@@ -560,7 +560,7 @@ test('mr_missing_v2: last month needs 評価 and comment when judged (else 評�
     assert.deepEqual(r.missing, ok ? [] : ['cur:sales:eval'], String(ev));
   }
   // Random shapes: the SQL and the screen agree.
-  let seed = 7; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  let seed = 7; const rnd = n => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return Math.floor(seed / 4294967296 * n); };   // exact 32-bit steps, high bits (the float version lost the low bits)
   const pick = a => a[rnd(a.length)];
   const txt = () => pick(['', ' ', '　', 'x', '\n', null, 5]);
   for (let i = 0; i < 250; i++) {

@@ -3,9 +3,10 @@
 ## 2026-10-12 中間レビュー v2（段階 4・UI案44 B案）
 
 1. 済（Claude）：段階 4-1 サーバー（`9a39c59`・ブランチ `claude/mid-review-v2`）。server 37/37・わざと壊した 95 通りすべてで落ちる。
-2. 次：段階 4-2 画面（`docs/MID_REVIEW_V2_JA.md` の「段階 4-2（画面）がすること」）。画面の試験と Codex の再現を v2 に書き直す。
-3. 次：auth-pin のソース（Moto さん）→ `verifyPin` を入れる（それまで PIN は断る）。
-4. レビュー：独立レビュー（Claude の別エージェント）と Codex。
+2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #__PR__）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
+3. 次：独立レビュー（Claude の別エージェント・Moto さんの判断）と Codex のレビュー。
+4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。
+5. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
 
 ## 2026-10-12 Invoice取込：通貨（v1070）と、反映 → 改名 → QuickBooks（v1071）
 

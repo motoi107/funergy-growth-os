@@ -117,11 +117,16 @@ Moto さんの「追加修正プロンプト」（10/12）と UI案44 の回答�
 
 ## 10. 入れ方（Moto さん・この版）
 
-1. auth-pin（PIN の回数の制限を足した版）を入れる（中身は Moto さんに直接）。
-2. 関数 `mid-review`（v2）を入れる。PIN の印を確かめる鍵は auth-pin と同じ設定を使う。
-3. migration `20261015090000_mid_review_v2.sql` → postcheck。
-4. PR をマージ（アプリ）。
-5. GM・CEO がメールでログインして担当・閲覧設定（Head Chef・入力担当）を保存。デモを作り直す。
+手順と貼るファイルは `deploy/mid-review-v2/`（`手順.md`）。本番に v1069 が入っている前提（10/12）。auth-pin（PIN の回数の制限を足した版）は 10/12 に入った。貼るものはすべて全文をそのまま。
+
+1. `1_最初に確認.sql`（＝`db/mid-review-precheck.sql`）→ すべて OK。
+2. 関数 `mid-review` を 1 ファイルで差し替え（PIN の印の確かめが入るので公開しない。Moto さんに直接渡す）。Verify JWT は OFF のまま。
+3. `2_追加のSQL_v2.sql`（＝migration `20261015090000_mid_review_v2.sql`）。
+4. `3_確認のSQL_読むだけ.sql`（＝`db/mid-review-postcheck.sql`）→ `mid-review v2 (20261015090000)` が OK。
+5. PR をマージ（アプリ v1072）。
+6. GM・CEO がメールでログインして担当・閲覧設定（Head Chef・入力担当）を保存。デモを作り直す。
+
+2〜5 のあいだは中間レビューの画面が使えない（ほかの画面は変わらない）。止めるときは画面で非公開確認を OFF、画面が開かないときは `db/mid-review-stop.sql`（＝`止める.sql`。記録・設定は消さない）。
 
 ## サーバーの実装（段階 4-1・ブランチ `claude/mid-review-v2`・本番未反映）
 
@@ -138,7 +143,7 @@ Moto さんの「追加修正プロンプト」（10/12）と UI案44 の回答�
   - 実効の権限は 1 つの関数 `mr_can`（閲覧・入力・返信・補足・実行完了・確認完了・取り消し・期限・設定と、その理由）。すべての操作がこれを使う。
   - 提出に要るもの `mr_missing_v2`（§4 の印の順と評価保留の数）。同じ規則を `handler.mjs` の `missingV2` に置いた（画面はこれと同じものを使う）。
   - 前の版の返信・完了の関数 5 つ（`mr_reply_save`・`mr_reply_delete`・`mr_reply_send`・`mr_complete`・`mr_result_save`）は `gone` を返すだけにした。
-- Edge Function `mid-review`（`handler.mjs`・`index.ts`）：メール（Supabase Auth）か PIN の印（本文の `pin_session` を `verifyPin` で確かめる）のどちらかで入る。`via` と利用者は関数が決める（本文の `via`・`actor` は使わない）。`index.ts` の `verifyPin` はまだ null（PIN は 401）。
+- Edge Function `mid-review`（`handler.mjs`・`index.ts`）：メール（Supabase Auth）か PIN の印（本文の `pin_session` を `verifyPin` で確かめる）のどちらかで入る。`via` と利用者は関数が決める（本文の `via`・`actor` は使わない）。`index.ts` の `verifyPin` は null のまま（PIN の確かめは本番に貼る 1 ファイルにだけ入れる。下の「PIN の確かめ」）。
 - `db/`：precheck（v1 が入っているか・title・同じ社員の 2 行）、postcheck（v2 の印・chef／staff の外れ・本番の入力の ON／OFF）、rollback（v2 の関数も消す・本番のレビューがあると止まる）、add-member（役割は am・gm・ceo のまま。同じ社員の PIN だけの行（staff）があれば止めてメールの行に置き換える。chef の行があるときは止まる）。
 
 ### 画面が使う API（段階 4-2）
@@ -178,7 +183,7 @@ POST で `{ action, ... }`。メールは `Authorization: Bearer <アクセス�
 
 - `node --test tests/mid-review-server.test.mjs`：37/37（本物の SQL を PGlite で、本物の handler、メールと PIN は代わりのもの）。
 - わざと壊した 95 通り（SQL 80・handler 15）：1 回目は 80 で落ちた。落ちなかった 15 のうち 14 は試験が足りなかった（2 か所で確かめているもののもう片方・試験の社員の並び）→ 試験を足した。1 つは壊し方が意味を変えていなかった（書き直した）。最後は 95/95 で落ちる。
-- `tests/mid-review-ui.test.mjs` と `tests/review/pr44-mid-review-repro.mjs` は v1068 の画面と前の API のものなので落ちる（段階 4-2 で書き直す）：UI は 55 のうち 16 が通り、36 が落ち、3 が止まる。再現は 4 つとも止まる（前の SQL だけを読み込むので、v2 の関数が無い）。
+- `tests/mid-review-ui.test.mjs` と `tests/review/pr44-mid-review-repro.mjs` は v1068 の画面と前の API のものなので落ちる（段階 4-2 で書き直した。下の「画面」）。
 - `python3 scripts/check-static-release.py`：pass・1068（画面は変えていない）。
 
 ### 段階 4-2（画面）がすること
@@ -189,8 +194,35 @@ POST で `{ action, ... }`。メールは `Authorization: Bearer <アクセス�
 - 担当・閲覧設定は `access_get` の `perms`（理由つき）を出す。`access_save` は店の入力担当と閲覧者をまとめて上書きするので、閲覧者は全部送る。
 - 前の形の記録（`legacy`）は読むだけ。
 
+## 画面（段階 4-2・アプリ v1072・ブランチ `claude/mid-review-v2`）
+
+- 予実 › 中間レビュー：全店一覧（デモ／本番・状態・入力担当・数は混ぜない・期限）→ 店舗の 1 ページ → 担当・閲覧設定（メールの GM・CEO）。
+- 店舗の 1 ページ（B案）：上に数字の一覧（会議タブと同じ。押すとそのカードへ）、① 前月の 6 KPI、② 今月の 5 KPI（未達 → 注意 → 達成 → 判定不可の順）と原価率の速報（参考・入力なし）、③ 重点（Qコミット）、④ 相談、⑤ 確認・提出（書く人）／確認・全体への返信（確かめる人）。どの KPI も 1 枚のカード（結果 → 担当者評価 → コメント・対策 → 返信）。達成している項目もいつも全部出す。
+- 書く人：どの欄にも必須・任意の印、足りない欄は赤い枠、⑤ に足りないものの一覧（押すとその欄へ・サーバーと同じ）。1.2 秒止まると版つきで自動保存（ほかの人が先に保存していたら上書きせず知らせる）。提出で提出版にそのときの数字を固定。
+- 確かめる人：項目の下に返信（1 件ずつすぐ送る・`client_id` で二重にしない。対応・判断と期限は任意）。左の欄で絞り込み（すべて・未達・評価 1・2・対策あり・相談・未返信・評価保留。数は混ぜない）。確認完了（AM・GM・CEO）と取り消し（GM・CEO）。期限は見出しの「期限を変える」（GM・CEO・確認完了の前）。
+- 両方できる人は「報告を書く」と「確認して返信する」を切り替える（補足と返信は別）。
+- スマホ（820px 以下）は 1 列・押すところ 44px 以上・短い言葉（上のチップ・手順・操作の切り替え。パンくずと年は出さない）。640px 以下は数字の一覧を出さない（数字は各カードにある）。
+- デモの重点は「会議タブの重点カード（デモ）」で反映のされ方を見せる（本番の Qコミットには書かない）。本番の数字は会議タブと同じ関数。前の形の記録（v1）は読むだけ。
+
+### PIN の確かめ（verifyPin）
+
+- auth-pin が PIN の照合で返す印を auth-pin と同じ設定で確かめ、印の人の名前を返す。名前はデータベースが在籍の社員 1 人に結び、その人の利用者の行を引く（2 人以上・退職・止めた人は断る）。店舗のログイン・期限切れ・形の違う印は断る。
+- auth-pin のソースと同じく、この確かめは公開のリポジトリに置かない。本番に貼る 1 ファイル（`handler.mjs` そのまま＋確かめ＋起動の行）にだけ入れて Moto さんに直接渡す。リポジトリの `index.ts` は `verifyPin = null`（このまま動かすと PIN は断り、メールだけ入れる）。
+- 試験（Claude の手元・合成データ）：本物の auth-pin（v1067）が出した印で入れ、ほかの印（作り直したもの・期限切れ・未来の日付・店舗のログイン・壊れたもの）は断る（鍵の設定 2 通り）。中間レビューの関数が印の人を引く（同じ名前が 2 人なら断る・PIN の GM は設定を開けない）。貼る 1 ファイル全体を Deno で動かし、PIN とメールの両方で入る。4/4。
+
+### 試験（段階 4-2・合成データ）
+
+- `node --test tests/mid-review-ui.test.mjs` 34/34（本物の画面のモジュールを VM で、本物の handler と SQL を PGlite で）。
+- `node --test tests/mid-review-server.test.mjs` 38/38、`tests/mid-review-deploy.test.mjs` 4/4（v1069 の束は変えない・v2 の束の SQL は元のファイルと同じ・関数のファイルは置かない・止める SQL）。
+- `tests/review/pr44-mid-review-repro.mjs`：R1・R3 は v2 の欄で通る、R2・R4 は v2 で無くなったので止める（R4 の役職の狭め方は server の「v1068 kept」）。`tests/review/pr45-mid-review-lock-order.test.mjs` 2/2（本物の PostgreSQL・v1069 の SQL とデモ）。
+- Chromium（1440・390px、日本語・英語。通信は止め、中間レビューの呼び出しだけ本物の handler と PGlite）：一覧・書く・確かめる・絞り込み・設定・PIN の GM・本番の入力担当の 21 画面で pageerror 0・横スクロールなし・スマホの押すところ 44px 以上。クリックと入力だけで川沿い（デモ）の 19 の必須を埋める → 自動保存 → 提出 → 確かめるに切り替え → 未返信の項目に返信 → 確認完了、をスマホ（日本語）と PC（英語）で 20/20。
+- わざと壊した server 95 通り（SQL 80・handler 15）：今のファイル（main の `20261013090000` の上）でもう一度流して 95/95 で落ちる。わざと壊した画面 45 通り：44 で落ちる（残り 1 つは同じ意味：確認完了で送る提出版の番号の取り方。画面の中では 2 つの値がいつも同じ）。1 回目は 41 で、落ちなかった 3 つに試験を足した（評価の形・同じログインの鍵を画面が取り替えたとき・閲覧者 2 人の保存）。
+- `tests/*.test.mjs` をファイルごとに main `466f3a4` と比べた（invoice-mutations 以外）：失敗は同じ 23 件（bot-center 2・bot-database 2・ingredient-transfers 1・meeting-budget 14・meeting-sales 4。前からの失敗）。違うのは中間レビューの 3 つだけ（server 56 → 38・ui 55 → 34 は v1069 の試験を v2 の試験に置き換えたため。deploy 3 → 4）。
+- 試験の乱数の直し：「ランダムな本文で画面・handler・SQL が同じ」の試験（server・ui）の乱数が、掛け算の丸めで下の桁を失い、2・4・8 で割った余りがほぼいつも 0 だった（評価・状態・相談の選び方が偏り、試したつもりの組み合わせが出ていなかった）。32 ビットで正しく計算し上の桁を使う形に直した。直したあとも 3 つは同じ答え。
+- `python3 scripts/check-static-release.py`：pass・1072。
+
 ### 残り
 
-- PIN の印を確かめる `verifyPin`（auth-pin と同じ鍵・形・期限）：auth-pin のソースが要る（Moto さんから。リポジトリには置かない）。それまで PIN は断る。
-- 入れる順は §10 のとおり。関数 v2 から migration までのあいだ、v1068 の画面は動かない（返信は 410）。続けて入れる。
-- 独立レビュー・Codex のレビューはまだ。
+- 独立レビュー（Claude の別エージェント）・Codex のレビュー：まだ。
+- 入れる：§10（`deploy/mid-review-v2/手順.md`）。
+- 店舗公開・通知は OFF のまま（別の段階）。本番の店の入力（`flags.live_input`）は GM・CEO が担当・閲覧設定で ON にする。

@@ -348,7 +348,7 @@ test('the screen’s rules equal the server’s: missing items, counts and the d
     assert.deepEqual(mine, JSON.parse(JSON.stringify(demoSnapshot('2026-10', st.demo))), st.store_id);
   }
   // Random bodies and numbers: the screen's missing list and holds equal the server's (same codes, same order).
-  let seed = 7; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  let seed = 7; const rnd = n => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return Math.floor(seed / 4294967296 * n); };   // exact 32-bit steps, high bits (the float version lost the low bits)
   const pick = a => a[rnd(a.length)];
   for (let i = 0; i < 400; i++) {
     const judges = ['ok', 'warn', 'miss', 'unset', 'missing'], keys = ['repeat', 'menu', 'ppa', 'cs'].filter(() => rnd(2));
@@ -362,6 +362,14 @@ test('the screen’s rules equal the server’s: missing items, counts and the d
     const mine = JSON.parse(c.run(`JSON.stringify(mrMissingV2(${JSON.stringify(b)}, ${JSON.stringify(sn)}))`));
     assert.deepEqual(mine, missingV2(b, sn), JSON.stringify(b));
   }
+  // A rating is an integer 1..5 on both sides: a string, a fraction, out of range or a boolean is not a rating.
+  const sn1 = { prev: { state: 'final', rows: { sales: { judge: 'ok' } } }, cur: { rows: { sales: { judge: 'miss' } } }, focus: { keys: [] } };
+  for (const ev of ['3', 2.5, 0, 6, true, '', [3]]) {
+    const b = { prev: { sales: { eval: ev, comment: 'c' } }, cur: { sales: { eval: ev, measure: 'm' } }, consult: 'none' };
+    const mine = JSON.parse(c.run(`JSON.stringify(mrMissingV2(${JSON.stringify(b)}, ${JSON.stringify(sn1)}))`));
+    assert.deepEqual(mine, missingV2(b, sn1), JSON.stringify(ev)); assert.deepEqual(mine.missing, ['prev:sales:eval', 'cur:sales:eval'], JSON.stringify(ev));
+  }
+  for (const ev of [1, 5]) assert.deepEqual(JSON.parse(c.run(`JSON.stringify(mrMissingV2({ prev:{ sales:{ eval:${ev}, comment:'c' } }, cur:{ sales:{ eval:${ev}, measure:'m' } }, consult:'none' }, ${JSON.stringify(sn1)}))`)).missing, []);
 });
 
 test('counts on the screen (rail, chips) equal the server’s counts for every demo store; the rail filters show only those items', async () => {
@@ -399,7 +407,7 @@ test('⑤ lists the concrete missing items as links; the codes equal what the se
   assert.match(sec, /onclick="mrGo\('k-cur-repeat'\)"/);
   assert.match(sec, /<button class="btn btn-primary mr-btn-l" disabled onclick="mrSubmit\(\)">提出する/);
   // Random partial bodies: whatever the list shows is exactly the server's missing list (save + submit straight to the server).
-  let seed = 3; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  let seed = 3; const rnd = n => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return Math.floor(seed / 4294967296 * n); };   // exact 32-bit steps, high bits (the float version lost the low bits)
   for (let i = 0; i < 12; i++) {
     const R = c.M().rec, ed = c.M().ed;
     const b = JSON.parse(JSON.stringify(ed.body));
@@ -689,13 +697,15 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   assert.match(table, /<b>Server Lead<\/b> <span class="mr-m">入力担当<\/span><\/td><td><span class="mr-y">○<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td class="mr-m">この月の入力担当・本番の入力は OFF/);
   assert.match(table, /<b>GM Test<\/b> <span class="mr-m">GM<\/span>.*<span class="mr-y">○<\/span><\/td><td class="mr-m">CEO・GM・Head Chef（全店）/);
   // Change ToriTon: input E13, add viewer E6 (keeps the list whole).
-  c.run("mrAccSet('input','E13')"); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  c.run("mrAccSet('input','E13')"); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
   c.renderPage(); assert.match(c.html, /保存していない変更あり/);
   await c.run('mrAccSave()'); await c.flush(); await c.show(); h = c.html;
-  assert.deepEqual((await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', viewer_emps: ['E6'] });
-  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6'] }]);
-  // Remove the viewer: the full (empty) list is sent.
+  assert.deepEqual((await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', viewer_emps: ['E6', 'E11'] });
+  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6', 'E11'] }]);
+  // Remove one viewer: the rest of the list is sent (not only the change); then the last one: the empty list.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, ['E11']);
+  c.run("mrAccDelViewer('E11')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, []);
   // This month only: E14.
   c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
@@ -770,6 +780,14 @@ test('R3 (v2): a new key for the same person keeps the screen and the input (ema
   const d = app(S); await openStore(d, 'D6'); const ed2 = d.M().ed;
   d._botSession = { access_token: 'tok-gm', refresh_token: 'other' }; d.renderPage();
   assert.notEqual(d.M().ed, ed2);
+  // …unless this page refreshed it itself after a 401 (the same sign-in): the screen and the input stay.
+  const r = app(S); await openStore(r, 'D6'); const red = r.M().ed;
+  let once = true; const f1 = r.fetch;
+  r.fetch = async (u, i) => { if (once) { once = false; r.calls.push({ ...JSON.parse(i.body), _auth: '401' }); return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) }; } return f1(u, i); };
+  r.invInSessionRefresh = async s => { assert.equal(s, r._botSession); r._botSession = { access_token: 'tok-gm', refresh_token: 'r-gm-2' }; return r._botSession; };
+  r.run("mrSetVal('prev.sales.comment','取り替えの前に書いた')"); await r.flush(); r.renderPage();
+  assert.equal(r.M().ed, red); assert.equal(r.M().view.id, 'D6'); assert.equal(r.calls.filter(b => b._auth === '401').length, 1);
+  assert.equal((await get(S, 'D6')).review.body.prev.sales.comment, '取り替えの前に書いた');
 });
 
 test('every text from the server is escaped (store, input person, replies, author names, comments, settings names)', async () => {

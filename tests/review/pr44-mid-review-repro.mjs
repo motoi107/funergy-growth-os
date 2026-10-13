@@ -107,7 +107,7 @@ test('R3: refreshing the same account must preserve the editor and pending input
 
 // Skipped for v2: there are no CEO-only decisions or escalation waits any more — replies have an optional response
 // and never decide the review; 確認完了 is AM / GM / CEO and its undo GM / CEO, checked by the server's mr_can (spec §2, §5).
-test('R4: a CEO changed to GM in manager_auth must not retain CEO-only decisions', { skip: 'v2 removed CEO-only decisions (replies carry an optional response; permissions come from mr_can)' }, async t => {
+test('R4: a CEO changed to GM in manager_auth must not retain CEO-only decisions', { skip: 'v2 removed CEO-only decisions (replies carry an optional response; permissions come from mr_can). The narrowing itself is tested in mid-review-server.test.mjs (“v1068 kept”)' }, async t => {
   const S = await server(); t.after(() => S.pg.close());
   await S.pg.exec('reset role');
   await S.pg.query('update manager_auth set role=$1 where user_id=$2', ['gm', U.ceo]);
