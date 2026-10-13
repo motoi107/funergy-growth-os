@@ -64,31 +64,44 @@ test('coefficients: linear between the points, 0.25% steps, held outside the ran
   assert.equal(run(c, 'kevFc(1.0125)'), '1.0125');
 });
 
-test('items: G2/G3 ①, G4 ①②③, G5/G6 ②④ — saved v1065-era on/off and sales/profit points are not used, saved ranges and new saves are', () => {
+test('items: G2/G3 ①, G4 ①②③, G5/G6 ②④ — v1065-era on/off, points and ②③④ ranges are not used; ① ranges, new saves and deliberate personal changes are', () => {
   const c = ceo();
   const on = id => { const s = seg(c, id); return ['c', 's', 'f', 'p'].filter(k => s.items[k].on).join(''); };
   assert.deepEqual(['aki', 'ken', 'neo', 'mia', 'sam', 'gus'].map(on), ['c', 'c', 'c', 'csf', 'sp', 'sp']);
   assert.equal(on('ray'), 'cf', "Ray's personal setting (② fixed, with a reason) is still honored");
   assert.equal(seg(c, 'sam').coefs.c, 1, 'G5: Career Score is evaluated but not used');
-  // what the v1065 settings tab saved for 2026 Q3: G5 ① on, G4 ② off, G5 ② points 0/100/200 with a range 0.90–1.10
+  // what the v1065 settings tab saved for 2026 Q3 (its form saved the pre-filled values too): G5 ① on with 0.80–1.20,
+  // G5 ② points 0/100/200 with the pre-filled range 0.80–1.20, G4 ② off, a company-wide ④ range 0.80–1.20
   c.STORE.bonus_eval_rule = {
-    'G5|2026-Q3': { set: { c: { on: true, lo: 0.8, hi: 1.2, x0: 0, x1: 50, x2: 100 }, s: { on: true, lo: 0.9, hi: 1.1, x0: 0, x1: 100, x2: 200 } }, _at: 1 },
-    'G4|2026-Q3': { set: { s: { on: false } }, _at: 1 },
+    'G5|2026-Q3': { set: { c: { on: true, lo: 0.8, hi: 1.2, x0: 0, x1: 50, x2: 100 }, s: { on: true, lo: 0.8, hi: 1.2, x0: 0, x1: 100, x2: 200 } }, _at: 1 },
+    'G4|2026-Q3': { set: { s: { on: false }, f: { lo: 0.9, hi: 1.1 } }, _at: 1 },
+    '_common|2026-Q3': { set: { p: { lo: 0.8, hi: 1.2, x0: 0, x1: 100, x2: 200 } }, _at: 1 },
   };
   assert.equal(on('sam'), 'sp', 'the old G5 ① on is not used');
   assert.equal(on('mia'), 'csf', 'the old G4 ② off is not used');
   const sam = seg(c, 'sam');
-  assert.deepEqual([sam.items.s.rule.lo, sam.items.s.rule.hi, sam.items.s.rule.x0, sam.items.s.rule.x2], [0.9, 1.1, 90, 110], 'the saved range carries over; the points come from the judgement rules');
-  assert.equal(sam.coefs.s, coef(96, 0.9, 1.1, PCT), '96% on 0.90–1.10');
-  // saved with this version (g2): used
+  assert.deepEqual([sam.items.s.rule.lo, sam.items.s.rule.hi, sam.items.s.rule.x0, sam.items.s.rule.x2], [0.95, 1.05, 90, 110], 'the CEO range and points, not the saved v1065 values');
+  assert.deepEqual([sam.items.p.rule.lo, sam.items.p.rule.hi, seg(c, 'mia').items.f.rule.lo], [0.9, 1.1, 0.95]);
+  assert.equal(sam.coefs.s, coef(96, 0.95, 1.05, PCT), '96% on 0.95–1.05 = 0.98');
+  // ① keeps the saved range (Moto: 5B) — visible once ① is switched on with this version (g2)
   c.STORE.bonus_eval_rule['G5|2026-Q3'].set.c.g2 = 1;
   assert.equal(on('sam'), 'csp');
   assert.deepEqual([seg(c, 'sam').items.c.rule.lo, seg(c, 'sam').items.c.rule.hi], [0.8, 1.2]);
-  // a personal on/off from before is honored (a decision about that person, with a reason)
+  // ②③④ ranges saved with this version are used
+  c.STORE.bonus_eval_rule['G5|2026-Q3'].set.s = { on: true, lo: 0.9, hi: 1.1, g2: 1 };
+  assert.deepEqual([seg(c, 'sam').items.s.rule.lo, seg(c, 'sam').coefs.s], [0.9, coef(96, 0.9, 1.1, PCT)]);
+  // a personal on/off from before is used only when it was a deliberate change from the v1065 default
   c.STORE.bonus_eval_rule = {};
-  c.STORE.bonus_eval_ovr.sam = undefined;
-  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true } }, why: '店舗の立ち上げ', _at: 1 };
-  assert.equal(on('sam'), 'csp');
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true, lo: 0.7, hi: 1.3 }, w: { ab: 40, kn: 20, ph: 20, qu: 20 } }, why: '配点を変えた', _at: 1 };
+  assert.equal(on('sam'), 'sp', 'G5 ① was on by default in v1065: the saved "on" was only pre-filled');
+  c.STORE.bonus_eval_ovr['mia|2026-Q3'] = { set: { p: { on: true, lo: 0.8, hi: 1.2 } }, why: '店舗の利益にも責任を持つ', _at: 1 };
+  assert.equal(on('mia'), 'csfp', 'G4 ④ was off by default in v1065: turning it on was deliberate');
+  assert.deepEqual([seg(c, 'mia').items.p.rule.lo, seg(c, 'mia').items.p.rule.hi], [0.9, 1.1], 'but its pre-filled range is not used');
+  assert.equal(on('ray'), 'cf', "Ray's ② fixed at 1.00 (deliberate) is kept");
+  // the judgement rules are company-wide: a grade or personal "j" is ignored
+  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { j: { clo: 0.5, chi: 2 } }, _at: 1 } };
+  c.STORE.bonus_eval_ovr['ray|2026-Q3'].set.j = { clo: 0.5, chi: 2 };
+  assert.deepEqual(seg(c, 'ray').lim, [0.85, 1.15]);
 });
 
 test('G4 FL: target − actual on ±2pt, then the improvement action, held to the FL range; a plus needs 実行状況', () => {
@@ -124,6 +137,14 @@ test('G4 FL: target − actual on ±2pt, then the improvement action, held to th
   run(c, `window._kevF={}`);
   c.ID = 'mia';
   assert.match(run(c, "kevDoneProblems(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()).segs[0], kevApplies(kbCfg())).join('／')"), /実行状況/);
+  // "a plus needs 実行状況" follows the adjustment rate (the rates are company-wide and editable): 標準 at +1% needs it too
+  c.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { j: { a3: 1 } }, _at: 1 } };
+  fx({ lv: 3, c_cause: true });
+  assert.match(f().miss.join(), /実行状況/);
+  assert.match(run(c, "kevDoneProblems(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()).segs[0], kevApplies(kbCfg())).join('／')"), /実行状況/);
+  c.STORE.bonus_eval_rule = {};
+  fx({ lv: 3, c_cause: true });
+  assert.deepEqual(f().miss, [], '標準 at 0% does not need it');
   fx({ lv: 4, c_exec: true, why: '  ' });
   assert.match(f().miss.join(), /理由を書いてください/);
   fx({ lv: null });
@@ -263,7 +284,7 @@ test('settings forms (2026 Q3): ②③④ change on/off and the range only, mark
   assert.match(lastToast(c), /1\.00 が下限〜上限の中/);
 });
 
-test('store table: GM/CEO set targets (% or $), office/GM/CEO enter monthly profit, PL fill = net income + head office + depreciation', () => {
+test('store table: GM/CEO set targets (% or $) and enter the monthly profit, PL fill = net income + head office + depreciation', () => {
   const c = ceo();
   install(c, 'plOtherOf', 'plNormAccount');
   assert.equal(run(c, `kevTgtSet('${Q}','S3','pp','12')`), true);
@@ -282,13 +303,22 @@ test('store table: GM/CEO set targets (% or $), office/GM/CEO enter monthly prof
   assert.deepEqual(J(c.STORE.bonus_store_q[`${Q}|S3`].act['2026-07']).a, 12345.67);
   assert.equal(run(c, `kevActSet('${Q}','S3','2026-12','1')`), false, 'a month outside the quarter');
   // roles
-  c.curRole = 'office';
-  assert.equal(run(c, `kevTgtSet('${Q}','S3','pp','9')`), false);
-  assert.match(lastToast(c), /GM・CEO/);
-  assert.equal(run(c, `kevActSet('${Q}','S3','2026-08','1000')`), true, 'accounting enters the actuals');
-  c.curRole = 'am';
-  assert.equal(run(c, `kevActSet('${Q}','S3','2026-08','2000')`), false);
+  // the table is on the GM/CEO-only growth chart: other roles cannot write (also when called directly)
+  for (const role of ['office', 'am', 'manager']) {
+    c.curRole = role;
+    assert.equal(run(c, `kevTgtSet('${Q}','S3','pp','9')`), false, role);
+    assert.equal(run(c, `kevActSet('${Q}','S3','2026-08','1000')`), false, role);
+    assert.match(lastToast(c), /GM・CEO/);
+  }
   c.curRole = 'gm';
+  // only closed months and the stores of the quarter
+  vm.runInContext('var _ymo=_ymToOffset; _ymToOffset=function(ym){ return _ymo(ym)+1; };', c);   // September is the current month
+  assert.equal(run(c, `kevActSet('${Q}','S3','2026-09','1000')`), false);
+  assert.match(lastToast(c), /締まった月だけ/);
+  vm.runInContext('_ymToOffset=_ymo;', c);
+  assert.equal(run(c, `kevActSet('${Q}','S9','2026-08','1000')`), false);
+  assert.equal(run(c, `kevTgtSet('${Q}','S9','pp','9')`), false);
+  assert.match(lastToast(c), /対象の店舗ではありません/);
   // profit confirmed / quarter confirmed / another quarter on screen
   c.STORE.bonus_q[Q].profitLocked = true;
   assert.equal(run(c, `kevActSet('${Q}','S3','2026-08','3000')`), false);
@@ -306,10 +336,29 @@ test('store table: GM/CEO set targets (% or $), office/GM/CEO enter monthly prof
   assert.equal(run(c, "kevPlValue('S4','2026-07')").ok, false, 'no breakdown of the other expenses: not filled');
   assert.equal(run(c, "kevPlValue('S3','2026-08')").v, -500, 'a month before opening: the other expenses are 0');
   assert.match(run(c, "kevPlValue('F03','2026-07')").why, /Waikiki/);
+  // only closed months are filled (September as the current month: not offered)
+  c.STORE.pl_actual['2026-09'] = { S3: { sales: 1, opex: 1, netinc: 1, detailOth: { 'Head Office Fee': 1, 'Depreciation': 1 } } };
+  vm.runInContext('var _ymo2=_ymToOffset; _ymToOffset=function(ym){ return _ymo2(ym)+1; };', c);
+  assert.deepEqual(run(c, `kevPlFillList('${Q}', ['S3'])`).map(x => x.ym), ['2026-07', '2026-08']);
+  vm.runInContext('_ymToOffset=_ymo2;', c);
+  delete c.STORE.pl_actual['2026-09'];
   assert.equal(run(c, `kevPlFill('${Q}')`), true);
   const a = c.STORE.bonus_store_q[`${Q}|S3`].act;
   assert.deepEqual([a['2026-07'].a, a['2026-07'].src, a['2026-08'].a, a['2026-09']], [28000, 'pl', -500, undefined]);
   assert.equal(run(c, `kevStoreRow('${Q}','S3')`).acts['2026-07'].src, 'pl');
+});
+
+test('progress panel (査定の進み具合): 2026 Q3 counts stores whose store table has a target and every closed month', () => {
+  const c = ceo();
+  install(c, 'bqStageState');
+  vm.runInContext('function getQBudget(){ return {status:"committed"}; }', c);
+  c.STORE.bonus_q = { [Q]: {} };   // no v1068 hand entry
+  assert.equal(run(c, `bqStageState('${Q}')`).profit.n, 0);
+  storeRec(c, 'S3', { tgt: { pp: 10, pb: 'pct' }, act: acts([1, 2, 3]) });
+  storeRec(c, 'S4', { tgt: { pp: 10, pb: 'pct' }, act: acts([1, 2, null]) });
+  const st = run(c, `bqStageState('${Q}')`);
+  assert.deepEqual([st.profit.n, st.profit.tot], [1, 5], 'S3 complete; S4 misses September');
+  assert.deepEqual(run(c, `kevStoreLockMiss('${Q}', ['S4', 'S5'])`), ['Store 4（9月の実績）', 'Store 5（目標・7月・8月・9月の実績）']);
 });
 
 test('store table sync: two devices change different stores / fields, both survive; the confirm re-read and digest include it', () => {
@@ -362,11 +411,14 @@ test('confirming freezes the CEO formula: later rules, targets, actuals and rang
   assert.match(store, /確定済み/);
   assert.doesNotMatch(store, /kevTgtSet\(|kevActSet\(|kevPlFill\(/);
   assert.match(store, /\$31,000/, 'the frozen monthly profit, not the later $1');
-  assert.match(run(c, 'kevJudgeCardHtml(kbCfg())'), /確定したときの決まり/);
+  const judgeLocked = run(c, 'kevJudgeCardHtml(kbCfg())');
+  assert.match(judgeLocked, /確定したときの決まり/);
+  assert.match(judgeLocked, /90% で下限 ／ 100% で 1\.00 ／ 110% で上限/, 'the confirmed rules, not the later 99/101');
+  assert.match(judgeLocked, /0\.85 〜 1\.15/);
   assert.equal(run(c, `kevTgtSet('${Q}','S3','pp','9')`), false);
   assert.equal(run(c, `kevTgtSet('${Q}','S3','fl','58')`), false, 'the FL target is closed by the confirmation too');
   assert.match(lastToast(c), /査定を確定しています/);
-  assert.match(store, /aria-label="&lt;b&gt;S3&lt;\/b&gt; 利益の目標 %" value="11.11"|aria-label="Store 3 利益の目標 %" value="11.11"/, 'the frozen target % (not the later 50%)');
+  assert.match(store, /aria-label="Store 3 利益の目標 %" value="11.11"/, 'the frozen target % (not the later 50%)');
   assert.doesNotMatch(store, /value="50"/);
   // the pay history keeps the final coefficient
   run(c, 'bonusConfirmQuarter()');
@@ -438,9 +490,8 @@ test('screens (PC and phone): evaluation with the FL action, settings ③ ④, l
   const inner = run(c, 'kevPersonInnerHtml(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()), kbCfg(), {})');
   assert.match(inner, /1\.1795 → 1\.150 で止めた/);
   assert.match(run(c, 'kevSelfExplainHtml(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()), kbCfg())'), /0\.85〜1\.15 に収めて ×1\.150/);
-  // the office role sees the store table (enters the actuals) but cannot change targets
+  // other roles get no inputs (the growth chart itself is GM/CEO only)
   c.curRole = 'office';
   const off = run(c, 'kevStoreCardHtml(kbCfg())');
-  assert.match(off, /kevActSet\(/);
-  assert.doesNotMatch(off, /kevTgtSet\(/);
+  assert.doesNotMatch(off, /kevActSet\(|kevTgtSet\(|kevPlFill\(/);
 });

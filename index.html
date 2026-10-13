@@ -11795,8 +11795,8 @@ var OP_MERGE = {
   bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
   bonus_eval_rule:    { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 4 項目の設定（会社共通・グレード・職種）。「キー|適用開始の四半期」の中を部分（c・s・f・p・w・fl）ごとに新しいほう・履歴は両方 */
   bonus_eval_ovr:     { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個人設定。「従業員|適用開始の四半期」の中を部分ごと（外した部分も時刻つき） */
-  bonus_eval:         { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },
-  bonus_store_q:      { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1074（CEO の指示書）：店舗の目標と実績（四半期の利益の目標・FL の目標率・各月の店舗管理利益）。「四半期|店舗」の中を欄ごと（2 台で別の店・別の欄を直しても両方残る） */   /* v1065: 個別評価の入力（下書き）。「四半期|従業員|グレード」の中を項目ごと（2 台で同じ人の別の項目を直しても両方残る） */
+  bonus_eval:         { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個別評価の入力（下書き）。「四半期|従業員|グレード」の中を項目ごと（2 台で同じ人の別の項目を直しても両方残る） */
+  bonus_store_q:      { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1074（CEO の指示書）：店舗の目標と実績（四半期の利益の目標・FL の目標率・各月の店舗管理利益）。「四半期|店舗」の中を欄ごと（2 台で別の店・別の欄を直しても両方残る） */
   ocs_cfg:            { merge: mergeLssRec,    covers: _coversLssRec },      /* v1050: オフィス用 Career Score の正式運用の ON/OFF（新しい保存が勝つ） */   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
@@ -59894,6 +59894,7 @@ function bqStageState(q, cfg){
     msg: past===3?'3ヶ月とも締まっています':(past+' / 3ヶ月が経過（進行中）') };
   /* ③ 利益入力 */
   var withData=sids.filter(function(sid){ return bqProfitOf(q,sid).hasData; }).length;
+  if(typeof kevGen2==='function' && kevGen2(q)) withData=sids.filter(function(sid){ return !kevStoreLockMiss(q, [sid]).length; }).length;   /* v1074：店舗の表（目標・締まった月の実績） */
   st.profit={ done:d.profitLocked, n:withData, tot:sids.length, locked:d.profitLocked,
     msg: d.profitLocked ? ('確定済み（'+escapeHtml(d.profitLockedBy||'')+' '+escapeHtml(String(d.profitLockedAt||'').slice(0,16))+'）')
                         : (withData+' / '+sids.length+' 店が入力済み') };
@@ -64207,6 +64208,9 @@ function kevMerge(R, set, src, M, F){
       /* v1074（2026 Q3 からの式）：売上・利益の点は判定の決まり（j）で決める。前の版で保存したグレード・会社共通の「反映・固定」は使わない（この版で保存した部分 g2 は使う） */
       if(F && F.noSP && (g==='s' || g==='p') && (f==='x0' || f==='x1' || f==='x2' || f==='d')) return;
       if(F && F.noOn && f==='on' && !kevN(x.g2)) return;
+      if(F && F.noJ && g==='j') return;   /* 判定の決まりは会社共通だけ（グレード・個人では変えない） */
+      if(F && F.noRng && (g==='s' || g==='f' || g==='p') && (f==='lo' || f==='hi') && !kevN(x.g2)) return;   /* 前の版で保存した ②③④ の幅は使わない（前の版の画面は初期値を入れたまま保存していた） */
+      if(F && F.onDev && f==='on' && !kevN(x.g2) && F.onDev[g] && ((x.on!==false && x.on!=='false')===(F.onDev[g].on!==false))) return;   /* 前の版の個人設定の「反映・固定」は、前の版の初期値とわざと変えたときだけ使う */
       if(f==='on'){ R[g].on=(x.on!==false && x.on!=='false'); M[g+'.on']=src; return; }   /* 同期で来た値：反映か固定か */
       var n=kevN(x[f]); if(n==null) return; R[g][f]=n; M[g+'.'+f]=src;                      /* それ以外は数だけ（文字は使わない） */
     });
@@ -64217,12 +64221,15 @@ function kevMerge(R, set, src, M, F){
 function kevRuleFor(scope, q, empId, sim, cfg){
   var R=kevBaseDefaults(cfg), M={}, gen2=kevGen2(q);
   if(gen2){ ['s','f','p'].forEach(function(p){ R[p].lo=KEV2_DEF_RNG[p][0]; R[p].hi=KEV2_DEF_RNG[p][1]; }); }   /* v1074：CEO の指示書の今の幅（保存した幅があればそちら） */
-  var FR=gen2 ? {noOn:true, noSP:true} : null, FP=gen2 ? {noSP:true} : null;   /* グレード・会社共通の前の版の「反映・固定」と売上・利益の点は使わない。個人設定の「反映・固定」は使う */
+  /* 2026 Q3 から：前の版（v1065〜v1068）で保存したグレード・会社共通の「反映・固定」・売上と利益の点・②③④ の幅は使わない（この版で保存した部分 g2 は使う）。
+     前の版の個人設定の「反映・固定」は、前の版の初期値とわざと変えたもの（例：Head Chef の ② を 1.00 固定）だけ使う。判定の決まり（j）は会社共通だけ */
+  var FC=gen2 ? {noOn:true, noSP:true, noRng:true} : null, FR=gen2 ? {noOn:true, noSP:true, noRng:true, noJ:true} : null,
+      FP=gen2 ? {noSP:true, noRng:true, noJ:true, onDev:kevGradeDefaults(scope || 'G2')} : null;
   Object.keys(R).forEach(function(g){ Object.keys(R[g]).forEach(function(f){ M[g+'.'+f]='common'; }); });
   R.stores=null; M.stores=null;
   var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ov=empId ? kevVer(kevOvrAll(), empId, q) : null;
-  if(cm) kevMerge(R, cm.set, 'common', M, FR);
-  if(sim && sim.level==='common') kevMerge(R, sim.set, 'common', M, FR);
+  if(cm) kevMerge(R, cm.set, 'common', M, FC);
+  if(sim && sim.level==='common') kevMerge(R, sim.set, 'common', M, FC);
   if(scope) kevMerge(R, gen2 ? kevGradeDefaults2(scope) : kevGradeDefaults(scope), 'gradeDef', M);
   var g5=(scope==='G6') ? kevVer(all, 'G5', q) : null;   /* G6 は G5 と同じ（Motoさん 10/11）：G6 で別に決めていない値は G5 の設定 */
   if(g5) kevMerge(R, g5.set, 'g5', M, FR);
@@ -64644,9 +64651,10 @@ function kevProfitItem(R, P){
      係数は step（0.25%）刻みに四捨五入（Career Score も同じ）。FL 改善行動の調整率 a5〜a1（＋5%・＋2.5%・0・−2.5%・−5%）。
      個人の最終係数の幅 clo〜chi（0.85〜1.15）：項目の係数を掛けた値（丸めない）をこの幅で止め、基準額（日割り）に掛けて $1 に丸める。
    【係数の幅（下限・上限）】今までどおりグレード・職種ごと（個人設定も）。初期値：売上 0.95〜1.05・FL 0.95〜1.05・利益 0.90〜1.10（CEO の指示書の今の設定）・
-     Career Score は今のグレード係数の幅（bonus_coef_rng。初期 0.70〜1.30）。前の版（v1065〜v1068）で保存したグレード・会社共通の幅は引き継ぐ。
-     前の版で保存したグレード・会社共通の「反映・固定」と売上・利益の点（0・100・200% など）は使わない（この版の初期値と判定の決まり）。
-     この版で保存した部分（g2 の印）の「反映・固定」は使う。個人設定の「反映・固定」は前の版の分も使う（その人ごとの判断で、理由がある）。
+     Career Score は今のグレード係数の幅（bonus_coef_rng。初期 0.70〜1.30。回答 5B）。
+     前の版（v1065〜v1068）で保存したグレード・会社共通の「反映・固定」・売上と利益の点（0・100・200% など）・②③④ の幅は使わない（前の版の画面は初期値を入れたまま保存していたため。
+     この版の初期値と判定の決まりから始める）。この版で保存した部分（g2 の印）は使う。① の幅は前の版で保存した分も使う。
+     前の版の個人設定の「反映・固定」は、前の版の初期値とわざと変えたもの（例：Head Chef の ② を 1.00 固定）だけ使う（理由がある判断）。
    【FL（G4）】FL 率＝（Food Cost ＋ Labor の 3 か月の額）÷ 3 か月の売上（月の % の平均にしない）。目標率は店舗の表（四半期）・無ければ KPI マスターの Food ＋ Labor。
      数値係数 → ＋改善行動の調整率（GM・CEO が 5 段階から選ぶ・理由は必須・プラスは「実行状況」のチェックが要る）→ FL の幅で止める。
    【利益（G5・G6）】店舗管理利益。目標は店舗の表の四半期の %（額＝売上予算 × %）か額。実績は各月（会計 PL から入れる・手入力）。
@@ -64802,7 +64810,7 @@ function kevFlItem2(R, ev, stores, kv, J){
     else { if(C.noF.length) miss.push('Food Cost の実績が未取得（'+C.noF.join('／')+'）'); if(C.noL.length) miss.push('Labor の実績が未取得（'+C.noL.join('／')+'）'+(C.noLAtt ? '。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください' : '')); }
   }
   if(lv==null) miss.push('FL 改善行動：段階を選んでください');
-  else if(lv>=4 && !fx.c_exec) miss.push('FL 改善行動：プラスの段階は「実行状況」のチェックが要ります（改善計画を作っただけではプラスにしない）');
+  else if(Number(J['a'+lv])>0 && !fx.c_exec) miss.push('FL 改善行動：プラスの段階は「実行状況」のチェックが要ります（改善計画を作っただけではプラスにしない）');   /* 調整率がプラスなら（率は会社共通で変えられる） */
   if(!String(fx.why||'').trim()) miss.push('FL 改善行動：理由を書いてください');
   var adj=(lv==null) ? null : Number(J['a'+lv]), coef=null, capped=false, raw=null;
   if(num!=null && adj!=null && isFinite(adj) && !miss.length){
@@ -65429,7 +65437,7 @@ function kevDoneProblems(e, seg, kv){
     if(I.items.f.on){
       var fx=ev.fx||{}, flv=Number(fx.lv);
       if(!(flv>=1 && flv<=5)) p.push('FL 改善行動：段階を選んでください');
-      else if(flv>=4 && !fx.c_exec) p.push('FL 改善行動：プラスの段階は「実行状況」のチェックが要ります');
+      else if(Number(I.J['a'+flv])>0 && !fx.c_exec) p.push('FL 改善行動：プラスの段階は「実行状況」のチェックが要ります');
       if(!String(fx.why||'').trim()) p.push('FL 改善行動：理由を書いてください');
     }
   }
@@ -65829,7 +65837,7 @@ function kevSnapMainHtml2(e, b, seg, kv){
 /* ---- 設定タブ ③：判定の決まり（会社共通） ---- */
 function kevJudgeCardHtml(cfg){
   var kv=kevApplies(cfg), q=kv ? kv.q : KEV2_START, can=kevCanEdit() && !(kv && kv.locked), dis=can ? '' : ' disabled';
-  var RF=kevRuleFor(null, q, null, null, cfg), J=kevJ(RF.r), cm=kevVer(kevRuleAll(), '_common', q), snapJ=(kv && kv.snap && kv.snap.gen===2) ? kv.snap.j : null;
+  var snapJ=(kv && kv.snap && kv.snap.gen===2) ? kv.snap.j : null, RF=kevRuleFor(null, q, null, null, cfg), J=snapJ ? kevJ({j:snapJ}) : kevJ(RF.r), cm=kevVer(kevRuleAll(), '_common', q);
   var h='<div class="card"><div class="card-title"><span class="kc-num">3</span>判定の決まり（会社共通・'+escapeHtml(q)+'）</div>';
   h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px;line-height:1.7">係数の幅（下限・上限）は上のグレード別の表。ここでは、どの達成率・どの差で下限・上限になるか、刻み、個人の最終係数の幅、FL 改善行動の調整率を決めます。適用開始の四半期ごとに保存し、確定した四半期には効きません。</div>';
   if(snapJ) h+='<div style="font-size:11px;color:var(--yellow);margin-bottom:6px"><i class="ti ti-lock"></i> この四半期は確定済み：確定したときの決まり（達成率 '+escapeHtml(kevJTxt(kevJ({j:snapJ})))+'・最終係数 '+kevF2(snapJ.clo)+'〜'+kevF2(snapJ.chi)+'）のまま計算しています。</div>';
@@ -65881,7 +65889,7 @@ function kevPlValue(sid, ym){
 }
 function kevPlFillList(q, sids){
   var out=[];
-  (sids||[]).forEach(function(sid){ kevQMonths(q).forEach(function(ym){ var v=kevPlValue(sid, ym); if(v.ok) out.push({sid:sid, ym:ym, v:v.v}); }); });
+  (sids||[]).forEach(function(sid){ kevQMonths(q).forEach(function(ym){ if(!(_ymToOffset(ym)<0)) return; var v=kevPlValue(sid, ym); if(v.ok) out.push({sid:sid, ym:ym, v:v.v}); }); });   /* 締まった月だけ */
   return out;
 }
 function kevStoreGuard(q, kind){
@@ -65891,13 +65899,13 @@ function kevStoreGuard(q, kind){
   var d=bqGet(q);
   if(d.locked){ showToast(q+' は査定を確定しています（確定を解除すると直せます）','warning'); return null; }
   if((kind==='act' || kind==='tgtp') && d.profitLocked){ showToast(q+' の利益は確定しています（設定 ④ の「利益の確定を解除」で直せます）','warning'); return null; }
-  var ok=(kind==='act') ? ['gm','ceo','office'].indexOf(curRole)>=0 : ['gm','ceo'].indexOf(curRole)>=0;
-  if(!ok){ showToast(kind==='act' ? '入れられるのは経理・GM・CEO です' : '目標を決められるのは GM・CEO です','warning'); return null; }
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('入れられるのは GM・CEO です','warning'); return null; }   /* 成長カルテ（GM・CEO だけの画面）の設定タブにある */
   return {cfg:cfg, d:d};
 }
 function kevNumIn(v){ var str=String(v==null ? '' : v).replace(/[$,%\s]/g, ''); if(str==='') return {empty:true}; var n=Number(str); return isFinite(n) ? {n:n} : {bad:true}; }
 function kevTgtSet(q, sid, field, v){
   var G=kevStoreGuard(q, field==='fl' ? 'tgt' : 'tgtp'); if(!G) return false;
+  if(bqStores(G.cfg).indexOf(sid)<0){ showToast('この四半期の対象の店舗ではありません','warning'); return false; }
   var x=kevNumIn(v); if(x.bad){ showToast('数字で入れてください','warning'); bqRefresh(); return false; }
   if(!x.empty){
     if(field==='pp' && !(x.n>=-100 && x.n<=100)){ showToast('利益の目標 % は −100〜100 で入れてください','warning'); bqRefresh(); return false; }
@@ -65918,7 +65926,8 @@ function kevTgtSet(q, sid, field, v){
 }
 function kevActSet(q, sid, ym, v){
   var G=kevStoreGuard(q, 'act'); if(!G) return false;
-  if(kevQMonths(q).indexOf(ym)<0) return false;
+  if(kevQMonths(q).indexOf(ym)<0 || !(_ymToOffset(ym)<0)){ showToast('締まった月だけ入れられます','warning'); return false; }
+  if(bqStores(G.cfg).indexOf(sid)<0){ showToast('この四半期の対象の店舗ではありません','warning'); return false; }
   var x=kevNumIn(v); if(x.bad || (!x.empty && !(Math.abs(x.n)<1e9))){ showToast('数字で入れてください','warning'); bqRefresh(); return false; }
   var cur=kevStoreQGet(q, sid), rec=cur ? JSON.parse(JSON.stringify(cur)) : {}, act=(rec.act && typeof rec.act==='object') ? rec.act : {};
   act[ym]=x.empty ? {a:null, src:'clr', at:kevNow(), by:kevMe()} : {a:Math.round(x.n*100)/100, src:'man', at:kevNow(), by:kevMe()};
@@ -65948,10 +65957,10 @@ function kevPlFill(q){
 function kevStoreCardHtml(cfg){
   var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim(), d=bqGet(q), sids=bqStores(cfg), months=kevQMonths(q);
   var locked=!!d.locked, snap=(locked && kevSnapOk(d) && d.evSnap.gen===2 && d.evSnap.stores) ? d.evSnap.stores : null;
-  var canT=['gm','ceo'].indexOf(curRole)>=0 && !locked, canTp=canT && !d.profitLocked, canA=['gm','ceo','office'].indexOf(curRole)>=0 && !locked && !d.profitLocked;
+  var canT=['gm','ceo'].indexOf(curRole)>=0 && !locked, canTp=canT && !d.profitLocked, canA=canTp;
   var qa=escapeHtml(JSON.stringify(q)), kv=kevStoreKv(q, cfg);
   var h='<div class="card"><div class="card-title"><span class="kc-num">4</span>店舗の目標と実績（'+escapeHtml(q)+'）'+(locked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>' : (d.profitLocked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">利益は確定</span>' : ''))+'</div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px;line-height:1.7">売上の目標は予算から自動。<b>利益（店舗管理利益＝純利益 ＋ 本部費 ＋ 減価償却）</b>の目標は店ごとに四半期の % か額（入れたほうが元・もう一方は売上予算から）、<b>FL</b> の目標率は四半期の %（空なら KPI マスターの Food ＋ Labor）。実績は月ごと（下）。FL 改善行動は個別評価タブで選びます。'+(snap ? ' 確定したときの数字を出しています。' : '')+'</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px;line-height:1.7">売上の目標は予算から自動。<b>利益（店舗管理利益＝純利益 ＋ 本部費 ＋ 減価償却）</b>の目標は店ごとに四半期の % か額（入れたほうが元・もう一方は売上予算から）、<b>FL</b> の目標率は四半期の %（空なら KPI マスターの Food ＋ Labor）。実績は月ごと（下・GM・CEO が入れる）。FL 改善行動は個別評価タブで選びます。'+(snap ? ' 確定したときの数字を出しています。' : '')+'</div>';
   if(locked && !snap) h+='<div style="font-size:11px;color:var(--yellow);margin:-2px 0 8px"><i class="ti ti-lock"></i> この四半期は前の式で確定しています（下の数字は今の入力で、確定した金額には使っていません）。新しい式で計算するには、査定一覧で確定を解除します。</div>';
   if(!sids.length) return h+'<div style="font-size:12px;color:var(--muted)">対象店舗がありません。</div></div>';
   var th=function(x, r){ return '<th style="padding:6px 7px;font-size:10px;color:var(--muted);white-space:nowrap;text-align:'+(r ? 'right' : 'left')+'">'+x+'</th>'; };
@@ -65967,10 +65976,10 @@ function kevStoreCardHtml(cfg){
     var dF=(r.flT!=null && flA!=null) ? Math.round((flA-r.flT)*10)/10 : null;   /* 表示は小数 1 桁（−0.0 にしない） */
     h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 7px;font-weight:700;white-space:nowrap">'+nm+'</td>'
       +'<td style="padding:5px 7px;text-align:right">'+kevUsd(r.budget)+'</td><td style="padding:5px 7px;text-align:right">'+kevUsd(S.actual)+'</td><td style="padding:5px 7px;text-align:right">'+kevPctTxt(S.pct)+'</td>'
-      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.tPct==null ? '' : String(Math.round(r.tPct*100)/100), canTp && !snap, 70, 'kevTgtSet('+qa+','+sa+',\'pp\',this.value)', r.tSrc!=='pct', nm+' 利益の目標 %')+' %</td>'
-      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.tAmt==null ? '' : String(Math.round(r.tAmt)), canTp && !snap, 96, 'kevTgtSet('+qa+','+sa+',\'pa\',this.value)', r.tSrc!=='amt', nm+' 利益の目標額')+'<div style="margin-top:2px">'+pTag+'</div></td>'
+      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.tPct==null ? '' : String(Math.round(r.tPct*100)/100), canTp && !snap, 70, 'kevTgtSet('+qa+','+sa+',\'pp\',this.value)', r.tSrc!=='pct', kevStoreNames([sid])+' 利益の目標 %')+' %</td>'
+      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.tAmt==null ? '' : String(Math.round(r.tAmt)), canTp && !snap, 96, 'kevTgtSet('+qa+','+sa+',\'pa\',this.value)', r.tSrc!=='amt', kevStoreNames([sid])+' 利益の目標額')+'<div style="margin-top:2px">'+pTag+'</div></td>'
       +'<td style="padding:5px 7px;text-align:right">'+(pA==null ? '—' : kevUsd(pA))+'</td><td style="padding:5px 7px;text-align:right">'+((pA!=null && pT>0) ? kevPctTxt(pA/pT*100) : '—')+'</td>'
-      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.flT==null ? '' : String(Math.round(r.flT*10)/10), canT && !snap, 64, 'kevTgtSet('+qa+','+sa+',\'fl\',this.value)', r.flSrc!=='set', nm+' FL の目標率')+' %<div style="margin-top:2px">'+fTag+'</div></td>'
+      +'<td style="padding:4px 7px;text-align:right;white-space:nowrap">'+inp(r.flT==null ? '' : String(Math.round(r.flT*10)/10), canT && !snap, 64, 'kevTgtSet('+qa+','+sa+',\'fl\',this.value)', r.flSrc!=='set', kevStoreNames([sid])+' FL の目標率')+' %<div style="margin-top:2px">'+fTag+'</div></td>'
       +'<td style="padding:5px 7px;text-align:right">'+kevPctTxt(flA)+'</td><td style="padding:5px 7px;text-align:right;font-weight:700;color:'+(dF==null ? 'var(--muted)' : (dF<=0 ? 'var(--green)' : 'var(--red)'))+'">'+(dF==null ? '—' : (dF>0 ? '＋' : (dF<0 ? '−' : ''))+(Math.round(Math.abs(dF)*10)/10).toFixed(1)+'pt')+'</td></tr>';
   });
   /* G5（担当店の合計）・G6（全店の合計） */
@@ -65998,7 +66007,7 @@ function kevStoreCardHtml(cfg){
     months.forEach(function(ym){
       var x=acts[ym], v=x ? x.a : null; if(v!=null){ tot+=Number(v); any=true; }
       var off=_ymToOffset(ym);
-      h+='<td style="padding:3px 6px;text-align:right;white-space:nowrap">'+((canA && !snap && off<0) ? inp(v==null ? '' : String(v), true, 96, 'kevActSet('+qa+','+sa+','+escapeHtml(JSON.stringify(ym))+',this.value)', false, nm+' '+Number(ym.slice(5))+'月 店舗管理利益') : (v==null ? '<span style="color:var(--muted)">—</span>' : kevUsd(v)))
+      h+='<td style="padding:3px 6px;text-align:right;white-space:nowrap">'+((canA && !snap && off<0) ? inp(v==null ? '' : String(v), true, 96, 'kevActSet('+qa+','+sa+','+escapeHtml(JSON.stringify(ym))+',this.value)', false, kevStoreNames([sid])+' '+Number(ym.slice(5))+'月 店舗管理利益') : (v==null ? '<span style="color:var(--muted)">—</span>' : kevUsd(v)))
         +(x ? '<div style="margin-top:2px">'+kevSrcTagHtml(x.src)+'</div>' : (off>=0 ? '<div style="font-size:10px;color:var(--muted)">まだ締まっていない</div>' : ''))+'</td>';
     });
     h+='<td style="padding:5px 7px;text-align:right;font-weight:700">'+(any ? kevUsd(tot) : '—')+'</td></tr>';
@@ -66109,6 +66118,7 @@ function kevFormBad(part, set){
 }
 /* モーダルを開いている間の状態 */
 function kevOvrOpen(empId, part){
+  if(part==='j') return;   /* 判定の決まりは会社共通だけ */
   var cfg=kbCfg(), kv=kevApplies(cfg); if(!kv || kv.locked){ showToast('この四半期は変えられません','warning'); return; }
   var e=getEmployees().find(function(x){ return x.id===empId; });
   if(!kevCanEditEmp(e)){ showToast(kevIsSelf(e) ? '自分自身の個人設定は変えられません（CEO が行います）' : '変えられるのは GM・CEO です','warning'); return; }
@@ -66124,11 +66134,11 @@ function kevOvrOpen(empId, part){
   kevFormPreview();
 }
 function kevRuleOpen(scope, part){
+  if(part==='j' && scope!=='_common') return;   /* 判定の決まりは会社共通だけ（v1074） */
   var cfg=kbCfg(), kv=kevApplies(cfg);
   if(!kevCanEdit()){ showToast('変えられるのは GM・CEO です','warning'); return; }
   var q=kv ? kv.q : KEV_START, R=JSON.parse(JSON.stringify(kevRuleFor(scope==='_common' ? null : scope, q, null, null, cfg).r));
   window._kevForm={kind:'rule', scope:scope, part:part, pre:'kevf-', q:q};
-  if(part==='j' && scope!=='_common') return;   /* 判定の決まりは会社共通だけ */
   openModal('<div class="modal-title"><i class="ti ti-settings"></i> '+escapeHtml(kevScopeLabel(scope))+(scope==='_common' ? (part==='j' ? '' : '（会社共通の初期値）') : ' の設定')+' ・ '+escapeHtml(kevPartLabel(part))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +((scope==='_common' && part!=='j') ? '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">グレード・職種で決めていない値に使います（グレード・職種の設定と個人設定が優先）。</div>' : '')
     +(scope==='G6' ? '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">G6 は G5 と同じ設定を使います。ここで保存すると、この項目だけ G6 の設定になります（G5 を変えても G6 のこの項目は変わらなくなります）。</div>' : '')
@@ -66253,7 +66263,7 @@ function kevRuleCardHtml(cfg){
   var kv=kevApplies(cfg), q=kv ? kv.q : KEV_START, can=kevCanEdit(), dis=can ? '' : ' disabled', g2=kevGen2(q);
   var rows=[['G1',null,'賞与の対象外（評価のみ）'], ['G2','G2','Crew Leader'], ['G3','G3-op',cscTrackName('op')], ['G3','G3-sv',cscTrackName('sv')], ['G3','G3-kt',cscTrackName('kt')], ['G4','G4','Store Manager・Head Chef など'], ['G5','G5','Area Manager など'], ['G6','G6','General Manager']];
   var h='<div class="card"><div class="card-title"><span class="kc-num">2</span>グレード別 基準額と 4 項目（'+escapeHtml(q)+'）</div>';
-  if(g2) h+='<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:-2px 0 8px">'+escapeHtml(q)+' からは CEO の指示書の決め方：G2・G3 は ① Career Score、G4 は ① ② 売上 ③ FL、G5・G6 は ② 売上 ④ 利益（店舗管理利益）が初期値。各項目は「賞与に反映（係数の幅）」か「1.00 固定」で、押すと変えられます（理由と適用開始の四半期を残す）。どの達成率・差で下限・上限になるかは ③ 判定の決まり（会社共通）。前の版（v1068 まで）で保存した「反映・固定」は使わず、この初期値から始めます（保存した幅は引き継ぎ）。基準ライン（Career Score）は昇格の判定だけに使います。</div>';
+  if(g2) h+='<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:-2px 0 8px">'+escapeHtml(q)+' からは CEO の指示書の決め方：G2・G3 は ① Career Score、G4 は ① ② 売上 ③ FL、G5・G6 は ② 売上 ④ 利益（店舗管理利益）が初期値。各項目は「賞与に反映（係数の幅）」か「1.00 固定」で、押すと変えられます（理由と適用開始の四半期を残す）。どの達成率・差で下限・上限になるかは ③ 判定の決まり（会社共通）。前の版（v1068 まで）で保存した「反映・固定」と ②③④ の幅は使わず、この初期値から始めます（① の幅は今のまま。前の版の個人設定は、初期値とわざと変えた「反映・固定」だけ引き継ぎ）。基準ライン（Career Score）は昇格の判定だけに使います。</div>';
   else h+='<div style="font-size:11px;color:var(--muted);line-height:1.7;margin:-2px 0 8px">各項目は「賞与に反映（係数の幅）」か「1.00 固定」。1.00 固定でも評価・記録はします。押すと決め方（何点・何％で何倍か）を変えられます。G2・G3 の ②③④ と G4 の ④ は、店舗の数字で直接増減させない（1.00 固定）。G6 も G5 と同じ設定（10/11）。基準ライン（Career Score）は昇格の判定だけに使い、賞与には使いません。</div>';
   h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;min-width:860px"><thead><tr style="background:var(--surface2);text-align:left">'
     +['グレード・職種','基準額（$）','① Career','② 売上','③ FL','④ 利益','出所'].map(function(x){ return '<th style="padding:7px 8px;font-size:10.5px;color:var(--muted);white-space:nowrap">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
