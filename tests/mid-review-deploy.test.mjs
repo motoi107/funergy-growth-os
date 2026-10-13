@@ -1,7 +1,8 @@
 // 中間レビューの配備用ファイルの確認（合成データ・本番に接続しない）。
 // 1) deploy/mid-review-v1069/ は本番に入れたときのまま（変えない）。中身を sha256 で固定して見張る。
 // 2) deploy/mid-review-v2/ は 10/13 に渡したときのまま（v1073 で確認の SQL が変わったので、中身を sha256 で固定して見張る）。
-//    関数の 1 ファイルは置かない（PIN のログインの確かめが入るので公開しない。Moto さんに直接渡す）。
+//    deploy/mid-review-v1073/ は SQL が元のファイルの写し（貼る内容が古くならない）。
+//    どちらも関数の 1 ファイルは置かない（PIN のログインの確かめが入るので公開しない。Moto さんに直接渡す）。
 // 3) 戻す SQL（db/mid-review-fixes-revert.sql）が、v1069 の 3 つの関数を 20261012090000 のときの中身に戻すこと。
 // 4) 止める SQL（db/mid-review-stop.sql）が、記録・設定を消さずに「非公開確認」だけを OFF にすること。
 import test from 'node:test';
@@ -59,6 +60,33 @@ test('v2 の束は渡したときのまま・v2 の SQL は元のファイルと
   const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
   assert.match(row(1), /1_最初に確認\.sql/); assert.match(row(2), /中間レビュー_関数_v1072_index\.ts/); assert.match(row(3), /2_追加のSQL_v2\.sql/);
   assert.match(row(4), /3_確認のSQL_読むだけ\.sql/); assert.match(row(5), /マージ/);
+  // 公開のリポジトリなので、PIN の印の作り方（鍵の設定の名前・形）は書かない。言葉そのものは試験にも書かず、ハッシュで見張る。
+  const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+  const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);
+  for (const w of howto.match(/[A-Za-z0-9_:.-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
+});
+
+// v1073 の束：SQL はどれも元のファイルの写し（貼る内容が古くならない）。関数の 1 ファイルは置かない（PIN の確かめ入り・Moto さんに直接）。
+test('v1073 の束：SQL は元のファイルと同じ・関数のファイルは置かない・手順の順番（確認 → 関数 → [v2] → v1073 → 確認 → マージ）', () => {
+  const D = 'deploy/mid-review-v1073/';
+  assert.deepEqual(list(D), ['1_最初に確認.sql', '2_追加のSQL_v2.sql', '3_追加のSQL_v1073.sql', '4_確認のSQL_読むだけ.sql', '手順.md', '止める.sql'].sort());
+  assert.equal(read(D + '1_最初に確認.sql'), read('db/mid-review-precheck.sql'));
+  assert.equal(read(D + '2_追加のSQL_v2.sql'), read('supabase/migrations/20261015090000_mid_review_v2.sql'));
+  assert.equal(read(D + '3_追加のSQL_v1073.sql'), read('supabase/migrations/20261016090000_mid_review_v2_versions.sql'));
+  assert.equal(read(D + '4_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  assert.equal(read(D + '止める.sql'), read('db/mid-review-stop.sql'));
+  assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false, '関数（PIN の確かめ入り）は公開しない');
+  const howto = read(D + '手順.md');
+  for (const s of ['1_最初に確認.sql', '2_追加のSQL_v2.sql', '3_追加のSQL_v1073.sql', '4_確認のSQL_読むだけ.sql', '止める.sql', '中間レビュー_関数_v1073_index.ts', 'Verify JWT', '全文',
+    'mid-review versions (20261016090000)', '店舗の管轄（どの AM の店か）', 'アプリを更新してください'])
+    assert.ok(howto.includes(s), s);
+  const at = s => howto.indexOf(s);
+  for (let n = 1; n < 7; n++) assert.ok(at('| ' + n + ' |') > 0 && at('| ' + n + ' |') < at('| ' + (n + 1) + ' |'), 'row ' + n);
+  const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
+  assert.match(row(1), /1_最初に確認\.sql/); assert.match(row(2), /中間レビュー_関数_v1073_index\.ts/); assert.match(row(3), /2_追加のSQL_v2\.sql/); assert.match(row(3), /まだ」のときだけ/);
+  assert.match(row(4), /3_追加のSQL_v1073\.sql/); assert.match(row(5), /4_確認のSQL_読むだけ\.sql/); assert.match(row(6), /マージ/);
+  // 確認の SQL が v2・v1073 の両方を見て、入れる前の確認が「v1073 が入っているか」を見る（試験は mid-review-server の install）
+  assert.match(read(D + '4_確認のSQL_読むだけ.sql'), /mid-review versions \(20261016090000\)/); assert.match(read(D + '1_最初に確認.sql'), /mid-review versions \(v1073\) already there/);
   // 公開のリポジトリなので、PIN の印の作り方（鍵の設定の名前・形）は書かない。言葉そのものは試験にも書かず、ハッシュで見張る。
   const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
   const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);

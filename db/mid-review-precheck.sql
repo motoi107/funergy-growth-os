@@ -28,8 +28,8 @@ union all select 'employees.id is unique',
 union all select 'auth.users',
   (to_regclass('auth.users') is not null)::text, case when to_regclass('auth.users') is not null then 'OK' else 'NG' end
 union all select 'mid-review tables (v1066)', (select n from mr)::text,
-  case (select n from mr) when 0 then 'OK（まだ無い：20261012090000 → 20261013090000 → 20261015090000 の順に流す）'
-   when 7 then 'OK（入っている：この上に 20261015090000 を流す）' else 'NG：表が途中まで（Claude に相談）' end
+  case (select n from mr) when 0 then 'OK（まだ無い：20261012090000 → 20261013090000 → 20261015090000 → 20261016090000 の順に流す）'
+   when 7 then 'OK（入っている：v2 がまだなら 20261015090000 → 20261016090000、v2 が入っていれば 20261016090000 だけ）' else 'NG：表が途中まで（Claude に相談）' end
 union all select 'mid-review v2 already there',
   exists(select 1 from c where table_name = 'mr_stores' and column_name = 'input_emp')::text,
   case when exists(select 1 from c where table_name = 'mr_stores' and column_name = 'input_emp') then 'OK（もう入っている：流し直さない。流し直したら続けて 20261016090000 も）' else 'OK（まだ）' end

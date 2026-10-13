@@ -930,6 +930,43 @@ test('v1073 B: 店舗の管轄 on two screens — only changed stores are sent, 
   g.run('mrScopeCancel()'); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf|mr-tr-mine|やめる（いまの管轄に戻す）/);
 });
 
+test('v1073 B (more): viewers one by one — what I removed stays removed, what they added stays; a screen that changed nothing shows the latest after reading again', async () => {
+  const S = await server(); await live(S);
+  await S.accessSave([{ store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5', 'E11'] }]);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); x.run("mrAccPick('F05')"); x.renderPage(); }
+  const db = async () => (await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F05'`))[0];
+  // The GM adds AM Two; the CEO (older screen) removes Yuki → Yuki goes, AM Two (theirs) and Corp Chef stay.
+  g.dom = { 'mr-acc-vadd': { value: 'E6' } }; g.run('mrAccAddViewer()'); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E5', 'E11', 'E6'] });
+  c.run("mrAccDelViewer('E5')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E5', 'E11', 'E6'] }, 'nothing written by the older screen');
+  assert.match(c.html, /ほかの人の変更：閲覧者に AM Two を足す/); assert.match(c.html, /あなたの変更（閲覧者から Yuki を外す）を、いまの設定に入れ直しました。/);
+  assert.equal(c.run('JSON.stringify(_mr.accDraft.viewers)'), '["E11","E6"]');
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E11', 'E6'] });
+  // The GM changed nothing since: reading again shows the CEO's save (no band, nothing unsaved).
+  g.run('mrAccReload()'); await g.show();
+  assert.equal(g.run('JSON.stringify(_mr.accDraft.viewers)'), '["E11","E6"]'); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
+});
+
+test('v1073: leaving the settings with unsaved changes asks (access and the oversight); the oversight waits for the server update (20261016090000)', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c.run("mrAccSet('input','E13')"); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('_mr.accDraft.input_emp'), 'E13');
+  c.run('mrAccCancel()'); c.run(`mrScopeSet('F06', '${U.am2}')`); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 2); assert.match(c.html, /mr-tr-mine/);
+  c.run('mrScopeCancel()'); c.run('mrBack()'); c.renderPage(); assert.equal(asked, 2, 'nothing unsaved: no question'); assert.doesNotMatch(c.html, /id="mr-scope"/);
+  // During the deploy (the function in, the SQL not yet): access_get has no oversight versions → the card says so, nothing to save.
+  c.run('mrOpenSettings()'); await c.show();
+  c.run('_mr.acc.stores.forEach(function(s){ delete s.am_version; delete s.am_user; delete s.am_name; })'); c.renderPage();
+  const card = c.html.slice(c.html.indexOf('id="mr-scope"'));
+  assert.match(card, /サーバーの更新（20261016090000）が終わるまで、管轄は変えられません。/); assert.doesNotMatch(card.slice(0, card.indexOf('</div></div>')), /mrScopeSave/);
+  assert.doesNotMatch(c.html, /管轄 Yuki|管轄：/, 'the rail and the card do not guess the oversight');
+});
+
 test('R3 (v2): a new key for the same person keeps the screen and the input (email and PIN); another person resets it', async () => {
   const S = await server();
   const jwt = (sub, n) => 'h.' + Buffer.from(JSON.stringify({ sub, n })).toString('base64url') + '.s';
@@ -1023,6 +1060,8 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
   assert.match(css, /\.mr-l-sp \{ display:none; \}/); assert.match(phone, /\.mr-l-pc \{ display:none; \} \.mr-l-sp \{ display:inline; \}/);
   assert.match(phone, /\.mr-crumb \{ display:none; \}/); assert.match(css, /@media \(max-width:640px\) \{ \.mr-strip \{ display:none; \} \}/);
   assert.match(css, /\.mr-linkb\.mr-blue \{ color:#1f4f9c; \}/);
+  // v1073: the band when someone saved first, and my unsaved changes (they wrap; no fixed width).
+  assert.match(css, /\.mr-conf \{ [^}]*display:flex;[^}]*overflow-wrap:anywhere; \}/); assert.match(css, /\.mr-conf-b \{ [^}]*min-width:0;/); assert.match(css, /\.mr-pp-mine \{/); assert.match(css, /\.mr-tr-mine td \{/);
 });
 
 // v1073: Moto さん 10/13「担当閲覧設定が読み込み中から進まない（できる時もある）」。一度読んだ画面に戻ると、読み込みの印は
