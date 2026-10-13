@@ -967,6 +967,21 @@ test('v1073: leaving the settings with unsaved changes asks (access and the over
   assert.doesNotMatch(c.html, /管轄 Yuki|管轄：/, 'the rail and the card do not guess the oversight');
 });
 
+test('v1073: a read that keeps coming back empty stops after a few tries and says so (no endless reading)', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show();
+  const real = c.fetch, n = () => c.calls.filter(b => b.action === 'access_get').length;
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_get') { c.calls.push(b); return { ok: true, status: 200, json: async () => null }; } return real(url, init); };
+  c.run('mrOpenSettings()');
+  for (let i = 0; i < 12; i++) { c.renderPage(); await c.flush(); }
+  c.renderPage();
+  assert.ok(n() >= 2 && n() <= 5, 'tried a few times: ' + n());
+  assert.match(c.html, /読み込めませんでした。「更新」を押してください/); assert.match(c.html, /mrAccReload\(\)/);
+  // After it works again, Retry reads it.
+  c.fetch = real; c.run('mrAccReload()'); await c.show();
+  assert.match(c.html, /一人ひとりの実効の権限/);
+});
+
 test('R3 (v2): a new key for the same person keeps the screen and the input (email and PIN); another person resets it', async () => {
   const S = await server();
   const jwt = (sub, n) => 'h.' + Buffer.from(JSON.stringify({ sub, n })).toString('base64url') + '.s';
