@@ -10,7 +10,7 @@ import { createHandler, missingV2, normBody, normSnap, demoSnapshot, demoData, K
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const INDEX = process.env.FUNERGY_INDEX ? new URL(process.env.FUNERGY_INDEX, 'file://' + process.cwd() + '/') : new URL('../index.html', import.meta.url);
 const html = fs.readFileSync(INDEX, 'utf8').replace(/\r\n/g, '\n');
-const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
+const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
 const B = '/* ===== v1066 中間レビュー（非公開版', E = '/* ===== v1066 中間レビュー ここまで ===== */';
 const MOD = html.includes(B) ? html.slice(html.indexOf(B), html.indexOf(E)) : '';
 const MEET = html.slice(html.indexOf('var MEET_KPI_DEF=['), html.indexOf('function _meetDiffStr('));
@@ -44,17 +44,27 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
   const api = (who, body) => call({ authorization: 'Bearer tok-' + who }, body);
   const pin = (tok, body) => call({ authorization: 'Bearer anon-key' }, { ...body, pin_session: tok });
   const q = async (sql, p = []) => { await pg.exec('reset role'); try { return (await pg.query(sql, p)).rows; } finally { await pg.exec('set role service_role'); } };
-  if (on) await api('gm', { action: 'settings_save', key: 'flags', value: { private: true } });
+  // v1073: saves carry the version read (the switches' version from whoami, each store's from access_get).
+  const flagsSave = async (value, who = 'gm') => api(who, { action: 'settings_save', key: 'flags', value, expect_version: (await api(who, { action: 'whoami' })).flags_version });
+  const accessSave = async (stores, who = 'gm') => {
+    const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.version]));
+    return api(who, { action: 'access_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
+  };
+  const storesSave = async (stores, who = 'gm') => {
+    const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.am_version]));
+    return api(who, { action: 'stores_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
+  };
+  if (on) await flagsSave({ private: true });
   if (on && demo) await api('gm', { action: 'demo_reset' });
-  return { h, pg, api, pin, q };
+  return { h, pg, api, pin, q, flagsSave, accessSave, storesSave };
 }
 // Live: F01 (ToriTon, AM Yuki) reported by E12 (Server Lead, PIN), F02 (Tenkichi) by Yuki herself, F05 (Marujuu, AM Two) by E14 with Yuki as an extra viewer.
 async function live(S, { input = true } = {}) {
-  await S.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: input } });
-  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
-    { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }] });
-  const r = await S.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }, { store_id: 'F02', input_emp: 'E5', viewer_emps: [] },
-    { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }] });
+  await S.flagsSave({ private: true, live_input: input });
+  await S.storesSave([{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
+    { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }]);
+  const r = await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }, { store_id: 'F02', input_emp: 'E5', viewer_emps: [] },
+    { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }]);
   assert.equal(r.saved, 3, JSON.stringify(r));
 }
 // The meeting tab's numbers as the stand-in app gives them (keyKpiStats … _meetKpiRows). [act, tgt]; state = _meetConfirmState.
@@ -132,7 +142,7 @@ const get = async (S, store, who = 'gm', env = 'demo', ym = '2026-10') => S.api(
 const cardOf = (h, id) => { const i = h.indexOf('id="mr-k-' + id + '"'); assert.ok(i >= 0, 'card ' + id); const j = h.indexOf('<div class="mr-k ', i + 10); return h.slice(h.lastIndexOf('<div', i), j < 0 ? h.length : j); };
 const dataCodes = h => [...h.matchAll(/data-codes="([^"]*)"/g)].flatMap(m => m[1].split(' '));
 
-test('the module is in index.html; the entry is wired; nothing of the review goes to shared app data; v1072', () => {
+test('the module is in index.html; the entry is wired; nothing of the review goes to shared app data; v1073', () => {
   assert.ok(MOD.length > 20000, 'module markers');
   assert.match(html, /\{id:'mid_review',\s+label:'中間レビュー', icon:'ti-message-2-check',\s+roles:\['ceo','gm','am','chef','sl'\]\}/);
   assert.match(html, /children:\['budget','mid_review','labor','foodcost','kpi_master'\]\}/);
@@ -140,8 +150,8 @@ test('the module is in index.html; the entry is wired; nothing of the review goe
   assert.match(html, /case 'mid_review':\s+el\.innerHTML = renderMidReview\(\)/);
   assert.match(html, /if\(typeof mrReset==='function'\) mrReset\(\);/);
   assert.doesNotMatch(MOD, /lsSet\(|\bls\('|localStorage|sessionStorage|supaUpsert|pushOpKey|setQBudgetObj|saveQcNote/);
-  assert.match(html, /const APP_VERSION = '1072';/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1072';/);
+  assert.match(html, /const APP_VERSION = '1073';/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1073';/);
   // The old v1 reply steps are not called any more.
   assert.doesNotMatch(MOD, /'reply_save'|'reply_send'|'reply_delete'|'result_save'|action:'complete'/);
 });
@@ -625,7 +635,7 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   ch.went = []; ch.run("mrOpenMeeting('x\\'','2026-09')"); assert.deepEqual(ch.went, []);
   assert.match(ch.html, /onclick="mrOpenMeeting\('F01','2026-10'\)">会議タブで見る/);
   // Live input off: the input person is told, nothing to write.
-  await S.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: false } });
+  await S.flagsSave({ private: true, live_input: false });
   const off = app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } }); off.run("mrSetEnv('live')"); await off.show();
   off.run("mrOpenStore('F01')"); off.renderPage(); await off.flush(); off.renderPage();
   assert.match(off.html, /本番の店の入力はまだ OFF です/); assert.doesNotMatch(off.html, /data-p="/);
@@ -699,9 +709,13 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   // Change ToriTon: input E13, add viewer E6 (keeps the list whole).
   c.run("mrAccSet('input','E13')"); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
   c.renderPage(); assert.match(c.html, /保存していない変更あり/);
+  // v1073: what is not saved yet is marked (the new viewers, the input person with the saved one named).
+  assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b><span class="mr-m">（未保存）<\/span>/); assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>Corp Chef<\/b>/);
+  assert.match(c.html, /あなたの変更（未保存）。保存するまでは Server Lead のまま/);
   await c.run('mrAccSave()'); await c.flush(); await c.show(); h = c.html;
+  assert.doesNotMatch(h, /mr-pp-mine|あなたの変更（未保存）/);
   assert.deepEqual((await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', viewer_emps: ['E6', 'E11'] });
-  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6', 'E11'] }]);
+  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6', 'E11'], expect_version: 1 }]);
   // Remove one viewer: the rest of the list is sent (not only the change); then the last one: the empty list.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, ['E11']);
@@ -711,6 +725,10 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
   assert.equal((await S.q(`select input_emp from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emp, 'E14');
   assert.match(c.html, /いまのこの月の担当：Op Lead/);
+  // v1073: pressing it again without a change sends nothing (an older screen does not write back what it read).
+  const nm = c.calls.filter(b => b.action === 'month_input_save').length;
+  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()');
+  assert.equal(c.calls.filter(b => b.action === 'month_input_save').length, nm); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /変えていません/.test(m)));
   // Head Chef: add E10 (a G4 Head Chef), then remove.
   c.dom = { 'mr-acc-chef': { value: 'E10' } }; await c.run('mrChefAdd()'); await c.flush(); await c.show();
   assert.match(c.html, /<span class="mr-pp"><b>Chef Oka<\/b>/);
@@ -721,6 +739,7 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   await c.run('mrSetFlags({ live_input:true })'); await c.flush(); await c.show();
   assert.match(c.html, /本番の店の入力（入力担当が書ける）：<b>ON/);
   assert.deepEqual(c.calls.filter(b => b.action === 'settings_save').at(-1).value, { private: true, live_input: true });
+  assert.equal(c.calls.filter(b => b.action === 'settings_save').at(-1).expect_version, (await S.q(`select version from mr_settings where key='flags'`))[0].version - 1);
   // A bad candidate is refused with plain words.
   c.run("mrAccSet('input','E17')"); await c.run('mrAccSave()');
   assert.ok(c.toasts.some(([m, k]) => k === 'error' && /選べない人です/.test(m)));
@@ -739,15 +758,288 @@ test('settings: a PIN GM sees why email is needed (no settings call); an AM cann
   p.run("mrSetEnv('demo')"); await openStore(p, 'D1'); assert.match(p.html, /mr-dlb" onclick="_mr\.dlOpen=true;mrRerender\(\)">期限を変える<\/button>/); assert.match(p.html, /確認完了にする（提出版 1）/);
 });
 
-test('settings: live stores and AMs are saved as before (store master proposals)', async () => {
-  const S = await server();
-  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show(); c.run('_mr.amOpen=true'); c.renderPage(); await c.flush(); c.renderPage();
-  const h = c.html;
-  assert.match(h, /data-store="F01"[^>]*>.*<option value="00000000-0000-4000-8000-0000000000c5" selected>Yuki<\/option>/s);
-  assert.match(h, /data-store="F05"[^>]*>.*<option value="00000000-0000-4000-8000-0000000000c6" selected>AM Two<\/option>/s);
-  c.qsa = [{ getAttribute: k => ({ 'data-store': 'F01', 'data-name': 'ToriTon', 'data-sort': '1', 'data-active': '1' })[k], value: U.am1 }, { getAttribute: k => ({ 'data-store': 'F06', 'data-name': 'LaLa', 'data-sort': '4', 'data-active': '1' })[k], value: '' }];
-  await c.run('mrSaveStores()'); await c.flush();
-  assert.deepEqual(await S.q(`select store_id, am_user from mr_stores where env='live' order by store_id`), [{ store_id: 'F01', am_user: U.am1 }, { store_id: 'F06', am_user: null }]);
+// v1073: 「本番の店舗と AM の担当」→「店舗の管轄（どの AM の店か）」（Moto さん 10/13）。決まりは同じで、保存するのは変えた店だけ。
+test('settings: 店舗の管轄 — the saved AM per store, GM direct, proposals for stores not saved yet; only changed stores are saved, with the version read', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show(); const nList = c.calls.filter(b => b.action === 'list').length; c.run('mrOpenSettings()'); await c.show();
+  let h = c.html;
+  const card = () => c.html.slice(c.html.indexOf('id="mr-scope"'), c.html.indexOf('</table>', c.html.indexOf('id="mr-scope"')));
+  const row = id => (card().match(new RegExp('<tr[^>]*><td><b>[^<]*</b>(?:(?!</tr>).)*data-store="' + id + '"(?:(?!</tr>).)*</tr>', 's')) || [''])[0];
+  assert.match(h, /<b style="font-size:16px">店舗の管轄（どの AM の店か）<\/b>/); assert.doesNotMatch(h, /本番の店舗と AM の担当/);
+  assert.match(row('F01'), /<option value="00000000-0000-4000-8000-0000000000c5" selected>Yuki（AM）<\/option>/); assert.match(row('F01'), /保存済み/);
+  assert.match(row('F05'), /<option value="00000000-0000-4000-8000-0000000000c6" selected>AM Two（AM）<\/option>/);
+  assert.match(row('F06'), /<option value="">GM の直轄（AM なし）<\/option>/); assert.doesNotMatch(row('F06'), / selected>/);
+  // The rail and the store card say who oversees it; the link goes to the card.
+  assert.match(h, /<b>ToriTon<\/b><br><span class="mr-m">管轄 Yuki・入力担当 Server Lead<\/span>/); assert.match(h, /<b>LaLa<\/b><br><span class="mr-m">GM の直轄・/);
+  assert.match(h, /<span class="mr-chip mr-c-ok">管轄：Yuki（AM）<\/span><button class="mr-linkb mr-blue" onclick="mrGo\('scope'\)">管轄を変える ↓<\/button>/);
+  assert.equal(c.calls.filter(b => b.action === 'list').length, nList, 'the oversight comes with access_get (no list call)');
+  // Nothing changed: nothing is sent.
+  await c.run('mrScopeSave()'); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /変えた店はありません/.test(m))); assert.equal(c.calls.filter(b => b.action === 'stores_save').length, 0);
+  // LaLa → AM Two: only that store is sent, with the version read; the others are not written.
+  const before = await S.q(`select store_id, am_version, updated_at from mr_stores where env='live' order by store_id`);
+  c.run(`mrScopeSet('F06', '${U.am2}')`);
+  assert.match(c.html, /<tr class="mr-tr-mine"><td><b>LaLa<\/b>/); assert.match(row('F06'), /あなたの変更（未保存）/); assert.match(card(), /保存していない変更あり/);
+  c.run(`mrScopeSet('F06', '')`); assert.doesNotMatch(card(), /mr-tr-mine|保存していない変更あり/, 'back to the saved value = no change');
+  c.run(`mrScopeSet('F06', '${U.am2}')`);
+  await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.deepEqual(c.calls.filter(b => b.action === 'stores_save').at(-1).stores, [{ store_id: 'F06', name: 'LaLa', am_user: U.am2, sort: 4, active: true, expect_version: 1 }]);
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && m === '管轄を保存しました'));
+  const after = await S.q(`select store_id, am_user, am_version, updated_at from mr_stores where env='live' order by store_id`);
+  assert.deepEqual(after.map(x => [x.store_id, x.am_version]), [['F01', 1], ['F02', 1], ['F05', 1], ['F06', 2]]);
+  for (const id of ['F01', 'F02', 'F05']) assert.equal(String(after.find(x => x.store_id === id).updated_at), String(before.find(x => x.store_id === id).updated_at), id);
+  assert.equal(after.find(x => x.store_id === 'F06').am_user, U.am2); assert.match(row('F06'), /selected>AM Two（AM）/); assert.doesNotMatch(card(), /mr-tr-mine/);
+  // A store not saved yet (Kapolei, AM column Yuki) and a renamed one in the store master: both go with the save; the new one at version 0.
+  c.activeStores = () => [...STORES.slice(0, 2), { id: 'F05', name: 'Marujuu Kaimuki', am: 'AM Two', active: true }, STORES[3], { id: 'F07', name: 'Kapolei', am: 'Yuki', active: true }];
+  c.renderPage();
+  assert.match(row('F07'), /selected>Yuki（AM）/); assert.match(row('F07'), /案：店舗マスターと同じ名前の AM（保存すると入る）/); assert.match(row('F07'), /まだ中間レビューに入っていない店/);
+  assert.match(row('F05'), /店舗マスターで名前・並び・使う／使わないが変わった/);
+  await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.deepEqual(c.calls.filter(b => b.action === 'stores_save').at(-1).stores, [{ store_id: 'F05', name: 'Marujuu Kaimuki', am_user: U.am2, sort: 3, active: true, expect_version: 1 },
+    { store_id: 'F07', name: 'Kapolei', am_user: U.am1, sort: 5, active: true, expect_version: 0 }]);
+  assert.deepEqual((await S.q(`select store_id, name, am_user, am_version from mr_stores where env='live' and store_id in ('F05','F07') order by store_id`)),
+    [{ store_id: 'F05', name: 'Marujuu Kaimuki', am_user: U.am2, am_version: 2 }, { store_id: 'F07', name: 'Kapolei', am_user: U.am1, am_version: 1 }]);
+  // An AM who is no longer an AM: shown so, and a save that would keep them is stopped on the screen until another choice.
+  await S.q(`update mr_members set enabled=false where user_id=$1`, [U.am2]);
+  c.run('mrAccReload()'); await c.show();
+  c.activeStores = () => [...STORES.slice(0, 2), { id: 'F05', name: 'Marujuu K', am: 'AM Two', active: true }, STORES[3], { id: 'F07', name: 'Kapolei', am: 'Yuki', active: true }];
+  c.renderPage();
+  assert.match(row('F05'), /selected>AM Two（AM でなくなった）<\/option>/); assert.match(row('F05'), /AM でなくなった：選び直して保存/); assert.match(row('F06'), /AM でなくなった：選び直して保存/);
+  const n0 = c.calls.filter(b => b.action === 'stores_save').length;
+  await c.run('mrScopeSave()'); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /管轄を選び直してください（AM でなくなった）：Marujuu K$/.test(m)));
+  assert.equal(c.calls.filter(b => b.action === 'stores_save').length, n0);
+  c.run(`mrScopeSet('F05', '')`); c.run(`mrScopeSet('F06', '${U.am1}')`); await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select store_id, name, am_user from mr_stores where env='live' and store_id in ('F05','F06') order by store_id`)),
+    [{ store_id: 'F05', name: 'Marujuu K', am_user: null }, { store_id: 'F06', name: 'LaLa', am_user: U.am1 }]);
+});
+
+// v1073: Codex の P2（685f49e）。GM と CEO が同じ店を開いて別の所を直す → 古い画面の保存は先の変更を戻さない。
+// B（Moto さん 10/13）：自分が変えた所だけをいまの設定に入れ直して、未保存で出す。
+test('v1073 B: two screens on the same store — the older save does not undo the first; only my change is put on the latest, unsaved, with a band', async () => {
+  const S = await server(); await live(S);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  const db = async () => (await S.q(`select input_emp, viewer_emps, access_version from mr_stores where env='live' and store_id='F01'`))[0];
+  // GM changes the input person; the CEO (opened before) adds a viewer.
+  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: [], access_version: 2 });
+  c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: [], access_version: 2 }, 'nothing written by the older screen');
+  assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
+  let h = c.html;
+  assert.match(h, /<div class="mr-conf" role="status">.*ほかの人（または別のタブ）が先にこの店の設定を保存しました/s);
+  assert.match(h, /ほかの人の変更：入力担当 Server Lead → Store Mgr/); assert.match(h, /あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<\/span>|あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<b>/);
+  assert.match(h, /まだ保存していません。/);
+  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E13" selected/, 'their input person is shown');
+  assert.match(h, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b>/); assert.match(h, /保存していない変更あり/);
+  assert.deepEqual(c.run('JSON.stringify(_mr.accDraft.viewers)'), '["E6"]'); assert.equal(c.run('_mr.accDraft.base.version'), 2);
+  // Saving now keeps both.
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: ['E6'], access_version: 3 }); assert.doesNotMatch(c.html, /mr-conf/);
+  // Both changed the input person: the draft has mine, the band names both; 「やめる」 goes back to theirs and writes nothing.
+  c.run("mrAccSet('input','E14')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  g.run("mrAccSet('input','E10')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
+  h = g.html;
+  assert.match(h, /ほかの人の変更：入力担当 Store Mgr → Op Lead・閲覧者に AM Two を足す/);
+  assert.match(h, /入力担当は 2 人とも変えていました：ほかの人は Op Lead、あなたは Chef Oka。いまの下書きは あなたの Chef Oka です（保存するまでは Op Lead のまま）。/);
+  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E10" selected/); assert.match(h, /<span class="mr-pp"><b>AM Two<\/b>/, 'their viewer is kept (not mine)');
+  assert.match(h, /やめる（いまの設定に戻す）/);
+  g.run('mrAccCancel()'); g.renderPage();
+  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E14" selected/); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
+  // The same change made on both: already in, nothing to save.
+  c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  g.run("mrAccDelViewer('E6')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.match(g.html, /あなたの変更（閲覧者から AM Two を外す）は、もう入っています（保存しなくて大丈夫）。/); assert.equal(g.run('_mr.accDraft.dirty'), false);
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: [], access_version: 5 });
+  // A save with nothing changed on an older screen: the settings now are shown.
+  await c.run('mrAccSave()'); await c.flush(); await c.show();   // c is current: saves the same, the version stays
+  g.run("mrAccPick('F02')"); g.renderPage(); g.run("mrAccPick('F01')"); g.renderPage();
+  await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }]);
+  await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.match(g.html, /ほかの人（または別のタブ）が先にこの店の設定を保存しました.*いまの設定を出しています。/s);
+  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E12" selected/);
+  assert.equal((await db()).input_emp, 'E12');
+  // Moving to another store drops the band.
+  g.run("mrAccPick('F02')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/);
+  g.run("mrAccPick('F01')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/, 'coming back does not bring the band back');
+});
+
+test('v1073: the switches on two screens — the older press is not saved; the band shows the switches now (settings and the off screen)', async () => {
+  const S = await server(); await live(S, { input: false });
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  const flags = async () => { const r = (await S.q(`select value, version from mr_settings where key='flags'`))[0]; return { value: { private: r.value.private, live_input: r.value.live_input }, version: r.version }; };
+  const v0 = (await flags()).version;
+  await g.run('mrSetFlags({ live_input:true })'); await g.flush(); await g.show();
+  assert.deepEqual(await flags(), { value: { private: true, live_input: true }, version: v0 + 1 });
+  // The CEO (opened before) turns the private check off: nothing written, the band, live input now ON.
+  await c.run('mrSetFlags({ private:false })'); await c.flush(); await c.show();
+  assert.deepEqual(await flags(), { value: { private: true, live_input: true }, version: v0 + 1 });
+  assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0);
+  assert.match(c.html, /ほかの人（または別のタブ）が先に ON・OFF を変えました/); assert.match(c.html, /あなたの操作（非公開確認を OFF にする）は反映していません。必要なら、もう一度押してください。/);
+  assert.match(c.html, /本番の店の入力（入力担当が書ける）：<b>ON/);
+  // Pressing again now turns it off and keeps live input on.
+  await c.run('mrSetFlags({ private:false })'); await c.flush(); await c.show();
+  assert.deepEqual(await flags(), { value: { private: false, live_input: true }, version: v0 + 2 });
+  // The GM's screen is older: the same press → already off.
+  await g.run('mrSetFlags({ private:false })'); await g.flush(); await g.show();
+  assert.deepEqual(await flags(), { value: { private: false, live_input: true }, version: v0 + 2 });
+  assert.match(g.html, /非公開確認 はもう OFF です（押さなくて大丈夫）。/);
+  // The off screen: someone turns it on and off meanwhile; the older ON press is not saved, the band says so.
+  const o = app(S); await o.show(); assert.match(o.html, /非公開確認を ON にする/);
+  await S.flagsSave({ private: true, live_input: true }); await S.flagsSave({ private: false, live_input: false });
+  await o.run('mrSetFlags({ private:true })'); await o.flush();
+  for (let i = 0; i < 100 && o.run('_mr.who.flags_version') !== v0 + 4; i++) await new Promise(r => setTimeout(r, 20));   // the switches read again (whoami)
+  await o.show();
+  assert.deepEqual((await flags()).value, { private: false, live_input: false });
+  assert.match(o.html, /<div class="mr-conf" role="status">/); assert.match(o.html, /あなたの操作（非公開確認を ON にする）は反映していません/);
+  assert.equal(o.run('_mr.who.flags_version'), v0 + 4);
+  await o.run('mrSetFlags({ private:true })'); await o.flush(); await o.show();
+  assert.deepEqual((await flags()).value, { private: true, live_input: false }); assert.doesNotMatch(o.html, /中間レビュー（非公開確認）は OFF です/);
+  // An older read never takes over a newer version; after a conflict the version read is taken as it is — even when the
+  // server's version went back (e.g. put in again), so the next press saves instead of being refused for ever.
+  const vo = o.run('_mr.who.flags_version'); o.run("mrFlagsFrom({ flags:{ private:false, live_input:false }, flags_version:0 })"); assert.equal(o.run('_mr.who.flags_version'), vo);
+  await S.q(`alter table mr_settings disable trigger mr_settings_bump`); await S.q(`update mr_settings set version = 1 where key='flags'`); await S.q(`alter table mr_settings enable trigger mr_settings_bump`);
+  o.run('mrOpenSettings()'); await o.show(); o.run('_mr.who.flags_version = ' + vo); o.renderPage();
+  o.run('mrAccReload()'); o.run('_mr.acc = null'); o.renderPage();
+  await o.run('mrSetFlags({ live_input:true })'); await o.flush();
+  for (let i = 0; i < 100 && o.run('_mr.who.flags_version') !== 1; i++) await new Promise(r => setTimeout(r, 20));
+  assert.equal(o.run('_mr.who.flags_version'), 1);
+  await o.run('mrSetFlags({ live_input:true })'); await o.flush(); await o.show();
+  assert.deepEqual((await flags()).value, { private: true, live_input: true });
+});
+
+test('v1073 B: 店舗の管轄 on two screens — only changed stores are sent, so another store’s change stays; the same store changed first → nothing written, mine kept (unsaved) on the latest', async () => {
+  const S = await server(); await live(S);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  const db = async () => Object.fromEntries((await S.q(`select store_id, am_user, am_version from mr_stores where env='live' order by store_id`)).map(x => [x.store_id, [x.am_user, x.am_version]]));
+  // Different stores: both saves stand (the older screen does not send Marujuu, so the GM's change is not undone).
+  g.run(`mrScopeSet('F05', '${U.am1}')`); await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  c.run(`mrScopeSet('F06', '${U.am2}')`); await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { F01: [U.am1, 1], F02: [U.am1, 1], F05: [U.am1, 2], F06: [U.am2, 2] });
+  assert.match(c.html, /data-store="F05"[^>]*>.*?<option value="00000000-0000-4000-8000-0000000000c5" selected>Yuki（AM）/s, 'the CEO now sees the GM’s change');
+  // The same store (LaLa) changed first by the CEO; meanwhile ToriTon changed by someone else; the GM (older) also changes Tenkichi.
+  await S.storesSave([{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1 }], 'ceo');
+  g.run(`mrScopeSet('F06', '${U.am1}')`); g.run(`mrScopeSet('F02', '${U.am2}')`);
+  await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { F01: [null, 2], F02: [U.am1, 1], F05: [U.am1, 2], F06: [U.am2, 2] }, 'nothing written by the older screen');
+  assert.equal(g.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
+  let h = g.html;
+  assert.match(h, /ほかの人（または別のタブ）が先に管轄を保存しました/); assert.match(h, /ほかの人の変更：ToriTon Yuki → GM の直轄/);
+  assert.match(h, /LaLa は 2 人とも変えていました：ほかの人は AM Two、あなたは Yuki。いまの下書きは あなたの Yuki です（保存するまでは AM Two のまま）。/);
+  assert.match(h, /あなたの変更（Tenkichi：Yuki → AM Two）を、いまの管轄に入れ直しました。<b>まだ保存していません。<\/b>/);
+  assert.match(h, /<tr class="mr-tr-mine"><td><b>Tenkichi<\/b>/); assert.match(h, /<tr class="mr-tr-mine"><td><b>LaLa<\/b>/); assert.match(h, /保存済み（ほかの人が変えた）/);
+  await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { F01: [null, 2], F02: [U.am2, 2], F05: [U.am1, 2], F06: [U.am1, 3] }, 'mine saved, theirs (ToriTon) kept');
+  assert.doesNotMatch(g.html, /mr-conf|mr-tr-mine/);
+  // The same change on both: already in, nothing left to save.
+  c.run('mrAccReload()'); await c.show();
+  c.run(`mrScopeSet('F01', '${U.am1}')`); await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  g.run(`mrScopeSet('F01', '${U.am1}')`); await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  assert.match(g.html, /あなたの変更（ToriTon：Yuki）は、もう入っています。/); assert.match(g.html, /いまの管轄を出しています（保存しなくて大丈夫）。/);
+  assert.equal(g.run('_mr.amDraft'), null); assert.deepEqual((await db()).F01, [U.am1, 3]);
+  // 「やめる」 drops my change and the band.
+  g.run(`mrScopeSet('F05', '')`); g.renderPage(); assert.match(g.html, /やめる（いまの管轄に戻す）/);
+  g.run('mrScopeCancel()'); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf|mr-tr-mine|やめる（いまの管轄に戻す）/);
+});
+
+test('v1073 B (more): viewers one by one — what I removed stays removed, what they added stays; a screen that changed nothing shows the latest after reading again', async () => {
+  const S = await server(); await live(S);
+  await S.accessSave([{ store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5', 'E11'] }]);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); x.run("mrAccPick('F05')"); x.renderPage(); }
+  const db = async () => (await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F05'`))[0];
+  // The GM adds AM Two; the CEO (older screen) removes Yuki → Yuki goes, AM Two (theirs) and Corp Chef stay.
+  g.dom = { 'mr-acc-vadd': { value: 'E6' } }; g.run('mrAccAddViewer()'); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E5', 'E11', 'E6'] });
+  c.run("mrAccDelViewer('E5')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E5', 'E11', 'E6'] }, 'nothing written by the older screen');
+  assert.match(c.html, /ほかの人の変更：閲覧者に AM Two を足す/); assert.match(c.html, /あなたの変更（閲覧者から Yuki を外す）を、いまの設定に入れ直しました。/);
+  assert.equal(c.run('JSON.stringify(_mr.accDraft.viewers)'), '["E11","E6"]');
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E11', 'E6'] });
+  // The GM changed nothing since: reading again shows the CEO's save (no band, nothing unsaved).
+  g.run('mrAccReload()'); await g.show();
+  assert.equal(g.run('JSON.stringify(_mr.accDraft.viewers)'), '["E11","E6"]'); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
+});
+
+test('v1073: leaving the settings with unsaved changes asks (access and the oversight); the oversight waits for the server update (20261016090000)', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  let asked = 0; c.confirm = () => { asked++; return false; };
+  c.run("mrAccSet('input','E13')"); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('_mr.accDraft.input_emp'), 'E13');
+  c.run('mrAccCancel()'); c.run(`mrScopeSet('F06', '${U.am2}')`); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 2); assert.match(c.html, /mr-tr-mine/);
+  c.run('mrScopeCancel()'); c.run('mrBack()'); c.renderPage(); assert.equal(asked, 2, 'nothing unsaved: no question'); assert.doesNotMatch(c.html, /id="mr-scope"/);
+  // During the deploy (the function in, the SQL not yet): access_get has no oversight versions → the card says so, nothing to save.
+  c.run('mrOpenSettings()'); await c.show();
+  c.run('_mr.acc.stores.forEach(function(s){ delete s.am_version; delete s.am_user; delete s.am_name; })'); c.renderPage();
+  const card = c.html.slice(c.html.indexOf('id="mr-scope"'));
+  assert.match(card, /サーバーの更新（20261016090000）が終わるまで、管轄は変えられません。/); assert.doesNotMatch(card.slice(0, card.indexOf('</div></div>')), /mrScopeSave/);
+  assert.doesNotMatch(c.html, /管轄 Yuki|管轄：/, 'the rail and the card do not guess the oversight');
+});
+
+test('v1073: a read that keeps coming back empty stops after a few tries and says so (no endless reading)', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show();
+  const real = c.fetch, n = () => c.calls.filter(b => b.action === 'access_get').length;
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_get') { c.calls.push(b); return { ok: true, status: 200, json: async () => null }; } return real(url, init); };
+  c.run('mrOpenSettings()');
+  for (let i = 0; i < 12; i++) { c.renderPage(); await c.flush(); }
+  c.renderPage();
+  assert.ok(n() >= 2 && n() <= 5, 'tried a few times: ' + n());
+  assert.match(c.html, /読み込めませんでした。「更新」を押してください/); assert.match(c.html, /mrAccReload\(\)/);
+  // After it works again, Retry reads it.
+  c.fetch = real; c.run('mrAccReload()'); await c.show();
+  assert.match(c.html, /一人ひとりの実効の権限/);
+});
+
+test('v1073: inputs wait while a save is on the way; a drafted store that left the list is dropped; more than 20 viewers after putting mine on theirs is stopped', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  // While a save waits for its answer, the settings' inputs are disabled and changes are not taken (the answer drops the draft).
+  c.run("_mr.busy = 'access'"); c.renderPage();
+  assert.match(c.html, /id="mr-acc-input" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
+  c.run("mrAccSet('input','E13')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null);
+  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-input" disabled/);
+  // A store only in the store master gets a draft, then leaves the store master: the draft goes with it (no stuck “unsaved”).
+  c.activeStores = () => [...STORES, { id: 'F07', name: 'Kapolei', am: '', active: true }]; c.renderPage();
+  c.run(`mrScopeSet('F07', '${U.am1}')`); assert.match(c.html, /<tr class="mr-tr-mine"><td><b>Kapolei<\/b>/);
+  c.activeStores = () => STORES; c.renderPage();
+  assert.equal(c.run('_mr.amDraft'), null); assert.doesNotMatch(c.html, /保存していない変更あり/); assert.equal(c.run('mrSetUnsaved()'), false);
+  // Mine put on theirs comes to more than 20 viewers: the band says so and the save is stopped on the screen.
+  const ids = n => Array.from({ length: n }, (_, i) => 'X' + i);
+  c.run(`(function(){ var s = _mr.acc.stores.filter(function(x){ return x.store_id === 'F01'; })[0];
+    var d = { store_id:'F01', input_emp:s.input_emp, viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ input_emp:s.input_emp, viewers:[], version:s.version - 1, names:{} } };
+    _mr.accDraft = d; mrAccRebase(s, d, { input_emp:s.input_emp, viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
+  c.renderPage();
+  assert.equal(c.run('_mr.accDraft.viewers.length'), 22); assert.match(c.html, /閲覧者が 22 人になりました（20 人まで）。保存の前に減らしてください。/);
+  const n = c.calls.filter(b => b.action === 'access_save').length; await c.run('mrAccSave()');
+  assert.equal(c.calls.filter(b => b.action === 'access_save').length, n); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /閲覧者は 20 人まで/.test(m)));
+});
+
+test('v1073 English: the bands (store settings, switches, oversight)', async () => {
+  const S = await server(); await live(S, { input: false });
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' }, lang: 'en' });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  // Each conflict on the CEO's screen reads it again, so the GM changes the next thing only after that.
+  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: input person Server Lead → Store Mgr/);
+  assert.match(c.html, /Your change \(add viewer AM Two\) was put on the settings now\. <b>Not saved yet\.<\/b>/); assert.match(c.html, /<span class="mr-m"> \(not saved\)<\/span>/);
+  assert.match(c.html, /Store oversight \(which AM looks after each store\)/); assert.match(c.html, /Overseen by Yuki \(AM\)/);
+  await g.run('mrSetFlags({ live_input:true })'); await g.flush(); await g.show();
+  await c.run('mrSetFlags({ private:false })'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) changed the switches first/); assert.match(c.html, /Your action \(The private check off\) was not saved\. Press it again if still needed\./);
+  g.run(`mrScopeSet('F06', '${U.am2}')`); await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  c.run(`mrScopeSet('F06', '${U.am1}')`); await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) saved the oversight first/); assert.match(c.html, /Both of you changed LaLa: theirs is AM Two, yours is Yuki\./);
+  assert.doesNotMatch(c.html, /ほかの人|あなたの|管轄/, 'no Japanese left in the bands and the oversight');
 });
 
 test('R3 (v2): a new key for the same person keeps the screen and the input (email and PIN); another person resets it', async () => {
@@ -843,5 +1135,33 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
   assert.match(css, /\.mr-l-sp \{ display:none; \}/); assert.match(phone, /\.mr-l-pc \{ display:none; \} \.mr-l-sp \{ display:inline; \}/);
   assert.match(phone, /\.mr-crumb \{ display:none; \}/); assert.match(css, /@media \(max-width:640px\) \{ \.mr-strip \{ display:none; \} \}/);
   assert.match(css, /\.mr-linkb\.mr-blue \{ color:#1f4f9c; \}/);
+  // v1073: the band when someone saved first, and my unsaved changes (they wrap; no fixed width).
+  assert.match(css, /\.mr-conf \{ [^}]*display:flex;[^}]*overflow-wrap:anywhere; \}/); assert.match(css, /\.mr-conf-b \{ [^}]*min-width:0;/); assert.match(css, /\.mr-pp-mine \{/); assert.match(css, /\.mr-tr-mine td \{/);
 });
 
+// v1073: Moto さん 10/13「担当閲覧設定が読み込み中から進まない（できる時もある）」。一度読んだ画面に戻ると、読み込みの印は
+// 「済み」のまま中身だけ捨てていたので、二度目は読みに行かず「読み込み中…」のまま止まった（設定・月の切り替え・一覧のデモ／本番）。
+test('v1073: going back to a screen read before loads it again — settings reopened, the settings month back and forth, the list demo / live and months', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show();
+  const loading = () => /読み込み中…/.test(c.html);
+  const n = a => c.calls.filter(b => b.action === a).length;
+  // Settings: open, back to the list, open again.
+  c.run('mrOpenSettings()'); await c.show();
+  assert.match(c.html, /一人ひとりの実効の権限/); assert.equal(n('access_get'), 1);
+  c.run('mrBack()'); await c.show(); assert.equal(loading(), false);
+  c.run('mrOpenSettings()'); await c.show();
+  assert.equal(loading(), false, 'the settings reopened must not stay on loading'); assert.match(c.html, /一人ひとりの実効の権限/); assert.equal(n('access_get'), 2);
+  // The settings month: October → November → October.
+  c.run("mrAccYm('2026-11')"); await c.show(); assert.equal(loading(), false); assert.match(c.html, /2026 年 11 月 だけの入力担当|2026年11月 だけの入力担当|11 月 だけの入力担当|11月 だけの入力担当/);
+  c.run("mrAccYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October'); assert.match(c.html, /一人ひとりの実効の権限/);
+  // The list: demo → live → demo, and live months back and forth.
+  c.run('mrBack()'); c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetEnv('live')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false, 'back to the demo list');
+  c.run("mrSetEnv('live')"); await c.show(); c.run("mrSetYm('2026-09')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October in the list');
+  // A store page opened twice still loads.
+  c.run("mrSetEnv('demo')"); await openStore(c, 'D1'); assert.equal(loading(), false);
+  c.run('mrBack()'); await openStore(c, 'D1'); assert.equal(loading(), false);
+});

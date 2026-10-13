@@ -1,7 +1,8 @@
 -- 中間レビュー：入れる前の確認（読むだけ。何も書き換えません）
 -- すべての行が OK（または参考）になってから流してください。
---   はじめて入れるとき：20261012090000_mid_review.sql → 20261013090000_mid_review_fixes.sql → 20261015090000_mid_review_v2.sql
---   v1066／v1068 が入っているとき：20261015090000_mid_review_v2.sql だけ
+--   はじめて入れるとき：20261012090000_mid_review.sql → 20261013090000_mid_review_fixes.sql → 20261015090000_mid_review_v2.sql → 20261016090000_mid_review_v2_versions.sql
+--   v1066／v1068 が入っているとき：20261015090000_mid_review_v2.sql → 20261016090000_mid_review_v2_versions.sql
+--   v2 が入っているとき：20261016090000_mid_review_v2_versions.sql だけ
 -- 中間レビューは社員の表（employees）と店舗の表（stores）を「読むだけ」で使います（候補を出す・退職や役職の変更で入れなくするため）。
 with c as (
   select table_name, column_name from information_schema.columns where table_schema = 'public'
@@ -27,11 +28,14 @@ union all select 'employees.id is unique',
 union all select 'auth.users',
   (to_regclass('auth.users') is not null)::text, case when to_regclass('auth.users') is not null then 'OK' else 'NG' end
 union all select 'mid-review tables (v1066)', (select n from mr)::text,
-  case (select n from mr) when 0 then 'OK（まだ無い：20261012090000 → 20261013090000 → 20261015090000 の順に流す）'
-   when 7 then 'OK（入っている：この上に 20261015090000 を流す）' else 'NG：表が途中まで（Claude に相談）' end
+  case (select n from mr) when 0 then 'OK（まだ無い：20261012090000 → 20261013090000 → 20261015090000 → 20261016090000 の順に流す）'
+   when 7 then 'OK（入っている：v2 がまだなら 20261015090000 → 20261016090000、v2 が入っていれば 20261016090000 だけ）' else 'NG：表が途中まで（Claude に相談）' end
 union all select 'mid-review v2 already there',
   exists(select 1 from c where table_name = 'mr_stores' and column_name = 'input_emp')::text,
-  case when exists(select 1 from c where table_name = 'mr_stores' and column_name = 'input_emp') then 'OK（もう入っている：流し直しても同じ）' else 'OK（まだ）' end
+  case when exists(select 1 from c where table_name = 'mr_stores' and column_name = 'input_emp') then 'OK（もう入っている：流し直さない。流し直したら続けて 20261016090000 も）' else 'OK（まだ）' end
+union all select 'mid-review versions (v1073) already there',
+  exists(select 1 from c where table_name = 'mr_stores' and column_name = 'access_version')::text,
+  case when exists(select 1 from c where table_name = 'mr_stores' and column_name = 'access_version') then 'OK（もう入っている：流し直しても同じ）' else 'OK（まだ）' end
 union all select 'the same employee enabled twice in mr_members',
   case when to_regclass('public.mr_members') is null then '0' else
     substring(query_to_xml('select count(*) as n from (select emp_id from public.mr_members where enabled and coalesce(emp_id, '''') <> '''' group by emp_id having count(*) > 1) x',

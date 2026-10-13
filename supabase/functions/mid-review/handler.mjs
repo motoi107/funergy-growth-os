@@ -324,6 +324,14 @@ export function createHandler(deps) {
 
   const str = (v, n) => (v === null || v === undefined ? null : String(v).slice(0, n));
   const NO = v => (Number.isInteger(v) && v >= 0 && v < 1e6 ? v : null);
+  // The version a settings screen read (v1073). Required: a screen from before v1073 sends none, and saving without it could
+  // put back what someone else saved after that screen read → 'gone' (update the app). Anything else that is not a whole
+  // number is refused. The SQL compares it with the version now (another version → conflict, nothing written).
+  const VER = v => {
+    if (v === undefined || v === null) { const e = new Error('gone'); e.code = 'gone'; throw e; }
+    if (!(Number.isInteger(v) && v >= 0 && v <= 999999999)) throw bad();
+    return v;
+  };
   const where = b => ({ env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) });
   // An employee id from the settings screen (null: none). Anything that is not a short string is refused.
   const EMP = v => { if (v == null || v === '') return null; if (typeof v !== 'string' || v.length > 64 || /[\u0000-\u001f]/.test(v)) throw bad(); return v; };
@@ -345,18 +353,19 @@ export function createHandler(deps) {
     confirm: (w, b) => rpc('mr_confirm', w, { ...where(b), expect_no: NO(b.expect_no) }),
     unconfirm: (w, b) => rpc('mr_unconfirm', w, where(b)),
     deadline_save: (w, b) => rpc('mr_deadline_save', w, { ...where(b), deadlines: { submit: DTS(obj(b.deadlines).submit), reply: DTS(obj(b.deadlines).reply) } }),
-    settings_save: (w, b) => rpc('mr_settings_save', w, { key: str(b.key, 20), value: obj(b.value) }),
+    settings_save: (w, b) => rpc('mr_settings_save', w, { key: str(b.key, 20), value: obj(b.value), expect_version: VER(b.expect_version) }),
     members_list: w => rpc('mr_members_list', w, {}),
     stores_save: (w, b) => rpc('mr_stores_save', w, { stores: Array.isArray(b.stores) ? b.stores.slice(0, 61).map(s => ({
       store_id: str(s && s.store_id, 30), name: str(s && s.name, 80), am_user: s && s.am_user ? str(s.am_user, 40) : null,
-      sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false) })) : null }),
+      sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false), expect_version: VER(s && s.expect_version) })) : null }),
     access_get: (w, b) => rpc('mr_access_get', w, { ym: str(b.ym, 8) }),
     access_save: (w, b) => {
       if (!Array.isArray(b.stores)) throw bad();
       return rpc('mr_access_save', w, { stores: b.stores.slice(0, 61).map(s => {
         s = obj(s);
         if (s.viewer_emps != null && !Array.isArray(s.viewer_emps)) throw bad();
-        return { store_id: str(s.store_id, 30), input_emp: EMP(s.input_emp), viewer_emps: (s.viewer_emps || []).slice(0, 21).map(v => { const e = EMP(v); if (!e) throw bad(); return e; }) };
+        return { store_id: str(s.store_id, 30), input_emp: EMP(s.input_emp), viewer_emps: (s.viewer_emps || []).slice(0, 21).map(v => { const e = EMP(v); if (!e) throw bad(); return e; }),
+          expect_version: VER(s.expect_version) };
       }) });
     },
     month_input_save: (w, b) => rpc('mr_month_input_save', w, { store_id: str(b.store_id, 30), ym: str(b.ym, 8), input_emp: EMP(b.input_emp) }),
