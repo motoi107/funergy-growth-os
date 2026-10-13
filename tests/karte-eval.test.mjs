@@ -102,7 +102,9 @@ function app() {
     function getKarteAll(){ return ls('growth_karte', {}); } function getKarte(id){ return getKarteAll()[id] || {}; }
     function karteScopeStores(){ return Object.keys(STORES).map(function(k){ return {id:k, name:'Store '+k.slice(1)}; }); }
     function renderKarteQuarterBar(){ return '<quarter-bar>'; } function cscJsArg(v){ return escapeHtml(JSON.stringify(String(v==null?'':v))); }
-    function _outboxGet(){ return []; }`, c);
+    function _outboxGet(){ return []; }
+    /* v1074: these tests keep checking the v1065 formula (2026 Q3 uses the CEO rules from v1074; those are in tests/karte-bonus-ceo.test.mjs) */
+    KEV2_START = '2099-Q1';`, c);
   return c;
 }
 const J = x => JSON.parse(JSON.stringify(x));
