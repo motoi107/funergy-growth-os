@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import { createHandler, demoData } from '../supabase/functions/mid-review/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const SQL = fs.readFileSync(new URL('../supabase/migrations/20261012090000_mid_review.sql', import.meta.url), 'utf8');
+const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3',
   crew: '00000000-0000-4000-8000-0000000000c4', am1: '00000000-0000-4000-8000-0000000000c5', am2: '00000000-0000-4000-8000-0000000000c6',
   off: '00000000-0000-4000-8000-0000000000c7', stranger: '00000000-0000-4000-8000-0000000000c8', amoff: '00000000-0000-4000-8000-0000000000c9' };
@@ -237,7 +237,7 @@ test('the check, add-AM and rollback SQL work on the same schema', async () => {
   const E = await setup();
   const post = fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8');
   const rows = await E.q(post);
-  assert.equal(rows.length, 14);
+  assert.equal(rows.length, 17);
   for (const r of rows) assert.ok(/^OK/.test(r.result), r.check_name + ': ' + r.result);
   // Add a member by SQL: the account must exist, the employee name must match exactly one, an AM must be an AM, roles are never changed.
   await E.pg.exec('reset role');
@@ -256,7 +256,10 @@ test('the check, add-AM and rollback SQL work on the same schema', async () => {
   await assert.rejects(E.pg.exec(add('yuki@example.test', 'Twin', 'am')), /2 人/);
   await assert.rejects(E.pg.exec(add('sm@example.test', 'Store Mgr', 'am')), /AM ではありません/);   // a G4 store manager is not added
   await assert.rejects(E.pg.exec(add('yuki@example.test', 'Yuki Test', 'gm')), /manager_auth/);
+  await assert.rejects(E.pg.exec(add('gm@example.test', 'GM Test', 'ceo')), /manager_auth/);   // a GM in manager_auth is never added as CEO
+  await E.pg.exec(`update manager_auth set role='ceo' where user_id='${U.gm}'`);
   await assert.rejects(E.pg.exec(add('gm@example.test', 'GM Test', 'ceo')), /もう gm/);       // roles are never changed by this file
+  await E.pg.exec(`update manager_auth set role='gm' where user_id='${U.gm}'`);
   await assert.rejects(E.pg.exec(add('gm2@example.test', 'GM Two', 'gm')), /manager_auth の社員/);   // the email account is someone else's employee
   await assert.rejects(E.pg.exec(add('stopped@example.test', 'Stopped AM', 'am')), /止めてあります/);   // a stopped member is not turned back on quietly
   await E.pg.exec(add('stopped@example.test', 'Stopped AM', 'am').replace('v_reenable boolean := false', 'v_reenable boolean := true'));
@@ -637,7 +640,9 @@ const saveR = async (E, who, st, target, decision, data = {}, escalate_to) => {
   return R(E, who, st, { action: 'reply_save', target, decision, escalate_to, data, expect_version: mine ? mine.version : null, expect_no: g.review ? g.review.submitted_no : null });
 };
 // Send this person's drafts, looking at the latest submitted version.
-const send = async (E, who, st) => R(E, who, st, { action: 'reply_send', expect_no: (await R(E, who, st, { action: 'get' })).body.review.submitted_no });
+// The drafts of this person as the screen shows them (id and version).
+const shownDrafts = g => (g.replies || []).filter(x => x.mine && x.state === 'draft').map(x => ({ id: x.id, version: x.version }));
+const send = async (E, who, st) => { const g = (await R(E, who, st, { action: 'get' })).body; return R(E, who, st, { action: 'reply_send', expect_no: g.review.submitted_no, drafts: shownDrafts(g) }); };
 const status = async (E, st) => (await E.q(`select status, decision_by, next_actor, next_due::text d from mr_reviews where env='demo' and store_id=$1`, [st]))[0];
 
 test('replies: the AM answers every item at once; an escalation waits for the GM; the GM decides; then the review can be completed', async () => {
@@ -953,7 +958,7 @@ test('replies are written and sent on the version shown: a newer version is refu
   await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act());
   await resubmit(E, 'D1', 'gm', b => { b.issues[0].ask = '本部で米の業者を比べて、月 $6,000 まで出してほしい'; return b; });
   // The page still shows version 1.
-  const old = await R(E, 'am1', 'D1', { action: 'reply_send', expect_no: 1 }); assert.deepEqual([old.status, old.body.error], [409, 'new_version']);
+  const old = await R(E, 'am1', 'D1', { action: 'reply_send', expect_no: 1, drafts: shownDrafts((await R(E, 'am1', 'D1', { action: 'get' })).body) }); assert.deepEqual([old.status, old.body.error], [409, 'new_version']);
   assert.equal((await R(E, 'am1', 'D1', { action: 'reply_save', target: 'pl', decision: 'as_proposed', data: act(), expect_no: 1 })).body.error, 'new_version');
   assert.equal((await R(E, 'am1', 'D1', { action: 'reply_send' })).body.error, 'new_version');      // the version is required
   // Loaded again: the draft on the changed question is marked; the KPI draft is not (unchanged).
@@ -1142,4 +1147,116 @@ test('"a newer draft" in a second round of questions: only answers to open quest
   const q2 = g.replies.find(x => x.decision === 'followup' && !x.data.resolved);
   await R(E, 'gm', 'D1', { action: 'save', expect_version: g.review.version, body: { ...g.review.body, answers: { [q2.id]: '米が 7 割' } } });
   assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.review.unsubmitted, true);
+});
+
+// ---------------------------------------------------------------- after the Codex review of PR #44 (v1068)
+test('v1068: a CEO changed to GM in manager_auth is a GM here at once; a GM changed to CEO there stays a GM here', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'am1', 'D1', 'issue:i1', 'escalate', { title: '米の業者', recommend: '2 社の見積り', due: '2026-10-22' }, 'ceo');
+  assert.equal((await send(E, 'am1', 'D1')).status, 200);
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  assert.equal((await E.api('ceo', { action: 'whoami' })).body.role, 'gm');
+  assert.equal((await saveR(E, 'ceo', 'D1', 'issue:i1', 'as_proposed', act())).status, 200);
+  const r1 = await send(E, 'ceo', 'D1'); assert.deepEqual([r1.status, r1.body.error], [422, 'incomplete']);      // a CEO item is not decided by a GM
+  assert.equal((await E.api('ceo', { action: 'settings_save', key: 'flags', value: { private: true } })).status, 200);   // still a GM for GM / CEO work
+  // A GM made CEO in manager_auth is not made CEO here (never wider than the copy here).
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.gm]);
+  assert.equal((await E.api('gm', { action: 'whoami' })).body.role, 'gm');
+  assert.equal((await saveR(E, 'gm', 'D1', 'issue:i1', 'as_proposed', act())).status, 200);
+  assert.equal((await send(E, 'gm', 'D1')).status, 422);
+  // Back to CEO in manager_auth: a CEO here again, and the CEO decides.
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.ceo]);
+  assert.equal((await E.api('ceo', { action: 'whoami' })).body.role, 'ceo');
+  assert.equal((await send(E, 'ceo', 'D1')).status, 200);
+  const esc = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'issue:i1' && x.decision === 'escalate');
+  assert.equal(esc.data.resolved, true);
+  // The decision counts as the CEO's: it was sent as CEO, though the draft was first saved while a GM.
+  const dec = (await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'issue:i1' && x.state === 'sent' && x.decision === 'as_proposed' && x.author_role === 'ceo');
+  assert.ok(dec, 'sent with the role at the time of sending');
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.review.final['issue:i1'], true);
+  // The other way: first saved as CEO, sent after becoming a GM → recorded as GM.
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act());
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.ceo]);
+  await saveR(E, 'ceo', 'D1', 'kpi', 'as_proposed', act({ next: '書き直した' }));
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  assert.equal((await send(E, 'ceo', 'D1')).status, 200);
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.replies.find(x => x.target === 'kpi' && x.state === 'sent' && x.data.next === '書き直した').author_role, 'gm');
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.ceo]);
+  // The check after installing points at both kinds of difference.
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.ceo]);
+  const post = Object.fromEntries((await E.q(fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8'))).map(r => [r.check_name, r]));
+  assert.deepEqual([post['ceo here but gm in manager_auth'].value, post['gm here but ceo in manager_auth'].value], ['1', '1']);
+  assert.match(post['ceo here but gm in manager_auth'].result, /^注意/);
+  assert.match(post['fixes after the review (v1068)'].result, /^OK/);
+});
+
+test('v1068: replies are sent only as the screen showed them (the same drafts at the same versions)', async () => {
+  const E = await setup(); await demoOn(E);
+  await saveR(E, 'am1', 'D1', 'issue:i1', 'as_proposed', act());
+  const g1 = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  const shown = shownDrafts(g1);
+  const base = { action: 'reply_send', expect_no: g1.review.submitted_no };
+  const err = async extra => { const r = await R(E, 'am1', 'D1', { ...base, ...extra }); return [r.status, r.body.error]; };
+  // Another tab: a new draft, then a change to the shown one.
+  await saveR(E, 'am1', 'D1', 'kpi', 'as_proposed', act());
+  assert.deepEqual(await err({ drafts: shown }), [409, 'drafts_changed']);
+  await R(E, 'am1', 'D1', { action: 'reply_delete', target: 'kpi' });
+  await saveR(E, 'am1', 'D1', 'issue:i1', 'no_action', { reason: '別のタブで書き直した' });
+  assert.deepEqual(await err({ drafts: shown }), [409, 'drafts_changed']);
+  // An old screen (no list), a list that is not a list, a draft that is not there, someone else's draft id.
+  const g2 = (await R(E, 'am1', 'D1', { action: 'get' })).body;
+  for (const d of [undefined, null, 'x', {}, [...shownDrafts(g2), { id: '00000000-0000-4000-8000-00000000abcd', version: 1 }]])
+    assert.deepEqual(await err({ drafts: d }), [409, 'drafts_changed'], JSON.stringify(d));
+  await saveR(E, 'gm', 'D1', 'kpi', 'as_proposed', act());
+  const gmDraft = shownDrafts((await R(E, 'gm', 'D1', { action: 'get' })).body);
+  assert.deepEqual(await err({ drafts: [...shownDrafts(g2), ...gmDraft] }), [409, 'drafts_changed']);
+  // Nothing was sent by the refused tries; the shown set at the shown versions is sent.
+  assert.equal((await R(E, 'am1', 'D1', { action: 'get' })).body.replies.filter(x => x.mine && x.state === 'sent').length, 0);
+  assert.deepEqual(await err({ drafts: shownDrafts(g2) }), [200, undefined]);
+  const sent = (await R(E, 'am1', 'D1', { action: 'get' })).body.replies.filter(x => x.mine && x.state === 'sent');
+  assert.deepEqual(sent.map(x => [x.target, x.data.reason]), [['issue:i1', '別のタブで書き直した']]);
+  // The GM's own draft was not touched by the AM's send.
+  assert.equal((await R(E, 'gm', 'D1', { action: 'get' })).body.replies.filter(x => x.mine && x.state === 'draft').length, 1);
+  // A tab whose drafts another tab already sent: "load again", not "nothing to send". With nothing shown and nothing there: nothing to send.
+  assert.deepEqual(await err({ drafts: shownDrafts(g2) }), [409, 'drafts_changed']);
+  assert.deepEqual(await err({ drafts: [] }), [409, 'nothing']);
+});
+
+test('v1068: the fix SQL on a database that already has the first one (rows kept, browsers still shut out, runs twice)', async () => {
+  const pg = new PGlite();
+  await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+    alter default privileges in schema public grant all on functions to anon, authenticated;
+    create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
+    create table public.employees(id text primary key, name text, role text, status text, data jsonb);
+    create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);
+    grant select on public.employees, public.stores to service_role;
+    insert into manager_auth values ('${U.gm}','gm','E2');`);
+  const [first, fix] = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8'));
+  await pg.exec(first);
+  await pg.exec(`update mr_settings set value = value || '{"private": true}' where key='flags'`);
+  const post = fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8');
+  const row = async () => (await pg.query(post)).rows.find(r => r.check_name === 'fixes after the review (v1068)').result;
+  assert.match(await row(), /^NG/);
+  const before = (await pg.query(`select (select count(*)::int from mr_members) m, (select value::text from mr_settings where key='flags') f`)).rows[0];
+  await pg.exec(fix); await pg.exec(fix);
+  assert.match(await row(), /^OK/);
+  assert.deepEqual((await pg.query(`select (select count(*)::int from mr_members) m, (select value::text from mr_settings where key='flags') f`)).rows[0], before);
+  const open = (await pg.query(`select proname from pg_proc where proname in ('mr_auth','mr_reply_send')
+    and (has_function_privilege('anon', oid, 'execute') or has_function_privilege('authenticated', oid, 'execute') or not has_function_privilege('service_role', oid, 'execute'))`)).rows;
+  assert.deepEqual(open, []);
+  for (const r of (await pg.query(post)).rows) if (!/^(members|ceo here|gm here)/.test(r.check_name)) assert.match(r.result, /^OK/, r.check_name + ': ' + r.result);
+});
+
+test('replies take their locks in one order everywhere: the review row first, then the drafts', async () => {
+  const E = await setup();
+  const src = async name => (await E.q(`select prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = $1`, [name]))[0].prosrc;
+  // mr_reply_delete used to take no lock at all, so a delete could be applied in the middle of a send that
+  // had already checked this person's drafts (only part of the set the person saw was then sent). What the
+  // two sessions actually do is checked on a real PostgreSQL in tests/review/pr45-mid-review-lock-order.test.mjs
+  // (PGlite is one backend and cannot overlap two transactions); this is the cheap guard that runs everywhere.
+  for (const fn of ['mr_reply_save', 'mr_reply_send', 'mr_reply_delete'])
+    assert.match(await src(fn), /from public\.mr_reviews where id = r\.id for update/, fn + ' must lock the review row first');
+  assert.match(await src('mr_reply_send'), /from public\.mr_replies y where[^;]*for update/, 'the send must hold the drafts it checked');
 });

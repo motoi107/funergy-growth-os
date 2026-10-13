@@ -16188,6 +16188,11 @@ function mrCanSee(){ return !(typeof curStoreLogin!=='undefined' && curStoreLogi
 var _mrGen = 0;
 /* 中間レビューのログインは _botSession だけ（管理者ページの _authSession は使わない） */
 function mrSession(){ return (typeof _botSession !== 'undefined' && _botSession) || null; }
+/* そのログインの人（アクセスキーの中の利用者 ID。画面の入力を残すかどうかだけに使う。権限はサーバーが毎回確かめる） */
+function mrSessUser(s){
+  try { var p = String((s && s.access_token) || '').split('.')[1]; if (!p) return null; p = p.replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '=';
+    var j = JSON.parse(atob(p)); return (j && typeof j.sub === 'string' && j.sub) || null; } catch(e) { return null; }
+}
 function mrSigned(){ var s = mrSession(); return !!(s && s.access_token); }
 function mrReset(){ _mrGen++; if (_mr && _mr.ed && _mr.ed.timer) clearTimeout(_mr.ed.timer); _mr = { who:null, env:'demo', tab:'all', ym:null, f:{ store:'', am:'', status:'' }, mine:false, list:null, load:{}, err:'', restoreTried:null, setOpen:false, members:null, kpi:{}, busy:'', view:null, rec:null, recKey:'', ed:null, showSnap:false, kOpen:null }; }
 function mrRerender(){ if (typeof curPage!=='undefined' && curPage==='mid_review') renderPage('mid_review'); }
@@ -16206,6 +16211,7 @@ var MR_ERR = {
   nothing:['送る返信がありません（下書きがない）','Nothing to send (no drafts)'],
   conflict:['ほかの人が先に保存しました。最新を読み込んでください','Someone else saved first. Load the latest'],
   too_many:['店長への質問は、答えを待っているものと合わせて 20 件までです','Up to 20 questions can wait for the store manager at once'],
+  drafts_changed:['別の画面（タブ）で下書きが変わりました。読み込み直して、確かめてから送ってください','Your drafts changed in another tab. Load them again and check before sending'],
   new_version:['店長が新しい提出版を出しました。読み込み直して、確かめてから返信してください（下書きは残っています）','The store manager sent a new version. Load it and check before replying (your drafts are kept)']
 };
 function mrErrText(code, status){
@@ -16222,7 +16228,7 @@ async function mrAPI(payload, retried){
   catch(e) { var e1 = new Error(t('中間レビューのサーバー（mid-review）につながりません。まだ配備されていないか、通信できません。','Cannot reach the mid-month review server (mid-review). It is not deployed yet, or the network is down.')); e1.code = 'network'; throw e1; }
   if (r.status === 401 && !retried && s.refresh_token) {
     var ns = await invInSessionRefresh(s);
-    if (ns && mrSession() === ns) return mrAPI(payload, true);
+    if (ns && mrSession() === ns) { if (_mr && _mr.sess === s) _mr.sess = ns; return mrAPI(payload, true); }   /* 同じログインの取り替え */
   }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
   if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; var err = new Error(mrErrText(code, r.status)); err.code = code; err.status = r.status; throw err; }
@@ -16441,6 +16447,8 @@ function renderMidReview(){
   if (!mrCanSee()) return head + mrCard('<div class="mr-m">'+t('このページは CEO・GM・AM だけが開けます。','Only CEO, GM and AM can open this page.')+'</div>');
   /* 1) メール認証（覚えた鍵があれば、まずそれで） */
   /* 別のメールの認証（Invoice取込・業務Bot）に変わったら、前の人の読み込みを使わない */
+  /* 同じ人のキーの取り替え（期限切れの更新）なら、開いている店と入力はそのまま */
+  if (_mr.who && _mr.sess !== mrSession() && mrSession() && mrSessUser(mrSession()) && mrSessUser(mrSession()) === mrSessUser(_mr.sess)) _mr.sess = mrSession();
   if (_mr.who && _mr.sess !== mrSession()) { _mrGen++; mrEdStop(); if (typeof mrRpStop === 'function') mrRpStop(); _mr.view = null; _mr.rec = null; _mr.recKey = ''; _mr.who = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.members = null; _mr.liveL = null; _mr.load = {}; _mr.err = ''; }
   if (!mrSigned()) {
     var kw = invInKeepWho();
@@ -17297,7 +17305,7 @@ async function mrSaveAndClose(){
   mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec();
 }
 async function mrSubmit(){
-  var ed = _mr.ed, R = _mr.rec; if (!ed || !R || _mr.busy) return;
+  var ed = _mr.ed, R = _mr.rec, g = _mrGen, key = mrRecKey(); if (!ed || !R || _mr.busy) return;
   var snap = mrSnapNow(R), miss = mrMissing(ed.body, snap, mrOpenFollowups(R));
   if (miss.length) { mrRerender(); mrGoSec('submit'); return; }
   var before = (R.review && R.review.submitted_no) || 0;
@@ -17306,16 +17314,21 @@ async function mrSubmit(){
     if (!(ed.state === 'saved' && !ed.pending)) { var ok = await mrSaveNow(); if (!ok) { showToast(t('先に保存できませんでした。入力は残っています。','Could not save first. Your input is kept.'), 'error'); return; } }
     if (_mr.ed !== ed) return;
     var res = await mrAPI({ action:'submit', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_version:ed.version, snapshot:snap });
-    showToast(t('提出しました（提出版 ' + res.submitted_no + '）','Submitted (version ' + res.submitted_no + ')'), 'success');
-    mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrDropList(); mrReloadRec();
+    showToast(escapeHtml(t('提出しました（' + ((R.store && R.store.name) || '') + '・提出版 ' + res.submitted_no + '）','Submitted (' + ((R.store && R.store.name) || '') + ', version ' + res.submitted_no + ')')), 'success');
+    mrDropList();
+    /* 答えを待つあいだに別の店へ移っていたら、その店の入力には触らない */
+    if (_mr.ed === ed && _mrGen === g && mrRecKey() === key) { mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec(); }
   } catch(e) {
     /* 答えが届かなかっただけで、提出はできていたかもしれない：読み直して確かめる */
     if (e && (e.code === 'network' || e.code === 'conflict' || e.status >= 500)) {
       try {
         var cur = await mrAPI({ action:'get', env:R.env, ym:R.ym, store_id:R.store.store_id });
-        if (_mr.ed === ed && cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
-          showToast(t('提出できていました（提出版 ' + cur.review.submitted_no + '）','It was submitted (version ' + cur.review.submitted_no + ')'), 'success');
-          _mr.busy = ''; mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrDropList(); mrReloadRec(); return;
+        if (cur.review && cur.review.submitted_no > before && cur.review.version === ed.version + 1 && !cur.review.unsubmitted) {
+          showToast(escapeHtml(t('提出できていました（' + ((R.store && R.store.name) || '') + '・提出版 ' + cur.review.submitted_no + '）','It was submitted (' + ((R.store && R.store.name) || '') + ', version ' + cur.review.submitted_no + ')')), 'success');
+          _mr.busy = ''; mrDropList();
+          /* 別の店へ移っていたら、その店の入力には触らない */
+          if (_mr.ed === ed && _mrGen === g && mrRecKey() === key) { mrEdStop(); _mr.view = { id:_mr.view.id, mode:'page' }; mrReloadRec(); } else mrRerender();
+          return;
         }
       } catch(e2) {}
     }
@@ -17331,7 +17344,8 @@ async function mrSubmit(){
         }
       } catch(e3) {}
     }
-    showToast(escapeHtml(e.message || String(e)), 'error');
+    /* 別の店へ移っていたら、どの店の提出の話かを添える */
+    showToast(escapeHtml((_mr.ed !== ed ? t('（' + ((R.store && R.store.name) || '') + ' の提出）','(Submitting ' + ((R.store && R.store.name) || '') + ') ') : '') + (e.message || String(e))), 'error');
   } finally { if (_mr.busy === 'submit') { _mr.busy = ''; mrRerender(); } }
 }
 /* ---- 段階 2-3：管理側の返信・判断（AM・GM・CEO）----
@@ -17353,7 +17367,7 @@ function mrRpState(){
   var key = mrRecKey();
   if (!_mr.rp || _mr.rp.key !== key || _mr.rp.gen !== _mrGen) {
     var drafts = {};
-    ((_mr.rec && _mr.rec.replies) || []).forEach(function(x){ if (x.mine && x.state === 'draft') drafts[x.target] = { decision:x.decision || null, escalate_to:x.escalate_to || null, data:JSON.parse(JSON.stringify(x.data || {})), version:x.version, state:'saved', err:'', stale:!!x.changed, sub_no:x.sub_no }; });
+    ((_mr.rec && _mr.rec.replies) || []).forEach(function(x){ if (x.mine && x.state === 'draft') drafts[x.target] = { id:x.id, decision:x.decision || null, escalate_to:x.escalate_to || null, data:JSON.parse(JSON.stringify(x.data || {})), version:x.version, state:'saved', err:'', stale:!!x.changed, sub_no:x.sub_no }; });
     _mr.rp = { key:key, gen:_mrGen, drafts:drafts, timers:{}, open:{}, busy:'' };
   }
   return _mr.rp;
@@ -17597,7 +17611,7 @@ async function mrRpSave(tg){
     try {
       var res = await mrAPI(Object.assign({ action:'reply_save', env:R.env, ym:R.ym, store_id:R.store.store_id, target:tg, expect_version:d.version || null, expect_no:(R.review && R.review.submitted_no) || 0 }, wire));
       if (g !== _mrGen || _mr.rp !== rp) return false;
-      d.version = res.version; d.err = '';
+      d.version = res.version; d.id = res.id || d.id; d.err = '';
       /* 保存した提出版がいま見ている提出版のときだけ「最新の下書き」（読み直しの前に出した保存の答えでは変えない） */
       if (_mr.rec === R) { d.stale = false; d.sub_no = R.review && R.review.submitted_no; }
       if (d.pending) { d.state = 'dirty'; d.saveP = null; return mrRpSave(tg); }
@@ -17660,7 +17674,9 @@ async function mrRpSend(finish){
     var keys = Object.keys(rp.drafts);
     for (var i = 0; i < keys.length; i++) { var d = rp.drafts[keys[i]]; if (d.state !== 'saved' || d.pending) { var ok = await mrRpSave(keys[i]); if (!ok) { if (mrSameRec(R, g)) showToast(t('保存できない返信があります。入力は残っています。','A reply could not be saved. Your input is kept.'), 'error'); return; } } }
     if (_mr.rp !== rp || !mrSameRec(R, g)) return;
-    var res = await mrAPI({ action:'reply_send', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_no:(R.review && R.review.submitted_no) || 0 });
+    /* 画面にある下書き（ID と版）だけを送る。別のタブで変わった・足された下書きがあればサーバーが断る */
+    var shown = Object.keys(rp.drafts).map(function(k){ var d = rp.drafts[k]; return d.id && d.version ? { id:d.id, version:d.version } : null; }).filter(Boolean);
+    var res = await mrAPI({ action:'reply_send', env:R.env, ym:R.ym, store_id:R.store.store_id, expect_no:(R.review && R.review.submitted_no) || 0, drafts:shown });
     showToast(t('返信しました（' + res.sent + ' 件）','Sent (' + res.sent + ')'), 'success');
     if (finish && mrSameRec(R, g)) {
       try { await mrAPI({ action:'complete', env:R.env, ym:R.ym, store_id:R.store.store_id }); showToast(t('レビュー完了にしました','The review is done'), 'success'); }
@@ -17668,7 +17684,9 @@ async function mrRpSend(finish){
     }
     mrDropList();
     if (mrSameRec(R, g)) { mrRpStop(); mrReloadRec(); }
-  } catch(e) { if (mrSameRec(R, g)) { if (e && e.code === 'new_version') { rp.busy = ''; await mrRpRebase(true); } else showToast(escapeHtml(e.message || String(e)), 'error'); } }
+  } catch(e) { if (mrSameRec(R, g)) { if (e && e.code === 'new_version') { rp.busy = ''; await mrRpRebase(true); }
+      else if (e && e.code === 'drafts_changed') { showToast(escapeHtml(e.message || ''), 'warning'); rp.busy = ''; if (!mrRpUnsaved()) { mrRpStop(); mrReloadRec(); } }
+      else showToast(escapeHtml(e.message || String(e)), 'error'); } }
   finally { if (_mr.rp === rp) { rp.busy = ''; mrRpLive(); } }
 }
 async function mrComplete(){
@@ -45957,7 +45975,7 @@ var INVIN_HINT = {
   total_mismatch:['合計が明細＋税などと合わない → 原本の合計を確かめる','Total differs from lines + charges → check the original'],
   line_amount_missing:['明細の金額が読めない → 原本の合計を確かめる','Line amounts not legible → check the total on the original'],
   line_value_missing:['明細が読めない（前の版の読み取り）→ 原本の合計を確かめる','Line not legible (earlier reading) → check the total on the original'],
-  currency:['通貨が USD でない・不明 → 確かめる','Currency not USD or unknown → check'],
+  currency:['通貨の印字なし・USD 以外 → USD なら「USD」を押す','No currency printed or not USD → press “USD” if it is USD'],
   missing_pages:['ページ不足の疑い → 原本を確かめる','Pages may be missing → check the original'],
   store_mismatch:['宛先が別の店舗 → 店舗を確かめる','Addressed to another store → check the store'],
   ship_to_unrecognized:['宛先が店舗と一致しない → 店舗を確かめる','Ship-to does not match the store → check the store'],
@@ -45980,6 +45998,8 @@ var INVIN_HINT = {
 };
 var INVIN_BATCH_REASON = ['経理の確認（業者・invoice番号・金額・店舗）','Accounting check (vendor, invoice no., amount, store)'];
 var INVIN_EDIT_REASON = ['経理の確認で直した','Corrected in the accounting check'];
+/* v1070：通貨の印字が無い（USD 以外と読んだ）invoice を、経理が USD と確かめたときの記録の理由 */
+var INVIN_USD_REASON = ['経理の確認：通貨は USD','Accounting check: the currency is USD'];
 var INVIN_ERR = {
   forbidden:['この操作の権限がありません','You do not have permission for this'],
   unauthorized:['メール認証の有効期限が切れました。認証し直してください','Your sign-in expired. Please sign in again'],
@@ -46526,10 +46546,13 @@ function invInReviewTable(Q){
     + '<th>'+t('業者','Vendor')+'</th><th>'+t('invoice番号','Invoice no.')+'</th><th style="text-align:right">'+t('金額（合計）','Amount (total)')+'</th><th>'+t('店舗','Store')+'</th><th>'+t('日付','Date')+'</th><th>'+t('確認すること','To check')+'</th><th></th></tr></thead><tbody>'
     + rows.map(function(r){
         var id = invInId(r.id), ok = invInBatchable(r), chk = invInToCheck(r.reasons), md = invInModeOf(r.reasons);
+        var onlyCur = edit && chk.length===1 && chk[0].code==='currency';   /* v1070：通貨だけが理由の行は、開かずに USD と確かめられる */
         var m = function(f){ return ' '+invInMarkHtml(invInMark4(r, f)); };
         var open = 'onclick="invInOpen(\''+id+'\',\'dreview\')"';
         var w = function(html){ return html.replace('style="', 'style="white-space:normal;line-height:1.45;'); };
-        var todo = (chk.length ? chk.map(function(x){ return w(invInChip(e(invInHint(x)), invInHintCol(x.code))); }).join(' ') : invInChip(t('4 項目とも問題なし','Four items OK'), INVIN_COL.green))
+        var todo = (chk.length ? chk.map(function(x){ return w(invInChip(e(invInHint(x)), invInHintCol(x.code))); }).join(' ')
+            + (onlyCur ? ' <button class="btn btn-primary btn-sm" style="padding:1px 10px;font-size:11px"'+(B||_invIn.busy?' disabled':'')+' onclick="event.stopPropagation();invInUsdRow(\''+id+'\')">USD</button>' : '')
+          : invInChip(t('4 項目とも問題なし','Four items OK'), INVIN_COL.green))
           + md.map(function(c){ return ' '+invInChip(e(invInReason(c)), INVIN_COL.gray); }).join('');
         return '<tr class="ivx-row"'+(ok?'':' style="background:rgba(240,102,31,.05)"')+'>'
           + '<td onclick="event.stopPropagation()">'+(edit ? '<input type="checkbox" aria-label="'+t('反映する','Post')+'"'+(invInSelected(r)?' checked':'')+(ok && !B?'':' disabled')+' onchange="invInSel(\''+id+'\',this.checked)">' : '')+'</td>'
@@ -46547,6 +46570,29 @@ function invInReviewTable(Q){
   if (rows.length < Q.total) h += '<div class="ivx-note">'+t('ほかに ','')+(Q.total-rows.length)+t(' 件あります（反映すると次が出ます）',' more (they appear as these are posted)')+'</div>';
   return h + '</div><div class="ivx-note">'+t('✓ は AI の読みとマスター・計算で確かめられた項目。? と ! が付いた行だけ開いて直します。商品の対応や単価の変化は「確認すること」に出しません（明細の中に参考として残ります）。',
     '✓ means the reading was confirmed against the master and the arithmetic. Open only the rows with ? or ! to fix them. Product mapping and price changes are not listed here (they stay in the lines for reference).')+'</div>';
+}
+/* v1070（Moto さん 10/12「USD の表記がないものが取り込みできません。経理が USD の判定をできるように」）
+   通貨の印字が無い・USD 以外と読んだ invoice は、経理が原本を見て USD と確かめる。サーバーは通貨を USD として確かめ直す（invoice_edit） */
+function invInUsdHtml(d, ai, codes, canEdit){
+  if (codes.indexOf('currency') < 0 || !canEdit) return '';
+  var e = escapeHtml, read = (ai && ai.currency) || d.currency || '';
+  if (invInHVal(d, 'currency')==='USD') return '<span style="color:'+INVIN_COL.green+';font-weight:700"><i class="ti ti-check"></i> '+t('通貨は USD（「この内容で反映する」で保存して反映）','Currency: USD (saved when you post)')+'</span>'
+    + ' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10.5px" onclick="invInSetUsd(false)">'+t('取り消す','Undo')+'</button>';
+  return t('通貨の読み：','Currency read: ')+(read ? e(read) : t('印字なし','not printed'))
+    + ' <button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:11px" onclick="invInSetUsd(true)">'+t('USD と確かめる','Confirm USD')+'</button>';
+}
+function invInSetUsd(on){
+  var E = _invIn.edits; if (!E) return;
+  if (on) E.h.currency = 'USD'; else delete E.h.currency;
+  invInRerender();
+}
+/* 一覧の「USD」：その invoice の通貨を USD として保存する（版つき。サーバーが確かめ直す）。ほかに確かめることが無ければ、まとめて反映に入る */
+async function invInUsdRow(id){
+  if (_invIn.batching || !invInCanEdit()) return;
+  var r = (((_invIn.review||{}).rows)||[]).find(function(x){ return x.id===id; }); if (!r) return;
+  try { await invInDo(function(){ return invInAPI({ action:'edit', doc_id:r.id, version:r.version, header:{ currency:'USD' }, lines:[], reason:invInL(INVIN_USD_REASON), adjustment_ack:false, ack:[] }); }, t('通貨を USD にしました','Set the currency to USD')); }
+  catch(e) {}
+  delete _invIn.loaded.review; delete _invIn.loaded.health; invInRerender();
 }
 function invInBatchAsk(){
   if (_invIn.batching || !invInCanEdit()) return;
@@ -46621,7 +46667,8 @@ function invInDetail(mode){
     /* v1056：経理が確かめることだけ（商品・単価は明細の中）。確認モードは灰色 */
     var md = invInModeOf(d.reasons);
     h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
-      + (chk.length ? chk.map(function(r){ return invInChip('<i class="ti ti-'+(invInHintCol(r.code)===INVIN_COL.red?'alert-triangle':'info-circle')+'"></i> '+e(invInHint(r)), invInHintCol(r.code)); }).join('')
+      + (chk.length ? chk.map(function(r){ if (r.code==='currency' && invInHVal(d, 'currency')==='USD') return invInChip('<i class="ti ti-check"></i> '+t('通貨は USD と確かめた（反映するときに保存）','Currency confirmed as USD (saved when you post)'), INVIN_COL.green);   /* v1070 */
+          return invInChip('<i class="ti ti-'+(invInHintCol(r.code)===INVIN_COL.red?'alert-triangle':'info-circle')+'"></i> '+e(invInHint(r)), invInHintCol(r.code)); }).join('')
           : d.status==='review' && d.doc_type==='invoice' ? invInChip('<i class="ti ti-circle-check"></i> '+t('4 項目とも問題なし','Four items OK'), INVIN_COL.green) : '')
       + md.map(function(c){ return invInChip(e(invInReason(c)), INVIN_COL.gray); }).join('') + '</div>';
   } else if ((d.reasons||[]).length) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">' + d.reasons.map(function(r){
@@ -46653,7 +46700,9 @@ function invInDetail(mode){
   var head;
   if (rv) {
     /* v1056：経理の確認（4 項目＋日付）。左が AI の読み、右が今の値と印 */
-    var fh = function(field){ return chk.filter(function(r){ var x = INVIN_FIELD[r.code]; return x && x[0]===field; })
+    /* v1070：「USD と確かめる」を押したら、保存する前でも通貨の「確認すること」は出さない（「この内容で反映する」で保存してから反映） */
+    var curUsd = invInHVal(d, 'currency')==='USD', chkShown = curUsd ? chk.filter(function(r){ return r.code!=='currency'; }) : chk;
+    var fh = function(field){ return chkShown.filter(function(r){ var x = INVIN_FIELD[r.code]; return x && x[0]===field; })
       .map(function(r){ return '<span style="color:'+invInHintCol(r.code)+'">'+e(invInHint(r))+'</span>'; }).join('<br>'); };
     var join = function(a){ return a.filter(Boolean).join('<br>'); };
     var four = function(label, aiText, inner, field, note, dim){
@@ -46683,7 +46732,7 @@ function invInDetail(mode){
       + '<div class="ivx-scroll"><table class="ivx-t"><tbody>'
       + four(t('業者','Vendor'), ai.vendor_name || d.vendor_raw, hin('vendor_key', d.vendor_key, 'vendor'), 'vendor', vNote)
       + four(t('invoice番号','Invoice no.'), ai.invoice_number, hin('invoice_no', d.invoice_no, 'text'), 'no', join([fh('no')]))
-      + four(t('金額（合計）','Amount (total)'), ai.total, hin('total_cents', cents(d.total_cents), 'money'), 'amount', join([fh('amount'), amt]))
+      + four(t('金額（合計）','Amount (total)'), ai.total, hin('total_cents', cents(d.total_cents), 'money'), 'amount', join([fh('amount'), invInUsdHtml(d, ai, codes, canEdit), amt]))
       + four(t('店舗','Store'), shipTo ? t('宛先：','Ship to: ')+shipTo : '', '<span style="font-size:12.5px;font-weight:700">'+invInStoreHtml(d.store_id)+'</span>', 'store', sNote)
       + four(t('日付','Date'), ai.invoice_date_text || (ai.delivery_date_text ? t('（請求日の印字なし）','(no invoice date printed)') : ''), hin('invoice_date', d.invoice_date, 'date'), 'date', dNote, true)
       + '</tbody></table></div>'
@@ -46802,7 +46851,7 @@ function invInReviewActions(d){
     + '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'reject\')">'+t('対象外にする','Exclude')+'</button>'
     + '<button class="btn btn-secondary btn-sm" onclick="invInSave()"><i class="ti ti-device-floppy"></i> '+t('直した値だけ保存','Save changes only')+'</button></div>'
     + '<input class="form-input" style="width:100%;margin-top:8px;box-sizing:border-box" placeholder="'+t('メモ（任意）。重複・対象外にするときは理由を入れる','Note (optional). Needed to mark duplicate or exclude')+'" value="'+e(E.reason||'')+'" oninput="_invIn.edits.reason=this.value">';
-  var blockers = invInToCheck(d.reasons).filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0; });
+  var blockers = invInToCheck(d.reasons).filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0 && !(r.code==='currency' && invInHVal(d, 'currency')==='USD'); });
   if (blockers.length && d.posting_kind==='purchase') h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('次は直してから反映します（値を直して「この内容で反映する」を押すと、保存してから反映します。直せないものは対象外・重複に）：','Fix these first (correct the value and press “Post as shown” — it saves, then posts; otherwise exclude or mark duplicate): ')+blockers.map(function(r){ return e(invInHint(r)); }).join(' / ')+'</div>';
   if (d.posting_kind!=='purchase') h += '<div class="ivx-note">'+t('この書類は仕入れとして計上しません（Statement・レシートなど）。照合に使うか、対象外にしてください。','This document is not posted as a purchase (statement, receipt…). Use it for reconciliation or exclude it.')+'</div>';
   return h + '</div>';

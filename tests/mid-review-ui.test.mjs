@@ -9,7 +9,7 @@ import { createHandler } from '../supabase/functions/mid-review/handler.mjs';
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const INDEX = process.env.FUNERGY_INDEX ? new URL(process.env.FUNERGY_INDEX, 'file://' + process.cwd() + '/') : new URL('../index.html', import.meta.url);
 const html = fs.readFileSync(INDEX, 'utf8').replace(/\r\n/g, '\n');
-const SQL = fs.readFileSync(new URL('../supabase/migrations/20261012090000_mid_review.sql', import.meta.url), 'utf8');
+const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
 const B = '/* ===== v1066 中間レビュー（非公開版', E = '/* ===== v1066 中間レビュー ここまで ===== */';
 const MOD = html.includes(B) ? html.slice(html.indexOf(B), html.indexOf(E)) : '';
 const MEET = html.slice(html.indexOf('var MEET_KPI_DEF=['), html.indexOf('function _meetDiffStr('));
@@ -643,7 +643,7 @@ test('submit: when the answer is lost on the way, the page checks and says it wa
   c.renderPage = () => { c.html = c.renderMidReview(); };
   await c.run('mrSubmit()'); await c.flush(); c.renderPage();
   assert.match(busySeen, /<fieldset class="mr-fs" disabled>/); assert.match(busySeen, /提出中…/);
-  assert.match(c.toasts.map(x => x[0]).join(' '), /提出できていました（提出版 1）/);
+  assert.match(c.toasts.map(x => x[0]).join(' '), /提出できていました（川沿い（デモ）・提出版 1）/);
   const n = await S.pg.query(`select count(*)::int n from mr_submissions x join mr_reviews r on r.id=x.review_id where r.store_id='D6'`);
   assert.equal(n.rows[0].n, 1);
   assert.match(strip(c.html), /川沿い（デモ） AM 返信待ち/);
@@ -828,7 +828,10 @@ test('dates: GM / CEO change one store’s dates; an AM has no button; the delay
 // The store manager's new version through the server (demo numbers, judged as last time).
 const sApi = async (S, who, st, b) => {
   // Replies are written and sent looking at the latest submitted version.
-  if (b.action === 'reply_save' || b.action === 'reply_send') b = { expect_no: (await S.api(who, { env: 'demo', ym: '2026-10', store_id: st, action: 'get' })).review.submitted_no, ...b };
+  if (b.action === 'reply_save' || b.action === 'reply_send') {
+    const g = await S.api(who, { env: 'demo', ym: '2026-10', store_id: st, action: 'get' });
+    b = { expect_no: g.review.submitted_no, ...(b.action === 'reply_send' ? { drafts: g.replies.filter(x => x.mine && x.state === 'draft').map(x => ({ id: x.id, version: x.version })) } : {}), ...b };
+  }
   return S.api(who, { env: 'demo', ym: '2026-10', store_id: st, ...b });
 };
 const sAct = { next: '配置表を作り直す', owner: '田中', due: '2026-10-25', next_check: '10/26・平均提供時間' };
@@ -1092,4 +1095,101 @@ test('the send box says when questions to the store manager would be more than 2
   a.run(`mrRpSet('kpi','decision','followup',true)`); rpIn(a, 'kpi', 'question', 'もう一つ'); await a.flush(); a.renderPage();
   assert.match(strip(a.html), /店長への質問は、答えを待っているものと合わせて 20 件まで（いま待っている 20 件・この返信 1 件）/);
   assert.match(a.html, /<button class="btn btn-primary" disabled onclick="mrRpSend\(false\)">/);
+});
+
+// ---------------------------------------------------------------- after the Codex review of PR #44 (v1068)
+test('v1068: a submit answered after moving to another store leaves that store alone; the toast names the store', async () => {
+  const S = await server();
+  const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()');
+  c.run("mrSetVal('consult','none'); mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok')"); await c.flush();
+  const f0 = c.fetch; let release, got; const ready = new Promise(r => { got = r; });
+  c.fetch = async (u, i) => { const r = await f0(u, i); if (JSON.parse(i.body).action === 'submit') { got(); await new Promise(x => { release = x; }); } return r; };
+  const p = c.run('mrSubmit()'); await ready;
+  c.run('mrBack(); mrBack()'); await openStore(c, 'D1'); c.run('mrStartInput()');
+  c.run("mrSetVal('focus.0.note','D1 で打っている')"); const ed = c.M().ed;
+  release(); await p;
+  assert.equal(c.M().ed, ed); assert.equal(c.M().view.id, 'D1'); assert.equal(c.M().view.mode, 'input'); assert.equal(ed.body.focus[0].note, 'D1 で打っている');
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /川沿い（デモ）・提出版 1/.test(m)), JSON.stringify(c.toasts));
+  await c.flush();                                                    // D1's own autosave goes on
+  assert.equal((await S.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D1' })).review.body.focus[0].note, 'D1 で打っている');
+  assert.equal((await S.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D6' })).review.submitted_no, 1);
+  // The answer is lost (the submit went through) while the user is already typing in another store:
+  // the toast says that store was submitted; the other store's input stays.
+  const S2 = await server();
+  const e = app(S2); await openStore(e, 'D6'); e.run('mrStartInput()');
+  e.run("mrSetVal('consult','none'); mrSetVal('focus.0.status','ok'); mrSetVal('focus.1.status','ok')"); await e.flush();
+  const g0 = e.fetch; let rel2, got2; const ready2 = new Promise(r => { got2 = r; });
+  e.fetch = async (u, i) => { const r = await g0(u, i); if (JSON.parse(i.body).action === 'submit') { got2(); await new Promise(x => { rel2 = x; }); throw new TypeError('Failed to fetch'); } return r; };
+  const p2 = e.run('mrSubmit()'); await ready2;
+  e.run('mrBack(); mrBack()'); await openStore(e, 'D1'); e.run('mrStartInput()'); e.run("mrSetVal('focus.0.note','D1 の続き')"); const ed2 = e.M().ed;
+  rel2(); await p2;
+  assert.equal(e.M().ed, ed2); assert.equal(e.M().view.id, 'D1'); assert.equal(ed2.body.focus[0].note, 'D1 の続き');
+  assert.ok(e.toasts.some(([m, k]) => k === 'success' && /提出できていました（川沿い（デモ）・提出版 1）/.test(m)), JSON.stringify(e.toasts));
+  assert.equal(e.toasts.filter(([, k]) => k === 'error').length, 0);
+  // Staying on the same store: back to its page with the submitted record, as before.
+  const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); d.run("mrSetVal('focus.0.note','v2')"); await d.flush();
+  await d.run('mrSubmit()'); await d.flush();
+  assert.deepEqual([d.M().ed, d.M().view.mode, d.M().rec.review.submitted_no], [null, 'page', 2]);
+});
+
+test('v1068: drafts changed in another tab of the same person are not sent; the tab loads them again', async () => {
+  const S = await server();
+  const a = app(S, { who: 'am1', role: 'am' }); await openStore(a, 'D1');
+  rpAct(a, 'issue:i1', 'as_proposed'); await a.flush();
+  const b = app(S, { who: 'am1', role: 'am' }); await openStore(b, 'D1');
+  rpAct(b, 'kpi', 'as_proposed'); await b.flush();                     // a draft tab A has not seen
+  await a.run('mrRpSend(false)'); await a.flush(); a.renderPage();
+  assert.ok(a.toasts.some(([m, k]) => k === 'warning' && /別の画面（タブ）で下書きが変わりました/.test(m)), JSON.stringify(a.toasts));
+  assert.equal((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.mine && x.state === 'sent').length, 0);
+  assert.deepEqual(Object.keys(a.run('JSON.parse(JSON.stringify(mrRpState().drafts))')).sort(), ['issue:i1', 'kpi']);   // loaded again: both shown now
+  await a.run('mrRpSend(false)'); await a.flush();
+  assert.deepEqual((await sApi(S, 'am1', 'D1', { action: 'get' })).replies.filter(x => x.mine && x.state === 'sent').map(x => x.target).sort(), ['issue:i1', 'kpi']);
+  // Another tab sent everything this tab shows: told to load again (not "nothing to send"), and loaded.
+  const S3 = await server();
+  const a2 = app(S3, { who: 'am1', role: 'am' }); await openStore(a2, 'D1');
+  rpAct(a2, 'issue:i1', 'as_proposed'); await a2.flush();
+  const b2 = app(S3, { who: 'am1', role: 'am' }); await openStore(b2, 'D1');
+  await b2.run('mrRpSend(false)'); await b2.flush();
+  await a2.run('mrRpSend(false)'); await a2.flush();
+  assert.ok(a2.toasts.some(([m, k]) => k === 'warning' && /別の画面（タブ）で下書きが変わりました/.test(m)), JSON.stringify(a2.toasts));
+  assert.deepEqual(Object.keys(a2.run('JSON.parse(JSON.stringify(mrRpState().drafts))')), []);
+  assert.equal(a2.run(`(_mr.rec.replies||[]).filter(function(x){ return x.mine && x.state === 'sent'; }).length`), 1);
+  // Unsaved typing on this tab is kept when another tab changed a draft (nothing reloaded over it).
+  const c = app(S, { who: 'gm', role: 'gm' }); await openStore(c, 'D1');
+  rpAct(c, 'pl', 'as_proposed'); await c.flush();
+  await sApi(S, 'gm', 'D1', { action: 'reply_save', target: 'focus:f1', decision: 'no_action', data: { reason: '別のタブ' } });
+  const f0 = c.fetch; let hold, held; const ready = new Promise(r => { held = r; });
+  c.fetch = async (u, i) => { if (JSON.parse(i.body).action === 'reply_send') { held(); await new Promise(x => { hold = x; }); } return f0(u, i); };
+  const p = c.run('mrRpSend(false)'); await ready;
+  rpIn(c, 'pl', 'next', '送っているあいだに打った');                 // typed while the send was on its way
+  hold(); await p;
+  assert.equal(c.run(`mrRpState().drafts.pl.data.next`), '送っているあいだに打った');
+  assert.equal((await sApi(S, 'gm', 'D1', { action: 'get' })).replies.filter(x => x.mine && x.state === 'sent').length, 0);
+});
+
+test('v1068: a new access key for the same person keeps the screen; another person resets it', async () => {
+  const S = await server();
+  const jwt = (sub, n) => 'h.' + Buffer.from(JSON.stringify({ sub, n })).toString('base64url') + '.s';
+  const c = app(S); c.atob = s => Buffer.from(s, 'base64').toString('binary');
+  const f0 = c.fetch;
+  c.fetch = async (u, i) => {   // the stand-in server knows people by tok-…; map the keys of this test to them
+    const tok = (i.headers.Authorization || '').replace('Bearer ', ''); let who = null;
+    try { const sub = JSON.parse(Buffer.from(tok.split('.')[1], 'base64url')).sub; who = Object.keys(U).find(k => U[k] === sub); } catch (e) {}
+    return f0(u, who ? { ...i, headers: { ...i.headers, Authorization: 'Bearer tok-' + who } } : i);
+  };
+  c._botSession = { access_token: jwt(U.gm, 1), refresh_token: 'r1' };
+  await openStore(c, 'D6'); c.run('mrStartInput()'); c.run("mrSetVal('focus.0.note','鍵が変わる前')");
+  const ed = c.M().ed;
+  // Another part of the app (Invoice取込, 業務Bot) changed the key: same person.
+  c._botSession = { access_token: jwt(U.gm, 2), refresh_token: 'r2' }; c.renderPage();
+  assert.equal(c.M().ed, ed); assert.equal(c.M().view.mode, 'input'); assert.equal(c.M().ed.body.focus[0].note, '鍵が変わる前'); assert.match(c.html, /mr-sec-focus/);
+  await c.flush();
+  assert.equal((await S.api('gm', { action: 'get', env: 'demo', ym: '2026-10', store_id: 'D6' })).review.body.focus[0].note, '鍵が変わる前');
+  // Another person signed in on this device: nothing of the first person stays on the screen.
+  c._botSession = { access_token: jwt(U.am1, 3), refresh_token: 'r3' }; c.renderPage();
+  assert.equal(c.M().ed, null); assert.equal(c.M().view, null); assert.equal(c.M().rec, null); assert.doesNotMatch(c.html, /mr-sec-focus/);
+  // A key that cannot be read is treated as another person (reset).
+  const d = app(S); await openStore(d, 'D6'); d.run('mrStartInput()'); const ed2 = d.M().ed;
+  d._botSession = { access_token: 'tok-gm', refresh_token: 'other' }; d.renderPage();
+  assert.notEqual(d.M().ed, ed2);
 });
