@@ -6,7 +6,7 @@
 2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #50・10/13 マージ済み main `04c0cb1`）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
 3. 済：Claude のレビュー（P1・P2 なし・P3 3）。Codex のレビューは blocked（P2 1：担当・閲覧設定と非公開確認・本番の入力の同時編集が上書きされる）。
 4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。状況は未確認。アプリはもう v1072 なので、入れるまで中間レビューの画面は動かない。
-5. 次（Claude）：Codex の P2 を直す（v1073：`access_get` に版、`access_save`・`settings_save` に `expect_version` と 409 `conflict`、画面は読み直す、2 つの画面の再現の試験）→ 非公開の 1 ファイルを作り直す → Codex の再レビュー。
+5. 作業中（Claude・ブランチ `claude/mid-review-v1073`）：Codex の P2 を直す（v1073）。サーバー・試験は済（server 44・本物の PostgreSQL 3・わざと壊した 33 通り中 32）。画面は UI案45 の回答待ち（A/B・本番の店舗と AM の担当も直すか）→ 画面 → 非公開の 1 ファイルを作り直す（zip が要る）→ PR → Codex の再レビュー。
 6. Moto さんの判断：期限の変更と確認完了の取り消しを PIN でも可のままにするか（今は GM・CEO なら PIN でも可）。
 7. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
 

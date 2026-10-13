@@ -160,3 +160,33 @@ test('v1073 [Codex P2] two sessions save the switches on the same version: the l
   assert.equal(r.out, ''); assert.match(r.err, /conflict/);
   assert.deepEqual(await F.flags(), { value: { private: true, store_publish: false, notify: false, live_input: true }, version: f0.version + 1 });
 });
+
+test('v1073 the switches: a save that reads while another one is in the middle of writing waits for it (the row is held from the read), then gets conflict', { skip: SKIP }, async t => {
+  const C = await cluster(t); const F = await fixture(C);
+  const f0 = await F.flags();
+  // A pause inside the first save's write, only to fix the order of the two sessions: the version trigger waits on an
+  // advisory lock when the private check is being turned off. Its answer is unchanged.
+  const KEY = 918073;
+  await C.one(`create or replace function public.mrt_pause() returns trigger language plpgsql as $f$
+    begin if new.value->>'private' = 'false' then perform pg_advisory_lock(${KEY}); perform pg_advisory_unlock(${KEY}); end if; return new; end $f$;
+    create trigger mrt_pause before update on public.mr_settings for each row execute function public.mrt_pause();`);
+  const first = C.session(), second = C.session(), pauser = C.session();
+  for (const s of [first, second, pauser]) await s.sendWait('set role service_role');
+  await pauser.sendWait(`select pg_advisory_lock(${KEY})`);
+  // 1. The CEO's save has read the version and stops in the middle of writing (the private check off).
+  const a = first.send(rpc('mr_settings_save', { actor: U.ceo, via: 'email', key: 'flags', value: { private: false, live_input: false }, expect_version: f0.version }));
+  await waitFor(async () => Number(await C.one(`select count(*) from pg_locks where locktype='advisory' and not granted`)) > 0, 'the first save to reach the pause');
+  // 2. The GM's save, read on the same version, comes in now (live input on).
+  const b = second.send(rpc('mr_settings_save', { actor: U.gm, via: 'email', key: 'flags', value: { private: true, live_input: true }, expect_version: f0.version }));
+  await waitFor(async () => b.answered || Number(await C.one(LOCK_WAITS)) > 0, 'the second save to wait or to answer');
+  const waited = !b.answered;
+  // 3. The first save goes on and commits.
+  await pauser.sendWait(`select pg_advisory_unlock(${KEY})`);
+  const ra = await a.answer, rb = await b.answer;
+  t.diagnostic(JSON.stringify({ waited, first: ra, second: rb }));
+  assert.match(ra.out, /"private": false/, ra.err);
+  assert.equal(waited, true, 'the second save waits from its read (the row is held), not only at its write');
+  assert.equal(rb.out, ''); assert.match(rb.err, /conflict/);
+  assert.deepEqual(await F.flags(), { value: { private: false, store_publish: false, notify: false, live_input: false }, version: f0.version + 1 },
+    'the first save stays; live input was not put on over it');
+});

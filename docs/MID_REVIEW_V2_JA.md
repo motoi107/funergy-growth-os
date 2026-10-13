@@ -226,3 +226,17 @@ POST で `{ action, ... }`。メールは `Authorization: Bearer <アクセス�
 - 独立レビュー（Claude の別エージェント）・Codex のレビュー：まだ。
 - 入れる：§10（`deploy/mid-review-v2/手順.md`）。
 - 店舗公開・通知は OFF のまま（別の段階）。本番の店の入力（`flags.live_input`）は GM・CEO が担当・閲覧設定で ON にする。
+
+## 版（v1073・Codex のレビュー `685f49e` の P2）
+
+Codex の指摘：担当・閲覧設定の画面は `access_get` の値を持ったまま、`access_save` がその店の入力担当と閲覧者を全部、`settings_save` が非公開確認と本番の入力の両方を、版を見ずに書き直していた。GM・CEO の 2 人が同じ店（同じスイッチ）を開いていると、あとから保存した画面が先の変更を黙って戻す。
+
+### サーバー（migration `20261016090000_mid_review_v2_versions.sql`・handler）
+
+- 版：`mr_settings.version`（キーごと）と `mr_stores.access_version`（店ごと・入力担当と閲覧者）。どちらも 0 から。**値が変わったときだけ** 1 進む（トリガー。関数・止める SQL・手で書いた SQL のどれでも同じ。版だけを書き換える更新は無視）。同じ値の保存では進まない（ほかの人の画面を止めない）。店の名前・AM（`stores_save`）、その月だけの入力担当、デモでは店の版は進まない。
+- 読む：`whoami` と `access_get` が `flags_version`、`access_get` の各店が `version` を返す（非公開確認が OFF のあいだも `whoami` は版を返す。画面はそこから ON にする）。
+- 保存：`settings_save` は `expect_version`、`access_save` は各店に `expect_version` が要る。今の版と違えば 409 `conflict` で**何も書かない**（履歴・利用者の行も作らない）。何店かをまとめて送ったときは、1 店でも違えば全部書かない。同じ店を 2 回送ると 400。保存の答えに新しい版（`settings_save` は `version`、`access_save` は `stores[]`：store_id・version）。
+- 順番：保存は先に行を `FOR UPDATE` で押さえてから版を比べる（店は store_id の順）。2 つの保存が同時に来ると、あとのほうは先の保存のコミットを待ち、そのあと `conflict` になる（本物の PostgreSQL で確かめた）。
+- `expect_version` が無い（v1072 の画面）→ handler が 410 `gone`（画面には「前の版の画面の操作です。アプリを更新してください」）。整数でない・0 未満・10 桁以上 → 400。SQL も無い・形の違う版は `bad_value` で断る（handler だけに頼らない）。
+- 変えていないもの：`month_input_save`・`chef_save`（1 つずつ決める操作で、ほかの人の別の変更を戻さない）・`stores_save`・権限・ほかの操作。
+- 入れる順：関数 → `20261016090000` → 確認の SQL → アプリ v1073（関数が先なら止まる時間が無い）。`20261015090000` をあとから流し直すと v2 の保存（版を見ない）に戻るので、続けて `20261016090000` も流す（確認の SQL の `mid-review versions (20261016090000)` が NG になる）。

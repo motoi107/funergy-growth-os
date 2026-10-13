@@ -191,6 +191,14 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
   assert.match(await row('mid-review versions (20261016090000)'), /^NG/);
   await pg.exec(V3);
   assert.match(await row('mid-review versions (20261016090000)'), /^OK/);
+  // Each of the two saves on its own: v2's body put back for just one of them is seen too.
+  const v2fn = name => { const a = V2.indexOf(`create or replace function public.${name}(p jsonb)`); return V2.slice(a, V2.indexOf('end $$;', a) + 7); };
+  for (const name of ['mr_access_save', 'mr_settings_save']) {
+    await pg.exec(v2fn(name));
+    assert.match(await row('mid-review versions (20261016090000)'), /^NG/, name);
+    await pg.exec(V3);
+    assert.match(await row('mid-review versions (20261016090000)'), /^OK/, name);
+  }
   for (const r of (await pg.query(post)).rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   // The first edition's review is read as before (legacy), its reply is not part of the v2 thread, and it cannot be written in v2.
   await pg.exec('set role service_role');

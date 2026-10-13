@@ -1,6 +1,6 @@
 // 中間レビューの配備用ファイルの確認（合成データ・本番に接続しない）。
 // 1) deploy/mid-review-v1069/ は本番に入れたときのまま（変えない）。中身を sha256 で固定して見張る。
-// 2) deploy/mid-review-v2/ の貼り付け用の SQL は、リポジトリの元のファイルと 1 文字も違わない（貼る内容が古くならないように）。
+// 2) deploy/mid-review-v2/ は 10/13 に渡したときのまま（v1073 で確認の SQL が変わったので、中身を sha256 で固定して見張る）。
 //    関数の 1 ファイルは置かない（PIN のログインの確かめが入るので公開しない。Moto さんに直接渡す）。
 // 3) 戻す SQL（db/mid-review-fixes-revert.sql）が、v1069 の 3 つの関数を 20261012090000 のときの中身に戻すこと。
 // 4) 止める SQL（db/mid-review-stop.sql）が、記録・設定を消さずに「非公開確認」だけを OFF にすること。
@@ -34,12 +34,20 @@ test('v1069 の束は本番に入れたときのまま（中身を変えない�
   assert.equal(/^\s*import\s/m.test(read('deploy/mid-review-v1069/C_関数_index.ts')), false);
 });
 
-test('v2 の束：貼り付け用の SQL は元のファイルと 1 文字も違わない・関数のファイルは置かない', () => {
+// v2 の束（10/13 に渡したもの）。直すときは新しい版のフォルダを作る（このフォルダは変えない）。
+const V2 = {
+  '1_最初に確認.sql': 'aad49483f34d432623316b919e1e6b380019e59e9fcea66cc9076ebb37358780',
+  '2_追加のSQL_v2.sql': 'ae500549f159ef5a1895763978a9cc87b58a1257e53ff545b084e346b441f7c6',
+  '3_確認のSQL_読むだけ.sql': 'fe562b392f888aebccecb335cad6a394ac6e5a415862870b9fe77132f65cc379',
+  '手順.md': 'e329b0be56b1c234adcdf414236add7c95b7d9bd2f706877efcb76e8f6b0bd46',
+  '止める.sql': '4f52e0a8f86010ca0a98719f46e4e8c34f9ea765d54f6bb0a9c3f8161eea50db',
+};
+
+test('v2 の束は渡したときのまま・v2 の SQL は元のファイルと同じ・関数のファイルは置かない', () => {
   const D = 'deploy/mid-review-v2/';
-  assert.deepEqual(list(D), ['1_最初に確認.sql', '2_追加のSQL_v2.sql', '3_確認のSQL_読むだけ.sql', '手順.md', '止める.sql'].sort());
-  assert.equal(read(D + '1_最初に確認.sql'), read('db/mid-review-precheck.sql'));
+  assert.deepEqual(list(D), Object.keys(V2).sort());
+  for (const [f, h] of Object.entries(V2)) assert.equal(sha(D + f), h, f);
   assert.equal(read(D + '2_追加のSQL_v2.sql'), read('supabase/migrations/20261015090000_mid_review_v2.sql'));
-  assert.equal(read(D + '3_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
   assert.equal(read(D + '止める.sql'), read('db/mid-review-stop.sql'));
   assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false, '関数（PIN の確かめ入り）は公開しない');
   const howto = read(D + '手順.md');

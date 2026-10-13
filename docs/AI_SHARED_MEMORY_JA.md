@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-13 中間レビュー v1073：Codex の P2（担当・閲覧設定と ON・OFF の同時編集）を直す — サーバーまで（Claude・ブランチ `claude/mid-review-v1073`・本番未反映・画面は UI案45 の回答待ち）
+
+- 依頼：Moto さん 10/13 の引き継ぎ「Codex の P2 を直す（v1073・新しいブランチ）」。ブランチは `claude/handoff-20261013`（PR #51・未マージ）の上に作った。
+- サーバー：migration `20261016090000_mid_review_v2_versions.sql`（`mr_settings.version`・`mr_stores.access_version`、値が変わったときだけ版を進めるトリガー、`mr_whoami`・`mr_access_get` が版を返す、`mr_access_save`・`mr_settings_save` は `expect_version` 必須で、違えば `conflict`・何も書かない。先に行を `FOR UPDATE`）。handler は版が無いと 410 `gone`（v1072 の画面）、整数でないと 400。precheck・postcheck（`mid-review versions (20261016090000)`）・rollback を合わせた。仕様は `docs/MID_REVIEW_V2_JA.md` の「版（v1073）」。
+- 試験（合成データ・本番に接続していない）：server 44/44（v1073 の 6 件。Codex の再現＝GM・CEO の 2 画面で同じ店の別の項目／別のスイッチを直す）、本物の PostgreSQL 16 の 2 セッション `tests/mid-review-versions-pg.test.mjs` 3/3（v2 の SQL だけでは 2 件とも、待ったあとに先の変更を戻すことを確かめた）、deploy 4/4（v2 の束は sha256 で固定）、わざと壊した 33 通りのうち 32 で落ちる（残り 1 つは handler の範囲の確かめ。SQL が同じ確かめをする）。ui は 32/34（落ちる 2 件は v1072 の画面が版を送らないため。画面を直すまで落ちるのが正しい）。`tests/mid-review-ui.test.mjs` の終わりの空行を消した（`git diff --check`）。
+- 画面：UI案45（Design・Moto さんの非公開の canvas）を出した。決めてほしいこと：① 店の担当・閲覧者がぶつかったとき A（知らせて最新を出す）か B（推奨：自分が変えた所だけを最新に入れ直して未保存で出す）② 同じ画面の「本番の店舗と AM の担当」（`stores_save`・全店をまとめて上書き）も今回直すか（推奨：直す。Codex の指摘には無いが同じこと）③ 前からの判断待ち：期限の変更と確認完了の取り消しを PIN でも可のままにするか。ON・OFF は A・B 共通（帯で知らせて、いまの状態を出す）。
+- 本番：Moto さんに配備の状況（v2 の手順 1〜6・Invoice取込 v1071 の SQL と関数）を聞いた（回答待ち）。非公開の 1 ファイルを作り直す部品（「中間レビュー_PIN_非公開一式.zip」）はこのチャットにまだ届いていない。
+- 次：回答 → 画面 v1073（APP_VERSION・SW_BUILD）→ 非公開の 1 ファイルを作り直して直接渡す → 入れる一式 `deploy/mid-review-v1073/` → PR → Codex の再レビュー。
+
 ## 2026-10-13 引き継ぎ：中間レビュー v2（v1072）— PR #50 はマージ済み・Codex は blocked（P2 1 件）・本番の関数と SQL は未確認（Claude）
 
 - PR #50 は Moto さんが 10/13 07:57 HST にマージ（main `04c0cb1`・Pages の公開は成功・sw.js は SW_BUILD 1072）。本番の Edge Function `mid-review` と SQL `20261015090000`（`deploy/mid-review-v2/手順.md` の 1〜4）を入れたかは未確認。入れていなければ、アプリはもう v1072 なので、入れるまで中間レビューの画面は動かない（ほかの画面は変わらない）。
