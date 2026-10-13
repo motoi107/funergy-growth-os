@@ -5,9 +5,10 @@
 1. 済（Claude）：段階 4-1 サーバー（`9a39c59`・ブランチ `claude/mid-review-v2`）。server 37/37・わざと壊した 95 通りすべてで落ちる。
 2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #50・10/13 マージ済み main `04c0cb1`）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
 3. 済：Claude のレビュー（P1・P2 なし・P3 3）。Codex のレビューは blocked（P2 1：担当・閲覧設定と非公開確認・本番の入力の同時編集が上書きされる）。
-4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。状況は未確認。アプリはもう v1072 なので、入れるまで中間レビューの画面は動かない。
+4. 済（Moto さん 10/13 10:41 HST「手順全部入れました」）：v2 を入れた（`deploy/mid-review-v2/手順.md` の 1〜6）。
 5. 済（Claude・ブランチ `claude/mid-review-v1073`）：Codex の P2 を直す（v1073）。サーバー（版・`stores_save` も）・画面（B・管轄・読み込み中で止まる不具合）・入れる一式 `deploy/mid-review-v1073/`・試験（ui 43・server 45・本物の PostgreSQL 5）・独立レビュー（P1・P2 なし・P3 7 は直した）。
-5b. 次：Moto さんが zip を添付 → 非公開の 1 ファイル `中間レビュー_関数_v1073_index.ts` を作り直して直接渡す → Codex の再レビュー（PR #52）→ Moto さんが入れる（`deploy/mid-review-v1073/手順.md`）。
+5b. 済（Claude）：非公開の 1 ファイル `中間レビュー_関数_v1073_index.ts`（sha256 先頭 `9275632555be`）を作り直して直接渡した（非公開の試験 4/4）。
+5c. 次：Codex の再レビュー（PR #52）→ Moto さんが入れる（`deploy/mid-review-v1073/手順.md`。v2 は入っているので 3 は飛ばす）→ マージ。
 6. 済（Moto さん 10/13）：期限の変更と確認完了の取り消しは、GM・CEO なら PIN でも可のまま。
 7. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
 
