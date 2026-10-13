@@ -17619,12 +17619,12 @@ function mrAccDrop(){
   Object.keys(_mr.load || {}).forEach(function(k){ if (k.indexOf('acc|') === 0 || k === 'members') delete _mr.load[k]; });
 }
 /* v1073: ON・OFF の版（whoami と access_get が返す）。保存はこの版で送り、違えばサーバーは何も書かない（conflict）。新しいほうだけ取る */
-function mrFlagsFrom(x){
+function mrFlagsFrom(x, force){
   if (!_mr.who || !x || !x.flags || typeof x.flags_version !== 'number') return;
-  if (typeof _mr.who.flags_version === 'number' && _mr.who.flags_version > x.flags_version) return;
+  if (!force && typeof _mr.who.flags_version === 'number' && _mr.who.flags_version > x.flags_version) return;   /* 先に保存されたあとは読んだ版をそのまま（版が戻っても止まらない） */
   _mr.who.flags = x.flags; _mr.who.flags_version = x.flags_version;
 }
-function mrFlagsFetch(){ var g = _mrGen; return mrAPI({ action:'whoami' }).then(function(w){ if (g === _mrGen) { mrFlagsFrom(w); mrRerender(); } }, function(){}); }
+function mrFlagsFetch(){ var g = _mrGen; return mrAPI({ action:'whoami' }).then(function(w){ if (g === _mrGen) { mrFlagsFrom(w, true); mrRerender(); } }, function(){}); }
 /* ほかの人（または別のタブ）が先に ON・OFF を変えたとき：いまの状態を出して知らせる（押した操作は保存していない） */
 function mrFlagsConfHtml(){
   var c = _mr.flagsConf; if (!c) return '';
@@ -17681,14 +17681,14 @@ function mrSettingsHtml(){
     h += '<div class="card mr-col"><div class="mr-rowh"><span class="mr-hd-t" style="font-size:18px">'+e(s.name)+'</span>'
       + (scopeOk ? '<span class="mr-chip '+(s.am_user ? 'mr-c-ok' : 'mr-c-none')+'">'+e(s.am_user ? t('管轄：' + (s.am_name || '?') + '（AM）', 'Overseen by ' + (s.am_name || '?') + ' (AM)') : t('管轄：GM の直轄', 'Overseen by the GM (no AM)'))+'</span><button class="mr-linkb mr-blue" onclick="mrGo(\'scope\')">'+t('管轄を変える ↓','Change ↓')+'</button>' : '')
       + (d.dirty ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div><div class="mr-grid">'
-      + '<div class="mr-blk"><b>'+t('入力・提出の担当（基本）','Input person (base)')+'</b><select class="mr-sel" id="mr-acc-input" onchange="mrAccSet(\'input\', this.value)">'+inOpts+'</select>'
+      + '<div class="mr-blk"><b>'+t('入力・提出の担当（基本）','Input person (base)')+'</b><select class="mr-sel" id="mr-acc-input"'+busy+' onchange="mrAccSet(\'input\', this.value)">'+inOpts+'</select>'
       + (myIn ? '<div class="mr-m mr-mine-t">'+e(t('あなたの変更（未保存）。保存するまでは ' + mrAccNm(d.base.input_emp, s) + ' のまま', 'Your change (not saved). Until saved: ' + mrAccNm(d.base.input_emp, s, true)))+'</div>' : '')
       + '<div class="mr-m">'+t('選べる人：在籍している G3（Server・Kitchen・Operation・Store Leader）・G4（Store Manager・Head Chef）・AM・GM。選んだ人は、この店・その月のレビューを見る・書く・提出することだけができます（PIN で入れるように利用者に足します）。','You can choose G3 leaders, G4 Store Managers / Head Chefs, AMs and GMs who are in service. That person can only view, write and submit this store’s review for the month (they are added as a member so the PIN login works).')+'</div>'
       + (s.input_ok === false ? '<div class="mr-m mr-bad">'+t('いまの担当は選べない人になっています（在籍・肩書きを確かめて選び直してください）。','The current input person can no longer be chosen (check and choose again).')+'</div>' : '') + '</div>'
-      + '<div class="mr-blk"><b>'+t('個人で足す閲覧者（AM・Head Chef・Corporate Chef）','Extra viewers (AM, Head Chef, Corporate Chef)')+'</b><div class="mr-chips">' + (d.viewers.length ? d.viewers.map(function(id){ var v = vNames[id] || { name:id }, mine = !!(d.base && bv.indexOf(id) < 0); return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : v.member === false ? '<span class="mr-m">'+t('（利用者でない）',' (not a member)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'" onclick="mrAccDelViewer(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('') : '<span class="mr-m">'+t('なし','none')+'</span>') + '</div>'
-      + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-vadd">'+vAdd+'</select><button class="btn btn-secondary btn-sm" onclick="mrAccAddViewer()">'+t('＋ 足す','+ Add')+'</button></div>'
+      + '<div class="mr-blk"><b>'+t('個人で足す閲覧者（AM・Head Chef・Corporate Chef）','Extra viewers (AM, Head Chef, Corporate Chef)')+'</b><div class="mr-chips">' + (d.viewers.length ? d.viewers.map(function(id){ var v = vNames[id] || { name:id }, mine = !!(d.base && bv.indexOf(id) < 0); return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : v.member === false ? '<span class="mr-m">'+t('（利用者でない）',' (not a member)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'"'+busy+' onclick="mrAccDelViewer(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('') : '<span class="mr-m">'+t('なし','none')+'</span>') + '</div>'
+      + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-vadd"'+busy+'>'+vAdd+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccAddViewer()">'+t('＋ 足す','+ Add')+'</button></div>'
       + '<div class="mr-m">'+t('CEO・GM・Head Chef・Corporate Chef は全店、担当の AM は自分の店を、ここで足さなくても見られます。閲覧者は利用者に足しません（入れない人は表に「利用者でない」と出ます）。','The CEO, GM and Head Chef / Corporate Chef see all stores and the AM in charge sees their stores without being added here. Viewers are not made members (people who cannot sign in show as “not a member”).')+'</div></div>'
-      + '</div><div class="mr-btns"><button class="btn btn-primary mr-btn-l"'+busy+' onclick="mrAccSave()">'+t('この店の担当と閲覧者を保存','Save this store’s input person and viewers')+'</button>'+(d.dirty ? '<button class="btn btn-secondary btn-sm" onclick="mrAccCancel()">'+t('やめる（いまの設定に戻す）','Cancel (back to the saved settings)')+'</button>' : '')+'</div></div>';
+      + '</div><div class="mr-btns"><button class="btn btn-primary mr-btn-l"'+busy+' onclick="mrAccSave()">'+t('この店の担当と閲覧者を保存','Save this store’s input person and viewers')+'</button>'+(d.dirty ? '<button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccCancel()">'+t('やめる（いまの設定に戻す）','Cancel (back to the saved settings)')+'</button>' : '')+'</div></div>';
     /* その月だけの担当 */
     var mOpts = '<option value="">'+e(t('基本どおり（' + (s.input_name || t('未設定','not set')) + '）', 'As the base (' + (s.input_name || 'not set') + ')'))+'</option>', mSeen = !s.month_input_emp;
     mrArr(C.input).forEach(function(c){ var on = c.emp_id === s.month_input_emp; if (on) mSeen = true; mOpts += '<option value="'+e(c.emp_id)+'"'+(on ? ' selected' : '')+'>'+e(mrCandL(c))+'</option>'; });
@@ -17770,14 +17770,15 @@ function mrAccConfHtml(s){
       'Both of you changed the input person: theirs is ' + mrAccNm(c.theirs.input[1], s) + ', yours is ' + mrAccNm(d.input_emp, s) + '. The draft now has yours (until saved it stays ' + mrAccNm(c.theirs.input[1], s) + ').'))+'</span>';
     if (mi) b += '<span>'+e(t('あなたの変更（' + mi + '）を、いまの設定に入れ直しました。', 'Your change (' + mi + ') was put on the settings now. '))+'<b>'+t('まだ保存していません。','Not saved yet.')+'</b> '+t('確かめて「保存」を押してください。','Check and press Save.')+'</span>';
   }
+  if (mrArr(d.viewers).length > 20) b += '<span><b>'+e(t('閲覧者が ' + d.viewers.length + ' 人になりました（20 人まで）。保存の前に減らしてください。', 'There are ' + d.viewers.length + ' viewers now (up to 20). Remove some before saving.'))+'</b></span>';
   return '<div class="mr-conf" role="status"><i class="ti ti-alert-triangle" style="margin-top:3px"></i><div class="mr-conf-b"><b>'+t('ほかの人（または別のタブ）が先にこの店の設定を保存しました','Someone (or another tab) saved this store’s settings first')+'</b>'+b+'</div>'
     + '<button class="mr-x" aria-label="'+t('閉じる','Close')+'" onclick="_mr.accConf=null;mrRerender()">×</button></div>';
 }
 function mrAccPick(id){ if (_mr.accDraft && _mr.accDraft.dirty && _mr.accDraft.store_id !== id && !confirm(t('保存していない変更があります。別の店へ移りますか？（変更は消えます）','There are unsaved changes. Move to another store? (they will be lost)'))) return; _mr.accStore = String(id || ''); _mr.accDraft = null; _mr.accConf = null; mrRerender(); }
-function mrAccSet(k, v){ var d = _mr.accDraft; if (!d) return; if (k === 'input') { d.input_emp = String(v || ''); d.dirty = true; } mrRerender(); }
-function mrAccAddViewer(){ var d = _mr.accDraft, el = document.getElementById('mr-acc-vadd'), v = el ? String(el.value || '') : ''; if (!d || !v || d.viewers.indexOf(v) >= 0 || d.viewers.length >= 20) return; d.viewers.push(v); d.dirty = true; mrRerender(); }
-function mrAccDelViewer(v){ var d = _mr.accDraft; if (!d) return; var i = d.viewers.indexOf(String(v)); if (i < 0) return; d.viewers.splice(i, 1); d.dirty = true; mrRerender(); }
-function mrAccCancel(){ _mr.accDraft = null; _mr.accConf = null; mrRerender(); }
+function mrAccSet(k, v){ var d = _mr.accDraft; if (!d || _mr.busy) return; if (k === 'input') { d.input_emp = String(v || ''); d.dirty = true; } mrRerender(); }
+function mrAccAddViewer(){ var d = _mr.accDraft, el = document.getElementById('mr-acc-vadd'), v = el ? String(el.value || '') : ''; if (!d || _mr.busy || !v || d.viewers.indexOf(v) >= 0 || d.viewers.length >= 20) return; d.viewers.push(v); d.dirty = true; mrRerender(); }
+function mrAccDelViewer(v){ var d = _mr.accDraft; if (!d || _mr.busy) return; var i = d.viewers.indexOf(String(v)); if (i < 0) return; d.viewers.splice(i, 1); d.dirty = true; mrRerender(); }
+function mrAccCancel(){ if (_mr.busy) return; _mr.accDraft = null; _mr.accConf = null; mrRerender(); }
 function mrAccYm(v){ if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(v || ''))) return; if (_mr.accDraft && _mr.accDraft.dirty && !confirm(t('保存していない変更があります。月を変えますか？（変更は消えます）','There are unsaved changes. Change the month? (they will be lost)'))) { mrRerender(); return; }
   _mr.accYm = v; _mr.acc = null; _mr.accDraft = null; _mr.accConf = null; Object.keys(_mr.load).forEach(function(k){ if (k.indexOf('acc|') === 0) delete _mr.load[k]; }); mrRerender(); }   /* v1073: 印も消す（月を戻したとき読み直す） */
 function mrAccReload(){ _mr.acc = null; _mr.members = null; _mr.liveL = null; Object.keys(_mr.load).forEach(function(k){ if (k.indexOf('acc|') === 0 || k === 'members' || k.indexOf('liveL|') === 0) delete _mr.load[k]; }); mrRerender(); }
@@ -17798,6 +17799,7 @@ function mrSetFlags(v){
 }
 function mrAccSave(){
   var d = _mr.accDraft; if (!d) return;
+  if (d.viewers.length > 20) { showToast(t('閲覧者は 20 人までです。減らしてから保存してください','Up to 20 viewers. Remove some, then save'), 'warning'); return; }
   /* サーバーは入力担当と閲覧者をまとめて上書きする：閲覧者は全部送る。v1073: 読んだときの版も送る（違えば何も書かない） */
   var payload = { store_id:d.store_id, input_emp:d.input_emp || null, viewer_emps:d.viewers.slice(), expect_version:d.base ? d.base.version : 0 };
   return mrSetRun('access', function(){ return mrAPI({ action:'access_save', stores:[payload] }).then(function(r){ _mr.accDraft = null; _mr.accConf = null; return r; }); }, null,
@@ -17807,6 +17809,9 @@ function mrAccSave(){
 }
 function mrAccMonthSave(){
   var el = document.getElementById('mr-acc-month'), v = el ? String(el.value || '') : '', ym = _mr.accYm || mrYmLive();
+  /* v1073: 変えていないのに押したときは送らない（古い画面から、読んだときの値をほかの人の変更の上に書き戻さない） */
+  var s0 = mrArr(_mr.acc && _mr.acc.stores).filter(function(x){ return x.store_id === _mr.accStore; })[0];
+  if (s0 && v === (s0.month_input_emp || '')) { showToast(t('変えていません（この月の担当はいまのまま）','Nothing changed (this month stays as it is)'), 'warning'); return; }
   return mrSetRun('month', function(){ return mrAPI({ action:'month_input_save', store_id:_mr.accStore, ym:ym, input_emp:v || null }); });
 }
 function mrChefAdd(){ var el = document.getElementById('mr-acc-chef'), v = el ? String(el.value || '') : ''; if (!v) return; return mrSetRun('chef', function(){ return mrAPI({ action:'chef_save', emp_id:v, on:true }); }); }
@@ -17854,6 +17859,7 @@ function mrScopeNames(){
 function mrScopeSync(rows){
   var d = _mr.amDraft, prev = _mr.amPrev, c = null, nm = mrScopeNames(), L = function(u){ return u ? (nm[u] || '?') : t('GM の直轄', 'GM direct'); };
   var add = function(k, v){ c = c || { theirs:[], mine:[], both:[], already:[] }; c[k].push(v); };
+  if (d) Object.keys(d).forEach(function(k){ if (!rows.some(function(r){ return r.id === k; })) delete d[k]; });   /* 一覧から外れた店（店舗マスターに無い・入っていない）の下書きは残さない */
   rows.forEach(function(r){
     var dr = d && d[r.id];
     if (dr) {
@@ -17867,7 +17873,7 @@ function mrScopeSync(rows){
     }
     if (!prev) return;
     var p = prev[r.id];
-    if (r.sv && (!p || p.am_version !== r.ver) && (!p || (p.am_user || '') !== (r.saved || ''))) add('theirs', { store:r.name, from:p ? L(p.am_user) : null, to:L(r.saved) });
+    if (r.sv && (!p || p.am_version !== r.ver) && (!p || (p.am_user || '') !== (r.saved || ''))) add('theirs', { id:r.id, store:r.name, from:p ? L(p.am_user) : null, to:L(r.saved) });
   });
   if (prev) { _mr.amPrev = null; if (!c) c = { theirs:[], mine:[], both:[], already:[], plain:true }; }
   if (d && !Object.keys(d).length) _mr.amDraft = null;
@@ -17888,15 +17894,15 @@ function mrScopeConfHtml(rows){
 }
 function mrScopeHtml(){
   var e = escapeHtml, busy = _mr.busy ? ' disabled' : '';
-  var h = '<div class="card mr-col" id="mr-scope"><div class="mr-rowh"><b style="font-size:16px">'+t('店舗の管轄（どの AM の店か）','Store oversight (which AM looks after each store)')+'</b>'+(_mr.amDraft ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div>'
-    + '<div class="mr-m">'+t('管轄の AM は、その店を見る・返信する・確認完了にすることができます。AM のいない店は「GM の直轄」（GM・CEO が確かめる）。','The AM who oversees a store can see it, reply and confirm it. A store with no AM is overseen by the GM (the GM and CEO check it).')+'</div>';
-  if (!mrScopeReady(_mr.acc)) return h + '<div class="mr-m mr-bad">'+t('サーバーの更新（20261016090000）が終わるまで、管轄は変えられません。','The oversight cannot be changed until the server update (20261016090000) is in.')+'</div></div>';
+  var hd = function(){ return '<div class="card mr-col" id="mr-scope"><div class="mr-rowh"><b style="font-size:16px">'+t('店舗の管轄（どの AM の店か）','Store oversight (which AM looks after each store)')+'</b>'+(_mr.amDraft ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div>'
+    + '<div class="mr-m">'+t('管轄の AM は、その店を見る・返信する・確認完了にすることができます。AM のいない店は「GM の直轄」（GM・CEO が確かめる）。','The AM who oversees a store can see it, reply and confirm it. A store with no AM is overseen by the GM (the GM and CEO check it).')+'</div>'; }, h;
+  if (!mrScopeReady(_mr.acc)) return hd() + '<div class="mr-m mr-bad">'+t('サーバーの更新（20261016090000）が終わるまで、管轄は変えられません。','The oversight cannot be changed until the server update (20261016090000) is in.')+'</div></div>';
   if (!_mr.members) {
-    if (_mr.load.members === 'err') return h + '<div class="mr-err">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" onclick="mrAccReload()">'+t('もう一度','Retry')+'</button></div>';
+    if (_mr.load.members === 'err') return hd() + '<div class="mr-err">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" onclick="mrAccReload()">'+t('もう一度','Retry')+'</button></div>';
     mrLoad('members', function(g){ return mrAPI({ action:'members_list' }).then(function(m){ if (g === _mrGen) _mr.members = m; }); });
-    return h + '<div class="mr-m">'+t('読み込み中…','Loading…')+'</div></div>';
+    return hd() + '<div class="mr-m">'+t('読み込み中…','Loading…')+'</div></div>';
   }
-  var rows = mrScopeRows(); mrScopeSync(rows); rows = mrScopeRows();
+  var rows = mrScopeRows(); mrScopeSync(rows); rows = mrScopeRows(); h = hd();   /* 見出しの「保存していない変更あり」は下書きを最新に合わせたあとで */
   var ams = mrScopeAms(), nm = mrScopeNames(), cf = _mr.amConf || { theirs:[] };
   h += mrScopeConfHtml(rows)
     + '<div class="mr-tw2"><table class="mr-table mr-table-s"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('管轄','Overseen by')+'</th><th>'+t('店舗マスターの AM 欄（参考）','Store master AM (reference)')+'</th><th>'+t('いま','Now')+'</th></tr></thead><tbody>';
@@ -17905,18 +17911,19 @@ function mrScopeHtml(){
     if (r.bad) opts += '<option value="'+e(r.v)+'" selected>'+e((nm[r.v] || '?') + t('（AM でなくなった）',' (no longer an AM)'))+'</option>';
     if (r.draft) note = t('あなたの変更（未保存）','Your change (not saved)');
     else if (!r.sv) note = r.prop ? t('案：店舗マスターと同じ名前の AM（保存すると入る）','Proposal: the AM with the store master’s name (saved when you save)') : r.hits > 1 ? t('案なし（同じ名前の AM が 2 人以上）・保存すると GM の直轄で入る','No proposal (2+ AMs share the name); saved as the GM') : t('まだ入っていない（保存すると GM の直轄で入る）','Not saved yet (saved as the GM when you save)');
-    else note = cf.theirs.some(function(x){ return x.store === r.name; }) ? t('保存済み（ほかの人が変えた）','Saved (changed by someone else)') : t('保存済み','Saved');
+    else note = cf.theirs.some(function(x){ return x.id === r.id; }) ? t('保存済み（ほかの人が変えた）','Saved (changed by someone else)') : t('保存済み','Saved');
     if (r.bad) note = '<b class="mr-bad">'+t('AM でなくなった：選び直して保存','No longer an AM: choose again and save')+'</b>';
     else note = e(note);
     if (r.meta && !r.draft) note += '<div class="mr-m">'+t('店舗マスターで名前・並び・使う／使わないが変わった（保存すると入る）','Name, order or use changed in the store master (saved when you save)')+'</div>';
     h += '<tr'+(r.draft ? ' class="mr-tr-mine"' : '')+'><td><b>'+e(r.name)+'</b>'+(r.active ? '' : '<div class="mr-m">'+t('今は使っていない店','Not active now')+'</div>')+(!r.sv && r.active ? '<div class="mr-m">'+t('まだ中間レビューに入っていない店','Not in the review yet')+'</div>' : '')+'</td>'
-      + '<td><select class="mr-sel mr-amsel" aria-label="'+e(t(r.name + ' の管轄', 'Oversight of ' + r.name))+'" data-store="'+e(r.id)+'" onchange="mrScopeSet(this.getAttribute(\'data-store\'), this.value)">'+opts+'</select></td><td>'+e(r.am || '—')+'</td><td class="mr-m">'+note+'</td></tr>';
+      + '<td><select class="mr-sel mr-amsel"'+busy+' aria-label="'+e(t(r.name + ' の管轄', 'Oversight of ' + r.name))+'" data-store="'+e(r.id)+'" onchange="mrScopeSet(this.getAttribute(\'data-store\'), this.value)">'+opts+'</select></td><td>'+e(r.am || '—')+'</td><td class="mr-m">'+note+'</td></tr>';
   });
   return h + '</tbody></table></div><div class="mr-btns"><button class="btn btn-primary mr-btn-l"'+busy+' onclick="mrScopeSave()">'+t('管轄を保存','Save the oversight')+'</button>'
-    + (_mr.amDraft ? '<button class="btn btn-secondary btn-sm" onclick="mrScopeCancel()">'+t('やめる（いまの管轄に戻す）','Cancel (back to the saved oversight)')+'</button>' : '') + '</div>'
+    + (_mr.amDraft ? '<button class="btn btn-secondary btn-sm"'+busy+' onclick="mrScopeCancel()">'+t('やめる（いまの管轄に戻す）','Cancel (back to the saved oversight)')+'</button>' : '') + '</div>'
     + '<div class="mr-m">'+t('保存するのは変えた店（と、まだ入っていない店）だけ。利用者（CEO・GM・AM）を足す・止めるのは SQL（Moto さん）。','Only the stores you changed (and stores not saved yet) are saved. Members (CEO, GM, AM) are added or turned off by SQL (Moto).')+'</div></div>';
 }
 function mrScopeSet(id, v){
+  if (_mr.busy) return;   /* v1073: 保存の答えを待つあいだは変えない（答えで下書きを消すので、そのあいだの変更が消えないように） */
   id = String(id || ''); v = String(v || '');
   var r = mrScopeRows().filter(function(x){ return x.id === id; })[0]; if (!r) return;
   var d = _mr.amDraft || {};
@@ -17925,7 +17932,7 @@ function mrScopeSet(id, v){
   _mr.amDraft = Object.keys(d).length ? d : null;
   mrRerender();
 }
-function mrScopeCancel(){ _mr.amDraft = null; _mr.amConf = null; mrRerender(); }
+function mrScopeCancel(){ if (_mr.busy) return; _mr.amDraft = null; _mr.amConf = null; mrRerender(); }
 function mrScopeSave(){
   var rows = mrScopeRows(), send = rows.filter(function(r){ return r.send; });
   if (!send.length) { showToast(t('変えた店はありません','No store was changed'), 'warning'); return; }

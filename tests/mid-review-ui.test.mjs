@@ -725,6 +725,10 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
   assert.equal((await S.q(`select input_emp from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emp, 'E14');
   assert.match(c.html, /いまのこの月の担当：Op Lead/);
+  // v1073: pressing it again without a change sends nothing (an older screen does not write back what it read).
+  const nm = c.calls.filter(b => b.action === 'month_input_save').length;
+  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()');
+  assert.equal(c.calls.filter(b => b.action === 'month_input_save').length, nm); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /変えていません/.test(m)));
   // Head Chef: add E10 (a G4 Head Chef), then remove.
   c.dom = { 'mr-acc-chef': { value: 'E10' } }; await c.run('mrChefAdd()'); await c.flush(); await c.show();
   assert.match(c.html, /<span class="mr-pp"><b>Chef Oka<\/b>/);
@@ -859,6 +863,7 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   assert.equal((await db()).input_emp, 'E12');
   // Moving to another store drops the band.
   g.run("mrAccPick('F02')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/);
+  g.run("mrAccPick('F01')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/, 'coming back does not bring the band back');
 });
 
 test('v1073: the switches on two screens — the older press is not saved; the band shows the switches now (settings and the off screen)', async () => {
@@ -893,6 +898,17 @@ test('v1073: the switches on two screens — the older press is not saved; the b
   assert.equal(o.run('_mr.who.flags_version'), v0 + 4);
   await o.run('mrSetFlags({ private:true })'); await o.flush(); await o.show();
   assert.deepEqual((await flags()).value, { private: true, live_input: false }); assert.doesNotMatch(o.html, /中間レビュー（非公開確認）は OFF です/);
+  // An older read never takes over a newer version; after a conflict the version read is taken as it is — even when the
+  // server's version went back (e.g. put in again), so the next press saves instead of being refused for ever.
+  const vo = o.run('_mr.who.flags_version'); o.run("mrFlagsFrom({ flags:{ private:false, live_input:false }, flags_version:0 })"); assert.equal(o.run('_mr.who.flags_version'), vo);
+  await S.q(`alter table mr_settings disable trigger mr_settings_bump`); await S.q(`update mr_settings set version = 1 where key='flags'`); await S.q(`alter table mr_settings enable trigger mr_settings_bump`);
+  o.run('mrOpenSettings()'); await o.show(); o.run('_mr.who.flags_version = ' + vo); o.renderPage();
+  o.run('mrAccReload()'); o.run('_mr.acc = null'); o.renderPage();
+  await o.run('mrSetFlags({ live_input:true })'); await o.flush();
+  for (let i = 0; i < 100 && o.run('_mr.who.flags_version') !== 1; i++) await new Promise(r => setTimeout(r, 20));
+  assert.equal(o.run('_mr.who.flags_version'), 1);
+  await o.run('mrSetFlags({ live_input:true })'); await o.flush(); await o.show();
+  assert.deepEqual((await flags()).value, { private: true, live_input: true });
 });
 
 test('v1073 B: 店舗の管轄 on two screens — only changed stores are sent, so another store’s change stays; the same store changed first → nothing written, mine kept (unsaved) on the latest', async () => {
@@ -980,6 +996,50 @@ test('v1073: a read that keeps coming back empty stops after a few tries and say
   // After it works again, Retry reads it.
   c.fetch = real; c.run('mrAccReload()'); await c.show();
   assert.match(c.html, /一人ひとりの実効の権限/);
+});
+
+test('v1073: inputs wait while a save is on the way; a drafted store that left the list is dropped; more than 20 viewers after putting mine on theirs is stopped', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  // While a save waits for its answer, the settings' inputs are disabled and changes are not taken (the answer drops the draft).
+  c.run("_mr.busy = 'access'"); c.renderPage();
+  assert.match(c.html, /id="mr-acc-input" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
+  c.run("mrAccSet('input','E13')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null);
+  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-input" disabled/);
+  // A store only in the store master gets a draft, then leaves the store master: the draft goes with it (no stuck “unsaved”).
+  c.activeStores = () => [...STORES, { id: 'F07', name: 'Kapolei', am: '', active: true }]; c.renderPage();
+  c.run(`mrScopeSet('F07', '${U.am1}')`); assert.match(c.html, /<tr class="mr-tr-mine"><td><b>Kapolei<\/b>/);
+  c.activeStores = () => STORES; c.renderPage();
+  assert.equal(c.run('_mr.amDraft'), null); assert.doesNotMatch(c.html, /保存していない変更あり/); assert.equal(c.run('mrSetUnsaved()'), false);
+  // Mine put on theirs comes to more than 20 viewers: the band says so and the save is stopped on the screen.
+  const ids = n => Array.from({ length: n }, (_, i) => 'X' + i);
+  c.run(`(function(){ var s = _mr.acc.stores.filter(function(x){ return x.store_id === 'F01'; })[0];
+    var d = { store_id:'F01', input_emp:s.input_emp, viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ input_emp:s.input_emp, viewers:[], version:s.version - 1, names:{} } };
+    _mr.accDraft = d; mrAccRebase(s, d, { input_emp:s.input_emp, viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
+  c.renderPage();
+  assert.equal(c.run('_mr.accDraft.viewers.length'), 22); assert.match(c.html, /閲覧者が 22 人になりました（20 人まで）。保存の前に減らしてください。/);
+  const n = c.calls.filter(b => b.action === 'access_save').length; await c.run('mrAccSave()');
+  assert.equal(c.calls.filter(b => b.action === 'access_save').length, n); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /閲覧者は 20 人まで/.test(m)));
+});
+
+test('v1073 English: the bands (store settings, switches, oversight)', async () => {
+  const S = await server(); await live(S, { input: false });
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' }, lang: 'en' });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  // Each conflict on the CEO's screen reads it again, so the GM changes the next thing only after that.
+  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: input person Server Lead → Store Mgr/);
+  assert.match(c.html, /Your change \(add viewer AM Two\) was put on the settings now\. <b>Not saved yet\.<\/b>/); assert.match(c.html, /<span class="mr-m"> \(not saved\)<\/span>/);
+  assert.match(c.html, /Store oversight \(which AM looks after each store\)/); assert.match(c.html, /Overseen by Yuki \(AM\)/);
+  await g.run('mrSetFlags({ live_input:true })'); await g.flush(); await g.show();
+  await c.run('mrSetFlags({ private:false })'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) changed the switches first/); assert.match(c.html, /Your action \(The private check off\) was not saved\. Press it again if still needed\./);
+  g.run(`mrScopeSet('F06', '${U.am2}')`); await g.run('mrScopeSave()'); await g.flush(); await g.show();
+  c.run(`mrScopeSet('F06', '${U.am1}')`); await c.run('mrScopeSave()'); await c.flush(); await c.show();
+  assert.match(c.html, /Someone \(or another tab\) saved the oversight first/); assert.match(c.html, /Both of you changed LaLa: theirs is AM Two, yours is Yuki\./);
+  assert.doesNotMatch(c.html, /ほかの人|あなたの|管轄/, 'no Japanese left in the bands and the oversight');
 });
 
 test('R3 (v2): a new key for the same person keeps the screen and the input (email and PIN); another person resets it', async () => {

@@ -207,3 +207,28 @@ test('v1073 店舗の管轄: two sessions save a store that was not saved yet (v
   assert.equal(r.out, ''); assert.match(r.err, /conflict/);
   assert.equal(await C.one(`select name || '|' || coalesce((to_jsonb(s)->>'am_version'), '?') from mr_stores s where env='live' and store_id='F07'`), 'Kapolei|1');
 });
+
+test('v1073 店舗の管轄: two sessions put in the same two new stores sent in the other order: no deadlock — the later one waits, then gets conflict', { skip: SKIP }, async t => {
+  const C = await cluster(t); await fixture(C);
+  // A pause in the first session only, when it puts in F08 (after F07), to fix the order. The answers are unchanged.
+  const KEY = 918074;
+  await C.one(`create or replace function public.mrt_pause_ins() returns trigger language plpgsql as $f$
+    begin if current_setting('mrt.who', true) = 'a' and new.store_id = 'F08' then perform pg_advisory_lock(${KEY}); perform pg_advisory_unlock(${KEY}); end if; return new; end $f$;
+    create trigger mrt_pause_ins before insert on public.mr_stores for each row execute function public.mrt_pause_ins();`);
+  const a = C.session(), b = C.session(), pauser = C.session();
+  await a.sendWait(`set role service_role; set mrt.who = 'a'`); await b.sendWait('set role service_role'); await pauser.sendWait(`select pg_advisory_lock(${KEY})`);
+  const F07 = { store_id: 'F07', name: 'Kapolei', sort: 2, am_user: null, expect_version: 0 }, F08 = { store_id: 'F08', name: 'Ewa', sort: 3, am_user: null, expect_version: 0 };
+  // 1. The GM's save (F07, F08) has put in F07 and stops before F08.
+  const ra = a.send(rpc('mr_stores_save', { actor: U.gm, via: 'email', stores: [F07, F08] }));
+  await waitFor(async () => Number(await C.one(`select count(*) from pg_locks where locktype='advisory' and not granted`)) > 0, 'the first save to reach the pause');
+  // 2. The CEO's save sends them the other way round (F08, F07).
+  const rb = b.send(rpc('mr_stores_save', { actor: U.ceo, via: 'email', stores: [{ ...F08, name: 'Ewa (CEO)' }, { ...F07, name: 'Kapolei (CEO)' }] }));
+  await waitFor(async () => rb.answered || Number(await C.one(LOCK_WAITS)) > 1, 'the second save to wait or to answer');
+  // 3. The first one goes on.
+  await pauser.sendWait(`select pg_advisory_unlock(${KEY})`);
+  const x = await ra.answer, y = await rb.answer;
+  t.diagnostic(JSON.stringify({ first: x, second: y }));
+  assert.match(x.out, /"saved": 2/, x.err);
+  assert.doesNotMatch(y.err, /deadlock/); assert.equal(y.out, ''); assert.match(y.err, /conflict/);
+  assert.equal(await C.one(`select string_agg(store_id || ':' || name || ':' || (to_jsonb(s)->>'am_version'), ',' order by store_id) from mr_stores s where env='live' and store_id in ('F07','F08')`), 'F07:Kapolei:1,F08:Ewa:1');
+});

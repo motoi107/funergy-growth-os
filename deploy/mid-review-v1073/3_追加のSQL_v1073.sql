@@ -228,7 +228,9 @@ begin
   select * into st from public.mr_stores y where y.env = 'live' and y.store_id = s->>'store_id';
   if coalesce(st.am_version, 0) <> public.mr_ver(s->'expect_version') then raise exception 'conflict'; end if;
  end loop;
- for s in select * from jsonb_array_elements(p->'stores') loop
+ -- Written in store_id order too: two saves that both put in the same new stores (sent in another order) wait for each other
+ -- in one order and the later one gets conflict (in the order sent, each could hold one new store and wait for the other).
+ for s in select e.value from jsonb_array_elements(p->'stores') e order by e.value->>'store_id' loop
   v_am := nullif(s->>'am_user','')::uuid;
   select * into st from public.mr_stores y where y.env = 'live' and y.store_id = s->>'store_id';
   if st.store_id is not null then
