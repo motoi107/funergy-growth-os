@@ -357,7 +357,7 @@ export function createHandler(deps) {
     members_list: w => rpc('mr_members_list', w, {}),
     stores_save: (w, b) => rpc('mr_stores_save', w, { stores: Array.isArray(b.stores) ? b.stores.slice(0, 61).map(s => ({
       store_id: str(s && s.store_id, 30), name: str(s && s.name, 80), am_user: s && s.am_user ? str(s.am_user, 40) : null,
-      sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false) })) : null }),
+      sort: Number.isInteger(s && s.sort) && s.sort >= 0 && s.sort <= 9999 ? s.sort : 0, active: !(s && s.active === false), expect_version: VER(s && s.expect_version) })) : null }),
     access_get: (w, b) => rpc('mr_access_get', w, { ym: str(b.ym, 8) }),
     access_save: (w, b) => {
       if (!Array.isArray(b.stores)) throw bad();

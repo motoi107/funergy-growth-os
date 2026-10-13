@@ -26,7 +26,7 @@ with t as (
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in (select name from fn)
 ), src as (
   select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
-   and p.proname in ('mr_auth','mr_member_role','mr_reply_send','mr_access_save','mr_settings_save')
+   and p.proname in ('mr_auth','mr_member_role','mr_reply_send','mr_access_save','mr_settings_save','mr_stores_save')
 ), v2 as (
   select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'input_emp')
    and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_replies' and column_name = 'client_id')
@@ -40,7 +40,9 @@ with t as (
    and exists(select 1 from pg_trigger g where g.tgname = 'mr_settings_bump' and g.tgrelid = 'public.mr_settings'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
    and exists(select 1 from pg_trigger g where g.tgname = 'mr_stores_bump' and g.tgrelid = 'public.mr_stores'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
    and exists(select 1 from src where proname = 'mr_access_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0)
-   and exists(select 1 from src where proname = 'mr_settings_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0) as ok
+   and exists(select 1 from src where proname = 'mr_settings_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0)
+   and exists(select 1 from src where proname = 'mr_stores_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0)
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'am_version') as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case

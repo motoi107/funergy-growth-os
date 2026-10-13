@@ -107,7 +107,7 @@ async function fixture(C) {
   for (const f of MIGRATIONS) { fs.copyFileSync(new URL('../supabase/migrations/' + f, import.meta.url), path.join(C.dir, f)); await C.file(f); }
   const as = (who, name, p) => C.one(`set role service_role; ${rpc(name, { actor: U[who], via: 'email', ...p })}`);
   await as('gm', 'mr_settings_save', { key: 'flags', value: { private: true }, expect_version: 0 });
-  await as('gm', 'mr_stores_save', { stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1 }] });
+  await as('gm', 'mr_stores_save', { stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1, expect_version: 0 }] });
   await as('gm', 'mr_access_save', { stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [], expect_version: 0 }] });
   // (read through to_jsonb so the same file also runs on the v2 SQL alone and shows what went wrong there: version 0 there)
   const row = async () => JSON.parse(await C.one(`select jsonb_build_object('input_emp', s.input_emp, 'viewer_emps', s.viewer_emps,
@@ -189,4 +189,21 @@ test('v1073 the switches: a save that reads while another one is in the middle o
   assert.equal(rb.out, ''); assert.match(rb.err, /conflict/);
   assert.deepEqual(await F.flags(), { value: { private: false, store_publish: false, notify: false, live_input: false }, version: f0.version + 1 },
     'the first save stays; live input was not put on over it');
+});
+
+test('v1073 店舗の管轄: two sessions save a store that was not saved yet (version 0): the later one waits, then gets conflict and writes nothing over it', { skip: SKIP }, async t => {
+  const C = await cluster(t); await fixture(C);
+  const gm = C.session(), ceo = C.session();
+  await gm.sendWait('set role service_role'); await ceo.sendWait('set role service_role');
+  const store = { store_id: 'F07', name: 'Kapolei', sort: 2, expect_version: 0 };
+  const a = await gm.sendWait(`begin; ${rpc('mr_stores_save', { actor: U.gm, via: 'email', stores: [{ ...store, am_user: null }] })}`);
+  assert.match(a.out, /"saved": 1/, a.err);
+  const b = ceo.send(rpc('mr_stores_save', { actor: U.ceo, via: 'email', stores: [{ ...store, name: 'Kapolei (CEO)', am_user: null }] }));
+  await waitFor(async () => b.answered || Number(await C.one(LOCK_WAITS)) > 0, 'the second save to wait or to answer');
+  assert.equal(b.answered, false, 'the second save waits for the first one');
+  await gm.sendWait('commit');
+  const r = await b.answer;
+  t.diagnostic(JSON.stringify(r));
+  assert.equal(r.out, ''); assert.match(r.err, /conflict/);
+  assert.equal(await C.one(`select name || '|' || coalesce((to_jsonb(s)->>'am_version'), '?') from mr_stores s where env='live' and store_id='F07'`), 'Kapolei|1');
 });

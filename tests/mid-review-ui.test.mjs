@@ -50,15 +50,19 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
     const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.version]));
     return api(who, { action: 'access_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
   };
+  const storesSave = async (stores, who = 'gm') => {
+    const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.am_version]));
+    return api(who, { action: 'stores_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
+  };
   if (on) await flagsSave({ private: true });
   if (on && demo) await api('gm', { action: 'demo_reset' });
-  return { h, pg, api, pin, q, flagsSave, accessSave };
+  return { h, pg, api, pin, q, flagsSave, accessSave, storesSave };
 }
 // Live: F01 (ToriTon, AM Yuki) reported by E12 (Server Lead, PIN), F02 (Tenkichi) by Yuki herself, F05 (Marujuu, AM Two) by E14 with Yuki as an extra viewer.
 async function live(S, { input = true } = {}) {
   await S.flagsSave({ private: true, live_input: input });
-  await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
-    { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }] });
+  await S.storesSave([{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
+    { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }]);
   const r = await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }, { store_id: 'F02', input_emp: 'E5', viewer_emps: [] },
     { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }]);
   assert.equal(r.saved, 3, JSON.stringify(r));
@@ -849,4 +853,31 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
   assert.match(css, /\.mr-l-sp \{ display:none; \}/); assert.match(phone, /\.mr-l-pc \{ display:none; \} \.mr-l-sp \{ display:inline; \}/);
   assert.match(phone, /\.mr-crumb \{ display:none; \}/); assert.match(css, /@media \(max-width:640px\) \{ \.mr-strip \{ display:none; \} \}/);
   assert.match(css, /\.mr-linkb\.mr-blue \{ color:#1f4f9c; \}/);
+});
+
+// v1073: Moto さん 10/13「担当閲覧設定が読み込み中から進まない（できる時もある）」。一度読んだ画面に戻ると、読み込みの印は
+// 「済み」のまま中身だけ捨てていたので、二度目は読みに行かず「読み込み中…」のまま止まった（設定・月の切り替え・一覧のデモ／本番）。
+test('v1073: going back to a screen read before loads it again — settings reopened, the settings month back and forth, the list demo / live and months', async () => {
+  const S = await server(); await live(S);
+  const c = app(S); await c.show();
+  const loading = () => /読み込み中…/.test(c.html);
+  const n = a => c.calls.filter(b => b.action === a).length;
+  // Settings: open, back to the list, open again.
+  c.run('mrOpenSettings()'); await c.show();
+  assert.match(c.html, /一人ひとりの実効の権限/); assert.equal(n('access_get'), 1);
+  c.run('mrBack()'); await c.show(); assert.equal(loading(), false);
+  c.run('mrOpenSettings()'); await c.show();
+  assert.equal(loading(), false, 'the settings reopened must not stay on loading'); assert.match(c.html, /一人ひとりの実効の権限/); assert.equal(n('access_get'), 2);
+  // The settings month: October → November → October.
+  c.run("mrAccYm('2026-11')"); await c.show(); assert.equal(loading(), false); assert.match(c.html, /2026 年 11 月 だけの入力担当|2026年11月 だけの入力担当|11 月 だけの入力担当|11月 だけの入力担当/);
+  c.run("mrAccYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October'); assert.match(c.html, /一人ひとりの実効の権限/);
+  // The list: demo → live → demo, and live months back and forth.
+  c.run('mrBack()'); c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetEnv('live')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false, 'back to the demo list');
+  c.run("mrSetEnv('live')"); await c.show(); c.run("mrSetYm('2026-09')"); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October in the list');
+  // A store page opened twice still loads.
+  c.run("mrSetEnv('demo')"); await openStore(c, 'D1'); assert.equal(loading(), false);
+  c.run('mrBack()'); await openStore(c, 'D1'); assert.equal(loading(), false);
 });
