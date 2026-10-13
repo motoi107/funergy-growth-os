@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFileSync } from 'node:child_process';
 
-const MIGRATIONS = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql'];
+const MIGRATIONS = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql', '20261017090000_mid_review_stores_save_fix.sql'];
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2' };
 
 // --- a real PostgreSQL in a temporary directory (the same harness as tests/review/pr45-mid-review-lock-order.test.mjs) ---
@@ -249,4 +249,31 @@ test('v1073 店舗の管轄: two sessions save the same saved store on the same 
   t.diagnostic(JSON.stringify(r));
   assert.equal(r.out, ''); assert.match(r.err, /conflict/);
   assert.equal(await row(), 'ToriTon Kaimuki|-|2', 'the first save stays; the older name was not put back');
+});
+
+// v1073 の直し（Codex `3fbd9dd` の P2）：A が既にある店（F01）とまだ無い店（F07）を保存し、版を比べ終えて F01 を書いているあいだに、
+// B が F07 だけを保存してコミットする。A は F07 を「ある店」として見つけても、読んだ版（0）と違うので書かない（conflict）。
+test('v1073 fix: a store another session puts in and commits after this save compared the versions is not written over (conflict)', { skip: SKIP }, async t => {
+  const C = await cluster(t); await fixture(C);
+  const KEY = 918075;
+  await C.one(`create or replace function public.mrt_pause_upd() returns trigger language plpgsql as $f$
+    begin if current_setting('mrt.who', true) = 'a' and new.store_id = 'F01' then perform pg_advisory_lock(${KEY}); perform pg_advisory_unlock(${KEY}); end if; return new; end $f$;
+    create trigger mrt_pause_upd before update on public.mr_stores for each row execute function public.mrt_pause_upd();`);
+  const a = C.session(), b = C.session(), pauser = C.session();
+  await a.sendWait(`set role service_role; set mrt.who = 'a'`); await b.sendWait('set role service_role'); await pauser.sendWait(`select pg_advisory_lock(${KEY})`);
+  const v01 = Number(await C.one(`select am_version from mr_stores where env='live' and store_id='F01'`));
+  // 1. A (GM): F01 renamed and F07 new; compared, now writing F01 (stops there).
+  const ra = a.send(rpc('mr_stores_save', { actor: U.gm, via: 'email', stores: [{ store_id: 'F01', name: 'ToriTon A', am_user: null, sort: 1, expect_version: v01 },
+    { store_id: 'F07', name: 'Kapolei (A)', am_user: null, sort: 2, expect_version: 0 }] }));
+  await waitFor(async () => Number(await C.one(`select count(*) from pg_locks where locktype='advisory' and not granted`)) > 0, 'A to reach the pause');
+  // 2. B (CEO): F07 only, committed.
+  const rb = await b.sendWait(rpc('mr_stores_save', { actor: U.ceo, via: 'email', stores: [{ store_id: 'F07', name: 'Kapolei (B)', am_user: null, sort: 2, expect_version: 0 }] }));
+  assert.match(rb.out, /"saved": 1/, rb.err);
+  // 3. A goes on.
+  await pauser.sendWait(`select pg_advisory_unlock(${KEY})`);
+  const x = await ra.answer;
+  t.diagnostic(JSON.stringify({ a: x, b: rb }));
+  assert.equal(x.out, ''); assert.match(x.err, /conflict/);
+  assert.equal(await C.one(`select string_agg(store_id || ':' || name || ':' || am_version, ',' order by store_id) from mr_stores s where env='live' and store_id in ('F01','F07')`),
+    `F01:ToriTon:${v01},F07:Kapolei (B):1`, 'B stays; nothing of A was written');
 });

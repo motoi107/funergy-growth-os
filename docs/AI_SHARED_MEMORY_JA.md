@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-10-13 中間レビュー v1073 は本番に入った・Codex の P2（`3fbd9dd`）を直す（Claude・ブランチ `claude/mid-review-stores-race`・本番未反映）
+
+- 本番：Moto さん 10/13 11:12 HST「全部終わりました」。PR #52（と #51）は 11:10 HST にマージ（main `a9b8c10`・Pages の公開は成功・sw.js は SW_BUILD 1073）。v1073 の手順（関数 v1073・SQL `20261016090000`・確認の SQL）も済み（Moto さんの報告。DB の中身は Claude からは見えない）。
+- Codex のレビュー（PR #52・head `3fbd9dd`・マージの前）：**blocked**（P2 1 件）。マージはその前に行われた。P2：`mr_stores_save` は、まだ無い店（版 0）を比べ終えたあと・書く前に、別の保存がその店を入れてコミットすると、書くときに「ある店」として見つけて版を見ずに UPDATE する（先の保存を書き直す・409 にならない）。GM・CEO の 2 人がまだ入っていない同じ店をほぼ同時に保存したときだけ起きる。Codex は PGlite で再現（実 PostgreSQL の 2 セッションは Codex の環境に無い）。ほかに：B・入れ直し・管轄・読み込みの直し・権限・410・版の整合は確認済み、非公開の 1 ファイルは Codex は見ていない（Claude の記録とハッシュのみ）。
+- 直し：migration `20261017090000_mid_review_stores_save_fix.sql`（`mr_stores_save` 1 つの置き換え。書く UPDATE にも `am_version = 読んだ版`、書けなければ `conflict`）。postcheck に `mid-review stores_save fix (20261017090000)`（26 行）。precheck の言葉に順番を足した。入れる一式 `deploy/mid-review-v1073-fix/`（SQL → 確認の SQL だけ。アプリ・関数は変えない）。v1073 の束は渡したときのまま sha256 で固定した。仕様は `docs/MID_REVIEW_V2_JA.md` の「v1073 の直し」。
+- 試験（合成データ・本番に接続していない）：本物の PostgreSQL 16 の 2 セッション（Codex の順番そのもの：A が F01 と新しい F07 を保存して F01 を書いているあいだに B が F07 を保存してコミット → A は conflict・B が残る）と、PGlite で「比べたあと・書く前に行が現れる」を作る試験。**どちらも直す前は落ちる**（A が B の F07 を書き直す）。server 46・ui 43・deploy 6・本物の PostgreSQL 7・pr44 2 通る 2 止める・pr45 2・static release pass/1073。
+- 次：PR → Codex の再レビュー → Moto さんが SQL を 1 つ流す（`deploy/mid-review-v1073-fix/手順.md`）→ マージ。
+
 ## 2026-10-13 中間レビュー v1073：Codex の P2（担当・閲覧設定・ON・OFF・管轄の同時編集）を直す ＋ 読み込み中で止まる不具合（Claude・ブランチ `claude/mid-review-v1073`・PR #52・本番未反映）
 
 - 依頼：Moto さん 10/13 の引き継ぎ「Codex の P2 を直す（v1073・新しいブランチ）」。ブランチは `claude/handoff-20261013`（PR #51・未マージ）の上。
