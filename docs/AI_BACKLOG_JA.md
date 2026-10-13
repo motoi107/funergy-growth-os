@@ -3,7 +3,7 @@
 ## 2026-10-12 中間レビュー v2（段階 4・UI案44 B案）
 
 1. 済（Claude）：段階 4-1 サーバー（`9a39c59`・ブランチ `claude/mid-review-v2`）。server 37/37・わざと壊した 95 通りすべてで落ちる。
-2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #__PR__）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
+2. 済（Claude）：段階 4-2 画面（アプリ v1072・PR #50）。PIN の確かめ（公開しない 1 ファイル・Moto さんに直接）。入れる一式 `deploy/mid-review-v2/`。
 3. 次：独立レビュー（Claude の別エージェント・Moto さんの判断）と Codex のレビュー。
 4. Moto さん：入れる（`deploy/mid-review-v2/手順.md` の 1〜6）。
 5. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
