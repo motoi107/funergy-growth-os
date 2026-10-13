@@ -1952,6 +1952,22 @@ test('posting renames the original 日付_業者名_番号, and only then is it 
       assert.equal(E.drive.items.get(dd.id).name, '2026-10-07_VendorA_12347.pdf'); assert.equal((await outbox(dd.id))[0].state, 'sent');
     });
 
+    await t.test('an original Drive cannot find is not renamed or forwarded (waiting, not an error); found again, it is renamed, then forwarded', async () => {
+      const m = await intake('RN-MISS', '12349');
+      await E.q(`update invoice_files set drive_state='missing' where drive_file_id=$1`, [m.id]);
+      const r = await post(m.d);
+      assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rename, null);
+      assert.equal((await fileRow(m.id)).rename_state, 'none'); assert.equal(E.drive.items.get(m.id).name, 'RN-MISS.pdf');
+      assert.equal(await consistent(), 1);
+      const h = (await E.api('tok-crew', { action: 'health' })).body;
+      assert.deepEqual({ waiting: h.rename_waiting, errors: h.rename_errors }, { waiting: 1, errors: 0 });
+      assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: (await fileRow(m.id)).id }), { queued: false, why: 'rename_waiting' });
+      await E.q(`update invoice_files set drive_state='ok' where drive_file_id=$1`, [m.id]);
+      await E.worker();
+      assert.equal(E.drive.items.get(m.id).name, '2026-10-07_VendorA_12349.pdf'); assert.equal((await outbox(m.id))[0].state, 'sent');
+      assert.equal(await consistent(), 0);
+    });
+
     await t.test('a name another file in the folder already has gets "_2"; nothing is overwritten', async () => {
       const e = await intake('RN-E', '12348');
       const other = E.drive.file('2026-10-07_VendorA_12348.pdf', pdf('unrelated'), E.drive.items.get(e.id).parents[0]);
