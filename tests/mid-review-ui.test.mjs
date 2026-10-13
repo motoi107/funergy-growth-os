@@ -10,7 +10,7 @@ import { createHandler, missingV2, normBody, normSnap, demoSnapshot, demoData, K
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const INDEX = process.env.FUNERGY_INDEX ? new URL(process.env.FUNERGY_INDEX, 'file://' + process.cwd() + '/') : new URL('../index.html', import.meta.url);
 const html = fs.readFileSync(INDEX, 'utf8').replace(/\r\n/g, '\n');
-const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
+const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
 const B = '/* ===== v1066 中間レビュー（非公開版', E = '/* ===== v1066 中間レビュー ここまで ===== */';
 const MOD = html.includes(B) ? html.slice(html.indexOf(B), html.indexOf(E)) : '';
 const MEET = html.slice(html.indexOf('var MEET_KPI_DEF=['), html.indexOf('function _meetDiffStr('));
@@ -44,17 +44,23 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
   const api = (who, body) => call({ authorization: 'Bearer tok-' + who }, body);
   const pin = (tok, body) => call({ authorization: 'Bearer anon-key' }, { ...body, pin_session: tok });
   const q = async (sql, p = []) => { await pg.exec('reset role'); try { return (await pg.query(sql, p)).rows; } finally { await pg.exec('set role service_role'); } };
-  if (on) await api('gm', { action: 'settings_save', key: 'flags', value: { private: true } });
+  // v1073: saves carry the version read (the switches' version from whoami, each store's from access_get).
+  const flagsSave = async (value, who = 'gm') => api(who, { action: 'settings_save', key: 'flags', value, expect_version: (await api(who, { action: 'whoami' })).flags_version });
+  const accessSave = async (stores, who = 'gm') => {
+    const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.version]));
+    return api(who, { action: 'access_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
+  };
+  if (on) await flagsSave({ private: true });
   if (on && demo) await api('gm', { action: 'demo_reset' });
-  return { h, pg, api, pin, q };
+  return { h, pg, api, pin, q, flagsSave, accessSave };
 }
 // Live: F01 (ToriTon, AM Yuki) reported by E12 (Server Lead, PIN), F02 (Tenkichi) by Yuki herself, F05 (Marujuu, AM Two) by E14 with Yuki as an extra viewer.
 async function live(S, { input = true } = {}) {
-  await S.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: input } });
+  await S.flagsSave({ private: true, live_input: input });
   await S.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
     { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }] });
-  const r = await S.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }, { store_id: 'F02', input_emp: 'E5', viewer_emps: [] },
-    { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }] });
+  const r = await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }, { store_id: 'F02', input_emp: 'E5', viewer_emps: [] },
+    { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }]);
   assert.equal(r.saved, 3, JSON.stringify(r));
 }
 // The meeting tab's numbers as the stand-in app gives them (keyKpiStats … _meetKpiRows). [act, tgt]; state = _meetConfirmState.
@@ -625,7 +631,7 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   ch.went = []; ch.run("mrOpenMeeting('x\\'','2026-09')"); assert.deepEqual(ch.went, []);
   assert.match(ch.html, /onclick="mrOpenMeeting\('F01','2026-10'\)">会議タブで見る/);
   // Live input off: the input person is told, nothing to write.
-  await S.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: false } });
+  await S.flagsSave({ private: true, live_input: false });
   const off = app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } }); off.run("mrSetEnv('live')"); await off.show();
   off.run("mrOpenStore('F01')"); off.renderPage(); await off.flush(); off.renderPage();
   assert.match(off.html, /本番の店の入力はまだ OFF です/); assert.doesNotMatch(off.html, /data-p="/);
@@ -844,4 +850,3 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
   assert.match(phone, /\.mr-crumb \{ display:none; \}/); assert.match(css, /@media \(max-width:640px\) \{ \.mr-strip \{ display:none; \} \}/);
   assert.match(css, /\.mr-linkb\.mr-blue \{ color:#1f4f9c; \}/);
 });
-

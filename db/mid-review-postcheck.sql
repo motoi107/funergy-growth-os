@@ -16,7 +16,9 @@ with t as (
    ('mr_in_service'),('mr_chef_hr_ok'),('mr_staff_hr_ok'),('mr_viewer_hr_ok'),('mr_input_kind'),('mr_emp_name'),('mr_member_role'),('mr_need_email'),('mr_pin_actor'),('mr_today'),
    ('mr_can'),('mr_store'),('mr_legacy'),('mr_status_v2'),('mr_txt_ok'),('mr_date_or_empty'),('mr_eval_v'),('mr_obj'),('mr_body_check_v2'),('mr_missing_v2'),
    ('mr_snap_check_v2'),('mr_overdue'),('mr_counts_v2'),('mr_input_info'),('mr_review_summary'),('mr_row_v2'),('mr_post'),('mr_confirm'),('mr_unconfirm'),
-   ('mr_review_row'),('mr_ensure_member'),('mr_is_input_somewhere'),('mr_cand_json'),('mr_access_get'),('mr_access_save'),('mr_month_input_save'),('mr_chef_save')
+   ('mr_review_row'),('mr_ensure_member'),('mr_is_input_somewhere'),('mr_cand_json'),('mr_access_get'),('mr_access_save'),('mr_month_input_save'),('mr_chef_save'),
+   -- v1073 (20261016090000)
+   ('mr_ver'),('mr_settings_bump'),('mr_stores_bump')
 ), f as (
   select p.oid, p.proname, has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute') as open_to_browser,
    has_function_privilege('service_role', p.oid, 'execute') as service_ok, p.prosecdef,
@@ -24,13 +26,21 @@ with t as (
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in (select name from fn)
 ), src as (
   select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
-   and p.proname in ('mr_auth','mr_member_role','mr_reply_send')
+   and p.proname in ('mr_auth','mr_member_role','mr_reply_send','mr_access_save','mr_settings_save')
 ), v2 as (
   select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'input_emp')
    and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_replies' and column_name = 'client_id')
    and exists(select 1 from f where proname = 'mr_missing_v2') and exists(select 1 from f where proname = 'mr_can')
    and exists(select 1 from src where proname = 'mr_reply_send' and position('gone' in prosrc) > 0)
    and to_regclass('public.mr_members_one_per_emp') is not null and to_regclass('public.mr_replies_client') is not null as ok
+), v3 as (
+  -- v1073: the versions are there, the triggers move them, and the two saves compare them (a second run of v2 would put back saves without it)
+  select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_settings' and column_name = 'version')
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'access_version')
+   and exists(select 1 from pg_trigger g where g.tgname = 'mr_settings_bump' and g.tgrelid = 'public.mr_settings'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
+   and exists(select 1 from pg_trigger g where g.tgname = 'mr_stores_bump' and g.tgrelid = 'public.mr_stores'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
+   and exists(select 1 from src where proname = 'mr_access_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0)
+   and exists(select 1 from src where proname = 'mr_settings_save' and position('expect_version' in prosrc) > 0 and position('conflict' in prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -54,6 +64,8 @@ union all select 'browser can run functions', (select count(*) filter (where ope
 union all select 'service role can run functions', (select count(*) filter (where service_ok) from f)::text, case when (select bool_and(service_ok) from f) then 'OK' else 'NG' end
 union all select 'security definer functions', (select count(*) filter (where prosecdef) from f)::text, case when (select count(*) filter (where prosecdef) from f) = 0 then 'OK' else 'NG' end
 union all select 'mid-review v2 (20261015090000)', (select ok::text from v2), case when (select ok from v2) then 'OK' else 'NG：20261015090000_mid_review_v2.sql がまだ（関数 v2 はこれが要る）' end
+union all select 'mid-review versions (20261016090000)', (select ok::text from v3),
+  case when (select ok from v3) then 'OK' else 'NG：20261016090000_mid_review_v2_versions.sql がまだ（20261015090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'flags', (select value::text from public.mr_settings where key = 'flags'),
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'live input', (select coalesce(value->>'live_input', 'null') from public.mr_settings where key = 'flags'),

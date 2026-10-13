@@ -1,7 +1,7 @@
 -- 中間レビュー：取り消し（中間レビューの表と関数だけを消します。ほかの表・データには触れません）
 -- ふだんは消さずに、アプリの設定で「非公開確認」を OFF にすれば、だれも使えなくなります。
 -- 本番（live）のレビューが 1 件でもあるときは何も消さずに止まります（デモだけなら消せます）。
--- v1066・v1068・v2（20261015090000）のどれが入っていても使えます（入っていないものは飛ばします）。
+-- v1066・v1068・v2（20261015090000）・v1073（20261016090000）のどれが入っていても使えます（入っていないものは飛ばします）。
 -- 確かめと削除を 1 つのブロックにしているので、どの実行方法でも「止まったのに消えた」にはなりません。
 do $$ begin
  if to_regclass('public.mr_reviews') is not null then
@@ -45,4 +45,6 @@ do $$ begin
   drop function if exists public.mr_reply_review(public.mr_members,jsonb), public.mr_auth(uuid,text[],boolean), public.mr_actor_name(public.mr_members);
  end if;
  drop table if exists public.mr_events, public.mr_replies, public.mr_submissions, public.mr_reviews, public.mr_stores, public.mr_members, public.mr_settings;
+ -- v1073: the version helpers (the triggers went with the tables)
+ drop function if exists public.mr_settings_bump(), public.mr_stores_bump(), public.mr_ver(jsonb);
 end $$;

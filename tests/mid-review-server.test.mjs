@@ -8,11 +8,12 @@ import { randomUUID } from 'node:crypto';
 import { createHandler, demoData, demoSnapshot, missingV2, normBody, normSnap, KPI_PREV, KPI_CUR } from '../supabase/functions/mid-review/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql'];
+const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql'];
 const mig = f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8');
 const SQL = MIG.map(mig).join('\n');
 const V1 = MIG.slice(0, 2).map(mig).join('\n');
 const V2 = mig(MIG[2]);
+const V3 = mig(MIG[3]);   // v1073: versions on the access settings and the switches
 const dbFile = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3',
   crew: '00000000-0000-4000-8000-0000000000c4', am1: '00000000-0000-4000-8000-0000000000c5', am2: '00000000-0000-4000-8000-0000000000c6',
@@ -74,15 +75,20 @@ async function setup({ verifier = true } = {}) {
   const rpc = async (name, p) => (await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p)])).rows[0].v;
   return { pg, api, pin, call, q, rpc };
 }
-const on = (E, extra = {}) => E.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, ...extra } });
+// v1073: a save carries the version the screen read. The switches' version comes with whoami (and access_get).
+const flagsVer = async (E, who = 'gm') => (await E.api(who, { action: 'whoami' })).body.flags_version;
+const on = async (E, extra = {}, who = 'gm') => E.api(who, { action: 'settings_save', key: 'flags', value: { private: true, ...extra }, expect_version: await flagsVer(E, who) });
+// Each live store's version as the settings screen reads it (access_get), and a save on those versions.
+const accVer = async (E, who = 'gm') => Object.fromEntries((await E.api(who, { action: 'access_get', ym: '2026-10' })).body.stores.map(s => [s.store_id, s.version]));
+const accSave = async (E, stores, who = 'gm') => { const v = await accVer(E, who); return E.api(who, { action: 'access_save', stores: stores.map(s => ({ expect_version: v[s.store_id] ?? 0, ...s })) }); };
 const STORES = [{ store_id: 'F01', name: 'ToriTon', am_user: U.am1, sort: 1 }, { store_id: 'F02', name: 'Tenkichi', am_user: U.am1, sort: 2 },
   { store_id: 'F05', name: 'Marujuu', am_user: U.am2, sort: 3 }, { store_id: 'F06', name: 'LaLa', am_user: null, sort: 4 }];
 // Live: F01 reported by E12 (staff, PIN), F02 by Yuki (an AM), F05 by E14 (staff) with Yuki as an extra viewer; F06 has nobody.
 async function live(E, { input = true } = {}) {
   assert.equal((await on(E, { live_input: input })).status, 200);
   assert.equal((await E.api('gm', { action: 'stores_save', stores: STORES })).status, 200);
-  const a = await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] },
-    { store_id: 'F02', input_emp: 'E5' }, { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }] });
+  const a = await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] },
+    { store_id: 'F02', input_emp: 'E5' }, { store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5'] }]);
   assert.equal(a.status, 200, JSON.stringify(a.body));
 }
 const prevYmOf = ym => { const [y, m] = ym.split('-').map(Number); return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`; };
@@ -138,7 +144,7 @@ test('browsers cannot reach any table or function (anon / authenticated); the se
   }
   const fns = await E.q(`select p.oid::regprocedure::text sig, has_function_privilege('anon', p.oid, 'execute') a, has_function_privilege('authenticated', p.oid, 'execute') b,
     has_function_privilege('service_role', p.oid, 'execute') s, p.prosecdef d from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname like 'mr\\_%'`);
-  assert.equal(fns.length, 77, 'all functions are there (v1066 40 + v2 37)');
+  assert.equal(fns.length, 80, 'all functions are there (v1066 40 + v2 37 + v1073 3)');
   for (const f of fns) { assert.equal(f.a || f.b, false, f.sig); assert.equal(f.s, true, f.sig); assert.equal(f.d, false, f.sig); }
   for (const name of ['mr_can', 'mr_post', 'mr_confirm', 'mr_access_get', 'mr_pin_actor', 'mr_missing_v2']) assert.ok(fns.some(f => f.sig.includes(name + '(')), name);
   const rls = await E.q(`select relname, relrowsecurity from pg_class where relname like 'mr\\_%' and relkind='r'`);
@@ -172,6 +178,19 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
   assert.deepEqual(await count(), before);
   assert.equal((await pg.query(`select value->>'live_input' v from mr_settings where key='flags'`)).rows[0].v, 'true');   // a second run keeps the switch
   assert.match(await row('mid-review v2 (20261015090000)'), /^OK/);
+  // v1073 on top (twice): rows and switches kept, every version starts at 0; the check says when it is missing.
+  assert.match(await row('mid-review versions (20261016090000)'), /^NG/);
+  await pg.exec(V3); await pg.exec(V3);
+  assert.deepEqual(await count(), before);
+  assert.deepEqual((await pg.query(`select key, version from mr_settings order by key`)).rows.map(x => [x.key, x.version]), [['demo', 0], ['flags', 0], ['schedule', 0]]);
+  assert.deepEqual((await pg.query(`select env, store_id, access_version from mr_stores order by env, store_id`)).rows.map(x => [x.env, x.store_id, x.access_version]),
+    [['demo', 'D1', 0], ['live', 'F01', 0]]);
+  assert.match(await row('mid-review versions (20261016090000)'), /^OK/);
+  // Running v2 again puts back its saves without the version check: the check says so, and v1073 again fixes it.
+  await pg.exec(V2);
+  assert.match(await row('mid-review versions (20261016090000)'), /^NG/);
+  await pg.exec(V3);
+  assert.match(await row('mid-review versions (20261016090000)'), /^OK/);
   for (const r of (await pg.query(post)).rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   // The first edition's review is read as before (legacy), its reply is not part of the v2 thread, and it cannot be written in v2.
   await pg.exec('set role service_role');
@@ -230,7 +249,7 @@ test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguou
   assert.equal((await E.pin('pin-E2', { action: 'whoami' })).body.role, 'gm');                       // a GM can sign in with a PIN too
   assert.equal((await E.pin('pin-E2', { action: 'whoami' })).body.perms.settings, false);
   assert.equal((await E.pin('pin-name-Server Lead', { action: 'whoami' })).body.emp_id, 'E12');      // exact name, one employee in service
-  await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E15' }] });   // one of the two named Twin is a member
+  await accSave(E, [{ store_id: 'F06', input_emp: 'E15' }]);   // one of the two named Twin is a member
   assert.equal((await E.pin('pin-E15', { action: 'whoami' })).body.role, 'staff');
   for (const tok of ['pin-E13', 'pin-E99', 'pin-name-Twin', 'pin-name-Server', 'pin-name-Gone Leader', 'pin-E7', 'pin-E9', 'pin-E3'])
     assert.equal((await E.pin(tok, { action: 'whoami' })).status, 403, tok);                          // not a member / ambiguous / turned off
@@ -259,8 +278,8 @@ test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguou
 
 test('settings need an email sign-in: a GM / CEO with a PIN can read, reply, confirm and change dates but not settings', async () => {
   const E = await setup(); await live(E);
-  for (const b of [{ action: 'settings_save', key: 'flags', value: { private: true } }, { action: 'demo_reset' }, { action: 'access_get', ym: '2026-10' },
-    { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E13' }] }, { action: 'month_input_save', store_id: 'F06', ym: '2026-10', input_emp: 'E13' },
+  for (const b of [{ action: 'settings_save', key: 'flags', value: { private: true }, expect_version: 0 }, { action: 'demo_reset' }, { action: 'access_get', ym: '2026-10' },
+    { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E13', expect_version: 0 }] }, { action: 'month_input_save', store_id: 'F06', ym: '2026-10', input_emp: 'E13' },
     { action: 'chef_save', emp_id: 'E10', on: true }, { action: 'stores_save', stores: STORES }, { action: 'members_list' }]) {
     const r = await E.pin('pin-E2', b);
     assert.deepEqual([r.status, r.body.error], [403, 'email_required'], b.action);
@@ -303,12 +322,12 @@ test('v1068 kept: a CEO changed to GM in manager_auth is a GM here at once; a GM
 test('switches: off → nobody can list; only GM / CEO with email change them; store publication and notices stay off; live input has its own switch', async () => {
   const E = await setup();
   assert.equal((await E.api('gm', { action: 'list', env: 'demo', ym: '2026-10' })).body.error, 'disabled');
-  assert.equal((await E.api('am1', { action: 'settings_save', key: 'flags', value: { private: true } })).status, 403);
+  assert.equal((await E.api('am1', { action: 'settings_save', key: 'flags', value: { private: true }, expect_version: 0 })).status, 403);
   for (const v of [{ private: true, store_publish: true }, { private: true, notify: true }])
-    assert.deepEqual([(await E.api('gm', { action: 'settings_save', key: 'flags', value: v })).body.error], ['not_available']);
+    assert.deepEqual([(await E.api('gm', { action: 'settings_save', key: 'flags', value: v, expect_version: 0 })).body.error], ['not_available']);
   for (const v of [{ private: 'yes' }, { private: true, live_input: 'on' }, {}])
-    assert.equal((await E.api('gm', { action: 'settings_save', key: 'flags', value: v })).status, 400, JSON.stringify(v));
-  assert.equal((await E.api('gm', { action: 'settings_save', key: 'schedule', value: {} })).status, 400);
+    assert.equal((await E.api('gm', { action: 'settings_save', key: 'flags', value: v, expect_version: 0 })).status, 400, JSON.stringify(v));
+  assert.equal((await E.api('gm', { action: 'settings_save', key: 'schedule', value: {}, expect_version: 0 })).status, 400);
   assert.deepEqual((await on(E)).body.value, { private: true, store_publish: false, notify: false, live_input: false });
   assert.deepEqual((await on(E, { live_input: true })).body.value.live_input, true);
   assert.deepEqual((await on(E)).body.value.live_input, true);                       // not sent: kept
@@ -316,7 +335,7 @@ test('switches: off → nobody can list; only GM / CEO with email change them; s
   assert.equal((await E.api('am1', { action: 'list', env: 'demo', ym: '2026-10' })).status, 200);
   await E.api('gm', { action: 'stores_save', stores: STORES });
   assert.equal((await E.api('am1', { action: 'whoami', ym: '2026-10' })).body.live_stores.length, 2);
-  await E.api('ceo', { action: 'settings_save', key: 'flags', value: { private: false } });
+  assert.equal((await on(E, { private: false }, 'ceo')).status, 200);
   assert.equal((await E.api('am1', { action: 'list', env: 'demo', ym: '2026-10' })).body.error, 'disabled');
   assert.deepEqual((await E.api('gm', { action: 'whoami', ym: '2026-10' })).body.live_stores, []);
   const ev = await E.q(`select kind, data from mr_events where kind='settings' order by id`);
@@ -358,7 +377,7 @@ test('stores_save (email GM / CEO): only enabled AMs still AMs; values in range;
   for (const who of ['gm', 'am1']) assert.ok(!(await E.api(who, { action: 'list', env: 'live', ym: '2026-10' })).body.stores.some(s => s.store_id === 'F09'), who);
   assert.equal((await E.api('gm', { action: 'get', ...at('F09') })).status, 404);
   // Saving the stores again keeps the input person and the viewers set in 担当・閲覧設定.
-  await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E6'] }] });
+  assert.equal((await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E6'] }])).status, 200);
   await E.api('gm', { action: 'stores_save', stores: STORES });
   assert.deepEqual((await E.q(`select input_emp, viewer_emps from mr_stores where store_id='F01'`))[0], { input_emp: 'E12', viewer_emps: ['E6'] });
   await E.q(`update employees set status='退職' where id='E6'`);
@@ -391,7 +410,7 @@ test('access_get: candidates by kind from the employee master (in service, by ti
 test('access_save: bad candidates refused (nothing written); the input person gets a PIN-only staff row; roles never change; history kept', async () => {
   const E = await setup(); await on(E);
   await E.api('gm', { action: 'stores_save', stores: STORES });
-  const save = stores => E.api('gm', { action: 'access_save', stores });
+  const save = stores => accSave(E, stores);
   for (const [s, code] of [[{ store_id: 'F01', input_emp: 'E17' }, 'bad_candidate'], [{ store_id: 'F01', input_emp: 'E18' }, 'bad_candidate'],
     [{ store_id: 'F01', input_emp: 'NOPE' }, 'bad_candidate'], [{ store_id: 'F01', input_emp: 'E3' }, 'bad_candidate'], [{ store_id: 'F01', input_emp: 'E11' }, 'bad_candidate'],
     [{ store_id: 'F01', viewer_emps: ['E12'] }, 'bad_candidate'], [{ store_id: 'F01', viewer_emps: ['E2'] }, 'bad_candidate'], [{ store_id: 'F01', viewer_emps: ['E18'] }, 'bad_candidate'],
@@ -420,7 +439,7 @@ test('access_save: bad candidates refused (nothing written); the input person ge
   // A stopped AM is not let back in from here.
   assert.equal((await save([{ store_id: 'F06', input_emp: 'E9' }])).body.error, 'member_stopped');
   assert.equal((await E.q(`select enabled from mr_members where user_id=$1`, [U.amoff]))[0].enabled, false);
-  assert.equal((await E.api('am1', { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E13' }] })).status, 403);
+  assert.equal((await E.api('am1', { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E13', expect_version: 0 }] })).status, 403);
 });
 
 test('month_input_save: one month’s own input person (null: back to the store’s); the row waits with nothing written (version 0)', async () => {
@@ -483,7 +502,7 @@ test('Head Chef / Corporate Chef: all live stores, reply, never confirm; added /
   assert.equal((await E.api('gm', { action: 'chef_save', emp_id: 'E11', on: false })).body.error, 'not_found');
   assert.equal((await E.api('gm', { action: 'chef_save', emp_id: 'E11', on: true })).body.action, 'enabled');     // added again: the same row
   // A Head Chef who reports for F06 (staff) becomes chef (same row), and on removal is staff again (still reports for F06).
-  await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F06', input_emp: 'E10' }] });
+  assert.equal((await accSave(E, [{ store_id: 'F06', input_emp: 'E10' }])).status, 200);
   const id0 = (await E.q(`select user_id::text id from mr_members where emp_id='E10' and enabled`))[0].id;
   assert.equal((await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true })).body.action, 'chef');
   assert.equal((await E.q(`select user_id::text id from mr_members where emp_id='E10' and enabled`))[0].id, id0);
@@ -491,7 +510,7 @@ test('Head Chef / Corporate Chef: all live stores, reply, never confirm; added /
   assert.equal((await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: false })).body.action, 'staff');
   assert.deepEqual((await E.pin('pin-E10', { action: 'whoami' })).body.live_stores, ['F06']);
   // As a store's own viewer (still a Head Chef) they see that store too; once the title changes, only where they report.
-  await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E10'] }] });
+  assert.equal((await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E10'] }])).status, 200);
   assert.deepEqual((await E.pin('pin-E10', { action: 'whoami' })).body.live_stores, ['F01', 'F06']);
   await E.q(`update employees set title='Sous Chef' where id='E10'`);
   assert.deepEqual((await E.pin('pin-E10', { action: 'whoami' })).body.live_stores, ['F06']);
@@ -505,7 +524,7 @@ test('Head Chef / Corporate Chef: all live stores, reply, never confirm; added /
 
 test('access_get perms: who can do what on each live store and why (from mr_can); people who cannot sign in are shown', async () => {
   const E = await setup(); await live(E, { input: false });
-  await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F06', input_emp: null, viewer_emps: ['E11'] }] });
+  assert.equal((await accSave(E, [{ store_id: 'F06', input_emp: null, viewer_emps: ['E11'] }])).status, 200);
   await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true });
   const g = (await E.api('gm', { action: 'access_get', ym: '2026-10' })).body;
   const by = Object.fromEntries(g.perms.map(p => [p.store_id, Object.fromEntries(p.people.map(x => [x.emp_id, x]))]));
@@ -523,6 +542,156 @@ test('access_get perms: who can do what on each live store and why (from mr_can)
   await on(E, { live_input: true });
   const g2 = (await E.api('gm', { action: 'access_get', ym: '2026-10' })).body;
   assert.deepEqual(g2.perms.find(p => p.store_id === 'F01').people.find(x => x.emp_id === 'E12').why, ['input']);
+});
+
+// ---------------------------------------------------------------- v1073: versions on 担当・閲覧設定 and the switches (Codex P2 on 685f49e)
+// Before v1073 a settings screen kept what access_get / whoami gave it and the saves wrote it back whole, without looking at
+// what was saved in between: of two GM / CEO screens open on the same store (or the same switches), the later save quietly
+// put back the earlier one's change. Now each save carries the version the screen read; another version now → 409 conflict
+// and nothing is written; the screen reads again.
+const f01 = x => x.stores.find(s => s.store_id === 'F01');
+const storeRow = async (E, id = 'F01') => (await E.q(`select input_emp, viewer_emps, access_version from mr_stores where env='live' and store_id=$1`, [id]))[0];
+const flagsRow = async E => (await E.q(`select value, version from mr_settings where key='flags'`))[0];
+
+test('v1073 [Codex P2] 担当・閲覧設定: a GM and a CEO screen change different things on the same store — the later save on the old version is refused, nothing is put back; read again, both stay', async () => {
+  const E = await setup(); await live(E);
+  // Both screens read the settings before either saves.
+  const gmScreen = (await E.api('gm', { action: 'access_get', ym: '2026-10' })).body;
+  const ceoScreen = (await E.api('ceo', { action: 'access_get', ym: '2026-10' })).body;
+  const v0 = f01(gmScreen).version;
+  assert.ok(Number.isInteger(v0)); assert.equal(f01(ceoScreen).version, v0);
+  assert.deepEqual(gmScreen.stores.map(s => typeof s.version), gmScreen.stores.map(() => 'number'));
+  // GM: a new input person (the viewers as read).
+  const a = await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E13', viewer_emps: f01(gmScreen).viewers.map(v => v.emp_id), expect_version: v0 }] });
+  assert.equal(a.status, 200, JSON.stringify(a.body)); assert.deepEqual(a.body.stores, [{ store_id: 'F01', version: v0 + 1 }]);
+  // CEO, on the screen read before: adds a viewer, and with it sends back the input person it read (E12).
+  const b = await E.api('ceo', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: f01(ceoScreen).input_emp, viewer_emps: ['E6'], expect_version: v0 }] });
+  assert.deepEqual([b.status, b.body.error], [409, 'conflict']);
+  // Before v1073 this save went through and the input person was E12 again. Now nothing is written.
+  assert.deepEqual(await storeRow(E), { input_emp: 'E13', viewer_emps: [], access_version: v0 + 1 });
+  const ev = await E.q(`select data from mr_events where kind='access' and data->>'store_id'='F01' order by id`);
+  assert.deepEqual(ev.map(e => [e.data.by, e.data.new.input_emp, e.data.new.viewer_emps]).slice(-1), [['GM Test', 'E13', []]]);
+  // The CEO's screen reads again and adds the viewer on the new version: both changes stay.
+  const again = (await E.api('ceo', { action: 'access_get', ym: '2026-10' })).body;
+  assert.equal(f01(again).input_emp, 'E13'); assert.equal(f01(again).version, v0 + 1);
+  const c = await E.api('ceo', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: f01(again).input_emp, viewer_emps: ['E6'], expect_version: f01(again).version }] });
+  assert.equal(c.status, 200, JSON.stringify(c.body));
+  assert.deepEqual(await storeRow(E), { input_emp: 'E13', viewer_emps: ['E6'], access_version: v0 + 2 });
+  // The GM's screen (still on v0 + 1) is now behind as well.
+  assert.equal((await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [], expect_version: v0 + 1 }] })).body.error, 'conflict');
+  assert.deepEqual(await storeRow(E), { input_emp: 'E13', viewer_emps: ['E6'], access_version: v0 + 2 });
+});
+
+test('v1073 [Codex P2] switches: a GM and a CEO screen change different switches — the later save on the old version is refused; read again, both stay', async () => {
+  const E = await setup(); await live(E, { input: false });   // private check on, live input off
+  const gmScreen = (await E.api('gm', { action: 'whoami' })).body;
+  const ceoScreen = (await E.api('ceo', { action: 'access_get', ym: '2026-10' })).body;
+  const v0 = gmScreen.flags_version;
+  assert.ok(Number.isInteger(v0)); assert.equal(ceoScreen.flags_version, v0); assert.equal((await flagsRow(E)).version, v0);
+  // GM turns live input on (sends the private check as read).
+  const a = await E.api('gm', { action: 'settings_save', key: 'flags', value: { private: gmScreen.flags.private, live_input: true }, expect_version: v0 });
+  assert.equal(a.status, 200); assert.equal(a.body.version, v0 + 1); assert.equal(a.body.value.live_input, true);
+  // CEO, on the screen read before: turns the private check off and sends back live input as read (off).
+  const b = await E.api('ceo', { action: 'settings_save', key: 'flags', value: { private: false, live_input: ceoScreen.flags.live_input }, expect_version: v0 });
+  assert.deepEqual([b.status, b.body.error], [409, 'conflict']);
+  assert.deepEqual(await flagsRow(E), { value: { private: true, store_publish: false, notify: false, live_input: true }, version: v0 + 1 });
+  // Read again (whoami says the same as access_get): the private check goes off and live input stays on.
+  const again = (await E.api('ceo', { action: 'whoami' })).body;
+  assert.equal(again.flags_version, (await E.api('ceo', { action: 'access_get', ym: '2026-10' })).body.flags_version);
+  const c = await E.api('ceo', { action: 'settings_save', key: 'flags', value: { private: false, live_input: again.flags.live_input }, expect_version: again.flags_version });
+  assert.equal(c.status, 200);
+  assert.deepEqual(await flagsRow(E), { value: { private: false, store_publish: false, notify: false, live_input: true }, version: v0 + 2 });
+  // While the private check is off, whoami still gives the version (the screen turns it on from there).
+  assert.equal((await E.api('gm', { action: 'whoami' })).body.flags_version, v0 + 2);
+  const settings = await E.q(`select data from mr_events where kind='settings' order by id`);
+  assert.deepEqual(settings.slice(-2).map(e => [e.data.by, e.data.version]), [['GM Test', v0 + 1], ['CEO Test', v0 + 2]]);
+});
+
+test('v1073: the version is required and checked — none (a screen from before v1073) → 410, not a whole number → 400, another version → 409; nothing written in any of them', async () => {
+  const E = await setup(); await live(E);
+  const before = { s: await storeRow(E), f: await flagsRow(E), ev: (await E.q(`select count(*)::int n from mr_events`))[0].n, m: (await E.q(`select count(*)::int n from mr_members`))[0].n };
+  const v = (await storeRow(E)).access_version, fv = (await flagsRow(E)).version;
+  const acc = ver => E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E13', viewer_emps: [], ...(ver === undefined ? {} : { expect_version: ver }) }] });
+  const sw = ver => E.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: false }, ...(ver === undefined ? {} : { expect_version: ver }) });
+  for (const send of [acc, sw]) {
+    assert.deepEqual([(await send(undefined)).status, (await send(undefined)).body.error], [410, 'gone']);
+    assert.equal((await send(null)).status, 410);
+    for (const bad of [-1, 1.5, '1', true, [], {}, 1e9]) assert.deepEqual([(await send(bad)).status, (await send(bad)).body.error], [400, 'bad_value'], JSON.stringify(bad));
+  }
+  assert.equal((await acc(v + 1)).body.error, 'conflict'); assert.equal((await acc(v + 7)).body.error, 'conflict');
+  if (v > 0) assert.equal((await acc(v - 1)).body.error, 'conflict');
+  assert.equal((await sw(fv + 1)).body.error, 'conflict'); assert.equal((await sw(fv - 1)).body.error, 'conflict');
+  const after = { s: await storeRow(E), f: await flagsRow(E), ev: (await E.q(`select count(*)::int n from mr_events`))[0].n, m: (await E.q(`select count(*)::int n from mr_members`))[0].n };
+  assert.deepEqual(after, before, 'nothing written: no change, no history, no member made for E13');
+  // The SQL refuses the same on its own (the handler is not the only check).
+  for (const p of [{}, { expect_version: '1' }, { expect_version: -1 }, { expect_version: 1.5 }]) {
+    await assert.rejects(E.rpc('mr_settings_save', { actor: U.gm, via: 'email', key: 'flags', value: { private: true }, ...p }), /bad_value/, JSON.stringify(p));
+    await assert.rejects(E.rpc('mr_access_save', { actor: U.gm, via: 'email', stores: [{ store_id: 'F01', input_emp: 'E12', ...p }] }), /bad_value/, JSON.stringify(p));
+  }
+  await assert.rejects(E.rpc('mr_settings_save', { actor: U.gm, via: 'email', key: 'flags', value: { private: true }, expect_version: fv + 1 }), /conflict/);
+  await assert.rejects(E.rpc('mr_access_save', { actor: U.gm, via: 'email', stores: [{ store_id: 'F01', input_emp: 'E12', expect_version: v + 1 }] }), /conflict/);
+  // The same store twice in one save is refused.
+  assert.equal((await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', expect_version: v }, { store_id: 'F01', input_emp: 'E13', expect_version: v }] })).body.error, 'bad_value');
+  assert.deepEqual(await storeRow(E), before.s);
+});
+
+test('v1073: several stores in one save — one store behind means nothing is written for any of them; each store has its own version', async () => {
+  const E = await setup(); await live(E);
+  const read = await accVer(E);
+  // Someone else changes F02 only.
+  assert.equal((await accSave(E, [{ store_id: 'F02', input_emp: 'E13', viewer_emps: [] }], 'ceo')).status, 200);
+  const r = await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E14', viewer_emps: [], expect_version: read.F01 },
+    { store_id: 'F02', input_emp: 'E5', viewer_emps: [], expect_version: read.F02 }] });
+  assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+  assert.equal((await storeRow(E, 'F01')).input_emp, 'E12');                       // F01 was up to date, but is not written either
+  assert.equal((await storeRow(E, 'F02')).input_emp, 'E13');
+  // A save that names only the up-to-date store goes through: stores do not share a version.
+  const ok = await E.api('gm', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E14', viewer_emps: [], expect_version: read.F01 }] });
+  assert.equal(ok.status, 200); assert.deepEqual(ok.body.stores, [{ store_id: 'F01', version: read.F01 + 1 }]);
+  assert.deepEqual(Object.fromEntries(Object.entries(await accVer(E)).filter(([k]) => ['F01', 'F02'].includes(k))), { F01: read.F01 + 1, F02: read.F02 + 1 });
+});
+
+test('v1073: what moves a version — a change of the value only, whoever writes it (the stop SQL too); the same values, other columns, the month and the demo do not', async () => {
+  const E = await setup(); await live(E);
+  const v = (await storeRow(E)).access_version;
+  // The same values again: saved, the version stays (the screen's version is still good).
+  const same = await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }]);
+  assert.equal(same.status, 200); assert.deepEqual(same.body.stores, [{ store_id: 'F01', version: v }]);
+  // Viewers in another order is a change.
+  await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E5', 'E6'] }]);
+  await accSave(E, [{ store_id: 'F01', input_emp: 'E12', viewer_emps: ['E6', 'E5'] }]);
+  assert.equal((await storeRow(E)).access_version, v + 2);
+  // The store's name / AM (stores_save), the month's own input person and the demo do not move it.
+  assert.equal((await E.api('gm', { action: 'stores_save', stores: STORES.map(s => ({ ...s, name: s.name + ' 2' })) })).status, 200);
+  assert.equal((await E.api('gm', { action: 'month_input_save', store_id: 'F01', ym: '2026-11', input_emp: 'E13' })).status, 200);
+  assert.equal((await E.api('gm', { action: 'demo_reset' })).status, 200);
+  assert.equal((await storeRow(E)).access_version, v + 2);
+  // A hand-written SQL that changes the input person moves it; one that only sets the version is ignored.
+  await E.q(`update mr_stores set input_emp='E14' where env='live' and store_id='F01'`);
+  assert.equal((await storeRow(E)).access_version, v + 3);
+  await E.q(`update mr_stores set access_version=0 where env='live' and store_id='F01'`);
+  assert.equal((await storeRow(E)).access_version, v + 3);
+  // Switches: the same value keeps the version; the stop SQL (private check off) moves it, so a screen opened before it
+  // cannot turn the private check back on without reading again.
+  const f0 = await flagsRow(E), screen = (await E.api('gm', { action: 'whoami' })).body;
+  assert.equal((await E.api('gm', { action: 'settings_save', key: 'flags', value: f0.value, expect_version: f0.version })).body.version, f0.version);
+  await E.pg.exec('reset role'); await E.pg.exec(dbFile('mid-review-stop.sql')); await E.pg.exec('set role service_role');
+  const f1 = await flagsRow(E);
+  assert.equal(f1.value.private, false); assert.equal(f1.version, f0.version + 1);
+  const stale = await E.api('gm', { action: 'settings_save', key: 'flags', value: { private: true, live_input: screen.flags.live_input }, expect_version: screen.flags_version });
+  assert.deepEqual([stale.status, stale.body.error], [409, 'conflict']);
+  assert.equal((await flagsRow(E)).value.private, false);
+  await E.q(`update mr_settings set version=0 where key='flags'`);
+  assert.equal((await flagsRow(E)).version, f1.version);
+});
+
+test('v1073: the versions SQL stops before changing anything when v2 is not there', async () => {
+  const pg = new PGlite();
+  await pg.exec(`${ROLES_SQL} ${MASTERS} grant select on public.manager_auth, public.employees, public.stores to service_role;`);
+  await pg.exec(V1);
+  await assert.rejects(pg.exec(V3), /20261015090000/);
+  assert.equal((await pg.query(`select count(*)::int n from information_schema.columns where table_name='mr_settings' and column_name='version'`)).rows[0].n, 0);
+  await assert.rejects(new PGlite().exec(V3), /20261015090000/);
 });
 
 // ---------------------------------------------------------------- what is required (spec §4)
@@ -997,7 +1166,7 @@ test('the check before installing: OK on an empty database and on one with the f
     insert into manager_auth values ('${U.gm}','gm','E2'); insert into employees(id, name, role, title) values ('E10','Chef','g4','Head Chef'),('E12','Lead','g3','Server Leader');`);
   const rows = async () => Object.fromEntries((await pg.query(pre)).rows.map(r => [r.check_name, r]));
   let r = await rows();
-  assert.equal(Object.keys(r).length, 13);
+  assert.equal(Object.keys(r).length, 14);
   for (const x of Object.values(r)) assert.match(x.result, /^OK/, x.check_name + ': ' + x.result);
   assert.match(r['mid-review tables (v1066)'].result, /まだ無い/);
   assert.equal(r['Head Chef / Corporate Chef in the employee master'].value, '1'); assert.equal(r['input candidates in the employee master'].value, '2');
@@ -1010,7 +1179,11 @@ test('the check before installing: OK on an empty database and on one with the f
   await pg.exec(V2);
   r = await rows();
   for (const x of Object.values(r)) assert.match(x.result, /^OK/, x.check_name + ': ' + x.result);
-  assert.match(r['mid-review v2 already there'].result, /もう入っている/);
+  assert.match(r['mid-review v2 already there'].result, /もう入っている/); assert.match(r['mid-review versions (v1073) already there'].result, /まだ/);
+  await pg.exec(V3);
+  r = await rows();
+  for (const x of Object.values(r)) assert.match(x.result, /^OK/, x.check_name + ': ' + x.result);
+  assert.match(r['mid-review versions (v1073) already there'].result, /もう入っている/);
   await pg.exec(`alter table employees drop column title`);
   r = await rows();
   assert.match(r['employees.title (Head Chef・入力担当の候補)'].result, /^NG/);
@@ -1024,7 +1197,7 @@ test('the check after installing: every row OK on a fresh install; it points at 
   const E = await setup(); await live(E);
   const post = dbFile('mid-review-postcheck.sql');
   let rows = await E.q(post);
-  assert.equal(rows.length, 24);
+  assert.equal(rows.length, 25);
   for (const r of rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match(rows.find(r => r.check_name === 'live stores without an input person').result, /^参考/);
   await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true });
