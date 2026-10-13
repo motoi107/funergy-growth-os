@@ -170,3 +170,100 @@ test('settings: only GM/CEO switch vendors and stores to auto, and the other sav
   await vm.runInContext('invInVendorSave', vm2)('v2');
   assert.equal(vm2.calls[0].vendor.expect_updated_at, '2026-10-07T20:01:00+00:00');
 });
+
+// v1071 (Moto 2026-10-12): 「この内容で反映」→ the original's name in Drive becomes 日付_業者名_番号 → then QuickBooks.
+const conf1071 = (mode = {}, qb = { to: 'qb@example.invalid', since: '2026-09-29', route: 'external', enabled: false }) =>
+  ({ vendors: [], stores: [], maps: [], settings: { mode, rules: {}, qb, qb_external_enabled: false } });
+
+test('v1071 settings: a GM or CEO turns renaming on after a confirmation; the QuickBooks start is a Hawaii time', async () => {
+  const g = app({ role: 'gm' }); g.M._invIn.config = conf1071(); g.M._invIn.health = {};
+  let h = vm.runInContext('invInSettings', g)();
+  assert.match(h, /原本を月ごとのフォルダに整理する（未照合・照合済み）/);
+  assert.doesNotMatch(h, /業者_請求日_店舗_INV-番号/);
+  assert.match(h, /反映したら原本のファイル名を変える/); assert.match(h, /2026-10-07_Marujuu-Produce_12345\.pdf/);
+  assert.match(h, /反映して、名前を変えた原本だけ/);
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-09-29T00:00">/);       // a date (the earlier form) starts at 0:00
+  vm.runInContext('invInSetting', g)('mode', 'rename', true);
+  assert.equal(g.calls.length, 0, 'nothing is saved before the confirmation');
+  assert.match(g.modals.at(-1), /ChatGPT 側の転送を「台帳を見て送る」に切り替えたのと同じ時/);
+  assert.match(g.modals.at(-1), /invInSaveSetting\(\\?'mode\\?',\{rename:true\}\)/);
+  await vm.runInContext('invInSaveSetting', g)('mode', { rename: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(g.calls.at(-1))), { action: 'settings_save', key: 'mode', value: { rename: true } });
+  // When it was turned on (set by the server) is shown in Hawaii time; a moment as the start is shown as it was saved.
+  g.M._invIn.config = conf1071({ rename: true, rename_since: '2026-10-12T21:30:05.123456+00:00' }, { since: '2026-10-13T09:00:00-10:00', route: 'external' });
+  h = vm.runInContext('invInSettings', g)();
+  assert.match(h, /ON にした時：2026-10-12 11:30（ハワイ）/);
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-10-13T09:00">/);
+  // Saving the start sends the Hawaii time with its offset; an empty field sends nothing.
+  const dom = { 'ivs-qbsince': { value: '2026-10-13T09:00' } };
+  const s = app({ role: 'ceo', dom }); s.M._invIn.config = conf1071();
+  await vm.runInContext('invInSaveQbSince', s)();
+  assert.deepEqual(JSON.parse(JSON.stringify(s.calls)), [{ action: 'settings_save', key: 'qb', value: { since: '2026-10-13T09:00:00-10:00' } }]);
+  dom['ivs-qbsince'].value = '';
+  await vm.runInContext('invInSaveQbSince', s)();
+  assert.equal(s.calls.length, 1); assert.equal(s.toasts.at(-1)[1], 'warning');
+  // Accounting sees the settings but cannot turn renaming on.
+  const o = app({ role: 'office' }); o.M._invIn.config = conf1071(); o.M._invIn.health = {};
+  h = vm.runInContext('invInSettings', o)();
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-09-29T00:00" disabled>/); assert.doesNotMatch(h, /invInSaveQbSince\(\)/);
+  vm.runInContext('invInSetting', o)('mode', 'rename', true);
+  assert.equal(o.modals.length, 0); assert.equal(o.calls.length, 0);
+});
+
+test('v1071 posting tells the new file name, or that the rename is tried again before QuickBooks', async () => {
+  const mk = rename => {
+    const c = app({ api: b => (b.action === 'post' ? { ok: true, version: 2, file_id: 'f1', rename } : { ok: true }) });
+    const d = DOC(); d.doc.vendor_key = 'v2'; d.doc.reasons = [{ code: 'mode_review_vendor' }];
+    c.M._invIn.docId = id(2); c.M._invIn.doc = d; c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} }; return c;
+  };
+  let c = mk({ ok: true, name: '2026-10-06_Vendor-B_2001.pdf' });
+  await vm.runInContext('invInPost', c)();
+  assert.deepEqual(c.calls.map(b => b.action), ['post']);
+  assert.deepEqual(c.toasts.at(-1), ['反映しました。ファイル名：2026-10-06_Vendor-B_2001.pdf', 'success']);
+  c = mk({ ok: false, error: 'drive_update_500' });
+  await vm.runInContext('invInPost', c)();
+  assert.equal(c.toasts.at(-1)[1], 'warning'); assert.match(c.toasts.at(-1)[0], /ファイル名はまだ変えていません.*名前を変えてから QuickBooks へ送ります/);
+  c = mk(null);
+  await vm.runInContext('invInPost', c)();
+  assert.deepEqual(c.toasts.at(-1), ['反映しました', 'success']);
+  // Posting together counts the originals not renamed yet.
+  const b = app({ api: x => ({ ok: true, rename: x.doc_id === id(1) ? { ok: false, error: 'drive_update_500' } : { ok: true, name: 'n.pdf' } }) });
+  const rs = rows(); rs[4].reasons = [{ code: 'mode_review_vendor' }];
+  b.M._invIn.review = { rows: rs, total: 5 };
+  await vm.runInContext('invInBatchPost', b)();
+  assert.match(b.toasts.at(-1)[0], /反映しました：2 件.*ファイル名をまだ変えていない：1 件/); assert.equal(b.toasts.at(-1)[1], 'warning');
+});
+
+test('v1071 one invoice: the original shows its file name and whether it was renamed', () => {
+  const c = app(); c.M._invIn.config = { vendors: [], maps: [], stores: [], settings: { mode: { rename: true } } };
+  const d = DOC(); d.file = { drive_file_id: 'abcDEF123', current_name: 'Scanned <Oct 7>.pdf', rename_state: 'none' };
+  c.M._invIn.docId = id(2); c.M._invIn.doc = d; c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  let h = vm.runInContext('invInDetail', c)('review');
+  assert.ok(h.includes('Scanned &lt;Oct 7&gt;.pdf') && !h.includes('<Oct 7>'));
+  assert.match(h, /反映すると「日付_業者名_invoice番号」に名前を変えます/);
+  assert.match(h, /原本の中身は変えません（変えるのはファイル名だけ）/); assert.doesNotMatch(h, /このアプリは原本を書き換えません/);
+  d.doc.status = 'posted'; d.file = { ...d.file, current_name: '2026-10-06_Vendor-B_2001.pdf', rename_state: 'done' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /2026-10-06_Vendor-B_2001\.pdf/); assert.match(h, /反映して名前を変えました/);
+  d.file = { ...d.file, rename_state: 'error', rename_error: 'outside_store_folders' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：原本が店舗のフォルダの外へ移されています/);
+  // With renaming off, nothing is promised.
+  c.M._invIn.config.settings.mode.rename = false; d.doc.status = 'review'; d.file = { ...d.file, rename_state: 'none' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.doesNotMatch(h, /反映すると「日付_業者名_invoice番号」/);
+});
+
+test('v1071 status page: a failed rename is explained and can be retried; originals waiting for their name are counted', () => {
+  const c = app();
+  c.M._invIn.health = { stores: [], qb: { sent: 1 }, qb_settings: { to: 'qb@example.invalid', since: '2026-10-13T09:00:00-10:00', route: 'external', enabled: true }, rename_waiting: 2, drive: {} };
+  c.M._invIn.problems = { files: [{ id: id(7), store_id: 'F06', current_name: 'a.pdf', drive_file_id: 'x1', intake_status: 'posted', organize_status: 'done', drive_state: 'ok',
+    rename_state: 'error', rename_error: 'outside_store_folders' }], qb: [] };
+  const h = vm.runInContext('invInHealth', c)();
+  assert.match(h, /ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：原本が店舗のフォルダの外へ移されています/);
+  assert.ok(h.includes("invInRetry('" + id(7) + "')"));
+  assert.match(h, /名前を変える待ち 2/);
+  assert.match(h, /2026\/10\/13 09:00 より後に入った原本/);
+  c.M._invIn.health.rename_waiting = 0;
+  assert.doesNotMatch(vm.runInContext('invInHealth', c)(), /名前を変える待ち/);
+});

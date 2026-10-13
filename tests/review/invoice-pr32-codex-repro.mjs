@@ -44,7 +44,9 @@ async function post(E,d){const r=await E.api('tok-gm',{action:'post',doc_id:d.id
 
 test('C1: an AI-failed rescan must not be forwarded without duplicate classification',async()=>{
  const E=await setup();try{
-  await intake(E,'ORIGINAL-A','R1'); assert.equal(E.sent.length,1);
+  // Updated by Claude 2026-10-12 (Moto: an original goes to QuickBooks after it is posted and renamed): the first
+  // original is posted by a person here, so that it is forwarded as when this reproduction was written. Codex to confirm.
+  const first=await intake(E,'ORIGINAL-A','R1'); await post(E,first.d); await E.worker(); assert.equal(E.sent.length,1);
   E.drive.file('retaken.pdf',pdf('same invoice different image bytes'),'U6'); E.setAiDown('ai_network');
   await E.worker();
   console.log('C1',JSON.stringify({sent:E.sent.length,files:await E.q('select intake_status,last_error from invoice_files order by ingested_at')}));

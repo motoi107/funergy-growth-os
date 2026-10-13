@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -75,12 +75,15 @@ const CASES = [
     " if d.needs_adjustment or (public.invoice_setting('rules')->>'closed_through' is not null\n     and to_char(coalesce(d.invoice_date, d.effective_date),'YYYY-MM') <= public.invoice_setting('rules')->>'closed_through') then",
     " if d.needs_adjustment and d.status='posted' then"]]],
   // Candidates and queuing check the same thing (double protection), so both are removed together.
+  // From 2026-10-12 an original is forwarded once it is posted (and renamed); a possible duplicate waits in review.
   ['possible duplicates forwarded before a decision', E2E, [['db/invoice-intake.sql',
-    "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review'\n", "   and not exists(select 1 from public.invoice_docs d where false\n"],
+    "  where f.source='drive' and f.current_sha256 is not null and f.intake_status='posted'\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status in ('review','posted')\n"],
+    ['db/invoice-intake.sql', "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')\n", ""],
     ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
   ['C1: a failed or pending reading is forwarded', E2E, [['db/invoice-intake.sql',
-    "  where f.source='drive' and f.current_sha256 is not null and f.intake_status in ('review','posted')\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')\n"],
-    ['db/invoice-intake.sql', "   and exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256)\n", ""],
+    "  where f.source='drive' and f.current_sha256 is not null and f.intake_status='posted'\n", "  where f.source='drive' and f.current_sha256 is not null and f.intake_status not in ('pending','processing','duplicate','unsupported')\n"],
+    ['db/invoice-intake.sql', "   and exists(select 1 from public.invoice_docs d0 where d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted')\n", ""],
+    ['db/invoice-intake.sql', "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')\n", ""],
     ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
   ['C2: a correction forgets the records registered in the app', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, app));", "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, []));"]]],
@@ -181,6 +184,63 @@ const CASES = [
   ['事務Crew: cannot post into a closed month', E2E, [['db/invoice-intake.sql',
     "  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n  who := actor::text; mode := 'manual';",
     "  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n  if public.invoice_actor_role(actor) = 'office_crew' and coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'forbidden'; end if;\n  who := actor::text; mode := 'manual';"]]],
+  // Moto 2026-10-12: 「この内容で反映」 → the original is named 日付_業者名_番号 → then it goes to QuickBooks.
+  ['QB: a posted original waiting for its name is a candidate', E2E, [
+    ['db/invoice-intake.sql', "   and f.id not in (select w.file_id from public.invoice_rename_waiting_all() w)\n", ""]]],
+  ['QB: a posted original waiting for its name can be queued', E2E, [
+    ['db/invoice-intake.sql', " if public.invoice_rename_waiting(f.id) then return jsonb_build_object('queued', false, 'why', 'rename_waiting'); end if;\n", ""]]],
+  ['QB: originals saved before the start moment are forwarded', E2E, [['db/invoice-intake.sql',
+    " if s ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$' then return s::timestamptz; end if;\n",
+    " if s ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$' then return s::date::timestamp at time zone 'Pacific/Honolulu'; end if;\n"]]],
+  ['QB: the candidates ignore the start', E2E, [['db/invoice-intake.sql', "   and f.drive_created_at >= (select public.invoice_qb_since_at())\n", ""]]],
+  ['QB: queuing ignores the start', E2E, [['db/invoice-intake.sql',
+    " if not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then return jsonb_build_object('queued', false, 'why', 'before_since'); end if;\n", ""]]],
+  ['QB: a start date begins at midnight UTC instead of Hawaii', E2E, [['db/invoice-intake.sql',
+    "then return s::date::timestamp at time zone 'Pacific/Honolulu'; end if;\n", "then return s::date::timestamp at time zone 'UTC'; end if;\n"]]],
+  ['QB: a broken start value stops the worker', E2E, [['db/invoice-intake.sql', "exception when others then return null;\nend $$;\n", "end $$;\n"]]],
+  ['QB: any value is accepted as the start time', E2E, [['db/invoice-intake.sql',
+    "  begin perform (v->>'since')::timestamptz; exception when others then raise exception 'bad_value'; end;\n", ""],
+    ['db/invoice-intake.sql', "     or (v->>'since') ~ '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?(Z|[+-]\\d{2}:\\d{2})$')) then raise exception 'bad_value'; end if;\n",
+      "     or true)) then raise exception 'bad_value'; end if;\n"]]],
+  ['rename: the posting leaves the name to the worker', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "      if (ctx.mode.rename && r.file_id) r.rename = await renameNow(a, r.file_id, ctx);\n", ""]]],
+  ['rename: the worker never renames', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      await renameStep(ctx, stats, t0 + budget * 1.3);\n", ""]]],
+  ['rename: a correction of a posted invoice is renamed only later, by the worker', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    if (g.doc.status === 'posted' && ctx.mode.rename && saved) saved.rename = await renameNow(actor, g.doc.file_id, ctx);\n", ""]]],
+  ['rename: a correction of a posted invoice keeps the old name (the key without the version)', E2E, [
+    ['db/invoice-intake.sql', " select f.id, d.id, d.id::text || ':' || d.version\n", " select f.id, d.id, d.id::text\n"],
+    ['db/invoice-intake.sql', "\n  and f.rename_key is distinct from (d.id::text || ':' || d.version)\n", "\n  and f.rename_key is distinct from d.id::text\n"],
+    ['db/invoice-intake.sql', "\n   and f.rename_key is distinct from (d.id::text || ':' || d.version)\n", "\n   and f.rename_key is distinct from d.id::text\n"]]],
+  ['rename: a file outside the store folders is renamed', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "      if (!parents.length || !(parents.every(p => allowed.has(p)) || await staffPlace(parents, store, ctx, t))) throw new Error('outside_store_folders');\n", ""]]],
+  ['rename: a name another file has is taken over', E2E, [['supabase/functions/invoice-intake/handler.mjs', "        name = uniqueName(name, taken);\n", ""]]],
+  ['rename: an invoice posted before renaming was turned on is renamed', E2E, [['db/invoice-intake.sql',
+    "\n  and d.posted_at >= nullif(s.m->>'rename_since', '')::timestamptz\n", "\n"]]],
+  ['rename: the one-file check and the all-files check disagree', E2E, [['db/invoice-intake.sql',
+    "\n   and d.posted_at >= nullif(s.m->>'rename_since', '')::timestamptz\n", "\n"]]],
+  ['rename: renaming that is off still holds QuickBooks', E2E, [
+    ['db/invoice-intake.sql', " where f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'\n", " where f.source='drive' and f.intake_status='posted'\n"],
+    ['db/invoice-intake.sql', "  where f.id=p_file and f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'\n", "  where f.id=p_file and f.source='drive' and f.intake_status='posted'\n"]]],
+  ['rename: renaming that is off renames anyway', E2E, [
+    ['db/invoice-intake.sql', " where f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'\n", " where f.source='drive' and f.intake_status='posted'\n"],
+    ['db/invoice-intake.sql', "  where f.id=p_file and f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'\n", "  where f.id=p_file and f.source='drive' and f.intake_status='posted'\n"],
+    ['supabase/functions/invoice-intake/handler.mjs', "    if (!ctx.mode.rename) return;\n", ""],
+    ['supabase/functions/invoice-intake/handler.mjs', "      if (ctx.mode.rename && r.file_id) r.rename", "      if (r.file_id) r.rename"]]],
+  ['rename: turning it on again renames what was posted while it was off', E2E, [['db/invoice-intake.sql',
+    " if k='mode' and v->>'rename' = 'true' and coalesce(cur->>'rename', 'false') <> 'true' then v := v || jsonb_build_object('rename_since', now()); end if;\n",
+    " if k='mode' and v->>'rename' = 'true' and nullif(cur->>'rename_since', '') is null then v := v || jsonb_build_object('rename_since', now()); end if;\n"]]],
+  ['rename: anyone can choose when renaming started', E2E, [['db/invoice-intake.sql', " if k='mode' and (v ? 'rename_since') then raise exception 'field_not_editable'; end if;\n", ""]]],
+  ['rename: a file with two invoices is renamed after one of them', E2E, [['db/invoice-intake.sql',
+    "  and not exists(select 1 from public.invoice_docs d2 where d2.file_id=f.id and d2.sha256=f.current_sha256 and d2.doc_index>0);\n", ";\n"]]],
+  ['rename: a failed rename is tried again at once on every run', E2E, [['db/invoice-intake.sql',
+    "        else f.rename_state<>'error' or (f.rename_next_at <= now() and f.rename_attempts < 8) end)\n", "        else true end)\n"]]],
+  ['rename: a retry does not clear a failed rename', E2E, [['db/invoice-intake.sql',
+    "  rename_state=case when rename_state='error' then 'none' else rename_state end, rename_attempts=0, rename_next_at=null, updated_at=now()\n", "  updated_at=now()\n"]]],
+  ['rename: the count on the screen counts something else', E2E, [['db/invoice-intake.sql',
+    "  'rename_waiting', (select count(*) from public.invoice_rename_waiting_all()),\n", "  'rename_waiting', (select count(*) from public.invoice_files where rename_state='error'),\n"]]],
+  ['organize renames the original again (old names)', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "      const moved = await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target,",
+    "      const moved = await drive.update(o.drive_file_id, { name: 'organized_' + o.original_name, addParents: parents.includes(target) ? null : target,"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
