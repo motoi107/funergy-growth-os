@@ -232,3 +232,21 @@ test('v1073 店舗の管轄: two sessions put in the same two new stores sent in
   assert.doesNotMatch(y.err, /deadlock/); assert.equal(y.out, ''); assert.match(y.err, /conflict/);
   assert.equal(await C.one(`select string_agg(store_id || ':' || name || ':' || (to_jsonb(s)->>'am_version'), ',' order by store_id) from mr_stores s where env='live' and store_id in ('F07','F08')`), 'F07:Kapolei:1,F08:Ewa:1');
 });
+
+test('v1073 店舗の管轄: two sessions save the same saved store on the same version: the later one waits, then gets conflict and puts nothing back', { skip: SKIP }, async t => {
+  const C = await cluster(t); await fixture(C);
+  const row = async () => C.one(`select name || '|' || coalesce(am_user::text, '-') || '|' || (to_jsonb(s)->>'am_version') from mr_stores s where env='live' and store_id='F01'`);
+  assert.equal(await row(), 'ToriTon|-|1');
+  const gm = C.session(), ceo = C.session();
+  await gm.sendWait('set role service_role'); await ceo.sendWait('set role service_role');
+  const a = await gm.sendWait(`begin; ${rpc('mr_stores_save', { actor: U.gm, via: 'email', stores: [{ store_id: 'F01', name: 'ToriTon Kaimuki', am_user: null, sort: 1, expect_version: 1 }] })}`);
+  assert.match(a.out, /"saved": 1/, a.err);
+  const b = ceo.send(rpc('mr_stores_save', { actor: U.ceo, via: 'email', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 5, expect_version: 1 }] }));
+  await waitFor(async () => b.answered || Number(await C.one(LOCK_WAITS)) > 0, 'the second save to wait or to answer');
+  assert.equal(b.answered, false, 'the second save waits for the first one (the row is held before the compare)');
+  await gm.sendWait('commit');
+  const r = await b.answer;
+  t.diagnostic(JSON.stringify(r));
+  assert.equal(r.out, ''); assert.match(r.err, /conflict/);
+  assert.equal(await row(), 'ToriTon Kaimuki|-|2', 'the first save stays; the older name was not put back');
+});
