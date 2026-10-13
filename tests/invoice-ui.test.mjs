@@ -170,3 +170,171 @@ test('settings: only GM/CEO switch vendors and stores to auto, and the other sav
   await vm.runInContext('invInVendorSave', vm2)('v2');
   assert.equal(vm2.calls[0].vendor.expect_updated_at, '2026-10-07T20:01:00+00:00');
 });
+
+// v1071 (Moto 2026-10-12): 「この内容で反映」→ the original's name in Drive becomes 日付_業者名_番号 → then QuickBooks.
+const conf1071 = (mode = {}, qb = { to: 'qb@example.invalid', since: '2026-09-29', route: 'external', enabled: false }) =>
+  ({ vendors: [], stores: [], maps: [], settings: { mode, rules: {}, qb, qb_external_enabled: false } });
+
+test('v1071 settings: a GM or CEO turns renaming on after a confirmation; the QuickBooks start is a Hawaii time', async () => {
+  const g = app({ role: 'gm' }); g.M._invIn.config = conf1071(); g.M._invIn.health = {};
+  let h = vm.runInContext('invInSettings', g)();
+  assert.match(h, /原本を月ごとのフォルダに整理する（未照合・照合済み）/);
+  assert.doesNotMatch(h, /業者_請求日_店舗_INV-番号/);
+  assert.match(h, /反映したら原本のファイル名を変える/); assert.match(h, /2026-10-07_Marujuu-Produce_12345\.pdf/);
+  assert.match(h, /反映して、名前を変えた原本だけ/);
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-09-29T00:00">/);       // a date (the earlier form) starts at 0:00
+  vm.runInContext('invInSetting', g)('mode', 'rename', true);
+  assert.equal(g.calls.length, 0, 'nothing is saved before the confirmation');
+  assert.match(g.modals.at(-1), /ChatGPT 側の転送を「台帳を見て送る」に切り替えたのと同じ時/);
+  assert.match(g.modals.at(-1), /invInSaveSetting\(\\?'mode\\?',\{rename:true\}\)/);
+  await vm.runInContext('invInSaveSetting', g)('mode', { rename: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(g.calls.at(-1))), { action: 'settings_save', key: 'mode', value: { rename: true } });
+  // When it was turned on (set by the server) is shown in Hawaii time; a moment as the start is shown as it was saved.
+  g.M._invIn.config = conf1071({ rename: true, rename_since: '2026-10-12T21:30:05.123456+00:00' }, { since: '2026-10-13T09:00:00-10:00', route: 'external' });
+  h = vm.runInContext('invInSettings', g)();
+  assert.match(h, /ON にした時：2026-10-12 11:30（ハワイ）/);
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-10-13T09:00">/);
+  // Saving the start sends the Hawaii time with its offset; an empty field sends nothing.
+  const dom = { 'ivs-qbsince': { value: '2026-10-13T09:00' } };
+  const s = app({ role: 'ceo', dom }); s.M._invIn.config = conf1071();
+  await vm.runInContext('invInSaveQbSince', s)();
+  assert.deepEqual(JSON.parse(JSON.stringify(s.calls)), [{ action: 'settings_save', key: 'qb', value: { since: '2026-10-13T09:00:00-10:00' } }]);
+  dom['ivs-qbsince'].value = '';
+  await vm.runInContext('invInSaveQbSince', s)();
+  assert.equal(s.calls.length, 1); assert.equal(s.toasts.at(-1)[1], 'warning');
+  // Accounting sees the settings but cannot turn renaming on.
+  const o = app({ role: 'office' }); o.M._invIn.config = conf1071(); o.M._invIn.health = {};
+  h = vm.runInContext('invInSettings', o)();
+  assert.match(h, /id="ivs-qbsince" style="max-width:220px" value="2026-09-29T00:00" disabled>/); assert.doesNotMatch(h, /invInSaveQbSince\(\)/);
+  vm.runInContext('invInSetting', o)('mode', 'rename', true);
+  assert.equal(o.modals.length, 0); assert.equal(o.calls.length, 0);
+});
+
+test('v1071 posting tells the new file name, or that the rename is tried again before QuickBooks', async () => {
+  const mk = rename => {
+    const c = app({ api: b => (b.action === 'post' ? { ok: true, version: 2, file_id: 'f1', rename } : { ok: true }) });
+    const d = DOC(); d.doc.vendor_key = 'v2'; d.doc.reasons = [{ code: 'mode_review_vendor' }];
+    c.M._invIn.docId = id(2); c.M._invIn.doc = d; c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} }; return c;
+  };
+  let c = mk({ ok: true, name: '2026-10-06_Vendor-B_2001.pdf' });
+  await vm.runInContext('invInPost', c)();
+  assert.deepEqual(c.calls.map(b => b.action), ['post']);
+  assert.deepEqual(c.toasts.at(-1), ['反映しました。ファイル名：2026-10-06_Vendor-B_2001.pdf', 'success']);
+  c = mk({ ok: false, error: 'drive_update_500' });
+  await vm.runInContext('invInPost', c)();
+  assert.equal(c.toasts.at(-1)[1], 'warning'); assert.match(c.toasts.at(-1)[0], /ファイル名はまだ変えていません.*名前を変えてから QuickBooks へ送ります/);
+  c = mk(null);
+  await vm.runInContext('invInPost', c)();
+  assert.deepEqual(c.toasts.at(-1), ['反映しました', 'success']);
+  // Posting together counts the originals not renamed yet.
+  const b = app({ api: x => ({ ok: true, rename: x.doc_id === id(1) ? { ok: false, error: 'drive_update_500' } : { ok: true, name: 'n.pdf' } }) });
+  const rs = rows(); rs[4].reasons = [{ code: 'mode_review_vendor' }];
+  b.M._invIn.review = { rows: rs, total: 5 };
+  await vm.runInContext('invInBatchPost', b)();
+  assert.match(b.toasts.at(-1)[0], /反映しました：2 件.*ファイル名をまだ変えていない：1 件/); assert.equal(b.toasts.at(-1)[1], 'warning');
+});
+
+test('v1071 one invoice: the original shows its file name and whether it was renamed', () => {
+  const c = app(); c.M._invIn.config = { vendors: [], maps: [], stores: [], settings: { mode: { rename: true } } };
+  const d = DOC(); d.file = { drive_file_id: 'abcDEF123', current_name: 'Scanned <Oct 7>.pdf', rename_state: 'none' };
+  c.M._invIn.docId = id(2); c.M._invIn.doc = d; c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  let h = vm.runInContext('invInDetail', c)('review');
+  assert.ok(h.includes('Scanned &lt;Oct 7&gt;.pdf') && !h.includes('<Oct 7>'));
+  assert.match(h, /反映すると「日付_業者名_invoice番号」に名前を変えます/);
+  assert.match(h, /原本の中身は変えません（変えるのはファイル名だけ）/); assert.doesNotMatch(h, /このアプリは原本を書き換えません/);
+  d.doc.status = 'posted'; d.file = { ...d.file, current_name: '2026-10-06_Vendor-B_2001.pdf', rename_state: 'done' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /2026-10-06_Vendor-B_2001\.pdf/); assert.match(h, /反映して名前を変えました/);
+  d.file = { ...d.file, rename_state: 'error', rename_error: 'outside_store_folders' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：原本が店舗のフォルダの外へ移されています/);
+  // With renaming off, nothing is promised.
+  c.M._invIn.config.settings.mode.rename = false; d.doc.status = 'review'; d.file = { ...d.file, rename_state: 'none' };
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.doesNotMatch(h, /反映すると「日付_業者名_invoice番号」/);
+});
+
+test('v1071 status page: a failed rename is explained and can be retried; originals waiting for their name are counted', () => {
+  const c = app();
+  c.M._invIn.health = { stores: [], qb: { sent: 1 }, qb_settings: { to: 'qb@example.invalid', since: '2026-10-13T09:00:00-10:00', route: 'external', enabled: true }, rename_waiting: 2, drive: {} };
+  c.M._invIn.problems = { files: [{ id: id(7), store_id: 'F06', current_name: 'a.pdf', drive_file_id: 'x1', intake_status: 'posted', organize_status: 'done', drive_state: 'ok',
+    rename_state: 'error', rename_error: 'outside_store_folders' }], qb: [] };
+  const h = vm.runInContext('invInHealth', c)();
+  assert.match(h, /ファイル名を変えられませんでした（名前を変えてから QuickBooks へ送ります）：原本が店舗のフォルダの外へ移されています/);
+  assert.ok(h.includes("invInRetry('" + id(7) + "')"));
+  assert.match(h, /名前を変える待ち 2/);
+  assert.match(h, /2026\/10\/13 09:00 より後に入った原本/);
+  c.M._invIn.health.rename_waiting = 0;
+  assert.doesNotMatch(vm.runInContext('invInHealth', c)(), /名前を変える待ち/);
+});
+
+// v1070 (Moto 2026-10-12「USD の表記がないものが取り込みできません。経理が USD の判定をできるように」).
+const usdRow = (n, reasons, version = 3) => ({ id: id(n), version, status: 'review', doc_type: 'invoice', vendor_name: 'Vendor A', invoice_no: String(7000 + n), total_cents: 4200, store_id: 'F06',
+  invoice_date: '2026-10-06', reasons });
+test('review list: a row whose only check is the currency gets a "USD" button that saves USD with its version, then reloads', async () => {
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : { ok: true }) });
+  const rs = [usdRow(11, [{ code: 'currency' }, { code: 'mode_review_store' }]), usdRow(12, [{ code: 'currency' }, { code: 'vendor_unknown' }]), usdRow(13, [{ code: 'mode_review_store' }])];
+  c.M._invIn.review = { rows: rs, total: 3 };
+  const h = vm.runInContext('invInQueueHtml', c)('review');
+  assert.match(h, /通貨の印字なし・USD 以外 → USD なら「USD」を押す/);
+  assert.equal((h.match(/invInUsdRow\(/g) || []).length, 1, 'only the currency-only row');
+  assert.ok(h.includes("invInUsdRow(\\'" + id(11) + "\\')") || h.includes("invInUsdRow('" + id(11) + "')"));
+  assert.match(h, /onclick="event\.stopPropagation\(\);invInUsdRow/);
+  c.M._invIn.loaded.review = 1;
+  await vm.runInContext('invInUsdRow', c)(id(11));
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls)), [{ action: 'edit', doc_id: id(11), version: 3, header: { currency: 'USD' }, lines: [], reason: '経理の確認：通貨は USD', adjustment_ack: false, ack: [] }]);
+  assert.equal(c.M._invIn.loaded.review, undefined, 'the list is read again (the row can now be posted together)');
+  assert.equal(c.toasts.at(-1)[0], '通貨を USD にしました');
+  // A row that is not in the list, or a person who cannot edit, sends nothing.
+  await vm.runInContext('invInUsdRow', c)(id(99));
+  assert.equal(c.calls.length, 1);
+  const other = app({ role: 'crew' }); other.M._invIn.review = { rows: rs, total: 3 };
+  assert.doesNotMatch(vm.runInContext('invInQueueHtml', other)('review'), /invInUsdRow/);
+  await vm.runInContext('invInUsdRow', other)(id(11));
+  assert.equal(other.calls.length, 0);
+  // A conflict (someone saved first) is shown and the list is read again.
+  const busy = app({ api: () => ({ status: 409, error: 'conflict' }) }); busy.M._invIn.review = { rows: rs, total: 3 }; busy.M._invIn.loaded.review = 1;
+  await vm.runInContext('invInUsdRow', busy)(id(11));
+  assert.match(busy.toasts.at(-1)[0], /ほかの人が先に更新しました/); assert.equal(busy.M._invIn.loaded.review, undefined);
+});
+
+test('one invoice: "Confirm USD" on the amount row, then "post as shown" saves USD, re-reads and posts', async () => {
+  const before = () => { const d = DOC(); d.doc.vendor_key = 'v2'; d.doc.vendor_name = 'Vendor B'; d.doc.currency = null; d.doc.reasons = [{ code: 'currency' }, { code: 'mode_review_store' }]; d.ai_doc = { vendor_name: 'Vendor B', currency: null }; return d; };
+  const after = before(); after.doc.version = 2; after.doc.currency = 'USD'; after.doc.reasons = [{ code: 'mode_review_store' }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 2 } : b.action === 'get' ? after : { ok: true }) });
+  c.M._invIn.config = { vendors: [{ vendor_key: 'v2', display_name: 'Vendor B' }], maps: [], stores: [] };
+  c.M._invIn.docId = id(2); c.M._invIn.doc = before(); c.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  let h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /通貨の読み：印字なし <button[^>]*onclick="invInSetUsd\(true\)">USD と確かめる<\/button>/);
+  assert.match(h, /次は直してから反映します[^<]*通貨の印字なし/);
+  // Posting without confirming sends nothing.
+  await vm.runInContext('invInConfirm', c)();
+  assert.equal(c.calls.length, 0);
+  vm.runInContext('invInSetUsd', c)(true);
+  h = vm.runInContext('invInDetail', c)('review');
+  assert.match(h, /通貨は USD（「この内容で反映する」で保存して反映）/);
+  assert.match(h, /通貨は USD と確かめた（反映するときに保存）/);
+  assert.doesNotMatch(h.slice(h.indexOf('経理の確認（4 項目）')), /通貨の印字なし/);
+  assert.doesNotMatch(h, /次は直してから反映します/);
+  assert.doesNotMatch(h, /USD と確かめる/);
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('invInCollectEdits', c)(c.M._invIn.doc.doc, []).header)), { currency: 'USD' });
+  // Undo puts it back.
+  vm.runInContext('invInSetUsd', c)(false);
+  assert.match(vm.runInContext('invInDetail', c)('review'), /USD と確かめる/);
+  vm.runInContext('invInSetUsd', c)(true);
+  await vm.runInContext('invInConfirm', c)();
+  assert.deepEqual(c.calls.map(b => b.action), ['edit', 'get', 'post']);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls[0].header)), { currency: 'USD' });
+  assert.equal(c.calls[2].version, 2);
+  // A currency the AI read as something else can be confirmed the same way; the read value is shown (escaped).
+  const x = app(); const d = before(); d.ai_doc.currency = '<b>JPY</b>';
+  x.M._invIn.docId = id(2); x.M._invIn.doc = d; x.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  const hx = vm.runInContext('invInDetail', x)('review');
+  assert.ok(hx.includes('通貨の読み：&lt;b&gt;JPY&lt;/b&gt;') && !hx.includes('<b>JPY</b>'));
+  // No currency reason: no button. Someone who cannot edit: no button.
+  const y = app(); const dy = before(); dy.doc.reasons = [{ code: 'mode_review_store' }];
+  y.M._invIn.docId = id(2); y.M._invIn.doc = dy; y.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  assert.doesNotMatch(vm.runInContext('invInDetail', y)('review'), /USD と確かめる|通貨の読み/);
+  const z = app({ role: 'crew' }); z.M._invIn.docId = id(2); z.M._invIn.doc = before(); z.M._invIn.edits = { version: 1, h: {}, l: {}, reason: '', ack: {} };
+  assert.doesNotMatch(vm.runInContext('invInDetail', z)('review'), /USD と確かめる/);
+});

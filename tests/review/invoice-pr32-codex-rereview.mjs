@@ -21,8 +21,10 @@ if (process.env.INVOICE_REVIEW_UPGRADE === '1') {
  const sqlLine = "const SQL = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');";
  assert.ok(fixtureSource.includes(sqlLine));
  fixtureSource = fixtureSource.replace(sqlLine,
-  "const SQL = fs.readFileSync(new URL('../supabase/migrations/20261007090000_invoice_intake.sql', import.meta.url), 'utf8') + '\\n' + fs.readFileSync(new URL('../supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', import.meta.url), 'utf8') + '\\n' + fs.readFileSync(new URL('../supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', import.meta.url), 'utf8');");
+  "const SQL = fs.readdirSync(new URL('../supabase/migrations/', import.meta.url)).filter(f => /^\\d{14}_invoice_.*\\.sql$/.test(f)).sort().map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\\n');");
  // (Claude 2026-10-07, UI案36: production now also receives 20261007200000.)
+ // (Claude 2026-10-12: every invoice migration in the order production gets them, through 20261012120000 — the test fixture
+ // turns renaming on, which needs the rename record that migration adds. Codex to confirm.)
 }
 const marker = "test('Drive invoice intake works end to end on synthetic data'";
 const boundary = fixtureSource.indexOf(marker);

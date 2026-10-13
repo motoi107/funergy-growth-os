@@ -1,5 +1,30 @@
 # Claude / Codex 共通記録
 
+## 2026-10-12 v1071：Invoice取込 — 反映したら原本の名前を「日付_業者名_番号」に変え、そのあとで QuickBooks へ（Claude・ブランチ `claude/invoice-rename-qb`・PR #49・本番未反映）
+
+- 依頼と決定：Moto さん 10/12 11:56 HST ②「この内容で反映ボタンを押したら、読み取りした Google Drive のファイル名を 日付、業者名、インボイスナンバーの順でファイル名を変更 → ファイル名を変更したらクイックブックスに送信する」。回答（10/12）：名前は `2026-10-07_Marujuu-Produce_12345.pdf`／送るのは ChatGPT 側（この台帳を見て、名前を変えたものだけ。Drive から直接拾うのはやめる）／画面の案は「この形でよい」。PR #48（v1070）を含む（#48 を先にマージ）。仕様は `docs/INVOICE_DRIVE_INTAKE_JA.md` の §11b。
+- サーバー（SQL `20261012120000`・Edge Function `invoice-intake`・`invoice/naming.mjs`）：反映（人・まとめて・自動）したら原本の名前を変える（人が押したときはその場で・新しい名前を返す。変えられなければ反映はそのまま・取込のたびにやり直す（10 分〜12 時間・8 回まで））。置き場所・中身は変えない。店舗のフォルダの外・消えた原本は変えずに取込状況へ。同じ名前は `_2`、Credit memo は `CM-`、番号なしは `INT-…`、中身の差し替わりは `_v2`。反映済みの訂正で名前を作り直す（`rename_key`＝書類の id と版。名前が同じなら Drive は触らない・送り直さない）。書類 2 つのファイル・過去分・ON の前と OFF のあいだに反映したものは変えない。整理（月のフォルダ）は名前を変えなくなった。
+- QuickBooks の台帳：①反映済み ②名前を変え終わった ③`qb.since` より後、の 3 つがそろったものだけ（候補と積む直前の両方）。要確認は積まない。名前の変更が OFF なら反映したものを今の名前で積む。`qb.since` は日付（ハワイの 0 時から・前と同じ）か日時（切り替えの時刻）。おかしな値は保存で断り、入っていても何も積まない。
+- 設定 `mode.rename`（最初は OFF・GM/CEO・確認の画面）。OFF から ON にするたびに、その時刻をサーバーが `rename_since` に入れる（人は入れられない）。
+- 重さ（PGlite・合成・本番の速さは測っていない）：最初の形（1 件ずつの関数を全件に使う）は 1 万件で QuickBooks の候補 約 2 秒（main は約 0.12 秒）。全件をまとめて調べる式 `invoice_rename_waiting_all` にして約 0.14 秒（3 万件で約 0.46 秒）。1 件ずつの式（積む直前）と答えが同じことを毎回の試験で確かめる。
+- アプリ v1071（index.html・sw.js）：設定（スイッチ・QuickBooks の「対象」と「送り始め」）、1 件の画面の原本の欄（ファイル名・変えた／変えられなかった・「原本の中身は変えません」）、反映・まとめて反映・保存の知らせ、取込状況（変えられなかったもの・「今すぐやり直す」・「名前を変える待ち」の数）。
+- 試験（合成データ・本番に接続していない）：`tests/invoice-intake.test.mjs` 85/85（main は 70。名前の変更と QuickBooks の 13 段：どの段でも 1 件ずつの式・全件の式・名前を変える候補・QuickBooks の候補・画面の数がそろうことを確かめる）・invoice-rules 16・invoice-migrations 1（migration を順に流した DB と全体の SQL が同じ）・invoice-ui 13（v1071 の 4 件は v1068 では落ちる）・adapters 5・office-crew 6・review 31・`INVOICE_REVIEW_UPGRADE=1` 2/2・わざと壊した 97 通りすべてで落ちる（最初の回で 1 通り＝「名前を変える待ち」の数に気づかなかったので、Drive で見つからない原本の試験を足した）・esbuild の 1 ファイルで結合 85/85（GET 405・OPTIONS 204・401・403）・確認の SQL を入れる前／あと／2 回目（functions 65→70・rename_after_post false→true）・`tests/*.test.mjs` をファイルごとに main `0dc70b5` と比べて失敗は同じ 23 件（前からの失敗）・static release pass/1071・Chromium（1280・390px）pageerror 0（390px の 1 件の画面の横のはみ出しは main と同じ）。
+- Codex の試験を 3 つ直した（v1071 の動きに合わせた）：`tests/review/invoice-pr32-codex-repro.mjs`（C1：最初の原本を人が反映してから送る）・`invoice-pr32-accounting-repro.mjs`（R7：古い版の naming も同じ版から読む）・`invoice-pr32-codex-rereview.mjs`（`INVOICE_REVIEW_UPGRADE=1` はすべての invoice の migration を順に）。Codex に確かめてほしい。
+- 独立レビュー：**まだ**（アプリもサーバーも）。Codex のレビューもまだ。
+- 入れる順番（Moto さん）：#48 をマージ → `db/invoice-intake-postcheck.sql`（functions 65・rename_after_post false）→ `20261012120000` → postcheck（functions 70・rename_after_post true・rename_on false）→ 関数 `invoice-intake` を 1 ファイルに差し替え → この PR をマージ。入れた直後は何も変わらない（名前の変更は OFF・台帳は今の設定のまま。整理を ON にしていれば、整理のときの名前の付け直しは止まる）。
+- 切り替え：ChatGPT 側に伝言（Drive から直接拾うのをやめ、台帳だけを見る。鍵は SQL で見て別に渡す）→ その時刻に「送り始め」・送る担当「外部の転送」・台帳 ON・外部の転送 ON・名前の変更 ON → 1 件反映して確かめる。ChatGPT 側が Drive から拾ったまま ON にすると、名前の変わったファイルをもう一度送るおそれ。
+
+## 2026-10-12 v1070：Invoice取込 — 経理が通貨を USD と確かめられる（Claude・ブランチ `claude/invoice-usd`・本番未反映）
+
+- 依頼：Moto さん 10/12 11:56 HST「①USD の表記がないものが取り込みできません。経理が USD の判定できる様にしてください。今の仕様だと要確認の取り込み業務が完了できません」。画面の形（1 件の画面の「金額」の行に「USD と確かめる」・要確認の一覧で確かめることが通貨だけの行に「USD」）は Moto さんが 10/12 に選択。
+- 原因：通貨の印字が無い・USD 以外と読んだ invoice は理由 `currency`（直さないと反映できない）。サーバーは通貨の訂正を受けるが、画面に通貨を直すところが無かった。
+- 変えたもの（index.html・sw.js だけ。サーバー・SQL は変えない）：1 件の画面の金額の行に通貨の読みと「USD と確かめる」／「取り消す」（「この内容で反映する」で保存 → 読み直し → 反映。押したあとは通貨の「確認すること」を緑で「USD と確かめた」に）。一覧の「USD」はその場で `edit`（版つき・`header:{currency:'USD'}`・理由「経理の確認：通貨は USD」）→ 一覧を読み直す。確かめることの言葉を「通貨の印字なし・USD 以外 → USD なら「USD」を押す」に。仕様は `docs/INVOICE_DRIVE_INTAKE_JA.md` §14b の下。
+- 試験（合成データ）：`tests/invoice-ui.test.mjs` 9/9（足した 2 つは v1067 で落ちる）・`tests/invoice-intake.test.mjs` に 1 件（通貨の印字なし・「US$」の 2 通り：反映は 409、USD を保存すると理由が消えて反映できる・事務Crew で）・invoice の関連 122/122・office-crew・signin-keep・pin-admin-email・toast-session 35/35・static release pass/1070・Chromium（1280・390px・通信はすべて止めて）で一覧と 1 件の画面、pageerror 0・横スクロールなし。
+- 独立レビュー：**まだ**。Codex のレビューもまだ。
+- 版：1068（PR #46）・1069（PR #45）が main に入ったので、main `0dc70b5` を取り込んだ（版は 1070 のまま・中身は変えていない）。
+- 別の手（今でも使える）：設定（GM・CEO）の「通貨の書いていない invoice」を「USD とみなす」にすると、これから読む分は最初から USD（すでに要確認の分は上の手で確かめる）。
+- 次（②・別の PR）：反映したら Drive の原本の名前を「請求日_業者名_番号」（例 `2026-10-07_Marujuu-Produce_12345.pdf`）に変え、そのあと QuickBooks へ。送るのは今の ChatGPT 側（台帳を見て、名前を変えたものだけを送る形に直す）。Moto さん 10/12 に選択。→ PR #49（v1071）で実装（上）。
+
 ## 2026-10-12 v1067：PIN の一覧・リセット・店舗PIN・機密情報はメール認証で開く（Claude・ブランチ `claude/pin-admin-email`・本番未反映）
 
 - 依頼と決定：Moto さん 10/12（Claude の報告と提案に「はいお願いします」、画面の 2 点に「１と２確認しました、進めてください」）。サーバー側（Edge Function `auth-pin`・`ob-private` の v1067 と、回数の制限の表 `auth_pin_guard`）は Moto さんが 10/12 10:5x HST に本番へ入れた（SQL の確認はすべて true）。**サーバーのソース・変えた理由はリポジトリに書かない**（Moto さんに直接）。

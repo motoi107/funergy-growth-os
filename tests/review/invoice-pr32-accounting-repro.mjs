@@ -63,9 +63,12 @@ test('R6: learning an invoice vendor alias must preserve a concurrent stop and o
 
 test('R7: upgrading a legacy unreadable line amount must not mark it safe for batch posting', async () => {
   // Run the actual previously reviewed rules/handler/SQL, then apply the new production migration.
-  // Other imported modules are unchanged between the two commits.
+  // Other imported modules are unchanged between the two commits, except naming.mjs (Claude 2026-10-12: the posted-name
+  // change replaced the function that handler imports), which is taken from the same commit too.
   const rules = moduleUrl(show('invoice/rules.mjs'), new URL('invoice/rules.mjs', root));
-  const handler = moduleUrl(show('supabase/functions/invoice-intake/handler.mjs').replace("'../../../invoice/rules.mjs'", JSON.stringify(rules)),
+  const naming = moduleUrl(show('invoice/naming.mjs'), new URL('invoice/naming.mjs', root));
+  const handler = moduleUrl(show('supabase/functions/invoice-intake/handler.mjs').replace("'../../../invoice/rules.mjs'", JSON.stringify(rules))
+    .replace("'../../../invoice/naming.mjs'", JSON.stringify(naming)),
     new URL('supabase/functions/invoice-intake/handler.mjs', root));
   let oldPrefix = prefix.replace("'../supabase/functions/invoice-intake/handler.mjs'", JSON.stringify(handler));
   const sqlDeclaration = "const SQL = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');";

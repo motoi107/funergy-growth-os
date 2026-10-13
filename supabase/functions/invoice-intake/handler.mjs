@@ -4,7 +4,7 @@
 import { callModel, PROMPT_VERSION } from '../../../invoice/extract.mjs';
 import { evaluate, applyDuplicates } from '../../../invoice/rules.mjs';
 import { sha256Hex, contentSignature, classifyDuplicates, aliasKey } from '../../../invoice/dedupe.mjs';
-import { organizedName, uniqueName, monthFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
+import { postedName, uniqueName, monthFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
 import { hstDate } from '../../../invoice/dates.mjs';
 import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../invoice/drive.mjs';
 
@@ -238,6 +238,8 @@ export function createHandler(deps) {
     return null;
   }
 
+  // Files the original by invoice month (year / month / 未照合 or 照合済み). The name is not changed here: a posted original is
+  // named 日付_業者名_番号 by renameOne (Moto 2026-10-12), wherever it is.
   async function organizeOne(o, ctx, stats) {
     const store = ctx.stores.find(s => s.store_id === o.store_id);
     try {
@@ -262,19 +264,65 @@ export function createHandler(deps) {
       const y = await ensureFolder(store, store.root_folder_id, mf.year, 'year');
       const m = await ensureFolder(store, y, mf.month, 'month');
       const target = await ensureFolder(store, m, o.target === 'reconciled' ? FOLDER.reconciled : FOLDER.unreconciled, o.target);
-      const ext = extensionFor(o.original_name, g.file.mimeType);
-      let name = organizedName({ vendor: o.vendor_name, invoiceDate: o.invoice_date, store: store.label, docType: o.doc_type,
-        invoiceNo: o.invoice_no, internalNo: o.internal_no, ext, suffix: o.version_no > 1 ? 'v' + o.version_no : null });
-      if (!name) throw new Error('name_not_determined');
-      const taken = (await drive.listNames(target)).filter(x => x.id !== o.drive_file_id).map(x => x.name);
-      name = uniqueName(name, taken);
-      const moved = await drive.update(o.drive_file_id, { name, addParents: parents.includes(target) ? null : target,
+      const moved = await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target,
         removeParents: parents.filter(p => p !== target).join(',') || null });
-      await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: target, name: moved.name || name });
+      // The name Drive has now (a rename done meanwhile by the posting is kept).
+      await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: target, name: (moved && moved.name) || g.file.name });
       stats.organized = (stats.organized || 0) + 1;
     } catch (e) {
       await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: false, target: o.target, error: safeErr(e) });
       stats.organize_errors = (stats.organize_errors || 0) + 1;
+    }
+  }
+
+  // Moto 2026-10-12: 「この内容で反映」 (or an automatic posting) → the original's name in Drive becomes 日付_業者名_番号
+  // (2026-10-07_Marujuu-Produce_12345.pdf) where it is; only then is it queued for QuickBooks. Nothing is moved here. A file
+  // that is no longer in the store's folders (a person moved it away) is not touched: the error is shown and retried.
+  // t: a row of invoice_rename_due. actor: the person whose posting or correction asked for it (null: the worker).
+  async function renameOne(t, ctx, actor) {
+    const store = ctx.all_stores.find(s => s.store_id === t.store_id);
+    let name = null;
+    try {
+      if (!store) throw new Error('store_not_found');
+      const g = await drive.get(t.drive_file_id);
+      if (g.status !== 200 || !g.file || g.file.trashed) throw new Error('original_unavailable_' + (g.status === 200 ? 'trashed' : g.status));
+      const parents = g.file.parents || [];
+      const allowed = new Set([store.upload_folder_id, store.root_folder_id, ...(t.store_folder_ids || []), ...(t.upload_folder_ids || [])].filter(Boolean));
+      if (!parents.length || !(parents.every(p => allowed.has(p)) || await staffPlace(parents, store, ctx, t))) throw new Error('outside_store_folders');
+      name = postedName({ invoiceDate: t.invoice_date, vendor: t.vendor_name, docType: t.doc_type, invoiceNo: t.invoice_no, internalNo: t.internal_no,
+        ext: extensionFor(t.original_name, g.file.mimeType), version: t.version_no });
+      if (!name) throw new Error('name_not_determined');
+      if (g.file.name !== name) {
+        // Another file in the same folder already has this name: "_2" is added (nothing is overwritten).
+        const taken = [];
+        for (const p of parents) taken.push(...(await drive.listNames(p)).filter(x => x.id !== t.drive_file_id).map(x => x.name));
+        name = uniqueName(name, taken);
+      }
+      if (g.file.name !== name) { const done = await drive.update(t.drive_file_id, { name }); name = (done && done.name) || name; }
+    } catch (e) {
+      await db.rpc('invoice_rename_result', { file_id: t.file_id, ok: false, error: safeErr(e), actor: actor || null });
+      return { ok: false, error: safeErr(e) };
+    }
+    await db.rpc('invoice_rename_result', { file_id: t.file_id, ok: true, key: t.target_key, name, actor: actor || null });
+    return { ok: true, name };
+  }
+
+  // The posting (and a correction of a posted invoice) renames its own original at once. The posting stands whatever
+  // happens here; a failed rename is tried again by the worker.
+  async function renameNow(actor, fileId, ctx) {
+    try {
+      const [t] = await db.rpc('invoice_rename_due', { file_id: fileId, limit: 1 });
+      return t ? await renameOne(t, ctx, actor) : null;
+    } catch (e) { return { ok: false, error: safeErr(e) }; }
+  }
+
+  async function renameStep(ctx, stats, until) {
+    if (!ctx.mode.rename) return;
+    for (const t of await db.rpc('invoice_rename_due', { limit: 10 })) {
+      if (now() > until) break;
+      let r;
+      try { r = await renameOne(t, ctx, null); } catch (e) { r = { ok: false }; }
+      stats[r.ok ? 'renamed' : 'rename_errors'] = (stats[r.ok ? 'renamed' : 'rename_errors'] || 0) + 1;
     }
   }
 
@@ -370,6 +418,8 @@ export function createHandler(deps) {
         await processFile(f, ctx, owner, stats);
       }
       if (ctx.mode.organize) for (const o of await db.rpc('invoice_organize_due', { limit: 10 })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
+      // Posted originals are renamed before the QuickBooks step queues them (Moto 2026-10-12).
+      await renameStep(ctx, stats, t0 + budget * 1.3);
       try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
       await mirrorStep(ctx, stats);
       await integrityStep(ctx, stats);
@@ -498,6 +548,8 @@ export function createHandler(deps) {
       reasons: result.reasons, content_sig: h.content_sig, lines_sum_cents: h.lines_sum_cents, adjustment_ack: !!b.adjustment_ack,
       ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [],
       learn_alias: !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw)) });
+    // A correction of a posted invoice (date, vendor, number) gives its original the new name at once (Moto 2026-10-12).
+    if (g.doc.status === 'posted' && ctx.mode.rename && saved) saved.rename = await renameNow(actor, g.doc.file_id, ctx);
     return saved;
   }
 
@@ -605,6 +657,8 @@ export function createHandler(deps) {
       const r = await db.rpc('invoice_post', { actor: a, doc_id: b.doc_id, version: b.version, reason: b.reason || '', ack: b.ack || [], adjustment_ack: !!b.adjustment_ack, supersedes: b.supersedes || null });
       const ctx = await context();
       if (ctx.mode.organize && r.file_id) await db.rpc('invoice_organize_request', { file_id: r.file_id, target: 'unreconciled' });
+      // Moto 2026-10-12: 「この内容で反映」 → the original's name becomes 日付_業者名_番号 now; QuickBooks follows (worker).
+      if (ctx.mode.rename && r.file_id) r.rename = await renameNow(a, r.file_id, ctx);
       return r;
     },
     reassign: (a, b) => db.rpc('invoice_reassign', { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || '' }),

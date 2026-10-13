@@ -1,7 +1,7 @@
 -- 事前の確認（読むだけ。何も書き換えません）
 -- Supabase の SQL Editor に貼って Run。出てきた行の result がすべて OK で始まっていれば migration（db/invoice-intake.sql）に進んでください。
 -- NG・STOP が 1 つでもあれば、migration は流さずに結果の画面を Claude に見せてください。
--- 確かめる対象は、この migration が作る表 16・関数 65 の名前だけ（別の仕組みの invoice_uploads などは対象外・参考として表示）。
+-- 確かめる対象は、この migration が作る表 16・関数 70 の名前だけ（別の仕組みの invoice_uploads などは対象外・参考として表示）。
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -10,8 +10,9 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_latest_prices', 'invoice_lease', 'invoice_list', 'invoice_map_save', 'invoice_map_seed', 'invoice_mark', 'invoice_mirror_apply',
    'invoice_mirror_due', 'invoice_organize_due', 'invoice_organize_request', 'invoice_organize_result', 'invoice_post', 'invoice_price_history_list',
    'invoice_price_insert', 'invoice_price_ref', 'invoice_problems', 'invoice_qb_candidates', 'invoice_qb_enqueue', 'invoice_qb_external_key',
-   'invoice_qb_external_list', 'invoice_qb_external_reserve', 'invoice_qb_reserve', 'invoice_qb_result', 'invoice_qb_sweep', 'invoice_reassign',
-   'invoice_reconcile', 'invoice_registered', 'invoice_relate', 'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
+   'invoice_qb_external_list', 'invoice_qb_external_reserve', 'invoice_qb_reserve', 'invoice_qb_result', 'invoice_qb_since_at', 'invoice_qb_sweep', 'invoice_reassign',
+   'invoice_reconcile', 'invoice_registered', 'invoice_relate', 'invoice_rename_due', 'invoice_rename_result', 'invoice_rename_waiting', 'invoice_rename_waiting_all',
+   'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
    'invoice_stage', 'invoice_store_folder', 'invoice_store_save', 'invoice_vendor_save', 'invoice_vendor_seed', 'invoice_whoami',
    'invoice_worker_context', 'invoice_worker_key']) as f)
 select '1. GM/CEO などの登録表（manager_auth）がある' as check_item,
