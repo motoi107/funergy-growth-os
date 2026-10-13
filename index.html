@@ -553,7 +553,7 @@ body.shift-wide .main { max-width:1900px; }
   transition: all .15s;
 }
 .phase-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-/* v1069 中間レビュー v2（UI案44 B案）。PC は 1180px 以上で広げる。色だけで伝えない（判定は文字と記号も出す）。スマホ（390px）は 1 列・横にはみ出さない・押すところは 44px 以上 */
+/* v1072 中間レビュー v2（UI案44 B案）。PC は 1180px 以上で広げる。色だけで伝えない（判定は文字と記号も出す）。スマホ（390px）は 1 列・横にはみ出さない・押すところは 44px 以上 */
 @media (min-width:1180px) { body.mr-wide .main { max-width:1500px; } }
 .mr-title { font-size:21px; font-weight:800; margin-bottom:8px; }
 .mr-m { font-size:12px; color:var(--muted); line-height:1.6; }
@@ -6470,7 +6470,7 @@ const NAV_ITEMS = [
   {id:'mgmt_ctrl',   label:'管理統括',    icon:'ti-shield-check',     roles:['ceo','gm','am','chef']},   /* v809: 表示可否は mcCanOpen() が最終判定 */
   {id:'mc_requests', label:'対応依頼',    icon:'ti-inbox',            roles:['ceo','gm','am','sl','crew','chef','office_crew','office']},   /* v811: 自分宛ての通知だけが出る */
   {id:'budget',      label:'予実管理',    icon:'ti-chart-bar',        roles:['ceo','gm','office','am','sl','g4','office_crew','chef']},
-  {id:'mid_review',  label:'中間レビュー', icon:'ti-message-2-check',  roles:['ceo','gm','am','chef','sl']},   /* v1069: 最後の判定は mrCanSee()（curRealRole：CEO・GM・AM・chef・G4・G3。G2 は出さない）。データはサーバーが許したときだけ */
+  {id:'mid_review',  label:'中間レビュー', icon:'ti-message-2-check',  roles:['ceo','gm','am','chef','sl']},   /* v1072: 最後の判定は mrCanSee()（curRealRole：CEO・GM・AM・chef・G4・G3。G2 は出さない）。データはサーバーが許したときだけ */
   {id:'foodcost',    label:'原価率(FC)',   icon:'ti-receipt',          roles:['ceo','gm','office','am','sl','office_crew','chef']},
   {id:'menu',        label:'メニュー',    icon:'ti-tools-kitchen-2',  roles:['ceo','gm','office','am','sl','chef']},
   {id:'recipe',      label:'原価登録',    icon:'ti-receipt-2',        roles:['ceo','gm','office','am','sl','chef']},
@@ -6609,7 +6609,7 @@ const CHEF_GROUPS = [
   {id:'gc_home', label:'本部', icon:'ti-building-skyscraper',
     children:['dashboard','cc_plan','mgmt_ctrl','mc_requests','notifications','approval']},
   {id:'gc_budget', label:'予実', icon:'ti-chart-bar',
-    children:['budget','mid_review','labor','foodcost','kpi_master']},   /* v1069: 中間レビュー（Head Chef・Corporate Chef） */
+    children:['budget','mid_review','labor','foodcost','kpi_master']},   /* v1072: 中間レビュー（Head Chef・Corporate Chef） */
   {id:'gc_tasks', label:'ワークセンター', icon:'ti-layout-kanban',
     children:['tasks','lala']},
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
@@ -6655,7 +6655,7 @@ function groupsForRole() {
   try { if (typeof mcCanOpen==='function' && !mcCanOpen()) groups = groups.filter(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')<0 || g.children.length>1; })
         .map(function(g){ return (g.children||[]).indexOf('mgmt_ctrl')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mgmt_ctrl';})}) : g; })
         .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
-  /* v1066・v1069: 中間レビューの入口は mrCanSee()（curRealRole）が決める。ROLE_ALIAS で g2→sl・g4→am になるため roles だけでは足りない */
+  /* v1066・v1072: 中間レビューの入口は mrCanSee()（curRealRole）が決める。ROLE_ALIAS で g2→sl・g4→am になるため roles だけでは足りない */
   try { if (typeof mrCanSee==='function' && !mrCanSee())
         groups = groups.map(function(g){ return (g.children||[]).indexOf('mid_review')>=0 ? Object.assign({}, g, {children:g.children.filter(function(c){return c!=='mid_review';})}) : g; })
         .filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
@@ -16233,7 +16233,7 @@ function skeletonMain(){
   var tiles='<div style="display:flex;gap:10px;margin-bottom:12px"><div class="skel" style="flex:1;height:64px;border-radius:12px"></div><div class="skel" style="flex:1;height:64px;border-radius:12px"></div><div class="skel" style="flex:1;height:64px;border-radius:12px"></div></div>';
   return '<div style="padding:2px" aria-busy="true">'+head+tiles+card()+card()+'</div>';
 }
-/* ===== v1066 中間レビュー（非公開版）— v2（段階 4-2・UI案44 B案・v1069）：店舗の 1 ページ＝カード 1 列（結果 → 担当者評価 → コメント・対策 → 返信）・担当・閲覧設定 =====
+/* ===== v1066 中間レビュー（非公開版）— v2（段階 4-2・UI案44 B案・v1072）：店舗の 1 ページ＝カード 1 列（結果 → 担当者評価 → コメント・対策 → 返信）・担当・閲覧設定 =====
    仕様は docs/MID_REVIEW_V2_JA.md。
    ・本文・返信・設定はサーバー（Edge Function mid-review と非公開の表 mr_*）にだけ置く。共通データ（app_state）・端末の保存には書かない。
    ・入り方は 2 つ。PIN のログインの印（window._hwSession を本文の pin_session で送る）か、メールの認証（_botSession・Invoice取込と業務Bot と同じ）。

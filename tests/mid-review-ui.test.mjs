@@ -1,4 +1,4 @@
-// 中間レビュー v2（段階 4-2・UI案44 B案・v1069）: the real screen module from index.html in a VM, talking to the real
+// 中間レビュー v2（段階 4-2・UI案44 B案・v1072）: the real screen module from index.html in a VM, talking to the real
 // mid-review handler and the real SQL (all three migrations, PGlite) with the v2 demo. Synthetic data only; no network,
 // no storage. Email sign-in is a stand-in for Supabase Auth; the PIN sign-in's mark is checked by a stand-in verifier.
 import test from 'node:test';
@@ -132,7 +132,7 @@ const get = async (S, store, who = 'gm', env = 'demo', ym = '2026-10') => S.api(
 const cardOf = (h, id) => { const i = h.indexOf('id="mr-k-' + id + '"'); assert.ok(i >= 0, 'card ' + id); const j = h.indexOf('<div class="mr-k ', i + 10); return h.slice(h.lastIndexOf('<div', i), j < 0 ? h.length : j); };
 const dataCodes = h => [...h.matchAll(/data-codes="([^"]*)"/g)].flatMap(m => m[1].split(' '));
 
-test('the module is in index.html; the entry is wired; nothing of the review goes to shared app data; v1069', () => {
+test('the module is in index.html; the entry is wired; nothing of the review goes to shared app data; v1072', () => {
   assert.ok(MOD.length > 20000, 'module markers');
   assert.match(html, /\{id:'mid_review',\s+label:'中間レビュー', icon:'ti-message-2-check',\s+roles:\['ceo','gm','am','chef','sl'\]\}/);
   assert.match(html, /children:\['budget','mid_review','labor','foodcost','kpi_master'\]\}/);
@@ -140,8 +140,8 @@ test('the module is in index.html; the entry is wired; nothing of the review goe
   assert.match(html, /case 'mid_review':\s+el\.innerHTML = renderMidReview\(\)/);
   assert.match(html, /if\(typeof mrReset==='function'\) mrReset\(\);/);
   assert.doesNotMatch(MOD, /lsSet\(|\bls\('|localStorage|sessionStorage|supaUpsert|pushOpKey|setQBudgetObj|saveQcNote/);
-  assert.match(html, /const APP_VERSION = '1069';/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1069';/);
+  assert.match(html, /const APP_VERSION = '1072';/);
+  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1072';/);
   // The old v1 reply steps are not called any more.
   assert.doesNotMatch(MOD, /'reply_save'|'reply_send'|'reply_delete'|'result_save'|action:'complete'/);
 });
@@ -804,7 +804,7 @@ test('logout clears what the previous person loaded; another sign-in loads again
 });
 
 test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px there, no fixed widths that overflow', () => {
-  const css = html.slice(html.indexOf('/* v1069 中間レビュー v2'), html.indexOf('/* ===== v925'));
+  const css = html.slice(html.indexOf('/* v1072 中間レビュー v2'), html.indexOf('/* ===== v925'));
   assert.ok(css.length > 3000);
   const phone = css.slice(css.indexOf('@media (max-width:820px)'));
   assert.match(phone, /\.mr-pg \{ flex-direction:column/); assert.match(phone, /\.mr-f2 \{ grid-template-columns:minmax\(0,1fr\)/);
