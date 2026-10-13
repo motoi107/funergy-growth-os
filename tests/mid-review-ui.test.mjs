@@ -316,6 +316,15 @@ test('store page (write): every item is a full card — result, rating, comment 
   for (const s of ['前月の振り返り', '今月の進捗', '重点項目（Qコミット）', '相談・支援依頼', '確認・提出']) assert.ok(h.includes(s), s);
   assert.match(h, /<div class="mr-subbar" id="mr-subbar">.*提出の前に あと 9/);
   assert.match(h, /あなたの操作：<b class="">報告を書く/);
+  // This month: misses first (UI案44 B案), then watch, met, no judgement; the meeting tab's order within the same judgement; the flash food cost last.
+  const pos = k => h.indexOf('id="mr-k-cur-' + k + '"');
+  assert.deepEqual(['repeat', 'ppa', 'sales', 'guests', 'labor', 'fc'].map(pos).every((x, i, a) => x > 0 && (!i || a[i - 1] < x)), true);
+  assert.deepEqual(['sales', 'guests', 'ppa', 'repeat', 'labor'].map(k => sn.cur.rows[k].judge), ['ok', 'ok', 'warn', 'miss', 'ok']);
+  // A phone shows short words with the same meaning (CSS picks one): the steps, the banner, the sign-in chip, the title without the year.
+  assert.match(h, /<span class="mr-l-pc">前月の振り返り<\/span><span class="mr-l-sp">1 前月<\/span>/);
+  assert.match(h, /<span class="mr-l-pc">非公開プレビュー<\/span><span class="mr-l-sp">非公開<\/span>/);
+  assert.match(h, /<span class="mr-l-pc">(PIN でログイン中|メールで認証中)：GM Test（GM）<\/span><span class="mr-l-sp">(PIN|メール)：GM Test（GM）<\/span>/);
+  assert.match(h, /<div class="mr-hd-t">川沿い（デモ）　<span class="mr-l-pc">2026 年 <\/span>10 月 の中間レビュー<\/div>/);
 });
 
 test('judgements that cannot be made: last month not final → all six on hold (optional); no target / no data → neutral with the reason, optional', async () => {
@@ -637,11 +646,11 @@ test('確認完了 and its undo: AM confirms the version shown; a newer version 
   assert.equal(a.M().rec.review.submitted_no, 2);
   await a.run('mrConfirm()'); await a.flush(); a.renderPage();
   assert.equal((await get(S, 'D4')).review.status, 'confirmed'); assert.match(a.html, /確認完了：/); assert.doesNotMatch(a.html, /mrUnconfirm\(\)/);
-  const g = app(S); await openStore(g, 'D4'); assert.match(g.html, /確認完了を取り消す（GM・CEO）/);
+  const g = app(S); await openStore(g, 'D4'); assert.match(g.html, /確認完了を取り消す（GM・CEO）/); assert.doesNotMatch(g.html, /期限を変える/);   // not after confirmation
   await g.run('mrUnconfirm()'); await g.flush(); assert.equal((await get(S, 'D4')).review.status, 'submitted');
   // Deadlines: GM sets only the submit date; the reply date stays empty (no default).
-  g.renderPage(); assert.match(g.html, /期限を変える（GM・CEO・任意）/);
-  g.run('_mr.dlOpen=true'); g.renderPage();
+  g.renderPage(); assert.match(g.html, /mr-dlb" onclick="_mr\.dlOpen=true;mrRerender\(\)">期限を変える<\/button>/);
+  g.run('_mr.dlOpen=true'); g.renderPage(); assert.match(g.html, /この店・この月の期限（GM・CEO・どちらも任意/); assert.doesNotMatch(g.html, />期限を変える</);
   g.dom = { 'mr-dl-submit': { value: '2026-10-20' }, 'mr-dl-reply': { value: '' } };
   await g.run('mrDeadlineSave()'); await g.flush();
   assert.deepEqual((await get(S, 'D4')).review.deadlines, { submit: '2026-10-20' });
@@ -717,7 +726,7 @@ test('settings: a PIN GM sees why email is needed (no settings call); an AM cann
   assert.equal((await S.pin('pin-E2', { action: 'access_get', ym: '2026-10' })).error, 'email_required');
   const a = app(S, { who: 'am1', role: 'am' }); await a.show(); a.run('mrOpenSettings()'); assert.match(await a.show(), /GM・CEO だけが開けます/);
   // The PIN GM can still change dates and confirm (no email needed).
-  p.run("mrSetEnv('demo')"); await openStore(p, 'D1'); assert.match(p.html, /期限を変える（GM・CEO・任意）/); assert.match(p.html, /確認完了にする（提出版 1）/);
+  p.run("mrSetEnv('demo')"); await openStore(p, 'D1'); assert.match(p.html, /mr-dlb" onclick="_mr\.dlOpen=true;mrRerender\(\)">期限を変える<\/button>/); assert.match(p.html, /確認完了にする（提出版 1）/);
 });
 
 test('settings: live stores and AMs are saved as before (store master proposals)', async () => {
@@ -812,5 +821,9 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
   assert.match(phone, /\.mr-subbar \{ display:flex; position:sticky; bottom:0/);
   assert.match(css, /\.mr-grid \{ display:grid; grid-template-columns:repeat\(auto-fill, minmax\(min\(100%, 400px\), 1fr\)\)/);
   assert.doesNotMatch(css, /min-width:7\d\dpx/);
+  // Short words on a phone; the number strip only on wider screens (each card has its numbers); blue text links stay blue.
+  assert.match(css, /\.mr-l-sp \{ display:none; \}/); assert.match(phone, /\.mr-l-pc \{ display:none; \} \.mr-l-sp \{ display:inline; \}/);
+  assert.match(phone, /\.mr-crumb \{ display:none; \}/); assert.match(css, /@media \(max-width:640px\) \{ \.mr-strip \{ display:none; \} \}/);
+  assert.match(css, /\.mr-linkb\.mr-blue \{ color:#1f4f9c; \}/);
 });
 
