@@ -10648,6 +10648,10 @@ function _lsOnDemand(key){
      翌月の予算を前もって作って承認するのは通常の運用なので、未来の月は常駐にする。 */
   var m=s.match(/^(?:fc_monthly_|budget_approved_).+_(\d{4}-\d{2})$/);
   if(m){ return m[1] < _lsYmPrev(); }          /* 'YYYY-MM' は文字列比較で日付順になる */
+  /* v1077: 確認済みの仕入れ集計。明細（invoice_purchase_lines_）は開いたときだけ、月の集計は前月より古いものだけ必要時（サーバーが書く・アプリは読むだけ） */
+  if(s.indexOf('invoice_purchase_lines_')===0) return true;
+  var ip=s.match(/^invoice_purchase_(\d{4}-\d{2})$/);
+  if(ip){ return ip[1] < _lsYmPrev(); }
   var p=s.match(/^menu_mix_.+_(\d{4})\.(\d{1,2})$/);
   if(p){
     var _r  = parseInt(p[1],10)*12 + parseInt(p[2],10);
@@ -19903,7 +19907,9 @@ function fcBreakdownSub(scopeStores, days){
   (scopeStores||[]).forEach(function(s){
     var fc=(typeof getFcMonthly==='function')?getFcMonthly(s.id,ym):{};
     beg+=parseFloat(fc.beginInv)||0; endv+=parseFloat(fc.endInv)||0;
-    purch+=(monthInvoiceTotalYm(s.id,ym)||0)+(monthPurchaseTotalYm(s.id,ym)||0);
+    /* v1077: 2026 年 10 月から確認済みの invoice で出す店・月は、原価率と同じ仕入れ（foodCostOf の invoice＋買い出し） */
+    if(typeof ipsOk==='function' && ipsOk(s.id, ym)){ var _fr=foodCostOf(s.id, ym); purch+=(_fr.invoice||0)+(_fr.buy||0); }
+    else purch+=(monthInvoiceTotalYm(s.id,ym)||0)+(monthPurchaseTotalYm(s.id,ym)||0);
     var tn=(typeof monthTransferNetYm==='function')?monthTransferNetYm(s.id,ym):{inAmt:0,outAmt:0};
     tin+=tn.inAmt||0; tout+=tn.outAmt||0;
   });
@@ -19915,7 +19921,8 @@ function fcBreakdownSub(scopeStores, days){
     +_kpiMiniChip(t('当月仕入','Purchases'), m(purch), '', false)
     +_kpiMiniChip(t('食材移動(純)','Transfer net'), netStr, '', false)
     +_kpiMiniChip(t('当月棚(期末)','End inv'), m(endv), endv>0?'':t('未入力','not entered'), true)
-    +'</div>';
+    +'</div>'
+    +((typeof ipsFcBreakdown==='function') ? ipsFcBreakdown(scopeStores, ym) : '');   /* v1077: 2026 年 10 月から確認済みの invoice */
 }
 /* KPIタイル → タップで内訳ポップアップ（v567） */
 function openKpiDetail(kid){
@@ -20450,7 +20457,9 @@ function storeMonthlyStaff(storeId){
 /* 実数原価: Invoice読取（Receipt買出しは対象店舗で按分）を店舗×日付で集計。手入力foodCostが無い日の実数として使用 */
 function _invDayCostMap(){
   var inv = ls('invoices', [])||[];
-  if (window._idcN===inv.length && window._idc) return window._idc;
+  /* v1077: 確認済みの仕入れ集計が入れ替わったときも作り直す */
+  var _ipsS = (typeof ipsStamp==='function') ? ipsStamp() : '';
+  if (window._idcN===inv.length && window._idcPs===_ipsS && window._idc) return window._idc;
   var m = {};
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
@@ -20458,10 +20467,13 @@ function _invDayCostMap(){
     var iso = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
     var sids = (v.splitStores&&v.splitStores.length)?v.splitStores:(v.storeId?[v.storeId]:[]);
     if(!sids.length) return;
+    /* v1077（Moto 10/14）：2026 年 10 月から、Drive の写しは確認済みの invoice に置き換える（下で請求日に足す） */
+    if(typeof ipsReplacesCopy==='function' && ipsReplacesCopy(v, sids)) return;
     var share = (Number(v.total)||0)/sids.length;
     sids.forEach(function(sid){ (m[sid]=m[sid]||{})[iso]=(m[sid][iso]||0)+share; });
   });
-  window._idc=m; window._idcN=inv.length; return m;
+  if(typeof ipsAddDayCosts==='function') ipsAddDayCosts(m);
+  window._idc=m; window._idcN=inv.length; window._idcPs=_ipsS; return m;
 }
 function dayCostReal(sid, iso){ var m=_invDayCostMap(); return (m[sid]&&m[sid][iso])||0; }
 /* ============================================================
@@ -22202,6 +22214,7 @@ function renderBudget() {
   <div style="margin:0 0 8px">${syncFreshBadge()}</div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
+    <div class="phase-tab${budgetTab==='purchase'?' active':''}" onclick="setBudgetTab('purchase')">${t('仕入れ','Purchases')}</div>
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
     <div class="phase-tab${budgetTab==='annual'?' active':''}" onclick="setBudgetTab('annual')">${t('年間計画','Annual Plan')}</div>
     <div class="phase-tab${budgetTab==='setup'?' active':''}" onclick="setBudgetTab('setup')">${t('予算設定','Budget Setup')}</div>
@@ -22221,6 +22234,7 @@ function renderBudget() {
   if (budgetTab==='minutes') budgetTab='daily';
   if (budgetTab==='initiative') return html + renderInitiative(); // v956: 施策分析。独自の店舗スコープあり
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
+  if (budgetTab==='purchase') return html + renderPurchaseTab();   // v1077: 確認済み invoice の仕入れ（Moto 10/14・UI案48）
   if (budgetTab==='meeting') return html + renderMeetingReview(); // 会議ビュー（中間/月初MTG）
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
@@ -32842,11 +32856,13 @@ function _fcInCost(purpose){
   if(!p) return true;                       /* 未設定＝原価に含める（既存データ互換） */
   return fcCostPurposes().indexOf(p)>=0;
 }
-/* 原価対象のInvoice合計（店舗按分後・削除済み除外・Receipt/Reimburse除外） */
-function monthInvoiceCostYm(storeId, ym){
-  var inv=ls('invoices',[])||[]; var sum=0;
+/* 原価対象のInvoice合計（店舗按分後・削除済み除外・Receipt/Reimburse除外）
+   v1077: opt.noDrive … Drive の取込の写し（src:'drive-intake'）を数えない（確認済みの仕入れ集計に置き換えるとき・ipsLink） */
+function monthInvoiceCostYm(storeId, ym, opt){
+  var inv=ls('invoices',[])||[]; var sum=0; var noDrive=!!(opt&&opt.noDrive);
   inv.forEach(function(v){
     if(!v || v.docType==='Receipt' || v.docType==='Reimburse') return;
+    if(noDrive && v.src==='drive-intake') return;
     if(!_fcInCost(v.purpose)) return;
     var d=_invDate(v); if(!d) return;
     if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
@@ -32891,7 +32907,10 @@ function monthNonCostYm(storeId, ym){
    戻り値: invoice/buy/transfer/begin/end/hasEnd/cost/rate/provisionalPurch/provisionalRate/mode */
 function foodCostOf(storeId, ym, salesOverride){
   var fc=(typeof getFcMonthly==='function')?(getFcMonthly(storeId, ym)||{}):{};
-  var invoice=monthInvoiceCostYm(storeId, ym);
+  /* v1077（Moto 10/14「① B」「10 月から」）：2026 年 10 月から invoice は「確認済み（原価対象）＋アプリで登録した invoice（Drive の取込の外）」。
+     Drive の写しは確認済みの集計に置き換わる（足さない＝二重にしない）。集計が読めない店・月は今までの数え方（ipsLink が ok でない）。 */
+  var _ips=(typeof ipsLink==='function')?ipsLink(storeId, ym):null;
+  var invoice=(_ips&&_ips.ok)?(_ips.confirmed+_ips.manual):monthInvoiceCostYm(storeId, ym);
   var buy=monthPurchaseCostYm(storeId, ym);
   var tnet=(typeof monthTransferNetYm==='function')?(monthTransferNetYm(storeId, ym)||{net:0}):{net:0};
   var begin=parseFloat(fc.beginInv)||0, end=parseFloat(fc.endInv)||0;
@@ -32908,7 +32927,9 @@ function foodCostOf(storeId, ym, salesOverride){
     rate: (hasEnd && sales) ? Math.round((cost/sales)*1000)/10 : 0,
     provisionalRate: (!hasEnd && sales) ? Math.round((purch/sales)*1000)/10 : 0,
     sales:sales,
-    mode: hasEnd ? 'confirmed' : 'provisional'
+    mode: hasEnd ? 'confirmed' : 'provisional',
+    basis: (_ips&&_ips.ok) ? 'confirmed_invoices' : 'all_invoices',   /* v1077 */
+    ips: _ips
   };
 }
 /* 確定/暫定バッジ（全画面共通表示） */
@@ -32918,6 +32939,573 @@ function fcModeBadge(r){
     ? '<span class="tag tag-green" style="font-size:10px">確定</span>'
     : '<span class="tag tag-yellow" style="font-size:10px">暫定 · 期末棚卸待ち</span>';
 }
+/* FUNERGY_PURCHASE_SUMMARY_BEGIN */
+/* ============================================================
+   v1077：確認済み invoice の全店仕入れ集計（Moto 10/14・UI案48）
+   ・サーバー（invoice-intake）が、店舗・業者・月ごとの集計を app_state に書く
+     （invoice_purchase_<月>・invoice_purchase_lines_<月>_<店>・invoice_purchase_status）。アプリは読むだけ。
+     見るのにメールの認証は要らない（Moto「だれでも見れるように・認証とかいらない」）。画面に出すのは今までどおり自分の店（getVisibleStores）。
+   ・A 確認済み＝反映済み・経理の照合済み・QuickBooks へ原本を送った記録がある（台帳の前に Drive に入った原本は照合済みだけ・Moto 10/14）。
+     B 確認済み・未転送／C 確認待ち／D 除外／E 集計保留。
+   ・明細ごとの区分は商品マスター（対応のない明細は業者の区分で仮分類・Moto 10/14）。税・送料・値引きは明細の割合で按分（サーバー）。
+   ・予実管理の原価率（foodCostOf）は 2026 年 10 月から、invoice を「確認済み（原価対象）＋アプリで登録した invoice（Drive の取込の外）」で出す
+     （Moto「① B」「10 月から」）。Drive の写し（src:'drive-intake'）はこの集計に置き換わる（足さない＝二重にしない）。
+     集計が読めない店・月（Drive の取込の外・まだ届いていない・止めてある）は今までの数え方のまま。
+   ・集計の中身はほかの app_state と同じく画面からも書けてしまうので、文字はすべて escapeHtml、数は Number で読む。
+   ============================================================ */
+var IPS_START = '2026-10';
+var IPS_COST = ['food', 'liquor', 'beverage'];
+var _ipsMemo = {}, _ipsAsked = {}, _ipsLines = {}, _ipsRefreshedAt = {};
+var _ipsScope = null, _ipsVendor = null, _ipsSaving = false, _ipsRefs = [];
+/* 画面の onclick に入れる値は形を確かめたものだけ（集計の中身は信用しない） */
+var IPS_RE = { ym:/^\d{4}-\d{2}$/, sid:/^[A-Za-z0-9_-]{1,24}$/, uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, vk:/^[A-Za-z0-9_.:@-]{1,80}$/ };
+function _ipsId(s, re){ s = String(s == null ? '' : s); return re.test(s) ? s : ''; }
+/* 業者の鍵は番号で渡す（表記ゆれの業者名がそのまま鍵になるため） */
+function _ipsRef(key){ var i = _ipsRefs.indexOf(key); if (i < 0) { _ipsRefs.push(key); i = _ipsRefs.length - 1; } return i; }
+
+function ipsKey(ym){ return 'invoice_purchase_' + ym; }
+function _ipsRaw(key){ try { return (typeof _lsStoreGet === 'function') ? _lsStoreGet(key) : null; } catch(e) { return null; } }
+function _ipsParse(key){
+  var raw = _ipsRaw(key); if (!raw) return null;
+  var m = _ipsMemo[key]; if (m && m.raw === raw) return m.val;
+  var v = null; try { v = JSON.parse(raw); } catch(e) { v = null; }
+  _ipsMemo[key] = { raw:raw, val:v };
+  return v;
+}
+function ipsStatus(){ var s = _ipsParse('invoice_purchase_status'); return (s && typeof s === 'object' && !Array.isArray(s)) ? s : null; }
+function ipsOff(){ var s = ipsStatus(); return !!(s && s.off === true); }
+/* 端末に無いものは 1 回だけクラウドから取る（取れたら描き直す）。集計の一覧（status）に無い月は取りに行かない */
+function ipsEnsure(ym){
+  var st = ipsStatus(), keys = [];
+  if (!st) keys.push('invoice_purchase_status');
+  else if (!st.off && st.months && st.months[ym] && !_ipsRaw(ipsKey(ym))) keys.push(ipsKey(ym));
+  keys.forEach(function(k){
+    if (_ipsAsked[k] || typeof pullOpKey !== 'function') return;
+    _ipsAsked[k] = 1;
+    Promise.resolve().then(function(){ return pullOpKey(k); })
+      .then(function(ok){ if (ok && _ipsRaw(k) && typeof _lsRerenderSoon === 'function') _lsRerenderSoon(); }, function(){});
+  });
+}
+function ipsMonth(ym){
+  if (!/^\d{4}-\d{2}$/.test(String(ym || ''))) return null;
+  var v = _ipsParse(ipsKey(ym));
+  if (!v) { ipsEnsure(ym); return null; }
+  return (v && v.v === 1 && v.stores && typeof v.stores === 'object' && !Array.isArray(v.stores)) ? v : null;
+}
+/* その店・その月を確認済みの数字で出せるか（2026 年 10 月から・集計が届いている・止めていない・Drive の取込の店） */
+function ipsOk(sid, ym){
+  if (!ym || ym < IPS_START || ipsOff()) return false;
+  var d = ipsMonth(ym);
+  return !!(d && d.stores[sid] && typeof d.stores[sid] === 'object');
+}
+/* foodCostOf から呼ぶ。ok のとき invoice＝confirmed（確認済み・原価対象）＋manual（アプリで登録した invoice・Drive の写しを除く） */
+function ipsLink(sid, ym){
+  if (!ym || ym < IPS_START) return null;
+  if (ipsOff()) return { ok:false, why:'off' };
+  var d = ipsMonth(ym);
+  if (!d) return { ok:false, why:'not_loaded' };
+  var s = d.stores[sid];
+  if (!s || typeof s !== 'object') return { ok:false, why:'not_intake' };
+  var A = (s.tot && s.tot.A) || {};
+  var manual = 0; try { manual = (typeof monthInvoiceCostYm === 'function') ? (monthInvoiceCostYm(sid, ym, { noDrive:true }) || 0) : 0; } catch(e) { manual = 0; }
+  return { ok:true, confirmed:(Number(A.cost) || 0) / 100, manual:manual, gen:String(d.generated_at || ''), closed:d.closed === true };
+}
+/* 日別の原価（_invDayCostMap）：Drive の写しは、その店・その月の集計が使えるときは数えない（下で確認済みを請求日に足す） */
+function ipsReplacesCopy(v, sids){
+  try {
+    if (!v || v.src !== 'drive-intake' || !sids || !sids.length) return false;
+    var d = _invDate(v); if (!d) return false;
+    var ym = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    return ipsOk(sids[0], ym);
+  } catch(e) { return false; }
+}
+function ipsAddDayCosts(m){
+  if (ipsOff()) return;
+  var st = ipsStatus(); if (!st || !st.months) return;
+  Object.keys(st.months).forEach(function(ym){
+    if (ym < IPS_START) return;
+    var d = ipsMonth(ym); if (!d) return;
+    Object.keys(d.stores).forEach(function(sid){
+      var s = d.stores[sid]; if (!s || !Array.isArray(s.docs)) return;
+      s.docs.forEach(function(x){
+        if (!x || x.cat !== 'A' || !/^\d{4}-\d{2}-\d{2}/.test(String(x.d || ''))) return;
+        var iso = String(x.d).slice(0, 10);
+        (m[sid] = m[sid] || {})[iso] = (m[sid][iso] || 0) + (Number(x.cost) || 0) / 100;
+      });
+    });
+  });
+}
+/* 日別の原価のキャッシュの鍵（集計が入れ替わったら作り直す） */
+function ipsStamp(){
+  var st = ipsStatus(); if (!st) return '';
+  if (st.off) return 'off';
+  return Object.keys(st.months || {}).sort().filter(function(ym){ return ym >= IPS_START; })
+    .map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-'); }).join('|');
+}
+
+/* ---------- 表示の部品 ---------- */
+var IPS_CAT = { A:['確認済み','Confirmed'], B:['確認済み・未転送','Confirmed, not forwarded'], C:['確認待ち','Waiting'], D:['除外','Excluded'], E:['集計保留','Held'] };
+var IPS_WHY = {
+  qb_pending:['QuickBooks へ送る順番待ち','Queued for QuickBooks'], qb_sending:['QuickBooks へ送っているところ','Sending to QuickBooks'],
+  qb_error:['QuickBooks へ送れなかった（やり直し待ち）','Sending failed (will retry)'], qb_unknown:['送れたか分からない（経理が送信の記録を確かめる）','Result unknown (accounting checks the sender)'],
+  qb_none:['まだ台帳に載っていない（名前の変更待ちなど）','Not in the ledger yet (waiting for its new name, etc.)'],
+  review:['反映を待っている（Invoice取込の要確認）','Waiting to be posted (intake review)'], unreconciled:['経理の照合を待っている','Waiting for reconciliation'],
+  discrepancy:['照合で差異あり','Reconciled with a difference'], unreadable:['読み取れない書類','Unreadable document'], no_date:['日付がない','No date'],
+  no_amount:['金額未確定','Amount unknown'],
+  before_start:['Drive の取込を始める前に入った（アプリでの登録で数える・照合が必要）','Taken in before the start (the app entry counts it; check against it)'],
+  deleted_in_app:['アプリで写しが消された（アプリでの登録と照合が必要）','Its app copy was deleted in the app (check against the app entry)'],
+  multi_store:['複数の店舗分が 1 枚（配賦の記録がない）','Several stores on one page (no allocation)'], currency:['USD ではない（換算しない）','Not USD (not converted)'],
+  closed_adjustment:['締め済みの月の調整（今までの手順で）','Closed-month adjustment (existing procedure)'],
+  no_class:['費用区分が決まっていない（業者の区分か商品の対応を決める）','No class (set the vendor class or map the products)'],
+  pre_ledger:['QuickBooks の台帳の前に入った原本（送信の記録なし・照合済みで集計）','Before the QuickBooks ledger (no send record; reconciled is enough)'],
+  rejected:['対象外にした','Rejected'], duplicate:['重複','Duplicate'], superseded:['訂正で置き換えた','Replaced by a correction']
+};
+var IPS_CLS = { food:['食材','Food'], liquor:['お酒','Liquor'], beverage:['飲料','Beverage'], supply:['消耗品','Supplies'], nonfood:['食材以外の業者','Non-food vendor'], unclass:['未分類','Unclassified'] };
+function _ipsL(p){ return t(p[0], p[1]); }
+function ipsMoney(c){
+  c = Math.round(Number(c) || 0); var neg = c < 0; c = Math.abs(c);
+  return (neg ? '−' : '') + '$' + Math.floor(c / 100).toLocaleString('en-US') + '.' + String(c % 100).padStart(2, '0');
+}
+function ipsPct(num, den){ num = Number(num) || 0; den = Number(den) || 0; return den > 0 ? (Math.round(num / den * 1000) / 10).toFixed(1) + '%' : t('算出不可', 'n/a'); }
+function ipsAgo(iso){
+  var ms = Date.parse(iso || ''); if (!isFinite(ms)) return '—';
+  var s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return t('たった今', 'just now');
+  if (s < 3600) return Math.floor(s / 60) + t('分前', ' min ago');
+  if (s < 86400) return Math.floor(s / 3600) + t('時間前', ' h ago');
+  return Math.floor(s / 86400) + t('日前', ' d ago');
+}
+function ipsMD(ymd){ var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || '')); return m ? (parseInt(m[2], 10) + '/' + parseInt(m[3], 10)) : '—'; }
+function ipsWhy(codes){ return (Array.isArray(codes) ? codes : []).map(function(c){ return IPS_WHY[c] ? _ipsL(IPS_WHY[c]) : String(c); }).join('・'); }
+function ipsDriveUrl(fid){ return /^[A-Za-z0-9_-]{10,200}$/.test(String(fid || '')) ? 'https://drive.google.com/file/d/' + fid + '/view' : ''; }
+var IPS_CSS = '<style>.ips-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}'
+  + '.ips-tile{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;min-width:0}'
+  + '.ips-tile .k{font-size:11px;color:var(--muted);font-weight:700}.ips-tile .v{font-size:20px;font-weight:800;margin-top:3px;overflow-wrap:anywhere}'
+  + '.ips-sub{font-size:10px;color:var(--muted);margin-top:2px}'
+  + '.ips-tile .s{font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6}.ips-t{width:100%;border-collapse:collapse}'
+  + '.ips-t td{padding:7px 6px;border-bottom:1px solid var(--border);font-size:12px;vertical-align:middle}.ips-t td.r,.ips-t th.r{text-align:right;white-space:nowrap}'
+  + '.ips-t th{text-align:left;font-size:10.5px;color:var(--muted);font-weight:700;padding:6px;border-bottom:1px solid var(--border);white-space:nowrap}'
+  + '.ips-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}.ips-row{cursor:pointer}.ips-row:hover{background:var(--surface2)}'
+  + '.ips-chip{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:99px;white-space:nowrap}'
+  + '.ips-note{font-size:10.5px;color:var(--muted);line-height:1.75;margin-top:6px}.ips-warn{border-left:4px solid var(--yellow)}'
+  + '@media(max-width:820px){.ips-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.ips-hide-m{display:none}.ips-tile .v{font-size:17px}}'
+  + '</style>';
+function ipsChip(cat){
+  var col = { A:'var(--green)', B:'var(--yellow)', C:'var(--accent)', D:'var(--muted)', E:'var(--red)' }[cat] || 'var(--muted)';
+  return '<span class="ips-chip" style="border:1px solid ' + col + ';color:' + col + '">' + escapeHtml(_ipsL(IPS_CAT[cat] || ['—', '—'])) + '</span>';
+}
+function ipsCan(){ return (typeof invInCanEdit === 'function') ? invInCanEdit() : false; }
+function ipsSum(stores){
+  var z = function(){ return { n:0, c:0, u:0, cost:0, non:0, unc:0, pc:0, pn:0, by:{} }; };
+  var out = { A:z(), B:z(), C:z(), D:z(), E:z(), cr:{ n:0, c:0 }, pre:{ n:0, c:0 }, ad:{ n:0, c:0 }, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 } };
+  (stores || []).forEach(function(s){
+    if (!s || typeof s !== 'object') return;
+    ['A', 'B', 'C', 'D', 'E'].forEach(function(k){
+      var x = s.tot && s.tot[k]; if (!x || typeof x !== 'object') return;
+      var o = out[k];
+      ['n', 'c', 'u', 'cost', 'non', 'unc', 'pc', 'pn'].forEach(function(f){ o[f] += Number(x[f]) || 0; });
+      Object.keys(x.by || {}).forEach(function(b){ var y = x.by[b] || {}, q = o.by[b] || (o.by[b] = { n:0, c:0, u:0 }); q.n += Number(y.n) || 0; q.c += Number(y.c) || 0; q.u += Number(y.u) || 0; });
+    });
+    ['cr', 'pre', 'ad'].forEach(function(k){ var x = s[k] || {}; out[k].n += Number(x.n) || 0; out[k].c += Number(x.c) || 0; });
+    Object.keys(out.cls).forEach(function(k){ out.cls[k] += Number((s.cls || {})[k]) || 0; });
+  });
+  return out;
+}
+function _ipsVKey(v){ return v && v.k ? String(v.k) : '?' + String((v && (v.n || v.vn)) || '').toLowerCase(); }
+/* 業者ごと（全店のときは店をまたいで同じ業者をまとめる） */
+function ipsVendorRows(list){
+  var map = {}, order = [];
+  list.forEach(function(e){
+    (e.s.vendors || []).forEach(function(v){
+      if (!v) return;
+      var k = _ipsVKey(v), m = map[k];
+      if (!m) { m = map[k] = { key:k, k:v.k || null, n:String(v.n || ''), a:{ n:0, c:0, cost:0, non:0, prov:0, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 } }, cr:{ n:0, c:0 }, p:{ n:0, c:0, u:0 }, dn:0, chks:[] }; order.push(k); }
+      var a = v.a || {};
+      ['n', 'c', 'cost', 'non', 'prov'].forEach(function(f){ m.a[f] += Number(a[f]) || 0; });
+      Object.keys(m.a.cls).forEach(function(f){ m.a.cls[f] += Number((a.cls || {})[f]) || 0; });
+      m.cr.n += Number((v.cr || {}).n) || 0; m.cr.c += Number((v.cr || {}).c) || 0;
+      m.p.n += Number((v.p || {}).n) || 0; m.p.c += Number((v.p || {}).c) || 0; m.p.u += Number((v.p || {}).u) || 0;
+      m.dn += Number(v.dn) || 0;
+      m.chks.push({ sid:e.sid, chk:(v.chk && typeof v.chk === 'object') ? v.chk : null, docs:(Number(a.n) || 0) + (Number((v.p || {}).n) || 0) });
+    });
+  });
+  return order.map(function(k){ return map[k]; }).sort(function(x, y){ return (y.a.c - x.a.c) || x.n.localeCompare(y.n); });
+}
+/* そろったか（請求明細と照合した記録）の表示 */
+function ipsChkHtml(chk){
+  if (!chk || chk.s === 'none') return '<span style="color:var(--muted)">' + t('未確認', 'Not checked') + '</span>';
+  var who = chk.by ? escapeHtml(String(chk.by)) : t('経理', 'accounting'), when = ipsMD(String(chk.at || '').slice(0, 10));
+  if (chk.s === 'missing') return '<span class="ips-chip" style="border:1px solid var(--red);color:var(--red)">' + t('足りない', 'Missing') + '</span> <span style="font-size:11px">' + escapeHtml(String(chk.note || '')) + '</span><div style="font-size:10px;color:var(--muted)">' + when + ' ' + who + '</div>';
+  var after = Number(chk.after) || 0;
+  return '<span class="ips-chip" style="border:1px solid ' + (after ? 'var(--yellow)' : 'var(--green)') + ';color:' + (after ? 'var(--yellow)' : 'var(--green)') + '">' + t('そろった', 'All here') + '</span>'
+    + (after ? ' <span style="font-size:11px;color:var(--yellow)">' + t('記録のあとに ' + after + ' 件増えた', after + ' more since') + '</span>' : '')
+    + (chk.sc != null && chk.sc !== '' ? '<div style="font-size:10px;color:var(--muted)">' + t('請求明細 ', 'Statement ') + ipsMoney(chk.sc) + '</div>' : '')
+    + '<div style="font-size:10px;color:var(--muted)">' + when + ' ' + who + '</div>';
+}
+/* この画面に出す店（今までどおり自分の店。本部の人には、その月に実績がある閉店した店も） */
+function ipsStoresFor(d){
+  var vis = (typeof getVisibleStores === 'function') ? getVisibleStores() : [];
+  var out = vis.map(function(s){ return { id:s.id, name:s.name || s.id, store:s }; });
+  var hq = ['ceo', 'gm', 'office', 'office_crew'].indexOf(typeof curRole !== 'undefined' ? curRole : '') >= 0;
+  if (hq && d && d.stores) {
+    var all = (typeof getStoresAll === 'function') ? (getStoresAll() || []) : [];
+    Object.keys(d.stores).forEach(function(sid){
+      if (!_ipsId(sid, IPS_RE.sid) || out.some(function(x){ return x.id === sid; })) return;
+      var s = d.stores[sid]; if (!s || !Array.isArray(s.docs) || !s.docs.length) return;
+      var m = all.find(function(x){ return x && x.id === sid; });
+      out.push({ id:sid, name:(m && m.name) || sid, store:m || { id:sid, name:sid }, closed:true });
+    });
+  }
+  return out;
+}
+function ipsSetScope(v){ _ipsScope = v; _ipsVendor = null; if (typeof renderPage === 'function') renderPage('budget'); }
+function ipsOpenVendor(i){ var k = _ipsRefs[Number(i)]; if (k == null) return; _ipsVendor = String(k); if (typeof renderPage === 'function') renderPage('budget'); }
+function ipsBack(){ _ipsVendor = null; if (typeof renderPage === 'function') renderPage('budget'); }
+function ipsCurYm(){
+  try { return (typeof ymFromOffset === 'function') ? ymFromOffset((typeof dailyMonthOffset !== 'undefined' ? dailyMonthOffset : 0) || 0) : curYm(); }
+  catch(e) { return (typeof curYm === 'function') ? curYm() : ''; }
+}
+/* 最新にする：集計の一覧とその月をクラウドから取り直す */
+function ipsRefresh(ym, quiet){
+  _ipsRefreshedAt[ym] = Date.now();
+  if (typeof pullOpKey !== 'function') return Promise.resolve(false);
+  return Promise.all([pullOpKey('invoice_purchase_status'), pullOpKey(ipsKey(ym))]).then(function(r){
+    _ipsLines = {};
+    if (!quiet && typeof showToast === 'function') showToast(t('仕入れの集計を読み直しました', 'Purchase summary reloaded'), 'success');
+    if (typeof renderPage === 'function' && typeof curPage !== 'undefined' && curPage === 'budget') renderPage('budget');
+    return r[0] && r[1];
+  }, function(){ return false; });
+}
+/* 売上（予実の進捗と同じ：今月は前日まで、過去の月は月の合計） */
+function ipsSales(sid, ym){
+  try {
+    var cur = (typeof curYm === 'function') ? curYm() : '';
+    var c = cumulativeToToday(sid, ym === cur ? null : ym) || {};
+    return Number(ym === cur ? c.actToToday : c.actMonth) || 0;
+  } catch(e) { return 0; }
+}
+/* アプリで登録した invoice（Drive の取込の外。原価率には今までどおり入る） */
+function ipsManualList(sid, ym){
+  var out = [];
+  try {
+    (ls('invoices', []) || []).forEach(function(v){
+      if (!v || v._deleted || v.src === 'drive-intake' || v.docType === 'Receipt' || v.docType === 'Reimburse') return;
+      if (typeof _fcInCost === 'function' && !_fcInCost(v.purpose)) return;
+      var d = _invDate(v); if (!d) return;
+      if ((d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0')) !== ym) return;
+      var sids = _invStoreIds(v); if (!sids.length || sids.indexOf(sid) < 0) return;
+      out.push({ vendor:String(v.vendor || ''), date:d, total:(Number(v.total) || 0) / sids.length, no:String(v.invoiceNo || '') });
+    });
+  } catch(e) {}
+  return out.sort(function(a, b){ return b.date - a.date; });
+}
+
+/* ---------- 予実管理 ›「仕入れ」タブ ---------- */
+function renderPurchaseTab(){
+  var ym = ipsCurYm(), h = IPS_CSS;
+  _ipsRefs = [];
+  if (!_ipsRefreshedAt[ym] || Date.now() - _ipsRefreshedAt[ym] > 300000) { _ipsRefreshedAt[ym] = Date.now(); setTimeout(function(){ ipsRefresh(ym, true); }, 0); }
+  var d = ipsMonth(ym), st = ipsStatus();
+  var stores = ipsStoresFor(d);
+  if (!stores.length) return h + '<div class="card" style="font-size:12px;color:var(--muted)">' + t('表示できる店舗がありません。', 'No store to show.') + '</div>';
+  var wide = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth > 820 : true;
+  if (!_ipsScope || (_ipsScope !== 'ALL' && !stores.some(function(s){ return s.id === _ipsScope; }))) _ipsScope = (stores.length > 1 && wide) ? 'ALL' : stores[0].id;
+  if (stores.length > 1) h += bStoreChips(_ipsScope, 'ipsSetScope', { stores:stores.map(function(s){ return s.store; }) });
+  var ymL = ym.replace('-', t('年', '-')) + t('月', '');
+  var gen = d ? String(d.generated_at || '') : '', checked = st ? String(st.checked_at || '') : '';
+  h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 2px 8px">'
+    + '<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(-1)"><i class="ti ti-chevron-left"></i></button>'
+    + '<b style="font-size:14px">' + escapeHtml(ymL) + '</b>'
+    + '<button class="btn btn-secondary btn-sm" onclick="shiftDailyMonth(1)"><i class="ti ti-chevron-right"></i></button>'
+    + '<span style="flex:1"></span>'
+    + '<span style="font-size:11px;color:var(--muted)">' + t('集計 ', 'Summary ') + (gen ? ipsAgo(gen) : '—') + (checked ? t('・確認 ', ' · checked ') + ipsAgo(checked) : '') + '</span>'
+    + '<button class="btn btn-secondary btn-sm" onclick="ipsRefresh(\'' + _ipsId(ym, IPS_RE.ym) + '\')"><i class="ti ti-refresh"></i> ' + t('最新にする', 'Reload') + '</button></div>';
+  if (st && st.off) return h + '<div class="card ips-warn" style="font-size:12.5px;line-height:1.7">' + t('確認済みの仕入れ集計は止めてあります。予実管理の原価率は、今までの数え方（Drive の写しを含む invoice の合計）で出しています。', 'The confirmed purchase summary is turned off. Food cost uses the previous count (all invoices, including Drive copies).') + '</div>';
+  if (!d) return h + '<div class="card" style="font-size:12.5px;line-height:1.8">' + t('この月の集計はまだ届いていません。Invoice取込のサーバーが集計を作ると、ここに出ます（5 分ごと・反映や照合のあとすぐ）。', 'No summary for this month yet. It appears once the invoice intake server writes it (every 5 minutes, and right after posting or reconciling).')
+    + (ym >= IPS_START ? '<div class="ips-note">' + t('届くまで、予実管理の原価率は今までの数え方で出しています。', 'Until then, food cost uses the previous count.') + '</div>' : '') + '</div>';
+  var stale = checked && (Date.now() - Date.parse(checked) > 3 * 3600000);
+  if (stale) h += '<div class="card ips-warn" style="font-size:12px;line-height:1.7"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ' + t('集計が ' + ipsAgo(checked) + ' から確かめられていません（Invoice取込の 5 分ごとの動きが止まっているかもしれません）。数字は最後に作った時点のものです。', 'The summary has not been checked since ' + ipsAgo(checked) + ' (the intake worker may have stopped). Figures are as of the last summary.') + '</div>';
+  var list = (_ipsScope === 'ALL' ? stores : stores.filter(function(s){ return s.id === _ipsScope; }))
+    .map(function(s){ return { sid:s.id, name:s.name, closed:!!s.closed, s:d.stores[s.id] || null }; });
+  if (_ipsVendor) return h + ipsVendorView(ym, d, list);
+  var withData = list.filter(function(e){ return e.s; });
+  var sum = ipsSum(withData.map(function(e){ return e.s; }));
+  var sales = withData.reduce(function(a, e){ return a + ipsSales(e.sid, ym); }, 0);
+  h += ipsTilesHtml(ym, d, withData, sum, sales);
+  if (list.length > withData.length) h += '<div class="ips-note" style="margin:-2px 2px 8px">' + t('Drive の取込の外の店（今までの数え方）：', 'Stores outside the Drive intake (previous count): ') + list.filter(function(e){ return !e.s; }).map(function(e){ return escapeHtml(e.name); }).join('・') + '</div>';
+  if (_ipsScope === 'ALL' && withData.length > 1) h += ipsStoreTableHtml(ym, withData);
+  h += ipsVendorTableHtml(ym, d, withData);
+  if (_ipsScope !== 'ALL' && withData.length === 1) h += ipsManualHtml(withData[0].sid, ym);
+  h += '<div class="ips-note">' + t('確認済み＝経理の照合済みで、QuickBooks へ原本を送った記録があるもの（QuickBooks の台帳の前に Drive に入った原本は照合済みだけで集計）。QuickBooks の「送った」はメールを送ったところまでで、QuickBooks への登録・記帳の完了ではありません。月は請求日（ハワイ時間）で分けます。税・送料・値引きは明細の金額の割合で分け、商品に対応していない明細は業者の区分で仮に分けています。',
+    'Confirmed = reconciled by accounting, with a record of the original sent to QuickBooks (originals put in Drive before the QuickBooks ledger need reconciliation only). “Sent” means the email was sent, not that QuickBooks booked it. Months follow the invoice date (Hawaii). Tax, shipping and discounts are shared in proportion to line amounts; lines not mapped to a product are classed by the vendor for now.')
+    + (ym >= IPS_START ? t('　予実管理の原価率は、2026 年 10 月から「確認済み（原価対象）＋アプリで登録した invoice（Drive の外）＋買い出し＋食材移動」です。', '　From October 2026, food cost on Budget vs Actual = confirmed (cost) + invoices registered in the app (outside Drive) + receipts + transfers.') : '') + '</div>';
+  return h;
+}
+function _ipsTile(k, v, s, extra){ return '<div class="ips-tile"' + (extra || '') + '><div class="k">' + k + '</div><div class="v">' + v + '</div>' + (s ? '<div class="s">' + s + '</div>' : '') + '</div>'; }
+function _ipsByLine(x, codes){
+  return codes.filter(function(c){ return x.by[c] && x.by[c].n; }).map(function(c){ return escapeHtml(ipsWhy([c])) + ' ' + x.by[c].n + t('件', ''); }).join('<br>');
+}
+function ipsTilesHtml(ym, d, withData, sum, sales){
+  var A = sum.A, B = sum.B, C = sum.C, E = sum.E;
+  var unk = function(x){ return x.u ? t('（金額未確定 ' + x.u + ' 件）', ' (' + x.u + ' amount unknown)') : ''; };
+  var h = '<div class="ips-tiles">';
+  h += _ipsTile(t('確認済みの仕入れ（原価対象）', 'Confirmed purchases (cost)'), ipsMoney(A.cost),
+    t('原本の純額 ', 'Net of originals ') + ipsMoney(A.c) + t('・原価対象外 ', ' · not for cost ') + ipsMoney(A.non)
+    + '<br>' + t('うち業者の区分で仮分類 ', 'Classed by vendor for now ') + ipsMoney(A.pc + A.pn)
+    + (sum.cr.n ? '<br>' + t('返品・クレジット ', 'Credits ') + ipsMoney(sum.cr.c) + '（' + sum.cr.n + t('件）', ')') : '')
+    + (sum.pre.n ? '<br>' + t('台帳の前の原本 ', 'Before the ledger ') + sum.pre.n + t('件（送信の記録なし）', ' (no send record)') : '') + '<br>' + A.n + t('件', ' invoices'));
+  h += _ipsTile(t('確認済み・未転送', 'Confirmed, not forwarded'), ipsMoney(B.c) + ' <span style="font-size:12px">' + B.n + t('件', '') + '</span>', _ipsByLine(B, ['qb_pending', 'qb_sending', 'qb_error', 'qb_unknown', 'qb_none']) + unk(B));
+  h += _ipsTile(t('経理の確認待ち', 'Waiting for accounting'), ipsMoney(C.c) + ' <span style="font-size:12px">' + C.n + t('件', '') + '</span>', _ipsByLine(C, ['review', 'unreconciled', 'discrepancy']) + unk(C));
+  h += _ipsTile(t('集計保留', 'Held'), ipsMoney(E.c) + ' <span style="font-size:12px">' + E.n + t('件', '') + '</span>', _ipsByLine(E, Object.keys(E.by)) + unk(E));
+  // 仕入率（棚卸未反映）＝確認済み（原価対象）÷ 同じ期間の売上
+  var lastA = withData.map(function(e){ return String(((e.s || {}).last || {}).a || ''); }).sort().pop() || '';
+  var today = (typeof bizToday === 'function') ? bizToday() : '';
+  var cur = ym === ((typeof curYm === 'function') ? curYm() : '');
+  h += _ipsTile(t('仕入率（棚卸未反映）', 'Purchase ratio (before stocktake)'), ipsPct(A.cost / 100, sales),
+    t('確認済み（原価対象）÷ 売上 ', 'Confirmed (cost) ÷ sales ') + (sales > 0 ? '$' + Math.round(sales).toLocaleString('en-US') : t('（売上なし）', '(no sales)'))
+    + (cur ? t('（前日まで）', ' (to yesterday)') : '')
+    + (cur && lastA ? '<br>' + t('確認済みの最新の請求日 ', 'Latest confirmed invoice ') + ipsMD(lastA) + (today ? t('・売上は ', ' · sales to ') + ipsMD(ymdPrevDay(today)) + t(' まで', '') : '') : '')
+    + '<br>' + t('まだ入っていない ', 'Not in yet ') + ipsMoney(B.c + C.c + E.c));
+  h += ipsCostTile(ym, d, withData, sum);
+  h += '</div>';
+  if (sum.ad.n) h += '<div class="card ips-warn" style="font-size:12px;line-height:1.7"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ' + t('アプリでの登録と同じかもしれない invoice が ' + sum.ad.n + ' 件（' + ipsMoney(sum.ad.c) + '）あります。Invoice取込で反映するときに「アプリに同じものがある」と出た invoice です。アプリでの登録と照合してください。', sum.ad.n + ' invoice(s) (' + ipsMoney(sum.ad.c) + ') may be the same as an app entry. Check them against the app entries.') + '</div>';
+  return h;
+}
+function ymdPrevDay(ymd){ var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd || '')); if (!m) return ''; var d = new Date(+m[1], +m[2] - 1, +m[3] - 1); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+/* 原価（棚卸反映後）＝期首＋仕入れ＋食材移動（入−出）−期末。数は foodCostOf と同じ（同じ数字を別々に計算しない） */
+function ipsCostTile(ym, d, withData, sum){
+  var reasons = [], cost = 0, sales = 0, beg = 0, end = 0, purch = 0, tin = 0, tout = 0, ok = true;
+  withData.forEach(function(e){
+    var sl = ipsSales(e.sid, ym), r = null;
+    try { r = foodCostOf(e.sid, ym, sl); } catch(x) { r = null; }
+    if (!r) { ok = false; return; }
+    sales += sl; beg += r.begin; end += r.end; purch += r.purch;
+    try { var tn = monthTransferNetYm(e.sid, ym) || {}; tin += Number(tn.inAmt) || 0; tout += Number(tn.outAmt) || 0; } catch(x) {}
+    if (!(r.begin > 0)) { ok = false; reasons.push(escapeHtml(e.name) + t('：期首（前月の棚卸）が未確定', ': opening stock not set')); }
+    if (!r.hasEnd) { ok = false; reasons.push(escapeHtml(e.name) + t('：期末の棚卸がまだ', ': closing stocktake not done')); }
+    cost += r.cost;
+  });
+  var pend = sum.B.n + sum.C.n + sum.E.n;
+  if (pend) reasons.push(t('まだ入っていない invoice ' + pend + ' 件（未転送・確認待ち・保留）', pend + ' invoice(s) not in yet'));
+  var vend = ipsVendorRows(withData), need = 0, done = 0;
+  vend.forEach(function(v){ v.chks.forEach(function(c){ if (!c.docs) return; need++; if (c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)) done++; }); });
+  if (need > done) reasons.push(t('業者の請求明細との照合 ' + done + '/' + need, 'Statements checked ' + done + '/' + need));
+  if (!d.closed) reasons.push(t('月の締めがまだ', 'Month not closed'));
+  var confirmed = ok && !reasons.length;
+  var badge = confirmed ? '<span class="ips-chip" style="border:1px solid var(--green);color:var(--green)">' + t('確定', 'Final') + '</span>'
+    : '<span class="ips-chip" style="border:1px solid var(--yellow);color:var(--yellow)">' + t('暫定', 'Provisional') + '</span>';
+  var v = ok ? (ipsMoney(Math.round(cost * 100)) + ' <span style="font-size:12px">' + ipsPct(cost, sales) + '</span>') : '<span style="font-size:15px">' + t('棚卸待ち', 'Waiting for stocktake') + '</span>';
+  var s = t('期首 ', 'Opening ') + (beg > 0 ? '$' + Math.round(beg).toLocaleString('en-US') : t('未確定', 'not set')) + t('＋仕入れ ', ' + purchases ') + '$' + Math.round(purch - (tin - tout)).toLocaleString('en-US')
+    + t('＋移動入 ', ' + in ') + '$' + Math.round(tin).toLocaleString('en-US') + t('−移動出 ', ' − out ') + '$' + Math.round(tout).toLocaleString('en-US')
+    + t('−期末 ', ' − closing ') + (end > 0 ? '$' + Math.round(end).toLocaleString('en-US') : t('未確定', 'not set'))
+    + '<br>' + badge + (reasons.length ? ' <span>' + reasons.slice(0, 4).join('・') + (reasons.length > 4 ? '…' : '') + '</span>' : '');
+  return _ipsTile(t('原価（棚卸反映後）', 'Cost of goods (with stocktake)'), v, s);
+}
+function ipsStoreTableHtml(ym, withData){
+  var rows = withData.map(function(e){
+    var x = ipsSum([e.s]), sl = ipsSales(e.sid, ym), man = ipsManualList(e.sid, ym).reduce(function(a, m){ return a + m.total; }, 0);
+    var vs = ipsVendorRows([e]), need = 0, done = 0;
+    vs.forEach(function(v){ v.chks.forEach(function(c){ if (!c.docs) return; need++; if (c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)) done++; }); });
+    return '<tr class="ips-row" onclick="ipsSetScope(\'' + _ipsId(e.sid, IPS_RE.sid) + '\')"><td><b>' + escapeHtml(e.name) + '</b>' + (e.closed ? ' <span style="font-size:10px;color:var(--muted)">' + t('閉店', 'closed') + '</span>' : '') + '</td>'
+      + '<td class="r"><b>' + ipsMoney(x.A.cost) + '</b></td><td class="r ips-hide-m">' + ipsMoney(x.A.c) + '</td>'
+      + '<td class="r">' + ipsMoney(x.B.c) + '<div class="ips-sub">' + x.B.n + t('件', '') + '</div></td>'
+      + '<td class="r">' + ipsMoney(x.C.c) + '<div class="ips-sub">' + x.C.n + t('件', '') + (x.C.u ? t('・未確定 ', ' · ') + x.C.u : '') + '</div></td>'
+      + '<td class="r ips-hide-m">' + ipsMoney(x.E.c) + '<div class="ips-sub">' + x.E.n + t('件', '') + '</div></td>'
+      + '<td class="r ips-hide-m">$' + Math.round(man).toLocaleString('en-US') + '</td>'
+      + '<td class="r">' + ipsPct(x.A.cost / 100, sl) + '</td><td class="r ips-hide-m">' + done + '/' + need + '</td></tr>';
+  }).join('');
+  return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>' + t('店舗別', 'By store') + '</div><div class="ips-scroll"><table class="ips-t"><thead><tr>'
+    + '<th>' + t('店舗', 'Store') + '</th><th class="r">' + t('確認済み（原価対象）', 'Confirmed (cost)') + '</th><th class="r ips-hide-m">' + t('原本の純額', 'Net') + '</th>'
+    + '<th class="r">' + t('未転送', 'Not fwd') + '</th><th class="r">' + t('確認待ち', 'Waiting') + '</th><th class="r ips-hide-m">' + t('保留', 'Held') + '</th>'
+    + '<th class="r ips-hide-m">' + t('アプリで登録（Drive の外）', 'App entries (outside Drive)') + '</th><th class="r">' + t('仕入率', 'Ratio') + '</th><th class="r ips-hide-m">' + t('そろった', 'Checked') + '</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+}
+function ipsVendorTableHtml(ym, d, withData){
+  var rows = ipsVendorRows(withData);
+  if (!rows.length) return '<div class="card" style="font-size:12px;color:var(--muted)">' + t('この月の invoice はまだありません。', 'No invoice this month yet.') + '</div>';
+  var single = withData.length === 1, can = single && ipsCan() && !d.closed, sid0 = single ? _ipsId(withData[0].sid, IPS_RE.sid) : '';
+  var body = rows.map(function(v){
+    var cls = v.a.cls, chk = single ? (v.chks[0] && v.chks[0].chk) : null, vk = _ipsId(v.k, IPS_RE.vk);
+    var chkCell = single ? ipsChkHtml(chk) + (can && vk && sid0 ? ' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();ipsCheckOpen(\'' + _ipsId(ym, IPS_RE.ym) + '\',\'' + sid0 + '\',\'' + vk + '\')">' + t('記録', 'Record') + '</button>' : '')
+      : (function(){ var n = 0, k = 0; v.chks.forEach(function(c){ if (!c.docs) return; n++; if (c.chk && c.chk.s === 'complete') k++; }); return k + '/' + n + t(' 店', ' stores'); })();
+    return '<tr class="ips-row" onclick="ipsOpenVendor(' + _ipsRef(v.key) + ')"><td><b>' + escapeHtml(v.n || t('業者未確定', 'Vendor unknown')) + '</b></td>'
+      + '<td class="r">' + v.a.n + '</td><td class="r"><b>' + ipsMoney(v.a.cost) + '</b></td>'
+      + '<td class="r ips-hide-m">' + ipsMoney(cls.food + cls.liquor + cls.beverage) + '<div class="ips-sub">' + t('飲料・お酒 ', 'Bev ') + ipsMoney(cls.liquor + cls.beverage) + '</div></td>'
+      + '<td class="r ips-hide-m">' + ipsMoney(cls.supply + cls.nonfood) + '</td>'
+      + '<td class="r ips-hide-m">' + (v.cr.n ? ipsMoney(v.cr.c) : '—') + '</td>'
+      + '<td class="r">' + (v.p.n ? ipsMoney(v.p.c) + '<div class="ips-sub">' + v.p.n + t('件', '') + (v.p.u ? t('・未確定 ', ' · ') + v.p.u : '') + '</div>' : '—') + '</td>'
+      + '<td class="r ips-hide-m">' + ipsMoney(v.a.c) + '</td><td>' + chkCell + '</td></tr>';
+  }).join('');
+  return '<div class="card"><div class="card-title"><i class="ti ti-truck" style="color:var(--accent)"></i>' + t('業者別', 'By vendor')
+    + '<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">' + t('業者を押すと invoice の一覧', 'Tap a vendor for its invoices') + '</span></div><div class="ips-scroll"><table class="ips-t"><thead><tr>'
+    + '<th>' + t('業者', 'Vendor') + '</th><th class="r">' + t('件数', 'Inv.') + '</th><th class="r">' + t('確認済み（原価対象）', 'Confirmed (cost)') + '</th>'
+    + '<th class="r ips-hide-m">' + t('食材・飲料・お酒', 'Food & bev') + '</th><th class="r ips-hide-m">' + t('消耗品・食材以外', 'Supplies & other') + '</th>'
+    + '<th class="r ips-hide-m">' + t('返品・クレジット', 'Credits') + '</th><th class="r">' + t('まだ入っていない', 'Not in yet') + '</th><th class="r ips-hide-m">' + t('原本の純額', 'Net') + '</th>'
+    + '<th>' + t('請求明細との照合', 'Statement') + '</th></tr></thead><tbody>' + body + '</tbody></table></div>'
+    + '<div class="ips-note">' + t('「請求明細との照合」は、月末に業者の請求明細と比べて、その月の invoice がそろったか（未着・未登録がないか）の記録です。登録済みの invoice の処理状況（上の件数）とは別です。', 'The statement check records whether all of the month’s invoices are here, compared with the vendor’s statement. It is separate from the status of the invoices already registered.') + '</div></div>';
+}
+function ipsManualHtml(sid, ym){
+  var ms = ipsManualList(sid, ym); if (!ms.length) return '';
+  var tot = ms.reduce(function(a, m){ return a + m.total; }, 0);
+  return '<details class="card"><summary style="cursor:pointer;font-size:12.5px;font-weight:700">' + t('アプリで登録した invoice（Drive の取込の外）', 'Invoices registered in the app (outside the Drive intake)') + ' ' + ms.length + t('件 ', ' · ') + '$' + tot.toFixed(2)
+    + ' <span style="font-weight:400;color:var(--muted);font-size:11px">' + t('原価率に今までどおり入る', 'counted in food cost as before') + '</span></summary><div class="ips-scroll"><table class="ips-t"><tbody>'
+    + ms.slice(0, 200).map(function(m){ return '<tr><td>' + escapeHtml(ipsMD(m.date.getFullYear() + '-' + String(m.date.getMonth() + 1).padStart(2, '0') + '-' + String(m.date.getDate()).padStart(2, '0'))) + '</td><td>' + escapeHtml(m.vendor) + '</td><td>' + escapeHtml(m.no) + '</td><td class="r">$' + m.total.toFixed(2) + '</td></tr>'; }).join('')
+    + '</tbody></table></div><div class="ips-note">' + t('Drive に同じ invoice を入れて反映すると二重になります。Invoice取込で「アプリに同じものがある」と出たときは、どちらかを外してください。', 'Posting the same invoice from Drive as well counts it twice. When intake says it may already be in the app, keep only one.') + '</div></details>';
+}
+/* 業者 → invoice の一覧 */
+function ipsVendorView(ym, d, list){
+  var docs = [];
+  list.forEach(function(e){ if (!e.s) return; (e.s.docs || []).forEach(function(x){ if (x && _ipsVKey({ k:x.vk, n:x.vn }) === _ipsVendor) docs.push({ x:x, sid:e.sid, name:e.name }); }); });
+  var rows = ipsVendorRows(list.filter(function(e){ return e.s; })).filter(function(v){ return v.key === _ipsVendor; });
+  var v = rows[0];
+  var h = '<div style="display:flex;gap:8px;align-items:center;margin:0 2px 8px"><button class="btn btn-secondary btn-sm" onclick="ipsBack()"><i class="ti ti-arrow-left"></i> ' + t('業者の一覧へ', 'Back') + '</button>'
+    + '<b style="font-size:15px">' + escapeHtml(v ? v.n : '') + '</b></div>';
+  if (!v) return h + '<div class="card" style="font-size:12px;color:var(--muted)">' + t('この業者の invoice はこの月にありません。', 'No invoice from this vendor this month.') + '</div>';
+  var single = list.filter(function(e){ return e.s; }).length === 1;
+  h += '<div class="ips-tiles">'
+    + _ipsTile(t('確認済み（原価対象）', 'Confirmed (cost)'), ipsMoney(v.a.cost), t('原本の純額 ', 'Net ') + ipsMoney(v.a.c) + t('・原価対象外 ', ' · not for cost ') + ipsMoney(v.a.non) + '<br>' + v.a.n + t('件', ' invoices'))
+    + _ipsTile(t('まだ入っていない', 'Not in yet'), ipsMoney(v.p.c), v.p.n + t('件', ' invoices') + (v.p.u ? t('（金額未確定 ' + v.p.u + ' 件）', ' (' + v.p.u + ' amount unknown)') : ''))
+    + _ipsTile(t('請求明細との照合', 'Statement check'), '<span style="font-size:13px">' + (single ? ipsChkHtml(v.chks[0] && v.chks[0].chk) : '') + '</span>',
+      (single && ipsCan() && !d.closed && _ipsId(v.k, IPS_RE.vk) && _ipsId(list.filter(function(e){ return e.s; })[0].sid, IPS_RE.sid)) ? '<button class="btn btn-primary btn-sm" onclick="ipsCheckOpen(\'' + _ipsId(ym, IPS_RE.ym) + '\',\'' + _ipsId(list.filter(function(e){ return e.s; })[0].sid, IPS_RE.sid) + '\',\'' + _ipsId(v.k, IPS_RE.vk) + '\')">' + t('照合を記録する', 'Record the check') + '</button>' : (single ? '' : t('店ごとに記録します（店を選ぶ）', 'Recorded per store (choose a store)')))
+    + '</div>';
+  docs.sort(function(a, b){ return String(b.x.d || '').localeCompare(String(a.x.d || '')) || String(a.x.no || '').localeCompare(String(b.x.no || '')); });
+  h += '<div class="card"><div class="ips-scroll"><table class="ips-t"><thead><tr><th>' + t('請求日', 'Date') + '</th>' + (single ? '' : '<th>' + t('店舗', 'Store') + '</th>') + '<th>' + t('番号', 'No.') + '</th>'
+    + '<th class="r">' + t('金額', 'Amount') + '</th><th class="r ips-hide-m">' + t('原価対象', 'Cost') + '</th><th>' + t('状態', 'State') + '</th><th class="ips-hide-m">' + t('理由', 'Reason') + '</th><th class="ips-hide-m">' + t('原本', 'Original') + '</th></tr></thead><tbody>'
+    + docs.map(function(e){
+      var x = e.x, url = ipsDriveUrl(x.fid);
+      return '<tr class="ips-row" onclick="ipsOpenDoc(\'' + _ipsId(ym, IPS_RE.ym) + '\',\'' + _ipsId(e.sid, IPS_RE.sid) + '\',\'' + _ipsId(x.id, IPS_RE.uuid) + '\')"><td>' + ipsMD(x.d) + '</td>' + (single ? '' : '<td>' + escapeHtml(e.name) + '</td>')
+        + '<td style="font-family:ui-monospace,monospace;font-size:11.5px">' + escapeHtml(String(x.no || '—')) + (x.t === 'c' ? ' <span class="ips-chip" style="border:1px solid var(--accent2);color:var(--accent2)">' + t('クレジット', 'Credit') + '</span>' : '') + '</td>'
+        + '<td class="r"><b>' + (x.c == null ? t('金額未確定', 'Unknown') : ipsMoney(x.c)) + '</b></td><td class="r ips-hide-m">' + (x.cat === 'D' ? '—' : ipsMoney(x.cost)) + '</td>'
+        + '<td>' + ipsChip(x.cat) + '</td><td class="ips-hide-m" style="font-size:11px">' + escapeHtml(ipsWhy(x.why)) + '</td>'
+        + '<td class="ips-hide-m" onclick="event.stopPropagation()">' + (url ? '<a href="' + url + '" target="_blank" rel="noopener">' + t('開く', 'Open') + '</a>' : '—') + '</td></tr>';
+    }).join('') + '</tbody></table></div></div>';
+  return h;
+}
+/* invoice → 明細と原本（明細は開いたときだけ読む） */
+async function ipsOpenDoc(ym, sid, id){
+  if (!_ipsId(ym, IPS_RE.ym) || !_ipsId(sid, IPS_RE.sid) || !_ipsId(id, IPS_RE.uuid)) return;
+  var d = ipsMonth(ym), s = d && d.stores[sid], x = s && (s.docs || []).find(function(y){ return y && y.id === id; });
+  if (!x) return;
+  var key = 'invoice_purchase_lines_' + ym + '_' + sid;
+  if (!_ipsLines[key] && typeof _fetchOpValue === 'function') {
+    openModal('<div class="modal-title">' + escapeHtml(String(x.vn || '')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="padding:14px;color:var(--muted);font-size:12px"><i class="ti ti-loader-2"></i> ' + t('明細を読んでいます…', 'Loading lines…') + '</div>');
+    var v = await _fetchOpValue(key);
+    if (v && typeof v === 'object' && v.docs) _ipsLines[key] = v;
+  }
+  var L = (_ipsLines[key] && _ipsLines[key].docs && _ipsLines[key].docs[id]) || null;
+  openModal(ipsDocHtml(ym, sid, x, L));
+}
+function ipsDocHtml(ym, sid, x, L){
+  var e = escapeHtml, url = ipsDriveUrl(x.fid);
+  var row = function(k, v){ return '<div style="display:flex;gap:10px;padding:4px 0;border-bottom:1px solid var(--border);font-size:12px"><div style="width:120px;color:var(--muted);flex:0 0 auto">' + k + '</div><div style="flex:1;min-width:0">' + v + '</div></div>'; };
+  var qb = x.qb === 'sent' ? t('送った ', 'Sent ') + e(ipsMD(String(x.qat || '').slice(0, 10))) + t('（メールを送ったところまで）', ' (email sent)')
+    : (x.why && x.why.indexOf('pre_ledger') >= 0) ? e(ipsWhy(['pre_ledger'])) : (x.qb ? e(ipsWhy(['qb_' + x.qb])) : e(ipsWhy(['qb_none'])));
+  var rc = { reconciled:t('照合済み', 'Reconciled'), unreconciled:t('未照合', 'Not reconciled'), discrepancy:t('差異あり', 'Difference') }[x.rc] || e(String(x.rc || ''));
+  var h = IPS_CSS + '<div class="modal-title"><span>' + e(String(x.vn || '')) + ' #' + e(String(x.no || '—')) + '</span><button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="max-height:70vh;overflow:auto">';
+  h += '<div style="margin-bottom:8px">' + ipsChip(x.cat) + ' <span style="font-size:12px">' + e(ipsWhy(x.why)) + '</span></div>';
+  h += row(t('請求日', 'Invoice date'), e(String(x.d || '—')) + (x.dl ? t('（納品日 ', ' (delivered ') + e(String(x.dl)) + t('）', ')') : '') + t('・計上は請求日の月', ' · counted in the invoice month'));
+  h += row(t('原本の合計', 'Original total'), x.c == null ? t('金額未確定', 'Amount unknown') : '<b>' + ipsMoney(x.c) + '</b>' + (x.t === 'c' ? t('（クレジット：マイナス）', ' (credit: negative)') : ''));
+  if (x.c != null && x.cat !== 'D') h += row(t('分け方', 'Split'), t('原価対象 ', 'Cost ') + ipsMoney(x.cost) + t('・原価対象外 ', ' · not for cost ') + ipsMoney(x.non) + (Number(x.unc) ? t('・未分類 ', ' · unclassified ') + ipsMoney(x.unc) : '') + ((Number(x.pc) || Number(x.pn)) ? '<br><span style="color:var(--muted)">' + t('うち業者の区分で仮分類 ', 'Classed by vendor for now ') + ipsMoney((Number(x.pc) || 0) + (Number(x.pn) || 0)) + '</span>' : ''));
+  h += row(t('経理の照合', 'Reconciliation'), rc + (x.rat ? ' ' + e(ipsMD(String(x.rat).slice(0, 10))) : '') + (x.rby ? ' ' + e(String(x.rby)) : ''));
+  h += row('QuickBooks', qb);
+  h += row(t('反映', 'Posted'), x.st === 'posted' ? ((x.pm === 'auto' ? t('自動', 'Automatic') : t('人', 'By a person')) + (x.pat ? ' ' + e(ipsMD(String(x.pat).slice(0, 10))) : '')) : e(String(x.st || '')));
+  if (x.rel) h += row(t('関連', 'Related'), (x.rel === 'credit_for' ? t('返品・クレジットの元 #', 'Credit for #') : x.rel === 'correction_of' ? t('訂正前 #', 'Corrects #') : e(String(x.rel)) + ' #') + e(String(x.rno || '—')));
+  h += row(t('原本', 'Original'), (url ? '<a href="' + url + '" target="_blank" rel="noopener">' + e(String(x.fn || t('開く', 'Open'))) + '</a>' : e(String(x.fn || '—'))));
+  if (L && typeof L === 'object') {
+    var hd = L.h || {}, lines = Array.isArray(L.l) ? L.l : [];
+    var hm = function(k, v){ return v == null ? '' : '<span style="margin-right:10px">' + k + ' ' + ipsMoney(v) + '</span>'; };
+    h += '<div style="font-size:11.5px;margin:10px 0 4px;color:var(--muted)">' + hm(t('小計', 'Subtotal'), hd.sub) + hm(t('値引き', 'Discount'), hd.disc) + hm(t('税', 'Tax'), hd.tax) + hm(t('送料', 'Shipping'), hd.ship) + hm(t('その他', 'Other'), hd.oth) + hm(t('合計', 'Total'), hd.tot) + '</div>';
+    h += '<div class="ips-scroll"><table class="ips-t"><thead><tr><th>' + t('品名', 'Item') + '</th><th class="r">' + t('数量', 'Qty') + '</th><th class="r">' + t('明細の金額', 'Line') + '</th><th class="r">' + t('税・送料などを分けたあと', 'With tax etc.') + '</th><th>' + t('区分', 'Class') + '</th></tr></thead><tbody>'
+      + lines.map(function(l){
+        if (!Array.isArray(l)) return '';
+        var basis = l[7] === 'm' ? t('商品', 'product') : l[7] === 'v' ? t('業者の区分・仮', 'vendor, provisional') : t('なし', 'none');
+        return '<tr><td>' + e(String(l[1] || '')) + '</td><td class="r">' + e(l[2] == null ? '' : String(l[2])) + ' ' + e(String(l[3] || '')) + '</td><td class="r">' + (l[4] == null ? '—' : ipsMoney(l[4])) + '</td><td class="r">' + (l[5] == null ? '—' : ipsMoney(l[5])) + '</td>'
+          + '<td>' + e(_ipsL(IPS_CLS[l[6]] || ['—', '—'])) + ' <span style="font-size:10px;color:var(--muted)">' + basis + '</span></td></tr>';
+      }).join('')
+      + (L.u ? '<tr><td colspan="3" style="color:var(--muted)">' + t('明細に乗らない金額', 'Not on any line') + '</td><td class="r">' + ipsMoney(L.u) + '</td><td>' + e(_ipsL(IPS_CLS[L.uc] || ['—', '—'])) + '</td></tr>' : '')
+      + '</tbody></table></div>';
+  } else h += '<div class="ips-note">' + t('明細を読めませんでした（通信を確かめて、もう一度開いてください）。', 'Could not load the lines (check the connection and open again).') + '</div>';
+  h += '</div><div class="btn-row">' + ((typeof invInCan === 'function' && invInCan() && typeof invInOpen === 'function' && _ipsId(x.id, IPS_RE.uuid)) ? '<button class="btn btn-secondary" onclick="closeModalDirect();ipsGoIntake(\'' + _ipsId(x.id, IPS_RE.uuid) + '\')"><i class="ti ti-brand-google-drive"></i> ' + t('Invoice取込で開く', 'Open in intake') + '</button>' : '')
+    + '<button class="btn btn-secondary" onclick="closeModalDirect()">' + t('閉じる', 'Close') + '</button></div>';
+  return h;
+}
+function ipsGoIntake(id){ try { if (typeof go === 'function') go('acct_center'); invInOpen(id, 'dreview'); } catch(e) {} }
+/* 請求明細との照合を記録する（経理・事務Crew・GM・CEO。サーバーでも確かめる） */
+function ipsCheckOpen(ym, sid, vk){
+  if (!_ipsId(ym, IPS_RE.ym) || !_ipsId(sid, IPS_RE.sid) || !_ipsId(vk, IPS_RE.vk)) return;
+  var d = ipsMonth(ym), s = d && d.stores[sid], v = s && (s.vendors || []).find(function(x){ return x && x.k === vk; });
+  if (!v) return;
+  var led = (Number((v.a || {}).c) || 0) + (Number((v.p || {}).c) || 0);
+  var cur = (v.chk && v.chk.s) || '';   /* まだ記録が無いときは、どれも選ばない */
+  var radio = function(val, label){ return '<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;margin:4px 0"><input type="radio" name="ips-ck" value="' + val + '"' + (cur === val ? ' checked' : '') + '> ' + label + '</label>'; };
+  openModal(IPS_CSS + '<div class="modal-title"><span>' + t('請求明細との照合', 'Statement check') + '：' + escapeHtml(String(v.n || '')) + '</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);line-height:1.7;margin-bottom:8px">' + escapeHtml(ym) + '・' + escapeHtml(sid) + t('。業者の請求明細と、この月に登録された invoice（反映済み・確認待ちを含む ' + ipsMoney(led) + '）を比べて記録します。', '. Compare the vendor’s statement with this month’s registered invoices (' + ipsMoney(led) + ', including those waiting).') + '</div>'
+    + radio('complete', t('そろった（請求明細の invoice がすべて登録されている）', 'All here (every invoice on the statement is registered)'))
+    + radio('missing', t('足りない（未着・未登録がある）', 'Missing (some not received or not registered)'))
+    + radio('none', t('記録を消す', 'Clear the record'))
+    + '<div class="form-group" style="margin-top:8px"><label class="form-label">' + t('請求明細の合計（任意）', 'Statement total (optional)') + '</label><input id="ips-ck-sc" class="form-input" type="text" inputmode="decimal" placeholder="1234.56" value="' + (v.chk && v.chk.sc != null ? (Number(v.chk.sc) / 100).toFixed(2) : '') + '"></div>'
+    + '<div class="form-group"><label class="form-label">' + t('メモ（足りないときは何が足りないか）', 'Note (what is missing)') + '</label><input id="ips-ck-note" class="form-input" type="text" maxlength="500" value="' + escapeHtml(String((v.chk && v.chk.note) || '')) + '"></div>'
+    + '<div id="ips-ck-err" style="font-size:12px;color:var(--red);min-height:16px"></div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('やめる', 'Cancel') + '</button><button id="ips-ck-save" class="btn btn-primary" onclick="ipsCheckSave(\'' + ym + '\',\'' + sid + '\',\'' + vk + '\')">' + t('記録する', 'Save') + '</button></div>');
+}
+function ipsParseCents(s){
+  s = String(s == null ? '' : s).replace(/[$,\s]/g, '');
+  if (!s) return null;
+  if (!/^-?\d{1,9}(\.\d{1,2})?$/.test(s)) return NaN;
+  var neg = s[0] === '-'; if (neg) s = s.slice(1);
+  var p = s.split('.'), c = parseInt(p[0], 10) * 100 + (p[1] ? parseInt((p[1] + '0').slice(0, 2), 10) : 0);
+  return neg ? -c : c;
+}
+async function ipsCheckSave(ym, sid, vk){
+  if (_ipsSaving) return;
+  var err = document.getElementById('ips-ck-err'), sel = document.querySelector ? document.querySelector('input[name="ips-ck"]:checked') : null;
+  var state = sel ? sel.value : '', note = ((document.getElementById('ips-ck-note') || {}).value || '').trim();
+  var sc = ipsParseCents((document.getElementById('ips-ck-sc') || {}).value);
+  var fail = function(m){ if (err) err.textContent = m; };
+  if (['complete', 'missing', 'none'].indexOf(state) < 0) return fail(t('どれかを選んでください', 'Choose one'));
+  if (state === 'missing' && !note) return fail(t('足りないときは、何が足りないかをメモに書いてください', 'Write what is missing'));
+  if (sc !== null && !isFinite(sc)) return fail(t('請求明細の合計は 1234.56 の形で入れてください', 'Enter the statement total like 1234.56'));
+  if (typeof invInSigned === 'function' && !invInSigned() && typeof invInRestore === 'function') { try { await invInRestore(); } catch(e) {} }
+  if (typeof invInSigned !== 'function' || !invInSigned()) {
+    closeModalDirect();
+    if (typeof invInLoginModal === 'function') invInLoginModal();
+    if (typeof showToast === 'function') showToast(t('記録には Invoice取込と同じメール認証が要ります。認証のあと、もう一度押してください', 'Recording needs the same email sign-in as invoice intake. Sign in, then press again'), 'warning');
+    return;
+  }
+  _ipsSaving = true;
+  var btn = document.getElementById('ips-ck-save'); if (btn) btn.disabled = true;
+  try {
+    await invInAPI({ action:'purchase_check', store_id:sid, vendor_key:vk, ym:ym, state:state, note:note, statement_cents:sc });
+    closeModalDirect();
+    if (typeof showToast === 'function') showToast(t('記録しました', 'Saved'), 'success');
+    await ipsRefresh(ym, true);
+  } catch(e) { fail(e && e.message ? e.message : String(e)); }
+  finally { _ipsSaving = false; if (btn) btn.disabled = false; }
+}
+/* 予実管理の原価率のタイルを押したときの内訳（2026 年 10 月から） */
+function ipsFcBreakdown(scopeStores, ym){
+  if (!ym || ym < IPS_START) return '';
+  var on = (scopeStores || []).filter(function(s){ return ipsOk(s.id, ym); });
+  if (!on.length) return ipsOff() ? '<div class="ips-note">' + t('確認済みの仕入れ集計は止めてあります（今までの数え方）。', 'The confirmed purchase summary is off (previous count).') + '</div>' : '';
+  var conf = 0, man = 0, buy = 0, tn = 0, legacy = 0, sum = ipsSum(on.map(function(s){ return ipsMonth(ym).stores[s.id]; }));
+  on.forEach(function(s){
+    var l = ipsLink(s.id, ym); conf += l.confirmed; man += l.manual;
+    try { buy += monthPurchaseCostYm(s.id, ym) || 0; } catch(e) {}
+    try { tn += Number((monthTransferNetYm(s.id, ym) || {}).net) || 0; } catch(e) {}
+    try { legacy += monthInvoiceCostYm(s.id, ym) || 0; } catch(e) {}
+  });
+  var m = function(v){ return (v < 0 ? '−$' : '$') + Math.round(Math.abs(v)).toLocaleString('en-US'); };
+  var rows = [[t('確認済みの invoice（原価対象）', 'Confirmed invoices (cost)'), m(conf)], [t('アプリで登録した invoice（Drive の外）', 'App invoices (outside Drive)'), m(man)],
+    [t('買い出し（レシート）', 'Receipts'), m(buy)], [t('食材移動（入−出）', 'Transfers (in − out)'), m(tn)]];
+  return '<div style="margin-top:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">'
+    + '<div style="font-weight:700;margin-bottom:4px">' + t('原価率の仕入れ（2026 年 10 月から確認済みの invoice）', 'Purchases in food cost (confirmed invoices from Oct 2026)') + '</div>'
+    + rows.map(function(r){ return '<div style="display:flex;justify-content:space-between;padding:2px 0"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('')
+    + '<div style="background:var(--surface2);border-radius:8px;padding:6px 8px;margin-top:6px;line-height:1.7">' + t('まだ入っていない', 'Not in yet') + '：' + t('確認済み・未転送 ', 'not forwarded ') + m(sum.B.c / 100) + '・' + t('確認待ち ', 'waiting ') + m(sum.C.c / 100) + '・' + t('保留 ', 'held ') + m(sum.E.c / 100)
+    + '<br><span style="color:var(--muted)">' + t('今までの数え方（Drive の写しを含む invoice）なら ', 'With the previous count (incl. Drive copies): ') + m(legacy) + '</span></div>'
+    + (on.length < (scopeStores || []).length ? '<div class="ips-note">' + t('Drive の取込の外の店は今までの数え方。', 'Stores outside the Drive intake use the previous count.') + '</div>' : '')
+    + '<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect();setBudgetTab(\'purchase\')"><i class="ti ti-truck"></i> ' + t('仕入れタブで業者・invoice を見る', 'See vendors and invoices') + '</button></div></div>';
+}
+/* FUNERGY_PURCHASE_SUMMARY_END */
 function monthInvoiceTotalYm(storeId, ym){
   var inv=ls('invoices',[])||[]; var sum=0;
   inv.forEach(function(v){
@@ -40302,7 +40890,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1076';
+const APP_VERSION = '1077';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

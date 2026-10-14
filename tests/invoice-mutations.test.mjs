@@ -10,7 +10,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs'];
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs',
+  'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -30,6 +31,7 @@ function run(mutations, testFile) {
 }
 
 const E2E = 'tests/invoice-intake.test.mjs', UNIT = 'tests/invoice-rules.test.mjs';
+const PS = 'tests/invoice-purchase-summary.test.mjs', PU = 'tests/invoice-purchase-ui.test.mjs';   // 確認済みの仕入れ集計（Moto 2026-10-14）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -241,6 +243,35 @@ const CASES = [
   ['organize renames the original again (old names)', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "      const moved = await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target,",
     "      const moved = await drive.update(o.drive_file_id, { name: 'organized_' + o.original_name, addParents: parents.includes(target) ? null : target,"]]],
+  // 確認済み invoice の仕入れ集計（Moto 2026-10-14・UI案48）: the server
+  ['purchases: not reconciled counted as confirmed', PS, [['db/invoice-intake.sql', "    when recon_status<>'reconciled' then 'C'\n", '']]],
+  ['purchases: a send not recorded counts as confirmed', PS, [['db/invoice-intake.sql', "    when qbs='sent' or preledger then 'A'\n", "    when true then 'A'\n"]]],
+  ['purchases: every original exempt from the ledger when qb.since is not set', PS, [['db/invoice-intake.sql', "(v_since is not null and not (d0.fsource='drive'", "(not (d0.fsource='drive'"]]],
+  ['purchases: taken in before the start counted (twice with the app entry)', PS, [['db/invoice-intake.sql', "    when not link then 'E'\n", '']]],
+  ['purchases: a credit memo printed positive is added', PS, [['db/invoice-intake.sql', "case when d1.credit then -1 else d1.f end mul", 'd1.f mul']]],
+  ['purchases: the rounding remainder of the shares is lost', PS, [['db/invoice-intake.sql', " + case when l4.wsum > 0 and l4.rn <= l4.rem - l4.flsum then 1 else 0 end", '']]],
+  ['purchases: a closed month is written again', PS, [['db/invoice-intake.sql', "if v_closed is not null and v_ym <= v_closed and v_pub.ym is not null and not coalesce((p->>'force')::boolean, false) then", 'if false then']]],
+  ['purchases: statement check without a role', PS, [['db/invoice-intake.sql', " perform public.invoice_require(v_actor, array['ceo','gm','office','office_crew']);\n", '']]],
+  ['purchases: statement check in a closed month', PS, [['db/invoice-intake.sql', " if v_closed is not null and v_ym <= v_closed then raise exception 'closed_month'; end if;\n", '']]],
+  ['purchases: an unclassified amount counted as confirmed', PS, [['db/invoice-intake.sql', " or needs_adjustment or unclass_m<>0 or tp is null then 'E'", " or needs_adjustment or tp is null then 'E'"]]],
+  ['purchases: several stores on one page counted in full', PS, [['db/invoice-intake.sql', "    when multi or coalesce(currency,'USD')<>'USD'", "    when coalesce(currency,'USD')<>'USD'"]]],
+  ['purchases: the stop switch is ignored', PS, [['db/invoice-intake.sql', " if coalesce((public.invoice_setting('purchase')->>'off')::boolean, false) then\n", " if false then\n"]]],
+  ['purchases: a line class from the vendor even when the product is mapped', PS, [['db/invoice-intake.sql', "   coalesce(l4.mcls, case l4.food_kind when 'food' then 'food' when 'nonfood' then 'nonfood' end, 'unclass') c,", "   coalesce(case l4.food_kind when 'food' then 'food' when 'nonfood' then 'nonfood' end, l4.mcls, 'unclass') c,"]]],
+  ['purchases: the summary is not written after reconciling', PS, [['supabase/functions/invoice-intake/handler.mjs', '    reconcile: thenSummary((a, b) =>', '    reconcile: ((a, b) =>']]],
+  ["purchases: the outside forwarder's send is not followed", PS, [['supabase/functions/invoice-intake/handler.mjs', "      if (b.state === 'sent') await publishSummary(null);\n", '']]],
+  ['purchases: the worker does not write the summary with intake off', PS, [['supabase/functions/invoice-intake/handler.mjs', 'const st = { off: true }; await publishSummary(st);', 'const st = { off: true };']]],
+  // the app (v1077)
+  ['app: food cost still adds the Drive copies', PU, [['index.html', '  var invoice=(_ips&&_ips.ok)?(_ips.confirmed+_ips.manual):monthInvoiceCostYm(storeId, ym);', '  var invoice=(_ips&&_ips.ok)?(_ips.confirmed+monthInvoiceCostYm(storeId, ym)):monthInvoiceCostYm(storeId, ym);']]],
+  ['app: invoices registered in the app are dropped', PU, [['index.html', "    if(noDrive && v.src==='drive-intake') return;", '    if(noDrive) return;']]],
+  ['app: the switch applies before October 2026', PU, [['index.html', '  if (!ym || ym < IPS_START) return null;\r\n  if (ipsOff())', '  if (!ym) return null;\r\n  if (ipsOff())']]],
+  ['app: a stopped summary is still used', PU, [['index.html', 'function ipsOff(){ var s = ipsStatus(); return !!(s && s.off === true); }', 'function ipsOff(){ return false; }']]],
+  ['app: the daily cost adds the copies too', PU, [['index.html', "    if(typeof ipsReplacesCopy==='function' && ipsReplacesCopy(v, sids)) return;", '']]],
+  ['app: other stores are shown', PU, [['index.html', "  var vis = (typeof getVisibleStores === 'function') ? getVisibleStores() : [];\r\n  var out = vis.map", "  var vis = (typeof getStoresAll === 'function') ? getStoresAll() : [];\r\n  var out = vis.map"]]],
+  ['app: a store key that is not a store id is shown', PU, [['index.html', '      if (!_ipsId(sid, IPS_RE.sid) || out.some(', '      if (out.some(']]],
+  ['app: vendor names are not escaped', PU, [['index.html', "onclick=\"ipsOpenVendor(' + _ipsRef(v.key) + ')\"><td><b>' + escapeHtml(v.n || t('業者未確定', 'Vendor unknown'))", "onclick=\"ipsOpenVendor(' + _ipsRef(v.key) + ')\"><td><b>' + (v.n || t('業者未確定', 'Vendor unknown'))"]]],
+  ['app: line names are not escaped', PU, [['index.html', "        return '<tr><td>' + e(String(l[1] || '')) + '</td>", "        return '<tr><td>' + String(l[1] || '') + '</td>"]]],
+  ['app: a missing statement needs no note', PU, [['index.html', "  if (state === 'missing' && !note) return fail(", '  if (false) return fail(']]],
+  ['app: the 仕入率 uses the net of originals', PU, [['index.html', "ipsPct(A.cost / 100, sales),", 'ipsPct(A.c / 100, sales),']]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
