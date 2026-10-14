@@ -5,8 +5,9 @@
 1. 済（Claude）：調査・Moto さんの決定・UI案48・本番の状況を見る SQL（`docs/INVOICE_PURCHASE_SUMMARY_JA.md`）。
 2. 済（Moto さん）：① B・②はい・台帳の前は照合済みなら入れる・10 月から。本番の台帳は 10/13 7:00 HST から動いている。
 3. 済（Claude・ブランチ `claude/invoice-purchase-summary`）：実装（migration `20261019090000`・handler・アプリ v1077・入れる一式・照合の表）・試験・独立レビュー 4 回（最後は P1・P2 なし）。
-4. 次：Codex のレビュー（PR #58。とくに A〜E の決め方・二重にしないこと・締めた月の作り直し・app_state に出すもの・`foodCostOf` と日別の原価）。
-5. Moto さん：棚卸に消耗品を入れたままにするか決める。`deploy/invoice-purchase-v1077/手順.md` の順で入れる（アプリが先）→ `5_照合の結果_読むだけ.sql` の結果を Claude に。
+4. 済（Codex・`8452ee7`）：blocked／manual・P2 2（書き戻しが端末に届かない／0 件の業者の「足りない」で「確定」）→ 済（Claude・`d8f636a`・`b83d6cd`）：直した・試験・独立レビュー（P1・P2 なし）。
+4b. 次：Codex の再レビュー（PR #58 の最新の head。とくに書き戻しの版・端末の取り直し・0 件の業者の照合）。
+5. Moto さん：棚卸に消耗品を入れたままにするか、app_state に出す範囲（業者・番号・Drive の ID・照合した人とメモ）を決める。SQL の前に端末を v1077 にそろえる。`deploy/invoice-purchase-v1077/手順.md` の順で入れる（アプリが先）→ `5_照合の結果_読むだけ.sql` の結果を Claude に。
 6. Claude：照合の結果で店舗・月ごとの報告を作る。
 
 ## 2026-10-14 中間レビュー v1076：店舗の管轄に GM も選べる
