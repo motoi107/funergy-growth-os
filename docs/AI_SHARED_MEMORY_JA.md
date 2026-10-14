@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-10-14 引き継ぎ：仕入れ集計 v1077（PR #58）は Codex の再レビュー待ち・本番には何も入れていない（Claude）
+
+- PR #58（ブランチ `claude/invoice-purchase-summary`）：Codex の P2 2 件（`8452ee7`）は `d8f636a`・`b83d6cd` で直した。そのあとは記録だけ（`f44d1aa`・`5bcfe82`・この記録）。直した内容は [PR のコメント 6179748266](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179748266)（Claude の報告で、レビューではない）。Static release validation は成功。**Codex の再レビューはまだ。**
+- Moto さんの決定（10/14 12:23 HST）：棚卸の消耗品はこのまま・app_state に出す範囲もこのまま（下の節）。原価に入れたい消耗品（串など）は商品マスターの区分を食材に（Moto さんの作業）。
+- 入れる手順は `deploy/invoice-purchase-v1077/手順.md`（7 ファイルは Moto さんに直接送った）。まだ何も入れていない（マージ・SQL・関数とも）。順番：Codex の OK → `qb.to`・`qb.since` を確かめる → マージ → 端末を v1077 に → SQL 1 → 確認 2 → 関数 3 →（4）→「仕入れ」タブ → 5 の結果を Claude に。
+- 次のチャットでやること：
+  1. Codex の再レビューの結果を見る（PR #58 の最新の head）。指摘があれば同じブランチで直す。
+  2. Moto さんが入れたら、`2_確認のSQL_読むだけ.sql` の結果と `5_照合の結果_読むだけ.sql` の結果をもらい、店舗・月ごとの照合の報告を作る。
+  3. 前からの件：Yuki さんを中間レビューの利用者に足したか（メールのアカウント → `db/mid-review-add-member.sql` を am で）／PR #56（v1076）の Codex のレビュー。
+
 ## 2026-10-14 確認済み invoice の全店仕入れ集計・原価との連携：アプリ v1077（Claude・ブランチ `claude/invoice-purchase-summary`・PR #58・本番未反映）
 
 - 依頼：Moto さん 10/14 03:58 HST の添付「Funergy+：確認済みinvoiceの全店仕入れ集計・原価画面連携」（実装まで・全店・二重計上を避ける）。仕様・決定・A〜E・試験・限界は `docs/INVOICE_PURCHASE_SUMMARY_JA.md`（7〜10 が実装）。
