@@ -399,6 +399,21 @@ export function createHandler(deps) {
     }
   }
 
+  // Confirmed purchases per store, vendor and month (Moto 2026-10-14): the summaries the app reads are written again whenever
+  // what they are made of changed. It never changes an invoice, the ledger or Drive, and a failure here never stops anything else.
+  // `only` names what a person's action touched (doc_ids, file_id, outbox_id, months): only those months are written then.
+  async function publishSummary(stats, only) {
+    try {
+      const r = await db.rpc('invoice_purchase_publish', only || {});
+      if (stats) stats.purchase_published = (r && r.changed ? r.changed.length : 0);
+      return { ok: true, changed: r && r.changed ? r.changed : [] };
+    } catch (e) {
+      if (stats) stats.purchase_errors = (stats.purchase_errors || 0) + 1;
+      console.error('invoice-intake purchase summary', safeErr(e));
+      return { ok: false };
+    }
+  }
+
   async function runWorker(body) {
     const t0 = now(), owner = 'w-' + crypto.randomUUID();
     const stats = {};
@@ -407,7 +422,11 @@ export function createHandler(deps) {
     const started = new Date(t0).toISOString();
     try {
       const ctx = await context();
-      if (!ctx.mode.intake) { await db.rpc('invoice_run_log', { kind: 'intake', started_at: started, ok: true, stats: { off: true } }); return { ok: true, off: true }; }
+      if (!ctx.mode.intake) {
+        // With intake off, reconciling and QuickBooks results still move invoices: the summaries follow them.
+        const st = { off: true }; await publishSummary(st);
+        await db.rpc('invoice_run_log', { kind: 'intake', started_at: started, ok: true, stats: st }); return { ok: true, off: true };
+      }
       const pilot = Array.isArray(ctx.mode.pilot_stores) && ctx.mode.pilot_stores.length ? new Set(ctx.mode.pilot_stores) : null;
       const stores = ctx.stores.filter(s => s.active && s.upload_folder_id && (!pilot || pilot.has(s.store_id)));
       try { for (const s of stores) await scanStore(s, ctx, stats); await db.rpc('invoice_drive_conn', { ok: true }); }
@@ -423,6 +442,7 @@ export function createHandler(deps) {
       try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
       await mirrorStep(ctx, stats);
       await integrityStep(ctx, stats);
+      await publishSummary(stats);
       await db.rpc('invoice_run_log', { kind: 'intake', started_at: started, ok: true, stats });
       return { ok: true, stats };
     } catch (e) {
@@ -644,6 +664,16 @@ export function createHandler(deps) {
     return report;
   }
 
+  // A person's change that can move an invoice between the purchase summary's places is followed at once by the summary
+  // (the worker would otherwise catch up within its next run). The change itself stands whatever happens to the summary.
+  // `hint` says which invoices, file, ledger row or month the action touched (null: settings, vendors and stores touch every month).
+  const ids = (...x) => ({ doc_ids: x.filter(v => typeof v === 'string' && v) });
+  const thenSummary = (fn, hint) => async (a, b) => {
+    const r = await fn(a, b);
+    const s = await publishSummary(null, hint ? hint(b) : null);
+    if (r && typeof r === 'object' && !Array.isArray(r)) r.summary = s.ok;
+    return r;
+  };
   const ACTIONS = {
     backfill,
     list: (a, b) => db.rpc('invoice_list', { ...b, actor: a }).then(r => ({ ...r, rows: r.rows.map(x => ({ ...x, original_url: viewUrl(x.drive_file_id) })) })),
@@ -652,26 +682,29 @@ export function createHandler(deps) {
     config: a => db.rpc('invoice_config', { actor: a }),
     problems: a => db.rpc('invoice_problems', { actor: a }).then(r => ({ files: r.files.map(f => ({ ...f, original_url: viewUrl(f.drive_file_id) })),
       qb: r.qb.map(o => ({ ...o, original_url: viewUrl(o.drive_file_id) })) })),
-    edit,
-    post: async (a, b) => {
+    edit: thenSummary(edit, b => ids(b.doc_id)),
+    // Moto 2026-10-14: per store, vendor and month, "compared with the vendor's statement: all here" (or what is missing).
+    purchase_check: thenSummary((a, b) => db.rpc('invoice_purchase_check', { actor: a, store_id: b.store_id, vendor_key: b.vendor_key, ym: b.ym,
+      state: b.state, note: typeof b.note === 'string' ? b.note.slice(0, 500) : '', statement_cents: b.statement_cents ?? null }), b => ({ months: [String(b.ym || '')] })),
+    post: thenSummary(async (a, b) => {
       const r = await db.rpc('invoice_post', { actor: a, doc_id: b.doc_id, version: b.version, reason: b.reason || '', ack: b.ack || [], adjustment_ack: !!b.adjustment_ack, supersedes: b.supersedes || null });
       const ctx = await context();
       if (ctx.mode.organize && r.file_id) await db.rpc('invoice_organize_request', { file_id: r.file_id, target: 'unreconciled' });
       // Moto 2026-10-12: 「この内容で反映」 → the original's name becomes 日付_業者名_番号 now; QuickBooks follows (worker).
       if (ctx.mode.rename && r.file_id) r.rename = await renameNow(a, r.file_id, ctx);
       return r;
-    },
-    reassign: (a, b) => db.rpc('invoice_reassign', { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || '' }),
-    mark: (a, b) => db.rpc('invoice_mark', { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || '' }),
-    relate: (a, b) => db.rpc('invoice_relate', { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation }),
-    reconcile: (a, b) => db.rpc('invoice_reconcile', { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || '', diff: b.diff || null }),
+    }, b => ids(b.doc_id, b.supersedes)),
+    reassign: thenSummary((a, b) => db.rpc('invoice_reassign', { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || '' }), b => ({ file_id: String(b.file_id || '') })),
+    mark: thenSummary((a, b) => db.rpc('invoice_mark', { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || '' }), b => ids(b.doc_id, b.duplicate_of)),
+    relate: thenSummary((a, b) => db.rpc('invoice_relate', { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation }), b => ids(b.doc_id, b.related_doc_id)),
+    reconcile: thenSummary((a, b) => db.rpc('invoice_reconcile', { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || '', diff: b.diff || null }), b => ids(b.doc_id)),
     retry: (a, b) => db.rpc('invoice_file_retry', { actor: a, file_id: b.file_id }),
-    qb_resolve: (a, b) => db.rpc('invoice_qb_result', { actor: a, id: b.id, state: b.state, message_id: b.message_id || null, result: { note: b.note || null, checked_by: a } }),
+    qb_resolve: thenSummary((a, b) => db.rpc('invoice_qb_result', { actor: a, id: b.id, state: b.state, message_id: b.message_id || null, result: { note: b.note || null, checked_by: a } }), b => ({ outbox_id: String(b.id || '') })),
     latest_prices: async (a, b) => { const w = await db.rpc('invoice_whoami', { actor: a }); if (!READ.includes(w.role)) throw new Error('forbidden'); return db.rpc('invoice_latest_prices', { stores: b.stores || null, codes: b.codes || null }); },
     map_save: (a, b) => db.rpc('invoice_map_save', { actor: a, map: b.map }),
-    vendor_save: (a, b) => db.rpc('invoice_vendor_save', { actor: a, vendor: b.vendor }),
-    store_save: (a, b) => db.rpc('invoice_store_save', { actor: a, store: b.store }),
-    settings_save: (a, b) => db.rpc('invoice_settings_save', { actor: a, key: b.key, value: b.value }),
+    vendor_save: thenSummary((a, b) => db.rpc('invoice_vendor_save', { actor: a, vendor: b.vendor })),
+    store_save: thenSummary((a, b) => db.rpc('invoice_store_save', { actor: a, store: b.store })),
+    settings_save: thenSummary((a, b) => db.rpc('invoice_settings_save', { actor: a, key: b.key, value: b.value })),
     folder_plan: folderPlan,
     folder_setup: folderSetup,
     price_history: priceHistory,
@@ -689,10 +722,13 @@ export function createHandler(deps) {
     qb_external_list: async b => ({ rows: (await db.rpc('invoice_qb_external_list', { limit: Math.max(1, Math.min(100, Number(b.limit) || 20)) }))
       .map(r => ({ ...r, original_url: viewUrl(r.drive_file_id) })) }),
     qb_external_reserve: b => db.rpc('invoice_qb_external_reserve', { id: b.id }),
-    qb_external_result: b => {
+    qb_external_result: async b => {
       if (!['sent', 'error', 'unknown'].includes(b.state)) throw new Error('bad_state');
-      return db.rpc('invoice_qb_result', { actor: 'external', id: b.id, state: b.state, message_id: b.message_id ? String(b.message_id).slice(0, 300) : null,
+      const r = await db.rpc('invoice_qb_result', { actor: 'external', id: b.id, state: b.state, message_id: b.message_id ? String(b.message_id).slice(0, 300) : null,
         error: b.error ? String(b.error).slice(0, 300) : null, result: { reported_by: 'external', note: b.note ? String(b.note).slice(0, 300) : null } });
+      // A send recorded as done moves a reconciled invoice into the confirmed purchases at once (the result stands either way).
+      if (b.state === 'sent') await publishSummary(null, { outbox_id: String(b.id || '') });
+      return r;
     },
   };
 
