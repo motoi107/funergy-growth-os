@@ -268,7 +268,7 @@ Moto さんの決定（10/13）：① 先に保存されていたら **B**（自
 - 入れ方：`deploy/mid-review-v1073-fix/`（SQL 1 つ → 確認の SQL）。`20261016090000` を流し直したときは、続けてこれも流す（確認の SQL の `mid-review stores_save fix (20261017090000)` で分かる）。
 
 
-## 店舗の管轄に GM も選べる（v1076・migration `20261018090000_mid_review_scope_gm.sql`・ブランチ `claude/mid-review-scope-gm`）
+## 店舗の管轄に GM も選べる（v1076・migration `20261018090000_mid_review_scope_gm.sql`・ブランチ `claude/mid-review-scope-gm`・PR #56）
 
 Moto さんの依頼（10/14 02:44 HST）「店舗管轄の選択を GM・AM のどちらか選べる様にしてください」と回答：GM も **名前で選ぶ**／GM を選んだ店の権限は **今までどおり**（GM・CEO は全店を見て、返信・確認完了ができる。担当として GM の名前が出る）／**「未設定」も選べる**。
 
