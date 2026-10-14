@@ -185,6 +185,10 @@ test('8・pre-ledger・start: the invoice month decides; before the ledger, reco
   assert.equal(byId(oct, copied.id).cat, 'A');
   assert.deepEqual([byId(oct, deleted.id).cat, byId(oct, deleted.id).why], ['E', ['deleted_in_app']]);
   assert.deepEqual(oct.pre, { n: 2, c: 20000 });
+  // held because the app's own entry counts them (before the start, copy deleted): not "not in yet", also per vendor
+  assert.deepEqual(oct.ap, { n: 2, c: 20000, u: 0 });
+  const vm = oct.vendors.find(v => v.k === 'minato');
+  assert.deepEqual([vm.p.n, N(vm.p.c)], [2, 20000], 'waiting (unreconciled) and not forwarded only');
   // the ledger is per address (qb.to): a send recorded to another address is not a send
   const elsewhere = await E.doc({ qb: null });
   await E.q(`insert into invoice_qb_outbox(file_id,sha256,to_address,route,state,attempt_key,sent_at) values($1,$2,'other@example.test','external','sent','qb-elsewhere',now())`, [elsewhere.file, elsewhere.sha]);
@@ -347,13 +351,31 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   assert.ok(st.checked_at && st.months['2026-10'].at && st.months['2026-08'].closed === true && st.months['2026-10'].closed === false);
   const lines = await E.state('invoice_purchase_lines_2026-10_F06');
   assert.equal(lines.store, 'F06'); assert.equal(Object.keys(lines.docs).length, 1);
-  // a later change in the closed month is not written (the closing procedure decides); force writes it
-  await E.doc({ total: 500, date: '2026-08-21' });
+  // a closed month stays as it was when only a master changes (a vendor's name here; a product's class the same) ...
+  await E.q(`update invoice_vendor_rules set display_name='Minato Renamed' where vendor_key='minato'`);
   const p2 = await E.publish();
-  assert.deepEqual([p2.changed, p2.frozen], [[], ['2026-08']]);
-  assert.equal(N(tot((await E.state('invoice_purchase_2026-08')).stores.F06, 'A').c), 1000);
+  assert.deepEqual([p2.changed, p2.frozen], [['2026-10'], ['2026-08']]);
+  assert.equal((await E.state('invoice_purchase_2026-08')).stores.F06.vendors[0].n, 'Minato Seika');
+  // ... and is written again when its invoices change: one reconciled after closing reaches the month's cost (still closed)
+  const lateAug = await E.doc({ total: 500, date: '2026-08-21', recon: 'unreconciled' });
+  let p3 = await E.publish();
+  assert.deepEqual([p3.changed, p3.frozen], [['2026-08'], []]);
+  let aug2 = await E.state('invoice_purchase_2026-08');
+  assert.deepEqual([aug2.closed, N(tot(aug2.stores.F06, 'A').c), N(tot(aug2.stores.F06, 'C').c)], [true, 1000, 500]);
+  await E.q(`update invoice_docs set recon_status='reconciled', recon_at=now(), version=version+1 where id=$1`, [lateAug.id]);
+  p3 = await E.publish();
+  assert.deepEqual([p3.changed, p3.frozen], [['2026-08'], []]);
+  aug2 = await E.state('invoice_purchase_2026-08');
+  assert.deepEqual([aug2.closed, N(tot(aug2.stores.F06, 'A').c), aug2.stores.F06.vendors[0].n], [true, 1500, 'Minato Renamed']);
+  assert.deepEqual((await E.publish()).frozen, ['2026-08']);
+  // a version that changes nothing shown is noted without writing; force writes a master change into a closed month
+  await E.q(`update invoice_docs set version=version+1 where id=$1`, [lateAug.id]);
+  assert.deepEqual(await E.publish().then(r => [r.changed, r.frozen]), [[], []]);
+  assert.deepEqual((await E.publish()).frozen, ['2026-08']);
+  await E.q(`update invoice_vendor_rules set display_name='Minato Again' where vendor_key='minato'`);
+  assert.deepEqual((await E.publish()).frozen, ['2026-08']);
   assert.deepEqual((await E.publish({ months: ['2026-08'], force: true })).changed, ['2026-08']);
-  assert.equal(N(tot((await E.state('invoice_purchase_2026-08')).stores.F06, 'A').c), 1500);
+  assert.equal((await E.state('invoice_purchase_2026-08')).stores.F06.vendors[0].n, 'Minato Again');
   // stores: the active ones even with no invoice, and an inactive one only with invoices
   const oct = await E.state('invoice_purchase_2026-10');
   assert.deepEqual(Object.keys(oct.stores).sort(), ['F01', 'F04-K', 'F06']);
@@ -365,9 +387,10 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   assert.deepEqual((await E.publish()).changed, ['2026-09']);
   assert.equal((await E.state('invoice_purchase_2026-09')).closed, true);
   assert.equal((await E.state('invoice_purchase_status')).months['2026-09'].closed, true);
-  await E.doc({ total: 50, date: '2026-09-11' });
   const pc = await E.publish();
   assert.deepEqual([pc.changed, pc.frozen], [[], ['2026-08', '2026-09']]);
+  await E.doc({ total: 50, date: '2026-09-11' });
+  assert.deepEqual((await E.publish()).changed, ['2026-09'], 'a new invoice in a closed month is shown');
   await E.q(`update invoice_settings set value=value||'{"closed_through":"2026-08"}' where key='rules'`);
   assert.deepEqual((await E.publish()).changed, ['2026-09']);
   const sep = await E.state('invoice_purchase_2026-09');
@@ -511,7 +534,9 @@ test('the store and month report (read only) puts the summary next to the app\'s
       {"id":"h4","storeId":"F06","docType":"Invoice","date":"2026年10月4日","total":4.5,"purpose":"仕入れ・仕込み"},
       {"id":"h5","storeId":"F06","docType":"Invoice","docDate":"2026/10/04","total":"","purpose":"仕入れ・仕込み"},
       {"id":"h6","storeId":"F06","docType":"Invoice","docDate":"","total":"abc","purpose":"仕入れ・仕込み"}]', now()),
-     ('fc_monthly_F06_2026-10', '{"beginInv":2000,"endInv":1800}', now()), ('fc_monthly_F01_2026-10', '{"endInv":"1.2.3"}', now());
+     ('fc_monthly_F06_2026-10', '{"beginInv":2000,"endInv":1800}', now()), ('fc_monthly_F01_2026-10', '{"endInv":"1.2.3"}', now()),
+     ('invoice_purchase_2026-12', '{"v":1,"generated_at":"not a time","stores":{"F06":{"tot":{"A":{"n":"x"}}}}}', now());
+    update app_state set value=value||'{"stores":{"F06":{"tot":{"A":{"n":99,"c":1}}}}}' where key='invoice_purchase_2026-10';
     set role service_role;`);
   const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-report.sql', import.meta.url), 'utf8'));
   const r = rows.find(x => x['店舗'] === 'F06' && x['月'] === '2026-10');
@@ -526,6 +551,8 @@ test('the store and month report (read only) puts the summary next to the app\'s
   const f01 = rows.find(x => x['店舗'] === 'F01' && x['月'] === '2026-10');
   assert.equal(f01['アプリの登録'], '$30.00'); assert.equal(f01['期末棚卸'], 'まだ');
   assert.ok(!JSON.stringify(rows).match(/drv_|Minato|[0-9a-f]{32}/), 'no ids, names or keys');
+  assert.equal(rows.find(x => x['月'] === '2026-12'), undefined, 'rows written from outside are not read: the report reads what the server wrote');
+  assert.match(r['集計の時刻（ハワイ）'], /^\d{2}\/\d{2} \d{2}:\d{2}$/);
 });
 
 test('the deploy folder: the SQL files are the repository files, the one-file function is built from the current sources, and the check runs',

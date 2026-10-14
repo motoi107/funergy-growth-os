@@ -1135,9 +1135,13 @@ test('deploy checks and the guarded rollback', async () => {
   await assert.rejects(pg.exec(BACK), /取込の記録が 1 件/);
   assert.equal(Number((await pg.query(POST)).rows[0].tables), 18, 'nothing was removed');
   await pg.query(`delete from public.invoice_files`);
+  await pg.query(`insert into public.app_state values('invoice_purchase_status', '{"v":1,"months":{"2026-10":{}}}', now())`);
   await pg.exec(BACK);
   assert.ok((await pre()).every(r => r.startsWith('OK')), 'after the rollback the precheck is OK again');
-  assert.equal((await pg.query(`select count(*)::int n from app_state`)).rows[0].n, 1, 'app_state is untouched');
+  assert.equal((await pg.query(`select count(*)::int n from app_state`)).rows[0].n, 2, 'app_state: no row added or removed');
+  assert.deepEqual((await pg.query(`select value from app_state where key='k'`)).rows[0].value, { a: 1 }, 'other rows untouched');
+  assert.equal((await pg.query(`select value from app_state where key='invoice_purchase_status'`)).rows[0].value.off, true,
+    'the purchase summaries are marked stopped, so the app goes back to its own count');
   assert.equal((await pg.query(`select count(*)::int n from manager_auth`)).rows[0].n, 1, 'manager_auth is untouched');
   assert.equal((await pg.query(`select count(*)::int n from invoice_uploads`)).rows[0].n, 1, 'the older invoice_uploads is untouched');
   await pg.exec(SQL);

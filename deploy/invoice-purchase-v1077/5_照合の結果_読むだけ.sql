@@ -1,5 +1,5 @@
 -- 確認済みの仕入れ集計：店舗・月ごとの照合（読むだけ・何も変えない）。結果をそのまま Claude に貼ってください。
--- 集計（app_state の invoice_purchase_<月>）と、アプリの invoice（spl_invoices_<店舗>：Drive の写しとアプリで登録したもの）、
+-- 集計（サーバーが書いた invoice_purchase_<月> の中身）と、アプリの invoice（spl_invoices_<店舗>：Drive の写しとアプリで登録したもの）、
 -- 棚卸（fc_monthly_<店舗>_<月>）を店舗・月で並べます。金額はドル。名前・明細・メール・鍵は出しません。
 -- 列：
 --   確認済み … A（照合済み・QuickBooks 送信済み／台帳の前は照合済み）の件数と原本の純額、そのうち原価対象・原価対象外・仮分類（業者の区分）
@@ -8,7 +8,8 @@
 --   今までの数え方 … Drive の写し＋アプリの登録（原価対象の用途）。新しい数え方 … 確認済み（原価対象）＋アプリの登録
 --   差 … 今までの数え方 − 新しい数え方（主に未転送・確認待ち・保留と、写しにあった原価対象外の分）
 with m as (
- select substring(a.key from 18) ym, a.value::jsonb v from public.app_state a where a.key ~ '^invoice_purchase_\d{4}-\d{2}$'
+ -- サーバーが書いた中身（invoice_purchase_published）から読む。app_state の行は画面からも書けるので使わない
+ select x.ym, x.summary || jsonb_build_object('generated_at', x.published_at) v from public.invoice_purchase_published x where x.summary is not null
 ),
 s as (
  select m.ym, st.key store, st.value x, coalesce((m.v->>'closed')::boolean, false) closed, m.v->>'generated_at' gen from m, jsonb_each(m.v->'stores') st
@@ -52,6 +53,7 @@ select n.store as "店舗", n.ym as "月", case when n.closed then '締め済み
  coalesce((select '$' || to_char((f.value::jsonb->>'endInv')::numeric, 'FM999,999,990.00') from public.app_state f
    where f.key = 'fc_monthly_' || n.store || '_' || n.ym
     and case when coalesce(f.value::jsonb->>'endInv', '') ~ '^\d+(\.\d+)?$' then (f.value::jsonb->>'endInv')::numeric > 0 else false end), 'まだ') as "期末棚卸",
- to_char((n.gen)::timestamptz at time zone 'Pacific/Honolulu', 'MM/DD HH24:MI') as "集計の時刻（ハワイ）"
+ case when coalesce(n.gen, '') ~ '^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}(:?\d{2})?|Z)$'
+  then to_char((n.gen)::timestamptz at time zone 'Pacific/Honolulu', 'MM/DD HH24:MI') else '?' end as "集計の時刻（ハワイ）"
 from n left join ag on ag.store = n.store and ag.ym = n.ym
 order by n.ym desc, n.store;

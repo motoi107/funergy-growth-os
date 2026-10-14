@@ -37,10 +37,10 @@ async function published(extra) {
     insert into invoice_vendor_rules(vendor_key,display_name,food_kind) values('minato','Minato <b>Seika</b> "Q''s"','food'),('clean','Clean Co','nonfood');`);
   await pg.exec('set role service_role');
   let n = 0;
-  const doc = async ({ store = 'F06', vk = 'minato', type = 'invoice', status = 'posted', total, recon = 'reconciled', qb = 'sent', lines, related = null, date = '2026-10-05' }) => {
+  const doc = async ({ store = 'F06', vk = 'minato', type = 'invoice', status = 'posted', total, recon = 'reconciled', qb = 'sent', lines, related = null, date = '2026-10-05', ingested = '2026-10-14T00:00:00Z' }) => {
     n++; const sha = n.toString(16).padStart(64, '0');
     const f = (await pg.query(`insert into invoice_files(drive_file_id,store_id,source,original_name,current_name,drive_created_at,current_sha256,intake_status,ingested_at)
-      values($1,$2,'drive',$3,$3,'2026-10-14T00:00:00Z',$4,'posted','2026-10-14T00:00:00Z') returning id`, ['1AbCdEfGhIjKlMnOp' + n, store, 'scan ' + n + '.pdf', sha])).rows[0].id;
+      values($1,$2,'drive',$3,$3,$5,$4,'posted',$5) returning id`, ['1AbCdEfGhIjKlMnOp' + n, store, 'scan ' + n + '.pdf', sha, ingested])).rows[0].id;
     const d = (await pg.query(`insert into invoice_docs(source_key,file_id,sha256,internal_no,store_id,doc_type,posting_kind,vendor_key,vendor_name,food_kind,invoice_no,invoice_date,effective_date,currency,total_cents,status,recon_status,related_doc_id,relation,posted_mode,posted_at)
       values($1,$2,$3,$4,$5,$6,'purchase',$7,$7,(select food_kind from invoice_vendor_rules where vendor_key=$7),$8,$9,$9,'USD',$10,$11,$12,$13,$14,'manual',now()) returning id`,
       ['k' + n, f, sha, 'INT-' + n, store, type, vk, String(48200 + n), date, total, status, recon, related, related ? 'credit_for' : null])).rows[0].id;
@@ -144,7 +144,7 @@ test('one count per purchase: app invoices outside Drive still count; months bef
   assert.deepEqual(JSON.parse(JSON.stringify(run(c, `foodCostOf('F06', '2026-10').ips`))), { ok: false, why: 'not_loaded' });
   await new Promise(r => setTimeout(r, 0));
   assert.deepEqual(c.pulled, ['invoice_purchase_status'], 'it asks for the list of summaries once, not for every month');
-  c = app({ state: { ...base, invoice_purchase_status: { v: 1, off: true, checked_at: '2026-10-14T00:00:00Z' } } });
+  c = app({ state: { ...base, invoice_purchase_status: { ...P.rows['invoice_purchase_status'], off: true } } });   // stopped, even with months listed
   assert.equal(run(c, `foodCostOf('F06', '2026-10').invoice`), 1400 + 500 + 400 + 80, 'stopped: the previous count everywhere');
   assert.match(run(c, `renderPurchaseTab()`), /止めてあります/);
 });
@@ -157,8 +157,9 @@ test('daily cost: Drive copies from October are replaced by the confirmed invoic
   assert.equal(m.F06['2026-10-05'], 1100, 'confirmed $1,200 − $100 credit on the invoice date');
   assert.equal(m.F06['2026-10-02'], 300, 'a September invoice copy taken in on 10/2 keeps the previous count');
   assert.equal(m.F06['2026-10-03'], 80);
-  // the cache is rebuilt when the summary changes
+  // the cache is rebuilt when the summary changes (the list then names the new version)
   c.STORE['invoice_purchase_2026-10'] = { ...c.STORE['invoice_purchase_2026-10'], generated_at: '2026-10-15T00:00:00Z', stores: {} };
+  c.STORE.invoice_purchase_status.months['2026-10'].at = '2026-10-15T00:00:00Z';
   assert.equal(run(c, `_invDayCostMap()`).F06['2026-10-14'], 2300, 'the store is no longer in the summary: its copies count again');
 });
 
@@ -281,7 +282,7 @@ test('only months the list names are used; closed from either side; keys like __
   assert.equal(c.pulled.filter(k => k === 'invoice_purchase_status').length, 2);
   // reload draws the page again only on the 仕入れ tab (or when something changed)
   c = app({ state: { ...P.rows } }); c.budgetTab = 'daily'; c.rendered = 0;
-  await run(c, `ipsRefresh('2026-10', true)`);
+  await run(c, `ipsRefresh('2026-10', true)`); await run(c, `ipsRefresh('2026-10')`);
   assert.equal(c.rendered, 0);
   c.budgetTab = 'purchase';
   await run(c, `ipsRefresh('2026-10')`);
@@ -299,8 +300,9 @@ test('the purchases chip uses one count per month for every store; English has n
   run(c, `ipsCheckOpen('2026-10', 'F06', 'minato')`);
   assert.doesNotMatch(h.replace(/<style>[\s\S]*?<\/style>/g, '') + c.modals.at(-1).replace(/<style>[\s\S]*?<\/style>/g, ''), /[・：（）、。　]/);
   // the login pull (all of app_state) leaves out the summaries; they are fetched by month
-  assert.match(source, /supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*'\)/);
-  assert.match(source, /async function supaFetchAll\(table, select, filter\)[\s\S]{0,400}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/);
+  // (assert.ok, not assert.match: a failed match would print the whole 7 MB page)
+  assert.ok(/supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*'\)/.test(source), 'the login pull leaves the summaries out');
+  assert.ok(/async function supaFetchAll\(table, select, filter\)[\s\S]{0,400}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/.test(source), 'supaFetchAll takes the filter');
   // the bonus lock reads the summaries of the quarter again before it locks
   const k = { IPS_START: '2026-10', _bonusQParse: () => ({ y: 2026, q: 4 }), _quarterMonths: () => ['2026-10', '2026-11', '2026-12'], _ymToOffset: ym => (ym <= '2026-11' ? 0 : 1),
     kbCfg: () => ({}), karteEligibleEmps: () => [], kevStoresExtra: () => [] };
@@ -308,4 +310,55 @@ test('the purchases chip uses one count per month for every store; English has n
   const keys = vm.runInContext(`kevLockSyncKeys('2026-Q4')`, k);
   assert.ok(keys.includes('invoice_purchase_status') && keys.includes('invoice_purchase_2026-10') && keys.includes('invoice_purchase_2026-11'));
   assert.ok(!keys.includes('invoice_purchase_2026-09') && !keys.includes('invoice_purchase_2026-12'), 'before October and future months are not read');
+});
+
+test('held invoices the app entry counts are not "not in yet"; lines follow the month version; a failed fetch is tried again; daily food cost and the cost card use the same count', async () => {
+  const P = await published(async doc => {
+    await doc({ total: 7000, lines: [[7000, 'I-MISO']], ingested: '2026-09-30T00:00:00Z' });   // taken in before the start: the app entry counts it
+  });
+  const s = P.rows['invoice_purchase_2026-10'].stores.F06;
+  assert.deepEqual(s.ap, { n: 1, c: 7000, u: 0 });
+  let c = app({ state: { ...P.rows, invoices: appInvoices() }, sales: { F06: 10000 }, visible: ['F06'] });
+  let h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /集計保留<\/div><div class="v">\$70\.00/);
+  assert.match(h, /うちアプリでの登録で数えるもの 1件/);
+  assert.match(h, /まだ入っていない \$900\.00/, '$500 not forwarded + $400 waiting; not the $70 the app entry counts');
+  assert.match(h, /まだ入っていない invoice 2 件/);
+  const kb = run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
+  assert.match(kb, /保留 \$0/);
+  const vrow = /<tr class="ips-row" onclick="ipsOpenVendor\(\d+\)"><td><b>Minato[\s\S]*?<\/tr>/.exec(h)[0];
+  assert.match(vrow, /\$900\.00<div class="ips-sub">2件/, 'the vendor\'s "not in yet" too');
+  // lines: the popup uses the lines of the month version on the device, and reads them again for a newer version
+  let reads = 0; const f0 = c._fetchOpValue; c._fetchOpValue = async k => { reads++; return f0(k); };
+  await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`); await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`);
+  assert.equal(reads, 1);
+  c.STORE['invoice_purchase_2026-10'].generated_at = '2026-10-15T01:00:00Z';
+  c.STORE['invoice_purchase_lines_2026-10_F06'].generated_at = '2026-10-15T01:00:00Z';
+  await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`);
+  assert.equal(reads, 2);
+  // a fetch that failed is tried again on the next look (a newer version than the device has)
+  c = app({ state: { ...P.rows } });
+  c.STORE.invoice_purchase_status.months['2026-10'].at = '2099-01-01T00:00:00Z';
+  let fail = true; c.pullOpKey = async k => { c.pulled.push(k); if (k === 'invoice_purchase_2026-10' && fail) { fail = false; return false; } return true; };
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  run(c, `ipsMonth('2026-10')`); await tick(); await tick();
+  run(c, `ipsMonth('2026-10')`); await tick(); await tick();
+  run(c, `ipsMonth('2026-10')`); await tick(); await tick();
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_2026-10').length, 2, 'tried again once after the failure, then not again for the same version');
+  // the cost card (原価管理) says the invoices are the confirmed ones and how much is not in yet
+  c = app({ state: { ...P.rows, invoices: appInvoices() }, fc: { 'F06|2026-10': { beginInv: 2000, endInv: 1800 } } });
+  vm.runInContext(['invCogsBreakdown', 'renderInvCogsCard'].map(fn).join('\n'), c);
+  Object.assign(c, { monthSalesOfYm: () => ({ sales: 10000, days: 13 }), monthEventSalesYm: () => ({ sales: 0, count: 0 }), monthNonCostYm: () => ({ total: 0, byPurpose: {} }),
+    _fcPrevYm: () => '2026-09', _fcMoney: v => '$' + Number(v).toFixed(2) });
+  const card = run(c, `renderInvCogsCard('F06', '2026-10', null)`);
+  assert.match(card, /確認済みの invoice（照合・QuickBooks 送信済み・原価対象）\$1,100\.00＋アプリで登録した invoice \$80\.00。まだ入っていない 2 件 \$900\.00/);
+  assert.doesNotMatch(card, /原価外を含む全伝票/);
+  const sep = run(c, `renderInvCogsCard('F06', '2026-09', null)`);
+  assert.doesNotMatch(sep, /確認済みの invoice/, 'September: as before');
+  // the daily food cost screen: the month-to-date figure uses the same count as food cost from October
+  Object.assign(c, { getDailyActuals: () => ({ '2026-10-05': { actual: 10000 } }), dailyOrderTotal: () => 0, _purchOnISO: () => 0, fmtUSD2: v => '$' + Number(v).toFixed(2),
+    daysOfYm: () => [{ date: '2026-10-05' }], kpi: (a, b, c2) => '<kpi>' + a + '|' + b + '|' + c2 + '</kpi>', monthInvoiceTotalYm: () => 2380 });
+  vm.runInContext(['dayCostReal', 'renderFcDaily'].map(fn).join('\n'), c);
+  let fd = ''; try { fd = run(c, `renderFcDaily('F06', {id:'F06'})`); } catch (e) { fd = String(e); }
+  assert.match(fd, /<kpi>当月 実質原価率\|11\.8%\|10月累計・仕入 \$1180\.00 \/ 売上 \$10000\.00<\/kpi>/, fd.slice(0, 300));
 });

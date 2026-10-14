@@ -32960,7 +32960,7 @@ function fcModeBadge(r){
 var IPS_START = '2026-10';
 var IPS_COST = ['food', 'liquor', 'beverage'];
 var _ipsMemo = {}, _ipsAsked = {}, _ipsLines = {}, _ipsRefreshedAt = {};
-var IPS_STATUS_TTL = 600000, _ipsStatusAt = 0, _ipsStatusBusy = false;
+var IPS_STATUS_TTL = 600000, _ipsStatusAt = 0, _ipsStatusBusy = false, _ipsStampMemo = null;
 var _ipsScope = null, _ipsVendor = null, _ipsSaving = false, _ipsRefs = [];
 /* 画面の onclick に入れる値は形を確かめたものだけ（集計の中身は信用しない） */
 var IPS_RE = { ym:/^\d{4}-\d{2}$/, sid:/^[A-Za-z0-9_-]{1,24}$/, uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, vk:/^[A-Za-z0-9_.:@-]{1,80}$/ };
@@ -32992,8 +32992,13 @@ function _ipsPull(k, flag){
   if (_ipsAsked[flag] || typeof pullOpKey !== 'function') return;
   _ipsAsked[flag] = 1;
   var before = _ipsRaw(k);
+  /* 取れなかったら印を外す（次に描くときにもう一度取る。失敗では描き直さないので、くり返し取りに行き続けることはない） */
   Promise.resolve().then(function(){ return pullOpKey(k); })
-    .then(function(ok){ if (ok && _ipsRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon(); }, function(){});
+    .then(function(ok){
+      if (!ok) { delete _ipsAsked[flag]; return; }
+      _ipsStampMemo = null;
+      if (_ipsRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
+    }, function(){ delete _ipsAsked[flag]; });
 }
 function ipsEnsure(ym){
   if (typeof pullOpKey !== 'function') return;
@@ -33001,8 +33006,12 @@ function ipsEnsure(ym){
     _ipsStatusAt = Date.now(); _ipsStatusBusy = true;
     var before = _ipsRaw('invoice_purchase_status');
     Promise.resolve().then(function(){ return pullOpKey('invoice_purchase_status'); })
-      .then(function(ok){ _ipsStatusBusy = false; if (ok && _ipsRaw('invoice_purchase_status') !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon(); },
-        function(){ _ipsStatusBusy = false; });
+      .then(function(ok){
+        _ipsStatusBusy = false;
+        if (!ok) { _ipsStatusAt = Date.now() - IPS_STATUS_TTL + 60000; return; }   /* 取れなかったら 1 分後にもう一度 */
+        _ipsStampMemo = null;
+        if (_ipsRaw('invoice_purchase_status') !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
+      }, function(){ _ipsStatusBusy = false; _ipsStatusAt = Date.now() - IPS_STATUS_TTL + 60000; });
   }
   if (!ym || !_ipsListed(ym)) return;
   var at = String(ipsStatus().months[ym].at || ''), loc = _ipsParse(ipsKey(ym));
@@ -33072,12 +33081,20 @@ function ipsAddDayCosts(m){
     });
   });
 }
+/* 一覧が 3 時間より前から確かめられていない（Invoice取込の 5 分ごとの動きが止まっているかもしれない） */
+function ipsStale(){ var st = ipsStatus(); if (!st || st.off) return false; var ms = Date.parse(String(st.checked_at || '')); return isFinite(ms) && Date.now() - ms > 3 * 3600000; }
 /* 日別の原価のキャッシュの鍵（集計が入れ替わったら作り直す） */
 function ipsStamp(){
-  var st = ipsStatus(); if (!st) return '';
-  if (st.off) return 'off';
-  return Object.keys(_ipsObj(st.months) || {}).sort().filter(function(ym){ return IPS_RE.ym.test(ym) && ym >= IPS_START; })
+  /* 日別の原価を描くたびに呼ばれる：一覧と月の集計が変わらないあいだは前の答え（取ったとき・最新にするで作り直す） */
+  var raw = _ipsRaw('invoice_purchase_status');
+  if (_ipsStampMemo && _ipsStampMemo.raw === raw) return _ipsStampMemo.val;
+  var st = ipsStatus(), val;
+  if (!st) val = '';
+  else if (st.off) val = 'off';
+  else val = Object.keys(_ipsObj(st.months) || {}).sort().filter(function(ym){ return IPS_RE.ym.test(ym) && ym >= IPS_START; })
     .map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-'); }).join('|');
+  _ipsStampMemo = { raw:raw, val:val };
+  return val;
 }
 
 /* ---------- 表示の部品 ---------- */
@@ -33134,7 +33151,7 @@ function ipsChip(cat){
 function ipsCan(){ return (typeof invInCanEdit === 'function') ? invInCanEdit() : false; }
 function ipsSum(stores){
   var z = function(){ return { n:0, c:0, u:0, cost:0, non:0, unc:0, pc:0, pn:0, by:Object.create(null) }; };
-  var out = { A:z(), B:z(), C:z(), D:z(), E:z(), cr:{ n:0, c:0 }, pre:{ n:0, c:0 }, ad:{ n:0, c:0 }, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 } };
+  var out = { A:z(), B:z(), C:z(), D:z(), E:z(), cr:{ n:0, c:0 }, pre:{ n:0, c:0 }, ad:{ n:0, c:0 }, ap:{ n:0, c:0, u:0 }, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 } };
   (stores || []).forEach(function(s){
     if (!s || typeof s !== 'object') return;
     ['A', 'B', 'C', 'D', 'E'].forEach(function(k){
@@ -33144,11 +33161,13 @@ function ipsSum(stores){
       /* 理由は決まった言葉だけを数える */
       Object.keys(_ipsObj(x.by) || {}).forEach(function(b){ if (!_ipsHas(IPS_WHY, b)) return; var y = _ipsObj(x.by[b]) || {}, q = o.by[b] || (o.by[b] = { n:0, c:0, u:0 }); q.n += Number(y.n) || 0; q.c += Number(y.c) || 0; q.u += Number(y.u) || 0; });
     });
-    ['cr', 'pre', 'ad'].forEach(function(k){ var x = _ipsObj(s[k]) || {}; out[k].n += Number(x.n) || 0; out[k].c += Number(x.c) || 0; });
+    ['cr', 'pre', 'ad', 'ap'].forEach(function(k){ var x = _ipsObj(s[k]) || {}; out[k].n += Number(x.n) || 0; out[k].c += Number(x.c) || 0; if (k === 'ap') out.ap.u += Number(x.u) || 0; });
     Object.keys(out.cls).forEach(function(k){ out.cls[k] += Number(_ipsGet(s.cls, k, 0)) || 0; });
   });
   return out;
 }
+/* まだ入っていない＝未転送・確認待ち・保留。ただし保留のうちアプリでの登録で数えるもの（取込の開始前・写しなし・写しを消した）は除く */
+function ipsPending(sum){ return { n:sum.B.n + sum.C.n + sum.E.n - sum.ap.n, c:sum.B.c + sum.C.c + sum.E.c - sum.ap.c, u:sum.B.u + sum.C.u + sum.E.u - sum.ap.u }; }
 function _ipsVKey(v){ return v && v.k ? String(v.k) : '?' + String((v && (v.n || v.vn)) || '').toLowerCase(); }
 /* 業者ごと（全店のときは店をまたいで同じ業者をまとめる） */
 function ipsVendorRows(list){
@@ -33210,7 +33229,7 @@ function ipsRefresh(ym, quiet){
   _ipsStatusAt = Date.now();
   var b0 = _ipsRaw('invoice_purchase_status'), b1 = _ipsRaw(ipsKey(ym));
   return Promise.all([pullOpKey('invoice_purchase_status'), pullOpKey(ipsKey(ym))]).then(function(r){
-    _ipsLines = {};
+    _ipsLines = {}; _ipsStampMemo = null;
     if (!quiet && typeof showToast === 'function') showToast(t('仕入れの集計を読み直しました', 'Purchase summary reloaded'), 'success');
     /* 描き直すのは、仕入れタブを開いているとき（押したとき）か、中身が変わったときだけ */
     var onTab = typeof curPage !== 'undefined' && curPage === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'purchase';
@@ -33267,7 +33286,7 @@ function renderPurchaseTab(){
   if (st && st.off) return h + '<div class="card ips-warn" style="font-size:12.5px;line-height:1.7">' + t('確認済みの仕入れ集計は止めてあります。予実管理の原価率は、今までの数え方（Drive の写しを含む invoice の合計）で出しています。', 'The confirmed purchase summary is turned off. Food cost uses the previous count (all invoices, including Drive copies).') + '</div>';
   if (!d) return h + '<div class="card" style="font-size:12.5px;line-height:1.8">' + t('この月の集計はまだ届いていません。Invoice取込のサーバーが集計を作ると、ここに出ます（5 分ごと・反映や照合のあとすぐ）。', 'No summary for this month yet. It appears once the invoice intake server writes it (every 5 minutes, and right after posting or reconciling).')
     + (ym >= IPS_START ? '<div class="ips-note">' + t('届くまで、予実管理の原価率は今までの数え方で出しています。', 'Until then, food cost uses the previous count.') + '</div>' : '') + '</div>';
-  var stale = checked && (Date.now() - Date.parse(checked) > 3 * 3600000);
+  var stale = ipsStale();
   if (stale) h += '<div class="card ips-warn" style="font-size:12px;line-height:1.7"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ' + t('集計が ' + ipsAgo(checked) + ' から確かめられていません（Invoice取込の 5 分ごとの動きが止まっているかもしれません）。数字は最後に作った時点のものです。', 'The summary has not been checked since ' + ipsAgo(checked) + ' (the intake worker may have stopped). Figures are as of the last summary.') + '</div>';
   var list = (_ipsScope === 'ALL' ? stores : stores.filter(function(s){ return s.id === _ipsScope; }))
     .map(function(s){ return { sid:s.id, name:s.name, closed:!!s.closed, s:_ipsGet(d.stores, s.id, null) }; });
@@ -33300,7 +33319,8 @@ function ipsTilesHtml(ym, d, withData, sum, sales){
     + (sum.pre.n ? '<br>' + t('台帳の前の原本 ', 'Before the ledger ') + sum.pre.n + t('件（送信の記録なし）', ' (no send record)') : '') + '<br>' + A.n + t('件', ' invoices'));
   h += _ipsTile(t('確認済み・未転送', 'Confirmed, not forwarded'), ipsMoney(B.c) + ' <span style="font-size:12px">' + B.n + t('件', '') + '</span>', _ipsByLine(B, ['qb_pending', 'qb_sending', 'qb_error', 'qb_unknown', 'qb_none']) + unk(B));
   h += _ipsTile(t('経理の確認待ち', 'Waiting for accounting'), ipsMoney(C.c) + ' <span style="font-size:12px">' + C.n + t('件', '') + '</span>', _ipsByLine(C, ['review', 'unreconciled', 'discrepancy']) + unk(C));
-  h += _ipsTile(t('集計保留', 'Held'), ipsMoney(E.c) + ' <span style="font-size:12px">' + E.n + t('件', '') + '</span>', _ipsByLine(E, Object.keys(E.by)) + unk(E));
+  h += _ipsTile(t('集計保留', 'Held'), ipsMoney(E.c) + ' <span style="font-size:12px">' + E.n + t('件', '') + '</span>', _ipsByLine(E, Object.keys(E.by)) + unk(E)
+    + (sum.ap.n ? '<br>' + t('うちアプリでの登録で数えるもの ', 'Counted through app entries ') + sum.ap.n + t('件（まだ入っていないには入れない）', ' (not in “not in yet”)') : ''));
   // 仕入率（棚卸未反映）＝確認済み（原価対象）÷ 同じ期間の売上
   var lastA = withData.map(function(e){ return String(((e.s || {}).last || {}).a || ''); }).sort().pop() || '';
   var today = (typeof bizToday === 'function') ? bizToday() : '';
@@ -33309,7 +33329,7 @@ function ipsTilesHtml(ym, d, withData, sum, sales){
     t('確認済み（原価対象）÷ 売上 ', 'Confirmed (cost) ÷ sales ') + (sales > 0 ? '$' + Math.round(sales).toLocaleString('en-US') : t('（売上なし）', '(no sales)'))
     + (cur ? t('（前日まで）', ' (to yesterday)') : '')
     + (cur && lastA ? '<br>' + t('確認済みの最新の請求日 ', 'Latest confirmed invoice ') + ipsMD(lastA) + (today ? t('・売上は ', ' · sales to ') + ipsMD(ymdPrevDay(today)) + t(' まで', '') : '') : '')
-    + '<br>' + t('まだ入っていない ', 'Not in yet ') + ipsMoney(B.c + C.c + E.c));
+    + '<br>' + t('まだ入っていない ', 'Not in yet ') + ipsMoney(ipsPending(sum).c));
   h += ipsCostTile(ym, d, withData, sum);
   h += '</div>';
   if (sum.ad.n) h += '<div class="card ips-warn" style="font-size:12px;line-height:1.7"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ' + t('アプリでの登録と同じかもしれない invoice が ' + sum.ad.n + ' 件（' + ipsMoney(sum.ad.c) + '）あります。Invoice取込で反映するときに「アプリに同じものがある」と出た invoice です。アプリでの登録と照合してください。', sum.ad.n + ' invoice(s) (' + ipsMoney(sum.ad.c) + ') may be the same as an app entry. Check them against the app entries.') + '</div>';
@@ -33329,7 +33349,7 @@ function ipsCostTile(ym, d, withData, sum){
     if (!r.hasEnd) { ok = false; reasons.push(escapeHtml(e.name) + t('：期末の棚卸がまだ', ': closing stocktake not done')); }
     cost += r.cost;
   });
-  var pend = sum.B.n + sum.C.n + sum.E.n;
+  var pend = ipsPending(sum).n;
   if (pend) reasons.push(t('まだ入っていない invoice ' + pend + ' 件（未転送・確認待ち・保留）', pend + ' invoice(s) not in yet'));
   var vend = ipsVendorRows(withData), need = 0, done = 0;
   vend.forEach(function(v){ v.chks.forEach(function(c){ if (!c.docs) return; need++; if (c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)) done++; }); });
@@ -33433,6 +33453,8 @@ async function ipsOpenDoc(ym, sid, id){
   var d = ipsMonth(ym), s = d && _ipsGet(d.stores, sid, null), x = s && (Array.isArray(s.docs) ? s.docs : []).find(function(y){ return y && y.id === id; });
   if (!x) return;
   var key = 'invoice_purchase_lines_' + ym + '_' + sid;
+  /* 明細は月の集計と同じ版（generated_at）のものを使う。違えば取り直す */
+  if (_ipsLines[key] && String(_ipsLines[key].generated_at || '') !== String(d.generated_at || '')) delete _ipsLines[key];
   if (!_ipsLines[key] && typeof _fetchOpValue === 'function') {
     openModal('<div class="modal-title">' + escapeHtml(String(x.vn || '')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="padding:14px;color:var(--muted);font-size:12px"><i class="ti ti-loader-2"></i> ' + t('明細を読んでいます…', 'Loading lines…') + '</div>');
     var v = await _fetchOpValue(key);
@@ -33528,6 +33550,15 @@ async function ipsCheckSave(ym, sid, vk){
   } catch(e) { fail(e && e.message ? e.message : String(e)); }
   finally { _ipsSaving = false; if (btn) btn.disabled = false; }
 }
+/* 原価管理の原価カードの「仕入（Invoice）」の説明（確認済みで出しているとき） */
+function ipsCogsNote(sid, ym){
+  var l = ipsLink(sid, ym); if (!l || !l.ok) return '';
+  var d = ipsMonth(ym), s = d && _ipsGet(d.stores, sid, null); if (!s) return '';
+  var p = ipsPending(ipsSum([s]));
+  return '確認済みの invoice（照合・QuickBooks 送信済み・原価対象）' + _ipsFcMoney(l.confirmed) + '＋アプリで登録した invoice ' + _ipsFcMoney(l.manual)
+    + (p.n ? '。まだ入っていない ' + p.n + ' 件 ' + ipsMoney(p.c) + '（予実管理 ›「仕入れ」）' : '');
+}
+function _ipsFcMoney(v){ v = Number(v) || 0; return (v < 0 ? '−$' : '$') + Math.abs(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 /* 予実管理の原価率のタイルを押したときの内訳（2026 年 10 月から） */
 function ipsFcBreakdown(scopeStores, ym){
   if (!ym || ym < IPS_START) return '';
@@ -33546,9 +33577,10 @@ function ipsFcBreakdown(scopeStores, ym){
   return '<div style="margin-top:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">'
     + '<div style="font-weight:700;margin-bottom:4px">' + t('原価率の仕入れ（2026 年 10 月から確認済みの invoice）', 'Purchases in food cost (confirmed invoices from Oct 2026)') + '</div>'
     + rows.map(function(r){ return '<div style="display:flex;justify-content:space-between;padding:2px 0"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('')
-    + '<div style="background:var(--surface2);border-radius:8px;padding:6px 8px;margin-top:6px;line-height:1.7">' + t('まだ入っていない', 'Not in yet') + t('：', ': ') + t('確認済み・未転送 ', 'not forwarded ') + m(sum.B.c / 100) + t('・', ' · ') + t('確認待ち ', 'waiting ') + m(sum.C.c / 100) + t('・', ' · ') + t('保留 ', 'held ') + m(sum.E.c / 100)
+    + '<div style="background:var(--surface2);border-radius:8px;padding:6px 8px;margin-top:6px;line-height:1.7">' + t('まだ入っていない', 'Not in yet') + t('：', ': ') + t('確認済み・未転送 ', 'not forwarded ') + m(sum.B.c / 100) + t('・', ' · ') + t('確認待ち ', 'waiting ') + m(sum.C.c / 100) + t('・', ' · ') + t('保留 ', 'held ') + m((sum.E.c - sum.ap.c) / 100)
     + '<br><span style="color:var(--muted)">' + t('今までの数え方（Drive の写しを含む invoice）なら ', 'With the previous count (incl. Drive copies): ') + m(legacy) + '</span></div>'
     + (on.length < (scopeStores || []).length ? '<div class="ips-note">' + t('Drive の取込の外の店は今までの数え方。', 'Stores outside the Drive intake use the previous count.') + '</div>' : '')
+    + (ipsStale() ? '<div class="ips-note" style="color:var(--yellow)">' + t('集計が ' + ipsAgo(ipsStatus().checked_at) + ' から確かめられていません（数字は最後に作った時点のもの）。', 'The summary has not been checked since ' + ipsAgo(ipsStatus().checked_at) + ' (figures as of the last summary).') + '</div>' : '')
     + '<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="closeModalDirect();setBudgetTab(\'purchase\')"><i class="ti ti-truck"></i> ' + t('仕入れタブで業者・invoice を見る', 'See vendors and invoices') + '</button></div></div>';
 }
 /* FUNERGY_PURCHASE_SUMMARY_END */
@@ -33748,6 +33780,8 @@ function renderFcDaily(storeId, store) {
   daysOfYm(_fcYm).forEach(function(d){ var _o=actuals[d.date]||{}; _mSales += Number(_o.actual)||0; });
   _mInv = monthInvoiceTotalYm(storeId, _fcYm);
   var _mShop = monthPurchaseTotalYm(storeId, _fcYm);
+  /* v1077: 2026 年 10 月からは原価率と同じ数え方（確認済みの invoice・原価対象。下の日別の行も同じ） */
+  if(typeof IPS_START!=='undefined' && _fcYm>=IPS_START){ var _fcIr=foodCostOf(storeId, _fcYm); _mInv=_fcIr.invoice||0; _mShop=_fcIr.buy||0; }
   var _mTrans = ((typeof monthTransferNetYm==='function')?monthTransferNetYm(storeId,_fcYm):{net:0}).net||0;
   var _mCost = _mInv + _mShop + _mTrans;
   var _mRate = _mSales>0 ? Math.round(_mCost/_mSales*1000)/10 : null;
@@ -35832,6 +35866,7 @@ function invCogsBreakdown(storeId, ym, snap){
     tInCount:Number(tnet.inCount)||0, tOutCount:Number(tnet.outCount)||0,
     purch:r.purch, cost:r.cost, sales:r.sales, rate:r.rate, hasEnd:r.hasEnd, mode:r.mode,
     invoiceTotal:invTotal, nonCost:nonCost.total, nonCostBy:nonCost.byPurpose,
+    basis:r.basis, ipsNote:(r.basis==='confirmed_invoices' && typeof ipsCogsNote==='function') ? ipsCogsNote(storeId, ym) : '',   /* v1077 */
     snapGrand:grand, endGap:gap,
     salesSrc: _manual ? 'manual' : (_auto>0 ? 'actual' : 'none'),
     salesDays: _actual.days, salesActual: _auto, salesManual: _manual,
@@ -35885,7 +35920,8 @@ function renderInvCogsCard(storeId, ym, snap){
   h+=row('', pmLabel+'末の棚（期首）', d.begin,
         d.begin>0?'前月の棚卸から引き継いだ金額':'<span style="color:var(--yellow)">未設定。前月の棚卸を確定すると入ります</span>', 'var(--tm)');
   h+=row('＋', cmLabel+'の仕入（Invoice）', d.invoice,
-        (d.nonCost>0?('原価対象のみ。原価外 '+_fcMoney(d.nonCost)+' は含めていません'):'原価対象の伝票の合計'), 'var(--accent2)');
+        d.basis==='confirmed_invoices' ? d.ipsNote
+        : (d.nonCost>0?('原価対象のみ。原価外 '+_fcMoney(d.nonCost)+' は含めていません'):'原価対象の伝票の合計'), 'var(--accent2)');
   if(d.buy>0) h+=row('＋', cmLabel+'の買い出し', d.buy, '現金購入など', 'var(--accent2)');
   h+=row(d.transfer>=0?'＋':'−', '食材移動', Math.abs(d.transfer),
         (d.tInCount||d.tOutCount)
@@ -35914,8 +35950,8 @@ function renderInvCogsCard(storeId, ym, snap){
     +'<div>計算式：<span style="color:var(--muted)">期首棚卸 ＋ 仕入 ＋ 食材移動 − 期末棚卸</span></div>'
     +'<div>'+_fcMoney(d.begin)+' ＋ '+_fcMoney(d.invoice+d.buy)+' '+(d.transfer>=0?'＋':'−')+' '+_fcMoney(Math.abs(d.transfer))
     +' − '+_fcMoney(d.end)+' ＝ <b>'+_fcMoney(d.cost)+'</b></div>'
-    +'<div style="margin-top:4px">Invoice 合計（原価外を含む全伝票）：'+_fcMoney(d.invoiceTotal)+'</div>';
-  if(d.nonCost>0){
+    +(d.basis==='confirmed_invoices' ? '' : '<div style="margin-top:4px">Invoice 合計（原価外を含む全伝票）：'+_fcMoney(d.invoiceTotal)+'</div>');
+  if(d.nonCost>0 && d.basis!=='confirmed_invoices'){
     h+='<div style="color:var(--muted)">うち原価に含めない分：'+_fcMoney(d.nonCost)+'　'
       + Object.keys(d.nonCostBy).map(function(k){ return escapeHtml(k)+' '+_fcMoney(d.nonCostBy[k]); }).join('・')
       + '</div>';

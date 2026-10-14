@@ -16,4 +16,9 @@ begin
   foreach t in array array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published'] loop
     execute format('drop table if exists public.%I cascade', t);
   end loop;
+  -- 確認済みの仕入れ集計を使っていたら、アプリが今までの数え方に戻るように「止めた」と書く（集計の行は消さない・ほかの行は触らない）
+  if to_regclass('public.app_state') is not null then
+    execute format('update public.app_state set value = %L, updated_at = now() where key = %L',
+      json_build_object('v', 1, 'off', true, 'checked_at', now())::text, 'invoice_purchase_status');
+  end if;
 end $$;

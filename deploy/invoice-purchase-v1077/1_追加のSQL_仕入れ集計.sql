@@ -13,7 +13,8 @@
 --                                 of tax, shipping and discounts (prorated by line amount, in whole cents, nothing lost).
 --   invoice_purchase_publish    : writes the summaries to app_state (invoice_purchase_<YYYY-MM>, invoice_purchase_lines_<YYYY-MM>_<store>,
 --                                 invoice_purchase_status) for the app to read without signing in (Moto 10/14: anyone using the
---                                 app may see it). A closed month (rules.closed_through) is published once and then kept as it was.
+--                                 app may see it). A closed month (rules.closed_through) is written again only when its
+--                                 invoices change (for example reconciled or sent after closing), not when a master changes.
 --   invoice_purchase_check      : records the statement check (accounting, 事務Crew, GM, CEO).
 -- Nothing here changes an invoice, a line, the QuickBooks ledger, the app's invoice copies or a Drive file.
 -- To stop it (the app goes back to its own count): db/invoice-purchase-stop.sql. Running this file twice changes nothing.
@@ -42,9 +43,10 @@ create table if not exists public.invoice_purchase_published(
  hash text not null,
  published_at timestamptz not null,
  checked_at timestamptz not null,
- closed boolean not null default false,   -- written as a closed month (kept as it is from then on)
+ closed boolean not null default false,   -- written as a closed month
  summary jsonb,                           -- what was written: rows changed or removed from outside are written again from this
- lines jsonb
+ lines jsonb,
+ inputs text                              -- what the month's invoices were (versions, states, ledger, copies) when it was written
 );
 
 do $$ declare t text; begin
@@ -256,8 +258,10 @@ begin
    coalesce(sum(mul * beverage_m) filter (where cat='A'), 0) a_beverage, coalesce(sum(mul * supply_m) filter (where cat='A'), 0) a_supply,
    coalesce(sum(mul * nonfood_m) filter (where cat='A'), 0) a_nonfood,
    count(*) filter (where cat='A' and credit) cr_n, coalesce(sum(cents) filter (where cat='A' and credit), 0) cr_c,
-   count(*) filter (where cat in ('B','C','E')) p_n, coalesce(sum(cents) filter (where cat in ('B','C','E') and cents is not null), 0) p_c,
-   count(*) filter (where cat in ('B','C','E') and cents is null) p_u, count(*) filter (where cat='D') d_n
+   -- not in yet: B, C and E, except what the app's own entry counts (E without a copy)
+   count(*) filter (where cat in ('B','C') or (cat='E' and link)) p_n,
+   coalesce(sum(cents) filter (where (cat in ('B','C') or (cat='E' and link)) and cents is not null), 0) p_c,
+   count(*) filter (where (cat in ('B','C') or (cat='E' and link)) and cents is null) p_u, count(*) filter (where cat='D') d_n
   from dd group by 1, 2
  ),
  vj as (
@@ -316,6 +320,9 @@ begin
      'cr', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents), 0)) from dd where dd.store_id=s.store_id and dd.cat='A' and dd.credit),
      'pre', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents), 0)) from dd where dd.store_id=s.store_id and dd.cat='A' and 'pre_ledger' = any(dd.why)),
      'ad', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0)) from dd where dd.store_id=s.store_id and dd.cat in ('A','B','C') and dd.appdup),
+     -- held because the app's own entry counts them (taken in before the start, no copy, copy deleted): not "not in yet"
+     'ap', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0), 'u', count(*) filter (where cents is null))
+        from dd where dd.store_id=s.store_id and dd.cat='E' and not dd.link),
      'last', (select jsonb_build_object('a', max(invoice_date) filter (where cat='A'), 'in', max(ingested_at)) from dd where dd.store_id=s.store_id),
      'vendors', coalesce((select jsonb_agg(vj.j order by vj.ord desc, vj.vn) from vj where vj.store_id=s.store_id), '[]'::jsonb),
      'docs', coalesce((select jsonb_agg(dj.j order by dj.invoice_date desc nulls first, dj.id) from dj where dj.store_id=s.store_id), '[]'::jsonb)))
@@ -328,14 +335,15 @@ end $$;
 
 -- Writes the months whose content changed: every month that has purchase documents, a statement check or an earlier summary
 -- (the worker, on every run), or only the months of the invoices, file or ledger row a person's action touched (p.doc_ids,
--- p.file_id, p.outbox_id, p.months). A closed month (rules.closed_through) is written once more when it is closed and then
--- kept as it was (the existing closing procedure decides any change; p.force writes it again). Rows changed or removed from
--- outside (app_state can be written from a browser) are written again from what was written here.
+-- p.file_id, p.outbox_id, p.months). A closed month (rules.closed_through) is written once more when it is closed; after that
+-- only when its invoices change (reconciled or sent to QuickBooks after closing, corrected, marked), not for a change of the
+-- masters or settings alone (p.force writes it again anyway). Rows changed or removed from outside (app_state can be written
+-- from a browser) are written again from what was written here.
 create or replace function public.invoice_purchase_publish(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare v_closed text := public.invoice_setting('rules')->>'closed_through'; v_months text[]; v_ym text; v_j jsonb; v_h text;
  v_pub public.invoice_purchase_published; v_changed text[] := '{}'; v_frozen text[] := '{}'; v_repaired text[] := '{}';
- v_now timestamptz := now(); v_sid text; v_cls jsonb; v_closedm boolean; v_sum jsonb; v_lines jsonb; v_at timestamptz; v_exp jsonb;
+ v_now timestamptz := now(); v_sid text; v_cls jsonb; v_closedm boolean; v_sum jsonb; v_lines jsonb; v_at timestamptz; v_exp jsonb; v_in text;
  v_uuid text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; v_ids text[] := '{}';
 begin
  -- One at a time: a later run starts after an earlier one ends and sees what was saved meanwhile.
@@ -376,7 +384,16 @@ begin
  foreach v_ym in array v_months loop
   select * into v_pub from public.invoice_purchase_published x where x.ym=v_ym;
   v_closedm := v_closed is not null and v_ym <= v_closed;
-  if v_closedm and v_pub.ym is not null and v_pub.closed and not coalesce((p->>'force')::boolean, false) then
+  -- What the month's invoices are now: every version (a reconcile, a correction, a mark), state, store, QuickBooks ledger row and
+  -- app copy. A closed month is written again when this changed (an invoice reconciled or sent after closing reaches its cost),
+  -- but not for a change of the masters or settings alone (classes, vendor names): those leave a closed month as it was.
+  select md5(coalesce(string_agg(q.x, '|' order by q.x), '')) into v_in from (
+   select d.id::text || ':' || d.version || ':' || d.status || ':' || d.recon_status || ':' || f.store_id || ':' || coalesce(m.state, '') || ':'
+     || coalesce((select string_agg(o.to_address || '/' || o.state, ',' order by o.id) from public.invoice_qb_outbox o where o.sha256=d.sha256), '') x
+   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id left join public.invoice_app_mirror m on m.doc_id=d.id
+   where (d.posting_kind='purchase' or (d.status='review' and d.doc_type='unknown'))
+    and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') = v_ym) q;
+  if v_closedm and v_pub.ym is not null and v_pub.closed and v_pub.inputs is not distinct from v_in and not coalesce((p->>'force')::boolean, false) then
    v_frozen := v_frozen || v_ym;
    v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
    update public.invoice_purchase_published x set checked_at=v_now where x.ym=v_ym;
@@ -392,15 +409,15 @@ begin
        jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'generated_at', v_now, 'docs', coalesce(v_j->'lines'->v_sid, '{}'::jsonb)), v_now)
      on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
     end loop;
-    insert into public.invoice_purchase_published(ym, hash, published_at, checked_at, closed, summary, lines)
-    values(v_ym, v_h, v_now, v_now, v_closedm, v_j->'summary', v_j->'lines')
+    insert into public.invoice_purchase_published(ym, hash, published_at, checked_at, closed, summary, lines, inputs)
+    values(v_ym, v_h, v_now, v_now, v_closedm, v_j->'summary', v_j->'lines', v_in)
     on conflict(ym) do update set hash=excluded.hash, published_at=excluded.published_at, checked_at=excluded.checked_at,
-     closed=excluded.closed, summary=excluded.summary, lines=excluded.lines;
+     closed=excluded.closed, summary=excluded.summary, lines=excluded.lines, inputs=excluded.inputs;
     v_changed := v_changed || v_ym;
     continue;
    end if;
    v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
-   update public.invoice_purchase_published x set checked_at=v_now where x.ym=v_ym;
+   update public.invoice_purchase_published x set checked_at=v_now, inputs=v_in where x.ym=v_ym;
   end if;
   -- Unchanged here: the rows the app reads must still be what was written.
   if v_sum is not null and coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_' || v_ym), '') <> md5(v_sum::text) then
