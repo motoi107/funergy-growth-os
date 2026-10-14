@@ -1,6 +1,6 @@
 # Claude / Codex 共通記録
 
-## 2026-10-14 仕入れ集計 v1077 は本番に入った・Codex の P2 残件を v1078 で直す・照合の結果（Claude・ブランチ `claude/invoice-purchase-refresh`・本番未反映）
+## 2026-10-14 仕入れ集計 v1077 は本番に入った・Codex の P2 残件を v1078 で直す・照合の結果（Claude・ブランチ `claude/invoice-purchase-refresh`・PR #59・本番未反映）
 
 - PR #58 は Moto さんが 10/14 12:28 HST にマージ（main `616f06e`・アプリ v1077）。そのとき Codex の再レビューは **blocked／manual（P2 1 件が残る）**：`f44d1aa`（[コメント 6179810050](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179810050)）・`5bcfe82`（[6179893764](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179893764)）。P2-2（0 件の業者の「足りない」）は直ったと確認。残る P2：同じ版のまま取り直したとき、月の額は直るが、日別の原価（`window._idc` の鍵 `ipsStamp()` が版だけ）と明細（`_ipsLines`）は古いまま。あわせて、答えが返らない取り直しは同じ印のまま二度と取られない。Claude のレビュー（6179788620 の「P1・P2 なし」）は 6179874617 で撤回済み。下の節の「Codex の再レビューはまだ」は古い。
 - 本番：Moto さんが 12:48 HST に `5_照合の結果_読むだけ.sql` の結果を貼った（集計の時刻 12:31 HST）→ SQL 1 と集計は入っている。関数 3 の Deploy は結果からは分からない（集計の時刻が 5 分ごとに進めば入っている）。
