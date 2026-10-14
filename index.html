@@ -32962,6 +32962,7 @@ var IPS_COST = ['food', 'liquor', 'beverage'];
 var _ipsMemo = {}, _ipsAsked = {}, _ipsLines = {}, _ipsRefreshedAt = {};
 var IPS_STATUS_TTL = 600000, _ipsStatusAt = 0, _ipsStatusBusy = false, _ipsStampMemo = null;
 var IPS_MONTH_TTL = 6 * 3600000, _ipsGot = {};   /* 月の集計をこの画面を開いてから取った時刻 */
+var IPS_RETRY_MS = 60000;                          /* 取れなかった月は 1 分あけてからもう一度 */
 var _ipsScope = null, _ipsVendor = null, _ipsSaving = false, _ipsRefs = [];
 /* 画面の onclick に入れる値は形を確かめたものだけ（集計の中身は信用しない） */
 var IPS_RE = { ym:/^\d{4}-\d{2}$/, sid:/^[A-Za-z0-9_-]{1,24}$/, uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, vk:/^[A-Za-z0-9_.:@-]{1,80}$/ };
@@ -32990,17 +32991,19 @@ function _ipsListed(ym){ var st = ipsStatus(); return !!(st && st.off !== true &
 /* ログインのまとめ取りに集計は入れない（行が多いため）。一覧（status）を 10 分ごとに読み直し、
    月の集計は、端末の版（generated_at）が一覧の版（at）と違うときだけ取る。取れたら描き直す */
 function _ipsPull(k, flag){
-  if (_ipsAsked[flag] || typeof pullOpKey !== 'function') return;
-  _ipsAsked[flag] = 1;
+  if (typeof pullOpKey !== 'function') return;
+  var a = _ipsAsked[flag];
+  /* 取っている途中・取れた版は取らない。取れなかったものは 1 分あけてから（失敗では描き直さないので、くり返し取りに行き続けることはない） */
+  if (a && !(a.fail && Date.now() - a.fail > IPS_RETRY_MS)) return;
+  _ipsAsked[flag] = { busy:1 };
   var before = _ipsRaw(k);
-  /* 取れなかったら印を外す（次に描くときにもう一度取る。失敗では描き直さないので、くり返し取りに行き続けることはない） */
   Promise.resolve().then(function(){ return pullOpKey(k); })
     .then(function(ok){
-      if (!ok) { delete _ipsAsked[flag]; return; }
+      if (!ok) { _ipsAsked[flag] = { fail:Date.now() }; return; }
       _ipsGot[k] = Date.now();
       _ipsStampMemo = null;
       if (_ipsRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
-    }, function(){ delete _ipsAsked[flag]; });
+    }, function(){ _ipsAsked[flag] = { fail:Date.now() }; });
 }
 function ipsEnsure(ym){
   if (typeof pullOpKey !== 'function') return;
@@ -33019,8 +33022,9 @@ function ipsEnsure(ym){
   var key = ipsKey(ym), at = String(ipsStatus().months[ym].at || ''), loc = _ipsParse(key), got = _ipsGot[key] || 0;
   /* 一覧の版と違う：その版ごとに 1 回取る（取れなかったら次に見るときにもう一度） */
   if (!loc || String(loc.generated_at || '') !== at) { _ipsPull(key, key + '|' + at); return; }
-  /* 同じ版でも、この画面を開いてから一度は取り直し、そのあとは 6 時間ごと。同じ版のまま書き換えられた行を
-     取っていた端末も、サーバーが書き戻した行に直る（Codex PR #58 P2-1） */
+  /* 同じ版でも、締めていない月は、この画面を開いてから一度は取り直し、そのあとは 6 時間ごと。同じ版のまま書き換えられ、
+     書き戻される前に戻された行を取っていた端末も直る（Codex PR #58 P2-1）。締めた月は版が変わったときだけ（月が増えても重くしない） */
+  if (ipsStatus().months[ym].closed === true) return;
   if (got && Date.now() - got < IPS_MONTH_TTL) return;
   _ipsPull(key, key + '|' + at + '|v' + got);
 }

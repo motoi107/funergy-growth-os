@@ -358,8 +358,16 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   const tick = () => new Promise(r => setTimeout(r, 0));
   run(c, `ipsMonth('2026-10')`); await tick(); await tick();
   run(c, `ipsMonth('2026-10')`); await tick(); await tick();
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_2026-10').length, 1, 'not again within a minute of the failure (offline: no request on every look)');
+  run(c, `Object.keys(_ipsAsked).forEach(function(k){ if (_ipsAsked[k] && _ipsAsked[k].fail) _ipsAsked[k].fail -= 60001; })`);
   run(c, `ipsMonth('2026-10')`); await tick(); await tick();
-  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_2026-10').length, 2, 'tried again once after the failure, then not again for the same version');
+  run(c, `ipsMonth('2026-10')`); await tick(); await tick();
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_2026-10').length, 2, 'tried again after a minute, then not again for the same version');
+  // a closed month of the same version is not taken again in the session (it changes only with a new version)
+  c = app({ state: { ...P.rows } });
+  c.STORE.invoice_purchase_status.months['2026-10'].closed = true;
+  run(c, `ipsMonth('2026-10')`); await tick();
+  assert.deepEqual(c.pulled, ['invoice_purchase_status']);
   // the cost card (原価管理) says the invoices are the confirmed ones and how much is not in yet
   c = app({ state: { ...P.rows, invoices: appInvoices() }, fc: { 'F06|2026-10': { beginInv: 2000, endInv: 1800 } } });
   vm.runInContext(['invCogsBreakdown', 'renderInvCogsCard'].map(fn).join('\n'), c);
