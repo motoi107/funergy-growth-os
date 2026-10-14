@@ -1,0 +1,52 @@
+-- 確認済みの仕入れ集計：店舗・月ごとの照合（読むだけ・何も変えない）。結果をそのまま Claude に貼ってください。
+-- 集計（app_state の invoice_purchase_<月>）と、アプリの invoice（spl_invoices_<店舗>：Drive の写しとアプリで登録したもの）、
+-- 棚卸（fc_monthly_<店舗>_<月>）を店舗・月で並べます。金額はドル。名前・明細・メール・鍵は出しません。
+-- 列：
+--   確認済み … A（照合済み・QuickBooks 送信済み／台帳の前は照合済み）の件数と原本の純額、そのうち原価対象・原価対象外・仮分類（業者の区分）
+--   未転送 B・確認待ち C・保留 E … 件数と金額（金額未確定の件数）。保留のうち「取込の開始前」はアプリの登録で数えているもの
+--   アプリの登録 … アプリで登録した invoice（Drive の写しを除く・用途が仕入れ・仕込み）。原価率には今までどおり入る
+--   今までの数え方 … Drive の写し＋アプリの登録（原価対象の用途）。新しい数え方 … 確認済み（原価対象）＋アプリの登録
+--   差 … 今までの数え方 − 新しい数え方（主に未転送・確認待ち・保留と、写しにあった原価対象外の分）
+with m as (
+ select substring(a.key from 18) ym, a.value::jsonb v from public.app_state a where a.key ~ '^invoice_purchase_\d{4}-\d{2}$'
+),
+s as (
+ select m.ym, st.key store, st.value x, coalesce((m.v->>'closed')::boolean, false) closed, m.v->>'generated_at' gen from m, jsonb_each(m.v->'stores') st
+),
+app as (
+ select coalesce(sp.store, e->>'storeId') store, left(replace(coalesce(nullif(e->>'docDate',''), e->>'date'), '/', '-'), 7) ym,
+  coalesce(e->>'src','') = 'drive-intake' copy, coalesce((e->>'total')::numeric, 0) / greatest(1, coalesce(jsonb_array_length(case when jsonb_typeof(e->'splitStores')='array' then e->'splitStores' end), 0)) amt
+ from public.app_state a
+  cross join lateral jsonb_array_elements(case when jsonb_typeof(a.value::jsonb)='array' then a.value::jsonb else '[]'::jsonb end) e
+  left join lateral (select jsonb_array_elements_text(case when jsonb_typeof(e->'splitStores')='array' and jsonb_array_length(e->'splitStores') > 0 then e->'splitStores' end) store) sp on true
+ where a.key like 'spl\_invoices\_%' and coalesce((e->>'_deleted')::boolean, false) = false
+  and coalesce(e->>'docType','') not in ('Receipt','Reimburse') and coalesce(nullif(e->>'purpose',''), '仕入れ・仕込み') = '仕入れ・仕込み'
+),
+ag as (select store, ym, sum(amt) filter (where copy) copies, sum(amt) filter (where not copy) manual from app group by 1, 2),
+n as (select s.*, (s.x->'tot') t from s)
+select n.store as "店舗", n.ym as "月", case when n.closed then '締め済み' else '' end as "締め",
+ coalesce((n.t->'A'->>'n')::int, 0) || ' 件 / $' || to_char(coalesce((n.t->'A'->>'c')::numeric, 0) / 100, 'FM999,999,990.00') as "確認済み（原本の純額）",
+ '$' || to_char(coalesce((n.t->'A'->>'cost')::numeric, 0) / 100, 'FM999,999,990.00') || ' / $' || to_char(coalesce((n.t->'A'->>'non')::numeric, 0) / 100, 'FM999,999,990.00')
+  || '（仮分類 $' || to_char((coalesce((n.t->'A'->>'pc')::numeric, 0) + coalesce((n.t->'A'->>'pn')::numeric, 0)) / 100, 'FM999,999,990.00') || '）' as "原価対象 / 対象外",
+ coalesce((n.t->'B'->>'n')::int, 0) || ' 件 / $' || to_char(coalesce((n.t->'B'->>'c')::numeric, 0) / 100, 'FM999,999,990.00') as "未転送 B",
+ coalesce((n.t->'C'->>'n')::int, 0) || ' 件 / $' || to_char(coalesce((n.t->'C'->>'c')::numeric, 0) / 100, 'FM999,999,990.00')
+  || case when coalesce((n.t->'C'->>'u')::int, 0) > 0 then '（金額未確定 ' || (n.t->'C'->>'u') || ' 件）' else '' end as "確認待ち C",
+ coalesce((n.t->'E'->>'n')::int, 0) || ' 件 / $' || to_char(coalesce((n.t->'E'->>'c')::numeric, 0) / 100, 'FM999,999,990.00')
+  || case when (n.t->'E'->'by') ? 'before_start' then '（開始前 ' || (n.t->'E'->'by'->'before_start'->>'n') || ' 件）' else '' end as "保留 E",
+ coalesce((n.t->'D'->>'n')::int, 0) as "除外 D",
+ coalesce((n.x->'cr'->>'n')::int, 0) || ' 件 / ' || case when coalesce((n.x->'cr'->>'c')::numeric, 0) < 0 then '-$' else '$' end
+  || to_char(abs(coalesce((n.x->'cr'->>'c')::numeric, 0)) / 100, 'FM999,999,990.00') as "返品・クレジット（確認済み）",
+ coalesce((n.x->'pre'->>'n')::int, 0) as "台帳の前の原本",
+ coalesce((n.x->'ad'->>'n')::int, 0) as "アプリの登録と同じかも",
+ '$' || to_char(coalesce(ag.manual, 0), 'FM999,999,990.00') as "アプリの登録",
+ '$' || to_char(coalesce(ag.copies, 0) + coalesce(ag.manual, 0), 'FM999,999,990.00') as "今までの数え方",
+ '$' || to_char(coalesce((n.t->'A'->>'cost')::numeric, 0) / 100 + coalesce(ag.manual, 0), 'FM999,999,990.00') as "新しい数え方",
+ case when coalesce(ag.copies, 0) - coalesce((n.t->'A'->>'cost')::numeric, 0) / 100 < 0 then '-$' else '$' end
+  || to_char(abs(coalesce(ag.copies, 0) - coalesce((n.t->'A'->>'cost')::numeric, 0) / 100), 'FM999,999,990.00') as "差",
+ (select count(*) from jsonb_array_elements(n.x->'vendors') vv where vv->'chk'->>'s' = 'complete') || ' / '
+  || (select count(*) from jsonb_array_elements(n.x->'vendors') vv where coalesce((vv->'a'->>'n')::int, 0) + coalesce((vv->'p'->>'n')::int, 0) > 0) as "請求明細と照合した業者",
+ coalesce((select '$' || to_char((f.value::jsonb->>'endInv')::numeric, 'FM999,999,990.00') from public.app_state f
+   where f.key = 'fc_monthly_' || n.store || '_' || n.ym and (f.value::jsonb->>'endInv') ~ '^[0-9.]+$' and (f.value::jsonb->>'endInv')::numeric > 0), 'まだ') as "期末棚卸",
+ to_char((n.gen)::timestamptz at time zone 'Pacific/Honolulu', 'MM/DD HH24:MI') as "集計の時刻（ハワイ）"
+from n left join ag on ag.store = n.store and ag.ym = n.ym
+order by n.ym desc, n.store;

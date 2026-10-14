@@ -434,3 +434,68 @@ test('people\'s actions, the forwarder\'s result and the worker write the summar
   assert.equal(r2.status, 200); assert.equal(r2.body.summary, false);
   assert.equal((await E.q(`select recon_status from invoice_docs where id=$1`, [c.id]))[0].recon_status, 'reconciled');
 });
+
+test('the store and month report (read only) puts the summary next to the app\'s invoices and stocktake', async () => {
+  const E = await setup();
+  const inv = await E.doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });
+  await E.doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: inv.id });
+  await E.doc({ total: 50000, qb: 'pending' });
+  await E.doc({ total: 40000, recon: 'unreconciled' });
+  await E.doc({ total: 7000, created: '2026-09-30T23:00:00Z', ingested: '2026-09-30T23:00:00Z' });   // before the start
+  await E.publish();
+  await E.pg.exec(`reset role;
+    insert into app_state values ('spl_invoices_F06', '[{"id":"drv_1","src":"drive-intake","storeId":"F06","docType":"Invoice","docDate":"2026/10/05","total":1400,"purpose":"仕入れ・仕込み"},
+      {"id":"drv_2","src":"drive-intake","storeId":"F06","docType":"Invoice","docDate":"2026/10/05","total":500,"purpose":"仕入れ・仕込み"},
+      {"id":"h1","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":80,"purpose":"仕入れ・仕込み"},
+      {"id":"h2","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":60,"purpose":"仕入れ・仕込み","splitStores":["F06","F01"]},
+      {"id":"r1","storeId":"F06","docType":"Receipt","date":"2026/10/03","total":999},
+      {"id":"x1","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":1,"_deleted":true}]', now()),
+     ('fc_monthly_F06_2026-10', '{"beginInv":2000,"endInv":1800}', now());
+    set role service_role;`);
+  const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-report.sql', import.meta.url), 'utf8'));
+  const r = rows.find(x => x['店舗'] === 'F06' && x['月'] === '2026-10');
+  assert.equal(r['確認済み（原本の純額）'], '2 件 / $1,300.00');
+  assert.equal(r['原価対象 / 対象外'], '$1,100.00 / $200.00（仮分類 $0.00）');
+  assert.equal(r['未転送 B'], '1 件 / $500.00'); assert.equal(r['確認待ち C'], '1 件 / $400.00');
+  assert.equal(r['保留 E'], '1 件 / $70.00（開始前 1 件）');
+  assert.equal(r['返品・クレジット（確認済み）'], '1 件 / -$100.00');
+  assert.equal(r['アプリの登録'], '$110.00', '$80 + half of $60 (split with another store); receipts and deleted ones are not counted');
+  assert.equal(r['今までの数え方'], '$2,010.00'); assert.equal(r['新しい数え方'], '$1,210.00'); assert.equal(r['差'], '$800.00');
+  assert.equal(r['期末棚卸'], '$1,800.00');
+  const f01 = rows.find(x => x['店舗'] === 'F01' && x['月'] === '2026-10');
+  assert.equal(f01['アプリの登録'], '$30.00'); assert.equal(f01['期末棚卸'], 'まだ');
+  assert.ok(!JSON.stringify(rows).match(/drv_|Minato|[0-9a-f]{32}/), 'no ids, names or keys');
+});
+
+test('the deploy folder: the SQL files are the repository files, the one-file function is built from the current sources, and the check runs', async () => {
+  const crypto = await import('node:crypto');
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const D = 'deploy/invoice-purchase-v1077/';
+  for (const [copy, orig] of [['1_追加のSQL_仕入れ集計.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql'], ['4_すぐに集計を作る.sql', 'db/invoice-purchase-start.sql'],
+    ['5_照合の結果_読むだけ.sql', 'db/invoice-purchase-report.sql'], ['止める.sql', 'db/invoice-purchase-stop.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  const src = JSON.parse(rd(D + 'source.json'));
+  for (const [f, h] of Object.entries(src.sources)) assert.equal(crypto.createHash('sha256').update(rd(f)).digest('hex'), h, f + ' changed after 3_関数 was built: build it again');
+  const listed = Object.keys(src.sources).filter(f => f.startsWith('invoice/')).sort();
+  assert.deepEqual(listed, fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).map(f => 'invoice/' + f).sort());
+  assert.equal(crypto.createHash('sha256').update(rd(D + '3_関数_invoice-intake_index.ts')).digest('hex'), src.bundle_sha256);
+  const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
+  assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle) && bundle.includes('invoice_purchase_publish') && bundle.includes('invoice_purchase_check'));
+  // the check SQL on a database with the migration: 2 tables, 4 functions, nothing for browsers; after publishing, the month is listed
+  const E = await setup();
+  await E.doc({ total: 1000 });
+  await E.pg.exec('reset role');
+  const check = rd(D + '2_確認のSQL_読むだけ.sql').toString();
+  let [r] = await E.q(check);
+  assert.deepEqual([N(r['表（2）']), N(r['関数（4）']), N(r['ブラウザーから読める表（0）']), N(r['ブラウザーから動かせる関数（0）']), r['集計がある月']], [2, 4, 0, 0, null]);
+  await E.pg.exec(rd(D + '4_すぐに集計を作る.sql').toString());
+  [r] = await E.q(check);
+  assert.deepEqual([r['集計がある月'], r['集計']], ['2026-10', '動いている']);
+  await E.pg.exec(rd(D + '止める.sql').toString());
+  assert.equal((await E.q(check))[0]['集計'], '止めてある');
+  // the migration needs the rename one first, and changes nothing when run again
+  await E.pg.exec(rd(D + '1_追加のSQL_仕入れ集計.sql').toString());
+  const bare = new PGlite();
+  await bare.exec(`create role anon; create role authenticated; create role service_role bypassrls;`);
+  await assert.rejects(bare.exec(rd(D + '1_追加のSQL_仕入れ集計.sql').toString()), /20261012120000/);
+  await bare.close();
+});
