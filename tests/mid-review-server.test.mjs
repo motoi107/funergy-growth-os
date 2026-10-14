@@ -8,13 +8,14 @@ import { randomUUID } from 'node:crypto';
 import { createHandler, demoData, demoSnapshot, missingV2, normBody, normSnap, KPI_PREV, KPI_CUR } from '../supabase/functions/mid-review/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql', '20261017090000_mid_review_stores_save_fix.sql'];
+const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql', '20261017090000_mid_review_stores_save_fix.sql', '20261018090000_mid_review_scope_gm.sql'];
 const mig = f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8');
 const SQL = MIG.map(mig).join('\n');
 const V1 = MIG.slice(0, 2).map(mig).join('\n');
 const V2 = mig(MIG[2]);
 const V3 = mig(MIG[3]);   // v1073: versions on the access settings and the switches
 const V4 = mig(MIG[4]);   // v1073 fix (Codex 3fbd9dd P2): stores_save writes only on the version read
+const V5 = mig(MIG[5]);   // v1076: the store oversight may be a GM too (and the list row says whose role it is)
 const dbFile = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3',
   crew: '00000000-0000-4000-8000-0000000000c4', am1: '00000000-0000-4000-8000-0000000000c5', am2: '00000000-0000-4000-8000-0000000000c6',
@@ -213,6 +214,23 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
     assert.match(await row('mid-review versions (20261016090000)'), /^OK/, name);
   }
   await pg.exec(V4);
+  // v1076 on top (twice): rows kept; running v1073 or its fix again puts back the save without GMs, and v2 again the list row
+  // without the role — the check says so each time, and running 20261018090000 again fixes it.
+  assert.match(await row('mid-review scope GM (20261018090000)'), /^NG/);
+  await pg.exec(V5); await pg.exec(V5);
+  assert.deepEqual(await count(), before);
+  assert.match(await row('mid-review scope GM (20261018090000)'), /^OK/);
+  for (const again of [V4, V3]) {
+    await pg.exec(again);
+    assert.match(await row('mid-review scope GM (20261018090000)'), /^NG/);
+    await pg.exec(V4); await pg.exec(V5);
+    assert.match(await row('mid-review scope GM (20261018090000)'), /^OK/);
+  }
+  const v2row = (() => { const a = V2.indexOf('create or replace function public.mr_row_v2('); return V2.slice(a, V2.indexOf('end $$;', a) + 7); })();
+  await pg.exec(v2row);
+  assert.match(await row('mid-review scope GM (20261018090000)'), /^NG/);
+  assert.match(await row('mid-review stores_save fix (20261017090000)'), /^OK/);   // only the list row went back
+  await pg.exec(V5);
   for (const r of (await pg.query(post)).rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   // The first edition's review is read as before (legacy), its reply is not part of the v2 thread, and it cannot be written in v2.
   await pg.exec('set role service_role');
@@ -388,9 +406,9 @@ test('an AM follows the employee master (moved to G4, 退職, removed, no employ
   assert.equal((await E.api('office', { action: 'whoami' })).status, 403);
 });
 
-test('stores_save (email GM / CEO): only enabled AMs still AMs; values in range; inactive stores are not listed', async () => {
+test('stores_save (email GM / CEO): only enabled AMs / GMs who still have the role; values in range; inactive stores are not listed', async () => {
   const E = await setup(); await on(E);
-  for (const bad of [U.gm, U.office, U.stranger, U.off, U.amoff, 'not-a-uuid'])
+  for (const bad of [U.ceo, U.office, U.stranger, U.off, U.amoff, 'not-a-uuid'])
     assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: bad, expect_version: 0 }] })).status, 400, bad);
   for (const bad of [{ store_id: 'F 01', name: 'x' }, { store_id: 'F01', name: '' }, { store_id: 'F01' }])
     assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ ...bad, expect_version: 0 }] })).status, 400, JSON.stringify(bad));
@@ -404,6 +422,66 @@ test('stores_save (email GM / CEO): only enabled AMs still AMs; values in range;
   assert.deepEqual((await E.q(`select input_emp, viewer_emps from mr_stores where store_id='F01'`))[0], { input_emp: 'E12', viewer_emps: ['E6'] });
   await E.q(`update employees set status='退職' where id='E6'`);
   assert.equal((await storesSave(E, [STORES[2]])).status, 400);
+});
+
+// v1076 (Moto 10/14「店舗管轄の選択を GM・AM のどちらか選べる様に」): a GM by name, an AM by name or 未設定. Permissions are as before.
+test('v1076 store oversight: a GM can oversee a store; the list says whose role it is; GM / CEO still see every store, the AM only theirs', async () => {
+  const E = await setup(); await live(E);
+  const chef = randomUUID();
+  await E.q(`insert into mr_members(user_id, emp_id, name, role) values($1,'E11','Corp Chef','chef')`, [chef]);
+  // F01 → the GM (by name); F02 stays with Yuki (AM); F06 not set.
+  const s = await storesSave(E, [{ ...STORES[0], am_user: U.gm }]);
+  assert.equal(s.status, 200, JSON.stringify(s.body));
+  const acc = Object.fromEntries((await E.api('gm', { action: 'access_get', ym: '2026-10' })).body.stores.map(x => [x.store_id, x]));
+  assert.deepEqual([acc.F01.am_user, acc.F01.am_name, acc.F01.am_version], [U.gm, 'GM Test', 2]);
+  const rows = who => E.api(who, { action: 'list', env: 'live', ym: '2026-10' }).then(r => Object.fromEntries(r.body.stores.map(x => [x.store_id, x])));
+  for (const who of ['gm', 'ceo']) {
+    const l = await rows(who);
+    assert.deepEqual(Object.keys(l).sort(), ['F01', 'F02', 'F05', 'F06'], who);
+    assert.deepEqual([l.F01.am_name, l.F01.am_role, l.F01.am_unset], ['GM Test', 'gm', false], who);
+    assert.deepEqual([l.F02.am_name, l.F02.am_role], ['Yuki', 'am'], who);
+    assert.deepEqual([l.F06.am_unset, l.F06.am_role ?? null], [true, null], who);
+    assert.equal(l.F01.perms.reply, true, who); assert.equal(l.F01.perms.confirm, true, who);   // GM / CEO reply and confirm as before
+  }
+  // The AM who had F01 no longer sees it (the store is the GM's); their other store stays.
+  const am = await rows('am1');
+  assert.ok(!am.F01, 'F01 is no longer Yuki\'s'); assert.ok(am.F02);
+  assert.equal((await E.api('am1', { action: 'get', ...at('F01') })).status, 404);
+  // Who cannot be chosen: a CEO, a chef, a GM taken off manager_auth or turned off here; the GM changed to CEO in manager_auth
+  // is still a GM here (v1068), so stays selectable.
+  for (const bad of [U.ceo, chef]) assert.equal((await storesSave(E, [{ ...STORES[3], am_user: bad }])).status, 400, bad);
+  await E.q(`update manager_auth set role='ceo' where user_id=$1`, [U.gm]);
+  assert.equal((await storesSave(E, [{ ...STORES[3], am_user: U.gm }])).status, 200);
+  await E.q(`update manager_auth set role='office' where user_id=$1`, [U.gm]);
+  assert.equal((await storesSave(E, [{ ...STORES[1], am_user: U.gm }], 'ceo')).status, 400);
+  await E.q(`update manager_auth set role='gm' where user_id=$1`, [U.gm]);
+  await E.q(`update mr_members set enabled=false where user_id=$1`, [U.gm]);
+  assert.equal((await storesSave(E, [{ ...STORES[1], am_user: U.gm }], 'ceo')).status, 400);
+  // A GM who is no longer one: the row has no role (the settings screen asks to choose again); the AM / 未設定 rows unchanged.
+  const l2 = await rows('ceo');
+  assert.deepEqual([l2.F01.am_name, l2.F01.am_role ?? null], ['GM Test', null]);
+  assert.equal(l2.F02.am_role, 'am');
+  // Back to an AM, and to 未設定.
+  await E.q(`update mr_members set enabled=true where user_id=$1`, [U.gm]);
+  assert.equal((await storesSave(E, [{ ...STORES[0], am_user: U.am1 }, { ...STORES[3], am_user: null }])).status, 200);
+  const l3 = await rows('gm');
+  assert.deepEqual([l3.F01.am_role, l3.F06.am_unset], ['am', true]);
+  assert.ok((await rows('am1')).F01);
+});
+
+test('v1076 store oversight keeps the 20261017090000 fix: a store put in after the compare is not written over (also with a GM)', async () => {
+  const E = await setup(); await on(E);
+  // The screen read F07 as not saved (version 0); another save puts it in with the GM; the first save then gets conflict.
+  assert.equal((await storesSave(E, [{ store_id: 'F07', name: 'New', am_user: U.gm, sort: 7 }], 'ceo')).status, 200);
+  const r = await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F07', name: 'New', am_user: U.am1, sort: 7, expect_version: 0 }] });
+  assert.deepEqual([r.status, r.body.error], [409, 'conflict']);
+  assert.equal((await E.q(`select am_user from mr_stores where store_id='F07'`))[0].am_user, U.gm);
+  // The guard: without 20261016090000 / 20261017090000 the file changes nothing.
+  const pg = new PGlite();
+  await pg.exec(`${ROLES_SQL} ${MASTERS}`);
+  await pg.exec(V1 + V2);
+  await assert.rejects(pg.exec(V5), /20261016090000/);
+  assert.equal((await pg.query(`select position('am_role' in prosrc) > 0 as x from pg_proc where proname='mr_row_v2'`)).rows[0].x, false);
 });
 
 // ---------------------------------------------------------------- 担当・閲覧設定
@@ -1288,7 +1366,7 @@ test('the check after installing: every row OK on a fresh install; it points at 
   const E = await setup(); await live(E);
   const post = dbFile('mid-review-postcheck.sql');
   let rows = await E.q(post);
-  assert.equal(rows.length, 26);
+  assert.equal(rows.length, 27);   // v1076: + scope GM (20261018090000)
   for (const r of rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match(rows.find(r => r.check_name === 'live stores without an input person').result, /^参考/);
   await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true });

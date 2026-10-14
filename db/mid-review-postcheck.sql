@@ -26,7 +26,7 @@ with t as (
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname in (select name from fn)
 ), src as (
   select p.proname, p.prosrc from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public'
-   and p.proname in ('mr_auth','mr_member_role','mr_reply_send','mr_access_save','mr_settings_save','mr_stores_save')
+   and p.proname in ('mr_auth','mr_member_role','mr_reply_send','mr_access_save','mr_settings_save','mr_stores_save','mr_row_v2')
 ), v2 as (
   select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'input_emp')
    and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_replies' and column_name = 'client_id')
@@ -46,6 +46,10 @@ with t as (
 ), v4 as (
   -- the stores_save fix (20261017090000): the write itself requires the version read (a store put in after the compare is not written over)
   select exists(select 1 from src where proname = 'mr_stores_save' and position('and am_version = public.mr_ver(s->''expect_version'')' in prosrc) > 0) as ok
+), v5 as (
+  -- the store oversight may be a GM too (20261018090000): the save takes a GM, and the list row says whose role it is
+  select exists(select 1 from src where proname = 'mr_stores_save' and position('public.mr_member_role(x) in (''am'',''gm'')' in prosrc) > 0)
+   and exists(select 1 from src where proname = 'mr_row_v2' and position('''am_role''' in prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -73,6 +77,8 @@ union all select 'mid-review versions (20261016090000)', (select ok::text from v
   case when (select ok from v3) then 'OK' else 'NG：20261016090000_mid_review_v2_versions.sql がまだ（20261015090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'mid-review stores_save fix (20261017090000)', (select ok::text from v4),
   case when (select ok from v4) then 'OK' else 'NG：20261017090000_mid_review_stores_save_fix.sql がまだ（20261016090000 を流し直したときも、続けてもう一度流す）' end
+union all select 'mid-review scope GM (20261018090000)', (select ok::text from v5),
+  case when (select ok from v5) then 'OK' else 'NG：20261018090000_mid_review_scope_gm.sql がまだ（20261016090000・20261017090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'flags', (select value::text from public.mr_settings where key = 'flags'),
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'live input', (select coalesce(value->>'live_input', 'null') from public.mr_settings where key = 'flags'),

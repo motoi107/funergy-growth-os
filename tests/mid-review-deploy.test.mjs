@@ -1,7 +1,7 @@
 // 中間レビューの配備用ファイルの確認（合成データ・本番に接続しない）。
 // 1) deploy/mid-review-v1069/ は本番に入れたときのまま（変えない）。中身を sha256 で固定して見張る。
 // 2) deploy/mid-review-v2/ は 10/13 に渡したときのまま（v1073 で確認の SQL が変わったので、中身を sha256 で固定して見張る）。
-//    deploy/mid-review-v1073/ も渡したときのまま（sha256）。deploy/mid-review-v1073-fix/ は SQL が元のファイルの写し。
+//    deploy/mid-review-v1073/・deploy/mid-review-v1073-fix/ も渡したときのまま（sha256）。deploy/mid-review-v1076/ は SQL が元のファイルの写し。
 //    どちらも関数の 1 ファイルは置かない（PIN のログインの確かめが入るので公開しない。Moto さんに直接渡す）。
 // 3) 戻す SQL（db/mid-review-fixes-revert.sql）が、v1069 の 3 つの関数を 20261012090000 のときの中身に戻すこと。
 // 4) 止める SQL（db/mid-review-stop.sql）が、記録・設定を消さずに「非公開確認」だけを OFF にすること。
@@ -86,18 +86,45 @@ test('v1073 の束は渡したときのまま・v2 と v1073 の SQL は元の�
   assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false, '関数（PIN の確かめ入り）は公開しない');
 });
 
-// v1073 の直しの束：SQL 1 つ＋確認の SQL。どちらも元のファイルの写し。関数・アプリは変えない。
-test('v1073 の直しの束：SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認だけ', () => {
+// v1073 の直しの束（10/13 に渡したもの）：SQL 1 つ＋確認の SQL。v1076 で確認の SQL が変わったので、中身を sha256 で固定して見張る。
+// 直すときは新しい版のフォルダを作る（このフォルダは変えない）。
+const V1073FIX = {
+  '1_追加のSQL_直し.sql': '12025603b1212d0b9028f4cbe4d5664f0eaa7eba8b2654e6ec900d14c4da6dea',
+  '2_確認のSQL_読むだけ.sql': '0d21162a6f45dda7ff9041c225c3cbeb8c96090f6e16d90844042f048c86d565',
+  '手順.md': 'd6df1cbbad8c10be354ba173432b81d9ea7f8c50c1405734220a2cd8f71fed20',
+};
+test('v1073 の直しの束は渡したときのまま：SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認だけ', () => {
   const D = 'deploy/mid-review-v1073-fix/';
-  assert.deepEqual(list(D), ['1_追加のSQL_直し.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
-  assert.equal(read(D + '1_追加のSQL_直し.sql'), read('supabase/migrations/20261017090000_mid_review_stores_save_fix.sql'));
-  assert.equal(read(D + '2_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  assert.deepEqual(list(D), Object.keys(V1073FIX).sort());
+  for (const [f, h] of Object.entries(V1073FIX)) assert.equal(sha(D + f), h, f);
+  assert.equal(read(D + '1_追加のSQL_直し.sql'), read('supabase/migrations/20261017090000_mid_review_stores_save_fix.sql'), 'the fix migration is not changed (v1076 is a new one)');
   const howto = read(D + '手順.md');
   for (const s of ['1_追加のSQL_直し.sql', '2_確認のSQL_読むだけ.sql', 'mid-review stores_save fix (20261017090000)', '全文', '関数・アプリは変えません'])
     assert.ok(howto.includes(s), s);
   const at = s => howto.indexOf(s);
   assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |'));
   assert.equal(howto.includes('| 3 |'), false);
+  const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+  const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);
+  for (const w of howto.match(/[A-Za-z0-9_:.-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
+});
+
+// v1076 の束：SQL 1 つ（店舗の管轄に GM も）＋確認の SQL。どちらも元のファイルの写し。関数は変えない。順番は SQL → 確認 → マージ。
+test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → マージ → 管轄を選ぶ', () => {
+  const D = 'deploy/mid-review-v1076/';
+  assert.deepEqual(list(D), ['1_追加のSQL_管轄にGM.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
+  assert.equal(read(D + '1_追加のSQL_管轄にGM.sql'), read('supabase/migrations/20261018090000_mid_review_scope_gm.sql'));
+  assert.equal(read(D + '2_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  const howto = read(D + '手順.md');
+  for (const s of ['1_追加のSQL_管轄にGM.sql', '2_確認のSQL_読むだけ.sql', 'mid-review scope GM (20261018090000)', 'mid-review stores_save fix (20261017090000)',
+    '全文', '関数は変えません', 'v1076', '未設定（GM・CEO みんなで見る）'])
+    assert.ok(howto.includes(s), s);
+  const at = s => howto.indexOf(s);
+  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 3 |') && at('| 3 |') < at('| 4 |'));
+  const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
+  assert.match(row(1), /1_追加のSQL_管轄にGM\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row(3), /マージ/); assert.match(row(4), /店舗の管轄/);
+  assert.equal(howto.includes('| 5 |'), false);
+  assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false);
   const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
   const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);
   for (const w of howto.match(/[A-Za-z0-9_:.-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
