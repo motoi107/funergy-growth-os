@@ -1866,6 +1866,10 @@ begin
    d.other_cents, d.food_kind, d.reasons, d.recon_status, d.recon_by, d.recon_at, d.posted_mode, d.posted_at, d.needs_adjustment,
    d.related_doc_id, d.relation, d.duplicate_of, (select x.invoice_no from public.invoice_docs x where x.id=d.related_doc_id) rno,
    f.drive_file_id, f.current_name, f.source fsource, f.drive_created_at, f.ingested_at, m.state mstate,
+   -- 'held' (a closed month or an adjustment met when copying): the copy may or may not be in the app. Look at the app's list.
+   case when m.state='held' then exists(select 1 from public.app_state a
+     cross join lateral jsonb_array_elements(case when jsonb_typeof(a.value::jsonb)='array' then a.value::jsonb else '[]'::jsonb end) e
+     where a.key='spl_invoices_' || m.store_id and e->>'id' = m.app_inv_id and coalesce(e->>'_deleted', '') <> 'true') end hcopy,
    (d.invoice_date is null and d.effective_date is null) nodate,
    -- The QuickBooks ledger is kept per original content and address: a send of the same content to the address in use counts,
    -- whatever the file is called now.
@@ -1884,8 +1888,12 @@ begin
    -- Counted here when the app's cost would have it through the copy (invoice_mirror_apply): copied, or due to be copied.
    -- Taken in before the start or while the copies are off (not copied: the store entered it in the app), or its copy deleted
    -- in the app: the app's own entry counts it, so it is held here (never counted twice).
-   case when d0.mstate='mirrored' then true when d0.mstate='tombstoned' then false when d0.mstate in ('held','error') then true
+   case when d0.mstate='mirrored' then true when d0.mstate='tombstoned' then false when d0.mstate='error' then true
+    when d0.mstate='held' then coalesce(d0.hcopy, false)
     else v_mirror and coalesce(d0.ingested_at >= v_start, false) end link,
+   -- Counted through the store's own app entry instead (not in "not in yet"). A held original with no copy is not: whether the
+   -- store entered it is not known (copies may have been off, or the month closed before it was copied), so it stays to check.
+   (d0.mstate is distinct from 'held') appentry,
    -- Not a ledger target (put in Drive before qb.since, or not a Drive original): no ledger row is expected.
    (v_since is not null and not (d0.fsource='drive' and coalesce(d0.drive_created_at >= v_since, false))) preledger,
    exists(select 1 from jsonb_array_elements(d0.reasons) r where r->>'code'='multi_store') multi,
@@ -1968,7 +1976,8 @@ begin
    mul * vfood_m pc, mul * vnon_m pn,
    case cat
     when 'D' then array[status]
-    when 'E' then case when not link then array[case when mstate='tombstoned' then 'deleted_in_app' when not v_mirror then 'no_copy' else 'before_start' end]
+    when 'E' then case when not link then array[case when mstate='tombstoned' then 'deleted_in_app' when mstate='held' then 'held_no_copy'
+      when not v_mirror then 'no_copy' else 'before_start' end]
      else array_remove(array[case when multi then 'multi_store' end, case when coalesce(currency,'USD')<>'USD' then 'currency' end,
       case when needs_adjustment then 'closed_adjustment' end, case when unclass_m<>0 then 'no_class' end, case when tp is null then 'no_amount' end], null) end
     when 'C' then case when status='review' then array_remove(array['review', case when doc_type='unknown' then 'unreadable' end,
@@ -1995,9 +2004,9 @@ begin
    coalesce(sum(mul * nonfood_m) filter (where cat='A'), 0) a_nonfood,
    count(*) filter (where cat='A' and credit) cr_n, coalesce(sum(cents) filter (where cat='A' and credit), 0) cr_c,
    -- not in yet: B, C and E, except what the app's own entry counts (E without a copy)
-   count(*) filter (where cat in ('B','C') or (cat='E' and link)) p_n,
-   coalesce(sum(cents) filter (where (cat in ('B','C') or (cat='E' and link)) and cents is not null), 0) p_c,
-   count(*) filter (where (cat in ('B','C') or (cat='E' and link)) and cents is null) p_u, count(*) filter (where cat='D') d_n
+   count(*) filter (where cat in ('B','C') or (cat='E' and not (not link and appentry))) p_n,
+   coalesce(sum(cents) filter (where (cat in ('B','C') or (cat='E' and not (not link and appentry))) and cents is not null), 0) p_c,
+   count(*) filter (where (cat in ('B','C') or (cat='E' and not (not link and appentry))) and cents is null) p_u, count(*) filter (where cat='D') d_n
   from dd group by 1, 2
  ),
  vj as (
@@ -2058,7 +2067,7 @@ begin
      'ad', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0)) from dd where dd.store_id=s.store_id and dd.cat in ('A','B','C') and dd.appdup),
      -- held because the app's own entry counts them (taken in before the start, no copy, copy deleted): not "not in yet"
      'ap', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0), 'u', count(*) filter (where cents is null))
-        from dd where dd.store_id=s.store_id and dd.cat='E' and not dd.link),
+        from dd where dd.store_id=s.store_id and dd.cat='E' and not dd.link and dd.appentry),
      'last', (select jsonb_build_object('a', max(invoice_date) filter (where cat='A'), 'in', max(ingested_at)) from dd where dd.store_id=s.store_id),
      'vendors', coalesce((select jsonb_agg(vj.j order by vj.ord desc, vj.vn) from vj where vj.store_id=s.store_id), '[]'::jsonb),
      'docs', coalesce((select jsonb_agg(dj.j order by dj.invoice_date desc nulls first, dj.id) from dj where dj.store_id=s.store_id), '[]'::jsonb)))

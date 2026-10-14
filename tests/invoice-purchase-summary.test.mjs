@@ -189,6 +189,18 @@ test('8・pre-ledger・start: the invoice month decides; before the ledger, reco
   assert.deepEqual(oct.ap, { n: 2, c: 20000, u: 0 });
   const vm = oct.vendors.find(v => v.k === 'minato');
   assert.deepEqual([vm.p.n, N(vm.p.c)], [2, 20000], 'waiting (unreconciled) and not forwarded only');
+  // held (a closed month met when copying): counted when its copy is in the app; without a copy it is left to check
+  // (the store may or may not have entered it), so neither counted nor taken as counted by the app
+  const heldIn = await E.doc({ mirror: 'held' }), heldOut = await E.doc({ mirror: 'held' }), heldDel = await E.doc({ mirror: 'held' });
+  await E.pg.exec(`reset role; insert into app_state values ('spl_invoices_F06', '[{"id":"drv_INT-${heldIn.n}","src":"drive-intake","total":100},
+    {"id":"drv_INT-${heldDel.n}","src":"drive-intake","total":100,"_deleted":true}]', now()); set role service_role;`);
+  const hm = (await E.month('2026-10')).summary.stores.F06;
+  assert.equal(byId(hm, heldIn.id).cat, 'A');
+  assert.deepEqual([byId(hm, heldOut.id).cat, byId(hm, heldOut.id).why], ['E', ['held_no_copy']]);
+  assert.deepEqual(byId(hm, heldDel.id).why, ['held_no_copy'], 'a copy deleted in the app is no copy');
+  assert.deepEqual(hm.ap, { n: 2, c: 20000, u: 0 }, 'not taken as counted by the app');
+  const hv = hm.vendors.find(v => v.k === 'minato');
+  assert.deepEqual([hv.p.n, N(hv.p.c)], [4, 40000], 'still to check, so "not in yet"');
   // the ledger is per address (qb.to): a send recorded to another address is not a send
   const elsewhere = await E.doc({ qb: null });
   await E.q(`insert into invoice_qb_outbox(file_id,sha256,to_address,route,state,attempt_key,sent_at) values($1,$2,'other@example.test','external','sent','qb-elsewhere',now())`, [elsewhere.file, elsewhere.sha]);
@@ -266,7 +278,8 @@ function model(docs, since, start) {
     const sum = want => (shares ? shares.reduce((s, x, i) => s + (want.includes(cls[i]) ? x : 0), 0) : 0)
       + (want.includes(d.fk === 'food' ? 'food' : d.fk === 'nonfood' ? 'nonfood' : 'unclass') ? ua : 0);
     const cost = sum(['food', 'liquor', 'beverage']), non = sum(['supply', 'nonfood']), unc = sum(['unclass']);
-    const link = d.mirror === 'mirrored' ? true : d.mirror === 'tombstoned' ? false : (d.mirror === 'held' || d.mirror === 'error') ? true : Date.parse(d.ingested) >= Date.parse(start);
+    // held: only with its copy in the app (these random invoices have no app copies)
+    const link = d.mirror === 'mirrored' ? true : d.mirror === 'tombstoned' ? false : d.mirror === 'error' ? true : d.mirror === 'held' ? false : Date.parse(d.ingested) >= Date.parse(start);
     const pre = !(d.source === 'drive' && Date.parse(d.created) >= Date.parse(since));
     let cat;
     if (['rejected', 'duplicate', 'superseded'].includes(d.status)) cat = 'D';

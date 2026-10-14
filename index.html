@@ -33085,15 +33085,14 @@ function ipsAddDayCosts(m){
 function ipsStale(){ var st = ipsStatus(); if (!st || st.off) return false; var ms = Date.parse(String(st.checked_at || '')); return isFinite(ms) && Date.now() - ms > 3 * 3600000; }
 /* 日別の原価のキャッシュの鍵（集計が入れ替わったら作り直す） */
 function ipsStamp(){
-  /* 日別の原価を描くたびに呼ばれる：一覧と月の集計が変わらないあいだは前の答え（取ったとき・最新にするで作り直す） */
-  var raw = _ipsRaw('invoice_purchase_status');
-  if (_ipsStampMemo && _ipsStampMemo.raw === raw) return _ipsStampMemo.val;
-  var st = ipsStatus(), val;
-  if (!st) val = '';
-  else if (st.off) val = 'off';
-  else val = Object.keys(_ipsObj(st.months) || {}).sort().filter(function(ym){ return IPS_RE.ym.test(ym) && ym >= IPS_START; })
-    .map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-'); }).join('|');
-  _ipsStampMemo = { raw:raw, val:val };
+  /* 日別の原価を描くたびに呼ばれる：一覧と月の集計の行が同じあいだは前の答え（行は端末のメモリにあるので比べるのは速い） */
+  var raw = _ipsRaw('invoice_purchase_status'), st = ipsStatus();
+  var yms = (st && !st.off) ? Object.keys(_ipsObj(st.months) || {}).sort().filter(function(ym){ return IPS_RE.ym.test(ym) && ym >= IPS_START; }) : [];
+  var mraws = yms.map(function(ym){ return _ipsRaw(ipsKey(ym)); });
+  var m = _ipsStampMemo;
+  if (m && m.raw === raw && m.mraws.length === mraws.length && m.mraws.every(function(r, i){ return r === mraws[i]; })) return m.val;
+  var val = !st ? '' : st.off ? 'off' : yms.map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-'); }).join('|');
+  _ipsStampMemo = { raw:raw, mraws:mraws, val:val };
   return val;
 }
 
@@ -33108,6 +33107,8 @@ var IPS_WHY = {
   no_amount:['金額未確定','Amount unknown'],
   before_start:['Drive の取込を始める前に入った（アプリでの登録で数える・照合が必要）','Taken in before the start (the app entry counts it; check against it)'],
   deleted_in_app:['アプリで写しが消された（アプリでの登録と照合が必要）','Its app copy was deleted in the app (check against the app entry)'],
+  no_copy:['アプリへの写しを作らない設定のあいだに入った（アプリでの登録で数える）','Taken in while app copies were off (the app entry counts it)'],
+  held_no_copy:['締めた月のため写しを作れなかった（アプリに登録があるか確かめる）','No app copy because the month is closed (check whether the app has it)'],
   multi_store:['複数の店舗分が 1 枚（配賦の記録がない）','Several stores on one page (no allocation)'], currency:['USD ではない（換算しない）','Not USD (not converted)'],
   closed_adjustment:['締め済みの月の調整（今までの手順で）','Closed-month adjustment (existing procedure)'],
   no_class:['費用区分が決まっていない（業者の区分か商品の対応を決める）','No class (set the vendor class or map the products)'],
@@ -33458,7 +33459,11 @@ async function ipsOpenDoc(ym, sid, id){
   if (!_ipsLines[key] && typeof _fetchOpValue === 'function') {
     openModal('<div class="modal-title">' + escapeHtml(String(x.vn || '')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div><div style="padding:14px;color:var(--muted);font-size:12px"><i class="ti ti-loader-2"></i> ' + t('明細を読んでいます…', 'Loading lines…') + '</div>');
     var v = await _fetchOpValue(key);
-    if (v && typeof v === 'object' && v.docs) _ipsLines[key] = v;
+    if (v && typeof v === 'object' && v.docs) {
+      _ipsLines[key] = v;
+      /* 明細のほうが新しい（端末の月の集計が古い）：月の集計を取り直す */
+      if (String(v.generated_at || '') !== String(d.generated_at || '')) _ipsPull(ipsKey(ym), ipsKey(ym) + '|lines|' + String(v.generated_at || ''));
+    }
   }
   var L = (_ipsLines[key] && _ipsGet(_ipsObj(_ipsLines[key].docs), id, null)) || null;
   openModal(ipsDocHtml(ym, sid, x, L));
@@ -33780,8 +33785,9 @@ function renderFcDaily(storeId, store) {
   daysOfYm(_fcYm).forEach(function(d){ var _o=actuals[d.date]||{}; _mSales += Number(_o.actual)||0; });
   _mInv = monthInvoiceTotalYm(storeId, _fcYm);
   var _mShop = monthPurchaseTotalYm(storeId, _fcYm);
-  /* v1077: 2026 年 10 月からは原価率と同じ数え方（確認済みの invoice・原価対象。下の日別の行も同じ） */
-  if(typeof IPS_START!=='undefined' && _fcYm>=IPS_START){ var _fcIr=foodCostOf(storeId, _fcYm); _mInv=_fcIr.invoice||0; _mShop=_fcIr.buy||0; }
+  /* v1077: 確認済みの仕入れ集計を使う店・月（2026 年 10 月から）は、Invoice を確認済み（原価対象）＋アプリで登録した invoice に（下の日別の行も確認済みを請求日に） */
+  var _fcIps=(typeof ipsLink==='function')?ipsLink(storeId, _fcYm):null;
+  if(_fcIps && _fcIps.ok) _mInv=_fcIps.confirmed+_fcIps.manual;
   var _mTrans = ((typeof monthTransferNetYm==='function')?monthTransferNetYm(storeId,_fcYm):{net:0}).net||0;
   var _mCost = _mInv + _mShop + _mTrans;
   var _mRate = _mSales>0 ? Math.round(_mCost/_mSales*1000)/10 : null;
@@ -33789,7 +33795,7 @@ function renderFcDaily(storeId, store) {
   var head = (_mSales>0)
     ? kpi('当月 実質原価率', _mRate!=null?_mRate.toFixed(1)+'%':'—', _mLabel+'累計・仕入 '+fmtUSD2(_mCost)+' / 売上 '+fmtUSD2(_mSales), _mRate==null?'var(--muted)':(_mRate<=31?'var(--green)':_mRate<=34?'var(--yellow)':'var(--red)'))
     : kpi('当月 実質原価率', '—', _mLabel+'の売上実績が未入力です', 'var(--muted)');
-  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">上部の<strong>当月 実質原価率</strong>＝（当月Invoice合計＋買い出し合計）÷ 当月売上合計。下の表は直近7日の実数速報。正確な原価率（棚卸法）は「月次」タブで確定します。</div></div>
+  var html = `<div class="alert alert-success" style="padding:8px 12px"><i class="ti ti-info-circle"></i><div style="font-size:12px">上部の<strong>当月 実質原価率</strong>＝（当月Invoice合計＋買い出し合計）÷ 当月売上合計。${(_fcIps&&_fcIps.ok)?'この月の Invoice は、確認済み（照合・QuickBooks 送信済み・原価対象）の invoice＋アプリで登録した invoice です（予実管理 ›「仕入れ」）。':''}下の表は直近7日の実数速報。正確な原価率（棚卸法）は「月次」タブで確定します。</div></div>
   <div class="card"><div class="card-title"><i class="ti ti-calendar-stats"></i>日次 実数原価率（直近7日）</div>
     <div class="kpi-grid">
       ${head}

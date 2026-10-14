@@ -336,6 +336,10 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   c.STORE['invoice_purchase_lines_2026-10_F06'].generated_at = '2026-10-15T01:00:00Z';
   await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`);
   assert.equal(reads, 2);
+  c.STORE['invoice_purchase_lines_2026-10_F06'].generated_at = '2026-10-15T02:00:00Z';   // the lines are newer than the month here
+  c.pulled = []; run(c, `_ipsLines = {}`);   // not read on this device yet
+  await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`); await new Promise(r => setTimeout(r, 0));
+  assert.ok(c.pulled.includes('invoice_purchase_2026-10'), 'the month on the device is old: read it again');
   // a fetch that failed is tried again on the next look (a newer version than the device has)
   c = app({ state: { ...P.rows } });
   c.STORE.invoice_purchase_status.months['2026-10'].at = '2099-01-01T00:00:00Z';
@@ -361,4 +365,8 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   vm.runInContext(['dayCostReal', 'renderFcDaily'].map(fn).join('\n'), c);
   let fd = ''; try { fd = run(c, `renderFcDaily('F06', {id:'F06'})`); } catch (e) { fd = String(e); }
   assert.match(fd, /<kpi>当月 実質原価率\|11\.8%\|10月累計・仕入 \$1180\.00 \/ 売上 \$10000\.00<\/kpi>/, fd.slice(0, 300));
+  assert.match(fd, /この月の Invoice は、確認済み/);
+  const fd99 = run(c, `renderFcDaily('F99', {id:'F99'})`);
+  assert.match(fd99, /<kpi>当月 実質原価率\|23\.8%\|/, 'a store outside the Drive intake: the totals, as its daily rows');
+  assert.doesNotMatch(fd99, /この月の Invoice は、確認済み/);
 });
