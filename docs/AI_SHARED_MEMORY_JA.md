@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-14 Tenkichi ランチチャレンジ（UI案49）と invoice の経理の追加変更 5 点（UI案50）：案だけ・コードの変更なし（Claude・ブランチ `claude/ui49-ui50-proposals`）
+
+- 依頼：Moto さん 10/14 13:27 HST。① 添付「Tenkichiランチ チャレンジ特設ページ」（UI 案・データの接続方針・確認事項まで。実装は UI 案を見てから）② 「経理のinvoice処理追加変更点」5 点（照合のあとの名前と照合済みフォルダ・要確認の並べ替え・packing list・店舗の食い違い・同じ番号）。
+- main `616f06e` を読んだだけ。UI案49・UI案50 は Design の canvas（Moto さんの非公開・値はサンプル）。仕様の記録は `docs/TENKICHI_LUNCH_CHALLENGE_JA.md` と `docs/INVOICE_ACCOUNTING_REQUESTS_JA.md`。
+- ランチの客数で分かったこと：元は `toast_sales.lunch_guests`（テイクアウト込み）。会議タブの「ランチ・ディナーのまとめ」（`ldAgg`）はランチの売上がある日を 1 日と数える。「0 名で営業」と「未取込」を分ける印・日ごとの取込時刻・今後の営業予定の暦は無い（定休・臨時休業・ランチ OFF の 3 つから作れる）。`app_state` はアプリの鍵で読める。
+- invoice で分かったこと：名前の変更は反映のとき（QuickBooks の台帳の条件）。照合済みへの整理はあるが、店舗フォルダの直下・店舗が作ったフォルダの原本は動かさない（10/8 の決定）。要確認は請求日の順で固定・100 件まで。packing list は `doc_type_unknown` で反映できない（サーバーは種類の訂正を受けるが画面に無い）。店舗の付け替えはサーバーにあるが画面にボタンが無い。複数のファイルを 1 つの invoice にする仕組みは無い。
+- Moto さんに決めてほしいこと：ランチ 7 つ・invoice 8 つ（各文書の「決めてほしいこと」・推奨は A）。
+- 次：Moto さんの回答 → ランチは新しいブランチで実装、invoice は段階 1（並べ替え・店舗を選ぶ・書類の種類）から。版は PR #59（v1078）のあと。
+
 ## 2026-10-14 引き継ぎ：仕入れ集計 v1077（PR #58）は Codex の再レビュー待ち・本番には何も入れていない（Claude）
 
 - PR #58（ブランチ `claude/invoice-purchase-summary`）：Codex の P2 2 件（`8452ee7`）は `d8f636a`・`b83d6cd` で直した。そのあとは記録だけ（`f44d1aa`・`5bcfe82`・この記録）。直した内容は [PR のコメント 6179748266](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179748266)（Claude の報告で、レビューではない）。Static release validation は成功。**Codex の再レビューはまだ。**
