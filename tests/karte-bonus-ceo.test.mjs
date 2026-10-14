@@ -724,3 +724,45 @@ test('v1075 review P3-4: a segment still waiting for its G3 job type is not desc
   assert.equal(run(c, 'kevSelfExplainHtml(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg())'), '');
   assert.deepEqual(run(c, 'kevSelfProgress(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg(), {})').rows.map(r => r.t), ['評価の準備', '評価の完了', '査定の確定', 'ボーナスの記録']);
 });
+
+test('v1075 second review (a3c44a1): history dated by part, the chain stops at a part saved by this version, v1 time from the set, job type pending next to a finished part', () => {
+  const c = ceo();
+  const r = s => ['c', 's', 'f', 'p'].filter(k => s[k].on).join('');
+  // P3-A: an offline device's copy (① saved on at t=10) merged in later as the older copy goes to the history with its record time 300;
+  //       the part time (10) is older than the kept v1 (off, t=100), so the baseline stays off
+  c.STORE.bonus_eval_rule = { 'G5|2026-Q3': { set: { c: { on: false, g2: 1 }, s: { on: true, g2: 1 } }, v1: { c: { on: false, t: 100 } },
+    hist: [{ set: { c: { on: true, lo: 0.7, hi: 1.3 }, s: { on: true } }, why: 'オフラインの端末', at: '2026/10/13 13:00', by: 'GM', _at: 300, _t: { c: 10, s: 300 } }], at: '2026/10/13 13:05', by: 'GM', _at: 301, _t: { c: 290, s: 301 } } };
+  assert.deepEqual(run(c, `kevV1On('G5', '${Q}')`).c, { on: false });
+  // saving and merging keep the part times in the history entries
+  clock(c, 1000);
+  assert.equal(run(c, `kevRuleSave('G5', '${Q}', {p:{on:true, lo:0.9, hi:1.1, g2:1}}, '保存', '④ を変更')`), true);
+  const v = J(c.STORE.bonus_eval_rule['G5|2026-Q3']);
+  assert.deepEqual(v.hist.at(-1)._t, { c: 290, s: 301 }, 'the pushed history entry carries _t');
+  assert.deepEqual(run(c, `kevV1On('G5', '${Q}')`).c, { on: false }, 'still off after the save');
+  c.A = { set: { c: { on: true } }, _t: { c: 7 }, hist: [], at: '2026/10/13 09:00', by: 'GM', _at: 7 };
+  c.B = { set: { c: { on: false, g2: 1 } }, _t: { c: 9 }, hist: [], at: '2026/10/13 10:00', by: 'GM', _at: 9 };
+  assert.deepEqual(run(c, 'kevMergeVerRec(A, B).hist')[0]._t, { c: 7 });
+  // P3-C: the v1 time comes from the part time when the value is taken from the set
+  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { c: { on: false, lo: 0.7, hi: 1.3 } }, _t: { c: 77 }, at: '2026/10/11 10:00', by: 'GM', _at: 80 } };
+  clock(c, 2000);
+  assert.equal(run(c, `kevRuleSave('G4', '${Q}', {c:{on:true, lo:0.7, hi:1.3, g2:1}}, '保存', '① を変更')`), true);
+  assert.deepEqual(J(c.STORE.bonus_eval_rule['G4|2026-Q3'].v1.c), { on: false, t: 77 });
+  // P3-C: a personal part saved by this version (g2) stops the chain — an older v1065-era value of the same on/off is not reached
+  c.STORE.bonus_eval_rule = {
+    'G5|2026-Q3': { set: { c: { on: false } }, _at: 1 },
+    'G5|2027-Q1': { set: { c: { on: true } }, _at: 2 },
+  };
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true } }, why: 'v1065', _at: 3 };
+  c.STORE.bonus_eval_ovr['sam|2026-Q4'] = { set: { c: { on: true, g2: 1 } }, why: 'v1074', _at: 4 };
+  c.STORE.bonus_eval_ovr['sam|2027-Q1'] = { set: { c: { on: true } }, why: '前の版の端末', _at: 5 };
+  assert.deepEqual(run(c, `kevOvrV1Base('G5', 'sam', '2027-Q1')`).c, { on: true }, 'from 2027 Q1, not 2026 Q3');
+  assert.equal(r(run(c, `kevRuleFor('G5', '2027-Q1', 'sam').r`)), 'sp', 'equal to the 2027 Q1 grade value: pre-filled');
+  // P3-C: a part waiting for its G3 job type next to a finished part: the finished part's coefficients are shown, no amount
+  c.ID = 'ken';
+  c.B = { v4: true, gen: 2, blocked: 'track', segs: [
+    { elig: true, g: 'G3', blocked: 'track', pr: 1000, items: { c: { on: true, coef: 1.1, miss: [] }, s: { on: false }, f: { on: false }, p: { on: false } }, evSt: 'done' },
+    { elig: true, g: 'G4', pr: 2000, coefs: { c: 1.05, s: 1.01, f: 1, p: 1 }, items: { c: { on: true, coef: 1.05, miss: [] }, s: { on: true, coef: 1.01, miss: [] }, f: { on: false }, p: { on: false } }, evSt: 'done' }] };
+  const ex = run(c, 'kevSelfExplainHtml(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg())');
+  assert.match(ex, /基準額 \$2,000 × Career 1\.050 × 売上 1\.010 で決まります。評価が終わると金額が出ます。/);
+  assert.doesNotMatch(ex, /\$1,000|支給額/);
+});

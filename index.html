@@ -64230,7 +64230,7 @@ function kevV1Part(v, p){
   var x=(v.set && typeof v.set==='object') ? v.set[p] : null;
   if(kevV1Has(x)) return x;
   var k=(v.v1 && typeof v.v1==='object' && kevV1Has(v.v1[p])) ? v.v1[p] : null, h=Array.isArray(v.hist) ? v.hist : [], y=null, yt=0;
-  for(var i=h.length-1; i>=0; i--){ var z=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(kevV1Has(z)){ y=z; yt=Number(h[i]._at)||0; break; } }
+  for(var i=h.length-1; i>=0; i--){ var z=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(kevV1Has(z)){ y=z; yt=kevV1T(h[i], p); break; } }   /* その部分を保存した時刻（無ければ版の時刻） */
   if(k && y) return (yt>(Number(k.t)||0)) ? y : k;   /* 残した v1 より新しい前の版の値が履歴にあれば（前の版の端末がそのあと保存した）、そちら */
   return k || y;
 }
@@ -64414,7 +64414,7 @@ function kevMergeVerRec(a, b){
   var hk=function(x){ return String(Number(x._at)||'')+'|'+String(x.at)+'|'+String(x.by||'')+'|'+String(x.what||'')+'|'+String(x.why||''); };   /* 保存の時刻（ミリ秒）も入れる：同じ分に 2 回保存しても別の変更 */
   var same=function(x, y){ return hk(x)===hk(y); };
   var hist=[].concat(Array.isArray(a.hist) ? a.hist : [], Array.isArray(b.hist) ? b.hist : []);
-  if(low.at && !same(low, top)) hist.push({set:low.set, why:low.why, what:low.what, at:low.at, by:low.by, _at:low._at});
+  if(low.at && !same(low, top)) hist.push({set:low.set, why:low.why, what:low.what, at:low.at, by:low.by, _at:low._at, _t:low._t});   /* v1075：部分ごとの保存時刻も */
   var seen={}, H=[];
   hist.forEach(function(x){ if(!x || typeof x!=='object' || same(x, top)) return; var key=hk(x); if(seen[key]) return; seen[key]=1; H.push(x); });
   H.sort(function(x, y){ return String(x.at)<String(y.at) ? -1 : (String(x.at)>String(y.at) ? 1 : 0); });
@@ -66264,7 +66264,7 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
   (replaceParts||[]).forEach(function(p){ delete cur[p]; });
   Object.keys(set||{}).forEach(function(k){ if(k==='stores'){ if(set.stores && set.stores.length) cur.stores=set.stores.slice(); else delete cur.stores; return; } cur[k]=Object.assign({}, set[k]); });
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
-  if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at});
+  if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at, _t:prev._t});   /* v1075：部分ごとの保存時刻も残す（前の版の値の時刻） */
   var rec=kevStamp({set:cur, why:why, what:what, hist:hist}, prev);
   /* v1075（Codex のレビュー eb10419 の P2）：グレード・会社共通の版を保存し直すとき、前の版（v1065〜v1068）で保存した「反映・固定」を v1 に残す
      （変更の履歴は 20 件までなので、21 回目の保存で消えないように）。前の版の値がこの版の set にあればそれで書き直し、無ければ残してある値のまま */
@@ -66274,7 +66274,7 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
       var x=(prev.set && typeof prev.set==='object') ? prev.set[p] : null;
       if(kevV1Has(x)){ v1[p]={on:(x.on!==false && x.on!=='false'), t:kevV1T(prev, p)}; return; }
       var y=kevV1Part(prev, p); if(!y) return;
-      var yt=(y===(prev.v1 && prev.v1[p])) ? (Number(y.t)||0) : (function(){ var h=Array.isArray(prev.hist) ? prev.hist : []; for(var i=h.length-1; i>=0; i--){ if(h[i] && h[i].set && h[i].set[p]===y) return Number(h[i]._at)||0; } return 0; })();
+      var yt=(y===(prev.v1 && prev.v1[p])) ? (Number(y.t)||0) : (function(){ var h=Array.isArray(prev.hist) ? prev.hist : []; for(var i=h.length-1; i>=0; i--){ if(h[i] && h[i].set && h[i].set[p]===y) return kevV1T(h[i], p); } return 0; })();
       v1[p]={on:(y.on!==false && y.on!=='false'), t:yt};
     });
     if(Object.keys(v1).length) rec.v1=v1;
@@ -66509,7 +66509,6 @@ function kevSelfExplainHtml(e, b, cfg){
   var kv=kevApplies(cfg); if(!kv || !b || !b.v4) return '';
   var tot=kevTotals(cfg, kv), fin=kevFinalOf(tot, e), el=(b.segs||[]).filter(function(x){ return x.elig; });
   var elE=el.filter(function(x){ return x.blocked!=='track'; });   /* 職種待ちの区間は出さない（仮の職種の係数になるため） */
-  if(b.blocked==='track' && !elE.some(function(x){ return x.blocked==='eval'; })) return '';
   if(elE.length && (b.blocked==='eval' || b.blocked==='track')){   /* v1075（UI案47）：評価が終わる前は、分かっている係数と「評価中」の項目だけ（金額は出さない） */
     return '<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div><div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は、'
       +elE.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items && x.items[it[0]] && x.items[it[0]].on; });
