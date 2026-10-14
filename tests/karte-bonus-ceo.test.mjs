@@ -605,3 +605,53 @@ test('v1075 (Moto 10/13「両方に付ける」): the person page and the self v
   run(c, 'kevOpenPerson("", true)');
   assert.equal(c._karteViewEmp, 'ray', 'no id: nothing happens');
 });
+
+test('v1075 UI案47 (Moto 10/13): while the evaluation is not finished, the self view shows how far it has got and the coefficients known so far', () => {
+  const c = ceo();
+  const P = id => { c.ID = id; return run(c, 'kevSelfProgress(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()), kbCfg(), getKarte(ID))'); };
+  const H = (f, id) => { c.ID = id; return run(c, `${f}(EMPS.find(function(e){ return e.id===ID; }), bonusForEmp(EMPS.find(function(e){ return e.id===ID; }), kbCfg()), kbCfg()${f === 'kevSelfProgressHtml' ? ', getKarte(ID)' : ''})`); };
+  const rows = p => p.rows.map(r => (r.ok ? '✓' : '·') + r.t + (r.sub ? '（' + r.sub + '）' : ''));
+  // Mia (G4): the FL action is not chosen and the evaluation is a draft
+  delete c.STORE.bonus_eval[`${Q}|mia|G4`].fx; c.STORE.bonus_eval[`${Q}|mia|G4`].st = 'draft';
+  let p = P('mia');
+  assert.deepEqual(rows(p), ['✓Career Score の評価', '✓売上の達成率', '·FL 管理（改善の取り組みを評価中です）', '·評価の完了（GM・CEO が評価を終えるまで）',
+    '·査定の確定（全員の評価がそろったあと、会社全体で確定します）', '·ボーナスの記録（確定したあと、あなたの記録に入ります）']);
+  assert.deepEqual([p.done, p.n, p.blocked], [2, 6, true]);
+  const mh = H('kevSelfProgressHtml', 'mia');
+  assert.match(mh, /今期の評価の進み具合/); assert.match(mh, /2026-Q3 ・ 2 \/ 6/); assert.match(mh, /width:33%/);
+  assert.equal((mh.match(/>済み</g) || []).length, 2); assert.equal((mh.match(/>これから</g) || []).length, 4);
+  const me = H('kevSelfExplainHtml', 'mia');
+  assert.match(me, /基準額 \$5,000 × Career 1\.080 × 売上 1\.015 × FL <span style="color:var\(--muted\)">（評価中）<\/span> で決まります。評価が終わると金額が出ます。/);
+  assert.doesNotMatch(me, /支給額|原資/, 'no amount and no pool while not finished');
+  // Sam (G5): the evaluation is done, the September profit of one store is missing — only "waiting for the store numbers", no details
+  c.STORE.bonus_store_q = { [`${Q}|S4`]: { tgt: { pa: 95000, pb: 'amt' }, act: acts([31000, 31000, null]), _at: 1 } };
+  delete c.STORE.bonus_store_q[`${Q}|S4`].act['2026-09']; delete c.STORE.bonus_q[Q].profit.S4['2026-09'];
+  p = P('sam');
+  assert.deepEqual(rows(p).slice(0, 3), ['✓売上の達成率', '·利益の達成率（店舗の数字がそろうのを待っています）', '✓評価の完了']);
+  assert.ok(!rows(p).some(r => /Career/.test(r)), 'G5: Career Score is not used, so it is not listed');
+  const sh = H('kevSelfProgressHtml', 'sam') + H('kevSelfExplainHtml', 'sam');
+  assert.match(sh, /利益 <span style="color:var\(--muted\)">（集計中）<\/span>/);
+  assert.doesNotMatch(sh, /S4|9 月|9月|設定 ④|店舗管理利益が|未取得/, 'no store names, months or screen instructions for the staff member');
+  // Ray: everything evaluated, the quarter not confirmed yet → the amount is an estimate and the card shows what is left
+  p = P('ray');
+  assert.deepEqual(rows(p), ['✓Career Score の評価', '✓FL 管理', '✓評価の完了', '·査定の確定（全員の評価がそろったあと、会社全体で確定します）', '·ボーナスの記録（確定したあと、あなたの記録に入ります）']);
+  assert.match(H('kevSelfExplainHtml', 'ray'), /あなたの評価で決まる額は <b>\$/, 'not blocked: the full explanation as before');
+  // confirmed but not recorded: 4 of 5; recorded: the card is gone
+  c.STORE.bonus_eval[`${Q}|mia|G4`].fx = { lv: 3, why: '発注の見直し', c_exec: true }; c.STORE.bonus_eval[`${Q}|mia|G4`].st = 'done';
+  c.STORE.bonus_q[Q].profit.S4['2026-09'] = { a: 31000, t: 33334 };
+  run(c, `bqLockQuarter('${Q}')`);
+  p = P('ray');
+  assert.deepEqual([p.done, p.n, p.locked], [4, 5, true]);
+  assert.ok(p.rows.every(r => r.ok || r.t === 'ボーナスの記録'));
+  c.STORE.growth_karte = { ray: { payLog: [{ id: 'q3', type: 'ボーナス', amount: 4000, quarter: Q, src: 'auto', _at: 1 }], _at: 1 } };
+  assert.equal(H('kevSelfProgressHtml', 'ray'), '', 'recorded: the amount and how it was decided are shown instead');
+  // G1 (no base amount) and quarters before 2026 Q3 get no card
+  c.EMPS.push({ id: 'zoe', name: 'Zoe Sample', title: 'Crew', g: 'G1', store: 'S1', status: '在籍' });
+  assert.equal(P('zoe'), null);
+  // the self view: the tile says 評価中 instead of —, and the card sits under the tiles
+  const src = fs.readFileSync(index, 'utf8').replace(/\r\n/g, '\n');
+  const sv = src.slice(src.indexOf('\nfunction renderKarteSelfView('), src.indexOf('\n}', src.indexOf('\nfunction renderKarteSelfView(')));
+  assert.match(sv, /cur\.blocked\?'評価中':_money\(cur\.amt\)/);
+  assert.match(sv, /cur\.blocked\?'・金額は評価のあと':'・査定中'/);
+  assert.ok(sv.indexOf('kevSelfProgressHtml(e, b, cfg, k)') > sv.indexOf("_kTile('次期の目標'") && sv.indexOf('kevSelfProgressHtml(e, b, cfg, k)') < sv.indexOf('kdBonusTrendHtml('), 'under the tiles, above the bonus trend');
+});

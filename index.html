@@ -61540,8 +61540,9 @@ function renderKarteSelfView(e, x){
   var goals=(k.goals||[]).filter(function(z){ return z && z.text; }), done=goals.filter(function(z){ return z.done; }).length;
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
     +_kTile('Career Score', (sum&&sum.hasData)?(pct+'%'):'未評価', 'L'+lv.n+' '+escapeHtml(lv.label||''), lv.color)
-    +_kTile('今期のボーナス', cur.out?'対象外':(cur.blocked?'—':_money(cur.amt)), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':'・査定中')), gcol)
+    +_kTile('今期のボーナス', cur.out?'対象外':(cur.blocked?'評価中':_money(cur.amt)), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':(cur.blocked?'・金額は評価のあと':'・査定中'))), gcol)
     +_kTile('次期の目標', goals.length?(done+' / '+goals.length):'—', goals.length?'達成・進行中':'これから決めます', 'var(--green)')+'</div>';
+  if(b && b.v4 && typeof kevSelfProgressHtml==='function') h+=kevSelfProgressHtml(e, b, cfg, k);   /* v1075（UI案47）：評価がどこまで進んだか */
   h+=kdBonusTrendHtml(e, k, b, cfg, cur);
   if(b && b.v4 && typeof kevSelfExplainHtml==='function') h+=kevSelfExplainHtml(e, b, cfg);   /* v1065：評価で決まる額と、原資の調整（全員同じ割合） */
   if(sum && sum.hasData && sum.cats && sum.cats.length){
@@ -66442,9 +66443,57 @@ function kevExplainList(e, b, kv, tot){
   if(!b.blocked && fin!=null) out.push('会社全体の原資に合わせて、全員同じ割合（×'+Number(tot.k).toFixed(3)+'）で調整して <b>'+kevUsd(fin)+'</b>'+(kv.locked ? '' : '（見込み）')+'。');
   return out;
 }
+/* v1075（UI案47・Motoさん 10/13「評価が終わっていないときに、どこまで進んでいるのか分かるように」）：本人に見せる表示の「今期の評価の進み具合」。
+   本人に効く項目（反映するものだけ）→ 評価の完了 → 査定の確定 → ボーナスの記録。足りないものの細かい中身（店舗の数字・画面の操作）は出さず、本人向けの言葉で */
+function kevSelfProgress(e, b, cfg, k){
+  var kv=kevApplies(cfg); if(!kv || !b || !b.v4) return null;
+  var el=(b.segs||[]).filter(function(x){ return x.elig; }); if(!el.length) return null;
+  var rec=((k && k.payLog) || []).some(function(p){ return p && p.src==='auto' && p.quarter===kv.q; });
+  var rows=[], NM={c:'Career Score の評価', s:'売上の達成率', f:'FL 管理', p:'利益の達成率'};
+  if(el.some(function(x){ return x.blocked==='track'; })) rows.push({ok:false, t:'評価の準備', sub:'あなたの職種（G3）を決めています'});
+  KEV_ITEMS.forEach(function(it){
+    var p=it[0], segs=el.filter(function(x){ return x.items && x.items[p] && x.items[p].on; });
+    if(!segs.length) return;   /* 本人に効かない項目（1.00 固定）は出さない */
+    var miss=[]; segs.forEach(function(x){ miss=miss.concat(x.snap ? [] : (x.items[p].miss||[])); });
+    var sub='';
+    if(miss.length){
+      if(p==='c') sub='評価中です';
+      else if(p==='f') sub=miss.some(function(m){ return /^FL 改善行動/.test(m); }) ? '改善の取り組みを評価中です' : '店舗の数字がそろうのを待っています';
+      else sub='店舗の数字がそろうのを待っています';
+    }
+    rows.push({ok:!miss.length, t:NM[p], sub:sub});
+  });
+  var evDone=kv.locked || el.every(function(x){ return x.evSt==='done'; });
+  rows.push({ok:evDone, t:'評価の完了', sub:evDone ? '' : 'GM・CEO が評価を終えるまで'});
+  rows.push({ok:!!kv.locked, t:'査定の確定', sub:kv.locked ? '' : '全員の評価がそろったあと、会社全体で確定します'});
+  rows.push({ok:rec, t:'ボーナスの記録', sub:rec ? '' : '確定したあと、あなたの記録に入ります'});
+  var done=rows.filter(function(r){ return r.ok; }).length;
+  return {q:kv.q, rows:rows, done:done, n:rows.length, rec:rec, locked:!!kv.locked, blocked:!!b.blocked};
+}
+function kevSelfProgressHtml(e, b, cfg, k){
+  var P=kevSelfProgress(e, b, cfg, k); if(!P || P.rec) return '';   /* 記録したあとは出さない（金額と決まり方が出る） */
+  var pc=Math.round(P.done/P.n*100);
+  var h='<div class="card"><div class="card-title"><i class="ti ti-progress-check" style="color:var(--accent)"></i>今期の評価の進み具合<span style="margin-left:auto;font-size:12px;font-weight:700;color:var(--muted)">'+escapeHtml(P.q)+' ・ '+P.done+' / '+P.n+'</span></div>';
+  h+='<div style="height:8px;background:var(--border);border-radius:5px;overflow:hidden;margin:2px 0 10px"><div style="width:'+pc+'%;height:8px;background:var(--accent)"></div></div>';
+  h+='<div style="display:flex;flex-direction:column">';
+  P.rows.forEach(function(r){
+    h+='<div style="display:flex;gap:10px;align-items:flex-start;border-top:1px solid var(--border);padding:7px 0;font-size:12.5px;line-height:1.55">'
+      +'<span style="flex:0 0 20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;'+(r.ok ? 'background:var(--green);color:#fff' : 'border:1.5px solid var(--border);color:var(--muted)')+'">'+(r.ok ? '✓' : '')+'</span>'
+      +'<div style="flex:1;min-width:0"><div style="font-weight:700'+(r.ok ? '' : ';color:var(--tm)')+'">'+escapeHtml(r.t)+'</div>'+(r.sub ? '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(r.sub)+'</div>' : '')+'</div>'
+      +'<span style="font-size:11px;font-weight:700;color:'+(r.ok ? 'var(--green)' : 'var(--muted)')+';white-space:nowrap">'+(r.ok ? '済み' : 'これから')+'</span></div>';
+  });
+  return h+'</div></div>';
+}
 function kevSelfExplainHtml(e, b, cfg){
   var kv=kevApplies(cfg); if(!kv || !b || !b.v4) return '';
   var tot=kevTotals(cfg, kv), fin=kevFinalOf(tot, e), el=(b.segs||[]).filter(function(x){ return x.elig; });
+  if(el.length && b.blocked==='eval'){   /* v1075（UI案47）：評価が終わる前は、分かっている係数と「評価中」の項目だけ（金額は出さない） */
+    return '<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div><div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は、'
+      +el.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items && x.items[it[0]] && x.items[it[0]].on; });
+        return '基準額 '+kevUsd(x.pr)+(on.length ? ' × '+on.map(function(it){ var v=x.items[it[0]]; var m=v.miss||[], wait=(it[0]==='c' || (it[0]==='f' && m.some(function(t){ return /^FL 改善行動/.test(t); }))) ? '評価中' : '集計中';
+          return it[2]+' '+((m.length || v.coef==null) ? '<span style="color:var(--muted)">（'+wait+'）</span>' : (b.gen===2 ? kevFc(v.coef) : kevF2(v.coef))); }).join(' × ') : ''); }).join('、')
+      +' で決まります。評価が終わると金額が出ます。</div></div>';
+  }
   if(!el.length || b.blocked) return '';
   var h='<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div>';
   h+='<div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は <b>'+kevUsd(b.amount)+'</b>（'+el.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items[it[0]].on; }); return '基準額 '+kevUsd(x.pr)+(on.length ? ' × '+on.map(function(it){ return it[2]+' '+(x.gen===2 ? kevFc(x.coefs[it[0]]) : kevF2(x.coefs[it[0]])); }).join(' × ') : '')+((x.gen===2 && x.clamped) ? '（掛けた値を '+kevF2((x.lim||[])[0])+'〜'+kevF2((x.lim||[])[1])+' に収めて ×'+kevFc(x.fmult)+'）' : ''); }).join('、')+'）。</div>';
