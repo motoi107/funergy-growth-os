@@ -12,6 +12,7 @@
 - 追記（10/14 03:4x HST・Claude）：Moto さんの答え ① 02:32 の表示は**消えた・ただし管轄で GM しか選べない** ② `1_追加のSQL_管轄にGM.sql` と確認の SQL は流した・3 行 OK ③ GM・CEO の端末は v1076 に更新済み。
   - GM しか出ない理由の見立て（コードを読んだだけ・本番の DB は Claude から見えない）：管轄の AM の選択肢は `mrScopeAms`＝中間レビューの利用者（`mr_members`）で役職 am・有効・いまの役職（`mr_member_role`）も am の人だけ。いまの役職が am になるのは社員の表（employees）の役職が `am` で退職でない人。AM のメールのアカウントを `db/mid-review-add-member.sql` で足していない、または社員の表の役職が `am` でないと、GM だけが出る（作りどおり。v1073 も同じ決まり）。
   - 確かめ方：読むだけの `db/mid-review-scope-leads-check.sql`（名前・役職・「管轄で選べる」・理由。社員の表で AM なのに利用者に入っていない人も出す）を合成データ 3 通り（AM が入っていない／入っている／社員の表で AM でない）で流して期待どおり。Moto さんに結果を聞いている。
+  - 結果（10/14 03:58 HST・Moto さんが `db/mid-review-scope-leads-check.sql` を流した）：GM（Motoi Kubota）は選べる・CEO は管轄に出ない（作りどおり）・**Yuki Nagatani は社員の表で AM・在籍だが中間レビューの利用者に入っていない**。→ メールのアカウント（Authentication）を作ってから `db/mid-review-add-member.sql` を Yuki さんの値（am）で流すよう案内した（流したかは未確認）。コードの不具合ではない。
   - Codex のレビュー：**PR #55 の再レビューは GitHub に投稿済み**（コメント 6161542183・head `4d92067`・10/14 05:23 UTC＝マージの前）。結論は blocked／manual（範囲のため）で、**前回の P2 は解消・新しい P1・P2 なし**。P3 1：共有記録の v1075 の節の「eb10419・GitHub には投稿していない」は誤り（PR #54 のコメント 6158065732 が記録）→ この追記と同じコミットで直した。PR #56（`eb5853b`）は Codex のレビューがまだ（Moto さんに依頼）。
 
 ## 2026-10-14 中間レビュー v1076：店舗の管轄に GM も選べる（Claude・ブランチ `claude/mid-review-scope-gm`・PR #56・マージ済み main `f0e93c5`）
