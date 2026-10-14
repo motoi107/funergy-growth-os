@@ -8,12 +8,13 @@ import { randomUUID } from 'node:crypto';
 import { createHandler, demoData, demoSnapshot, missingV2, normBody, normSnap, KPI_PREV, KPI_CUR } from '../supabase/functions/mid-review/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql'];
+const MIG = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql', '20261017090000_mid_review_stores_save_fix.sql'];
 const mig = f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8');
 const SQL = MIG.map(mig).join('\n');
 const V1 = MIG.slice(0, 2).map(mig).join('\n');
 const V2 = mig(MIG[2]);
 const V3 = mig(MIG[3]);   // v1073: versions on the access settings and the switches
+const V4 = mig(MIG[4]);   // v1073 fix (Codex 3fbd9dd P2): stores_save writes only on the version read
 const dbFile = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
 const U = { ceo: '00000000-0000-4000-8000-0000000000c1', gm: '00000000-0000-4000-8000-0000000000c2', office: '00000000-0000-4000-8000-0000000000c3',
   crew: '00000000-0000-4000-8000-0000000000c4', am1: '00000000-0000-4000-8000-0000000000c5', am2: '00000000-0000-4000-8000-0000000000c6',
@@ -189,6 +190,15 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
   assert.deepEqual((await pg.query(`select env, store_id, access_version, am_version from mr_stores order by env, store_id`)).rows.map(x => [x.env, x.store_id, x.access_version, x.am_version]),
     [['demo', 'D1', 0, 0], ['live', 'F01', 0, 0]]);
   assert.match(await row('mid-review versions (20261016090000)'), /^OK/);
+  // The stores_save fix on top (twice); running v1073 again puts back the unfixed save, and the check says so.
+  assert.match(await row('mid-review stores_save fix (20261017090000)'), /^NG/);
+  await pg.exec(V4); await pg.exec(V4);
+  assert.deepEqual(await count(), before);
+  assert.match(await row('mid-review stores_save fix (20261017090000)'), /^OK/);
+  await pg.exec(V3);
+  assert.match(await row('mid-review stores_save fix (20261017090000)'), /^NG/);
+  await pg.exec(V4);
+  assert.match(await row('mid-review stores_save fix (20261017090000)'), /^OK/);
   // Running v2 again puts back its saves without the version check: the check says so, and v1073 again fixes it.
   await pg.exec(V2);
   assert.match(await row('mid-review versions (20261016090000)'), /^NG/);
@@ -202,6 +212,7 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
     await pg.exec(V3);
     assert.match(await row('mid-review versions (20261016090000)'), /^OK/, name);
   }
+  await pg.exec(V4);
   for (const r of (await pg.query(post)).rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   // The first edition's review is read as before (legacy), its reply is not part of the v2 thread, and it cannot be written in v2.
   await pg.exec('set role service_role');
@@ -737,6 +748,34 @@ test('v1073 店舗の管轄 (stores_save): two screens — a change to another s
   }
 });
 
+// v1073 の直し（Codex `3fbd9dd` の P2）：版を比べたあとに、ほかの保存がまだ無かった店を入れると、その店は版を見ずに書き直されていた。
+// 「比べたあと・書く前に行が現れる」状態を、試験の中だけのトリガーで作る（F01 を書いたときに F07 を入れる）。本物の 2 セッションは pg の試験。
+test('v1073 fix (Codex 3fbd9dd P2): a store that appears after the compare is not written over — conflict, nothing written', async () => {
+  const E = await setup(); await live(E);
+  const v = await amVer(E);
+  assert.equal(v.F07, undefined);
+  await E.q(`create function public.mrt_appear() returns trigger language plpgsql as $f$ begin
+      if new.store_id = 'F01' and not exists(select 1 from public.mr_stores where env = 'live' and store_id = 'F07') then
+        insert into public.mr_stores(env, store_id, name, am_user, sort, active, am_version) values ('live', 'F07', 'FIRST SAVER', null, 5, true, 1);
+      end if; return new; end $f$`);
+  await E.q(`create trigger mrt_appear after update on public.mr_stores for each row execute function public.mrt_appear()`);
+  const r = await E.api('gm', { action: 'stores_save', stores: [{ ...STORES[0], name: 'ToriTon X', expect_version: v.F01 },
+    { store_id: 'F07', name: 'STALE SAVER', am_user: null, sort: 5, expect_version: 0 }] });
+  assert.deepEqual([r.status, r.body.error], [409, 'conflict'], JSON.stringify(r.body));
+  assert.deepEqual(await E.q(`select store_id, name, am_version from mr_stores where env='live' and store_id in ('F01','F07') order by store_id`),
+    [{ store_id: 'F01', name: STORES[0].name, am_version: v.F01 }], 'nothing written (not even F01)');
+  // A store that really appeared at version 1 can only be written on version 1.
+  await E.q(`drop trigger mrt_appear on public.mr_stores`);
+  await E.q(`insert into public.mr_stores(env, store_id, name, am_user, sort, active, am_version) values ('live','F07','FIRST SAVER',null,5,true,1)`);
+  assert.deepEqual([(await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F07', name: 'STALE SAVER', sort: 5, expect_version: 0 }] })).status], [409]);
+  const ok = await E.api('gm', { action: 'stores_save', stores: [{ store_id: 'F07', name: 'Kapolei', sort: 5, expect_version: 1 }] });
+  assert.equal(ok.status, 200); assert.deepEqual(ok.body.stores, [{ store_id: 'F07', version: 2 }]);
+  // The ordinary saves are as before (an unchanged store keeps its version; a changed one moves by 1).
+  const w = await amVer(E);
+  assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ ...STORES[0], expect_version: w.F01 }] })).body.stores[0].version, w.F01);
+  assert.equal((await E.api('gm', { action: 'stores_save', stores: [{ ...STORES[0], am_user: U.am2, expect_version: w.F01 }] })).body.stores[0].version, w.F01 + 1);
+});
+
 test('v1073: the versions SQL stops before changing anything when v2 is not there', async () => {
   const pg = new PGlite();
   await pg.exec(`${ROLES_SQL} ${MASTERS} grant select on public.manager_auth, public.employees, public.stores to service_role;`);
@@ -1249,7 +1288,7 @@ test('the check after installing: every row OK on a fresh install; it points at 
   const E = await setup(); await live(E);
   const post = dbFile('mid-review-postcheck.sql');
   let rows = await E.q(post);
-  assert.equal(rows.length, 25);
+  assert.equal(rows.length, 26);
   for (const r of rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match(rows.find(r => r.check_name === 'live stores without an input person').result, /^参考/);
   await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true });

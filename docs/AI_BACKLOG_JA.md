@@ -17,7 +17,8 @@
 4. 済（Moto さん 10/13 10:41 HST「手順全部入れました」）：v2 を入れた（`deploy/mid-review-v2/手順.md` の 1〜6）。
 5. 済（Claude・ブランチ `claude/mid-review-v1073`）：Codex の P2 を直す（v1073）。サーバー（版・`stores_save` も）・画面（B・管轄・読み込み中で止まる不具合）・入れる一式 `deploy/mid-review-v1073/`・試験（ui 43・server 45・本物の PostgreSQL 5）・独立レビュー（P1・P2 なし・P3 7 は直した）。
 5b. 済（Claude）：非公開の 1 ファイル `中間レビュー_関数_v1073_index.ts`（sha256 先頭 `9275632555be`）を作り直して直接渡した（非公開の試験 4/4）。
-5c. 次：Codex の再レビュー（PR #52）→ Moto さんが入れる（`deploy/mid-review-v1073/手順.md`。v2 は入っているので 3 は飛ばす）→ マージ。
+5c. 済（Moto さん 10/13 11:12 HST「全部終わりました」）：v1073 を入れて PR #52 をマージ（main `a9b8c10`）。
+5d. Codex の PR #52 のレビュー（`3fbd9dd`）は blocked（P2：まだ無い店を比べたあとに別の保存が入れると、管轄の保存が版を見ずに書き直す）→ 済（Claude・ブランチ `claude/mid-review-stores-race`）：migration `20261017090000`・試験（直す前は落ちる）。次：Codex の再レビュー → Moto さんが SQL を 1 つ流す（`deploy/mid-review-v1073-fix/`）→ マージ。
 6. 済（Moto さん 10/13）：期限の変更と確認完了の取り消しは、GM・CEO なら PIN でも可のまま。
 7. そのあと：GM・CEO が本番の店の入力を ON。店舗公開・通知は別の段階。
 
