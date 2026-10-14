@@ -40294,7 +40294,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1074';
+const APP_VERSION = '1075';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64218,23 +64218,32 @@ function kevMerge(R, set, src, M, F){
   if(Array.isArray(set.stores) && set.stores.length){ R.stores=set.stores.filter(function(s){ return typeof s==='string' && s; }); if(R.stores.length) M.stores=src; else R.stores=null; }
 }
 /* v1074：前の版（v1065〜v1068）でその人に効いていた「反映・固定」。前の版の初期値（kevGradeDefaults）に、前の版で保存したグレード（G6 は G5 → G6 の順）の
-   「反映・固定」を重ねる（この版で保存した部分 g2 は前の版の決定ではないので重ねず、同じ版の変更の履歴にある前の版の値を使う。会社共通は「反映・固定」を持たない）。
-   前の版の個人設定の画面は、そのとき効いていた値を入れたまま保存していたので、これと同じ値の個人設定は「わざと変えたもの」ではない */
+   「反映・固定」を重ねる（この版で保存した部分 g2 は前の版の決定ではないので重ねない。会社共通は「反映・固定」を持たない）。
+   前の版の個人設定の画面は、そのとき効いていた値を入れたまま保存していたので、これと同じ値の個人設定は「わざと変えたもの」ではない。
+   v1075（Codex のレビュー eb10419 の P2）：q 以前の版を新しい順に見て、部分ごとに最初に見つかった前の版の値を使う
+   （この版で次の四半期の版を作っても、前の版の値は前の四半期の版に残っている）。1 つの版の中では、その版の値（前の版で保存）→
+   この版で上書きしたときに残した前の版の値（v1）→ 変更の履歴（hist は 20 件までなので、21 回目の保存で消えないように v1 に残す） */
+function kevV1Has(x){ return !!(x && typeof x==='object' && x.on!==undefined && x.on!==null && x.on!=='' && !kevN(x.g2)); }
+function kevV1Part(v, p){
+  if(!v || typeof v!=='object') return null;
+  var x=(v.set && typeof v.set==='object') ? v.set[p] : null;
+  if(kevV1Has(x)) return x;
+  if(v.v1 && typeof v.v1==='object' && kevV1Has(v.v1[p])) return v.v1[p];
+  var h=Array.isArray(v.hist) ? v.hist : [];
+  for(var i=h.length-1; i>=0; i--){ var y=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(kevV1Has(y)) return y; }
+  return null;
+}
 function kevV1On(scope, q){
   var d=kevGradeDefaults(scope || 'G2'), o={}, all=kevRuleAll();
   ['c','s','f','p'].forEach(function(p){ o[p]={on:!(d[p] && d[p].on===false)}; });
-  var has=function(x){ return !!(x && typeof x==='object' && x.on!==undefined && x.on!==null && x.on!=='' && !kevN(x.g2)); };
-  var lay=function(v){ if(!v || !v.set || typeof v.set!=='object') return;
+  var lay=function(prefix){
+    var vs=kevVersions(all, prefix).filter(function(v){ return !q || v.from<=q; }).reverse();
     ['c','s','f','p'].forEach(function(p){
-      var x=v.set[p];
-      if(x && typeof x==='object' && kevN(x.g2)){   /* この版で同じ版（適用開始の四半期）を保存し直した部分：前の版の値は変更の履歴（hist）に残っている */
-        x=null; var h=Array.isArray(v.hist) ? v.hist : [];
-        for(var i=h.length-1; i>=0; i--){ var y=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(has(y)){ x=y; break; } }
-      }
-      if(has(x)) o[p]={on:(x.on!==false && x.on!=='false')};
-    }); };
-  if(scope==='G6') lay(kevVer(all, 'G5', q));
-  if(scope) lay(kevVer(all, scope, q));
+      for(var i=0; i<vs.length; i++){ var x=kevV1Part(vs[i], p); if(x){ o[p]={on:(x.on!==false && x.on!=='false')}; return; } }
+    });
+  };
+  if(scope==='G6') lay('G5');
+  if(scope) lay(scope);
   return o;
 }
 /* scope（G2・G3-sv など）・四半期・人の設定。sim＝試算（保存前の値を一段だけ差し込む：{level:'common'|'grade'|'person', set}） */
@@ -64245,10 +64254,12 @@ function kevRuleFor(scope, q, empId, sim, cfg){
      前の版の個人設定の「反映・固定」は、前の版でその人に効いていた「反映・固定」（前の版の初期値＋前の版で保存したグレードの設定。kevV1On）とわざと変えたもの
      （例：Head Chef の ② を 1.00 固定／グレードで ① を固定にしていて、その人だけ反映）だけ使う。判定の決まり（j）は会社共通だけ（Codex のレビュー 3a2f5e2 の P2） */
   var FC=gen2 ? {noOn:true, noSP:true, noRng:true} : null, FR=gen2 ? {noOn:true, noSP:true, noRng:true, noJ:true} : null,
-      FP=gen2 ? {noSP:true, noRng:true, noJ:true, onDev:kevV1On(scope, q)} : null;
+      FP=null;
   Object.keys(R).forEach(function(g){ Object.keys(R[g]).forEach(function(f){ M[g+'.'+f]='common'; }); });
   R.stores=null; M.stores=null;
   var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ov=empId ? kevVer(kevOvrAll(), empId, q) : null;
+  /* v1075：前の版の個人設定は、その個人設定の版（適用開始の四半期）のときに前の版で効いていた値と比べる（あとで次の四半期の版を作っても変わらない） */
+  if(gen2) FP={noSP:true, noRng:true, noJ:true, onDev:kevV1On(scope, (ov && ov.from) ? ov.from : q)};
   if(cm) kevMerge(R, cm.set, 'common', M, FC);
   if(sim && sim.level==='common') kevMerge(R, sim.set, 'common', M, FC);
   if(scope) kevMerge(R, gen2 ? kevGradeDefaults2(scope) : kevGradeDefaults(scope), 'gradeDef', M);
@@ -64386,7 +64397,11 @@ function kevMergeVerRec(a, b){
   var seen={}, H=[];
   hist.forEach(function(x){ if(!x || typeof x!=='object' || same(x, top)) return; var key=hk(x); if(seen[key]) return; seen[key]=1; H.push(x); });
   H.sort(function(x, y){ return String(x.at)<String(y.at) ? -1 : (String(x.at)>String(y.at) ? 1 : 0); });
-  return Object.assign({}, top, {set:set, hist:H.slice(-20), _t:T, _at:Math.max(_recAt(a), _recAt(b))});
+  var out=Object.assign({}, top, {set:set, hist:H.slice(-20), _t:T, _at:Math.max(_recAt(a), _recAt(b))});
+  /* v1075：前の版の「反映・固定」を残した v1 は、どちらの写しのものも残す（同じ部分なら新しいほうの写し） */
+  var v1={}; [low, top].forEach(function(r){ if(r.v1 && typeof r.v1==='object') Object.keys(r.v1).forEach(function(p){ if(kevV1Has(r.v1[p])) v1[p]={on:(r.v1[p].on!==false && r.v1[p].on!=='false')}; }); });
+  if(Object.keys(v1).length) out.v1=v1; else delete out.v1;
+  return out;
 }
 function kevMergeMap(cloud, local){
   var out={}, c=(cloud && typeof cloud==='object') ? cloud : {}, l=(local && typeof local==='object') ? local : {};
@@ -65359,6 +65374,8 @@ function kevCss(){
     +'@media(max-width:900px){.kev-list{display:none}.kev-side{display:none}.kev-sm{display:flex}.kev-el{grid-template-columns:minmax(0,1fr) auto}.kev-el>.kev-el-in{grid-column:1/-1}.kev-lv{min-width:0;min-height:44px;flex:1 1 0;max-width:56px}.kev-lvs{flex-wrap:nowrap;width:100%}.kev-fls .kev-lvs{order:3;flex-basis:100%}.kev-fx{grid-template-columns:1fr}.kev-fxb{flex-direction:row;justify-content:space-between;padding:8px 12px}}'
     +'</style>';
 }
+/* v1075（Motoさん 10/13「両方に付ける」）：個別評価・査定一覧から個人ページと本人に見せる表示を開く */
+function kevOpenPerson(empId, self){ if(!empId) return; kevFlushText(); window._karteDetTab='sum'; window._karteSelf=!!self; window._karteViewEmp=empId; karteRerender(); try{ window.scrollTo(0,0); }catch(e){} }
 function kevOpenEval(empId){ kevFlushText(); window._karteTab='eval'; window._kevSel=empId; window._kevSegG=null; window._karteViewEmp=null; karteRerender(); try{ window.scrollTo(0,0); }catch(e){} }
 function kevPick(empId){ kevFlushText(); window._kevSel=empId; window._kevSegG=null; karteRerender(); }
 function kevPickSeg(g){ kevFlushText(); window._kevSegG=g; karteRerender(); }
@@ -65736,6 +65753,8 @@ function kevTabHtml(cfg){
     +'<span style="margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="tag" style="color:'+st.c+'">'+escapeHtml(st.t)+'</span>'
     +(can ? '<span id="kev-save" style="font-size:11px;color:var(--muted)">'+kevSaveText(ev)+'</span><button class="btn btn-secondary btn-sm" onclick="kevSaveNow('+id+','+gg+','+qq+')">下書き保存</button><button class="btn btn-primary btn-sm" onclick="kevDone('+id+','+gg+','+qq+')">評価完了</button>' : '')
     +'</span>'
+    +'<div class="kev-go" style="flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="kevOpenPerson('+id+',false)"><i class="ti ti-user"></i> 個人ページ</button>'
+    +'<button class="btn btn-secondary btn-sm" onclick="kevOpenPerson('+id+',true)"><i class="ti ti-eye"></i> 本人に見せる表示</button></div>'   /* v1075 */
     +(segs.length>1 ? '<div style="flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span style="font-size:11px;color:var(--muted)">四半期の途中でグレードが変わったので、区間ごとに評価します：</span>'+segs.map(function(x){ return '<button class="kev-chip'+(x.g===seg.g ? ' on' : '')+'" onclick="kevPickSeg('+cscJsArg(x.g)+')">'+escapeHtml(x.g+' '+ghMD(x.from)+'〜'+ghMD(x.to))+'</button>'; }).join('')+'</div>' : '')
     +kevTrackPickHtml(e, b, kv)
     +(seg.pseudo ? '<div style="flex-basis:100%;font-size:11px;color:var(--muted)">賞与の対象外のグレードです。評価は記録できます（賞与の支給の資格は変わりません）。</div>' : '')
@@ -66226,6 +66245,18 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
   if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at});
   var rec=kevStamp({set:cur, why:why, what:what, hist:hist}, prev);
+  /* v1075（Codex のレビュー eb10419 の P2）：グレード・会社共通の版を保存し直すとき、前の版（v1065〜v1068）で保存した「反映・固定」を v1 に残す
+     （変更の履歴は 20 件までなので、21 回目の保存で消えないように）。前の版の値がこの版の set にあればそれで書き直し、無ければ残してある値のまま */
+  if(key==='bonus_eval_rule' && prev){
+    var v1=(prev.v1 && typeof prev.v1==='object') ? JSON.parse(JSON.stringify(prev.v1)) : {};
+    ['c','s','f','p'].forEach(function(p){
+      var x=(prev.set && typeof prev.set==='object') ? prev.set[p] : null;
+      if(kevV1Has(x)){ v1[p]={on:(x.on!==false && x.on!=='false')}; return; }
+      if(kevV1Has(v1[p])) return;
+      var y=kevV1Part(prev, p); if(y) v1[p]={on:(y.on!==false && y.on!=='false')};
+    });
+    if(Object.keys(v1).length) rec.v1=v1;
+  }
   /* 部分ごとの保存時刻（合流は部分ごと）。前の版から写した部分は、その版の時刻のまま */
   var T={}, bT=(base && base._t && typeof base._t==='object') ? base._t : null;
   Object.keys(cur).forEach(function(p){ var x=bT ? Number(bT[p])||0 : (Number(base && base._at)||0); if(x) T[p]=x; });
@@ -66350,7 +66381,8 @@ function kevListTableHtml(cfg, tot){
         +((x.gen===2 && x.fmult!=null) ? '<div style="font-size:10.5px">→ 最終 <b style="color:var(--accent)">×'+kevFc(x.fmult)+'</b>'+(x.clamped ? '（止めた）' : '')+'</div>' : '');   /* v1074 */
     }).join('<br>');
     h+='<tr style="border-top:1px solid var(--border);cursor:pointer'+(b.blocked ? ';background:rgba(226,59,59,.05)' : '')+'" onclick="kevOpenEval('+cscJsArg(e.id)+')">'
-      +'<td style="padding:7px 8px"><b>'+escapeHtml(e.name||'')+'</b><div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(e.title||'')+'</div></td>'
+      +'<td style="padding:7px 8px"><b>'+escapeHtml(e.name||'')+'</b><div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(e.title||'')+'</div>'
+      +'<button class="btn btn-secondary btn-sm kev-go" style="margin-top:4px;padding:2px 8px;font-size:11px" onclick="event.stopPropagation();kevOpenPerson('+cscJsArg(e.id)+',false)"><i class="ti ti-user"></i> 個人ページ</button></td>'   /* v1075：行を押すと個別評価（今までどおり） */
       +'<td style="padding:7px 8px;font-size:11.5px">'+escapeHtml(kevStoreNames(b.stores) || '—')+'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(b.storeSrc==='person' ? '個人設定' : (b.storeSrc==='manual' ? '手動指定' : (b.storeBasis||'自動')))+'</div></td>'
       +'<td style="padding:7px 8px;white-space:nowrap">'+el.map(function(x){ return ghBadge(x.g)+(x.track ? ' <span style="font-size:10.5px">'+escapeHtml(cscTrackName(x.track))+'</span>' : '')+'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(ghMD(x.from)+'〜'+ghMD(x.to))+'・'+x.days+' 日</div>'; }).join('')+'</td>'
       +'<td style="padding:7px 8px;text-align:right;white-space:nowrap">'+kevUsd(el.reduce(function(a, x){ return a+(Number(x.pr)||0); }, 0))+'</td>'
