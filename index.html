@@ -64217,14 +64217,27 @@ function kevMerge(R, set, src, M, F){
   });
   if(Array.isArray(set.stores) && set.stores.length){ R.stores=set.stores.filter(function(s){ return typeof s==='string' && s; }); if(R.stores.length) M.stores=src; else R.stores=null; }
 }
+/* v1074：前の版（v1065〜v1068）でその人に効いていた「反映・固定」。前の版の初期値（kevGradeDefaults）に、前の版で保存したグレード（G6 は G5 → G6 の順）の
+   「反映・固定」を重ねる（この版で保存した部分 g2 は前の版の決定ではないので重ねない。会社共通は「反映・固定」を持たない）。
+   前の版の個人設定の画面は、そのとき効いていた値を入れたまま保存していたので、これと同じ値の個人設定は「わざと変えたもの」ではない */
+function kevV1On(scope, q){
+  var d=kevGradeDefaults(scope || 'G2'), o={}, all=kevRuleAll();
+  ['c','s','f','p'].forEach(function(p){ o[p]={on:!(d[p] && d[p].on===false)}; });
+  var lay=function(v){ if(!v || !v.set || typeof v.set!=='object') return;
+    ['c','s','f','p'].forEach(function(p){ var x=v.set[p]; if(x && typeof x==='object' && x.on!==undefined && x.on!==null && x.on!=='' && !kevN(x.g2)) o[p]={on:(x.on!==false && x.on!=='false')}; }); };
+  if(scope==='G6') lay(kevVer(all, 'G5', q));
+  if(scope) lay(kevVer(all, scope, q));
+  return o;
+}
 /* scope（G2・G3-sv など）・四半期・人の設定。sim＝試算（保存前の値を一段だけ差し込む：{level:'common'|'grade'|'person', set}） */
 function kevRuleFor(scope, q, empId, sim, cfg){
   var R=kevBaseDefaults(cfg), M={}, gen2=kevGen2(q);
   if(gen2){ ['s','f','p'].forEach(function(p){ R[p].lo=KEV2_DEF_RNG[p][0]; R[p].hi=KEV2_DEF_RNG[p][1]; }); }   /* v1074：CEO の指示書の今の幅（保存した幅があればそちら） */
   /* 2026 Q3 から：前の版（v1065〜v1068）で保存したグレード・会社共通の「反映・固定」・売上と利益の点・②③④ の幅は使わない（この版で保存した部分 g2 は使う）。
-     前の版の個人設定の「反映・固定」は、前の版の初期値とわざと変えたもの（例：Head Chef の ② を 1.00 固定）だけ使う。判定の決まり（j）は会社共通だけ */
+     前の版の個人設定の「反映・固定」は、前の版でその人に効いていた「反映・固定」（前の版の初期値＋前の版で保存したグレードの設定。kevV1On）とわざと変えたもの
+     （例：Head Chef の ② を 1.00 固定／グレードで ① を固定にしていて、その人だけ反映）だけ使う。判定の決まり（j）は会社共通だけ（Codex のレビュー 3a2f5e2 の P2） */
   var FC=gen2 ? {noOn:true, noSP:true, noRng:true} : null, FR=gen2 ? {noOn:true, noSP:true, noRng:true, noJ:true} : null,
-      FP=gen2 ? {noSP:true, noRng:true, noJ:true, onDev:kevGradeDefaults(scope || 'G2')} : null;
+      FP=gen2 ? {noSP:true, noRng:true, noJ:true, onDev:kevV1On(scope, q)} : null;
   Object.keys(R).forEach(function(g){ Object.keys(R[g]).forEach(function(f){ M[g+'.'+f]='common'; }); });
   R.stores=null; M.stores=null;
   var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ov=empId ? kevVer(kevOvrAll(), empId, q) : null;

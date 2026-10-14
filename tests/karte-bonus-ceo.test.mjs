@@ -98,6 +98,26 @@ test('items: G2/G3 ①, G4 ①②③, G5/G6 ②④ — v1065-era on/off, points 
   assert.equal(on('mia'), 'csfp', 'G4 ④ was off by default in v1065: turning it on was deliberate');
   assert.deepEqual([seg(c, 'mia').items.p.rule.lo, seg(c, 'mia').items.p.rule.hi], [0.9, 1.1], 'but its pre-filled range is not used');
   assert.equal(on('ray'), 'cf', "Ray's ② fixed at 1.00 (deliberate) is kept");
+  // Codex review (3a2f5e2) P2: the baseline is what the person had in v1065 — the v1065 default plus the v1065 grade setting.
+  // G5 ① was switched to "fixed" for the grade in v1065, and Sam alone was switched back on: deliberate, kept (with the amount it implies)
+  const sam0 = person(c, 'sam').amount;
+  c.STORE.bonus_eval_rule = { 'G5|2026-Q3': { set: { c: { on: false } }, _at: 1 } };
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true, lo: 0.7, hi: 1.3 } }, why: 'この人だけ Career Score を反映', _at: 2 };
+  assert.equal(on('sam'), 'csp');
+  const samC = seg(c, 'sam');
+  assert.equal(person(c, 'sam').amount, Math.round(8000 * samC.coefs.c * samC.coefs.s * samC.coefs.p));
+  assert.notEqual(person(c, 'sam').amount, sam0, 'the personal ① changes the amount');
+  // the same grade setting with Sam's pre-filled "fixed" (equal to what he had): not a deliberate change → the CEO default (① off)
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: false, lo: 0.7, hi: 1.3 } }, why: '配点', _at: 3 };
+  assert.equal(on('sam'), 'sp');
+  // G6 inherits G5's v1065 setting first (G5 ① fixed, G6 not saved): Gus alone on → kept
+  c.STORE.bonus_eval_ovr['gus|2026-Q3'] = { set: { c: { on: true } }, why: 'この人だけ', _at: 4 };
+  assert.equal(on('gus'), 'csp');
+  // a grade part saved by this version (g2) is not a v1065 decision: the baseline stays the v1065 default (G5 ① on) → Sam's pre-filled "on" is ignored
+  c.STORE.bonus_eval_rule = { 'G5|2026-Q3': { set: { c: { on: false, g2: 1 } }, _at: 5 } };
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true } }, why: '配点', _at: 6 };
+  assert.equal(on('sam'), 'sp');
+  delete c.STORE.bonus_eval_ovr['gus|2026-Q3'];
   // the judgement rules are company-wide: a grade or personal "j" is ignored
   c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { j: { clo: 0.5, chi: 2 } }, _at: 1 } };
   c.STORE.bonus_eval_ovr['ray|2026-Q3'].set.j = { clo: 0.5, chi: 2 };
