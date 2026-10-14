@@ -17,7 +17,7 @@ test('the migrations in order give the same database as db/invoice-intake.sql', 
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   assert.deepEqual(files, ['20261007090000_invoice_intake.sql', '20261007160000_invoice_intake_review_fixes.sql', '20261007200000_invoice_intake_accounting_checks.sql',
     '20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
-    '20261012120000_invoice_rename_after_post.sql']);
+    '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql']);
   const base = `create role anon; create role authenticated; create role service_role bypassrls;
     alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
     alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
@@ -43,7 +43,7 @@ test('the migrations in order give the same database as db/invoice-intake.sql', 
     await stepwise.exec(base);
     for (const f of files) await stepwise.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     const a = await snap(whole), b = await snap(stepwise);
-    assert.ok(a.functions.length === 70 && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
+    assert.ok(a.functions.length === 74 && a.tables.some(t => t.relname === 'invoice_purchase_checks') && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
     for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k);
     // New functions are for the service role only, like every other one (Supabase grants them to the browser roles by default).
     for (const r of a.functions) assert.ok(!/(^|[{,])(anon|authenticated)=/.test(r.acl || ''), r.proname);
