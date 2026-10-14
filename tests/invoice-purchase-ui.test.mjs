@@ -22,7 +22,7 @@ const MOD = block('/* FUNERGY_PURCHASE_SUMMARY_BEGIN */', '/* FUNERGY_PURCHASE_S
 const esc = s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 // ---------------------------------------------------------------- the summary, made by the real SQL
-async function published(extra) {
+async function published(extra, { base = true, keep = false } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
@@ -50,15 +50,20 @@ async function published(extra) {
   };
   // the fixed example of the request (8): $1,400 = food $1,200 + supplies $200; a $100 food credit; $500 not forwarded; $400 not reconciled
   const ids = {};
-  ids.inv = await doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });
-  ids.cm = await doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: ids.inv });
-  ids.b = await doc({ total: 50000, lines: [[50000, null]], qb: 'pending' });
-  ids.c = await doc({ total: 40000, lines: [[40000, null]], recon: 'unreconciled' });
-  if (extra) await extra(doc, ids);
-  await pg.query(`select public.invoice_purchase_publish('{}')`);
-  const rows = (await pg.query(`select key, value from app_state`)).rows;
+  if (base) {
+    ids.inv = await doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });
+    ids.cm = await doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: ids.inv });
+    ids.b = await doc({ total: 50000, lines: [[50000, null]], qb: 'pending' });
+    ids.c = await doc({ total: 40000, lines: [[40000, null]], recon: 'unreconciled' });
+  }
+  if (extra) await extra(doc, ids, pg);
+  const publish = async () => (await pg.query(`select public.invoice_purchase_publish('{}') v`)).rows[0].v;
+  const read = async () => Object.fromEntries((await pg.query(`select key, value from app_state`)).rows.map(r => [r.key, r.value]));
+  await publish();
+  const rows = await read();
+  if (keep) return { rows, ids, pg, doc, publish, read };   // the caller closes pg
   await pg.close();
-  return { rows: Object.fromEntries(rows.map(r => [r.key, r.value])), ids };
+  return { rows, ids };
 }
 
 // ---------------------------------------------------------------- the app in a VM
@@ -274,12 +279,18 @@ test('only months the list names are used; closed from either side; keys like __
   // the list is read again every 10 minutes; a month only when the list names a newer version than the one on the device
   c = app({ state: { ...P.rows } });
   run(c, `ipsMonth('2026-10')`); run(c, `ipsMonth('2026-10')`); await tick();
-  assert.deepEqual(c.pulled, ['invoice_purchase_status'], 'same version: the month is not fetched');
+  assert.deepEqual(c.pulled, ['invoice_purchase_status', 'invoice_purchase_2026-10'], 'same version: fetched once to verify, in this session');
+  run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(c.pulled.length, 2, 'then not again for 6 hours');
+  run(c, `_ipsGot['invoice_purchase_2026-10'] = Date.now() - 6 * 3600000 - 1`); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_2026-10').length, 2, 'after 6 hours, once more');
+  c.pulled = [];
   c.STORE.invoice_purchase_status.months['2026-10'].at = '2099-01-01T00:00:00Z';
-  run(c, `ipsMonth('2026-10')`); run(c, `ipsMonth('2026-10')`); await tick();
-  assert.deepEqual(c.pulled, ['invoice_purchase_status', 'invoice_purchase_2026-10'], 'a newer version: fetched once');
+  run(c, `ipsMonth('2026-10')`); run(c, `ipsMonth('2026-10')`); await tick(); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.deepEqual(c.pulled, ['invoice_purchase_2026-10'], 'a newer version: fetched once (not on every look when the row has not caught up)');
+  c.pulled = [];
   run(c, `_ipsStatusAt = Date.now() - 600001`); run(c, `ipsMonth('2026-10')`); await tick();
-  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_status').length, 2);
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_status').length, 1, 'the list again after 10 minutes');
   // reload draws the page again only on the 仕入れ tab (or when something changed)
   c = app({ state: { ...P.rows } }); c.budgetTab = 'daily'; c.rendered = 0;
   await run(c, `ipsRefresh('2026-10', true)`); await run(c, `ipsRefresh('2026-10')`);
@@ -369,4 +380,83 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   const fd99 = run(c, `renderFcDaily('F99', {id:'F99'})`);
   assert.match(fd99, /<kpi>当月 実質原価率\|23\.8%\|/, 'a store outside the Drive intake: the totals, as its daily rows');
   assert.doesNotMatch(fd99, /この月の Invoice は、確認済み/);
+});
+
+test('a summary changed from outside with the same version is put right on devices that took it (Codex PR #58 P2-1)', async () => {
+  const E = await published(null, { keep: true });
+  const server = await E.read();
+  // the device reads the server's rows (pullOpKey → app_state); the summary of October was changed with the same version
+  const bad = JSON.parse(JSON.stringify(server['invoice_purchase_2026-10']));
+  bad.stores.F06.tot.A.cost = 990000;
+  bad.stores.F06.docs.filter(x => x.cat === 'A').forEach(x => { x.cost = 495000; });
+  await E.pg.query(`update app_state set value=$1 where key='invoice_purchase_2026-10'`, [JSON.stringify(bad)]);
+  await E.pg.query(`update app_state set value=jsonb_set(value, '{docs}', '{}'::jsonb) where key='invoice_purchase_lines_2026-10_F06'`);
+  let srv = await E.read();
+  const c = app({ state: { ...srv, invoices: appInvoices() } });
+  c.pullOpKey = async k => { c.pulled.push(k); const r = (await E.read())[k]; if (r !== undefined) c.STORE[k] = JSON.parse(JSON.stringify(r)); return true; };
+  c._fetchOpValue = async k => { const r = (await E.read())[k]; return r === undefined ? null : JSON.parse(JSON.stringify(r)); };
+  const tick = () => new Promise(r => setTimeout(r, 5));
+  assert.equal(run(c, `ipsLink('F06', '2026-10').confirmed`), 9900, 'the device has the changed row');
+  assert.equal(run(c, `_invDayCostMap()`).F06['2026-10-05'], 9900);
+  await tick();
+  // the server writes the rows again as a new version; the device looks again after the list's 10 minutes
+  const r = await E.publish();
+  assert.deepEqual(r.repaired, ['2026-10']);
+  run(c, `_ipsStatusAt = Date.now() - 600001; _ipsGot = {}`);
+  run(c, `ipsMonth('2026-10')`); await tick(); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(run(c, `ipsLink('F06', '2026-10').confirmed`), 1100, 'the device took the rows again');
+  assert.equal(run(c, `_invDayCostMap()`).F06['2026-10-05'], 1100, 'and its daily cost');
+  await run(c, `ipsOpenDoc('2026-10', 'F06', '${E.ids.inv}')`);
+  assert.match(c.modals.at(-1), /Shiro &lt;img/, 'the lines of the new version');
+  // a row changed and changed back before the server looked: the device that took it is put right within its session check
+  bad.generated_at = (await E.read())['invoice_purchase_2026-10'].generated_at;
+  const good = JSON.parse(JSON.stringify((await E.read())['invoice_purchase_2026-10']));
+  const c2 = app({ state: { ...(await E.read()), 'invoice_purchase_2026-10': bad, invoices: appInvoices() } });
+  c2.pullOpKey = async k => { c2.pulled.push(k); const v = (await E.read())[k]; if (v !== undefined) c2.STORE[k] = JSON.parse(JSON.stringify(v)); return true; };
+  assert.equal(run(c2, `ipsLink('F06', '2026-10').confirmed`), 9900);
+  await tick(); await tick();
+  assert.equal(run(c2, `ipsLink('F06', '2026-10').confirmed`), 1100, 'checked once in this session although the version is the same');
+  assert.equal(good.generated_at, bad.generated_at);
+  await E.pg.close();
+});
+
+test('a vendor with no invoice and a "missing" statement keeps the month provisional until the invoice is in and checked (Codex PR #58 P2-2)', async () => {
+  const E = await published(async (doc, ids, pg) => {
+    ids.a = await doc({ total: 100000, lines: [[100000, 'I-MISO']] });
+    await pg.query(`insert into invoice_purchase_checks(store_id,vendor_key,ym,state,note,checked_by) values
+      ('F06','minato','2026-10','complete','','00000000-0000-4000-8000-0000000000c1'), ('F06','clean','2026-10','missing','1 枚届いていない','00000000-0000-4000-8000-0000000000c1')`);
+    await pg.query(`update invoice_settings set value=value||'{"closed_through":"2026-10"}' where key='rules'`);
+  }, { base: false, keep: true });
+  const fc = { 'F06|2026-10': { beginInv: 2000, endInv: 1800 } };
+  let c = app({ state: { ...E.rows }, fc, sales: { F06: 10000 }, visible: ['F06'], role: 'office' });
+  let h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /足りない/, 'the vendor shows "missing"');
+  assert.match(h, /請求明細で足りない invoice がある業者 1/);
+  assert.match(h, /暫定/); assert.doesNotMatch(h, />確定</, 'not final while an invoice on the statement is not in');
+  // the invoice arrives and is confirmed; still missing on record → provisional
+  await E.pg.query(`update invoice_settings set value=value||'{"closed_through":"2026-09"}' where key='rules'`);
+  await E.doc({ vk: 'clean', total: 3000, lines: [[3000, null]] });
+  await E.publish();
+  c = app({ state: { ...(await E.read()) }, fc, sales: { F06: 10000 }, visible: ['F06'], role: 'office' });
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /暫定/); assert.doesNotMatch(h, />確定</);
+  // checked again: all here, month closed → final
+  await E.pg.query(`insert into invoice_purchase_checks(store_id,vendor_key,ym,state,note,checked_by) values ('F06','clean','2026-10','complete','','00000000-0000-4000-8000-0000000000c1')`);
+  await E.pg.query(`update invoice_settings set value=value||'{"closed_through":"2026-10"}' where key='rules'`);
+  await E.publish();
+  c = app({ state: { ...(await E.read()) }, fc, sales: { F06: 10000 }, visible: ['F06'], role: 'office' });
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, />確定</, 'every statement checked, nothing pending, month closed, stocktake in');
+  assert.doesNotMatch(h, /足りない invoice がある業者/);
+  // the store table and the all-stores vendor column count the 0-invoice "missing" vendor too
+  const P2 = await published(async (doc, ids, pg) => {
+    await doc({ total: 1000, lines: [[1000, 'I-MISO']] }); await doc({ store: 'F01', total: 1000, lines: [[1000, 'I-MISO']] });
+    await pg.query(`insert into invoice_purchase_checks(store_id,vendor_key,ym,state,note,checked_by) values ('F06','minato','2026-10','complete','','00000000-0000-4000-8000-0000000000c1'),
+      ('F01','minato','2026-10','complete','','00000000-0000-4000-8000-0000000000c1'), ('F06','clean','2026-10','missing','x','00000000-0000-4000-8000-0000000000c1')`);
+  }, { base: false });
+  c = app({ state: { ...P2.rows }, sales: { F06: 10000, F01: 10000 } });
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /<td class="r ips-hide-m">1\/2<\/td><\/tr>/, 'LaLa: 1 of 2 statements done (the missing one counts)');
+  assert.match(h, /0\/1 店/, 'the vendor with no invoice: 0 of 1 store');
+  await E.pg.close();
 });

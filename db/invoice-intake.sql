@@ -2083,12 +2083,12 @@ end $$;
 -- p.file_id, p.outbox_id, p.months). A closed month (rules.closed_through) is written once more when it is closed; after that
 -- only when its invoices change (reconciled or sent to QuickBooks after closing, corrected, marked), not for a change of the
 -- masters or settings alone (p.force writes it again anyway). Rows changed or removed from outside (app_state can be written
--- from a browser) are written again from what was written here.
+-- from a browser) are written again from what was written here, as a new version.
 create function public.invoice_purchase_publish(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare v_closed text := public.invoice_setting('rules')->>'closed_through'; v_months text[]; v_ym text; v_j jsonb; v_h text;
  v_pub public.invoice_purchase_published; v_changed text[] := '{}'; v_frozen text[] := '{}'; v_repaired text[] := '{}';
- v_now timestamptz := now(); v_sid text; v_cls jsonb; v_closedm boolean; v_sum jsonb; v_lines jsonb; v_at timestamptz; v_exp jsonb; v_in text;
+ v_now timestamptz := now(); v_sid text; v_cls jsonb; v_closedm boolean; v_sum jsonb; v_lines jsonb; v_exp jsonb; v_in text; v_bad boolean;
  v_uuid text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; v_ids text[] := '{}';
 begin
  -- One at a time: a later run starts after an earlier one ends and sees what was saved meanwhile.
@@ -2140,7 +2140,7 @@ begin
     and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') = v_ym) q;
   if v_closedm and v_pub.ym is not null and v_pub.closed and v_pub.inputs is not distinct from v_in and not coalesce((p->>'force')::boolean, false) then
    v_frozen := v_frozen || v_ym;
-   v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
+   v_sum := v_pub.summary; v_lines := v_pub.lines;
    update public.invoice_purchase_published x set checked_at=v_now where x.ym=v_ym;
   else
    v_j := public.invoice_purchase_month(v_ym, v_cls);
@@ -2161,23 +2161,31 @@ begin
     v_changed := v_changed || v_ym;
     continue;
    end if;
-   v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
+   v_sum := v_pub.summary; v_lines := v_pub.lines;
    update public.invoice_purchase_published x set checked_at=v_now, inputs=v_in where x.ym=v_ym;
   end if;
-  -- Unchanged here: the rows the app reads must still be what was written.
-  if v_sum is not null and coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_' || v_ym), '') <> md5(v_sum::text) then
-   insert into public.app_state(key, value, updated_at) values('invoice_purchase_' || v_ym, v_sum || jsonb_build_object('generated_at', v_at), v_now)
-   on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
-   v_repaired := v_repaired || v_ym;
-  end if;
-  for v_sid in select jsonb_object_keys(coalesce(v_lines, '{}'::jsonb)) loop
-   v_exp := jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'docs', v_lines->v_sid);
-   if coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_lines_' || v_ym || '_' || v_sid), '') <> md5(v_exp::text) then
-    insert into public.app_state(key, value, updated_at) values('invoice_purchase_lines_' || v_ym || '_' || v_sid, v_exp || jsonb_build_object('generated_at', v_at), v_now)
+  -- Unchanged here: the rows the app reads must still be what was written. If any row of the month is not (app_state can be
+  -- written from a browser), every row of the month is written again with a NEW version (generated_at, and the list's "at"),
+  -- so that devices which took a changed row see a newer version and take the rows again (Codex PR #58 P2-1).
+  if v_sum is not null then
+   v_bad := coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_' || v_ym), '') <> md5(v_sum::text);
+   for v_sid in select jsonb_object_keys(coalesce(v_lines, '{}'::jsonb)) loop
+    exit when v_bad;
+    v_exp := jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'docs', v_lines->v_sid);
+    v_bad := coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_lines_' || v_ym || '_' || v_sid), '') <> md5(v_exp::text);
+   end loop;
+   if v_bad then
+    insert into public.app_state(key, value, updated_at) values('invoice_purchase_' || v_ym, v_sum || jsonb_build_object('generated_at', v_now), v_now)
     on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
-    if not (v_ym = any(v_repaired)) then v_repaired := v_repaired || v_ym; end if;
+    for v_sid in select jsonb_object_keys(coalesce(v_lines, '{}'::jsonb)) loop
+     insert into public.app_state(key, value, updated_at) values('invoice_purchase_lines_' || v_ym || '_' || v_sid,
+       jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'docs', v_lines->v_sid, 'generated_at', v_now), v_now)
+     on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
+    end loop;
+    update public.invoice_purchase_published x set published_at=v_now where x.ym=v_ym;
+    v_repaired := v_repaired || v_ym;
    end if;
-  end loop;
+  end if;
  end loop;
  -- The app shows when the summaries were last checked (and warns when that is old: the worker may have stopped).
  insert into public.app_state(key, value, updated_at) values('invoice_purchase_status', jsonb_build_object('v', 1, 'checked_at', v_now,

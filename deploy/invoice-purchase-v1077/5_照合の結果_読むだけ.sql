@@ -48,8 +48,10 @@ select n.store as "店舗", n.ym as "月", case when n.closed then '締め済み
  '$' || to_char(coalesce((n.t->'A'->>'cost')::numeric, 0) / 100 + coalesce(ag.manual, 0), 'FM999,999,990.00') as "新しい数え方",
  case when coalesce(ag.copies, 0) - coalesce((n.t->'A'->>'cost')::numeric, 0) / 100 < 0 then '-$' else '$' end
   || to_char(abs(coalesce(ag.copies, 0) - coalesce((n.t->'A'->>'cost')::numeric, 0) / 100), 'FM999,999,990.00') as "差",
- (select count(*) from jsonb_array_elements(n.x->'vendors') vv where vv->'chk'->>'s' = 'complete') || ' / '
-  || (select count(*) from jsonb_array_elements(n.x->'vendors') vv where coalesce((vv->'a'->>'n')::int, 0) + coalesce((vv->'p'->>'n')::int, 0) > 0) as "請求明細と照合した業者",
+ -- そろった（そのあとに増えていない）／照合が要る業者（invoice がある、または「足りない」の記録がある。0 件でも足りないなら要る）
+ (select count(*) from jsonb_array_elements(n.x->'vendors') vv where vv->'chk'->>'s' = 'complete' and coalesce(vv->'chk'->>'after', '0') = '0') || ' / '
+  || (select count(*) from jsonb_array_elements(n.x->'vendors') vv where coalesce((vv->'a'->>'n')::int, 0) + coalesce((vv->'p'->>'n')::int, 0) > 0
+      or vv->'chk'->>'s' = 'missing') as "請求明細と照合した業者",
  coalesce((select '$' || to_char((f.value::jsonb->>'endInv')::numeric, 'FM999,999,990.00') from public.app_state f
    where f.key = 'fc_monthly_' || n.store || '_' || n.ym
     and case when coalesce(f.value::jsonb->>'endInv', '') ~ '^\d+(\.\d+)?$' then (f.value::jsonb->>'endInv')::numeric > 0 else false end), 'まだ') as "期末棚卸",

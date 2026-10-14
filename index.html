@@ -32961,6 +32961,7 @@ var IPS_START = '2026-10';
 var IPS_COST = ['food', 'liquor', 'beverage'];
 var _ipsMemo = {}, _ipsAsked = {}, _ipsLines = {}, _ipsRefreshedAt = {};
 var IPS_STATUS_TTL = 600000, _ipsStatusAt = 0, _ipsStatusBusy = false, _ipsStampMemo = null;
+var IPS_MONTH_TTL = 6 * 3600000, _ipsGot = {};   /* 月の集計をこの画面を開いてから取った時刻 */
 var _ipsScope = null, _ipsVendor = null, _ipsSaving = false, _ipsRefs = [];
 /* 画面の onclick に入れる値は形を確かめたものだけ（集計の中身は信用しない） */
 var IPS_RE = { ym:/^\d{4}-\d{2}$/, sid:/^[A-Za-z0-9_-]{1,24}$/, uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, vk:/^[A-Za-z0-9_.:@-]{1,80}$/ };
@@ -32996,6 +32997,7 @@ function _ipsPull(k, flag){
   Promise.resolve().then(function(){ return pullOpKey(k); })
     .then(function(ok){
       if (!ok) { delete _ipsAsked[flag]; return; }
+      _ipsGot[k] = Date.now();
       _ipsStampMemo = null;
       if (_ipsRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
     }, function(){ delete _ipsAsked[flag]; });
@@ -33014,9 +33016,13 @@ function ipsEnsure(ym){
       }, function(){ _ipsStatusBusy = false; _ipsStatusAt = Date.now() - IPS_STATUS_TTL + 60000; });
   }
   if (!ym || !_ipsListed(ym)) return;
-  var at = String(ipsStatus().months[ym].at || ''), loc = _ipsParse(ipsKey(ym));
-  if (loc && String(loc.generated_at || '') === at) return;
-  _ipsPull(ipsKey(ym), ipsKey(ym) + '|' + at);
+  var key = ipsKey(ym), at = String(ipsStatus().months[ym].at || ''), loc = _ipsParse(key), got = _ipsGot[key] || 0;
+  /* 一覧の版と違う：その版ごとに 1 回取る（取れなかったら次に見るときにもう一度） */
+  if (!loc || String(loc.generated_at || '') !== at) { _ipsPull(key, key + '|' + at); return; }
+  /* 同じ版でも、この画面を開いてから一度は取り直し、そのあとは 6 時間ごと。同じ版のまま書き換えられた行を
+     取っていた端末も、サーバーが書き戻した行に直る（Codex PR #58 P2-1） */
+  if (got && Date.now() - got < IPS_MONTH_TTL) return;
+  _ipsPull(key, key + '|' + at + '|v' + got);
 }
 /* 店の鍵は形を確かめたものだけを、プロトタイプの無い入れ物に移す */
 function _ipsClean(v){
@@ -33167,6 +33173,9 @@ function ipsSum(stores){
   });
   return out;
 }
+/* 請求明細との照合：「足りない」の記録は、その業者の invoice が 0 件でも未完了（未着の invoice は原価に入っていない・Codex PR #58 P2-2） */
+function _ipsChkNeed(c){ return !!c && ((Number(c.docs) || 0) > 0 || !!(c.chk && c.chk.s === 'missing')); }
+function _ipsChkDone(c){ return !!(c && c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)); }
 /* まだ入っていない＝未転送・確認待ち・保留。ただし保留のうちアプリでの登録で数えるもの（取込の開始前・写しなし・写しを消した）は除く */
 function ipsPending(sum){ return { n:sum.B.n + sum.C.n + sum.E.n - sum.ap.n, c:sum.B.c + sum.C.c + sum.E.c - sum.ap.c, u:sum.B.u + sum.C.u + sum.E.u - sum.ap.u }; }
 function _ipsVKey(v){ return v && v.k ? String(v.k) : '?' + String((v && (v.n || v.vn)) || '').toLowerCase(); }
@@ -33231,6 +33240,7 @@ function ipsRefresh(ym, quiet){
   var b0 = _ipsRaw('invoice_purchase_status'), b1 = _ipsRaw(ipsKey(ym));
   return Promise.all([pullOpKey('invoice_purchase_status'), pullOpKey(ipsKey(ym))]).then(function(r){
     _ipsLines = {}; _ipsStampMemo = null;
+    if (r[1]) _ipsGot[ipsKey(ym)] = Date.now();
     if (!quiet && typeof showToast === 'function') showToast(t('仕入れの集計を読み直しました', 'Purchase summary reloaded'), 'success');
     /* 描き直すのは、仕入れタブを開いているとき（押したとき）か、中身が変わったときだけ */
     var onTab = typeof curPage !== 'undefined' && curPage === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'purchase';
@@ -33353,7 +33363,9 @@ function ipsCostTile(ym, d, withData, sum){
   var pend = ipsPending(sum).n;
   if (pend) reasons.push(t('まだ入っていない invoice ' + pend + ' 件（未転送・確認待ち・保留）', pend + ' invoice(s) not in yet'));
   var vend = ipsVendorRows(withData), need = 0, done = 0;
-  vend.forEach(function(v){ v.chks.forEach(function(c){ if (!c.docs) return; need++; if (c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)) done++; }); });
+  var miss = 0;
+  vend.forEach(function(v){ v.chks.forEach(function(c){ if (!_ipsChkNeed(c)) return; need++; if (_ipsChkDone(c)) done++; if (c.chk && c.chk.s === 'missing') miss++; }); });
+  if (miss) reasons.push(t('請求明細で足りない invoice がある業者 ' + miss, miss + ' vendor(s) with missing invoices'));
   if (need > done) reasons.push(t('業者の請求明細との照合 ' + done + '/' + need, 'Statements checked ' + done + '/' + need));
   if (!d.closed) reasons.push(t('月の締めがまだ', 'Month not closed'));
   var confirmed = ok && !reasons.length;
@@ -33372,7 +33384,7 @@ function ipsStoreTableHtml(ym, withData){
   var rows = withData.map(function(e){
     var x = ipsSum([e.s]), sl = ipsSales(e.sid, ym), man = ipsManualList(e.sid, ym).reduce(function(a, m){ return a + m.total; }, 0);
     var vs = ipsVendorRows([e]), need = 0, done = 0;
-    vs.forEach(function(v){ v.chks.forEach(function(c){ if (!c.docs) return; need++; if (c.chk && c.chk.s === 'complete' && !(Number(c.chk.after) > 0)) done++; }); });
+    vs.forEach(function(v){ v.chks.forEach(function(c){ if (!_ipsChkNeed(c)) return; need++; if (_ipsChkDone(c)) done++; }); });
     return '<tr class="ips-row" onclick="ipsSetScope(\'' + _ipsId(e.sid, IPS_RE.sid) + '\')"><td><b>' + escapeHtml(e.name) + '</b>' + (e.closed ? ' <span style="font-size:10px;color:var(--muted)">' + t('閉店', 'closed') + '</span>' : '') + '</td>'
       + '<td class="r"><b>' + ipsMoney(x.A.cost) + '</b></td><td class="r ips-hide-m">' + ipsMoney(x.A.c) + '</td>'
       + '<td class="r">' + ipsMoney(x.B.c) + '<div class="ips-sub">' + x.B.n + t('件', '') + '</div></td>'
@@ -33394,7 +33406,7 @@ function ipsVendorTableHtml(ym, d, withData){
   var body = rows.map(function(v){
     var cls = v.a.cls, chk = single ? (v.chks[0] && v.chks[0].chk) : null, vk = _ipsId(v.k, IPS_RE.vk);
     var chkCell = single ? ipsChkHtml(chk) + (can && vk && sid0 ? ' <button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();ipsCheckOpen(\'' + _ipsId(ym, IPS_RE.ym) + '\',\'' + sid0 + '\',\'' + vk + '\')">' + t('記録', 'Record') + '</button>' : '')
-      : (function(){ var n = 0, k = 0; v.chks.forEach(function(c){ if (!c.docs) return; n++; if (c.chk && c.chk.s === 'complete') k++; }); return k + '/' + n + t(' 店', ' stores'); })();
+      : (function(){ var n = 0, k = 0; v.chks.forEach(function(c){ if (!_ipsChkNeed(c)) return; n++; if (_ipsChkDone(c)) k++; }); return k + '/' + n + t(' 店', ' stores'); })();
     return '<tr class="ips-row" onclick="ipsOpenVendor(' + _ipsRef(v.key) + ')"><td><b>' + escapeHtml(v.n || t('業者未確定', 'Vendor unknown')) + '</b></td>'
       + '<td class="r">' + v.a.n + '</td><td class="r"><b>' + ipsMoney(v.a.cost) + '</b></td>'
       + '<td class="r ips-hide-m">' + ipsMoney(cls.food + cls.liquor + cls.beverage) + '<div class="ips-sub">' + t('飲料・お酒 ', 'Bev ') + ipsMoney(cls.liquor + cls.beverage) + '</div></td>'

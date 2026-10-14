@@ -408,7 +408,10 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   assert.deepEqual((await E.publish()).changed, ['2026-09']);
   const sep = await E.state('invoice_purchase_2026-09');
   assert.deepEqual([sep.closed, N(tot(sep.stores.F06, 'A').c)], [false, 450]);
-  // rows changed or removed from outside are written again from what was published, closed months too; the version stays
+  // rows changed or removed from outside are written again from what was published, closed months too, as a NEW version
+  // (a device that took a changed row with the old version sees a newer one and takes the rows again: Codex PR #58 P2-1)
+  const gen0 = (await E.state('invoice_purchase_2026-10')).generated_at;
+  const linesF01Gen0 = (await E.state('invoice_purchase_lines_2026-10_F01'))?.generated_at;
   await E.pg.exec(`reset role;
     update app_state set value=value||'{"stores":{}}' where key='invoice_purchase_2026-10';
     delete from app_state where key='invoice_purchase_lines_2026-10_F06';
@@ -419,6 +422,18 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   const oct2 = await E.state('invoice_purchase_2026-10'), st2 = await E.state('invoice_purchase_status');
   assert.equal(N(tot(oct2.stores.F06, 'A').c), 2000);
   assert.equal(oct2.generated_at, st2.months['2026-10'].at, 'the app compares these to know it has the latest');
+  assert.notEqual(oct2.generated_at, gen0, 'repaired as a new version');
+  const l06 = await E.state('invoice_purchase_lines_2026-10_F06');
+  assert.equal(Object.keys(l06.docs).length, 1);
+  assert.equal(l06.generated_at, oct2.generated_at, 'every row of the month carries the new version');
+  if (linesF01Gen0) assert.equal((await E.state('invoice_purchase_lines_2026-10_F01')).generated_at, oct2.generated_at);
+  // a changed lines row alone also gives the whole month a new version
+  await E.pg.exec(`reset role; update app_state set value=jsonb_set(value, '{docs}', '{}'::jsonb) where key='invoice_purchase_lines_2026-10_F06'; set role service_role;`);
+  const pr2 = await E.publish();
+  assert.deepEqual(pr2.repaired, ['2026-10']);
+  const oct3 = await E.state('invoice_purchase_2026-10');
+  assert.notEqual(oct3.generated_at, oct2.generated_at);
+  assert.equal((await E.state('invoice_purchase_status')).months['2026-10'].at, oct3.generated_at);
   assert.equal(Object.keys((await E.state('invoice_purchase_lines_2026-10_F06')).docs).length, 1);
   assert.equal(N(tot((await E.state('invoice_purchase_2026-08')).stores.F06, 'A').c), 1500);
   assert.deepEqual((await E.publish()).repaired, []);
