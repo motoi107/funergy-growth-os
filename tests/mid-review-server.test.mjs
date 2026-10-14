@@ -447,6 +447,13 @@ test('v1076 store oversight: a GM can oversee a store; the list says whose role 
   const am = await rows('am1');
   assert.ok(!am.F01, 'F01 is no longer Yuki\'s'); assert.ok(am.F02);
   assert.equal((await E.api('am1', { action: 'get', ...at('F01') })).status, 404);
+  // The check after installing: a store overseen by a GM is not a warning (only an AM must match the store master's AM column).
+  for (const r of await E.q(dbFile('mid-review-postcheck.sql'))) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
+  // An AM whose store the store master gives to someone else is still pointed at.
+  await E.q(`update stores set am='AM Two' where id='F02'`);
+  const w = (await E.q(dbFile('mid-review-postcheck.sql'))).find(r => r.check_name === 'live stores the saved AM cannot see');
+  assert.deepEqual([w.value, /^注意/.test(w.result)], ['1', true]);
+  await E.q(`update stores set am='Yuki' where id='F02'`);
   // Who cannot be chosen: a CEO, a chef, a GM taken off manager_auth or turned off here; the GM changed to CEO in manager_auth
   // is still a GM here (v1068), so stays selectable.
   for (const bad of [U.ceo, chef]) assert.equal((await storesSave(E, [{ ...STORES[3], am_user: bad }])).status, 400, bad);

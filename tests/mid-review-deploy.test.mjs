@@ -110,7 +110,7 @@ test('v1073 の直しの束は渡したときのまま：SQL は元のファイ�
 });
 
 // v1076 の束：SQL 1 つ（店舗の管轄に GM も）＋確認の SQL。どちらも元のファイルの写し。関数は変えない。順番は SQL → 確認 → マージ。
-test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → マージ → 管轄を選ぶ', () => {
+test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → マージ → 端末を更新 → 管轄を選ぶ', () => {
   const D = 'deploy/mid-review-v1076/';
   assert.deepEqual(list(D), ['1_追加のSQL_管轄にGM.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
   assert.equal(read(D + '1_追加のSQL_管轄にGM.sql'), read('supabase/migrations/20261018090000_mid_review_scope_gm.sql'));
@@ -120,10 +120,10 @@ test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関�
     '全文', '関数は変えません', 'v1076', '未設定（GM・CEO みんなで見る）'])
     assert.ok(howto.includes(s), s);
   const at = s => howto.indexOf(s);
-  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 3 |') && at('| 3 |') < at('| 4 |'));
+  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 3 |') && at('| 3 |') < at('| 4 |') && at('| 4 |') < at('| 5 |'));
   const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
-  assert.match(row(1), /1_追加のSQL_管轄にGM\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row(3), /マージ/); assert.match(row(4), /店舗の管轄/);
-  assert.equal(howto.includes('| 5 |'), false);
+  assert.match(row(1), /1_追加のSQL_管轄にGM\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row(3), /マージ/); assert.match(row(4), /端末.*v1076/); assert.match(row(5), /店舗の管轄/);
+  assert.equal(howto.includes('| 6 |'), false);
   assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false);
   const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
   const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);

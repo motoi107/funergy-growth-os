@@ -76,7 +76,7 @@ begin
  select * into v_am from public.mr_members x where x.user_id = st.am_user;
  return jsonb_build_object('store_id', st.store_id, 'name', st.name, 'sort', st.sort,
   'am_name', coalesce(case when v_am.user_id is not null then public.mr_actor_name(v_am) end, st.am_name), 'am_unset', st.am_user is null and st.am_name is null,
-  'am_role', case when v_am.user_id is not null then public.mr_member_role(v_am) end,   -- 20261018090000: 'gm' or 'am' (null: no longer either)
+  'am_role', case when v_am.user_id is not null then public.mr_member_role(v_am) end,   -- 20261018090000: the role now (mr_member_role): 'gm' or 'am'; null or another role = no longer a GM or AM (the screen asks to choose again)
   'input', public.mr_input_info(st, v_can->>'input_emp', v_can->>'input_from'),
   'perms', v_can - 'input_emp' - 'input_from',
   'review', public.mr_review_summary(r));

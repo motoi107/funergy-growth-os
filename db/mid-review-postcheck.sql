@@ -78,7 +78,7 @@ union all select 'mid-review versions (20261016090000)', (select ok::text from v
 union all select 'mid-review stores_save fix (20261017090000)', (select ok::text from v4),
   case when (select ok from v4) then 'OK' else 'NG：20261017090000_mid_review_stores_save_fix.sql がまだ（20261016090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'mid-review scope GM (20261018090000)', (select ok::text from v5),
-  case when (select ok from v5) then 'OK' else 'NG：20261018090000_mid_review_scope_gm.sql がまだ（20261016090000・20261017090000 を流し直したときも、続けてもう一度流す）' end
+  case when (select ok from v5) then 'OK' else 'NG：20261018090000_mid_review_scope_gm.sql がまだ（20261015090000・20261016090000・20261017090000 を流し直したときも、そのあとで続けてもう一度流す）' end
 union all select 'flags', (select value::text from public.mr_settings where key = 'flags'),
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'live input', (select coalesce(value->>'live_input', 'null') from public.mr_settings where key = 'flags'),
@@ -113,9 +113,11 @@ union all select 'chef no longer Head Chef / Corporate Chef', (select count(*)::
    else '注意：この人は入れない（退職・肩書きが変わった）。担当・閲覧設定で外す' end
 union all select 'staff not in service', (select count(*)::text from m where m.role = 'staff' and m.role_now is null),
   case when (select count(*) from m where m.role = 'staff' and m.role_now is null) = 0 then 'OK' else '注意：この人は入れない（退職・社員の表に無い）' end
+-- v1076: a store overseen by a GM is not counted here (a GM sees every store; only an AM must match the store master's AM column).
 union all select 'live stores the saved AM cannot see', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and s.am_user is not null
-   and not public.mr_am_master_ok(s.am_user, s.store_id)),
-  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and s.am_user is not null and not public.mr_am_master_ok(s.am_user, s.store_id)) = 0 then 'OK'
+   and exists(select 1 from public.mr_members w where w.user_id = s.am_user and w.role = 'am') and not public.mr_am_master_ok(s.am_user, s.store_id)),
+  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and s.am_user is not null
+   and exists(select 1 from public.mr_members w where w.user_id = s.am_user and w.role = 'am') and not public.mr_am_master_ok(s.am_user, s.store_id)) = 0 then 'OK'
    else '注意：店舗マスターの AM 欄と違う店がある（アプリの設定で担当を確かめて保存）' end
 union all select 'live stores without an input person', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null),
   case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null) = 0 then 'OK'
