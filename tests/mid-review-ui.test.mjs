@@ -150,8 +150,9 @@ test('the module is in index.html; the entry is wired; nothing of the review goe
   assert.match(html, /case 'mid_review':\s+el\.innerHTML = renderMidReview\(\)/);
   assert.match(html, /if\(typeof mrReset==='function'\) mrReset\(\);/);
   assert.doesNotMatch(MOD, /lsSet\(|\bls\('|localStorage|sessionStorage|supaUpsert|pushOpKey|setQBudgetObj|saveQcNote/);
-  assert.match(html, /const APP_VERSION = '1073';/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1073';/);
+  // v1073 or a later release (v1074: the growth-chart bonus), with the page and the service worker on the same release
+  const appV = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], swV = (fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8').match(/const SW_BUILD = '(\d+)';/) || [])[1];
+  assert.ok(Number(appV) >= 1073 && appV === swV, `APP_VERSION ${appV} / SW_BUILD ${swV}`);
   // The old v1 reply steps are not called any more.
   assert.doesNotMatch(MOD, /'reply_save'|'reply_send'|'reply_delete'|'result_save'|action:'complete'/);
 });
