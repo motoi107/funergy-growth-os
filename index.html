@@ -64218,13 +64218,21 @@ function kevMerge(R, set, src, M, F){
   if(Array.isArray(set.stores) && set.stores.length){ R.stores=set.stores.filter(function(s){ return typeof s==='string' && s; }); if(R.stores.length) M.stores=src; else R.stores=null; }
 }
 /* v1074：前の版（v1065〜v1068）でその人に効いていた「反映・固定」。前の版の初期値（kevGradeDefaults）に、前の版で保存したグレード（G6 は G5 → G6 の順）の
-   「反映・固定」を重ねる（この版で保存した部分 g2 は前の版の決定ではないので重ねない。会社共通は「反映・固定」を持たない）。
+   「反映・固定」を重ねる（この版で保存した部分 g2 は前の版の決定ではないので重ねず、同じ版の変更の履歴にある前の版の値を使う。会社共通は「反映・固定」を持たない）。
    前の版の個人設定の画面は、そのとき効いていた値を入れたまま保存していたので、これと同じ値の個人設定は「わざと変えたもの」ではない */
 function kevV1On(scope, q){
   var d=kevGradeDefaults(scope || 'G2'), o={}, all=kevRuleAll();
   ['c','s','f','p'].forEach(function(p){ o[p]={on:!(d[p] && d[p].on===false)}; });
+  var has=function(x){ return !!(x && typeof x==='object' && x.on!==undefined && x.on!==null && x.on!=='' && !kevN(x.g2)); };
   var lay=function(v){ if(!v || !v.set || typeof v.set!=='object') return;
-    ['c','s','f','p'].forEach(function(p){ var x=v.set[p]; if(x && typeof x==='object' && x.on!==undefined && x.on!==null && x.on!=='' && !kevN(x.g2)) o[p]={on:(x.on!==false && x.on!=='false')}; }); };
+    ['c','s','f','p'].forEach(function(p){
+      var x=v.set[p];
+      if(x && typeof x==='object' && kevN(x.g2)){   /* この版で同じ版（適用開始の四半期）を保存し直した部分：前の版の値は変更の履歴（hist）に残っている */
+        x=null; var h=Array.isArray(v.hist) ? v.hist : [];
+        for(var i=h.length-1; i>=0; i--){ var y=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(has(y)){ x=y; break; } }
+      }
+      if(has(x)) o[p]={on:(x.on!==false && x.on!=='false')};
+    }); };
   if(scope==='G6') lay(kevVer(all, 'G5', q));
   if(scope) lay(kevVer(all, scope, q));
   return o;

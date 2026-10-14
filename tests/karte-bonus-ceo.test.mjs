@@ -113,10 +113,17 @@ test('items: G2/G3 ①, G4 ①②③, G5/G6 ②④ — v1065-era on/off, points 
   // G6 inherits G5's v1065 setting first (G5 ① fixed, G6 not saved): Gus alone on → kept
   c.STORE.bonus_eval_ovr['gus|2026-Q3'] = { set: { c: { on: true } }, why: 'この人だけ', _at: 4 };
   assert.equal(on('gus'), 'csp');
-  // a grade part saved by this version (g2) is not a v1065 decision: the baseline stays the v1065 default (G5 ① on) → Sam's pre-filled "on" is ignored
+  // a grade part saved by this version (g2) is not a v1065 decision: with no v1065 value for it, the baseline is the v1065 default (G5 ① on),
+  // so Sam's "on" equals what he had and is treated as pre-filled
   c.STORE.bonus_eval_rule = { 'G5|2026-Q3': { set: { c: { on: false, g2: 1 } }, _at: 5 } };
   c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true } }, why: '配点', _at: 6 };
   assert.equal(on('sam'), 'sp');
+  // the same grade version re-saved by this version keeps the v1065 value in its history: v1065 had G5 ① fixed, so Sam's "on" was deliberate → kept
+  c.STORE.bonus_eval_rule['G5|2026-Q3'].hist = [{ set: { c: { on: false, lo: 0.7, hi: 1.3 } }, why: 'v1065', at: '2026/10/11 10:00', by: 'GM', _at: 1 }];
+  assert.equal(on('sam'), 'csp');
+  // an earlier save by this version in the same history is skipped too (it is not a v1065 decision)
+  c.STORE.bonus_eval_rule['G5|2026-Q3'].hist.push({ set: { c: { on: true, g2: 1 } }, why: 'v1074', at: '2026/10/13 10:00', by: 'GM', _at: 4 });
+  assert.equal(on('sam'), 'csp');
   delete c.STORE.bonus_eval_ovr['gus|2026-Q3'];
   // the judgement rules are company-wide: a grade or personal "j" is ignored
   c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { j: { clo: 0.5, chi: 2 } }, _at: 1 } };
