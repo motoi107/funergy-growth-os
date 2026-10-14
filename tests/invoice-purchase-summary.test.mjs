@@ -592,6 +592,8 @@ test('the before-start check (read only) lists invoices taken in before the star
   await E.doc({ total: 900, date: '2026-10-06', created: at, ingested: at });                       // entered as a receipt: not in the cost
   await E.doc({ total: 3300, date: '2026-10-07', created: at, ingested: at, store: 'F01' });         // entered under another store only
   await E.doc({ total: 4400, date: '2026-10-08' });                                                 // after the start: not listed
+  await E.doc({ total: 2000, date: '2026-10-09', currency: 'JPY' });                                // held for another reason: not listed
+  await E.doc({ total: 1500, date: '2026-10-10', mirror: 'tombstoned' });                           // its app copy deleted in the app: not listed
   await E.publish();
   await E.pg.exec(`reset role;
     insert into app_state values ('spl_invoices_F06', '[{"id":"h1","storeId":"F06","vendor":"Minato","docType":"Invoice","docDate":"2026/10/02","total":123.45,"purpose":"仕入れ・仕込み"},
@@ -604,7 +606,7 @@ test('the before-start check (read only) lists invoices taken in before the star
     set role service_role;`);
   const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-before-start-check.sql', import.meta.url), 'utf8'));
   const by = d => rows.find(r => r['請求日'] === d);
-  assert.equal(rows.length, 5, 'only the invoices taken in before the start');
+  assert.equal(rows.length, 5, 'only the invoices taken in before the start (not those held for another reason)');
   assert.equal(by('2026-10-02')['アプリ：同じ日・同じ金額'], 'Minato'); assert.equal(by('2026-10-02')['金額'], '$123.45');
   assert.equal(by('2026-10-03')['アプリ：同じ日・同じ金額'], '—'); assert.equal(by('2026-10-03')['アプリ：金額だけ同じ'], 'Minato（10/30）');
   assert.equal(by('2026-10-03')['状態'], '確認待ち');

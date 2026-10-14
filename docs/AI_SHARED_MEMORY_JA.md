@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-10-14 仕入れ集計 v1077 は本番に入った・Codex の P2 残件を v1078 で直す・照合の結果（Claude・ブランチ `claude/invoice-purchase-refresh`・本番未反映）
+
+- PR #58 は Moto さんが 10/14 12:28 HST にマージ（main `616f06e`・アプリ v1077）。そのとき Codex の再レビューは **blocked／manual（P2 1 件が残る）**：`f44d1aa`（[コメント 6179810050](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179810050)）・`5bcfe82`（[6179893764](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179893764)）。P2-2（0 件の業者の「足りない」）は直ったと確認。残る P2：同じ版のまま取り直したとき、月の額は直るが、日別の原価（`window._idc` の鍵 `ipsStamp()` が版だけ）と明細（`_ipsLines`）は古いまま。あわせて、答えが返らない取り直しは同じ印のまま二度と取られない。Claude のレビュー（6179788620 の「P1・P2 なし」）は 6179874617 で撤回済み。下の節の「Codex の再レビューはまだ」は古い。
+- 本番：Moto さんが 12:48 HST に `5_照合の結果_読むだけ.sql` の結果を貼った（集計の時刻 12:31 HST）→ SQL 1 と集計は入っている。関数 3 の Deploy は結果からは分からない（集計の時刻が 5 分ごとに進めば入っている）。
+- v1078（アプリ・`33be77e`）：`ipsStamp()` に月の行の中身が変わった回数（`_ipsRevOf`：行の文字列そのものを比べる。長さではない）を入れて、同じ版で中身が変わったら日別の原価を作り直す。月を取り直したら、その月の明細の写しを捨てて次に開くときに取り直す。答えが 2 分返らない取り直しは取れなかったものとして扱う（`IPS_BUSY_MS`）。SQL・関数は変えない。
+- 読むだけの SQL `db/invoice-purchase-before-start-check.sql`：開始日時より前に Drive に入った invoice（保留 E「開始前」）ごとに、アプリの登録に同じ日・同じ金額のものがあるか。照合の結果で、店によってはアプリの登録が開始前の分より少なく（1 店は 0）、開始前の invoice がどちらの数え方にも入っていない可能性がある（本番の数字はリポジトリに書かない・Moto さんに直接）。
+- 試験（合成データ・本番に接続していない）：invoice の 7 ファイル 147/147（purchase-summary 15・purchase-ui 12）。同じ版の回復で日別の原価と明細も戻る・同じ中身の取り直しでは鍵が動かない・変えて戻すとそのたびに作り直す・答えの無い取り直しは 2 分で取り直す。static release pass/1078。わざと壊す試験：仕入れ集計とアプリの 74 通りすべてで落ちる（1 回目は「開始前の確かめが、ほかの理由の保留まで出す」に気づかなかったので、試験に別の理由の保留を足した）。`tests/*.test.mjs`（invoice-mutations 以外）の失敗は前と同じ。
+- 次：PR → Codex の再レビュー（v1078 の head）→ Moto さんがマージ（アプリだけ）。Moto さん：`db/invoice-purchase-before-start-check.sql` の結果を Claude に。
+
 ## 2026-10-14 引き継ぎ：仕入れ集計 v1077（PR #58）は Codex の再レビュー待ち・本番には何も入れていない（Claude）
 
 - PR #58（ブランチ `claude/invoice-purchase-summary`）：Codex の P2 2 件（`8452ee7`）は `d8f636a`・`b83d6cd` で直した。そのあとは記録だけ（`f44d1aa`・`5bcfe82`・この記録）。直した内容は [PR のコメント 6179748266](https://github.com/motoi107/funergy-growth-os/pull/58#issuecomment-6179748266)（Claude の報告で、レビューではない）。Static release validation は成功。**Codex の再レビューはまだ。**
