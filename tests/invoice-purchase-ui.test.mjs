@@ -32,7 +32,7 @@ async function published(extra) {
   await pg.exec(SQL);
   await pg.exec(`update invoice_settings set value=value||'{"mirror":true,"start_at":"2026-10-01T00:00:00Z"}' where key='mode';
     update invoice_settings set value=value||'{"closed_through":"2026-08"}' where key='rules';
-    update invoice_settings set value=value||'{"route":"external","enabled":true,"since":"2026-10-13T07:00:00-10:00"}' where key='qb';
+    update invoice_settings set value=value||'{"route":"external","enabled":true,"to":"qb@example.test","since":"2026-10-13T07:00:00-10:00"}' where key='qb';
     insert into invoice_stores(store_id,label,active) values('F06','LaLa',true),('F01','ToriTon',true);
     insert into invoice_vendor_rules(vendor_key,display_name,food_kind) values('minato','Minato <b>Seika</b> "Q''s"','food'),('clean','Clean Co','nonfood');`);
   await pg.exec('set role service_role');
@@ -238,4 +238,74 @@ test('a summary not checked for hours is pointed out; months without a summary s
   const h = run(c, `renderPurchaseTab()`);
   assert.match(h, /この月の集計はまだ届いていません/);
   assert.doesNotMatch(h, /届くまで、予実管理の原価率は今までの数え方/, 'September is before the switch');
+});
+
+test('only months the list names are used; closed from either side; keys like __proto__ change nothing; a month is fetched again only for a newer version', async () => {
+  const P = await published();
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  // a month the list (status) does not name is not used, even with its summary on the device: monthly and daily agree
+  const st = JSON.parse(JSON.stringify(P.rows['invoice_purchase_status'])); delete st.months['2026-10'];
+  let c = app({ state: { ...P.rows, invoice_purchase_status: st, invoices: appInvoices() } });
+  assert.equal(run(c, `foodCostOf('F06', '2026-10').basis`), 'all_invoices');
+  assert.equal(run(c, `_invDayCostMap()`).F06['2026-10-14'], 2300, 'the copies count, as in the month');
+  // closed: the list says so, although the summary was written before the month was closed
+  const st2 = JSON.parse(JSON.stringify(P.rows['invoice_purchase_status'])); st2.months['2026-10'].closed = true;
+  c = app({ state: { ...P.rows, invoice_purchase_status: st2 }, role: 'office' });
+  run(c, `ipsSetScope('F06')`);
+  let h = run(c, `renderPurchaseTab()`);
+  assert.doesNotMatch(h, /ipsCheckOpen/, 'no recording in a closed month'); assert.doesNotMatch(h, /月の締めがまだ/);
+  assert.equal(run(c, `ipsLink('F06', '2026-10').closed`), true);
+  // keys like __proto__ in the rows (which a browser can write) add nothing to every object and change no number
+  const bad = JSON.parse(JSON.stringify(P.rows['invoice_purchase_2026-10']));
+  bad.stores = JSON.parse('{"__proto__":{"tot":{"A":{"cost":999999}}},"constructor":{"tot":{}},' + JSON.stringify(bad.stores).slice(1));
+  bad.stores.F06.tot.E = JSON.parse('{"n":1,"c":5,"by":{"__proto__":{"n":7},"constructor":{"n":3},"toString":{"n":2}}}');
+  bad.stores.F06.vendors.push(JSON.parse('{"k":"__proto__","n":"Proto Vendor","a":{"n":1,"c":1}}'));
+  bad.stores.F06.cls = JSON.parse('{"__proto__":{"x":1},"food":110000}');
+  c = app({ state: { ...P.rows, 'invoice_purchase_2026-10': bad, invoices: appInvoices() }, sales: { F06: 10000 } });
+  h = run(c, `renderPurchaseTab()`);
+  assert.equal(run(c, `({}).n === undefined && ({}).x === undefined && ({}).tot === undefined`), true, 'nothing added to every object');
+  assert.equal(run(c, `Object.getPrototypeOf(ipsMonth('2026-10').stores)`), null);
+  assert.equal(run(c, `foodCostOf('F06', '2026-10').invoice`), 1100 + 80);
+  assert.match(h, /Proto Vendor/); assert.doesNotMatch(h, /toString|native code|undefined|NaN/);
+  run(c, `ipsSetScope('F06')`);
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /集計保留<\/div><div class="v">\$0\.05/); assert.doesNotMatch(h, /undefined|NaN|native code/);
+  // the list is read again every 10 minutes; a month only when the list names a newer version than the one on the device
+  c = app({ state: { ...P.rows } });
+  run(c, `ipsMonth('2026-10')`); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.deepEqual(c.pulled, ['invoice_purchase_status'], 'same version: the month is not fetched');
+  c.STORE.invoice_purchase_status.months['2026-10'].at = '2099-01-01T00:00:00Z';
+  run(c, `ipsMonth('2026-10')`); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.deepEqual(c.pulled, ['invoice_purchase_status', 'invoice_purchase_2026-10'], 'a newer version: fetched once');
+  run(c, `_ipsStatusAt = Date.now() - 600001`); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(c.pulled.filter(k => k === 'invoice_purchase_status').length, 2);
+  // reload draws the page again only on the 仕入れ tab (or when something changed)
+  c = app({ state: { ...P.rows } }); c.budgetTab = 'daily'; c.rendered = 0;
+  await run(c, `ipsRefresh('2026-10', true)`);
+  assert.equal(c.rendered, 0);
+  c.budgetTab = 'purchase';
+  await run(c, `ipsRefresh('2026-10')`);
+  assert.equal(c.rendered, 1);
+});
+
+test('the purchases chip uses one count per month for every store; English has no Japanese punctuation; logins leave the summaries out; the bonus lock reads them again', async () => {
+  const P = await published();
+  const inv = [...appInvoices(), { id: 'f99', storeId: 'F99', vendor: 'Other', docType: 'Invoice', date: '2026/10/03', docDate: '2026/10/03', total: 70, purpose: '仕入れ・仕込み' }];
+  let c = app({ state: { ...P.rows, invoices: inv } });
+  assert.match(run(c, `fcBreakdownSub([{id:'F99'}], [{date:'2026-10-01'}])`), /当月仕入:\$70/, 'a store outside Drive: the count food cost uses');
+  assert.match(run(c, `fcBreakdownSub([{id:'F99'}], [{date:'2026-09-01'}])`), /当月仕入:\$0/, 'before October: as before (the totals)');
+  c = app({ state: { ...P.rows, invoices: appInvoices() }, lang: 'en', fc: { 'F06|2026-10': { beginInv: 2000, endInv: 1800 } }, sales: { F06: 10000, F01: 1 } });
+  const h = run(c, `renderPurchaseTab()`) + run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
+  run(c, `ipsCheckOpen('2026-10', 'F06', 'minato')`);
+  assert.doesNotMatch(h.replace(/<style>[\s\S]*?<\/style>/g, '') + c.modals.at(-1).replace(/<style>[\s\S]*?<\/style>/g, ''), /[・：（）、。　]/);
+  // the login pull (all of app_state) leaves out the summaries; they are fetched by month
+  assert.match(source, /supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*'\)/);
+  assert.match(source, /async function supaFetchAll\(table, select, filter\)[\s\S]{0,400}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/);
+  // the bonus lock reads the summaries of the quarter again before it locks
+  const k = { IPS_START: '2026-10', _bonusQParse: () => ({ y: 2026, q: 4 }), _quarterMonths: () => ['2026-10', '2026-11', '2026-12'], _ymToOffset: ym => (ym <= '2026-11' ? 0 : 1),
+    kbCfg: () => ({}), karteEligibleEmps: () => [], kevStoresExtra: () => [] };
+  vm.createContext(k); vm.runInContext(fn('kevLockSyncKeys'), k);
+  const keys = vm.runInContext(`kevLockSyncKeys('2026-Q4')`, k);
+  assert.ok(keys.includes('invoice_purchase_status') && keys.includes('invoice_purchase_2026-10') && keys.includes('invoice_purchase_2026-11'));
+  assert.ok(!keys.includes('invoice_purchase_2026-09') && !keys.includes('invoice_purchase_2026-12'), 'before October and future months are not read');
 });

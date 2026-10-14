@@ -321,7 +321,7 @@ test('each migration changes only what it says', async () => {
   assert.deepEqual([...psRest.matchAll(/^create table (?:if not exists )?public\.(\w+)/gm)].map(m => m[1]), ['invoice_purchase_checks', 'invoice_purchase_published']);
   assert.ok(!/^(alter table|drop |insert |update |delete )/im.test(psRest), 'no existing table or row is changed');
   assert.ok(/foreach t in array array\['invoice_purchase_checks','invoice_purchase_published'\] loop/.test(psRest) && /revoke all on public\.%I from public, anon, authenticated/.test(psRest));
-  assert.ok(/foreach f in array array\['invoice_purchase_classes\(text\[\]\)','invoice_purchase_month\(text\)','invoice_purchase_publish\(jsonb\)','invoice_purchase_check\(jsonb\)'\] loop/.test(psRest));
+  assert.ok(/foreach f in array array\['invoice_purchase_classes\(text\[\]\)','invoice_purchase_month\(text,jsonb\)','invoice_purchase_publish\(jsonb\)','invoice_purchase_check\(jsonb\)'\] loop/.test(psRest));
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));

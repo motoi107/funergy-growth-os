@@ -1742,7 +1742,8 @@ end $$;
 -- What this adds (service_role only, like every other invoice_ object):
 --   invoice_purchase_checks     : per store, vendor and month, "the vendor's statement was compared: everything is here" (or
 --                                 what is missing). Insert-only; the latest row is the current state.
---   invoice_purchase_published  : which month was published with which content (hash), and when it was last checked.
+--   invoice_purchase_published  : which month was published with which content (hash, and the content itself, to write rows
+--                                 changed from outside again), whether it was written as closed, and when it was last checked.
 --   invoice_purchase_classes    : the class (food / liquor / beverage / supply) of product master codes, the way the app reads it.
 --   invoice_purchase_month      : one month's summary per store, vendor and invoice, and each invoice's lines with their share
 --                                 of tax, shipping and discounts (prorated by line amount, in whole cents, nothing lost).
@@ -1776,7 +1777,10 @@ create table public.invoice_purchase_published(
  ym text primary key check (ym ~ '^\d{4}-(0[1-9]|1[0-2])$'),
  hash text not null,
  published_at timestamptz not null,
- checked_at timestamptz not null
+ checked_at timestamptz not null,
+ closed boolean not null default false,   -- written as a closed month (kept as it is from then on)
+ summary jsonb,                           -- what was written: rows changed or removed from outside are written again from this
+ lines jsonb
 );
 
 do $$ declare t text; begin
@@ -1829,17 +1833,22 @@ end $$;
 --     page (no allocation), not USD, a closed-month adjustment, an amount with no class (vendor class not set)
 -- Amounts are whole cents; a credit memo counts negative. Lines take tax, shipping, discounts and other charges in proportion
 -- to their amounts (largest remainder, so the shares add up to the total exactly).
-create function public.invoice_purchase_month(p_ym text) returns jsonb
+create function public.invoice_purchase_month(p_ym text, p_cls jsonb default null) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare v_start timestamptz; v_since timestamptz := public.invoice_qb_since_at();
- v_closed text := public.invoice_setting('rules')->>'closed_through'; v_cls jsonb; v_names jsonb := '{}'; v_res jsonb;
+ v_closed text := public.invoice_setting('rules')->>'closed_through'; v_cls jsonb := p_cls; v_names jsonb := '{}'; v_res jsonb;
+ -- The ledger is kept per content and destination: a send to the QuickBooks address in use counts (as the ledger itself checks).
+ v_to text := public.invoice_setting('qb')->>'to';
+ v_mirror boolean := coalesce((public.invoice_setting('mode')->>'mirror')::boolean, false);
 begin
  if p_ym is null or p_ym !~ '^\d{4}-(0[1-9]|1[0-2])$' then raise exception 'bad_value'; end if;
  begin v_start := (public.invoice_setting('mode')->>'start_at')::timestamptz; exception when others then v_start := null; end;
- select public.invoice_purchase_classes(coalesce(array_agg(distinct l.ingredient_code), '{}')) into v_cls
- from public.invoice_lines l join public.invoice_docs d on d.id=l.doc_id join public.invoice_files f on f.id=d.file_id
- where l.ingredient_code is not null
-  and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') = p_ym;
+ if v_cls is null then
+  select public.invoice_purchase_classes(coalesce(array_agg(distinct l.ingredient_code), '{}')) into v_cls
+  from public.invoice_lines l join public.invoice_docs d on d.id=l.doc_id join public.invoice_files f on f.id=d.file_id
+  where l.ingredient_code is not null
+   and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') = p_ym;
+ end if;
  -- Who reconciled or checked: the employee's name when the account is linked to one (manager_auth.emp_id).
  if to_regclass('public.employees') is not null then
   begin
@@ -1856,10 +1865,11 @@ begin
    d.related_doc_id, d.relation, d.duplicate_of, (select x.invoice_no from public.invoice_docs x where x.id=d.related_doc_id) rno,
    f.drive_file_id, f.current_name, f.source fsource, f.drive_created_at, f.ingested_at, m.state mstate,
    (d.invoice_date is null and d.effective_date is null) nodate,
-   -- The QuickBooks ledger is kept per original content: a send of the same content counts, whatever the file is called now.
-   (select o.state from public.invoice_qb_outbox o where o.sha256=d.sha256 and o.state<>'cancelled'
+   -- The QuickBooks ledger is kept per original content and address: a send of the same content to the address in use counts,
+   -- whatever the file is called now.
+   (select o.state from public.invoice_qb_outbox o where o.sha256=d.sha256 and o.to_address=v_to and o.state<>'cancelled'
      order by (o.state='sent') desc, o.updated_at desc, o.id limit 1) qbs,
-   (select max(o.sent_at) from public.invoice_qb_outbox o where o.sha256=d.sha256 and o.state='sent') qbat
+   (select max(o.sent_at) from public.invoice_qb_outbox o where o.sha256=d.sha256 and o.to_address=v_to and o.state='sent') qbat
   from public.invoice_docs d
   join public.invoice_files f on f.id=d.file_id
   left join public.invoice_app_mirror m on m.doc_id=d.id
@@ -1870,10 +1880,10 @@ begin
  d1 as (
   select d0.*, (d0.doc_type='credit_memo') credit, case when d0.total_cents < 0 then -1 else 1 end f,
    -- Counted here when the app's cost would have it through the copy (invoice_mirror_apply): copied, or due to be copied.
-   -- Taken in before the start (not copied: the store entered it in the app) or its copy deleted in the app: the app's
-   -- own entry counts it, so it is held here (never counted twice).
+   -- Taken in before the start or while the copies are off (not copied: the store entered it in the app), or its copy deleted
+   -- in the app: the app's own entry counts it, so it is held here (never counted twice).
    case when d0.mstate='mirrored' then true when d0.mstate='tombstoned' then false when d0.mstate in ('held','error') then true
-    else coalesce(d0.ingested_at >= v_start, false) end link,
+    else v_mirror and coalesce(d0.ingested_at >= v_start, false) end link,
    -- Not a ledger target (put in Drive before qb.since, or not a Drive original): no ledger row is expected.
    (v_since is not null and not (d0.fsource='drive' and coalesce(d0.drive_created_at >= v_since, false))) preledger,
    exists(select 1 from jsonb_array_elements(d0.reasons) r where r->>'code'='multi_store') multi,
@@ -1956,7 +1966,7 @@ begin
    mul * vfood_m pc, mul * vnon_m pn,
    case cat
     when 'D' then array[status]
-    when 'E' then case when not link then array[case when mstate='tombstoned' then 'deleted_in_app' else 'before_start' end]
+    when 'E' then case when not link then array[case when mstate='tombstoned' then 'deleted_in_app' when not v_mirror then 'no_copy' else 'before_start' end]
      else array_remove(array[case when multi then 'multi_store' end, case when coalesce(currency,'USD')<>'USD' then 'currency' end,
       case when needs_adjustment then 'closed_adjustment' end, case when unclass_m<>0 then 'no_class' end, case when tp is null then 'no_amount' end], null) end
     when 'C' then case when status='review' then array_remove(array['review', case when doc_type='unknown' then 'unreadable' end,
@@ -2019,18 +2029,21 @@ begin
       from dd y where y.store_id=g.store_id and y.cat=g.cat group by 1) z)) j
   from dd g group by g.store_id, g.cat
  ),
+ lg as (
+  select ls.doc_id, jsonb_agg(jsonb_build_array(ls.line_no, ls.raw_name, trim_scale(ls.qty), ls.purchase_unit, ls.amount_cents,
+    case when ls.share is null then null else dd.mul * ls.share end, ls.c, ls.b, ls.ingredient_code) order by ls.line_no) l
+  from ls join dd on dd.id=ls.doc_id group by ls.doc_id
+ ),
  lj as (
   select dd.store_id, dd.id, jsonb_build_object(
     'h', jsonb_build_object('sub', subtotal_cents, 'disc', discount_cents, 'tax', tax_cents, 'ship', shipping_cents, 'oth', other_cents, 'tot', total_cents),
     'u', case when tp is null or ua = 0 then null else mul * ua end,
     'uc', case when food_kind in ('food','nonfood') then food_kind else 'unclass' end,
-    'l', coalesce((select jsonb_agg(jsonb_build_array(ls.line_no, ls.raw_name, trim_scale(ls.qty), ls.purchase_unit, ls.amount_cents,
-       case when ls.share is null then null else dd.mul * ls.share end, ls.c, ls.b, ls.ingredient_code) order by ls.line_no)
-      from ls where ls.doc_id=dd.id), '[]'::jsonb)) j
-  from dd
+    'l', coalesce(lg.l, '[]'::jsonb)) j
+  from dd left join lg on lg.doc_id=dd.id
  )
  select jsonb_build_object(
-  'summary', jsonb_build_object('v', 1, 'ym', p_ym, 'closed', v_closed is not null and p_ym <= v_closed, 'closed_through', v_closed,
+  'summary', jsonb_build_object('v', 1, 'ym', p_ym, 'closed', v_closed is not null and p_ym <= v_closed,
    'start_at', v_start, 'qb_since', v_since,
    'stores', coalesce((select jsonb_object_agg(s.store_id, jsonb_build_object(
      'tot', coalesce((select jsonb_object_agg(tj.cat, tj.j) from tj where tj.store_id=s.store_id), '{}'::jsonb),
@@ -2049,14 +2062,17 @@ begin
  return v_res;
 end $$;
 
--- Writes every month that has purchase documents, a statement check or an earlier summary, when its content changed.
--- A closed month (rules.closed_through) is written once and then kept as it was (the existing closing procedure decides any
--- change). The worker calls this on every run; the people's actions (post, correct, reconcile, mark, statement check) call it
--- right after. p.months: only these months; p.force: a closed month is written again.
+-- Writes the months whose content changed: every month that has purchase documents, a statement check or an earlier summary
+-- (the worker, on every run), or only the months of the invoices, file or ledger row a person's action touched (p.doc_ids,
+-- p.file_id, p.outbox_id, p.months). A closed month (rules.closed_through) is written once more when it is closed and then
+-- kept as it was (the existing closing procedure decides any change; p.force writes it again). Rows changed or removed from
+-- outside (app_state can be written from a browser) are written again from what was written here.
 create function public.invoice_purchase_publish(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare v_closed text := public.invoice_setting('rules')->>'closed_through'; v_months text[]; v_ym text; v_j jsonb; v_h text;
- v_pub public.invoice_purchase_published; v_changed text[] := '{}'; v_frozen text[] := '{}'; v_now timestamptz := now(); v_sid text;
+ v_pub public.invoice_purchase_published; v_changed text[] := '{}'; v_frozen text[] := '{}'; v_repaired text[] := '{}';
+ v_now timestamptz := now(); v_sid text; v_cls jsonb; v_closedm boolean; v_sum jsonb; v_lines jsonb; v_at timestamptz; v_exp jsonb;
+ v_uuid text := '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; v_ids text[] := '{}';
 begin
  -- One at a time: a later run starts after an earlier one ends and sees what was saved meanwhile.
  perform pg_advisory_xact_lock(hashtext('invoice_purchase_publish'));
@@ -2064,10 +2080,25 @@ begin
  if coalesce((public.invoice_setting('purchase')->>'off')::boolean, false) then
   insert into public.app_state(key, value, updated_at) values('invoice_purchase_status', jsonb_build_object('v', 1, 'off', true, 'checked_at', v_now), v_now)
   on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
-  return jsonb_build_object('ok', true, 'off', true, 'changed', '[]'::jsonb, 'frozen', '[]'::jsonb);
+  return jsonb_build_object('ok', true, 'off', true, 'changed', '[]'::jsonb, 'frozen', '[]'::jsonb, 'repaired', '[]'::jsonb);
  end if;
- if jsonb_typeof(p->'months') = 'array' then
-  v_months := array(select distinct x from jsonb_array_elements_text(p->'months') x where x ~ '^\d{4}-(0[1-9]|1[0-2])$' order by 1);
+ if p ? 'months' or p ? 'doc_ids' or p ? 'file_id' or p ? 'outbox_id' then
+  -- the invoices the action touched: their month now, and every month an earlier summary showed them in (a changed date moves one)
+  v_ids := array(select d.id::text from public.invoice_docs d
+    where d.id::text in (select x from jsonb_array_elements_text(case when jsonb_typeof(p->'doc_ids') = 'array' then p->'doc_ids' else '[]'::jsonb end) x where x ~ v_uuid)
+     or d.file_id = case when p->>'file_id' ~ v_uuid then (p->>'file_id')::uuid end
+     or d.sha256 in (select o.sha256 from public.invoice_qb_outbox o where o.id = case when p->>'outbox_id' ~ v_uuid then (p->>'outbox_id')::uuid end));
+  v_months := array(select distinct q.m from (
+    select x m from jsonb_array_elements_text(case when jsonb_typeof(p->'months') = 'array' then p->'months' else '[]'::jsonb end) x
+    union
+    select to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM')
+    from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
+    where d.id::text = any(v_ids) and (d.posting_kind='purchase' or (d.status='review' and d.doc_type='unknown'))
+    union
+    select x.ym from public.invoice_purchase_published x
+    where cardinality(v_ids) > 0 and exists (select 1 from jsonb_each(coalesce(x.summary->'stores', '{}'::jsonb)) st,
+      jsonb_array_elements(case when jsonb_typeof(st.value->'docs') = 'array' then st.value->'docs' else '[]'::jsonb end) e where e->>'id' = any(v_ids))
+   ) q where q.m ~ '^\d{4}-(0[1-9]|1[0-2])$' order by 1);
  else
   v_months := array(select distinct q.m from (
     select to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') m
@@ -2076,35 +2107,58 @@ begin
     union select c.ym from public.invoice_purchase_checks c
     union select x.ym from public.invoice_purchase_published x) q where q.m is not null order by 1);
  end if;
+ -- The classes of every product any line maps to, once for all months.
+ select public.invoice_purchase_classes(coalesce(array_agg(distinct l.ingredient_code), '{}')) into v_cls from public.invoice_lines l where l.ingredient_code is not null;
  foreach v_ym in array v_months loop
   select * into v_pub from public.invoice_purchase_published x where x.ym=v_ym;
-  if v_closed is not null and v_ym <= v_closed and v_pub.ym is not null and not coalesce((p->>'force')::boolean, false) then
+  v_closedm := v_closed is not null and v_ym <= v_closed;
+  if v_closedm and v_pub.ym is not null and v_pub.closed and not coalesce((p->>'force')::boolean, false) then
    v_frozen := v_frozen || v_ym;
-   continue;
-  end if;
-  v_j := public.invoice_purchase_month(v_ym);
-  v_h := md5(v_j::text);
-  if v_pub.ym is null or v_pub.hash <> v_h then
-   insert into public.app_state(key, value, updated_at) values('invoice_purchase_' || v_ym, (v_j->'summary') || jsonb_build_object('generated_at', v_now), v_now)
-   on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
-   for v_sid in select jsonb_object_keys(v_j->'lines') loop
-    insert into public.app_state(key, value, updated_at) values('invoice_purchase_lines_' || v_ym || '_' || v_sid,
-      jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'generated_at', v_now, 'docs', v_j->'lines'->v_sid), v_now)
-    on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
-   end loop;
-   insert into public.invoice_purchase_published(ym, hash, published_at, checked_at) values(v_ym, v_h, v_now, v_now)
-   on conflict(ym) do update set hash=excluded.hash, published_at=excluded.published_at, checked_at=excluded.checked_at;
-   v_changed := v_changed || v_ym;
+   v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
+   update public.invoice_purchase_published x set checked_at=v_now where x.ym=v_ym;
   else
+   v_j := public.invoice_purchase_month(v_ym, v_cls);
+   v_h := md5(v_j::text);
+   if v_pub.ym is null or v_pub.hash <> v_h or v_pub.closed is distinct from v_closedm or v_pub.summary is null then
+    insert into public.app_state(key, value, updated_at) values('invoice_purchase_' || v_ym, (v_j->'summary') || jsonb_build_object('generated_at', v_now), v_now)
+    on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
+    for v_sid in select jsonb_object_keys(v_j->'lines') union select jsonb_object_keys(coalesce(v_pub.lines, '{}'::jsonb)) loop
+     -- a store whose last invoice of the month moved elsewhere gets an empty row (never the old invoices)
+     insert into public.app_state(key, value, updated_at) values('invoice_purchase_lines_' || v_ym || '_' || v_sid,
+       jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'generated_at', v_now, 'docs', coalesce(v_j->'lines'->v_sid, '{}'::jsonb)), v_now)
+     on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
+    end loop;
+    insert into public.invoice_purchase_published(ym, hash, published_at, checked_at, closed, summary, lines)
+    values(v_ym, v_h, v_now, v_now, v_closedm, v_j->'summary', v_j->'lines')
+    on conflict(ym) do update set hash=excluded.hash, published_at=excluded.published_at, checked_at=excluded.checked_at,
+     closed=excluded.closed, summary=excluded.summary, lines=excluded.lines;
+    v_changed := v_changed || v_ym;
+    continue;
+   end if;
+   v_sum := v_pub.summary; v_lines := v_pub.lines; v_at := v_pub.published_at;
    update public.invoice_purchase_published x set checked_at=v_now where x.ym=v_ym;
   end if;
+  -- Unchanged here: the rows the app reads must still be what was written.
+  if v_sum is not null and coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_' || v_ym), '') <> md5(v_sum::text) then
+   insert into public.app_state(key, value, updated_at) values('invoice_purchase_' || v_ym, v_sum || jsonb_build_object('generated_at', v_at), v_now)
+   on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
+   v_repaired := v_repaired || v_ym;
+  end if;
+  for v_sid in select jsonb_object_keys(coalesce(v_lines, '{}'::jsonb)) loop
+   v_exp := jsonb_build_object('v', 1, 'ym', v_ym, 'store', v_sid, 'docs', v_lines->v_sid);
+   if coalesce((select md5((a.value::jsonb - 'generated_at')::text) from public.app_state a where a.key='invoice_purchase_lines_' || v_ym || '_' || v_sid), '') <> md5(v_exp::text) then
+    insert into public.app_state(key, value, updated_at) values('invoice_purchase_lines_' || v_ym || '_' || v_sid, v_exp || jsonb_build_object('generated_at', v_at), v_now)
+    on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
+    if not (v_ym = any(v_repaired)) then v_repaired := v_repaired || v_ym; end if;
+   end if;
+  end loop;
  end loop;
  -- The app shows when the summaries were last checked (and warns when that is old: the worker may have stopped).
  insert into public.app_state(key, value, updated_at) values('invoice_purchase_status', jsonb_build_object('v', 1, 'checked_at', v_now,
    'closed_through', v_closed, 'months', coalesce((select jsonb_object_agg(x.ym, jsonb_build_object('at', x.published_at, 'checked', x.checked_at,
-     'closed', v_closed is not null and x.ym <= v_closed)) from public.invoice_purchase_published x), '{}'::jsonb)), v_now)
+     'closed', x.closed)) from public.invoice_purchase_published x), '{}'::jsonb)), v_now)
  on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at;
- return jsonb_build_object('ok', true, 'changed', to_jsonb(v_changed), 'frozen', to_jsonb(v_frozen));
+ return jsonb_build_object('ok', true, 'changed', to_jsonb(v_changed), 'frozen', to_jsonb(v_frozen), 'repaired', to_jsonb(v_repaired));
 end $$;
 
 -- "This month of this vendor is all here" (compared with the vendor's statement), or what is missing. Accounting, 事務Crew,
@@ -2135,7 +2189,7 @@ begin
 end $$;
 
 do $$ declare f text; begin
- foreach f in array array['invoice_purchase_classes(text[])','invoice_purchase_month(text)','invoice_purchase_publish(jsonb)','invoice_purchase_check(jsonb)'] loop
+ foreach f in array array['invoice_purchase_classes(text[])','invoice_purchase_month(text,jsonb)','invoice_purchase_publish(jsonb)','invoice_purchase_check(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

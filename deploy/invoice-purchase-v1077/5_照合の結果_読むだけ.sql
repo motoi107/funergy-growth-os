@@ -14,8 +14,12 @@ s as (
  select m.ym, st.key store, st.value x, coalesce((m.v->>'closed')::boolean, false) closed, m.v->>'generated_at' gen from m, jsonb_each(m.v->'stores') st
 ),
 app as (
- select coalesce(sp.store, e->>'storeId') store, left(replace(coalesce(nullif(e->>'docDate',''), e->>'date'), '/', '-'), 7) ym,
-  coalesce(e->>'src','') = 'drive-intake' copy, coalesce((e->>'total')::numeric, 0) / greatest(1, coalesce(jsonb_array_length(case when jsonb_typeof(e->'splitStores')='array' then e->'splitStores' end), 0)) amt
+ -- 日付は 2026/10/05・2026-10-5・2026年10月5日 のどれでも月を取る。金額が数でない行は 0（照合の表が止まらないように）
+ select coalesce(sp.store, e->>'storeId') store,
+  (select dm[1] || '-' || lpad(dm[2], 2, '0') from regexp_match(coalesce(nullif(e->>'docDate',''), e->>'date', ''), '^\s*(\d{4})\D(\d{1,2})(\D|$)') dm) ym,
+  coalesce(e->>'src','') = 'drive-intake' copy,
+  case when coalesce(e->>'total', '') ~ '^\s*-?\d+(\.\d+)?\s*$' then trim(e->>'total')::numeric else 0 end
+   / greatest(1, coalesce(jsonb_array_length(case when jsonb_typeof(e->'splitStores')='array' then e->'splitStores' end), 0)) amt
  from public.app_state a
   cross join lateral jsonb_array_elements(case when jsonb_typeof(a.value::jsonb)='array' then a.value::jsonb else '[]'::jsonb end) e
   left join lateral (select jsonb_array_elements_text(case when jsonb_typeof(e->'splitStores')='array' and jsonb_array_length(e->'splitStores') > 0 then e->'splitStores' end) store) sp on true
@@ -46,7 +50,8 @@ select n.store as "店舗", n.ym as "月", case when n.closed then '締め済み
  (select count(*) from jsonb_array_elements(n.x->'vendors') vv where vv->'chk'->>'s' = 'complete') || ' / '
   || (select count(*) from jsonb_array_elements(n.x->'vendors') vv where coalesce((vv->'a'->>'n')::int, 0) + coalesce((vv->'p'->>'n')::int, 0) > 0) as "請求明細と照合した業者",
  coalesce((select '$' || to_char((f.value::jsonb->>'endInv')::numeric, 'FM999,999,990.00') from public.app_state f
-   where f.key = 'fc_monthly_' || n.store || '_' || n.ym and (f.value::jsonb->>'endInv') ~ '^[0-9.]+$' and (f.value::jsonb->>'endInv')::numeric > 0), 'まだ') as "期末棚卸",
+   where f.key = 'fc_monthly_' || n.store || '_' || n.ym
+    and case when coalesce(f.value::jsonb->>'endInv', '') ~ '^\d+(\.\d+)?$' then (f.value::jsonb->>'endInv')::numeric > 0 else false end), 'まだ') as "期末棚卸",
  to_char((n.gen)::timestamptz at time zone 'Pacific/Honolulu', 'MM/DD HH24:MI') as "集計の時刻（ハワイ）"
 from n left join ag on ag.store = n.store and ag.ym = n.ym
 order by n.ym desc, n.store;

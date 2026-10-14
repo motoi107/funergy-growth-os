@@ -1499,9 +1499,9 @@ function createHandler(deps) {
       }
     }
   }
-  async function publishSummary(stats) {
+  async function publishSummary(stats, only) {
     try {
-      const r = await db.rpc("invoice_purchase_publish", {});
+      const r = await db.rpc("invoice_purchase_publish", only || {});
       if (stats) stats.purchase_published = r && r.changed ? r.changed.length : 0;
       return { ok: true, changed: r && r.changed ? r.changed : [] };
     } catch (e) {
@@ -1867,9 +1867,10 @@ function createHandler(deps) {
     }
     return report;
   }
-  const thenSummary = (fn) => async (a, b) => {
+  const ids = (...x) => ({ doc_ids: x.filter((v) => typeof v === "string" && v) });
+  const thenSummary = (fn, hint) => async (a, b) => {
     const r = await fn(a, b);
-    const s = await publishSummary(null);
+    const s = await publishSummary(null, hint ? hint(b) : null);
     if (r && typeof r === "object" && !Array.isArray(r)) r.summary = s.ok;
     return r;
   };
@@ -1883,7 +1884,7 @@ function createHandler(deps) {
       files: r.files.map((f) => ({ ...f, original_url: viewUrl(f.drive_file_id) })),
       qb: r.qb.map((o) => ({ ...o, original_url: viewUrl(o.drive_file_id) }))
     })),
-    edit: thenSummary(edit),
+    edit: thenSummary(edit, (b) => ids(b.doc_id)),
     // Moto 2026-10-14: per store, vendor and month, "compared with the vendor's statement: all here" (or what is missing).
     purchase_check: thenSummary((a, b) => db.rpc("invoice_purchase_check", {
       actor: a,
@@ -1893,20 +1894,20 @@ function createHandler(deps) {
       state: b.state,
       note: typeof b.note === "string" ? b.note.slice(0, 500) : "",
       statement_cents: b.statement_cents ?? null
-    })),
+    }), (b) => ({ months: [String(b.ym || "")] })),
     post: thenSummary(async (a, b) => {
       const r = await db.rpc("invoice_post", { actor: a, doc_id: b.doc_id, version: b.version, reason: b.reason || "", ack: b.ack || [], adjustment_ack: !!b.adjustment_ack, supersedes: b.supersedes || null });
       const ctx = await context();
       if (ctx.mode.organize && r.file_id) await db.rpc("invoice_organize_request", { file_id: r.file_id, target: "unreconciled" });
       if (ctx.mode.rename && r.file_id) r.rename = await renameNow(a, r.file_id, ctx);
       return r;
-    }),
-    reassign: thenSummary((a, b) => db.rpc("invoice_reassign", { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || "" })),
-    mark: thenSummary((a, b) => db.rpc("invoice_mark", { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || "" })),
-    relate: thenSummary((a, b) => db.rpc("invoice_relate", { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation })),
-    reconcile: thenSummary((a, b) => db.rpc("invoice_reconcile", { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || "", diff: b.diff || null })),
+    }, (b) => ids(b.doc_id, b.supersedes)),
+    reassign: thenSummary((a, b) => db.rpc("invoice_reassign", { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || "" }), (b) => ({ file_id: String(b.file_id || "") })),
+    mark: thenSummary((a, b) => db.rpc("invoice_mark", { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || "" }), (b) => ids(b.doc_id, b.duplicate_of)),
+    relate: thenSummary((a, b) => db.rpc("invoice_relate", { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation }), (b) => ids(b.doc_id, b.related_doc_id)),
+    reconcile: thenSummary((a, b) => db.rpc("invoice_reconcile", { actor: a, doc_id: b.doc_id, version: b.version, result: b.result, note: b.note || "", diff: b.diff || null }), (b) => ids(b.doc_id)),
     retry: (a, b) => db.rpc("invoice_file_retry", { actor: a, file_id: b.file_id }),
-    qb_resolve: thenSummary((a, b) => db.rpc("invoice_qb_result", { actor: a, id: b.id, state: b.state, message_id: b.message_id || null, result: { note: b.note || null, checked_by: a } })),
+    qb_resolve: thenSummary((a, b) => db.rpc("invoice_qb_result", { actor: a, id: b.id, state: b.state, message_id: b.message_id || null, result: { note: b.note || null, checked_by: a } }), (b) => ({ outbox_id: String(b.id || "") })),
     latest_prices: async (a, b) => {
       const w = await db.rpc("invoice_whoami", { actor: a });
       if (!READ.includes(w.role)) throw new Error("forbidden");
@@ -1963,7 +1964,7 @@ function createHandler(deps) {
         error: b.error ? String(b.error).slice(0, 300) : null,
         result: { reported_by: "external", note: b.note ? String(b.note).slice(0, 300) : null }
       });
-      if (b.state === "sent") await publishSummary(null);
+      if (b.state === "sent") await publishSummary(null, { outbox_id: String(b.id || "") });
       return r;
     }
   };

@@ -36,7 +36,7 @@ async function setup({ categories = null } = {}) {
   await pg.exec(`
     update invoice_settings set value=value||'{"intake":false,"mirror":true,"start_at":"2026-10-01T00:00:00Z"}' where key='mode';
     update invoice_settings set value=value||'{"closed_through":"2026-08"}' where key='rules';
-    update invoice_settings set value=value||'{"route":"external","enabled":true,"since":"${SINCE}"}' where key='qb';
+    update invoice_settings set value=value||'{"route":"external","enabled":true,"to":"qb@example.test","since":"${SINCE}"}' where key='qb';
     insert into invoice_stores(store_id,label,active) values('F06','LaLa',true),('F01','ToriTon',true),('F04-K','Kaimuki',true),('F99','Closed',false);
     insert into invoice_vendor_rules(vendor_key,display_name,food_kind) values('minato','Minato Seika','food'),('clean','Clean Co','nonfood'),('nokind','No Kind Co',null),
      ('fish','Umi Fish','food');`);
@@ -185,9 +185,19 @@ test('8・pre-ledger・start: the invoice month decides; before the ledger, reco
   assert.equal(byId(oct, copied.id).cat, 'A');
   assert.deepEqual([byId(oct, deleted.id).cat, byId(oct, deleted.id).why], ['E', ['deleted_in_app']]);
   assert.deepEqual(oct.pre, { n: 2, c: 20000 });
+  // the ledger is per address (qb.to): a send recorded to another address is not a send
+  const elsewhere = await E.doc({ qb: null });
+  await E.q(`insert into invoice_qb_outbox(file_id,sha256,to_address,route,state,attempt_key,sent_at) values($1,$2,'other@example.test','external','sent','qb-elsewhere',now())`, [elsewhere.file, elsewhere.sha]);
+  assert.deepEqual([byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).cat, byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).why], ['B', ['qb_none']]);
   // With no qb.since set the ledger never started: nothing is exempted.
   await E.q(`update invoice_settings set value=value-'since' where key='qb'`);
   assert.equal(byId((await E.month('2026-10')).summary.stores.F06, pre.id).cat, 'B');
+  // With copies to the app turned off, an original the app has no copy of is held (the store's own app entry counts it), never counted twice
+  await E.q(`update invoice_settings set value=value||'{"mirror":false}' where key='mode'`);
+  const off = (await E.month('2026-10')).summary.stores.F06;
+  assert.deepEqual([byId(off, late.id).cat, byId(off, late.id).why], ['E', ['no_copy']]);
+  assert.equal(byId(off, copied.id).cat, 'A', 'an original already copied to the app still replaces its copy');
+  assert.deepEqual(byId(off, deleted.id).why, ['deleted_in_app']);
 });
 
 test('5・6: renaming, resending, repeated results and publishing again add nothing; credits, corrections, rejects and duplicates count once', async () => {
@@ -347,6 +357,53 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   // stores: the active ones even with no invoice, and an inactive one only with invoices
   const oct = await E.state('invoice_purchase_2026-10');
   assert.deepEqual(Object.keys(oct.stores).sort(), ['F01', 'F04-K', 'F06']);
+  // a month closed later is written once more, as closed, and then kept; opened again, it is written again
+  await E.doc({ total: 400, date: '2026-09-10' });
+  assert.ok((await E.publish()).changed.includes('2026-09'));
+  assert.equal((await E.state('invoice_purchase_2026-09')).closed, false);
+  await E.q(`update invoice_settings set value=value||'{"closed_through":"2026-09"}' where key='rules'`);
+  assert.deepEqual((await E.publish()).changed, ['2026-09']);
+  assert.equal((await E.state('invoice_purchase_2026-09')).closed, true);
+  assert.equal((await E.state('invoice_purchase_status')).months['2026-09'].closed, true);
+  await E.doc({ total: 50, date: '2026-09-11' });
+  const pc = await E.publish();
+  assert.deepEqual([pc.changed, pc.frozen], [[], ['2026-08', '2026-09']]);
+  await E.q(`update invoice_settings set value=value||'{"closed_through":"2026-08"}' where key='rules'`);
+  assert.deepEqual((await E.publish()).changed, ['2026-09']);
+  const sep = await E.state('invoice_purchase_2026-09');
+  assert.deepEqual([sep.closed, N(tot(sep.stores.F06, 'A').c)], [false, 450]);
+  // rows changed or removed from outside are written again from what was published, closed months too; the version stays
+  await E.pg.exec(`reset role;
+    update app_state set value=value||'{"stores":{}}' where key='invoice_purchase_2026-10';
+    delete from app_state where key='invoice_purchase_lines_2026-10_F06';
+    update app_state set value='{"x":1}' where key='invoice_purchase_2026-08';
+    set role service_role;`);
+  const pr = await E.publish();
+  assert.deepEqual([pr.changed, [...pr.repaired].sort()], [[], ['2026-08', '2026-10']]);
+  const oct2 = await E.state('invoice_purchase_2026-10'), st2 = await E.state('invoice_purchase_status');
+  assert.equal(N(tot(oct2.stores.F06, 'A').c), 2000);
+  assert.equal(oct2.generated_at, st2.months['2026-10'].at, 'the app compares these to know it has the latest');
+  assert.equal(Object.keys((await E.state('invoice_purchase_lines_2026-10_F06')).docs).length, 1);
+  assert.equal(N(tot((await E.state('invoice_purchase_2026-08')).stores.F06, 'A').c), 1500);
+  assert.deepEqual((await E.publish()).repaired, []);
+  // a person's action writes only the months of what it touched: an invoice moved to another store leaves an empty row behind,
+  // and one moved to another month is taken out of the month it was in
+  const f1 = await E.doc({ store: 'F01', total: 300 });
+  await E.publish();
+  assert.equal(Object.keys((await E.state('invoice_purchase_lines_2026-10_F01')).docs).length, 1);
+  await E.q(`update invoice_docs set store_id='F06' where id=$1`, [f1.id]);
+  await E.q(`update invoice_files set store_id='F06' where id=$1`, [f1.file]);
+  await E.doc({ total: 60, date: '2026-09-12' });   // not touched by the action: left for the worker
+  assert.deepEqual((await E.publish({ file_id: f1.file })).changed, ['2026-10']);
+  assert.deepEqual((await E.state('invoice_purchase_lines_2026-10_F01')).docs, {});
+  assert.ok(byId((await E.state('invoice_purchase_2026-10')).stores.F06, f1.id));
+  await E.q(`update invoice_docs set invoice_date='2026-11-02', effective_date='2026-11-02' where id=$1`, [f1.id]);
+  assert.deepEqual((await E.publish({ doc_ids: [f1.id] })).changed, ['2026-10', '2026-11']);
+  assert.equal(byId((await E.state('invoice_purchase_2026-10')).stores.F06, f1.id), undefined);
+  assert.ok(byId((await E.state('invoice_purchase_2026-11')).stores.F06, f1.id));
+  assert.deepEqual((await E.publish({ doc_ids: ['not-an-id'] })).changed, [], 'nothing touched, nothing written');
+  assert.deepEqual((await E.publish({ months: ['2026-09'] })).changed, ['2026-09']);
+  assert.equal(N(tot((await E.state('invoice_purchase_2026-09')).stores.F06, 'A').c), 510);
   // stop / start
   await E.pg.exec(fs.readFileSync(new URL('../db/invoice-purchase-stop.sql', import.meta.url), 'utf8'));
   assert.equal((await E.state('invoice_purchase_status')).off, true);
@@ -360,7 +417,7 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   for (const role of ['anon', 'authenticated']) {
     for (const t of ['invoice_purchase_checks', 'invoice_purchase_published'])
       assert.equal((await E.q(`select has_table_privilege($1, 'public.' || $2, 'select,insert,update,delete') v`, [role, t]))[0].v, false);
-    for (const f of ['invoice_purchase_classes(text[])', 'invoice_purchase_month(text)', 'invoice_purchase_publish(jsonb)', 'invoice_purchase_check(jsonb)'])
+    for (const f of ['invoice_purchase_classes(text[])', 'invoice_purchase_month(text,jsonb)', 'invoice_purchase_publish(jsonb)', 'invoice_purchase_check(jsonb)'])
       assert.equal((await E.q(`select has_function_privilege($1, 'public.' || $2, 'execute') v`, [role, f]))[0].v, false);
   }
 });
@@ -449,8 +506,12 @@ test('the store and month report (read only) puts the summary next to the app\'s
       {"id":"h1","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":80,"purpose":"仕入れ・仕込み"},
       {"id":"h2","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":60,"purpose":"仕入れ・仕込み","splitStores":["F06","F01"]},
       {"id":"r1","storeId":"F06","docType":"Receipt","date":"2026/10/03","total":999},
-      {"id":"x1","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":1,"_deleted":true}]', now()),
-     ('fc_monthly_F06_2026-10', '{"beginInv":2000,"endInv":1800}', now());
+      {"id":"x1","storeId":"F06","docType":"Invoice","docDate":"2026/10/03","total":1,"_deleted":true},
+      {"id":"h3","storeId":"F06","docType":"Invoice","docDate":"2026/10/3","total":"5.5","purpose":"仕入れ・仕込み"},
+      {"id":"h4","storeId":"F06","docType":"Invoice","date":"2026年10月4日","total":4.5,"purpose":"仕入れ・仕込み"},
+      {"id":"h5","storeId":"F06","docType":"Invoice","docDate":"2026/10/04","total":"","purpose":"仕入れ・仕込み"},
+      {"id":"h6","storeId":"F06","docType":"Invoice","docDate":"","total":"abc","purpose":"仕入れ・仕込み"}]', now()),
+     ('fc_monthly_F06_2026-10', '{"beginInv":2000,"endInv":1800}', now()), ('fc_monthly_F01_2026-10', '{"endInv":"1.2.3"}', now());
     set role service_role;`);
   const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-report.sql', import.meta.url), 'utf8'));
   const r = rows.find(x => x['店舗'] === 'F06' && x['月'] === '2026-10');
@@ -459,15 +520,16 @@ test('the store and month report (read only) puts the summary next to the app\'s
   assert.equal(r['未転送 B'], '1 件 / $500.00'); assert.equal(r['確認待ち C'], '1 件 / $400.00');
   assert.equal(r['保留 E'], '1 件 / $70.00（開始前 1 件）');
   assert.equal(r['返品・クレジット（確認済み）'], '1 件 / -$100.00');
-  assert.equal(r['アプリの登録'], '$110.00', '$80 + half of $60 (split with another store); receipts and deleted ones are not counted');
-  assert.equal(r['今までの数え方'], '$2,010.00'); assert.equal(r['新しい数え方'], '$1,210.00'); assert.equal(r['差'], '$800.00');
+  assert.equal(r['アプリの登録'], '$120.00', '$80 + half of $60 (split with another store) + $5.50 + $4.50 (loose dates); receipts, deleted ones and totals that are not numbers are not counted');
+  assert.equal(r['今までの数え方'], '$2,020.00'); assert.equal(r['新しい数え方'], '$1,220.00'); assert.equal(r['差'], '$800.00');
   assert.equal(r['期末棚卸'], '$1,800.00');
   const f01 = rows.find(x => x['店舗'] === 'F01' && x['月'] === '2026-10');
   assert.equal(f01['アプリの登録'], '$30.00'); assert.equal(f01['期末棚卸'], 'まだ');
   assert.ok(!JSON.stringify(rows).match(/drv_|Minato|[0-9a-f]{32}/), 'no ids, names or keys');
 });
 
-test('the deploy folder: the SQL files are the repository files, the one-file function is built from the current sources, and the check runs', async () => {
+test('the deploy folder: the SQL files are the repository files, the one-file function is built from the current sources, and the check runs',
+  { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const crypto = await import('node:crypto');
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const D = 'deploy/invoice-purchase-v1077/';
