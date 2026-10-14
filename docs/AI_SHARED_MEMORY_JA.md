@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-10-14 中間レビュー v1076：店舗の管轄に GM も選べる（Claude・ブランチ `claude/mid-review-scope-gm`・PR #56・本番未反映）
+
+- 経緯：Moto さん 10/14 02:32 HST「中間レビュー、店舗の管轄 サーバーの更新20261016090000が終わるまで管轄は変えられません」→ 本番の DB に v1073 の SQL（`20261016090000`）が入っていない（または v2 の SQL を流し直して戻った）状態と判断し、`deploy/mid-review-v1073-fix/2_確認のSQL` → `deploy/mid-review-v1073/3_追加のSQL_v1073.sql` → `deploy/mid-review-v1073-fix/1_追加のSQL_直し.sql` → 確認 → アプリで「更新」を案内（結果は Moto さんからまだ聞いていない）。
+- 依頼：02:44 HST「店舗管轄の選択をGM,AMのどちらか選べる様にしてください」。回答：GM も名前で選ぶ／権限は今までどおり（GM・CEO は全店・返信・確認完了。担当として GM の名前）／「未設定」も選べる。
+- 実装（アプリ v1076・index.html・sw.js・migration `20261018090000_mid_review_scope_gm.sql`。Edge Function は変えない）：`mr_stores_save` が管轄に GM も受ける（いまの役割 `mr_member_role` が am か gm。20261017090000 の直しはそのまま写した）・`mr_row_v2` に `am_role`。画面は選ぶ所を 未設定 → GM → AM、「GM の直轄」→「未設定」、一覧に「担当：名前（GM／AM）」。確認の SQL に `mid-review scope GM (20261018090000)`（27 行）。入れる一式 `deploy/mid-review-v1076/`。`deploy/mid-review-v1073-fix/` は渡したときのまま sha256 で固定した。仕様は `docs/MID_REVIEW_V2_JA.md` の最後。
+- 試験（合成データ・本番に接続していない）：server 48・ui 44・本物の PostgreSQL 7・deploy 7・pr44 2 通る 2 止める・pr45 2・static release pass/1076・karte-bonus-ceo 19（版の確かめ）。わざと壊した 17 通り（SQL 7・確認の SQL 3・画面 7）すべてで落ちる。
+- 独立レビュー（Claude の別エージェント・作業を見ていない・`71de479`）：P1 なし・**P2 1**（確認の SQL の `live stores the saved AM cannot see` が GM の店を注意し続け、AM に戻すよう誘う）・P3（コメント・前の版の端末の表示・入れる順番の書き方・記録の抜け）→ `2a1a2b6` で直した（AM の店だけ数える・試験を足した）。再レビュー（`2a1a2b6`）：P1・P2 なし・P3 2（手順.md の言葉）→ 次のコミットで直した。**Codex のレビューはまだ。**
+- 入れる順（Moto さん）：SQL → 確認 → マージ → GM・CEO の端末をすべて v1076 に → 管轄を選ぶ（前の版の端末では GM を管轄にした店が「AM でなくなった」と出て保存できない。先にマージすると、SQL が入るまで GM を選んだ保存はエラー・何も書かない）。
+- 次：Codex のレビュー（PR #56 の最新の head）→ Moto さんが `deploy/mid-review-v1076/手順.md` の順で入れる。
+
 ## 2026-10-13 成長カルテ v1075：Codex の P2（eb10419）・個人ページへの入口・評価の途中の本人に見せる表示 UI案47（Claude・ブランチ `claude/karte-v1075`・本番未反映）
 
 - 経緯：PR #54（v1074）は Moto さんがマージ済み（main `f091c42`・本番は v1074）。Moto さん 18:07 HST「実機で見たけど本人見せる表示は見当たりません」＋ Codex のレビュー（eb10419・Moto さん経由・GitHub には投稿していない）：**blocked／manual・P2 1**（個人の「Career 反映あり」が ① 翌四半期の設定を作る ② 同じ四半期で 21 回目の保存、で失われる。② はプレビューに出ない。合成データで $8,257 → $7,291。関連 141 試験は成功）。

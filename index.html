@@ -16740,7 +16740,7 @@ function mrListHtml(){
   h += '<div class="card mr-tw" style="padding:0"><table class="mr-table"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('状態','Status')+'</th><th>'+t('入力担当','Input person')+'</th><th>'+t('確認すること（数は別々）','To check (separate numbers)')+'</th><th>'+t('期限','Due dates')+'</th></tr></thead><tbody>';
   rows.forEach(function(s){
     var rv = s.review || {};
-    h += '<tr onclick="mrOpenStore(\''+e(s.store_id)+'\')"><td><button class="mr-linkb" onclick="event.stopPropagation();mrOpenStore(\''+e(s.store_id)+'\')"><b>'+e(s.name)+'</b></button><div class="mr-m">'+(s.am_unset ? '<span class="mr-or">'+t('AM 未設定','No AM')+'</span>' : t('担当：','AM: ')+e(s.am_name || ''))+'</div></td>'
+    h += '<tr onclick="mrOpenStore(\''+e(s.store_id)+'\')"><td><button class="mr-linkb" onclick="event.stopPropagation();mrOpenStore(\''+e(s.store_id)+'\')"><b>'+e(s.name)+'</b></button><div class="mr-m">'+(s.am_unset ? '<span class="mr-or">'+t('管轄 未設定','Lead not set')+'</span>' : t('担当：','Lead: ')+e(s.am_name || '')+mrScopeRoleL(s.am_role))+'</div></td>'
       + '<td>'+mrStatusChip(rv)+(rv.confirmed_at ? '<div class="mr-m">'+e(mrHst(rv.confirmed_at))+' '+e(rv.confirmed_by || '')+'</div>' : rv.submitted_at ? '<div class="mr-m">'+e(mrHst(rv.submitted_at))+'</div>' : '')+'</td>'
       + '<td class="mr-m">'+mrInputL(s.input)+'</td>'
       + '<td><div class="mr-chips mr-chips-s">'+(rv.counts ? mrCountChips(rv.counts) : '<span class="mr-m">'+(rv.status === 'legacy' ? t('前の形の記録','Earlier format') : t('まだ提出されていない','Not submitted yet'))+'</span>')+'</div></td>'
@@ -16750,7 +16750,7 @@ function mrListHtml(){
   rows.forEach(function(s){
     var rv = s.review || {};
     h += '<div class="card mr-lcard"><div class="mr-rowh"><b style="font-size:15px">'+e(s.name)+'</b>'+mrStatusChip(rv)+'</div>'
-      + '<div class="mr-m">'+mrInputL(s.input)+'・'+(s.am_unset ? '<span class="mr-or">'+t('AM 未設定','No AM')+'</span>' : t('担当：','AM: ')+e(s.am_name || ''))+'</div>'
+      + '<div class="mr-m">'+mrInputL(s.input)+'・'+(s.am_unset ? '<span class="mr-or">'+t('管轄 未設定','Lead not set')+'</span>' : t('担当：','Lead: ')+e(s.am_name || '')+mrScopeRoleL(s.am_role))+'</div>'
       + '<div class="mr-chips mr-chips-s">'+(rv.counts ? mrCountChips(rv.counts) : '<span class="mr-m">'+(rv.status === 'legacy' ? t('前の形の記録','Earlier format') : t('まだ提出されていない','Not submitted yet'))+'</span>')+'</div>'
       + mrDlCell(rv) + '<button class="btn btn-secondary btn-sm mr-open" onclick="mrOpenStore(\''+e(s.store_id)+'\')">'+t('開く','Open')+'</button></div>';
   });
@@ -17680,7 +17680,7 @@ function mrSettingsHtml(){
     var vAdd = '<option value="">'+t('人を選ぶ','Choose a person')+'</option>' + mrArr(C.viewer).filter(function(c){ return d.viewers.indexOf(c.emp_id) < 0; }).map(function(c){ return '<option value="'+e(c.emp_id)+'">'+e(mrCandL(c))+'</option>'; }).join('');
     h += mrAccConfHtml(s);
     h += '<div class="card mr-col"><div class="mr-rowh"><span class="mr-hd-t" style="font-size:18px">'+e(s.name)+'</span>'
-      + (scopeOk ? '<span class="mr-chip '+(s.am_user ? 'mr-c-ok' : 'mr-c-none')+'">'+e(s.am_user ? t('管轄：' + (s.am_name || '?') + '（AM）', 'Overseen by ' + (s.am_name || '?') + ' (AM)') : t('管轄：GM の直轄', 'Overseen by the GM (no AM)'))+'</span><button class="mr-linkb mr-blue" onclick="mrGo(\'scope\')">'+t('管轄を変える ↓','Change ↓')+'</button>' : '')
+      + (scopeOk ? '<span class="mr-chip '+(s.am_user ? 'mr-c-ok' : 'mr-c-none')+'">'+e(s.am_user ? t('管轄：' + (s.am_name || '?'), 'Lead: ' + (s.am_name || '?')) + mrScopeRoleL(mrScopeRoleOf(s.am_user)) : t('管轄：未設定', 'Lead: not set'))+'</span><button class="mr-linkb mr-blue" onclick="mrGo(\'scope\')">'+t('管轄を変える ↓','Change ↓')+'</button>' : '')
       + (d.dirty ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div><div class="mr-grid">'
       + '<div class="mr-blk"><b>'+t('入力・提出の担当（基本）','Input person (base)')+'</b><select class="mr-sel" id="mr-acc-input"'+busy+' onchange="mrAccSet(\'input\', this.value)">'+inOpts+'</select>'
       + (myIn ? '<div class="mr-m mr-mine-t">'+e(t('あなたの変更（未保存）。保存するまでは ' + mrAccNm(d.base.input_emp, s) + ' のまま', 'Your change (not saved). Until saved: ' + mrAccNm(d.base.input_emp, s, true)))+'</div>' : '')
@@ -17830,10 +17830,15 @@ function mrDemoReset(){
    保存するのは、変えた店と、まだ入っていない店・店舗マスターで名前・並び・使う／使わないが変わった店だけ。どの店も読んだときの版で送り、
    ほかの人（または別のタブ）が先に保存していればサーバーは何も書かない（conflict）。そのときは自分が変えた店だけをいまの管轄に入れ直して出す（B） */
 function mrScopeReady(A){ var st = mrArr(A && A.stores); return st.length ? st.every(function(x){ return typeof x.am_version === 'number'; }) : typeof (A && A.flags_version) === 'number'; }
-function mrScopeL(x){ return x.am_user ? t('管轄 ' + (x.am_name || '?'), 'AM ' + (x.am_name || '?')) : t('GM の直轄', 'GM direct'); }
+function mrScopeL(x){ return x.am_user ? t('管轄 ' + (x.am_name || '?'), 'Lead ' + (x.am_name || '?')) : t('未設定', 'Not set'); }
 function mrScopeAms(){ return mrArr(_mr.members).filter(function(m){ return m.role === 'am' && m.enabled && m.role_now === 'am'; }); }
+/* v1076（Motoさん 10/14）：管轄に GM も選べる（権限は今のまま：GM・CEO は全店）。いまも GM の人だけ */
+function mrScopeGms(){ return mrArr(_mr.members).filter(function(m){ return m.enabled && m.role_now === 'gm'; }); }
+function mrScopeLeads(){ return mrScopeGms().concat(mrScopeAms()); }
+function mrScopeRoleOf(u){ var m = mrArr(_mr.members).filter(function(x){ return x.user_id === u; })[0]; return m && m.enabled ? (m.role_now === 'gm' ? 'gm' : m.role_now === 'am' ? 'am' : '') : ''; }
+function mrScopeRoleL(r){ return r === 'gm' ? t('（GM）',' (GM)') : r === 'am' ? t('（AM）',' (AM)') : ''; }
 function mrScopeRows(){
-  var saved = {}, ams = mrScopeAms(), d = _mr.amDraft || {};
+  var saved = {}, ams = mrScopeAms(), leads = mrScopeLeads(), d = _mr.amDraft || {};
   mrArr(_mr.acc && _mr.acc.stores).forEach(function(x){ saved[x.store_id] = x; });
   var rows = mrArr(typeof activeStores === 'function' ? activeStores() : getStoresAll()).map(function(st){ return { id:st.id, name:st.name || st.id, am:st.am || '', active:true }; });
   Object.keys(saved).forEach(function(id){ if (!rows.some(function(x){ return x.id === id; })) rows.push({ id:id, name:saved[id].name || id, am:'', active:false }); });
@@ -17844,7 +17849,7 @@ function mrScopeRows(){
     else { var name = String(r.am || '').trim(), hits = name ? ams.filter(function(m){ return String(m.name || '').trim() === name; }) : []; r.saved = null; r.ver = 0; r.prop = hits.length === 1 ? hits[0].user_id : ''; r.hits = hits.length; }
     r.draft = d[r.id] || null;
     r.v = r.draft ? r.draft.v : sv ? r.saved : r.prop;
-    r.bad = !!(r.v && !ams.some(function(m){ return m.user_id === r.v; }));
+    r.bad = !!(r.v && !leads.some(function(m){ return m.user_id === r.v; }));   /* v1076：GM・AM のどちらでもなくなった */
     r.meta = !!(sv && (sv.name !== r.name || Number(sv.sort) !== r.sort || (sv.active !== false) !== r.active));
     r.send = !sv || !!r.draft || r.meta;
   });
@@ -17858,7 +17863,7 @@ function mrScopeNames(){
 }
 /* 読み直して版が進んでいたら：自分が変えた店だけをいまの管轄に入れ直す（同じ値ならもう入っている）。ほかの店の変更は帯に出す */
 function mrScopeSync(rows){
-  var d = _mr.amDraft, prev = _mr.amPrev, c = null, nm = mrScopeNames(), L = function(u){ return u ? (nm[u] || '?') : t('GM の直轄', 'GM direct'); };
+  var d = _mr.amDraft, prev = _mr.amPrev, c = null, nm = mrScopeNames(), L = function(u){ return u ? (nm[u] || '?') : t('未設定', 'Not set'); };
   var add = function(k, v){ c = c || { theirs:[], mine:[], both:[], already:[] }; c[k].push(v); };
   if (d) Object.keys(d).forEach(function(k){ if (!rows.some(function(r){ return r.id === k; })) delete d[k]; });   /* 一覧から外れた店（店舗マスターに無い・入っていない）の下書きは残さない */
   rows.forEach(function(r){
@@ -17895,8 +17900,8 @@ function mrScopeConfHtml(rows){
 }
 function mrScopeHtml(){
   var e = escapeHtml, busy = _mr.busy ? ' disabled' : '';
-  var hd = function(){ return '<div class="card mr-col" id="mr-scope"><div class="mr-rowh"><b style="font-size:16px">'+t('店舗の管轄（どの AM の店か）','Store oversight (which AM looks after each store)')+'</b>'+(_mr.amDraft ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div>'
-    + '<div class="mr-m">'+t('管轄の AM は、その店を見る・返信する・確認完了にすることができます。AM のいない店は「GM の直轄」（GM・CEO が確かめる）。','The AM who oversees a store can see it, reply and confirm it. A store with no AM is overseen by the GM (the GM and CEO check it).')+'</div>'; }, h;
+  var hd = function(){ return '<div class="card mr-col" id="mr-scope"><div class="mr-rowh"><b style="font-size:16px">'+t('店舗の管轄（どの GM・AM の店か）','Store oversight (which GM or AM looks after each store)')+'</b>'+(_mr.amDraft ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div>'
+    + '<div class="mr-m">'+t('管轄は GM か AM を名前で選びます。AM を選ぶと、その AM がその店を見る・返信する・確認完了にすることができます。GM を選ぶと、担当としてその GM の名前が出ます（GM・CEO は今までどおり全店を見て、返信・確認完了ができます）。「未設定」の店は GM・CEO みんなで見ます。','Choose a GM or an AM by name. An AM can then see the store, reply and confirm it. A GM is shown as the lead (the GM and CEO still see every store and can reply and confirm). A store left “Not set” is checked by the GM and CEO together.')+'</div>'; }, h;
   if (!mrScopeReady(_mr.acc)) return hd() + '<div class="mr-m mr-bad">'+t('サーバーの更新（20261016090000）が終わるまで、管轄は変えられません。','The oversight cannot be changed until the server update (20261016090000) is in.')+'</div></div>';
   if (!_mr.members) {
     if (_mr.load.members === 'err') return hd() + '<div class="mr-err">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" onclick="mrAccReload()">'+t('もう一度','Retry')+'</button></div>';
@@ -17904,16 +17909,19 @@ function mrScopeHtml(){
     return hd() + '<div class="mr-m">'+t('読み込み中…','Loading…')+'</div></div>';
   }
   var rows = mrScopeRows(); mrScopeSync(rows); rows = mrScopeRows(); h = hd();   /* 見出しの「保存していない変更あり」は下書きを最新に合わせたあとで */
-  var ams = mrScopeAms(), nm = mrScopeNames(), cf = _mr.amConf || { theirs:[] };
+  var ams = mrScopeAms(), gms = mrScopeGms(), nm = mrScopeNames(), cf = _mr.amConf || { theirs:[] };
   h += mrScopeConfHtml(rows)
     + '<div class="mr-tw2"><table class="mr-table mr-table-s"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('管轄','Overseen by')+'</th><th>'+t('店舗マスターの AM 欄（参考）','Store master AM (reference)')+'</th><th>'+t('いま','Now')+'</th></tr></thead><tbody>';
   rows.forEach(function(r){
-    var note, opts = '<option value="">'+t('GM の直轄（AM なし）','The GM (no AM)')+'</option>' + ams.map(function(m){ return '<option value="'+e(m.user_id)+'"'+(m.user_id === r.v ? ' selected' : '')+'>'+e((m.name || '') + t('（AM）',' (AM)'))+'</option>'; }).join('');
-    if (r.bad) opts += '<option value="'+e(r.v)+'" selected>'+e((nm[r.v] || '?') + t('（AM でなくなった）',' (no longer an AM)'))+'</option>';
+    var opt = function(m, rl){ return '<option value="'+e(m.user_id)+'"'+(m.user_id === r.v ? ' selected' : '')+'>'+e((m.name || '') + mrScopeRoleL(rl))+'</option>'; };
+    var note, opts = '<option value="">'+t('未設定（GM・CEO みんなで見る）','Not set (the GM and CEO check it)')+'</option>'   /* v1076：GM も名前で選べる */
+      + (gms.length ? '<optgroup label="GM">' + gms.map(function(m){ return opt(m, 'gm'); }).join('') + '</optgroup>' : '')
+      + (ams.length ? '<optgroup label="AM">' + ams.map(function(m){ return opt(m, 'am'); }).join('') + '</optgroup>' : '');
+    if (r.bad) opts += '<option value="'+e(r.v)+'" selected>'+e((nm[r.v] || '?') + t('（GM・AM でなくなった）',' (no longer a GM or AM)'))+'</option>';
     if (r.draft) note = t('あなたの変更（未保存）','Your change (not saved)');
-    else if (!r.sv) note = r.prop ? t('案：店舗マスターと同じ名前の AM（保存すると入る）','Proposal: the AM with the store master’s name (saved when you save)') : r.hits > 1 ? t('案なし（同じ名前の AM が 2 人以上）・保存すると GM の直轄で入る','No proposal (2+ AMs share the name); saved as the GM') : t('まだ入っていない（保存すると GM の直轄で入る）','Not saved yet (saved as the GM when you save)');
+    else if (!r.sv) note = r.prop ? t('案：店舗マスターと同じ名前の AM（保存すると入る）','Proposal: the AM with the store master’s name (saved when you save)') : r.hits > 1 ? t('案なし（同じ名前の AM が 2 人以上）・保存すると未設定で入る','No proposal (2+ AMs share the name); saved as not set') : t('まだ入っていない（保存すると未設定で入る）','Not saved yet (saved as not set when you save)');
     else note = cf.theirs.some(function(x){ return x.id === r.id; }) ? t('保存済み（ほかの人が変えた）','Saved (changed by someone else)') : t('保存済み','Saved');
-    if (r.bad) note = '<b class="mr-bad">'+t('AM でなくなった：選び直して保存','No longer an AM: choose again and save')+'</b>';
+    if (r.bad) note = '<b class="mr-bad">'+t('GM・AM でなくなった：選び直して保存','No longer a GM or AM: choose again and save')+'</b>';
     else note = e(note);
     if (r.meta && !r.draft) note += '<div class="mr-m">'+t('店舗マスターで名前・並び・使う／使わないが変わった（保存すると入る）','Name, order or use changed in the store master (saved when you save)')+'</div>';
     h += '<tr'+(r.draft ? ' class="mr-tr-mine"' : '')+'><td><b>'+e(r.name)+'</b>'+(r.active ? '' : '<div class="mr-m">'+t('今は使っていない店','Not active now')+'</div>')+(!r.sv && r.active ? '<div class="mr-m">'+t('まだ中間レビューに入っていない店','Not in the review yet')+'</div>' : '')+'</td>'
@@ -17938,7 +17946,7 @@ function mrScopeSave(){
   var rows = mrScopeRows(), send = rows.filter(function(r){ return r.send; });
   if (!send.length) { showToast(t('変えた店はありません','No store was changed'), 'warning'); return; }
   var bad = send.filter(function(r){ return r.bad; });
-  if (bad.length) { showToast(escapeHtml(t('管轄を選び直してください（AM でなくなった）：', 'Choose the oversight again (no longer an AM): ') + bad.map(function(r){ return r.name; }).join(t('・', ', '))), 'warning'); return; }
+  if (bad.length) { showToast(escapeHtml(t('管轄を選び直してください（GM・AM でなくなった）：', 'Choose the oversight again (no longer a GM or AM): ') + bad.map(function(r){ return r.name; }).join(t('・', ', '))), 'warning'); return; }
   var prev = {}; mrArr(_mr.acc && _mr.acc.stores).forEach(function(x){ prev[x.store_id] = { am_user:x.am_user || '', am_name:x.am_name || '', am_version:x.am_version }; });
   var stores = send.map(function(r){ return { store_id:r.id, name:r.name, am_user:r.v || null, sort:r.sort, active:r.active, expect_version:r.draft ? r.draft.base_ver : r.ver }; });
   return mrSetRun('stores', function(){ return mrAPI({ action:'stores_save', stores:stores }).then(function(x){ _mr.amDraft = null; _mr.amConf = null; return x; }); }, t('管轄を保存しました','Oversight saved'),
@@ -40294,7 +40302,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1075';
+const APP_VERSION = '1076';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
