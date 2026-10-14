@@ -5,7 +5,7 @@
 1. 済（Claude）：調査・Moto さんの決定・UI案48・本番の状況を見る SQL（`docs/INVOICE_PURCHASE_SUMMARY_JA.md`）。
 2. 済（Moto さん）：① B・②はい・台帳の前は照合済みなら入れる・10 月から。本番の台帳は 10/13 7:00 HST から動いている。
 3. 済（Claude・ブランチ `claude/invoice-purchase-summary`）：実装（migration `20261019090000`・handler・アプリ v1077・入れる一式・照合の表）・試験・独立レビュー 4 回（最後は P1・P2 なし）。
-4. 次：PR → Codex のレビュー（とくに A〜E の決め方・二重にしないこと・締めた月の作り直し・app_state に出すもの・`foodCostOf` と日別の原価）。
+4. 次：Codex のレビュー（PR #58。とくに A〜E の決め方・二重にしないこと・締めた月の作り直し・app_state に出すもの・`foodCostOf` と日別の原価）。
 5. Moto さん：棚卸に消耗品を入れたままにするか決める。`deploy/invoice-purchase-v1077/手順.md` の順で入れる（アプリが先）→ `5_照合の結果_読むだけ.sql` の結果を Claude に。
 6. Claude：照合の結果で店舗・月ごとの報告を作る。
 
