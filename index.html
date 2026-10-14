@@ -64229,10 +64229,30 @@ function kevV1Part(v, p){
   if(!v || typeof v!=='object') return null;
   var x=(v.set && typeof v.set==='object') ? v.set[p] : null;
   if(kevV1Has(x)) return x;
-  if(v.v1 && typeof v.v1==='object' && kevV1Has(v.v1[p])) return v.v1[p];
-  var h=Array.isArray(v.hist) ? v.hist : [];
-  for(var i=h.length-1; i>=0; i--){ var y=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(kevV1Has(y)) return y; }
-  return null;
+  var k=(v.v1 && typeof v.v1==='object' && kevV1Has(v.v1[p])) ? v.v1[p] : null, h=Array.isArray(v.hist) ? v.hist : [], y=null, yt=0;
+  for(var i=h.length-1; i>=0; i--){ var z=(h[i] && h[i].set && typeof h[i].set==='object') ? h[i].set[p] : null; if(kevV1Has(z)){ y=z; yt=Number(h[i]._at)||0; break; } }
+  if(k && y) return (yt>(Number(k.t)||0)) ? y : k;   /* 残した v1 より新しい前の版の値が履歴にあれば（前の版の端末がそのあと保存した）、そちら */
+  return k || y;
+}
+/* 前の版の値の時刻（v1 に残すとき）：その版の部分の保存時刻、無ければ版の時刻 */
+function kevV1T(v, p){ var t=(v && v._t && typeof v._t==='object') ? Number(v._t[p])||0 : 0; return t || Number(v && v._at)||0; }
+/* v1075（独立レビューの P2-1）：前の版の個人設定の「反映・固定」は、部分ごとに、その値を決めた四半期の前の版の設定と比べる。
+   この版で次の四半期の個人設定の版を作ると、前の版の値がそのまま写るので、同じ値が続くあいだは前の版へさかのぼる */
+function kevOvrV1Base(scope, empId, q){
+  var vs=empId ? kevVersions(kevOvrAll(), empId).filter(function(v){ return !q || v.from<=q; }).reverse() : [], o={}, memo={};
+  var base=function(qq){ var k=qq||''; if(!memo[k]) memo[k]=kevV1On(scope, qq || q); return memo[k]; };
+  ['c','s','f','p'].forEach(function(p){
+    var from=null, val=null;
+    for(var i=0; i<vs.length; i++){
+      var x=(vs[i].set && typeof vs[i].set==='object') ? vs[i].set[p] : null;
+      if(!kevV1Has(x)) break;
+      var on=(x.on!==false && x.on!=='false');
+      if(val===null) val=on; else if(on!==val) break;
+      from=vs[i].from;
+    }
+    o[p]=base(from)[p];
+  });
+  return o;
 }
 function kevV1On(scope, q){
   var d=kevGradeDefaults(scope || 'G2'), o={}, all=kevRuleAll();
@@ -64259,8 +64279,8 @@ function kevRuleFor(scope, q, empId, sim, cfg){
   Object.keys(R).forEach(function(g){ Object.keys(R[g]).forEach(function(f){ M[g+'.'+f]='common'; }); });
   R.stores=null; M.stores=null;
   var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ov=empId ? kevVer(kevOvrAll(), empId, q) : null;
-  /* v1075：前の版の個人設定は、その個人設定の版（適用開始の四半期）のときに前の版で効いていた値と比べる（あとで次の四半期の版を作っても変わらない） */
-  if(gen2) FP={noSP:true, noRng:true, noJ:true, onDev:kevV1On(scope, (ov && ov.from) ? ov.from : q)};
+  /* v1075：前の版の個人設定は、部分ごとに、その値を決めた四半期に前の版で効いていた値と比べる（あとで次の四半期の版を作っても変わらない） */
+  if(gen2) FP={noSP:true, noRng:true, noJ:true, onDev:kevOvrV1Base(scope, empId, q)};
   if(cm) kevMerge(R, cm.set, 'common', M, FC);
   if(sim && sim.level==='common') kevMerge(R, sim.set, 'common', M, FC);
   if(scope) kevMerge(R, gen2 ? kevGradeDefaults2(scope) : kevGradeDefaults(scope), 'gradeDef', M);
@@ -64400,7 +64420,7 @@ function kevMergeVerRec(a, b){
   H.sort(function(x, y){ return String(x.at)<String(y.at) ? -1 : (String(x.at)>String(y.at) ? 1 : 0); });
   var out=Object.assign({}, top, {set:set, hist:H.slice(-20), _t:T, _at:Math.max(_recAt(a), _recAt(b))});
   /* v1075：前の版の「反映・固定」を残した v1 は、どちらの写しのものも残す（同じ部分なら新しいほうの写し） */
-  var v1={}; [low, top].forEach(function(r){ if(r.v1 && typeof r.v1==='object') Object.keys(r.v1).forEach(function(p){ if(kevV1Has(r.v1[p])) v1[p]={on:(r.v1[p].on!==false && r.v1[p].on!=='false')}; }); });
+  var v1={}; [low, top].forEach(function(r){ if(r.v1 && typeof r.v1==='object') Object.keys(r.v1).forEach(function(p){ var x=r.v1[p]; if(!kevV1Has(x)) return; if(v1[p] && (Number(v1[p].t)||0)>(Number(x.t)||0)) return; v1[p]={on:(x.on!==false && x.on!=='false'), t:Number(x.t)||0}; }); });   /* 部分ごとに、値の時刻が新しいほう（同じなら新しい写し） */
   if(Object.keys(v1).length) out.v1=v1; else delete out.v1;
   return out;
 }
@@ -65772,7 +65792,7 @@ function kevTabHtml(cfg){
   h+='</div>';
   /* 右：計算の内訳 */
   h+='<div class="card kev-side"><b style="font-size:14px">計算の内訳</b>'+kevBreakdownHtml(e, b, kv, tot, false)
-    +((!b.blocked && (b.segs||[]).some(function(x){ return x.elig; })) ? '<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="openKarteDetail('+id+')">個人ページを開く</button>' : '')+'</div>';
+    +((!b.blocked && (b.segs||[]).some(function(x){ return x.elig; })) ? '<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="kevOpenPerson('+id+',false)">個人ページを開く</button>' : '')+'</div>';
   h+='</div>';
   return h;
 }
@@ -66252,9 +66272,10 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
     var v1=(prev.v1 && typeof prev.v1==='object') ? JSON.parse(JSON.stringify(prev.v1)) : {};
     ['c','s','f','p'].forEach(function(p){
       var x=(prev.set && typeof prev.set==='object') ? prev.set[p] : null;
-      if(kevV1Has(x)){ v1[p]={on:(x.on!==false && x.on!=='false')}; return; }
-      if(kevV1Has(v1[p])) return;
-      var y=kevV1Part(prev, p); if(y) v1[p]={on:(y.on!==false && y.on!=='false')};
+      if(kevV1Has(x)){ v1[p]={on:(x.on!==false && x.on!=='false'), t:kevV1T(prev, p)}; return; }
+      var y=kevV1Part(prev, p); if(!y) return;
+      var yt=(y===(prev.v1 && prev.v1[p])) ? (Number(y.t)||0) : (function(){ var h=Array.isArray(prev.hist) ? prev.hist : []; for(var i=h.length-1; i>=0; i--){ if(h[i] && h[i].set && h[i].set[p]===y) return Number(h[i]._at)||0; } return 0; })();
+      v1[p]={on:(y.on!==false && y.on!=='false'), t:yt};
     });
     if(Object.keys(v1).length) rec.v1=v1;
   }
@@ -66452,7 +66473,7 @@ function kevSelfProgress(e, b, cfg, k){
   var rows=[], NM={c:'Career Score の評価', s:'売上の達成率', f:'FL 管理', p:'利益の達成率'};
   if(el.some(function(x){ return x.blocked==='track'; })) rows.push({ok:false, t:'評価の準備', sub:'あなたの職種（G3）を決めています'});
   KEV_ITEMS.forEach(function(it){
-    var p=it[0], segs=el.filter(function(x){ return x.items && x.items[p] && x.items[p].on; });
+    var p=it[0], segs=el.filter(function(x){ return x.blocked!=='track' && x.items && x.items[p] && x.items[p].on; });   /* 職種待ちの区間は、仮の職種の項目を出さない */
     if(!segs.length) return;   /* 本人に効かない項目（1.00 固定）は出さない */
     var miss=[]; segs.forEach(function(x){ miss=miss.concat(x.snap ? [] : (x.items[p].miss||[])); });
     var sub='';
@@ -66487,9 +66508,11 @@ function kevSelfProgressHtml(e, b, cfg, k){
 function kevSelfExplainHtml(e, b, cfg){
   var kv=kevApplies(cfg); if(!kv || !b || !b.v4) return '';
   var tot=kevTotals(cfg, kv), fin=kevFinalOf(tot, e), el=(b.segs||[]).filter(function(x){ return x.elig; });
-  if(el.length && b.blocked==='eval'){   /* v1075（UI案47）：評価が終わる前は、分かっている係数と「評価中」の項目だけ（金額は出さない） */
+  var elE=el.filter(function(x){ return x.blocked!=='track'; });   /* 職種待ちの区間は出さない（仮の職種の係数になるため） */
+  if(b.blocked==='track' && !elE.some(function(x){ return x.blocked==='eval'; })) return '';
+  if(elE.length && (b.blocked==='eval' || b.blocked==='track')){   /* v1075（UI案47）：評価が終わる前は、分かっている係数と「評価中」の項目だけ（金額は出さない） */
     return '<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div><div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は、'
-      +el.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items && x.items[it[0]] && x.items[it[0]].on; });
+      +elE.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items && x.items[it[0]] && x.items[it[0]].on; });
         return '基準額 '+kevUsd(x.pr)+(on.length ? ' × '+on.map(function(it){ var v=x.items[it[0]]; var m=v.miss||[], wait=(it[0]==='c' || (it[0]==='f' && m.some(function(t){ return /^FL 改善行動/.test(t); }))) ? '評価中' : '集計中';
           return it[2]+' '+((m.length || v.coef==null) ? '<span style="color:var(--muted)">（'+wait+'）</span>' : (b.gen===2 ? kevFc(v.coef) : kevF2(v.coef))); }).join(' × ') : ''); }).join('、')
       +' で決まります。評価が終わると金額が出ます。</div></div>';

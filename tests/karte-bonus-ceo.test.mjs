@@ -161,21 +161,21 @@ test('Codex review (eb10419) P2: the v1065 baseline survives creating the next q
   const v = J(c.STORE.bonus_eval_rule['G5|2026-Q3']);
   assert.equal(v.hist.length, 20, 'the history is capped');
   assert.ok(v.hist.every(h => h.set.c.g2), 'the v1065 value has left the history');
-  assert.deepEqual(v.v1, { c: { on: false } }, 'it is kept in v1');
+  assert.deepEqual(v.v1.c.on, false, 'it is kept in v1');
   assert.equal(on('sam'), 'csp', 'the 22nd save does not drop the personal ①');
   assert.equal(person(c, 'sam').amount, want, 'and the amount does not change');
   // sync: a copy without v1 (older) and a copy with it — the merged record keeps v1, and so does the reverse order
   const withV1 = J(v), without = Object.assign(J(v), { _at: v._at - 5 }); delete without.v1;
   c.A = withV1; c.B = without;
-  assert.deepEqual(run(c, 'kevMergeVerRec(A, B).v1'), { c: { on: false } });
-  assert.deepEqual(run(c, 'kevMergeVerRec(B, A).v1'), { c: { on: false } });
+  assert.equal(run(c, 'kevMergeVerRec(A, B).v1').c.on, false);
+  assert.equal(run(c, 'kevMergeVerRec(B, A).v1').c.on, false);
   // an old device (v1068) saving the version again with a v1065 value: that value is used, and the next save with this version keeps it in v1
   c.STORE.bonus_eval_rule['G5|2026-Q3'] = Object.assign(J(v), { set: { c: { on: true, lo: 0.7, hi: 1.3 } }, _at: (t += 1000) });
   assert.deepEqual(run(c, `kevV1On('G5', '${Q}')`).c, { on: true }, 'the v1065-era value in the set wins over the kept one');
   assert.equal(on('sam'), 'sp', 'G5 ① on for the grade (v1065): Sam\'s "on" is now the same → pre-filled');
   clock(c, (t += 1000));
   assert.equal(run(c, `kevRuleSave('G5', '2026-Q3', {c:{on:false, lo:0.7, hi:1.3, g2:1}}, '保存', '① を変更')`), true);
-  assert.deepEqual(J(c.STORE.bonus_eval_rule['G5|2026-Q3'].v1), { c: { on: true } }, 'v1 follows the latest v1065-era value');
+  assert.equal(J(c.STORE.bonus_eval_rule['G5|2026-Q3'].v1).c.on, true, 'v1 follows the latest v1065-era value');
   // personal settings do not get v1 (only the grade and company rules carry the v1065 baseline), even when the same version is saved again
   clock(c, (t += 1000));
   assert.equal(run(c, `kevOvrSave('sam', '2026-Q3', {stores:['S3']}, '担当店', '担当店を変更')`), true);
@@ -584,7 +584,11 @@ test('v1075 (Moto 10/13「両方に付ける」): the person page and the self v
   // in the person's header row (outside .kev-side, which phones hide), both buttons, whether or not the evaluation is finished
   const head = ev.slice(ev.indexOf('<div class="kev-main">'), ev.indexOf('<div class="card kev-side">'));
   assert.match(head, /class="kev-go"[^>]*><button class="btn btn-secondary btn-sm" onclick="kevOpenPerson\(&quot;mia&quot;,false\)"><i class="ti ti-user"><\/i> 個人ページ<\/button><button class="btn btn-secondary btn-sm" onclick="kevOpenPerson\(&quot;mia&quot;,true\)"><i class="ti ti-eye"><\/i> 本人に見せる表示<\/button>/);
-  assert.doesNotMatch(ev.slice(ev.indexOf('<div class="card kev-side">')), /openKarteDetail\(/, 'the old button at the bottom right is shown only when finished');
+  assert.doesNotMatch(ev.slice(ev.indexOf('<div class="card kev-side">')), /個人ページを開く/, 'the old button at the bottom right is shown only when finished');
+  vm.runInContext("window._kevSel='ray';", c);
+  const rv = run(c, 'kevTabHtml(kbCfg())');
+  assert.ok(rv.slice(rv.indexOf('<div class="card kev-side">')).includes('onclick="kevOpenPerson(&quot;ray&quot;,false)">個人ページを開く'), 'and it saves the text being typed too (review P3-5)');
+  vm.runInContext("window._kevSel='mia';", c);
   // 査定一覧: each name has its own button; it stops the row's click (the row still opens 個別評価)
   const list = run(c, 'kevListTableHtml(kbCfg(), bonusTotals(kbCfg()))');
   const rows = list.split('<tr').slice(2);
@@ -654,4 +658,69 @@ test('v1075 UI案47 (Moto 10/13): while the evaluation is not finished, the self
   assert.match(sv, /cur\.blocked\?'評価中':_money\(cur\.amt\)/);
   assert.match(sv, /cur\.blocked\?'・金額は評価のあと':'・査定中'/);
   assert.ok(sv.indexOf('kevSelfProgressHtml(e, b, cfg, k)') > sv.indexOf("_kTile('次期の目標'") && sv.indexOf('kevSelfProgressHtml(e, b, cfg, k)') < sv.indexOf('kdBonusTrendHtml('), 'under the tiles, above the bonus trend');
+});
+
+test('v1075 independent review (1ef8d0c): per-part baseline quarter, timed v1, merge both ways, G3 job type pending', () => {
+  const c = ceo();
+  const r = s => ['c', 's', 'f', 'p'].filter(k => s[k].on).join('');
+  // P2-1: a stores-only personal version for 2026 Q4 copies Sam's v1065 ① "on" (set in Q3); it is still compared with the Q3 baseline,
+  //       so the preview (before saving) and the saved result agree
+  c.STORE.bonus_eval_rule = {
+    'G5|2026-Q3': { set: { c: { on: false, lo: 0.7, hi: 1.3 } }, why: 'v1065', at: '2026/10/11 10:00', by: 'GM', _at: 1 },
+    'G5|2026-Q4': { set: { c: { on: true, lo: 0.7, hi: 1.3 } }, why: 'v1065 Q4', at: '2026/10/11 10:01', by: 'GM', _at: 2 },
+  };
+  c.STORE.bonus_eval_ovr['sam|2026-Q3'] = { set: { c: { on: true, lo: 0.7, hi: 1.3 } }, why: 'この人だけ', at: '2026/10/11 10:05', by: 'GM', _at: 3 };
+  assert.equal(r(run(c, `kevRuleFor('G5', '2026-Q4', 'sam').r`)), 'csp');
+  const sim = r(run(c, `kevRuleFor('G5', '2026-Q4', 'sam', {level:'person', empId:'sam', set:{stores:['S3']}}).r`));
+  clock(c, 5000);
+  assert.equal(run(c, `kevOvrSave('sam', '2026-Q4', {stores:['S3']}, '担当店', '担当店を変更')`), true);
+  assert.equal(r(run(c, `kevRuleFor('G5', '2026-Q4', 'sam').r`)), sim, 'preview = saved');
+  assert.equal(sim, 'csp');
+  // the chain stops where the value changes: a v1065-era Q4 personal "off" (changed in Q4) is compared with the Q4 baseline (on) → deliberate
+  c.STORE.bonus_eval_ovr['sam|2026-Q4'].set.c = { on: false, lo: 0.7, hi: 1.3 };
+  assert.equal(r(run(c, `kevRuleFor('G5', '2026-Q4', 'sam').r`)), 'sp');
+  assert.deepEqual(run(c, `kevOvrV1Base('G5', 'sam', '2026-Q4')`).c, { on: true }, 'baseline from Q4, where the "off" was decided');
+  assert.deepEqual(run(c, `kevOvrV1Base('G5', 'sam', '${Q}')`).c, { on: false }, 'Q3 still uses the Q3 baseline');
+  // a part saved by this version (g2) breaks the chain and is used as is
+  c.STORE.bonus_eval_ovr['sam|2026-Q4'].set.c = { on: true, g2: 1 };
+  assert.equal(r(run(c, `kevRuleFor('G5', '2026-Q4', 'sam').r`)), 'csp');
+  // P3-1: merging an older copy that has v1 with a newer copy without it (an old device saved last) keeps v1, in either order
+  const older = { set: { c: { on: true, g2: 1 } }, v1: { c: { on: false, t: 1 } }, hist: [], at: '2026/10/13 10:00', by: 'GM', _at: 10 };
+  const newer = { set: { c: { on: true, g2: 1 } }, hist: [], at: '2026/10/13 11:00', by: 'GM', _at: 20 };
+  c.A = older; c.B = newer;
+  assert.equal(run(c, 'kevMergeVerRec(A, B).v1').c.on, false);
+  assert.equal(run(c, 'kevMergeVerRec(B, A).v1').c.on, false);
+  // two kept values: the one decided later wins, whichever copy is newer
+  c.A = Object.assign(J(older), { v1: { c: { on: true, t: 50 } } }); c.B = Object.assign(J(newer), { v1: { c: { on: false, t: 5 } } });
+  assert.equal(run(c, 'kevMergeVerRec(A, B).v1').c.on, true);
+  assert.equal(run(c, 'kevMergeVerRec(B, A).v1').c.on, true);
+  // P3-2: a kept v1 (decided at t=1) loses to a newer v1065-era value that an old device saved and a v1074 save pushed into the history
+  c.STORE.bonus_eval_rule = { 'G5|2026-Q3': { set: { c: { on: false, g2: 1 } }, v1: { c: { on: false, t: 1 } },
+    hist: [{ set: { c: { on: true, lo: 0.7, hi: 1.3 } }, why: 'v1068 の端末', at: '2026/10/13 12:00', by: 'GM', _at: 30 }], at: '2026/10/13 12:10', by: 'GM', _at: 31 } };
+  assert.deepEqual(run(c, `kevV1On('G5', '${Q}')`).c, { on: true }, 'the later v1065-era decision');
+  c.STORE.bonus_eval_rule['G5|2026-Q3'].v1.c.t = 40;
+  assert.deepEqual(run(c, `kevV1On('G5', '${Q}')`).c, { on: false }, 'a kept value decided later than the history entry wins');
+  // saving again keeps the time of the value it keeps
+  clock(c, 9000);
+  assert.equal(run(c, `kevRuleSave('G5', '${Q}', {c:{on:true, lo:0.7, hi:1.3, g2:1}}, '保存', '① を変更')`), true);
+  assert.deepEqual(J(c.STORE.bonus_eval_rule['G5|2026-Q3'].v1.c), { on: false, t: 40 });
+});
+
+test('v1075 review P3-4: a segment still waiting for its G3 job type is not described with the fallback job type in the self view', () => {
+  const c = ceo();
+  c.ID = 'ken';
+  // a quarter with a G3 part whose job type is not chosen yet (worked out with a fallback job type) and an unfinished G4 part
+  c.B = { v4: true, gen: 2, blocked: 'track', segs: [
+    { elig: true, g: 'G3', blocked: 'track', pr: 1000, items: { c: { on: true, coef: 1.1, miss: [] }, s: { on: false }, f: { on: false }, p: { on: false } }, evSt: 'done' },
+    { elig: true, g: 'G4', blocked: 'eval', pr: 2000, items: { c: { on: true, coef: null, miss: ['能力：未評価'] }, s: { on: true, coef: 1.01, miss: [] }, f: { on: false }, p: { on: false } }, evSt: 'draft' }] };
+  const p = run(c, 'kevSelfProgress(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg(), {})');
+  assert.equal(p.rows[0].t, '評価の準備');
+  assert.deepEqual(p.rows.filter(r => /Career|売上/.test(r.t)).map(r => [r.t, r.ok]), [['Career Score の評価', false], ['売上の達成率', true]], 'only the G4 part decides the items');
+  const ex = run(c, 'kevSelfExplainHtml(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg())');
+  assert.doesNotMatch(ex, /\$1,000|1\.100/, 'the job-type-pending part is left out');
+  assert.match(ex, /基準額 \$2,000 × Career <span style="color:var\(--muted\)">（評価中）<\/span> × 売上 1\.010/);
+  // only the job type is pending: no partial explanation (there is nothing known to show)
+  c.B.segs = [c.B.segs[0]];
+  assert.equal(run(c, 'kevSelfExplainHtml(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg())'), '');
+  assert.deepEqual(run(c, 'kevSelfProgress(EMPS.find(function(e){ return e.id===ID; }), B, kbCfg(), {})').rows.map(r => r.t), ['評価の準備', '評価の完了', '査定の確定', 'ボーナスの記録']);
 });
