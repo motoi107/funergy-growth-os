@@ -44,6 +44,7 @@ function app({ role = 'crew', user = 'Aki', today = '2026-10-13', days = {}, clo
     renderPage: p => c.pages.push(p), go: p => { c.curPage = p; c.pages.push(p); }, setTimeout: () => 0, clearTimeout: () => {},
     SUPABASE_URL: 'https://example.invalid', supaHeaders: () => ({}),
     supaUpsert: async (t, rows) => { c.upserts.push([t, rows]); return true; },
+    pullOpKey: async () => true,   // the cloud read before every change (the device's copy is the newest here)
     fetch: async url => { c.calls.push(url); const r = await api(url); return { ok: true, json: async () => r }; },
     localStorage: store || { getItem: () => null, setItem: () => {} }, window: {}, document: {},
   };
@@ -124,16 +125,16 @@ test('days that count: closures, lunch off, today and later are not counted; a d
   // A manager decides the 0-guest day and the waiting days.
   const gm = app({ role: 'gm', user: 'GM', days, tipHours, closures: { '2026-10-07': { mode: 'closed' }, '2026-10-08': { mode: 'dclose' } } });
   setCfg(gm, '2026-10');
-  fn(gm, 'lcMarkDay')('2026-10-02', 'zero'); fn(gm, 'lcMarkDay')('2026-10-03', 'closed');
+  await fn(gm, 'lcMarkDay')('2026-10-02', 'zero'); await fn(gm, 'lcMarkDay')('2026-10-03', 'closed');
   let p = fn(gm, 'lcCompute')('2026-10');
   assert.deepEqual([p.C, p.d, p.D - o.D], [186, 4, -1]);
-  fn(gm, 'lcMarkDay')('2026-10-03', 'none');
+  await fn(gm, 'lcMarkDay')('2026-10-03', 'none');
   p = fn(gm, 'lcCompute')('2026-10');
   assert.ok(p.wait.includes('2026-10-03'));
   // Only GM/CEO mark days; never today or later.
-  const crew = app({ days }); fn(crew, 'lcMarkDay')('2026-10-02', 'zero');
+  const crew = app({ days }); await fn(crew, 'lcMarkDay')('2026-10-02', 'zero');
   assert.equal(crew.saves, undefined);
-  fn(gm, 'lcMarkDay')('2026-10-13', 'closed');
+  await fn(gm, 'lcMarkDay')('2026-10-13', 'closed');
   assert.equal(fn(gm, 'lcMark')('2026-10-13'), '');
 });
 
@@ -186,7 +187,7 @@ test('states: before the first number, targets not set, keeping the top star, mo
   const e = app({ role: 'gm', user: 'GM', days, today: '2026-11-02' }); setCfg(e, '2026-10');
   const eo = fn(e, 'lcCompute')('2026-10');
   assert.ok(eo.ended && eo.wait.length > 0, 'days after the 25th have no numbers');
-  eo.wait.forEach(d => fn(e, 'lcMarkDay')(d, 'closed'));
+  for (const d of eo.wait) await fn(e, 'lcMarkDay')(d, 'closed');
   e.M._lc.ym = '2026-10'; e.M._lc.view = 'admin';
   h = fn(e, 'renderLunchChallenge')();
   assert.match(h, /<button class="btn btn-primary btn-sm" style="margin-top:10px" onclick="lcConfirm\(\)">★3 で確定する<\/button>/);
@@ -294,15 +295,15 @@ test('confirming needs the month to end, every day decided and the settings; und
   c.today = '2026-10-02';
   await fn(c, 'lcConfirm')();
   assert.equal(c.mem.lunch_challenge['conf:2026-09'], undefined, 'not while days are waiting');
-  const o = fn(c, 'lcCompute')('2026-09'); o.wait.forEach(d => fn(c, 'lcMarkDay')(d, 'closed'));
+  const o = fn(c, 'lcCompute')('2026-09'); for (const d of o.wait) await fn(c, 'lcMarkDay')(d, 'closed');
   await fn(c, 'lcConfirm')();
   assert.equal(J(c.mem.lunch_challenge['conf:2026-09']).state, 'done');
-  fn(c, 'lcMarkDay')('2026-09-01', 'closed');
+  await fn(c, 'lcMarkDay')('2026-09-01', 'closed');
   assert.match(c.toasts.at(-1)[0], /確定した月は日の印を変えられません/);
-  fn(c, 'lcUnconfirm')();
+  await fn(c, 'lcUnconfirm')();
   assert.match(c.toasts.at(-1)[0], /理由を入れてください/);
   c.M._lc.confWhy = '客数の訂正';
-  fn(c, 'lcUnconfirm')();
+  await fn(c, 'lcUnconfirm')();
   assert.equal(J(c.mem.lunch_challenge['conf:2026-09']).state, 'none');
   assert.equal(fn(c, 'lcCompute')('2026-09').conf, null);
 });
@@ -316,16 +317,16 @@ test('saved records merge one by one (two managers on different things keep both
   assert.equal(m['cfg:2026-11'].tiers[0].t, '61');
   assert.equal(m['mark:2026-10-02'].k, 'zero'); assert.equal(m['mark:2026-10-03'].k, 'closed');
   // A removed mark is saved as "none" (a tombstone would win every merge and could never be set again).
-  fn(c, 'lcMarkDay')('2026-10-02', 'zero'); fn(c, 'lcMarkDay')('2026-10-02', 'none'); fn(c, 'lcMarkDay')('2026-10-02', 'closed');
+  await fn(c, 'lcMarkDay')('2026-10-02', 'zero'); await fn(c, 'lcMarkDay')('2026-10-02', 'none'); await fn(c, 'lcMarkDay')('2026-10-02', 'closed');
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'closed');
   assert.ok(Object.values(c.mem.lunch_challenge).every(v => !v._deleted));
   const t1 = c.mem.lunch_challenge['mark:2026-10-02']._at;
-  fn(c, 'lcMarkDay')('2026-10-02', 'none');
+  await fn(c, 'lcMarkDay')('2026-10-02', 'none');
   assert.ok(c.mem.lunch_challenge['mark:2026-10-02']._at > t1, 'always newer than the saved one');
   // Even when this device's clock is behind the device that saved last.
   vm.runInContext('Date.now = function(){ return 1000; }', c);
   c.mem.lunch_challenge['mark:2026-10-02'] = { k: 'closed', _at: 5000 };
-  fn(c, 'lcMarkDay')('2026-10-02', 'none');
+  await fn(c, 'lcMarkDay')('2026-10-02', 'none');
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02']._at, 5001);
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'none');
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'none'); assert.equal(c.mem.lunch_challenge['mark:2026-10-02']._deleted, undefined);
@@ -440,7 +441,7 @@ test('after the review: a confirmed month shows the confirmed numbers; a change 
   const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
   delete days['2026-09-15'];   // waiting → marked closed below
   const c = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(c, '2026-09'); c.M._lc.ym = '2026-09';
-  fn(c, 'lcMarkDay')('2026-09-15', 'closed');
+  await fn(c, 'lcMarkDay')('2026-09-15', 'closed');
   await fn(c, 'lcConfirm')();
   const conf = J(c.mem.lunch_challenge['conf:2026-09']);
   assert.equal(conf.avg10, 720); assert.equal(Object.keys(conf.days).length, conf.d);
@@ -509,12 +510,12 @@ test('after the review: a settings draft is dropped when the page is opened agai
 test('after the review: a waiting day can only be marked closed; the entry card at the month start shows only the state; the saved data is read once per drawing', async () => {
   const days = { '2026-10-01': day(70), '2026-10-02': day(0) };   // Oct 3 waiting, Oct 2 has 0 guests
   const gm = app({ role: 'gm', user: 'GM', days, today: '2026-10-05' }); setCfg(gm, '2026-10');
-  fn(gm, 'lcMarkDay')('2026-10-03', 'zero');
+  await fn(gm, 'lcMarkDay')('2026-10-03', 'zero');
   assert.equal(fn(gm, 'lcMark')('2026-10-03'), '', 'a day without numbers is never 0');
   assert.match(gm.toasts.at(-1)[0], /数字が取り込まれていない日は 0 名で確定できません/);
-  fn(gm, 'lcMarkDay')('2026-10-02', 'zero');
+  await fn(gm, 'lcMarkDay')('2026-10-02', 'zero');
   assert.equal(fn(gm, 'lcMark')('2026-10-02'), 'zero');
-  fn(gm, 'lcMarkDay')('2026-10-02', 'none');
+  await fn(gm, 'lcMarkDay')('2026-10-02', 'none');
   gm.M._lc.view = 'admin'; gm.M._lc.ym = '2026-10';
   const h = fn(gm, 'renderLunchChallenge')();
   const row = d => h.slice(h.indexOf('<b style="min-width:52px">' + d + '</b>'), h.indexOf('</div>', h.indexOf('<b style="min-width:52px">' + d + '</b>')));
@@ -576,14 +577,14 @@ test('second review: a closure change alone does not mark a confirmed month corr
   const m = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) m[iso] = day(72); }
   delete m['2026-09-15'];
   const g = app({ role: 'gm', user: 'GM', days: m, today: '2026-10-02' }); setCfg(g, '2026-09'); g.M._lc.ym = '2026-09'; g.M._lc.view = 'admin';
-  fn(g, 'lcMarkDay')('2026-09-15', 'closed');
+  await fn(g, 'lcMarkDay')('2026-09-15', 'closed');
   m['2026-09-15'] = day(55);
   const gh = fn(g, 'renderLunchChallenge')();
   assert.match(gh, / disabled onclick="lcConfirm\(\)"/);
   assert.match(gh, /休業だったとした日に客数があります（9\/15）/);
   await fn(g, 'lcConfirm')();
   assert.equal(g.mem.lunch_challenge['conf:2026-09'], undefined);
-  fn(g, 'lcMarkDay')('2026-09-15', 'none');
+  await fn(g, 'lcMarkDay')('2026-09-15', 'none');
   await fn(g, 'lcConfirm')();
   assert.equal(J(g.mem.lunch_challenge['conf:2026-09']).C, 25 * 72 + 55);
   assert.equal(fn(g, 'lcCompute')('2026-09').corrected, false);
@@ -591,7 +592,7 @@ test('second review: a closure change alone does not mark a confirmed month corr
   // A 0 mark counts only while the numbers say 0; if they go missing the day waits again.
   const z = { '2026-10-01': day(70), '2026-10-02': day(0) };
   const zc = app({ role: 'gm', user: 'GM', days: z, today: '2026-10-05' });
-  fn(zc, 'lcMarkDay')('2026-10-02', 'zero');
+  await fn(zc, 'lcMarkDay')('2026-10-02', 'zero');
   assert.equal(fn(zc, 'lcCompute')('2026-10').d, 2);
   delete z['2026-10-02'];
   const zo = fn(zc, 'lcCompute')('2026-10');
@@ -647,4 +648,75 @@ test('second review: saves read the newest shared data first and never save over
   assert.equal(p.pages.length, pages, 'no redraw');
   assert.equal(el.kids.length, 1); assert.equal(el.kids[0].tag, 'img'); assert.equal(el.kids[0].src, img); assert.equal(el.kids[0].alt, 'Photo <b>');
   assert.equal(el.attrs['data-lcph'], undefined);
+});
+
+test('third review: turning a weekday lunch back on is not a correction; nothing changes when the latest records cannot be read; stale confirm/undo/marks are refused', async () => {
+  // Tuesday lunch is off at confirmation (its lunch pre-orders are moved to dinner, as in the meeting tab), then turned back on.
+  const tipHours = { mode: 'hours', l1: '11:00', l2: '14:00', d1: '17:00', d2: '22:00', dow: { '火': { lOn: false, dOn: true } } };
+  const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
+  const c = app({ role: 'gm', user: 'GM', days, today: '2026-10-02', tipHours }); setCfg(c, '2026-09'); c.M._lc.ym = '2026-09';
+  await fn(c, 'lcConfirm')();
+  const conf = J(c.mem.lunch_challenge['conf:2026-09']);
+  assert.equal(conf.state, 'done'); assert.equal(conf.off['2026-09-01'], true, 'Tuesday 9/1 was off with numbers');
+  delete c.mem.tip_hours_config.F02;
+  let o = fn(c, 'lcCompute')('2026-09');
+  assert.ok(o.counted.some(r => r.date === '2026-09-01'), 'Tuesdays count again');
+  assert.equal(o.corrected, false, 'a settings change, not a correction');
+  // A day that was off with no numbers and gets guests later is still a correction.
+  c.mem.lunch_challenge['conf:2026-09'].off['2026-09-08'] = false;
+  assert.deepEqual([...fn(c, 'lcCompute')('2026-09').changed], ['2026-09-08']);
+
+  // The cloud cannot be read: nothing is saved, marked, confirmed or undone.
+  const f = app({ role: 'gm', user: 'GM', days: { '2026-10-01': day(70), '2026-10-02': day(0) }, today: '2026-10-05' });
+  f.pullOpKey = async () => false;
+  setCfg(f, '2026-11'); f.M._lc.ym = '2026-11';
+  fn(f, 'lcFormFor')('2026-11'); fn(f, 'lcFormSet')(0, 'rest', 'X');
+  const s0 = JSON.stringify(f.mem.lunch_challenge);
+  await fn(f, 'lcSaveCfg')();
+  fn(f, 'lcDinFor')('2026-11'); fn(f, 'lcDinSet')('place', 'Y'); await fn(f, 'lcSaveDin')();
+  await fn(f, 'lcMarkDay')('2026-10-02', 'zero');
+  assert.equal(JSON.stringify(f.mem.lunch_challenge), s0);
+  assert.match(f.toasts.at(-1)[0], /最新の記録を読めませんでした/);
+  assert.equal(f.M._lc.busy, false, 'the buttons come back');
+  // A read that throws is the same.
+  f.pullOpKey = async () => { throw new Error('offline'); };
+  await fn(f, 'lcMarkDay')('2026-10-02', 'zero');
+  assert.equal(JSON.stringify(f.mem.lunch_challenge), s0);
+
+  // Another manager confirmed while this page was open: confirm says so; a mark is refused.
+  const g = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(g, '2026-09'); g.M._lc.ym = '2026-09';
+  const other = { ym: '2026-09', state: 'done', C: 1, d: 1, D: 1, avg10: 10, tier: -1, days: {}, _at: 50, by: 'CEO' };
+  g.pullOpKey = async () => { g.mem.lunch_challenge['conf:2026-09'] = J(other); return true; };
+  await fn(g, 'lcConfirm')();
+  assert.equal(J(g.mem.lunch_challenge['conf:2026-09']).by, 'CEO');
+  assert.match(g.toasts.at(-1)[0], /この月はもう確定されています/);
+  delete g.mem.lunch_challenge['conf:2026-09'];
+  await fn(g, 'lcMarkDay')('2026-09-02', 'closed');
+  assert.equal(fn(g, 'lcMark')('2026-09-02'), '');
+  assert.match(g.toasts.at(-1)[0], /確定した月は日の印を変えられません/);
+  // Undo never cancels a newer confirmation made by someone else.
+  g.pullOpKey = async () => { g.mem.lunch_challenge['conf:2026-09'] = { ...J(other), _at: 80 }; return true; };
+  g.mem.lunch_challenge['conf:2026-09'] = J(other); g.M._lc.confWhy = 'fix';
+  await fn(g, 'lcUnconfirm')();
+  assert.equal(J(g.mem.lunch_challenge['conf:2026-09']).state, 'done');
+  assert.match(g.toasts.at(-1)[0], /ほかの人がこの月の確定を先に変えました/);
+  g.pullOpKey = async () => true;
+  await fn(g, 'lcUnconfirm')();
+  assert.equal(J(g.mem.lunch_challenge['conf:2026-09']).state, 'none');
+
+  // A photo cannot be picked while something is being saved; a late read does not redraw a field being typed in.
+  const b = app({ role: 'gm', user: 'GM' }); b.M._lc.ym = '2026-11'; fn(b, 'lcFormFor')('2026-11');
+  let uploads = 0; b.lcUploadPhoto = async () => { uploads++; return 'lunch_photo_abcdef1'; }; vm.runInContext('lcUploadPhoto = this.lcUploadPhoto', b);
+  b.M._lc.busy = true;
+  await fn(b, 'lcPickTierPhoto')({ files: [{ name: 'x.jpg' }] }, 0);
+  fn(b, 'lcDinFor')('2026-11'); await fn(b, 'lcPickDinPhoto')({ files: [{ name: 'x.jpg' }] });
+  assert.equal(uploads, 0);
+  b.M._lc.busy = false;
+  b.document = { activeElement: { tagName: 'INPUT', closest: () => ({}) } };
+  const before = b.pages.length;
+  fn(b, 'lcOpen')('mypage'); await new Promise(r => setImmediate(r));
+  assert.equal(b.pages.length, before + 1, 'only the page change, no redraw while typing');
+  b.document = {};
+  fn(b, 'lcOpen')('mypage'); await new Promise(r => setImmediate(r));
+  assert.equal(b.pages.length, before + 3, 'redrawn with the newest records when nobody is typing');
 });
