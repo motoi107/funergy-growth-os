@@ -308,7 +308,7 @@ test('confirming needs the month to end, every day decided and the settings; und
 });
 
 test('saved records merge one by one (two managers on different things keep both); history entries never collide', () => {
-  const c = app({ role: 'gm', user: 'GM' });
+  const c = app({ role: 'gm', user: 'GM', days: { '2026-10-02': day(0) } });
   const merge = fn(c, 'mergeMapByTime');
   const a = { 'cfg:2026-11': { tiers: tiers(), _at: 10 }, 'mark:2026-10-02': { k: 'zero', _at: 20 } };
   const b = { 'cfg:2026-11': { tiers: tiers('61'), _at: 30 }, 'mark:2026-10-03': { k: 'closed', _at: 25 } };
@@ -322,8 +322,14 @@ test('saved records merge one by one (two managers on different things keep both
   const t1 = c.mem.lunch_challenge['mark:2026-10-02']._at;
   fn(c, 'lcMarkDay')('2026-10-02', 'none');
   assert.ok(c.mem.lunch_challenge['mark:2026-10-02']._at > t1, 'always newer than the saved one');
+  // Even when this device's clock is behind the device that saved last.
+  vm.runInContext('Date.now = function(){ return 1000; }', c);
+  c.mem.lunch_challenge['mark:2026-10-02'] = { k: 'closed', _at: 5000 };
+  fn(c, 'lcMarkDay')('2026-10-02', 'none');
+  assert.equal(c.mem.lunch_challenge['mark:2026-10-02']._at, 5001);
+  assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'none');
   assert.equal(c.mem.lunch_challenge['mark:2026-10-02'].k, 'none'); assert.equal(c.mem.lunch_challenge['mark:2026-10-02']._deleted, undefined);
-  assert.equal(Object.keys(c.mem.lunch_challenge).filter(k => k.startsWith('h:')).length, 4);
+  assert.equal(Object.keys(c.mem.lunch_challenge).filter(k => k.startsWith('h:')).length, 5);
   // The key is synced, merged and never freed (checked in the source).
   assert.match(html, /'q_budgets','fv_config','lunch_challenge'\];/);
   assert.match(html, /  lunch_challenge:    \{ merge: mergeMapByTime, covers: _coversMapByTime \},/);
@@ -399,4 +405,132 @@ test('history lists each month with its result; past months keep their own targe
   assert.match(h, /2026年10月/); assert.match(h, /進行中/);
   assert.ok(h.includes('Restaurant &lt;i&gt;B&lt;/i&gt; · 10/20 · 12 人'));
   assert.equal((h.match(/読み込み中…/g) || []).length, 1, 'only valid photo ids (the one valid photo is being loaded)');
+});
+
+test('after the review: every photo is fetched, a failed fetch is not "Loading" forever, and opening the page again retries', async () => {
+  const ids = Array.from({ length: 25 }, (_, i) => 'lunch_photo_p' + String(i).padStart(5, '0'));
+  const img = 'data:image/jpeg;base64,' + 'A'.repeat(64);
+  let fail = false;
+  const c = app({ api: url => { if (fail) throw new Error('offline'); const want = decodeURIComponent(url).match(/in\.\(([^)]*)\)/)[1].split(','); return want.map(k => ({ key: k, value: { img } })); } });
+  const timers = []; c.setTimeout = f => { timers.push(f); return timers.length; };
+  const tick = async () => { const f = timers.shift(); assert.ok(f, 'a fetch is waiting'); f(); for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r)); };
+  ids.forEach(id => fn(c, 'lcAskPhoto')(id));
+  assert.equal(timers.length, 1, 'one fetch for all the photos asked at once');
+  await tick();
+  assert.equal(c.calls.length, 1);
+  assert.equal(decodeURIComponent(c.calls[0]).match(/in\.\(([^)]*)\)/)[1].split(',').length, 20, '20 at a time');
+  assert.equal(Object.values(c.M._lc.photoAsk).filter(v => v === 1).length, 5, 'the rest are still asked for');
+  await tick();   // the rest are fetched on their own (no new drawing needed)
+  assert.equal(c.calls.length, 2);
+  assert.equal(Object.keys(c.M._lc.photos).length, 25, 'all 25 photos are in');
+  assert.equal(timers.length, 0, 'nothing more to fetch');
+  // A fetch that fails shows the placeholder (never "Loading…" forever); opening the page again tries once more.
+  fail = true;
+  fn(c, 'lcAskPhoto')('lunch_photo_zz9999');
+  await tick();
+  assert.equal(timers.length, 0, 'a failed fetch is not tried again and again');
+  assert.equal(c.M._lc.photoAsk.lunch_photo_zz9999, 'none');
+  assert.doesNotMatch(fn(c, 'lcPhotoHtml')('lunch_photo_zz9999', 'X'), /読み込み中|Loading/);
+  fn(c, 'lcOpen')('mypage');
+  assert.equal(c.M._lc.photoAsk.lunch_photo_zz9999, undefined, 'asked again after reopening');
+  assert.match(fn(c, 'lcPhotoHtml')('lunch_photo_zz9999', 'X'), /読み込み中/);
+});
+
+test('after the review: a confirmed month shows the confirmed numbers; a change is found day by day; a day marked closed that gets guests is flagged', () => {
+  const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
+  delete days['2026-09-15'];   // waiting → marked closed below
+  const c = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(c, '2026-09'); c.M._lc.ym = '2026-09';
+  fn(c, 'lcMarkDay')('2026-09-15', 'closed');
+  fn(c, 'lcConfirm')();
+  const conf = J(c.mem.lunch_challenge['conf:2026-09']);
+  assert.equal(conf.avg10, 720); assert.equal(Object.keys(conf.days).length, conf.d);
+  let o = fn(c, 'lcCompute')('2026-09');
+  assert.equal(o.corrected, false);
+  // Two days change by +10 and −10: the total and the number of days are the same, but the numbers changed.
+  days['2026-09-01'] = day(82); days['2026-09-02'] = day(62);
+  o = fn(c, 'lcCompute')('2026-09');
+  assert.deepEqual([o.C, o.d], [conf.C, conf.d]);
+  assert.equal(o.corrected, true, 'found day by day, not by the total');
+  days['2026-09-01'] = day(72); days['2026-09-02'] = day(72);
+  assert.equal(fn(c, 'lcCompute')('2026-09').corrected, false);
+  // A day marked closed that later gets guests: flagged on the calendar and as a correction.
+  days['2026-09-15'] = day(55);
+  o = fn(c, 'lcCompute')('2026-09');
+  assert.ok(o.days.find(r => r.date === '2026-09-15').conflict, 'marked closed but guests came in');
+  assert.equal(o.corrected, true);
+  c.M._lc.view = 'admin';
+  assert.match(fn(c, 'renderLunchChallenge')(), /休み扱いなのに客数がある日：9\/15/);
+  // The page shows the confirmed numbers first, and today's numbers under them when they changed.
+  delete days['2026-09-15'];
+  ['01', '02', '03', '04', '05'].forEach(d => { days['2026-09-' + d] = day(10); });   // 1,800 − 5 × 62 = 1,490 → 59.6, below ★1 now
+  c.M._lc.view = 'staff';
+  const h = fn(c, 'renderLunchChallenge')();
+  assert.match(h, /<div class="lc-big">72\.0<\/div><div class="lc-mut">名<\/div><span[^>]*>確定<\/span>/);
+  assert.match(h, /ランチ 25 日で 1,800 名/);
+  assert.match(h, /確定のあとで客数が直りました（訂正あり・再確認）/);
+  assert.match(h, /今の数字：平均 59\.6・ランチ 25 日で 1,490 名/);
+  assert.match(h, /★2 のライン/); assert.doesNotMatch(h, /★1 まで あと/, 'the ladder shows the confirmed result');
+  // The bar and the arrow stand at 72.0 (61.4% of the ladder from 48.0 to 87.1), not at today's 59.6 (29.7%).
+  assert.match(h, /background:#f0661f;width:61\.4%/); assert.match(h, /left:61\.4%;transform:translateX\(-50%\);font-size:10px;font-weight:800">▼/);
+  // Even if every counted day disappeared, the confirmed bar stays.
+  Object.keys(days).forEach(k => delete days[k]);
+  assert.match(fn(c, 'renderLunchChallenge')(), /★2 のライン/);
+  assert.equal(J(c.mem.lunch_challenge['conf:2026-09']).avg10, 720, 'the confirmed record is never rewritten');
+});
+
+test('after the review: a settings draft is dropped when the page is opened again and cannot save over another manager\'s newer save', () => {
+  const c = app({ role: 'gm', user: 'GM', today: '2026-10-20' });
+  setCfg(c, '2026-11');
+  c.M._lc.ym = '2026-11';
+  fn(c, 'lcFormFor')('2026-11'); fn(c, 'lcFormSet')(0, 'rest', 'Mine');
+  // Opening the page again forgets the draft.
+  fn(c, 'lcOpen')('mypage');
+  assert.equal(c.M._lc.form, null);
+  c.M._lc.ym = '2026-11';
+  fn(c, 'lcFormFor')('2026-11'); fn(c, 'lcFormSet')(0, 'rest', 'Mine');
+  // Another manager saves first (it arrives through the sync).
+  c.mem.lunch_challenge['cfg:2026-11'] = { ym: '2026-11', state: 'set', tiers: tiers('61'), who: 'Other', _at: 99, by: 'CEO' };
+  const before = c.saves;
+  fn(c, 'lcSaveCfg')();
+  assert.equal(c.saves, before, 'not saved over the newer settings');
+  assert.match(c.toasts.at(-1)[0], /ほかの人がこの月の設定を先に保存しました/);
+  assert.equal(c.M._lc.form, null, 'the draft is read again from the new settings');
+  assert.equal(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[0].t, '61');
+  // From the new settings the change can be made.
+  fn(c, 'lcFormFor')('2026-11'); fn(c, 'lcFormSet')(0, 'rest', 'Mine');
+  c.M._lc.reason = 'x';
+  fn(c, 'lcSaveCfg')();
+  assert.equal(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[0].rest, 'Mine');
+  // The same manager can save twice in a row.
+  fn(c, 'lcFormFor')('2026-11'); fn(c, 'lcFormSet')(0, 'rest', 'Mine 2'); fn(c, 'lcSaveCfg')();
+  assert.equal(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[0].rest, 'Mine 2');
+});
+
+test('after the review: a waiting day can only be marked closed; the entry card at the month start shows only the state; the saved data is read once per drawing', () => {
+  const days = { '2026-10-01': day(70), '2026-10-02': day(0) };   // Oct 3 waiting, Oct 2 has 0 guests
+  const gm = app({ role: 'gm', user: 'GM', days, today: '2026-10-05' }); setCfg(gm, '2026-10');
+  fn(gm, 'lcMarkDay')('2026-10-03', 'zero');
+  assert.equal(fn(gm, 'lcMark')('2026-10-03'), '', 'a day without numbers is never 0');
+  assert.match(gm.toasts.at(-1)[0], /数字が取り込まれていない日は 0 名で確定できません/);
+  fn(gm, 'lcMarkDay')('2026-10-02', 'zero');
+  assert.equal(fn(gm, 'lcMark')('2026-10-02'), 'zero');
+  fn(gm, 'lcMarkDay')('2026-10-02', 'none');
+  gm.M._lc.view = 'admin'; gm.M._lc.ym = '2026-10';
+  const h = fn(gm, 'renderLunchChallenge')();
+  const row = d => h.slice(h.indexOf('<b style="min-width:52px">' + d + '</b>'), h.indexOf('</div>', h.indexOf('<b style="min-width:52px">' + d + '</b>')));
+  assert.match(row('10/2'), /0 名で確定/); assert.match(row('10/2'), /休業だった/);
+  assert.doesNotMatch(row('10/3'), /0 名で確定/); assert.match(row('10/3'), /休業だった/); assert.match(row('10/3'), /Toast の取込を待つ/);
+  // Month start: only the state, no "below ★1".
+  const s = app({ today: '2026-11-02' }); setCfg(s, '2026-11');
+  const card = fn(s, 'lcEntryCard')('mypage');
+  assert.match(card, />集計開始前</); assert.doesNotMatch(card, /★1 まで/);
+  // One read of the saved data per drawing (the page and each card).
+  const r = app({ days: { '2026-10-01': day(62) } }); setCfg(r, '2026-10');
+  let n = 0; const ls0 = r.ls; r.ls = (k, d) => { if (k === 'lunch_challenge') n++; return ls0(k, d); }; vm.runInContext('ls = this.ls', r);
+  fn(r, 'renderLunchChallenge')();
+  assert.equal(n, 1, 'the page reads once');
+  n = 0; fn(r, 'lcEntryCard')('mypage'); assert.equal(n, 1, 'the card reads once');
+  // A save inside a drawing is read again.
+  const g2 = app({ role: 'gm', user: 'GM', days }); setCfg(g2, '2026-10');
+  assert.equal(vm.runInContext('lcCached(function(){ lcSaveMany([["mark:2026-10-02", { k:"zero" }]]); return lcMark("2026-10-02"); })', g2), 'zero');
 });

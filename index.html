@@ -71839,10 +71839,17 @@ function lcCanSee(){
   try { return empStoresOf(e).indexOf(LC_STORE) >= 0; } catch(err) { return false; }
 }
 /* ---- 保存 ---- */
-function lcAll(){ var v = null; try { v = ls(LC_KEY, {}); } catch(e) { v = null; } return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}; }
+function lcAll(){
+  if (_lc.cache) return _lc.cache;
+  var v = null; try { v = ls(LC_KEY, {}); } catch(e) { v = null; }
+  return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
+}
+/* 1 回の描画のあいだは、保存したデータを 1 回だけ読む（書いたら読み直す） */
+function lcCached(fn){ var own = !_lc.cache; if (own) _lc.cache = lcAll(); try { return fn(); } finally { if (own) _lc.cache = null; } }
 function lcRec(k){ var a = lcAll(), r = lcHas(a, k) ? a[k] : null; return (r && typeof r === 'object' && !Array.isArray(r) && !r._deleted) ? r : null; }
 /* いくつかの記録を 1 回で保存する（[[キー, 中身], …]）。時刻は前の記録より必ず新しく */
 function lcSaveMany(list){
+  _lc.cache = null;
   var a = Object.assign({}, lcAll()), now = Date.now(), by = lcMe();
   list.forEach(function(x){
     var old = lcHas(a, x[0]) ? a[x[0]] : null, at = Math.max(now, old ? (Number(old._at) || 0) + 1 : 0);
@@ -71903,7 +71910,7 @@ function lcCompute(ym){
   days.forEach(function(d){
     var plan = lcDayPlan(d), r = { date:d, plan:plan, g:null, st:plan };
     if (d < today) { var gx = lcDayGuests(d); if (gx !== null && (!o.through || d > o.through)) o.through = d; r.data = gx; }
-    if (plan !== 'lunch') { if (plan !== 'mark' && r.data > 0) r.conflict = true; o.days.push(r); return; }
+    if (plan !== 'lunch') { if (r.data > 0) r.conflict = true; o.days.push(r); return; }
     o.D++;
     if (d >= today) { r.st = 'future'; o.future.push(d); o.days.push(r); return; }
     var g = r.data, mk = lcMark(d);
@@ -71928,7 +71935,14 @@ function lcCompute(ym){
   }
   var cf = lcRec('conf:' + ym);
   o.conf = (cf && cf.state === 'done') ? cf : null;
-  if (o.conf) o.corrected = (Number(o.conf.C) !== o.C || Number(o.conf.d) !== o.d || Number(o.conf.D) !== o.D || o.pending > 0);
+  if (o.conf) {
+    /* 確定したときの日ごとの客数と今を比べる（休業の設定を変えて営業予定の日数だけが変わったときは出さない）。休業だったとした日に客数が入ったときも出す */
+    var then = (o.conf.days && typeof o.conf.days === 'object') ? o.conf.days : {}, now = {};
+    o.counted.forEach(function(r){ now[r.date] = r.g; });
+    var ks = Object.keys(then).concat(Object.keys(now));
+    o.corrected = o.pending > 0 || ks.some(function(k){ return !lcHas(then, k) || !lcHas(now, k) || Number(then[k]) !== Number(now[k]); })
+      || o.days.some(function(r){ return r.st === 'mark' && r.data > 0; });
+  }
   return o;
 }
 /* 目標 T（10 倍の整数）に届くための数。R＝0 は割らない */
@@ -71984,8 +71998,10 @@ async function lcFetchPhotos(){
     var rows = await r.json();
     (Array.isArray(rows) ? rows : []).forEach(function(x){ var src = x && x.value && typeof obImgSrc === 'function' ? obImgSrc(x.value.img) : ''; if (src && lcPhotoId(x.key)) _lc.photos[x.key] = src; });
     ids.forEach(function(k){ if (!_lc.photos[k]) _lc.photoAsk[k] = 'none'; });
-    lcRerender();
-  } catch(e) { ids.forEach(function(k){ delete _lc.photoAsk[k]; }); }
+  } catch(e) { ids.forEach(function(k){ _lc.photoAsk[k] = 'none'; }); }
+  /* 21 枚目から：残りをもう一度（20 枚ずつ） */
+  if (Object.keys(_lc.photoAsk).some(function(k){ return _lc.photoAsk[k] === 1; }) && !_lc.photoT) _lc.photoT = setTimeout(function(){ _lc.photoT = null; lcFetchPhotos(); }, 0);
+  lcRerender();
 }
 /* 端末で小さくしてから保存する（長い辺 900px・JPEG。大きければ質を下げてもう一度） */
 function lcCompress(file, cb){
@@ -72025,14 +72041,18 @@ function lcUploadPhoto(file, ym){
 }
 /* ---- 入口：マイページの上のカード・店舗オペレーション（アプリの言葉に合わせる） ---- */
 function lcWithAppLang(fn){ _lc.cardLang = (typeof curLang !== 'undefined' && curLang === 'en') ? 'en' : 'ja'; try { return fn(); } finally { _lc.cardLang = null; } }
-function lcOpen(from){ _lc.view = 'staff'; _lc.ym = null; _lc.from = from || null; go('lunch_challenge'); }
+function lcOpen(from){
+  _lc.view = 'staff'; _lc.ym = null; _lc.from = from || null; _lc.form = null; _lc.formYm = null; _lc.din = null; _lc.dinYm = null; _lc.reason = ''; _lc.confWhy = '';
+  Object.keys(_lc.photoAsk).forEach(function(k){ if (_lc.photoAsk[k] === 'none') delete _lc.photoAsk[k]; });   /* 取れなかった写真は開き直したときにもう一度 */
+  go('lunch_challenge');
+}
 function lcEntryCard(from){
   if (!lcCanSee()) return '';
-  return lcWithAppLang(function(){
+  return lcCached(function(){ return lcWithAppLang(function(){
     var o = lcCompute(bizToday().slice(0, 7)), sub = '', big = lcAvgL(o.avg10), line = '';
     if (o.d === 0) { big = '—'; line = o.pending ? lcT('集計待ち', 'Waiting for numbers') : lcT('集計開始前', 'Not started yet'); }
     if (o.cfg) {
-      line = (o.reached >= 0 ? lcStarMark(o.reached) + lcT(' のライン', ' line') : lcT('★1 まで', 'Below ★')) + (line ? ' · ' + line : '');
+      if (o.d > 0) line = (o.reached >= 0 ? lcStarMark(o.reached) + lcT(' のライン', ' line') : lcT('★1 まで', 'Below ★'));
       if (o.next >= 0 && !o.pending && o.pace[o.next].per != null && o.d > 0) sub = lcT('次の ', 'Next ') + lcStarMark(o.next) + lcT('（' + lcAvgL(o.cfg.tiers[o.next].t10) + '）まで 1 日 ' + o.pace[o.next].per + ' 名・残り ' + o.R + ' 日', ' at ' + lcAvgL(o.cfg.tiers[o.next].t10) + ' · ' + o.pace[o.next].per + ' a day for the ' + o.R + ' days left');
       else if (o.next < 0 && o.d > 0) sub = lcT('★3 に届いています', '★★★ reached');
     } else line = lcT('目標は準備中', 'Targets coming soon') + (line ? ' · ' + line : '');
@@ -72042,7 +72062,7 @@ function lcEntryCard(from){
       + '<div style="display:flex;align-items:baseline;gap:8px;margin-top:4px"><div style="font-size:30px;font-weight:800;line-height:1">' + big + '</div><div style="font-size:12px;color:var(--muted)">' + lcT('ランチの客数／日', 'lunch guests / day') + '</div>'
       + '<div style="margin-left:auto;font-size:12px;font-weight:700;color:#b7791f">' + escapeHtml(line) + '</div></div>'
       + (sub ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + escapeHtml(sub) + '</div>' : '') + '</div>';
-  });
+  }); });
 }
 /* ---- ページ ---- */
 function lcFirstYm(){
@@ -72052,7 +72072,8 @@ function lcFirstYm(){
 }
 function lcSetYm(ym){ if (!lcYmOk(ym)) return; _lc.ym = ym; lcRerender(); }
 function lcSetView(v){ if (['staff','history','admin'].indexOf(v) < 0) return; if (v === 'admin' && !lcCanAdmin()) return; _lc.view = v; lcRerender(); try { window.scrollTo(0, 0); } catch(e) {} }
-function renderLunchChallenge(){
+function renderLunchChallenge(){ return lcCached(lcRenderPage); }
+function lcRenderPage(){
   if (!lcCanSee()) return '<div class="card" style="text-align:center;color:var(--muted);padding:24px">' + escapeHtml(lcT('Tenkichi の人だけが見られるページです', 'This page is for the Tenkichi team')) + '</div>';
   var cur = bizToday().slice(0, 7), maxYm = lcCanAdmin() ? lcYmAdd(cur, 1) : cur, minYm = lcFirstYm();
   if (!lcYmOk(_lc.ym) || _lc.ym > maxYm || _lc.ym < minYm) _lc.ym = cur;
@@ -72086,6 +72107,13 @@ function lcHeroHtml(o){
         : first ? lcT('最初のランチ営業日 ' + lcDateL(first) + ' の数字が入ると、平均が出ます。0 名とは出しません。', 'The average appears once the first lunch day (' + lcDateL(first) + ') is counted. It never shows 0.') : lcT('この月はランチの営業予定がありません。', 'No lunch days are planned this month.')) + '</div></div>';
     return h;
   }
+  if (o.conf) {
+    h += '<div class="lc-row" style="align-items:baseline;margin:2px 0 6px"><div class="lc-big">' + lcAvgL(Number(o.conf.avg10)) + '</div><div class="lc-mut">' + lcT('名', 'avg') + '</div>' + lcChip(lcT('確定', 'Confirmed'), '#0d6b44', '#e6f6ee') + '</div>'
+      + '<div style="font-size:13px">' + escapeHtml(lcT('ランチ ' + o.conf.d + ' 日で ' + lcN(o.conf.C) + ' 名', lcN(o.conf.C) + ' guests over ' + o.conf.d + (Number(o.conf.d) === 1 ? ' lunch day' : ' lunch days'))) + '</div>';
+    if (o.corrected) h += '<div style="font-size:12px;margin-top:6px;color:#b42318;font-weight:700">' + lcT('確定のあとで客数が直りました（訂正あり・再確認）', 'Guest numbers changed after the month was confirmed (being rechecked)') + '</div>'
+      + '<div class="lc-mut" style="font-size:11.5px">' + escapeHtml(lcT('今の数字：平均 ' + lcAvgL(o.avg10) + '・ランチ ' + o.d + ' 日で ' + lcN(o.C) + ' 名', 'Now: average ' + lcAvgL(o.avg10) + ' · ' + lcN(o.C) + ' guests over ' + o.d + ' lunch days')) + '</div>';
+    return h + '</div>';
+  }
   var delta = (o.prev10 != null) ? (Math.floor(o.avg10) - Math.floor(o.prev10)) / 10 : null;
   h += '<div class="lc-row" style="align-items:baseline;margin:2px 0 6px"><div class="lc-big">' + lcAvgL(o.avg10) + '</div><div class="lc-mut">' + lcT('名', 'avg') + '</div>'
     + (o.pending ? lcChip(lcT('暫定', 'Provisional'), '#7a4f00', '#fff1d6') : '')
@@ -72095,7 +72123,6 @@ function lcHeroHtml(o){
   if (delta != null && !o.ended) h += '<div class="lc-mut" style="font-size:11.5px;margin-top:2px">' + escapeHtml(lcT('前の日までの平均 ' + lcAvgL(o.prev10) + '（' + lcDateL(o.prevThrough) + ' まで）からの変化', 'Change since the day before (' + lcAvgL(o.prev10) + ' through ' + lcDateL(o.prevThrough) + ')')) + '</div>';
   if (o.wait.length) h += '<div style="font-size:12px;margin-top:6px;color:#7a4f00">' + escapeHtml(lcT('未集計 ' + o.wait.length + ' 日（' + lcList(o.wait) + '）。この日は 0 名ではなく、平均から外しています。', o.wait.length + ' day(s) not loaded yet (' + lcList(o.wait) + '). They are left out, not counted as 0.')) + '</div>';
   if (o.zero.length) h += '<div style="font-size:12px;margin-top:4px;color:#7a4f00">' + escapeHtml(lcT('ランチ 0 名の日 ' + o.zero.length + ' 日（' + lcList(o.zero) + '）は確かめ中で、平均から外しています。', o.zero.length + ' day(s) with 0 lunch guests (' + lcList(o.zero) + ') are being checked and left out.')) + '</div>';
-  if (o.corrected) h += '<div style="font-size:12px;margin-top:6px;color:#b42318;font-weight:700">' + lcT('確定のあとで客数が直りました（訂正あり・再確認）', 'Guest numbers changed after the month was confirmed (being rechecked)') + '</div>';
   return h + '</div>';
 }
 /* 段階のはしご・次の目標 */
@@ -72104,12 +72131,12 @@ function lcGoalHtml(o){
   if (!c) return '<div class="lc-card"><div class="lc-sec">' + lcT('準備中', 'Coming soon') + '</div><div class="lc-mut" style="font-size:12.5px">' + lcT('今月の目標とごほうびは、まだ決まっていません。平均客数だけ出します。', 'This month\'s targets and rewards are not set yet. Only the average is shown.') + '</div></div>';
   var t = c.tiers.map(function(x){ return x.t10; }), lo = Math.max(0, t[0] - Math.round((t[2] - t[0]) * 0.6)), hi = t[2] + Math.round((t[2] - t[0]) * 0.35) + 1;
   var pos = function(v){ return Math.max(0, Math.min(100, (v - lo) * 100 / (hi - lo))); };
-  var reached = o.conf ? Number(o.conf.tier) : o.reached, h = '<div class="lc-card">';
+  var reached = o.conf ? Number(o.conf.tier) : o.reached, av = o.conf ? Number(o.conf.avg10) : o.avg10, dd = o.conf ? Number(o.conf.d) : o.d, h = '<div class="lc-card">';
   h += '<div style="position:relative;height:46px;margin:6px 6px 2px"><div style="position:absolute;left:0;right:0;top:18px;height:10px;border-radius:99px;background:#efe7dc"></div>';
-  if (o.d) h += '<div style="position:absolute;left:0;top:18px;height:10px;border-radius:99px;background:#f0661f;width:' + pos(o.avg10).toFixed(1) + '%"></div>';
+  if (dd) h += '<div style="position:absolute;left:0;top:18px;height:10px;border-radius:99px;background:#f0661f;width:' + pos(av).toFixed(1) + '%"></div>';
   t.forEach(function(v, i){ h += '<div style="position:absolute;top:10px;left:' + pos(v).toFixed(1) + '%;transform:translateX(-50%);text-align:center;white-space:nowrap"><div style="width:2px;height:26px;background:#b7791f;margin:0 auto"></div><div style="font-size:10.5px;font-weight:700" class="lc-gold">' + lcStarMark(i) + ' ' + lcAvgL(v) + '</div></div>'; });
-  if (o.d) h += '<div style="position:absolute;top:0;left:' + pos(o.avg10).toFixed(1) + '%;transform:translateX(-50%);font-size:10px;font-weight:800">▼</div>';
-  h += '</div><div class="lc-row" style="margin-top:14px;justify-content:space-between"><b>' + (o.d ? (reached >= 0 ? escapeHtml(lcT(lcTierShort(reached) + ' のライン', 'Now at ' + lcTierShort(reached) + ' line')) : escapeHtml(lcT('★1 まで あと ' + ((t[0] - o.avg10) / 10).toFixed(1), (((t[0] - o.avg10) / 10).toFixed(1)) + ' to ★ 1 Star'))) : lcT('今月の目標', 'This month\'s targets')) + '</b>'
+  if (dd) h += '<div style="position:absolute;top:0;left:' + pos(av).toFixed(1) + '%;transform:translateX(-50%);font-size:10px;font-weight:800">▼</div>';
+  h += '</div><div class="lc-row" style="margin-top:14px;justify-content:space-between"><b>' + (dd ? (reached >= 0 ? escapeHtml(lcT(lcTierShort(reached) + ' のライン', 'Now at ' + lcTierShort(reached) + ' line')) : escapeHtml(lcT('★1 まで あと ' + ((t[0] - av) / 10).toFixed(1), (((t[0] - av) / 10).toFixed(1)) + ' to ★ 1 Star'))) : lcT('今月の目標', 'This month\'s targets')) + '</b>'
     + '<span class="lc-mut" style="font-size:11.5px">' + (o.conf ? lcT('確定しました', 'Confirmed') : lcT('月末まで確定しません', 'Not final until month end')) + '</span></div>';
   h += '</div>';
   /* 次の目標 */
@@ -72169,7 +72196,7 @@ function lcChartHtml(o){
   var mn = Math.min.apply(null, all), mx = Math.max.apply(null, all), step = Math.max(100, Math.ceil((mx - mn) / 5 / 100) * 100);
   var lo = Math.floor(mn / step) * step, hi = Math.ceil(mx / step) * step; if (hi - lo < 2 * step) hi = lo + 2 * step;
   var x = function(d){ return X0 + (X1 - X0) * ((+d.slice(8, 10)) - 0.5) / n; }, y = function(v){ return Y1 - (Y1 - Y0) * (v - lo) / (hi - lo); };
-  var s = '<svg viewBox="0 0 360 176" width="100%" role="img" aria-label="' + escapeHtml(lcT('日ごとのランチ客数と今月ここまでの平均', 'Daily lunch guests and the month average so far')) + '">';
+  var s = '<svg viewBox="0 0 360 176" width="100%" role="img" aria-label="' + escapeHtml(o.ym === bizToday().slice(0, 7) ? lcT('日ごとのランチ客数と今月ここまでの平均', 'Daily lunch guests and the month average so far') : lcT('日ごとのランチ客数とその日までの月の平均', 'Daily lunch guests and the month average to each day')) + '">';
   for (var g = lo; g <= hi; g += step) s += '<text x="34" y="' + (y(g) + 3.5).toFixed(1) + '" font-size="10" text-anchor="end" fill="#6d6459">' + (g / 10) + '</text>';
   if (c) c.tiers.forEach(function(t){ s += '<line x1="' + X0 + '" y1="' + y(t.t10).toFixed(1) + '" x2="' + X1 + '" y2="' + y(t.t10).toFixed(1) + '" stroke="#d9b45a" stroke-dasharray="4 4"></line>'; });
   s += '<line x1="' + X0 + '" y1="' + Y1 + '" x2="' + X1 + '" y2="' + Y1 + '" stroke="#ece6dd"></line>';
@@ -72184,7 +72211,7 @@ function lcChartHtml(o){
   for (var dd = 1; dd <= n; dd += 2) s += '<text x="' + x(o.ym + '-' + String(dd).padStart(2, '0')).toFixed(1) + '" y="166" font-size="10" text-anchor="middle" fill="#6d6459">' + dd + '</text>';
   s += '</svg>';
   var leg = '<div class="lc-row lc-mut" style="font-size:11px;gap:12px;margin-top:4px"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#8d8378"></span> ' + lcT('その日の客数', 'Guests that day') + '</span>'
-    + '<span><span style="display:inline-block;width:14px;height:3px;background:#f0661f;vertical-align:middle"></span> ' + lcT('今月ここまでの平均', 'Month average so far') + '</span>'
+    + '<span><span style="display:inline-block;width:14px;height:3px;background:#f0661f;vertical-align:middle"></span> ' + (o.ym === bizToday().slice(0, 7) ? lcT('今月ここまでの平均', 'Month average so far') : lcT('その日までの月の平均', 'Month average to that day')) + '</span>'
     + (c ? '<span><span style="display:inline-block;width:14px;border-top:2px dashed #d9b45a;vertical-align:middle"></span> ' + lcT('★ のライン', 'Star lines') + '</span>' : '')
     + ((o.wait.length || o.zero.length) ? '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid #b7791f"></span> ' + lcT('集計待ち・確かめ中', 'Waiting / checking') + '</span>' : '') + '</div>';
   var ex = '<div class="lc-row" style="font-size:12px;gap:14px;margin-top:6px">' + (o.best ? '<span>' + escapeHtml(lcT('いちばん多い日：', 'Best day: ')) + '<b>' + o.best.g + '</b>' + lcT('（', ' (') + escapeHtml(lcDateL(o.best.date)) + lcT('）', ')') + '</span>' : '')
@@ -72194,7 +72221,7 @@ function lcChartHtml(o){
 /* 今月のごほうび（予算は GM・CEO だけ） */
 function lcRewardsHtml(o){
   var c = o.conf ? lcSnapCfg(o.conf) : o.cfg; if (!c) return '';
-  var admin = lcCanAdmin(), won = o.conf ? Number(o.conf.tier) : o.reached, h = '<div class="lc-card"><div class="lc-row" style="justify-content:space-between"><div class="lc-sec" style="margin:0">' + lcT('今月のごほうび', 'This month\'s rewards') + '</div><span class="lc-mut" style="font-size:11px">' + lcT('月に 1 つ・届いたいちばん上', 'One per month · the highest reached') + '</span></div>';
+  var admin = lcCanAdmin(), won = o.conf ? Number(o.conf.tier) : o.reached, h = '<div class="lc-card"><div class="lc-row" style="justify-content:space-between"><div class="lc-sec" style="margin:0">' + (o.ym === bizToday().slice(0, 7) ? lcT('今月のごほうび', 'This month\'s rewards') : escapeHtml(lcT(lcMonthShort(o.ym) + 'のごほうび', lcMonthShort(o.ym) + ' rewards'))) + '</div><span class="lc-mut" style="font-size:11px">' + lcT('月に 1 つ・届いたいちばん上', 'One per month · the highest reached') + '</span></div>';
   c.tiers.forEach(function(x, i){
     var st = o.conf ? (i === won ? [lcT('獲得', 'Won'), '#0d6b44', '#e6f6ee'] : [lcT('—', '—'), '#6d6459', '#f3eee7'])
       : (o.d && i <= o.reached) ? [lcT('到達', 'Reached'), '#0d6b44', '#e6f6ee'] : i === o.next ? [lcT('次', 'Next'), '#b4410c', '#ffe7d6'] : [lcT('まだ', 'Locked'), '#6d6459', '#f3eee7'];
@@ -72206,7 +72233,7 @@ function lcRewardsHtml(o){
       + (admin && cfgT && cfgT.budget ? '<div style="font-size:11.5px;margin-top:2px;color:#7a4f00">' + escapeHtml(lcT('1 人あたり $' + cfgT.budget + '（' + LC_TAX[cfgT.tax][0] + '）・管理者だけに表示', '$' + cfgT.budget + ' per person (' + LC_TAX[cfgT.tax][1] + ') · managers only')) + '</div>' : '')
       + (cfgT && cfgT.who ? '<div class="lc-mut" style="font-size:11.5px">' + escapeHtml(cfgT.who) + '</div>' : '') + '</div></div>';
   });
-  return h + '<div class="lc-mut" style="font-size:11.5px;margin-top:8px">' + escapeHtml((c.who ? lcT('参加：', 'Who joins: ') + c.who + ' · ' : '') + lcT('月末に数字を確かめてから決まります。', 'Decided after the month ends and the numbers are checked.')) + '</div></div>';
+  return h + '<div class="lc-mut" style="font-size:11.5px;margin-top:8px">' + escapeHtml((c.who ? lcT('参加：', 'Who joins: ') + c.who + ' · ' : '') + (o.conf ? lcT('確定しました。', 'Confirmed.') : lcT('月末に数字を確かめてから決まります。', 'Decided after the month ends and the numbers are checked.'))) + '</div></div>';
 }
 /* ---- 過去の月 ---- */
 function lcHistoryHtml(minYm, cur){
@@ -72244,7 +72271,7 @@ function lcFormFor(ym){
   var c = lcCfg(ym), r = lcRec('cfg:' + ym);
   var base = c ? c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; })
     : [0, 1, 2].map(function(){ return { t:'', name:'', rest:'', meal:'', who:'', budget:'', tax:'incl', photo:'' }; });
-  _lc.form = { tiers:base, who:c ? c.who : '', had:!!c || !!(r && r.state !== 'none') };
+  _lc.form = { tiers:base, who:c ? c.who : '', had:!!c || !!(r && r.state !== 'none'), base:r ? Number(r._at) || 0 : 0 };
   _lc.formYm = ym; _lc.reason = '';
   return _lc.form;
 }
@@ -72257,7 +72284,8 @@ function lcFormSet(i, k, v){
 function lcFormDropPhoto(i){ var f = _lc.form; if (!f || !f.tiers[i] || _lc.busy) return; f.tiers[i].photo = ''; lcRerender(); }
 function lcCopyPrev(){
   var ym = _lc.ym, c = lcCfg(lcYmAdd(ym, -1)); if (!c) { showToast(lcT('前の月の設定がありません', 'The previous month has no settings'), 'warning'); return; }
-  _lc.form = { tiers:c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; }), who:c.who, had:(_lc.form || {}).had };
+  var cur = lcRec('cfg:' + ym);
+  _lc.form = { tiers:c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; }), who:c.who, had:(_lc.form || {}).had, base:cur ? Number(cur._at) || 0 : 0 };
   _lc.formYm = ym; lcRerender();
 }
 function lcFormCheck(f){
@@ -72286,6 +72314,12 @@ function lcSaveCfg(){
   var ym = _lc.ym, f = _lc.form; if (!f || _lc.formYm !== ym) return;
   if (lcRec('conf:' + ym) && lcRec('conf:' + ym).state === 'done') { showToast(lcT('確定した月の設定は変えられません（先に確定を取り消す）', 'A confirmed month cannot be changed (undo the confirmation first)'), 'warning'); return; }
   var err = lcFormCheck(f); if (err) { showToast(err, 'warning'); return; }
+  var curRec = lcRec('cfg:' + ym);
+  if ((curRec ? Number(curRec._at) || 0 : 0) !== (Number(f.base) || 0)) {
+    _lc.form = null; _lc.formYm = null;
+    showToast(lcT('ほかの人がこの月の設定を先に保存しました。今の設定を読み直したので、もう一度直してください', 'Someone saved this month\'s settings first. The current settings are shown again; please make your change again'), 'warning');
+    lcRerender(); return;
+  }
   var oldC = lcCfg(ym), diff = lcDiff(oldC, f), started = bizToday() >= ym + '-01', why = String(_lc.reason || '').trim();
   if (!diff.length) { showToast(lcT('変えたところはありません', 'Nothing changed'), 'info'); return; }
   if (oldC && started && !why) { showToast(lcT('月が始まったあとに直すときは理由を入れてください', 'Enter a reason to change a month that has started'), 'warning'); return; }
@@ -72307,6 +72341,7 @@ function lcMarkDay(d, k){
   var ym = d.slice(0, 7), cf = lcRec('conf:' + ym);
   if (cf && cf.state === 'done') { showToast(lcT('確定した月は日の印を変えられません（先に確定を取り消す）', 'A confirmed month cannot change its days (undo the confirmation first)'), 'warning'); return; }
   if (d >= bizToday()) return;
+  if (k === 'zero' && lcDayGuests(d) === null) { showToast(lcT('数字が取り込まれていない日は 0 名で確定できません（休業だったか、取込を待つ）', 'A day without numbers cannot be confirmed as 0 (mark it closed, or wait for the numbers)'), 'warning'); return; }
   var what = k === 'zero' ? lcT(lcDateL(d) + '：ランチ 0 名で確定', lcDateL(d) + ': confirmed 0 lunch guests') : k === 'closed' ? lcT(lcDateL(d) + '：休業だった', lcDateL(d) + ': closed') : lcT(lcDateL(d) + '：印を外した', lcDateL(d) + ': mark removed');
   lcSaveMany([['mark:' + d, { k:k }], lcHistRec(ym, what, '')]);
   lcRerender();
@@ -72409,7 +72444,8 @@ function lcAdminHtml(o){
     pend.forEach(function(d){
       var zero = o.zero.indexOf(d) >= 0;
       h += '<div class="lc-row" style="margin-top:4px;font-size:12.5px"><b style="min-width:52px">' + e(lcDateL(d)) + '</b><span class="lc-mut">' + (zero ? lcT('ランチ 0 名', '0 lunch guests') : lcT('集計待ち', 'waiting')) + '</span>'
-        + (locked ? '' : '<button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'zero\')">' + lcT('0 名で確定', 'Confirm 0') + '</button><button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'closed\')">' + lcT('休業だった', 'Was closed') + '</button>') + '</div>';
+        + (locked ? '' : (zero ? '<button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'zero\')">' + lcT('0 名で確定', 'Confirm 0') + '</button>' : '') + '<button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'closed\')">' + lcT('休業だった', 'Was closed') + '</button>')
+        + (zero || locked ? '' : '<span class="lc-mut" style="font-size:11px">' + lcT('営業していたなら、Toast の取込を待つ（0 名では数えない）', 'If lunch was open, wait for the Toast numbers (never counted as 0)') + '</span>') + '</div>';
     });
   }
   var marked = o.days.filter(function(r){ return r.date < o.today && (r.st === 'mark' || r.marked); });
