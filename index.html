@@ -32969,6 +32969,8 @@ var _ipsMemo = {}, _ipsAsked = {}, _ipsLines = {}, _ipsRefreshedAt = {};
 var IPS_STATUS_TTL = 600000, _ipsStatusAt = 0, _ipsStatusBusy = false, _ipsStampMemo = null;
 var IPS_MONTH_TTL = 6 * 3600000, _ipsGot = {};   /* 月の集計をこの画面を開いてから取った時刻 */
 var IPS_RETRY_MS = 60000;                          /* 取れなかった月は 1 分あけてからもう一度 */
+var IPS_BUSY_MS = 120000;                          /* 2 分たっても答えが無い取り直しは、取れなかったものとして扱う */
+var _ipsRev = {};                                  /* 月の集計の行が変わった回数（同じ版のまま中身が変わっても、日別の原価を作り直す） */
 var _ipsScope = null, _ipsVendor = null, _ipsSaving = false, _ipsRefs = [];
 /* 画面の onclick に入れる値は形を確かめたものだけ（集計の中身は信用しない） */
 var IPS_RE = { ym:/^\d{4}-\d{2}$/, sid:/^[A-Za-z0-9_-]{1,24}$/, uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, vk:/^[A-Za-z0-9_.:@-]{1,80}$/ };
@@ -32998,18 +33000,24 @@ function _ipsListed(ym){ var st = ipsStatus(); return !!(st && st.off !== true &
    月の集計は、端末の版（generated_at）が一覧の版（at）と違うときだけ取る。取れたら描き直す */
 function _ipsPull(k, flag){
   if (typeof pullOpKey !== 'function') return;
-  var a = _ipsAsked[flag];
-  /* 取っている途中・取れた版は取らない。取れなかったものは 1 分あけてから（失敗では描き直さないので、くり返し取りに行き続けることはない） */
-  if (a && !(a.fail && Date.now() - a.fail > IPS_RETRY_MS)) return;
-  _ipsAsked[flag] = { busy:1 };
+  var a = _ipsAsked[flag], now = Date.now();
+  /* 取っている途中・取れた版は取らない。取れなかったものは 1 分あけてから（失敗では描き直さないので、くり返し取りに行き続けることはない）。
+     2 分たっても答えが無いものも取れなかったものとして扱う（返事が来ないまま、その版が二度と取られないことが無いように） */
+  if (a && !(a.fail && now - a.fail > IPS_RETRY_MS) && !(a.busy && now - a.busy > IPS_BUSY_MS)) return;
+  var mine = { busy:now };
+  _ipsAsked[flag] = mine;
   var before = _ipsRaw(k);
   Promise.resolve().then(function(){ return pullOpKey(k); })
     .then(function(ok){
-      if (!ok) { _ipsAsked[flag] = { fail:Date.now() }; return; }
+      if (!ok) { if (_ipsAsked[flag] === mine) _ipsAsked[flag] = { fail:Date.now() }; return; }
+      if (_ipsAsked[flag] === mine) _ipsAsked[flag] = { done:1 };
       _ipsGot[k] = Date.now();
       _ipsStampMemo = null;
+      /* 月を取り直したら、その月の明細も次に開くときに取り直す（同じ版のまま書き換えられた明細を持っていても直る・Codex PR #58） */
+      var lp = 'invoice_purchase_lines_' + k.slice('invoice_purchase_'.length) + '_';
+      Object.keys(_ipsLines).forEach(function(x){ if (x.indexOf(lp) === 0) delete _ipsLines[x]; });
       if (_ipsRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
-    }, function(){ _ipsAsked[flag] = { fail:Date.now() }; });
+    }, function(){ if (_ipsAsked[flag] === mine) _ipsAsked[flag] = { fail:Date.now() }; });
 }
 function ipsEnsure(ym){
   if (typeof pullOpKey !== 'function') return;
@@ -33099,7 +33107,14 @@ function ipsAddDayCosts(m){
 }
 /* 一覧が 3 時間より前から確かめられていない（Invoice取込の 5 分ごとの動きが止まっているかもしれない） */
 function ipsStale(){ var st = ipsStatus(); if (!st || st.off) return false; var ms = Date.parse(String(st.checked_at || '')); return isFinite(ms) && Date.now() - ms > 3 * 3600000; }
-/* 日別の原価のキャッシュの鍵（集計が入れ替わったら作り直す） */
+/* 月の集計の行が端末で変わった回数。版（generated_at）が同じでも中身が変われば数が進む（行の文字列そのものを比べる） */
+function _ipsRevOf(key){
+  var raw = _ipsRaw(key), r = _ipsRev[key];
+  if (!r) r = _ipsRev[key] = { raw:raw, n:0 };
+  else if (r.raw !== raw) { r.raw = raw; r.n++; }
+  return r.n;
+}
+/* 日別の原価のキャッシュの鍵（集計が入れ替わったら作り直す。版が同じでも行の中身が変われば変わる・Codex PR #58） */
 function ipsStamp(){
   /* 日別の原価を描くたびに呼ばれる：一覧と月の集計の行が同じあいだは前の答え（行は端末のメモリにあるので比べるのは速い） */
   var raw = _ipsRaw('invoice_purchase_status'), st = ipsStatus();
@@ -33107,7 +33122,7 @@ function ipsStamp(){
   var mraws = yms.map(function(ym){ return _ipsRaw(ipsKey(ym)); });
   var m = _ipsStampMemo;
   if (m && m.raw === raw && m.mraws.length === mraws.length && m.mraws.every(function(r, i){ return r === mraws[i]; })) return m.val;
-  var val = !st ? '' : st.off ? 'off' : yms.map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-'); }).join('|');
+  var val = !st ? '' : st.off ? 'off' : yms.map(function(ym){ var d = ipsMonth(ym); return ym + ':' + (d ? String(d.generated_at || '') : '-') + '#' + _ipsRevOf(ipsKey(ym)); }).join('|');
   _ipsStampMemo = { raw:raw, mraws:mraws, val:val };
   return val;
 }
