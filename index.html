@@ -41016,7 +41016,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1081';
+const APP_VERSION = '1082';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46911,7 +46911,7 @@ var INVIN_HINT = {
   vendor_kind_unset:['業者の食材／食材以外が未設定 → 設定の「業者」で決める','Vendor food/non-food not set → set it in Settings › Vendors'],
   invoice_no_missing:['invoice番号が読めない → 番号を入れる','No invoice number → enter it'],
   duplicate_certain:['同じ invoice が登録済み → 重複にする','Already registered → mark as duplicate'],
-  same_number_different:['同じ番号で内容が違う → 訂正版か別の書類か決める','Same number, different content → corrected version or another document?'],
+  same_number_different:['同じ番号で内容が違う → 「同じ番号」で、複数枚で 1 つか・重複か・別の書類か決める','Same number, different content → “Same number”: pages of one invoice, a duplicate or another document?'],
   duplicate_candidate:['重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」','Possible duplicate (same vendor, store, date and total) → compare; for a packing list and its invoice, mark one as duplicate'],
   packing_list:['Packing list → 開いて、同じ納品の invoice が来ていないか（日付・合計が違っても）見てから反映','Packing list → open it and check that no invoice of the same delivery is in (even with another date or total), then post'],
   app_duplicate_candidate:['アプリで登録済みの可能性 → 見比べる','May already be in the app → compare'],
@@ -46966,7 +46966,12 @@ var INVIN_ERR = {
   auto_off:['自動反映は OFF です','Automatic posting is off'], not_eligible:['自動反映の条件を満たしていません','Not eligible for automatic posting'],
   bad_supersede:['置き換える invoice が正しくありません','The document to replace is not valid'],
   drive_not_configured:['Google Drive の連携がまだです','Google Drive is not connected yet'],
-  origin:['このページからは使えません','Not allowed from this page'], too_large:['送る内容が大きすぎます','Request too large']
+  origin:['このページからは使えません','Not allowed from this page'], too_large:['送る内容が大きすぎます','Request too large'],
+  /* v1082（段階 3）：複数枚で 1 つの invoice */
+  has_parts:['複数枚の invoice です。先に「まとめを外す」','This invoice has several originals. Take the merge back first'],
+  bad_merge:['まとめられません（同じ業者・番号・店舗の、書類が 1 つだけの原本を選んでください）','These cannot be merged (choose originals of the same vendor, number and store, one document each)'],
+  route_not_assigned:['QuickBooks の宛先がまだ設定されていません','The QuickBooks address is not set yet'],
+  qb_in_progress:['QuickBooks へ送っている途中か、送った結果が分からない原本があります。取込状況の QuickBooks で決めてから、もう一度','A QuickBooks send of this invoice is under way or its outcome is unknown. Settle it under Intake status › QuickBooks, then try again']
 };
 function invInL(pair){ return pair ? (curLang==='en' ? pair[1] : pair[0]) : ''; }
 function invInReason(code){ return INVIN_REASONS[code] ? invInL(INVIN_REASONS[code]) : String(code||''); }
@@ -47153,7 +47158,7 @@ async function invInForget(){
 /* ログアウトしたとき：前の人の読み込んだ内容を残さない（覚えた鍵はその人の分として残る） */
 function invInReset(){
   ['health','config','list','q','review','recon','problems','docId','doc','edits','rel','folder','restoring','restoreTried','restoreP','keptSession','storeOpen'].forEach(function(k){ _invIn[k] = null; });
-  _invIn.unsel = {}; _invIn.rpage = 0; _invIn.batchPlan = null; _invIn.plDoc = null;
+  _invIn.unsel = {}; _invIn.rpage = 0; _invIn.batchPlan = null; _invIn.plDoc = null; _invIn.same = null; _invIn.origFile = null;
   _invIn.reviewSeq = (_invIn.reviewSeq || 0) + 1;   /* ログアウトのあとに終わった読み込みは、前の人の一覧を書かない */
   _invIn.loaded = {}; _invIn.cand = {}; _invIn.error = '';
 }
@@ -47295,8 +47300,11 @@ function invInProcChip(r){
   if (r.status==='rejected') return invInChip(t('対象外','Excluded'), INVIN_COL.gray);
   if (r.status==='duplicate') return invInChip(t('重複','Duplicate'), INVIN_COL.gray);
   if (r.status==='superseded') return invInChip(t('訂正版に置き換え','Replaced'), INVIN_COL.gray);
+  /* v1082（段階 3）：複数枚で 1 つの invoice のページ（明細はまとめた invoice に入っている） */
+  if (r.status==='merged') return invInChip(t('まとめた原本','Merged original'), INVIN_COL.gray) + (r.part_no ? '<div class="ivx-sub">'+t('','page ')+Number(r.part_no)+t(' 枚目','')+'</div>' : '');
   return invInChip(escapeHtml(r.status||'—'), INVIN_COL.gray);
 }
+function invInPartsChip(n){ return invInChip('<i class="ti ti-files"></i> '+n+t(' 枚',' originals'), '#5b3fb0'); }
 function invInReconChip(r){
   if (r.recon_status==='reconciled') return invInChip(t('照合済み','Reconciled'), INVIN_COL.blue);
   if (r.recon_status==='discrepancy') return invInChip(t('差異あり','Difference'), INVIN_COL.org);
@@ -47308,7 +47316,9 @@ function invInOrgText(r){
   if (r.organize_status==='pending') return '<span style="font-size:11px;color:var(--muted)">'+t('整理待ち','Waiting')+'</span>';
   return '<span style="font-size:11px;color:var(--muted)">'+t('00_Upload のまま','Still in 00_Upload')+'</span>';
 }
-function invInQbChip(s){
+/* v1082（段階 3）：反映した複数枚の invoice は、転送側（ChatGPT）が対応するまで台帳に出さない（Moto 10/14「台帳に出さずに作る」） */
+function invInQbChip(s, parts, status){
+  if (!s && Number(parts) > 0 && status==='posted') return invInChip(t('複数枚：転送側の対応待ち','Several originals: waiting for the forwarder'), INVIN_COL.org);
   if (!s) return invInChip(t('対象外・未登録','Not queued'), INVIN_COL.gray);
   var M = { pending:[t('未送信','Not sent'),INVIN_COL.gray], sending:[t('送信中','Sending'),INVIN_COL.gray], sent:[t('送信済み','Sent'),INVIN_COL.blue],
     error:[t('送信エラー','Send error'),INVIN_COL.red], unknown:[t('送信結果不明','Result unknown'),INVIN_COL.org] };
@@ -47321,6 +47331,7 @@ var INVIN_CSS = '<style>.ivx-chip{display:inline-flex;align-items:center;gap:3px
   +'.ivx-chips .ivx-chip{white-space:normal;line-height:1.45}.ivx-sort{font:inherit;color:inherit;background:none;border:0;padding:2px 0;cursor:pointer;white-space:nowrap}.ivx-sort.on{color:var(--text)}.ivx-sort:disabled{cursor:default}.ivx-sort:focus-visible{outline:2px solid var(--accent);outline-offset:2px}'
   +'.ivx-grid{display:grid;grid-template-columns:300px 1fr;gap:10px}.ivx-grid>*{min-width:0}.ivx-note{font-size:10.5px;color:var(--muted);line-height:1.75;margin-top:6px}'
   +'.ivx-f{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;align-items:center}.ivx-in{font-size:12px;padding:4px 7px}.ivx-chg{border-color:var(--accent)!important;background:#fff7f0!important}'
+  +'.ivx-same{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin-top:10px}.ivx-same>*{min-width:0}'
   +'.ivx-mob{display:none}@media(max-width:760px){.ivx-grid{grid-template-columns:1fr}.ivx-f{grid-template-columns:1fr 1fr}.ivx-mob{display:grid}.ivx-hide-m{display:none}}'
   +'</style>';
 function invInHead(){
@@ -47381,7 +47392,7 @@ function invInListParams(q, offset){
   var mn = invInCents(q.min), mx = invInCents(q.max);
   if (q.min && isFinite(mn)) p.min_cents = mn; if (q.max && isFinite(mx)) p.max_cents = mx;
   var S = { review:{status:'review'}, posted:{status:'posted'}, unrec:{status:'posted',recon:'unreconciled'}, disc:{recon:'discrepancy'},
-    recon:{recon:'reconciled'}, rejected:{status:'rejected'}, duplicate:{status:'duplicate'} }[q.state];
+    recon:{recon:'reconciled'}, rejected:{status:'rejected'}, duplicate:{status:'duplicate'}, merged:{status:'merged'} }[q.state];
   if (S) Object.keys(S).forEach(function(k){ p[k] = S[k]; });
   return p;
 }
@@ -47417,7 +47428,7 @@ function invInList(){
     + '<div style="display:flex;gap:4px;align-items:center"><input class="form-input ivx-in" id="ivq-min" inputmode="decimal" placeholder="'+t('$ 下限','$ min')+'" value="'+e(q.min)+'"><input class="form-input ivx-in" id="ivq-max" inputmode="decimal" placeholder="'+t('上限','max')+'" value="'+e(q.max)+'"></div>'
     + '<input class="form-input ivx-in" id="ivq-item" placeholder="'+t('商品名（明細）','Item (line)')+'" value="'+e(q.item)+'">'
     + '<select class="form-select ivx-in" id="ivq-state">'+st('',t('状態（すべて）','All states'))+st('review',t('要確認','Review'))+st('posted',t('反映済み','Posted'))
-      + st('unrec',t('反映済み・未照合','Posted, not reconciled'))+st('disc',t('差異あり','Difference'))+st('recon',t('照合済み','Reconciled'))+st('rejected',t('対象外','Excluded'))+st('duplicate',t('重複','Duplicate'))+'</select>'
+      + st('unrec',t('反映済み・未照合','Posted, not reconciled'))+st('disc',t('差異あり','Difference'))+st('recon',t('照合済み','Reconciled'))+st('rejected',t('対象外','Excluded'))+st('duplicate',t('重複','Duplicate'))+st('merged',t('まとめた原本（複数枚の invoice のページ）','Merged originals (pages of an invoice)'))+'</select>'
     + '<button class="btn btn-primary btn-sm" onclick="invInSearch()"><i class="ti ti-search"></i> '+t('検索','Search')+'</button></div></div>';
   var L = _invIn.list;
   if (!L) return h + invInLoadingCard();
@@ -47430,9 +47441,10 @@ function invInList(){
     + L.rows.map(function(r){
         var id = invInId(r.id);
         return '<tr class="ivx-row" onclick="invInOpen(\''+id+'\',\''+(r.status==='review'?'dreview':'drecon')+'\')"><td>'+invInStoreHtml(r.store_id)+'</td><td><b>'+e(r.vendor_name||r.vendor_raw||t('（業者不明）','(vendor unknown)'))+'</b>'
+          + (Number(r.parts) ? ' '+invInPartsChip(Number(r.parts)+1) : '')
           + (r.doc_type && r.doc_type!=='invoice' ? '<div class="ivx-sub">'+e(r.doc_type)+'</div>' : '')+'</td><td style="white-space:nowrap">'+invInDate(r.invoice_date)+' ／ '+invInDate(r.delivery_date)+'</td>'
           + '<td style="font-family:ui-monospace,monospace;font-size:11.5px">'+e(r.invoice_no||'—')+'</td><td style="text-align:right;font-weight:700">'+invInMoney(r.total_cents)+'</td>'
-          + '<td>'+invInProcChip(r)+'</td><td>'+invInReconChip(r)+'</td><td>'+invInOrgText(r)+'</td><td>'+invInQbChip(r.qb_state)+'</td>'
+          + '<td>'+invInProcChip(r)+'</td><td>'+invInReconChip(r)+'</td><td>'+invInOrgText(r)+'</td><td>'+invInQbChip(r.qb_state, r.parts, r.status)+'</td>'
           + '<td onclick="event.stopPropagation()">'+invInOrig(r.drive_file_id)+'</td></tr>';
       }).join('') + '</tbody></table></div>'
     + (L.rows.length < L.total ? '<div style="text-align:center;margin:8px 0"><button class="btn btn-secondary btn-sm" onclick="invInMore()">'+t('続きを読む','Load more')+'（'+(L.total-L.rows.length)+'）</button></div>' : '')
@@ -47443,11 +47455,11 @@ function invInList(){
 function invInOpen(id, sub){
   if (!invInId(id)) return;
   if (_invIn.docId !== id) { _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.plDoc = null; }
-  _invIn.docId = id; _invIn.docSub = sub || 'dreview'; _invIn.mob = 'lines'; _invIn.linesOpen = false;
+  _invIn.docId = id; _invIn.docSub = sub || 'dreview'; _invIn.mob = 'lines'; _invIn.linesOpen = false; _invIn.same = null; _invIn.origFile = null;
   delete _invIn.loaded.doc;
   _acCat = 'drive'; acSetSub(sub || 'dreview');
 }
-function invInBack(){ _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; _invIn.plDoc = null; delete _invIn.loaded.doc; invInRerender(); }
+function invInBack(){ _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; _invIn.plDoc = null; _invIn.same = null; _invIn.origFile = null; delete _invIn.loaded.doc; invInRerender(); }
 async function invInLoadDoc(){
   var id = _invIn.docId; if (!id) return;
   var g = await invInAPI({ action:'get', doc_id:id });
@@ -47649,9 +47661,11 @@ function invInReviewTable(Q){
   rows.forEach(function(r){
     var id = invInId(r.id), ok = invInBatchable(r), chk = invInToCheck(r.reasons), md = invInModeOf(r.reasons), gk = invInSameKey(r);
     /* v1079：業者・番号で並べたときは、同じ番号の行の前に見出し（重複か、複数枚で 1 つの invoice か） */
+    /* v1082（段階 3）：「まとめて決める」で、複数枚で 1 つ・重複・別々を選ぶ画面へ */
     if (grouped && gk && same[gk] > 1 && gk!==prevKey) h += '<tr><td></td><td colspan="8" style="background:rgba(91,63,176,.07);font-size:11.5px;line-height:1.6"><b>'
       + t('同じ番号 ','Same number: ')+same[gk]+t(' 件：',' invoices · ')+e(r.vendor_name || r.vendor_raw || '')+' · '+e(r.invoice_no || '')+'</b> <span style="color:var(--muted)">'
-      + t('— 原本を見比べる。重複なら 1 件を残して「重複にする」','— compare the originals; if they are duplicates, keep one and mark the others')+'</span></td></tr>';
+      + t('— 重複か、複数枚で 1 つの invoice か','— duplicates, or one invoice in several originals?')+'</span>'
+      + (edit ? ' <button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px"'+dis+' onclick="event.stopPropagation();invInSameFromRow(\''+id+'\')"><i class="ti ti-files"></i> '+t('まとめて決める','Decide together')+'</button>' : '')+'</td></tr>';
     prevKey = gk;
     var onlyCur = edit && chk.length===1 && chk[0].code==='currency';   /* v1070：通貨だけが理由の行は、開かずに USD と確かめられる */
     var storeBad = edit && invInMark4(r, 'store')!=='ok';               /* v1079：宛先が別の店舗・一致しない → 開いて店舗を選ぶ */
@@ -47661,11 +47675,12 @@ function invInReviewTable(Q){
     var todo = (chk.length ? chk.map(function(x){ return w(invInChip(e(invInHint(x)), invInHintCol(x.code))); }).join(' ')
         + (onlyCur ? ' <button class="btn btn-primary btn-sm" style="padding:1px 10px;font-size:11px"'+(B||_invIn.busy?' disabled':'')+' onclick="event.stopPropagation();invInUsdRow(\''+id+'\')">USD</button>' : '')
         + (storeBad ? ' <button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px"'+dis+' onclick="event.stopPropagation();invInStorePick(\''+id+'\')">'+t('店舗を選ぶ','Choose store')+'</button>' : '')
+        + (!grouped && edit && invInIdsIn(r.reasons, INVIN_SAME_CODES).length ? ' <button class="btn btn-secondary btn-sm" style="padding:1px 10px;font-size:11px"'+dis+' onclick="event.stopPropagation();invInSameFromRow(\''+id+'\')">'+t('同じ番号','Same number')+'</button>' : '')
       : invInChip(t('4 項目とも問題なし','Four items OK'), INVIN_COL.green))
       + md.map(function(c){ return ' '+invInChip(e(invInReason(c)), INVIN_COL.gray); }).join('');
     h += '<tr class="ivx-row"'+(ok ? '' : ' style="background:rgba(240,102,31,.05)"')+'>'
       + '<td onclick="event.stopPropagation()">'+(edit ? '<input type="checkbox" aria-label="'+t('反映する','Post')+'"'+(invInSelected(r) ? ' checked' : '')+(ok && !B ? '' : ' disabled')+' onchange="invInSel(\''+id+'\',this.checked)">' : '')+'</td>'
-      + '<td '+open+'><b>'+e(r.vendor_name || r.vendor_raw || t('（業者不明）','(vendor unknown)'))+'</b>'+m('vendor')+'</td>'
+      + '<td '+open+'><b>'+e(r.vendor_name || r.vendor_raw || t('（業者不明）','(vendor unknown)'))+'</b>'+m('vendor')+(Number(r.parts) ? ' '+invInPartsChip(Number(r.parts)+1) : '')+'</td>'
       + '<td '+open+' style="font-family:ui-monospace,monospace;font-size:11.5px;white-space:nowrap">'+e(r.invoice_no || '—')+m('no')+'</td>'
       + '<td '+open+' style="text-align:right;font-weight:700;white-space:nowrap">'+invInMoney(r.total_cents)+m('amount')+'</td>'
       + '<td '+open+' style="white-space:nowrap">'+invInStoreHtml(r.store_id)+m('store')+'</td>'
@@ -47748,9 +47763,430 @@ async function invInBatchPost(fromAsk){
     + (rnNg ? t('　ファイル名をまだ変えていない：',' · not renamed yet: ')+rnNg+t(' 件（あとで自動でやり直します）',' (retried automatically)') : ''), ng.length || rnNg ? 'warning' : 'success');
   delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list; delete _invIn.loaded.recon; invInRerender();
 }
+/* ===================================================================== 同じ invoice 番号（v1082・段階 3）
+   Moto 10/14「同じinvoice#で続いてるパターンもあるので、重複か複数枚で１つのinvoiceか選択して処理できる様にする（invoice#を正にして、
+   重複で削除か統合で複数選択を可能にする）」→ UI案50（決めてほしいこと 6A・7A・8A）→ 14:39「これで進めてください」。
+   ・複数枚で 1 つ：チェックしたファイルをページの順にまとめる（サーバーの merge。先に preview で結果を見てから保存）。チェックしないものは重複として外す
+   ・重複：1 つを残して、ほかを重複にする（mark）。Drive の原本は消さない（7A）
+   ・別々の invoice：何も変えない（それぞれ開いて反映する）
+   反映済みの invoice にあとから届いたページは、反映済みに足す（訂正・8A）。QuickBooks には、転送側の対応が済むまで出さない（Moto 10/14「台帳に出さずに作る」） */
+var INVIN_SAME_MAX = 10;
+var INVIN_SAME_CODES = ['same_number_different','duplicate_certain'];
+var INVIN_MERGE_REASON = ['複数枚で 1 つの invoice','Several originals, one invoice'];
+var INVIN_DUP_REASON = ['同じ番号の処理：重複（1 つを残す）','Same number: duplicate (one kept)'];
+var INVIN_UNMERGE_REASON = ['まとめを外す','Merge taken back'];
+function invInIdsIn(rs, codes){
+  var out = [];
+  (rs||[]).forEach(function(r){ if (!r || codes.indexOf(r.code) < 0) return; String(r.detail||'').split(',').forEach(function(x){ x = invInId(x.trim()); if (x && out.indexOf(x) < 0) out.push(x); }); });
+  return out;
+}
+/* 同じ番号の相手（理由に書かれた書類）。まとめた原本は、まとめた invoice として数える */
+function invInSameCands(d){
+  return invInIdsIn(d && d.reasons, INVIN_SAME_CODES).map(function(id){ var c = _invIn.cand && _invIn.cand[id]; return (c && c.status==='merged' && invInId(c.merged_into)) || id; })
+    .filter(function(id, i, a){ return id !== (d && d.id) && a.indexOf(id) === i; });
+}
+function invInSameOpen(ids){
+  var list = [];
+  (ids||[]).forEach(function(x){ x = invInId(x); if (x && list.indexOf(x) < 0) list.push(x); });
+  if (list.length < 2 || !invInCanEdit() || _invIn.batching || _invIn.busy) return;
+  _invIn.same = { ids:list.slice(0, INVIN_SAME_MAX), more:Math.max(0, list.length - INVIN_SAME_MAX), back:_invIn.docId || null, G:null, order:[], skip:[],
+    inc:{}, page:{}, how:'', keep:'', note:'', ack:{}, adj:false, pv:null, pvKey:'', pvErr:'' };
+  delete _invIn.loaded.same; delete _invIn.loaded.samepv;
+  invInRerender();
+}
+/* 一覧から：同じ業者・番号の行（受け取った順）と、その行の理由に書かれた相手（反映済みの invoice など） */
+function invInSameFromRow(id){
+  var all = ((_invIn.review||{}).rows) || [], r = all.filter(function(x){ return x.id===id; })[0]; if (!r) return;
+  var k = invInSameKey(r);
+  var grp = all.filter(function(x){ return k ? invInSameKey(x)===k : x.id===id; })
+    .sort(function(a, b){ return String(a.ingested_at||'').localeCompare(String(b.ingested_at||'')) || String(a.id).localeCompare(String(b.id)); });
+  var ids = grp.map(function(x){ return x.id; });
+  grp.forEach(function(x){ invInIdsIn(x.reasons, INVIN_SAME_CODES).forEach(function(y){ if (ids.indexOf(y) < 0) ids.push(y); }); });
+  invInSameOpen(ids);
+}
+function invInSameFromDoc(){ var G = _invIn.doc; if (!G || !G.doc) return; invInSameOpen([G.doc.id].concat(invInSameCands(G.doc))); }
+function invInSameClose(){ _invIn.same = null; delete _invIn.loaded.same; delete _invIn.loaded.samepv; invInRerender(); }
+function invInSameReload(S){ S.G = null; S.pv = null; S.pvKey = ''; S.pvErr = ''; delete _invIn.loaded.same; delete _invIn.loaded.samepv; invInRerender(); }
+async function invInLoadSame(){
+  var S = _invIn.same; if (!S) return;
+  var G = {}, order = [], skip = [];
+  var get = async function(id){ if (!G[id]) G[id] = await invInAPI({ action:'get', doc_id:id }); return G[id]; };
+  for (var i = 0; i < S.ids.length; i++) {
+    var g = await get(S.ids[i]);
+    if (g.doc.status==='merged' && g.main && invInId(g.main.id)) g = await get(g.main.id);   /* まとめた原本は、まとめた invoice として */
+    var id = g.doc.id;
+    if (order.indexOf(id) >= 0 || skip.indexOf(id) >= 0) continue;
+    (['review','posted'].indexOf(g.doc.status) >= 0 ? order : skip).push(id);
+  }
+  if (_invIn.same !== S) return;
+  var at = function(id){ return String((G[id].file||{}).ingested_at || ''); };
+  order.sort(function(a, b){ return at(a).localeCompare(at(b)) || (a < b ? -1 : a > b ? 1 : 0); });
+  S.G = G; S.order = order.slice(0, INVIN_SAME_MAX); S.skip = skip;
+  invInSameDefaults(S);
+}
+/* 印字のページ（「Page 1 of 2」など） */
+function invInPageMark(d){
+  var hit = null;
+  ((d && d.pages_marked) || []).some(function(p){ var m = /(\d+)\s*(?:of|\/|ページ中)\s*(\d+)/i.exec(String(p)); if (m) hit = { k:Number(m[1]), n:Number(m[2]), text:String(p) }; return !!m; });
+  return hit;
+}
+function invInSameParts(S, id){ return (((S.G && S.G[id]) || {}).parts || []).length; }
+/* 同じ中身（撮り直し）：確実な重複の相手がこの中にあれば、その id */
+function invInSameDupOf(S, id){ var hit = ''; invInIdsIn(S.G[id].doc.reasons, ['duplicate_certain']).forEach(function(x){ if (!hit && x!==id && S.order.indexOf(x) >= 0) hit = x; }); return hit; }
+/* 複数枚の invoice のページの原本が差し替えられたときの新しい読み：[その invoice の id, 何枚目]（同じ invoice にはまとめられない） */
+function invInSamePageOf(S, id){
+  var f = S.G[id].doc.file_id, hit = null;
+  if (!f) return null;
+  S.order.forEach(function(x){
+    if (hit || x === id || !invInSameParts(S, x)) return;
+    var g = S.G[x];
+    if (g.doc.file_id === f) hit = [x, Number(g.doc.part_no) || 1];
+    (g.parts || []).forEach(function(q){ if (!hit && q.file_id === f) hit = [x, Number(q.part_no) || 0]; });
+  });
+  return hit;
+}
+/* 反映済み・複数枚の invoice は外せない（ページはそこに足す） */
+function invInSameFixed(S, id){ return S.G[id].doc.status==='posted' || invInSameParts(S, id) > 0; }
+function invInSameDefaults(S){
+  S.inc = {}; S.page = {};
+  S.order.forEach(function(id){ S.inc[id] = invInSameFixed(S, id) || (!invInSameDupOf(S, id) && !invInSamePageOf(S, id)); });
+  var inc = S.order.filter(function(id){ return S.inc[id]; });
+  var pages = inc.some(function(id){ var m = invInPageMark(S.G[id].doc); return (m && m.n > 1) || invInSameParts(S, id) > 0; });
+  S.how = inc.length >= 2 && pages ? 'merge' : (inc.length === 1 && S.order.length > 1 ? 'dup' : '');
+  var fixed = S.order.filter(function(id){ return invInSameFixed(S, id); });
+  S.keep = fixed[0] || inc[0] || S.order[0] || '';
+  invInSameRenumber(S);
+}
+/* ページの順：まとめ済みのページを持つ invoice が先。あとは選んだ順 → 印字のページ → 受け取った順。1 から振り直す */
+function invInSameRenumber(S){
+  var inc = S.order.filter(function(id){ return S.inc[id]; });
+  var key = function(id){ var m = invInPageMark(S.G[id].doc); return [invInSameParts(S, id) ? 0 : 1, S.page[id] || 999, m ? m.k : 999, S.order.indexOf(id)]; };
+  inc.sort(function(a, b){ var x = key(a), y = key(b); for (var i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; });
+  S.page = {}; inc.forEach(function(id, i){ S.page[id] = i + 1; });
+}
+function invInSameChanged(S){ S.pv = null; S.pvErr = ''; S.pvCode = ''; S.pvKey = ''; S.ack = {}; delete _invIn.loaded.samepv; invInRerender(); }
+function invInSamePage(id, p){
+  var S = _invIn.same; if (!S || !S.inc[id] || invInSameParts(S, id)) return;
+  p = Number(p); var cur = S.page[id]; if (!(p >= 1) || p === cur) return;
+  S.order.forEach(function(x){ if (x !== id && S.inc[x] && S.page[x] === p) S.page[x] = cur; });
+  S.page[id] = p; invInSameRenumber(S); invInSameChanged(S);
+}
+function invInSameInc(id, on){ var S = _invIn.same; if (!S || invInSameFixed(S, id)) return; S.inc[id] = !!on; if (!on) delete S.page[id]; invInSameRenumber(S); invInSameChanged(S); }
+function invInSameHow(v){ var S = _invIn.same; if (!S || ['merge','dup','sep'].indexOf(v) < 0) return; S.how = v; invInSameChanged(S); }
+function invInSameKeep(id){ var S = _invIn.same; if (!S || S.order.indexOf(id) < 0) return; S.keep = id; invInSameChanged(S); }
+function invInSameRetryPv(){ var S = _invIn.same; if (!S || !S.pvErr) return; invInSameChanged(S); }
+function invInSameAck(c, on){ var S = _invIn.same; if (!S) return; S.ack[c] = !!on; invInRerender(); }
+/* 送る内容：ページの順の id と、重複として外す id */
+function invInSamePlan(S){
+  var docs = S.order.filter(function(id){ return S.inc[id]; }).sort(function(a, b){ return S.page[a] - S.page[b]; });
+  return { docs:docs, duplicates:S.order.filter(function(id){ return !S.inc[id]; }) };
+}
+/* まとめられない・重複にできない理由（サーバーも同じことを確かめる） */
+function invInSameProblem(S){
+  if (!S || !S.G) return '';
+  if (S.how==='merge') {
+    var P = invInSamePlan(S), st = {};
+    if (P.docs.length < 2) return t('1 つの invoice に入れるファイルを 2 つ以上選んでください','Choose at least two files for the invoice');
+    if (P.docs.filter(function(id){ return S.G[id].doc.status==='posted'; }).length > 1) return t('反映済みの invoice が 2 つあります。まとめられません（「別々の invoice」にするか、片方を訂正する）','Two of them are posted invoices; they cannot be merged (treat them as separate invoices, or correct one)');
+    if (P.docs.filter(function(id){ return invInSameParts(S, id) > 0; }).length > 1) return t('複数枚の invoice が 2 つあります。先に片方の「まとめを外す」','Two of them already have several originals; take one merge back first');
+    if (P.docs.some(function(id){ return Number(S.G[id].file_docs) > 1; })) return t('1 つのファイルに書類が 2 つある原本はまとめられません','An original holding two documents cannot be merged');
+    var again = P.docs.filter(function(id){ return invInSamePageOf(S, id); })[0];
+    if (again) { var po = invInSamePageOf(S, again);
+      return t('原本 ','Original ')+(S.order.indexOf(again) + 1)+t(' は、原本 ',' is a new reading of page ')+(curLang==='en' ? po[1]+' of original '+(S.order.indexOf(po[0]) + 1) : (S.order.indexOf(po[0]) + 1)+' の '+po[1]+' 枚目')
+        +t(' の新しい読みです（原本が差し替えられた）。同じ invoice にはまとめられません。外して重複にするか、1 件の画面で確かめてください',' (the original was overwritten). It cannot join the same invoice: set it aside as a duplicate, or check it on its own screen'); }
+    var differ = function(f, skip){ var v = {}; P.docs.forEach(function(id){ var x = S.G[id].doc[f]; if (x != null && x !== '' && x !== skip) v[x] = 1; }); return Object.keys(v).length > 1; };
+    P.docs.forEach(function(id){ st[S.G[id].doc.store_id || ''] = 1; });
+    if (Object.keys(st).length > 1) return t('店舗が違うファイルはまとめられません（先に 1 件の画面で店舗を選ぶ）','Files of different stores cannot be merged (choose the store on the invoice first)');
+    if (differ('vendor_key')) return t('業者が違うファイルはまとめられません（1 件の画面で業者を確かめる）','Files of different vendors cannot be merged (check the vendor on each)');
+    if (differ('invoice_no_norm')) return t('invoice 番号が違うファイルはまとめられません','Files with different invoice numbers cannot be merged');
+    if (differ('doc_type', 'unknown')) return t('書類の種類が違うファイル（Statement・Credit memo など）はまとめられません','Files of different kinds (statement, credit memo…) cannot be merged');
+    if (differ('currency')) return t('通貨が違うファイルはまとめられません','Files in different currencies cannot be merged');
+    return '';
+  }
+  if (S.how==='dup') {
+    if (!S.keep || S.order.indexOf(S.keep) < 0) return t('残す 1 件を選んでください','Choose the one to keep');
+    if (S.order.some(function(id){ return id !== S.keep && invInSameFixed(S, id); })) return t('反映済み・複数枚の invoice は重複にできません。それを残すほうにしてください','A posted invoice or one with several originals cannot be set aside; keep that one');
+    return '';
+  }
+  return '';
+}
+/* 反映済みに足す（8A）：反映と同じ条件。直す理由があれば足せない。合わない合計などは「原本で確かめた」が要る（サーバーの invoice_merge と同じ） */
+var INVIN_MERGE_ACK = ['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
+function invInSameAcks(S){ var c = invInCodes(S.pv && S.pv.reasons); return c.filter(function(x, i){ return INVIN_MERGE_ACK.indexOf(x) >= 0 && c.indexOf(x) === i; }); }
+/* 反映済みの invoice の QuickBooks の台帳の行（取り消したものを除く）：sent・wait（送る前・送れなかった）・busy（送っている途中・結果が分からない） */
+function invInSameQb(S, id){
+  var st = ((((S.G || {})[id] || {}).qb) || []).filter(function(o){ return o && o.state!=='cancelled'; }).map(function(o){ return o.state; });
+  return { sent:st.indexOf('sent') >= 0, wait:st.some(function(x){ return x==='pending' || x==='error'; }), busy:st.some(function(x){ return x==='sending' || x==='unknown'; }) };
+}
+function invInSameMust(S){
+  if (!S.pv || !S.pv.posted) return '';
+  if (invInSameQb(S, S.pv.main).busy) return invInL(INVIN_ERR.qb_in_progress);
+  var c = invInCodes(S.pv.reasons), must = c.filter(function(x, i){ return INVIN_MUST_FIX.indexOf(x) >= 0 && c.indexOf(x) === i; });
+  if (must.length) return t('まとめると次を直す必要があるため、反映済みの invoice には足せません：','Merged, these would need fixing, so the pages cannot be added to the posted invoice: ')+must.map(function(x){ return invInReason(x); }).join(' / ');
+  if (invInSameAcks(S).some(function(x){ return !S.ack[x]; })) return t('原本で確かめたらチェックしてください','Tick once you have checked against the original');
+  return '';
+}
+async function invInLoadSamePv(){
+  var S = _invIn.same; if (!S || !S.G || S.how!=='merge' || invInSameProblem(S)) return;
+  var P = invInSamePlan(S), key = JSON.stringify(P);
+  if (S.pvKey === key) return;
+  var pv = null, err = '';
+  var code = '';
+  try { pv = await invInAPI({ action:'merge', preview:true, docs:P.docs, duplicates:P.duplicates }); } catch(e) { err = String(e && e.message || e); code = (e && e.code) || ''; }
+  if (_invIn.same !== S || S.how!=='merge' || JSON.stringify(invInSamePlan(S)) !== key) return;   /* 選び直したあとに届いた古い結果は使わない */
+  S.pv = pv; S.pvErr = err; S.pvCode = code; S.pvKey = key;
+}
+function invInSameReady(S){
+  if (!S || !S.G || S.order.length < 2) return false;
+  if (S.how==='sep') return true;
+  if (S.how==='dup') return !invInSameProblem(S);
+  if (S.how!=='merge' || invInSameProblem(S) || S.pvErr || !S.pv) return false;
+  return S.pvKey === JSON.stringify(invInSamePlan(S)) && !invInSameMust(S);
+}
+async function invInSameSave(){
+  var S = _invIn.same; if (!S || _invIn.busy || !invInCanEdit() || !invInSameReady(S)) return;
+  var note = String(S.note || '').trim(), res;
+  if (S.how==='sep') { invInSameClose(); return; }
+  if (S.how==='merge') {
+    var P = invInSamePlan(S), versions = {};
+    P.docs.concat(P.duplicates).forEach(function(id){ versions[id] = S.G[id].doc.version; });
+    try { res = await invInDo(function(){ return invInAPI({ action:'merge', docs:P.docs, duplicates:P.duplicates, versions:versions, reason:note || invInL(INVIN_MERGE_REASON),
+      ack:invInSameAcks(S).filter(function(x){ return S.ack[x]; }), adjustment_ack:!!S.adj }); }); }
+    catch(e) { if (e && e.code==='conflict') invInSameReload(S); else invInRerender(); return; }
+    if (!res) return;
+    var main = invInId((res.plan || S.pv).main), n = (res.file_ids || []).length || P.docs.length;
+    var rn = Array.isArray(res.rename) ? res.rename : [], rnNg = rn.filter(function(x){ return !x || !x.ok; }).length;
+    showToast(res.posted ? t('反映済みの invoice に足しました（全部で ','Added to the posted invoice (')+n+t(' 枚）',' originals)')+(rnNg ? t('。ファイル名はあとで自動でやり直します','; file names are retried automatically') : '')
+      : n+t(' 枚を 1 つの invoice にまとめました。4 項目を確かめて反映してください',' originals merged into one invoice. Check the four items and post it'), rnNg ? 'warning' : 'success');
+    _invIn.same = null; _invIn.loaded = {}; _invIn.cand = {};
+    if (main) invInOpen(main, res.posted ? 'drecon' : 'dreview'); else invInRerender();
+    return;
+  }
+  /* 重複：残す 1 件のほかを、1 件ずつ版つきで重複にする */
+  var keep = S.keep, ok = 0, ng = [], reason = note || invInL(INVIN_DUP_REASON);
+  var others = S.order.filter(function(id){ return id !== keep; });
+  _invIn.busy = true; invInRerender();
+  try {
+    for (var i = 0; i < others.length; i++) {
+      try { await invInAPI({ action:'mark', doc_id:others[i], version:S.G[others[i]].doc.version, mark:'duplicate', duplicate_of:keep, reason:reason }); ok++; }
+      catch(e) { ng.push(String(e && e.message || e)); }
+    }
+  } finally { _invIn.busy = false; }
+  showToast(t('重複にしました：','Set aside as duplicates: ')+ok+t(' 件','')+(ng.length ? t('　できなかった：',' · not done: ')+ng.length+t(' 件（',' (')+ng[0]+t('）',')') : ''), ng.length ? 'warning' : 'success');
+  _invIn.cand = {}; delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list;
+  if (ng.length) { invInSameReload(S); return; }
+  _invIn.same = null;
+  if (S.G[keep].doc.status==='review') invInOpen(keep, 'dreview');
+  else { _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; invInRerender(); }
+}
+function invInSameHtml(){
+  var S = _invIn.same, e = escapeHtml, B = !!(_invIn.busy || _invIn.batching);
+  var h = '<button class="btn btn-secondary btn-sm" style="margin-bottom:8px" onclick="invInSameClose()"><i class="ti ti-chevron-left"></i> '+(S.back ? t('1 件の画面へ戻る','Back to the invoice') : t('要確認の一覧へ','Back to review list'))+'</button>';
+  if (!S.G) return h + invInLoadingCard();
+  var G = S.G, n = S.order.length, d0 = ((G[S.keep] || G[S.order[0]] || {}).doc) || {};
+  var label = function(id){ return t('原本 ','Original ')+(S.order.indexOf(id) + 1); };
+  h += '<div class="card" style="padding:12px 14px"><div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap"><b style="font-size:16px">'+t('同じ invoice 番号が ','Same invoice number: ')+n+t(' 件',' documents')+'</b>'
+    + '<span style="font-size:12.5px">'+e(d0.vendor_name || d0.vendor_raw || '')+' · <span style="font-family:ui-monospace,monospace">'+e(d0.invoice_no || '—')+'</span> · '+invInStoreHtml(d0.store_id)+' · '+t('請求日 ','Invoice date ')+invInDate(d0.invoice_date)+'</span></div>'
+    + '<div style="font-size:12.5px;margin-top:6px;line-height:1.6">'+t('invoice 番号を正にして、','Taking the invoice number as the key, decide how to treat these ')+n+t(' 件をどう扱うか決めます。原本を見てファイルを選んでください。',' documents. Look at the originals and choose the files.')+'</div>'
+    + (S.skip.length ? '<div class="ivx-note">'+t('ほかに 対象外・重複などにした書類が ','Also ')+S.skip.length+t(' 件あります（ここでは扱いません）',' document(s) already excluded, set aside or replaced (not handled here)')+'</div>' : '')
+    + (S.more ? '<div class="ivx-note">'+t('同じ番号の書類が多いため、最初の ','Many documents share this number: the first ')+INVIN_SAME_MAX+t(' 件だけを出しています',' are shown')+'</div>' : '')
+    + '</div>';
+  if (n < 2) return h + '<div class="card" style="padding:12px 14px;font-size:12.5px">'+t('まとめる・重複にする相手がありません（同じ番号のほかの書類は、もう処理しました）。1 件の画面で確かめてください。','There is nothing left to merge or set aside (the other documents with this number are already handled). Check the invoice on its own screen.')+'</div>';
+  if (S.how==='merge' && !invInSameProblem(S) && S.pvKey !== JSON.stringify(invInSamePlan(S))) invInLoad('samepv', invInLoadSamePv);
+  var incN = S.order.filter(function(id){ return S.inc[id]; }).length, held = 0;
+  S.order.forEach(function(id){ if (S.inc[id] && invInSameParts(S, id)) held = invInSameParts(S, id); });   /* まとめ済みのページの数（その invoice が 1〜held+1 枚目） */
+  var shown = function(r){ return held ? r + held : r; };
+  h += '<div class="ivx-same">' + S.order.map(function(id){
+    var g = G[id], d = g.doc, f = g.file || {}, fid = invInFileId(f.drive_file_id), mk = invInPageMark(d), dup = invInSameDupOf(S, id), k = invInSameParts(S, id);
+    var on = S.how==='merge' ? !!S.inc[id] : S.how==='dup' ? S.keep===id : false, facts = [];
+    var again = invInSamePageOf(S, id);
+    if (again) facts.push(curLang==='en' ? 'A new reading of page '+again[1]+' of '+e(label(again[0]))+' (the original was overwritten)' : e(label(again[0]))+' の '+again[1]+' 枚目の原本の新しい読み（原本が差し替えられた）');
+    else if (dup) facts.push(e(label(dup))+t(' と同じ中身（撮り直し）',': same content (a retake)'));
+    else {
+      if (mk) facts.push(t('印字「','Printed “')+e(mk.text)+t('」','”'));
+      facts.push(t('明細 ','Lines ')+(g.lines||[]).length+t(' 行',''));
+      if (d.lines_sum_cents!=null) facts.push(t('明細の計 ','Line total ')+invInMoney(d.lines_sum_cents));
+      if (Number(d.tax_cents)) facts.push(t('税 ','Tax ')+invInMoney(d.tax_cents));
+      if (Number(d.shipping_cents)) facts.push(t('送料 ','Shipping ')+invInMoney(d.shipping_cents));
+      facts.push(d.total_cents!=null ? t('合計 ','Total ')+invInMoney(d.total_cents) : t('合計の印字なし','No total printed'));
+    }
+    var tag = (d.status==='posted' ? invInChip(t('反映済み（ここに足す）','Posted (pages are added to it)'), INVIN_COL.green) : '') + (k ? ' '+invInPartsChip(k + 1) : '');
+    var foot = '';
+    if (S.how==='merge') {
+      var opts = ''; for (var r = held ? 2 : 1; r <= incN; r++) opts += '<option value="'+r+'"'+(S.page[id]===r ? ' selected' : '')+'>'+shown(r)+'</option>';
+      foot = '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="checkbox"'+(S.inc[id] ? ' checked' : '')+(invInSameFixed(S, id) || B ? ' disabled' : '')+' onchange="invInSameInc(\''+id+'\',this.checked)"> '+t('1 つの invoice に入れる','Include in the invoice')+'</label>'
+        + (!S.inc[id] ? '<span style="margin-left:auto">'+invInChip(t('重複として外す','Set aside as duplicate'), INVIN_COL.org)+'</span>'
+          : k ? '<span style="margin-left:auto;font-size:11.5px;color:var(--muted)">'+t('ページ ','Pages ')+'1–'+(k + 1)+'</span>'
+          : '<label for="ivx-pg-'+id+'" style="margin-left:auto;font-size:11.5px;color:var(--muted)">'+t('ページ','Page')+'</label><select id="ivx-pg-'+id+'" class="form-select ivx-in" style="width:auto"'+(B ? ' disabled' : '')+' onchange="invInSamePage(\''+id+'\',this.value)">'+opts+'</select>');
+    } else if (S.how==='dup') {
+      foot = '<label style="display:flex;align-items:center;gap:6px;font-size:12.5px"><input type="radio" name="ivx-keep"'+(S.keep===id ? ' checked' : '')+(B ? ' disabled' : '')+' onchange="invInSameKeep(\''+id+'\')"> '+t('これを残す','Keep this one')+'</label>'
+        + (S.keep===id ? '' : '<span style="margin-left:auto">'+invInChip(t('重複として外す','Set aside as duplicate'), INVIN_COL.org)+'</span>');
+    } else if (S.how==='sep') foot = '<span style="font-size:12px;color:var(--muted)">'+t('別の invoice として、開いて確かめる','A separate invoice: open it and check it')+'</span>';
+    return '<div class="card" style="padding:10px;margin:0;border:'+(on ? '2px solid #5b3fb0' : '1px solid var(--border)')+'">'
+      + (fid ? '<iframe src="https://drive.google.com/file/d/'+fid+'/preview" title="'+e(label(id))+'" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:150px;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
+        : '<div style="height:150px;border-radius:6px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted)">'+e(label(id))+'</div>')
+      + '<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap"><b style="font-size:12.5px">'+e(label(id))+'</b> '+tag
+      + '<span style="margin-left:auto;white-space:nowrap">'+invInOrig(f.drive_file_id)+' <a style="color:var(--accent2);cursor:pointer;font-size:11.5px" onclick="invInOpen(\''+id+'\',\''+(d.status==='review' ? 'dreview' : 'drecon')+'\')">'+t('開く','Open')+'</a></span></div>'
+      + '<div style="font-size:12px;font-weight:700;word-break:break-all;margin-top:2px">'+e(f.current_name || '—')+'</div>'
+      + '<div style="font-size:11.5px;line-height:1.6;margin-top:2px">'+facts.join(t('・',' · '))+'</div>'
+      + '<div style="font-size:11px;color:var(--muted)">'+t('受け取り ','Received ')+e(invInTime(f.ingested_at))+'</div>'
+      + (foot ? '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:8px;padding-top:8px">'+foot+'</div>' : '')
+      + '</div>';
+  }).join('') + '</div>';
+  var opt = function(v, title, text){ return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;line-height:1.5;margin:4px 0"><input type="radio" name="ivx-how"'+(S.how===v ? ' checked' : '')+(B ? ' disabled' : '')+' style="margin-top:3px" onchange="invInSameHow(\''+v+'\')"> <span><b>'+title+'</b>'+t('：',': ')+text+'</span></label>'; };
+  var how = '<div class="card" style="padding:10px 14px;margin:0;flex:1 1 320px;min-width:0"><div style="font-size:12.5px;font-weight:800;margin-bottom:4px">'+t('どう扱うか','How to treat them')+'</div>'
+    + opt('merge', t('複数枚で 1 つの invoice','One invoice in several originals'), t('チェックしたファイルをページの順にまとめる。チェックしないものは重複として外す','the ticked files are put together in page order; the others are set aside as duplicates'))
+    + opt('dup', t('重複','Duplicates'), t('1 つだけ残して、ほかは重複として外す','keep one and set the others aside as duplicates'))
+    + opt('sep', t('別々の invoice','Separate invoices'), t('業者が同じ番号を使った別の請求（それぞれ反映）','the vendor used the same number for different bills (each is posted)'))
+    + '</div>';
+  h += '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:10px">' + how + invInSameResult(S) + '</div>';
+  var btn = S.how==='merge' ? (S.pv && S.pv.posted ? t('反映済みの invoice に足す','Add to the posted invoice') : t('1 つの invoice にまとめる','Merge into one invoice'))
+    : S.how==='dup' ? t('重複にする（1 つを残す）','Set aside the duplicates') : S.how==='sep' ? t('別々に確かめる（戻る）','Check them separately (back)') : t('どう扱うかを選んでください','Choose how to treat them');
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px"><label for="ivx-same-note" style="font-size:12.5px;font-weight:700">'+t('メモ','Note')+'</label>'
+    + '<input id="ivx-same-note" class="form-input" style="flex:1 1 260px;min-width:0" placeholder="'+t('任意。例：2 枚に分けて撮った・3 枚目は撮り直し','Optional, e.g. photographed in two parts; the third is a retake')+'" value="'+e(S.note || '')+'" oninput="_invIn.same.note=this.value"'+(S.how==='sep' ? ' disabled' : '')+'>'
+    + '<button class="btn btn-primary"'+(invInSameReady(S) && !B ? '' : ' disabled')+' onclick="invInSameSave()"><i class="ti ti-'+(B ? 'loader-2' : 'files')+'"></i> '+btn+'</button>'
+    + '<button class="btn btn-secondary" onclick="invInSameClose()">'+t('やめる','Cancel')+'</button></div>';
+  return h;
+}
+/* 名前の例（サーバーが付ける名前と同じ形。見せるだけ） */
+function invInNamePart(v){ return String(v==null ? '' : v).normalize('NFKC').replace(/[\u0000-\u001f\u007f-\u009f]/g, '').replace(/[\\/:*?"<>|#%{}~&]/g, '-').replace(/[\s_]+/g, '-').replace(/-+/g, '-').replace(/^[-.]+|[-.]+$/g, '').slice(0, 40); }
+function invInSameResult(S){
+  var e = escapeHtml, box = function(inner){ return '<div class="card" style="padding:12px 14px;margin:0;flex:999 1 440px;min-width:0;background:rgba(91,63,176,.06);border-color:rgba(91,63,176,.25)">'+inner+'</div>'; };
+  var title = function(x){ return '<div style="font-size:12.5px;font-weight:800;color:#45308a;margin-bottom:6px">'+x+'</div>'; };
+  var names = function(ids){ return ids.map(function(id){ return t('原本 ','Original ')+(S.order.indexOf(id) + 1); }).join(t('・',', ')); };
+  var red = function(x){ return '<div style="font-size:12px;color:'+INVIN_COL.red+';line-height:1.6">'+e(x)+'</div>'; };
+  var p = invInSameProblem(S);
+  if (S.how==='dup') {
+    var others = S.order.filter(function(id){ return id !== S.keep; });
+    return box(title(t('重複にする','Set aside as duplicates')) + (p ? red(p)
+      : '<div style="font-size:12px;line-height:1.7">'+t('原本 ','Original ')+(S.order.indexOf(S.keep) + 1)+t(' を残し、',' is kept; ')+e(names(others))+t(' を重複として外します（計上しません）。Drive の原本は消しません。',' are set aside as duplicates (not posted). The originals stay in Drive.')
+        + (S.G[S.keep].doc.status==='review' ? t('残した invoice は、このあと 4 項目を確かめて反映します。',' The kept invoice is then checked (four items) and posted.') : '')+'</div>'));
+  }
+  if (S.how==='sep') return box(title(t('別々の invoice','Separate invoices'))+'<div style="font-size:12px;line-height:1.7">'+t('何も変えません。それぞれを開いて 4 項目を確かめ、別々に反映します（「同じ番号で内容が違う」の注意は残ります）。','Nothing is changed. Open each one, check the four items and post them separately (the “same number” note stays).')+'</div>');
+  if (S.how!=='merge') return box('<div style="font-size:12px;color:var(--muted)">'+t('どう扱うかを選ぶと、ここに結果が出ます','Choose how to treat them; the result appears here')+'</div>');
+  if (p) return box(title(t('まとめた結果','The merged invoice')) + red(p));
+  var P = invInSamePlan(S), pv = S.pv;
+  /* もう一度で変わりうるもの（通信・サーバーの一時的なエラー）だけ、もう一度を出す */
+  if (S.pvErr) return box(title(t('まとめた結果','The merged invoice')) + red(t('まとめられません：','Cannot merge: ')+S.pvErr)
+    + (['bad_merge','invalid_state','forbidden','not_found','has_parts'].indexOf(S.pvCode) < 0 ? '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invInSameRetryPv()">'+t('もう一度','Try again')+'</button>' : ''));
+  if (!pv || S.pvKey !== JSON.stringify(P)) return box(title(t('まとめた結果','The merged invoice'))+'<div style="font-size:12px;color:var(--muted)">'+t('まとめた結果を計算しています…','Working out the merged invoice…')+'</div>');
+  var H = pv.header || {}, from = H.from || {}, codes = invInCodes(pv.reasons);
+  var pg = function(id){ var x = (pv.parts || []).filter(function(q){ return q.id===id; })[0]; if (!x) return ''; var no = Number(x.part_no) || 1;
+    if (x.main && invInSameParts(S, id)) return t('まとめ済みの印字','printed on the merged pages'); return t('','printed on page ')+no+t(' 枚目の印字',''); };
+  var counts = P.docs.map(function(id){ return (S.G[id].lines || []).length; });
+  var ok;
+  if (H.total_cents==null) ok = '<span style="color:'+INVIN_COL.yel+'">'+t('合計の印字がありません（まとめたあとに入れる）','No total printed (enter it after merging)')+'</span>';
+  else if (codes.indexOf('total_mismatch') >= 0) {
+    var mm = /calc (-?\d+) vs (-?\d+)/.exec(String(((pv.reasons || []).filter(function(r){ return r.code==='total_mismatch'; })[0] || {}).detail || ''));
+    ok = '<span style="color:'+INVIN_COL.red+';font-weight:700">✗ '+t('合いません','Does not match')+(mm ? t('（差 ',' (difference ')+invInMoney(Math.abs(Number(mm[1]) - Number(mm[2])))+t('）',')') : '')+'</span>';
+  }
+  else ok = '<span style="color:'+INVIN_COL.green+';font-weight:700">✓ '+t('合っています','They match')+'</span>';
+  var row = function(k, v, strong){ return '<div>'+k+'</div><div style="font-weight:'+(strong ? 800 : 700)+';text-align:right;overflow-wrap:anywhere">'+v+'</div>'; };
+  var inner = title(t('まとめた結果（反映の前に見る）','The merged invoice (look before posting)'))
+    + '<div style="display:grid;grid-template-columns:minmax(6em,max-content) minmax(0,1fr);gap:4px 14px;font-size:12.5px">'
+    + row(t('明細','Lines'), pv.lines_n+t(' 行',' lines')+(counts.length > 1 ? t('（',' (')+counts.join(t('＋',' + '))+t('）',')') : ''))
+    + row(t('明細の計','Line total'), invInMoney(H.lines_sum_cents))
+    + (Number(H.tax_cents) || Number(H.shipping_cents) ? row(t('税・送料','Tax · shipping')+((from.tax_cents || from.shipping_cents) ? t('（',' (')+pg(from.tax_cents || from.shipping_cents)+t('）',')') : ''), invInMoney(H.tax_cents)+t(' ・ ',' · ')+invInMoney(H.shipping_cents)) : '')
+    + row(t('合計','Total')+(from.total_cents ? t('（',' (')+pg(from.total_cents)+t('）',')') : ''), H.total_cents!=null ? invInMoney(H.total_cents) : '—', true)
+    + row(t('明細の計＋税＋送料 ＝ 合計','Lines + tax + shipping = total'), ok)
+    + '</div>';
+  var rest = invInToCheck(pv.reasons).filter(function(r){ return r.code!=='total_mismatch'; });
+  if (rest.length) inner += '<div style="font-size:12px;margin-top:8px;line-height:1.6"><b>'+t('まとめたあとに確かめること：','To check after merging: ')+'</b>'+rest.map(function(r){ return e(invInHint(r)); }).join(' / ')+'</div>';
+  var stem = invInNamePart(H.invoice_date)+'_'+invInNamePart(H.vendor_name)+'_'+invInNamePart(H.invoice_no);
+  inner += '<div style="font-size:12px;margin-top:8px;line-height:1.7">'
+    + (pv.posted ? t('原本の名前はすぐに ','The originals are renamed at once to ') : t('反映すると原本の名前は ','When posted, the originals are named '))
+    + '<span style="font-family:ui-monospace,monospace;word-break:break-all">'+e(stem)+'_p1</span>'+t(' と ',' and ')+'<span style="font-family:ui-monospace,monospace">_p2</span>'+t('（ページの順）。',' (in page order).')
+    + (P.duplicates.length ? e(names(P.duplicates))+t(' は重複として外し、Drive からは消しません。',' are set aside as duplicates and stay in Drive.') : '')
+    + (pv.posted ? '' : t('まとめたあとは 1 件の invoice として 4 項目を確かめて反映します。',' After merging, check the four items of the one invoice and post it.'))+'</div>';
+  if (pv.posted) {
+    var qb = invInSameQb(S, pv.main);
+    inner += '<div style="font-size:12px;margin-top:8px;line-height:1.7">'+t('反映済みの invoice に足します（訂正：版が上がり、価格の履歴・アプリの写し・仕入れ集計を作り直し、照合は「未照合」に戻ります）。','The pages are added to the posted invoice (a correction: its version goes up, the price history, the app copy and the purchase totals are rebuilt, and reconciliation goes back to “not reconciled”).')
+      + (qb.sent ? t('この invoice はもう QuickBooks へ送っています。足したページは QuickBooks で手で足してください。',' This invoice was already sent to QuickBooks: add the new pages there by hand.')
+        : qb.wait ? t('QuickBooks へ送る予定だったこの invoice は、足すと送らなくなります（複数枚は転送側の対応待ち）。QuickBooks に手で入れたら「QuickBooks に入れた」を記録してください。',' This invoice was waiting to be sent to QuickBooks; once pages are added it is not sent (several originals wait for the forwarder). When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks”.') : '')+'</div>'
+      + invInSameAcks(S).map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px;color:'+INVIN_COL.red+'"><input type="checkbox"'+(S.ack[c] ? ' checked' : '')+' onchange="invInSameAck(\''+c+'\',this.checked)"> '+t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+'</label>'; }).join('')
+      + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px"><input type="checkbox"'+(S.adj ? ' checked' : '')+' onchange="_invIn.same.adj=this.checked"> '+t('締め済みの月なら、経理の調整として記録する','If the month is closed, record an accounting adjustment')+'</label>';
+    var must = invInSameMust(S);
+    if (must) inner += red(must);
+  }
+  inner += '<div class="ivx-note">'+t('QuickBooks：複数枚の invoice は、転送側（ChatGPT）の対応が済むまで台帳に出しません（反映したあと、1 件の画面で「QuickBooks に入れた」を記録できます）。','QuickBooks: an invoice in several originals is not put in the forwarding ledger until the forwarder (ChatGPT) supports it (after posting, “Entered in QuickBooks” can be recorded on the invoice).')+'</div>';
+  return box(inner);
+}
+/* ---- 複数枚の invoice（1 件の画面）：ページの一覧・原本の切り替え・まとめを外す・QuickBooks ---- */
+function invInPartsOf(d){ var G = _invIn.doc; return (G && G.doc && d && G.doc.id===d.id) ? (G.parts || []).length : 0; }
+function invInQbOf(rows){
+  var r = (rows || []).filter(function(o){ return o && o.state!=='cancelled'; }).sort(function(a, b){ return String(b.created_at || '').localeCompare(String(a.created_at || '')); })[0];
+  return r ? r.state : null;
+}
+function invInOrigFiles(G){
+  var parts = (G && G.parts) || []; if (!parts.length) return [];
+  var f = G.file || {};
+  return [{ no:Number(G.doc.part_no) || 1, fid:invInFileId(f.drive_file_id), name:f.current_name || '', main:true, qb:invInQbOf(G.qb) }]
+    .concat(parts.map(function(x){ return { no:Number(x.part_no) || 0, fid:invInFileId(x.drive_file_id), name:x.current_name || '', main:false, qb:x.qb_state || null }; }))
+    .sort(function(a, b){ return a.no - b.no; });
+}
+function invInShowOrig(fid){ _invIn.origFile = invInFileId(fid) || null; _invIn.mob = 'orig'; invInRerender(); }
+function invInOrigTabs(list, pick){
+  if (list.length < 2) return '';
+  return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">' + list.map(function(x){ var on = pick ? x===pick : x.main;
+    return '<button class="btn btn-sm '+(on ? 'btn-primary' : 'btn-secondary')+'" style="padding:1px 10px;font-size:11px" onclick="invInShowOrig('+invInJs(x.main ? '' : x.fid)+')">'+t('','Page ')+x.no+t(' 枚目','')+'</button>'; }).join('') + '</div>';
+}
+function invInPartsHtml(G){
+  var d = G.doc, e = escapeHtml, B = !!_invIn.busy;
+  if (d.status==='merged') {
+    var m = G.main || {}, mid = invInId(m.id);
+    var which = e((m.vendor_name || '')+' · '+(m.invoice_no || '')), no = Number(d.part_no) || '?';
+    return '<div class="card" style="padding:10px 12px;border-left:3px solid #5b3fb0;font-size:12.5px;line-height:1.7"><i class="ti ti-files"></i> '
+      + (curLang==='en' ? 'This original is page '+no+' of “'+which+'” (its lines are there).' : 'この原本は「'+which+'」の '+no+' 枚目にまとめました（明細はそちらに入っています）。')
+      + (mid ? ' <button class="btn btn-secondary btn-sm" onclick="invInOpen(\''+mid+'\',\''+(m.status==='review' ? 'dreview' : 'drecon')+'\')">'+t('まとめた invoice を開く','Open the invoice')+'</button>' : '') + '</div>';
+  }
+  var list = invInOrigFiles(G); if (!list.length) return '';
+  var canEdit = invInCanEdit();
+  var h = '<div class="card" style="padding:10px 12px;border-left:3px solid #5b3fb0"><div style="font-size:12.5px;font-weight:700;margin-bottom:4px"><i class="ti ti-files"></i> '+t('複数枚の invoice：','One invoice in ')+list.length+t(' 枚',' originals')+'</div>'
+    + list.map(function(x){ return '<div style="display:flex;gap:8px;align-items:center;font-size:11.5px;border-top:1px solid var(--border);padding:5px 0;flex-wrap:wrap"><b style="white-space:nowrap">'+t('','Page ')+x.no+t(' 枚目','')+'</b>'
+        + '<span style="flex:1;min-width:120px;word-break:break-all;font-family:ui-monospace,monospace;font-size:11px">'+e(x.name || '—')+'</span>'
+        + (d.status==='posted' ? invInQbChip(x.qb, list.length, 'posted') : '')
+        + (x.fid ? '<a style="color:var(--accent2);cursor:pointer;white-space:nowrap" onclick="invInShowOrig('+invInJs(x.main ? '' : x.fid)+')">'+t('表示','Show')+'</a> '+invInOrig(x.fid) : '')+'</div>'; }).join('');
+  if (d.status==='review' && d.merge_base && canEdit) h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><button class="btn btn-secondary btn-sm"'+(B ? ' disabled' : '')+' onclick="invInUnmergeAsk()"><i class="ti ti-arrows-split"></i> '+t('まとめを外す','Take the merge back')+'</button>'
+    + '<span class="ivx-note" style="margin:0">'+t('それぞれの原本を、まとめる前の要確認に戻します（反映する前だけ）','Each original goes back to review as it was before (only before posting)')+'</span></div>';
+  if (d.status==='posted') {
+    var unsent = list.filter(function(x){ return x.qb!=='sent'; }).length;
+    h += '<div class="ivx-note">'+(unsent ? t('QuickBooks：複数枚の invoice は、転送側（ChatGPT）が対応するまで台帳に出しません。QuickBooks に手で入れたら「QuickBooks に入れた」で記録します（台帳に「送信済み」として残り、あとで二重に送りません）。','QuickBooks: an invoice in several originals is not put in the forwarding ledger until the forwarder (ChatGPT) supports it. When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks” (it is kept as sent, so it is never sent twice).')
+        : t('QuickBooks：すべてのページを記録済み','QuickBooks: every page is recorded'))+'</div>'
+      + (unsent && canEdit ? '<button class="btn btn-secondary btn-sm" style="margin-top:4px"'+(B ? ' disabled' : '')+' onclick="invInQbManualAsk()"><i class="ti ti-check"></i> '+t('QuickBooks に入れた（記録する）','Entered in QuickBooks (record it)')+'</button>' : '');
+  }
+  return h + '</div>';
+}
+function invInUnmergeAsk(){
+  var G = _invIn.doc; if (!G || !G.doc) return;
+  openModal('<div class="modal-title">'+t('まとめを外す','Take the merge back')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;line-height:1.8">'+invInOrigFiles(G).length+t(' 枚の原本を、まとめる前のそれぞれの要確認に戻します。まとめたあとに直した値も、まとめる前の値に戻ります。',' originals go back to review, each as it was before the merge. Values corrected after the merge go back too.')+'</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInUnmerge()">'+t('まとめを外す','Take it back')+'</button></div>');
+}
+async function invInUnmerge(){
+  var G = _invIn.doc; if (!G || !G.doc || !invInCanEdit()) return; var d = G.doc, E = _invIn.edits || {};
+  try { await invInDo(function(){ return invInAPI({ action:'unmerge', doc_id:d.id, version:d.version, reason:String(E.reason || '').trim() || invInL(INVIN_UNMERGE_REASON) }); }, t('まとめを外しました','The merge was taken back')); }
+  catch(e) { delete _invIn.loaded.doc; invInRerender(); return; }
+  _invIn.loaded = {}; _invIn.cand = {}; _invIn.edits = null; _invIn.origFile = null; invInRerender();
+}
+function invInQbManualAsk(){
+  openModal('<div class="modal-title">'+t('QuickBooks に入れた','Entered in QuickBooks')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;line-height:1.8">'+t('この invoice のページをすべて QuickBooks に手で入れたことを記録します。記録したページは台帳で「送信済み」になり、あとで転送側から二重に送りません。','Records that every page of this invoice was entered in QuickBooks by hand. The pages are kept as sent in the ledger and are never forwarded twice.')+'</div>'
+    + '<input id="ivx-qbm-note" class="form-input" style="width:100%;box-sizing:border-box;margin-top:8px" maxlength="300" placeholder="'+t('メモ（任意）。例：QuickBooks の番号','Note (optional), e.g. the QuickBooks number')+'">'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="invInQbManual()">'+t('記録する','Record')+'</button></div>');
+}
+async function invInQbManual(){
+  var G = _invIn.doc; if (!G || !G.doc || !invInCanEdit()) return; var d = G.doc;
+  var el = document.getElementById('ivx-qbm-note'), note = el ? String(el.value || '').trim() : '', r;
+  closeModalDirect();
+  try { r = await invInDo(function(){ return invInAPI({ action:'qb_manual', doc_id:d.id, version:d.version, note:note }); }); }
+  catch(e) { delete _invIn.loaded.doc; invInRerender(); return; }
+  if (r) showToast(t('記録しました（','Recorded (')+(Number(r.added) || 0)+t(' ページ）',' pages)'), 'success');
+  delete _invIn.loaded.doc; delete _invIn.loaded.list; invInRerender();
+}
 function invInReview(){
   var g = invInGate(); if (g) return g;
   invInLoadBase();
+  if (_invIn.same) { invInLoad('same', invInLoadSame); return invInHead() + invInSameHtml(); }   /* v1082：同じ invoice 番号の処理 */
   if (_invIn.docId && _invIn.docSub==='dreview') { invInLoad('doc', invInLoadDoc); return invInHead() + invInDetail('review'); }
   invInLoad('review', function(){ return invInLoadQueue('review'); });
   return invInHead() + invInQueueHtml('review');
@@ -47846,7 +48282,7 @@ function invInStoreHits(rs){
   return out;
 }
 function invInActiveStores(){ return (((_invIn.config||{}).stores)||[]).filter(function(s){ return s && s.active; }).map(function(s){ return s.store_id; }); }
-function invInStoreOpenFor(d){ return !!d && d.status==='review' && invInCanEdit() && (invInMark4(d, 'store')!=='ok' || _invIn.storeOpen===d.id); }
+function invInStoreOpenFor(d){ return !!d && d.status==='review' && invInCanEdit() && !invInPartsOf(d) && (invInMark4(d, 'store')!=='ok' || _invIn.storeOpen===d.id); }
 function invInStoreTo(d){
   var E = _invIn.edits || {}, act = invInActiveStores();
   /* 宛先が別の店舗（store_mismatch）のときだけ、その店舗を先に選んでおく。複数の店舗（multi_store）は人が選ぶ */
@@ -47856,7 +48292,7 @@ function invInStoreTo(d){
   return act.indexOf(to)>=0 ? to : '';
 }
 function invInStoreBtn(d, canEdit){
-  if (!canEdit || d.status!=='review' || invInStoreOpenFor(d)) return '';
+  if (!canEdit || d.status!=='review' || invInPartsOf(d) || invInStoreOpenFor(d)) return '';
   return ' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10.5px" onclick="_invIn.storeOpen='+invInJs(invInId(d.id))+';invInRerender()">'+t('店舗を変える','Change store')+'</button>';
 }
 function invInStorePanel(d, canEdit, shipTo){
@@ -47933,6 +48369,7 @@ function invInDetail(mode){
   var codes = invInCodes(d.reasons), chk = invInToCheck(d.reasons);
   var h = back + '<div class="card" style="padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">'+e(d.vendor_name||d.vendor_raw||t('（業者不明）','(vendor unknown)'))+'</b>'
     + invInStoreHtml(d.store_id) + '<span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)">'+e(d.invoice_no||'—')+'</span>' + invInProcChip(d) + ' ' + invInReconChip(d)
+    + ((G.parts||[]).length ? ' '+invInPartsChip((G.parts||[]).length + 1) : '')
     + '<span style="margin-left:auto;font-size:11px;color:var(--muted)">'+t('取込','Received')+' '+e(invInTime(f.ingested_at))+(f.submitter?' · '+t('提出者','by')+' '+e(f.submitter)+t('（Drive の記録）',' (Drive record)'):'')+'</span></div>';
   if (rv) {
     /* v1056：経理が確かめることだけ（商品・単価は明細の中）。確認モードは灰色 */
@@ -47949,13 +48386,17 @@ function invInDetail(mode){
   /* スマホは「原本」「確認（照合では明細）」を切り替える */
   h += '<div class="ivx-mob" style="grid-template-columns:1fr 1fr;border:1px solid var(--border);border-radius:9px;overflow:hidden;margin-bottom:8px">'
     + ['orig','lines'].map(function(k){ var on = _invIn.mob===k; return '<button style="font:inherit;font-size:12px;padding:8px;border:0;'+(on?'font-weight:700;background:var(--accent);color:#fff':'background:var(--surface)')+'" onclick="_invIn.mob=\''+k+'\';invInRerender()"><i class="ti ti-'+(k==='orig'?'file-text':rv?'checklist':'list-details')+'"></i> '+(k==='orig'?t('原本','Original'):rv?t('確認','Check'):t('明細','Lines'))+'</button>'; }).join('') + '</div>';
-  var fid = invInFileId(f.drive_file_id), place;
+  /* v1082：複数枚の invoice は、見る原本（ページ）を切り替えられる */
+  var oFiles = invInOrigFiles(G), oPick = oFiles.filter(function(x){ return !x.main && x.fid && x.fid===_invIn.origFile; })[0];
+  var fid = invInFileId(oPick ? oPick.fid : f.drive_file_id), place;
   if (f.organize_status==='done') place = t('Drive の ','In Drive: ')+e(invInStore(d.store_id).name)+' / '+e(String(d.invoice_date||'').slice(0,4))+' / '+e(String(d.invoice_date||'').slice(5,7))+' / '+(f.organize_target==='reconciled'?t('照合済み','Reconciled'):t('未照合','Unreconciled'));
   else place = t('Drive の 00_Upload にあります（整理前）','In Drive 00_Upload (not filed yet)');
+  if (oPick) place = t('この invoice の ','This invoice, page ')+oPick.no+t(' 枚目の原本','');
   var orig = '<div class="card ivx-orig'+(_invIn.mob==='lines'?' ivx-hide-m':'')+'" style="padding:12px;text-align:center"><div style="font-size:11px;color:var(--muted);text-align:left;margin-bottom:6px"><i class="ti ti-file-text"></i> '+t('原本（Google Drive）','Original (Google Drive)')+'</div>'
+    + invInOrigTabs(oFiles, oPick)
     + (fid ? '<iframe src="https://drive.google.com/file/d/'+fid+'/preview" title="'+t('原本','Original')+'" loading="lazy" referrerpolicy="no-referrer" style="width:100%;height:380px;border:1px solid var(--border);border-radius:6px;background:#fff"></iframe>'
       + '<a class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px;box-sizing:border-box" href="'+invInFileUrl(fid)+'" target="_blank" rel="noopener noreferrer"><i class="ti ti-external-link"></i> '+t('原本を Drive で開く（拡大）','Open in Drive')+'</a>' : '')
-    + '<div class="ivx-note" style="text-align:left">'+place+'<br>'+t('ファイル名：','File name: ')+'<span style="font-family:ui-monospace,monospace;word-break:break-all">'+e(f.current_name||'—')+'</span>'+invInRenameNote(d, f)+'<br>'
+    + '<div class="ivx-note" style="text-align:left">'+place+'<br>'+t('ファイル名：','File name: ')+'<span style="font-family:ui-monospace,monospace;word-break:break-all">'+e((oPick ? oPick.name : f.current_name)||'—')+'</span>'+(oPick ? '' : invInRenameNote(d, f))+'<br>'
     + t('原本の中身は変えません（変えるのはファイル名だけ）。見えないときは、Drive に入れる Google アカウントでブラウザにログインしてください。','The content of the original is never changed (only its file name). If it does not show, sign in to Google in this browser with an account that can open the folder.')+'</div></div>';
   /* ---- 見出しの入力 ---- */
   var hin = function(key, cur, kind){
@@ -48085,8 +48526,8 @@ function invInDetail(mode){
   if ((G.related||[]).length) rel = '<div class="card" style="padding:10px 12px"><div style="font-size:11.5px;font-weight:700;margin-bottom:6px"><i class="ti ti-link"></i> '+t('関連する書類','Related documents')+'</div>'
     + G.related.map(function(x){ return '<div style="font-size:11.5px;line-height:1.9;cursor:pointer" onclick="invInOpen(\''+invInId(x.id)+'\',\''+(x.status==='review'?'dreview':'drecon')+'\')"><span class="tag tag-gray">'+e(x.doc_type||'')+'</span> '+e(x.invoice_no||'—')+' · '+e(x.relation||'')+' · '+e(x.status||'')+'</div>'; }).join('') + '</div>';
   var acts = rv ? invInReviewActions(d) : invInReconActions(d);
-  if (rv) h += '<div class="ivx-grid"><div>'+orig+'</div><div>'+head+acts+'</div></div>' + linesCard + rel;
-  else h += '<div class="ivx-grid"><div>'+orig+'</div><div>'+head+'</div></div>' + linesCard + rel + acts;
+  if (rv) h += '<div class="ivx-grid"><div>'+orig+'</div><div>'+head+invInPartsHtml(G)+acts+'</div></div>' + linesCard + rel;
+  else h += '<div class="ivx-grid"><div>'+orig+'</div><div>'+head+invInPartsHtml(G)+'</div></div>' + linesCard + rel + acts;
   /* ---- 履歴（直した人・理由） ---- */
   var ev = (G.events||[]).slice(-12).reverse();
   if (ev.length) h += '<div class="card" style="padding:10px 12px"><details><summary style="font-size:12px;cursor:pointer;font-weight:700"><i class="ti ti-history"></i> '+t('履歴','History')+'（'+(G.events||[]).length+'）</summary>'
@@ -48116,14 +48557,18 @@ function invInReviewActions(d){
         + '<a style="color:var(--accent2);cursor:pointer" onclick="invInOpen(\''+id+'\',\''+(c.status==='review'?'dreview':'drecon')+'\')">'+t('開く','Open')+'</a></div>';
     }).join('');
   }
+  /* v1082（段階 3）：同じ番号の書類がある → 複数枚で 1 つ・重複・別々を選ぶ画面へ */
+  if (invInSameCands(d).length) h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0 2px"><button class="btn btn-secondary btn-sm" onclick="invInSameFromDoc()"><i class="ti ti-files"></i> '+t('同じ番号の処理（まとめる・重複）','Same number: merge or set aside')+'</button>'
+    + '<span class="ivx-note" style="margin:0">'+t('複数枚で 1 つの invoice なら、ここでまとめます','If they are pages of one invoice, merge them here')+'</span></div>';
   if (d.doc_type==='credit_memo') h += invInRelateHtml(d);
   /* v1056：主の操作は「この内容で反映する」（直した値があれば保存してから反映）。理由は任意（空なら経理の確認として残す） */
   h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">'
     + (invInBuy(d) ? '<button class="btn btn-primary" onclick="invInConfirm()"><i class="ti ti-check"></i> '+t('この内容で反映する','Post as shown')+'</button>' : '')
-    + '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'duplicate\')">'+t('重複にする','Mark duplicate')+'</button>'
-    + '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'reject\')">'+t('対象外にする','Exclude')+'</button>'
+    + (invInPartsOf(d) ? '' : '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'duplicate\')">'+t('重複にする','Mark duplicate')+'</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="invInMark(\'reject\')">'+t('対象外にする','Exclude')+'</button>')
     + '<button class="btn btn-secondary btn-sm" onclick="invInSave()"><i class="ti ti-device-floppy"></i> '+t('直した値だけ保存','Save changes only')+'</button></div>'
     + '<input class="form-input" style="width:100%;margin-top:8px;box-sizing:border-box" placeholder="'+t('メモ（任意）。重複・対象外にするときは理由を入れる','Note (optional). Needed to mark duplicate or exclude')+'" value="'+e(E.reason||'')+'" oninput="_invIn.edits.reason=this.value">';
+  if (invInPartsOf(d)) h += '<div class="ivx-note">'+t('複数枚の invoice です。重複・対象外にするときは、先に「まとめを外す」。','This invoice has several originals. To set it aside or exclude it, take the merge back first.')+'</div>';
   var blockers = invInToCheck(d.reasons).filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0 && !invInSuppressed(d, r.code); });
   if (blockers.length && invInBuy(d)) h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('次は直してから反映します（値を直して「この内容で反映する」を押すと、保存してから反映します。直せないものは対象外・重複に）：','Fix these first (correct the value and press “Post as shown” — it saves, then posts; otherwise exclude or mark duplicate): ')+blockers.map(function(r){ return e(invInHint(r)); }).join(' / ')+'</div>';
   if (!invInBuy(d)) h += '<div class="ivx-note">'+t('この書類は仕入れとして計上しません（Statement・レシートなど）。照合に使うか、対象外にしてください。','This document is not posted as a purchase (statement, receipt…). Use it for reconciliation or exclude it.')+'</div>';

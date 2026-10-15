@@ -328,7 +328,9 @@ export function createHandler(deps) {
       const parents = g.file.parents || [];
       const allowed = new Set([store.upload_folder_id, store.root_folder_id, ...(t.store_folder_ids || []), ...(t.upload_folder_ids || [])].filter(Boolean));
       if (!parents.length || !(parents.every(p => allowed.has(p)) || await staffPlace(parents, store, ctx, t))) throw new Error('outside_store_folders');
+      // An invoice of several originals: _p1, _p2 … in page order (UI案50 5).
       name = postedName({ invoiceDate: t.invoice_date, vendor: t.vendor_name, docType: t.doc_type, invoiceNo: t.invoice_no, internalNo: t.internal_no,
+        part: Number(t.parts) > 1 ? Number(t.part_no) || 1 : null,
         ext: extensionFor(t.original_name, g.file.mimeType), version: t.version_no });
       if (!name) throw new Error('name_not_determined');
       if (g.file.name !== name) {
@@ -525,7 +527,8 @@ export function createHandler(deps) {
 
   // Rebuilds reasons after a person's correction from the current values, never from the AI's.
   // ai: the AI's transcription of this document (invoice_get's ai_doc), used only for what was printed.
-  async function recheck(doc, lines, edits, ctx, ai) {
+  // exclude: ids of documents not to compare with (the pages being merged into this invoice, UI案50 5).
+  async function recheck(doc, lines, edits, ctx, ai, exclude) {
     const H = { ...doc, ...(edits.header || {}) };
     const dateIn = invoiceDateInput(doc, edits.header || {}, ai);
     const byId = Object.fromEntries((edits.lines || []).map(e => [e.line_id, e.set || {}]));
@@ -563,7 +566,8 @@ export function createHandler(deps) {
     h.content_sig = await contentSignature(h, result.lines);
     const existing = (await db.rpc('invoice_dup_scope', { sha256: doc.sha256, vendor_key: h.vendor_key, invoice_no_norm: h.invoice_no_norm,
       store_id: doc.store_id, invoice_date: h.invoice_date, total_cents: h.total_cents }))
-      .filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256) && e.status !== 'duplicate' && e.duplicate_of !== doc.id);
+      .filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256) && e.status !== 'duplicate' && e.duplicate_of !== doc.id
+        && !(exclude && exclude.has(e.id)));
     // Records registered through the existing app screen are compared again (copies written by this intake are not returned).
     const app = await db.rpc('invoice_app_records', { store_id: doc.store_id });
     applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h, packing: result.reasons.some(r => r.code === 'packing_list') }, existing, app));
@@ -618,8 +622,118 @@ export function createHandler(deps) {
       ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [],
       learn_alias: !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw)) });
     // A correction of a posted invoice (date, vendor, number) gives its original the new name at once (Moto 2026-10-12).
-    if (g.doc.status === 'posted' && ctx.mode.rename && saved) saved.rename = await renameNow(actor, g.doc.file_id, ctx);
+    if (g.doc.status === 'posted' && ctx.mode.rename && saved) {
+      saved.rename = await renameNow(actor, g.doc.file_id, ctx);
+      for (const x of g.parts || []) await renameNow(actor, x.file_id, ctx);   // the other originals of the invoice (_p2 …)
+    }
     return saved;
+  }
+
+  // ------------------------------------------------------------------ several originals, one invoice
+  // Moto 2026-10-14「同じinvoice#で続いてるパターンもあるので、重複か複数枚で１つのinvoiceか選択して処理できる様に」(UI案50 5・7A・8A):
+  // accounting picks the pages of one invoice number in page order (b.docs) and the ones that are duplicates (b.duplicates). The main
+  // invoice is the posted one (a page added to a posted invoice corrects it), else one that already has pages, else the first page.
+  // Its header keeps what identifies it (vendor, number, dates: the main page's, or the first page that has them); the amounts are
+  // the last page's that has them (the total, tax and shipping are printed on the last page). Every line of every page is worked out
+  // again for the whole invoice. b.preview: nothing is saved, the result is returned to be looked at first.
+  const KEEP_ON_MERGE = ['ai_truncated', 'original_replaced', 'unreadable', 'ai_failed', 'store_assigned', 'packing_list'];
+  async function merge(actor, b) {
+    const order = Array.isArray(b.docs) ? b.docs.map(String) : [];
+    const dupIds = Array.isArray(b.duplicates) ? b.duplicates.map(String) : [];
+    if (order.length < 2 || order.length > 10 || new Set(order).size !== order.length || dupIds.length > 10
+      || new Set(dupIds).size !== dupIds.length || dupIds.some(id => order.includes(id))) throw new Error('bad_merge');
+    const gs = [];
+    for (const id of order) gs.push(await db.rpc('invoice_get', { actor, doc_id: id }));
+    if (gs.some(g => !['review', 'posted'].includes(g.doc.status))) throw new Error('invalid_state');
+    if (gs.filter(g => g.doc.status === 'posted').length > 1 || gs.filter(g => (g.parts || []).length).length > 1) throw new Error('bad_merge');
+    const main = gs.find(g => g.doc.status === 'posted') || gs.find(g => (g.parts || []).length) || gs[0];
+    const others = gs.filter(g => g !== main);
+    const versions = b.versions && typeof b.versions === 'object' ? b.versions : {};
+    if (!b.preview) for (const g of gs) if (Number(versions[g.doc.id]) !== Number(g.doc.version)) throw new Error('conflict');
+    // A page set aside as a duplicate is changed only with the version that was looked at.
+    if (!b.preview) for (const id of dupIds) if (versions[id] == null || !Number.isInteger(Number(versions[id]))) throw new Error('conflict');
+    // Page numbers: the order given; pages added to an invoice that already has some come after them.
+    const had = (main.parts || []).length;
+    const firstNo = had ? Math.max(Number(main.doc.part_no) || 1, ...main.parts.map(x => Number(x.part_no) || 0)) + 1 : 1;
+    const partNo = new Map(had ? others.map((g, i) => [g.doc.id, firstNo + i]) : gs.map((g, i) => [g.doc.id, i + 1]));
+    // The pages in page order (an invoice that already has pages counts as one, first).
+    const seq = had ? [main, ...others] : gs;
+    const pick = (f, last, zeroIsNone) => {
+      const vals = seq.map(g => g.doc[f]).filter(v => v !== null && v !== undefined && v !== '' && !(zeroIsNone && Number(v) === 0) && !(Array.isArray(v) && !v.length));
+      return vals.length ? vals[last ? vals.length - 1 : 0] : (zeroIsNone ? 0 : null);
+    };
+    const first = f => (main.doc[f] !== null && main.doc[f] !== undefined && main.doc[f] !== '' ? main.doc[f] : pick(f, false));
+    const reasons = [];
+    for (const g of gs) for (const r of g.doc.reasons || []) if (KEEP_ON_MERGE.includes(r.code) && !reasons.some(x => x.code === r.code)) reasons.push(r);
+    // Lines: the main invoice's own (those of pages merged before included), then each new page's, in page order. A page's
+    // page numbers follow the pages before it.
+    let pageEnd = Math.max(0, ...main.lines.map(l => Number(l.page) || 0), ...(main.doc.pages || []).map(Number));
+    const lines = main.lines.map(l => ({ ...l, moved: false }));
+    const pages = [...(main.doc.pages || [])].map(Number);
+    if (!pages.length) for (let i = 1; i <= Math.max(1, pageEnd); i++) pages.push(i);
+    pageEnd = Math.max(pageEnd, ...pages, 1);
+    const marked = [...(main.doc.pages_marked || [])];
+    const ordered = had ? others : gs.filter(g => g !== main);
+    for (const g of ordered) {
+      const own = (g.doc.pages || []).map(Number).filter(n => n > 0);
+      const span = Math.max(1, ...own, ...g.lines.map(l => Number(l.page) || 0));
+      for (const l of g.lines) lines.push({ ...l, page: pageEnd + (Number(l.page) || 1), moved: true });
+      for (let i = 1; i <= span; i++) pages.push(pageEnd + i);
+      pageEnd += span;
+      marked.push(...(g.doc.pages_marked || []));
+    }
+    const doc = { ...main.doc, reasons,
+      vendor_key: first('vendor_key'), vendor_name: first('vendor_name'), vendor_raw: first('vendor_raw'), vendor_code: first('vendor_code'),
+      invoice_no: first('invoice_no'), invoice_no_norm: first('invoice_no_norm'), invoice_date: first('invoice_date'), delivery_date: first('delivery_date'),
+      due_date: first('due_date'), currency: first('currency'), ship_to_raw: first('ship_to_raw'),
+      subtotal_cents: pick('subtotal_cents', true), total_cents: pick('total_cents', true),
+      tax_cents: pick('tax_cents', true, true), shipping_cents: pick('shipping_cents', true, true), discount_cents: pick('discount_cents', true, true),
+      other_charges: pick('other_charges', true) || [], pages, pages_marked: marked,
+      references_raw: seq.flatMap(g => g.doc.references_raw || []) };
+    // What the database refuses is said already at the preview (the same rules as invoice_merge): the same store, vendor, number,
+    // kind of document and currency (what could not be read may join), one document per original, read from what it holds now,
+    // and never a new reading of an original that is already a page of the invoice.
+    const same = (x, y) => x == null || y == null || x === y;
+    const kind = (x, y) => x === y || x === 'unknown' || y === 'unknown';
+    const files = new Set([main.doc.file_id, ...(main.parts || []).map(x => x.file_id)]);
+    for (const g of gs) {
+      if (g.doc.store_id !== doc.store_id || !same(g.doc.vendor_key, doc.vendor_key) || !same(g.doc.invoice_no_norm, doc.invoice_no_norm)
+        || !kind(g.doc.doc_type, doc.doc_type) || !same(g.doc.currency, doc.currency) || Number(g.file_docs) > 1 || Number(g.doc.doc_index) > 0
+        || (g.file && g.file.current_sha256 !== g.doc.sha256)) throw new Error('bad_merge');
+      if (g !== main) { if (files.has(g.doc.file_id)) throw new Error('bad_merge'); files.add(g.doc.file_id); }
+    }
+    const ctx = await context();
+    const exclude = new Set([...order, ...dupIds, ...(main.parts || []).map(x => x.id)]);
+    const result = await recheck(doc, lines, { header: {}, lines: [] }, ctx, main.ai_doc || null, exclude);
+    const h = result.header;
+    const where = f => { const i = seq.map(g => g.doc[f]).map(v => (v === null || v === undefined || Number(v) === 0 ? null : v)).lastIndexOf(doc[f]); return i < 0 ? null : seq[i].doc.id; };
+    const plan = {
+      main: main.doc.id, posted: main.doc.status === 'posted',
+      parts: gs.map(g => ({ id: g.doc.id, part_no: g === main ? (Number(main.doc.part_no) || partNo.get(g.doc.id) || 1) : partNo.get(g.doc.id), main: g === main })),
+      header: { vendor_name: h.vendor_name || null, invoice_no: h.invoice_no || null, invoice_date: h.invoice_date || null, currency: h.currency || null,
+        subtotal_cents: h.subtotal_cents, tax_cents: h.tax_cents, shipping_cents: h.shipping_cents, discount_cents: h.discount_cents, other_cents: h.other_cents,
+        total_cents: h.total_cents, lines_sum_cents: h.lines_sum_cents,
+        from: { total_cents: where('total_cents'), tax_cents: where('tax_cents'), shipping_cents: where('shipping_cents') } },
+      lines_n: result.lines.length, pages: pages.length, reasons: result.reasons,
+    };
+    if (b.preview) return plan;
+    const reason = typeof b.reason === 'string' && b.reason.trim() ? b.reason.trim().slice(0, 500) : '複数枚で 1 つの invoice';
+    const saved = await db.rpc('invoice_merge', { actor, doc_id: main.doc.id, version: main.doc.version, part_no: plan.parts.find(x => x.main).part_no,
+      parts: others.map(g => ({ id: g.doc.id, version: g.doc.version, part_no: partNo.get(g.doc.id) })),
+      duplicates: dupIds.map(id => ({ id, version: Number(versions[id]) })),
+      // The kind of purchase a person chose for the invoice (food / other) stays: only the vendor's default fills it in.
+      header: { ...h, food_kind: first('food_kind') ?? h.food_kind ?? null, pages, pages_marked: marked, other_charges: h.other_charges || [] },
+      lines: lines.map((l, i) => { const n = result.lines[i];
+        return { line_id: l.id, page: l.page, reasons: n.reasons, map_id: n.map_id ?? null, ingredient_code: n.ingredient_code ?? null, count_unit: n.count_unit ?? null,
+          count_per_purchase: n.count_per_purchase ?? null, base_unit: n.base_unit ?? null, base_per_purchase: n.base_per_purchase ?? null,
+          price_per_purchase: n.price_per_purchase ?? null, price_per_count: n.price_per_count ?? null, price_per_base: n.price_per_base ?? null, prev_price: n.prev_price ?? null }; }),
+      reasons: result.reasons, reason, ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [], adjustment_ack: !!b.adjustment_ack });
+    // A posted invoice: its originals get their names (_p1, _p2 …) and are filed with it now.
+    if (saved && saved.posted) {
+      if (ctx.mode.organize) for (const f of saved.file_ids || []) await db.rpc('invoice_organize_request', { file_id: f, target: 'unreconciled' });
+      if (ctx.mode.rename) { saved.rename = []; for (const f of saved.file_ids || []) saved.rename.push(await renameNow(actor, f, ctx)); }
+    }
+    return { ...saved, plan };
   }
 
   async function folderPlan(actor, b) {
@@ -738,11 +852,21 @@ export function createHandler(deps) {
     post: thenSummary(async (a, b) => {
       const r = await db.rpc('invoice_post', { actor: a, doc_id: b.doc_id, version: b.version, reason: b.reason || '', ack: b.ack || [], adjustment_ack: !!b.adjustment_ack, supersedes: b.supersedes || null });
       const ctx = await context();
-      if (ctx.mode.organize && r.file_id) await db.rpc('invoice_organize_request', { file_id: r.file_id, target: 'unreconciled' });
+      // An invoice of several originals (UI案50 5): every one of them, in page order (file_ids).
+      const files = Array.isArray(r.file_ids) && r.file_ids.length ? r.file_ids : (r.file_id ? [r.file_id] : []);
+      if (ctx.mode.organize) for (const f of files) await db.rpc('invoice_organize_request', { file_id: f, target: 'unreconciled' });
       // Moto 2026-10-12: 「この内容で反映」 → the original's name becomes 日付_業者名_番号 now; QuickBooks follows (worker).
-      if (ctx.mode.rename && r.file_id) r.rename = await renameNow(a, r.file_id, ctx);
+      if (ctx.mode.rename && files.length) {
+        r.rename = await renameNow(a, files[0], ctx);
+        for (const f of files.slice(1)) await renameNow(a, f, ctx);
+      }
       return r;
     }, b => ids(b.doc_id, b.supersedes)),
+    // A preview saves nothing (and writes no summary).
+    merge: (a, b) => (b.preview ? merge(a, b)
+      : thenSummary(merge, x => ids(...(Array.isArray(x.docs) ? x.docs : []), ...(Array.isArray(x.duplicates) ? x.duplicates : [])))(a, b)),
+    unmerge: thenSummary((a, b) => db.rpc('invoice_unmerge', { actor: a, doc_id: b.doc_id, version: b.version, reason: typeof b.reason === 'string' ? b.reason.slice(0, 500) : '' }), b => ids(b.doc_id)),
+    qb_manual: thenSummary((a, b) => db.rpc('invoice_qb_manual', { actor: a, doc_id: b.doc_id, version: b.version, note: typeof b.note === 'string' ? b.note.slice(0, 300) : '' }), b => ids(b.doc_id)),
     reassign: thenSummary((a, b) => db.rpc('invoice_reassign', { actor: a, file_id: b.file_id, store_id: b.store_id, reason: b.reason || '' }), b => ({ file_id: String(b.file_id || '') })),
     mark: thenSummary((a, b) => db.rpc('invoice_mark', { actor: a, doc_id: b.doc_id, version: b.version, action: b.mark, duplicate_of: b.duplicate_of || null, reason: b.reason || '' }), b => ids(b.doc_id, b.duplicate_of)),
     relate: thenSummary((a, b) => db.rpc('invoice_relate', { actor: a, doc_id: b.doc_id, version: b.version, related_doc_id: b.related_doc_id, relation: b.relation }), b => ids(b.doc_id, b.related_doc_id)),
@@ -763,7 +887,7 @@ export function createHandler(deps) {
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
-    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409 };
+    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409 };
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.

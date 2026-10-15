@@ -38,12 +38,14 @@ export function extensionFor(originalName, mimeType) {
 // The name a posted original gets: date, vendor, number. A credit memo's number starts with "CM-" (it is not a purchase
 // invoice) unless the printed number already starts with CM; with no printed number the app's internal number is used
 // ("INT-…"). version > 1: the file was overwritten in Drive with new content and the new version was posted ("_v2").
-export function postedName({ invoiceDate, vendor, docType = 'invoice', invoiceNo, internalNo, ext, version }) {
+// part: one page of an invoice of several originals (Moto 2026-10-14・UI案50 5): "_p1", "_p2" … after the number.
+export function postedName({ invoiceDate, vendor, docType = 'invoice', invoiceNo, internalNo, ext, version, part }) {
   const v = safePart(vendor, 40), num = safeNumber(invoiceNo), internal = safePart(internalNo, 16);
   if (!v || !validYmd(invoiceDate) || !ext || (!num && !internal)) return null;
   let id = num || 'INT-' + internal;
   if (docType === 'credit_memo' && !/^CM[-0-9]/i.test(id)) id = 'CM-' + id;
   let base = `${invoiceDate}_${v}_${id}`;
+  if (Number(part) >= 1) base += '_p' + Math.floor(Number(part));
   if (Number(version) > 1) base += '_v' + Math.floor(Number(version));
   const extPart = '.' + String(ext).toLowerCase().replace(/[^a-z0-9]/g, '');
   if (extPart === '.') return null;
