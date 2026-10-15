@@ -811,3 +811,38 @@ test('fifth review: an unedited settings form follows a newer save; confirm comp
   const n0 = t.pages.length; await fn(t, 'lcSaveCfg')();
   assert.equal(t.pages.length, n0 + 2, 'drawn busy, then drawn again with the buttons on');
 });
+
+test('sixth review: unsaved settings block confirming; typing a reason keeps the draft; an unedited rebuilt form says so; a stuck photo upload gives up', async () => {
+  const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
+  const k = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(k, '2026-09'); k.M._lc.ym = '2026-09'; k.M._lc.view = 'admin';
+  fn(k, 'lcFormFor')('2026-09'); fn(k, 'lcFormSet')(2, 't', '71');
+  const h = fn(k, 'renderLunchChallenge')();
+  assert.match(h, / disabled onclick="lcConfirm\(\)"/); assert.match(h, /上の設定の変更を保存してから確定してください/);
+  await fn(k, 'lcConfirm')();
+  assert.equal(k.mem.lunch_challenge['conf:2026-09'], undefined);
+  // Typing the reason marks the draft as edited, so a newer save does not wipe it (and saving is refused, not silent).
+  const c = app({ role: 'gm', user: 'GM', today: '2026-11-05' }); setCfg(c, '2026-11'); c.M._lc.ym = '2026-11'; c.M._lc.view = 'admin';
+  fn(c, 'lcFormFor')('2026-11');
+  assert.match(fn(c, 'renderLunchChallenge')(), /oninput="_lc\.reason=this\.value;if\(_lc\.form\)_lc\.form\.dirty=true"/);
+  vm.runInContext('_lc.reason = "late"; if (_lc.form) _lc.form.dirty = true;', c);
+  c.mem.lunch_challenge['cfg:2026-11'] = { ym: '2026-11', state: 'set', tiers: tiers('61'), _at: 30, by: 'CEO' };
+  fn(c, 'lcFormFor')('2026-11');
+  assert.equal(c.M._lc.reason, 'late');
+  // An unedited draft that is rebuilt during the save says the current settings are shown.
+  const u = app({ role: 'gm', user: 'GM', today: '2026-10-20' }); setCfg(u, '2026-11'); u.M._lc.ym = '2026-11';
+  fn(u, 'lcFormFor')('2026-11');
+  u.pullOpKey = async () => { u.mem.lunch_challenge['cfg:2026-11'] = { ym: '2026-11', state: 'set', tiers: tiers('62'), _at: 31, by: 'CEO' }; fn(u, 'lcFormFor')('2026-11'); return true; };
+  await fn(u, 'lcSaveCfg')();
+  assert.match(u.toasts.at(-1)[0], /ほかの人が先に設定を保存しました。今の設定を出しています/);
+  // A photo upload that never answers gives up (the timer fires) and the buttons come back.
+  const b = app({ role: 'gm', user: 'GM' }); b.M._lc.ym = '2026-11'; fn(b, 'lcFormFor')('2026-11');
+  const timers = []; b.setTimeout = f => { timers.push(f); return timers.length; };
+  b.supaUpsert = () => new Promise(() => {});
+  b.lcCompress = (file, cb) => cb('data:image/jpeg;base64,' + 'A'.repeat(64)); vm.runInContext('lcCompress = this.lcCompress', b);
+  const pick = fn(b, 'lcPickTierPhoto')({ files: [{ name: 'x.jpg' }] }, 0);
+  await new Promise(r => setImmediate(r));
+  assert.equal(b.M._lc.busy, true);
+  timers.forEach(f => f()); await pick;
+  assert.equal(b.M._lc.busy, false); assert.equal(b.M._lc.form.tiers[0].photo, '');
+  assert.match(b.toasts.at(-1)[0], /写真を保存できませんでした/);
+});

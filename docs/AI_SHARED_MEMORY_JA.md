@@ -4,8 +4,8 @@
 
 - 依頼：Moto さん 10/14 14:39 HST「確認しました、これで進めてください」＝ UI案49 の決めてほしいこと 1〜7 はすべて A。仕様・実装・試験・限界は `docs/TENKICHI_LUNCH_CHALLENGE_JA.md`（6〜9）。
 - 実装（index.html・sw.js。SQL・Edge Function なし）：マイページと Tenkichi の店舗オペレーションの入口 → 特設ページ（スタッフ・過去の月・管理者）。保存は共通データのキー `lunch_challenge`（記録ごとに新しいほう・`_deleted` は使わない）と写真の行 `lunch_photo_*`（まとめ取りに入れない・見るときだけ取る）。変える前にクラウドの最新を読み、読めなければ何も変えない。確定した月は確定のときの数字で固定。
-- 試験（合成データ・本番に接続していない）：`tests/lunch-challenge.test.mjs` 20/20・わざと壊す 107/107・`tests/*.test.mjs`（invoice-mutations 以外）の失敗は前と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）・static release pass/1080・Chromium 390／1280px で横スクロールなし・pageerror 0。
-- 独立レビュー（Claude の別エージェント・作業を見ていない・5 回）：`b50cc70` P2 1 → `e73f4aa` P2 1 → `4698f32` P2 1 → `a8c5b09` P2 1 → `96636d5` P1・P2 なし・P3 4 → `d291993` で直した。各回の中身は仕様の 8。**Codex のレビューはまだ。**
+- 試験（合成データ・本番に接続していない）：`tests/lunch-challenge.test.mjs` 21/21・わざと壊す 112/112・`tests/*.test.mjs`（invoice-mutations 以外）の失敗は前と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）・static release pass/1080・Chromium 390／1280px で横スクロールなし・pageerror 0。
+- 独立レビュー（Claude の別エージェント・作業を見ていない・6 回）：`b50cc70` P2 1 → `e73f4aa` P2 1 → `4698f32` P2 1 → `a8c5b09` P2 1 → `96636d5` P1・P2 なし・P3 4 → `da141ad` P1・P2 なし・P3 5 → 直した（この記録と同じコミット）。各回の中身は仕様の 8。**Codex のレビューはまだ。**
 - この PR は PR #60（UI案の記録）と PR #61（invoice v1079）を含む。マージは #59（v1078）→ #60 → #61 → この PR。
 - 残っていること：実機と本番のデータでは未確認（Tenkichi の `toast_sales` のテイクアウトの数・2026 年 1〜6 月のランチ客数は読むだけで確かめる）。使わなくなった写真の行は残る。Toast の数字がずっと取れない日の印（「数字なしで外す」を足すか）は Moto さんの判断。
 - 次：Codex のレビュー → Moto さんが #59 → #60 → #61 → この PR の順にマージ → GM・CEO が 11 月（または開始月）の段階とごほうびを入れる → 実機で確認。そのあと invoice の段階 2（照合済みフォルダ・packing list の見分け）。
