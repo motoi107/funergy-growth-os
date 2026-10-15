@@ -1216,9 +1216,11 @@ test('the review fixes upgrade a database that already has the first migration',
   const STAGE2 = read('supabase/migrations/20261020090000_invoice_reconciled_folder.sql');
   await assert.rejects(pg.exec(STAGE2), /20261012120000/);
   const STAGE3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
-  await assert.rejects(pg.exec(STAGE3), /20261020090000/, '段階 3 needs 段階 2 first');
+  // 段階 3 replaces invoice_purchase_month: without 20261019090000 it stops first (2026-10-15), then without 段階 2.
+  await assert.rejects(pg.exec(STAGE3), /先に 20261019090000/, '段階 3 needs the purchase summary first');
   for (const f of ['20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
     '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql']) await pg.exec(read('supabase/migrations/' + f));
+  await assert.rejects(pg.exec(STAGE3), /先に 20261020090000/, '段階 3 needs 段階 2 first');
   await pg.query(`insert into public.invoice_folders(id, parent_id, name, store_id, role) values('Y1', 'R6', '2026', 'F06', 'year')`);
   assert.equal((await pg.query(POST)).rows[0].reconciled_folder, false);
   await pg.exec(STAGE2); await pg.exec(STAGE2);
@@ -2840,6 +2842,8 @@ test('段階 3 deploy folder: the copies are the repository files and the one-fi
   for (const k of ['invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'KEEP_ON_MERGE', 'reconciled_month', 'intake-2026-10-15.1', 'invoice_purchase_publish']) assert.ok(bundle.includes(k), k);
   // The steps name the files in the folder, and the order SQL → check → function → app.
   const steps = rd(D + '手順.md').toString();
-  for (const f of ['1_追加のSQL_複数枚のinvoice.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts', 'deploy/invoice-stage2-v1081/3_関数_invoice-intake_index.ts']) assert.ok(steps.includes(f), f);
+  for (const f of ['1_追加のSQL_段階2と段階3.sql', '1_追加のSQL_複数枚のinvoice.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts', 'deploy/invoice-stage2-v1081/3_関数_invoice-intake_index.ts']) assert.ok(steps.includes(f), f);
+  // 段階 2 and 段階 3 in one file, in that order (tests/invoice-migrations.test.mjs runs it on a database like production's).
+  assert.ok(rd(D + '1_追加のSQL_段階2と段階3.sql').equals(Buffer.concat([rd('supabase/migrations/20261020090000_invoice_reconciled_folder.sql'), Buffer.from('\n'), rd('supabase/migrations/20261021090000_invoice_multi_file.sql')])));
   assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1082 をマージ'));
 });

@@ -16,6 +16,12 @@
 -- role only. No row, setting or Drive file is changed. Running this file twice changes nothing.
 
 do $$ begin
+-- This file replaces invoice_purchase_month (20261019090000): without it the function would be new here, open to the browser roles
+-- and without its tables. Run in this order: 20261019090000 → 20261020090000 → this file.
+ if to_regclass('public.invoice_purchase_checks') is null or to_regclass('public.invoice_purchase_published') is null
+  or to_regprocedure('public.invoice_purchase_month(text,jsonb)') is null then
+  raise exception '先に 20261019090000_invoice_purchase_summary.sql を流してください（この SQL はそのあとに流します）';
+ end if;
  if not exists(select 1 from pg_constraint where conname='invoice_folders_role_check' and pg_get_constraintdef(oid) like '%reconciled_month%') then
   raise exception '先に 20261020090000_invoice_reconciled_folder.sql を流してください（この SQL はそのあとに流します）';
  end if;
