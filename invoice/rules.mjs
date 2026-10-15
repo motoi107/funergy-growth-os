@@ -41,8 +41,9 @@ export const REASONS = {
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
   original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
-  // Moto 2026-10-14 (UI案50 5A): a packing list is treated as an invoice; it is shown, and a same-delivery invoice is a possible duplicate.
-  packing_list:          ['Packing list（invoice として扱う）', 'Packing list (treated as an invoice)'],
+  // Moto 2026-10-14 (UI案50 5A): a packing list is treated as an invoice and a same-delivery invoice is a possible duplicate.
+  // It always waits for a person (never posted automatically: the invoice of the same delivery may differ in date or total).
+  packing_list:          ['Packing list（invoice として扱う・自動では反映しない）', 'Packing list (treated as an invoice; not posted automatically)'],
   // A person chose the store for this file (UI案50 段階 1): it is never posted automatically.
   store_assigned:        ['店舗を人が選んだ（自動では反映しない）', 'Store chosen by a person (not posted automatically)'],
   // line_value_missing is no longer produced (it also covered an unreadable amount before 2026-10-07). Documents read
@@ -71,7 +72,7 @@ export const REASONS = {
 // Reasons about products and unit prices: shown for reference, never a reason to stop posting (by a person or
 // automatically). The same list is in db/invoice-intake.sql (invoice_post); tests/invoice-rules keeps them equal.
 export const INFO_REASONS = ['unmapped', 'map_ambiguous', 'map_unverified', 'unit_mismatch', 'unit_unverified', 'spec_changed', 'no_price_ref', 'price_jump',
-  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_qty_price_missing', 'discount_allocation', 'mixed_tax', 'packing_list'];
+  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_qty_price_missing', 'discount_allocation', 'mixed_tax'];
 const INFO = new Set(INFO_REASONS);
 export const blocksPosting = reasons => (reasons || []).some(r => !INFO.has(r.code));
 

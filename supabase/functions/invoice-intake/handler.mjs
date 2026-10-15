@@ -222,6 +222,17 @@ export function createHandler(deps) {
     return saved.id;
   }
 
+  // A folder this worker recorded counts as the store's only while Drive still shows it inside the store folder (a person may
+  // have moved 照合済み, a year or a month folder out, for example to an archive).
+  async function insideStore(id, store, o, depth = 0) {
+    if (id === store.root_folder_id || id === store.upload_folder_id || (o.upload_folder_ids || []).includes(id)) return true;
+    if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;
+    const g = await drive.get(id);
+    if (g.status !== 200 || !g.file || g.file.trashed || g.file.mimeType !== 'application/vnd.google-apps.folder') return false;
+    for (const p of g.file.parents || []) if (await insideStore(p, store, o, depth + 1)) return true;
+    return false;
+  }
+
   // Where staff keep an original themselves: right in the store folder, or in a folder of theirs right in it. The
   // folders this worker makes (year / month / 未照合 / 照合済み) and 00_Upload are not theirs. A file a person assigned
   // to another store may sit in the folder of the store it came from.
@@ -264,8 +275,8 @@ export function createHandler(deps) {
         stats.organize_left = (stats.organize_left || 0) + 1;
         return;
       }
-      const allowed = new Set([store.upload_folder_id, ...(o.store_folder_ids || []), ...(o.upload_folder_ids || [])]);
-      if (!parents.length || !parents.every(p => allowed.has(p))) throw new Error('outside_store_folders');
+      if (!parents.length) throw new Error('outside_store_folders');
+      for (const p of parents) if (p === store.root_folder_id || !(await insideStore(p, store, o))) throw new Error('outside_store_folders');
       const y = await ensureFolder(store, store.root_folder_id, mf.year, 'year');
       const m = await ensureFolder(store, y, mf.month, 'month');
       const target = await ensureFolder(store, m, o.target === 'reconciled' ? FOLDER.reconciled : FOLDER.unreconciled, o.target);
@@ -286,10 +297,11 @@ export function createHandler(deps) {
     const g = await drive.get(o.drive_file_id);
     if (g.status !== 200 || g.file.trashed) throw new Error('original_unavailable_' + g.status);
     const parents = g.file.parents || [];
-    // Safety: still inside the store's folders (00_Upload, the folders this worker made, the store folder itself, or a
-    // folder staff keep right in it). Anything else is not touched: the error is shown and retried.
-    const allowed = new Set([store.upload_folder_id, store.root_folder_id, ...(o.store_folder_ids || []), ...(o.upload_folder_ids || [])].filter(Boolean));
-    if (!parents.length || !(parents.every(p => allowed.has(p)) || await staffPlace(parents, store, ctx, o))) throw new Error('outside_store_folders');
+    // Safety: every place it is in is inside the store's folders (00_Upload, the folders this worker made and that are still
+    // in the store folder, the store folder itself, or a folder staff keep right in it). Anything else is not touched: the
+    // error is shown and retried (a file kept in two places is not taken out of the one outside).
+    if (!parents.length) throw new Error('outside_store_folders');
+    for (const p of parents) if (!(await insideStore(p, store, o)) && !(await staffPlace([p], store, ctx, o))) throw new Error('outside_store_folders');
     const root = await ensureFolder(store, store.root_folder_id, rf.root, 'reconciled_root');
     const target = await ensureFolder(store, root, rf.month, 'reconciled_month');
     const moved = parents.length === 1 && parents[0] === target ? null
@@ -460,9 +472,11 @@ export function createHandler(deps) {
         await processFile(f, ctx, owner, stats);
       }
       // Filing in 00_Upload (organize) and moving reconciled originals (organize_reconciled, Moto 2026-10-14) are two switches.
-      // Until the second one is set, it follows the first (as before this change, filing included the reconciled ones).
-      const targets = [ctx.mode.organize && 'unreconciled', (ctx.mode.organize_reconciled ?? ctx.mode.organize) && 'reconciled'].filter(Boolean);
-      if (targets.length) for (const o of await db.rpc('invoice_organize_due', { limit: 10, targets })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
+      // Until the second one is set, it follows the first (as before this change, filing included the reconciled ones). With
+      // the second on, an original whose reconciliation is taken back also leaves 照合済み/年-月 (to 年/月/未照合).
+      const rec = ctx.mode.organize_reconciled ?? ctx.mode.organize;
+      const targets = [ctx.mode.organize && 'unreconciled', rec && 'reconciled'].filter(Boolean), back = !!rec && !ctx.mode.organize;
+      if (targets.length) for (const o of await db.rpc('invoice_organize_due', { limit: 10, targets, back })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
       // Posted originals are renamed before the QuickBooks step queues them (Moto 2026-10-12).
       await renameStep(ctx, stats, t0 + budget * 1.3);
       try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }

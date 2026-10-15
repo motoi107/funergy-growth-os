@@ -2190,12 +2190,30 @@ test('段階 2: reconciled originals go to 照合済み/YYYY-MM from wherever th
     await reconcile(e); await E.worker();
     assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [e]))[0], { organize_status: 'error', organize_error: 'outside_store_folders' });
     assert.deepEqual(E.drive.items.get(e).parents, ['ELSEWHERE']);
-    // Taking a reconciliation back files the original into 年/月/未照合 (when filing is on).
-    await setMode({ organize: true });
-    const dd = await docOf(b);
+    // Taking a reconciliation back takes the original out of 照合済み into 年/月/未照合, also with 00_Upload filing off.
+    let dd = await docOf(b);
     assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'discrepancy', note: '送料が違う' })).status, 200);
     await E.worker();
     assert.equal(E.drive.pathOf(b), 'LaLa/2026/10/未照合');
+    // A file kept in two places, one of them outside the store folder: not touched (the outside place is never dropped).
+    const two = await put('S2-F', '3006', '2026-10-03', 'U6');
+    E.drive.items.get(two).parents = ['U6', 'ELSEWHERE'];
+    await reconcile(two); await E.worker();
+    assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [two]))[0], { organize_status: 'error', organize_error: 'outside_store_folders' });
+    assert.deepEqual(E.drive.items.get(two).parents, ['U6', 'ELSEWHERE']);
+    // Someone moves 照合済み out of the store folder (an archive): what is in it is no longer the store's to move; the next
+    // reconciled original gets a new 照合済み in the store folder.
+    const rc = [...E.drive.items.values()].find(x => x.name === '照合済み' && x.parents.includes('R6'));
+    E.drive.folder('ARCHIVE', 'Archive', 'INV'); rc.parents = ['ARCHIVE'];
+    dd = await docOf(d);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'unreconciled', note: '戻す' })).status, 200);
+    await E.worker();
+    assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [d]))[0], { organize_status: 'error', organize_error: 'outside_store_folders' });
+    assert.equal(E.drive.pathOf(d), 'Archive/照合済み/2026-10', 'left in the archive');
+    const g = await put('S2-G', '3007', '2026-10-06', 'U6');
+    await reconcile(g); await E.worker();
+    assert.equal(E.drive.pathOf(g), 'LaLa/照合済み/2026-10');
+    assert.notEqual(E.drive.items.get(g).parents[0], E.drive.items.get(d).parents[0], 'a new folder in the store, not the archived one');
   } finally { await E.pg.close(); }
 });
 
@@ -2205,8 +2223,13 @@ test('段階 2: a packing list is read as an invoice; a packing list and an invo
     const line = [['06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00', 'CS', '12/500G']];
     const put = async (tag, d) => { E.fixtures.set(tag, { readable: true, documents: [d] }); const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6'); await E.worker(); return (await docsOf(E, id))[0]; };
     // The AI names it a packing list: kept as an invoice, marked, posted like any clean invoice (5A).
-    const pl = await put('PL-1', doc('SO-77', '2026-10-04', line, { type: 'packing_list' }));
-    assert.equal(pl.doc_type, 'invoice'); assert.equal(pl.posting_kind, 'purchase'); assert.ok(codes(pl).includes('packing_list') && !blocksPosting(pl.reasons)); assert.equal(pl.status, 'posted');
+    let pl = await put('PL-1', doc('SO-77', '2026-10-04', line, { type: 'packing_list' }));
+    assert.equal(pl.doc_type, 'invoice'); assert.equal(pl.posting_kind, 'purchase'); assert.ok(codes(pl).includes('packing_list'));
+    // It always waits for a person (the invoice of the same delivery may come with another date or total); a person posts it.
+    assert.equal(pl.status, 'review'); assert.ok(blocksPosting(pl.reasons));
+    await assert.rejects(E.db.rpc('invoice_post', { doc_id: pl.id, version: pl.version }), /not_eligible/, 'the database never posts it by itself');
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: pl.id, version: pl.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' })).status, 200);
+    [pl] = await E.q(`select * from invoice_docs where id=$1`, [pl.id]); assert.equal(pl.status, 'posted');
     // The invoice of the same delivery (another number, same vendor, store, date and total): a possible duplicate, never posted by itself.
     const inv = await put('INV-77', doc('9077', '2026-10-04', line));
     assert.equal(inv.status, 'review');
@@ -2216,6 +2239,12 @@ test('段階 2: a packing list is read as an invoice; a packing list and an invo
     assert.equal(inv2.status, 'posted');
     const pl2 = await put('PL-2', doc('SO-78', '2026-10-05', line, { type: 'packing_list' }));
     assert.equal(pl2.status, 'review'); assert.ok(codes(pl2).includes('packing_list') && codes(pl2).includes('duplicate_candidate'));
+    // Marked as the duplicate it is, it is not compared again with a later document.
+    assert.equal((await E.api('tok-office', { action: 'mark', doc_id: pl2.id, version: pl2.version, mark: 'duplicate', duplicate_of: inv2.id, reason: '同じ納品' })).status, 200);
+    E.fixtures.set('PL-2B', { readable: true, documents: [doc('SO-78B', '2026-10-05', line, { type: 'packing_list' })] });
+    const again = E.drive.file('PL-2B.pdf', pdf('PL-2B'), 'U6'); await E.worker();
+    const [pl3] = await docsOf(E, again);
+    assert.deepEqual(pl3.reasons.filter(r => r.code === 'duplicate_candidate'), [{ code: 'duplicate_candidate', detail: inv2.id }], 'only the posted invoice, not the duplicate');
     // Two invoices with their own numbers are not compared on the amount alone (as before).
     await put('INV-79', doc('9079', '2026-10-06', line));
     const inv4 = await put('INV-80', doc('9080', '2026-10-06', line));

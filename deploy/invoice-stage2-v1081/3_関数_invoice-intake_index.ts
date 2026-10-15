@@ -486,7 +486,7 @@ function classifyDuplicates(doc, existing, appRecords = []) {
       continue;
     }
     if (!doc.invoice_no_norm || !e.invoice_no_norm || doc.packing || e.packing) {
-      if (e.vendor_key && e.vendor_key === doc.vendor_key && e.store_id === doc.store_id && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents) out.candidates.push(e.id);
+      if (e.vendor_key && e.vendor_key === doc.vendor_key && e.store_id === doc.store_id && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents && e.status !== "duplicate") out.candidates.push(e.id);
     }
   }
   for (const a of appRecords || []) {
@@ -519,8 +519,7 @@ var INFO_REASONS = [
   "negative_line",
   "line_qty_price_missing",
   "discount_allocation",
-  "mixed_tax",
-  "packing_list"
+  "mixed_tax"
 ];
 var INFO = new Set(INFO_REASONS);
 var blocksPosting = (reasons) => (reasons || []).some((r) => !INFO.has(r.code));
@@ -1302,6 +1301,14 @@ function createHandler(deps) {
     if (!saved || saved.id !== id) throw new Error("folder_record_mismatch:" + name);
     return saved.id;
   }
+  async function insideStore(id, store, o, depth = 0) {
+    if (id === store.root_folder_id || id === store.upload_folder_id || (o.upload_folder_ids || []).includes(id)) return true;
+    if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;
+    const g = await drive.get(id);
+    if (g.status !== 200 || !g.file || g.file.trashed || g.file.mimeType !== "application/vnd.google-apps.folder") return false;
+    for (const p of g.file.parents || []) if (await insideStore(p, store, o, depth + 1)) return true;
+    return false;
+  }
   async function staffPlace(parents, store, ctx, o) {
     const roots = /* @__PURE__ */ new Set([store.root_folder_id]);
     if ((o.upload_folder_ids || []).length) {
@@ -1336,8 +1343,8 @@ function createHandler(deps) {
         stats.organize_left = (stats.organize_left || 0) + 1;
         return;
       }
-      const allowed = /* @__PURE__ */ new Set([store.upload_folder_id, ...o.store_folder_ids || [], ...o.upload_folder_ids || []]);
-      if (!parents.length || !parents.every((p) => allowed.has(p))) throw new Error("outside_store_folders");
+      if (!parents.length) throw new Error("outside_store_folders");
+      for (const p of parents) if (p === store.root_folder_id || !await insideStore(p, store, o)) throw new Error("outside_store_folders");
       const y = await ensureFolder(store, store.root_folder_id, mf.year, "year");
       const m = await ensureFolder(store, y, mf.month, "month");
       const target = await ensureFolder(store, m, o.target === "reconciled" ? FOLDER.reconciled : FOLDER.unreconciled, o.target);
@@ -1358,8 +1365,8 @@ function createHandler(deps) {
     const g = await drive.get(o.drive_file_id);
     if (g.status !== 200 || g.file.trashed) throw new Error("original_unavailable_" + g.status);
     const parents = g.file.parents || [];
-    const allowed = new Set([store.upload_folder_id, store.root_folder_id, ...o.store_folder_ids || [], ...o.upload_folder_ids || []].filter(Boolean));
-    if (!parents.length || !(parents.every((p) => allowed.has(p)) || await staffPlace(parents, store, ctx, o))) throw new Error("outside_store_folders");
+    if (!parents.length) throw new Error("outside_store_folders");
+    for (const p of parents) if (!await insideStore(p, store, o) && !await staffPlace([p], store, ctx, o)) throw new Error("outside_store_folders");
     const root = await ensureFolder(store, store.root_folder_id, rf.root, "reconciled_root");
     const target = await ensureFolder(store, root, rf.month, "reconciled_month");
     const moved = parents.length === 1 && parents[0] === target ? null : await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target, removeParents: parents.filter((p) => p !== target).join(",") || null });
@@ -1571,8 +1578,9 @@ function createHandler(deps) {
         }
         await processFile(f, ctx, owner, stats);
       }
-      const targets = [ctx.mode.organize && "unreconciled", (ctx.mode.organize_reconciled ?? ctx.mode.organize) && "reconciled"].filter(Boolean);
-      if (targets.length) for (const o of await db.rpc("invoice_organize_due", { limit: 10, targets })) {
+      const rec = ctx.mode.organize_reconciled ?? ctx.mode.organize;
+      const targets = [ctx.mode.organize && "unreconciled", rec && "reconciled"].filter(Boolean), back = !!rec && !ctx.mode.organize;
+      if (targets.length) for (const o of await db.rpc("invoice_organize_due", { limit: 10, targets, back })) {
         if (now() - t0 > budget * 1.3) break;
         await organizeOne(o, ctx, stats);
       }

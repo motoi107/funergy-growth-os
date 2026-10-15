@@ -537,7 +537,7 @@ test('v1081 (段階 2): a packing list the server marked shows as one; choosing 
   let h = fn(c, 'invInDetail')('review');
   assert.match(h, /<option value="pl" selected>Packing list（invoice 扱い）<\/option>/);
   assert.match(h, /同じ業者・店舗・日付・合計の invoice が届くと「重複の可能性」が出る/);
-  assert.match(h, /Packing list（invoice として扱う）/, 'shown as a gray note');
+  assert.match(h, /Packing list（invoice として扱う・自動では反映しない）/, 'shown as a gray note');
   // Already marked: posting needs no save; the record still says it is a packing list.
   await fn(c, 'invInConfirm')();
   assert.deepEqual(c.calls.map(b => b.action), ['post']);
@@ -549,6 +549,7 @@ test('v1081 (段階 2): a packing list the server marked shows as one; choosing 
   fn(x, 'invInSetDocType')('invoice');
   assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), fn(x, 'invInIsPl')(x.M._invIn.doc.doc)], [{ doc_type: 'invoice' }, false]);
   assert.equal(sel(), ' ivx-chg', 'a change to save is marked');
+  assert.deepEqual(JSON.parse(JSON.stringify(fn(x, 'invInCollectEdits')(x.M._invIn.doc.doc, []).header)), { doc_type: 'invoice' }, 'sent, so the server takes the mark away');
   fn(x, 'invInSetDocType')('pl');
   assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), fn(x, 'invInIsPl')(x.M._invIn.doc.doc)], [{}, true]);
   assert.equal(sel(), '');
@@ -557,8 +558,39 @@ test('v1081 (段階 2): a packing list the server marked shows as one; choosing 
   assert.equal(fn(c, 'invInBatchable')(r), true);
   c.M._invIn.review = { rows: [r], total: 1 };
   h = fn(c, 'invInQueueHtml')('review');
-  assert.match(h, /4 項目とも問題なし/); assert.match(h, /Packing list（invoice として扱う）/); assert.match(h, /店舗を人が選んだ（自動では反映しない）/);
+  assert.match(h, /4 項目とも問題なし/); assert.match(h, /Packing list（invoice として扱う・自動では反映しない）/); assert.match(h, /店舗を人が選んだ（自動では反映しない）/);
   // A possible duplicate says what matched and what to do.
   c.M._invIn.review = { rows: [{ ...row(2), reasons: [{ code: 'duplicate_candidate', detail: 'x' }] }], total: 1 };
   assert.match(fn(c, 'invInQueueHtml')('review'), /重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」/);
+});
+
+test('v1081 (段階 2 review P2-1): when saving finds something new to check (a possible duplicate), nothing is posted until the person looks', async () => {
+  const before = () => DOC({ reasons: [{ code: 'mode_review_store' }] });
+  const after = before(); after.doc.version = 4; after.doc.reasons = [{ code: 'mode_review_store' }, { code: 'packing_list' }, { code: 'duplicate_candidate', detail: id(9) }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
+  open(c, before()); fn(c, 'invInSetDocType')('pl');
+  await fn(c, 'invInConfirm')();
+  assert.ok(c.calls.some(b => b.action === 'edit') && !c.calls.some(b => b.action === 'post'), 'saved, not posted');
+  assert.match(c.toasts.at(-1)[0], /保存したら確かめることが増えました：重複の可能性/);
+  // Pressed again after looking: posted (nothing more to save).
+  await fn(c, 'invInConfirm')();
+  assert.equal(c.calls.filter(b => b.action === 'edit').length, 1); assert.equal(c.calls.at(-1).action, 'post');
+  // A save that finds nothing new posts at once (as before).
+  const same = before(); same.doc.version = 4;
+  const d = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? same : { ok: true }) });
+  open(d, before()); d.M._invIn.edits.h.invoice_no = '77411';
+  await fn(d, 'invInConfirm')();
+  assert.deepEqual(d.calls.map(b => b.action), ['edit', 'get', 'post']);
+});
+
+test('v1081 (段階 2 review P3-4): changing only the old filing switch keeps the reconciled switch as it worked', async () => {
+  const conf = mode => ({ vendors: [], stores: [], maps: [], settings: { mode, rules: {}, qb: {} } });
+  const c = app({ role: 'gm', api: () => ({}) }); c.M._invIn.config = conf({ organize: true });
+  fn(c, 'invInSetting')('mode', 'organize', false);
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls.at(-1).value)), { organize: false, organize_reconciled: true });
+  const d = app({ role: 'gm', api: () => ({}) }); d.M._invIn.config = conf({ organize: true, organize_reconciled: false });
+  fn(d, 'invInSetting')('mode', 'organize', false);
+  await new Promise(r => setImmediate(r));
+  assert.deepEqual(JSON.parse(JSON.stringify(d.calls.at(-1).value)), { organize: false }, 'once set, it is left as set');
 });

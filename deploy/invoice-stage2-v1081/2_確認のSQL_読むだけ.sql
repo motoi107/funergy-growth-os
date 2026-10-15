@@ -86,10 +86,10 @@ select
   -- Packing list は invoice として扱い同じ納品と見比べる、人が店舗を選んだファイルは自動で反映しない、一覧は業者のキーと id の順。
   coalesce((select bool_and(pg_get_constraintdef(c.oid) like '%reconciled_root%' and pg_get_constraintdef(c.oid) like '%reconciled_month%')
       from pg_constraint c where c.conrelid = 'public.invoice_folders'::regclass and c.conname = 'invoice_folders_role_check')
-    and (select bool_and(case p.proname when 'invoice_organize_due' then p.prosrc like '%targets%'
+    and (select bool_and(case p.proname when 'invoice_organize_due' then p.prosrc like '%targets%' and p.prosrc like '%reconciled_month%'
         when 'invoice_dup_scope' then p.prosrc like '%packing_list%'
         when 'invoice_files_due' then p.prosrc like '%store_assigned%'
-        when 'invoice_post' then p.prosrc like '%''packing_list''%' and p.prosrc like '%store_assigned_by is not null%'
+        when 'invoice_post' then p.prosrc like '%store_assigned_by is not null%'
         when 'invoice_list' then p.prosrc like '%d.vendor_key%' and p.prosrc like '%ingested_at desc, id%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname in ('invoice_organize_due', 'invoice_dup_scope', 'invoice_files_due', 'invoice_post', 'invoice_list')), false) as reconciled_folder;

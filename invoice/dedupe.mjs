@@ -57,7 +57,7 @@ export function classifyDuplicates(doc, existing, appRecords = []) {
     // the order's, not the invoice's): same vendor, store, date and total is a possible duplicate for a person to compare.
     if (!doc.invoice_no_norm || !e.invoice_no_norm || doc.packing || e.packing) {
       if (e.vendor_key && e.vendor_key === doc.vendor_key && e.store_id === doc.store_id
-        && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents) out.candidates.push(e.id);
+        && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents && e.status !== 'duplicate') out.candidates.push(e.id);
     }
   }
   // Invoices registered through the existing app screen carry no invoice number,

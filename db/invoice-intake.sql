@@ -584,7 +584,7 @@ declare d public.invoice_docs; old public.invoice_docs; actor uuid := nullif(p->
  must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  info text[] := array['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax','packing_list'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
  -- A line amount that cannot be read leaves the total unchecked: posted only when the person checked it against the
  -- original. line_value_missing is the code documents read before 2026-10-07 carry for the same case (Codex R7).
  may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
@@ -1328,7 +1328,10 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0
   where f.drive_state='ok' and f.organize_target is not null
    -- targets: the filings that are switched on (00_Upload filing and moving reconciled originals are two switches, Moto 2026-10-14).
-   and (jsonb_typeof(p->'targets') is distinct from 'array' or f.organize_target in (select jsonb_array_elements_text(case when jsonb_typeof(p->'targets')='array' then p->'targets' else '[]'::jsonb end)))
+   and (jsonb_typeof(p->'targets') is distinct from 'array' or f.organize_target in (select jsonb_array_elements_text(case when jsonb_typeof(p->'targets')='array' then p->'targets' else '[]'::jsonb end))
+    -- back: an original whose reconciliation was taken back leaves 照合済み/年-月 under the reconciled switch too.
+    or (coalesce((p->>'back')::boolean,false) and f.organize_target='unreconciled'
+     and exists(select 1 from public.invoice_folders fo where fo.id=f.organized_folder_id and fo.role='reconciled_month')))
    and (f.organize_status='pending' or (f.organize_status='error' and f.organize_next_at <= now() and f.organize_attempts < 8))
    and d.status in ('review','posted') and d.vendor_name is not null and d.invoice_date is not null
    and not exists(select 1 from public.invoice_docs d2 where d2.file_id=f.id and d2.sha256=f.current_sha256 and d2.doc_index>0)

@@ -46858,7 +46858,7 @@ var INVIN_REASONS = {
   duplicate_certain:['同じ invoice が登録済み（計上しない）','Already registered (not posted again)'], same_number_different:['同じ番号で内容が違う（訂正版か別書類）','Same number, different content'],
   duplicate_candidate:['重複の可能性','Possible duplicate'], app_duplicate_candidate:['アプリで登録済みの可能性','May already be registered in the app'],
   original_replaced:['同じファイルの中身が差し替えられた（前の版と見比べる）','The file was overwritten with new content (compare with the earlier version)'],
-  packing_list:['Packing list（invoice として扱う）','Packing list (treated as an invoice)'], store_assigned:['店舗を人が選んだ（自動では反映しない）','Store chosen by a person (not posted automatically)'],
+  packing_list:['Packing list（invoice として扱う・自動では反映しない）','Packing list (treated as an invoice; not posted automatically)'], store_assigned:['店舗を人が選んだ（自動では反映しない）','Store chosen by a person (not posted automatically)'],
   line_value_missing:['数量・単価・金額のどれかが読めない明細（前の版の読み取り）','Line quantity, price or amount not legible (earlier reading)'],
   line_qty_price_missing:['数量・単価が読めない明細（金額は読めた）','Line quantity/price not legible (amount read)'],
   line_amount_missing:['明細の金額が読めない（合計を明細で確かめられない）','Line amount not legible (the total cannot be checked against the lines)'], line_math:['数量×単価が明細金額と一致しない','Quantity × price does not equal the line amount'],
@@ -46876,9 +46876,10 @@ var INVIN_MUST_FIX = ['duplicate_certain','total_missing','date_missing','date_u
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
 /* v1056（UI案36）：商品・単価の理由は参考。反映を止めず、経理の「確認すること」に出さない（明細の中には残る）。サーバーの INFO_REASONS と同じ */
 var INVIN_INFO = ['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax','packing_list'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
 /* 確認モード：その店舗・業者をまだ「自動」にしていないだけ（中身の問題ではない。まとめて反映できる）。
-   v1081（UI案50 段階 2）：Packing list（invoice として扱う）と、人が店舗を選んだファイル（自動では反映しない）も灰色で出す */
+   v1081（UI案50 段階 2）：Packing list（invoice として扱う）と、人が店舗を選んだファイルも灰色で出す。どちらも自動では反映しない（サーバー）が、
+   人が 4 項目を確かめてまとめて反映できる */
 var INVIN_MODE = ['mode_review_store','mode_review_vendor','packing_list','store_assigned'];
 /* 4 項目（と日付）のどこに付く理由か。? は読めない・決まっていない、! は合わない・食い違う */
 var INVIN_FIELD = {
@@ -47861,8 +47862,8 @@ function invInStorePanel(d, canEdit, shipTo){
       + '<input class="form-input ivx-in" placeholder="'+t('例：宛先が別の店舗。アップロード先を間違えた','e.g. addressed to another store; uploaded to the wrong folder')+'" value="'+e(E.storeWhy||'')+'" oninput="invInSet(\'e\',\'storeWhy\',null,this.value)"></label>'
       + '<button class="btn btn-primary btn-sm"'+(to && to!==d.store_id && !_invIn.busy ? '' : ' disabled')+' onclick="invInReassign()">'+t('この店舗にする','Use this store')+'</button></div>'
       : '<div class="ivx-note">'+t('選べる店舗がありません（設定の「店舗」で取込中の店舗）','No store to choose (stores taking in invoices, in Settings › Stores)')+'</div>')
-    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は数分で選んだ店舗の分として取り込み直します（AI は読み直しません）。自動では反映せず、要確認に戻ります（確かめることが無ければ、まとめて反映できます）。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
-        'Changing the store takes this invoice in again for the chosen store within minutes (the AI does not read it again). It is never posted automatically: it returns to Review (with nothing to check, it can be posted with the others). Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
+    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は数分で選んだ店舗の分として取り込み直します（AI は読み直しません。読み方の版が上がる前に読んだ原本だけ、もう一度読みます）。自動では反映せず、要確認に戻ります（確かめることが無ければ、まとめて反映できます）。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
+        'Changing the store takes this invoice in again for the chosen store within minutes (the AI does not read it again, except an original read before the reading was updated). It is never posted automatically: it returns to Review (with nothing to check, it can be posted with the others). Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
     + (multi ? '<br><b>'+t('このファイルには書類が複数あります。ファイルの書類はすべて選んだ店舗になります。','This file holds several documents: all of them move to the chosen store.')+'</b>' : '')+'</div></div>';
 }
 async function invInReassign(force){
@@ -48148,6 +48149,7 @@ function invInCollectEdits(d, lines){
     else if (k==='invoice_date' || k==='delivery_date') {
       if (!v) { if (k==='delivery_date' && d[k]) header[k] = null; return; }   /* 納品日は消せる（読み違いのとき）。請求日は消せない */
       if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { err = t('日付の形が正しくありません','Date is not valid'); return; } if (v!==d[k]) header[k] = v; }
+    else if (k==='doc_type' && v==='invoice' && d.doc_type==='invoice' && invInCodes(d.reasons).indexOf('packing_list')>=0) header[k] = v;   /* v1081：Packing list の印を外す */
     else { v = String(v||'').trim(); if (v && v!==String(d[k]||'')) header[k] = v; }
   });
   Object.keys(E.l).forEach(function(id){
@@ -48197,6 +48199,7 @@ async function invInConfirm(){
     var saved = await invInSave(true); if (!saved) return;
     try { await invInLoadDoc(); } catch(err) { showToast(String(err && err.message || err), 'warning'); delete _invIn.loaded.doc; invInRerender(); return; }
     if (!_invIn.doc || _invIn.doc.doc.id !== d.id || !_invIn.edits) { invInRerender(); return; }
+    var seenCodes = invInToCheck(d.reasons).map(function(r){ return r.code; });
     /* 保存したあと、読み直すまでにほかの人が直していたら反映しない（見ていない金額を反映しない・Codex R8）。読み直した内容を見てもう一度押してもらう */
     if (Number(_invIn.doc.doc.version) !== Number(saved.version)) {
       showToast(t('保存のあとにほかの人がこの invoice を直しました。今の内容を確かめてから、もう一度「この内容で反映する」を押してください','Someone changed this invoice after you saved. Check the current values and press “Post as shown” again'), 'warning');
@@ -48204,6 +48207,10 @@ async function invInConfirm(){
     }
     _invIn.edits.reason = keep.reason; _invIn.edits.ack = keep.ack; _invIn.edits.adj = keep.adj; _invIn.edits.sup = keep.sup; _invIn.edits.dupOf = keep.dupOf;
     d = _invIn.doc.doc;
+    /* v1081（段階 2 の独立レビュー P2-1）：保存したら確かめることが増えた（例：Packing list にしたら同じ納品の invoice が見つかった）ときは
+       反映せず、見てからもう一度押してもらう */
+    var grown = invInToCheck(d.reasons).filter(function(r){ return seenCodes.indexOf(r.code) < 0; });
+    if (grown.length) { showToast(t('保存したら確かめることが増えました：','Saving found something to check: ')+invInHint(grown[0])+t('。見てから、もう一度「この内容で反映する」を押してください','. Look at it, then press “Post as shown” again'), 'warning'); invInRerender(); return; }
   }
   var chk = invInToCheck(d.reasons);
   var block = chk.filter(function(r){ return INVIN_MUST_FIX.indexOf(r.code)>=0; });
@@ -48556,6 +48563,9 @@ async function invInSaveSetting(key, value, msg){
 function invInSetting(key, sub, on){
   if (!invInCanAdmin()) return;
   var v = {}; v[sub] = !!on;
+  /* v1081：「照合したら移す」を決める前は「整理する」と同じに動く。「整理する」だけを変えたときは、「照合したら移す」を今のまま残す */
+  var M0 = (_invIn.config && _invIn.config.settings && _invIn.config.settings.mode) || {};
+  if (key==='mode' && sub==='organize' && (M0.organize_reconciled===undefined || M0.organize_reconciled===null)) v.organize_reconciled = !!M0.organize;
   /* v1071（Moto さん 10/12）：反映したら原本のファイル名を変える。ON にする前に、いつから・何が変わるかを確かめる */
   if (key==='mode' && sub==='rename' && on) {
     openModal('<div class="modal-title">'+t('ファイル名の変更を ON にする','Turn on renaming')+' <button class="modal-close" onclick="closeModalDirect();invInRerender()">×</button></div>'
