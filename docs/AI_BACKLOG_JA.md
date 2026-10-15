@@ -1,5 +1,13 @@
 # 改修・自動化の作業記録
 
+## 2026-10-15 タブの整理（v1084）と退職完了の不具合（v1085）
+
+1. 済（Moto さん 10/15）：月次サマリー（経理）は残す・auth-pin と hyper-worker のソースは zip で受け取った。
+2. 済（Claude・ブランチ `claude/tab-reorg`）：v1084 タブの整理（`docs/TAB_REORG_RESIGN_JA.md`）。試験・Chromium の確認。
+3. 次：v1084 の独立レビュー → Codex → Moto さんがマージ → 実機（PC・iPhone の PWA）。
+4. 次（Claude）：v1085 退職完了の不具合（原因の特定・アプリ・SQL・関数・試験）。
+5. Moto さんの判断：原価率(FC)で入れた手入力の売上・棚卸額を直す入口が要るか／`db/mc-escalate-stop.sql` を流すか。
+
 ## 2026-10-15 業者の統合（UI案51・v1083）
 
 1. 済（Moto さん 10/15 08:29 HST）：決めてほしいこと 1〜7 はすべて A。

@@ -346,7 +346,7 @@ const CASES = [
   ['app: the month is fetched on every look', PU, [['index.html', "{ _ipsPull(key, key + '|' + at); return; }", "{ _ipsPull(key, key + '|' + at + '|' + Math.random()); return; }"]]],
   ['app: the login pull takes the summaries', PU, [['index.html', "supaFetchAll('app_state', 'key,value', 'key=not.like.invoice_purchase_*&key=not.like.lunch_photo_*')", "supaFetchAll('app_state', 'key,value', 'key=not.like.lunch_photo_*')"]]],
   ['app: the bonus lock does not read the summaries', PU, [['index.html', "  keys.push('invoice_purchase_status');", '']]],
-  ['app: reload draws any page', PU, [['index.html', "    var onTab = typeof curPage !== 'undefined' && curPage === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'purchase';", '    var onTab = true;']]],
+  ['app: reload draws any page', PU, [['index.html', "    var onTab = typeof curPage !== 'undefined' && curPage === 'purchase';", '    var onTab = true;']]],   // v1084: 仕入れは独立したページ
   ['app: a month of the same version is never checked again', PU, [['index.html', '  if (got && Date.now() - got < IPS_MONTH_TTL) return;', '  return;']]],
   ['app: a "missing" statement of a vendor with no invoice is ignored', PU, [['index.html', "function _ipsChkNeed(c){ return !!c && ((Number(c.docs) || 0) > 0 || !!(c.chk && c.chk.s === 'missing')); }", "function _ipsChkNeed(c){ return !!c && (Number(c.docs) || 0) > 0; }"]]],
   ['app: "not in yet" counts held invoices the app entry counts', PU, [['index.html', 'c:sum.B.c + sum.C.c + sum.E.c - sum.ap.c,', 'c:sum.B.c + sum.C.c + sum.E.c,'], ['index.html', 'n:sum.B.n + sum.C.n + sum.E.n - sum.ap.n,', 'n:sum.B.n + sum.C.n + sum.E.n,']]],
@@ -358,8 +358,7 @@ const CASES = [
   ['app: a changed month row does not move the count', PU, [['index.html', '  else if (r.raw !== raw) { r.raw = raw; r.n++; }', '  else if (r.raw !== raw) { r.raw = raw; }']]],
   ['app: lines are kept when the month is taken again', PU, [['index.html', '      Object.keys(_ipsLines).forEach(function(x){ if (x.indexOf(lp) === 0) delete _ipsLines[x]; });\r\n', '']]],
   ['app: closed months are taken again every session', PU, [['index.html', '  if (ipsStatus().months[ym].closed === true) return;\r\n', '']]],
-  ['app: the daily food cost head keeps the old count', PU, [['index.html', "  if(_fcIps && _fcIps.ok) _mInv=_fcIps.confirmed+_fcIps.manual;", "  if(false) _mInv=_fcIps.confirmed+_fcIps.manual;"]]],
-  ['app: the daily food cost head uses the confirmed count for every store', PU, [['index.html', "  if(_fcIps && _fcIps.ok) _mInv=_fcIps.confirmed+_fcIps.manual;", "  if(typeof IPS_START!=='undefined' && _fcYm>=IPS_START){ var _fcIr=foodCostOf(storeId, _fcYm); _mInv=_fcIr.invoice||0; }"]]],
+  // v1084: 原価率(FC)の日次画面（renderFcDaily）は廃止したので、その画面の 2 通りは外した。
   ['app: an old month is not read again for newer lines', PU, [['index.html', "      if (String(v.generated_at || '') !== String(d.generated_at || '')) _ipsPull(", "      if (false) _ipsPull("]]],
   ['app: the cost card does not say which invoices', PU, [['index.html', "        d.basis==='confirmed_invoices' ? d.ipsNote\r\n", "        false ? d.ipsNote\r\n"]]],
   ['app: the purchases chip mixes two counts', PU, [['index.html', "    if(typeof IPS_START!=='undefined' && ym>=IPS_START){ var _fr=foodCostOf(s.id, ym);", "    if(typeof ipsOk==='function' && ipsOk(s.id, ym)){ var _fr=foodCostOf(s.id, ym);"]]],
@@ -482,7 +481,7 @@ const CASES = [
   ["業者の統合 screen: a new similar name is not asked about", VU, [["index.html", "  if (best) return { name:best.name, why:bestRank };\r\n", "  if (best && false) return { name:best.name, why:bestRank };\r\n"]]],
   ["業者の統合 screen: AM or chef remembers a name", VU, [["index.html", "  if (!vmgCan() || !typed || vmgKey(typed) === vmgKey(name) || vmgResolve(typed)) return;", "  if (!typed || vmgKey(typed) === vmgKey(name) || vmgResolve(typed)) return;"]]],
   ["業者の統合 screen: the intake offers a merged vendor", VU, [["index.html", "  var vs = all.filter(function(x){ return !x.merged_into || x.vendor_key === shown; });", "  var vs = all;"]]],
-  ["業者の統合 screen: invoices of a merged name are totalled apart", VU, [["index.html", "    var vn=((v.vendor?vendorCanon(v.vendor):'')||'業者未設定');", "    var vn=(v.vendor||'業者未設定');"]]],
+  // v1084: 「業者の統合 screen: invoices of a merged name are totalled apart」は、その集計（monthInvoiceByVendor・原価率(FC)の画面）の廃止と一緒に外した。
   ["業者の統合 screen: the merged toast shows a name as markup", VU, [["index.html", "    var msg = vmgT('「'+escapeHtml(keep)+'」にまとめました','Merged into “'+escapeHtml(keep)+'”');", "    var msg = vmgT('「'+keep+'」にまとめました','Merged into “'+keep+'”');"]]],
   ["業者の統合 screen: the record button runs what a record carries", VU, [["index.html", "onclick=\"vmgUndoAsk('+vmgJs(g.id)+')\"", "onclick=\"vmgUndoAsk(\\''+escapeHtml(g.id)+'\\')\""]]],
   ["業者の統合 screen: the merge screen shows a name as markup", VU, [["index.html", "  if (P.rename) L.push([vmgT('カードの名前','Card name'), vmgT('「'+e(P.rename.from)+'」→「'+e(keep)+'」','“'+e(P.rename.from)+'” → “'+e(keep)+'”')]);\r\n  L.push([vmgT('請求書 '+P.inv+' 件・商品 '+P.prod+' 品','Invoices '+P.inv+', products '+P.prod), vmgT('表示と集計が「'+e(keep)+'」になります", "  if (P.rename) L.push([vmgT('カードの名前','Card name'), vmgT('「'+e(P.rename.from)+'」→「'+e(keep)+'」','“'+e(P.rename.from)+'” → “'+e(keep)+'”')]);\r\n  L.push([vmgT('請求書 '+P.inv+' 件・商品 '+P.prod+' 品','Invoices '+P.inv+', products '+P.prod), vmgT('表示と集計が「'+keep+'」になります"]]],

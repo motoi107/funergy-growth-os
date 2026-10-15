@@ -91,7 +91,7 @@ function app({ state = {}, role = 'gm', visible = ['F06', 'F01'], lang = 'ja', f
   };
   vm.createContext(c);
   vm.runInContext(['parseJaDate', '_invDate', '_invStoreIds', 'fcCostPurposes', '_fcInCost', 'dateInYm', 'monthInvoiceCostYm', 'monthPurchaseCostYm', 'foodCostOf',
-    '_invDayCostMap', 'fcBreakdownSub'].map(fn).join('\n') + '\n' + MOD, c);
+    '_invDayCostMap', 'fcBreakdownSub', 'budPage'].map(fn).join('\n') + '\n' + MOD, c);   // v1084: 仕入れは独立したページ（budPage が描き直す先を決める）
   return c;
 }
 const run = (c, code) => vm.runInContext(code, c);
@@ -291,11 +291,11 @@ test('only months the list names are used; closed from either side; keys like __
   c.pulled = [];
   run(c, `_ipsStatusAt = Date.now() - 600001`); run(c, `ipsMonth('2026-10')`); await tick();
   assert.equal(c.pulled.filter(k => k === 'invoice_purchase_status').length, 1, 'the list again after 10 minutes');
-  // reload draws the page again only on the 仕入れ tab (or when something changed)
-  c = app({ state: { ...P.rows } }); c.budgetTab = 'daily'; c.rendered = 0;
+  // reload draws the page again only on the 仕入れ page (or when something changed). v1084: 仕入れは予実管理のタブから独立したページ
+  c = app({ state: { ...P.rows } }); c.curPage = 'budget'; c.rendered = 0;
   await run(c, `ipsRefresh('2026-10', true)`); await run(c, `ipsRefresh('2026-10')`);
   assert.equal(c.rendered, 0);
-  c.budgetTab = 'purchase';
+  c.curPage = 'purchase';
   await run(c, `ipsRefresh('2026-10')`);
   assert.equal(c.rendered, 1);
 });
@@ -324,7 +324,7 @@ test('the purchases chip uses one count per month for every store; English has n
   assert.ok(!keys.includes('invoice_purchase_2026-09') && !keys.includes('invoice_purchase_2026-12'), 'before October and future months are not read');
 });
 
-test('held invoices the app entry counts are not "not in yet"; lines follow the month version; a failed fetch is tried again; daily food cost and the cost card use the same count', async () => {
+test('held invoices the app entry counts are not "not in yet"; lines follow the month version; a failed fetch is tried again', async () => {
   const P = await published(async doc => {
     await doc({ total: 7000, lines: [[7000, 'I-MISO']], ingested: '2026-09-30T00:00:00Z' });   // taken in before the start: the app entry counts it
   });
@@ -379,16 +379,7 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   assert.doesNotMatch(card, /原価外を含む全伝票/);
   const sep = run(c, `renderInvCogsCard('F06', '2026-09', null)`);
   assert.doesNotMatch(sep, /確認済みの invoice/, 'September: as before');
-  // the daily food cost screen: the month-to-date figure uses the same count as food cost from October
-  Object.assign(c, { getDailyActuals: () => ({ '2026-10-05': { actual: 10000 } }), dailyOrderTotal: () => 0, _purchOnISO: () => 0, fmtUSD2: v => '$' + Number(v).toFixed(2),
-    daysOfYm: () => [{ date: '2026-10-05' }], kpi: (a, b, c2) => '<kpi>' + a + '|' + b + '|' + c2 + '</kpi>', monthInvoiceTotalYm: () => 2380 });
-  vm.runInContext(['dayCostReal', 'renderFcDaily'].map(fn).join('\n'), c);
-  let fd = ''; try { fd = run(c, `renderFcDaily('F06', {id:'F06'})`); } catch (e) { fd = String(e); }
-  assert.match(fd, /<kpi>当月 実質原価率\|11\.8%\|10月累計・仕入 \$1180\.00 \/ 売上 \$10000\.00<\/kpi>/, fd.slice(0, 300));
-  assert.match(fd, /この月の Invoice は、確認済み/);
-  const fd99 = run(c, `renderFcDaily('F99', {id:'F99'})`);
-  assert.match(fd99, /<kpi>当月 実質原価率\|23\.8%\|/, 'a store outside the Drive intake: the totals, as its daily rows');
-  assert.doesNotMatch(fd99, /この月の Invoice は、確認済み/);
+  // v1084: 原価率(FC)の日次画面（renderFcDaily）は廃止したので、その画面の月累計の確かめはここから外した。
 });
 
 test('a summary changed from outside with the same version is put right on devices that took it (Codex PR #58 P2-1)', async () => {

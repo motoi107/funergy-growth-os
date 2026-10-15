@@ -28,7 +28,7 @@ function fnSrc(name) {
   throw new Error('unbalanced ' + name);
 }
 const REAL = ['mergeMapByTime', '_recAt', 'invVendorKind', 'invSetVendorKind', 'matchVendorBest', '_vnNorm', '_vnTokens', 'vendorsSorted', 'checkVendorRegistered',
-  'applyVendorSuggest', 'monthInvoiceByVendor', '_invGather', 'invInVendorOpts'].map(fnSrc).join('\n');
+  'applyVendorSuggest', '_invGather', 'invInVendorOpts'].map(fnSrc).join('\n');   // v1084: monthInvoiceByVendor は原価率(FC)の画面と一緒に廃止
 
 const CARD = (id, name, o = {}) => ({ id, name, contact: '', phone: '', sms: '', email: '', line: '', method: '', cutoff: '', leadtime: 1, minOrder: 0, delivery: '', terms: '', rating: 3, webform: '', ...o });
 const CARDS = () => [
@@ -130,8 +130,6 @@ test('the shared table decides the vendor: chains, a name of another case, a mer
   // The best match finds a merged name at once.
   assert.deepEqual([c.fn('matchVendorBest')('Island Fresh Prodcue').vendor.id, c.fn('matchVendorBest')('Island Fresh Prodcue').score], ['v1', 1]);
   // Totals per vendor add the merged names up; the record keeps what was read.
-  const byV = J(c.fn('monthInvoiceByVendor')('F01', '2026-10'));
-  assert.deepEqual(byV.map(r => [r.vendor, r.total, r.count]), [['Island Fresh Produce', 405, 5], ['ALOHA MEAT CO.', 70, 1], ['ISLAND FRESH PRODUCE, INC.', 40, 1]]);
   assert.equal(c.mem.invoices.find(v => v.id === 'b2').vendor, 'Island Fresh Prodcue', 'records are not rewritten (2A)');
   assert.match(c.fn('vmgVendorHtml')('Island Fresh Prodcue'), /^Island Fresh Produce <span[^>]*>読み取り：Island Fresh Prodcue<\/span>$/);
   assert.equal(c.fn('vmgVendorHtml')('Island Fresh Produce'), 'Island Fresh Produce');
@@ -220,7 +218,6 @@ test('merge: the screen asks the intake first (nothing changes), then the intake
   assert.ok(c.toasts.some(x => /同じ番号で 2 件とも反映済み/.test(x[0]) && x[1] === 'warning'));
   assert.equal(c.dom['vmg-modal'], undefined, 'closed');
   // Now one vendor everywhere in the app.
-  assert.deepEqual(J(c.fn('monthInvoiceByVendor')('F01', '2026-10')).map(r => [r.vendor, r.total]), [['Island Fresh Produce', 445], ['ALOHA MEAT CO.', 70]]);
   assert.equal(J(c.fn('vmgGroups')(c.fn('vmgPool')())).some(x => x.names.includes('Island Fresh Produce')), false);
   const h2 = c.fn('vmgCardHtml')();
   assert.match(h2, /統合の記録 1/);

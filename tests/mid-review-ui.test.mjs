@@ -145,8 +145,9 @@ const dataCodes = h => [...h.matchAll(/data-codes="([^"]*)"/g)].flatMap(m => m[1
 test('the module is in index.html; the entry is wired; nothing of the review goes to shared app data; v1073', () => {
   assert.ok(MOD.length > 20000, 'module markers');
   assert.match(html, /\{id:'mid_review',\s+label:'中間レビュー', icon:'ti-message-2-check',\s+roles:\['ceo','gm','am','chef','sl'\]\}/);
-  assert.match(html, /children:\['budget','mid_review','labor','foodcost','kpi_master'\]\}/);
-  assert.match(html, /\{id:'gc_budget', label:'予実', icon:'ti-chart-bar',\n    children:\['budget','mid_review','labor','foodcost','kpi_master'\]\},/);
+  // v1084: 会議は中間レビューの右隣・仕入れは原価率(FC)のあった位置（原価率(FC)は廃止）
+  assert.match(html, /children:\['budget','mid_review','meeting','labor','purchase','kpi_master'\]\}/);
+  assert.match(html, /\{id:'gc_budget', label:'予実', icon:'ti-chart-bar',\n    children:\['budget','mid_review','meeting','labor','purchase','kpi_master'\]\},/);
   assert.match(html, /case 'mid_review':\s+el\.innerHTML = renderMidReview\(\)/);
   assert.match(html, /if\(typeof mrReset==='function'\) mrReset\(\);/);
   assert.doesNotMatch(MOD, /lsSet\(|\bls\('|localStorage|sessionStorage|supaUpsert|pushOpKey|setQBudgetObj|saveQcNote/);
@@ -166,7 +167,7 @@ test('menu: CEO, GM, AM, Corporate Chef, G4 and G3 get the entry (the server dec
     const c = { curRealRole: real, curRole: role, curStore: store, curStoreLogin: false, mcCanOpen: () => true, mdCanOpen: () => true, _gradeHideApplies: () => false,
       canAccessStaffMaster: () => true, canAccessKpiMaster: () => true, canSeeDashboard: () => true, console };
     vm.createContext(c);
-    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + fnSrc('firstAllowedChild'), c);
+    vm.runInContext(['NAV_ITEMS', 'MENU_GROUPS', 'OFFICE_GROUPS', 'ACCT_GROUPS', 'CHEF_GROUPS', 'CREW_GROUPS', 'STORE_GROUPS'].map(constSrc).join('\n') + '\n' + MOD + '\n' + fnSrc('groupsForRole') + '\n' + fnSrc('navChildAllowed') + '\n' + fnSrc('firstAllowedChild'), c);
     assert.equal(vm.runInContext('mrCanSee()', c), want, real);
     const has = vm.runInContext('groupsForRole()', c).some(g => g.children.includes('mid_review'));
     assert.equal(has, want, real);
@@ -630,9 +631,9 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   assert.equal(ch.run('mrOpNow(_mr.rec)'), 'review'); assert.doesNotMatch(ch.html, /mrConfirm\(\)/); assert.match(ch.html, /返信する（Corp Chef・Head Chef・Corporate Chef として）/);
   ch.run("mrCIn({ getAttribute:function(){ return 'reply|cur:labor'; }, value:'キッチン側も手伝います' })"); await ch.run("mrPost('reply|cur:labor')");
   assert.equal((await get(S, 'F01', 'gm', 'live')).replies.filter(x => x.author_role === 'chef').length, 1);
-  // The meeting tab link opens that store and month.
-  ch.run("mrOpenMeeting('F01','2026-10')"); assert.deepEqual(ch.went, [['go', 'budget', 'meeting', 'F01', 0], ['load', '2026-10', 'budget']]);
-  ch.went = []; ch.run("mrOpenMeeting('F01','2026-09')"); assert.deepEqual(ch.went, [['go', 'budget', 'meeting', 'F01', -1], ['load', '2026-09', 'budget']]);
+  // The meeting tab link opens that store and month. v1084: 会議は予実管理のタブから独立したページ（meeting）。予実管理のタブは変えない
+  ch.run("mrOpenMeeting('F01','2026-10')"); assert.deepEqual(ch.went, [['go', 'meeting', 'daily', 'F01', 0], ['load', '2026-10', 'meeting']]);
+  ch.went = []; ch.run("mrOpenMeeting('F01','2026-09')"); assert.deepEqual(ch.went, [['go', 'meeting', 'daily', 'F01', -1], ['load', '2026-09', 'meeting']]);
   ch.went = []; ch.run("mrOpenMeeting('x\\'','2026-09')"); assert.deepEqual(ch.went, []);
   assert.match(ch.html, /onclick="mrOpenMeeting\('F01','2026-10'\)">会議タブで見る/);
   // Live input off: the input person is told, nothing to write.
