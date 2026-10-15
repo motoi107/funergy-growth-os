@@ -296,7 +296,7 @@ const CASES = [
   ['app: any reason code is counted', PU, [['index.html', "if (!_ipsHas(IPS_WHY, b)) return; ", '']]],
   ['app: vendors kept in an ordinary object', PU, [['index.html', '  var map = Object.create(null), order = [];', '  var map = {}, order = [];']]],
   ['app: the month is fetched on every look', PU, [['index.html', "{ _ipsPull(key, key + '|' + at); return; }", "{ _ipsPull(key, key + '|' + at + '|' + Math.random()); return; }"]]],
-  ['app: the login pull takes the summaries', PU, [['index.html', "supaFetchAll('app_state', 'key,value', 'key=not.like.invoice_purchase_*')", "supaFetchAll('app_state', 'key,value')"]]],
+  ['app: the login pull takes the summaries', PU, [['index.html', "supaFetchAll('app_state', 'key,value', 'key=not.like.invoice_purchase_*&key=not.like.lunch_photo_*')", "supaFetchAll('app_state', 'key,value', 'key=not.like.lunch_photo_*')"]]],
   ['app: the bonus lock does not read the summaries', PU, [['index.html', "  keys.push('invoice_purchase_status');", '']]],
   ['app: reload draws any page', PU, [['index.html', "    var onTab = typeof curPage !== 'undefined' && curPage === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'purchase';", '    var onTab = true;']]],
   ['app: a month of the same version is never checked again', PU, [['index.html', '  if (got && Date.now() - got < IPS_MONTH_TTL) return;', '  return;']]],

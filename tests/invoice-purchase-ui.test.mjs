@@ -312,7 +312,8 @@ test('the purchases chip uses one count per month for every store; English has n
   assert.doesNotMatch(h.replace(/<style>[\s\S]*?<\/style>/g, '') + c.modals.at(-1).replace(/<style>[\s\S]*?<\/style>/g, ''), /[・：（）、。　]/);
   // the login pull (all of app_state) leaves out the summaries; they are fetched by month
   // (assert.ok, not assert.match: a failed match would print the whole 7 MB page)
-  assert.ok(/supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*'\)/.test(source), 'the login pull leaves the summaries out');
+  // (v1080: other heavy rows may be left out too, e.g. lunch_photo_*; the summaries must stay out)
+  assert.ok(/supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*(&key=not\.like\.[a-z_]+\*)*'\)/.test(source), 'the login pull leaves the summaries out');
   assert.ok(/async function supaFetchAll\(table, select, filter\)[\s\S]{0,400}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/.test(source), 'supaFetchAll takes the filter');
   // the bonus lock reads the summaries of the quarter again before it locks
   const k = { IPS_START: '2026-10', _bonusQParse: () => ({ y: 2026, q: 4 }), _quarterMonths: () => ['2026-10', '2026-11', '2026-12'], _ymToOffset: ym => (ym <= '2026-11' ? 0 : 1),
