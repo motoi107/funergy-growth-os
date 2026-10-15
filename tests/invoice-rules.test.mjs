@@ -341,6 +341,32 @@ test('each migration changes only what it says', async () => {
     'alter table public.invoice_folders drop constraint if exists invoice_folders_role_check;',
     'alter table public.invoice_folders add constraint invoice_folders_role_check',
     " check (role in ('year','month','unreconciled','reconciled','reconciled_root','reconciled_month'));"].join('\n'), 'only the folder roles besides functions');
+  // 段階 3 (20261021090000, Moto 2026-10-14・UI案50 5・6A・7A・8A): the docs status 'merged' and three columns, sixteen functions replaced,
+  // three new ones (service role only); no row or setting.
+  const mf = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
+  assert.deepEqual([...mf.matchAll(fn)].map(m => m[1]), ['invoice_file_settle', 'invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_reconcile',
+    'invoice_organize_due', 'invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_qb_enqueue', 'invoice_qb_candidates',
+    'invoice_list', 'invoice_get', 'invoice_purchase_month', 'invoice_reassign', 'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual']);
+  assert.ok([...mf.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  assert.equal(mf.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
+    'do $$ begin',
+    " if not exists(select 1 from pg_constraint where conname='invoice_folders_role_check' and pg_get_constraintdef(oid) like '%reconciled_month%') then",
+    "  raise exception '先に 20261020090000_invoice_reconciled_folder.sql を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'alter table public.invoice_docs drop constraint if exists invoice_docs_status_check;',
+    'alter table public.invoice_docs add constraint invoice_docs_status_check',
+    " check (status in ('review','posted','rejected','superseded','duplicate','merged'));",
+    'alter table public.invoice_docs add column if not exists merged_into uuid references public.invoice_docs(id);',
+    'alter table public.invoice_docs add column if not exists part_no integer;',
+    'alter table public.invoice_docs add column if not exists merge_base jsonb;',
+    'create index if not exists invoice_docs_merged on public.invoice_docs(merged_into) where merged_into is not null;',
+    'do $$ declare f text; begin',
+    " foreach f in array array['invoice_merge(jsonb)','invoice_unmerge(jsonb)','invoice_qb_manual(jsonb)'] loop",
+    "  execute format('revoke all on function public.%s from public, anon, authenticated', f);",
+    "  execute format('grant execute on function public.%s to service_role', f);",
+    ' end loop;',
+    'end $$;'].join('\n'), 'only the docs columns and the grants besides functions');
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -349,7 +375,7 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql',
     'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql',
     'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
-    'supabase/migrations/20261020090000_invoice_reconciled_folder.sql'])
+    'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

@@ -137,7 +137,7 @@ create table public.invoice_docs(
  pages_marked text[] not null default '{}',
  references_raw jsonb not null default '[]',
  content_sig text,
- status text not null default 'review' check (status in ('review','posted','rejected','superseded','duplicate')),
+ status text not null default 'review' check (status in ('review','posted','rejected','superseded','duplicate','merged')),
  reasons jsonb not null default '[]',
  auto_eligible boolean not null default false,
  posted_at timestamptz, posted_by text, posted_mode text check (posted_mode in ('auto','manual')),
@@ -151,7 +151,12 @@ create table public.invoice_docs(
  overrides jsonb not null default '{}',   -- what people changed, with who/when/why
  version integer not null default 1,
  created_at timestamptz not null default now(),
- updated_at timestamptz not null default now()
+ updated_at timestamptz not null default now(),
+ -- Several originals are one invoice (Moto 2026-10-14・UI案50 5): a page merged into another invoice points to it (status 'merged',
+ -- its lines moved there) and part_no is its place; merge_base keeps the invoice as it was before, to take the merge back in review.
+ merged_into uuid references public.invoice_docs(id),
+ part_no integer,
+ merge_base jsonb
 );
 -- A posted purchase can exist once per store, vendor, type and number, and once per content hash.
 create unique index invoice_docs_posted_number on public.invoice_docs(store_id, vendor_key, doc_type, invoice_no_norm)
@@ -161,6 +166,7 @@ create index invoice_docs_lookup on public.invoice_docs(vendor_key, invoice_no_n
 create index invoice_docs_date on public.invoice_docs(store_id, invoice_date);
 -- The documents of a file's current content are looked up per file (rename, QuickBooks, filing): an index for that.
 create index if not exists invoice_docs_file on public.invoice_docs(file_id, sha256);
+create index if not exists invoice_docs_merged on public.invoice_docs(merged_into) where merged_into is not null;
 
 create table public.invoice_lines(
  id uuid primary key default gen_random_uuid(),
@@ -499,7 +505,8 @@ begin
  -- The same Drive file read before with other content (overwritten in Drive): the new version always waits for a person,
  -- who supersedes the earlier version, marks this one as a duplicate, or confirms that both stand.
  select string_agg(o.id::text, ',' order by o.created_at, o.doc_index) into prior from public.invoice_docs o
- where o.file_id=(p->>'file_id')::uuid and o.sha256 is distinct from p->>'sha256' and o.status in ('posted','review');
+ -- A page merged into an invoice counts too (its lines are in that invoice, UI案50 5).
+ where o.file_id=(p->>'file_id')::uuid and o.sha256 is distinct from p->>'sha256' and o.status in ('posted','review','merged');
  if prior is not null then
   rs := rs || jsonb_build_array(jsonb_build_object('code', 'original_replaced', 'detail', prior)); auto := false;
  end if;
@@ -546,7 +553,9 @@ begin
    when bool_and(status='duplicate') then 'duplicate'
    when bool_and(status in ('posted','duplicate','rejected','superseded')) and bool_or(status='posted') then 'posted'
    else 'review' end into st
- from public.invoice_docs where file_id=f and sha256=(select current_sha256 from public.invoice_files where id=f);
+ -- A page merged into another invoice (Moto 2026-10-14・UI案50 5) counts as that invoice does.
+ from (select case when d.status='merged' then coalesce((select m.status from public.invoice_docs m where m.id=d.merged_into), 'review') else d.status end status
+       from public.invoice_docs d where d.file_id=f and d.sha256=(select current_sha256 from public.invoice_files where id=f)) x;
  if p ? 'status' then st := p->>'status'; end if;
  update public.invoice_files set intake_status=coalesce(st,'review'), lease_owner=null, lease_until=null, last_error=null, next_attempt_at=null, updated_at=now()
  where id=f and (lease_owner=p->>'owner' or (p->>'owner' is null and intake_status not in ('pending','processing')));
@@ -629,6 +638,8 @@ begin
  if nullif(p->>'supersedes','') is not null then
   select * into old from public.invoice_docs where id=(p->>'supersedes')::uuid for update;
   if old.id is null or old.status<>'posted' or old.store_id<>d.store_id or old.vendor_key is distinct from d.vendor_key then raise exception 'bad_supersede'; end if;
+  -- An invoice made of several originals is not replaced by a new version of one of them (UI案50 5): a person decides.
+  if exists(select 1 from public.invoice_docs c where c.merged_into=old.id) then raise exception 'has_parts'; end if;
   if closed is not null and to_char(old.invoice_date,'YYYY-MM') <= closed then
    if not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
    update public.invoice_docs set needs_adjustment=true where id=old.id;
@@ -645,11 +656,15 @@ begin
  end loop;
  update public.invoice_docs set status='posted', posted_at=now(), posted_by=who, posted_mode=mode, version=version+1, updated_at=now()
  where id=d.id;
- update public.invoice_files set organize_target=coalesce(organize_target,'unreconciled') where id=d.file_id;
+ update public.invoice_files set organize_target=coalesce(organize_target,'unreconciled') where id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id);
  perform public.invoice_event(d.id, d.file_id, who, 'posted', jsonb_build_object('mode', mode, 'price_rows', n, 'price_skipped', skipped,
   'reason', p->>'reason', 'ack', p->'ack', 'supersedes', p->>'supersedes'));
  perform public.invoice_file_settle(jsonb_build_object('file_id', d.file_id));
- return jsonb_build_object('ok', true, 'price_rows', n, 'price_skipped', skipped, 'version', d.version + 1, 'file_id', d.file_id);
+ perform public.invoice_file_settle(jsonb_build_object('file_id', x.file_id)) from public.invoice_docs x where x.merged_into=d.id;
+ -- file_ids: every original of the invoice (the pages merged into it too), in page order, to rename and file.
+ return jsonb_build_object('ok', true, 'price_rows', n, 'price_skipped', skipped, 'version', d.version + 1, 'file_id', d.file_id,
+  'file_ids', (select jsonb_agg(q.fid order by q.o) from (select d.file_id fid, coalesce(d.part_no, 0) o
+   union all select x.file_id, x.part_no from public.invoice_docs x where x.merged_into=d.id) q));
 end $$;
 
 -- A person's correction. The AI value stays in ai/raw; overrides keep old and new values with who and why.
@@ -757,7 +772,7 @@ begin
   -- A reconciled original whose key values changed is reconciled again and goes back to 未照合.
   update public.invoice_docs set recon_status='unreconciled' where id=d.id and recon_status<>'unreconciled';
   update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_next_at=null
-  where id=d.file_id and organize_target='reconciled';
+  where (id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and organize_target='reconciled';
   update public.invoice_app_mirror set state='held', error='edited_after_post', updated_at=now() where doc_id=d.id and state='mirrored';
  end if;
  -- Every earlier value is kept in the event log, so repeated corrections never lose history.
@@ -792,6 +807,9 @@ begin
  if d.id is null then raise exception 'not_found'; end if;
  if d.version <> (p->>'version')::int then raise exception 'conflict'; end if;
  if d.status = 'posted' then raise exception 'posted_use_correction'; end if;
+ -- A page merged into an invoice, or an invoice made of several originals, changes through the merge (take it back first).
+ if d.status = 'merged' then raise exception 'invalid_state'; end if;
+ if exists(select 1 from public.invoice_docs c where c.merged_into=d.id) then raise exception 'has_parts'; end if;
  if a = 'duplicate' then
   if nullif(p->>'duplicate_of','') is null then raise exception 'duplicate_of_required'; end if;
   update public.invoice_docs set status='duplicate', duplicate_of=(p->>'duplicate_of')::uuid, version=version+1, updated_at=now() where id=d.id;
@@ -835,11 +853,12 @@ begin
  update public.invoice_docs set recon_status=r, recon_by=actor::text, recon_at=now(), recon_note=nullif(p->>'note',''), recon_diff=p->'diff',
   version=version+1, updated_at=now() where id=d.id;
  if r = 'reconciled' then
+  -- Every original of the invoice (the pages merged into it too, UI案50 5) goes with it.
   update public.invoice_files set organize_target='reconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
-  where id=d.file_id;
+  where id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id);
  else
   update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_error=null, organize_next_at=null
-  where id=d.file_id and organize_target='reconciled';
+  where (id=d.file_id or id in (select x.file_id from public.invoice_docs x where x.merged_into=d.id)) and organize_target='reconciled';
  end if;
  perform public.invoice_event(d.id, d.file_id, actor::text, 'reconcile_'||r, jsonb_build_object('note', p->>'note', 'diff', p->'diff'));
  return jsonb_build_object('ok', true, 'version', d.version + 1);
@@ -901,6 +920,11 @@ begin
   return jsonb_build_object('queued', false, 'why', 'not_ready');
  end if;
  if public.invoice_rename_waiting(f.id) then return jsonb_build_object('queued', false, 'why', 'rename_waiting'); end if;
+ -- Several originals make one invoice (UI案50 5・6A): they go to QuickBooks together once the forwarder can send them as one
+ -- (Moto 2026-10-14: built now, kept out of the ledger until then). Accounting records a manual entry meanwhile (invoice_qb_manual).
+ if exists(select 1 from public.invoice_docs d0 join public.invoice_docs x on x.merged_into=d0.id where d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted') then
+  return jsonb_build_object('queued', false, 'why', 'multi_file');
+ end if;
  insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key)
  values(f.id, f.current_sha256, q->>'to', q->>'route', 'qb-' || f.current_sha256 || '-' || md5(q->>'to'))
  on conflict do nothing returning * into o;
@@ -958,7 +982,8 @@ begin
  with q as (
   select d.id, d.store_id, d.doc_type, d.vendor_key, d.vendor_name, d.vendor_raw, d.invoice_no, d.invoice_date, d.delivery_date, d.total_cents,
    d.status, d.recon_status, d.reasons, d.needs_adjustment, d.posted_mode, d.version, f.drive_file_id, f.current_name, f.organize_status, f.drive_state,
-   f.ingested_at, (select state from public.invoice_qb_outbox o where o.file_id=f.id and o.state<>'cancelled' order by created_at desc limit 1) qb_state
+   f.ingested_at, (select state from public.invoice_qb_outbox o where o.file_id=f.id and o.state<>'cancelled' order by created_at desc limit 1) qb_state,
+   (select count(*) from public.invoice_docs x where x.merged_into=d.id) parts
   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
   where (jsonb_typeof(p->'stores') is distinct from 'array' or d.store_id in (select jsonb_array_elements_text(case when jsonb_typeof(p->'stores')='array' then p->'stores' else '[]'::jsonb end)))
    and (p->>'vendor' is null or d.vendor_name ilike '%'||(p->>'vendor')||'%' or d.vendor_raw ilike '%'||(p->>'vendor')||'%')
@@ -966,6 +991,7 @@ begin
    and (p->>'invoice_no' is null or d.invoice_no ilike '%'||(p->>'invoice_no')||'%')
    and (p->>'min_cents' is null or d.total_cents >= (p->>'min_cents')::bigint) and (p->>'max_cents' is null or d.total_cents <= (p->>'max_cents')::bigint)
    and (p->>'item' is null or exists(select 1 from public.invoice_lines l where l.doc_id=d.id and l.raw_name ilike '%'||(p->>'item')||'%'))
+   and (d.status <> 'merged' or p->>'status' = 'merged')
    and (p->>'status' is null or d.status=p->>'status') and (p->>'recon' is null or d.recon_status=p->>'recon'))
  select (select count(*) from q), (select coalesce(sum(total_cents),0) from q),
   coalesce((select jsonb_agg(to_jsonb(x) order by x.invoice_date desc nulls first, x.ingested_at desc, x.id) from
@@ -989,6 +1015,16 @@ begin
   'related', (select coalesce(jsonb_agg(jsonb_build_object('id',x.id,'doc_type',x.doc_type,'invoice_no',x.invoice_no,'relation',x.relation,'status',x.status)),'[]')
               from public.invoice_docs x where x.related_doc_id=d.id or x.id=d.related_doc_id or x.duplicate_of=d.id or x.id=d.duplicate_of),
   'qb', (select coalesce(jsonb_agg(to_jsonb(o) - 'reserved_by'),'[]') from public.invoice_qb_outbox o where o.file_id=d.file_id),
+  -- Several originals are one invoice (UI案50 5): its other pages, and for a page the invoice it was merged into.
+  'parts', (select coalesce(jsonb_agg(jsonb_build_object('id', x.id, 'part_no', x.part_no, 'version', x.version, 'file_id', x.file_id,
+     'drive_file_id', f.drive_file_id, 'current_name', f.current_name, 'ingested_at', f.ingested_at, 'pages_marked', x.pages_marked,
+     'invoice_no', x.invoice_no, 'total_cents', x.total_cents, 'tax_cents', x.tax_cents, 'shipping_cents', x.shipping_cents, 'lines_sum_cents', x.lines_sum_cents,
+     'qb_state', (select o.state from public.invoice_qb_outbox o where o.file_id=f.id and o.state<>'cancelled' order by o.created_at desc limit 1)) order by x.part_no), '[]')
+    from public.invoice_docs x join public.invoice_files f on f.id=x.file_id where x.merged_into=d.id),
+  'main', (select jsonb_build_object('id', m.id, 'invoice_no', m.invoice_no, 'vendor_name', m.vendor_name, 'status', m.status, 'part_no', m.part_no)
+    from public.invoice_docs m where m.id=d.merged_into),
+  -- How many documents the original holds (one original with several documents is not merged).
+  'file_docs', (select count(distinct x.doc_index) from public.invoice_docs x where x.file_id=d.file_id and x.sha256=d.sha256),
   -- The AI's transcription of this document, shown beside the values in use (never changed).
   'ai_doc', (select e.raw->'documents'->d.doc_index from public.invoice_extractions e
              where e.sha256=d.sha256 and e.prompt_version=d.ai->>'prompt_version' limit 1));
@@ -1325,7 +1361,9 @@ language sql stable security invoker set search_path=public,pg_temp as $$
    case when f.store_assigned_by is not null then (select coalesce(jsonb_agg(s2.upload_folder_id), '[]') from public.invoice_stores s2 where s2.upload_folder_id is not null)
         else '[]'::jsonb end upload_folder_ids
   from public.invoice_files f
-  join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0
+  join public.invoice_docs d0 on d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.doc_index=0
+  -- A page merged into another invoice (UI案50 5) is filed with that invoice: its date, vendor and state.
+  join public.invoice_docs d on d.id=coalesce(d0.merged_into, d0.id)
   where f.drive_state='ok' and f.organize_target is not null
    -- targets: the filings that are switched on (00_Upload filing and moving reconciled originals are two switches, Moto 2026-10-14).
    and (jsonb_typeof(p->'targets') is distinct from 'array' or f.organize_target in (select jsonb_array_elements_text(case when jsonb_typeof(p->'targets')='array' then p->'targets' else '[]'::jsonb end))
@@ -1346,11 +1384,14 @@ $$;
 create function public.invoice_rename_waiting(p_file uuid) returns boolean
 language sql stable security invoker set search_path=public,pg_temp as $$
  select exists(select 1 from public.invoice_files f
-  join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0 and d.status='posted'
+  join public.invoice_docs d0 on d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.doc_index=0 and d0.status in ('posted','merged')
+  -- d: the posted invoice the original belongs to (itself, or the invoice it was merged into as one of its pages, UI案50 5).
+  join public.invoice_docs d on d.id=coalesce(d0.merged_into, d0.id) and d.status='posted'
+  cross join lateral (select 1 + count(*) n from public.invoice_docs x where x.merged_into=d.id) np
   cross join (select public.invoice_setting('mode') m) s
   where f.id=p_file and f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'
    and d.posted_at >= nullif(s.m->>'rename_since', '')::timestamptz
-   and f.rename_key is distinct from (d.id::text || ':' || d.version)
+   and f.rename_key is distinct from (d.id::text || ':' || d.version || case when np.n > 1 then ':p' || coalesce(d0.part_no, 1) else '' end)
    and not exists(select 1 from public.invoice_docs d2 where d2.file_id=f.id and d2.sha256=f.current_sha256 and d2.doc_index>0));
 $$;
 
@@ -1358,13 +1399,16 @@ $$;
 -- conditions of invoice_rename_waiting for all files at once (renaming, QuickBooks and the count on the screen use it).
 create function public.invoice_rename_waiting_all() returns table(file_id uuid, doc_id uuid, target_key text)
 language sql stable security invoker set search_path=public,pg_temp as $$
- select f.id, d.id, d.id::text || ':' || d.version
+ select f.id, d.id, d.id::text || ':' || d.version || case when np.n > 1 then ':p' || coalesce(d0.part_no, 1) else '' end
  from public.invoice_files f
- join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0 and d.status='posted'
+ join public.invoice_docs d0 on d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.doc_index=0 and d0.status in ('posted','merged')
+ -- d: the posted invoice the original belongs to (itself, or the invoice it was merged into as one of its pages, UI案50 5).
+ join public.invoice_docs d on d.id=coalesce(d0.merged_into, d0.id) and d.status='posted'
+ cross join lateral (select 1 + count(*) n from public.invoice_docs x where x.merged_into=d.id) np
  cross join (select public.invoice_setting('mode') m) s
  where f.source='drive' and f.intake_status='posted' and s.m->>'rename' = 'true'
   and d.posted_at >= nullif(s.m->>'rename_since', '')::timestamptz
-  and f.rename_key is distinct from (d.id::text || ':' || d.version)
+  and f.rename_key is distinct from (d.id::text || ':' || d.version || case when np.n > 1 then ':p' || coalesce(d0.part_no, 1) else '' end)
   and not exists(select 1 from public.invoice_docs d2 where d2.file_id=f.id and d2.sha256=f.current_sha256 and d2.doc_index>0);
 $$;
 
@@ -1378,6 +1422,9 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   select f.id file_id, f.drive_file_id, f.store_id, f.original_name, f.current_name, w.target_key,
    coalesce(d.invoice_date, d.effective_date) invoice_date, coalesce(d.vendor_name, d.vendor_raw) vendor_name, d.doc_type,
    nullif(d.invoice_no, '') invoice_no, d.internal_no, (select count(*) from public.invoice_file_versions v where v.file_id=f.id) version_no,
+   -- An invoice of several originals: which page this original is and how many there are (named _p1, _p2, UI案50).
+   (select x.part_no from public.invoice_docs x where x.file_id=f.id and x.sha256=f.current_sha256 and x.doc_index=0 and (x.id=d.id or x.merged_into=d.id)) part_no,
+   (select 1 + count(*) from public.invoice_docs x where x.merged_into=d.id) parts,
    (select coalesce(jsonb_agg(fo.id), '[]') from public.invoice_folders fo where fo.store_id=f.store_id) store_folder_ids,
    -- A file a person assigned to another store may still sit in a store's 00_Upload; it may be renamed there.
    case when f.store_assigned_by is not null then (select coalesce(jsonb_agg(s2.upload_folder_id), '[]') from public.invoice_stores s2 where s2.upload_folder_id is not null)
@@ -1487,6 +1534,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
    -- Possible duplicates, replaced originals and documents that could not be read wait for a person (review): never forwarded before.
    and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')
    and f.id not in (select w.file_id from public.invoice_rename_waiting_all() w)
+   -- An invoice of several originals waits out of the ledger (invoice_qb_enqueue).
+   and not exists(select 1 from public.invoice_docs d0 join public.invoice_docs x on x.merged_into=d0.id where d0.file_id=f.id and d0.sha256=f.current_sha256 and d0.status='posted')
   order by f.ingested_at limit coalesce((p->>'limit')::int, 20)) f;
 $$;
 
@@ -1556,6 +1605,9 @@ begin
  select * into f from public.invoice_files where id=(p->>'file_id')::uuid for update;
  if f.id is null or not exists(select 1 from public.invoice_stores where store_id=p->>'store_id') then raise exception 'not_found'; end if;
  if exists(select 1 from public.invoice_docs where file_id=f.id and status='posted') then raise exception 'posted_use_correction'; end if;
+ -- A page merged into an invoice, or an invoice made of several originals: take the merge back first (UI案50 5).
+ if exists(select 1 from public.invoice_docs d where d.file_id=f.id and (d.status='merged' or exists(select 1 from public.invoice_docs c where c.merged_into=d.id))) then
+  raise exception 'has_parts'; end if;
  update public.invoice_docs set status='rejected', version=version+1, updated_at=now() where file_id=f.id and status in ('review','duplicate');
  update public.invoice_files set store_id=p->>'store_id', store_assigned_by=actor::text, drive_state=case when drive_state='moved_store' then 'ok' else drive_state end,
   intake_status='pending', attempts=0, next_attempt_at=null, organize_status='none', organize_target=null, updated_at=now() where id=f.id;
@@ -1889,6 +1941,8 @@ begin
   left join public.invoice_app_mirror m on m.doc_id=d.id
   left join public.invoice_vendor_rules v on v.vendor_key=d.vendor_key
   where (d.posting_kind='purchase' or (d.status='review' and d.doc_type='unknown'))
+   -- A page merged into another invoice is counted in that invoice (its lines moved there, UI案50 5).
+   and d.status <> 'merged'
    and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') = p_ym
  ),
  d1 as (
@@ -2232,6 +2286,213 @@ end $$;
 
 do $$ declare f text; begin
  foreach f in array array['invoice_purchase_classes(text[])','invoice_purchase_month(text,jsonb)','invoice_purchase_publish(jsonb)','invoice_purchase_check(jsonb)'] loop
+  execute format('revoke all on function public.%s from public, anon, authenticated', f);
+  execute format('grant execute on function public.%s to service_role', f);
+ end loop;
+end $$;
+
+-- 複数枚で 1 つの invoice（Moto 2026-10-14「経理のinvoice処理追加変更点」5・UI案50 決めてほしいこと 6A・7A・8A・段階 3）。
+-- 同じ invoice 番号の原本を 1 つの invoice にまとめる（重複は外す）。QuickBooks へは、転送側が 1 件にまとめて送れるようになるまで台帳に出さない。
+
+-- Several originals are one invoice (Moto 2026-10-14「同じinvoice#で続いてるパターンもあるので、重複か複数枚で１つのinvoiceか選択して
+-- 処理できる様に」・UI案50 5・7A・8A). Accounting picks the pages of one invoice number in page order. The main invoice keeps its id
+-- (a posted one keeps its posting, now corrected); every line of the other pages moves to it, in page order, and those pages wait
+-- as 'merged' (their originals stay in Drive). The reasons, the totals and the products are worked out again for the whole invoice
+-- by the caller from the current values (header, lines, reasons). Pages marked as duplicates in the same step are set aside (Drive
+-- is never touched). A merge of an invoice still waiting for review can be taken back (invoice_unmerge).
+create function public.invoice_merge(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; m public.invoice_docs; x public.invoice_docs; l public.invoice_lines; e jsonb; h jsonb := p->'header';
+ ids uuid[]; files uuid[]; dups uuid[] := '{}'; mx int; k int := 0; base jsonb; closed text; blocking text;
+ must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
+  'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
+ may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];
+ ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}');
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ if jsonb_typeof(p->'parts') is distinct from 'array' or jsonb_array_length(p->'parts') not between 1 and 9
+    or jsonb_typeof(p->'lines') is distinct from 'array' or jsonb_typeof(h) is distinct from 'object' or jsonb_typeof(p->'reasons') is distinct from 'array' then
+  raise exception 'bad_merge'; end if;
+ select * into m from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
+ if m.id is null then raise exception 'not_found'; end if;
+ if m.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if m.status not in ('review','posted') then raise exception 'invalid_state'; end if;
+ -- One document per original, read from what the original holds now (a file with several documents is never merged; the
+ -- reading set aside when a person chose another store is not another document).
+ if m.doc_index > 0 or exists(select 1 from public.invoice_docs o where o.file_id=m.file_id and o.sha256=m.sha256 and o.doc_index > 0)
+    or not exists(select 1 from public.invoice_files f where f.id=m.file_id and f.current_sha256=m.sha256) then raise exception 'bad_merge'; end if;
+ ids := array[m.id]; files := array[m.file_id];
+ for e in select * from jsonb_array_elements(p->'parts') loop
+  select * into x from public.invoice_docs where id=(e->>'id')::uuid for update;
+  if x.id is null then raise exception 'not_found'; end if;
+  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;
+  if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;
+  if x.id = any(ids) or x.file_id = any(files) or (e->>'part_no')::int is null then raise exception 'bad_merge'; end if;
+  -- The same store, vendor and invoice number (a page whose vendor or number could not be read may join).
+  if x.store_id <> m.store_id or x.vendor_key <> coalesce(h->>'vendor_key', m.vendor_key) or x.invoice_no_norm <> coalesce(h->>'invoice_no_norm', m.invoice_no_norm) then
+   raise exception 'bad_merge'; end if;
+  if x.doc_index > 0 or exists(select 1 from public.invoice_docs o where o.file_id=x.file_id and o.sha256=x.sha256 and o.doc_index > 0)
+     or not exists(select 1 from public.invoice_files f where f.id=x.file_id and f.current_sha256=x.sha256) then raise exception 'bad_merge'; end if;
+  ids := ids || x.id; files := files || x.file_id;
+ end loop;
+ for e in select * from jsonb_array_elements(coalesce(p->'duplicates','[]')) loop
+  select * into x from public.invoice_docs where id=(e->>'id')::uuid for update;
+  if x.id is null then raise exception 'not_found'; end if;
+  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;
+  if x.status <> 'review' or x.id = any(ids) or x.id = any(dups) or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;
+  dups := dups || x.id;
+ end loop;
+ closed := public.invoice_setting('rules')->>'closed_through';
+ if m.status='posted' then
+  -- A page added to a posted invoice is a correction of it (UI案50 8A): it passes what posting passes, and the invoice stays itself.
+  if h->>'vendor_key' is distinct from m.vendor_key or h->>'invoice_no_norm' is distinct from m.invoice_no_norm or h->>'doc_type' is distinct from m.doc_type
+     or (h->>'invoice_date')::date is distinct from m.invoice_date then raise exception 'bad_merge'; end if;
+  select r->>'code' into blocking from jsonb_array_elements(p->'reasons') r where r->>'code' = any(must_fix) limit 1;
+  if blocking is not null then raise exception 'blocked:%', blocking; end if;
+  select r->>'code' into blocking from jsonb_array_elements(p->'reasons') r where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) limit 1;
+  if blocking is not null then raise exception 'blocked:%', blocking; end if;
+  if closed is not null and to_char(m.invoice_date,'YYYY-MM') <= closed and not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
+ end if;
+ select coalesce(max(line_no), 0) into mx from public.invoice_lines where doc_id=m.id;
+ -- What the invoice was before its first merge, while it waits for review: what invoice_unmerge puts back.
+ base := m.merge_base;
+ if m.status='review' and base is null then
+  base := jsonb_build_object('doc', to_jsonb(m) - 'merge_base' - 'ai', 'moved', '[]'::jsonb,
+   'own', (select coalesce(jsonb_agg(to_jsonb(o) order by o.line_no), '[]'::jsonb) from public.invoice_lines o where o.doc_id=m.id));
+ end if;
+ -- Every line of the invoice, in order: its own lines (their reasons worked out again), then each page's lines, moved to it.
+ for e in select * from jsonb_array_elements(p->'lines') loop
+  select * into l from public.invoice_lines where id=(e->>'line_id')::uuid for update;
+  if l.id is null or not (l.doc_id = any(ids)) then raise exception 'line_not_found'; end if;
+  if l.doc_id <> m.id then
+   k := k + 1;
+   if m.status='review' then base := jsonb_set(base, '{moved}', (base->'moved') || jsonb_build_array(to_jsonb(l))); end if;
+   update public.invoice_lines y set doc_id=m.id, line_no=mx+k, page=coalesce((e->>'page')::int, y.page),
+    map_id=(e->>'map_id')::uuid, ingredient_code=e->>'ingredient_code', count_unit=e->>'count_unit', count_per_purchase=(e->>'count_per_purchase')::numeric,
+    base_unit=e->>'base_unit', base_per_purchase=(e->>'base_per_purchase')::numeric, price_per_purchase=(e->>'price_per_purchase')::numeric,
+    price_per_count=(e->>'price_per_count')::numeric, price_per_base=(e->>'price_per_base')::numeric, prev_price=e->'prev_price'
+   where y.id=l.id;
+  end if;
+  update public.invoice_lines y set reasons=coalesce(e->'reasons', y.reasons) where y.id=l.id;
+ end loop;
+ -- No line of a page is left behind (the caller sent every line).
+ if exists(select 1 from public.invoice_lines o where o.doc_id = any(ids) and o.doc_id <> m.id) then raise exception 'bad_merge'; end if;
+ update public.invoice_docs y set vendor_key=h->>'vendor_key', vendor_name=h->>'vendor_name', food_kind=h->>'food_kind',
+  invoice_no=h->>'invoice_no', invoice_no_norm=h->>'invoice_no_norm', invoice_date=(h->>'invoice_date')::date, delivery_date=(h->>'delivery_date')::date,
+  due_date=(h->>'due_date')::date, posting_date=(h->>'posting_date')::date, effective_date=(h->>'effective_date')::date, effective_basis=h->>'effective_basis',
+  currency=h->>'currency', doc_type=coalesce(h->>'doc_type', y.doc_type), posting_kind=coalesce(h->>'posting_kind', y.posting_kind),
+  subtotal_cents=(h->>'subtotal_cents')::bigint, discount_cents=(h->>'discount_cents')::bigint, tax_cents=(h->>'tax_cents')::bigint,
+  shipping_cents=(h->>'shipping_cents')::bigint, other_cents=(h->>'other_cents')::bigint, total_cents=(h->>'total_cents')::bigint,
+  lines_sum_cents=(h->>'lines_sum_cents')::bigint, other_charges=coalesce(h->'other_charges', '[]'::jsonb),
+  pages=coalesce(array(select (jsonb_array_elements_text(h->'pages'))::int), '{}'), pages_marked=coalesce(array(select jsonb_array_elements_text(h->'pages_marked')), '{}'),
+  content_sig=h->>'content_sig', reasons=p->'reasons', auto_eligible=false, part_no=coalesce(y.part_no, (p->>'part_no')::int, 1), merge_base=base,
+  recon_status=case when y.status='posted' then 'unreconciled' else y.recon_status end,
+  needs_adjustment=y.needs_adjustment or (y.status='posted' and closed is not null and to_char(y.invoice_date,'YYYY-MM') <= closed),
+  version=y.version+1, updated_at=now()
+ where y.id=m.id;
+ for e in select * from jsonb_array_elements(p->'parts') loop
+  update public.invoice_docs set status='merged', merged_into=m.id, part_no=(e->>'part_no')::int, version=version+1, updated_at=now() where id=(e->>'id')::uuid;
+  perform public.invoice_event(x2.id, x2.file_id, actor::text, 'merged_into', jsonb_build_object('into', m.id, 'part_no', x2.part_no, 'reason', p->>'reason'))
+  from public.invoice_docs x2 where x2.id=(e->>'id')::uuid;
+ end loop;
+ -- One place per page.
+ if (select count(*) from public.invoice_docs where id=m.id or merged_into=m.id) <> (select count(distinct part_no) from public.invoice_docs where id=m.id or merged_into=m.id) then
+  raise exception 'bad_merge'; end if;
+ update public.invoice_docs set status='duplicate', duplicate_of=m.id, version=version+1, updated_at=now() where id = any(dups);
+ perform public.invoice_event(x2.id, x2.file_id, actor::text, 'marked_duplicate', jsonb_build_object('reason', p->>'reason', 'duplicate_of', m.id))
+ from public.invoice_docs x2 where x2.id = any(dups);
+ if m.status='posted' then
+  -- Price history is rebuilt from the whole invoice, the reconciliation starts again and the app's copy is written again.
+  update public.invoice_price_history set status='voided', voided_by=actor::text, voided_at=now(), void_reason=coalesce(nullif(p->>'reason',''), 'merged')
+  where doc_id=m.id and status='active';
+  perform public.invoice_price_insert(m.id, l2.id, actor::text, p->>'reason') from public.invoice_lines l2 where l2.doc_id=m.id;
+  update public.invoice_files set organize_target='unreconciled', organize_status='pending', organize_attempts=0, organize_next_at=null
+  where id = any(files) and organize_target='reconciled';
+  update public.invoice_files set organize_target='unreconciled' where id = any(files) and organize_target is null;
+  update public.invoice_app_mirror set state='held', error='edited_after_post', updated_at=now() where doc_id=m.id and state='mirrored';
+ end if;
+ perform public.invoice_file_settle(jsonb_build_object('file_id', fid)) from unnest(files || array(select x3.file_id from public.invoice_docs x3 where x3.id = any(dups))) fid;
+ perform public.invoice_event(m.id, m.file_id, actor::text, 'merged', jsonb_build_object('parts', to_jsonb(ids[2:]), 'duplicates', to_jsonb(dups),
+  'reason', p->>'reason', 'posted', m.status='posted', 'ack', p->'ack'));
+ return jsonb_build_object('ok', true, 'version', m.version + 1, 'file_ids', to_jsonb(files), 'posted', m.status='posted');
+end $$;
+
+-- Takes a merge back while the invoice waits for review: the invoice is as it was before its first merge (values corrected since
+-- then are gone too), each page gets its own lines back and waits for review again.
+create function public.invoice_unmerge(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; m public.invoice_docs; b jsonb; l jsonb; files uuid[];
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ select * into m from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
+ if m.id is null then raise exception 'not_found'; end if;
+ if m.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if m.status <> 'review' or m.merge_base is null then raise exception 'invalid_state'; end if;
+ perform 1 from public.invoice_docs where merged_into=m.id for update;
+ b := m.merge_base;
+ for l in select * from jsonb_array_elements(b->'moved') loop
+  update public.invoice_lines y set (doc_id, line_no, page, qty, purchase_unit, spec_key, unit_price, line_discount_cents, amount_cents, map_id, ingredient_code,
+    count_unit, count_per_purchase, base_unit, base_per_purchase, price_per_purchase, price_per_count, price_per_base, prev_price, reasons, overrides)
+   = (select r.doc_id, r.line_no, r.page, r.qty, r.purchase_unit, r.spec_key, r.unit_price, r.line_discount_cents, r.amount_cents, r.map_id, r.ingredient_code,
+      r.count_unit, r.count_per_purchase, r.base_unit, r.base_per_purchase, r.price_per_purchase, r.price_per_count, r.price_per_base, r.prev_price, r.reasons, r.overrides
+      from jsonb_populate_record(null::public.invoice_lines, l) r)
+  where y.id=(l->>'id')::uuid and y.doc_id=m.id;
+ end loop;
+ for l in select * from jsonb_array_elements(b->'own') loop
+  update public.invoice_lines y set (page, qty, purchase_unit, spec_key, unit_price, line_discount_cents, amount_cents, map_id, ingredient_code,
+    count_unit, count_per_purchase, base_unit, base_per_purchase, price_per_purchase, price_per_count, price_per_base, prev_price, reasons, overrides)
+   = (select r.page, r.qty, r.purchase_unit, r.spec_key, r.unit_price, r.line_discount_cents, r.amount_cents, r.map_id, r.ingredient_code,
+      r.count_unit, r.count_per_purchase, r.base_unit, r.base_per_purchase, r.price_per_purchase, r.price_per_count, r.price_per_base, r.prev_price, r.reasons, r.overrides
+      from jsonb_populate_record(null::public.invoice_lines, l) r)
+  where y.id=(l->>'id')::uuid and y.doc_id=m.id;
+ end loop;
+ -- Only the invoice's own lines are left on it.
+ if (select count(*) from public.invoice_lines where doc_id=m.id) <> jsonb_array_length(b->'own') then raise exception 'bad_merge'; end if;
+ update public.invoice_docs y set (vendor_key, vendor_name, food_kind, invoice_no, invoice_no_norm, invoice_date, delivery_date, due_date, posting_date,
+   effective_date, effective_basis, currency, doc_type, posting_kind, subtotal_cents, discount_cents, tax_cents, shipping_cents, other_cents, total_cents,
+   lines_sum_cents, other_charges, pages, pages_marked, content_sig, reasons, overrides)
+  = (select r.vendor_key, r.vendor_name, r.food_kind, r.invoice_no, r.invoice_no_norm, r.invoice_date, r.delivery_date, r.due_date, r.posting_date,
+     r.effective_date, r.effective_basis, r.currency, r.doc_type, r.posting_kind, r.subtotal_cents, r.discount_cents, r.tax_cents, r.shipping_cents, r.other_cents, r.total_cents,
+     r.lines_sum_cents, r.other_charges, r.pages, r.pages_marked, r.content_sig, r.reasons, r.overrides
+     from jsonb_populate_record(null::public.invoice_docs, b->'doc') r)
+ where y.id=m.id;
+ update public.invoice_docs set auto_eligible=false, part_no=null, merge_base=null, version=version+1, updated_at=now() where id=m.id;
+ select array_agg(file_id order by part_no) into files from public.invoice_docs where merged_into=m.id;
+ perform public.invoice_event(x.id, x.file_id, actor::text, 'unmerged_from', jsonb_build_object('from', m.id, 'reason', p->>'reason'))
+ from public.invoice_docs x where x.merged_into=m.id;
+ update public.invoice_docs set status='review', merged_into=null, part_no=null, version=version+1, updated_at=now() where merged_into=m.id;
+ perform public.invoice_file_settle(jsonb_build_object('file_id', fid)) from unnest(array[m.file_id] || coalesce(files, '{}')) fid;
+ perform public.invoice_event(m.id, m.file_id, actor::text, 'unmerged', jsonb_build_object('reason', p->>'reason', 'files', to_jsonb(files)));
+ return jsonb_build_object('ok', true, 'version', m.version + 1, 'file_ids', to_jsonb(array[m.file_id] || coalesce(files, '{}')));
+end $$;
+
+-- An invoice of several originals waits out of the QuickBooks ledger until the forwarder can send them as one (Moto 2026-10-14).
+-- Meanwhile accounting enters it in QuickBooks by hand and records that here: each original's ledger row is written as sent (route
+-- 'manual'), so it counts as in QuickBooks and is never sent again.
+create function public.invoice_qb_manual(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; m public.invoice_docs; q jsonb := public.invoice_setting('qb'); n int := 0; fr record;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ select * into m from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
+ if m.id is null then raise exception 'not_found'; end if;
+ if m.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if m.status <> 'posted' or not exists(select 1 from public.invoice_docs c where c.merged_into=m.id) then raise exception 'invalid_state'; end if;
+ if coalesce(q->>'to', '') = '' then raise exception 'route_not_assigned'; end if;
+ for fr in select f.id, f.current_sha256 from public.invoice_files f
+   where (f.id=m.file_id or f.id in (select x.file_id from public.invoice_docs x where x.merged_into=m.id)) and f.current_sha256 is not null loop
+  insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, state, attempt_key, sent_at, result)
+  values(fr.id, fr.current_sha256, q->>'to', 'manual', 'sent', 'qb-' || fr.current_sha256 || '-' || md5(q->>'to'), now(),
+   jsonb_build_object('manual', true, 'by', actor, 'note', nullif(left(coalesce(p->>'note', ''), 300), '')))
+  on conflict do nothing;
+  if found then n := n + 1; end if;
+ end loop;
+ perform public.invoice_event(m.id, m.file_id, actor::text, 'qb_manual', jsonb_build_object('added', n, 'note', nullif(left(coalesce(p->>'note', ''), 300), '')));
+ return jsonb_build_object('ok', true, 'added', n);
+end $$;
+
+do $$ declare f text; begin
+ foreach f in array array['invoice_merge(jsonb)','invoice_unmerge(jsonb)','invoice_qb_manual(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

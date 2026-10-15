@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import vm from 'node:vm';
 import { createHandler } from '../supabase/functions/invoice-intake/handler.mjs';
 import { parseResponse } from '../invoice/extract.mjs';
 import { blocksPosting } from '../invoice/rules.mjs';
@@ -1141,7 +1142,7 @@ test('deploy checks and the guarded rollback', async () => {
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 18, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1214,6 +1215,8 @@ test('the review fixes upgrade a database that already has the first migration',
   // the counts, settings, records and grants, and running it twice changes nothing.
   const STAGE2 = read('supabase/migrations/20261020090000_invoice_reconciled_folder.sql');
   await assert.rejects(pg.exec(STAGE2), /20261012120000/);
+  const STAGE3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
+  await assert.rejects(pg.exec(STAGE3), /20261020090000/, '段階 3 needs 段階 2 first');
   for (const f of ['20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
     '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql']) await pg.exec(read('supabase/migrations/' + f));
   await pg.query(`insert into public.invoice_folders(id, parent_id, name, store_id, role) values('Y1', 'R6', '2026', 'F06', 'year')`);
@@ -1221,6 +1224,7 @@ test('the review fixes upgrade a database that already has the first migration',
   await pg.exec(STAGE2); await pg.exec(STAGE2);
   const post3 = (await pg.query(POST)).rows[0];
   assert.equal(post3.reconciled_folder, true); assert.equal(post3.purchase_summary, true); assert.equal(Number(post3.functions), 74); assert.equal(Number(post3.tables), 18);
+  assert.equal(post3.multi_file, false);
   assert.equal(Number(post3.browser_can_run), 0); assert.equal(Number(post3.browser_can_read), 0);
   assert.equal((await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k, keyBefore);
   assert.deepEqual((await pg.query(`select id, role from invoice_folders`)).rows, [{ id: 'Y1', role: 'year' }], 'folder records are kept');
@@ -1247,6 +1251,36 @@ test('the review fixes upgrade a database that already has the first migration',
   assert.equal((await pg.query(POST)).rows[0].reconciled_folder, false, 'the check notices the earlier folder roles');
   await pg.exec(STAGE2);
   assert.equal((await pg.query(POST)).rows[0].reconciled_folder, true);
+  // 段階 3 (20261021090000) on top: multi_file on, 77 functions, rows, keys and grants kept, twice changes nothing.
+  await pg.query(`delete from public.invoice_folders where role like 'reconciled_%'`);
+  await pg.exec(STAGE3); await pg.exec(STAGE3);
+  const post4 = (await pg.query(POST)).rows[0];
+  assert.equal(post4.multi_file, true); assert.equal(post4.reconciled_folder, true); assert.equal(Number(post4.functions), 77);
+  assert.equal(Number(post4.browser_can_run), 0); assert.equal(Number(post4.browser_can_read), 0);
+  assert.equal((await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k, keyBefore);
+  assert.deepEqual((await pg.query(`select id, role from invoice_folders`)).rows, [{ id: 'Y1', role: 'year' }]);
+  // The check says false when any part of 段階 3 is missing: each replaced function put back as 段階 2 left it, the status, a column, a new function.
+  const beforeS3 = name => {
+    let last = null;
+    for (const f of [...EARLIER, '20261020090000_invoice_reconciled_folder.sql'])
+      for (const m of read('supabase/migrations/' + f).matchAll(new RegExp('create (?:or replace )?function public\\.' + name + '\\([^)]*\\)[\\s\\S]*?\\$\\$;', 'g'))) last = m[0];
+    assert.ok(last, name + ' had an earlier version'); return last.replace(/^create (?:or replace )?function/, 'create or replace function');
+  };
+  for (const name of ['invoice_file_settle', 'invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_reconcile', 'invoice_organize_due',
+    'invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_qb_enqueue', 'invoice_qb_candidates', 'invoice_list', 'invoice_get', 'invoice_purchase_month', 'invoice_reassign']) {
+    await pg.exec(beforeS3(name));
+    assert.equal((await pg.query(POST)).rows[0].multi_file, false, 'the check notices the earlier ' + name);
+    await pg.exec(STAGE3);
+    assert.equal((await pg.query(POST)).rows[0].multi_file, true);
+  }
+  for (const undo of [`alter table public.invoice_docs drop constraint invoice_docs_status_check;
+      alter table public.invoice_docs add constraint invoice_docs_status_check check (status in ('review','posted','rejected','superseded','duplicate'))`,
+    'alter table public.invoice_docs drop column merge_base', 'drop function public.invoice_qb_manual(jsonb)']) {
+    await pg.exec(undo);
+    assert.equal((await pg.query(POST)).rows[0].multi_file, false, undo);
+    await pg.exec(STAGE3);
+    assert.equal((await pg.query(POST)).rows[0].multi_file, true);
+  }
 });
 
 // Codex independent review of 1851593 (2026-10-07): C1-C5. Each case fails on that commit and passes after the fix.
@@ -2368,17 +2402,333 @@ test('段階 2: a file whose store a person chose is never posted automatically;
   } finally { await E.pg.close(); }
 });
 
-test('段階 2 deploy folder: the SQL files are the repository files, the one-file function is built from the current sources',
+// 段階 3 (Moto 2026-10-14「同じinvoice#で続いてるパターンもあるので、重複か複数枚で１つのinvoiceか選択して処理できる様に」・UI案50 5・6A・7A・8A,
+// 10/14「台帳に出さずに作る」): the pages of one invoice number become one invoice; QuickBooks waits until the forwarder sends them together.
+const S3L = (code, name, qty, price, amount, pack = '12/500G') => [code, name, qty, price, amount, 'CS', pack];
+function page(no, date, lines, { pageNo, of, total = null, subtotal = null, tax = '0.00', vendor } = {}) {
+  const d = doc(no, date, lines, { tax, marks: [`Page ${pageNo} of ${of}`], ...(vendor ? { vendor } : {}) });
+  d.total = total; d.subtotal = subtotal;
+  return d;
+}
+async function twoPages(E, tagA, tagB, no = 'M-55021', opts = {}) {
+  E.fixtures.set(tagA, { readable: true, documents: [page(no, '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00'), S3L('X1', 'NEW THING', '1', '10.00', '10.00')],
+    { pageNo: 1, of: 2, ...(opts.a || {}) })] });
+  E.fixtures.set(tagB, { readable: true, documents: [page(no, '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00')],
+    { pageNo: 2, of: 2, subtotal: '190.00', tax: '9.50', total: '199.50', ...(opts.b || {}) })] });
+  const a = E.drive.file(tagA + '.pdf', pdf(tagA), opts.folder || 'U6', { created: '2026-10-06T19:00:00Z' });
+  await E.worker();
+  const b = E.drive.file(tagB + '.pdf', pdf(tagB), opts.folder || 'U6', { created: '2026-10-06T19:01:00Z' });
+  await E.worker();
+  return { a, b, da: (await docsOf(E, a))[0], db: (await docsOf(E, b))[0] };
+}
+const vers = (...ds) => Object.fromEntries(ds.map(d => [d.id, d.version]));
+
+test('段階 3: the pages of one invoice number are merged into one invoice, looked at first, taken back, and posted as one', async () => {
+  const E = await setup();
+  try {
+    const { a, b, da, db } = await twoPages(E, 'S3-A1', 'S3-A2');
+    assert.equal(da.status, 'review'); assert.equal(db.status, 'review');
+    assert.ok(codes(da).includes('total_missing') && codes(da).includes('missing_pages'));
+    assert.ok(codes(db).includes('same_number_different') && codes(db).includes('total_mismatch'));
+    // A preview saves nothing: the whole invoice is worked out (3 lines, the second page's total, tax), and it adds up.
+    const pv = await E.api('tok-office', { action: 'merge', docs: [da.id, db.id], preview: true });
+    assert.equal(pv.status, 200, JSON.stringify(pv.body));
+    assert.equal(pv.body.main, da.id); assert.equal(pv.body.lines_n, 3); assert.equal(pv.body.pages, 2);
+    assert.equal(pv.body.header.total_cents, 19950); assert.equal(pv.body.header.tax_cents, 950); assert.equal(pv.body.header.lines_sum_cents, 19000);
+    assert.equal(pv.body.header.from.total_cents, db.id);
+    for (const c of ['total_missing', 'missing_pages', 'same_number_different', 'total_mismatch']) assert.ok(!pv.body.reasons.some(r => r.code === c), c);
+    assert.deepEqual(pv.body.parts.map(x => [x.id, x.part_no, x.main]), [[da.id, 1, true], [db.id, 2, false]]);
+    assert.equal((await docsOf(E, a))[0].version, da.version, 'nothing saved');
+    // Saved with the versions that were looked at; an older version is refused.
+    assert.equal((await E.api('tok-office', { action: 'merge', docs: [da.id, db.id], versions: { [da.id]: da.version, [db.id]: db.version - 1 } })).status, 409);
+    const sv = await E.api('tok-crew', { action: 'merge', docs: [da.id, db.id], versions: vers(da, db), reason: '2 枚に分けて撮った' });
+    assert.equal(sv.status, 200, JSON.stringify(sv.body));
+    let [m] = await docsOf(E, a); let [pB] = await docsOf(E, b);
+    assert.equal(m.status, 'review'); assert.equal(m.part_no, 1); assert.equal(Number(m.total_cents), 19950); assert.deepEqual(m.pages, [1, 2]);
+    assert.deepEqual(m.pages_marked, ['Page 1 of 2', 'Page 2 of 2']);
+    assert.equal(pB.status, 'merged'); assert.equal(pB.merged_into, m.id); assert.equal(pB.part_no, 2);
+    const ml = await E.q(`select line_no, page, raw_name, doc_id from invoice_lines where doc_id=$1 order by line_no`, [m.id]);
+    assert.deepEqual(ml.map(l => [l.line_no, l.page]), [[1, 1], [2, 1], [3, 2]]);
+    assert.equal((await E.q(`select count(*)::int n from invoice_lines where doc_id=$1`, [pB.id]))[0].n, 0, 'the page lines moved to the invoice');
+    assert.equal((await E.q(`select intake_status from invoice_files where drive_file_id=$1`, [b]))[0].intake_status, 'review');
+    // The review list shows the invoice once, with its pages; a merged page is shown with it, never on its own.
+    const rl = (await E.api('tok-office', { action: 'list', status: 'review' })).body.rows;
+    assert.deepEqual(rl.map(r => [r.id, Number(r.parts)]), [[m.id, 1]]);
+    assert.ok(!(await E.api('tok-office', { action: 'list' })).body.rows.some(r => r.id === pB.id));
+    const gm = (await E.api('tok-office', { action: 'get', doc_id: m.id })).body;
+    assert.deepEqual(gm.parts.map(x => [x.id, x.part_no, x.drive_file_id]), [[pB.id, 2, b]]);
+    assert.equal((await E.api('tok-office', { action: 'get', doc_id: pB.id })).body.main.id, m.id);
+    // A page or an invoice of pages is changed through the merge only.
+    assert.equal((await E.api('tok-office', { action: 'mark', mark: 'reject', doc_id: pB.id, version: pB.version, reason: 'x' })).status, 409);
+    assert.deepEqual((await E.api('tok-office', { action: 'mark', mark: 'reject', doc_id: m.id, version: m.version, reason: 'x' })).body, { error: 'has_parts' });
+    assert.deepEqual((await E.api('tok-office', { action: 'reassign', file_id: pB.file_id, store_id: 'F04-K', reason: 'x' })).body, { error: 'has_parts' });
+    assert.equal((await E.api('tok-office', { action: 'post', doc_id: pB.id, version: pB.version, reason: 'x' })).status, 409);
+    // Taken back while it waits for review: each page gets its own lines and reasons back.
+    const um = await E.api('tok-office', { action: 'unmerge', doc_id: m.id, version: m.version });
+    assert.equal(um.status, 200, JSON.stringify(um.body));
+    [m] = await docsOf(E, a); [pB] = await docsOf(E, b);
+    assert.equal(m.status, 'review'); assert.equal(m.part_no, null); assert.equal(m.merge_base, null); assert.equal(m.total_cents, null);
+    assert.deepEqual(codes(m).sort(), codes(da).sort()); assert.deepEqual(m.pages, [1]);
+    assert.equal(pB.status, 'review'); assert.equal(pB.merged_into, null);
+    assert.equal((await E.q(`select count(*)::int n from invoice_lines where doc_id=$1`, [m.id]))[0].n, 2);
+    assert.deepEqual((await E.q(`select line_no, page from invoice_lines where doc_id=$1`, [pB.id])).map(l => [l.line_no, l.page]), [[1, 1]]);
+    assert.equal(m.version, da.version + 2); assert.equal(pB.version, db.version + 2);
+    // Merged again and posted: one invoice, both originals named _p1 / _p2, both posted.
+    assert.equal((await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB) })).status, 200);
+    [m] = await docsOf(E, a);
+    const po = await E.api('tok-office', { action: 'post', doc_id: m.id, version: m.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(po.status, 200, JSON.stringify(po.body));
+    assert.deepEqual(po.body.file_ids, [m.file_id, pB.file_id]);
+    assert.equal(E.drive.items.get(a).name, '2026-10-11_VendorA_M-55021_p1.pdf');
+    assert.equal(E.drive.items.get(b).name, '2026-10-11_VendorA_M-55021_p2.pdf');
+    assert.deepEqual((await E.q(`select intake_status from invoice_files where drive_file_id in ($1,$2) order by drive_file_id`, [a, b])).map(x => x.intake_status), ['posted', 'posted']);
+    assert.equal((await E.q(`select count(*)::int n from invoice_price_history where doc_id=$1 and status='active'`, [m.id]))[0].n, 2, 'both mapped lines, from both pages');
+    // One file and all files say the same about waiting for a name (both renamed now).
+    for (const f of await E.q(`select id from invoice_files`)) {
+      const one = (await E.q(`select public.invoice_rename_waiting($1) w`, [f.id]))[0].w;
+      const all = (await E.q(`select count(*)::int n from public.invoice_rename_waiting_all() w where w.file_id=$1`, [f.id]))[0].n === 1;
+      assert.equal(one, all); assert.equal(one, false, 'renamed: not waiting any more');
+    }
+    // QuickBooks: kept out of the ledger until the forwarder sends the pages together.
+    await E.worker();
+    assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox`))[0].n, 0);
+    assert.deepEqual(await E.db.rpc('invoice_qb_enqueue', { file_id: m.file_id }), { queued: false, why: 'multi_file' });
+    assert.deepEqual(await E.db.rpc('invoice_qb_candidates', {}), []);
+    // Reconciled: every original goes to 照合済み/2026-10.
+    [m] = await docsOf(E, a);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: m.id, version: m.version, result: 'reconciled', note: '一致' })).status, 200);
+    await E.worker();
+    assert.equal(E.drive.pathOf(a), 'LaLa/照合済み/2026-10'); assert.equal(E.drive.pathOf(b), 'LaLa/照合済み/2026-10');
+    // Entered in QuickBooks by hand: recorded for both originals, once.
+    [m] = await docsOf(E, a);
+    const man = await E.api('tok-crew', { action: 'qb_manual', doc_id: m.id, version: m.version, note: '手で入れた' });
+    assert.equal(man.status, 200, JSON.stringify(man.body)); assert.equal(man.body.added, 2);
+    assert.equal((await E.api('tok-crew', { action: 'qb_manual', doc_id: m.id, version: m.version })).body.added, 0);
+    assert.deepEqual((await E.q(`select route, state from invoice_qb_outbox order by created_at`)).map(o => [o.route, o.state]), [['manual', 'sent'], ['manual', 'sent']]);
+    // The confirmed purchases count the invoice once, with every line, and never the page on its own.
+    const pm = (await E.q(`select public.invoice_purchase_month('2026-10') v`))[0].v;
+    const docs = pm.summary.stores.F06.docs;
+    assert.deepEqual(docs.map(x => x.id), [m.id]); assert.equal(docs[0].cat, 'A'); assert.equal(docs[0].c, 19950);
+    assert.equal(pm.lines.F06[m.id].l.length, 3);
+    // A posted invoice of pages is not taken back.
+    assert.equal((await E.api('tok-office', { action: 'unmerge', doc_id: m.id, version: m.version })).status, 409);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 3: a page that arrives after its invoice was posted is added to it (a correction), with what posting asks', async () => {
+  const E = await setup();
+  try {
+    // The first page alone looks complete (its own total) and is posted by itself.
+    E.fixtures.set('S3-B1', { readable: true, documents: [page('B-77', '2026-10-09', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00')],
+      { pageNo: 1, of: 1, subtotal: '120.00', total: '120.00' })] });
+    const a = E.drive.file('S3-B1.pdf', pdf('S3-B1'), 'U6'); await E.worker();
+    let [m] = await docsOf(E, a);
+    assert.equal(m.status, 'posted'); assert.equal(E.drive.items.get(a).name, '2026-10-09_VendorA_B-77.pdf');
+    const mirror0 = (await E.q(`select state from invoice_app_mirror where doc_id=$1`, [m.id]))[0];
+    E.fixtures.set('S3-B2', { readable: true, documents: [page('B-77', '2026-10-09', [S3L('01111', 'SAKE 6/1.8L', '1', '40.00', '40.00', '6/1.8L')], { pageNo: 2, of: 2 })] });
+    const b = E.drive.file('S3-B2.pdf', pdf('S3-B2'), 'U6'); await E.worker();
+    let [pB] = await docsOf(E, b);
+    assert.equal(pB.status, 'review'); assert.ok(codes(pB).includes('same_number_different'));
+    // Two posted invoices or a page that is not waiting are refused; the posted one stays the invoice.
+    const pv = (await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], preview: true })).body;
+    assert.equal(pv.main, m.id); assert.equal(pv.posted, true); assert.ok(pv.reasons.some(r => r.code === 'total_mismatch'), 'the total printed covers the first page only');
+    const no = await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB) });
+    assert.deepEqual(no.body, { error: 'blocked:total_mismatch' }); assert.equal(no.status, 409);
+    // The page named first is the late one: the posted invoice stays the invoice and becomes the second page.
+    const pv2 = (await E.api('tok-office', { action: 'merge', docs: [pB.id, m.id], preview: true })).body;
+    assert.equal(pv2.main, m.id); assert.deepEqual(pv2.parts.map(x => [x.id, x.part_no, x.main]), [[pB.id, 1, false], [m.id, 2, true]]);
+    // A closed month asks for the accounting adjustment, as posting does.
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"closed_through":"2026-10"}' where key='rules'; set role service_role`);
+    assert.deepEqual((await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB), ack: ['total_mismatch'] })).body, { error: 'closed_month' });
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"closed_through":"2026-08"}' where key='rules'; set role service_role`);
+    // The posted invoice keeps what identifies it, even when asked directly (the worker always sends its own values).
+    const allLines = await E.q(`select id, page from invoice_lines where doc_id = any($1::uuid[]) order by doc_id = $2 desc, line_no`, [[m.id, pB.id], m.id]);
+    const keep = { vendor_key: m.vendor_key, vendor_name: m.vendor_name, invoice_no: m.invoice_no, invoice_no_norm: m.invoice_no_norm, doc_type: m.doc_type, posting_kind: m.posting_kind,
+      currency: 'USD', total_cents: 16000, lines_sum_cents: 16000, pages: [1, 2], pages_marked: [] };
+    await assert.rejects(E.db.rpc('invoice_merge', { actor: U.office, doc_id: m.id, version: m.version, part_no: 1, parts: [{ id: pB.id, version: pB.version, part_no: 2 }], duplicates: [],
+      header: { ...keep, invoice_date: '2026-10-01' }, lines: allLines.map(l => ({ line_id: l.id, page: l.page, reasons: [] })), reasons: [], reason: 'x', ack: [], adjustment_ack: false }), /bad_merge/);
+    assert.equal((await docsOf(E, a))[0].version, m.version, 'nothing changed');
+    const ok = await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB), ack: ['total_mismatch'], reason: '2 枚目があとで届いた' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.posted, true);
+    [m] = await docsOf(E, a); [pB] = await docsOf(E, b);
+    assert.equal(m.status, 'posted'); assert.equal(m.recon_status, 'unreconciled'); assert.equal(pB.status, 'merged');
+    assert.equal((await E.q(`select count(*)::int n from invoice_lines where doc_id=$1`, [m.id]))[0].n, 2);
+    const ph = await E.q(`select status, line_id from invoice_price_history where doc_id=$1 order by id`, [m.id]);
+    assert.deepEqual(ph.map(x => x.status), ['voided', 'active', 'active'], 'rebuilt from the whole invoice');
+    assert.equal(E.drive.items.get(a).name, '2026-10-09_VendorA_B-77_p1.pdf'); assert.equal(E.drive.items.get(b).name, '2026-10-09_VendorA_B-77_p2.pdf');
+    if (mirror0) assert.equal((await E.q(`select state, error from invoice_app_mirror where doc_id=$1`, [m.id]))[0].error, 'edited_after_post');
+    // Already queued for QuickBooks as one page: that row stays; the second page is not queued (the forwarder does not join them yet).
+    await E.worker();
+    assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [b]))[0].n, 0);
+    assert.equal((await E.api('tok-office', { action: 'unmerge', doc_id: m.id, version: m.version })).status, 409);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 3: what may not be merged is refused, duplicates are set aside in the same step, a page whose original is overwritten waits', async () => {
+  const E = await setup();
+  try {
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"auto_post":false}' where key='mode'; set role service_role`);
+    const { a, b, da, db } = await twoPages(E, 'S3-C1', 'S3-C2', 'C-9');
+    // The same page photographed again (same number): set aside as a duplicate of the invoice while merging.
+    E.fixtures.set('S3-C3', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00')], { pageNo: 1, of: 2 })] });
+    const c = E.drive.file('S3-C3.pdf', pdf('S3-C3'), 'U6'); await E.worker();
+    const [dc] = await docsOf(E, c);
+    // Another vendor, another store, one page, the same page twice, a page also marked a duplicate: refused, nothing changes.
+    E.fixtures.set('S3-C4', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('9', 'OTHER', '1', '1.00', '1.00')], { pageNo: 2, of: 2, vendor: 'VendorB' })] });
+    const d4 = E.drive.file('S3-C4.pdf', pdf('S3-C4'), 'U6'); await E.worker();
+    const [dd] = await docsOf(E, d4);
+    E.fixtures.set('S3-C5', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('9', 'OTHER', '1', '1.00', '1.00')], { pageNo: 2, of: 2 })] });
+    const d5 = E.drive.file('S3-C5.pdf', pdf('S3-C5'), 'UK'); await E.worker();
+    const [de] = await docsOf(E, d5);
+    const bad = async body => (await E.api('tok-office', { action: 'merge', ...body })).body;
+    assert.deepEqual(await bad({ docs: [da.id], versions: vers(da) }), { error: 'bad_merge' });
+    assert.deepEqual(await bad({ docs: [da.id, da.id], versions: vers(da) }), { error: 'bad_merge' });
+    assert.deepEqual(await bad({ docs: [da.id, db.id], duplicates: [db.id], versions: vers(da, db) }), { error: 'bad_merge' });
+    assert.deepEqual(await bad({ docs: [da.id, dd.id], versions: vers(da, dd) }), { error: 'bad_merge' }, 'another vendor');
+    assert.deepEqual(await bad({ docs: [da.id, de.id], versions: vers(da, de) }), { error: 'bad_merge' }, 'another store');
+    assert.equal((await E.api('tok-other', { action: 'merge', docs: [da.id, db.id], versions: vers(da, db) })).status, 403);
+    // A file holding two documents is never merged.
+    E.fixtures.set('S3-C6', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('9', 'X', '1', '1.00', '1.00')], { pageNo: 2, of: 2 }),
+      page('C-10', '2026-10-11', [S3L('9', 'Y', '1', '1.00', '1.00')], { pageNo: 1, of: 1 })] });
+    const d6 = E.drive.file('S3-C6.pdf', pdf('S3-C6'), 'U6'); await E.worker();
+    const [df] = await docsOf(E, d6);
+    assert.deepEqual(await bad({ docs: [da.id, df.id], versions: vers(da, df) }), { error: 'bad_merge' });
+    assert.equal((await docsOf(E, a))[0].version, da.version, 'nothing changed');
+    const ok = await E.api('tok-office', { action: 'merge', docs: [da.id, db.id], duplicates: [dc.id], versions: { ...vers(da, db), [dc.id]: dc.version } });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const [cc] = await docsOf(E, c);
+    assert.equal(cc.status, 'duplicate'); assert.equal(cc.duplicate_of, da.id);
+    // The second page's original is overwritten in Drive: the new reading waits for a person (its lines are in the invoice).
+    E.fixtures.set('S3-C2-NEW', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '9', '60.00', '540.00')], { pageNo: 2, of: 2 })] });
+    E.drive.replaceContent(b, pdf('S3-C2-NEW'));
+    await E.q(`update invoice_files set drive_checked_at=null`); await E.worker(); await E.worker();
+    const all = await docsOf(E, b);
+    assert.equal(all.length, 2); assert.equal(all[0].status, 'merged');
+    assert.equal(all[1].status, 'review'); assert.ok(codes(all[1]).includes('original_replaced'));
+  } finally { await E.pg.close(); }
+});
+
+// The screen (index.html v1082) against the real server: what the screen sends is what the server takes, and back.
+function screenOn(E, tok = 'tok-office', dom = {}) {
+  const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const MOD = html.slice(html.indexOf('/* FUNERGY_INVOICE_INTAKE_BEGIN */'), html.indexOf('/* FUNERGY_INVOICE_INTAKE_END */'));
+  const esc = v => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const c = { toasts: [], modals: [], curLang: 'ja', curRole: 'office', curPage: 'acct_center', _acCat: 'drive', _acSub: 'dreview', t: ja => ja, escapeHtml: esc,
+    STORES: [{ id: 'F06', name: 'LaLa', color: '#777' }], getStoresAll: () => c.STORES, getIngredients: () => [], showToast: (m, k) => c.toasts.push([m, k]),
+    openModal: h => c.modals.push(h), closeModalDirect: () => {}, renderPage: () => {}, acSetSub: x => { c._acSub = x; }, go: () => {}, lsSet: () => true,
+    SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon', _botSession: { access_token: tok }, botResetShared: () => {}, botTime: v => String(v || ''),
+    window: {}, setTimeout: () => {}, document: { getElementById: k => dom[k] || null, querySelectorAll: () => [] },
+    fetch: async (url, init) => { const r = await E.api(tok, JSON.parse(init.body)); return { ok: r.status < 400, status: r.status, json: async () => r.body }; } };
+  vm.createContext(c);
+  vm.runInContext(MOD + '\nthis.M = { _invIn };', c);
+  c.M._invIn.loaded = {}; c.M._invIn.cand = {};
+  c.fn = n => vm.runInContext(n, c);
+  return c;
+}
+
+test('段階 3: the same-number screen merges, takes back, posts and records QuickBooks through the real server', async () => {
+  const E = await setup();
+  try {
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"auto_post":false}' where key='mode'; set role service_role`);
+    const { a, b, da, db } = await twoPages(E, 'S3-U1', 'S3-U2', 'U-55');
+    // The first page photographed again and read a little differently (the same reading would be set aside by itself).
+    E.fixtures.set('S3-U3', { readable: true, documents: [page('U-55', '2026-10-11', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00'), S3L('X1', 'NEW THING', '1', '19.00', '19.00')],
+      { pageNo: 1, of: 2 })] });
+    const r3 = E.drive.file('S3-U3.pdf', pdf('S3-U3'), 'U6', { created: '2026-10-06T19:02:00Z' }); await E.worker();
+    const [dc] = await docsOf(E, r3);
+    assert.equal(dc.status, 'review'); assert.ok(codes(dc).includes('same_number_different'));
+    const ui = screenOn(E, 'tok-crew', { 'ivx-qbm-note': { value: 'QB で入力' } });
+    await ui.fn('invInLoadQueue')('review');
+    assert.ok(ui.fn('invInQueueHtml')('review').includes('まとめて決める'));
+    ui.fn('invInSameFromRow')(db.id);
+    await ui.fn('invInLoadSame')();
+    const S = ui.M._invIn.same;
+    assert.deepEqual([...S.order].sort(), [da.id, db.id, dc.id].sort());
+    assert.equal(S.how, 'merge');
+    assert.deepEqual({ ...S.page }, { [da.id]: 1, [dc.id]: 2, [db.id]: 3 }, 'two first pages: the one received first comes first');
+    ui.fn('invInSameInc')(dc.id, false);                       // the person sees it is a retake
+    assert.deepEqual({ ...S.page }, { [da.id]: 1, [db.id]: 2 });
+    await ui.fn('invInLoadSamePv')();
+    assert.equal(S.pvErr, ''); assert.equal(S.pv.main, da.id);
+    let h = ui.fn('invInSameHtml')();
+    assert.match(h, /3 行（2＋1）/); assert.match(h, /\$199\.50/); assert.match(h, /✓ 合っています/);
+    assert.match(h, /2026-10-11_VendorA_U-55_p1/);
+    assert.equal(ui.fn('invInSameReady')(S), true);
+    await ui.fn('invInSameSave')();
+    assert.deepEqual(ui.toasts.at(-1), ['2 枚を 1 つの invoice にまとめました。4 項目を確かめて反映してください', 'success']);
+    let [m] = await docsOf(E, a); let [pB] = await docsOf(E, b); let [pC] = await docsOf(E, r3);
+    assert.equal(m.status, 'review'); assert.equal(pB.status, 'merged'); assert.equal(pB.merged_into, m.id);
+    assert.equal(pC.status, 'duplicate'); assert.equal(pC.duplicate_of, m.id);
+    assert.equal(ui.M._invIn.docId, m.id);
+    // The invoice of pages on its own screen; taken back from there.
+    await ui.fn('invInLoadDoc')();
+    h = ui.fn('invInDetail')('review');
+    assert.match(h, /複数枚の invoice：2 枚/); assert.match(h, /まとめを外す/);
+    await ui.fn('invInUnmerge')();
+    [m] = await docsOf(E, a); [pB] = await docsOf(E, b);
+    assert.equal(m.status, 'review'); assert.equal(m.merge_base, null); assert.equal(pB.status, 'review');
+    [pC] = await docsOf(E, r3);
+    assert.equal(pC.status, 'duplicate', 'a duplicate set aside stays set aside');
+    // Merged again from the list, posted from the invoice's screen: both originals named, QuickBooks waits.
+    await ui.fn('invInLoadQueue')('review');
+    ui.fn('invInSameFromRow')(m.id); await ui.fn('invInLoadSame')(); await ui.fn('invInLoadSamePv')(); await ui.fn('invInSameSave')();
+    await ui.fn('invInLoadDoc')();
+    await ui.fn('invInPost')();
+    [m] = await docsOf(E, a);
+    assert.equal(m.status, 'posted');
+    assert.equal(E.drive.items.get(a).name, '2026-10-11_VendorA_U-55_p1.pdf'); assert.equal(E.drive.items.get(b).name, '2026-10-11_VendorA_U-55_p2.pdf');
+    await E.worker();
+    ui.fn('invInOpen')(m.id, 'drecon'); await ui.fn('invInLoadDoc')();
+    h = ui.fn('invInDetail')('recon');
+    assert.equal((h.match(/複数枚：転送側の対応待ち/g) || []).length, 2);
+    await ui.fn('invInQbManual')();
+    assert.deepEqual(ui.toasts.at(-1), ['記録しました（2 ページ）', 'success']);
+    assert.deepEqual((await E.q(`select route, state, result->>'note' note from invoice_qb_outbox order by created_at`)).map(o => [o.route, o.state, o.note]),
+      [['manual', 'sent', 'QB で入力'], ['manual', 'sent', 'QB で入力']]);
+    await ui.fn('invInLoadDoc')();
+    assert.match(ui.fn('invInDetail')('recon'), /すべてのページを記録済み/);
+    // Reconciled first: adding a page later starts the reconciliation again.
+    [m] = await docsOf(E, a);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: m.id, version: m.version, result: 'reconciled', note: '一致' })).status, 200);
+    // A page added later to the posted invoice (8A) from the page's own screen: the mismatch is ticked, then it is added.
+    E.fixtures.set('S3-U4', { readable: true, documents: [page('U-55', '2026-10-11', [S3L('01111', 'SAKE 6/1.8L', '1', '40.00', '40.00', '6/1.8L')], { pageNo: 3, of: 3 })] });
+    const r4 = E.drive.file('S3-U4.pdf', pdf('S3-U4'), 'U6', { created: '2026-10-06T19:03:00Z' }); await E.worker();
+    const [dd] = await docsOf(E, r4);
+    ui.fn('invInOpen')(dd.id, 'dreview'); await ui.fn('invInLoadDoc')();
+    assert.match(ui.fn('invInDetail')('review'), /同じ番号の処理（まとめる・重複）/);
+    ui.fn('invInSameFromDoc')(); await ui.fn('invInLoadSame')();
+    assert.deepEqual([...ui.M._invIn.same.order].sort(), [m.id, dd.id].sort());
+    assert.equal(ui.M._invIn.same.how, 'merge'); assert.deepEqual({ ...ui.M._invIn.same.page }, { [m.id]: 1, [dd.id]: 2 });
+    await ui.fn('invInLoadSamePv')();
+    const S2 = ui.M._invIn.same;
+    assert.equal(S2.pv.posted, true); assert.deepEqual([...ui.fn('invInSameAcks')(S2)], ['total_mismatch']);
+    assert.equal(ui.fn('invInSameReady')(S2), false);
+    ui.fn('invInSameAck')('total_mismatch', true);
+    await ui.fn('invInSameSave')();
+    [m] = await docsOf(E, a);
+    assert.equal(m.status, 'posted'); assert.equal((await docsOf(E, r4))[0].status, 'merged');
+    assert.equal(m.recon_status, 'unreconciled');
+    assert.equal(E.drive.items.get(r4).name, '2026-10-11_VendorA_U-55_p3.pdf');
+    assert.equal(ui.M._invIn.docId, m.id); assert.equal(ui.M._invIn.docSub, 'drecon');
+    // A correction of the posted invoice renames every one of its originals.
+    const ed = await E.api('tok-office', { action: 'edit', doc_id: m.id, version: m.version, header: { invoice_no: 'U-56' }, lines: [], reason: '番号の読み違い', ack: [], adjustment_ack: false });
+    assert.equal(ed.status, 200, JSON.stringify(ed.body));
+    assert.deepEqual([a, b, r4].map(f => E.drive.items.get(f).name), ['2026-10-11_VendorA_U-56_p1.pdf', '2026-10-11_VendorA_U-56_p2.pdf', '2026-10-11_VendorA_U-56_p3.pdf']);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 2 deploy folder: the migration copy is the repository file; the check SQL and the one-file function stay as handed over',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const sha = b => crypto.createHash('sha256').update(b).digest('hex');
   const D = 'deploy/invoice-stage2-v1081/';
-  for (const [copy, orig] of [['1_追加のSQL_照合済みフォルダ.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql'], ['2_確認のSQL_読むだけ.sql', 'db/invoice-intake-postcheck.sql']])
-    assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  assert.ok(rd(D + '1_追加のSQL_照合済みフォルダ.sql').equals(rd('supabase/migrations/20261020090000_invoice_reconciled_folder.sql')));
+  // The sources moved on with 段階 3 (deploy/invoice-stage3-v1082 is built from the current ones): this folder is what goes in
+  // for 段階 2 alone, and the function to go back to from 段階 3.
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), 'c7dbfae515bb31187c218cefddb0a5b0646dc324c2759f4f27c1e4dbd17c0cd3');
   const src = JSON.parse(rd(D + 'source.json'));
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(crypto.createHash('sha256').update(rd(f)).digest('hex'), h, f + ' changed after 3_関数 was built: build it again');
-  const listed = Object.keys(src.sources).filter(f => f.startsWith('invoice/')).sort();
-  assert.deepEqual(listed, fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).map(f => 'invoice/' + f).sort());
-  assert.equal(crypto.createHash('sha256').update(rd(D + '3_関数_invoice-intake_index.ts')).digest('hex'), src.bundle_sha256);
+  assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
+  assert.equal(src.bundle_sha256, '4a130b45ba7b49a55881dd31012876ff9cb46e0e026781ff78cbd37235451dcf');
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
   assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle) && bundle.includes('reconciled_month') && bundle.includes('organize_reconciled')
     && bundle.includes('store_assigned') && bundle.includes('intake-2026-10-15.1') && bundle.includes('invoice_purchase_publish'));
@@ -2386,4 +2736,26 @@ test('段階 2 deploy folder: the SQL files are the repository files, the one-fi
   const steps = rd(D + '手順.md').toString();
   for (const f of ['1_追加のSQL_照合済みフォルダ.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts']) assert.ok(steps.includes(f), f);
   assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1081 をマージ'));
+});
+
+test('段階 3 deploy folder: the copies are the repository files and the one-file function is built from the sources in use',
+  { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const sha = b => crypto.createHash('sha256').update(b).digest('hex');
+  const D = 'deploy/invoice-stage3-v1082/';
+  assert.ok(rd(D + '1_追加のSQL_複数枚のinvoice.sql').equals(rd('supabase/migrations/20261021090000_invoice_multi_file.sql')));
+  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  const src = JSON.parse(rd(D + 'source.json'));
+  assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
+  // Every source of the one-file function is the repository's as it is now: change one, build the function again.
+  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, f + ' changed: build 3_関数 again');
+  assert.deepEqual(Object.keys(src.sources).sort(), ['invoice/dates.mjs', 'invoice/decimal.mjs', 'invoice/dedupe.mjs', 'invoice/drive.mjs', 'invoice/extract.mjs', 'invoice/naming.mjs',
+    'invoice/rules.mjs', 'invoice/units.mjs', 'supabase/functions/invoice-intake/handler.mjs', 'supabase/functions/invoice-intake/index.ts']);
+  const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
+  assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle));
+  for (const k of ['invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'KEEP_ON_MERGE', 'reconciled_month', 'intake-2026-10-15.1', 'invoice_purchase_publish']) assert.ok(bundle.includes(k), k);
+  // The steps name the files in the folder, and the order SQL → check → function → app.
+  const steps = rd(D + '手順.md').toString();
+  for (const f of ['1_追加のSQL_複数枚のinvoice.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts', 'deploy/invoice-stage2-v1081/3_関数_invoice-intake_index.ts']) assert.ok(steps.includes(f), f);
+  assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1082 をマージ'));
 });

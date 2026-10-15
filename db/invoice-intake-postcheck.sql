@@ -1,9 +1,10 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 18・関数 74 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 18 / functions 74 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true
+-- 対象はこの migration の表 18・関数 77 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 18 / functions 77 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
+-- （20261021090000＝複数枚で 1 つの invoice を入れる前は functions 74・multi_file false。入れたあとは 77・true）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -16,7 +17,8 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_reconcile', 'invoice_registered', 'invoice_relate', 'invoice_rename_due', 'invoice_rename_result', 'invoice_rename_waiting', 'invoice_rename_waiting_all',
    'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
    'invoice_stage', 'invoice_store_folder', 'invoice_store_save', 'invoice_vendor_save', 'invoice_vendor_seed', 'invoice_whoami',
-   'invoice_worker_context', 'invoice_worker_key', 'invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check']) as f)
+   'invoice_worker_context', 'invoice_worker_key', 'invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check',
+   'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -92,4 +94,22 @@ select
         when 'invoice_post' then p.prosrc like '%store_assigned_by is not null%'
         when 'invoice_list' then p.prosrc like '%d.vendor_key%' and p.prosrc like '%ingested_at desc, id%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_organize_due', 'invoice_dup_scope', 'invoice_files_due', 'invoice_post', 'invoice_list')), false) as reconciled_folder;
+      where n.nspname = 'public' and p.proname in ('invoice_organize_due', 'invoice_dup_scope', 'invoice_files_due', 'invoice_post', 'invoice_list')), false) as reconciled_folder,
+  -- 段階 3（20261021090000, Moto 2026-10-14・UI案50 5・6A・7A・8A）：同じ番号の原本を 1 つの invoice にまとめる（まとめたページは 'merged'）、
+  -- まとめた invoice のページは名前・整理・状態がその invoice に付いていく、QuickBooks へは転送側が対応するまで台帳に出さない。
+  coalesce((select bool_and(pg_get_constraintdef(c.oid) like '%merged%')
+      from pg_constraint c where c.conrelid = 'public.invoice_docs'::regclass and c.conname = 'invoice_docs_status_check')
+    and (select count(*) = 3 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_docs'
+      and column_name in ('merged_into', 'part_no', 'merge_base'))
+    and (select count(*) = 3 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_merge', 'invoice_unmerge', 'invoice_qb_manual')
+        and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))
+    and (select bool_and(case when p.proname in ('invoice_qb_enqueue') then p.prosrc like '%multi_file%'
+        when p.proname in ('invoice_mark', 'invoice_reassign') then p.prosrc like '%has_parts%'
+        when p.proname = 'invoice_purchase_month' then p.prosrc like '%<> ''merged''%'
+        when p.proname = 'invoice_stage' then p.prosrc like '%''merged''%'
+        else p.prosrc like '%merged_into%' end)
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_file_settle', 'invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_reconcile',
+        'invoice_organize_due', 'invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_qb_enqueue', 'invoice_qb_candidates',
+        'invoice_list', 'invoice_get', 'invoice_purchase_month', 'invoice_reassign')), false) as multi_file;
