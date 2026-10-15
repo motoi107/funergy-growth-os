@@ -41,7 +41,7 @@ export async function contentSignature(h, lines) {
 }
 
 // Classifies a staged document against what the database already holds.
-//   existing: [{ id, status, store_id, vendor_key, invoice_no_norm, invoice_date, total_cents, content_sig, sha256 }]
+//   existing: [{ id, status, store_id, vendor_key, invoice_no_norm, invoice_date, total_cents, content_sig, sha256, packing }]
 export function classifyDuplicates(doc, existing, appRecords = []) {
   const out = { certain: null, sameNumberDifferent: [], candidates: [], app: [] };
   for (const e of existing || []) {
@@ -53,9 +53,11 @@ export function classifyDuplicates(doc, existing, appRecords = []) {
       else out.sameNumberDifferent.push(e.id);
       continue;
     }
-    if (!doc.invoice_no_norm || !e.invoice_no_norm) {
+    // Without a number on one side, or (Moto 2026-10-14, 5A) when one of the two is a packing list (its number is often
+    // the order's, not the invoice's): same vendor, store, date and total is a possible duplicate for a person to compare.
+    if (!doc.invoice_no_norm || !e.invoice_no_norm || doc.packing || e.packing) {
       if (e.vendor_key && e.vendor_key === doc.vendor_key && e.store_id === doc.store_id
-        && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents) out.candidates.push(e.id);
+        && e.invoice_date && e.invoice_date === doc.invoice_date && e.total_cents === doc.total_cents && e.status !== 'duplicate') out.candidates.push(e.id);
     }
   }
   // Invoices registered through the existing app screen carry no invoice number,

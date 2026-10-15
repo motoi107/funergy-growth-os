@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs',
+const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs', 'tests/invoice-adapters.test.mjs',
   'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs'];
 
 function run(mutations, testFile) {
@@ -32,6 +32,7 @@ function run(mutations, testFile) {
 }
 
 const E2E = 'tests/invoice-intake.test.mjs', UNIT = 'tests/invoice-rules.test.mjs';
+const AD = 'tests/invoice-adapters.test.mjs';   // the Google Drive / AI / database adapters
 const PS = 'tests/invoice-purchase-summary.test.mjs', PU = 'tests/invoice-purchase-ui.test.mjs';   // 確認済みの仕入れ集計（Moto 2026-10-14）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
@@ -60,7 +61,7 @@ const CASES = [
   ['settings send the forwarder key to the screen', E2E, [['db/invoice-intake.sql', " return public.invoice_setting(k) - 'key';", ' return public.invoice_setting(k);']]],
   ['folder setup changes Drive on a dry run', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      if (apply) {\n        const c = await drive.createFolder", "      if (true) {\n        const c = await drive.createFolder"]]],
   ['a recorded upload folder is replaced silently', E2E, [['supabase/functions/invoice-intake/handler.mjs', "if (s.upload_folder_id) { row.problems.push('different_upload_folder_recorded'); continue; }", '']]],
-  ['organiser moves files outside the store folders', E2E, [['supabase/functions/invoice-intake/handler.mjs', "if (!parents.length || !parents.every(p => allowed.has(p))) throw new Error('outside_store_folders');", '']]],
+  ['organiser moves files outside the store folders', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      for (const p of parents) if (p === store.root_folder_id || !(await insideStore(p, store, o))) throw new Error('outside_store_folders');\n", '']]],
   ['closed month posted without adjustment', E2E, [['db/invoice-intake.sql', "  if actor is null or not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;\n  update public.invoice_docs set needs_adjustment=true where id=d.id;", '']]],
   ['a moved file is reassigned to the other store automatically', E2E, [['db/invoice-intake.sql', "  update public.invoice_files set drive_state='moved_store', updated_at=now() where id=f.id;", "  update public.invoice_files set store_id=s.store_id, updated_at=now() where id=f.id;"]]],
   ['re-reading replaces a stored reading', E2E, [['db/invoice-intake.sql', "  insert into public.invoice_extractions(sha256, prompt_version, model, raw) values(p->>'sha256', p->>'prompt_version', p->>'model', p->'raw')\n  on conflict do nothing;",
@@ -89,7 +90,7 @@ const CASES = [
     ['db/invoice-intake.sql', "   and not exists(select 1 from public.invoice_docs d where d.file_id=f.id and d.sha256=f.current_sha256 and d.status='review')\n", ""],
     ['db/invoice-intake.sql', "  return jsonb_build_object('queued', false, 'why', 'not_ready');\n", "  null;\n"]]],
   ['C2: a correction forgets the records registered in the app', E2E, [['supabase/functions/invoice-intake/handler.mjs',
-    "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, app));", "applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, []));"]]],
+    "packing: result.reasons.some(r => r.code === 'packing_list') }, existing, app));\n    // What the reading", "packing: result.reasons.some(r => r.code === 'packing_list') }, existing, []));\n    // What the reading"]]],
   ['C3: a posted invoice is corrected into a mismatch without acknowledgement', E2E, [['db/invoice-intake.sql',
     " if d.status='posted' then\n  select r->>'code' into blocking", " if false then\n  select r->>'code' into blocking"]]],
   // A currency change is both an amount change and checked on every correction (double protection): both removed together.
@@ -105,7 +106,7 @@ const CASES = [
   ['C5: a replaced original is posted beside the earlier version without a decision', E2E, [['db/invoice-intake.sql',
     "may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];", "may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];"]]],
   ['C5: a correction drops the replaced-original warning', E2E, [['supabase/functions/invoice-intake/handler.mjs',
-    "['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code)", "['ai_truncated', 'multiple_documents', 'missing_pages'].includes(r.code)"]]],
+    "['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced', 'unreadable',", "['ai_truncated', 'multiple_documents', 'missing_pages', 'unreadable',"]]],
   ['a failed reading is stored as the reading', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "        if (!res.ok) { stats.ai_failed = (stats.ai_failed || 0) + 1; await fail('ai_failed:' + String(res.error || 'unknown').slice(0, 80)); return; }\n        const value = { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null };",
     "        if (!res.ok && res.retryable) { await fail(res.error); return; }\n        const value = res.ok ? { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null } : { readable: false, failed: true, reason: res.error, documents: [] };"]]],
@@ -295,6 +296,50 @@ const CASES = [
   ['app: stores kept in an ordinary object', PU, [['index.html', '  var st = Object.create(null);\r\n  Object.keys(v.stores)', '  var st = {};\r\n  Object.keys(v.stores)']]],
   ['app: any reason code is counted', PU, [['index.html', "if (!_ipsHas(IPS_WHY, b)) return; ", '']]],
   ['app: vendors kept in an ordinary object', PU, [['index.html', '  var map = Object.create(null), order = [];', '  var map = {}, order = [];']]],
+  // 段階 2（Moto 2026-10-14・UI案50）
+  ['段階2: reconciled originals filed the old way', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      if (o.target === 'reconciled') { await fileReconciled(o, store, ctx, stats); return; }\n", '']]],
+  ['段階2: the reconciled month is not the invoice month', E2E, [['invoice/naming.mjs', "return { root: FOLDER.reconciled, month: invoiceDate.slice(0, 7) };", "return { root: FOLDER.reconciled, month: invoiceDate.slice(0, 4) };"]]],
+  ['段階2: the reconciled folders are recorded as other folders', E2E, [['supabase/functions/invoice-intake/handler.mjs', "rf.root, 'reconciled_root');", "rf.root, 'year');"]]],
+  ['段階2: one switch for both filings (worker)', E2E, [['supabase/functions/invoice-intake/handler.mjs', "const rec = ctx.mode.organize_reconciled ?? ctx.mode.organize;", "const rec = ctx.mode.organize;"]]],
+  ['段階2: a Drive hiccup is taken for a folder outside the store', E2E, [['supabase/functions/invoice-intake/handler.mjs', "    if (g.limited || (g.status !== 200 && g.status !== 404 && g.status !== 403)) throw new Error('folder_check_' + g.status);\n", '']]],
+  ['段階2: a packing list is not marked', E2E, [['invoice/rules.mjs', "  if (packing) add('packing_list');\n", '']]],
+  ['段階2: a packing list is not compared with the invoice', E2E, [['invoice/dedupe.mjs', ' || doc.packing || e.packing) {', ') {']]],
+  ['段階2: the database does not say which are packing lists', E2E, [['db/invoice-intake.sql', ",\n  'packing', d.reasons @> '[{\"code\":\"packing_list\"}]'::jsonb)), '[]')", ")), '[]')"]]],
+  ['段階2: a chosen packing list is forgotten by another correction', E2E, [['supabase/functions/invoice-intake/handler.mjs', "    const packing = !('doc_type' in (edits.header || {})) &&", "    const packing = false &&"]]],
+  ['段階2: packing_list saved as a document type', E2E, [['supabase/functions/invoice-intake/handler.mjs', "    if ('doc_type' in header) { header.doc_type = h.doc_type; header.posting_kind = h.posting_kind; }", "    if ('doc_type' in header) header.posting_kind = h.posting_kind;"]]],
+  ['段階2: any document type accepted', E2E, [['supabase/functions/invoice-intake/handler.mjs', "    if ('doc_type' in header && !['invoice', 'packing_list', 'credit_memo', 'statement', 'receipt', 'other', 'unknown'].includes(header.doc_type)) throw new Error('bad_value');\n", '']]],
+  ['段階2: a chosen store is posted automatically (worker)', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      if (f.store_assigned && !result.reasons.some(r => r.code === 'store_assigned'))", "      if (false && !result.reasons.some(r => r.code === 'store_assigned'))"]]],
+  ['段階2: a chosen store is posted automatically (database)', E2E, [['db/invoice-intake.sql', "  if exists(select 1 from public.invoice_files where id=d.file_id and store_assigned_by is not null) then raise exception 'not_eligible'; end if;\n", '']]],
+  ['段階2: the files due do not say the store was chosen', E2E, [['db/invoice-intake.sql', ", f.store_assigned_by is not null store_assigned from public.invoice_files f", " from public.invoice_files f"]]],
+  ['段階2: a correction forgets a document that could not be read', E2E, [['supabase/functions/invoice-intake/handler.mjs', "'original_replaced', 'unreadable', 'ai_failed', 'store_assigned'].includes(r.code)", "'original_replaced', 'store_assigned'].includes(r.code)"]]],
+  ['段階2: a correction forgets the chosen store', E2E, [['supabase/functions/invoice-intake/handler.mjs', "'original_replaced', 'unreadable', 'ai_failed', 'store_assigned'].includes(r.code)", "'original_replaced', 'unreadable', 'ai_failed'].includes(r.code)"]]],
+  ['段階2: the list order changes between pages', E2E, [['db/invoice-intake.sql', "   (select * from q order by invoice_date desc nulls first, ingested_at desc, id\n", "   (select * from q order by invoice_date desc nulls first, ingested_at desc\n"]]],
+  ['段階2: the list does not say the vendor', E2E, [['db/invoice-intake.sql', "  select d.id, d.store_id, d.doc_type, d.vendor_key, d.vendor_name,", "  select d.id, d.store_id, d.doc_type, d.vendor_name,"]]],
+  ['段階2: reconciled originals moved from outside the store folder', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    for (const p of parents) if (!(await insideStore(p, store, o)) && !(await staffPlace([p], store, ctx, o))) throw new Error('outside_store_folders');\n", '']]],
+  ['段階2: one of two places is enough to move', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    for (const p of parents) if (!(await insideStore(p, store, o)) && !(await staffPlace([p], store, ctx, o)))", "    for (const p of parents.slice(0, 1)) if (!(await insideStore(p, store, o)) && !(await staffPlace([p], store, ctx, o)))"]]],
+  ['段階2: recorded folders are not checked in Drive', E2E, [['supabase/functions/invoice-intake/handler.mjs',
+    "    if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;", "    if ((o.store_folder_ids || []).includes(id)) return true;\n    if (depth > 4) return false;"]]],
+  ['段階2: the switches are not followed (database)', E2E, [['db/invoice-intake.sql',
+    "   and (jsonb_typeof(p->'targets') is distinct from 'array' or f.organize_target in (select jsonb_array_elements_text(case when jsonb_typeof(p->'targets')='array' then p->'targets' else '[]'::jsonb end))\n", "   and (true\n"]]],
+  ['段階2: taken-back originals stay in 照合済み (worker)', E2E, [['supabase/functions/invoice-intake/handler.mjs', "back = !!rec && !ctx.mode.organize;", "back = false;"]]],
+  ['段階2: taken-back originals stay in 照合済み (database)', E2E, [['db/invoice-intake.sql',
+    "    or (coalesce((p->>'back')::boolean,false) and f.organize_target='unreconciled'\n     and exists(select 1 from public.invoice_folders fo where fo.id=f.organized_folder_id and fo.role='reconciled_month')))", "    )"]]],
+  ['段階2: a packing list is posted automatically', E2E, [['invoice/rules.mjs', ", 'mixed_tax'];\nconst INFO", ", 'mixed_tax', 'packing_list'];\nconst INFO"],
+    ['db/invoice-intake.sql', ",'discount_allocation','mixed_tax'];\n -- A line amount", ",'discount_allocation','mixed_tax','packing_list'];\n -- A line amount"]]],
+  ['段階2: a document marked as a duplicate keeps raising candidates', E2E, [['invoice/dedupe.mjs', " && e.status !== 'duplicate') out.candidates.push(e.id);", ") out.candidates.push(e.id);"]]],
+  ['段階2: the post check misses the reconciled folder', E2E, [['db/invoice-intake-postcheck.sql', "when 'invoice_organize_due' then p.prosrc like '%targets%' and p.prosrc like '%reconciled_month%'", "when 'invoice_organize_due' then true"]]],
+  ['段階2: the post check misses the packing list comparison', E2E, [['db/invoice-intake-postcheck.sql', "when 'invoice_dup_scope' then p.prosrc like '%packing_list%'", "when 'invoice_dup_scope' then true"]]],
+  ['段階2: the post check misses the chosen store (intake)', E2E, [['db/invoice-intake-postcheck.sql', "when 'invoice_files_due' then p.prosrc like '%store_assigned%'", "when 'invoice_files_due' then true"]]],
+  ['段階2: the post check misses the chosen store (posting)', E2E, [['db/invoice-intake-postcheck.sql', "when 'invoice_post' then p.prosrc like '%store_assigned_by is not null%'", "when 'invoice_post' then true"]]],
+  ['段階2: the post check misses the list order', E2E, [['db/invoice-intake-postcheck.sql', "when 'invoice_list' then p.prosrc like '%d.vendor_key%' and p.prosrc like '%ingested_at desc, id%' end)", "when 'invoice_list' then true end)"]]],
+  ['段階2: the post check misses the folder roles', E2E, [['db/invoice-intake-postcheck.sql', "coalesce((select bool_and(pg_get_constraintdef(c.oid) like '%reconciled_root%' and pg_get_constraintdef(c.oid) like '%reconciled_month%')", "coalesce((select bool_and(true)"]]],
+  ['段階2: a rate limit is taken for a folder outside the store', E2E, [['supabase/functions/invoice-intake/handler.mjs', "    if (g.limited || (g.status !== 200 && g.status !== 404 && g.status !== 403)) throw", "    if ((g.status !== 200 && g.status !== 404 && g.status !== 403)) throw"]]],
+  ['段階2: a Drive hiccup in a staff folder is taken for outside the store', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      if (pf.limited || (pf.status !== 200 && pf.status !== 404 && pf.status !== 403)) throw new Error('folder_check_' + pf.status);\n", '']]],
+  ['段階2: a rate limit in a staff folder is taken for outside the store', E2E, [['supabase/functions/invoice-intake/handler.mjs', "      if (pf.limited || (pf.status", "      if ((pf.status"]]],
+  ['段階2: Drive rate limits sent as 403 are not marked', AD, [['invoice/drive.mjs', "const limited = r.status === 403 && errs.some(", "const limited = false && errs.some("]]],
+  ['段階2: possible duplicates listed in the order the database gave', UNIT, [['invoice/rules.mjs', "add('duplicate_candidate', [...dup.candidates].map(String).sort().join(','));", "add('duplicate_candidate', dup.candidates.join(','));"]]],
   ['app: the month is fetched on every look', PU, [['index.html', "{ _ipsPull(key, key + '|' + at); return; }", "{ _ipsPull(key, key + '|' + at + '|' + Math.random()); return; }"]]],
   ['app: the login pull takes the summaries', PU, [['index.html', "supaFetchAll('app_state', 'key,value', 'key=not.like.invoice_purchase_*&key=not.like.lunch_photo_*')", "supaFetchAll('app_state', 'key,value', 'key=not.like.lunch_photo_*')"]]],
   ['app: the bonus lock does not read the summaries', PU, [['index.html', "  keys.push('invoice_purchase_status');", '']]],
@@ -329,6 +374,7 @@ test('every protection is covered by a failing test when removed', async (t) => 
   const only = process.env.INVOICE_MUTATION_ONLY ? new RegExp(process.env.INVOICE_MUTATION_ONLY) : null;
   assert.equal(run([], E2E), 0, 'the unmodified end-to-end test must pass');
   assert.equal(run([], UNIT), 0, 'the unmodified unit test must pass');
+  assert.equal(run([], AD), 0, 'the unmodified adapter test must pass');
   if (!only || only.test('purchases') || only.test('app:')) {
     assert.equal(run([], PS), 0, 'the unmodified purchase summary test must pass (without the deploy-folder check)');
     assert.equal(run([], PU), 0, 'the unmodified purchase app test must pass');

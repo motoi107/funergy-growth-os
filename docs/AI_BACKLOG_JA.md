@@ -15,7 +15,9 @@
 2. 済（Moto さん 10/14 14:39 HST）：「これで進めてください」＝決めてほしいこと 1〜8 は推奨 A。
 3. 済（Claude・ブランチ `claude/invoice-review-sort-store`）：段階 1 アプリ v1079（並べ替え・店舗を選ぶ・書類の種類）。試験・独立レビュー 4 回（最後は P1・P2 なし）。
 4. 次：Codex のレビュー（v1079 の最新の head。とくにまとめて反映の行の決め方・全件の読み方・reassign の画面・書類の種類の鍵）→ Moto さんがマージ（PR #59 を先に）→ 経理の実機。
-5. 段階 2（サーバー・SQL）：照合したら各店舗の「照合済み / YYYY-MM」（請求日の月）へ移す（店舗フォルダの直下・店舗のフォルダの原本も）・AI が packing list を見分けて重複の疑い・`recheck` が `unreadable`・`ai_failed` を残す・人が店舗を変えたファイルは自動反映しない・`invoice_list` の順に id と `vendor_key`。
+5. 済（Claude・ブランチ `claude/invoice-stage2`）：段階 2 アプリ v1081・migration `20261020090000`（照合したら「照合済み / YYYY-MM」へ移す・AI が packing list を見分けて重複の疑い・自動では反映しない・`recheck` が `unreadable`・`ai_failed` を残す・人が店舗を選んだファイルは自動反映しない・`invoice_list` の順に id と `vendor_key`）。入れる一式 `deploy/invoice-stage2-v1081/`。試験・独立レビュー 2 回（最後は製品の P1・P2 なし）。
+5b. 次：Codex のレビュー（段階 2 の最新の head。とくに店舗フォルダの中の確かめ・照合の取り消しで戻す・packing list の重複の範囲・2 つのスイッチ）→ Moto さんが #59 → #60 → #61 → #62 → 段階 2 の順にマージ・段階 2 は手順.md の順（SQL → 確認 → 関数 → アプリ）。
+5c. Moto さんの判断：Packing list と日付・合計の違う invoice をどこまで「重複の可能性」にするか（今は同じ日付・合計だけ）。
 6. 段階 3：複数枚を 1 つの invoice に（QuickBooks へはページのファイルを全部・ChatGPT 側で 1 件に）。着手前に Moto さんと ChatGPT 側の転送の進め方を確かめる。
 
 ## 2026-10-14 確認済み invoice の全店仕入れ集計・原価との連携（UI案48・v1077）

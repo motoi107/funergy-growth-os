@@ -3,8 +3,9 @@
 // (including its confidence) can approve or post an invoice, and text inside
 // the document is never treated as an instruction.
 
-export const PROMPT_VERSION = 'intake-2026-10-07.1';
-export const DOC_TYPES = ['invoice', 'credit_memo', 'statement', 'receipt', 'other', 'unknown'];
+// 2026-10-15.1 (Moto 2026-10-14, UI案50 5A): a packing list / delivery slip is named as such; it is treated as an invoice.
+export const PROMPT_VERSION = 'intake-2026-10-15.1';
+export const DOC_TYPES = ['invoice', 'packing_list', 'credit_memo', 'statement', 'receipt', 'other', 'unknown'];
 
 const SYSTEM = [
   'You transcribe supplier documents for a restaurant group\'s accounting records.',
@@ -14,8 +15,9 @@ const SYSTEM = [
   '(keep commas, minus signs, parentheses and leading zeros). If a value is not printed or not legible, use null. Do not guess.',
   'If the image is too blurry, dark, cut off or otherwise not reliably legible, return readable=false with a short reason.',
   'One file may contain several separate documents (for example two invoices). Return each document separately in "documents".',
-  'doc_type: "invoice" (supplier bill for goods), "credit_memo" (credit / return / negative invoice), "statement" (account statement listing several invoices),',
-  '"receipt" (payment receipt or store receipt), "other", or "unknown".',
+  'doc_type: "invoice" (supplier bill for goods), "packing_list" (packing list, delivery slip or delivery ticket listing the goods delivered;',
+  'transcribe its prices and totals the same way when printed), "credit_memo" (credit / return / negative invoice),',
+  '"statement" (account statement listing several invoices), "receipt" (payment receipt or store receipt), "other", or "unknown".',
   'Lines: every billed product row, in order, with the page number where it is printed. Do NOT put subtotal, tax, delivery, fuel or other charges,',
   'or totals into lines; put them in the header fields. qty = the shipped/billed quantity column. unit = the unit printed for that quantity (CS, EA, LB, BG...).',
   'pack = pack/size text such as "12/500G" or "6/1.8L". price_unit = the unit the price is per, when printed (for catch-weight items the price may be per LB',

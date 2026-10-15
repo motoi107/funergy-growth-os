@@ -629,10 +629,10 @@ test('the deploy folder: the SQL files are the repository files, the one-file fu
   for (const [copy, orig] of [['1_追加のSQL_仕入れ集計.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql'], ['4_すぐに集計を作る.sql', 'db/invoice-purchase-start.sql'],
     ['5_照合の結果_読むだけ.sql', 'db/invoice-purchase-report.sql'], ['止める.sql', 'db/invoice-purchase-stop.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
   const src = JSON.parse(rd(D + 'source.json'));
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(crypto.createHash('sha256').update(rd(f)).digest('hex'), h, f + ' changed after 3_関数 was built: build it again');
-  const listed = Object.keys(src.sources).filter(f => f.startsWith('invoice/')).sort();
-  assert.deepEqual(listed, fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).map(f => 'invoice/' + f).sort());
+  // The one-file function stays as it was handed over (the sources moved on with 段階 2: deploy/invoice-stage2-v1081 is
+  // built from the current ones and checked in tests/invoice-intake.test.mjs). It is the version to go back to.
   assert.equal(crypto.createHash('sha256').update(rd(D + '3_関数_invoice-intake_index.ts')).digest('hex'), src.bundle_sha256);
+  assert.equal(src.bundle_sha256, 'e4d06e7eb18f61d417c15e6b56b6a9abdbcef821bf3b67766dfb2948b585d91f');
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
   assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle) && bundle.includes('invoice_purchase_publish') && bundle.includes('invoice_purchase_check'));
   // the check SQL on a database with the migration: 2 tables, 4 functions, nothing for browsers; after publishing, the month is listed

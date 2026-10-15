@@ -41,6 +41,11 @@ export const REASONS = {
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
   original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
+  // Moto 2026-10-14 (UI案50 5A): a packing list is treated as an invoice and a same-delivery invoice is a possible duplicate.
+  // It always waits for a person (never posted automatically: the invoice of the same delivery may differ in date or total).
+  packing_list:          ['Packing list（invoice として扱う・自動では反映しない）', 'Packing list (treated as an invoice; not posted automatically)'],
+  // A person chose the store for this file (UI案50 段階 1): it is never posted automatically.
+  store_assigned:        ['店舗を人が選んだ（自動では反映しない）', 'Store chosen by a person (not posted automatically)'],
   // line_value_missing is no longer produced (it also covered an unreadable amount before 2026-10-07). Documents read
   // earlier may still carry it, so it holds like line_amount_missing (Codex R7) until a correction re-checks the lines.
   line_value_missing:    ['数量・単価・金額のどれかが読めない明細（前の版の読み取り）', 'Line quantity, price or amount missing (earlier reading)'],
@@ -131,12 +136,15 @@ export async function evaluate(ext, ctx) {
   if (ctx.docCount > 1) add('multiple_documents', ctx.docCount);
   if (ctx.aiStop === 'max_tokens') add('ai_truncated');
 
-  h.doc_type = ext.doc_type;
-  h.posting_kind = ext.doc_type === 'invoice' || ext.doc_type === 'credit_memo' ? 'purchase' : 'none';
+  // A packing list is kept as an invoice (Moto 2026-10-14): same checks, same posting, marked so it can be compared.
+  const packing = ext.doc_type === 'packing_list';
+  h.doc_type = packing ? 'invoice' : ext.doc_type;
+  h.posting_kind = h.doc_type === 'invoice' || h.doc_type === 'credit_memo' ? 'purchase' : 'none';
+  if (packing) add('packing_list');
   if (ext.doc_type === 'statement') add('statement');
   else if (ext.doc_type === 'receipt') add('receipt_route');
   else if (ext.doc_type === 'credit_memo') add('credit_memo');
-  else if (ext.doc_type !== 'invoice') add('doc_type_unknown');
+  else if (h.doc_type !== 'invoice') add('doc_type_unknown');
 
   // Vendor: exact match to a master name or a registered alias only.
   h.vendor_raw = ext.vendor_name;
@@ -336,8 +344,9 @@ export function applyDuplicates(result, dup) {
   const add = (code, detail) => { if (!result.reasons.some(r => r.code === code && r.detail === detail)) result.reasons.push({ code, detail }); };
   if (dup.certain) add('duplicate_certain', dup.certain.id);
   (dup.sameNumberDifferent || []).forEach(id => add('same_number_different', id));
-  if ((dup.candidates || []).length) add('duplicate_candidate', dup.candidates.join(','));
-  if ((dup.app || []).length) add('app_duplicate_candidate', dup.app.join(','));
+  // Ids in a fixed order, so that the same partners give the same detail each time (the screen compares details before posting).
+  if ((dup.candidates || []).length) add('duplicate_candidate', [...dup.candidates].map(String).sort().join(','));
+  if ((dup.app || []).length) add('app_duplicate_candidate', [...dup.app].map(String).sort().join(','));
   result.autoEligible = !blocksPosting(result.reasons);
   return result;
 }

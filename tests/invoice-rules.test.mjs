@@ -265,6 +265,12 @@ test('duplicates: same bytes or same content is certain; same number with other 
   const r = { reasons: [], autoEligible: true };
   applyDuplicates(r, { certain: { id: 'a' } });
   assert.equal(r.autoEligible, false);
+  // 段階 2: the ids of possible duplicates are listed in a fixed order whatever order the database gave them (the screen
+  // compares the detail before posting, and a new order is not a new partner).
+  const r2 = applyDuplicates({ reasons: [], autoEligible: true }, { candidates: ['b2', 'a1'], app: ['inv9', 'inv10'] });
+  const r3 = applyDuplicates({ reasons: [], autoEligible: true }, { candidates: ['a1', 'b2'], app: ['inv10', 'inv9'] });
+  assert.deepEqual(r2.reasons, r3.reasons);
+  assert.equal(r2.reasons.find(x => x.code === 'duplicate_candidate').detail, 'a1,b2');
   const s1 = await contentSignature({ vendor_key: 'v1', store_id: 'F06', invoice_no_norm: '1', invoice_date: '2026-10-06', total_cents: 1 }, [{ raw_name: 'A', qty: '1', unit_price: '1', amount_cents: 100 }]);
   const s2 = await contentSignature({ vendor_key: 'v1', store_id: 'F06', invoice_no_norm: '1', invoice_date: '2026-10-06', total_cents: 1 }, [{ raw_name: 'a', qty: '1', unit_price: '1', amount_cents: 100 }]);
   assert.equal(s1, s2);
@@ -322,6 +328,19 @@ test('each migration changes only what it says', async () => {
   assert.ok(!/^(alter table|drop |insert |update |delete )/im.test(psRest), 'no existing table or row is changed');
   assert.ok(/foreach t in array array\['invoice_purchase_checks','invoice_purchase_published'\] loop/.test(psRest) && /revoke all on public\.%I from public, anon, authenticated/.test(psRest));
   assert.ok(/foreach f in array array\['invoice_purchase_classes\(text\[\]\)','invoice_purchase_month\(text,jsonb\)','invoice_purchase_publish\(jsonb\)','invoice_purchase_check\(jsonb\)'\] loop/.test(psRest));
+  // 段階 2 (20261020090000, Moto 2026-10-14・UI案50): the reconciled folder roles and five functions replaced; no row or setting.
+  const rf = read('supabase/migrations/20261020090000_invoice_reconciled_folder.sql');
+  assert.deepEqual([...rf.matchAll(fn)].map(m => m[1]), ['invoice_dup_scope', 'invoice_post', 'invoice_list', 'invoice_files_due', 'invoice_organize_due']);
+  assert.ok([...rf.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  assert.equal(rf.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
+    'do $$ begin',
+    " if not exists(select 1 from information_schema.columns where table_schema='public' and table_name='invoice_files' and column_name='rename_state') then",
+    "  raise exception '先に 20261012120000_invoice_rename_after_post.sql を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'alter table public.invoice_folders drop constraint if exists invoice_folders_role_check;',
+    'alter table public.invoice_folders add constraint invoice_folders_role_check',
+    " check (role in ('year','month','unreconciled','reconciled','reconciled_root','reconciled_month'));"].join('\n'), 'only the folder roles besides functions');
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -329,7 +348,8 @@ test('each migration changes only what it says', async () => {
   for (const f of ['supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql',
     'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql',
     'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql',
-    'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql'])
+    'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
+    'supabase/migrations/20261020090000_invoice_reconciled_folder.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);
