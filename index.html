@@ -47124,6 +47124,7 @@ async function invInForget(){
 function invInReset(){
   ['health','config','list','q','review','recon','problems','docId','doc','edits','rel','folder','restoring','restoreTried','restoreP','keptSession','storeOpen'].forEach(function(k){ _invIn[k] = null; });
   _invIn.unsel = {}; _invIn.rpage = 0; _invIn.batchPlan = null; _invIn.plDoc = null;
+  _invIn.reviewSeq = (_invIn.reviewSeq || 0) + 1;   /* ログアウトのあとに終わった読み込みは、前の人の一覧を書かない */
   _invIn.loaded = {}; _invIn.cand = {}; _invIn.error = '';
 }
 async function invInAPI(payload, retried){
@@ -47810,8 +47811,8 @@ function invInStoreTo(d){
   var E = _invIn.edits || {}, act = invInActiveStores();
   /* 宛先が別の店舗（store_mismatch）のときだけ、その店舗を先に選んでおく。複数の店舗（multi_store）は人が選ぶ */
   var printed = invInStoreHits((d.reasons||[]).filter(function(r){ return r && r.code==='store_mismatch'; }));
-  var cand = printed.filter(function(x){ return x!==d.store_id && act.indexOf(x)>=0; });
-  var to = E.storeTo!=null ? String(E.storeTo) : (cand.length===1 ? cand[0] : '');   /* 1 店だけのときだけ先に選ぶ */
+  var cand = printed.filter(function(x){ return x!==d.store_id; });   /* 取込していない店舗も数える（宛先が 2 店に当たるときは人が選ぶ） */
+  var to = E.storeTo!=null ? String(E.storeTo) : (cand.length===1 && act.indexOf(cand[0])>=0 ? cand[0] : '');   /* 1 店だけのときだけ先に選ぶ */
   return act.indexOf(to)>=0 ? to : '';
 }
 function invInStoreBtn(d, canEdit){

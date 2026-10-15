@@ -439,6 +439,14 @@ test('third review P2: a packing-list choice that was not saved is forgotten wit
   assert.match(fn(q, 'invInQueueHtml')('review'), /<button class="btn btn-primary btn-sm" disabled onclick="invInBatchAsk\(\)">/);
   const two = app(); open(two, DOC({ reasons: [{ code: 'store_mismatch', detail: 'S2,S4' }] }));
   assert.match(fn(two, 'invInDetail')('review'), /<option value="" selected>選ぶ<\/option>/);
+  const half = app(); open(half, DOC({ reasons: [{ code: 'store_mismatch', detail: 'S2,S3' }] }));
+  assert.match(fn(half, 'invInDetail')('review'), /<option value="" selected>選ぶ<\/option>/, 'a store not taking invoices in still makes the address ambiguous');
+  // A reading that ends after sign-out does not write the previous person's list.
+  let go; const gate = new Promise(r => { go = r; });
+  const so = app({ api: async () => { await gate; return { rows: [row(1)], total: 1 }; } });
+  const reading = fn(so, 'invInLoadQueue')('review');
+  fn(so, 'invInReset')(); go(); await reading;
+  assert.equal(so.M._invIn.review, null);
 });
 
 test('second review P2: a document without an AI reading keeps its type even after the read failure reason was saved away', () => {

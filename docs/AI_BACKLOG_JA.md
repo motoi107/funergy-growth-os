@@ -10,8 +10,11 @@
 ## 2026-10-14 invoice 取込：経理の追加変更 5 点（UI案50）
 
 1. 済（Claude）：5 点の今の作りの調査と UI案50（`docs/INVOICE_ACCOUNTING_REQUESTS_JA.md`）。
-2. Moto さん：決めてほしいこと 1〜8 と UI案50 への意見。
-3. 次：段階 1（並べ替え・店舗を選ぶ・書類の種類）→ 段階 2（照合済みフォルダへ移す・packing list の見分け）→ 段階 3（複数枚を 1 つに・ChatGPT 側の転送と合わせる）。
+2. 済（Moto さん 10/14 14:39 HST）：「これで進めてください」＝決めてほしいこと 1〜8 は推奨 A。
+3. 済（Claude・ブランチ `claude/invoice-review-sort-store`）：段階 1 アプリ v1079（並べ替え・店舗を選ぶ・書類の種類）。試験・独立レビュー 4 回（最後は P1・P2 なし）。
+4. 次：Codex のレビュー（v1079 の最新の head。とくにまとめて反映の行の決め方・全件の読み方・reassign の画面・書類の種類の鍵）→ Moto さんがマージ（PR #59 を先に）→ 経理の実機。
+5. 段階 2（サーバー・SQL）：照合したら各店舗の「照合済み / YYYY-MM」（請求日の月）へ移す（店舗フォルダの直下・店舗のフォルダの原本も）・AI が packing list を見分けて重複の疑い・`recheck` が `unreadable`・`ai_failed` を残す・人が店舗を変えたファイルは自動反映しない・`invoice_list` の順に id と `vendor_key`。
+6. 段階 3：複数枚を 1 つの invoice に（QuickBooks へはページのファイルを全部・ChatGPT 側で 1 件に）。着手前に Moto さんと ChatGPT 側の転送の進め方を確かめる。
 
 ## 2026-10-14 確認済み invoice の全店仕入れ集計・原価との連携（UI案48・v1077）
 
