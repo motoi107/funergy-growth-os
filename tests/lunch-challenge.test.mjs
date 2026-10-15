@@ -585,6 +585,7 @@ test('second review: a closure change alone does not mark a confirmed month corr
   await fn(g, 'lcConfirm')();
   assert.equal(g.mem.lunch_challenge['conf:2026-09'], undefined);
   await fn(g, 'lcMarkDay')('2026-09-15', 'none');
+  fn(g, 'renderLunchChallenge')();   // the page is drawn again after the mark (renderPage is a stub here)
   await fn(g, 'lcConfirm')();
   assert.equal(J(g.mem.lunch_challenge['conf:2026-09']).C, 25 * 72 + 55);
   assert.equal(fn(g, 'lcCompute')('2026-09').corrected, false);
@@ -737,7 +738,7 @@ test('fourth review: leaving the page during the read still saves; a changed mon
   g = gate(); c.pullOpKey = () => g.p; run = fn(c, 'lcSaveCfg')();
   fn(c, 'lcOpen')('mypage'); g.open(); await run;
   assert.notEqual(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[0].rest, 'Z');
-  assert.match(c.toasts.at(-1)[0], /画面が変わったので、変えていません/);
+  assert.match(c.toasts.at(-1)[0], /入力した内容は保存していません（画面が変わったため）。もう一度入れて保存してください/);
   // Logged out and someone else logged in during the read: nothing is changed.
   const m = app({ role: 'gm', user: 'GM', days: { '2026-10-01': day(70), '2026-10-02': day(0) }, today: '2026-10-05' });
   g = gate(); m.pullOpKey = () => g.p;
@@ -767,4 +768,46 @@ test('fourth review: leaving the page during the read still saves; a changed mon
   assert.match(h, /<button class="lc-btn" disabled onclick="lcMarkDay\('2026-10-02','zero'\)">/);
   v.mem.lunch_challenge['conf:2026-10'] = { ym: '2026-10', state: 'done', C: 70, d: 1, D: 1, avg10: 700, tier: 1, days: {}, _at: 3 };
   assert.match(fn(v, 'renderLunchChallenge')(), /disabled onclick="lcUnconfirm\(\)"/);
+});
+
+test('fifth review: an unedited settings form follows a newer save; confirm compares with what the page drew; photo pickers always come back', async () => {
+  // The form shown on the admin page follows another manager's newer save unless it was edited here.
+  const c = app({ role: 'gm', user: 'GM', today: '2026-10-20' }); setCfg(c, '2026-11'); c.M._lc.ym = '2026-11';
+  fn(c, 'lcFormFor')('2026-11');
+  c.mem.lunch_challenge['cfg:2026-11'] = { ym: '2026-11', state: 'set', tiers: tiers('65', '75', '85'), _at: 40, by: 'CEO' };
+  assert.equal(fn(c, 'lcFormFor')('2026-11').tiers[0].t, '65.0', 'not edited: rebuilt from the newer save');
+  fn(c, 'lcFormSet')(0, 'rest', 'Mine');
+  c.mem.lunch_challenge['cfg:2026-11'] = { ym: '2026-11', state: 'set', tiers: tiers('66', '76', '86'), _at: 41, by: 'CEO' };
+  assert.equal(fn(c, 'lcFormFor')('2026-11').tiers[0].rest, 'Mine', 'edited: kept (and refused on save)');
+  // Confirm compares with what the admin page drew, even when a background sync changed the targets before the click.
+  const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
+  const k = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(k, '2026-09'); k.M._lc.ym = '2026-09'; k.M._lc.view = 'admin';
+  assert.match(fn(k, 'renderLunchChallenge')(), /★2 で確定する/);
+  k.mem.lunch_challenge['cfg:2026-09'] = { ym: '2026-09', state: 'set', tiers: tiers('75', '80', '85'), _at: 70, by: 'CEO' };
+  await fn(k, 'lcConfirm')();
+  assert.equal(k.mem.lunch_challenge['conf:2026-09'], undefined);
+  assert.match(k.toasts.at(-1)[0], /最新の記録で数字・段階・目標が変わりました/);
+  assert.match(fn(k, 'renderLunchChallenge')(), /75\.0/, 'the page shows the new targets');
+  await fn(k, 'lcConfirm')();
+  assert.equal(J(k.mem.lunch_challenge['conf:2026-09']).tier, -1);
+  // A photo picker whose drawing fails, or whose form changed during the upload, comes back and says so.
+  const b = app({ role: 'gm', user: 'GM' }); b.M._lc.ym = '2026-11'; fn(b, 'lcFormFor')('2026-11');
+  let release; b.lcUploadPhoto = () => new Promise(r => { release = r; }); vm.runInContext('lcUploadPhoto = this.lcUploadPhoto', b);
+  b.renderPage = () => { throw new Error('draw'); };
+  let pick = fn(b, 'lcPickTierPhoto')({ files: [{ name: 'x.jpg' }] }, 0);
+  fn(b, 'lcOpen')('mypage'); b.M._lc.ym = '2026-11'; fn(b, 'lcFormFor')('2026-11');
+  release('lunch_photo_abcdef1'); await pick;
+  assert.equal(b.M._lc.busy, false);
+  assert.equal(b.M._lc.form.tiers[0].photo, '');
+  assert.match(b.toasts.at(-1)[0], /写真は上げましたが、画面が変わったので入れていません/);
+  fn(b, 'lcDinFor')('2026-11');
+  pick = fn(b, 'lcPickDinPhoto')({ files: [{ name: 'x.jpg' }] });
+  b.M._lc.din = null; fn(b, 'lcDinFor')('2026-11');
+  release('lunch_photo_abcdef2'); await pick;
+  assert.equal(b.M._lc.busy, false); assert.equal(b.M._lc.din.photos.length, 0);
+  // After a failed read the buttons come back even while a field has focus.
+  const t = app({ role: 'gm', user: 'GM' }); t.M._lc.ym = '2026-11'; fn(t, 'lcFormFor')('2026-11');
+  t.document = { activeElement: { tagName: 'INPUT', closest: () => ({}) } }; t.pullOpKey = async () => false;
+  const n0 = t.pages.length; await fn(t, 'lcSaveCfg')();
+  assert.equal(t.pages.length, n0 + 2, 'drawn busy, then drawn again with the buttons on');
 });

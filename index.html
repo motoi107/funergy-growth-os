@@ -71854,13 +71854,16 @@ async function lcPullForSave(){
   var ok = false;
   _lc.busy = true;
   try { try { lcRerender(); } catch(e) {} ok = await lcPull(); } catch(e) { ok = false; } finally { _lc.busy = false; }
-  try { if (!lcTyping()) lcRerender(); } catch(e) {}
+  try { lcRerender(); } catch(e) {}
   if (!ok) showToast(lcT('最新の記録を読めませんでした。通信（または端末の保存容量）を確かめて、もう一度押してください（何も変えていません）', 'Could not read the latest records. Check the connection (or the device storage) and press again (nothing was changed)'), 'warning');
   return ok;
 }
 /* 読んでいるあいだに、ログアウトしてほかの人になっていないか */
 function lcStill(me){ return lcCanAdmin() && lcMe() === me; }
-function lcNotDone(){ showToast(lcT('画面が変わったので、変えていません。もう一度押してください', 'Nothing was changed because the page changed. Please press again'), 'warning'); }
+function lcNotDone(draft){
+  showToast(draft ? lcT('入力した内容は保存していません（画面が変わったため）。もう一度入れて保存してください', 'Your entries were not saved because the page changed. Please enter them again and save')
+    : lcT('画面が変わったので、変えていません。もう一度押してください', 'Nothing was changed because the page changed. Please press again'), 'warning');
+}
 /* 入力中の欄があるときは、ページを描き直さない（あとで読んだ記録は次に描くときに出る） */
 function lcTyping(){ try { var a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest && a.closest('.lc-wrap')); } catch(e) { return false; } }
 /* 1 回の描画のあいだは、保存したデータを 1 回だけ読む（書いたら読み直す） */
@@ -72083,7 +72086,7 @@ function lcOpen(from){
   _lc.view = 'staff'; _lc.ym = null; _lc.from = from || null; _lc.form = null; _lc.formYm = null; _lc.din = null; _lc.dinYm = null; _lc.reason = ''; _lc.confWhy = '';
   Object.keys(_lc.photoAsk).forEach(function(k){ if (_lc.photoAsk[k] === 'none') delete _lc.photoAsk[k]; });   /* 取れなかった写真は開き直したときにもう一度 */
   go('lunch_challenge');
-  lcPull().then(function(ok){ if (ok && !lcTyping()) lcRerender(); });
+  lcPull().then(function(ok){ try { if (ok && !lcTyping()) lcRerender(); } catch(e) {} });
 }
 function lcEntryCard(from){
   if (!lcCanSee()) return '';
@@ -72306,7 +72309,11 @@ function lcDin(ym){
 }
 /* ---- 管理者（GM・CEO） ---- */
 function lcFormFor(ym){
-  if (_lc.form && _lc.formYm === ym) return _lc.form;
+  if (_lc.form && _lc.formYm === ym) {
+    /* 直していない下書きは、ほかの人があとで保存した設定に合わせて作り直す（見えている目標が古いままにならない） */
+    var r0 = lcRec('cfg:' + ym);
+    if (_lc.form.dirty || (r0 ? Number(r0._at) || 0 : 0) === (Number(_lc.form.base) || 0)) return _lc.form;
+  }
   var c = lcCfg(ym), r = lcRec('cfg:' + ym);
   var base = c ? c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; })
     : [0, 1, 2].map(function(){ return { t:'', name:'', rest:'', meal:'', who:'', budget:'', tax:'incl', photo:'' }; });
@@ -72316,15 +72323,16 @@ function lcFormFor(ym){
 }
 function lcFormSet(i, k, v){
   var f = _lc.form; if (!f) return;
+  f.dirty = true;
   if (i === -1) { if (k === 'who') f.who = String(v || ''); return; }
   if (!f.tiers[i] || ['t','name','rest','meal','who','budget','tax'].indexOf(k) < 0) return;
   f.tiers[i][k] = String(v == null ? '' : v);
 }
-function lcFormDropPhoto(i){ var f = _lc.form; if (!f || !f.tiers[i] || _lc.busy) return; f.tiers[i].photo = ''; lcRerender(); }
+function lcFormDropPhoto(i){ var f = _lc.form; if (!f || !f.tiers[i] || _lc.busy) return; f.tiers[i].photo = ''; f.dirty = true; lcRerender(); }
 function lcCopyPrev(){
   var ym = _lc.ym, c = lcCfg(lcYmAdd(ym, -1)); if (!c) { showToast(lcT('前の月の設定がありません', 'The previous month has no settings'), 'warning'); return; }
   var cur = lcRec('cfg:' + ym);
-  _lc.form = { tiers:c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; }), who:c.who, had:(_lc.form || {}).had, base:cur ? Number(cur._at) || 0 : 0 };
+  _lc.form = { tiers:c.tiers.map(function(x){ return { t:lcAvgL(x.t10), name:x.name, rest:x.rest, meal:x.meal, who:x.who, budget:x.budget, tax:x.tax, photo:x.photo }; }), who:c.who, had:(_lc.form || {}).had, base:cur ? Number(cur._at) || 0 : 0, dirty:true };
   _lc.formYm = ym; lcRerender();
 }
 function lcFormCheck(f){
@@ -72353,7 +72361,7 @@ async function lcSaveCfg(){
   var ym = _lc.ym, f = _lc.form, me = lcMe(); if (!f || _lc.formYm !== ym) return;
   if (!(await lcPullForSave())) return;
   if (!lcStill(me)) return;
-  if (_lc.form !== f || _lc.formYm !== ym) { lcNotDone(); return; }
+  if (_lc.form !== f || _lc.formYm !== ym) { lcNotDone(true); return; }
   if (lcRec('conf:' + ym) && lcRec('conf:' + ym).state === 'done') { showToast(lcT('確定した月の設定は変えられません（先に確定を取り消す）', 'A confirmed month cannot be changed (undo the confirmation first)'), 'warning'); return; }
   var err = lcFormCheck(f); if (err) { showToast(err, 'warning'); return; }
   var curRec = lcRec('cfg:' + ym);
@@ -72374,9 +72382,13 @@ async function lcSaveCfg(){
 }
 async function lcPickTierPhoto(input, i){
   var f = input && input.files && input.files[0], f0 = _lc.form, ym = _lc.ym; if (!f || !f0 || !f0.tiers[i] || _lc.formYm !== ym || _lc.busy) return;
-  _lc.busy = true; lcRerender();
-  try { var id = await lcUploadPhoto(f, ym); if (id && _lc.form === f0 && _lc.formYm === ym && f0.tiers[i]) f0.tiers[i].photo = id; }
-  finally { _lc.busy = false; lcRerender(); }
+  _lc.busy = true;
+  try {
+    try { lcRerender(); } catch(e) {}
+    var id = await lcUploadPhoto(f, ym);
+    if (id && _lc.form === f0 && _lc.formYm === ym && f0.tiers[i]) { f0.tiers[i].photo = id; f0.dirty = true; }
+    else if (id) lcPhotoNotAdded();
+  } finally { _lc.busy = false; try { lcRerender(); } catch(e) {} }
 }
 async function lcMarkDay(d, k){
   if (!lcCanAdmin() || !lcDateOk(d) || ['zero','closed','none'].indexOf(k) < 0) return;
@@ -72392,10 +72404,10 @@ async function lcMarkDay(d, k){
   lcRerender();
 }
 /* 確定のボタンを押したときに見えていた内容（数字・段階・目標とごほうび） */
-function lcConfKey(o){ return JSON.stringify([o.C, o.d, o.avg10, o.reached, o.cfg ? o.cfg.tiers.map(function(x){ return [x.t10, x.name, x.rest, x.meal]; }) : null]); }
+function lcConfKey(o){ return JSON.stringify([o.C, o.d, o.avg10, o.reached, o.cfg ? [o.cfg.who, o.cfg.tiers.map(function(x){ return [x.t10, x.name, x.rest, x.meal, x.photo]; })] : null]); }
 async function lcConfirm(){
   if (!lcCanAdmin() || _lc.busy) return;
-  var ym = _lc.ym, me = lcMe(), seen = lcConfKey(lcCompute(ym));
+  var ym = _lc.ym, me = lcMe(), seen = (_lc.confSeen && _lc.confSeen.ym === ym) ? _lc.confSeen.key : lcConfKey(lcCompute(ym));
   if (!(await lcPullForSave())) return;
   if (!lcStill(me)) return;
   if (_lc.ym !== ym) { lcNotDone(); return; }
@@ -72441,7 +72453,7 @@ async function lcSaveDin(){
   var ym = _lc.ym, d = _lc.din, me = lcMe(); if (!d || _lc.dinYm !== ym) return;
   if (!(await lcPullForSave())) return;
   if (!lcStill(me)) return;
-  if (_lc.din !== d || _lc.dinYm !== ym) { lcNotDone(); return; }
+  if (_lc.din !== d || _lc.dinYm !== ym) { lcNotDone(true); return; }
   var cur = lcRec('din:' + ym);
   if ((cur ? Number(cur._at) || 0 : 0) !== (Number(d.base) || 0)) {
     _lc.din = null; _lc.dinYm = null;
@@ -72458,9 +72470,16 @@ async function lcSaveDin(){
 async function lcPickDinPhoto(input){
   var f = input && input.files && input.files[0], d = _lc.din; if (!f || !d || _lc.dinYm !== _lc.ym || _lc.busy) return;
   if (d.photos.length >= LC_MAX_DINNER_PHOTOS) { showToast(lcT('写真は ' + LC_MAX_DINNER_PHOTOS + ' 枚まで', 'Up to ' + LC_MAX_DINNER_PHOTOS + ' photos'), 'warning'); return; }
-  _lc.busy = true; lcRerender();
-  try { var id = await lcUploadPhoto(f, _lc.dinYm); if (id && _lc.din === d) d.photos.push(id); }
-  finally { _lc.busy = false; lcRerender(); }
+  _lc.busy = true;
+  try {
+    try { lcRerender(); } catch(e) {}
+    var id = await lcUploadPhoto(f, _lc.dinYm);
+    if (id && _lc.din === d) d.photos.push(id);
+    else if (id) lcPhotoNotAdded();
+  } finally { _lc.busy = false; try { lcRerender(); } catch(e) {} }
+}
+function lcPhotoNotAdded(){
+  showToast(lcT('写真は上げましたが、画面が変わったので入れていません。もう一度選んでください', 'The photo was uploaded but not added because the page changed. Please choose it again'), 'warning');
 }
 function lcDinDrop(i){ var d = _lc.din; if (!d || _lc.busy) return; d.photos.splice(i, 1); lcRerender(); }
 function lcAdminHtml(o){
@@ -72527,6 +72546,7 @@ function lcAdminHtml(o){
       + (o.corrected ? '<div style="font-size:12px;color:#b42318;margin-top:4px">' + e(lcT('確定のあとで数字が変わりました（' + lcList(o.changed) + '）：確定のとき ' + o.conf.C + ' 名／' + o.conf.d + ' 日・今 ' + o.C + ' 名／' + o.d + ' 日。確かめて、必要なら取り消して確定し直してください。', 'The numbers changed after confirming (' + lcList(o.changed) + '): then ' + o.conf.C + ' guests / ' + o.conf.d + ' days, now ' + o.C + ' / ' + o.d + '. Check and, if needed, undo and confirm again.')) + '</div>' : '')
       + '<div class="lc-row" style="margin-top:8px"><input class="lc-in" style="flex:1;width:auto" placeholder="' + e(lcT('取り消す理由（必須）', 'Reason to undo (required)')) + '" value="' + e(_lc.confWhy || '') + '" oninput="_lc.confWhy=this.value"><button class="btn btn-secondary btn-sm"' + (_lc.busy ? ' disabled' : '') + ' onclick="lcUnconfirm()">' + lcT('確定を取り消す', 'Undo confirmation') + '</button></div>';
   } else {
+    _lc.confSeen = { ym:o.ym, key:lcConfKey(o) };   /* 確定のボタンを描いたときの内容（押したあとに最新と比べる） */
     var can = o.ended && !o.pending && !o.markData.length && !!o.cfg && o.d > 0, why = !o.cfg ? lcT('段階とごほうびを先に設定してください', 'Set the stars and rewards first') : !o.ended ? lcT('月が終わってから確定します', 'Confirm after the month ends') : o.pending ? lcT('集計待ち・ランチ 0 名の日を先に決めてください', 'Decide the waiting / 0-guest days first') : o.markData.length ? lcT('休業だったとした日に客数があります（' + lcList(o.markData) + '）。営業していたなら印を外してください', 'Days marked closed have guests (' + lcList(o.markData) + '). If lunch was open, undo the mark') : !o.d ? lcT('数えたランチの日がありません', 'No lunch day counted') : '';
     h += '<button class="btn btn-primary btn-sm" style="margin-top:10px"' + (can && !_lc.busy ? '' : ' disabled') + ' onclick="lcConfirm()">' + e(o.cfg && o.reached >= 0 ? lcT(lcTierShort(o.reached) + ' で確定する', 'Confirm with ' + lcTierShort(o.reached)) : lcT('確定する', 'Confirm')) + '</button>'
       + (why ? '<div class="lc-mut" style="font-size:11.5px;margin-top:4px">' + e(why) + '</div>' : '')
