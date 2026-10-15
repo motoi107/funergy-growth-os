@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-10-14 invoice 取込 v1079：要確認の並べ替え・店舗を選ぶ・書類の種類（UI案50 段階 1・Claude・ブランチ `claude/invoice-review-sort-store`・本番未反映）
+
+- 依頼と決定：Moto さん 10/14 13:27 HST「経理のinvoice処理追加変更点」→ UI案50 → 14:39 HST「確認しました、これで進めてください」（決めてほしいこと 1〜8 は推奨 A として進める）。順番は ① invoice 段階 1 → ② Tenkichi ランチ → ③ invoice 段階 2 → ④ 段階 3（ChatGPT 側の転送と合わせるので着手前に確認）。
+- 段階 1 はアプリだけ（index.html・sw.js・試験。SQL・Edge Function は変えない）。PR #60（記録だけ・`df16802`）の上に積んだので、この PR をマージすると #60 も入る。版は PR #59（v1078）のあと（1079）。
+- 中身（詳しくは `docs/INVOICE_ACCOUNTING_REQUESTS_JA.md` の「段階 1 の実装」）：要確認はすべて読んで（200 件ずつ・20 行重ねる・2,000 件まで）画面で並べ替え（8 通り＋見出し・初めは業者 → invoice番号・同じ番号の見出し・この端末に覚える）、100 件ずつのページ、まとめて反映は問いに出した行（id と版）だけ。宛先が別の店舗なら一覧に「店舗を選ぶ」、1 件の画面に店舗を選ぶ欄（サーバーの reassign・理由が要る・取込中の店舗だけ）。書類の種類（Invoice／Packing list（invoice 扱い）／Credit memo／Statement）。読めない書類・レシートは種類を変えない。
+- 試験（合成データ）：invoice-review-sort 15・invoice-ui 13・invoice-intake 85（packing list の段を足した）・わざと壊す 92 通りすべてで落ちる・static release pass/1079・Chromium（1280・390px・日英）pageerror 0・横スクロールなし。`tests/*.test.mjs`（invoice-mutations 以外）の失敗は前からの 27 件と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）。
+- 独立レビュー（Claude の別エージェント・4 回）：P1 1・P2 5 を直した。最後（`b6a3b13`）は P1・P2 なし・P3 3（2 つ直した・1 つは段階 2 のサーバー）。**Codex のレビューはまだ。**
+- 段階 2 で直すこと（サーバー）：`recheck` が `unreadable`・`ai_failed` を残さない／人が店舗を変えたファイルを自動反映から外す／`invoice_list` の順に id・`vendor_key`。あわせて照合済みフォルダへ移す・AI が packing list を見分ける（決めてほしいこと 1〜5 の A）。
+- 次：PR → Codex のレビュー → Moto さんがマージ（入れるのはアプリだけ）→ 経理の実機で並べ替え・店舗を選ぶ・Packing list を確かめる。そのあと ② Tenkichi ランチ。
+
 ## 2026-10-14 Tenkichi ランチチャレンジ（UI案49）と invoice の経理の追加変更 5 点（UI案50）：案だけ・コードの変更なし（Claude・ブランチ `claude/ui49-ui50-proposals`）
 
 - 依頼：Moto さん 10/14 13:27 HST。① 添付「Tenkichiランチ チャレンジ特設ページ」（UI 案・データの接続方針・確認事項まで。実装は UI 案を見てから）② 「経理のinvoice処理追加変更点」5 点（照合のあとの名前と照合済みフォルダ・要確認の並べ替え・packing list・店舗の食い違い・同じ番号）。

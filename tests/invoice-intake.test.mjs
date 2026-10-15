@@ -340,6 +340,23 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     const [rc] = await docsOf(E, ids['RCPT-1']); assert.ok(codes(rc).includes('receipt_route'));
     r = await E.api('tok-office', { action: 'relate', doc_id: rc.id, version: rc.version, related_doc_id: d1001.id, relation: 'payment_for' }); assert.equal(r.status, 200);
     r = await E.api('tok-office', { action: 'post', doc_id: rc.id, version: rc.version + 1, reason: 'x' }); assert.equal(r.status, 409);
+    // v1079 (Moto 2026-10-14): a packing list with amounts that the AI could not type ("other") is held until a person
+    // chooses the type on the screen; saved as an invoice it is checked again as a purchase and can be posted.
+    E.fixtures.set('PL-77', { readable: true, documents: [{ ...doc('PL77', '2026-10-06', [['06263', 'SHIRO MISO 12/500G', '1', '61.20', '61.20', 'CS', '12/500G']]), doc_type: 'other' }] });
+    const plId = E.drive.file('PL-77.pdf', pdf('PL-77', 1), 'U6');
+    await E.worker();
+    let [pl] = await docsOf(E, plId);
+    assert.deepEqual([pl.status, pl.posting_kind], ['review', 'none']); assert.ok(codes(pl).includes('doc_type_unknown'));
+    r = await E.api('tok-office', { action: 'post', doc_id: pl.id, version: pl.version, reason: 'x' }); assert.equal(r.status, 409);
+    r = await E.api('tok-crew', { action: 'edit', doc_id: pl.id, version: pl.version, header: { doc_type: 'invoice' }, lines: [],
+      reason: '経理の確認で直した / 書類の種類：Packing list を invoice として扱う', adjustment_ack: false, ack: [] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    [pl] = await docsOf(E, plId);
+    assert.deepEqual([pl.doc_type, pl.posting_kind], ['invoice', 'purchase']); assert.ok(!codes(pl).includes('doc_type_unknown'), JSON.stringify(pl.reasons));
+    r = await E.api('tok-crew', { action: 'post', doc_id: pl.id, version: pl.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const [plEv] = await E.q(`select data from invoice_events where doc_id=$1 and kind='edited' order by id desc limit 1`, [pl.id]);
+    assert.match(JSON.stringify(plEv ? plEv.data : null), /Packing list を invoice として扱う/);
   });
 
   await t.test('6b: a corrected version replaces a posted one without double counting; corrections of posted invoices are reconciled again', async () => {
