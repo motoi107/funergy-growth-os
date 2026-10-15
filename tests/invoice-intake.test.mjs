@@ -1225,6 +1225,28 @@ test('the review fixes upgrade a database that already has the first migration',
   assert.equal((await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k, keyBefore);
   assert.deepEqual((await pg.query(`select id, role from invoice_folders`)).rows, [{ id: 'Y1', role: 'year' }], 'folder records are kept');
   await pg.query(`insert into public.invoice_folders(id, parent_id, name, store_id, role) values('RC', 'R6', '照合済み', 'F06', 'reconciled_root')`);
+  // The check says false when any one part of 段階 2 is missing: each of the five functions put back as it was before, and the
+  // folder roles as they were (the check would otherwise pass a half-applied update).
+  const EARLIER = ['20261007090000_invoice_intake.sql', '20261007160000_invoice_intake_review_fixes.sql', '20261007200000_invoice_intake_accounting_checks.sql',
+    '20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
+    '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql'];
+  const before = name => {
+    let last = null;
+    for (const f of EARLIER) for (const m of read('supabase/migrations/' + f).matchAll(new RegExp('create (?:or replace )?function public\\.' + name + '\\(p jsonb\\)[\\s\\S]*?\\$\\$;', 'g'))) last = m[0];
+    assert.ok(last, name + ' had an earlier version'); return last.replace(/^create (?:or replace )?function/, 'create or replace function');
+  };
+  for (const name of ['invoice_organize_due', 'invoice_dup_scope', 'invoice_files_due', 'invoice_post', 'invoice_list']) {
+    await pg.exec(before(name));
+    assert.equal((await pg.query(POST)).rows[0].reconciled_folder, false, 'the check notices the earlier ' + name);
+    await pg.exec(STAGE2);
+    assert.equal((await pg.query(POST)).rows[0].reconciled_folder, true);
+  }
+  await pg.query(`delete from public.invoice_folders where role like 'reconciled_%'`);
+  await pg.exec(`alter table public.invoice_folders drop constraint invoice_folders_role_check;
+    alter table public.invoice_folders add constraint invoice_folders_role_check check (role in ('year','month','unreconciled','reconciled'))`);
+  assert.equal((await pg.query(POST)).rows[0].reconciled_folder, false, 'the check notices the earlier folder roles');
+  await pg.exec(STAGE2);
+  assert.equal((await pg.query(POST)).rows[0].reconciled_folder, true);
 });
 
 // Codex independent review of 1851593 (2026-10-07): C1-C5. Each case fails on that commit and passes after the fix.
