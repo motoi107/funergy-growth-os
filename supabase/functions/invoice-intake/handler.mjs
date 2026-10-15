@@ -80,6 +80,13 @@ export function createHandler(deps) {
     return { ...c, mode, rules, qb, started: !!mode.intake && Number.isFinite(startAt) && startAt <= now() };
   }
 
+  // The vendor a key ends at, following merges (業者の統合, Moto 2026-10-15). Null for a key no vendor has.
+  function finalVendor(vendors, key) {
+    let v = key ? (vendors || []).find(x => x.vendor_key === key) : null;
+    for (let i = 0; v && v.merged_into && i < 20; i++) v = (vendors || []).find(x => x.vendor_key === v.merged_into) || null;
+    return v;
+  }
+
   async function scanStore(store, ctx, stats) {
     const started = new Date(now()).toISOString();
     let n = 0, nStore = 0;
@@ -533,7 +540,8 @@ export function createHandler(deps) {
     const dateIn = invoiceDateInput(doc, edits.header || {}, ai);
     const byId = Object.fromEntries((edits.lines || []).map(e => [e.line_id, e.set || {}]));
     const store = ctx.stores.find(s => s.store_id === doc.store_id) || { store_id: doc.store_id, auto_post: false };
-    const vendor = ctx.vendors.find(v => v.vendor_key === H.vendor_key);
+    // A vendor merged into another one (業者の統合, Moto 2026-10-15) is read as the vendor it ended at.
+    const vendor = finalVendor(ctx.vendors, H.vendor_key);
     const cents = c => (c === null || c === undefined ? null : (Number(c) / 100).toFixed(2));
     // A packing list stays one through other corrections; choosing the document type again decides anew.
     const packing = !('doc_type' in (edits.header || {})) && H.doc_type === 'invoice' && (doc.reasons || []).some(r => r.code === 'packing_list');
@@ -589,6 +597,8 @@ export function createHandler(deps) {
       'subtotal_cents', 'discount_cents', 'tax_cents', 'shipping_cents', 'total_cents', 'food_kind'];
     for (const k of Object.keys(b.header || {})) { if (!allowed.includes(k)) throw new Error('field_not_editable'); header[k] = b.header[k]; }
     if ('doc_type' in header && !['invoice', 'packing_list', 'credit_memo', 'statement', 'receipt', 'other', 'unknown'].includes(header.doc_type)) throw new Error('bad_value');
+    // A screen opened before a merge may still offer a merged vendor: the invoice gets the vendor it ended at (業者の統合).
+    if (typeof header.vendor_key === 'string' && header.vendor_key) { const fv = finalVendor(ctx.vendors, header.vendor_key); if (fv) header.vendor_key = fv.vendor_key; }
     const result = await recheck(g.doc, g.lines, { header, lines: b.lines || [] }, ctx, g.ai_doc || null);
     const h = result.header;
     // An invoice with no printed invoice date takes its delivery date. When that gives a date the record does not
@@ -734,6 +744,45 @@ export function createHandler(deps) {
       if (ctx.mode.rename) { saved.rename = []; for (const f of saved.file_ids || []) saved.rename.push(await renameNow(actor, f, ctx)); }
     }
     return { ...saved, plan };
+  }
+
+  // ------------------------------------------------------------------ 業者の統合 (Moto 2026-10-15・UI案51 1A・2A・3A)
+  // The database merges the vendors by their names (invoice_vendor_merge) or takes a merge back (invoice_vendor_unmerge). The
+  // invoices waiting for review that it moved (and those whose printed name no vendor had: they get the kept vendor) are worked out
+  // again here, as a person's correction would (reasons, duplicates, the vendor's mode): at most VENDOR_RECHECK in one call, the
+  // others when they are opened. b.preview: nothing is changed; what would change is returned.
+  const VENDOR_RECHECK = 60;
+  const strList = x => (Array.isArray(x) ? x.filter(s => typeof s === 'string').map(s => s.trim()).filter(Boolean) : []);
+  async function recheckVendorDocs(actor, ids, target, reason) {
+    const out = { fixed: 0, failed: 0, left: Math.max(0, ids.length - VENDOR_RECHECK) };
+    for (const id of ids.slice(0, VENDOR_RECHECK)) {
+      try {
+        const g = await db.rpc('invoice_get', { actor, doc_id: id });
+        if (!g || !g.doc || g.doc.status !== 'review') continue;
+        await edit(actor, { doc_id: id, version: g.doc.version, header: target && !g.doc.vendor_key ? { vendor_key: target } : {}, lines: [], reason, ack: [] });
+        out.fixed++;
+      } catch (e) { out.failed++; console.error('invoice-intake vendor recheck', safeErr(e)); }
+    }
+    return out;
+  }
+  async function vendorMerge(actor, b) {
+    const names = strList(b.names);
+    if (typeof b.to !== 'string' || !b.to.trim() || !names.length || names.length > 50) throw new Error('bad_value');
+    if (b.food_kind != null && b.food_kind !== '' && b.food_kind !== 'food' && b.food_kind !== 'nonfood') throw new Error('bad_value');
+    const r = await db.rpc('invoice_vendor_merge', { actor, to: b.to.trim(), names, preview: b.preview === true,
+      food_kind: b.food_kind || null, group_id: typeof b.group_id === 'string' ? b.group_id : null });
+    if (b.preview === true || !r.merge_id) return r;
+    r.recheck = await recheckVendorDocs(actor, r.review_doc_ids || [], r.target.vendor_key, '業者の統合：' + r.target.display_name);
+    r.summary = (await publishSummary(null, { months: r.months || [], doc_ids: r.review_doc_ids || [] })).ok;
+    return r;
+  }
+  async function vendorUnmerge(actor, b) {
+    if (typeof b.merge_id !== 'string') throw new Error('bad_value');
+    const r = await db.rpc('invoice_vendor_unmerge', { actor, merge_id: b.merge_id, preview: b.preview === true });
+    if (b.preview === true) return r;
+    r.recheck = await recheckVendorDocs(actor, r.review_doc_ids || [], null, '業者の統合を外した');
+    r.summary = (await publishSummary(null, { months: r.months || [], doc_ids: r.review_doc_ids || [] })).ok;
+    return r;
   }
 
   async function folderPlan(actor, b) {
@@ -882,12 +931,17 @@ export function createHandler(deps) {
     folder_setup: folderSetup,
     price_history: priceHistory,
     vendor_seed: (a, b) => db.rpc('invoice_vendor_seed', { actor: a, apply: b.apply === true }),
+    // 業者の統合 (Moto 2026-10-15・UI案51): the vendor master's merge screen.
+    vendor_usage: a => db.rpc('invoice_vendor_usage', { actor: a }),
+    vendor_merge: vendorMerge,
+    vendor_unmerge: vendorUnmerge,
     map_seed: (a, b) => db.rpc('invoice_map_seed', { actor: a, store_id: b.store_id || null, apply: b.apply === true, only_ext: b.only_ext !== false }),
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
-    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409 };
+    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409,
+    merged: 409, later_merge: 409 };
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.

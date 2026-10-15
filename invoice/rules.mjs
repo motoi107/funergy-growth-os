@@ -87,7 +87,8 @@ function matchStores(text, stores) {
 function vendorFor(name, vendors) {
   const k = aliasKey(name);
   if (!k) return null;
-  const hits = (vendors || []).filter(v => [v.display_name, ...(v.aliases || [])].some(a => aliasKey(a) === k));
+  // A vendor merged into another one (業者の統合, Moto 2026-10-15) is found through that vendor, which has its names.
+  const hits = (vendors || []).filter(v => !v.merged_into && [v.display_name, ...(v.aliases || [])].some(a => aliasKey(a) === k));
   return hits.length === 1 ? hits[0] : null;
 }
 
