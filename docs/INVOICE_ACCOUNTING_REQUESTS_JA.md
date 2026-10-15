@@ -140,7 +140,11 @@
 - 試験（合成データ・本番に接続していない）：invoice の 9 ファイル（intake・rules・migrations・ui・review-sort・purchase-summary・adapters・purchase-ui・multi-file-ui）187/187。`tests/invoice-multi-file-ui.test.mjs`（新しい・画面を VM で）11。`tests/invoice-intake.test.mjs` に 段階 3 の 5 つ（まとめる・見る・外す・反映・照合・QuickBooks の記録・仕入れ集計／反映済みに足す（8A・締め済みの月・食材以外のまま・主の invoice の見分け）／QuickBooks の台帳の行の取り消しと手で入れた記録／まとめられないもの（preview とデータベースの両方）／**画面のコードを本物の関数と PGlite で動かす**：一覧 → まとめて決める → 結果 → まとめる → 外す → またまとめる → 反映 → QuickBooks に入れた → 照合 → 8A で 3 枚目 → 訂正で 3 枚とも名前が変わる）と、入れる一式の試験。1 ファイルにした関数（`3_関数`）で intake の試験 95/95。static release pass/1082。Chromium（1280・390px・日本語と英語）で同じ番号の画面（まとめる・反映済みに足す・重複）と複数枚の invoice（要確認・反映済み）、pageerror 0・横スクロールなし。わざと壊す試験：`tests/invoice-mutations.test.mjs` に「段階3」71 通り（サーバー 48・画面 23）を足し、71 通りすべてで落ちる（`INVOICE_MUTATION_ONLY='段階3'`。サーバーの 65 通りは `9b91aac`（関数・SQL は最後と同じ）で、画面の 23 通りと最後に足した 6 通りは `c4930b5` で流した。前の段階の 198 通りは流し直していない）。
 - 独立レビュー（Claude の別エージェント・作業を見ていない）：`fec0e65` P1 1（反映済みの invoice が台帳で送る前のときにページを足すと、1 枚目だけが QuickBooks へ行き、「QuickBooks に入れた」でも止められない）・P2 2（まとめたページの原本が差し替えられた新しい読みを同じ invoice にまた足せる・明細が二重／まとめると人が決めた食材以外が業者の初期値に戻る）・P3 5（重複の版・逆の順で同時にまとめるとデッドロック・一覧に何枚目か無い・書類の種類と通貨を比べない・失敗した preview をやり直せない）→ `9b91aac` で直した。再レビュー（`9b91aac`）：**P1・P2 なし**・P3 3（差し替えられた原本の新しい読みを画面が「業者・番号・店舗」と言う・データベースだけの版の確かめの試験が無い・前からある 2 つのまれなデッドロック）→ `c4930b5` で 2 つ直した（前からのデッドロックは残した：`invoice_post` の置き換えと `invoice_reassign` がロックを逆の順に取る。同時に同じ書類で起きたときだけ・片方が失敗して何も変わらない）。**Codex のレビューはまだ。**
 - PR #64（#63 の上）。
-- 入れる一式：`deploy/invoice-stage3-v1082/`（手順.md・追加の SQL・確認の SQL・1 ファイルの関数・source.json）。順番は SQL → 確認（multi_file＝true・functions＝77）→ 関数 → アプリ。関数を前に戻すときは `deploy/invoice-stage2-v1081/` の関数（SQL はそのままでよい）。
+- 入れる一式：`deploy/invoice-stage3-v1082/`（手順.md・段階 2 と段階 3 を 1 つにした SQL・段階 3 だけの SQL・確認の SQL・1 ファイルの関数・source.json）。順番は SQL → 確認（purchase_summary・reconciled_folder・multi_file＝true・tables＝18・functions＝77）→ 関数 → アプリ。関数を前に戻すときは `deploy/invoice-stage2-v1081/` の関数（SQL はそのままでよい）。
+- 10/15 に足したこと（`fe8258b`）：
+  - 段階 3 の SQL は、仕入れ集計（`20261019090000`）が無いと止まる（何も変えない）。無いまま流すと `invoice_purchase_month` がブラウザーの鍵で呼べる形で作られていた。
+  - 仕入れ集計・段階 2 だけの SQL を段階 3 のあとにもう一度流すと、段階 3 の関数が前に戻る（確認の SQL で multi_file＝false。段階 3 の SQL をもう一度流せば戻る）。
+  - わざと壊す試験で、段階 3 のコードに合わなくなっていた前の段階の 7 通り（目印 9 か所）を直し、7 通りすべてで落ちることを確かめた。
 - 残っていること・Moto さんの判断
   - ChatGPT 側の転送が複数枚の invoice を 1 件にまとめて送れるようになったら、台帳に出す（台帳に「同じ invoice の印・何枚目・全部で何枚」を足し、全部のページの名前が変わってから一緒に出す。設定で ON）。今は出さない。伝言の案は下。
   - 重複にした原本を要確認に戻すボタンは無い（前から。サーバーには `reopen` がある）。要るかは Moto さん。
