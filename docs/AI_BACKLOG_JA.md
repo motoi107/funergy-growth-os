@@ -20,7 +20,7 @@
 5c. Moto さんの判断：Packing list と日付・合計の違う invoice をどこまで「重複の可能性」にするか（今は同じ日付・合計だけ）。
 6. 済（Moto さん 10/14）：段階 3 は「台帳に出さずに作る」（複数枚の invoice は ChatGPT 側の転送が対応するまで台帳に出さない・経理が手で入れて記録）。
 6b. 済（Claude・ブランチ `claude/invoice-stage3`）：段階 3 アプリ v1082・migration `20261021090000`（同じ番号の画面・まとめる／重複／別々・反映済みに足す・まとめを外す・QuickBooks に入れた）。入れる一式 `deploy/invoice-stage3-v1082/`。試験・独立レビュー 2 回（2 回目は P1・P2 なし）。
-6c. 次：Codex のレビュー（とくに invoice_merge のロックと確かめ・台帳の行の取り消し・qb_manual・反映済みに足すときの条件・画面の preview と版）→ Moto さんが #63 のあとにマージ・手順.md の順で入れる → 経理の実機。
+6c. 次（PR #64）：Codex のレビュー（とくに invoice_merge のロックと確かめ・台帳の行の取り消し・qb_manual・反映済みに足すときの条件・画面の preview と版）→ Moto さんが #63 のあとにマージ・手順.md の順で入れる → 経理の実機。
 6d. Moto さんの判断：ChatGPT 側への伝言（`docs/INVOICE_ACCOUNTING_REQUESTS_JA.md` の案）を送るか。対応したら台帳に「同じ invoice の印・何枚目・全部で何枚」を足して出す（設定で ON）。重複にした原本を要確認に戻すボタンが要るか。
 
 ## 2026-10-14 確認済み invoice の全店仕入れ集計・原価との連携（UI案48・v1077）
