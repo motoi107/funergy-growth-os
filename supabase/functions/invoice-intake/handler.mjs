@@ -228,6 +228,8 @@ export function createHandler(deps) {
     if (id === store.root_folder_id || id === store.upload_folder_id || (o.upload_folder_ids || []).includes(id)) return true;
     if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;
     const g = await drive.get(id);
+    // A temporary error (rate limit, Drive down) is retried as such, never shown as "outside the store".
+    if (g.status !== 200 && g.status !== 404 && g.status !== 403) throw new Error('folder_check_' + g.status);
     if (g.status !== 200 || !g.file || g.file.trashed || g.file.mimeType !== 'application/vnd.google-apps.folder') return false;
     for (const p of g.file.parents || []) if (await insideStore(p, store, o, depth + 1)) return true;
     return false;

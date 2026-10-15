@@ -16,7 +16,7 @@ const WORKER_KEY = 'synthetic-worker-key-0123456789';
 
 // ---------------------------------------------------------------- stand-ins
 class FakeDrive {
-  constructor() { this.items = new Map(); this.n = 0; this.failUpdate = 0; this.authDown = false; this.forbidden = new Set(); this.log = []; }
+  constructor() { this.items = new Map(); this.n = 0; this.failUpdate = 0; this.authDown = false; this.forbidden = new Set(); this.busy = new Set(); this.log = []; }
   folder(id, name, parent) { this.items.set(id, { id, name, mimeType: 'application/vnd.google-apps.folder', parents: parent ? [parent] : [], trashed: false }); return id; }
   file(name, bytes, parent, { id, mime = 'application/pdf', created = '2026-10-06T19:00:00Z', owner = null } = {}) {
     id = id || 'f' + (++this.n);
@@ -40,6 +40,7 @@ class FakeDrive {
   async get(id) {
     this.check();
     if (this.forbidden.has(id)) return { status: 403, file: null };
+    if (this.busy.has(id)) return { status: 503, file: null };   // Drive briefly unavailable
     const f = this.items.get(id); return f ? { status: 200, file: this.meta(f) } : { status: 404, file: null };
   }
   async download(id) { this.check(); this.log.push(['download', id]); return new Uint8Array(this.items.get(id).bytes); }
@@ -2214,6 +2215,13 @@ test('段階 2: reconciled originals go to 照合済み/YYYY-MM from wherever th
     await reconcile(g); await E.worker();
     assert.equal(E.drive.pathOf(g), 'LaLa/照合済み/2026-10');
     assert.notEqual(E.drive.items.get(g).parents[0], E.drive.items.get(d).parents[0], 'a new folder in the store, not the archived one');
+    // Drive briefly unavailable while checking a folder: a Drive error to retry, never "outside the store".
+    E.drive.busy.add(E.drive.items.get(g).parents[0]);
+    const dg = await docOf(g);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: dg.id, version: dg.version, result: 'unreconciled', note: '戻す' })).status, 200);
+    await E.worker();
+    assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [g]))[0], { organize_status: 'error', organize_error: 'folder_check_503' });
+    assert.equal(E.drive.pathOf(g), 'LaLa/照合済み/2026-10');
   } finally { await E.pg.close(); }
 });
 

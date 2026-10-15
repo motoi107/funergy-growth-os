@@ -46878,9 +46878,9 @@ var INVIN_MUST_FIX = ['duplicate_certain','total_missing','date_missing','date_u
 var INVIN_INFO = ['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
   'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
 /* 確認モード：その店舗・業者をまだ「自動」にしていないだけ（中身の問題ではない。まとめて反映できる）。
-   v1081（UI案50 段階 2）：Packing list（invoice として扱う）と、人が店舗を選んだファイルも灰色で出す。どちらも自動では反映しない（サーバー）が、
-   人が 4 項目を確かめてまとめて反映できる */
-var INVIN_MODE = ['mode_review_store','mode_review_vendor','packing_list','store_assigned'];
+   v1081（UI案50 段階 2）：人が店舗を選んだファイルも灰色で出す（自動では反映しない・人がまとめて反映できる）。
+   Packing list は「確認すること」に出す（1 件ずつ開いて、同じ納品の invoice が無いか見てから反映する・独立レビュー 2 回目 P3） */
+var INVIN_MODE = ['mode_review_store','mode_review_vendor','store_assigned'];
 /* 4 項目（と日付）のどこに付く理由か。? は読めない・決まっていない、! は合わない・食い違う */
 var INVIN_FIELD = {
   vendor_unknown:['vendor','?'], vendor_kind_unset:['vendor','?'],
@@ -46898,6 +46898,7 @@ var INVIN_HINT = {
   duplicate_certain:['同じ invoice が登録済み → 重複にする','Already registered → mark as duplicate'],
   same_number_different:['同じ番号で内容が違う → 訂正版か別の書類か決める','Same number, different content → corrected version or another document?'],
   duplicate_candidate:['重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」','Possible duplicate (same vendor, store, date and total) → compare; for a packing list and its invoice, mark one as duplicate'],
+  packing_list:['Packing list → 開いて、同じ納品の invoice が来ていないか（日付・合計が違っても）見てから反映','Packing list → open it and check that no invoice of the same delivery is in (even with another date or total), then post'],
   app_duplicate_candidate:['アプリで登録済みの可能性 → 見比べる','May already be in the app → compare'],
   original_replaced:['原本が差し替えられた → 前の版と見比べる','The original was overwritten → compare with the earlier version'],
   total_missing:['合計が読めない → 原本の合計を入れる','No total → enter it from the original'],
@@ -48199,7 +48200,8 @@ async function invInConfirm(){
     var saved = await invInSave(true); if (!saved) return;
     try { await invInLoadDoc(); } catch(err) { showToast(String(err && err.message || err), 'warning'); delete _invIn.loaded.doc; invInRerender(); return; }
     if (!_invIn.doc || _invIn.doc.doc.id !== d.id || !_invIn.edits) { invInRerender(); return; }
-    var seenCodes = invInToCheck(d.reasons).map(function(r){ return r.code; });
+    var ckKey = function(r){ return r.code + '|' + String(r.detail==null ? '' : r.detail) + '|' + String(r.line_no==null ? '' : r.line_no); };
+    var seenCodes = invInToCheck(d.reasons).map(ckKey), chosePl = invInIsPl(d);
     /* 保存したあと、読み直すまでにほかの人が直していたら反映しない（見ていない金額を反映しない・Codex R8）。読み直した内容を見てもう一度押してもらう */
     if (Number(_invIn.doc.doc.version) !== Number(saved.version)) {
       showToast(t('保存のあとにほかの人がこの invoice を直しました。今の内容を確かめてから、もう一度「この内容で反映する」を押してください','Someone changed this invoice after you saved. Check the current values and press “Post as shown” again'), 'warning');
@@ -48209,7 +48211,7 @@ async function invInConfirm(){
     d = _invIn.doc.doc;
     /* v1081（段階 2 の独立レビュー P2-1）：保存したら確かめることが増えた（例：Packing list にしたら同じ納品の invoice が見つかった）ときは
        反映せず、見てからもう一度押してもらう */
-    var grown = invInToCheck(d.reasons).filter(function(r){ return seenCodes.indexOf(r.code) < 0; });
+    var grown = invInToCheck(d.reasons).filter(function(r){ return seenCodes.indexOf(ckKey(r)) < 0 && !(r.code==='packing_list' && chosePl); });   /* 自分で選んだ Packing list の印は増えたうちに数えない */
     if (grown.length) { showToast(t('保存したら確かめることが増えました：','Saving found something to check: ')+invInHint(grown[0])+t('。見てから、もう一度「この内容で反映する」を押してください','. Look at it, then press “Post as shown” again'), 'warning'); invInRerender(); return; }
   }
   var chk = invInToCheck(d.reasons);

@@ -537,7 +537,7 @@ test('v1081 (段階 2): a packing list the server marked shows as one; choosing 
   let h = fn(c, 'invInDetail')('review');
   assert.match(h, /<option value="pl" selected>Packing list（invoice 扱い）<\/option>/);
   assert.match(h, /同じ業者・店舗・日付・合計の invoice が届くと「重複の可能性」が出る/);
-  assert.match(h, /Packing list（invoice として扱う・自動では反映しない）/, 'shown as a gray note');
+  assert.match(h, /Packing list → 開いて、同じ納品の invoice が来ていないか（日付・合計が違っても）見てから反映/, 'shown as something to check');
   // Already marked: posting needs no save; the record still says it is a packing list.
   await fn(c, 'invInConfirm')();
   assert.deepEqual(c.calls.map(b => b.action), ['post']);
@@ -553,12 +553,19 @@ test('v1081 (段階 2): a packing list the server marked shows as one; choosing 
   fn(x, 'invInSetDocType')('pl');
   assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), fn(x, 'invInIsPl')(x.M._invIn.doc.doc)], [{}, true]);
   assert.equal(sel(), '');
-  // In the list: neither is something to check; both are shown; the row can be posted with the others.
-  const r = { ...row(1), reasons: [{ code: 'packing_list' }, { code: 'store_assigned' }, { code: 'no_price_ref' }] };
+  // In the list: a chosen store is a gray note and can be posted with the others; a packing list is opened one by one.
+  const r = { ...row(1), reasons: [{ code: 'store_assigned' }, { code: 'no_price_ref' }] };
   assert.equal(fn(c, 'invInBatchable')(r), true);
   c.M._invIn.review = { rows: [r], total: 1 };
   h = fn(c, 'invInQueueHtml')('review');
-  assert.match(h, /4 項目とも問題なし/); assert.match(h, /Packing list（invoice として扱う・自動では反映しない）/); assert.match(h, /店舗を人が選んだ（自動では反映しない）/);
+  assert.match(h, /4 項目とも問題なし/); assert.match(h, /店舗を人が選んだ（自動では反映しない）/);
+  const plr = { ...row(3), reasons: [{ code: 'packing_list' }, { code: 'mode_review_store' }] };
+  assert.equal(fn(c, 'invInBatchable')(plr), false, 'not posted with the others');
+  c.M._invIn.review = { rows: [plr], total: 1 };
+  assert.match(fn(c, 'invInQueueHtml')('review'), /Packing list → 開いて、同じ納品の invoice が来ていないか/);
+  // Once posted, the record still says it was a packing list.
+  const pd = app(); open(pd, DOC({ status: 'posted', reasons: [{ code: 'packing_list' }] }));
+  assert.match(fn(pd, 'invInDetail')('recon'), /Packing list（invoice として扱う・自動では反映しない）/);
   // A possible duplicate says what matched and what to do.
   c.M._invIn.review = { rows: [{ ...row(2), reasons: [{ code: 'duplicate_candidate', detail: 'x' }] }], total: 1 };
   assert.match(fn(c, 'invInQueueHtml')('review'), /重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」/);
@@ -593,4 +600,14 @@ test('v1081 (段階 2 review P3-4): changing only the old filing switch keeps th
   fn(d, 'invInSetting')('mode', 'organize', false);
   await new Promise(r => setImmediate(r));
   assert.deepEqual(JSON.parse(JSON.stringify(d.calls.at(-1).value)), { organize: false }, 'once set, it is left as set');
+});
+
+test('v1081 (段階 2 re-review P3-2): a second possible duplicate found by the save is shown before posting, even under the same reason', async () => {
+  const before = () => DOC({ reasons: [{ code: 'mode_review_store' }, { code: 'duplicate_candidate', detail: id(9) }] });
+  const after = before(); after.doc.version = 4; after.doc.reasons = [{ code: 'mode_review_store' }, { code: 'duplicate_candidate', detail: id(9) + ',' + id(10) }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
+  open(c, before()); c.M._invIn.edits.h.invoice_no = '77411';
+  await fn(c, 'invInConfirm')();
+  assert.ok(!c.calls.some(b => b.action === 'post'), 'not posted');
+  assert.match(c.toasts.at(-1)[0], /保存したら確かめることが増えました：重複の可能性/);
 });
