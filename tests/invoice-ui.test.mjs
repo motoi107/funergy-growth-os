@@ -178,7 +178,14 @@ const conf1071 = (mode = {}, qb = { to: 'qb@example.invalid', since: '2026-09-29
 test('v1071 settings: a GM or CEO turns renaming on after a confirmation; the QuickBooks start is a Hawaii time', async () => {
   const g = app({ role: 'gm' }); g.M._invIn.config = conf1071(); g.M._invIn.health = {};
   let h = vm.runInContext('invInSettings', g)();
-  assert.match(h, /原本を月ごとのフォルダに整理する（未照合・照合済み）/);
+  assert.match(h, /00_Upload の原本を月ごとのフォルダに整理する（年 \/ 月 \/ 未照合）/);
+  // v1081 (UI案50 1A・3A・4A): moving reconciled originals is its own switch; until it is set it shows (and works) like filing.
+  assert.match(h, /<input type="checkbox" onchange="invInSetting\('mode','organize_reconciled',this\.checked\)"> 照合したら原本を「照合済み \/ 年-月」フォルダへ移す/);
+  assert.match(h, /店舗フォルダの直下や「○月 Uploaded」に置いた原本も移します/);
+  const tick = cf => { const x = app({ role: 'gm' }); x.M._invIn.config = conf1071(cf); x.M._invIn.health = {};
+    return /<input type="checkbox" checked onchange="invInSetting\('mode','organize_reconciled'/.test(vm.runInContext('invInSettings', x)()); };
+  assert.deepEqual([tick({ organize: true }), tick({ organize: false }), tick({ organize: true, organize_reconciled: false }), tick({ organize: false, organize_reconciled: true })],
+    [true, false, false, true], 'not set yet: shown like filing; once set: as set');
   assert.doesNotMatch(h, /業者_請求日_店舗_INV-番号/);
   assert.match(h, /反映したら原本のファイル名を変える/); assert.match(h, /2026-10-07_Marujuu-Produce_12345\.pdf/);
   assert.match(h, /反映して、名前を変えた原本だけ/);

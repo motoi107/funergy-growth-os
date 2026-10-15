@@ -314,8 +314,9 @@ test('one invoice: unsaved corrections are not carried over, so changing the sto
   assert.match(h, /ファイルの書類はすべて選んだ店舗になります/);
   assert.match(h, /宛先は複数の店舗：Alpha・Bravo/);
   assert.match(h, /<option value="" selected>選ぶ<\/option>/, 'several printed stores (the current one too): nothing is chosen for the person');
-  // The note says plainly that automatic posting may post it after the change.
-  assert.match(h, /自動反映が ON の店舗・業者で確かめることが無ければ、そのまま反映されます/);
+  // v1081: a file whose store a person chose is never posted automatically (the server marks it store_assigned).
+  assert.match(h, /自動では反映せず、要確認に戻ります（確かめることが無ければ、まとめて反映できます）/);
+  assert.doesNotMatch(h, /そのまま反映されます/);
 });
 
 test('one invoice: a packing list with amounts is saved as an invoice with the reason, re-read and posted', async () => {
@@ -342,7 +343,7 @@ test('one invoice: a packing list with amounts is saved as an invoice with the r
   assert.match(h, /金額のある Packing list を invoice として反映します/);
   await fn(c, 'invInConfirm')();
   assert.deepEqual(c.calls.map(b => b.action), ['edit', 'get', 'post']);
-  assert.deepEqual(JSON.parse(JSON.stringify(c.calls[0].header)), { doc_type: 'invoice' });
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls[0].header)), { doc_type: 'packing_list' }, 'v1081: sent as a packing list (the server saves an invoice and marks it)');
   assert.equal(c.calls[0].reason, '経理の確認で直した / 書類の種類：Packing list を invoice として扱う');
   assert.equal(c.calls[2].version, 4);
   // Choosing the type again undoes it; a statement stays out of posting; a value that is not offered is ignored.
@@ -361,10 +362,13 @@ test('one invoice: a packing list with amounts is saved as an invoice with the r
   fn(st, 'invInSetDocType')('statement');
   assert.deepEqual(JSON.parse(JSON.stringify(st.M._invIn.edits.h)), {});
   assert.doesNotMatch(fn(st, 'invInDetail')('review'), /保存すると確かめ直します/);
-  // An invoice that is already an invoice and picked as a packing list sends no change.
+  // v1081: an invoice picked as a packing list is saved as one (the server marks it); one already marked sends no change.
   const y = app(); open(y, DOC({ reasons: [{ code: 'mode_review_store' }] }));
   fn(y, 'invInSetDocType')('pl');
-  assert.deepEqual(JSON.parse(JSON.stringify(fn(y, 'invInCollectEdits')(y.M._invIn.doc.doc, []).header)), {});
+  assert.deepEqual(JSON.parse(JSON.stringify(fn(y, 'invInCollectEdits')(y.M._invIn.doc.doc, []).header)), { doc_type: 'packing_list' });
+  const ym = app(); open(ym, DOC({ reasons: [{ code: 'mode_review_store' }, { code: 'packing_list' }] }));
+  fn(ym, 'invInSetDocType')('pl');
+  assert.deepEqual(JSON.parse(JSON.stringify(fn(ym, 'invInCollectEdits')(ym.M._invIn.doc.doc, []).header)), {});
   // English.
   const en = app(); en.curLang = 'en'; open(en, before());
   fn(en, 'invInSetDocType')('pl');
@@ -498,11 +502,14 @@ test('second review P3: late store change, cancelled question, sign-out, a print
 test('a packing list the AI already read as an invoice is recorded when it is posted (and when other values are saved)', async () => {
   const PL = '書類の種類：Packing list を invoice として扱う';
   const clean = () => DOC({ reasons: [{ code: 'mode_review_store' }] });
-  const c = app({ api: () => ({ ok: true }) });
+  // v1081: choosing Packing list is saved first (the server marks it, so a same-delivery invoice is compared with it).
+  const marked = clean(); marked.doc.version = 4; marked.doc.reasons = [{ code: 'mode_review_store' }, { code: 'packing_list' }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? marked : { ok: true }) });
   open(c, clean()); fn(c, 'invInSetDocType')('pl');
   await fn(c, 'invInConfirm')();
-  assert.deepEqual(c.calls.map(b => b.action), ['post']);
-  assert.equal(c.calls[0].reason, '経理の確認（業者・invoice番号・金額・店舗） / ' + PL);
+  assert.deepEqual(c.calls.map(b => b.action), ['edit', 'get', 'post']);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.calls[0].header)), { doc_type: 'packing_list' });
+  assert.equal(c.calls[2].reason, '経理の確認（業者・invoice番号・金額・店舗） / ' + PL);
   // With another correction: the save and the post both say so.
   const after = clean(); after.doc.version = 4; after.doc.invoice_no = '77411';
   const d = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
@@ -521,4 +528,37 @@ test('rows that could not be read while the list changed are reported as such; a
   assert.deepEqual(order(c), [id(3), id(1), id(2)]);
   fn(c, 'invInRSortHead')('store');
   assert.deepEqual(order(c), [id(1), id(3), id(2)], 'also last when the order is reversed');
+});
+
+test('v1081 (段階 2): a packing list the server marked shows as one; choosing Invoice takes the mark away; chosen stores and packing lists are gray notes', async () => {
+  const marked = () => DOC({ reasons: [{ code: 'mode_review_store' }, { code: 'packing_list' }] });
+  const c = app({ api: () => ({ ok: true }) });
+  open(c, marked());
+  let h = fn(c, 'invInDetail')('review');
+  assert.match(h, /<option value="pl" selected>Packing list（invoice 扱い）<\/option>/);
+  assert.match(h, /同じ業者・店舗・日付・合計の invoice が届くと「重複の可能性」が出る/);
+  assert.match(h, /Packing list（invoice として扱う）/, 'shown as a gray note');
+  // Already marked: posting needs no save; the record still says it is a packing list.
+  await fn(c, 'invInConfirm')();
+  assert.deepEqual(c.calls.map(b => b.action), ['post']);
+  assert.match(c.calls[0].reason, /書類の種類：Packing list を invoice として扱う/);
+  // Choosing Invoice for a marked one sends invoice (the server takes the mark away); choosing Packing list again changes nothing.
+  const x = app(); open(x, marked());
+  const sel = () => /class="form-select ivx-in( ivx-chg)?"[^>]*aria-label="書類の種類"/.exec(fn(x, 'invInDetail')('review'))[1] || '';
+  assert.equal(sel(), '', 'nothing chosen: not marked as changed');
+  fn(x, 'invInSetDocType')('invoice');
+  assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), fn(x, 'invInIsPl')(x.M._invIn.doc.doc)], [{ doc_type: 'invoice' }, false]);
+  assert.equal(sel(), ' ivx-chg', 'a change to save is marked');
+  fn(x, 'invInSetDocType')('pl');
+  assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), fn(x, 'invInIsPl')(x.M._invIn.doc.doc)], [{}, true]);
+  assert.equal(sel(), '');
+  // In the list: neither is something to check; both are shown; the row can be posted with the others.
+  const r = { ...row(1), reasons: [{ code: 'packing_list' }, { code: 'store_assigned' }, { code: 'no_price_ref' }] };
+  assert.equal(fn(c, 'invInBatchable')(r), true);
+  c.M._invIn.review = { rows: [r], total: 1 };
+  h = fn(c, 'invInQueueHtml')('review');
+  assert.match(h, /4 項目とも問題なし/); assert.match(h, /Packing list（invoice として扱う）/); assert.match(h, /店舗を人が選んだ（自動では反映しない）/);
+  // A possible duplicate says what matched and what to do.
+  c.M._invIn.review = { rows: [{ ...row(2), reasons: [{ code: 'duplicate_candidate', detail: 'x' }] }], total: 1 };
+  assert.match(fn(c, 'invInQueueHtml')('review'), /重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」/);
 });

@@ -4,7 +4,7 @@
 import { callModel, PROMPT_VERSION } from '../../../invoice/extract.mjs';
 import { evaluate, applyDuplicates } from '../../../invoice/rules.mjs';
 import { sha256Hex, contentSignature, classifyDuplicates, aliasKey } from '../../../invoice/dedupe.mjs';
-import { postedName, uniqueName, monthFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
+import { postedName, uniqueName, monthFolders, reconciledFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
 import { hstDate } from '../../../invoice/dates.mjs';
 import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../invoice/drive.mjs';
 
@@ -138,8 +138,10 @@ export function createHandler(deps) {
           store_id: store.store_id, invoice_date: h.invoice_date, total_cents: h.total_cents }))
           .filter(e => !(e.file_id === f.id && e.sha256 === sha));
         const app = await db.rpc('invoice_app_records', { store_id: store.store_id });
-        applyDuplicates(result, classifyDuplicates({ sha256: sha, store_id: store.store_id, ...h }, existing, app));
+        applyDuplicates(result, classifyDuplicates({ sha256: sha, store_id: store.store_id, ...h, packing: result.reasons.some(r => r.code === 'packing_list') }, existing, app));
       }
+      // A person chose the store for this file (reassign): it waits for a person even when nothing else needs checking.
+      if (f.store_assigned && !result.reasons.some(r => r.code === 'store_assigned')) { result.reasons.push({ code: 'store_assigned' }); result.autoEligible = false; }
       const h = result.header;
       const certain = result.reasons.find(r => r.code === 'duplicate_certain');
       const st = await db.rpc('invoice_stage', { source_key: `${f.id}:${sha}:${store.store_id}:${i}`, file_id: f.id, sha256: sha, doc_index: i, store_id: store.store_id,
@@ -238,12 +240,15 @@ export function createHandler(deps) {
     return null;
   }
 
-  // Files the original by invoice month (year / month / 未照合 or 照合済み). The name is not changed here: a posted original is
-  // named 日付_業者名_番号 by renameOne (Moto 2026-10-12), wherever it is.
+  // Files the original. Not reconciled: by invoice month (year / month / 未照合), originals staff keep themselves stay where
+  // they are. Reconciled (Moto 2026-10-14, UI案50 1A・3A・4A): {store folder}/照合済み/YYYY-MM (the invoice date's month),
+  // from wherever it is in the store's folders, right in the store folder and staff's own folders in it included. The name
+  // is not changed here: a posted original is named 日付_業者名_番号 by renameOne (Moto 2026-10-12), wherever it is.
   async function organizeOne(o, ctx, stats) {
     const store = ctx.stores.find(s => s.store_id === o.store_id);
     try {
       if (!store || !store.root_folder_id) throw new Error('store_root_not_set');
+      if (o.target === 'reconciled') { await fileReconciled(o, store, ctx, stats); return; }
       const mf = monthFolders(o.invoice_date);
       if (!mf) throw new Error('date_not_determined');
       // Safety: the file must still be inside this store's configured folders.
@@ -273,6 +278,24 @@ export function createHandler(deps) {
       await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: false, target: o.target, error: safeErr(e) });
       stats.organize_errors = (stats.organize_errors || 0) + 1;
     }
+  }
+
+  async function fileReconciled(o, store, ctx, stats) {
+    const rf = reconciledFolders(o.invoice_date);
+    if (!rf) throw new Error('date_not_determined');
+    const g = await drive.get(o.drive_file_id);
+    if (g.status !== 200 || g.file.trashed) throw new Error('original_unavailable_' + g.status);
+    const parents = g.file.parents || [];
+    // Safety: still inside the store's folders (00_Upload, the folders this worker made, the store folder itself, or a
+    // folder staff keep right in it). Anything else is not touched: the error is shown and retried.
+    const allowed = new Set([store.upload_folder_id, store.root_folder_id, ...(o.store_folder_ids || []), ...(o.upload_folder_ids || [])].filter(Boolean));
+    if (!parents.length || !(parents.every(p => allowed.has(p)) || await staffPlace(parents, store, ctx, o))) throw new Error('outside_store_folders');
+    const root = await ensureFolder(store, store.root_folder_id, rf.root, 'reconciled_root');
+    const target = await ensureFolder(store, root, rf.month, 'reconciled_month');
+    const moved = parents.length === 1 && parents[0] === target ? null
+      : await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target, removeParents: parents.filter(p => p !== target).join(',') || null });
+    await db.rpc('invoice_organize_result', { file_id: o.file_id, ok: true, target: o.target, folder_id: target, name: (moved && moved.name) || g.file.name });
+    stats.organized = (stats.organized || 0) + 1;
   }
 
   // Moto 2026-10-12: 「この内容で反映」 (or an automatic posting) → the original's name in Drive becomes 日付_業者名_番号
@@ -436,7 +459,10 @@ export function createHandler(deps) {
         if (now() - t0 > budget) { stats.deferred = (stats.deferred || 0) + 1; continue; }
         await processFile(f, ctx, owner, stats);
       }
-      if (ctx.mode.organize) for (const o of await db.rpc('invoice_organize_due', { limit: 10 })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
+      // Filing in 00_Upload (organize) and moving reconciled originals (organize_reconciled, Moto 2026-10-14) are two switches.
+      // Until the second one is set, it follows the first (as before this change, filing included the reconciled ones).
+      const targets = [ctx.mode.organize && 'unreconciled', (ctx.mode.organize_reconciled ?? ctx.mode.organize) && 'reconciled'].filter(Boolean);
+      if (targets.length) for (const o of await db.rpc('invoice_organize_due', { limit: 10, targets })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
       // Posted originals are renamed before the QuickBooks step queues them (Moto 2026-10-12).
       await renameStep(ctx, stats, t0 + budget * 1.3);
       try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
@@ -488,8 +514,10 @@ export function createHandler(deps) {
     const store = ctx.stores.find(s => s.store_id === doc.store_id) || { store_id: doc.store_id, auto_post: false };
     const vendor = ctx.vendors.find(v => v.vendor_key === H.vendor_key);
     const cents = c => (c === null || c === undefined ? null : (Number(c) / 100).toFixed(2));
+    // A packing list stays one through other corrections; choosing the document type again decides anew.
+    const packing = !('doc_type' in (edits.header || {})) && H.doc_type === 'invoice' && (doc.reasons || []).some(r => r.code === 'packing_list');
     const ext = {
-      doc_type: H.doc_type, vendor_name: vendor ? vendor.display_name : H.vendor_raw, ship_to: doc.ship_to_raw, customer_account: doc.vendor_code,
+      doc_type: packing ? 'packing_list' : H.doc_type, vendor_name: vendor ? vendor.display_name : H.vendor_raw, ship_to: doc.ship_to_raw, customer_account: doc.vendor_code,
       invoice_number: H.invoice_no, invoice_date_text: dateIn.text, invoice_date: dateIn.iso,
       delivery_date_text: H.delivery_date || null, delivery_date: H.delivery_date || null, due_date_text: H.due_date || null, due_date: H.due_date || null,
       currency: H.currency, subtotal: cents(H.subtotal_cents), discount_total: cents(H.discount_cents), tax: cents(H.tax_cents),
@@ -520,10 +548,12 @@ export function createHandler(deps) {
       .filter(e => e.id !== doc.id && !(e.file_id === doc.file_id && e.sha256 === doc.sha256) && e.status !== 'duplicate' && e.duplicate_of !== doc.id);
     // Records registered through the existing app screen are compared again (copies written by this intake are not returned).
     const app = await db.rpc('invoice_app_records', { store_id: doc.store_id });
-    applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h }, existing, app));
-    // What the reading itself got wrong, and a replaced original, cannot be fixed by editing values: those reasons stay.
+    applyDuplicates(result, classifyDuplicates({ sha256: doc.sha256, store_id: doc.store_id, ...h, packing: result.reasons.some(r => r.code === 'packing_list') }, existing, app));
+    // What the reading itself got wrong (also a document that could not be read at all), a replaced original and a store a
+    // person chose cannot be fixed by editing values: those reasons stay.
     for (const r of doc.reasons || []) {
-      if (['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced'].includes(r.code) && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
+      if (['ai_truncated', 'multiple_documents', 'missing_pages', 'original_replaced', 'unreadable', 'ai_failed', 'store_assigned'].includes(r.code)
+        && !result.reasons.some(x => x.code === r.code)) { result.reasons.push(r); result.autoEligible = false; }
     }
     result.invoiceDateDerived = dateIn.derived;
     return result;
@@ -536,6 +566,7 @@ export function createHandler(deps) {
     const allowed = ['vendor_key', 'invoice_no', 'invoice_date', 'delivery_date', 'due_date', 'doc_type', 'currency',
       'subtotal_cents', 'discount_cents', 'tax_cents', 'shipping_cents', 'total_cents', 'food_kind'];
     for (const k of Object.keys(b.header || {})) { if (!allowed.includes(k)) throw new Error('field_not_editable'); header[k] = b.header[k]; }
+    if ('doc_type' in header && !['invoice', 'packing_list', 'credit_memo', 'statement', 'receipt', 'other', 'unknown'].includes(header.doc_type)) throw new Error('bad_value');
     const result = await recheck(g.doc, g.lines, { header, lines: b.lines || [] }, ctx, g.ai_doc || null);
     const h = result.header;
     // An invoice with no printed invoice date takes its delivery date. When that gives a date the record does not
@@ -544,7 +575,7 @@ export function createHandler(deps) {
     if (!('invoice_date' in header) && result.invoiceDateDerived && h.invoice_date && h.invoice_date !== g.doc.invoice_date) header.invoice_date = h.invoice_date;
     if ('vendor_key' in header) { header.vendor_name = h.vendor_name || null; header.food_kind = header.food_kind ?? h.food_kind ?? null; }
     if ('invoice_no' in header) header.invoice_no_norm = h.invoice_no_norm;
-    if ('doc_type' in header) header.posting_kind = h.posting_kind;
+    if ('doc_type' in header) { header.doc_type = h.doc_type; header.posting_kind = h.posting_kind; }   // packing_list → invoice
     if ('invoice_date' in header || 'delivery_date' in header) { header.effective_date = h.effective_date; header.effective_basis = h.effective_basis; header.posting_date = h.posting_date; }
     const lines = (b.lines || []).map(e => {
       const idx = g.lines.findIndex(l => l.id === e.line_id);

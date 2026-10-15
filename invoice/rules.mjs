@@ -41,6 +41,10 @@ export const REASONS = {
   duplicate_candidate:   ['重複の可能性', 'Possible duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性', 'May already be registered in the app'],
   original_replaced:     ['同じファイルの中身が差し替えられた（前の版と見比べる）', 'The file was overwritten with new content (compare with the earlier version)'],
+  // Moto 2026-10-14 (UI案50 5A): a packing list is treated as an invoice; it is shown, and a same-delivery invoice is a possible duplicate.
+  packing_list:          ['Packing list（invoice として扱う）', 'Packing list (treated as an invoice)'],
+  // A person chose the store for this file (UI案50 段階 1): it is never posted automatically.
+  store_assigned:        ['店舗を人が選んだ（自動では反映しない）', 'Store chosen by a person (not posted automatically)'],
   // line_value_missing is no longer produced (it also covered an unreadable amount before 2026-10-07). Documents read
   // earlier may still carry it, so it holds like line_amount_missing (Codex R7) until a correction re-checks the lines.
   line_value_missing:    ['数量・単価・金額のどれかが読めない明細（前の版の読み取り）', 'Line quantity, price or amount missing (earlier reading)'],
@@ -67,7 +71,7 @@ export const REASONS = {
 // Reasons about products and unit prices: shown for reference, never a reason to stop posting (by a person or
 // automatically). The same list is in db/invoice-intake.sql (invoice_post); tests/invoice-rules keeps them equal.
 export const INFO_REASONS = ['unmapped', 'map_ambiguous', 'map_unverified', 'unit_mismatch', 'unit_unverified', 'spec_changed', 'no_price_ref', 'price_jump',
-  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_qty_price_missing', 'discount_allocation', 'mixed_tax'];
+  'mode_review_item', 'catch_weight', 'line_math', 'zero_price', 'negative_line', 'line_qty_price_missing', 'discount_allocation', 'mixed_tax', 'packing_list'];
 const INFO = new Set(INFO_REASONS);
 export const blocksPosting = reasons => (reasons || []).some(r => !INFO.has(r.code));
 
@@ -131,12 +135,15 @@ export async function evaluate(ext, ctx) {
   if (ctx.docCount > 1) add('multiple_documents', ctx.docCount);
   if (ctx.aiStop === 'max_tokens') add('ai_truncated');
 
-  h.doc_type = ext.doc_type;
-  h.posting_kind = ext.doc_type === 'invoice' || ext.doc_type === 'credit_memo' ? 'purchase' : 'none';
+  // A packing list is kept as an invoice (Moto 2026-10-14): same checks, same posting, marked so it can be compared.
+  const packing = ext.doc_type === 'packing_list';
+  h.doc_type = packing ? 'invoice' : ext.doc_type;
+  h.posting_kind = h.doc_type === 'invoice' || h.doc_type === 'credit_memo' ? 'purchase' : 'none';
+  if (packing) add('packing_list');
   if (ext.doc_type === 'statement') add('statement');
   else if (ext.doc_type === 'receipt') add('receipt_route');
   else if (ext.doc_type === 'credit_memo') add('credit_memo');
-  else if (ext.doc_type !== 'invoice') add('doc_type_unknown');
+  else if (h.doc_type !== 'invoice') add('doc_type_unknown');
 
   // Vendor: exact match to a master name or a registered alias only.
   h.vendor_raw = ext.vendor_name;

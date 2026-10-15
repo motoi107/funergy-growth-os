@@ -273,7 +273,8 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     assert.equal(r.status, 200, JSON.stringify(r.body));
     await E.worker();
     const [f] = await E.q(`select * from invoice_files where id=$1`, [d.file_id]);
-    assert.equal(E.drive.pathOf(f.drive_file_id), 'LaLa/2026/10/照合済み');
+    // Reconciled: {store folder}/照合済み/YYYY-MM, the invoice date's month (Moto 2026-10-14, UI案50 1A・4A).
+    assert.equal(E.drive.pathOf(f.drive_file_id), 'LaLa/照合済み/2026-10');
     // Someone renames and moves the original by hand.
     const it = E.drive.items.get(f.drive_file_id); it.name = 'renamed by hand.pdf';
     const calls = E.aiCalls;
@@ -448,7 +449,7 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     r = await E.api('tok-office', { action: 'retry', file_id: d.file_id }); assert.equal(r.status, 200);
     await E.worker();
     [f] = await E.q(`select * from invoice_files where id=$1`, [d.file_id]);
-    assert.equal(f.organize_status, 'done'); assert.equal(E.drive.pathOf(f.drive_file_id), 'LaLa/2026/10/照合済み');
+    assert.equal(f.organize_status, 'done'); assert.equal(E.drive.pathOf(f.drive_file_id), 'LaLa/照合済み/2026-10');
     assert.equal(await priceRows(), rows);
     // Drive disconnected: the run is recorded as failed and nothing is lost.
     E.drive.authDown = true;
@@ -1029,7 +1030,7 @@ test('review findings stay fixed', async (t) => {
     d = await docOf(id);
     assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled' })).status, 200);
     await E.worker();
-    assert.match(E.drive.pathOf(id), /照合済み$/);
+    assert.equal(E.drive.pathOf(id), 'LaLa/照合済み/2026-10');
     d = await docOf(id);
     assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'discrepancy', note: '送料が違う' })).status, 200);
     await E.worker();
@@ -1138,7 +1139,7 @@ test('deploy checks and the guarded rollback', async () => {
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 18, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1207,6 +1208,21 @@ test('the review fixes upgrade a database that already has the first migration',
   }
   await pg.exec(ACCOUNTING);
   assert.equal((await pg.query(POST)).rows[0].accounting_checks, true);
+  // 段階 2 (20261020090000) needs the rename one first; on top of every earlier one it turns reconciled_folder on, keeps
+  // the counts, settings, records and grants, and running it twice changes nothing.
+  const STAGE2 = read('supabase/migrations/20261020090000_invoice_reconciled_folder.sql');
+  await assert.rejects(pg.exec(STAGE2), /20261012120000/);
+  for (const f of ['20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
+    '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql']) await pg.exec(read('supabase/migrations/' + f));
+  await pg.query(`insert into public.invoice_folders(id, parent_id, name, store_id, role) values('Y1', 'R6', '2026', 'F06', 'year')`);
+  assert.equal((await pg.query(POST)).rows[0].reconciled_folder, false);
+  await pg.exec(STAGE2); await pg.exec(STAGE2);
+  const post3 = (await pg.query(POST)).rows[0];
+  assert.equal(post3.reconciled_folder, true); assert.equal(post3.purchase_summary, true); assert.equal(Number(post3.functions), 74); assert.equal(Number(post3.tables), 18);
+  assert.equal(Number(post3.browser_can_run), 0); assert.equal(Number(post3.browser_can_read), 0);
+  assert.equal((await pg.query(`select value->>'key' k from invoice_settings where key='worker'`)).rows[0].k, keyBefore);
+  assert.deepEqual((await pg.query(`select id, role from invoice_folders`)).rows, [{ id: 'Y1', role: 'year' }], 'folder records are kept');
+  await pg.query(`insert into public.invoice_folders(id, parent_id, name, store_id, role) values('RC', 'R6', '照合済み', 'F06', 'reconciled_root')`);
 });
 
 // Codex independent review of 1851593 (2026-10-07): C1-C5. Each case fails on that commit and passes after the fix.
@@ -1779,14 +1795,15 @@ test('invoices put right in the store folder are read too, only from the start, 
     E.drive.items.get(inRoot).parents = ['R6-MAR'];
     await E.q(`update invoice_files set drive_checked_at=null`); await E.worker();
     assert.equal((await docsOf(E, inRoot))[0].status, 'posted');
-    // Reconciled after staff moved it on: still left where they keep it, recorded as filed there, no error (review of cb2f6e5).
+    // Reconciled after staff moved it on: moved from their folder to 照合済み/2026-10 (Moto 2026-10-14, UI案50 3A), with its name.
     let dd = (await docsOf(E, inRoot))[0];
     let r = await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'reconciled', note: '原本と一致' });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     await E.worker();
+    const [rcm] = await E.q(`select id from invoice_folders where store_id='F06' and role='reconciled_month' and name='2026-10'`);
     let [ff] = await E.q(`select organize_status, organized_folder_id, organize_error, current_name from invoice_files where drive_file_id=$1`, [inRoot]);
-    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: 'R6-MAR', organize_error: null, current_name: '2026-10-05_VendorA_2001.pdf' });
-    assert.deepEqual(E.drive.items.get(inRoot).parents, ['R6-MAR']); assert.equal(E.drive.items.get(inRoot).name, '2026-10-05_VendorA_2001.pdf');
+    assert.deepEqual(ff, { organize_status: 'done', organized_folder_id: rcm.id, organize_error: null, current_name: '2026-10-05_VendorA_2001.pdf' });
+    assert.equal(E.drive.pathOf(inRoot), 'LaLa/照合済み/2026-10'); assert.equal(E.drive.items.get(inRoot).name, '2026-10-05_VendorA_2001.pdf');
     // A folder outside the store folder is still never used: the original is not touched and a person is told.
     E.drive.folder('ELSEWHERE', 'Someone else', 'INV'); E.drive.folder('ELSE-SUB', 'Sub', 'ELSEWHERE');
     E.drive.items.get(inRoot).parents = ['ELSE-SUB'];
@@ -2123,4 +2140,171 @@ test('no currency printed: review until accounting confirms USD, then it posts',
     assert.equal(d.status, 'posted');
   }
   } finally { await E.pg.close(); }
+});
+
+// 段階 2（Moto 2026-10-14「経理のinvoice処理追加変更点」・UI案50・決めてほしいこと 1〜8 は A）.
+test('段階 2: reconciled originals go to 照合済み/YYYY-MM from wherever they are in the store folder, under their own switch', async () => {
+  const E = await setup();
+  try {
+    const line = [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']];
+    const put = async (tag, no, date, folder, created = '2026-10-05T19:00:00Z') => {
+      E.fixtures.set(tag, { readable: true, documents: [doc(no, date, line)] });
+      const id = E.drive.file(tag + '.pdf', pdf(tag), folder, { created }); await E.worker(); return id;
+    };
+    const docOf = async id => (await docsOf(E, id))[0];
+    const reconcile = async id => { const d = await docOf(id); assert.equal(d.status, 'posted'); const r = await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled', note: '原本と一致' }); assert.equal(r.status, 200, JSON.stringify(r.body)); };
+    const setMode = async v => assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: v })).status, 200);
+    // The second switch off: a reconciled original waits (00_Upload filing goes on as before).
+    await setMode({ organize_reconciled: false });
+    const a = await put('S2-A', '3001', '2026-10-04', 'U6');
+    assert.equal(E.drive.pathOf(a), 'LaLa/2026/10/未照合');
+    await reconcile(a); await E.worker();
+    assert.equal(E.drive.pathOf(a), 'LaLa/2026/10/未照合');
+    assert.deepEqual((await E.q(`select organize_target, organize_status from invoice_files where drive_file_id=$1`, [a]))[0], { organize_target: 'reconciled', organize_status: 'pending' });
+    // Turned on: moved to {store folder}/照合済み/2026-10.
+    await setMode({ organize_reconciled: true }); await E.worker();
+    assert.equal(E.drive.pathOf(a), 'LaLa/照合済み/2026-10');
+    // Filing in 00_Upload off, moving reconciled originals on: a new one stays in 00_Upload until it is reconciled.
+    await setMode({ organize: false });
+    const b = await put('S2-B', '3002', '2026-10-05', 'U6');
+    assert.equal(E.drive.pathOf(b), 'LaLa/00_Upload');
+    await reconcile(b); await E.worker();
+    assert.equal(E.drive.pathOf(b), 'LaLa/照合済み/2026-10');
+    // Right in the store folder, and in a folder staff keep in it: moved too (3A). The month is the invoice date's (4A).
+    const c = await put('S2-C', '3003', '2026-09-28', 'R6');
+    E.drive.folder('R6-OCT', 'ここにUpしないでOct 2026 Uploaded', 'R6');
+    const d = await put('S2-D', '3004', '2026-10-02', 'R6');
+    E.drive.items.get(d).parents = ['R6-OCT'];
+    assert.equal(E.drive.pathOf(c), 'LaLa');
+    await reconcile(c); await reconcile(d); await E.worker();
+    assert.equal(E.drive.pathOf(c), 'LaLa/照合済み/2026-09'); assert.equal(E.drive.pathOf(d), 'LaLa/照合済み/2026-10');
+    assert.equal(E.drive.items.get(c).name, '2026-09-28_VendorA_3003.pdf', 'named when posted (2A), wherever it is');
+    // One 照合済み folder in the store folder, one folder per month in it, all recorded (so none is taken for a staff folder).
+    assert.equal([...E.drive.items.values()].filter(x => x.name === '照合済み' && x.parents.includes('R6')).length, 1);
+    const roles = await E.q(`select role, name from invoice_folders where store_id='F06' and role like 'reconciled_%' order by role, name`);
+    assert.deepEqual(roles, [{ role: 'reconciled_month', name: '2026-09' }, { role: 'reconciled_month', name: '2026-10' }, { role: 'reconciled_root', name: '照合済み' }]);
+    // Outside the store folder: never touched, the error is shown.
+    E.drive.folder('ELSEWHERE', 'Someone else', 'INV');
+    const e = await put('S2-E', '3005', '2026-10-03', 'U6');
+    E.drive.items.get(e).parents = ['ELSEWHERE'];
+    await reconcile(e); await E.worker();
+    assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [e]))[0], { organize_status: 'error', organize_error: 'outside_store_folders' });
+    assert.deepEqual(E.drive.items.get(e).parents, ['ELSEWHERE']);
+    // Taking a reconciliation back files the original into 年/月/未照合 (when filing is on).
+    await setMode({ organize: true });
+    const dd = await docOf(b);
+    assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: dd.id, version: dd.version, result: 'discrepancy', note: '送料が違う' })).status, 200);
+    await E.worker();
+    assert.equal(E.drive.pathOf(b), 'LaLa/2026/10/未照合');
+  } finally { await E.pg.close(); }
+});
+
+test('段階 2: a packing list is read as an invoice; a packing list and an invoice of the same delivery are compared', async () => {
+  const E = await setup();
+  try {
+    const line = [['06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00', 'CS', '12/500G']];
+    const put = async (tag, d) => { E.fixtures.set(tag, { readable: true, documents: [d] }); const id = E.drive.file(tag + '.pdf', pdf(tag), 'U6'); await E.worker(); return (await docsOf(E, id))[0]; };
+    // The AI names it a packing list: kept as an invoice, marked, posted like any clean invoice (5A).
+    const pl = await put('PL-1', doc('SO-77', '2026-10-04', line, { type: 'packing_list' }));
+    assert.equal(pl.doc_type, 'invoice'); assert.equal(pl.posting_kind, 'purchase'); assert.ok(codes(pl).includes('packing_list') && !blocksPosting(pl.reasons)); assert.equal(pl.status, 'posted');
+    // The invoice of the same delivery (another number, same vendor, store, date and total): a possible duplicate, never posted by itself.
+    const inv = await put('INV-77', doc('9077', '2026-10-04', line));
+    assert.equal(inv.status, 'review');
+    assert.deepEqual(inv.reasons.find(r => r.code === 'duplicate_candidate'), { code: 'duplicate_candidate', detail: pl.id });
+    // The other way round: an invoice first, then the packing list.
+    const inv2 = await put('INV-78', doc('9078', '2026-10-05', line));
+    assert.equal(inv2.status, 'posted');
+    const pl2 = await put('PL-2', doc('SO-78', '2026-10-05', line, { type: 'packing_list' }));
+    assert.equal(pl2.status, 'review'); assert.ok(codes(pl2).includes('packing_list') && codes(pl2).includes('duplicate_candidate'));
+    // Two invoices with their own numbers are not compared on the amount alone (as before).
+    await put('INV-79', doc('9079', '2026-10-06', line));
+    const inv4 = await put('INV-80', doc('9080', '2026-10-06', line));
+    assert.equal(inv4.status, 'posted'); assert.ok(!codes(inv4).includes('duplicate_candidate'));
+    // A person chooses "Packing list" for a document the AI could not type: saved as an invoice, marked; it stays marked
+    // through other corrections; choosing "Invoice" again takes the mark away. Other values are refused.
+    const oth = await put('OTH-1', doc('SO-90', '2026-10-03', line, { type: 'other' }));
+    assert.equal(oth.doc_type, 'other'); assert.ok(codes(oth).includes('doc_type_unknown'));
+    let r = await E.api('tok-office', { action: 'edit', doc_id: oth.id, version: oth.version, reason: '書類の種類：Packing list を invoice として扱う', header: { doc_type: 'packing_list' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    let x = (await E.q(`select * from invoice_docs where id=$1`, [oth.id]))[0];
+    assert.equal(x.doc_type, 'invoice'); assert.equal(x.posting_kind, 'purchase'); assert.ok(codes(x).includes('packing_list') && !codes(x).includes('doc_type_unknown'));
+    r = await E.api('tok-office', { action: 'edit', doc_id: x.id, version: x.version, reason: '番号', header: { invoice_no: 'SO-90A' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    x = (await E.q(`select * from invoice_docs where id=$1`, [oth.id]))[0];
+    assert.ok(codes(x).includes('packing_list'), 'still a packing list after another correction');
+    r = await E.api('tok-office', { action: 'edit', doc_id: x.id, version: x.version, reason: 'invoice だった', header: { doc_type: 'invoice' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    x = (await E.q(`select * from invoice_docs where id=$1`, [oth.id]))[0];
+    assert.equal(x.doc_type, 'invoice'); assert.ok(!codes(x).includes('packing_list'));
+    assert.equal((await E.api('tok-office', { action: 'edit', doc_id: x.id, version: x.version, reason: 'x', header: { doc_type: 'bill' } })).status, 400);
+    // The list says which vendor (vendor_key) and keeps one order for rows with the same date and time (id), page by page.
+    await E.q(`update invoice_docs set invoice_date='2026-10-01'`); await E.q(`update invoice_files set ingested_at='2026-10-06T00:00:00Z'`);
+    const all = (await E.q(`select id from invoice_docs order by id`)).map(z => z.id);
+    const seen = [];
+    for (let off = 0; off < all.length; off += 2) {
+      const pg = await E.api('tok-office', { action: 'list', limit: 2, offset: off });
+      assert.equal(pg.status, 200); seen.push(...pg.body.rows.map(z => z.id));
+      assert.ok(pg.body.rows.every(z => z.vendor_key === 'v1'));
+    }
+    assert.deepEqual(seen, all);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 2: a file whose store a person chose is never posted automatically; a document that could not be read stays so', async () => {
+  const E = await setup();
+  try {
+    const line = [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']];
+    E.fixtures.set('K-1', { readable: true, documents: [doc('4001', '2026-10-04', line, { ship: 'Totoya Kaimuki, 200 Sample Ave' })] });
+    const id = E.drive.file('K-1.pdf', pdf('K-1'), 'U6'); await E.worker();
+    const [d0] = await docsOf(E, id);
+    assert.equal(d0.status, 'review'); assert.ok(codes(d0).includes('store_mismatch'));
+    assert.equal((await E.api('tok-office', { action: 'reassign', file_id: d0.file_id, store_id: 'F04-K', reason: 'Kaimuki 宛' })).status, 200);
+    await E.worker(); await E.worker();
+    let k = (await docsOf(E, id)).find(x => x.store_id === 'F04-K');
+    // Kaimuki and VendorA are both "auto", and nothing else needs checking: it still waits for a person.
+    assert.equal(k.status, 'review'); assert.deepEqual(codes(k).filter(c => c !== 'no_price_ref'), ['store_assigned']);   // no_price_ref: for reference
+    // The database refuses too, even if the reasons were gone.
+    await E.q(`update invoice_docs set reasons='[]', auto_eligible=true where id=$1`, [k.id]);
+    k = (await docsOf(E, id)).find(x => x.store_id === 'F04-K');
+    await assert.rejects(E.db.rpc('invoice_post', { doc_id: k.id, version: k.version }), /not_eligible/);
+    await E.q(`update invoice_docs set reasons='[{"code":"store_assigned"}]', auto_eligible=false where id=$1`, [k.id]);
+    // A correction keeps it; a person posts it.
+    let r = await E.api('tok-office', { action: 'edit', doc_id: k.id, version: k.version, reason: '期日', header: { due_date: '2026-10-30' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    k = (await docsOf(E, id)).find(x => x.store_id === 'F04-K');
+    assert.ok(codes(k).includes('store_assigned'));
+    r = await E.api('tok-office', { action: 'post', doc_id: k.id, version: k.version, reason: '経理の確認（業者・invoice番号・金額・店舗）' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    // A document that could not be read: entering values does not turn it into a readable one (review of v1079).
+    const u = E.drive.file('BLUR.pdf', pdf('BLUR-NO-FIXTURE'), 'U6'); await E.worker();
+    const [ud] = await docsOf(E, u);
+    assert.ok(codes(ud).includes('unreadable'));
+    r = await E.api('tok-office', { action: 'edit', doc_id: ud.id, version: ud.version, reason: '原本を見て入れた',
+      header: { doc_type: 'invoice', vendor_key: 'v1', invoice_no: '4002', invoice_date: '2026-10-04', total_cents: 6000, currency: 'USD' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const [ud2] = await docsOf(E, u);
+    assert.ok(codes(ud2).includes('unreadable'), JSON.stringify(ud2.reasons));
+    r = await E.api('tok-office', { action: 'post', doc_id: ud2.id, version: ud2.version, reason: 'x' });
+    assert.equal(r.status, 409); assert.match(r.body.error, /blocked:unreadable/);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 2 deploy folder: the SQL files are the repository files, the one-file function is built from the current sources',
+  { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const D = 'deploy/invoice-stage2-v1081/';
+  for (const [copy, orig] of [['1_追加のSQL_照合済みフォルダ.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql'], ['2_確認のSQL_読むだけ.sql', 'db/invoice-intake-postcheck.sql']])
+    assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  const src = JSON.parse(rd(D + 'source.json'));
+  for (const [f, h] of Object.entries(src.sources)) assert.equal(crypto.createHash('sha256').update(rd(f)).digest('hex'), h, f + ' changed after 3_関数 was built: build it again');
+  const listed = Object.keys(src.sources).filter(f => f.startsWith('invoice/')).sort();
+  assert.deepEqual(listed, fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).map(f => 'invoice/' + f).sort());
+  assert.equal(crypto.createHash('sha256').update(rd(D + '3_関数_invoice-intake_index.ts')).digest('hex'), src.bundle_sha256);
+  const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
+  assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle) && bundle.includes('reconciled_month') && bundle.includes('organize_reconciled')
+    && bundle.includes('store_assigned') && bundle.includes('intake-2026-10-15.1') && bundle.includes('invoice_purchase_publish'));
+  // The steps name the files in the folder, and the order SQL → check → function → app.
+  const steps = rd(D + '手順.md').toString();
+  for (const f of ['1_追加のSQL_照合済みフォルダ.sql', '2_確認のSQL_読むだけ.sql', '3_関数_invoice-intake_index.ts']) assert.ok(steps.includes(f), f);
+  assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1081 をマージ'));
 });

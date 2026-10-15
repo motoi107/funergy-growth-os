@@ -32,7 +32,7 @@ create table public.invoice_folders(
  parent_id text not null,
  name text not null,
  store_id text not null references public.invoice_stores(store_id),
- role text not null check (role in ('year','month','unreconciled','reconciled')),
+ role text not null check (role in ('year','month','unreconciled','reconciled','reconciled_root','reconciled_month')),
  created_by_worker boolean not null default false,
  created_at timestamptz not null default now(),
  unique(parent_id, name)
@@ -468,7 +468,8 @@ end $$;
 create function public.invoice_dup_scope(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(jsonb_build_object('id',d.id,'file_id',d.file_id,'status',d.status,'store_id',d.store_id,'vendor_key',d.vendor_key,
-  'invoice_no_norm',d.invoice_no_norm,'invoice_date',d.invoice_date,'total_cents',d.total_cents,'content_sig',d.content_sig,'sha256',d.sha256,'duplicate_of',d.duplicate_of)), '[]')
+  'invoice_no_norm',d.invoice_no_norm,'invoice_date',d.invoice_date,'total_cents',d.total_cents,'content_sig',d.content_sig,'sha256',d.sha256,'duplicate_of',d.duplicate_of,
+  'packing', d.reasons @> '[{"code":"packing_list"}]'::jsonb)), '[]')
  from public.invoice_docs d
  where d.status in ('review','posted','duplicate')
   and (d.sha256=p->>'sha256'
@@ -583,7 +584,7 @@ declare d public.invoice_docs; old public.invoice_docs; actor uuid := nullif(p->
  must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
  info text[] := array['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax','packing_list'];
  -- A line amount that cannot be read leaves the total unchecked: posted only when the person checked it against the
  -- original. line_value_missing is the code documents read before 2026-10-07 carry for the same case (Codex R7).
  may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
@@ -610,6 +611,8 @@ begin
   if exists(select 1 from public.invoice_lines il, jsonb_array_elements_text(il.reasons) c where il.doc_id=d.id and not (c = any(info))) then raise exception 'not_eligible'; end if;
   if not exists(select 1 from public.invoice_stores where store_id=d.store_id and auto_post and active) then raise exception 'not_eligible'; end if;
   if not exists(select 1 from public.invoice_vendor_rules where vendor_key=d.vendor_key and auto_post) then raise exception 'not_eligible'; end if;
+  -- A file whose store a person chose waits for a person (UI案50).
+  if exists(select 1 from public.invoice_files where id=d.file_id and store_assigned_by is not null) then raise exception 'not_eligible'; end if;
   who := 'auto'; mode := 'auto';
  else
   -- 事務Crew (office_crew) posts like accounting (Moto 2026-10-09: 事務Crew completes the invoice work on their own).
@@ -953,7 +956,7 @@ declare actor uuid := nullif(p->>'actor','')::uuid; r jsonb; total int; sum_cent
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  with q as (
-  select d.id, d.store_id, d.doc_type, d.vendor_name, d.vendor_raw, d.invoice_no, d.invoice_date, d.delivery_date, d.total_cents,
+  select d.id, d.store_id, d.doc_type, d.vendor_key, d.vendor_name, d.vendor_raw, d.invoice_no, d.invoice_date, d.delivery_date, d.total_cents,
    d.status, d.recon_status, d.reasons, d.needs_adjustment, d.posted_mode, d.version, f.drive_file_id, f.current_name, f.organize_status, f.drive_state,
    f.ingested_at, (select state from public.invoice_qb_outbox o where o.file_id=f.id and o.state<>'cancelled' order by created_at desc limit 1) qb_state
   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
@@ -965,8 +968,8 @@ begin
    and (p->>'item' is null or exists(select 1 from public.invoice_lines l where l.doc_id=d.id and l.raw_name ilike '%'||(p->>'item')||'%'))
    and (p->>'status' is null or d.status=p->>'status') and (p->>'recon' is null or d.recon_status=p->>'recon'))
  select (select count(*) from q), (select coalesce(sum(total_cents),0) from q),
-  coalesce((select jsonb_agg(to_jsonb(x) order by x.invoice_date desc nulls first, x.ingested_at desc) from
-   (select * from q order by invoice_date desc nulls first, ingested_at desc
+  coalesce((select jsonb_agg(to_jsonb(x) order by x.invoice_date desc nulls first, x.ingested_at desc, x.id) from
+   (select * from q order by invoice_date desc nulls first, ingested_at desc, id
     limit least(coalesce((p->>'limit')::int,50),200) offset coalesce((p->>'offset')::int,0)) x), '[]')
  into total, sum_cents, r;
  return jsonb_build_object('rows', r, 'total', total, 'sum_cents', sum_cents);
@@ -1261,7 +1264,7 @@ $$;
 create function public.invoice_files_due(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
  select coalesce(jsonb_agg(to_jsonb(x)), '[]') from (
-  select f.id, f.drive_file_id, f.store_id, f.original_name, f.mime_type from public.invoice_files f
+  select f.id, f.drive_file_id, f.store_id, f.original_name, f.mime_type, f.store_assigned_by is not null store_assigned from public.invoice_files f
   where f.drive_state='ok' and f.attempts < 6
    and (f.intake_status in ('pending','error') or (f.intake_status='processing' and f.lease_until < now()))
    and (f.next_attempt_at is null or f.next_attempt_at <= now()) and (f.lease_until is null or f.lease_until < now())
@@ -1324,6 +1327,8 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   from public.invoice_files f
   join public.invoice_docs d on d.file_id=f.id and d.sha256=f.current_sha256 and d.doc_index=0
   where f.drive_state='ok' and f.organize_target is not null
+   -- targets: the filings that are switched on (00_Upload filing and moving reconciled originals are two switches, Moto 2026-10-14).
+   and (jsonb_typeof(p->'targets') is distinct from 'array' or f.organize_target in (select jsonb_array_elements_text(case when jsonb_typeof(p->'targets')='array' then p->'targets' else '[]'::jsonb end)))
    and (f.organize_status='pending' or (f.organize_status='error' and f.organize_next_at <= now() and f.organize_attempts < 8))
    and d.status in ('review','posted') and d.vendor_name is not null and d.invoice_date is not null
    and not exists(select 1 from public.invoice_docs d2 where d2.file_id=f.id and d2.sha256=f.current_sha256 and d2.doc_index>0)

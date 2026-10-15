@@ -41001,7 +41001,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1080';
+const APP_VERSION = '1081';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46858,6 +46858,7 @@ var INVIN_REASONS = {
   duplicate_certain:['同じ invoice が登録済み（計上しない）','Already registered (not posted again)'], same_number_different:['同じ番号で内容が違う（訂正版か別書類）','Same number, different content'],
   duplicate_candidate:['重複の可能性','Possible duplicate'], app_duplicate_candidate:['アプリで登録済みの可能性','May already be registered in the app'],
   original_replaced:['同じファイルの中身が差し替えられた（前の版と見比べる）','The file was overwritten with new content (compare with the earlier version)'],
+  packing_list:['Packing list（invoice として扱う）','Packing list (treated as an invoice)'], store_assigned:['店舗を人が選んだ（自動では反映しない）','Store chosen by a person (not posted automatically)'],
   line_value_missing:['数量・単価・金額のどれかが読めない明細（前の版の読み取り）','Line quantity, price or amount not legible (earlier reading)'],
   line_qty_price_missing:['数量・単価が読めない明細（金額は読めた）','Line quantity/price not legible (amount read)'],
   line_amount_missing:['明細の金額が読めない（合計を明細で確かめられない）','Line amount not legible (the total cannot be checked against the lines)'], line_math:['数量×単価が明細金額と一致しない','Quantity × price does not equal the line amount'],
@@ -46875,9 +46876,10 @@ var INVIN_MUST_FIX = ['duplicate_certain','total_missing','date_missing','date_u
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
 /* v1056（UI案36）：商品・単価の理由は参考。反映を止めず、経理の「確認すること」に出さない（明細の中には残る）。サーバーの INFO_REASONS と同じ */
 var INVIN_INFO = ['unmapped','map_ambiguous','map_unverified','unit_mismatch','unit_unverified','spec_changed','no_price_ref','price_jump',
-  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax'];
-/* 確認モード：その店舗・業者をまだ「自動」にしていないだけ（中身の問題ではない。まとめて反映できる） */
-var INVIN_MODE = ['mode_review_store','mode_review_vendor'];
+  'mode_review_item','catch_weight','line_math','zero_price','negative_line','line_qty_price_missing','discount_allocation','mixed_tax','packing_list'];
+/* 確認モード：その店舗・業者をまだ「自動」にしていないだけ（中身の問題ではない。まとめて反映できる）。
+   v1081（UI案50 段階 2）：Packing list（invoice として扱う）と、人が店舗を選んだファイル（自動では反映しない）も灰色で出す */
+var INVIN_MODE = ['mode_review_store','mode_review_vendor','packing_list','store_assigned'];
 /* 4 項目（と日付）のどこに付く理由か。? は読めない・決まっていない、! は合わない・食い違う */
 var INVIN_FIELD = {
   vendor_unknown:['vendor','?'], vendor_kind_unset:['vendor','?'],
@@ -46894,7 +46896,7 @@ var INVIN_HINT = {
   invoice_no_missing:['invoice番号が読めない → 番号を入れる','No invoice number → enter it'],
   duplicate_certain:['同じ invoice が登録済み → 重複にする','Already registered → mark as duplicate'],
   same_number_different:['同じ番号で内容が違う → 訂正版か別の書類か決める','Same number, different content → corrected version or another document?'],
-  duplicate_candidate:['重複の可能性 → 見比べる','Possible duplicate → compare'],
+  duplicate_candidate:['重複の可能性（同じ業者・店舗・日付・合計）→ 見比べる。Packing list と invoice なら片方を「重複にする」','Possible duplicate (same vendor, store, date and total) → compare; for a packing list and its invoice, mark one as duplicate'],
   app_duplicate_candidate:['アプリで登録済みの可能性 → 見比べる','May already be in the app → compare'],
   original_replaced:['原本が差し替えられた → 前の版と見比べる','The original was overwritten → compare with the earlier version'],
   total_missing:['合計が読めない → 原本の合計を入れる','No total → enter it from the original'],
@@ -47766,13 +47768,18 @@ function invInDocTypeLabel(v){
   if (x) return invInL([x[1], x[2]]);
   return v==='receipt' ? t('レシート','Receipt') : v==='other' ? t('その他','Other') : t('分からない','Unknown');
 }
-/* Packing list を選んだ invoice（id で覚える。保存 → 読み直し → 反映のあいだも残る） */
-function invInIsPl(d){ return !!d && !!_invIn.plDoc && _invIn.plDoc===d.id; }
+/* Packing list を選んだ invoice（id で覚える。保存 → 読み直し → 反映のあいだも残る）。
+   v1081（段階 2）：サーバーが Packing list と分かった invoice（理由 packing_list）も、種類を選び直していなければ Packing list */
+function invInIsPl(d){
+  if (!d) return false;
+  if (_invIn.plDoc && _invIn.plDoc===d.id) return true;
+  return invInHVal(d, 'doc_type')===null && invInCodes(d.reasons).indexOf('packing_list')>=0;
+}
 function invInDocTypeSel(d, canEdit){
   var e = escapeHtml, v = invInHVal(d, 'doc_type'), cur = invInIsPl(d) ? 'pl' : (v!==null ? v : d.doc_type);
   if (!canEdit || d.status!=='review') return '<span style="font-size:12.5px">'+e(invInDocTypeLabel(d.doc_type))+'</span>';
   if (invInTypeLocked(d)) return '<span style="font-size:12.5px">'+e(invInDocTypeLabel(d.doc_type))+'</span>';
-  var changed = (v!==null && v!==d.doc_type) || (invInIsPl(d) && d.doc_type!=='invoice');
+  var changed = v!==null;
   return '<select class="form-select ivx-in'+(changed ? ' ivx-chg' : '')+'" style="width:100%;max-width:280px" aria-label="'+t('書類の種類','Document type')+'" onchange="invInSetDocType(this.value)">'
     + (INVIN_DOCTYPES.some(function(p){ return p[0]===cur; }) ? '' : '<option value="" selected>'+e(invInDocTypeLabel(cur))+t('（選び直す）',' (choose)')+'</option>')
     + INVIN_DOCTYPES.map(function(p){ return '<option value="'+p[0]+'"'+(p[0]===cur ? ' selected' : '')+'>'+e(invInL([p[1], p[2]]))+'</option>'; }).join('') + '</select>';
@@ -47780,17 +47787,22 @@ function invInDocTypeSel(d, canEdit){
 function invInSetDocType(v){
   var E = _invIn.edits, G = _invIn.doc; if (!E || !G || !G.doc || invInTypeLocked(G.doc)) return;
   if (v && !INVIN_DOCTYPES.some(function(p){ return p[0]===v; })) return;
-  var real = v==='pl' ? 'invoice' : v;
-  _invIn.plDoc = v==='pl' ? G.doc.id : (_invIn.plDoc===G.doc.id ? null : _invIn.plDoc);
-  if (!real || real===G.doc.doc_type) delete E.h.doc_type; else E.h.doc_type = real;
+  /* v1081：Packing list は packing_list として送る（サーバーが invoice として保存し、印を付ける）。
+     印の付いた invoice で「Invoice」を選ぶと印を外す（invoice を送る） */
+  var marked = G.doc.doc_type==='invoice' && invInCodes(G.doc.reasons).indexOf('packing_list')>=0;
+  if (v==='pl') { _invIn.plDoc = G.doc.id; if (marked) delete E.h.doc_type; else E.h.doc_type = 'packing_list'; }
+  else {
+    if (_invIn.plDoc===G.doc.id) _invIn.plDoc = null;
+    if (!v || (v===G.doc.doc_type && !(marked && v==='invoice'))) delete E.h.doc_type; else E.h.doc_type = v;
+  }
   invInRerender();
 }
 function invInDocTypeNote(d, canEdit){
   if (canEdit && d.status==='review' && invInTypeLocked(d)) return invInCodes(d.reasons).indexOf('receipt_route')>=0
     ? t('レシートは種類を変えられません（会社カード・立替のレシートは社員別の管理へ。違うときは対象外に）','A receipt keeps its type (card and reimbursement receipts go to the employee folders; otherwise exclude it)')
     : t('読み取れなかった書類は種類を変えられません（取込状況から読み直すか、対象外に）','A document that could not be read keeps its type (read it again from Intake status, or exclude it)');
-  if (invInIsPl(d)) return t('金額のある Packing list を invoice として反映します。同じ納品の invoice が別に届いていないか、一覧で同じ業者・日付を確かめてください。金額の無い Packing list は「対象外にする」。',
-    'The packing list is posted as an invoice. Check the list for an invoice of the same delivery (same vendor and date). Exclude a packing list without amounts.');
+  if (invInIsPl(d)) return t('金額のある Packing list を invoice として反映します。同じ業者・店舗・日付・合計の invoice が届くと「重複の可能性」が出るので、見比べて片方を「重複にする」。金額の無い Packing list は「対象外にする」。',
+    'The packing list is posted as an invoice. An invoice with the same vendor, store, date and total is shown as a possible duplicate: compare them and mark one as duplicate. Exclude a packing list without amounts.');
   if (canEdit && d.status==='review' && ['invoice','credit_memo'].indexOf(d.doc_type)<0) return t('金額のある Packing list は「Packing list（invoice 扱い）」を選ぶ。Statement は照合に使い、仕入れにしない','For a packing list with amounts, choose “Packing list (as invoice)”. A statement is for reconciliation, not a purchase');
   return '';
 }
@@ -47800,7 +47812,7 @@ function invInSuppressed(d, code){
   return INVIN_TYPE_CODES.indexOf(code)>=0 && !!invInHVal(d, 'doc_type');
 }
 /* 仕入れとして反映する書類か（選び直した種類があれば、それで決める） */
-function invInBuy(d){ var v = invInHVal(d, 'doc_type'); return v ? ['invoice','credit_memo'].indexOf(v)>=0 : d.posting_kind==='purchase'; }
+function invInBuy(d){ var v = invInHVal(d, 'doc_type'); return v ? ['invoice','packing_list','credit_memo'].indexOf(v)>=0 : d.posting_kind==='purchase'; }   /* v1081：packing_list は invoice として保存される */
 /* v1079（Moto 10/14・経理の依頼「アップロードフォルダの店名と invoice の店名が違うときに注意 → 任意で店舗を選べる」・UI案50）
    店舗の付け替えはサーバーの reassign（invoice_reassign：経理・事務Crew・GM・CEO・理由が要る・そのファイルから何も反映していないあいだだけ。
    書類は対象外にして、ファイルを選んだ店舗の分として読み直す。AI の読みはそのまま使う） */
@@ -47849,8 +47861,8 @@ function invInStorePanel(d, canEdit, shipTo){
       + '<input class="form-input ivx-in" placeholder="'+t('例：宛先が別の店舗。アップロード先を間違えた','e.g. addressed to another store; uploaded to the wrong folder')+'" value="'+e(E.storeWhy||'')+'" oninput="invInSet(\'e\',\'storeWhy\',null,this.value)"></label>'
       + '<button class="btn btn-primary btn-sm"'+(to && to!==d.store_id && !_invIn.busy ? '' : ' disabled')+' onclick="invInReassign()">'+t('この店舗にする','Use this store')+'</button></div>'
       : '<div class="ivx-note">'+t('選べる店舗がありません（設定の「店舗」で取込中の店舗）','No store to choose (stores taking in invoices, in Settings › Stores)')+'</div>')
-    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は数分で選んだ店舗の分として取り込み直します（AI は読み直しません）。確かめることがあれば要確認に戻ります。自動反映が ON の店舗・業者で確かめることが無ければ、そのまま反映されます。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
-        'Changing the store takes this invoice in again for the chosen store within minutes (the AI does not read it again). It returns to Review if anything needs checking; with automatic posting on for that store and vendor and nothing to check, it is posted. Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
+    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は数分で選んだ店舗の分として取り込み直します（AI は読み直しません）。自動では反映せず、要確認に戻ります（確かめることが無ければ、まとめて反映できます）。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
+        'Changing the store takes this invoice in again for the chosen store within minutes (the AI does not read it again). It is never posted automatically: it returns to Review (with nothing to check, it can be posted with the others). Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
     + (multi ? '<br><b>'+t('このファイルには書類が複数あります。ファイルの書類はすべて選んだ店舗になります。','This file holds several documents: all of them move to the chosen store.')+'</b>' : '')+'</div></div>';
 }
 async function invInReassign(force){
@@ -48394,7 +48406,11 @@ function invInSettings(){
     + '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-player-play"></i>'+t('運用（GM・CEO）','Operation (GM, CEO)')+'</div>'
     + tog('mode','intake',M.intake,t('新しい invoice を取り込む','Read new invoices'),!admin)
     + tog('mode','auto_post',M.auto_post,t('確認の要らない invoice は自動で反映する','Post invoices that need no check automatically')+' <span style="color:var(--muted);font-size:11px">'+t('（条件は下の「自動反映の条件」）','(conditions below)')+'</span>',!admin)
-    + tog('mode','organize',M.organize,t('原本を月ごとのフォルダに整理する（未照合・照合済み）','File originals by month (unreconciled / reconciled)'),!admin)
+    + tog('mode','organize',M.organize,t('00_Upload の原本を月ごとのフォルダに整理する（年 / 月 / 未照合）','File originals in 00_Upload by month (year / month / unreconciled)'),!admin)
+    /* v1081（Moto 10/14・UI案50 1A・3A・4A）：照合したら「照合済み / 年-月」へ。決めるまでは上と同じ（前は上のスイッチで照合済みも整理していた） */
+    + tog('mode','organize_reconciled',(M.organize_reconciled===undefined || M.organize_reconciled===null) ? !!M.organize : !!M.organize_reconciled,
+        t('照合したら原本を「照合済み / 年-月」フォルダへ移す','Move an original to “照合済み / year-month” when it is reconciled'),!admin)
+    + '<div class="ivx-note" style="margin:-2px 0 4px 26px">'+t('店舗フォルダの中の「照合済み」に、請求日の月（例：2026-10）ごとに入れます。店舗フォルダの直下や「○月 Uploaded」に置いた原本も移します。店舗フォルダの外にあるものは動かさず、取込状況に出します。名前は反映のときに変えたまま。','Into “照合済み” in the store folder, one folder per invoice month (e.g. 2026-10). Originals put right in the store folder or in a folder such as “Oct Uploaded” are moved too. Anything outside the store folder is not touched and is shown in Intake status. The name stays as given at posting.')+'</div>'
     + tog('mode','rename',M.rename,t('反映したら原本のファイル名を変える','Rename the original when it is posted'),!admin)
     + '<div class="ivx-note" style="margin:-2px 0 4px 26px">'+t('例：','e.g. ')+'<span style="font-family:ui-monospace,monospace">2026-10-07_Marujuu-Produce_12345.pdf</span>'
       + t('（日付_業者名_invoice番号）。ON にした時より後に反映したものから。QuickBooks へは名前を変えたあとで送ります。ChatGPT 側の切り替えと同じ時に ON にしてください。',' (date_vendor_invoice no.). From invoices posted after it is turned on. Originals go to QuickBooks after the rename. Turn it on together with the ChatGPT-side switch.')

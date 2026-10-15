@@ -66,3 +66,9 @@ export function monthFolders(invoiceDate) {
   return { year: invoiceDate.slice(0, 4), month: invoiceDate.slice(5, 7) };
 }
 export const FOLDER = { upload: '00_Upload', unreconciled: '未照合', reconciled: '照合済み' };
+
+// Moto 2026-10-14 (UI案50 1A・4A): a reconciled original goes to {store folder}/照合済み/YYYY-MM, the month of its invoice date.
+export function reconciledFolders(invoiceDate) {
+  if (!validYmd(invoiceDate)) return null;
+  return { root: FOLDER.reconciled, month: invoiceDate.slice(0, 7) };
+}

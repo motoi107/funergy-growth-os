@@ -1,8 +1,9 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
 -- 対象はこの migration の表 18・関数 74 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 18 / functions 74 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true
+-- 期待：tables 18 / functions 74 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
+-- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -80,4 +81,15 @@ select
       where n.nspname = 'public' and p.proname in ('invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check')
         and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))
     and (select bool_and(p.prosrc like '%invoice_purchase_status%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname = 'invoice_purchase_publish'), false) as purchase_summary;
+      where n.nspname = 'public' and p.proname = 'invoice_purchase_publish'), false) as purchase_summary,
+  -- 段階 2（20261020090000, Moto 2026-10-14・UI案50）：照合済みの原本は 照合済み/年-月 へ（フォルダの役割）、整理は入っているスイッチの分だけ、
+  -- Packing list は invoice として扱い同じ納品と見比べる、人が店舗を選んだファイルは自動で反映しない、一覧は業者のキーと id の順。
+  coalesce((select bool_and(pg_get_constraintdef(c.oid) like '%reconciled_root%' and pg_get_constraintdef(c.oid) like '%reconciled_month%')
+      from pg_constraint c where c.conrelid = 'public.invoice_folders'::regclass and c.conname = 'invoice_folders_role_check')
+    and (select bool_and(case p.proname when 'invoice_organize_due' then p.prosrc like '%targets%'
+        when 'invoice_dup_scope' then p.prosrc like '%packing_list%'
+        when 'invoice_files_due' then p.prosrc like '%store_assigned%'
+        when 'invoice_post' then p.prosrc like '%''packing_list''%' and p.prosrc like '%store_assigned_by is not null%'
+        when 'invoice_list' then p.prosrc like '%d.vendor_key%' and p.prosrc like '%ingested_at desc, id%' end)
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_organize_due', 'invoice_dup_scope', 'invoice_files_due', 'invoice_post', 'invoice_list')), false) as reconciled_folder;
