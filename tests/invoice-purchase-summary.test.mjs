@@ -583,6 +583,44 @@ test('the store and month report (read only) puts the summary next to the app\'s
   assert.match(r['集計の時刻（ハワイ）'], /^\d{2}\/\d{2} \d{2}:\d{2}$/);
 });
 
+test('the before-start check (read only) lists invoices taken in before the start with the app entries that may count them', async () => {
+  const E = await setup();
+  const at = '2026-09-30T23:00:00Z';
+  await E.doc({ total: 12345, date: '2026-10-02', created: at, ingested: at });                     // entered in the app on the same day, same amount
+  await E.doc({ total: 5000, date: '2026-10-03', created: at, ingested: at, status: 'review' });    // entered with a wrong date
+  await E.doc({ total: 7700, date: '2026-10-04', created: at, ingested: at });                      // not entered at all
+  await E.doc({ total: 900, date: '2026-10-06', created: at, ingested: at });                       // entered as a receipt: not in the cost
+  await E.doc({ total: 3300, date: '2026-10-07', created: at, ingested: at, store: 'F01' });         // entered under another store only
+  await E.doc({ total: 4400, date: '2026-10-08' });                                                 // after the start: not listed
+  await E.doc({ total: 2000, date: '2026-10-09', currency: 'JPY' });                                // held for another reason: not listed
+  await E.doc({ total: 1500, date: '2026-10-10', mirror: 'tombstoned' });                           // its app copy deleted in the app: not listed
+  await E.publish();
+  await E.pg.exec(`reset role;
+    insert into app_state values ('spl_invoices_F06', '[{"id":"h1","storeId":"F06","vendor":"Minato","docType":"Invoice","docDate":"2026/10/02","total":123.45,"purpose":"仕入れ・仕込み"},
+      {"id":"h2","storeId":"F06","vendor":"Minato","docType":"Invoice","docDate":"2026/10/30","total":"50","purpose":"仕入れ・仕込み"},
+      {"id":"h3","storeId":"F06","vendor":"Minato","docType":"Receipt","date":"2026年10月6日","total":9},
+      {"id":"h4","storeId":"F06","vendor":"Minato","docType":"Invoice","docDate":"2026/10/04","total":77,"_deleted":true},
+      {"id":"drv_x","src":"drive-intake","storeId":"F06","vendor":"Minato","docType":"Invoice","docDate":"2026/10/04","total":77},
+      {"id":"h5","storeId":"F06","vendor":"","docType":"Invoice","docDate":"2026/02/30","total":"abc"}]', now()),
+     ('spl_invoices_F01', '[{"id":"g1","storeId":"F06","vendor":"Elsewhere","docType":"Invoice","docDate":"2026/10/07","total":33}]', now());
+    set role service_role;`);
+  const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-before-start-check.sql', import.meta.url), 'utf8'));
+  const by = d => rows.find(r => r['請求日'] === d);
+  assert.equal(rows.length, 5, 'only the invoices taken in before the start (not those held for another reason)');
+  assert.equal(by('2026-10-02')['アプリ：同じ日・同じ金額'], 'Minato'); assert.equal(by('2026-10-02')['金額'], '$123.45');
+  assert.equal(by('2026-10-03')['アプリ：同じ日・同じ金額'], '—'); assert.equal(by('2026-10-03')['アプリ：金額だけ同じ'], 'Minato（10/30）');
+  assert.equal(by('2026-10-03')['状態'], '確認待ち');
+  assert.deepEqual([by('2026-10-04')['アプリ：同じ日・同じ金額'], by('2026-10-04')['アプリ：金額だけ同じ']], ['—', '—'], 'deleted entries and Drive copies are not entries');
+  assert.equal(by('2026-10-06')['アプリ：同じ日・同じ金額'], 'Minato・原価に入らない種類');
+  assert.equal(by('2026-10-07')['店舗'], 'F01');
+  assert.equal(by('2026-10-07')['アプリ：同じ日・同じ金額'], '—', 'an entry for another store (by its storeId, whichever list it sits in) does not count for this store');
+  assert.match(by('2026-10-02')['Drive に入った時刻（ハワイ）'], /^09\/30 13:00$/);
+  assert.match(by('2026-10-02')['取込の開始日時（ハワイ）'], /^09\/30 14:00$/);
+  // a summary written from outside into app_state is not read: the check reads what the server wrote
+  await E.pg.exec(`reset role; update app_state set value=jsonb_set(value, '{stores,F06,docs}', '[]') where key='invoice_purchase_2026-10'; set role service_role;`);
+  assert.equal((await E.q(fs.readFileSync(new URL('../db/invoice-purchase-before-start-check.sql', import.meta.url), 'utf8'))).length, 5);
+});
+
 test('the deploy folder: the SQL files are the repository files, the one-file function is built from the current sources, and the check runs',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const crypto = await import('node:crypto');

@@ -1,4 +1,4 @@
-// 確認済み invoice の全店仕入れ集計（Moto 2026-10-14・UI案48）— the app side (v1077).
+// 確認済み invoice の全店仕入れ集計（Moto 2026-10-14・UI案48）— the app side (v1077・v1078).
 // The summary the app reads is made by the real SQL (db/invoice-intake.sql on PGlite, publish → app_state) from the fixed
 // example of the request; the real app code (the FUNERGY_PURCHASE_SUMMARY block and foodCostOf, _invDayCostMap,
 // monthInvoiceCostYm, fcBreakdownSub from index.html) runs in a VM on it. Synthetic data only; no network, no browser storage.
@@ -422,10 +422,52 @@ test('a summary changed from outside with the same version is put right on devic
   const c2 = app({ state: { ...(await E.read()), 'invoice_purchase_2026-10': bad, invoices: appInvoices() } });
   c2.pullOpKey = async k => { c2.pulled.push(k); const v = (await E.read())[k]; if (v !== undefined) c2.STORE[k] = JSON.parse(JSON.stringify(v)); return true; };
   assert.equal(run(c2, `ipsLink('F06', '2026-10').confirmed`), 9900);
+  assert.equal(run(c2, `_invDayCostMap()`).F06['2026-10-05'], 9900, 'its daily cost has the changed row too');
+  // it also holds the lines of this version as they were changed (no invoice on them)
+  run(c2, `_ipsLines['invoice_purchase_lines_2026-10_F06'] = { v:1, ym:'2026-10', store:'F06', generated_at:${JSON.stringify(bad.generated_at)}, docs:{} }`);
+  let gets = 0;
+  c2._fetchOpValue = async k => { gets++; const v = (await E.read())[k]; return v === undefined ? null : JSON.parse(JSON.stringify(v)); };
+  const stamp0 = run(c2, `ipsStamp()`);
   await tick(); await tick();
   assert.equal(run(c2, `ipsLink('F06', '2026-10').confirmed`), 1100, 'checked once in this session although the version is the same');
   assert.equal(good.generated_at, bad.generated_at);
+  // Codex PR #58 (f44d1aa): the daily cost and the lines follow the row's content, not only its version
+  assert.notEqual(run(c2, `ipsStamp()`), stamp0, 'the daily cost cache key moves with the content');
+  assert.equal(run(c2, `_invDayCostMap()`).F06['2026-10-05'], 1100, 'the daily cost is put right with the same version');
+  await run(c2, `ipsOpenDoc('2026-10', 'F06', '${E.ids.inv}')`);
+  assert.equal(gets, 1, 'the lines of the month are read again after the month is taken again');
+  assert.match(c2.modals.at(-1), /Shiro &lt;img/, 'and they are the right ones');
+  await run(c2, `ipsOpenDoc('2026-10', 'F06', '${E.ids.inv}')`);
+  assert.equal(gets, 1, 'then kept until the month is taken again');
+  // the same content written again (another pull of an unchanged row) does not move the key; a change and a change back does
+  const s1 = run(c2, `ipsStamp()`);
+  c2.STORE['invoice_purchase_2026-10'] = JSON.parse(JSON.stringify(c2.STORE['invoice_purchase_2026-10']));
+  assert.equal(run(c2, `ipsStamp()`), s1, 'an unchanged row keeps the key');
+  c2.STORE['invoice_purchase_2026-10'] = JSON.parse(JSON.stringify(bad));
+  assert.equal(run(c2, `_invDayCostMap()`).F06['2026-10-05'], 9900);
+  c2.STORE['invoice_purchase_2026-10'] = JSON.parse(JSON.stringify(good));
+  assert.equal(run(c2, `_invDayCostMap()`).F06['2026-10-05'], 1100, 'changed and changed back: rebuilt each time');
   await E.pg.close();
+});
+
+test('a month fetch that never answers is treated as failed after two minutes, so the month is taken again (Codex PR #58)', async () => {
+  const { rows } = await published();
+  const c = app({ state: { ...rows, invoices: appInvoices() } });
+  let hang = true;
+  c.pullOpKey = k => { c.pulled.push(k); return (hang && k === 'invoice_purchase_2026-10') ? new Promise(() => {}) : Promise.resolve(true); };
+  const tick = () => new Promise(r => setTimeout(r, 5));
+  run(c, `ipsMonth('2026-10')`); await tick(); run(c, `ipsMonth('2026-10')`); await tick();
+  const n = () => c.pulled.filter(k => k === 'invoice_purchase_2026-10').length;
+  assert.equal(n(), 1, 'asked once, no answer yet');
+  run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(n(), 1, 'not asked again while it may still answer');
+  // two minutes on: asked again; when that answers, the month is not asked again in the session
+  run(c, `Object.keys(_ipsAsked).forEach(function(f){ if (_ipsAsked[f].busy) _ipsAsked[f].busy -= 120001; })`);
+  hang = false;
+  run(c, `ipsMonth('2026-10')`); await tick(); run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(n(), 2, 'asked again after two minutes without an answer');
+  run(c, `ipsMonth('2026-10')`); await tick();
+  assert.equal(n(), 2, 'answered: not asked again in the session');
 });
 
 test('a vendor with no invoice and a "missing" statement keeps the month provisional until the invoice is in and checked (Codex PR #58 P2-2)', async () => {
