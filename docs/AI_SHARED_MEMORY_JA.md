@@ -8,7 +8,7 @@
 - 入れる一式：`deploy/invoice-vendor-merge-v1083/`（SQL（段階 2・3 と合わせたもの／業者の統合だけ）→ 確認（vendor_merge＝true・tables＝19・functions＝81）→ 関数 → アプリ）。関数を前に戻すときは先に統合をすべて外す。
 - 試験（合成データ・本番に接続していない）：`tests/invoice-vendor-merge.test.mjs` 4・`tests/invoice-vendor-merge-ui.test.mjs` 10（新しい）。`tests/*.test.mjs`（invoice-mutations 以外）660 のうち失敗は前からの 27 件と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）。1 ファイルにした関数で intake と業者の統合の試験 96 通る（入れる一式の確かめ 3 つは飛ばす）。static release pass/1083。Chromium（1280・390px・日英）で業者の統合（候補・手動・記録）とまとめる画面、pageerror 0・横スクロールなし。わざと壊す試験：「業者の統合」42 通り（サーバー 21・画面 21）を足し、42 通りすべてで落ちる（1 回目は 40。落ちなかった 2 つ（商品の候補がまとめた業者を見る・7A の似た名前）は試験を足して落ちることを確かめた。前の段階の通りは流し直していない）。
 - レビュー：**独立レビュー・Codex のレビューはまだ**（Claude が自分で試験しただけ）。
-- PR は #65（記録だけ）を含む（ぶつからないように取り込んだ）。
+- PR #66（#65（記録だけ）を含む。ぶつからないように取り込んだ）。コードの head `d92b6d9`。
 - 次：Codex のレビュー（とくに invoice_vendor_merge の残す業者の決め方・締めた月と二重の反映済み・unmerge の later_merge と戻す範囲・アプリの共通データの合流と「外す」・7A）→ Moto さんが手順.md の順で入れる → 経理の実機。前の版の「業者名の整理」でまとめた名前は候補に「以前この端末でまとめた」と出るので、まとめ直してもらう。
 
 ## 2026-10-15 PR #59〜#64 はマージ済み（アプリ v1082）・#64 の SQL に仕入れ集計の確かめを足した・段階 2 と段階 3 の SQL を Moto さんに渡した（Claude・本番の SQL・関数は未確認）
