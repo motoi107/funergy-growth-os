@@ -96,6 +96,7 @@ test('review list: the same-number heading opens the screen; an invoice of pages
   assert.match(c.fn('invInQbChip')(null, 0, 'posted'), /対象外・未登録/);
   assert.match(c.fn('invInQbChip')('sent', 1, 'posted'), /送信済み/);
   assert.deepEqual({ ...c.fn('invInListParams')({ state: 'merged' }, 0) }, { action: 'list', limit: 50, offset: 0, status: 'merged' });
+  assert.match(c.fn('invInProcChip')({ status: 'merged', part_no: 2 }), /まとめた原本<\/span><div class="ivx-sub">2 枚目<\/div>/);
 });
 
 test('merge: pages from what is printed, the retake set aside, a preview first, then saved with every version', async () => {
@@ -199,6 +200,11 @@ test('merge: what cannot be merged is said before asking the server', async () =
   c.fn('invInSameOpen')([id(1), id(2), id(3)]); await c.fn('invInLoadSame')(); await c.fn('invInLoadSamePv')();
   assert.match(c.fn('invInSameHtml')(), /まとめられません：まとめられません（同じ業者・番号・店舗の/);
   assert.equal(c.fn('invInSameReady')(c.M._invIn.same), false);
+  // A preview that failed (the network, say) can be asked again.
+  assert.match(c.fn('invInSameHtml')(), /onclick="invInSameRetryPv\(\)">もう一度/);
+  const asked = c.calls.filter(b => b.action === 'merge').length;
+  c.fn('invInSameRetryPv')(); await c.fn('invInLoadSamePv')();
+  assert.equal(c.calls.filter(b => b.action === 'merge').length, asked + 1);
 });
 
 test('a page that arrives after its invoice was posted is added to it (8A), with what posting asks', async () => {
@@ -228,6 +234,23 @@ test('a page that arrives after its invoice was posted is added to it (8A), with
   assert.deepEqual(c.calls.at(-1), { action: 'merge', docs: [id(1), id(2)], duplicates: [], versions: { [id(1)]: 4, [id(2)]: 1 }, reason: '複数枚で 1 つの invoice', ack: ['total_mismatch'], adjustment_ack: true });
   assert.equal(c.M._invIn.docId, id(1)); assert.equal(c.M._invIn.docSub, 'drecon');
   assert.deepEqual(c.toasts.at(-1), ['反映済みの invoice に足しました（全部で 2 枚）。ファイル名はあとで自動でやり直します', 'warning']);
+  // Waiting in the QuickBooks ledger: said that it will not be sent alone. Under way or unknown: settled first, nothing to save.
+  docs[id(1)].qb = [{ state: 'cancelled', created_at: '2026-10-11T00:00:00Z' }, { state: 'pending', created_at: '2026-10-12T17:00:00Z' }];
+  pv = PLAN({ main: id(1), posted: true, reasons: [{ code: 'original_replaced' }] });
+  const cq = app({ api: b => getter(docs)(b) || (b.action === 'merge' ? pv : null) });
+  cq.fn('invInSameOpen')([id(2), id(1)]); await cq.fn('invInLoadSame')(); await cq.fn('invInLoadSamePv')();
+  let hq = cq.fn('invInSameHtml')();
+  assert.match(hq, /QuickBooks へ送る予定だったこの invoice は、足すと送らなくなります/);
+  assert.doesNotMatch(hq, /もう QuickBooks へ送っています/);
+  assert.ok(hq.includes('onchange="invInSameAck(\'original_replaced\',this.checked)"'), 'a replaced original is acknowledged as posting asks');
+  for (const st of ['sending', 'unknown']) {
+    docs[id(1)].qb = [{ state: st, created_at: '2026-10-12T17:00:00Z' }];
+    const cb = app({ api: b => getter(docs)(b) || (b.action === 'merge' ? PLAN({ main: id(1), posted: true }) : null) });
+    cb.fn('invInSameOpen')([id(2), id(1)]); await cb.fn('invInLoadSame')(); await cb.fn('invInLoadSamePv')();
+    assert.match(cb.fn('invInSameHtml')(), /QuickBooks へ送っている途中か、送った結果が分からない原本があります/, st);
+    assert.equal(cb.fn('invInSameReady')(cb.M._invIn.same), false, st);
+  }
+  docs[id(1)].qb = [];
   // Something posting would make a person fix first: the pages cannot be added.
   pv = PLAN({ main: id(1), posted: true, reasons: [{ code: 'vendor_unknown' }] });
   const c2 = app({ api: b => getter(docs)(b) || (b.action === 'merge' ? pv : null) });

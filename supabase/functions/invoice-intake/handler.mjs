@@ -650,6 +650,8 @@ export function createHandler(deps) {
     const others = gs.filter(g => g !== main);
     const versions = b.versions && typeof b.versions === 'object' ? b.versions : {};
     if (!b.preview) for (const g of gs) if (Number(versions[g.doc.id]) !== Number(g.doc.version)) throw new Error('conflict');
+    // A page set aside as a duplicate is changed only with the version that was looked at.
+    if (!b.preview) for (const id of dupIds) if (versions[id] == null || !Number.isInteger(Number(versions[id]))) throw new Error('conflict');
     // Page numbers: the order given; pages added to an invoice that already has some come after them.
     const had = (main.parts || []).length;
     const firstNo = had ? Math.max(Number(main.doc.part_no) || 1, ...main.parts.map(x => Number(x.part_no) || 0)) + 1 : 1;
@@ -688,6 +690,18 @@ export function createHandler(deps) {
       tax_cents: pick('tax_cents', true, true), shipping_cents: pick('shipping_cents', true, true), discount_cents: pick('discount_cents', true, true),
       other_charges: pick('other_charges', true) || [], pages, pages_marked: marked,
       references_raw: seq.flatMap(g => g.doc.references_raw || []) };
+    // What the database refuses is said already at the preview (the same rules as invoice_merge): the same store, vendor, number,
+    // kind of document and currency (what could not be read may join), one document per original, read from what it holds now,
+    // and never a new reading of an original that is already a page of the invoice.
+    const same = (x, y) => x == null || y == null || x === y;
+    const kind = (x, y) => x === y || x === 'unknown' || y === 'unknown';
+    const files = new Set([main.doc.file_id, ...(main.parts || []).map(x => x.file_id)]);
+    for (const g of gs) {
+      if (g.doc.store_id !== doc.store_id || !same(g.doc.vendor_key, doc.vendor_key) || !same(g.doc.invoice_no_norm, doc.invoice_no_norm)
+        || !kind(g.doc.doc_type, doc.doc_type) || !same(g.doc.currency, doc.currency) || Number(g.file_docs) > 1 || Number(g.doc.doc_index) > 0
+        || (g.file && g.file.current_sha256 !== g.doc.sha256)) throw new Error('bad_merge');
+      if (g !== main) { if (files.has(g.doc.file_id)) throw new Error('bad_merge'); files.add(g.doc.file_id); }
+    }
     const ctx = await context();
     const exclude = new Set([...order, ...dupIds, ...(main.parts || []).map(x => x.id)]);
     const result = await recheck(doc, lines, { header: {}, lines: [] }, ctx, main.ai_doc || null, exclude);
@@ -707,7 +721,8 @@ export function createHandler(deps) {
     const saved = await db.rpc('invoice_merge', { actor, doc_id: main.doc.id, version: main.doc.version, part_no: plan.parts.find(x => x.main).part_no,
       parts: others.map(g => ({ id: g.doc.id, version: g.doc.version, part_no: partNo.get(g.doc.id) })),
       duplicates: dupIds.map(id => ({ id, version: Number(versions[id]) })),
-      header: { ...h, pages, pages_marked: marked, other_charges: h.other_charges || [] },
+      // The kind of purchase a person chose for the invoice (food / other) stays: only the vendor's default fills it in.
+      header: { ...h, food_kind: first('food_kind') ?? h.food_kind ?? null, pages, pages_marked: marked, other_charges: h.other_charges || [] },
       lines: lines.map((l, i) => { const n = result.lines[i];
         return { line_id: l.id, page: l.page, reasons: n.reasons, map_id: n.map_id ?? null, ingredient_code: n.ingredient_code ?? null, count_unit: n.count_unit ?? null,
           count_per_purchase: n.count_per_purchase ?? null, base_unit: n.base_unit ?? null, base_per_purchase: n.base_per_purchase ?? null,
@@ -872,7 +887,7 @@ export function createHandler(deps) {
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
-    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409 };
+    not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409 };
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.

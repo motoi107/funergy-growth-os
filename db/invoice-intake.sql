@@ -983,7 +983,7 @@ begin
   select d.id, d.store_id, d.doc_type, d.vendor_key, d.vendor_name, d.vendor_raw, d.invoice_no, d.invoice_date, d.delivery_date, d.total_cents,
    d.status, d.recon_status, d.reasons, d.needs_adjustment, d.posted_mode, d.version, f.drive_file_id, f.current_name, f.organize_status, f.drive_state,
    f.ingested_at, (select state from public.invoice_qb_outbox o where o.file_id=f.id and o.state<>'cancelled' order by created_at desc limit 1) qb_state,
-   (select count(*) from public.invoice_docs x where x.merged_into=d.id) parts
+   (select count(*) from public.invoice_docs x where x.merged_into=d.id) parts, d.part_no
   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
   where (jsonb_typeof(p->'stores') is distinct from 'array' or d.store_id in (select jsonb_array_elements_text(case when jsonb_typeof(p->'stores')='array' then p->'stores' else '[]'::jsonb end)))
    and (p->>'vendor' is null or d.vendor_name ilike '%'||(p->>'vendor')||'%' or d.vendor_raw ilike '%'||(p->>'vendor')||'%')
@@ -2303,33 +2303,41 @@ end $$;
 create function public.invoice_merge(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; m public.invoice_docs; x public.invoice_docs; l public.invoice_lines; e jsonb; h jsonb := p->'header';
- ids uuid[]; files uuid[]; dups uuid[] := '{}'; mx int; k int := 0; base jsonb; closed text; blocking text;
+ ids uuid[]; files uuid[]; dups uuid[] := '{}'; mx int; k int := 0; nq int := 0; base jsonb; closed text; blocking text;
  must_fix text[] := array['duplicate_certain','total_missing','date_missing','date_unreadable','date_disagree','vendor_unknown',
   'currency','doc_type_unknown','receipt_route','statement','unreadable','ai_failed','ai_truncated'];
- may_ack text[] := array['total_mismatch','line_amount_missing','line_value_missing'];
+ may_ack text[] := array['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
  ack text[] := coalesce(array(select jsonb_array_elements_text(p->'ack')), '{}');
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if jsonb_typeof(p->'parts') is distinct from 'array' or jsonb_array_length(p->'parts') not between 1 and 9
     or jsonb_typeof(p->'lines') is distinct from 'array' or jsonb_typeof(h) is distinct from 'object' or jsonb_typeof(p->'reasons') is distinct from 'array' then
   raise exception 'bad_merge'; end if;
+ -- Every document of the merge is locked first, in one order (two people merging the same pages in another order wait, never deadlock).
+ perform 1 from public.invoice_docs where id in (select (p->>'doc_id')::uuid
+   union select (e2->>'id')::uuid from jsonb_array_elements(p->'parts') e2
+   union select (e2->>'id')::uuid from jsonb_array_elements(coalesce(p->'duplicates','[]')) e2) order by id for update;
  select * into m from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if m.id is null then raise exception 'not_found'; end if;
- if m.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if m.version is distinct from (p->>'version')::int then raise exception 'conflict'; end if;
  if m.status not in ('review','posted') then raise exception 'invalid_state'; end if;
  -- One document per original, read from what the original holds now (a file with several documents is never merged; the
  -- reading set aside when a person chose another store is not another document).
  if m.doc_index > 0 or exists(select 1 from public.invoice_docs o where o.file_id=m.file_id and o.sha256=m.sha256 and o.doc_index > 0)
     or not exists(select 1 from public.invoice_files f where f.id=m.file_id and f.current_sha256=m.sha256) then raise exception 'bad_merge'; end if;
- ids := array[m.id]; files := array[m.file_id];
+ -- Files already in the invoice (its pages merged before): a new reading of one of them is not another page of it.
+ ids := array[m.id]; files := array[m.file_id] || array(select c.file_id from public.invoice_docs c where c.merged_into=m.id order by c.part_no);
  for e in select * from jsonb_array_elements(p->'parts') loop
   select * into x from public.invoice_docs where id=(e->>'id')::uuid for update;
   if x.id is null then raise exception 'not_found'; end if;
-  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;
+  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;
   if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;
   if x.id = any(ids) or x.file_id = any(files) or (e->>'part_no')::int is null then raise exception 'bad_merge'; end if;
-  -- The same store, vendor and invoice number (a page whose vendor or number could not be read may join).
-  if x.store_id <> m.store_id or x.vendor_key <> coalesce(h->>'vendor_key', m.vendor_key) or x.invoice_no_norm <> coalesce(h->>'invoice_no_norm', m.invoice_no_norm) then
+  -- The same store, vendor, invoice number, kind of document and currency (a page whose vendor, number, kind or currency could
+  -- not be read may join; a statement or a credit memo never joins an invoice).
+  if x.store_id <> m.store_id or x.vendor_key <> coalesce(h->>'vendor_key', m.vendor_key) or x.invoice_no_norm <> coalesce(h->>'invoice_no_norm', m.invoice_no_norm)
+     or (x.doc_type <> coalesce(h->>'doc_type', m.doc_type) and 'unknown' <> all(array[x.doc_type, coalesce(h->>'doc_type', m.doc_type)]))
+     or x.currency <> coalesce(h->>'currency', m.currency) then
    raise exception 'bad_merge'; end if;
   if x.doc_index > 0 or exists(select 1 from public.invoice_docs o where o.file_id=x.file_id and o.sha256=x.sha256 and o.doc_index > 0)
      or not exists(select 1 from public.invoice_files f where f.id=x.file_id and f.current_sha256=x.sha256) then raise exception 'bad_merge'; end if;
@@ -2338,7 +2346,7 @@ begin
  for e in select * from jsonb_array_elements(coalesce(p->'duplicates','[]')) loop
   select * into x from public.invoice_docs where id=(e->>'id')::uuid for update;
   if x.id is null then raise exception 'not_found'; end if;
-  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;
+  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;
   if x.status <> 'review' or x.id = any(ids) or x.id = any(dups) or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;
   dups := dups || x.id;
  end loop;
@@ -2352,6 +2360,10 @@ begin
   select r->>'code' into blocking from jsonb_array_elements(p->'reasons') r where r->>'code' = any(may_ack) and not (r->>'code' = any(ack)) limit 1;
   if blocking is not null then raise exception 'blocked:%', blocking; end if;
   if closed is not null and to_char(m.invoice_date,'YYYY-MM') <= closed and not coalesce((p->>'adjustment_ack')::boolean,false) then raise exception 'closed_month'; end if;
+  -- QuickBooks (6A・「台帳に出さずに作る」): an invoice of several originals waits out of the ledger. A send of the posted invoice
+  -- that is under way or whose outcome is unknown is settled first (取込状況); one still waiting is taken back below.
+  perform 1 from public.invoice_qb_outbox where file_id=m.file_id for update;
+  if exists(select 1 from public.invoice_qb_outbox where file_id=m.file_id and state in ('sending','unknown')) then raise exception 'qb_in_progress'; end if;
  end if;
  select coalesce(max(line_no), 0) into mx from public.invoice_lines where doc_id=m.id;
  -- What the invoice was before its first merge, while it waits for review: what invoice_unmerge puts back.
@@ -2410,6 +2422,11 @@ begin
   where id = any(files) and organize_target='reconciled';
   update public.invoice_files set organize_target='unreconciled' where id = any(files) and organize_target is null;
   update public.invoice_app_mirror set state='held', error='edited_after_post', updated_at=now() where doc_id=m.id and state='mirrored';
+  -- The posted invoice's own row that waits to be sent alone is taken back (it goes with its pages, or by hand: invoice_qb_manual).
+  with c as (update public.invoice_qb_outbox set state='cancelled', next_at=null, last_error='multi_file', updated_at=now()
+             where file_id=m.file_id and state in ('pending','error') returning id)
+  select count(*) into nq from c;
+  if nq > 0 then perform public.invoice_event(m.id, m.file_id, actor::text, 'qb_cancelled', jsonb_build_object('rows', nq, 'why', 'multi_file')); end if;
  end if;
  perform public.invoice_file_settle(jsonb_build_object('file_id', fid)) from unnest(files || array(select x3.file_id from public.invoice_docs x3 where x3.id = any(dups))) fid;
  perform public.invoice_event(m.id, m.file_id, actor::text, 'merged', jsonb_build_object('parts', to_jsonb(ids[2:]), 'duplicates', to_jsonb(dups),
@@ -2472,20 +2489,30 @@ end $$;
 create function public.invoice_qb_manual(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; m public.invoice_docs; q jsonb := public.invoice_setting('qb'); n int := 0; fr record;
+ o public.invoice_qb_outbox; key text; res jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  select * into m from public.invoice_docs where id=(p->>'doc_id')::uuid for update;
  if m.id is null then raise exception 'not_found'; end if;
- if m.version <> (p->>'version')::int then raise exception 'conflict'; end if;
+ if m.version is distinct from (p->>'version')::int then raise exception 'conflict'; end if;
  if m.status <> 'posted' or not exists(select 1 from public.invoice_docs c where c.merged_into=m.id) then raise exception 'invalid_state'; end if;
  if coalesce(q->>'to', '') = '' then raise exception 'route_not_assigned'; end if;
- for fr in select f.id, f.current_sha256 from public.invoice_files f
-   where (f.id=m.file_id or f.id in (select x.file_id from public.invoice_docs x where x.merged_into=m.id)) and f.current_sha256 is not null loop
-  insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, state, attempt_key, sent_at, result)
-  values(fr.id, fr.current_sha256, q->>'to', 'manual', 'sent', 'qb-' || fr.current_sha256 || '-' || md5(q->>'to'), now(),
-   jsonb_build_object('manual', true, 'by', actor, 'note', nullif(left(coalesce(p->>'note', ''), 300), '')))
-  on conflict do nothing;
-  if found then n := n + 1; end if;
+ res := jsonb_build_object('manual', true, 'by', actor, 'note', nullif(left(coalesce(p->>'note', ''), 300), ''));
+ perform 1 from public.invoice_qb_outbox ob where ob.file_id in (select x.file_id from public.invoice_docs x where x.id=m.id or x.merged_into=m.id) for update;
+ -- Each page as it is in the invoice (its content when it was read), whatever its original holds now. A row that waits (or was
+ -- taken back when the page was added) becomes the manual entry; a send under way or with an unknown outcome is settled first.
+ for fr in select x.file_id, x.sha256 from public.invoice_docs x where x.id=m.id or x.merged_into=m.id order by coalesce(x.part_no, 0) loop
+  key := 'qb-' || fr.sha256 || '-' || md5(q->>'to');
+  select * into o from public.invoice_qb_outbox where attempt_key=key;
+  if o.id is null then
+   insert into public.invoice_qb_outbox(file_id, sha256, to_address, route, state, attempt_key, sent_at, result)
+   values(fr.file_id, fr.sha256, q->>'to', 'manual', 'sent', key, now(), res);
+   n := n + 1;
+  elsif o.state in ('sending','unknown') then raise exception 'qb_in_progress';
+  elsif o.state <> 'sent' then
+   update public.invoice_qb_outbox set state='sent', route='manual', sent_at=now(), next_at=null, last_error=null, result=res, updated_at=now() where id=o.id;
+   n := n + 1;
+  end if;
  end loop;
  perform public.invoice_event(m.id, m.file_id, actor::text, 'qb_manual', jsonb_build_object('added', n, 'note', nullif(left(coalesce(p->>'note', ''), 300), '')));
  return jsonb_build_object('ok', true, 'added', n);

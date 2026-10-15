@@ -2422,6 +2422,15 @@ async function twoPages(E, tagA, tagB, no = 'M-55021', opts = {}) {
   return { a, b, da: (await docsOf(E, a))[0], db: (await docsOf(E, b))[0] };
 }
 const vers = (...ds) => Object.fromEntries(ds.map(d => [d.id, d.version]));
+// The database's own merge, asked directly (as if the worker had not checked first): every line, page numbers after the invoice's.
+async function rawMerge(E, m, parts) {
+  const ids = [m.id, ...parts.map(x => x.id)];
+  const lines = await E.q(`select id, page from invoice_lines where doc_id = any($1::uuid[]) order by doc_id = $2 desc, line_no`, [ids, m.id]);
+  const header = { vendor_key: m.vendor_key, vendor_name: m.vendor_name, invoice_no: m.invoice_no, invoice_no_norm: m.invoice_no_norm, doc_type: m.doc_type,
+    posting_kind: m.posting_kind, currency: m.currency, total_cents: m.total_cents, pages: [1, 2], pages_marked: [] };
+  return E.db.rpc('invoice_merge', { actor: U.office, doc_id: m.id, version: m.version, part_no: 1, parts: parts.map((x, i) => ({ id: x.id, version: x.version, part_no: 10 + i })),
+    duplicates: [], header, lines: lines.map(l => ({ line_id: l.id, page: l.page, reasons: [] })), reasons: [], reason: 'x', ack: [], adjustment_ack: false });
+}
 
 test('段階 3: the pages of one invoice number are merged into one invoice, looked at first, taken back, and posted as one', async () => {
   const E = await setup();
@@ -2455,6 +2464,7 @@ test('段階 3: the pages of one invoice number are merged into one invoice, loo
     const rl = (await E.api('tok-office', { action: 'list', status: 'review' })).body.rows;
     assert.deepEqual(rl.map(r => [r.id, Number(r.parts)]), [[m.id, 1]]);
     assert.ok(!(await E.api('tok-office', { action: 'list' })).body.rows.some(r => r.id === pB.id));
+    assert.deepEqual((await E.api('tok-office', { action: 'list', status: 'merged' })).body.rows.map(r => [r.id, r.part_no]), [[pB.id, 2]]);
     const gm = (await E.api('tok-office', { action: 'get', doc_id: m.id })).body;
     assert.deepEqual(gm.parts.map(x => [x.id, x.part_no, x.drive_file_id]), [[pB.id, 2, b]]);
     assert.equal((await E.api('tok-office', { action: 'get', doc_id: pB.id })).body.main.id, m.id);
@@ -2532,6 +2542,10 @@ test('段階 3: a page that arrives after its invoice was posted is added to it 
     // Two posted invoices or a page that is not waiting are refused; the posted one stays the invoice.
     const pv = (await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], preview: true })).body;
     assert.equal(pv.main, m.id); assert.equal(pv.posted, true); assert.ok(pv.reasons.some(r => r.code === 'total_mismatch'), 'the total printed covers the first page only');
+    // A person had said this invoice is not food (the vendor's default is food): adding a page keeps it.
+    const fk = await E.api('tok-office', { action: 'edit', doc_id: m.id, version: m.version, header: { food_kind: 'nonfood' }, lines: [], reason: '消耗品の請求', ack: [], adjustment_ack: false });
+    assert.equal(fk.status, 200, JSON.stringify(fk.body));
+    [m] = await docsOf(E, a); assert.equal(m.food_kind, 'nonfood');
     const no = await E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB) });
     assert.deepEqual(no.body, { error: 'blocked:total_mismatch' }); assert.equal(no.status, 409);
     // The page named first is the late one: the posted invoice stays the invoice and becomes the second page.
@@ -2552,6 +2566,7 @@ test('段階 3: a page that arrives after its invoice was posted is added to it 
     assert.equal(ok.status, 200, JSON.stringify(ok.body)); assert.equal(ok.body.posted, true);
     [m] = await docsOf(E, a); [pB] = await docsOf(E, b);
     assert.equal(m.status, 'posted'); assert.equal(m.recon_status, 'unreconciled'); assert.equal(pB.status, 'merged');
+    assert.equal(m.food_kind, 'nonfood', 'the kind a person chose stays');
     assert.equal((await E.q(`select count(*)::int n from invoice_lines where doc_id=$1`, [m.id]))[0].n, 2);
     const ph = await E.q(`select status, line_id from invoice_price_history where doc_id=$1 order by id`, [m.id]);
     assert.deepEqual(ph.map(x => x.status), ['voided', 'active', 'active'], 'rebuilt from the whole invoice');
@@ -2561,6 +2576,50 @@ test('段階 3: a page that arrives after its invoice was posted is added to it 
     await E.worker();
     assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox o join invoice_files f on f.id=o.file_id where f.drive_file_id=$1`, [b]))[0].n, 0);
     assert.equal((await E.api('tok-office', { action: 'unmerge', doc_id: m.id, version: m.version })).status, 409);
+  } finally { await E.pg.close(); }
+});
+
+test('段階 3: the QuickBooks row of a posted invoice that gets a page later is taken back, and the manual entry takes it over', async () => {
+  const E = await setup();
+  try {
+    // The forwarder is the outside one (rows wait in the ledger until it reserves them).
+    await E.pg.exec(`reset role; update invoice_settings set value=value||'{"route":"external"}' where key='qb'; set role service_role`);
+    E.fixtures.set('S3-Q1', { readable: true, documents: [page('Q-1', '2026-10-09', [S3L('06263', 'SHIRO MISO 12/500G', '2', '60.00', '120.00')],
+      { pageNo: 1, of: 1, subtotal: '120.00', total: '120.00' })] });
+    const a = E.drive.file('S3-Q1.pdf', pdf('S3-Q1'), 'U6'); await E.worker(); await E.worker();
+    let [m] = await docsOf(E, a);
+    assert.equal(m.status, 'posted');
+    const rows = () => E.q(`select o.state, o.route, o.last_error, f.drive_file_id from invoice_qb_outbox o join invoice_files f on f.id=o.file_id order by o.created_at`);
+    assert.deepEqual((await rows()).map(o => [o.drive_file_id, o.state, o.route]), [[a, 'pending', 'external']], 'page 1 alone waits for the forwarder');
+    E.fixtures.set('S3-Q2', { readable: true, documents: [page('Q-1', '2026-10-09', [S3L('01111', 'SAKE 6/1.8L', '1', '40.00', '40.00', '6/1.8L')], { pageNo: 2, of: 2 })] });
+    const b = E.drive.file('S3-Q2.pdf', pdf('S3-Q2'), 'U6'); await E.worker();
+    const [pB] = await docsOf(E, b);
+    const add = () => E.api('tok-office', { action: 'merge', docs: [m.id, pB.id], versions: vers(m, pB), ack: ['total_mismatch'] });
+    // A send under way or with an unknown outcome is settled first: nothing changes.
+    for (const st of ['sending', 'unknown']) {
+      await E.q(`update invoice_qb_outbox set state=$1`, [st]);
+      assert.deepEqual((await add()).body, { error: 'qb_in_progress' }, st);
+      assert.equal((await docsOf(E, b))[0].status, 'review');
+    }
+    await E.q(`update invoice_qb_outbox set state='pending'`);
+    const ok = await add();
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    // The row of page 1 is taken back: the forwarder no longer sees it, and nothing new is queued.
+    assert.deepEqual((await rows()).map(o => [o.drive_file_id, o.state, o.last_error]), [[a, 'cancelled', 'multi_file']]);
+    assert.deepEqual(await E.db.rpc('invoice_qb_external_list', {}), []);
+    await E.worker();
+    assert.equal((await rows()).length, 1);
+    [m] = await docsOf(E, a);
+    assert.ok((await E.q(`select 1 from invoice_events where doc_id=$1 and kind='qb_cancelled'`, [m.id])).length === 1);
+    // Entered in QuickBooks by hand: the taken-back row becomes the manual entry (same content and address), page 2 is added.
+    const man = await E.api('tok-crew', { action: 'qb_manual', doc_id: m.id, version: m.version, note: '手で入れた' });
+    assert.equal(man.status, 200, JSON.stringify(man.body)); assert.equal(man.body.added, 2);
+    assert.deepEqual((await rows()).map(o => [o.drive_file_id, o.state, o.route]), [[a, 'sent', 'manual'], [b, 'sent', 'manual']]);
+    assert.equal((await E.api('tok-crew', { action: 'qb_manual', doc_id: m.id, version: m.version })).body.added, 0);
+    assert.deepEqual(await E.db.rpc('invoice_qb_external_list', {}), []);
+    // A send under way of one of its pages is settled before a manual entry too.
+    await E.q(`update invoice_qb_outbox set state='sending' where file_id=(select id from invoice_files where drive_file_id=$1)`, [b]);
+    assert.deepEqual((await E.api('tok-crew', { action: 'qb_manual', doc_id: m.id, version: m.version })).body, { error: 'qb_in_progress' });
   } finally { await E.pg.close(); }
 });
 
@@ -2593,6 +2652,11 @@ test('段階 3: what may not be merged is refused, duplicates are set aside in t
     const d6 = E.drive.file('S3-C6.pdf', pdf('S3-C6'), 'U6'); await E.worker();
     const [df] = await docsOf(E, d6);
     assert.deepEqual(await bad({ docs: [da.id, df.id], versions: vers(da, df) }), { error: 'bad_merge' });
+    // The preview says so already, and the database refuses each of them on its own too.
+    for (const x of [dd, de, df]) {
+      assert.deepEqual(await bad({ docs: [da.id, x.id], preview: true }), { error: 'bad_merge' }, x.store_id + ' ' + x.vendor_key);
+      await assert.rejects(rawMerge(E, da, [x]), /bad_merge/, x.store_id + ' ' + x.vendor_key);
+    }
     assert.equal((await docsOf(E, a))[0].version, da.version, 'nothing changed');
     const ok = await E.api('tok-office', { action: 'merge', docs: [da.id, db.id], duplicates: [dc.id], versions: { ...vers(da, db), [dc.id]: dc.version } });
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
@@ -2605,6 +2669,22 @@ test('段階 3: what may not be merged is refused, duplicates are set aside in t
     const all = await docsOf(E, b);
     assert.equal(all.length, 2); assert.equal(all[0].status, 'merged');
     assert.equal(all[1].status, 'review'); assert.ok(codes(all[1]).includes('original_replaced'));
+    const [mm] = await docsOf(E, a);
+    for (const body of [{ docs: [mm.id, all[1].id], preview: true }, { docs: [mm.id, all[1].id], versions: vers(mm, all[1]) }])
+      assert.deepEqual((await E.api('tok-office', { action: 'merge', ...body })).body, { error: 'bad_merge' }, 'its original is already a page of this invoice');
+    await assert.rejects(rawMerge(E, mm, [all[1]]), /bad_merge/);
+    // A statement with the same number is not a page of the invoice; a duplicate is changed only with the version that was looked at.
+    E.fixtures.set('S3-C7', { readable: true, documents: [{ ...page('C-9', '2026-10-11', [S3L('9', 'BALANCE', '1', '5.00', '5.00')], { pageNo: 1, of: 1 }), doc_type: 'statement' }] });
+    const d7 = E.drive.file('S3-C7.pdf', pdf('S3-C7'), 'U6'); await E.worker();
+    const [dg] = await docsOf(E, d7);
+    assert.equal(dg.doc_type, 'statement');
+    assert.deepEqual((await E.api('tok-office', { action: 'merge', docs: [mm.id, dg.id], preview: true })).body, { error: 'bad_merge' });
+    await assert.rejects(rawMerge(E, mm, [dg]), /bad_merge/);
+    E.fixtures.set('S3-C8', { readable: true, documents: [page('C-9', '2026-10-11', [S3L('9', 'Z', '1', '2.00', '2.00')], { pageNo: 3, of: 3 })] });
+    const d8 = E.drive.file('S3-C8.pdf', pdf('S3-C8'), 'U6'); await E.worker();
+    const [dh] = await docsOf(E, d8);
+    assert.deepEqual((await E.api('tok-office', { action: 'merge', docs: [mm.id, dh.id], duplicates: [dg.id], versions: vers(mm, dh) })).body, { error: 'conflict' });
+    assert.deepEqual(await bad({ docs: [mm.id, dh.id], duplicates: [dg.id], versions: { ...vers(mm, dh), [dg.id]: dg.version - 1 } }), { error: 'conflict' });
   } finally { await E.pg.close(); }
 });
 

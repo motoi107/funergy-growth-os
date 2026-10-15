@@ -46955,7 +46955,8 @@ var INVIN_ERR = {
   /* v1082（段階 3）：複数枚で 1 つの invoice */
   has_parts:['複数枚の invoice です。先に「まとめを外す」','This invoice has several originals. Take the merge back first'],
   bad_merge:['まとめられません（同じ業者・番号・店舗の、書類が 1 つだけの原本を選んでください）','These cannot be merged (choose originals of the same vendor, number and store, one document each)'],
-  route_not_assigned:['QuickBooks の宛先がまだ設定されていません','The QuickBooks address is not set yet']
+  route_not_assigned:['QuickBooks の宛先がまだ設定されていません','The QuickBooks address is not set yet'],
+  qb_in_progress:['QuickBooks へ送っている途中か、送った結果が分からない原本があります。取込状況の QuickBooks で決めてから、もう一度','A QuickBooks send of this invoice is under way or its outcome is unknown. Settle it under Intake status › QuickBooks, then try again']
 };
 function invInL(pair){ return pair ? (curLang==='en' ? pair[1] : pair[0]) : ''; }
 function invInReason(code){ return INVIN_REASONS[code] ? invInL(INVIN_REASONS[code]) : String(code||''); }
@@ -47285,7 +47286,7 @@ function invInProcChip(r){
   if (r.status==='duplicate') return invInChip(t('重複','Duplicate'), INVIN_COL.gray);
   if (r.status==='superseded') return invInChip(t('訂正版に置き換え','Replaced'), INVIN_COL.gray);
   /* v1082（段階 3）：複数枚で 1 つの invoice のページ（明細はまとめた invoice に入っている） */
-  if (r.status==='merged') return invInChip(t('まとめた原本','Merged original'), INVIN_COL.gray) + (r.part_no ? '<div class="ivx-sub">'+r.part_no+t(' 枚目',' (page)')+'</div>' : '');
+  if (r.status==='merged') return invInChip(t('まとめた原本','Merged original'), INVIN_COL.gray) + (r.part_no ? '<div class="ivx-sub">'+t('','page ')+Number(r.part_no)+t(' 枚目','')+'</div>' : '');
   return invInChip(escapeHtml(r.status||'—'), INVIN_COL.gray);
 }
 function invInPartsChip(n){ return invInChip('<i class="ti ti-files"></i> '+n+t(' 枚',' originals'), '#5b3fb0'); }
@@ -47846,6 +47847,7 @@ function invInSamePage(id, p){
 function invInSameInc(id, on){ var S = _invIn.same; if (!S || invInSameFixed(S, id)) return; S.inc[id] = !!on; if (!on) delete S.page[id]; invInSameRenumber(S); invInSameChanged(S); }
 function invInSameHow(v){ var S = _invIn.same; if (!S || ['merge','dup','sep'].indexOf(v) < 0) return; S.how = v; invInSameChanged(S); }
 function invInSameKeep(id){ var S = _invIn.same; if (!S || S.order.indexOf(id) < 0) return; S.keep = id; invInSameChanged(S); }
+function invInSameRetryPv(){ var S = _invIn.same; if (!S || !S.pvErr) return; invInSameChanged(S); }
 function invInSameAck(c, on){ var S = _invIn.same; if (!S) return; S.ack[c] = !!on; invInRerender(); }
 /* 送る内容：ページの順の id と、重複として外す id */
 function invInSamePlan(S){
@@ -47873,10 +47875,16 @@ function invInSameProblem(S){
   return '';
 }
 /* 反映済みに足す（8A）：反映と同じ条件。直す理由があれば足せない。合わない合計などは「原本で確かめた」が要る（サーバーの invoice_merge と同じ） */
-var INVIN_MERGE_ACK = ['total_mismatch','line_amount_missing','line_value_missing'];
+var INVIN_MERGE_ACK = ['total_mismatch','original_replaced','line_amount_missing','line_value_missing'];
 function invInSameAcks(S){ var c = invInCodes(S.pv && S.pv.reasons); return c.filter(function(x, i){ return INVIN_MERGE_ACK.indexOf(x) >= 0 && c.indexOf(x) === i; }); }
+/* 反映済みの invoice の QuickBooks の台帳の行（取り消したものを除く）：sent・wait（送る前・送れなかった）・busy（送っている途中・結果が分からない） */
+function invInSameQb(S, id){
+  var st = ((((S.G || {})[id] || {}).qb) || []).filter(function(o){ return o && o.state!=='cancelled'; }).map(function(o){ return o.state; });
+  return { sent:st.indexOf('sent') >= 0, wait:st.some(function(x){ return x==='pending' || x==='error'; }), busy:st.some(function(x){ return x==='sending' || x==='unknown'; }) };
+}
 function invInSameMust(S){
   if (!S.pv || !S.pv.posted) return '';
+  if (invInSameQb(S, S.pv.main).busy) return invInL(INVIN_ERR.qb_in_progress);
   var c = invInCodes(S.pv.reasons), must = c.filter(function(x, i){ return INVIN_MUST_FIX.indexOf(x) >= 0 && c.indexOf(x) === i; });
   if (must.length) return t('まとめると次を直す必要があるため、反映済みの invoice には足せません：','Merged, these would need fixing, so the pages cannot be added to the posted invoice: ')+must.map(function(x){ return invInReason(x); }).join(' / ');
   if (invInSameAcks(S).some(function(x){ return !S.ack[x]; })) return t('原本で確かめたらチェックしてください','Tick once you have checked against the original');
@@ -48019,7 +48027,8 @@ function invInSameResult(S){
   if (S.how!=='merge') return box('<div style="font-size:12px;color:var(--muted)">'+t('どう扱うかを選ぶと、ここに結果が出ます','Choose how to treat them; the result appears here')+'</div>');
   if (p) return box(title(t('まとめた結果','The merged invoice')) + red(p));
   var P = invInSamePlan(S), pv = S.pv;
-  if (S.pvErr) return box(title(t('まとめた結果','The merged invoice')) + red(t('まとめられません：','Cannot merge: ')+S.pvErr));
+  if (S.pvErr) return box(title(t('まとめた結果','The merged invoice')) + red(t('まとめられません：','Cannot merge: ')+S.pvErr)
+    + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invInSameRetryPv()">'+t('もう一度','Try again')+'</button>');
   if (!pv || S.pvKey !== JSON.stringify(P)) return box(title(t('まとめた結果','The merged invoice'))+'<div style="font-size:12px;color:var(--muted)">'+t('まとめた結果を計算しています…','Working out the merged invoice…')+'</div>');
   var H = pv.header || {}, from = H.from || {}, codes = invInCodes(pv.reasons);
   var pg = function(id){ var x = (pv.parts || []).filter(function(q){ return q.id===id; })[0]; if (!x) return ''; var no = Number(x.part_no) || 1;
@@ -48050,9 +48059,10 @@ function invInSameResult(S){
     + (P.duplicates.length ? e(names(P.duplicates))+t(' は重複として外し、Drive からは消しません。',' are set aside as duplicates and stay in Drive.') : '')
     + (pv.posted ? '' : t('まとめたあとは 1 件の invoice として 4 項目を確かめて反映します。',' After merging, check the four items of the one invoice and post it.'))+'</div>';
   if (pv.posted) {
-    var sentBefore = ((S.G[pv.main] || {}).qb || []).some(function(o){ return o && o.state==='sent'; });
+    var qb = invInSameQb(S, pv.main);
     inner += '<div style="font-size:12px;margin-top:8px;line-height:1.7">'+t('反映済みの invoice に足します（訂正：版が上がり、価格の履歴・アプリの写し・仕入れ集計を作り直し、照合は「未照合」に戻ります）。','The pages are added to the posted invoice (a correction: its version goes up, the price history, the app copy and the purchase totals are rebuilt, and reconciliation goes back to “not reconciled”).')
-      + (sentBefore ? t('この invoice はもう QuickBooks へ送っています。足したページは QuickBooks で手で足してください。',' This invoice was already sent to QuickBooks: add the new pages there by hand.') : '')+'</div>'
+      + (qb.sent ? t('この invoice はもう QuickBooks へ送っています。足したページは QuickBooks で手で足してください。',' This invoice was already sent to QuickBooks: add the new pages there by hand.')
+        : qb.wait ? t('QuickBooks へ送る予定だったこの invoice は、足すと送らなくなります（複数枚は転送側の対応待ち）。QuickBooks に手で入れたら「QuickBooks に入れた」を記録してください。',' This invoice was waiting to be sent to QuickBooks; once pages are added it is not sent (several originals wait for the forwarder). When you enter it in QuickBooks by hand, record it with “Entered in QuickBooks”.') : '')+'</div>'
       + invInSameAcks(S).map(function(c){ return '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px;color:'+INVIN_COL.red+'"><input type="checkbox"'+(S.ack[c] ? ' checked' : '')+' onchange="invInSameAck(\''+c+'\',this.checked)"> '+t('原本で確かめた：','Checked against the original: ')+e(invInReason(c))+'</label>'; }).join('')
       + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:4px"><input type="checkbox"'+(S.adj ? ' checked' : '')+' onchange="_invIn.same.adj=this.checked"> '+t('締め済みの月なら、経理の調整として記録する','If the month is closed, record an accounting adjustment')+'</label>';
     var must = invInSameMust(S);

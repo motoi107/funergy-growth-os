@@ -108,8 +108,9 @@ select
         when p.proname in ('invoice_mark', 'invoice_reassign') then p.prosrc like '%has_parts%'
         when p.proname = 'invoice_purchase_month' then p.prosrc like '%<> ''merged''%'
         when p.proname = 'invoice_stage' then p.prosrc like '%''merged''%'
+        when p.proname in ('invoice_merge', 'invoice_qb_manual') then p.prosrc like '%qb_in_progress%'
         else p.prosrc like '%merged_into%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname in ('invoice_file_settle', 'invoice_stage', 'invoice_post', 'invoice_edit', 'invoice_mark', 'invoice_reconcile',
         'invoice_organize_due', 'invoice_rename_waiting', 'invoice_rename_waiting_all', 'invoice_rename_due', 'invoice_qb_enqueue', 'invoice_qb_candidates',
-        'invoice_list', 'invoice_get', 'invoice_purchase_month', 'invoice_reassign')), false) as multi_file;
+        'invoice_list', 'invoice_get', 'invoice_purchase_month', 'invoice_reassign', 'invoice_merge', 'invoice_qb_manual')), false) as multi_file;

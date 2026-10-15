@@ -1810,6 +1810,9 @@ function createHandler(deps) {
     if (!b.preview) {
       for (const g of gs) if (Number(versions[g.doc.id]) !== Number(g.doc.version)) throw new Error("conflict");
     }
+    if (!b.preview) {
+      for (const id of dupIds) if (versions[id] == null || !Number.isInteger(Number(versions[id]))) throw new Error("conflict");
+    }
     const had = (main.parts || []).length;
     const firstNo = had ? Math.max(Number(main.doc.part_no) || 1, ...main.parts.map((x) => Number(x.part_no) || 0)) + 1 : 1;
     const partNo = new Map(had ? others.map((g, i) => [g.doc.id, firstNo + i]) : gs.map((g, i) => [g.doc.id, i + 1]));
@@ -1860,6 +1863,16 @@ function createHandler(deps) {
       pages_marked: marked,
       references_raw: seq.flatMap((g) => g.doc.references_raw || [])
     };
+    const same = (x, y) => x == null || y == null || x === y;
+    const kind = (x, y) => x === y || x === "unknown" || y === "unknown";
+    const files = /* @__PURE__ */ new Set([main.doc.file_id, ...(main.parts || []).map((x) => x.file_id)]);
+    for (const g of gs) {
+      if (g.doc.store_id !== doc.store_id || !same(g.doc.vendor_key, doc.vendor_key) || !same(g.doc.invoice_no_norm, doc.invoice_no_norm) || !kind(g.doc.doc_type, doc.doc_type) || !same(g.doc.currency, doc.currency) || Number(g.file_docs) > 1 || Number(g.doc.doc_index) > 0 || g.file && g.file.current_sha256 !== g.doc.sha256) throw new Error("bad_merge");
+      if (g !== main) {
+        if (files.has(g.doc.file_id)) throw new Error("bad_merge");
+        files.add(g.doc.file_id);
+      }
+    }
     const ctx = await context();
     const exclude = /* @__PURE__ */ new Set([...order, ...dupIds, ...(main.parts || []).map((x) => x.id)]);
     const result = await recheck(doc, lines, { header: {}, lines: [] }, ctx, main.ai_doc || null, exclude);
@@ -1899,7 +1912,8 @@ function createHandler(deps) {
       part_no: plan.parts.find((x) => x.main).part_no,
       parts: others.map((g) => ({ id: g.doc.id, version: g.doc.version, part_no: partNo.get(g.doc.id) })),
       duplicates: dupIds.map((id) => ({ id, version: Number(versions[id]) })),
-      header: { ...h, pages, pages_marked: marked, other_charges: h.other_charges || [] },
+      // The kind of purchase a person chose for the invoice (food / other) stays: only the vendor's default fills it in.
+      header: { ...h, food_kind: first("food_kind") ?? h.food_kind ?? null, pages, pages_marked: marked, other_charges: h.other_charges || [] },
       lines: lines.map((l, i) => {
         const n = result.lines[i];
         return {
@@ -2150,7 +2164,8 @@ function createHandler(deps) {
     posted_use_correction: 409,
     has_parts: 409,
     bad_merge: 409,
-    route_not_assigned: 409
+    route_not_assigned: 409,
+    qb_in_progress: 409
   };
   const EXTERNAL = {
     qb_external_list: async (b) => ({ rows: (await db.rpc("invoice_qb_external_list", { limit: Math.max(1, Math.min(100, Number(b.limit) || 20)) })).map((r) => ({ ...r, original_url: viewUrl(r.drive_file_id) })) }),
