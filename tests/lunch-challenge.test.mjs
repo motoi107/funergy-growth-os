@@ -720,3 +720,51 @@ test('third review: turning a weekday lunch back on is not a correction; nothing
   fn(b, 'lcOpen')('mypage'); await new Promise(r => setImmediate(r));
   assert.equal(b.pages.length, before + 3, 'redrawn with the newest records when nobody is typing');
 });
+
+test('fourth review: leaving the page during the read still saves; a changed month asks to press again; the same manager only; busy always comes back', async () => {
+  const gate = () => { let open; const p = new Promise(r => { open = () => r(true); }); return { p, open }; };
+  // Save, then go to another page while the cloud is being read: the settings are still saved.
+  const c = app({ role: 'gm', user: 'GM', today: '2026-10-20' }); c.M._lc.ym = '2026-11';
+  fn(c, 'lcFormFor')('2026-11'); ['60', '70', '80'].forEach((t, i) => fn(c, 'lcFormSet')(i, 't', t));
+  let g = gate(); c.pullOpKey = () => g.p;
+  let run = fn(c, 'lcSaveCfg')();
+  assert.equal(c.M._lc.busy, true);
+  c.curPage = 'mypage';
+  g.open(); await run;
+  assert.equal(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[2].t, '80.0', 'saved although the page changed');
+  // Reopening the page during the read drops the draft: nothing is saved and it says so.
+  c.curPage = 'lunch_challenge'; fn(c, 'lcFormFor')('2026-11'); fn(c, 'lcFormSet')(0, 'rest', 'Z');
+  g = gate(); c.pullOpKey = () => g.p; run = fn(c, 'lcSaveCfg')();
+  fn(c, 'lcOpen')('mypage'); g.open(); await run;
+  assert.notEqual(J(c.mem.lunch_challenge['cfg:2026-11']).tiers[0].rest, 'Z');
+  assert.match(c.toasts.at(-1)[0], /画面が変わったので、変えていません/);
+  // Logged out and someone else logged in during the read: nothing is changed.
+  const m = app({ role: 'gm', user: 'GM', days: { '2026-10-01': day(70), '2026-10-02': day(0) }, today: '2026-10-05' });
+  g = gate(); m.pullOpKey = () => g.p;
+  run = fn(m, 'lcMarkDay')('2026-10-02', 'zero');
+  m.curRole = 'crew'; m.curUserName = 'Aki';
+  g.open(); await run;
+  assert.equal(fn(m, 'lcMark')('2026-10-02'), '');
+  // Another manager raised the targets after the month ended: confirming does not lock in a result nobody saw.
+  const days = {}; for (let d = 1; d <= 30; d++) { const iso = '2026-09-' + String(d).padStart(2, '0'); if (new Date(iso + 'T00:00:00').getDay() !== 0) days[iso] = day(72); }
+  const k = app({ role: 'gm', user: 'GM', days, today: '2026-10-02' }); setCfg(k, '2026-09'); k.M._lc.ym = '2026-09';
+  k.pullOpKey = async () => { k.mem.lunch_challenge['cfg:2026-09'] = { ym: '2026-09', state: 'set', tiers: tiers('75', '80', '85'), _at: 70, by: 'CEO' }; return true; };
+  await fn(k, 'lcConfirm')();
+  assert.equal(k.mem.lunch_challenge['conf:2026-09'], undefined);
+  assert.match(k.toasts.at(-1)[0], /最新の記録で数字・段階・目標が変わりました/);
+  k.pullOpKey = async () => true;
+  await fn(k, 'lcConfirm')();
+  assert.equal(J(k.mem.lunch_challenge['conf:2026-09']).tier, -1, 'confirmed with what is now shown');
+  // A drawing that fails during the read never leaves the buttons off.
+  const b = app({ role: 'gm', user: 'GM' }); b.renderPage = () => { throw new Error('draw'); };
+  b.M._lc.ym = '2026-11'; fn(b, 'lcFormFor')('2026-11');
+  await fn(b, 'lcSaveCfg')();
+  assert.equal(b.M._lc.busy, false);
+  // While reading, the day marks and undo are shown disabled.
+  const v = app({ role: 'gm', user: 'GM', days: { '2026-10-01': day(70), '2026-10-02': day(0) }, today: '2026-10-05' }); setCfg(v, '2026-10');
+  v.M._lc.view = 'admin'; v.M._lc.ym = '2026-10'; v.M._lc.busy = true;
+  const h = fn(v, 'renderLunchChallenge')();
+  assert.match(h, /<button class="lc-btn" disabled onclick="lcMarkDay\('2026-10-02','zero'\)">/);
+  v.mem.lunch_challenge['conf:2026-10'] = { ym: '2026-10', state: 'done', C: 70, d: 1, D: 1, avg10: 700, tier: 1, days: {}, _at: 3 };
+  assert.match(fn(v, 'renderLunchChallenge')(), /disabled onclick="lcUnconfirm\(\)"/);
+});

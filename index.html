@@ -71851,14 +71851,16 @@ async function lcPull(){
 }
 /* 保存・印・確定の前：クラウドの最新を読む（そのあいだは押せない）。読めなければ何も変えない */
 async function lcPullForSave(){
-  _lc.busy = true; lcRerender();
   var ok = false;
-  try { ok = await lcPull(); } finally { _lc.busy = false; }
-  lcRerender();
-  if (!ok) showToast(lcT('最新の記録を読めませんでした。通信を確かめて、もう一度押してください（何も変えていません）', 'Could not read the latest records. Check the connection and press again (nothing was changed)'), 'warning');
+  _lc.busy = true;
+  try { try { lcRerender(); } catch(e) {} ok = await lcPull(); } catch(e) { ok = false; } finally { _lc.busy = false; }
+  try { if (!lcTyping()) lcRerender(); } catch(e) {}
+  if (!ok) showToast(lcT('最新の記録を読めませんでした。通信（または端末の保存容量）を確かめて、もう一度押してください（何も変えていません）', 'Could not read the latest records. Check the connection (or the device storage) and press again (nothing was changed)'), 'warning');
   return ok;
 }
-function lcHere(){ return typeof curPage === 'undefined' || curPage === 'lunch_challenge'; }
+/* 読んでいるあいだに、ログアウトしてほかの人になっていないか */
+function lcStill(me){ return lcCanAdmin() && lcMe() === me; }
+function lcNotDone(){ showToast(lcT('画面が変わったので、変えていません。もう一度押してください', 'Nothing was changed because the page changed. Please press again'), 'warning'); }
 /* 入力中の欄があるときは、ページを描き直さない（あとで読んだ記録は次に描くときに出る） */
 function lcTyping(){ try { var a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest && a.closest('.lc-wrap')); } catch(e) { return false; } }
 /* 1 回の描画のあいだは、保存したデータを 1 回だけ読む（書いたら読み直す） */
@@ -72348,9 +72350,10 @@ function lcDiff(oldC, f){
 }
 async function lcSaveCfg(){
   if (!lcCanAdmin() || _lc.busy) return;
-  var ym = _lc.ym, f = _lc.form; if (!f || _lc.formYm !== ym) return;
+  var ym = _lc.ym, f = _lc.form, me = lcMe(); if (!f || _lc.formYm !== ym) return;
   if (!(await lcPullForSave())) return;
-  if (_lc.form !== f || _lc.ym !== ym || !lcHere()) return;
+  if (!lcStill(me)) return;
+  if (_lc.form !== f || _lc.formYm !== ym) { lcNotDone(); return; }
   if (lcRec('conf:' + ym) && lcRec('conf:' + ym).state === 'done') { showToast(lcT('確定した月の設定は変えられません（先に確定を取り消す）', 'A confirmed month cannot be changed (undo the confirmation first)'), 'warning'); return; }
   var err = lcFormCheck(f); if (err) { showToast(err, 'warning'); return; }
   var curRec = lcRec('cfg:' + ym);
@@ -72377,7 +72380,9 @@ async function lcPickTierPhoto(input, i){
 }
 async function lcMarkDay(d, k){
   if (!lcCanAdmin() || !lcDateOk(d) || ['zero','closed','none'].indexOf(k) < 0) return;
+  var me = lcMe();
   if (_lc.busy || !(await lcPullForSave())) return;
+  if (!lcStill(me)) return;
   var ym = d.slice(0, 7), cf = lcRec('conf:' + ym);
   if (cf && cf.state === 'done') { showToast(lcT('確定した月は日の印を変えられません（先に確定を取り消す）', 'A confirmed month cannot change its days (undo the confirmation first)'), 'warning'); return; }
   if (d >= bizToday()) return;
@@ -72386,16 +72391,20 @@ async function lcMarkDay(d, k){
   lcSaveMany([['mark:' + d, { k:k }], lcHistRec(ym, what, '')]);
   lcRerender();
 }
+/* 確定のボタンを押したときに見えていた内容（数字・段階・目標とごほうび） */
+function lcConfKey(o){ return JSON.stringify([o.C, o.d, o.avg10, o.reached, o.cfg ? o.cfg.tiers.map(function(x){ return [x.t10, x.name, x.rest, x.meal]; }) : null]); }
 async function lcConfirm(){
   if (!lcCanAdmin() || _lc.busy) return;
-  var ym = _lc.ym;
+  var ym = _lc.ym, me = lcMe(), seen = lcConfKey(lcCompute(ym));
   if (!(await lcPullForSave())) return;
-  if (_lc.ym !== ym || !lcHere()) return;
+  if (!lcStill(me)) return;
+  if (_lc.ym !== ym) { lcNotDone(); return; }
   var o = lcCompute(ym);
   if (o.conf) { showToast(lcT('この月はもう確定されています', 'This month is already confirmed'), 'info'); return; }
   if (!o.ended || o.pending || !o.cfg) { showToast(lcT('最新の記録では、まだ確定できません（画面の理由を確かめてください）', 'With the latest records this month cannot be confirmed yet (see the reason on the page)'), 'warning'); return; }
   if (o.markData.length) { showToast(lcT('休業だったとした日に客数があります（' + lcList(o.markData) + '）。営業していたなら印を外してください', 'Days marked closed have guests (' + lcList(o.markData) + '). If lunch was open, undo the mark'), 'warning'); return; }
   if (!o.d) { showToast(lcT('数えたランチの日がありません', 'No lunch day was counted'), 'warning'); return; }
+  if (lcConfKey(o) !== seen) { showToast(lcT('最新の記録で数字・段階・目標が変わりました。画面を確かめて、もう一度押してください（確定していません）', 'The numbers, star or targets changed with the latest records. Check the page and press again (not confirmed)'), 'warning'); lcRerender(); return; }
   var days = {}, off = {}; o.counted.forEach(function(r){ days[r.date] = r.g; });
   /* 休みの設定だった日と、そのとき数字があったか（あとで設定を変えて数えるようになっても「訂正」にしない） */
   o.days.forEach(function(r){ if (['weekly', 'temp', 'loff'].indexOf(r.st) >= 0) off[r.date] = r.data != null; });
@@ -72410,9 +72419,10 @@ async function lcUnconfirm(){
   var ym = _lc.ym, why = String(_lc.confWhy || '').trim(), cf = lcRec('conf:' + ym);
   if (!cf || cf.state !== 'done') return;
   if (!why) { showToast(lcT('確定を取り消す理由を入れてください', 'Enter a reason to undo the confirmation'), 'warning'); return; }
-  var seen = Number(cf._at) || 0;
+  var seen = Number(cf._at) || 0, me = lcMe();
   if (!(await lcPullForSave())) return;
-  if (_lc.ym !== ym || !lcHere()) return;
+  if (!lcStill(me)) return;
+  if (_lc.ym !== ym) { lcNotDone(); return; }
   cf = lcRec('conf:' + ym);
   if (!cf || cf.state !== 'done' || (Number(cf._at) || 0) !== seen) { showToast(lcT('ほかの人がこの月の確定を先に変えました。今の状態を確かめてください', 'Someone changed this month\'s confirmation first. Check the current state'), 'warning'); lcRerender(); return; }
   lcSaveMany([['conf:' + ym, { ym:ym, state:'none' }], lcHistRec(ym, lcT('確定を取り消した', 'Confirmation undone'), why)]);
@@ -72428,9 +72438,10 @@ function lcDinFor(ym){
 function lcDinSet(k, v){ var d = _lc.din; if (!d || ['date','place','people'].indexOf(k) < 0) return; d[k] = String(v == null ? '' : v); }
 async function lcSaveDin(){
   if (!lcCanAdmin() || _lc.busy) return;
-  var ym = _lc.ym, d = _lc.din; if (!d || _lc.dinYm !== ym) return;
+  var ym = _lc.ym, d = _lc.din, me = lcMe(); if (!d || _lc.dinYm !== ym) return;
   if (!(await lcPullForSave())) return;
-  if (_lc.din !== d || _lc.ym !== ym || !lcHere()) return;
+  if (!lcStill(me)) return;
+  if (_lc.din !== d || _lc.dinYm !== ym) { lcNotDone(); return; }
   var cur = lcRec('din:' + ym);
   if ((cur ? Number(cur._at) || 0 : 0) !== (Number(d.base) || 0)) {
     _lc.din = null; _lc.dinYm = null;
@@ -72505,16 +72516,16 @@ function lcAdminHtml(o){
     pend.forEach(function(d){
       var zero = o.zero.indexOf(d) >= 0;
       h += '<div class="lc-row" style="margin-top:4px;font-size:12.5px"><b style="min-width:52px">' + e(lcDateL(d)) + '</b><span class="lc-mut">' + (zero ? lcT('ランチ 0 名', '0 lunch guests') : lcT('集計待ち', 'waiting')) + '</span>'
-        + (locked ? '' : (zero ? '<button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'zero\')">' + lcT('0 名で確定', 'Confirm 0') + '</button>' : '') + '<button class="lc-btn" onclick="lcMarkDay(\'' + d + '\',\'closed\')">' + lcT('休業だった', 'Was closed') + '</button>')
+        + (locked ? '' : (zero ? '<button class="lc-btn"' + (_lc.busy ? ' disabled' : '') + ' onclick="lcMarkDay(\'' + d + '\',\'zero\')">' + lcT('0 名で確定', 'Confirm 0') + '</button>' : '') + '<button class="lc-btn"' + (_lc.busy ? ' disabled' : '') + ' onclick="lcMarkDay(\'' + d + '\',\'closed\')">' + lcT('休業だった', 'Was closed') + '</button>')
         + (zero || locked ? '' : '<span class="lc-mut" style="font-size:11px">' + lcT('営業していたなら、Toast の取込を待つ（0 名では数えない）', 'If lunch was open, wait for the Toast numbers (never counted as 0)') + '</span>') + '</div>';
     });
   }
   var marked = o.days.filter(function(r){ return r.date < o.today && (r.st === 'mark' || r.marked); });
-  if (marked.length) h += '<div style="font-size:11.5px;margin-top:8px" class="lc-mut">' + lcT('印を付けた日：', 'Marked days: ') + marked.map(function(r){ return e(lcDateL(r.date)) + '（' + (r.st === 'mark' ? lcT('休業', 'closed') : lcT('0 名', '0')) + '）' + (locked ? '' : ' <button class="lc-btn" style="padding:1px 7px;font-size:11px" onclick="lcMarkDay(\'' + r.date + '\',\'none\')">' + lcT('外す', 'undo') + '</button>'); }).join(' ') + '</div>';
+  if (marked.length) h += '<div style="font-size:11.5px;margin-top:8px" class="lc-mut">' + lcT('印を付けた日：', 'Marked days: ') + marked.map(function(r){ return e(lcDateL(r.date)) + '（' + (r.st === 'mark' ? lcT('休業', 'closed') : lcT('0 名', '0')) + '）' + (locked ? '' : ' <button class="lc-btn" style="padding:1px 7px;font-size:11px"' + (_lc.busy ? ' disabled' : '') + ' onclick="lcMarkDay(\'' + r.date + '\',\'none\')">' + lcT('外す', 'undo') + '</button>'); }).join(' ') + '</div>';
   if (locked) {
     h += '<div style="margin-top:10px;font-size:12.5px;color:#0d6b44;font-weight:700">' + e(lcT(lcWhen(o.conf.at) + ' に確定（' + String(o.conf.by || '') + '）', 'Confirmed ' + lcWhen(o.conf.at) + ' (' + String(o.conf.by || '') + ')')) + '</div>'
       + (o.corrected ? '<div style="font-size:12px;color:#b42318;margin-top:4px">' + e(lcT('確定のあとで数字が変わりました（' + lcList(o.changed) + '）：確定のとき ' + o.conf.C + ' 名／' + o.conf.d + ' 日・今 ' + o.C + ' 名／' + o.d + ' 日。確かめて、必要なら取り消して確定し直してください。', 'The numbers changed after confirming (' + lcList(o.changed) + '): then ' + o.conf.C + ' guests / ' + o.conf.d + ' days, now ' + o.C + ' / ' + o.d + '. Check and, if needed, undo and confirm again.')) + '</div>' : '')
-      + '<div class="lc-row" style="margin-top:8px"><input class="lc-in" style="flex:1;width:auto" placeholder="' + e(lcT('取り消す理由（必須）', 'Reason to undo (required)')) + '" value="' + e(_lc.confWhy || '') + '" oninput="_lc.confWhy=this.value"><button class="btn btn-secondary btn-sm" onclick="lcUnconfirm()">' + lcT('確定を取り消す', 'Undo confirmation') + '</button></div>';
+      + '<div class="lc-row" style="margin-top:8px"><input class="lc-in" style="flex:1;width:auto" placeholder="' + e(lcT('取り消す理由（必須）', 'Reason to undo (required)')) + '" value="' + e(_lc.confWhy || '') + '" oninput="_lc.confWhy=this.value"><button class="btn btn-secondary btn-sm"' + (_lc.busy ? ' disabled' : '') + ' onclick="lcUnconfirm()">' + lcT('確定を取り消す', 'Undo confirmation') + '</button></div>';
   } else {
     var can = o.ended && !o.pending && !o.markData.length && !!o.cfg && o.d > 0, why = !o.cfg ? lcT('段階とごほうびを先に設定してください', 'Set the stars and rewards first') : !o.ended ? lcT('月が終わってから確定します', 'Confirm after the month ends') : o.pending ? lcT('集計待ち・ランチ 0 名の日を先に決めてください', 'Decide the waiting / 0-guest days first') : o.markData.length ? lcT('休業だったとした日に客数があります（' + lcList(o.markData) + '）。営業していたなら印を外してください', 'Days marked closed have guests (' + lcList(o.markData) + '). If lunch was open, undo the mark') : !o.d ? lcT('数えたランチの日がありません', 'No lunch day counted') : '';
     h += '<button class="btn btn-primary btn-sm" style="margin-top:10px"' + (can && !_lc.busy ? '' : ' disabled') + ' onclick="lcConfirm()">' + e(o.cfg && o.reached >= 0 ? lcT(lcTierShort(o.reached) + ' で確定する', 'Confirm with ' + lcTierShort(o.reached)) : lcT('確定する', 'Confirm')) + '</button>'
