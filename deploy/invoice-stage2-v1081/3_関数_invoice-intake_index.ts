@@ -796,8 +796,8 @@ function applyDuplicates(result, dup) {
   };
   if (dup.certain) add("duplicate_certain", dup.certain.id);
   (dup.sameNumberDifferent || []).forEach((id) => add("same_number_different", id));
-  if ((dup.candidates || []).length) add("duplicate_candidate", dup.candidates.join(","));
-  if ((dup.app || []).length) add("app_duplicate_candidate", dup.app.join(","));
+  if ((dup.candidates || []).length) add("duplicate_candidate", [...dup.candidates].map(String).sort().join(","));
+  if ((dup.app || []).length) add("app_duplicate_candidate", [...dup.app].map(String).sort().join(","));
   result.autoEligible = !blocksPosting(result.reasons);
   return result;
 }
@@ -946,7 +946,9 @@ function createDrive({ fetch, getToken }) {
     },
     async get(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(FILE_FIELDS)}&supportsAllDrives=true`);
-      return { status: r.status, file: r.status === 200 ? r.body : null };
+      const errs = r.body && r.body.error && Array.isArray(r.body.error.errors) ? r.body.error.errors : [];
+      const limited = r.status === 403 && errs.some((e) => /rateLimitExceeded/i.test(String(e && e.reason || "")));
+      return { status: r.status, file: r.status === 200 ? r.body : null, limited };
     },
     async download(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {}, true);
@@ -1305,7 +1307,7 @@ function createHandler(deps) {
     if (id === store.root_folder_id || id === store.upload_folder_id || (o.upload_folder_ids || []).includes(id)) return true;
     if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;
     const g = await drive.get(id);
-    if (g.status !== 200 && g.status !== 404 && g.status !== 403) throw new Error("folder_check_" + g.status);
+    if (g.limited || g.status !== 200 && g.status !== 404 && g.status !== 403) throw new Error("folder_check_" + g.status);
     if (g.status !== 200 || !g.file || g.file.trashed || g.file.mimeType !== "application/vnd.google-apps.folder") return false;
     for (const p of g.file.parents || []) if (await insideStore(p, store, o, depth + 1)) return true;
     return false;
@@ -1321,6 +1323,7 @@ function createHandler(deps) {
     for (const p of parents) {
       if (ours.has(p)) continue;
       const pf = await drive.get(p);
+      if (pf.limited || pf.status !== 200 && pf.status !== 404 && pf.status !== 403) throw new Error("folder_check_" + pf.status);
       if (pf.status === 200 && pf.file && !pf.file.trashed && pf.file.mimeType === "application/vnd.google-apps.folder" && (pf.file.parents || []).some((x) => roots.has(x))) return p;
     }
     return null;

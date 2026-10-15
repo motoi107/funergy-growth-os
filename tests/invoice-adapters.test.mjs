@@ -48,6 +48,21 @@ test('Google token refresh and Drive requests: scoped queries, shared-drive flag
   assert.deepEqual(await googleAccessToken({ fetch, clientId: '', clientSecret: '', refreshToken: '' }), { ok: false, error: 'drive_not_configured' });
 });
 
+test('段階 2: a rate limit sent as 403 is marked, so it is retried and not taken for "no access"', async () => {
+  const { fetch } = recorder((url) => {
+    if (url.startsWith('https://oauth2.googleapis.com/token')) return Response.json({ access_token: 'tok' });
+    if (/\/files\/LIMIT\?/.test(url)) return Response.json({ error: { code: 403, errors: [{ reason: 'userRateLimitExceeded' }] } }, { status: 403 });
+    if (/\/files\/RATE\?/.test(url)) return Response.json({ error: { code: 403, errors: [{ reason: 'rateLimitExceeded' }] } }, { status: 403 });
+    if (/\/files\/DENY\?/.test(url)) return Response.json({ error: { code: 403, errors: [{ reason: 'insufficientFilePermissions' }] } }, { status: 403 });
+    return Response.json({ id: 'OK', name: 'x', mimeType: 'application/vnd.google-apps.folder', parents: ['R6'] });
+  });
+  const d = createDrive({ fetch, getToken: () => googleAccessToken({ fetch, clientId: 'cid', clientSecret: 'cs', refreshToken: 'rt' }) });
+  assert.deepEqual(await d.get('LIMIT'), { status: 403, file: null, limited: true });
+  assert.deepEqual(await d.get('RATE'), { status: 403, file: null, limited: true });
+  assert.deepEqual(await d.get('DENY'), { status: 403, file: null, limited: false });
+  const ok = await d.get('OK'); assert.equal(ok.status, 200); assert.equal(ok.limited, false); assert.equal(ok.file.id, 'OK');
+});
+
 test('Folders in a shared drive are listed with corpora=drive and the drive id (looked up once per folder)', async () => {
   const { calls, fetch } = recorder(url => {
     if (url.startsWith('https://oauth2.googleapis.com/token')) return Response.json({ access_token: 't' });

@@ -46963,6 +46963,10 @@ function invInToCheck(rs){
   var seen = {};
   return (rs||[]).filter(function(r){ if (!r || INVIN_INFO.indexOf(r.code)>=0 || INVIN_MODE.indexOf(r.code)>=0 || seen[r.code]) return false; seen[r.code] = 1; return true; });
 }
+/* v1081：反映の前の確かめで使う。同じ理由もまとめずに全部（同じ番号の書類が 2 つ目に増えたのも分かるように） */
+function invInToCheckAll(rs){
+  return (rs||[]).filter(function(r){ return !!r && INVIN_INFO.indexOf(r.code)<0 && INVIN_MODE.indexOf(r.code)<0; });
+}
 function invInModeOf(rs){ var c = invInCodes(rs); return INVIN_MODE.filter(function(x){ return c.indexOf(x)>=0; }); }
 /* まとめて反映できる：要確認の invoice で、確かめることが1つも無い（確認モード・商品の参考だけ） */
 function invInBatchable(r){ return !!r && r.status==='review' && r.doc_type==='invoice' && !invInToCheck(r.reasons).length; }
@@ -48201,7 +48205,7 @@ async function invInConfirm(){
     try { await invInLoadDoc(); } catch(err) { showToast(String(err && err.message || err), 'warning'); delete _invIn.loaded.doc; invInRerender(); return; }
     if (!_invIn.doc || _invIn.doc.doc.id !== d.id || !_invIn.edits) { invInRerender(); return; }
     var ckKey = function(r){ return r.code + '|' + String(r.detail==null ? '' : r.detail) + '|' + String(r.line_no==null ? '' : r.line_no); };
-    var seenCodes = invInToCheck(d.reasons).map(ckKey), chosePl = invInIsPl(d);
+    var seenCodes = invInToCheckAll(d.reasons).map(ckKey), chosePl = invInIsPl(d);
     /* 保存したあと、読み直すまでにほかの人が直していたら反映しない（見ていない金額を反映しない・Codex R8）。読み直した内容を見てもう一度押してもらう */
     if (Number(_invIn.doc.doc.version) !== Number(saved.version)) {
       showToast(t('保存のあとにほかの人がこの invoice を直しました。今の内容を確かめてから、もう一度「この内容で反映する」を押してください','Someone changed this invoice after you saved. Check the current values and press “Post as shown” again'), 'warning');
@@ -48211,7 +48215,7 @@ async function invInConfirm(){
     d = _invIn.doc.doc;
     /* v1081（段階 2 の独立レビュー P2-1）：保存したら確かめることが増えた（例：Packing list にしたら同じ納品の invoice が見つかった）ときは
        反映せず、見てからもう一度押してもらう */
-    var grown = invInToCheck(d.reasons).filter(function(r){ return seenCodes.indexOf(ckKey(r)) < 0 && !(r.code==='packing_list' && chosePl); });   /* 自分で選んだ Packing list の印は増えたうちに数えない */
+    var grown = invInToCheckAll(d.reasons).filter(function(r){ return seenCodes.indexOf(ckKey(r)) < 0 && !(r.code==='packing_list' && chosePl); });   /* 自分で選んだ Packing list の印は増えたうちに数えない */
     if (grown.length) { showToast(t('保存したら確かめることが増えました：','Saving found something to check: ')+invInHint(grown[0])+t('。見てから、もう一度「この内容で反映する」を押してください','. Look at it, then press “Post as shown” again'), 'warning'); invInRerender(); return; }
   }
   var chk = invInToCheck(d.reasons);

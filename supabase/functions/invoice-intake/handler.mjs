@@ -229,7 +229,7 @@ export function createHandler(deps) {
     if (!(o.store_folder_ids || []).includes(id) || depth > 4) return false;
     const g = await drive.get(id);
     // A temporary error (rate limit, Drive down) is retried as such, never shown as "outside the store".
-    if (g.status !== 200 && g.status !== 404 && g.status !== 403) throw new Error('folder_check_' + g.status);
+    if (g.limited || (g.status !== 200 && g.status !== 404 && g.status !== 403)) throw new Error('folder_check_' + g.status);
     if (g.status !== 200 || !g.file || g.file.trashed || g.file.mimeType !== 'application/vnd.google-apps.folder') return false;
     for (const p of g.file.parents || []) if (await insideStore(p, store, o, depth + 1)) return true;
     return false;
@@ -247,6 +247,8 @@ export function createHandler(deps) {
     for (const p of parents) {
       if (ours.has(p)) continue;
       const pf = await drive.get(p);
+      // As in insideStore: a temporary error is a Drive error to retry, not "outside the store".
+      if (pf.limited || (pf.status !== 200 && pf.status !== 404 && pf.status !== 403)) throw new Error('folder_check_' + pf.status);
       if (pf.status === 200 && pf.file && !pf.file.trashed && pf.file.mimeType === 'application/vnd.google-apps.folder'
         && (pf.file.parents || []).some(x => roots.has(x))) return p;
     }

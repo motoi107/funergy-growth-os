@@ -16,7 +16,7 @@ const WORKER_KEY = 'synthetic-worker-key-0123456789';
 
 // ---------------------------------------------------------------- stand-ins
 class FakeDrive {
-  constructor() { this.items = new Map(); this.n = 0; this.failUpdate = 0; this.authDown = false; this.forbidden = new Set(); this.busy = new Set(); this.log = []; }
+  constructor() { this.items = new Map(); this.n = 0; this.failUpdate = 0; this.authDown = false; this.forbidden = new Set(); this.busy = new Set(); this.limited = new Set(); this.log = []; }
   folder(id, name, parent) { this.items.set(id, { id, name, mimeType: 'application/vnd.google-apps.folder', parents: parent ? [parent] : [], trashed: false }); return id; }
   file(name, bytes, parent, { id, mime = 'application/pdf', created = '2026-10-06T19:00:00Z', owner = null } = {}) {
     id = id || 'f' + (++this.n);
@@ -41,6 +41,7 @@ class FakeDrive {
     this.check();
     if (this.forbidden.has(id)) return { status: 403, file: null };
     if (this.busy.has(id)) return { status: 503, file: null };   // Drive briefly unavailable
+    if (this.limited.has(id)) return { status: 403, file: null, limited: true };   // a rate limit, sent by Google as 403
     const f = this.items.get(id); return f ? { status: 200, file: this.meta(f) } : { status: 404, file: null };
   }
   async download(id) { this.check(); this.log.push(['download', id]); return new Uint8Array(this.items.get(id).bytes); }
@@ -2222,6 +2223,25 @@ test('段階 2: reconciled originals go to 照合済み/YYYY-MM from wherever th
     await E.worker();
     assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [g]))[0], { organize_status: 'error', organize_error: 'folder_check_503' });
     assert.equal(E.drive.pathOf(g), 'LaLa/照合済み/2026-10');
+    // The same with a rate limit (Google sends it as 403), for a recorded folder and for a folder staff keep in the store folder.
+    E.drive.busy.clear(); E.drive.limited.add(E.drive.items.get(g).parents[0]);
+    await E.q(`update invoice_files set organize_next_at=now() where drive_file_id=$1`, [g]); await E.worker();
+    assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [g]))[0], { organize_status: 'error', organize_error: 'folder_check_403' });
+    assert.equal(E.drive.pathOf(g), 'LaLa/照合済み/2026-10');
+    E.drive.folder('R6-NOV', 'ここにUpしないでNov 2026 Uploaded', 'R6');
+    const h = await put('S2-H', '3008', '2026-10-07', 'R6');
+    E.drive.items.get(h).parents = ['R6-NOV'];
+    for (const [set, status] of [['busy', 503], ['limited', 403]]) {
+      E.drive.busy.clear(); E.drive.limited.clear(); E.drive[set].add('R6-NOV');
+      await E.q(`update invoice_files set organize_next_at=now() where drive_file_id=$1`, [h]);
+      if (set === 'busy') await reconcile(h);
+      await E.worker();
+      assert.deepEqual((await E.q(`select organize_status, organize_error from invoice_files where drive_file_id=$1`, [h]))[0], { organize_status: 'error', organize_error: 'folder_check_' + status }, 'never "outside the store": ' + set);
+      assert.equal(E.drive.pathOf(h), 'LaLa/ここにUpしないでNov 2026 Uploaded');
+    }
+    E.drive.limited.clear();
+    await E.q(`update invoice_files set organize_next_at=now() where drive_file_id=$1`, [h]); await E.worker();
+    assert.equal(E.drive.pathOf(h), 'LaLa/照合済み/2026-10', 'moved once Drive answers');
   } finally { await E.pg.close(); }
 });
 

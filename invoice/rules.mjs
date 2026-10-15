@@ -344,8 +344,9 @@ export function applyDuplicates(result, dup) {
   const add = (code, detail) => { if (!result.reasons.some(r => r.code === code && r.detail === detail)) result.reasons.push({ code, detail }); };
   if (dup.certain) add('duplicate_certain', dup.certain.id);
   (dup.sameNumberDifferent || []).forEach(id => add('same_number_different', id));
-  if ((dup.candidates || []).length) add('duplicate_candidate', dup.candidates.join(','));
-  if ((dup.app || []).length) add('app_duplicate_candidate', dup.app.join(','));
+  // Ids in a fixed order, so that the same partners give the same detail each time (the screen compares details before posting).
+  if ((dup.candidates || []).length) add('duplicate_candidate', [...dup.candidates].map(String).sort().join(','));
+  if ((dup.app || []).length) add('app_duplicate_candidate', [...dup.app].map(String).sort().join(','));
   result.autoEligible = !blocksPosting(result.reasons);
   return result;
 }

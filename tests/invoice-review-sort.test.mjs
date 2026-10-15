@@ -602,6 +602,24 @@ test('v1081 (段階 2 review P3-4): changing only the old filing switch keeps th
   assert.deepEqual(JSON.parse(JSON.stringify(d.calls.at(-1).value)), { organize: false }, 'once set, it is left as set');
 });
 
+test('v1081 (段階 2 3rd review P3-2): a second same-number document found by the save is shown before posting (each one is its own reason)', async () => {
+  const before = () => DOC({ reasons: [{ code: 'mode_review_store' }, { code: 'same_number_different', detail: id(9) }] });
+  const after = before(); after.doc.version = 4; after.doc.reasons = [{ code: 'mode_review_store' }, { code: 'same_number_different', detail: id(9) }, { code: 'same_number_different', detail: id(10) }];
+  const c = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
+  open(c, before()); c.M._invIn.edits.h.invoice_no = '77411';
+  await fn(c, 'invInConfirm')();
+  assert.ok(!c.calls.some(b => b.action === 'post'), 'not posted');
+  assert.match(c.toasts.at(-1)[0], /保存したら確かめることが増えました：同じ番号で内容が違う/);
+
+  // Two same-number documents before and after the save: nothing new, no alarm.
+  const two = () => DOC({ reasons: [{ code: 'same_number_different', detail: id(9) }, { code: 'same_number_different', detail: id(10) }] });
+  const same = two(); same.doc.version = 4;
+  const d = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? same : { ok: true }) });
+  open(d, two()); d.M._invIn.edits.h.invoice_no = '77411';
+  await fn(d, 'invInConfirm')();
+  assert.ok(!d.toasts.some(x => /増えました/.test(x[0])), 'no "found something new" when nothing is new');
+});
+
 test('v1081 (段階 2 re-review P3-2): a second possible duplicate found by the save is shown before posting, even under the same reason', async () => {
   const before = () => DOC({ reasons: [{ code: 'mode_review_store' }, { code: 'duplicate_candidate', detail: id(9) }] });
   const after = before(); after.doc.version = 4; after.doc.reasons = [{ code: 'mode_review_store' }, { code: 'duplicate_candidate', detail: id(9) + ',' + id(10) }];

@@ -265,6 +265,12 @@ test('duplicates: same bytes or same content is certain; same number with other 
   const r = { reasons: [], autoEligible: true };
   applyDuplicates(r, { certain: { id: 'a' } });
   assert.equal(r.autoEligible, false);
+  // 段階 2: the ids of possible duplicates are listed in a fixed order whatever order the database gave them (the screen
+  // compares the detail before posting, and a new order is not a new partner).
+  const r2 = applyDuplicates({ reasons: [], autoEligible: true }, { candidates: ['b2', 'a1'], app: ['inv9', 'inv10'] });
+  const r3 = applyDuplicates({ reasons: [], autoEligible: true }, { candidates: ['a1', 'b2'], app: ['inv10', 'inv9'] });
+  assert.deepEqual(r2.reasons, r3.reasons);
+  assert.equal(r2.reasons.find(x => x.code === 'duplicate_candidate').detail, 'a1,b2');
   const s1 = await contentSignature({ vendor_key: 'v1', store_id: 'F06', invoice_no_norm: '1', invoice_date: '2026-10-06', total_cents: 1 }, [{ raw_name: 'A', qty: '1', unit_price: '1', amount_cents: 100 }]);
   const s2 = await contentSignature({ vendor_key: 'v1', store_id: 'F06', invoice_no_norm: '1', invoice_date: '2026-10-06', total_cents: 1 }, [{ raw_name: 'a', qty: '1', unit_price: '1', amount_cents: 100 }]);
   assert.equal(s1, s2);

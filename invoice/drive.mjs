@@ -64,7 +64,11 @@ export function createDrive({ fetch, getToken }) {
     },
     async get(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(FILE_FIELDS)}&supportsAllDrives=true`);
-      return { status: r.status, file: r.status === 200 ? r.body : null };
+      // Google also answers a rate limit with 403 (rateLimitExceeded / userRateLimitExceeded): marked, so callers retry it
+      // instead of taking it for "no access".
+      const errs = (r.body && r.body.error && Array.isArray(r.body.error.errors)) ? r.body.error.errors : [];
+      const limited = r.status === 403 && errs.some(e => /rateLimitExceeded/i.test(String((e && e.reason) || '')));
+      return { status: r.status, file: r.status === 200 ? r.body : null, limited };
     },
     async download(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {}, true);
