@@ -71844,6 +71844,8 @@ function lcAll(){
   var v = null; try { v = ls(LC_KEY, {}); } catch(e) { v = null; }
   return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
 }
+/* クラウドの最新を読んで端末と合わせる（開いたとき・保存の前。ほかの管理者の保存を上書きしないため） */
+async function lcPull(){ if (typeof pullOpKey !== 'function') return false; try { return !!(await pullOpKey(LC_KEY)); } catch(e) { return false; } }
 /* 1 回の描画のあいだは、保存したデータを 1 回だけ読む（書いたら読み直す） */
 function lcCached(fn){ var own = !_lc.cache; if (own) _lc.cache = lcAll(); try { return fn(); } finally { if (own) _lc.cache = null; } }
 function lcRec(k){ var a = lcAll(), r = lcHas(a, k) ? a[k] : null; return (r && typeof r === 'object' && !Array.isArray(r) && !r._deleted) ? r : null; }
@@ -71915,7 +71917,7 @@ function lcCompute(ym){
     if (d >= today) { r.st = 'future'; o.future.push(d); o.days.push(r); return; }
     var g = r.data, mk = lcMark(d);
     if (g === null || g === 0) {
-      if (mk === 'zero') { r.g = 0; r.st = 'count'; r.marked = true; }
+      if (mk === 'zero' && g === 0) { r.g = 0; r.st = 'count'; r.marked = true; }
       else if (g === null) { r.st = 'wait'; o.wait.push(d); }
       else { r.st = 'zero'; r.g = 0; o.zero.push(d); }
     } else { r.g = g; r.st = 'count'; }
@@ -71935,13 +71937,20 @@ function lcCompute(ym){
   }
   var cf = lcRec('conf:' + ym);
   o.conf = (cf && cf.state === 'done') ? cf : null;
+  /* 休業だったとした日に客数がある（確定の前に印を確かめる） */
+  o.markData = o.days.filter(function(r){ return r.st === 'mark' && r.data > 0; }).map(function(r){ return r.date; });
   if (o.conf) {
-    /* 確定したときの日ごとの客数と今を比べる（休業の設定を変えて営業予定の日数だけが変わったときは出さない）。休業だったとした日に客数が入ったときも出す */
-    var then = (o.conf.days && typeof o.conf.days === 'object') ? o.conf.days : {}, now = {};
-    o.counted.forEach(function(r){ now[r.date] = r.g; });
-    var ks = Object.keys(then).concat(Object.keys(now));
-    o.corrected = o.pending > 0 || ks.some(function(k){ return !lcHas(then, k) || !lcHas(now, k) || Number(then[k]) !== Number(now[k]); })
-      || o.days.some(function(r){ return r.st === 'mark' && r.data > 0; });
+    /* 確定したときの日ごとの客数と今を比べる。訂正＝数えた日の客数が変わった（0 名になったも）・数えなかった日に客数が入った。
+       この端末に数字が無い日は分からないので比べない。定休・臨時休業・ランチ休の設定を変えただけ（日付の無い設定は過去の月にも効く）では出さない
+       （休みの設定なのに客数がある日は、管理者の暦に赤で出る） */
+    var then = (o.conf.days && typeof o.conf.days === 'object') ? o.conf.days : {}, setOff = ['weekly', 'temp', 'loff'];
+    o.changed = [];
+    o.days.forEach(function(r){
+      if (r.data == null || setOff.indexOf(r.st) >= 0) return;
+      if (lcHas(then, r.date)) { if (r.st !== 'count' || Number(r.g) !== Number(then[r.date])) o.changed.push(r.date); }
+      else if (r.data > 0) o.changed.push(r.date);
+    });
+    o.corrected = o.changed.length > 0;
   }
   return o;
 }
@@ -71980,7 +71989,7 @@ function lcPhotoHtml(id, label){
   var src = _lc.photos[id];
   if (src) return '<div class="lc-ph"><img src="' + src + '" alt="' + escapeHtml(label || lcT('写真', 'Photo')) + '" loading="lazy"></div>';
   lcAskPhoto(id);
-  return _lc.photoAsk[id] === 'none' ? ph : '<div class="lc-ph">' + lcT('読み込み中…', 'Loading…') + '</div>';
+  return _lc.photoAsk[id] === 'none' ? ph : '<div class="lc-ph" data-lcph="' + id + '" data-lcl="' + escapeHtml(label || lcT('写真', 'Photo')) + '">' + lcT('読み込み中…', 'Loading…') + '</div>';
 }
 function lcAskPhoto(id){
   if (_lc.photoAsk[id]) return;
@@ -72001,7 +72010,18 @@ async function lcFetchPhotos(){
   } catch(e) { ids.forEach(function(k){ _lc.photoAsk[k] = 'none'; }); }
   /* 21 枚目から：残りをもう一度（20 枚ずつ） */
   if (Object.keys(_lc.photoAsk).some(function(k){ return _lc.photoAsk[k] === 1; }) && !_lc.photoT) _lc.photoT = setTimeout(function(){ _lc.photoT = null; lcFetchPhotos(); }, 0);
-  lcRerender();
+  lcPhotoPaint();
+}
+/* 取れた写真をその場所に入れる（ページ全体は描き直さない＝入力中の欄はそのまま） */
+function lcPhotoPaint(){
+  if (typeof document === 'undefined' || !document || typeof document.querySelectorAll !== 'function') { lcRerender(); return; }
+  try {
+    Array.prototype.forEach.call(document.querySelectorAll('.lc-ph[data-lcph]'), function(el){
+      var id = lcPhotoId(el.getAttribute('data-lcph')), src = id ? _lc.photos[id] : '';
+      if (src) { var im = document.createElement('img'); im.src = src; im.alt = el.getAttribute('data-lcl') || ''; im.loading = 'lazy'; el.textContent = ''; el.appendChild(im); el.removeAttribute('data-lcph'); }
+      else if (!id || _lc.photoAsk[id] === 'none') { el.textContent = el.getAttribute('data-lcl') || ''; el.removeAttribute('data-lcph'); }
+    });
+  } catch(e) {}
 }
 /* 端末で小さくしてから保存する（長い辺 900px・JPEG。大きければ質を下げてもう一度） */
 function lcCompress(file, cb){
@@ -72045,6 +72065,7 @@ function lcOpen(from){
   _lc.view = 'staff'; _lc.ym = null; _lc.from = from || null; _lc.form = null; _lc.formYm = null; _lc.din = null; _lc.dinYm = null; _lc.reason = ''; _lc.confWhy = '';
   Object.keys(_lc.photoAsk).forEach(function(k){ if (_lc.photoAsk[k] === 'none') delete _lc.photoAsk[k]; });   /* 取れなかった写真は開き直したときにもう一度 */
   go('lunch_challenge');
+  lcPull().then(function(ok){ if (ok) lcRerender(); });
 }
 function lcEntryCard(from){
   if (!lcCanSee()) return '';
@@ -72100,19 +72121,19 @@ function lcRenderPage(){
 }
 function lcHeroHtml(o){
   var h = '<div class="lc-card"><div class="lc-sec">' + (o.ended ? escapeHtml(lcT(lcMonthShort(o.ym) + 'の平均客数', lcMonthShort(o.ym) + ' average')) : lcT('ランチの平均客数（1 日あたり）・今月ここまで', 'Lunch guests per day · so far this month')) + '</div>';
-  if (o.d === 0) {
-    var first = o.future[0] || o.wait[0] || o.zero[0] || '';
-    h += '<div style="font-size:26px;font-weight:800;margin:4px 0">' + (o.pending ? lcT('集計待ち', 'Waiting for numbers') : lcT('集計開始前', 'Not started yet')) + '</div>'
-      + '<div class="lc-mut" style="font-size:12.5px;line-height:1.6">' + escapeHtml(o.pending ? lcT('未集計 ' + o.pending + ' 日（' + lcList(o.wait.concat(o.zero)) + '）。数字が入ると平均が出ます。0 名とは出しません。', o.pending + ' day(s) waiting (' + lcList(o.wait.concat(o.zero)) + '). The average appears once they are in. It never shows 0.')
-        : first ? lcT('最初のランチ営業日 ' + lcDateL(first) + ' の数字が入ると、平均が出ます。0 名とは出しません。', 'The average appears once the first lunch day (' + lcDateL(first) + ') is counted. It never shows 0.') : lcT('この月はランチの営業予定がありません。', 'No lunch days are planned this month.')) + '</div></div>';
-    return h;
-  }
   if (o.conf) {
     h += '<div class="lc-row" style="align-items:baseline;margin:2px 0 6px"><div class="lc-big">' + lcAvgL(Number(o.conf.avg10)) + '</div><div class="lc-mut">' + lcT('名', 'avg') + '</div>' + lcChip(lcT('確定', 'Confirmed'), '#0d6b44', '#e6f6ee') + '</div>'
       + '<div style="font-size:13px">' + escapeHtml(lcT('ランチ ' + o.conf.d + ' 日で ' + lcN(o.conf.C) + ' 名', lcN(o.conf.C) + ' guests over ' + o.conf.d + (Number(o.conf.d) === 1 ? ' lunch day' : ' lunch days'))) + '</div>';
     if (o.corrected) h += '<div style="font-size:12px;margin-top:6px;color:#b42318;font-weight:700">' + lcT('確定のあとで客数が直りました（訂正あり・再確認）', 'Guest numbers changed after the month was confirmed (being rechecked)') + '</div>'
       + '<div class="lc-mut" style="font-size:11.5px">' + escapeHtml(lcT('今の数字：平均 ' + lcAvgL(o.avg10) + '・ランチ ' + o.d + ' 日で ' + lcN(o.C) + ' 名', 'Now: average ' + lcAvgL(o.avg10) + ' · ' + lcN(o.C) + ' guests over ' + o.d + ' lunch days')) + '</div>';
     return h + '</div>';
+  }
+  if (o.d === 0) {
+    var first = o.future[0] || o.wait[0] || o.zero[0] || '';
+    h += '<div style="font-size:26px;font-weight:800;margin:4px 0">' + (o.pending ? lcT('集計待ち', 'Waiting for numbers') : lcT('集計開始前', 'Not started yet')) + '</div>'
+      + '<div class="lc-mut" style="font-size:12.5px;line-height:1.6">' + escapeHtml(o.pending ? lcT('未集計 ' + o.pending + ' 日（' + lcList(o.wait.concat(o.zero)) + '）。数字が入ると平均が出ます。0 名とは出しません。', o.pending + ' day(s) waiting (' + lcList(o.wait.concat(o.zero)) + '). The average appears once they are in. It never shows 0.')
+        : first ? lcT('最初のランチ営業日 ' + lcDateL(first) + ' の数字が入ると、平均が出ます。0 名とは出しません。', 'The average appears once the first lunch day (' + lcDateL(first) + ') is counted. It never shows 0.') : lcT('この月はランチの営業予定がありません。', 'No lunch days are planned this month.')) + '</div></div>';
+    return h;
   }
   var delta = (o.prev10 != null) ? (Math.floor(o.avg10) - Math.floor(o.prev10)) / 10 : null;
   h += '<div class="lc-row" style="align-items:baseline;margin:2px 0 6px"><div class="lc-big">' + lcAvgL(o.avg10) + '</div><div class="lc-mut">' + lcT('名', 'avg') + '</div>'
@@ -72309,9 +72330,11 @@ function lcDiff(oldC, f){
   if (String(oldC.who || '') !== String(f.who || '').trim()) out.push(lcT('参加対象', 'who joins') + '：' + (oldC.who || '—') + ' → ' + (String(f.who || '').trim() || '—'));
   return out;
 }
-function lcSaveCfg(){
+async function lcSaveCfg(){
   if (!lcCanAdmin() || _lc.busy) return;
   var ym = _lc.ym, f = _lc.form; if (!f || _lc.formYm !== ym) return;
+  _lc.busy = true; try { await lcPull(); } finally { _lc.busy = false; }
+  if (_lc.form !== f || _lc.ym !== ym) return;
   if (lcRec('conf:' + ym) && lcRec('conf:' + ym).state === 'done') { showToast(lcT('確定した月の設定は変えられません（先に確定を取り消す）', 'A confirmed month cannot be changed (undo the confirmation first)'), 'warning'); return; }
   var err = lcFormCheck(f); if (err) { showToast(err, 'warning'); return; }
   var curRec = lcRec('cfg:' + ym);
@@ -72331,9 +72354,9 @@ function lcSaveCfg(){
   lcRerender();
 }
 async function lcPickTierPhoto(input, i){
-  var f = input && input.files && input.files[0]; if (!f || !_lc.form || !_lc.form.tiers[i]) return;
+  var f = input && input.files && input.files[0], f0 = _lc.form, ym = _lc.ym; if (!f || !f0 || !f0.tiers[i] || _lc.formYm !== ym) return;
   _lc.busy = true; lcRerender();
-  try { var id = await lcUploadPhoto(f, _lc.ym); if (id && _lc.form && _lc.form.tiers[i]) _lc.form.tiers[i].photo = id; }
+  try { var id = await lcUploadPhoto(f, ym); if (id && _lc.form === f0 && _lc.formYm === ym && f0.tiers[i]) f0.tiers[i].photo = id; }
   finally { _lc.busy = false; lcRerender(); }
 }
 function lcMarkDay(d, k){
@@ -72346,10 +72369,14 @@ function lcMarkDay(d, k){
   lcSaveMany([['mark:' + d, { k:k }], lcHistRec(ym, what, '')]);
   lcRerender();
 }
-function lcConfirm(){
+async function lcConfirm(){
   if (!lcCanAdmin() || _lc.busy) return;
-  var ym = _lc.ym, o = lcCompute(ym);
+  var ym = _lc.ym;
+  _lc.busy = true; try { await lcPull(); } finally { _lc.busy = false; }
+  if (_lc.ym !== ym) return;
+  var o = lcCompute(ym);
   if (!o.ended || o.pending || !o.cfg || o.conf) return;
+  if (o.markData.length) { showToast(lcT('休業だったとした日に客数があります（' + lcList(o.markData) + '）。営業していたなら印を外してください', 'Days marked closed have guests (' + lcList(o.markData) + '). If lunch was open, undo the mark'), 'warning'); return; }
   if (!o.d) { showToast(lcT('数えたランチの日がありません', 'No lunch day was counted'), 'warning'); return; }
   var days = {}; o.counted.forEach(function(r){ days[r.date] = r.g; });
   var rec = { ym:ym, state:'done', at:new Date().toISOString(), C:o.C, d:o.d, D:o.D, avg10:o.avg10, tier:o.reached, who:o.cfg.who, days:days,
@@ -72369,13 +72396,22 @@ function lcUnconfirm(){
 function lcDinFor(ym){
   if (_lc.din && _lc.dinYm === ym) return _lc.din;
   var d = lcDin(ym) || { date:'', place:'', people:'', photos:[] };
-  _lc.din = { date:d.date, place:d.place, people:d.people, photos:d.photos.slice() }; _lc.dinYm = ym;
+  var rec = lcRec('din:' + ym);
+  _lc.din = { date:d.date, place:d.place, people:d.people, photos:d.photos.slice(), base:rec ? Number(rec._at) || 0 : 0 }; _lc.dinYm = ym;
   return _lc.din;
 }
 function lcDinSet(k, v){ var d = _lc.din; if (!d || ['date','place','people'].indexOf(k) < 0) return; d[k] = String(v == null ? '' : v); }
-function lcSaveDin(){
+async function lcSaveDin(){
   if (!lcCanAdmin() || _lc.busy) return;
   var ym = _lc.ym, d = _lc.din; if (!d || _lc.dinYm !== ym) return;
+  _lc.busy = true; try { await lcPull(); } finally { _lc.busy = false; }
+  if (_lc.din !== d || _lc.ym !== ym) return;
+  var cur = lcRec('din:' + ym);
+  if ((cur ? Number(cur._at) || 0 : 0) !== (Number(d.base) || 0)) {
+    _lc.din = null; _lc.dinYm = null;
+    showToast(lcT('ほかの人が食事会の記録を先に保存しました。今の記録を読み直したので、もう一度直してください', 'Someone saved the team dinner first. The current record is shown again; please make your change again'), 'warning');
+    lcRerender(); return;
+  }
   if (d.date && !lcDateOk(d.date)) { showToast(lcT('日付の形が正しくありません', 'The date is not valid'), 'warning'); return; }
   if (d.people && !/^\d{1,3}$/.test(String(d.people).trim())) { showToast(lcT('人数は数で入れてください', 'Enter the number of people'), 'warning'); return; }
   lcSaveMany([['din:' + ym, { ym:ym, date:d.date, place:String(d.place || '').trim().slice(0, 120), people:String(d.people || '').trim(), photos:d.photos.map(lcPhotoId).filter(Boolean).slice(0, LC_MAX_DINNER_PHOTOS) }],
@@ -72384,10 +72420,10 @@ function lcSaveDin(){
   showToast(lcT('食事会の記録を保存しました', 'Saved the team dinner'), 'success'); lcRerender();
 }
 async function lcPickDinPhoto(input){
-  var f = input && input.files && input.files[0], d = _lc.din; if (!f || !d) return;
+  var f = input && input.files && input.files[0], d = _lc.din; if (!f || !d || _lc.dinYm !== _lc.ym) return;
   if (d.photos.length >= LC_MAX_DINNER_PHOTOS) { showToast(lcT('写真は ' + LC_MAX_DINNER_PHOTOS + ' 枚まで', 'Up to ' + LC_MAX_DINNER_PHOTOS + ' photos'), 'warning'); return; }
   _lc.busy = true; lcRerender();
-  try { var id = await lcUploadPhoto(f, _lc.ym); if (id && _lc.din === d) d.photos.push(id); }
+  try { var id = await lcUploadPhoto(f, _lc.dinYm); if (id && _lc.din === d) d.photos.push(id); }
   finally { _lc.busy = false; lcRerender(); }
 }
 function lcDinDrop(i){ var d = _lc.din; if (!d || _lc.busy) return; d.photos.splice(i, 1); lcRerender(); }
@@ -72452,10 +72488,10 @@ function lcAdminHtml(o){
   if (marked.length) h += '<div style="font-size:11.5px;margin-top:8px" class="lc-mut">' + lcT('印を付けた日：', 'Marked days: ') + marked.map(function(r){ return e(lcDateL(r.date)) + '（' + (r.st === 'mark' ? lcT('休業', 'closed') : lcT('0 名', '0')) + '）' + (locked ? '' : ' <button class="lc-btn" style="padding:1px 7px;font-size:11px" onclick="lcMarkDay(\'' + r.date + '\',\'none\')">' + lcT('外す', 'undo') + '</button>'); }).join(' ') + '</div>';
   if (locked) {
     h += '<div style="margin-top:10px;font-size:12.5px;color:#0d6b44;font-weight:700">' + e(lcT(lcWhen(o.conf.at) + ' に確定（' + String(o.conf.by || '') + '）', 'Confirmed ' + lcWhen(o.conf.at) + ' (' + String(o.conf.by || '') + ')')) + '</div>'
-      + (o.corrected ? '<div style="font-size:12px;color:#b42318;margin-top:4px">' + e(lcT('確定のあとで数字が変わりました：確定のとき ' + o.conf.C + ' 名／' + o.conf.d + ' 日・今 ' + o.C + ' 名／' + o.d + ' 日。確かめて、必要なら取り消して確定し直してください。', 'The numbers changed after confirming: then ' + o.conf.C + ' guests / ' + o.conf.d + ' days, now ' + o.C + ' / ' + o.d + '. Check and, if needed, undo and confirm again.')) + '</div>' : '')
+      + (o.corrected ? '<div style="font-size:12px;color:#b42318;margin-top:4px">' + e(lcT('確定のあとで数字が変わりました（' + lcList(o.changed) + '）：確定のとき ' + o.conf.C + ' 名／' + o.conf.d + ' 日・今 ' + o.C + ' 名／' + o.d + ' 日。確かめて、必要なら取り消して確定し直してください。', 'The numbers changed after confirming (' + lcList(o.changed) + '): then ' + o.conf.C + ' guests / ' + o.conf.d + ' days, now ' + o.C + ' / ' + o.d + '. Check and, if needed, undo and confirm again.')) + '</div>' : '')
       + '<div class="lc-row" style="margin-top:8px"><input class="lc-in" style="flex:1;width:auto" placeholder="' + e(lcT('取り消す理由（必須）', 'Reason to undo (required)')) + '" value="' + e(_lc.confWhy || '') + '" oninput="_lc.confWhy=this.value"><button class="btn btn-secondary btn-sm" onclick="lcUnconfirm()">' + lcT('確定を取り消す', 'Undo confirmation') + '</button></div>';
   } else {
-    var can = o.ended && !o.pending && !!o.cfg && o.d > 0, why = !o.cfg ? lcT('段階とごほうびを先に設定してください', 'Set the stars and rewards first') : !o.ended ? lcT('月が終わってから確定します', 'Confirm after the month ends') : o.pending ? lcT('集計待ち・ランチ 0 名の日を先に決めてください', 'Decide the waiting / 0-guest days first') : !o.d ? lcT('数えたランチの日がありません', 'No lunch day counted') : '';
+    var can = o.ended && !o.pending && !o.markData.length && !!o.cfg && o.d > 0, why = !o.cfg ? lcT('段階とごほうびを先に設定してください', 'Set the stars and rewards first') : !o.ended ? lcT('月が終わってから確定します', 'Confirm after the month ends') : o.pending ? lcT('集計待ち・ランチ 0 名の日を先に決めてください', 'Decide the waiting / 0-guest days first') : o.markData.length ? lcT('休業だったとした日に客数があります（' + lcList(o.markData) + '）。営業していたなら印を外してください', 'Days marked closed have guests (' + lcList(o.markData) + '). If lunch was open, undo the mark') : !o.d ? lcT('数えたランチの日がありません', 'No lunch day counted') : '';
     h += '<button class="btn btn-primary btn-sm" style="margin-top:10px"' + (can && !_lc.busy ? '' : ' disabled') + ' onclick="lcConfirm()">' + e(o.cfg && o.reached >= 0 ? lcT(lcTierShort(o.reached) + ' で確定する', 'Confirm with ' + lcTierShort(o.reached)) : lcT('確定する', 'Confirm')) + '</button>'
       + (why ? '<div class="lc-mut" style="font-size:11.5px;margin-top:4px">' + e(why) + '</div>' : '')
       + '<div class="lc-mut" style="font-size:11.5px;margin-top:6px">' + e(lcT('確定すると、平均・段階・そのときの目標とごほうびを固定します。あとで客数が直ったら「訂正あり・再確認」と出し、勝手に書き換えません。', 'Confirming fixes the average, the star and that month\'s targets and rewards. If guest numbers change later it shows "corrected · recheck" and never rewrites it.')) + '</div>';
