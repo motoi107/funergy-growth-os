@@ -2423,13 +2423,13 @@ async function twoPages(E, tagA, tagB, no = 'M-55021', opts = {}) {
 }
 const vers = (...ds) => Object.fromEntries(ds.map(d => [d.id, d.version]));
 // The database's own merge, asked directly (as if the worker had not checked first): every line, page numbers after the invoice's.
-async function rawMerge(E, m, parts) {
+async function rawMerge(E, m, parts, { duplicates = [], stale = false } = {}) {
   const ids = [m.id, ...parts.map(x => x.id)];
   const lines = await E.q(`select id, page from invoice_lines where doc_id = any($1::uuid[]) order by doc_id = $2 desc, line_no`, [ids, m.id]);
   const header = { vendor_key: m.vendor_key, vendor_name: m.vendor_name, invoice_no: m.invoice_no, invoice_no_norm: m.invoice_no_norm, doc_type: m.doc_type,
     posting_kind: m.posting_kind, currency: m.currency, total_cents: m.total_cents, pages: [1, 2], pages_marked: [] };
-  return E.db.rpc('invoice_merge', { actor: U.office, doc_id: m.id, version: m.version, part_no: 1, parts: parts.map((x, i) => ({ id: x.id, version: x.version, part_no: 10 + i })),
-    duplicates: [], header, lines: lines.map(l => ({ line_id: l.id, page: l.page, reasons: [] })), reasons: [], reason: 'x', ack: [], adjustment_ack: false });
+  return E.db.rpc('invoice_merge', { actor: U.office, doc_id: m.id, version: m.version, part_no: 1, parts: parts.map((x, i) => ({ id: x.id, version: x.version - (stale ? 1 : 0), part_no: 10 + i })),
+    duplicates, header, lines: lines.map(l => ({ line_id: l.id, page: l.page, reasons: [] })), reasons: [], reason: 'x', ack: [], adjustment_ack: false });
 }
 
 test('段階 3: the pages of one invoice number are merged into one invoice, looked at first, taken back, and posted as one', async () => {
@@ -2685,6 +2685,10 @@ test('段階 3: what may not be merged is refused, duplicates are set aside in t
     const [dh] = await docsOf(E, d8);
     assert.deepEqual((await E.api('tok-office', { action: 'merge', docs: [mm.id, dh.id], duplicates: [dg.id], versions: vers(mm, dh) })).body, { error: 'conflict' });
     assert.deepEqual(await bad({ docs: [mm.id, dh.id], duplicates: [dg.id], versions: { ...vers(mm, dh), [dg.id]: dg.version - 1 } }), { error: 'conflict' });
+    // The database checks the versions on its own too: a duplicate without one, a page with an older one.
+    await assert.rejects(rawMerge(E, mm, [dh], { duplicates: [{ id: dg.id }] }), /conflict/);
+    await assert.rejects(rawMerge(E, mm, [dh], { stale: true }), /conflict/);
+    assert.equal((await docsOf(E, d7))[0].status, dg.status, 'nothing changed');
   } finally { await E.pg.close(); }
 });
 

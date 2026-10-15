@@ -425,6 +425,12 @@ const CASES = [
   ["段階3 screen: a page is added while QuickBooks is sending", MU, [["index.html", "  if (invInSameQb(S, S.pv.main).busy) return invInL(INVIN_ERR.qb_in_progress);", "  if (false) return invInL(INVIN_ERR.qb_in_progress);"]]],
   ["段階3 screen: the waiting QuickBooks row is not mentioned", MU, [["index.html", "        : qb.wait ? t('QuickBooks へ送る予定だったこの invoice は", "        : false ? t('QuickBooks へ送る予定だったこの invoice は"]]],
   ["段階3 screen: a failed preview is not asked again", MU, [["index.html", "function invInSameRetryPv(){ var S = _invIn.same; if (!S || !S.pvErr) return; invInSameChanged(S); }", "function invInSameRetryPv(){ }"]]],
+  ["段階3: a duplicate is set aside without its version (database)", E2E, [["db/invoice-intake.sql", "  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or x.id = any(ids) or x.id = any(dups)", "  if x.version <> (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or x.id = any(ids) or x.id = any(dups)"]]],
+  ["段階3: a page is merged with an older version (database)", E2E, [["db/invoice-intake.sql", "  if x.version is distinct from (e->>'version')::int then raise exception 'conflict'; end if;\n  if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;\n", "  if x.status <> 'review' or exists(select 1 from public.invoice_docs c where c.merged_into=x.id) then raise exception 'invalid_state'; end if;\n"]]],
+  ["段階3 screen: a new reading of a page is offered for its invoice", MU, [["index.html", "    if (again) { var po = invInSamePageOf(S, again);", "    if (false) { var po = invInSamePageOf(S, again);"]]],
+  ["段階3 screen: other vendors are sent to the server", MU, [["index.html", "    if (differ('vendor_key')) return t(", "    if (false) return t("]]],
+  ["段階3 screen: other kinds are sent to the server", MU, [["index.html", "    if (differ('doc_type', 'unknown')) return t(", "    if (differ('doc_type')) return t("]]],
+  ["段階3 screen: a refusal is offered again", MU, [["index.html", "    + (['bad_merge','invalid_state','forbidden','not_found','has_parts'].indexOf(S.pvCode) < 0 ? '<button", "    + (true ? '<button"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {

@@ -47818,11 +47818,23 @@ function invInPageMark(d){
 function invInSameParts(S, id){ return (((S.G && S.G[id]) || {}).parts || []).length; }
 /* 同じ中身（撮り直し）：確実な重複の相手がこの中にあれば、その id */
 function invInSameDupOf(S, id){ var hit = ''; invInIdsIn(S.G[id].doc.reasons, ['duplicate_certain']).forEach(function(x){ if (!hit && x!==id && S.order.indexOf(x) >= 0) hit = x; }); return hit; }
+/* 複数枚の invoice のページの原本が差し替えられたときの新しい読み：[その invoice の id, 何枚目]（同じ invoice にはまとめられない） */
+function invInSamePageOf(S, id){
+  var f = S.G[id].doc.file_id, hit = null;
+  if (!f) return null;
+  S.order.forEach(function(x){
+    if (hit || x === id || !invInSameParts(S, x)) return;
+    var g = S.G[x];
+    if (g.doc.file_id === f) hit = [x, Number(g.doc.part_no) || 1];
+    (g.parts || []).forEach(function(q){ if (!hit && q.file_id === f) hit = [x, Number(q.part_no) || 0]; });
+  });
+  return hit;
+}
 /* 反映済み・複数枚の invoice は外せない（ページはそこに足す） */
 function invInSameFixed(S, id){ return S.G[id].doc.status==='posted' || invInSameParts(S, id) > 0; }
 function invInSameDefaults(S){
   S.inc = {}; S.page = {};
-  S.order.forEach(function(id){ S.inc[id] = invInSameFixed(S, id) || !invInSameDupOf(S, id); });
+  S.order.forEach(function(id){ S.inc[id] = invInSameFixed(S, id) || (!invInSameDupOf(S, id) && !invInSamePageOf(S, id)); });
   var inc = S.order.filter(function(id){ return S.inc[id]; });
   var pages = inc.some(function(id){ var m = invInPageMark(S.G[id].doc); return (m && m.n > 1) || invInSameParts(S, id) > 0; });
   S.how = inc.length >= 2 && pages ? 'merge' : (inc.length === 1 && S.order.length > 1 ? 'dup' : '');
@@ -47837,7 +47849,7 @@ function invInSameRenumber(S){
   inc.sort(function(a, b){ var x = key(a), y = key(b); for (var i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]; return 0; });
   S.page = {}; inc.forEach(function(id, i){ S.page[id] = i + 1; });
 }
-function invInSameChanged(S){ S.pv = null; S.pvErr = ''; S.pvKey = ''; S.ack = {}; delete _invIn.loaded.samepv; invInRerender(); }
+function invInSameChanged(S){ S.pv = null; S.pvErr = ''; S.pvCode = ''; S.pvKey = ''; S.ack = {}; delete _invIn.loaded.samepv; invInRerender(); }
 function invInSamePage(id, p){
   var S = _invIn.same; if (!S || !S.inc[id] || invInSameParts(S, id)) return;
   p = Number(p); var cur = S.page[id]; if (!(p >= 1) || p === cur) return;
@@ -47863,8 +47875,17 @@ function invInSameProblem(S){
     if (P.docs.filter(function(id){ return S.G[id].doc.status==='posted'; }).length > 1) return t('反映済みの invoice が 2 つあります。まとめられません（「別々の invoice」にするか、片方を訂正する）','Two of them are posted invoices; they cannot be merged (treat them as separate invoices, or correct one)');
     if (P.docs.filter(function(id){ return invInSameParts(S, id) > 0; }).length > 1) return t('複数枚の invoice が 2 つあります。先に片方の「まとめを外す」','Two of them already have several originals; take one merge back first');
     if (P.docs.some(function(id){ return Number(S.G[id].file_docs) > 1; })) return t('1 つのファイルに書類が 2 つある原本はまとめられません','An original holding two documents cannot be merged');
+    var again = P.docs.filter(function(id){ return invInSamePageOf(S, id); })[0];
+    if (again) { var po = invInSamePageOf(S, again);
+      return t('原本 ','Original ')+(S.order.indexOf(again) + 1)+t(' は、原本 ',' is a new reading of page ')+(curLang==='en' ? po[1]+' of original '+(S.order.indexOf(po[0]) + 1) : (S.order.indexOf(po[0]) + 1)+' の '+po[1]+' 枚目')
+        +t(' の新しい読みです（原本が差し替えられた）。同じ invoice にはまとめられません。外して重複にするか、1 件の画面で確かめてください',' (the original was overwritten). It cannot join the same invoice: set it aside as a duplicate, or check it on its own screen'); }
+    var differ = function(f, skip){ var v = {}; P.docs.forEach(function(id){ var x = S.G[id].doc[f]; if (x != null && x !== '' && x !== skip) v[x] = 1; }); return Object.keys(v).length > 1; };
     P.docs.forEach(function(id){ st[S.G[id].doc.store_id || ''] = 1; });
     if (Object.keys(st).length > 1) return t('店舗が違うファイルはまとめられません（先に 1 件の画面で店舗を選ぶ）','Files of different stores cannot be merged (choose the store on the invoice first)');
+    if (differ('vendor_key')) return t('業者が違うファイルはまとめられません（1 件の画面で業者を確かめる）','Files of different vendors cannot be merged (check the vendor on each)');
+    if (differ('invoice_no_norm')) return t('invoice 番号が違うファイルはまとめられません','Files with different invoice numbers cannot be merged');
+    if (differ('doc_type', 'unknown')) return t('書類の種類が違うファイル（Statement・Credit memo など）はまとめられません','Files of different kinds (statement, credit memo…) cannot be merged');
+    if (differ('currency')) return t('通貨が違うファイルはまとめられません','Files in different currencies cannot be merged');
     return '';
   }
   if (S.how==='dup') {
@@ -47895,9 +47916,10 @@ async function invInLoadSamePv(){
   var P = invInSamePlan(S), key = JSON.stringify(P);
   if (S.pvKey === key) return;
   var pv = null, err = '';
-  try { pv = await invInAPI({ action:'merge', preview:true, docs:P.docs, duplicates:P.duplicates }); } catch(e) { err = String(e && e.message || e); }
+  var code = '';
+  try { pv = await invInAPI({ action:'merge', preview:true, docs:P.docs, duplicates:P.duplicates }); } catch(e) { err = String(e && e.message || e); code = (e && e.code) || ''; }
   if (_invIn.same !== S || S.how!=='merge' || JSON.stringify(invInSamePlan(S)) !== key) return;   /* 選び直したあとに届いた古い結果は使わない */
-  S.pv = pv; S.pvErr = err; S.pvKey = key;
+  S.pv = pv; S.pvErr = err; S.pvCode = code; S.pvKey = key;
 }
 function invInSameReady(S){
   if (!S || !S.G || S.order.length < 2) return false;
@@ -47962,7 +47984,9 @@ function invInSameHtml(){
   h += '<div class="ivx-same">' + S.order.map(function(id){
     var g = G[id], d = g.doc, f = g.file || {}, fid = invInFileId(f.drive_file_id), mk = invInPageMark(d), dup = invInSameDupOf(S, id), k = invInSameParts(S, id);
     var on = S.how==='merge' ? !!S.inc[id] : S.how==='dup' ? S.keep===id : false, facts = [];
-    if (dup) facts.push(e(label(dup))+t(' と同じ中身（撮り直し）',': same content (a retake)'));
+    var again = invInSamePageOf(S, id);
+    if (again) facts.push(curLang==='en' ? 'A new reading of page '+again[1]+' of '+e(label(again[0]))+' (the original was overwritten)' : e(label(again[0]))+' の '+again[1]+' 枚目の原本の新しい読み（原本が差し替えられた）');
+    else if (dup) facts.push(e(label(dup))+t(' と同じ中身（撮り直し）',': same content (a retake)'));
     else {
       if (mk) facts.push(t('印字「','Printed “')+e(mk.text)+t('」','”'));
       facts.push(t('明細 ','Lines ')+(g.lines||[]).length+t(' 行',''));
@@ -48027,8 +48051,9 @@ function invInSameResult(S){
   if (S.how!=='merge') return box('<div style="font-size:12px;color:var(--muted)">'+t('どう扱うかを選ぶと、ここに結果が出ます','Choose how to treat them; the result appears here')+'</div>');
   if (p) return box(title(t('まとめた結果','The merged invoice')) + red(p));
   var P = invInSamePlan(S), pv = S.pv;
+  /* もう一度で変わりうるもの（通信・サーバーの一時的なエラー）だけ、もう一度を出す */
   if (S.pvErr) return box(title(t('まとめた結果','The merged invoice')) + red(t('まとめられません：','Cannot merge: ')+S.pvErr)
-    + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invInSameRetryPv()">'+t('もう一度','Try again')+'</button>');
+    + (['bad_merge','invalid_state','forbidden','not_found','has_parts'].indexOf(S.pvCode) < 0 ? '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invInSameRetryPv()">'+t('もう一度','Try again')+'</button>' : ''));
   if (!pv || S.pvKey !== JSON.stringify(P)) return box(title(t('まとめた結果','The merged invoice'))+'<div style="font-size:12px;color:var(--muted)">'+t('まとめた結果を計算しています…','Working out the merged invoice…')+'</div>');
   var H = pv.header || {}, from = H.from || {}, codes = invInCodes(pv.reasons);
   var pg = function(id){ var x = (pv.parts || []).filter(function(q){ return q.id===id; })[0]; if (!x) return ''; var no = Number(x.part_no) || 1;

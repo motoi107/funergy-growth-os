@@ -37,7 +37,7 @@ const fid = n => 'drivefile' + String(n).padStart(8, '0');
 // One "get" answer of the server, for a synthetic document of Pacific Seafood INV-55021.
 function G(n, o = {}) {
   return {
-    doc: { id: id(n), version: o.v || 1, status: o.status || 'review', doc_type: 'invoice', posting_kind: 'purchase', vendor_key: 'v1', vendor_name: 'Pacific Seafood', invoice_no: 'INV-55021',
+    doc: { id: id(n), file_id: id(500 + n), version: o.v || 1, status: o.status || 'review', doc_type: 'invoice', posting_kind: 'purchase', vendor_key: 'v1', vendor_name: 'Pacific Seafood', invoice_no: 'INV-55021',
       store_id: o.store || 'F06', invoice_date: '2026-10-11', total_cents: o.total ?? null, tax_cents: o.tax || 0, shipping_cents: o.ship || 0, lines_sum_cents: o.sum ?? null,
       pages_marked: o.marks || [], reasons: o.reasons || [], part_no: o.part_no ?? null, merge_base: o.merge_base ?? null, merged_into: o.merged_into ?? null, recon_status: 'unreconciled' },
     file: { drive_file_id: fid(n), current_name: o.name || `Scan_1012_16${40 + n}.pdf`, ingested_at: o.at || `2026-10-12T16:${String(40 + n).padStart(2, '0')}:00Z` },
@@ -200,11 +200,48 @@ test('merge: what cannot be merged is said before asking the server', async () =
   c.fn('invInSameOpen')([id(1), id(2), id(3)]); await c.fn('invInLoadSame')(); await c.fn('invInLoadSamePv')();
   assert.match(c.fn('invInSameHtml')(), /まとめられません：まとめられません（同じ業者・番号・店舗の/);
   assert.equal(c.fn('invInSameReady')(c.M._invIn.same), false);
-  // A preview that failed (the network, say) can be asked again.
-  assert.match(c.fn('invInSameHtml')(), /onclick="invInSameRetryPv\(\)">もう一度/);
-  const asked = c.calls.filter(b => b.action === 'merge').length;
-  c.fn('invInSameRetryPv')(); await c.fn('invInLoadSamePv')();
-  assert.equal(c.calls.filter(b => b.action === 'merge').length, asked + 1);
+  assert.doesNotMatch(c.fn('invInSameHtml')(), /invInSameRetryPv/, 'a refusal is not offered again');
+  // A preview that failed on the way (the network, say) can be asked again.
+  let down = true;
+  const cn = app({ api: b => { if (b.action === 'merge' && down) throw new Error('offline'); return getter(THREE())(b) || (b.action === 'merge' ? PLAN() : null); } });
+  cn.fn('invInSameOpen')([id(1), id(2), id(3)]); await cn.fn('invInLoadSame')(); await cn.fn('invInLoadSamePv')();
+  assert.match(cn.fn('invInSameHtml')(), /取込のサーバー（invoice-intake）につながりません[\s\S]*onclick="invInSameRetryPv\(\)">もう一度/);
+  down = false; cn.fn('invInSameRetryPv')(); await cn.fn('invInLoadSamePv')();
+  assert.equal(cn.fn('invInSameReady')(cn.M._invIn.same), true);
+  // Other vendors, numbers, kinds and currencies are said before asking (what could not be read may join).
+  const mixed = [[{ vendor_key: 'v2' }, /業者が違うファイルはまとめられません/], [{ invoice_no_norm: 'INV55022' }, /invoice 番号が違うファイルはまとめられません/],
+    [{ doc_type: 'statement' }, /書類の種類が違うファイル/], [{ currency: 'JPY' }, /通貨が違うファイルはまとめられません/]];
+  for (const [o, re] of mixed) {
+    const ds = THREE(); ds[id(1)].doc.invoice_no_norm = 'INV55021'; ds[id(2)].doc.invoice_no_norm = 'INV55021'; ds[id(1)].doc.currency = 'USD';
+    Object.assign(ds[id(2)].doc, o);
+    const cm = app({ api: getter(ds) });
+    cm.fn('invInSameOpen')([id(1), id(2)]); await cm.fn('invInLoadSame')();
+    assert.match(cm.fn('invInSameProblem')(cm.M._invIn.same), re);
+  }
+  const unk = THREE(); unk[id(2)].doc.doc_type = 'unknown'; unk[id(2)].doc.vendor_key = null;
+  const cu = app({ api: getter(unk) }); cu.fn('invInSameOpen')([id(1), id(2)]); await cu.fn('invInLoadSame')();
+  assert.equal(cu.fn('invInSameProblem')(cu.M._invIn.same), '', 'a page whose kind or vendor could not be read may join');
+});
+
+test('the new reading of a page whose original was overwritten is not merged into its invoice again', async () => {
+  const fileOf = n => '00000000-0000-4000-8000-0000000009' + String(n).padStart(2, '0');
+  const docs = {
+    [id(7)]: G(7, { status: 'posted', part_no: 1, parts: [{ id: id(8), part_no: 2, file_id: fileOf(8), drive_file_id: fid(8), current_name: 'p2.pdf' }] }),
+    [id(9)]: G(9, { marks: ['Page 2 of 2'], reasons: [{ code: 'original_replaced', detail: id(8) }, { code: 'same_number_different', detail: id(7) }] }),
+    [id(5)]: G(5, { marks: ['Page 3 of 3'] }),
+  };
+  docs[id(7)].doc.file_id = fileOf(7); docs[id(9)].doc.file_id = fileOf(8); docs[id(5)].doc.file_id = fileOf(5);
+  const c = app({ api: getter(docs) });
+  c.fn('invInSameOpen')([id(9), id(7), id(5)]); await c.fn('invInLoadSame')();
+  const S = c.M._invIn.same;
+  assert.equal(S.inc[id(9)], false, 'left out by default');
+  assert.equal(S.how, 'merge');
+  const h = c.fn('invInSameHtml')();
+  assert.match(h, /原本 \d の 2 枚目の原本の新しい読み（原本が差し替えられた）/);
+  c.fn('invInSameInc')(id(9), true);
+  assert.match(c.fn('invInSameProblem')(S), /の新しい読みです（原本が差し替えられた）。同じ invoice にはまとめられません/);
+  await c.fn('invInLoadSamePv')();
+  assert.ok(!c.calls.some(b => b.action === 'merge'));
 });
 
 test('a page that arrives after its invoice was posted is added to it (8A), with what posting asks', async () => {
