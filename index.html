@@ -10885,7 +10885,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -11800,6 +11800,7 @@ var OP_MERGE = {
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
+  vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
   bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
   bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
   bonus_eval_rule:    { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 4 項目の設定（会社共通・グレード・職種）。「キー|適用開始の四半期」の中を部分（c・s・f・p・w・fl）ごとに新しいほう・履歴は両方 */
@@ -32776,7 +32777,8 @@ function _invHas(text, words){
 function invVendorKind(vendorName){
   if(!vendorName) return '';
   try{
-    var v=(getVendors()||[]).find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
+    /* v1083：まとめた名前は、まとめた先の業者のカード */
+    var v=((typeof vmgCardFor==='function')?vmgCardFor(vendorName):null) || (getVendors()||[]).find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
     return (v && (v.kind==='food'||v.kind==='nonfood')) ? v.kind : '';
   }catch(e){ return ''; }
 }
@@ -32784,7 +32786,9 @@ function invSetVendorKind(vendorName, kind){
   if(!vendorName || (kind!=='food' && kind!=='nonfood')) return false;
   try{
     var vendors=getVendors()||[];
-    var v=vendors.find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
+    /* v1083：まとめた名前は、まとめた先の業者のカードに（読み取りが少し違うたびにカードを作らない） */
+    var _c=(typeof vmgCardFor==='function')?vmgCardFor(vendorName):null;
+    var v=_c ? vendors.find(function(x){ return x && String(x.id)===String(_c.id); }) : vendors.find(function(x){ return x && String(x.name||'').toLowerCase()===String(vendorName).toLowerCase(); });
     if(v){ v.kind=kind; v.kindBy=myName(); v.kindAt=nowJP(); }
     else vendors.push({ id:'v'+Date.now(), name:vendorName, kind:kind, kindBy:myName(), kindAt:nowJP(),
       contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'', leadtime:1, minOrder:0,
@@ -33663,7 +33667,7 @@ function monthInvoiceByVendor(storeId, ym){
     if(storeId && storeId!=='ALL' && sids.indexOf(storeId)<0) return;
     var share=(Number(v.total)||0)/sids.length;
     var amt=(storeId && storeId!=='ALL')?share:(Number(v.total)||0);
-    var vn=(v.vendor||'業者未設定'); var m=map[vn]||(map[vn]={vendor:vn,total:0,count:0,invoice:0,receipt:0,lastDate:'',lastDt:0});
+    var vn=((v.vendor?vendorCanon(v.vendor):'')||'業者未設定'); var m=map[vn]||(map[vn]={vendor:vn,total:0,count:0,invoice:0,receipt:0,lastDate:'',lastDt:0});   /* v1083：まとめた名前はまとめた先で */
     m.total+=amt; m.count++; if(v.docType==='Receipt') m.receipt++; else m.invoice++;
     var dt=d.getTime(); if(dt>m.lastDt){ m.lastDt=dt; m.lastDate=v.date; }
   });
@@ -39322,6 +39326,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'fv_count_','fv_moves_','fv_review_','fv_config',
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q',
   'lunch_challenge',   /* v1080: Tenkichi ランチチャレンジ（月の設定・日の印・確定・食事会。手入力・再生不可） */
+  'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
@@ -41016,7 +41021,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1082';
+const APP_VERSION = '1083';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -46952,6 +46957,8 @@ var INVIN_ERR = {
   unauthorized:['メール認証の有効期限が切れました。認証し直してください','Your sign-in expired. Please sign in again'],
   actor_required:['メール認証してください','Please sign in'],
   conflict:['ほかの人が先に更新しました。開き直してください','Someone else updated this first. Reopen it'],
+  merged:['この業者はほかの業者にまとめてあります（業者マスターの「業者の統合」）。まとめた先の業者で設定してください','This vendor is merged into another (vendor master: Merge vendors). Set the vendor it was merged into'],
+  later_merge:['このあとの統合が同じ業者を使っています。先に新しいほうを外してください','A later merge uses the same vendor. Take the newer one back first'],
   not_found:['見つかりません（消えたか、まだ読み込まれていません）','Not found'],
   closed_month:['締め済みの月です。「経理の調整として反映」にチェックしてください','This month is closed. Tick “post as an accounting adjustment”'],
   duplicate:['同じ invoice が既に反映されています','The same invoice is already posted'],
@@ -48351,6 +48358,16 @@ async function invInReassign(force){
   invInRerender();
 }
 function invInLVal(l, f){ var E = _invIn.edits; return (E && E.l[l.id] && Object.prototype.hasOwnProperty.call(E.l[l.id], f)) ? E.l[l.id][f] : null; }
+/* v1083：1 件の画面の業者の選択肢。業者の統合でまとめた業者は出さない。印字された名前に似た業者を先に（UI案51 7A） */
+function invInVendorOpts(shown, raw){
+  var e = escapeHtml, all = ((typeof _invIn !== 'undefined' && _invIn.config && _invIn.config.vendors) || []);
+  var vs = all.filter(function(x){ return !x.merged_into || x.vendor_key === shown; });
+  var opt = function(x){ return '<option value="'+e(x.vendor_key)+'"'+(x.vendor_key === shown ? ' selected' : '')+'>'+e(x.display_name)+(x.merged_into ? t('（まとめた業者）',' (merged)') : '')+'</option>'; };
+  var sim = (!shown && raw && typeof vmgSimilar === 'function') ? vs.filter(function(x){ return [x.display_name].concat(x.aliases || []).some(function(n){ return !!vmgSimilar(raw, n); }); }) : [];
+  return '<option value="">'+t('マスターから選ぶ','Choose from the master')+'</option>'
+    + (sim.length ? '<optgroup label="'+e(t('印字された名前に似た業者','Similar to the printed name'))+'">'+sim.map(opt).join('')+'</optgroup><optgroup label="'+e(t('すべての業者','All vendors'))+'">' : '')
+    + vs.map(opt).join('') + (sim.length ? '</optgroup>' : '');
+}
 function invInVendorName(key){ var v = _invIn.config && (_invIn.config.vendors||[]).find(function(x){ return x.vendor_key===key; }); return v ? v.display_name : (key||''); }
 function invInIng(code){ try { return getIngredients().find(function(x){ return String(x.code)===String(code); }) || null; } catch(e) { return null; } }
 function invInMapsFor(d){
@@ -48403,7 +48420,7 @@ function invInDetail(mode){
     var v = invInHVal(d, key), shown = v!==null ? v : cur, changed = v!==null && String(v)!==String(cur==null?'':cur);
     return !canEdit ? '<span style="font-size:12px">'+e(shown==null||shown===''?'—':shown)+'</span>'
       : kind==='vendor' ? '<select class="form-select ivx-in'+(changed?' ivx-chg':'')+'" style="max-width:260px'+(!shown?';border-color:'+INVIN_COL.yel:'')+'" onchange="invInSet(\'h\',\'vendor_key\',null,this.value);invInRerender()">'
-          + '<option value="">'+t('マスターから選ぶ','Choose from the master')+'</option>' + ((_invIn.config && _invIn.config.vendors)||[]).map(function(x){ return '<option value="'+e(x.vendor_key)+'"'+(x.vendor_key===shown?' selected':'')+'>'+e(x.display_name)+'</option>'; }).join('') + '</select>'
+          + invInVendorOpts(shown, d.vendor_raw) + '</select>'
       : '<input class="form-input ivx-in'+(changed?' ivx-chg':'')+'" style="max-width:220px" '+(kind==='date'?'type="date" ':'inputmode="'+(kind==='money'?'decimal':'text')+'" ')+'value="'+e(shown==null?'':shown)+'" oninput="invInSet(\'h\',\''+key+'\',null,this.value)">';
   };
   var hf = function(label, key, aiText, cur, kind, note){
@@ -48939,12 +48956,14 @@ function invInSettings(){
     + '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center">'+(admin ? '<button class="btn btn-secondary btn-sm" onclick="invInFolderCheck(false)"><i class="ti ti-folder-search"></i> '+t('フォルダを確かめる（作らない）','Check folders (creates nothing)')+'</button>' : '')
     + '<span class="ivx-note" style="margin:0">'+t('既にあるフォルダを使います。同じ名前のフォルダが2つあるときは止めて知らせます。店舗の画面に案内を出すと、その店のレシート管理に「提出フォルダを開く」が出て、その店はアプリで業者の Invoice を登録しなくなります（Drive だけ）。','Existing folders are used; two folders with the same name stop the run. “Show” adds an “Open the upload folder” card to that store’s Receipts page, and the store no longer registers supplier invoices in the app (Drive only).')+'</span></div></div>';
   /* ---- 業者・対応表 ---- */
-  var vend = C.vendors || [], maps = C.maps || [];
+  /* v1083：業者マスターの「業者の統合」でまとめた業者は、自動の切り替え・編集に出さない（まとめた先の業者で決める） */
+  var vendAll = C.vendors || [], vend = vendAll.filter(function(v){ return !v.merged_into; }), maps = C.maps || [];
+  var vendMerged = vendAll.filter(function(v){ return v.merged_into; });
   var unver = maps.filter(function(m){ return !m.verified; }).length;
   h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px">'
     + '<div class="card" style="padding:10px 12px"><div class="card-title" style="flex-wrap:wrap"><i class="ti ti-truck"></i>'+t('業者ごとの自動反映','Auto-post per vendor')+'（'+vend.length+'）'
       + '<span style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">'
-      + (admin && vend.some(function(v){ return !v.auto_post; }) ? '<button class="btn btn-secondary btn-sm" onclick="invInVendorAutoAll()">'+t('マスターの業者をすべて「自動」にする','Set all master vendors to auto')+'</button>' : '')
+      + (admin && vend.some(function(v){ return !v.auto_post && !v.merged_into; }) ? '<button class="btn btn-secondary btn-sm" onclick="invInVendorAutoAll()">'+t('マスターの業者をすべて「自動」にする','Set all master vendors to auto')+'</button>' : '')
       + (admin ? '<button class="btn btn-secondary btn-sm" onclick="invInSeed(\'vendor\',false)">'+t('業者マスターから候補','Candidates from the vendor master')+'</button>' : '')+'</span></div>'
     + '<div style="max-height:320px;overflow:auto">'+(vend.length ? vend.map(function(v){
         return '<div style="display:flex;gap:8px;align-items:center;border-top:1px solid var(--border);padding:6px 0;font-size:12px"><b style="flex:1">'+e(v.display_name)+'</b>'
@@ -48952,7 +48971,9 @@ function invInSettings(){
           + (admin ? '<label style="display:flex;gap:4px;align-items:center;font-size:11.5px;white-space:nowrap;font-weight:700;color:'+(v.auto_post?INVIN_COL.green:INVIN_COL.yel)+'"><input type="checkbox"'+(v.auto_post?' checked':'')+' onchange="invInVendorAuto('+invInJs(v.vendor_key)+',this.checked)"> '+(v.auto_post?t('自動','Auto'):t('確認モード','Review'))+'</label>'
             : invInChip(v.auto_post?t('自動','auto'):t('確認モード','review mode'), v.auto_post?INVIN_COL.green:INVIN_COL.yel))
           + (invInCanEdit() ? '<button class="btn btn-secondary btn-sm" onclick="invInVendorModal('+invInJs(v.vendor_key)+')">'+t('編集','Edit')+'</button>' : '')+'</div>';
-      }).join('') : '<div class="ivx-note">'+t('まだありません。「業者マスターから候補」で作れます（すべて確認モードから始まります）。','None yet. Create candidates from the vendor master (all start in review mode).')+'</div>')+'</div>'
+      }).join('') : '<div class="ivx-note">'+t('まだありません。「業者マスターから候補」で作れます（すべて確認モードから始まります）。','None yet. Create candidates from the vendor master (all start in review mode).')+'</div>')
+      + (vendMerged.length ? '<div class="ivx-note" style="border-top:1px solid var(--border);padding-top:6px">'+t('まとめた業者 ','Merged vendors ')+vendMerged.length+'：'
+        + vendMerged.map(function(v){ return e(v.display_name)+' → '+e(invInVendorName(v.merged_into)); }).join('・')+t('（業者マスターの「業者の統合」で外せます）',' (taken back in the vendor master’s Merge vendors)')+'</div>' : '')+'</div>'
     + '<div class="ivx-note">'+t('マスターに無い業者の invoice は自動にしません（最初の 1 枚で業者を選ぶと、印字された名前を覚えて次からは ✓）。「自動」にできるのは GM・CEO。','Invoices from vendors not in the master are never posted automatically (choose the vendor on the first one; the printed name is remembered). Only GM or CEO set vendors to auto.')+'</div></div>'
     + '<div class="card" style="padding:10px 12px"><div class="card-title"><i class="ti ti-arrows-exchange"></i>'+t('商品の対応表（業者コード → 食材マスター）','Item mapping (vendor code → ingredient master)')+'</div>'
     + '<div class="ivx-note" style="margin-top:0;margin-bottom:6px">'+t('食材の単価の記録（価格の履歴）用です。経理の確認・反映には関係しません。','For ingredient price history only. Not part of the accounting check or posting.')+(unver ? t('　未確認 ',' Unverified: ')+'<b>'+unver+'</b>'+t(' 件は、確認するまで単価の記録に使いません。',' — not used for prices until verified.') : '')+'</div>'
@@ -49183,7 +49204,7 @@ async function invInVendorAuto(key, on){
 }
 function invInVendorAutoAll(){
   if (!invInCanAdmin()) return;
-  var list = ((_invIn.config && _invIn.config.vendors) || []).filter(function(v){ return !v.auto_post; }); if (!list.length) return;
+  var list = ((_invIn.config && _invIn.config.vendors) || []).filter(function(v){ return !v.auto_post && !v.merged_into; }); if (!list.length) return;
   var unset = list.filter(function(v){ return !v.food_kind; }).length;
   openModal('<div class="modal-title">'+t('業者をすべて「自動」にする','Set all vendors to auto')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     + '<div style="font-size:12px;line-height:1.8"><b>'+list.length+t(' 業者',' vendors')+'</b>'+t(' を「自動」にします。自動で反映されるのは、確認の要らない invoice だけです（店舗も「自動」で、自動反映が ON のとき）。',' will be set to auto. Only invoices that need no check are posted automatically (store set to auto and auto-post on).')
@@ -49192,7 +49213,7 @@ function invInVendorAutoAll(){
 }
 async function invInVendorAutoAllDo(){
   if (!invInCanAdmin() || _invIn.busy) return;
-  var list = ((_invIn.config && _invIn.config.vendors) || []).filter(function(v){ return !v.auto_post; }), ok = 0, ng = [];
+  var list = ((_invIn.config && _invIn.config.vendors) || []).filter(function(v){ return !v.auto_post && !v.merged_into; }), ok = 0, ng = [];
   _invIn.busy = true;
   try { for (var i = 0; i < list.length; i++) { try { await invInAPI({ action:'vendor_save', vendor:invInVendorBody(list[i], true) }); ok++; } catch(e) { ng.push(String(e && e.message || e)); } } }
   finally { _invIn.busy = false; }
@@ -53334,41 +53355,675 @@ function setIngMigration(on){
 }
 function getIngV2(){ return ls('m_ingredients_v2', [])||[]; }
 function _setIngV2(a){ lsSet('m_ingredients_v2', a||[]); }
+/* FUNERGY_VENDOR_MERGE_BEGIN */
 /* ===== 業者名の正規化＋エイリアス（自動反映の表記ゆれ対策） ===== */
+/* m_vendor_alias：v1083 より前の「業者名の整理」が、押した端末にだけ残した表（ほかの端末には届かない）。
+   v1083 からは書かない・読むだけ（業者の統合の候補に「以前この端末でまとめた」として出す） */
 function getVendorAlias(){ return ls('m_vendor_alias', {})||{}; }
 function setVendorAlias(m){ lsSet('m_vendor_alias', m||{}); }
 function normVendor(v){ v=String(v==null?'':v); try{ v=v.normalize('NFKC'); }catch(e){} return v.replace(/\s+/g,' ').trim(); }
-function vendorCanon(v){ var n=normVendor(v); if(!n) return ''; var a=getVendorAlias(); return a[n.toLowerCase()]||n; }
-/* v2の全業者参照を正規化＋エイリアス適用で書き換え */
+/* v1083：まとめた先の業者名（共通データ vendor_merges。どの端末でも同じ）。まとめていない名前はその名前（空白・全角はそろえる） */
+function vendorCanon(v){ var n=normVendor(v); if(!n) return ''; return vmgResolve(n) || n; }
+/* v2 の業者名の空白・全角をそろえる。v1083 から統合の表では書き換えない（記録は元の名前のまま、表示と集計は vendorCanon：UI案51 2A） */
 function normalizeV2Vendors(){
   try{
     var arr=getIngV2(); if(!Array.isArray(arr)||!arr.length) return 0; var ch=0;
     arr.forEach(function(it){
-      if(it.vendor!=null){ var c=vendorCanon(it.vendor); if(c!==it.vendor){ it.vendor=c; ch++; } }
-      if(it.vendors){ var nv={}; Object.keys(it.vendors).forEach(function(k){ nv[vendorCanon(k)]=it.vendors[k]; }); it.vendors=nv; }
-      if(it.storePrices){ Object.keys(it.storePrices).forEach(function(sid){ var sp=it.storePrices[sid]; if(sp&&sp.vendor!=null) sp.vendor=vendorCanon(sp.vendor); }); }
-      if(Array.isArray(it.priceHistory)){ it.priceHistory.forEach(function(h){ if(h&&h.vendor!=null) h.vendor=vendorCanon(h.vendor); }); }
+      if(it.vendor!=null){ var c=normVendor(it.vendor); if(c!==it.vendor){ it.vendor=c; ch++; } }
+      if(it.vendors){ var nv={}; Object.keys(it.vendors).forEach(function(k){ nv[normVendor(k)]=it.vendors[k]; }); it.vendors=nv; }
+      if(it.storePrices){ Object.keys(it.storePrices).forEach(function(sid){ var sp=it.storePrices[sid]; if(sp&&sp.vendor!=null) sp.vendor=normVendor(sp.vendor); }); }
+      if(Array.isArray(it.priceHistory)){ it.priceHistory.forEach(function(h){ if(h&&h.vendor!=null) h.vendor=normVendor(h.vendor); }); }
     });
     if(ch) _setIngV2(arr);
     return ch;
   }catch(e){ return 0; }
 }
-function mergeVendorTo(fromName, toName){
-  var from=normVendor(fromName), to=normVendor(toName);
-  if(!from||!to){ return; }
-  if(from.toLowerCase()===to.toLowerCase()){ showToast('同じ業者です','warning'); return; }
-  var a=getVendorAlias(); a[from.toLowerCase()]=to; setVendorAlias(a);
-  var n=normalizeV2Vendors();
-  showToast('「'+from+'」→「'+to+'」に統合（'+n+'品目を更新）','success');
-  if(typeof renderPage==='function') renderPage('vendor_master');
-}
-function mergeDupKey(key, canon){
-  var a=getVendorAlias(); a[key]=canon; setVendorAlias(a);
-  var n=normalizeV2Vendors();
-  showToast('表記ゆれを「'+canon+'」に統一（'+n+'品目を更新）','success');
-  if(typeof renderPage==='function') renderPage('vendor_master');
-}
+/* 前の版の入口（業者名の整理）：v1083 の「業者をまとめる」画面を開く */
+function mergeVendorTo(fromName, toName){ vmgOpen([toName, fromName], toName); }
+function mergeDupKey(key, canon){ var names=[canon]; try{ (vmgGroups(vmgPool())||[]).forEach(function(g){ if(g.keys.some(function(k){ return vmgKey(k)===String(key); })) names=g.names; }); }catch(e){} vmgOpen(names, canon); }
 function _v2VendorNormOnce(){ try{ if(ls('_v2vnorm_v1',false)) return; normalizeV2Vendors(); lsSet('_v2vnorm_v1',true); }catch(e){} }
+
+/* ============================================================
+   v1083 業者の統合（Moto 2026-10-15「アプリでインボイスを取り込んでいた時や今も複数の業者名（同じ業者なのに読み取りで若干違う）
+   この複数いる同じ業者を統合したいです」・UI案51 決めてほしいこと 1〜7 はすべて A）
+   ・どの名前をどの業者にまとめたかは共通データ vendor_merges（記録ごとに新しいほう・mergeMapByTime。どの端末でも同じ）：
+       n:<名前のキー>   { to, name, g, off }        この名前は to にまとめた（off：外した）。キーは空白・全角をそろえて小文字
+       g:<統合の id>    { to, names, by, at, server, card, filled, kind, prevKind, renamed, hide, src, off, offBy, offAt }
+       skip:<キー|キー> { a, b, off }               「別の業者」（候補に出さない）
+     消すときは off で上書きする（消した印は合流で必ず勝つため使わない）
+   ・記録（請求書・発注・小切手・商品）の業者名は書き換えない。表示と集計は vendorCanon（まとめた先の名前）（2A）。外せば戻る
+   ・業者マスターのカード：まとめた名前のカードはしまう（消さない）。残すカードの空欄だけほかのカードから埋める（6A）。
+     残す名前のカードが無いときは、いちばん使われているカードの名前を残す名前に変える（外すと戻す）
+   ・Invoice取込（サーバー）も同じ名前で一緒にまとめる（1A。締めていない月の書類を付け替える：3A）。サーバーが先、この表があと
+     （サーバーで止まったら何も変えない）。Invoice取込の業者に無い名前だけなら、この表だけ
+   ・まとめる・外すのは経理・事務Crew・GM・CEO（5A）。AM・シェフは見るだけ
+   ・候補は名前の似たもの（Inc.・LLC・Co. を除く・記号・& と and・単数と複数・1〜2 文字の綴り違い）を出すだけ。まとめるのは人（4A）
+   ・新しい名前の請求書を保存するとき、似た業者があれば「この業者ですか？」と聞く（7A）
+   ・発注リストは業者の名前ごとのまま（まとめた名前のカードの発注リストもそのまま使える） */
+var VMG_KEY = 'vendor_merges';
+var VMG_FIELDS = [['contact','担当者','Contact'],['phone','電話','Phone'],['sms','SMS番号','SMS'],['email','Email','Email'],['line','LINE','LINE'],
+  ['method','発注方法','Order method'],['cutoff','発注の締め','Order cutoff'],['delivery','配送','Delivery'],['terms','支払条件','Terms'],['webform','Web フォーム','Web form']];
+var VMG_CORP = { inc:1, incorporated:1, llc:1, co:1, corp:1, corporation:1, company:1, ltd:1, limited:1, lp:1, llp:1, dba:1, the:1 };
+var _vmg = { tab:'cand', q:'', pick:{}, usage:null, usageAt:0, usageErr:'', usageLoading:false, restoreTried:null, m:null, seq:0, busy:false };
+var _vmgC = { raw:undefined, all:{}, res:{}, hide:null };
+function vmgCan(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
+function vmgHas(o, k){ return !!o && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k); }
+function vmgKey(n){ return normVendor(n).toLowerCase(); }
+function vmgT(ja, en){ return (typeof t === 'function') ? t(ja, en) : ja; }
+/* 表を読む（同じ中身なら前に読んだものを使う：表示と集計で 1 件ごとに呼ばれるため） */
+function vmgAll(){
+  var raw = null;
+  try { raw = (typeof _lsStoreGet === 'function') ? _lsStoreGet(VMG_KEY) : localStorage.getItem(VMG_KEY); } catch(e) { raw = null; }
+  if (raw === _vmgC.raw) return _vmgC.all;
+  var v = {}; try { v = raw ? JSON.parse(raw) : {}; } catch(e) { v = {}; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) v = {};
+  _vmgC = { raw:raw, all:v, res:{}, hide:null };
+  return v;
+}
+function vmgRec(k){ var a = vmgAll(), r = vmgHas(a, k) ? a[k] : null; return (r && typeof r === 'object' && !Array.isArray(r) && !r._deleted) ? r : null; }
+/* まとめた先（何度まとめても最後まで。輪になっていたらそこで止める）。まとめていなければ null */
+function vmgResolve(n){
+  var a = vmgAll(), k0 = String(n).toLowerCase();
+  if (vmgHas(_vmgC.res, k0)) return _vmgC.res[k0];
+  var cur = n, seen = {}, out = null;
+  for (var i = 0; i < 20; i++) {
+    var ck = cur.toLowerCase(); if (seen[ck]) break; seen[ck] = 1;
+    var r = vmgHas(a, 'n:' + ck) ? a['n:' + ck] : null;
+    if (!r || typeof r !== 'object' || r.off || r._deleted || !r.to) break;
+    var tn = normVendor(r.to); if (!tn) break;
+    out = tn; cur = tn;
+  }
+  _vmgC.res[k0] = out;
+  return out;
+}
+/* 同じ名前のカードが 2 枚あったとき、まとめてしまったほうのカード（g の hide） */
+function vmgHiddenIds(){
+  vmgAll();
+  if (_vmgC.hide) return _vmgC.hide;
+  var h = {}, a = _vmgC.all;
+  Object.keys(a).forEach(function(k){ if (k.indexOf('g:') !== 0) return; var g = a[k]; if (!g || g.off || g._deleted || !Array.isArray(g.hide)) return; g.hide.forEach(function(id){ h[String(id)] = 1; }); });
+  _vmgC.hide = h;
+  return h;
+}
+/* まとめてしまった業者マスターのカード（消さない・一覧に出さない） */
+function vmgCardHidden(v){
+  if (!v || !v.name) return false;
+  if (vendorCanon(v.name) !== normVendor(v.name)) return true;
+  return !!vmgHiddenIds()[String(v.id)];
+}
+function getVendorsVisible(){ return (getVendors() || []).filter(function(v){ return v && !vmgCardHidden(v); }); }
+/* その名前（まとめた名前なら、まとめた先）の業者マスターのカード */
+function vmgCardFor(name){
+  var c = vendorCanon(name); if (!c) return null;
+  var k = c.toLowerCase(), best = null;
+  (getVendors() || []).forEach(function(v){ if (!v || !v.name || vmgKey(v.name) !== k || vmgCardHidden(v)) return; if (!best || normVendor(v.name) === c) best = v; });
+  return best;
+}
+/* ---- 保存 ---- */
+function vmgSaveMany(list){
+  var a = Object.assign({}, vmgAll()), now = Date.now(), by = (typeof myName === 'function' ? myName() : '') || '';
+  list.forEach(function(x){
+    var old = vmgHas(a, x[0]) ? a[x[0]] : null, at = Math.max(now, old ? (Number(old._at) || 0) + 1 : 0);
+    a[x[0]] = Object.assign({}, x[1], { _at:at, by:x[1].by || by });
+  });
+  return lsSet(VMG_KEY, a) !== false;
+}
+/* クラウドの最新を読んで端末と合わせる（まとめる・外すの前。ほかの人の統合を上書きしないため）。読めなければ何も変えない */
+async function vmgPull(){
+  if (typeof pullOpKey !== 'function') return true;
+  try { return !!(await Promise.race([pullOpKey(VMG_KEY), new Promise(function(res){ setTimeout(function(){ res(false); }, 15000); })])); } catch(e) { return false; }
+}
+function vmgId(){ return 'vm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+/* 統合の順（新しいほうから外すため）：記録した時刻。同じ時刻なら、この表で後から書いたほう */
+function vmgOrder(g){ return Number(g && g.ms) || Date.parse(g && g.at || '') || 0; }
+function vmgMs(){ var a = vmgAll(), m = Date.now(); Object.keys(a).forEach(function(k){ if (k.indexOf('g:') === 0 && a[k]) m = Math.max(m, vmgOrder(a[k]) + 1); }); return m; }
+/* ---- 似た名前 ---- */
+function vmgLoose(n){
+  var s = normVendor(n).toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9぀-ヿ一-鿿]+/g, ' ').trim();
+  var w = s.split(/\s+/).filter(Boolean), core = w.filter(function(x){ return !VMG_CORP[x]; });
+  if (!core.length) core = w;
+  return core.map(function(x){ return (x.length > 3 && /s$/.test(x) && !/ss$/.test(x)) ? x.slice(0, -1) : x; }).join('');
+}
+/* 綴りの違い（入れ替え・抜け・余分・置き換えを 1 つと数える）。max を超えたら max+1 */
+function vmgDist(a, b, max){
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  var d = [], i, j;
+  for (i = 0; i <= a.length; i++) { d[i] = [i]; }
+  for (j = 0; j <= b.length; j++) d[0][j] = j;
+  for (i = 1; i <= a.length; i++) {
+    var rowMin = max + 1;
+    for (j = 1; j <= b.length; j++) {
+      var c = a[i-1] === b[j-1] ? 0 : 1;
+      var v = Math.min(d[i-1][j] + 1, d[i][j-1] + 1, d[i-1][j-1] + c);
+      if (i > 1 && j > 1 && a[i-1] === b[j-2] && a[i-2] === b[j-1]) v = Math.min(v, d[i-2][j-2] + 1);
+      d[i][j] = v; if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;
+  }
+  return d[a.length][b.length];
+}
+function vmgSimilar(a, b){
+  var x = vmgLoose(a), y = vmgLoose(b);
+  if (x.length >= 3 && x === y) return vmgKey(a) === vmgKey(b) ? 'case' : 'loose';
+  if (Math.min(x.length, y.length) < 6) return '';
+  var lim = Math.min(x.length, y.length) >= 12 ? 2 : 1;
+  return vmgDist(x, y, lim) <= lim ? 'spell' : '';
+}
+function vmgSkipped(k1, k2){ var r = vmgRec('skip:' + [vmgKey(k1), vmgKey(k2)].sort().join('|')); return !!(r && !r.off); }
+/* 名前ごとの使われ方（まとめた名前はまとめた先に数える）。名前（まとめた先の名前そのまま。大文字・小文字の違う名前は別）→
+   { name, key, cards, hidden, kinds, inv, prod, intake, unk, merged, vks } */
+function vmgPool(){
+  var pool = {};
+  function at(name){ var c = vendorCanon(name); if (!c) return null; if (!vmgHas(pool, c)) pool[c] = { key:c.toLowerCase(), name:c, cards:[], hidden:[], kinds:{}, inv:0, prod:0, intake:0, unk:0, merged:[], vks:[] }; return pool[c]; }
+  (getVendors() || []).forEach(function(v){
+    if (!v || !v.name) return; var p = at(v.name); if (!p) return;
+    if (vmgCardHidden(v)) { p.hidden.push(v.id); return; }
+    p.cards.push(v.id); if (v.kind === 'food' || v.kind === 'nonfood') p.kinds[v.kind] = (p.kinds[v.kind] || 0) + 1;
+  });
+  (ls('invoices', []) || []).forEach(function(v){ if (!v || v.deleted || v._deleted || !v.vendor) return; var p = at(v.vendor); if (p) p.inv++; });
+  try { (getIngV2() || []).forEach(function(it){ if (it && it.vendor) { var p = at(it.vendor); if (p) p.prod++; } }); } catch(e) {}
+  var U = _vmg.usage;
+  if (U) {
+    (U.vendors || []).forEach(function(v){ if (!v || v.merged_into) return; var p = at(v.display_name); if (p) { p.intake += Number(v.docs) || 0; p.vks.push(v.vendor_key); if (v.food_kind === 'food' || v.food_kind === 'nonfood') p.kinds['i' + v.food_kind] = 1; } });
+    (U.unknown || []).forEach(function(x){ var p = at(x.name); if (p) p.unk += Number(x.docs) || 0; });
+  }
+  var a = vmgAll();
+  Object.keys(a).forEach(function(k){
+    if (k.indexOf('n:') !== 0) return; var r = a[k]; if (!r || r.off || r._deleted || !r.to || !r.name) return;
+    var p = pool[vendorCanon(r.to)]; if (p && normVendor(r.name) !== p.name && p.merged.indexOf(r.name) < 0) p.merged.push(r.name);
+  });
+  return pool;
+}
+function vmgUse(p){ return p.inv + p.prod + p.intake + p.unk + p.cards.length; }
+/* 候補（似た名前のまとまり）。「別の業者」にした 2 つはつながない */
+function vmgGroups(pool){
+  var keys = Object.keys(pool), parent = {}, legacy = {}, i, j;
+  keys.forEach(function(k){ parent[k] = k; });
+  function f(x){ while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; }
+  function u(a, b){ if (a === b || vmgSkipped(a, b)) return; var ra = f(a), rb = f(b); if (ra !== rb) parent[ra] = rb; }
+  var L = {}; keys.forEach(function(k){ L[k] = vmgLoose(pool[k].name); });
+  var byL = {}; keys.forEach(function(k){ if (L[k].length >= 3) (byL[L[k]] = byL[L[k]] || []).push(k); });
+  Object.keys(byL).forEach(function(l){ var ks = byL[l]; for (var x = 0; x < ks.length; x++) for (var y = x + 1; y < ks.length; y++) u(ks[x], ks[y]); });
+  var arr = keys.filter(function(k){ return L[k].length >= 6; }).sort(function(x, y){ return L[x].length - L[y].length; });
+  for (i = 0; i < arr.length; i++) for (j = i + 1; j < arr.length && L[arr[j]].length - L[arr[i]].length <= 2; j++) {
+    var a = L[arr[i]], b = L[arr[j]]; if (a === b) continue;
+    var lim = Math.min(a.length, b.length) >= 12 ? 2 : 1;
+    if (vmgDist(a, b, lim) <= lim) u(arr[i], arr[j]);
+  }
+  /* 前の版の「業者名の整理」がこの端末でまとめた名前（共有されていなかった） */
+  var leg = {}; try { leg = getVendorAlias() || {}; } catch(e) { leg = {}; }
+  Object.keys(leg).forEach(function(fk){
+    var ka = vendorCanon(fk), kb = vendorCanon(leg[fk]); if (!ka || !kb) return;
+    /* 表は小文字のキーだけを持っていた：同じ名前（大文字・小文字の違い）を pool から探す */
+    if (!vmgHas(pool, ka)) ka = Object.keys(pool).find(function(k){ return pool[k].key === ka.toLowerCase(); }) || ka;
+    if (ka === kb || !vmgHas(pool, ka) || !vmgHas(pool, kb)) return;
+    u(ka, kb); legacy[ka] = legacy[kb] = 1;
+  });
+  var by = {};
+  keys.forEach(function(k){ var r = f(k); (by[r] = by[r] || []).push(k); });
+  var out = [];
+  Object.keys(by).forEach(function(r){
+    var ks = by[r]; if (ks.length < 2) return;
+    ks.sort(function(x, y){ return (pool[y].cards.length ? 1 : 0) - (pool[x].cards.length ? 1 : 0) || vmgUse(pool[y]) - vmgUse(pool[x]) || String(pool[x].name).localeCompare(String(pool[y].name)); });
+    var why = ks.some(function(k){ return legacy[k]; }) ? 'legacy'
+      : ks.every(function(k){ return pool[k].key === pool[ks[0]].key; }) ? 'case'
+      : ks.every(function(k){ return L[k] === L[ks[0]]; }) ? 'loose' : 'spell';
+    var food = ks.some(function(k){ return pool[k].kinds.food || pool[k].kinds.ifood; }), non = ks.some(function(k){ return pool[k].kinds.nonfood || pool[k].kinds.inonfood; });
+    out.push({ keys:ks, names:ks.map(function(k){ return pool[k].name; }), why:why, kindClash:food && non, use:ks.reduce(function(s, k){ return s + vmgUse(pool[k]); }, 0) });
+  });
+  /* 同じ名前のカードが 2 枚以上（名前は 1 つ。しまうカードを選ぶ） */
+  keys.forEach(function(k){
+    if (pool[k].cards.length < 2 || by[f(k)].length > 1) return;
+    out.push({ keys:[k], names:[pool[k].name], why:'dupcard', kindClash:!!(pool[k].kinds.food && pool[k].kinds.nonfood), use:vmgUse(pool[k]) });
+  });
+  out.sort(function(x, y){ return y.use - x.use || String(x.names[0]).localeCompare(String(y.names[0])); });
+  return out;
+}
+var VMG_WHY = { case:['大文字・小文字・空白だけ違う','Only case or spaces differ'], loose:['Inc.・LLC・Co. や記号を除くと同じ','Same without Inc., LLC, Co. or punctuation'],
+  spell:['綴りが少し違う','Spelled slightly differently'], dupcard:['同じ名前の業者マスターのカードが 2 枚以上','Two or more cards with the same name'], legacy:['以前この端末の「業者名の整理」でまとめた（ほかの端末には届いていなかった）','Merged before on this device only (not shared)'] };
+/* ---- Invoice取込の件数（メール認証のある経理・事務Crew・GM・CEO の端末だけ） ---- */
+function vmgRerender(){
+  if (typeof curPage === 'undefined' || curPage !== 'vendor_master' || (typeof vmView !== 'undefined' && vmView === 'const')) return;
+  try { var a = document.activeElement; if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && a.closest && a.closest('.vmg-wrap')) return; } catch(e) {}
+  if (document.getElementById('vmg-modal')) { vmgModalRender(); return; }
+  renderPage('vendor_master');
+}
+function vmgUsageEnsure(force){
+  if (!vmgCan() || _vmg.usageLoading) return;
+  if (!force && (_vmg.usage || _vmg.usageErr) && Date.now() - _vmg.usageAt < 120000) return;
+  if (typeof invInSigned !== 'function') return;
+  if (!invInSigned()) {
+    var who = (typeof invInKeepWho === 'function') ? invInKeepWho() : '';
+    if (typeof invInKept === 'function' && invInKept() && _vmg.restoreTried !== who) {
+      _vmg.restoreTried = who; _vmg.usageLoading = true;
+      Promise.resolve((typeof _invIn !== 'undefined' && _invIn.restoreP) || invInRestore()).then(function(){}, function(){}).then(function(){ _vmg.usageLoading = false; if (invInSigned()) vmgUsageEnsure(true); else vmgRerender(); });
+    }
+    return;
+  }
+  _vmg.usageLoading = true;
+  invInAPI({ action:'vendor_usage' }).then(function(r){ _vmg.usage = r; _vmg.usageErr = ''; }, function(e){ _vmg.usageErr = String(e && e.message || e); })
+    .then(function(){ _vmg.usageAt = Date.now(); _vmg.usageLoading = false; vmgRerender(); });
+}
+function vmgSignIn(){
+  if (typeof invInLoginModal !== 'function') return;
+  _vmg.restoreTried = null; _vmg.usageErr = ''; invInLoginModal();
+  /* 認証が済んだら件数を読む（認証の画面は閉じるだけなので、ここで待つ） */
+  clearInterval(_vmg.signT); var n = 0;
+  _vmg.signT = setInterval(function(){ n++; if (typeof invInSigned === 'function' && invInSigned()) { clearInterval(_vmg.signT); vmgUsageEnsure(true); } else if (n > 180) clearInterval(_vmg.signT); }, 1000);
+}
+/* ---- 業者マスターの「業者の統合」 ---- */
+function vmgChips(p, compact){
+  var e = escapeHtml, out = [];
+  if (p.cards.length) out.push('<span class="tag tag-blue" style="font-size:10.5px">'+vmgT('業者マスターのカード','Card')+(p.cards.length > 1 ? ' ×'+p.cards.length : '')+'</span>');
+  if (p.kinds.food || p.kinds.nonfood) out.push('<span class="tag '+(p.kinds.food && p.kinds.nonfood ? 'tag-orange' : p.kinds.food ? 'tag-green' : 'tag-yellow')+'" style="font-size:10.5px">'
+    +(p.kinds.food && p.kinds.nonfood ? vmgT('食材と食材以外','Food and non-food') : p.kinds.food ? vmgT('食材','Food') : vmgT('食材以外','Non-food'))+'</span>');
+  if (p.inv) out.push('<span class="tag tag-gray" style="font-size:10.5px">'+vmgT('請求書 ','Invoices ')+p.inv+'</span>');
+  if (p.prod) out.push('<span class="tag tag-gray" style="font-size:10.5px">'+vmgT('商品 ','Products ')+p.prod+'</span>');
+  if (p.intake) out.push('<span class="tag tag-gray" style="font-size:10.5px">'+vmgT('Invoice取込 ','Intake ')+p.intake+'</span>');
+  if (p.unk) out.push('<span class="tag tag-orange" style="font-size:10.5px">'+vmgT('業者を選ぶ待ち ','Vendor to choose ')+p.unk+'</span>');
+  if (p.merged.length && !compact) out.push('<span class="tag tag-blue" style="font-size:10.5px" title="'+e(p.merged.join(' / '))+'">'+vmgT('まとめた名前 ','Merged names ')+p.merged.length+'</span>');
+  return out.join(' ');
+}
+function vmgUsageLine(){
+  if (!vmgCan()) return '';
+  var s = 'font-size:11.5px;color:var(--muted);margin:2px 0 6px;display:flex;gap:6px;align-items:center;flex-wrap:wrap';
+  if (typeof invInSigned !== 'function') return '';
+  if (_vmg.usageLoading) return '<div style="'+s+'"><i class="ti ti-loader"></i> '+vmgT('Invoice取込の件数を読んでいます…','Reading the intake counts…')+'</div>';
+  if (!invInSigned()) return '<div style="'+s+'">'+vmgT('Invoice取込の件数とまとめるには、メール認証が要ります（この端末で最初の 1 回だけ）。','The intake counts and merging need the email sign-in (once on this device).')
+    +' <button class="btn btn-secondary btn-sm" onclick="vmgSignIn()"><i class="ti ti-login"></i> '+vmgT('メール認証','Email sign-in')+'</button></div>';
+  if (_vmg.usageErr) return '<div style="'+s+';color:var(--red)">'+escapeHtml(_vmg.usageErr)+' <button class="btn btn-secondary btn-sm" onclick="vmgUsageEnsure(true)">'+vmgT('もう一度','Retry')+'</button></div>';
+  return '';
+}
+function vmgCardHtml(){
+  var e = escapeHtml, can = vmgCan(), pool = vmgPool(), groups = vmgGroups(pool), a = vmgAll();
+  var recs = Object.keys(a).filter(function(k){ return k.indexOf('g:') === 0 && a[k] && !a[k]._deleted; }).map(function(k){ return Object.assign({ id:k.slice(2) }, a[k]); })
+    .sort(function(x, y){ return vmgOrder(y) - vmgOrder(x); });
+  var live = recs.filter(function(g){ return !g.off; }), gone = recs.filter(function(g){ return g.off; });
+  var tab = _vmg.tab;
+  var h = '<div class="card vmg-wrap" style="border:2px solid var(--accent)">'
+    + '<div class="card-title" style="flex-wrap:wrap"><i class="ti ti-arrows-join"></i>'+vmgT('業者の統合','Merge vendors')+'</div>'
+    + '<div style="font-size:11.5px;color:var(--muted);margin:-2px 0 8px;line-height:1.6">'+vmgT('同じ業者の名前を 1 つにまとめます。まとめた業者は、請求書・Invoice取込・食材の原価・仕入れ集計・小切手・商品で 1 つの業者になります（記録の元の名前は残ります）。',
+        'Merge the names of one vendor. A merged vendor is one vendor in invoices, intake, food cost, purchase totals, checks and products (the names on the records stay).')
+      + (can ? '' : ' '+vmgT('まとめる・外すのは経理・事務Crew・GM・CEO です。','Accounting, office crew, GM and CEO merge and take merges back.'))+'</div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'
+    + [['cand', vmgT('候補 ','Candidates ')+groups.length], ['pick', vmgT('手動で選ぶ','Choose by hand')], ['rec', vmgT('統合の記録 ','Merges ')+live.length]].map(function(x){
+        return '<button class="btn '+(tab === x[0] ? 'btn-primary' : 'btn-secondary')+' btn-sm" onclick="vmgTab(\''+x[0]+'\')">'+x[1]+'</button>'; }).join('')
+    + '</div>' + vmgUsageLine();
+  if (tab === 'cand') {
+    if (!groups.length) h += '<div style="font-size:12px;color:var(--muted);padding:6px 0">'+vmgT('似た名前の業者は見つかりませんでした。候補に出ない業者は「手動で選ぶ」でまとめられます。','No similar names found. Use “Choose by hand” for others.')+'</div>';
+    groups.slice(0, 40).forEach(function(g, gi){
+      h += '<div style="border:1px solid var(--yellow);border-radius:10px;padding:8px 10px;margin-bottom:8px;background:var(--surface)">'
+        + '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px"><span class="tag tag-orange" style="font-size:10.5px">'+vmgT('候補の理由：','Why: ')+e(vmgT(VMG_WHY[g.why][0], VMG_WHY[g.why][1]))+'</span>'
+        + (can ? '<span style="margin-left:auto;display:flex;gap:6px"><button class="btn btn-primary btn-sm" onclick="vmgOpenGroup('+gi+')"><i class="ti ti-arrows-join"></i> '+vmgT('まとめる…','Merge…')+'</button>'
+          + '<button class="btn btn-secondary btn-sm" onclick="vmgSkipGroup('+gi+')">'+vmgT('別の業者','Different vendors')+'</button></span>' : '')+'</div>';
+      g.keys.forEach(function(k, i){
+        var p = pool[k];
+        h += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 0;'+(i ? 'border-top:1px dashed var(--border)' : '')+'"><b style="font-size:13px;min-width:180px">'+e(p.name)+'</b><span>'+vmgChips(p)+'</span></div>';
+      });
+      if (g.kindClash) h += '<div style="font-size:11.5px;color:var(--yellow);margin-top:4px">'+vmgT('食材と食材以外が分かれています。まとめるときにどちらか選びます。','Food and non-food differ. You choose one when merging.')+'</div>';
+      h += '</div>';
+    });
+    if (groups.length > 40) h += '<div style="font-size:11px;color:var(--muted)">'+vmgT('ほかに '+(groups.length - 40)+' 件（上をまとめると次が出ます）','and '+(groups.length - 40)+' more')+'</div>';
+  } else if (tab === 'pick') {
+    h += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"><input class="form-input" id="vmg-q" style="flex:1;min-width:200px" placeholder="'+vmgT('業者名で探す（例：rice）','Search vendor names (e.g. rice)')+'" value="'+e(_vmg.q)+'" oninput="vmgSearch(this.value)">'
+      + (can ? '<button class="btn btn-primary btn-sm" id="vmg-pick-go" onclick="vmgOpenPicked()"></button>' : '')+'</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin:4px 0">'+vmgT('名前の一部で探せます。請求書・Invoice取込・商品に出てくる名前も探します（業者マスターにカードが無い名前も）。','Searches every name in invoices, intake and products too (also names without a card).')+'</div>'
+      + '<div id="vmg-results"></div>';
+  } else {
+    if (!live.length) h += '<div style="font-size:12px;color:var(--muted);padding:6px 0">'+vmgT('まだありません。','None yet.')+'</div>';
+    else h += '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="text-align:left;color:var(--muted);font-size:11px">'
+      + '<th style="padding:5px;border-bottom:1px solid var(--border)">'+vmgT('日時','When')+'</th><th style="padding:5px;border-bottom:1px solid var(--border)">'+vmgT('残した名前','Kept')+'</th>'
+      + '<th style="padding:5px;border-bottom:1px solid var(--border)">'+vmgT('まとめた名前','Merged')+'</th><th style="padding:5px;border-bottom:1px solid var(--border)">'+vmgT('した人','By')+'</th>'
+      + '<th style="padding:5px;border-bottom:1px solid var(--border)"></th></tr></thead><tbody>'
+      + live.map(function(g){
+          var nm = (g.names || []).filter(function(x){ return x !== g.to; });
+          var srv = g.server && g.server.id ? vmgT('Invoice取込も','with intake') : g.src === 'invoice_form' ? vmgT('請求書の登録で（アプリだけ）','from an invoice (app only)') : vmgT('アプリだけ','app only');
+          return '<tr><td style="padding:6px 5px;border-bottom:1px solid var(--border);white-space:nowrap">'+e(vmgWhen(g.at))+'</td><td style="padding:6px 5px;border-bottom:1px solid var(--border);font-weight:700">'+e(g.to || '')+'</td>'
+            + '<td style="padding:6px 5px;border-bottom:1px solid var(--border)">'+e(nm.join('・'))+'<div style="font-size:10.5px;color:var(--muted)">'+srv+'</div></td>'
+            + '<td style="padding:6px 5px;border-bottom:1px solid var(--border)">'+e(g.by || '')+'</td>'
+            + '<td style="padding:6px 5px;border-bottom:1px solid var(--border)">'+(can ? '<button class="btn btn-secondary btn-sm" onclick="vmgUndoAsk('+vmgJs(g.id)+')">'+vmgT('外す','Take back')+'</button>' : '')+'</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    if (gone.length) h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">'+vmgT('外した記録 '+gone.length+' 件','Taken back: '+gone.length)+'</div>';
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">'+vmgT('「外す」：名前を元に戻します（しまったカードも出ます）。新しいほうから外します。まとめたあとに届いた invoice はまとめた業者のままです。','Taking back restores the names (and the cards). Newer merges first. Invoices read after the merge stay with the kept vendor.')+'</div>';
+  }
+  h += '</div>';
+  if (tab === 'pick') setTimeout(function(){ vmgSearch(_vmg.q, true); }, 0);
+  vmgUsageEnsure();
+  return h;
+}
+function vmgWhen(iso){ try { var d = new Date(iso); if (isNaN(d)) return ''; return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); } catch(e) { return ''; } }
+function vmgTab(x){ _vmg.tab = x; renderPage('vendor_master'); }
+function vmgSearch(q, keepPick){
+  _vmg.q = String(q || ''); if (!keepPick) {}
+  var box = document.getElementById('vmg-results'); if (!box) return;
+  var e = escapeHtml, pool = vmgPool(), s = vmgKey(_vmg.q), can = vmgCan();
+  var keys = Object.keys(pool).filter(function(k){ return !s || pool[k].key.indexOf(s) >= 0 || vmgLoose(pool[k].name).indexOf(vmgLoose(_vmg.q)) >= 0 || _vmg.pick[k]; })
+    .sort(function(x, y){ return (_vmg.pick[y] ? 1 : 0) - (_vmg.pick[x] ? 1 : 0) || vmgUse(pool[y]) - vmgUse(pool[x]) || String(pool[x].name).localeCompare(String(pool[y].name)); }).slice(0, 60);
+  box.innerHTML = keys.length ? keys.map(function(k){
+    var p = pool[k];
+    return '<label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin-bottom:4px;cursor:pointer">'
+      + (can ? '<input type="checkbox"'+(_vmg.pick[k] ? ' checked' : '')+' onchange="vmgPickToggle('+vmgJs(k)+',this.checked)">' : '')
+      + '<b style="font-size:12.5px;min-width:160px">'+e(p.name)+'</b><span>'+vmgChips(p, true)+'</span></label>';
+  }).join('') : '<div style="font-size:12px;color:var(--muted)">'+vmgT('見つかりません','Nothing found')+'</div>';
+  vmgPickButton();
+}
+function vmgPickToggle(k, on){ if (on) _vmg.pick[k] = 1; else delete _vmg.pick[k]; vmgPickButton(); }
+function vmgPickButton(){
+  var b = document.getElementById('vmg-pick-go'); if (!b) return;
+  var n = Object.keys(_vmg.pick).length;
+  b.disabled = n < 2; b.innerHTML = '<i class="ti ti-arrows-join"></i> '+vmgT('選んだ '+n+' つをまとめる…','Merge the '+n+' chosen…');
+}
+function vmgOpenPicked(){
+  var pool = vmgPool(), names = Object.keys(_vmg.pick).filter(function(k){ return pool[k]; }).map(function(k){ return pool[k].name; });
+  if (names.length < 2) { showToast(vmgT('2 つ以上選んでください','Choose two or more'), 'warning'); return; }
+  vmgOpen(names);
+}
+function vmgOpenGroup(i){ var g = vmgGroups(vmgPool())[i]; if (g) vmgOpen(g.names); }
+async function vmgSkipGroup(i){
+  if (!vmgCan() || _vmg.busy) return;
+  var g = vmgGroups(vmgPool())[i]; if (!g) return;
+  _vmg.busy = true;
+  try {
+    if (!(await vmgPull())) { showToast(vmgT('最新の記録を読めませんでした。通信を確かめて、もう一度押してください（何も変えていません）','Could not read the latest records. Check the connection and press again (nothing was changed)'), 'warning'); return; }
+    var list = [];
+    for (var x = 0; x < g.keys.length; x++) for (var y = x + 1; y < g.keys.length; y++) { var pk = [vmgKey(g.keys[x]), vmgKey(g.keys[y])].sort(); list.push(['skip:' + pk.join('|'), { a:g.names[x], b:g.names[y], off:false }]); }
+    if (!vmgSaveMany(list)) { showToast(vmgT('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'), 'warning'); return; }
+    showToast(vmgT('「別の業者」にしました（候補に出しません）','Marked as different vendors'), 'success');
+  } finally { _vmg.busy = false; renderPage('vendor_master'); }
+}
+/* ---- 業者をまとめる画面 ---- */
+function vmgOpen(names, keep){
+  if (!vmgCan()) { showToast(vmgT('まとめるのは経理・事務Crew・GM・CEO です','Accounting, office crew, GM or CEO merge vendors'), 'warning'); return; }
+  var pool = vmgPool(), seen = {}, list = [];
+  (names || []).forEach(function(n){ var c = vendorCanon(n); if (!c || seen[c]) return; seen[c] = 1; list.push(c); });
+  if (list.length < 2 && !(list.length === 1 && pool[list[0]] && pool[list[0]].cards.length > 1)) { showToast(vmgT('まとめる名前が 2 つ以上要ります（もうまとまっているかもしれません）','Two or more names are needed (they may be merged already)'), 'warning'); return; }
+  var best = list.slice().sort(function(x, y){ var p = pool[x] || { cards:[] }, q = pool[y] || { cards:[] };
+    return (q.cards.length ? 1 : 0) - (p.cards.length ? 1 : 0) || (pool[y] ? vmgUse(pool[y]) : 0) - (pool[x] ? vmgUse(pool[x]) : 0); })[0];
+  var k0 = keep ? vendorCanon(keep) : best;
+  _vmg.m = { names:list, keep:list.indexOf(k0) >= 0 ? k0 : best, custom:'', useCustom:false, off:{}, kind:'', pv:null, pvErr:'', pvFor:'', loading:false, seq:++_vmg.seq };
+  openModal('<div id="vmg-modal"></div>');
+  vmgModalRender();
+  vmgPreview();
+}
+function vmgKeepName(){ var m = _vmg.m; if (!m) return ''; return m.useCustom ? normVendor(m.custom) : m.keep; }
+/* まとめる名前（残す名前と、チェックした名前）。同じ名前は 1 つ */
+function vmgMergeNames(){
+  var m = _vmg.m; if (!m) return []; var keep = vmgKeepName(), out = keep ? [keep] : [];
+  m.names.forEach(function(n){ if (!m.off[n] && n !== keep) out.push(n); });
+  return out;
+}
+/* まとめた結果（カード・空欄を埋める欄・名前を変えるカード・しまうカード・食材の区分） */
+function vmgPlan(){
+  var m = _vmg.m, keep = vmgKeepName(), names = vmgMergeNames(), pool = vmgPool();
+  var cards = [];
+  names.forEach(function(n){ var p = pool[n]; if (p) p.cards.forEach(function(id){ var v = (getVendors() || []).find(function(x){ return x && String(x.id) === String(id); }); if (v && cards.indexOf(v) < 0) cards.push(v); }); });
+  var target = cards.find(function(v){ return normVendor(v.name) === keep; }) || cards.find(function(v){ return vmgKey(v.name) === vmgKey(keep); }) || null;
+  if (!target && cards.length) target = cards.slice().sort(function(x, y){ var px = pool[normVendor(x.name)], py = pool[normVendor(y.name)]; return (py ? vmgUse(py) : 0) - (px ? vmgUse(px) : 0); })[0];
+  var rename = target && normVendor(target.name) !== keep ? { id:target.id, from:target.name } : null;
+  var fill = {};
+  if (target) VMG_FIELDS.forEach(function(f){
+    var cur = target[f[0]]; if (cur != null && String(cur).trim() !== '') return;
+    var src = cards.find(function(v){ return v !== target && v[f[0]] != null && String(v[f[0]]).trim() !== ''; });
+    if (src) fill[f[0]] = { v:src[f[0]], from:src.name };
+  });
+  var hide = cards.filter(function(v){ return v !== target && normVendor(v.name) === keep; }).map(function(v){ return v.id; });
+  var kinds = {};
+  cards.forEach(function(v){ if (v.kind === 'food' || v.kind === 'nonfood') kinds[v.kind] = 1; });
+  if (m.pv && m.pv.target) [m.pv.target].concat(m.pv.from || []).forEach(function(x){ if (x && (x.food_kind === 'food' || x.food_kind === 'nonfood')) kinds[x.food_kind] = 1; });
+  var clash = !!(kinds.food && kinds.nonfood);
+  var inv = 0, prod = 0; names.forEach(function(n){ var p = pool[n]; if (p && n !== keep) { inv += p.inv; prod += p.prod; } });
+  return { keep:keep, names:names, cards:cards, target:target, rename:rename, fill:fill, hide:hide, clash:clash, kind:clash ? m.kind : (kinds.food ? 'food' : kinds.nonfood ? 'nonfood' : ''), inv:inv, prod:prod };
+}
+function vmgModalRender(){
+  var box = document.getElementById('vmg-modal'), m = _vmg.m; if (!box || !m) return;
+  var e = escapeHtml, pool = vmgPool(), P = vmgPlan(), keep = P.keep, signed = typeof invInSigned === 'function' && invInSigned();
+  var row = function(n, radio){
+    var p = pool[n] || { cards:[], hidden:[], kinds:{}, inv:0, prod:0, intake:0, unk:0, merged:[] };
+    var on = radio ? (!m.useCustom && m.keep === n) : !m.off[n];
+    return '<label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 9px;border:1px solid '+(radio && on ? 'var(--accent)' : 'var(--border)')+';border-radius:9px;margin-bottom:5px;cursor:pointer">'
+      + (radio ? '<input type="radio" name="vmg-keep"'+(on ? ' checked' : '')+' onchange="vmgSetKeep('+vmgJs(n)+')">' : '<input type="checkbox"'+(on ? ' checked' : '')+' onchange="vmgSetOff('+vmgJs(n)+',!this.checked)">')
+      + '<b style="font-size:13px;min-width:180px">'+e(n)+'</b><span>'+vmgChips(p, true)+'</span></label>';
+  };
+  var h = '<div class="modal-title">'+vmgT('業者をまとめる','Merge vendors')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;font-weight:800;margin:4px 0 6px">'+vmgT('① 残す名前','① The name to keep')+'</div>'
+    + m.names.map(function(n){ return row(n, true); }).join('')
+    + '<label style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 9px;border:1px solid '+(m.useCustom ? 'var(--accent)' : 'var(--border)')+';border-radius:9px;margin-bottom:5px">'
+    + '<input type="radio" name="vmg-keep"'+(m.useCustom ? ' checked' : '')+' onchange="vmgUseCustom(true)"> '+vmgT('別の名前にする','Another name')
+    + ' <input class="form-input" id="vmg-custom" style="flex:1;min-width:180px;padding:5px 8px" value="'+e(m.custom)+'" placeholder="'+vmgT('例：Island Fresh Produce','e.g. Island Fresh Produce')+'" oninput="vmgCustom(this.value)" onfocus="vmgUseCustom(true,true)"></label>'
+    + '<div style="font-size:12.5px;font-weight:800;margin:10px 0 2px">'+vmgT('② まとめる名前','② Names to merge')+'</div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">'+vmgT('違う業者が混ざっていたら外してください。','Untick any that is a different vendor.')+'</div>'
+    + (m.names.filter(function(n){ return n !== keep; }).map(function(n){ return row(n, false); }).join('') || '');
+  /* ③ 業者マスターの内容 */
+  h += '<div style="font-size:12.5px;font-weight:800;margin:10px 0 2px">'+vmgT('③ 業者マスターの内容','③ The vendor card')+'</div>';
+  if (!P.target) h += '<div style="font-size:11.5px;color:var(--muted)">'+vmgT('業者マスターのカードはありません（請求書・Invoice取込の名前だけ）。','No vendor card (names in invoices and intake only).')+'</div>';
+  else {
+    h += '<div style="font-size:11px;color:var(--muted);margin-bottom:4px">'+vmgT('残すカード：','Card kept: ')+'<b>'+e(P.target.name)+'</b>'
+      + (P.rename ? vmgT('（名前を「'+e(keep)+'」に変えます）',' (renamed to “'+e(keep)+'”)') : '')+vmgT('。残すカードの内容のまま、空欄だけほかのカードから埋めます。','. Its values stay; only empty fields are filled from the other cards.')+'</div>'
+      + '<table style="width:100%;border-collapse:collapse;font-size:12px">'
+      + VMG_FIELDS.map(function(f){
+          var cur = P.target[f[0]], fl = P.fill[f[0]];
+          var val = fl ? '<b>'+e(String(fl.v))+'</b> <span class="tag tag-blue" style="font-size:10px">'+vmgT('ほかのカードから埋める','filled from another card')+'</span> <span style="font-size:10.5px;color:var(--muted)">'+e(fl.from)+'</span>'
+            : (cur != null && String(cur).trim() !== '' ? e(String(cur)) : '<span style="color:var(--muted)">'+vmgT('（空欄）','(empty)')+'</span>');
+          return '<tr><td style="padding:4px 6px;border-bottom:1px solid var(--border);color:var(--muted);width:120px">'+vmgT(f[1], f[2])+'</td><td style="padding:4px 6px;border-bottom:1px solid var(--border)">'+val+'</td></tr>';
+        }).join('') + '</table>';
+  }
+  if (P.clash) h += '<div style="margin-top:10px;padding:8px 10px;border:1px solid var(--yellow);border-radius:9px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">'
+    + vmgT('食材と食材以外が分かれています。まとめた業者はどちらですか？','Food and non-food differ. Which is the merged vendor?')+'</div>'
+    + ['food','nonfood'].map(function(k){ return '<label style="display:inline-flex;gap:6px;align-items:center;margin-right:12px;font-size:12.5px"><input type="radio" name="vmg-kind"'+(m.kind === k ? ' checked' : '')+' onchange="vmgKind(\''+k+'\')"> '+(k === 'food' ? vmgT('食材','Food') : vmgT('食材以外','Non-food'))+'</label>'; }).join('')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:4px">'+vmgT('これから届く invoice に使います（今までの invoice の区分は変えません）。選ぶまでまとめられません。','Used for invoices from now on (earlier invoices keep theirs). Required.')+'</div></div>';
+  /* ④ まとめると変わること */
+  var L = [];
+  var nCards = P.cards.length;
+  if (nCards > 1) L.push([vmgT('業者マスターのカード '+nCards+' → 1','Vendor cards '+nCards+' → 1'), vmgT('ほかの '+(nCards - 1)+' 枚はしまいます（消しません。外すと戻ります）。','The other '+(nCards - 1)+' are put away (not deleted).')]);
+  if (P.rename) L.push([vmgT('カードの名前','Card name'), vmgT('「'+e(P.rename.from)+'」→「'+e(keep)+'」','“'+e(P.rename.from)+'” → “'+e(keep)+'”')]);
+  L.push([vmgT('請求書 '+P.inv+' 件・商品 '+P.prod+' 品','Invoices '+P.inv+', products '+P.prod), vmgT('表示と集計が「'+e(keep)+'」になります（記録の元の名前は残ります）。','Shown and totalled as “'+e(keep)+'” (the names on the records stay).')]);
+  L.push([vmgT('食材の原価・業者ごとの仕入れ','Food cost per vendor'), vmgT('まとめた名前の金額を 1 つの業者として足します。','Amounts of the merged names count as one vendor.')]);
+  if (!signed) L.push([vmgT('Invoice取込','Invoice intake'), vmgT('一緒にまとめるにはメール認証が要ります。','The email sign-in is needed to merge it too.')+' <button class="btn btn-secondary btn-sm" onclick="vmgSignIn()"><i class="ti ti-login"></i> '+vmgT('メール認証','Email sign-in')+'</button>']);
+  else if (m.loading || m.pvFor !== vmgPvKey()) L.push([vmgT('Invoice取込','Invoice intake'), '<i class="ti ti-loader"></i> '+vmgT('確かめています…','Checking…')]);
+  else if (m.pvErr) L.push([vmgT('Invoice取込','Invoice intake'), '<span style="color:var(--red)">'+e(m.pvErr)+'</span> <button class="btn btn-secondary btn-sm" onclick="vmgPreview()">'+vmgT('もう一度','Retry')+'</button>']);
+  else if (m.pv && !m.pv.matched) L.push([vmgT('Invoice取込','Invoice intake'), vmgT('この名前の業者はありません（アプリだけまとめます）。','No vendor with these names there (the app only).')
+    + (m.pv.unknown ? vmgT('業者を選ぶ待ちの書類 '+m.pv.unknown+' 件は、1 件の画面で業者を選んでください。',' '+m.pv.unknown+' waiting invoices: choose the vendor on each.') : '')]);
+  else if (m.pv) {
+    var pv = m.pv;
+    L.push([vmgT('Invoice取込の業者 '+(1 + (pv.from || []).length)+' → 1','Intake vendors '+(1 + (pv.from || []).length)+' → 1'),
+      vmgT('締めていない月の書類 '+pv.docs+' 件を「'+e(keep)+'」に付け替えます'+(pv.closed_left ? '（締めた月の '+pv.closed_left+' 件はそのまま）' : '')+'。仕入れ集計・照合も 1 つの業者になります。',
+        pv.docs+' invoices in open months move to “'+e(keep)+'”'+(pv.closed_left ? ' (closed months: '+pv.closed_left+' stay)' : '')+'.')]);
+    if (pv.unknown) L.push([vmgT('業者を選ぶ待ちの書類','Invoices waiting for a vendor'), vmgT(pv.unknown+' 件をこの業者にします。',pv.unknown+' get this vendor.')]);
+    if ((pv.kept || []).length) L.push(['<span style="color:var(--red)">'+vmgT('同じ番号で 2 件とも反映済み','Posted twice with the same number')+'</span>',
+      vmgT('次の invoice は付け替えません（二重に反映されている可能性があります。見てください）：','Not moved (possibly posted twice; please look): ')+(pv.kept || []).map(function(x){ return '#'+e(x.invoice_no || x.internal_no || '')+'（'+e(x.store_id)+'）'; }).join('、')]);
+    L.push([vmgT('これから届く invoice','Invoices from now on'), vmgT('まとめた名前で書いてあっても、この業者として読みます。自動で反映するかは「'+e(keep)+'」の設定のまま（'+(pv.target && pv.target.auto_post ? '自動' : '確認モード')+'）。',
+      'Read as this vendor whatever name is printed. Auto-posting follows “'+e(keep)+'” ('+(pv.target && pv.target.auto_post ? 'auto' : 'review mode')+').')]);
+  }
+  L.push([vmgT('変えないもの','Not changed'), vmgT('QuickBooks に送ったもの・名前を変えた Drive の原本・締めた月の数字・発注リスト（業者の名前ごとのまま）。','What was sent to QuickBooks, renamed Drive originals, closed months, order lists (per name as before).')]);
+  h += '<div style="margin-top:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 10px"><div style="font-size:12.5px;font-weight:800;margin-bottom:4px">'+vmgT('④ まとめると変わること','④ What changes')+'</div>'
+    + L.map(function(x){ return '<div style="display:flex;gap:10px;padding:5px 0;border-top:1px solid var(--border);font-size:12px;flex-wrap:wrap"><div style="min-width:170px;font-weight:700">'+x[0]+'</div><div style="flex:1;min-width:200px">'+x[1]+'</div></div>'; }).join('')
+    + '</div>';
+  var why = vmgCantWhy(P, signed);
+  h += '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+vmgT('やめる','Cancel')+'</button>'
+    + '<button class="btn btn-primary" id="vmg-go"'+(why ? ' disabled' : '')+' onclick="vmgDo()"><i class="ti ti-arrows-join"></i> '+vmgT('この内容でまとめる','Merge as shown')+'</button></div>'
+    + (why ? '<div style="font-size:11.5px;color:var(--yellow);margin-top:4px;text-align:right">'+why+'</div>' : '')
+    + '<div style="font-size:11px;color:var(--muted);margin-top:4px;text-align:right">'+vmgT('間違えたら「統合の記録」の「外す」で元に戻せます。','“Take back” in Merges restores it.')+'</div>';
+  var foc = null; try { var ae = document.activeElement; if (ae && ae.id === 'vmg-custom') foc = { s:ae.selectionStart, e:ae.selectionEnd }; } catch(err) {}
+  box.innerHTML = h;
+  if (foc) { var ci = document.getElementById('vmg-custom'); if (ci) { ci.focus(); try { ci.setSelectionRange(foc.s, foc.e); } catch(err) {} } }
+}
+function vmgJs(s){ return escapeHtml(JSON.stringify(String(s))).replace(/'/g, '&#39;'); }
+function vmgCantWhy(P, signed){
+  var m = _vmg.m;
+  if (_vmg.busy) return vmgT('まとめています…','Merging…');
+  if (!P.keep) return vmgT('残す名前を入れてください','Enter the name to keep');
+  if (P.keep.length > 200) return vmgT('名前が長すぎます','The name is too long');
+  if (P.names.length < 2 && P.cards.length < 2) return vmgT('まとめる名前を 1 つ以上チェックしてください','Tick at least one name to merge');
+  if (P.clash && !m.kind) return vmgT('食材か食材以外かを選んでください','Choose food or non-food');
+  if (!signed) return vmgT('メール認証が要ります（Invoice取込も一緒にまとめるため）','The email sign-in is needed (to merge the intake too)');
+  if (m.loading || m.pvFor !== vmgPvKey()) return vmgT('Invoice取込を確かめています…','Checking the intake…');
+  if (m.pvErr) return vmgT('Invoice取込を確かめられませんでした','Could not check the intake');
+  return '';
+}
+function vmgSetKeep(n){ var m = _vmg.m; if (!m) return; m.keep = n; m.useCustom = false; delete m.off[n]; vmgModalRender(); vmgPreview(); }
+function vmgSetOff(n, off){ var m = _vmg.m; if (!m) return; if (off) m.off[n] = 1; else delete m.off[n]; vmgModalRender(); vmgPreview(); }
+function vmgUseCustom(on, noRender){ var m = _vmg.m; if (!m || m.useCustom === !!on) return; m.useCustom = !!on; if (!noRender) vmgModalRender(); else { setTimeout(vmgModalRender, 0); } vmgPreview(); }
+var _vmgCustomT = null;
+function vmgCustom(v){ var m = _vmg.m; if (!m) return; m.custom = String(v || '').slice(0, 200); m.useCustom = true; clearTimeout(_vmgCustomT); _vmgCustomT = setTimeout(function(){ vmgModalRender(); vmgPreview(); }, 400); }
+function vmgKind(k){ var m = _vmg.m; if (!m) return; m.kind = k; vmgModalRender(); }
+function vmgPvKey(){ return JSON.stringify([vmgKeepName(), vmgMergeNames()]); }
+/* Invoice取込で何が変わるか（何も変えない）。同じ名前の組み合わせで 1 回 */
+function vmgPreview(){
+  var m = _vmg.m; if (!m || typeof invInSigned !== 'function' || !invInSigned()) { if (m) vmgModalRender(); return; }
+  var key = vmgPvKey(), names = vmgMergeNames(), keep = vmgKeepName(), seq = ++_vmg.seq;
+  if (!keep || !names.length) { m.pv = null; m.pvErr = ''; m.pvFor = key; m.loading = false; vmgModalRender(); return; }
+  m.loading = true; m.mySeq = seq; vmgModalRender();
+  invInAPI({ action:'vendor_merge', preview:true, to:keep, names:names }).then(function(r){ if (_vmg.m !== m || m.mySeq !== seq) return; m.pv = r; m.pvErr = ''; m.pvFor = key; },
+    function(err){ if (_vmg.m !== m || m.mySeq !== seq) return; m.pv = null; m.pvErr = String(err && err.message || err); m.pvFor = key; })
+    .then(function(){ if (_vmg.m !== m || m.mySeq !== seq) return; m.loading = false; vmgModalRender(); });
+}
+async function vmgDo(){
+  var m = _vmg.m; if (!m || _vmg.busy || !vmgCan()) return;
+  var P = vmgPlan(), signed = typeof invInSigned === 'function' && invInSigned();
+  if (vmgCantWhy(P, signed)) { vmgModalRender(); return; }
+  var me = (typeof myName === 'function' ? myName() : '') || '', role = curRole;
+  _vmg.busy = true; vmgModalRender();
+  try {
+    if (!(await vmgPull())) { showToast(vmgT('最新の記録を読めませんでした。通信（または端末の保存容量）を確かめて、もう一度押してください（何も変えていません）','Could not read the latest records. Check the connection (or storage) and press again (nothing was changed)'), 'warning'); return; }
+    if (curRole !== role || ((typeof myName === 'function' ? myName() : '') || '') !== me || _vmg.m !== m) { showToast(vmgT('画面が変わったので、まとめていません','The screen changed; nothing was merged'), 'warning'); return; }
+    /* 読んでいるあいだに、ほかの人がこの名前をほかの業者にまとめていないか */
+    var keep = P.keep, kk = vmgKey(keep);
+    var moved = P.names.filter(function(n){ var c = vendorCanon(n); return c !== normVendor(n) && vmgKey(c) !== kk; });
+    if (moved.length) { showToast(vmgT('「'+escapeHtml(moved.join('・'))+'」は、ほかの人が先にまとめました。開き直してください（何も変えていません）','“'+escapeHtml(moved.join(', '))+'” was merged by someone else first. Reopen (nothing was changed)'), 'warning'); closeModalDirect(); renderPage('vendor_master'); return; }
+    var gid = vmgId(), srv = null;
+    var r = await invInAPI({ action:'vendor_merge', to:keep, names:P.names, food_kind:P.clash ? m.kind : null, group_id:gid });
+    if (r && r.merge_id) srv = { id:r.merge_id, docs:r.docs || 0, kept:(r.kept || []).length, unknown:r.unknown || 0, vk:r.target && r.target.vendor_key || null };
+    /* アプリの表：名前ごとの印と統合の記録。カード：空欄を埋める・名前を変える・区分 */
+    var vendors = getVendors() || [], tgt = P.target ? vendors.find(function(v){ return v && String(v.id) === String(P.target.id); }) : null;
+    var filled = {}, prevKind = null, renamed = null;
+    if (tgt) {
+      Object.keys(P.fill).forEach(function(f){ if (tgt[f] == null || String(tgt[f]).trim() === '') { tgt[f] = P.fill[f].v; filled[f] = P.fill[f].v; } });
+      if (P.rename && tgt.name === P.rename.from) { renamed = { from:tgt.name, to:keep }; tgt.name = keep; }
+      if (P.kind && tgt.kind !== P.kind) { prevKind = tgt.kind || ''; tgt.kind = P.kind; tgt.kindBy = me; tgt.kindAt = (typeof nowJP === 'function' ? nowJP() : ''); }
+    }
+    var names = P.names.slice(); if (renamed && names.indexOf(renamed.from) < 0) names.push(renamed.from);
+    var list = [['g:' + gid, { to:keep, names:names, at:new Date().toISOString(), ms:vmgMs(), server:srv, card:tgt ? tgt.id : null, filled:filled, kind:prevKind !== null ? P.kind : null,
+      prevKind:prevKind, renamed:renamed, hide:P.hide, off:false }]];
+    names.forEach(function(n){ if (n === keep) return; list.push(['n:' + vmgKey(n), { to:keep, name:n, g:gid, off:false }]); });
+    var ok = vmgSaveMany(list);
+    var okCards = !tgt || (!Object.keys(filled).length && !renamed && prevKind === null) || lsSet('m_vendors', vendors) !== false;
+    if (!ok || !okCards) { showToast(vmgT('Invoice取込はまとめましたが、この端末に保存できませんでした（保存容量を確かめて、もう一度まとめてください）','The intake was merged, but this device could not save (check the storage and merge again)'), 'warning'); return; }
+    closeModalDirect();
+    _vmg.pick = {}; _vmg.usageAt = 0;
+    var msg = vmgT('「'+escapeHtml(keep)+'」にまとめました','Merged into “'+escapeHtml(keep)+'”');
+    if (srv) msg += vmgT('（Invoice取込：書類 '+srv.docs+' 件を付け替え'+(srv.unknown ? '・業者を選ぶ待ち '+srv.unknown+' 件' : '')+'）',' (intake: '+srv.docs+' invoices moved)');
+    showToast(msg, 'success');
+    if (srv && srv.kept) showToast(vmgT('同じ番号で 2 件とも反映済みの invoice が '+srv.kept+' 件あります（付け替えていません）。Invoice取込の一覧で見てください','Invoices posted twice with the same number: '+srv.kept+' (not moved). Please look at them'), 'warning');
+    if (r && r.recheck && r.recheck.failed) showToast(vmgT('確認待ちの書類 '+r.recheck.failed+' 件は、開いたときに確かめ直します','Waiting invoices: '+r.recheck.failed+' are checked again when opened'), 'info');
+  } catch(err) {
+    showToast(String(err && err.message || err) + vmgT('（まとめていません）',' (nothing was merged)'), 'warning');
+  } finally { _vmg.busy = false; if (document.getElementById('vmg-modal')) vmgModalRender(); else renderPage('vendor_master'); vmgUsageEnsure(true); }
+}
+/* ---- 外す ---- */
+function vmgLater(g){
+  /* この統合より新しく、この統合の残した名前をまとめた（またはこの名前にさらにまとめた）統合がある */
+  var a = vmgAll(), k = vmgKey(g.to || '');
+  return Object.keys(a).some(function(x){
+    if (x.indexOf('g:') !== 0 || x === 'g:' + g.id) return false; var o = a[x]; if (!o || o.off || o._deleted) return false;
+    if (vmgOrder(o) <= vmgOrder(g)) return false;
+    return vmgKey(o.to || '') === k || (o.names || []).some(function(n){ return vmgKey(n) === k; });
+  });
+}
+async function vmgUndoAsk(id){
+  if (!vmgCan()) return;
+  var g = vmgRec('g:' + id); if (!g || g.off) return;
+  g = Object.assign({ id:id }, g);
+  if (vmgLater(g)) { showToast(vmgT('このあとの統合が「'+escapeHtml(g.to)+'」を使っています。先に新しいほうを外してください','A later merge uses “'+escapeHtml(g.to)+'”. Take the newer one back first'), 'warning'); return; }
+  var e = escapeHtml, head = '<div class="modal-title">'+vmgT('統合を外す','Take a merge back')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+  var nm = (g.names || []).filter(function(n){ return n !== g.to; });
+  var body = '<div style="font-size:12.5px;line-height:1.7"><b>'+e(g.to)+'</b> '+vmgT('から','from')+' '+e(nm.join('・'))+' '+vmgT('を元の名前に戻します。','go back to their own names.')+'</div>';
+  if (g.server && g.server.id) {
+    if (!invInSigned()) { openModal(head + body + '<div style="font-size:12px;margin:8px 0">'+vmgT('Invoice取込も元に戻すには、メール認証が要ります。','The email sign-in is needed to take the intake back too.')+'</div><button class="btn btn-primary" onclick="vmgSignIn()"><i class="ti ti-login"></i> '+vmgT('メール認証','Email sign-in')+'</button>'); return; }
+    openModal(head + body + '<div style="font-size:12px;color:var(--muted);margin-top:6px"><i class="ti ti-loader"></i> '+vmgT('Invoice取込を確かめています…','Checking the intake…')+'</div>');
+    var pv = null;
+    try { pv = await invInAPI({ action:'vendor_unmerge', merge_id:g.server.id, preview:true }); }
+    catch(err) { if (err && err.code === 'invalid_state') pv = { docs:0, stay:0, gone:true }; else { openModal(head + body + '<div style="color:var(--red);font-size:12px;margin-top:6px">'+e(String(err && err.message || err))+'</div>'); return; } }
+    body += '<div style="font-size:12px;margin-top:6px;line-height:1.7">'+(pv.gone ? vmgT('Invoice取込はもう外してあります。','The intake was taken back already.')
+      : vmgT('Invoice取込：書類 '+pv.docs+' 件を元の業者に戻します'+(pv.stay ? '（そのあと直した '+pv.stay+' 件はそのまま）' : '')+'。まとめたあとに届いた invoice は「'+e(g.to)+'」のままです。',
+        'Intake: '+pv.docs+' invoices go back'+(pv.stay ? ' ('+pv.stay+' corrected since stay)' : '')+'. Invoices read after the merge stay with “'+e(g.to)+'”.'))+'</div>';
+  }
+  if (g.renamed) body += '<div style="font-size:12px;margin-top:4px">'+vmgT('カードの名前を「'+e(g.renamed.from)+'」に戻します。','The card name goes back to “'+e(g.renamed.from)+'”.')+'</div>';
+  openModal(head + body + '<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+vmgT('やめる','Cancel')+'</button>'
+    + '<button class="btn btn-primary" onclick="vmgUndo('+vmgJs(id)+')">'+vmgT('外す','Take back')+'</button></div>');
+}
+async function vmgUndo(id){
+  if (!vmgCan() || _vmg.busy) return;
+  _vmg.busy = true;
+  try {
+    if (!(await vmgPull())) { showToast(vmgT('最新の記録を読めませんでした。通信を確かめて、もう一度押してください（何も変えていません）','Could not read the latest records. Check the connection and press again (nothing was changed)'), 'warning'); return; }
+    var g = vmgRec('g:' + id); if (!g || g.off) { closeModalDirect(); renderPage('vendor_master'); return; }
+    g = Object.assign({ id:id }, g);
+    if (vmgLater(g)) { showToast(vmgT('このあとの統合が「'+escapeHtml(g.to)+'」を使っています。先に新しいほうを外してください','A later merge uses “'+escapeHtml(g.to)+'”. Take the newer one back first'), 'warning'); return; }
+    if (g.server && g.server.id) {
+      try { await invInAPI({ action:'vendor_unmerge', merge_id:g.server.id }); }
+      catch(err) { if (!(err && err.code === 'invalid_state')) { showToast(String(err && err.message || err) + vmgT('（外していません）',' (nothing was taken back)'), 'warning'); return; } }
+    }
+    var a = vmgAll(), me = (typeof myName === 'function' ? myName() : '') || '', list = [['g:' + id, Object.assign({}, g, { off:true, offBy:me, offAt:new Date().toISOString() })]];
+    delete list[0][1].id;
+    Object.keys(a).forEach(function(k){ if (k.indexOf('n:') !== 0) return; var r = a[k]; if (r && !r.off && !r._deleted && r.g === id) list.push([k, Object.assign({}, r, { off:true })]); });
+    var ok = vmgSaveMany(list);
+    /* カード：埋めた欄（そのままなら）・名前（そのままなら）・区分（そのままなら）を戻す */
+    var vendors = getVendors() || [], v = g.card != null ? vendors.find(function(x){ return x && String(x.id) === String(g.card); }) : null, ch = false;
+    if (v) {
+      Object.keys(g.filled || {}).forEach(function(f){ if (v[f] === g.filled[f]) { v[f] = ''; ch = true; } });
+      if (g.renamed && v.name === g.renamed.to) { v.name = g.renamed.from; ch = true; }
+      if (g.kind && v.kind === g.kind && g.prevKind !== null && g.prevKind !== undefined) { v.kind = g.prevKind || ''; ch = true; }
+    }
+    if (ch) ok = (lsSet('m_vendors', vendors) !== false) && ok;
+    if (!ok) { showToast(vmgT('Invoice取込は外しましたが、この端末に保存できませんでした（保存容量を確かめて、もう一度外してください）','The intake was taken back, but this device could not save (check the storage and press again)'), 'warning'); return; }
+    closeModalDirect(); _vmg.usageAt = 0;
+    showToast(vmgT('統合を外しました（「'+escapeHtml(g.to)+'」）','Merge taken back (“'+escapeHtml(g.to)+'”)'), 'success');
+  } finally { _vmg.busy = false; renderPage('vendor_master'); vmgUsageEnsure(true); }
+}
+/* ---- 請求書の登録：新しい名前で似た業者があれば聞く（7A） ---- */
+function vmgAskSimilar(name){
+  var n = normVendor(name); if (!n) return null;
+  if (vmgCardFor(n) || vmgResolve(n)) return null;
+  var best = null, bestRank = 9;
+  getVendorsVisible().forEach(function(v){
+    var w = vmgSimilar(n, v.name), r = w === 'case' ? 0 : w === 'loose' ? 1 : w === 'spell' ? 2 : 9;
+    if (r < bestRank) { bestRank = r; best = v; }
+  });
+  if (best) return { name:best.name, why:bestRank };
+  var m = (typeof matchVendorBest === 'function') ? matchVendorBest(n) : null;
+  return (m && m.score >= 0.5 && m.vendor && m.vendor.name) ? { name:m.vendor.name, why:3 } : null;
+}
+/* 「この業者にする」：入力をその業者に。経理・事務Crew・GM・CEO は、この名前もまとめておく（次からは聞かない。アプリだけ） */
+async function vmgUseVendor(typed, name){
+  try { var el = document.getElementById('inv-vendor'); if (el) { el.value = name; el.dataset.newOk = ''; } } catch(e) {}
+  try { if (typeof checkVendorRegistered === 'function') checkVendorRegistered(); if (typeof invKindRefresh === 'function') invKindRefresh(); } catch(e) {}
+  typed = normVendor(typed);
+  if (!vmgCan() || !typed || vmgKey(typed) === vmgKey(name) || vmgResolve(typed)) return;
+  if (!(await vmgPull())) return;
+  if (vmgResolve(typed)) return;
+  var gid = vmgId();
+  vmgSaveMany([['g:' + gid, { to:vendorCanon(name), names:[vendorCanon(name), typed], at:new Date().toISOString(), ms:vmgMs(), server:null, card:null, filled:{}, kind:null, prevKind:null, renamed:null, hide:[], src:'invoice_form', off:false }],
+    ['n:' + vmgKey(typed), { to:vendorCanon(name), name:typed, g:gid, off:false }]]);
+}
+function vmgNewVendorOk(){
+  try { var el = document.getElementById('inv-vendor'); if (el) el.dataset.newOk = normVendor(el.value); } catch(e) {}
+  try { if (typeof checkVendorRegistered === 'function') checkVendorRegistered(); } catch(e) {}
+}
+function vmgAskHtml(typed, s){
+  var e = escapeHtml, why = [vmgT('大文字・小文字だけ違う','case only'), vmgT('Inc.・LLC などを除くと同じ','same without Inc., LLC'), vmgT('綴りが少し違う','spelled slightly differently'), vmgT('名前が似ている','similar name')][s.why] || '';
+  return '<div style="margin-top:6px;padding:8px 10px;border:1px solid var(--accent2);border-radius:8px;background:var(--surface2)">'
+    + '<div style="font-size:11.5px"><b>'+vmgT('似た業者があります：','A similar vendor exists: ')+'</b>'+e(s.name)+' <span style="color:var(--muted)">（'+e(why)+'）</span></div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:5px"><button class="btn btn-primary btn-sm" onclick="vmgUseVendor('+vmgJs(typed)+','+vmgJs(s.name)+')">'+vmgT('この業者にする','Use this vendor')+'</button>'
+    + '<button class="btn btn-secondary btn-sm" onclick="vmgNewVendorOk()">'+vmgT('新しい業者として登録','Register as a new vendor')+'</button></div>'
+    + (vmgCan() ? '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+vmgT('「この業者にする」で、この名前もまとめておきます（次からは聞きません）。','“Use this vendor” also merges this name (not asked again).')+'</div>' : '')+'</div>';
+}
+/* 業者名の表示：まとめた先の名前（元の名前が違えば小さく「読み取り」） */
+function vmgVendorHtml(name){
+  var n = String(name == null ? '' : name), c = vendorCanon(n), e = escapeHtml;
+  if (!c) return e(n);
+  return e(c) + (c !== normVendor(n) ? ' <span style="font-size:10.5px;color:var(--muted);font-weight:400">'+vmgT('読み取り：','read as: ')+e(n)+'</span>' : '');
+}
+/* FUNERGY_VENDOR_MERGE_END */
 function saveIngV2(a){ lsSet('m_ingredients_v2', a); }
 function _v2Find(arr, nm){
   var key = normName(nm);
@@ -58028,7 +58683,7 @@ function setSoTab(t){ window._soTab=t; renderPage('supply_order'); }
 function setSoStatus(s){ window._soStatus=s; renderPage('supply_order'); }
 
 function renderVendorMaster() {
-  var vendors = getVendors();
+  var vendors = getVendorsVisible();   /* v1083：まとめた名前のカードはしまう（消さない。業者の統合の「外す」で戻る） */
   var tabBar = `<div class="phase-tabs" style="margin-bottom:12px">
     <button class="phase-tab${vmView==='order'?' active':''}" onclick="setVmView('order')">仕入業者 ${vendors.length}</button>
     <button class="phase-tab${vmView==='const'?' active':''}" onclick="setVmView('const')">工事・設備業者 ${constVendorCount()}</button>
@@ -58040,9 +58695,11 @@ function renderVendorMaster() {
   var html = `<div class="section-header">
     <div><div class="section-title">業者マスター</div><div class="section-sub">${vendors.length}社</div></div>
     <button class="btn btn-primary btn-sm" onclick="openVendorModal()"><i class="ti ti-plus"></i> 業者登録</button>
-  </div>` + tabBar;
+  </div>` + tabBar + vmgCardHtml();   /* v1083（UI案51）：業者の統合を一番上に */
+  var _vmgPool = vmgPool();
   vendors.forEach(v => {
     var stars = '★'.repeat(v.rating) + '☆'.repeat(5-v.rating);
+    var _vp = _vmgPool[normVendor(v.name)], _other = _vp && _vp.merged.length ? _vp.merged : [];
     html += `<div class="card" style="cursor:pointer" onclick="openVendorModal('${v.id}')">
       <div class="approval-header">
         <div><div class="approval-title">${v.name}</div>
@@ -58053,41 +58710,11 @@ function renderVendorMaster() {
         <span class="tag tag-gray">最低発注 $${v.minOrder}</span>
         <span class="tag tag-blue">配送: ${v.delivery}</span>
         <span class="tag tag-gray">${v.terms}</span>
+        ${_other.length ? `<span class="tag tag-blue" title="${escapeHtml(_other.join(' / '))}">${t('ほかの名前：','Also: ')}${escapeHtml(_other.slice(0,3).join('・'))}${_other.length>3?' ほか'+(_other.length-3):''}</span>` : ''}
       </div>
     </div>`;
   });
-  // ===== 自動反映された業者名の整理（新マスターv2） =====
-  (function(){
-    var _v2=getIngV2(); var _vc={};
-    _v2.forEach(function(it){ var vn=(it.vendor||'').trim(); if(vn) _vc[vn]=(_vc[vn]||0)+1; });
-    var _vn=Object.keys(_vc).sort(function(a,b){return _vc[b]-_vc[a];});
-    if(!_vn.length) return;
-    function vchip(nm,cnt){ return '<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:2px 8px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);margin:0 4px 4px 0">'+escapeHtml(nm)+'<b style="color:var(--muted);font-size:9px">'+cnt+'</b></span>'; }
-    var _grp={}; _vn.forEach(function(nm){ var k=normVendor(nm).toLowerCase(); (_grp[k]=_grp[k]||[]).push(nm); });
-    var _dup=Object.keys(_grp).filter(function(k){return _grp[k].length>1;});
-    html+='<div class="card"><div class="card-title"><i class="ti ti-arrows-join"></i>業者名の整理（自動反映）<span class="tag tag-gray" style="margin-left:auto">'+_vn.length+'種</span></div>';
-    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px">Invoiceから自動反映された業者名です。以後の取込は自動で正規化されます。表記ゆれは下で統合できます。</div>';
-    if(_dup.length){
-      html+='<div style="font-size:12px;font-weight:700;color:var(--yellow);margin:2px 0 4px">⚠ 重複候補（表記ゆれ）</div>';
-      _dup.forEach(function(k){
-        var vars=_grp[k]; var canon=vars.slice().sort(function(a,b){return _vc[b]-_vc[a];})[0];
-        html+='<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 9px;margin-bottom:6px">'
-          +'<div style="display:flex;flex-wrap:wrap;align-items:center">'+vars.map(function(nm){return vchip(nm,_vc[nm]);}).join('')+'</div>'
-          +'<button class="btn btn-primary btn-sm" style="margin-top:4px" onclick="mergeDupKey('+JSON.stringify(k)+','+JSON.stringify(canon)+')">「'+escapeHtml(canon)+'」に統一</button></div>';
-      });
-    }
-    // 手動統合
-    var opts=_vn.map(function(nm){return '<option value="'+escapeHtml(nm)+'">'+escapeHtml(nm)+'（'+_vc[nm]+'品）</option>';}).join('');
-    html+='<div style="border-top:1px solid var(--border);margin-top:6px;padding-top:8px">'
-      +'<div style="font-size:11.5px;font-weight:700;margin-bottom:4px">手動で統合</div>'
-      +'<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">'
-      +'<select class="form-select" id="vm-from" style="flex:1;min-width:120px;padding:6px">'+opts+'</select>'
-      +'<i class="ti ti-arrow-right" style="color:var(--muted)"></i>'
-      +'<select class="form-select" id="vm-to" style="flex:1;min-width:120px;padding:6px">'+opts+'</select>'
-      +'<button class="btn btn-secondary btn-sm" onclick="mergeVendorTo(document.getElementById(\'vm-from\').value,document.getElementById(\'vm-to\').value)">統合</button>'
-      +'</div><div style="font-size:10px;color:var(--muted);margin-top:3px">左（統合元）→ 右（統合先）に寄せます。</div></div>';
-    html+='</div>';
-  })();
+  /* v1083：前の版の「業者名の整理（自動反映）」は、上の「業者の統合」に置き換えた（どの端末でも同じ・Invoice取込も一緒に） */
   return html;
 }
 
@@ -75655,7 +76282,7 @@ function pdRows(storeId, ym){
     if((d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))!==ym) return;
     var sids=(typeof _invStoreIds==='function')?_invStoreIds(v):[v.storeId];
     if(storeId && storeId!=='ALL' && sids.indexOf(storeId)<0) return;
-    if(_pdVendor && (v.vendor||'')!==_pdVendor) return;
+    if(_pdVendor && vendorCanon(v.vendor||'')!==_pdVendor) return;   /* v1083：まとめた名前もその業者 */
     var share=(Number(v.total)||0)/(sids.length||1);
     out.push({v:v, d:d, sids:sids, amount:(storeId&&storeId!=='ALL')?share:(Number(v.total)||0),
       iso:d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')});
@@ -75672,7 +76299,7 @@ function renderPurchaseDetail(){
   var total=rows.reduce(function(a,r){ return a+r.amount; },0);
 
   /* 業者候補（当月・当店） */
-  var vend={}; pdRows(_pdStore, ym).forEach(function(r){ if(r.v.vendor) vend[r.v.vendor]=(vend[r.v.vendor]||0)+r.amount; });
+  var vend={}; pdRows(_pdStore, ym).forEach(function(r){ var _vn=r.v.vendor?vendorCanon(r.v.vendor):''; if(_vn) vend[_vn]=(vend[_vn]||0)+r.amount; });
   var vendList=Object.keys(vend).sort(function(a,b){ return vend[b]-vend[a]; });
 
   var html='<div class="section-header"><div><div class="section-title"><i class="ti ti-truck-delivery" style="color:var(--accent)"></i> '+t('仕入明細','Purchase details')+'</div>'
@@ -75739,7 +76366,7 @@ function renderPurchaseDetail(){
         var lines=Array.isArray(v.lines)?v.lines:[];
         html+='<div style="border-top:1px solid var(--border);padding:9px 12px">'
           +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
-          +'<span style="font-size:13px;font-weight:700">'+escapeHtml(v.vendor||t('業者未設定','No vendor'))+'</span>'
+          +'<span style="font-size:13px;font-weight:700">'+(v.vendor?vmgVendorHtml(v.vendor):escapeHtml(t('業者未設定','No vendor')))+'</span>'
           +(isRcpt?'<span class="tag tag-blue" style="font-size:10px">'+t('買い出し','Receipt')+'</span>':'')
           +(v.purpose?'<span class="tag tag-gray" style="font-size:10px">'+escapeHtml(v.purpose)+'</span>':'')
           +(r.sids.length>1?'<span class="tag tag-yellow" style="font-size:10px">'+t('按分','Split')+' '+r.sids.length+'</span>':'')
@@ -75896,7 +76523,7 @@ function invCardHtml(inv) {
       }
       return `<div class="card">
         <div class="approval-header">
-          <div><div class="approval-title">${inv.vendor}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}${t('品目',' items')} · $${inv.total.toFixed(2)}${_empMeta}</div></div>
+          <div><div class="approval-title">${vmgVendorHtml(inv.vendor)}</div><div class="approval-meta">${storeBadge}${inv.date} · ${typeLabel} · ${inv.lines.length}${t('品目',' items')} · $${inv.total.toFixed(2)}${_empMeta}</div></div>
           <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">
             <button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="openInvoiceViewer('${inv.id}')" title="${t('画像とメモを確認','Image & memo')}"><i class="ti ti-photo"></i></button>
             ${inv.driveUrl?`<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="${inv.driveUrl}" target="_blank" title="${t('Driveで開く','Open in Drive')}"><i class="ti ti-brand-google-drive"></i></a>`:''}
@@ -77919,7 +78546,7 @@ async function openInvoiceViewer(id){
     + head(t('店舗','Store'), _ivEsc(st?st.name:(inv.storeId||'')))
     + head(t('種別','Type'), _ivEsc(inv.docType||''))
     + head(t('購入日','Date'), _ivEsc(inv.docDate||inv.date||''))
-    + head(t('業者・購入店','Vendor'), _ivEsc(inv.vendor||''))
+    + head(t('業者・購入店','Vendor'), vmgVendorHtml(inv.vendor||''))
     + head(t('金額','Total'), '$'+Number(inv.total||0).toFixed(2))
     + (inv.empName?head(t('カード名義','Cardholder'), _ivEsc(inv.empName)):'')
     + head(t('登録者','Entered by'), _ivEsc(inv.byUser||inv.by||''))
@@ -78032,7 +78659,9 @@ function _vnTokens(s){
 /* 登録業者の中から最も確からしいものを返す: {vendor, score(0-1), reason} / 無ければ null */
 function matchVendorBest(raw){
   var q=String(raw||'').trim(); if(!q) return null;
-  var vendors=(typeof getVendors==='function')?getVendors():[];
+  /* v1083：業者の統合でまとめた名前は、まとめた先の業者 */
+  try{ var _c=vmgCardFor(q); if(_c && vendorCanon(q)!==normVendor(q)) return {vendor:_c, score:1, reason:'まとめた名前'}; }catch(e){}
+  var vendors=(typeof getVendorsVisible==='function')?getVendorsVisible():((typeof getVendors==='function')?getVendors():[]);
   if(!vendors.length) return null;
   var qn=_vnNorm(q), qt=_vnTokens(q);
   var best=null;
@@ -78058,7 +78687,7 @@ function matchVendorBest(raw){
 }
 /* アルファベット順（日本語は五十音/文字順）に並べた業者リスト */
 function vendorsSorted(){
-  var vs=(typeof getVendors==='function')?getVendors().slice():[];
+  var vs=(typeof getVendorsVisible==='function')?getVendorsVisible().slice():((typeof getVendors==='function')?getVendors().slice():[]);   /* v1083：まとめた名前のカードは出さない */
   return vs.sort(function(a,b){ return String(a.name||'').localeCompare(String(b.name||''), 'ja', {sensitivity:'base', numeric:true}); });
 }
 /* 候補を提示して1タップで確定（自動一致が中確度のとき用） */
@@ -78075,14 +78704,20 @@ function checkVendorRegistered() {
   var name = document.getElementById('inv-vendor').value.trim();
   var warn = document.getElementById('inv-vendor-warn');
   if (!name) { warn.innerHTML=''; return; }
-  var exists = getVendors().find(v=>v.name===name);
+  var exists = getVendorsVisible().find(v=>v.name===name);
   if (exists) { warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録済み業者</div>`; return; }
+  /* v1083：業者の統合でまとめた名前（大文字・小文字・空白だけ違う名前も）は、その業者 */
+  var _vc = vmgCardFor(name);
+  if (_vc) { warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ ${vendorCanon(name)!==normVendor(name)?'業者の統合でまとめた名前':'登録業者と一致'}: <b>${escapeHtml(_vc.name)}</b><button class="btn btn-secondary btn-sm" style="margin-left:6px;font-size:10px;padding:1px 7px" onclick="applyVendorSuggest(${vmgJs(_vc.name)})">この名前に統一</button></div>`; return; }
   /* v611: 完全一致でなくても登録業者へ自動照合（"JFC INTERNATIONAL INC." → "JFC" 等） */
   var _m = (typeof matchVendorBest==='function') ? matchVendorBest(name) : null;
   if (_m && _m.score>=0.8) {
     warn.innerHTML = `<div style="font-size:11px;color:var(--green);margin-top:4px">✓ 登録業者と一致: <b>${escapeHtml(_m.vendor.name)}</b>（${escapeHtml(_m.reason)}）<button class="btn btn-secondary btn-sm" style="margin-left:6px;font-size:10px;padding:1px 7px" onclick="applyVendorSuggest('${String(_m.vendor.name).replace(/'/g,"\\'")}')">この名前に統一</button></div>`;
     return;
   }
+  /* v1083（7A）：似た業者があれば「この業者ですか？」（新しい業者として登録すると、この名前では聞かない） */
+  var _ask = vmgAskSimilar(name), _el = document.getElementById('inv-vendor');
+  if (_ask && !(_el && _el.dataset.newOk === normVendor(name))) { warn.innerHTML = vmgAskHtml(name, _ask); return; }
   var _sug = (_m && _m.score>=0.5) ? `<div style="font-size:11px;margin-top:5px">もしかして: <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:1px 7px" onclick="applyVendorSuggest('${String(_m.vendor.name).replace(/'/g,"\\'")}')">${escapeHtml(_m.vendor.name)}</button></div>` : '';
   warn.innerHTML = `<div class="alert alert-warning" style="margin-top:6px;padding:7px 10px"><i class="ti ti-alert-triangle"></i><div style="font-size:11px">未登録の業者です。<button class="btn btn-secondary btn-sm" style="margin-left:6px" onclick="gotoVendorRegister('${name.replace(/'/g,'')}')">業者登録へ</button></div>${_sug}</div>`;
 }
@@ -78920,9 +79555,18 @@ function _invGather(){
   var vendor = document.getElementById('inv-vendor').value.trim();
   if (!vendor) { alert('業者・購入先を入力してください'); return null; }
   /* v611: 保存時も登録業者名へ統一（表記ゆれで別業者として増殖するのを防ぐ） */
-  if (!getVendors().find(function(v){return v.name===vendor;})) {
+  if (!getVendorsVisible().find(function(v){return v.name===vendor;})) {
     var _vmS=(typeof matchVendorBest==='function')?matchVendorBest(vendor):null;
     if(_vmS && _vmS.score>=0.9) vendor=_vmS.vendor.name;
+  }
+  /* v1083（UI案51 7A）：マスターに無い名前で、似た業者があれば、保存の前に「この業者ですか？」と聞く */
+  if (!getVendorsVisible().find(function(v){return v.name===vendor;})) {
+    var _ask=vmgAskSimilar(vendor), _vel=document.getElementById('inv-vendor');
+    if (_ask && !(_vel && _vel.dataset.newOk===normVendor(vendor))) {
+      try { var _w=document.getElementById('inv-vendor-warn'); if (_w) _w.innerHTML=vmgAskHtml(vendor, _ask); if (_vel && _vel.scrollIntoView) _vel.scrollIntoView({block:'center'}); } catch(e){}
+      showToast(t('似た業者があります。「この業者にする」か「新しい業者として登録」を選んでから保存してください','A similar vendor exists. Choose “Use this vendor” or “Register as a new vendor”, then save'),'warning');
+      return null;
+    }
   }
   var total = invoiceTmpLines.reduce((a,l)=>a+(l.lineTotal!=null?l.lineTotal:(l.newPrice||0)*(l.qty||0)),0);
   var selEl = document.getElementById('invoice-store');

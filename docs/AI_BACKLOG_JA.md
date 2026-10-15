@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-15 業者の統合（UI案51・v1083）
+
+1. 済（Moto さん 10/15 08:29 HST）：決めてほしいこと 1〜7 はすべて A。
+2. 済（Claude・ブランチ `claude/vendor-merge`）：アプリ v1083・migration `20261022090000`・関数 invoice-intake・入れる一式 `deploy/invoice-vendor-merge-v1083/`・試験・わざと壊す 42/42（`docs/VENDOR_MERGE_JA.md`）。
+3. 次（PR #66）：Codex のレビュー（独立レビューもまだ）→ Moto さんが SQL → 確認 → 関数 → マージ → 業者マスターの「業者の統合」で 1 つまとめて確かめる。
+4. Moto さんの判断：発注リストも業者ごとにまとめるか（今は名前ごと）。
+
 ## 2026-10-14 Tenkichi ランチチャレンジ（UI案49）
 
 1. 済（Claude）：ランチの客数・営業日・権限・保存の調査と UI案49（`docs/TENKICHI_LUNCH_CHALLENGE_JA.md`）。

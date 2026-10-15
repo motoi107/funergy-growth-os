@@ -39,14 +39,14 @@ test('the migrations in order give the same database as db/invoice-intake.sql', 
   assert.deepEqual(files, ['20261007090000_invoice_intake.sql', '20261007160000_invoice_intake_review_fixes.sql', '20261007200000_invoice_intake_accounting_checks.sql',
     '20261008090000_invoice_intake_store_folder.sql', '20261009170000_invoice_office_crew_review.sql', '20261009190000_invoice_office_crew_accounting.sql',
     '20261012120000_invoice_rename_after_post.sql', '20261019090000_invoice_purchase_summary.sql', '20261020090000_invoice_reconciled_folder.sql',
-    '20261021090000_invoice_multi_file.sql']);
+    '20261021090000_invoice_multi_file.sql', '20261022090000_invoice_vendor_merge.sql']);
   const whole = new PGlite(), stepwise = new PGlite();
   try {
     await whole.exec(base); await whole.exec(SQL);
     await stepwise.exec(base);
     for (const f of files) await stepwise.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     const a = await snap(whole), b = await snap(stepwise);
-    assert.ok(a.functions.length === 77 && a.tables.some(t => t.relname === 'invoice_purchase_checks') && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
+    assert.ok(a.functions.length === 81 && a.tables.some(t => t.relname === 'invoice_vendor_merges') && a.tables.some(t => t.relname === 'invoice_purchase_checks') && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
     for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k);
     // New functions are for the service role only, like every other one (Supabase grants them to the browser roles by default).
     for (const r of a.functions) assert.ok(!/(^|[{,])(anon|authenticated)=/.test(r.acl || ''), r.proname);
@@ -62,12 +62,12 @@ test('the migrations in order give the same database as db/invoice-intake.sql', 
 // and changes nothing (2026-10-15). 20261019090000 run again later puts its older invoice_purchase_month back (a merged page
 // would be counted again): the check SQL then says multi_file false, and 20261021090000 run again puts its version back.
 test('20261021090000 stops, changing nothing, without 20261019090000; run again, it puts its version back', async () => {
-  const S1 = '20261019090000_invoice_purchase_summary.sql', S3 = '20261021090000_invoice_multi_file.sql';
+  const S1 = '20261019090000_invoice_purchase_summary.sql', S3 = '20261021090000_invoice_multi_file.sql', S4 = '20261022090000_invoice_vendor_merge.sql';
   const post = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite(), whole = new PGlite();
   try {
     await pg.exec(base);
-    for (const f of files.filter(f => f !== S1 && f !== S3)) await pg.exec(migration(f));
+    for (const f of files.filter(f => f !== S1 && f !== S3 && f !== S4)) await pg.exec(migration(f));
     const before = await snap(pg);
     await assert.rejects(pg.exec(migration(S3)), /先に 20261019090000_invoice_purchase_summary\.sql を流してください/);
     assert.deepEqual(await snap(pg), before);
@@ -79,6 +79,7 @@ test('20261021090000 stops, changing nothing, without 20261019090000; run again,
     assert.equal(await multi(), false);
     await pg.exec(migration(S3));
     assert.equal(await multi(), true);
+    await pg.exec(migration(S4));
     await whole.exec(base); await whole.exec(SQL);
     const a = await snap(whole), b = await snap(pg);
     for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k);
@@ -90,6 +91,7 @@ test('20261021090000 stops, changing nothing, without 20261019090000; run again,
 // 20261019090000 it stops at 段階 3 and, run as one statement list (one transaction), leaves the database as it was.
 test('deploy/invoice-stage3-v1082: 段階 2 and 段階 3 in one file give db/invoice-intake.sql, twice the same', async () => {
   const S1 = '20261019090000_invoice_purchase_summary.sql', S2 = '20261020090000_invoice_reconciled_folder.sql', S3 = '20261021090000_invoice_multi_file.sql';
+  const S4 = '20261022090000_invoice_vendor_merge.sql';
   const both = fs.readFileSync(new URL('../deploy/invoice-stage3-v1082/1_追加のSQL_段階2と段階3.sql', import.meta.url), 'utf8');
   assert.equal(both, migration(S2) + '\n' + migration(S3));
   const pg = new PGlite(), whole = new PGlite(), early = new PGlite();
@@ -97,16 +99,58 @@ test('deploy/invoice-stage3-v1082: 段階 2 and 段階 3 in one file give db/inv
     await whole.exec(base); await whole.exec(SQL);
     const a = await snap(whole);
     await pg.exec(base);
-    for (const f of files.filter(f => f !== S2 && f !== S3)) await pg.exec(migration(f));
+    for (const f of files.filter(f => f !== S2 && f !== S3 && f !== S4)) await pg.exec(migration(f));
     for (const round of [1, 2]) {
       await pg.exec(both);
+      await pg.exec(migration(S4));   // the whole schema has moved on with 業者の統合 (20261022090000) since
       const b = await snap(pg);
       for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k + ' round ' + round);
     }
     await early.exec(base);
-    for (const f of files.filter(f => f !== S1 && f !== S2 && f !== S3)) await early.exec(migration(f));
+    for (const f of files.filter(f => f !== S1 && f !== S2 && f !== S3 && f !== S4)) await early.exec(migration(f));
     const before = await snap(early);
     await assert.rejects(early.exec(both), /先に 20261019090000_invoice_purchase_summary\.sql を流してください/);
     assert.deepEqual(await snap(early), before);
   } finally { await pg.close(); await whole.close(); await early.close(); }
+});
+
+// 業者の統合 (20261022090000, Moto 2026-10-15・UI案51) goes on top of 段階 3. Without it, it stops and changes nothing. What goes into
+// production (deploy/invoice-vendor-merge-v1083): 段階 2, 段階 3 and 業者の統合 in one file, in that order (production may or may not
+// have 段階 2 and 3 yet, 2026-10-15). On a database with everything before 段階 2, or with 段階 2 and 3 already, it gives
+// db/invoice-intake.sql; run again it changes nothing; without 20261019090000 it stops and, run as one statement list, leaves the
+// database as it was. The file for 業者の統合 alone is the migration itself.
+test('20261022090000 stops without 段階 3; deploy/invoice-vendor-merge-v1083 gives db/invoice-intake.sql, twice the same', async () => {
+  const S1 = '20261019090000_invoice_purchase_summary.sql', S2 = '20261020090000_invoice_reconciled_folder.sql', S3 = '20261021090000_invoice_multi_file.sql';
+  const S4 = '20261022090000_invoice_vendor_merge.sql';
+  const D = '../deploy/invoice-vendor-merge-v1083/';
+  const all = fs.readFileSync(new URL(D + '1_追加のSQL_段階2と段階3と業者の統合.sql', import.meta.url), 'utf8');
+  assert.equal(all, migration(S2) + '\n' + migration(S3) + '\n' + migration(S4));
+  assert.equal(fs.readFileSync(new URL(D + '1_追加のSQL_業者の統合だけ.sql', import.meta.url), 'utf8'), migration(S4));
+  const whole = new PGlite(), noS3 = new PGlite(), fresh = new PGlite(), had = new PGlite(), early = new PGlite();
+  try {
+    await whole.exec(base); await whole.exec(SQL);
+    const a = await snap(whole);
+    // 業者の統合 alone on a database without 段階 3: it stops and changes nothing.
+    await noS3.exec(base);
+    for (const f of files.filter(f => f !== S3 && f !== S4)) await noS3.exec(migration(f));
+    const before = await snap(noS3);
+    await assert.rejects(noS3.exec(migration(S4)), /先に 20261021090000_invoice_multi_file\.sql（段階 3）を流してください/);
+    assert.deepEqual(await snap(noS3), before);
+    // The deploy file on a database without 段階 2 and 3, and on one that has them.
+    await fresh.exec(base);
+    for (const f of files.filter(f => f !== S2 && f !== S3 && f !== S4)) await fresh.exec(migration(f));
+    await had.exec(base);
+    for (const f of files.filter(f => f !== S4)) await had.exec(migration(f));
+    for (const pg of [fresh, had]) for (const round of [1, 2]) {
+      await pg.exec(all);
+      const b = await snap(pg);
+      for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k + ' round ' + round);
+    }
+    // Without 20261019090000 it stops before changing anything.
+    await early.exec(base);
+    for (const f of files.filter(f => f !== S1 && f !== S2 && f !== S3 && f !== S4)) await early.exec(migration(f));
+    const b0 = await snap(early);
+    await assert.rejects(early.exec(all), /先に 20261019090000_invoice_purchase_summary\.sql を流してください/);
+    assert.deepEqual(await snap(early), b0);
+  } finally { for (const pg of [whole, noS3, fresh, had, early]) await pg.close(); }
 });

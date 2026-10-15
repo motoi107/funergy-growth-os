@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-10-15 業者の統合：アプリ v1083・migration 20261022090000（Claude・ブランチ `claude/vendor-merge`・本番未反映）
+
+- 依頼：Moto さん 10/15 08:17 HST「アプリでインボイスを取り込んでいた時や今も複数の業者名（同じ業者なのに読み取りで若干違う）この複数いる同じ業者を統合したいです / 今も業者マスターの下部に業者名を整理という機能がありますが、統合できません」→ UI案51（Design の canvas・非公開）→ 08:29 HST「１〜７ A」。仕様・決定・試験は `docs/VENDOR_MERGE_JA.md`。同じ日に「今までのファイルは手動で照合済みに移します」（照合済みフォルダへの移動は Moto さんの手作業・コードの変更なし）。
+- 統合できなかった理由：前の「業者名の整理」は押した端末の `m_vendor_alias` にだけ書き、請求書・商品の名前を書き換えていた（ほかの端末・Invoice取込に届かない・戻せない）。Invoice取込の業者（`invoice_vendor_rules`）は別の表。
+- 実装：業者マスターの一番上に「業者の統合」（候補・手動で選ぶ・統合の記録と「外す」）とまとめる画面（残す名前・まとめる名前・カードの空欄だけ埋める・食材／食材以外・Invoice取込に先に聞く ④）。共通データ `vendor_merges`（OP_SYNC・記録ごとに新しいほう・外すのは off）。記録の名前は書き換えず `vendorCanon` で表示と集計。請求書の登録で「この業者ですか？」（7A）。Invoice取込：`invoice_vendor_rules.merged_into`・表 `invoice_vendor_merges`・関数 4 つ（final・usage・merge・unmerge）と 4 つの置き換え（vendor_save・purchase_check・map_seed・vendor_seed）。締めていない月の書類・照合・対応表を付け替え、単価の履歴は全部。同じ番号で 2 件とも反映済みは付け替えずに知らせる。書類の版は変えない（Drive の名前・QuickBooks はそのまま）。外すと動かしたものを戻す（そのあと直した書類はそのまま・新しい統合から）。
+- 入れる一式：`deploy/invoice-vendor-merge-v1083/`（SQL（段階 2・3 と合わせたもの／業者の統合だけ）→ 確認（vendor_merge＝true・tables＝19・functions＝81）→ 関数 → アプリ）。関数を前に戻すときは先に統合をすべて外す。
+- 試験（合成データ・本番に接続していない）：`tests/invoice-vendor-merge.test.mjs` 4・`tests/invoice-vendor-merge-ui.test.mjs` 10（新しい）。`tests/*.test.mjs`（invoice-mutations 以外）660 のうち失敗は前からの 27 件と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）。1 ファイルにした関数で intake と業者の統合の試験 96 通る（入れる一式の確かめ 3 つは飛ばす）。static release pass/1083。Chromium（1280・390px・日英）で業者の統合（候補・手動・記録）とまとめる画面、pageerror 0・横スクロールなし。わざと壊す試験：「業者の統合」42 通り（サーバー 21・画面 21）を足し、42 通りすべてで落ちる（1 回目は 40。落ちなかった 2 つ（商品の候補がまとめた業者を見る・7A の似た名前）は試験を足して落ちることを確かめた。前の段階の通りは流し直していない）。
+- レビュー：**独立レビュー・Codex のレビューはまだ**（Claude が自分で試験しただけ）。
+- PR #66（#65（記録だけ）を含む。ぶつからないように取り込んだ）。コードの head `d92b6d9`。
+- 次：Codex のレビュー（とくに invoice_vendor_merge の残す業者の決め方・締めた月と二重の反映済み・unmerge の later_merge と戻す範囲・アプリの共通データの合流と「外す」・7A）→ Moto さんが手順.md の順で入れる → 経理の実機。前の版の「業者名の整理」でまとめた名前は候補に「以前この端末でまとめた」と出るので、まとめ直してもらう。
+
 ## 2026-10-15 PR #59〜#64 はマージ済み（アプリ v1082）・#64 の SQL に仕入れ集計の確かめを足した・段階 2 と段階 3 の SQL を Moto さんに渡した（Claude・本番の SQL・関数は未確認）
 
 - Moto さんが 10/15 06:54〜07:10 HST に #59（v1078）→ #60 → #61（v1079）→ #62（v1080）→ #63（v1081）をマージ（main `7b8fa71`）。#59 が先に入ったため #60〜#64 がぶつかっていた（06:56「＃60がマージできません」）。Claude が順に取り込んで直した。中身は変えていない：

@@ -1140,9 +1140,9 @@ test('deploy checks and the guarded rollback', async () => {
   const post = (await pg.query(POST)).rows[0];
   const created = [...SQL.matchAll(/^create (?:or replace )?function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
-    { tables: 18, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
+    { tables: 19, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1154,7 +1154,7 @@ test('deploy checks and the guarded rollback', async () => {
   await pg.query(`insert into public.invoice_stores(store_id, label) values('F06', 'LaLa')`);
   await pg.query(`insert into public.invoice_files(drive_file_id, store_id, source, original_name, current_name) values('f1', 'F06', 'drive', 'a.pdf', 'a.pdf')`);
   await assert.rejects(pg.exec(BACK), /取込の記録が 1 件/);
-  assert.equal(Number((await pg.query(POST)).rows[0].tables), 18, 'nothing was removed');
+  assert.equal(Number((await pg.query(POST)).rows[0].tables), 19, 'nothing was removed');
   await pg.query(`delete from public.invoice_files`);
   await pg.query(`insert into public.app_state values('invoice_purchase_status', '{"v":1,"months":{"2026-10":{}}}', now())`);
   await pg.exec(BACK);
@@ -2824,17 +2824,18 @@ test('段階 2 deploy folder: the migration copy is the repository file; the che
   assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1081 をマージ'));
 });
 
-test('段階 3 deploy folder: the copies are the repository files and the one-file function is built from the sources in use',
+test('段階 3 deploy folder: the copies are the repository files and the one-file function stays as handed over',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
   const D = 'deploy/invoice-stage3-v1082/';
   assert.ok(rd(D + '1_追加のSQL_複数枚のinvoice.sql').equals(rd('supabase/migrations/20261021090000_invoice_multi_file.sql')));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The sources and the check SQL moved on with 業者の統合 (deploy/invoice-vendor-merge-v1083 is built from the current ones): this
+  // folder is what goes in for 段階 3 alone, and the function to go back to from 業者の統合.
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), '602ffe9f738ebc4a9b995054beb6e7a63ac98d83799ba8f9e335a62933a2c521');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
-  // Every source of the one-file function is the repository's as it is now: change one, build the function again.
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, f + ' changed: build 3_関数 again');
+  assert.equal(src.bundle_sha256, '6058283b76c5d81449360e1b34a31984f95e346969773523c86ca4490a820a37');
   assert.deepEqual(Object.keys(src.sources).sort(), ['invoice/dates.mjs', 'invoice/decimal.mjs', 'invoice/dedupe.mjs', 'invoice/drive.mjs', 'invoice/extract.mjs', 'invoice/naming.mjs',
     'invoice/rules.mjs', 'invoice/units.mjs', 'supabase/functions/invoice-intake/handler.mjs', 'supabase/functions/invoice-intake/index.ts']);
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();

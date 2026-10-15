@@ -371,6 +371,49 @@ test('each migration changes only what it says', async () => {
     "  execute format('grant execute on function public.%s to service_role', f);",
     ' end loop;',
     'end $$;'].join('\n'), 'only the docs columns and the grants besides functions');
+  // 業者の統合 (20261022090000, Moto 2026-10-15・UI案51): the vendors' merge mark (three columns), the merge record (service role only),
+  // four functions replaced and four new ones (service role only); no row or setting.
+  const vm = read('supabase/migrations/20261022090000_invoice_vendor_merge.sql');
+  assert.deepEqual([...vm.matchAll(fn)].map(m => m[1]), ['invoice_vendor_save', 'invoice_vendor_seed', 'invoice_map_seed', 'invoice_purchase_check',
+    'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge']);
+  assert.ok([...vm.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  assert.equal(vm.replace(fn, '').replace(/^--.*\n/gm, '').replace(/ +--.*$/gm, '').replace(/\n+/g, '\n').trim(), [
+    'do $$ begin',
+    " if not exists(select 1 from information_schema.columns where table_schema='public' and table_name='invoice_docs' and column_name='merged_into')",
+    "  or to_regprocedure('public.invoice_merge(jsonb)') is null then",
+    "  raise exception '先に 20261021090000_invoice_multi_file.sql（段階 3）を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'alter table public.invoice_vendor_rules add column if not exists merged_into text references public.invoice_vendor_rules(vendor_key);',
+    'alter table public.invoice_vendor_rules add column if not exists merged_at timestamptz;',
+    'alter table public.invoice_vendor_rules add column if not exists merged_by text;',
+    'create table if not exists public.invoice_vendor_merges(',
+    ' id uuid primary key default gen_random_uuid(),',
+    ' to_key text not null references public.invoice_vendor_rules(vendor_key),',
+    " from_keys text[] not null default '{}',",
+    " names text[] not null default '{}',",
+    ' group_id text,',
+    " before jsonb not null default '{}',",
+    " added_aliases text[] not null default '{}',",
+    " moved jsonb not null default '{}',",
+    " kept jsonb not null default '[]',",
+    ' merged_by text not null,',
+    ' merged_at timestamptz not null default now(),',
+    ' undone_by text,',
+    ' undone_at timestamptz',
+    ');',
+    'create index if not exists invoice_vendor_merges_to on public.invoice_vendor_merges(to_key, merged_at desc);',
+    'do $$ begin',
+    ' alter table public.invoice_vendor_merges enable row level security;',
+    ' revoke all on public.invoice_vendor_merges from public, anon, authenticated;',
+    ' grant select, insert, update on public.invoice_vendor_merges to service_role;',
+    'end $$;',
+    'do $$ declare f text; begin',
+    " foreach f in array array['invoice_vendor_final(text)','invoice_vendor_usage(jsonb)','invoice_vendor_merge(jsonb)','invoice_vendor_unmerge(jsonb)'] loop",
+    "  execute format('revoke all on function public.%s from public, anon, authenticated', f);",
+    "  execute format('grant execute on function public.%s to service_role', f);",
+    ' end loop;',
+    'end $$;'].join('\n'), 'only the merge mark, the merge record and the grants besides functions');
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -379,7 +422,8 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql',
     'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql',
     'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
-    'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql'])
+    'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
+    'supabase/migrations/20261022090000_invoice_vendor_merge.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);
