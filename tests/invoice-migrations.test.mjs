@@ -110,3 +110,20 @@ test('deploy/invoice-stage3-v1082: 段階 2 and 段階 3 in one file give db/inv
     assert.deepEqual(await snap(early), before);
   } finally { await pg.close(); await whole.close(); await early.close(); }
 });
+
+// db/invoice-reconciled-backlog-check.sql (read only) runs on production as it is before 段階 2 too; the move SQL stops there,
+// changing nothing (2026-10-15). tests/invoice-intake.test.mjs runs both on the whole schema with the worker.
+test('reconciled backlog SQL: the check runs before 段階 2, the move stops there', async () => {
+  const rd = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
+  const pg = new PGlite();
+  try {
+    await pg.exec(base);
+    for (const f of files.filter(f => f < '20261020')) await pg.exec(migration(f));
+    const rows = (await pg.exec(rd('invoice-reconciled-backlog-check.sql'))).at(-1).rows;
+    assert.deepEqual(rows.map(r => r['店舗']), ['合計', '設定：整理する=false・照合したら移す=（整理すると同じ）・段階2の SQL=まだ']);
+    assert.equal(Number(rows[0]['照合済みの原本']), 0);
+    const before = await snap(pg);
+    await assert.rejects(pg.exec(rd('invoice-reconciled-backlog-move.sql')), /先に 1_追加のSQL_段階2と段階3\.sql を流してください/);
+    assert.deepEqual(await snap(pg), before);
+  } finally { await pg.close(); }
+});

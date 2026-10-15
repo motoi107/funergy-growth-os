@@ -2847,3 +2847,87 @@ test('段階 3 deploy folder: the copies are the repository files and the one-fi
   assert.ok(rd(D + '1_追加のSQL_段階2と段階3.sql').equals(Buffer.concat([rd('supabase/migrations/20261020090000_invoice_reconciled_folder.sql'), Buffer.from('\n'), rd('supabase/migrations/20261021090000_invoice_multi_file.sql')])));
   assert.ok(steps.indexOf('1_追加のSQL') < steps.indexOf('2_確認のSQL') && steps.indexOf('2_確認のSQL') < steps.indexOf('3_関数') && steps.indexOf('3_関数') < steps.indexOf('v1082 をマージ'));
 });
+
+// Moto 2026-10-15「経理確認済みのファイルは今までのものも照合済みフォルダに移動できますか」. Originals reconciled before 段階 2 were
+// left where staff put them (store folder, 「○月 Uploaded」) or filed in the earlier 年/月/照合済み, and recorded as filed: the
+// worker does not take them again. db/invoice-reconciled-backlog-check.sql (read only) counts them per store;
+// db/invoice-reconciled-backlog-move.sql queues them again (no Drive call), and the worker moves them to 照合済み/年-月 under the switch.
+test('10/15: reconciled originals from before 段階 2 are counted and queued again for 照合済み/YYYY-MM', async () => {
+  const E = await setup();
+  const rd = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
+  const CHECK = rd('invoice-reconciled-backlog-check.sql'), MOVE = rd('invoice-reconciled-backlog-move.sql');
+  try {
+    const line = [['06263', 'SHIRO MISO 12/500G', '1', '60.00', '60.00', 'CS', '12/500G']];
+    const put = async (tag, no, date, folder) => {
+      E.fixtures.set(tag, { readable: true, documents: [doc(no, date, line)] });
+      const id = E.drive.file(tag + '.pdf', pdf(tag), folder, { created: '2026-10-05T19:00:00Z' }); await E.worker(); return id;
+    };
+    const docOf = async id => (await docsOf(E, id))[0];
+    const reconcile = async id => { const d = await docOf(id); assert.equal(d.status, 'posted'); assert.equal((await E.api('tok-office', { action: 'reconcile', doc_id: d.id, version: d.version, result: 'reconciled', note: '原本と一致' })).status, 200); };
+    const setMode = async v => assert.equal((await E.api('tok-gm', { action: 'settings_save', key: 'mode', value: v })).status, 200);
+    const fileOf = async id => (await E.q(`select organize_target, organize_status, organize_error from invoice_files where drive_file_id=$1`, [id]))[0];
+    // What the earlier version left: recorded as filed where it is.
+    const leftAs = (id, folder) => E.q(`update invoice_files set organize_status='done', organized_folder_id=$2, organize_error=null where drive_file_id=$1`, [id, folder]);
+    const check = async () => {
+      const rows = (await E.pg.exec(CHECK)).at(-1).rows;
+      return { store: rows.find(r => r['店舗'] === 'LaLa'), total: rows.find(r => r['店舗'] === '合計'), setting: rows.find(r => String(r['店舗']).startsWith('設定'))['店舗'] };
+    };
+    const move = async () => (await E.pg.exec(MOVE)).at(-1).rows;
+    await setMode({ organize: true, organize_reconciled: false });
+    // A: right in the store folder; B: in a folder staff keep there; both left in place by the earlier version.
+    const A = await put('BL-A', '4001', '2026-10-02', 'R6'); await reconcile(A); await leftAs(A, 'R6');
+    E.drive.folder('R6-SEP', 'ここにUpしないでSep 2026 Uploaded', 'R6');
+    const B = await put('BL-B', '4002', '2026-09-26', 'R6'); E.drive.items.get(B).parents = ['R6-SEP']; await reconcile(B); await leftAs(B, 'R6-SEP');
+    // C: filed by the earlier version in 年/月/照合済み (a folder it recorded with the role reconciled).
+    const C = await put('BL-C', '4003', '2026-10-03', 'U6');
+    assert.equal(E.drive.pathOf(C), 'LaLa/2026/10/未照合');
+    const [month] = await E.q(`select id from invoice_folders where store_id='F06' and role='month'`);
+    E.drive.folder('OLD-RC', '照合済み', month.id);
+    await E.q(`insert into invoice_folders(id, parent_id, name, store_id, role) values('OLD-RC', $1, '照合済み', 'F06', 'reconciled')`, [month.id]);
+    E.drive.items.get(C).parents = ['OLD-RC']; await reconcile(C); await leftAs(C, 'OLD-RC');
+    // D: reconciled while moving was off — already waiting. E: posted, not reconciled. G: already in 照合済み/2026-10.
+    const D = await put('BL-D', '4004', '2026-10-04', 'R6'); await reconcile(D);
+    const Ex = await put('BL-E', '4005', '2026-10-04', 'R6');
+    await setMode({ organize_reconciled: true });
+    const G = await put('BL-G', '4006', '2026-10-01', 'R6'); await reconcile(G); await E.worker();
+    assert.equal(E.drive.pathOf(G), 'LaLa/照合済み/2026-10'); assert.equal(E.drive.pathOf(D), 'LaLa/照合済み/2026-10', 'a waiting one moves by itself');
+    await setMode({ organize_reconciled: false });
+    // F: someone moved it out of the store folder; the earlier tries gave up.
+    E.drive.folder('ELSEWHERE', 'Someone else', 'INV');
+    const F = await put('BL-F', '4007', '2026-10-04', 'R6'); await reconcile(F); E.drive.items.get(F).parents = ['ELSEWHERE'];
+    await E.q(`update invoice_files set organize_status='error', organize_attempts=8, organize_error='outside_store_folders' where drive_file_id=$1`, [F]);
+    // H: one file holding two documents is never moved by the worker; it is shown apart.
+    E.fixtures.set('BL-H', { readable: true, documents: [doc('4008', '2026-10-04', line), doc('4009', '2026-10-04', line)] });
+    const H = E.drive.file('BL-H.pdf', pdf('BL-H'), 'R6', { created: '2026-10-05T19:00:00Z' }); await E.worker();
+    await E.q(`update invoice_docs set status='posted', recon_status='reconciled' where file_id=(select id from invoice_files where drive_file_id=$1)`, [H]);
+
+    let c = await check();
+    const cols = ['照合済みの原本', '照合済み_年月に移した', '移す待ち', '移せなかった', '前の版の_年月_照合済み', '店舗の場所に置いたまま', '移せないもの', 'そのほか'];
+    // A B C D F G H reconciled (7): D G moved, F failed, C in the earlier folder, A B left in place, H two documents.
+    assert.deepEqual(cols.map(k => Number(c.store[k])), [7, 2, 0, 1, 1, 2, 1, 0], JSON.stringify(c.store));
+    assert.deepEqual(cols.map(k => Number(c.total[k])), [7, 2, 0, 1, 1, 2, 1, 0]);
+    assert.match(c.setting, /整理する=true・照合したら移す=false・段階2の SQL=入っている/);
+    // Queued again: A, B (left in place), C (earlier folder), F (gave up). Not D, G (moved), E (not reconciled), H (two documents).
+    let m = await move();
+    assert.deepEqual(m.map(r => [r['店舗'], Number(r['移す待ちに入れた原本'])]), [['LaLa', 4], ['合計', 4]]);
+    for (const id of [A, B, C, F]) assert.deepEqual(await fileOf(id), { organize_target: 'reconciled', organize_status: 'pending', organize_error: null });
+    assert.equal((await E.q(`select count(*)::int n from invoice_events where kind='organize_requeued' and actor='backfill'`))[0].n, 4);
+    assert.equal(E.drive.pathOf(A), 'LaLa', 'the SQL does not touch Drive'); assert.equal(E.drive.pathOf(Ex), 'LaLa');
+    // Twice: nothing more.
+    m = await move();
+    assert.deepEqual(m.map(r => [r['店舗'], Number(r['移す待ちに入れた原本'])]), [['合計', 0]]);
+    c = await check();
+    assert.equal(Number(c.store['移す待ち']), 4); assert.equal(Number(c.store['店舗の場所に置いたまま']), 0);
+    // Moving off: they wait. On: moved to 照合済み/年-月 (the invoice date's month), names kept; outside the store folder never touched.
+    await E.worker();
+    assert.equal(E.drive.pathOf(A), 'LaLa');
+    await setMode({ organize_reconciled: true }); await E.worker();
+    assert.equal(E.drive.pathOf(A), 'LaLa/照合済み/2026-10'); assert.equal(E.drive.pathOf(B), 'LaLa/照合済み/2026-09'); assert.equal(E.drive.pathOf(C), 'LaLa/照合済み/2026-10');
+    assert.equal(E.drive.items.get(A).name, '2026-10-02_VendorA_4001.pdf');
+    assert.deepEqual(E.drive.items.get(F).parents, ['ELSEWHERE']);
+    assert.deepEqual(await fileOf(F), { organize_target: 'reconciled', organize_status: 'error', organize_error: 'outside_store_folders' });
+    assert.equal(E.drive.pathOf(Ex), 'LaLa'); assert.equal(E.drive.pathOf(H), 'LaLa');
+    c = await check();
+    assert.deepEqual(cols.map(k => Number(c.store[k])), [7, 5, 0, 1, 0, 0, 1, 0], JSON.stringify(c.store));
+  } finally { await E.pg.close(); }
+});
