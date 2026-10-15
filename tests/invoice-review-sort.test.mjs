@@ -49,10 +49,31 @@ test('the review list reads every row in pages of 200 and counts a row that move
     return res;
   } });
   await fn(c, 'invInLoadQueue')('review');
-  assert.deepEqual(c.calls.map(b => [b.action, b.status, b.limit, b.offset]), [['list', 'review', 200, 0], ['list', 'review', 200, 200], ['list', 'review', 200, 400]]);
-  assert.equal(c.M._invIn.review.rows.length, 450);
-  assert.equal(new Set([...c.M._invIn.review.rows].map(r => r.id)).size, 450, 'the repeated row is counted once and none of the 450 is missed');
-  assert.equal(c.M._invIn.review.total, 451, 'the new one appears when the list is read again');
+  // The count changed between pages, so the list is read once more from the start.
+  assert.deepEqual(c.calls.map(b => [b.action, b.status, b.limit, b.offset]), [0, 200, 400, 0, 200, 400].map(o => ['list', 'review', 200, o]));
+  assert.equal(c.M._invIn.review.rows.length, 451);
+  assert.equal(new Set([...c.M._invIn.review.rows].map(r => r.id)).size, 451, 'every row once, the new one too');
+  assert.deepEqual([c.M._invIn.review.total, c.M._invIn.review.moved], [451, false]);
+  assert.doesNotMatch(fn(c, 'invInQueueHtml')('review'), /読み込むあいだに一覧が変わ/);
+  // Rows with the same sort values can come back in another order on the next page: a row seen twice is counted once.
+  const same = Array.from({ length: 450 }, (_, i) => row(i + 1));
+  const tie = app({ api: b => ({ rows: b.offset ? same.slice(b.offset - 1, b.offset - 1 + b.limit) : same.slice(0, b.limit), total: 450 }) });
+  await fn(tie, 'invInLoadQueue')('review');
+  assert.equal(tie.calls.length, 3);
+  assert.equal(tie.M._invIn.review.rows.length, 450);
+  // A list that keeps changing (someone posting between every page) is read twice, then the person is told to refresh.
+  let k = 0;
+  const busy = app({ api: b => ({ rows: Array.from({ length: Math.min(b.limit, 300 - b.offset) }, (_, i) => row(b.offset + i + 1)), total: 300 + (k++) }) });
+  await fn(busy, 'invInLoadQueue')('review');
+  assert.equal(busy.calls.length, 6, 'two readings, then it stops');
+  assert.equal(busy.M._invIn.review.moved, true);
+  assert.match(fn(busy, 'invInQueueHtml')('review'), /読み込むあいだに一覧が変わ/);
+  // Rows posted elsewhere while reading: every row was read, but one may be missing, so the person is told too.
+  let k2 = 0; const fixed = Array.from({ length: 300 }, (_, i) => row(i + 1));
+  const gone = app({ api: b => ({ rows: fixed.slice(b.offset, b.offset + b.limit), total: 300 - (k2++) }) });
+  await fn(gone, 'invInLoadQueue')('review');
+  assert.deepEqual([gone.M._invIn.review.rows.length, gone.M._invIn.review.total, gone.M._invIn.review.moved], [300, 300, true]);
+  assert.match(fn(gone, 'invInQueueHtml')('review'), /読み込むあいだに一覧が変わりました。抜けている行があるかもしれないので/);
   // It stops at 2,000 rows and says how many more there are.
   const big = app({ api: b => ({ rows: Array.from({ length: b.limit }, (_, i) => row(b.offset + i + 1)), total: 2300 }) });
   await fn(big, 'invInLoadQueue')('review');
@@ -313,7 +334,9 @@ test('one invoice: a packing list with amounts is saved as an invoice with the r
   // Choosing the type again undoes it; a statement stays out of posting; a value that is not offered is ignored.
   const x = app(); open(x, before());
   fn(x, 'invInSetDocType')('pl'); fn(x, 'invInSetDocType')('');
-  assert.deepEqual(JSON.parse(JSON.stringify(x.M._invIn.edits.h)), {});
+  assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), x.M._invIn.plDoc], [{}, null]);
+  fn(x, 'invInSetDocType')('pl'); fn(x, 'invInSetDocType')('invoice');
+  assert.deepEqual([JSON.parse(JSON.stringify(x.M._invIn.edits.h)), x.M._invIn.plDoc], [{ doc_type: 'invoice' }, null]);
   fn(x, 'invInSetDocType')('statement');
   h = fn(x, 'invInDetail')('review');
   assert.doesNotMatch(h, /この内容で反映する<\/button>/);
@@ -376,9 +399,55 @@ test('independent review P2: a document that could not be read, or a receipt, ca
     assert.doesNotMatch(h, /aria-label="書類の種類"/, code);
     assert.match(h, note, code);
     fn(c, 'invInSetDocType')('pl');
-    assert.deepEqual([JSON.parse(JSON.stringify(c.M._invIn.edits.h)), !!c.M._invIn.edits.pl], [{}, false], code);
+    assert.deepEqual([JSON.parse(JSON.stringify(c.M._invIn.edits.h)), c.M._invIn.plDoc || null], [{}, null], code);
     assert.doesNotMatch(fn(c, 'invInDetail')('review'), /この内容で反映する<\/button>/, code);
   }
+});
+
+test('second review P2: a document without an AI reading keeps its type even after the read failure reason was saved away', () => {
+  const c = app(); const d = DOC({ doc_type: 'unknown', posting_kind: 'none', reasons: [{ code: 'doc_type_unknown' }, { code: 'no_lines' }] }); d.ai_doc = null;
+  open(c, d);
+  const h = fn(c, 'invInDetail')('review');
+  assert.doesNotMatch(h, /aria-label="書類の種類"/);
+  assert.match(h, /読み取れなかった書類は種類を変えられません/);
+  fn(c, 'invInSetDocType')('pl');
+  assert.deepEqual(JSON.parse(JSON.stringify(c.M._invIn.edits.h)), {});
+});
+
+test('second review P3: late store change, cancelled question, sign-out, a printed store not taking invoices in, a packing list saved first', async () => {
+  // A store change that returns after another invoice was opened does not close that invoice.
+  let release; const gate = new Promise(r => { release = r; });
+  const c = app({ api: async b => { if (b.action === 'reassign') { await gate; return { ok: true }; } return { ok: true }; } });
+  open(c, DOC()); fn(c, 'invInSet')('e', 'storeWhy', null, 'x');
+  const pending = fn(c, 'invInReassign')();
+  const other = DOC({ id: id(7), reasons: [{ code: 'mode_review_store' }] }); open(c, other); c.M._invIn.edits.h.invoice_no = '1';
+  release(); await pending;
+  assert.deepEqual([c.M._invIn.docId, c.M._invIn.edits.h.invoice_no], [id(7), '1']);
+  assert.equal(c.M._invIn.loaded.review, undefined);
+  // Cancel and sign-out forget the question; sign-out forgets the packing list choice.
+  const q = app(); q.M._invIn.review = { rows: [row(1)], total: 1 };
+  fn(q, 'invInBatchAsk')();
+  assert.match(q.modals.at(-1), /onclick="_invIn\.batchPlan=null;closeModalDirect\(\)">キャンセル/);
+  assert.match(q.modals.at(-1), /class="modal-close" onclick="_invIn\.batchPlan=null;closeModalDirect\(\)"/);
+  q.M._invIn.plDoc = id(2);
+  fn(q, 'invInReset')();
+  assert.deepEqual([q.M._invIn.batchPlan, q.M._invIn.plDoc], [null, null]);
+  // The printed store that is not taking invoices in is named and marked.
+  const ia = app(); open(ia, DOC({ reasons: [{ code: 'store_mismatch', detail: 'S3' }] }));
+  const h = fn(ia, 'invInDetail')('review');
+  assert.match(h, /→ 設定の Charlie（取込していない店舗・選べない） と一致/);
+  assert.doesNotMatch(h, /<option value="S3"/);
+  // A packing list saved with "save changes only" is still recorded when it is posted later.
+  const before = () => DOC({ doc_type: 'other', posting_kind: 'none', reasons: [{ code: 'doc_type_unknown' }, { code: 'mode_review_store' }] });
+  const after = before(); after.doc.version = 4; after.doc.doc_type = 'invoice'; after.doc.posting_kind = 'purchase'; after.doc.reasons = [{ code: 'mode_review_store' }];
+  const sv = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
+  open(sv, before()); fn(sv, 'invInSetDocType')('pl');
+  await fn(sv, 'invInSave')();
+  await fn(sv, 'invInLoadDoc')();
+  assert.match(fn(sv, 'invInDetail')('review'), /<option value="pl" selected>/);
+  await fn(sv, 'invInConfirm')();
+  assert.deepEqual(sv.calls.map(b => b.action), ['edit', 'get', 'post']);
+  assert.match(sv.calls[2].reason, /書類の種類：Packing list を invoice として扱う$/);
 });
 
 test('a packing list the AI already read as an invoice is recorded when it is posted (and when other values are saved)', async () => {
