@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs',
-  'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs'];
+  'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -256,6 +256,12 @@ const CASES = [
   ['purchases: a held original counts as copied without a copy in the app', PS, [['db/invoice-intake.sql', "    when d0.mstate='held' then coalesce(d0.hcopy, false)\n", "    when d0.mstate='held' then true\n"]]],
   ['purchases: a held original without a copy is taken as counted by the app', PS, [['db/invoice-intake.sql', " and not dd.link and dd.appentry),", " and not dd.link),"]]],
   ['purchases: held invoices the app entry counts are "not in yet" for the vendor', PS, [['db/invoice-intake.sql', "   count(*) filter (where cat in ('B','C') or (cat='E' and not (not link and appentry))) p_n,", "   count(*) filter (where cat in ('B','C','E')) p_n,"]]],
+  ['purchases: the before-start check takes Drive copies for app entries', PS, [['db/invoice-purchase-before-start-check.sql', " where a.key like 'spl\\_invoices\\_%' and coalesce(e->>'src', '') <> 'drive-intake' and", " where a.key like 'spl\\_invoices\\_%' and"]]],
+  ['purchases: the before-start check lists every held invoice', PS, [['db/invoice-purchase-before-start-check.sql', " and (d->'why') ? 'before_start'", '']]],
+  ['purchases: the before-start check takes deleted entries', PS, [['db/invoice-purchase-before-start-check.sql', " and coalesce((e->>'_deleted')::boolean, false) = false\n  and s.store is not null", "\n  and s.store is not null"]]],
+  ['purchases: the before-start check does not say an entry is not in the cost', PS, [['db/invoice-purchase-before-start-check.sql', "else a.vendor end || case when a.nocost then '・原価に入らない種類' else '' end, ' / ')", "else a.vendor end, ' / ')"]]],
+  ['purchases: the before-start check matches any store', PS, [['db/invoice-purchase-before-start-check.sql', "from app a where a.store = x.store and a.dt = x.dt and a.cents = x.cents)", "from app a where a.dt = x.dt and a.cents = x.cents)"]]],
+  ['purchases: the before-start check reads rows written from outside', PS, [['db/invoice-purchase-before-start-check.sql', "pub as (select x.ym, x.summary s from public.invoice_purchase_published x join p on p.ym = x.ym where x.summary is not null),", "pub as (select p.ym, a.value::jsonb s from public.app_state a join p on a.key = 'invoice_purchase_' || p.ym),"]]],
   ['purchases: the report reads rows written from outside', PS, [['db/invoice-purchase-report.sql', " select x.ym, x.summary || jsonb_build_object('generated_at', x.published_at) v from public.invoice_purchase_published x where x.summary is not null", " select substring(a.key from 18) ym, a.value::jsonb v from public.app_state a where a.key ~ '^invoice_purchase_\\d{4}-\\d{2}$'"]]],
   ['purchases: the full rollback leaves the summaries in use', E2E, [['db/invoice-intake-rollback.sql', "    execute format('update public.app_state set value = %L, updated_at = now() where key = %L',", "    if false then execute format('update public.app_state set value = %L, updated_at = now() where key = %L',"],
     ['db/invoice-intake-rollback.sql', "      json_build_object('v', 1, 'off', true, 'checked_at', now())::text, 'invoice_purchase_status');", "      json_build_object('v', 1, 'off', true, 'checked_at', now())::text, 'invoice_purchase_status'); end if;"]]],
@@ -277,7 +283,7 @@ const CASES = [
   ['purchases: the summary is not written after reconciling', PS, [['supabase/functions/invoice-intake/handler.mjs', '    reconcile: thenSummary((a, b) =>', '    reconcile: ((a, b) =>']]],
   ["purchases: the outside forwarder's send is not followed", PS, [['supabase/functions/invoice-intake/handler.mjs', "      if (b.state === 'sent') await publishSummary(null, { outbox_id: String(b.id || '') });\n", '']]],
   ['purchases: the worker does not write the summary with intake off', PS, [['supabase/functions/invoice-intake/handler.mjs', 'const st = { off: true }; await publishSummary(st);', 'const st = { off: true };']]],
-  // the app (v1077)
+  // the app (v1077・v1078)
   ['app: food cost still adds the Drive copies', PU, [['index.html', '  var invoice=(_ips&&_ips.ok)?(_ips.confirmed+_ips.manual):monthInvoiceCostYm(storeId, ym);', '  var invoice=(_ips&&_ips.ok)?(_ips.confirmed+monthInvoiceCostYm(storeId, ym)):monthInvoiceCostYm(storeId, ym);']]],
   ['app: invoices registered in the app are dropped', PU, [['index.html', "    if(noDrive && v.src==='drive-intake') return;", '    if(noDrive) return;']]],
   ['app: the switch applies before October 2026', PU, [['index.html', '  if (!ym || ym < IPS_START) return null;\r\n  if (ipsOff())', '  if (!ym) return null;\r\n  if (ipsOff())']]],
@@ -297,8 +303,12 @@ const CASES = [
   ['app: a "missing" statement of a vendor with no invoice is ignored', PU, [['index.html', "function _ipsChkNeed(c){ return !!c && ((Number(c.docs) || 0) > 0 || !!(c.chk && c.chk.s === 'missing')); }", "function _ipsChkNeed(c){ return !!c && (Number(c.docs) || 0) > 0; }"]]],
   ['app: "not in yet" counts held invoices the app entry counts', PU, [['index.html', 'c:sum.B.c + sum.C.c + sum.E.c - sum.ap.c,', 'c:sum.B.c + sum.C.c + sum.E.c,'], ['index.html', 'n:sum.B.n + sum.C.n + sum.E.n - sum.ap.n,', 'n:sum.B.n + sum.C.n + sum.E.n,']]],
   ['app: old lines are kept for a newer month version', PU, [['index.html', "  if (_ipsLines[key] && String(_ipsLines[key].generated_at || '') !== String(d.generated_at || '')) delete _ipsLines[key];\r\n", '']]],
-  ['app: a failed fetch is not tried again', PU, [['index.html', '      if (!ok) { _ipsAsked[flag] = { fail:Date.now() }; return; }', '      if (!ok) return;']]],
-  ['app: a failed fetch is tried on every look', PU, [['index.html', '  if (a && !(a.fail && Date.now() - a.fail > IPS_RETRY_MS)) return;', '  if (a && !a.fail) return;']]],
+  ['app: a failed fetch is not tried again', PU, [['index.html', '      if (!ok) { if (_ipsAsked[flag] === mine) _ipsAsked[flag] = { fail:Date.now() }; return; }', '      if (!ok) return;']]],
+  ['app: a failed fetch is tried on every look', PU, [['index.html', '  if (a && !(a.fail && now - a.fail > IPS_RETRY_MS) && !(a.busy && now - a.busy > IPS_BUSY_MS)) return;', '  if (a && !a.fail) return;']]],
+  ['app: a fetch with no answer keeps the month from being taken again', PU, [['index.html', ' && !(a.busy && now - a.busy > IPS_BUSY_MS)) return;', ') return;']]],
+  ['app: the daily cost cache is kept when a month row changes with the same version', PU, [['index.html', " : '-') + '#' + _ipsRevOf(ipsKey(ym)); }).join('|');", " : '-'); }).join('|');"]]],
+  ['app: a changed month row does not move the count', PU, [['index.html', '  else if (r.raw !== raw) { r.raw = raw; r.n++; }', '  else if (r.raw !== raw) { r.raw = raw; }']]],
+  ['app: lines are kept when the month is taken again', PU, [['index.html', '      Object.keys(_ipsLines).forEach(function(x){ if (x.indexOf(lp) === 0) delete _ipsLines[x]; });\r\n', '']]],
   ['app: closed months are taken again every session', PU, [['index.html', '  if (ipsStatus().months[ym].closed === true) return;\r\n', '']]],
   ['app: the daily food cost head keeps the old count', PU, [['index.html', "  if(_fcIps && _fcIps.ok) _mInv=_fcIps.confirmed+_fcIps.manual;", "  if(false) _mInv=_fcIps.confirmed+_fcIps.manual;"]]],
   ['app: the daily food cost head uses the confirmed count for every store', PU, [['index.html', "  if(_fcIps && _fcIps.ok) _mInv=_fcIps.confirmed+_fcIps.manual;", "  if(typeof IPS_START!=='undefined' && _fcYm>=IPS_START){ var _fcIr=foodCostOf(storeId, _fcYm); _mInv=_fcIr.invoice||0; }"]]],
