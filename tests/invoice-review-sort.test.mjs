@@ -233,7 +233,7 @@ test('one invoice: the store panel offers the printed store first, needs a reaso
   fn(c, 'invInSet')('e', 'storeTo', null, 'S2');
   await fn(c, 'invInReassign')();
   assert.deepEqual(JSON.parse(JSON.stringify(c.calls)), [{ action: 'reassign', file_id: id(50), store_id: 'S2', reason: 'Addressed to Bravo' }]);
-  assert.match(c.toasts.at(-1)[0], /店舗を Bravo にしました。数分で要確認に戻ります/);
+  assert.match(c.toasts.at(-1)[0], /店舗を Bravo にしました。数分で取り込み直します/);
   assert.equal(c.M._invIn.docId, null);
   assert.equal(c.M._invIn.loaded.review, undefined, 'the list is read again');
 });
@@ -249,7 +249,7 @@ test('one invoice: unsaved corrections are not carried over, so changing the sto
   assert.match(c.modals.at(-1), /invInReassign\(true\)/);
   await fn(c, 'invInReassign')(true);
   assert.equal(c.calls.length, 1);
-  assert.match(c.toasts.at(-1)[0], /反映済みです/);
+  assert.match(c.toasts.at(-1)[0], /このファイルの書類はもう反映済みのため、店舗を変えられません/);
   assert.equal(c.M._invIn.docId, id(2), 'a refusal keeps the invoice open');
   // A store that matches: no panel, a small "Change store" button opens it.
   const ok = app(); open(ok, DOC({ reasons: [{ code: 'mode_review_store' }] }));
@@ -278,6 +278,9 @@ test('one invoice: unsaved corrections are not carried over, so changing the sto
   h = fn(multi, 'invInDetail')('review');
   assert.match(h, /ファイルの書類はすべて選んだ店舗になります/);
   assert.match(h, /宛先は複数の店舗：Alpha・Bravo/);
+  assert.match(h, /<option value="" selected>選ぶ<\/option>/, 'several printed stores (the current one too): nothing is chosen for the person');
+  // The note says plainly that automatic posting may post it after the change.
+  assert.match(h, /自動反映が ON の店舗・業者で確かめることが無ければ、そのまま反映されます/);
 });
 
 test('one invoice: a packing list with amounts is saved as an invoice with the reason, re-read and posted', async () => {
@@ -329,4 +332,79 @@ test('one invoice: a packing list with amounts is saved as an invoice with the r
   const en = app(); en.curLang = 'en'; open(en, before());
   fn(en, 'invInSetDocType')('pl');
   assert.match(fn(en, 'invInDetail')('review'), /<option value="pl" selected>Packing list \(as invoice\)<\/option>/);
+});
+
+test('independent review P1: the batch posts exactly the rows (and versions) the question showed, never rows that moved in later', async () => {
+  const rows = Array.from({ length: 150 }, (_, i) => row(i + 1, { v: 'a', no: String(i + 1) }));
+  const c = app({ api: () => ({ ok: true }) });
+  c.M._invIn.review = { rows, total: 150 };
+  // Only two rows ticked on page 1.
+  fn(c, 'invInSelAll')(false); fn(c, 'invInSel')(id(3), true); fn(c, 'invInSel')(id(50), true);
+  fn(c, 'invInBatchAsk')();
+  assert.match(c.modals.at(-1), /<b>2 件<\/b>/);
+  assert.match(c.modals.at(-1), /invInBatchPost\(true\)/);
+  // Before "Post" is pressed the list is read again: row 3 was posted elsewhere, row 50 changed, row 101 moved up onto page 1 (ticked).
+  const now = rows.filter(r => r.id !== id(3)).map(r => (r.id === id(50) ? { ...r, version: 2, total_cents: 999999 } : r));
+  c.M._invIn.review = { rows: now, total: 149 };
+  await fn(c, 'invInBatchPost')(true);
+  assert.deepEqual(c.calls.map(b => [b.action, b.doc_id, b.version]), [['post', id(3), 1], ['post', id(50), 1]], 'what was shown, with the version shown (the server refuses a changed one)');
+  // Pressing it again without a new question sends nothing.
+  await fn(c, 'invInBatchPost')(true);
+  assert.equal(c.calls.length, 2);
+  // While the list is being read again, the question is not shown and the button is off.
+  c.M._invIn.loaded.review = 'loading';
+  const n = c.modals.length; fn(c, 'invInBatchAsk')();
+  assert.equal(c.modals.length, n);
+  assert.match(fn(c, 'invInQueueHtml')('review'), /<button class="btn btn-primary btn-sm" disabled onclick="invInBatchAsk\(\)">/);
+});
+
+test('independent review P2: rows a person unticked stay unticked after a batch is posted', async () => {
+  const rows = Array.from({ length: 150 }, (_, i) => row(i + 1, { v: 'a', no: String(i + 1) }));
+  const c = app({ api: () => ({ ok: true }) });
+  c.M._invIn.review = { rows, total: 150 };
+  fn(c, 'invInSel')(id(120), false);
+  await fn(c, 'invInBatchPost')();
+  assert.equal(c.calls.length, 100);
+  assert.equal(fn(c, 'invInSelected')(rows[119]), false);
+  assert.equal(fn(c, 'invInSelected')(rows[120]), true);
+});
+
+test('independent review P2: a document that could not be read, or a receipt, cannot change its type', () => {
+  for (const [code, note] of [['unreadable', /読み取れなかった書類は種類を変えられません/], ['ai_failed', /読み取れなかった書類は種類を変えられません/], ['receipt_route', /レシートは種類を変えられません/]]) {
+    const c = app(); open(c, DOC({ doc_type: code === 'receipt_route' ? 'receipt' : 'unknown', posting_kind: 'none', reasons: [{ code }] }));
+    const h = fn(c, 'invInDetail')('review');
+    assert.doesNotMatch(h, /aria-label="書類の種類"/, code);
+    assert.match(h, note, code);
+    fn(c, 'invInSetDocType')('pl');
+    assert.deepEqual([JSON.parse(JSON.stringify(c.M._invIn.edits.h)), !!c.M._invIn.edits.pl], [{}, false], code);
+    assert.doesNotMatch(fn(c, 'invInDetail')('review'), /この内容で反映する<\/button>/, code);
+  }
+});
+
+test('a packing list the AI already read as an invoice is recorded when it is posted (and when other values are saved)', async () => {
+  const PL = '書類の種類：Packing list を invoice として扱う';
+  const clean = () => DOC({ reasons: [{ code: 'mode_review_store' }] });
+  const c = app({ api: () => ({ ok: true }) });
+  open(c, clean()); fn(c, 'invInSetDocType')('pl');
+  await fn(c, 'invInConfirm')();
+  assert.deepEqual(c.calls.map(b => b.action), ['post']);
+  assert.equal(c.calls[0].reason, '経理の確認（業者・invoice番号・金額・店舗） / ' + PL);
+  // With another correction: the save and the post both say so.
+  const after = clean(); after.doc.version = 4; after.doc.invoice_no = '77411';
+  const d = app({ api: b => (b.action === 'edit' ? { ok: true, version: 4 } : b.action === 'get' ? after : { ok: true }) });
+  open(d, clean()); fn(d, 'invInSetDocType')('pl'); d.M._invIn.edits.h.invoice_no = '77411';
+  await fn(d, 'invInConfirm')();
+  assert.deepEqual(d.calls.map(b => b.action), ['edit', 'get', 'post']);
+  assert.equal(d.calls[0].reason, '経理の確認で直した / ' + PL);
+  assert.equal(d.calls[2].reason, '経理の確認（業者・invoice番号・金額・店舗） / ' + PL);
+});
+
+test('rows that could not be read while the list changed are reported as such; a row without a store sorts last', () => {
+  const c = app();
+  c.M._invIn.review = { rows: [row(1, { store: 'S2' }), { ...row(2), store_id: null }, row(3, { store: 'S1' })], total: 4 };
+  assert.match(fn(c, 'invInQueueHtml')('review'), /読み込むあいだに一覧が変わり、1 件を読めませんでした。「更新」で読み直してください/);
+  fn(c, 'invInRSortPick')('5');
+  assert.deepEqual(order(c), [id(3), id(1), id(2)]);
+  fn(c, 'invInRSortHead')('store');
+  assert.deepEqual(order(c), [id(1), id(3), id(2)], 'also last when the order is reversed');
 });

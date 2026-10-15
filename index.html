@@ -47541,7 +47541,7 @@ function invInSortKey(r, k){
   if (k==='vendor') return invInVendorLabel(r);
   if (k==='no') return invInNoKey(r.invoice_no);
   if (k==='amount') { var n = r.total_cents===null || r.total_cents===undefined || r.total_cents==='' ? NaN : Number(r.total_cents); return isFinite(n) ? n : null; }
-  if (k==='store') return String(invInStore(r.store_id).name || '').toLowerCase();
+  if (k==='store') return r.store_id ? String(invInStore(r.store_id).name || '').toLowerCase() : null;
   if (k==='date') { var m = /^\d{4}-\d{2}-\d{2}/.exec(String(r.invoice_date || '')); return m ? m[0] : null; }
   if (k==='recv') { var ms = Date.parse(r.ingested_at || ''); return isFinite(ms) ? ms : null; }
   if (k==='fix') return invInFixRank(r);
@@ -47629,7 +47629,7 @@ function invInReviewTable(Q){
       + '<td onclick="event.stopPropagation()" style="white-space:nowrap">'+invInOrig(r.drive_file_id)+' <button class="btn '+(ok ? 'btn-secondary' : 'btn-primary')+' btn-sm" onclick="invInOpen(\''+id+'\',\'dreview\')">'+t('開く','Open')+'</button></td></tr>';
   });
   h += '</tbody></table></div>';
-  if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B ? '' : ' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B ? 'loader-2' : 'checks')+'"></i> '
+  if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B && !invInReviewLoading() ? '' : ' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B ? 'loader-2' : 'checks')+'"></i> '
       + (B ? t('反映中… ','Posting… ')+B.done+' / '+B.total : t('選んだ ','Post the ')+sel.length+t(' 件を反映する',' selected'))+'</button>'
       + '<span class="ivx-note" style="margin:0">'+t('原本と 4 項目が合っているものにチェック → まとめて反映。商品・単価は見なくてよい。','Tick the ones whose four items match the original and post them together. Products and prices need not be checked.')
       + (P.pages > 1 ? t('反映するのはこのページでチェックした行だけ。並べ替えても・ページを変えても、チェックは消えません。',' Only the ticked rows on this page are posted; ticks stay when you sort or change pages.') : '')+'</span></div>';
@@ -47638,7 +47638,9 @@ function invInReviewTable(Q){
       + '<span style="font-size:11.5px;color:var(--muted)">'+(P.page + 1)+' / '+P.pages+'</span>'
       + '<button class="btn btn-secondary btn-sm"'+(P.page < P.pages - 1 && !B ? '' : ' disabled')+' onclick="invInRPage(1)">'
       + (P.page < P.pages - 1 ? t('次の ','Next ')+Math.min(INVIN_PAGE, P.all.length - (P.page + 1) * INVIN_PAGE)+t(' 件','') : t('次へ','Next'))+' ›</button></div>';
-  if (P.all.length < Q.total) h += '<div class="ivx-note">'+t('ほかに ','')+(Q.total - P.all.length)+t(' 件あります（読み込むのは 2,000 件まで。反映すると次が出ます）',' more (up to 2,000 are loaded; they appear as these are posted)')+'</div>';
+  if (P.all.length < Q.total) h += '<div class="ivx-note">'+(Q.total > INVIN_REVIEW_MAX
+      ? t('ほかに ','')+(Q.total - P.all.length)+t(' 件あります（読み込むのは 2,000 件まで。反映すると次が出ます）',' more (up to 2,000 are loaded; they appear as these are posted)')
+      : t('読み込むあいだに一覧が変わり、','The list changed while it was read: ')+(Q.total - P.all.length)+t(' 件を読めませんでした。「更新」で読み直してください',' could not be read. Press “Refresh” to read it again'))+'</div>';
   return h + '</div><div class="ivx-note">'+t('✓ は AI の読みとマスター・計算で確かめられた項目。? と ! が付いた行だけ開いて直します。商品の対応や単価の変化は「確認すること」に出しません（明細の中に参考として残ります）。',
     '✓ means the reading was confirmed against the master and the arithmetic. Open only the rows with ? or ! to fix them. Product mapping and price changes are not listed here (they stay in the lines for reference).')+'</div>';
 }
@@ -47665,19 +47667,26 @@ async function invInUsdRow(id){
   catch(e) {}
   delete _invIn.loaded.review; delete _invIn.loaded.health; invInRerender();
 }
+/* v1079（独立レビュー P1）：問いを出したときの行（id と版）だけを送る。一覧を読み直している間は出さない
+   （読み直しで次のページの行がこのページに上がってきても、見ていない行は送らない。版が変わった行はサーバーが断る） */
+function invInReviewLoading(){ return _invIn.loaded && _invIn.loaded.review === 'loading'; }
 function invInBatchAsk(){
-  if (_invIn.batching || !invInCanEdit()) return;
+  if (_invIn.batching || !invInCanEdit() || invInReviewLoading()) return;
   var rows = invInPageRows().rows.filter(invInSelected); if (!rows.length) return;
+  _invIn.batchPlan = rows.map(function(r){ return { id:r.id, version:r.version, total_cents:r.total_cents }; });
   var sum = rows.reduce(function(a, r){ return a + (Number(r.total_cents)||0); }, 0);
   openModal('<div class="modal-title">'+t('まとめて反映','Post together')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     + '<div style="font-size:12.5px;line-height:1.8"><b>'+rows.length+t(' 件',' invoices')+'</b>'+t('・合計 ',', total ')+'<b>'+invInMoney(sum)+'</b>'+t(' を反映します。',' will be posted.')+'<br>'
     + '<span style="color:var(--muted);font-size:11.5px">'+t('履歴には「','The history records “')+escapeHtml(invInBatchReason())+t('」と、反映した人が残ります。','” and who posted.')+'</span></div>'
-    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInBatchPost()"><i class="ti ti-checks"></i> '+t('反映する','Post')+'</button></div>');
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="closeModalDirect();invInBatchPost(true)"><i class="ti ti-checks"></i> '+t('反映する','Post')+'</button></div>');
 }
 /* 1 件ずつ順に送る（サーバーが 1 件ごとに版・重複・締め・4 項目の条件を確かめる）。失敗した行は要確認に残る */
-async function invInBatchPost(){
+async function invInBatchPost(fromAsk){
   if (_invIn.batching || _invIn.busy || !invInCanEdit()) return;
-  var rows = invInPageRows().rows.filter(invInSelected); if (!rows.length) return;   /* v1079：見えているページの行だけ */
+  /* v1079：問いから来たときは、問いに出した行（id と版）そのもの。それ以外は見えているページのチェックした行 */
+  var plan = fromAsk ? _invIn.batchPlan : null; _invIn.batchPlan = null;
+  if (fromAsk && !plan) return;
+  var rows = plan || invInPageRows().rows.filter(invInSelected); if (!rows.length) return;
   var ok = 0, ng = [], rnNg = 0, reason = invInBatchReason();
   _invIn.batching = { done:0, total:rows.length }; _invIn.busy = true; invInRerender();
   try {
@@ -47687,7 +47696,7 @@ async function invInBatchPost(){
       catch(e) { ng.push(String(e && e.message || e)); }
       _invIn.batching.done = i + 1; invInRerender();
     }
-  } finally { _invIn.batching = null; _invIn.busy = false; _invIn.unsel = {}; }
+  } finally { _invIn.batching = null; _invIn.busy = false; }   /* v1079：外したチェックはそのまま（独立レビュー P2） */
   showToast(t('反映しました：','Posted: ')+ok+t(' 件','')+(ng.length ? t('　反映できなかった：',' · not posted: ')+ng.length+t(' 件（',' (')+ng[0]+t('）',')') : '')
     + (rnNg ? t('　ファイル名をまだ変えていない：',' · not renamed yet: ')+rnNg+t(' 件（あとで自動でやり直します）',' (retried automatically)') : ''), ng.length || rnNg ? 'warning' : 'success');
   delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list; delete _invIn.loaded.recon; invInRerender();
@@ -47719,6 +47728,10 @@ function invInHVal(d, k){ var E = _invIn.edits; return (E && Object.prototype.ha
 var INVIN_DOCTYPES = [['invoice','Invoice','Invoice'], ['pl','Packing list（invoice 扱い）','Packing list (as invoice)'], ['credit_memo','Credit memo','Credit memo'],
   ['statement','Statement（照合用）','Statement (reconciliation)']];
 var INVIN_TYPE_CODES = ['doc_type_unknown','statement','receipt_route','credit_memo'];
+/* 読み取れなかった書類・レシートは種類を変えられない（変えると読めていない書類を仕入れにできてしまう・独立レビュー P2）。
+   読み直す（取込状況）か、対象外にする */
+var INVIN_TYPE_LOCK = ['unreadable','ai_failed','receipt_route'];
+function invInTypeLocked(d){ var c = invInCodes(d && d.reasons); return INVIN_TYPE_LOCK.some(function(x){ return c.indexOf(x)>=0; }); }
 function invInDocTypeLabel(v){
   var x = INVIN_DOCTYPES.find(function(p){ return p[0]===v; });
   if (x) return invInL([x[1], x[2]]);
@@ -47727,13 +47740,14 @@ function invInDocTypeLabel(v){
 function invInDocTypeSel(d, canEdit){
   var e = escapeHtml, E = _invIn.edits || {}, v = invInHVal(d, 'doc_type'), cur = E.pl ? 'pl' : (v!==null ? v : d.doc_type);
   if (!canEdit || d.status!=='review') return '<span style="font-size:12.5px">'+e(invInDocTypeLabel(d.doc_type))+'</span>';
+  if (invInTypeLocked(d)) return '<span style="font-size:12.5px">'+e(invInDocTypeLabel(d.doc_type))+'</span>';
   var changed = !!E.pl || (v!==null && v!==d.doc_type);
   return '<select class="form-select ivx-in'+(changed ? ' ivx-chg' : '')+'" style="width:100%;max-width:280px" aria-label="'+t('書類の種類','Document type')+'" onchange="invInSetDocType(this.value)">'
     + (INVIN_DOCTYPES.some(function(p){ return p[0]===cur; }) ? '' : '<option value="" selected>'+e(invInDocTypeLabel(cur))+t('（選び直す）',' (choose)')+'</option>')
     + INVIN_DOCTYPES.map(function(p){ return '<option value="'+p[0]+'"'+(p[0]===cur ? ' selected' : '')+'>'+e(invInL([p[1], p[2]]))+'</option>'; }).join('') + '</select>';
 }
 function invInSetDocType(v){
-  var E = _invIn.edits, G = _invIn.doc; if (!E || !G || !G.doc) return;
+  var E = _invIn.edits, G = _invIn.doc; if (!E || !G || !G.doc || invInTypeLocked(G.doc)) return;
   if (v && !INVIN_DOCTYPES.some(function(p){ return p[0]===v; })) return;
   var real = v==='pl' ? 'invoice' : v;
   E.pl = v==='pl';
@@ -47742,6 +47756,9 @@ function invInSetDocType(v){
 }
 function invInDocTypeNote(d, canEdit){
   var E = _invIn.edits || {};
+  if (canEdit && d.status==='review' && invInTypeLocked(d)) return invInCodes(d.reasons).indexOf('receipt_route')>=0
+    ? t('レシートは種類を変えられません（会社カード・立替のレシートは社員別の管理へ。違うときは対象外に）','A receipt keeps its type (card and reimbursement receipts go to the employee folders; otherwise exclude it)')
+    : t('読み取れなかった書類は種類を変えられません（取込状況から読み直すか、対象外に）','A document that could not be read keeps its type (read it again from Intake status, or exclude it)');
   if (E.pl) return t('金額のある Packing list を invoice として反映します。同じ納品の invoice が別に届いていないか、一覧で同じ業者・日付を確かめてください。金額の無い Packing list は「対象外にする」。',
     'The packing list is posted as an invoice. Check the list for an invoice of the same delivery (same vendor and date). Exclude a packing list without amounts.');
   if (canEdit && d.status==='review' && ['invoice','credit_memo'].indexOf(d.doc_type)<0) return t('金額のある Packing list は「Packing list（invoice 扱い）」を選ぶ。Statement は照合に使い、仕入れにしない','For a packing list with amounts, choose “Packing list (as invoice)”. A statement is for reconciliation, not a purchase');
@@ -47769,7 +47786,9 @@ function invInActiveStores(){ return (((_invIn.config||{}).stores)||[]).filter(f
 function invInStoreOpenFor(d){ return !!d && d.status==='review' && invInCanEdit() && (invInMark4(d, 'store')!=='ok' || _invIn.storeOpen===d.id); }
 function invInStoreTo(d){
   var E = _invIn.edits || {}, act = invInActiveStores();
-  var to = E.storeTo!=null ? String(E.storeTo) : (invInStoreHits(d.reasons).filter(function(x){ return x!==d.store_id && act.indexOf(x)>=0; })[0] || '');
+  /* 宛先が別の店舗（store_mismatch）のときだけ、その店舗を先に選んでおく。複数の店舗（multi_store）は人が選ぶ */
+  var printed = invInStoreHits((d.reasons||[]).filter(function(r){ return r && r.code==='store_mismatch'; }));
+  var to = E.storeTo!=null ? String(E.storeTo) : (printed.filter(function(x){ return x!==d.store_id && act.indexOf(x)>=0; })[0] || '');
   return act.indexOf(to)>=0 ? to : '';
 }
 function invInStoreBtn(d, canEdit){
@@ -47798,8 +47817,8 @@ function invInStorePanel(d, canEdit, shipTo){
       + '<input class="form-input ivx-in" placeholder="'+t('例：宛先が別の店舗。アップロード先を間違えた','e.g. addressed to another store; uploaded to the wrong folder')+'" value="'+e(E.storeWhy||'')+'" oninput="invInSet(\'e\',\'storeWhy\',null,this.value)"></label>'
       + '<button class="btn btn-primary btn-sm"'+(to && to!==d.store_id && !_invIn.busy ? '' : ' disabled')+' onclick="invInReassign()">'+t('この店舗にする','Use this store')+'</button></div>'
       : '<div class="ivx-note">'+t('選べる店舗がありません（設定の「店舗」で取込中の店舗）','No store to choose (stores taking in invoices, in Settings › Stores)')+'</div>')
-    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は選んだ店舗の分として確かめ直し、数分で要確認に戻ります（AI は読み直しません）。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
-        'Changing the store re-checks this invoice for the chosen store; it returns to Review within minutes (the AI does not read it again). Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
+    + '<div class="ivx-note">'+t('店舗を変えると、この invoice は数分で選んだ店舗の分として取り込み直します（AI は読み直しません）。確かめることがあれば要確認に戻ります。自動反映が ON の店舗・業者で確かめることが無ければ、そのまま反映されます。この画面で直した値は引き継がないので、店舗を先に決めてから直してください。原本は Drive から消さず、中身も変えません。今の店舗のままでよいときは、店舗は変えずに「この内容で反映する」。反映したあとは、ここでは店舗を変えられません。',
+        'Changing the store takes this invoice in again for the chosen store within minutes (the AI does not read it again). It returns to Review if anything needs checking; with automatic posting on for that store and vendor and nothing to check, it is posted. Values corrected on this screen are not carried over, so choose the store first. The original is not deleted or changed in Drive. If the current store is right, keep it and press “Post as shown”. A posted invoice cannot change its store here.')
     + (multi ? '<br><b>'+t('このファイルには書類が複数あります。ファイルの書類はすべて選んだ店舗になります。','This file holds several documents: all of them move to the chosen store.')+'</b>' : '')+'</div></div>';
 }
 async function invInReassign(force){
@@ -47816,10 +47835,16 @@ async function invInReassign(force){
     return;
   }
   var name = invInStore(to).name, res;
-  try { res = await invInDo(function(){ return invInAPI({ action:'reassign', file_id:d.file_id, store_id:to, reason:why }); }); }
-  catch(e) { if (/先に更新|updated this first/.test(e.message)) { delete _invIn.loaded.doc; invInRerender(); } return; }
+  _invIn.busy = true;
+  try { res = await invInAPI({ action:'reassign', file_id:d.file_id, store_id:to, reason:why }); }
+  catch(e) {
+    /* 同じファイルのほかの書類がもう反映済み（invoice_reassign の posted_use_correction） */
+    showToast(e && e.code==='posted_use_correction' ? t('このファイルの書類はもう反映済みのため、店舗を変えられません（反映済みの書類を直すときは「修正を保存」）','A document from this file is already posted, so the store cannot change (correct the posted one with “Save correction”)')
+      : String(e && e.message || e), 'warning');
+    return;
+  } finally { _invIn.busy = false; }
   if (!res) return;
-  showToast(t('店舗を ','The store is now ')+name+t(' にしました。数分で要確認に戻ります（AI は読み直しません）','. It returns to Review within minutes (no new AI reading)'), 'success');
+  showToast(t('店舗を ','The store is now ')+name+t(' にしました。数分で取り込み直します（AI は読み直しません）','. It is taken in again within minutes (no new AI reading)'), 'success');
   _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null;
   delete _invIn.loaded.doc; delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list;
   invInRerender();
@@ -48102,7 +48127,7 @@ async function invInSave(fromConfirm){
   var reason = String(E.reason||'').trim();
   if (!reason && d.status==='posted') { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return false; }
   if (!reason) reason = invInL(INVIN_EDIT_REASON);
-  if (E.pl && c.header.doc_type==='invoice') reason += ' / ' + invInL(INVIN_PL_REASON);   /* v1079 */
+  if (E.pl) reason += ' / ' + invInL(INVIN_PL_REASON);   /* v1079：Packing list を invoice として扱うことを記録に残す */
   var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; }), res;
   try { res = await invInDo(function(){ return invInAPI({ action:'edit', doc_id:d.id, version:d.version, header:c.header, lines:c.lines, reason:reason, adjustment_ack:!!E.adj, ack:ack }); }); }
   catch(e) {
@@ -48124,7 +48149,7 @@ async function invInSave(fromConfirm){
 async function invInConfirm(){
   var G = _invIn.doc; if (!G || _invIn.busy) return; var d = G.doc, E = _invIn.edits || {};
   if (invInHasEdits()) {
-    var keep = { reason:E.reason||'', ack:E.ack||{}, adj:!!E.adj, sup:E.sup||'', dupOf:E.dupOf||'' };
+    var keep = { reason:E.reason||'', ack:E.ack||{}, adj:!!E.adj, sup:E.sup||'', dupOf:E.dupOf||'', pl:!!E.pl };
     var saved = await invInSave(true); if (!saved) return;
     try { await invInLoadDoc(); } catch(err) { showToast(String(err && err.message || err), 'warning'); delete _invIn.loaded.doc; invInRerender(); return; }
     if (!_invIn.doc || _invIn.doc.doc.id !== d.id || !_invIn.edits) { invInRerender(); return; }
@@ -48133,7 +48158,7 @@ async function invInConfirm(){
       showToast(t('保存のあとにほかの人がこの invoice を直しました。今の内容を確かめてから、もう一度「この内容で反映する」を押してください','Someone changed this invoice after you saved. Check the current values and press “Post as shown” again'), 'warning');
       invInRerender(); return;
     }
-    _invIn.edits.reason = keep.reason; _invIn.edits.ack = keep.ack; _invIn.edits.adj = keep.adj; _invIn.edits.sup = keep.sup; _invIn.edits.dupOf = keep.dupOf;
+    _invIn.edits.reason = keep.reason; _invIn.edits.ack = keep.ack; _invIn.edits.adj = keep.adj; _invIn.edits.sup = keep.sup; _invIn.edits.dupOf = keep.dupOf; _invIn.edits.pl = keep.pl;
     d = _invIn.doc.doc;
   }
   var chk = invInToCheck(d.reasons);
@@ -48148,6 +48173,7 @@ async function invInPost(){
   var G = _invIn.doc; if (!G) return; var d = G.doc, E = _invIn.edits || {};
   if (invInHasEdits()) return invInConfirm();
   var reason = String(E.reason||'').trim() || invInBatchReason();
+  if (E.pl) reason += ' / ' + invInL(INVIN_PL_REASON);   /* v1079 */
   var ack = Object.keys(E.ack||{}).filter(function(k){ return E.ack[k]; });
   var res;
   try { res = await invInDo(function(){ return invInAPI({ action:'post', doc_id:d.id, version:d.version, reason:reason, ack:ack, adjustment_ack:!!E.adj, supersedes:E.sup||null }); }); }
