@@ -47411,18 +47411,22 @@ function invInList(){
 }
 function invInOpen(id, sub){
   if (!invInId(id)) return;
-  if (_invIn.docId !== id) { _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; }
+  if (_invIn.docId !== id) { _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.plDoc = null; }
   _invIn.docId = id; _invIn.docSub = sub || 'dreview'; _invIn.mob = 'lines'; _invIn.linesOpen = false;
   delete _invIn.loaded.doc;
   _acCat = 'drive'; acSetSub(sub || 'dreview');
 }
-function invInBack(){ _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; delete _invIn.loaded.doc; invInRerender(); }
+function invInBack(){ _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; _invIn.plDoc = null; delete _invIn.loaded.doc; invInRerender(); }
 async function invInLoadDoc(){
   var id = _invIn.docId; if (!id) return;
   var g = await invInAPI({ action:'get', doc_id:id });
   if (_invIn.docId !== id) return;
   _invIn.doc = g;
-  if (!_invIn.edits || _invIn.edits.version !== g.doc.version) _invIn.edits = { version:g.doc.version, h:{}, l:{}, reason:'', ack:{}, adj:false, sup:'', dupOf:'', note:'' };
+  if (!_invIn.edits || _invIn.edits.version !== g.doc.version) {
+    _invIn.edits = { version:g.doc.version, h:{}, l:{}, reason:'', ack:{}, adj:false, sup:'', dupOf:'', note:'' };
+    /* v1079：Packing list の選択は、invoice として保存されたときだけ残す（保存しなかった選択は直した値と一緒に忘れる） */
+    if (_invIn.plDoc === g.doc.id && g.doc.doc_type !== 'invoice') _invIn.plDoc = null;
+  }
   /* 重複の候補は中身を並べて見せる（どれと同じかを人が選ぶ） */
   var ids = invInCandIds(g.doc);
   for (var i = 0; i < ids.length && i < 4; i++) {
@@ -47442,24 +47446,29 @@ function invInCandIds(d){
 /* ===================================================================== ② 要確認 */
 /* v1079（Moto 10/14・経理の依頼「アプリの要確認画面でソート機能を追加」・UI案50）：要確認はすべての行を 200 件ずつ読み、
    画面で並べ替える（表示は 100 件ずつ）。読むあいだに増えた・減った行は id で 1 回だけ数える。読むのは 2,000 件まで */
-var INVIN_PAGE = 100, INVIN_REVIEW_MAX = 2000;
+var INVIN_PAGE = 100, INVIN_REVIEW_MAX = 2000, INVIN_READ_OVERLAP = 20;
 async function invInLoadQueue(kind){
   if (kind==='review') {
     /* 読むあいだに件数が変わったら（ほかの人が反映した・新しく届いた）、1 回だけ最初から読み直す。それでも変わるときは「更新」を案内する */
-    var all, seen, total, off, first, moved = false;
+    /* サーバーの順（請求日・受け取った時刻）が同じ行は、ページごとに入れ替わることがある：次のページは 20 行重ねて読み、id で 1 回だけ数える */
+    var seq = _invIn.reviewSeq = (_invIn.reviewSeq || 0) + 1;
+    var all, seen, total, pos, first, moved = false;
     for (var attempt = 0; attempt < 2; attempt++) {
-      all = []; seen = {}; total = 0; off = 0; first = null; moved = false;
-      while (off < INVIN_REVIEW_MAX) {
-        var q = await invInAPI({ action:'list', status:'review', limit:200, offset:off });
+      all = []; seen = {}; total = 0; pos = 0; first = null; moved = false;
+      while (pos < INVIN_REVIEW_MAX) {
+        var from = pos ? Math.max(0, pos - INVIN_READ_OVERLAP) : 0;
+        var q = await invInAPI({ action:'list', status:'review', limit:200, offset:from });
         var got = (q && q.rows) || [];
         total = Number(q && q.total) || 0;
         if (first === null) first = total; else if (total !== first) moved = true;
         got.forEach(function(x){ if (x && x.id && !seen[x.id]) { seen[x.id] = 1; all.push(x); } });
-        off += got.length;
-        if (!got.length || off >= total) break;
+        var next = from + got.length;
+        if (!got.length || next <= pos || next >= total) break;
+        pos = next;
       }
       if (!moved) break;
     }
+    if (seq !== _invIn.reviewSeq) return;   /* あとから始めた読み込みが先に終わっていたら、古い結果で上書きしない */
     _invIn.review = { rows:all, total:Math.max(total, all.length), moved:moved };
     return;
   }
@@ -47635,7 +47644,7 @@ function invInReviewTable(Q){
       + '<td onclick="event.stopPropagation()" style="white-space:nowrap">'+invInOrig(r.drive_file_id)+' <button class="btn '+(ok ? 'btn-secondary' : 'btn-primary')+' btn-sm" onclick="invInOpen(\''+id+'\',\'dreview\')">'+t('開く','Open')+'</button></td></tr>';
   });
   h += '</tbody></table></div>';
-  if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B && !invInReviewLoading() ? '' : ' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B ? 'loader-2' : 'checks')+'"></i> '
+  if (edit) h += '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:10px"><button class="btn btn-primary btn-sm"'+(sel.length && !B && !_invIn.busy && !invInReviewLoading() ? '' : ' disabled')+' onclick="invInBatchAsk()"><i class="ti ti-'+(B ? 'loader-2' : 'checks')+'"></i> '
       + (B ? t('反映中… ','Posting… ')+B.done+' / '+B.total : t('選んだ ','Post the ')+sel.length+t(' 件を反映する',' selected'))+'</button>'
       + '<span class="ivx-note" style="margin:0">'+t('原本と 4 項目が合っているものにチェック → まとめて反映。商品・単価は見なくてよい。','Tick the ones whose four items match the original and post them together. Products and prices need not be checked.')
       + (P.pages > 1 ? t('反映するのはこのページでチェックした行だけ。並べ替えても・ページを変えても、チェックは消えません。',' Only the ticked rows on this page are posted; ticks stay when you sort or change pages.') : '')+'</span></div>';
@@ -47678,7 +47687,7 @@ async function invInUsdRow(id){
    （読み直しで次のページの行がこのページに上がってきても、見ていない行は送らない。版が変わった行はサーバーが断る） */
 function invInReviewLoading(){ return _invIn.loaded && _invIn.loaded.review === 'loading'; }
 function invInBatchAsk(){
-  if (_invIn.batching || !invInCanEdit() || invInReviewLoading()) return;
+  if (_invIn.batching || _invIn.busy || !invInCanEdit() || invInReviewLoading()) return;
   var rows = invInPageRows().rows.filter(invInSelected); if (!rows.length) return;
   _invIn.batchPlan = rows.map(function(r){ return { id:r.id, version:r.version, total_cents:r.total_cents }; });
   var sum = rows.reduce(function(a, r){ return a + (Number(r.total_cents)||0); }, 0);
@@ -47801,7 +47810,8 @@ function invInStoreTo(d){
   var E = _invIn.edits || {}, act = invInActiveStores();
   /* 宛先が別の店舗（store_mismatch）のときだけ、その店舗を先に選んでおく。複数の店舗（multi_store）は人が選ぶ */
   var printed = invInStoreHits((d.reasons||[]).filter(function(r){ return r && r.code==='store_mismatch'; }));
-  var to = E.storeTo!=null ? String(E.storeTo) : (printed.filter(function(x){ return x!==d.store_id && act.indexOf(x)>=0; })[0] || '');
+  var cand = printed.filter(function(x){ return x!==d.store_id && act.indexOf(x)>=0; });
+  var to = E.storeTo!=null ? String(E.storeTo) : (cand.length===1 ? cand[0] : '');   /* 1 店だけのときだけ先に選ぶ */
   return act.indexOf(to)>=0 ? to : '';
 }
 function invInStoreBtn(d, canEdit){
@@ -47859,7 +47869,7 @@ async function invInReassign(force){
   } finally { _invIn.busy = false; }
   if (!res) return;
   showToast(t('店舗を ','The store is now ')+name+t(' にしました。数分で取り込み直します（AI は読み直しません）','. It is taken in again within minutes (no new AI reading)'), 'success');
-  if (_invIn.docId === d.id) { _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; delete _invIn.loaded.doc; }   /* 待つあいだに別の invoice を開いていたら閉じない */
+  if (_invIn.docId === d.id) { _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; _invIn.rel = null; _invIn.storeOpen = null; _invIn.plDoc = null; delete _invIn.loaded.doc; }   /* 待つあいだに別の invoice を開いていたら閉じない */
   delete _invIn.loaded.review; delete _invIn.loaded.health; delete _invIn.loaded.list;
   invInRerender();
 }

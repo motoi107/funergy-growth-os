@@ -50,7 +50,7 @@ test('the review list reads every row in pages of 200 and counts a row that move
   } });
   await fn(c, 'invInLoadQueue')('review');
   // The count changed between pages, so the list is read once more from the start.
-  assert.deepEqual(c.calls.map(b => [b.action, b.status, b.limit, b.offset]), [0, 200, 400, 0, 200, 400].map(o => ['list', 'review', 200, o]));
+  assert.deepEqual(c.calls.map(b => [b.action, b.status, b.limit, b.offset]), [0, 180, 360, 0, 180, 360].map(o => ['list', 'review', 200, o]), 'pages overlap by 20 rows');
   assert.equal(c.M._invIn.review.rows.length, 451);
   assert.equal(new Set([...c.M._invIn.review.rows].map(r => r.id)).size, 451, 'every row once, the new one too');
   assert.deepEqual([c.M._invIn.review.total, c.M._invIn.review.moved], [451, false]);
@@ -61,6 +61,20 @@ test('the review list reads every row in pages of 200 and counts a row that move
   await fn(tie, 'invInLoadQueue')('review');
   assert.equal(tie.calls.length, 3);
   assert.equal(tie.M._invIn.review.rows.length, 450);
+  // Two rows with the same date and time swap places between the first and the second query: the overlap still reads both.
+  const L = Array.from({ length: 450 }, (_, i) => row(i + 1));
+  const swapped = L.slice(); [swapped[199], swapped[200]] = [swapped[200], swapped[199]];
+  const sw = app({ api: b => ({ rows: (b.offset === 0 ? swapped : L).slice(b.offset, b.offset + b.limit), total: 450 }) });
+  await fn(sw, 'invInLoadQueue')('review');
+  assert.equal(new Set([...sw.M._invIn.review.rows].map(r => r.id)).size, 450);
+  assert.doesNotMatch(fn(sw, 'invInQueueHtml')('review'), /読み込むあいだに一覧が変わ/);
+  // An older reading that ends after a newer one does not overwrite it.
+  let open1; const g1 = new Promise(r => { open1 = r; }); let n2 = 0;
+  const two = app({ api: async b => { const me = ++n2; if (me === 1) { await g1; return { rows: [row(1)], total: 1 }; } return { rows: [row(2), row(3)], total: 2 }; } });
+  const slow = fn(two, 'invInLoadQueue')('review');
+  await fn(two, 'invInLoadQueue')('review');
+  open1(); await slow;
+  assert.deepEqual([...two.M._invIn.review.rows].map(r => r.id), [id(2), id(3)]);
   // A list that keeps changing (someone posting between every page) is read twice, then the person is told to refresh.
   let k = 0;
   const busy = app({ api: b => ({ rows: Array.from({ length: Math.min(b.limit, 300 - b.offset) }, (_, i) => row(b.offset + i + 1)), total: 300 + (k++) }) });
@@ -77,7 +91,7 @@ test('the review list reads every row in pages of 200 and counts a row that move
   // It stops at 2,000 rows and says how many more there are.
   const big = app({ api: b => ({ rows: Array.from({ length: b.limit }, (_, i) => row(b.offset + i + 1)), total: 2300 }) });
   await fn(big, 'invInLoadQueue')('review');
-  assert.equal(big.calls.length, 10);
+  assert.equal(big.calls.length, 11);
   assert.equal(big.M._invIn.review.rows.length, 2000);
   assert.match(fn(big, 'invInQueueHtml')('review'), /ほかに 300 件あります（読み込むのは 2,000 件まで/);
   // An empty page ends the reading even when the total says more.
@@ -402,6 +416,29 @@ test('independent review P2: a document that could not be read, or a receipt, ca
     assert.deepEqual([JSON.parse(JSON.stringify(c.M._invIn.edits.h)), c.M._invIn.plDoc || null], [{}, null], code);
     assert.doesNotMatch(fn(c, 'invInDetail')('review'), /この内容で反映する<\/button>/, code);
   }
+});
+
+test('third review P2: a packing-list choice that was not saved is forgotten with the other unsaved values', async () => {
+  const before = () => DOC({ doc_type: 'other', posting_kind: 'none', reasons: [{ code: 'doc_type_unknown' }] });
+  const c = app({ api: b => (b.action === 'get' ? before() : { ok: true }) });
+  open(c, before()); fn(c, 'invInSetDocType')('pl');
+  fn(c, 'invInBack')();
+  assert.equal(c.M._invIn.plDoc, null);
+  fn(c, 'invInOpen')(id(2), 'dreview'); await fn(c, 'invInLoadDoc')();
+  assert.doesNotMatch(fn(c, 'invInDetail')('review'), /<option value="pl" selected>/);
+  // Opening another invoice, or a fresh reading that is still not an invoice, forgets it too.
+  fn(c, 'invInSetDocType')('pl'); fn(c, 'invInOpen')(id(9), 'dreview');
+  assert.equal(c.M._invIn.plDoc, null);
+  const d = app({ api: b => (b.action === 'get' ? { ...before(), doc: { ...before().doc, version: 9 } } : { ok: true }) });
+  open(d, before()); fn(d, 'invInSetDocType')('pl'); await fn(d, 'invInLoadDoc')();
+  assert.equal(d.M._invIn.plDoc, null);
+  // No question while another save is running; several printed stores: nothing chosen for the person.
+  const q = app(); q.M._invIn.review = { rows: [row(1)], total: 1 }; q.M._invIn.busy = true;
+  fn(q, 'invInBatchAsk')();
+  assert.equal(q.modals.length, 0);
+  assert.match(fn(q, 'invInQueueHtml')('review'), /<button class="btn btn-primary btn-sm" disabled onclick="invInBatchAsk\(\)">/);
+  const two = app(); open(two, DOC({ reasons: [{ code: 'store_mismatch', detail: 'S2,S4' }] }));
+  assert.match(fn(two, 'invInDetail')('review'), /<option value="" selected>選ぶ<\/option>/);
 });
 
 test('second review P2: a document without an AI reading keeps its type even after the read failure reason was saved away', () => {
