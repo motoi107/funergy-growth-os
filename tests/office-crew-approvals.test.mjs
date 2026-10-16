@@ -48,7 +48,7 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', '_apShortTime',
   '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', 'invTouch',
-  '_apDecidedElsewhere'];
+  '_apDecidedElsewhere', '_apAcctOn', '_apStT'];
 // One-line top-level `var` statements the functions above use (v1087).
 function varSrc(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(SRC); if (!m) throw new Error('var not found: ' + name); return m[0]; }
 const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt, _apPullTry, _apPulling'].map(n => { try { return varSrc(n.split(',')[0]); } catch (_e) { return ''; } });
