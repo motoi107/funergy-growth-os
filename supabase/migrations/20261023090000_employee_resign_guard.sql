@@ -5,8 +5,9 @@
 --   1) 社員の状態（status・resignDate・osDisabled）に版 data._stV を持たせる。状態を変える書き込みは、
 --      読んだときの版（送られてきた _stV）がいまの版と同じときだけ通る（通ったら版を 1 つ進める）。
 --      古い写しからの書き込みは、状態だけ今のまま残す（ほかの欄はそのまま書く。前の版のアプリでも同じ）。
---   2) 退職（または OS アカウントの無効化）から在籍に戻すのは、サーバー（service_role：auth-pin の「在籍に戻す」）と
---      データベースの管理者（SQL Editor）だけ。アプリの公開の鍵（anon）では戻せない（版が合っていても止める）。
+--   2) 退職（または OS アカウントの無効化）から在籍に戻すのは、employee_restore（auth-pin の「在籍に戻す」が service_role で呼ぶ）と
+--      データベースの管理者（SQL Editor）だけ。アプリの公開の鍵（anon）でも、ほかの service_role の書き込みでも戻せない
+--      （版が合っていても止める）。公開の鍵では社員の行を消せない・data を壊せない・消えた退職者の ID を在籍で入れ直せない。
 --      退職にするほう（止めるほう）は今までどおりアプリから。状態の書き込みはすべて記録する（employee_status_log）。
 --   3) 退職・OS 無効になったら、その人のアクセスを止める（在籍に戻したら元に戻す）：
 --      ・ログインの PIN（auth_pins の staff）を使えない印にする（前の PIN は employee_access_hold に残す）。
@@ -89,6 +90,13 @@ language sql stable set search_path=public,pg_temp as $$
  select coalesce(nullif(current_setting('role', true), ''), 'none') in ('service_role','postgres','supabase_admin')
   or (coalesce(nullif(current_setting('role', true), ''), 'none') = 'none' and session_user not in ('authenticator','anon','authenticated'));
 $$;
+-- 在籍に戻してよい書き込みか：データベースの管理者（SQL Editor）か、employee_restore の中（取引の中だけの印 funergy.emp_restore）。
+-- ほかの service_role の書き込み（ほかの関数が端末から来た行をそのまま書く場合など）では戻さない
+create or replace function public.emp_reinstate_ok() returns boolean
+language sql stable set search_path=public,pg_temp as $$
+ select public.emp_privileged() and (coalesce(nullif(current_setting('role', true), ''), 'none') <> 'service_role'
+  or coalesce(current_setting('funergy.emp_restore', true), '') = 'on');
+$$;
 -- 記録（同じ人の同じ「残した・止めた」は 1 時間に 1 回だけ。前の版の端末は保存のたびに全員分を送るため）
 create or replace function public.employee_status_note(p_emp text, p_kind text, p_old text, p_new text, p_ver integer, p_by text, p_detail jsonb)
 returns void language plpgsql security definer set search_path=public,pg_temp as $$
@@ -104,12 +112,27 @@ end $$;
 -- ---------------------------------------------------------------- 3) 書き込みの前：古い写しで状態を戻させない・公開の鍵で在籍に戻させない
 create or replace function public.employees_status_guard() returns trigger
 language plpgsql security definer set search_path=public,pg_temp as $$
-declare od jsonb; nd jsonb; ov integer; nv integer; ok text; nk text; k text; priv boolean; reinstate boolean;
+declare od jsonb; nd jsonb; ov integer; nv integer; ok text; nk text; k text; rpriv boolean; reinstate boolean;
 begin
- priv := public.emp_privileged();
+ rpriv := public.emp_reinstate_ok();
+ -- 退職・停止のまま消えた社員の ID（止めた PIN・アカウントの記録が残っている）を、在籍として新しく入れさせない
+ -- （入れると止めたアクセスが戻る）。行があるとき（upsert の更新）は下の UPDATE で見る
+ if TG_OP = 'INSERT' and not rpriv
+    and not public.emp_blocked_of(NEW.status, case when jsonb_typeof(NEW.data) = 'object' then NEW.data else '{}'::jsonb end)
+    and exists(select 1 from public.employee_access_hold h where h.emp_id = NEW.id::text)
+    and not exists(select 1 from public.employees x where x.id::text = NEW.id::text) then
+  perform public.employee_status_note(NEW.id::text, 'refused', '退職', coalesce(NEW.data->>'status', NEW.status), null, NEW.data->>'_stBy', jsonb_build_object('reason', 'insert_after_delete'));
+  return null;
+ end if;
  if NEW.data is null or jsonb_typeof(NEW.data) <> 'object' then
-  -- data の無い行（アプリは書かない）：退職の列だけは公開の鍵で戻させない
-  if TG_OP = 'UPDATE' and not priv and coalesce(OLD.status, '') = '退職' and NEW.status is distinct from OLD.status then NEW.status := OLD.status; end if;
+  -- data が無い・オブジェクトでない書き込み（アプリは書かない）：前の data と状態をそのまま残す（OS 無効などの印を消させない）
+  if TG_OP = 'UPDATE' and not rpriv and OLD.data is not null and jsonb_typeof(OLD.data) = 'object' then
+   perform public.employee_status_note(NEW.id::text, 'refused', coalesce(nullif(OLD.data->>'status', ''), OLD.status), null, null, null, jsonb_build_object('reason', 'data_not_object'));
+   NEW.data := OLD.data; NEW.status := OLD.status;
+   return NEW;
+  end if;
+  -- data の無い行：退職の列だけは公開の鍵で戻させない
+  if TG_OP = 'UPDATE' and not rpriv and coalesce(OLD.status, '') = '退職' and NEW.status is distinct from OLD.status then NEW.status := OLD.status; end if;
   return NEW;
  end if;
  nd := NEW.data;
@@ -132,12 +155,12 @@ begin
  -- 在籍に戻す＝止めた状態から外れる、または退職から外れる（OS 無効のまま状態だけ在籍にするのも同じ。一覧に戻るため）
  reinstate := (public.emp_blocked_of(OLD.status, od) and not public.emp_blocked_of(NEW.status, nd))
   or (coalesce(nullif(od->>'status', ''), OLD.status, '') = '退職' and coalesce(nullif(nd->>'status', ''), NEW.status, '') <> '退職');
- if nk is distinct from ok and nv = ov and (priv or not reinstate) then
+ if nk is distinct from ok and nv = ov and (rpriv or not reinstate) then
   -- いまの版を読んで状態を変えた：通して版を進める
   nd := nd || jsonb_build_object('_stV', ov + 1, '_stAt', to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
   perform public.employee_status_note(NEW.id::text, case when reinstate then 'restored' else 'accepted' end, split_part(ok, '|', 1), split_part(nk, '|', 1), ov + 1,
    nd->>'_stBy', jsonb_build_object('from', ok, 'to', nk));
-  if not priv then
+  if not rpriv then
    foreach k in array array['_restoreAt','_restoreBy'] loop
     if od ? k then nd := jsonb_set(nd, array[k], od->k, true); else nd := nd - k; end if;
    end loop;
@@ -154,7 +177,7 @@ begin
  foreach k in array array['status','resignDate','osDisabled','_stAt','_stBy'] loop
   if od ? k then nd := jsonb_set(nd, array[k], od->k, true); else nd := nd - k; end if;
  end loop;
- if not priv then
+ if not rpriv then
   foreach k in array array['_restoreAt','_restoreBy'] loop
    if od ? k then nd := jsonb_set(nd, array[k], od->k, true); else nd := nd - k; end if;
   end loop;
@@ -165,15 +188,24 @@ begin
  return NEW;
 end $$;
 revoke all on function public.employees_status_guard() from public, anon, authenticated;
+-- 社員の行は消させない（アプリは消さない。消して在籍で入れ直すと、止めたアクセスが戻る）。サーバー・管理者は消せる
+create or replace function public.employees_delete_guard() returns trigger
+language plpgsql security definer set search_path=public,pg_temp as $$
+begin
+ if public.emp_privileged() then return OLD; end if;
+ perform public.employee_status_note(OLD.id::text, 'refused', coalesce(OLD.data->>'status', OLD.status), null, null, null, jsonb_build_object('reason', 'delete'));
+ return null;
+end $$;
+revoke all on function public.employees_delete_guard() from public, anon, authenticated;
 
 -- ---------------------------------------------------------------- 4) PIN（名前ごと）：その名前の人が退職・停止だけなら止める。在籍の人がいれば止めない
 create or replace function public.employee_pin_reconcile(p_name text) returns text
 language plpgsql security definer set search_path=public,pg_temp as $$
-declare nm text := nullif(btrim(coalesce(p_name, '')), ''); v_blocked text; v_active boolean; cur jsonb; h record;
+declare nm text := case when btrim(coalesce(p_name, '')) = '' then null else p_name end; v_blocked text; v_active boolean; cur jsonb; h record;
 begin
  if nm is null or to_regclass('public.auth_pins') is null then return 'n/a'; end if;
- select min(x.id::text) into v_blocked from public.employees x where btrim(coalesce(x.data->>'name', '')) = nm and public.emp_blocked_of(x.status, x.data);
- select exists(select 1 from public.employees x where btrim(coalesce(x.data->>'name', '')) = nm and not public.emp_blocked_of(x.status, x.data)) into v_active;
+ select min(x.id::text) into v_blocked from public.employees x where coalesce(x.data->>'name', '') = nm and public.emp_blocked_of(x.status, x.data);
+ select exists(select 1 from public.employees x where coalesce(x.data->>'name', '') = nm and not public.emp_blocked_of(x.status, x.data)) into v_active;
  select a.data into cur from public.auth_pins a where a.id = 'staff' for update;
  if not found then
   if v_blocked is null or v_active then return 'open'; end if;
@@ -221,7 +253,7 @@ begin
  select x.id::text as id, x.status, x.data into e from public.employees x where x.id::text = p_emp limit 1;
  if not found then return jsonb_build_object('found', false); end if;
  blocked := public.emp_blocked_of(e.status, e.data);
- nm := nullif(btrim(coalesce(e.data->>'name', '')), '');
+ nm := case when btrim(coalesce(e.data->>'name', '')) = '' then null else e.data->>'name' end;   -- PIN の表と同じ（名前そのまま）
  -- (1) ログインの PIN：いまの名前と、名前が変わる前に止めた名前
  begin
   for h in select * from public.employee_access_hold where kind = 'pin' and emp_id = p_emp and key is distinct from nm loop
@@ -288,10 +320,10 @@ begin
  if TG_OP = 'UPDATE' then ob := public.emp_blocked_of(OLD.status, OLD.data); end if;
  -- 新しく足した人も見る（同じ名前の退職者の PIN を止めていたら、新しい人には初期の PIN にする）
  if nb is distinct from ob or TG_OP = 'INSERT'
-    or (TG_OP = 'UPDATE' and btrim(coalesce(OLD.data->>'name', '')) is distinct from btrim(coalesce(NEW.data->>'name', ''))) then
+    or (TG_OP = 'UPDATE' and coalesce(OLD.data->>'name', '') is distinct from coalesce(NEW.data->>'name', '')) then
   perform public.employee_access_apply(NEW.id::text);
   -- 名前が変わったとき：前の名前の人たち（同じ名前の在籍者）の PIN の扱いも見直す
-  if TG_OP = 'UPDATE' and btrim(coalesce(OLD.data->>'name', '')) is distinct from btrim(coalesce(NEW.data->>'name', '')) then
+  if TG_OP = 'UPDATE' and coalesce(OLD.data->>'name', '') is distinct from coalesce(NEW.data->>'name', '') then
    perform public.employee_pin_reconcile(OLD.data->>'name');
   end if;
  end if;
@@ -304,34 +336,42 @@ revoke all on function public.employees_access_after() from public, anon, authen
 -- 付けるあいだは見張りを外す。2 回目に流したときは、版の無い行だけ（入れたあとに足された行は版 0 のまま）。
 drop trigger if exists employees_status_guard_trg on public.employees;
 drop trigger if exists employees_access_after_trg on public.employees;
+drop trigger if exists employees_delete_guard_trg on public.employees;
 update public.employees set data = data || jsonb_build_object('_stV', 1)
  where data is not null and jsonb_typeof(data) = 'object' and not (data ? '_stV');
 create trigger employees_status_guard_trg before insert or update on public.employees
  for each row execute function public.employees_status_guard();
 create trigger employees_access_after_trg after insert or update on public.employees
  for each row execute function public.employees_access_after();
+create trigger employees_delete_guard_trg before delete on public.employees
+ for each row execute function public.employees_delete_guard();
 
 -- ---------------------------------------------------------------- 6) 在籍に戻す（サーバー・管理者だけ）
 -- auth-pin（v1085）が、メールで認証した CEO・GM・AM・経理かを確かめてから、service_role で呼ぶ。SQL Editor からも使える：
 --   select public.employee_restore('<社員ID>', '<戻した人の名前>');
--- その人の退職記録（app_state の offboardings）も「取消」にする（p_keep_offboard＝true のときはしない：承認の取り消し）。
+-- その人の退職記録（app_state の offboardings）も「取消」にする（p_keep_offboard＝true のときはしない：承認の取り消し。
+-- そのときは「在籍に戻した」印 _restoreAt も付けない＝あとで記録が完了なら、修復の一覧に出る）。
 drop function if exists public.employee_restore(text, text);
 create or replace function public.employee_restore(p_emp text, p_by text, p_keep_offboard boolean default false) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare d jsonb; v_at text := to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'); v_by text := left(coalesce(p_by, ''), 120);
- v_ms bigint := (extract(epoch from clock_timestamp()) * 1000)::bigint; v_upd boolean;
+ v_ms bigint := (extract(epoch from clock_timestamp()) * 1000)::bigint; v_upd boolean; v_done boolean;
 begin
  if coalesce(p_emp, '') = '' then return jsonb_build_object('ok', false, 'error', 'not_found'); end if;
  if not public.emp_privileged() then return jsonb_build_object('ok', false, 'error', 'forbidden'); end if;
- update public.employees x set status = '在籍', data = x.data || jsonb_build_object('status', '在籍', 'resignDate', '', 'osDisabled', false,
-   '_restoreAt', v_at, '_restoreBy', v_by, '_stBy', v_by)
+ perform set_config('funergy.emp_restore', 'on', true);          -- この取引の中だけ：在籍に戻す書き込みとして通す
+ update public.employees x set status = '在籍', data = x.data || jsonb_build_object('status', '在籍', 'resignDate', '', 'osDisabled', false, '_stBy', v_by)
+   || case when coalesce(p_keep_offboard, false) then '{}'::jsonb else jsonb_build_object('_restoreAt', v_at, '_restoreBy', v_by) end
   where x.id::text = p_emp and public.emp_blocked_of(x.status, x.data)
   returning x.data into d;
+ v_done := found;
+ perform set_config('funergy.emp_restore', 'off', true);
  if d is null then
   select x.data into d from public.employees x where x.id::text = p_emp;
   if d is null then return jsonb_build_object('ok', false, 'error', 'not_found'); end if;
  end if;
  if not coalesce(p_keep_offboard, false) and to_regclass('public.app_state') is not null then
+  perform set_config('funergy.emp_restore', 'on', true);         -- 完了の記録も取消にできる（見張り 8 が見る）
   v_upd := exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'app_state' and column_name = 'updated_at');
   if v_upd then
    update public.app_state s set updated_at = now(), value = (
@@ -350,8 +390,9 @@ begin
     where (s.key = 'offboardings' or s.key like 'spl\_offboardings\_%') and jsonb_typeof(s.value) = 'array'
      and exists(select 1 from jsonb_array_elements(s.value) x where jsonb_typeof(x) = 'object' and x->>'empId' = p_emp and coalesce(x->>'status', '') <> '取消');
   end if;
+  perform set_config('funergy.emp_restore', 'off', true);
  end if;
- return jsonb_build_object('ok', true, 'already', (d->>'_restoreAt') is distinct from v_at, 'data', d, 'state', public.employee_access_state(p_emp, false));
+ return jsonb_build_object('ok', true, 'already', not v_done, 'data', d, 'state', public.employee_access_state(p_emp, false));
 end $$;
 
 -- PIN を 1 人分だけ書く（auth-pin v1085 の本人の変更・GM・CEO のリセット）。PIN の表を丸ごと書き戻さないので、
@@ -380,12 +421,12 @@ begin
   select x.id::text as id, x.status, x.data into e from public.employees x where x.id::text = p_emp limit 1;
   if not found then return jsonb_build_object('found', false); end if;
   blocked := public.emp_blocked_of(e.status, e.data);
-  nm := nullif(btrim(coalesce(e.data->>'name', '')), '');
+  nm := case when btrim(coalesce(e.data->>'name', '')) = '' then null else e.data->>'name' end;
   pin := 'n/a'; mgr := 'n/a';
   if to_regclass('public.auth_pins') is not null and nm is not null then
    select a.data into cur from public.auth_pins a where a.id = 'staff';
    pin := case when (cur->>nm) = public.emp_pin_mark() then 'locked'
-    when exists(select 1 from public.employees x where x.id::text <> p_emp and btrim(coalesce(x.data->>'name', '')) = nm and not public.emp_blocked_of(x.status, x.data)) then 'shared_name'
+    when exists(select 1 from public.employees x where x.id::text <> p_emp and coalesce(x.data->>'name', '') = nm and not public.emp_blocked_of(x.status, x.data)) then 'shared_name'
     else 'open' end;
   end if;
   if to_regclass('public.manager_auth') is not null and exists(select 1 from information_schema.columns
@@ -408,6 +449,7 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 8) 退職記録（app_state の offboardings）：完了・取消を古い写しで戻させない
+-- 完了を取消にできるのは「在籍に戻す」（employee_restore）と管理者だけ（前の版のアプリの「在籍に戻す」は社員を戻せないので、記録も変えない）
 create or replace function public.offboard_record_guard() returns trigger
 language plpgsql security definer set search_path=public,pg_temp as $$
 declare o jsonb; n jsonb; out jsonb := '[]'::jsonb; seen text[] := array[]::text[]; f text; keep boolean; v_new text;
@@ -420,7 +462,7 @@ begin
    seen := seen || (n->>'id');
   end if;
   keep := o is not null and not coalesce(n->'_deleted' = 'true'::jsonb, false) and (
-    (o->>'status' = '完了' and coalesce(n->>'status', '') not in ('完了','取消'))
+    (o->>'status' = '完了' and coalesce(n->>'status', '') <> '完了' and not (n->>'status' = '取消' and public.emp_reinstate_ok()))
     or (o->>'status' = '取消' and coalesce(n->>'status', '') <> '取消'));
   if keep then
    v_new := n->>'status';
@@ -463,4 +505,5 @@ revoke all on function public.emp_status_key(text, jsonb) from public, anon, aut
 revoke all on function public.emp_blocked_of(text, jsonb) from public, anon, authenticated;
 revoke all on function public.emp_pin_mark() from public, anon, authenticated;
 revoke all on function public.emp_privileged() from public, anon, authenticated;
-grant execute on function public.emp_status_ver(jsonb), public.emp_status_key(text, jsonb), public.emp_blocked_of(text, jsonb), public.emp_pin_mark(), public.emp_privileged() to service_role;
+revoke all on function public.emp_reinstate_ok() from public, anon, authenticated;
+grant execute on function public.emp_status_ver(jsonb), public.emp_status_key(text, jsonb), public.emp_blocked_of(text, jsonb), public.emp_pin_mark(), public.emp_privileged(), public.emp_reinstate_ok() to service_role;

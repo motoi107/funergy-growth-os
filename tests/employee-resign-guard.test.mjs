@@ -78,7 +78,7 @@ test('the migration gives the rows version 1, runs twice to the same result, and
   await pg.exec(MIG);
   assert.deepEqual(await all(pg), a, 'running it again changes nothing');
   const trg = (await pg.query("select tgname from pg_trigger where tgrelid in ('public.employees'::regclass, 'public.app_state'::regclass) and not tgisinternal order by tgname")).rows.map(r => r.tgname);
-  assert.deepEqual(trg, ['employees_access_after_trg', 'employees_status_guard_trg', 'offboard_record_guard_trg']);
+  assert.deepEqual(trg, ['employees_access_after_trg', 'employees_delete_guard_trg', 'employees_status_guard_trg', 'offboard_record_guard_trg']);
   assert.deepEqual(await pins(pg), { 'Ann Sample': '4821', 'Gus Sample': '7710', 'Twin Sample': '3333' }, 'no PIN is touched by the migration itself');
   assert.equal(await mgr(pg, U.ann), 'office');
   // a row added after the first run keeps version 0 when the SQL is run again (a pending edit on it is not turned into a conflict)
@@ -302,10 +302,18 @@ test('the offboarding record in app_state: 完了 and 取消 are not turned back
   assert.deepEqual(v.map(x => [x.id, x.status, x.completedBy || '']), [['o1', '完了', 'Gus Sample'], ['o2', '申請中', '']]);
   assert.deepEqual(v[0].checklist, [{ done: true }]);
   assert.ok((await log(pg, 'e1')).some(x => x.kind === 'offboard_kept' && x.new_status === '進行中'));
-  // a copy that does not have o1 at all keeps it; 完了 → 取消 (restore) goes in, 取消 does not go back
+  // a copy that does not have o1 at all keeps it
   await put([{ id: 'o2', empId: 'e2', status: '申請中' }]);
   assert.deepEqual((await get()).map(x => x.id).sort(), ['o1', 'o2']);
+  // 完了 → 取消 from the app key (the old app's 在籍に戻す, which cannot restore the person either) does not go in …
   await put([{ ...v[0], status: '取消' }, { id: 'o2', empId: 'e2', status: '申請中' }]);
+  assert.equal((await get()).find(x => x.id === 'o1').status, '完了');
+  // … nor from another service_role writer; only the restore (employee_restore) or the SQL Editor
+  await as(pg, 'service_role', () => pg.query("update app_state set value = $1 where key='spl_offboardings__'", [JSON.stringify([{ ...v[0], status: '取消' }, { id: 'o2', empId: 'e2', status: '申請中' }])]));
+  assert.equal((await get()).find(x => x.id === 'o1').status, '完了');
+  await pg.query("update app_state set value = $1 where key='spl_offboardings__'", [JSON.stringify([{ ...v[0], status: '取消' }, { id: 'o2', empId: 'e2', status: '申請中' }])]);
+  assert.equal((await get()).find(x => x.id === 'o1').status, '取消', 'the SQL Editor');
+  // 取消 does not go back
   await put([{ ...v[0], status: '完了' }, { id: 'o2', empId: 'e2', status: '申請中' }]);
   assert.equal((await get()).find(x => x.id === 'o1').status, '取消');
   // a deletion mark is respected
@@ -334,8 +342,9 @@ test('restoring through the server also sets that person\'s offboarding records 
   assert.deepEqual(row.value.map(x => x.id), ['o1', 'o2', 'o3', 'o4'], 'the order stays');
   // undoing an approval: the person comes back, the record is left for the app (申請中)
   const r2 = await as(pg, 'service_role', async () => (await pg.query("select public.employee_restore('e2', 'Gus Sample', true) as v")).rows[0].v);
-  assert.equal(r2.ok, true);
+  assert.equal(r2.ok, true); assert.equal(r2.already, false);
   assert.equal((await row_(pg, 'e2')).data.status, '在籍');
+  assert.equal((await row_(pg, 'e2')).data._restoreAt, undefined, 'no "restored" mark: if the record ends up 完了 anyway, the repair list shows the person');
   row = (await pg.query("select value from app_state where key='spl_offboardings__'")).rows[0];
   assert.equal(row.value.find(x => x.id === 'o2').status, '進行中');
   // twice is the same; nobody of that id: not_found
@@ -343,6 +352,65 @@ test('restoring through the server also sets that person\'s offboarding records 
   assert.deepEqual(await restore(pg, 'nobody'), { ok: false, error: 'not_found' });
 });
 const row_ = row;
+
+test('the app key cannot delete a row, put a resigned person back by deleting and inserting, or break the data; another service_role writer cannot reinstate either', async () => {
+  const pg = await setup();
+  await pg.exec('grant delete on public.employees to anon');               // in case the project grants it (Supabase does by default)
+  await resign(pg, 'e1', { osDisabled: true });
+  const before = (await row(pg, 'e1')).data;
+  // delete: refused (the row stays) and logged
+  await as(pg, 'anon', () => pg.query("delete from employees where id='e1'"));
+  assert.equal((await row(pg, 'e1')).data.status, '退職');
+  assert.ok((await pg.query("select 1 from employee_status_log where emp_id='e1' and kind='refused' and detail->>'reason'='delete'")).rows.length);
+  // data that is not an object: the stored data and state stay (OS account off is not dropped)
+  await upsert(pg, [{ id: 'e2', name: 'Bob Sample', status: '在籍' }]);
+  await upsert(pg, [{ ...(await row(pg, 'e2')).data, osDisabled: true }]);
+  assert.equal(await state(pg, 'e2').then(x => x.blocked), true);
+  await as(pg, 'anon', () => pg.query(`update employees set data = '"x"'::jsonb where id='e2'`));
+  assert.equal((await row(pg, 'e2')).data.osDisabled, true);
+  assert.equal((await state(pg, 'e2')).blocked, true);
+  // the database owner deletes a resigned person's row (her stops are still recorded); the app key cannot insert her back in service
+  await pg.query("delete from employees where id='e1'");
+  await upsert(pg, [{ ...before, status: '在籍', osDisabled: false, resignDate: '' }]);
+  assert.equal((await pg.query("select count(*)::int as n from employees where id='e1'")).rows[0].n, 0, 'not inserted');
+  assert.equal((await pins(pg))['Ann Sample'], '!blocked'); assert.equal(await mgr(pg, U.ann), 'suspended'); assert.equal(await bot(pg, U.ann), false);
+  // … inserting her as resigned is allowed (nothing comes back)
+  await upsert(pg, [{ ...before }]);
+  assert.equal((await row(pg, 'e1')).data.status, '退職');
+  // another service_role writer (not the restore) cannot put her back in service; its other changes go in
+  await as(pg, 'service_role', () => pg.query(`update employees set status='在籍', data = data || '{"status":"在籍","osDisabled":false,"title":"Senior Accountant","_restoreAt":"2099-01-01T00:00:00Z"}' where id='e1'`));
+  let r = await row(pg, 'e1');
+  assert.equal(r.data.status, '退職'); assert.equal(r.data.title, 'Senior Accountant'); assert.equal(r.data._restoreAt, undefined);
+  assert.equal((await pins(pg))['Ann Sample'], '!blocked');
+  // the restore (employee_restore as service_role) does it, and the mark does not stay on after it
+  assert.equal((await restore(pg, 'e1')).ok, true);
+  assert.equal((await row(pg, 'e1')).data.status, '在籍'); assert.equal(await mgr(pg, U.ann), 'office');
+  await resign(pg, 'e1');
+  for (const keep of [true, false]) {                                   // undoing an approval (no record change) and the full restore
+    await upsert(pg, [{ ...(await row(pg, 'e2')).data, osDisabled: true }]);
+    await as(pg, 'service_role', async () => {
+      await pg.exec('begin');
+      try {
+        await pg.query("select public.employee_restore('e2', 'Gus Sample', $1)", [keep]);
+        await pg.query(`update employees set status='在籍', data = data || '{"status":"在籍"}' where id='e1'`);   // same transaction, after the restore
+        assert.equal((await pg.query("select data->>'status' as s from employees where id='e1'")).rows[0].s, '退職', 'the restore\'s mark ends with it (keep ' + keep + ')');
+      } finally { await pg.exec('commit'); }
+    });
+  }
+});
+
+test('PINs are keyed by the name exactly as stored (as the app and auth-pin do)', async () => {
+  const pg = await setup();
+  await pg.query(`update auth_pins set data = data || '{"Cy Sample ":"5555"}' where id='staff'`);
+  await upsert(pg, [{ id: 'e7', name: 'Cy Sample ', status: '在籍' }]);
+  await resign(pg, 'e7');
+  const p = await pins(pg);
+  assert.equal(p['Cy Sample '], '!blocked');
+  assert.equal(Object.prototype.hasOwnProperty.call(p, 'Cy Sample'), false);
+  assert.equal((await state(pg, 'e7')).pin, 'locked');
+  await restore(pg, 'e7');
+  assert.equal((await pins(pg))['Cy Sample '], '5555');
+});
 
 test('a status change made on a stale copy is kept and logged; the same change on the current version goes in', async () => {
   const pg = await setup();

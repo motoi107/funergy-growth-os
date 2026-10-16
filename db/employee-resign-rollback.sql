@@ -26,6 +26,7 @@ begin
  if to_regclass('public.employees') is not null then
   execute 'drop trigger if exists employees_status_guard_trg on public.employees';
   execute 'drop trigger if exists employees_access_after_trg on public.employees';
+  execute 'drop trigger if exists employees_delete_guard_trg on public.employees';
  end if;
  if to_regclass('public.app_state') is not null then
   execute 'drop trigger if exists offboard_record_guard_trg on public.app_state';
@@ -40,7 +41,9 @@ drop function if exists public.employees_access_after();
 drop function if exists public.employee_access_apply(text);
 drop function if exists public.employee_pin_reconcile(text);
 drop function if exists public.employees_status_guard();
+drop function if exists public.employees_delete_guard();
 drop function if exists public.employee_status_note(text, text, text, text, integer, text, jsonb);
+drop function if exists public.emp_reinstate_ok();
 drop function if exists public.emp_privileged();
 drop function if exists public.emp_pin_mark();
 drop function if exists public.emp_blocked_of(text, jsonb);

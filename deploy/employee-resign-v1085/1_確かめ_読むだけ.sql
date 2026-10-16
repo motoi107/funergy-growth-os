@@ -89,8 +89,8 @@ begin
    select count(*), string_agg(e.id::text || ' ' || coalesce(e.data->>'name',''), '、 ' order by e.id::text) from public.employees e, p
    where (coalesce(nullif(e.data->>'status',''), e.status, '') = '退職' or coalesce(e.data->'osDisabled' = 'true'::jsonb, false))
     and nullif(btrim(coalesce(e.data->>'name','')), '') is not null
-    and (p.m->>btrim(e.data->>'name')) is distinct from '!blocked'
-    and not exists(select 1 from public.employees x where x.id::text <> e.id::text and btrim(coalesce(x.data->>'name','')) = btrim(e.data->>'name')
+    and (p.m->>(e.data->>'name')) is distinct from '!blocked'
+    and not exists(select 1 from public.employees x where x.id::text <> e.id::text and coalesce(x.data->>'name','') = e.data->>'name'
       and not (coalesce(nullif(x.data->>'status',''), x.status, '') = '退職' or coalesce(x.data->'osDisabled' = 'true'::jsonb, false))) $q$ into c, d;
   value := c::text; verdict := case when c = 0 then 'OK' else '要対応（4_ で止める）' end; detail := left(d, 900);
  end if;
@@ -99,7 +99,7 @@ begin
  n := 9; item := 'resigned / stopped employees sharing a name with someone in service (PIN not stopped by name)'; value := '0'; verdict := 'OK'; detail := null;
  select count(*), string_agg(e.id::text || ' ' || coalesce(e.data->>'name',''), '、 ') into c, d from public.employees e
   where (coalesce(nullif(e.data->>'status',''), e.status, '') = '退職' or coalesce(e.data->'osDisabled' = 'true'::jsonb, false))
-   and exists(select 1 from public.employees x where x.id::text <> e.id::text and btrim(coalesce(x.data->>'name','')) = btrim(coalesce(e.data->>'name',''))
+   and exists(select 1 from public.employees x where x.id::text <> e.id::text and coalesce(x.data->>'name','') = coalesce(e.data->>'name','')
     and not (coalesce(nullif(x.data->>'status',''), x.status, '') = '退職' or coalesce(x.data->'osDisabled' = 'true'::jsonb, false)));
  value := c::text; verdict := case when c = 0 then 'OK' else 'info（PIN は名前で決まるので止めない。在籍の人の PIN を変えてもらう）' end; detail := left(d, 900); return next;
 

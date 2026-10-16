@@ -114,6 +114,15 @@ async function server({ guard = true, extra = [] } = {}) {
         }
         return res(200, { ok: false });
       }
+      if (path === '/auth/v1/token' && method === 'POST') {             // e-mail sign-in (synthetic accounts)
+        const b = JSON.parse(init.body || '{}'), acc = { 'ann@example.test': 'tok-ann' }[b.email];
+        return acc && b.password === 'pw' ? res(200, { access_token: acc, refresh_token: 'r-' + acc }) : res(400, { error: 'invalid_grant' });
+      }
+      if (path === '/rest/v1/manager_auth' && method === 'GET') {       // RLS: the signed-in account's own row
+        const tok = String((init.headers || {}).Authorization || '').replace(/^Bearer /, '');
+        const uid = { 'tok-ann': '00000000-0000-4000-8000-0000000000b1' }[tok];
+        return res(200, uid ? (await pg.query('select emp_id, role from manager_auth where user_id = $1', [uid])).rows : []);
+      }
       if (path.startsWith('/auth/v1/')) return res(200, {});
       return res(200, []);
     } finally { S.inflight--; }
@@ -134,7 +143,7 @@ const FNS = ['lsSet', '_pushWithOutbox', 'syncMasterToSupabase', 'supaUpsert', '
   '_opMergeDef', '_fetchOpValue', '_opUpsertRow', '_opWriteBack', 'opMergePush', 'pullOpKey', '_splitRead', '_splitWrite', '_splitPrefix', '_mutBare',
   'ghTxnBegin', 'ghTxnEnd', 'empStatusLabel'];
 const FNS_1085 = ['resignRepairCandidates', 'resignRepairApply', 'resignRepairKeep', '_obBusy', 'secAuthSession', 'secAuthEnsure', 'secAuthCall', 'secAuthNeedLogin',
-  'secAuthErrText', 'secAuthLoginModal', '_restoreErrText', 'empRestoreServer', 'reopenApproval', '_reopenOffboardApproval', 'saveEmp'];
+  'secAuthErrText', 'secAuthLoginModal', '_restoreErrText', 'empRestoreServer', 'reopenApproval', '_reopenOffboardApproval', 'saveEmp', 'doManagerLogin', 'managerRoleAllowed'];
 function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = true } = {}) {
   const x = extractor(src);
   const v1085 = x.has('/* FUNERGY_EMP_SYNC_BEGIN */');
@@ -148,7 +157,7 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
   } else parts.push('var OP_MERGE = {};');
   const LSMAP = new Map();
   const c = { console, LSMAP, TOASTS: [], ALERTS: [], OUTBOX: new Set(), LOGOUTS: 0, MODALS: 0, fetch: (...a) => S.fetch(...a), Response, URL, setTimeout, clearTimeout, setInterval: () => 0, clearInterval() {},
-    curUserName: user, curRole: role, curStoreLogin: false, loginPerson: me, navigator: { onLine: true }, CONFIRM: true, DOMV: {}, SESSION: null, LS_FULL: false, IDB_ON: idb };
+    curUserName: user, curRole: role, curStoreLogin: false, loginPerson: me, navigator: { onLine: true }, CONFIRM: true, DOMV: {}, SESSION: null, LS_FULL: false, IDB_ON: idb, SECURE: 0 };
   vm.createContext(c);
   vm.runInContext(`var window = this; var document = { getElementById: function(id){ if (id === 'modal-overlay') return { classList: { contains: function(){ return false; } } }; return Object.prototype.hasOwnProperty.call(DOMV, id) ? { value: DOMV[id], checked: false, classList: { contains: function(){ return false; } } } : null; }, querySelectorAll: function(){ return []; }, hidden: false, activeElement: null };
     var localStorage = { getItem: function(k){ return LSMAP.has(k) ? LSMAP.get(k) : null; }, setItem: function(k, v){ if (LS_FULL) throw new Error('QuotaExceededError'); LSMAP.set(k, String(v)); }, removeItem: function(k){ LSMAP.delete(k); }, key: function(i){ return Array.from(LSMAP.keys())[i]; }, get length(){ return LSMAP.size; } };
@@ -170,7 +179,7 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
     function todayISO(){ return '2026-10-15'; } function fmtJP(x){ return String(x).slice(0,10); } function escapeHtml(s){ return String(s==null?'':s); }
     function showSyncSplash(){} function hideSyncSplash(){} function refreshStaffPinsFromCloud(){ return Promise.resolve(); } function refreshStores(){}
     function getOBTemplate(){ return [{ id:'t1', label:'Crew化', type:'完了条件' }]; } function getSkills(){ return {}; } function setSkills(){} function setWorkCondition(){} function getWorkCondition(){ return {}; }
-    function doLogout(){ LOGOUTS++; curUserName = null; loginPerson = null; } function managerLogout(){ LOGOUTS++; }
+    function doLogout(){ LOGOUTS++; curUserName = null; loginPerson = null; } function managerLogout(){ LOGOUTS++; } function showManagerSecure(){ SECURE++; }
     function invInKeepAll(){ var v = _lsRaw('_invin_signin', null); return (v && v.people) ? v : { v:1, people:{} }; }
     function invInKeepSet(rt, w){ var a = invInKeepAll(); if (rt) a.people[w] = { rt:rt, at:Date.now() }; else delete a.people[w]; put('_invin_signin', a); return true; }
     function invInSession(){ return SESSION; } function invInKept(){ return false; } function invInRestore(){ return Promise.resolve(); } function invInSessionRefresh(){ return Promise.resolve(null); }
@@ -356,6 +365,61 @@ test('v1085: two devices change the same person\'s status — the one that read 
   assert.equal(S.calls.filter(x => x.startsWith('POST')).length, posts, 'nothing was sent by the load');
 });
 
+test('v1085: a second status change made while the first is being sent is kept (not taken for another device\'s change), also when a load or a failed read-back comes in between', async () => {
+  const S = await server({ extra: [['e4', 'Dee Sample', 'crew', 'Crew', 'F01'], ['e5', 'Eli Sample', 'crew', 'Crew', 'F01']] });
+  const a = await pulled(S, NOW);
+  // 1) leave, then the resignation is pressed while the leave is being sent
+  let sent1 = false;
+  S.hold = async (url, init) => { if (!sent1 && (init.method || 'GET').toUpperCase() === 'POST' && String(url).includes('/rest/v1/employees')) { sent1 = true; a.run("deleteEmp('e2')"); } };
+  a.run("setEmpStatusQuick('e2', '休職')");
+  await S.settle(); S.hold = null; await a.run('flushOutbox()'); await S.settle();
+  assert.equal(sent1, true);
+  assert.ok((await S.log('e2')).some(x => x.kind === 'accepted' && x.new_status === '休職'), 'the leave went in first');
+  assert.equal((await S.emp('e2')).data.status, '退職', 'the resignation is not lost');
+  assert.equal(a.emp('e2').status, '退職');
+  assert.ok(!a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)), 'not told it was another device');
+  assert.equal(a.run('empDirtyCount()'), 0);
+  // 2) the read-back after the first push fails; the next change is sent on the version the first one made
+  let posted = false, failed = false;
+  S.hold = async (url, init) => { const m = (init.method || 'GET').toUpperCase(); if (!String(url).includes('/rest/v1/employees')) return;
+    if (m === 'POST') posted = true; else if (posted && !failed) { failed = true; throw new TypeError('Failed to fetch'); } };
+  a.run("setEmpStatusQuick('e4', '休職')"); await S.settle(); S.hold = null;
+  assert.equal(failed, true); assert.equal((await S.emp('e4')).data.status, '休職');
+  a.run("deleteEmp('e4')"); await S.settle(); await a.run('flushOutbox()'); await S.settle();
+  assert.equal((await S.emp('e4')).data.status, '退職');
+  assert.ok(!a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)));
+  // 3) a load comes in after the first push went in and before its read-back, while a second change is waiting
+  let posted3 = false, loaded = false;
+  S.hold = async (url, init) => { const m = (init.method || 'GET').toUpperCase(); if (!String(url).includes('/rest/v1/employees')) return;
+    if (m === 'POST') { posted3 = true; return; }
+    if (posted3 && !loaded && String(url).includes('id=in')) { loaded = true; a.run("deleteEmp('e5')"); await a.run('loginBootstrapPull()'); } };
+  a.run("setEmpStatusQuick('e5', '休職')"); await S.settle(); S.hold = null;
+  await a.run('flushOutbox()'); await S.settle();
+  assert.equal(loaded, true);
+  assert.equal((await S.emp('e5')).data.status, '退職');
+  assert.equal(a.emp('e5').status, '退職');
+  assert.ok(!a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)));
+  assert.equal(a.run('empDirtyCount()'), 0);
+});
+
+test('v1085: the manager e-mail sign-in asks the server when this device still shows the person as resigned (restored elsewhere); without the server it refuses', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW);
+  a.run("deleteEmp('e1')"); await S.settle();
+  assert.equal((await S.pg.query("select role from manager_auth where emp_id='e1'")).rows[0].role, 'suspended');
+  Object.assign(a.DOMV, { 'mgr-email': 'ann@example.test', 'mgr-pass': 'pw' });
+  await a.run('doManagerLogin()'); await S.settle();
+  assert.equal(a.SECURE, 0, 'resigned: refused');
+  await S.pg.query("select public.employee_restore('e1', 'Gus Sample')");     // restored on another device / by the administrator
+  assert.equal(a.emp('e1').status, '退職', 'this device still shows the old state');
+  S.hold = async (url) => { if (String(url).includes('/rest/v1/employees')) throw new TypeError('Failed to fetch'); };
+  await a.run('doManagerLogin()'); await S.settle(); S.hold = null;
+  assert.equal(a.SECURE, 0, 'cannot ask the server: refused as before');
+  await a.run('doManagerLogin()'); await S.settle();
+  assert.equal(a.SECURE, 1, 'the server says in service: signed in');
+  assert.equal(a.emp('e1').status, '在籍', 'and this device takes the server state');
+});
+
 test('v1085: a load that started before the resignation was sent does not bring the person back on screen (versions only go up)', async () => {
   const S = await server();
   const a = await pulled(S, NOW);
@@ -536,7 +600,7 @@ test('v1085: the quick status buttons and the onboarding never bring a resigned 
 });
 
 test('v1085: undoing an offboarding approval re-reads the record (completed elsewhere: refused) and restores through the server (record back to 申請中)', async () => {
-  const S = await server();
+  const S = await server({ extra: [['e4', 'Dee Sample', 'crew', 'Crew', 'F01']] });
   const a = await pulled(S, NOW), b = await pulled(S, NOW);
   // the approval on A started the offboarding (Ann resigned, record 進行中); B (stale copy of the record) completes it
   a.run(OB({ id: 'ob1', empId: 'e1', empName: 'Ann Sample', store: 'OFFICE', status: '進行中', lastWorkDate: '2026-10-14', checklist: [], settlement: { pay: true, tip: true } }));
@@ -561,6 +625,19 @@ test('v1085: undoing an offboarding approval re-reads the record (completed else
   assert.equal(o2.status, '申請中'); assert.equal(o2._gen, 1);
   assert.equal((await S.records()).find(x => x.id === 'ob2').status, '申請中', 'the server takes 申請中 (the record was not final)');
   assert.equal(a.run("ls('approvals', [])[0].status"), 'pending');
+  // the undo races with a completion on another device (the record becomes 完了 while restoring): the record is not set back,
+  // the person is in service with a completed record → told, and listed for the repair (no "restored" mark)
+  a.run(OB({ id: 'ob4', empId: 'e4', empName: 'Dee Sample', store: 'F01', status: '進行中', lastWorkDate: '2026-10-14', initiatedAt: '2026-10-14T00:00:00Z', checklist: [], settlement: { pay: true, tip: true } }));
+  a.run("deleteEmp('e4')"); a.run(`put('approvals', [{ id:'ap4', type:'退職', ref:'ob4', status:'approved' }])`); await S.settle();
+  S.hold = async (url, init) => { if (!String(url).includes('/functions/v1/auth-pin') || JSON.parse(init.body).action !== 'restore') return; S.hold = null;
+    const v = (await S.records()).map(x => x.id === 'ob4' ? { ...x, status: '完了', completedAt: '2026-10-15T00:00:00Z', completedBy: 'Gus Sample' } : x);
+    await S.pg.query("update app_state set value = $1 where key = 'spl_offboardings__'", [JSON.stringify(v)]); };
+  await a.run("reopenApproval('ap4', true)"); await S.settle();
+  assert.match(a.ALERTS.at(-1), /ほかの端末でこの退職手続きが完了/);
+  assert.equal(a.run("ls('approvals', [])[0].status"), 'approved');
+  assert.equal((await S.records()).find(x => x.id === 'ob4').status, '完了');
+  assert.equal((await S.emp('e4')).data.status, '在籍'); assert.equal((await S.emp('e4')).data._restoreAt, undefined);
+  assert.ok(a.run("resignRepairCandidates().map(function(x){ return x.e.id; })").includes('e4'), 'listed for the repair');
   // the edit form cannot leave 退職
   Object.assign(a.DOMV, { 'e-name': 'Ann Sample', 'e-status': '在籍' });
   a.run("saveEmp('e1')"); await S.settle();
@@ -605,6 +682,14 @@ test('v1085: a row the server refuses does not block the others; it is marked an
   assert.equal(a.run('empDirtyCount()'), 0, 'the refused one is not retried by itself');
   assert.ok(a.run('_empDirtyGet()').e2.err.status === 400);
   assert.ok(a.TOASTS.some(([m]) => /受け付けませんでした（400）/.test(m)));
+  // a save of someone else, on a list where the private fields (wage, e-mail) were laid over, does not clear the mark
+  const posts = S.calls.filter(x => x.startsWith('POST /rest/v1/employees')).length;
+  a.run("window._empPrivate = { e2: { wage: 21, email: 'bob@example.test', phone: '' }, e1: { wage: 30, email: '', phone: '' } }; var L1 = getEmployees(); L1.find(function(e){ return e.id==='e1'; }).title = 'Accountant II'; lsSet('m_employees', L1);");
+  await S.settle();
+  assert.ok(a.run('_empDirtyGet()').e2.err, 'still marked');
+  assert.equal((await S.emp('e1')).data.title, 'Accountant II');
+  assert.equal(S.calls.filter(x => x.startsWith('POST /rest/v1/employees')).length, posts + 1, 'only the edited person is sent');
+  assert.equal((await S.emp('e1')).data.wage, undefined, 'the private fields are not sent');
   a.run("var L2 = getEmployees(); delete L2.find(function(e){ return e.id==='e2'; }).__bad; lsSet('m_employees', L2);");   // fixed: sent again
   await S.settle();
   assert.equal(a.run('empDirtyCount()'), 0);
