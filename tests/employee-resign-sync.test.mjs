@@ -367,7 +367,7 @@ test('v1085: two devices change the same person\'s status — the one that read 
 
 test('v1085: a second status change made while the first is being sent is kept (not taken for another device\'s change), also when a load or a failed read-back comes in between', async () => {
   const S = await server({ extra: [['e4', 'Dee Sample', 'crew', 'Crew', 'F01'], ['e5', 'Eli Sample', 'crew', 'Crew', 'F01']] });
-  const a = await pulled(S, NOW);
+  let a = await pulled(S, NOW);
   // 1) leave, then the resignation is pressed while the leave is being sent
   let sent1 = false;
   S.hold = async (url, init) => { if (!sent1 && (init.method || 'GET').toUpperCase() === 'POST' && String(url).includes('/rest/v1/employees')) { sent1 = true; a.run("deleteEmp('e2')"); } };
@@ -385,9 +385,12 @@ test('v1085: a second status change made while the first is being sent is kept (
     if (m === 'POST') posted = true; else if (posted && !failed) { failed = true; throw new TypeError('Failed to fetch'); } };
   a.run("setEmpStatusQuick('e4', '休職')"); await S.settle(); S.hold = null;
   assert.equal(failed, true); assert.equal((await S.emp('e4')).data.status, '休職');
-  a.run("deleteEmp('e4')"); await S.settle(); await a.run('flushOutbox()'); await S.settle();
+  // … and the app is reloaded before the next change (what was sent is kept with the unsent changes)
+  const a2 = device(S, NOW); for (const [k, v] of a.LSMAP) a2.LSMAP.set(k, v);
+  a2.run("deleteEmp('e4')"); await S.settle(); await a2.run('flushOutbox()'); await S.settle();
   assert.equal((await S.emp('e4')).data.status, '退職');
-  assert.ok(!a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)));
+  assert.ok(!a2.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)));
+  a = a2;                                                               // the reloaded app goes on
   // 3) a load comes in after the first push went in and before its read-back, while a second change is waiting
   let posted3 = false, loaded = false;
   S.hold = async (url, init) => { const m = (init.method || 'GET').toUpperCase(); if (!String(url).includes('/rest/v1/employees')) return;
@@ -418,6 +421,49 @@ test('v1085: the manager e-mail sign-in asks the server when this device still s
   await a.run('doManagerLogin()'); await S.settle();
   assert.equal(a.SECURE, 1, 'the server says in service: signed in');
   assert.equal(a.emp('e1').status, '在籍', 'and this device takes the server state');
+  // a resignation on this device that is not sent yet is not undone by the sign-in: refused while it cannot be sent, sent first otherwise
+  S.hold = async (url, init) => { if ((init.method || 'GET').toUpperCase() === 'POST' && String(url).includes('/rest/v1/employees')) throw new TypeError('Failed to fetch'); };
+  a.run("deleteEmp('e1')"); await S.settle();
+  assert.equal((await S.emp('e1')).data.status, '在籍', 'not sent yet');
+  await a.run('doManagerLogin()'); await S.settle();
+  assert.equal(a.SECURE, 1, 'refused'); assert.equal(a.emp('e1').status, '退職'); assert.ok(a.run('_empDirtyGet()').e1, 'still queued');
+  S.hold = null;
+  await a.run('doManagerLogin()'); await S.settle();
+  assert.equal(a.SECURE, 1, 'sent first, then refused');
+  assert.equal((await S.emp('e1')).data.status, '退職');
+});
+
+test('v1085: a change made while sending moves onto the new version only when the sent state went in as the very next version (another device in between: told, its change stays)', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW);
+  let step = 0;
+  S.hold = async (url, init) => { const m = (init.method || 'GET').toUpperCase(); if (!String(url).includes('/rest/v1/employees')) return;
+    if (m === 'POST' && step === 0) { step = 1; a.run("var L = getEmployees(); L.find(function(e){ return e.id==='e2'; }).resignDate = '2026-10-31'; lsSet('m_employees', L);"); return; }
+    if (m === 'GET' && step === 1) { step = 2; await S.pg.query(`update employees set data = data || '{"resignDate":"2026-11-30"}' where id = 'e2'`); } };   // another device, before the read-back
+  a.run("setEmpStatusQuick('e2', '休職')"); await S.settle(); S.hold = null;
+  await a.run('flushOutbox()'); await S.settle();
+  assert.equal(step, 2);
+  const r = await S.emp('e2');
+  assert.equal(r.data.status, '休職'); assert.equal(r.data.resignDate, '2026-11-30', "the other device's change stays");
+  assert.ok(a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)), 'told');
+  assert.equal(a.run('empDirtyCount()'), 0);
+});
+
+test('v1085: a send that did not go in is not taken for this device\'s own write when the person was restored elsewhere meanwhile', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW);
+  a.run("deleteEmp('e1')"); await S.settle();
+  // A turns the OS account flag off for the resigned Ann; the send fails (not applied)
+  S.hold = async (url, init) => { if ((init.method || 'GET').toUpperCase() === 'POST' && String(url).includes('/rest/v1/employees')) throw new TypeError('Failed to fetch'); };
+  a.run("var L = getEmployees(); L.find(function(e){ return e.id==='e1'; }).osDisabled = false; lsSet('m_employees', L);"); await S.settle();
+  S.hold = null;
+  await S.pg.query("select public.employee_restore('e1', 'Gus Sample')");            // restored elsewhere: the next version, osDisabled false too
+  a.run("var L = getEmployees(); L.find(function(e){ return e.id==='e1'; }).osDisabled = true; lsSet('m_employees', L);"); await S.settle();
+  await a.run('flushOutbox()'); await S.settle();
+  const r = await S.emp('e1');
+  assert.equal(r.data.status, '在籍'); assert.notEqual(r.data.osDisabled, true, 'the restore stays');
+  assert.equal((await S.pins())['Ann Sample'], '4821');
+  assert.ok(a.TOASTS.some(([m]) => /ほかの端末で先に/.test(m)), 'told');
 });
 
 test('v1085: a load that started before the resignation was sent does not bring the person back on screen (versions only go up)', async () => {
@@ -600,7 +646,7 @@ test('v1085: the quick status buttons and the onboarding never bring a resigned 
 });
 
 test('v1085: undoing an offboarding approval re-reads the record (completed elsewhere: refused) and restores through the server (record back to 申請中)', async () => {
-  const S = await server({ extra: [['e4', 'Dee Sample', 'crew', 'Crew', 'F01']] });
+  const S = await server({ extra: [['e4', 'Dee Sample', 'crew', 'Crew', 'F01'], ['e5', 'Eli Sample', 'crew', 'Crew', 'F01']] });
   const a = await pulled(S, NOW), b = await pulled(S, NOW);
   // the approval on A started the offboarding (Ann resigned, record 進行中); B (stale copy of the record) completes it
   a.run(OB({ id: 'ob1', empId: 'e1', empName: 'Ann Sample', store: 'OFFICE', status: '進行中', lastWorkDate: '2026-10-14', checklist: [], settlement: { pay: true, tip: true } }));
@@ -638,6 +684,19 @@ test('v1085: undoing an offboarding approval re-reads the record (completed else
   assert.equal((await S.records()).find(x => x.id === 'ob4').status, '完了');
   assert.equal((await S.emp('e4')).data.status, '在籍'); assert.equal((await S.emp('e4')).data._restoreAt, undefined);
   assert.ok(a.run("resignRepairCandidates().map(function(x){ return x.e.id; })").includes('e4'), 'listed for the repair');
+  // the look after restoring cannot reach the server: the person is restored, the approval is not undone yet; pressing again finishes it
+  a.run(OB({ id: 'ob5', empId: 'e5', empName: 'Eli Sample', store: 'F01', status: '進行中', lastWorkDate: '2026-10-14', initiatedAt: '2026-10-14T00:00:00Z', checklist: [], settlement: { pay: true, tip: true } }));
+  a.run("deleteEmp('e5')"); a.run(`put('approvals', [{ id:'ap5', type:'退職', ref:'ob5', status:'approved' }])`); await S.settle();
+  let restored5 = false;
+  S.hold = async (url, init) => { if (String(url).includes('/functions/v1/auth-pin')) { restored5 = true; return; }
+    if (restored5 && String(url).includes('/rest/v1/app_state') && (init.method || 'GET').toUpperCase() === 'GET') throw new TypeError('Failed to fetch'); };
+  await a.run("reopenApproval('ap5', true)"); await S.settle(); S.hold = null;
+  assert.match(a.ALERTS.at(-1), /承認はまだ取り消していません/);
+  assert.equal(a.run("ls('approvals', [])[0].status"), 'approved');
+  assert.equal((await S.emp('e5')).data.status, '在籍');
+  await a.run("reopenApproval('ap5', true)"); await S.settle();
+  assert.equal(a.run("offboardById('ob5').status"), '申請中');
+  assert.equal(a.run("ls('approvals', [])[0].status"), 'pending');
   // the edit form cannot leave 退職
   Object.assign(a.DOMV, { 'e-name': 'Ann Sample', 'e-status': '在籍' });
   a.run("saveEmp('e1')"); await S.settle();
@@ -693,6 +752,21 @@ test('v1085: a row the server refuses does not block the others; it is marked an
   a.run("var L2 = getEmployees(); delete L2.find(function(e){ return e.id==='e2'; }).__bad; lsSet('m_employees', L2);");   // fixed: sent again
   await S.settle();
   assert.equal(a.run('empDirtyCount()'), 0);
+});
+
+test('v1085: a row the server does not store (a deleted resigned person sent back as in service) is marked and not sent again and again', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW), b = await pulled(S, NOW);
+  a.run("deleteEmp('e1')"); await S.settle();
+  await S.pg.query("delete from employees where id = 'e1'");               // the administrator deletes the row (the stops stay recorded)
+  b.run("var L = getEmployees(); L.find(function(e){ return e.id==='e1'; }).title = 'Accountant II'; lsSet('m_employees', L);"); await S.settle();
+  assert.equal((await S.pg.query("select count(*)::int as n from employees where id = 'e1'")).rows[0].n, 0, 'not inserted back');
+  assert.equal((await S.pins())['Ann Sample'], '!blocked');
+  assert.ok(b.run('_empDirtyGet()').e1.err, 'marked');
+  assert.ok(b.TOASTS.some(([m]) => /受け付けませんでした/.test(m)));
+  const posts = S.calls.filter(x => x.startsWith('POST /rest/v1/employees')).length;
+  await b.run('flushOutbox()'); await b.run('empPushDirty()'); await S.settle();
+  assert.equal(S.calls.filter(x => x.startsWith('POST /rest/v1/employees')).length, posts, 'not sent again');
 });
 
 test('v1085: a signed-in person who is resigned on another device is signed out on the next check; one restored elsewhere is not', async () => {

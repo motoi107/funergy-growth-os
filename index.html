@@ -8514,15 +8514,15 @@ function _empStTx(v){
 }
 /* ---- 送れていない変更（端末だけ）。書けなかったときはメモリに持ち、すぐ送る ---- */
 var _EMP_Q_MEM = null, _empQFailed = false, _empLastQueueOk = true;
-/* 送った状態（id → {st:送った版, f:送った状態の欄}）。サーバーで通ったのを読み直して確かめるまで持つ。
-   送っているあいだに同じ人の状態をもう一度変えたとき、その変更を「ほかの端末の変更」と取り違えないため */
-var _EMP_INFLIGHT = {};
-function _empStOf(f){ var o={}; EMP_ST_FIELDS.forEach(function(k){ if(f && Object.prototype.hasOwnProperty.call(f,k)) o[k]=f[k]; }); return o; }
-/* クラウドの行が、この端末が送った状態そのもの（送った版の次の版・同じ値）か */
-function _empOwnStWrite(id, c){
-  var x=_EMP_INFLIGHT[String(id)]; if(!x || !c) return false;
-  if((Number(c._stV)||0)!==x.st+1) return false;
-  return Object.keys(x.f).every(function(k){ var v=x.f[k]; return _empSameField(k, c[k], (v && typeof v==='object' && v.__del===1) ? undefined : v); });
+/* 送った状態は、未送信の印の中に fl＝{st:送った版, full:送った行の状態（status・resignDate・osDisabled の 3 つ）} として、
+   サーバーで通ったのを読み直して確かめるまで持つ（再読み込みでも残る）。送っているあいだに同じ人の状態をもう一度
+   変えたとき、その変更を「ほかの端末の変更」と取り違えないため */
+function _empStFull(r){ return { status:r ? r.status : undefined, resignDate:r ? r.resignDate : undefined, osDisabled:r ? r.osDisabled : undefined }; }
+/* クラウドの行が、この端末が送った状態そのもの（送った版の次の版・3 つとも同じ値）か */
+function _empOwnStWrite(e, c){
+  var x=e && e.fl; if(!x || !c || !x.full) return false;
+  if((Number(e.st)||0)!==x.st || (Number(c._stV)||0)!==x.st+1) return false;
+  return EMP_ST_FIELDS.every(function(k){ return _empSameField(k, c[k], x.full[k]); });
 }
 function _empDirtyGet(){
   if(_empQFailed && _EMP_Q_MEM) return _empClone(_EMP_Q_MEM);
@@ -8672,7 +8672,7 @@ function _empApplyServerRow(row){
     });
     if(hit) _lsWriteVerified('m_employees', JSON.stringify(cur));
     var d=_empDirtyGet();
-    if(d[id]){ EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete d[id].f[k]; }); delete d[id].st; if(!Object.keys(d[id].f).length) delete d[id]; _empDirtySet(d); }
+    if(d[id]){ EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete d[id].f[k]; }); delete d[id].st; delete d[id].fl; if(!Object.keys(d[id].f).length) delete d[id]; _empDirtySet(d); }
   }catch(e){}
 }
 /* クラウドから取り込んだ表（cloudArr）に、送れていない変更を重ねる（取り込みで消さない）。
@@ -8690,14 +8690,14 @@ function _empMergeCloud(cloudArr){
       EMP_ST_KEEP.forEach(function(k){ if(l[k]===undefined) delete c[k]; else c[k]=_empClone(l[k]); });
     }
     var e=d[id]; if(!e) return c;
-    if(_empHasSt(e) && e.st!=null && (Number(c._stV)||0) > (Number(e.st)||0) && _EMP_INFLIGHT[id] && Number(e.st)===_EMP_INFLIGHT[id].st && _empOwnStWrite(id, c)){
-      e.st=Number(c._stV)||0; changed=true;                         /* 新しい版はこの端末が送った状態：続けて変えた分はその版の上に */
+    if(_empHasSt(e) && e.st!=null && (Number(c._stV)||0) > (Number(e.st)||0) && _empOwnStWrite(e, c)){
+      e.st=Number(c._stV)||0; delete e.fl; changed=true;           /* 新しい版はこの端末が送った状態：続けて変えた分はその版の上に */
     }
     if(_empHasSt(e) && e.st!=null && (Number(c._stV)||0) > (Number(e.st)||0)){
       /* 変えたあとで、ほかの端末が先に状態を変えていた：この端末の状態の変更は入らない（サーバーも通さない） */
       var want=e.f.status, have=c.status;
       if(want===undefined && e.f.osDisabled!==undefined){ want={ os:e.f.osDisabled===true }; }
-      EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e.f[k]; }); delete e.st; changed=true;
+      EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e.f[k]; }); delete e.st; delete e.fl; changed=true;
       if(typeof want==='object' || !_empSameField('status', want, have) || want===undefined) _empConflictNote(id, want===undefined ? '-' : want, have);
       if(!Object.keys(e.f).length) delete d[id];
     }
@@ -8743,22 +8743,23 @@ async function _empPushOnce(){
   for(var i=0;i<ids.length;i+=40){
     var chunk=ids.slice(i,i+40);
     var cloud=await _empFetchByIds(chunk); if(cloud===null) return false;
-    var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), rows=[], rowIds=[], sent={}, bumped={};
+    var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), rows=[], rowIds=[], sent={}, bumped={}, flr={};
     chunk.forEach(function(id){
       var e=d[id], base=cloud[id]||null, loc=cBy[id]||null;
       if(!base && !loc) return;
       /* 前に送った状態がもう通っていた（読み直しの前に途切れた）：続けて変えた分は、その次の版の上に */
-      if(_empHasSt(e) && base && _EMP_INFLIGHT[id] && Number(e.st)===_EMP_INFLIGHT[id].st && _empOwnStWrite(id, base)){ bumped[id]={ from:Number(e.st)||0, to:Number(base._stV)||0 }; e.st=bumped[id].to; }
+      if(_empHasSt(e) && base && _empOwnStWrite(e, base)){ bumped[id]={ from:Number(e.st)||0, to:Number(base._stV)||0 }; e.st=bumped[id].to; }
       var m=_empClone(base||loc);
       Object.keys(e.f).forEach(function(k){ var v=e.f[k]; if(v && typeof v==='object' && v.__del===1) delete m[k]; else m[k]=_empClone(v); });
       if(_empHasSt(e)) m._stV=Number(e.st)||0;                     /* 読んだときの版。サーバーはこの版がいまの版のときだけ状態を通す */
       if(m.id==null) m.id=id;
       rows.push(def.map(m)); rowIds.push(id); sent[id]=JSON.stringify(e.f);
-      if(_empHasSt(e)) _EMP_INFLIGHT[id]={ st:Number(e.st)||0, f:_empClone(_empStOf(e.f)) };
+      if(_empHasSt(e)) flr[id]={ st:Number(e.st)||0, full:_empStFull(m) };   /* 送る状態を覚える（読み直しで確かめるまで） */
     });
-    if(Object.keys(bumped).length){
+    if(Object.keys(bumped).length || Object.keys(flr).length){
       var dqb=_empDirtyGet();
       Object.keys(bumped).forEach(function(id){ if(dqb[id] && (Number(dqb[id].st)||0)===bumped[id].from) dqb[id].st=bumped[id].to; });
+      Object.keys(flr).forEach(function(id){ if(dqb[id] && (Number(dqb[id].st)||0)===flr[id].st) dqb[id].fl=flr[id]; });
       _empDirtySet(dqb);
     }
     if(!rows.length) continue;
@@ -8778,8 +8779,8 @@ async function _empPushOnce(){
       }
       var dq=_empDirtyGet();
       Object.keys(refused).forEach(function(id){
-        delete sent[id]; delete _EMP_INFLIGHT[id];
-        if(dq[id]){ dq[id].err=refused[id]; }
+        delete sent[id];
+        if(dq[id]){ dq[id].err=refused[id]; delete dq[id].fl; }
         try{ var nm=(cBy[id]||{}).name||id; showToast(t(nm+' さんの変更をサーバーが受け付けませんでした（'+refused[id].status+'）。入力を確かめて、もう一度保存してください。', 'The server did not accept the change for '+nm+' ('+refused[id].status+'). Check and save again.'), 'danger'); }catch(e){}
       });
       _empDirtySet(dq);
@@ -8790,7 +8791,13 @@ async function _empPushOnce(){
     var d2=_empDirtyGet(), cur2=_lsRaw('m_employees', [])||[], idx={};
     cur2.forEach(function(r,j){ if(r && r.id!=null) idx[String(r.id)]=j; });
     sentIds.forEach(function(id){
-      var a=after[id], e2=d2[id]; if(!a || !e2 || !e2.f) return;
+      var a=after[id], e2=d2[id];
+      if(!a && e2){                                                 /* 送ったのにサーバーに行が無い（サーバーが入れなかった）：直すまで送らない */
+        e2.err={ status:0, body:'not stored', at:new Date().toISOString() }; delete e2.fl;
+        try{ var nm0=(cBy[id]||{}).name||id; showToast(t(nm0+' さんの変更をサーバーが受け付けませんでした。管理者に知らせてください。', 'The server did not store the change for '+nm0+'. Tell the administrator.'), 'danger'); }catch(e){}
+        return;
+      }
+      if(!a || !e2 || !e2.f) return;
       var e0=JSON.parse(sent[id]);
       var stWant=null, stHave=null, lost=false, sentSt=EMP_ST_FIELDS.some(function(k){ return Object.prototype.hasOwnProperty.call(e0,k); });
       Object.keys(e0).forEach(function(k){
@@ -8802,8 +8809,10 @@ async function _empPushOnce(){
         EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e2.f[k]; });
         _empConflictNote(id, stWant==null ? (e0.osDisabled!==undefined ? { os:e0.osDisabled===true } : '-') : stWant, stHave==null ? a.status : stHave);
       }
-      if(!lost && sentSt && _empHasSt(e2)) e2.st=Number(a._stV)||0;   /* 送った状態は通った：送っているあいだに続けて変えた分は、いまの版の上に */
-      delete _EMP_INFLIGHT[id];
+      /* 送った状態がそのまま通った（送った版の次の版・3 つとも同じ）：送っているあいだに続けて変えた分は、その版の上に。
+         それより先にほかの端末が変えていれば、続けて変えた分は古い版のまま（サーバーが断り、知らせる） */
+      if(!lost && sentSt && _empHasSt(e2) && _empOwnStWrite(e2, a)) e2.st=Number(a._stV)||0;
+      delete e2.fl;
       if(!_empHasSt(e2)) delete e2.st;
       delete e2.n;
       if(!Object.keys(e2.f).length) delete d2[id];
@@ -10873,9 +10882,15 @@ async function doManagerLogin(){
       headers:{ 'apikey':SUPABASE_ANON, 'Authorization':'Bearer '+j.access_token } });
     var rows=await mr.json();
     if(mr.ok && Array.isArray(rows) && rows.length===1 && rows[0].emp_id && rows[0].role!=='suspended' && empBlocked(getEmployees().find(function(e){ return String(e.id)===String(rows[0].emp_id); }))){
-      /* v1085: この端末の写しでは退職：サーバーで確かめる（ほかの端末で在籍に戻したかもしれない。読めなければ端末のとおり断る） */
-      var _svid=String(rows[0].emp_id), _sv=await _empFetchByIds([_svid]);
-      if(_sv && _sv[_svid] && !empBlocked(_sv[_svid])){ try{ _empApplyServerRow(_sv[_svid]); }catch(e){} }
+      /* v1085: この端末の写しでは退職：サーバーで確かめる（ほかの端末で在籍に戻したかもしれない。読めなければ端末のとおり断る）。
+         この端末にまだ送れていない状態の変更（退職など）があれば先に送る。送れなければ端末のとおり断る（サーバーの古い状態で消さない） */
+      var _svid=String(rows[0].emp_id), _dq0=_empDirtyGet();
+      if(_dq0[_svid] && _empHasSt(_dq0[_svid])){ try{ await empPushDirty(); }catch(e){} }
+      var _dq1=_empDirtyGet();
+      if(!(_dq1[_svid] && _empHasSt(_dq1[_svid]))){
+        var _sv=await _empFetchByIds([_svid]);
+        if(_sv && _sv[_svid] && !empBlocked(_sv[_svid])){ try{ _empApplyServerRow(_sv[_svid]); }catch(e){} }
+      }
     }
     if(mr.ok && Array.isArray(rows) && rows.length===1 && (rows[0].role==='suspended' || (rows[0].emp_id && empBlocked(getEmployees().find(function(e){ return String(e.id)===String(rows[0].emp_id); }))))){ window._authSession=null; if(passEl) passEl.value=''; fail(t('このアカウントは止まっています（退職・停止）。','This account is stopped (resigned).')); return; }   /* v1085 */
     if(!mr.ok || !Array.isArray(rows) || rows.length!==1 || !managerRoleAllowed(rows[0].role)){ window._authSession=null; if(passEl) passEl.value=''; fail('このアカウントには管理者ページの権限がありません。Bot専用アカウントは通常ログイン後、ワークセンターの業務Botで認証してください。'); return; }
@@ -68013,7 +68028,12 @@ async function _reopenOffboardApproval(a, fresh){
     if(!r.ok){ alert(t('在籍に戻せなかったため、承認は取り消していません。','The approval was not undone because the person could not be restored.')+' '+(r.reason||'')); return false; }
     /* 在籍に戻しているあいだに、ほかの端末で退職手続きが完了・取消になっていないか（なっていたら、記録は申請中に戻さない。
        完了なら従業員マスターの「退職の記録と食い違う人」に出る） */
-    if(await offboardPullNow()){
+    if(!(await offboardPullNow())){
+      alert(t((ob.empName||'')+' さんは在籍に戻しました。退職記録をサーバーで確かめられなかった（通信）ので、承認はまだ取り消していません。もう一度押してください。',
+        (ob.empName||'')+' is back in service. The offboarding record could not be checked on the server (network), so the approval is not undone yet. Press again.'));
+      return false;
+    }
+    {
       var ob3=offboardById(a.ref);
       if(ob3 && (ob3.status==='完了' || ob3.status==='取消')){
         alert(t('在籍に戻しているあいだに、ほかの端末でこの退職手続きが'+(ob3.status==='完了'?'完了':'取消に')+'なりました。'+(ob.empName||'')+' さんは在籍に戻っています。'+(ob3.status==='完了'?'退職にするときは、従業員マスターの「退職の記録と食い違う人」から直してください。':''),
