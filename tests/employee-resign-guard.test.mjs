@@ -67,7 +67,8 @@ const mgr = async (pg, u) => (await pg.query('select role from manager_auth wher
 const bot = async (pg, u) => (await pg.query('select enabled from bot_users where user_id=$1', [u])).rows[0].enabled;
 const log = async (pg, id) => (await pg.query('select kind, old_status, new_status, version from employee_status_log where emp_id=$1 order by id', [id])).rows;
 const state = (pg, id, fix = false, role = 'anon') => as(pg, role, async () => (await pg.query('select public.employee_access_state($1, $2) as v', [id, fix])).rows[0].v);
-const restore = (pg, id, by = 'Gus Sample', role = 'service_role') => as(pg, role, async () => (await pg.query('select public.employee_restore($1, $2) as v', [id, by])).rows[0].v);
+// auth-pin passes the role of the email account that pressed "restore" (p_caller_role); the SQL Editor passes none
+const restore = (pg, id, by = 'Gus Sample', role = 'service_role', caller = 'gm', keep = false) => as(pg, role, async () => (await pg.query('select public.employee_restore($1, $2, $3, $4) as v', [id, by, keep, caller])).rows[0].v);
 const resign = async (pg, id, extra = {}) => { const d = (await row(pg, id)).data; await upsert(pg, [{ ...d, status: '退職', ...extra }]); };
 
 test('the migration gives the rows version 1, runs twice to the same result, and leaves the other columns alone', async () => {
@@ -153,9 +154,9 @@ test('the public key cannot bring a resigned person back, even with the current 
   for (const sql of ["select public.employee_restore('e1', 'x')", "select public.auth_pin_put('staff', 'Ann Sample', '1111')"])
     await assert.rejects(as(pg, 'anon', () => pg.query(sql)), /permission denied/, sql);
   // even if someone granted it to the app's roles by mistake, the restore checks who is calling
-  await pg.exec('grant execute on function public.employee_restore(text, text, boolean) to authenticated');
+  await pg.exec('grant execute on function public.employee_restore(text, text, boolean, text) to authenticated');
   await assert.rejects(restore(pg, 'e1', 'x', 'authenticated'), /permission denied/);
-  await pg.exec('revoke execute on function public.employee_restore(text, text, boolean) from authenticated');
+  await pg.exec('revoke execute on function public.employee_restore(text, text, boolean, text) from authenticated');
   assert.equal((await row(pg, 'e1')).data.status, '退職');
   // the server (auth-pin, service_role) restores: PIN, manager role and Bot come back, the restorer is recorded
   const res = await restore(pg, 'e1', 'Gus Sample');
@@ -341,7 +342,7 @@ test('restoring through the server also sets that person\'s offboarding records 
   assert.ok(row.updated_at > new Date('2026-01-02'), 'the row time moves (other devices see the change)');
   assert.deepEqual(row.value.map(x => x.id), ['o1', 'o2', 'o3', 'o4'], 'the order stays');
   // undoing an approval: the person comes back, the record is left for the app (申請中)
-  const r2 = await as(pg, 'service_role', async () => (await pg.query("select public.employee_restore('e2', 'Gus Sample', true) as v")).rows[0].v);
+  const r2 = await as(pg, 'service_role', async () => (await pg.query("select public.employee_restore('e2', 'Gus Sample', true, 'gm') as v")).rows[0].v);
   assert.equal(r2.ok, true); assert.equal(r2.already, false);
   assert.equal((await row_(pg, 'e2')).data.status, '在籍');
   assert.equal((await row_(pg, 'e2')).data._restoreAt, undefined, 'no "restored" mark: if the record ends up 完了 anyway, the repair list shows the person');
@@ -391,12 +392,62 @@ test('the app key cannot delete a row, put a resigned person back by deleting an
     await as(pg, 'service_role', async () => {
       await pg.exec('begin');
       try {
-        await pg.query("select public.employee_restore('e2', 'Gus Sample', $1)", [keep]);
+        await pg.query("select public.employee_restore('e2', 'Gus Sample', $1, 'gm')", [keep]);
         await pg.query(`update employees set status='在籍', data = data || '{"status":"在籍"}' where id='e1'`);   // same transaction, after the restore
         assert.equal((await pg.query("select data->>'status' as s from employees where id='e1'")).rows[0].s, '退職', 'the restore\'s mark ends with it (keep ' + keep + ')');
       } finally { await pg.exec('commit'); }
     });
   }
+});
+
+test('a GM / CEO person can be restored only by a GM / CEO (Moto 10/15); a service_role call without the restorer\'s role restores nobody', async () => {
+  const M = { b: '00000000-0000-4000-8000-0000000000b1', c: '00000000-0000-4000-8000-0000000000b2' };
+  const pg = await setup({ before: async pg => {
+    await pg.query("insert into manager_auth(user_id, role, emp_id) values ($1, 'ceo', 'e2'), ($2, 'gm', 'e5')", [M.b, M.c]);   // crew rows with a GM / CEO email account
+  } });
+  const stillOut = async id => { const r = await row(pg, id); assert.equal(r.data.status, '退職', id); assert.equal(r.status, '退職', id); };
+  // (1) the employee's own role is gm (Gus: his manager account is held as gm too)
+  await resign(pg, 'e3');
+  assert.equal(await mgr(pg, U.gm), 'suspended');
+  for (const caller of ['am', 'office', 'AM'])
+    assert.deepEqual(await restore(pg, 'e3', 'Amy Sample', 'service_role', caller), { ok: false, error: 'forbidden_rank' }, caller);
+  await stillOut('e3');
+  assert.equal((await pins(pg))['Gus Sample'], '!blocked', 'the PIN stays stopped');
+  assert.equal(await mgr(pg, U.gm), 'suspended', 'the GM account stays stopped');
+  // (2) the role of the employee row is crew, but the held (stopped) manager account was ceo
+  await resign(pg, 'e2');
+  assert.equal(await mgr(pg, M.b), 'suspended');
+  assert.deepEqual(await restore(pg, 'e2', 'Amy Sample', 'service_role', 'am'), { ok: false, error: 'forbidden_rank' });
+  await stillOut('e2');
+  // (3) only the linked manager account says gm (resigned before the SQL ran: nothing held, the account still active)
+  await pg.exec('alter table employees disable trigger employees_access_after_trg');
+  await upsert(pg, [{ ...(await row(pg, 'e5')).data, status: '退職' }]);
+  await pg.exec('alter table employees enable trigger employees_access_after_trg');
+  assert.equal(await mgr(pg, M.c), 'gm');
+  assert.deepEqual(await restore(pg, 'e5', 'Amy Sample', 'service_role', 'office'), { ok: false, error: 'forbidden_rank' });
+  await stillOut('e5');
+  // (4) the employee's role is ceo, no manager account at all
+  await resign(pg, 'e4', { role: 'ceo' });
+  assert.deepEqual(await restore(pg, 'e4', 'Amy Sample', 'service_role', 'am'), { ok: false, error: 'forbidden_rank' });
+  await stillOut('e4');
+  // undoing an approval is a restore too
+  assert.deepEqual(await restore(pg, 'e3', 'Amy Sample', 'service_role', 'am', true), { ok: false, error: 'forbidden_rank' });
+  // a service_role call without the restorer's role (or with another role) restores nobody, a crew member included
+  await resign(pg, 'e1');
+  for (const caller of [null, '', 'crew', 'office_crew', 'suspended'])
+    assert.deepEqual(await restore(pg, 'e1', 'x', 'service_role', caller), { ok: false, error: 'forbidden' }, String(caller));
+  await stillOut('e1');
+  // AM / accounting restore the others; GM / CEO restore GM / CEO people
+  assert.equal((await restore(pg, 'e1', 'Amy Sample', 'service_role', 'am')).ok, true);
+  assert.equal((await row(pg, 'e1')).data.status, '在籍');
+  assert.equal((await restore(pg, 'e3', 'Cat Sample', 'service_role', 'ceo')).ok, true);
+  assert.equal((await row(pg, 'e3')).data.status, '在籍'); assert.equal(await mgr(pg, U.gm), 'gm', 'the GM account comes back as gm');
+  assert.equal((await restore(pg, 'e2', 'Gus Sample', 'service_role', 'gm')).ok, true);
+  assert.equal(await mgr(pg, M.b), 'ceo');
+  assert.equal((await restore(pg, 'e5', 'Gus Sample', 'service_role', ' GM ')).ok, true, 'the role is compared without case / spaces');
+  // the SQL Editor (database owner) restores anyone without a role
+  const ed = (await pg.query("select public.employee_restore('e4', 'Admin') as v")).rows[0].v;
+  assert.equal(ed.ok, true); assert.equal((await row(pg, 'e4')).data.status, '在籍');
 });
 
 test('PINs are keyed by the name exactly as stored (as the app and auth-pin do)', async () => {
@@ -450,6 +501,13 @@ test('the post-check says OK after the SQL (and the apply-existing step stops on
   const rows = (await pg.exec(dbFile('employee-resign-postcheck.sql'))).at(-1).rows;
   assert.equal(rows.length, 7);
   for (const r of rows) assert.equal(r.verdict, 'OK', r.item + ' ' + r.value);
+  // an earlier restore without the restorer's role (3 arguments) left in place shows NG; running the SQL again removes it
+  await pg.exec(`create function public.employee_restore(p_emp text, p_by text, p_keep_offboard boolean default false) returns jsonb
+    language sql security invoker set search_path=public,pg_temp as $$ select '{}'::jsonb $$`);
+  assert.notEqual((await pg.exec(dbFile('employee-resign-postcheck.sql'))).at(-1).rows[0].verdict, 'OK');
+  await pg.exec(MIG);
+  assert.equal((await pg.query("select count(*)::int as n from pg_proc where proname = 'employee_restore'")).rows[0].n, 1);
+  for (const r of (await pg.exec(dbFile('employee-resign-postcheck.sql'))).at(-1).rows) assert.equal(r.verdict, 'OK', r.item);
   // Ann was resigned before the SQL (no trigger then): the explicit step stops her access; nobody in service is touched
   await pg.exec('alter table employees disable trigger employees_access_after_trg');
   await pg.query(`update employees set status='退職', data = data || '{"status":"退職"}' where id='e1'`);

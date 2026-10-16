@@ -1,6 +1,6 @@
 -- 退職の保護（20261023090000）が入ったかの確認（読むだけ・v1085）。7 行すべて OK なら入っている。
 with fn as (
- select p.proname, p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '') as cfg, p.oid
+ select p.proname, p.prosecdef, coalesce(array_to_string(p.proconfig, ','), '') as cfg, p.oid, p.pronargs
  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public' and p.proname in ('emp_status_ver','emp_status_key','emp_blocked_of','emp_pin_mark','emp_privileged','emp_reinstate_ok','employee_status_note',
   'employees_status_guard','employees_delete_guard','employee_pin_reconcile','employee_access_apply','employees_access_after','employee_restore','auth_pin_put',
@@ -12,8 +12,8 @@ with fn as (
 ), want as (
  select 3 + case when to_regclass('public.app_state') is not null then 1 else 0 end as n
 )
-select 'functions (16)' as item, (select count(*) from fn)::text as value,
-  case when (select count(*) from fn) = 16 then 'OK' else 'NG：2_追加のSQL を流す' end as verdict
+select 'functions (16; the restore takes the restorer''s role)' as item, (select count(*) from fn)::text as value,
+  case when (select count(*) from fn) = 16 and exists(select 1 from fn where proname = 'employee_restore' and pronargs = 4) then 'OK' else 'NG：2_追加のSQL を流す' end as verdict
 union all select 'fixed search_path on all', (select count(*) from fn where cfg like '%search_path=public%')::text,
   case when (select count(*) from fn where cfg like '%search_path=public%') = 16 then 'OK' else 'NG' end
 union all select 'security definer (8: note, guard, delete guard, pin, apply, after, state, offboard)', (select count(*) from fn where prosecdef)::text,

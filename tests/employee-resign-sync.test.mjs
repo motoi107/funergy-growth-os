@@ -37,7 +37,8 @@ function extractor(src) {
 }
 
 // ---------------------------------------------------------------------------------------------------- the server
-const SESSIONS = { 'tok-gm': { role: 'gm', name: 'Gus Sample' }, 'tok-office': { role: 'office', name: 'Ann Sample' }, 'tok-crew': { role: 'office_crew', name: 'Cy Sample' } };
+const SESSIONS = { 'tok-gm': { role: 'gm', name: 'Gus Sample' }, 'tok-office': { role: 'office', name: 'Ann Sample' }, 'tok-crew': { role: 'office_crew', name: 'Cy Sample' },
+  'tok-am': { role: 'am', name: 'Amy Sample' } };
 async function server({ guard = true, extra = [] } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
@@ -110,7 +111,7 @@ async function server({ guard = true, extra = [] } = {}) {
           if (!['ceo', 'gm', 'am', 'office'].includes(m.role)) return res(200, { ok: false, error: 'forbidden' });
           if (!guard) return res(200, { ok: false, error: 'not_installed' });
           S.restores = (S.restores || []).concat([b]);
-          return res(200, await asRole('service_role', async () => (await pg.query('select public.employee_restore($1, $2, $3) as v', [b.emp, m.name, b.keepOffboard === true])).rows[0].v));
+          return res(200, await asRole('service_role', async () => (await pg.query('select public.employee_restore($1, $2, $3, $4) as v', [b.emp, m.name, b.keepOffboard === true, m.role])).rows[0].v));
         }
         return res(200, { ok: false });
       }
@@ -636,6 +637,37 @@ test('v1085: restore (在籍に戻す) goes through the server with e-mail sign-
   assert.equal((await S.pins())['Ann Sample'], '4821');
   assert.equal((await S.pg.query("select role from manager_auth where emp_id='e1'")).rows[0].role, 'office');
   assert.equal(a.run('empDirtyCount()'), 0);
+});
+
+test('v1085 (Moto 10/15): a GM / CEO person is restored only by a GM / CEO; the app does not ask the server, and the server refuses by the held account too', async () => {
+  const S = await server();
+  await S.pg.query("insert into manager_auth values ('00000000-0000-4000-8000-0000000000c1', 'gm', 'e2')");   // Bob (crew row) has a GM email account
+  await S.pg.query(`update employees set status='退職', data = data || '{"status":"退職","osDisabled":true}' where id in ('e2', 'e3')`);   // the administrator
+  const a = await pulled(S, NOW);
+  // an AM (PIN and email): Gus's row says gm → refused on this device, nothing is sent
+  a.curRole = 'am'; a.signIn('tok-am');
+  await a.run("restoreEmployee('e3', true)"); await S.settle();
+  assert.equal((S.restores || []).length, 0, 'the app does not ask the server');
+  assert.match(a.TOASTS.at(-1)[0], /GM・CEO の人を在籍に戻せるのは GM・CEO だけ/);
+  assert.equal((await S.emp('e3')).data.status, '退職'); assert.equal(a.emp('e3').status, '退職');
+  // Bob's row says crew, but his stopped manager account was gm → the server refuses, nothing changes here
+  await a.run("restoreEmployee('e2', true)"); await S.settle();
+  assert.equal((S.restores || []).length, 1);
+  assert.match(a.TOASTS.at(-1)[0], /GM・CEO として登録されたメールのアカウントだけ/);
+  assert.equal((await S.emp('e2')).data.status, '退職'); assert.equal(a.emp('e2').status, '退職'); assert.equal(a.run('empDirtyCount()'), 0);
+  assert.equal((await S.pg.query("select role from manager_auth where emp_id='e2'")).rows[0].role, 'suspended');
+  // a GM signed in by PIN but with an AM email account: the server goes by the email account
+  a.curRole = 'gm';
+  await a.run("restoreEmployee('e3', true)"); await S.settle();
+  assert.match(a.TOASTS.at(-1)[0], /GM・CEO として登録されたメールのアカウントだけ/);
+  assert.equal((await S.emp('e3')).data.status, '退職');
+  // the GM's email account restores both
+  a.signIn('tok-gm');
+  await a.run("restoreEmployee('e3', true)"); await S.settle();
+  await a.run("restoreEmployee('e2', true)"); await S.settle();
+  assert.equal((await S.emp('e3')).data.status, '在籍'); assert.equal((await S.emp('e2')).data.status, '在籍');
+  assert.equal(a.emp('e3').status, '在籍');
+  assert.equal((await S.pg.query("select role from manager_auth where emp_id='e2'")).rows[0].role, 'gm');
 });
 
 test('v1085: a record that was cancelled on another device (restored) is not completed from a stale copy', async () => {

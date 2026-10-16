@@ -33,6 +33,7 @@ begin
  end if;
 end $$;
 drop function if exists public.employee_access_state(text, boolean);
+drop function if exists public.employee_restore(text, text, boolean, text);
 drop function if exists public.employee_restore(text, text, boolean);
 drop function if exists public.employee_restore(text, text);
 drop function if exists public.auth_pin_put(text, text, text);

@@ -112,6 +112,17 @@ const CASES = [
   ['sql: undoing an approval sets the restored mark', 'mig', "   || case when coalesce(p_keep_offboard, false) then '{}'::jsonb else jsonb_build_object('_restoreAt', v_at, '_restoreBy', v_by) end", "   || jsonb_build_object('_restoreAt', v_at, '_restoreBy', v_by)", GUARD, 'offboarding records to 取消'],
   ['sql: PIN names are trimmed (not as the app stores them)', 'mig', "declare nm text := case when btrim(coalesce(p_name, '')) = '' then null else p_name end;", "declare nm text := nullif(btrim(coalesce(p_name, '')), '');", GUARD, 'keyed by the name exactly'],
   ['sql: a stale copy drops a finished record', 'mig', "  if jsonb_typeof(o) = 'object' and (o->>'id') is not null and not ((o->>'id') = any(seen)) and o->>'status' in ('完了','取消') then", "  if false then", GUARD, 'offboarding record in app_state'],
+  // ---- Moto 10/15: a GM / CEO person is restored only by a GM / CEO
+  ['sql: the restore does not check who restores a GM / CEO', 'mig', "   if v_high then return jsonb_build_object('ok', false, 'error', 'forbidden_rank'); end if;", '', GUARD, 'restored only by a GM'],
+  ['sql: an AM counts as a GM for the restore', 'mig', "  if v_caller not in ('ceo','gm') then\n", "  if v_caller not in ('ceo','gm','am') then\n", GUARD, 'restored only by a GM'],
+  ['sql: a service_role call without the restorer\'s role restores', 'mig', "  if v_caller not in ('ceo','gm','am','office') then return jsonb_build_object('ok', false, 'error', 'forbidden'); end if;", '', GUARD, 'restored only by a GM'],
+  ['sql: the rank looks only at the employee row (not the held account)', 'mig', "    or exists(select 1 from public.employee_access_hold h where h.kind = 'manager' and h.emp_id = p_emp and lower(btrim(coalesce(h.prev->>'role', ''))) in ('gm','ceo'));", ";", GUARD, 'restored only by a GM'],
+  ['sql: the rank does not look at the linked manager account', 'mig', "    v_high := exists(select 1 from public.manager_auth a where a.emp_id::text = p_emp and lower(btrim(coalesce(a.role, ''))) in ('gm','ceo'));", "    null;", GUARD, 'restored only by a GM'],
+  ['sql: the rank does not look at the employee row', 'mig', "   v_high := exists(select 1 from public.employees x where x.id::text = p_emp and lower(btrim(coalesce(x.data->>'role', ''))) in ('gm','ceo'))\n", "   v_high := false\n", GUARD, 'restored only by a GM'],
+  ['sql: the restorer\'s role is compared with case and spaces', 'mig', " v_caller text := lower(btrim(coalesce(p_caller_role, ''))); v_high boolean := false;", " v_caller text := coalesce(p_caller_role, ''); v_high boolean := false;", GUARD, 'restored only by a GM'],
+  ['sql: the earlier restore without the role is left in place', 'mig', "drop function if exists public.employee_restore(text, text, boolean);\n", '', GUARD, 'post-check'],
+  ['app: an AM asks the server to restore a GM / CEO', 'index', "  if(['ceo','gm'].indexOf(curRole)<0 && ['gm','ceo'].indexOf(String(e.role||'').toLowerCase())>=0){", "  if(false){", SYNC, 'restored only by a GM'],
+  ['app: the server\'s refusal for a GM / CEO is shown as a plain failure', 'index', "  if(e==='forbidden_rank') return", "  if(false) return", SYNC, 'restored only by a GM'],
   ['sql: the restore leaves the offboarding records', 'mig', " if not coalesce(p_keep_offboard, false) and to_regclass('public.app_state') is not null then", " if false then", GUARD, 'offboarding records to 取消'],
 ];
 

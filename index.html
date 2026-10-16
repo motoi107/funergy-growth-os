@@ -50806,10 +50806,11 @@ async function completeOffboarding(obId){
 
 /* ===== 復元（誤操作対策：退職→在籍に戻す） ===== */
 /* v1085: 在籍に戻す（再入社など）のは、ここ（権限のある人の明示の操作）だけ。サーバー（auth-pin）が、メールで認証した
-   CEO・GM・AM・経理かを確かめて戻す（アプリの公開の鍵では戻せない）。サーバーが退職の手続きも「取消」にする。
+   CEO・GM・AM・経理かを確かめて戻す（GM・CEO の人は GM・CEO だけ。アプリの公開の鍵では戻せない）。サーバーが退職の手続きも「取消」にする。
    サーバーが戻すまで、この端末の表は変えない（失敗したのに在籍と出したり、あとで送ったりしない） */
 function _restoreErrText(j){
   var e=j && j.error;
+  if(e==='forbidden_rank') return t('GM・CEO の人を在籍に戻せるのは、GM・CEO として登録されたメールのアカウントだけです。','Only an email account registered as GM or CEO can restore a GM or CEO.');   /* Motoさん 10/15 */
   if(e==='forbidden' || e==='not_registered') return secAuthErrText({ error:'forbidden' }, 'restore');
   return secAuthErrText(j, 'restore');
 }
@@ -50830,6 +50831,8 @@ async function empRestoreServer(empId, keepOffboard, title, again, fresh){
 async function restoreEmployee(empId, fresh){
   if(['ceo','gm','am','office'].indexOf(curRole)<0){ showToast(t('在籍に戻せるのは CEO・GM・AM・経理だけです。','Only CEO, GM, AM or office can restore.'), 'danger'); return; }
   var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  /* Motoさん 10/15：GM・CEO の人を在籍に戻せるのは GM・CEO だけ（サーバーも、メールのアカウントの役割と、その人の管理者のアカウントで確かめる） */
+  if(['ceo','gm'].indexOf(curRole)<0 && ['gm','ceo'].indexOf(String(e.role||'').toLowerCase())>=0){ showToast(t('GM・CEO の人を在籍に戻せるのは GM・CEO だけです。','Only a GM or CEO can restore a GM or CEO.'), 'danger'); return; }
   if(!fresh && !confirm(t(e.name+' を在籍に戻しますか？（ログインも再び使えるようになり、退職の手続きは「取消」になります。メールの認証が要ります）',
       'Restore '+e.name+' to in service? (Sign-in works again and the offboarding becomes "cancelled". Email sign-in is required.)'))) return;
   var title=t('在籍に戻す','Restore'), again=function(){ restoreEmployee(empId, true); };

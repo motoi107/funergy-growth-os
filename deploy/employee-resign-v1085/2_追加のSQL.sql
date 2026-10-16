@@ -15,7 +15,7 @@
 --      ・その社員に紐づく管理者のメールのアカウント（manager_auth.emp_id）を役割 'suspended' にし、
 --        同じアカウントの業務Bot の利用（bot_users）も止める（前の役割・状態は employee_access_hold に残す）。
 --   4) employee_access_state(社員ID, 直す)：退職・停止の人のアクセスが止まっているかを返す（アプリが完了の前に確かめる）。
---      employee_restore(社員ID, 人)：在籍に戻す（service_role・管理者だけ）。auth_pin_put：PIN を 1 人分だけ書く（auth-pin 用）。
+--      employee_restore(社員ID, 人)：在籍に戻す（service_role・管理者だけ。GM・CEO の人は GM・CEO だけ）。auth_pin_put：PIN を 1 人分だけ書く（auth-pin 用）。
 --   5) 退職記録（app_state の offboardings）の「完了」「取消」を古い写しで戻させない（前の版のアプリにも効く）。
 -- 前の版のアプリ（v1084 以前）の端末も、この SQL を入れたあとは古い写しで状態を戻せない（版が古いため）。
 -- ただし、この SQL を入れる前から開いたままの端末は、状態を変えても通らない（版を知らない）。入れたら、みんなの端末を
@@ -347,18 +347,34 @@ create trigger employees_delete_guard_trg before delete on public.employees
  for each row execute function public.employees_delete_guard();
 
 -- ---------------------------------------------------------------- 6) 在籍に戻す（サーバー・管理者だけ）
--- auth-pin（v1085）が、メールで認証した CEO・GM・AM・経理かを確かめてから、service_role で呼ぶ。SQL Editor からも使える：
+-- auth-pin（v1085）が、メールで認証した CEO・GM・AM・経理かを確かめてから、その人の役割（p_caller_role）を付けて service_role で呼ぶ。
+-- GM・CEO の人（社員の役割・止めた管理者のアカウントの役割・紐づく管理者のアカウントの役割のどれかが gm か ceo）を戻せるのは、
+-- 役割が GM・CEO の人だけ（Motoさん 10/15）。役割を付けない service_role の呼び出しは戻さない。SQL Editor からも使える（役割は見ない）：
 --   select public.employee_restore('<社員ID>', '<戻した人の名前>');
 -- その人の退職記録（app_state の offboardings）も「取消」にする（p_keep_offboard＝true のときはしない：承認の取り消し。
 -- そのときは「在籍に戻した」印 _restoreAt も付けない＝あとで記録が完了なら、修復の一覧に出る）。
 drop function if exists public.employee_restore(text, text);
-create or replace function public.employee_restore(p_emp text, p_by text, p_keep_offboard boolean default false) returns jsonb
+drop function if exists public.employee_restore(text, text, boolean);
+create or replace function public.employee_restore(p_emp text, p_by text, p_keep_offboard boolean default false, p_caller_role text default null) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare d jsonb; v_at text := to_char(now() at time zone 'utc', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'); v_by text := left(coalesce(p_by, ''), 120);
  v_ms bigint := (extract(epoch from clock_timestamp()) * 1000)::bigint; v_upd boolean; v_done boolean;
+ v_caller text := lower(btrim(coalesce(p_caller_role, ''))); v_high boolean := false;
 begin
  if coalesce(p_emp, '') = '' then return jsonb_build_object('ok', false, 'error', 'not_found'); end if;
  if not public.emp_privileged() then return jsonb_build_object('ok', false, 'error', 'forbidden'); end if;
+ if coalesce(nullif(current_setting('role', true), ''), 'none') = 'service_role' then   -- サーバー（auth-pin）：戻す人の役割で決める
+  if v_caller not in ('ceo','gm','am','office') then return jsonb_build_object('ok', false, 'error', 'forbidden'); end if;
+  if v_caller not in ('ceo','gm') then
+   v_high := exists(select 1 from public.employees x where x.id::text = p_emp and lower(btrim(coalesce(x.data->>'role', ''))) in ('gm','ceo'))
+    or exists(select 1 from public.employee_access_hold h where h.kind = 'manager' and h.emp_id = p_emp and lower(btrim(coalesce(h.prev->>'role', ''))) in ('gm','ceo'));
+   if not v_high and to_regclass('public.manager_auth') is not null and exists(select 1 from information_schema.columns
+      where table_schema = 'public' and table_name = 'manager_auth' and column_name = 'emp_id') then
+    v_high := exists(select 1 from public.manager_auth a where a.emp_id::text = p_emp and lower(btrim(coalesce(a.role, ''))) in ('gm','ceo'));
+   end if;
+   if v_high then return jsonb_build_object('ok', false, 'error', 'forbidden_rank'); end if;
+  end if;
+ end if;
  perform set_config('funergy.emp_restore', 'on', true);          -- この取引の中だけ：在籍に戻す書き込みとして通す
  update public.employees x set status = '在籍', data = x.data || jsonb_build_object('status', '在籍', 'resignDate', '', 'osDisabled', false, '_stBy', v_by)
    || case when coalesce(p_keep_offboard, false) then '{}'::jsonb else jsonb_build_object('_restoreAt', v_at, '_restoreBy', v_by) end
@@ -495,8 +511,8 @@ end $$;
 
 revoke all on function public.employee_access_state(text, boolean) from public;
 grant execute on function public.employee_access_state(text, boolean) to anon, authenticated, service_role;
-revoke all on function public.employee_restore(text, text, boolean) from public, anon, authenticated;
-grant execute on function public.employee_restore(text, text, boolean) to service_role;
+revoke all on function public.employee_restore(text, text, boolean, text) from public, anon, authenticated;
+grant execute on function public.employee_restore(text, text, boolean, text) to service_role;
 revoke all on function public.auth_pin_put(text, text, text) from public, anon, authenticated;
 grant execute on function public.auth_pin_put(text, text, text) to service_role;
 revoke all on function public.employee_status_note(text, text, text, text, integer, text, jsonb) from public, anon, authenticated;
