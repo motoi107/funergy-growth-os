@@ -55,7 +55,7 @@ const run = (c, e) => vm.runInContext(e, c);
 
 test('every call to hyper-worker sends its body through toastFnBody', () => {
   const calls = [...SRC.matchAll(/fetch\(TOAST_SYNC_FN,/g)].map(m => m.index);
-  assert.equal(calls.length, 12);
+  assert.equal(calls.length, 11);   // v1084: 日次食材差異（トッピングの出数・bowlDebug）の呼び出しは画面と一緒に廃止
   for (const at of calls) {
     const seg = SRC.slice(at, at + 400);
     const body = /body\s*:\s*([A-Za-z_]+)\(/.exec(seg);
