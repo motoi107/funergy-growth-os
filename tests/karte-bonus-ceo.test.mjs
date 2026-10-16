@@ -538,6 +538,35 @@ test('2026 Q3 confirmed by v1065–v1068 (old formula): the old record stays unt
   assert.match(run(c, 'renderKarteQuarterBar(kbCfg())'), /最終係数/);
 });
 
+// v1086 (CEO 10/15 via Moto: "本部経費や減価償却を含めない数字" と言う記載に。保存が失われないように): only the wording changes.
+test('v1086: the store management profit is labelled as the number without head office expenses and depreciation; the saved monthly entries are untouched', () => {
+  const c = ceo();
+  storeRec(c, 'S3', { act: { '2026-07': { a: 35739, src: 'man' }, '2026-08': { a: 33911, src: 'man' } } });
+  storeRec(c, 'S4', { act: { '2026-07': { a: -2860, src: 'man' } } });
+  const saved = J(c.STORE.bonus_store_q);
+  const NEW = '本部経費や減価償却を含めない数字';
+  const store = run(c, 'kevStoreCardHtml(kbCfg())');
+  assert.ok(store.includes('各月の店舗管理利益（' + NEW + '）'), 'the heading of the monthly table');
+  assert.ok(store.includes('利益（店舗管理利益＝' + NEW + '）'), 'the explanation above the table');
+  assert.ok(!store.includes('純利益 ＋ 本部費 ＋ 減価償却'), 'the old formula wording is gone from the screen');
+  // the hand-entered numbers are shown as before, still editable, and showing the table writes nothing
+  assert.match(store, /aria-label="Store 3 7月 店舗管理利益" value="35739"/);
+  assert.match(store, /aria-label="Store 3 8月 店舗管理利益" value="33911"/);
+  assert.match(store, /aria-label="Store 4 7月 店舗管理利益" value="-2860"/);
+  assert.deepEqual(J(c.STORE.bonus_store_q), saved, 'rendering does not change what is saved');
+  // the bonus amounts are the same numbers as before the wording change (same key, same values)
+  const before = totals(c).finals;
+  assert.equal(run(c, `kevActSet('${Q}','S3','2026-08','33911')`), true, 'saving the same value again still works');
+  assert.deepEqual(totals(c).finals, before);
+  assert.deepEqual(J(c.STORE.bonus_store_q[`${Q}|S3`].act['2026-07']), saved[`${Q}|S3`].act['2026-07'], 'the other month is kept');
+  // the G5 / G6 evaluation page and the PL import question use the same wording
+  vm.runInContext("window._kevSel='sam'", c);
+  assert.ok(run(c, 'kevTabHtml(kbCfg())').includes('店舗管理利益 ＝ ' + NEW));
+  const src = fs.readFileSync(index, 'utf8');
+  assert.ok(src.includes("か月ぶんの店舗管理利益（" + NEW + "）を、会計 PL の値で入れます"));
+  assert.doesNotMatch(src, /'[^'\n]*純利益 ＋ 本部費 ＋ 減価償却/, 'no string shown on screen keeps the old wording');
+});
+
 test('screens (PC and phone): evaluation with the FL action, settings ③ ④, list with the final coefficient; synced text is escaped', () => {
   const c = ceo();
   c.STORE.bonus_eval[`${Q}|mia|G4`].fx.why = '<img src=x onerror=alert(1)>';
@@ -550,7 +579,7 @@ test('screens (PC and phone): evaluation with the FL action, settings ③ ④, l
   assert.equal((mia.match(/class="kev-fxb"/g) || []).length, 5);
   vm.runInContext("window._kevSel='sam'", c);
   const sam = run(c, 'kevTabHtml(kbCfg())');
-  assert.ok(sam.includes('④ 利益予算達成率（店舗管理利益）') && sam.includes('純利益 ＋ 本部費 ＋ 減価償却'));
+  assert.ok(sam.includes('④ 利益予算達成率（店舗管理利益）') && sam.includes('店舗管理利益 ＝ 本部経費や減価償却を含めない数字'));
   assert.doesNotMatch(sam, /<b>S3<\/b>/);
   const judge = run(c, 'kevJudgeCardHtml(kbCfg())');
   for (const s of ['判定の決まり（会社共通', '90% で下限', '個人の最終係数の幅', '0.85 〜 1.15', "kevRuleOpen('_common','j')", '達成率 → 係数'])

@@ -38479,7 +38479,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1085';
+const APP_VERSION = '1086';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64137,7 +64137,7 @@ function kevPersonMainHtml2(e, b, seg, kv, tot, I){
     +['店舗','目標 %','目標額'+(p.ended ? '' : '（締まった月の分）'),'実績','達成率'].map(function(x, i){ return '<th style="padding:5px 7px;font-size:10.5px;color:var(--muted);text-align:'+(i ? 'right' : 'left')+'">'+escapeHtml(x)+'</th>'; }).join('')+'</tr></thead><tbody>'
     +(p.rows||[]).map(function(r){ return '<tr style="border-top:1px solid var(--border)"><td style="padding:5px 7px">'+escapeHtml(kevStoreNames([r.sid]))+' '+kevSrcTagHtml(r.tSrc)+'</td><td style="padding:5px 7px;text-align:right">'+kevPctTxt(r.tPct)+'</td><td style="padding:5px 7px;text-align:right">'+(r.target==null ? '—' : kevUsd(r.target))+'</td><td style="padding:5px 7px;text-align:right">'+(r.actual==null ? '—' : kevUsd(r.actual))+'</td><td style="padding:5px 7px;text-align:right">'+((r.actual!=null && r.target>0) ? kevPctTxt(r.actual/r.target*100) : '—')+'</td></tr>'; }).join('')
     +'<tr style="border-top:1px solid var(--border);font-weight:800"><td style="padding:5px 7px">合計</td><td></td><td style="padding:5px 7px;text-align:right">'+kevUsd(p.target)+'</td><td style="padding:5px 7px;text-align:right">'+kevUsd(p.actual)+'</td><td style="padding:5px 7px;text-align:right">'+(p.mode==='pct' ? kevPctTxt(p.pct) : '—')+'</td></tr></tbody></table></div>'
-    +'<div style="font-size:11px;color:var(--muted)">店舗管理利益 ＝ 純利益 ＋ 本部費 ＋ 減価償却（目標と実績は同じ基準。会社のボーナス原資の経常利益とは別）。額を足してから割ります。'
+    +'<div style="font-size:11px;color:var(--muted)">店舗管理利益 ＝ 本部経費や減価償却を含めない数字（目標と実績は同じ基準。会社のボーナス原資の経常利益とは別）。額を足してから割ります。'
     +(p.mode==='diff' ? '目標の合計が 0 以下のため、差 ÷ 売上予算（pt）で評価（−'+escapeHtml(String(J.pd))+'pt で下限・0 で 1.00・＋'+escapeHtml(String(J.pd))+'pt で上限）。' : '係数 '+escapeHtml(kevRuleTxt(p.rule,'%'))+'。')+'目標と各月の実績は設定タブ ④。</div>'
     +kevMissHtml(p)+'</div>';
   h+='<div class="card" style="margin:0"><label class="form-label" for="kev-cm">コメント（本人への説明・次の期待）</label><textarea id="kev-cm" class="form-textarea kev-ta" style="min-height:56px"'+(can ? '' : ' disabled')+kevTaOn(id, gg, 'cm', qq)+'>'+escapeHtml((ev && ev.cm) || '')+'</textarea></div>';
@@ -64268,13 +64268,13 @@ function kevActSet(q, sid, ym, v){
   if(!kevStoreQPut(q, sid, rec, ['act.'+ym])){ showToast('保存できませんでした（もう一度してください）','danger'); return false; }
   bqRefresh(); return true;
 }
-/* 会計 PL を取り込んだ端末で：その月の店舗管理利益（純利益 ＋ 本部費 ＋ 減価償却）を各月の欄に入れる。利益は端末をまたいで配らない作り（v910）なので、ほかの端末は入った数を見る */
+/* 会計 PL を取り込んだ端末で：その月の店舗管理利益（本部経費・減価償却を含めない数字＝純利益 ＋ 本部費 ＋ 減価償却。v1086 で表記を CEO の依頼に合わせた）を各月の欄に入れる。利益は端末をまたいで配らない作り（v910）なので、ほかの端末は入った数を見る */
 function kevPlFill(q){
   var G=kevStoreGuard(q, 'act'); if(!G) return false;
   var sids=bqStores(G.cfg), list=kevPlFillList(q, sids);
   if(!list.length){ showToast('この端末には、この四半期の会計 PL（純利益と、その他の費用の本部費・減価償却）がありません','info'); return false; }
   var nS={}; list.forEach(function(x){ nS[x.sid]=1; });
-  if(!confirm(Object.keys(nS).length+' 店・'+list.length+' か月ぶんの店舗管理利益（純利益 ＋ 本部費 ＋ 減価償却）を、会計 PL の値で入れます（手で入れた値も上書きします）。よろしいですか？')) return false;
+  if(!confirm(Object.keys(nS).length+' 店・'+list.length+' か月ぶんの店舗管理利益（本部経費や減価償却を含めない数字）を、会計 PL の値で入れます（手で入れた値も上書きします）。よろしいですか？')) return false;
   var bySid={}; list.forEach(function(x){ (bySid[x.sid]=bySid[x.sid]||[]).push(x); });
   var bad=0;
   Object.keys(bySid).forEach(function(sid){
@@ -64293,7 +64293,7 @@ function kevStoreCardHtml(cfg){
   var canT=['gm','ceo'].indexOf(curRole)>=0 && !locked, canTp=canT && !d.profitLocked, canA=canTp;
   var qa=escapeHtml(JSON.stringify(q)), kv=kevStoreKv(q, cfg);
   var h='<div class="card"><div class="card-title"><span class="kc-num">4</span>店舗の目標と実績（'+escapeHtml(q)+'）'+(locked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>' : (d.profitLocked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">利益は確定</span>' : ''))+'</div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px;line-height:1.7">売上の目標は予算から自動。<b>利益（店舗管理利益＝純利益 ＋ 本部費 ＋ 減価償却）</b>の目標は店ごとに四半期の % か額（入れたほうが元・もう一方は売上予算から）、<b>FL</b> の目標率は四半期の %（空なら KPI マスターの Food ＋ Labor）。実績は月ごと（下・GM・CEO が入れる）。FL 改善行動は個別評価タブで選びます。'+(snap ? ' 確定したときの数字を出しています。' : '')+'</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin:-2px 0 8px;line-height:1.7">売上の目標は予算から自動。<b>利益（店舗管理利益＝本部経費や減価償却を含めない数字）</b>の目標は店ごとに四半期の % か額（入れたほうが元・もう一方は売上予算から）、<b>FL</b> の目標率は四半期の %（空なら KPI マスターの Food ＋ Labor）。実績は月ごと（下・GM・CEO が入れる）。FL 改善行動は個別評価タブで選びます。'+(snap ? ' 確定したときの数字を出しています。' : '')+'</div>';
   if(locked && !snap) h+='<div style="font-size:11px;color:var(--yellow);margin:-2px 0 8px"><i class="ti ti-lock"></i> この四半期は前の式で確定しています（下の数字は今の入力で、確定した金額には使っていません）。新しい式で計算するには、査定一覧で確定を解除します。</div>';
   if(!sids.length) return h+'<div style="font-size:12px;color:var(--muted)">対象店舗がありません。</div></div>';
   var th=function(x, r){ return '<th style="padding:6px 7px;font-size:10px;color:var(--muted);white-space:nowrap;text-align:'+(r ? 'right' : 'left')+'">'+x+'</th>'; };
@@ -64331,7 +64331,7 @@ function kevStoreCardHtml(cfg){
   h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px">合計の行の率は額を足してから割ります。G5・G6 は売上と利益だけを使うので、合計の FL は参考です。四半期の途中は、締まった月の実績と、その月の売上予算の割合で按分した目標で比べます。</div>';
   /* 各月の店舗管理利益 */
   var pl=snap ? [] : kevPlFillList(q, sids);
-  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:12px"><b style="font-size:13.5px">各月の店舗管理利益（純利益 ＋ 本部費 ＋ 減価償却）</b>'
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:12px"><b style="font-size:13.5px">各月の店舗管理利益（本部経費や減価償却を含めない数字）</b>'
     +((canA && pl.length) ? '<button class="btn btn-secondary btn-sm" onclick="kevPlFill('+qa+')"><i class="ti ti-file-import"></i> 会計 PL から入れる（'+pl.length+' か月）</button>' : '')+'</div>';
   h+='<div style="overflow:auto"><table style="border-collapse:collapse;font-size:12px;min-width:560px"><thead><tr style="background:var(--surface2)">'+th('店舗')+months.map(function(ym){ return th(Number(ym.slice(5))+'月', 1); }).join('')+th('合計', 1)+'</tr></thead><tbody>';
   sids.forEach(function(sid){
