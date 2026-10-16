@@ -54,7 +54,7 @@ function objSrc(decl) {
 
 const MERGE = ['_apAcctOn', '_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
   '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices'];
-const APPROVAL = ['apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
+const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel', '_approvalChainHtml',
   'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
@@ -351,14 +351,43 @@ test('an old Tip Rate item (no link) decided on the page cannot be undone from t
   assert.equal(c.S.approvals[0].status, 'approved');
 });
 
-test('the center rejected it, then the page approved it: the center follows the page and the applicant is told', async () => {
-  const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
-    approvals: [AP({ id: 'ap8', type: 'TipRate', title: 'x', from: 'Crew A', store: '---', ref: 'tip2', status: 'rejected', _stT: 500, _mut: 500, rejectReason: 'x' })],
-    tip_requests: [{ id: 'tip2', name: 'Crew A', rate: 100, status: '申請中' }], tip_history: [], notifications: [] } });
+test('the center rejected it, then the page approved it: after reading the cloud, the center follows the page and the applicant is told', async () => {
+  const rejected = AP({ id: 'ap8', type: 'TipRate', title: 'x', from: 'Crew A', store: '---', ref: 'tip2', status: 'rejected', _stT: 500, _mut: 500, rejectReason: 'x' });
+  const st = { approvals: [rejected], tip_requests: [{ id: 'tip2', name: 'Crew A', rate: 100, status: '申請中' }], tip_history: [], notifications: [] };
+  const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st, cloud: { approvals: [rejected] } });
   run(c, 'approveTip("tip2","承認")'); await tick();
   assert.equal(c.S.approvals[0].status, 'approved');
   assert.equal(c.S.approvals[0].via, 'page');
   assert.ok(c.S.notifications.some(n => n.toUser === 'Crew A' && /承認されました/.test(n.title)));
+  // Without reading the cloud (offline / sync off) nothing is re-marked.
+  const off = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st });
+  run(off, 'approveTip("tip2","承認")'); await tick();
+  assert.equal(off.S.approvals[0].status, 'rejected');
+});
+
+test('following the page never rewrites an older round: a resubmitted plan, a reopened item, several decided rounds', async () => {
+  // Monthly plan: round 1 rejected here; the resubmitted round 2 is only in the cloud.
+  const r1 = AP({ id: 'apA', type: '月間行動計画', title: 'plan', from: 'Chef', store: '---', ref: '2026-10', ym: '2026-10', status: 'rejected', _stT: 100, _mut: 100 });
+  const r2 = AP({ id: 'apB', type: '月間行動計画', title: 'plan', from: 'Chef', store: '---', ref: '2026-10', ym: '2026-10', status: 'pending', _mut: 200 });
+  const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [r1], notifications: [] }, cloud: { approvals: [r1, r2] } });
+  await run(c, 'apDecidedFromPage("月間行動計画", "2026-10", "approved", {ym:"2026-10", noApplicant:true})');
+  assert.deepEqual(plain(c.S.approvals.map(a => a.id + ':' + a.status).sort()), ['apA:rejected', 'apB:approved']);
+  // A plan round is never rewritten by following the page (the same month is resubmitted as a new item), even with no pending round anywhere.
+  const p = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [r1], notifications: [] }, cloud: { approvals: [r1] } });
+  await run(p, 'apDecidedFromPage("月間行動計画", "2026-10", "approved", {ym:"2026-10", noApplicant:true})');
+  assert.equal(p.S.approvals[0].status, 'rejected');
+  // Mileage: this device still has the old generation rejected; another device reopened it (generation 1, pending).
+  const g0 = AP({ status: 'rejected', _stT: 100, _mut: 100 });
+  const g1 = AP({ status: 'pending', _gen: 1, _stT: 300, _mut: 300 });
+  const d = app(MERGE.concat(APPROVAL), { role: 'am', user: 'Yuki', st: { approvals: [g0], notifications: [] }, cloud: { approvals: [g1] } });
+  await run(d, 'apDecidedFromPage("ガソリン代", "mi1", "approved", {applicant:"Leader B"})');
+  assert.equal(d.S.approvals[0].status, 'approved');
+  assert.equal(d.S.approvals[0]._gen, 1);
+  // Two decided rounds with the same ref: only the newest is followed.
+  const old = AP({ id: 'apX', status: 'rejected', _stT: 100, _mut: 100 }), newer = AP({ id: 'apY', status: 'rejected', _stT: 200, _mut: 200 });
+  const e = app(MERGE.concat(APPROVAL), { role: 'am', user: 'Yuki', st: { approvals: [old, newer], notifications: [] }, cloud: { approvals: [old, newer] } });
+  await run(e, 'apDecidedFromPage("ガソリン代", "mi1", "approved", {applicant:"Leader B"})');
+  assert.deepEqual(plain(e.S.approvals.map(a => a.id + ':' + a.status).sort()), ['apX:rejected', 'apY:approved']);
 });
 
 test('v1086 devices: the merged record is always newer than the newest copy it differs from; an old accounting check does not come back', () => {
@@ -526,6 +555,15 @@ test('accounting tab: approved money items wait for 経理の確認; 確認し�
   assert.doesNotMatch(g, /apAcctConfirm\(/);
   await run(gm, 'apAcctConfirm("ap1")');
   assert.match(gm.alerts[0], /経理・事務Crew/);
+});
+
+test('accounting check pressed on a device whose clock is behind the approver\'s still counts', async () => {
+  const future = Date.now() + 60000;
+  const c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', st: {
+    approvals: [AP({ status: 'approved', decidedAt: new Date(future).toISOString(), _stT: future, _mut: future })], notifications: [] } });
+  await run(c, 'apAcctConfirm("ap1")');
+  assert.ok(c.S.approvals[0].acct.t > future);
+  assert.equal(plain(run(c, 'apAcctPending(ls("approvals"))')).length, 0);
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {

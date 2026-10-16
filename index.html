@@ -67505,24 +67505,36 @@ function _apResolveLocal(type, ref, status, opt){
     if(c.length){ c.sort(function(p,q){ return String(q.id||'').localeCompare(String(p.id||'')); });
       _apMarkDecided(c[0], status, opt.reason, 'page'); lsSet('approvals', approvals); hit=[c[0]]; }
   }
-  /* 承認センターで違う決定（却下など）になっていたら、申請の画面の決定に合わせる（画面の決定が反映されたもの） */
-  if(!hit.length && ref!=null){
-    var ap2=ls('approvals', []);
-    var d=ap2.filter(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && (!opt.ym || !a.ym || a.ym===opt.ym)
-      && a.status!=='pending' && a.status!=='withdrawn' && a.status!==status; });
-    if(d.length){ d.forEach(function(a){ _apMarkDecided(a, status, opt.reason, 'page'); }); lsSet('approvals', ap2); hit=d; }
-  }
   return hit;
+}
+/* 同じ申請（ref）の案件のうち、いちばん新しいもの（版 → 決めた時刻 → id の順） */
+function _apNewestForRef(list, type, ref){
+  if(ref==null) return null;
+  var c=(list||[]).filter(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref); });
+  c.sort(function(p,q){ return (_apGen(q)-_apGen(p)) || (_apStT(q)-_apStT(p)) || String(q.id||'').localeCompare(String(p.id||'')); });
+  return c[0]||null;
+}
+/* 承認センターで違う決定（却下など）になっていたら、申請の画面の決定に合わせる（画面の決定が反映されたもの）。
+   クラウドを読み直したあとだけ・承認待ちの案件が無いときだけ・いちばん新しい案件だけ。
+   月間行動計画・予算は同じ ref（月・店舗）で出し直すので合わせない。 */
+function _apFollowPage(type, ref, status, opt){
+  if(ref==null || type==='月間行動計画' || type==='予算') return [];
+  var ap2=ls('approvals', []);
+  if(ap2.some(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status==='pending'; })) return [];
+  var a=_apNewestForRef(ap2, type, ref);
+  if(!a || a.status==='withdrawn' || a.status===status) return [];
+  _apMarkDecided(a, status, opt.reason, 'page'); lsSet('approvals', ap2);
+  return [a];
 }
 function _apNotifyHits(hit, type, status, opt){
   if(opt.silent) return;
   if(hit.length) hit.forEach(function(a){ apNotifyDecision(a, status, opt); });
   else apNotifyDecision({ type:type, from:(opt.applicant||''), title:(opt.title||''), store:(opt.store||''), id:'' }, status, opt);
 }
-/* 同じ申請の案件が承認センターで同じ決定になっているか（そのときは承認センターで知らせ済みなので、もう一度は知らせない） */
+/* 同じ申請のいちばん新しい案件が承認センターで同じ決定になっているか（そのときは承認センターで知らせ済みなので、もう一度は知らせない） */
 function _apDecidedElsewhere(type, ref, status){
   if(ref==null) return false;
-  try{ return (ls('approvals',[])||[]).some(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status===status; }); }catch(e){ return false; }
+  try{ var a=_apNewestForRef(ls('approvals',[])||[], type, ref); return !!(a && a.status===status); }catch(e){ return false; }
 }
 /* 手元に案件が無ければ（ほかの端末で出された申請）、クラウドを読み直してからもう一度探す */
 function apDecidedFromPage(type, ref, status, opt){
@@ -67530,7 +67542,12 @@ function apDecidedFromPage(type, ref, status, opt){
   var hit=_apResolveLocal(type, ref, status, opt);
   if(hit.length){ _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
   var fin=function(h2){ if(h2.length || !_apDecidedElsewhere(type, ref, status)) _apNotifyHits(h2, type, status, opt); return h2; };
-  return apPullLatest().then(function(ok){ return fin(ok?_apResolveLocal(type, ref, status, opt):[]); }, function(){ return fin([]); });
+  return apPullLatest().then(function(ok){
+    if(!ok) return fin([]);
+    var h2=_apResolveLocal(type, ref, status, opt);
+    if(!h2.length) h2=_apFollowPage(type, ref, status, opt);
+    return fin(h2);
+  }, function(){ return fin([]); });
 }
 /* 申請した人が取り下げたとき（承認センターに「承認待ち」を残さない） */
 function apWithdrawByRef(type, ref){
@@ -67601,7 +67618,7 @@ async function apAcctConfirm(id, undo){
   var approvals=ls('approvals', []); var a=approvals.find(function(x){ return x && x.id===id; });
   if(!a){ showToast(t('この申請は見つかりません','Request not found'),'warning'); redraw(); return; }
   if(a.status!=='approved'){ alert(t('この申請は今は承認済みではありません（ほかの端末で承認が取り消されました）','This request is no longer approved (undone on another device)')); redraw(); return; }
-  var now=Date.now();
+  var now=Math.max(Date.now(), _apStT(a)+1);   /* 承認した端末の時計より遅れていても、決めた時刻より後にする */
   if(undo){
     if(!_apAcctOn(a)){ redraw(); return; }
     if(!confirm(t('経理の確認を取り消して「経理の確認」に戻しますか？','Undo the accounting confirmation?'))) return;
