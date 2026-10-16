@@ -42,7 +42,8 @@ begin
   from latest l join public.employees e on e.id::text = l.emp
   where l.r->>'status' = '完了'
    and not (coalesce(nullif(e.data->>'status',''), e.status, '') = '退職' or coalesce(e.data->'osDisabled' = 'true'::jsonb, false))
-   and coalesce(e.data->>'_restoreAt','') <= coalesce(l.r->>'completedAt','');
+   and coalesce(e.data->>'_restoreAt','') <= coalesce(l.r->>'completedAt','')
+   and not (nullif(e.data->'_resignOk'->>'ob', '') is not null and e.data->'_resignOk'->>'ob' = l.r->>'id');   -- 「在籍のまま」と決めた人は出さない
   value := c::text; verdict := case when c = 0 then 'OK' else '要確認（アプリの「退職の記録と食い違う人」で 1 人ずつ）' end; detail := left(d, 1800);
  end if;
  return next;
@@ -123,6 +124,37 @@ begin
   execute $q$ select count(*), string_agg(l.emp_id || ' ' || coalesce(l.detail->>'step','') || ' ' || coalesce(l.detail->>'error',''), '、 ')
    from public.employee_status_log l where l.kind = 'apply_failed' and l.at > now() - interval '30 days' $q$ into c, d;
   value := c::text; verdict := case when c = 0 then 'OK' else '要確認' end; detail := left(d, 900);
+ end if;
+ return next;
+
+ -- 退職した人の管理者のアカウントは役割を 'suspended' にして止める。役割に決まった値しか入らない作りだと止められない
+ n := 13; item := 'manager_auth.role accepts ''suspended'''; value := 'n/a'; verdict := 'manager_auth が無い'; detail := null;
+ if to_regclass('public.manager_auth') is not null then
+  select string_agg(c2.conname || ': ' || pg_get_constraintdef(c2.oid), '、 ') into d from pg_constraint c2
+   where c2.conrelid = 'public.manager_auth'::regclass and c2.contype = 'c'
+    and pg_get_constraintdef(c2.oid) ~* 'role' and pg_get_constraintdef(c2.oid) !~* 'suspended';
+  select string_agg('enum ' || t.typname, ', ') into v from pg_attribute a join pg_type t on t.oid = a.atttypid
+   where a.attrelid = 'public.manager_auth'::regclass and a.attname = 'role' and t.typtype = 'e'
+    and not exists(select 1 from pg_enum en where en.enumtypid = t.oid and en.enumlabel = 'suspended');
+  if v is not null then d := coalesce(d || '、 ', '') || v; end if;
+  value := case when d is null then 'yes' else 'no' end;
+  verdict := case when d is null then 'OK' else '要対応（このままでは退職した人の管理者のアカウントを止められない。結果を Claude に貼る）' end; detail := left(d, 900);
+ end if;
+ return next;
+
+ n := 14; item := 'reinstatements refused from the app key (last 30 days)'; value := 'n/a'; verdict := null; detail := null;
+ if to_regclass('public.employee_status_log') is not null then
+  execute $q$ select count(*), string_agg(distinct l.emp_id || ' ' || coalesce(l.old_status,'') || '→' || coalesce(l.new_status,''), '、 ')
+   from public.employee_status_log l where l.kind = 'refused' and l.at > now() - interval '30 days' $q$ into c, d;
+  value := c::text; verdict := case when c = 0 then 'OK' else 'info（在籍に戻すのは「在籍に戻す」（サーバー）だけ。前の版の端末か、アプリの鍵で直接書いた）' end; detail := left(d, 900);
+ end if;
+ return next;
+
+ n := 15; item := 'offboarding records kept (完了・取消 from a stale copy, last 30 days)'; value := 'n/a'; verdict := null; detail := null;
+ if to_regclass('public.employee_status_log') is not null then
+  execute $q$ select count(*), string_agg(distinct l.emp_id || ' ' || coalesce(l.old_status,'') || '→' || coalesce(l.new_status,''), '、 ')
+   from public.employee_status_log l where l.kind = 'offboard_kept' and l.at > now() - interval '30 days' $q$ into c, d;
+  value := c::text; verdict := case when c = 0 then 'OK' else 'info（前の版の端末がまだある）' end; detail := left(d, 900);
  end if;
  return next;
 end $$;

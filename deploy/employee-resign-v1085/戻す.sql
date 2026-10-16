@@ -1,7 +1,8 @@
 -- 退職の保護（20261023090000）を外す（v1085 の取り消し）。2 回流しても同じ。
 -- 止めた PIN・管理者のメールのアカウント・業務Bot の利用を元に戻してから、見張り（トリガー）と関数を外す。
--- 社員の表の行（状態・data の _stV など）は変えない。記録（employee_status_log）は残す。
+-- 社員の表の行（状態・data の _stV など）・退職記録（app_state）は変えない。記録（employee_status_log）は残す。
 -- 外したあとは、前の版のアプリの端末が古い写しで退職した人を在籍に戻せる（v1084 と同じ）。
+-- 関数 auth-pin を v1085 のままにすると、PIN の変更（auth_pin_put）が無くなるので前の書き方に戻る（auth-pin は両方に合う）。
 do $$
 declare h record; cur jsonb;
 begin
@@ -20,12 +21,27 @@ begin
   delete from public.employee_access_hold where kind = h.kind and key = h.key;
  end loop;
 end $$;
-drop trigger if exists employees_status_guard_trg on public.employees;
-drop trigger if exists employees_access_after_trg on public.employees;
+do $$
+begin
+ if to_regclass('public.employees') is not null then
+  execute 'drop trigger if exists employees_status_guard_trg on public.employees';
+  execute 'drop trigger if exists employees_access_after_trg on public.employees';
+ end if;
+ if to_regclass('public.app_state') is not null then
+  execute 'drop trigger if exists offboard_record_guard_trg on public.app_state';
+ end if;
+end $$;
 drop function if exists public.employee_access_state(text, boolean);
+drop function if exists public.employee_restore(text, text, boolean);
+drop function if exists public.employee_restore(text, text);
+drop function if exists public.auth_pin_put(text, text, text);
+drop function if exists public.offboard_record_guard();
 drop function if exists public.employees_access_after();
 drop function if exists public.employee_access_apply(text);
+drop function if exists public.employee_pin_reconcile(text);
 drop function if exists public.employees_status_guard();
+drop function if exists public.employee_status_note(text, text, text, text, integer, text, jsonb);
+drop function if exists public.emp_privileged();
 drop function if exists public.emp_pin_mark();
 drop function if exists public.emp_blocked_of(text, jsonb);
 drop function if exists public.emp_status_key(text, jsonb);

@@ -8161,8 +8161,9 @@ function _lsRenderSaveFailBanner(){
 
 function lsSet(key, val) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
-  /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない） */
-  if(key==='m_employees' && typeof _empOnLocalSave==='function'){ try{ val=_empOnLocalSave(val); }catch(e){ console.warn('emp save', e); } }
+  /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
+     重ねられなかったときは書かない（古い写しの表をそのまま書くと、退職した人が戻る） */
+  if(key==='m_employees' && typeof _empOnLocalSave==='function'){ try{ val=_empOnLocalSave(val); }catch(e){ console.warn('emp save', e); try{ _lsNoteSaveFailure(key); }catch(_){} return false; } }
   var _json;
   try{ _json=JSON.stringify(val); }
   catch(e){ console.warn('lsSet stringify failed', key, e); return false; }
@@ -8184,6 +8185,7 @@ function lsSet(key, val) {
     _ok=_lsWriteVerified(key, _json);
   }
   if(_ok) _lsClearSaveFailure(key); else _lsNoteSaveFailure(key);
+  if(key==='m_employees' && typeof _empLastQueueOk!=='undefined' && _empLastQueueOk===false) _ok=false;   /* v1085: 送る分を端末に残せなかった（メモリにあり、すぐ送る） */
 
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
@@ -8484,33 +8486,68 @@ function _stripTestRows(key, val){
         退職の前から開いていた端末がほかの人を直すと、退職した人を「在籍」のまま書き戻していた。
      ② クラウドから取り込むと端末の表を丸ごと置き換えた。送れていない退職（電波が無かった）は取り込みで消えた。
    直し：
-     ・保存したら「この保存で変えた人の、変えた欄」だけを覚える（_emp_dirty。端末だけ）。
+     ・保存したら「この保存で変えた人の、変えた欄」だけを覚える（emp_dirty_q。端末だけ・クラウドには送らない）。
+       IndexedDB にも入るキー（_ で始めない）なので、localStorage が一杯の端末でも残る。書けなければ画面に出し、すぐ送る。
        画面が読んだときの表（getEmployees の __src）と比べるので、そのあいだに取り込んだほかの変更は戻さない。
      ・送るときは、その人のクラウドの最新を読んで、変えた欄だけを重ねて送る（ほかの人・ほかの欄は送らない）。
        状態（status・resignDate・osDisabled）を変えたときは、読んだときの版（_stV）を付ける。サーバーは版が同じときだけ
-       通す（20261023090000）。送ったあと読み直して、入ったかを確かめる（入らなければ、ほかの端末で先に変わっていた）。
-     ・取り込みは、送れていない変更を残して重ねる（消さない）。
+       通す（20261023090000）。在籍に戻すのはサーバー（auth-pin の「在籍に戻す」）だけ（アプリの鍵では通らない）。
+       送ったあと読み直して、入ったかを確かめる（入らなければ、ほかの端末で先に変わっていた）。
+     ・取り込みは、送れていない変更を残して重ねる（消さない）。端末のほうが新しい版の状態は、古い取り込みで戻さない。
    ============================================================ */
-var EMP_DIRTY_KEY = '_emp_dirty';
+var EMP_DIRTY_KEY = 'emp_dirty_q';
 var EMP_ST_FIELDS = ['status','resignDate','osDisabled'];
+var EMP_ST_KEEP = ['status','resignDate','osDisabled','_stV','_stAt','_stBy','_restoreAt','_restoreBy'];   /* 状態とその印（版が新しいほうを使う） */
 var EMP_PRIV_FIELDS = ['wage','monthlySalary','email','phone'];   /* 公開の表に書かない欄（emp-private）。変えても送らない */
-var EMP_SERVER_FIELDS = ['_stV','_stAt'];                          /* サーバーが決める欄 */
+var EMP_SERVER_FIELDS = ['_stV','_stAt','_restoreAt','_restoreBy'];   /* サーバーが決める欄（アプリからは送らない） */
 function _empIsTest(e){ var pre=(typeof TEST_STAFF_PREFIX!=='undefined')?TEST_STAFF_PREFIX:'tst_'; return !!(e && (e.isTest===true || String(e.id||'').indexOf(pre)===0)); }
 function empBlocked(e){ return !!(e && (e.status==='退職' || e.osDisabled===true)); }
 function _empJ(x){ return x===undefined ? '\u0000u' : JSON.stringify(x); }
 function _empById(arr){ var m={}; (Array.isArray(arr)?arr:[]).forEach(function(r){ if(r && r.id!=null && r.id!=='') m[String(r.id)]=r; }); return m; }
 function _empClone(x){ return x==null ? x : JSON.parse(JSON.stringify(x)); }
-function _empDirtyGet(){ try{ var d=_lsRaw(EMP_DIRTY_KEY, null); return (d && typeof d==='object' && !Array.isArray(d)) ? d : {}; }catch(e){ return {}; } }
-function _empDirtySet(d){
-  try{
-    var keys=Object.keys(d||{}).filter(function(id){ var e=d[id]; return e && e.f && Object.keys(e.f).length; });
-    if(!keys.length){ if(typeof _lsRawDel==='function') _lsRawDel(EMP_DIRTY_KEY); else localStorage.removeItem(EMP_DIRTY_KEY); return true; }
-    var o={}; keys.forEach(function(id){ o[id]=d[id]; });
-    return _lsWriteVerified(EMP_DIRTY_KEY, JSON.stringify(o));
-  }catch(e){ return false; }
+/* 状態の言葉（英語の画面では英語） */
+function _empStTx(v){
+  if(v && typeof v==='object' && v.os!==undefined) return t('OSアカウント'+(v.os?'無効':'有効'), 'OS account '+(v.os?'off':'on'));
+  if(v==null || v==='') return '-';
+  var lb=(typeof empStatusLabel==='function') ? empStatusLabel(v) : null;
+  return t(String(v), (lb && lb[1]) || String(v));
 }
-function empDirtyCount(){ return Object.keys(_empDirtyGet()).length; }
+/* ---- 送れていない変更（端末だけ）。書けなかったときはメモリに持ち、すぐ送る ---- */
+var _EMP_Q_MEM = null, _empQFailed = false, _empLastQueueOk = true;
+function _empDirtyGet(){
+  if(_empQFailed && _EMP_Q_MEM) return _empClone(_EMP_Q_MEM);
+  try{ var d=_lsRaw(EMP_DIRTY_KEY, null); return (d && typeof d==='object' && !Array.isArray(d)) ? d : {}; }
+  catch(e){ return _EMP_Q_MEM ? _empClone(_EMP_Q_MEM) : {}; }
+}
+function _empDirtySet(d){
+  var o={}, keys=Object.keys(d||{}).filter(function(id){ var e=d[id]; return e && e.f && Object.keys(e.f).length; });
+  keys.forEach(function(id){ o[id]=d[id]; });
+  _EMP_Q_MEM=_empClone(o);
+  var ok=false;
+  try{
+    if(!keys.length){ if(typeof _lsRawDel==='function') _lsRawDel(EMP_DIRTY_KEY); else localStorage.removeItem(EMP_DIRTY_KEY); ok=true; }
+    else {
+      var js=JSON.stringify(o);
+      ok=_lsWriteVerified(EMP_DIRTY_KEY, js);
+      if(!ok){ try{ if(typeof _lsFreeOldLaborKeys==='function') _lsFreeOldLaborKeys(2); }catch(e){} ok=_lsWriteVerified(EMP_DIRTY_KEY, js); }
+    }
+  }catch(e){ ok=false; }
+  _empQFailed=!ok;
+  try{
+    if(ok){ if(typeof _lsClearSaveFailure==='function') _lsClearSaveFailure(EMP_DIRTY_KEY); }
+    else {
+      if(typeof _lsNoteSaveFailure==='function') _lsNoteSaveFailure(EMP_DIRTY_KEY);
+      setTimeout(function(){ try{ empPushDirty(); }catch(e){} }, 0);   /* 端末に残せない：いま送る（このページを閉じるまではメモリにある） */
+    }
+  }catch(e){}
+  return ok;
+}
+/* 送る分の数（サーバーが受け付けなかった変更は数えない） */
+function empDirtyCount(){ var d=_empDirtyGet(); return Object.keys(d).filter(function(id){ return d[id] && !d[id].err; }).length; }
 function _empHasSt(e){ return !!(e && e.f && EMP_ST_FIELDS.some(function(k){ return Object.prototype.hasOwnProperty.call(e.f, k); })); }
+/* グレードの変更などの「まとめて保存」が戻すとき用（ghTxn） */
+function _empDirtySnapshot(){ return _empClone(_empDirtyGet()); }
+function _empDirtyRestore(snap){ try{ _empDirtySet(snap||{}); }catch(e){} }
 /* 状態の欄の比べ方（空と無い・false と無いを同じに） */
 function _empStNorm(k, v){ if(k==='osDisabled') return v===true; return (v==null) ? '' : String(v); }
 function _empSameField(k, a, b){ return (EMP_ST_FIELDS.indexOf(k)>=0) ? _empStNorm(k,a)===_empStNorm(k,b) : _empJ(a)===_empJ(b); }
@@ -8533,12 +8570,14 @@ function _empConflictNote(id, want, have){
     a.push({ id:id, name:e.name||'', want:want, have:have, at:new Date().toISOString() });
     if(a.length>20) a=a.slice(a.length-20);
     _lsWriteVerified('_emp_conflicts', JSON.stringify(a));
-    if(typeof showToast==='function') showToast(t((e.name||id)+' さんの状態は、ほかの端末で先に「'+(have||'-')+'」に変わっていたため、この端末の変更（'+(want||'-')+'）は入りませんでした。',
-      'The status of '+(e.name||id)+' had already been changed to "'+(have||'-')+'" on another device, so this change ("'+(want||'-')+'") was not applied.'), 'warn');
+    if(typeof showToast==='function') showToast(t((e.name||id)+' さんの状態は、ほかの端末で先に「'+_empStTx(have)+'」に変わっていたため、この端末の変更（'+_empStTx(want)+'）は入りませんでした。',
+      'The status of '+(e.name||id)+' had already been changed to "'+_empStTx(have)+'" on another device, so this change ("'+_empStTx(want)+'") was not applied.'), 'warn');
   }catch(err){}
 }
-/* 端末に保存するとき（lsSet('m_employees')）：この保存で変えたものを、いまの表に重ねて返す（＝端末に書く表）。変えた欄を覚える */
+/* 端末に保存するとき（lsSet('m_employees')）：この保存で変えたものを、いまの表に重ねて返す（＝端末に書く表）。変えた欄を覚える
+   起動のあいだ（_supaBooting：取り込みの前の一度きりの直し）は覚えない（前と同じく、取り込みで最新になる） */
 function _empOnLocalSave(val){
+  _empLastQueueOk=true;
   if(!Array.isArray(val)) return val;
   var curStr=null; try{ curStr=_lsStoreGet('m_employees'); }catch(e){}
   var cur=null; try{ cur=curStr ? JSON.parse(curStr) : null; }catch(e){ cur=null; }
@@ -8547,8 +8586,9 @@ function _empOnLocalSave(val){
   if(typeof val.__src==='string'){ try{ base=JSON.parse(val.__src); }catch(e){ base=null; } }
   if(!Array.isArray(base)) base=Array.isArray(cur) ? cur : seed();
   if(!Array.isArray(cur)) cur=base;
+  var booting=(typeof _supaBooting!=='undefined' && _supaBooting);
   var bBy=_empById(base), vBy=_empById(val), cBy=_empById(cur);
-  var d=_empDirtyGet(), who=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : '';
+  var d=booting ? {} : _empDirtyGet(), who=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : '';
   var out=cur.map(function(r){ return r; }), outIdx={};
   out.forEach(function(r,i){ if(r && r.id!=null) outIdx[String(r.id)]=i; });
   var touched=false;
@@ -8574,7 +8614,7 @@ function _empOnLocalSave(val){
     var row=Object.prototype.hasOwnProperty.call(outIdx,id) && out[outIdx[id]] ? _empClone(out[outIdx[id]]) : (isNew ? {} : _empClone(cBy[id]||b||{}));
     Object.keys(set).forEach(function(k){ var x=set[k]; if(x && typeof x==='object' && x.__del===1) delete row[k]; else row[k]=_empClone(x); });
     if(Object.prototype.hasOwnProperty.call(outIdx,id) && out[outIdx[id]]) out[outIdx[id]]=row; else { outIdx[id]=out.length; out.push(row); }
-    if(_empIsTest(v)) return;                                      /* テスト用スタッフはクラウドに出さない（v850） */
+    if(booting || _empIsTest(v)) return;                            /* テスト用スタッフはクラウドに出さない（v850） */
     var e=d[id] || { f:{} };
     if(isNew) e.n=1;
     var stTouched=false;
@@ -8587,36 +8627,71 @@ function _empOnLocalSave(val){
       if(e.st==null) e.st=Number((b && b._stV)||0)||0;           /* 読んだときの状態の版（サーバーはこの版のときだけ通す） */
       e.f._stBy=who; row._stBy=who;
     }
+    delete e.err;                                                  /* 直したので、もう一度送る */
     e.t=Date.now();
     if(Object.keys(e.f).length) d[id]=e;
   });
-  if(!touched) return out.filter(function(r){ return r!=null; });
-  _empDirtySet(d);
+  if(touched && !booting) _empLastQueueOk=_empDirtySet(d);
   return out.filter(function(r){ return r!=null; });
 }
-/* クラウドから取り込んだ表（cloudArr）に、送れていない変更を重ねる（取り込みで消さない） */
+/* 状態を、クラウドのいまの版の上で変える（退職手続きの完了・修復）。端末の表も同じに（送るのは状態だけ） */
+function _empQueueState(id, fields, ver){
+  id=String(id);
+  var d=_empDirtyGet(), e=d[id] || { f:{} }, who=(typeof curUserName!=='undefined' && curUserName) ? String(curUserName) : '';
+  Object.keys(fields).forEach(function(k){ e.f[k]=fields[k]; });
+  e.f._stBy=who; e.st=Number(ver)||0; delete e.err; e.t=Date.now(); d[id]=e;
+  var qok=_empDirtySet(d);
+  try{
+    var cur=_lsRaw('m_employees', [])||[], hit=false;
+    cur=cur.map(function(r){ if(r && String(r.id)===id){ hit=true; return Object.assign({}, r, fields, { _stBy:who }); } return r; });
+    if(hit) _lsWriteVerified('m_employees', JSON.stringify(cur));
+  }catch(err){}
+  return qok;
+}
+/* サーバーの行の状態を端末の表へ（送らない）。この人の送れていない状態の変更は捨てる（サーバーが決めた） */
+function _empApplyServerRow(row){
+  if(!row || row.id==null) return;
+  var id=String(row.id);
+  try{
+    var cur=_lsRaw('m_employees', [])||[], hit=false;
+    cur=cur.map(function(r){
+      if(!(r && String(r.id)===id)) return r;
+      hit=true; var m=Object.assign({}, r);
+      EMP_ST_KEEP.forEach(function(k){ if(row[k]===undefined) delete m[k]; else m[k]=_empClone(row[k]); });
+      return m;
+    });
+    if(hit) _lsWriteVerified('m_employees', JSON.stringify(cur));
+    var d=_empDirtyGet();
+    if(d[id]){ EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete d[id].f[k]; }); delete d[id].st; if(!Object.keys(d[id].f).length) delete d[id]; _empDirtySet(d); }
+  }catch(e){}
+}
+/* クラウドから取り込んだ表（cloudArr）に、送れていない変更を重ねる（取り込みで消さない）。
+   端末のほうが新しい版の状態は残す（版は上がるだけ。先に始まった取り込みの古い答えで、退職した人を在籍に戻さない） */
 function _empMergeCloud(cloudArr){
   if(!Array.isArray(cloudArr)) return cloudArr;
   var d=_empDirtyGet(), ids=Object.keys(d);
-  var out=cloudArr, changed=false;
-  if(ids.length){
-    var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), seen={};
-    out=cloudArr.map(function(c){
-      if(!c || c.id==null) return c;
-      var id=String(c.id); seen[id]=1;
-      var e=d[id]; if(!e) return c;
-      if(_empHasSt(e) && e.st!=null && (Number(c._stV)||0) > (Number(e.st)||0)){
-        /* 変えたあとで、ほかの端末が先に状態を変えていた：この端末の状態の変更は入らない（サーバーも通さない） */
-        var want=e.f.status, have=c.status;
-        EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e.f[k]; }); delete e.st; changed=true;
-        if(!_empSameField('status', want, have) || want===undefined) _empConflictNote(id, want===undefined ? '-' : want, have);
-        if(!Object.keys(e.f).length) delete d[id];
-      }
-      return d[id] ? _empOverlay(c, d[id]) : c;
-    });
-    ids.forEach(function(id){ if(seen[id] || !d[id] || !d[id].n || !cBy[id]) return; out.push(cBy[id]); });   /* まだクラウドに無い新しい人 */
-    if(changed) _empDirtySet(d);
-  }
+  var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), seen={}, changed=false;
+  var out=cloudArr.map(function(c){
+    if(!c || c.id==null) return c;
+    var id=String(c.id); seen[id]=1;
+    var l=cBy[id];
+    if(l && (Number(l._stV)||0) > (Number(c._stV)||0)){
+      c=Object.assign({}, c);
+      EMP_ST_KEEP.forEach(function(k){ if(l[k]===undefined) delete c[k]; else c[k]=_empClone(l[k]); });
+    }
+    var e=d[id]; if(!e) return c;
+    if(_empHasSt(e) && e.st!=null && (Number(c._stV)||0) > (Number(e.st)||0)){
+      /* 変えたあとで、ほかの端末が先に状態を変えていた：この端末の状態の変更は入らない（サーバーも通さない） */
+      var want=e.f.status, have=c.status;
+      if(want===undefined && e.f.osDisabled!==undefined){ want={ os:e.f.osDisabled===true }; }
+      EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e.f[k]; }); delete e.st; changed=true;
+      if(typeof want==='object' || !_empSameField('status', want, have) || want===undefined) _empConflictNote(id, want===undefined ? '-' : want, have);
+      if(!Object.keys(e.f).length) delete d[id];
+    }
+    return d[id] ? _empOverlay(c, d[id]) : c;
+  });
+  ids.forEach(function(id){ if(seen[id] || !d[id] || !d[id].n || !cBy[id]) return; out.push(cBy[id]); });   /* まだクラウドに無い新しい人 */
+  if(changed) _empDirtySet(d);
   try{ _empForgetBlockedSignins(out); }catch(e){}
   return out;
 }
@@ -8645,15 +8720,17 @@ function empPushDirty(){
   })();
   return _empPushP;
 }
+/* 1 行だけサーバーが受け付けない（形が違うなど）とき、ほかの行まで止めない */
+function _empRowRefused(status){ return status>=400 && status<500 && [401,403,404,408,429].indexOf(status)<0; }
 async function _empPushOnce(){
   if(typeof _supaBooting!=='undefined' && _supaBooting) return false;
-  var d=_empDirtyGet(), ids=Object.keys(d).filter(function(id){ return d[id] && d[id].f && Object.keys(d[id].f).length; });
+  var d=_empDirtyGet(), ids=Object.keys(d).filter(function(id){ return d[id] && d[id].f && Object.keys(d[id].f).length && !d[id].err; });
   if(!ids.length) return true;
   var def=SUPA_MASTER_MAP.m_employees;
   for(var i=0;i<ids.length;i+=40){
     var chunk=ids.slice(i,i+40);
     var cloud=await _empFetchByIds(chunk); if(cloud===null) return false;
-    var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), rows=[], sent={};
+    var cur=_lsRaw('m_employees', [])||[], cBy=_empById(cur), rows=[], rowIds=[], sent={};
     chunk.forEach(function(id){
       var e=d[id], base=cloud[id]||null, loc=cBy[id]||null;
       if(!base && !loc) return;
@@ -8661,14 +8738,37 @@ async function _empPushOnce(){
       Object.keys(e.f).forEach(function(k){ var v=e.f[k]; if(v && typeof v==='object' && v.__del===1) delete m[k]; else m[k]=_empClone(v); });
       if(_empHasSt(e)) m._stV=Number(e.st)||0;                     /* 読んだときの版。サーバーはこの版がいまの版のときだけ状態を通す */
       if(m.id==null) m.id=id;
-      rows.push(def.map(m)); sent[id]=JSON.stringify(e.f);
+      rows.push(def.map(m)); rowIds.push(id); sent[id]=JSON.stringify(e.f);
     });
     if(!rows.length) continue;
-    var up=await supaUpsert(def.table, rows); if(up===false) return false;
-    var after=await _empFetchByIds(chunk); if(after===null) return false;   /* 確かめられない：残して次に（同じ変更をもう一度送っても同じ結果） */
+    var up=await supaUpsert(def.table, rows);
+    if(up===false){
+      var s0=(typeof _lastSupaError!=='undefined' && _lastSupaError && _lastSupaError.status)||0;
+      if(!_empRowRefused(s0)) return false;
+      /* 1 行ずつ。受け付けない行は印を付けて止める（直したら、また送る）。ほかは送る */
+      var refused={};
+      for(var j=0;j<rows.length;j++){
+        var u1=await supaUpsert(def.table, [rows[j]]);
+        if(u1===false){
+          var s1=(typeof _lastSupaError!=='undefined' && _lastSupaError && _lastSupaError.status)||0;
+          if(!_empRowRefused(s1)) return false;
+          refused[rowIds[j]]={ status:s1, body:String((_lastSupaError && _lastSupaError.body)||'').slice(0,200), at:new Date().toISOString() };
+        }
+      }
+      var dq=_empDirtyGet();
+      Object.keys(refused).forEach(function(id){
+        delete sent[id];
+        if(dq[id]){ dq[id].err=refused[id]; }
+        try{ var nm=(cBy[id]||{}).name||id; showToast(t(nm+' さんの変更をサーバーが受け付けませんでした（'+refused[id].status+'）。入力を確かめて、もう一度保存してください。', 'The server did not accept the change for '+nm+' ('+refused[id].status+'). Check and save again.'), 'danger'); }catch(e){}
+      });
+      _empDirtySet(dq);
+      if(!Object.keys(sent).length) continue;
+    }
+    var sentIds=Object.keys(sent);
+    var after=await _empFetchByIds(sentIds); if(after===null) return false;   /* 確かめられない：残して次に（同じ変更をもう一度送っても同じ結果） */
     var d2=_empDirtyGet(), cur2=_lsRaw('m_employees', [])||[], idx={};
     cur2.forEach(function(r,j){ if(r && r.id!=null) idx[String(r.id)]=j; });
-    Object.keys(sent).forEach(function(id){
+    sentIds.forEach(function(id){
       var a=after[id], e2=d2[id]; if(!a || !e2 || !e2.f) return;
       var e0=JSON.parse(sent[id]);
       var stWant=null, stHave=null, lost=false;
@@ -8679,7 +8779,7 @@ async function _empPushOnce(){
       });
       if(lost){
         EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e2.f[k]; });
-        _empConflictNote(id, stWant==null ? (e0.osDisabled!==undefined ? 'OS '+(e0.osDisabled?'無効':'有効') : '-') : stWant, stHave==null ? a.status : stHave);
+        _empConflictNote(id, stWant==null ? (e0.osDisabled!==undefined ? { os:e0.osDisabled===true } : '-') : stWant, stHave==null ? a.status : stHave);
       }
       if(!_empHasSt(e2)) delete e2.st;
       delete e2.n;
@@ -8716,13 +8816,14 @@ async function empAccessState(id, fix){
     return (j && typeof j==='object') ? j : null;
   }catch(e){ return null; }
 }
-/* 送って、入ったかを確かめる。want: 'blocked'（退職・停止）／'open'（在籍に戻す）／null（状態は見ない） */
+/* 送って、入ったかを確かめる。want: 'blocked'（退職・停止）／'open'（在籍）／null（状態は見ない） */
 async function empSyncNow(ids, want){
   if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return { ok:false, reason:t('クラウド同期が OFF です（同期センターで ON にしてください）','Cloud sync is off (turn it on in the sync center).') };
   if(typeof navigator!=='undefined' && navigator && navigator.onLine===false) return { ok:false, reason:t('オフラインです。電波のある所で、もう一度押してください。','You are offline. Press again where you have a connection.') };
   var pushed=await empPushDirty();
   if(pushed===false) return { ok:false, reason:t('サーバーに保存できませんでした（通信）。','Could not save to the server (network).')+((typeof supaErrorText==='function'&&supaErrorText())?' '+supaErrorText():'') };
   var d=_empDirtyGet();
+  for(var k=0;k<ids.length;k++){ var q=d[String(ids[k])]; if(q && q.err) return { ok:false, reason:t('サーバーがこの変更を受け付けませんでした（'+q.err.status+'）。','The server did not accept this change ('+q.err.status+').') }; }
   if(ids.some(function(id){ return d[id] && _empHasSt(d[id]); })) return { ok:false, reason:t('まだサーバーに入っていません。もう一度押してください。','Not on the server yet. Press again.') };
   var rows=await _empFetchByIds(ids);
   if(!rows) return { ok:false, reason:t('サーバーで確かめられませんでした（通信）。','Could not check on the server (network).') };
@@ -8732,8 +8833,8 @@ async function empSyncNow(ids, want){
     if(!r){ res.ok=false; res.reason=t('サーバーにこの従業員の行がありません（'+id+'）。','The server has no row for this employee ('+id+').'); continue; }
     if((want==='blocked' && !empBlocked(r)) || (want==='open' && empBlocked(r))){
       res.ok=false; res.conflict=true;
-      res.reason=t('ほかの端末で先に変わっていました（いま：'+(r.status||'-')+(r.osDisabled?'・OSアカウント無効':'')+'）。画面を確かめてから、もう一度押してください。',
-        'It had already been changed on another device (now: '+(r.status||'-')+'). Check the screen and press again.');
+      res.reason=t('ほかの端末で先に変わっていました（いま：'+_empStTx(r.status)+(r.osDisabled?'・OSアカウント無効':'')+'）。画面を確かめてから、もう一度押してください。',
+        'It had already been changed on another device (now: '+_empStTx(r.status)+(r.osDisabled?', OS account off':'')+'). Check the screen and press again.');
       continue;
     }
     if(!want) continue;
@@ -8742,9 +8843,26 @@ async function empSyncNow(ids, want){
     if(st && st.missing){ res.guard=false; continue; }
     if(!st || st.found===false){ res.ok=false; res.reason=t('ログインの停止をサーバーで確かめられませんでした（通信）。もう一度押してください。','Could not check the sign-in stop on the server. Press again.'); continue; }
     if(want==='blocked' && !st.stopped){ res.ok=false; res.reason=t('ログインの停止がサーバーで終わっていません（PIN：'+st.pin+'・管理者のアカウント：'+st.manager+'）。もう一度押してください。','The sign-in stop has not finished on the server (PIN: '+st.pin+', manager account: '+st.manager+'). Press again.'); }
-    if(want==='open' && st.blocked){ res.ok=false; res.reason=t('サーバーではまだ止まったままです。もう一度押してください。','Still stopped on the server. Press again.'); }
+    if(want==='open' && (st.blocked || st.pin==='locked' || st.manager==='stopped')){ res.ok=false; res.reason=t('サーバーではまだ止まったままです（PIN：'+st.pin+'・管理者のアカウント：'+st.manager+'）。もう一度押してください。','Still stopped on the server (PIN: '+st.pin+', manager account: '+st.manager+'). Press again.'); }
   }
   return res;
+}
+/* 状態を、クラウドのいまの版の上で変えて送り、確かめる（退職手続きの完了・修復の「退職に戻す」）。fields は {欄:値} か、クラウドの行を受けて返す関数 */
+async function empSetStateNow(id, fields, want){
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return { ok:false, reason:t('クラウド同期が OFF です（同期センターで ON にしてください）','Cloud sync is off (turn it on in the sync center).') };
+  if(typeof navigator!=='undefined' && navigator && navigator.onLine===false) return { ok:false, reason:t('オフラインです。電波のある所で、もう一度押してください。','You are offline. Press again where you have a connection.') };
+  id=String(id);
+  var rows=await _empFetchByIds([id]);
+  if(rows===null) return { ok:false, reason:t('サーバーで確かめられませんでした（通信）。','Could not check on the server (network).') };
+  var c=rows[id];
+  if(!c) return { ok:false, reason:t('サーバーにこの従業員の行がありません（'+id+'）。','The server has no row for this employee ('+id+').') };
+  var fl=(typeof fields==='function') ? fields(c) : fields;          /* fields はクラウドの行から決めてもよい（最終出勤日など） */
+  var need=Object.keys(fl).filter(function(k){ return !_empSameField(k, c[k], fl[k]); });
+  if(need.length){
+    var f={}; need.forEach(function(k){ f[k]=fl[k]; });
+    if(!_empQueueState(id, f, c._stV) && !_EMP_Q_MEM) return { ok:false, reason:t('この端末に保存できませんでした。','Could not save on this device.') };
+  } else _empApplyServerRow(c);
+  return await empSyncNow([id], want);
 }
 /* この端末に覚えたメール認証（Invoice取込・業務Bot。v1063）のうち、退職・停止の人のものを消す（サーバー側のログインも閉じる） */
 function _empForgetSignin(id){
@@ -8768,13 +8886,14 @@ function _empForgetBlockedSignins(arr){
 /* ============================================================
    v1085 ログインしている人が退職・停止になったら、この端末からログアウトする
    （アプリを開いたとき・前面に戻ったとき・電波が戻ったとき・5 分ごと。ほかの端末で退職にした人も）
-   店舗のアカウント（共有）は社員に結びつかないので見ない。
+   決めるのはサーバーの行（端末の表が古いだけなら、ログアウトしない）。サーバーに届かないときは、ログインの直後だけ端末の表で決める。
+   メールでログインした管理者（セキュア）は、そのアカウントに紐づく社員で見る。店舗のアカウント（共有）は見ない。
    ============================================================ */
 var _eacAt=0, _eacBusy=false, _eacTimer=null;
 function _empMeId(){
   if(typeof curStoreLogin!=='undefined' && curStoreLogin) return null;
-  if(typeof loginPerson!=='undefined' && loginPerson && loginPerson.id!=null && loginPerson.id!=='') return String(loginPerson.id);
   if(window._secureMode && window._authSession && window._authSession.emp_id) return String(window._authSession.emp_id);
+  if(typeof loginPerson!=='undefined' && loginPerson && loginPerson.id!=null && loginPerson.id!=='') return String(loginPerson.id);
   return null;
 }
 async function empAccessCheck(why){
@@ -8785,17 +8904,20 @@ async function empAccessCheck(why){
   try{
     var d=_empDirtyGet();
     var loc=(getEmployees()||[]).find(function(e){ return String(e.id)===me; });
-    if(loc && empBlocked(loc) && !(d[me] && _empHasSt(d[me]))){ empForceLogout(loc); return 'out'; }
+    var locBlocked=!!(loc && empBlocked(loc) && !(d[me] && _empHasSt(d[me])));
     var rows=await _empFetchByIds([me]);
-    if(!rows || !rows[me]) return null;                              /* 読めない（電波）・クラウドに無い：分からないので続ける */
-    if(empBlocked(rows[me])){ empForceLogout(rows[me]); return 'out'; }
+    if(!rows){ if(locBlocked && (why==='login' || why==='force')){ empForceLogout(loc); return 'out'; } return null; }   /* 届かない：ログインの直後だけ端末の表で */
+    var c=rows[me];
+    if(!c) return null;                                              /* クラウドに無い：分からないので続ける */
+    if(empBlocked(c)){ empForceLogout(c); return 'out'; }
+    if(locBlocked) _empApplyServerRow(c);                            /* ほかの端末で在籍に戻っていた：端末の表を最新に */
     return 'ok';
   } finally { _eacBusy=false; }
 }
 function empForceLogout(rec){
   var id=rec && rec.id!=null ? String(rec.id) : _empMeId();
   try{ _empForgetSignin(id); }catch(e){}
-  try{ var cur=_lsRaw('m_employees', [])||[]; var by=_empById(cur); if(rec && by[id] && !empBlocked(by[id])){ cur=cur.map(function(r){ return (r && String(r.id)===id) ? Object.assign({}, r, { status:rec.status, resignDate:rec.resignDate, osDisabled:rec.osDisabled, _stV:rec._stV }) : r; }); _lsWriteVerified('m_employees', JSON.stringify(cur)); } }catch(e){}
+  try{ if(rec && rec.id!=null){ var cur=_lsRaw('m_employees', [])||[]; var by=_empById(cur); if(by[id] && !empBlocked(by[id]) && empBlocked(rec)) _empApplyServerRow(rec); } }catch(e){}
   window._sessionPin=null; window._hwSession=null; window._empPrivate=null;
   var msg=t('このアカウントは退職（または停止）になったため、ログアウトしました。','You were signed out because this account was stopped (resigned).');
   if(window._secureMode && typeof managerLogout==='function'){ try{ managerLogout(); }catch(e){} }
@@ -8811,14 +8933,18 @@ function empAccessWatch(){
 }
 try{
   if(typeof window!=='undefined' && window.addEventListener){
-    document.addEventListener('visibilitychange', function(){ if(!document.hidden){ try{ empAccessCheck('resume'); }catch(e){} try{ empRosterRefresh(false); }catch(e){} } });
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden){ try{ empAccessCheck('resume'); }catch(e){} try{ if(typeof curPage!=='undefined' && curPage==='staff_master') empRosterRefresh(false); }catch(e){} } });
     window.addEventListener('pageshow', function(ev){ if(ev && ev.persisted){ try{ empAccessCheck('resume'); }catch(e){} } });
     window.addEventListener('online', function(){ setTimeout(function(){ try{ empAccessCheck('online'); }catch(e){} try{ if(empDirtyCount()) empPushDirty(); }catch(e){} }, 1200); });
     window.addEventListener('focus', function(){ try{ empAccessCheck('focus'); }catch(e){} });
   }
 }catch(e){}
-/* 従業員の表だけ取り直す（従業員マスターを開いたとき・前面に戻ったとき。60 秒・10 分に 1 回まで） */
+/* 従業員の表だけ取り直す（従業員マスターを開いたとき・その画面で前面に戻ったとき。60 秒・10 分に 1 回まで）
+   打っている途中（検索など）は描き直さない */
 var _empRosterAt=0, _empRosterBusy=false;
+function _empTyping(){
+  try{ var a=document.activeElement; if(!a) return false; var tg=(a.tagName||'').toUpperCase(); return (tg==='INPUT' || tg==='TEXTAREA' || tg==='SELECT' || a.isContentEditable===true); }catch(e){ return false; }
+}
 async function empRosterRefresh(force){
   if(_empRosterBusy || !curUserName) return false;
   if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return false;
@@ -8832,7 +8958,10 @@ async function empRosterRefresh(force){
     var before=_lsStoreGet('m_employees');
     var merged=_empMergeCloud(arr).concat(keepTest);
     var js=JSON.stringify(merged);
-    if(js!==before){ _lsWriteVerified('m_employees', js); if(typeof curPage!=='undefined' && curPage==='staff_master' && !(document.getElementById('modal-overlay')||{classList:{contains:function(){return false;}}}).classList.contains('open')) renderPage('staff_master'); }
+    if(js!==before){
+      _lsWriteVerified('m_employees', js);
+      if(typeof curPage!=='undefined' && curPage==='staff_master' && !_empTyping() && !(document.getElementById('modal-overlay')||{classList:{contains:function(){return false;}}}).classList.contains('open')) renderPage('staff_master');
+    }
     return true;
   } catch(e){ return false; }
   finally { _empRosterBusy=false; }
@@ -10466,11 +10595,16 @@ function secAuthErrText(j, kind){
   var e = j && j.error;
   if (e === 'forbidden' || e === 'not_registered') {
     if (kind === 'secret') return t('このメールのアカウントでは機密情報を開けません（経理・GM・CEO として登録されたメールだけ）','This email account cannot open confidential details (registered accounting, GM and CEO accounts only)');
+    if (kind === 'restore') return t('このメールのアカウントでは在籍に戻せません（CEO・GM・AM・経理として登録されたメールだけ）','This email account cannot restore employees (registered CEO, GM, AM and accounting accounts only)');   /* v1085 */
     if (kind === 'migrate') return t('このメールのアカウントでは移行できません（GM・CEO として登録されたメールだけ）','This email account cannot run the move (registered GM and CEO accounts only)');
     return t('このメールのアカウントでは PIN の一覧・変更を開けません（GM・CEO として登録されたメールだけ）','This email account cannot open PIN lists or changes (registered GM and CEO accounts only)');
   }
   if (e === 'db_unavailable') return t('サーバーにつながりません。しばらくしてから、もう一度お試しください。','Cannot reach the server. Please try again in a little while.');
   if (e === 'invalid') return t('入力の値を確かめてください','Check the values you entered');
+  if (e === 'inactive') return t('退職・停止中の人の PIN は変えられません（在籍に戻すと前の PIN に戻ります）','The PIN of a resigned / stopped person cannot be changed (it comes back when they are restored)');   /* v1085 */
+  if (e === 'not_installed') return t('サーバーの更新（SQL 20261023090000）がまだです。管理者に知らせてください。','The server update (SQL 20261023090000) is not installed yet. Tell the administrator.');
+  if (e === 'not_found') return t('サーバーにこの従業員の行がありません。','The server has no row for this employee.');
+  if (e === 'unknown action') return t('サーバーの関数（auth-pin）が古い版のままです。管理者に知らせてください。','The server function (auth-pin) is still an old version. Tell the administrator.');   /* v1085: 前の版の auth-pin は restore を知らない */
   if (j && j.ok === false && !e) return t('確認できませんでした（サーバーが古い版のままかもしれません）','Could not confirm (the server may still be an old version)');
   return t('うまくいきませんでした','Something went wrong');
 }
@@ -10838,6 +10972,7 @@ async function showManagerSecure(){
   _applyRole(window._authSession.role);
   curStore='ALL';
   try{ var me=getEmployees().find(function(x){return x.id===window._authSession.emp_id;}); curUserName=me?me.name:(window._authSession.email||''); }catch(e){ curUserName=window._authSession.email||''; }
+  try{ if (typeof empAccessWatch === 'function' && window._authSession.emp_id) { empAccessWatch(); setTimeout(function(){ try{ empAccessCheck('force'); }catch(e){} }, 1500); } }catch(e){}   /* v1085 */
   if(body){
     try{ body.innerHTML=renderSecureBody(); }catch(e){ body.innerHTML='<div class="card" style="padding:16px;color:var(--red)">表示エラー: '+escapeHtml(String(e))+'</div>'; }
   }
@@ -13577,11 +13712,12 @@ async function enterAppWithSync(){
   try { await Promise.race([ loginSync(), new Promise(function(res){ setTimeout(res, 9000); }) ]); } catch(e){} // 携帯回線でハングしても9秒で先へ
   // クラウド同期後、ログイン者の役職・所属を最新マスターで再解決（シードの古い役職に固定されるのを防ぐ）
   try { if (!curStoreLogin) resolveLoginIdentity(); } catch(e){}
-  /* v1085: 取り込んだばかりの名簿で退職・停止ならここで止める（ログイン画面に戻す） */
+  /* v1085: 取り込んだばかりの名簿で退職・停止ならここで止める（ログイン画面に戻す。この人の状態を変える送信が残っていれば待つ） */
   try {
     if (!curStoreLogin && typeof empBlocked === 'function' && loginPerson) {
       var _me = getEmployees().find(function(e){ return String(e.id) === String(loginPerson.id); });
-      if (_me && empBlocked(_me) && !(_empDirtyGet()[String(_me.id)])) { hideSyncSplash(); empForceLogout(_me); return; }
+      var _mq = _me ? _empDirtyGet()[String(_me.id)] : null;
+      if (_me && empBlocked(_me) && !(_mq && _empHasSt(_mq))) { hideSyncSplash(); empForceLogout(_me); return; }
     }
   } catch(e){}
   try { await fetchEmpPrivate(); } catch(e){}
@@ -36599,6 +36735,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q',
+  'emp_dirty_q',       /* v1085: 従業員の送れていない変更（退職など。端末だけ・再生不可） */
   'lunch_challenge',   /* v1080: Tenkichi ランチチャレンジ（月の設定・日の印・確定・食事会。手入力・再生不可） */
   'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
@@ -50059,6 +50196,7 @@ function empsByCardLast4(last4){
 function empAge(dob){ if(!dob) return ''; var d=new Date(dob); if(isNaN(d.getTime())) return ''; var t=new Date(); var a=t.getFullYear()-d.getFullYear(); var m=t.getMonth()-d.getMonth(); if(m<0||(m===0&&t.getDate()<d.getDate())) a--; return (a>=0&&a<130)?a:''; }
 function openEmpModal(empId) {
   var emps = getEmployees();
+  window._empForm = { id: empId || '', list: emps };   /* v1085: 保存のとき、この画面に出した内容と比べて、変えた欄だけを書く */
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
   var isNew = !empId;
   var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'Office'},...STORES];
@@ -50178,8 +50316,13 @@ function openEmpModal(empId) {
 
 function saveEmp(empId) {
   var name = document.getElementById('e-name').value.trim();
-  /* v1085: 退職した人をこの画面で在籍に戻さない（戻すのは「在籍に戻す」＝退職の手続きも取り消す） */
-  if (empId) { var _cur0 = getEmployees().find(x=>x.id===empId), _ns0 = (document.getElementById('e-status')||{}).value; if (_cur0 && _cur0.status==='退職' && _ns0 && _ns0!=='退職') { alert(t('退職した人を在籍に戻すときは、従業員マスターの「在籍に戻す」を使ってください（退職の手続きも取り消します）。','To bring back a resigned person, use "Restore" in the staff master.')); return; } }
+  /* v1085: 退職した人をこの画面で在籍に戻さない（戻すのは「在籍に戻す」＝退職の手続きも取り消す）。
+     この画面を開いたあとでほかの端末が退職にしていたときも、状態を変えようとしたら知らせる */
+  var _fm0 = (empId && window._empForm && window._empForm.id===empId && Array.isArray(window._empForm.list)) ? window._empForm.list : null;
+  if (empId) {
+    var _cur0 = getEmployees().find(x=>x.id===empId), _ns0 = (document.getElementById('e-status')||{}).value, _or0 = ((_fm0||[]).find(x=>x.id===empId)||_cur0||{}).status;
+    if (_cur0 && _cur0.status==='退職' && _ns0 && _ns0!=='退職' && _ns0!==_or0) { alert(t('退職した人を在籍に戻すときは、従業員マスターの「在籍に戻す」を使ってください（退職の手続きも取り消します）。','To bring back a resigned person, use "Restore" in the staff master.')); return; }
+  }
   if (!name) { alert('氏名を入力してください'); return; }
   var support = Array.from(document.querySelectorAll('.e-support:checked')).map(c=>c.value);
   var data = {
@@ -50225,7 +50368,7 @@ function saveEmp(empId) {
   if (coefEl) { data.coef = parseFloat(coefEl.value)||1; }
   data.prep = (data.title==='Prep'||data.title==='Prep Specialist');
   if (typeof ghBeforeSaveEmp==='function' && ghBeforeSaveEmp(empId, data)) return;   /* v1043: グレードが変わるときは確定日を聞いてから保存する（UI案31-5b） */
-  var emps = getEmployees();
+  var emps = _fm0 || getEmployees();   /* v1085: 開いたときの表（変えた欄だけが、いまの表に重なる） */
   if (empId) {
     var e = emps.find(x=>x.id===empId);
     if (e){ Object.assign(e, data); if(e.prep && !e.prepLv) e.prepLv=1; }
@@ -50306,12 +50449,15 @@ function offboardChecklistFor(store){
 
 /* FUNERGY_OFFBOARD_BEGIN */
 /* v1085: 退職記録（offboardings）の合流。前は「手元が勝つ」だったので、完了の前から開いていた端末がチェックを 1 つ直すと
-   「完了」が「進行中」に戻っていた。状態は 申請中 → 進行中 → 完了（取消・却下は終わり）と前へだけ進む。
-   承認を取り消して「申請中」に戻すときは世代（_gen）を 1 つ上げる（時計のずれに左右されない）。
-   中身（チェック・清算・メモ）は新しい更新（_mut）。 */
-var OB_STATUS_RANK = { '申請中':0, '進行中':1, '完了':2, '却下':3, '取消':3 };
-var OB_STATUS_FIELDS = ['status','completedBy','completedAt','approvedBy','approvedAt','approvalId','_stAt','_stBy','_gen'];
+   「完了」が「進行中」に戻っていた。状態は 申請中 → 進行中・却下 → 完了 → 取消 と前へだけ進む：
+   ・取消（在籍に戻した）は終わり。完了は取消のほかには変わらない（承認の取り消し・古い写しでは戻らない）。
+   ・完了・取消の前は、承認を取り消して「申請中」に戻したほうが勝つ（世代 _gen。時計のずれに左右されない）。
+     同じ世代なら先へ進んだほう（申請中 < 進行中・却下）、同じなら新しいほう。
+   中身（チェック・清算・メモ）は新しい更新（_mut）。サーバーの見張り（20261023090000）も完了・取消を戻させない。 */
+var OB_STATUS_RANK = { '申請中':0, '進行中':1, '却下':1, '完了':2, '取消':3 };
+var OB_STATUS_FIELDS = ['status','completedBy','completedAt','approvedBy','approvedAt','approvalId','_stAt','_stBy','_gen','pinShared'];
 function _obRank(o){ var r=OB_STATUS_RANK[o && o.status]; return r==null ? -1 : r; }
+function _obFinal(o){ return !!(o && (o.status==='完了' || o.status==='取消')); }
 function _obStTime(o){ var v=o && o._stAt; var n=(typeof v==='number') ? v : Date.parse(v||''); return isNaN(n) ? 0 : n; }
 function _obBare(o){ if(o==null) return ''; var x={}; Object.keys(o).forEach(function(k){ if(k!=='_mut') x[k]=o[k]; }); return JSON.stringify(x); }
 function _obMergeOne(c, l){
@@ -50320,7 +50466,11 @@ function _obMergeOne(c, l){
   var cm=Number(c._mut)||0, lm=Number(l._mut)||0;
   var body=(cm||lm) ? (lm>=cm ? l : c) : l;
   var cg=Number(c._gen)||0, lg=Number(l._gen)||0, st;
-  if(cg!==lg) st = lg>cg ? l : c;
+  if(_obFinal(c) || _obFinal(l)){
+    if(_obRank(c)!==_obRank(l)) st = _obRank(l)>_obRank(c) ? l : c;               /* 取消 ＞ 完了 ＞ そのほか */
+    else st = (_obStTime(l)>=_obStTime(c)) ? l : c;
+  }
+  else if(cg!==lg) st = lg>cg ? l : c;
   else if(_obRank(c)!==_obRank(l)) st = _obRank(l)>_obRank(c) ? l : c;
   else st = (_obStTime(l)>=_obStTime(c)) ? l : c;
   var out=Object.assign({}, body);
@@ -50346,17 +50496,30 @@ function _coversOffboard(check, want){
   }
   return true;
 }
+/* 退職記録の入れ物のキー（分けて保存しているときは spl_offboardings_*） */
+function _obKeys(){
+  var sp=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS) ? _SPLIT_KEYS.offboardings : null;
+  if(!sp) return ['offboardings'];
+  var keys={ 'spl_offboardings__':1 };
+  (_splitRead('offboardings', sp, true)||[]).forEach(function(r){ keys['spl_offboardings_'+String(sp.by(r)==null?'_':sp.by(r))]=1; });
+  try{ lsKeys('spl_offboardings_').forEach(function(k){ keys[k]=1; }); }catch(e){}
+  return Object.keys(keys);
+}
 /* 退職記録をすぐ送って、送れたかを返す（完了・取消の確認に使う） */
 async function offboardPushNow(){
   try{
-    var sp=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS) ? _SPLIT_KEYS.offboardings : null;
-    if(!sp) return (await opMergePush('offboardings', _lsRaw('offboardings', [])))!==false;
-    var keys={};
-    (_splitRead('offboardings', sp, true)||[]).forEach(function(r){ keys['spl_offboardings_'+String(sp.by(r)==null?'_':sp.by(r))]=1; });
-    var ok=true;
-    for(var k in keys){ if(!Object.prototype.hasOwnProperty.call(keys,k)) continue; var r=await opMergePush(k, _lsRaw(k, [])); if(r===false) ok=false; }
+    var keys=_obKeys(), ok=true;
+    for(var i=0;i<keys.length;i++){ var k=keys[i]; var v=_lsRaw(k, null); if(v==null) continue; var r=await opMergePush(k, v); if(r===false) ok=false; }
     return ok;
   }catch(e){ console.warn('offboardPushNow', e); return false; }
+}
+/* 退職記録をサーバーから読み直して重ねる（ほかの端末で完了・取消になっていないか。読めなければ false） */
+async function offboardPullNow(){
+  try{
+    var keys=_obKeys(), ok=true;
+    for(var i=0;i<keys.length;i++){ if(!(await pullOpKey(keys[i]))) ok=false; }
+    return ok;
+  }catch(e){ console.warn('offboardPullNow', e); return false; }
 }
 /* FUNERGY_OFFBOARD_END */
 function getOffboardings(){ return ls('offboardings', []); }
@@ -50477,6 +50640,7 @@ function openOffboardingModal(obId){
     +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+escapeHtml(storeName)+(o.title?' · '+escapeHtml(o.title):'')+' · 区分：'+escapeHtml(o.reason)+' · 最終出勤：'+escapeHtml(o.lastWorkDate||'-')+'</div>'
     +(o.reasonNote?'<div style="font-size:11px;color:var(--muted);margin-top:3px">メモ：'+escapeHtml(o.reasonNote)+'</div>':'')
     +(o.initiatedBy?'<div style="font-size:10px;color:var(--muted);margin-top:2px">起票：'+escapeHtml(o.initiatedBy)+(o.approvedBy?' / 承認：'+escapeHtml(o.approvedBy):'')+'</div>':'')
+    +(o.pinShared?'<div style="font-size:11px;color:var(--red);margin-top:3px"><i class="ti ti-alert-triangle"></i> '+t('PIN は止めていません（同じ名前の在籍者がいるため。その方の PIN を変えてもらう）','The PIN was not stopped (a namesake is in service; ask them to change their PIN)')+'</div>':'')   /* v1085 */
     +'</div></div>';
 
   var bar = '<div style="margin:4px 0 12px"><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:3px"><span>手続きの進捗</span><span>'+pr.done+'/'+pr.total+'（'+pr.pct+'%）</span></div>'
@@ -50532,7 +50696,11 @@ function enableOsAccount(obId){
   o.accountDisabled=false;
   setOffboardings(arr); showToast('OSアカウントの無効化を解除しました','info'); openOffboardingModal(obId);
 }
-/* v1085: 完了は「退職がサーバーに入り、ログインが止まった」のを確かめてから。途中で失敗したら完了にしない（もう一度押せば続きから） */
+/* v1085: 完了は「退職がサーバーに入り、ログインが止まった」のを確かめてから。途中で失敗したら完了にしない（もう一度押せば続きから）
+   ・先にサーバーの退職記録を読み直す（ほかの端末で取消になっていたら完了にしない）
+   ・退職はサーバーのいまの版の上で送る（この端末の表が古くても、送る分が無くても）
+   ・サーバーの見張り（20261023090000）が無い・ログインの停止を確かめられないときは完了にしない
+   ・同じ名前の在籍者がいて PIN を止められないときは、確かめてから完了にし、記録に残す（pinShared） */
 var _obCompleting = {};
 function _obBusy(on, label){
   try{ var b=document.getElementById('ob-complete-btn'); if(!b) return; b.disabled=!!on; if(on){ if(!b.dataset._t) b.dataset._t=b.innerHTML; b.innerHTML='<i class="ti ti-loader"></i> '+(label||t('サーバーに送っています…','Sending to the server…')); } else if(b.dataset._t){ b.innerHTML=b.dataset._t; } }catch(e){}
@@ -50542,40 +50710,47 @@ async function completeOffboarding(obId){
   if(!offboardCanEdit(o)) return;
   if(_obCompleting[obId]) return;
   var pr=offboardProgress(o);
-  if(pr.pct<100 && !confirm('未完了の項目が '+(pr.total-pr.done)+'件 あります。このまま完了にしますか？')) return;
+  if(pr.pct<100 && !confirm(t('未完了の項目が '+(pr.total-pr.done)+'件 あります。このまま完了にしますか？', (pr.total-pr.done)+' item(s) are not done yet. Complete anyway?'))) return;
   _obCompleting[obId]=true; _obBusy(true);
   var fail=function(msg){ _obBusy(false); showToast(t('退職手続きを完了にできませんでした。','The offboarding could not be completed.')+' '+msg, 'danger'); };
   try{
-    /* ① 従業員：退職・最終出勤日・OSアカウントの無効化（もう入っていれば何もしない） */
-    var emps=getEmployees(); var e=emps.find(function(x){ return x.id===o.empId; });
+    /* ⓪ ほかの端末で完了・取消になっていないか */
+    if(!(await offboardPullNow())){ fail(t('退職記録をサーバーで確かめられませんでした（通信）。もう一度押してください。','Could not check the record on the server (network). Press again.')); return; }
+    arr=getOffboardings(); o=arr.find(function(x){return x.id===obId;});
+    if(!o){ fail(t('退職記録が見つかりません。','The record was not found.')); return; }
+    if(o.status==='取消'){ fail(t('この退職手続きは「取消」になっています（在籍に戻しました）。','This offboarding was cancelled (the person was restored).')); try{ closeModalDirect(); renderPage('staff_master'); }catch(e){} return; }
+    var wasDone=(o.status==='完了');
+    /* ① 従業員：退職・最終出勤日・OSアカウントの無効化を、サーバーのいまの版の上で（もう入っていれば送らない） ② ログインが止まったか */
+    var e=getEmployees().find(function(x){ return x.id===o.empId; });
     if(!e){ fail(t('この記録の従業員（ID '+o.empId+'）が従業員マスターにいません。','The employee of this record (ID '+o.empId+') is not in the staff master.')); return; }
-    var ch=false;
-    if(e.status!=='退職'){ e.status='退職'; ch=true; }
-    if(!e.resignDate){ e.resignDate=o.lastWorkDate||todayISO(); ch=true; }
-    if(e.osDisabled!==true){ e.osDisabled=true; ch=true; }
-    if(ch) lsSet('m_employees', emps);
-    /* ② サーバーに入って、ログイン（PIN・管理者のメールのアカウント）が止まったか */
-    var r=await empSyncNow([o.empId], 'blocked');
+    var r=await empSetStateNow(o.empId, function(c){ return { status:'退職', resignDate:(c.resignDate||e.resignDate||o.lastWorkDate||todayISO()), osDisabled:true }; }, 'blocked');
     if(!r.ok){ fail(r.reason||''); return; }
+    if(r.guard===false){ fail(t('サーバーの退職の保護（SQL 20261023090000）が入っていないため、ログインの停止を確かめられません。完了にはしていません（管理者に知らせてください）。','The server-side guard (SQL 20261023090000) is not installed, so the sign-in stop cannot be checked. Not completed (tell the administrator).')); return; }
+    var st=r.states && r.states[o.empId], shared=!!(st && st.pin==='shared_name');
+    if(shared && !o.pinShared && !confirm(t('同じ名前（'+o.empName+'）の在籍者がいます。ログインの PIN は名前で決まるため、止められません（退職した人が、在籍の方の PIN でログインできてしまいます）。在籍の方に PIN を変えてもらってください。このまま完了にしますか？',
+        'Someone in service has the same name ('+o.empName+'). Sign-in PINs are by name, so this PIN cannot be stopped (the resigned person could sign in with that PIN). Ask that person to change their PIN. Complete anyway?'))){
+      fail(t('同じ名前の在籍者がいるため、PIN を止められません。','A namesake is in service, so the PIN cannot be stopped.')); return;
+    }
     /* ③ 退職記録を完了にして送る（送れなければ完了にしない） */
     arr=getOffboardings(); o=arr.find(function(x){return x.id===obId;}); if(!o){ fail(t('退職記録が見つかりません。','The record was not found.')); return; }
-    var wasDone=(o.status==='完了');
+    var now=new Date().toISOString(), touched=false;
     if(!wasDone){
-      o.status='完了'; o.completedBy=(curUserName||''); o.completedAt=new Date().toISOString();
-      if(!o.accountDisabled){ o.accountDisabled=true; o.accountBy=(curUserName||''); o.accountAt=o.completedAt; }
-      setOffboardings(arr);
+      o.status='完了'; o.completedBy=(curUserName||''); o.completedAt=now; touched=true;
+      if(!o.accountDisabled){ o.accountDisabled=true; o.accountBy=(curUserName||''); o.accountAt=now; }
     }
+    if(shared && !o.pinShared){ o.pinShared={ at:now, by:(curUserName||'') }; touched=true; }
+    if(touched) setOffboardings(arr);
     var sent=await offboardPushNow();
     if(!sent){
       if(!wasDone){ var arr2=getOffboardings(); var o2=arr2.find(function(x){return x.id===obId;}); if(o2 && o2.status==='完了'){ o2.status='進行中'; o2.completedBy=''; o2.completedAt=''; setOffboardings(arr2); } }
       fail(t('退職とログインの停止はサーバーに入りましたが、完了の記録を送れませんでした。電波を確かめて、もう一度「退職手続きを完了」を押してください。','The resignation and the sign-in stop are on the server, but the completion record could not be sent. Press "Complete" again.'));
       return;
     }
+    /* 送ったあいだに、ほかの端末で取消（在籍に戻した）になっていたら、サーバーは取消を残す */
+    if(await offboardPullNow()){ var o3=offboardById(obId); if(o3 && o3.status==='取消'){ fail(t('ほかの端末で「取消」（在籍に戻す）になりました。','It was cancelled on another device (restored).')); try{ closeModalDirect(); renderPage('staff_master'); }catch(e){} return; } }
     try{ addNotif({ type:'offboard', title:'退職手続き完了：'+o.empName, text:('最終出勤 '+(o.lastWorkDate||'')+'／全手続き完了').slice(0,140), toStore:o.store, toRoles:['office','gm','ceo','am'], page:'staff_master', refId:o.id }); }catch(_){}
     closeModalDirect();
-    var st=r.states && r.states[o.empId];
-    var note=(r.guard===false) ? t('（サーバーの退職の保護 20261023090000 がまだ入っていません。管理者へ）','(The server-side guard 20261023090000 is not installed yet.)')
-      : (st && st.pin==='shared_name') ? t('（同じ名前の在籍者がいるため PIN は止めていません。その方の PIN を変えてもらってください）','(A namesake is in service, so the PIN was not stopped.)') : '';
+    var note=shared ? t('（同じ名前の在籍者がいるため PIN は止めていません。その方の PIN を変えてもらってください）','(A namesake is in service, so the PIN was not stopped. Ask them to change their PIN.)') : '';
     showToast(o.empName+' '+t('の退職手続きを完了しました（ログインも止めました）','offboarding completed (sign-in stopped)')+note, note ? 'warn' : 'success');
     renderPage('staff_master');
   } catch(err){ console.warn('completeOffboarding', err); fail(String((err && err.message) || err)); }
@@ -50583,19 +50758,46 @@ async function completeOffboarding(obId){
 }
 
 /* ===== 復元（誤操作対策：退職→在籍に戻す） ===== */
-/* v1085: 在籍に戻すのは、ここ（権限のある人の明示の操作）だけ。サーバーに入ったのを確かめてから退職の手続きを取消にする */
-async function restoreEmployee(empId){
+/* v1085: 在籍に戻す（再入社など）のは、ここ（権限のある人の明示の操作）だけ。サーバー（auth-pin）が、メールで認証した
+   CEO・GM・AM・経理かを確かめて戻す（アプリの公開の鍵では戻せない）。サーバーが退職の手続きも「取消」にする。
+   サーバーが戻すまで、この端末の表は変えない（失敗したのに在籍と出したり、あとで送ったりしない） */
+function _restoreErrText(j){
+  var e=j && j.error;
+  if(e==='forbidden' || e==='not_registered') return secAuthErrText({ error:'forbidden' }, 'restore');
+  return secAuthErrText(j, 'restore');
+}
+/* サーバーで在籍に戻す。{ok:true, j} ／ {ok:false, reason} ／ {pending:true}（メール認証の画面を出した。通ったら again） */
+async function empRestoreServer(empId, keepOffboard, title, again, fresh){
+  if(typeof navigator!=='undefined' && navigator && navigator.onLine===false) return { ok:false, reason:t('オフラインです。電波のある所で、もう一度押してください。','You are offline. Press again where you have a connection.') };
+  if(!(await secAuthEnsure())){ secAuthLoginModal(title, again); return { pending:true }; }
+  var j;
+  try{ j=await secAuthCall('auth-pin', { action:'restore', emp:String(empId), keepOffboard:!!keepOffboard }); }
+  catch(err){ return { ok:false, reason:t('通信に失敗しました。','Network error.') }; }
+  if(secAuthNeedLogin(j, fresh, title, again, 'restore')) return { pending:true };
+  if(!j || !j.ok) return { ok:false, reason:_restoreErrText(j) };
+  try{ if(j.data) _empApplyServerRow(Object.assign({ id:String(empId) }, j.data)); }catch(e){}
+  var st=j.state||{};
+  if(st.pin==='locked' || st.manager==='stopped'){ var s2=await empAccessState(empId, true); if(s2 && !s2.missing && s2.found!==false) j.state=s2; }
+  return { ok:true, j:j };
+}
+async function restoreEmployee(empId, fresh){
   if(['ceo','gm','am','office'].indexOf(curRole)<0){ showToast(t('在籍に戻せるのは CEO・GM・AM・経理だけです。','Only CEO, GM, AM or office can restore.'), 'danger'); return; }
-  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
-  if(!confirm(e.name+' を在籍に戻しますか？（ログインも再び使えるようになり、退職の手続きは「取消」になります）')) return;
-  e.status='在籍'; e.resignDate=''; e.osDisabled=false; e._restoreAt=new Date().toISOString(); e._restoreBy=(curUserName||''); lsSet('m_employees', emps);
-  var r=await empSyncNow([empId], 'open');
+  var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  if(!fresh && !confirm(t(e.name+' を在籍に戻しますか？（ログインも再び使えるようになり、退職の手続きは「取消」になります。メールの認証が要ります）',
+      'Restore '+e.name+' to in service? (Sign-in works again and the offboarding becomes "cancelled". Email sign-in is required.)'))) return;
+  var title=t('在籍に戻す','Restore'), again=function(){ restoreEmployee(empId, true); };
+  var r=await empRestoreServer(empId, false, title, again, fresh);
+  if(r.pending) return;
   if(!r.ok){ showToast(t('在籍に戻せませんでした。','Could not restore.')+' '+(r.reason||''), 'danger'); renderPage('staff_master'); return; }
-  var arr=getOffboardings(); var changed=false;
+  /* サーバーが取消にした記録を読む。この端末にしか無い記録も取消に */
+  await offboardPullNow();
+  var arr=getOffboardings(), changed=false;
   arr.forEach(function(o){ if(o.empId===empId && o.status!=='取消'){ o.status='取消'; changed=true; } });
   if(changed){ setOffboardings(arr); offboardPushNow(); }
+  var st=(r.j && r.j.state)||{}, warn=(st.pin==='locked' || st.manager==='stopped');
   try{ addNotif({ type:'offboard', title:'退職を取消：'+e.name, text:'在籍に復元されました', toStore:e.store, toRoles:['office','gm','ceo','am'], page:'staff_master', refId:empId }); }catch(_){}
-  showToast(e.name+' を在籍に戻しました','info'); renderPage('staff_master');
+  showToast(e.name+' '+t('を在籍に戻しました','was restored to in service')+(warn ? t('（ログインの再開がサーバーで終わっていません。管理者に知らせてください）','(sign-in has not been reopened on the server; tell the administrator)') : ''), warn ? 'warn' : 'info');
+  renderPage('staff_master');
 }
 
 /* ===== v1085 退職の記録と食い違う人（退職手続きが「完了」なのに在籍に戻っている人）。GM・CEO が 1 人ずつ直す（推測で退職にしない） ===== */
@@ -50605,7 +50807,8 @@ function resignRepairCandidates(){
   var out=[];
   (getEmployees()||[]).forEach(function(e){
     var o=e && latest[e.id]; if(!o || o.status!=='完了' || empBlocked(e)) return;
-    if(String(e._restoreAt||'') > String(o.completedAt||'')) return;     /* 完了のあとで「在籍に戻す」「在籍のまま」を押した */
+    if(String(e._restoreAt||'') > String(o.completedAt||'')) return;     /* 完了のあとで「在籍に戻す」を押した */
+    if(e._resignOk && e._resignOk.ob===o.id) return;                     /* 「在籍のまま（再入社など）」を押した */
     out.push({ e:e, o:o, rehire: !!(e.hireDate && o.completedAt && String(e.hireDate) > String(o.completedAt).slice(0,10)) });
   });
   return out;
@@ -50616,11 +50819,11 @@ function renderResignRepairCard(){
   var rows=list.map(function(x){
     var e=x.e, o=x.o, s=STORES.find(function(z){ return z.id===e.store; });
     return '<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;padding:7px 0;border-top:1px solid var(--border);flex-wrap:wrap">'
-      +'<div style="flex:1 1 220px;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+' <span class="tag tag-green" style="font-size:10px">'+escapeHtml(e.status||'')+'</span></div>'
+      +'<div style="flex:1 1 220px;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(e.name)+' <span class="tag tag-green" style="font-size:10px">'+escapeHtml(_empStTx(e.status||''))+'</span></div>'
       +'<div style="font-size:11px;color:var(--muted)">'+escapeHtml(s?s.name:(e.store||''))+' · '+t('退職手続き 完了','Offboarding completed')+' '+escapeHtml(o.completedAt?fmtJP(o.completedAt):'-')+(o.completedBy?' · '+escapeHtml(o.completedBy):'')+' · '+t('最終出勤','Last day')+' '+escapeHtml(o.lastWorkDate||'-')+'</div>'
       +(x.rehire?'<div style="font-size:11px;color:var(--accent)">'+t('入社日が完了より後です（再入社かもしれません）','The hire date is after the completion (maybe a rehire)')+'</div>':'')+'</div>'
       +'<div style="display:flex;gap:4px;flex-wrap:wrap"><button class="btn btn-danger btn-sm" style="padding:3px 9px;font-size:11px" onclick="resignRepairApply(\''+e.id+'\',\''+o.id+'\')"><i class="ti ti-user-off"></i> '+t('退職に戻す','Set back to resigned')+'</button>'
-      +'<button class="btn btn-secondary btn-sm" style="padding:3px 9px;font-size:11px" onclick="resignRepairKeep(\''+e.id+'\')">'+t('在籍のまま（再入社など）','Keep in service (rehire)')+'</button></div></div>';
+      +'<button class="btn btn-secondary btn-sm" style="padding:3px 9px;font-size:11px" onclick="resignRepairKeep(\''+e.id+'\',\''+o.id+'\')">'+t('在籍のまま（再入社など）','Keep in service (rehire)')+'</button></div></div>';
   }).join('');
   return '<div class="card" style="margin-bottom:10px;border-left:3px solid var(--red)"><div class="card-title" style="font-size:13px"><i class="ti ti-alert-triangle" style="color:var(--red)"></i> '
     +t('退職の記録と食い違う人','Resigned on record but in service')+'（'+list.length+'）</div>'
@@ -50629,19 +50832,19 @@ function renderResignRepairCard(){
 }
 async function resignRepairApply(empId, obId){
   if(['ceo','gm'].indexOf(curRole)<0) return;
-  var o=offboardById(obId), emps=getEmployees(), e=emps.find(function(x){ return x.id===empId; });
+  var o=offboardById(obId), e=getEmployees().find(function(x){ return x.id===empId; });
   if(!o || !e || o.empId!==empId || o.status!=='完了') return;
   if(!confirm(e.name+' '+t('さんを退職に戻します（退職手続きの完了 ','will be set back to resigned (completed ')+(o.completedAt?fmtJP(o.completedAt):'-')+t('・最終出勤 ',', last day ')+(o.lastWorkDate||'-')+t('）。ログインも止まります。よろしいですか？','). Sign-in will be stopped. OK?'))) return;
-  e.status='退職'; if(!e.resignDate) e.resignDate=o.lastWorkDate||todayISO(); e.osDisabled=true; lsSet('m_employees', emps);
-  var r=await empSyncNow([empId], 'blocked');
+  var r=await empSetStateNow(empId, function(c){ return { status:'退職', resignDate:(c.resignDate||e.resignDate||o.lastWorkDate||todayISO()), osDisabled:true }; }, 'blocked');
+  if(r.ok && r.guard===false) r={ ok:false, reason:t('サーバーの退職の保護（SQL 20261023090000）がまだのため、ログインの停止を確かめられません。','The server-side guard (SQL 20261023090000) is not installed, so the sign-in stop cannot be checked.') };
   showToast(r.ok ? (e.name+' '+t('さんを退職に戻しました（ログインも止めました）','set back to resigned (sign-in stopped)')) : (t('退職に戻せませんでした。','Could not set back.')+' '+(r.reason||'')), r.ok ? 'success' : 'danger');
   renderPage('staff_master');
 }
-function resignRepairKeep(empId){
+function resignRepairKeep(empId, obId){
   if(['ceo','gm'].indexOf(curRole)<0) return;
   var emps=getEmployees(), e=emps.find(function(x){ return x.id===empId; }); if(!e) return;
   if(!confirm(e.name+' '+t('さんは在籍のままにします（再入社など）。この一覧から外します。よろしいですか？','stays in service (rehire etc.) and is removed from this list. OK?'))) return;
-  e._restoreAt=new Date().toISOString(); e._restoreBy=(curUserName||''); lsSet('m_employees', emps);
+  e._resignOk={ ob:String(obId||''), at:new Date().toISOString(), by:(curUserName||'') }; lsSet('m_employees', emps);   /* 記録の印（状態は変えない） */
   renderPage('staff_master');
 }
 /* ===== 従業員マスター上部カード（進行中の退職手続き） ===== */
@@ -62048,7 +62251,8 @@ function bonusSegCsShort(b){
    どれか 1 つでも端末に保存できなかったら（lsSet が false・途中の例外）、書いたキーを全部前の値に戻し、同期にも送らない。
    全部書けたときだけ、lsSet が送るはずだったものを同じ順番で送る（端末だけ戻しても、先に送った新しい値で同期が食い違う、を起こさない）。 */
 function ghTxnBegin(){
-  var tx={ snap:[], seen:{}, fail:[], pushes:[], err:null, set:lsSet, push:(typeof _pushWithOutbox==='function') ? _pushWithOutbox : null };
+  var tx={ snap:[], seen:{}, fail:[], pushes:[], err:null, set:lsSet, push:(typeof _pushWithOutbox==='function') ? _pushWithOutbox : null,
+    empQ:(typeof _empDirtySnapshot==='function') ? _empDirtySnapshot() : null };   /* v1085: 従業員の送る分も戻す */
   lsSet=function(key, val){
     var split=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS && _SPLIT_KEYS[key]);   /* 分けて保存するキーは、中の 1 つずつ（ここを通る）を覚える */
     if(!split && !tx.seen[key]){ tx.seen[key]=1; tx.snap.push([key, _lsRawStr(key)]); }
@@ -62068,6 +62272,7 @@ function ghTxnEnd(tx){
   }
   var bad=false;
   tx.snap.slice().reverse().forEach(function(x){ try{ if(x[1]==null) _lsRawDel(x[0]); else if(!_lsWriteVerified(x[0], x[1])) bad=true; }catch(e){ bad=true; } });   /* 端末だけ（同期に送らない） */
+  try{ if(tx.empQ && typeof _empDirtyRestore==='function') _empDirtyRestore(tx.empQ); }catch(e){ bad=true; }   /* v1085: 戻した変更を、あとで送らない */
   tx.rollbackFailed=bad;
   if(!bad && typeof _lsClearSaveFailure==='function') tx.fail.forEach(function(k){ try{ _lsClearSaveFailure(k); }catch(e){} });   /* 戻せたら「保存できていない項目」の印を消す（端末とクラウドは前の値でそろっている） */
   if(tx.err) console.warn('ghTxn', tx.err);
@@ -67762,11 +67967,32 @@ function cancelMySignoff(id){
   a._mut=Date.now(); lsSet('approvals', approvals);
   showToast(t('自分の承認を取り消しました','Your approval was canceled'),'info'); renderPage('approval');
 }
-function reopenApproval(id){
+/* v1085: 退職の承認の取り消し。サーバーの退職記録を読み直して、完了・取消なら取り消さない。退職にした人は、サーバー
+   （メールの認証）で在籍に戻してから、記録を「申請中」に戻す（在籍に戻せなければ何も変えない） */
+async function _reopenOffboardApproval(a, fresh){
+  if(!(await offboardPullNow())){ alert(t('退職記録をサーバーで確かめられませんでした（通信）。もう一度お試しください。','Could not check the offboarding record on the server (network). Try again.')); return false; }
+  var ob=offboardById(a.ref);
+  if(ob && (ob.status==='完了' || ob.status==='取消')){ alert(t('この方の退職手続きは'+(ob.status==='完了'?'完了':'取消に')+'しています。承認は取り消せません。在籍に戻すときは、従業員マスターの「在籍に戻す」を使ってください。','This offboarding is '+(ob.status==='完了'?'completed':'cancelled')+'; the approval cannot be undone. Use "Restore" in the staff master.')); return false; }
+  if(!fresh && !confirm(t('この承認を取り消して「承認待ち」に戻します。退職手続きは「申請中」に戻り、'+(ob?ob.empName+' さんは':'この方は')+'在籍に戻ります（ログインも再び使えます。メールの認証が要ります）。よろしいですか？',
+      'Undo this approval and set it back to pending. The offboarding goes back to "requested" and '+(ob?ob.empName:'the person')+' is restored to in service (sign-in works again; email sign-in is required). Continue?'))) return false;
+  if(!ob) return true;
+  var rows=await _empFetchByIds([ob.empId]);
+  if(rows===null){ alert(t('サーバーで確かめられませんでした（通信）。','Could not check on the server (network).')); return false; }
+  var c=rows[ob.empId], loc=getEmployees().find(function(x){ return x.id===ob.empId; });
+  if((c && empBlocked(c)) || (!c && loc && empBlocked(loc))){
+    var r=await empRestoreServer(ob.empId, true, t('承認の取り消し','Undo approval'), function(){ reopenApproval(a.id, true); }, fresh);
+    if(r.pending) return false;
+    if(!r.ok){ alert(t('在籍に戻せなかったため、承認は取り消していません。','The approval was not undone because the person could not be restored.')+' '+(r.reason||'')); return false; }
+  }
+  var obs=getOffboardings(), o2=obs.find(function(x){ return x.id===a.ref; });
+  if(o2 && o2.status!=='完了' && o2.status!=='取消'){ o2.status='申請中'; o2._gen=(Number(o2._gen)||0)+1; setOffboardings(obs); offboardPushNow(); }
+  return true;
+}
+async function reopenApproval(id, fresh){
   if(!(curRole==='gm'||curRole==='ceo')){ alert(t('承認の取り消しはGM/CEOのみ可能です','Only GM/CEO can undo an approval')); return; }
   var approvals=ls('approvals',[]); var a=approvals.find(function(x){return x.id===id;}); if(!a) return;
-  if(a.type==='退職' && a.ref){ var _ob0=offboardById(a.ref); if(_ob0 && _ob0.status==='完了'){ alert(t('この方の退職手続きは完了しています。承認は取り消せません。在籍に戻すときは、従業員マスターの「在籍に戻す」を使ってください。','This offboarding is completed; the approval cannot be undone. Use "Restore" in the staff master.')); return; } }   /* v1085 */
-  if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
+  if(a.type==='退職' && a.ref){ if(!(await _reopenOffboardApproval(a, fresh))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }   /* v1085 */
+  else if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
   var _by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
   try{
     if(a.type==='スキル'){
@@ -67788,7 +68014,7 @@ function reopenApproval(id){
     else if(a.type==='経費'&&a.ref){ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status='申請中'; _ex.approvedBy=''; _ex.rejectReason=''; saveExpenseReqs(_es); } }
     else if(a.type==='建替経費'&&a.ref){ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status='申請中'; _rb.approvedBy=''; _rb.rejectReason=''; saveReimbursements(_rbs); } }
     else if(a.type==='予算'&&a.ref){ var _buds=getBudgets(); var _b=_buds.find(function(x){return x.storeId===a.ref;}); if(_b){ _b.status='GM承認待ち'; saveBudgets(_buds); } }
-    else if(a.type==='退職'&&a.ref){ var _obs=getOffboardings(); var _ob=_obs.find(function(x){return x.id===a.ref;}); if(_ob){ _ob.status='申請中'; _ob._gen=(Number(_ob._gen)||0)+1; setOffboardings(_obs); var _emps=getEmployees(); var _e=_emps.find(function(x){return x.id===_ob.empId;}); if(_e&&_e.status==='退職'){ _e.status='在籍'; lsSet('m_employees',_emps); } } }
+    /* v1085: 退職は _reopenOffboardApproval で済ませた（サーバーで在籍に戻し、記録を申請中に） */
   }catch(e){ console.warn('reopenApproval undo', e); }
   a.status='pending'; a.signoffs=[]; a.rejectReason=''; a._mut=Date.now(); lsSet('approvals', approvals);
   try{ addNotif({ type:'approval', title:t('承認が取り消されました','Approval undone')+'：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
