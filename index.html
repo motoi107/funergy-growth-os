@@ -8723,6 +8723,7 @@ async function _empFetchByIds(ids){
 /* 送れていない変更を送る（1 本ずつ・順に）。true＝送り終えた（またはもう無い）／false＝送れなかった（未送信に残る） */
 var _empPushP=null, _empPushAgain=false;
 function empPushDirty(){
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return Promise.resolve(false);   /* 同期 OFF：送らない（未送信に残す） */
   if(_empPushP){ _empPushAgain=true; return _empPushP; }
   _empPushP=(async function(){
     var ok=true, guard=0;
@@ -8759,7 +8760,7 @@ async function _empPushOnce(){
     if(Object.keys(bumped).length || Object.keys(flr).length){
       var dqb=_empDirtyGet();
       Object.keys(bumped).forEach(function(id){ if(dqb[id] && (Number(dqb[id].st)||0)===bumped[id].from) dqb[id].st=bumped[id].to; });
-      Object.keys(flr).forEach(function(id){ if(dqb[id] && (Number(dqb[id].st)||0)===flr[id].st) dqb[id].fl=flr[id]; });
+      Object.keys(flr).forEach(function(id){ if(dqb[id] && dqb[id].st!=null && _empHasSt(dqb[id]) && (Number(dqb[id].st)||0)===flr[id].st) dqb[id].fl=flr[id]; });
       _empDirtySet(dqb);
     }
     if(!rows.length) continue;
@@ -8806,7 +8807,8 @@ async function _empPushOnce(){
         if(_empJ(e2.f[k])===_empJ(want)) delete e2.f[k];            /* 送った値のままなら、送り終えた */
       });
       if(lost){
-        EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e2.f[k]; });
+        /* 送っているあいだに、状態をいまの版の上に置き直した（退職手続きの完了など）なら、その新しい変更は残す */
+        if(!(e2.fl && (Number(e2.st)||0)!==e2.fl.st)) EMP_ST_FIELDS.concat(['_stBy']).forEach(function(k){ delete e2.f[k]; });
         _empConflictNote(id, stWant==null ? (e0.osDisabled!==undefined ? { os:e0.osDisabled===true } : '-') : stWant, stHave==null ? a.status : stHave);
       }
       /* 送った状態がそのまま通った（送った版の次の版・3 つとも同じ）：送っているあいだに続けて変えた分は、その版の上に。
@@ -10886,11 +10888,13 @@ async function doManagerLogin(){
          この端末にまだ送れていない状態の変更（退職など）があれば先に送る。送れなければ端末のとおり断る（サーバーの古い状態で消さない） */
       var _svid=String(rows[0].emp_id), _dq0=_empDirtyGet();
       if(_dq0[_svid] && _empHasSt(_dq0[_svid])){ try{ await empPushDirty(); }catch(e){} }
-      var _dq1=_empDirtyGet();
-      if(!(_dq1[_svid] && _empHasSt(_dq1[_svid]))){
-        var _sv=await _empFetchByIds([_svid]);
-        if(_sv && _sv[_svid] && !empBlocked(_sv[_svid])){ try{ _empApplyServerRow(_sv[_svid]); }catch(e){} }
+      var _dq1=_empDirtyGet(), _pend=!!(_dq1[_svid] && _empHasSt(_dq1[_svid]));
+      if(!_pend){
+        var _sv=await _empFetchByIds([_svid]), _dq2=_empDirtyGet();
+        _pend=!!(_dq2[_svid] && _empHasSt(_dq2[_svid]));
+        if(!_pend && _sv && _sv[_svid] && !empBlocked(_sv[_svid])){ try{ _empApplyServerRow(_sv[_svid]); }catch(e){} }
       }
+      if(_pend){ window._authSession=null; if(passEl) passEl.value=''; fail(t('この端末に、この方の送れていない状態の変更（退職など）があります。送れるまで（電波のある所で「最新に更新」）ログインできません。','This device has an unsent status change for this person (for example a resignation). Sign-in is refused until it is sent (update where you have a connection).')); return; }
     }
     if(mr.ok && Array.isArray(rows) && rows.length===1 && (rows[0].role==='suspended' || (rows[0].emp_id && empBlocked(getEmployees().find(function(e){ return String(e.id)===String(rows[0].emp_id); }))))){ window._authSession=null; if(passEl) passEl.value=''; fail(t('このアカウントは止まっています（退職・停止）。','This account is stopped (resigned).')); return; }   /* v1085 */
     if(!mr.ok || !Array.isArray(rows) || rows.length!==1 || !managerRoleAllowed(rows[0].role)){ window._authSession=null; if(passEl) passEl.value=''; fail('このアカウントには管理者ページの権限がありません。Bot専用アカウントは通常ログイン後、ワークセンターの業務Botで認証してください。'); return; }

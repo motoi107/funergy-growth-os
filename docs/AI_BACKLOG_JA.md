@@ -5,7 +5,7 @@
 1. 済（Moto さん 10/15）：月次サマリー（経理）は残す・auth-pin と hyper-worker のソースは zip で受け取った。
 2. 済（Claude・ブランチ `claude/tab-reorg`）：v1084 タブの整理（`docs/TAB_REORG_RESIGN_JA.md`）。試験・Chromium の確認。
 3. 済：v1084 の Claude のレビュー（P1・P2 なし）・Codex のレビュー（blocked／manual：下の 5 の判断待ち）。次：Moto さんの判断 → マージ → 実機（PC・iPhone の PWA）。
-4. 済（Claude・ブランチ `claude/resign-fix`・PR #68）：v1085 退職完了の不具合（原因の特定・アプリ・SQL `20261023090000`・auth-pin／hyper-worker（非公開・Moto さんへ直接）・試験・わざと壊す 88/88・Chromium）。独立レビュー 1 回目（P1 3・P2 5）・2 回目（P2 2）・3 回目（P2 1）を直した。次：Codex → Moto さんが `deploy/employee-resign-v1085/手順.md` の順に入れる → 1_確かめの結果を Claude に → 修復の一覧。
+4. 済（Claude・ブランチ `claude/resign-fix`・PR #68）：v1085 退職完了の不具合（原因の特定・アプリ・SQL `20261023090000`・auth-pin／hyper-worker（非公開・Moto さんへ直接）・試験・わざと壊す 90/90・Chromium）。独立レビュー 1 回目（P1 3・P2 5）・2 回目（P2 2）・3 回目（P2 1）を直した。4 回目は P1・P2 なし（P3 は直した）。次：Codex → Moto さんが `deploy/employee-resign-v1085/手順.md` の順に入れる → 1_確かめの結果を Claude に → 修復の一覧。
 5. Moto さんの判断：原価率(FC)で入れた手入力の売上・棚卸額を直す入口が要るか／`db/mc-escalate-stop.sql` を流すか・未完了の管理案件と備品発注の扱い（Codex の PR #67 のレビュー）。
 6. Moto さんの判断（v1085）：退職手続きの「開始」で退職扱い（ログインも止まる）のままでよいか（最終出勤日まで使えるようにするか）。社員に紐づいていない管理者・Bot のアカウントをどうするか（1_確かめで一覧）。
 7. 未確認：emp-private・ob-private・discount-log・drive-sync のソース（退職者を断るか）。公開の鍵で読み書きできる表（employees・app_state など）を人ごとの権限（RLS・ログインした人の書き込み）にする作業（大きい・Moto さんに直接説明）。

@@ -449,6 +449,35 @@ test('v1085: a change made while sending moves onto the new version only when th
   assert.equal(a.run('empDirtyCount()'), 0);
 });
 
+test('v1085: a state put back on the current version while an out-of-date send of the same person is in flight (the completion) is kept and sent', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW), b = await pulled(S, NOW);
+  b.run("setEmpStatusQuick('e2', '休職')"); await S.settle();                          // another device: v2
+  let held = false, p2 = null;
+  S.hold = async (url, init) => { if (!held && (init.method || 'GET').toUpperCase() === 'POST' && String(url).includes('/rest/v1/employees')) { held = true;
+    p2 = a.run("empSetStateNow('e2', { status:'退職', resignDate:'2026-10-15' }, 'blocked')"); for (let i = 0; i < 80; i++) await tick(); } };
+  a.run("var L = getEmployees(); L.find(function(e){ return e.id==='e2'; }).osDisabled = true; lsSet('m_employees', L);");   // this device: an out-of-date change (v1)
+  await S.settle(); S.hold = null;
+  const r2 = await p2; await S.settle();
+  assert.equal(held, true);
+  assert.equal(r2.ok, true, 'the completion\'s state went in on the first try');
+  assert.equal((await S.emp('e2')).data.status, '退職');
+  assert.equal(a.run('empDirtyCount()'), 0);
+});
+
+test('v1085: with cloud sync turned off nothing about employees is sent; the changes wait and go when it is on again', async () => {
+  const S = await server();
+  const a = await pulled(S, NOW);
+  a.run('SUPA_SYNC_ENABLED = false');
+  a.run("deleteEmp('e2')"); await S.settle();
+  await a.run('empPushDirty()'); await a.run('flushOutbox()'); await S.settle();
+  assert.equal((await S.emp('e2')).data.status, '在籍', 'not sent');
+  assert.equal(a.run('empDirtyCount()'), 1, 'waiting');
+  a.run('SUPA_SYNC_ENABLED = true');
+  await a.run('empPushDirty()'); await S.settle();
+  assert.equal((await S.emp('e2')).data.status, '退職');
+});
+
 test('v1085: a send that did not go in is not taken for this device\'s own write when the person was restored elsewhere meanwhile', async () => {
   const S = await server();
   const a = await pulled(S, NOW);
