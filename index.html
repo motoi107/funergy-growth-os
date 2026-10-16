@@ -10114,14 +10114,29 @@ function _apMut(a){ return Number(a && a._mut) || 0; }
 function _apGen(a){ return Number(a && a._gen) || 0; }
 function _apStT(a){ return Number(a && a._stT) || 0; }
 function _apSoT(s){ return Number(s && s._t) || 0; }
+/* 状態の中身の印（保存時刻を除く）。合流で中身が変わったかを見る */
+function _apSigBody(a){
+  if(!a) return '';
+  var so=(a.signoffs||[]).filter(Boolean).map(function(s){ return String(s.role)+'@'+_apSoT(s); }).sort();
+  var x=a._soX||{}; var xs=Object.keys(x).sort().map(function(r){ return r+'@'+(Number(x[r])||0); });
+  var ac=a.acct?((Number(a.acct.t)||0)+(a.acct.off?'off':'')):'';
+  return JSON.stringify([a.status||'', _apGen(a), _apStT(a), so, xs, ac, a.rejectReason||'']);
+}
 function _apMergeOne(c, l, preferL){
   var cg=_apGen(c), lg=_apGen(l);
-  if(cg!==lg) return (cg>lg)?c:l;
+  if(cg!==lg){
+    /* 新しい版をまるごと。前の版のアプリは保存時刻で選ぶので、古い版の保存時刻より大きくする */
+    var w=(cg>lg)?c:l, o=(cg>lg)?l:c;
+    return (_apMut(o)>=_apMut(w)) ? Object.assign({}, w, {_mut:_apMut(o)+1}) : w;
+  }
   var cd=_apDecided(c), ld=_apDecided(l);
   if(cd!==ld){
     var p=cd?l:c, d=cd?c:l;
-    /* 前の版のアプリの「承認を取り消す」：承認待ち・承認なし・あとで保存・決めた時刻は写したまま */
-    if(!(p.signoffs||[]).length && _apMut(p)>_apMut(d) && _apStT(p)===_apStT(d)) return p;
+    /* 前の版のアプリの「承認を取り消す」：承認待ち・承認なし・あとで保存・決めた時刻は写したまま。経理の確認は外す */
+    if(!(p.signoffs||[]).length && _apMut(p)>_apMut(d) && _apStT(p)===_apStT(d)){
+      if(!p.acct) return p;
+      var pc=Object.assign({}, p); delete pc.acct; pc._mut=_apMut(p)+1; return pc;
+    }
   }
   var base;
   if(cd!==ld) base = cd?c:l;
@@ -10136,12 +10151,23 @@ function _apMergeOne(c, l, preferL){
   var x={};
   [c._soX, l._soX].forEach(function(m){ if(m && typeof m==='object') Object.keys(m).forEach(function(r){ var v=Number(m[r])||0; if(v>(x[r]||0)) x[r]=v; }); });
   var first=(base===c)?c:l, second=(base===c)?l:c;
-  out.signoffs=_apUnionSignoffs((first.signoffs||[]).filter(function(s){ return !(s && x[s.role] && _apSoT(s)<=x[s.role]); }),
-                                (second.signoffs||[]).filter(function(s){ return !(s && x[s.role] && _apSoT(s)<=x[s.role]); }));
+  /* 役割ごとに、取り消しより後の承認のうち、いちばん新しいもの（同じなら先に見たほう） */
+  var pick={}, order=[];
+  (first.signoffs||[]).concat(second.signoffs||[]).forEach(function(s){
+    if(!s || s.role==null) return;
+    if(x[s.role] && _apSoT(s)<=x[s.role]) return;
+    if(!pick[s.role]){ pick[s.role]=s; order.push(s.role); }
+    else if(_apSoT(s)>_apSoT(pick[s.role])) pick[s.role]=s;
+  });
+  out.signoffs=order.map(function(r){ return pick[r]; });
   if(Object.keys(x).length) out._soX=x; else delete out._soX;
   var ca=c.acct, la=l.acct;
   if(ca||la) out.acct = !ca?la:(!la?ca:((Number(la.t)||0)>(Number(ca.t)||0)?la:ca));
-  var mm=Math.max(_apMut(c), _apMut(l)); if(mm) out._mut=mm;
+  var mm=Math.max(_apMut(c), _apMut(l));
+  /* 合流で中身がどちらとも違えば、保存時刻を 1 つ進める（前の版のアプリが合流した中身を採るように） */
+  var sb=_apSigBody(out);
+  if(mm && sb!==_apSigBody(c) && sb!==_apSigBody(l)) mm=mm+1;
+  if(mm) out._mut=mm;
   return out;
 }
 function mergeApprovals(cloudArr, localArr){
@@ -10159,10 +10185,7 @@ function mergeApprovals(cloudArr, localArr){
 /* 合流で中身が変わるか見る印（状態・版・承認の役割と時刻・取り消しの時刻・経理の確認・却下の理由・保存時刻） */
 function _apSig(a){
   if(!a) return '';
-  var so=(a.signoffs||[]).filter(Boolean).map(function(s){ return String(s.role)+'@'+_apSoT(s); }).sort();
-  var x=a._soX||{}; var xs=Object.keys(x).sort().map(function(r){ return r+'@'+(Number(x[r])||0); });
-  var ac=a.acct?((Number(a.acct.t)||0)+(a.acct.off?'off':'')):'';
-  return JSON.stringify([a.status||'', _apGen(a), _apStT(a), so, xs, ac, a.rejectReason||'', _apMut(a)]);
+  return _apSigBody(a)+'|'+_apMut(a);
 }
 function _coversApprovals(check, want){
   if(!Array.isArray(check)) return false;
@@ -52561,7 +52584,7 @@ var OFFICE_CLOSE_ITEMS=[
   {id:'payStore', label:'給与CSV出力（店舗）', page:'acct_export'},
   {id:'payOffice',label:'給与CSV出力（Office・月給/時給）', tab:'attend'},
   {id:'summary',  label:'月次サマリー（KPI）確認', page:'monthly'},
-  {id:'order',    label:'在庫の締め', page:'inventory'},   /* v1084: 備品発注は廃止 / v1087: 発注も廃止（12A）。id はそのまま（済みの記録を残す） */
+  {id:'order',    label:'在庫の締め', page:'inventory'},   /* v1084: 備品発注は廃止 / v1087: 発注も廃止（12A）。id はそのまま（済みの記録を残す）。棚卸しを開けない役職（事務Crew）には矢印を出さない */
   {id:'tax',      label:'DOH・税務 対応事項の確認'}
 ];
 var officeCloseMonth=(function(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
@@ -52588,7 +52611,7 @@ function renderOfficeCloseCard(){
     h+='<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
       +'<div onclick="toggleOfficeClose(\''+ym+'\',\''+it.id+'\')" style="cursor:pointer;width:22px;height:22px;border-radius:6px;border:1.5px solid '+(on?'var(--green)':'var(--border)')+';background:'+(on?'var(--green)':'transparent')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(on?'<i class="ti ti-check" style="color:#fff;font-size:14px"></i>':'')+'</div>'
       +'<div style="flex:1;font-size:13px;'+(on?'color:var(--muted);text-decoration:line-through':'')+'">'+escapeHtml(it.label)+'</div>'
-      +(it.fn?'<button class="btn btn-secondary btn-sm" onclick="'+it.fn+'" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':it.page?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
+      +(it.fn?'<button class="btn btn-secondary btn-sm" onclick="'+it.fn+'" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.page && !(it.id==='order' && typeof navPageAllowed==='function' && !navPageAllowed(it.page)))?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
       +'</div>';
   });
   h+='</div>';
@@ -67358,6 +67381,7 @@ function approveLssRequest(id, status) {
   try{ var _lkw=(r.kind==='promo')?'昇格':'Tip Rate';
     apDecidedFromPage('Leadership', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'leadership',
       title:(r.name+' '+_lkw+'申請'), match:function(a){ return !a.ref && a.from===r.name && String(a.title||'').indexOf(_lkw)>=0; }}); }catch(e){}
+  try{ if(status==='承認') apNotifyAcctApplied((r.kind==='promo')?'昇格':'Tip Rate', r.name, (r.kind==='promo'?(r.wantTitle||''):''), 'leadership'); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
   showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
   renderPage(curPage);
 }
@@ -67420,7 +67444,13 @@ function resolveApprovalByRef(type, ref, status, ym, reason) {
    ・押す前にクラウドの最新を読み直す（ほかの端末でもう決まっていたら知らせて何もしない）。
    ============================================================ */
 /* 経理が処理する種類（お金・給与に関わる）。予算・月間行動計画・シフト変更は入れない。 */
-var AP_ACCT_TYPES = ['経費','建替経費','ガソリン代','休暇','TipRate','Leadership','スキル','採用','退職'];
+var AP_ACCT_TYPES = ['経費','建替経費','ガソリン代','休暇','スキル','採用','退職'];
+/* Tip Rate・Leadership（昇格）は、承認センターで承認しても申請には反映しない（前から。画面で承認したときに反映）。
+   なので経理・事務Crew への「承認済み（処理してください）」は、画面で承認して反映したときに出す（apNotifyAcctApplied）。 */
+function apNotifyAcctApplied(kind, who, text, page){
+  try{ addNotif({ type:'approved', title:'承認済み：'+kind+'（処理してください）', text:[who, text].filter(Boolean).join(' ・ ').slice(0,140),
+    toRoles:['office','office_crew'], page:(page||'mypage') }); }catch(e){}
+}
 function apNeedsAcct(type){ return AP_ACCT_TYPES.indexOf(type)>=0; }
 /* 経理の確認を押せる人／タブを見られる人 */
 function apCanAcct(){ return curRole==='office' || curRole==='office_crew'; }
@@ -67474,16 +67504,18 @@ function _apNotifyHits(hit, type, status, opt){
   if(hit.length) hit.forEach(function(a){ apNotifyDecision(a, status, opt); });
   else apNotifyDecision({ type:type, from:(opt.applicant||''), title:(opt.title||''), store:(opt.store||''), id:'' }, status, opt);
 }
+/* 同じ申請の案件が承認センターでもう決まっているか（そのときは承認センターで知らせ済みなので、もう一度は知らせない） */
+function _apDecidedElsewhere(type, ref){
+  if(ref==null) return false;
+  try{ return (ls('approvals',[])||[]).some(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='pending'; }); }catch(e){ return false; }
+}
 /* 手元に案件が無ければ（ほかの端末で出された申請）、クラウドを読み直してからもう一度探す */
 function apDecidedFromPage(type, ref, status, opt){
   opt=opt||{};
   var hit=_apResolveLocal(type, ref, status, opt);
   if(hit.length){ _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
-  return apPullLatest().then(function(ok){
-    var h2=ok?_apResolveLocal(type, ref, status, opt):[];
-    _apNotifyHits(h2, type, status, opt);
-    return h2;
-  }, function(){ _apNotifyHits([], type, status, opt); return []; });
+  var fin=function(h2){ if(h2.length || !_apDecidedElsewhere(type, ref)) _apNotifyHits(h2, type, status, opt); return h2; };
+  return apPullLatest().then(function(ok){ return fin(ok?_apResolveLocal(type, ref, status, opt):[]); }, function(){ return fin([]); });
 }
 /* 申請した人が取り下げたとき（承認センターに「承認待ち」を残さない） */
 function apWithdrawByRef(type, ref){
@@ -67517,15 +67549,17 @@ function apPullLatest(){
   _apPullTry=Date.now();
   _apPulling=(async function(){
     var ok=false;
-    try{ ok=!!(await pullOpKey('approvals')); }catch(e){ ok=false; }
+    /* 8 秒で返らなければ読めなかったものとして進む（押したまま止まらないように） */
+    try{ ok=!!(await Promise.race([pullOpKey('approvals'), new Promise(function(r){ setTimeout(function(){ r(false); }, 8000); })])); }catch(e){ ok=false; }
     if(ok) _apPullAt=Date.now();
     _apPulling=null;
     return ok;
   })();
   return _apPulling;
 }
-function _apOnApprovalPage(){ return curPage==='approval' || (curPage==='tasks' && typeof workTab!=='undefined' && workTab==='approval'); }
-function _apRerender(){ try{ if(curPage==='tasks') renderPage('tasks'); else renderPage('approval'); }catch(e){} }
+function _apOnApprovalPage(){ return typeof curPage!=='undefined' && (curPage==='approval' || (curPage==='tasks' && typeof workTab!=='undefined' && workTab==='approval')); }
+/* 承認センターを開いているときだけ描き直す（読み直しを待つあいだにほかの画面へ移ったら、その画面を上書きしない） */
+function _apRerender(){ try{ if(!_apOnApprovalPage()) return; if(curPage==='tasks') renderPage('tasks'); else renderPage('approval'); }catch(e){} }
 /* 開いたとき、1 分より前に読んだきりなら裏で読み直し、変わっていれば描き直す */
 function apAutoPull(){
   if(Date.now()-Math.max(_apPullAt,_apPullTry) < 60000) return;
@@ -67697,6 +67731,16 @@ async function overrideApproveAll(id){
   await approveItem(id,'approved', null, {fresh:true});
   } finally { delete _apBusy[id]; }
 }
+/* v1087: 承認がそろっているのに承認待ちのもの（2 台でほぼ同時に押したとき）を確定する */
+async function apFinalize(id){
+  if(_apBusy[id]) return; _apBusy[id]=1;
+  try{
+    var a=await _apFreshPending(id); if(!a) return;
+    if(!_approvalAllDone(a)){ showToast(t('まだ承認がそろっていません','Not all approvals are in yet'),'info'); _apRerender(); return; }
+    if(!(curRole==='gm'||curRole==='ceo'||(a.signoffs||[]).some(function(s){return s && s.name===_actorName();}))){ alert(t('確定できるのは、この申請を承認した人と GM・CEO です','Only an approver of this request or GM/CEO can finalize')); return; }
+    await approveItem(id,'approved', null, {fresh:true});
+  } finally { delete _apBusy[id]; }
+}
 function rejectApprovalItem(id){
   openInputModal({title:t('申請の却下','Reject request'), label:t('却下理由（申請者に通知されます）','Rejection reason (sent to applicant)'), required:true, placeholder:t('例: 現時点では基準に達していません。練習してから再申請してください。','e.g. Criteria not yet met; please practice and re-apply.'), okLabel:t('却下する','Reject'), okClass:'btn-danger'}, function(reason){
     approveItem(id,'rejected', reason);
@@ -67757,6 +67801,10 @@ async function reopenApproval(id, fresh){
   if(!fresh) await apPullLatest();   /* v1087: 押す前にクラウドの最新を読み直す */
   var approvals=ls('approvals',[]); var a=approvals.find(function(x){return x.id===id;}); if(!a) return;
   if(a.status==='pending' || a.status==='withdrawn'){ alert(t('この申請は今は承認待ちです（ほかの端末で取り消されました）。','This request is pending now (undone on another device).')); _apRerender(); return; }
+  /* v1087: Tip Rate・Leadership を申請の画面で決めたものは、ここでは元に戻せない（率・役職を戻す処理が無い）。
+     取り消して承認待ちにすると、もう一度の却下が「画面で承認済み」に合わせられて承認に戻ってしまう */
+  if(a.type==='TipRate' || a.type==='Leadership'){ var _rs1=_apRecordState(a);
+    if(_rs1 && (_rs1.state==='approved' || _rs1.state==='rejected')){ alert(t('この申請は「'+_rs1.label+'」の画面で'+(_rs1.state==='approved'?'承認':'却下')+'され、反映済みです。承認センターからは取り消せません。','This request was decided and applied on the '+_rs1.label+' page. It cannot be undone from the approval center.')); return; } }
   if(a.type==='退職' && a.ref){ if(!(await _reopenOffboardApproval(a, fresh))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }   /* v1085 */
   else if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
   var _by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
@@ -67784,7 +67832,7 @@ async function reopenApproval(id, fresh){
   }catch(e){ console.warn('reopenApproval undo', e); }
   _apReopenRec(a); lsSet('approvals', approvals);   /* v1087: 版を進める（前の承認・経理の確認は使わない） */
   try{ addNotif({ type:'approval', title:t('承認が取り消されました','Approval undone')+'：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
-  showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); renderPage('approval');
+  showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); _apRerender();
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
 function openBudgetReview(storeId, submitMode, ymArg){
@@ -68015,6 +68063,8 @@ function renderApproval() {
           if (canSign) {
             html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> '+t('承認する','Approve')+'</button>';
           }
+          /* v1087: 2 台でほぼ同時に承認すると、承認はそろったのに確定していないことがある（合流で両方の承認が残る）。確定するボタン */
+          if (_approvalAllDone(a) && (isMgr || (a.signoffs||[]).some(function(s){return s && s.name===_actorName();}))) html += '<button class="btn btn-success btn-sm" onclick="apFinalize(\''+a.id+'\')"><i class="ti ti-circle-check"></i> '+t('確定する','Finalize')+'</button>';
           html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> '+t('却下','Reject')+'</button>';
           if((a.signoffs||[]).some(function(s){return s.name===_actorName();})) html += '<button class="btn btn-secondary btn-sm" onclick="cancelMySignoff(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('自分の承認を取消','Cancel my approval')+'</button>';
           if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> '+t('他の承認者待ち','Awaiting other approvers')+'</span>';
@@ -68188,10 +68238,6 @@ async function approveItem(id, status, reason, opt) {
   if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(_ap?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(!_ap&&reason) _m.rejectReason=reason; _m._stT=_now; saveMileageReqs(_ms); } }catch(_e){} }
   if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(_ap?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(!_ap&&reason) _ex.rejectReason=reason; _ex._stT=_now; saveExpenseReqs(_es); } }catch(_e){} }
   if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(_ap?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(!_ap&&reason) _rb.rejectReason=reason; invTouch(_rb); saveReimbursements(_rbs); } }catch(_e){} }   /* v1087: 保存時刻を進める（古い写しで「申請中」に戻らない） */
-  /* v1087: Tip Rate は申請（tip_requests）にも反映する（前は承認センターで承認しても率が変わらなかった。v1087 から申請と結ぶ） */
-  if (a.type==='TipRate' && a.ref) { try{ var _trs=ls('tip_requests',[]); var _tr=_trs.find(function(x){return x && x.id===a.ref;});
-    if(_tr && _tr.status==='申請中'){ var _tst=(_ap?'承認':'却下'); _tr.status=_tst; _tr.approver=(ROLE_CONFIG[curRole]||{}).name||curUserName; _tr.approvedDate=todayJP(); lsSet('tip_requests', _trs);
-      var _th=ls('tip_history',[]); _th.push({name:_tr.name, rate:_tr.rate, store:_tr.store||'', status:_tst, by:_tr.approver, date:_tr.approvedDate, basis:_tr.basis||'manual'}); lsSet('tip_history', _th); } }catch(_e){} }
   /* v1087: 申請した人へ（スキルは上で専用の知らせ）。最後の承認で、経理と事務Crew へ（退職は「退職手続き開始」が届く） */
   apNotifyDecision(a, status, { reason:reason, noApplicant:(a.type==='スキル'), noAcct:(a.type==='退職') });
   _apRerender(); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
@@ -80758,7 +80804,8 @@ function approveTip(id, status) {
     lsSet('tip_history', h);
     /* v1087: 承認センターの案件も済みにして知らせる（前の申請は ref が無いので名前と率で探す） */
     try{ apDecidedFromPage('TipRate', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'tiprate', title:(r.name+' Tip Rate '+r.rate+'%'),
-      match:function(a){ return !a.ref && a.from===r.name && String(a.title||'').indexOf(String(r.rate)+'%')>=0; }}); }catch(e){}
+      match:function(a){ return !a.ref && a.from===r.name && /Tip Rate申請/.test(String(a.title||'')) && String(a.title||'').trim().slice(-(String(r.rate).length+2))===(' '+r.rate+'%'); }}); }catch(e){}
+    try{ if(status==='承認') apNotifyAcctApplied('Tip Rate', r.name, r.rate+'%', 'tiprate'); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
     showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
     renderPage(curPage);
   }

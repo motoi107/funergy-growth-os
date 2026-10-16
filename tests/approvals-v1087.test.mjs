@@ -52,9 +52,9 @@ function objSrc(decl) {
   throw new Error('unterminated ' + decl);
 }
 
-const MERGE = ['_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
+const MERGE = ['_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
   '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices'];
-const APPROVAL = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
+const APPROVAL = ['apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel', '_approvalChainHtml',
   'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
@@ -117,7 +117,7 @@ test('approvals: two devices signing different roles keep both sign-offs (v1086 
   for (const [cl, lo] of [[devA, devB], [devB, devA]]) {
     const m = plain(run(c, 'mergeApprovals(' + JSON.stringify([cl]) + ',' + JSON.stringify([lo]) + ')'))[0];
     assert.deepEqual(m.signoffs.map(s => s.role).sort(), ['am', 'office']);
-    assert.equal(m._mut, 300);
+    assert.equal(m._mut, 301);   // content differs from both copies: one past the newest save, so v1086 devices take it
     assert.equal(m.status, 'pending');
   }
   // covers: the cloud without the other device's sign-off is not "covered".
@@ -143,7 +143,10 @@ test('approvals: a removed own sign-off stays removed; decided beats pending; un
   const m1 = mg(approved, stalePending);
   assert.equal(m1.status, 'approved');
   assert.deepEqual(m1.signoffs.map(s => s.role).sort(), ['am', 'gm', 'office']);
-  assert.equal(m1._mut, 600);   // the merged record carries the newest save time (v1086 devices compare it)
+  assert.equal(m1._mut, 601);   // newer than both copies (v1086 devices compare it)
+  // Merging a result again changes nothing (no endless bumping in the push loop).
+  const m1b = plain(run(c, 'mergeApprovals(' + JSON.stringify([m1]) + ',' + JSON.stringify([stalePending]) + ')'))[0];
+  assert.deepEqual(m1b, m1);
   // A decision saved by a v1086 device (no decision time) still beats a pending copy saved later with a sign-off.
   const oldApproved = AP({ status: 'approved', _mut: 500, signoffs: [{ role: 'am', name: 'Yuki' }] });
   assert.equal(mg(oldApproved, stalePending).status, 'approved');
@@ -156,9 +159,17 @@ test('approvals: a removed own sign-off stays removed; decided beats pending; un
   // Undo moves to a new generation: the old decision and its sign-offs lose.
   const reopened = AP({ status: 'pending', _gen: 1, signoffs: [], _stT: 700, _mut: 700 });
   for (const [a, b] of [[approved, reopened], [reopened, approved]]) { const m = mg(a, b); assert.equal(m.status, 'pending'); assert.equal(m._gen, 1); assert.deepEqual(m.signoffs, []); }
+  // The newer generation wins with a save time past the older one (a v1086 device would otherwise keep the old generation).
+  const oldLater = { ...approved, _mut: 900 };
+  assert.ok(mg(oldLater, reopened)._mut > 900);
+  assert.equal(mg(oldLater, reopened)._gen, 1);
   // An undo saved by a v1086 device (no generation): pending, no sign-offs, later save, the decision time copied.
   const oldUndo = { ...approved, status: 'pending', signoffs: [], _mut: 800 };
   assert.equal(mg(approved, oldUndo).status, 'pending');
+  // ... and the accounting check copied with it is dropped (it belonged to the undone approval).
+  const oldUndoAcct = { ...oldUndo, acct: { by: 'Marcia', t: 700 } };
+  assert.equal(mg({ ...approved, acct: { by: 'Marcia', t: 700 } }, oldUndoAcct).acct, undefined);
+  assert.equal(mg(oldUndoAcct, approved).acct, undefined);
   // Both decided: the newer decision time wins.
   const rejected = AP({ status: 'rejected', _stT: 900, _mut: 900, rejectReason: 'x' });
   assert.equal(mg(approved, rejected).status, 'rejected');
@@ -168,6 +179,16 @@ test('approvals: a removed own sign-off stays removed; decided beats pending; un
   assert.equal(mg(ok1, off).acct.off, true);
   assert.equal(mg(off, ok1).acct.off, true);
   assert.equal(mg(approved, ok1).acct.by, 'Marcia');
+});
+
+test('approvals: a re-sign survives whichever order the copies are merged in (the newest sign-off per role is kept)', () => {
+  const c = app(MERGE);
+  const M = (a, b) => plain(run(c, 'mergeApprovals(' + JSON.stringify([a]) + ',' + JSON.stringify([b]) + ')'))[0];
+  const cloud = AP({ type: 'シフト変更', ref: undefined, signoffs: [{ role: 'office', name: 'Marcia', _t: 11 }, { role: 'am', name: 'Yuki', _t: 24 }], _mut: 24 });
+  const d1 = AP({ type: 'シフト変更', ref: undefined, signoffs: [{ role: 'office', name: 'Akane', _t: 23 }], _mut: 23 });
+  const d2 = AP({ type: 'シフト変更', ref: undefined, signoffs: [], _soX: { office: 20 }, _mut: 20 });
+  const f1 = M(M(cloud, d1), d2), f2 = M(M(cloud, d2), d1);
+  for (const f of [f1, f2]) assert.deepEqual(f.signoffs.map(s => s.role + '@' + s._t).sort(), ['am@24', 'office@23']);
 });
 
 test('approvals: random three-device histories never lose a sign-off that was not removed', () => {
@@ -188,10 +209,9 @@ test('approvals: random three-device histories never lose a sign-off that was no
       if (rnd() < 0.6) { cloud = plain(run(c, 'mergeApprovals(' + JSON.stringify(cloud) + ',' + JSON.stringify(dev[d]) + ')')); dev[d] = plain(cloud); }
       if (rnd() < 0.3) { const e = Math.floor(rnd() * 3); dev[e] = plain(run(c, 'mergeApprovals(' + JSON.stringify(cloud) + ',' + JSON.stringify(dev[e]) + ')')); }
     }
-    for (const d of [0, 1, 2]) cloud = plain(run(c, 'mergeApprovals(' + JSON.stringify(cloud) + ',' + JSON.stringify(dev[d]) + ')'));
-    // Every role whose latest action was a sign-off is present; a role whose latest action was a removal is not.
-    const got = cloud[0].signoffs.map(s => s.role).sort();
-    assert.deepEqual(got, Object.keys(live).sort(), 'history ' + n);
+    const finals = [[0, 1, 2], [2, 1, 0], [1, 2, 0]].map(ord => { let cl = cloud; for (const d of ord) cl = plain(run(c, 'mergeApprovals(' + JSON.stringify(cl) + ',' + JSON.stringify(dev[d]) + ')')); return cl; });
+    // Every role whose latest action was a sign-off is present; a role whose latest action was a removal is not; whatever the order.
+    for (const fin of finals) assert.deepEqual(fin[0].signoffs.map(s => s.role + '@' + s._t).sort(), Object.keys(live).map(r => r + '@' + live[r]).sort(), 'history ' + n);
   }
 });
 
@@ -252,20 +272,121 @@ test('approving on the mileage page resolves the approval-center item and notifi
   assert.equal(w.S.approvals[0].status, 'withdrawn');
 });
 
-test('pages without a link to the item (legacy TipRate / Leadership) find it by name; the approval center applies a TipRate', async () => {
+test('pages without a link to the item (legacy TipRate / Leadership) find it by name; the approval center does not change a TipRate', async () => {
   const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
     approvals: [AP({ id: 'ap9', type: 'TipRate', title: 'Crew A Tip Rate申請 90%', from: 'Crew A', store: '---', ref: undefined })],
     tip_requests: [{ id: 'tip1', name: 'Crew A', rate: 90, status: '申請中' }], tip_history: [], notifications: [] } });
   run(c, 'approveTip("tip1","承認")'); await tick();
   assert.equal(c.S.approvals[0].status, 'approved');
   assert.ok(c.S.notifications.some(n => n.toUser === 'Crew A' && /TipRate が承認されました/.test(n.title)));
-  // Approval center, linked item: the tip request is applied (before v1087 its rate did not change).
+  // Applied on the page: accounting and office crew are told (2A).
+  const acc = c.S.notifications.find(n => /承認済み：Tip Rate（処理してください）/.test(n.title));
+  assert.deepEqual(plain(acc.toRoles), ['office', 'office_crew']);
+  assert.equal(acc.page, 'tiprate');
+  // A 5% request does not match a "15%" title.
+  const e = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
+    approvals: [AP({ id: 'ap7', type: 'TipRate', title: 'Crew A Tip Rate申請 15%', from: 'Crew A', store: '---', ref: undefined })],
+    tip_requests: [{ id: 'tip3', name: 'Crew A', rate: 5, status: '申請中' }], tip_history: [], notifications: [] } });
+  run(e, 'approveTip("tip3","承認")'); await tick();
+  assert.equal(e.S.approvals[0].status, 'pending');
+  // Approval center, linked item: the tip request is not changed (as before v1087; the rate is applied on the Tip Rate page),
+  // and accounting is not asked to process anything yet.
   const d = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
     approvals: [AP({ id: 'ap8', type: 'TipRate', title: 'Crew A Tip Rate申請 100%', from: 'Crew A', store: '---', ref: 'tip2', signoffs: [{ role: 'office', name: 'Marcia' }, { role: 'gm', name: 'Moto' }, { role: 'am', name: 'Yuki' }] })],
     tip_requests: [{ id: 'tip2', name: 'Crew A', rate: 100, status: '申請中' }], tip_history: [], notifications: [] } });
   await run(d, 'approveItem("ap8","approved")');
-  assert.equal(d.S.tip_requests[0].status, '承認');
-  assert.equal(d.S.tip_history.length, 1);
+  assert.equal(d.S.approvals[0].status, 'approved');
+  assert.equal(d.S.tip_requests[0].status, '申請中');
+  assert.equal(d.S.tip_history.length, 0);
+  assert.ok(!d.S.notifications.some(n => /処理してください/.test(n.title)));
+  // ... and when the page then approves it, the applicant is not told twice.
+  const before = d.S.notifications.filter(n => n.toUser === 'Crew A').length;
+  run(d, 'approveTip("tip2","承認")'); await tick();
+  assert.equal(d.S.notifications.filter(n => n.toUser === 'Crew A').length, before);
+});
+
+test('Leadership page approval (legacy item without a link) resolves the item, tells the applicant, and asks accounting to process it', async () => {
+  const c = app(MERGE.concat(APPROVAL, ['approveLssRequest', 'getLssRequests']), { role: 'gm', user: 'Moto', st: {
+    approvals: [AP({ id: 'ap6', type: 'Leadership', title: 'Crew A Tip Rate申請（Leadership 80%）', from: 'Crew A', store: 'F01', ref: undefined })],
+    lss_requests: [{ id: 'lss1', name: 'Crew A', kind: 'tip', status: '申請中' }], notifications: [] } });
+  run(c, 'approveLssRequest("lss1","承認")'); await tick();
+  assert.equal(c.S.lss_requests[0].status, '承認');
+  assert.equal(c.S.approvals[0].status, 'approved');
+  assert.ok(c.S.notifications.some(n => n.toUser === 'Crew A' && /Leadership が承認されました/.test(n.title)));
+  const acc = c.S.notifications.find(n => /承認済み：Tip Rate（処理してください）/.test(n.title));
+  assert.equal(acc.page, 'leadership');
+  assert.deepEqual(plain(acc.toRoles), ['office', 'office_crew']);
+  // A rejection: no accounting notice.
+  const d = app(MERGE.concat(APPROVAL, ['approveLssRequest', 'getLssRequests']), { role: 'gm', user: 'Moto', st: {
+    approvals: [], lss_requests: [{ id: 'lss2', name: 'Crew A', kind: 'tip', status: '申請中' }], notifications: [] } });
+  run(d, 'approveLssRequest("lss2","却下")'); await tick();
+  assert.ok(!d.S.notifications.some(n => /処理してください/.test(n.title)));
+});
+
+test('a Tip Rate decided on its page cannot be undone from the approval center (no reject-after-undo turning into approved)', async () => {
+  const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
+    approvals: [AP({ id: 'ap8', type: 'TipRate', title: 'Crew A Tip Rate申請 100%', from: 'Crew A', store: '---', ref: 'tip2', status: 'approved', _stT: 500, _mut: 500, decidedAt: '2026-10-16T18:00:00Z' })],
+    tip_requests: [{ id: 'tip2', name: 'Crew A', rate: 100, status: '承認' }], notifications: [] } });
+  await run(c, 'reopenApproval("ap8")');
+  assert.match(c.alerts.at(-1), /承認センターからは取り消せません/);
+  assert.equal(c.S.approvals[0].status, 'approved');
+  assert.equal(c.S.approvals[0]._gen, undefined);
+  // An item the center approved but the page did not apply can still be undone.
+  const d = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: {
+    approvals: [AP({ id: 'ap8', type: 'TipRate', title: 'x', from: 'Crew A', store: '---', ref: 'tip2', status: 'approved', _stT: 500, _mut: 500 })],
+    tip_requests: [{ id: 'tip2', name: 'Crew A', rate: 100, status: '申請中' }], notifications: [] } });
+  await run(d, 'reopenApproval("ap8")');
+  assert.equal(d.S.approvals[0].status, 'pending');
+  assert.equal(d.S.approvals[0]._gen, 1);
+});
+
+test('all sign-offs in but still pending (two devices at once): 確定する finishes it and notifies', async () => {
+  const all = [{ role: 'office', name: 'Marcia', _t: 1 }, { role: 'gm', name: 'Moto', _t: 2 }, { role: 'am', name: 'Yuki', _t: 3 }];
+  const st = { approvals: [AP({ type: '採用', ref: undefined, title: 'Crew A 採用書類', from: 'Crew A', signoffs: all })], notifications: [] };
+  const c = app(MERGE.concat(APPROVAL), { role: 'am', user: 'Yuki', st });
+  run(c, '_apTab="pending"');
+  const h = run(c, 'renderApproval()');
+  assert.match(h, /apFinalize\('ap1'\)/);
+  const crew = app(MERGE.concat(APPROVAL), { role: 'sl', user: 'Leader B', st });
+  run(crew, '_apTab="pending"');
+  assert.doesNotMatch(run(crew, 'renderApproval()'), /apFinalize\(/);
+  await run(c, 'apFinalize("ap1")');
+  assert.equal(c.S.approvals[0].status, 'approved');
+  assert.ok(c.S.notifications.some(n => n.toUser === 'Crew A'));
+  assert.ok(c.S.notifications.some(n => n.apTab === 'acct'));
+  // Not all in: nothing changes.
+  const d = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [AP({ type: '採用', ref: undefined, signoffs: all.slice(0, 2) })], notifications: [] } });
+  await run(d, 'apFinalize("ap1")');
+  assert.equal(d.S.approvals[0].status, 'pending');
+  // Someone who neither approved it nor is GM/CEO cannot finalize it.
+  const e = app(MERGE.concat(APPROVAL), { role: 'office_crew', user: 'Akane', st });
+  await run(e, 'apFinalize("ap1")');
+  assert.equal(e.S.approvals[0].status, 'pending');
+  assert.match(e.alerts[0], /承認した人と GM・CEO/);
+});
+
+test('after waiting for the cloud, the approval page is redrawn only if it is still open', async () => {
+  const c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', st: { approvals: [AP({ type: 'シフト変更', ref: undefined })], notifications: [] } });
+  c.curPage = 'dashboard';
+  await run(c, 'signoffApproval("ap1")');
+  assert.equal(c.S.approvals[0].signoffs.length, 1);
+  assert.deepEqual(c.rendered, []);
+  c.curPage = 'approval';
+  await run(c, 'cancelMySignoff("ap1")');
+  assert.deepEqual(c.rendered, ['approval']);
+});
+
+test('monthly close: 在庫の締め opens inventory only for roles that can open it', () => {
+  const mk = role => {
+    const ctx = { curRole: role, done: {}, escapeHtml: s => String(s), progBar: () => '', ymLabelJP: y => y, getOfficeClose: () => ({}), navPageAllowed: p => role !== 'office_crew' };
+    vm.createContext(ctx);
+    vm.runInContext(objSrc('var OFFICE_CLOSE_ITEMS=[') + ';\nvar officeCloseMonth="2026-10";\n' + fnSrc('renderOfficeCloseCard'), ctx);
+    return vm.runInContext('renderOfficeCloseCard()', ctx);
+  };
+  assert.match(mk('office'), /在庫の締め[\s\S]*?go\('inventory'\)/);
+  assert.doesNotMatch(mk('office_crew'), /go\('inventory'\)/);
+  assert.match(mk('office_crew'), /在庫の締め/);
+  assert.match(mk('office_crew'), /go\('monthly'\)/);   // the other items keep their links
 });
 
 test('approval center: a press reads the cloud first and stops if another device already decided', async () => {
