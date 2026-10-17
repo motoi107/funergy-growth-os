@@ -3907,7 +3907,7 @@ const NAV_ITEMS = [
    店舗も使う Invoice管理・チップ管理・棚卸し・ガソリン代・紛失届はナビに残す
    （ここを外すと店舗側が入口を失うため）。 */
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','office','chef','am','sl']},
-  {id:'order',       label:'発注',       icon:'ti-clipboard-list',   roles:['ceo','gm','office','am','sl','office_crew','chef']},
+  /* v1087: 「発注」（id:'order'）は廃止（Moto 10/16 ④）。古い行き先は NAV_RETIRED で棚卸しへ */
   {id:'tasks',       label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl','office_crew','chef']},
   {id:'lala',        label:'LaLa オープン準備', icon:'ti-sparkles',      roles:['ceo','gm','office','am','sl','chef','office_crew']},
   {id:'biz_guide',   label:'業務ガイド',    icon:'ti-book-2',           roles:['ceo','gm','office','am','sl','office_crew']},
@@ -3975,7 +3975,7 @@ const MENU_GROUPS = [
     children:['skill','ojt_admin','growth_mgr','leadership','growthhub']},
   {id:'g_food', label:'食材管理', icon:'ti-receipt', roles:['ceo','gm','office','am','sl'],
     /* v1084: 経理センター・経理レビューは食材管理の右隣のタブへ（下の 2 つ）。日次食材差異・備品発注は廃止 */
-    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','order','purchase_detail','invoice']},
+    children:['menu','recipe','ingredient_master','ing_transfer','vendor_master','inventory','purchase_detail','invoice']},   /* v1087: 発注は廃止 */
   /* v1084: 食材管理の中から、食材管理と同じ階層の右隣へ（Moto 10/15）。roles は前と同じく見えていた ceo・gm・office だけ
      （1 ページだけのグループは firstAllowedChild がその 1 ページへ行くので、ここで絞らないと AM・SL にも出てしまう） */
   {id:'g_acct_center', label:'経理センター', icon:'ti-building-bank', roles:['ceo','gm','office'],
@@ -4010,7 +4010,6 @@ const ACCT_GROUPS = [
   {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_review','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
   /* v1084: 会議は予実管理の中にあったので予実管理の右隣（経理は中間レビューを見ない）・仕入れは原価率(FC)の位置 */
   {id:'ga_budget', label:'経理 予実・労務', icon:'ti-chart-bar', children:['budget','meeting','labor','purchase','kpi_master','tip']},
-  {id:'ga_order', label:'経理 発注', icon:'ti-package', children:['order']},   /* v1084: 備品発注は廃止 */
   /* v844: ガソリン代・事前経費・建て替え経費の承認をここから全部たどれるようにする。
      建て替え経費は Invoice管理の中（canApproveReimburse が office / office_crew を許可済み）。 */
   {id:'ga_req', label:'経理 申請・承認', icon:'ti-file-check',
@@ -4040,7 +4039,7 @@ const CHEF_GROUPS = [
     children:['tasks','lala']},
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
     children:['menu','recipe','ingredient_master','ing_transfer','vendor_master',
-              'inventory','order','purchase_detail','invoice']},   /* v1084: 日次食材差異・備品発注は廃止 */
+              'inventory','purchase_detail','invoice']},   /* v1084: 日次食材差異・備品発注は廃止 / v1087: 発注も廃止 */
   {id:'gc_store', label:'店舗', icon:'ti-building-store',
     children:['store_cmd','shift_admin','vacation','mileage']},
   {id:'gc_hr', label:'人材・育成', icon:'ti-users',
@@ -4192,8 +4191,9 @@ function navHomePage(){
    ・会議・仕入れ：予実管理の中のタブ（budgetTab）から独立したページ meeting・purchase へ。
    ・経営分析（予実管理のタブ）：予実管理の日次進捗へ。経理の「月次サマリー」（monthly）は残す（Moto 10/15）。
    ・原価率(FC)→仕入れ、日次食材差異→棚卸し、備品発注→発注、管理統括→ワークセンター、対応依頼→マイページ。
+   ・v1087: 発注（食材管理）も廃止（Moto 10/16 ④）→棚卸し。備品発注も棚卸しへ（前は発注へ寄せていた）。
      寄せ先を開けない役職なら、その人のホーム。寄せることで見える人は増えない。 */
-var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'order', mgmt_ctrl:'tasks', mc_requests:'mypage' };
+var NAV_RETIRED = { foodcost:'purchase', fv_variance:'inventory', supply_order:'inventory', order:'inventory', mgmt_ctrl:'tasks', mc_requests:'mypage' };
 function navResolvePage(page){
   if (page === 'budget' && typeof budgetTab !== 'undefined') {
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
@@ -5022,10 +5022,6 @@ const DEFAULT_VENDORS = [
   {id:'vi22', name:'Japan Import', contact:'', phone:'', sms:'', email:'', line:'', method:'Email', cutoff:'15:00', leadtime:1, minOrder:0, delivery:'', terms:'NET30', rating:3, webform:'', storeMethods:{}}
 ];
 const ORDER_METHODS = ['LINE','Text','Email','電話','Webフォーム','FAX','その他'];
-function vendorMethod(vendor, storeId) {
-  if (vendor.storeMethods && vendor.storeMethods[storeId]) return vendor.storeMethods[storeId];
-  return vendor.method || 'Email';
-}
 
 /* 初期 従業員マスター (拡張版) */
 /* セキュリティ#1: 給与・メール等の機微情報はソースに置かず、実データはSupabaseから取得（初期値は空/0） */
@@ -5334,24 +5330,7 @@ function ingCostByCode(code) {
   return i ? ingUnitCost(i) : 0;
 }
 function getVendors() { return ls('m_vendors', DEFAULT_VENDORS); }
-/* ===== 業者ごとの発注リスト（発注の大元・店舗×業者） =====
-   order_lists[storeId][vendorName] = [codes...]  食材マスターから選んだ発注品目 */
-function getOrderList(storeId, vendorName) {
-  var all = ls('order_lists', {});
-  return (all[storeId] && all[storeId][vendorName]) ? all[storeId][vendorName] : [];
-}
-function setOrderList(storeId, vendorName, codes) {
-  var all = ls('order_lists', {});
-  if (!all[storeId]) all[storeId] = {};
-  all[storeId][vendorName] = codes;
-  lsSet('order_lists', all);
-}
-/* 店舗で発注リストが登録済みの業者一覧 */
-function vendorsWithOrderList(storeId) {
-  var all = ls('order_lists', {});
-  var m = all[storeId] || {};
-  return Object.keys(m).filter(v=>m[v] && m[v].length);
-}
+/* v1087: 業者ごとの発注リスト（order_lists）を読み書きする関数は、発注の画面と一緒に外した（記録と同期はそのまま） */
 function getEmployees() {
   /* v1085: 読んだときの表（文字のまま）を覚えておく。保存のとき、この画面が変えた欄だけを、いまの表に重ねる（_empOnLocalSave） */
   var _src = null, emps = null;
@@ -10124,37 +10103,103 @@ function _apDecided(a){ return !!(a && a.status!=null && a.status!=='pending'); 
 function _apTs(a){ return String((a&&(a.approvedAt||a.decidedAt||a.updatedAt||a.date))||''); }
 function _apUnionSignoffs(x,y){ var out=[], seen={}; (x||[]).concat(y||[]).forEach(function(s){ if(!s||s.role==null) return; if(!seen[s.role]){ seen[s.role]=1; out.push(s); } }); return out; }
 function _apMut(a){ return Number(a && a._mut) || 0; }
+/* v1087: 承認の合流を役割ごとにする。
+   前は、どちらかに保存時刻（_mut）があると、新しいほうの記録をまるごと採っていた。2 台で別々の役割を承認すると
+   （AM と GM など）、あとから保存したほうの記録には先の承認が無いので、先の承認が消えていた。
+   ・承認（signoffs）は役割ごとに足し合わせる。自分の承認の取り消しは、取り消した時刻（_soX）より前の承認だけを落とす。
+   ・状態（承認待ち／承認／却下／取り下げ）は、決まったものが承認待ちに勝つ。両方決まっていれば決めた時刻（_stT）が新しいほう。
+   ・承認の取り消し（承認待ちに戻す）は版（_gen）を 1 つ進めるので、前の版の承認・状態はすべて負ける。
+   ・経理の確認（acct）は時刻（t）が新しいほう（取り消しも時刻で）。
+   ・前の版のアプリが承認を取り消したもの（承認待ち・承認なし・決めた時刻が同じ・あとで保存）は、今までどおり取り消しを採る。 */
+function _apGen(a){ return Number(a && a._gen) || 0; }
+/* 経理の確認が今の決定に付いているか（決めたあとに押したもの。前の承認のときの確認は使わない） */
+function _apAcctOn(a){ return !!(a && a.acct && !a.acct.off && (Number(a.acct.t)||0) >= _apStT(a)); }
+function _apStT(a){ return Number(a && a._stT) || 0; }
+function _apSoT(s){ return Number(s && s._t) || 0; }
+/* 状態の中身の印（保存時刻を除く）。合流で中身が変わったかを見る */
+function _apSigBody(a){
+  if(!a) return '';
+  var so=(a.signoffs||[]).filter(Boolean).map(function(s){ return String(s.role)+'@'+_apSoT(s); }).sort();
+  var x=a._soX||{}; var xs=Object.keys(x).sort().map(function(r){ return r+'@'+(Number(x[r])||0); });
+  var ac=a.acct?((Number(a.acct.t)||0)+(a.acct.off?'off':'')):'';
+  return JSON.stringify([a.status||'', _apGen(a), _apStT(a), so, xs, ac, a.rejectReason||'']);
+}
+function _apMergeOne(c, l, preferL){
+  var cg=_apGen(c), lg=_apGen(l);
+  if(cg!==lg){
+    /* 新しい版をまるごと。前の版のアプリは保存時刻で選ぶので、古い版の保存時刻より大きくする */
+    var w=(cg>lg)?c:l, o=(cg>lg)?l:c;
+    return (_apMut(o)>=_apMut(w)) ? Object.assign({}, w, {_mut:_apMut(o)+1}) : w;
+  }
+  var cd=_apDecided(c), ld=_apDecided(l);
+  if(cd!==ld){
+    var p=cd?l:c, d=cd?c:l;
+    /* 前の版のアプリの「承認を取り消す」：承認待ち・承認なし・あとで保存・決めた時刻は写したまま。経理の確認は外す */
+    if(!(p.signoffs||[]).length && _apMut(p)>_apMut(d) && _apStT(p)===_apStT(d)){
+      if(!p.acct) return p;
+      var pc=Object.assign({}, p); delete pc.acct; pc._mut=_apMut(p)+1; return pc;
+    }
+  }
+  var base;
+  if(cd!==ld) base = cd?c:l;
+  else {
+    var cs=_apStT(c), ls_=_apStT(l), cm=_apMut(c), lm=_apMut(l);
+    if(cd && cs!==ls_) base = (cs>ls_)?c:l;
+    else if(cd && _rtStK(c)!==_rtStK(l)) base = (_rtStK(c)>_rtStK(l))?c:l;   /* v1087: 同じ時刻なら決定の印（申請の記録と同じ決め方） */
+    else if(cd && _rtStK(c) && _rtDecRank(c)!==_rtDecRank(l)) base = (_rtDecRank(c)>_rtDecRank(l))?c:l;   /* 印も同じなら却下 */
+    else if(cm!==lm) base = (cm>lm)?c:l;
+    else if(cd && _apTs(c)!==_apTs(l)) base = (_apTs(l)>_apTs(c))?l:c;
+    else base = preferL?l:c;
+  }
+  var out=Object.assign({}, base);
+  var x={};
+  [c._soX, l._soX].forEach(function(m){ if(m && typeof m==='object') Object.keys(m).forEach(function(r){ var v=Number(m[r])||0; if(v>(x[r]||0)) x[r]=v; }); });
+  var first=(base===c)?c:l, second=(base===c)?l:c;
+  /* 役割ごとに、取り消しより後の承認のうち、いちばん新しいもの（同じなら先に見たほう） */
+  var pick={}, order=[];
+  (first.signoffs||[]).concat(second.signoffs||[]).forEach(function(s){
+    if(!s || s.role==null) return;
+    if(x[s.role] && _apSoT(s)<=x[s.role]) return;
+    if(!pick[s.role]){ pick[s.role]=s; order.push(s.role); }
+    else if(_apSoT(s)>_apSoT(pick[s.role])) pick[s.role]=s;
+  });
+  out.signoffs=order.map(function(r){ return pick[r]; });
+  if(Object.keys(x).length) out._soX=x; else delete out._soX;
+  var ca=c.acct, la=l.acct;
+  if(ca||la) out.acct = !ca?la:(!la?ca:((Number(la.t)||0)>(Number(ca.t)||0)?la:ca));
+  /* 今の決定より前の経理の確認（取り消して決め直したときの、前の確認）は外す */
+  if(out.acct && (Number(out.acct.t)||0) < _apStT(out)) delete out.acct;
+  var mm=Math.max(_apMut(c), _apMut(l));
+  /* 合流した中身が、保存時刻のいちばん新しい写しと違えば、保存時刻を 1 つ進める
+     （前の版のアプリは保存時刻で記録をまるごと選び、同じなら手元を採るので、合流した中身を採るように） */
+  var sb=_apSigBody(out);
+  if(mm && ((_apMut(c)===mm && sb!==_apSigBody(c)) || (_apMut(l)===mm && sb!==_apSigBody(l)))) mm=mm+1;
+  if(mm) out._mut=mm;
+  return out;
+}
 function mergeApprovals(cloudArr, localArr){
   var by={}, order=[];
   function put(item, isLocal){
     if(!item || item.id==null) return;
     var id=item.id;
     if(!by[id]){ by[id]=item; order.push(id); return; }
-    var cur=by[id];
-    var mc=_apMut(cur), mi=_apMut(item);
-    if(mc||mi){ if(mi!==mc){ by[id]=(mi>mc)?item:cur; } else { by[id]=isLocal?item:cur; } return; }
-    // 旧データ（_mut無し）：従来ロジック＝決定済み優先→両決定は時刻→signoff和集合
-    var win;
-    if(_apDecided(cur)!==_apDecided(item)) win = _apDecided(cur)?cur:item;
-    else if(_apDecided(cur) && _apDecided(item)) win = (_apTs(item)>_apTs(cur))?item:((_apTs(cur)>_apTs(item))?cur:(isLocal?item:cur));
-    else win = isLocal?item:cur;
-    win = Object.assign({}, win, { signoffs: _apUnionSignoffs(cur.signoffs, item.signoffs) });
-    by[id]=win;
+    by[id]=_apMergeOne(by[id], item, isLocal);
   }
   (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
   (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
   return order.map(function(id){ return by[id]; });
+}
+/* 合流で中身が変わるか見る印（状態・版・承認の役割と時刻・取り消しの時刻・経理の確認・却下の理由・保存時刻） */
+function _apSig(a){
+  if(!a) return '';
+  return _apSigBody(a)+'|'+_apMut(a);
 }
 function _coversApprovals(check, want){
   if(!Array.isArray(check)) return false;
   var have={}; check.forEach(function(x){ if(x&&x.id!=null) have[x.id]=x; });
   for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
     var h=have[w.id]; if(!h) return false;
-    var wm=_apMut(w), hm=_apMut(h);
-    if(wm||hm){ if(hm<wm) return false; continue; } // 新しい版が反映されているか
-    if(w.status && w.status!=='pending' && (h.status==null || h.status==='pending')) return false;
-    var hr={}; (h.signoffs||[]).forEach(function(s){ if(s&&s.role!=null) hr[s.role]=1; });
-    var ws=w.signoffs||[]; for(var j=0;j<ws.length;j++){ if(ws[j]&&ws[j].role!=null && !hr[ws[j].role]) return false; }
+    if(_apSig(_apMergeOne(h, w, false))!==_apSig(h)) return false;   /* v1087: 手元の分を足してもクラウドが変わらないか */
   }
   return true;
 }
@@ -10311,6 +10356,18 @@ function _coversLog(check, want){
    idで和集合／_deleted は最優先で残す(復活防止)／レビュー済み(status!=='申請中')は申請中に勝つ／それ以外はlocal優先 */
 function _rtDel(a){ return !!(a && a._deleted); }
 function _rtPend(a){ return !a || a.status==null || a.status==='申請中'; }
+/* v1087: 状態を変えた時刻（_stT）。承認・却下・承認の取り消し・月末の精算確定で付ける。
+   前は、両方とも決まっていると保存した端末の写しが勝つので、古い写しを持つ端末が別の申請を保存すると、
+   あとからの決定（精算確定・承認の取り消し）が元に戻っていた。時刻が違えば新しいほうを採る（削除はいつも勝つ）。
+   時刻が同じ（どちらも無いを含む）ときは今までどおり。 */
+function _rtStT(a){ return Number(a && a._stT) || 0; }
+/* v1087: 決定の印の順（_stK）。承認センターの案件と申請の記録に同じ印を書くので、2 台が同じ時刻に別々に決めても、
+   どの合流でも（案件・申請とも）同じ決定が残る：時刻 → 印の大きいほう（印の無いものはいちばん小さい） */
+function _rtStK(a){ return String((a && a._stK) || ''); }
+/* 時刻も印も同じ 2 つの決定（ふつうは起きない）：案件でも申請でも却下を残す。承認・却下以外は 0 */
+function _rtDecRank(a){ var s=a && a.status; return (s==='却下' || s==='rejected') ? 2 : (s==='承認' || s==='approved') ? 1 : 0; }
+/* v1087: 次の状態の時刻。前の決定・取り消しより必ず後にする（時計が遅れた端末で押しても、合流で前の状態に負けない） */
+function _rtNextT(r, min){ return Math.max(Date.now(), _rtStT(r)+1, Number(min)||0); }
 function mergeReqTomb(cloudArr, localArr){
   var by={}, order=[];
   function put(item, isLocal){
@@ -10319,6 +10376,9 @@ function mergeReqTomb(cloudArr, localArr){
     if(!by[id]){ by[id]=item; order.push(id); return; }
     var cur=by[id], win;
     if(_rtDel(cur)!==_rtDel(item)) win = _rtDel(cur)?cur:item;          // 削除が最優先（復活防止）
+    else if(_rtStT(cur)!==_rtStT(item)) win = (_rtStT(item)>_rtStT(cur))?item:cur;   // v1087: 状態を変えた時刻が新しいほう
+    else if(_rtStK(cur)!==_rtStK(item)) win = (_rtStK(item)>_rtStK(cur))?item:cur;   // v1087: 同じ時刻なら決定の印の大きいほう（承認センターの案件と同じ決め方）
+    else if(_rtStK(cur) && _rtDecRank(cur)!==_rtDecRank(item)) win = (_rtDecRank(item)>_rtDecRank(cur))?item:cur;   // v1087: 印も同じなら却下（案件と同じ）
     else if(_rtPend(cur)!==_rtPend(item)) win = _rtPend(cur)?item:cur;  // レビュー済み優先
     else win = isLocal?item:cur;
     by[id]=win;
@@ -10333,7 +10393,9 @@ function _coversReqTomb(check, want){
   for(var i=0;i<want.length;i++){ var w=want[i]; if(!w||w.id==null) continue;
     var h=have[w.id]; if(!h) return false;
     if(w._deleted && !h._deleted) return false; // 削除が反映されているか
-    if(!w._deleted && w.status && w.status!=='申請中' && (h.status==null||h.status==='申請中')) return false; // 決定リグレッション
+    if(!w._deleted && !h._deleted && _rtStT(w)>_rtStT(h)) return false; // v1087: 新しい決定が反映されているか
+    if(!w._deleted && _rtStT(w)===_rtStT(h) && w.status && w.status!=='申請中' && (h.status==null||h.status==='申請中')) return false; // 決定リグレッション
+    if(!w._deleted && !h._deleted && _rtStT(w)===_rtStT(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false; // v1087: 同じ時刻なら合流と同じ決め方（印・却下）
   }
   return true;
 }
@@ -10349,7 +10411,9 @@ function _invMut(x){
   return Math.max(a,b,c)||0;
 }
 /* 請求書を編集したら必ずこれを通す（端末間で「新しい方」が確実に勝つようにする） */
-function invTouch(v){ if(v && typeof v==='object'){ v._mut=Date.now(); } return v; }
+function invTouch(v){ if(v && typeof v==='object'){ v._mut=Math.max(Date.now(), (Number(v._mut)||0)+1); } return v; }   /* v1087: 前の保存時刻より必ず後（時計が遅れた端末の支払済などが、先の決定に負けない） */
+/* v1087: 建て替え経費の決定・取り消し：保存時刻を前より必ず後に（時計が遅れた端末でも）。決めた時刻を返す */
+function _rtTouchMut(v, min){ if(!v || typeof v!=='object') return 0; v._mut=Math.max(Date.now(), (Number(v._mut)||0)+1, Number(min)||0); return v._mut; }
 function mergeInvoices(cloudArr, localArr){
   var by={}, order=[];
   function put(item, isLocal){
@@ -10359,6 +10423,8 @@ function mergeInvoices(cloudArr, localArr){
     if(!!cur._deleted !== !!item._deleted){ win = cur._deleted?cur:item; } // 削除優先（復活防止）
     else { var mc=_invMut(cur), mi=_invMut(item);
       if(mi!==mc){ win=(mi>mc)?item:cur; }
+      else if(_rtStK(cur)!==_rtStK(item)){ win=(_rtStK(item)>_rtStK(cur))?item:cur; }   /* v1087: 建て替え経費の決定は同じ時刻なら決定の印で（承認センターの案件と同じ決め方） */
+      else if(_rtStK(cur) && _rtDecRank(cur)!==_rtDecRank(item)){ win=(_rtDecRank(item)>_rtDecRank(cur))?item:cur; }   /* 印も同じなら却下 */
       else { var cd=(cur.reviewStatus&&cur.reviewStatus!=='未確認'), idd=(item.reviewStatus&&item.reviewStatus!=='未確認');
         win=(cd!==idd)?(idd?item:cur):(isLocal?item:cur); } }
     by[id]=win;
@@ -10374,6 +10440,7 @@ function _coversInvoices(check, want){
     var h=have[w.id]; if(!h) return false;
     if(w._deleted && !h._deleted) return false;
     if(_invMut(w)>_invMut(h)) return false;
+    if(!w._deleted && !h._deleted && _invMut(w)===_invMut(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false;   /* v1087: 同じ時刻なら合流と同じ決め方 */
   }
   return true;
 }
@@ -14168,7 +14235,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['lunch_challenge','crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','order','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','discount','labor','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
+var OFFICE_OK_PAGES = ['lunch_challenge','crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','discount','labor','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
   'ing_transfer','office_career',
@@ -15967,7 +16034,6 @@ function renderPage(page) {
     case 'mgmt_dash':    renderPage('dashboard'); return;   /* v840: 統合したので別名 */
     case 'error_center': workTab='error'; el.innerHTML = renderWorkCenter(); break;
     case 'inventory':    el.innerHTML = renderInventory(); break;
-    case 'order':        el.innerHTML = renderOrder(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
     case 'tasks':        el.innerHTML = renderWorkCenter(); break;
     case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
@@ -16361,7 +16427,6 @@ var FAV_TABS = {
   budget:            [{k:'budgetTab', g:function(){return budgetTab;}, s:function(v){budgetTab=v;}}],   /* v1084: 経営分析タブは廃止 */
   monthly:           [{k:'msSubTab', g:function(){return msSubTab;}, s:function(v){msSubTab=v;}},
                       {k:'msPeriod', g:function(){return msPeriod;}, s:function(v){msPeriod=v;}}],
-  order:             [{k:'orderTab', g:function(){return orderTab;}, s:function(v){orderTab=v;}}],
   labor:             [{k:'laborTab', g:function(){return laborTab;}, s:function(v){laborTab=v;}}],
   shift_admin:       [{k:'shiftAdminTab', g:function(){return shiftAdminTab;}, s:function(v){shiftAdminTab=v;}}],
   hiring:            [{k:'hiringTab', g:function(){return hiringTab;}, s:function(v){hiringTab=v;}}],
@@ -16484,7 +16549,7 @@ function renderFavCard(){
   if(!favs.length){
     h+='<div style="font-size:12px;color:var(--muted);line-height:1.8;padding:6px 2px">'
       +'よく使うタブを開いて、右上の <i class="ti ti-star" style="color:var(--yellow,#f5b301)"></i> を押すとここに追加されます（小タブも登録できます）。<br>'
-      +'例：予実 › 会議／シフト作成／発注 など。ここから1タップで移動できます。</div></div>';
+      +'例：予実 › 会議／シフト作成／棚卸し など。ここから1タップで移動できます。</div></div>';
     return h;
   }
   if(!_favEdit){
@@ -16984,7 +17049,6 @@ function renderStoreCmd() {
   if (cfg.tiles) {
     var tiles = [
       {label:t('棚卸','Inventory'), icon:'ti-box', color:'#15a66a', page:'inventory'},
-      {label:t('発注','Order'), icon:'ti-truck-delivery', color:'#2e6fd6', page:'order'},
       {label:t('シフト','Shift'), icon:'ti-calendar-event', color:'#f0661f', page:'shift_admin'},
       {label:t('日報','Daily Report'), icon:'ti-clipboard-text', color:'#8b5cf6', action:`scrollToReport()`},
       {label:t('レシート','Receipts'), icon:'ti-receipt', color:'#e0a23a', page:'invoice'},
@@ -18077,8 +18141,8 @@ function approveBudgetSeg(storeId, ym) {
   saveBudgets(budgets);
   /* v624: 承認の瞬間に不変コピーを別行へ。以後どんな上書きが起きても承認時点に戻せる（要件②） */
   try{ snapshotApprovedBudget(b, _apYm); }catch(e){}
-  // 承認待ちタスクを消化
-  resolveApprovalByRef('予算', storeId, 'approved', _apYm);
+  // 承認待ちタスクを消化（v1087: 申請した人にも知らせる）
+  apDecidedFromPage('予算', storeId, 'approved', {ym:_apYm, page:'budget', applicant:(b.submittedBy||''), title:(_apYm+' 予算')});
   showToast(_apYm+' の予算を承認しました。予実・ダッシュボードに反映されます','success');
   renderPage('budget');
 }
@@ -18092,7 +18156,7 @@ function rejectBudgetSeg(storeId, ym) {
   b.rejectReason=reason; b.rejectedAt=nowJP();
   budSetStatus(b, _rjYm, '差し戻し', { rejectReason:reason, rejectedAt:b.rejectedAt, rejectedBy:myName() });
   saveBudgets(budgets);
-  resolveApprovalByRef('予算', storeId, 'rejected', _rjYm);
+  apDecidedFromPage('予算', storeId, 'rejected', {ym:_rjYm, page:'budget', applicant:(b.submittedBy||''), reason:reason, title:(_rjYm+' 予算')});   /* v1087 */
   showToast(_rjYm+' の予算を差し戻しました','info');
   renderPage('budget');
   });
@@ -20080,7 +20144,7 @@ var PAGE_SYNC_SCOPE = {
   tasks:'tasks', biz_guide:'tasks',
   staff_master:'hr', hiring:'hr', onboarding:'hr', tip:'hr', hr:'hr', vacation:'hr', mileage:'hr', expense:'hr', attendance:'hr', crew_handbook:'hr',
   skill:'growth', ojt_admin:'growth', growth_mgr:'growth', leadership:'growth', growthhub:'growth', tiprate:'growth',
-  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', order:'food', purchase_detail:'food', invoice:'food', acct_review:'food',
+  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', purchase_detail:'food', invoice:'food', acct_review:'food',
   store_master:'settings', required:'settings', settings:'settings'
 };  /* shift_admin は専用バー(availDiag)を持つため意図的に除外 */
 function pageSyncScope(page){ return PAGE_SYNC_SCOPE[page] || null; }
@@ -33676,46 +33740,6 @@ function openNewInvTemplate(storeId) {
   renderPage('inventory');
   setTimeout(()=>openInvTemplateEdit(storeId, invTemplate), 200);
 }
-/* 発注リスト（業者ごと）から棚卸表をコピー生成 */
-function openInvTemplateFromOrder(storeId) {
-  var vendorsWL = vendorsWithOrderList(storeId);
-  if (!vendorsWL.length) {
-    openModal(`<div class="modal-title">発注リストから棚卸表を作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-      <div class="alert alert-warning" style="margin:0"><i class="ti ti-info-circle"></i><div style="font-size:12px">まだ業者ごとの発注リストがありません。先に<b>発注画面で「発注リスト」</b>を作成してください（食材マスターから業者ごとに品目を登録）。</div></div>
-      <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
-      <button class="btn btn-primary" onclick="closeModalDirect();go('order')">発注画面へ</button></div>`);
-    return;
-  }
-  var html = `<div class="modal-title">発注リストから棚卸表を作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:10px">業者の発注リストを選ぶと、その品目をコピーして棚卸表を作ります。作成後は独立（発注リストを変えても棚卸表は変わりません）。</div>
-    <div class="form-group"><label class="form-label">棚卸表の名前</label><input class="form-input" id="ivt-name" placeholder="例: ${store_nameSafe(storeId)} 通常棚卸"></div>
-    <div style="font-size:11px;font-weight:600;margin-bottom:4px">取り込む業者の発注リスト</div>
-    <div style="max-height:34vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
-      ${vendorsWL.map(v=>{var n=getOrderList(storeId,v).length; return `<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px"><input type="checkbox" class="ivt-vendor" value="${v}" checked> <span style="flex:1">${v}</span> <span style="color:var(--muted);font-size:11px">${n}品目</span></label>`;}).join('')}
-    </div>
-    <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="createInvTemplateFromOrder('${storeId}')">棚卸表を作成</button></div>`;
-  openModal(html);
-}
-function store_nameSafe(storeId){ return (STORES.find(s=>s.id===storeId)||{}).name||storeId; }
-function createInvTemplateFromOrder(storeId) {
-  var name = (document.getElementById('ivt-name').value||'').trim();
-  if (!name) { alert('棚卸表の名前を入力してください'); return; }
-  var codes = {};
-  document.querySelectorAll('.ivt-vendor:checked').forEach(cb=>{
-    getOrderList(storeId, cb.value).forEach(code=>codes[code]=1);
-  });
-  var codeList = Object.keys(codes).map(c=>parseInt(c));
-  if (!codeList.length) { alert('業者を選択してください'); return; }
-  codeList.forEach(c=>ensureInvItem(storeId, c));
-  var tpls = getInvTemplates(storeId);
-  tpls.push({id:'tpl'+Date.now(), name:name, kind:'custom', codes:codeList});
-  setInvTemplates(storeId, tpls);
-  invTemplate = tpls[tpls.length-1].id;
-  closeModalDirect();
-  showToast(`棚卸表「${name}」を作成（${codeList.length}品目）`,'success');
-  renderPage('inventory');
-}
 function setInvFilter(f) { invClassFilter = f; renderPage('inventory'); }
 
 function openDailySetModal(storeId) {
@@ -33774,501 +33798,9 @@ function setInvView(v) { invView = v; renderPage('inventory'); }
 
 
 
-/* 自動発注算出: 必要数 = 基準在庫 − 現在庫 + 予測使用量 − 発注済 → 発注ロットへ丸め → 業者別 */
-function computeAutoOrders(storeId, countedItems) {
-  var ings = getIngredients();
-  var vendorGroups = {};
-  countedItems.forEach(ci => {
-    var ing = ings.find(x=>x.code===ci.code);
-    if (!ing) return;
-    var current = parseFloat(ci.count)||0;
-    var forecast = Math.round((ing.par||20)*0.4); // 予測使用量（仮: PARの40%）
-    var ordered = 0; // 発注済（簡易: 0）
-    var need = (ing.par||20) - current + forecast - ordered;
-    if (need <= (ing.minStock||0)) return; // 最低在庫以下にならなければスキップ... ここは need<=0でスキップ
-    if (need <= 0) return;
-    var lot = ing.lot||1;
-    var orderQty = Math.ceil(need/lot)*lot; // 発注単位丸め
-    var vendor = ing.vendor;
-    if (!vendor || vendor==='自家製') return;
-    if (!vendorGroups[vendor]) vendorGroups[vendor] = [];
-    vendorGroups[vendor].push({code:ing.code, name:ing.name, unit:ing.unit, need:Math.round(need*10)/10, qty:orderQty, price:ing.price});
-  });
-  var drafts = [];
-  Object.keys(vendorGroups).forEach(vname => {
-    var lines = vendorGroups[vname];
-    var amount = lines.reduce((a,l)=>a+l.price*l.qty,0);
-    drafts.push({id:'ao'+Date.now()+Math.random().toString(36).slice(2,5), storeId, vendor:vname, lines, amount,
-      status:'自動作成', date:todayJP(), deliveryDate:'', auto:true});
-  });
-  if (drafts.length) {
-    var all = getOrdersRaw(storeId).concat(drafts);
-    saveOrders(storeId, all);
-  }
-  return drafts;
-}
-
-
-
-/* ============================================================
-   ⑨ 発注管理 (作成→承認→送信→履歴・業者連動)
-============================================================ */
-var orderTab = 'order'; // 'order' | 'lists'
-function setOrderTab(t){ orderTab = t; renderPage('order'); }
-/* 発注リスト管理（業者ごとに食材マスターから品目登録） */
-function renderOrderLists(storeId) {
-  var vendors = getVendors();
-  var html = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px">業者ごとに、発注する品目を食材マスターから登録します。これが発注と棚卸表の大元になります。</div>`;
-  vendors.forEach(v => {
-    var codes = getOrderList(storeId, v.name);
-    var ings = getIngredients();
-    html += `<div class="card" style="padding:0;overflow:hidden">
-      <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--surface2);border-bottom:1px solid var(--border)">
-        <span style="width:26px;height:26px;border-radius:8px;background:var(--accent-soft,#fceee4);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0"><i class="ti ti-truck" style="font-size:15px"></i></span>
-        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${v.name}</div>
-          <div style="font-size:10px;color:var(--muted)">${codes.length}品目登録 · ${vendorMethod(v,storeId)}</div></div>
-        <button class="btn btn-secondary btn-sm" onclick="openOrderListEdit('${storeId}','${v.name.replace(/'/g,"\\'")}')"><i class="ti ti-edit"></i> 編集</button>
-      </div>`;
-    if (codes.length) {
-      html += `<div style="padding:8px 12px;font-size:12px;color:var(--tm)">${codes.map(c=>{var i=ings.find(x=>x.code===c);return i?i.name:'';}).filter(Boolean).join(' · ')}</div>`;
-    } else {
-      html += `<div style="padding:10px 12px;font-size:11px;color:var(--muted)">未登録 — 「編集」から品目を追加</div>`;
-    }
-    html += `</div>`;
-  });
-  return html;
-}
-function openOrderListEdit(storeId, vendorName) {
-  var codes = getOrderList(storeId, vendorName);
-  var ings = getIngredients();
-  var inList = codes.map(c=>ings.find(i=>i.code===c)).filter(Boolean);
-  var html = `<div class="modal-title">発注リスト: ${vendorName} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">この業者に発注する品目を登録します（${inList.length}品目）</div>
-    <div style="max-height:40vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:8px">
-      ${inList.map(i=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border)">
-        <span style="font-size:12px">${i.name}<div style="font-size:10px;color:var(--muted)">#${i.code} · ${catName(i.cat)} · $${ingUnitCost(i).toFixed(3)}/${i.unit}</div></span>
-        <button class="btn btn-danger btn-sm" style="padding:0 8px" onclick="orderListRemove('${storeId}','${vendorName.replace(/'/g,"\\'")}',${i.code})"><i class="ti ti-x"></i></button></div>`).join('')||'<div style="padding:14px;text-align:center;color:var(--muted);font-size:12px">品目なし</div>'}
-    </div>
-    <button class="btn btn-secondary" style="width:100%" onclick="orderListAdd('${storeId}','${vendorName.replace(/'/g,"\\'")}')"><i class="ti ti-search"></i> 食材マスターから品目を追加</button>
-    <div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect();renderPage('order')">完了</button></div>`;
-  openModal(html);
-}
-function orderListAdd(storeId, vendorName) {
-  // その業者の取扱食材（仕入先がvendorName）に絞る
-  var vendorIngs = getIngredients().filter(i=>i.vendor===vendorName);
-  var onPick = function(code){
-    var codes = getOrderList(storeId, vendorName);
-    if (!codes.includes(code)) codes.push(code);
-    setOrderList(storeId, vendorName, codes);
-    openOrderListEdit(storeId, vendorName);
-  };
-  if (vendorIngs.length) {
-    openIngredientPicker(onPick, vendorName);   // 第2引数で業者フィルタ
-  } else {
-    // この業者の食材がマスターに無い場合は全食材から（仕入先未設定対策）。選んだら仕入先をこの業者に設定するか確認
-    openIngredientPicker(function(code){
-      onPick(code);
-    });
-  }
-}
-function orderListRemove(storeId, vendorName, code) {
-  var codes = getOrderList(storeId, vendorName).filter(c=>c!==code);
-  setOrderList(storeId, vendorName, codes);
-  openOrderListEdit(storeId, vendorName);
-}
-/* v830: 発注は複数の人が同じ店の発注を触る（作成・数量修正・確定・送信・取消）。
-   これまでは配列を丸ごと書き戻していたため、あとに保存したほうの端末の内容で全部が置き換わり、
-   もう一方が作った発注や送信済みの記録が消えていた。クラウド同期でも同じ（合流ルールが無い）。
-   1件ごとに保存時刻(_mut)と保存者(_by)を付け、取消は記録として残す(_deleted)。
-   物理削除にすると、取り消す前の写しを持った端末から発注が復活する。
-   画面へ渡すのは getOrders()（取消済みを除いた一覧）。書き換えるときだけ getOrdersRaw()。 */
-function getOrdersRaw(storeId){ var a=ls('orders_'+storeId, []); return Array.isArray(a)?a:[]; }
-function getOrders(storeId){ return getOrdersRaw(storeId).filter(function(o){ return !(o&&o._deleted); }); }
-function _ordId(r){ return (r && r.id!=null) ? ('id:'+r.id) : null; }
-function saveOrders(storeId, arr){
-  var prev=getOrdersRaw(storeId), pm={};
-  prev.forEach(function(r){ var k=_ordId(r); if(k) pm[k]=Number(r._mut)||0; });
-  _stampListBy(arr, prev, _ordId);            /* 変わった発注にだけ保存時刻(_mut)を進める */
-  var by=''; try{ by=(typeof myName==='function')?myName():''; }catch(e){ by=''; }
-  arr.forEach(function(r){
-    var k=_ordId(r); if(!k) return;
-    if((Number(r._mut)||0)!==(pm[k]||0)) r._by=String(by||'');   /* 保存者を記録 */
-  });
-  return lsSet('orders_'+storeId, arr)!==false;
-}
-/* 取消・空になった下書きの削除。記録として残し、他端末へ伝える */
-function deleteOrder(storeId, orderId){
-  var arr=getOrdersRaw(storeId);
-  var o=null;
-  for(var i=0;i<arr.length;i++){ if(arr[i] && arr[i].id===orderId){ o=arr[i]; break; } }
-  if(!o) return false;
-  o._deleted=true;
-  return saveOrders(storeId, arr);
-}
-function renderOrder() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
-  var store = STORES.find(s=>s.id===storeId) || STORES[0];
-  var orders = getOrders(storeId);
-  var canConfig = ROLE_CONFIG[curRole].canCreate;
-  var html = pageStoreTabs(storeId, false) + `<div class="section-header">
-    <div><div class="section-title">${store.name} · 発注管理</div><div class="section-sub">業者ごとの発注リストから発注</div></div>
-    ${orderTab==='order'?`<button class="btn btn-primary btn-sm" onclick="openOrderModal('${storeId}')"><i class="ti ti-plus"></i> 発注作成</button>`:''}
-  </div>`;
-
-  html += `<div class="phase-tabs">
-    <div class="phase-tab${orderTab==='order'?' active':''}" onclick="setOrderTab('order')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> 発注</div>
-    <div class="phase-tab${orderTab==='lists'?' active':''}" onclick="setOrderTab('lists')"><i class="ti ti-list-details" style="font-size:12px"></i> 発注リスト</div>
-  </div>`;
-
-  if (orderTab==='lists') return html + renderOrderLists(storeId);
-
-  // 発注リスト未作成の案内
-  if (!vendorsWithOrderList(storeId).length) {
-    html += `<div class="alert alert-warning"><i class="ti ti-info-circle"></i><div style="font-size:12px"><b>まず「発注リスト」タブで、業者ごとの発注品目を登録</b>してください。食材マスターから選んで業者ごとに登録すると、発注がぐっと速くなります。</div></div>`;
-  }
-
-  // 自動作成ドラフト
-  var autoDrafts = orders.filter(o=>o.status==='自動作成');
-  if (autoDrafts.length) {
-    html += `<div class="alert alert-warning"><i class="ti ti-robot"></i><div><p style="font-size:12px;font-weight:600">自動算出された発注ドラフト ${autoDrafts.length}件</p><div style="font-size:11px">棚卸から自動作成。確認・修正して確定してください</div></div></div>`;
-    autoDrafts.slice().reverse().forEach(o => {
-      var vendor = getVendors().find(v=>v.name===o.vendor)||{};
-      var method = vendorMethod(vendor, storeId);
-      html += `<div class="card">
-        <div class="approval-header"><div><div class="approval-title">${o.vendor} <span class="tag tag-blue" style="font-size:9px">${method}</span></div>
-        <div class="approval-meta">${o.lines.length}品目 · $${o.amount.toFixed(2)}</div></div>
-        <span class="tag tag-gray">自動作成</span></div>
-        <table class="inv-table" style="margin-top:6px"><tbody>
-        ${o.lines.map((l,i)=>`<tr><td style="font-size:12px">${l.name}</td><td><input class="inv-input" type="number" inputmode="decimal" value="${l.qty}" onchange="updateDraftQty('${storeId}','${o.id}',${i},this.value)" style="width:50px"> ${l.unit}</td><td style="color:var(--muted);font-size:11px">$${(l.price*l.qty).toFixed(2)}</td><td><button class="btn btn-danger btn-sm" onclick="removeDraftLine('${storeId}','${o.id}',${i})"><i class="ti ti-x"></i></button></td></tr>`).join('')}
-        </tbody></table>
-        <div class="approval-actions">
-          <button class="btn btn-success btn-sm" onclick="confirmOrder('${storeId}','${o.id}')"><i class="ti ti-check"></i> 発注確定</button>
-          <button class="btn btn-danger btn-sm" onclick="cancelOrder('${storeId}','${o.id}')"><i class="ti ti-trash"></i> 削除</button>
-        </div>
-      </div>`;
-    });
-  }
-
-  // 確定済（送信準備）
-  var confirmed = orders.filter(o=>o.status==='発注確定'||o.status==='申請中'||o.status==='承認済');
-  if (confirmed.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-clipboard-check"></i>発注確定（送信準備）</div>`;
-    confirmed.slice().reverse().forEach(o => {
-      var vendor = getVendors().find(v=>v.name===o.vendor)||{};
-      var method = vendorMethod(vendor, storeId);
-      html += `<div class="approval-item">
-        <div class="approval-header"><div><div class="approval-title">${o.vendor} <span class="tag tag-blue" style="font-size:9px">${method}</span></div>
-        <div class="approval-meta">${o.date} · ${o.lines.length}品目 · $${o.amount.toFixed(2)}</div></div>
-        <span class="tag tag-yellow">${o.status}</span></div>
-        <div class="approval-actions">
-          <button class="btn btn-primary btn-sm" onclick="openSendModal('${storeId}','${o.id}')"><i class="ti ti-send"></i> ${method}で発注</button>
-          <button class="btn btn-secondary btn-sm" onclick="exportOrderCSV('${storeId}','${o.id}')"><i class="ti ti-file-spreadsheet"></i> CSV</button>
-          <button class="btn btn-secondary btn-sm" onclick="exportOrderPrint('${storeId}','${o.id}')"><i class="ti ti-printer"></i> PDF/印刷</button>
-        </div></div>`;
-    });
-    html += '</div>';
-  }
-
-  // 送信/連絡済み履歴
-  var done = orders.filter(o=>['送信済','電話確認済','納品完了'].includes(o.status));
-  if (done.length) {
-    html += `<div class="card"><div class="card-title"><i class="ti ti-check"></i>送信済み履歴</div>`;
-    done.slice().reverse().slice(0,8).forEach(o => {
-      html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${o.vendor}</div><div class="approval-meta">${o.sentDate||o.date} · $${o.amount.toFixed(2)} · ${o.sentMethod||''}</div></div>
-        <span class="tag tag-green">${o.status}</span></div></div>`;
-    });
-    html += '</div>';
-  }
-  if (!orders.length) html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-clipboard-list" style="font-size:32px;margin-bottom:8px;display:block"></i>発注なし<div style="font-size:12px;margin-top:6px">Inventory棚卸を確定すると自動でドラフトが作成されます</div></div>`;
-  return html;
-}
-
-function updateDraftQty(storeId, orderId, idx, val) {
-  var orders = getOrdersRaw(storeId);
-  var o = orders.find(x=>x.id===orderId);
-  if (o) { o.lines[idx].qty = parseFloat(val)||0; o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); saveOrders(storeId, orders); }
-}
-function removeDraftLine(storeId, orderId, idx) {
-  var orders = getOrdersRaw(storeId);
-  var o = orders.find(x=>x.id===orderId);
-  if (o) { o.lines.splice(idx,1); o.amount = o.lines.reduce((a,l)=>a+l.price*l.qty,0); saveOrders(storeId, orders); if(!o.lines.length) deleteOrder(storeId, orderId); renderPage('order'); }
-}
-function confirmOrder(storeId, orderId) {
-  var orders = getOrdersRaw(storeId);
-  var o = orders.find(x=>x.id===orderId);
-  if (o) { o.status='発注確定'; saveOrders(storeId, orders); showToast('発注を確定しました', 'success'); renderPage('order'); }
-}
-function cancelOrder(storeId, orderId) {
-  if (!confirm('この発注を削除しますか？')) return;
-  deleteOrder(storeId, orderId);
-  showToast('削除しました', 'danger');
-  renderPage('order');
-}
-
-/* 発注方法別テキスト生成 */
-function buildOrderText(o, vendor, storeId, method) {
-  var store = STORES.find(s=>s.id===storeId)||{name:storeId};
-  var delivery = o.deliveryDate || '次回納品日';
-  var lines = o.lines.map(l=>`・${l.name} ${l.qty}${l.unit}`).join('\n');
-  if (method==='LINE') {
-    return `${o.vendor} Order / ${store.name} / ${delivery}納品希望\n\n${lines}\n\nよろしくお願いします。`;
-  } else if (method==='Text') {
-    return `${store.name} Order\nDelivery: ${delivery}\n\n${o.lines.map(l=>`${l.name} x${l.qty}`).join('\n')}\n\nThank you.`;
-  } else if (method==='Email') {
-    return `To: ${vendor.email}\nSubject: ${store.name} Order for ${delivery} Delivery\n\nHi,\n\nPlease see our order below for ${store.name}.\n\nDelivery Date: ${delivery}\n\nItems:\n${lines}\n\nThank you,\n${store.name}`;
-  } else if (method==='電話') {
-    return `【電話発注リスト】${o.vendor}\nTEL: ${vendor.phone}\n納品: ${delivery}\n\n${lines}`;
-  } else { // Web/FAX/その他
-    return `${o.vendor} 発注 / ${store.name} / ${delivery}\n${vendor.webform?'Webフォーム: '+vendor.webform+'\n':''}\n${lines}`;
-  }
-}
-
-function openSendModal(storeId, orderId) {
-  var o = getOrders(storeId).find(x=>x.id===orderId);
-  if (!o) return;
-  var vendor = getVendors().find(v=>v.name===o.vendor)||{};
-  var method = vendorMethod(vendor, storeId);
-  var text = buildOrderText(o, vendor, storeId, method);
-  var phoneFields = method==='電話' ? `
-    <div class="form-row">
-      <div class="form-group"><label class="form-label">担当者名</label><input class="form-input" id="snd-contact" placeholder="話した相手"></div>
-      <div class="form-group"><label class="form-label">確認番号</label><input class="form-input" id="snd-confirm" placeholder="任意"></div>
-    </div>` : '';
-  openModal(`<div class="modal-title">${o.vendor} へ${method}発注 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">納品希望日</label><input class="form-input" id="snd-delivery" type="date" onchange="updateDraftDelivery('${storeId}','${orderId}',this.value)" value="${o.deliveryDate||''}"></div>
-    <div class="form-group"><label class="form-label">${method}用テキスト（コピーして使用）</label>
-      <textarea class="form-textarea" id="snd-text" style="min-height:160px;font-size:12px" readonly>${text}</textarea>
-      <button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="copyOrderText()"><i class="ti ti-copy"></i> コピー</button>
-      ${vendor.webform&&method==='Webフォーム'?`<a href="${vendor.webform}" target="_blank" class="btn btn-secondary btn-sm" style="margin-top:6px;margin-left:6px;text-decoration:none"><i class="ti ti-external-link"></i> Webフォームを開く</a>`:''}
-    </div>
-    ${phoneFields}
-    <div class="form-group"><label class="form-label">メモ</label><input class="form-input" id="snd-memo" placeholder="任意"></div>
-    <div class="btn-row">
-      <button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
-      <button class="btn btn-success" onclick="markOrderSent('${storeId}','${orderId}','${method}')"><i class="ti ti-check"></i> ${method==='電話'?'電話済みに':'送信済みに'}</button>
-    </div>`);
-}
-function updateDraftDelivery(storeId, orderId, val) {
-  var orders = getOrdersRaw(storeId);
-  var o = orders.find(x=>x.id===orderId);
-  if (o) { o.deliveryDate=val; saveOrders(storeId, orders);
-    var vendor=getVendors().find(v=>v.name===o.vendor)||{}; var method=vendorMethod(vendor,storeId);
-    var ta=document.getElementById('snd-text'); if(ta) ta.value=buildOrderText(o,vendor,storeId,method);
-  }
-}
-function copyOrderText() {
-  var ta = document.getElementById('snd-text');
-  ta.select();
-  try { document.execCommand('copy'); showToast('コピーしました', 'success'); } catch(e){ showToast('手動でコピーしてください', 'info'); }
-}
-function markOrderSent(storeId, orderId, method) {
-  var orders = getOrdersRaw(storeId);
-  var o = orders.find(x=>x.id===orderId);
-  if (!o) return;
-  o.status = method==='電話'?'電話確認済':'送信済';
-  o.sentDate = todayJP();
-  o.sentMethod = method;
-  o.sentBy = ROLE_CONFIG[curRole].name;
-  if (method==='電話') { var c=document.getElementById('snd-contact'); o.phoneContact=c?c.value:''; }
-  var m=document.getElementById('snd-memo'); o.memo = m?m.value:'';
-  saveOrders(storeId, orders);
-  closeModalDirect();
-  showToast(`${o.vendor}へ${method}で発注しました`, 'success');
-  renderPage('order');
-}
-
-var orderTmpLines = [];
-function openOrderModal(storeId) {
-  orderTmpLines = [];
-  var vendors = getVendors();
-  renderOrderModalBody(storeId, vendors[0].name);
-}
-/* 発注テンプレート: order_templates[storeId] = [{id,name,vendor,lines:[{code,name,unit,price,qty}]}] */
-function getOrderTemplates(storeId) { var all=ls('order_templates', {}); return all[storeId]||[]; }
-function setOrderTemplates(storeId, tpls) { var all=ls('order_templates', {}); all[storeId]=tpls; lsSet('order_templates', all); }
-/* 前回の同業者発注を取得 */
-function lastOrderForVendor(storeId, vendorName) {
-  var orders = getOrders(storeId).filter(o=>o.vendor===vendorName);
-  return orders.length ? orders[orders.length-1] : null;
-}
-
-function renderOrderModalBody(storeId, vendorName) {
-  var vendors = getVendors();
-  var vendor = vendors.find(v=>v.name===vendorName) || vendors[0];
-  var total = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
-  var templates = getOrderTemplates(storeId).filter(t=>t.vendor===vendor.name);
-  var lastOrder = lastOrderForVendor(storeId, vendor.name);
-  var linesHtml = orderTmpLines.map((l,idx)=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--border)">
-    <div style="flex:1;font-size:13px">${l.name}<div style="font-size:10px;color:var(--muted)">$${l.price.toFixed(3)}/${l.unit}</div></div>
-    <input class="inv-input" type="number" inputmode="decimal" value="${l.qty}" onchange="updateOrderQty(${idx},this.value)" style="width:55px"> <span style="font-size:11px;color:var(--muted)">${l.unit}</span>
-    <span style="font-size:11px;color:var(--muted);min-width:54px;text-align:right">$${(l.price*l.qty).toFixed(2)}</span>
-    <button class="btn btn-danger btn-sm" onclick="removeOrderLine('${storeId}','${vendorName}',${idx})"><i class="ti ti-x"></i></button>
-  </div>`).join('');
-  var minWarn = total < vendor.minOrder ? `<div class="alert alert-warning" style="margin-top:8px"><i class="ti ti-alert-triangle"></i>最低発注額 $${vendor.minOrder} 未満です（現在 $${total.toFixed(2)}）</div>` : '';
-
-  openModal(`<div class="modal-title">発注作成 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="form-group"><label class="form-label">業者（マスター連動）</label>
-      <select class="form-select" id="o-vendor" onchange="changeOrderVendor('${storeId}',this.value)">${vendors.map(v=>`<option${v.name===vendorName?' selected':''}>${v.name}</option>`).join('')}</select>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">発注方法 ${vendorMethod(vendor,storeId)} · 最低 $${vendor.minOrder} · ${vendor.delivery}</div>
-    </div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
-      ${lastOrder?`<button class="btn btn-secondary btn-sm" onclick="orderCopyLast('${storeId}','${vendorName}')"><i class="ti ti-copy"></i> 前回をコピー</button>`:''}
-      ${templates.length?templates.map(t=>`<button class="btn btn-secondary btn-sm" onclick="orderLoadTemplate('${storeId}','${vendorName}','${t.id}')"><i class="ti ti-template"></i> ${t.name}</button>`).join(''):''}
-    </div>
-    <div class="form-group"><label class="form-label">発注品目（${vendor.name}の取扱）</label>
-      <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:8px">
-        ${linesHtml || '<div style="color:var(--muted);font-size:12px;text-align:center;padding:6px">品目を追加してください</div>'}
-        <div style="display:flex;justify-content:space-between;padding-top:8px;font-weight:600;font-size:13px"><span>合計</span><span style="color:var(--accent)">$${total.toFixed(2)}</span></div>
-      </div>
-      <button class="btn btn-secondary" style="width:100%" onclick="openOrderIngPicker('${storeId}','${vendorName}')"><i class="ti ti-search"></i> 品目を検索して追加</button>
-      ${minWarn}
-    </div>
-    <div style="display:flex;gap:6px">
-      ${orderTmpLines.length?`<button class="btn btn-secondary btn-sm" onclick="openSaveTemplateModal('${storeId}','${vendorName}')"><i class="ti ti-bookmark"></i> テンプレ保存</button>`:''}
-    </div>
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-      <button class="btn btn-primary" onclick="openOrderConfirm('${storeId}','${vendorName}')" ${orderTmpLines.length?'':'disabled'}>確認画面へ</button>
-    </div>`);
-}
-/* 業者の発注リスト（あれば）に絞った検索ピッカー。なければ業者の取扱商品 */
-function openOrderIngPicker(storeId, vendorName) {
-  var listCodes = getOrderList(storeId, vendorName);
-  if (listCodes.length) {
-    // 発注リストの品目だけを選ばせる
-    var ings = getIngredients().filter(i=>listCodes.includes(i.code));
-    openIngredientPickerFromList(ings, function(code){
-      var ing = getIngredients().find(i=>i.code===code);
-      if (ing && !orderTmpLines.find(l=>l.code===code)) orderTmpLines.push({code, name:ing.name, unit:ing.unit, price:ing.price, qty:1});
-      renderOrderModalBody(storeId, vendorName);
-    }, vendorName+' の発注リスト');
-  } else {
-    openIngredientPicker(function(code){
-      var ing = getIngredients().find(i=>i.code===code);
-      if (ing && !orderTmpLines.find(l=>l.code===code)) orderTmpLines.push({code, name:ing.name, unit:ing.unit, price:ing.price, qty:1});
-      renderOrderModalBody(storeId, vendorName);
-    }, vendorName);
-  }
-}
-/* 指定リストから選ぶ簡易ピッカー */
-function openIngredientPickerFromList(ings, onPick, title) {
-  window._listPick = { ings:ings, onPick:onPick, q:'' };
-  openModal(`<div class="modal-title">${title||'品目を選ぶ'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <input class="form-input" id="lp-q" placeholder="検索" oninput="listPickInput(this.value)" autocomplete="off" style="margin-bottom:8px">
-    <div id="lp-list" style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px"></div>`);
-  setTimeout(()=>{var i=document.getElementById('lp-q');if(i)i.focus();},60);
-  renderListPick();
-}
-function listPickInput(v){ window._listPick.q=v; renderListPick(); }
-function renderListPick() {
-  var st = window._listPick; var el=document.getElementById('lp-list'); if(!el) return;
-  var q = (st.q||'').toLowerCase().trim();
-  var list = st.ings.filter(i=> !q || (i.name||'').toLowerCase().includes(q) || String(i.code).includes(q));
-  el.innerHTML = list.length ? list.map(i=>{
-    var cl = CLASSES.find(c=>c.id===catClass(i.cat))||{color:'#888'};
-    return `<div onclick="listPickChoose(${i.code})" style="display:flex;align-items:center;gap:10px;padding:9px 11px;border-bottom:1px solid var(--border);cursor:pointer">
-      <span style="width:8px;height:8px;border-radius:50%;background:${cl.color};flex-shrink:0"></span>
-      <div style="flex:1;min-width:0"><div style="font-size:13px">${i.name}</div><div style="font-size:10px;color:var(--muted)">#${i.code} · ${catName(i.cat)}</div></div>
-      <div style="font-size:12px;font-weight:600;color:var(--accent)">$${ingUnitCost(i).toFixed(3)}/${i.unit}</div></div>`;
-  }).join('') : '<div style="padding:20px;text-align:center;color:var(--muted);font-size:13px">該当なし</div>';
-}
-function listPickChoose(code){ var cb=window._listPick.onPick; closeModalDirect(); if(cb)cb(code); }
-function orderCopyLast(storeId, vendorName) {
-  var last = lastOrderForVendor(storeId, vendorName);
-  if (last) { orderTmpLines = JSON.parse(JSON.stringify(last.lines)); showToast('前回の発注をコピーしました','info'); }
-  renderOrderModalBody(storeId, vendorName);
-}
-function orderLoadTemplate(storeId, vendorName, tplId) {
-  var tpl = getOrderTemplates(storeId).find(t=>t.id===tplId);
-  if (tpl) { orderTmpLines = JSON.parse(JSON.stringify(tpl.lines)); showToast('テンプレート「'+tpl.name+'」を読み込みました','info'); }
-  renderOrderModalBody(storeId, vendorName);
-}
-function openSaveTemplateModal(storeId, vendorName) {
-  var name = prompt('テンプレート名（例: '+ (STORES.find(s=>s.id===storeId)||{}).name +' 平日通常発注）','');
-  if (!name) return;
-  var tpls = getOrderTemplates(storeId);
-  tpls.push({id:'tpl'+Date.now(), name:name.trim(), vendor:vendorName, lines:JSON.parse(JSON.stringify(orderTmpLines))});
-  setOrderTemplates(storeId, tpls);
-  showToast('テンプレート保存: '+name,'success');
-  renderOrderModalBody(storeId, vendorName);
-}
-/* 確認画面 */
-function openOrderConfirm(storeId, vendorName) {
-  window._orderVendor = vendorName;
-  var vendor = getVendors().find(v=>v.name===vendorName)||{};
-  var total = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
-  var rows = orderTmpLines.map(l=>`<tr><td style="font-size:12px">${l.name}</td><td style="text-align:right">${l.qty} ${l.unit}</td><td style="text-align:right;color:var(--muted)">$${l.price.toFixed(3)}</td><td style="text-align:right;font-weight:600">$${(l.price*l.qty).toFixed(2)}</td></tr>`).join('');
-  openModal(`<div class="modal-title">発注内容の確認 <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div class="card" style="margin-bottom:10px"><div style="font-size:13px;font-weight:700">${vendorName}</div>
-      <div style="font-size:11px;color:var(--muted)">発注方法 ${vendorMethod(vendor,storeId)} · 納品 ${vendor.delivery||'—'}</div></div>
-    <table class="inv-table" style="width:100%"><thead><tr><th>品目</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:right">金額</th></tr></thead>
-      <tbody>${rows}</tbody>
-      <tfoot><tr><td colspan="3" style="text-align:right;font-weight:700">合計</td><td style="text-align:right;font-weight:700;color:var(--accent)">$${total.toFixed(2)}</td></tr></tfoot>
-    </table>
-    ${total<vendor.minOrder?`<div class="alert alert-warning" style="margin-top:8px"><i class="ti ti-alert-triangle"></i>最低発注額 $${vendor.minOrder} 未満</div>`:''}
-    <div class="btn-row" style="margin-top:10px">
-      <button class="btn btn-secondary" onclick="renderOrderModalBody('${storeId}','${vendorName}')">戻る</button>
-      <button class="btn btn-primary" onclick="saveOrder('${storeId}')"><i class="ti ti-check"></i> 発注を確定</button>
-    </div>`);
-}
-
-function changeOrderVendor(storeId, vendorName) { orderTmpLines = []; renderOrderModalBody(storeId, vendorName); }
-function addOrderLine(storeId, vendorName) {
-  var code = parseInt(document.getElementById('o-add-ing').value);
-  if (!code) return;
-  var ing = getIngredients().find(i=>i.code===code);
-  if (ing && !orderTmpLines.find(l=>l.code===code)) orderTmpLines.push({code, name:ing.name, unit:ing.unit, price:ing.price, qty:1});
-  renderOrderModalBody(storeId, vendorName);
-}
-function updateOrderQty(idx, val) { orderTmpLines[idx].qty = parseFloat(val)||0; }
-function removeOrderLine(storeId, vendorName, idx) { orderTmpLines.splice(idx,1); renderOrderModalBody(storeId, vendorName); }
-
-function saveOrder(storeId) {
-  if (!orderTmpLines.length) { alert('品目を追加してください'); return; }
-  var vendor = document.getElementById('o-vendor') ? document.getElementById('o-vendor').value : (orderTmpLines._vendor||'');
-  // 確認画面経由ではo-vendorが無い場合があるため、保持していた業者を使う
-  if (!vendor) vendor = window._orderVendor || '';
-  var amount = orderTmpLines.reduce((a,l)=>a+l.price*l.qty,0);
-  var orders = getOrdersRaw(storeId);
-  orders.push({id:'o'+Date.now(), vendor, lines:JSON.parse(JSON.stringify(orderTmpLines)), amount, status:'発注確定', date:todayJP(), deliveryDate:''});
-  saveOrders(storeId, orders);
-  closeModalDirect();
-  showToast('発注を確定しました', 'success');
-  renderPage('order');
-}
-/* CSV出力 */
-function exportOrderCSV(storeId, orderId) {
-  var o = getOrders(storeId).find(x=>x.id===orderId); if(!o) return;
-  var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
-  var rows = [['発注書',''],['店舗',store],['業者',o.vendor],['発注日',o.date],['',''],['品目','数量','単位','単価','金額']];
-  o.lines.forEach(l=> rows.push([l.name, l.qty, l.unit, l.price.toFixed(3), (l.price*l.qty).toFixed(2)]));
-  rows.push(['','','','合計', o.amount.toFixed(2)]);
-  var csv = rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(',')).join('\r\n');
-  var blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8'});
-  var url = URL.createObjectURL(blob);
-  var a = document.createElement('a'); a.href=url; a.download=`発注_${o.vendor}_${o.date.replace(/\//g,'')}.csv`; a.click();
-  URL.revokeObjectURL(url);
-  showToast('CSVを出力しました','success');
-}
-/* PDF（印刷ダイアログ経由）*/
-function exportOrderPrint(storeId, orderId) {
-  var o = getOrders(storeId).find(x=>x.id===orderId); if(!o) return;
-  var vendor = getVendors().find(v=>v.name===o.vendor)||{};
-  var store = (STORES.find(s=>s.id===storeId)||{}).name||storeId;
-  var rows = o.lines.map(l=>`<tr><td>${l.name}</td><td style="text-align:right">${l.qty} ${l.unit}</td><td style="text-align:right">$${l.price.toFixed(3)}</td><td style="text-align:right">$${(l.price*l.qty).toFixed(2)}</td></tr>`).join('');
-  var w = window.open('', '_blank');
-  if (!w) { showToast('ポップアップを許可してください','warning'); return; }
-  w.document.write(`<html><head><meta charset="utf-8"><title>発注書 ${o.vendor}</title>
-    <style>body{font-family:sans-serif;padding:30px;color:#222}h1{font-size:20px;border-bottom:2px solid #f0661f;padding-bottom:8px}
-    table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border:1px solid #ccc;padding:8px;font-size:13px}th{background:#1e2a3a;color:#fff}
-    .meta{font-size:13px;color:#555;line-height:1.8;margin-top:8px}.total{text-align:right;font-size:16px;font-weight:bold;margin-top:12px}</style></head>
-    <body><h1>発注書 / Purchase Order</h1>
-    <div class="meta"><b>店舗:</b> ${store}<br><b>業者:</b> ${o.vendor}<br><b>発注日:</b> ${o.date}<br><b>納品:</b> ${vendor.delivery||'—'}</div>
-    <table><thead><tr><th>品目</th><th style="text-align:right">数量</th><th style="text-align:right">単価</th><th style="text-align:right">金額</th></tr></thead><tbody>${rows}</tbody></table>
-    <div class="total">合計: $${o.amount.toFixed(2)}</div>
-    <script>window.onload=function(){window.print();}<\/script></body></html>`);
-  w.document.close();
-}
+/* v1087: 食材管理の「発注」（発注の作成・送った記録・業者ごとの発注リスト・テンプレート）の画面は廃止した（Moto 10/16 ④）。
+   保存してある発注（orders_<店舗>）・発注リスト（order_lists）・テンプレート（order_templates）は消していない（同期の決まりもそのまま）。
+   業務Bot の「発注依頼」は別の仕組みなので変えていない。 */
 
 /* ============================================================
    ⑩ Labor (コスト + Availability→シフト作成→公開→承認)
@@ -38479,7 +38011,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1086';
+const APP_VERSION = '1087';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -42785,10 +42317,10 @@ function saveExpenseRequest(){
   try{ addApproval({type:'経費', title:(req.project||'経費')+' $'+total.toFixed(2)+(req.participants?'（'+req.participants+'名）':''), from:me, store:storeId, ref:req.id}); }catch(e){}
   closeModalDirect(); showToast('経費申請を送信しました（$'+total.toFixed(2)+'）承認センターで承認','success'); renderPage('expense');
 }
-function approveExpense(id){ var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveExpense(r)){ alert('承認はGM/CEOのみです'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=nowJP(); saveExpenseReqs(arr); showToast(r.employee+' の経費を承認しました（$'+(r.total||0).toFixed(2)+'）','success'); renderPage('expense'); }
+function approveExpense(id){ var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveExpense(r)){ alert('承認はGM/CEOのみです'); return; } r.status='承認'; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; r.approvedAt=nowJP(); apStampRec(r, '経費', r.id); saveExpenseReqs(arr); apDecidedFromPage('経費', r.id, 'approved', {st:apStOf(r), applicant:r.employee, title:(r.project||'経費')+' $'+(r.total||0).toFixed(2), store:r.storeId}); showToast(r.employee+' の経費を承認しました（$'+(r.total||0).toFixed(2)+'）','success'); renderPage('expense'); }   /* v1087: 承認センターも済みにして知らせる */
 function rejectExpense(id){ var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveExpense(r)){ alert('承認はGM/CEOのみです'); return; }
   openInputModal({title:'経費申請の却下', label:'却下理由（任意）', placeholder:'例: 領収書不備 / 対象外の費目', okLabel:'却下する', okClass:'btn-danger'}, function(re){
-    r.status='却下'; r.rejectReason=re||''; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole; saveExpenseReqs(arr); showToast('却下しました','info'); renderPage('expense');
+    r.status='却下'; r.rejectReason=re||''; r.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curRole; apStampRec(r, '経費', r.id); saveExpenseReqs(arr); apDecidedFromPage('経費', r.id, 'rejected', {st:apStOf(r), applicant:r.employee, reason:re||'', title:(r.project||'経費'), store:r.storeId}); showToast('却下しました','info'); renderPage('expense');
   }); }
 function deleteMyExpense(id){
   var me=expenseMyName(); var arr=getExpenseRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
@@ -42796,6 +42328,7 @@ function deleteMyExpense(id){
   if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
   if(!confirm('この経費申請を取り消しますか？')) return;
   r._deleted=true; r._deletedAt=(typeof nowJP==='function'?nowJP():new Date().toISOString()); saveExpenseReqs(arr);
+  apWithdrawByRef('経費', r.id);   /* v1087: 承認センターに「承認待ち」を残さない */
   showToast('申請を取り消しました','info'); renderPage('expense');
 }
 function _expRow(r, withActions){
@@ -42825,12 +42358,15 @@ function renderExpense(){
   var html='<div class="section-header"><div class="section-title">事前経費 承認申請</div>'
     +(canSubmitExpense()?'<button class="btn btn-primary btn-sm" onclick="openExpenseModal()"><i class="ti ti-plus"></i> 申請</button>':'')+'</div>';
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 事前承認必須・原則会社カード。案件/イベントの立替が発生する前にGM/CEOの承認を得るための申請です（G4以上が申請可）。</div>';
+  var isAcct=(curRole==='office'||curRole==='office_crew');   /* v1087: 経理・事務Crew にも承認済みを見せる（UI案52 ①） */
   if(isApprover){
     var pending=all.filter(function(r){ return r.status==='申請中'; });
     html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>承認待ち <span class="tag '+(pending.length?'tag-yellow':'tag-gray')+'">'+pending.length+'</span>'+(pending.length?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="go(\'approval\')"><i class="ti ti-checklist"></i> 承認センターで承認</button>':'')+'</div>';
     html+= pending.length ? pending.map(function(r){return _expRow(r,null);}).join('') : '<div style="font-size:12px;color:var(--muted);padding:4px 0">承認待ちはありません</div>';
     html+='</div>';
-    var approved=all.filter(function(r){ return r.status==='承認'; }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,15);
+  }
+  if(isApprover || isAcct){
+    var approved=all.filter(function(r){ return r.status==='承認'; }).sort(function(a,b){return (b.date||'').localeCompare(a.date||'');}).slice(0,isAcct?40:15);
     if(approved.length){
       var sum=approved.reduce(function(a,r){return a+(r.total||0);},0);
       html+='<div class="card"><div class="card-title"><i class="ti ti-cash" style="color:var(--green)"></i>承認済み（直近）<span class="tag tag-green" style="margin-left:auto">$'+sum.toFixed(2)+'</span></div>'+approved.map(function(r){return _expRow(r,null);}).join('')+'</div>';
@@ -43087,10 +42623,10 @@ function saveMileageRequest(){
   try{ addApproval({type:'ガソリン代', title:(req.purpose||'移動')+' '+req.origin+'→'+req.destination+' '+req.miles+'mi $'+amount.toFixed(2), from:me, store:storeId, ref:req.id}); }catch(e){}
   closeModalDirect(); showToast('ガソリン代を申請しました（$'+amount.toFixed(2)+'）','success'); renderPage('mileage');
 }
-function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=_actorName(); r.approvedAt=nowJP(); saveMileageReqs(arr); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }
+function approveMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; } r.status='承認'; r.approvedBy=_actorName(); r.approvedAt=nowJP(); apStampRec(r, 'ガソリン代', r.id); saveMileageReqs(arr); apDecidedFromPage('ガソリン代', r.id, 'approved', {st:apStOf(r), applicant:r.employee, page:'mileage', title:(r.purpose||'移動')+' $'+(r.amount||0).toFixed(2), store:r.storeId}); showToast(r.employee+' のガソリン代を承認しました（$'+(r.amount||0).toFixed(2)+'）','success'); renderPage('mileage'); }   /* v1087: 承認センターも済みにして知らせる */
 function rejectMileage(id){ var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return; if(!canApproveMileage(r)){ alert('承認権限がありません'); return; }
   openInputModal({title:'ガソリン代申請の却下', label:'却下理由（任意）', placeholder:'例: 距離の根拠不明 / 私用移動', okLabel:'却下する', okClass:'btn-danger'}, function(re){
-    r.status='却下'; r.rejectReason=re||''; r.approvedBy=_actorName(); saveMileageReqs(arr); showToast('却下しました','info'); renderPage('mileage');
+    r.status='却下'; r.rejectReason=re||''; r.approvedBy=_actorName(); apStampRec(r, 'ガソリン代', r.id); saveMileageReqs(arr); apDecidedFromPage('ガソリン代', r.id, 'rejected', {st:apStOf(r), applicant:r.employee, page:'mileage', reason:re||'', title:(r.purpose||'移動'), store:r.storeId}); showToast('却下しました','info'); renderPage('mileage');
   }); }
 function deleteMyMileage(id){
   var me=mileMyName(); var arr=getMileageRequests(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
@@ -43098,6 +42634,7 @@ function deleteMyMileage(id){
   if(r.status!=='申請中'){ alert('承認待ちの申請のみ取消できます'); return; }
   if(!confirm('この申請を取り消しますか？')) return;
   r._deleted=true; r._deletedAt=(typeof nowJP==='function'?nowJP():new Date().toISOString()); saveMileageReqs(arr);
+  apWithdrawByRef('ガソリン代', r.id);   /* v1087 */
   showToast('申請を取り消しました','info'); renderPage('mileage');
 }
 function _mileRow(r, withActions){
@@ -43135,7 +42672,7 @@ function mileageMonthEndClose(mk){
   msg+='\n\nよろしいですか？';
   if(!confirm(msg)) return;
   var now=nowJP(); var by=_actorName();
-  target.forEach(function(r){ r.archived=true; r.archivedMonth=mk; r.archivedAt=now; r.archivedBy=by; });
+  var _st=Date.now(); target.forEach(function(r){ r.archived=true; r.archivedMonth=mk; r.archivedAt=now; r.archivedBy=by; r._stT=Math.max(_st, _rtStT(r)+1); });   /* v1087: 精算確定の時刻（古い写しで戻らない） */
   saveMileageReqs(arr);
   showToast(mk+' を月末処理しました（過去ログへ移動）','success');
   renderPage('mileage');
@@ -47141,8 +46678,9 @@ function approvedLeavesForStore(storeId, fromDate, toDate) {
 function approveVacation(id) {
   var vacs = getVacations(); var v = vacs.find(x=>x.id===id); if(!v) return;
   if (!canApproveVacation(v)) { alert('承認権限がありません'); return; }
-  v.status='承認'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=nowJP();
+  v.status='承認'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=nowJP(); apStampRec(v, '休暇', v.id);
   saveVacations(vacs);
+  apDecidedFromPage('休暇', v.id, 'approved', {st:apStOf(v), applicant:v.employee, page:'vacation', store:v.storeId});   /* v1087 */
   showToast(v.employee+' の休暇を承認しました（シフトに反映）','success');
   renderPage(curPage);
 }
@@ -47150,8 +46688,9 @@ function rejectVacation(id) {
   var vacs = getVacations(); var v = vacs.find(x=>x.id===id); if(!v) return;
   if (!canApproveVacation(v)) { alert('承認権限がありません'); return; }
   openInputModal({title:v.employee+' の休暇申請を却下', label:'却下理由（任意）', placeholder:'例: 同日にシフト希望が集中 / 繁忙期', okLabel:'却下する', okClass:'btn-danger'}, function(reason){
-    v.status='却下'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=nowJP(); v.rejectReason=reason||'';
+    v.status='却下'; v.approvedBy=(ROLE_CONFIG[curRole]||{}).name||curUserName||curRole; v.approvedAt=nowJP(); v.rejectReason=reason||''; apStampRec(v, '休暇', v.id);
     saveVacations(vacs);
+    apDecidedFromPage('休暇', v.id, 'rejected', {st:apStOf(v), applicant:v.employee, page:'vacation', reason:reason||'', store:v.storeId});   /* v1087 */
     showToast(v.employee+' の休暇を却下しました','info');
     renderPage(curPage);
   });
@@ -47243,6 +46782,7 @@ function deleteMyVacation(id){
   /* v687: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外） */
   vacs[idx]._deleted=true; vacs[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
   saveVacations(vacs);
+  apWithdrawByRef('休暇', id);   /* v1087 */
   showToast('申請を取り消しました','info');
   renderPage('vacation');
 }
@@ -47250,8 +46790,11 @@ function cancelApprovedVacation(id) {
   if (!confirm('この承認済み休暇を取り消しますか？（シフトの休み反映が解除されます）')) return;
   var vacs = getVacations(); var v=vacs.find(x=>x.id===id); if(!v) return;
   if (!canApproveVacation(v)) { alert('権限がありません'); return; }
-  v.status='申請中'; delete v.approvedBy; delete v.approvedAt;
+  /* v1087: 取り消しの時刻（古い写しの「承認」で戻らない）。承認センターの案件と同じ時刻にする（取り消したあとの決定だけを決定とみなすため） */
+  var _rt=apReopenTime('休暇', id, _rtNextT(v));
+  v.status='申請中'; delete v.approvedBy; delete v.approvedAt; v._stT=_rt; delete v._stK;
   saveVacations(vacs);
+  apReopenByRef('休暇', id, _rt);   /* v1087: 承認センターの案件も承認待ちに戻す（もう一度承認できるように） */
   showToast('承認を取り消しました','info');
   renderPage(curPage);
 }
@@ -51529,7 +51072,7 @@ function vmgModalRender(){
     L.push([vmgT('これから届く invoice','Invoices from now on'), vmgT('まとめた名前で書いてあっても、この業者として読みます。自動で反映するかは「'+e(keep)+'」の設定のまま（'+(pv.target && pv.target.auto_post ? '自動' : '確認モード')+'）。',
       'Read as this vendor whatever name is printed. Auto-posting follows “'+e(keep)+'” ('+(pv.target && pv.target.auto_post ? 'auto' : 'review mode')+').')]);
   }
-  L.push([vmgT('変えないもの','Not changed'), vmgT('QuickBooks に送ったもの・名前を変えた Drive の原本・締めた月の数字・発注リスト（業者の名前ごとのまま）。','What was sent to QuickBooks, renamed Drive originals, closed months, order lists (per name as before).')]);
+  L.push([vmgT('変えないもの','Not changed'), vmgT('QuickBooks に送ったもの・名前を変えた Drive の原本・締めた月の数字。','What was sent to QuickBooks, renamed Drive originals, closed months.')]);
   h += '<div style="margin-top:10px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:8px 10px"><div style="font-size:12.5px;font-weight:800;margin-bottom:4px">'+vmgT('④ まとめると変わること','④ What changes')+'</div>'
     + L.map(function(x){ return '<div style="display:flex;gap:10px;padding:5px 0;border-top:1px solid var(--border);font-size:12px;flex-wrap:wrap"><div style="min-width:170px;font-weight:700">'+x[0]+'</div><div style="flex:1;min-width:200px">'+x[1]+'</div></div>'; }).join('')
     + '</div>';
@@ -53065,7 +52608,7 @@ var OFFICE_CLOSE_ITEMS=[
   {id:'payStore', label:'給与CSV出力（店舗）', page:'acct_export'},
   {id:'payOffice',label:'給与CSV出力（Office・月給/時給）', tab:'attend'},
   {id:'summary',  label:'月次サマリー（KPI）確認', page:'monthly'},
-  {id:'order',    label:'発注・在庫の締め', page:'order'},   /* v1084: 備品発注は廃止。発注へ */
+  {id:'order',    label:'在庫の締め', page:'inventory'},   /* v1084: 備品発注は廃止 / v1087: 発注も廃止（12A）。id はそのまま（済みの記録を残す）。棚卸しを開けない役職（事務Crew）には矢印を出さない */
   {id:'tax',      label:'DOH・税務 対応事項の確認'}
 ];
 var officeCloseMonth=(function(){ var d=new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); })();
@@ -53092,7 +52635,7 @@ function renderOfficeCloseCard(){
     h+='<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">'
       +'<div onclick="toggleOfficeClose(\''+ym+'\',\''+it.id+'\')" style="cursor:pointer;width:22px;height:22px;border-radius:6px;border:1.5px solid '+(on?'var(--green)':'var(--border)')+';background:'+(on?'var(--green)':'transparent')+';display:flex;align-items:center;justify-content:center;flex-shrink:0">'+(on?'<i class="ti ti-check" style="color:#fff;font-size:14px"></i>':'')+'</div>'
       +'<div style="flex:1;font-size:13px;'+(on?'color:var(--muted);text-decoration:line-through':'')+'">'+escapeHtml(it.label)+'</div>'
-      +(it.fn?'<button class="btn btn-secondary btn-sm" onclick="'+it.fn+'" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':it.page?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
+      +(it.fn?'<button class="btn btn-secondary btn-sm" onclick="'+it.fn+'" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.page && !(it.id==='order' && typeof navPageAllowed==='function' && !navPageAllowed(it.page)))?'<button class="btn btn-secondary btn-sm" onclick="go(\''+it.page+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':(it.tab?'<button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\''+it.tab+'\')" style="padding:3px 8px;font-size:11px"><i class="ti ti-arrow-right"></i></button>':''))
       +'</div>';
   });
   h+='</div>';
@@ -67830,7 +67373,7 @@ function submitLssApply(name, kind) {
   /* v684: 配属店を渡す。store が無いと _approvalStore() が OFFICE 扱いになり、
      一次承認(配属店の上位Grade)が誰も満たせず実質GM単独承認に潰れていた。 */
   var _apE=(typeof getEmployees==='function')?getEmployees().find(function(x){return x.name===name;}):null;
-  addApproval({title:`${name} ${kind==='promo'?'昇格':'Tip Rate'}申請（${_csc?'スコア基準 達成':'Leadership '+sum.totalPct+'%'}）`, type:'Leadership', from:name, store:(_apE&&_apE.store)?_apE.store:''});
+  addApproval({title:`${name} ${kind==='promo'?'昇格':'Tip Rate'}申請（${_csc?'スコア基準 達成':'Leadership '+sum.totalPct+'%'}）`, type:'Leadership', from:name, store:(_apE&&_apE.store)?_apE.store:'', ref:_rq.id});   /* v1087: 申請と結ぶ（画面で決めたら承認センターも済みに） */
   closeModalDirect();
   showToast('申請しました（承認待ち）','success');
   renderPage('leadership');
@@ -67858,6 +67401,11 @@ function approveLssRequest(id, status) {
   }
   }catch(err){ if(!_gtx) throw err; _gtx.err=err; }
   if(_gtx && !ghTxnEnd(_gtx)){ showToast(ghTxnFailMsg(_gtx, '承認・役職・グレード履歴'),'danger'); renderPage(curPage); return; }   /* v1058 */
+  /* v1087: 承認センターの案件も済みにして、申請した人・経理と事務Crew に知らせる（前の申請は ref が無いので名前と種類で探す） */
+  try{ var _lkw=(r.kind==='promo')?'昇格':'Tip Rate';
+    apDecidedFromPage('Leadership', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'leadership',
+      title:(r.name+' '+_lkw+'申請'), match:function(a){ return !a.ref && a.from===r.name && String(a.title||'').indexOf(_lkw)>=0; }}); }catch(e){}
+  try{ if(status==='承認') apNotifyAcctApplied((r.kind==='promo')?'昇格':'Tip Rate', r.name, (r.kind==='promo'?(r.wantTitle||''):'')); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
   showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
   renderPage(curPage);
 }
@@ -67889,24 +67437,310 @@ function addApproval(obj) {
   try{
     var _sid=null;
     if(rec.store && rec.store!=='---'){ var _s=STORES.find(function(x){return x.id===rec.store || x.name===rec.store;}); if(_s) _sid=_s.id; }
-    var _n={ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:(_apGradeChainTypes(rec.type)?['sl','am','gm','sm']:approversForType(rec.type)), page:'approval', refId:rec.id };
+    var _n={ type:'approval', title:'承認待ち：'+(rec.type||'申請'), text:(rec.title||'').slice(0,140), toRoles:(_apGradeChainTypes(rec.type)?['sl','am','gm','sm']:apWithOfficeCrew(approversForType(rec.type))), page:'approval', refId:rec.id };
     if(_sid) _n.toStore=_sid; // 店舗が特定できれば、その店舗の上長＋HQ承認者に絞る
     if(_apGradeChainTypes(rec.type)) _n.ack=true;
     addNotif(_n);
   }catch(e){}
 }
 /* type+refで承認待ちを解決（予算承認フロー連携用） */
-function resolveApprovalByRef(type, ref, status, ym) {
+function resolveApprovalByRef(type, ref, status, ym, reason, via, st) {
   var approvals = ls('approvals', []);
   /* v734: ym を指定した場合はその月の依頼だけを消化する。
      指定しないと、8月を承認したときに9月の依頼まで消えてしまう。
      月を持たない古い依頼は、月指定があっても一緒に消化する（積み残さないため）。 */
-  approvals.filter(function(a){
-    if(!(a && a.type===type && a.ref===ref && a.status==='pending')) return false;
+  var hit = approvals.filter(function(a){
+    if(!(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status==='pending')) return false;
     if(!ym) return true;
     return !a.ym || a.ym===ym;
-  }).forEach(function(a){ a.status=status; a._mut=Date.now(); });
-  lsSet('approvals', approvals);
+  });
+  hit.forEach(function(a){ _apMarkDecided(a, status, reason, via, st); });   /* v1087: 決めた人・時刻も残す（申請の画面で決めたときは記録と同じ印） */
+  if(hit.length) lsSet('approvals', approvals);
+  return hit;
+}
+/* ============================================================
+   v1087（UI案52 ①・Moto 10/16「全部A」）承認の通知と経理の確認
+   ------------------------------------------------------------
+   ・どの画面で承認・却下しても、承認センターの案件も済みにして、申請した人に「〇〇 が承認されました」を出す（却下も同じ）。
+   ・最後の承認で、経理と事務Crew に「承認済み：〇〇（処理してください）」を出す（お金・給与に関わる種類だけ）。
+   ・承認センターに「経理の確認」タブ。「確認した」で、確認した人と日時を残す（経理・事務Crew のどちらでも同じ）。
+   ・事務Crew にも承認待ちの通知（経理が承認者の種類）・本部の申請を見せる。
+   ・押す前にクラウドの最新を読み直す（ほかの端末でもう決まっていたら知らせて何もしない）。
+   ============================================================ */
+/* 経理が処理する種類（お金・給与に関わる）。予算・月間行動計画・シフト変更は入れない。 */
+var AP_ACCT_TYPES = ['経費','建替経費','ガソリン代','休暇','スキル','採用','退職'];
+/* Tip Rate・Leadership（昇格）は、承認センターで承認しても申請には反映しない（前から。画面で承認したときに反映）。
+   なので経理・事務Crew への「承認済み（処理してください）」は、画面で承認して反映したときに出す（apNotifyAcctApplied）。 */
+function apNotifyAcctApplied(kind, who, text){
+  /* 開く画面は付けない（Tip Rate・Leadership の画面は経理・事務Crew のメニューに無い） */
+  try{ addNotif({ type:'approved', title:'承認済み：'+kind+'（処理してください）', text:[who, text].filter(Boolean).join(' ・ ').slice(0,140),
+    toRoles:['office','office_crew'] }); }catch(e){}
+}
+function apNeedsAcct(type){ return AP_ACCT_TYPES.indexOf(type)>=0; }
+/* 経理の確認を押せる人／タブを見られる人 */
+function apCanAcct(){ return curRole==='office' || curRole==='office_crew'; }
+function apSeesAcct(){ return ['office','office_crew','gm','ceo'].indexOf(curRole)>=0; }
+/* 承認待ちの通知の宛先に経理がいれば、事務Crew にも出す（3A） */
+function apWithOfficeCrew(roles){
+  var r=(roles||[]).slice();
+  if(r.indexOf('office')>=0 && r.indexOf('office_crew')<0) r.push('office_crew');
+  return r;
+}
+/* v1087: 決定の印 {t:時刻, k:同じ時刻どうしの順}。時刻は floor より必ず後（時計が遅れた端末でも）。時計が遅れていれば
+   0〜996 ミリ秒を足して同じ時刻になりにくくする。同じ時刻になっても、k の大きいほうが案件にも申請にも残る */
+function apDecStamp(floor){
+  var t=Date.now(), f=Number(floor)||0;
+  if(t<f) t=f+Math.floor(Math.random()*997);
+  return { t:t, k:t.toString(36)+'.'+Math.random().toString(36).slice(2,12)+Math.random().toString(36).slice(2,8) };
+}
+/* 記録の印（_stT か建て替え経費の _mut と _stK）。申請の画面で決めたとき、承認センターの案件にも同じ印を書くため */
+function apStOf(r, field){ return { t:Number(r && r[field||'_stT'])||0, k:_rtStK(r) }; }
+/* 申請の画面で決めるとき：記録に決定の印を書く（記録の前の時刻と、この端末が知っている承認センターの案件より後） */
+function apStampRec(r, type, ref, field){
+  field=field||'_stT';
+  var st=apDecStamp(Math.max((Number(r && r[field])||0)+1, apRecFloor(type, ref)));
+  r[field]=st.t; r._stK=st.k; return st;
+}
+function _apMarkDecided(a, status, reason, via, st){
+  var fl=Math.max(_apStT(a), _apMut(a))+1;   /* 前の状態（取り消し・承認待ちに戻した時刻）より必ず後（時計が遅れた端末でも） */
+  /* 申請の記録と同じ印（st）。案件のほうが新しければ（あとで読み直した）新しい印 */
+  if(!st || !(Number(st.t)>=fl) || !st.k) st=apDecStamp(Math.max(fl, st ? Number(st.t)||0 : 0));
+  var now=Number(st.t);
+  a.status=status; a._stT=now; a._mut=now; a._stK=String(st.k);
+  a.decidedAt=new Date().toISOString(); a.decidedBy=_actorName();   /* 見せる時刻はこの端末の時計 */
+  delete a.acct;   /* 前の決定の経理の確認は使わない */
+  if(via) a.via=via; else delete a.via;   /* via:'page' = 申請の画面で決めた */
+  if(status==='rejected' && reason) a.rejectReason=reason;
+}
+function _apStoreLabel(a){ try{ return _approvalStore(a).name; }catch(e){ return ''; } }
+/* 決まったことを知らせる。opt = {applicant, page, noApplicant, noAcct, reason} */
+function apNotifyDecision(a, status, opt){
+  opt=opt||{};
+  var ok = status==='approved';
+  var who = (a && a.decidedBy) || _actorName();
+  var reason = opt.reason || (a && a.rejectReason) || '';
+  if(!opt.noApplicant){
+    var to = opt.applicant || (a && a.from) || '';
+    if(to){ try{ addNotif({ type:(ok?'approved':'reject'), title:(a.type||'申請')+(ok?' が承認されました':' が却下されました'),
+      text:((a.title||'')+' ・ '+who+((!ok&&reason)?('　'+t('理由','Reason')+'：'+reason):'')).slice(0,140),
+      toUser:to, page:(opt.page || (a.type==='予算'?'budget':'mypage')), refId:(a.id||opt.refId||'') }); }catch(e){} }
+  }
+  if(ok && !opt.noAcct && apNeedsAcct(a.type)){
+    try{ addNotif({ type:'approved', title:'承認済み：'+(a.type||'申請')+'（処理してください）',
+      text:[_apStoreLabel(a), (a.from||opt.applicant||''), (a.title||'')].filter(Boolean).join(' ・ ').slice(0,140),
+      toRoles:['office','office_crew'], page:'approval', apTab:'acct', refId:(a.id||'') }); }catch(e){}
+  }
+}
+/* 承認センター以外の画面で決めたとき。ref のある案件はそれで、無い古い案件は opt.match で探す（いちばん新しい 1 件）。
+   案件が無くても、申請した人と経理には知らせる。戻り値は済みにした案件。 */
+function _apResolveLocal(type, ref, status, opt){
+  var hit=[];
+  try{ if(ref!=null) hit=resolveApprovalByRef(type, ref, status, opt.ym, opt.reason, 'page', opt.st); }catch(e){}
+  if(!hit.length && typeof opt.match==='function'){
+    var approvals=ls('approvals', []);
+    var c=approvals.filter(function(a){ return a && a.type===type && a.status==='pending' && opt.match(a); });
+    if(c.length){ c.sort(function(p,q){ return String(q.id||'').localeCompare(String(p.id||'')); });
+      _apMarkDecided(c[0], status, opt.reason, 'page', opt.st); lsSet('approvals', approvals); hit=[c[0]]; }
+  }
+  return hit;
+}
+/* 同じ申請（ref）の案件のうち、いちばん新しいもの（版 → 決めた時刻 → id の順） */
+function _apNewestForRef(list, type, ref){
+  if(ref==null) return null;
+  var c=(list||[]).filter(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref); });
+  c.sort(function(p,q){ return (_apGen(q)-_apGen(p)) || (_apStT(q)-_apStT(p)) || String(q.id||'').localeCompare(String(p.id||'')); });
+  return c[0]||null;
+}
+/* 承認センターで違う決定（却下など）になっていたら、申請の画面の決定に合わせる（画面の決定が反映されたもの）。
+   クラウドを読み直したあとだけ・承認待ちの案件が無いときだけ・いちばん新しい案件だけ。
+   月間行動計画・予算は同じ ref（月・店舗）で出し直すので合わせない。 */
+function _apFollowPage(type, ref, status, opt){
+  if(ref==null || type==='月間行動計画' || type==='予算') return [];
+  var ap2=ls('approvals', []);
+  if(ap2.some(function(a){ return a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status==='pending'; })) return [];
+  var a=_apNewestForRef(ap2, type, ref);
+  if(!a || a.status==='withdrawn' || a.status===status) return [];
+  _apMarkDecided(a, status, opt.reason, 'page', opt.st); lsSet('approvals', ap2);
+  return [a];
+}
+/* v1087: 申請の画面で決めたあと、承認センターの読み直しを待つあいだに、申請の記録がほかの端末の決定に変わったか（印が違う）。
+   そのときはこの画面の決定ではなく、記録に合わせる（案件だけを画面の決定にして新しい印を付けると、どちらの順で合流しても
+   案件と申請が食い違う）。合わせたら true */
+function _apRecSuperseded(type, ref, opt){
+  var rk=AP_REC_KEYS[type];
+  if(!rk || ref==null || !opt.st || !opt.st.k) return false;
+  var r=null; try{ r=(ls(rk,[])||[]).find(function(x){ return x && String(x.id)===String(ref); })||null; }catch(_e){}
+  if(!r || _rtStK(r)===String(opt.st.k)) return false;
+  var rs=r._deleted ? '' : (r.status==='承認' ? 'approved' : r.status==='却下' ? 'rejected' : '');
+  if(rs){
+    var ap2=ls('approvals', []), a=_apNewestForRef(ap2, type, ref);
+    /* 取り消した（版が進んだ）案件より前の決定は、取り消す前のもの（_apRecordState と同じ）：案件は合わせない */
+    if(a && _apGen(a)>0 && _apRecTime(type, r)<=_apStT(a)) a=null;
+    if(a && a.status!=='withdrawn' && a.status!==rs){
+      var rst={ t:_apRecTime(type, r), k:_rtStK(r) };
+      _apMarkDecided(a, rs, r.rejectReason||'', 'page', rst); lsSet('approvals', ap2);
+      _apSyncRecStamp(type, ref, [a], rst);
+    }
+  }
+  return true;
+}
+function _apNotifyHits(hit, type, status, opt){
+  if(opt.silent) return;
+  if(hit.length) hit.forEach(function(a){ apNotifyDecision(a, status, opt); });
+  else apNotifyDecision({ type:type, from:(opt.applicant||''), title:(opt.title||''), store:(opt.store||''), id:'' }, status, opt);
+}
+/* 同じ申請のいちばん新しい案件が承認センターで同じ決定になっているか（そのときは承認センターで知らせ済みなので、もう一度は知らせない） */
+function _apDecidedElsewhere(type, ref, status){
+  if(ref==null) return false;
+  try{ var a=_apNewestForRef(ls('approvals',[])||[], type, ref); return !!(a && a.status===status); }catch(e){ return false; }
+}
+/* 手元に案件が無ければ（ほかの端末で出された申請）、クラウドを読み直してからもう一度探す */
+/* v1087: 申請の画面で決めたとき、読み直した案件のほうが新しくて案件に新しい印を付けたなら、申請の記録にも同じ印を書く
+   （案件と記録の印が違うと、同じ時刻にほかの端末で決めたとき、案件と申請で残る決定が食い違うことがある） */
+var AP_REC_FIELD={ '建替経費':'_mut' };
+function _apSyncRecStamp(type, ref, hit, st){
+  try{
+    var key=AP_REC_KEYS[type]; if(!key || ref==null || !st || !st.k || !hit || !hit.length) return;
+    var a=null; hit.forEach(function(x){ if(x && x._stK && (!a || _apStT(x)>_apStT(a))) a=x; });
+    if(!a || String(a._stK)===String(st.k)) return;
+    var field=AP_REC_FIELD[type]||'_stT', raw=ls(key,[])||[];
+    var r=raw.find(function(x){ return x && String(x.id)===String(ref); });
+    if(!r || String(r._stK||'')!==String(st.k)) return;   /* 記録がそのあと変わっていれば触らない */
+    var t=_apStT(a); if(!(t>(Number(r[field])||0))) return;
+    r[field]=t; r._stK=String(a._stK); lsSet(key, raw);
+  }catch(e){}
+}
+function apDecidedFromPage(type, ref, status, opt){
+  opt=opt||{};
+  var hit=_apResolveLocal(type, ref, status, opt);
+  if(hit.length){ _apSyncRecStamp(type, ref, hit, opt.st); _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
+  var fin=function(h2){
+    _apSyncRecStamp(type, ref, h2, opt.st);
+    if(opt._superseded){   /* ほかの端末の決定が申請に残った：この画面の決定は知らせない */
+      try{ showToast(t('この申請は、ほかの端末で先に決まっていました。承認センターと申請はそちらに合わせました','This request was decided on another device first. The approval center and the request follow that decision.'), 'warn'); }catch(_e){}
+      return h2;
+    }
+    if(h2.length || !_apDecidedElsewhere(type, ref, status)) _apNotifyHits(h2, type, status, opt); return h2; };
+  return apPullLatest().then(function(ok){
+    if(!ok) return fin([]);
+    if(_apRecSuperseded(type, ref, opt)){ opt._superseded=true; return fin([]); }
+    var h2=_apResolveLocal(type, ref, status, opt);
+    if(!h2.length) h2=_apFollowPage(type, ref, status, opt);
+    return fin(h2);
+  }, function(){ return fin([]); });
+}
+/* 申請した人が取り下げたとき（承認センターに「承認待ち」を残さない） */
+function apWithdrawByRef(type, ref){
+  try{
+    var approvals=ls('approvals', []); var n=0;
+    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status==='pending'){ _apMarkDecided(a, 'withdrawn'); n++; } });
+    if(n) lsSet('approvals', approvals);
+    return n;
+  }catch(e){ return 0; }
+}
+/* 申請の画面で承認を取り消したとき（承認センターの案件も承認待ちに戻す。版を進めて前の承認は使わない） */
+function apReopenByRef(type, ref, t){
+  try{
+    var approvals=ls('approvals', []); var n=0;
+    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='pending' && a.status!=='withdrawn'){ _apReopenRec(a, t); n++; } });
+    if(n) lsSet('approvals', approvals);
+    return n;
+  }catch(e){ return 0; }
+}
+/* 申請の画面で決めるとき、記録の状態の時刻の下限：この端末が知っている承認センターの案件の時刻より後
+   （ほかの端末で承認を取り消した時刻より前の時刻で書くと、合流で取り消しのほうが残る） */
+function apRecFloor(type, ref){
+  var m=0;
+  try{ (ls('approvals', [])||[]).forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref)) m=Math.max(m, _apStT(a)+1, _apMut(a)+1); }); }catch(e){}
+  return m;
+}
+/* 取り消す時刻：申請の記録と承認センターの案件で同じ値（どちらの前の時刻よりも後） */
+function apReopenTime(type, ref, min){
+  var m=Math.max(Date.now(), Number(min)||0);
+  try{ (ls('approvals', [])||[]).forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref)) m=Math.max(m, _apStT(a)+1, _apMut(a)+1); }); }catch(e){}
+  return m;
+}
+function _apReopenRec(a, t){
+  var now=Number(t) || Math.max(Date.now(), _apStT(a)+1);
+  a._gen=_apGen(a)+1; a.status='pending'; a.signoffs=[]; a.rejectReason=''; a._stT=now; a._mut=now;
+  delete a._soX; delete a.acct; delete a.decidedAt; delete a.decidedBy; delete a._stK;
+}
+/* 承認センターの一覧をクラウドから読み直す（押す前・開いたとき）。同期 OFF・オフラインは読まない（false）。 */
+var _apPullAt=0, _apPullTry=0, _apPulling=null, AP_PULL_TIMEOUT_MS=8000;
+function apPullLatest(){
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return Promise.resolve(false);
+  if(typeof pullOpKey!=='function') return Promise.resolve(false);
+  if(_apPulling) return _apPulling;
+  _apPullTry=Date.now();
+  _apPulling=(async function(){
+    var ok=false;
+    /* 8 秒で返らなければ読めなかったものとして進む（押したまま止まらないように） */
+    try{ ok=!!(await Promise.race([pullOpKey('approvals'), new Promise(function(r){ setTimeout(function(){ r(false); }, AP_PULL_TIMEOUT_MS); })])); }catch(e){ ok=false; }
+    if(ok) _apPullAt=Date.now();
+    _apPulling=null;
+    return ok;
+  })();
+  return _apPulling;
+}
+function _apOnApprovalPage(){ return typeof curPage!=='undefined' && (curPage==='approval' || (curPage==='tasks' && typeof workTab!=='undefined' && workTab==='approval')); }
+/* 承認センターを開いているときだけ描き直す（読み直しを待つあいだにほかの画面へ移ったら、その画面を上書きしない） */
+function _apRerender(){ try{ if(!_apOnApprovalPage()) return; if(curPage==='tasks') renderPage('tasks'); else renderPage('approval'); }catch(e){} }
+/* 開いたとき、1 分より前に読んだきりなら裏で読み直し、変わっていれば描き直す */
+function apAutoPull(){
+  if(Date.now()-Math.max(_apPullAt,_apPullTry) < 60000) return;
+  var before='';
+  try{ before=JSON.stringify(ls('approvals',[])); }catch(e){}
+  apPullLatest().then(function(ok){
+    if(!ok) return;
+    var now=''; try{ now=JSON.stringify(ls('approvals',[])); }catch(e){}
+    if(now!==before && _apOnApprovalPage()) _apRerender();
+  });
+}
+function apRefreshNow(){
+  apPullLatest().then(function(ok){
+    showToast(ok?t('最新にしました','Updated'):t('クラウドを読めませんでした（通信・同期 OFF）','Could not read the cloud (network or sync off)'), ok?'success':'warning');
+    if(_apOnApprovalPage()) _apRerender();
+  });
+}
+/* 経理の確認：確認した人と日時を残す（もう一度押すと取り消し） */
+async function apAcctConfirm(id, undo){
+  /* 通知の中から押したときは、開いている画面をそのままにする（承認センターか通知の画面だけ描き直す） */
+  var redraw=function(){ if(curPage==='notifications') renderPage('notifications'); else if(_apOnApprovalPage()) _apRerender(); };
+  if(!apCanAcct()){ alert(t('経理の確認は経理・事務Crew が押します','Only accounting / office crew can confirm')); return; }
+  await apPullLatest();
+  var approvals=ls('approvals', []); var a=approvals.find(function(x){ return x && x.id===id; });
+  if(!a){ showToast(t('この申請は見つかりません','Request not found'),'warning'); redraw(); return; }
+  if(a.status!=='approved'){ alert(t('この申請は今は承認済みではありません（ほかの端末で承認が取り消されました）','This request is no longer approved (undone on another device)')); redraw(); return; }
+  /* 承認した端末の時計より遅れていても、決めた時刻と前の確認・取り消しより後にする（同じ時刻だと合流で前のほうが残る） */
+  var now=Math.max(Date.now(), _apStT(a)+1, (a.acct ? (Number(a.acct.t)||0)+1 : 0));
+  if(undo){
+    if(!_apAcctOn(a)){ redraw(); return; }
+    if(!confirm(t('経理の確認を取り消して「経理の確認」に戻しますか？','Undo the accounting confirmation?'))) return;
+    a.acct={ by:_actorName(), at:nowJP(), t:now, off:true };
+  } else {
+    if(_apAcctOn(a)){ showToast(t('もう確認されています（','Already confirmed (')+(a.acct.by||'')+'）','info'); redraw(); return; }
+    a.acct={ by:_actorName(), at:nowJP(), t:now };
+  }
+  a._mut=now; lsSet('approvals', approvals);
+  try{ var ns=getNotifs(), ch=false; ns.forEach(function(n){ if(n && n.apTab==='acct' && n.refId===id && curUserName && (n.readBy||[]).indexOf(curUserName)<0){ (n.readBy=n.readBy||[]).push(curUserName); ch=true; } }); if(ch) lsSet('notifications', ns); }catch(e){}
+  showToast(undo?t('経理の確認を取り消しました','Confirmation undone'):t('確認しました','Confirmed'), undo?'info':'success');
+  try{ renderNotifBell(); }catch(e){}
+  try{ var p=document.getElementById('notif-panel'); if(p&&p.style.display==='block') renderNotifPanel(); }catch(e){}
+  redraw();
+}
+/* 経理の確認がまだの承認済み（v1087 から決まったもの・お金・給与に関わる種類） */
+function apAcctPending(list){
+  return (list||[]).filter(function(a){ return a && a.status==='approved' && a.decidedAt && apNeedsAcct(a.type) && !_apAcctOn(a); });
+}
+/* 通知の中の「確認した」（経理と事務Crew 宛ての「承認済み：〇〇（処理してください）」） */
+function _apAcctNotifHtml(n){
+  try{
+    var a=(ls('approvals',[])||[]).find(function(x){ return x && x.id===n.refId; });
+    if(!a) return '';
+    if(_apAcctOn(a)) return '<div style="margin-top:6px"><span class="tag tag-green" style="font-size:10px"><i class="ti ti-check"></i> '+t('経理確認','Accounting')+'：'+escapeHtml(a.acct.by||'')+' '+escapeHtml(a.acct.at||'')+'</span></div>';
+    if(a.status!=='approved' || !apCanAcct()) return '';
+    return '<div onclick="event.stopPropagation()" style="margin-top:6px"><button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:11px" onclick="event.stopPropagation();apAcctConfirm(\''+escapeHtml(a.id)+'\')"><i class="ti ti-check"></i> '+t('確認した','Confirmed')+'</button></div>';
+  }catch(e){ return ''; }
 }
 
 /* ===== 承認センター（店舗別・複数承認者の可視化） ===== */
@@ -67973,49 +67807,84 @@ function _approvalChainHtml(a){
   var all=_approvalAllDone(a);
   return '<div style="display:flex;gap:4px;flex-wrap:wrap;margin:6px 0">'+chips+(all?' <span class="tag tag-green" style="font-size:10px;font-weight:700"><i class="ti ti-circle-check"></i> 全承認':'')+'</div>';
 }
-function signoffApproval(id){
+/* v1087: 押す前にクラウドの最新を読み直し、もう決まっていれば知らせて何もしない。戻り値は今の案件（無ければ null） */
+var _apBusy={};
+async function _apFreshPending(id){
+  await apPullLatest();
+  var a=(ls('approvals', [])||[]).find(function(x){ return x && x.id===id; });
+  if(!a){ showToast(t('この申請は見つかりません','Request not found'),'warning'); _apRerender(); return null; }
+  if(a.status!=='pending'){
+    var w=a.status==='approved'?t('承認','approved'):a.status==='withdrawn'?t('取り下げ','withdrawn'):t('却下','rejected');
+    alert(t('この申請は、ほかの端末でもう'+w+'されています'+(a.decidedBy?('（'+a.decidedBy+'）'):'')+'。','This request was already '+w+' on another device.'));
+    _apRerender(); return null;
+  }
+  return a;
+}
+async function signoffApproval(id){
+  if(_apBusy[id]) return; _apBusy[id]=1;
+  try{
+  if(!(await _apFreshPending(id))) return;
   var approvals = ls('approvals', []);
   var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
   var roles=_approvalMyRoles(a);
-  if(!roles.length){ alert('あなたが承認できる役職枠がありません（他の承認者待ち、または権限対象外）'); return; }
+  if(!roles.length){ alert('あなたが承認できる役職枠がありません（他の承認者待ち、または権限対象外）'); _apRerender(); return; }
   a.signoffs = a.signoffs||[];
-  var nm=_actorName();
-  roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:nowJP()}); });
-  a._mut=Date.now(); lsSet('approvals', approvals);
+  var nm=_actorName(), now=Date.now();
+  roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:nowJP(), _t:now}); });
+  a._mut=now; lsSet('approvals', approvals);
   if(_approvalAllDone(a)){
-    approveItem(id,'approved'); /* 全承認(直上＋GM等)で確定。approveItem内で反映＋通知 */
+    await approveItem(id,'approved', null, {fresh:true}); /* 全承認(直上＋GM等)で確定。approveItem内で反映＋通知 */
   } else {
     var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a);
     var remain=req.filter(function(r){return !m[r];});
     showToast('承認しました（残り：'+remain.map(_approvalRoleLabel).join('・')+'）','success');
-    renderPage('approval');
+    _apRerender();
   }
+  } finally { delete _apBusy[id]; }
 }
-function overrideApproveAll(id){
+async function overrideApproveAll(id){
   if(!(curRole==='gm'||curRole==='ceo')){ alert('代理での全承認はGM/CEOのみです'); return; }
   if(!confirm('残りの承認者の代わりに、この案件を全承認として確定しますか？')) return;
+  if(_apBusy[id]) return; _apBusy[id]=1;
+  try{
+  if(!(await _apFreshPending(id))) return;
   var approvals = ls('approvals', []);
   var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
   a.signoffs = a.signoffs||[];
-  var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole;
-  approvalRequiredRoles(a).forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm+'(代理)', at:nowJP()}); });
-  lsSet('approvals', approvals);
-  approveItem(id,'approved');
+  var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole, now=Date.now();
+  approvalRequiredRoles(a).forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm+'(代理)', at:nowJP(), _t:now}); });
+  a._mut=now; lsSet('approvals', approvals);
+  await approveItem(id,'approved', null, {fresh:true});
+  } finally { delete _apBusy[id]; }
+}
+/* v1087: 承認がそろっているのに承認待ちのもの（2 台でほぼ同時に押したとき）を確定する */
+async function apFinalize(id){
+  if(_apBusy[id]) return; _apBusy[id]=1;
+  try{
+    var a=await _apFreshPending(id); if(!a) return;
+    if(!_approvalAllDone(a)){ showToast(t('まだ承認がそろっていません','Not all approvals are in yet'),'info'); _apRerender(); return; }
+    if(!(curRole==='gm'||curRole==='ceo'||(a.signoffs||[]).some(function(s){return s && s.name===_actorName();}))){ alert(t('確定できるのは、この申請を承認した人と GM・CEO です','Only an approver of this request or GM/CEO can finalize')); return; }
+    await approveItem(id,'approved', null, {fresh:true});
+  } finally { delete _apBusy[id]; }
 }
 function rejectApprovalItem(id){
   openInputModal({title:t('申請の却下','Reject request'), label:t('却下理由（申請者に通知されます）','Rejection reason (sent to applicant)'), required:true, placeholder:t('例: 現時点では基準に達していません。練習してから再申請してください。','e.g. Criteria not yet met; please practice and re-apply.'), okLabel:t('却下する','Reject'), okClass:'btn-danger'}, function(reason){
     approveItem(id,'rejected', reason);
   });
 }
-function cancelMySignoff(id){
+async function cancelMySignoff(id){
+  if(!(await _apFreshPending(id))) return;
   var approvals=ls('approvals',[]); var a=approvals.find(function(x){return x.id===id;}); if(!a) return;
   if(a.status!=='pending'){ alert(t('確定済みです。取り消しは履歴の「承認を取り消す」から行ってください。','Already finalized. Use "Undo approval" in the history section.')); return; }
   var nm=_actorName();
   if(!(a.signoffs||[]).some(function(s){return s.name===nm;})){ alert(t('あなたの承認はありません。','You have not signed off on this.')); return; }
   if(!confirm(t('自分の承認を取り消しますか？','Cancel your approval?'))) return;
+  /* v1087: 取り消した役割と時刻を残す（ほかの端末の写しと合わせても戻らない） */
+  var now=Date.now(); a._soX=Object.assign({}, a._soX||{});
+  (a.signoffs||[]).forEach(function(s){ if(s && s.name===nm) a._soX[s.role]=now; });
   a.signoffs=(a.signoffs||[]).filter(function(s){return s.name!==nm;});
-  a._mut=Date.now(); lsSet('approvals', approvals);
-  showToast(t('自分の承認を取り消しました','Your approval was canceled'),'info'); renderPage('approval');
+  a._mut=now; lsSet('approvals', approvals);
+  showToast(t('自分の承認を取り消しました','Your approval was canceled'),'info'); _apRerender();
 }
 /* v1085: 退職の承認の取り消し。サーバーの退職記録を読み直して、完了・取消なら取り消さない。退職にした人は、サーバー
    （メールの認証）で在籍に戻してから、記録を「申請中」に戻す（在籍に戻せなければ何も変えない） */
@@ -68055,10 +67924,18 @@ async function _reopenOffboardApproval(a, fresh){
 }
 async function reopenApproval(id, fresh){
   if(!(curRole==='gm'||curRole==='ceo')){ alert(t('承認の取り消しはGM/CEOのみ可能です','Only GM/CEO can undo an approval')); return; }
+  if(!fresh) await apPullLatest();   /* v1087: 押す前にクラウドの最新を読み直す */
   var approvals=ls('approvals',[]); var a=approvals.find(function(x){return x.id===id;}); if(!a) return;
+  if(a.status==='pending' || a.status==='withdrawn'){ alert(t('この申請は今は承認待ちです（ほかの端末で取り消されました）。','This request is pending now (undone on another device).')); _apRerender(); return; }
+  /* v1087: Tip Rate・Leadership を申請の画面で決めたものは、ここでは元に戻せない（率・役職を戻す処理が無い）。
+     取り消して承認待ちにすると、もう一度の却下が「画面で承認済み」に合わせられて承認に戻ってしまう */
+  if(a.type==='TipRate' || a.type==='Leadership'){ var _rs1=_apRecordState(a);
+    if(!_rs1 && a.via==='page') _rs1={ state:a.status, label:(a.type==='TipRate'?'Tip Rate':'Leadership') };   /* 申請と結んでいない前の案件：画面で決めた印で */
+    if(_rs1 && (_rs1.state==='approved' || _rs1.state==='rejected')){ alert(t('この申請は「'+_rs1.label+'」の画面で'+(_rs1.state==='approved'?'承認':'却下')+'され、反映済みです。承認センターからは取り消せません。','This request was decided and applied on the '+_rs1.label+' page. It cannot be undone from the approval center.')); return; } }
   if(a.type==='退職' && a.ref){ if(!(await _reopenOffboardApproval(a, fresh))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }   /* v1085 */
   else if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
   var _by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
+  var _rn=Math.max(Date.now(), _apStT(a)+1, _apMut(a)+1);   /* v1087: 申請の記録と案件で同じ取り消しの時刻 */
   try{
     if(a.type==='スキル'){
       var _sreqs=getSkillRequests();
@@ -68074,16 +67951,16 @@ async function reopenApproval(id, fresh){
         _sr.status='申請中'; _sr.reviewer=''; setSkillRequests(_sreqs);
         try{ addSkillHistory(_sr.name,_sid,_sr.position,(_cur.level||0),_back,_by,'承認取消'); }catch(e){}
       }
-    } else if(a.type==='休暇'&&a.ref){ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status='申請中'; _v.approvedBy=''; _v.rejectReason=''; saveVacations(_vs); } }
-    else if(a.type==='ガソリン代'&&a.ref){ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status='申請中'; _m.approvedBy=''; _m.rejectReason=''; saveMileageReqs(_ms); } }
-    else if(a.type==='経費'&&a.ref){ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status='申請中'; _ex.approvedBy=''; _ex.rejectReason=''; saveExpenseReqs(_es); } }
-    else if(a.type==='建替経費'&&a.ref){ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status='申請中'; _rb.approvedBy=''; _rb.rejectReason=''; saveReimbursements(_rbs); } }
+    } else if(a.type==='休暇'&&a.ref){ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _rn=_rtNextT(_v, _rn); _v.status='申請中'; _v.approvedBy=''; _v.rejectReason=''; _v._stT=_rn; delete _v._stK; saveVacations(_vs); } }   /* v1087: 状態を変えた時刻（_stT） */
+    else if(a.type==='ガソリン代'&&a.ref){ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _rn=_rtNextT(_m, _rn); _m.status='申請中'; _m.approvedBy=''; _m.rejectReason=''; _m._stT=_rn; delete _m._stK; saveMileageReqs(_ms); } }
+    else if(a.type==='経費'&&a.ref){ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _rn=_rtNextT(_ex, _rn); _ex.status='申請中'; _ex.approvedBy=''; _ex.rejectReason=''; _ex._stT=_rn; delete _ex._stK; saveExpenseReqs(_es); } }
+    else if(a.type==='建替経費'&&a.ref){ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status='申請中'; _rb.approvedBy=''; _rb.rejectReason=''; delete _rb._stK; _rn=_rtTouchMut(_rb, _rn); saveReimbursements(_rbs); } }   /* v1087: 保存時刻（_mut）を進める */
     else if(a.type==='予算'&&a.ref){ var _buds=getBudgets(); var _b=_buds.find(function(x){return x.storeId===a.ref;}); if(_b){ _b.status='GM承認待ち'; saveBudgets(_buds); } }
     /* v1085: 退職は _reopenOffboardApproval で済ませた（サーバーで在籍に戻し、記録を申請中に） */
   }catch(e){ console.warn('reopenApproval undo', e); }
-  a.status='pending'; a.signoffs=[]; a.rejectReason=''; a._mut=Date.now(); lsSet('approvals', approvals);
+  _apReopenRec(a, _rn); lsSet('approvals', approvals);   /* v1087: 版を進める（前の承認・経理の確認は使わない）。時刻は申請の記録と同じ */
   try{ addNotif({ type:'approval', title:t('承認が取り消されました','Approval undone')+'：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:(a.type==='スキル'?'skill':a.type==='予算'?'budget':'mypage'), refId:a.id }); }catch(e){}
-  showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); renderPage('approval');
+  showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); _apRerender();
 }
 /* ===== 予算レビュー: 考え方（客数×単価 L/D/TO）＋日別一覧を一目で。読み取り専用＝保存に影響なし ===== */
 function openBudgetReview(storeId, submitMode, ymArg){
@@ -68168,18 +68045,36 @@ function openBudgetReview(storeId, submitMode, ymArg){
     +'<div style="max-height:'+(submitMode?'62vh':'72vh')+';overflow-y:auto;padding-right:4px">'+h+'</div>'
     +_foot);
 }
+/* v1087: 承認センターのタブ（承認待ち・経理の確認・履歴） */
+var _apTab='pending';
+function setApTab(tb){ _apTab=tb; _apRerender(); }
+/* ISO の時刻を「10/16 08:40」に */
+function _apShortTime(iso){
+  try{ var d=new Date(iso); if(isNaN(d)) return String(iso||'');
+    return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }catch(e){ return ''; }
+}
+/* 履歴に出す「誰が決めたか」（承認の役割ごと、無ければ決めた人） */
+function _apDeciders(a){
+  var so=(a.signoffs||[]).filter(Boolean).map(function(s){ return s.name; });
+  if(so.length) return so.join(curLang==='en'?', ':'、');
+  return a.decidedBy||'';
+}
 function renderApproval() {
+  try{ apAutoPull(); }catch(e){}   /* v1087: 開いたとき、1 分より前に読んだきりなら裏で読み直す */
   var approvals = ls('approvals', []);
   var pending = approvals.filter(function(a){return a.status==='pending';});
   var done = approvals.filter(function(a){return a.status!=='pending';});
   var _skDirty=false;
-  // スコープ: G3/G4=自店, G5(AM)=管轄店, GM/CEO/経理=全店（本部案件含む）
-  if (['gm','ceo','office'].indexOf(curRole)<0) {
+  // スコープ: G3/G4=自店, G5(AM)=管轄店, GM/CEO/経理/事務Crew=全店（本部案件含む。v1087: 事務Crew にも本部の申請＝4A）
+  if (['gm','ceo','office','office_crew'].indexOf(curRole)<0) {
     var _vis = getVisibleStores(); var _vId=_vis.map(function(x){return x.id;}), _vNm=_vis.map(function(x){return x.name;});
     var _inScope=function(a){ var st=_approvalStore(a); return _vId.indexOf(st.id)>=0 || _vNm.indexOf(st.name)>=0; };
     pending = pending.filter(_inScope); done = done.filter(_inScope);
   }
-  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice'};
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice','建替経費':'ti-receipt','ガソリン代':'ti-car','Leadership':'ti-medal','月間行動計画':'ti-target'};
+  var acctList = apSeesAcct() ? apAcctPending(done) : [];
+  if (_apTab==='acct' && !apSeesAcct()) _apTab='pending';
+  if (['pending','acct','history'].indexOf(_apTab)<0) _apTab='pending';
 
   // 店舗別グルーピング（本部含む）
   var groups={}, order=[];
@@ -68189,8 +68084,35 @@ function renderApproval() {
 
   var html = '<div class="section-header"><div><div class="section-title">'+t('承認センター','Approval Center')+'</div><div class="section-sub">'+t('店舗別・承認状況（誰が承認／未承認）','By store · approval status (who approved / pending)')+'</div></div>'
     +'<span class="tag '+(pending.length?'tag-yellow':'tag-green')+'">'+pending.length+t('件待ち',' pending')+'</span></div>';
+  /* v1087: クラウドの最新をいつ読んだか・最新に更新 */
+  html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin:-4px 0 8px">'
+    +'<span><i class="ti ti-cloud"></i> '+(_apPullAt?(t('クラウドの最新','Cloud as of')+' '+_apShortTime(new Date(_apPullAt).toISOString())):t('クラウドの最新はまだ読んでいません','Not read from the cloud yet'))+'</span>'
+    +'<button class="btn btn-secondary btn-sm" style="padding:2px 10px" onclick="apRefreshNow()"><i class="ti ti-refresh"></i> '+t('最新に更新','Refresh')+'</button></div>';
+  html += '<div class="phase-tabs" style="margin-bottom:10px">'
+    +'<div class="phase-tab'+(_apTab==='pending'?' active':'')+'" onclick="setApTab(\'pending\')">'+t('承認待ち','Pending')+(pending.length?' <span class="tag tag-yellow" style="font-size:9px">'+pending.length+'</span>':'')+'</div>'
+    +(apSeesAcct()?'<div class="phase-tab'+(_apTab==='acct'?' active':'')+'" onclick="setApTab(\'acct\')">'+t('経理の確認','Accounting check')+(acctList.length?' <span class="tag tag-red" style="font-size:9px">'+acctList.length+'</span>':'')+'</div>':'')
+    +'<div class="phase-tab'+(_apTab==='history'?' active':'')+'" onclick="setApTab(\'history\')">'+t('履歴','History')+'</div>'
+    +'</div>';
 
-  if (!pending.length) {
+  if (_apTab==='acct') {
+    html += '<div class="card"><div class="card-title"><i class="ti ti-receipt-2" style="color:var(--accent)"></i>'+t('承認が済んで、まだ経理が確認していないもの','Approved, not yet checked by accounting')+' <span class="tag '+(acctList.length?'tag-red':'tag-green')+'" style="margin-left:auto">'+acctList.length+'</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin:-2px 0 6px">'+t('「確認した」で、確認した人と日時を残します。経理と事務Crew のどちらが確認しても同じです。','“Confirmed” records who checked it and when. Accounting and office crew share the same list.')+'</div>';
+    if (!acctList.length) html += '<div style="text-align:center;padding:14px;font-size:13px;color:var(--green)"><i class="ti ti-circle-check"></i> '+t('経理の確認待ちはありません','Nothing waiting for accounting')+'</div>';
+    acctList.slice().sort(function(p,q){ return String(q.decidedAt||'').localeCompare(String(p.decidedAt||'')); }).forEach(function(a){
+      html += '<div class="approval-item"><div class="approval-header" style="gap:8px;flex-wrap:wrap"><div style="flex:1;min-width:0">'
+        +'<div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
+        +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(_approvalStore(a).name)+' · '+escapeHtml(a.from||'')+'</div>'
+        +'<div class="approval-meta">'+t('承認','Approved')+' '+escapeHtml(_apShortTime(a.decidedAt))+(_apDeciders(a)?' · '+escapeHtml(_apDeciders(a)):'')+'</div></div>'
+        +(apCanAcct()?'<button class="btn btn-primary btn-sm" style="min-height:36px" onclick="apAcctConfirm(\''+escapeHtml(a.id)+'\')"><i class="ti ti-check"></i> '+t('確認した','Confirmed')+'</button>':'<span class="tag tag-yellow" style="font-size:10px">'+t('経理の確認待ち','Waiting for accounting')+'</span>')
+        +'</div></div>';
+    });
+    html += '<div style="font-size:11px;color:var(--muted);margin-top:8px">'+t('確認したものは「履歴」に移り、「経理確認：名前 日時」と出ます。','Confirmed items move to History with “Accounting: name, time”.')+'</div></div>';
+    return html;
+  }
+
+  if (_apTab!=='pending') {
+    /* 履歴タブ：下の「過去ログ」だけ */
+  } else if (!pending.length) {
     html += '<div class="card" style="text-align:center;padding:20px"><i class="ti ti-circle-check" style="font-size:24px;color:var(--green)"></i><div style="font-size:14px;color:var(--green);font-weight:600;margin-top:4px">'+t('承認待ちはありません','No pending approvals')+'</div></div>';
   } else {
     order.forEach(function(sid){
@@ -68203,6 +68125,9 @@ function renderApproval() {
         var isMgr = (curRole==='gm'||curRole==='ceo');
         html += '<div class="approval-item"><div class="approval-header"><div><div class="approval-title"><i class="ti '+(typeIcon[a.type]||'ti-circle')+'" style="font-size:12px;color:var(--muted)"></i> '+escapeHtml(a.title||'')+'</div>'
           +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+'</div></div></div>';
+        /* v1087: 申請の画面でもう決まっているもの（前の版で画面から承認したなど）。押すと承認センターを合わせる */
+        var _rs0=_apRecordState(a);
+        if (_rs0 && _rs0.state!=='pending') html += '<div style="font-size:11px;color:var(--accent);margin:2px 0"><i class="ti ti-info-circle"></i> '+escapeHtml(t('「'+_rs0.label+'」の画面で、もう'+(_rs0.state==='approved'?'承認':_rs0.state==='rejected'?'却下':'取り下げ')+'されています（承認・却下を押すと、承認センターを合わせます）','Already decided on the '+_rs0.label+' page (pressing approve/reject just matches it)'))+'</div>';
         if (a.type==='スキル') {
           var _pos = a.position || ((String(a.title||'').match(/\(([^)]+)\)\s*$/)||[])[1]) || '';
           var _reqLv = (a.reqLevel!=null) ? a.reqLevel : null;
@@ -68266,6 +68191,8 @@ function renderApproval() {
           if (canSign) {
             html += '<button class="btn btn-success btn-sm" onclick="signoffApproval(\''+a.id+'\')"><i class="ti ti-check"></i> '+t('承認する','Approve')+'</button>';
           }
+          /* v1087: 2 台でほぼ同時に承認すると、承認はそろったのに確定していないことがある（合流で両方の承認が残る）。確定するボタン */
+          if (_approvalAllDone(a) && (isMgr || (a.signoffs||[]).some(function(s){return s && s.name===_actorName();}))) html += '<button class="btn btn-success btn-sm" onclick="apFinalize(\''+a.id+'\')"><i class="ti ti-circle-check"></i> '+t('確定する','Finalize')+'</button>';
           html += '<button class="btn btn-danger btn-sm" onclick="rejectApprovalItem(\''+a.id+'\')"><i class="ti ti-x"></i> '+t('却下','Reject')+'</button>';
           if((a.signoffs||[]).some(function(s){return s.name===_actorName();})) html += '<button class="btn btn-secondary btn-sm" onclick="cancelMySignoff(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('自分の承認を取消','Cancel my approval')+'</button>';
           if (!canSign && !isMgr) html += '<span style="font-size:11px;color:var(--muted);align-self:center"><i class="ti ti-clock"></i> '+t('他の承認者待ち','Awaiting other approvers')+'</span>';
@@ -68277,7 +68204,10 @@ function renderApproval() {
     });
   }
 
-  if (done.length) {
+  if (_apTab==='history' && !done.length) {
+    html += '<div class="card" style="text-align:center;padding:20px;color:var(--muted);font-size:13px">'+t('履歴はまだありません','No history yet')+'</div>';
+  }
+  if (_apTab==='history' && done.length) {
     var dgroups={}, dorder=[];
     done.forEach(function(a){ var st=_approvalStore(a); if(!dgroups[st.id]){ dgroups[st.id]={name:st.name, items:[]}; dorder.push(st.id); } dgroups[st.id].items.push(a); });
     dorder.sort(function(x,y){ return (x==='OFFICE'?1:0)-(y==='OFFICE'?1:0); });
@@ -68287,12 +68217,19 @@ function renderApproval() {
       var sicon = sid==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
       html += '<details style="margin:2px 0"><summary style="cursor:pointer;font-size:13px;font-weight:600;padding:6px 0"><i class="ti '+sicon+'"></i> '+escapeHtml(g.name)+' <span class="tag tag-gray" style="font-size:10px">'+g.items.length+'</span></summary>';
       g.items.slice().reverse().slice(0,40).forEach(function(a){
-        var ok=a.status==='approved';
+        var ok=a.status==='approved', wd=a.status==='withdrawn';
+        var _dz=_apDeciders(a);
+        /* v1087: 経理の確認（確認した人と日時／まだの印）。取り下げの印。 */
+        var _acH='';
+        if (ok && _apAcctOn(a)) _acH='<div style="margin-top:4px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><span class="tag tag-green" style="font-size:10px"><i class="ti ti-check"></i> '+t('経理確認','Accounting')+'：'+escapeHtml(a.acct.by||'')+' '+escapeHtml(a.acct.at||'')+'</span>'
+          +(apCanAcct()?'<button class="btn btn-secondary btn-sm" style="padding:1px 8px;font-size:10px" onclick="apAcctConfirm(\''+escapeHtml(a.id)+'\',true)">'+t('確認を取り消す','Undo')+'</button>':'')+'</div>';
+        else if (ok && a.decidedAt && apNeedsAcct(a.type) && apSeesAcct()) _acH='<div style="margin-top:4px"><span class="tag tag-yellow" style="font-size:10px">'+t('経理の確認待ち','Waiting for accounting')+'</span></div>';
         html += '<div class="approval-item" style="padding-left:6px"><div class="approval-header"><div><div class="approval-title" style="font-size:12px">'+escapeHtml(a.title||'')+'</div>'
-          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+(a.signoffs&&a.signoffs.length?' · '+t('承認者','Approvers')+': '+a.signoffs.map(function(s){return escapeHtml(s.name);}).join(curLang==='en'?', ':'、'):'')+'</div></div>'
-          +'<span class="tag '+(ok?'tag-green':'tag-red')+'">'+(ok?t('全承認','Approved'):t('却下','Rejected'))+'</span></div>'
-          +((!ok&&a.rejectReason)?'<div style="font-size:11px;color:var(--red);margin-top:2px"><i class="ti ti-message-2"></i> '+t('却下理由','Reason')+'：'+escapeHtml(a.rejectReason)+'</div>':'')
-          +((curRole==='gm'||curRole==='ceo')?'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="reopenApproval(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('承認を取り消す','Undo approval')+'</button></div>':'')
+          +'<div class="approval-meta">'+escapeHtml(a.type||'')+' · '+escapeHtml(a.from||'')+' · '+escapeHtml(a.date||'')+(_dz?' · '+(wd?'':(t('承認者','Approvers')+': '))+escapeHtml(_dz):'')+(a.decidedAt?' · '+escapeHtml(_apShortTime(a.decidedAt)):'')+'</div></div>'
+          +'<span class="tag '+(ok?'tag-green':wd?'tag-gray':'tag-red')+'">'+(ok?t('全承認','Approved'):wd?t('取り下げ','Withdrawn'):t('却下','Rejected'))+'</span></div>'
+          +((!ok&&!wd&&a.rejectReason)?'<div style="font-size:11px;color:var(--red);margin-top:2px"><i class="ti ti-message-2"></i> '+t('却下理由','Reason')+'：'+escapeHtml(a.rejectReason)+'</div>':'')
+          +_acH
+          +((!wd&&(curRole==='gm'||curRole==='ceo'))?'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="reopenApproval(\''+a.id+'\')"><i class="ti ti-arrow-back-up"></i> '+t('承認を取り消す','Undo approval')+'</button></div>':'')
           +'</div>';
       });
       html += '</details>';
@@ -68303,95 +68240,182 @@ function renderApproval() {
   return html;
 }
 
-async function approveItem(id, status, reason) {
+/* v1087: 申請の種類ごとの記録のキー */
+var AP_REC_KEYS={ '経費':'expense_requests', 'ガソリン代':'mileage_requests', '休暇':'my_vacations', '建替経費':'reimbursements', 'TipRate':'tip_requests', 'Leadership':'lss_requests' };
+/* 記録の、状態を変えた時刻（建替経費は保存時刻）。時刻を持たない種類は -1 */
+function _apRecTime(type, r){
+  if(type==='経費' || type==='ガソリン代' || type==='休暇') return Number(r && r._stT) || 0;
+  if(type==='建替経費') return Number(r && r._mut) || 0;
+  return -1;
+}
+/* v1087: 申請の画面でもう決まっているか（前の版で画面から承認・却下した、取り下げた）。分からなければ null。
+   承認を取り消した（版が進んだ）案件は、取り消したときより後に決めた記録だけを「決まっている」とみなす
+   （ほかの端末で取り消した申請の古い写しが手元に残っていても、前の決定に戻さない） */
+function _apRecordState(a){
+  try{
+    if(!a || a.ref==null) return null;
+    var list=null, lab='';
+    if(a.type==='経費'){ list=ls('expense_requests',[]); lab=t('事前経費','Expense'); }
+    else if(a.type==='ガソリン代'){ list=ls('mileage_requests',[]); lab=t('ガソリン代','Mileage'); }
+    else if(a.type==='休暇'){ list=ls('my_vacations',[]); lab=t('休暇','Leave'); }
+    else if(a.type==='建替経費'){ list=ls('reimbursements',[]); lab=t('レシート管理（立替）','Reimbursements'); }
+    else if(a.type==='TipRate'){ list=ls('tip_requests',[]); lab='Tip Rate'; }
+    else if(a.type==='Leadership'){ list=ls('lss_requests',[]); lab='Leadership'; }
+    else return null;
+    var r=(list||[]).find(function(x){ return x && String(x.id)===String(a.ref); });
+    if(!r) return null;
+    if(r._deleted) return { state:'withdrawn', label:lab, by:'' };
+    var st=r.status==='承認'?'approved':r.status==='却下'?'rejected':'pending';
+    if(st!=='pending' && _apGen(a)>0){ var rt=_apRecTime(a.type, r); if(rt>=0 && rt<=_apStT(a)) st='pending'; }
+    var rst={ t:_apRecTime(a.type, r), k:_rtStK(r) };   /* v1087: 案件を合わせるときに申請と同じ印を使う */
+    if(st==='approved') return { state:'approved', label:lab, by:(r.approvedBy||''), st:rst };
+    if(st==='rejected') return { state:'rejected', label:lab, by:(r.approvedBy||''), st:rst };
+    return { state:'pending', label:lab, by:'' };
+  }catch(e){ return null; }
+}
+/* v1087: 申請の記録をクラウドから読み直す（申請の画面で決まっているとみなす前に。8 秒で打ち切り）。分割した行は申請者・店舗の行も */
+async function _apPullRecord(a){
+  try{
+    var key=a && AP_REC_KEYS[a.type];
+    if(!key || a.ref==null || typeof pullOpKey!=='function') return false;
+    if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return false;
+    var keys=[key], sp=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS) ? _SPLIT_KEYS[key] : null;
+    if(sp && typeof sp.by==='function'){
+      var r=(ls(key,[])||[]).find(function(x){ return x && String(x.id)===String(a.ref); }), ids=[];
+      [r ? sp.by(r) : null, a.from, a.store].forEach(function(v){ if(v!=null && v!=='' && ids.indexOf(String(v))<0) ids.push(String(v)); });
+      ids.forEach(function(v){ keys.push('spl_'+key+'_'+v); });
+    }
+    var all=Promise.all(keys.map(function(k){ return pullOpKey(k).catch(function(){ return false; }); }));
+    var tm=null, res=await Promise.race([all, new Promise(function(ok){ tm=setTimeout(function(){ ok(null); }, AP_PULL_TIMEOUT_MS); })]);
+    if(tm) clearTimeout(tm);
+    return !!(res && res.every(function(x){ return !!x; }));
+  }catch(e){ return false; }
+}
+async function approveItem(id, status, reason, opt) {
   /* v1060: 事務Crew も経理と同じく承認・却下できる（v846 の閲覧のみを外した）。 */
+  opt=opt||{};
+  /* v1087: 押す前にクラウドの最新を読み直す（承認する・代理で全承認は、呼ぶ前に読み直している） */
+  if(!opt.fresh){ if(!(await _apFreshPending(id))) return; }
   var approvals = ls('approvals', []);
-  var a = approvals.find(a=>a.id===id);
-  if (a) {
+  var a = approvals.find(function(x){ return x && x.id===id; });
+  if (!a) return;
+  if (a.status!=='pending') { _apRerender(); return; }
+  /* v1087: 申請の画面でもう決まっていれば、申請は書き換えずに承認センターを合わせる（承認したものを却下に変えない）。
+     手元の記録は古いことがあるので、申請の記録をクラウドから読み直してから見る（古い写しの決定を取り違えない・
+     このあと書く記録の時刻が、ほかの端末で取り消した時刻より前にならない） */
+  var _rsOld=false;
+  if (AP_REC_KEYS[a.type] && a.ref!=null) {
+    _rsOld = !(await _apPullRecord(a)) && !(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED);
+    approvals = ls('approvals', []); a = approvals.find(function(x){ return x && x.id===id; });
+    if (!a) return;
+    if (a.status!=='pending') { _apRerender(); return; }
+  }
+  var _rs=_apRecordState(a);
+  if (_rs && _rs.state!=='pending') {
+    _apMarkDecided(a, _rs.state, null, 'page', _rs.st); if(_rs.by) a.decidedBy=_rs.by; lsSet('approvals', approvals);
+    if(_rs.st) _apSyncRecStamp(a.type, a.ref, [a], _rs.st);   /* 案件のほうが新しくて新しい印にしたときは、申請にも同じ印 */
+    var _w=_rs.state==='approved'?t('承認','approved'):_rs.state==='rejected'?t('却下','rejected'):t('取り下げ','withdrawn');
+    showToast(t('この申請は「'+_rs.label+'」の画面で、もう'+_w+'されています。承認センターも合わせました','This request was already '+_w+' on the '+_rs.label+' page. The approval center now matches.')
+      +(_rsOld?t('（申請の記録をクラウドで確かめられなかったので、この端末の記録で合わせました）',' (the request could not be checked in the cloud, so this device’s copy was used)'):''), _rsOld?'warning':'info');
+    _apRerender(); return;
+  }
+  /* v1087: スキルは、反映できるかを先に確かめてから決める。
+     前は「承認」を保存してから確かめ、だめなら「承認待ち」に戻していたので、そのあいだに送られた「承認」が残ることがあった。 */
+  var _sreqs=null, _sr=null, _sid='';
+  if (a.type==='スキル') {
     /* v616: スキルは「承認したのにLvが上がらない」事故を防ぐため、判定前に最新の申請を取り込む。
        （他端末で出された申請がこの端末の skill_requests に無いと、以前は黙って反映をスキップしていた） */
-    if (a.type==='スキル' && status==='approved') {
+    if (status==='approved') {
       try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){ await pullOpKey('skill_requests'); } }catch(e){}
     }
-    if(status==='rejected' && reason) a.rejectReason=reason;
-    a.status = status; a._mut=Date.now(); lsSet('approvals', approvals);
-    if(status==='approved' && _apGradeChainTypes(a.type)){ try{ addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:'approval', refId:a.id, ack:true }); }catch(_e){} try{ var _csid=_approvalStoreId(a); addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toStore:((_csid&&_csid!=='OFFICE')?_csid:undefined), toRoles:['sl','am','gm','sm'], page:'approval', refId:a.id, ack:true }); }catch(_e){} }
-    if (a.type==='退職' && a.ref) {
-      try {
-        var _obs=getOffboardings(); var _ob=_obs.find(function(x){return x.id===a.ref;});
-        if(_ob){
-          if(status==='approved'){
-            _ob.status='進行中'; _ob.approvedBy=(curUserName||''); _ob.approvedAt=new Date().toISOString(); _ob.approvalId=a.id;
-            var _emps=getEmployees(); var _e=_emps.find(function(x){return x.id===_ob.empId;});
-            if(_e){ _e.status='退職'; _e.resignDate=_ob.lastWorkDate||_e.resignDate; lsSet('m_employees', _emps); }
-            addNotif({ type:'offboard', title:'退職手続き開始：'+_ob.empName, text:('承認されました／最終出勤 '+(_ob.lastWorkDate||'')).slice(0,140), toStore:_ob.store, toRoles:['office','gm','ceo','am','sl','sm'], page:'staff_master', refId:_ob.id });
-          } else {
-            _ob.status='却下';
-          }
-          setOffboardings(_obs);
-        }
-      } catch(_e){}
+    try {
+      _sreqs = getSkillRequests();
+      _sr = a.ref ? _sreqs.find(function(x){return x.id===a.ref;}) : null;
+      if (!_sr) {
+        var _pm = String(a.title||'').match(/\(([^)]+)\)\s*$/);
+        var _pos = _pm ? _pm[1] : null;
+        /* v616: 以前は「候補がちょうど1件」でないと特定できず黙って反映されなかった。
+           → 申請中を優先し、複数あれば最新日付を採用。 */
+        var _cands = _sreqs.filter(function(x){ return x.name===a.from && (!_pos || x.position===_pos); });
+        var _pend = _cands.filter(function(x){ return x.status==='申請中'; });
+        var _pick = (_pend.length?_pend:_cands).slice().sort(function(p,q){ return String(q.date||'').localeCompare(String(p.date||'')); });
+        if (_pick.length) _sr = _pick[0];
+      }
+    } catch(_e){ _sr=null; }
+    /* v616: 反映できない時は黙って通さない（承認済みなのにLv未反映を作らない） */
+    if (status==='approved' && !_sr) {
+      showToast('申請データが見つからないため承認を保留しました。スキル画面から承認してください','warning');
+      _apRerender(); return;
     }
-    if (a.type==='スキル') {
-      try {
-        var _sreqs = getSkillRequests();
-        var _sr = a.ref ? _sreqs.find(function(x){return x.id===a.ref;}) : null;
-        if (!_sr) {
-          var _pm = String(a.title||'').match(/\(([^)]+)\)\s*$/);
-          var _pos = _pm ? _pm[1] : null;
-          /* v616: 以前は「候補がちょうど1件」でないと特定できず黙って反映されなかった。
-             → 申請中を優先し、複数あれば最新日付を採用。 */
-          var _cands = _sreqs.filter(function(x){ return x.name===a.from && (!_pos || x.position===_pos); });
-          var _pend = _cands.filter(function(x){ return x.status==='申請中'; });
-          var _pick = (_pend.length?_pend:_cands).slice().sort(function(p,q){ return String(q.date||'').localeCompare(String(p.date||'')); });
-          if (_pick.length) _sr = _pick[0];
-        }
-        /* v616: 反映できない時は黙って通さない（承認済みなのにLv未反映を作らない） */
-        if (status==='approved' && !_sr) {
-          a.status='pending'; a._mut=Date.now(); lsSet('approvals', approvals);
-          showToast('申請データが見つからないため承認を保留しました。スキル画面から承認してください','warning');
-          renderPage('approval'); return;
-        }
-        if (_sr && (_sr.status==='申請中' || status==='approved')) {
-          var _by = _actorName();
-          /* v616: 店舗が特定できない時にSTORES[0](ToriTon)へ書くと、別店舗のスタッフには一生反映されない。
-             → 推測書き込みをやめ、保留にして知らせる。 */
-          var _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || '';
-          if (status==='approved' && !_sid) {
-            a.status='pending'; a._mut=Date.now(); lsSet('approvals', approvals);
-            showToast(_sr.name+' の対象店舗が特定できないため承認を保留しました（従業員マスターの店舗を確認）','warning');
-            renderPage('approval'); return;
-          }
-          if (status==='approved') {
-            try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){ await pullOpKey(SKILL_STORE_PREFIX+_sid); } }catch(e){}
-            var _prev = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {level:0};
-            var _lv = parseInt(_sr.level)||0;
-            _sr.status='承認'; _sr.reviewer=_by; setSkillRequests(_sreqs);
-            setEmpSkillStore(_sr.name, _sid, _sr.position, {level:_lv, status:'承認', selfComment:_sr.selfComment, mgrComment:_sr.mgrComment||'', nextTask:_sr.nextTask||'', date:_sr.date, evaluator:_by});
-            /* v616: 書き込み後に読み戻して検証（反映されていなければ承認者に知らせる） */
-            try{
-              var _chk = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
-              if (Number(_chk.level)!==_lv || _chk.status!=='承認') showToast('スキルLvの反映に失敗しました。スキル画面から再度承認してください','danger');
-              else showToast(_sr.name+' の '+_sr.position+' を Lv'+_lv+' に反映しました', 'success');
-            }catch(e){}
-            if ((_prev.status==='承認'?_prev.level:0)!==_lv) addSkillHistory(_sr.name, _sid, _sr.position, (_prev.status==='承認'?_prev.level:0), _lv, _by);
-            try{ addNotif({ type:'approved', title:t('スキルが承認されました','Skill approved'), text:(_sr.name+'・'+((typeof posLabel==='function')?posLabel(_sr.position):_sr.position)+' Lv'+_lv+'（'+t('承認','by')+'：'+_by+'）'), toUser:_sr.name, page:'skill', refId:a.id }); }catch(_e2){}
-          } else {
-            _sr.status='差戻し'; _sr.reviewer=_by; if(reason) _sr.mgrComment=reason; setSkillRequests(_sreqs);
-            var _prevR = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
-            setEmpSkillStore(_sr.name, _sid, _sr.position, Object.assign({}, _prevR, {status:'差戻し', mgrComment:(reason||_sr.mgrComment||'')}));
-            try{ addNotif({ type:'reject', title:t('スキル申請が差し戻されました','Skill request returned'), text:(_sr.name+'・'+((typeof posLabel==='function')?posLabel(_sr.position):_sr.position)+(reason?('：'+reason):'')), toUser:_sr.name, page:'skill', refId:a.id }); }catch(_e2){}
-          }
-        }
-      } catch(_e){}
+    if (_sr) {
+      /* v616: 店舗が特定できない時にSTORES[0](ToriTon)へ書くと、別店舗のスタッフには一生反映されない。
+         → 推測書き込みをやめ、保留にして知らせる。 */
+      _sid = _sr.store || ((getEmployees().find(function(e){return e.name===_sr.name;})||{}).store) || '';
+      if (status==='approved' && !_sid) {
+        showToast(_sr.name+' の対象店舗が特定できないため承認を保留しました（従業員マスターの店舗を確認）','warning');
+        _apRerender(); return;
+      }
     }
-    if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(status==='approved'?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); if(status!=='approved'&&reason) _v.rejectReason=reason; saveVacations(_vs); } }catch(_e){} }
-    if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(status==='approved'?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(status!=='approved'&&reason) _m.rejectReason=reason; saveMileageReqs(_ms); } }catch(_e){} }
-    if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(status==='approved'?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(status!=='approved'&&reason) _ex.rejectReason=reason; saveExpenseReqs(_es); } }catch(_e){} }
-    if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(status==='approved'?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(status!=='approved'&&reason) _rb.rejectReason=reason; saveReimbursements(_rbs); } }catch(_e){} }
-    try{ if(a.type!=='スキル'){ addNotif({ type:(status==='approved'?'approved':'reject'), title:(a.type||'申請')+(status==='approved'?' が承認されました':' が却下されました'), text:((a.title||'')+((status!=='approved'&&reason)?('　'+t('理由','Reason')+'：'+reason):'')).slice(0,140), toUser:(a.from||''), page:(a.type==='予算'?'budget':'mypage'), refId:a.id }); } }catch(e){}
-    renderPage('approval'); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
   }
+  /* v1087: 決定の印は、案件の前の時刻と申請の記録の前の時刻の両方より後。案件と申請の記録に同じ印を書く
+     （2 台が同じ時刻に別々に決めても、合流で案件と申請に同じ決定が残る） */
+  var _rk=AP_REC_KEYS[a.type], _rr=null;
+  try{ if(_rk && a.ref!=null) _rr=(ls(_rk,[])||[]).find(function(x){ return x && String(x.id)===String(a.ref); })||null; }catch(_e){}
+  var _dst=apDecStamp(Math.max(_apStT(a), _apMut(a), _rr ? _apRecTime(a.type, _rr) : -1)+1);
+  _apMarkDecided(a, status, reason, null, _dst); lsSet('approvals', approvals);   /* v1087: 決めた人・時刻（decidedBy・decidedAt・_stT・_stK） */
+  /* v1087: 「承認完了」は確かめが済んでから出す（前は承認待ちに戻すかもしれない確かめの前に出ていた） */
+  if(status==='approved' && _apGradeChainTypes(a.type)){ try{ addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toUser:(a.from||''), page:'approval', refId:a.id, ack:true }); }catch(_e){} try{ var _csid=_approvalStoreId(a); addNotif({ type:'approval', title:'承認完了：'+(a.type||''), text:(a.title||'').slice(0,140), toStore:((_csid&&_csid!=='OFFICE')?_csid:undefined), toRoles:['sl','am','gm','sm'], page:'approval', refId:a.id, ack:true }); }catch(_e){} }
+  if (a.type==='退職' && a.ref) {
+    try {
+      var _obs=getOffboardings(); var _ob=_obs.find(function(x){return x.id===a.ref;});
+      if(_ob){
+        if(status==='approved'){
+          _ob.status='進行中'; _ob.approvedBy=(curUserName||''); _ob.approvedAt=new Date().toISOString(); _ob.approvalId=a.id;
+          var _emps=getEmployees(); var _e=_emps.find(function(x){return x.id===_ob.empId;});
+          if(_e){ _e.status='退職'; _e.resignDate=_ob.lastWorkDate||_e.resignDate; lsSet('m_employees', _emps); }
+          addNotif({ type:'offboard', title:'退職手続き開始：'+_ob.empName, text:('承認されました／最終出勤 '+(_ob.lastWorkDate||'')).slice(0,140), toStore:_ob.store, toRoles:['office','office_crew','gm','ceo','am','sl','sm'], page:'staff_master', refId:_ob.id });   /* v1087: 事務Crew にも */
+        } else {
+          _ob.status='却下';
+        }
+        setOffboardings(_obs);
+      }
+    } catch(_e){}
+  }
+  if (a.type==='スキル' && _sr) {
+    try {
+      if (_sr.status==='申請中' || status==='approved') {
+        var _by = _actorName();
+        if (status==='approved') {
+          try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED && typeof pullOpKey==='function'){ await pullOpKey(SKILL_STORE_PREFIX+_sid); } }catch(e){}
+          var _prev = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {level:0};
+          var _lv = parseInt(_sr.level)||0;
+          _sr.status='承認'; _sr.reviewer=_by; setSkillRequests(_sreqs);
+          setEmpSkillStore(_sr.name, _sid, _sr.position, {level:_lv, status:'承認', selfComment:_sr.selfComment, mgrComment:_sr.mgrComment||'', nextTask:_sr.nextTask||'', date:_sr.date, evaluator:_by});
+          /* v616: 書き込み後に読み戻して検証（反映されていなければ承認者に知らせる） */
+          try{
+            var _chk = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
+            if (Number(_chk.level)!==_lv || _chk.status!=='承認') showToast('スキルLvの反映に失敗しました。スキル画面から再度承認してください','danger');
+            else showToast(_sr.name+' の '+_sr.position+' を Lv'+_lv+' に反映しました', 'success');
+          }catch(e){}
+          if ((_prev.status==='承認'?_prev.level:0)!==_lv) addSkillHistory(_sr.name, _sid, _sr.position, (_prev.status==='承認'?_prev.level:0), _lv, _by);
+          try{ addNotif({ type:'approved', title:t('スキルが承認されました','Skill approved'), text:(_sr.name+'・'+((typeof posLabel==='function')?posLabel(_sr.position):_sr.position)+' Lv'+_lv+'（'+t('承認','by')+'：'+_by+'）'), toUser:_sr.name, page:'skill', refId:a.id }); }catch(_e2){}
+        } else {
+          _sr.status='差戻し'; _sr.reviewer=_by; if(reason) _sr.mgrComment=reason; setSkillRequests(_sreqs);
+          var _prevR = getEmpSkillsStore(_sr.name, _sid)[_sr.position] || {};
+          setEmpSkillStore(_sr.name, _sid, _sr.position, Object.assign({}, _prevR, {status:'差戻し', mgrComment:(reason||_sr.mgrComment||'')}));
+          try{ addNotif({ type:'reject', title:t('スキル申請が差し戻されました','Skill request returned'), text:(_sr.name+'・'+((typeof posLabel==='function')?posLabel(_sr.position):_sr.position)+(reason?('：'+reason):'')), toUser:_sr.name, page:'skill', refId:a.id }); }catch(_e2){}
+        }
+      }
+    } catch(_e){}
+  }
+  var _ap=(status==='approved'), _now=Date.now();
+  if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(_ap?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); if(!_ap&&reason) _v.rejectReason=reason; _v._stT=Math.max(_dst.t, _rtStT(_v)+1); _v._stK=_dst.k; saveVacations(_vs); } }catch(_e){} }
+  if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(_ap?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(!_ap&&reason) _m.rejectReason=reason; _m._stT=Math.max(_dst.t, _rtStT(_m)+1); _m._stK=_dst.k; saveMileageReqs(_ms); } }catch(_e){} }
+  if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(_ap?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(!_ap&&reason) _ex.rejectReason=reason; _ex._stT=Math.max(_dst.t, _rtStT(_ex)+1); _ex._stK=_dst.k; saveExpenseReqs(_es); } }catch(_e){} }
+  if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(_ap?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(!_ap&&reason) _rb.rejectReason=reason; _rb._mut=Math.max(_dst.t, (Number(_rb._mut)||0)+1); _rb._stK=_dst.k; saveReimbursements(_rbs); } }catch(_e){} }   /* v1087: 保存時刻を進める（古い写しで「申請中」に戻らない） */
+  /* v1087: 申請した人へ（スキルは上で専用の知らせ）。最後の承認で、経理と事務Crew へ（退職は「退職手続き開始」が届く） */
+  apNotifyDecision(a, status, { reason:reason, noApplicant:(a.type==='スキル'), noAcct:(a.type==='退職') });
+  _apRerender(); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
 }
 
 /* ============================================================
@@ -71599,7 +71623,7 @@ function notifForMe(n){
   if(n.by && curUserName && n.by===curUserName) return false;
   if(n.toUser) return !!(curUserName && n.toUser===curUserName);
   if(n.toStore){
-    var inStore = (curStore===n.toStore) || _userSupportsStore(n.toStore) || _amManagesStore(n.toStore) || ['gm','ceo','office'].indexOf(curRole)>=0;
+    var inStore = (curStore===n.toStore) || _userSupportsStore(n.toStore) || _amManagesStore(n.toStore) || ['gm','ceo','office','office_crew'].indexOf(curRole)>=0;   /* v1087: 事務Crew も経理と同じく全店 */
     if(!inStore) return false;
     if(n.toRoles && n.toRoles.length) return _roleMatch(n.toRoles);
     return true;
@@ -71650,6 +71674,7 @@ function onNotifClickPage(id){
   markNotifRead(id);
   var n=getNotifs().find(function(x){return x.id===id;});
   renderNotifBell();
+  if(n && n.page==='approval'){ try{ _apTab=n.apTab||'pending'; }catch(e){} }   /* v1087: 「承認済み（処理してください）」は経理の確認のタブで、承認待ちの知らせは承認待ちのタブで開く */
   if(n && n.page){ go(n.page); } else { renderPage('notifications'); }
 }
 /* v670+: 通知の「確認しました」ack。承認申請/完了の通知に確認ボタン＋確認済み/未確認を表示。 */
@@ -71718,6 +71743,7 @@ function renderNotifications(){
         +(n.text?('<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>'):'')
         +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+(n.page?' · <i class="ti ti-arrow-right"></i> 開く':'')+'</div>'
         +(n.ack?_notifAckHtml(n):'')
+        +(n.apTab==='acct'?_apAcctNotifHtml(n):'')
       +'</div>'
       +(unread?'<div style="flex-shrink:0;width:9px;height:9px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
       +'</div>';
@@ -71774,6 +71800,7 @@ function renderNotifPanel(){
         +(n.text?'<div style="font-size:12px;color:var(--muted);margin-top:2px;word-break:break-word">'+escapeHtml(n.text)+'</div>':'')
         +'<div style="font-size:10px;color:var(--muted);margin-top:3px">'+escapeHtml(n.by||'')+' · '+notifAgo(n.at)+'</div>'
         +(n.ack?_notifAckHtml(n):'')
+        +(n.apTab==='acct'?_apAcctNotifHtml(n):'')
       +'</div>'
       +(unread?'<div style="flex-shrink:0;width:8px;height:8px;border-radius:50%;background:var(--accent2);margin-top:6px"></div>':'')
       +'</div>';
@@ -71784,6 +71811,7 @@ function onNotifClick(id){
   markNotifRead(id);
   var n=getNotifs().find(function(x){return x.id===id;});
   closeNotifPanel(); renderNotifBell();
+  if(n && n.page==='approval'){ try{ _apTab=n.apTab||'pending'; }catch(e){} }   /* v1087 */
   if(n && n.page){ go(n.page); }
 }
 
@@ -71831,6 +71859,9 @@ function onNotifIncoming(arr){
   try{
     if(!Array.isArray(arr)) return;
     var before = myUnreadCount();
+    /* v1087: 手元の通知と合わせてから書く。前はクラウドの値で置き換えていたので、まだ送れていない通知
+       （電波の無いときの承認の知らせなど）が手元から消え、送り直されなかった。 */
+    try{ var _loc=_lsRaw('notifications', null); if(Array.isArray(_loc) && _loc.length) arr=mergeNotifs(arr, _loc); }catch(e){}
     _lsWriteVerified('notifications', JSON.stringify(arr));       /* v763 */
     var after = myUnreadCount();
     renderNotifBell();
@@ -76018,7 +76049,7 @@ async function saveReimbursement(){
   try{ addApproval({type:'建替経費', title:payer+' 立替 $'+rec.amount.toFixed(2)+(purpose?'（'+purpose+'）':'')+' / '+stN, from:(curUserName||rec.by), store:storeId, ref:rec.id}); }catch(e){}
   try{ notifyAccounting('【建て替え経費】'+stN+' '+payer+' $'+rec.amount.toFixed(2),
       '建て替え経費の承認依頼です。\n建て替え者: '+payer+(rec.payerContact?'（'+rec.payerContact+'）':'')+'\n店舗: '+stN+'\n金額: $'+rec.amount.toFixed(2)+(purpose?'\n用途: '+purpose+(pmemo?'（'+pmemo+'）':''):'')+(vendor?'\n購入先: '+vendor:'')+'\n申請者: '+(curUserName||rec.by)+'\n\nOSの「承認センター」または「Invoice管理」で承認してください。'); }catch(e){}
-  try{ addNotif({ type:'approval', title:'承認待ち：建替経費', text:(stN+' / '+payer+' $'+rec.amount.toFixed(2)).slice(0,140), toRoles:['office','gm','am'], toStore:storeId, page:'approval', refId:rec.id }); }catch(e){}
+  try{ addNotif({ type:'approval', title:'承認待ち：建替経費', text:(stN+' / '+payer+' $'+rec.amount.toFixed(2)).slice(0,140), toRoles:['office','office_crew','gm','am'], toStore:storeId, page:'approval', refId:rec.id }); }catch(e){}   /* v1087: 事務Crew にも */
   if(imagePath){
     var sb2=document.querySelector('.modal .btn-primary'); if(sb2){sb2.disabled=true;sb2.textContent='Driveへ保存中…';}
     try{
@@ -76052,9 +76083,10 @@ function _applyReimburseDecision(id, ok, re){
   if(!ok){ r.status='却下'; r.rejectReason=re||''; }
   else { r.status='承認'; }
   r.approvedBy=_actorName(); r.approvedAt=nowJP();
+  apStampRec(r, '建替経費', id, '_mut');   /* v1087: 保存時刻を進める（前は進めなかったので、古い写しの端末の保存で「申請中」に戻ることがあった）。前より必ず後に・承認センターの案件と同じ印 */
   saveReimbursements(arr);
-  try{ resolveApprovalByRef('建替経費', id, ok?'approved':'rejected'); }catch(e){}
-  try{ addNotif({type:(ok?'approved':'reject'), title:'建替経費'+(ok?' が承認されました':' が却下されました'), text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
+  /* v1087: 承認センターも済みにして、申請した人・経理と事務Crew に知らせる */
+  apDecidedFromPage('建替経費', id, ok?'approved':'rejected', {st:apStOf(r,'_mut'), applicant:(r.byUser||''), page:'invoice', reason:re||'', title:(r.payer+' $'+(r.amount||0).toFixed(2)), store:r.storeId});
   showToast(ok?'承認しました':'却下しました', ok?'success':'danger'); renderPage('invoice');
 }
 function markReimbursePaid(id){
@@ -76063,6 +76095,7 @@ function markReimbursePaid(id){
   if(r.status!=='承認'){ alert('承認済みの立替のみ支払い済みにできます'); return; }
   openInputModal({title:r.payer+' へ $'+(r.amount||0).toFixed(2)+' 支払済にする', label:'支払い方法・メモ（任意）', placeholder:'例: 現金 / Venmo / 給与同時', okLabel:'支払済にする'}, function(note){
   r.payStatus='支払済'; r.paidAt=nowJP(); r.paidBy=_actorName(); r.payMethodNote=note||'';
+  invTouch(r);   /* v1087 */
   saveReimbursements(arr);
   try{ addNotif({type:'approved', title:'立替金 支払済', text:(r.payer+' $'+(r.amount||0).toFixed(2)).slice(0,140), toUser:(r.byUser||''), page:'invoice', refId:r.id}); }catch(e){}
   showToast(r.payer+' へ $'+(r.amount||0).toFixed(2)+' を支払済みにしました','success'); renderPage('invoice');
@@ -76072,7 +76105,7 @@ function undoReimbursePaid(id){
   if(!canMarkReimbursePaid()) return;
   var arr=getReimbursements(); var r=arr.find(function(x){return x.id===id;}); if(!r) return;
   if(!confirm('支払済みを取り消しますか？')) return;
-  r.payStatus='未払い'; r.paidAt=''; r.paidBy=''; r.payMethodNote=''; saveReimbursements(arr); renderPage('invoice');
+  r.payStatus='未払い'; r.paidAt=''; r.paidBy=''; r.payMethodNote=''; invTouch(r); saveReimbursements(arr); renderPage('invoice');   /* v1087 */
 }
 function _rbRow(r, mgr){
   var sc=r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
@@ -77247,7 +77280,7 @@ function renderWorkCenter(){
   var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可
   var canAnn = true;
   var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
-  if (['gm','ceo','office'].indexOf(curRole)<0) {
+  if (['gm','ceo','office','office_crew'].indexOf(curRole)<0) {   /* v1087: 事務Crew にも本部の申請 */
     var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
     pend = pend.filter(function(a){ var st=(typeof _approvalStore==='function')?_approvalStore(a):{id:a.store,name:a.store}; return _vi.indexOf(st.id)>=0 || _vn.indexOf(st.name)>=0; });
   }
@@ -80060,6 +80093,7 @@ function ccApprove(ym){
   var _fz = ccFreezeTargets(ym);
   if(_fz === -1){ showToast('目標を確定できませんでした', 'danger'); return; }
   if(!ccSavePlan(ym, { status: '承認済', approvedBy: myName(), approvedAt: nowJP(), returnReason: '' })) return;
+  apDecidedFromPage('月間行動計画', ym, 'approved', {ym:ym, noApplicant:true});   /* v1087: 承認センターの案件も済みに（Head Chef へは下の知らせ） */
   try{ addNotif({ type:'plan', title:'月間行動計画が承認されました', text: ym + ' の行動計画',
                   toRoles:['chef'], page:'cc_plan' }); }catch(e){}
   showToast('承認しました', 'success'); renderPage('cc_plan');
@@ -80070,6 +80104,7 @@ function ccReturn(ym){
   r = String(r).trim();
   if(!r){ alert('理由は必須です'); return; }
   if(!ccSavePlan(ym, { status: '差し戻し', returnReason: r, returnedBy: myName(), returnedAt: nowJP() })) return;
+  apDecidedFromPage('月間行動計画', ym, 'rejected', {ym:ym, reason:r, noApplicant:true});   /* v1087 */
   try{ addNotif({ type:'plan', title:'月間行動計画が差し戻されました', text: ym + '：' + r.slice(0,120),
                   toRoles:['chef'], page:'cc_plan' }); }catch(e){}
   showToast('差し戻しました', 'info'); renderPage('cc_plan');
@@ -80922,9 +80957,10 @@ function submitTipRequest() {
   if (!rate) { alert('Tip Rateを選択してください'); return; }
   var reason = document.getElementById('tip-reason').value.trim();
   var requests = ls('tip_requests', []);
-  requests.push({id:'tip'+Date.now(), name:myName(), rate, reason, status:'申請中', date:todayJP()});
+  var _tipId='tip'+Date.now();
+  requests.push({id:_tipId, name:myName(), rate, reason, status:'申請中', date:todayJP()});
   lsSet('tip_requests', requests);
-  addApproval({title:`${myName()} Tip Rate申請 ${rate}%`, type:'TipRate', from:myName(), store:'---'});
+  addApproval({title:`${myName()} Tip Rate申請 ${rate}%`, type:'TipRate', from:myName(), store:'---', ref:_tipId});   /* v1087: 申請と結ぶ */
   closeModalDirect();
   showToast('Tip Rateを申請しました', 'success');
   renderPage('tiprate');
@@ -80941,6 +80977,10 @@ function approveTip(id, status) {
     var h = ls('tip_history', []);
     h.push({name:r.name, rate:r.rate, store:r.store||'', status:status, by:r.approver, date:r.approvedDate, basis:r.basis||'manual'});
     lsSet('tip_history', h);
+    /* v1087: 承認センターの案件も済みにして知らせる（前の申請は ref が無いので名前と率で探す） */
+    try{ apDecidedFromPage('TipRate', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'tiprate', title:(r.name+' Tip Rate '+r.rate+'%'),
+      match:function(a){ return !a.ref && a.from===r.name && /Tip Rate申請/.test(String(a.title||'')) && String(a.title||'').trim().slice(-(String(r.rate).length+2))===(' '+r.rate+'%'); }}); }catch(e){}
+    try{ if(status==='承認') apNotifyAcctApplied('Tip Rate', r.name, r.rate+'%'); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
     showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
     renderPage(curPage);
   }
@@ -80991,9 +81031,10 @@ function submitTipFromSkill(storeId, rate) {
   var me = myName();
   var reason = document.getElementById('tip-sk-reason').value.trim();
   var requests = ls('tip_requests', []);
-  requests.push({id:'tip'+Date.now(), name:me, rate:rate, store:storeId, reason:reason, basis:'skill', status:'申請中', date:todayJP()});
+  var _tipId='tip'+Date.now();
+  requests.push({id:_tipId, name:me, rate:rate, store:storeId, reason:reason, basis:'skill', status:'申請中', date:todayJP()});
   lsSet('tip_requests', requests);
-  addApproval({title:`${me} Tip Rate申請 ${rate}%`, type:'TipRate', from:me, store:storeId});
+  addApproval({title:`${me} Tip Rate申請 ${rate}%`, type:'TipRate', from:me, store:storeId, ref:_tipId});   /* v1087: 申請と結ぶ */
   closeModalDirect();
   showToast('Tip Rateを申請しました（条件達成）','success');
   renderPage('skill');
