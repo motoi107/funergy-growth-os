@@ -1160,10 +1160,11 @@ test('a leave undone on a device with an old or missing item copy stays undone; 
     assert.deepEqual(both(A, B, 'my_vacations', 'mergeReqTomb').map(x => [x.status, x._dG]), [['申請中', 1], ['申請中', 1]], label + ': the request stays undone');
     assert.deepEqual(both(A, B, 'approvals', 'mergeApprovals').map(x => [x.status, x._gen]), [['pending', 1], ['pending', 1]], label + ': the item too');
   }
-  // (no copy and the cloud cannot be read: the request is still undone; the item is reopened when it is next read)
+  // (no copy and the cloud cannot be read: the request is still undone; the item cannot be reopened, which is pointed out)
   { const B = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [], my_vacations: [plain(A.S.my_vacations[0])], notifications: [] } });
     at(B, T + 100); run(B, 'cancelApprovedVacation("v1")'); await wait();
-    assert.deepEqual(both(A, B, 'my_vacations', 'mergeReqTomb').map(x => [x.status, x._dG]), [['申請中', 1], ['申請中', 1]]); }
+    assert.deepEqual(both(A, B, 'my_vacations', 'mergeReqTomb').map(x => [x.status, x._dG]), [['申請中', 1], ['申請中', 1]]);
+    assert.ok(B.toasts.some(([m, k]) => /承認センターの案件を読み直せませんでした/.test(m) && k === 'warn')); }
 
   // P2-2: A approves mileage and undoes it (item gen 1, request gen 1); P has the undone request but the original pending item (gen 0).
   const mi = { id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', amount: 12, date: '2026-10-05', _stT: 500 };
@@ -1219,6 +1220,65 @@ test('a leave undone on a device with an old or missing item copy stays undone; 
   assert.match(h2, /\$12\.00/); assert.match(h2, /締めたあとに変わった 1件/); assert.match(h2, /あと承認になった 1件（\$12\.00）は、この合計に入っています/);
   // (records closed before v1087 have no state: nothing to point out)
   assert.doesNotMatch(run(L, 'renderMileagePastLog(' + JSON.stringify([{ ...me[0], archivedStatus: undefined }]) + ')'), /締めたあと/);
+});
+
+test('undoing a leave on a device with an old request copy does not touch a newer round of the item; a page decision already made the same way elsewhere is not announced twice (independent review of a63f079)', async () => {
+  const T = Date.now() + 300000;
+  const both = (x, y, key, fn) => [[x, y], [y, x]].map(([p, q]) => plain(run(p, fn + '(' + JSON.stringify(plain(p.S[key])) + ',' + JSON.stringify(plain(q.S[key])) + ')'))[0]);
+  const at = (dev, t) => run(dev, 'Date.now = () => ' + t);
+  const wait = () => new Promise(r => setTimeout(r, 50));
+  const v = { id: 'v1', status: '申請中', storeId: 'F01', employee: 'Leader B', _stT: 500 };
+  const item = AP({ type: '休暇', ref: 'v1', _stT: 500, _mut: 500, signoffs: [] });
+  // D approves (gen 0); B keeps that approved request. D then undoes (gen 1) and either rejects, or a first approver signs the new round.
+  for (const [label, next] of [['rejected after the undo', 'approveItem("ap1","rejected","x")'], ['a sign-off in the new round', null]]) {
+    const D = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [item], my_vacations: [{ ...v }], notifications: [] } });
+    at(D, T); await run(D, 'approveItem("ap1","approved","x")');
+    const oldRec = plain(D.S.my_vacations[0]);
+    at(D, T + 100); await run(D, 'reopenApproval("ap1")');
+    if (next) { at(D, T + 200); await run(D, next); }
+    else { D.S.approvals[0].signoffs = [{ role: 'am', name: 'Yuki', _t: T + 200 }]; D.S.approvals[0]._mut = T + 200; }
+    const dItem = plain(D.S.approvals[0]);
+    for (const [how, bItems, cloud] of [['current item copy', [dItem], null], ['no copy, read from the cloud', [], { approvals: [dItem] }]]) {
+      const B = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud, st: { approvals: plain(bItems), my_vacations: [oldRec], notifications: [] } });
+      at(B, T + 300); run(B, 'cancelApprovedVacation("v1")'); await wait();
+      const it = B.S.approvals[0];
+      assert.deepEqual([it._gen, it.status, (it.signoffs || []).length], [1, dItem.status, dItem.signoffs.length], label + ' / ' + how + ': the newer round is not touched');
+      assert.ok(!B.toasts.some(([m]) => /読み直せませんでした/.test(m)), 'no warning: the item was read');
+      assert.deepEqual(both(D, B, 'my_vacations', 'mergeReqTomb').map(x => x.status), next ? ['却下', '却下'] : ['申請中', '申請中'], label + ' / ' + how + ': the request follows the newer round');
+      assert.deepEqual(both(D, B, 'approvals', 'mergeApprovals').map(x => [x.status, x._gen]), [[dItem.status, 1], [dItem.status, 1]]);
+    }
+  }
+  // The approved current round is still undone (the leave the person sees as approved is approved).
+  { const D = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [item], my_vacations: [{ ...v }], notifications: [] } });
+    at(D, T); await run(D, 'approveItem("ap1","approved","x")');
+    at(D, T + 100); await run(D, 'reopenApproval("ap1")');
+    at(D, T + 200); await run(D, 'approveItem("ap1","approved","x")');
+    const B = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: plain(D.S.approvals), my_vacations: plain(D.S.my_vacations), notifications: [] } });
+    at(B, T + 300); run(B, 'cancelApprovedVacation("v1")'); await wait();
+    assert.deepEqual([B.S.approvals[0].status, B.S.approvals[0]._gen, B.S.my_vacations[0].status, B.S.my_vacations[0]._dG], ['pending', 2, '申請中', 2]);
+    assert.deepEqual(both(D, B, 'my_vacations', 'mergeReqTomb').map(x => x.status), ['申請中', '申請中']);
+    // (B has the first approval of the request and no item copy: the item read from the cloud is reopened, and the request takes its generation)
+    const B2 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: plain(D.S.approvals) }, st: { approvals: [], my_vacations: [{ ...plain(D.S.my_vacations[0]), _dG: 0 }], notifications: [] } });
+    at(B2, T + 300); run(B2, 'cancelApprovedVacation("v1")'); await wait();
+    assert.deepEqual([B2.S.approvals[0].status, B2.S.approvals[0]._gen, B2.S.my_vacations[0].status, B2.S.my_vacations[0]._dG], ['pending', 2, '申請中', 2]);
+    assert.deepEqual(both(D, B2, 'my_vacations', 'mergeReqTomb').map(x => x.status), ['申請中', '申請中']); }
+
+  // A page decision on an old item copy, when the newer round was already decided the same way on another device: one notice in all.
+  const mi = { id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', amount: 12, date: '2026-10-05', _stT: 500 };
+  const X = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [AP({ _stT: 500, _mut: 500, signoffs: [] })], mileage_requests: [{ ...mi }], notifications: [] } });
+  at(X, T); await run(X, 'approveItem("ap1","approved","x")');
+  at(X, T + 100); await run(X, 'reopenApproval("ap1")');
+  const undone = plain(X.S.mileage_requests[0]);
+  at(X, T + 200); await run(X, 'approveItem("ap1","approved","x")');
+  const P = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: plain(X.S.approvals) },
+    st: { approvals: [AP({ _stT: 500, _mut: 500, signoffs: [] })], mileage_requests: [undone], notifications: [] } });
+  at(P, T + 300); run(P, 'approveMileage("mi1")'); await wait();
+  assert.equal((P.S.notifications || []).filter(n => /が承認されました|承認済み/.test(n.title || '')).length, 0, 'already announced by the other device');
+  assert.deepEqual(both(P, X, 'mileage_requests', 'mergeReqTomb').map(x => x.status), ['承認', '承認']);
+  // _apSyncRecStamp writes the generation on a record that has a mark but no generation (written before the generation).
+  { const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [], mileage_requests: [{ ...mi, status: '承認', _stK: 'k1', _stT: 900 }], notifications: [] } });
+    run(c, '_apSyncRecStamp("ガソリン代", "mi1", [' + JSON.stringify(AP({ status: 'approved', _stK: 'k1', _stT: 900, _mut: 900 })) + '], {t:900,k:"k1"})');
+    assert.equal(c.S.mileage_requests[0]._dG, 0); }
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {
