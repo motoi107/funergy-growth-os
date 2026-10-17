@@ -52657,14 +52657,14 @@ function _ecAttribute(issue){
   }
   return {store:store, emp:emp};
 }
-function ecSnapshot(){
+function ecSnapshot(open, again){
   var today=todayISO();
   var log=getEcLog();
   var todayRec={}; log.forEach(function(r){ if(r && r.date===today && !todayRec[r.title]) todayRec[r.title]=r; });
   var added=0;
   /* v1088: 解除したものは記録に足さない（解除する前の日の記録は残る）。key と fp も残す（「問題ではない」で解除したものを数から外すため）。
      同じ日・同じ題名の記録があれば 1 日 1 件のまま、中身（key と fp）が違えば parts に足す（解除した中身のあとに出た別の中身を数える） */
-  try{ ecOpenIssues().forEach(function(x){
+  try{ (open || ecOpenIssues()).forEach(function(x){
     var r0=todayRec[x.title];
     if(r0){
       if(!x.key) return;
@@ -52678,13 +52678,23 @@ function ecSnapshot(){
     log.push(rec); todayRec[x.title]=rec; added++;
   }); }catch(e){}
   if(log.length>4000) log=log.slice(log.length-4000);
-  lsSet('ec_log', log);
+  if(added || !again) lsSet('ec_log', log);   /* v1088: 同じ日に記録し直したときは、足したときだけ書く */
   return added;
 }
-function ecMaybeAutoSnapshot(){
-  var today=todayISO(), n=0;
-  if(ls('ec_log_last','')===today) return 0;
-  try{ n=ecSnapshot(); lsSet('ec_log_last', today); }catch(e){}
+/* v1088: 今の不備（key と fp）の印。同じ日でも、前に記録したときと違えば記録し直す（足すのは新しい中身だけ・1 日 1 件のまま）。
+   端末に残すのは短い印だけ */
+function _ecOpenSig(list){
+  var s=(list||[]).filter(function(x){ return x && x.key; }).map(function(x){ return String(x.key)+'\u241e'+String(x.fp==null?'':x.fp); }).sort().join('\n');
+  var h=0; for(var i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; }
+  return (s.length)+':'+(h>>>0).toString(36);
+}
+function ecMaybeAutoSnapshot(all){
+  var today=todayISO(), n=0, open=null;
+  try{ open=all ? ecOpenIssues(all) : null; }catch(e){ open=null; }
+  var sig=open ? _ecOpenSig(open) : '';
+  var again=(ls('ec_log_last','')===today);
+  if(again && (!open || ls('ec_log_sig','')===sig)) return 0;
+  try{ n=ecSnapshot(open || undefined, again); lsSet('ec_log_last', today); if(open) lsSet('ec_log_sig', sig); }catch(e){}
   return n||0;
 }
 function ecSnapshotNow(){ var n=ecSnapshot(); lsSet('ec_log_last', todayISO()); showToast(n>0?(n+'件を記録しました'):'本日分は記録済みです（新規なし）', n>0?'success':'info'); renderPage(curPage); }
@@ -52756,7 +52766,7 @@ function renderErrorCenter(embedded){
     ?'<div style="display:flex;align-items:center;gap:7px;margin:2px 2px 12px"><i class="ti ti-alert-hexagon" style="font-size:20px;color:var(--accent)"></i><div><div style="font-weight:700;font-size:15px">エラーセンター</div><div style="font-size:11px;color:var(--muted)">運用・データの不備を自動検知（勤怠/チップ14日・打刻7日）</div></div></div>'
     :'<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
   /* 毎日の記録はクラウドの解除を読み直してから（ほかの端末で解除したものを今日の記録に足さない） */
-  try{ if(!ecAutoPull(function(){ var n=0; try{ n=ecMaybeAutoSnapshot(); }catch(e){} if(n>0 && ecView==='log') _ecRerender(); })) ecMaybeAutoSnapshot(); }catch(e){}
+  try{ if(!ecAutoPull(function(){ var n=0; try{ n=ecMaybeAutoSnapshot(all); }catch(e){} if(n>0 && ecView==='log') _ecRerender(); })) ecMaybeAutoSnapshot(all); }catch(e){}
   if(['now','res','log','inactive','unreg'].indexOf(ecView)<0) ecView='now';
   html+='<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> '+t('今の不備','Current')+' '+issues.length+'</div>'

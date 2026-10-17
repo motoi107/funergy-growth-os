@@ -52,7 +52,7 @@ const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetE
   '_ecResSave', 'ecPullLatest', '_ecOnPage', '_ecRerender', 'ecAutoPull', 'ecSetSort', 'ecSetStore', 'ecSetCat', '_ecStoreName', '_ecStoresOf',
   '_ecDateLabel', '_ecAtLabel', '_ecMeta', '_ecStoreRank', 'ecSortIssues', 'ecFilterIssues', '_ecBarHtml', '_ecHeadRow', '_ecSevBadge', '_ecCells',
   '_ecRowHtml', '_ecResRows', '_ecResView', 'ecOpenResolve', 'ecResolveGo', 'ecUndoResolve', 'ecSevMeta', 'setEcView', 'setEcRange', 'getEcLog',
-  '_ecAttribute', 'ecSnapshot', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
+  '_ecAttribute', 'ecSnapshot', '_ecOpenSig', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
   'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecPartSig', '_ecLogParts', '_ecPartsUnion', 'ecLogSev', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes', '_canonForSig', '_logSig',
   'ecCloseResolve', '_ecNaOk'];
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
@@ -416,6 +416,22 @@ test('7A: overwork cleared as "not a problem" that grows to 要対応 the same d
     assert.deepEqual(plain(run(c, 'mergeEcLog(' + JSON.stringify(back) + ',' + JSON.stringify(m) + ')'))[0].parts, m[0].parts);
   }
   assert.equal(run(c, '_coversEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([rowHigh]) + ')'), false);
+  // Without pressing 今すぐ記録: opening the error center again the same day records the new details (the day's first record was
+  // made already); opening it again with nothing changed writes nothing.
+  const d = app({ missingTip: [] });
+  run(d, 'renderErrorCenter(true)'); await tick();
+  const row0 = plain(d.S.ec_log).find(r => r.key === OW);
+  d.S.ec_resolutions = { [RID(OW, row0.fp)]: { key: OW, fp: row0.fp, why: 'false', cat: row0.cat, title: row0.title, _at: NOW - 1 } };
+  const w0 = d.writes.filter(k => k === 'ec_log').length;
+  run(d, 'renderErrorCenter(true)'); await tick();   // the open issues changed (one cleared) but nothing new to add
+  run(d, 'renderErrorCenter(true)'); await tick();
+  assert.equal(d.writes.filter(k => k === 'ec_log').length, w0, 'nothing new: the log is not written again');
+  d.owScanWeek = () => [{ name: 'Crew A', over: 9, max: 40, total: 49, grade: 'G1', byStore: { F01: 30, F02: 19 }, weekDone: false }];
+  run(d, 'renderErrorCenter(true)'); await tick();
+  const row1 = plain(d.S.ec_log).filter(r => r.date === '2026-10-16' && r.title === row0.title);
+  assert.equal(row1.length, 1);
+  assert.equal(run(d, 'ecLogSev(' + JSON.stringify(row1[0]) + ')'), 'high');
+  assert.ok(!('ec_log_sig' in d.S && d.S.ec_log_sig.length > 40), 'only a short mark is kept on the device');
   // Rows without parts are merged and covered as before.
   assert.equal(run(c, '_coversEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([{ ...rowMid, id: 'x', ts: 5 }]) + ')'), true);
   assert.ok(!('parts' in plain(run(c, 'mergeEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([{ ...rowMid, id: 'x', ts: 5 }]) + ')'))[0]));
