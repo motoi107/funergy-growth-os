@@ -1,5 +1,21 @@
 # Claude / Codex 共通記録
 
+## 2026-10-17 Codex の再レビュー（#70 `8ccb543`・#71 `a4d1457`・#72 `ca8b148`）の P2 2 つを直した（Claude・#70 は `129618e`・#71 は `12eadd8`・#72 は `8afef76` 以降・本番未反映）
+
+- Codex（Moto さん経由・10/17 06:12 HST）：3 つとも **blocked／manual**。#70・#71 の投稿は Codex の側で拒否されて GitHub に無い。#72 は [コメント 6230910276](https://github.com/motoi107/funergy-growth-os/pull/72#issuecomment-6230910276)。Claude のルーティンのレビュー（#72 の 6230863243・P1・P2 なし）とは結論が違う。
+  1. （#70・#71・#72）申請の古い写しと、時計の進んだ端末の取り消しが重なると、却下を知らせたあと同期で申請が「申請中」に戻る（v1087）。
+  2. （#72）業者の統合を「外す」と、統合で業者を付けた待ちの invoice（印字名がどの業者の名前でもなかったもの）に業者が残る（v1089・前からの v1083 の作りを引き継いでいた）。
+- 直し 1（v1087・アプリだけ・`docs/WORKCENTER_APPROVALS_V1087_JA.md` の 6c）：承認センターで決める前に申請の記録を毎回読み直す。案件の決定の時刻は前の状態・保存の時刻より必ず後（見せる時刻は端末の時計）。申請に書く時刻は案件の決定より後。申請の画面の決定も知っている案件の時刻より後（`apRecFloor`）。時計が下限より遅れていれば 0〜996 ミリ秒を足す（2 台が同じ時刻にならない）。押すたびに申請の読み直しが 1 回増える（最大 8 秒・速さは測っていない）。
+- 直し 2（v1089・migration `20261024090000` に業者の統合の 2 つの置き換えを足した・`docs/VENDOR_DECIDE_V1089_JA.md` の 5c）：統合が待ちの invoice に業者と区分を付けて記録に残す（`moved.unknown`）。外すと、要確認のまま・人が業者を選んでいなければ業者を選ぶ待ちに戻し、すぐ「業者がマスターにない」を付ける（区分・業者名も戻す）。反映した・ほかの業者・人が選んだものはそのまま。1 回で確かめ直せない分も「業者を決める」が出て、`invoice_vendor_waiting` が数える。関数（1 ファイル）は前と同じ（sha256 先頭 `3c1d48fe7d87`）。関数の数 84 のまま。
+- 独立レビュー（Claude の別エージェント・作業を見ていない・`34c2a96` と `3552636`）：1 は P1・P2 なし（P3 1：2 台が同じ時刻 → 直した）。2 は直っている・新しく **P2 1**（統合で業者を付けた invoice に区分が付かず、食材に数えられない）・P3 3（外した直後の「業者がマスターにない」・行の待ちと上書き・画面の文）→ すべて直した（`129618e`・`a20f8e5`）。直したあとの独立レビューは無し。
+- 試験（合成データ・本番に接続していない）：
+  - v1087：`tests/approvals-v1087.test.mjs` 34（足した 2 件は `8ccb543`・`34c2a96` で落ちる）・`tests/office-crew-approvals.test.mjs` 7・`tests/employee-resign-sync.test.mjs` 36・`tests/error-center-v1088.test.mjs` 20。直しを 1 つずつ外す 14 通りのうち 13 で落ちる（残り 1 は二重の守り）。static release pass（1087・1088・1089）。
+  - v1089：`tests/invoice-vendor-register.test.mjs` 12（「taken back exactly」を業者・区分・「業者がマスターにない」・期日の訂正・人が選んだ業者・反映・アプリの写しの用途まで見るように書き直し、1 回で直せない分の試験を足した。直す前の SQL では落ちる）・`tests/invoice-vendor-merge.test.mjs` 4・`tests/invoice-vendor-merge-ui.test.mjs` 10・`tests/invoice-vendor-decide-ui.test.mjs` 10・`tests/invoice-rules.test.mjs` 16・`tests/invoice-migrations.test.mjs` 5・`tests/invoice-intake.test.mjs` 95・`tests/invoice-ui.test.mjs` 13。
+  - わざと壊す：業者の統合と新しい業者の 130 通り（`8afef76`）すべてで落ちる。v1089 で `vendorMergeInto` が同じ行を持ったため目印が 2 か所になっていた業者の統合の 3 通りを直した（それまで v1089 で業者の統合の通りを流していなかった）。
+  - `tests/*.test.mjs`（重いもの以外）793 件の失敗は前と同じ 27 件。
+- 残したこと：v1089 の前の統合（記録に `unknown` が無い）は外しても前と同じ。申請の画面で 2 台が同時に別々に決めたときの同じ時刻は前から（送った順）。実 PostgreSQL の 2 セッションの競合（統合と人の保存）・実機・日英の画面・速さは確かめていない。
+- 次：Codex の再レビュー（#70 `129618e`・#71 `12eadd8`・#72 の最新の head）→ Moto さんが #70 → #71 → #72 の順にマージ（#72 は手順.md の順）。
+
 ## 2026-10-16 Invoice取込で新しい業者を「統合」か「新規登録」で決める：アプリ v1089・migration 20261024090000・関数 invoice-intake（UI案52 ③・Claude・ブランチ `claude/vendor-decide-1089`・PR #72（#70・#71 を含む）・本番未反映）
 
 - 決定：Moto さん 10/16 10:58 HST「全部Aでお願いします」の 9A〜11A。17:40 HST「次お願いします」。仕様・決めたこと・限界は `docs/VENDOR_DECIDE_V1089_JA.md`。入れる一式 `deploy/invoice-vendor-register-v1089/`（SQL → 確認（vendor_register＝true・functions＝84）→ 関数（1 ファイル・sha256 先頭 `3c1d48fe7d87`）→ アプリ）。
@@ -9,7 +25,7 @@
   - 印字名がもう 1 つの業者の名前なら「〇〇にする」。2 つの業者の名前なら、この invoice だけ（名前は覚えない）。
   - どれも同じ印字名で待っている invoice（締めていない月・1 回に 60 件）と、見ている invoice を直す（9A）。決めるのは経理・事務Crew・GM・CEO（10A）。
   - 1 件の画面の「マスターから選ぶ」で印字名を黙って覚えることは、業者が決まっていない invoice ではなくなった。答えが返らないときは Invoice取込に確かめてから記録・カードを書く。
-- サーバー：関数 3 つ（`invoice_vendor_register`・`invoice_vendor_waiting`・`invoice_vendor_merge_into`。service_role だけ・業者を書くところと同じロック）。handler に `vendor_register`・`vendor_apply`・`vendor_merge_into`、`edit` の `learn:false`。`invoice_vendor_merge`・`invoice_edit` の SQL は変えていない。
+- サーバー：関数 3 つ（`invoice_vendor_register`・`invoice_vendor_waiting`・`invoice_vendor_merge_into`。service_role だけ。登録と統合は業者を書くところと同じロック・`invoice_vendor_waiting` は読むだけでロックを取らない）。handler に `vendor_register`・`vendor_apply`・`vendor_merge_into`、`edit` の `learn:false`。`invoice_edit` の SQL は変えていない（`invoice_vendor_merge`・`invoice_vendor_unmerge` は 10/17 に置き換えた・上の節）。
 - 試験（合成データ・本番に接続していない）：`tests/invoice-vendor-register.test.mjs` 11・`tests/invoice-vendor-decide-ui.test.mjs` 10・関連（migrations・rules・intake・vendor-merge・invoice-ui）。わざと壊す 73 通り（最後のコード `d9ea5b5`）：73 通りすべてで落ちる（`eaaa81b` では 70 を流して 68。落ちなかった 2 つに試験を足した）。`tests/*.test.mjs`（重いもの以外）の失敗は前と同じ 27 件。static release pass/1089。ESLint の未定義の名前は前と同じ 3 つ。Chromium（日英・1280／390px・経理・事務Crew・GM の 12 通り）pageerror 0・横スクロールなし。
 - 独立レビュー（Claude の別エージェント・作業を見ていない・3 回）：`c0893e6` P1 1・P2 3 → `949a3a4`。`949a3a4` P2 1 → `2c6b987`。`2c6b987` **P1・P2 なし**・P3 4 → 3 つを `eaaa81b` で直した（残した P3：先頭に直せない invoice が 120 件以上ずっとあると進まない・名前のそろえ方の JavaScript と PostgreSQL の小さな違い）。**Codex のレビューはまだ。**
 - この PR は #71 の上（#70 → #71 → この PR の順にマージ）。下の節の #70・#71 の直しも取り込んでいる。
