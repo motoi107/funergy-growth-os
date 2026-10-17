@@ -126,6 +126,15 @@ test('every detector gives each issue a key, a fingerprint, its store and date',
   assert.equal(by('ob|ob1').fp, '提出完了'); assert.equal(by('ob|ob1').store, 'F02');
   assert.ok(by('close|2026-09')); assert.equal(by('close|2026-09').store, '');
   const inv = by('inv|F01|m|i1'); assert.ok(inv); assert.equal(inv.fp, '2026-09|-1|10|-11'); assert.equal(inv.date, '2026-09-01');
+  // Duplicate names: the fingerprint is the count (a third person with the same name shows again).
+  const dup = app({ fns: [] });
+  dup.getEmployees = () => [{ id: 'x1', name: 'Same', store: 'F01', status: '在籍', email: 'a@x', dob: '1' }, { id: 'x2', name: 'Same', store: 'F02', status: '在籍', email: 'b@x', dob: '1' }];
+  const d = plain(run(dup, 'ecDetEmpMaster()')).find(x => x.key === 'empdup|name|Same');
+  assert.equal(d.fp, '2');
+  // Inventory lines without id or name get separate keys (by line number).
+  const noName = app({ st: { inv_hist_F02: [{ ym: '2026-09', lines: [{ actual: -1, theory: 5, diff: -6 }, { actual: -2, theory: 5, diff: -7 }] }] } });
+  const nk = plain(run(noName, 'ecDetInventory()')).map(x => x.key);
+  assert.deepEqual(nk, ['inv|F02|m|#0', 'inv|F02|m|#1']);
   // Keys are unique (one issue per key).
   assert.equal(new Set(all.map(x => x.key)).size, all.length);
   // An issue without a key gets one from its type and title, and its details as fingerprint.
@@ -155,6 +164,9 @@ test('two devices clearing different issues keep both; the newer record wins (ti
   const mg = (a, b) => plain(run(c, 'mergeEcRes(' + JSON.stringify(a) + ',' + JSON.stringify(b) + ')'));
   assert.deepEqual(Object.keys(mg(A, B)).sort(), [RID('emp|email|e1'), RID('tip|F01|2026-10-15')]);
   assert.equal(run(c, '_coversEcRes(' + JSON.stringify(A) + ',' + JSON.stringify(B) + ')'), false);
+  const newer = { [RID('tip|F01|2026-10-15')]: Object.assign({}, A[RID('tip|F01|2026-10-15')], { _at: NOW - 10, off: true }) };
+  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(A) + ',' + JSON.stringify(newer) + ')'), false, 'an older cloud record does not cover a newer one');
+  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(newer) + ',' + JSON.stringify(A) + ')'), true);
   const undo = { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 50, off: true } };
   for (const [cl, lo] of [[A, undo], [undo, A]]) assert.equal(mg(cl, lo)[RID('tip|F01|2026-10-15')].off, true);
   // Same time on two devices (a skewed clock): both devices keep the same record.
@@ -195,6 +207,8 @@ test('clearing: the reason, note, who and when are saved after reading the cloud
   assert.equal(r.key, 'tip|F01|2026-10-15');
   assert.equal(c.closed, 1);
   assert.ok(!plain(run(c, 'ecOpenIssues()')).some(x => x.key === 'tip|F01|2026-10-15'));
+  run(c, 'renderErrorCenter(true)');
+  assert.ok(!plain(run(c, '_ecShown')).some(x => x.key === 'tip|F01|2026-10-15'), 'the list leaves it out');
   // The cleared tab lists it with an undo button.
   run(c, 'ecView="res"');
   const resHtml = run(c, 'renderErrorCenter(true)');
@@ -361,6 +375,8 @@ test('the dialog: cancelling while the save waits for the cloud saves nothing; a
   assert.deepEqual(c.S.ec_resolutions || {}, {}, 'nothing saved after cancelling');
   assert.ok(c.toasts.some(t => /やめました/.test(t[0])));
   // "この店は対象外" is offered for tips, attendance and inventory, not for employee / onboarding / monthly close items.
+  assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"", key:"k" })'), false, 'not without a store');
+  assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"F01", key:"k" })'), true);
   for (const [key, na] of [['tip|F01|2026-10-15', true], ['ow|Crew A|2026-10-11', true], ['emp|email|e1', false], ['close|2026-09', false]]) {
     const i = shown.findIndex(x => x.key === key);
     c.modals.length = 0; run(c, 'ecOpenResolve(' + i + ')');
@@ -388,6 +404,10 @@ test('opening the error center reads the cloud at most once a minute and redraws
   assert.deepEqual(c.rendered, ['tasks'], 'redraws after the cloud brought a new record');
   run(c, 'renderErrorCenter(true)'); await tick();
   assert.equal(c.pulls, 1, 'not again within a minute');
+  // Nothing new in the cloud: no redraw.
+  const same = app({ cloud: { ec_resolutions: {} } });
+  run(same, 'renderErrorCenter(true)'); await tick();
+  assert.equal(same.pulls, 1); assert.deepEqual(same.rendered, []);
   // Moved away while reading: no redraw over another page.
   const d = app({ cloud: { ec_resolutions: { [RID('x')]: { key: 'x', fp: '', why: 'false', _at: NOW - 1 } } } });
   run(d, 'renderErrorCenter(true)'); d.curPage = 'dashboard'; await tick();
