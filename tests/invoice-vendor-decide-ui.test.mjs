@@ -452,10 +452,11 @@ test('a vendor name is text everywhere (also one registered from a printed name)
 
 test('the review list and the open invoice offer 業者を決める where the vendor is not in the master; the silent learning is gone; v1089', () => {
   const table = bodyOf('invInReviewTable');
-  assert.match(table, /var vendorNew = edit && !r\.vendor_key && chk\.some\(function\(x\)\{ return x\.code==='vendor_unknown'; \}\);/);
+  // Also one a merge gave the vendor that was not worked out again yet (more than one call works out): it still says vendor_unknown.
+  assert.match(table, /var vendorNew = edit && chk\.some\(function\(x\)\{ return x\.code==='vendor_unknown'; \}\);/);
   assert.match(table, /\(vendorNew \? ' <button class="btn btn-primary btn-sm"[^']*'\+dis\+' onclick="event\.stopPropagation\(\);ivdOpenRow\(/);
   const detail = bodyOf('invInDetail');
-  assert.match(detail, /var vendorNew = canEdit && rv && d\.status==='review' && !d\.vendor_key && codes\.indexOf\('vendor_unknown'\)>=0;/);
+  assert.match(detail, /var vendorNew = canEdit && rv && d\.status==='review' && codes\.indexOf\('vendor_unknown'\)>=0;/);
   assert.match(detail, /kind==='vendor' && vendorNew \? '<button class="btn btn-primary btn-sm" onclick="ivdOpenDoc\(\)">/);
   assert.ok(detail.indexOf("kind==='vendor' && vendorNew") < detail.indexOf("kind==='vendor' ? '<select"), 'the button comes before the select');
   assert.ok(!/を業者の別名として覚えます（次回から ✓）/.test(html), 'the old note is gone');

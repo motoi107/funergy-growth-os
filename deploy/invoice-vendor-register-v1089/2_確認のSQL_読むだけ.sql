@@ -134,7 +134,8 @@ select
       where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_purchase_check', 'invoice_map_seed', 'invoice_vendor_seed')), false) as vendor_merge,
   -- 新しい業者を決める（20261024090000, Moto 2026-10-16・UI案52 ③）：invoice の印字名から業者を登録する関数（同じ名前の業者があれば登録しない）、
   -- 名前で待っている invoice を数える関数、印字名を業者にまとめる関数（ほかの業者をまとめないか同じロックの中で確かめてから業者の統合）。
-  -- どれもブラウザーからは動かせない。経理・事務Crew・GM・CEO が使う（10A）。
+  -- どれもブラウザーからは動かせない。経理・事務Crew・GM・CEO が使う（10A）。業者の統合で業者が決まった待ちの invoice は統合の記録に残り、
+  -- 統合を外すと業者を選ぶ待ちに戻る（業者の統合の 2 つの置き換え・Codex の PR #72 のレビュー）。
   coalesce((select count(*) = 3 and bool_and(p.prosrc like '%''office'',''office_crew''])%' and p.prosrc like '%vendor_key is null and d.status=''review''%')
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_waiting', 'invoice_vendor_merge_into')
@@ -142,4 +143,7 @@ select
     and (select count(*) = 2 and bool_and(p.prosrc like '%pg_advisory_xact_lock(hashtext(''invoice_vendor_rules''))%'
         and p.prosrc like case p.proname when 'invoice_vendor_register' then '%''taken''%' else '%''shared''%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_merge_into')), false) as vendor_register;
+      where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_merge_into'))
+    and (select count(*) = 2 and bool_and(p.prosrc like '%''unknown'', v_unk%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_vendor_merge', 'invoice_vendor_unmerge')), false) as vendor_register;

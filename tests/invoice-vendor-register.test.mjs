@@ -291,26 +291,73 @@ const into = (E, tok, body) => E.api(tok, { action: 'vendor_merge_into', ...body
 test('新しい業者を決める: merging the printed name into a vendor — the waiting invoices get it, the one on screen too; taken back exactly', async () => {
   const E = await setup();
   const D = await read(E, [['M-1', '9001', '2026-10-02', 'VENDR A'], ['M-2', '9002', '2026-10-03', 'Vendr  A'], ['M-3', '9003', '2026-10-03', 'VendorB'],
-    ['M-4', '9004', '2026-08-20', 'VENDR A'], ['M-5', '9005', '2026-08-21', 'VENDR A']]);
+    ['M-4', '9004', '2026-08-20', 'VENDR A'], ['M-5', '9005', '2026-08-21', 'VENDR A'], ['M-6', '9006', '2026-10-04', 'VENDR A']]);
   const before = await snap(E);
   // Preview (nothing changes): the waiting ones of open months and the one on screen (M-4, a closed month) on top.
   const pv = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['M-4'].id, preview: true });
   assert.equal(pv.status, 200, JSON.stringify(pv.body));
   assert.deepEqual([pv.body.ok, pv.body.matched, pv.body.target.vendor_key, pv.body.target.display_name, pv.body.from, pv.body.unknown, pv.body.waiting, pv.body.closed_left, pv.body.here, pv.body.added_aliases],
-    [true, 1, 'v1', 'VendorA', [], 2, 3, 1, true, ['VENDR A']]);
+    [true, 1, 'v1', 'VendorA', [], 3, 4, 1, true, ['VENDR A']]);
   assert.deepEqual(await snap(E), before, 'a preview changes nothing');
   const m = await into(E, 'tok-crew', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['M-4'].id, group_id: 'vm-inv-1' });
   assert.equal(m.status, 200, JSON.stringify(m.body));
   assert.ok(m.body.merge_id); assert.deepEqual(m.body.from, []);
-  assert.deepEqual(m.body.review_doc_ids, [D['M-4'].id, D['M-1'].id, D['M-2'].id], 'the one on screen first');
-  assert.deepEqual([m.body.recheck, m.body.closed_left, m.body.waiting, m.body.summary], [{ fixed: 3, failed: 0, left: 0 }, 1, 3, true]);
+  assert.deepEqual(m.body.review_doc_ids, [D['M-4'].id, D['M-1'].id, D['M-2'].id, D['M-6'].id], 'the one on screen first');
+  assert.deepEqual([m.body.recheck, m.body.closed_left, m.body.waiting, m.body.summary], [{ fixed: 4, failed: 0, left: 0 }, 1, 4, true]);
   const vk = async k => (await one(E, D[k].id)).vendor_key;
-  assert.deepEqual([await vk('M-1'), await vk('M-2'), await vk('M-3'), await vk('M-4'), await vk('M-5')], ['v1', 'v1', 'v2', 'v1', null], 'a closed month stays, but not the one on screen');
+  const all = async () => Promise.all(['M-1', 'M-2', 'M-3', 'M-4', 'M-5', 'M-6'].map(vk));
+  assert.deepEqual(await all(), ['v1', 'v1', 'v2', 'v1', null, 'v1'], 'a closed month stays, but not the one on screen');
+  for (const k of ['M-1', 'M-4']) assert.ok(!codes(await one(E, D[k].id)).includes('vendor_unknown'), k + ': worked out again with the vendor');
   assert.deepEqual((await rule(E, 'v1')).aliases, ['VENDOR A INC.', 'VENDR A']);
-  assert.equal((await E.q(`select group_id from invoice_vendor_merges where id=$1`, [m.body.merge_id]))[0].group_id, 'vm-inv-1');
+  const rec = (await E.q(`select group_id, moved from invoice_vendor_merges where id=$1`, [m.body.merge_id]))[0];
+  assert.equal(rec.group_id, 'vm-inv-1');
+  assert.deepEqual(rec.moved.unknown.map(x => x.id).sort(), [D['M-1'].id, D['M-2'].id, D['M-4'].id, D['M-6'].id].sort(), 'the merge records every invoice it gave the vendor');
+  // After the merge: M-1's due date is corrected (its vendor is the merge's), M-2's vendor is chosen by a person, M-6 is posted.
+  let x = await one(E, D['M-1'].id);
+  assert.equal((await E.api('tok-office', { action: 'edit', doc_id: x.id, version: x.version, header: { due_date: '2026-10-30' }, lines: [], reason: '期日', ack: [] })).status, 200);
+  x = await one(E, D['M-2'].id);
+  assert.equal((await E.api('tok-office', { action: 'edit', doc_id: x.id, version: x.version, header: { vendor_key: 'v1' }, lines: [], reason: '業者を選んだ：VendorA', ack: [], learn: false })).status, 200);
+  x = await one(E, D['M-6'].id);
+  const po = await E.api('tok-office', { action: 'post', doc_id: x.id, version: x.version, reason: '確認済み' });
+  assert.equal(po.status, 200, JSON.stringify(po.body));
+  assert.equal((await one(E, D['M-6'].id)).status, 'posted');
+  // Taking it back: the invoices it gave the vendor wait for a vendor again (worked out again); the ones a person decided stay.
+  const upv = await E.api('tok-office', { action: 'vendor_unmerge', merge_id: m.body.merge_id, preview: true });
+  assert.equal(upv.status, 200, JSON.stringify(upv.body));
+  assert.deepEqual([upv.body.docs, upv.body.unknown, upv.body.stay, upv.body.review], [0, 2, 2, 2]);
+  assert.deepEqual(await all(), ['v1', 'v1', 'v2', 'v1', null, 'v1'], 'a preview changes nothing');
   const u = await E.api('tok-office', { action: 'vendor_unmerge', merge_id: m.body.merge_id });
   assert.equal(u.status, 200, JSON.stringify(u.body));
   assert.deepEqual((await rule(E, 'v1')).aliases, ['VENDOR A INC.'], 'the name is taken back');
+  assert.deepEqual([u.body.unknown, u.body.stay, u.body.review_doc_ids, u.body.recheck], [2, 2, [D['M-1'].id, D['M-4'].id], { fixed: 2, failed: 0, left: 0 }]);
+  assert.deepEqual(await all(), [null, 'v1', 'v2', null, null, 'v1'], 'given by the merge → waiting again; chosen by a person or posted → stays');
+  const m1 = await one(E, D['M-1'].id), m4 = await one(E, D['M-4'].id);
+  for (const [k, d] of [['M-1', m1], ['M-4', m4]]) {
+    assert.deepEqual([d.status, d.vendor_name, codes(d).includes('vendor_unknown')], ['review', D[k].vendor_name, true], k + ': waits for a vendor again');
+  }
+  assert.equal(String(m1.due_date).slice(0, 10) === '2026-10-30' || new Date(m1.due_date).toISOString().slice(0, 10) === '2026-10-30', true, 'the correction stays');
+  const us = await E.api('tok-office', { action: 'vendor_usage' });
+  assert.deepEqual(us.body.unknown.map(q => [q.name, q.docs]), [['VENDR A', 3]], 'listed as waiting for a vendor again (M-1, M-4, M-5)');
+  await E.pg.close();
+});
+
+test('新しい業者を決める: more waiting invoices than one call works out — the merge gives them all the vendor, the next press works out the rest, and taking it back reaches them all', async () => {
+  const E = await setup(SQL, { vendorRecheck: 2 });
+  const D = await read(E, [['W-1', '9401', '2026-10-01', 'VENDR A'], ['W-2', '9402', '2026-10-02', 'VENDR A'], ['W-3', '9403', '2026-10-03', 'VENDR A']]);
+  const m = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['W-1'].id });
+  assert.equal(m.status, 200, JSON.stringify(m.body));
+  assert.deepEqual(m.body.recheck, { fixed: 2, failed: 0, left: 1 });
+  const W3 = await one(E, D['W-3'].id);
+  assert.deepEqual([W3.vendor_key, codes(W3).includes('vendor_unknown')], ['v1', true], 'given the vendor, not worked out again yet');
+  // The next press: the name is the vendor's now, so the screen gives it (vendor_apply), and the one left is worked out.
+  const a = await E.api('tok-office', { action: 'vendor_apply', name: 'VENDR A', doc_id: D['W-3'].id, vendor_key: 'v1' });
+  assert.deepEqual([a.body.ok, a.body.doc_ids, a.body.recheck], [true, [D['W-3'].id], { fixed: 1, failed: 0, left: 0 }]);
+  assert.ok(!codes(await one(E, D['W-3'].id)).includes('vendor_unknown'));
+  // Taken back: all three wait for a vendor again (the press after the merge was not a person choosing the vendor).
+  const u = await E.api('tok-office', { action: 'vendor_unmerge', merge_id: m.body.merge_id });
+  assert.equal(u.status, 200, JSON.stringify(u.body));
+  assert.deepEqual([u.body.unknown, u.body.stay, u.body.recheck], [3, 0, { fixed: 2, failed: 0, left: 1 }]);
+  for (const k of ['W-1', 'W-2', 'W-3']) assert.equal((await one(E, D[k].id)).vendor_key, null, k);
   await E.pg.close();
 });
 

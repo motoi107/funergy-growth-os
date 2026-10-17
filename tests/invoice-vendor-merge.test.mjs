@@ -201,6 +201,8 @@ test('業者の統合: the vendors become one, open months move, closed months a
   const r = await E.api('tok-office', { action: 'vendor_merge', to: 'VendorA', names, group_id: 'vm-test-1' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.merge_id); assert.deepEqual(r.body.recheck, { fixed: 3, failed: 0, left: 0 }); assert.equal(r.body.summary, true);
+  assert.equal(r.body.review_doc_ids[0], D['U-3001'].id, 'the invoice that had no vendor is worked out first');
+  assert.deepEqual((await E.q(`select moved->'unknown' u from invoice_vendor_merges where id=$1`, [r.body.merge_id]))[0].u.map(x => x.id), [D['U-3001'].id], 'and recorded');
   const v1 = await rule(E, 'v1'), v5 = await rule(E, 'v5');
   assert.deepEqual([v1.display_name, v1.aliases, v1.merged_into], ['VendorA', ['VENDOR A INC.', 'Vendor A Co', 'VENDOR-A HAWAII'], null]);
   assert.deepEqual([v5.merged_into, v5.aliases, v5.display_name], ['v1', [], 'Vendor A Co'], 'the merged vendor keeps its own names (taken back exactly)');
@@ -258,18 +260,19 @@ test('業者の統合: the vendors become one, open months move, closed months a
   // Take it back.
   const upv = await E.api('tok-gm', { action: 'vendor_unmerge', merge_id: r.body.merge_id, preview: true });
   assert.equal(upv.status, 200, JSON.stringify(upv.body));
-  assert.deepEqual([upv.body.docs, upv.body.stay, upv.body.review], [1, 1, 1]);
+  assert.deepEqual([upv.body.docs, upv.body.unknown, upv.body.stay, upv.body.review], [1, 1, 1, 2]);
   assert.equal((await rule(E, 'v5')).merged_into, 'v1', 'a preview changes nothing');
   const un = await E.api('tok-gm', { action: 'vendor_unmerge', merge_id: r.body.merge_id });
   assert.equal(un.status, 200, JSON.stringify(un.body));
-  assert.deepEqual(un.body.recheck, { fixed: 1, failed: 0, left: 0 });
+  assert.deepEqual(un.body.recheck, { fixed: 2, failed: 0, left: 0 });
   const v1b = await rule(E, 'v1'), v5b = await rule(E, 'v5');
   assert.deepEqual([v1b.display_name, v1b.aliases, v1b.food_kind, v5b.merged_into, v5b.merged_by], ['VendorA', ['VENDOR A INC.'], 'food', null, null],
     'the names the merge added are taken off (also when one was taken off by hand since)');
   const back = {}; for (const k of Object.keys(D)) back[k] = await one(E, D[k].id);
   assert.deepEqual(Object.fromEntries(Object.entries(back).map(([k, d]) => [k, d.vendor_key])), {
-    'A-1001': 'v1', 'B-2001': 'v5', 'B-1001': 'v5', 'B-2003': 'v5', 'B-2004': 'v2', 'U-3001': 'v1', 'C-4001': 'v1' },
-    'what the merge moved goes back; what was corrected or read since stays');
+    'A-1001': 'v1', 'B-2001': 'v5', 'B-1001': 'v5', 'B-2003': 'v5', 'B-2004': 'v2', 'U-3001': null, 'C-4001': 'v1' },
+    'what the merge moved goes back (the invoice with a name no vendor had waits for a vendor again); what was corrected or read since stays');
+  assert.deepEqual([back['U-3001'].vendor_name, codes(back['U-3001']).includes('vendor_unknown')], [D['U-3001'].vendor_name, true], 'worked out again: no vendor has its name now');
   assert.equal(back['B-2001'].vendor_name, 'Vendor A Co'); assert.ok(codes(back['B-2001']).includes('mode_review_vendor'), 'worked out again with its own vendor');
   assert.deepEqual((await E.q(`select vendor_item_code c, vendor_key k from invoice_item_maps where vendor_item_code in ('00777','06263') order by 1, 2`)).map(x => x.c + ':' + x.k),
     ['00777:v5', '06263:v1', '06263:v5']);

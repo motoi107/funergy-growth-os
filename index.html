@@ -44604,7 +44604,7 @@ function invInReviewTable(Q){
     prevKey = gk;
     var onlyCur = edit && chk.length===1 && chk[0].code==='currency';   /* v1070：通貨だけが理由の行は、開かずに USD と確かめられる */
     var storeBad = edit && invInMark4(r, 'store')!=='ok';               /* v1079：宛先が別の店舗・一致しない → 開いて店舗を選ぶ */
-    var vendorNew = edit && !r.vendor_key && chk.some(function(x){ return x.code==='vendor_unknown'; });
+    var vendorNew = edit && chk.some(function(x){ return x.code==='vendor_unknown'; });   /* 業者が決まっていない（統合で業者を付けたが、まだ確かめ直していないものも） */
     var m = function(f){ return ' '+invInMarkHtml(invInMark4(r, f)); };
     var open = 'onclick="invInOpen(\''+id+'\',\'dreview\')"';
     var w = function(html){ return html.replace('style="', 'style="white-space:normal;line-height:1.45;'); };
@@ -45766,7 +45766,7 @@ function invInDetail(mode){
   var d = G.doc, f = G.file || {}, lines = G.lines || [], ai = G.ai_doc || {}, E = _invIn.edits || { h:{}, l:{} };
   var canEdit = invInCanEdit() && (d.status==='review' || d.status==='posted');
   var codes = invInCodes(d.reasons), chk = invInToCheck(d.reasons);
-  var vendorNew = canEdit && rv && d.status==='review' && !d.vendor_key && codes.indexOf('vendor_unknown')>=0;   /* v1089 */
+  var vendorNew = canEdit && rv && d.status==='review' && codes.indexOf('vendor_unknown')>=0;   /* v1089（統合で業者を付けたが、まだ確かめ直していないものも） */
   var h = back + '<div class="card" style="padding:12px 14px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:15px">'+e(d.vendor_name||d.vendor_raw||t('（業者不明）','(vendor unknown)'))+'</b>'
     + invInStoreHtml(d.store_id) + '<span style="font-family:ui-monospace,monospace;font-size:12px;color:var(--muted)">'+e(d.invoice_no||'—')+'</span>' + invInProcChip(d) + ' ' + invInReconChip(d)
     + ((G.parts||[]).length ? ' '+invInPartsChip((G.parts||[]).length + 1) : '')
@@ -51573,8 +51573,8 @@ async function vmgUndoAsk(id){
     try { pv = await invInAPI({ action:'vendor_unmerge', merge_id:g.server.id, preview:true }); }
     catch(err) { if (err && err.code === 'invalid_state') pv = { docs:0, stay:0, gone:true }; else { openModal(head + body + '<div style="color:var(--red);font-size:12px;margin-top:6px">'+e(String(err && err.message || err))+'</div>'); return; } }
     body += '<div style="font-size:12px;margin-top:6px;line-height:1.7">'+(pv.gone ? vmgT('Invoice取込はもう外してあります。','The intake was taken back already.')
-      : vmgT('Invoice取込：書類 '+pv.docs+' 件を元の業者に戻します'+(pv.stay ? '（そのあと直した '+pv.stay+' 件はそのまま）' : '')+'。まとめたあとに届いた invoice は「'+e(g.to)+'」のままです。',
-        'Intake: '+pv.docs+' invoices go back'+(pv.stay ? ' ('+pv.stay+' corrected since stay)' : '')+'. Invoices read after the merge stay with “'+e(g.to)+'”.'))+'</div>';
+      : vmgT('Invoice取込：書類 '+pv.docs+' 件を元の業者に戻します'+(pv.unknown ? '・業者が決まっていなかった '+pv.unknown+' 件は業者を選ぶ待ちに戻します' : '')+(pv.stay ? '（そのあと直した '+pv.stay+' 件はそのまま）' : '')+'。まとめたあとに届いた invoice は「'+e(g.to)+'」のままです。',
+        'Intake: '+pv.docs+' invoices go back'+(pv.unknown ? '; '+pv.unknown+' that had no vendor wait for a vendor again' : '')+(pv.stay ? ' ('+pv.stay+' corrected since stay)' : '')+'. Invoices read after the merge stay with “'+e(g.to)+'”.'))+'</div>';
   }
   if (g.renamed) body += '<div style="font-size:12px;margin-top:4px">'+vmgT('カードの名前を「'+e(g.renamed.from)+'」に戻します。','The card name goes back to “'+e(g.renamed.from)+'”.')+'</div>';
   openModal(head + body + '<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+vmgT('やめる','Cancel')+'</button>'

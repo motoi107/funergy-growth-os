@@ -749,9 +749,10 @@ export function createHandler(deps) {
 
   // ------------------------------------------------------------------ 業者の統合 (Moto 2026-10-15・UI案51 1A・2A・3A)
   // The database merges the vendors by their names (invoice_vendor_merge) or takes a merge back (invoice_vendor_unmerge). The
-  // invoices waiting for review that it moved (and those whose printed name no vendor had: they get the kept vendor) are worked out
-  // again here, as a person's correction would (reasons, duplicates, the vendor's mode): at most VENDOR_RECHECK in one call, the
-  // others when they are opened. b.preview: nothing is changed; what would change is returned.
+  // invoices waiting for review that it moved (also those whose printed name no vendor had: the database gives them the kept
+  // vendor and records them, so taking the merge back makes them wait for a vendor again) are worked out again here, as a person's
+  // correction would (reasons, duplicates, the vendor's mode): at most VENDOR_RECHECK in one call, the others when they are
+  // corrected. b.preview: nothing is changed; what would change is returned.
   const VENDOR_RECHECK = Math.max(1, Number(deps.vendorRecheck) || 60);
   const strList = x => (Array.isArray(x) ? x.filter(s => typeof s === 'string').map(s => s.trim()).filter(Boolean) : []);
   // One that cannot be worked out is passed over (counted in failed), so it never holds the others back: up to VENDOR_RECHECK are
