@@ -53,18 +53,18 @@ function objSrc(decl) {
 }
 
 const MERGE = ['_apAcctOn', '_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
-  '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', '_rtStK', '_rtDecRank', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices', '_coversInvoices'];
+  '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', '_rtStK', '_rtDecRank', '_rtDecT', '_rtDecCmp', '_rtDecOverlay', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices', '_coversInvoices'];
 const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel', '_approvalChainHtml',
   'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', 'apAcctConfirm',
   '_apAcctNotifHtml', '_apShortTime', '_apDeciders', '_apReopenRec', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits',
-  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded',
+  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded', 'markReimbursePaid', 'canMarkReimbursePaid', '_rbStoreName', 'opMergePush',
   'canApproveMileage', 'approveMileage', 'rejectMileage', 'deleteMyMileage', 'mileageMonthEndClose', 'canMileageMonthEnd',
   'canApproveReimburse', 'approveReimburse', '_applyReimburseDecision', 'cancelApprovedVacation', 'canApproveVacation', 'approveTip',
   'notifForMe', '_roleMatch', '_userSupportsStore', '_amManagesStore', 'getNotifs', 'addNotif', 'onNotifIncoming', 'myNotifs', 'myUnreadCount'];
-const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt', 'AP_REC_KEYS', 'AP_REC_FIELD'];   // _apPullAt's line also holds AP_PULL_TIMEOUT_MS
+const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt', 'AP_REC_KEYS', 'AP_REC_FIELD', 'RT_DEC_FIELDS'];   // _apPullAt's line also holds AP_PULL_TIMEOUT_MS
 
 const ROLE_CONFIG = { ceo: { name: 'Tac' }, gm: { name: 'Moto' }, office: { name: 'Marcia' }, am: { name: 'Yuki' }, sl: { name: 'Store Leader' },
   office_crew: { name: '事務スタッフ' }, crew: { name: 'スタッフ' }, chef: { name: 'Head Chef' } };
@@ -852,7 +852,7 @@ test('the same time on two devices (a forced tie): the item and the request keep
   const it7 = p7.S.approvals.find(x => x.ref === 'r1'), rc7 = p7.S.mileage_requests[0];
   assert.deepEqual([it7.status, rc7.status], ['rejected', '却下']);
   assert.ok(it7._stT > late);
-  assert.deepEqual([rc7._stT, rc7._stK], [it7._stT, it7._stK], 'the request carries the item\'s newer mark');
+  assert.deepEqual([rc7._stT, rc7._stK, rc7._dT], [it7._stT, it7._stK, it7._stT], 'the request carries the item\'s newer mark (and its decision time)');
   // The same, but the request was changed elsewhere while the item was being read (another mark): the request is left alone.
   const p8 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [{ ...pending('ガソリン代', 'r1'), _stT: late, _mut: late }] },
     st: { approvals: [], mileage_requests: [{ ...TYPES[0][3] }], notifications: [] } });
@@ -864,6 +864,15 @@ test('the same time on two devices (a forced tie): the item and the request keep
   // (that decision is older than the undo the item shows, so the item is not set to it either, and nothing is announced)
   assert.deepEqual([p8.S.mileage_requests[0].status, p8.S.mileage_requests[0]._stT, p8.S.mileage_requests[0]._stK], ['承認', late - 1000, 'zz-elsewhere']);
   assert.equal(p8.S.approvals.find(x => x.ref === 'r1').status, 'pending');
+  // The same, but that older decision was edited later (month-end close moved its time past the undo): still older than the undo.
+  const p9 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [{ ...pending('ガソリン代', 'r1'), _stT: late, _mut: late }] },
+    st: { approvals: [], mileage_requests: [{ ...TYPES[0][3] }], notifications: [] } });
+  run(p9, randoms([0.3, 0.6, 0.9]));
+  const pull9 = p9.pullOpKey;
+  p9.pullOpKey = async (key) => { const r = await pull9(key); if (key === 'approvals') p9.S.mileage_requests[0] = { ...p9.S.mileage_requests[0], status: '承認', _stT: late + 1000, _dT: late - 1000, _stK: 'zz-elsewhere', archived: true }; return r; };
+  run(p9, 'rejectMileage("r1")');
+  await new Promise(r => setTimeout(r, 50));
+  assert.equal(p9.S.approvals.find(x => x.ref === 'r1').status, 'pending', 'a decision from before the undo is not followed, even when edited after it');
 });
 
 test('the same decision mark on the item and the request also when the request changes while the item is read, when the approval center follows the page, and in the write-back check (independent review of 27be84d)', async () => {
@@ -914,6 +923,108 @@ test('the same decision mark on the item and the request also when the request c
   assert.equal(run(C, '_coversInvoices(' + JSON.stringify([rb]) + ',' + JSON.stringify([rbLo]) + ')'), true);
   assert.equal(run(C, '_coversInvoices(' + JSON.stringify([{ ...rb, status: '却下' }]) + ',' + JSON.stringify([rb]) + ')'), true);
   assert.equal(run(C, '_coversInvoices(' + JSON.stringify([rb]) + ',' + JSON.stringify([{ ...rb, status: '却下' }]) + ')'), false);
+});
+
+test('the write-back check sees the decision mark, and a later payment / month-end close does not swap the decision (Codex re-review of cd0bcef)', async () => {
+  // 1) Two copies of the same approval that differ only in the mark: the check must not take the smaller one for the larger.
+  const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [], notifications: [] } });
+  const A = AP({ status: 'approved', _stT: 1000, _mut: 1000, _stK: 'a', signoffs: [] }), Z = { ...A, _stK: 'z' }, M = { ...A, status: 'rejected', _stK: 'm' };
+  const Z1 = plain(run(c, 'mergeApprovals(' + JSON.stringify([A]) + ',' + JSON.stringify([Z]) + ')'))[0];
+  assert.deepEqual([Z1._stK, Z1._mut], ['z', 1001], 'the merge keeps the larger mark (and saves it a step later, as for any change at the same save time)');
+  assert.equal(run(c, '_coversApprovals(' + JSON.stringify([A]) + ',' + JSON.stringify([Z]) + ')'), false, 'the cloud has only the smaller mark');
+  assert.equal(run(c, '_coversApprovals(' + JSON.stringify([A]) + ',' + JSON.stringify([Z1]) + ')'), false);
+  assert.equal(run(c, '_coversApprovals(' + JSON.stringify([Z1]) + ',' + JSON.stringify([A]) + ')'), true, 'the cloud has the merged copy');
+  assert.equal(run(c, '_coversApprovals(' + JSON.stringify([Z1]) + ',' + JSON.stringify([Z1]) + ')'), true);
+  // The real opMergePush: right after our write, another device writes its copy (mark a) back. The check must see it and write again.
+  let cloud = [A], writes = 0, reads = 0, overwrite = true;
+  c._opMergeDef = () => ({ merge: (x, y) => c.mergeApprovals(x, y), covers: (x, y) => c._coversApprovals(x, y) });
+  c._fetchOpValue = async () => { reads++; return JSON.parse(JSON.stringify(cloud)); };
+  c.supaUpsert = async (t, rows) => { writes++; cloud = JSON.parse(JSON.stringify(rows[0].v)); if (overwrite) { overwrite = false; cloud = [A]; } return true; };
+  c._opUpsertRow = (k, v) => ({ k, v }); c._opWriteBack = () => {};
+  run(c, 'var _opMergeChain = {}, _opLastPushErr = {};');
+  assert.equal(await run(c, 'opMergePush("approvals", ' + JSON.stringify([Z]) + ')'), true);
+  assert.equal(writes, 2, 'written again after the overwrite');
+  assert.equal(cloud[0]._stK, 'z', 'the larger mark is in the cloud');
+  // A third, opposite decision at the same time (mark m, between a and z) now loses on the item as on a request carrying z.
+  assert.equal(plain(run(c, 'mergeApprovals(' + JSON.stringify(cloud) + ',' + JSON.stringify([M]) + ')'))[0].status, 'approved');
+  assert.equal(plain(run(c, 'mergeReqTomb(' + JSON.stringify([{ id: 'mi1', status: '承認', _stT: 1000, _dT: 1000, _stK: 'z' }]) + ',' + JSON.stringify([{ id: 'mi1', status: '却下', _stT: 1000, _dT: 1000, _stK: 'm' }]) + ')'))[0].status, '承認');
+
+  // The decision comparison and the overlay themselves (marks that do not follow the time, as a guard against relying on the mark's format).
+  const dc = (x, y) => run(c, '_rtDecCmp(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')');
+  assert.equal(dc({ status: '承認', _dT: 2000, _stK: 'a' }, { status: '却下', _dT: 1000, _stK: 'z' }), 1, 'the later decision time wins over a larger mark');
+  assert.equal(dc({ status: '承認', _dT: 1000, _stK: 'a' }, { status: '却下', _dT: 1000, _stK: 'z' }), -1);
+  assert.equal(dc({ status: '承認', _dT: 1000, _stK: 'a' }, { status: '却下', _dT: 1000, _stK: 'a' }), -1, 'same time and mark: the rejection');
+  assert.equal(dc({ status: '承認', _stK: 'a' }, { status: '却下', _dT: 1000, _stK: 'z' }), 0, 'no decision time: not compared');
+  const ov = plain(run(c, '_rtDecOverlay(' + JSON.stringify({ id: 'x', status: '却下', rejectReason: 'old', _dT: 1000, _stK: 'z', _stT: 5000, archived: true }) + ',' + JSON.stringify({ id: 'x', status: '承認', approvedBy: 'Tac', _dT: 2000, _stK: 'a', _stT: 2000 }) + ')'));
+  assert.deepEqual([ov.status, ov.approvedBy, 'rejectReason' in ov, ov._dT, ov._stK, ov._stT, ov.archived], ['承認', 'Tac', false, 2000, 'a', 5000, true], 'the decision fields come from the newer decision only; later edits stay');
+  // The write-back checks look at the decision time even when the state times and marks would say otherwise.
+  const wq = { id: 'mi1', status: '承認', _stT: 5000, _dT: 2000, _stK: 'a' }, hq = { id: 'mi1', status: '却下', _stT: 5000, _dT: 1000, _stK: 'z' };
+  assert.equal(run(c, '_coversReqTomb(' + JSON.stringify([hq]) + ',' + JSON.stringify([wq]) + ')'), false);
+  assert.equal(run(c, '_coversInvoices(' + JSON.stringify([{ ...hq, _mut: 5000 }]) + ',' + JSON.stringify([{ ...wq, _mut: 5000 }]) + ')'), false);
+
+  // 2) Codex's order: A approves at T and pays at T+200; B (not synced) rejects the same request at T+100.
+  const T = Date.now() + 120000;
+  const both = (x, y, key, fn) => [[x, y], [y, x]].map(([p, q]) => plain(run(p, fn + '(' + JSON.stringify(plain(p.S[key])) + ',' + JSON.stringify(plain(q.S[key])) + ')'))[0]);
+  const at = (dev, t) => run(dev, 'Date.now = () => ' + t);
+  const rb = { id: 'rb1', status: '申請中', storeId: 'F01', payer: 'Leader B', amount: 10, byUser: 'Leader B', payStatus: '未払い', _mut: 500 };
+  const devR = () => app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [AP({ type: '建替経費', ref: 'rb1', _stT: 500, _mut: 500, signoffs: [] })], reimbursements: [{ ...rb }] },
+    st: { approvals: [AP({ type: '建替経費', ref: 'rb1', _stT: 500, _mut: 500, signoffs: [] })], reimbursements: [{ ...rb }], notifications: [] } });
+  const RA = devR(), RB = devR();
+  at(RA, T); await run(RA, 'approveItem("ap1","approved","x")');
+  at(RA, T + 200); run(RA, 'markReimbursePaid("rb1")');
+  at(RB, T + 100); await run(RB, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([RA.S.reimbursements[0].payStatus, RA.S.reimbursements[0]._mut, RA.S.reimbursements[0]._dT], ['支払済', T + 200, T]);
+  const ri = both(RA, RB, 'approvals', 'mergeApprovals'), rr = both(RA, RB, 'reimbursements', 'mergeInvoices');
+  assert.deepEqual(ri.map(x => x.status), ['rejected', 'rejected'], 'the item: the later decision (B)');
+  assert.deepEqual(rr.map(x => [x.status, x.payStatus, x._dT, x._stK === RB.S.reimbursements[0]._stK]), [['却下', '支払済', T + 100, true], ['却下', '支払済', T + 100, true]], 'the request: the same decision, the payment is kept');
+  assert.equal(run(RA, '_coversInvoices(' + JSON.stringify(plain(RA.S.reimbursements)) + ',' + JSON.stringify([rr[0]]) + ')'), false, 'the cloud with only the paid copy does not cover the later decision');
+  assert.equal(run(RA, '_coversInvoices(' + JSON.stringify([rr[0]]) + ',' + JSON.stringify(plain(RA.S.reimbursements)) + ')'), true);
+  // (_rbRow has a regex with a quote, which fnSrc cannot cut out: take it up to its closing line)
+  { const i = SRC.indexOf('function _rbRow('); assert.ok(i >= 0); vm.runInContext(SRC.slice(i, SRC.indexOf('\n}\n', i) + 2), RA); }
+  assert.match(run(RA, '_rbRow(' + JSON.stringify(rr[0]) + ', true)'), /支払済ですが、ほかの端末の却下があとから届きました/);
+  assert.doesNotMatch(run(RA, '_rbRow(' + JSON.stringify(plain(RA.S.reimbursements[0])) + ', true)'), /ほかの端末の却下/);
+  // A decision made after the payment's decision still wins the other way round (B approves earlier, A rejects later and pays nothing).
+  const RC = devR(), RD = devR();
+  at(RC, T); await run(RC, 'approveItem("ap1","rejected","x")');
+  at(RD, T + 100); await run(RD, 'approveItem("ap1","approved","x")');
+  at(RD, T + 200); run(RD, 'markReimbursePaid("rb1")');
+  assert.deepEqual(both(RC, RD, 'approvals', 'mergeApprovals').map(x => x.status), ['approved', 'approved']);
+  assert.deepEqual(both(RC, RD, 'reimbursements', 'mergeInvoices').map(x => [x.status, x.payStatus]), [['承認', '支払済'], ['承認', '支払済']]);
+
+  // The same with the approval made on the reimbursement page (the decision time comes with the page's mark).
+  const RE = devR(), RF = devR();
+  at(RE, T); run(RE, 'approveReimburse("rb1", true)');
+  at(RE, T + 200); run(RE, 'markReimbursePaid("rb1")');
+  at(RF, T + 100); await run(RF, 'approveItem("ap1","rejected","x")');
+  await new Promise(r => setTimeout(r, 20));
+  assert.equal(RE.S.reimbursements[0]._dT, T);
+  assert.deepEqual(both(RE, RF, 'approvals', 'mergeApprovals').map(x => x.status), ['rejected', 'rejected']);
+  assert.deepEqual(both(RE, RF, 'reimbursements', 'mergeInvoices').map(x => [x.status, x.payStatus]), [['却下', '支払済'], ['却下', '支払済']]);
+  // The approval center after an undo: a decision older than the undo (paid later on a device that missed the undo) is not followed.
+  const RG = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto',
+    cloud: { approvals: [AP({ type: '建替経費', ref: 'rb1', _gen: 1, _stT: T + 50, _mut: T + 50, signoffs: [] })], reimbursements: [{ ...rb, status: '承認', _dT: T, _stK: 'kk-old', _mut: T + 300, payStatus: '支払済' }] },
+    st: { approvals: [AP({ type: '建替経費', ref: 'rb1', _gen: 1, _stT: T + 50, _mut: T + 50, signoffs: [] })], reimbursements: [{ ...rb, status: '承認', _dT: T, _stK: 'kk-old', _mut: T + 300, payStatus: '支払済' }], notifications: [] } });
+  at(RG, T + 400); await run(RG, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([RG.S.approvals[0].status, RG.S.reimbursements[0].status, RG.S.reimbursements[0].payStatus, RG.S.reimbursements[0]._dT === RG.S.approvals[0]._stT], ['rejected', '却下', '支払済', true]);
+
+  // 3) Mileage: A approves at T and closes the month at T+200; B rejects at T+100.
+  const mi = { id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', amount: 12, date: '2026-10-05', _stT: 500 };
+  const devM = () => app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [AP({ _stT: 500, _mut: 500, signoffs: [] })], mileage_requests: [{ ...mi }] },
+    st: { approvals: [AP({ _stT: 500, _mut: 500, signoffs: [] })], mileage_requests: [{ ...mi }], notifications: [] } });
+  const MA = devM(), MB = devM();
+  at(MA, T); await run(MA, 'approveItem("ap1","approved","x")');
+  at(MA, T + 200); run(MA, 'mileageMonthEndClose("2026-10")');
+  at(MB, T + 100); await run(MB, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([MA.S.mileage_requests[0].archived, MA.S.mileage_requests[0]._stT, MA.S.mileage_requests[0]._dT], [true, T + 200, T]);
+  assert.deepEqual(both(MA, MB, 'approvals', 'mergeApprovals').map(x => x.status), ['rejected', 'rejected']);
+  assert.deepEqual(both(MA, MB, 'mileage_requests', 'mergeReqTomb').map(x => [x.status, !!x.archived]), [['却下', true], ['却下', true]]);
+  assert.equal(run(MA, '_coversReqTomb(' + JSON.stringify(plain(MA.S.mileage_requests)) + ',' + JSON.stringify(both(MA, MB, 'mileage_requests', 'mergeReqTomb').slice(0, 1)) + ')'), false);
+  // 4) An undo still wins over the earlier decision and its later edit (no decision time on the undone request).
+  const U = devM();
+  at(U, T); await run(U, 'approveItem("ap1","approved","x")');
+  at(U, T + 300); await run(U, 'reopenApproval("ap1")');
+  assert.equal('_dT' in U.S.mileage_requests[0], false);
+  assert.deepEqual(both(MA, U, 'mileage_requests', 'mergeReqTomb').map(x => x.status), ['申請中', '申請中']);
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {

@@ -10091,7 +10091,7 @@ function _apSigBody(a){
   var so=(a.signoffs||[]).filter(Boolean).map(function(s){ return String(s.role)+'@'+_apSoT(s); }).sort();
   var x=a._soX||{}; var xs=Object.keys(x).sort().map(function(r){ return r+'@'+(Number(x[r])||0); });
   var ac=a.acct?((Number(a.acct.t)||0)+(a.acct.off?'off':'')):'';
-  return JSON.stringify([a.status||'', _apGen(a), _apStT(a), so, xs, ac, a.rejectReason||'']);
+  return JSON.stringify([a.status||'', _apGen(a), _apStT(a), so, xs, ac, a.rejectReason||'', _rtStK(a)]);   /* v1087: 決定の印も（書いたあとの確かめで、印だけ違う写しを見落とさない） */
 }
 function _apMergeOne(c, l, preferL){
   var cg=_apGen(c), lg=_apGen(l);
@@ -10358,6 +10358,25 @@ function _rtStT(a){ return Number(a && a._stT) || 0; }
 function _rtStK(a){ return String((a && a._stK) || ''); }
 /* 時刻も印も同じ 2 つの決定（ふつうは起きない）：案件でも申請でも却下を残す。承認・却下以外は 0 */
 function _rtDecRank(a){ var s=a && a.status; return (s==='却下' || s==='rejected') ? 2 : (s==='承認' || s==='approved') ? 1 : 0; }
+/* v1087: 申請の記録の決定の時刻（_dT）。承認センターの案件の決定の時刻と同じ値。状態の時刻（_stT）や保存時刻（_mut）は、
+   決めたあとの支払済・月末処理でも進むので、決定どうしはこちらで比べる */
+function _rtDecT(a){ return Number(a && a._dT) || 0; }
+/* 2 つの決定の新しさ（どちらも印と決定の時刻があるときだけ）：時刻 → 印 → 却下。a が新しければ 1・b なら -1・同じか比べられなければ 0 */
+function _rtDecCmp(a, b){
+  if(!_rtStK(a) || !_rtStK(b) || !_rtDecT(a) || !_rtDecT(b) || !_rtDecRank(a) || !_rtDecRank(b)) return 0;
+  if(_rtDecT(a)!==_rtDecT(b)) return _rtDecT(a)>_rtDecT(b) ? 1 : -1;
+  if(_rtStK(a)!==_rtStK(b)) return _rtStK(a)>_rtStK(b) ? 1 : -1;
+  var ra=_rtDecRank(a), rb=_rtDecRank(b); return ra===rb ? 0 : (ra>rb ? 1 : -1);
+}
+var RT_DEC_FIELDS=['status','approvedBy','approvedAt','rejectReason','_dT','_stK'];
+/* 合流で残した写し（w）より、もう片方（o）の決定のほうが新しければ、決定の欄だけを o にする（決めたあとの支払済・月末処理などは w のまま）。
+   案件は決定の時刻で選ぶので、これで案件と申請に同じ決定が残る */
+function _rtDecOverlay(w, o){
+  if(!w || !o || w===o || w._deleted || o._deleted || _rtDecCmp(o, w)<=0) return w;
+  var out=Object.assign({}, w);
+  RT_DEC_FIELDS.forEach(function(f){ if(Object.prototype.hasOwnProperty.call(o, f)) out[f]=o[f]; else delete out[f]; });
+  return out;
+}
 /* v1087: 次の状態の時刻。前の決定・取り消しより必ず後にする（時計が遅れた端末で押しても、合流で前の状態に負けない） */
 function _rtNextT(r, min){ return Math.max(Date.now(), _rtStT(r)+1, Number(min)||0); }
 function mergeReqTomb(cloudArr, localArr){
@@ -10373,7 +10392,7 @@ function mergeReqTomb(cloudArr, localArr){
     else if(_rtStK(cur) && _rtDecRank(cur)!==_rtDecRank(item)) win = (_rtDecRank(item)>_rtDecRank(cur))?item:cur;   // v1087: 印も同じなら却下（案件と同じ）
     else if(_rtPend(cur)!==_rtPend(item)) win = _rtPend(cur)?item:cur;  // レビュー済み優先
     else win = isLocal?item:cur;
-    by[id]=win;
+    by[id]=_rtDecOverlay(win, win===cur?item:cur);   // v1087: 決定は決定の時刻で（決めたあとの変更で決定が入れ替わらない）
   }
   (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
   (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
@@ -10388,6 +10407,7 @@ function _coversReqTomb(check, want){
     if(!w._deleted && !h._deleted && _rtStT(w)>_rtStT(h)) return false; // v1087: 新しい決定が反映されているか
     if(!w._deleted && _rtStT(w)===_rtStT(h) && w.status && w.status!=='申請中' && (h.status==null||h.status==='申請中')) return false; // 決定リグレッション
     if(!w._deleted && !h._deleted && _rtStT(w)===_rtStT(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false; // v1087: 同じ時刻なら合流と同じ決め方（印・却下）
+    if(!w._deleted && !h._deleted && _rtDecCmp(w, h)>0) return false; // v1087: 新しい決定（決定の時刻）が反映されているか
   }
   return true;
 }
@@ -10418,7 +10438,8 @@ function mergeInvoices(cloudArr, localArr){
       else if(_rtStK(cur)!==_rtStK(item)){ win=(_rtStK(item)>_rtStK(cur))?item:cur; }   /* v1087: 建て替え経費の決定は同じ時刻なら決定の印で（承認センターの案件と同じ決め方） */
       else if(_rtStK(cur) && _rtDecRank(cur)!==_rtDecRank(item)){ win=(_rtDecRank(item)>_rtDecRank(cur))?item:cur; }   /* 印も同じなら却下 */
       else { var cd=(cur.reviewStatus&&cur.reviewStatus!=='未確認'), idd=(item.reviewStatus&&item.reviewStatus!=='未確認');
-        win=(cd!==idd)?(idd?item:cur):(isLocal?item:cur); } }
+        win=(cd!==idd)?(idd?item:cur):(isLocal?item:cur); }
+      win=_rtDecOverlay(win, win===cur?item:cur); }   /* v1087: 建て替え経費の決定は決定の時刻で（支払済にしても決定が入れ替わらない） */
     by[id]=win;
   }
   (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
@@ -10433,6 +10454,7 @@ function _coversInvoices(check, want){
     if(w._deleted && !h._deleted) return false;
     if(_invMut(w)>_invMut(h)) return false;
     if(!w._deleted && !h._deleted && _invMut(w)===_invMut(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false;   /* v1087: 同じ時刻なら合流と同じ決め方 */
+    if(!w._deleted && !h._deleted && _rtDecCmp(w, h)>0) return false;   /* v1087: 新しい決定（決定の時刻）が反映されているか */
   }
   return true;
 }
@@ -47196,7 +47218,7 @@ function cancelApprovedVacation(id) {
   if (!canApproveVacation(v)) { alert('権限がありません'); return; }
   /* v1087: 取り消しの時刻（古い写しの「承認」で戻らない）。承認センターの案件と同じ時刻にする（取り消したあとの決定だけを決定とみなすため） */
   var _rt=apReopenTime('休暇', id, _rtNextT(v));
-  v.status='申請中'; delete v.approvedBy; delete v.approvedAt; v._stT=_rt; delete v._stK;
+  v.status='申請中'; delete v.approvedBy; delete v.approvedAt; v._stT=_rt; delete v._stK; delete v._dT;
   saveVacations(vacs);
   apReopenByRef('休暇', id, _rt);   /* v1087: 承認センターの案件も承認待ちに戻す（もう一度承認できるように） */
   showToast('承認を取り消しました','info');
@@ -68221,12 +68243,12 @@ function apDecStamp(floor){
   return { t:t, k:t.toString(36)+'.'+Math.random().toString(36).slice(2,12)+Math.random().toString(36).slice(2,8) };
 }
 /* 記録の印（_stT か建て替え経費の _mut と _stK）。申請の画面で決めたとき、承認センターの案件にも同じ印を書くため */
-function apStOf(r, field){ return { t:Number(r && r[field||'_stT'])||0, k:_rtStK(r) }; }
+function apStOf(r, field){ return { t:_rtDecT(r) || Number(r && r[field||'_stT'])||0, k:_rtStK(r) }; }
 /* 申請の画面で決めるとき：記録に決定の印を書く（記録の前の時刻と、この端末が知っている承認センターの案件より後） */
 function apStampRec(r, type, ref, field){
   field=field||'_stT';
   var st=apDecStamp(Math.max((Number(r && r[field])||0)+1, apRecFloor(type, ref)));
-  r[field]=st.t; r._stK=st.k; return st;
+  r[field]=st.t; r._stK=st.k; r._dT=st.t; return st;
 }
 function _apMarkDecided(a, status, reason, via, st){
   var fl=Math.max(_apStT(a), _apMut(a))+1;   /* 前の状態（取り消し・承認待ちに戻した時刻）より必ず後（時計が遅れた端末でも） */
@@ -68302,9 +68324,10 @@ function _apRecSuperseded(type, ref, opt){
   if(rs){
     var ap2=ls('approvals', []), a=_apNewestForRef(ap2, type, ref);
     /* 取り消した（版が進んだ）案件より前の決定は、取り消す前のもの（_apRecordState と同じ）：案件は合わせない */
-    if(a && _apGen(a)>0 && _apRecTime(type, r)<=_apStT(a)) a=null;
+    var rdt=_rtDecT(r) || _apRecTime(type, r);
+    if(a && _apGen(a)>0 && rdt<=_apStT(a)) a=null;
     if(a && a.status!=='withdrawn' && a.status!==rs){
-      var rst={ t:_apRecTime(type, r), k:_rtStK(r) };
+      var rst={ t:rdt, k:_rtStK(r) };
       _apMarkDecided(a, rs, r.rejectReason||'', 'page', rst); lsSet('approvals', ap2);
       _apSyncRecStamp(type, ref, [a], rst);
     }
@@ -68333,8 +68356,8 @@ function _apSyncRecStamp(type, ref, hit, st){
     var field=AP_REC_FIELD[type]||'_stT', raw=ls(key,[])||[];
     var r=raw.find(function(x){ return x && String(x.id)===String(ref); });
     if(!r || String(r._stK||'')!==String(st.k)) return;   /* 記録がそのあと変わっていれば触らない */
-    var t=_apStT(a); if(!(t>(Number(r[field])||0))) return;
-    r[field]=t; r._stK=String(a._stK); lsSet(key, raw);
+    var t=_apStT(a); if(!(t>_rtDecT(r))) return;
+    r[field]=Math.max(t, Number(r[field])||0); r._stK=String(a._stK); r._dT=t; lsSet(key, raw);
   }catch(e){}
 }
 function apDecidedFromPage(type, ref, status, opt){
@@ -68678,10 +68701,10 @@ async function reopenApproval(id, fresh){
         _sr.status='申請中'; _sr.reviewer=''; setSkillRequests(_sreqs);
         try{ addSkillHistory(_sr.name,_sid,_sr.position,(_cur.level||0),_back,_by,'承認取消'); }catch(e){}
       }
-    } else if(a.type==='休暇'&&a.ref){ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _rn=_rtNextT(_v, _rn); _v.status='申請中'; _v.approvedBy=''; _v.rejectReason=''; _v._stT=_rn; delete _v._stK; saveVacations(_vs); } }   /* v1087: 状態を変えた時刻（_stT） */
-    else if(a.type==='ガソリン代'&&a.ref){ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _rn=_rtNextT(_m, _rn); _m.status='申請中'; _m.approvedBy=''; _m.rejectReason=''; _m._stT=_rn; delete _m._stK; saveMileageReqs(_ms); } }
-    else if(a.type==='経費'&&a.ref){ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _rn=_rtNextT(_ex, _rn); _ex.status='申請中'; _ex.approvedBy=''; _ex.rejectReason=''; _ex._stT=_rn; delete _ex._stK; saveExpenseReqs(_es); } }
-    else if(a.type==='建替経費'&&a.ref){ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status='申請中'; _rb.approvedBy=''; _rb.rejectReason=''; delete _rb._stK; _rn=_rtTouchMut(_rb, _rn); saveReimbursements(_rbs); } }   /* v1087: 保存時刻（_mut）を進める */
+    } else if(a.type==='休暇'&&a.ref){ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _rn=_rtNextT(_v, _rn); _v.status='申請中'; _v.approvedBy=''; _v.rejectReason=''; _v._stT=_rn; delete _v._stK; delete _v._dT; saveVacations(_vs); } }   /* v1087: 状態を変えた時刻（_stT） */
+    else if(a.type==='ガソリン代'&&a.ref){ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _rn=_rtNextT(_m, _rn); _m.status='申請中'; _m.approvedBy=''; _m.rejectReason=''; _m._stT=_rn; delete _m._stK; delete _m._dT; saveMileageReqs(_ms); } }
+    else if(a.type==='経費'&&a.ref){ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _rn=_rtNextT(_ex, _rn); _ex.status='申請中'; _ex.approvedBy=''; _ex.rejectReason=''; _ex._stT=_rn; delete _ex._stK; delete _ex._dT; saveExpenseReqs(_es); } }
+    else if(a.type==='建替経費'&&a.ref){ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status='申請中'; _rb.approvedBy=''; _rb.rejectReason=''; delete _rb._stK; delete _rb._dT; _rn=_rtTouchMut(_rb, _rn); saveReimbursements(_rbs); } }   /* v1087: 保存時刻（_mut）を進める */
     else if(a.type==='予算'&&a.ref){ var _buds=getBudgets(); var _b=_buds.find(function(x){return x.storeId===a.ref;}); if(_b){ _b.status='GM承認待ち'; saveBudgets(_buds); } }
     /* v1085: 退職は _reopenOffboardApproval で済ませた（サーバーで在籍に戻し、記録を申請中に） */
   }catch(e){ console.warn('reopenApproval undo', e); }
@@ -68993,8 +69016,9 @@ function _apRecordState(a){
     if(!r) return null;
     if(r._deleted) return { state:'withdrawn', label:lab, by:'' };
     var st=r.status==='承認'?'approved':r.status==='却下'?'rejected':'pending';
-    if(st!=='pending' && _apGen(a)>0){ var rt=_apRecTime(a.type, r); if(rt>=0 && rt<=_apStT(a)) st='pending'; }
-    var rst={ t:_apRecTime(a.type, r), k:_rtStK(r) };   /* v1087: 案件を合わせるときに申請と同じ印を使う */
+    var rdt=_rtDecT(r) || _apRecTime(a.type, r);   /* v1087: 決定の時刻（無ければ状態・保存の時刻） */
+    if(st!=='pending' && _apGen(a)>0){ if(rdt>=0 && rdt<=_apStT(a)) st='pending'; }
+    var rst={ t:rdt, k:_rtStK(r) };   /* v1087: 案件を合わせるときに申請と同じ印を使う */
     if(st==='approved') return { state:'approved', label:lab, by:(r.approvedBy||''), st:rst };
     if(st==='rejected') return { state:'rejected', label:lab, by:(r.approvedBy||''), st:rst };
     return { state:'pending', label:lab, by:'' };
@@ -69136,10 +69160,10 @@ async function approveItem(id, status, reason, opt) {
     } catch(_e){}
   }
   var _ap=(status==='approved'), _now=Date.now();
-  if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(_ap?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); if(!_ap&&reason) _v.rejectReason=reason; _v._stT=Math.max(_dst.t, _rtStT(_v)+1); _v._stK=_dst.k; saveVacations(_vs); } }catch(_e){} }
-  if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(_ap?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(!_ap&&reason) _m.rejectReason=reason; _m._stT=Math.max(_dst.t, _rtStT(_m)+1); _m._stK=_dst.k; saveMileageReqs(_ms); } }catch(_e){} }
-  if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(_ap?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(!_ap&&reason) _ex.rejectReason=reason; _ex._stT=Math.max(_dst.t, _rtStT(_ex)+1); _ex._stK=_dst.k; saveExpenseReqs(_es); } }catch(_e){} }
-  if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(_ap?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(!_ap&&reason) _rb.rejectReason=reason; _rb._mut=Math.max(_dst.t, (Number(_rb._mut)||0)+1); _rb._stK=_dst.k; saveReimbursements(_rbs); } }catch(_e){} }   /* v1087: 保存時刻を進める（古い写しで「申請中」に戻らない） */
+  if (a.type==='休暇' && a.ref) { try{ var _vs=getVacations(); var _v=_vs.find(function(x){return x.id===a.ref;}); if(_v){ _v.status=(_ap?'承認':'却下'); _v.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _v.approvedAt=nowJP(); if(!_ap&&reason) _v.rejectReason=reason; _v._stT=Math.max(_dst.t, _rtStT(_v)+1); _v._stK=_dst.k; _v._dT=_dst.t; saveVacations(_vs); } }catch(_e){} }
+  if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(_ap?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(!_ap&&reason) _m.rejectReason=reason; _m._stT=Math.max(_dst.t, _rtStT(_m)+1); _m._stK=_dst.k; _m._dT=_dst.t; saveMileageReqs(_ms); } }catch(_e){} }
+  if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(_ap?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(!_ap&&reason) _ex.rejectReason=reason; _ex._stT=Math.max(_dst.t, _rtStT(_ex)+1); _ex._stK=_dst.k; _ex._dT=_dst.t; saveExpenseReqs(_es); } }catch(_e){} }
+  if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(_ap?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(!_ap&&reason) _rb.rejectReason=reason; _rb._mut=Math.max(_dst.t, (Number(_rb._mut)||0)+1); _rb._stK=_dst.k; _rb._dT=_dst.t; saveReimbursements(_rbs); } }catch(_e){} }   /* v1087: 保存時刻を進める（古い写しで「申請中」に戻らない） */
   /* v1087: 申請した人へ（スキルは上で専用の知らせ）。最後の承認で、経理と事務Crew へ（退職は「退職手続き開始」が届く） */
   apNotifyDecision(a, status, { reason:reason, noApplicant:(a.type==='スキル'), noAcct:(a.type==='退職') });
   _apRerender(); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
@@ -76834,6 +76858,8 @@ function _rbRow(r, mgr){
     +(r.purposeMemo?'<div style="font-size:11px;color:var(--muted)">memo: '+escapeHtml(r.purposeMemo)+'</div>':'')
     +(r.payerContact?'<div style="font-size:11px;color:var(--muted)">連絡先: '+escapeHtml(r.payerContact)+'</div>':'')
     +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
+    /* v1087: 承認して支払済にしたあと、ほかの端末の（あとの）却下が届いたもの。支払った事実は消さずに知らせる */
+    +(r.status==='却下'&&r.payStatus==='支払済'?'<div style="font-size:11px;color:var(--red);font-weight:600">⚠ 支払済ですが、ほかの端末の却下があとから届きました（支払 '+escapeHtml(r.paidAt||'')+(r.paidBy?'・'+escapeHtml(r.paidBy):'')+'）。確認してください</div>':'')
     +(r.status==='承認'?'<div style="font-size:11px;color:'+pc+';font-weight:600">'+(r.payStatus==='支払済'?('✓ 支払済 '+escapeHtml(r.paidAt||'')+(r.paidBy?'（'+escapeHtml(r.paidBy)+'）':'')+(r.payMethodNote?' / '+escapeHtml(r.payMethodNote):'')):'● 未払い')+'</div>':'')
     +'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
     /* v848: アイコンだけでは気づけないので「レシート」と書く。無い申請はその旨を出す。 */
