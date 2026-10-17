@@ -53,14 +53,14 @@ function objSrc(decl) {
 }
 
 const MERGE = ['_apAcctOn', '_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
-  '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', '_rtStK', '_rtDecRank', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices'];
+  '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', '_rtStK', '_rtDecRank', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices', '_coversInvoices'];
 const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel', '_approvalChainHtml',
   'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', 'apAcctConfirm',
   '_apAcctNotifHtml', '_apShortTime', '_apDeciders', '_apReopenRec', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits',
-  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp',
+  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded',
   'canApproveMileage', 'approveMileage', 'rejectMileage', 'deleteMyMileage', 'mileageMonthEndClose', 'canMileageMonthEnd',
   'canApproveReimburse', 'approveReimburse', '_applyReimburseDecision', 'cancelApprovedVacation', 'canApproveVacation', 'approveTip',
   'notifForMe', '_roleMatch', '_userSupportsStore', '_amManagesStore', 'getNotifs', 'addNotif', 'onNotifIncoming', 'myNotifs', 'myUnreadCount'];
@@ -792,17 +792,26 @@ test('the same time on two devices (a forced tie): the item and the request keep
   const J = { approved: '承認', rejected: '却下' };
   for (const T of TYPES) {
     const [type, recKey, recMerge, , field] = T;
-    for (const [sa, sb, ra, rb] of [['approved', 'rejected', [0.1, 0.31, 0.62], [0.1001, 0.47, 0.18]], ['rejected', 'approved', [0.1, 0.9, 0.05], [0.1001, 0.02, 0.99]]]) {
+    // The approval's mark is the larger one in the first pair, the rejection's in the second (the 2nd random number starts the mark),
+    // so either decision can be the one kept, and it must be the same on the item and the request.
+    for (const [sa, sb, ra, rb, want] of [['approved', 'rejected', [0.1, 0.92, 0.62], [0.1001, 0.17, 0.18], 'approved'], ['approved', 'rejected', [0.1, 0.31, 0.62], [0.1001, 0.47, 0.18], 'rejected'],
+      ['rejected', 'approved', [0.1, 0.9, 0.05], [0.1001, 0.02, 0.99], 'rejected'], ['rejected', 'approved', [0.1, 0.05, 0.05], [0.1001, 0.88, 0.99], 'approved']]) {
       const A = await center(T, ra, sa), B = await center(T, rb, sb);
       assert.equal(A.S.approvals[0]._stT, B.S.approvals[0]._stT, type + ': a tie is forced');
       assert.deepEqual([A.S[recKey][0][field], A.S[recKey][0]._stK], [A.S.approvals[0]._stT, A.S.approvals[0]._stK], type + ': the item and the request carry the same mark');
-      const w = winner(A, B) === A ? sa : sb;
-      check(A, B, recKey, recMerge, [w, J[w]], type);
+      assert.equal(winner(A, B) === A ? sa : sb, want, type + ': the larger mark is the expected one');
+      check(A, B, recKey, recMerge, [want, J[want]], type);
     }
-    // Even the marks are the same (the same random numbers on both devices): the rejection on both.
-    const A = await center(T, [0.1], 'approved'), B = await center(T, [0.1], 'rejected');
-    assert.equal(A.S.approvals[0]._stK, B.S.approvals[0]._stK);
-    check(A, B, recKey, recMerge, ['rejected', '却下'], type + ' (same mark)');
+    // Even the marks are the same (the same random numbers on both devices): the rejection on both, whichever was pressed later
+    // (the later one has the later display time, which the item used to fall back on).
+    for (const order of [['approved', 'rejected'], ['rejected', 'approved']]) {
+      const X = await center(T, [0.1], order[0]);
+      await new Promise(r => setTimeout(r, 5));
+      const Y = await center(T, [0.1], order[1]);
+      assert.equal(X.S.approvals[0]._stK, Y.S.approvals[0]._stK);
+      check(X, Y, recKey, recMerge, ['rejected', '却下'], type + ' (same mark, ' + order.join(' then ') + ')');
+    }
+    const A = await center(T, [0.1], 'approved');
     // An undo forgets the mark on the item and the request (a later decision at the undo's time is not out-ranked by it).
     await run(A, 'reopenApproval("ap1")');
     assert.deepEqual([A.S.approvals[0].status, '_stK' in A.S.approvals[0], A.S[recKey][0].status, '_stK' in A.S[recKey][0]], ['pending', false, '申請中', false], type + ': undo');
@@ -815,13 +824,16 @@ test('the same time on two devices (a forced tie): the item and the request keep
     run(c, fn);
     return c;
   };
-  for (const [T, fn, ps, cs] of [[TYPES[0], 'rejectMileage("r1")', 'rejected', 'approved'], [TYPES[3], 'approveReimburse("r1", false)', 'rejected', 'approved']]) {
+  for (const [T, fn, ps, cs, pr, cr, want] of [[TYPES[0], 'rejectMileage("r1")', 'rejected', 'approved', [0.1, 0.44, 0.71], [0.1001, 0.21, 0.83], 'rejected'],
+    [TYPES[0], 'rejectMileage("r1")', 'rejected', 'approved', [0.1, 0.21, 0.71], [0.1001, 0.93, 0.83], 'approved'],
+    [TYPES[3], 'approveReimburse("r1", false)', 'rejected', 'approved', [0.1, 0.44, 0.71], [0.1001, 0.21, 0.83], 'rejected'],
+    [TYPES[3], 'approveReimburse("r1", false)', 'rejected', 'approved', [0.1, 0.21, 0.71], [0.1001, 0.93, 0.83], 'approved']]) {
     const [type, recKey, recMerge, , field] = T;
-    const P = pageDev(T, [0.1, 0.44, 0.71], fn), B = await center(T, [0.1001, 0.21, 0.83], cs);
+    const P = pageDev(T, pr, fn), B = await center(T, cr, cs);
     assert.equal(P.S.approvals[0]._stT, B.S.approvals[0]._stT, type + ' (page): a tie is forced');
     assert.deepEqual([P.S.approvals[0].status, P.S.approvals[0]._stK, P.S.approvals[0]._stT], [ps, P.S[recKey][0]._stK, P.S[recKey][0][field]], type + ': the page stamps the item with the request\'s mark');
-    const w = winner(P, B) === P ? ps : cs;
-    check(P, B, recKey, recMerge, [w, J[w]], type + ' (page)');
+    assert.equal(winner(P, B) === P ? ps : cs, want, type + ' (page): the larger mark is the expected one');
+    check(P, B, recKey, recMerge, [want, J[want]], type + ' (page)');
   }
   // A later change of a reimbursement (paid) on a device whose clock is behind the decision still wins the merge.
   const R = await center(TYPES[3], [0.1, 0.5, 0.6], 'approved');
@@ -841,6 +853,67 @@ test('the same time on two devices (a forced tie): the item and the request keep
   assert.deepEqual([it7.status, rc7.status], ['rejected', '却下']);
   assert.ok(it7._stT > late);
   assert.deepEqual([rc7._stT, rc7._stK], [it7._stT, it7._stK], 'the request carries the item\'s newer mark');
+  // The same, but the request was changed elsewhere while the item was being read (another mark): the request is left alone.
+  const p8 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [{ ...pending('ガソリン代', 'r1'), _stT: late, _mut: late }] },
+    st: { approvals: [], mileage_requests: [{ ...TYPES[0][3] }], notifications: [] } });
+  run(p8, randoms([0.3, 0.6, 0.9]));
+  const pull8 = p8.pullOpKey;
+  p8.pullOpKey = async (key) => { const r = await pull8(key); if (key === 'approvals') p8.S.mileage_requests[0] = { ...p8.S.mileage_requests[0], status: '承認', _stT: late - 1000, _stK: 'zz-elsewhere' }; return r; };
+  run(p8, 'rejectMileage("r1")');
+  await new Promise(r => setTimeout(r, 50));
+  // (that decision is older than the undo the item shows, so the item is not set to it either, and nothing is announced)
+  assert.deepEqual([p8.S.mileage_requests[0].status, p8.S.mileage_requests[0]._stT, p8.S.mileage_requests[0]._stK], ['承認', late - 1000, 'zz-elsewhere']);
+  assert.equal(p8.S.approvals.find(x => x.ref === 'r1').status, 'pending');
+});
+
+test('the same decision mark on the item and the request also when the request changes while the item is read, when the approval center follows the page, and in the write-back check (independent review of 27be84d)', async () => {
+  const future = Date.now() + 60000, tB = future + 3000, kB = 'zz-b-mark';
+  const randoms = vals => 'Math.random = (function(a){ var i=0; return function(){ return a[(i++) % a.length]; }; })(' + JSON.stringify(vals) + ')';
+  const recA = { id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', _stT: future };
+  const recB = { ...recA, status: '承認', approvedBy: 'Tac', _stT: tB, _stK: kB };
+  const itemB = AP({ _gen: 1, status: 'approved', _stT: tB, _mut: tB, _stK: kB, signoffs: [] });
+  const both = (c, x, y, fn) => [plain(run(c, fn + '(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')'))[0], plain(run(c, fn + '(' + JSON.stringify(y) + ',' + JSON.stringify(x) + ')'))[0]];
+  // A decides on the request's page; while it reads the approval center, B's decision arrives in the request (B's mark).
+  // (the third item was saved after B's decision time by a merge: the item needs a newer mark, and the request gets it too)
+  for (const cloudItem of [itemB, AP({ _gen: 1, status: 'pending', _stT: future, _mut: future, signoffs: [] }), AP({ _gen: 1, status: 'pending', _stT: future, _mut: tB + 500, signoffs: [] })]) {
+    const A = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [cloudItem] },
+      st: { approvals: [AP({ status: 'approved', _stT: 50, _mut: 50, signoffs: [] })], mileage_requests: [{ ...recA }], notifications: [] } });
+    run(A, randoms([0.3, 0.6, 0.9]));
+    const pull = A.pullOpKey;
+    A.pullOpKey = async (key) => { const r = await pull(key); if (key === 'approvals') A.S.mileage_requests[0] = { ...recB }; return r; };
+    run(A, 'rejectMileage("mi1")');
+    await new Promise(r => setTimeout(r, 50));
+    const it = A.S.approvals.find(x => x.ref === 'mi1' && x._gen === 1), rc = A.S.mileage_requests[0];
+    assert.deepEqual([it.status, rc.status, it._stK, it._stT], ['approved', '承認', rc._stK, rc._stT], cloudItem.status + ': the item follows the request, with the same mark');
+    if (cloudItem._mut <= tB) assert.deepEqual([rc._stK, rc._stT], [kB, tB], 'B\'s mark is kept'); else assert.ok(rc._stT > tB + 500);
+    assert.ok(A.toasts.some(([m]) => /ほかの端末で先に決まっていました/.test(m)));
+    assert.ok(!(A.S.notifications || []).some(n => /却下/.test(JSON.stringify(n))), 'no notice of the decision that lost');
+    // And merged with B's copies in both orders.
+    assert.deepEqual(both(A, [plain(it)], [itemB], 'mergeApprovals').map(x => x.status), ['approved', 'approved']);
+    assert.deepEqual(both(A, [plain(rc)], [recB], 'mergeReqTomb').map(x => x.status), ['承認', '承認']);
+  }
+  // The approval center finds the request already decided on its page: the item takes the request's mark.
+  const C = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [AP({ _gen: 1, _stT: future, _mut: future, signoffs: [] })], mileage_requests: [{ ...recB }] },
+    st: { approvals: [AP({ _gen: 1, _stT: future, _mut: future, signoffs: [] })], mileage_requests: [{ ...recB }], notifications: [] } });
+  await run(C, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([C.S.approvals[0].status, C.S.approvals[0]._stT, C.S.approvals[0]._stK], ['approved', tB, kB]);
+  // (the item was saved after the request's decision: a newer mark on both)
+  const C2 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [AP({ _gen: 1, _stT: future, _mut: tB + 500, signoffs: [] })], mileage_requests: [{ ...recB }] },
+    st: { approvals: [AP({ _gen: 1, _stT: future, _mut: tB + 500, signoffs: [] })], mileage_requests: [{ ...recB }], notifications: [] } });
+  await run(C2, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([C2.S.approvals[0].status, C2.S.mileage_requests[0].status, C2.S.approvals[0]._stT, C2.S.approvals[0]._stK], ['approved', '承認', C2.S.mileage_requests[0]._stT, C2.S.mileage_requests[0]._stK]);
+  assert.ok(C2.S.approvals[0]._stT > tB + 500);
+  // The write-back check uses the same tie rule as the merge (a copy with the losing mark at the same time is not "covered").
+  const lo = { ...recB, _stK: 'aa-lower' }, rej = { ...recB, status: '却下' };
+  assert.equal(run(C, '_coversReqTomb(' + JSON.stringify([lo]) + ',' + JSON.stringify([recB]) + ')'), false);
+  assert.equal(run(C, '_coversReqTomb(' + JSON.stringify([recB]) + ',' + JSON.stringify([lo]) + ')'), true);
+  assert.equal(run(C, '_coversReqTomb(' + JSON.stringify([recB]) + ',' + JSON.stringify([rej]) + ')'), false);
+  assert.equal(run(C, '_coversReqTomb(' + JSON.stringify([rej]) + ',' + JSON.stringify([recB]) + ')'), true);
+  const rb = { id: 'rb1', status: '承認', _mut: tB, _stK: kB }, rbLo = { ...rb, _stK: 'aa-lower' };
+  assert.equal(run(C, '_coversInvoices(' + JSON.stringify([rbLo]) + ',' + JSON.stringify([rb]) + ')'), false);
+  assert.equal(run(C, '_coversInvoices(' + JSON.stringify([rb]) + ',' + JSON.stringify([rbLo]) + ')'), true);
+  assert.equal(run(C, '_coversInvoices(' + JSON.stringify([{ ...rb, status: '却下' }]) + ',' + JSON.stringify([rb]) + ')'), true);
+  assert.equal(run(C, '_coversInvoices(' + JSON.stringify([rb]) + ',' + JSON.stringify([{ ...rb, status: '却下' }]) + ')'), false);
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {

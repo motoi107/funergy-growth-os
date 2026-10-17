@@ -50,7 +50,7 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', 'invTouch',
   '_apDecidedElsewhere', '_apAcctOn', '_apStT', '_apFollowPage', '_apNewestForRef',
   // v1087 (Codex review of 79d5675): status times only move forward; the request is read again before following its page decision.
-  '_apMut', '_rtStT', '_rtStK', '_rtDecRank', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp'];
+  '_apMut', '_rtStT', '_rtStK', '_rtDecRank', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded'];
 // One-line top-level `var` statements the functions above use (v1087).
 function varSrc(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(SRC); if (!m) throw new Error('var not found: ' + name); return m[0]; }
 const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt, _apPullTry, _apPulling', 'AP_REC_KEYS', 'AP_REC_FIELD'].map(n => { try { return varSrc(n.split(',')[0]); } catch (_e) { return ''; } });

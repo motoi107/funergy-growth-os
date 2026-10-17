@@ -10395,6 +10395,7 @@ function _coversReqTomb(check, want){
     if(w._deleted && !h._deleted) return false; // 削除が反映されているか
     if(!w._deleted && !h._deleted && _rtStT(w)>_rtStT(h)) return false; // v1087: 新しい決定が反映されているか
     if(!w._deleted && _rtStT(w)===_rtStT(h) && w.status && w.status!=='申請中' && (h.status==null||h.status==='申請中')) return false; // 決定リグレッション
+    if(!w._deleted && !h._deleted && _rtStT(w)===_rtStT(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false; // v1087: 同じ時刻なら合流と同じ決め方（印・却下）
   }
   return true;
 }
@@ -10439,6 +10440,7 @@ function _coversInvoices(check, want){
     var h=have[w.id]; if(!h) return false;
     if(w._deleted && !h._deleted) return false;
     if(_invMut(w)>_invMut(h)) return false;
+    if(!w._deleted && !h._deleted && _invMut(w)===_invMut(h) && (_rtStK(w)>_rtStK(h) || (_rtStK(w) && _rtStK(w)===_rtStK(h) && _rtDecRank(w)>_rtDecRank(h)))) return false;   /* v1087: 同じ時刻なら合流と同じ決め方 */
   }
   return true;
 }
@@ -67561,6 +67563,27 @@ function _apFollowPage(type, ref, status, opt){
   _apMarkDecided(a, status, opt.reason, 'page', opt.st); lsSet('approvals', ap2);
   return [a];
 }
+/* v1087: 申請の画面で決めたあと、承認センターの読み直しを待つあいだに、申請の記録がほかの端末の決定に変わったか（印が違う）。
+   そのときはこの画面の決定ではなく、記録に合わせる（案件だけを画面の決定にして新しい印を付けると、どちらの順で合流しても
+   案件と申請が食い違う）。合わせたら true */
+function _apRecSuperseded(type, ref, opt){
+  var rk=AP_REC_KEYS[type];
+  if(!rk || ref==null || !opt.st || !opt.st.k) return false;
+  var r=null; try{ r=(ls(rk,[])||[]).find(function(x){ return x && String(x.id)===String(ref); })||null; }catch(_e){}
+  if(!r || _rtStK(r)===String(opt.st.k)) return false;
+  var rs=r._deleted ? '' : (r.status==='承認' ? 'approved' : r.status==='却下' ? 'rejected' : '');
+  if(rs){
+    var ap2=ls('approvals', []), a=_apNewestForRef(ap2, type, ref);
+    /* 取り消した（版が進んだ）案件より前の決定は、取り消す前のもの（_apRecordState と同じ）：案件は合わせない */
+    if(a && _apGen(a)>0 && _apRecTime(type, r)<=_apStT(a)) a=null;
+    if(a && a.status!=='withdrawn' && a.status!==rs){
+      var rst={ t:_apRecTime(type, r), k:_rtStK(r) };
+      _apMarkDecided(a, rs, r.rejectReason||'', 'page', rst); lsSet('approvals', ap2);
+      _apSyncRecStamp(type, ref, [a], rst);
+    }
+  }
+  return true;
+}
 function _apNotifyHits(hit, type, status, opt){
   if(opt.silent) return;
   if(hit.length) hit.forEach(function(a){ apNotifyDecision(a, status, opt); });
@@ -67591,9 +67614,16 @@ function apDecidedFromPage(type, ref, status, opt){
   opt=opt||{};
   var hit=_apResolveLocal(type, ref, status, opt);
   if(hit.length){ _apSyncRecStamp(type, ref, hit, opt.st); _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
-  var fin=function(h2){ _apSyncRecStamp(type, ref, h2, opt.st); if(h2.length || !_apDecidedElsewhere(type, ref, status)) _apNotifyHits(h2, type, status, opt); return h2; };
+  var fin=function(h2){
+    _apSyncRecStamp(type, ref, h2, opt.st);
+    if(opt._superseded){   /* ほかの端末の決定が申請に残った：この画面の決定は知らせない */
+      try{ showToast(t('この申請は、ほかの端末で先に決まっていました。承認センターと申請はそちらに合わせました','This request was decided on another device first. The approval center and the request follow that decision.'), 'warn'); }catch(_e){}
+      return h2;
+    }
+    if(h2.length || !_apDecidedElsewhere(type, ref, status)) _apNotifyHits(h2, type, status, opt); return h2; };
   return apPullLatest().then(function(ok){
     if(!ok) return fin([]);
+    if(_apRecSuperseded(type, ref, opt)){ opt._superseded=true; return fin([]); }
     var h2=_apResolveLocal(type, ref, status, opt);
     if(!h2.length) h2=_apFollowPage(type, ref, status, opt);
     return fin(h2);
@@ -68237,8 +68267,9 @@ function _apRecordState(a){
     if(r._deleted) return { state:'withdrawn', label:lab, by:'' };
     var st=r.status==='承認'?'approved':r.status==='却下'?'rejected':'pending';
     if(st!=='pending' && _apGen(a)>0){ var rt=_apRecTime(a.type, r); if(rt>=0 && rt<=_apStT(a)) st='pending'; }
-    if(st==='approved') return { state:'approved', label:lab, by:(r.approvedBy||'') };
-    if(st==='rejected') return { state:'rejected', label:lab, by:(r.approvedBy||'') };
+    var rst={ t:_apRecTime(a.type, r), k:_rtStK(r) };   /* v1087: 案件を合わせるときに申請と同じ印を使う */
+    if(st==='approved') return { state:'approved', label:lab, by:(r.approvedBy||''), st:rst };
+    if(st==='rejected') return { state:'rejected', label:lab, by:(r.approvedBy||''), st:rst };
     return { state:'pending', label:lab, by:'' };
   }catch(e){ return null; }
 }
@@ -68281,7 +68312,8 @@ async function approveItem(id, status, reason, opt) {
   }
   var _rs=_apRecordState(a);
   if (_rs && _rs.state!=='pending') {
-    _apMarkDecided(a, _rs.state, null, 'page'); if(_rs.by) a.decidedBy=_rs.by; lsSet('approvals', approvals);
+    _apMarkDecided(a, _rs.state, null, 'page', _rs.st); if(_rs.by) a.decidedBy=_rs.by; lsSet('approvals', approvals);
+    if(_rs.st) _apSyncRecStamp(a.type, a.ref, [a], _rs.st);   /* 案件のほうが新しくて新しい印にしたときは、申請にも同じ印 */
     var _w=_rs.state==='approved'?t('承認','approved'):_rs.state==='rejected'?t('却下','rejected'):t('取り下げ','withdrawn');
     showToast(t('この申請は「'+_rs.label+'」の画面で、もう'+_w+'されています。承認センターも合わせました','This request was already '+_w+' on the '+_rs.label+' page. The approval center now matches.')
       +(_rsOld?t('（申請の記録をクラウドで確かめられなかったので、この端末の記録で合わせました）',' (the request could not be checked in the cloud, so this device’s copy was used)'):''), _rsOld?'warning':'info');
