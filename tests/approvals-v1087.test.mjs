@@ -1164,7 +1164,12 @@ test('a leave undone on a device with an old or missing item copy stays undone; 
   { const B = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [], my_vacations: [plain(A.S.my_vacations[0])], notifications: [] } });
     at(B, T + 100); run(B, 'cancelApprovedVacation("v1")'); await wait();
     assert.deepEqual(both(A, B, 'my_vacations', 'mergeReqTomb').map(x => [x.status, x._dG]), [['申請中', 1], ['申請中', 1]]);
-    assert.ok(B.toasts.some(([m, k]) => /承認センターの案件を読み直せませんでした/.test(m) && k === 'warn')); }
+    assert.ok(B.toasts.some(([m, k]) => /承認センターの案件を読み直せませんでした/.test(m) && k === 'warn'));
+    // (read, but the item is not there either)
+    const B2 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [] }, st: { approvals: [], my_vacations: [plain(A.S.my_vacations[0])], notifications: [] } });
+    at(B2, T + 100); run(B2, 'cancelApprovedVacation("v1")'); await wait();
+    assert.equal(B2.S.my_vacations[0].status, '申請中');
+    assert.ok(B2.toasts.some(([m, k]) => /承認センターの案件を読み直せませんでした/.test(m) && k === 'warn')); }
 
   // P2-2: A approves mileage and undoes it (item gen 1, request gen 1); P has the undone request but the original pending item (gen 0).
   const mi = { id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', amount: 12, date: '2026-10-05', _stT: 500 };
