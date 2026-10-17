@@ -308,6 +308,8 @@ test('新しい業者を決める: merging the printed name into a vendor — th
   const all = async () => Promise.all(['M-1', 'M-2', 'M-3', 'M-4', 'M-5', 'M-6'].map(vk));
   assert.deepEqual(await all(), ['v1', 'v1', 'v2', 'v1', null, 'v1'], 'a closed month stays, but not the one on screen');
   for (const k of ['M-1', 'M-4']) assert.ok(!codes(await one(E, D[k].id)).includes('vendor_unknown'), k + ': worked out again with the vendor');
+  // They take the vendor's kind too (as choosing the vendor does), so a food invoice counts as food.
+  assert.deepEqual([D['M-1'].food_kind, (await one(E, D['M-1'].id)).food_kind, (await one(E, D['M-4'].id)).food_kind], [null, 'food', 'food']);
   assert.deepEqual((await rule(E, 'v1')).aliases, ['VENDOR A INC.', 'VENDR A']);
   const rec = (await E.q(`select group_id, moved from invoice_vendor_merges where id=$1`, [m.body.merge_id]))[0];
   assert.equal(rec.group_id, 'vm-inv-1');
@@ -320,7 +322,10 @@ test('新しい業者を決める: merging the printed name into a vendor — th
   x = await one(E, D['M-6'].id);
   const po = await E.api('tok-office', { action: 'post', doc_id: x.id, version: x.version, reason: '確認済み' });
   assert.equal(po.status, 200, JSON.stringify(po.body));
-  assert.equal((await one(E, D['M-6'].id)).status, 'posted');
+  assert.deepEqual([(await one(E, D['M-6'].id)).status, (await one(E, D['M-6'].id)).food_kind], ['posted', 'food']);
+  assert.equal((await E.worker()).body.ok, true);   // the copy for the app
+  const mirror = (await E.q(`select value from app_state where key='spl_invoices_F06'`))[0].value.find(x => x.intakeDocId === D['M-6'].id);
+  assert.equal(mirror && mirror.purpose, '仕入れ・仕込み', 'the app copy is a food purchase');
   // Taking it back: the invoices it gave the vendor wait for a vendor again (worked out again); the ones a person decided stay.
   const upv = await E.api('tok-office', { action: 'vendor_unmerge', merge_id: m.body.merge_id, preview: true });
   assert.equal(upv.status, 200, JSON.stringify(upv.body));
@@ -333,7 +338,7 @@ test('新しい業者を決める: merging the printed name into a vendor — th
   assert.deepEqual(await all(), [null, 'v1', 'v2', null, null, 'v1'], 'given by the merge → waiting again; chosen by a person or posted → stays');
   const m1 = await one(E, D['M-1'].id), m4 = await one(E, D['M-4'].id);
   for (const [k, d] of [['M-1', m1], ['M-4', m4]]) {
-    assert.deepEqual([d.status, d.vendor_name, codes(d).includes('vendor_unknown')], ['review', D[k].vendor_name, true], k + ': waits for a vendor again');
+    assert.deepEqual([d.status, d.vendor_name, d.food_kind, codes(d).includes('vendor_unknown')], ['review', D[k].vendor_name, D[k].food_kind, true], k + ': waits for a vendor again');
   }
   assert.equal(String(m1.due_date).slice(0, 10) === '2026-10-30' || new Date(m1.due_date).toISOString().slice(0, 10) === '2026-10-30', true, 'the correction stays');
   const us = await E.api('tok-office', { action: 'vendor_usage' });
@@ -358,6 +363,10 @@ test('新しい業者を決める: more waiting invoices than one call works out
   assert.equal(u.status, 200, JSON.stringify(u.body));
   assert.deepEqual([u.body.unknown, u.body.stay, u.body.recheck], [3, 0, { fixed: 2, failed: 0, left: 1 }]);
   for (const k of ['W-1', 'W-2', 'W-3']) assert.equal((await one(E, D[k].id)).vendor_key, null, k);
+  // The one not worked out again in that call says "vendor not in the master" already (no 4 items OK, not posted together;
+  // the screen offers 業者を決める).
+  const w3 = await one(E, D['W-3'].id);
+  assert.deepEqual([codes(w3).includes('vendor_unknown'), w3.auto_eligible], [true, false]);
   await E.pg.close();
 });
 

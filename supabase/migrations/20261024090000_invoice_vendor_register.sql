@@ -165,11 +165,12 @@ begin
  if v_prev then return r || jsonb_build_object('ok', true, 'closed_left', v_left, 'here', v_here, 'waiting', coalesce((r->>'unknown')::int, 0) + v_extra); end if;
  -- The one on screen that the merge did not reach gets the vendor here, in the merge's record.
  if v_extra = 1 and r->>'merge_id' is not null then
-  select * into hd from public.invoice_docs where id=v_doc and vendor_key is null and status='review' for update;
+  select * into hd from public.invoice_docs where id=v_doc and vendor_key is null and status='review' for update skip locked;
   if hd.id is not null then
-   update public.invoice_docs set vendor_key=tgt.vendor_key, vendor_name=tgt.display_name, updated_at=now() where id=hd.id;
+   update public.invoice_docs set vendor_key=tgt.vendor_key, vendor_name=tgt.display_name, food_kind=coalesce(food_kind, tgt.food_kind), updated_at=now() where id=hd.id;
    perform public.invoice_event(hd.id, hd.file_id, actor::text, 'vendor_merged', jsonb_build_object('from', null, 'to', tgt.vendor_key, 'name', tgt.display_name));
-   update public.invoice_vendor_merges set moved=jsonb_set(moved, '{unknown}', coalesce(moved->'unknown', '[]'::jsonb) || jsonb_build_array(jsonb_build_object('id', hd.id, 'n', hd.vendor_name)))
+   update public.invoice_vendor_merges set moved=jsonb_set(moved, '{unknown}', coalesce(moved->'unknown', '[]'::jsonb) || jsonb_build_array(jsonb_build_object('id', hd.id,
+     'n', hd.vendor_name, 'f', hd.food_kind, 'fk', coalesce(hd.food_kind, tgt.food_kind))))
    where id=(r->>'merge_id')::uuid;
   end if;
  end if;
@@ -274,20 +275,25 @@ begin
   end if;
   v_months := v_months || r.ym;
  end loop;
- -- Invoices waiting for a person because their printed name was no vendor's: they get the kept vendor, and what they had is kept
- -- in the record (moved.unknown) so that taking the merge back makes them wait for a vendor again (Codex P2 on PR #72).
- for r in select d.id, d.file_id, d.vendor_name, to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') ym
+ -- Invoices waiting for a person because their printed name was no vendor's: they get the kept vendor (and its kind when they
+ -- have none, as choosing the vendor would give), and what they had is kept in the record (moved.unknown: name, kind, the kind
+ -- given) so that taking the merge back makes them wait for a vendor again (Codex P2 on PR #72). One a person is saving right now
+ -- is passed over (it is being decided; waiting for it could deadlock with the name learning).
+ for r in select d.id, d.file_id, d.vendor_name, d.food_kind, to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') ym
   from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
   where d.vendor_key is null and d.status='review'
    and nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\s+', ' ', 'g')), '') = any(v_keys)
   order by d.created_at, d.id
+  for update of d skip locked
  loop
   if v_closed is not null and r.ym <= v_closed then continue; end if;
   if not v_prev then
-   update public.invoice_docs set vendor_key=v_tk, vendor_name=v_to, updated_at=now() where id=r.id;
+   update public.invoice_docs set vendor_key=v_tk, vendor_name=v_to, food_kind=coalesce(food_kind, v_kind, tgt.food_kind), updated_at=now()
+   where id=r.id and vendor_key is null and status='review';
+   if not found then continue; end if;
    perform public.invoice_event(r.id, r.file_id, actor::text, 'vendor_merged', jsonb_build_object('from', null, 'to', v_tk, 'name', v_to));
   end if;
-  v_unk := v_unk || jsonb_build_object('id', r.id, 'n', r.vendor_name);
+  v_unk := v_unk || jsonb_build_object('id', r.id, 'n', r.vendor_name, 'f', r.food_kind, 'fk', coalesce(r.food_kind, v_kind, tgt.food_kind));
   v_unknown := v_unknown || r.id; v_months := v_months || r.ym;
  end loop;
  -- Product mappings: to the kept vendor, unless it has one for the same product code, name, spec and unit (that one stays).
@@ -368,7 +374,7 @@ create or replace function public.invoice_vendor_unmerge(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; v_prev boolean := coalesce((p->>'preview')::boolean, false);
  m public.invoice_vendor_merges; tgt public.invoice_vendor_rules; e jsonb; d public.invoice_docs;
- v_back int := 0; v_stay int := 0; v_unk int := 0; v_review uuid[] := '{}'; v_months text[] := '{}';
+ v_back int := 0; v_stay int := 0; v_unk int := 0; v_review uuid[] := '{}'; v_rev_u uuid[] := '{}'; v_months text[] := '{}';
 begin
  perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if coalesce(p->>'merge_id', '') !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then raise exception 'bad_value'; end if;
@@ -400,17 +406,24 @@ begin
   if d.id is null or d.vendor_key is distinct from m.to_key or d.status <> 'review'
      or coalesce((d.overrides->'vendor_key'->>'at')::timestamptz > m.merged_at, false) then v_stay := v_stay + 1; continue; end if;
   if not v_prev then
-   update public.invoice_docs set vendor_key=null, vendor_name=e->>'n', updated_at=now() where id=d.id;
+   -- Waiting for a vendor again right away (also when it is not worked out again in this call): no vendor, the kind it had (unless
+   -- a person set the kind since), and "vendor not in the master" among its reasons.
+   update public.invoice_docs set vendor_key=null, vendor_name=e->>'n',
+    food_kind=case when e ? 'fk' and food_kind is not distinct from e->>'fk'
+      and not coalesce((overrides->'food_kind'->>'at')::timestamptz > m.merged_at, false) then e->>'f' else food_kind end,
+    reasons=case when coalesce(reasons, '[]'::jsonb) @> '[{"code":"vendor_unknown"}]'::jsonb then reasons
+      else coalesce(reasons, '[]'::jsonb) || '[{"code":"vendor_unknown"}]'::jsonb end,
+    auto_eligible=false, updated_at=now() where id=d.id;
    perform public.invoice_event(d.id, d.file_id, actor::text, 'vendor_unmerged', jsonb_build_object('from', m.to_key, 'to', null));
   end if;
   v_unk := v_unk + 1;
-  v_review := v_review || d.id;
+  v_rev_u := v_rev_u || d.id;
   v_months := v_months || to_char(coalesce(d.invoice_date, d.effective_date,
    (select (f.ingested_at at time zone 'Pacific/Honolulu')::date from public.invoice_files f where f.id=d.file_id)), 'YYYY-MM');
  end loop;
  v_months := v_months || array(select y->>'ym' from jsonb_array_elements(coalesce(m.moved->'checks', '[]'::jsonb)) y);
  if v_prev then
-  return jsonb_build_object('ok', true, 'preview', true, 'merge_id', m.id, 'docs', v_back, 'unknown', v_unk, 'stay', v_stay, 'review', cardinality(v_review),
+  return jsonb_build_object('ok', true, 'preview', true, 'merge_id', m.id, 'docs', v_back, 'unknown', v_unk, 'stay', v_stay, 'review', cardinality(v_rev_u || v_review),
    'from', to_jsonb(m.from_keys), 'months', to_jsonb(array(select distinct x from unnest(v_months) x where x is not null order by 1)));
  end if;
  update public.invoice_item_maps x set vendor_key=q.k, updated_at=now()
@@ -435,7 +448,7 @@ begin
  update public.invoice_vendor_merges set undone_by=actor::text, undone_at=now() where id=m.id;
  perform public.invoice_event(null, null, actor::text, 'vendors_unmerged', jsonb_build_object('merge_id', m.id, 'to', m.to_key, 'from', to_jsonb(m.from_keys),
   'docs', v_back, 'unknown', v_unk, 'stayed', v_stay));
- return jsonb_build_object('ok', true, 'preview', false, 'merge_id', m.id, 'docs', v_back, 'unknown', v_unk, 'stay', v_stay, 'review', cardinality(v_review),
-  'from', to_jsonb(m.from_keys), 'review_doc_ids', to_jsonb(v_review),
+ return jsonb_build_object('ok', true, 'preview', false, 'merge_id', m.id, 'docs', v_back, 'unknown', v_unk, 'stay', v_stay, 'review', cardinality(v_rev_u || v_review),
+  'from', to_jsonb(m.from_keys), 'review_doc_ids', to_jsonb(v_rev_u || v_review),
   'months', to_jsonb(array(select distinct x from unnest(v_months) x where x is not null order by 1)));
 end $$;
