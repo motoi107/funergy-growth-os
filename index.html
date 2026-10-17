@@ -10291,6 +10291,23 @@ function mergeAppendLog(cloudArr, localArr){
    一方 id は 'ec'+時刻+乱数 で端末ごとに異なるため、全文一致のマージだと
    2端末が同じ日に記録した同じ検知が2件に増えてしまう。署名を日付+タイトルにする。 */
 function _ecLogSig(x){ return String((x&&x.date)||'')+'|'+String((x&&x.title)||''); }
+/* v1088: 同じ日・同じ題名の記録は 1 件のまま、中身（key と fp）が違うものは parts に持つ。
+   「問題ではない」で解除した中身のあとに、同じ日に別の中身（重くなった・時刻が変わった）が出たとき、その中身を数えるため。
+   parts は key と fp の順に並べる（端末・クラウドの並びによらず同じになる） */
+function _ecPartSig(x){ return String(x && x.key)+'\u241e'+String(x && x.fp!=null ? x.fp : ''); }
+function _ecLogParts(r){
+  if(!r) return [];
+  var by={};
+  var add=function(x){ if(!x || !x.key) return; var k=_ecPartSig(x); if(!by[k]) by[k]={ key:String(x.key), fp:(x.fp==null?'':String(x.fp)), sev:String(x.sev||'') }; };
+  if(r.key) add(r);
+  if(Array.isArray(r.parts)) r.parts.forEach(add);
+  return Object.keys(by).sort().map(function(k){ return by[k]; });
+}
+function _ecPartsUnion(a, b){
+  var by={};
+  _ecLogParts(a).concat(_ecLogParts(b)).forEach(function(x){ var k=_ecPartSig(x); if(!by[k]) by[k]=x; });
+  return Object.keys(by).sort().map(function(k){ return by[k]; });
+}
 function mergeEcLog(cloudArr, localArr){
   var by={}, order=[];
   function add(x){
@@ -10298,7 +10315,10 @@ function mergeEcLog(cloudArr, localArr){
     var k=_ecLogSig(x);
     if(!by[k]){ by[k]=x; order.push(k); return; }
     var at=(by[k]&&by[k].ts)||0, bt=(x&&x.ts)||0;
-    if(bt&&bt<at) by[k]=x;   /* 先に検知した方を残す */
+    var keep=(bt&&bt<at)?x:by[k], other=(keep===x)?by[k]:x;   /* 先に検知した方を残す */
+    var u=_ecPartsUnion(keep, other);   /* v1088: 中身は両方 */
+    if(u.length>1 || (u.length===1 && !keep.key)) keep=Object.assign({}, keep, { parts:u });
+    by[k]=keep;
   }
   (Array.isArray(cloudArr)?cloudArr:[]).forEach(add);
   (Array.isArray(localArr)?localArr:[]).forEach(add);
@@ -10309,8 +10329,11 @@ function mergeEcLog(cloudArr, localArr){
 }
 function _coversEcLog(check, want){
   if(!Array.isArray(check)) return false;
-  var have={}; check.forEach(function(x){ if(x!=null) have[_ecLogSig(x)]=1; });
-  for(var i=0;i<want.length;i++){ var w=want[i]; if(w==null) continue; if(!have[_ecLogSig(w)]) return false; }
+  var have={}; check.forEach(function(x){ if(x!=null && !have[_ecLogSig(x)]) have[_ecLogSig(x)]=x; });
+  for(var i=0;i<want.length;i++){ var w=want[i]; if(w==null) continue; var h=have[_ecLogSig(w)]; if(!h) return false;
+    /* v1088: 手元の記録の中身（parts）もクラウドにあるか */
+    var hp={}; _ecLogParts(h).forEach(function(x){ hp[_ecPartSig(x)]=1; });
+    if(_ecLogParts(w).some(function(x){ return !hp[_ecPartSig(x)]; })) return false; }
   return true;
 }
 function _coversLog(check, want){
@@ -52637,14 +52660,22 @@ function _ecAttribute(issue){
 function ecSnapshot(){
   var today=todayISO();
   var log=getEcLog();
-  var todaySet={}; log.forEach(function(r){ if(r.date===today) todaySet[r.title]=1; });
+  var todayRec={}; log.forEach(function(r){ if(r && r.date===today && !todayRec[r.title]) todayRec[r.title]=r; });
   var added=0;
-  /* v1088: 解除したものは記録に足さない（解除する前の日の記録は残る）。key と fp も残す（「問題ではない」で解除したものを数から外すため） */
+  /* v1088: 解除したものは記録に足さない（解除する前の日の記録は残る）。key と fp も残す（「問題ではない」で解除したものを数から外すため）。
+     同じ日・同じ題名の記録があれば 1 日 1 件のまま、中身（key と fp）が違えば parts に足す（解除した中身のあとに出た別の中身を数える） */
   try{ ecOpenIssues().forEach(function(x){
-    if(todaySet[x.title]) return;
+    var r0=todayRec[x.title];
+    if(r0){
+      if(!x.key) return;
+      var fp=(x.fp==null?'':String(x.fp));
+      if(_ecLogParts(r0).some(function(y){ return y.key===x.key && y.fp===fp; })) return;
+      r0.parts=_ecPartsUnion(r0, { key:x.key, fp:fp, sev:x.sev }); added++;
+      return;
+    }
     var at=_ecAttribute(x);
-    log.push({id:'ec'+Date.now()+'_'+Math.random().toString(36).slice(2,6), date:today, ts:Date.now(), sev:x.sev, cat:x.cat, title:x.title, store:at.store, emp:at.emp, key:x.key, fp:x.fp});
-    todaySet[x.title]=1; added++;
+    var rec={id:'ec'+Date.now()+'_'+Math.random().toString(36).slice(2,6), date:today, ts:Date.now(), sev:x.sev, cat:x.cat, title:x.title, store:at.store, emp:at.emp, key:x.key, fp:x.fp};
+    log.push(rec); todayRec[x.title]=rec; added++;
   }); }catch(e){}
   if(log.length>4000) log=log.slice(log.length-4000);
   lsSet('ec_log', log);
@@ -52669,15 +52700,20 @@ function _ecFalseSet(resA){
   });
   return s;
 }
-function ecLogCounted(r, fs){
-  if(!r) return false;
+function ecLogCounted(r, fs){ return !!ecLogSev(r, fs); }
+/* 数える中身のいちばん重いもの（数えないなら ''）。key の無い前の記録は種類と題名で見る */
+function ecLogSev(r, fs){
+  if(!r) return '';
   fs=fs||_ecFalseSet();
-  if(r.key) return !fs['k:'+r.key+'|'+String(r.fp==null?'':r.fp)];
-  return !fs['t:'+String(r.cat||'')+'|'+String(r.title||'')];
+  var rk={high:3, mid:2, low:1}, best='';
+  var take=function(v){ v=String(v||'low'); if(!rk[v]) v='low'; if(!best || rk[v]>rk[best]) best=v; };
+  if(!r.key && !fs['t:'+String(r.cat||'')+'|'+String(r.title||'')]) take(r.sev);
+  _ecLogParts(r).forEach(function(x){ if(!fs['k:'+x.key+'|'+x.fp]) take(x.sev || (x.key===r.key ? r.sev : '')); });
+  return best;
 }
 function ecRenderLogView(){
   var all=ecLogInRange(), fs=_ecFalseSet();
-  var rows=all.filter(function(r){ return ecLogCounted(r, fs); }), excl=all.length-rows.length;
+  var rows=all.map(function(r){ var v=ecLogSev(r, fs); return v ? Object.assign({}, r, { sev:v }) : null; }).filter(Boolean), excl=all.length-rows.length;   /* v1088: 数える中身の重さで */
   var html='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
   [['30','30日'],['90','90日'],['180','180日'],['0','全期間']].forEach(function(o){ html+='<button class="btn '+(String(ecRangeDays)===o[0]?'btn-primary':'btn-secondary')+' btn-sm" style="font-size:11px" onclick="setEcRange('+o[0]+')">'+o[1]+'</button>'; });
   html+='<button class="btn btn-secondary btn-sm" style="font-size:11px;margin-left:auto" onclick="ecSnapshotNow()"><i class="ti ti-camera"></i> 今すぐ記録</button></div>';

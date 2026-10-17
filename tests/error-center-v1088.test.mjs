@@ -53,7 +53,7 @@ const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetE
   '_ecDateLabel', '_ecAtLabel', '_ecMeta', '_ecStoreRank', 'ecSortIssues', 'ecFilterIssues', '_ecBarHtml', '_ecHeadRow', '_ecSevBadge', '_ecCells',
   '_ecRowHtml', '_ecResRows', '_ecResView', 'ecOpenResolve', 'ecResolveGo', 'ecUndoResolve', 'ecSevMeta', 'setEcView', 'setEcRange', 'getEcLog',
   '_ecAttribute', 'ecSnapshot', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
-  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes', '_canonForSig', '_logSig',
+  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecPartSig', '_ecLogParts', '_ecPartsUnion', 'ecLogSev', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes', '_canonForSig', '_logSig',
   'ecCloseResolve', '_ecNaOk'];
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
 const RID = (key, fp = '') => key + '\u241e' + fp;
@@ -373,6 +373,52 @@ test('overwork that grows from 確認 to 要対応 shows again after it was clea
   c.owScanWeek = () => [{ name: 'Crew A', over: 9, max: 40, total: 49, grade: 'G1', byStore: { F01: 49 }, weekDone: false }];
   const x = plain(run(c, 'ecOpenIssues()')).find(x => x.key === 'ow|Crew A|2026-10-11');
   assert.ok(x && x.sev === 'high', 'escalated to 要対応: shows again');
+});
+
+test('7A: overwork cleared as "not a problem" that grows to 要対応 the same day is still counted in the past log (Codex P2 on 79d5675)', async () => {
+  const OW = 'ow|Crew A|2026-10-11';
+  const c = app({ missingTip: [] });
+  run(c, 'ecSnapshot()');
+  const mid = plain(c.S.ec_log).find(r => r.key === OW);
+  assert.equal(mid.sev, 'mid');
+  // Cleared as a false alarm at 43h.
+  c.S.ec_resolutions = { [RID(OW, mid.fp)]: { key: OW, fp: mid.fp, why: 'false', cat: mid.cat, title: mid.title, _at: NOW - 1 } };
+  const counted = () => plain(run(c, 'ecLogInRange().filter(function(r){ return ecLogCounted(r); })')).filter(r => r.title === mid.title);
+  assert.equal(counted().length, 0);
+  // The same day it grows to 49h (same stores, so the same title): it shows again (要対応) and the next record counts it,
+  // still one row for the day.
+  c.owScanWeek = () => [{ name: 'Crew A', over: 9, max: 40, total: 49, grade: 'G1', byStore: { F01: 30, F02: 19 }, weekDone: false }];
+  const high = plain(run(c, 'ecOpenIssues()')).find(x => x.key === OW);
+  assert.equal(high.sev, 'high');
+  assert.equal(high.title, mid.title);
+  assert.equal(run(c, 'ecSnapshot()'), 1);
+  assert.equal(c.S.ec_log.filter(r => r.date === '2026-10-16' && r.title === mid.title).length, 1, 'one row for the day');
+  assert.equal(counted().length, 1);
+  assert.equal(run(c, 'ecLogSev(' + JSON.stringify(c.S.ec_log.find(r => r.title === mid.title)) + ')'), 'high');
+  assert.match(run(c, 'ecRenderLogView()'), /●1<\/span> <span style="color:#e0a020">●0/);
+  assert.equal(run(c, 'ecSnapshot()'), 0, 'the same details are not added twice');
+  // Cleared as a false alarm at 49h as well: nothing counted.
+  c.S.ec_resolutions[RID(OW, high.fp)] = { key: OW, fp: high.fp, why: 'false', cat: high.cat, title: high.title, _at: NOW };
+  assert.equal(counted().length, 0);
+  // Another device logged the 49h row while this one had the 43h row: the merge keeps both details (either order), and the cloud with
+  // only the 43h row does not cover the 49h one.
+  const rowMid = { ...mid, ts: 1 }, rowHigh = { ...mid, id: 'ecB', ts: 2, sev: 'high', fp: high.fp };
+  delete c.S.ec_resolutions[RID(OW, high.fp)];
+  for (const [x, y] of [[[rowMid], [rowHigh]], [[rowHigh], [rowMid]]]) {
+    const m = plain(run(c, 'mergeEcLog(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')'));
+    assert.equal(m.length, 1);
+    assert.deepEqual(m[0].parts.map(p => p.sev).sort(), ['high', 'mid']);
+    assert.equal(m[0].ts, 1, 'the earlier row is kept');
+    assert.equal(run(c, 'ecLogSev(' + JSON.stringify(m[0]) + ')'), 'high');
+    assert.equal(run(c, '_coversEcLog(' + JSON.stringify(m) + ',' + JSON.stringify([rowHigh]) + ')'), true);
+    // Merging again (the cloud row came back through jsonb with its keys reordered) gives the same row.
+    const back = m.map(r => Object.fromEntries(Object.entries(r).reverse().map(([k, v]) => [k, Array.isArray(v) ? v.map(o => Object.fromEntries(Object.entries(o).reverse())) : v])));
+    assert.deepEqual(plain(run(c, 'mergeEcLog(' + JSON.stringify(back) + ',' + JSON.stringify(m) + ')'))[0].parts, m[0].parts);
+  }
+  assert.equal(run(c, '_coversEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([rowHigh]) + ')'), false);
+  // Rows without parts are merged and covered as before.
+  assert.equal(run(c, '_coversEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([{ ...rowMid, id: 'x', ts: 5 }]) + ')'), true);
+  assert.ok(!('parts' in plain(run(c, 'mergeEcLog(' + JSON.stringify([rowMid]) + ',' + JSON.stringify([{ ...rowMid, id: 'x', ts: 5 }]) + ')'))[0]));
 });
 
 test('clears pushed through a jsonb cloud row (keys come back reordered) are confirmed in one upsert, and ties are decided the same on every device', async () => {
