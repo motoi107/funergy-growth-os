@@ -742,6 +742,26 @@ test('an old copy of the request and an undo stamped by a fast clock together: t
     assert.match(fnSrc(fn), /_rtNextT\((r|v), apRecFloor\('(経費|休暇)', (r|v)\.id\)\)/, fn);
 });
 
+test('two devices whose clocks are behind an undo decide differently: the item and the request end with the same decision, whichever is pushed first (independent review of 34c2a96)', async () => {
+  const future = Date.now() + 60000;
+  const reopened = () => AP({ _gen: 1, _stT: future, _mut: future, signoffs: [] });
+  const undone = () => ({ id: 'mi1', status: '申請中', storeId: 'F01', employee: 'Leader B', _stT: future });
+  const dev = async (rand, status) => {
+    const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [reopened()], mileage_requests: [undone()] },
+      st: { approvals: [reopened()], mileage_requests: [undone()], notifications: [] } });
+    run(c, 'Math.random = () => ' + rand);
+    await run(c, 'approveItem("ap1",' + JSON.stringify(status) + ',"x")');
+    return c;
+  };
+  const A = await dev(0.1, 'approved'), B = await dev(0.8, 'rejected');
+  assert.notEqual(A.S.approvals[0]._stT, B.S.approvals[0]._stT, 'not the same time');
+  for (const [x, y] of [[A, B], [B, A]]) {
+    const item = plain(run(x, 'mergeApprovals(' + JSON.stringify(plain(x.S.approvals)) + ',' + JSON.stringify(plain(y.S.approvals)) + ')'))[0];
+    const req = plain(run(x, 'mergeReqTomb(' + JSON.stringify(plain(x.S.mileage_requests)) + ',' + JSON.stringify(plain(y.S.mileage_requests)) + ')'))[0];
+    assert.deepEqual([item.status, req.status], ['rejected', '却下'], 'the later decision on both');
+  }
+});
+
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {
   const c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', st: { approvals: [], notifications: [] } });
   run(c, 'addApproval({type:"採用", title:"Crew A 採用書類", from:"Crew A", store:"Store One"})');
