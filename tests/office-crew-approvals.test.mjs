@@ -50,10 +50,10 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', 'invTouch',
   '_apDecidedElsewhere', '_apAcctOn', '_apStT', '_apFollowPage', '_apNewestForRef',
   // v1087 (Codex review of 79d5675): status times only move forward; the request is read again before following its page decision.
-  '_apMut', '_rtStT', '_rtStK', '_rtDecRank', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded'];
+  '_apMut', '_rtStT', '_rtStK', '_rtDecRank', '_rtDecT', '_rtDecCmp', '_rtDecOverlay', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', '_apSyncRecStamp', '_apRecSuperseded'];
 // One-line top-level `var` statements the functions above use (v1087).
 function varSrc(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(SRC); if (!m) throw new Error('var not found: ' + name); return m[0]; }
-const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt, _apPullTry, _apPulling', 'AP_REC_KEYS', 'AP_REC_FIELD'].map(n => { try { return varSrc(n.split(',')[0]); } catch (_e) { return ''; } });
+const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt, _apPullTry, _apPulling', 'AP_REC_KEYS', 'AP_REC_FIELD', 'RT_DEC_FIELDS'].map(n => { try { return varSrc(n.split(',')[0]); } catch (_e) { return ''; } });
 // So the same checks can run on a build before v1060 (FUNERGY_INDEX): its view-only helpers, and the old name rule.
 const OLD = { isViewOnlyRole: null, denyViewOnly: null, _actorName: 'function _actorName(){ return (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole; }' };
 const CODE = FNS.map(n => { try { return fnSrc(n); } catch (e) { if (n in OLD) return OLD[n]; throw e; } })
