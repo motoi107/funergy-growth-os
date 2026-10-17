@@ -325,7 +325,8 @@ test('新しい業者を決める: merging never merges another vendor and never
   await E.q(`update invoice_vendor_rules set display_name='VendorA Hawaii', aliases=aliases||'{"VendorA"}' where vendor_key='v1'`);
   const pv = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id, preview: true });
   assert.deepEqual([pv.body.docs, pv.body.waiting], [1, 2], 'the vendor’s own invoice whose name is brought up to date is told');
-  const r = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id });
+  // A name sent along (an old screen's) is ignored: the name is the vendor's own, read under the lock.
+  const r = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id, to: 'VendorA' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual([r.body.target.display_name, r.body.target.before, (await rule(E, 'v1')).display_name], ['VendorA Hawaii', 'VendorA Hawaii', 'VendorA Hawaii']);
   // The one on screen, then the invoices waiting for a vendor, then the vendor's own (only if it waits for review).

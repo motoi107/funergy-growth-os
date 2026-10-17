@@ -150,6 +150,12 @@ test('今の業者に統合 is not sent when the intake refuses, cannot be check
   c = app({ api: b => b.action === 'vendor_merge_into' ? { ok: false, why: 'gone', vendors: [] } : USAGE() });
   await c.fn('ivdOpenRow')(D1); await flush();
   assert.match(c.box(), /この業者が Invoice取込で見つかりません/);
+  // Any other refusal, even one that names the vendor: not sent.
+  c = app({ api: b => b.action === 'vendor_merge_into' ? { ...PV(b), ok: false, why: 'later_change' } : USAGE() });
+  await c.fn('ivdOpenRow')(D1); await flush();
+  assert.match(c.box(), / disabled onclick="ivdMerge\(\)"/);
+  await c.fn('ivdMerge')(); await flush();
+  assert.deepEqual(acts(c).filter(a => a === 'vendor_merge_into'), [], 'a refused preview is not sent');
   // The printed name has become a vendor's elsewhere: the dialog gives the waiting invoices that vendor instead.
   c = app({ api: b => b.action === 'vendor_merge_into' ? { ok: false, why: 'owned', vendors: [{ vendor_key: 'v3', display_name: 'Pacific Seafood' }] } : USAGE() });
   await c.fn('ivdOpenRow')(D1); await flush();
