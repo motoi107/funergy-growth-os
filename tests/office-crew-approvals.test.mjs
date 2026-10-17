@@ -43,11 +43,21 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'approveBudgetSeg', 'reopenApproval',
   'canReviewChecks', '_ckSeesAll', '_ckMine', 'canDeleteCheck', 'canApproveReimburse', 'canMarkReimbursePaid', 'markReimbursePaid',
   'canApproveMileage', 'canViewMileageRec', 'approveMileage', 'canMileageMonthEnd', 'mileageMonthEndClose', 'renderApproval', '_approvalChainHtml',
-  'canViewWages', 'canViewIndividualWage', 'invIsIntake', 'invIsMine', 'canDeleteInvoice'];
+  'canViewWages', 'canViewIndividualWage', 'invIsIntake', 'invIsMine', 'canDeleteInvoice',
+  // v1087: the approval center reads the cloud before a press, notifies on every decision, and has the accounting tab.
+  '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', '_apRecordState', '_apMarkDecided',
+  'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', '_apShortTime',
+  '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', 'invTouch',
+  '_apDecidedElsewhere', '_apAcctOn', '_apStT', '_apFollowPage', '_apNewestForRef',
+  // v1087 (Codex review of 79d5675): status times only move forward; the request is read again before following its page decision.
+  '_apMut', '_rtStT', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor'];
+// One-line top-level `var` statements the functions above use (v1087).
+function varSrc(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(SRC); if (!m) throw new Error('var not found: ' + name); return m[0]; }
+const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt, _apPullTry, _apPulling', 'AP_REC_KEYS'].map(n => { try { return varSrc(n.split(',')[0]); } catch (_e) { return ''; } });
 // So the same checks can run on a build before v1060 (FUNERGY_INDEX): its view-only helpers, and the old name rule.
 const OLD = { isViewOnlyRole: null, denyViewOnly: null, _actorName: 'function _actorName(){ return (ROLE_CONFIG[curRole]||{}).name || curUserName || curRole; }' };
 const CODE = FNS.map(n => { try { return fnSrc(n); } catch (e) { if (n in OLD) return OLD[n]; throw e; } })
-  .concat(Object.keys(OLD).filter(n => !FNS.includes(n)).map(n => { try { return fnSrc(n); } catch (_e) { return ''; } })).join('\n');
+  .concat(Object.keys(OLD).filter(n => !FNS.includes(n)).map(n => { try { return fnSrc(n); } catch (_e) { return ''; } })).concat(VARS).join('\n');
 
 const ROLE_CONFIG = { ceo: { name: 'Tac' }, gm: { name: 'Moto' }, office: { name: 'Marcia' }, am: { name: 'Yuki' }, sl: { name: 'Store Leader' },
   office_crew: { name: '事務スタッフ', noWage: true }, crew: { name: 'スタッフ' }, chef: { name: 'Head Chef' } };
@@ -60,7 +70,7 @@ const EMPLOYEES = [
 function app({ role = 'office_crew', user = 'Akane', approvals = [], routing = {}, checks = [], reimb = [], mileage = [] } = {}) {
   const st = { approvals: JSON.parse(JSON.stringify(approvals)), checks, reimbursements: reimb, mileage };
   const c = {
-    curRole: role, curUserName: user, curStore: 'ALL', curStoreLogin: false, curLang: 'ja', ROLE_CONFIG,
+    curRole: role, curUserName: user, curStore: 'ALL', curStoreLogin: false, curLang: 'ja', ROLE_CONFIG, curPage: 'approval',
     STORES: [{ id: 'F01', name: 'Store One' }, { id: 'F02', name: 'Store Two' }],
     alerts: [], toasts: [], rendered: [], notifs: [], modals: [], lsWrites: 0,
     t: (ja) => ja, ls: (k, d) => (k in st ? st[k] : d), lsSet: (k, v) => { st[k] = v; c.lsWrites++; return true; },
@@ -88,26 +98,26 @@ test('approval center: 事務Crew fills the 本部 (office) slot like accounting
   for (const [role, user, name] of [['office', 'Marcia', 'Marcia'], ['office_crew', 'Akane', 'Akane']]) {
     const c = app({ role, user, approvals: [AP()] });
     assert.deepEqual([...run(c, '_approvalMyRoles(ls("approvals")[0])')], ['office'], role);
-    run(c, 'signoffApproval("ap1")');
+    await run(c, 'signoffApproval("ap1")');
     const a = c.st.approvals[0];
     assert.deepEqual(plain(a.signoffs.map(s => [s.role, s.name])), [['office', name]], role);
     assert.equal(a.status, 'pending', role);
     assert.match(c.toasts.at(-1)[0], /承認しました（残り：GM・AM\/店長）/, role);
     assert.equal(c.alerts.length, 0, role);
     // The undo-my-sign-off finds their own sign-off by the same name.
-    run(c, 'cancelMySignoff("ap1")');
+    await run(c, 'cancelMySignoff("ap1")');
     assert.deepEqual(plain(c.st.approvals[0].signoffs), [], role);
   }
   // Reject goes through approveItem; 事務Crew is no longer stopped there.
   const c = app({ approvals: [AP()] });
   run(c, 'rejectApprovalItem("ap1")');
-  await new Promise(r => setImmediate(r));
+  for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));
   assert.equal(c.st.approvals[0].status, 'rejected');
   assert.equal(c.st.approvals[0].rejectReason, '理由');
   assert.ok(!c.toasts.some(([m]) => /閲覧のみ/.test(m)));
 });
 
-test('approval center: what stays as before for 事務Crew', () => {
+test('approval center: what stays as before for 事務Crew', async () => {
   const crew = app();
   // Skill / Career Score: the direct superior (grade above the applicant) and GM. A G1 事務Crew fills neither.
   assert.deepEqual([...run(crew, '_approvalMyRoles(' + JSON.stringify(AP({ type: 'スキル' })) + ')')], []);
@@ -119,9 +129,9 @@ test('approval center: what stays as before for 事務Crew', () => {
   assert.deepEqual([...run(crew, '_approvalMyRoles(' + JSON.stringify(AP({ signoffs: [{ role: 'office', name: 'Marcia' }] })) + ')')], []);
   // GM/CEO-only actions.
   const c = app({ approvals: [AP()] });
-  run(c, 'overrideApproveAll("ap1")');
-  run(c, 'reopenApproval("ap1")');
-  run(c, 'approveBudgetSeg("F01","2026-10")');
+  await run(c, 'overrideApproveAll("ap1")');
+  await run(c, 'reopenApproval("ap1")');
+  await run(c, 'approveBudgetSeg("F01","2026-10")');
   assert.equal(c.alerts.length, 3);
   assert.equal(c.st.approvals[0].status, 'pending');
   assert.equal(c.st.approvals[0].signoffs, undefined);
@@ -187,11 +197,13 @@ test('receipts / invoices: 事務Crew deletes like accounting; Drive-intake copi
   assert.equal(run(app({ role: 'sl', user: 'Leader B' }), 'canDeleteInvoice(' + JSON.stringify({ ...inv, reviewStatus: '確認済み' }) + ')'), false);
 });
 
-test('what 事務Crew sees does not widen: no 本部 (office) requests in the approval center, no wages', () => {
+test('what 事務Crew sees: 本部 (office) requests in the approval center since v1087 (Moto 10/16 4A); still no wages', () => {
   const items = [AP({ id: 'ap1', title: 'STORE-REQUEST' }), AP({ id: 'ap2', title: 'HQ-REQUEST', store: '---', from: 'Leader B' })];
   const crew = run(app({ approvals: items }), 'renderApproval()');
   assert.match(crew, /STORE-REQUEST/);
-  assert.doesNotMatch(crew, /HQ-REQUEST/);
+  assert.match(crew, /HQ-REQUEST/);   // v1087: 4A
+  const store = run(app({ role: 'sl', user: 'Leader B', approvals: items }), 'renderApproval()');
+  assert.doesNotMatch(store, /HQ-REQUEST/);   // a store leader still sees only their stores
   const office = run(app({ role: 'office', user: 'Marcia', approvals: items }), 'renderApproval()');
   assert.match(office, /HQ-REQUEST/);
   // The 事務Crew sees the approve button for the store request (本部 slot) and the reject button.
