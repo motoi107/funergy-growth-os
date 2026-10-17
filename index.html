@@ -411,7 +411,7 @@ body.shift-wide .main { max-width:1900px; }
 .ec-why-o{display:flex;align-items:center;gap:10px;min-height:44px;border:1px solid var(--border);border-radius:10px;padding:0 12px;cursor:pointer;font-size:13px}
 .ec-why-o:has(input:checked){border-color:var(--accent);background:var(--surface2)}
 .ec-note{font-size:11.5px;color:var(--muted);line-height:1.6;margin:4px 0 10px}
-@media (max-width:760px){
+@media (max-width:900px){
   .ec-row{display:flex;flex-wrap:wrap;gap:3px 8px;padding:11px 12px}
   .ec-row.ec-h{display:none}
   .ec-row:nth-child(2){border-top:none}
@@ -9730,7 +9730,7 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
      prep_history は unshift(新しい順)で ts を持たず並びが壊れるため対象外。
      meeting_minutes は追記ログではなく丸ごと保存のため対象外。 */
   ec_log:         { merge: mergeEcLog,     covers: _coversEcLog },
-  ec_resolutions: { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1088: エラーの解除（記録ごとに新しいほう・元に戻すは off で上書き） */
+  ec_resolutions: { merge: mergeEcRes, covers: _coversEcRes },   /* v1088: エラーの解除（不備と中身ごとの記録・新しいほう・元に戻すは off で上書き・古い記録は落とす） */
   menu_log:       { merge: mergeAppendLog, covers: _coversLog },
   reject_log:     { merge: mergeAppendLog, covers: _coversLog },
   handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
@@ -37567,9 +37567,9 @@ function ecDetOverwork(){
         var stores = Object.keys(r.byStore);
         var stName = stores.map(_owStoreName).join('・');
         /* 題名に実績時間を入れない：進行中の週で時間が伸びるたびに別件として溜まるのを防ぐ */
-        /* v1088: 人と週ごと。fp＝上限（時間が伸びても、解除したものはまた出さない。上限を変えたら出す） */
+        /* v1088: 人と週ごと。fp＝上限と重さ（時間が伸びても同じ重さならまた出さない。上限を変えた・8h 以上の超過＝要対応に上がったら出す） */
         issues.push({
-          key: 'ow|' + r.name + '|' + sun, fp: String(r.max), store: stores[0] || '', stores: stores, date: rg.from, dateLabel: rg.label, who: r.name,
+          key: 'ow|' + r.name + '|' + sun, fp: String(r.max) + '|' + (r.over>=8 ? 'high' : 'mid'), store: stores[0] || '', stores: stores, date: rg.from, dateLabel: rg.label, who: r.name,
           sev: (r.over>=8 ? 'high' : 'mid'),
           cat: '勤怠',
           title: r.name + '：' + stName + ' ' + rg.label + ' 上限' + r.max + 'h超過（' + (r.grade||'等級未設定') + '）',
@@ -52280,7 +52280,7 @@ function ecDetInventory(){
       var snap=hist[hist.length-1]; var lines=(snap&&snap.lines)||[];
       var _snapIso=(snap&&snap.ym)?(snap.ym+'-01'):((snap&&snap.date)?(function(){var _p=parseJaDate(snap.date)||new Date(snap.date);return (_p&&!isNaN(_p.getTime()))?_ecYmd(_p):null;})():null);
       if(_snapIso && _snapIso < EC_MIN_DATE) return; // 7月以前の棚卸は対象外
-      lines.forEach(function(ln){
+      lines.forEach(function(ln, lnIdx){
         var problems=[];
         if(typeof ln.actual!=='number'||isNaN(ln.actual)) problems.push('実棚が数値でない');
         else if(ln.actual<0) problems.push('実棚がマイナス');
@@ -52289,7 +52289,7 @@ function ecDetInventory(){
           if(ratio>=0.5&&Math.abs(ln.diff)>=3) problems.push('理論比'+Math.round(ratio*100)+'%差');
         }
         /* v1088: 店舗・棚卸の種類・品目ごと。fp＝その棚卸の日と数（次の棚卸・数の直しでまた出す） */
-        if(problems.length) issues.push({sev:'mid',cat:'棚卸',title:st.name+'：'+(ln.name||'品目')+' 異常値',detail:problems.join('・')+'（実棚 '+ln.actual+' ／理論 '+ln.theory+' ／差 '+ln.diff+'）・'+(snap.date||''),fix:{label:'棚卸',action:"go('inventory')"},key:'inv|'+st.id+'|'+(key.indexOf('daily')>=0?'d':'m')+'|'+(ln.id||ln.name||''),fp:[snap.ym||snap.date||'',ln.actual,ln.theory,ln.diff].join('|'),store:st.id,date:_snapIso||''});
+        if(problems.length) issues.push({sev:'mid',cat:'棚卸',title:st.name+'：'+(ln.name||'品目')+' 異常値',detail:problems.join('・')+'（実棚 '+ln.actual+' ／理論 '+ln.theory+' ／差 '+ln.diff+'）・'+(snap.date||''),fix:{label:'棚卸',action:"go('inventory')"},key:'inv|'+st.id+'|'+(key.indexOf('daily')>=0?'d':'m')+'|'+(ln.id||ln.name||('#'+lnIdx)),fp:[snap.ym||snap.date||'',ln.actual,ln.theory,ln.diff].join('|'),store:st.id,date:_snapIso||''});
       });
     });
   });
@@ -52314,8 +52314,10 @@ function ecCollect(){
 }
 
 /* ===== v1088: エラーの解除（UI案52 ②・Moto 10/16「全部A」の 6A〜8A）=====
-   共通データ ec_resolutions：{ <key>: { fp, why, memo, by, role, at, _at, off, cat, title, store, stores, date, dateLabel, sev } }
-   ・記録ごとに新しいほう（mergeMapByTime・_at）。元に戻すは off:true で上書きする（消さない＝古い写しで戻らない）
+   共通データ ec_resolutions：{ <key>␞<fp>: { key, fp, why, memo, by, role, at, _at, off, cat, title, store, stores, date, dateLabel, sev } }
+   ・記録は不備（key）と中身（fp）の組ごと。同じ不備の別の中身を解除しても、前の記録（誰が・いつ・どの理由）は残る
+   ・記録ごとに新しいほう（mergeEcRes：_at、同じ時刻なら中身の文字列で決める）。元に戻すは off:true で上書きする（消さない＝古い写しで戻らない）
+   ・元に戻してから 120 日・「対応した」から 400 日たった記録は合流のときに落とす（大きくなり続けないように。「問題ではない」「この店は対象外」は残す）
    ・解除が効くのは、同じ key で fp（中身）も同じとき。中身が変われば「今の不備」にまた出す
    ・why：done＝対応した／false＝問題ではない（誤検知）／na＝この店は対象外
    ・解除できる人・見られる人：CEO・GM・経理・事務Crew（6A・8A）
@@ -52327,18 +52329,52 @@ function ecCanView(){ return ['ceo','gm','office','office_crew'].indexOf(curRole
 function ecCanResolve(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
 function ecResAll(){ var v=ls(EC_RES_KEY, {}); return (v && typeof v==='object' && !Array.isArray(v)) ? v : {}; }
 function _ecResLive(r){ return !!(r && typeof r==='object' && !Array.isArray(r) && !r.off && !r._deleted); }
+function _ecRid(key, fp){ return String(key) + '\u241e' + String(fp==null?'':fp); }
+function _ecResKey(k, r){ return (r && r.key!=null) ? String(r.key) : String(k).split('\u241e')[0]; }
 function ecResOf(x, all){
   if(!x || !x.key) return null;
-  var a=all||ecResAll(), r=Object.prototype.hasOwnProperty.call(a, x.key) ? a[x.key] : null;
-  if(!_ecResLive(r)) return null;
-  return (String(r.fp==null?'':r.fp)===String(x.fp==null?'':x.fp)) ? r : null;
+  var a=all||ecResAll(), rid=_ecRid(x.key, x.fp), r=Object.prototype.hasOwnProperty.call(a, rid) ? a[rid] : null;
+  return _ecResLive(r) ? r : null;
+}
+/* 合流：記録ごとに新しいほう。同じ時刻なら中身の文字列の大きいほう（どの端末でも同じ答え）。古い「元に戻した」「対応した」は落とす */
+var EC_RES_OFF_KEEP_MS=120*86400000, EC_RES_DONE_KEEP_MS=400*86400000;
+function _ecResExpired(r, now){
+  if(!r || typeof r!=='object') return false;
+  var at=Number(r._at)||0; if(!at) return false;
+  if(r.off) return (now-at) > EC_RES_OFF_KEEP_MS;
+  return r.why==='done' && (now-at) > EC_RES_DONE_KEEP_MS;
+}
+function mergeEcRes(cloud, local){
+  var out={}, c=(cloud&&typeof cloud==='object'&&!Array.isArray(cloud))?cloud:{}, l=(local&&typeof local==='object'&&!Array.isArray(local))?local:{};
+  var now=Date.now();
+  Object.keys(c).forEach(function(k){ out[k]=c[k]; });
+  Object.keys(l).forEach(function(k){
+    if(!(k in out)){ out[k]=l[k]; return; }
+    var a=out[k], b=l[k], ta=Number(a&&a._at)||0, tb=Number(b&&b._at)||0;
+    if(tb!==ta){ out[k] = tb>ta ? b : a; return; }
+    var sa=JSON.stringify(a), sb=JSON.stringify(b);
+    out[k] = sb>sa ? b : a;
+  });
+  Object.keys(out).forEach(function(k){ if(_ecResExpired(out[k], now)) delete out[k]; });
+  return out;
+}
+function _coversEcRes(check, want){
+  if(!check||typeof check!=='object') return false;
+  var now=Date.now();
+  for(var k in want){ if(!Object.prototype.hasOwnProperty.call(want,k)) continue;
+    var w=want[k], h=check[k];
+    if(_ecResExpired(w, now)) continue;
+    if(h===undefined) return false;
+    if((Number(h&&h._at)||0) < (Number(w&&w._at)||0)) return false;
+  }
+  return true;
 }
 /* 今の不備（解除していないもの）。画面の件数・ダッシュボード・毎日の記録はこれを使う */
 function ecOpenIssues(list){ var a=ecResAll(); return (list||ecCollect()).filter(function(x){ return !ecResOf(x, a); }); }
-function _ecResSave(key, rec){
-  var a=Object.assign({}, ecResAll()), old=Object.prototype.hasOwnProperty.call(a,key)?a[key]:null;
+function _ecResSave(rid, rec){
+  var a=Object.assign({}, ecResAll()), old=Object.prototype.hasOwnProperty.call(a,rid)?a[rid]:null;
   var at=Math.max(Date.now(), old ? (Number(old._at)||0)+1 : 0);
-  a[key]=Object.assign({}, rec, { _at:at });
+  a[rid]=Object.assign({}, rec, { _at:at });
   return lsSet(EC_RES_KEY, a) !== false;
 }
 /* クラウドの最新を読む（解除・元に戻すの前と、開いたとき）。6 秒で返らなければ読めなかったものとして進む */
@@ -52367,10 +52403,12 @@ function _ecOnPage(){
 }
 /* エラーセンターを開いているときだけ描き直す（読み直しを待つあいだにほかの画面へ移ったら、その画面を上書きしない） */
 function _ecRerender(){ try{ if(_ecOnPage()) renderPage(curPage); }catch(e){} }
-function ecAutoPull(){
-  if(Date.now()-Math.max(_ecPullAt,_ecPullTry) < 60000) return;
+/* 1 分より前に読んだきりなら裏で読み直す。読み直した（読めなかった）あとに after を呼ぶ。読み直さないときは null */
+function ecAutoPull(after){
+  if(Date.now()-Math.max(_ecPullAt,_ecPullTry) < 60000) return null;
   var before=''; try{ before=JSON.stringify(ecResAll()); }catch(e){}
-  ecPullLatest().then(function(ok){
+  return ecPullLatest().then(function(ok){
+    try{ if(after) after(); }catch(e){}
     if(!ok) return;
     var now=''; try{ now=JSON.stringify(ecResAll()); }catch(e){}
     if(now!==before) _ecRerender();
@@ -52475,12 +52513,13 @@ function _ecResRows(all, resA){
   var a=resA||ecResAll(), cur={};
   (all||ecCollect()).forEach(function(x){ cur[x.key]=x; });
   var out=[];
-  Object.keys(a).forEach(function(k){
-    var r=a[k]; if(!_ecResLive(r)) return;
-    var c=Object.prototype.hasOwnProperty.call(cur,k)?cur[k]:null;
-    out.push(Object.assign({}, r, { key:k, _now: c ? (String(c.fp)===String(r.fp==null?'':r.fp) ? 'same' : 'changed') : 'gone' }));
+  Object.keys(a).forEach(function(rid){
+    var r=a[rid]; if(!_ecResLive(r)) return;
+    var k=_ecResKey(rid, r), c=Object.prototype.hasOwnProperty.call(cur,k)?cur[k]:null, now='gone';
+    if(c) now = (String(c.fp)===String(r.fp==null?'':r.fp)) ? 'same' : (ecResOf(c, a) ? 'replaced' : 'changed');
+    out.push(Object.assign({}, r, { key:k, rid:rid, _now:now }));
   });
-  out.sort(function(x,y){ return (Number(y._at)||0)-(Number(x._at)||0) || (x.key<y.key?-1:x.key>y.key?1:0); });
+  out.sort(function(x,y){ return (Number(y._at)||0)-(Number(x._at)||0) || (x.rid<y.rid?-1:x.rid>y.rid?1:0); });
   return out;
 }
 function _ecResView(rows){
@@ -52491,6 +52530,7 @@ function _ecResView(rows){
   if(!shown.length) return h+'<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'+t('この条件の解除済みはありません','Nothing cleared matches these filters')+'</div>';
   var st={ same:t('今も検知中（解除しているので「今の不備」には出ません）','Still detected (cleared, so not shown under "Current")'),
            changed:t('中身が変わったので「今の不備」にまた出ています','Its details changed, so it shows under "Current" again'),
+           replaced:t('中身が変わりました（今の中身も解除しています）','Its details changed (the new details are cleared too)'),
            gone:t('もう検知されていません','No longer detected') };
   h+='<div class="ec-list">'+_ecHeadRow();
   _ecResShown.forEach(function(r, i){
@@ -52505,34 +52545,42 @@ function _ecResView(rows){
   if(shown.length>200) h+='<div class="md-more" style="margin-top:6px">'+t('ほか ','')+(shown.length-200)+t(' 件（店舗・種類で絞ると見られます）',' more (narrow by store or type)')+'</div>';
   return h;
 }
+/* 「この店は対象外」を出す種類（店の運用の不備）。従業員・オンボーディング・月次締めには出さない */
+var EC_NA_CATS=['チップ','勤怠','棚卸'];
+function _ecNaOk(x){ return !!(x && _ecStoresOf(x).length && EC_NA_CATS.indexOf(x.cat)>=0); }
+function ecCloseResolve(){ _ecModal=null; try{ closeModalDirect(); }catch(e){} }
 function ecOpenResolve(i){
   if(!ecCanResolve()){ showToast(t('解除できるのは CEO・GM・経理・事務Crew です','Only the CEO, GM, accounting and office crew can clear errors'),'warning'); return; }
+  if(_ecBusy){ showToast(t('前の解除を保存しています。少し待ってから押してください','Saving the previous clear. Please wait a moment'),'info'); return; }
   var x=_ecShown[i]; if(!x) return;
-  _ecModal={ key:x.key, fp:String(x.fp==null?'':x.fp), cat:x.cat||'', title:x.title||'', store:x.store||'', stores:_ecStoresOf(x).slice(), date:x.date||'', dateLabel:x.dateLabel||'', sev:x.sev||'' };
+  _ecModal={ key:x.key, fp:String(x.fp==null?'':x.fp), cat:x.cat||'', title:x.title||'', store:x.store||'', stores:_ecStoresOf(x).slice(), date:x.date||'', dateLabel:x.dateLabel||'', sev:x.sev||'', na:_ecNaOk(x) };
   var sm=ecSevMeta(x.sev);
   var opts=[['done',t('対応した（直した・本人に確認した）','Handled (fixed it or checked with the person)')],['false',t('問題ではない（誤検知）','Not a problem (false alarm)')]];
-  if(_ecStoresOf(x).length) opts.push(['na',t('この店は対象外','Not applicable to this store')]);
-  openModal('<div class="modal-title">'+t('このエラーを解除','Clear this error')+' <button class="modal-close" onclick="closeModalDirect()" aria-label="'+t('閉じる','Close')+'">×</button></div>'
+  if(_ecNaOk(x)) opts.push(['na',t('この店は対象外','Not applicable to this store')]);
+  openModal('<div class="modal-title">'+t('このエラーを解除','Clear this error')+' <button class="modal-close" onclick="ecCloseResolve()" aria-label="'+t('閉じる','Close')+'">×</button></div>'
     +'<div class="ec-mbox"><div class="ec-mmeta" style="color:'+sm.c+'">'+escapeHtml(_ecMeta(x)+(_ecDateLabel(x)!=='—'?' ・ '+_ecDateLabel(x):''))+'</div><div class="ec-t">'+escapeHtml(x.title||'')+'</div><div class="ec-d">'+escapeHtml(x.detail||'')+'</div></div>'
     +'<fieldset class="ec-why"><legend>'+t('理由（どれか 1 つ）','Reason (choose one)')+'</legend>'
     +opts.map(function(o, k){ return '<label class="ec-why-o"><input type="radio" name="ec-why" value="'+o[0]+'"'+(k===0?' checked':'')+'> <span>'+escapeHtml(o[1])+'</span></label>'; }).join('')
     +'</fieldset>'
     +'<div class="form-group" style="margin-top:10px"><label class="form-label" for="ec-memo">'+t('メモ（任意）','Note (optional)')+'</label><textarea class="form-textarea" id="ec-memo" maxlength="200" rows="2" style="min-height:64px"></textarea></div>'
-    +'<div class="ec-note">'+t('解除した人・日時・理由を残し、ほかの端末にも届きます。「解除済み」から元に戻せます。中身が変わったとき（打刻の時刻など）はまた出ます。「問題ではない（誤検知）」で解除したものは、過去ログ（査定用）の数に入れません。',
-                              'Who cleared it, when and why are saved and reach other devices. You can undo it under "Cleared". It shows again when its details change (such as a clock-in time). Errors cleared as "Not a problem" are not counted in the past log (for reviews).')+'</div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('やめる','Cancel')+'</button><button class="btn btn-primary" id="ec-res-go" onclick="ecResolveGo()">'+t('解除する','Clear')+'</button></div>');
+    +'<div class="ec-note">'+t('解除はこの 1 件（今の中身）だけに効きます。解除した人・日時・理由を残し、ほかの端末にも届きます。「解除済み」から元に戻せます。中身が変わったとき（打刻の時刻など）はまた出ます。「問題ではない（誤検知）」で解除したものは、過去ログ（査定用）の数に入れません。',
+                              'Clearing applies to this one item (its current details) only. Who cleared it, when and why are saved and reach other devices. You can undo it under "Cleared". It shows again when its details change (such as a clock-in time). Errors cleared as "Not a problem" are not counted in the past log (for reviews).')+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="ecCloseResolve()">'+t('やめる','Cancel')+'</button><button class="btn btn-primary" id="ec-res-go" onclick="ecResolveGo()">'+t('解除する','Clear')+'</button></div>');
 }
 async function ecResolveGo(){
   if(_ecBusy || !_ecModal || !ecCanResolve()) return;
   var m=_ecModal, el=document.querySelector('input[name="ec-why"]:checked'), why=el?el.value:'';
-  if(!Object.prototype.hasOwnProperty.call(EC_WHY, why) || (why==='na' && !m.stores.length)){ showToast(t('理由を選んでください','Choose a reason'),'warning'); return; }
+  if(!Object.prototype.hasOwnProperty.call(EC_WHY, why) || (why==='na' && !m.na)){ showToast(t('理由を選んでください','Choose a reason'),'warning'); return; }
   var memo=String((document.getElementById('ec-memo')||{}).value||'').trim().slice(0,200);
   _ecBusy=true;
   var b=document.getElementById('ec-res-go'); if(b) b.disabled=true;
   try{
     /* 先にほかの端末の解除・元に戻すを取り込む（読めなくても進む。記録ごとに新しいほうで合わさる） */
     if(typeof navigator==='undefined' || navigator.onLine!==false){ try{ await ecPullLatest(); }catch(e){} }
-    var ok=_ecResSave(m.key, { fp:m.fp, why:why, memo:memo, by:(myName()||''), role:curRole, at:new Date().toISOString(), off:false,
+    /* 読み直しを待つあいだに「やめる」・×・外を押して閉じたら保存しない */
+    var ov=(typeof document!=='undefined' && document.getElementById) ? document.getElementById('modal-overlay') : null;
+    if(_ecModal!==m || (ov && ov.classList && !ov.classList.contains('open'))){ if(_ecModal===m) _ecModal=null; showToast(t('解除をやめました（何も変えていません）','Cancelled (nothing was changed)'),'info'); return; }
+    var ok=_ecResSave(_ecRid(m.key, m.fp), { key:m.key, fp:m.fp, why:why, memo:memo, by:(myName()||''), role:curRole, at:new Date().toISOString(), off:false,
                                cat:m.cat, title:m.title, store:m.store, stores:m.stores, date:m.date, dateLabel:m.dateLabel, sev:m.sev });
     if(!ok){ showToast(t('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'),'warning'); return; }
     _ecModal=null;
@@ -52546,9 +52594,9 @@ async function ecUndoResolve(i){
   _ecBusy=true;
   try{
     if(typeof navigator==='undefined' || navigator.onLine!==false){ try{ await ecPullLatest(); }catch(e){} }
-    var a=ecResAll(), cur=Object.prototype.hasOwnProperty.call(a, r.key)?a[r.key]:null;
+    var a=ecResAll(), cur=Object.prototype.hasOwnProperty.call(a, r.rid)?a[r.rid]:null;
     if(!_ecResLive(cur)){ showToast(t('もう元に戻されています','Already undone'),'info'); return; }
-    var ok=_ecResSave(r.key, Object.assign({}, cur, { off:true, offBy:(myName()||''), offAt:new Date().toISOString() }));
+    var ok=_ecResSave(r.rid, Object.assign({}, cur, { off:true, offBy:(myName()||''), offAt:new Date().toISOString() }));
     if(!ok){ showToast(t('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'),'warning'); return; }
     showToast(t('元に戻しました（不備がまだあれば「今の不備」に出ます）','Undone (if the error still exists, it shows under "Current")'),'success');
   } finally { _ecBusy=false; _ecRerender(); }
@@ -52600,8 +52648,8 @@ function _ecFalseSet(resA){
   var a=resA||ecResAll(), s={};
   Object.keys(a).forEach(function(k){
     var r=a[k]; if(!_ecResLive(r) || r.why!=='false') return;
-    s['k:'+k+'|'+String(r.fp==null?'':r.fp)]=1;
-    if(r.title) s['t:'+String(r.cat||'')+'|'+String(r.title)]=1;
+    s['k:'+_ecResKey(k, r)+'|'+String(r.fp==null?'':r.fp)]=1;
+    if(r.title && r.cat!=='棚卸') s['t:'+String(r.cat||'')+'|'+String(r.title)]=1;
   });
   return s;
 }
@@ -52655,8 +52703,8 @@ function renderErrorCenter(embedded){
   var html=embedded
     ?'<div style="display:flex;align-items:center;gap:7px;margin:2px 2px 12px"><i class="ti ti-alert-hexagon" style="font-size:20px;color:var(--accent)"></i><div><div style="font-weight:700;font-size:15px">エラーセンター</div><div style="font-size:11px;color:var(--muted)">運用・データの不備を自動検知（勤怠/チップ14日・打刻7日）</div></div></div>'
     :'<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
-  try{ ecMaybeAutoSnapshot(); }catch(e){}
-  try{ ecAutoPull(); }catch(e){}
+  /* 毎日の記録はクラウドの解除を読み直してから（ほかの端末で解除したものを今日の記録に足さない） */
+  try{ if(!ecAutoPull(function(){ try{ ecMaybeAutoSnapshot(); }catch(e){} })) ecMaybeAutoSnapshot(); }catch(e){}
   if(['now','res','log','inactive','unreg'].indexOf(ecView)<0) ecView='now';
   html+='<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> '+t('今の不備','Current')+' '+issues.length+'</div>'
@@ -52705,7 +52753,7 @@ function renderErrorCenter(embedded){
      さらに renderOfficeMgr の中から renderOfficeDash() を呼んでいるので、
      並び順が変わってラッパが勝つと無限再帰する罠だった。挙動は変わらない。 */
 function renderOfficeMgr(bare){
-  var html = bare ? '' : '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
+  var html = bare ? '' : '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・エラー・報告承認・育成</div></div></div>';
 
   var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];   /* v1088: タスクは廃止 */
   if(officeMgrTab==='tasks') officeMgrTab='dash';
@@ -76897,9 +76945,9 @@ function renderGradeGuide(){
 
   h+='<details class="card" open><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--accent)">G3（SL）— 現場リーダー：日々の入力と確定の起点</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
     +_bgSec('ti-sun','毎日（営業前・営業中・締め）', _bgLi([
-      ['Store CMD',' 出勤したらまず開く。今日の予算・天気・イベント・シフトを確認。締めで<b>キャッシュチップ入力（0でも「0」）</b>。未入力は翌朝タスク＋通知が飛びます'],
+      ['Store CMD',' 出勤したらまず開く。今日の予算・天気・イベント・シフトを確認。締めで<b>キャッシュチップ入力（0でも「0」）</b>。未入力は翌朝に通知が飛び、エラーセンターにも出ます'],
       ['発注の確定','食材発注を確定。欠品時は<b>代替材料を確保</b>し、使った代替はInvoice/買い出しに記録'],
-      ['ワークセンター「今日」','承認待ち・期限タスク・相談の初動タスクを処理。相談が来たら<b>「担当する」</b>で必ず誰かが拾う'],
+      ['ワークセンター「今日」','承認待ち・重要エラーを処理。相談が来たら（通知が届きます）<b>「担当する」</b>で必ず誰かが拾う'],
       ['日次進捗','昨日の売上・L/D客単価（@表示）・✎手入力マークを確認。異常値は当日中に原因メモ（イベント欄）'],
       ['オーバーポーション監視','盛り付け基準の徹底。原価率が跳ねた日は日次進捗→原価入力を確認']]))
     +_bgSec('ti-calendar-week','毎週', _bgLi([
@@ -76931,7 +76979,7 @@ function renderGradeGuide(){
   h+='<details class="card"><summary style="font-weight:800;font-size:14px;cursor:pointer;color:var(--yellow)">G5（AM）— 管轄店を横串で最適化</summary><div style="font-size:12px;line-height:1.9;margin-top:8px">'
     +_bgSec('ti-building-store','日々・週次', _bgLi([
       ['全店舗（管轄すべて）タブ','ロケーション切替の先頭から管轄横断ビューへ。店舗別状況タイルで売上/FC/Labor/客単価を横比較し、外れ値の店に入る'],
-      ['ワークセンター（管轄スコープ）','管轄店の承認・タスク・相談を横断処理。滞留（担当未定の相談・期限切れタスク）を潰す'],
+      ['ワークセンター（管轄スコープ）','管轄店の承認・相談を横断処理。滞留（担当未定の相談）を潰す'],
       ['仕入分析の店舗差','新マスターの<b>店舗差バッジ</b>（同じ食材の店舗間価格差）を毎週確認→安い仕入への統一・業者交渉'],
       ['成長管理','Lv合計順の一覧で次の昇格候補を把握。パイプラインの停滞者にOJTを割当']]))
     +_bgSec('ti-calendar-month','月次', _bgLi([
@@ -77113,13 +77161,13 @@ function renderRespMatrix(){
     ['Month-end','Do inventory (G3 finalizes, G4 owns result, G5 oversees) → close the month → on errors, G3/G4/G5 jointly fix via mid-count → finalize cost (own store G4, area G5) → GM checks profit via simplified P&L and HQ budget → accounting enters actual P&L to verify variance.']]) : _bgLi([
     ['前月25日頃','G3が予算たたき台（義務・日別予算一覧と前月客単価を参照）→G4最終化・根拠重点記入（義務）→G5監督のうえGMへ提出'],
     ['月初','GM承認→承認済み予算で運用開始。管轄・本部レベルの調整はG5が修正実務、最終はGM'],
-    ['毎日','売上/Tip/キャッシュチップ入力（実行G3・結果責任G4・入力徹底の義務G5）→現在地確認（G4）→承認・タスク処理（ワークセンター）'],
+    ['毎日','売上/Tip/キャッシュチップ入力（実行G3・結果責任G4・入力徹底の義務G5）→現在地確認（G4）→承認・エラー処理（ワークセンター）'],
     ['毎週','シフト作成（G3義務→G4最終決定）→OT監視（G4全責任）→Invoice読取（全員で実行・完了責任G4・G5監督）・売価/おすすめ提案（G4/G5→GM決定）'],
     ['月末','棚卸実施（確定G3・結果責任G4・監督G5）→月分確定→エラーあればG3/G4/G5が中間棚卸で共同修正→原価確定（自店G4・管轄G5）→GMが簡易PL・本部予算で利益確認→実PL入力（経理）で差異検証']]));
   return h;
 }
 /* ============================================================
-   ワークセンター（作業ハブ）: タスク・承認・エラー・アナウンスを1箇所に統合
+   ワークセンター（作業ハブ）: 承認・エラー・アナウンスを1箇所に統合（v1088: タスクは廃止）
    表示: G3以上＋事務（sl/am/gm/ceo/office）
 ============================================================ */
 var workTab = 'today';
