@@ -12,7 +12,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs', 'tests/invoice-adapters.test.mjs',
   'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs', 'tests/invoice-multi-file-ui.test.mjs',
-  'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs'];
+  'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs',
+  'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -37,6 +38,7 @@ const AD = 'tests/invoice-adapters.test.mjs';   // the Google Drive / AI / datab
 const PS = 'tests/invoice-purchase-summary.test.mjs', PU = 'tests/invoice-purchase-ui.test.mjs';   // 確認済みの仕入れ集計（Moto 2026-10-14）
 const MU = 'tests/invoice-multi-file-ui.test.mjs';   // 段階 3 の画面（同じ invoice 番号・複数枚の invoice）
 const VM = 'tests/invoice-vendor-merge.test.mjs', VU = 'tests/invoice-vendor-merge-ui.test.mjs';   // 業者の統合（Moto 2026-10-15・UI案51）
+const VR = 'tests/invoice-vendor-register.test.mjs', VD = 'tests/invoice-vendor-decide-ui.test.mjs';   // 新しい業者を決める（Moto 2026-10-16・UI案52 ③）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -485,6 +487,47 @@ const CASES = [
   ["業者の統合 screen: the merged toast shows a name as markup", VU, [["index.html", "    var msg = vmgT('「'+escapeHtml(keep)+'」にまとめました','Merged into “'+escapeHtml(keep)+'”');", "    var msg = vmgT('「'+keep+'」にまとめました','Merged into “'+keep+'”');"]]],
   ["業者の統合 screen: the record button runs what a record carries", VU, [["index.html", "onclick=\"vmgUndoAsk('+vmgJs(g.id)+')\"", "onclick=\"vmgUndoAsk(\\''+escapeHtml(g.id)+'\\')\""]]],
   ["業者の統合 screen: the merge screen shows a name as markup", VU, [["index.html", "  if (P.rename) L.push([vmgT('カードの名前','Card name'), vmgT('「'+e(P.rename.from)+'」→「'+e(keep)+'」','“'+e(P.rename.from)+'” → “'+e(keep)+'”')]);\r\n  L.push([vmgT('請求書 '+P.inv+' 件・商品 '+P.prod+' 品','Invoices '+P.inv+', products '+P.prod), vmgT('表示と集計が「'+e(keep)+'」になります", "  if (P.rename) L.push([vmgT('カードの名前','Card name'), vmgT('「'+e(P.rename.from)+'」→「'+e(keep)+'」','“'+e(P.rename.from)+'” → “'+e(keep)+'”')]);\r\n  L.push([vmgT('請求書 '+P.inv+' 件・商品 '+P.prod+' 品','Invoices '+P.inv+', products '+P.prod), vmgT('表示と集計が「'+keep+'」になります"]]],
+  // 新しい業者を決める（Moto 2026-10-16・UI案52 ③ 9A・10A・11A）
+  ["新しい業者: a name a vendor has is registered", VR, [["db/invoice-intake.sql", " if found then\n  return jsonb_build_object('ok', false, 'taken', jsonb_build_object('why', 'name',", " if false then\n  return jsonb_build_object('ok', false, 'taken', jsonb_build_object('why', 'name',"]]],
+  ["新しい業者: a key in use is overwritten", VR, [["db/invoice-intake.sql", " select x.vendor_key, x.display_name, x.merged_into into t from public.invoice_vendor_rules x where x.vendor_key=v_key;\n if found then", " select x.vendor_key, x.display_name, x.merged_into into t from public.invoice_vendor_rules x where x.vendor_key=v_key;\n if false then"]]],
+  ["新しい業者: the printed name is not remembered", VR, [["db/invoice-intake.sql", "then v_aliases := array[v_printed]; end if;", "then v_aliases := '{}'; end if;"]]],
+  ["新しい業者: closed months get the new vendor", VR, [["db/invoice-intake.sql", "  if not coalesce(r.here, false) and v_closed is not null and r.ym <= v_closed then v_left := v_left + 1; continue; end if;\n  v_ids := v_ids || r.id; v_months := v_months || r.ym;\n end loop;\n perform public.invoice_event(v_doc", "  v_ids := v_ids || r.id; v_months := v_months || r.ym;\n end loop;\n perform public.invoice_event(v_doc"]]],
+  ["新しい業者: the typed name finds no waiting invoice", VR, [["db/invoice-intake.sql", "   from unnest(array[v_name, v_printed]) x) q where k is not null);", "   from unnest(array[v_printed]) x) q where k is not null);"]]],
+  ["新しい業者: the one on screen is not first", VR, [["db/invoice-intake.sql", "   and (d.id = v_doc or nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\\s+', ' ', 'g')), '') = any(v_keys))\n  order by (d.id = v_doc) desc, d.created_at, d.id", "   and (d.id = v_doc or nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\\s+', ' ', 'g')), '') = any(v_keys))\n  order by d.created_at, d.id"]]],
+  ["新しい業者: anyone registers", VR, [["db/invoice-intake.sql", " perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n if jsonb_typeof(v) is distinct from 'object' then raise exception 'bad_value'; end if;", " if jsonb_typeof(v) is distinct from 'object' then raise exception 'bad_value'; end if;"]]],
+  ["新しい業者: any kind is taken", VR, [["db/invoice-intake.sql", "\n    or v_kind is null or v_kind not in ('food','nonfood') then raise exception 'bad_value'; end if;", "\n    then raise exception 'bad_value'; end if;"]]],
+  ["新しい業者: a merged vendor's name counts as taken", VR, [["db/invoice-intake.sql", " where x.merged_into is null and nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\\s+', ' ', 'g')), '') = any(v_keys)", " where nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\\s+', ' ', 'g')), '') = any(v_keys)"]]],
+  ["新しい業者: the waiting invoices are not worked out again", VR, [["supabase/functions/invoice-intake/handler.mjs", "    r.recheck = await recheckVendorDocs(actor, r.doc_ids || [], r.vendor.vendor_key, '新しい業者として登録：' + r.vendor.display_name);", "    r.recheck = { fixed: 0, failed: 0, left: 0 };"]]],
+  ["新しい業者: the month's summary is not written", VR, [["supabase/functions/invoice-intake/handler.mjs", "'新しい業者として登録：' + r.vendor.display_name);\n    r.summary = (await publishSummary(", "'新しい業者として登録：' + r.vendor.display_name);\n    r.summary = true || (await publishSummary("]]],
+  ["新しい業者: a printed name that is not text is taken", VR, [["supabase/functions/invoice-intake/handler.mjs", " || (b.printed != null && typeof b.printed !== 'string')) throw new Error('bad_value');", ") throw new Error('bad_value');"]]],
+  ["新しい業者: the vendor of two is given", VR, [["supabase/functions/invoice-intake/handler.mjs", "    if ((w.vendors || []).length !== 1) return { ok: false, vendors: w.vendors || [] };", "    if ((w.vendors || []).length < 1) return { ok: false, vendors: w.vendors || [] };"]]],
+  ["新しい業者: closed months are given the vendor that has the name", VR, [["db/invoice-intake.sql", "  if not coalesce(r.here, false) and v_closed is not null and r.ym <= v_closed then v_left := v_left + 1; continue; end if;\n  v_ids := v_ids || r.id; v_months := v_months || r.ym;\n end loop;\n return jsonb_build_object(\n  'vendors'", "  v_ids := v_ids || r.id; v_months := v_months || r.ym;\n end loop;\n return jsonb_build_object(\n  'vendors'"]]],
+  ["新しい業者: the one on screen is not given the vendor", VR, [["db/invoice-intake.sql", "   and (d.id = v_doc or nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\\s+', ' ', 'g')), '') = v_k)", "   and (nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\\s+', ' ', 'g')), '') = v_k)"]]],
+  ["新しい業者: anyone sees the waiting invoices", VR, [["db/invoice-intake.sql", " perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n if length(v_name) = 0 or length(v_name) > 200 then raise exception 'bad_value'; end if;", " if length(v_name) = 0 or length(v_name) > 200 then raise exception 'bad_value'; end if;"]]],
+  ["新しい業者: the browser may run the new functions", VR, [["supabase/migrations/20261024090000_invoice_vendor_register.sql", " foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)'] loop\n  execute format('revoke all on function public.%s from public, anon, authenticated', f);\n", " foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)'] loop\n"]]],
+  ["新しい業者: the check SQL does not look at who may run them", VR, [["db/invoice-intake-postcheck.sql", "      where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_waiting')\n        and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))", "      where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_waiting'))"]]],
+  ["新しい業者 screen: part of the name is not similar", VD, [["index.html", "    if (!w) { var a = ivdWords(raw), b = ivdWords(n); if (a.some(function(x){ return b.indexOf(x) >= 0; })) w = 'part'; }", ""]]],
+  ["新しい業者 screen: merged vendors are offered", VD, [["index.html", ".filter(function(v){ return v && v.vendor_key && !v.merged_into; }); }", ".filter(function(v){ return v && v.vendor_key; }); }"]]],
+  ["新しい業者 screen: another vendor would be merged too", VD, [["index.html", "  if ((pv.from || []).length) return ivdT(", "  if (false) return ivdT("]]],
+  ["新しい業者 screen: the app's merge elsewhere is not looked at", VD, [["index.html", "  if (typeof vendorCanon === 'function') { var c = vendorCanon(m.raw);", "  if (false) { var c = vendorCanon(m.raw);"]]],
+  ["新しい業者 screen: merged without reading the latest", VD, [["index.html", "    if (!(await vmgPull())) { showToast(ivdT(", "    if (false) { showToast(ivdT("]]],
+  ["新しい業者 screen: the app does not record the name", VD, [["index.html", ",\r\n      ['n:' + vmgKey(m.raw), { to:x.display_name, name:m.raw, g:gid, off:false }]]);", "]);"]]],
+  ["新しい業者 screen: no kind is needed", VD, [["index.html", "  if (!m.kind) return ivdT('食材か食材以外かを選んでください','Choose food or non-food');", ""]]],
+  ["新しい業者 screen: a name a vendor has is sent", VD, [["index.html", "  if (ivdRegTaken(m)) return 'taken';", ""]]],
+  ["新しい業者 screen: a second card of the same name", VD, [["index.html", "    var cur = card ? vs.find(function(v){ return v && String(v.id) === String(card.id); }) : null;", "    var cur = null;"]]],
+  ["新しい業者 screen: the card's id is not the vendor key", VD, [["index.html", "  var key = (card && IVD_KEY_RE.test(String(card.id))) ? String(card.id) : ('v' + Date.now());", "  var key = 'v' + Date.now();"]]],
+  ["新しい業者 screen: no card is made", VD, [["index.html", "      okCard = lsSet('m_vendors', vs) !== false; made = okCard;", "      made = true;"]]],
+  ["新しい業者 screen: a name a vendor has is offered a merge", VD, [["index.html", "  m.mode = m.owners.length ? 'owned' : (m.cands.length || !raw) ? 'merge' : 'register';", "  m.mode = (m.cands.length || !raw) ? 'merge' : 'register';"]]],
+  ["新しい業者 screen: the one on screen is not sent", VD, [["index.html", "    var r = await invInAPI({ action:'vendor_apply', name:m.raw, doc_id:m.docId });", "    var r = await invInAPI({ action:'vendor_apply', name:m.raw });"]]],
+  ["新しい業者 screen: an invoice without a printed name is merged", VD, [["index.html", "  if (!m.raw) return ivdOnly(ivdTarget(m));", ""]]],
+  ["新しい業者 screen: AM decides", VD, [["index.html", "  if (typeof invInCanEdit !== 'function' || !invInCanEdit()) { showToast(", "  if (false) { showToast("]]],
+  ["新しい業者 screen: pressed twice, sent twice", VD, [["index.html", "  if (!m || m.busy || _ivd.m !== m || !invInCanEdit()) return;", "  if (!m || _ivd.m !== m || !invInCanEdit()) return;"]]],
+  ["新しい業者 screen: a printed name is shown as markup", VD, [["index.html", "overflow-wrap:anywhere\">'+(raw ? e(raw) :", "overflow-wrap:anywhere\">'+(raw ? raw :"]]],
+  ["新しい業者 screen: a toast shows a name as markup", VD, [["index.html", "    showToast(ivdT(ivdE(nm)+' を登録しました（Invoice取込'", "    showToast(ivdT(nm+' を登録しました（Invoice取込'"]]],
+  ["新しい業者 screen: unsaved values are dropped without asking", VD, [["index.html", "  if (!force && typeof invInHasEdits === 'function' && invInHasEdits()) {", "  if (false) {"]]],
+  ["新しい業者 screen: the review row offers nothing", VD, [["index.html", "    var vendorNew = edit && !r.vendor_key && chk.some(function(x){ return x.code==='vendor_unknown'; });", "    var vendorNew = false;"]]],
+  ["新しい業者 screen: the open invoice keeps the silent choice", VD, [["index.html", "      : kind==='vendor' && vendorNew ? '<button", "      : kind==='vendor' && false ? '<button"]]],
+  ["新しい業者 screen: the screen and the server: the vendor is not given", VR, [["index.html", "    var r = await invInAPI({ action:'vendor_apply', name:m.raw, doc_id:m.docId });", "    var r = { ok: true, recheck: { fixed: 1 } };"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
@@ -500,6 +543,10 @@ test('every protection is covered by a failing test when removed', async (t) => 
   if (!only || only.test('業者の統合')) {
     assert.equal(run([], VM), 0, 'the unmodified vendor merge test must pass (without the deploy-folder check)');
     assert.equal(run([], VU), 0, 'the unmodified vendor merge screen test must pass');
+  }
+  if (!only || only.test('新しい業者')) {
+    assert.equal(run([], VR), 0, 'the unmodified vendor register test must pass (without the deploy-folder check)');
+    assert.equal(run([], VD), 0, 'the unmodified vendor decide screen test must pass');
   }
   // INVOICE_MUTATION_ONLY=<regex>: run only the matching cases (for checking one protection quickly).
   for (const [name, file, muts] of CASES) {

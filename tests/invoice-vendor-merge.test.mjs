@@ -360,7 +360,7 @@ test('業者の統合: a later merge is taken back first; a new name for the kep
   await E.pg.close();
 });
 
-test('業者の統合 deploy folder: the copies are the repository files and the one-file function is built from the sources in use',
+test('業者の統合 deploy folder: the migration copies are the repository files; the check SQL and the one-file function stay as handed over',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -368,11 +368,12 @@ test('業者の統合 deploy folder: the copies are the repository files and the
   assert.ok(rd(D + '1_追加のSQL_業者の統合だけ.sql').equals(rd('supabase/migrations/20261022090000_invoice_vendor_merge.sql')));
   assert.ok(rd(D + '1_追加のSQL_段階2と段階3と業者の統合.sql').equals(Buffer.concat([rd('supabase/migrations/20261020090000_invoice_reconciled_folder.sql'), Buffer.from('\n'),
     rd('supabase/migrations/20261021090000_invoice_multi_file.sql'), Buffer.from('\n'), rd('supabase/migrations/20261022090000_invoice_vendor_merge.sql')])));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The sources and the check SQL moved on with 新しい業者を決める (deploy/invoice-vendor-register-v1089 is built from the current
+  // ones): this folder is what goes in for 業者の統合 alone, and the function to go back to from 新しい業者を決める.
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), '0548d13a42fc5db7efe464ecb474441ed34531c427b4d25dcff46551e417b4e0');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
-  // Every source of the one-file function is the repository's as it is now: change one, build the function again.
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, f + ' changed: build 3_関数 again');
+  assert.equal(src.bundle_sha256, '44e433b15c0a2f90b80b0ac7b62dc2e56ca0575a1195e45f40418c69b442a070');
   assert.deepEqual(Object.keys(src.sources).sort(), ['invoice/dates.mjs', 'invoice/decimal.mjs', 'invoice/dedupe.mjs', 'invoice/drive.mjs', 'invoice/extract.mjs', 'invoice/naming.mjs',
     'invoice/rules.mjs', 'invoice/units.mjs', 'supabase/functions/invoice-intake/handler.mjs', 'supabase/functions/invoice-intake/index.ts']);
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
@@ -389,7 +390,8 @@ test('業者の統合: the check SQL tells before from after', async () => {
   const dir = new URL('../supabase/migrations/', import.meta.url);
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S4 = '20261022090000_invoice_vendor_merge.sql';
-  assert.equal(files.at(-1), S4);
+  // 新しい業者を決める (20261024090000) came after it: the database here is the one 業者の統合 went on.
+  assert.deepEqual(files.slice(-2), [S4, '20261024090000_invoice_vendor_register.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
   try {
@@ -397,7 +399,7 @@ test('業者の統合: the check SQL tells before from after', async () => {
       alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
-    for (const f of files.slice(0, -1)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -2)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_merge, Number(post.tables), Number(post.functions), post.multi_file], [false, 18, 77, true]);
     await pg.exec(fs.readFileSync(new URL(S4, dir), 'utf8'));

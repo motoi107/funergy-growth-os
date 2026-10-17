@@ -1,11 +1,12 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 19・関数 81 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 19 / functions 81 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true
+-- 対象はこの migration の表 19・関数 83 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 19 / functions 83 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
 -- （20261021090000＝複数枚で 1 つの invoice を入れる前は functions 74・multi_file false。入れたあとは 77・true）
 -- （20261022090000＝業者の統合を入れる前は tables 18・functions 77・vendor_merge false。入れたあとは 19・81・true）
+-- （20261024090000＝新しい業者を決める を入れる前は functions 81・vendor_register false。入れたあとは 83・true）
 with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
@@ -19,7 +20,7 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
    'invoice_stage', 'invoice_store_folder', 'invoice_store_save', 'invoice_vendor_save', 'invoice_vendor_seed', 'invoice_whoami',
    'invoice_worker_context', 'invoice_worker_key', 'invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check',
-   'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge']) as f)
+   'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge', 'invoice_vendor_register', 'invoice_vendor_waiting']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -130,4 +131,13 @@ select
         when 'invoice_map_seed' then p.prosrc like '%merged_into is null%'
         when 'invoice_vendor_seed' then p.prosrc like '%normalize(v.name%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_purchase_check', 'invoice_map_seed', 'invoice_vendor_seed')), false) as vendor_merge;
+      where n.nspname = 'public' and p.proname in ('invoice_vendor_save', 'invoice_purchase_check', 'invoice_map_seed', 'invoice_vendor_seed')), false) as vendor_merge,
+  -- 新しい業者を決める（20261024090000, Moto 2026-10-16・UI案52 ③）：invoice の印字名から業者を登録する関数（同じ名前の業者があれば登録しない）と、
+  -- 名前で待っている invoice を数える関数。どちらもブラウザーからは動かせない。経理・事務Crew・GM・CEO が使う（10A）。
+  coalesce((select count(*) = 2 and bool_and(p.prosrc like '%''office'',''office_crew''])%' and p.prosrc like '%vendor_key is null and d.status=''review''%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_waiting')
+        and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))
+    and (select bool_and(p.prosrc like '%pg_advisory_xact_lock(hashtext(''invoice_vendor_rules''))%' and p.prosrc like '%''taken''%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = 'invoice_vendor_register'), false) as vendor_register;
