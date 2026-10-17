@@ -45569,7 +45569,7 @@ async function ivdRun(m, fn, settle){
       var st = null; try { st = settle ? await settle() : null; } catch(e2) { st = null; }
       if (st === 'done') showToast(ivdT('答えが途中で返りませんでしたが、Invoice取込では済んでいました（この端末の記録も書きました）。一覧を読み直しました','The answer was lost, but it was done in the intake (this device’s record was written too). The list was read again'), 'success');
       else if (st === 'saved_no') showToast(ivdT('答えが途中で返りませんでしたが、Invoice取込では済んでいました。この端末には記録を保存できませんでした（保存容量を確かめて、業者マスターでカードや統合の記録を確かめてください）','The answer was lost but it was done in the intake; this device could not save its record (check the storage and the vendor master)'), 'warning');
-      else if (st === 'not') showToast(ivdE(ivdErr(err)) + ivdT('（Invoice取込を確かめました。変わっていません）',' (checked in the intake: nothing was changed)'), 'warning');
+      else if (st === 'not') showToast(ivdE(ivdErr(err)) + ivdT('（Invoice取込を確かめたときには変わっていませんでした。少ししてから、もう一度「業者を決める」を開いて確かめてください）',' (nothing had changed in the intake when it was checked; open “Decide the vendor” again a little later to check)'), 'warning');
       else showToast(ivdE(ivdErr(err)) + ivdT('（結果が分かりません。Invoice取込では済んでいるかもしれないので、一覧を読み直しました。もう一度「業者を決める」を開いて確かめてください。業者マスターにカードや統合の記録が無ければ、そこで足してください）',' (the result is unknown: it may have been done in the intake. The list was read again; open “Decide the vendor” again to check, and add the card or merge record in the vendor master if missing)'), 'warning');
       ivdDone(m); return;
     }
@@ -45602,9 +45602,9 @@ function ivdRecheckMsg(rc, closedLeft){
   return s;
 }
 /* アプリの統合の記録（業者マスターの「業者の統合」の「統合の記録」に出て「外す」で戻せる） */
-function ivdRecordMerge(gid, srv, tn, raw){
-  var card = (typeof vmgCardFor === 'function') ? vmgCardFor(tn) : null;
-  return vmgSaveMany([['g:' + gid, { to:tn, names:[tn, raw], at:new Date().toISOString(), ms:vmgMs(), server:srv, card:card ? card.id : null,
+function ivdRecordMerge(gid, srv, tn, raw, when){
+  var card = (typeof vmgCardFor === 'function') ? vmgCardFor(tn) : null, t0 = when ? Date.parse(when) : NaN;   /* when：Invoice取込でまとめた時刻（あとから書くとき。統合の順を保つ） */
+  return vmgSaveMany([['g:' + gid, { to:tn, names:[tn, raw], at:isFinite(t0) ? new Date(t0).toISOString() : new Date().toISOString(), ms:isFinite(t0) ? t0 : vmgMs(), server:srv, card:card ? card.id : null,
       filled:{}, kind:null, prevKind:null, renamed:null, hide:[], src:'invoice_intake', off:false }],
     ['n:' + vmgKey(raw), { to:tn, name:raw, g:gid, off:false }]]);
 }
@@ -45632,8 +45632,8 @@ async function ivdMissingRecord(m, u){
   miss.forEach(function(g){
     if (vmgRec('g:' + g.group_id)) return;
     var v = (u.vendors || []).find(function(x){ return x && x.vendor_key === g.to_key; }); if (!v || !v.display_name) return;
-    if (ivdRecordMerge(g.group_id, { id:g.id, docs:0, kept:0, unknown:0, vk:g.to_key }, v.display_name, m.raw))
-      showToast(ivdT('前に答えが返らなかった統合（「'+ivdE(m.raw)+'」→ '+ivdE(v.display_name)+'）の記録を、この端末にも書きました','The record of an earlier merge whose answer was lost (“'+ivdE(m.raw)+'” → '+ivdE(v.display_name)+') was written on this device too'), 'info');
+    if (ivdRecordMerge(g.group_id, { id:g.id, docs:0, kept:0, unknown:0, vk:g.to_key }, v.display_name, m.raw, g.merged_at))
+      showToast(ivdT('この印字名の統合（「'+ivdE(m.raw)+'」→ '+ivdE(v.display_name)+'）の記録が無かったので、この端末にも書きました','The record of this printed name’s merge (“'+ivdE(m.raw)+'” → '+ivdE(v.display_name)+') was missing and was written on this device'), 'info');
   });
 }
 async function ivdMerge(){
@@ -45670,7 +45670,7 @@ async function ivdMerge(){
     var u = await invInAPI({ action:'vendor_usage' });
     var mg = (u.merges || []).find(function(g){ return g && g.group_id === gid; }); if (!mg) return 'not';
     var v = (u.vendors || []).find(function(y){ return y && y.vendor_key === mg.to_key; });
-    return ivdRecordMerge(gid, { id:mg.id, docs:0, kept:0, unknown:0, vk:mg.to_key }, (v && v.display_name) || x.display_name, m.raw) ? 'done' : 'saved_no';
+    return ivdRecordMerge(gid, { id:mg.id, docs:0, kept:0, unknown:0, vk:mg.to_key }, (v && v.display_name) || x.display_name, m.raw, mg.merged_at) ? 'done' : 'saved_no';
   });
 }
 async function ivdRegister(){
@@ -45678,6 +45678,7 @@ async function ivdRegister(){
   if (ivdRegWhy(m)) { ivdRender(); return; }
   var nm = ivdClean(m.name), kind = m.kind, card = ivdCardFor(nm);
   var key = (card && IVD_KEY_RE.test(String(card.id))) ? String(card.id) : ('v' + Date.now());
+  var had = (((_invIn.config && _invIn.config.vendors) || []).some(function(y){ return y && y.vendor_key === key; }));   /* 開いたときにもうあった鍵（サーバーは断る） */
   await ivdRun(m, async function(){
     var r = await invInAPI({ action:'vendor_register', vendor:{ vendor_key:key, display_name:nm, food_kind:kind }, printed:m.raw || null, doc_id:m.docId });
     if (r && r.ok === false) {
@@ -45695,7 +45696,8 @@ async function ivdRegister(){
   }, async function(){
     /* 答えが返らなかった：Invoice取込にこの業者（この鍵）ができているか。あればカードを書く */
     var cfg = await invInAPI({ action:'config' });
-    var v = ((cfg && cfg.vendors) || []).find(function(y){ return y && y.vendor_key === key; }); if (!v) return 'not';
+    /* この鍵で、入れた名前の業者だけ（鍵がもうあって断られたときは、名前の違う業者が見つかる） */
+    var v = ((cfg && cfg.vendors) || []).find(function(y){ return y && y.vendor_key === key; }); if (had || !v || ivdKey(v.display_name) !== ivdKey(nm)) return 'not';
     _invIn.config = cfg;
     return ivdMakeCard(key, v.display_name || nm, kind, card ? card.id : null).ok ? 'done' : 'saved_no';
   });
