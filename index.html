@@ -67618,7 +67618,8 @@ async function apAcctConfirm(id, undo){
   var approvals=ls('approvals', []); var a=approvals.find(function(x){ return x && x.id===id; });
   if(!a){ showToast(t('この申請は見つかりません','Request not found'),'warning'); redraw(); return; }
   if(a.status!=='approved'){ alert(t('この申請は今は承認済みではありません（ほかの端末で承認が取り消されました）','This request is no longer approved (undone on another device)')); redraw(); return; }
-  var now=Math.max(Date.now(), _apStT(a)+1);   /* 承認した端末の時計より遅れていても、決めた時刻より後にする */
+  /* 承認した端末の時計より遅れていても、決めた時刻と前の確認・取り消しより後にする（同じ時刻だと合流で前のほうが残る） */
+  var now=Math.max(Date.now(), _apStT(a)+1, (a.acct ? (Number(a.acct.t)||0)+1 : 0));
   if(undo){
     if(!_apAcctOn(a)){ redraw(); return; }
     if(!confirm(t('経理の確認を取り消して「経理の確認」に戻しますか？','Undo the accounting confirmation?'))) return;
@@ -68145,7 +68146,17 @@ function renderApproval() {
   return html;
 }
 
-/* v1087: 申請の画面でもう決まっているか（前の版で画面から承認・却下した、取り下げた）。分からなければ null */
+/* v1087: 申請の種類ごとの記録のキー */
+var AP_REC_KEYS={ '経費':'expense_requests', 'ガソリン代':'mileage_requests', '休暇':'my_vacations', '建替経費':'reimbursements', 'TipRate':'tip_requests', 'Leadership':'lss_requests' };
+/* 記録の、状態を変えた時刻（建替経費は保存時刻）。時刻を持たない種類は -1 */
+function _apRecTime(type, r){
+  if(type==='経費' || type==='ガソリン代' || type==='休暇') return Number(r && r._stT) || 0;
+  if(type==='建替経費') return Number(r && r._mut) || 0;
+  return -1;
+}
+/* v1087: 申請の画面でもう決まっているか（前の版で画面から承認・却下した、取り下げた）。分からなければ null。
+   承認を取り消した（版が進んだ）案件は、取り消したときより後に決めた記録だけを「決まっている」とみなす
+   （ほかの端末で取り消した申請の古い写しが手元に残っていても、前の決定に戻さない） */
 function _apRecordState(a){
   try{
     if(!a || a.ref==null) return null;
@@ -68160,10 +68171,29 @@ function _apRecordState(a){
     var r=(list||[]).find(function(x){ return x && String(x.id)===String(a.ref); });
     if(!r) return null;
     if(r._deleted) return { state:'withdrawn', label:lab, by:'' };
-    if(r.status==='承認') return { state:'approved', label:lab, by:(r.approvedBy||'') };
-    if(r.status==='却下') return { state:'rejected', label:lab, by:(r.approvedBy||'') };
+    var st=r.status==='承認'?'approved':r.status==='却下'?'rejected':'pending';
+    if(st!=='pending' && _apGen(a)>0){ var rt=_apRecTime(a.type, r); if(rt>=0 && rt<=_apStT(a)) st='pending'; }
+    if(st==='approved') return { state:'approved', label:lab, by:(r.approvedBy||'') };
+    if(st==='rejected') return { state:'rejected', label:lab, by:(r.approvedBy||'') };
     return { state:'pending', label:lab, by:'' };
   }catch(e){ return null; }
+}
+/* v1087: 申請の記録をクラウドから読み直す（申請の画面で決まっているとみなす前に。8 秒で打ち切り）。分割した行は申請者・店舗の行も */
+async function _apPullRecord(a){
+  try{
+    var key=a && AP_REC_KEYS[a.type];
+    if(!key || a.ref==null || typeof pullOpKey!=='function') return false;
+    if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return false;
+    var keys=[key], sp=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS) ? _SPLIT_KEYS[key] : null;
+    if(sp && typeof sp.by==='function'){
+      var r=(ls(key,[])||[]).find(function(x){ return x && String(x.id)===String(a.ref); }), ids=[];
+      [r ? sp.by(r) : null, a.from, a.store].forEach(function(v){ if(v!=null && v!=='' && ids.indexOf(String(v))<0) ids.push(String(v)); });
+      ids.forEach(function(v){ keys.push('spl_'+key+'_'+v); });
+    }
+    var all=Promise.all(keys.map(function(k){ return pullOpKey(k).catch(function(){ return false; }); }));
+    var res=await Promise.race([all, new Promise(function(ok){ setTimeout(function(){ ok(null); }, AP_PULL_TIMEOUT_MS); })]);
+    return !!(res && res.every(function(x){ return !!x; }));
+  }catch(e){ return false; }
 }
 async function approveItem(id, status, reason, opt) {
   /* v1060: 事務Crew も経理と同じく承認・却下できる（v846 の閲覧のみを外した）。 */
@@ -68174,8 +68204,16 @@ async function approveItem(id, status, reason, opt) {
   var a = approvals.find(function(x){ return x && x.id===id; });
   if (!a) return;
   if (a.status!=='pending') { _apRerender(); return; }
-  /* v1087: 申請の画面でもう決まっていれば、申請は書き換えずに承認センターを合わせる（承認したものを却下に変えない） */
+  /* v1087: 申請の画面でもう決まっていれば、申請は書き換えずに承認センターを合わせる（承認したものを却下に変えない）。
+     手元の記録は古いことがあるので、決まっているように見えたら記録を読み直してから */
   var _rs=_apRecordState(a);
+  if (_rs && _rs.state!=='pending') {
+    await _apPullRecord(a);
+    approvals = ls('approvals', []); a = approvals.find(function(x){ return x && x.id===id; });
+    if (!a) return;
+    if (a.status!=='pending') { _apRerender(); return; }
+    _rs=_apRecordState(a);
+  }
   if (_rs && _rs.state!=='pending') {
     _apMarkDecided(a, _rs.state, null, 'page'); if(_rs.by) a.decidedBy=_rs.by; lsSet('approvals', approvals);
     var _w=_rs.state==='approved'?t('承認','approved'):_rs.state==='rejected'?t('却下','rejected'):t('取り下げ','withdrawn');
