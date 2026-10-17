@@ -962,7 +962,8 @@ test('④ the 食材管理「発注」 tab is gone; old links go to 棚卸し; i
   assert.equal(vm.runInContext('navResolvePage("order")', nav), 'home');
 });
 
-test('release markers are 1087', () => {
-  assert.match(SRC, /const APP_VERSION = '1087';/);
-  assert.match(SW, /const SW_BUILD = '1087';/);
+test('release markers are 1087 or later and the page matches the service worker', () => {
+  const app = Number((SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1]), sw = Number((SW.match(/const SW_BUILD = '(\d+)';/) || [])[1]);
+  assert.ok(app >= 1087, 'APP_VERSION ' + app);
+  assert.equal(app, sw);
 });
