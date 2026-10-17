@@ -53,7 +53,7 @@ const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetE
   '_ecDateLabel', '_ecAtLabel', '_ecMeta', '_ecStoreRank', 'ecSortIssues', 'ecFilterIssues', '_ecBarHtml', '_ecHeadRow', '_ecSevBadge', '_ecCells',
   '_ecRowHtml', '_ecResRows', '_ecResView', 'ecOpenResolve', 'ecResolveGo', 'ecUndoResolve', 'ecSevMeta', 'setEcView', 'setEcRange', 'getEcLog',
   '_ecAttribute', 'ecSnapshot', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
-  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes',
+  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes', '_canonForSig', '_logSig',
   'ecCloseResolve', '_ecNaOk'];
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
 const RID = (key, fp = '') => key + '\u241e' + fp;
@@ -373,6 +373,38 @@ test('overwork that grows from 確認 to 要対応 shows again after it was clea
   c.owScanWeek = () => [{ name: 'Crew A', over: 9, max: 40, total: 49, grade: 'G1', byStore: { F01: 49 }, weekDone: false }];
   const x = plain(run(c, 'ecOpenIssues()')).find(x => x.key === 'ow|Crew A|2026-10-11');
   assert.ok(x && x.sev === 'high', 'escalated to 要対応: shows again');
+});
+
+test('clears pushed through a jsonb cloud row (keys come back reordered) are confirmed in one upsert, and ties are decided the same on every device', async () => {
+  const { PGlite } = await import('./runtime/node_modules/@electric-sql/pglite/dist/index.js');
+  const db = new PGlite();
+  await db.exec('create table app_state(key text primary key, value jsonb)');
+  const c = app();
+  vm.runInContext(fnSrc('opMergePush'), c);
+  let ups = 0;
+  Object.assign(c, {
+    _opMergeDef: () => ({ merge: c.mergeEcRes, covers: c._coversEcRes }), _opMergeChain: {}, _opLastPushErr: {}, _opWriteBack: () => {},
+    _opUpsertRow: (k, v) => ({ key: k, value: v }), console,
+    supaUpsert: async (_t, rows) => { ups++; for (const r of rows) await db.query('insert into app_state values($1,$2) on conflict(key) do update set value=excluded.value', [r.key, JSON.stringify(r.value)]); return true; },
+    _fetchOpValue: async k => { const r = await db.query('select value::text as v from app_state where key=$1', [k]); return r.rows.length ? JSON.parse(r.rows[0].v) : null; },
+  });
+  const rec = { key: 'tip|F01|2026-10-15', fp: '', why: 'false', memo: 'x', by: 'Marcia', role: 'office', at: '2026-10-16T19:30:00.000Z', off: false, cat: 'チップ', title: 't', store: 'F01', stores: ['F01'], date: '2026-10-15', dateLabel: '', sev: 'high', _at: NOW };
+  const local = { [RID(rec.key)]: rec };
+  assert.equal(await run(c, 'opMergePush')('ec_resolutions', local), true);
+  assert.equal(ups, 1, 'confirmed on the first try');
+  const back = (await db.query("select value::text as v from app_state where key='ec_resolutions'")).rows[0].v;
+  assert.notEqual(Object.keys(JSON.parse(back)[RID(rec.key)]).join(), Object.keys(rec).join(), 'jsonb did reorder the keys (the case being checked)');
+  // A second device with a different record at the same time: both orders and both key orders give the same winner.
+  const other = Object.assign({}, rec, { why: 'done', memo: 'y', by: 'Akane' });
+  const reordered = o => Object.fromEntries(Object.keys(o).sort((a, b) => a.length - b.length || (a < b ? -1 : 1)).map(k => [k, o[k]]));
+  const w1 = plain(run(c, 'mergeEcRes(' + JSON.stringify({ k: reordered(rec) }) + ',' + JSON.stringify({ k: other }) + ')')).k.why;
+  const w2 = plain(run(c, 'mergeEcRes(' + JSON.stringify({ k: other }) + ',' + JSON.stringify({ k: rec }) + ')')).k.why;
+  const w3 = plain(run(c, 'mergeEcRes(' + JSON.stringify({ k: reordered(other) }) + ',' + JSON.stringify({ k: reordered(rec) }) + ')')).k.why;
+  assert.equal(w1, w2); assert.equal(w2, w3);
+  ups = 0;
+  assert.equal(await run(c, 'opMergePush')('ec_resolutions', { [RID(rec.key)]: other }), true);
+  assert.ok(ups <= 2, 'settles within the push');
+  await db.close();
 });
 
 test('the dialog: cancelling while the save waits for the cloud saves nothing; a second dialog waits for the first save; "not applicable" only for store operations', async () => {

@@ -52338,7 +52338,8 @@ function ecResOf(x, all){
   var a=all||ecResAll(), rid=_ecRid(x.key, x.fp), r=Object.prototype.hasOwnProperty.call(a, rid) ? a[rid] : null;
   return _ecResLive(r) ? r : null;
 }
-/* 合流：記録ごとに新しいほう。同じ時刻なら中身の文字列の大きいほう（どの端末でも同じ答え）。古い「元に戻した」「対応した」は落とす */
+/* 合流：記録ごとに新しいほう。同じ時刻なら、キーを並べ替えた中身の文字列の大きいほう（どの端末でも同じ答え。jsonb がキーの順を変えても同じ）。
+   古い「元に戻した」「対応した」は小さな印に縮める */
 var EC_RES_OFF_KEEP_MS=120*86400000, EC_RES_DONE_KEEP_MS=400*86400000, EC_RES_MARK_KEEP_MS=1095*86400000;
 /* 縮める記録か（元に戻して 120 日・「対応した」から 400 日）。もう縮めた印（_m）は縮めない */
 function _ecResExpired(r, now){
@@ -52357,7 +52358,7 @@ function mergeEcRes(cloud, local){
     if(!(k in out)){ out[k]=l[k]; return; }
     var a=out[k], b=l[k], ta=Number(a&&a._at)||0, tb=Number(b&&b._at)||0;
     if(tb!==ta){ out[k] = tb>ta ? b : a; return; }
-    var sa=JSON.stringify(a), sb=JSON.stringify(b);
+    var sa=_logSig(a), sb=_logSig(b);   /* キーを並べ替えて比べる（クラウドの jsonb はキーの順を保たない＝v763 と同じ） */
     out[k] = sb>sa ? b : a;
   });
   Object.keys(out).forEach(function(k){
@@ -52377,7 +52378,7 @@ function _coversEcRes(check, want){
     var th=Number(h&&h._at)||0, tw=Number(w&&w._at)||0;
     if(th < tw) return false;
     /* 同じ時刻なら合流と同じ決め方（中身の文字列の大きいほう）。どちらも「元に戻した」なら同じとみなす（縮めた印と縮める前） */
-    if(th===tw && !(h && h.off && w && w.off) && JSON.stringify(h) < JSON.stringify(w)) return false;
+    if(th===tw && !(h && h.off && w && w.off) && _logSig(h) < _logSig(w)) return false;   /* キーの順によらない */
   }
   return true;
 }
