@@ -103,8 +103,10 @@ test('a printed name no vendor has: similar vendors first (spelling, then part o
   c.curLang = 'en'; c.fn('ivdRender')();
   assert.match(c.box(), /Merge into Pacific Seafood/);
   // The server calls the vendor by another name now (renamed on another screen): that name is shown and used.
-  const r = app({ api: b => b.action === 'vendor_merge_into' ? PV(b, { target: { vendor_key: 'v1', display_name: 'Sakura Produce Hawaii', before: 'Sakura Produce' }, waiting: 4, closed_left: 2 }) : USAGE() });
+  const r = app({ api: b => b.action === 'vendor_merge_into' ? PV(b, { target: { vendor_key: 'v1', display_name: 'Sakura Produce Hawaii', before: 'Sakura Produce' }, waiting: 4, closed_left: 2, docs: 2 }) : USAGE() });
   await r.fn('ivdOpenRow')(D1); await flush();
+  assert.match(r.box(), /この業者の invoice 2 件は、業者名を今の名前（Sakura Produce Hawaii）にそろえます（Drive の名前・QuickBooks・金額は変えません）/);
+  assert.ok(!/業者名を今の名前/.test(c.box()), 'not told when there are none');
   assert.match(r.box(), /<b>Sakura Produce Hawaii<\/b> の別の名前として覚えます。待っている invoice 4 件の業者も直します（締めた月の 2 件はそのまま）/);
   assert.match(r.box(), /onclick="ivdMerge\(\)">Sakura Produce Hawaii に統合する</);
 });
@@ -187,13 +189,33 @@ test('今の業者に統合 is not sent when the intake refuses, cannot be check
   await c.fn('ivdMerge')(); await flush();
   assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge_into:preview'], 'only the preview was sent');
   assert.match(c.toasts.at(-1)[0], /最新の記録を読めませんでした/);
-  // No answer (the network, or the server stopped inside): it may be done in the intake — told, everything read again.
+  // No answer (the network, or the server stopped inside): the intake is asked what happened.
   for (const err of [{ __error: 'つながりません', code: 'network' }, { __error: 'うまくいきませんでした（error）', code: 'error', status: 500 }]) {
+    // It was merged there (its record carries this merge's id): the app's record is written, as after a normal merge.
+    let gid = null, usageCalls = 0;
+    c = app({ api: b => { if (b.action === 'vendor_merge_into' && b.preview) return PV(b); if (b.action === 'vendor_merge_into') { gid = b.group_id; return err; }
+      if (b.action === 'vendor_usage') { usageCalls++; return usageCalls === 1 ? USAGE() : { ...USAGE(), merges: [{ id: 'mmmmmmmm-0000-4000-8000-000000000001', to_key: 'v1', names: ['Sakura Produce', 'SAKURA PRODUCF'], group_id: gid }] }; } return {}; } });
+    await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
+    assert.match(c.toasts.at(-1)[0], /答えが途中で返りませんでしたが、Invoice取込では済んでいました/, err.code);
+    assert.deepEqual([c.mem.vendor_merges['g:' + gid].server.id, c.mem.vendor_merges['n:sakura producf'].to], ['mmmmmmmm-0000-4000-8000-000000000001', 'Sakura Produce'], err.code);
+    assert.deepEqual([c.box(), ['review', 'config', 'health', 'list'].filter(k => k in c._invIn.loaded)], [null, []], err.code);
+    // Not merged there: told so, nothing recorded.
     c = app({ api: b => b.action === 'vendor_merge_into' && b.preview ? PV(b) : b.action === 'vendor_merge_into' ? err : USAGE() });
     await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
+    assert.match(c.toasts.at(-1)[0], /Invoice取込を確かめました。変わっていません/, err.code);
+    assert.deepEqual(Object.keys(c.mem.vendor_merges), [], err.code);
+    // The intake cannot be asked either: the result is unknown.
+    let uc = 0;
+    c = app({ api: b => b.action === 'vendor_merge_into' && b.preview ? PV(b) : b.action === 'vendor_merge_into' ? err : (b.action === 'vendor_usage' && ++uc > 1) ? { __error: 'x', code: 'network' } : USAGE() });
+    await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
     assert.match(c.toasts.at(-1)[0], /結果が分かりません/, err.code);
-    assert.deepEqual([c.box(), ['review', 'config', 'health', 'list'].filter(k => k in c._invIn.loaded)], [null, []], err.code);
   }
+  // Opened again after such a lost answer: the intake's merge of this printed name gets its app record (only a 2-name one made here).
+  c = app({ api: b => b.action === 'vendor_usage' ? { ...USAGE(), merges: [{ id: 'mmmmmmmm-0000-4000-8000-000000000002', to_key: 'v1', names: ['Sakura Produce', 'SAKURA PRODUCF'], group_id: 'vmlost01' },
+    { id: 'mmmmmmmm-0000-4000-8000-000000000003', to_key: 'v1', names: ['Sakura Produce', 'SAKURA PRODUCF', 'OTHER'], group_id: 'vmmaster1' }] } : PV(b) });
+  await c.fn('ivdOpenRow')(D1); await flush();
+  assert.deepEqual([Object.keys(c.mem.vendor_merges).sort(), c.mem.vendor_merges['g:vmlost01'].server.id], [['g:vmlost01', 'n:sakura producf'], 'mmmmmmmm-0000-4000-8000-000000000002']);
+  assert.match(c.toasts.at(-1)[0], /前に答えが返らなかった統合/);
 });
 
 test('新しい業者として登録: the kind is required; the intake and the app vendor master get it (11A); a card of the same name is used, not doubled', async () => {
@@ -225,6 +247,14 @@ test('新しい業者として登録: the kind is required; the intake and the a
   assert.equal(d.calls.find(b => b.action === 'vendor_register').vendor.vendor_key, 'v77');
   assert.deepEqual([d.mem.m_vendors.length, d.mem.m_vendors.find(v => v.id === 'v77').kind], [2, 'nonfood']);
   assert.match(d.toasts.at(-1)[0], /Aloha Fish Market を登録しました（Invoice取込）/);
+  // No answer to the registration: the intake is asked whether the vendor (this key) is there; if so, the card is made.
+  let rk = null;
+  const g = app({ rows: [{ id: D1, version: 2, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }],
+    config: n => ({ vendors: n === 1 || !rk ? VENDORS() : VENDORS().concat([{ vendor_key: rk, display_name: 'Aloha Fish Market', aliases: ['ALOHA FISH MKT'], food_kind: 'food' }]) }),
+    api: b => { if (b.action === 'vendor_register') { rk = b.vendor.vendor_key; return { __error: 'つながりません', code: 'network' }; } return USAGE(); } });
+  await g.fn('ivdOpenRow')(D1); await flush(); g.fn('ivdKind')('food'); await g.fn('ivdRegister')(); await flush();
+  assert.match(g.toasts.at(-1)[0], /Invoice取込では済んでいました/);
+  assert.deepEqual(g.mem.m_vendors.map(v => v.id), ['v1', rk]);
   // The card could not be saved (storage full): the intake has it, and that is told.
   const f = app({ rows: [{ id: D1, version: 2, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }] });
   f.full = true;
@@ -383,6 +413,14 @@ test('a vendor name is text everywhere (also one registered from a printed name)
   await g.fn('ivdOpenRow')(D2); await flush();
   release(); await p1; await flush();
   assert.equal(g.M.m.docId, D2);
+  // Closed while the list is read: it does not open.
+  let rel2; const gate2 = new Promise(r => { rel2 = r; });
+  const h = app({ config: async () => { await gate2; return { vendors: VENDORS() }; } });
+  const p2 = h.fn('ivdOpenRow')(D1); await flush();
+  assert.match(h.modals.at(-1), /業者の一覧を読んでいます/);
+  h.fn('closeModalDirect')(); rel2(); await p2; await flush();
+  assert.deepEqual([h.M.m, h.box()], [null, null]);
+  assert.ok(!h.calls.some(b => b.action === 'vendor_merge_into'));
 });
 
 test('the review list and the open invoice offer 業者を決める where the vendor is not in the master; the silent learning is gone; v1089', () => {

@@ -1818,7 +1818,10 @@ begin
  r := public.invoice_vendor_merge(jsonb_build_object('actor', p->>'actor', 'to', tgt.display_name, 'names', jsonb_build_array(tgt.display_name, v_name),
   'preview', v_prev, 'group_id', p->'group_id'));
  if v_prev then return r || jsonb_build_object('ok', true, 'closed_left', v_left, 'here', v_here, 'waiting', coalesce((r->>'unknown')::int, 0) + v_extra); end if;
- v_ids := coalesce(r->'review_doc_ids', '[]'::jsonb);
+ -- The invoices waiting for a vendor first (the vendor's own invoices whose name the merge brought up to date come after them), so
+ -- they are the ones worked out within the limit of one call.
+ v_ids := coalesce((select jsonb_agg(q.e order by (d.vendor_key is null) desc, q.o) from jsonb_array_elements(coalesce(r->'review_doc_ids', '[]'::jsonb)) with ordinality q(e, o)
+  left join public.invoice_docs d on d.id = (q.e #>> '{}')::uuid), '[]'::jsonb);
  if v_here then
   v_ids := jsonb_build_array(v_doc::text) || coalesce((select jsonb_agg(e) from jsonb_array_elements(v_ids) e where e #>> '{}' <> v_doc::text), '[]'::jsonb);
  end if;

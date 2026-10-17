@@ -43813,7 +43813,7 @@ var INVIN_FIELD = {
 };
 /* 「確認すること」：何を見て、何をするか */
 var INVIN_HINT = {
-  vendor_unknown:['業者がマスターにない → 業者を選ぶ','Vendor not in the master → choose the vendor'],
+  vendor_unknown:['業者がマスターにない → 業者を決める（統合か新しい業者）','Vendor not in the master → decide the vendor (merge or new)'],   /* v1089 */
   vendor_kind_unset:['業者の食材／食材以外が未設定 → 設定の「業者」で決める','Vendor food/non-food not set → set it in Settings › Vendors'],
   invoice_no_missing:['invoice番号が読めない → 番号を入れる','No invoice number → enter it'],
   duplicate_certain:['同じ invoice が登録済み → 重複にする','Already registered → mark as duplicate'],
@@ -45355,11 +45355,15 @@ function ivdOpenDoc(force){
 async function ivdOpen(docId, version, raw){
   if (typeof invInCanEdit !== 'function' || !invInCanEdit()) { showToast(ivdT('業者を決めるのは経理・事務Crew・GM・CEO です','Accounting, office crew, GM or CEO decide the vendor'), 'warning'); return; }
   if (_ivd.m && _ivd.m.busy) { showToast(ivdT('前の業者を決めています。終わってから押してください','Still deciding the previous vendor; press again when it is done'), 'warning'); return; }
-  /* 業者の一覧はいつも読み直す（ほかの画面・端末で統合・登録・名前の変更があっても、今の業者で決める）。読めなければ前に読んだもの */
+  /* 業者の一覧はいつも読み直す（ほかの画面・端末で統合・登録・名前の変更があっても、今の業者で決める）。読めなければ前に読んだもの。
+     読むあいだは「読み込み中」を出し、閉じた・別の画面が開いたら開かない */
   var openSeq = _ivd.open = (_ivd.open || 0) + 1;
+  _ivd.m = null;
+  openModal('<div id="ivd-modal"><div class="modal-title">'+ivdT('業者を決める','Decide the vendor')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12px;color:var(--muted);padding:12px 0"><i class="ti ti-loader-2"></i> '+ivdT('業者の一覧を読んでいます…','Reading the vendors…')+'</div></div>');
   try { _invIn.config = await invInAPI({ action:'config' }); }
-  catch(err) { if (!_invIn.config) { showToast(ivdE(ivdErr(err)), 'warning'); return; } }
-  if (_ivd.open !== openSeq || (_ivd.m && _ivd.m.busy)) return;   /* 読むあいだにもう一度押した・別の業者を決め始めた */
+  catch(err) { if (!_invIn.config) { if (_ivd.open === openSeq && ivdShown()) closeModalDirect(); showToast(ivdE(ivdErr(err)), 'warning'); return; } }
+  if (_ivd.open !== openSeq || (_ivd.m && _ivd.m.busy) || !ivdShown()) return;   /* 読むあいだにもう一度押した・閉じた・別の画面が開いた */
   raw = String(raw == null ? '' : raw).trim();
   var m = { docId:docId, version:version, raw:raw, usage:null, owners:raw ? ivdOwners(raw) : [], cands:[], mode:'', pick:'', other:'', only:'',
     name:ivdClean(raw), kind:'', taken:null, pv:null, pvErr:'', pvFor:'', loading:false, busy:false, mySeq:0 };
@@ -45368,10 +45372,9 @@ async function ivdOpen(docId, version, raw){
   m.pick = m.cands.length ? m.cands[0].v.vendor_key : '';
   m.only = m.owners.length ? m.owners[0].vendor_key : '';
   _ivd.m = m;
-  openModal('<div id="ivd-modal"></div>');
   ivdRender();
   ivdPreview();
-  invInAPI({ action:'vendor_usage' }).then(function(u){ if (_ivd.m !== m) return; m.usage = u; m.cands = ivdCands(m, m.raw); ivdRender(); }, function(){});
+  invInAPI({ action:'vendor_usage' }).then(function(u){ if (_ivd.m !== m) return; m.usage = u; m.cands = ivdCands(m, m.raw); ivdRender(); ivdMissingRecord(m, u); }, function(){});
 }
 /* ---- 選ぶ ---- */
 function ivdTarget(m){ return ivdVendor(m.other || m.pick); }
@@ -45500,6 +45503,7 @@ function ivdMergeHtml(m){
     var pv = (!why && m.pv) ? m.pv : null, k = pv ? Math.max(0, Number(pv.waiting) || 0) : ivdWaiting(m), cl = pv ? Number(pv.closed_left) || 0 : 0;
     h += ivdNote(ivdT('「'+e(m.raw)+'」を <b>'+e(xn)+'</b> の別の名前として覚えます。待っている invoice '+k+' 件の業者も直します'+(cl ? '（締めた月の '+cl+' 件はそのまま）' : '（締めた月の分はそのまま）')+'。統合の記録が残り、業者マスターの「業者の統合」から外せます。',
       '“'+e(m.raw)+'” is remembered as a name of <b>'+e(xn)+'</b>. The '+k+' invoices waiting with it get this vendor too ('+(cl ? cl+' in closed months stay' : 'closed months stay')+'). The merge is recorded and can be taken back in the vendor master (Merge vendors).')
+      + (pv && Number(pv.docs) ? '<br>'+ivdT('この業者の invoice '+Number(pv.docs)+' 件は、業者名を今の名前（'+e(xn)+'）にそろえます（Drive の名前・QuickBooks・金額は変えません）。','The vendor name on '+Number(pv.docs)+' of this vendor’s invoices is brought up to date (“'+e(xn)+'”; Drive names, QuickBooks and amounts do not change).') : '')
       + (pv ? '<br><span style="color:var(--muted)">'+ivdT('自動で反映するかは「'+e(xn)+'」の設定のまま（'+(pv.target && pv.target.auto_post ? '自動' : '確認モード')+'）。','Auto-posting follows “'+e(xn)+'” ('+(pv.target && pv.target.auto_post ? 'auto' : 'review mode')+').')+'</span>' : ''));
   }
   var label = !x ? ivdT('業者を選んでください','Choose the vendor') : !m.raw ? ivdT('この invoice を '+x.display_name+' にする','Give this invoice '+x.display_name) : ivdT(xn+' に統合する','Merge into '+xn);
@@ -45554,14 +45558,19 @@ function ivdErr(err){
   if (err && err.code === 'unknown_action') return ivdT('Invoice取込のサーバーが前の版のままです（関数 invoice-intake を入れ直してください）','The intake server is an older version (deploy the invoice-intake function again)');
   return String(err && err.message || err);
 }
-async function ivdRun(m, fn){
+async function ivdRun(m, fn, settle){
   if (!m || m.busy || _ivd.m !== m || !invInCanEdit()) return;
   m.busy = true; ivdRender();
   try { await fn(); }
   catch(err) {
-    /* 答えが返らなかった・サーバーの中で止まった：Invoice取込では済んでいるかもしれない。読み直して、開き直してもらう */
+    /* 答えが返らなかった・サーバーの中で止まった：Invoice取込では済んでいるかもしれない。Invoice取込の今の状態を読んで確かめ、
+       済んでいればこの端末の記録（統合の記録・業者マスターのカード）も書く。確かめられなければ、そう言って読み直す */
     if (err && (err.code === 'network' || Number(err.status) >= 500)) {
-      showToast(ivdE(ivdErr(err)) + ivdT('（結果が分かりません。Invoice取込では済んでいるかもしれないので、一覧を読み直しました。もう一度「業者を決める」を開いて確かめてください）',' (the result is unknown: it may have been done in the intake. The list was read again; open “Decide the vendor” again to check)'), 'warning');
+      var st = null; try { st = settle ? await settle() : null; } catch(e2) { st = null; }
+      if (st === 'done') showToast(ivdT('答えが途中で返りませんでしたが、Invoice取込では済んでいました（この端末の記録も書きました）。一覧を読み直しました','The answer was lost, but it was done in the intake (this device’s record was written too). The list was read again'), 'success');
+      else if (st === 'saved_no') showToast(ivdT('答えが途中で返りませんでしたが、Invoice取込では済んでいました。この端末には記録を保存できませんでした（保存容量を確かめて、業者マスターでカードや統合の記録を確かめてください）','The answer was lost but it was done in the intake; this device could not save its record (check the storage and the vendor master)'), 'warning');
+      else if (st === 'not') showToast(ivdE(ivdErr(err)) + ivdT('（Invoice取込を確かめました。変わっていません）',' (checked in the intake: nothing was changed)'), 'warning');
+      else showToast(ivdE(ivdErr(err)) + ivdT('（結果が分かりません。Invoice取込では済んでいるかもしれないので、一覧を読み直しました。もう一度「業者を決める」を開いて確かめてください。業者マスターにカードや統合の記録が無ければ、そこで足してください）',' (the result is unknown: it may have been done in the intake. The list was read again; open “Decide the vendor” again to check, and add the card or merge record in the vendor master if missing)'), 'warning');
       ivdDone(m); return;
     }
     showToast(ivdE(ivdErr(err)) + ivdT('（変えていません）',' (nothing was changed)'), 'warning');
@@ -45592,6 +45601,41 @@ function ivdRecheckMsg(rc, closedLeft){
   if (closedLeft) s += ivdT('締めた月の '+closedLeft+' 件はそのままです（開いて「業者を決める」を押すと、その 1 件を直します）。',' '+closedLeft+' in closed months stay (open one and press “Decide the vendor” for it).');
   return s;
 }
+/* アプリの統合の記録（業者マスターの「業者の統合」の「統合の記録」に出て「外す」で戻せる） */
+function ivdRecordMerge(gid, srv, tn, raw){
+  var card = (typeof vmgCardFor === 'function') ? vmgCardFor(tn) : null;
+  return vmgSaveMany([['g:' + gid, { to:tn, names:[tn, raw], at:new Date().toISOString(), ms:vmgMs(), server:srv, card:card ? card.id : null,
+      filled:{}, kind:null, prevKind:null, renamed:null, hide:[], src:'invoice_intake', off:false }],
+    ['n:' + vmgKey(raw), { to:tn, name:raw, g:gid, off:false }]]);
+}
+/* アプリの業者マスターのカード（11A）：同じ名前のカードが無ければ作る。あれば区分が空のときだけ入れる */
+function ivdMakeCard(key, nm, kind, cardId){
+  var me = (typeof myName === 'function' ? myName() : '') || '', vs = getVendors() || [], when = (typeof nowJP === 'function' ? nowJP() : '');
+  var cur = cardId != null ? vs.find(function(v){ return v && String(v.id) === String(cardId); }) : null;
+  if (!cur) cur = vs.find(function(v){ return v && v.name && ivdKey(v.name) === ivdKey(nm) && !(typeof vmgCardHidden === 'function' && vmgCardHidden(v)); }) || null;
+  if (!cur) {
+    vs.push({ id:key, name:nm, kind:kind || '', kindBy:me, kindAt:when, contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'',
+      leadtime:1, minOrder:0, delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, src:'invoice_intake' });
+    var ok = lsSet('m_vendors', vs) !== false;
+    return { ok:ok, made:ok };
+  }
+  if ((kind === 'food' || kind === 'nonfood') && cur.kind !== 'food' && cur.kind !== 'nonfood') { cur.kind = kind; cur.kindBy = me; cur.kindAt = when; return { ok:lsSet('m_vendors', vs) !== false, made:false }; }
+  return { ok:true, made:false };
+}
+/* 開いたとき：この印字名をまとめた Invoice取込の統合（この画面から・答えが返らなかったもの）に、アプリの記録が無ければ書く
+   （ほかの端末の記録を読んでからも無いときだけ。業者マスターの統合は名前が 2 つより多いことがあるので、印字名と業者の 2 つのものだけ） */
+async function ivdMissingRecord(m, u){
+  if (!m || !m.raw || !u || typeof vmgRec !== 'function') return;
+  var k = ivdKey(m.raw), miss = (u.merges || []).filter(function(g){ return g && g.group_id && /^vm[0-9a-z]+$/.test(g.group_id) && (g.names || []).length === 2
+    && (g.names || []).some(function(n){ return ivdKey(n) === k; }) && !vmgRec('g:' + g.group_id); });
+  if (!miss.length || !(await vmgPull())) return;
+  miss.forEach(function(g){
+    if (vmgRec('g:' + g.group_id)) return;
+    var v = (u.vendors || []).find(function(x){ return x && x.vendor_key === g.to_key; }); if (!v || !v.display_name) return;
+    if (ivdRecordMerge(g.group_id, { id:g.id, docs:0, kept:0, unknown:0, vk:g.to_key }, v.display_name, m.raw))
+      showToast(ivdT('前に答えが返らなかった統合（「'+ivdE(m.raw)+'」→ '+ivdE(v.display_name)+'）の記録を、この端末にも書きました','The record of an earlier merge whose answer was lost (“'+ivdE(m.raw)+'” → '+ivdE(v.display_name)+') was written on this device too'), 'info');
+  });
+}
 async function ivdMerge(){
   var m = _ivd.m; if (!m) return;
   if (!m.raw) return ivdOnly(ivdTarget(m));
@@ -45600,7 +45644,7 @@ async function ivdMerge(){
   await ivdRun(m, async function(){
     if (!(await vmgPull())) { showToast(ivdT('最新の記録を読めませんでした。通信（または端末の保存容量）を確かめて、もう一度押してください（何も変えていません）','Could not read the latest records. Check the connection (or storage) and press again (nothing was changed)'), 'warning'); return; }
     if (_ivd.m !== m || !ivdShown() || ivdMergeWhy(m)) return;   /* 読むあいだに閉じた・別の画面が開いたら送らない */
-    var gid = vmgId();
+    var gid = m.gid = vmgId();
     /* Invoice取込が同じロックの中で確かめてからまとめる（ほかの業者はまとめない・業者の名前は今の名前のまま） */
     var r = await invInAPI({ action:'vendor_merge_into', vendor_key:x.vendor_key, name:m.raw, doc_id:docId, group_id:gid });
     var R = ivdE(m.raw);   /* お知らせは HTML で出るので、印字された名前は文字として */
@@ -45614,15 +45658,19 @@ async function ivdMerge(){
     var tn = (r && r.target && r.target.display_name) || x.display_name, X = ivdE(tn);
     if (!r || !r.merge_id) { ivdDone(m); showToast(ivdT('「'+R+'」はもう '+X+' の名前でした（変えることはありません）','“'+R+'” was already a name of '+X+' (nothing to change)'), 'info'); return; }
     var srv = { id:r.merge_id, docs:r.docs || 0, kept:(r.kept || []).length, unknown:r.unknown || 0, vk:(r.target && r.target.vendor_key) || null };
-    var card = (typeof vmgCardFor === 'function') ? vmgCardFor(tn) : null;
-    var ok = vmgSaveMany([['g:' + gid, { to:tn, names:[tn, m.raw], at:new Date().toISOString(), ms:vmgMs(), server:srv, card:card ? card.id : null,
-        filled:{}, kind:null, prevKind:null, renamed:null, hide:[], src:'invoice_intake', off:false }],
-      ['n:' + vmgKey(m.raw), { to:tn, name:m.raw, g:gid, off:false }]]);
+    var ok = ivdRecordMerge(gid, srv, tn, m.raw);
     ivdDone(m);
     var fixed = (r.recheck && r.recheck.fixed) || 0;
     showToast(ivdT('「'+R+'」を '+X+' にまとめました（待っている invoice '+fixed+' 件をこの業者にしました）。','Merged “'+R+'” into '+X+' ('+fixed+' waiting invoices got this vendor).') + ivdRecheckMsg(r.recheck, r.closed_left), 'success');
     if (!ok) showToast(ivdT('Invoice取込はまとめましたが、この端末に統合の記録を保存できませんでした（保存容量を確かめてください）。業者マスターの「業者の統合」に記録が出なければ、そこでまとめ直してください','The intake was merged, but this device could not save the record (check the storage). If it is missing in “Merge vendors”, merge there again'), 'warning');
     if ((r.from || []).length) showToast(ivdT('ほかの業者も同じ名前だったので一緒にまとめました。違っていれば業者マスターの「業者の統合」で外してください','Another vendor had the same name and was merged too. If wrong, take it back in “Merge vendors”'), 'warning');
+  }, async function(){
+    /* 答えが返らなかった：Invoice取込の統合の記録（この統合の id）を探す。あればアプリの記録を書く */
+    var gid = m.gid; if (!gid) return null;
+    var u = await invInAPI({ action:'vendor_usage' });
+    var mg = (u.merges || []).find(function(g){ return g && g.group_id === gid; }); if (!mg) return 'not';
+    var v = (u.vendors || []).find(function(y){ return y && y.vendor_key === mg.to_key; });
+    return ivdRecordMerge(gid, { id:mg.id, docs:0, kept:0, unknown:0, vk:mg.to_key }, (v && v.display_name) || x.display_name, m.raw) ? 'done' : 'saved_no';
   });
 }
 async function ivdRegister(){
@@ -45638,21 +45686,18 @@ async function ivdRegister(){
       return;
     }
     if (!r || !r.vendor) throw new Error(ivdT('うまくいきませんでした','Something went wrong'));
-    /* アプリの業者マスターのカード（11A）：同じ名前のカードが無ければ作る。あれば区分が空のときだけ入れる */
-    var me = (typeof myName === 'function' ? myName() : '') || '', vs = getVendors() || [], okCard = true, made = false;
-    var cur = card ? vs.find(function(v){ return v && String(v.id) === String(card.id); }) : null;
-    if (!cur) {
-      vs.push({ id:r.vendor.vendor_key, name:nm, kind:kind, kindBy:me, kindAt:(typeof nowJP === 'function' ? nowJP() : ''), contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'',
-        leadtime:1, minOrder:0, delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, src:'invoice_intake' });
-      okCard = lsSet('m_vendors', vs) !== false; made = okCard;
-    } else if (cur.kind !== 'food' && cur.kind !== 'nonfood') {
-      cur.kind = kind; cur.kindBy = me; cur.kindAt = (typeof nowJP === 'function' ? nowJP() : ''); okCard = lsSet('m_vendors', vs) !== false;
-    }
+    var cr = ivdMakeCard(r.vendor.vendor_key, nm, kind, card ? card.id : null), okCard = cr.ok, made = cr.made;
     ivdDone(m);
     var fixed = (r.recheck && r.recheck.fixed) || 0;
     showToast(ivdT(ivdE(nm)+' を登録しました（Invoice取込'+(made ? 'と業者マスター' : '')+'）。待っている invoice '+fixed+' 件をこの業者にしました。','Registered '+ivdE(nm)+' (intake'+(made ? ' and vendor master' : '')+'). '+fixed+' waiting invoices got this vendor.')
       + ivdRecheckMsg(r.recheck, r.closed_left), 'success');
     if (!okCard) showToast(ivdT('業者マスターのカードを保存できませんでした（端末の保存容量を確かめて、業者マスターで足してください）','The vendor card could not be saved (check the storage and add it in the vendor master)'), 'warning');
+  }, async function(){
+    /* 答えが返らなかった：Invoice取込にこの業者（この鍵）ができているか。あればカードを書く */
+    var cfg = await invInAPI({ action:'config' });
+    var v = ((cfg && cfg.vendors) || []).find(function(y){ return y && y.vendor_key === key; }); if (!v) return 'not';
+    _invIn.config = cfg;
+    return ivdMakeCard(key, v.display_name || nm, kind, card ? card.id : null).ok ? 'done' : 'saved_no';
   });
 }
 async function ivdApply(){

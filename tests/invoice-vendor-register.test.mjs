@@ -316,13 +316,22 @@ test('新しい業者を決める: merging the printed name into a vendor — th
 
 test('新しい業者を決める: merging never merges another vendor and never renames the vendor; who may; bad values', async () => {
   const E = await setup();
-  const D = await read(E, [['X-1', '9101', '2026-10-02', 'VENDR A'], ['X-2', '9102', '2026-10-02', 'VENDOR A INC.'.toLowerCase() + ' x']]);
+  await E.q(`update invoice_vendor_rules set auto_post=false where vendor_key='v1'`);   // its own invoice waits for review
+  const D = await read(E, [['X-1', '9101', '2026-10-02', 'VENDR A'], ['X-2', '9102', '2026-10-02', 'VENDOR A INC.'.toLowerCase() + ' x'], ['X-3', '9103', '2026-10-03', 'VENDOR A INC.'],
+    ['X-4', '9104', '2026-10-04', 'VENDR A']]);
+  assert.deepEqual([D['X-3'].vendor_key, D['X-3'].vendor_name], ['v1', 'VendorA']);
   // The vendor was renamed on another screen (its old name kept as one of its names): a screen that read the old name merges into
   // it as it is called now, and does not rename it back.
   await E.q(`update invoice_vendor_rules set display_name='VendorA Hawaii', aliases=aliases||'{"VendorA"}' where vendor_key='v1'`);
+  const pv = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id, preview: true });
+  assert.deepEqual([pv.body.docs, pv.body.waiting], [1, 2], 'the vendor’s own invoice whose name is brought up to date is told');
   const r = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.deepEqual([r.body.target.display_name, r.body.target.before, (await rule(E, 'v1')).display_name], ['VendorA Hawaii', 'VendorA Hawaii', 'VendorA Hawaii']);
+  // The one on screen, then the invoices waiting for a vendor, then the vendor's own (only if it waits for review).
+  assert.equal(D['X-3'].status, 'review');
+  assert.deepEqual(r.body.review_doc_ids, [D['X-1'].id, D['X-4'].id, D['X-3'].id]);
+  assert.equal((await one(E, D['X-3'].id)).vendor_name, 'VendorA Hawaii');
   // Another vendor has the vendor's name: refused, nothing changes (the vendor master's 業者の統合 is the place for that).
   await E.q(`insert into invoice_vendor_rules(vendor_key,display_name,aliases,food_kind,auto_post) values('v8','VendorA Hawaii Co','{"VENDORA HAWAII"}','food',false)`);
   const b1 = await snap(E);

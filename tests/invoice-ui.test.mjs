@@ -58,7 +58,7 @@ test('review list: four items with marks; only invoices with nothing to check ar
   assert.equal(vm.runInContext('invInMark4', c)(rows()[5], 'amount'), '!');
   const h = vm.runInContext('invInQueueHtml', c)('review');
   assert.match(h, /選んだ 1 件を反映する/);
-  assert.match(h, /業者がマスターにない → 業者を選ぶ/);
+  assert.match(h, /業者がマスターにない → 業者を決める（統合か新しい業者）/);
   assert.match(h, /合計が明細＋税などと \$2\.00 合わない/);
   assert.match(h, /明細の金額が読めない → 原本の合計を確かめる/);
   assert.match(h, /明細が読めない（前の版の読み取り）→ 原本の合計を確かめる/);
