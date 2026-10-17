@@ -46,7 +46,7 @@ test('the migrations in order give the same database as db/invoice-intake.sql', 
     await stepwise.exec(base);
     for (const f of files) await stepwise.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     const a = await snap(whole), b = await snap(stepwise);
-    assert.ok(a.functions.length === 83 && a.functions.some(f => f.proname === 'invoice_vendor_register') && a.tables.some(t => t.relname === 'invoice_vendor_merges') && a.tables.some(t => t.relname === 'invoice_purchase_checks') && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
+    assert.ok(a.functions.length === 84 && a.functions.some(f => f.proname === 'invoice_vendor_register') && a.tables.some(t => t.relname === 'invoice_vendor_merges') && a.tables.some(t => t.relname === 'invoice_purchase_checks') && a.columns.some(c => c.table_name === 'invoice_files' && c.column_name === 'rename_state'));
     for (const k of Object.keys(a)) assert.deepEqual(b[k], a[k], k);
     // New functions are for the service role only, like every other one (Supabase grants them to the browser roles by default).
     for (const r of a.functions) assert.ok(!/(^|[{,])(anon|authenticated)=/.test(r.acl || ''), r.proname);

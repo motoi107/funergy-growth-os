@@ -630,7 +630,8 @@ export function createHandler(deps) {
     const saved = await db.rpc('invoice_edit', { actor, doc_id: b.doc_id, version: b.version, header, lines: [...lines, ...untouched], reason: b.reason,
       reasons: result.reasons, content_sig: h.content_sig, lines_sum_cents: h.lines_sum_cents, adjustment_ack: !!b.adjustment_ack,
       ack: Array.isArray(b.ack) ? b.ack.filter(x => typeof x === 'string') : [],
-      learn_alias: !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw)) });
+      // b.learn === false: the vendor of this invoice only (業者を決める: no printed name, or a name two vendors have).
+      learn_alias: b.learn !== false && !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw)) });
     // A correction of a posted invoice (date, vendor, number) gives its original the new name at once (Moto 2026-10-12).
     if (g.doc.status === 'posted' && ctx.mode.rename && saved) {
       saved.rename = await renameNow(actor, g.doc.file_id, ctx);
@@ -751,11 +752,15 @@ export function createHandler(deps) {
   // invoices waiting for review that it moved (and those whose printed name no vendor had: they get the kept vendor) are worked out
   // again here, as a person's correction would (reasons, duplicates, the vendor's mode): at most VENDOR_RECHECK in one call, the
   // others when they are opened. b.preview: nothing is changed; what would change is returned.
-  const VENDOR_RECHECK = 60;
+  const VENDOR_RECHECK = Math.max(1, Number(deps.vendorRecheck) || 60);
   const strList = x => (Array.isArray(x) ? x.filter(s => typeof s === 'string').map(s => s.trim()).filter(Boolean) : []);
+  // One that cannot be worked out is passed over (counted in failed), so it never holds the others back: up to VENDOR_RECHECK are
+  // worked out in one call, trying at most twice as many; the rest are left for the next call (left).
   async function recheckVendorDocs(actor, ids, target, reason) {
-    const out = { fixed: 0, failed: 0, left: Math.max(0, ids.length - VENDOR_RECHECK) };
-    for (const id of ids.slice(0, VENDOR_RECHECK)) {
+    const out = { fixed: 0, failed: 0, left: 0 };
+    let i = 0;
+    for (; i < ids.length && out.fixed < VENDOR_RECHECK && i < VENDOR_RECHECK * 2; i++) {
+      const id = ids[i];
       try {
         const g = await db.rpc('invoice_get', { actor, doc_id: id });
         if (!g || !g.doc || g.doc.status !== 'review') continue;
@@ -763,6 +768,7 @@ export function createHandler(deps) {
         out.fixed++;
       } catch (e) { out.failed++; console.error('invoice-intake vendor recheck', safeErr(e)); }
     }
+    out.left = ids.length - i;
     return out;
   }
   async function vendorMerge(actor, b) {
@@ -782,7 +788,7 @@ export function createHandler(deps) {
   // the merge instead), or, when the name has become one vendor's since the invoice was read, give the waiting invoices that
   // vendor (vendor_apply). Either way the invoices waiting with the name (and the one on screen) are worked out again with the
   // vendor, as a person's correction would: at most VENDOR_RECHECK in one call (the one on screen first). Merging the printed name
-  // into a vendor that exists is vendor_merge (業者の統合).
+  // into a vendor that exists is vendor_merge_into (業者の統合, after checking that nothing else is merged).
   const docIdOf = x => (typeof x === 'string' && x ? x : null);
   async function vendorRegister(actor, b) {
     const v = b.vendor && typeof b.vendor === 'object' && !Array.isArray(b.vendor) ? b.vendor : {};
@@ -796,14 +802,24 @@ export function createHandler(deps) {
     return r;
   }
   async function vendorApply(actor, b) {
-    if (typeof b.name !== 'string' || !b.name.trim()) throw new Error('bad_value');
+    if (typeof b.name !== 'string' || !b.name.trim() || (b.vendor_key != null && typeof b.vendor_key !== 'string')) throw new Error('bad_value');
     const w = await db.rpc('invoice_vendor_waiting', { actor, name: b.name, doc_id: docIdOf(b.doc_id) });
-    // Only a name exactly one vendor has: with none or with two the invoice waits for a person to choose.
-    if ((w.vendors || []).length !== 1) return { ok: false, vendors: w.vendors || [] };
+    // Only a name exactly one vendor has (and the one the screen showed, b.vendor_key): with none, with two or with another one,
+    // the invoice waits for a person to choose.
+    if ((w.vendors || []).length !== 1 || (b.vendor_key && w.vendors[0].vendor_key !== b.vendor_key)) return { ok: false, vendors: w.vendors || [] };
     const vk = w.vendors[0].vendor_key;
     const r = { ok: true, vendor: w.vendors[0], doc_ids: w.doc_ids || [], closed_left: w.closed_left || 0, months: w.months || [] };
     r.recheck = await recheckVendorDocs(actor, r.doc_ids, vk, '業者を決めた：' + w.vendors[0].display_name);
     r.summary = (await publishSummary(null, { months: r.months, doc_ids: r.doc_ids })).ok;
+    return r;
+  }
+  async function vendorMergeInto(actor, b) {
+    if (typeof b.vendor_key !== 'string' || typeof b.name !== 'string' || !b.name.trim() || (b.group_id != null && typeof b.group_id !== 'string')) throw new Error('bad_value');
+    const r = await db.rpc('invoice_vendor_merge_into', { actor, vendor_key: b.vendor_key, name: b.name, doc_id: docIdOf(b.doc_id),
+      group_id: typeof b.group_id === 'string' ? b.group_id : null, preview: b.preview === true });
+    if (b.preview === true || !r || !r.ok || !r.merge_id) return r;
+    r.recheck = await recheckVendorDocs(actor, r.review_doc_ids || [], r.target.vendor_key, '業者の統合：' + r.target.display_name);
+    r.summary = (await publishSummary(null, { months: r.months || [], doc_ids: r.review_doc_ids || [] })).ok;
     return r;
   }
   async function vendorUnmerge(actor, b) {
@@ -968,6 +984,7 @@ export function createHandler(deps) {
     // 新しい業者を決める (Moto 2026-10-16・UI案52 ③): an invoice's printed name as a new vendor, or as the vendor that has it now.
     vendor_register: vendorRegister,
     vendor_apply: vendorApply,
+    vendor_merge_into: vendorMergeInto,
     map_seed: (a, b) => db.rpc('invoice_map_seed', { actor: a, store_id: b.store_id || null, apply: b.apply === true, only_ext: b.only_ext !== false }),
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,

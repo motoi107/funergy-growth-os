@@ -24,11 +24,15 @@ const VENDORS = () => [
 const USAGE = () => ({ vendors: [{ vendor_key: 'v1', display_name: 'Sakura Produce', docs: 42 }, { vendor_key: 'v2', display_name: 'Sakura Farms LLC', docs: 7 }, { vendor_key: 'v3', docs: 3 }],
   unknown: [{ name: 'SAKURA PRODUCF', docs: 3 }, { name: 'ALOHA FISH MKT', docs: 1 }], merges: [] });
 const D1 = '11111111-1111-4111-8111-111111111111', D2 = '22222222-2222-4222-8222-222222222222';
+const NAMES = { v1: 'Sakura Produce', v2: 'Sakura Farms LLC', v3: 'Pacific Seafood', v4: 'Kona Paper' };
+// What vendor_merge_into answers in a preview (the vendor as the server calls it now).
+const PV = (b, o = {}) => ({ ok: true, preview: true, matched: 1, target: { vendor_key: b.vendor_key, display_name: NAMES[b.vendor_key], before: NAMES[b.vendor_key], auto_post: b.vendor_key === 'v1' },
+  from: [], unknown: 3, waiting: 3, closed_left: 0, here: true, added_aliases: [b.name], ...o });
 const ROWS = () => [{ id: D1, version: 3, vendor_key: null, vendor_raw: 'SAKURA PRODUCF', reasons: [{ code: 'vendor_unknown' }] },
   { id: D2, version: 1, vendor_key: null, vendor_raw: 'sakura  producf', reasons: [{ code: 'vendor_unknown' }] }];
 const CARD = (id, name, o = {}) => ({ id, name, contact: '', phone: '', sms: '', email: '', line: '', method: '', cutoff: '', leadtime: 1, minOrder: 0, delivery: '', terms: '', rating: 3, webform: '', ...o });
 
-function app({ role = 'office', cards = [CARD('v1', 'Sakura Produce', { kind: 'food' })], vendors = VENDORS(), rows = ROWS(), api = null, pull = true, merges = {} } = {}) {
+function app({ role = 'office', cards = [CARD('v1', 'Sakura Produce', { kind: 'food' })], vendors = VENDORS(), rows = ROWS(), api = null, pull = true, merges = {}, config = null } = {}) {
   const mem = { m_vendors: cards, vendor_merges: merges, m_vendor_alias: {} };
   const dom = {};
   const c = {
@@ -48,13 +52,15 @@ function app({ role = 'office', cards = [CARD('v1', 'Sakura Produce', { kind: 'f
     _invIn: { config: vendors ? { vendors } : null, review: { rows }, loaded: { review: 1, health: 1, config: 1, list: 1, doc: 1 }, doc: null, docId: null, edits: null },
     invInAPI: async body => {
       c.calls.push(JSON.parse(JSON.stringify(body)));
-      const r = api ? await api(body, c) : (body.action === 'vendor_usage' ? USAGE() : body.action === 'config' ? { vendors: VENDORS() }
-        : body.action === 'vendor_merge' && body.preview ? { ok: true, preview: true, matched: 1, target: { vendor_key: 'v1', display_name: body.to, auto_post: true }, from: [], unknown: 3, added_aliases: [body.names[1]] }
-        : body.action === 'vendor_merge' ? { ok: true, merge_id: '99999999-9999-4999-8999-999999999999', target: { vendor_key: 'v1', display_name: body.to }, from: [], docs: 0, unknown: 3, recheck: { fixed: 3, failed: 0, left: 0 } }
+      // The vendor list is read again each time the dialog opens: the same list unless the test says otherwise (config).
+      if (body.action === 'config') { c.configs = (c.configs || 0) + 1; return config ? config(c.configs) : { vendors: JSON.parse(JSON.stringify(vendors || [])) }; }
+      const r = api ? await api(body, c) : (body.action === 'vendor_usage' ? USAGE()
+        : body.action === 'vendor_merge_into' && body.preview ? PV(body)
+        : body.action === 'vendor_merge_into' ? { ...PV(body), preview: false, merge_id: '99999999-9999-4999-8999-999999999999', recheck: { fixed: 3, failed: 0, left: 0 }, review_doc_ids: [D1, D2] }
         : body.action === 'vendor_register' ? { ok: true, vendor: { vendor_key: body.vendor.vendor_key, display_name: body.vendor.display_name, food_kind: body.vendor.food_kind, aliases: [] }, doc_ids: [D1], closed_left: 1, recheck: { fixed: 1, failed: 0, left: 0 } }
         : body.action === 'vendor_apply' ? { ok: true, vendor: { vendor_key: 'v3', display_name: 'Pacific Seafood' }, doc_ids: [D1], closed_left: 0, recheck: { fixed: 1, failed: 0, left: 0 } }
         : body.action === 'edit' ? { ok: true, version: body.version + 1 } : {});
-      if (r && r.__error) { const e = new Error(r.__error); e.code = r.code || ''; throw e; }
+      if (r && r.__error) { const e = new Error(r.__error); e.code = r.code || ''; if (r.status) e.status = r.status; throw e; }
       return r;
     },
     document: { getElementById: k => dom[k] || null, activeElement: null },
@@ -76,9 +82,10 @@ test('a printed name no vendor has: similar vendors first (spelling, then part o
   await flush();
   const m = c.M.m;
   assert.deepEqual([m.mode, m.raw, m.cands.map(x => [x.v.vendor_key, x.why]), m.pick], ['merge', 'SAKURA PRODUCF', [['v1', 'spell'], ['v2', 'part']], 'v1']);
-  // Preview first (nothing changes): the vendor's name and the printed one.
-  const pv = c.calls.find(b => b.action === 'vendor_merge');
-  assert.deepEqual(pv, { action: 'vendor_merge', preview: true, to: 'Sakura Produce', names: ['Sakura Produce', 'SAKURA PRODUCF'] });
+  assert.equal(c.configs, 1, 'the vendor list is read again when it opens');
+  // Preview first (nothing changes): the vendor, the printed name, the invoice on screen.
+  const pv = c.calls.find(b => b.action === 'vendor_merge_into');
+  assert.deepEqual(pv, { action: 'vendor_merge_into', preview: true, vendor_key: 'v1', name: 'SAKURA PRODUCF', doc_id: D1 });
   const h = c.box();
   assert.match(h, /同じ名前で待っている invoice：3 件/);
   assert.match(h, /Sakura Produce<\/b><br><span[^>]*>綴りが少し違う ・ 食材 ・ invoice 42 件/);
@@ -90,22 +97,28 @@ test('a printed name no vendor has: similar vendors first (spelling, then part o
   assert.match(h, /<button class="btn btn-primary"[^>]*onclick="ivdMerge\(\)">Sakura Produce に統合する<\/button>/);
   // Choosing another vendor checks again.
   c.fn('ivdPick')('v2'); await flush();
-  assert.deepEqual(c.calls.filter(b => b.action === 'vendor_merge').at(-1).names, ['Sakura Farms LLC', 'SAKURA PRODUCF']);
+  assert.equal(c.calls.filter(b => b.action === 'vendor_merge_into').at(-1).vendor_key, 'v2');
   c.fn('ivdOther')('v3'); await flush();
-  assert.deepEqual([c.M.m.pick, c.M.m.other, c.calls.filter(b => b.action === 'vendor_merge').at(-1).to], ['v2', 'v3', 'Pacific Seafood']);
+  assert.deepEqual([c.M.m.pick, c.M.m.other, c.calls.filter(b => b.action === 'vendor_merge_into').at(-1).vendor_key], ['v2', 'v3', 'v3']);
   c.curLang = 'en'; c.fn('ivdRender')();
   assert.match(c.box(), /Merge into Pacific Seafood/);
+  // The server calls the vendor by another name now (renamed on another screen): that name is shown and used.
+  const r = app({ api: b => b.action === 'vendor_merge_into' ? PV(b, { target: { vendor_key: 'v1', display_name: 'Sakura Produce Hawaii', before: 'Sakura Produce' }, waiting: 4, closed_left: 2 }) : USAGE() });
+  await r.fn('ivdOpenRow')(D1); await flush();
+  assert.match(r.box(), /<b>Sakura Produce Hawaii<\/b> の別の名前として覚えます。待っている invoice 4 件の業者も直します（締めた月の 2 件はそのまま）/);
+  assert.match(r.box(), /onclick="ivdMerge\(\)">Sakura Produce Hawaii に統合する</);
 });
 
-test('今の業者に統合: the shared latest is read, the intake merges, the app records the merge (taken back in the vendor master); every list is read again', async () => {
+test('今の業者に統合: the shared latest is read, the intake merges after its checks, the app records the merge (taken back in the vendor master); every list is read again', async () => {
   const c = app();
   c._invIn.docId = D1;
   await c.fn('ivdOpenRow')(D1); await flush();
   await c.fn('ivdMerge')(); await flush();
   assert.equal(c.pulls, 1);
-  const call = c.calls.filter(b => b.action === 'vendor_merge' && !b.preview);
+  const call = c.calls.filter(b => b.action === 'vendor_merge_into' && !b.preview);
   assert.equal(call.length, 1);
-  assert.deepEqual([call[0].to, call[0].names, /^vm[0-9a-z]+$/.test(call[0].group_id)], ['Sakura Produce', ['Sakura Produce', 'SAKURA PRODUCF'], true]);
+  assert.deepEqual([call[0].vendor_key, call[0].name, call[0].doc_id, /^vm[0-9a-z]+$/.test(call[0].group_id)], ['v1', 'SAKURA PRODUCF', D1, true]);
+  assert.ok(!c.calls.some(b => b.action === 'vendor_merge'), 'never the unchecked merge');
   const g = c.mem.vendor_merges['g:' + call[0].group_id];
   assert.deepEqual([g.to, g.names, g.server.id, g.server.unknown, g.card, g.src, g.off, g.by], ['Sakura Produce', ['Sakura Produce', 'SAKURA PRODUCF'], '99999999-9999-4999-8999-999999999999', 3, 'v1', 'invoice_intake', false, 'Akane']);
   const n = c.mem.vendor_merges['n:sakura producf'];
@@ -116,61 +129,78 @@ test('今の業者に統合: the shared latest is read, the intake merges, the a
   assert.equal(c._invIn.edits, null);
   assert.match(c.toasts.at(-1)[0], /「SAKURA PRODUCF」を Sakura Produce にまとめました（待っている invoice 3 件をこの業者にしました）/);
   assert.equal(c.M.m, null);
+  // The app records the name the server merged into (renamed meanwhile), and tells the closed months left.
+  const d = app({ api: b => b.action === 'vendor_merge_into' && b.preview ? PV(b) : b.action === 'vendor_merge_into'
+    ? { ...PV(b, { target: { vendor_key: 'v1', display_name: 'Sakura Produce Hawaii' } }), preview: false, merge_id: '99999999-9999-4999-8999-999999999999', recheck: { fixed: 2, failed: 0, left: 0 }, closed_left: 1 } : USAGE() });
+  await d.fn('ivdOpenRow')(D1); await flush(); await d.fn('ivdMerge')(); await flush();
+  assert.equal(d.mem.vendor_merges['n:sakura producf'].to, 'Sakura Produce Hawaii');
+  assert.match(d.toasts.at(-1)[0], /Sakura Produce Hawaii にまとめました.*締めた月の 1 件はそのままです/);
 });
 
-test('今の業者に統合 is not sent when it would merge another vendor, cannot be checked, or the app has the name elsewhere; the latest unread: nothing', async () => {
-  // Another vendor has the chosen vendor's name: the intake would merge it too.
-  let c = app({ api: b => b.action === 'vendor_merge' && b.preview ? { ok: true, matched: 2, target: { vendor_key: 'v1' }, from: [{ vendor_key: 'v9', display_name: 'Sakura Prod.' }], unknown: 3 }
-    : b.action === 'vendor_usage' ? USAGE() : { ok: true } });
+test('今の業者に統合 is not sent when the intake refuses, cannot be checked, or the app has the name elsewhere; the latest unread or closed: nothing', async () => {
+  // The intake refuses: another vendor has the vendor's name / the vendor is gone.
+  let c = app({ api: b => b.action === 'vendor_merge_into' ? { ok: false, why: 'shared', vendors: [{ vendor_key: 'v9', display_name: 'Sakura Prod.' }] } : USAGE() });
   await c.fn('ivdOpenRow')(D1); await flush();
-  assert.match(c.box(), /ほかの業者（Sakura Prod\.）も同じ名前を持っているため、ここではまとめられません/);
-  assert.match(c.box(), /onclick="ivdMerge\(\)"/); assert.match(c.box(), / disabled onclick="ivdMerge\(\)"/);
+  assert.match(c.box(), /ほかの業者（Sakura Prod\.）も「Sakura Produce」という名前を持っているため、ここではまとめられません/);
+  assert.match(c.box(), / disabled onclick="ivdMerge\(\)"/);
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a === 'vendor_merge'), [], 'not sent');
-  // The check failed / the vendor is not found there.
-  c = app({ api: b => b.action === 'vendor_merge' ? { __error: '通信できません' } : USAGE() });
-  await c.fn('ivdOpenRow')(D1); await flush();
-  assert.match(c.box(), /Invoice取込を確かめられませんでした/);
-  c = app({ api: b => b.action === 'vendor_merge' ? { ok: true, matched: 0, target: null, from: [] } : USAGE() });
+  assert.deepEqual(acts(c).filter(a => a === 'vendor_merge_into'), [], 'not sent');
+  c = app({ api: b => b.action === 'vendor_merge_into' ? { ok: false, why: 'gone', vendors: [] } : USAGE() });
   await c.fn('ivdOpenRow')(D1); await flush();
   assert.match(c.box(), /この業者が Invoice取込で見つかりません/);
+  // The printed name has become a vendor's elsewhere: the dialog gives the waiting invoices that vendor instead.
+  c = app({ api: b => b.action === 'vendor_merge_into' ? { ok: false, why: 'owned', vendors: [{ vendor_key: 'v3', display_name: 'Pacific Seafood' }] } : USAGE() });
+  await c.fn('ivdOpenRow')(D1); await flush();
+  assert.deepEqual([c.M.m.mode, c.M.m.owners.map(v => v.vendor_key)], ['owned', ['v3']]);
+  assert.match(c.box(), /この印字名は、もう <b>Pacific Seafood<\/b> の名前です/);
+  // The check failed.
+  c = app({ api: b => b.action === 'vendor_merge_into' ? { __error: '通信できません' } : USAGE() });
+  await c.fn('ivdOpenRow')(D1); await flush();
+  assert.match(c.box(), /Invoice取込を確かめられませんでした/);
+  // Refused when sent (decided on another screen meanwhile): nothing recorded, the dialog follows.
+  c = app({ api: b => b.action === 'vendor_merge_into' && b.preview ? PV(b) : b.action === 'vendor_merge_into' ? { ok: false, why: 'owned', vendors: [{ vendor_key: 'v2', display_name: 'Sakura Farms LLC' }] } : USAGE() });
+  await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
+  assert.deepEqual([c.M.m.mode, Object.keys(c.mem.vendor_merges).length, c.toasts.at(-1)[1]], ['owned', 0, 'warning']);
+  assert.match(c.toasts.at(-1)[0], /まとめていません：この印字名は、ほかの画面でもう業者の名前になりました/);
   // The app's 業者の統合 put the printed name under another vendor already (read with the latest).
   c = app();
   c.onPull = mem => { mem.vendor_merges = { 'n:sakura producf': { to: 'Sakura Farms LLC', name: 'SAKURA PRODUCF', g: 'gx', _at: 5 } }; };
   await c.fn('ivdOpenRow')(D1); await flush();
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge:preview'], 'only the preview was sent');
+  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge_into:preview'], 'only the preview was sent');
   assert.match(c.box(), /「SAKURA PRODUCF」は、業者マスターの「業者の統合」で「Sakura Farms LLC」にまとめてあります/);
   // Closed (or another screen opened) while the latest was read: nothing is sent.
   c = app();
   c.onPull = () => { delete c.dom['ivd-modal']; };
   await c.fn('ivdOpenRow')(D1); await flush();
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge:preview'], 'closed: only the preview was sent');
+  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge_into:preview'], 'closed: only the preview was sent');
   c = app();
   c.dom['modal-overlay'] = { classList: { contains: k => k === 'open' && !c.closedOverlay } };
   c.onPull = () => { c.closedOverlay = true; };   // × pressed: the box stays in the page, the overlay is closed
   await c.fn('ivdOpenRow')(D1); await flush();
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge:preview'], '× pressed: only the preview was sent');
+  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge_into:preview'], '× pressed: only the preview was sent');
   // The latest records could not be read: nothing is sent.
   c = app({ pull: false });
   await c.fn('ivdOpenRow')(D1); await flush();
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge:preview'], 'only the preview was sent');
+  assert.deepEqual(acts(c).filter(a => a.startsWith('vendor_merge')), ['vendor_merge_into:preview'], 'only the preview was sent');
   assert.match(c.toasts.at(-1)[0], /最新の記録を読めませんでした/);
-  // Nothing to merge (the name became the vendor's meanwhile): told, read again.
-  c = app({ api: b => b.action === 'vendor_merge' && b.preview ? { ok: true, matched: 1, target: { vendor_key: 'v1' }, from: [], unknown: 0 }
-    : b.action === 'vendor_merge' ? { ok: true, merge_id: null, matched: 1 } : USAGE() });
-  await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual([c.box(), c.toasts.at(-1)[1], Object.keys(c.mem.vendor_merges).length], [null, 'info', 0]);
+  // No answer (the network, or the server stopped inside): it may be done in the intake — told, everything read again.
+  for (const err of [{ __error: 'つながりません', code: 'network' }, { __error: 'うまくいきませんでした（error）', code: 'error', status: 500 }]) {
+    c = app({ api: b => b.action === 'vendor_merge_into' && b.preview ? PV(b) : b.action === 'vendor_merge_into' ? err : USAGE() });
+    await c.fn('ivdOpenRow')(D1); await flush(); await c.fn('ivdMerge')(); await flush();
+    assert.match(c.toasts.at(-1)[0], /結果が分かりません/, err.code);
+    assert.deepEqual([c.box(), ['review', 'config', 'health', 'list'].filter(k => k in c._invIn.loaded)], [null, []], err.code);
+  }
 });
 
 test('新しい業者として登録: the kind is required; the intake and the app vendor master get it (11A); a card of the same name is used, not doubled', async () => {
   const c = app({ rows: [{ id: D1, version: 2, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }] });
   await c.fn('ivdOpenRow')(D1); await flush();
   assert.deepEqual([c.M.m.mode, c.M.m.name, c.M.m.kind], ['register', 'ALOHA FISH MKT', ''], 'no similar vendor: register first, the printed name as it is');
-  assert.ok(!c.calls.some(b => b.action === 'vendor_merge'), 'no merge preview for a registration');
+  assert.ok(!c.calls.some(b => b.action === 'vendor_merge_into'), 'no merge preview for a registration');
   assert.match(c.box(), /食材か食材以外かを選んでください/);
   await c.fn('ivdRegister')(); await flush();
   assert.ok(!c.calls.some(b => b.action === 'vendor_register'), 'not sent without the kind');
@@ -211,11 +241,11 @@ test('新しい業者として登録 is refused for a name a vendor has (here or
   await c.fn('ivdRegister')(); await flush();
   assert.ok(!c.calls.some(b => b.action === 'vendor_register'));
   c.fn('ivdUseTaken')('v3'); await flush();
-  assert.deepEqual([c.M.m.mode, c.M.m.pick, c.calls.filter(b => b.action === 'vendor_merge').at(-1).to], ['merge', 'v3', 'Pacific Seafood']);
+  assert.deepEqual([c.M.m.mode, c.M.m.pick, c.calls.filter(b => b.action === 'vendor_merge_into').at(-1).vendor_key], ['merge', 'v3', 'v3']);
   // The intake refuses it (another screen registered it meanwhile): the vendor is named, the vendors are read again.
   const d = app({ rows: [{ id: D1, version: 2, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }],
-    api: b => b.action === 'vendor_register' ? { ok: false, taken: { why: 'name', vendor_key: 'v8', display_name: 'Aloha Fish Market', name: 'ALOHA FISH MKT' } }
-      : b.action === 'config' ? { vendors: VENDORS().concat([{ vendor_key: 'v8', display_name: 'Aloha Fish Market', aliases: ['ALOHA FISH MKT'] }]) } : USAGE() });
+    config: n => ({ vendors: n === 1 ? VENDORS() : VENDORS().concat([{ vendor_key: 'v8', display_name: 'Aloha Fish Market', aliases: ['ALOHA FISH MKT'] }]) }),
+    api: b => b.action === 'vendor_register' ? { ok: false, taken: { why: 'name', vendor_key: 'v8', display_name: 'Aloha Fish Market', name: 'ALOHA FISH MKT' } } : USAGE() });
   await d.fn('ivdOpenRow')(D1); await flush();
   d.fn('ivdKind')('food'); await d.fn('ivdRegister')(); await flush();
   assert.deepEqual(acts(d).slice(-2), ['vendor_register', 'config']);
@@ -224,7 +254,7 @@ test('新しい業者として登録 is refused for a name a vendor has (here or
   assert.equal(d.mem.m_vendors.length, 1, 'no card');
   // The card's id is a vendor of the intake under another name already: that vendor is named.
   const k = app({ cards: [CARD('v3', 'Aloha Fish Market', { kind: 'food' })], rows: [{ id: D1, version: 2, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }],
-    api: b => b.action === 'vendor_register' ? { ok: false, taken: { why: 'key', vendor_key: 'v3', display_name: 'Pacific Seafood', name: 'Pacific Seafood' } } : b.action === 'config' ? { vendors: VENDORS() } : USAGE() });
+    api: b => b.action === 'vendor_register' ? { ok: false, taken: { why: 'key', vendor_key: 'v3', display_name: 'Pacific Seafood', name: 'Pacific Seafood' } } : USAGE() });
   await k.fn('ivdOpenRow')(D1); await flush();
   k.fn('ivdNameIn')('Aloha Fish Market'); k.fn('ivdKind')('food'); await k.fn('ivdRegister')(); await flush();
   assert.equal(k.calls.find(b => b.action === 'vendor_register').vendor.vendor_key, 'v3', 'the card’s id');
@@ -239,7 +269,7 @@ test('a name one vendor has now: the waiting invoices get it (vendor_apply); two
   assert.match(c.box(), /この印字名は、もう <b>Pacific Seafood<\/b> の名前です/);
   assert.ok(!/ivdMode\(/.test(c.box()), 'neither merge nor register is offered (the name would join two vendors)');
   await c.fn('ivdApply')(); await flush();
-  assert.deepEqual(c.calls.find(b => b.action === 'vendor_apply'), { action: 'vendor_apply', name: 'Pac Seafood', doc_id: D1 });
+  assert.deepEqual(c.calls.find(b => b.action === 'vendor_apply'), { action: 'vendor_apply', name: 'Pac Seafood', doc_id: D1, vendor_key: 'v3' }, 'with the vendor the dialog showed');
   assert.match(c.toasts.at(-1)[0], /待っている invoice 1 件を Pacific Seafood にしました/);
   // Two vendors have it.
   const d = app({ rows: [{ id: D1, version: 4, vendor_key: null, vendor_raw: 'shared name', reasons: [{ code: 'vendor_unknown' }] }] });
@@ -247,8 +277,8 @@ test('a name one vendor has now: the waiting invoices get it (vendor_apply); two
   assert.match(d.box(), /2 つ以上の業者（Pacific Seafood・Kona Paper）が持っているため/);
   assert.ok(!/ivdApply/.test(d.box()));
   d.fn('ivdOnlyPick')('v4'); await d.fn('ivdOnly')(); await flush();
-  assert.deepEqual(d.calls.find(b => b.action === 'edit'), { action: 'edit', doc_id: D1, version: 4, header: { vendor_key: 'v4' }, lines: [], reason: '業者を選んだ：Kona Paper', adjustment_ack: false, ack: [] });
-  assert.ok(!d.calls.some(b => b.action === 'vendor_merge' || b.action === 'vendor_apply' || b.action === 'vendor_register'));
+  assert.deepEqual(d.calls.find(b => b.action === 'edit'), { action: 'edit', doc_id: D1, version: 4, header: { vendor_key: 'v4' }, lines: [], reason: '業者を選んだ：Kona Paper', adjustment_ack: false, ack: [], learn: false });
+  assert.ok(!d.calls.some(b => b.action === 'vendor_merge_into' || b.action === 'vendor_apply' || b.action === 'vendor_register'));
   // The vendors with the name changed meanwhile: nothing is changed, it is told.
   const z = app({ rows: [{ id: D1, version: 4, vendor_key: null, vendor_raw: 'Pac Seafood', reasons: [{ code: 'vendor_unknown' }] }], api: b => b.action === 'vendor_apply' ? { ok: false, vendors: [] } : USAGE() });
   await z.fn('ivdOpenRow')(D1); await flush(); await z.fn('ivdApply')(); await flush();
@@ -263,7 +293,7 @@ test('no printed name: the invoice gets the vendor chosen (no name is remembered
   c.fn('ivdOther')('v2'); await flush();
   assert.match(c.box(), /この invoice の業者を <b>Sakura Farms LLC<\/b> にします（印字された名前が無いので、名前は覚えません）/);
   await c.fn('ivdMerge')(); await flush();
-  assert.deepEqual(acts(c).filter(a => a !== 'vendor_usage'), ['edit'], 'no merge, no preview');
+  assert.deepEqual(acts(c).filter(a => a !== 'vendor_usage' && a !== 'config'), ['edit'], 'no merge, no preview');
   assert.deepEqual(c.calls.find(b => b.action === 'edit').header, { vendor_key: 'v2' });
   const d = app({ rows: [{ id: D1, version: 6, vendor_key: null, vendor_raw: '', reasons: [{ code: 'vendor_unknown' }] }] });
   await d.fn('ivdOpenRow')(D1); await flush();
@@ -282,15 +312,15 @@ test('who may, one at a time, the open invoice’s unsaved values, an older serv
   for (const role of ['office_crew', 'gm', 'ceo']) { const c = app({ role }); await c.fn('ivdOpenRow')(D1); await flush(); assert.ok(c.box(), role); }
   // While one is being saved, another is not opened.
   let release; const gate = new Promise(r => { release = r; });
-  const c = app({ api: async b => { if (b.action === 'vendor_merge' && !b.preview) await gate; return b.action === 'vendor_merge' && b.preview ? { ok: true, matched: 1, target: { vendor_key: 'v1' }, from: [], unknown: 3 }
-    : b.action === 'vendor_merge' ? { ok: true, merge_id: '99999999-9999-4999-8999-999999999999', target: { vendor_key: 'v1' }, from: [], recheck: { fixed: 3 } } : USAGE(); } });
+  const c = app({ api: async b => { if (b.action === 'vendor_merge_into' && !b.preview) await gate; return b.action === 'vendor_merge_into' && b.preview ? PV(b)
+    : b.action === 'vendor_merge_into' ? { ...PV(b), preview: false, merge_id: '99999999-9999-4999-8999-999999999999', recheck: { fixed: 3 } } : USAGE(); } });
   await c.fn('ivdOpenRow')(D1); await flush();
   const p = c.fn('ivdMerge')(); await flush();
   assert.match(c.box(), /決めています…/);
   await c.fn('ivdOpenRow')(D2); await flush();
   assert.match(c.toasts.at(-1)[0], /前の業者を決めています/);
   await c.fn('ivdMerge')(); await flush();
-  assert.equal(c.calls.filter(b => b.action === 'vendor_merge' && !b.preview).length, 1, 'pressed twice: sent once');
+  assert.equal(c.calls.filter(b => b.action === 'vendor_merge_into' && !b.preview).length, 1, 'pressed twice: sent once');
   release(); await p; await flush();
   // The open invoice has unsaved values: asked first.
   const d = app();
@@ -312,6 +342,47 @@ test('who may, one at a time, the open invoice’s unsaved values, an older serv
   assert.ok(!/<img/.test(x.box()) && /&lt;img src=x onerror=alert\(1\)&gt;/.test(x.box()));
   x.fn('ivdKind')('food'); await x.fn('ivdRegister')(); await flush();
   assert.ok(x.toasts.length && x.toasts.every(([m]) => !/<img/.test(m)), 'toasts too');
+});
+
+test('a vendor name is text everywhere (also one registered from a printed name); the vendor applied is the server’s; a printed name merged in the app is not registered elsewhere', async () => {
+  const bad = '<img src=x onerror=alert(1)>';
+  const vendors = VENDORS().concat([{ vendor_key: 'v9', display_name: bad, aliases: ['EVIL CO'], food_kind: 'food' }]);
+  const c = app({ vendors, rows: [{ id: D1, version: 1, vendor_key: null, vendor_raw: 'EVIL CO', reasons: [{ code: 'vendor_unknown' }] }],
+    api: b => b.action === 'vendor_apply' ? { ok: true, vendor: { vendor_key: 'v9', display_name: bad }, doc_ids: [D1], recheck: { fixed: 1 } } : USAGE() });
+  await c.fn('ivdOpenRow')(D1); await flush();
+  assert.equal(c.M.m.mode, 'owned');
+  assert.ok(!/<img/.test(c.box()), c.box().match(/ivdApply\(\)">[^<]*/));
+  assert.match(c.box(), /onclick="ivdApply\(\)">&lt;img src=x onerror=alert\(1\)&gt; にする</);
+  await c.fn('ivdApply')(); await flush();
+  assert.ok(c.toasts.length && c.toasts.every(([m]) => !/<img/.test(m)));
+  // The toast names the vendor the server applied.
+  const d = app({ rows: [{ id: D1, version: 1, vendor_key: null, vendor_raw: 'PAC SEAFOOD', reasons: [{ code: 'vendor_unknown' }] }],
+    api: b => b.action === 'vendor_apply' ? { ok: true, vendor: { vendor_key: 'v3', display_name: 'Pacific Seafood Co' }, doc_ids: [D1], recheck: { fixed: 1 } } : USAGE() });
+  await d.fn('ivdOpenRow')(D1); await flush(); await d.fn('ivdApply')(); await flush();
+  assert.match(d.toasts.at(-1)[0], /待っている invoice 1 件を Pacific Seafood Co にしました/);
+  // The printed name is merged into another vendor in the app: registering it under a new name is refused.
+  const e = app({ merges: { 'n:aloha fish mkt': { to: 'Aloha Fish', name: 'ALOHA FISH MKT', g: 'g1', _at: 1 } },
+    rows: [{ id: D1, version: 1, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }] });
+  await e.fn('ivdOpenRow')(D1); await flush();
+  e.fn('ivdMode')('register'); e.fn('ivdNameIn')('Aloha Fish Market'); e.fn('ivdKind')('food'); e.fn('ivdRender')();
+  assert.match(e.box(), /印字された「ALOHA FISH MKT」は、業者マスターの「業者の統合」で「Aloha Fish」にまとめてあります/);
+  await e.fn('ivdRegister')(); await flush();
+  assert.ok(!e.calls.some(b => b.action === 'vendor_register'));
+  // Refused as taken by the vendor that has the printed name now: 「統合する」 gives the waiting invoices that vendor (no empty merge).
+  const f = app({ rows: [{ id: D1, version: 1, vendor_key: null, vendor_raw: 'ALOHA FISH MKT', reasons: [{ code: 'vendor_unknown' }] }],
+    config: n => ({ vendors: n === 1 ? VENDORS() : VENDORS().concat([{ vendor_key: 'v8', display_name: 'Aloha Fish Market', aliases: ['ALOHA FISH MKT'] }]) }),
+    api: b => b.action === 'vendor_register' ? { ok: false, taken: { why: 'name', vendor_key: 'v8', display_name: 'Aloha Fish Market', name: 'ALOHA FISH MKT' } } : USAGE() });
+  await f.fn('ivdOpenRow')(D1); await flush(); f.fn('ivdKind')('food'); await f.fn('ivdRegister')(); await flush();
+  f.fn('ivdUseTaken')('v8'); await flush();
+  assert.deepEqual([f.M.m.mode, f.M.m.owners.map(v => v.vendor_key)], ['owned', ['v8']]);
+  assert.ok(!f.calls.some(b => b.action === 'vendor_merge_into'), 'no merge');
+  // Pressed again while the list is read: only the last one opens.
+  let release; const gate = new Promise(r => { release = r; });
+  const g = app({ config: async n => { if (n === 1) await gate; return { vendors: VENDORS() }; } });
+  const p1 = g.fn('ivdOpenRow')(D1); await flush();
+  await g.fn('ivdOpenRow')(D2); await flush();
+  release(); await p1; await flush();
+  assert.equal(g.M.m.docId, D2);
 });
 
 test('the review list and the open invoice offer 業者を決める where the vendor is not in the master; the silent learning is gone; v1089', () => {

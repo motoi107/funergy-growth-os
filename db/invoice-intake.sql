@@ -2922,8 +2922,61 @@ begin
   'doc_ids', to_jsonb(v_ids), 'closed_left', v_left, 'months', to_jsonb(array(select distinct m from unnest(v_months) m where m is not null order by 1)));
 end $$;
 
+-- 今の業者に統合 from an invoice (業者を決める): the printed name (p.name) joins the vendor p.vendor_key through 業者の統合
+-- (invoice_vendor_merge: its record can be taken back from the vendor master). Under the lock of the vendor writes it is first
+-- checked that nothing else is merged: the vendor is called by its name as it is now (a screen that read an older name never
+-- renames it back), no other vendor has that name, and the printed name is no vendor's yet (if it is, the waiting invoices are
+-- given that vendor instead: vendor_apply). Refused: { ok:false, why, vendors }. The invoice on screen (p.doc_id, if it is
+-- waiting) comes first among the invoices to work out again, also in a closed month; the waiting ones with the name in closed
+-- months are counted (closed_left) and left as they are. p.preview: nothing is changed.
+create function public.invoice_vendor_merge_into(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare actor uuid := nullif(p->>'actor','')::uuid; v_key text := p->>'vendor_key'; v_name text := btrim(coalesce(p->>'name', ''));
+ v_prev boolean := coalesce((p->>'preview')::boolean, false); v_doc uuid; v_k text; v_tk text; tgt public.invoice_vendor_rules;
+ v_closed text := public.invoice_setting('rules')->>'closed_through'; r jsonb; v_ids jsonb; v_left int := 0; v_here boolean := false; v_extra int := 0;
+begin
+ perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);
+ if coalesce(v_key, '') !~ '^[A-Za-z0-9_.:@-]{1,80}$' or length(v_name) = 0 or length(v_name) > 200 then raise exception 'bad_value'; end if;
+ if coalesce(p->>'doc_id', '') <> '' then
+  if p->>'doc_id' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then raise exception 'bad_value'; end if;
+  v_doc := (p->>'doc_id')::uuid;
+ end if;
+ v_k := nullif(btrim(regexp_replace(lower(normalize(v_name, NFKC)), '\s+', ' ', 'g')), '');
+ perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
+ select * into tgt from public.invoice_vendor_rules where vendor_key=v_key;
+ if tgt.vendor_key is null or tgt.merged_into is not null then
+  return jsonb_build_object('ok', false, 'why', 'gone', 'vendors', '[]'::jsonb);
+ end if;
+ if exists(select 1 from public.invoice_vendor_rules x, unnest(array[x.display_name] || x.aliases) a(n) where x.merged_into is null and nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\s+', ' ', 'g')), '') = v_k) then
+  return jsonb_build_object('ok', false, 'why', 'owned', 'vendors', (select coalesce(jsonb_agg(jsonb_build_object('vendor_key', x.vendor_key, 'display_name', x.display_name)
+   order by x.display_name, x.vendor_key), '[]') from public.invoice_vendor_rules x where x.merged_into is null
+    and exists(select 1 from unnest(array[x.display_name] || x.aliases) a(n) where nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\s+', ' ', 'g')), '') = v_k)));
+ end if;
+ v_tk := nullif(btrim(regexp_replace(lower(normalize(tgt.display_name, NFKC)), '\s+', ' ', 'g')), '');
+ if exists(select 1 from public.invoice_vendor_rules x, unnest(array[x.display_name] || x.aliases) a(n) where x.merged_into is null and x.vendor_key <> tgt.vendor_key and nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\s+', ' ', 'g')), '') = v_tk) then
+  return jsonb_build_object('ok', false, 'why', 'shared', 'vendors', (select coalesce(jsonb_agg(jsonb_build_object('vendor_key', x.vendor_key, 'display_name', x.display_name)
+   order by x.display_name, x.vendor_key), '[]') from public.invoice_vendor_rules x where x.merged_into is null and x.vendor_key <> tgt.vendor_key
+    and exists(select 1 from unnest(array[x.display_name] || x.aliases) a(n) where nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\s+', ' ', 'g')), '') = v_tk)));
+ end if;
+ select count(*) into v_left from public.invoice_docs d join public.invoice_files f on f.id=d.file_id
+ where d.vendor_key is null and d.status='review' and d.id is distinct from v_doc and nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\s+', ' ', 'g')), '') = v_k and v_closed is not null
+  and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') <= v_closed;
+ v_here := v_doc is not null and exists(select 1 from public.invoice_docs d where d.id=v_doc and d.vendor_key is null and d.status='review');
+ -- The one on screen is given the vendor even when the merge would not reach it (a closed month): counted on top.
+ if v_here and not exists(select 1 from public.invoice_docs d join public.invoice_files f on f.id=d.file_id where d.id=v_doc and nullif(btrim(regexp_replace(lower(normalize(coalesce(d.vendor_raw, ''), NFKC)), '\s+', ' ', 'g')), '') = v_k
+    and not (v_closed is not null and to_char(coalesce(d.invoice_date, d.effective_date, (f.ingested_at at time zone 'Pacific/Honolulu')::date), 'YYYY-MM') <= v_closed)) then v_extra := 1; end if;
+ r := public.invoice_vendor_merge(jsonb_build_object('actor', p->>'actor', 'to', tgt.display_name, 'names', jsonb_build_array(tgt.display_name, v_name),
+  'preview', v_prev, 'group_id', p->'group_id'));
+ if v_prev then return r || jsonb_build_object('ok', true, 'closed_left', v_left, 'here', v_here, 'waiting', coalesce((r->>'unknown')::int, 0) + v_extra); end if;
+ v_ids := coalesce(r->'review_doc_ids', '[]'::jsonb);
+ if v_here then
+  v_ids := jsonb_build_array(v_doc::text) || coalesce((select jsonb_agg(e) from jsonb_array_elements(v_ids) e where e #>> '{}' <> v_doc::text), '[]'::jsonb);
+ end if;
+ return r || jsonb_build_object('ok', true, 'review_doc_ids', v_ids, 'closed_left', v_left, 'here', v_here, 'waiting', coalesce((r->>'unknown')::int, 0) + v_extra);
+end $$;
+
 do $$ declare f text; begin
- foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)'] loop
+ foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)','invoice_vendor_merge_into(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

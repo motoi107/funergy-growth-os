@@ -1796,7 +1796,8 @@ function createHandler(deps) {
       lines_sum_cents: h.lines_sum_cents,
       adjustment_ack: !!b.adjustment_ack,
       ack: Array.isArray(b.ack) ? b.ack.filter((x) => typeof x === "string") : [],
-      learn_alias: !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw))
+      // b.learn === false: the vendor of this invoice only (業者を決める: no printed name, or a name two vendors have).
+      learn_alias: b.learn !== false && !!(header.vendor_key && !g.doc.vendor_key && aliasKey(g.doc.vendor_raw))
     });
     if (g.doc.status === "posted" && ctx.mode.rename && saved) {
       saved.rename = await renameNow(actor, g.doc.file_id, ctx);
@@ -1955,11 +1956,13 @@ function createHandler(deps) {
     }
     return { ...saved, plan };
   }
-  const VENDOR_RECHECK = 60;
+  const VENDOR_RECHECK = Math.max(1, Number(deps.vendorRecheck) || 60);
   const strList = (x) => Array.isArray(x) ? x.filter((s) => typeof s === "string").map((s) => s.trim()).filter(Boolean) : [];
   async function recheckVendorDocs(actor, ids2, target, reason) {
-    const out = { fixed: 0, failed: 0, left: Math.max(0, ids2.length - VENDOR_RECHECK) };
-    for (const id of ids2.slice(0, VENDOR_RECHECK)) {
+    const out = { fixed: 0, failed: 0, left: 0 };
+    let i = 0;
+    for (; i < ids2.length && out.fixed < VENDOR_RECHECK && i < VENDOR_RECHECK * 2; i++) {
+      const id = ids2[i];
       try {
         const g = await db.rpc("invoice_get", { actor, doc_id: id });
         if (!g || !g.doc || g.doc.status !== "review") continue;
@@ -1970,6 +1973,7 @@ function createHandler(deps) {
         console.error("invoice-intake vendor recheck", safeErr(e));
       }
     }
+    out.left = ids2.length - i;
     return out;
   }
   async function vendorMerge(actor, b) {
@@ -2006,13 +2010,28 @@ function createHandler(deps) {
     return r;
   }
   async function vendorApply(actor, b) {
-    if (typeof b.name !== "string" || !b.name.trim()) throw new Error("bad_value");
+    if (typeof b.name !== "string" || !b.name.trim() || b.vendor_key != null && typeof b.vendor_key !== "string") throw new Error("bad_value");
     const w = await db.rpc("invoice_vendor_waiting", { actor, name: b.name, doc_id: docIdOf(b.doc_id) });
-    if ((w.vendors || []).length !== 1) return { ok: false, vendors: w.vendors || [] };
+    if ((w.vendors || []).length !== 1 || b.vendor_key && w.vendors[0].vendor_key !== b.vendor_key) return { ok: false, vendors: w.vendors || [] };
     const vk = w.vendors[0].vendor_key;
     const r = { ok: true, vendor: w.vendors[0], doc_ids: w.doc_ids || [], closed_left: w.closed_left || 0, months: w.months || [] };
     r.recheck = await recheckVendorDocs(actor, r.doc_ids, vk, "\u696D\u8005\u3092\u6C7A\u3081\u305F\uFF1A" + w.vendors[0].display_name);
     r.summary = (await publishSummary(null, { months: r.months, doc_ids: r.doc_ids })).ok;
+    return r;
+  }
+  async function vendorMergeInto(actor, b) {
+    if (typeof b.vendor_key !== "string" || typeof b.name !== "string" || !b.name.trim() || b.group_id != null && typeof b.group_id !== "string") throw new Error("bad_value");
+    const r = await db.rpc("invoice_vendor_merge_into", {
+      actor,
+      vendor_key: b.vendor_key,
+      name: b.name,
+      doc_id: docIdOf(b.doc_id),
+      group_id: typeof b.group_id === "string" ? b.group_id : null,
+      preview: b.preview === true
+    });
+    if (b.preview === true || !r || !r.ok || !r.merge_id) return r;
+    r.recheck = await recheckVendorDocs(actor, r.review_doc_ids || [], r.target.vendor_key, "\u696D\u8005\u306E\u7D71\u5408\uFF1A" + r.target.display_name);
+    r.summary = (await publishSummary(null, { months: r.months || [], doc_ids: r.review_doc_ids || [] })).ok;
     return r;
   }
   async function vendorUnmerge(actor, b) {
@@ -2217,6 +2236,7 @@ function createHandler(deps) {
     // 新しい業者を決める (Moto 2026-10-16・UI案52 ③): an invoice's printed name as a new vendor, or as the vendor that has it now.
     vendor_register: vendorRegister,
     vendor_apply: vendorApply,
+    vendor_merge_into: vendorMergeInto,
     map_seed: (a, b) => db.rpc("invoice_map_seed", { actor: a, store_id: b.store_id || null, apply: b.apply === true, only_ext: b.only_ext !== false })
   };
   const ERR = {

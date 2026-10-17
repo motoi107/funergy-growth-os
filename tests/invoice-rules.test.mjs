@@ -414,10 +414,10 @@ test('each migration changes only what it says', async () => {
     "  execute format('grant execute on function public.%s to service_role', f);",
     ' end loop;',
     'end $$;'].join('\n'), 'only the merge mark, the merge record and the grants besides functions');
-  // 新しい業者を決める (20261024090000, Moto 2026-10-16・UI案52 ③): two new functions (service role only); nothing replaced, no table,
+  // 新しい業者を決める (20261024090000, Moto 2026-10-16・UI案52 ③): three new functions (service role only); nothing replaced, no table,
   // row or setting changed.
   const vr = read('supabase/migrations/20261024090000_invoice_vendor_register.sql');
-  assert.deepEqual([...vr.matchAll(fn)].map(m => m[1]), ['invoice_vendor_register', 'invoice_vendor_waiting']);
+  assert.deepEqual([...vr.matchAll(fn)].map(m => m[1]), ['invoice_vendor_register', 'invoice_vendor_waiting', 'invoice_vendor_merge_into']);
   assert.ok([...vr.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
   assert.equal(vr.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
     'do $$ begin',
@@ -426,7 +426,7 @@ test('each migration changes only what it says', async () => {
     ' end if;',
     'end $$;',
     'do $$ declare f text; begin',
-    " foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)'] loop",
+    " foreach f in array array['invoice_vendor_register(jsonb)','invoice_vendor_waiting(jsonb)','invoice_vendor_merge_into(jsonb)'] loop",
     "  execute format('revoke all on function public.%s from public, anon, authenticated', f);",
     "  execute format('grant execute on function public.%s to service_role', f);",
     ' end loop;',

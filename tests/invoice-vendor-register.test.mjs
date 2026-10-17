@@ -75,7 +75,7 @@ function doc(no, date, lines, { total, tax = '0.00', ship = 'LaLa Izakaya, 100 T
     lines: lines.map(([code, name, qty, price, amount, unit = 'CS', pack = null]) => ({ page: 1, item_code: code, description: name, qty, unit, pack, unit_price: price, amount })) };
 }
 
-async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the production upgrade path)
+async function setup(sql = SQL, opts = {}) {   // opts.vendorRecheck: how many invoices one call works out again; opts.failGet: ids invoice_get fails on
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key);
     create table public.manager_auth(user_id uuid primary key, role text, emp_id text); grant select on public.manager_auth to service_role;
@@ -107,7 +107,9 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
      ('inv_count_F06_2026-09','{"I-1":3}'),('fc_monthly_F06','{"2026-09":{"beginInv":1000,"endInv":1234.56}}'),
      ('spl_invoices_F06','[{"id":"inv123","storeId":"F06","vendor":"VendorA","docDate":"2026/10/07","total":122.4,"driveFileId":"app-drive-1"}]');`);
   await pg.exec('set role service_role');
-  const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+  const failGet = opts.failGet || new Set();
+  const db = { async rpc(name, p) { if (name === 'invoice_get' && p && failGet.has(p.doc_id)) throw new Error('synthetic_failure');
+    const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const drive = new FakeDrive();
   drive.folder('R6', 'LaLa', 'INV'); drive.folder('U6', '00_Upload', 'R6'); drive.folder('RK', 'Kaimuki', 'INV'); drive.folder('UK', '00_Upload', 'RK');
   const fixtures = new Map(); let aiCalls = 0; let aiFail = 0; let aiDown = null;
@@ -130,7 +132,7 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
     throw new Error('unexpected network call ' + url);
   };
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon-key' })[k];
-  const h = createHandler({ env, fetch, db, drive, ai, mailer, now: () => Date.parse('2026-10-06T20:00:00Z') });
+  const h = createHandler({ env, fetch, db, drive, ai, mailer, now: () => Date.parse('2026-10-06T20:00:00Z'), vendorRecheck: opts.vendorRecheck });
   const call = async (body, headers = {}) => { const r = await h(new Request('https://fn.test', { method: 'POST', headers, body: JSON.stringify(body) })); return { status: r.status, body: await r.json() }; };
   const worker = () => call({ action: 'worker' }, { 'x-invoice-worker-key': WORKER_KEY });
   const api = (tok, body) => call(body, tok ? { authorization: 'Bearer ' + tok } : {});
@@ -179,12 +181,12 @@ test('新しい業者を決める: a printed name no vendor has becomes a new ve
   for (const k of ['N-3', 'N-5']) { const d = await one(E, D[k].id); assert.deepEqual([d.vendor_key, d.version], [null, D[k].version], k + ' stays'); }
   assert.equal((await E.q(`select count(*)::int n from invoice_events where kind='vendor_registered' and doc_id=$1`, [D['N-2'].id]))[0].n, 1);
   assert.equal((await E.q(`select count(*)::int n from invoice_events where kind='vendor_alias_learned'`))[0].n, 0, 'nothing more is learned');
+  // The month's summary has the invoices under the new vendor (written by the registration itself).
+  const sd = (await E.q(`select value from app_state where key='invoice_purchase_2026-10'`))[0].value.stores.F06.docs;
+  assert.equal(sd.find(x => x.id === D['N-1'].id).vk, 'v900');
   // A later invoice printed with the name is the vendor by itself.
   const L = await read(E, [['N-6', '5006', '2026-10-05', 'Aloha Fish MKT']]);
   assert.deepEqual([L['N-6'].vendor_key, codes(L['N-6']).includes('vendor_unknown')], ['v900', false]);
-  // The month's summary has the invoices under the new vendor.
-  const sd = (await E.q(`select value from app_state where key='invoice_purchase_2026-10'`))[0].value.stores.F06.docs;
-  assert.equal(sd.find(x => x.id === D['N-1'].id).vk, 'v900');
   await E.pg.close();
 });
 
@@ -262,6 +264,10 @@ test('新しい業者を決める: vendor_apply gives the waiting invoices the v
   assert.deepEqual([r.body.ok, r.body.vendor.vendor_key, r.body.doc_ids, r.body.closed_left, r.body.recheck.fixed], [true, 'v2', [D['A-3'].id, D['A-1'].id, D['A-2'].id], 0, 3],
     'the one on screen is given the vendor even in a closed month (a person looked at it)');
   for (const k of ['A-1', 'A-2', 'A-3']) assert.equal((await one(E, D[k].id)).vendor_key, 'v2', k);
+  // The one on screen is given it whatever its printed name reads like (the person looked at it and pressed).
+  const T = await read(E, [['A-9', '8009', '2026-10-05', 'VENDORB HAWAI']]);
+  const t9 = await E.api('tok-office', { action: 'vendor_apply', name: 'VENDORB HAWAII', doc_id: T['A-9'].id });
+  assert.deepEqual([t9.body.doc_ids, (await one(E, T['A-9'].id)).vendor_key], [[T['A-9'].id], 'v2']);
   // Without the one on screen, a closed month's invoice waits.
   await E.q(`update invoice_docs set vendor_key=null, vendor_name=null where id=$1`, [D['A-3'].id]);
   const r2 = await E.api('tok-office', { action: 'vendor_apply', name: 'VENDORB HAWAII' });
@@ -279,21 +285,87 @@ test('新しい業者を決める: vendor_apply gives the waiting invoices the v
   await E.pg.close();
 });
 
-// 今の業者に統合 from an invoice is 業者の統合 itself (vendor_merge with the vendor's name and the printed one): its record can be
-// taken back from the vendor master. Here only what the invoice screen relies on: the printed name joins the vendor, every waiting
-// invoice with it gets the vendor, and nothing else is merged when no other vendor has either name.
-test('新しい業者を決める: merging the printed name into a vendor (業者の統合) — the waiting invoices get it; taken back exactly', async () => {
+// 今の業者に統合 from an invoice is 業者の統合 itself (vendor_merge_into checks first, under the same lock, that nothing else is
+// merged, then calls invoice_vendor_merge): its record can be taken back from the vendor master.
+const into = (E, tok, body) => E.api(tok, { action: 'vendor_merge_into', ...body });
+test('新しい業者を決める: merging the printed name into a vendor — the waiting invoices get it, the one on screen too; taken back exactly', async () => {
   const E = await setup();
-  const D = await read(E, [['M-1', '9001', '2026-10-02', 'VENDR A'], ['M-2', '9002', '2026-10-03', 'VENDR A'], ['M-3', '9003', '2026-10-03', 'VendorB']]);
-  const pv = await E.api('tok-office', { action: 'vendor_merge', to: 'VendorA', names: ['VendorA', 'VENDR A'], preview: true });
-  assert.deepEqual([pv.body.matched, pv.body.target.vendor_key, pv.body.from, pv.body.unknown, pv.body.added_aliases], [1, 'v1', [], 2, ['VENDR A']]);
-  const m = await E.api('tok-office', { action: 'vendor_merge', to: 'VendorA', names: ['VendorA', 'VENDR A'], group_id: 'vm-inv-1' });
-  assert.ok(m.body.merge_id); assert.deepEqual(m.body.recheck, { fixed: 2, failed: 0, left: 0 }); assert.deepEqual(m.body.from, []);
-  assert.deepEqual([(await one(E, D['M-1'].id)).vendor_key, (await one(E, D['M-2'].id)).vendor_key, (await one(E, D['M-3'].id)).vendor_key], ['v1', 'v1', 'v2']);
+  const D = await read(E, [['M-1', '9001', '2026-10-02', 'VENDR A'], ['M-2', '9002', '2026-10-03', 'Vendr  A'], ['M-3', '9003', '2026-10-03', 'VendorB'],
+    ['M-4', '9004', '2026-08-20', 'VENDR A'], ['M-5', '9005', '2026-08-21', 'VENDR A']]);
+  const before = await snap(E);
+  // Preview (nothing changes): the waiting ones of open months and the one on screen (M-4, a closed month) on top.
+  const pv = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['M-4'].id, preview: true });
+  assert.equal(pv.status, 200, JSON.stringify(pv.body));
+  assert.deepEqual([pv.body.ok, pv.body.matched, pv.body.target.vendor_key, pv.body.target.display_name, pv.body.from, pv.body.unknown, pv.body.waiting, pv.body.closed_left, pv.body.here, pv.body.added_aliases],
+    [true, 1, 'v1', 'VendorA', [], 2, 3, 1, true, ['VENDR A']]);
+  assert.deepEqual(await snap(E), before, 'a preview changes nothing');
+  const m = await into(E, 'tok-crew', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['M-4'].id, group_id: 'vm-inv-1' });
+  assert.equal(m.status, 200, JSON.stringify(m.body));
+  assert.ok(m.body.merge_id); assert.deepEqual(m.body.from, []);
+  assert.deepEqual(m.body.review_doc_ids, [D['M-4'].id, D['M-1'].id, D['M-2'].id], 'the one on screen first');
+  assert.deepEqual([m.body.recheck, m.body.closed_left, m.body.waiting, m.body.summary], [{ fixed: 3, failed: 0, left: 0 }, 1, 3, true]);
+  const vk = async k => (await one(E, D[k].id)).vendor_key;
+  assert.deepEqual([await vk('M-1'), await vk('M-2'), await vk('M-3'), await vk('M-4'), await vk('M-5')], ['v1', 'v1', 'v2', 'v1', null], 'a closed month stays, but not the one on screen');
   assert.deepEqual((await rule(E, 'v1')).aliases, ['VENDOR A INC.', 'VENDR A']);
+  assert.equal((await E.q(`select group_id from invoice_vendor_merges where id=$1`, [m.body.merge_id]))[0].group_id, 'vm-inv-1');
   const u = await E.api('tok-office', { action: 'vendor_unmerge', merge_id: m.body.merge_id });
   assert.equal(u.status, 200, JSON.stringify(u.body));
   assert.deepEqual((await rule(E, 'v1')).aliases, ['VENDOR A INC.'], 'the name is taken back');
+  await E.pg.close();
+});
+
+test('新しい業者を決める: merging never merges another vendor and never renames the vendor; who may; bad values', async () => {
+  const E = await setup();
+  const D = await read(E, [['X-1', '9101', '2026-10-02', 'VENDR A'], ['X-2', '9102', '2026-10-02', 'VENDOR A INC.'.toLowerCase() + ' x']]);
+  // The vendor was renamed on another screen (its old name kept as one of its names): a screen that read the old name merges into
+  // it as it is called now, and does not rename it back.
+  await E.q(`update invoice_vendor_rules set display_name='VendorA Hawaii', aliases=aliases||'{"VendorA"}' where vendor_key='v1'`);
+  const r = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDR A', doc_id: D['X-1'].id });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.target.display_name, r.body.target.before, (await rule(E, 'v1')).display_name], ['VendorA Hawaii', 'VendorA Hawaii', 'VendorA Hawaii']);
+  // Another vendor has the vendor's name: refused, nothing changes (the vendor master's 業者の統合 is the place for that).
+  await E.q(`insert into invoice_vendor_rules(vendor_key,display_name,aliases,food_kind,auto_post) values('v8','VendorA Hawaii Co','{"VENDORA HAWAII"}','food',false)`);
+  const b1 = await snap(E);
+  let x = await into(E, 'tok-office', { vendor_key: 'v1', name: 'VENDOR NEW', doc_id: D['X-2'].id });
+  assert.deepEqual(x.body, { ok: false, why: 'shared', vendors: [{ vendor_key: 'v8', display_name: 'VendorA Hawaii Co' }] });
+  // The printed name is a vendor's already (registered or merged on another screen): refused, that vendor is named.
+  x = await into(E, 'tok-office', { vendor_key: 'v2', name: 'vendr  a' });
+  assert.deepEqual(x.body, { ok: false, why: 'owned', vendors: [{ vendor_key: 'v1', display_name: 'VendorA Hawaii' }] });
+  // A vendor merged into another one, or none.
+  await E.q(`update invoice_vendor_rules set merged_into='v2' where vendor_key='v8'`);
+  for (const k of ['v8', 'v99']) assert.deepEqual((await into(E, 'tok-office', { vendor_key: k, name: 'SOMETHING ELSE' })).body, { ok: false, why: 'gone', vendors: [] }, k);
+  await E.q(`update invoice_vendor_rules set merged_into=null where vendor_key='v8'`);
+  assert.deepEqual(await snap(E), b1, 'nothing was changed');
+  assert.equal((await into(E, 'tok-other', { vendor_key: 'v2', name: 'SOMETHING ELSE' })).status, 403);
+  for (const body of [{ vendor_key: 'v 2', name: 'X' }, { vendor_key: 'v2', name: '  ' }, { vendor_key: 'v2', name: 'N'.repeat(201) }, { vendor_key: 'v2', name: 'X', doc_id: 'nope' },
+    { vendor_key: 2, name: 'X' }, { vendor_key: 'v2', name: 'X', group_id: 5 }]) assert.equal((await into(E, 'tok-office', body)).status, 400, JSON.stringify(body));
+  await E.pg.close();
+});
+
+test('新しい業者を決める: an invoice that cannot be worked out never holds the others back; the rest are left for the next call', async () => {
+  const failGet = new Set();
+  const E = await setup(SQL, { vendorRecheck: 2, failGet });
+  const D = await read(E, [['L-1', '9201', '2026-10-01', 'SLOW CO'], ['L-2', '9202', '2026-10-02', 'SLOW CO'], ['L-3', '9203', '2026-10-03', 'SLOW CO'], ['L-4', '9204', '2026-10-04', 'SLOW CO']]);
+  failGet.add(D['L-1'].id);
+  const r = await E.api('tok-office', { action: 'vendor_register', vendor: { vendor_key: 'v930', display_name: 'Slow Co', food_kind: 'food' }, printed: 'SLOW CO' });
+  assert.deepEqual([r.body.doc_ids.length, r.body.recheck], [4, { fixed: 2, failed: 1, left: 1 }]);
+  const a = await E.api('tok-office', { action: 'vendor_apply', name: 'SLOW CO', vendor_key: 'v930' });
+  assert.deepEqual([a.body.ok, a.body.recheck], [true, { fixed: 1, failed: 1, left: 0 }], 'the next call reaches the last one');
+  assert.deepEqual(await Promise.all(['L-1', 'L-2', 'L-3', 'L-4'].map(async k => (await one(E, D[k].id)).vendor_key)), [null, 'v930', 'v930', 'v930']);
+  // The vendor the screen showed is checked: another one has the name now → nothing.
+  const b = await E.api('tok-office', { action: 'vendor_apply', name: 'SLOW CO', vendor_key: 'v1' });
+  assert.deepEqual([b.body.ok, b.body.vendors.map(v => v.vendor_key)], [false, ['v930']]);
+  await E.pg.close();
+});
+
+test('新しい業者を決める: "this invoice only" learns no name; an older screen still learns it as before', async () => {
+  const E = await setup();
+  const D = await read(E, [['O-1', '9301', '2026-10-02', 'ONE OFF NAME'], ['O-2', '9302', '2026-10-02', 'TWO OFF NAME']]);
+  let r = await E.api('tok-office', { action: 'edit', doc_id: D['O-1'].id, version: D['O-1'].version, header: { vendor_key: 'v2' }, lines: [], reason: '業者を選んだ：VendorB', ack: [], learn: false });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.alias_learned, (await rule(E, 'v2')).aliases, (await one(E, D['O-1'].id)).vendor_key], [undefined, [], 'v2']);
+  r = await E.api('tok-office', { action: 'edit', doc_id: D['O-2'].id, version: D['O-2'].version, header: { vendor_key: 'v2' }, lines: [], reason: 'x', ack: [] });
+  assert.deepEqual([r.body.alias_learned, (await rule(E, 'v2')).aliases], ['TWO OFF NAME', ['TWO OFF NAME']]);
   await E.pg.close();
 });
 
@@ -314,7 +386,9 @@ function screenOn(E, tok = 'tok-office', mem = { m_vendors: [{ id: 'v1', name: '
     _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null), getVendors: () => c.ls('m_vendors', []), getIngV2: () => [], pullOpKey: async () => true,
     SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon', _botSession: { access_token: tok }, botResetShared: () => {}, botTime: v => String(v || ''),
     window: {}, setTimeout: () => {}, clearTimeout: () => {}, document: { getElementById: k => dom[k] || null, querySelectorAll: () => [], activeElement: null },
-    fetch: async (url, init) => { const r = await E.api(tok, JSON.parse(init.body)); return { ok: r.status < 400, status: r.status, json: async () => r.body }; } };
+    fetch: async (url, init) => { const body = JSON.parse(init.body); c.sent.push(body.action);
+      if (c.failConfig && body.action === 'config') return { ok: false, status: 503, json: async () => ({ error: 'unavailable' }) };   // the list cannot be read now
+      const r = await E.api(tok, body); return { ok: r.status < 400, status: r.status, json: async () => r.body }; }, sent: [] };
   vm.createContext(c);
   vm.runInContext(MOD + '\nthis.M = { _invIn, get m(){ return _ivd.m; } };', c);
   c.M._invIn.loaded = {}; c.M._invIn.cand = {};
@@ -345,6 +419,7 @@ test('新しい業者を決める: the screen against the real server — merge,
   const gk = Object.keys(ui.mem.vendor_merges).find(k => k.startsWith('g:'));
   const merge = (await E.q(`select * from invoice_vendor_merges`))[0];
   assert.deepEqual([ui.mem.vendor_merges[gk].server.id, merge.group_id, ui.mem.vendor_merges['n:vendr a'].to], [merge.id, gk.slice(2), 'VendorA']);
+  assert.ok(ui.sent.includes('vendor_merge_into') && !ui.sent.includes('vendor_merge'), 'through the checked merge');
   // 新しい業者として登録 (事務Crew may: 10A): both waiting invoices get it; the app vendor master gets its card (11A).
   ui.M._invIn.config = (await E.api('tok-crew', { action: 'config' })).body;
   await ui.fn('ivdOpenRow')(D['W-3'].id); await settle();
@@ -355,12 +430,16 @@ test('新しい業者を決める: the screen against the real server — merge,
   const nv = await rule(E, key);
   assert.deepEqual([nv.display_name, nv.aliases, nv.food_kind, ui.mem.m_vendors.at(-1).name, ui.mem.m_vendors.length], ['Aloha Fish Market', ['ALOHA FISH MKT'], 'food', 'Aloha Fish Market', 2]);
   assert.deepEqual([(await one(E, D['W-3'].id)).vendor_key, (await one(E, D['W-4'].id)).vendor_key], [key, key]);
-  // The same name again from another screen (the list read before): refused by the server, the vendor is named, no second card.
-  ui.M._invIn.config = { vendors: [] };
+  // Opened again, the vendor list is read again: the name is that vendor's now (no second registration offered).
+  await ui.fn('ivdOpen')(D['W-4'].id, 1, 'ALOHA FISH MKT'); await settle();
+  assert.equal(ui.M.m.mode, 'owned');
+  // The list cannot be read (the one read before is used, without the new vendor): the server refuses, names it, no second card.
+  ui.M._invIn.config = { vendors: [] }; ui.failConfig = true;
   await ui.fn('ivdOpen')(D['W-4'].id, 1, 'ALOHA FISH MKT'); await settle();
   ui.fn('ivdMode')('register'); ui.fn('ivdKind')('food'); await ui.fn('ivdRegister')(); await settle();
   assert.match(ui.box(), /「Aloha Fish Market」がもうこの名前を持っています/);
   assert.equal(ui.mem.m_vendors.length, 2);
+  ui.failConfig = false;
   // A name added in the settings since: the waiting invoice gets that vendor.
   const v2 = await rule(E, 'v2');
   await E.api('tok-gm', { action: 'vendor_save', vendor: { vendor_key: 'v2', aliases: ['VENDORB HAWAII'], expect_updated_at: v2.updated_at } });
@@ -417,7 +496,7 @@ test('新しい業者を決める: the check SQL tells before from after', async
     await pg.exec(fs.readFileSync(new URL(S5, dir), 'utf8'));
     post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_register, post.vendor_merge, Number(post.tables), Number(post.functions), Number(post.browser_can_read), Number(post.browser_can_run)],
-      [true, true, 19, 83, 0, 0]);
+      [true, true, 19, 84, 0, 0]);
     // A browser role that could run one of them is told.
     await pg.exec(`grant execute on function public.invoice_vendor_register(jsonb) to anon`);
     post = (await pg.query(POST)).rows[0];
