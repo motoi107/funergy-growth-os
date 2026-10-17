@@ -42669,10 +42669,13 @@ function renderMileagePastLog(archived){
     var appr=recs.filter(function(r){return r.status==='承認';});
     var tot=appr.reduce(function(a,r){return a+(r.amount||0);},0);
     var byStaff={}; appr.forEach(function(r){ byStaff[r.employee]=(byStaff[r.employee]||0)+(r.amount||0); });
-    /* v1087: 締めたときは承認だったのに、そのあとほかの端末の却下が届いたもの（この月の合計から外れている） */
-    var late=recs.filter(function(r){ return r.archivedStatus==='承認' && r.status==='却下'; });
-    h+='<details style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600">'+mk+' <span style="color:var(--green)">$'+tot.toFixed(2)+'</span> <span style="font-size:10px;color:var(--muted);font-weight:400">／ '+Object.keys(byStaff).length+'名・'+appr.length+'件'+(recs[0].archivedBy?(' · 処理: '+escapeHtml(recs[0].archivedBy)):'')+'</span>'+(late.length?' <span style="font-size:10px;color:var(--red)">⚠ 締めたあとに却下 '+late.length+'件</span>':'')+'</summary>';
-    if(late.length) h+='<div style="font-size:11px;color:var(--red);font-weight:600;margin-top:4px">⚠ 締めたときは承認でしたが、そのあとほかの端末の却下が届いた '+late.length+'件（$'+late.reduce(function(a,r){return a+(r.amount||0);},0).toFixed(2)+'）は、この合計に入っていません。確認してください</div>';
+    /* v1087: 締めたときと今で承認かどうかが変わったもの（ほかの端末の却下・取り消し・あとからの承認）。合計は今の状態で数える */
+    var lost=recs.filter(function(r){ return r.archivedStatus==='承認' && r.status!=='承認'; });
+    var added=recs.filter(function(r){ return r.archivedStatus!=null && r.archivedStatus!=='承認' && r.status==='承認'; });
+    var late=lost.concat(added), _amt=function(l){ return l.reduce(function(a,r){return a+(r.amount||0);},0).toFixed(2); };
+    h+='<details style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px"><summary style="cursor:pointer;font-size:13px;font-weight:600">'+mk+' <span style="color:var(--green)">$'+tot.toFixed(2)+'</span> <span style="font-size:10px;color:var(--muted);font-weight:400">／ '+Object.keys(byStaff).length+'名・'+appr.length+'件'+(recs[0].archivedBy?(' · 処理: '+escapeHtml(recs[0].archivedBy)):'')+'</span>'+(late.length?' <span style="font-size:10px;color:var(--red)">⚠ 締めたあとに変わった '+late.length+'件</span>':'')+'</summary>';
+    if(lost.length) h+='<div style="font-size:11px;color:var(--red);font-weight:600;margin-top:4px">⚠ 締めたときは承認でしたが、そのあと承認でなくなった（ほかの端末の却下・取り消し） '+lost.length+'件（$'+_amt(lost)+'）は、この合計に入っていません。確認してください</div>';
+    if(added.length) h+='<div style="font-size:11px;color:var(--red);font-weight:600;margin-top:4px">⚠ 締めたときは承認ではありませんでしたが、そのあと承認になった '+added.length+'件（$'+_amt(added)+'）は、この合計に入っています。確認してください</div>';
     h+='<table class="inv-table" style="width:100%;font-size:11px;margin-top:4px"><tbody>';
     Object.keys(byStaff).sort(function(a,b){return byStaff[b]-byStaff[a];}).forEach(function(n){
       var cnt=appr.filter(function(r){return r.employee===n;}).length;
@@ -46772,10 +46775,17 @@ function cancelApprovedVacation(id) {
   if (!canApproveVacation(v)) { alert('権限がありません'); return; }
   /* v1087: 取り消しの時刻（古い写しの「承認」で戻らない）。承認センターの案件と同じ時刻にする（取り消したあとの決定だけを決定とみなすため） */
   var _rt=apReopenTime('休暇', id, _rtNextT(v));
+  var _g=(_rtDecG(v)||0)+1;   /* 取り消したあとの版：取り消す決定の版より必ず後（手元の案件の写しが古い・無いときも） */
   v.status='申請中'; delete v.approvedBy; delete v.approvedAt; v._stT=_rt; delete v._stK; delete v._dT;
   saveVacations(vacs);
-  apReopenByRef('休暇', id, _rt);   /* v1087: 承認センターの案件も承認待ちに戻す（もう一度承認できるように） */
-  v._dG=apRecGen('休暇', id); saveVacations(vacs);   /* v1087: 取り消したあとの案件の版（前の版の決定はこの取り消しより古い） */
+  var _n=apReopenByRef('休暇', id, _rt, _g);   /* v1087: 承認センターの案件も承認待ちに戻す（もう一度承認できるように・同じ版） */
+  v._dG=Math.max(_g, apRecGen('休暇', id)); saveVacations(vacs);   /* v1087: 取り消したあとの案件の版（前の版の決定はこの取り消しより古い） */
+  /* この端末に案件の写しが無いときは、読み直してから承認待ちに戻す（戻さないと、案件だけ承認のまま残る） */
+  if(!_n) apPullLatest().then(function(ok){
+    if(!ok || !apReopenByRef('休暇', id, _rt, _g)) return;
+    var vs=getVacations(), w=vs.find(function(x){ return x.id===id; });
+    if(w && w.status==='申請中' && !w._stK){ w._dG=Math.max(_rtDecG(w)||0, apRecGen('休暇', id)); saveVacations(vs); }
+  }, function(){});
   showToast('承認を取り消しました','info');
   renderPage(curPage);
 }
@@ -67913,16 +67923,28 @@ function _apSyncRecStamp(type, ref, hit, st){
     var r=raw.find(function(x){ return x && String(x.id)===String(ref); });
     if(!r || String(r._stK||'')!==String(st.k)) return;   /* 記録がそのあと変わっていれば触らない */
     var ch=false;
-    if(_rtDecG(r)!==_apGen(a)){ r._dG=_apGen(a); ch=true; }   /* 読み直した案件の版（ほかの端末で取り消してあった） */
+    if(!(_rtDecG(r)>=_apGen(a))){ r._dG=_apGen(a); ch=true; }   /* 読み直した案件の版（ほかの端末で取り消してあった）。下げない（手元の案件の写しが古いことがある） */
     if(String(a._stK)!==String(st.k)){ var t=_apStT(a); if(t>_rtDecT(r)){ r[field]=Math.max(t, Number(r[field])||0); r._stK=String(a._stK); r._dT=t; ch=true; } }
     if(ch) lsSet(key, raw);
   }catch(e){}
 }
+/* 手元の案件の写しが、申請の記録の版より古い（ほかの端末で取り消してあった）か */
+function _apHitStale(type, ref, hit){
+  try{
+    var key=AP_REC_KEYS[type]; if(!key || ref==null) return false;
+    var r=(ls(key,[])||[]).find(function(x){ return x && String(x.id)===String(ref); });
+    var g=_rtDecG(r); if(g==null) return false;
+    var hg=0; hit.forEach(function(a){ hg=Math.max(hg, _apGen(a)); });
+    return g>hg;
+  }catch(e){ return false; }
+}
 function apDecidedFromPage(type, ref, status, opt){
   opt=opt||{};
   var hit=_apResolveLocal(type, ref, status, opt);
-  if(hit.length){ _apSyncRecStamp(type, ref, hit, opt.st); _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
+  var stale=hit.length>0 && _apHitStale(type, ref, hit);   /* 古い写しなら、クラウドを読み直して新しい版の案件を済みにする */
+  if(hit.length && !stale){ _apSyncRecStamp(type, ref, hit, opt.st); _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
   var fin=function(h2){
+    if(!h2.length && stale) h2=hit;   /* 読み直せなかった・見つからなかった：手元の案件で知らせる */
     _apSyncRecStamp(type, ref, h2, opt.st);
     if(opt._superseded){   /* ほかの端末の決定が申請に残った：この画面の決定は知らせない */
       try{ showToast(t('この申請は、ほかの端末で先に決まっていました。承認センターと申請はそちらに合わせました','This request was decided on another device first. The approval center and the request follow that decision.'), 'warn'); }catch(_e){}
@@ -67947,10 +67969,11 @@ function apWithdrawByRef(type, ref){
   }catch(e){ return 0; }
 }
 /* 申請の画面で承認を取り消したとき（承認センターの案件も承認待ちに戻す。版を進めて前の承認は使わない） */
-function apReopenByRef(type, ref, t){
+function apReopenByRef(type, ref, t, minGen){
   try{
     var approvals=ls('approvals', []); var n=0;
-    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='pending' && a.status!=='withdrawn'){ _apReopenRec(a, t); n++; } });
+    /* 承認待ちの案件も版を進める（申請は承認済み＝この端末の案件の写しが古い。進めないと、ほかの端末の承認の写しに負けて案件だけ承認に戻る） */
+    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='withdrawn'){ _apReopenRec(a, t, minGen); n++; } });
     if(n) lsSet('approvals', approvals);
     return n;
   }catch(e){ return 0; }
@@ -67974,9 +67997,9 @@ function apReopenTime(type, ref, min){
   try{ (ls('approvals', [])||[]).forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref)) m=Math.max(m, _apStT(a)+1, _apMut(a)+1); }); }catch(e){}
   return m;
 }
-function _apReopenRec(a, t){
+function _apReopenRec(a, t, minGen){
   var now=Number(t) || Math.max(Date.now(), _apStT(a)+1);
-  a._gen=_apGen(a)+1; a.status='pending'; a.signoffs=[]; a.rejectReason=''; a._stT=now; a._mut=now;
+  a._gen=Math.max(_apGen(a)+1, Number(minGen)||0); a.status='pending'; a.signoffs=[]; a.rejectReason=''; a._stT=now; a._mut=now;
   delete a._soX; delete a.acct; delete a.decidedAt; delete a.decidedBy; delete a._stK;
 }
 /* 承認センターの一覧をクラウドから読み直す（押す前・開いたとき）。同期 OFF・オフラインは読まない（false）。 */
@@ -76425,6 +76448,7 @@ function _rbRow(r, mgr){
     +(r.status==='却下'&&r.rejectReason?'<div style="font-size:11px;color:var(--red)">却下理由: '+escapeHtml(r.rejectReason)+'</div>':'')
     /* v1087: 承認して支払済にしたあと、ほかの端末の（あとの）却下が届いたもの。支払った事実は消さずに知らせる */
     +(r.status==='却下'&&r.payStatus==='支払済'?'<div style="font-size:11px;color:var(--red);font-weight:600">⚠ 支払済ですが、ほかの端末の却下があとから届きました（支払 '+escapeHtml(r.paidAt||'')+(r.paidBy?'・'+escapeHtml(r.paidBy):'')+'）。確認してください</div>':'')
+    +(r.status==='申請中'&&r.payStatus==='支払済'?'<div style="font-size:11px;color:var(--red);font-weight:600">⚠ 支払済ですが、承認が取り消されています（支払 '+escapeHtml(r.paidAt||'')+(r.paidBy?'・'+escapeHtml(r.paidBy):'')+'）。確認してください</div>':'')
     +(r.status==='承認'?'<div style="font-size:11px;color:'+pc+';font-weight:600">'+(r.payStatus==='支払済'?('✓ 支払済 '+escapeHtml(r.paidAt||'')+(r.paidBy?'（'+escapeHtml(r.paidBy)+'）':'')+(r.payMethodNote?' / '+escapeHtml(r.payMethodNote):'')):'● 未払い')+'</div>':'')
     +'</div><div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">'
     /* v848: アイコンだけでは気づけないので「レシート」と書く。無い申請はその旨を出す。 */
