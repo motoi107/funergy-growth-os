@@ -126,6 +126,16 @@ Tip Rate と昇格（Leadership）は、承認センターでは反映しない�
 - Chromium（1280・390px・日英・経理・事務Crew・GM・SL）：承認センターの 3 つのタブ・経理の確認を押す・通知の「確認した」・発注の古い行き先・食材管理のタブ。pageerror 0・横スクロールなし。
 - `tests/*.test.mjs`（invoice-mutations・employee-resign-mutations 以外）745 件（`dfb938d`）：失敗は main と同じ 27 件（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）。static release pass/1087。
 
+## 6b. Codex のレビュー（PR #71 の head `79d5675`・PR #70 を含む）の P2 2 つの直し
+
+- Codex（[PR #71 のコメント](https://github.com/motoi107/funergy-growth-os/pull/71)・2026-10-17 UTC）：P2 3 つ。そのうち 2 つが v1087（もう 1 つは v1088・`docs/ERROR_CENTER_V1088_JA.md`）。
+  1. ほかの端末で承認を取り消した（版が進み、申請も申請中に戻った）案件を、申請の古い写し（承認）を持つ端末で「却下」すると、承認センターが「申請の画面で承認済み」とみなして承認に戻していた。
+     - 直し：申請の画面で決まっているように見えたら、申請の記録をクラウドから読み直してから決める（`_apPullRecord`。分割した行も・8 秒で打ち切り）。
+     - さらに、承認を取り消した案件（版が 1 以上）では、取り消したときより後に決めた記録だけを「決まっている」とみなす（`_apRecordState`。ガソリン代・事前経費・休暇は状態を変えた時刻、建て替え経費は保存時刻。時刻を持たない Tip Rate・Leadership は読み直しだけ）。
+  2. 時計が遅れた端末で「確認した」→「確認を取り消す」と押すと、2 つが同じ時刻になり、合流で確認が戻っていた。
+     - 直し：時刻は、決めた時刻と前の確認・取り消しの時刻より後にする。
+- 試験：`tests/approvals-v1087.test.mjs` に 2 件（31 件）。どちらも直す前の index.html では落ちる。直しを 1 つずつ外すと落ちる（4 通り）。`tests/office-crew-approvals.test.mjs` 7・`tests/employee-resign-sync.test.mjs` 36 は通る。static release pass/1087。
+
 ## 7. 残っていること・限界
 
 - 独立レビュー（4 回目 `dfb938d` で P1・P2 なし）の残した P3：同期していない端末が古い承認待ちの写しを持ったまま申請の画面で決めると、ほかで決めて取り消した新しい版（承認待ち）に負けて、承認センターは承認待ちのまま（その端末が決定と取り消しの両方を見ていないときだけ）。同じ ref の別の案件が 2 つあると版の大きいほうを新しいとみなす（今は ref が申請ごとに 1 つ）。

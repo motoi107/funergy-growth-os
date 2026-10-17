@@ -60,11 +60,11 @@ const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcc
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', 'apAcctConfirm',
   '_apAcctNotifHtml', '_apShortTime', '_apDeciders', '_apReopenRec', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits',
-  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch',
+  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord',
   'canApproveMileage', 'approveMileage', 'rejectMileage', 'deleteMyMileage', 'mileageMonthEndClose', 'canMileageMonthEnd',
   'canApproveReimburse', 'approveReimburse', '_applyReimburseDecision', 'cancelApprovedVacation', 'canApproveVacation', 'approveTip',
   'notifForMe', '_roleMatch', '_userSupportsStore', '_amManagesStore', 'getNotifs', 'addNotif', 'onNotifIncoming', 'myNotifs', 'myUnreadCount'];
-const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt'];   // _apPullAt's line also holds AP_PULL_TIMEOUT_MS
+const VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt', 'AP_REC_KEYS'];   // _apPullAt's line also holds AP_PULL_TIMEOUT_MS
 
 const ROLE_CONFIG = { ceo: { name: 'Tac' }, gm: { name: 'Moto' }, office: { name: 'Marcia' }, am: { name: 'Yuki' }, sl: { name: 'Store Leader' },
   office_crew: { name: '事務スタッフ' }, crew: { name: 'スタッフ' }, chef: { name: 'Head Chef' } };
@@ -564,6 +564,56 @@ test('accounting check pressed on a device whose clock is behind the approver\'s
   await run(c, 'apAcctConfirm("ap1")');
   assert.ok(c.S.approvals[0].acct.t > future);
   assert.equal(plain(run(c, 'apAcctPending(ls("approvals"))')).length, 0);
+});
+
+test('accounting check on a clock-behind device: confirm → undo → confirm again each win the merge with the copy before it (Codex P2 on 79d5675)', async () => {
+  const future = Date.now() + 60000;
+  const cloud = { approvals: [AP({ status: 'approved', decidedAt: new Date(future).toISOString(), _stT: future, _mut: future })] };
+  const c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud, st: { approvals: plain(cloud.approvals), notifications: [] } });
+  const on = list => run(c, '_apAcctOn(' + JSON.stringify(list[0]) + ')');
+  const mg = (x, y) => plain(run(c, 'mergeApprovals(' + JSON.stringify(x) + ',' + JSON.stringify(y) + ')'));
+  await run(c, 'apAcctConfirm("ap1")');
+  const confirmed = plain(c.S.approvals); cloud.approvals = confirmed;   // sent
+  await run(c, 'apAcctConfirm("ap1", true)');
+  const undone = plain(c.S.approvals);
+  assert.equal(on(undone), false);
+  assert.ok(undone[0].acct.t > confirmed[0].acct.t);
+  for (const m of [mg(confirmed, undone), mg(undone, confirmed)]) assert.equal(on(m), false, 'the undo is not brought back by the confirmed copy');
+  cloud.approvals = undone;
+  await run(c, 'apAcctConfirm("ap1")');
+  const again = plain(c.S.approvals);
+  for (const m of [mg(undone, again), mg(again, undone)]) assert.equal(on(m), true, 'confirming again is not lost to the undone copy');
+});
+
+test('a reopened request rejected on a device whose copy of the request is old is rejected, not turned back into the old approval (Codex P2 on 79d5675)', async () => {
+  // Another device undid the approval: the item is a new generation (pending), the mileage request is 申請中 again (both in the cloud).
+  // This device still has the mileage request as 承認 from before.
+  const reopened = () => AP({ _gen: 1, _stT: 500, _mut: 500, signoffs: [] });   // a fresh copy each time (the merge can hand back the cloud's own object)
+  const oldReq = { id: 'mi1', status: '承認', approvedBy: 'Yuki', storeId: 'F01', employee: 'Leader B', _stT: 300 };
+  const cloudReq = { ...oldReq, status: '申請中', approvedBy: '', _stT: 500 };
+  // The request is read again before following it: rejected as asked, and the request becomes 却下.
+  let c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [reopened()], mileage_requests: [cloudReq] },
+    st: { approvals: [AP({ status: 'approved', _stT: 300, _mut: 300 })], mileage_requests: [oldReq], notifications: [] } });
+  await run(c, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([c.S.approvals[0].status, c.S.approvals[0]._gen, c.S.mileage_requests[0].status], ['rejected', 1, '却下']);
+  // The request cannot be read (not in the cloud copy here): its decision is older than the undo, so it is not followed either.
+  c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [reopened()] },
+    st: { approvals: [reopened()], mileage_requests: [oldReq], notifications: [] } });
+  await run(c, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([c.S.approvals[0].status, c.S.mileage_requests[0].status], ['rejected', '却下']);
+  assert.ok(c.S.mileage_requests[0]._stT > 500);
+  // Decided on the page after the undo: that is followed (the center matches the page; nothing is rewritten).
+  c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [reopened()] },
+    st: { approvals: [reopened()], mileage_requests: [{ ...oldReq, _stT: 600 }], notifications: [] } });
+  await run(c, 'approveItem("ap1","rejected","x")');
+  assert.deepEqual([c.S.approvals[0].status, c.S.mileage_requests[0].status], ['approved', '承認']);
+  assert.match(c.toasts.at(-1)[0], /もう承認されています/);
+  // A type whose request has no status time (Tip Rate): only reading the request again shows it is pending again.
+  const tipAp = () => AP({ type: 'TipRate', ref: 'tr1', title: 'Leader B Tip Rate', _gen: 1, _stT: 500, _mut: 500, signoffs: [] });
+  c = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [tipAp()], tip_requests: [{ id: 'tr1', name: 'Leader B', status: '申請中' }] },
+    st: { approvals: [tipAp()], tip_requests: [{ id: 'tr1', name: 'Leader B', status: '承認', approvedBy: 'Yuki' }], notifications: [] } });
+  await run(c, 'approveItem("ap1","rejected","x")');
+  assert.equal(c.S.approvals[0].status, 'rejected');
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {
