@@ -47,7 +47,7 @@ const FNS = ['_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserIn
   // v1087: the approval center reads the cloud before a press, notifies on every decision, and has the accounting tab.
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', '_apShortTime',
-  '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', 'invTouch',
+  '_apDeciders', '_apReopenRec', '_apGen', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits', 'apDecidedFromPage', '_apHitStale', 'invTouch',
   '_apDecidedElsewhere', '_apAcctOn', '_apStT', '_apFollowPage', '_apNewestForRef',
   // v1087 (Codex review of 79d5675): status times only move forward; the request is read again before following its page decision.
   '_apMut', '_rtStT', '_rtStK', '_rtDecRank', '_rtDecT', '_rtDecG', '_rtDecCmp', '_rtDecOverlay', '_rtNextT', '_rtTouchMut', '_apRecTime', '_apPullRecord', 'apReopenTime', 'apRecFloor', 'apDecStamp', 'apStOf', 'apStampRec', 'apRecGen', '_apSyncRecStamp', '_apRecSuperseded'];
