@@ -60,7 +60,7 @@ const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcc
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', 'apAcctConfirm',
   '_apAcctNotifHtml', '_apShortTime', '_apDeciders', '_apReopenRec', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits',
-  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime',
+  'apDecidedFromPage', 'apWithdrawByRef', 'apReopenByRef', 'setApTab', 'invTouch', '_apRecTime', '_apPullRecord', '_rtNextT', '_rtTouchMut', 'apReopenTime', 'apRecFloor',
   'canApproveMileage', 'approveMileage', 'rejectMileage', 'deleteMyMileage', 'mileageMonthEndClose', 'canMileageMonthEnd',
   'canApproveReimburse', 'approveReimburse', '_applyReimburseDecision', 'cancelApprovedVacation', 'canApproveVacation', 'approveTip',
   'notifForMe', '_roleMatch', '_userSupportsStore', '_amManagesStore', 'getNotifs', 'addNotif', 'onNotifIncoming', 'myNotifs', 'myUnreadCount'];
@@ -672,6 +672,74 @@ test('status times only move forward: a decision or an undo on a device whose cl
   assert.equal(c.S.my_vacations[0]._stT, c.S.approvals[0]._stT);
   assert.ok(c.S.my_vacations[0]._stT > future + 9);
   assert.equal(c.S.approvals[0]._mut, c.S.approvals[0]._stT);
+});
+
+test('an old copy of the request and an undo stamped by a fast clock together: the rejection still wins the merge (Codex re-review of 8ccb543)', async () => {
+  const future = Date.now() + 60000;
+  // Another device (clock 60 s fast) undid the approval: item generation 1 and the request 申請中, both at `future`, both in the cloud.
+  // This device already has the reopened item, but its copy of the request is the old 承認 (time 300).
+  const reopened = () => AP({ _gen: 1, _stT: future, _mut: future, signoffs: [] });
+  const oldReq = { id: 'mi1', status: '承認', approvedBy: 'Yuki', storeId: 'F01', employee: 'Leader B', _stT: 300 };
+  const cloudReq = () => ({ ...oldReq, status: '申請中', approvedBy: '', _stT: future });
+  const c = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [reopened()], mileage_requests: [cloudReq()] },
+    st: { approvals: [reopened()], mileage_requests: [oldReq], notifications: [] } });
+  await run(c, 'approveItem("ap1","rejected","x")');
+  // The request is read again even though the old copy did not look decided.
+  assert.ok(c.pulled.includes('mileage_requests'));
+  const a = c.S.approvals[0], r = c.S.mileage_requests[0];
+  assert.deepEqual([a.status, a._gen, r.status], ['rejected', 1, '却下']);
+  assert.ok(a._stT > future && r._stT > future);
+  // After the next sync (merge with the cloud's undo), both stay rejected.
+  const mr = plain(run(c, 'mergeReqTomb(' + JSON.stringify([cloudReq()]) + ',' + JSON.stringify(plain(c.S.mileage_requests)) + ')'));
+  assert.equal(mr[0].status, '却下');
+  const ma = plain(run(c, 'mergeApprovals(' + JSON.stringify([reopened()]) + ',' + JSON.stringify(plain(c.S.approvals)) + ')'));
+  assert.equal(ma[0].status, 'rejected');
+  // The same old copy when the request cannot be read: the approval-center decision is still later than the undo it saw.
+  const c2 = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [reopened()] },
+    st: { approvals: [reopened()], mileage_requests: [oldReq], notifications: [] } });
+  c2.pullOpKey = async key => (key === 'approvals');
+  await run(c2, 'approveItem("ap1","rejected","x")');
+  assert.ok(c2.S.approvals[0]._stT > future && c2.S.mileage_requests[0]._stT > future);
+  // The same for the other requests the approval center writes (leave, expense, reimbursement).
+  for (const [type, key, rec, tf] of [['休暇', 'my_vacations', { id: 'r1', status: '申請中', employee: 'Leader B', storeId: 'F01', _stT: 300 }, '_stT'],
+    ['経費', 'expense_requests', { id: 'r1', status: '申請中', employee: 'Leader B', storeId: 'F01', _stT: 300 }, '_stT'],
+    ['建替経費', 'reimbursements', { id: 'r1', status: '申請中', storeId: 'F01', payer: 'Leader B', amount: 10, byUser: 'Leader B', _mut: 100 }, '_mut']]) {
+    const item = () => AP({ type, ref: 'r1', _gen: 1, _stT: future, _mut: future, signoffs: [] });
+    const cx = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto', cloud: { approvals: [item()] }, st: { approvals: [item()], [key]: [rec], notifications: [] } });
+    cx.pullOpKey = async k => (k === 'approvals');
+    await run(cx, 'approveItem("ap1","rejected","x")');
+    assert.equal(cx.S[key][0].status, '却下', type);
+    assert.ok(cx.S[key][0][tf] > future, type);
+  }
+  // On the request's own page: the decision is later than the approval-center item this device knows, even when the request's
+  // own time is old.
+  const c3 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto',
+    st: { approvals: [reopened()], mileage_requests: [{ ...oldReq, status: '申請中', approvedBy: '', _stT: 300 }], notifications: [] } });
+  run(c3, 'rejectMileage("mi1")');
+  assert.equal(c3.S.mileage_requests[0].status, '却下');
+  assert.ok(c3.S.mileage_requests[0]._stT > future);
+  const c4 = app(MERGE.concat(APPROVAL), { role: 'gm', user: 'Moto',
+    st: { approvals: [reopened()], mileage_requests: [{ ...oldReq, status: '申請中', approvedBy: '', _stT: 300 }], notifications: [] } });
+  run(c4, 'approveMileage("mi1")');
+  assert.equal(c4.S.mileage_requests[0].status, '承認');
+  assert.ok(c4.S.mileage_requests[0]._stT > future);
+  const c5 = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', st: {
+    approvals: [AP({ type: '建替経費', ref: 'rb1', _gen: 1, _stT: future, _mut: future })],
+    reimbursements: [{ id: 'rb1', status: '申請中', storeId: 'F01', payer: 'Leader B', amount: 48.2, byUser: 'Leader B', _mut: 100 }], notifications: [] } });
+  run(c5, '_applyReimburseDecision("rb1", false, "x")');
+  assert.equal(c5.S.reimbursements[0].status, '却下');
+  assert.ok(c5.S.reimbursements[0]._mut > future);
+  // A device on the version before saved the item last with a fast clock (only its save time is ahead): the decision's save time is
+  // later still, so that version (it picks the copy saved last) keeps the decision too.
+  const c6 = app(MERGE.concat(APPROVAL), { role: 'office', user: 'Marcia', cloud: { approvals: [AP({ _mut: future })] },
+    st: { approvals: [AP({ _mut: future })], mileage_requests: [{ ...oldReq, status: '申請中', approvedBy: '', _stT: 300 }], notifications: [] } });
+  await run(c6, 'approveItem("ap1","rejected","x")');
+  assert.ok(c6.S.approvals[0]._mut > future);
+  // The floor is only the item for that request.
+  assert.deepEqual([run(c3, 'apRecFloor("ガソリン代","mi1")') > future, run(c3, 'apRecFloor("ガソリン代","mi2")'), run(c3, 'apRecFloor("経費","mi1")')], [true, 0, 0]);
+  // The expense and leave pages use the same floor.
+  for (const fn of ['approveExpense', 'rejectExpense', 'approveVacation', 'rejectVacation'])
+    assert.match(fnSrc(fn), /_rtNextT\((r|v), apRecFloor\('(経費|休暇)', (r|v)\.id\)\)/, fn);
 });
 
 test('office crew: pending notices where accounting is an approver, store-scoped notices, and the approval center shows 本部', () => {
