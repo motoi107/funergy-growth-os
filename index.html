@@ -52317,7 +52317,9 @@ function ecCollect(){
    共通データ ec_resolutions：{ <key>␞<fp>: { key, fp, why, memo, by, role, at, _at, off, cat, title, store, stores, date, dateLabel, sev } }
    ・記録は不備（key）と中身（fp）の組ごと。同じ不備の別の中身を解除しても、前の記録（誰が・いつ・どの理由）は残る
    ・記録ごとに新しいほう（mergeEcRes：_at、同じ時刻なら中身の文字列で決める）。元に戻すは off:true で上書きする（消さない＝古い写しで戻らない）
-   ・元に戻してから 120 日・「対応した」から 400 日たった記録は合流のときに落とす（大きくなり続けないように。「問題ではない」「この店は対象外」は残す）
+   ・元に戻してから 120 日・「対応した」から 400 日たった記録は、合流のときに小さな「元に戻した」印 {key, fp, off, _at} に縮める
+     （大きくなり続けないように。印は残すので、長く使っていなかった端末の古い写しで解除が戻らない。印も 3 年で落とす。
+       「対応した」は 400 日たつと解除でなくなる＝同じ中身がまだ検知されていれば「今の不備」にまた出る。「問題ではない」「この店は対象外」は縮めない）
    ・解除が効くのは、同じ key で fp（中身）も同じとき。中身が変われば「今の不備」にまた出す
    ・why：done＝対応した／false＝問題ではない（誤検知）／na＝この店は対象外
    ・解除できる人・見られる人：CEO・GM・経理・事務Crew（6A・8A）
@@ -52337,13 +52339,16 @@ function ecResOf(x, all){
   return _ecResLive(r) ? r : null;
 }
 /* 合流：記録ごとに新しいほう。同じ時刻なら中身の文字列の大きいほう（どの端末でも同じ答え）。古い「元に戻した」「対応した」は落とす */
-var EC_RES_OFF_KEEP_MS=120*86400000, EC_RES_DONE_KEEP_MS=400*86400000;
+var EC_RES_OFF_KEEP_MS=120*86400000, EC_RES_DONE_KEEP_MS=400*86400000, EC_RES_MARK_KEEP_MS=1095*86400000;
+/* 縮める記録か（元に戻して 120 日・「対応した」から 400 日）。もう縮めた印（_m）は縮めない */
 function _ecResExpired(r, now){
-  if(!r || typeof r!=='object') return false;
+  if(!r || typeof r!=='object' || r._m) return false;
   var at=Number(r._at)||0; if(!at) return false;
   if(r.off) return (now-at) > EC_RES_OFF_KEEP_MS;
   return r.why==='done' && (now-at) > EC_RES_DONE_KEEP_MS;
 }
+function _ecResMark(k, r){ return { key:_ecResKey(k, r), fp:String(r.fp==null?'':r.fp), off:true, _m:1, _at:Number(r._at)||0 }; }
+function _ecResGone(r, now){ return !!(r && r._m && (now-(Number(r._at)||0)) > EC_RES_MARK_KEEP_MS); }
 function mergeEcRes(cloud, local){
   var out={}, c=(cloud&&typeof cloud==='object'&&!Array.isArray(cloud))?cloud:{}, l=(local&&typeof local==='object'&&!Array.isArray(local))?local:{};
   var now=Date.now();
@@ -52355,7 +52360,10 @@ function mergeEcRes(cloud, local){
     var sa=JSON.stringify(a), sb=JSON.stringify(b);
     out[k] = sb>sa ? b : a;
   });
-  Object.keys(out).forEach(function(k){ if(_ecResExpired(out[k], now)) delete out[k]; });
+  Object.keys(out).forEach(function(k){
+    if(_ecResExpired(out[k], now)) out[k]=_ecResMark(k, out[k]);
+    if(_ecResGone(out[k], now)) delete out[k];
+  });
   return out;
 }
 function _coversEcRes(check, want){
@@ -52363,9 +52371,13 @@ function _coversEcRes(check, want){
   var now=Date.now();
   for(var k in want){ if(!Object.prototype.hasOwnProperty.call(want,k)) continue;
     var w=want[k], h=check[k];
-    if(_ecResExpired(w, now)) continue;
+    if(_ecResExpired(w, now)) w=_ecResMark(k, w);
+    if(_ecResGone(w, now)) continue;
     if(h===undefined) return false;
-    if((Number(h&&h._at)||0) < (Number(w&&w._at)||0)) return false;
+    var th=Number(h&&h._at)||0, tw=Number(w&&w._at)||0;
+    if(th < tw) return false;
+    /* 同じ時刻なら合流と同じ決め方（中身の文字列の大きいほう）。どちらも「元に戻した」なら同じとみなす（縮めた印と縮める前） */
+    if(th===tw && !(h && h.off && w && w.off) && JSON.stringify(h) < JSON.stringify(w)) return false;
   }
   return true;
 }
@@ -52405,6 +52417,7 @@ function _ecOnPage(){
 function _ecRerender(){ try{ if(_ecOnPage()) renderPage(curPage); }catch(e){} }
 /* 1 分より前に読んだきりなら裏で読み直す。読み直した（読めなかった）あとに after を呼ぶ。読み直さないときは null */
 function ecAutoPull(after){
+  if(_ecPulling) return _ecPulling.then(function(){ try{ if(after) after(); }catch(e){} });   /* 読み直しの途中（前の描画・解除の保存）なら、それを待つ */
   if(Date.now()-Math.max(_ecPullAt,_ecPullTry) < 60000) return null;
   var before=''; try{ before=JSON.stringify(ecResAll()); }catch(e){}
   return ecPullLatest().then(function(ok){
@@ -52579,7 +52592,8 @@ async function ecResolveGo(){
     if(typeof navigator==='undefined' || navigator.onLine!==false){ try{ await ecPullLatest(); }catch(e){} }
     /* 読み直しを待つあいだに「やめる」・×・外を押して閉じたら保存しない */
     var ov=(typeof document!=='undefined' && document.getElementById) ? document.getElementById('modal-overlay') : null;
-    if(_ecModal!==m || (ov && ov.classList && !ov.classList.contains('open'))){ if(_ecModal===m) _ecModal=null; showToast(t('解除をやめました（何も変えていません）','Cancelled (nothing was changed)'),'info'); return; }
+    var swapped=!!(b && document.getElementById('ec-res-go')!==b);   /* 待つあいだに別の画面が開いた（外を押して閉じたあと） */
+    if(_ecModal!==m || swapped || (ov && ov.classList && !ov.classList.contains('open'))){ if(_ecModal===m) _ecModal=null; showToast(t('解除をやめました（何も変えていません）','Cancelled (nothing was changed)'),'info'); return; }
     var ok=_ecResSave(_ecRid(m.key, m.fp), { key:m.key, fp:m.fp, why:why, memo:memo, by:(myName()||''), role:curRole, at:new Date().toISOString(), off:false,
                                cat:m.cat, title:m.title, store:m.store, stores:m.stores, date:m.date, dateLabel:m.dateLabel, sev:m.sev });
     if(!ok){ showToast(t('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'),'warning'); return; }
@@ -52636,9 +52650,10 @@ function ecSnapshot(){
   return added;
 }
 function ecMaybeAutoSnapshot(){
-  var today=todayISO();
-  if(ls('ec_log_last','')===today) return;
-  try{ ecSnapshot(); lsSet('ec_log_last', today); }catch(e){}
+  var today=todayISO(), n=0;
+  if(ls('ec_log_last','')===today) return 0;
+  try{ n=ecSnapshot(); lsSet('ec_log_last', today); }catch(e){}
+  return n||0;
 }
 function ecSnapshotNow(){ var n=ecSnapshot(); lsSet('ec_log_last', todayISO()); showToast(n>0?(n+'件を記録しました'):'本日分は記録済みです（新規なし）', n>0?'success':'info'); renderPage(curPage); }
 function ecLogInRange(){ var log=getEcLog(); if(!ecRangeDays) return log; var cutoff=isoOf(new Date(Date.now()-ecRangeDays*86400000)); return log.filter(function(r){ return (r.date||'')>=cutoff; }); }
@@ -52704,7 +52719,7 @@ function renderErrorCenter(embedded){
     ?'<div style="display:flex;align-items:center;gap:7px;margin:2px 2px 12px"><i class="ti ti-alert-hexagon" style="font-size:20px;color:var(--accent)"></i><div><div style="font-weight:700;font-size:15px">エラーセンター</div><div style="font-size:11px;color:var(--muted)">運用・データの不備を自動検知（勤怠/チップ14日・打刻7日）</div></div></div>'
     :'<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
   /* 毎日の記録はクラウドの解除を読み直してから（ほかの端末で解除したものを今日の記録に足さない） */
-  try{ if(!ecAutoPull(function(){ try{ ecMaybeAutoSnapshot(); }catch(e){} })) ecMaybeAutoSnapshot(); }catch(e){}
+  try{ if(!ecAutoPull(function(){ var n=0; try{ n=ecMaybeAutoSnapshot(); }catch(e){} if(n>0 && ecView==='log') _ecRerender(); })) ecMaybeAutoSnapshot(); }catch(e){}
   if(['now','res','log','inactive','unreg'].indexOf(ecView)<0) ecView='now';
   html+='<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> '+t('今の不備','Current')+' '+issues.length+'</div>'

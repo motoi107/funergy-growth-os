@@ -53,7 +53,7 @@ const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetE
   '_ecDateLabel', '_ecAtLabel', '_ecMeta', '_ecStoreRank', 'ecSortIssues', 'ecFilterIssues', '_ecBarHtml', '_ecHeadRow', '_ecSevBadge', '_ecCells',
   '_ecRowHtml', '_ecResRows', '_ecResView', 'ecOpenResolve', 'ecResolveGo', 'ecUndoResolve', 'ecSevMeta', 'setEcView', 'setEcRange', 'getEcLog',
   '_ecAttribute', 'ecSnapshot', 'ecMaybeAutoSnapshot', 'ecLogInRange', '_ecFalseSet', 'ecLogCounted', 'ecRenderLogView', 'renderErrorCenter',
-  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecRid', '_ecResKey', '_ecResExpired', 'mergeEcRes', '_coversEcRes',
+  'mergeMapByTime', '_coversMapByTime', '_recAt', 'mergeEcLog', '_ecLogSig', '_coversEcLog', '_ecRid', '_ecResKey', '_ecResExpired', '_ecResMark', '_ecResGone', 'mergeEcRes', '_coversEcRes',
   'ecCloseResolve', '_ecNaOk'];
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
 const RID = (key, fp = '') => key + '\u241e' + fp;
@@ -181,9 +181,26 @@ test('two devices clearing different issues keep both; the newer record wins (ti
     [RID('d')]: { key: 'd', fp: '', why: 'na', _at: NOW - 900 * day },
     [RID('e')]: { key: 'e', fp: '', why: 'done', _at: NOW - 300 * day },
   };
-  assert.deepEqual(Object.keys(mg(old, {})).sort(), [RID('c'), RID('d'), RID('e')]);
-  assert.deepEqual(Object.keys(mg({}, old)).sort(), [RID('c'), RID('d'), RID('e')]);
-  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(mg(old, {})) + ',' + JSON.stringify(old) + ')'), true, 'an expired record is not required in the cloud');
+  for (const merged of [mg(old, {}), mg({}, old)]) {
+    assert.deepEqual(Object.keys(merged).sort(), [RID('a'), RID('b'), RID('c'), RID('d'), RID('e')]);
+    // Undone / handled records shrink to a small undo mark (kept, so a stale copy cannot bring the clear back).
+    assert.deepEqual(merged[RID('a')], { key: 'a', fp: '', off: true, _m: 1, _at: NOW - 121 * day });
+    assert.deepEqual(merged[RID('b')], { key: 'b', fp: '', off: true, _m: 1, _at: NOW - 401 * day });
+    assert.equal(merged[RID('c')].why, 'false'); assert.equal(merged[RID('e')].why, 'done');
+  }
+  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(mg(old, {})) + ',' + JSON.stringify(old) + ')'), true, 'the shrunk cloud covers the long form');
+  // A device unused for months still holds the clear before it was undone: the mark in the cloud wins.
+  const stale = { [RID('a')]: { key: 'a', fp: '', why: 'false', _at: NOW - 200 * day } };
+  const back = mg(mg(old, {}), stale);
+  assert.equal(back[RID('a')].off, true, 'the old clear does not come back');
+  // Marks are dropped after three years.
+  assert.equal(RID('z') in mg({ [RID('z')]: { key: 'z', fp: '', off: true, _m: 1, _at: NOW - 1100 * day } }, {}), false);
+  assert.equal(run(c, '_coversEcRes({},' + JSON.stringify({ [RID('z')]: { key: 'z', fp: '', off: true, _m: 1, _at: NOW - 1100 * day } }) + ')'), true, 'a dropped mark is not required in the cloud');
+  // Same time, different content: the cloud covers only when it holds the version the merge would keep.
+  const RA = { [RID('t')]: { key: 't', fp: '', why: 'done', memo: 'a', _at: NOW - 5 } }, RB = { [RID('t')]: { key: 't', fp: '', why: 'false', memo: 'b', _at: NOW - 5 } };
+  const win = JSON.stringify(RA[RID('t')]) > JSON.stringify(RB[RID('t')]) ? RA : RB, lose = win === RA ? RB : RA;
+  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(lose) + ',' + JSON.stringify(win) + ')'), false);
+  assert.equal(run(c, '_coversEcRes(' + JSON.stringify(win) + ',' + JSON.stringify(lose) + ')'), true);
 });
 
 test('clearing: the reason, note, who and when are saved after reading the cloud; the issue leaves the list; undo brings it back', async () => {
@@ -374,6 +391,19 @@ test('the dialog: cancelling while the save waits for the cloud saves nothing; a
   release(); await p;
   assert.deepEqual(c.S.ec_resolutions || {}, {}, 'nothing saved after cancelling');
   assert.ok(c.toasts.some(t => /やめました/.test(t[0])));
+  // Closed by tapping outside, and another dialog opened while waiting: not saved either.
+  const btn = {}; let cur = btn, overlayOpen = true;
+  c.document = { querySelector: () => ({ value: 'done' }), getElementById: id => (id === 'ec-res-go' ? cur : id === 'modal-overlay' ? { classList: { contains: () => overlayOpen } } : null) };
+  run(c, '_ecShown=' + JSON.stringify(shown));
+  run(c, 'ecOpenResolve(' + tip + ')');
+  const p2 = run(c, 'ecResolveGo()');
+  cur = { other: true };   // a different dialog is open now
+  release(); await p2;
+  assert.deepEqual(c.S.ec_resolutions || {}, {}, 'nothing saved when another dialog replaced it');
+  c.document = { querySelector: () => ({ value: 'done' }), getElementById: id => (id === 'ec-res-go' ? btn : id === 'modal-overlay' ? { classList: { contains: () => true } } : null) };
+  run(c, 'ecOpenResolve(' + tip + ')');
+  const p3 = run(c, 'ecResolveGo()'); release(); await p3;
+  assert.equal(c.S.ec_resolutions[RID('tip|F01|2026-10-15')].why, 'done', 'a normal clear still saves');
   // "この店は対象外" is offered for tips, attendance and inventory, not for employee / onboarding / monthly close items.
   assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"", key:"k" })'), false, 'not without a store');
   assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"F01", key:"k" })'), true);
@@ -389,11 +419,22 @@ test('the daily log snapshot waits for the cloud read, so an issue cleared on an
   const cloud = { ec_resolutions: { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 9 } } };
   const c = app({ cloud });
   run(c, 'renderErrorCenter(true)');
+  run(c, 'ecSetSort("store"); renderErrorCenter(true)');   // drawn again while the read is still in flight
   assert.equal((c.S.ec_log || []).length, 0, 'not logged before the read');
   await tick();
   const today = (c.S.ec_log || []).filter(r => r.date === '2026-10-16').map(r => r.key);
   assert.ok(today.length > 0);
   assert.ok(!today.includes('tip|F01|2026-10-15'));
+});
+
+test('the past-log view opened first thing in the day is drawn again once today\'s rows are written', async () => {
+  const c = app({ cloud: { ec_resolutions: {} } });
+  run(c, 'ecView="log"');
+  const h = run(c, 'renderErrorCenter(true)');
+  assert.match(h, /記録された過去ログはまだありません/);
+  await tick();
+  assert.ok((c.S.ec_log || []).length > 0);
+  assert.deepEqual(c.rendered, ['tasks']);
 });
 
 test('opening the error center reads the cloud at most once a minute and redraws only while it is still open', async () => {
