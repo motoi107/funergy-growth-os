@@ -153,6 +153,11 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
   for (const n of FNS) parts.push(x.fn(n));
   if (v1085) {
     for (const n of FNS_1085) parts.push(x.fn(n));
+    // v1087: the undo of an approval reads the approval list from the cloud first and moves the item to a new generation.
+    if (x.has('function apPullLatest(')) { for (const n of ['apPullLatest', '_apOnApprovalPage', '_apRerender', '_apReopenRec', '_apGen', '_apRecordState']) parts.push(x.fn(n));
+      parts.push(x.line('var _apPullAt'), 'var curPage = "approval";');
+      // v1087 (Codex review of 79d5675): the undo writes one time on the record and the item; the record state looks at the time.
+      if (x.has('function _apRecTime(')) for (const n of ['_apStT', '_apMut', '_apRecTime', '_rtStT', '_rtNextT', '_rtTouchMut']) parts.push(x.fn(n)); }
     parts.push(x.block('/* FUNERGY_EMP_SYNC_BEGIN */', '/* FUNERGY_EMP_SYNC_END */'), x.block('/* FUNERGY_OFFBOARD_BEGIN */', '/* FUNERGY_OFFBOARD_END */'), 'var _obCompleting = {};',
       'var OP_MERGE = { offboardings: { merge: mergeOffboard, covers: _coversOffboard } };');
   } else parts.push('var OP_MERGE = {};');
