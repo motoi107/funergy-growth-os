@@ -47237,12 +47237,17 @@ function cancelApprovedVacation(id) {
   saveVacations(vacs);
   var _n=apReopenByRef('休暇', id, _rt, _g);   /* v1087: 承認センターの案件も承認待ちに戻す（もう一度承認できるように・同じ版） */
   v._dG=Math.max(_g, apRecGen('休暇', id)); saveVacations(vacs);   /* v1087: 取り消したあとの案件の版（前の版の決定はこの取り消しより古い） */
-  /* この端末に案件の写しが無いときは、読み直してから承認待ちに戻す（戻さないと、案件だけ承認のまま残る） */
-  if(!_n) apPullLatest().then(function(ok){
-    if(!ok || !apReopenByRef('休暇', id, _rt, _g)) return;
-    var vs=getVacations(), w=vs.find(function(x){ return x.id===id; });
-    if(w && w.status==='申請中' && !w._stK){ w._dG=Math.max(_rtDecG(w)||0, apRecGen('休暇', id)); saveVacations(vs); }
-  }, function(){});
+  /* この端末に案件の写しが無いときは、読み直してから承認待ちに戻す（戻さないと、案件だけ承認のまま残る）。読めない・見つからないときは知らせる */
+  var _has=function(){ return (ls('approvals',[])||[]).some(function(a){ return a && a.type==='休暇' && a.ref!=null && String(a.ref)===String(id); }); };
+  if(!_n && !_has()){
+    var _warn=function(){ try{ showToast(t('承認センターの案件を読み直せませんでした。承認センターで「最新に更新」して、この休暇の案件を確かめてください','Could not re-read the approval center. Refresh it and check this leave request there.'), 'warn'); }catch(_e){} };
+    apPullLatest().then(function(ok){
+      if(!ok){ _warn(); return; }
+      if(!apReopenByRef('休暇', id, _rt, _g)){ if(!_has()) _warn(); return; }   /* 案件が無い：知らせる（取り消したあとの版の案件だけなら、そのまま） */
+      var vs=getVacations(), w=vs.find(function(x){ return x.id===id; });
+      if(w && w.status==='申請中' && !w._stK){ w._dG=Math.max(_rtDecG(w)||0, apRecGen('休暇', id)); saveVacations(vs); }
+    }, _warn);
+  }
   showToast('承認を取り消しました','info');
   renderPage(curPage);
 }
@@ -68380,7 +68385,7 @@ function _apSyncRecStamp(type, ref, hit, st){
     var r=raw.find(function(x){ return x && String(x.id)===String(ref); });
     if(!r || String(r._stK||'')!==String(st.k)) return;   /* 記録がそのあと変わっていれば触らない */
     var ch=false;
-    if(!(_rtDecG(r)>=_apGen(a))){ r._dG=_apGen(a); ch=true; }   /* 読み直した案件の版（ほかの端末で取り消してあった）。下げない（手元の案件の写しが古いことがある） */
+    if(_rtDecG(r)==null || _rtDecG(r)<_apGen(a)){ r._dG=_apGen(a); ch=true; }   /* 読み直した案件の版（ほかの端末で取り消してあった）。下げない（手元の案件の写しが古いことがある） */
     if(String(a._stK)!==String(st.k)){ var t=_apStT(a); if(t>_rtDecT(r)){ r[field]=Math.max(t, Number(r[field])||0); r._stK=String(a._stK); r._dT=t; ch=true; } }
     if(ch) lsSet(key, raw);
   }catch(e){}
@@ -68400,8 +68405,8 @@ function apDecidedFromPage(type, ref, status, opt){
   var hit=_apResolveLocal(type, ref, status, opt);
   var stale=hit.length>0 && _apHitStale(type, ref, hit);   /* 古い写しなら、クラウドを読み直して新しい版の案件を済みにする */
   if(hit.length && !stale){ _apSyncRecStamp(type, ref, hit, opt.st); _apNotifyHits(hit, type, status, opt); return Promise.resolve(hit); }
-  var fin=function(h2){
-    if(!h2.length && stale) h2=hit;   /* 読み直せなかった・見つからなかった：手元の案件で知らせる */
+  var fin=function(h2, readOk){
+    if(!h2.length && stale && !readOk) h2=hit;   /* 読み直せなかった：手元の案件で知らせる（読めたら、ほかで同じ決定になっていれば知らせない） */
     _apSyncRecStamp(type, ref, h2, opt.st);
     if(opt._superseded){   /* ほかの端末の決定が申請に残った：この画面の決定は知らせない */
       try{ showToast(t('この申請は、ほかの端末で先に決まっていました。承認センターと申請はそちらに合わせました','This request was decided on another device first. The approval center and the request follow that decision.'), 'warn'); }catch(_e){}
@@ -68409,12 +68414,12 @@ function apDecidedFromPage(type, ref, status, opt){
     }
     if(h2.length || !_apDecidedElsewhere(type, ref, status)) _apNotifyHits(h2, type, status, opt); return h2; };
   return apPullLatest().then(function(ok){
-    if(!ok) return fin([]);
-    if(_apRecSuperseded(type, ref, opt)){ opt._superseded=true; return fin([]); }
+    if(!ok) return fin([], false);
+    if(_apRecSuperseded(type, ref, opt)){ opt._superseded=true; return fin([], true); }
     var h2=_apResolveLocal(type, ref, status, opt);
     if(!h2.length) h2=_apFollowPage(type, ref, status, opt);
-    return fin(h2);
-  }, function(){ return fin([]); });
+    return fin(h2, true);
+  }, function(){ return fin([], false); });
 }
 /* 申請した人が取り下げたとき（承認センターに「承認待ち」を残さない） */
 function apWithdrawByRef(type, ref){
@@ -68430,7 +68435,9 @@ function apReopenByRef(type, ref, t, minGen){
   try{
     var approvals=ls('approvals', []); var n=0;
     /* 承認待ちの案件も版を進める（申請は承認済み＝この端末の案件の写しが古い。進めないと、ほかの端末の承認の写しに負けて案件だけ承認に戻る） */
-    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='withdrawn'){ _apReopenRec(a, t, minGen); n++; } });
+    /* ただし取り消す決定より後の版（ほかの端末で取り消して決め直した・承認の途中）は触らない */
+    approvals.forEach(function(a){ if(a && a.type===type && a.ref!=null && String(a.ref)===String(ref) && a.status!=='withdrawn'
+      && (minGen==null ? a.status!=='pending' : (a.status==='approved' || _apGen(a)<minGen))){ _apReopenRec(a, t, minGen); n++; } });
     if(n) lsSet('approvals', approvals);
     return n;
   }catch(e){ return 0; }
