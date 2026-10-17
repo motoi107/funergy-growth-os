@@ -386,6 +386,40 @@ body.shift-wide .main { max-width:1900px; }
 .store-meta { font-size: 12px; color: var(--muted); }
 .progress-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 4px; }
 @media (max-width:640px){ .inv-table .d-wx{display:none} }
+/* v1088: エラーセンターの並べ替え・絞り込み・解除（UI案52 ②） */
+.ec-bar{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:12px 14px}
+.ec-fl{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.ec-bar select{min-height:38px;max-width:100%;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font:inherit;font-size:13px;padding:0 8px}
+.ec-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ec-chip{font:inherit;font-size:12px;min-height:34px;padding:0 11px;border-radius:99px;border:1px solid var(--border);background:var(--surface);color:var(--tm);cursor:pointer}
+.ec-chip.on{background:var(--tm);color:var(--surface);border-color:var(--tm)}
+.ec-list{background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:10px}
+.ec-row{display:grid;grid-template-columns:76px 78px minmax(80px,150px) 74px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--border);font-size:12.5px}
+.ec-row:first-child{border-top:none}
+.ec-row.ec-h{background:var(--surface2);font-size:10.5px;color:var(--muted);font-weight:700;padding:7px 14px}
+.ec-c{min-width:0;overflow-wrap:anywhere}
+.ec-sev{display:inline-block;font-size:10.5px;font-weight:800;border-radius:5px;padding:2px 7px;white-space:nowrap}
+.ec-t{font-weight:600;font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+.ec-d{font-size:11px;color:var(--muted);line-height:1.5;margin-top:1px;overflow-wrap:anywhere}
+.ec-now-changed{color:var(--yellow)}
+.ec-act{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.ec-act .btn{min-height:36px;white-space:nowrap}
+.ec-mbox{background:var(--surface2);border-radius:10px;padding:10px 12px;margin-bottom:12px}
+.ec-mmeta{font-size:11.5px;font-weight:700;margin-bottom:2px}
+.ec-why{border:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.ec-why legend{font-size:13px;font-weight:700;margin-bottom:6px;padding:0}
+.ec-why-o{display:flex;align-items:center;gap:10px;min-height:44px;border:1px solid var(--border);border-radius:10px;padding:0 12px;cursor:pointer;font-size:13px}
+.ec-why-o:has(input:checked){border-color:var(--accent);background:var(--surface2)}
+.ec-note{font-size:11.5px;color:var(--muted);line-height:1.6;margin:4px 0 10px}
+@media (max-width:760px){
+  .ec-row{display:flex;flex-wrap:wrap;gap:3px 8px;padding:11px 12px}
+  .ec-row.ec-h{display:none}
+  .ec-row:nth-child(2){border-top:none}
+  .ec-c-cat,.ec-c-st,.ec-c-dt{font-size:11px;color:var(--muted);align-self:center}
+  .ec-c-tx,.ec-c-act{flex:1 1 100%}
+  .ec-act{justify-content:flex-start}
+  .ec-act .btn{min-height:40px}
+}
 @media (max-width:640px){ .csc-et thead{display:none} .csc-et tr{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:7px 2px;border-bottom:1px solid var(--border)} .csc-et td{border:none!important;padding:0!important} .csc-et td:nth-child(1){flex:1 1 60%} .csc-et td:nth-child(3){flex:1 1 auto} .csc-et td:nth-child(5){display:none} }   /* v1062 */
 .progress-fill { height: 100%; border-radius: 2px; transition: width .3s; }
 
@@ -3309,11 +3343,11 @@ function mdSummaryStripHtml(stores, ym, sc, counts) {
         '月間予算 ' + mdMoney(tt.budMonth) + '<br>予測差 ' + mdSigned(tt.fcGap, 'money'),
         tt.budMonth > 0 ? Math.round(tt.forecast / tt.budMonth * 1000) / 10 : null);
   /* v1084: 「要対応」（管理統括と同じデータ）のタイルは、管理統括の廃止と一緒に外した */
-  var ac = counts.approvals, tc = counts.tasks, ec = counts.errors;
-  h += tile('承認・タスク・エラー', 'ti-checklist',
+  var ac = counts.approvals, ec = counts.errors;   /* v1088: タスクは廃止（UI案52 5A） */
+  h += tile('承認・エラー', 'ti-checklist',
         (ac || ec.high) ? 'var(--yellow)' : 'var(--green)',
-        ac + ' / ' + tc + ' / ' + ec.total,
-        '承認待ち ' + ac + '・本日のタスク ' + tc + '<br>エラー ' + ec.total
+        ac + ' / ' + ec.total,
+        '承認待ち ' + ac + '<br>エラー ' + ec.total
         + (ec.high ? '（要対応 ' + ec.high + '）' : ''), null);
   var dm = counts.missDays ? 'var(--yellow)' : 'var(--green)';
   h += tile('データの入り', 'ti-database', dm,
@@ -3323,7 +3357,7 @@ function mdSummaryStripHtml(stores, ym, sc, counts) {
   return h;
 }
 
-/* ---------- 右レール：承認・タスク・エラー ---------- */
+/* ---------- 右レール：承認・エラー（v1088: タスクは廃止） ---------- */
 function mdPendingApprovals(stores) {
   var out = [];
   try {
@@ -3338,17 +3372,8 @@ function mdPendingApprovals(stores) {
   } catch (e) { out = []; }
   return out;
 }
-function mdTodayTasks() {
-  try {
-    var today = todayISO();
-    return (getTasks() || []).filter(function (t) {
-      /* v948: _deleted を除く。手で削除したタスクがここに残っていた。 */
-      return t && !t._deleted && t.status !== '完了' && (!t.due || t.due <= today);
-    });
-  } catch (e) { return []; }
-}
 function mdErrors() {
-  try { return (typeof ecCollect === 'function') ? (ecCollect() || []) : []; }
+  try { return (typeof ecOpenIssues === 'function') ? (ecOpenIssues() || []) : []; }   /* v1088: 解除したものは出さない */
   catch (e) { return []; }
 }
 function mdListCard(title, icon, items, empty, page, render) {
@@ -3373,14 +3398,6 @@ function mdRailHtml(stores, counts) {
       return '<div class="md-li"><span class="md-pill" style="background:var(--accent)22;color:var(--accent)">'
         + escapeHtml(a.type || '申請') + '</span>'
         + '<span class="md-li-t">' + escapeHtml(a.title || '') + '</span></div>';
-    });
-  h += mdListCard('本日のタスク', 'ti-checklist', counts.taskList, '未完了のタスクはありません', 'tasks',
-    function (t) {
-      var late = t.due && t.due < todayISO();
-      return '<div class="md-li">'
-        + '<span class="md-pill" style="background:' + (late ? 'var(--red)22;color:var(--red)' : 'var(--surface2);color:var(--muted)') + '">'
-        + (late ? '期限超過' : '本日') + '</span>'
-        + '<span class="md-li-t">' + escapeHtml(t.title || t.name || '') + '</span></div>';
     });
   h += mdListCard('エラーセンター', 'ti-alert-circle', counts.errorList, 'エラーはありません', 'error_center',
     function (e) {
@@ -3418,12 +3435,10 @@ function renderMgmtDash() {
   var errs = mdErrors();
   var counts = {
     approvalList: mdPendingApprovals(stores),
-    taskList: mdTodayTasks(),
     errorList: errs,
     missDays: mdScopeTotals(stores, ym).missDays,
   };
   counts.approvals = counts.approvalList.length;
-  counts.tasks = counts.taskList.length;
   counts.errors = { total: errs.length, high: errs.filter(function (e) { return e.sev === 'high'; }).length };
 
   var h = head + '<div class="md-shell">';
@@ -3942,7 +3957,7 @@ const NAV_ITEMS = [
   {id:'growth_mgr',  label:'成長管理',  icon:'ti-chart-arcs',       roles:['ceo','gm','office','am','sl','chef']},
   {id:'ojt_admin',   label:'OJT管理',    icon:'ti-clipboard-text',   roles:['ceo','gm','am','sl','chef']},
   {id:'approval',    label:'承認センター',icon:'ti-circle-check',         roles:['ceo','gm','office','am','office_crew','chef']},
-  {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office']},
+  {id:'error_center',label:'エラーセンター',icon:'ti-alert-hexagon',    roles:['ceo','gm','office','office_crew']},   /* v1088（8A）: 事務Crew も */
   {id:'notifications',label:'通知',       icon:'ti-bell',             roles:['ceo','gm','office','office_crew','chef']},
   {id:'mypage',      label:'マイページ',     icon:'ti-user',             roles:['ceo','gm','office','am','sl','crew','office_crew','chef']},
   /* v897: 従業員割引カード。全グレード対象。ここを絞ると G1 に出ない。 */
@@ -4199,7 +4214,8 @@ function navResolvePage(page){
     if (budgetTab === 'meeting' || budgetTab === 'purchase') { page = budgetTab; budgetTab = 'daily'; }
     else if (budgetTab === 'analysis') budgetTab = 'daily';
   }
-  if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests')) workTab = 'today';
+  if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests' || workTab === 'tasks')) workTab = 'today';   /* v1088: タスク */
+  if (page === 'office_mgr' && typeof officeMgrTab !== 'undefined' && officeMgrTab === 'tasks') officeMgrTab = 'dash';
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, page)) {
     var to = NAV_RETIRED[page];
     page = navPageAllowed(to) ? to : navHomePage();
@@ -5425,9 +5441,7 @@ function halfMonthDates(dateISO) {
 var TIP_CC_FEE = 0.035;
 function getCashTips(storeId) { return ls('cash_tips_'+storeId, {}); }
 function setCashTips(storeId, data) {
-  lsSet('cash_tips_'+storeId, data);
-  /* v947: 入力した瞬間にその店のタスクを消す。次の日まで残らないように。 */
-  try{ if(typeof sweepCashTipTasks==='function') sweepCashTipTasks(storeId); }catch(e){}
+  lsSet('cash_tips_'+storeId, data);   /* v1088: タスクは廃止（未入力はエラーセンターと通知で） */
 }
 function getCashTip(storeId, date) { return getCashTips(storeId)[date] || {lunch:0, dinner:0, entered:false}; }
 /* L/D どちらか片方だけでも保存できる。両方入力済みで entered=true（未入力タスクも解消） */
@@ -5443,15 +5457,6 @@ function saveCashTipSides(storeId, date, lunchVal, dinnerVal) {
   if (prev.by) { rec.editedBy = myName(); rec.editedAt = nowJP(); }
   else { rec.by = myName(); rec.at = nowJP(); }
   d[date] = rec; setCashTips(storeId, d);
-  /* v854: 自動完了の条件を、エラー側とまったく同じ判定にそろえる。
-     rec.entered は L/D 両方の入力を要求するため、ランチ休の日は
-     ディナーを入れても false のままで、エラーは消えるのにタスクだけ残っていた。 */
-  var _done = (typeof cashTipMissing==='function') ? !cashTipMissing(storeId, date) : rec.entered;
-  if (_done) { try{
-    var _t = getTasks(); var _hit=false;
-    _t.forEach(function(t){ if(t.refId==='ctip_'+storeId+'_'+date && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); _hit=true; } });
-    if(_hit) lsSet('tasks_all', _t);
-  }catch(e){} }
 }
 function saveCashTip(storeId, date, lunch, dinner) {
   saveCashTipSides(storeId, date, lunch||0, dinner||0);
@@ -8223,7 +8228,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'lala_tasks','office_close','applicants','onboardings','approvals','evaluations','eval_history','meetings','growthhub',
   'invoices','notifications','approval_routing','notip_config','tip_notify_state','order_lists','order_templates','ot_requests','tip_requests','tip_history','shift_changes',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
-  'ec_log',
+  'ec_log','ec_resolutions',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
 /* v836: labor_hours_ を同期対象から外した。
@@ -8346,7 +8351,7 @@ function outboxLabel(key){
     ['fv_moves_','日次食材差異(入出庫)'],['fv_review_','日次食材差異(原因)'],['fv_config','日次食材差異(設定)'],
     ['cash_tips_','現金チップ'],['skills_st_','スキル'],['m_ingredients','食材マスタ'],['m_vendors','業者マスタ'],
     ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替'],['spl_checks_','チェック'],['checks','チェック'],
-    ['ec_log','エラーセンター記録'],['menu_log','メニュー変更ログ'],['reject_log','不採用ログ'],
+    ['ec_resolutions','エラーの解除'],['ec_log','エラーセンター記録'],['menu_log','メニュー変更ログ'],['reject_log','不採用ログ'],
     ['handbook_log','ハンドブック更新ログ'],['prep_history','仕込みレベル履歴'],['meeting_minutes','議事録']];
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return map[i][1]; }
   return k;
@@ -9716,7 +9721,7 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
   reimbursements: { merge: mergeInvoices, covers: _coversInvoices },
   checks:         { merge: mergeInvoices, covers: _coversInvoices },   /* v1030: 登録端末と経理端末が同じ行を書く */
-  tasks_all:      { merge: mergeTasks, covers: _coversTasks, after: function(){ try{ if(curPage==='tasks') renderPage('tasks'); }catch(e){} } },
+  tasks_all:      { merge: mergeTasks, covers: _coversTasks },   /* v1088: タスクは廃止（データと合流ルールは残す） */
   /* v722: 日次食材差異の設定。ings/recipes はエントリ単位で新しい方が勝つ(端末間で消えない) */
   fv_config:      { merge: mergeFvConfig, covers: _coversFvConfig },
   /* v748: ログ系。マージ定義が無いキーは syncMasterToSupabase が丸ごと上書きするため
@@ -9725,6 +9730,7 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
      prep_history は unshift(新しい順)で ts を持たず並びが壊れるため対象外。
      meeting_minutes は追記ログではなく丸ごと保存のため対象外。 */
   ec_log:         { merge: mergeEcLog,     covers: _coversEcLog },
+  ec_resolutions: { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1088: エラーの解除（記録ごとに新しいほう・元に戻すは off で上書き） */
   menu_log:       { merge: mergeAppendLog, covers: _coversLog },
   reject_log:     { merge: mergeAppendLog, covers: _coversLog },
   handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
@@ -9767,44 +9773,7 @@ function _coversTasks(check, want){
   }
   return true;
 }
-/* タスク画面を開いたら1回、クラウドとマージ取得＋この端末の分を押し上げ（消失防止・端末間復旧） */
-var _tasksSynced=false;      /* 互換のため残置（未使用） */
-var _tasksPulledAt=0;        /* v615: 最終取り込み時刻 */
-var _tasksPulling=false;
-/* v615: 以前は「セッション中1回だけ」しか取り込まず、アプリを開きっぱなしの端末に
-   他端末の新規タスクが永久に出なかった。→ 一定間隔で毎回取り込む方式に変更。 */
-function maybeSyncTasks(force){
-  if(typeof pullOpKey!=='function' || typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return;
-  if(_tasksPulling) return;
-  var now=Date.now();
-  if(!force && (now-_tasksPulledAt) < 20000) return;   // 20秒スロットル（連打・再描画で叩きすぎない）
-  _tasksPulling=true; _tasksPulledAt=now; _tasksSynced=true;
-  try{
-    pullOpKey('tasks_all').then(function(){
-      _tasksPulledAt=Date.now();
-      if(curPage==='tasks') renderPage('tasks');
-      if(typeof opMergePush==='function'){ return opMergePush('tasks_all', getTasks()); }
-    }).then(function(){
-      _tasksPulling=false; _tasksPulledAt=Date.now();
-      if(curPage==='tasks') renderPage('tasks');
-    }).catch(function(){ _tasksPulling=false; });
-  }catch(e){ _tasksPulling=false; }
-}
-/* 手動更新（タスク画面の「更新」ボタン） */
-function tasksSyncNow(){
-  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ showToast('自動同期がOFFです（同期センターでON）','warning'); return; }
-  showToast('タスクを同期中…','info');
-  maybeSyncTasks(true);
-}
-/* v615: アプリが前面に戻った時／再フォーカス時にタスクを取り込む（他端末の追加を拾う） */
-try{
-  document.addEventListener('visibilitychange', function(){
-    if(!document.hidden && typeof curPage!=='undefined' && curPage==='tasks'){ try{ maybeSyncTasks(); }catch(e){} }
-  });
-  window.addEventListener('focus', function(){
-    if(typeof curPage!=='undefined' && curPage==='tasks'){ try{ maybeSyncTasks(); }catch(e){} }
-  });
-}catch(e){}
+/* v1088: タスクの画面は廃止（UI案52 5A）。開いたときの読み直し（maybeSyncTasks・前面に戻ったとき）もやめた。データと合流ルール（mergeTasks）は残す */
 /* プレフィックス一致のマージ定義（動的キー用：skills_st_<store>） */
 /* キャッシュチップの店舗マップ {date:{lunch,dinner,lunchEntered,dinnerEntered,entered,by,at,editedBy,editedAt}} のマージ。
    日付で和集合／同一日付はL/D側ごとに保持（片方入力の取りこぼし防止）、値の衝突は editedAt||at の新しい方を優先。物理削除なし＝tombstone不要 */
@@ -13826,8 +13795,7 @@ async function enterAppWithSync(){
   try{ notifRealtimeStart(); }catch(e){}
   try{ checkShiftReminders(); }catch(e){}
   try{ checkTipPromotions(); }catch(e){}
-  try{ ensureRecurringTasks(); }catch(e){}
-  try{ taskDeadlineReminders(); }catch(e){}
+  /* v1088: くり返しのタスク・期限の知らせは、タスクと一緒に廃止（UI案52 5A） */
   try{ captureSkillSnapshots(); }catch(e){}
   // ログイン時に全店のToast売上を自動同期（バックグラウンド・UIはブロックしない）
   try{ loginToastAutoSync(); }catch(e){}
@@ -16415,8 +16383,7 @@ var FAV_TABS = {
   hiring:            [{k:'hiringTab', g:function(){return hiringTab;}, s:function(v){hiringTab=v;}}],
   ingredient_master: [{k:'_ingTab', g:function(){return window._ingTab;}, s:function(v){window._ingTab=v;}}],
   office_mgr:        [{k:'officeMgrTab', g:function(){return officeMgrTab;}, s:function(v){officeMgrTab=v;}}],
-  tasks:             [{k:'workTab', g:function(){return workTab;}, s:function(v){workTab=v;}},
-                      {k:'taskTab', g:function(){return taskTab;}, s:function(v){taskTab=v;}}],
+  tasks:             [{k:'workTab', g:function(){return workTab;}, s:function(v){workTab=v;}}],   /* v1088: タスクの小タブは廃止 */
   biz_guide:         [{k:'bizTab', g:function(){return bizTab;}, s:function(v){bizTab=v;}}],
   ojt_admin:         [{k:'bizTab', g:function(){return bizTab;}, s:function(v){bizTab=v;}}],
   growth_mgr:        [{k:'growthMgrTab', g:function(){return growthMgrTab;}, s:function(v){growthMgrTab=v;}}]
@@ -16436,7 +16403,8 @@ function _favRetired(f){
   var st = (f && f.state) || {};
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, f.page)) return true;
   if (f.page === 'budget' && st.budgetTab === 'analysis') return true;
-  if (f.page === 'tasks' && (st.workTab === 'mgmt' || st.workTab === 'requests')) return true;
+  if (f.page === 'tasks' && (st.workTab === 'mgmt' || st.workTab === 'requests' || st.workTab === 'tasks')) return true;   /* v1088: タスクは廃止 */
+  if (f.page === 'office_mgr' && st.officeMgrTab === 'tasks') return true;
   return false;
 }
 function getFavs(){
@@ -16621,15 +16589,11 @@ function renderDashboard() {
 
   // ---- データ収集（アラート用） ----
   var me = rc.name;
-  var allTasks = getTasks();
   var today = todayISO();
-  /* v948: _deleted を除く */
-  var myTasks = allTasks.filter(t=>t && !t._deleted && t.status!=='完了' && (t.assignee===me || t.assignee===''));
-  var overdue = myTasks.filter(t=>t.due && t.due < today);
-  var todayTasks = myTasks.filter(t=>t.due===today);
+  /* v1088: タスクは廃止（UI案52 5A）。優先アクション・本日の対応にタスクは出さない */
   var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending');
   var reqAlerts = [];
-  // GM/CEOは全社視点。店舗の必須チェック（店舗タスク）は優先アクション・本日のタスクから除外
+  // GM/CEOは全社視点。店舗の必須チェック（店舗タスク）は優先アクション・本日の対応から除外
   if (!['gm','ceo'].includes(curRole)) {
     getVisibleStores().forEach(s=>{ var ops=getDailyOps(s.id); var inc=ops.filter(t=>t.required&&!t.done); if(inc.length) reqAlerts.push({store:s.name, count:inc.length, id:s.id}); });
   }
@@ -16747,7 +16711,6 @@ function renderDashboard() {
   laborOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-clock-dollar', text:`${s.name} ${t('Labor超過','Labor over')} ${s.labor}%`, act:`switchStore('${s.id}');go('labor')`}));
   fcOver.forEach(s=>alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} ${t('Food Cost超過','Food cost over')} ${s.fc}%`, act:`switchStore('${s.id}');go('purchase')`}));
   reqAlerts.forEach(r=>alerts.push({lv:'danger', icon:'ti-checklist', text:`${r.store} ${t('必須チェック未完','Required incomplete')} ${r.count}${t('件','')}`, act:`switchStore('${r.id}');openStoreCmd()`}));
-  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`${t('期限切れタスク','Overdue tasks')} ${overdue.length}${t('件','')}`, act:`go('tasks')`});
   if (approvalsAll.length) alerts.push({lv:'warn', icon:'ti-checkbox', text:`${t('承認待ち','Pending approvals')} ${approvalsAll.length}${t('件','')}`, act:`go('approval')`});
   if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, act:`go('vacation')`});
   if (pendingOB) alerts.push({lv:'warn', icon:'ti-file-text', text:`${t('採用書類の確認待ち','Hiring docs to review')} ${pendingOB}${t('件','')}`, act:`goOnboarding()`});
@@ -16755,7 +16718,6 @@ function renderDashboard() {
   if (_inact) alerts.push({lv:'warn', icon:'ti-user-off', text:`${t('非アクティブの疑い','Possibly inactive')} ${_inact}${t('名','')}`, act:`go('staff_master')`});
   var _unreg = (['ceo','gm','am','office'].indexOf(curRole)>=0)?(function(){var l=unregisteredClockIns(window._unregDays||30);if(curRole==='am'){var ms=myAmStores();l=l.filter(function(x){return x.stores.some(function(s){return ms.indexOf(s)>=0;});});}return l.length;})():0;
   if (_unreg) alerts.push({lv:'warn', icon:'ti-user-question', text:`${t('未登録の打刻','Unregistered clock-ins')} ${_unreg}${t('名','')}`, act:`go('staff_master')`});
-  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`${t('本日期限タスク','Tasks due today')} ${todayTasks.length}${t('件','')}`, act:`go('tasks')`});
 
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}">
     <div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
@@ -16773,21 +16735,17 @@ function renderDashboard() {
   }
   html += `</div>`;
 
-  // ====== ④ 本日のタスク（隠さない） ======
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日のタスク',"Today's tasks")}`;
-  var openCount = myTasks.length + approvalsAll.length + pendingVac + pendingOB + reqAlerts.reduce((a,r)=>a+r.count,0);
+  // ====== ④ 本日の対応（隠さない）v1088: タスクは廃止。承認・休暇・採用書類・必須チェックだけ ======
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日の対応',"Today's actions")}`;
+  var openCount = approvalsAll.length + pendingVac + pendingOB + reqAlerts.reduce((a,r)=>a+r.count,0);
   html += ` <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}${t('件','')}</span></div>`;
   var taskRows = [];
-  overdue.slice(0,5).forEach(t=>taskRows.push({s:'danger', t:t.title, sub:(curLang==='en'?'Overdue':'期限切れ'), act:`go('tasks')`}));
-  todayTasks.slice(0,5).forEach(t=>taskRows.push({s:'warn', t:t.title, sub:(curLang==='en'?'Due today':'本日期限'), act:`go('tasks')`}));
   if (approvalsAll.length) taskRows.push({s:'active', t:`${t('承認待ち','Pending approvals')} ${approvalsAll.length}${t('件','')}`, sub:t('承認センター','Approval Center'), act:`go('approval')`});
   if (pendingVac) taskRows.push({s:'active', t:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, sub:t('休暇申請','Vacation'), act:`go('vacation')`});
   if (pendingOB) taskRows.push({s:'active', t:`${t('採用書類の確認待ち','Hiring docs to review')} ${pendingOB}${t('件','')}`, sub:t('オンボーディング','Onboarding'), act:`goOnboarding()`});
   reqAlerts.forEach(r=>taskRows.push({s:'danger', t:`${r.store} ${t('必須チェック','Required check')}`, sub:`${r.count}${t('件未完',' incomplete')}`, act:`switchStore('${r.id}');openStoreCmd()`}));
-  var otherTasks = myTasks.filter(t=>!overdue.includes(t)&&!todayTasks.includes(t));
-  otherTasks.slice(0,4).forEach(tk=>taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}));
   if (!taskRows.length) {
-    html += `<div style="text-align:center;color:var(--green);padding:14px"><i class="ti ti-circle-check" style="font-size:22px"></i><div style="font-size:13px;margin-top:4px">${t('本日のタスクは完了です','All tasks done for today')}</div></div>`;
+    html += `<div style="text-align:center;color:var(--green);padding:14px"><i class="ti ti-circle-check" style="font-size:22px"></i><div style="font-size:13px;margin-top:4px">${t('本日の対応はありません','Nothing to handle today')}</div></div>`;
   } else {
     taskRows.forEach(r=>{
       var st = r.s==='danger'?'danger':r.s==='warn'?'warn':r.s==='active'?'active':'idle';
@@ -16848,12 +16806,7 @@ function renderSlFunergyNow(){
     if (s.fc>34) alerts.push({lv:'danger', icon:'ti-receipt', text:`${s.name} ${t('Food Cost超過','Food cost over')} ${s.fc}%`, act:`switchStore('${s.id}');go('purchase')`});
   });
   myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) alerts.push({lv:'danger', icon:'ti-checklist', text:`${s.name} ${t('必須チェック未完','Required incomplete')} ${inc.length}${t('件','')}`, act:`switchStore('${s.id}');openStoreCmd()`}); });
-  /* v948: _deleted を除く */
-  var myTasks = getTasks().filter(function(t){ return t && !t._deleted && t.status!=='完了' && t.assignee===me; });
-  var overdue = myTasks.filter(function(t){ return t.due && t.due<todayStr; });
-  var todayTasks = myTasks.filter(function(t){ return t.due===todayStr; });
-  if (overdue.length) alerts.push({lv:'warn', icon:'ti-alarm', text:`${t('期限切れタスク','Overdue tasks')} ${overdue.length}${t('件','')}`, act:`go('tasks')`});
-  if (todayTasks.length) alerts.push({lv:'warn', icon:'ti-clock', text:`${t('本日期限タスク','Tasks due today')} ${todayTasks.length}${t('件','')}`, act:`go('tasks')`});
+  /* v1088: タスクは廃止（UI案52 5A） */
   var pendingVac = getVacations().filter(function(v){ return v.status==='申請中' && canApproveVacation(v); }).length;
   if (pendingVac) alerts.push({lv:'warn', icon:'ti-beach', text:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, act:`go('vacation')`});
   html += `<div class="card" style="border-left:4px solid ${alerts.length?statusColor(alerts[0].lv):'var(--green)'}"><div class="card-title"><i class="ti ti-bell" style="color:var(--accent)"></i>${t('優先アクション','Priority Actions')}</div>`;
@@ -16866,20 +16819,16 @@ function renderSlFunergyNow(){
   }
   html += `</div>`;
 
-  // 本日のタスク（配属店舗）
+  // 本日の対応（配属店舗）v1088: タスクは廃止。休暇・必須チェックだけ
   var reqAlerts = [];
   myStores.forEach(function(s){ var inc=getDailyOps(s.id).filter(function(t){return t.required&&!t.done;}); if(inc.length) reqAlerts.push({store:s.name, id:s.id, count:inc.length}); });
   var taskRows = [];
-  overdue.slice(0,5).forEach(function(tk){ taskRows.push({s:'danger', t:tk.title, sub:t('期限切れ','Overdue'), act:`go('tasks')`}); });
-  todayTasks.slice(0,5).forEach(function(tk){ taskRows.push({s:'warn', t:tk.title, sub:t('本日期限','Due today'), act:`go('tasks')`}); });
   if (pendingVac) taskRows.push({s:'active', t:`${t('休暇承認待ち','Vacation approvals')} ${pendingVac}${t('件','')}`, sub:t('休暇申請','Vacation'), act:`go('vacation')`});
   reqAlerts.forEach(function(r){ taskRows.push({s:'danger', t:`${r.store} ${t('必須チェック','Required check')}`, sub:`${r.count}${t('件未完',' incomplete')}`, act:`switchStore('${r.id}');openStoreCmd()`}); });
-  var otherTasks = myTasks.filter(function(tk){ return overdue.indexOf(tk)<0 && todayTasks.indexOf(tk)<0; });
-  otherTasks.slice(0,4).forEach(function(tk){ taskRows.push({s:'idle', t:tk.title, sub:tk.due||t('期限なし','No due date'), act:`go('tasks')`}); });
-  var openCount = myTasks.length + pendingVac + reqAlerts.reduce(function(a,r){return a+r.count;},0);
-  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日のタスク','Today Tasks')} <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}${t('件','')}</span></div>`;
+  var openCount = pendingVac + reqAlerts.reduce(function(a,r){return a+r.count;},0);
+  html += `<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>${t('本日の対応',"Today's actions")} <span class="tag ${openCount?'tag-yellow':'tag-green'}" style="margin-left:auto">${openCount}${t('件','')}</span></div>`;
   if (!taskRows.length) {
-    html += `<div style="text-align:center;color:var(--green);padding:14px"><i class="ti ti-circle-check" style="font-size:22px"></i><div style="font-size:13px;margin-top:4px">${t('本日のタスクは完了です','All tasks done for today')}</div></div>`;
+    html += `<div style="text-align:center;color:var(--green);padding:14px"><i class="ti ti-circle-check" style="font-size:22px"></i><div style="font-size:13px;margin-top:4px">${t('本日の対応はありません','Nothing to handle today')}</div></div>`;
   } else {
     taskRows.forEach(function(r){ var st=r.s==='danger'?'danger':r.s==='warn'?'warn':r.s==='active'?'active':'idle';
       html += `<div onclick="${r.act}" style="display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer">${statusDot(st,9)}<div style="flex:1"><div style="font-size:13px">${r.t}</div><div style="font-size:10px;color:var(--muted)">${r.sub}</div></div><i class="ti ti-chevron-right" style="font-size:13px;color:var(--muted)"></i></div>`;
@@ -16994,9 +16943,7 @@ function renderStoreCmd() {
   var reqItems = ops.filter(t=>t.required);
   var reqIncomplete = reqItems.filter(t=>!t.done);
   var goals = ls('goals_v2', []).filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
-  /* v948: _deleted を除く */
-  var tasks = getTasks().filter(t=>t && !t._deleted && (t.store===storeId||t.store==='ALL') && t.status!=='完了');
-  var canEdit = ROLE_CONFIG[curRole].canCreate;
+  var canEdit = ROLE_CONFIG[curRole].canCreate;   /* v1088: タスクの入口は廃止 */
   var dailyComplete = ops.length>0 && opsDone===ops.length;
   var cfg = getStoreOpsConfig();
 
@@ -17125,8 +17072,7 @@ function renderStoreCmd() {
 
   // 管理リンク（編集権限者のみ）
   if (canEdit) {
-    html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
-      <button class="btn btn-secondary btn-sm" onclick="go('tasks')"><i class="ti ti-list-check"></i> ${t('タスク','Tasks')} (${tasks.length})</button>
+    html += `<div style="display:grid;grid-template-columns:1fr;gap:8px;margin-top:4px">
       <button class="btn btn-secondary btn-sm" onclick="go('required')"><i class="ti ti-settings"></i> ${t('必須チェック設定','Required setup')}</button>
     </div>`;
   }
@@ -20115,7 +20061,7 @@ function pageSyncBar(opts){
 var SYNC_SCOPE_META = {
   dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
   budget:  { label:'予実', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
-  tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await maybeSyncTasks(true); }catch(e){} } },
+  tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await apPullLatest(); }catch(e){} try{ await ecPullLatest(); }catch(e){} } },   /* v1088: タスクは廃止。承認とエラーの解除を読み直す */
   hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
   food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
@@ -22558,21 +22504,6 @@ function meetActionToTask(storeId, ym, kpiKey){
   if(all[storeId]&&all[storeId][ym]&&all[storeId][ym][kpiKey]){ all[storeId][ym][kpiKey].taskId=tk.id; lsSet('meeting_reviews',all); }
   if(typeof showToast==='function') showToast(t('タスク化しました','Task created')+(tk.assignee?('（'+tk.assignee+t('へ通知','notified')+'）'):''),'success');
   renderPage(budPage());
-}
-function _meetTaskSection(store){
-  var tasks=[]; try{ tasks=getTasksN().filter(function(t){ return t.store===store.id && t.status!=='完了'; }); }catch(e){}
-  tasks.sort(function(a,b){ var da=a.due||'9999', db=b.due||'9999'; return da<db?-1:da>db?1:0; });
-  var h='<div class="card" style="border-left:3px solid var(--accent2)"><div class="card-title" style="display:flex;align-items:center"><i class="ti ti-list-check" style="color:var(--accent2)"></i>'+t('取り組み中のタスク','Active tasks')+' <span style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(store.name)+'</span>'
-    +'<button class="btn btn-primary btn-sm" style="margin-left:auto" onclick="openTaskModal(\'店舗\',\''+store.id+'\')"><i class="ti ti-plus"></i> '+t('MTGタスク追加','Add task')+'</button></div>';
-  if(!tasks.length){ h+='<div style="font-size:12px;color:var(--muted);padding:6px 2px">'+t('未完了のタスクはありません。MTGで決めた対策を「追加」して担当に割り当てましょう。','No open tasks. Add actions decided in the MTG and assign an owner.')+'</div>'; }
-  else { tasks.forEach(function(tk){ var di=taskDueInfo(tk.due); var sc=taskStatusColor(tk.status);
-    h+='<div onclick="openTaskDetail(\''+tk.id+'\')" style="display:flex;align-items:center;gap:8px;padding:8px 2px;border-top:1px solid var(--border);cursor:pointer">'
-      +'<span style="width:8px;height:8px;border-radius:50%;background:'+sc+';flex-shrink:0"></span>'
-      +'<div style="flex:1;min-width:0"><div style="font-size:12.5px;font-weight:600;color:var(--tm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(tk.title)+'</div>'
-      +'<div style="font-size:10px;color:var(--muted)"><i class="ti ti-user"></i> '+(tk.assignee?escapeHtml(tk.assignee):('<span style="color:var(--red)">'+t('未割当','Unassigned')+'</span>'))+'　<span class="tag" style="background:'+sc+';color:#fff;font-size:8.5px;padding:1px 6px">'+tk.status+'</span>'+(di.label?('　<span style="color:'+di.color+'">'+di.label+'</span>'):'')+'</div></div>'
-      +'<i class="ti ti-chevron-right" style="color:var(--muted)"></i></div>'; });
-  }
-  h+='</div>'; return h;
 }
 /* 1店舗の会議カード */
 /* 目標vs実績の1行: 実績を主役（大・色）、目標は併記、あと◯◯は小さく */
@@ -29378,11 +29309,6 @@ function totoyaBowlMatrixCard(scopeStores, days){
 function bizDowIdx(ymd){
   var p=String(ymd).split('-');
   return new Date(Date.UTC(+p[0], (+p[1])-1, +p[2])).getUTCDay();
-}
-/* v987: 業務日どうしの日数差（a − b）。カレンダー日で数える。 */
-function bizDayDiff(a, b){
-  var pa=String(a).split('-'), pb=String(b).split('-');
-  return Math.round((Date.UTC(+pa[0],(+pa[1])-1,+pa[2]) - Date.UTC(+pb[0],(+pb[1])-1,+pb[2]))/86400000);
 }
 function initDateAdd(ymd, n){
   var p=String(ymd).split('-');
@@ -36300,6 +36226,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'emp_dirty_q',       /* v1085: 従業員の送れていない変更（退職など。端末だけ・再生不可） */
   'lunch_challenge',   /* v1080: Tenkichi ランチチャレンジ（月の設定・日の印・確定・食事会。手入力・再生不可） */
   'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
+  'ec_resolutions',    /* v1088: エラーの解除（誰が・いつ・どの理由で。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
@@ -37640,7 +37567,9 @@ function ecDetOverwork(){
         var stores = Object.keys(r.byStore);
         var stName = stores.map(_owStoreName).join('・');
         /* 題名に実績時間を入れない：進行中の週で時間が伸びるたびに別件として溜まるのを防ぐ */
+        /* v1088: 人と週ごと。fp＝上限（時間が伸びても、解除したものはまた出さない。上限を変えたら出す） */
         issues.push({
+          key: 'ow|' + r.name + '|' + sun, fp: String(r.max), store: stores[0] || '', stores: stores, date: rg.from, dateLabel: rg.label, who: r.name,
           sev: (r.over>=8 ? 'high' : 'mid'),
           cat: '勤怠',
           title: r.name + '：' + stName + ' ' + rg.label + ' 上限' + r.max + 'h超過（' + (r.grade||'等級未設定') + '）',
@@ -37994,7 +37923,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1087';
+const APP_VERSION = '1088';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43206,7 +43135,6 @@ async function botCopyDraft(){
   try{await navigator.clipboard.writeText(el.value);showToast(t('コピーしました（未送信）','Copied (not sent)'),'success');}
   catch(e){el.focus();el.select();showToast(t('文章を選択しました。手動でコピーしてください','Text selected. Please copy manually.'),'warning');}
 }
-function botOpenTasks(){ if(botCanView()){_acCat='review';acSetSub('task');} }
 /* v1016: renderBotLocalCenter は下の「見た目をそろえる」ブロックへ移した */
 /* FUNERGY_BOT_SHARED_BEGIN */
 var _botBatch=null;
@@ -43665,10 +43593,7 @@ function renderBotLocalCenter(){
     h+='</div>';
   }
   h+='<div class="bot-note" style="border-top:1px dashed var(--border);padding-top:6px;margin-top:10px">'+t('退勤時刻が保存されていない打刻は、この一覧には含まれません。','Entries without stored clock-out times are not included in this list.')+'</div></div>';
-  h+='<div class="card"><div class="card-title"><i class="ti ti-shopping-cart"></i>'+t('発注・対応管理','Purchasing and follow-up')+'</div>'
-    +'<div class="bot-grid2">'
-    +'<button class="btn btn-secondary btn-sm" onclick="botOpenTasks()"><i class="ti ti-list-check"></i> '+t('経理タスクを開く','Open accounting tasks')+'</button></div>'
-    +'<div class="bot-note">'+t('LINEからの依頼と対応履歴は、業務Botの共有案件で管理します。','Manage LINE requests and follow-up history in the shared cases view.')+'</div></div>';
+  h+='<div class="bot-note" style="margin-top:6px">'+t('LINEからの依頼と対応履歴は、業務Botの共有案件で管理します。','Manage LINE requests and follow-up history in the shared cases view.')+'</div>';   /* v1088: 経理タスクへの入口は廃止（UI案52 5A） */
   return h;
 }
 function botLoginModal(){
@@ -46407,8 +46332,7 @@ var AC_TABS = [
       { id:'purchase', label:'仕入明細',       fn:'renderPurchaseDetail' },
       { id:'vendor',   label:'業者マスター',   fn:'renderVendorMaster' },
       { id:'acctrev',  label:'区分・承認',     fn:'renderAcctReview' },
-      { id:'err',      label:'エラーセンター', fn:'acErrBody' },
-      { id:'task',     label:'タスク',         fn:'renderOfficeTasks' },
+      { id:'err',      label:'エラーセンター', fn:'acErrBody' },   /* v1088: タスクは廃止（UI案52 5A） */
       { id:'appr',     label:'報告・承認',     fn:'renderApproval' }
   ]},
   { id:'tip', label:'Tip＆シフトリーダー', icon:'ti-coin', subs:[
@@ -52262,25 +52186,29 @@ function ecDetEmpMaster(){
   var byName={}, byEmail={};
   emps.forEach(function(e){
     var nm=e.name||e.id, fix={label:'編集',action:"openEmpModal('"+e.id+"')"};
+    /* v1088: 解除のための印（key＝どの人のどの不備か・fp＝中身。中身が変われば解除していてもまた出す） */
+    var sid=(e.store && e.store!=='ALL') ? e.store : '';
+    function add(type, sev, title, detail, fp){ issues.push({sev:sev,cat:'従業員',title:title,detail:detail,fix:fix,key:'emp|'+type+'|'+(e.id||nm),fp:String(fp==null?'':fp),store:sid,who:nm}); }
     // ステータス不整合
-    if(!e.status) issues.push({sev:'mid',cat:'従業員',title:nm+'：ステータス未設定',detail:'在籍状況（在籍/研修中/休職/退職）が未設定です。',fix:fix});
-    if(e.resignDate && e.status!=='退職') issues.push({sev:'mid',cat:'従業員',title:nm+'：退職日ありだが在籍中',detail:'退職日（'+e.resignDate+'）が設定済みですが、ステータスが退職ではありません。',fix:fix});
-    if(e.status==='退職' && !e.resignDate) issues.push({sev:'mid',cat:'従業員',title:nm+'：退職だが退職日なし',detail:'ステータスが退職ですが退職日が未入力です。',fix:fix});
+    if(!e.status) add('status','mid',nm+'：ステータス未設定','在籍状況（在籍/研修中/休職/退職）が未設定です。','');
+    if(e.resignDate && e.status!=='退職') add('resign','mid',nm+'：退職日ありだが在籍中','退職日（'+e.resignDate+'）が設定済みですが、ステータスが退職ではありません。',e.resignDate+'|'+e.status);
+    if(e.status==='退職' && !e.resignDate) add('noresign','mid',nm+'：退職だが退職日なし','ステータスが退職ですが退職日が未入力です。','');
     // 配属店舗未設定（＝店舗未登録）
-    if(_ecEmpAlive(e) && (!e.store||e.store==='ALL') && e.role!=='office'&&e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office_crew') issues.push({sev:'mid',cat:'従業員',title:nm+'：配属店舗が未設定',detail:'在籍中ですが配属店舗が未設定です（打刻・集計・チップに影響）。',fix:fix});
+    if(_ecEmpAlive(e) && (!e.store||e.store==='ALL') && e.role!=='office'&&e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office_crew') add('store','mid',nm+'：配属店舗が未設定','在籍中ですが配属店舗が未設定です（打刻・集計・チップに影響）。','');
     // 連絡先・DOB
-    if(_ecEmpAlive(e) && !(e.email&&e.email.trim())) issues.push({sev:'low',cat:'従業員',title:nm+'：Email未登録',detail:'通知・招待が届きません。',fix:fix});
-    if(_ecEmpAlive(e) && !(e.dob&&String(e.dob).trim())) issues.push({sev:'low',cat:'従業員',title:nm+'：生年月日 未登録',detail:'生年月日が未登録です。',fix:fix});
+    if(_ecEmpAlive(e) && !(e.email&&e.email.trim())) add('email','low',nm+'：Email未登録','通知・招待が届きません。','');
+    if(_ecEmpAlive(e) && !(e.dob&&String(e.dob).trim())) add('dob','low',nm+'：生年月日 未登録','生年月日が未登録です。','');
     // 給与係数の不整合（チップ対象外なのにチップ係数）
-    if(typeof isTipExcludedTitle==='function' && isTipExcludedTitle(e.title) && e.coef && e.coef>1) issues.push({sev:'low',cat:'従業員',title:nm+'：チップ係数の不整合',detail:'チップ対象外の役職（'+e.title+'）ですが、チップ係数が'+e.coef+'に設定されています。',fix:fix});
+    if(typeof isTipExcludedTitle==='function' && isTipExcludedTitle(e.title) && e.coef && e.coef>1) add('coef','low',nm+'：チップ係数の不整合','チップ対象外の役職（'+e.title+'）ですが、チップ係数が'+e.coef+'に設定されています。',e.title+'|'+e.coef);
     // 重複収集
     if(_ecEmpAlive(e)){
       var k=(e.name||'').trim(); if(k){ byName[k]=(byName[k]||0)+1; }
       var em=(e.email||'').trim().toLowerCase(); if(em){ byEmail[em]=(byEmail[em]||0)+1; }
     }
   });
-  Object.keys(byName).forEach(function(k){ if(byName[k]>1) issues.push({sev:'low',cat:'従業員',title:'氏名の重複：'+k+'（'+byName[k]+'件）',detail:'同じ氏名の在籍者が複数います。別人なら問題ありませんが確認推奨。',fix:{label:'マスター',action:"go('staff_master')"}}); });
-  Object.keys(byEmail).forEach(function(k){ if(byEmail[k]>1) issues.push({sev:'mid',cat:'従業員',title:'Emailの重複：'+k+'（'+byEmail[k]+'件）',detail:'同じEmailが複数の在籍者に登録されています。',fix:{label:'マスター',action:"go('staff_master')"}}); });
+  /* v1088: 重複は「同じ名前・同じ Email」ごと。人数が変われば、解除していてもまた出す */
+  Object.keys(byName).forEach(function(k){ if(byName[k]>1) issues.push({sev:'low',cat:'従業員',title:'氏名の重複：'+k+'（'+byName[k]+'件）',detail:'同じ氏名の在籍者が複数います。別人なら問題ありませんが確認推奨。',fix:{label:'マスター',action:"go('staff_master')"},key:'empdup|name|'+k,fp:String(byName[k]),store:'',who:k}); });
+  Object.keys(byEmail).forEach(function(k){ if(byEmail[k]>1) issues.push({sev:'mid',cat:'従業員',title:'Emailの重複：'+k+'（'+byEmail[k]+'件）',detail:'同じEmailが複数の在籍者に登録されています。',fix:{label:'マスター',action:"go('staff_master')"},key:'empdup|email|'+k,fp:String(byEmail[k]),store:''}); });
   return issues;
 }
 
@@ -52289,7 +52217,7 @@ function ecDetCashTip(){
   var issues=[], dates=_ecClosedDates(14);   /* v854: 当日は出さない */
   (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
     dates.forEach(function(dt){
-      try{ if(cashTipMissing(st.id, dt)){ issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップ未登録',detail:'クレジットチップの記録はありますが現金チップが未入力です。現金が無い場合も「0」で確定が必要です。',fix:{label:'入力',action:"openCashTipModal('"+st.id+"','"+dt+"')"}}); } }catch(e){}
+      try{ if(cashTipMissing(st.id, dt)){ issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップ未登録',detail:'クレジットチップの記録はありますが現金チップが未入力です。現金が無い場合も「0」で確定が必要です。',fix:{label:'入力',action:"openCashTipModal('"+st.id+"','"+dt+"')"},key:'tip|'+st.id+'|'+dt,fp:'',store:st.id,date:dt}); } }catch(e){}
     });
   });
   return issues;
@@ -52304,7 +52232,9 @@ function ecDetClock(){
       if(!labor) return;
       Object.keys(labor).forEach(function(nm){
         var e=labor[nm];
-        if(e&&e.shifts&&e.shifts.some(function(s){return s.inDate&&!s.outDate;})) issues.push({sev:'high',cat:'勤怠',title:st.name+'：'+dt+' '+nm+' 退勤打刻漏れ',detail:'出勤打刻はありますが退勤打刻がありません。勤怠・給与計算に影響します。',fix:{label:'勤怠',action:"go('tip')"}});
+        var _open=(e&&e.shifts)?e.shifts.filter(function(s){return s&&s.inDate&&!s.outDate;}):[];
+        /* v1088: fp＝退勤の無い打刻の出勤時刻。打刻が直る・変わると、解除していてもまた出す */
+        if(_open.length) issues.push({sev:'high',cat:'勤怠',title:st.name+'：'+dt+' '+nm+' 退勤打刻漏れ',detail:'出勤打刻はありますが退勤打刻がありません。勤怠・給与計算に影響します。',fix:{label:'勤怠',action:"go('tip')"},key:'clock|'+st.id+'|'+dt+'|'+nm,fp:_open.map(function(s){return String(s.inDate);}).join(','),store:st.id,date:dt,who:nm});
       });
     });
   });
@@ -52317,10 +52247,12 @@ function ecDetOnboard(){
   obs.forEach(function(o){
     if(o.obStatus==='登録完了') return;
     var nm=o.name||(o.personal&&o.personal.name)||'(無名)';
+    /* v1088: 1 件のオンボーディングごと。fp＝状態（状態が変われば、解除していてもまた出す） */
+    var _k={key:'ob|'+(o.id||nm),fp:String(o.obStatus||''),store:o.store||'',who:nm};
     if(o.obStatus==='提出完了'||o.obStatus==='I-9確認待ち'||o.obStatus==='経理確認中'||o.obStatus==='Payroll登録中')
-      issues.push({sev:'mid',cat:'OB',title:nm+'：Office対応待ち（'+o.obStatus+'）',detail:'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}});
+      issues.push(Object.assign({sev:'mid',cat:'OB',title:nm+'：Office対応待ち（'+o.obStatus+'）',detail:'オンボーディングがOffice側の対応待ちです。',fix:{label:'採用',action:"go('hiring')"}},_k));
     else if(o.obStatus==='本人入力待ち'||o.obStatus==='差し戻し')
-      issues.push({sev:'low',cat:'OB',title:nm+'：本人入力待ち（'+o.obStatus+'）',detail:'招待済みですが本人の入力が完了していません。',fix:{label:'採用',action:"go('hiring')"}});
+      issues.push(Object.assign({sev:'low',cat:'OB',title:nm+'：本人入力待ち（'+o.obStatus+'）',detail:'招待済みですが本人の入力が完了していません。',fix:{label:'採用',action:"go('hiring')"}},_k));
   });
   return issues;
 }
@@ -52334,7 +52266,8 @@ function ecDetClose(){
   if(typeof OFFICE_CLOSE_ITEMS==='undefined') return issues;
   var done=getOfficeClose(ym), total=OFFICE_CLOSE_ITEMS.length;
   var doneN=OFFICE_CLOSE_ITEMS.filter(function(it){return done[it.id];}).length;
-  if(doneN<total) issues.push({sev:'mid',cat:'月次締め',title:ymLabelJP(ym)+'の締めが未完了（'+doneN+'/'+total+'）',detail:'前月の月次締めチェックリストに未完了の項目があります。',fix:{label:'Office',action:"go('office_mgr')"}});
+  /* v1088: その月ごと（済んだ項目が増えても、解除したものはまた出さない） */
+  if(doneN<total) issues.push({sev:'mid',cat:'月次締め',title:ymLabelJP(ym)+'の締めが未完了（'+doneN+'/'+total+'）',detail:'前月の月次締めチェックリストに未完了の項目があります。',fix:{label:'Office',action:"go('office_mgr')"},key:'close|'+ym,fp:'',store:'',date:ym});
   return issues;
 }
 
@@ -52355,7 +52288,8 @@ function ecDetInventory(){
           var ratio=Math.abs(ln.diff)/ln.theory;
           if(ratio>=0.5&&Math.abs(ln.diff)>=3) problems.push('理論比'+Math.round(ratio*100)+'%差');
         }
-        if(problems.length) issues.push({sev:'mid',cat:'棚卸',title:st.name+'：'+(ln.name||'品目')+' 異常値',detail:problems.join('・')+'（実棚 '+ln.actual+' ／理論 '+ln.theory+' ／差 '+ln.diff+'）・'+(snap.date||''),fix:{label:'棚卸',action:"go('inventory')"}});
+        /* v1088: 店舗・棚卸の種類・品目ごと。fp＝その棚卸の日と数（次の棚卸・数の直しでまた出す） */
+        if(problems.length) issues.push({sev:'mid',cat:'棚卸',title:st.name+'：'+(ln.name||'品目')+' 異常値',detail:problems.join('・')+'（実棚 '+ln.actual+' ／理論 '+ln.theory+' ／差 '+ln.diff+'）・'+(snap.date||''),fix:{label:'棚卸',action:"go('inventory')"},key:'inv|'+st.id+'|'+(key.indexOf('daily')>=0?'d':'m')+'|'+(ln.id||ln.name||''),fp:[snap.ym||snap.date||'',ln.actual,ln.theory,ln.diff].join('|'),store:st.id,date:_snapIso||''});
       });
     });
   });
@@ -52363,16 +52297,263 @@ function ecDetInventory(){
 }
 
 var EC_DETECTORS=[ecDetCashTip, ecDetClock, ecDetOverwork, ecDetEmpMaster, ecDetOnboard, ecDetClose, ecDetInventory];   /* v793: オーバーワーク / v1084: 備品発注の承認待ち（ecDetApproval）は備品発注と一緒に廃止 */
+/* v1088: 1 件ずつに key（どの不備か）と fp（中身）を付ける。検知が付けていなければ、種類＋題名と説明から作る */
+function _ecNorm(x){
+  if(!x || typeof x!=='object') return null;
+  if(!x.key) x.key='x|'+String(x.cat||'')+'|'+String(x.title||'');
+  if(x.fp==null) x.fp=String(x.detail||'');
+  else x.fp=String(x.fp);
+  if(x.store==null){ try{ x.store=_ecAttribute(x).store||''; }catch(e){ x.store=''; } }
+  if(x.date==null) x.date='';
+  return x;
+}
 function ecCollect(){
   var all=[];
   EC_DETECTORS.forEach(function(fn){ try{ var r=fn(); if(r&&r.length) all=all.concat(r); }catch(e){ /* detector失敗は無視 */ } });
-  return all;
+  return all.map(_ecNorm).filter(Boolean);
 }
 
-var EC_CAT_META={
-  'チップ':{icon:'ti-coin'}, '勤怠':{icon:'ti-clock'}, '従業員':{icon:'ti-user'},
-  'OB':{icon:'ti-user-plus'}, '承認':{icon:'ti-clipboard-check'}, '月次締め':{icon:'ti-calendar-check'}, '棚卸':{icon:'ti-box'}
-};
+/* ===== v1088: エラーの解除（UI案52 ②・Moto 10/16「全部A」の 6A〜8A）=====
+   共通データ ec_resolutions：{ <key>: { fp, why, memo, by, role, at, _at, off, cat, title, store, stores, date, dateLabel, sev } }
+   ・記録ごとに新しいほう（mergeMapByTime・_at）。元に戻すは off:true で上書きする（消さない＝古い写しで戻らない）
+   ・解除が効くのは、同じ key で fp（中身）も同じとき。中身が変われば「今の不備」にまた出す
+   ・why：done＝対応した／false＝問題ではない（誤検知）／na＝この店は対象外
+   ・解除できる人・見られる人：CEO・GM・経理・事務Crew（6A・8A）
+   ・過去ログ（査定用）：「問題ではない」で解除したものは数えない。ほかは数える（7A）。解除したあとは毎日の記録に足さない */
+var EC_RES_KEY='ec_resolutions';
+var EC_WHY={ done:['対応した','Handled'], 'false':['問題ではない（誤検知）','Not a problem (false alarm)'], na:['この店は対象外','Not applicable to this store'] };
+function ecWhyLabel(w){ var a=Object.prototype.hasOwnProperty.call(EC_WHY, w)?EC_WHY[w]:null; return a ? t(a[0],a[1]) : String(w||''); }
+function ecCanView(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+function ecCanResolve(){ return ['ceo','gm','office','office_crew'].indexOf(curRole)>=0; }
+function ecResAll(){ var v=ls(EC_RES_KEY, {}); return (v && typeof v==='object' && !Array.isArray(v)) ? v : {}; }
+function _ecResLive(r){ return !!(r && typeof r==='object' && !Array.isArray(r) && !r.off && !r._deleted); }
+function ecResOf(x, all){
+  if(!x || !x.key) return null;
+  var a=all||ecResAll(), r=Object.prototype.hasOwnProperty.call(a, x.key) ? a[x.key] : null;
+  if(!_ecResLive(r)) return null;
+  return (String(r.fp==null?'':r.fp)===String(x.fp==null?'':x.fp)) ? r : null;
+}
+/* 今の不備（解除していないもの）。画面の件数・ダッシュボード・毎日の記録はこれを使う */
+function ecOpenIssues(list){ var a=ecResAll(); return (list||ecCollect()).filter(function(x){ return !ecResOf(x, a); }); }
+function _ecResSave(key, rec){
+  var a=Object.assign({}, ecResAll()), old=Object.prototype.hasOwnProperty.call(a,key)?a[key]:null;
+  var at=Math.max(Date.now(), old ? (Number(old._at)||0)+1 : 0);
+  a[key]=Object.assign({}, rec, { _at:at });
+  return lsSet(EC_RES_KEY, a) !== false;
+}
+/* クラウドの最新を読む（解除・元に戻すの前と、開いたとき）。6 秒で返らなければ読めなかったものとして進む */
+var _ecPullAt=0, _ecPullTry=0, _ecPulling=null, EC_PULL_TIMEOUT_MS=6000;
+function ecPullLatest(){
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return Promise.resolve(false);
+  if(typeof pullOpKey!=='function') return Promise.resolve(false);
+  if(_ecPulling) return _ecPulling;
+  _ecPullTry=Date.now();
+  _ecPulling=(async function(){
+    var ok=false;
+    try{ ok=!!(await Promise.race([pullOpKey(EC_RES_KEY), new Promise(function(r){ setTimeout(function(){ r(false); }, EC_PULL_TIMEOUT_MS); })])); }catch(e){ ok=false; }
+    if(ok) _ecPullAt=Date.now();
+    _ecPulling=null;
+    return ok;
+  })();
+  return _ecPulling;
+}
+function _ecOnPage(){
+  if(typeof curPage==='undefined') return false;
+  if(curPage==='error_center') return true;
+  if(curPage==='tasks') return typeof workTab!=='undefined' && workTab==='error';
+  if(curPage==='acct_center') return typeof _acSub!=='undefined' && _acSub==='err';
+  if(curPage==='office_mgr') return typeof officeMgrTab!=='undefined' && officeMgrTab==='errors';
+  return false;
+}
+/* エラーセンターを開いているときだけ描き直す（読み直しを待つあいだにほかの画面へ移ったら、その画面を上書きしない） */
+function _ecRerender(){ try{ if(_ecOnPage()) renderPage(curPage); }catch(e){} }
+function ecAutoPull(){
+  if(Date.now()-Math.max(_ecPullAt,_ecPullTry) < 60000) return;
+  var before=''; try{ before=JSON.stringify(ecResAll()); }catch(e){}
+  ecPullLatest().then(function(ok){
+    if(!ok) return;
+    var now=''; try{ now=JSON.stringify(ecResAll()); }catch(e){}
+    if(now!==before) _ecRerender();
+  });
+}
+/* ---- 表示の部品 ---- */
+var EC_SEV_ORDER={high:0,mid:1,low:2};
+var EC_CAT_ORDER=['勤怠','チップ','従業員','OB','月次締め','棚卸'];
+var ecSort='sev', ecFStore='', ecFCat='';
+try{ var _ecS0=localStorage.getItem('_ec_sort'); if(_ecS0 && ['sev','cat','store','new','old'].indexOf(_ecS0)>=0) ecSort=_ecS0; }catch(e){}
+function ecSetSort(v){ ecSort=(['sev','cat','store','new','old'].indexOf(v)>=0)?v:'sev'; try{ localStorage.setItem('_ec_sort', ecSort); }catch(e){} renderPage(curPage); }
+function ecSetStore(v){ ecFStore=String(v||''); renderPage(curPage); }
+function ecSetCat(v){ ecFCat=String(v||''); renderPage(curPage); }
+function _ecStoreName(id){ if(!id) return ''; var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return s?s.name:String(id); }
+function _ecStoresOf(x){ return (x && Array.isArray(x.stores) && x.stores.length) ? x.stores : ((x && x.store) ? [x.store] : []); }
+function _ecDateLabel(x){
+  if(x && x.dateLabel) return String(x.dateLabel);
+  var d=String((x && x.date)||''), m=d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if(m) return Number(m[2])+'/'+Number(m[3]);
+  m=d.match(/^(\d{4})-(\d{2})$/);
+  if(m) return t(Number(m[2])+'月', m[1]+'/'+m[2]);
+  return '—';
+}
+function _ecAtLabel(iso){ var d=new Date(iso||''); if(isNaN(d.getTime())) return ''; return (d.getMonth()+1)+'/'+d.getDate()+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function _ecMeta(x){ var sm=ecSevMeta(x.sev); return [sm.l, x.cat||'', _ecStoresOf(x).map(_ecStoreName).join('・')].filter(Boolean).join(' ・ '); }
+function _ecStoreRank(x){
+  var ids=(typeof STORES!=='undefined'?STORES:[]).map(function(s){ return s.id; }), sid=_ecStoresOf(x)[0]||'';
+  if(!sid) return ids.length+1;
+  var i=ids.indexOf(sid); return i>=0?i:ids.length;
+}
+function ecSortIssues(list, how){
+  var catI=function(c){ var i=EC_CAT_ORDER.indexOf(c); return i<0?EC_CAT_ORDER.length:i; };
+  var sev=function(x){ var v=EC_SEV_ORDER[x.sev]; return v==null?3:v; };
+  var dt=function(x){ return String(x.date||''); };
+  var desc=function(a,b){ var da=dt(a), db=dt(b); if(da===db) return 0; if(!da) return 1; if(!db) return -1; return da<db?1:-1; };
+  var asc=function(a,b){ var da=dt(a), db=dt(b); if(da===db) return 0; if(!da) return 1; if(!db) return -1; return da<db?-1:1; };
+  var key=function(a,b){ var ka=String(a.key), kb=String(b.key); return ka<kb?-1:ka>kb?1:0; };
+  var f;
+  if(how==='cat') f=function(a,b){ return catI(a.cat)-catI(b.cat) || (String(a.cat)<String(b.cat)?-1:String(a.cat)>String(b.cat)?1:0) || sev(a)-sev(b) || desc(a,b) || key(a,b); };
+  else if(how==='store') f=function(a,b){ return _ecStoreRank(a)-_ecStoreRank(b) || sev(a)-sev(b) || desc(a,b) || key(a,b); };
+  else if(how==='new') f=function(a,b){ return desc(a,b) || sev(a)-sev(b) || key(a,b); };
+  else if(how==='old') f=function(a,b){ return asc(a,b) || sev(a)-sev(b) || key(a,b); };
+  else f=function(a,b){ return sev(a)-sev(b) || desc(a,b) || catI(a.cat)-catI(b.cat) || key(a,b); };
+  return list.slice().sort(f);
+}
+function ecFilterIssues(list, st, cat){
+  return list.filter(function(x){
+    if(cat && x.cat!==cat) return false;
+    if(st==='-') return !_ecStoresOf(x).length;
+    if(st) return _ecStoresOf(x).indexOf(st)>=0;
+    return true;
+  });
+}
+/* 並べ替え・店舗・種類（数は、その画面の一覧のうち店舗で絞ったあとの数） */
+function _ecBarHtml(base, withSort){
+  var cnt={}, noSt=0;
+  base.forEach(function(x){ var s=_ecStoresOf(x); if(!s.length) noSt++; s.forEach(function(id){ cnt[id]=(cnt[id]||0)+1; }); });
+  var ids=[];
+  (typeof STORES!=='undefined'?STORES:[]).forEach(function(s){ if(cnt[s.id]) ids.push(s.id); });
+  Object.keys(cnt).forEach(function(id){ if(ids.indexOf(id)<0) ids.push(id); });
+  if(ecFStore && ecFStore!=='-' && ids.indexOf(ecFStore)<0) ids.push(ecFStore);
+  var h='<div class="card ec-bar">';
+  if(withSort){
+    h+='<label class="ec-fl">'+t('並べ替え','Sort')+' <select onchange="ecSetSort(this.value)">'
+      +[['sev',t('重要度の高い順','Most important first')],['cat',t('種類ごと','By type')],['store',t('店舗ごと','By store')],['new',t('日付の新しい順','Newest first')],['old',t('日付の古い順','Oldest first')]]
+        .map(function(o){ return '<option value="'+o[0]+'"'+(ecSort===o[0]?' selected':'')+'>'+escapeHtml(o[1])+'</option>'; }).join('')
+      +'</select></label>';
+  }
+  h+='<label class="ec-fl">'+t('店舗','Store')+' <select onchange="ecSetStore(this.value)"><option value="">'+t('すべての店舗','All stores')+'</option>'
+    +ids.map(function(id){ return '<option value="'+escapeHtml(id)+'"'+(ecFStore===id?' selected':'')+'>'+escapeHtml(_ecStoreName(id))+' ('+(cnt[id]||0)+')</option>'; }).join('')
+    +((noSt||ecFStore==='-')?'<option value="-"'+(ecFStore==='-'?' selected':'')+'>'+t('店舗なし（本部・全社）','No store (HQ / company-wide)')+' ('+noSt+')</option>':'')
+    +'</select></label>';
+  var inSt=ecFilterIssues(base, ecFStore, ''), cats={};
+  inSt.forEach(function(x){ cats[x.cat]=(cats[x.cat]||0)+1; });
+  var cl=Object.keys(cats).sort(function(a,b){ var ia=EC_CAT_ORDER.indexOf(a), ib=EC_CAT_ORDER.indexOf(b); ia=ia<0?99:ia; ib=ib<0?99:ib; return ia-ib || (a<b?-1:a>b?1:0); });
+  if(ecFCat && cl.indexOf(ecFCat)<0) cl.push(ecFCat);
+  h+='<div class="ec-chips" role="group" aria-label="'+t('種類','Type')+'"><span class="ec-fl">'+t('種類','Type')+'</span>'
+    +'<button type="button" class="ec-chip'+(!ecFCat?' on':'')+'" onclick="ecSetCat(\'\')">'+t('すべて','All')+' '+inSt.length+'</button>'
+    +cl.map(function(c){ return '<button type="button" class="ec-chip'+(ecFCat===c?' on':'')+'" data-cat="'+escapeHtml(c)+'" onclick="ecSetCat(this.getAttribute(\'data-cat\'))">'+escapeHtml(c)+' '+(cats[c]||0)+'</button>'; }).join('')
+    +'</div>';
+  return h+'</div>';
+}
+function _ecHeadRow(){ return '<div class="ec-row ec-h" aria-hidden="true"><div>'+t('重要度','Priority')+'</div><div>'+t('種類','Type')+'</div><div>'+t('店舗','Store')+'</div><div>'+t('日付','Date')+'</div><div>'+t('内容','Details')+'</div><div></div></div>'; }
+function _ecSevBadge(sev){ var sm=ecSevMeta(sev); return '<span class="ec-sev" style="background:'+sm.c+'22;color:'+sm.c+'">'+escapeHtml(sm.l)+'</span>'; }
+function _ecCells(x){
+  return '<div class="ec-c ec-c-sev">'+_ecSevBadge(x.sev)+'</div>'
+    +'<div class="ec-c ec-c-cat">'+escapeHtml(x.cat||'')+'</div>'
+    +'<div class="ec-c ec-c-st">'+escapeHtml(_ecStoresOf(x).map(_ecStoreName).join('・')||'—')+'</div>'
+    +'<div class="ec-c ec-c-dt">'+escapeHtml(_ecDateLabel(x))+'</div>';
+}
+var _ecShown=[], _ecResShown=[], _ecModal=null, _ecBusy=false;
+function _ecRowHtml(x, i, canRes){
+  return '<div class="ec-row">'+_ecCells(x)
+    +'<div class="ec-c ec-c-tx"><div class="ec-t">'+escapeHtml(x.title||'')+'</div><div class="ec-d">'+escapeHtml(x.detail||'')+'</div></div>'
+    +'<div class="ec-c ec-c-act"><div class="ec-act">'
+      +(x.fix?'<button class="btn btn-secondary btn-sm" onclick="'+x.fix.action+'"><i class="ti ti-arrow-right"></i> '+escapeHtml(x.fix.label)+'</button>':'')
+      +(canRes?'<button class="btn btn-secondary btn-sm ec-btn-res" onclick="ecOpenResolve('+i+')"><i class="ti ti-circle-check"></i> '+t('解除','Clear')+'</button>':'')
+    +'</div></div></div>';
+}
+/* 解除済み：元に戻していない記録。今も検知されているか（同じ中身・中身が変わった・もう出ていない）も出す */
+function _ecResRows(all, resA){
+  var a=resA||ecResAll(), cur={};
+  (all||ecCollect()).forEach(function(x){ cur[x.key]=x; });
+  var out=[];
+  Object.keys(a).forEach(function(k){
+    var r=a[k]; if(!_ecResLive(r)) return;
+    var c=Object.prototype.hasOwnProperty.call(cur,k)?cur[k]:null;
+    out.push(Object.assign({}, r, { key:k, _now: c ? (String(c.fp)===String(r.fp==null?'':r.fp) ? 'same' : 'changed') : 'gone' }));
+  });
+  out.sort(function(x,y){ return (Number(y._at)||0)-(Number(x._at)||0) || (x.key<y.key?-1:x.key>y.key?1:0); });
+  return out;
+}
+function _ecResView(rows){
+  var canRes=ecCanResolve(), h=_ecBarHtml(rows, false);
+  var shown=ecFilterIssues(rows, ecFStore, ecFCat);
+  _ecResShown=shown.slice(0, 200);
+  if(!rows.length) return h+'<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'+t('解除したエラーはまだありません','No cleared errors yet')+'</div>';
+  if(!shown.length) return h+'<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'+t('この条件の解除済みはありません','Nothing cleared matches these filters')+'</div>';
+  var st={ same:t('今も検知中（解除しているので「今の不備」には出ません）','Still detected (cleared, so not shown under "Current")'),
+           changed:t('中身が変わったので「今の不備」にまた出ています','Its details changed, so it shows under "Current" again'),
+           gone:t('もう検知されていません','No longer detected') };
+  h+='<div class="ec-list">'+_ecHeadRow();
+  _ecResShown.forEach(function(r, i){
+    h+='<div class="ec-row">'+_ecCells(r)
+      +'<div class="ec-c ec-c-tx"><div class="ec-t">'+escapeHtml(r.title||'')+'</div>'
+      +'<div class="ec-d">'+t('理由：','Reason: ')+'<b>'+escapeHtml(ecWhyLabel(r.why))+'</b> ・ '+escapeHtml(r.by||'')+' '+escapeHtml(_ecAtLabel(r.at))+'</div>'
+      +(r.memo?'<div class="ec-d">'+t('メモ：','Note: ')+escapeHtml(r.memo)+'</div>':'')
+      +'<div class="ec-d ec-now ec-now-'+r._now+'">'+escapeHtml(st[r._now]||'')+'</div></div>'
+      +'<div class="ec-c ec-c-act"><div class="ec-act">'+(canRes?'<button class="btn btn-secondary btn-sm" onclick="ecUndoResolve('+i+')"><i class="ti ti-arrow-back-up"></i> '+t('元に戻す','Undo')+'</button>':'')+'</div></div></div>';
+  });
+  h+='</div>';
+  if(shown.length>200) h+='<div class="md-more" style="margin-top:6px">'+t('ほか ','')+(shown.length-200)+t(' 件（店舗・種類で絞ると見られます）',' more (narrow by store or type)')+'</div>';
+  return h;
+}
+function ecOpenResolve(i){
+  if(!ecCanResolve()){ showToast(t('解除できるのは CEO・GM・経理・事務Crew です','Only the CEO, GM, accounting and office crew can clear errors'),'warning'); return; }
+  var x=_ecShown[i]; if(!x) return;
+  _ecModal={ key:x.key, fp:String(x.fp==null?'':x.fp), cat:x.cat||'', title:x.title||'', store:x.store||'', stores:_ecStoresOf(x).slice(), date:x.date||'', dateLabel:x.dateLabel||'', sev:x.sev||'' };
+  var sm=ecSevMeta(x.sev);
+  var opts=[['done',t('対応した（直した・本人に確認した）','Handled (fixed it or checked with the person)')],['false',t('問題ではない（誤検知）','Not a problem (false alarm)')]];
+  if(_ecStoresOf(x).length) opts.push(['na',t('この店は対象外','Not applicable to this store')]);
+  openModal('<div class="modal-title">'+t('このエラーを解除','Clear this error')+' <button class="modal-close" onclick="closeModalDirect()" aria-label="'+t('閉じる','Close')+'">×</button></div>'
+    +'<div class="ec-mbox"><div class="ec-mmeta" style="color:'+sm.c+'">'+escapeHtml(_ecMeta(x)+(_ecDateLabel(x)!=='—'?' ・ '+_ecDateLabel(x):''))+'</div><div class="ec-t">'+escapeHtml(x.title||'')+'</div><div class="ec-d">'+escapeHtml(x.detail||'')+'</div></div>'
+    +'<fieldset class="ec-why"><legend>'+t('理由（どれか 1 つ）','Reason (choose one)')+'</legend>'
+    +opts.map(function(o, k){ return '<label class="ec-why-o"><input type="radio" name="ec-why" value="'+o[0]+'"'+(k===0?' checked':'')+'> <span>'+escapeHtml(o[1])+'</span></label>'; }).join('')
+    +'</fieldset>'
+    +'<div class="form-group" style="margin-top:10px"><label class="form-label" for="ec-memo">'+t('メモ（任意）','Note (optional)')+'</label><textarea class="form-textarea" id="ec-memo" maxlength="200" rows="2" style="min-height:64px"></textarea></div>'
+    +'<div class="ec-note">'+t('解除した人・日時・理由を残し、ほかの端末にも届きます。「解除済み」から元に戻せます。中身が変わったとき（打刻の時刻など）はまた出ます。「問題ではない（誤検知）」で解除したものは、過去ログ（査定用）の数に入れません。',
+                              'Who cleared it, when and why are saved and reach other devices. You can undo it under "Cleared". It shows again when its details change (such as a clock-in time). Errors cleared as "Not a problem" are not counted in the past log (for reviews).')+'</div>'
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('やめる','Cancel')+'</button><button class="btn btn-primary" id="ec-res-go" onclick="ecResolveGo()">'+t('解除する','Clear')+'</button></div>');
+}
+async function ecResolveGo(){
+  if(_ecBusy || !_ecModal || !ecCanResolve()) return;
+  var m=_ecModal, el=document.querySelector('input[name="ec-why"]:checked'), why=el?el.value:'';
+  if(!Object.prototype.hasOwnProperty.call(EC_WHY, why) || (why==='na' && !m.stores.length)){ showToast(t('理由を選んでください','Choose a reason'),'warning'); return; }
+  var memo=String((document.getElementById('ec-memo')||{}).value||'').trim().slice(0,200);
+  _ecBusy=true;
+  var b=document.getElementById('ec-res-go'); if(b) b.disabled=true;
+  try{
+    /* 先にほかの端末の解除・元に戻すを取り込む（読めなくても進む。記録ごとに新しいほうで合わさる） */
+    if(typeof navigator==='undefined' || navigator.onLine!==false){ try{ await ecPullLatest(); }catch(e){} }
+    var ok=_ecResSave(m.key, { fp:m.fp, why:why, memo:memo, by:(myName()||''), role:curRole, at:new Date().toISOString(), off:false,
+                               cat:m.cat, title:m.title, store:m.store, stores:m.stores, date:m.date, dateLabel:m.dateLabel, sev:m.sev });
+    if(!ok){ showToast(t('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'),'warning'); return; }
+    _ecModal=null;
+    try{ closeModalDirect(); }catch(e){}
+    showToast(t('解除しました：','Cleared: ')+ecWhyLabel(why),'success');
+  } finally { _ecBusy=false; if(b) b.disabled=false; _ecRerender(); }
+}
+async function ecUndoResolve(i){
+  if(_ecBusy || !ecCanResolve()) return;
+  var r=_ecResShown[i]; if(!r) return;
+  _ecBusy=true;
+  try{
+    if(typeof navigator==='undefined' || navigator.onLine!==false){ try{ await ecPullLatest(); }catch(e){} }
+    var a=ecResAll(), cur=Object.prototype.hasOwnProperty.call(a, r.key)?a[r.key]:null;
+    if(!_ecResLive(cur)){ showToast(t('もう元に戻されています','Already undone'),'info'); return; }
+    var ok=_ecResSave(r.key, Object.assign({}, cur, { off:true, offBy:(myName()||''), offAt:new Date().toISOString() }));
+    if(!ok){ showToast(t('この端末に保存できませんでした（保存容量を確かめてください）','Could not save on this device (check the storage)'),'warning'); return; }
+    showToast(t('元に戻しました（不備がまだあれば「今の不備」に出ます）','Undone (if the error still exists, it shows under "Current")'),'success');
+  } finally { _ecBusy=false; _ecRerender(); }
+}
+
 function ecSevMeta(sev){ return sev==='high'?{c:'#e23b3b',l:'要対応'}:(sev==='mid'?{c:'#e0a020',l:'確認'}:{c:'#8a8f98',l:'情報'}); }
 
 /* ===== エラーセンター 過去ログ（査定用：店舗別・人別の集計）===== */
@@ -52395,10 +52576,11 @@ function ecSnapshot(){
   var log=getEcLog();
   var todaySet={}; log.forEach(function(r){ if(r.date===today) todaySet[r.title]=1; });
   var added=0;
-  try{ ecCollect().forEach(function(x){
+  /* v1088: 解除したものは記録に足さない（解除する前の日の記録は残る）。key と fp も残す（「問題ではない」で解除したものを数から外すため） */
+  try{ ecOpenIssues().forEach(function(x){
     if(todaySet[x.title]) return;
     var at=_ecAttribute(x);
-    log.push({id:'ec'+Date.now()+'_'+Math.random().toString(36).slice(2,6), date:today, ts:Date.now(), sev:x.sev, cat:x.cat, title:x.title, store:at.store, emp:at.emp});
+    log.push({id:'ec'+Date.now()+'_'+Math.random().toString(36).slice(2,6), date:today, ts:Date.now(), sev:x.sev, cat:x.cat, title:x.title, store:at.store, emp:at.emp, key:x.key, fp:x.fp});
     todaySet[x.title]=1; added++;
   }); }catch(e){}
   if(log.length>4000) log=log.slice(log.length-4000);
@@ -52412,12 +52594,31 @@ function ecMaybeAutoSnapshot(){
 }
 function ecSnapshotNow(){ var n=ecSnapshot(); lsSet('ec_log_last', todayISO()); showToast(n>0?(n+'件を記録しました'):'本日分は記録済みです（新規なし）', n>0?'success':'info'); renderPage(curPage); }
 function ecLogInRange(){ var log=getEcLog(); if(!ecRangeDays) return log; var cutoff=isoOf(new Date(Date.now()-ecRangeDays*86400000)); return log.filter(function(r){ return (r.date||'')>=cutoff; }); }
+/* v1088（7A）：「問題ではない（誤検知）」で解除したものは査定の数に入れない。
+   key のある記録（v1088 から）は key と fp で、key の無い前の記録は種類と題名で見る */
+function _ecFalseSet(resA){
+  var a=resA||ecResAll(), s={};
+  Object.keys(a).forEach(function(k){
+    var r=a[k]; if(!_ecResLive(r) || r.why!=='false') return;
+    s['k:'+k+'|'+String(r.fp==null?'':r.fp)]=1;
+    if(r.title) s['t:'+String(r.cat||'')+'|'+String(r.title)]=1;
+  });
+  return s;
+}
+function ecLogCounted(r, fs){
+  if(!r) return false;
+  fs=fs||_ecFalseSet();
+  if(r.key) return !fs['k:'+r.key+'|'+String(r.fp==null?'':r.fp)];
+  return !fs['t:'+String(r.cat||'')+'|'+String(r.title||'')];
+}
 function ecRenderLogView(){
-  var rows=ecLogInRange();
+  var all=ecLogInRange(), fs=_ecFalseSet();
+  var rows=all.filter(function(r){ return ecLogCounted(r, fs); }), excl=all.length-rows.length;
   var html='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
   [['30','30日'],['90','90日'],['180','180日'],['0','全期間']].forEach(function(o){ html+='<button class="btn '+(String(ecRangeDays)===o[0]?'btn-primary':'btn-secondary')+' btn-sm" style="font-size:11px" onclick="setEcRange('+o[0]+')">'+o[1]+'</button>'; });
   html+='<button class="btn btn-secondary btn-sm" style="font-size:11px;margin-left:auto" onclick="ecSnapshotNow()"><i class="ti ti-camera"></i> 今すぐ記録</button></div>';
-  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 1日1回、検知された不備を自動記録。査定の参考として店舗別・人別の検知件数を集計します（●赤=要対応 ●黄=確認 ●灰=情報）。</div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 1日1回、検知された不備を自動記録。査定の参考として店舗別・人別の検知件数を集計します（●赤=要対応 ●黄=確認 ●灰=情報）。解除したものは、その日から記録しません。</div>';
+  if(excl>0) html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-filter-off"></i> 「問題ではない（誤検知）」で解除した '+excl+' 件は数えていません。</div>';
   if(!rows.length) return html+'<div class="card" style="text-align:center;padding:24px;color:var(--muted)">記録された過去ログはまだありません</div>';
   var byStore={}, byEmp={};
   rows.forEach(function(r){
@@ -52443,8 +52644,11 @@ function ecRenderLogView(){
 
 
 function renderErrorCenter(embedded){
-  if(['ceo','gm','office'].indexOf(curRole)<0) return embedded?'':'<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">GM/CEO/Officeのみ閲覧できます。</p></div>';
-  var issues=ecCollect();
+  /* v1088（8A）：事務Crew も中身を見られる。ほかの役職には空のタブではなく、見られる人を出す */
+  if(!ecCanView()) return '<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:20px">'+t('エラーセンターの中身は CEO・GM・経理・事務Crew が見られます。','The Error Center is for the CEO, GM, accounting and office crew.')+'</p></div>';
+  var all=ecCollect(), resA=ecResAll();
+  var issues=all.filter(function(x){ return !ecResOf(x, resA); });
+  var resRows=_ecResRows(all, resA);
   var hi=issues.filter(function(x){return x.sev==='high';}).length;
   var mi=issues.filter(function(x){return x.sev==='mid';}).length;
   var lo=issues.filter(function(x){return x.sev==='low';}).length;
@@ -52452,8 +52656,11 @@ function renderErrorCenter(embedded){
     ?'<div style="display:flex;align-items:center;gap:7px;margin:2px 2px 12px"><i class="ti ti-alert-hexagon" style="font-size:20px;color:var(--accent)"></i><div><div style="font-weight:700;font-size:15px">エラーセンター</div><div style="font-size:11px;color:var(--muted)">運用・データの不備を自動検知（勤怠/チップ14日・打刻7日）</div></div></div>'
     :'<div class="section-header"><div><div class="section-title"><i class="ti ti-alert-hexagon"></i> エラーセンター</div><div class="section-sub">運用・データの不備を自動検知（直近の勤怠/チップは14日・打刻は7日を対象）</div></div></div>';
   try{ ecMaybeAutoSnapshot(); }catch(e){}
+  try{ ecAutoPull(); }catch(e){}
+  if(['now','res','log','inactive','unreg'].indexOf(ecView)<0) ecView='now';
   html+='<div class="phase-tabs" style="margin-bottom:10px">'
-    +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> 現在の不備</div>'
+    +'<div class="phase-tab'+(ecView==='now'?' active':'')+'" onclick="setEcView(\'now\')"><i class="ti ti-alert-hexagon" style="font-size:11px"></i> '+t('今の不備','Current')+' '+issues.length+'</div>'
+    +'<div class="phase-tab'+(ecView==='res'?' active':'')+'" onclick="setEcView(\'res\')"><i class="ti ti-circle-check" style="font-size:11px"></i> '+t('解除済み','Cleared')+' '+resRows.length+'</div>'
     +'<div class="phase-tab'+(ecView==='log'?' active':'')+'" onclick="setEcView(\'log\')"><i class="ti ti-history" style="font-size:11px"></i> 過去ログ（査定用）</div>'
     +'<div class="phase-tab'+(ecView==='inactive'?' active':'')+'" onclick="setEcView(\'inactive\')"><i class="ti ti-user-off" style="font-size:11px"></i> 非アクティブ検知</div>'
     +'<div class="phase-tab'+(ecView==='unreg'?' active':'')+'" onclick="setEcView(\'unreg\')"><i class="ti ti-user-question" style="font-size:11px"></i> 未登録打刻検知</div>'
@@ -52461,7 +52668,8 @@ function renderErrorCenter(embedded){
   if(ecView==='log'){ return html + ecRenderLogView(); }
   if(ecView==='inactive'){ return html + renderInactiveCard(); }
   if(ecView==='unreg'){ return html + renderUnregisteredCard(); }
-  // サマリー
+  if(ecView==='res'){ return html + _ecResView(resRows); }
+  // サマリー（解除したものは数えない）
   function tile(n,label,col){ return '<div style="flex:1;min-width:90px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:13px;text-align:center"><div style="font-size:26px;font-weight:800;color:'+(n>0?col:'var(--muted)')+'">'+n+'</div><div style="font-size:11px;color:var(--muted);margin-top:2px">'+label+'</div></div>'; }
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">'
     +tile(hi,'🔴 要対応','#e23b3b')+tile(mi,'🟡 確認','#e0a020')+tile(lo,'⚪ 情報','#8a8f98')
@@ -52469,32 +52677,22 @@ function renderErrorCenter(embedded){
     +'</div>';
   html+='<div style="text-align:right;margin-bottom:8px"><button class="btn btn-secondary btn-sm" onclick="renderPage(curPage)"><i class="ti ti-refresh"></i> 再チェック</button></div>';
   if(!issues.length){
-    html+='<div class="card" style="text-align:center;padding:28px"><i class="ti ti-circle-check" style="font-size:38px;color:var(--green)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">検知された不備はありません</div><div style="font-size:12px;color:var(--muted);margin-top:4px">勤怠・チップ・従業員・OB・承認・月次締め・棚卸をチェック済み</div></div>';
+    _ecShown=[];
+    html+='<div class="card" style="text-align:center;padding:28px"><i class="ti ti-circle-check" style="font-size:38px;color:var(--green)"></i><div style="font-size:14px;font-weight:600;margin-top:8px">検知された不備はありません</div><div style="font-size:12px;color:var(--muted);margin-top:4px">勤怠・チップ・従業員・OB・月次締め・棚卸をチェック済み'+(resRows.length?t('（解除したものは「解除済み」で見られます）',' (cleared errors are under "Cleared")'):'')+'</div></div>';
     return html;
   }
-  // カテゴリ別（深刻度順）
-  var order={high:0,mid:1,low:2};
-  var cats={}; issues.forEach(function(x){ (cats[x.cat]=cats[x.cat]||[]).push(x); });
-  Object.keys(cats).sort(function(a,b){
-    var ha=Math.min.apply(null,cats[a].map(function(x){return order[x.sev];}));
-    var hb=Math.min.apply(null,cats[b].map(function(x){return order[x.sev];}));
-    return ha-hb;
-  }).forEach(function(cat){
-    var list=cats[cat].slice().sort(function(a,b){return order[a.sev]-order[b.sev];});
-    var meta=EC_CAT_META[cat]||{icon:'ti-alert-circle'};
-    html+='<div class="card"><div class="card-title"><i class="ti '+meta.icon+'" style="color:var(--accent)"></i>'+cat+' <span class="tag tag-gray" style="margin-left:auto">'+list.length+'</span></div>';
-    list.forEach(function(x){
-      var sm=ecSevMeta(x.sev);
-      html+='<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--border)">'
-        +'<span style="flex-shrink:0;width:9px;height:9px;border-radius:50%;background:'+sm.c+';margin-top:5px"></span>'
-        +'<div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600">'+escapeHtml(x.title)+'</div>'
-        +'<div style="font-size:11px;color:var(--muted);line-height:1.5;margin-top:1px">'+escapeHtml(x.detail)+'</div></div>'
-        +(x.fix?'<button class="btn btn-secondary btn-sm" onclick="'+x.fix.action+'" style="flex-shrink:0;padding:4px 9px;font-size:11px"><i class="ti ti-arrow-right"></i> '+escapeHtml(x.fix.label)+'</button>':'')
-        +'</div>';
-    });
+  html+=_ecBarHtml(issues, true);
+  var shown=ecSortIssues(ecFilterIssues(issues, ecFStore, ecFCat), ecSort), canRes=ecCanResolve();
+  _ecShown=shown;
+  if(!shown.length){
+    html+='<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'+t('この条件の不備はありません','No errors match these filters')+'</div>';
+  } else {
+    html+='<div class="ec-list">'+_ecHeadRow();
+    shown.forEach(function(x, i){ html+=_ecRowHtml(x, i, canRes); });
     html+='</div>';
-  });
-  html+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6"><i class="ti ti-info-circle"></i> 打刻・チップの検知はToast同期データに依存します。未同期の店舗・日付は検知対象外です。</div>';
+  }
+  html+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> 打刻・チップの検知はToast同期データに依存します。未同期の店舗・日付は検知対象外です。'
+    +(canRes?t('「解除」した不備は「解除済み」に移り、中身が変わるとまた出ます。',' Cleared errors move to "Cleared" and show again when their details change.'):'')+'</div>';
   return html;
 }
 
@@ -52509,7 +52707,8 @@ function renderErrorCenter(embedded){
 function renderOfficeMgr(bare){
   var html = bare ? '' : '<div class="section-header"><div><div class="section-title"><i class="ti ti-building-skyscraper"></i> Office（本部）</div><div class="section-sub">事務・経理の業務を集約：出力・勤怠・タスク・報告承認・育成</div></div></div>';
 
-  var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['tasks','タスク','ti-checklist'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];
+  var tabs=[['dash','ダッシュボード','ti-layout-dashboard'],['errors','エラーセンター','ti-alert-hexagon'],['attend','勤怠','ti-clock'],['report','報告・承認','ti-clipboard-check'],['member','メンバー・育成','ti-users']];   /* v1088: タスクは廃止 */
+  if(officeMgrTab==='tasks') officeMgrTab='dash';
   if(curRole==='office_crew'){ if(officeMgrTab==='export') officeMgrTab='dash'; tabs=tabs.filter(function(t){ return t[0]!=='export'; }); }
   if(!bare) html += '<div class="phase-tabs" style="flex-wrap:wrap">'
     + tabs.map(function(t){ return '<div class="phase-tab'+(officeMgrTab===t[0]?' active':'')+'" onclick="setOfficeMgrTab(\''+t[0]+'\')"><i class="ti '+t[2]+'" style="font-size:12px"></i> '+t[1]+'</div>'; }).join('')
@@ -52517,7 +52716,6 @@ function renderOfficeMgr(bare){
   if(officeMgrTab==='export') return html + renderOfficeExport();
   if(officeMgrTab==='errors') return html + renderErrorCenter(true);
   if(officeMgrTab==='attend') return html + renderOfficeAttend();
-  if(officeMgrTab==='tasks')  return html + renderOfficeTasks();
   if(officeMgrTab==='report') return html + renderOfficeReport();
   if(officeMgrTab==='member') return html + renderOfficeMember();
   return html + renderOfficeDash();
@@ -52531,7 +52729,6 @@ function officeOnDutyCount(){
   hqStaffMembers().forEach(function(e){ var recs=getOfficeAttend(e.name)||[];   /* v775 */ var r=recs.find(function(x){return x.date===today;}); if(r && r.in && !r.out) n++; });
   return n;
 }
-function officeOpenTasks(){ try{ return getTasksN().filter(function(t){ return t.store==='OFFICE' && t.status!=='完了'; }); }catch(e){ return []; } }
 function officePendingApprovals(){
   var n=0;
   try{ n += (typeof pendingAcctReviewCount==='function')?pendingAcctReviewCount():0; }catch(e){}   /* v1084: 備品発注は廃止 */
@@ -52645,7 +52842,7 @@ function renderOfficeObStatus(){
 }
 
 function renderOfficeDash(){
-  var mem=hqStaffMembers(), onduty=officeOnDutyCount(),   /* v775 */ tasks=officeOpenTasks(), appr=officePendingApprovals();
+  var mem=hqStaffMembers(), onduty=officeOnDutyCount(),   /* v775 */ appr=officePendingApprovals();   /* v1088: タスクは廃止 */
   var now=new Date(); var ym=now.getFullYear()+'年'+(now.getMonth()+1)+'月';
   function tile(label,val,sub,col,act){
     return '<div style="flex:1;min-width:150px;background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:14px'+(act?';cursor:pointer':'')+'"'+(act?' onclick="'+act+'"':'')+'>'
@@ -52656,7 +52853,6 @@ function renderOfficeDash(){
   var html=officeClockCard();
   html+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">'
     + tile('出勤中','<span style="font-size:18px">'+onduty+'</span> / '+mem.length+'名', 'Officeメンバー', onduty>0?'var(--green)':'var(--muted)', "setOfficeMgrTab('attend')")
-    + tile('未処理タスク', tasks.length, '進行中・未着手', tasks.length>0?'var(--accent)':'var(--muted)', "setOfficeMgrTab('tasks')")
     + tile('承認待ち', appr, '経理レビュー', appr>0?'var(--yellow)':'var(--muted)', "setOfficeMgrTab('report')")
     + tile('今月', ym, '締め・出力の対象月', 'var(--accent2)', "setOfficeMgrTab('export')")
     + '</div>';
@@ -52672,12 +52868,7 @@ function renderOfficeDash(){
   // 月次締め + 採用事務
   html+=renderOfficeCloseCard();
   html+=renderOfficeObStatus();
-  // 直近タスク
-  html+='<div class="card"><div class="card-title"><i class="ti ti-checklist" style="color:var(--accent)"></i>未処理タスク <span class="tag tag-gray" style="margin-left:auto">'+tasks.length+'</span></div>';
-  if(!tasks.length) html+='<p style="font-size:12px;color:var(--muted);text-align:center;padding:10px">未処理のタスクはありません</p>';
-  else tasks.slice(0,5).forEach(function(t){ try{ html+=taskCardHtml(t); }catch(e){ html+='<div style="font-size:13px;padding:6px 0;border-top:1px solid var(--border)">'+escapeHtml(t.title||'')+'</div>'; } });
-  if(tasks.length>5) html+='<div style="text-align:center;margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="setOfficeMgrTab(\'tasks\')">すべて見る</button></div>';
-  html+='</div>';
+  /* v1088: 直近タスクは廃止（UI案52 5A） */
   return html;
 }
 
@@ -52748,37 +52939,6 @@ function invExpStore(id,y,m){ exportInventoryCSV(id,y,m); try{ logOfficeExport('
 function invExpAll(y,m){ exportAllInventoryCSV(y,m); try{ logOfficeExport('棚卸CSV（全店・'+y+'/'+(m+1)+'）'); }catch(e){} }
 
 
-/* ---------- ③ タスク（Office） ---------- */
-function renderOfficeTasks(){
-  var canEdit=['ceo','gm','office'].includes(curRole);
-  var tasks; try{ tasks=getTasksN().filter(function(t){return t.store==='OFFICE';}); }catch(e){ tasks=[]; }
-  var html='';
-  if(canEdit){
-    html+='<div class="card" style="padding:10px 12px"><div style="display:flex;gap:8px"><input id="office-quick-task" placeholder="Officeタスクを追加（Enterで登録）" style="flex:1;padding:9px 11px;border:1px solid var(--border);border-radius:9px;background:var(--surface);font-size:13px" onkeydown="if(event.key===\'Enter\'){officeQuickAddTask();}"><button class="btn btn-primary btn-sm" onclick="officeQuickAddTask()"><i class="ti ti-plus"></i></button></div>'
-      +'<div style="margin-top:6px"><button class="btn btn-secondary btn-sm" onclick="openTaskModal(\'店舗\',\'OFFICE\')"><i class="ti ti-settings"></i> 詳細タスク作成</button></div></div>';
-  }
-  var groups=[['未着手','未着手'],['進行中','進行中'],['レビュー','レビュー']];
-  groups.forEach(function(g){
-    var arr=tasks.filter(function(t){return t.status===g[1];});
-    if(!arr.length) return;
-    html+='<div class="card"><div class="card-title">'+g[0]+' <span class="tag tag-gray" style="margin-left:auto">'+arr.length+'</span></div>';
-    arr.forEach(function(t){ try{ html+=taskCardHtml(t); }catch(e){ html+='<div style="font-size:13px;padding:6px 0;border-top:1px solid var(--border)">'+escapeHtml(t.title)+'</div>'; } });
-    html+='</div>';
-  });
-  var done=tasks.filter(function(t){return t.status==='完了';});
-  if(!tasks.length) html+='<div class="card"><p style="font-size:13px;color:var(--muted);text-align:center;padding:14px">Officeタスクはまだありません。請求書処理・月次締め・給与計算などを登録しましょう。</p></div>';
-  if(done.length) html+='<details style="margin-top:4px"><summary style="font-size:12px;color:var(--muted);cursor:pointer;padding:6px">完了済み（'+done.length+'）</summary>'+done.map(function(t){ try{return taskCardHtml(t);}catch(e){return '';} }).join('')+'</details>';
-  return html;
-}
-function officeQuickAddTask(){
-  var el=document.getElementById('office-quick-task'); if(!el) return; var v=(el.value||'').trim(); if(!v) return;
-  try{
-    var t=normalizeTask({id:'tk'+Date.now(), title:v, type:'店舗', store:'OFFICE', assignee:'', priority:'中', due:'', place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
-    addTaskLog(t,'作成（Office・クイック）'); saveTaskObj(t);
-    showToast('Officeタスクを追加しました','success');
-  }catch(e){ showToast('追加に失敗しました','warning'); }
-  setOfficeMgrTab('tasks');
-}
 
 /* ---------- ⑤ 報告・承認 ---------- */
 function getOfficeReports(){ return ls('office_reports', []); }
@@ -69926,17 +70086,7 @@ function renderMypage() {
   } else { _shiftCard += `<p style="color:var(--muted);font-size:13px">${t('公開シフトはまだありません。Availabilityを提出しましょう','No published shifts yet. Please submit your availability.')}</p>`; }
   _shiftCard += '</div>';
 
-  // 3. 個人タスク
-  /* v948: _deleted を除く */
-  var myTasks = getTasks().filter(t=>t && !t._deleted && t.assignee===me && t.status!=='完了');
-  var _taskCard = `<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>${t('今日のタスク',"Today's Tasks")}</div>`;
-  if (myTasks.length) {
-    myTasks.forEach(tk => {
-      _taskCard += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${tk.title}</div><span class="tag ${tk.priority==='高'?'tag-red':'tag-yellow'}">${tk.priority||t('低','Low')}</span></div>
-        <div class="approval-meta">${tk.due?t('期限 ','Due ')+tk.due:''} · ${t('進捗','Progress')} ${tk.progress||0}%</div></div>`;
-    });
-  } else { _taskCard += `<p style="color:var(--muted);font-size:13px">${t('担当タスクはありません','No assigned tasks')}</p>`; }
-  _taskCard += '</div>';
+  // 3. 個人タスク：v1088 で廃止（UI案52 5A）
 
   // 4-5-6. Your Skill Progress（店舗別スキル現在地 + 次の目標 + Tip連動）
   var positions = getStorePositions(storeId);
@@ -70250,7 +70400,7 @@ function renderMypage() {
   }
 
   // ▼ 上部プレースホルダを ①今週のシフト ②タスク ③勤怠実績 に差し替え
-  html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_taskCard||'') + (_attCard||''));
+  html = html.replace('<!--TOP_OPS-->', (_shiftCard||'') + (_attCard||''));
   /* ★v996: 相談室をバッジの直後へ。★差し替え漏れで印が画面に出ないよう、必ず replace する。 */
   html = html.replace('<!--VOICE-->', (_voiceCard||''));
 
@@ -76691,20 +76841,12 @@ function deleteDailyOpTemplate(storeId, id) {
 
 /* ============================================================
    ⑭ タスク管理 v2（店舗/個人・詳細ステータス・メモ/ログ・管理ビュー）
+   v1088: タスクの画面と入口はすべて廃止（UI案52 5A・Moto 10/16）。保存してあるタスク（tasks_all）は消さない。
+   ここに残すのは、データの読み書きと、凍結した呼び出し元（会議の _meetInputBlock・v928 から止めてある）が使う部品だけ。
 ============================================================ */
-var taskTab = 'store';
-var TASK_STATUSES = ['未着手','進行中','レビュー','完了'];
-function setTaskTab(t){ taskTab=t; renderPage('tasks'); }
 function getTasks() { return ls('tasks_all', []); }
 function setTasks(arr){ lsSet('tasks_all', arr); }
 function tsNow(){ return nowJP(); }
-/* v611: タスクのリンク先を正規化（スキーム省略はhttps://を補完・javascript:等は拒否） */
-function _taskNormLink(v){
-  v=String(v||'').trim(); if(!v) return '';
-  if(/^(javascript|data|vbscript):/i.test(v)) return '';
-  if(!/^[a-z][a-z0-9+.-]*:\/\//i.test(v)) v='https://'+v.replace(/^\/+/,'');
-  return v;
-}
 function normalizeTask(t){
   if(!t.type) t.type='店舗';
   if(t.link==null) t.link='';   /* v611: 任意のリンク先 */
@@ -76719,65 +76861,11 @@ function normalizeTask(t){
   if(!t.updatedTs) t.updatedTs = t.created ? Date.parse(t.created)||Date.now() : Date.now();
   return t;
 }
-function getTasksN(){ return getTasks().filter(function(t){ return t && !t._deleted; }).map(normalizeTask); }
-function taskById(id){ return getTasksN().find(function(t){return t.id===id;}); }
 function saveTaskObj(t){ var arr=getTasks(); var i=arr.findIndex(function(x){return x.id===t.id;}); if(i>=0)arr[i]=t; else arr.push(t); setTasks(arr); }
 function addTaskLog(t, action){ t.log.push({date:tsNow(), by:myName(), action:action}); t.updatedTs=Date.now(); }
 
-function taskPriColor(p){ return p==='高'?'var(--eval-low)':p==='中'?'var(--eval-mid)':'var(--muted)'; }
-function taskStatusColor(s){ return s==='完了'?'var(--green)':s==='レビュー'?'var(--purple)':s==='進行中'?'var(--accent2)':'var(--muted)'; }
-function taskDueInfo(due){
-  if(!due) return {label:'',color:'var(--muted)',overdue:false};
-  /* ★v987: 起点をハワイの営業日に。端末が先に日付を跨ぐと、
-     ハワイではまだ今日が期限のタスクが「期限超過」と赤くなっていた。 */
-  var diff=bizDayDiff(due, bizToday());
-  if(diff<0) return {label:'期限超過 '+(-diff)+'日',color:'var(--eval-low)',overdue:true};
-  if(diff===0) return {label:'今日',color:'var(--eval-mid)',overdue:false};
-  if(diff<=7) return {label:'今週 '+due.slice(5),color:'var(--eval-mid)',overdue:false};
-  return {label:due.slice(5),color:'var(--muted)',overdue:false};
-}
-function taskStalled(t){ return t.status!=='完了' && t.updatedTs && (Date.now()-t.updatedTs)/86400000 >= 3; }
 
-/* ===== 繰り返しタスク ===== */
-var TASK_RECUR_LABELS = {none:'なし', daily:'毎日', weekly:'毎週', monthly:'毎月', monthend:'月末'};
 function isoDateStr(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
-function daysInMonth(y,m){ return new Date(y,m+1,0).getDate(); }
-function nextRecurDue(recur, fromDue){
-  if(!recur || recur.type==='none' || !fromDue) return null;
-  var b=new Date(fromDue+'T00:00:00');
-  if(recur.type==='daily'){ b.setDate(b.getDate()+1); return isoDateStr(b); }
-  if(recur.type==='weekly'){ b.setDate(b.getDate()+7); return isoDateStr(b); }
-  if(recur.type==='monthly'){ var dom=b.getDate(); var nm=new Date(b.getFullYear(), b.getMonth()+1, 1); nm.setDate(Math.min(dom, daysInMonth(nm.getFullYear(), nm.getMonth()))); return isoDateStr(nm); }
-  if(recur.type==='monthend'){ var mend=new Date(b.getFullYear(), b.getMonth()+2, 0); return isoDateStr(mend); }
-  return null;
-}
-/* 期日が来た繰り返しタスクの次回分を自動生成（最大6件まで遡及生成）*/
-function ensureRecurringTasks(){
-  var arr=getTasks(); var changed=false; var todayISO=isoDateStr(new Date());
-  var series={};
-  arr.forEach(function(t){ if(t.recur && t.recur.type && t.recur.type!=='none' && t.due && !t._deleted){ var sid=t.seriesId||t.id; (series[sid]=series[sid]||[]).push(t); } });
-  Object.keys(series).forEach(function(sid){
-    var list=series[sid].slice().sort(function(a,b){return (a.due||'')<(b.due||'')?-1:1;});
-    var latest=normalizeTask(Object.assign({}, list[list.length-1]));
-    var cap=6;
-    while(latest.due && latest.due<=todayISO && cap>0){
-      var nd=nextRecurDue(latest.recur, latest.due);
-      if(!nd) break;
-      var exists=arr.some(function(t){ return (t.seriesId||t.id)===sid && t.due===nd; });
-      if(exists){ latest.due=nd; cap--; continue; }
-      var inst=normalizeTask({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), seriesId:sid,
-        title:latest.title, desc:latest.desc, type:latest.type, store:latest.store, assignee:latest.assignee,
-        place:latest.place, priority:latest.priority, due:nd, recur:latest.recur,
-        status:'未着手', progress:0, createdBy:latest.createdBy||'system', created:tsNow(), memos:[], log:[] });
-      inst.log.push({date:tsNow(), by:'system', action:'繰り返し自動生成'});
-      arr.push(inst); changed=true;
-      if(inst.assignee) notifyTaskAssigned(inst);
-      latest=inst; cap--;
-    }
-  });
-  if(changed) setTasks(arr);
-  return changed;
-}
 
 /* ===== タスク通知 ===== */
 function notifHasRef(rid){ return getNotifs().some(function(n){ return n.refId===rid; }); }
@@ -76786,103 +76874,6 @@ function notifyTaskAssigned(t){
   var rid='taskassign_'+t.id;
   if(notifHasRef(rid)) return;
   try{ addNotif({ type:'task', title:'タスクが割り当てられました', text:(t.title+(t.due?'（期限 '+t.due+'）':'')).slice(0,140), toUser:t.assignee, page:'tasks', refId:rid }); }catch(e){}
-}
-/* 期限が近い/超過したタスクのリマインド（担当へ・1日1回） */
-function taskDeadlineReminders(){
-  var todayISO=isoDateStr(new Date());
-  var tmrw=new Date(); tmrw.setDate(tmrw.getDate()+1); var tmrwISO=isoDateStr(tmrw);
-  getTasksN().forEach(function(t){
-    if(t.status==='完了' || !t.assignee || !t.due) return;
-    if(t.due>tmrwISO) return; // 明日より先はまだ
-    var rid='taskdue_'+t.id+'_'+todayISO;
-    if(notifHasRef(rid)) return;
-    var when = t.due<todayISO ? ('期限超過（'+t.due+'）') : t.due===todayISO ? '本日が期限' : '明日が期限';
-    try{ addNotif({ type:'task', title:'タスク期限リマインド', text:(t.title+'：'+when).slice(0,140), toUser:t.assignee, page:'tasks', refId:rid }); }catch(e){}
-  });
-}
-
-var taskSearch='';
-function taskSearchSet(v){ taskSearch=v||''; renderPage('tasks'); var el=document.getElementById('task-search'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }catch(e){} } }
-function taskApplySearch(list){ if(!taskSearch) return list; var q=taskSearch.toLowerCase(); return list.filter(function(t){ return (String(t.assignee||'').toLowerCase().indexOf(q)>=0) || (String(t.title||'').toLowerCase().indexOf(q)>=0); }); }
-function taskAssigneeDatalistHtml(){ var names=getEmployees().filter(function(e){return e.status!=='退職';}).map(function(e){return e.name;}); return '<datalist id="dl-task-assignees">'+names.map(function(n){return '<option value="'+escapeHtml(n)+'">';}).join('')+'</datalist>'; }
-function addTaskMemoInline(id){
-  var el=document.getElementById('tmemo-'+id); var txt=el?el.value.trim():''; if(!txt) return;
-  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
-  t.memos.push({date:tsNow(), by:myName(), text:txt}); t.updatedTs=Date.now();
-  addTaskLog(t,'メモ追加'); saveTaskObj(t); renderPage('tasks');
-}
-/* v614: タスクカード刷新
-   ・「何のタスクか」を最優先で読めるように：タスク名 → 担当/期限 → 詳細 → リンク
-   ・作成者・作成日時を明示（誰がいつ出したタスクか分かる）
-   ・詳細は枠付きで本文として読ませる／リンクはボタンで1タップ
-   ・編集系（担当・期限・重要度・進捗）は下部にまとめ、情報と操作を分離 */
-function taskCardHtml(t){
-  var pr=taskPriColor(t.priority);
-  var di=taskDueInfo(t.due);
-  var canEdit = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0 || t.assignee===myName() || t.createdBy===myName();
-  var st=taskStatusColor(t.status);
-  var h='<div class="card" style="border-left:4px solid '+pr+';border-radius:0 12px 12px 0">';
-  /* 1) 見出し：タスク名＋状態＋重要度 */
-  h+='<div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">'
-    +'<div style="font-size:15px;font-weight:700;line-height:1.4;min-width:0">'+escapeHtml(t.title)+'</div>'
-    +'<div style="display:flex;gap:4px;flex-shrink:0;align-items:center">'
-    +'<span class="tag" style="background:'+st+';color:#fff;font-size:10px">'+t.status+'</span>'
-    +'<span class="tag" style="background:'+pr+';color:#fff;font-size:10px">'+t.priority+'</span>'
-    +(canEdit?'<button class="btn btn-secondary btn-sm" style="padding:1px 7px" onclick="deleteTask(\''+t.id+'\')"><i class="ti ti-trash" style="font-size:12px"></i></button>':'')
-    +'</div></div>';
-  /* 2) 担当・期限（誰が・いつまで） */
-  h+='<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12px;margin-top:6px">'
-    +'<span'+(t.assignee?'':' style="color:var(--red)"')+'><i class="ti ti-user" style="color:var(--muted)"></i> '+(t.assignee?escapeHtml(t.assignee):'未割当')+'</span>'
-    +(di.label?'<span style="color:'+di.color+'"><i class="ti ti-clock"></i> '+di.label+'</span>':'<span style="color:var(--muted)"><i class="ti ti-clock"></i> 期限なし</span>')
-    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:9px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
-    +(taskStalled(t)?'<span class="tag tag-red" style="font-size:9px">停滞</span>':'')
-    +'</div>';
-  /* 3) 作成者・作成日時（誰がいつ出したタスクか） */
-  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:3px"><i class="ti ti-pencil-plus"></i> '+escapeHtml(t.createdBy||'—')+' が作成'+(t.created?' · '+escapeHtml(String(t.created)):'')+'</div>';
-  /* 4) 詳細（本文として読ませる） */
-  if(t.desc) h+='<div style="margin-top:8px;background:var(--surface2);border-radius:8px;padding:7px 9px;font-size:12.5px;line-height:1.7;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
-  /* 5) リンク（1タップで開く） */
-  if(t.link) h+='<div style="margin-top:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;display:inline-flex;align-items:center;gap:5px;max-width:100%"><i class="ti ti-link" style="color:var(--accent2)"></i><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(_taskLinkLabel(t.link))+'</span><i class="ti ti-external-link" style="font-size:11px;color:var(--muted)"></i></a></div>';
-  /* 6) ステータス変更 */
-  h+='<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:9px">'
-    +TASK_STATUSES.map(function(sname){return '<button class="btn btn-sm '+(sname===t.status?'btn-primary':'btn-secondary')+'" style="font-size:10px;padding:2px 9px" '+(canEdit?'onclick="taskSetStatus(\''+t.id+'\',\''+sname+'\')"':'disabled')+'>'+sname+'</button>';}).join('')
-    +'</div>';
-  /* 7) 進捗 */
-  h+='<div class="progress-bar" style="margin-top:8px"><div class="progress-fill" style="background:'+st+';width:'+(t.progress||0)+'%"></div></div>';
-  if(canEdit){
-    h+='<div style="display:flex;gap:4px;margin-top:6px;align-items:center;flex-wrap:wrap"><span style="font-size:10px;color:var(--muted)">進捗 '+(t.progress||0)+'%</span>'
-      +[0,25,50,75,100].map(function(p){return '<button class="btn btn-secondary btn-sm" style="font-size:10px;padding:1px 7px'+(((t.progress||0)===p)?';background:var(--accent2);color:#fff':'')+'" onclick="taskField(\''+t.id+'\',\'progress\','+p+')">'+p+'</button>';}).join('')
-      +'</div>';
-  }
-  /* 8) 編集（担当・期限・重要度・リンク）＝情報表示と分けて下部にまとめる */
-  if(canEdit){
-    h+='<details style="margin-top:8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-adjustments"></i> 編集（担当・期限・重要度・リンク）</summary>'
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;align-items:center">'
-      +'<input class="form-input" list="dl-task-assignees" value="'+escapeHtml(t.assignee||'')+'" placeholder="担当者（名前で検索）" style="flex:1;min-width:130px;font-size:12px;padding:5px 8px" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)">'
-      +'<input class="form-input" type="date" value="'+(t.due||'')+'" style="font-size:12px;padding:5px 8px;width:148px'+(di.overdue?';border:1.5px solid var(--red)':'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)">'
-      +'<select class="form-select" style="font-size:12px;padding:5px 8px;width:auto" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select>'
-      +'</div>'
-      +'<input class="form-input" type="url" inputmode="url" value="'+escapeHtml(t.link||'')+'" placeholder="リンク先 https://…" style="font-size:12px;padding:5px 8px;margin-top:6px;width:100%" onchange="taskField(\''+t.id+'\',\'link\',_taskNormLink(this.value))">'
-      +'</details>';
-  }
-  /* 9) メモ */
-  h+='<details style="margin-top:6px"'+(t.memos.length?' open':'')+'><summary style="font-size:11px;color:var(--muted);cursor:pointer"><i class="ti ti-message-2"></i> メモ ('+t.memos.length+')</summary>';
-  t.memos.slice().reverse().slice(0,5).forEach(function(m){ h+='<div style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:9px">'+m.date+' · '+escapeHtml(m.by)+'</span><div style="white-space:pre-line">'+escapeHtml(m.text)+'</div></div>'; });
-  if(canEdit) h+='<div style="display:flex;gap:4px;margin-top:6px"><input class="form-input" id="tmemo-'+t.id+'" placeholder="メモ追加…" style="flex:1;font-size:11px;padding:4px 8px"><button class="btn btn-secondary btn-sm" style="font-size:10px" onclick="addTaskMemoInline(\''+t.id+'\')">追加</button></div>';
-  h+='</details>';
-  h+='</div>';
-  return h;
-}
-/* リンクの表示名（ドメイン＋短縮パス。長いURLでも潰れない） */
-function _taskLinkLabel(u){
-  var s=String(u||'');
-  try{
-    var m=s.match(/^[a-z]+:\/\/([^\/]+)(\/[^?#]*)?/i);
-    if(!m) return s.length>34?s.slice(0,34)+'…':s;
-    var host=m[1].replace(/^www\./,''), path=(m[2]||'');
-    var lab=host+(path&&path!=='/'?path:'');
-    return lab.length>34?lab.slice(0,34)+'…':lab;
-  }catch(e){ return s.slice(0,34); }
 }
 
 /* ============================================================
@@ -77134,35 +77125,30 @@ function renderRespMatrix(){
 var workTab = 'today';
 function setWorkTab(t){ workTab = t; renderPage('tasks'); }
 function renderWorkCenter(){
-  try{ checkCashTipTasks(); }catch(e){}
-  var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可
+  try{ checkCashTipNotify(); }catch(e){}
+  var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可（エラーセンターの中身は CEO・GM・経理・事務Crew）
   var canAnn = true;
   var pend = ls('approvals',[]).filter(function(a){return a.status==='pending';});
   if (['gm','ceo','office','office_crew'].indexOf(curRole)<0) {   /* v1087: 事務Crew にも本部の申請 */
     var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
     pend = pend.filter(function(a){ var st=(typeof _approvalStore==='function')?_approvalStore(a):{id:a.store,name:a.store}; return _vi.indexOf(st.id)>=0 || _vn.indexOf(st.name)>=0; });
   }
-  var issues = []; if (canErr){ try{ issues = ecCollect(); }catch(e){} }
+  /* v1088: 件数は解除していない不備だけ */
+  var issues = []; if (canErr){ try{ issues = ecOpenIssues(); }catch(e){} }
   var hi = issues.filter(function(x){return x.sev==='high';}).length;
-  /* v948: _deleted を除く。ここが件数バッジの元。 */
-  var openT = getTasks().filter(function(t){ return t && !t._deleted && t.status!=='完了' && (t.store==='ALL' || !t.store || getVisibleStores().some(function(st){return st.id===t.store;})); });
-  var today = todayISO();
-  var dueT = openT.filter(function(t){ return t.due && t.due<=today; });
   if (workTab==='bot' && !botCanView()) workTab='today';
   if (workTab==='announce' && !canAnn) workTab='today';
   if (workTab==='error' && !canErr) workTab='today';
-  if (workTab==='mgmt' || workTab==='requests') workTab='today';   /* v1084: 管理統括・対応依頼は廃止 */
-  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">タスク・承認・エラー・アナウンスの作業ハブ</div></div></div>
+  if (workTab==='mgmt' || workTab==='requests' || workTab==='tasks') workTab='today';   /* v1084: 管理統括・対応依頼は廃止 / v1088: タスクも廃止（UI案52 5A） */
+  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">承認・エラー・アナウンスの作業ハブ</div></div></div>
   <div class="phase-tabs" style="margin-bottom:10px">
     <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
-    <div class="phase-tab${workTab==='tasks'?' active':''}" onclick="setWorkTab('tasks')"><i class="ti ti-list-check" style="font-size:12px"></i> タスク${openT.length?' <span class="tag tag-yellow" style="font-size:8px">'+openT.length+'</span>':''}</div>
     <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
     ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
     ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
   </div>`;
   if (workTab==='bot' && botCanView()) return bar + renderBotCenter();
-  if (workTab==='tasks')    return bar + renderTasks();
   if (workTab==='approval') return bar + renderApproval();
   if (workTab==='error')    return bar + renderErrorCenter(true);
   if (workTab==='announce') return bar + renderAnnounce();
@@ -77170,7 +77156,6 @@ function renderWorkCenter(){
   var h = bar;
   h += `<div class="kpi-grid" style="margin-bottom:12px">
     <div style="cursor:pointer" onclick="setWorkTab('approval')">${kpi('承認待ち', pend.length+'件', pend.length?'タップで処理へ':'すべて処理済み', pend.length?'var(--red)':'var(--green)')}</div>
-    <div style="cursor:pointer" onclick="setWorkTab('tasks')">${kpi('期限内タスク', dueT.length+'件', '未完了 '+openT.length+'件中・今日まで', dueT.length?'var(--yellow)':'var(--green)')}</div>
     ${canErr?`<div style="cursor:pointer" onclick="setWorkTab('error')">${kpi('エラー検知', issues.length+'件', hi?('重要 '+hi+'件'):'重要なし', hi?'var(--red)':issues.length?'var(--yellow)':'var(--green)')}</div>`:''}
   </div>`;
   // 承認クイックリスト
@@ -77184,619 +77169,43 @@ function renderWorkCenter(){
     if (pend.length>5) h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">他 ${pend.length-5} 件 — 承認タブへ</div>`;
     h += `</div>`;
   }
-  // 期限タスク クイックリスト
-  if (dueT.length){
-    h += `<div class="card"><div class="card-title"><i class="ti ti-alarm" style="color:var(--yellow)"></i>今日までのタスク <span class="tag tag-yellow" style="margin-left:auto">${dueT.length}</span></div>`;
-    dueT.slice(0,5).forEach(function(t){
-      var st = STORES.find(function(x){return x.id===t.store;});
-      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
-        <div style="flex:1;min-width:0"><b>${escapeHtml(t.title||'')}</b><div style="font-size:10px;color:var(--muted)">${st?escapeHtml(st.name):(t.store==='ALL'?'全店':'')} · 期限 ${escapeHtml(t.due||'')}${t.assignee?' · '+escapeHtml(t.assignee):''}</div></div>
-        <button class="btn btn-secondary btn-sm" style="padding:3px 10px" onclick="setWorkTab('tasks')">開く</button></div>`;
-    });
-    h += `</div>`;
-  }
   // エラー クイックリスト（重要のみ）
   if (canErr && hi){
     h += `<div class="card"><div class="card-title"><i class="ti ti-alert-hexagon" style="color:var(--red)"></i>重要エラー <span class="tag tag-red" style="margin-left:auto">${hi}</span></div>`;
     issues.filter(function(x){return x.sev==='high';}).slice(0,4).forEach(function(x){
-      h += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${escapeHtml(x.title||x.text||'')}</b>${x.store?`<span style="font-size:10px;color:var(--muted)"> · ${escapeHtml(x.store)}</span>`:''}</div>`;
+      h += `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><b>${escapeHtml(x.title||x.text||'')}</b>${x.store?`<span style="font-size:10px;color:var(--muted)"> · ${escapeHtml(_ecStoreName(x.store))}</span>`:''}</div>`;
     });
     h += `<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="setWorkTab('error')">エラーセンターで対応</button></div>`;
   }
-  if (!pend.length && !dueT.length && !(canErr&&hi)){
-    h += `<div class="card" style="text-align:center;padding:28px"><i class="ti ti-confetti" style="font-size:30px;color:var(--green)"></i><div style="font-weight:700;margin-top:8px;color:var(--green)">今処理すべきものはありません</div><div style="font-size:11px;color:var(--muted);margin-top:4px">承認・期限タスク・重要エラーはすべてクリアです</div></div>`;
+  if (!pend.length && !(canErr&&hi)){
+    h += `<div class="card" style="text-align:center;padding:28px"><i class="ti ti-confetti" style="font-size:30px;color:var(--green)"></i><div style="font-weight:700;margin-top:8px;color:var(--green)">今処理すべきものはありません</div><div style="font-size:11px;color:var(--muted);margin-top:4px">承認・重要エラーはすべてクリアです</div></div>`;
   }
   return h;
 }
-/* v949: キャッシュチップタスクを締めるまでの日数。
-   これより前の未入力は、今日の判断に使えないので削除する（Motoさん判断）。 */
-var CTIP_EXPIRE_DAYS = 30;
-/* v947: 入力済みになったキャッシュチップタスクに墓標を立てる。
-   ★配列から消さない。mergeTasks が「削除優先」で扱うので、墓標でないと
-     他端末の古い配列と合流したときに復活する（deleteTask と同じ作法）。
-   ★「入力された」を積極的に確かめる。cashTipMissing が false なだけでは足りない。
-     その店のデータが端末に載っていないときも false になるため（cash_tips_ は
-     店舗ごとの別キーで需要読み）。記録が実在するか、その日が定休のときだけ消す。 */
-function sweepCashTipTasks(onlyStore){
-  try{
-    var arr = getTasks(); if(!Array.isArray(arr) || !arr.length) return 0;
-    var cache = {};
-    var n = 0;
-    /* v949: ★同じ refId のタスクが複数ある。
-       checkCashTipTasks は refId で重複を避けるが、それはその端末が持っている配列の中だけ。
-       mergeTasks は id で合流するので、2台が同期前にそれぞれ作ると両方生き残る。
-       ★どれを残すかは全端末で同じ答えにならないと収束しない（合流のたびに入れ替わる）。
-         id の辞書順で最小のものを残す。 */
-    var grp = {};
-    arr.forEach(function(t){
-      if(!t || t.auto !== 'cashtip' || t._deleted || t.status === '完了') return;
-      if(!t.refId) return;
-      (grp[t.refId] = grp[t.refId] || []).push(t);
-    });
-    Object.keys(grp).forEach(function(rid){
-      var g = grp[rid]; if(g.length < 2) return;
-      var keep = g.reduce(function(a, b){ return String(a.id) <= String(b.id) ? a : b; });
-      g.forEach(function(t){
-        if(t === keep) return;
-        t._deleted = true; t.updatedTs = Date.now(); n++;
-      });
-    });
-    var tipsOf = function(sid){ if(!(sid in cache)) cache[sid] = getCashTips(sid) || {}; return cache[sid]; };
-    /* v949: 1か月より前のものは締める。入力されないまま日が経ったものは
-       今日の判断に使えない。★「完了」にはしない（やっていないので）。 */
-    var expBefore = null;
-    try{ expBefore = isoOf(new Date(Date.now() - CTIP_EXPIRE_DAYS*86400000)); }catch(e){}
-    arr.forEach(function(t){
-      if(!t || t.auto !== 'cashtip' || t._deleted || t.status === '完了') return;
-      if(onlyStore && t.store !== onlyStore) return;
-      var m = /^ctip_(.+)_(\d{4}-\d{2}-\d{2})$/.exec(t.refId || '');
-      if(!m) return;
-      var sid = m[1], date = m[2];
-      var kill = false, offStore = false, expired = false;
-      if(typeof isNoCashTipStore === 'function' && isNoCashTipStore(sid)){
-        kill = true; offStore = true;              /* 対象外店舗になった */
-      } else {
-        var dow = null;
-        try{ dow = ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]; }catch(e){}
-        var closed = (typeof dayClosureMode === 'function') && dayClosureMode(sid, date, dow) === 'closed';
-        var rec = tipsOf(sid)[date];
-        var entered = !!(rec || closed)
-          && !(typeof cashTipMissing === 'function' && cashTipMissing(sid, date));
-        if(entered){ kill = true; }
-        /* ★順番が大事。先に期限切れを見ると、実は入力済みだったものまで
-           「削除」になって履歴が不正確になる。確認できるものは「完了」で残す。 */
-        else if(expBefore && date < expBefore){ kill = true; expired = true; }
-        /* 記録が無く定休でもなく、まだ1か月経っていない＝
-           端末にデータが無いだけかもしれない。消さない。 */
-        else return;
-      }
-      if(!kill) return;
-      /* v948: ★消し方を既存にそろえる。
-         入力済み・定休は「完了」。saveCashTipSides(7587行) と同じ形にしないと、
-         status しか見ていない画面（ワークセンター等）から消えない。
-         対象外店舗だけは墓標にする（そもそも存在すべきでないタスクなので）。 */
-      if(offStore || expired){ t._deleted = true; }
-      else { t.status = '完了'; t.progress = 100; if(typeof nowJP==='function') t.doneAt = nowJP(); }
-      t.updatedTs = Date.now(); n++;
-    });
-    if(n) setTasks(arr);
-    return n;
-  }catch(e){ console.warn('ctip sweep', e); return 0; }
-}
-/* 前日のキャッシュチップ未入力を検知 → タスク化＋店舗のG3以上へ通知（0なら「0」と入力の注意つき） */
-function checkCashTipTasks(){
+/* v1088: 前日のキャッシュチップ未入力を、店舗のG3以上へ知らせる（UI案52 5A：タスクは作らない。未入力はエラーセンターにも出る）。
+   同じ店・同じ日は 1 回だけ：同じ refId の通知か、前の版が作ったタスクがあれば、もう知らせてある。 */
+function checkCashTipNotify(){
   try{
     var y = isoOf(new Date(Date.now()-86400000));
     if (window._ctipChk === y) return; window._ctipChk = y;
-    /* v947: 入力済みになったものと対象外店舗の分をここで掃除する。
-       ★以前は tasks.filter(...) で配列から消していたが、それでは同期で復活する。
-         sweepCashTipTasks が墓標を立てる（mergeTasks が削除優先で扱う）。 */
-    try{ sweepCashTipTasks(); }catch(e){}
-    var tasks = getTasks(); var changed=false;
+    var tasks = getTasks();
     activeStores().forEach(function(st){
       if (typeof cashTipMissing!=='function' || !cashTipMissing(st.id, y)) return;
       var refId = 'ctip_'+st.id+'_'+y;
-      if (tasks.some(function(t){ return t.refId===refId; })) return;
-      tasks.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:refId, auto:'cashtip',
-        title:'【要入力】キャッシュチップ未入力（'+y.slice(5).replace('-','/')+'）',
-        desc:'現金チップが無い日も必ず「0」と入力して確定してください（Store CMD → チップ管理）',
-        assignee:'', store:st.id, priority:'高', due:todayISO(), progress:0, status:'進行中', created:todayJP() });
+      if (notifHasRef(refId)) return;
+      if (Array.isArray(tasks) && tasks.some(function(t){ return t && t.refId===refId; })) return;
       addNotif({ type:'warning', title:'キャッシュチップ未入力: '+st.name,
         text:y.slice(5).replace('-','/')+' のキャッシュチップが未入力です。0の場合も「0」と入力して確定してください。',
         toStore:st.id, toRoles:['sl','sm','am','gm','ceo'], page:'store_cmd', refId:refId });
-      changed=true;
     });
-    if (changed) lsSet('tasks_all', tasks);
   }catch(e){ console.warn('ctip check', e); }
 }
-/* ===== タスク作成 v2（作成タブ＋Grade別担当者ピッカー＋「タスク化」確定） ===== */
-function setTaskView(v){ window._taskView=v; renderPage('tasks'); }
-/* 割り当て可能スタッフ（Grade連動スコープ）: G6/本部=全員 / G5(AM)=管轄店 / G4以下=自店 */
-function assignableStaff(){
-  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-  if(['gm','ceo','office'].indexOf(curRole)>=0) return emps;
-  if(curRole==='am'){ var mine=(typeof myAmStores==='function')?(myAmStores()||[]):[]; return emps.filter(function(e){ return mine.indexOf(e.store)>=0 || e.name===myName(); }); }
-  var sid=(typeof myStoreId==='function')?myStoreId():null;
-  if(!sid){ var me=emps.find(function(e){return e.name===myName();}); sid=me?me.store:null; }
-  return emps.filter(function(e){ return (sid&&e.store===sid) || e.name===myName(); });
-}
-function _assigneeScopeLabel(){
-  if(['gm','ceo','office'].indexOf(curRole)>=0) return '全スタッフから選べます（G6/本部）';
-  if(curRole==='am') return '管轄店のスタッフから選べます（G5）';
-  return '自店のスタッフから選べます（G4以下）';
-}
-/* Grade別グルーピング＋名前絞り込みのピッカー */
-function openAssigneePicker(){ window._apQuery=window._apQuery||''; window._apStore=(document.getElementById('tc-store')||{}).value||''; _renderAssigneePicker(); }
-function apSearch(v){ window._apQuery=v; _renderAssigneePicker(); var el=document.getElementById('ap-search'); if(el){ try{ el.focus(); el.setSelectionRange(el.value.length,el.value.length); }catch(e){} } }
-function pickAssigneeIdx(i){ _setCreateAssignee((window._apList||[])[i]||''); closeModalDirect(); }
-function _setCreateAssignee(name){ var inp=document.getElementById('tc-assignee'); var lab=document.getElementById('tc-assignee-label'); if(inp)inp.value=name; if(lab)lab.textContent=name||'未選択'; }
-/* 期限クイックボタン */
-function tcSetDue(n){ var d=new Date(); d.setDate(d.getDate()+n); var el=document.getElementById('tc-due'); if(el)el.value=isoDateStr(d); }
-function tcSetDueWeekend(){ var d=new Date(); var add=(6-d.getDay()+7)%7; d.setDate(d.getDate()+add); var el=document.getElementById('tc-due'); if(el)el.value=isoDateStr(d); }
-function tcSetDueMonthEnd(){ var d=new Date(); var e=new Date(d.getFullYear(), d.getMonth()+1, 0); var el=document.getElementById('tc-due'); if(el)el.value=isoDateStr(e); }
-function tcClear(){ ['tc-title','tc-desc','tc-due','tc-link'].forEach(function(id){ var e=document.getElementById(id); if(e)e.value=''; }); _setCreateAssignee(''); }
-/* 作成タブ本体（入力→「タスク化」で確定。確定まで登録されない） */
-function renderTaskCreate(){
-  var canAll=['gm','ceo','office'].indexOf(curRole)>=0;
-  var vis=(typeof getVisibleStores==='function')?getVisibleStores().slice():STORES.slice();
-  var storeOpts=(canAll?[{id:'ALL',name:'全社'}]:[]).concat(vis);
-  if(canAll && !storeOpts.find(function(s){return s.id==='OFFICE';})) storeOpts.push({id:'OFFICE',name:'Office'});
-  var defStore = (curStore && curStore!=='ALL') ? curStore : (storeOpts[0]?storeOpts[0].id:'F01');
-  var today=todayISO();
-  var recurOpts=[['none','なし'],['daily','毎日'],['weekly','毎週'],['monthly','毎月'],['monthend','月末']];
-  var html='<div class="card">'
-    +'<div class="card-title"><i class="ti ti-clipboard-plus" style="color:var(--accent)"></i>新しいタスク</div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">「何を／誰が／いつまでに」を決めて、下の<b>「タスク化」</b>で登録します。登録すると担当者に通知が届き、一覧に反映されます（登録後も編集可）。</div>'
-    +'<div class="form-group"><label class="form-label"><i class="ti ti-checkbox"></i> 何を（タスク名）</label><input class="form-input" id="tc-title" placeholder="例：週末の在庫棚卸し" style="font-size:15px"></div>'
-    +'<div class="form-group"><label class="form-label"><i class="ti ti-user"></i> 誰が（担当者）</label>'
-      +'<button type="button" class="btn btn-secondary" style="width:100%;justify-content:flex-start;text-align:left" onclick="openAssigneePicker()"><i class="ti ti-user-search"></i> <span id="tc-assignee-label" style="margin-left:4px">未選択</span></button>'
-      +'<input type="hidden" id="tc-assignee" value=""></div>'
-    +'<div class="form-group"><label class="form-label"><i class="ti ti-calendar-due"></i> いつまでに（期限）</label>'
-      +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">'
-        +'<button type="button" class="btn btn-secondary btn-sm" onclick="tcSetDue(0)">今日</button>'
-        +'<button type="button" class="btn btn-secondary btn-sm" onclick="tcSetDue(1)">明日</button>'
-        +'<button type="button" class="btn btn-secondary btn-sm" onclick="tcSetDueWeekend()">今週末</button>'
-        +'<button type="button" class="btn btn-secondary btn-sm" onclick="tcSetDueMonthEnd()">月末</button>'
-      +'</div>'
-      +'<input class="form-input" id="tc-due" type="date"></div>'
-    +'<div class="form-row">'
-      +'<div class="form-group"><label class="form-label">区分</label><select class="form-select" id="tc-type"><option>店舗</option><option>個人</option></select></div>'
-      +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="tc-store" onchange="_setCreateAssignee(\'\')">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+(s.id===defStore?' selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('')+'</select></div>'
-    +'</div>'
-    +'<div class="form-row">'
-      +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" id="tc-priority"><option>低</option><option selected>中</option><option>高</option></select></div>'
-      +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" id="tc-place"><option value="">—</option><option>店舗内</option><option>店舗外</option></select></div>'
-    +'</div>'
-    +'<div class="form-group"><label class="form-label"><i class="ti ti-repeat"></i> 繰り返し（期限日を基準に自動生成）</label><select class="form-select" id="tc-recur">'+recurOpts.map(function(r){return '<option value="'+r[0]+'"'+(r[0]==='none'?' selected':'')+'>'+r[1]+'</option>';}).join('')+'</select></div>'
-    +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="tc-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
-    +'<div class="form-group"><label class="form-label"><i class="ti ti-link"></i> リンク先（任意）</label><input class="form-input" id="tc-link" type="url" inputmode="url" placeholder="https://… （資料・フォーム・動画など）"><div style="font-size:10px;color:var(--muted);margin-top:3px">タスク詳細から「リンクを開く」で開けます</div></div>'
-    +'<div class="btn-row"><button type="button" class="btn btn-secondary" onclick="tcClear()">クリア</button>'
-      +'<button type="button" class="btn btn-primary" onclick="commitTaskCreate()"><i class="ti ti-circle-plus"></i> タスク化（登録）</button></div>'
-    +'</div>';
-  return html;
-}
-/* 「タスク化」= 確定して登録＋通知 */
-function commitTaskCreate(){
-  var title=((document.getElementById('tc-title')||{}).value||'').trim();
-  if(!title){ showToast('タスク名（何を）を入力してください','warning'); var e=document.getElementById('tc-title'); if(e)e.focus(); return; }
-  var type=(document.getElementById('tc-type')||{}).value||'店舗';
-  var store=(document.getElementById('tc-store')||{}).value||'';
-  var assignee=(document.getElementById('tc-assignee')||{}).value||'';
-  if(type==='個人' && !assignee) assignee=myName();
-  var aEmp=assignee?getEmployees().find(function(x){return x.name===assignee;}):null;
-  var finalStore=(type==='個人') ? ((aEmp&&aEmp.store)||store||'') : (store||'');
-  var t=normalizeTask({ id:'tk'+Date.now(), title:title,
-    desc:((document.getElementById('tc-desc')||{}).value||'').trim(),
-    link:_taskNormLink((document.getElementById('tc-link')||{}).value||''),
-    type:type, store:finalStore, assignee:assignee,
-    place:(document.getElementById('tc-place')||{}).value||'',
-    priority:(document.getElementById('tc-priority')||{}).value||'中',
-    due:(document.getElementById('tc-due')||{}).value||'',
-    recur:{type:(document.getElementById('tc-recur')||{}).value||'none'},
-    status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[] });
-  addTaskLog(t,'作成（タスク化）');
-  saveTaskObj(t);
-  notifyTaskAssigned(t);
-  showToast(assignee?('タスク化しました（'+assignee+'へ通知）'):'タスク化しました（担当は後から割当可）','success');
-  tcClear();
-  window._taskView='list'; renderPage('tasks');
-}
-/* 作成｜一覧 の上部タブ */
-function taskTopTabsHtml(){
-  var v=window._taskView||'list';
-  return '<div class="phase-tabs">'
-    +'<div class="phase-tab'+(v==='create'?' active':'')+'" onclick="setTaskView(\'create\')"><i class="ti ti-clipboard-plus" style="font-size:12px"></i> 作成</div>'
-    +'<div class="phase-tab'+(v==='list'?' active':'')+'" onclick="setTaskView(\'list\')"><i class="ti ti-list-check" style="font-size:12px"></i> 一覧</div>'
-    +'</div>';
-}
-/* この店を管轄するAM（G5+）か */
-function _apAmManages(e, storeId){
-  if((typeof empGradeNum==='function'?empGradeNum(e):0)<5) return false;
-  if(typeof amStoresOf==='function'){ var mine=amStoresOf(e.name)||[]; return mine.indexOf(storeId)>=0; }
-  return true;
-}
-/* 担当者ピッカー本体：店舗が選ばれていれば「その店のスタッフ＋上位Grade（管理者）」、ALLはGrade別 */
-function _renderAssigneePicker(){
-  var q=(window._apQuery||'').toLowerCase();
-  var sid=window._apStore||'';
-  var groups=[];
-  if(sid && sid!=='ALL'){
-    var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-    var base=emps.filter(function(e){ return e.store===sid; });
-    var higher=emps.filter(function(e){ return e.store!==sid && (['gm','ceo','office'].indexOf(e.role)>=0 || _apAmManages(e,sid)); });
-    var stObj=STORES.find(function(s){return s.id===sid;});
-    groups.push({label:'この店舗（'+(stObj?stObj.name:sid)+'）', list:base});
-    groups.push({label:'上位Grade（管理者）', list:higher});
-  } else {
-    var staff=assignableStaff();
-    var byGrade={}; staff.forEach(function(e){ var g=(typeof empGrade==='function'?empGrade(e):'')||'—'; (byGrade[g]=byGrade[g]||[]).push(e); });
-    var order=['G6','G5','G4','G3','G2','G1-P','G1'];
-    Object.keys(byGrade).sort(function(a,b){ var ia=order.indexOf(a),ib=order.indexOf(b); return (ia<0?99:ia)-(ib<0?99:ib); }).forEach(function(g){ groups.push({label:g, list:byGrade[g]}); });
-  }
-  window._apList=[]; var body='';
-  groups.forEach(function(grp){
-    var list=(grp.list||[]).filter(function(e){ return !q || String(e.name).toLowerCase().indexOf(q)>=0; });
-    if(!list.length) return;
-    body+='<div style="margin:8px 0 4px;font-size:11px;font-weight:700;color:var(--muted)">'+escapeHtml(grp.label)+' <span style="font-weight:400">('+list.length+')</span></div>';
-    body+='<div style="display:flex;gap:6px;flex-wrap:wrap">'+list.map(function(e){
-      var idx=window._apList.length; window._apList.push(e.name);
-      var st=STORES.find(function(s){return s.id===e.store;});
-      var gd=(typeof empGrade==='function'?empGrade(e):'');
-      return '<span class="tag tag-gray" style="cursor:pointer;font-size:12px" onclick="pickAssigneeIdx('+idx+')">'+escapeHtml(e.name)+' <span style="color:var(--muted);font-size:9px">'+escapeHtml(gd)+(st?'·'+escapeHtml(st.name):'')+'</span></span>';
-    }).join('')+'</div>';
-  });
-  if(!body) body='<div style="color:var(--muted);font-size:13px;padding:10px">該当なし</div>';
-  var scopeLine=(sid&&sid!=='ALL') ? '<i class="ti ti-building-store"></i> 選択中の店舗のスタッフ＋上位Grade（管理者）' : ('<i class="ti ti-shield-lock"></i> '+_assigneeScopeLabel());
-  var html='<div class="modal-title">担当者を選ぶ <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px">'+scopeLine+'</div>'
-    +'<input class="form-input" id="ap-search" value="'+escapeHtml(window._apQuery||'')+'" placeholder="名前で絞り込み…" oninput="apSearch(this.value)" style="margin-bottom:6px">'
-    +'<div style="max-height:52vh;overflow-y:auto">'+body+'</div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="_setCreateAssignee(\'\');closeModalDirect()">未割当にする</button><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
-  openModal(html);
-}
-/* 自分が他の人に出したタスク（担当者別・一目で把握） */
-function renderTaskAssignedByMe(){
-  var me=myName();
-  var mine=getTasksN().filter(function(t){ return t.createdBy===me && t.assignee!==me; });
-  var active=mine.filter(function(t){ return t.status!=='完了'; });
-  var un=active.filter(function(t){ return !t.assignee; });
-  var byP={}; active.filter(function(t){ return !!t.assignee; }).forEach(function(t){ (byP[t.assignee]=byP[t.assignee]||[]).push(t); });
-  var nPeople=Object.keys(byP).length;
-  function row(t){ var di=taskDueInfo(t.due); return '<div style="display:flex;gap:8px;align-items:center;font-size:13px;padding:7px 0;border-top:1px solid var(--border);cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:9px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+(t.recur&&t.recur.type&&t.recur.type!=='none'?' <i class="ti ti-repeat" style="color:var(--accent2);font-size:11px"></i>':'')+'</span>'+(di.label?'<span style="color:'+di.color+';font-size:12px;white-space:nowrap">'+di.label+'</span>':'')+'</div>'; }
-  var html='<div class="card" style="padding:10px 12px"><div style="font-size:12px;color:var(--muted)"><i class="ti ti-send" style="color:var(--accent)"></i> 自分が出した未完了タスク: <b style="color:var(--text)">'+active.length+'</b>件（'+nPeople+'名'+(un.length?' ＋ 未割当'+un.length:'')+'）</div></div>';
-  if(!active.length){ html+='<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-send" style="font-size:26px;display:block;margin-bottom:6px"></i>自分が出した未完了タスクはありません</div>'; }
-  if(un.length){
-    html+='<div class="card" style="border-left:3px solid var(--eval-mid)"><div class="card-title"><i class="ti ti-inbox" style="color:var(--eval-mid)"></i>未割当 <span style="color:var(--muted);font-weight:400;font-size:12px">('+un.length+') — 担当を決めましょう</span></div>';
-    un.sort(function(a,b){ return (a.due||'9999')<(b.due||'9999')?-1:1; });
-    un.forEach(function(t){ html+=row(t); });
-    html+='</div>';
-  }
-  Object.keys(byP).sort().forEach(function(n){
-    var list=byP[n]; var od=list.filter(function(t){ return taskDueInfo(t.due).overdue; }).length;
-    html+='<div class="card"><div class="card-title"><span style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;display:inline-flex;align-items:center;justify-content:center;margin-right:6px">'+escapeHtml(n[0]||'?')+'</span>'+escapeHtml(n)+' <span style="color:var(--muted);font-weight:400;font-size:12px">('+list.length+')</span>'+(od?' <span class="tag" style="background:var(--eval-low);color:#fff;font-size:9px;margin-left:6px">期限超過 '+od+'</span>':'')+'</div>';
-    list.sort(function(a,b){ return (a.due||'9999')<(b.due||'9999')?-1:1; });
-    list.forEach(function(t){ html+=row(t); });
-    html+='</div>';
-  });
-  var done=mine.filter(function(t){ return t.status==='完了'; });
-  if(done.length){
-    html+='<details style="margin-top:6px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了 ('+done.length+')</summary>';
-    done.slice().reverse().slice(0,30).forEach(function(t){ html+='<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'未割当')+' · '+(t.completedDate||'')+'</div></div>'; });
-    html+='</details>';
-  }
-  return html;
-}
-function renderTasks(){
-  try{ maybeSyncTasks(); }catch(e){}
-  try{ ensureRecurringTasks(); taskDeadlineReminders(); checkCashTipTasks(); }catch(e){}
-  var canManage = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0;
-  if(!window._taskView) window._taskView='list';
-  var html = '<div class="section-header"><div><div class="section-title">タスク</div><div class="section-sub">ワークセンター — 作成と一覧</div></div>'
-    +'</div>'
-    +'<div style="font-size:10px;color:var(--muted);margin:-6px 0 8px">'+(_tasksPulledAt?('最終同期 '+new Date(_tasksPulledAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})+'（他端末で作成されたタスクはここで取り込まれます）'):'他端末のタスクを取り込むには「更新」を押してください')+'</div>';
-  html += taskTopTabsHtml();
-  if(window._taskView==='create') return html + renderTaskCreate();
-  html += '<div class="phase-tabs">'
-    +'<div class="phase-tab'+(taskTab==='store'?' active':'')+'" onclick="setTaskTab(\'store\')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗タスク</div>'
-    +'<div class="phase-tab'+(taskTab==='mine'?' active':'')+'" onclick="setTaskTab(\'mine\')"><i class="ti ti-user" style="font-size:12px"></i> 個人タスク</div>'
-    +'<div class="phase-tab'+(taskTab==='byme'?' active':'')+'" onclick="setTaskTab(\'byme\')"><i class="ti ti-send" style="font-size:12px"></i> 出したタスク</div>'
-    +(canManage?'<div class="phase-tab'+(taskTab==='admin'?' active':'')+'" onclick="setTaskTab(\'admin\')"><i class="ti ti-eye" style="font-size:12px"></i> 管理ビュー</div>':'')
-    +'</div>';
-  html += taskAssigneeDatalistHtml();
-  html += '<div class="card" style="padding:8px 12px;margin-bottom:8px"><div style="display:flex;gap:6px;align-items:center"><i class="ti ti-search" style="color:var(--muted)"></i>'
-    +'<input class="form-input" id="task-search" list="dl-task-assignees" value="'+escapeHtml(taskSearch)+'" placeholder="担当者名で検索（タスク名も可）…" style="flex:1;font-size:13px" oninput="taskSearchSet(this.value)">'
-    +(taskSearch?'<button class="btn btn-secondary btn-sm" onclick="taskSearchSet(\'\')">クリア</button>':'')+'</div></div>';
-  if(taskTab==='byme') return html + renderTaskAssignedByMe();
-  if(taskTab==='mine') return html + renderTaskMine();
-  if(taskTab==='admin' && canManage) return html + renderTaskAdmin();
-  return html + renderTaskStore();
-}
 
-function renderTaskStore(){
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
-  var html = pageStoreTabs(storeId, true);
-  html += '<div class="card"><div style="display:flex;gap:8px;align-items:center">'
-    +'<input class="form-input" id="qadd-title" placeholder="タスク名を入力して Enter で追加…" style="flex:1" onkeydown="if(event.key===\'Enter\')quickAddTask(\''+storeId+'\',\'店舗\')">'
-    +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\''+storeId+'\',\'店舗\')"><i class="ti ti-plus"></i></button>'
-    +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="setTaskView(\'create\')"><i class="ti ti-adjustments"></i></button>'
-    +'</div></div>';
-  var tasks = taskApplySearch(getTasksN().filter(function(t){ return t.type==='店舗' && (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); }));
-  ['未着手','進行中','レビュー'].forEach(function(st){
-    var list=tasks.filter(function(t){return t.status===st;});
-    html += '<div style="margin:10px 2px 4px;font-size:12px;font-weight:600;color:'+taskStatusColor(st)+'">'+st+' <span style="color:var(--muted)">('+list.length+')</span></div>';
-    if(!list.length) html += '<div style="font-size:12px;color:var(--muted);padding:4px 2px">なし</div>';
-    list.sort(function(a,b){ var po={'高':0,'中':1,'低':2}; if(po[a.priority]!==po[b.priority]) return po[a.priority]-po[b.priority]; return (a.due||'9999')<(b.due||'9999')?-1:1; });
-    list.forEach(function(t){ html += taskCardHtml(t); });
-  });
-  var done=tasks.filter(function(t){return t.status==='完了';});
-  if(done.length){
-    html += '<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了 ('+done.length+')</summary>';
-    done.slice().reverse().slice(0,20).forEach(function(t){
-      html += '<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+escapeHtml(t.assignee||'')+' · '+(t.completedDate||'')+'</div></div>';
-    });
-    html += '</details>';
-  }
-  return html;
-}
 
-function renderTaskMine(){
-  var me = myName();
-  var html = '<div class="card"><div style="display:flex;gap:8px;align-items:center">'
-    +'<input class="form-input" id="qadd-title" placeholder="自分のタスクを Enter で追加…" style="flex:1" onkeydown="if(event.key===\'Enter\')quickAddTask(\'\',\'個人\')">'
-    +'<button class="btn btn-primary btn-sm" onclick="quickAddTask(\'\',\'個人\')"><i class="ti ti-plus"></i></button>'
-    +'<button class="btn btn-secondary btn-sm" title="詳細作成" onclick="setTaskView(\'create\')"><i class="ti ti-adjustments"></i></button>'
-    +'</div></div>';
-  var tasks = taskApplySearch(getTasksN().filter(function(t){ return t.assignee===me && t.status!=='完了'; }));
-  var groups=[
-    {key:'overdue', label:'期限超過', color:'var(--eval-low)', f:function(t){ return taskDueInfo(t.due).overdue; }},
-    {key:'today', label:'今日', color:'var(--eval-mid)', f:function(t){ return taskDueInfo(t.due).label==='今日'; }},
-    {key:'week', label:'今週', color:'var(--eval-mid)', f:function(t){ var l=taskDueInfo(t.due).label; return l.indexOf('今週')===0; }},
-    {key:'later', label:'それ以降・期限なし', color:'var(--muted)', f:function(t){ var di=taskDueInfo(t.due); return !di.overdue && di.label!=='今日' && di.label.indexOf('今週')!==0; }},
-  ];
-  var shown={};
-  groups.forEach(function(g){
-    var list=tasks.filter(function(t){ return !shown[t.id] && g.f(t); });
-    list.forEach(function(t){ shown[t.id]=1; });
-    if(!list.length) return;
-    html += '<div style="margin:10px 2px 4px;font-size:12px;font-weight:600;color:'+g.color+'">'+g.label+' ('+list.length+')</div>';
-    list.forEach(function(t){ html += taskCardHtml(t); });
-  });
-  if(!tasks.length) html += '<div class="card" style="text-align:center;color:var(--muted);padding:24px"><i class="ti ti-checks" style="font-size:26px;display:block;margin-bottom:6px"></i>未完了の個人タスクなし</div>';
-  var done=getTasksN().filter(function(t){ return t.assignee===me && t.status==='完了'; });
-  if(done.length){
-    html += '<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer;color:var(--green)"><i class="ti ti-history"></i> 完了履歴 ('+done.length+')</summary>';
-    done.slice().reverse().slice(0,20).forEach(function(t){ html += '<div class="approval-item" style="cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><div class="approval-header"><div class="approval-title" style="text-decoration:line-through;color:var(--muted)">'+escapeHtml(t.title)+'</div><span class="tag tag-green">完了</span></div><div class="approval-meta">'+(t.completedDate||'')+'</div></div>'; });
-    html += '</details>';
-  }
-  return html;
-}
 
-function renderTaskAdmin(){
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
-  var html = pageStoreTabs(storeId, true);
-  var tasks = taskApplySearch(getTasksN().filter(function(t){ return (storeId==='ALL'?true:(t.store===storeId||t.store==='ALL')); }));
-  var active = tasks.filter(function(t){return t.status!=='完了';});
-  var overdue = active.filter(function(t){ return taskDueInfo(t.due).overdue; });
-  var stalled = active.filter(taskStalled);
-  html += '<div class="kpi-grid" style="margin-bottom:10px">'
-    + kpi('進行中', active.length, '全担当', 'var(--tm)')
-    + kpi('期限超過', overdue.length, '要対応', overdue.length?'var(--eval-low)':'var(--green)')
-    + kpi('停滞(3日+)', stalled.length, '進捗なし', stalled.length?'var(--eval-mid)':'var(--green)')
-    + '</div>';
 
-  // 遅延・停滞スタッフ
-  var byPerson={};
-  active.forEach(function(t){ var k=t.assignee||'未割当'; (byPerson[k]=byPerson[k]||[]).push(t); });
-  var slow=Object.keys(byPerson).map(function(n){
-    var list=byPerson[n];
-    return {name:n, od:list.filter(function(t){return taskDueInfo(t.due).overdue;}).length, st:list.filter(taskStalled).length, total:list.length};
-  }).filter(function(p){ return p.od>0 || p.st>0; }).sort(function(a,b){ return (b.od+b.st)-(a.od+a.st); });
-  if(slow.length){
-    html += '<div class="card" style="border-left:3px solid var(--eval-low)"><div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--eval-low)"></i>遅延しているスタッフ</div>';
-    slow.forEach(function(p){
-      html += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:13px">'
-        +'<span style="width:22px;height:22px;border-radius:50%;background:'+(p.od?'var(--eval-low)':'var(--eval-mid)')+';color:#fff;font-size:10px;display:inline-flex;align-items:center;justify-content:center">'+escapeHtml(p.name[0]||'?')+'</span>'
-        +'<span style="font-weight:600">'+escapeHtml(p.name)+'</span>'
-        +'<span style="color:var(--muted);font-size:12px">'+(p.od?'期限超過 '+p.od+'件':'')+(p.od&&p.st?' · ':'')+(p.st?'停滞 '+p.st+'件':'')+'</span>'
-        +'<button class="btn btn-secondary btn-sm" style="margin-left:auto;font-size:11px" onclick="taskFollowUp(\''+p.name.replace(/'/g,"")+'\')">フォロー</button>'
-        +'</div>';
-    });
-    html += '</div>';
-  } else {
-    html += '<div class="alert alert-success"><i class="ti ti-circle-check"></i>遅延・停滞しているスタッフはいません</div>';
-  }
 
-  // G2以上の業務（店舗内/店舗外）
-  var emps=getEmployees();
-  function gradeOfName(n){ var e=emps.find(function(x){return x.name===n;}); return e?empGradeNum(e):0; }
-  var g2=active.filter(function(t){ return t.assignee && gradeOfName(t.assignee)>=2; });
-  var inStore=g2.filter(function(t){return t.place==='店舗内';});
-  var outStore=g2.filter(function(t){return t.place==='店舗外';});
-  var noPlace=g2.filter(function(t){return !t.place;});
-  html += '<div class="card"><div class="card-title"><i class="ti ti-briefcase"></i>G2以上の業務 ('+g2.length+')</div>'
-    +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px">'
-    +'<div><div style="color:var(--muted);margin-bottom:4px"><i class="ti ti-building-store"></i> 店舗内 ('+inStore.length+')</div>'+(inStore.length?inStore.map(function(t){return '<div style="padding:2px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">· '+escapeHtml(t.title)+' <span style="color:var(--muted)">'+escapeHtml(t.assignee)+'</span></div>';}).join(''):'<div style="color:var(--muted)">なし</div>')+'</div>'
-    +'<div><div style="color:var(--muted);margin-bottom:4px"><i class="ti ti-map-pin"></i> 店舗外 ('+outStore.length+')</div>'+(outStore.length?outStore.map(function(t){return '<div style="padding:2px 0;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')">· '+escapeHtml(t.title)+' <span style="color:var(--muted)">'+escapeHtml(t.assignee)+'</span></div>';}).join(''):'<div style="color:var(--muted)">なし</div>')+'</div>'
-    +'</div>'
-    +(noPlace.length?'<div style="font-size:11px;color:var(--muted);margin-top:8px">※ 場所未設定 '+noPlace.length+'件（タスク詳細で店舗内/外を設定できます）</div>':'')
-    +'</div>';
 
-  // 担当別 全タスク把握
-  html += '<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>担当別タスク</div>';
-  Object.keys(byPerson).sort().forEach(function(n){
-    var list=byPerson[n];
-    html += '<details style="border-top:1px solid var(--border);padding:4px 0"><summary style="font-size:13px;font-weight:600;cursor:pointer">'+escapeHtml(n)+' <span style="color:var(--muted);font-weight:400">('+list.length+')</span></summary>';
-    list.forEach(function(t){ var di=taskDueInfo(t.due); html += '<div style="display:flex;gap:8px;font-size:12px;padding:3px 0 3px 10px;cursor:pointer" onclick="openTaskDetail(\''+t.id+'\')"><span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:9px">'+t.status+'</span><span style="flex:1">'+escapeHtml(t.title)+'</span>'+(di.label?'<span style="color:'+di.color+'">'+di.label+'</span>':'')+'</div>'; });
-    html += '</details>';
-  });
-  if(!Object.keys(byPerson).length) html += '<div style="color:var(--muted);font-size:13px;text-align:center;padding:12px">進行中タスクなし</div>';
-  html += '</div>';
-  return html;
-}
-
-function quickAddTask(storeId, type){
-  var el=document.getElementById('qadd-title'); var title=el?el.value.trim():'';
-  if(!title){ return; }
-  var t=normalizeTask({id:'tk'+Date.now(), title:title, type:type||'店舗',
-    store: type==='個人' ? (curStore==='ALL'?'ALL':curStore) : (storeId==='ALL'?'ALL':storeId),
-    assignee: type==='個人' ? myName() : '',
-    priority:'中', due:'', place:'', status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
-  addTaskLog(t, type==='個人'?'作成（個人・クイック）':'作成（クイック）');
-  saveTaskObj(t);
-  if(el) el.value='';
-  showToast('タスクを追加しました','success');
-  renderPage('tasks');
-}
-
-function openTaskModal(type, storeId){
-  type=type||'店舗';
-  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-  var storeOpts=[{id:'ALL',name:'全社'}].concat(STORES).concat([{id:'OFFICE',name:'Office'}]);
-  openModal('<div class="modal-title">'+(type==='個人'?'個人タスク作成':'店舗タスク作成')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div class="form-group"><label class="form-label">タスク名</label><input class="form-input" id="t-title" placeholder="タスク内容"></div>'
-    +'<div class="form-group"><label class="form-label">詳細（任意）</label><textarea class="form-input" id="t-desc" rows="2" placeholder="補足・手順など"></textarea></div>'
-    +'<div class="form-group"><label class="form-label">リンク先（任意）</label><input class="form-input" id="t-link" type="url" inputmode="url" placeholder="https://… （資料・フォーム・動画など）"><div style="font-size:10px;color:var(--muted);margin-top:3px">タスク詳細から開けます</div></div>'
-    +'<div class="form-row">'
-    +'<div class="form-group"><label class="form-label">区分</label><select class="form-select" id="t-type"><option'+(type==='店舗'?' selected':'')+'>店舗</option><option'+(type==='個人'?' selected':'')+'>個人</option></select></div>'
-    +'<div class="form-group"><label class="form-label">店舗</label><select class="form-select" id="t-store">'+storeOpts.map(function(s){return '<option value="'+s.id+'"'+((storeId&&s.id===storeId)?' selected':'')+'>'+s.name+'</option>';}).join('')+'</select></div>'
-    +'</div>'
-    +'<div class="form-row">'
-    +'<div class="form-group"><label class="form-label">担当者</label><select class="form-select" id="t-assignee"><option value="">未割当</option>'+emps.map(function(e){return '<option'+(type==='個人'&&e.name===myName()?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></div>'
-    +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" id="t-place"><option value="">—</option><option>店舗内</option><option>店舗外</option></select></div>'
-    +'</div>'
-    +'<div class="form-row">'
-    +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" id="t-priority"><option>低</option><option selected>中</option><option>高</option></select></div>'
-    +'<div class="form-group"><label class="form-label">期限</label><input class="form-input" id="t-due" type="date"></div>'
-    +'</div>'
-    +'<div class="form-group"><label class="form-label">繰り返し（期限日を基準に自動生成）</label><select class="form-select" id="t-recur"><option value="none">なし</option><option value="daily">毎日</option><option value="weekly">毎週</option><option value="monthly">毎月</option><option value="monthend">月末</option></select></div>'
-    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="saveTask()">作成</button></div>');
-}
-function saveTask(){
-  var title=document.getElementById('t-title').value.trim();
-  if(!title){ alert('タスク名を入力してください'); return; }
-  var t=normalizeTask({id:'tk'+Date.now(), title:title,
-    desc:document.getElementById('t-desc').value.trim(),
-    link:_taskNormLink((document.getElementById('t-link')||{}).value||''),
-    type:document.getElementById('t-type').value,
-    store:document.getElementById('t-store').value,
-    assignee:document.getElementById('t-assignee').value,
-    place:document.getElementById('t-place').value,
-    priority:document.getElementById('t-priority').value,
-    due:document.getElementById('t-due').value,
-    recur:{type:(document.getElementById('t-recur')||{}).value||'none'},
-    status:'未着手', progress:0, createdBy:myName(), created:tsNow(), memos:[], log:[]});
-  addTaskLog(t,'作成');
-  saveTaskObj(t);
-  notifyTaskAssigned(t);
-  closeModalDirect();
-  showToast('タスクを作成しました','success');
-  renderPage('tasks');
-}
-
-function openTaskDetail(id){
-  var t=taskById(id); if(!t) return;
-  var emps=getEmployees().filter(function(e){return e.status!=='退職';});
-  var canEdit = ['ceo','gm','am','sl','office'].indexOf(curRole)>=0 || t.assignee===myName() || t.createdBy===myName();
-  var stIdx=TASK_STATUSES.indexOf(t.status);
-  var nextSt=stIdx>=0&&stIdx<TASK_STATUSES.length-1?TASK_STATUSES[stIdx+1]:null;
-  var di=taskDueInfo(t.due);
-  var h='<div class="modal-title">タスク詳細 <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
-  h+='<div style="max-height:70vh;overflow-y:auto">';
-  h+='<div style="font-size:16px;font-weight:700;margin-bottom:4px">'+escapeHtml(t.title)+'</div>';
-  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">'
-    +'<span class="tag" style="background:'+taskPriColor(t.priority)+';color:#fff;font-size:10px">重要度 '+t.priority+'</span>'
-    +'<span class="tag" style="background:'+taskStatusColor(t.status)+';color:#fff;font-size:10px">'+t.status+'</span>'
-    +'<span class="tag tag-gray" style="font-size:10px">'+t.type+'</span>'
-    +(t.recur&&t.recur.type&&t.recur.type!=='none'?'<span class="tag tag-blue" style="font-size:10px"><i class="ti ti-repeat"></i> '+(TASK_RECUR_LABELS[t.recur.type]||'')+'</span>':'')
-    +(t.place?'<span class="tag tag-gray" style="font-size:10px">'+t.place+'</span>':'')
-    +(di.label?'<span class="tag" style="background:'+di.color+';color:#fff;font-size:10px">'+di.label+'</span>':'')
-    +'</div>';
-  h+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-pencil-plus"></i> '+escapeHtml(t.createdBy||'—')+' が作成'+(t.created?' · '+escapeHtml(String(t.created)):'')+(t.assignee?' ／ <i class="ti ti-user"></i> 担当 '+escapeHtml(t.assignee):'')+'</div>';
-  if(t.desc) h+='<div style="background:var(--surface2);border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.7;margin-bottom:8px;white-space:pre-line">'+escapeHtml(t.desc)+'</div>';
-  if(t.link) h+='<div style="margin-bottom:8px"><a href="'+escapeHtml(t.link)+'" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-sm" style="font-size:11px;display:inline-flex;align-items:center;gap:5px;max-width:100%"><i class="ti ti-link" style="color:var(--accent2)"></i><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escapeHtml(_taskLinkLabel(t.link))+'</span><i class="ti ti-external-link" style="font-size:11px;color:var(--muted)"></i></a></div>';
-  // 編集フィールド
-  if(canEdit){
-    h+='<div class="form-row">'
-      +'<div class="form-group"><label class="form-label">担当者</label><select class="form-select" id="td-assignee" onchange="taskField(\''+t.id+'\',\'assignee\',this.value)"><option value="">未割当</option>'+emps.map(function(e){return '<option'+(e.name===t.assignee?' selected':'')+'>'+e.name+'</option>';}).join('')+'</select></div>'
-      +'<div class="form-group"><label class="form-label">期限</label><input class="form-input" type="date" id="td-due" value="'+(t.due||'')+'" onchange="taskField(\''+t.id+'\',\'due\',this.value)"></div>'
-      +'</div>';
-    h+='<div class="form-row">'
-      +'<div class="form-group"><label class="form-label">重要度</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'priority\',this.value)">'+['低','中','高'].map(function(p){return '<option'+(p===t.priority?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
-      +'<div class="form-group"><label class="form-label">場所</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'place\',this.value)"><option value="">—</option>'+['店舗内','店舗外'].map(function(p){return '<option'+(p===t.place?' selected':'')+'>'+p+'</option>';}).join('')+'</select></div>'
-      +'</div>';
-    h+='<div class="form-group"><label class="form-label">リンク先（任意）</label><input class="form-input" type="url" inputmode="url" value="'+escapeHtml(t.link||'')+'" placeholder="https://…" onchange="taskField(\''+t.id+'\',\'link\',_taskNormLink(this.value))"></div>';
-    h+='<div class="form-group"><label class="form-label">繰り返し（期限日基準で自動生成）</label><select class="form-select" onchange="taskField(\''+t.id+'\',\'recur\',this.value)">'+['none','daily','weekly','monthly','monthend'].map(function(r){return '<option value="'+r+'"'+((t.recur&&t.recur.type===r)?' selected':'')+'>'+TASK_RECUR_LABELS[r]+'</option>';}).join('')+'</select></div>';
-    // ステータス & 進捗
-    h+='<div class="form-group"><label class="form-label">ステータス</label><div style="display:flex;gap:6px;flex-wrap:wrap">'
-      +TASK_STATUSES.map(function(s){return '<button class="btn btn-sm '+(s===t.status?'btn-primary':'btn-secondary')+'" style="font-size:11px" onclick="taskSetStatus(\''+t.id+'\',\''+s+'\')">'+s+'</button>';}).join('')
-      +'</div></div>';
-    h+='<div class="form-group"><label class="form-label">進捗 '+(t.progress||0)+'%</label><div style="display:flex;gap:6px">'
-      +[0,25,50,75,100].map(function(p){return '<button class="btn btn-secondary btn-sm" style="font-size:11px" onclick="taskField(\''+t.id+'\',\'progress\','+p+')">'+p+'%</button>';}).join('')
-      +'</div></div>';
-  }
-  // メモ
-  h+='<div style="border-top:1px solid var(--border);margin-top:10px;padding-top:8px"><div style="font-size:13px;font-weight:600;margin-bottom:6px"><i class="ti ti-message-2"></i> メモ書き</div>';
-  if(t.memos.length){ t.memos.slice().reverse().forEach(function(m){ h+='<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><span style="color:var(--muted);font-size:10px">'+m.date+' · '+escapeHtml(m.by)+'</span><div style="white-space:pre-line">'+escapeHtml(m.text)+'</div></div>'; }); }
-  else h+='<div style="font-size:12px;color:var(--muted)">メモはまだありません</div>';
-  h+='<div style="display:flex;gap:6px;margin-top:8px"><input class="form-input" id="td-memo" placeholder="メモを追加…" style="flex:1"><button class="btn btn-secondary btn-sm" onclick="addTaskMemo(\''+t.id+'\')">追加</button></div></div>';
-  // ログ
-  h+='<details style="margin-top:10px"><summary style="font-size:13px;font-weight:600;cursor:pointer"><i class="ti ti-history"></i> アクティビティログ ('+t.log.length+')</summary>';
-  t.log.slice().reverse().forEach(function(l){ h+='<div style="font-size:11px;color:var(--muted);padding:3px 0">'+l.date+' · '+escapeHtml(l.by)+' — '+escapeHtml(l.action)+'</div>'; });
-  h+='</details>';
-  h+='</div>';
-  h+='<div class="btn-row" style="margin-top:10px">';
-  if(canEdit && t.status!=='完了') h+='<button class="btn btn-success" onclick="taskSetStatus(\''+t.id+'\',\'完了\')"><i class="ti ti-check"></i> 完了にする</button>';
-  if(canEdit) h+='<button class="btn btn-danger btn-sm" onclick="deleteTask(\''+t.id+'\')"><i class="ti ti-trash"></i></button>';
-  h+='<button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>';
-  openModal(h);
-}
-function taskField(id, field, val){
-  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
-  var old=t[field];
-  if(field==='progress') val=parseInt(val)||0;
-  if(field==='recur'){ old=(t.recur&&t.recur.type)||'none'; t.recur={type:val}; }
-  else t[field]=val;
-  if(field==='progress'){ if(val>=100 && t.status!=='完了'){ t.status='完了'; t.completedDate=tsNow(); } else if(val>0 && t.status==='未着手'){ t.status='進行中'; } }
-  var disp = field==='recur' ? (TASK_RECUR_LABELS[old]+' → '+TASK_RECUR_LABELS[val]) : ((old||'—')+' → '+(val||'—'));
-  addTaskLog(t, field+': '+disp);
-  if(field==='assignee' && val) notifyTaskAssigned(t);
-  saveTaskObj(t);
-  renderPage('tasks');
-  if(document.getElementById('modal-overlay').classList.contains('open')) openTaskDetail(id);
-}
-function taskSetStatus(id, st){
-  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
-  t.status=st;
-  if(st==='完了'){ t.progress=100; t.completedDate=tsNow(); }
-  else if(st==='進行中' && (t.progress||0)===0){ t.progress=25; }
-  addTaskLog(t,'ステータス → '+st);
-  saveTaskObj(t);
-  showToast(st==='完了'?'タスク完了':'更新しました','success');
-  renderPage('tasks');
-  if(st==='完了'){ closeModalDirect(); } else if(document.getElementById('modal-overlay').classList.contains('open')){ openTaskDetail(id); }
-}
-function addTaskMemo(id){
-  var el=document.getElementById('td-memo'); var txt=el?el.value.trim():''; if(!txt) return;
-  var arr=getTasks(); var t=normalizeTask(arr.find(function(x){return x.id===id;})||{}); if(!t.id) return;
-  t.memos.push({date:tsNow(), by:myName(), text:txt});
-  t.updatedTs=Date.now();
-  saveTaskObj(t);
-  openTaskDetail(id);
-}
-function taskFollowUp(name){
-  showToast(name+' のフォロー：本人の個人タスク／スキル評価／1on1メモで対応できます','info');
-}
-function deleteTask(id){
-  if(!confirm('このタスクを削除しますか？')) return;
-  var arr=getTasks(); var t=arr.find(function(x){return x.id===id;});
-  if(t){ t._deleted=true; t.updatedTs=Date.now(); } else { arr=arr.filter(function(x){return x.id!==id;}); }
-  setTasks(arr);
-  closeModalDirect();
-  showToast('削除しました','success');
-  renderPage('tasks');
-}
-function updateTaskProgress(id,p){ taskField(id,'progress',p); }
-function completeTask(id){ taskSetStatus(id,'完了'); }
 
 /* ============================================================
    ⑯ Required管理 (必須設定/未完了検知/注意ログ/警告カウント)
@@ -81242,7 +80651,7 @@ function renderGrowthHub() {
   }
   return html;
 }
-/* 担当者の設定/解除。担当が決まると初動タスクを自動完了し、投稿者へ通知 */
+/* 担当者の設定/解除。担当が決まると投稿者へ通知（v1088: 初動タスクは廃止） */
 function ghAssignMe(id, off){
   var posts=ls('growthhub',[]); var p=posts.find(function(x){return x.id===id;}); if(!p) return;
   var me=curUserName||(ROLE_CONFIG[curRole]||{}).name;
@@ -81250,7 +80659,6 @@ function ghAssignMe(id, off){
   else {
     p.assignee=me; p.assignedAt=nowJP();
     if((p.status||'未対応')==='未対応') p.status='対応中';
-    try{ var tk=getTasks(); var hit=false; tk.forEach(function(t){ if(t.refId==='gh_'+id && t.status!=='完了'){ t.status='完了'; t.progress=100; t.doneAt=nowJP(); hit=true; } }); if(hit) lsSet('tasks_all', tk); }catch(e){}
     try{ addNotif({type:'consult', title:'相談の担当者が決まりました', text:(me+' が対応します: '+String(p.title||'').slice(0,80)), toUser:p.author, page:'growthhub', refId:id}); }catch(e){}
   }
   lsSet('growthhub', posts);
@@ -81317,16 +80725,7 @@ function saveGHPost() {
     store: emp?emp.store:(curStore!=='ALL'?curStore:''),
     date:todayJP(), status:'未対応', replies:[]});
   lsSet('growthhub', posts);
-  // 初動タスク: 内容確認＋担当決め（ワークセンターに集約）
-  try{
-    var _p2=posts[posts.length-1];
-    var _tk=getTasks();
-    _tk.push({ id:'tk'+Date.now()+Math.floor(Math.random()*1000), refId:'gh_'+_p2.id, auto:'consult',
-      title:t('【相談】内容確認と担当決め: ','[Consultation] Review and assign: ')+String(_p2.title||'').slice(0,40),
-      desc:t('お悩み相談室に新しい相談が届きました。内容を確認し、「担当する」で対応者を決めてください。','A new consultation arrived in the Support Room. Review it and use "Take it" to assign an owner.'),
-      assignee:'', store:_p2.store||'ALL', priority:'高', due:todayISO(), progress:0, status:'進行中', created:todayJP() });
-    lsSet('tasks_all', _tk);
-  }catch(e){}
+  /* v1088: 初動タスクは作らない（UI案52 5A）。管理者への通知だけ */
   try{ var _gp=posts[posts.length-1]; if(_gp.store){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(_gp.title||'').slice(0,140), toStore:_gp.store, toRoles:['sl','am','gm'], page:'growthhub', refId:_gp.id }); } else { addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(_gp.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:_gp.id }); } }catch(e){}
   closeModalDirect();
   showToast(t('相談を送信しました。管理者が確認します','Sent. A manager will review it'), 'success');
@@ -84945,7 +84344,7 @@ async function checkOnboardToken(){
 }
 try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
 try { migrateAkaneHourly(); } catch(e) { console.error('migrateAkaneHourly', e); }
-try { setTimeout(function(){ try{ checkCashTipTasks(); }catch(e){} }, 5000); } catch(e) {}
+try { setTimeout(function(){ try{ checkCashTipNotify(); }catch(e){} }, 5000); } catch(e) {}
 try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
 try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
