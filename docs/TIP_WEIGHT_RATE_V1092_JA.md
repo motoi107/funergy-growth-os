@@ -50,7 +50,7 @@
   - **Codex の P2**：本物の `approveTip` で、未処理の申請を 10/23 に承認しても、10/18 の配分（$100／$80）が変わらない（前の記録に並びの時刻が付いても）。10/23 からは新しい決定の率（$90／$90）。
   - 従業員マスターの説明・版（1092）。
 - わざと壊す 40 通りすべてで落ちる（UTC の時間で流した。「ハワイの日付をその端末の日付にする」の 1 通りはハワイの時間の端末では同じ結果になる）。最初の 32 通り（開始日の比べ方・10/1・3 か月・承認した日・日付の無い記録・時刻だけの記録・並びの時刻・初回勤務日の無い人・Waikiki・役職・決めた時刻の選び方・No Tip・係数を使う・時間だけ・期間の率の集め方・表示 7 か所・確定の記録・説明）すべてで落ちる。
-- 関連 13 ファイル（tip-weight-rate・tip-rate-live・next-v1090・ingredient-export-sql・approvals-v1087・dashboard-ui41・error-center-v1088・karte-bonus-ceo・karte-eval-sync・karte-eval・mid-review-ui・office-crew-approvals・employee-resign-sync）：__REL__（skipped 0）。static release pass／1092。lone LF 0・lone CR 0。
+- 関連 13 ファイル（tip-weight-rate・tip-rate-live・next-v1090・ingredient-export-sql・approvals-v1087・dashboard-ui41・error-center-v1088・karte-bonus-ceo・karte-eval-sync・karte-eval・mid-review-ui・office-crew-approvals・employee-resign-sync）：286/286（skipped 0・UTC の時間で・`e59f3f9`）。static release pass／1092。lone LF 0・lone CR 0。
 - Chromium（PC 1280・390px・合成の 3 人・外への通信はすべて止めて）：配分表で Crew B が「80%→90%」（10/16 は 80%・10/17 に 90% を承認）、Crew A「80%」、Crew C「100%」（3 か月）。10/17 の振り分け：Crew C $170.37・B $153.33・A $136.30（合計 $460.00 ＝ チップの総額）。10/2（開始日より前）は係数 1・1・0.8 で $164.29・$164.29・$131.43（今までどおり）。CSV の B の行の「Tip Rate」は「80→90%」。従業員マスターの説明。pageerror 0・横スクロールなし。
 
 ## 4. 限界・確かめること
