@@ -298,15 +298,32 @@ test('独立レビュー（e59f3f9）P1・P3: rejecting an old request changes n
   await run(c, "approveTip('p', '却下')");
   assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]], 'the past day pays the same (before: $80 / $100)');
   assert.equal(run(c, "effectiveTipRate('A')"), 100, 'the rate now stays at the raise (before: 80%)');
-  // P3: a device whose clock reads 10/19 23:00 approves a new 90% request: its day is not before the latest decision day
-  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([{ id: 'q', name: 'A', rate: 90, status: '申請中', date: '2026/10/19' }]);
-  c.NOW = hst(2026, 10, 19, 23);
+  // P3: a device whose clock reads 10/22 23:00 (behind) approves a new 90% request: its day is not before the latest decision day (10/23)
+  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([{ id: 'q', name: 'A', rate: 90, status: '申請中', date: '2026/10/22' }]);
+  c.LABOR['F01|2026-10-22'] = c.LABOR['F01|2026-10-20']; c.TIPS['F01|2026-10-22'] = { l: 180, d: 0 };
+  c.NOW = hst(2026, 10, 22, 23);
   await run(c, "approveTip('q', '承認')");
-  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'q').decDay, '2026-10-23', 'not 10/19');
-  assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]], 'the past day pays the same (before: the slow clock made it count from 10/19)');
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'q').decDay, '2026-10-23', 'not 10/22');
+  assert.deepEqual(pay('2026-10-22'), [['A', 90], ['B', 90]], 'the past day pays the same (before: the slow clock made it count from 10/22)');
+  assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]]);
   // a later day uses the new decision
   c.LABOR['F01|2026-10-24'] = c.LABOR['F01|2026-10-20']; c.TIPS['F01|2026-10-24'] = { l: 190, d: 0 };
   assert.deepEqual(pay('2026-10-24'), [['B', 100], ['A', 90]]);
+  // independent review acb707e P2: a day far ahead (a device whose clock runs days ahead, or a broken 2099) does not hold back later decisions
+  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([
+    { id: 'x1', name: 'A', rate: 80, status: '却下', decDay: '2099-01-01', decAt: hst(2026, 10, 23, 11) },
+    { id: 'x2', name: 'A', rate: 80, status: '却下', decDay: '2026-10-27', decAt: hst(2026, 10, 23, 12) },
+    { id: 's', name: 'A', rate: 100, status: '申請中', date: '2026/10/24' }]);
+  c.NOW = hst(2026, 10, 24, 10);
+  await run(c, "approveTip('s', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 's').decDay, '2026-10-24', 'not 10/27 or 2099');
+  const m = Object.fromEntries(pay('2026-10-24'));
+  assert.deepEqual([m.A, m.B], [95, 95], 'the approval counts from today');
+  // a day at most one ahead (tomorrow on this device) is still used: a clock up to a day behind is covered
+  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([{ id: 'y', name: 'A', rate: 90, status: '申請中', date: '2026/10/24' }]);
+  c.STORE.tip_requests.find(r => r.id === 's').decDay = '2026-10-25';
+  await run(c, "approveTip('y', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'y').decDay, '2026-10-25');
 });
 
 test('the period table, CSV and staff tab show the rates used in the period (80%→90%); the daily table shows Tip Rate; the confirmation keeps the basis and the rates', () => {

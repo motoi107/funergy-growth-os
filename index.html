@@ -6187,10 +6187,12 @@ function _tipDecDay(r) {
   return m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
 }
 /* 決めるときに残す日（ハワイの日付）。その人のどの決定の日（decDay）よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で
-   決めると前の日になり、あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り） */
+   決めると前の日になり、あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り）。
+   ただし、この端末の明日より先の日は使わない（独立レビュー acb707e P2：時計の進んだ端末の日やこわれた日（2099 年など）があると、
+   そのあとの決定がずっと配分に効かなかった）。時計の遅れは 1 日まで守り、進んだ端末の日でずれるのも 1 日まで */
 function tipDecDayStamp(list, name) {
-  var d = _tipHstDay(Date.now());
-  (list || []).forEach(function (r) { if (r && r.name === name) { var x = String(r.decDay || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(x) && x > d) d = x; } });
+  var now = Date.now(), d = _tipHstDay(now), cap = _tipHstDay(now + 86400000);
+  (list || []).forEach(function (r) { if (r && r.name === name) { var x = String(r.decDay || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(x) && x > d && x <= cap) d = x; } });
   return d;
 }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
