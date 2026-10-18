@@ -6166,20 +6166,29 @@ function isTipEligibleRole(e){
      表示の率と No Tip（配分から外す）にだけ効き、重みには入らなかった（empCoef はどこからも呼ばれていなかった）。
    【いま】TIP_RATE_WEIGHT_START の日からは、重み ＝ その日の Tip Rate ÷ 100（80% → 0.8・90% → 0.9・100% → 1.0）。
      その日の Tip Rate（tipRateOn）は Tip Rate の画面と同じ決まり（Waikiki・役職・初回勤務から 3 か月・承認・初回勤務日の無い人は従業員マスターの率）で、
-     ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から）。
+     ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から・ハワイの日付）。
+     Waikiki（F03・F03-G）のチップは、だれでも 100%（勤務時間で均等）。
      No Tip は今までどおり別の印（noTip＝いまの Tip Rate が No Tip の人を配分から外す）。
    【開始日より前】今までどおり評価係数（支給・確定に使った期間の額を変えない。v959 の TIP_SL_SPLIT_END と同じ考え方）。
      10/1〜10/15 も Tip Rate にするなら、この日付を '2026-10-01' にする（期間の区切りの日にする）。 */
 var TIP_RATE_WEIGHT_START = '2026-10-16';
 function tipWeightByRate(dateISO) { return !!dateISO && String(dateISO) >= TIP_RATE_WEIGHT_START; }
-/* 決めた日（YYYY-MM-DD）。承認・却下した日（approvedDate＝その端末の日付）を先に、無ければ決めた時刻（本物の時刻のときだけ）。
-   分からなければ ''（いつも効く＝決めた日の分からない前の記録は、どの日にも効く） */
+/* 決めた日（ハワイの日付・YYYY-MM-DD）。
+   ・決めた時刻 decAt（v1091 から・本物の時刻）があれば、そのハワイの日付（独立レビュー dc96c7e P3-2：approvedDate は承認した端末の日付なので、
+     日本の端末で承認すると 1 日あとになっていた）。ただし approvedDate より後・2 日以上前なら使わない（v1091 の端末が前の記録に付けた並びの時刻）。
+   ・無ければ approvedDate（承認した端末の日付）。どちらも無ければ ''（いつも効く＝決めた日の分からない前の記録は、どの日にも効く） */
+function _tipHstDay(t) { var u = new Date(t - 10 * 3600 * 1000); return u.getUTCFullYear() + '-' + ('0' + (u.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + u.getUTCDate()).slice(-2); }
 function _tipDecDay(r) {
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
-  if (m) return m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2);
+  var ad = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
   var t = (typeof _tipDecT === 'function') ? _tipDecT(r) : 0;
-  if (t > 1e12) { try { return isoOf(new Date(t)); } catch (e) { } }
-  return '';
+  if (t > 1e12 && !(r && r.decEst)) {
+    var hd = _tipHstDay(t);
+    if (!ad) return hd;
+    var gap = (Date.UTC(+ad.slice(0, 4), +ad.slice(5, 7) - 1, +ad.slice(8, 10)) - Date.UTC(+hd.slice(0, 4), +hd.slice(5, 7) - 1, +hd.slice(8, 10))) / 86400000;
+    if (gap >= 0 && gap <= 1) return hd;
+  }
+  return ad;
 }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
 function tipRateOn(emp, dateISO, list) {
@@ -6191,12 +6200,8 @@ function tipRateOn(emp, dateISO, list) {
   var fw = firstWorkDate(emp);
   if (fw) { var tm = new Date(fw); tm.setMonth(tm.getMonth() + 3); if (day >= isoOf(tm)) return 100; }   // その日に初回勤務から 3 か月
   var src = Array.isArray(list) ? list : (ls('tip_requests', []) || []);
-  var upto = src.filter(function (r) {
-    if (!r || r.name !== emp.name) return false;
-    if (r.status !== '承認' && r.status !== '却下') return true;
-    var d = _tipDecDay(r); return !d || d <= day;   // その日までに決めたもの
-  });
-  var ap = _tipLatestApproved(emp.name, upto);   // 決めた時刻のいちばん新しい承認（v1091 と同じ選び方）
+  /* その日までに決めた承認のうち、決めた時刻のいちばん新しいもの（v1091 と同じ選び方。並びの時刻は前の記録すべてで数える＝独立レビュー dc96c7e P3-5） */
+  var ap = _tipLatestApproved(emp.name, src, function (r) { var d = _tipDecDay(r); return !d || d <= day; });
   if (ap) { var rr = Number(ap.rate); if (isFinite(rr) && rr > 0) return rr; }
   if (!fw) return (emp.coef != null ? Math.round(emp.coef * 100) : 100);   // 初回勤務日も勤務開始日も無い人：Tip Rate の画面と同じく従業員マスターの率
   return 80;
@@ -6215,14 +6220,17 @@ function calcTipDistribution(storeId, date) {
   function inStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
   var staff = emps.filter(e=>inStore(e) && isTipEligibleRole(e) && e.status!=='退職' && !isTipExcludedTitle(e.title)); /* v630: g2(Crew Leader)も対象 */
   /* v1092: 重み（その日の Tip Rate か、開始日より前は評価係数）と No Tip の印は、1 人 1 回だけ求める（ランチ・ディナーで同じ） */
-  var byRate = tipWeightByRate(date), tipReqs = byRate ? (ls('tip_requests', []) || []) : null, _wt = {};
+  /* Waikiki（F03・F03-G）のチップは、だれでも勤務時間で均等（80/90/100 制度の外。応援の人も同じ＝独立レビュー dc96c7e P2-1） */
+  var byRate = tipWeightByRate(date), tipReqs = ls('tip_requests', []) || [], _wt = [];
+  var wkk = (storeId==='F03' || storeId==='F03-G');
   function weightOf(e) {
-    if (_wt[e.name]) return _wt[e.name];
+    for (var i = 0; i < _wt.length; i++) if (_wt[i].e === e) return _wt[i].o;   /* 1 人（記録）1 回。同じ名前の別の記録は別に（P3-4） */
     var o;
-    if (byRate) { var rt = tipRateOn(e, date, tipReqs); o = { coef: rt / 100, rate: rt, by: 'rate' }; }
+    if (byRate) { var rt = wkk ? 100 : tipRateOn(e, date, tipReqs); o = { coef: rt / 100, rate: rt, by: 'rate' }; }
     else { var c = (e.coef!=null?e.coef:1); o = { coef: c, rate: null, by: 'coef' }; }
-    o.noTip = (typeof effectiveTipRate==='function' && effectiveTipRate(e.name)===0);
-    return (_wt[e.name] = o);
+    o.noTip = (typeof effectiveTipRate==='function' && effectiveTipRate(e.name, tipReqs)===0);
+    _wt.push({ e: e, o: o });
+    return o;
   }
 
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
@@ -35242,6 +35250,7 @@ function tipPeriodRates(dists){
   var rates={};
   (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
     if(r.by!=='rate' || r.lunchNoTip || r.dinnerNoTip || r.rate==null) return;
+    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;   /* 両方とも除外した日は入れない */
     var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==r.rate) a.push(r.rate);
   }); });
   return rates;
@@ -80809,13 +80818,14 @@ var TIP_LIVE_LIKE='spl\\_tip\\_requests\\_';
 var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false, at:0, pend:false, rtOk:false, keys:[], gen:0 };
 /* 時刻の無い記録（v1090 以前の端末で決めたもの）は、並びでその前にある決定のいちばん新しい時刻とみなす（並びのあと＝新しい、のまま）。
    独立レビュー 10/17（ae5c541）の P1：v1091 の端末で 90% に上げたあと v1090 の端末で 100% に上げると、v1091 の端末は 90% のままだった。 */
-function _tipLatestApproved(name, list){
+function _tipLatestApproved(name, list, ok){   /* ok：候補にする承認（v1092：その日までに決めたもの）。並びの時刻はすべての記録で数える */
   var best=null, bestT=-Infinity, floor=0;
   (Array.isArray(list) ? list : (ls('tip_requests',[])||[])).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r), eff=t>0 ? t : floor;
     if(t>floor) floor=t;
     if(r.status!=='承認') return;
+    if(typeof ok==='function' && !ok(r)) return;
     if(eff>=bestT){ best=r; bestT=eff; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
   });
   return best;
@@ -80833,7 +80843,7 @@ function tipStampLegacy(list, name){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r);
     if(t>0){ if(t>floor) floor=t; return; }
-    if(r.status==='承認' || r.status==='却下'){ r.decAt=floor>0 ? floor : 1; n++; }   /* floor は上げない（時刻の無い記録はもともと前の時刻を上げない） */
+    if(r.status==='承認' || r.status==='却下'){ r.decAt=floor>0 ? floor : 1; r.decEst=1; n++; }   /* floor は上げない（時刻の無い記録はもともと前の時刻を上げない）・v1092: 並びから付けた時刻（決めた日には使わない） */
   });
   return n;
 }

@@ -44,7 +44,7 @@ function app() {
   vm.createContext(c);
   vm.runInContext(['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', 'tipRateOn', '_tipLatestApproved', '_tipDecT', 'firstWorkDate', 'isThreeMonths',
     'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit', 'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel',
-    'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf'].map(fnSrc).join('\n') + `
+    'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf', '_tipHstDay'].map(fnSrc).join('\n') + `
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';
     var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
@@ -57,7 +57,7 @@ function app() {
     function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
     function getTipLabor(s, d){ return LABOR[s + '|' + d] || null; }
     function tipForDay(s, d){ var x = TIPS[s + '|' + d] || { l: 0, d: 0 }; return { lunchTotal: x.l, dinnerTotal: x.d, total: x.l + x.d, lunchCredit: x.l, dinnerCredit: x.d, lunchCash: 0, dinnerCash: 0 }; }
-    function isTipExcluded(){ return false; }
+    var EXCL = {}; function isTipExcluded(s, d, n, slot){ return !!EXCL[s + '|' + d + '|' + n + '|' + slot]; }
     function isOrderOnlyAccount(){ return false; }
     function isStoreLeader(){ return false; }
     function workedShiftCount(emp){ return NOTIP[emp.name] ? 0 : 99; }
@@ -72,7 +72,8 @@ function app() {
   return c;
 }
 const EMP = (o) => Object.assign({ store: 'F01', role: 'crew', status: '在籍', title: 'Crew', coef: 1 }, o);
-function days(from, to) { const out = []; const d = new Date(from + 'T00:00:00'); const e = new Date(to + 'T00:00:00'); for (; d <= e; d.setDate(d.getDate() + 1)) out.push(d.toISOString().slice(0, 10)); return out; }
+function days(from, to) { const out = []; const d = new Date(from + 'T00:00:00'); const e = new Date(to + 'T00:00:00'); const p2 = n => String(n).padStart(2, '0');
+  for (; d <= e; d.setDate(d.getDate() + 1)) out.push(d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate())); return out; }   // local dates (also on a Japan-time machine)
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, msg + ': ' + a + ' vs ' + b);
 
 test('the start date is the first day of a pay period (10/16 or 10/1), and nothing before it changes', () => {
@@ -195,6 +196,50 @@ test('Waikiki and roles outside 80/90/100 are 100%; legacy approvals without a d
   assert.equal(run(c, "tipRateOn('D', '2026-10-27')"), 100);
 });
 
+test('独立レビュー（dc96c7e）: Waikiki tips are shared by hours for everyone (helpers too); same-name records keep their own coefficient before the start date', () => {
+  const c = app();
+  c.EMPS = [EMP({ name: 'W', store: 'F03', firstWork: '2026-10-01' }), EMP({ name: 'H', store: 'F01', support: ['F03'], firstWork: '2026-09-01' })];
+  c.LABOR[`F03|${START}`] = { W: { lunch: 5, dinner: 0 }, H: { lunch: 5, dinner: 0 } }; c.TIPS[`F03|${START}`] = { l: 200, d: 0 };
+  const w = plain(run(c, `calcTipDistribution('F03', '${START}')`));
+  near(w.list.find(r => r.name === 'W').total, 100, 'W'); near(w.list.find(r => r.name === 'H').total, 100, 'H (an 80% helper)');
+  // the helper at their own store keeps their own rate
+  assert.equal(run(c, `tipRateOn('H', '${START}')`), 80);
+  // two records with the same name (pre-start): each its own coefficient, as before
+  const d = app();
+  d.EMPS = [EMP({ name: 'Same', coef: 0.8, firstWork: '2026-09-01' }), EMP({ name: 'Same', coef: 1, firstWork: '2026-09-01', support: ['F01'], store: 'F02' }), EMP({ name: 'Z', coef: 1, firstWork: '2026-09-01' })];
+  d.LABOR['F01|2026-10-10'] = { Same: { lunch: 5, dinner: 0 }, Z: { lunch: 5, dinner: 0 } }; d.TIPS['F01|2026-10-10'] = { l: 280, d: 0 };
+  const x = plain(run(d, "calcTipDistribution('F01', '2026-10-10')"));
+  near(x.distSum, 280, 'whole tip');
+  near(x.list.find(r => r.name === 'Z').total, 280 * 5 / (4 + 5 + 5), 'Z as with the old per-record coefficients');
+});
+
+test('独立レビュー（dc96c7e）: the day an approval counts is the Hawaii day of the decision (an approval made in Japan); estimated times are not days; an undated approval counts on every day in the same order', () => {
+  const c = app();
+  c.EMPS = [EMP({ name: 'J', firstWork: '2026-09-01' }), EMP({ name: 'L', firstWork: '2026-09-01' }), EMP({ name: 'U', firstWork: '2026-09-01' })];
+  const hst = (y, m, d, h) => Date.UTC(y, m - 1, d, h + 10);
+  c.STORE.tip_requests = [
+    // approved in Japan at 10/20 10:00 JST = 10/19 15:00 HST: the device date says 10/20
+    { id: 'j', name: 'J', rate: 90, status: '承認', approvedDate: '2026/10/20', decAt: hst(2026, 10, 19, 15) },
+    // a v1091 device stamped an old approval with the time of an earlier decision (+1): the day is the approval date
+    { id: 'l0', name: 'L', rate: 90, status: '承認', approvedDate: '2026/10/05', decAt: hst(2026, 10, 5, 9) },
+    { id: 'l1', name: 'L', rate: 100, status: '承認', approvedDate: '2026/10/21', decAt: hst(2026, 10, 5, 9) + 1 },
+    // marked as estimated by v1092
+    { id: 'u0', name: 'U', rate: 90, status: '承認', approvedDate: '2026/10/25', decAt: hst(2026, 10, 25, 9) },
+    { id: 'u1', name: 'U', rate: 100, status: '承認' },                                            // imported, no date: every day
+    { id: 'u2', name: 'U', rate: 80, status: '承認', approvedDate: '2026/10/12', decAt: hst(2026, 10, 12, 9) },
+  ];
+  assert.equal(run(c, "tipRateOn('J', '2026-10-19')"), 90, 'from the Hawaii day of the decision');
+  assert.equal(run(c, "tipRateOn('J', '2026-10-18')"), 80);
+  assert.equal(run(c, "tipRateOn('L', '2026-10-20')"), 90, 'the stamped time is not taken as the day');
+  assert.equal(run(c, "tipRateOn('L', '2026-10-21')"), 100);
+  assert.equal(run(c, "_tipDecDay({ approvedDate: '2026/10/21', decAt: " + (hst(2026, 10, 20, 9)) + ", decEst: 1 })"), '2026-10-21', 'estimated (decEst) is never a day');
+  assert.equal(run(c, "_tipDecDay({ decAt: " + hst(2026, 10, 19, 23) + " })"), '2026-10-19', 'Hawaii day, whatever the device');
+  assert.equal(run(c, "tipRateOn('U', '2026-10-20')"), 100, 'the undated approval (after the 10/25 one in the list) counts');
+  assert.equal(run(c, "tipRateOn('U', '2026-10-26')"), 100, 'the same on later days');
+  // tipStampLegacy marks the times it estimates
+  assert.match(fnSrc('tipStampLegacy'), /r\.decAt=floor; r\.decEst=1; n\+\+;/);
+});
+
 test('the period table, CSV and staff tab show the rates used in the period (80%→90%); the daily table shows Tip Rate; the confirmation keeps the basis and the rates', () => {
   const c = app();
   c.EMPS = [EMP({ name: 'B', firstWork: '2026-09-01' }), EMP({ name: 'K', firstWork: '2026-09-01' })];
@@ -204,6 +249,12 @@ test('the period table, CSV and staff tab show the rates used in the period (80%
   c.PERIOD = { from: '2026-10-16', to: '2026-10-31', dates: P, anyDate: '2026-10-20', label: '2026年10月後期', rangeLabel: '2026-10-16 〜 2026-10-31' };
   const M = plain(run(c, 'tipPeriodMatrix("F01", PERIOD)'));
   assert.deepEqual(M.rates, { B: [80, 90], K: [80] });
+  // a day where B was excluded from both lunch and dinner is not "used"
+  run(c, "EXCL['F01|2026-10-16|B|lunch'] = EXCL['F01|2026-10-16|B|dinner'] = true");
+  assert.deepEqual(plain(run(c, 'tipPeriodMatrix("F01", PERIOD)')).rates.B, [80, 90], 'still 80 on the other days before 10/20');
+  run(c, "for (var d of ['2026-10-16','2026-10-17','2026-10-18','2026-10-19']) { EXCL['F01|'+d+'|B|lunch'] = EXCL['F01|'+d+'|B|dinner'] = true; }");
+  assert.deepEqual(plain(run(c, 'tipPeriodMatrix("F01", PERIOD)')).rates.B, [90], 'only the days B took part');
+  run(c, 'EXCL = {}');
   c.M = M;
   assert.equal(run(c, 'tipPeriodRateLabel(M.rates, "B")'), '80→90%');
   assert.equal(run(c, 'tipPeriodRateLabel(M.rates, "K")'), '80%');
