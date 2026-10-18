@@ -141,22 +141,37 @@ test('B: opening the notification shows the rejected list of that month; the hoo
 
 /* ---------------- ①: all-store dashboard view ---------------- */
 const STORES = [
-  { id: 'F01', name: 'ToriTon', active: true, am: 'Uruma' }, { id: 'F02', name: 'Tenkichi', active: true, am: 'Masamitsu' },
-  { id: 'F04-K', name: 'Kaimuki', active: true, am: 'Yuki Nagatani' }, { id: 'F04-P', name: 'Piikoi', active: true, am: 'Yuki Nagatani' },
-  { id: 'F05', name: 'Marujuu', active: true, am: 'Uruma' }, { id: 'F06', name: 'LaLa', active: true, am: 'Uruma' }, { id: 'F03', name: 'FSP', active: false, am: 'Yuki Nagatani' }];
+  { id: 'F01', name: 'ToriTon', active: true, am: 'Uruma', toastGuid: 'g1' }, { id: 'F02', name: 'Tenkichi', active: true, am: 'Masamitsu', toastGuid: 'g2' },
+  { id: 'F04-K', name: 'Kaimuki', active: true, am: 'Yuki Nagatani', toastGuid: 'g4k' }, { id: 'F04-P', name: 'Piikoi', active: true, am: 'Yuki Nagatani', toastGuid: 'g4p' },
+  { id: 'F05', name: 'Marujuu', active: true, am: 'Uruma', toastGuid: 'g5' }, { id: 'F06', name: 'LaLa', active: true, am: 'Uruma', toastGuid: 'g6' }, { id: 'F03', name: 'FSP', active: false, am: 'Yuki Nagatani' }];
 function mdApp(o) {
   const c = Object.assign({ console, STORE: {}, CALLS: [], curRole: 'am', curRealRole: 'am', curUserName: 'Yuki Nagatani', curStoreLogin: false,
     curStore: 'F04-K', ME: 'e-yuki', TOASTS: [] }, o || {});
   vm.createContext(c);
   vm.runInContext(['mcRole', 'mcScopeStores', 'mdAllViewers', 'mdIsAllViewer', 'mdViewStores', 'mdPickedStore', 'mdSetStore', 'mdSetAllViewer', 'mdOpenStore',
-    'dashScopeStores', 'mdScopeLabel', 'mdStorePickHtml', 'mcStoreLabel', 'activeStores', 'mdPendingApprovals'].map(fnSrc).join('\n') + `
+    'dashScopeStores', 'mdScopeLabel', 'mdStorePickHtml', 'mcStoreLabel', 'activeStores', 'mdPendingApprovals',
+    '_mdSyncedIds', 'mdViewOnlyStore', 'mdViewLaborPending', 'mdViewerEnsureLabor', 'mdVerdict', 'mdUnknown', 'mdJudge', 'mdV', 'mdStateLabel', 'mcRound'].map(fnSrc).join('\n') + `
     var mdState = { period:'month', storeFilter:'all', kpi:'', store:'' };
     var STORES_ALL = ${JSON.stringify(STORES)};
     function getStoresAll(){ return STORES_ALL; }
     function sortByLoginOrder(a){ return a; }
     function myAmStores(){ var me=curUserName; return getStoresAll().filter(function(s){ return s.am===me; }).map(function(s){ return s.id; }); }
     function mcMe(){ return null; } function mcIsStoreManagerEmp(){ return false; } function myStoreId(){ return ''; }
-    function getVisibleStores(){ return activeStores(); }
+    var SUPPORT = [];   // stores she supports (synced at login like her own); the real getVisibleStores = own + support
+    function getVisibleStores(){ var mine = myAmStores().concat(SUPPORT); return activeStores().filter(function(s){ return mine.indexOf(s.id) >= 0; }); }
+    var _mdViewLabor = {};
+    var MD_KPI = { labor_rate: { label: '人件費率', dir: 'down', unit: '%' }, profit: { label: '営業利益', dir: 'up' }, sales: { label: '売上', dir: 'up' } };
+    var MD_UNKNOWN = ${JSON.stringify({ no_labor: '勤怠が未取込', no_target: '目標が未設定', calc_error: '計算エラー' })};
+    var LABOR = {}, LOADS = [];   // LABOR[store|ym] = days with sales but no labor on this device
+    function cumulativeToToday(id, ym){ return { actToToday: 10000, actMonth: 10000, laborRate: 9.5, daysWithActual: 16, daysPassed: 16, budMonth: 1, budToToday: 1 }; }
+    function laborCoreForYm(id, ym){ return { noLaborDays: LABOR[id + '|' + ym] || [] }; }
+    function getStoreKpiTargets(){ return { laborPct: 30 }; }
+    function mcEnoughDays(){ return true; }
+    function mcYm(){ return '2026-10'; }
+    function daysOfYm(ym){ return [{ date: ym + '-01' }, { date: ym + '-31' }]; }
+    function syncTipLaborFromDB(id, guid, days){ LOADS.push([id, guid, days[0].date, days[days.length - 1].date]);
+      return Promise.resolve({ rowCount: ROWS(id) }).then(function(r){ if (r.rowCount) delete LABOR[id + '|' + days[0].date.slice(0, 7)]; return r; }); }
+    function ROWS(id){ return 14; }
     function _empMeId(){ return ME; }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
@@ -248,6 +263,91 @@ test('①: only GM / CEO set it, by employee ID, with a newer time each save; th
   assert.match(SRC, /\n  md_all_viewers:     \{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
   assert.match(listSrc('var LS_NEVER_FREE = ['), /'md_all_viewers'/);
   assert.match(SRC, /\n  h\+=scAllViewerHtml\(people\);   \/\* v1090 \*\/\n/, 'the setting is in the scope assignment (GM / CEO)');
+});
+
+test('①（独立レビュー P3）: a store she supports is not "view only": it opens 予実 like before and has no view-only label', () => {
+  const c = mdApp(); c.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  run(c, "SUPPORT = ['F02']");
+  assert.equal(run(c, "mdViewOnlyStore('F02')"), false);
+  assert.equal(run(c, "mdViewOnlyStore('F01')"), true);
+  assert.equal(run(c, "mdViewOnlyStore('F04-K')"), false, 'her own store');
+  run(c, "mdOpenStore('F02')");
+  assert.deepEqual(plain(c.CALLS), [['switch', 'F02'], ['go', 'budget']]);
+  const pick = run(c, 'mdStorePickHtml()');
+  assert.match(pick, />Tenkichi<\/option>/); assert.match(pick, />ToriTon（管轄外・見るだけ）<\/option>/);
+  run(c, "mdState.store='F04-K'");
+  assert.equal(run(c, "mdScopeLabel(['F04-K'])"), 'Kaimuki', 'her own store is not "（閲覧）"');
+});
+
+test('①（独立レビュー P2-1）: a view-only store whose labor is not on this device is "勤怠が未取込", never a low rate; after the read-only load it is judged like the GM sees it', async () => {
+  const c = mdApp({ curPage: 'dashboard' }); c.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  run(c, "LABOR['F01|2026-09'] = ['2026-09-01','2026-09-02']; LABOR['F04-K|2026-09'] = ['2026-09-03']");
+  let v = plain(run(c, "mdVerdict('F01','labor_rate','2026-09')"));
+  assert.equal(v.state, 'unknown'); assert.equal(v.reasonCode, 'no_labor'); assert.match(v.note, /2 日/);
+  assert.equal(plain(run(c, "mdVerdict('F01','profit','2026-09')")).reasonCode, 'no_labor');
+  // her own store: unchanged (the login sync loads it; no new gate)
+  assert.equal(plain(run(c, "mdVerdict('F04-K','labor_rate','2026-09')")).state, 'ok');
+  // a view-only store with every day's labor already here: judged
+  assert.equal(plain(run(c, "mdVerdict('F05','labor_rate','2026-09')")).state, 'ok');
+  // the dashboard loads labor for the view-only stores of that month (read only), once, then redraws
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-09')"), 4);
+  await new Promise(r => setTimeout(r, 0));
+  assert.deepEqual(plain(c.LOADS).map(x => x[0]).sort(), ['F01', 'F02', 'F05', 'F06']);
+  assert.deepEqual(plain(c.LOADS[0]).slice(2), ['2026-09-01', '2026-09-31']);
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-09')"), 0, 'already loading');
+  await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+  assert.ok(plain(c.CALLS).some(x => x[0] === 'render' && x[1] === 'dashboard'));
+  assert.equal(plain(run(c, "mdVerdict('F01','labor_rate','2026-09')")).state, 'ok');
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-09')"), 0, 'loaded: not again');
+  // an empty answer (read failed / nothing in the DB): stays "勤怠が未取込" and is tried again after a minute
+  const d = mdApp(); d.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  run(d, "ROWS = function(){ return 0; }; LABOR['F06|2026-10'] = ['2026-10-05']");
+  assert.equal(run(d, "mdViewerEnsureLabor('2026-10')"), 4);
+  await new Promise(r => setTimeout(r, 0)); await new Promise(r => setTimeout(r, 0));
+  assert.equal(plain(run(d, "mdVerdict('F06','labor_rate','2026-10')")).reasonCode, 'no_labor');
+  assert.equal(run(d, "mdViewerEnsureLabor('2026-10')"), 0, 'waits a minute before trying again');
+  run(d, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; })");
+  assert.equal(run(d, "mdViewerEnsureLabor('2026-10')"), 4);
+  // people who are not all-store viewers: nothing is loaded and nothing is gated
+  const n = mdApp(); run(n, "LABOR['F04-K|2026-09'] = ['2026-09-03']");
+  assert.equal(run(n, "mdViewerEnsureLabor('2026-09')"), 0);
+  assert.equal(plain(run(n, "mdVerdict('F04-K','labor_rate','2026-09')")).state, 'ok');
+  assert.match(fnSrc('renderMgmtDash'), /mdViewerEnsureLabor\(ym\)/);
+  assert.match(SRC, /no_labor:     \{ label: '勤怠が未取込'/);
+});
+
+test('B（独立レビュー P2-2）: tapping the notification switches the receipts screen back to the list, where the reimbursement card is', () => {
+  const c = { console }; vm.createContext(c);
+  vm.runInContext(fnSrc('rbApplyNotifFocus') + "\nvar _rbView = { ym: '', status: 'all' }; var window = { _invMainView: 'checks' };", c);
+  run(c, "rbApplyNotifFocus({ rbFocus: { ym: '2026-10', status: 'rejected' } })");
+  assert.equal(run(c, 'window._invMainView'), 'list');
+  assert.deepEqual(plain(run(c, '_rbView')), { ym: '2026-10', status: 'rejected' });
+  run(c, "window._invMainView='checks'; rbApplyNotifFocus({ page: 'invoice' })");
+  assert.equal(run(c, 'window._invMainView'), 'checks', 'other notifications do not touch it');
+});
+
+test('B（独立レビュー P3）: if the notification cannot be saved on this device, it is not remembered as sent (tried again next time)', () => {
+  const c = rbApp('office', 'Akane');
+  c.STORE.reimbursements = [RB()];
+  run(c, "var _lsSet0 = lsSet; lsSet = function(k, v){ if (k === 'notifications') return false; return _lsSet0(k, v); }");
+  run(c, 'rbNotifyRejectedPaid()');
+  assert.equal(c.STORE.rb_rp_seen, undefined);
+  run(c, 'lsSet = _lsSet0');
+  assert.equal(run(c, 'rbNotifyRejectedPaid()'), 1);
+  assert.ok(c.STORE.rb_rp_seen);
+});
+
+test('①（独立レビュー P3）: names with quotes or "&quot;" in the setting buttons stay inside the call', () => {
+  const c = { console, STORE: {}, ARGS: [] }; vm.createContext(c);
+  const esc = /^function escapeHtml\(s\)\{.*\}$/m.exec(SRC)[0];   // one line; fnSrc cannot read its /"/ regex
+  vm.runInContext(fnSrc('scAllViewerHtml') + '\n' + esc + "\nfunction mdAllViewers(){ return {}; }", c);
+  const nasty = 'Yu"ki &quot;);alert(1);//';
+  const h = run(c, 'scAllViewerHtml(' + JSON.stringify([{ kind: 'am', id: 'e-1', name: nasty }]) + ')');
+  const m = /onclick="([^"]*)"/.exec(h); assert.ok(m, 'one double-quoted attribute');
+  const js = m[1].replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  vm.runInContext('function scToggleAllViewer(a, b){ ARGS.push([a, b]); }\n' + js, c);
+  assert.deepEqual(plain(c.ARGS), [['e-1', nasty]]);
+  assert.match(fnSrc('scToggleAllViewer'), /showToast\(escapeHtml\(name\)/);
 });
 
 /* ---------------- ②: repeat rate ---------------- */
