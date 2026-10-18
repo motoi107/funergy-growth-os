@@ -2590,8 +2590,12 @@ function mdViewLaborPending(storeId, ym) {
   if (mdLaborFresh(storeId, ym) || _mdFrozenLoaded(storeId, ym)) return false;
   return true;
 }
-/* 判定不可の文（読み込み中／読めなかった／DB に無い） */
+/* 門をかける人（全店を見る人）。Codex 10/17（#74 e7a833a）：読んだ印があっても、売上のある日に勤怠が無い日が残れば判定しない
+   （DB の行はあるが中身が空・まだ取り込まれていない日を、給与・保険だけの低い率で「達成」と出さない） */
+function mdViewLaborGate() { return !!_mdMemo('vw', 'me', mdIsAllViewer); }
+/* 判定不可の文（読み込み中／読めなかった／DB に無い／読めたが勤怠の無い日が残る） */
 function mdViewLaborNote(storeId, ym, n) {
+  if (!mdViewLaborPending(storeId, ym)) return '勤怠が未取込の日があります（' + n + ' 日）';
   var st = _mdViewLabor[storeId + '|' + ym];
   if (st && st.failAt) return (st.empty ? 'DB に勤怠がありません（' : '勤怠を読めませんでした（') + n + ' 日・1 分あけて読み直します）';
   return '勤怠を読み込み中（' + n + ' 日）';
@@ -2622,7 +2626,7 @@ function mdViewerEnsureLabor(ym, stores) {
     Promise.race([Promise.resolve().then(function () { return syncTipLaborFromDB(s.id, s.toastGuid, days); }), cap])
       .then(function (r) {
         clearTimeout(tm);
-        if (r !== '__timeout' && r && Number(r.rowCount) > 0) { delete _mdViewLabor[k]; mdLaborMark(s.id, ym); }
+        if (r !== '__timeout' && r && Number(r.updated) > 0) { delete _mdViewLabor[k]; mdLaborMark(s.id, ym); }   /* 中身のある日を 1 日でも入れた（行だけで中身が空は読めていない） */
         else _mdViewLabor[k] = { failAt: Date.now(), empty: !!(r && r !== '__timeout') };
       }, function () { clearTimeout(tm); _mdViewLabor[k] = { failAt: Date.now() }; })
       .then(_mdViewRedrawSoon);
@@ -3876,7 +3880,7 @@ function mdVerdict(storeId, code, ym) {
     var c = cumulativeToToday(storeId, ym);
     if (!c) return mdUnknown(code, 'calc_error');
     /* v1090: 全店を見る人は、その日にこの端末が勤怠を読んでいない店で勤怠の無い日があれば、人件費率・営業利益は判定しない */
-    if ((code === 'labor_rate' || code === 'profit') && typeof mdViewLaborPending === 'function' && mdViewLaborPending(storeId, ym)) {
+    if ((code === 'labor_rate' || code === 'profit') && typeof mdViewLaborGate === 'function' && mdViewLaborGate()) {
       var _lcv = laborCoreForYm(storeId, ym);
       if (_lcv && Array.isArray(_lcv.noLaborDays) && _lcv.noLaborDays.length)
         return mdUnknown(code, 'no_labor', mdViewLaborNote(storeId, ym, _lcv.noLaborDays.length));
@@ -13951,7 +13955,7 @@ async function loginSyncOps(){
     // 店舗ごとに並列。売上・勤怠・出数をまとめて取得（どれが欠けても各種計算が成立しないため）
     await Promise.all(stores.map(async function(s){
       try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); }
-      try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.rowCount) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }   /* v1090: 読んだ店と月の印 */
+      try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }   /* v1090: 読んだ店と月の印 */
       /* v860: クレジットTip調整は前月の日付を直すことが多い。
          他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */
       try {
@@ -28001,7 +28005,7 @@ async function ensureMonthDataLoaded(ym){
     await Promise.all(stores.map(async function(s){
       if (froze && ls(monthFrozenKey(s.id, ym), false)) return; // 凍結済み→スキップ（固定・再取得しない）
       try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth actuals', s.id, ym, e); }
-      try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.rowCount) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('ensureMonth labor', s.id, ym, e); }   /* v1090: 読んだ店と月の印 */
+      try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('ensureMonth labor', s.id, ym, e); }   /* v1090: 読んだ店と月の印 */
       if (!froze) { try { await backfillRecentLabor(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth laborTail', s.id, e); } } // 当月のみ直近Laborをライブ補完
       try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('ensureMonth mix', s.id, ym, e); }
       if (froze) lsSet(monthFrozenKey(s.id, ym), true); // 過去月のみ凍結（今月はフラグを立てない）

@@ -8,9 +8,9 @@
 - ②：リピート率はどの店も同じ関数（LaLa を特別に扱う所なし）。Qコミットで来店区分のデータが無い月を 0% にしていたのを「データなし（未取得）」に。SQL の結果（16:23 HST）：**LaLa の toast_sales は初回・リピート・SR がどの日も 0**（ToriTon は毎日ある）→ アプリは「データなし」で正しい。原因（Toast の LaLa に記録するものが無いか、hyper-worker が見つけていない）は `db/lala-repeat-check-2.sql` で見る。
 - ③：LaLa の 167 品目を調べた（ウェブで確認 68・invoice だけ 72・要確認 27・量り売り 25）。候補一覧 xlsx は Moto さんに直接（リポジトリに入れない）。新マスターの書き出し 2,018 行は規格がほぼ空・区分が空 2,016・同じ ID 5 つ。UI案53（Design・非公開）：商品一覧・詳細と規格・用途別の単位・棚卸し・食材移動・登録候補。決めてほしいこと 7（推奨 A）。仕様の変更と本番の登録は確認のあと。今のマスター全体は `db/ingredient-master-export-current.sql` の結果待ち。
 - ④：UI案54（Design・非公開）。SQL の結果：**モディファイヤーの行は Marujuu だけ**（468 行・8/14〜）→ モディファイヤー内訳は hyper-worker が全店を取り込んでから。表の列などは `db/menu-data-check-all.sql` の結果待ち。
-- 試験（合成データ）：`tests/next-v1090.test.mjs` 18/18（わざと壊す 10 通りすべてで落ちる）・関連 8 ファイル・static release pass/1090・Chromium（PC・390px）。
-- 独立レビュー（Claude の別エージェント）：`e77e868` P1 なし・P2 2（見るだけの店の勤怠／通知を押してもチェックのタブのまま）→ `2102bd2`。`2102bd2` P1 なし・P2 2（読んだ印が消えない／同期した店を上で選んだ店で決めていた）→ 次のコミットで直した。直したあとの独立レビューは無し。**Codex のレビューはまだ。**
-- 次：Codex → Moto さんがマージ（アプリだけ）→ GM・CEO が Yuki さんを ON → Moto さんが SQL 3 つ（lala-repeat-check-2・menu-data-check-all・ingredient-master-export-current）の結果を Claude に → ③④の決めてほしいことの回答。
+- 試験（合成データ）：`tests/next-v1090.test.mjs` 18/18（わざと壊す 13 通りすべてで落ちる）・関連 8 ファイル・static release pass/1090・Chromium（PC・390px）。
+- 独立レビュー（Claude の別エージェント）：`e77e868` P1 なし・P2 2（見るだけの店の勤怠／通知を押してもチェックのタブのまま）→ `2102bd2`。`2102bd2` P1 なし・P2 2（読んだ印が消えない／同期した店を上で選んだ店で決めていた）→ 次のコミットで直した。**Codex（`e7a833a`・Moto さん経由 17:51 HST・GitHub には投稿していない）：blocked／manual・P2 1（勤怠の中身が空でも「読んだ」になり、未取込の日が残る人件費率を「達成」）・SQL の括弧 1** → 次のコミットで直した（読んだとみなすのは中身のある日を入れたとき・全店を見る人は未取込の日が残れば判定しない・SQL の or を括弧で）。直したあとの独立レビュー・Codex の再レビューはまだ。
+- 次：Codex の再レビュー → Moto さんがマージ（アプリだけ）→ GM・CEO が Yuki さんを ON → Moto さんが SQL 3 つ（lala-repeat-check-2・menu-data-check-all・ingredient-master-export-current）の結果を Claude に → ③④の決めてほしいことの回答。
 
 ## 2026-10-17 引き継ぎ：#72（v1089）はマージ済み・本番は v1089（Claude）
 

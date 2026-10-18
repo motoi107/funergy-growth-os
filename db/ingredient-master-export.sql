@@ -27,13 +27,13 @@ select
   (select string_agg(o.owner, ' ' order by o.owner) from (
      select substr(a.key, 23) owner
      from public.app_state a
-     where a.key like 'spl_store_ingredients_%'
-       and (case when jsonb_typeof(a.value::jsonb) = 'array' then a.value::jsonb
+     where left(a.key, 22) = 'spl_store_ingredients_'   -- 店の棚卸表の行だけ（_ を 1 文字の何でもにしない）
+       and ((case when jsonb_typeof(a.value::jsonb) = 'array' then a.value::jsonb
                  when jsonb_typeof(a.value::jsonb -> substr(a.key, 23)) = 'array' then a.value::jsonb -> substr(a.key, 23)
                  else '[]'::jsonb end) @> to_jsonb(array[i.code::text])
         or (case when jsonb_typeof(a.value::jsonb) = 'array' then a.value::jsonb
                  when jsonb_typeof(a.value::jsonb -> substr(a.key, 23)) = 'array' then a.value::jsonb -> substr(a.key, 23)
-                 else '[]'::jsonb end) @> to_jsonb(array[(case when i.code::text ~ '^\d+$' then i.code::text::numeric end)])
+                 else '[]'::jsonb end) @> to_jsonb(array[(case when i.code::text ~ '^\d+$' then i.code::text::numeric end)]))   -- Codex 10/17：or を括弧でくくる（無かったので、ほかの行が店に混ざった）
   ) o) owners,
   concat_ws(' ',
     case when coalesce(i.data->>'nameEN', '') = '' then '英語名' end,
