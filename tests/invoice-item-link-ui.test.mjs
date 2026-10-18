@@ -176,16 +176,21 @@ test('紐づけの画面: a linked item (who and when), choose again / undo; acc
   c.fn(`ilkOpen('va|a:z|')`);
   assert.match(c.modals.at(-1), /対応表にこの品目の対応が複数あります/);
   assert.ok(!/ilk-pick-go/.test(c.modals.at(-1)));
-  // one mapping that is not the item's own (another store's, or another item's on its lines): the same as several (review P3)
-  c = app({ data: data([item('va|a:w|', 'va', { alias_key: 'w', names: [['Avocado', 1]], links: 1, link: null })]) });
-  await loaded(c); c.fn(`ilkSet('filter','check')`); h = c.page();
-  assert.ok(!/ilkConfirmOne/.test(h) && /対応表に同じ品目が複数/.test(h));
+  // some lines on another mapping (a store's own, or one a person chose): told, not confirmed together, and still linkable one by one
+  // (those lines keep their mapping; second review P3-1)
+  c = app({ data: data([item('va|a:avocado, 48s usa|', 'va', { alias_key: 'avocado, 48s usa', names: [['Avocado, 48s USA', 3]], n: 3, other_lines: 2 })]) });
+  await loaded(c); h = c.page();
+  assert.ok(/明細 2 行はほかの対応のまま/.test(h) && !/ilkConfirmOne/.test(h) && !/対応表に同じ品目が複数/.test(h));
+  c.fn(`ilkOpen('va|a:avocado, 48s usa|')`);
+  assert.ok(/ilk-pick-go/.test(c.modals.at(-1)));
   // a code item whose lines are linked by their printed name: choosing again changes that link, sent with its own key (review P3)
   const byName = item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 3]],
-    link: { id: 'm-5', version: 2, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: 't', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '' }, links: 1 });
+    link: { id: 'm-5', version: 2, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: 't', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '', by_name: true }, links: 1 });
   c = app({ data: data([byName]) });
   await loaded(c);
-  c.fn(`ilkOpen('va|c:777')`); c.fn(`ilkPick('50101')`);
+  c.fn(`ilkOpen('va|c:777')`);
+  assert.match(c.modals.at(-1), /名前の対応で結んでいます/);
+  c.fn(`ilkPick('50101')`);
   await c.fn('ilkPickGo()'); await c.run();
   assert.deepEqual(c.calls.find(x => x.action === 'link_save').links, [{ vendor_key: 'va', ingredient_code: '50101', alias_key: 'avocado, 48s usa', spec_key: '', map_id: 'm-5', version: 2 }]);
 });

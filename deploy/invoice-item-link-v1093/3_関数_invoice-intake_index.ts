@@ -1114,15 +1114,15 @@ function groupItems(lines, { vendors = [], maps = [], marks = [], pending = null
   for (const g of groups.values()) {
     const k = { vendor_item_code: g.vendor_item_code, alias_key: g.alias_key, spec_key: g.spec_key };
     const own = linksOf(maps, g.vendor_key, k), seen = new Set(own.map((m) => m.id)), links = [...own];
-    let others = 0;
+    let otherLines = 0;
     for (const id of Object.keys(g.mapped)) {
       const m = id && active.get(id);
       if (!m || seen.has(m.id)) continue;
       seen.add(m.id);
       if (k.vendor_item_code && !m.store_id && !m.vendor_item_code && m.alias_key && g.aliases.has(m.alias_key + "|" + (m.spec_key || ""))) links.push(m);
-      else others++;
+      else otherLines += g.mapped[id];
     }
-    const link = links.length === 1 && !others ? links[0] : null;
+    const link = links.length === 1 ? links[0] : null;
     const retired = (maps || []).filter((m) => m.retired_at && m.vendor_key === g.vendor_key && !m.store_id && (k.vendor_item_code ? codeKey(m.vendor_item_code) === k.vendor_item_code : m.alias_key === k.alias_key && (m.spec_key || "") === k.spec_key));
     const mark = markOf.get(g.id) || null;
     out.push({
@@ -1152,6 +1152,7 @@ function groupItems(lines, { vendors = [], maps = [], marks = [], pending = null
         source: link.source,
         vendor_item_code: link.vendor_item_code ? codeKey(link.vendor_item_code) : null,
         alias_key: link.vendor_item_code ? null : link.alias_key,
+        by_name: !!(k.vendor_item_code && !link.vendor_item_code),
         verified_by: link.verified_by || null,
         verified_at: link.verified_at || null,
         purchase_unit: link.purchase_unit || "",
@@ -1161,8 +1162,9 @@ function groupItems(lines, { vendors = [], maps = [], marks = [], pending = null
         base_unit: link.base_unit || null,
         base_per_purchase: link.base_per_purchase ?? null
       } : null,
-      // links: how many links the item and its lines have (more than one = accounting tidies them in the mapping table)
-      links: links.length + others,
+      // links: how many links the item has (more than one = accounting tidies them in the mapping table); other_lines: lines on another link
+      links: links.length,
+      other_lines: otherLines,
       // lines that have the item's link now, and lines waiting for the links in use (taken in before a link, or left behind)
       applied: link ? g.mapped[link.id] || 0 : 0,
       waiting: g.waiting,
@@ -1186,7 +1188,7 @@ function relink(line, maps) {
   if (cur) {
     fm = { map: cur };
     if (cur.purchase_unit && unit && cur.purchase_unit !== unit) fm.reason = "unit_mismatch";
-    else if (cur.purchase_unit && !unit && reasons.includes("unit_unverified")) fm.reason = "unit_unverified";
+    else if (cur.purchase_unit && !unit && (reasons.includes("unit_unverified") || (line.ingredient_code || null) !== (cur.ingredient_code || null))) fm.reason = "unit_unverified";
   } else {
     fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
     if (!fm.map && !line.map_id && !reasons.includes("unmapped") && !reasons.includes("map_ambiguous")) return null;
@@ -1221,21 +1223,23 @@ function relink(line, maps) {
     else if (!m.auto_post) r.push("mode_review_item");
     const sk = line.spec_key || "";
     if (m.spec_key && sk && m.spec_key !== sk) r.push("spec_changed");
-    const conv = { countPerPurchase: num2(m.count_per_purchase), basePerPurchase: num2(m.base_per_purchase) };
-    if (line.spec && conv.basePerPurchase) {
+    const conv2 = { countPerPurchase: num2(m.count_per_purchase), basePerPurchase: num2(m.base_per_purchase) };
+    if (line.spec && conv2.basePerPurchase) {
       const p = parsePackSpec(line.spec);
-      if (p && UNIT_DEFS[p.baseUnit] && p.baseUnit === m.base_unit && p.basePerPurchase !== conv.basePerPurchase) r.push("spec_changed");
+      if (p && UNIT_DEFS[p.baseUnit] && p.baseUnit === m.base_unit && p.basePerPurchase !== conv2.basePerPurchase) r.push("spec_changed");
     }
     const price = line.unit_price == null || line.unit_price === "" ? null : parseMicros(String(line.unit_price));
     if (price !== null) {
-      const up = unitPrices(price, conv);
+      const up = unitPrices(price, conv2);
       if (up.perCount) out.price_per_count = usd2(up.perCount);
       if (up.perBase) out.price_per_base = usd2(up.perBase);
     }
   }
   const keepPrice = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null);
   out.reasons = [.../* @__PURE__ */ new Set([...reasons.filter((c) => !MAPPING.has(c) || keepPrice && PRICE_INFO.has(c)), ...r])];
-  const same = keepPrice && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
+  const q2 = (v) => v === null || v === void 0 || v === "" ? null : String(parseQty(String(v)));
+  const conv = ["count_unit", "base_unit"].every((f) => (out[f] || null) === (line[f] || null)) && ["count_per_purchase", "base_per_purchase"].every((f) => q2(out[f]) === q2(line[f]));
+  const same = keepPrice && conv && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
   return same ? null : out;
 }
 
@@ -1995,7 +1999,7 @@ function createHandler(deps) {
       const n = result.lines[idx];
       const set = { ...e.set || {} };
       for (const k of Object.keys(set)) if (!["qty", "unit_price", "amount_cents", "line_discount_cents", "purchase_unit", "map_id"].includes(k)) throw new Error("field_not_editable");
-      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error("conflict");
+      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error("map_not_usable");
       if ("map_id" in set) Object.assign(set, {
         ingredient_code: n.ingredient_code ?? null,
         count_unit: n.count_unit ?? null,
@@ -2284,7 +2288,8 @@ function createHandler(deps) {
   async function linkData(actor, b) {
     const r = await db.rpc("invoice_link_data", { actor });
     const { lines, truncated } = await linkLines(actor, null);
-    const pending = new Set(lines.filter((l) => relink(l, r.maps || [])).map((l) => l.id));
+    const merged = mergedKeys(r.vendors);
+    const pending = new Set(lines.filter((l) => !merged.has(l.vendor_key) && relink(l, r.maps || [])).map((l) => l.id));
     return {
       role: r.role,
       items: groupItems(lines, { vendors: r.vendors, maps: r.maps, marks: r.marks, pending }),
@@ -2296,14 +2301,16 @@ function createHandler(deps) {
       at: new Date(now()).toISOString()
     };
   }
+  const mergedKeys = (vendors) => new Set((vendors || []).filter((v) => v.merged_into).map((v) => v.vendor_key));
   async function linkSync(actor, vendorKeys) {
     const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
     if (vendorKeys && !vendorKeys.length) return out;
     const ctx = await context();
     const got = await linkLines(actor, vendorKeys);
     out.truncated = got.truncated;
-    const updates = [];
+    const updates = [], merged = mergedKeys(ctx.vendors);
     for (const l of got.lines) {
+      if (merged.has(l.vendor_key)) continue;
       const u = relink(l, ctx.maps);
       if (u) updates.push(u);
     }
@@ -2608,7 +2615,8 @@ function createHandler(deps) {
     qb_in_progress: 409,
     merged: 409,
     later_merge: 409,
-    unknown_ingredient: 409
+    unknown_ingredient: 409,
+    map_not_usable: 409
   };
   const EXTERNAL = {
     qb_external_list: async (b) => ({ rows: (await db.rpc("invoice_qb_external_list", { limit: Math.max(1, Math.min(100, Number(b.limit) || 20)) })).map((r) => ({ ...r, original_url: viewUrl(r.drive_file_id) })) }),

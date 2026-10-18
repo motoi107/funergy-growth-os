@@ -44389,6 +44389,7 @@ var INVIN_ERR = {
   unauthorized:['メール認証の有効期限が切れました。認証し直してください','Your sign-in expired. Please sign in again'],
   actor_required:['メール認証してください','Please sign in'],
   conflict:['ほかの人が先に更新しました。開き直してください','Someone else updated this first. Reopen it'],
+  map_not_usable:['選んだ対応はこの明細に使えません（紐づけで戻した・ほかの業者や店の対応・まだ仕入れの invoice になっていない）。開き直して選び直してください','The chosen mapping cannot be used for this line (undone by linking, another vendor or store, or not a purchase invoice yet). Reopen and choose again'],
   merged:['この業者はほかの業者にまとめてあります（業者マスターの「業者の統合」）。まとめた先の業者で設定してください','This vendor is merged into another (vendor master: Merge vendors). Set the vendor it was merged into'],
   later_merge:['このあとの統合が同じ業者を使っています。先に新しいほうを外してください','A later merge uses the same vendor. Take the newer one back first'],
   not_found:['見つかりません（消えたか、まだ読み込まれていません）','Not found'],
@@ -47445,6 +47446,7 @@ function ilkPrepare(){
     if (best && cls !== 'C' && cls !== 'D') { var nd = ilkNumDiff(names[0] || '', best.c.en + ' ' + best.c.ja); if (nd) flags.push({ k:'num', t:t('数字が違う：', 'Numbers differ: ') + nd }); }
     if ((it.specs || []).length > 1) flags.push({ k:'spec', t:t('規格が複数', 'Several packs') });
     if (ilkMany(it)) flags.push({ k:'many', t:t('対応表に同じ品目が複数（経理で整理）', 'Several mappings (accounting tidies them)') });
+    if (it.other_lines) flags.push({ k:'other', t:t('明細 ', '') + it.other_lines + t(' 行はほかの対応のまま（店だけ・人が選んだ）', ' lines keep another mapping (a store’s own or one a person chose)') });
     out[it.id] = { cls:cls, best:(cls==='A' || cls==='B') ? best : null, cands:cands.slice(0, 6).filter(function(x){ return x.s >= 0.3; }), flags:flags, pool:pool.length, vendor:v };
   });
   _ilk.prep = out; _ilk.prepKey = key;
@@ -47482,7 +47484,7 @@ function ilkIngHtml(c, extra){
 function ilkIngOf(code){ var M = ilkMaster(), c = M.by[String(code)]; return c || { code:String(code), ja:t('（今のマスターに無いコード）', '(code not in the master)'), en:'', vendor:'' }; }
 function ilkCanChange(it){ return !(it.link && it.link.verified && it.link.source !== 'review' && ['am','chef'].indexOf(curRole) >= 0); }
 /* 対応表に、この品目の対応が複数（品目の対応と、明細が持つほかの対応・店だけの対応）：経理が対応表で 1 つにする */
-function ilkMany(it){ return it.links > 1 || (it.links === 1 && !it.link); }
+function ilkMany(it){ return it.links > 1; }
 
 /* ---- 読み込み ---- */
 function ilkLoad(force){
@@ -47680,6 +47682,7 @@ function ilkOpen(id){
     + ((it.specs || []).length ? '<br>' + t('規格（AI が読んだ）', 'Pack (as read)') + '：' + it.specs.map(function(s){ return e(s[0]); }).join('・') : '')
     + ((it.names || []).length > 1 ? '<br>' + t('ほかの名前：', 'Other names: ') + it.names.slice(1).map(function(n){ return '<span class="ilk-mono" style="font-size:11.5px">' + e(n[0]) + '</span>'; }).join('、') : '') + '</div>'
     + ((p.flags || []).length ? '<div style="margin-top:6px">' + p.flags.map(ilkFlagHtml).join('') + '</div>' : '')
+    + (it.link && it.link.by_name ? '<div class="ilk-s" style="margin-top:6px;color:' + INVIN_COL.yel + '">' + t('名前の対応で結んでいます。同じ名前・規格で品番の無い明細も同じ対応なので、選び直す・戻すと両方に効きます。', 'Linked through its printed name: lines with the same name and pack but no item code share it, so choosing again or undoing changes both.') + '</div>' : '')
     + (it.retired && it.retired.length ? '<div class="ilk-s" style="margin-top:6px">' + t('前に結んで戻したコード：', 'Linked before and undone: ') + it.retired.map(function(r){ return e(r.ingredient_code); }).join('、') + '</div>' : '') + '</div>';
   var right = '<div style="flex:1 1 360px;min-width:0"><div class="ilk-s" style="margin-bottom:6px">' + t('今のマスターの候補（同じ仕入先）', 'Candidates in the current master (same vendor)') + '</div>'
     + (cands.length ? cands.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '<div class="ilk-s" style="margin-bottom:8px">' + t('候補はありません。下で探してください。', 'No candidates. Search below.') + '</div>')
@@ -47743,7 +47746,10 @@ async function ilkMark(id, state){
 }
 async function ilkSyncAll(){
   if (_ilk.busy) return; _ilk.busy = true; ilkRerender();
-  try { var r = await invInAPI({ action:'link_sync' }); showToast(t('そろえました（明細 ', 'Done (lines ') + ((r.sync && r.sync.lines) || 0) + t(' 行・単価の記録 ', ', prices ') + ((r.sync && r.sync.prices) || 0) + t(' 件）', ')'), 'success'); }
+  try { var r = await invInAPI({ action:'link_sync' }), S = r.sync || {};
+    showToast(t('そろえました（明細 ', 'Done (lines ') + (S.lines || 0) + t(' 行・単価の記録 ', ', prices ') + (S.prices || 0) + t(' 件）', ')')
+      + (S.skipped ? t('。その間に直された明細 ', '. Lines changed meanwhile: ') + S.skipped + t(' 行は、もう一度「そろえる」で', ' (press it again)') : '')
+      + (S.truncated ? t('。明細が多すぎて一部を読めていません（Claude に知らせてください）', '. Too many lines: some were not read (tell Claude)') : ''), S.skipped || S.truncated ? 'warning' : 'success'); }
   catch(e) { showToast(String(e.message || e), 'warning'); }
   _ilk.busy = false; ilkReload();
 }

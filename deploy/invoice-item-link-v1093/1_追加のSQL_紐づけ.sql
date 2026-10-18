@@ -120,6 +120,8 @@ begin
  if coalesce((m->>'auto_post')::boolean,false) and not coalesce((m->>'verified')::boolean,false) then raise exception 'bad_value'; end if;
  if coalesce((m->>'auto_post')::boolean,false) and rl not in ('ceo','gm')
     and not (m ? 'id' and coalesce((select auto_post from public.invoice_item_maps where id=(m->>'id')::uuid), false)) then raise exception 'forbidden'; end if;
+ -- the same lock as linking (one change of the mapping table at a time: a link taken back is used again by one of them only)
+ perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
  -- A link taken back (2026-10-18) is changed only by linking it again: here it is refused, or (a new mapping with the same key)
  -- used again with the values given.
  if not (m ? 'id') then
@@ -213,7 +215,8 @@ begin
  if jsonb_typeof(p->'vendor_keys') = 'array' then v_keys := array(select jsonb_array_elements_text(p->'vendor_keys')); end if;
  return (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from (
   select l.id, l.doc_id, l.line_no, l.item_code, l.raw_name, l.spec, l.spec_key, l.purchase_unit, l.qty::text qty, l.unit_price::text unit_price,
-   l.amount_cents, l.map_id, l.ingredient_code, l.reasons, d.store_id, d.vendor_key, d.status, d.doc_type,
+   l.amount_cents, l.map_id, l.ingredient_code, l.count_unit, l.count_per_purchase::text count_per_purchase, l.base_unit,
+   l.base_per_purchase::text base_per_purchase, l.reasons, d.store_id, d.vendor_key, d.status, d.doc_type,
    coalesce(d.effective_date, d.invoice_date) as day
   from public.invoice_lines l join public.invoice_docs d on d.id=l.doc_id
   where d.status in ('review','posted') and d.doc_type in ('invoice','credit_memo') and d.posting_kind='purchase' and d.vendor_key is not null
@@ -386,7 +389,11 @@ create or replace function public.invoice_link_apply(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; rl text; u jsonb; l public.invoice_lines; d public.invoice_docs; mp public.invoice_item_maps;
  map_codes text[] := array['unmapped','map_ambiguous','map_unverified','mode_review_item','spec_changed','unit_mismatch','unit_unverified','no_price_ref','price_jump'];
- v_new_map uuid; n int := 0; v_prices int := 0; v_skipped int := 0; v_voided int := 0; v_docs jsonb := '{}'; v_months text[] := '{}'; v_doc uuid;
+ v_new_map uuid; v_new_code text; v_same boolean; n int := 0; v_prices int := 0; v_skipped int := 0; v_voided int := 0; v_docs jsonb := '{}';
+ v_months text[] := '{}'; v_doc uuid;
+ -- the line reasons that keep a line from giving a price (the same list as invoice_price_insert)
+ no_price text[] := array['catch_weight','line_math','zero_price','negative_line','line_value_missing','line_qty_price_missing','line_amount_missing',
+  'unit_mismatch','unit_unverified','spec_changed','map_ambiguous','unmapped'];
 begin
  if actor is null then raise exception 'actor_required'; end if;
  rl := public.invoice_link_role(actor);
@@ -401,7 +408,9 @@ begin
   select * into d from public.invoice_docs where id=v_doc for update;
   select * into l from public.invoice_lines where id=(u->>'line_id')::uuid for update;
   if jsonb_typeof(u->'reasons') is distinct from 'array' then raise exception 'bad_value'; end if;
+  -- an invoice left on a vendor merged into another (a closed month's, or one kept apart) is not linked here: its vendor's links moved
   if d.status not in ('review','posted') or d.doc_type not in ('invoice','credit_memo') or d.posting_kind <> 'purchase'
+     or exists(select 1 from public.invoice_vendor_rules v where v.vendor_key=d.vendor_key and v.merged_into is not null)
      or l.map_id is distinct from nullif(u->>'from_map','')::uuid
      or l.unit_price::text is distinct from (u->>'unit_price') or l.purchase_unit is distinct from (u->>'purchase_unit') then
    v_skipped := v_skipped + 1; continue;
@@ -417,7 +426,15 @@ begin
    if mp.id is null or mp.retired_at is not null or mp.vendor_key <> d.vendor_key or (mp.store_id is not null and mp.store_id <> d.store_id)
       or mp.ingredient_code is distinct from u->>'ingredient_code' then v_skipped := v_skipped + 1; continue; end if;
   end if;
-  if d.status = 'posted' then
+  v_new_code := case when v_new_map is null then null else mp.ingredient_code end;
+  -- the price history is written again only when what it records changes (the link, its code or its conversion); a change of the
+  -- reasons alone keeps a posted line's row, voids it when the line may no longer give a price, or writes one when it now may
+  v_same := l.map_id is not distinct from v_new_map and l.ingredient_code is not distinct from v_new_code
+   and l.count_unit is not distinct from (case when v_new_map is null then null else u->>'count_unit' end)
+   and l.base_unit is not distinct from (case when v_new_map is null then null else u->>'base_unit' end)
+   and l.count_per_purchase is not distinct from (case when v_new_map is null then null else (u->>'count_per_purchase')::numeric end)
+   and l.base_per_purchase is not distinct from (case when v_new_map is null then null else (u->>'base_per_purchase')::numeric end);
+  if d.status = 'posted' and (not v_same or (u->'reasons') ?| no_price or (v_new_map is not null and not mp.verified)) then
    update public.invoice_price_history set status='voided', voided_by=actor::text, voided_at=now(), void_reason='link'
    where line_id=l.id and status='active';
    get diagnostics n = row_count; v_voided := v_voided + n;
@@ -431,7 +448,7 @@ begin
    price_per_purchase=case when v_new_map is null then null else l.unit_price end,
    price_per_count=case when v_new_map is null then null else (u->>'price_per_count')::numeric end,
    price_per_base=case when v_new_map is null then null else (u->>'price_per_base')::numeric end,
-   prev_price=null,
+   prev_price=case when v_same then l.prev_price end,
    reasons=(select coalesce(jsonb_agg(distinct c), '[]') from jsonb_array_elements_text(u->'reasons') c)
   where id=l.id;
   -- the invoice's own list of reasons follows the line's (the reasons about the link of this line only)
@@ -441,7 +458,8 @@ begin
    || (select coalesce(jsonb_agg(jsonb_build_object('code', c, 'line_no', l.line_no)), '[]')
        from (select distinct c from jsonb_array_elements_text(u->'reasons') c where c = any(map_codes)) q)
   where id=d.id;
-  if d.status = 'posted' and v_new_map is not null and public.invoice_price_insert(d.id, l.id, actor::text, 'link') then v_prices := v_prices + 1; end if;
+  if d.status = 'posted' and v_new_map is not null and not exists(select 1 from public.invoice_price_history h where h.line_id=l.id and h.status='active')
+     and public.invoice_price_insert(d.id, l.id, actor::text, 'link') then v_prices := v_prices + 1; end if;
   v_docs := jsonb_set(v_docs, array[d.id::text], coalesce(v_docs->d.id::text, '[]'::jsonb) || to_jsonb(l.line_no));
   v_months := v_months || to_char(coalesce(d.invoice_date, d.effective_date), 'YYYY-MM');
  end loop;

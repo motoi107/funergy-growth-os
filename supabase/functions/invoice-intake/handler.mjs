@@ -618,7 +618,7 @@ export function createHandler(deps) {
       for (const k of Object.keys(set)) if (!['qty', 'unit_price', 'amount_cents', 'line_discount_cents', 'purchase_unit', 'map_id'].includes(k)) throw new Error('field_not_editable');
       // A chosen mapping that is not in use (taken back by linking, or an older screen's list) is refused: the line would keep it with
       // another mapping's code (紐づけ 2026-10-18, review P3).
-      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error('conflict');
+      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error('map_not_usable');
       if ('map_id' in set) Object.assign(set, { ingredient_code: n.ingredient_code ?? null, count_unit: n.count_unit ?? null, count_per_purchase: n.count_per_purchase ?? null,
         base_unit: n.base_unit ?? null, base_per_purchase: n.base_per_purchase ?? null });
       Object.assign(set, { price_per_purchase: n.price_per_purchase ?? null, price_per_count: n.price_per_count ?? null, price_per_base: n.price_per_base ?? null, prev_price: n.prev_price ?? null });
@@ -862,21 +862,24 @@ export function createHandler(deps) {
   async function linkData(actor, b) {
     const r = await db.rpc('invoice_link_data', { actor });
     const { lines, truncated } = await linkLines(actor, null);
-    // the lines not in step with the links in use (relink would change them): そろえる puts them right
-    const pending = new Set(lines.filter(l => relink(l, r.maps || [])).map(l => l.id));
+    // the lines not in step with the links in use (relink would change them): そろえる puts them right. An invoice left on a vendor merged
+    // into another (a closed month's, or one kept apart) is not linked here (its vendor's links moved with the merge): never waiting.
+    const merged = mergedKeys(r.vendors);
+    const pending = new Set(lines.filter(l => !merged.has(l.vendor_key) && relink(l, r.maps || [])).map(l => l.id));
     return { role: r.role, items: groupItems(lines, { vendors: r.vendors, maps: r.maps, marks: r.marks, pending }), vendors: r.vendors || [],
       people: r.people || {}, lines: lines.length, waiting: pending.size, truncated, at: new Date(now()).toISOString() };
   }
   // The lines of these vendors (null: all) follow the links in use (relink works the whole state out again, so a line left behind is
   // put right too). In chunks (one transaction each); a line changed meanwhile is passed over (the next action or そろえる does it).
+  const mergedKeys = vendors => new Set((vendors || []).filter(v => v.merged_into).map(v => v.vendor_key));
   async function linkSync(actor, vendorKeys) {
     const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
     if (vendorKeys && !vendorKeys.length) return out;
     const ctx = await context();
     const got = await linkLines(actor, vendorKeys);
     out.truncated = got.truncated;
-    const updates = [];
-    for (const l of got.lines) { const u = relink(l, ctx.maps); if (u) updates.push(u); }
+    const updates = [], merged = mergedKeys(ctx.vendors);
+    for (const l of got.lines) { if (merged.has(l.vendor_key)) continue; const u = relink(l, ctx.maps); if (u) updates.push(u); }
     for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
       const r = await db.rpc('invoice_link_apply', { actor, updates: updates.slice(i, i + APPLY_CHUNK) });
       out.lines += r.lines || 0; out.prices += r.prices || 0; out.voided += r.voided || 0; out.skipped += r.skipped || 0;
@@ -1093,7 +1096,7 @@ export function createHandler(deps) {
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
     not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409,
-    merged: 409, later_merge: 409, unknown_ingredient: 409 };
+    merged: 409, later_merge: 409, unknown_ingredient: 409, map_not_usable: 409 };
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.

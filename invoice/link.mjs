@@ -2,8 +2,9 @@
 // What the function invoice-intake needs for it, apart from the database:
 //   itemKey / groupItems : the lines of the invoices as items, keyed the way the intake finds a link for a line (rules.mjs findMap):
 //                          the vendor's item code, or else the printed name with its pack. An item's link is the vendor-wide link of
-//                          that key, or the vendor-wide name link its lines have (a code item linked by name before); several, or a
-//                          link of one store or of another item on its lines = accounting tidies the mapping table.
+//                          that key, or the vendor-wide name link its lines have (a code item linked by name before); several = accounting
+//                          tidies the mapping table. Lines on another link (a store's own, or one a person chose in a correction) keep it:
+//                          they are counted (other_lines) and do not stop the item from being linked.
 //   relink              : what a line taken in should be with the links in use. The same as the intake's own mapping step (rules.mjs
 //                          evaluate), without the price comparison (no_price_ref / price_jump stay only while the link stays).
 // Nothing here reads the current master (the screen proposes; a person decides) or changes an amount.
@@ -89,16 +90,17 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [], pending
     const k = { vendor_item_code: g.vendor_item_code, alias_key: g.alias_key, spec_key: g.spec_key };
     // the item's own key links, and the links its lines have now (in use, this vendor)
     const own = linksOf(maps, g.vendor_key, k), seen = new Set(own.map(m => m.id)), links = [...own];
-    let others = 0;
+    let otherLines = 0;
     for (const id of Object.keys(g.mapped)) {
       const m = id && active.get(id);
       if (!m || seen.has(m.id)) continue;
       seen.add(m.id);
-      // a code item's lines linked by their printed name (vendor-wide): the item's link too; anything else is another link on its lines
+      // a code item's lines linked by their printed name (vendor-wide): the item's link too (shared with the name's own item); anything
+      // else is another link on some of its lines (a store's own, or one a person chose): those lines keep it
       if (k.vendor_item_code && !m.store_id && !m.vendor_item_code && m.alias_key && g.aliases.has(m.alias_key + '|' + (m.spec_key || ''))) links.push(m);
-      else others++;
+      else otherLines += g.mapped[id];
     }
-    const link = links.length === 1 && !others ? links[0] : null;
+    const link = links.length === 1 ? links[0] : null;
     const retired = (maps || []).filter(m => m.retired_at && m.vendor_key === g.vendor_key && !m.store_id
       && (k.vendor_item_code ? codeKey(m.vendor_item_code) === k.vendor_item_code : (m.alias_key === k.alias_key && (m.spec_key || '') === k.spec_key)));
     const mark = markOf.get(g.id) || null;
@@ -109,11 +111,12 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [], pending
       min_price: g.min_price ? g.min_price.s : null, max_price: g.max_price ? g.max_price.s : null,
       link: link ? { id: link.id, version: link.version, ingredient_code: link.ingredient_code, verified: !!link.verified, source: link.source,
         vendor_item_code: link.vendor_item_code ? codeKey(link.vendor_item_code) : null, alias_key: link.vendor_item_code ? null : link.alias_key,
+        by_name: !!(k.vendor_item_code && !link.vendor_item_code),
         verified_by: link.verified_by || null, verified_at: link.verified_at || null, purchase_unit: link.purchase_unit || '', spec_key: link.spec_key || '',
         count_unit: link.count_unit || null, count_per_purchase: link.count_per_purchase ?? null, base_unit: link.base_unit || null,
         base_per_purchase: link.base_per_purchase ?? null } : null,
-      // links: how many links the item and its lines have (more than one = accounting tidies them in the mapping table)
-      links: links.length + others,
+      // links: how many links the item has (more than one = accounting tidies them in the mapping table); other_lines: lines on another link
+      links: links.length, other_lines: otherLines,
       // lines that have the item's link now, and lines waiting for the links in use (taken in before a link, or left behind)
       applied: link ? (g.mapped[link.id] || 0) : 0,
       waiting: g.waiting,
@@ -149,7 +152,8 @@ export function relink(line, maps) {
   if (cur) {
     fm = { map: cur };
     if (cur.purchase_unit && unit && cur.purchase_unit !== unit) fm.reason = 'unit_mismatch';
-    else if (cur.purchase_unit && !unit && reasons.includes('unit_unverified')) fm.reason = 'unit_unverified';
+    // a purchase unit not printed: kept when the intake left it; and the line never gives a price under a new code without it (review b P3-3)
+    else if (cur.purchase_unit && !unit && (reasons.includes('unit_unverified') || (line.ingredient_code || null) !== (cur.ingredient_code || null))) fm.reason = 'unit_unverified';
   } else {
     fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
     // a line with no link and no reason about it is not one the intake left to link (left as it is)
@@ -182,6 +186,10 @@ export function relink(line, maps) {
   }
   const keepPrice = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null);
   out.reasons = [...new Set([...reasons.filter(c => !MAPPING.has(c) || (keepPrice && PRICE_INFO.has(c))), ...r])];
-  const same = keepPrice && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
+  // the link's conversion too (accounting changed it, or an apply stopped): the line's prices per unit follow it
+  const q = v => (v === null || v === undefined || v === '' ? null : String(parseQty(String(v))));
+  const conv = ['count_unit', 'base_unit'].every(f => (out[f] || null) === (line[f] || null))
+    && ['count_per_purchase', 'base_per_purchase'].every(f => q(out[f]) === q(line[f]));
+  const same = keepPrice && conv && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
   return same ? null : out;
 }
