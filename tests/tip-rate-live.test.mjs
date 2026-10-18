@@ -78,15 +78,17 @@ function makeCloud() {
   return cloud;
 }
 
-const EMP = [{ name: 'Crew A', store: 'F01', role: 'crew', firstWork: '2026-09-20', status: '在籍' },
-             { name: 'Crew B', store: 'F01', role: 'crew', firstWork: '2026-09-25', status: '在籍' }];
+const daysAgo = n => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);   // relative, so the 3-month rule does not start on its own later
+const EMP = [{ name: 'Crew A', store: 'F01', role: 'crew', firstWork: daysAgo(27), status: '在籍' },
+             { name: 'Crew B', store: 'F01', role: 'crew', firstWork: daysAgo(22), status: '在籍' },
+             { name: 'Crew C', store: 'F01', role: 'crew', firstWork: daysAgo(400), status: '在籍' }];   // past 3 months: 100% automatically
 const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsRaw', '_lsStoreGet', '_lsWriteVerified', '_lsSetVerified', '_lsSplitOnDemandPrefix',
   '_pushWithOutbox', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
   '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_srPending', 'mergeSkillReq', '_coversSkillReq',
   'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
 const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
   'tipLiveAfterSave', 'tipLivePull', 'tipLiveRerender', 'tipLivePullSoon', 'tipLiveStart', 'tipLiveStop',
-  'tipLiveAutoPage', 'tipLivePill', 'tipLiveApply', 'tipLiveFastPage', '_tipLiveRateSig', '_tipLiveTake', '_tipLiveSigKeys'];
+  'tipLiveAutoPage', 'tipLivePill', 'tipLiveApply', 'tipLiveFastPage', '_tipLiveRateSig', '_tipLiveTake', '_tipLiveSigKeys', 'tipLivePillFor', 'tipStampLegacy'];
 const NEW_VARS = ['TIP_LIVE_KEY', 'TIP_LIVE_LIKE', '_tipLive'];
 
 function device(cloud, { user = 'Moto', role = 'gm', page = 'tiprate', view = 'matrix', rt = true } = {}) {
@@ -468,6 +470,153 @@ test('with sync off, a failed save on the device does not claim it was sent to t
   await run(A, "tipLiveAfterSave(['Crew A'], false)");
   const tw = A.TOASTS.at(-1)[0];
   assert.match(tw, /この端末に保存できませんでした/); assert.doesNotMatch(tw, /クラウドへは送っています/);
+});
+
+test('review 2 P2-1: approving an older request counts even when undated (v1090) decisions come after it in the list', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  // 80% approved, a 100% request, then a direct raise to 90% made on v1090 (no decision time), all from before v1091
+  const LEG = [{ id: 'a', name: 'Crew A', rate: 80, status: '承認' }, { id: 'b', name: 'Crew A', rate: 100, status: '申請中' }, { id: 'c', name: 'Crew A', rate: 90, status: '承認' }];
+  seed(cloud, [A], LEG);
+  assert.equal(rate(A), 90);
+  await run(A, "approveTip('b','承認')"); await settle(60);
+  assert.equal(rate(A), 100, 'the approval made now is the newest decision (6f75b67 kept 90)');
+  assert.equal(A.CONFIRMS.length, 0, 'going up: no question');
+  const rows = JSON.parse(cloud.rows.get(KEY).value);
+  const t = Object.fromEntries(rows.map(r => [r.id, r.decAt]));
+  assert.ok(t.a > 0 && t.c > t.a && t.b > t.c, 'the older decisions got times in their list order, before this approval: ' + JSON.stringify(t));
+  const B = device(cloud); B.STORE.set(KEY, cloud.rows.get(KEY).value);
+  assert.equal(rate(B), 100, 'another v1091 device reads the same rate');
+  // the other way: an older 90% request after an undated 100% → asks, and the rate really goes down when approved
+  seed(cloud, [A], [{ id: 'd', name: 'Crew A', rate: 90, status: '申請中' }, { id: 'e', name: 'Crew A', rate: 100, status: '承認' }]);
+  A.CONFIRM_ANSWER = true;
+  await run(A, "approveTip('d','承認')"); await settle(60);
+  assert.match(A.CONFIRMS.at(-1), /Tip Rate は 100% です。承認すると 90% に下がります/);
+  assert.equal(rate(A), 90, 'what the question said happens');
+});
+
+test('review 2 P3-3: the question and the message use the rate that really applies (3-month 100% etc.)', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  const K = 'spl_tip_requests_Crew C';
+  cloud.rows.set(K, { value: JSON.stringify([{ id: 'x', name: 'Crew C', rate: 80, status: '申請中' }]), updated_at: new Date().toISOString() });
+  A.STORE.set(K, cloud.rows.get(K).value);
+  assert.equal(rate(A, 'Crew C'), 100, 'past 3 months');
+  await run(A, "approveTip('x','承認')"); await settle(60);
+  assert.equal(A.CONFIRMS.length, 0, 'not "goes down to 80%" (it stays 100%)');
+  assert.match(A.TOASTS.at(-1)[0], /承認しました。ただし Crew C さんの Tip Rate は 100% です/);
+  assert.equal(rate(A, 'Crew C'), 100);
+});
+
+test('review 2 P3-1: a read still running at log-out changes nothing and shows nothing', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am', page: 'budget' });
+  seed(cloud, [A, B], OLD80);
+  run(B, 'tipLiveStart()');
+  await raise(A, 'Crew A', 90);
+  cloud.delay = 40;
+  const p = run(B, "tipLivePull('poll')");
+  run(B, "tipLiveStop(); curUserName = ''");
+  await p; await settle(); cloud.delay = 1;
+  assert.equal(pill(B), null, 'no notice on the login screen');
+  assert.deepEqual(plain(B.RENDERS), []);
+  assert.equal(JSON.parse(B.STORE.get(KEY)).some(r => r.rate === 90), false, 'not written after log-out');
+});
+
+test('review 2 P3-2: after the cloud read, approve / raise do not redraw a page the user moved to, and a closed or changed raise dialog raises nothing', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  seed(cloud, [A], OLD80.concat([{ id: 'tip150', name: 'Crew A', rate: 100, status: '申請中' }]));
+  cloud.delay = 40;
+  let p = run(A, "approveTip('tip150','承認')");
+  run(A, "curPage = 'budget'");   // moved on while the read runs
+  await p; await settle(60); cloud.delay = 1;
+  assert.equal(JSON.parse(A.STORE.get(KEY)).find(r => r.id === 'tip150').status, '承認', 'the approval is saved');
+  assert.equal(A.RENDERS.includes('budget'), false, 'the page the user moved to is not redrawn');
+  // raise: the dialog closed during the read → nothing raised
+  const B = device(cloud); B.STORE.set(KEY, JSON.stringify(OLD80));
+  cloud.delay = 40;
+  B.INPUTS = { 'tipraise-name': { value: 'Crew A' }, 'tipraise-rate': { value: '90' } };
+  p = run(B, 'applyTipRaise()'); B.INPUTS = {}; await p; await settle(60);
+  assert.ok(B.TOASTS.some(x => /画面を閉じたので、引き上げていません/.test(x[0])));
+  assert.equal(JSON.parse(B.STORE.get(KEY)).some(r => r.basis === 'manual'), false);
+  // the raise is saved but the page the user moved to is not redrawn
+  B.INPUTS = { 'tipraise-name': { value: 'Crew A' }, 'tipraise-rate': { value: '90' } }; B.RENDERS.length = 0;
+  p = run(B, 'applyTipRaise()'); run(B, "curPage = 'budget'"); await p; await settle(60);
+  assert.equal(B.RENDERS.includes('budget'), false);
+  assert.ok(JSON.parse(B.STORE.get(KEY)).some(r => r.basis === 'manual' && r.rate === 90), 'saved');
+  run(B, "curPage = 'tiprate'");
+  // changed during the read, then pressed again: told to press again, nothing raised with the old values (another person)
+  B.INPUTS = { 'tipraise-name': { value: 'Crew B' }, 'tipraise-rate': { value: '90' } };
+  p = run(B, 'applyTipRaise()');
+  B.INPUTS['tipraise-rate'].value = '100'; await run(B, 'applyTipRaise()');
+  assert.ok(B.TOASTS.some(x => /確かめています。少し待ってください/.test(x[0])), 'the second press is not silent');
+  await p; await settle(60); cloud.delay = 1;
+  assert.ok(B.TOASTS.some(x => /選び直したので、もう一度「引き上げる」を押してください/.test(x[0])));
+  assert.equal(JSON.parse(B.STORE.get('spl_tip_requests_Crew B') || '[]').some(r => r.basis === 'manual'), false, 'no raise recorded');
+});
+
+test('review 2 P3-4 / P3-5: staff see the notice only for their own rate; a page drawn instead of the Tip Rate page is not redrawn', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  const S = device(cloud, { user: 'Crew B', role: 'crew', page: 'mypage' });
+  seed(cloud, [A, S], OLD80);
+  const KB = 'spl_tip_requests_Crew B';
+  cloud.rows.set(KB, { value: JSON.stringify([{ id: 'b1', name: 'Crew B', rate: 80, status: '承認' }]), updated_at: new Date(Date.now() - 3600e3).toISOString() });
+  S.STORE.set(KB, cloud.rows.get(KB).value); A.STORE.set(KB, cloud.rows.get(KB).value);
+  run(S, "myName = function(){ return 'Crew B'; }; tipLiveStart()");
+  await raise(A, 'Crew A', 90);
+  S.RT['rt-tip-rate']({}); await settle();
+  assert.equal(pill(S), null, 'a coworker’s change: no notice for staff');
+  await raise(A, 'Crew B', 90);
+  S.RT['rt-tip-rate']({}); await settle();
+  assert.ok(pill(S), 'their own rate changed');
+  // the Tip Rate page hidden for this person (another page is drawn): treated like other pages
+  const H = device(cloud, { user: 'Yuki', role: 'am' });
+  run(H, "isPageHiddenForMe = function(p){ return p === 'tiprate'; }");
+  assert.equal(run(H, 'tipLiveAutoPage()'), false);
+  const O = device(cloud, { user: 'Yuki', role: 'am' });
+  run(O, "curStore = 'OFFICE'; OFFICE_OK_PAGES = ['dashboard']");
+  assert.equal(run(O, 'tipLiveAutoPage()'), false);
+  run(O, "OFFICE_OK_PAGES = ['tiprate']");
+  assert.equal(run(O, 'tipLiveAutoPage()'), true);
+});
+
+test('review 2 P3-6 / P3-9: signal keys that could not be read are kept for the next read; no extra request when the row already came; pulls on page open are not doubled', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [A, B], OLD80);
+  run(B, 'tipLiveStart()');
+  await raise(A, 'Crew A', 90);
+  const sig = JSON.parse(cloud.rows.get('live_tip_rate').value);
+  // the row is in the time window: read once, no by-key request
+  let n = cloud.log.length;
+  B.RT['rt-tip-rate']({ new: { value: sig } }); await settle(60);
+  assert.equal(rate(B), 90);
+  assert.equal(cloud.log.slice(n).filter(x => x[0] === 'GET' && /key=eq\./.test(x[1])).length, 0, 'no extra request');
+  // a slow writer and a failing by-key read: the key is kept and read next time
+  await raise(A, 'Crew A', 100);
+  cloud.rows.get(KEY).updated_at = new Date(Date.now() - 600e3).toISOString();
+  const sig2 = JSON.parse(cloud.rows.get('live_tip_rate').value);
+  const f0 = cloud.fetch; cloud.fetch = async (u, o) => (/key=eq\./.test(u) ? { ok: false, status: 503, json: async () => null, text: async () => '' } : f0(u, o));
+  B.RT['rt-tip-rate']({ new: { value: sig2 } }); await settle(60);
+  assert.equal(rate(B), 90);
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), [KEY], 'kept');
+  cloud.fetch = f0;
+  await run(B, "tipLivePull('poll')");
+  assert.equal(rate(B), 100, 'read on the next pull');
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), []);
+  // Codex 6f75b67 / 27f5ec8: the by-key read throws (network error) → the key is kept too, and read after the network is back
+  await raise(A, 'Crew A', 90);
+  cloud.rows.get(KEY).updated_at = new Date(Date.now() - 600e3).toISOString();
+  const sig3 = JSON.parse(cloud.rows.get('live_tip_rate').value);
+  cloud.fetch = async (u, o) => { if (/key=eq\./.test(u)) throw new TypeError('Failed to fetch'); return f0(u, o); };
+  B.RT['rt-tip-rate']({ new: { value: sig3 } }); await settle(60);
+  assert.equal(rate(B), 100, 'not yet');
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), [KEY], 'kept after the error');
+  cloud.fetch = f0;
+  await run(B, "tipLivePull('poll')");
+  assert.equal(rate(B), 90, 'read after the network is back');
+  // opening a Tip Rate page while a read runs does not start another
+  run(B, "_tipLive.busy = true; _tipLive.at = 0"); n = cloud.log.length;
+  run(B, 'tipLivePullSoon()'); await new Promise(r => setTimeout(r, 10)); await settle();
+  assert.equal(cloud.log.length, n);
+  assert.equal(run(B, '_tipLive.again'), false, 'no second read queued');
+  run(B, '_tipLive.busy = false');
 });
 
 test('wiring: started at login, stopped at logout, read when the Tip Rate screens open; staff requests also reach approvers', () => {

@@ -80689,7 +80689,7 @@ function isThreeMonths(emp) {
    - 承認済みの最新Tip Rate申請 → その%
    - No Tip期間中 → 0（No Tip）
    - それ以降 → 80% */
-function effectiveTipRate(name) {
+function effectiveTipRate(name, list) {   /* list：決める前に結果を確かめるための写し（省略すると端末の記録） */
   var emp = getEmployees().find(e=>e.name===name);
   if (!emp) return 100;
   if (emp.store==='F03' || emp.store==='F03-G') return 100; // Waikiki(FSP/WGS)は80/90/100制度から除外。クレジットチップを勤務時間で均等シェア
@@ -80697,7 +80697,7 @@ function effectiveTipRate(name) {
   // 3ヶ月自動100%
   if (isThreeMonths(emp)) return 100;
   // 承認済み最新
-  var approved = _tipLatestApproved(name);   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後） */
+  var approved = _tipLatestApproved(name, list);   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後） */
   if (approved) return approved.rate;
   // 初回勤務日が未設定なら、既存の評価係数（coef）を尊重（インポートデータ保護）
   var fw = firstWorkDate(emp);
@@ -80730,12 +80730,12 @@ function tipRateLabel(name) {
 var TIP_LIVE_KEY='live_tip_rate', TIP_LIVE_PRE='spl_tip_requests_', TIP_LIVE_BACK_MS=300000, TIP_LIVE_POLL_MS=20000, TIP_LIVE_RT_POLL_MS=60000, TIP_LIVE_TIMEOUT_MS=8000;
 /* 行のキーの探し方（PostgREST の like は SQL の LIKE。「_」は 1 文字の何でも、なので \ で文字の「_」にする） */
 var TIP_LIVE_LIKE='spl\\_tip\\_requests\\_';
-var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false, at:0, pend:false, rtOk:false, keys:[] };
+var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false, at:0, pend:false, rtOk:false, keys:[], gen:0 };
 /* 時刻の無い記録（v1090 以前の端末で決めたもの）は、並びでその前にある決定のいちばん新しい時刻とみなす（並びのあと＝新しい、のまま）。
    独立レビュー 10/17（ae5c541）の P1：v1091 の端末で 90% に上げたあと v1090 の端末で 100% に上げると、v1091 の端末は 90% のままだった。 */
-function _tipLatestApproved(name){
+function _tipLatestApproved(name, list){
   var best=null, bestT=-Infinity, floor=0;
-  (ls('tip_requests',[])||[]).forEach(function(r){
+  (Array.isArray(list) ? list : (ls('tip_requests',[])||[])).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r), eff=t>0 ? t : floor;
     if(t>floor) floor=t;
@@ -80743,6 +80743,19 @@ function _tipLatestApproved(name){
     if(eff>=bestT){ best=r; bestT=eff; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
   });
   return best;
+}
+/* 前からある申請を承認するとき：時刻の無い前の決定（v1090 以前）に、並びのとおりの時刻を付ける（並びのあと＝新しい、と同じ意味）。
+   独立レビュー（6f75b67）P2-1：付けないと、承認した申請（並びの前のほう）が、そのあとに並ぶ時刻の無い引き上げに負け、承認しても率が変わらなかった。
+   付けたあとは、この承認（いまの時刻）がいちばん新しい決定になる。率の決まり方はほかの記録では変わらない */
+function tipStampLegacy(list, name){
+  var floor=0, n=0;
+  (list||[]).forEach(function(r){
+    if(!r || r.name!==name) return;
+    var t=_tipDecT(r);
+    if(t>0){ if(t>floor) floor=t; return; }
+    if(r.status==='承認' || r.status==='却下'){ floor=floor+1; r.decAt=floor; n++; }
+  });
+  return n;
 }
 /* この人の記録のどの決定よりも後の時刻（時計が遅れた端末でも、決め直しが前の決定に負けない） */
 function tipDecStamp(list, name){
@@ -80798,7 +80811,7 @@ function _tipLiveTake(x, st){
   var name=x.key.slice(TIP_LIVE_PRE.length), before=_tipLiveRateSig(name);
   if(_lsWriteVerified(x.key, js)){
     try{ _lsMarkFetched(x.key); _lsClearSaveFailure(x.key); }catch(e){}
-    st.changed=true; if(_tipLiveRateSig(name)!==before) st.rate=true;
+    st.changed=true; if(_tipLiveRateSig(name)!==before){ st.rate=true; (st.names=st.names||[]).push(name); }
   }
   else { try{ _lsNoteSaveFailure(x.key); }catch(e){} }
 }
@@ -80813,29 +80826,36 @@ async function tipLivePull(why, keys){
   if(_tipLive.busy){ _tipLive.keys=want; _tipLive.again=true; return false; }
   _tipLive.keys=[];
   _tipLive.busy=true;
-  var t0=Date.now(), st={ changed:false, rate:false }, seen={};
+  var g=_tipLive.gen, gone=function(){ return g!==_tipLive.gen || !curUserName; };   /* 読んでいるあいだにログアウト（独立レビュー 6f75b67 P3-1） */
+  var keep=function(ks){ var u={}; (_tipLive.keys||[]).concat(ks).forEach(function(k){ u[k]=1; }); _tipLive.keys=Object.keys(u).slice(0,50); };   /* 読めなかったキーは次に */
+  var t0=Date.now(), st={ changed:false, rate:false, names:[] }, seen={};
   try{
     var from=new Date(Math.min(_tipLive.since||t0, t0)-TIP_LIVE_BACK_MS).toISOString();
     var url=SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=like.'+encodeURIComponent(TIP_LIVE_LIKE)+'*&updated_at=gte.'+encodeURIComponent(from);
     var res=await _tipLiveTimeout(fetch(url, { headers: supaHeaders() }), TIP_LIVE_TIMEOUT_MS);
-    if(res==='__timeout' || !res || !res.ok){ _tipLive.keys=want.concat(_tipLive.keys||[]); return false; }
-    var rows=await res.json(); if(!Array.isArray(rows)){ _tipLive.keys=want.concat(_tipLive.keys||[]); return false; }
+    if(gone()) return false;
+    if(res==='__timeout' || !res || !res.ok){ keep(want); return false; }
+    var rows=await res.json(); if(gone()) return false;
+    if(!Array.isArray(rows)){ keep(want); return false; }
     _tipLive.since=t0;
     rows.forEach(function(x){ if(x && typeof x.key==='string') seen[x.key]=1; _tipLiveTake(x, st); });
-    /* 合図に書いてあったのに時刻で拾えなかった行（書いた端末の時計が 5 分より遅れている）は、キーで読む */
+    /* 合図に書いてあったのに時刻で拾えなかった行（書いた端末の時計が 5 分より遅れている）は、キーで読む（1 回に 20 まで・残りと読めなかったものは次に） */
     var uq={}; want.forEach(function(k){ if(!seen[k]) uq[k]=1; });
-    var ks=Object.keys(uq).slice(0,20);
+    var ks=Object.keys(uq), later=ks.slice(20); ks=ks.slice(0,20);
     for(var i=0;i<ks.length;i++){
       var r2=await _tipLiveTimeout(fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=eq.'+encodeURIComponent(ks[i]), { headers: supaHeaders() }), TIP_LIVE_TIMEOUT_MS);
-      if(r2==='__timeout' || !r2 || !r2.ok) continue;
-      var a2=await r2.json(); if(Array.isArray(a2)) a2.forEach(function(x){ _tipLiveTake(x, st); });
+      if(gone()) return false;
+      if(r2==='__timeout' || !r2 || !r2.ok){ later.push(ks[i]); continue; }
+      var a2=await r2.json(); if(gone()) return false;
+      if(Array.isArray(a2)) a2.forEach(function(x){ _tipLiveTake(x, st); }); else later.push(ks[i]);
     }
-    if(st.changed || _tipLive.pend) tipLiveRerender(st.changed, st.rate);
+    if(later.length) keep(later);
+    if(st.changed || _tipLive.pend) tipLiveRerender(st.changed, st.rate, st.names);
     return true;
-  }catch(e){ return false; }
+  }catch(e){ if(!gone()) keep(want); return false; }   /* 途中で失敗：合図のキーは次に読む（Codex 6f75b67・27f5ec8 の P2） */
   finally{
     _tipLive.busy=false; _tipLive.at=Date.now();
-    if(_tipLive.again){ _tipLive.again=false; setTimeout(function(){ tipLivePull('again'); }, 300); }
+    if(_tipLive.again){ _tipLive.again=false; if(!gone()) setTimeout(function(){ tipLivePull('again'); }, 300); }
   }
 }
 /* 画面を描き直す（Codex 10/17・#75 ae5c541：前はどの画面も丸ごと描き直したので、入力欄から離れたあとのまだ保存していない入力
@@ -80846,13 +80866,17 @@ async function tipLivePull(why, keys){
 function tipLiveAutoPage(){
   try{
     if(typeof curPage==='undefined' || !curPage) return false;
+    /* 描いているのが別の画面のとき（隠している画面・本部の店）は描き直さない（独立レビュー 6f75b67 P3-5） */
+    if(typeof isPageHiddenForMe==='function' && isPageHiddenForMe(curPage)) return false;
+    if(typeof curStore!=='undefined' && curStore==='OFFICE' && typeof OFFICE_OK_PAGES!=='undefined' && OFFICE_OK_PAGES.indexOf(curPage)<0) return false;
     if(curPage==='tiprate') return true;
     return curPage==='tip' && typeof tipPeriodView!=='undefined' && (tipPeriodView==='rate' || tipPeriodView==='ratemgmt');
   }catch(e){ return false; }
 }
-function tipLiveRerender(changed, rateChanged){
+function tipLiveRerender(changed, rateChanged, names){
   try{
-    if(!tipLiveAutoPage()){ _tipLive.pend=false; if(rateChanged) tipLivePill(true); return; }
+    if(!curUserName) return;
+    if(!tipLiveAutoPage()){ _tipLive.pend=false; if(rateChanged && tipLivePillFor(names)) tipLivePill(true); return; }
     var ov=document.getElementById('modal-overlay');
     var typing=(typeof _empTyping==='function') && _empTyping();
     if((ov && ov.classList && ov.classList.contains('open')) || typing){ _tipLive.pend=true; return; }
@@ -80862,6 +80886,15 @@ function tipLiveRerender(changed, rateChanged){
     renderPage(curPage);
     if(changed) showToast(t('ほかの端末で変わった Tip Rate を取り込みました','Loaded Tip Rate changes from another device'),'info');
   }catch(e){}
+}
+/* 帯を出す人：承認する人（店のみんなの率を見る）・チップ管理の画面・自分の率が変わった人（独立レビュー 6f75b67 P3-4：スタッフにほかの人の変更を出さない） */
+function tipLivePillFor(names){
+  try{
+    if((ROLE_CONFIG[curRole]||{}).canApprove) return true;
+    if(typeof curPage!=='undefined' && curPage==='tip') return true;
+    var me=(typeof myName==='function') ? myName() : curUserName;
+    return (names||[]).indexOf(me)>=0;
+  }catch(e){ return true; }
 }
 /* 「表示を更新」の帯（画面の下・入力の邪魔をしない）。押すと今の画面を描き直す */
 function tipLivePill(on){
@@ -80916,7 +80949,7 @@ function tipLiveStop(){
   _tipLive.ch=null;
   if(_tipLive.timer){ clearInterval(_tipLive.timer); _tipLive.timer=null; }
   if(_tipLive.onVis){ try{ document.removeEventListener('visibilitychange', _tipLive.onVis); }catch(e){} _tipLive.onVis=null; }
-  _tipLive.pend=false; _tipLive.keys=[];
+  _tipLive.pend=false; _tipLive.keys=[]; _tipLive.gen++;   /* 読んでいる途中の取り直しは、終わっても何もしない */
   tipLivePill(false);
 }
 
@@ -81578,32 +81611,38 @@ async function approveTip(id, status) {
   if (r) {
     /* v1091: 押す前にクラウドのその人の行を読み直す。ほかの端末でもう決まっていたら知らせて何もしない。
        押した人は押したときの人（読み直しのあいだにログアウト・別の人のログインがあれば何もしない） */
-    var _fresh = null, _who = curUserName, _role = curRole;
+    var _fresh = null, _who = curUserName, _role = curRole, _pg = curPage;
+    var _redraw = function(){ if (curPage===_pg) renderPage(curPage); };   /* 読み直しのあいだにほかの画面へ移ったら、その画面は描き直さない（独立レビュー 6f75b67 P3-2） */
     if (typeof tipPullPerson==='function') {
       approveTip._busy = true;
       var _slow = setTimeout(function(){ try{ showToast(t('クラウドの最新を確かめています…','Checking the latest in the cloud…'),'info'); }catch(e){} }, 700);
       try { _fresh = await tipPullPerson(r.name); } finally { approveTip._busy = false; clearTimeout(_slow); }
       if (curUserName!==_who || curRole!==_role) return;
       requests = ls('tip_requests', []); r = requests.find(x=>x.id===id);
-      if (!r) { renderPage(curPage); return; }
+      if (!r) { _redraw(); return; }
       if (r.status && r.status!=='申請中') {
         var _lb = r.status==='承認' ? t('承認','approved') : (r.status==='却下' ? t('却下','rejected') : t('決定済み','decided'));
         showToast(t('この申請はほかの端末でもう「'+_lb+'」になっていました（変えていません）','This request was already '+_lb+' on another device (nothing changed)'),'warning');
-        renderPage(curPage); return;
+        _redraw(); return;
       }
       if (_fresh===false) showToast(t('クラウドの最新を読めませんでした。この端末の内容で決めます','Could not read the latest from the cloud; deciding with this device’s copy'),'warning');
     }
-    /* v1091: いまの率は決めた時刻のいちばん新しい承認なので、今より低い率の申請を承認すると率が下がる。確かめてから */
-    if (status==='承認' && typeof _tipLatestApproved==='function') {
-      var _cur = _tipLatestApproved(r.name);
-      if (_cur && _cur.id!==r.id && Number(_cur.rate)>Number(r.rate) && typeof confirm==='function'
-        && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_cur.rate+'% です。承認すると '+r.rate+'% に下がります。承認しますか？',
-                      r.name+'\'s Tip Rate is '+_cur.rate+'% now. Approving lowers it to '+r.rate+'%. Approve?'))) return;
+    /* v1091: いまの率は決めた時刻のいちばん新しい承認。承認したあとの率を先に計算し（3 か月の 100%・役職・店の決まりも入れる）、
+       下がるときは確かめる。変わらないときは知らせる（独立レビュー 6f75b67 P2-1・P3-3） */
+    var _rl = function(v){ return v===0 ? 'No Tip' : (v+'%'); };
+    var _before = (typeof effectiveTipRate==='function') ? effectiveTipRate(r.name) : null, _after = null;
+    if (status==='承認' && typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
+    var _dec = (typeof tipDecStamp==='function') ? tipDecStamp(requests, r.name) : Date.now();   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
+    if (status==='承認' && _before!=null) {
+      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec }) : x; }));
+      if (_after < _before && typeof confirm==='function'
+        && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_rl(_before)+' です。承認すると '+_rl(_after)+' に下がります。承認しますか？',
+                      r.name+'\'s Tip Rate is '+_rl(_before)+' now. Approving lowers it to '+_rl(_after)+'. Approve?'))) return;
     }
     r.status = status;
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
-    if (typeof tipDecStamp==='function') r.decAt = tipDecStamp(requests, r.name);   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
+    r.decAt = _dec;
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81613,8 +81652,10 @@ async function approveTip(id, status) {
     try{ apDecidedFromPage('TipRate', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'tiprate', title:(r.name+' Tip Rate '+r.rate+'%'),
       match:function(a){ return !a.ref && a.from===r.name && /Tip Rate申請/.test(String(a.title||'')) && String(a.title||'').trim().slice(-(String(r.rate).length+2))===(' '+r.rate+'%'); }}); }catch(e){}
     try{ if(status==='承認') apNotifyAcctApplied('Tip Rate', r.name, r.rate+'%'); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
-    showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
-    renderPage(curPage);
+    if (status==='承認' && _after!=null && _after!==Number(r.rate))
+      showToast(t('承認しました。ただし '+r.name+' さんの Tip Rate は '+_rl(_after)+' です（3 か月の 100%・役職・店の決まりなど）', 'Approved. '+r.name+'\'s Tip Rate stays '+_rl(_after)+' (3-month 100%, role or store rules)'),'info');
+    else showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
+    _redraw();
     try{ if(typeof tipLiveAfterSave==='function') tipLiveAfterSave([r.name], _saved); }catch(e){}   /* v1091: ほかの端末へすぐ */
   }
 }
@@ -81635,8 +81676,8 @@ async function applyTipRaise(){
   var name=(document.getElementById('tipraise-name')||{}).value;
   var rate=parseInt((document.getElementById('tipraise-rate')||{}).value,10);
   if(!name||!rate) return;
-  if(applyTipRaise._busy) return;   /* v1091: 読み直しの途中にもう一度押した */
-  var _who=curUserName, _role=curRole;
+  if(applyTipRaise._busy){ showToast(t('クラウドの最新を確かめています。少し待ってください','Checking the latest in the cloud. Please wait'),'info'); return; }   /* v1091: 読み直しの途中にもう一度押した */
+  var _who=curUserName, _role=curRole, _pg=curPage;
   /* v1091（独立レビュー 10/17）：時刻を付ける前にその人の行を読み直す（ほかの端末のもっと新しい決定に負けない時刻にする） */
   if(typeof tipPullPerson==='function'){
     applyTipRaise._busy=true;
@@ -81644,6 +81685,10 @@ async function applyTipRaise(){
     var _fr=null;
     try{ _fr=await tipPullPerson(name); }finally{ applyTipRaise._busy=false; clearTimeout(_slow); }
     if(curUserName!==_who || curRole!==_role) return;   /* 読み直しのあいだにログアウト・別の人のログイン */
+    /* 読み直しのあいだに画面を閉じた・選び直した：引き上げない（独立レビュー 6f75b67 P3-2） */
+    var _ov=document.getElementById('modal-overlay'), _ne=document.getElementById('tipraise-name'), _re=document.getElementById('tipraise-rate');
+    if(!_ne || !_re || (_ov && _ov.classList && !_ov.classList.contains('open'))){ showToast(t('画面を閉じたので、引き上げていません','The dialog was closed; nothing was raised'),'info'); return; }
+    if(_ne.value!==name || parseInt(_re.value,10)!==rate){ showToast(t('選び直したので、もう一度「引き上げる」を押してください','You changed the selection; press Raise again'),'info'); return; }
     if(_fr===false) showToast(t('クラウドの最新を読めませんでした。この端末の内容で引き上げます','Could not read the latest from the cloud; raising with this device’s copy'),'warning');
   }
   var emp=getEmployees().find(function(e){return e.name===name;});
@@ -81657,7 +81702,7 @@ async function applyTipRaise(){
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
   closeModalDirect();
   showToast(name+' → Tip Rate '+rate+'%','success');
-  renderPage(curPage);
+  if(curPage===_pg) renderPage(curPage);
   try{ if(typeof tipLiveAfterSave==='function') tipLiveAfterSave([name], _saved); }catch(e){}   /* v1091: ほかの端末へすぐ */
 }
 /* スキル条件達成からTip申請（店舗・根拠つき） */
