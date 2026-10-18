@@ -6161,10 +6161,129 @@ function isTipEligibleRole(e){
   return b==='sl' || b==='crew';   /* g2 は sl に正規化されて対象、g4 は am で対象外 */
 }
 
+/* ===== v1092（Moto 10/17「Tip Rate の承認で決める」）：チップの配分の重みを、その日の Tip Rate にする =====
+   【前】配分の重みは従業員マスターの「評価係数（Tip Rate）」（e.coef）。Tip Rate の画面の承認・引き上げ・3 か月の 100% は、
+     表示の率と No Tip（配分から外す）にだけ効き、重みには入らなかった（empCoef はどこからも呼ばれていなかった）。
+   【いま】TIP_RATE_WEIGHT_START の日からは、重み ＝ その日の Tip Rate ÷ 100（80% → 0.8・90% → 0.9・100% → 1.0）。
+     その日の Tip Rate（tipRateOn）は Tip Rate の画面と同じ決まり（Waikiki・役職・初回勤務から 3 か月・承認・初回勤務日の無い人は従業員マスターの率）で、
+     ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から・v1092 からはハワイの日付 decDay）。
+     Waikiki（F03・F03-G）のチップは、だれでも 100%（勤務時間で均等）。
+     No Tip は今までどおり別の印（noTip＝いまの Tip Rate が No Tip の人を配分から外す）。
+   【開始日より前】今までどおり評価係数（支給・確定に使った期間の額を変えない。v959 の TIP_SL_SPLIT_END と同じ考え方）。
+     10/1〜10/15 も Tip Rate にするなら、この日付を '2026-10-01' にする（期間の区切りの日にする）。 */
+var TIP_RATE_WEIGHT_START = '2026-10-16';
+function tipWeightByRate(dateISO) { return !!dateISO && String(dateISO) >= TIP_RATE_WEIGHT_START; }
+/* 決めた日（ハワイの日付・YYYY-MM-DD）。
+   ・decDay（v1092 から。承認・却下・引き上げのときのハワイの日付＝日本の端末で承認しても、ハワイのその日から。独立レビュー dc96c7e P3-2）
+   ・無ければ approvedDate（承認した端末の日付）
+   ・どちらも無ければ ''（いつも効く＝決めた日の分からない前の記録は、どの日にも効く）
+   決めた時刻 decAt は日付に使わない（Codex dc96c7e：tipStampLegacy が前の記録に並びから付けた時刻は本物の時刻と見分けられず、
+   後日の承認で付いたとたんに、日付の分からない前の承認が過去の日から外れて、過去の日の配分が変わった） */
+function _tipHstDay(t) { var u = new Date(t - 10 * 3600 * 1000); return u.getUTCFullYear() + '-' + ('0' + (u.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + u.getUTCDate()).slice(-2); }
+function _tipDecDayExact(r) { var dd = String((r && r.decDay) || ''); return /^\d{4}-\d{2}-\d{2}$/.test(dd) && _tipDayOk(dd); }   /* v1092 のハワイの日付 decDay がある */
+function _tipDecDay(r) {
+  if (_tipDecDayExact(r)) return String(r.decDay);   /* ありえない日（10/99 など）なら approvedDate（独立レビュー 0a35425 P3-2） */
+  var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  var a = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
+  return (a && _tipDayOk(a)) ? a : '';   /* ありえない approvedDate も日付の分からない記録と同じ（守りと同じに読む。独立レビュー 19eb415 P3-5） */
+}
+/* 決めるときに残す日（ハワイの日付）。ほかの決定の日よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で決めると前の日になり、
+   あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り）。
+   ・ほかの決定の日は配分と同じ _tipDecDay（decDay → 無ければ approvedDate。Codex 2ad1047 の P2：前は decDay だけを見たので、
+     v1091 以前の端末の承認（approvedDate だけ）があると、時計の遅れた端末の決定が過ぎた日から効いた）。
+   ・手がかりは、ほかの決定を「決めた端末のその日の日付」（_tipDecSeen：decHst＝v1092 の決めた端末のハワイの日付 → 無ければ approvedDate）。
+     決めた日 decDay は守りのために後ろへ寄せることがあるので手がかりにしない（独立レビュー 9c08984 P2-1：スマホの時計が進んだ申請で
+     後ろへ寄せた decDay が、ほかの全員の決定を黙って遅らせた）。
+   ・その人の決定は今日より先なら数える。ほかの人の決定は、decHst なら今日より先、approvedDate なら明日より先のときだけ数える
+     （配分は人どうしの割合なので、ほかの人の決定が過ぎた日から効いてもその人の額が変わる＝独立レビュー 0a35425 P2(a)。approvedDate の明日までは
+     日本の端末の日付（1 日先）なので数えない。decHst の明日は時計のずれ＝日付の変わり目の小さなずれも守る：独立レビュー 19eb415 P3-1）。
+   ・承認では、決める申請そのものの申請した時刻（id＝'tip'＋時刻）のハワイの日より前にもしない（独立レビュー 19eb415 P2-1：ほかに先の日付の
+     決定が無いと、時計の遅れた端末の承認が何も出さずに過ぎた日から効いた）。却下では使わない（配分を変えない）。
+   ・信じるのは、この端末の今日から TIP_DEC_DAY_AHEAD 日先まで（独立レビュー acb707e P2：こわれた日（2099 年など）があると、
+     そのあとの決定がずっと配分に効かなかった）。この幅の中なら時計の遅れを守り、時計の進んだ端末の日があると、あとの決定はその日まで待つ。
+   ・決めた人には、明日より先の日付の決定があるとき、決める前に確かめる（tipDecClockAhead・tipDecClockMsg）。
+   self：いま決める記録（数えない。承認の前に入れる approvedDate＝日本の端末の日付で 1 日先にならない） */
+var TIP_DEC_DAY_AHEAD = 31, TIP_DEC_CLOCK_DAYS = 400;
+function _tipDayOk(x) { var t = Date.parse(x + 'T00:00:00Z'); return isFinite(t) && new Date(t).toISOString().slice(0, 10) === x; }
+function _tipDecided(r) { return !!r && (r.status === '承認' || r.status === '却下'); }
+function _tipReqT(r) { var m = /^tip(\d{12,14})$/.exec(String((r && r.id) || '')); return m ? Number(m[1]) : 0; }   /* 申請した時刻（申請した端末の時計）。無ければ 0 */
+/* ほかの決定を決めた端末の、その日の日付（手がかり）。{day, exact}：exact＝ハワイの日付 decHst（v1092）。無ければ approvedDate、それも無ければ decDay（exact でない） */
+function _tipDecSeen(r) {
+  var h = String((r && r.decHst) || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(h) && _tipDayOk(h)) return { day: h, exact: true };
+  var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  var a = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
+  if (a && _tipDayOk(a)) return { day: a, exact: false };
+  return _tipDecDayExact(r) ? { day: String(r.decDay), exact: false } : null;
+}
+function tipDecDayStamp(list, name, self, byReq) {
+  var now = Date.now(), d0 = _tipHstDay(now), d = d0, tm = _tipHstDay(now + 86400000), cap = _tipHstDay(now + TIP_DEC_DAY_AHEAD * 86400000);
+  var up = function (x) { if (x && x > d && x <= cap && _tipDayOk(x)) d = x; };
+  if (byReq) { var st = _tipReqT(self); if (st) up(_tipHstDay(st)); }
+  (list || []).forEach(function (r) {
+    if (r === self || !_tipDecided(r)) return;
+    var sn = _tipDecSeen(r);
+    if (sn && sn.day > ((r.name === name || sn.exact) ? d0 : tm)) up(sn.day);
+    /* 同じ人の決定の日（守りで後ろへ寄せた decDay も）より前にしない＝その人の決定の日は前へ戻らない（Codex 04ce8a4・82e7954 の P2：
+       10/22 の申請を 10/19 の端末で承認して decDay＝10/22、続けて同じ人の古い申請を承認すると 10/19 になり、10/21 の配分が変わった）。
+       ほかの人には寄せた日を使わない（独立レビュー 9c08984 P2-1 のまま） */
+    if (r.name === name) up(_tipDecDay(r));
+  });
+  return d;
+}
+/* 決める前の確かめ（端末の時計）。だれかの決定の日付か、決める申請の申請した日が、この端末の明日より先（TIP_DEC_CLOCK_DAYS 日まで。
+   それより先はこわれた日）なら、いちばん先のもの（{day, name, req}）を返す。サーバーの時刻は使えない（app_state.updated_at も端末が書く）ので、
+   決める人に端末の日付を見てもらう（独立レビュー 0a35425 P2(b)：31 日より遅れた端末の決定が、何も出さずに 10/16 からの配分を変えた） */
+function tipDecClockAhead(list, self, name) {   /* name：引き上げのときの人（承認では self の人） */
+  var now = Date.now(), tm = _tipHstDay(now + 86400000), lim = _tipHstDay(now + TIP_DEC_CLOCK_DAYS * 86400000), e = null;
+  var nm = (self && self.name) || name || '';
+  var see = function (x, r, req) { if (x && x > tm && x <= lim && _tipDayOk(x) && (!e || x > e.day)) e = { day: x, name: (r && r.name) || '', req: !!req }; };
+  var st = _tipReqT(self); if (st) see(_tipHstDay(st), self, true);
+  (list || []).forEach(function (r) {
+    if (r === self || !_tipDecided(r)) return;
+    var sn = _tipDecSeen(r); if (sn) see(sn.day, r, false);
+    if (nm && r.name === nm) see(_tipDecDay(r), r, false);   /* 同じ人の決定の日が先なら、その日から効くことを確かめる（tipDecDayStamp と同じ） */
+  });
+  return e;
+}
+/* 確かめの文（独立レビュー 19eb415 P3-2・P3-6：どの記録か・どうすればよいかを出す。日付はアプリのほかの所と同じ YYYY/MM/DD）。raise：引き上げ */
+function tipDecClockMsg(ah, day, raise) {
+  var f = function (x) { return String(x || '').replace(/-/g, '/'); };
+  var today = f(_tipHstDay(Date.now())), at = f(ah && ah.day), from = f(day), who = (ah && ah.name) || '';
+  var ja = (ah && ah.req) ? (who + ' さんの申請（' + at + ' の日付）') : (who + ' さんの Tip Rate の決定（' + at + ' の日付）');
+  var en = (ah && ah.req) ? ('a request from ' + who + ' dated ' + at) : ('a Tip Rate decision for ' + who + ' dated ' + at);
+  var req = !!(ah && ah.req);   /* 申請した端末の日付が進んでいる（独立レビュー 9c08984 P3-2） */
+  return t('この端末の今日の日付は ' + today + ' ですが、' + ja + 'があります。\n'
+      + '・この端末の日付が違うときは［キャンセル］を押し、端末の日付と時刻を直してから、もう一度押してください。\n'
+      + (req ? '・この端末の日付が正しいときは、申請した端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます（今日から効かせるには［キャンセル］を押し、日付の正しい端末で申請し直してもらってください）。\n'
+             : '・この端末の日付が正しいときは、ほかの端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます。\n')
+      + (raise ? '引き上げますか？' : '承認しますか？'),
+    'This device says today is ' + today + ', but there is ' + en + '.\n'
+      + '• If this device\'s date is wrong, press Cancel, fix the date and time, and try again.\n'
+      + (req ? '• If it is right, the clock of the device that sent the request is ahead. If you go on, the tip split uses this from ' + from + ' (to have it count from today, press Cancel and ask for the request to be sent again from a device with the right date).\n'
+             : '• If it is right, another device\'s clock is ahead. If you go on, the tip split uses this from ' + from + '.\n')
+      + (raise ? 'Raise the Tip Rate?' : 'Approve?'));
+}
+/* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
+function tipRateOn(emp, dateISO, list) {
+  if (typeof emp === 'string') { var _nm = emp; emp = getEmployees().find(function (e) { return e.name === _nm; }); }
+  if (!emp) return 100;
+  if (emp.store === 'F03' || emp.store === 'F03-G') return 100;   // Waikiki(FSP/WGS)は80/90/100制度から除外（effectiveTipRate と同じ）
+  if (emp.role !== 'crew' && emp.role !== 'sl') return 100;
+  var day = String(dateISO || '');
+  var fw = firstWorkDate(emp);
+  if (fw) { var tm = new Date(fw); tm.setMonth(tm.getMonth() + 3); if (day >= isoOf(tm)) return 100; }   // その日に初回勤務から 3 か月
+  var src = Array.isArray(list) ? list : (ls('tip_requests', []) || []);
+  /* その日までに決めた承認のうち、決めた時刻のいちばん新しいもの（v1091 と同じ選び方。並びの時刻は前の記録すべてで数える＝独立レビュー dc96c7e P3-5） */
+  var ap = _tipLatestApproved(emp.name, src, function (r) { var d = _tipDecDay(r); return !d || d <= day; });
+  if (ap) { var rr = Number(ap.rate); if (isFinite(rr) && rr > 0) return rr; }
+  if (!fw) return (emp.coef != null ? Math.round(emp.coef * 100) : 100);   // 初回勤務日も勤務開始日も無い人：Tip Rate の画面と同じく従業員マスターの率
+  return 80;
+}
 /* チップ配分計算（Tip Sheetロジック）
    - Store Manager以上(ceo/gm/office/am)は対象外
    - Store Leader(sl)は50%別枠を時間按分で受取＋一般配分にも参加
-   - 残りを全スタッフ(sl含む)で「hours × 評価係数」按分
+   - 残りを全スタッフ(sl含む)で「hours × 重み」按分。重みは v1092 から、TIP_RATE_WEIGHT_START の日からはその日の Tip Rate、それより前は評価係数
    - Lunch/Dinner別 */
 function calcTipDistribution(storeId, date) {
   var tip = tipForDay(storeId, date);
@@ -6174,13 +6293,28 @@ function calcTipDistribution(storeId, date) {
   // 対象スタッフ: その店のsl/crew（manager以上除外）
   function inStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
   var staff = emps.filter(e=>inStore(e) && isTipEligibleRole(e) && e.status!=='退職' && !isTipExcludedTitle(e.title)); /* v630: g2(Crew Leader)も対象 */
+  /* v1092: 重み（その日の Tip Rate か、開始日より前は評価係数）と No Tip の印は、1 人 1 回だけ求める（ランチ・ディナーで同じ） */
+  /* Waikiki（F03・F03-G）のチップは、だれでも勤務時間で均等（80/90/100 制度の外。応援の人も同じ＝独立レビュー dc96c7e P2-1） */
+  var byRate = tipWeightByRate(date), tipReqs = ls('tip_requests', []) || [], _wt = [];
+  var wkk = (storeId==='F03' || storeId==='F03-G');
+  function weightOf(e) {
+    for (var i = 0; i < _wt.length; i++) if (_wt[i].e === e) return _wt[i].o;   /* 1 人（記録）1 回。同じ名前の別の記録は別に（P3-4） */
+    var o;
+    if (byRate) { var rt = wkk ? 100 : tipRateOn(e, date, tipReqs); o = { coef: rt / 100, rate: rt, by: 'rate' }; }
+    else { var c = (e.coef!=null?e.coef:1); o = { coef: c, rate: null, by: 'coef' }; }
+    o.noTip = (typeof effectiveTipRate==='function' && effectiveTipRate(e.name, tipReqs)===0);
+    _wt.push({ e: e, o: o });
+    return o;
+  }
 
   function distSlot(slot, tipTotal) { // slot='lunch'|'dinner'
     var rows = staff.map(e=>{
       var h = labor && labor[e.name] ? (labor[e.name][slot]||0) : 0;
+      if (!(h>0)) return { hours:0 };
       var excluded = isTipExcluded(storeId, date, e.name, slot);
-      return { name:e.name, role:e.role, coef:(e.coef!=null?e.coef:1), hours:h,
-        pt:h*(e.coef!=null?e.coef:1), total:0, excluded:excluded, noTip:(typeof effectiveTipRate==='function'&&effectiveTipRate(e.name)===0) };
+      var w = weightOf(e);
+      return { name:e.name, role:e.role, coef:w.coef, rate:w.rate, by:w.by, hours:h,
+        pt:h*w.coef, total:0, excluded:excluded, noTip:w.noTip };
     }).filter(r=>r.hours>0);
     if (!rows.length || tipTotal<=0) return rows;
     // 対象外の人を除いて按分（外した分は残りに自動再配分）。除外者はtotal=0で行は残す（表示用）
@@ -6193,7 +6327,7 @@ function calcTipDistribution(storeId, date) {
   var dinnerRows = distSlot('dinner', tip.dinnerTotal);
   // 統合（名前単位でlunch+dinner合算）
   var byName = {};
-  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,lunchExcl:false,dinnerExcl:false,lunchNoTip:false,dinnerNoTip:false,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name][slot+'Excl']=r.excluded; byName[r.name][slot+'NoTip']=r.noTip; byName[r.name].total+=r.total; }); }
+  function merge(rows, slot){ rows.forEach(r=>{ if(!byName[r.name]) byName[r.name]={name:r.name,role:r.role,coef:r.coef,rate:r.rate,by:r.by,lunch:0,dinner:0,lunchHours:0,dinnerHours:0,lunchExcl:false,dinnerExcl:false,lunchNoTip:false,dinnerNoTip:false,total:0}; byName[r.name][slot]=r.total; byName[r.name][slot+'Hours']=r.hours; byName[r.name][slot+'Excl']=r.excluded; byName[r.name][slot+'NoTip']=r.noTip; byName[r.name].total+=r.total; }); }
   merge(lunchRows,'lunch'); merge(dinnerRows,'dinner');
   var list = Object.values(byName).sort((a,b)=>b.total-a.total);
   var distSum = list.reduce((a,r)=>a+r.total,0);
@@ -6225,7 +6359,7 @@ function calcTipDistribution(storeId, date) {
       });
     }
   }catch(e){}
-  return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched };
+  return { tip, list, distSum, hasLabor: !!labor, leaderSplit, unmatched:_unmatched, weightBy: byRate ? 'rate' : 'coef' };
 }
 
 /* 半月精算: Store Leaderの日次取り分合計の50%をプール→SL以外の半月総労働時間で再分配
@@ -35183,7 +35317,23 @@ function tipPeriodMatrix(storeId, info){
     if(!unmatched[u.name]) unmatched[u.name]={ name:u.name, days:0, reason:u.reason };
     unmatched[u.name].days++;
   }); });
-  return { dists:dists, names:names, unmatched:Object.values(unmatched) };
+  return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists) };
+}
+/* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。評価係数で配分した日・No Tip の日は入れない */
+function tipPeriodRates(dists){
+  var rates={};
+  (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
+    if(r.by!=='rate' || r.lunchNoTip || r.dinnerNoTip || r.rate==null) return;
+    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;   /* 両方とも除外した日は入れない */
+    var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==r.rate) a.push(r.rate);
+  }); });
+  return rates;
+}
+/* 表の名前の横・CSV の Tip Rate 列：この期間に配分に使った率（80%→90%）。無ければ今の Tip Rate（今までどおり） */
+function tipPeriodRateLabel(rates, nm){
+  var a=rates && rates[nm];
+  if(a && a.length) return a.join('→')+'%';
+  try{ return (typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ return ''; }
 }
 function exportTipPeriodCsv(){
   var storeId = (curStore==='ALL'||curStore==='OFFICE')?STORES[0].id:curStore;
@@ -35197,7 +35347,7 @@ function exportTipPeriodCsv(){
      ①〜④・配分合計の行は従業員行ではないので空欄。 */
   var _rcCsv={};
   var _rateLbl=function(nm){
-    if(!(nm in _rcCsv)){ try{ _rcCsv[nm]=(typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ _rcCsv[nm]=''; } }
+    if(!(nm in _rcCsv)) _rcCsv[nm]=tipPeriodRateLabel(M.rates, nm);   /* v1092: この期間の配分に使った率（無ければ今の率） */
     return _rcCsv[nm];
   };
   // ヘッダ
@@ -35398,10 +35548,11 @@ function renderTipPeriodMatrix(storeId, store, info){
     return _rateCache[nm];
   }
   function _rateBadge(nm){
-    var rt=_rateOf(nm); if(rt==null) return '';
+    var used=M.rates && M.rates[nm];   /* v1092: この期間の配分に使った率（80%→90%）。無ければ今の Tip Rate */
+    var rt=(used && used.length) ? used[used.length-1] : _rateOf(nm); if(rt==null) return '';
     var rc=(typeof tipRateColor==='function')?tipRateColor(rt):'var(--muted)';
-    var lb=(rt===0)?'No Tip':(rt+'%');
-    return ' <span title="Tip Rate" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
+    var lb=(used && used.length) ? (used.join('→')+'%') : ((rt===0)?'No Tip':(rt+'%'));
+    return ' <span title="'+((used && used.length)?t('この期間の配分に使った Tip Rate','Tip Rate used for this period'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
   }
   // 従業員ごと
   M.names.forEach(function(nm){
@@ -35618,7 +35769,7 @@ function openTipDayDetail(storeId, date) {
       }
       var anyExcl = r.lunchExcl || r.dinnerExcl;
       html += `<tr${anyExcl?' style="background:rgba(229,72,77,0.06)"':''}>
-        <td>${r.name}${r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:''}${(r.lunchNoTip||r.dinnerNoTip)?' <span class="tag tag-gray" style="font-size:9px">No Tip</span>':''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Partly excl':'一部除外')+'</span>':''}</td>
+        <td>${r.name}${r.by==='rate'?(r.rate!==100?` <span style="font-size:9px;color:var(--muted)">${r.rate}%</span>`:''):(r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:'')}${(r.lunchNoTip||r.dinnerNoTip)?' <span class="tag tag-gray" style="font-size:9px">No Tip</span>':''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Partly excl':'一部除外')+'</span>':''}</td>
         ${slotCell('lunch')}
         <td style="text-align:right">${r.lunchNoTip?'<span style="color:var(--muted);font-size:10px">No Tip</span>':r.lunchExcl?'<span style="color:var(--red);font-size:10px">'+(curLang==='en'?'Excluded':'除外')+'</span>':((r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—')}</td>
         ${slotCell('dinner')}
@@ -35647,18 +35798,22 @@ function renderTipPeriodStaff(storeId, store, info) {
     return `<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-users" style="font-size:28px"></i><div style="margin-top:8px">${t('この期間の勤怠データがありません。','No labor data for this period.')}<br>${t('日別タブで各日の勤怠を取得してください。','Fetch each day\'s labor in the Daily tab.')}</div></div>`;
   }
   // スタッフ別の勤務日数を集計
-  var workdays={};
+  var workdays={}, _sdists=[];
   info.dates.forEach(date=>{
     var dist=calcTipDistribution(storeId,date);
+    _sdists.push({date:date, dist:dist});
     dist.list.forEach(r=>{ if(((r.lunchHours||0)+(r.dinnerHours||0))>0) workdays[r.name]=(workdays[r.name]||0)+1; });
   });
+  var _used=tipPeriodRates(_sdists);   /* v1092: この期間の配分に使った率 */
   var html = `<div class="card"><div class="card-title"><i class="ti ti-users"></i>${t('スタッフ別','By staff')} ${info.label}</div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> ${t('「精算前」は日次配分の合計、「SL再分配」はStore Leaderの50%プールからの受取/拠出、「最終Tip」が支給額です。','"Pre-settle" = sum of daily distribution; "SL redist" = receipt/contribution from the Store Leader 50% pool; "Final Tip" = payout.')}</div>
     <div style="overflow-x:auto"><table class="inv-table" style="width:100%;font-size:11px;min-width:440px"><thead><tr>
       <th>${t('スタッフ','Staff')}</th><th style="text-align:center">${t('日数','Days')}</th><th style="text-align:right">${t('精算前','Pre-settle')}</th><th style="text-align:right">${t('SL再分配','SL redist')}</th><th style="text-align:center">Rate</th><th style="text-align:right">${t('最終Tip','Final Tip')}</th></tr></thead><tbody>`;
   settle.rows.forEach(r=>{
-    var rate = effectiveTipRate(r.name);
+    var _u = _used[r.name];
+    var rate = (_u && _u.length) ? _u[_u.length-1] : effectiveTipRate(r.name);
     var rateTag = rate===0?'<span class="tag tag-red" style="font-size:9px">NoTip</span>':rate>=100?'<span class="tag tag-green" style="font-size:9px">100%</span>':rate>=90?'<span class="tag tag-blue" style="font-size:9px">90%</span>':'<span class="tag tag-yellow" style="font-size:9px">80%</span>';
+    if (_u && _u.length>1) rateTag = '<span class="tag tag-gray" style="font-size:9px">'+_u.join('→')+'%</span>';
     var adj = r.isSL
       ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span>`
       : (r.redistrib>0 ? `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span>` : '<span style="color:var(--muted)">—</span>');
@@ -35691,9 +35846,11 @@ function confirmTip(storeId, force) {
     }
   }
   var settle = calcHalfMonthSettlement(storeId, info.anyDate);
-  var rows = settle.rows.map(r=>({name:r.name, hours:r.hours, rate:effectiveTipRate(r.name), final:r.final, isSL:r.isSL}));
+  var _used = tipPeriodRates(tipPeriodMatrix(storeId, info).dists);   /* v1092: 配分に使った率を確定の記録に残す */
+  var rows = settle.rows.map(r=>({name:r.name, hours:r.hours, rate:effectiveTipRate(r.name), rates:(_used[r.name]||[]), final:r.final, isSL:r.isSL}));
   var data = {
     status:'確定済み', period:info.label, range:info.rangeLabel, from:info.from, to:info.to,
+    weight: tipWeightByRate(info.from) ? 'rate' : 'coef',
     by:(ROLE_CONFIG[curRole]||{}).name||curRole, at:nowJP(),
     rows, staffCount:rows.length, totalFinal:rows.reduce((a,r)=>a+r.final,0),
     forced:!!force, forceReason: force||'',
@@ -36359,11 +36516,11 @@ function renderTipDaily(storeId, store, date) {
   } else {
     html += `<div class="card"><div class="card-title"><i class="ti ti-users"></i>スタッフ別チップ配分</div>
       <table class="inv-table" style="width:100%;font-size:12px"><thead><tr>
-        <th>従業員</th><th>係数</th><th>L時間</th><th>D時間</th><th>L配分</th><th>D配分</th><th>合計</th></tr></thead><tbody>`;
+        <th>従業員</th><th>${dist.weightBy==='rate'?'Tip Rate':'係数'}</th><th>L時間</th><th>D時間</th><th>L配分</th><th>D配分</th><th>合計</th></tr></thead><tbody>`;
     dist.list.forEach(r=>{
       html += `<tr>
         <td>${r.name}<div style="font-size:9px;color:var(--muted)">${r.role==='sl'?'Leader':'Crew'}</div></td>
-        <td style="text-align:center">${r.coef}</td>
+        <td style="text-align:center">${(r.lunchNoTip||r.dinnerNoTip)?'No Tip':(r.by==='rate'?r.rate+'%':r.coef)}</td>
         <td style="text-align:right;color:var(--muted)">${r.lunchHours?r.lunchHours.toFixed(2):'—'}</td>
         <td style="text-align:right;color:var(--muted)">${r.dinnerHours?r.dinnerHours.toFixed(2):'—'}</td>
         <td style="text-align:right">$${r.lunch.toFixed(2)}</td>
@@ -36377,7 +36534,9 @@ function renderTipDaily(storeId, store, date) {
       </tfoot></table>`;
     if (Math.abs(dist.distSum-tip.total)<0.5) html += `<div class="alert alert-success" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-circle-check"></i>配分合計とチップ総額が一致しています（ミスなし）</div>`;
     else html += `<div class="alert alert-warning" style="padding:7px 10px;margin-top:8px;font-size:12px"><i class="ti ti-alert-triangle"></i>差額があります。勤怠やキャッシュチップを確認してください。</div>`;
-    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">※ チップ総額を pt（時間×評価係数）で全員按分。Store Manager以上・Officeは対象外。Lunch/Dinner別に計算。</div>`;
+    html += `<div style="font-size:11px;color:var(--muted);margin-top:8px">${dist.weightBy==='rate'
+      ? '※ チップ総額を pt（時間×その日の Tip Rate）で全員按分。Tip Rate は Tip Rate の画面の承認（承認した日から）と、初回勤務から 3 か月の 100%。Store Manager以上・Officeは対象外。Lunch/Dinner別に計算。'
+      : '※ チップ総額を pt（時間×評価係数）で全員按分（'+TIP_RATE_WEIGHT_START.replace(/-/g,'/')+' より前の日）。Store Manager以上・Officeは対象外。Lunch/Dinner別に計算。'}</div>`;
     html += '</div>';
   }
   return html;
@@ -38289,7 +38448,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1091';
+const APP_VERSION = '1092';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50637,7 +50796,7 @@ function openEmpModal(empId) {
       <select class="form-select" id="e-coef">
         ${[['1','100%'],['0.9','90%'],['0.8','80%']].map(o=>`<option value="${o[0]}"${(e.coef!=null?e.coef:1)==parseFloat(o[0])?' selected':''}>${o[1]}（係数${o[0]}）</option>`).join('')}
       </select>
-      <div style="font-size:11px;color:var(--muted);margin-top:4px">チップ配分はこの係数で重み付けされます（評価に連動）。</div>
+      <div style="font-size:11px;color:var(--muted);margin-top:4px">${'チップ配分の重みは、'+TIP_RATE_WEIGHT_START.replace(/-/g,'/')+' からは Tip Rate（Tip Rate の画面の承認・初回勤務から 3 か月の 100%）です。この欄は、初回勤務日も勤務開始日も無く承認も無い人の Tip Rate と、それより前の日の配分に使います。'}</div>
     </div>
     <div class="form-group"><label class="form-label">シフト条件</label>
       <div class="form-row">
@@ -80733,13 +80892,14 @@ var TIP_LIVE_LIKE='spl\\_tip\\_requests\\_';
 var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false, at:0, pend:false, rtOk:false, keys:[], gen:0 };
 /* 時刻の無い記録（v1090 以前の端末で決めたもの）は、並びでその前にある決定のいちばん新しい時刻とみなす（並びのあと＝新しい、のまま）。
    独立レビュー 10/17（ae5c541）の P1：v1091 の端末で 90% に上げたあと v1090 の端末で 100% に上げると、v1091 の端末は 90% のままだった。 */
-function _tipLatestApproved(name, list){
+function _tipLatestApproved(name, list, ok){   /* ok：候補にする承認（v1092：その日までに決めたもの）。並びの時刻はすべての記録で数える */
   var best=null, bestT=-Infinity, floor=0;
   (Array.isArray(list) ? list : (ls('tip_requests',[])||[])).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r), eff=t>0 ? t : floor;
     if(t>floor) floor=t;
     if(r.status!=='承認') return;
+    if(typeof ok==='function' && !ok(r)) return;
     if(eff>=bestT){ best=r; bestT=eff; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
   });
   return best;
@@ -81653,6 +81813,12 @@ async function approveTip(id, status) {
        その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
     var _dec = (typeof tipDecStamp==='function') ? tipDecStamp(requests, r.name) : Date.now();   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
+    var _day = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name, r, status==='承認') : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
+    /* v1092: 明日より先の日付の決定があれば、決める前に端末の日付を確かめてもらう（Codex 2ad1047・独立レビュー 0a35425） */
+    if (status==='承認' && typeof tipDecClockAhead==='function') {
+      var _ah = tipDecClockAhead(requests, r);
+      if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _day))) return;
+    }
     if (status==='承認' && _before!=null) {
       _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec }) : x; }));
       if (_after < _before && typeof confirm==='function'
@@ -81663,6 +81829,8 @@ async function approveTip(id, status) {
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
     r.decAt = _dec;
+    r.decDay = _day;
+    r.decHst = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined;   /* v1092: 決めた端末のその日のハワイの日付（ほかの決定の手がかり） */
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81716,7 +81884,10 @@ async function applyTipRaise(){
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec});
+  var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
+  var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
+  if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
