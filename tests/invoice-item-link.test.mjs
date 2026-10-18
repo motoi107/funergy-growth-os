@@ -92,7 +92,10 @@ async function setup() {
     insert into invoice_vendor_rules(vendor_key,display_name,aliases,food_kind,auto_post) values
      ('v1','VendorA','{"VENDOR A INC."}','food',true),('v2','VendorB','{}','food',false),('v3','Supply Co','{}','nonfood',false);`);
   await pg.exec('set role service_role');
-  const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+  const hooks = {};
+  const db = { async rpc(name, p) {
+    if (hooks[name]) { const h = hooks[name]; delete hooks[name]; await h(); }   // once: another operation just before this call
+    const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const drive = new FakeDrive();
   drive.folder('R6', 'LaLa', 'INV'); drive.folder('U6', '00_Upload', 'R6');
   const fixtures = new Map();
@@ -125,8 +128,11 @@ async function setup() {
     for (const tag of Object.keys(F)) D[tag] = (await q(`select d.* from invoice_docs d join invoice_files f on f.id=d.file_id where f.drive_file_id=$1`, [F[tag]]))[0];
     return D;
   };
-  return { pg, db, api, q, read };
+  return { pg, db, api, q, read, hooks };
 }
+// The vendor's links in use as invoice_link_apply works them out (ids and versions)
+const fpOf = async (E, vk) => (await E.q(`select encode(sha256(convert_to(coalesce(string_agg(m.id::text || ':' || m.version, ',' order by m.id::text collate "C"), ''), 'UTF8')), 'hex') fp
+  from invoice_item_maps m where m.vendor_key=$1 and m.retired_at is null`, [vk]))[0].fp;
 
 const linesOf = (E, docId) => E.q(`select * from invoice_lines where doc_id=$1 order by line_no`, [docId]);
 const docOf = async (E, id) => (await E.q(`select * from invoice_docs where id=$1`, [id]))[0];
@@ -377,7 +383,15 @@ test('紐づけ: invoice_link_apply only moves the link and its reasons; a line 
   assert.ok(l.reasons.includes('line_math') && l.map_id === m.id && l2.map_id === m.id, JSON.stringify(l.reasons));
   const read = (await E.db.rpc('invoice_link_lines', { actor: U.office })).find(x => x.id === l.id);
   const base = { line_id: l.id, from_map: m.id, unit_price: read.unit_price, purchase_unit: read.purchase_unit, map_id: m.id, ingredient_code: '10003', count_unit: null,
-    count_per_purchase: null, base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null, reasons: l.reasons };
+    count_per_purchase: null, base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null, reasons: l.reasons, maps_fp: await fpOf(E, 'v1') };
+  // the function's own fingerprint is the database's (the same ids and versions)
+  const crypto2 = await import('node:crypto');
+  const mine = crypto2.createHash('sha256').update((await E.q(`select id::text, version from invoice_item_maps where vendor_key='v1' and retired_at is null`))
+    .map(x => x.id + ':' + x.version).sort().join(',')).digest('hex');
+  assert.equal(mine, base.maps_fp);
+  // links changed since the update was worked out (another fingerprint): passed over
+  let x0 = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, map_id: null, ingredient_code: null, reasons: [...l.reasons.filter(c => !MAP_REASONS.includes(c)), 'unmapped'], maps_fp: 'x' }] });
+  assert.deepEqual([x0.lines, x0.skipped], [0, 1]);
   const read2 = (await E.db.rpc('invoice_link_lines', { actor: U.office })).find(x => x.id === l2.id);
   const off2 = { ...base, line_id: l2.id, unit_price: read2.unit_price, purchase_unit: read2.purchase_unit, map_id: null, ingredient_code: null,
     reasons: [...l2.reasons.filter(c => !MAP_REASONS.includes(c)), 'unmapped'] };
@@ -402,7 +416,7 @@ test('紐づけ: invoice_link_apply only moves the link and its reasons; a line 
   x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, ingredient_code: '50067' }] });
   assert.deepEqual([x.lines, x.skipped], [0, 1]);
   await E.q(`update invoice_item_maps set retired_at=now() where id=$1`, [m.id]);
-  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [base] });
+  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, maps_fp: await fpOf(E, 'v1') }] });   // worked out with the links as they are now
   assert.deepEqual([x.lines, x.skipped], [0, 1]);
   await E.q(`update invoice_item_maps set retired_at=null where id=$1`, [m.id]);
   await E.q(`update invoice_docs set status='superseded' where id=$1`, [A['E-1'].id]);
@@ -680,7 +694,7 @@ test('紐づけ: an invoice left on a merged vendor (a closed month) is never cl
   assert.deepEqual((await prices(E, '10003')).map(h => h.status), ['active']);
   // and the database passes over such a line whatever it is sent
   const read = (await E.db.rpc('invoice_link_lines', { actor: U.office })).find(x => x.id === l.id);
-  const x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ line_id: l.id, from_map: l.map_id, unit_price: read.unit_price, purchase_unit: read.purchase_unit,
+  const x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ line_id: l.id, from_map: l.map_id, unit_price: read.unit_price, purchase_unit: read.purchase_unit, maps_fp: await fpOf(E, 'v2'),
     map_id: null, ingredient_code: null, count_unit: null, count_per_purchase: null, base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null,
     reasons: [...l.reasons.filter(c => !MAP_REASONS.includes(c)), 'unmapped'] }] });
   assert.deepEqual([x.lines, x.skipped], [0, 1]);
@@ -723,6 +737,55 @@ test('紐づけ: a posted line\'s price row stays when only the reasons change; 
   assert.deepEqual([kl.ingredient_code, kl.reasons.includes('unit_unverified')], ['50067', true]);
   assert.deepEqual(await prices(E, '50067'), []);
   assert.equal((await E.api('tok-office', { action: 'link_data' })).body.waiting, 0, 'settled');
+  await E.pg.close();
+});
+
+// Codex P2 on PR #77: an older そろえる/戻す, worked out before another person's link change and applied after it, wrote over the newer
+// state (a price per piece back to the old conversion; a link linked again lost its code and its price). Made with the real handler and
+// SQL: the other operation runs just before the older one's invoice_link_apply. The older one passes over those lines; そろえる then
+// finds nothing to do.
+test('紐づけ: an older そろえる or 戻す applied after a newer link change never writes over it (Codex P2 on PR #77)', async () => {
+  const E = await setup();
+  const A = await E.read([['R-1', '9951', '2026-10-02', [AVO]]]);
+  let r = await E.api('tok-office', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '07777', ingredient_code: '10003' }] });
+  const m = r.body.maps[0];
+  const mapNow = async () => (await E.q(`select * from invoice_item_maps where id=$1`, [m.id]))[0];
+  const active = async () => (await prices(E, '10003')).filter(h => h.status === 'active');
+  // 1) accounting sets 6 a case; A's そろえる works out 6 a case; meanwhile B sets 48 a case and brings the lines along; then A's apply
+  let cur = await mapNow();
+  assert.equal((await E.api('tok-office', { action: 'map_save', map: { id: cur.id, version: cur.version, ingredient_code: '10003', count_unit: 'EA', count_per_purchase: '6',
+    verified: true, auto_post: false, note: null } })).status, 200);
+  E.hooks.invoice_link_apply = async () => {
+    const c = await mapNow();
+    const b1 = await E.api('tok-office', { action: 'map_save', map: { id: c.id, version: c.version, ingredient_code: '10003', count_unit: 'EA', count_per_purchase: '48',
+      verified: true, auto_post: false, note: null } });
+    assert.equal(b1.status, 200, JSON.stringify(b1.body));
+    const b2 = await E.api('tok-office', { action: 'link_sync' });
+    assert.deepEqual([b2.status, b2.body.sync.lines], [200, 1], JSON.stringify(b2.body));
+  };
+  r = await E.api('tok-office', { action: 'link_sync' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.sync.lines, r.body.sync.skipped], [0, 1], 'the older one is passed over');
+  let [l] = await linesOf(E, A['R-1'].id);
+  assert.equal(Number(l.count_per_purchase), 48);
+  let act = await active();
+  assert.deepEqual([act.length, Number(act[0].price_per_count).toFixed(4), Number(act[0].conversion.count_per_purchase)], [1, '0.6250', 48]);
+  assert.equal((await E.api('tok-office', { action: 'link_data' })).body.waiting, 0);
+  // 2) a Head Chef takes the link back; before the lines follow, an AM links the same item again (the same row) and brings them along
+  cur = await mapNow();
+  E.hooks.invoice_link_apply = async () => {
+    const b = await E.api('tok-am', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '07777', ingredient_code: '10003' }] });
+    assert.deepEqual([b.status, b.body.maps[0].id], [200, m.id], JSON.stringify(b.body));
+  };
+  const und = await E.api('tok-office', { action: 'link_undo', maps: [{ id: cur.id, version: cur.version }] });
+  assert.equal(und.status, 200, JSON.stringify(und.body));
+  assert.deepEqual([und.body.sync.lines, und.body.sync.voided], [0, 0], 'the older undo is passed over');
+  cur = await mapNow();
+  [l] = await linesOf(E, A['R-1'].id);
+  assert.deepEqual([cur.retired_at, l.map_id, l.ingredient_code], [null, m.id, '10003']);
+  act = await active();
+  assert.equal(act.length, 1, 'the price under the link linked again is in use');
+  assert.equal((await E.api('tok-office', { action: 'link_data' })).body.waiting, 0);
   await E.pg.close();
 });
 

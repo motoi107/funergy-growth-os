@@ -2302,6 +2302,7 @@ function createHandler(deps) {
     };
   }
   const mergedKeys = (vendors) => new Set((vendors || []).filter((v) => v.merged_into).map((v) => v.vendor_key));
+  const mapsFp = (maps, vk) => sha256Hex(new TextEncoder().encode((maps || []).filter((m) => m.vendor_key === vk && !m.retired_at).map((m) => m.id + ":" + m.version).sort().join(",")));
   async function linkSync(actor, vendorKeys) {
     const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
     if (vendorKeys && !vendorKeys.length) return out;
@@ -2313,6 +2314,12 @@ function createHandler(deps) {
       if (merged.has(l.vendor_key)) continue;
       const u = relink(l, ctx.maps);
       if (u) updates.push(u);
+    }
+    const fps = /* @__PURE__ */ new Map(), byLine = new Map(got.lines.map((l) => [l.id, l.vendor_key]));
+    for (const u of updates) {
+      const vk = byLine.get(u.line_id);
+      if (!fps.has(vk)) fps.set(vk, await mapsFp(ctx.maps, vk));
+      u.maps_fp = fps.get(vk);
     }
     for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
       const r = await db.rpc("invoice_link_apply", { actor, updates: updates.slice(i, i + APPLY_CHUNK) });

@@ -3320,16 +3320,18 @@ end $$;
 -- ---------------------------------------------------------------- 6) the lines follow the links
 -- p.updates: [{ line_id, from_map, unit_price, purchase_unit, map_id, ingredient_code, count_unit, count_per_purchase, base_unit,
 --   base_per_purchase, price_per_count, price_per_base, reasons }], 1000 at most, as the function worked them out with the links in use
--- (invoice/link.mjs: the intake's own mapping step). A line changed since it was read (its link, unit price, purchase unit or any
--- other reason) is passed over, never fails the others: the next action or そろえる does it. Only the link and the reasons about it
--- change. The line's price per purchase unit is its unit price when it has a
+-- (invoice/link.mjs: the intake's own mapping step), and maps_fp: the vendor's links in use as the function read them (their ids and
+-- versions). Under the lock of the mapping table, a line whose vendor's links changed since (linked again, taken back, a conversion
+-- changed: Codex P2 on PR #77), or that changed since it was read (its link, unit price, purchase unit or any other reason), or whose
+-- invoice is being changed now, is passed over, never fails the others: the next action or そろえる does it with the links as they are.
+-- Only the link and the reasons about it change. The line's price per purchase unit is its unit price when it has a
 -- link. A posted line's active price history row is voided and a new one written when the line is clean (invoice_price_insert).
 -- No amount, version, posting, reconciliation or QuickBooks row of an invoice changes.
 create function public.invoice_link_apply(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; rl text; u jsonb; l public.invoice_lines; d public.invoice_docs; mp public.invoice_item_maps;
  map_codes text[] := array['unmapped','map_ambiguous','map_unverified','mode_review_item','spec_changed','unit_mismatch','unit_unverified','no_price_ref','price_jump'];
- v_new_map uuid; v_new_code text; v_same boolean; n int := 0; v_prices int := 0; v_skipped int := 0; v_voided int := 0; v_docs jsonb := '{}';
+ v_new_map uuid; v_new_code text; v_same boolean; v_fps jsonb := '{}'; v_fp text; n int := 0; v_prices int := 0; v_skipped int := 0; v_voided int := 0; v_docs jsonb := '{}';
  v_months text[] := '{}'; v_doc uuid;
  -- the line reasons that keep a line from giving a price (the same list as invoice_price_insert)
  no_price text[] := array['catch_weight','line_math','zero_price','negative_line','line_value_missing','line_qty_price_missing','line_amount_missing',
@@ -3339,22 +3341,34 @@ begin
  rl := public.invoice_link_role(actor);
  if rl is null then raise exception 'forbidden'; end if;
  if jsonb_typeof(p->'updates') is distinct from 'array' or jsonb_array_length(p->'updates') > 1000 then raise exception 'bad_value'; end if;
- -- invoices locked in one order (the invoice, then its line), as posting does
+ -- the lock of the mapping table first (nothing else is held yet): no link changes until this is done
+ perform pg_advisory_xact_lock(hashtext('invoice_vendor_rules'));
+ -- invoices locked in one order (the invoice, then its line); an invoice someone is changing now is passed over (never waited for while
+ -- this holds the lock of the mapping table)
  for u in select e.value from jsonb_array_elements(p->'updates') e
    left join public.invoice_lines il on il.id = nullif(e.value->>'line_id','')::uuid
    order by il.doc_id, il.line_no loop
   select doc_id into v_doc from public.invoice_lines where id=nullif(u->>'line_id','')::uuid;
   if v_doc is null then v_skipped := v_skipped + 1; continue; end if;
-  select * into d from public.invoice_docs where id=v_doc for update;
+  d := null;
+  select * into d from public.invoice_docs where id=v_doc for update skip locked;
+  if d.id is null then v_skipped := v_skipped + 1; continue; end if;
   select * into l from public.invoice_lines where id=(u->>'line_id')::uuid for update;
   if jsonb_typeof(u->'reasons') is distinct from 'array' then raise exception 'bad_value'; end if;
   -- an invoice left on a vendor merged into another (a closed month's, or one kept apart) is not linked here: its vendor's links moved
-  if d.status not in ('review','posted') or d.doc_type not in ('invoice','credit_memo') or d.posting_kind <> 'purchase'
+  if d.status not in ('review','posted') or d.doc_type not in ('invoice','credit_memo') or d.posting_kind <> 'purchase' or d.vendor_key is null
      or exists(select 1 from public.invoice_vendor_rules v where v.vendor_key=d.vendor_key and v.merged_into is not null)
      or l.map_id is distinct from nullif(u->>'from_map','')::uuid
      or l.unit_price::text is distinct from (u->>'unit_price') or l.purchase_unit is distinct from (u->>'purchase_unit') then
    v_skipped := v_skipped + 1; continue;
   end if;
+  -- the vendor's links in use are the ones the function worked the update out with
+  if not (v_fps ? d.vendor_key) then
+   select encode(sha256(convert_to(coalesce(string_agg(m.id::text || ':' || m.version, ',' order by m.id::text collate "C"), ''), 'UTF8')), 'hex') into v_fp
+   from public.invoice_item_maps m where m.vendor_key=d.vendor_key and m.retired_at is null;
+   v_fps := v_fps || jsonb_build_object(d.vendor_key, v_fp);
+  end if;
+  if (v_fps->>d.vendor_key) is distinct from (u->>'maps_fp') then v_skipped := v_skipped + 1; continue; end if;
   -- only the reasons about the link change: a line whose other reasons changed meanwhile (a correction) is passed over
   if (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(l.reasons) c where not (c = any(map_codes)))
      is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) then

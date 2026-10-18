@@ -872,6 +872,9 @@ export function createHandler(deps) {
   // The lines of these vendors (null: all) follow the links in use (relink works the whole state out again, so a line left behind is
   // put right too). In chunks (one transaction each); a line changed meanwhile is passed over (the next action or そろえる does it).
   const mergedKeys = vendors => new Set((vendors || []).filter(v => v.merged_into).map(v => v.vendor_key));
+  // The same as invoice_link_apply works out: the vendor's links in use, "id:version" in id order, joined with commas, as sha-256 hex.
+  const mapsFp = (maps, vk) => sha256Hex(new TextEncoder().encode((maps || []).filter(m => m.vendor_key === vk && !m.retired_at)
+    .map(m => m.id + ':' + m.version).sort().join(',')));
   async function linkSync(actor, vendorKeys) {
     const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
     if (vendorKeys && !vendorKeys.length) return out;
@@ -880,6 +883,14 @@ export function createHandler(deps) {
     out.truncated = got.truncated;
     const updates = [], merged = mergedKeys(ctx.vendors);
     for (const l of got.lines) { if (merged.has(l.vendor_key)) continue; const u = relink(l, ctx.maps); if (u) updates.push(u); }
+    // the vendor's links in use as read here (ids and versions): the database passes over a line whose vendor's links changed since,
+    // so an older そろえる/戻す never writes over a newer link (Codex P2 on PR #77)
+    const fps = new Map(), byLine = new Map(got.lines.map(l => [l.id, l.vendor_key]));
+    for (const u of updates) {
+      const vk = byLine.get(u.line_id);
+      if (!fps.has(vk)) fps.set(vk, await mapsFp(ctx.maps, vk));
+      u.maps_fp = fps.get(vk);
+    }
     for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
       const r = await db.rpc('invoice_link_apply', { actor, updates: updates.slice(i, i + APPLY_CHUNK) });
       out.lines += r.lines || 0; out.prices += r.prices || 0; out.voided += r.voided || 0; out.skipped += r.skipped || 0;
