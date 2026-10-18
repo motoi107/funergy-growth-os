@@ -6191,11 +6191,14 @@ function _tipDecDay(r) {
    あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り）。
    ・ほかの決定の日は配分と同じ _tipDecDay（decDay → 無ければ approvedDate。Codex 2ad1047 の P2：前は decDay だけを見たので、
      v1091 以前の端末の承認（approvedDate だけ）があると、時計の遅れた端末の決定が過ぎた日から効いた）。
-   ・その人の決定はいつも数える。ほかの人の決定は、ハワイの日付（decDay）なら今日より先、端末の日付（approvedDate）なら明日より先のときだけ数える
+   ・手がかりは、ほかの決定を「決めた端末のその日の日付」（_tipDecSeen：decHst＝v1092 の決めた端末のハワイの日付 → 無ければ approvedDate）。
+     決めた日 decDay は守りのために後ろへ寄せることがあるので手がかりにしない（独立レビュー 9c08984 P2-1：スマホの時計が進んだ申請で
+     後ろへ寄せた decDay が、ほかの全員の決定を黙って遅らせた）。
+   ・その人の決定は今日より先なら数える。ほかの人の決定は、decHst なら今日より先、approvedDate なら明日より先のときだけ数える
      （配分は人どうしの割合なので、ほかの人の決定が過ぎた日から効いてもその人の額が変わる＝独立レビュー 0a35425 P2(a)。approvedDate の明日までは
-     日本の端末の日付（1 日先）なので数えない。decDay の明日は時計のずれ＝日付の変わり目の小さなずれも守る：独立レビュー 19eb415 P3-1）。
-   ・決める申請そのものの申請した時刻（id＝'tip'＋時刻）のハワイの日より前にもしない（独立レビュー 19eb415 P2-1：ほかに先の日付の決定が無いと、
-     時計の遅れた端末の承認が何も出さずに過ぎた日から効いた）。
+     日本の端末の日付（1 日先）なので数えない。decHst の明日は時計のずれ＝日付の変わり目の小さなずれも守る：独立レビュー 19eb415 P3-1）。
+   ・承認では、決める申請そのものの申請した時刻（id＝'tip'＋時刻）のハワイの日より前にもしない（独立レビュー 19eb415 P2-1：ほかに先の日付の
+     決定が無いと、時計の遅れた端末の承認が何も出さずに過ぎた日から効いた）。却下では使わない（配分を変えない）。
    ・信じるのは、この端末の今日から TIP_DEC_DAY_AHEAD 日先まで（独立レビュー acb707e P2：こわれた日（2099 年など）があると、
      そのあとの決定がずっと配分に効かなかった）。この幅の中なら時計の遅れを守り、時計の進んだ端末の日があると、あとの決定はその日まで待つ。
    ・決めた人には、明日より先の日付の決定があるとき、決める前に確かめる（tipDecClockAhead・tipDecClockMsg）。
@@ -6204,14 +6207,23 @@ var TIP_DEC_DAY_AHEAD = 31, TIP_DEC_CLOCK_DAYS = 400;
 function _tipDayOk(x) { var t = Date.parse(x + 'T00:00:00Z'); return isFinite(t) && new Date(t).toISOString().slice(0, 10) === x; }
 function _tipDecided(r) { return !!r && (r.status === '承認' || r.status === '却下'); }
 function _tipReqT(r) { var m = /^tip(\d{12,14})$/.exec(String((r && r.id) || '')); return m ? Number(m[1]) : 0; }   /* 申請した時刻（申請した端末の時計）。無ければ 0 */
-function tipDecDayStamp(list, name, self) {
+/* ほかの決定を決めた端末の、その日の日付（手がかり）。{day, exact}：exact＝ハワイの日付 decHst（v1092）。無ければ approvedDate、それも無ければ decDay（exact でない） */
+function _tipDecSeen(r) {
+  var h = String((r && r.decHst) || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(h) && _tipDayOk(h)) return { day: h, exact: true };
+  var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  var a = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
+  if (a && _tipDayOk(a)) return { day: a, exact: false };
+  return _tipDecDayExact(r) ? { day: String(r.decDay), exact: false } : null;
+}
+function tipDecDayStamp(list, name, self, byReq) {
   var now = Date.now(), d0 = _tipHstDay(now), d = d0, tm = _tipHstDay(now + 86400000), cap = _tipHstDay(now + TIP_DEC_DAY_AHEAD * 86400000);
   var up = function (x) { if (x && x > d && x <= cap && _tipDayOk(x)) d = x; };
-  var st = _tipReqT(self); if (st) up(_tipHstDay(st));
+  if (byReq) { var st = _tipReqT(self); if (st) up(_tipHstDay(st)); }
   (list || []).forEach(function (r) {
     if (r === self || !_tipDecided(r)) return;
-    var x = _tipDecDay(r);
-    if (x && (r.name === name || x > (_tipDecDayExact(r) ? d0 : tm))) up(x);
+    var sn = _tipDecSeen(r);
+    if (sn && sn.day > ((r.name === name || sn.exact) ? d0 : tm)) up(sn.day);
   });
   return d;
 }
@@ -6222,7 +6234,7 @@ function tipDecClockAhead(list, self) {
   var now = Date.now(), tm = _tipHstDay(now + 86400000), lim = _tipHstDay(now + TIP_DEC_CLOCK_DAYS * 86400000), e = null;
   var see = function (x, r, req) { if (x && x > tm && x <= lim && _tipDayOk(x) && (!e || x > e.day)) e = { day: x, name: (r && r.name) || '', req: !!req }; };
   var st = _tipReqT(self); if (st) see(_tipHstDay(st), self, true);
-  (list || []).forEach(function (r) { if (r !== self && _tipDecided(r)) see(_tipDecDay(r), r, false); });
+  (list || []).forEach(function (r) { if (r !== self && _tipDecided(r)) { var sn = _tipDecSeen(r); if (sn) see(sn.day, r, false); } });
   return e;
 }
 /* 確かめの文（独立レビュー 19eb415 P3-2・P3-6：どの記録か・どうすればよいかを出す。日付はアプリのほかの所と同じ YYYY/MM/DD）。raise：引き上げ */
@@ -6231,13 +6243,16 @@ function tipDecClockMsg(ah, day, raise) {
   var today = f(_tipHstDay(Date.now())), at = f(ah && ah.day), from = f(day), who = (ah && ah.name) || '';
   var ja = (ah && ah.req) ? (who + ' さんの申請（' + at + ' の日付）') : (who + ' さんの Tip Rate の決定（' + at + ' の日付）');
   var en = (ah && ah.req) ? ('a request from ' + who + ' dated ' + at) : ('a Tip Rate decision for ' + who + ' dated ' + at);
+  var req = !!(ah && ah.req);   /* 申請した端末の日付が進んでいる（独立レビュー 9c08984 P3-2） */
   return t('この端末の今日の日付は ' + today + ' ですが、' + ja + 'があります。\n'
       + '・この端末の日付が違うときは［キャンセル］を押し、端末の日付と時刻を直してから、もう一度押してください。\n'
-      + '・この端末の日付が正しいときは、ほかの端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます。\n'
+      + (req ? '・この端末の日付が正しいときは、申請した端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます（今日から効かせるには［キャンセル］を押し、日付の正しい端末で申請し直してもらってください）。\n'
+             : '・この端末の日付が正しいときは、ほかの端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます。\n')
       + (raise ? '引き上げますか？' : '承認しますか？'),
     'This device says today is ' + today + ', but there is ' + en + '.\n'
       + '• If this device\'s date is wrong, press Cancel, fix the date and time, and try again.\n'
-      + '• If it is right, another device\'s clock is ahead. If you go on, the tip split uses this from ' + from + '.\n'
+      + (req ? '• If it is right, the clock of the device that sent the request is ahead. If you go on, the tip split uses this from ' + from + ' (to have it count from today, press Cancel and ask for the request to be sent again from a device with the right date).\n'
+             : '• If it is right, another device\'s clock is ahead. If you go on, the tip split uses this from ' + from + '.\n')
       + (raise ? 'Raise the Tip Rate?' : 'Approve?'));
 }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
@@ -81789,7 +81804,7 @@ async function approveTip(id, status) {
        その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
     var _dec = (typeof tipDecStamp==='function') ? tipDecStamp(requests, r.name) : Date.now();   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
-    var _day = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name, r) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
+    var _day = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name, r, status==='承認') : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
     /* v1092: 明日より先の日付の決定があれば、決める前に端末の日付を確かめてもらう（Codex 2ad1047・独立レビュー 0a35425） */
     if (status==='承認' && typeof tipDecClockAhead==='function') {
       var _ah = tipDecClockAhead(requests, r);
@@ -81806,6 +81821,7 @@ async function approveTip(id, status) {
     r.approvedDate = todayJP();
     r.decAt = _dec;
     r.decDay = _day;
+    r.decHst = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined;   /* v1092: 決めた端末のその日のハワイの日付（ほかの決定の手がかり） */
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81862,7 +81878,7 @@ async function applyTipRaise(){
   var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd});
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
