@@ -1697,7 +1697,7 @@ function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err'
    あわせて、打ち切った（opts.signal）・使わなくなった（opts.alive() が false）読み込みは何も保存しない。
    独立レビュー（a775888）P3：勤怠（L）とクレジットTip調整額（A）は別の印（中身の空の行は勤怠の印を取らない）。
    ほかの書き込み（調整額の保存・Toast から直接の取得・調整額だけの読み込み）も同じ番号を使う */
-var _tipLaborSeq = 0, _tipLaborSaved = {};
+var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {};
 function _tipLaborNewer(storeId, date, part, seq) { return (_tipLaborSaved[storeId + '|' + date + '|' + part] || 0) > seq; }
 function _tipLaborMark(storeId, date, part, seq) { _tipLaborSaved[storeId + '|' + date + '|' + part] = (seq == null) ? ++_tipLaborSeq : seq; }
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
@@ -5735,6 +5735,21 @@ async function _tipLaborEnsureRow(guid, date){
     body: JSON.stringify([{ restaurant_guid: guid, business_date: date, data: [] }]) });
   return !!(res && res.ok);
 }
+/* v1090（独立レビュー 9752ac3 P3-1・Codex 9752ac3）：調整額は、その日の行の調整額の列だけを書き換える（UPDATE・PATCH）。
+   data の列の決まり（NOT NULL・既定値の有無）に左右されない（upsert は ON CONFLICT の前に NOT NULL を確かめるので、
+   data に既定値の無い表では、行があっても調整額だけの upsert が落ちた）。書き換えた行が無い（行を作れなかった）ときは false */
+async function _tipLaborPatchAdj(guid, date, cols){
+  try {
+    var res = await fetch(SUPABASE_URL+'/rest/v1/tip_labor?restaurant_guid=eq.'+encodeURIComponent(guid)+'&business_date=eq.'+encodeURIComponent(date)+'&select=business_date', {
+      method:'PATCH', headers: supaHeaders({ Prefer:'return=representation' }), body: JSON.stringify(cols) });
+    if (!res.ok) { var txt = await res.text();
+      _lastSupaError = { table:'tip_labor', status: res.status, body: txt, at: new Date().toISOString() }; return false; }
+    var a = await res.json();
+    if (!Array.isArray(a) || !a.length) {
+      _lastSupaError = { table:'tip_labor', status: 404, body: 'その日の行を作れませんでした（通信を確かめてもう一度） / could not create the row for this day', at: new Date().toISOString() }; return false; }
+    _lastSupaError = null; return true;
+  } catch(e){ _lastSupaError = { table:'tip_labor', status: 0, body: String(e && e.message || e), at: new Date().toISOString() }; return false; }
+}
 async function saveCreditTipAdj(storeId, date){
   if (!creditTipAdjCanEdit()) { showToast(t('この操作は経理・事務Crew・GM/CEOのみです','Only Accounting / Office Crew / GM / CEO can do this'),'warning'); return; }
   var store = STORES.find(function(s){return s.id===storeId;}) || {};
@@ -5751,19 +5766,19 @@ async function saveCreditTipAdj(storeId, date){
   var dChanged = (dA !== (+prev.dAdj||0)) || (dR !== (prev.dReason||''));
   var lBy = lChanged ? who : (prev.lBy||''); var lAt = lChanged ? nowIso : (prev.lAt||'');
   var dBy = dChanged ? who : (prev.dBy||''); var dAt = dChanged ? nowIso : (prev.dAt||'');
-  var row = { restaurant_guid: guid, business_date: date,
+  var row = {
     lunch_credit_tip_adj: lA, dinner_credit_tip_adj: dA,
     lunch_credit_tip_adj_reason: lR||null, dinner_credit_tip_adj_reason: dR||null,
     lunch_credit_tip_adj_by: lBy||null, dinner_credit_tip_adj_by: dBy||null,
     lunch_credit_tip_adj_at: lAt||null, dinner_credit_tip_adj_at: dAt||null };
-  /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される（data が NOT NULL の環境では insert が落ちる）。
+  /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される。v848 の SQL で data に既定値を付けた（HANDOFF_v847 の 4・本番の列は未確認）。
      v1090（独立レビュー a775888・Codex 6246409181・どちらも前からの経路）：前は「行があるか」を読んでから、無ければ data: [] を添えて
      merge-duplicates で送っていた。読めなかったとき・読んでから送るまでのあいだにほかの端末や取込が勤怠を入れたときに、
      その日の Toast の勤怠を空にした。→ 読まない。① 行が無いときだけ作る（ignore-duplicates＝ある行は変えない。data: []）
-     ② 調整額の列だけを merge-duplicates で送る（data は送らない）。どの順でほかの書き込みが入っても、勤怠を空にしない */
+     ② 調整額の列だけをその行に書く（UPDATE。data は送らない・data の列の決まりに左右されない）。どの順でほかの書き込みが入っても、勤怠を空にしない */
   try { await _tipLaborEnsureRow(guid, date); } catch(e){ /* 作れなくても調整額の保存は試みる（行が無ければ下で失敗が出る） */ }
   var ok = false;
-  try { ok = await supaUpsert('tip_labor', [row]); } catch(e){ ok = false; }
+  try { ok = await _tipLaborPatchAdj(guid, date, row); } catch(e){ ok = false; }
   if (!ok) {
     /* v845: 「DB書込エラー」だけでは次の一手が分からないので、中身を出す。 */
     var _d = (typeof supaErrorText==='function') ? supaErrorText() : '';
@@ -6299,6 +6314,8 @@ function showMyTipDetail(storeId, name) {
 
 async function fetchTipLabor(storeId, guid, date) {
   var ymd = date.replace(/-/g,'');
+  /* v1090（独立レビュー 9752ac3 P3-2）：この端末で、同じ店・同じ日の Toast からの取り込みのうち、あとから始めたものだけが書き終えたあとに入れ直す */
+  var _fgk = storeId + '|' + date, _fg = (_tipLaborFetchGen[_fgk] || 0) + 1; _tipLaborFetchGen[_fgk] = _fg;
   var res = await fetch(TOAST_SYNC_FN, {
     method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON},
     body: toastFnBody({ restaurantGuid:guid, mode:'tipLabor', businessDate:ymd }),
@@ -6323,7 +6340,7 @@ async function fetchTipLabor(storeId, guid, date) {
   var _dbSaved = false;
   try { _dbSaved = await supaUpsert('tip_labor', [{ restaurant_guid: guid, business_date: date, data: j.employees, fetched_at: new Date().toISOString() }]); } catch(e){ console.warn('fetchTipLabor tip_labor upsert', e); }
   /* v1090（独立レビュー 27793ab P3-1）：DB に書き終えるまでのあいだに始めた読み込みは、まだ古い DB の勤怠を読む。書き終えたら、もう一度入れて印を付ける */
-  if (_dbSaved) { setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
+  if (_dbSaved && _tipLaborFetchGen[_fgk] === _fg) { setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
   return { count: Object.keys(labor).length, dbSaved: _dbSaved };
 }
 

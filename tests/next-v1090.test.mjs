@@ -449,10 +449,10 @@ function laborApp() {
   const c = { console, AbortController, STORE: {}, FETCHES: [], TIMERS: [], NOW: 1000000, IGNORE_ABORT: false };
   vm.createContext(c);
   vm.runInContext(['_tipLaborFetchErr', 'fetchTipLaborFromDB', 'syncTipLaborFromDB', 'setTipLabor', 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
-    'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', '_tipLaborEnsureRow', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
+    'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', '_tipLaborEnsureRow', '_tipLaborPatchAdj', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
     Date.now = function(){ return NOW; };
     var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so
-    var _tipLaborSeq = 0, _tipLaborSaved = {};
+    var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {};
     var _mdLaborMarks = {}, _mdViewLabor = {}, _mdViewInflight = {}, MD_VIEW_LABOR_TIMEOUT_MS = 20000, _mdViewRedrawT = null;
     var MD_VIEW_LABOR_RETRY_MS = 60000, MD_VIEW_LABOR_EMPTY_RETRY_MS = 600000;
     var SUPABASE_URL = 'https://x', SUPABASE_ANON = 'a';
@@ -551,7 +551,7 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   vm.runInContext(`
     var STORES = [{ id: 'F01', toastGuid: 'g1' }], ROLE_CONFIG = { gm: { name: 'GM' } }, curRole = 'gm', curUserName = 'Moto', curPage = 'tip';
     var HOLD = false, HOLDS = [], TOAST_SYNC_FN = 'https://toast.example/fn'; function toastFnBody(x){ return JSON.stringify(x); }
-    var UPS = [], TABLE = {}, BEFORE = null, FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
+    var UPS = [], TABLE = {}, BEFORE = null, NOTNULL = false, ROWFAIL = false, PATCHFAIL = false, FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
     var document = { getElementById: function(id){ return id in FIELDS ? { value: FIELDS[id] } : null; } };
     function creditTipAdjCanEdit(){ return true; } function getCreditTipAdj(s, d){ return (getCreditTipAdjMap(s) || {})[d] || null; }
     function supaHeaders(x){ return Object.assign({ apikey: 'a' }, x || {}); }
@@ -562,11 +562,26 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
       }
       if (o && o.method === 'POST' && String(url).endsWith('/rest/v1/tip_labor')) {
         if (typeof BEFORE === 'function') { var b = BEFORE; BEFORE = null; b(o.headers.Prefer); }
+        if (ROWFAIL && /ignore-duplicates/.test(o.headers.Prefer)) return Promise.resolve({ ok: false, status: 503, text: async function(){ return 'down'; } });
+        var bad = null;
         JSON.parse(o.body).forEach(function(r){ var k = r.restaurant_guid + '|' + r.business_date;
           UPS.push({ prefer: o.headers.Prefer, row: JSON.parse(JSON.stringify(r)) });
+          if (NOTNULL && !('data' in r)) { bad = '23502'; return; }   // PostgreSQL checks NOT NULL on the proposed row before ON CONFLICT (no default)
           if (/ignore-duplicates/.test(o.headers.Prefer)) { if (!TABLE[k]) TABLE[k] = JSON.parse(JSON.stringify(r)); }
           else TABLE[k] = Object.assign(TABLE[k] || {}, JSON.parse(JSON.stringify(r))); });
+        if (bad) return Promise.resolve({ ok: false, status: 400, text: async function(){ return '{"code":"23502","message":"null value in column \\"data\\""}'; } });
         return Promise.resolve({ ok: true, text: async function(){ return ''; } });
+      }
+      if (o && o.method === 'PATCH' && String(url).indexOf('/rest/v1/tip_labor?') >= 0) {   // UPDATE … WHERE restaurant_guid = … AND business_date = …
+        if (typeof BEFORE === 'function') { var b2 = BEFORE; BEFORE = null; b2('PATCH'); }
+        if (PATCHFAIL) return Promise.resolve({ ok: false, status: 403, json: async function(){ return { code: '42501' }; }, text: async function(){ return '{"code":"42501","message":"row-level security"}'; } });
+        var q = {}; String(url).split('?')[1].split('&').forEach(function(x){ var i = x.indexOf('='); q[x.slice(0, i)] = decodeURIComponent(x.slice(i + 1)); });
+        q.get = function(n){ return q[n]; };   // (no URLSearchParams inside the vm)
+        var k2 = q.get('restaurant_guid').slice(3) + '|' + q.get('business_date').slice(3);
+        var body = JSON.parse(o.body); UPS.push({ prefer: 'PATCH', row: JSON.parse(JSON.stringify(body)) });
+        var hit2 = [];
+        if (TABLE[k2]) { Object.assign(TABLE[k2], body); hit2.push({ business_date: q.get('business_date').slice(3) }); }
+        return Promise.resolve({ ok: true, json: async function(){ return hit2; }, text: async function(){ return JSON.stringify(hit2); } });
       }
       var one = /business_date=gte\.([0-9-]+)&business_date=lte\.([0-9-]+)/.exec(String(url));   // a one-day read (an old save checked the row first): answered from the table at once
       if (one && one[1] === one[2]) { var hit = Object.keys(TABLE).filter(function(k){ return k.split('|')[1] === one[1]; }).map(function(k){ return TABLE[k]; });
@@ -574,7 +589,7 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
       return _fetchRead(url, o);
     };
     function showToast(){} function closeModalDirect(){} function renderPage(){} function t(ja){ return ja; }
-    function supaErrorText(){ return ''; } function supaLastError(){ return null; }`, c);
+    function supaErrorText(){ return _lastSupaError ? String(_lastSupaError.body || '') : ''; } function supaLastError(){ return _lastSupaError; }`, c);
   vm.runInContext(fnSrc('supaUpsert') + '\nvar _lastSupaError = null;', c);
   pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`); await flush();
   run(c, "TABLE['g1|2026-10-02'] = { restaurant_guid: 'g1', business_date: '2026-10-02', data: [{ name: 'Ken', lunchHours: 6 }] }");
@@ -586,7 +601,8 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   assert.equal(run(c, 'saved().adj'), 42, 'the saved adjustment stays');
   // the save never reads first and never sends labor with merge-duplicates
   assert.equal(c.UPS.filter(u => /merge-duplicates/.test(u.prefer) && 'data' in u.row).length, 0, 'labor is never sent with merge-duplicates');
-  // no row yet: the row is created with an empty labor list (the column may be NOT NULL), then the adjustment
+  assert.equal(c.UPS.filter(u => u.prefer === 'PATCH' && 'data' in u.row).length, 0, 'the adjustment write never has labor');
+  // no row yet: the row is created with an empty labor list (v848 gave the column a default; production is not checked), then the adjustment
   await run(c, "saveCreditTipAdj('F01','2026-10-04')");
   assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-04'].data")), []);
   assert.equal(run(c, "TABLE['g1|2026-10-04'].lunch_credit_tip_adj"), 42);
@@ -601,6 +617,34 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
     assert.equal(run(c, `TABLE['g1|${k}'].lunch_credit_tip_adj`), 42);
   }
   assert.doesNotMatch(fnSrc('saveCreditTipAdj'), /fetchTipLaborFromDB/, 'no read-then-write');
+  // independent review 9752ac3 P3-1 / Codex 9752ac3: a table whose labor column is NOT NULL with no default — saving works on an existing and a new day
+  // (an upsert of only the adjustment columns failed there, because PostgreSQL checks NOT NULL before ON CONFLICT)
+  run(c, 'NOTNULL = true');
+  run(c, "TABLE['g1|2026-10-08'] = { restaurant_guid: 'g1', business_date: '2026-10-08', data: [{ name: 'Ken', lunchHours: 5 }] }");
+  await run(c, "saveCreditTipAdj('F01','2026-10-08')");
+  assert.equal(run(c, "TABLE['g1|2026-10-08'].lunch_credit_tip_adj"), 42, 'existing day');
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-08'].data")), [{ name: 'Ken', lunchHours: 5 }]);
+  await run(c, "saveCreditTipAdj('F01','2026-10-09')");
+  assert.equal(run(c, "TABLE['g1|2026-10-09'].lunch_credit_tip_adj"), 42, 'new day');
+  assert.equal(run(c, "(getCreditTipAdjMap('F01') || {})['2026-10-09'].lAdj"), 42);
+  run(c, 'NOTNULL = false');
+  // the row step fails (network): an existing day is still saved; a day with no row says it could not save and keeps the device as it was
+  run(c, 'ROWFAIL = true');
+  run(c, "TABLE['g1|2026-10-10'] = { restaurant_guid: 'g1', business_date: '2026-10-10', data: [{ name: 'Ken', lunchHours: 4 }] }");
+  await run(c, "saveCreditTipAdj('F01','2026-10-10')");
+  assert.equal(run(c, "TABLE['g1|2026-10-10'].lunch_credit_tip_adj"), 42);
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-10'].data")), [{ name: 'Ken', lunchHours: 4 }]);
+  await run(c, "saveCreditTipAdj('F01','2026-10-11')");
+  assert.equal(run(c, "TABLE['g1|2026-10-11']"), undefined, 'no row made');
+  assert.equal(run(c, "(getCreditTipAdjMap('F01') || {})['2026-10-11']"), undefined, 'not kept on the device as saved');
+  assert.match(run(c, "supaErrorText()"), /could not create the row/);
+  run(c, 'ROWFAIL = false');
+  // the adjustment write is refused (RLS): the reason from the database is shown, nothing is kept as saved
+  run(c, 'PATCHFAIL = true');
+  await run(c, "saveCreditTipAdj('F01','2026-10-11')");
+  assert.match(run(c, "supaErrorText()"), /42501/);
+  assert.equal(run(c, "(getCreditTipAdjMap('F01') || {})['2026-10-11']"), undefined);
+  run(c, 'PATCHFAIL = false');
   // 27793ab P3-1: Toast labor fetched on this device is not put back by a DB read that started while the device was still writing it to the DB
   vm.runInContext(fnSrc('fetchTipLabor'), c);
   run(c, 'HOLD = true');
@@ -613,7 +657,85 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   assert.equal(run(c, "STORE['tip_labor_F01_2026-10-07'].Ken.lunch"), 8, 'after writing to the DB, the fetched labor is put back');
   assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-07'].data")), [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }]);
   assert.match(fnSrc('fetchTipLabor'), /setTipLabor\(storeId, date, labor\);\n  _tipLaborMark\(storeId, date, 'L'\);/);
+  // independent review 9752ac3 P3-2: two Toast fetches of the same day on this device; the DB keeps the later one, but its answer comes first.
+  // The earlier fetch's re-apply after its DB write must not put its older labor back over the later one
+  vm.runInContext(`var LATE = false, LATES = [], _fetchW = fetch;
+    fetch = function(url, o){
+      if (LATE && o && o.method === 'POST' && String(url).endsWith('/rest/v1/tip_labor')) { var p = _fetchW(url, o); return new Promise(function(res){ LATES.push(function(){ res(p); }); }); }
+      return _fetchW(url, o); };`, c);
+  run(c, 'LATE = true');
+  const t1 = run(c, "fetchTipLabor('F01', 'g1', '2026-10-12')"); await flush();
+  const i1 = c.FETCHES.length - 1;
+  const t2 = run(c, "fetchTipLabor('F01', 'g1', '2026-10-12')"); await flush();
+  const i2 = c.FETCHES.length - 1;
+  run(c, `FETCHES[${i1}].res({ ok: true, json: async function(){ return { employees: [{ name: 'Ken', lunchHours: 5, dinnerHours: 0 }] }; } })`); await flush();
+  run(c, `FETCHES[${i2}].res({ ok: true, json: async function(){ return { employees: [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }] }; } })`); await flush();
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-12'].data")), [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }], 'the DB has the later fetch');
+  run(c, 'LATES[1]()'); await t2;   // the later fetch's answer comes first
+  run(c, 'LATES[0]()'); await t1;
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-12'].Ken.lunch"), 8, 'the earlier fetch does not put its older labor back');
+  run(c, 'LATE = false');
   assert.match(fnSrc('syncCreditTipAdjFromDB'), /if\(_tipLaborNewer\(storeId, bd, 'A', _seq\)\) return;/);
+});
+
+test('①（Codex 9752ac3・独立レビュー 9752ac3 P3-1）: in real SQL (PGlite) the adjustment is saved whether the labor column is NOT NULL without a default, NOT NULL with a default, or nullable; labor stays', async () => {
+  const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
+  const ADJ = ['lunch_credit_tip_adj numeric', 'dinner_credit_tip_adj numeric', 'lunch_credit_tip_adj_reason text', 'dinner_credit_tip_adj_reason text',
+    'lunch_credit_tip_adj_by text', 'dinner_credit_tip_adj_by text', 'lunch_credit_tip_adj_at text', 'dinner_credit_tip_adj_at text'];
+  for (const dataCol of ['jsonb NOT NULL', "jsonb NOT NULL DEFAULT '[]'::jsonb", 'jsonb']) {
+    const db = new PGlite();
+    await db.exec(`create table tip_labor (restaurant_guid text not null, business_date date not null, data ${dataCol}, fetched_at text, ${ADJ.join(', ')}, primary key (restaurant_guid, business_date))`);
+    // PostgREST in SQL: POST + ignore-duplicates = INSERT … ON CONFLICT DO NOTHING; POST + merge-duplicates = INSERT … ON CONFLICT DO UPDATE (sent columns);
+    // PATCH ?a=eq.x&b=eq.y = UPDATE … WHERE … RETURNING
+    const sqlFetch = async (url, o) => {
+      const [path, qs] = String(url).split('?');
+      if (!path.endsWith('/rest/v1/tip_labor')) throw new Error('unexpected ' + url);
+      try {
+        if (o.method === 'POST') {
+          const rows = JSON.parse(o.body);
+          for (const r of rows) {
+            const cols = Object.keys(r), vals = cols.map(c => (c === 'data' ? JSON.stringify(r[c]) : r[c]));
+            const upd = cols.filter(c => c !== 'restaurant_guid' && c !== 'business_date').map(c => `${c} = excluded.${c}`).join(', ');
+            const tail = /ignore-duplicates/.test(o.headers.Prefer) ? 'on conflict (restaurant_guid, business_date) do nothing' : `on conflict (restaurant_guid, business_date) do update set ${upd}`;
+            await db.query(`insert into tip_labor (${cols.join(', ')}) values (${cols.map((_, i) => '$' + (i + 1)).join(', ')}) ${tail}`, vals);
+          }
+          return { ok: true, status: 201, text: async () => '' };
+        }
+        if (o.method === 'PATCH') {
+          const q = Object.fromEntries(qs.split('&').map(x => { const i = x.indexOf('='); return [x.slice(0, i), decodeURIComponent(x.slice(i + 1))]; }));
+          const body = JSON.parse(o.body), cols = Object.keys(body);
+          const res = await db.query(`update tip_labor set ${cols.map((c, i) => `${c} = $${i + 1}`).join(', ')} where restaurant_guid = $${cols.length + 1} and business_date = $${cols.length + 2} returning business_date`,
+            cols.map(c => body[c]).concat([q.restaurant_guid.slice(3), q.business_date.slice(3)]));
+          const out = res.rows.map(r => ({ business_date: String(r.business_date) }));
+          return { ok: true, status: 200, json: async () => out, text: async () => JSON.stringify(out) };
+        }
+      } catch (e) { return { ok: false, status: 400, text: async () => JSON.stringify({ code: e.code, message: e.message }), json: async () => ({ code: e.code }) }; }
+      throw new Error('unexpected method');
+    };
+    const c = { console, STORE: {}, TOASTS: [], sqlFetch };
+    vm.createContext(c);
+    vm.runInContext(['saveCreditTipAdj', '_tipLaborEnsureRow', '_tipLaborPatchAdj', 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey', '_tipLaborMark', '_tipLaborNewer', 'supaUpsert'].map(fnSrc).join('\n') + `
+      var _tipLaborSeq = 0, _tipLaborSaved = {}, _lastSupaError = null, SUPABASE_URL = 'https://x', curPage = 'tip';
+      var STORES = [{ id: 'F01', toastGuid: 'g1' }], ROLE_CONFIG = { gm: { name: 'GM' } }, curRole = 'gm', curUserName = 'Moto';
+      var FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
+      var document = { getElementById: function(id){ return id in FIELDS ? { value: FIELDS[id] } : null; } };
+      function fetch(u, o){ return sqlFetch(u, o); }
+      function supaHeaders(x){ return Object.assign({ apikey: 'a' }, x || {}); }
+      function creditTipAdjCanEdit(){ return true; } function getCreditTipAdj(s, d){ return (getCreditTipAdjMap(s) || {})[d] || null; }
+      function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
+      function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
+      function _lsRawStr(k){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.stringify(STORE[k]) : null; }
+      function showToast(m, k){ TOASTS.push([m, k]); } function closeModalDirect(){} function renderPage(){} function t(ja){ return ja; }
+      function supaErrorText(){ return _lastSupaError ? String(_lastSupaError.body || '') : ''; } function supaLastError(){ return _lastSupaError; }`, c);
+    await db.query(`insert into tip_labor (restaurant_guid, business_date, data) values ('g1', '2026-10-02', '[{"name":"Ken","lunchHours":6}]')`);
+    await run(c, "saveCreditTipAdj('F01','2026-10-02')");   // a day that has labor
+    await run(c, "saveCreditTipAdj('F01','2026-10-03')");   // a day with no row yet
+    const rows = (await db.query(`select business_date::text d, data, lunch_credit_tip_adj::float adj from tip_labor order by 1`)).rows;
+    assert.deepEqual(rows.map(r => [r.d, r.data, r.adj]), [['2026-10-02', [{ name: 'Ken', lunchHours: 6 }], 42], ['2026-10-03', [], 42]], dataCol);
+    assert.equal(c.TOASTS.filter(x => x[1] === 'danger').length, 0, dataCol + ': ' + JSON.stringify(c.TOASTS));
+    assert.equal(run(c, "(getCreditTipAdjMap('F01') || {})['2026-10-03'].lAdj"), 42);
+    await db.close();
+  }
 });
 
 test('B（独立レビュー P2-2）: tapping the notification switches the receipts screen back to the list, where the reimbursement card is', () => {
