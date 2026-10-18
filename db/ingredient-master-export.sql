@@ -1,5 +1,6 @@
 -- 食材マスターの全件と、足りない項目を見る（読むだけ・何も変えない）。
 -- 結果の 2 つの表を、Supabase の画面の「Download CSV」で保存して Claude に添付してください（リポジトリには入れません）。
+-- Supabase の画面は最後の結果（2 つ目）だけを出すので、1 つ目は ingredient-master-export-current.sql で流してください。
 --
 -- なぜ：今の食材マスターは 2 つある。
 --   ・今のマスター（表 ingredients・アプリの m_ingredients）：棚卸し・レシピの原価・食材移動が使う。数える単位（unit）・1 購入単位の内容量（qty）・価格・歩留
