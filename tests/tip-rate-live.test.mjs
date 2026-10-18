@@ -86,7 +86,7 @@ const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsR
   '_pushWithOutbox', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
   '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_srPending', 'mergeSkillReq', '_coversSkillReq',
   'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
-const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
+const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveGetJson', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
   'tipLiveAfterSave', 'tipLivePull', 'tipLiveRerender', 'tipLivePullSoon', 'tipLiveStart', 'tipLiveStop',
   'tipLiveAutoPage', 'tipLivePill', 'tipLiveApply', 'tipLiveFastPage', '_tipLiveRateSig', '_tipLiveTake', '_tipLiveSigKeys', 'tipLivePillFor', 'tipStampLegacy'];
 const NEW_VARS = ['TIP_LIVE_KEY', 'TIP_LIVE_LIKE', '_tipLive'];
@@ -494,6 +494,23 @@ test('review 2 P2-1: approving an older request counts even when undated (v1090)
   assert.equal(rate(A), 90, 'what the question said happens');
 });
 
+test('review v1092 e59f3f9 P1: rejecting an older request does not lift an undated (v1090) approval after it above a later raise', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  // a 100% request from before, then an 80% approval made on v1090 (no decision time), then a raise to 100% on v1091 (timed)
+  const LEG = [{ id: 'p', name: 'Crew A', rate: 100, status: '申請中' }, { id: 'l', name: 'Crew A', rate: 80, status: '承認', approvedDate: '2026/09/10' }];
+  seed(cloud, [A], LEG);
+  await raise(A, 'Crew A', 100);
+  assert.equal(rate(A), 100);
+  await run(A, "approveTip('p','却下')"); await settle(60);
+  assert.equal(rate(A), 100, 'the raise is still the newest approval (before: the undated 80% took the rejection time and won)');
+  const rows = JSON.parse(cloud.rows.get(KEY).value);
+  const t = Object.fromEntries(rows.map(r => [r.id, r.decAt]));
+  assert.ok(t.l > 0 && t.l < t.p, 'the older decision got a time before this rejection: ' + JSON.stringify(t));
+  const B = device(cloud); B.STORE.set(KEY, cloud.rows.get(KEY).value);
+  assert.equal(rate(B), 100, 'another device reads the same rate');
+  assert.equal(A.CONFIRMS.length, 0);
+});
+
 test('review 2 P3-3: the question and the message use the rate that really applies (3-month 100% etc.)', async () => {
   const cloud = makeCloud(); const A = device(cloud);
   const K = 'spl_tip_requests_Crew C';
@@ -617,6 +634,55 @@ test('review 2 P3-6 / P3-9: signal keys that could not be read are kept for the 
   assert.equal(cloud.log.length, n);
   assert.equal(run(B, '_tipLive.again'), false, 'no second read queued');
   run(B, '_tipLive.busy = false');
+});
+
+test('Codex P2 (#75 215a2e3): a read whose body never arrives does not stop Tip Rate updates (the time limit covers the body; the read is cut off)', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [A, B], OLD80);
+  B.AbortController = AbortController;
+  run(B, 'tipLiveStart(); TIP_LIVE_TIMEOUT_MS = 80');
+  await raise(A, 'Crew A', 90);
+  const f0 = cloud.fetch; let stall = null, aborted = 0, stalled = 0;
+  // the headers come (200) but the body never does; the read is cut off at the limit
+  cloud.fetch = async (u, o) => {
+    if (!(o && o.method === 'POST') && stall && stall.test(u)) {
+      stalled++; if (o && o.signal) o.signal.addEventListener('abort', () => { aborted++; });
+      return { ok: true, status: 200, json: () => new Promise(() => {}), text: () => new Promise(() => {}) };
+    }
+    return f0(u, o);
+  };
+  const within = (p, ms) => Promise.race([p, new Promise(res => setTimeout(() => res('hung'), ms))]);
+  // 1) the read of the changed rows stalls
+  stall = /key=like\./;
+  let r = await within(run(B, "tipLivePull('rt', [" + JSON.stringify(KEY) + "])"), 3000);
+  assert.notEqual(r, 'hung', 'the read ends at the time limit (before: it waited for the body for ever)');
+  assert.equal(r, false);
+  assert.equal(run(B, '_tipLive.busy'), false, 'not stuck as busy');
+  assert.equal(aborted, 1, 'the stalled read is cut off');
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), [KEY], 'the signal key is kept for the next read');
+  assert.equal(rate(B), 80);
+  // the network is back: the next Realtime signal reads it
+  stall = null;
+  B.RT['rt-tip-rate']({}); await settle(60);
+  assert.equal(rate(B), 90, 'Realtime reads again after the stall');
+  // 2) a by-key read stalls (the writer's clock is far behind, so the row is read by key): the rest waits for the next read, not 8 s each
+  await raise(A, 'Crew A', 100);
+  cloud.rows.get(KEY).updated_at = new Date(Date.now() - 600e3).toISOString();
+  const other = 'spl_tip_requests_Crew B';
+  cloud.rows.set(other, { value: JSON.stringify([{ id: 'tipB', name: 'Crew B', rate: 90, status: '承認', decAt: Date.now() }]), updated_at: new Date(Date.now() - 600e3).toISOString() });
+  stall = /key=eq\./;
+  stalled = 0;
+  r = await within(run(B, "tipLivePull('rt', [" + JSON.stringify(KEY) + ", " + JSON.stringify(other) + "])"), 3000);
+  assert.notEqual(r, 'hung');
+  assert.equal(run(B, '_tipLive.busy'), false);
+  assert.equal(stalled, 1, 'stops at the first stalled by-key read');
+  assert.deepEqual(plain(run(B, '_tipLive.keys')).sort(), [KEY, other].sort(), 'both keys are kept');
+  stall = null;
+  await run(B, "tipLivePull('poll')");
+  assert.equal(rate(B), 100); assert.equal(rate(B, 'Crew B'), 90);
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), []);
+  // a failed answer (503) or a broken body still counts as not read
+  assert.match(fnSrc('_tipLiveGetJson'), /if\(!res \|\| !res\.ok\) return '__bad';/);
 });
 
 test('wiring: started at login, stopped at logout, read when the Tip Rate screens open; staff requests also reach approvers', () => {

@@ -80767,6 +80767,20 @@ function _tipLiveTimeout(p, ms){
     .then(function(v){ clearTimeout(tm); return v; }, function(e){ clearTimeout(tm); throw e; });
 }
 function _tipLiveOn(){ return typeof SUPA_SYNC_ENABLED!=='undefined' && !!SUPA_SYNC_ENABLED; }
+/* 行を読む（本文まで）。時間の制限は本文を読み終えるまで（Codex 215a2e3 の P2：前はヘッダーが届くまでで、本文が届かないと取り直しが止まったまま
+   ＝ほかの端末の Tip Rate がずっと来なかった）。時間切れは '__timeout'・失敗の答えは '__bad'。時間切れの読み込みは打ち切る */
+async function _tipLiveGetJson(url){
+  var ac=(typeof AbortController==='function') ? new AbortController() : null;
+  var p=(async function(){
+    var res=await fetch(url, ac ? { headers: supaHeaders(), signal: ac.signal } : { headers: supaHeaders() });
+    if(!res || !res.ok) return '__bad';
+    return await res.json();
+  })();
+  p.catch(function(){});   /* 時間切れのあとの失敗は使わない */
+  var v=await _tipLiveTimeout(p, TIP_LIVE_TIMEOUT_MS);
+  if(v==='__timeout'){ try{ if(ac) ac.abort(); }catch(e){} }
+  return v;
+}
 /* その人の行だけをクラウドから読み直す（決める前）。true＝読めた・false＝読めなかった・null＝同期 OFF */
 async function tipPullPerson(name){
   if(!_tipLiveOn() || typeof pullOpKey!=='function') return null;
@@ -80832,21 +80846,18 @@ async function tipLivePull(why, keys){
   try{
     var from=new Date(Math.min(_tipLive.since||t0, t0)-TIP_LIVE_BACK_MS).toISOString();
     var url=SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=like.'+encodeURIComponent(TIP_LIVE_LIKE)+'*&updated_at=gte.'+encodeURIComponent(from);
-    var res=await _tipLiveTimeout(fetch(url, { headers: supaHeaders() }), TIP_LIVE_TIMEOUT_MS);
+    var rows=await _tipLiveGetJson(url);
     if(gone()) return false;
-    if(res==='__timeout' || !res || !res.ok){ keep(want); return false; }
-    var rows=await res.json(); if(gone()) return false;
-    if(!Array.isArray(rows)){ keep(want); return false; }
+    if(!Array.isArray(rows)){ keep(want); return false; }   /* 時間切れ・失敗の答え・形の違う答え */
     _tipLive.since=t0;
     rows.forEach(function(x){ if(x && typeof x.key==='string') seen[x.key]=1; _tipLiveTake(x, st); });
     /* 合図に書いてあったのに時刻で拾えなかった行（書いた端末の時計が 5 分より遅れている）は、キーで読む（1 回に 20 まで・残りと読めなかったものは次に） */
     var uq={}; want.forEach(function(k){ if(!seen[k]) uq[k]=1; });
     var ks=Object.keys(uq), later=ks.slice(20); ks=ks.slice(0,20);
     for(var i=0;i<ks.length;i++){
-      var r2=await _tipLiveTimeout(fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=eq.'+encodeURIComponent(ks[i]), { headers: supaHeaders() }), TIP_LIVE_TIMEOUT_MS);
+      var a2=await _tipLiveGetJson(SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=eq.'+encodeURIComponent(ks[i]));
       if(gone()) return false;
-      if(r2==='__timeout' || !r2 || !r2.ok){ later.push(ks[i]); continue; }
-      var a2=await r2.json(); if(gone()) return false;
+      if(a2==='__timeout'){ later=later.concat(ks.slice(i)); break; }   /* 時間切れのあとは待たずに、残りを次に読む（1 回の取り直しが長く止まらない） */
       if(Array.isArray(a2)) a2.forEach(function(x){ _tipLiveTake(x, st); }); else later.push(ks[i]);
     }
     if(later.length) keep(later);
@@ -81631,7 +81642,9 @@ async function approveTip(id, status) {
        下がるときは確かめる。変わらないときは知らせる（独立レビュー 6f75b67 P2-1・P3-3） */
     var _rl = function(v){ return v===0 ? 'No Tip' : (v+'%'); };
     var _before = (typeof effectiveTipRate==='function') ? effectiveTipRate(r.name) : null, _after = null;
-    if (status==='承認' && typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
+    /* 却下でも付ける（独立レビュー v1092 e59f3f9 の P1：前からある申請を却下すると、その申請に新しい時刻が付き、並びでそのあとにある時刻の無い前の承認が
+       その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
+    if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
     var _dec = (typeof tipDecStamp==='function') ? tipDecStamp(requests, r.name) : Date.now();   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
     if (status==='承認' && _before!=null) {
       _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec }) : x; }));
