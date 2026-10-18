@@ -6180,18 +6180,22 @@ function tipWeightByRate(dateISO) { return !!dateISO && String(dateISO) >= TIP_R
    決めた時刻 decAt は日付に使わない（Codex dc96c7e：tipStampLegacy が前の記録に並びから付けた時刻は本物の時刻と見分けられず、
    後日の承認で付いたとたんに、日付の分からない前の承認が過去の日から外れて、過去の日の配分が変わった） */
 function _tipHstDay(t) { var u = new Date(t - 10 * 3600 * 1000); return u.getUTCFullYear() + '-' + ('0' + (u.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + u.getUTCDate()).slice(-2); }
+function _tipDecDayExact(r) { var dd = String((r && r.decDay) || ''); return /^\d{4}-\d{2}-\d{2}$/.test(dd) && _tipDayOk(dd); }   /* v1092 のハワイの日付 decDay がある */
 function _tipDecDay(r) {
-  var dd = String((r && r.decDay) || '');
-  if (/^\d{4}-\d{2}-\d{2}$/.test(dd) && _tipDayOk(dd)) return dd;   /* ありえない日（10/99 など）なら approvedDate（独立レビュー 0a35425 P3-2） */
+  if (_tipDecDayExact(r)) return String(r.decDay);   /* ありえない日（10/99 など）なら approvedDate（独立レビュー 0a35425 P3-2） */
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
-  return m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
+  var a = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
+  return (a && _tipDayOk(a)) ? a : '';   /* ありえない approvedDate も日付の分からない記録と同じ（守りと同じに読む。独立レビュー 19eb415 P3-5） */
 }
 /* 決めるときに残す日（ハワイの日付）。ほかの決定の日よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で決めると前の日になり、
    あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り）。
    ・ほかの決定の日は配分と同じ _tipDecDay（decDay → 無ければ approvedDate。Codex 2ad1047 の P2：前は decDay だけを見たので、
      v1091 以前の端末の承認（approvedDate だけ）があると、時計の遅れた端末の決定が過ぎた日から効いた）。
-   ・その人の決定はいつも数える。ほかの人の決定は、この端末の明日より先（時計のずれのしるし）のときだけ数える（配分は人どうしの割合なので、
-     ほかの人の決定が過ぎた日から効いてもその人の額が変わる＝独立レビュー 0a35425 P2(a)。明日までは日本の端末の日付（1 日先）なので数えない）。
+   ・その人の決定はいつも数える。ほかの人の決定は、ハワイの日付（decDay）なら今日より先、端末の日付（approvedDate）なら明日より先のときだけ数える
+     （配分は人どうしの割合なので、ほかの人の決定が過ぎた日から効いてもその人の額が変わる＝独立レビュー 0a35425 P2(a)。approvedDate の明日までは
+     日本の端末の日付（1 日先）なので数えない。decDay の明日は時計のずれ＝日付の変わり目の小さなずれも守る：独立レビュー 19eb415 P3-1）。
+   ・決める申請そのものの申請した時刻（id＝'tip'＋時刻）のハワイの日より前にもしない（独立レビュー 19eb415 P2-1：ほかに先の日付の決定が無いと、
+     時計の遅れた端末の承認が何も出さずに過ぎた日から効いた）。
    ・信じるのは、この端末の今日から TIP_DEC_DAY_AHEAD 日先まで（独立レビュー acb707e P2：こわれた日（2099 年など）があると、
      そのあとの決定がずっと配分に効かなかった）。この幅の中なら時計の遅れを守り、時計の進んだ端末の日があると、あとの決定はその日まで待つ。
    ・決めた人には、明日より先の日付の決定があるとき、決める前に確かめる（tipDecClockAhead・tipDecClockMsg）。
@@ -6199,31 +6203,42 @@ function _tipDecDay(r) {
 var TIP_DEC_DAY_AHEAD = 31, TIP_DEC_CLOCK_DAYS = 400;
 function _tipDayOk(x) { var t = Date.parse(x + 'T00:00:00Z'); return isFinite(t) && new Date(t).toISOString().slice(0, 10) === x; }
 function _tipDecided(r) { return !!r && (r.status === '承認' || r.status === '却下'); }
+function _tipReqT(r) { var m = /^tip(\d{12,14})$/.exec(String((r && r.id) || '')); return m ? Number(m[1]) : 0; }   /* 申請した時刻（申請した端末の時計）。無ければ 0 */
 function tipDecDayStamp(list, name, self) {
-  var now = Date.now(), d = _tipHstDay(now), tm = _tipHstDay(now + 86400000), cap = _tipHstDay(now + TIP_DEC_DAY_AHEAD * 86400000);
+  var now = Date.now(), d0 = _tipHstDay(now), d = d0, tm = _tipHstDay(now + 86400000), cap = _tipHstDay(now + TIP_DEC_DAY_AHEAD * 86400000);
+  var up = function (x) { if (x && x > d && x <= cap && _tipDayOk(x)) d = x; };
+  var st = _tipReqT(self); if (st) up(_tipHstDay(st));
   (list || []).forEach(function (r) {
     if (r === self || !_tipDecided(r)) return;
     var x = _tipDecDay(r);
-    if (x && x > d && x <= cap && _tipDayOk(x) && (r.name === name || x > tm)) d = x;
+    if (x && (r.name === name || x > (_tipDecDayExact(r) ? d0 : tm))) up(x);
   });
   return d;
 }
-/* 決める前の確かめ（端末の時計）。だれかの決定の日付が、この端末の明日より先（TIP_DEC_CLOCK_DAYS 日まで。それより先はこわれた日）なら、
-   いちばん先の日を返す。サーバーの時刻は使えない（app_state.updated_at も端末が書く）ので、決める人に端末の日付を見てもらう
-   （独立レビュー 0a35425 P2(b)：31 日より遅れた端末の決定が、何も出さずに 10/16 からの配分を変えた） */
+/* 決める前の確かめ（端末の時計）。だれかの決定の日付か、決める申請の申請した日が、この端末の明日より先（TIP_DEC_CLOCK_DAYS 日まで。
+   それより先はこわれた日）なら、いちばん先のもの（{day, name, req}）を返す。サーバーの時刻は使えない（app_state.updated_at も端末が書く）ので、
+   決める人に端末の日付を見てもらう（独立レビュー 0a35425 P2(b)：31 日より遅れた端末の決定が、何も出さずに 10/16 からの配分を変えた） */
 function tipDecClockAhead(list, self) {
-  var now = Date.now(), tm = _tipHstDay(now + 86400000), lim = _tipHstDay(now + TIP_DEC_CLOCK_DAYS * 86400000), e = '';
-  (list || []).forEach(function (r) {
-    if (r === self || !_tipDecided(r)) return;
-    var x = _tipDecDay(r);
-    if (x && x > tm && x <= lim && x > e && _tipDayOk(x)) e = x;
-  });
+  var now = Date.now(), tm = _tipHstDay(now + 86400000), lim = _tipHstDay(now + TIP_DEC_CLOCK_DAYS * 86400000), e = null;
+  var see = function (x, r, req) { if (x && x > tm && x <= lim && _tipDayOk(x) && (!e || x > e.day)) e = { day: x, name: (r && r.name) || '', req: !!req }; };
+  var st = _tipReqT(self); if (st) see(_tipHstDay(st), self, true);
+  (list || []).forEach(function (r) { if (r !== self && _tipDecided(r)) see(_tipDecDay(r), r, false); });
   return e;
 }
-function tipDecClockMsg(ahead, day) {
-  var today = _tipHstDay(Date.now());
-  return t('この端末の今日の日付（'+today+'）より先の '+ahead+' の日付の Tip Rate の決定があります。この端末か、ほかの端末の日付・時刻が違っています。この端末の日付と時刻が正しいか確かめてください。\n決めると、チップの配分には '+day+' から効きます。決めますか？',
-           'There is a Tip Rate decision dated '+ahead+', after today on this device ('+today+'). The date or time on this device or another device is wrong. Please check that this device\'s date and time are right.\nIf you decide now, the tip split uses it from '+day+'. Decide?');
+/* 確かめの文（独立レビュー 19eb415 P3-2・P3-6：どの記録か・どうすればよいかを出す。日付はアプリのほかの所と同じ YYYY/MM/DD）。raise：引き上げ */
+function tipDecClockMsg(ah, day, raise) {
+  var f = function (x) { return String(x || '').replace(/-/g, '/'); };
+  var today = f(_tipHstDay(Date.now())), at = f(ah && ah.day), from = f(day), who = (ah && ah.name) || '';
+  var ja = (ah && ah.req) ? (who + ' さんの申請（' + at + ' の日付）') : (who + ' さんの Tip Rate の決定（' + at + ' の日付）');
+  var en = (ah && ah.req) ? ('a request from ' + who + ' dated ' + at) : ('a Tip Rate decision for ' + who + ' dated ' + at);
+  return t('この端末の今日の日付は ' + today + ' ですが、' + ja + 'があります。\n'
+      + '・この端末の日付が違うときは［キャンセル］を押し、端末の日付と時刻を直してから、もう一度押してください。\n'
+      + '・この端末の日付が正しいときは、ほかの端末の日付が進んでいます。続けると、チップの配分には ' + from + ' から効きます。\n'
+      + (raise ? '引き上げますか？' : '承認しますか？'),
+    'This device says today is ' + today + ', but there is ' + en + '.\n'
+      + '• If this device\'s date is wrong, press Cancel, fix the date and time, and try again.\n'
+      + '• If it is right, another device\'s clock is ahead. If you go on, the tip split uses this from ' + from + '.\n'
+      + (raise ? 'Raise the Tip Rate?' : 'Approve?'));
 }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
 function tipRateOn(emp, dateISO, list) {
@@ -81846,7 +81861,7 @@ async function applyTipRaise(){
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
   var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests) : '';   /* 明日より先の日付の決定があれば確かめる */
-  if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd))) return;
+  if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);

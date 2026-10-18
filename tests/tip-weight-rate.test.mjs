@@ -45,7 +45,7 @@ function app() {
   vm.runInContext(['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', 'tipRateOn', '_tipLatestApproved', '_tipDecT', 'firstWorkDate', 'isThreeMonths',
     'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit', 'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel',
     'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf', '_tipHstDay'].map(fnSrc).join('\n')
-    + '\n' + ['_tipDayOk'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
+    + '\n' + ['_tipDayOk', '_tipDecDayExact'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';
     var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
@@ -80,7 +80,7 @@ const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, msg + ': ' + a + '
 const optFn = n => { try { return fnSrc(n); } catch (e) { return ''; } };
 const AHEAD = (/var TIP_DEC_DAY_AHEAD = (\d+)/.exec(SRC) || [])[1], CLOCK = (/TIP_DEC_CLOCK_DAYS = (\d+);/.exec(SRC) || [])[1];
 function decideFns(extra = ['todayJP', 'fmtJP']) {
-  return ['approveTip', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp'].concat(extra).map(fnSrc).concat(['tipDecClockAhead', 'tipDecClockMsg', '_tipDecided'].map(optFn)).join('\n')
+  return ['approveTip', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp'].concat(extra).map(fnSrc).concat(['tipDecClockAhead', 'tipDecClockMsg', '_tipDecided', '_tipReqT'].map(optFn)).join('\n')
     + (AHEAD ? `\nvar TIP_DEC_DAY_AHEAD = ${AHEAD};` : '') + (CLOCK ? `\nvar TIP_DEC_CLOCK_DAYS = ${CLOCK};` : '');
 }
 
@@ -330,8 +330,8 @@ test('独立レビュー（e59f3f9）P1・P3: rejecting an old request changes n
   await run(c, "approveTip('s', '承認')");
   assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 's').decDay, '2026-10-24', 'not 2099, 11/25, 11/30 or a broken 10/99');
   assert.equal(clock().length, 1, 'asked once');
-  assert.match(clock()[0], /今日の日付（2026-10-24）より先の 2026-11-30 の日付/);
-  assert.match(clock()[0], /チップの配分には 2026-10-24 から効きます/);
+  assert.match(clock()[0], /この端末の今日の日付は 2026\/10\/24 ですが、A さんの Tip Rate の決定（2026\/11\/30 の日付）があります。/);
+  assert.match(clock()[0], /続けると、チップの配分には 2026\/10\/24 から効きます。\n承認しますか？$/);
   assert.doesNotMatch(clock()[0], /2099/);
   const m = Object.fromEntries(pay('2026-10-24'));
   assert.deepEqual([m.A, m.B], [95, 95], 'the approval counts from today');
@@ -341,7 +341,7 @@ test('独立レビュー（e59f3f9）P1・P3: rejecting an old request changes n
     { id: 'y', name: 'A', rate: 90, status: '申請中', date: '2026/10/24' }]);
   await run(c, "approveTip('y', '承認')");
   assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'y').decDay, '2026-11-24');
-  assert.match(clock().slice(-1)[0], /チップの配分には 2026-11-24 から効きます/);
+  assert.match(clock().slice(-1)[0], /チップの配分には 2026\/11\/24 から効きます/);
   // pressing Cancel decides nothing
   c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([{ id: 'z', name: 'A', rate: 100, status: '申請中', date: '2026/10/24' }]);
   const keep = JSON.stringify(c.STORE.tip_requests);
@@ -363,11 +363,11 @@ test('Codex（2ad1047）: an approval with only the old date (approvedDate, v109
   const c = app();
   vm.runInContext(decideFns(['fmtJP', 'applyTipRaise']) + `
     var curUserName = 'Moto', curPage = 'tip'; var ASKED = [], ANSWER = true; function confirm(m){ ASKED.push(m); return ANSWER; }
-    var NOW = 0, JPDAY = '', RAISE = '100';
+    var NOW = 0, JPDAY = '', RAISE = '100', LANG = 'ja'; function t(ja, en){ return LANG === 'en' ? en : ja; }
     Date.now = function(){ return NOW; }; function todayJP(){ return JPDAY; }   // the device's own date (a Japan device is a day ahead)
     var document = { getElementById: function(id){ return id === 'tipraise-name' ? { value: 'A' } : (id === 'tipraise-rate' ? { value: RAISE } : null); } };
     function closeModalDirect(){} function addNotif(){}`, c);
-  const clock = () => c.ASKED.filter(m => /端末の日付/.test(m));
+  const clock = () => c.ASKED.filter(m => /端末の日付|this device/.test(m));
   const hst = (y, m, d, h) => Date.UTC(y, m - 1, d, h + 10);
   c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-05-01' })];   // B: past 3 months → 100%
   c.STORE.tip_requests = [
@@ -378,21 +378,23 @@ test('Codex（2ad1047）: an approval with only the old date (approvedDate, v109
   for (const d of ['2026-10-20', '2026-10-23', '2026-10-25', '2026-10-26']) { c.LABOR['F01|' + d] = { A: { lunch: 5, dinner: 0 }, B: { lunch: 5, dinner: 0 } }; c.TIPS['F01|' + d] = { l: 180, d: 0 }; }
   const pay = d => Object.fromEntries(plain(run(c, `calcTipDistribution('F01', '${d}')`)).list.map(r => [r.name, +r.total.toFixed(2)]));
   assert.deepEqual(pay('2026-10-20'), { A: 80, B: 100 });
-  // Codex: a device whose clock reads 10/19 (it already has the 10/23 decision) approves the 90% request. It asks first; Cancel changes nothing
+  // Codex: a device whose clock reads 10/19 (it already has the 10/23 decision) approves the 90% request (OK on the check)
   c.NOW = hst(2026, 10, 19, 10); c.JPDAY = '2026/10/19';
-  const keep = JSON.stringify(c.STORE.tip_requests);
-  c.ANSWER = false;
-  await run(c, "approveTip('p', '承認')");
-  assert.equal(JSON.stringify(c.STORE.tip_requests), keep, 'Cancel: nothing changed');
-  assert.match(clock()[0], /この端末の今日の日付（2026-10-19）より先の 2026-10-23 の日付の Tip Rate の決定があります/);
-  assert.match(clock()[0], /チップの配分には 2026-10-23 から効きます/);
-  c.ANSWER = true;
   await run(c, "approveTip('p', '承認')");
   let st = plain(c.STORE.tip_requests);
-  assert.ok(st.find(r => r.id === 'p').decAt > st.find(r => r.id === 'n').decAt, 'the newer decision');
-  assert.equal(st.find(r => r.id === 'p').decDay, '2026-10-23', 'not 10/19 (the 10/23 approval has only approvedDate)');
   assert.deepEqual(pay('2026-10-20'), { A: 80, B: 100 }, 'the past day pays the same (before: $85.26 / $94.74)');
+  assert.equal(st.find(r => r.id === 'p').decDay, '2026-10-23', 'not 10/19 (the 10/23 approval has only approvedDate)');
+  assert.ok(st.find(r => r.id === 'p').decAt > st.find(r => r.id === 'n').decAt, 'the newer decision');
   assert.deepEqual(pay('2026-10-23'), { A: 85.26, B: 94.74 }, 'from 10/23 the newer decision (90%) counts');
+  assert.match(clock()[0], /^この端末の今日の日付は 2026\/10\/19 ですが、A さんの Tip Rate の決定（2026\/10\/23 の日付）があります。\n・この端末の日付が違うときは［キャンセル］を押し、端末の日付と時刻を直してから、もう一度押してください。\n・この端末の日付が正しいときは、ほかの端末の日付が進んでいます。続けると、チップの配分には 2026\/10\/23 から効きます。\n承認しますか？$/);
+  // Cancel on the check changes nothing
+  c.STORE.tip_requests = st.concat([{ id: 'p2', name: 'A', rate: 100, status: '申請中', date: '2026/10/18' }]);
+  const keep = JSON.stringify(c.STORE.tip_requests);
+  c.ANSWER = false;
+  await run(c, "approveTip('p2', '承認')");
+  assert.equal(JSON.stringify(c.STORE.tip_requests), keep, 'Cancel: nothing changed');
+  c.ANSWER = true;
+  c.STORE.tip_requests = st;
   // a Japan device (10/25 15:00 there = 10/24 20:00 in Hawaii): the record's own date (10/25) is not used; the day is Hawaii 10/24
   c.STORE.tip_requests = st.concat([{ id: 'q', name: 'A', rate: 80, status: '申請中', date: '2026/10/24' }]);
   c.NOW = hst(2026, 10, 24, 20); c.JPDAY = '2026/10/25'; c.ASKED.length = 0;
@@ -405,13 +407,14 @@ test('Codex（2ad1047）: an approval with only the old date (approvedDate, v109
   // a raise from a device whose clock reads 10/21, when a v1091 device approved 90% on 10/26 (approvedDate only): it asks, and the raise counts from 10/26
   c.STORE.tip_requests = st.concat([{ id: 'm', name: 'A', rate: 90, status: '承認', approvedDate: '2026/10/26', decAt: hst(2026, 10, 26, 9) }]);
   c.NOW = hst(2026, 10, 21, 9); c.JPDAY = '2026/10/21'; c.ASKED.length = 0;
-  c.ANSWER = false;
+  c.ANSWER = false; c.LANG = 'en';
   const keep2 = JSON.stringify(c.STORE.tip_requests);
   await run(c, 'applyTipRaise()');
   assert.equal(JSON.stringify(c.STORE.tip_requests), keep2, 'Cancel: nothing raised');
-  c.ANSWER = true;
+  assert.match(clock()[0], /^This device says today is 2026\/10\/21, but there is a Tip Rate decision for A dated 2026\/10\/26\.\n• If this device's date is wrong, press Cancel, fix the date and time, and try again\.\n• If it is right, another device's clock is ahead\. If you go on, the tip split uses this from 2026\/10\/26\.\nRaise the Tip Rate\?$/);
+  c.ANSWER = true; c.LANG = 'ja';
   await run(c, 'applyTipRaise()');
-  assert.match(clock()[1], /より先の 2026-10-26 の日付[\s\S]*チップの配分には 2026-10-26 から効きます/);
+  assert.match(clock()[1], /A さんの Tip Rate の決定（2026\/10\/26 の日付）[\s\S]*チップの配分には 2026\/10\/26 から効きます。\n引き上げますか？$/);
   st = plain(c.STORE.tip_requests);
   const raise = st.find(r => r.basis === 'manual');
   assert.ok(raise && raise.rate === 100 && raise.decAt > hst(2026, 10, 26, 9));
@@ -456,7 +459,7 @@ test('独立レビュー（0a35425）P2・P3-2: another person’s decision date
   c.NOW = hst(2026, 9, 13, 10); c.ANSWER = false; c.ASKED.length = 0;
   await run(c, "approveTip('a3', '承認')");
   assert.equal(JSON.stringify(c.STORE.tip_requests), keep);
-  assert.match(clock()[0], /今日の日付（2026-09-13）より先の 2026-10-25 の日付[\s\S]*チップの配分には 2026-09-13 から効きます/);
+  assert.match(clock()[0], /この端末の今日の日付は 2026\/09\/13 ですが、B さんの Tip Rate の決定（2026\/10\/25 の日付）[\s\S]*チップの配分には 2026\/09\/13 から効きます/);
   // a rejection does not ask (it does not change the split)
   c.ASKED.length = 0;
   await run(c, "approveTip('a3', '却下')");
@@ -466,11 +469,49 @@ test('独立レビュー（0a35425）P2・P3-2: another person’s decision date
   c.LANG = 'en'; c.ASKED.length = 0;
   await run(c, "approveTip('a3', '承認')");
   assert.equal(JSON.stringify(c.STORE.tip_requests), keep);
-  assert.match(clock()[0], /There is a Tip Rate decision dated 2026-10-25, after today on this device \(2026-09-13\)[\s\S]*Please check that this device's date and time are right\.\nIf you decide now, the tip split uses it from 2026-09-13\. Decide\?/);
+  assert.match(clock()[0], /^This device says today is 2026\/09\/13, but there is a Tip Rate decision for B dated 2026\/10\/25\.[\s\S]*the tip split uses this from 2026\/09\/13\.\nApprove\?$/);
   // P3-2: an impossible decDay falls back to approvedDate (the split and the guard read the same day)
   assert.equal(run(c, "_tipDecDay({ decDay: '2026-10-99', approvedDate: '2026/10/20' })"), '2026-10-20');
   assert.equal(run(c, "_tipDecDay({ decDay: '2026-10-99' })"), '');
   assert.equal(run(c, "_tipDecDay({ decDay: '2026-10-21', approvedDate: '2026/10/20' })"), '2026-10-21');
+  assert.equal(run(c, "_tipDecDay({ approvedDate: '2026/10/99' })"), '', 'an impossible approvedDate is read as no date (19eb415 P3-5)');
+});
+
+test('独立レビュー（19eb415）P2-1・P3-1: the request’s own time keeps a slow-clock approval off past days (and asks); another device’s Hawaii day just after midnight is also a floor', async () => {
+  const c = app();
+  vm.runInContext(decideFns() + `
+    var curUserName = 'Moto', curPage = 'tip'; var ASKED = [], ANSWER = true; function confirm(m){ ASKED.push(m); return ANSWER; } var NOW = 0;
+    Date.now = function(){ return NOW; };`, c);
+  const clock = () => c.ASKED.filter(m => /端末の日付/.test(m));
+  const hst = (y, m, d, h, mi = 0) => Date.UTC(y, m - 1, d, h + 10, mi);
+  c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-09-01' })];
+  const sub = 'tip' + hst(2026, 10, 22, 12);   // A sent the request on 10/22 12:00 (Hawaii)
+  c.STORE.tip_requests = [
+    { id: 'a', name: 'A', rate: 80, status: '承認', approvedDate: '2026/09/10' },
+    { id: 'b', name: 'B', rate: 80, status: '承認', approvedDate: '2026/10/15' },
+    { id: sub, name: 'A', rate: 100, status: '申請中', date: '2026/10/22' },
+  ];
+  for (const d of ['2026-10-19', '2026-10-21', '2026-10-22', '2026-10-23', '2026-10-24']) { c.LABOR['F01|' + d] = { A: { lunch: 5, dinner: 0 }, B: { lunch: 5, dinner: 0 } }; c.TIPS['F01|' + d] = { l: 180, d: 0 }; }
+  const pay = d => Object.fromEntries(plain(run(c, `calcTipDistribution('F01', '${d}')`)).list.map(r => [r.name, +r.total.toFixed(2)]));
+  assert.deepEqual(pay('2026-10-21'), { A: 90, B: 90 });
+  // P2-1: really 10/24, but this device reads 10/19 and approves A's request (no other decision is dated later)
+  c.NOW = hst(2026, 10, 19, 10);
+  await run(c, `approveTip('${sub}', '承認')`);
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === sub).decDay, '2026-10-22', 'not before the day it was sent (before: 10/19)');
+  assert.deepEqual(pay('2026-10-19'), { A: 90, B: 90 }, 'the past day pays the same (before: $100 / $80)');
+  assert.deepEqual(pay('2026-10-21'), { A: 90, B: 90 });
+  assert.equal(clock().length, 1, 'asked');
+  assert.match(clock()[0], /この端末の今日の日付は 2026\/10\/19 ですが、A さんの申請（2026\/10\/22 の日付）があります。[\s\S]*2026\/10\/22 から効きます/);
+  // P3-1: another device decided B on 10/24 at 00:05 (Hawaii day 10/24); this device is 15 minutes slow (10/23 23:50) and approves A
+  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([
+    { id: 'b2', name: 'B', rate: 90, status: '承認', decDay: '2026-10-24', decAt: hst(2026, 10, 24, 0, 5) },
+    { id: 'a2', name: 'A', rate: 80, status: '申請中', date: '2026/10/23' }]);
+  const before23 = pay('2026-10-23');
+  c.NOW = hst(2026, 10, 23, 23, 50); c.ASKED.length = 0;
+  await run(c, "approveTip('a2', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'a2').decDay, '2026-10-24', 'not 10/23');
+  assert.deepEqual(pay('2026-10-23'), before23, 'yesterday (really) pays the same');
+  assert.equal(clock().length, 0, 'tomorrow does not ask');
 });
 
 test('the period table, CSV and staff tab show the rates used in the period (80%→90%); the daily table shows Tip Rate; the confirmation keeps the basis and the rates', () => {
