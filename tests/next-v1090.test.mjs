@@ -146,12 +146,12 @@ const STORES = [
   { id: 'F05', name: 'Marujuu', active: true, am: 'Uruma', toastGuid: 'g5' }, { id: 'F06', name: 'LaLa', active: true, am: 'Uruma', toastGuid: 'g6' }, { id: 'F03', name: 'FSP', active: false, am: 'Yuki Nagatani' }];
 function mdApp(o) {
   const c = Object.assign({ console, STORE: {}, CALLS: [], curRole: 'am', curRealRole: 'am', curUserName: 'Yuki Nagatani', curStoreLogin: false,
-    curStore: 'F04-K', ME: 'e-yuki', TOASTS: [], setTimeout, clearTimeout }, o || {});
+    curStore: 'F04-K', ME: 'e-yuki', TOASTS: [], setTimeout, clearTimeout, AbortController }, o || {});
   vm.createContext(c);
   vm.runInContext(['mcRole', 'mcScopeStores', 'mdAllViewers', 'mdIsAllViewer', 'mdViewStores', 'mdPickedStore', 'mdSetStore', 'mdSetAllViewer', 'mdOpenStore',
     'dashScopeStores', 'mdScopeLabel', 'mdStorePickHtml', 'mcStoreLabel', 'activeStores', 'mdPendingApprovals',
     'mdViewOnlyStore', 'mdViewLaborPending', 'mdViewerEnsureLabor', 'mdVerdict', 'mdUnknown', 'mdJudge', 'mdV', 'mdStateLabel', 'mcRound',
-    '_mdMemo', 'mdCacheClear', '_mdBizDay', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdFrozenLoaded', 'mdViewLaborNote', '_mdViewRedrawSoon', 'mdViewLaborGate', '_mdNoLaborDays'].map(fnSrc).join('\n') + `
+    '_mdMemo', 'mdCacheClear', '_mdBizDay', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdFrozenLoaded', 'mdViewLaborNote', '_mdViewRedrawSoon', 'mdViewLaborGate', '_mdNoLaborDays', '_mdViewBusy'].map(fnSrc).join('\n') + `
     var mdState = { period:'month', storeFilter:'all', kpi:'', store:'' };
     var STORES_ALL = ${JSON.stringify(STORES)};
     function getStoresAll(){ return STORES_ALL; }
@@ -175,9 +175,9 @@ function mdApp(o) {
     function mcEnoughDays(){ return true; }
     function mcYm(){ return '2026-10'; }
     function daysOfYm(ym){ return [{ date: ym + '-01' }, { date: ym + '-31' }]; }
-    var HANG = false;
-    function syncTipLaborFromDB(id, guid, days){ LOADS.push([id, guid, days[0].date, days[days.length - 1].date]);
-      if (HANG) return new Promise(function(){});
+    var HANG = false, HANGS = [], SIGNALS = [];
+    function syncTipLaborFromDB(id, guid, days, opts){ LOADS.push([id, guid, days[0].date, days[days.length - 1].date]); SIGNALS.push(opts && opts.signal);
+      if (HANG) { HANG = (HANG === 'once') ? false : HANG; return new Promise(function(res){ HANGS.push(res); }); }   // answers only when the test says so (late)
       if (FETCHERR) return Promise.resolve({ rowCount: 0, updated: 0, fetchErr: true });
       var k = id + '|' + days[0].date.slice(0, 7), n = ROWS(id), upd = EMPTYDATA ? 0 : n;   // EMPTYDATA: rows in the DB but their labor lists are empty
       return Promise.resolve({ rowCount: n, updated: upd }).then(function(r){ if (r.updated) { if (REMAIN[k]) LABOR[k] = REMAIN[k]; else delete LABOR[k]; } return r; }); }
@@ -373,15 +373,37 @@ test('①（独立レビュー P2-1・2 回目 P2-A／B・Codex・3 回目）: f
   assert.equal(plain(run(x, "mdVerdict('F01','labor_rate','2026-10')")).note, '勤怠を読めませんでした（1 日・1 分あけて読み直します）');
   run(x, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; })");
   assert.equal(run(x, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1, 'after a minute');
-  // 2 回目 P3-2 / 3 回目 P3-5: a request that never answers stops "loading" after the time limit, but is not started twice while it is still out
+  // 2 回目 P3-2 / 3 回目 P3-5 / Codex 27f5ec8: a request that never answers stops "loading" at the time limit and is cancelled;
+  // within the limit the store is not read twice; after it, the store can be read again (a minute later, or at once after 最新に更新),
+  // and the late answer of the cancelled request is not used
   const h = mdApp({ curPage: 'dashboard' }); h.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
-  run(h, "HANG = true; MD_VIEW_LABOR_TIMEOUT_MS = 20; LABOR['F01|2026-10'] = ['2026-10-02']");
+  run(h, "HANG = 'once'; MD_VIEW_LABOR_TIMEOUT_MS = 40; LABOR['F01|2026-10'] = ['2026-10-02']");
   assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1);
-  await wait(60);
+  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 0, 'not twice within the time limit');
+  run(h, 'mdLaborMarksClear()');
+  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 0, 'not twice within the time limit, also after 最新に更新');
+  await wait(90);
   assert.equal(plain(run(h, "mdVerdict('F01','labor_rate','2026-10')")).note, '勤怠を読めませんでした（1 日・1 分あけて読み直します）', 'no endless "loading"');
-  run(h, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; }); mdLaborMarksClear()");
-  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 0, 'not a second request while the first is out (also after 最新に更新)');
-  assert.equal(plain(h.LOADS).length, 1);
+  assert.equal(run(h, 'SIGNALS[0] && SIGNALS[0].aborted'), true, 'the request that did not answer is cancelled');
+  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 0, 'waits a minute');
+  run(h, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; })");
+  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1, 'read again after a minute (the network came back)');
+  await wait(20);
+  assert.equal(plain(run(h, "mdVerdict('F01','labor_rate','2026-10')")).state, 'ok', 'judged with the new read');
+  run(h, "HANGS[0]({ rowCount: 0, updated: 0, fetchErr: true })"); await wait(20);   // the cancelled request answers late
+  assert.equal(plain(run(h, "mdVerdict('F01','labor_rate','2026-10')")).state, 'ok', 'the late answer is not used');
+  assert.equal(run(h, "mdLaborFresh('F01','2026-10')"), true);
+  // after 最新に更新 a timed-out store is read again at once
+  const r2 = mdApp({ curPage: 'dashboard' }); r2.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  run(r2, "HANG = 'once'; MD_VIEW_LABOR_TIMEOUT_MS = 20; LABOR['F02|2026-10'] = ['2026-10-02']");
+  assert.equal(run(r2, "mdViewerEnsureLabor('2026-10', ['F02'])"), 1);
+  await wait(60);
+  run(r2, 'mdLaborMarksClear()');
+  assert.equal(run(r2, "mdViewerEnsureLabor('2026-10', ['F02'])"), 1, 'read again at once after 最新に更新');
+  await wait(20);
+  assert.equal(plain(run(r2, "mdVerdict('F02','labor_rate','2026-10')")).state, 'ok');
+  assert.match(fnSrc('fetchTipLaborFromDB'), /if \(signal\) _fo\.signal = signal;/);
+  assert.match(fnSrc('syncTipLaborFromDB'), /fetchTipLaborFromDB\(guid, days\[0\]\.date, days\[days\.length-1\]\.date, opts && opts\.signal\)/);
   // people who are not all-store viewers: nothing is loaded and nothing is gated
   const n = mdApp(); run(n, "LABOR['F04-K|2026-09'] = ['2026-09-03']; LABOR['F01|2026-09'] = ['2026-09-03']");
   assert.equal(run(n, "mdViewerEnsureLabor('2026-09')"), 0);

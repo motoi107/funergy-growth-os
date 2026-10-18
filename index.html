@@ -1679,20 +1679,21 @@ async function syncStoreActualsFromToast(storeId, guid, days) {
 }
 
 /* DBから勤怠(tip_labor)を読み、店舗の時間設定で計算してローカル保存（毎朝の自動同期分を取り込む） */
-async function fetchTipLaborFromDB(guid, dateFrom, dateTo) {
+async function fetchTipLaborFromDB(guid, dateFrom, dateTo, signal) {   /* signal：時間で打ち切るとき（v1090・Codex 27f5ec8） */
   try {
     var url = SUPABASE_URL + '/rest/v1/tip_labor?restaurant_guid=eq.' + encodeURIComponent(guid)
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
-    var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
+    var _fo = { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } }; if (signal) _fo.signal = signal;
+    var res = await fetch(url, _fo);
     if (!res.ok) return _tipLaborFetchErr();
     return await res.json();
   } catch (e) { return _tipLaborFetchErr(); }
 }
 /* v1090（独立レビュー 7002a69 P3-2）：読めなかったときは空の配列に印 _err（空の答えと分ける。ほかの使い方は配列のまま） */
 function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
-async function syncTipLaborFromDB(storeId, guid, days) {
+async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
-  var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date);
+  var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date, opts && opts.signal);
   var staff = getEmployees();
   var updated = 0, emptyData = 0, savedDates = [];
   var rawDates = rows.map(r=>r.business_date);
@@ -2584,7 +2585,10 @@ var MD_VIEW_LABOR_RETRY_MS = 60000, MD_VIEW_LABOR_EMPTY_RETRY_MS = 600000;   /* 
 function _mdBizDay() { try { return (typeof bizToday === 'function') ? bizToday() : ''; } catch (e) { return ''; } }
 function mdLaborMark(sid, ym) { if (sid && ym) _mdLaborMarks[sid + '|' + ym] = { day: _mdBizDay(), at: Date.now() }; }
 function mdLaborFresh(sid, ym) { var m = _mdLaborMarks[sid + '|' + ym]; return !!(m && m.day === _mdBizDay()); }
-function mdLaborMarksClear() { _mdLaborMarks = {}; _mdViewLabor = {}; }   /* 読んでいる途中（_mdViewInflight）は残す：同じ店をもう一度読まない */
+function mdLaborMarksClear() { _mdLaborMarks = {}; _mdViewLabor = {}; }   /* 読んでいる途中（_mdViewInflight・時間内のもの）は残す：同じ店をもう一度読まない */
+/* 読んでいる途中か。時間（MD_VIEW_LABOR_TIMEOUT_MS）を過ぎたものは途中とみなさない（Codex 27f5ec8：答えの来ない要求が残ると、
+   「最新に更新」のあとも読み直せなかった）。過ぎた要求は打ち切り（AbortController）、遅れて来た答えは使わない */
+function _mdViewBusy(k) { var f = _mdViewInflight[k]; return !!(f && Date.now() - f.at < MD_VIEW_LABOR_TIMEOUT_MS); }
 /* この端末で、売上はあるのに勤怠が無い日 */
 function _mdNoLaborDays(sid, ym) {
   try { var lc = laborCoreForYm(sid, ym); return (lc && Array.isArray(lc.noLaborDays)) ? lc.noLaborDays : []; } catch (e) { return []; }
@@ -2607,7 +2611,7 @@ function mdViewLaborGate(storeId) {
 function mdViewLaborNote(storeId, ym, n) {
   var k = storeId + '|' + ym, st = _mdViewLabor[k];
   if (st && st.failAt && !st.empty) return '勤怠を読めませんでした（' + n + ' 日・1 分あけて読み直します）';   /* 時間切れも（答えが来るまで次は読まない） */
-  if (_mdViewInflight[k] || (!st && !mdLaborFresh(storeId, ym))) return '勤怠を読み込み中（' + n + ' 日）';
+  if (_mdViewBusy(k) || (!st && !mdLaborFresh(storeId, ym))) return '勤怠を読み込み中（' + n + ' 日）';
   return 'DB にまだ勤怠が無い日があります（' + n + ' 日）';
 }
 function _mdViewRedrawSoon() {
@@ -2622,31 +2626,37 @@ function mdViewerEnsureLabor(ym, stores) {
   var now = Date.now();
   (stores || mdViewStores()).forEach(function (sid) {
     var k = sid + '|' + ym;
-    if (mdLaborFresh(sid, ym) || _mdViewInflight[k]) return;
+    if (mdLaborFresh(sid, ym) || _mdViewBusy(k)) return;
     /* 締めた月：勤怠の無い日が無ければ読まない。残っていれば 1 日 1 回読む（独立レビュー 7002a69 P3-3：あとで DB に入った日も出る） */
     if (_mdFrozenLoaded(sid, ym) && !_mdNoLaborDays(sid, ym).length) return;
     var st = _mdViewLabor[k];
     if (st && st.failAt && now - st.failAt < (st.empty ? MD_VIEW_LABOR_EMPTY_RETRY_MS : MD_VIEW_LABOR_RETRY_MS)) return;
     var s = all.find(function (x) { return x && x.id === sid; });
     if (!s || !s.toastGuid) { mdLaborMark(sid, ym); return; }   /* Toast の店でない＝どの端末にも勤怠は無い */
-    _mdViewInflight[k] = true; delete _mdViewLabor[k]; todo.push(s);
+    delete _mdViewLabor[k]; todo.push(s);
   });
   if (!todo.length) return 0;
   var days = daysOfYm(ym);
   todo.forEach(function (s) {
-    var k = s.id + '|' + ym, tm = null;
+    var k = s.id + '|' + ym, tm = null, tok = {};
+    var ac = null; try { ac = (typeof AbortController === 'function') ? new AbortController() : null; } catch (e) { ac = null; }
+    _mdViewInflight[k] = { at: Date.now(), tok: tok };
+    var mine = function () { var f = _mdViewInflight[k]; return !!(f && f.tok === tok); };   /* あとから始めた読み込みがあれば、この答えは使わない */
     var cap = new Promise(function (res) { tm = setTimeout(function () { res('__timeout'); }, MD_VIEW_LABOR_TIMEOUT_MS); });
-    var job = Promise.resolve().then(function () { return syncTipLaborFromDB(s.id, s.toastGuid, days); });
-    job.then(function () { delete _mdViewInflight[k]; }, function () { delete _mdViewInflight[k]; });   /* 本当に終わるまで同じ店を読み直さない（独立レビュー 7002a69 P3-5） */
+    var job = Promise.resolve().then(function () { return syncTipLaborFromDB(s.id, s.toastGuid, days, ac ? { signal: ac.signal } : null); });
+    /* 時間内は同じ店を二重に読まない（独立レビュー 7002a69 P3-5）。答えか時間切れで「途中」を外す */
     Promise.race([job, cap])
       .then(function (r) {
         clearTimeout(tm);
+        if (!mine()) return;
+        delete _mdViewInflight[k];
+        if (r === '__timeout') { try { if (ac) ac.abort(); } catch (e) { } }   /* 時間切れ：打ち切って、次は 1 分あけて読める */
         if (r === '__timeout' || !r || r.fetchErr) { _mdViewLabor[k] = { failAt: Date.now() }; return; }   /* 読めなかった：1 分あけて */
         /* 読めた。勤怠の無い日が残っていなければ、きょうは読んだ。残っていれば（中身が空・まだ DB に無い）10 分あけて読み直す。
            判定はいつもこの端末の勤怠で決める（残る日があれば判定不可） */
         if (!_mdNoLaborDays(s.id, ym).length) { delete _mdViewLabor[k]; mdLaborMark(s.id, ym); }
         else _mdViewLabor[k] = { failAt: Date.now(), empty: true };
-      }, function () { clearTimeout(tm); _mdViewLabor[k] = { failAt: Date.now() }; })
+      }, function () { clearTimeout(tm); if (mine()) { delete _mdViewInflight[k]; _mdViewLabor[k] = { failAt: Date.now() }; } })
       .then(_mdViewRedrawSoon);
   });
   return todo.length;
