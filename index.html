@@ -80746,14 +80746,18 @@ function _tipLatestApproved(name, list){
 }
 /* 前からある申請を承認するとき：時刻の無い前の決定（v1090 以前）に、並びのとおりの時刻を付ける（並びのあと＝新しい、と同じ意味）。
    独立レビュー（6f75b67）P2-1：付けないと、承認した申請（並びの前のほう）が、そのあとに並ぶ時刻の無い引き上げに負け、承認しても率が変わらなかった。
-   付けたあとは、この承認（いまの時刻）がいちばん新しい決定になる。率の決まり方はほかの記録では変わらない */
+   付けたあとは、この承認（いまの時刻）がいちばん新しい決定になる。率の決まり方はほかの記録では変わらない。
+   付ける時刻は、その記録がもともとみなされていた時刻そのもの（並びでその前にある決定のいちばん新しい時刻。前に決定が無ければ 1）。
+   同じ時刻どうしは並びのあとが新しい（_tipLatestApproved と同じ）ので、付ける前と後で、どの記録とどの記録を比べても結果は同じ。
+   独立レビュー（91a9eea）P2：前は「前の時刻＋1、＋2…」と付けたので、あとに並ぶ時刻つきの決定（時計の遅れた端末の「前の時刻＋1」）より新しくなることがあり、
+   関係のない申請を却下しただけで、いまの率が引き上げの 100% から 90% に下がった */
 function tipStampLegacy(list, name){
   var floor=0, n=0;
   (list||[]).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r);
     if(t>0){ if(t>floor) floor=t; return; }
-    if(r.status==='承認' || r.status==='却下'){ floor=floor+1; r.decAt=floor; n++; }
+    if(r.status==='承認' || r.status==='却下'){ r.decAt=floor>0 ? floor : 1; n++; }   /* floor は上げない（時刻の無い記録はもともと前の時刻を上げない） */
   });
   return n;
 }
@@ -80863,7 +80867,10 @@ async function tipLivePull(why, keys){
     if(later.length) keep(later);
     if(st.changed || _tipLive.pend) tipLiveRerender(st.changed, st.rate, st.names);
     return true;
-  }catch(e){ if(!gone()) keep(want); return false; }   /* 途中で失敗：合図のキーは次に読む（Codex 6f75b67・27f5ec8 の P2） */
+  }catch(e){
+    if(!gone()){ keep(want); if(st.changed) tipLiveRerender(st.changed, st.rate, st.names); }   /* 途中で失敗：合図のキーは次に読む（Codex 6f75b67・27f5ec8 の P2）。もう入れた行は描き直す・帯を出す（独立レビュー 91a9eea P3：次の取り直しでは変わりが無いので出なかった） */
+    return false;
+  }
   finally{
     _tipLive.busy=false; _tipLive.at=Date.now();
     if(_tipLive.again){ _tipLive.again=false; if(!gone()) setTimeout(function(){ tipLivePull('again'); }, 300); }

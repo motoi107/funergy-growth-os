@@ -483,7 +483,7 @@ test('review 2 P2-1: approving an older request counts even when undated (v1090)
   assert.equal(A.CONFIRMS.length, 0, 'going up: no question');
   const rows = JSON.parse(cloud.rows.get(KEY).value);
   const t = Object.fromEntries(rows.map(r => [r.id, r.decAt]));
-  assert.ok(t.a > 0 && t.c > t.a && t.b > t.c, 'the older decisions got times in their list order, before this approval: ' + JSON.stringify(t));
+  assert.ok(t.a > 0 && t.c >= t.a && t.b > t.c, 'the older decisions got times in their list order (same time: the later one is newer), before this approval: ' + JSON.stringify(t));
   const B = device(cloud); B.STORE.set(KEY, cloud.rows.get(KEY).value);
   assert.equal(rate(B), 100, 'another v1091 device reads the same rate');
   // the other way: an older 90% request after an undated 100% → asks, and the rate really goes down when approved
@@ -509,6 +509,45 @@ test('review v1092 e59f3f9 P1: rejecting an older request does not lift an undat
   const B = device(cloud); B.STORE.set(KEY, cloud.rows.get(KEY).value);
   assert.equal(rate(B), 100, 'another device reads the same rate');
   assert.equal(A.CONFIRMS.length, 0);
+});
+
+test('independent review 91a9eea P2: the times given to undated decisions are the times they already counted as, so no later decision is overtaken (clocks apart)', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  const T = Date.now() + 600e3;   // decided on a device whose clock is 10 minutes ahead
+  seed(cloud, [A], [{ id: 'a', name: 'Crew A', rate: 80, status: '承認', decAt: T },
+    { id: 'l1', name: 'Crew A', rate: 90, status: '承認' }, { id: 'l2', name: 'Crew A', rate: 90, status: '承認' },   // v1090 devices (no time)
+    { id: 'p', name: 'Crew A', rate: 100, status: '申請中' }]);
+  assert.equal(rate(A), 90);
+  await raise(A, 'Crew A', 100);   // this device is behind T: the raise gets T + 1
+  const rows0 = JSON.parse(cloud.rows.get(KEY).value);
+  assert.equal(rows0.at(-1).decAt, T + 1, 'the raise is just after the latest decision');
+  assert.equal(rate(A), 100);
+  await run(A, "approveTip('p','却下')"); await settle(60);
+  assert.equal(rate(A), 100, 'rejecting an unrelated old request keeps the raise (before: 90%)');
+  const t = Object.fromEntries(JSON.parse(cloud.rows.get(KEY).value).map(r => [r.id, r.decAt]));
+  assert.ok(t.l1 === T && t.l2 === T, 'the undated decisions get the time they counted as: ' + JSON.stringify(t));
+  const B = device(cloud); B.STORE.set(KEY, cloud.rows.get(KEY).value);
+  assert.equal(rate(B), 100, 'another device reads the same rate');
+  // a person with no earlier decision: an undated approval gets 1 (still older than any real time)
+  const C = device(cloud), K2 = 'spl_tip_requests_Crew B';
+  C.STORE.set(K2, JSON.stringify([{ id: 'u', name: 'Crew B', rate: 90, status: '承認' }, { id: 'q', name: 'Crew B', rate: 100, status: '申請中' }]));
+  assert.equal(run(C, "(function(){ var l = ls('tip_requests', []); tipStampLegacy(l, 'Crew B'); return l.find(function(x){ return x.id === 'u'; }).decAt; })()"), 1);
+});
+
+test('independent review 91a9eea P3: when a read fails after some rows were already taken in, the page is still redrawn (or the notice shown)', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [A, B], OLD80);
+  run(B, 'tipLiveStart()');
+  await raise(A, 'Crew A', 90);   // a row in the time window
+  const other = 'spl_tip_requests_Crew B';
+  cloud.rows.set(other, { value: JSON.stringify([{ id: 'tipB', name: 'Crew B', rate: 90, status: '承認', decAt: Date.now() }]), updated_at: new Date(Date.now() - 600e3).toISOString() });
+  const f0 = cloud.fetch; cloud.fetch = async (u, o) => { if (/key=eq\./.test(u)) throw new TypeError('Failed to fetch'); return f0(u, o); };
+  const r0 = B.RENDERS.length;
+  B.RT['rt-tip-rate']({ new: { value: { keys: [other] } } }); await settle(60);
+  assert.equal(rate(B), 90, 'the row from the time window is in');
+  assert.ok(B.RENDERS.length > r0 && B.RENDERS.at(-1) === 'tiprate', 'redrawn although the by-key read failed');
+  assert.deepEqual(plain(run(B, '_tipLive.keys')), [other], 'the key that failed is kept');
+  cloud.fetch = f0;
 });
 
 test('review 2 P3-3: the question and the message use the rate that really applies (3-month 100% etc.)', async () => {
