@@ -13,7 +13,8 @@ const pglite = path.join(root, 'tests/runtime/node_modules/@electric-sql/pglite/
 const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.sql', 'db/invoice-intake-postcheck.sql', 'db/invoice-intake-rollback.sql', 'db/invoice-intake-office-crew-revert.sql', 'supabase/migrations/20261007090000_invoice_intake.sql', 'supabase/migrations/20261007160000_invoice_intake_review_fixes.sql', 'supabase/migrations/20261007200000_invoice_intake_accounting_checks.sql', 'supabase/migrations/20261008090000_invoice_intake_store_folder.sql', 'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql', 'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql', 'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql', 'supabase/functions/invoice-intake/handler.mjs', 'tests/invoice-intake.test.mjs', 'tests/invoice-rules.test.mjs', 'tests/invoice-adapters.test.mjs',
   'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs', 'tests/invoice-multi-file-ui.test.mjs',
   'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs',
-  'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js'];
+  'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js',
+  'supabase/migrations/20261025090000_invoice_item_link.sql', 'tests/invoice-item-link.test.mjs', 'tests/invoice-item-link-ui.test.mjs', 'db/invoice-link-add-member.sql'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -39,6 +40,7 @@ const PS = 'tests/invoice-purchase-summary.test.mjs', PU = 'tests/invoice-purcha
 const MU = 'tests/invoice-multi-file-ui.test.mjs';   // 段階 3 の画面（同じ invoice 番号・複数枚の invoice）
 const VM = 'tests/invoice-vendor-merge.test.mjs', VU = 'tests/invoice-vendor-merge-ui.test.mjs';   // 業者の統合（Moto 2026-10-15・UI案51）
 const VR = 'tests/invoice-vendor-register.test.mjs', VD = 'tests/invoice-vendor-decide-ui.test.mjs';   // 新しい業者を決める（Moto 2026-10-16・UI案52 ③）
+const LK = 'tests/invoice-item-link.test.mjs', LU = 'tests/invoice-item-link-ui.test.mjs';   // 紐づけ 段階 1（Moto 2026-10-18・UI案55）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -581,6 +583,61 @@ const CASES = [
   ["新しい業者: an invoice a merge gave the vendor but did not work out is never worked out", VR, [["db/invoice-intake.sql", " or (d.status='review' and d.reasons @> '[{\"code\":\"vendor_unknown\"}]'::jsonb))", ")"]]],
   ["新しい業者 screen: the open invoice keeps the silent choice", VD, [["index.html", "      : kind==='vendor' && vendorNew ? '<button", "      : kind==='vendor' && false ? '<button"]]],
   ["新しい業者 screen: the screen and the server: the vendor is not given", VR, [["index.html", "    var r = await invInAPI({ action:'vendor_apply', name:m.raw, doc_id:m.docId, vendor_key:x.vendor_key });", "    var r = { ok: true, recheck: { fixed: 1 } };"]]],
+  // 紐づけ 段階 1（Moto 2026-10-18・UI案55）
+  ["紐づけ: a Head Chef / AM account no longer in the role still links", LK, [["db/invoice-intake.sql", " if m.user_id is null or not public.invoice_link_hr_ok(m.emp_id, m.role) then return null; end if;", " if m.user_id is null then return null; end if;"]]],
+  ["紐づけ: 退職 does not take linking away", LK, [["db/invoice-intake.sql", " if coalesce(nullif(x->'data'->>'status',''), x->>'status', '') = '退職' then return false; end if;", ""]]],
+  ["紐づけ: OS turned off does not take linking away", LK, [["db/invoice-intake.sql", " if coalesce(x->'data'->'osDisabled' = 'true'::jsonb, false) then return false; end if;", ""]]],
+  ["紐づけ: a disabled member row still links", LK, [["db/invoice-intake.sql", " select * into m from public.invoice_link_members where user_id=p_actor and enabled;", " select * into m from public.invoice_link_members where user_id=p_actor;"]]],
+  ["紐づけ: a Head Chef / AM changes accounting's own verified mapping", LK, [["db/invoice-intake.sql", "   if rl in ('am','chef') and m.verified and m.source <> 'review' then raise exception 'forbidden'; end if;\n  else", "  else"]]],
+  ["紐づけ: a Head Chef / AM takes back accounting's own verified mapping", LK, [["db/invoice-intake.sql", "  if rl in ('am','chef') and m.verified and m.source <> 'review' then raise exception 'forbidden'; end if;\n  update public.invoice_item_maps set retired_at=now()", "  update public.invoice_item_maps set retired_at=now()"]]],
+  ["紐づけ: a screen that saw no link writes a second one", LK, [["db/invoice-intake.sql", "      and (case when v_code is not null then public.invoice_code_key(x.vendor_item_code) = v_code else x.alias_key = v_alias and x.spec_key = v_spec end)) then\n    raise exception 'conflict';", "      and false) then\n    raise exception 'conflict';"]]],
+  ["紐づけ: an out-of-date version changes the link", LK, [["db/invoice-intake.sql", "   if m.id is null or m.version is distinct from (e->>'version')::int or m.retired_at is not null", "   if m.id is null or m.retired_at is not null"]]],
+  ["紐づけ: a code not in the current master is linked", LK, [["db/invoice-intake.sql", " if n <> cardinality(v_codes) then raise exception 'unknown_ingredient'; end if;", ""]]],
+  ["紐づけ: a merged vendor's item is linked", LK, [["db/invoice-intake.sql", "  if v.merged_into is not null then raise exception 'merged'; end if;\n  m := null;", "  m := null;"]]],
+  ["紐づけ: the lines' other reasons may be changed", LK, [["db/invoice-intake.sql", "is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) then\n   v_skipped := v_skipped + 1; continue;", "is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) and false then\n   v_skipped := v_skipped + 1; continue;"]]],
+  ["紐づけ: a line changed meanwhile is written over", LK, [["db/invoice-intake.sql", "     or l.map_id is distinct from nullif(u->>'from_map','')::uuid\n", "\n"]]],
+  ["紐づけ: a link taken back is applied to lines", LK, [["db/invoice-intake.sql", "   if mp.id is null or mp.retired_at is not null or mp.vendor_key <> d.vendor_key", "   if mp.id is null or mp.vendor_key <> d.vendor_key"]]],
+  ["紐づけ: the old price row is not voided", LK, [["db/invoice-intake.sql", "   update public.invoice_price_history set status='voided', voided_by=actor::text, voided_at=now(), void_reason='link'\n   where line_id=l.id and status='active';\n   get diagnostics n = row_count; v_voided := v_voided + n;", "   n := 0;"]]],
+  ["紐づけ: a posted line gets no price history", LK, [["db/invoice-intake.sql", "     and public.invoice_price_insert(d.id, l.id, actor::text, 'link') then v_prices := v_prices + 1; end if;", "     and false then v_prices := v_prices + 1; end if;"]]],
+  ["紐づけ: a link taken back is a source of prices", LK, [["db/invoice-intake.sql", "where id=l.map_id and verified and retired_at is null and vendor_key=d.vendor_key", "where id=l.map_id and verified and vendor_key=d.vendor_key"]]],
+  ["紐づけ: the intake uses a link taken back", LK, [["db/invoice-intake.sql", "  'maps', (select coalesce(jsonb_agg(to_jsonb(m)), '[]') from public.invoice_item_maps m where m.retired_at is null));", "  'maps', (select coalesce(jsonb_agg(to_jsonb(m)), '[]') from public.invoice_item_maps m));"]]],
+  ["紐づけ: accounting's mapping screen fails on a taken-back row", LK, [["db/invoice-intake.sql", "  if old.id is not null then m := m || jsonb_build_object('id', old.id, 'version', old.version); v_reuse := true; end if;", ""]]],
+  ["紐づけ: the lines do not follow a link", LK, [["supabase/functions/invoice-intake/handler.mjs", "    r.sync = await linkSync(actor, vendorKeys);", "    r.sync = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [] };"]]],
+  ["紐づけ: relink leaves out spec_changed", LK, [["invoice/link.mjs", "    if (m.spec_key && sk && m.spec_key !== sk) r.push('spec_changed');", ""]]],
+  ["紐づけ: relink does not see a line left on an old code (review P2-1)", LK, [["invoice/link.mjs", "  const same = keepPrice && conv && [...out.reasons]", "  const same = (out.map_id || null) === (line.map_id || null) && conv && [...out.reasons]"]]],
+  ["紐づけ: a store's own link on some lines stops the item (second review P3-1)", LK, [["invoice/link.mjs", "    const link = links.length === 1 ? links[0] : null;", "    const link = links.length === 1 && !otherLines ? links[0] : null;"]]],
+  ["紐づけ: a link's \"unit not printed\" is dropped when it is linked again (review P2-4)", LK, [["invoice/link.mjs", "(reasons.includes('unit_unverified') || (line.ingredient_code", "(false || (line.ingredient_code"]]],
+  ["紐づけ: a correction made since the line was read (its other reasons) fails the whole call (review P2-2)", LK, [["db/invoice-intake.sql", "is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) then\n   v_skipped := v_skipped + 1; continue;", "is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) then\n   raise exception 'bad_value';"]]],
+  ["紐づけ: a unit price or purchase unit changed since the line was read is applied", LK, [["db/invoice-intake.sql", "\n     or l.unit_price::text is distinct from (u->>'unit_price') or l.purchase_unit is distinct from (u->>'purchase_unit') then", " then"]]],
+  ["紐づけ: credit memos are left out", LK, [["db/invoice-intake.sql", "  where d.status in ('review','posted') and d.doc_type in ('invoice','credit_memo') and d.posting_kind='purchase' and d.vendor_key is not null", "  where d.status in ('review','posted') and d.doc_type='invoice' and d.posting_kind='purchase' and d.vendor_key is not null"]]],
+  ["紐づけ: the lines are not read page by page", LK, [["db/invoice-intake.sql", " offset greatest(coalesce((p->>'offset')::int, 0), 0)) x);", ") x);"]]],
+  ["紐づけ: the screen is not told of lines not in step", LK, [["supabase/functions/invoice-intake/handler.mjs", "    const pending = new Set(lines.filter(l => !merged.has(l.vendor_key) && relink(l, r.maps || [])).map(l => l.id));", "    const pending = new Set();"]]],
+  ["紐づけ: そろえる leaves out a vendor with no link in use", LK, [["supabase/functions/invoice-intake/handler.mjs", "    return linkFollow(actor, { role: w.role }, null);", "    return linkFollow(actor, { role: w.role }, [...new Set((await context()).maps.map(m => m.vendor_key))]);"]]],
+  ["紐づけ: a correction keeps a chosen mapping that is not in use", LK, [["supabase/functions/invoice-intake/handler.mjs", "      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error('map_not_usable');\n", ""]]],
+  ["紐づけ: the mapping screen takes the reuse of a link taken back from the screen", LK, [["db/invoice-intake.sql", "(retired_at is null or v_reuse) returning * into r;", "(retired_at is null or v_reuse or coalesce((m->>'retired_again')::boolean,false)) returning * into r;"]]],
+  ["紐づけ: accounting's change leaves a link changeable by a Head Chef / AM", LK, [["db/invoice-intake.sql", "   source=case when source='review' then 'manual' else source end\n", "   source=source\n"]]],
+  ["紐づけ: a code item linked by its printed name shows no link", LK, [["invoice/link.mjs", "g.aliases.has(m.alias_key + '|' + (m.spec_key || ''))) links.push(m);", "g.aliases.has(m.alias_key + '|' + (m.spec_key || ''))) otherLines += g.mapped[id];"]]],
+  ["紐づけ: そろえる sends a merged vendor's lines (second review P1)", LK, [["supabase/functions/invoice-intake/handler.mjs", "    for (const l of got.lines) { if (merged.has(l.vendor_key)) continue; const u = relink(l, ctx.maps); if (u) updates.push(u); }", "    for (const l of got.lines) { const u = relink(l, ctx.maps); if (u) updates.push(u); }"]]],
+  ["紐づけ: a merged vendor's lines wait (second review P1)", LK, [["supabase/functions/invoice-intake/handler.mjs", "lines.filter(l => !merged.has(l.vendor_key) && relink(l, r.maps || []))", "lines.filter(l => relink(l, r.maps || []))"]]],
+  ["紐づけ: the database applies to a merged vendor's lines (second review P1)", LK, [["db/invoice-intake.sql", "\n     or exists(select 1 from public.invoice_vendor_rules v where v.vendor_key=d.vendor_key and v.merged_into is not null)", ""]]],
+  ["紐づけ: a change of the reasons alone writes the price row again (second review P3-2)", LK, [["db/invoice-intake.sql", "  if d.status = 'posted' and (not v_same or (u->'reasons') ?| no_price", "  if d.status = 'posted' and (true or (u->'reasons') ?| no_price"]]],
+  ["紐づけ: the price comparison is lost when only the reasons change", LK, [["db/invoice-intake.sql", "   prev_price=case when v_same then l.prev_price end,", "   prev_price=null,"]]],
+  ["紐づけ: a line left with an old conversion is in step (second review P3-3)", LK, [["invoice/link.mjs", "  const same = keepPrice && conv && ", "  const same = keepPrice && "]]],
+  ["紐づけ: a new code gives a price without a printed unit (second review P3-3)", LK, [["invoice/link.mjs", " || (line.ingredient_code || null) !== (cur.ingredient_code || null))) fm.reason = 'unit_unverified';", ")) fm.reason = 'unit_unverified';"]]],
+  ["紐づけ: a mapping not in use is told as someone else's change (second review P3-4)", LK, [["supabase/functions/invoice-intake/handler.mjs", "throw new Error('map_not_usable');", "throw new Error('conflict');"]]],
+  ["紐づけ: an older そろえる/戻す writes over a newer link (Codex P2 on PR #77)", LK, [["db/invoice-intake.sql", "  if (v_fps->>d.vendor_key) is distinct from (u->>'maps_fp') then v_skipped := v_skipped + 1; continue; end if;\n", ""]]],
+  ["紐づけ: the function does not say which links it worked the update out with", LK, [["supabase/functions/invoice-intake/handler.mjs", "      u.maps_fp = fps.get(vk);", "      u.maps_fp = null;"]]],
+  ["紐づけ app: marked items go into the bulk confirm", LU, [["index.html", "return _ilk.vendor && ilkState(it) === 'high' && p.best && !p.flags.length && !it.link; });", "return _ilk.vendor && ilkState(it) === 'high' && p.best && !it.link; });"]]],
+  ["紐づけ app: no mark for different numbers", LU, [["index.html", "    if (best && cls !== 'C' && cls !== 'D') { var nd = ilkNumDiff(", "    if (false) { var nd = ilkNumDiff("]]],
+  ["紐づけ app: a Head Chef / AM may change accounting's own mapping", LU, [["index.html", "function ilkCanChange(it){ return !(it.link && it.link.verified && it.link.source !== 'review' && ['am','chef'].indexOf(curRole) >= 0); }", "function ilkCanChange(it){ return true; }"]]],
+  ["紐づけ app: a non-food vendor's items are not left out", LU, [["index.html", "  if (m === 'excluded' || (ilkNonfood(it) && m !== 'included')) return 'out';", "  if (m === 'excluded') return 'out';"]]],
+  ["紐づけ app: high confidence without the margin", LU, [["index.html", "    if (best && ((best.s >= 0.6 && best.s - second >= 0.15) || best.s >= 0.95)) cls = 'A';", "    if (best && best.s >= 0.35) cls = 'A';"]]],
+  ["紐づけ app: the bulk confirm is not one vendor's", LU, [["index.html", "    if (_ilk.vendor && it.vendor_key !== _ilk.vendor) return false;", ""]]],
+  ["紐づけ app: the sign-in is kept for another employee's Head Chef / AM account", LU, [["index.html", "    return String(w.emp_id) === String(lp.id) ? true : 'other';", "    return true;"]]],
+  ["紐づけ app: the bulk confirm sends codes the dialog did not show", LU, [["index.html", "return it && C[id] && !it.link ? ilkPayload(it, C[id]) : null;", "return it && C[id] && !it.link ? ilkPayload(it, (_ilk.prep || {})[id].best.c.code) : null;"]]],
+  ["紐づけ app: an error stays after a new sign-in", LU, [["index.html", "if (typeof ilkReset === 'function' && typeof _ilk !== 'undefined' && _ilk.loaded === 'err') ilkReset(); ", ""]]],
+  ["紐づけ app: lines on another mapping are not told", LU, [["index.html", "    if (it.other_lines) flags.push(", "    if (false) flags.push("]]],
+  ["紐づけ app: choosing again sends the item's key, not its link's", LU, [["index.html", "k = it.link || it;", "k = it;"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
@@ -600,6 +657,10 @@ test('every protection is covered by a failing test when removed', async (t) => 
   if (!only || only.test('新しい業者')) {
     assert.equal(run([], VR), 0, 'the unmodified vendor register test must pass (without the deploy-folder check)');
     assert.equal(run([], VD), 0, 'the unmodified vendor decide screen test must pass');
+  }
+  if (!only || only.test('紐づけ')) {
+    assert.equal(run([], LK), 0, 'the unmodified linking test must pass (without the deploy-folder check)');
+    assert.equal(run([], LU), 0, 'the unmodified linking screen test must pass');
   }
   // INVOICE_MUTATION_ONLY=<regex>: run only the matching cases (for checking one protection quickly).
   for (const [name, file, muts] of CASES) {
