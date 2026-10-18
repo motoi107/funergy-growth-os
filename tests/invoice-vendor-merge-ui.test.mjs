@@ -78,7 +78,7 @@ function app({ role = 'office', user = 'Akane', signed = true, cards = CARDS(), 
       c.calls.push(JSON.parse(JSON.stringify(body)));
       const r = api ? await api(body) : (body.action === 'vendor_usage' ? usage : body.action === 'vendor_merge' && body.preview ? PREVIEW()
         : body.action === 'vendor_merge' ? { ...PREVIEW({ preview: false }), merge_id: '11111111-1111-4111-8111-111111111111', recheck: { fixed: 2, failed: 0, left: 0 } }
-        : body.action === 'vendor_unmerge' && body.preview ? { ok: true, preview: true, docs: 5, stay: 1, review: 1 } : body.action === 'vendor_unmerge' ? { ok: true, docs: 5, stay: 1 } : {});
+        : body.action === 'vendor_unmerge' && body.preview ? { ok: true, preview: true, docs: 5, unknown: 2, stay: 1, review: 3, ...(globalThis.__unmergePv || {}) } : body.action === 'vendor_unmerge' ? { ok: true, docs: 5, stay: 1 } : {});
       if (r && r.__error) { const e = new Error(r.__error); e.code = r.code || ''; throw e; }
       return r;
     },
@@ -285,7 +285,14 @@ test('the name to keep has no card: the card is renamed to it; taken back, the n
   // Taking back the later one: the intake first (preview, then the change), then the table.
   await c.fn('vmgUndoAsk')(gid2);
   assert.deepEqual(sent(c).at(-1), { action: 'vendor_unmerge', merge_id: '11111111-1111-4111-8111-111111111111', preview: true });
-  assert.match(c.modals.at(-1), /Invoice取込：書類 5 件を元の業者に戻します（そのあと直した 1 件はそのまま）/);
+  assert.match(c.modals.at(-1), /Invoice取込：書類 5 件を元の業者に戻します・業者が決まっていなかった 2 件は業者を選ぶ待ちに戻します（そのあと直した 1 件はそのまま）/);
+  globalThis.__unmergePv = { docs: 0, unknown: 2, stay: 0 };   // only invoices that had no vendor go back
+  await c.fn('vmgUndoAsk')(gid2);
+  assert.match(c.modals.at(-1), /Invoice取込：業者が決まっていなかった 2 件は業者を選ぶ待ちに戻します。/);
+  globalThis.__unmergePv = { docs: 0, unknown: 0, stay: 0 };
+  await c.fn('vmgUndoAsk')(gid2);
+  assert.match(c.modals.at(-1), /Invoice取込：書類 0 件を元の業者に戻します。/);
+  delete globalThis.__unmergePv;
   await c.fn('vmgUndo')(gid2);
   assert.deepEqual(sent(c).at(-1), { action: 'vendor_unmerge', merge_id: '11111111-1111-4111-8111-111111111111' });
   assert.equal(c.fn('vendorCanon')('Island Fresh Prodcue'), 'Island Fresh Prodcue');

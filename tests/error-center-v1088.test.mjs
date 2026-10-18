@@ -621,7 +621,8 @@ test('the dashboard rail and work center count only open issues', () => {
   assert.equal(n, plain(run(c, 'ecCollect()')).length - 1);
 });
 
-test('release markers are 1088', () => {
-  assert.match(SRC, /const APP_VERSION = '1088';/);
-  assert.match(SW, /const SW_BUILD = '1088';/);
+test('release markers are 1088 or later, the page and the service worker the same', () => {
+  const v = Number((/const APP_VERSION = '(\d+)';/.exec(SRC) || [])[1]);
+  assert.ok(v >= 1088, String(v));
+  assert.ok(SW.includes("const SW_BUILD = '" + v + "';"));
 });

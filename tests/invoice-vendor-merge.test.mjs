@@ -201,6 +201,8 @@ test('業者の統合: the vendors become one, open months move, closed months a
   const r = await E.api('tok-office', { action: 'vendor_merge', to: 'VendorA', names, group_id: 'vm-test-1' });
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.merge_id); assert.deepEqual(r.body.recheck, { fixed: 3, failed: 0, left: 0 }); assert.equal(r.body.summary, true);
+  assert.equal(r.body.review_doc_ids[0], D['U-3001'].id, 'the invoice that had no vendor is worked out first');
+  assert.deepEqual((await E.q(`select moved->'unknown' u from invoice_vendor_merges where id=$1`, [r.body.merge_id]))[0].u.map(x => x.id), [D['U-3001'].id], 'and recorded');
   const v1 = await rule(E, 'v1'), v5 = await rule(E, 'v5');
   assert.deepEqual([v1.display_name, v1.aliases, v1.merged_into], ['VendorA', ['VENDOR A INC.', 'Vendor A Co', 'VENDOR-A HAWAII'], null]);
   assert.deepEqual([v5.merged_into, v5.aliases, v5.display_name], ['v1', [], 'Vendor A Co'], 'the merged vendor keeps its own names (taken back exactly)');
@@ -258,18 +260,19 @@ test('業者の統合: the vendors become one, open months move, closed months a
   // Take it back.
   const upv = await E.api('tok-gm', { action: 'vendor_unmerge', merge_id: r.body.merge_id, preview: true });
   assert.equal(upv.status, 200, JSON.stringify(upv.body));
-  assert.deepEqual([upv.body.docs, upv.body.stay, upv.body.review], [1, 1, 1]);
+  assert.deepEqual([upv.body.docs, upv.body.unknown, upv.body.stay, upv.body.review], [1, 1, 1, 2]);
   assert.equal((await rule(E, 'v5')).merged_into, 'v1', 'a preview changes nothing');
   const un = await E.api('tok-gm', { action: 'vendor_unmerge', merge_id: r.body.merge_id });
   assert.equal(un.status, 200, JSON.stringify(un.body));
-  assert.deepEqual(un.body.recheck, { fixed: 1, failed: 0, left: 0 });
+  assert.deepEqual(un.body.recheck, { fixed: 2, failed: 0, left: 0 });
   const v1b = await rule(E, 'v1'), v5b = await rule(E, 'v5');
   assert.deepEqual([v1b.display_name, v1b.aliases, v1b.food_kind, v5b.merged_into, v5b.merged_by], ['VendorA', ['VENDOR A INC.'], 'food', null, null],
     'the names the merge added are taken off (also when one was taken off by hand since)');
   const back = {}; for (const k of Object.keys(D)) back[k] = await one(E, D[k].id);
   assert.deepEqual(Object.fromEntries(Object.entries(back).map(([k, d]) => [k, d.vendor_key])), {
-    'A-1001': 'v1', 'B-2001': 'v5', 'B-1001': 'v5', 'B-2003': 'v5', 'B-2004': 'v2', 'U-3001': 'v1', 'C-4001': 'v1' },
-    'what the merge moved goes back; what was corrected or read since stays');
+    'A-1001': 'v1', 'B-2001': 'v5', 'B-1001': 'v5', 'B-2003': 'v5', 'B-2004': 'v2', 'U-3001': null, 'C-4001': 'v1' },
+    'what the merge moved goes back (the invoice with a name no vendor had waits for a vendor again); what was corrected or read since stays');
+  assert.deepEqual([back['U-3001'].vendor_name, codes(back['U-3001']).includes('vendor_unknown')], [D['U-3001'].vendor_name, true], 'worked out again: no vendor has its name now');
   assert.equal(back['B-2001'].vendor_name, 'Vendor A Co'); assert.ok(codes(back['B-2001']).includes('mode_review_vendor'), 'worked out again with its own vendor');
   assert.deepEqual((await E.q(`select vendor_item_code c, vendor_key k from invoice_item_maps where vendor_item_code in ('00777','06263') order by 1, 2`)).map(x => x.c + ':' + x.k),
     ['00777:v5', '06263:v1', '06263:v5']);
@@ -360,7 +363,7 @@ test('業者の統合: a later merge is taken back first; a new name for the kep
   await E.pg.close();
 });
 
-test('業者の統合 deploy folder: the copies are the repository files and the one-file function is built from the sources in use',
+test('業者の統合 deploy folder: the migration copies are the repository files; the check SQL and the one-file function stay as handed over',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -368,11 +371,12 @@ test('業者の統合 deploy folder: the copies are the repository files and the
   assert.ok(rd(D + '1_追加のSQL_業者の統合だけ.sql').equals(rd('supabase/migrations/20261022090000_invoice_vendor_merge.sql')));
   assert.ok(rd(D + '1_追加のSQL_段階2と段階3と業者の統合.sql').equals(Buffer.concat([rd('supabase/migrations/20261020090000_invoice_reconciled_folder.sql'), Buffer.from('\n'),
     rd('supabase/migrations/20261021090000_invoice_multi_file.sql'), Buffer.from('\n'), rd('supabase/migrations/20261022090000_invoice_vendor_merge.sql')])));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The sources and the check SQL moved on with 新しい業者を決める (deploy/invoice-vendor-register-v1089 is built from the current
+  // ones): this folder is what goes in for 業者の統合 alone, and the function to go back to from 新しい業者を決める.
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), '0548d13a42fc5db7efe464ecb474441ed34531c427b4d25dcff46551e417b4e0');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
-  // Every source of the one-file function is the repository's as it is now: change one, build the function again.
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, f + ' changed: build 3_関数 again');
+  assert.equal(src.bundle_sha256, '44e433b15c0a2f90b80b0ac7b62dc2e56ca0575a1195e45f40418c69b442a070');
   assert.deepEqual(Object.keys(src.sources).sort(), ['invoice/dates.mjs', 'invoice/decimal.mjs', 'invoice/dedupe.mjs', 'invoice/drive.mjs', 'invoice/extract.mjs', 'invoice/naming.mjs',
     'invoice/rules.mjs', 'invoice/units.mjs', 'supabase/functions/invoice-intake/handler.mjs', 'supabase/functions/invoice-intake/index.ts']);
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
@@ -389,7 +393,8 @@ test('業者の統合: the check SQL tells before from after', async () => {
   const dir = new URL('../supabase/migrations/', import.meta.url);
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S4 = '20261022090000_invoice_vendor_merge.sql';
-  assert.equal(files.at(-1), S4);
+  // 新しい業者を決める (20261024090000) came after it: the database here is the one 業者の統合 went on.
+  assert.deepEqual(files.slice(-2), [S4, '20261024090000_invoice_vendor_register.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
   try {
@@ -397,7 +402,7 @@ test('業者の統合: the check SQL tells before from after', async () => {
       alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
-    for (const f of files.slice(0, -1)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -2)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_merge, Number(post.tables), Number(post.functions), post.multi_file], [false, 18, 77, true]);
     await pg.exec(fs.readFileSync(new URL(S4, dir), 'utf8'));
