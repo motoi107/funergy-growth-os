@@ -6186,15 +6186,22 @@ function _tipDecDay(r) {
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
   return m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
 }
-/* 決めるときに残す日（ハワイの日付）。その人のどの決定の日（decDay）よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で
+/* 決めるときに残す日（ハワイの日付）。その人のほかの決定の日よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で
    決めると前の日になり、あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り）。
-   ただし、この端末の明日より先の日は使わない（独立レビュー acb707e P2：時計の進んだ端末の日やこわれた日（2099 年など）があると、
-   そのあとの決定がずっと配分に効かなかった）。時計の遅れは 1 日まで守り、進んだ端末の日でずれるのも 1 日まで */
-function tipDecDayStamp(list, name) {
-  var now = Date.now(), d = _tipHstDay(now), cap = _tipHstDay(now + 86400000);
-  (list || []).forEach(function (r) { if (r && r.name === name) { var x = String(r.decDay || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(x) && x > d && x <= cap) d = x; } });
+   ほかの決定の日は配分と同じ _tipDecDay（decDay → 無ければ approvedDate。Codex 2ad1047 の P2：前は decDay だけを見たので、
+   v1091 以前の端末の承認（approvedDate だけ）があると、時計の遅れた端末の決定が過ぎた日から効いて、過去の日の配分が変わった）。
+   信じるのは、この端末の今日から TIP_DEC_DAY_AHEAD 日先まで（独立レビュー acb707e P2：こわれた日（2099 年など）があると、
+   そのあとの決定がずっと配分に効かなかった）。この幅の中なら、時計の遅れは守り、時計の進んだ端末の日があると、あとの決定はその日まで待つ
+   （進んだ端末で決めたもの自体もその日まで効かない。待つときは決めた人に知らせる＝tipDecDayLate）。self：いま決める記録（数えない） */
+var TIP_DEC_DAY_AHEAD = 31;
+function _tipDayOk(x) { var t = Date.parse(x + 'T00:00:00Z'); return isFinite(t) && new Date(t).toISOString().slice(0, 10) === x; }
+function tipDecDayStamp(list, name, self) {
+  var now = Date.now(), d = _tipHstDay(now), cap = _tipHstDay(now + TIP_DEC_DAY_AHEAD * 86400000);
+  (list || []).forEach(function (r) { if (r && r !== self && r.name === name) { var x = _tipDecDay(r); if (x && x > d && x <= cap && _tipDayOk(x)) d = x; } });
   return d;
 }
+/* 決めた日が、この端末の明日より先になった（ほかの決定の日に合わせて待つ）なら、その日（知らせる）。明日までは時差（日本の端末の承認日）の分なので知らせない */
+function tipDecDayLate(day) { var x = String(day || ''); return (x && x > _tipHstDay(Date.now() + 86400000)) ? x : ''; }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
 function tipRateOn(emp, dateISO, list) {
   if (typeof emp === 'string') { var _nm = emp; emp = getEmployees().find(function (e) { return e.name === _nm; }); }
@@ -81754,7 +81761,8 @@ async function approveTip(id, status) {
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
     r.decAt = _dec;
-    r.decDay = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
+    r.decDay = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name, r) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日）。いま決める記録の approvedDate は数えない */
+    var _late = (status==='承認' && typeof tipDecDayLate==='function') ? tipDecDayLate(r.decDay) : '';
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81764,7 +81772,10 @@ async function approveTip(id, status) {
     try{ apDecidedFromPage('TipRate', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'tiprate', title:(r.name+' Tip Rate '+r.rate+'%'),
       match:function(a){ return !a.ref && a.from===r.name && /Tip Rate申請/.test(String(a.title||'')) && String(a.title||'').trim().slice(-(String(r.rate).length+2))===(' '+r.rate+'%'); }}); }catch(e){}
     try{ if(status==='承認') apNotifyAcctApplied('Tip Rate', r.name, r.rate+'%'); }catch(e){}   /* v1087（2A）: 反映したので経理・事務Crew へ */
-    if (status==='承認' && _after!=null && _after!==Number(r.rate))
+    if (_late)   /* Codex 2ad1047 の P2 の直し：ほかの決定の日に合わせて待つ。端末の日付を確かめてもらう */
+      showToast(t('承認しました。'+r.name+' さんのほかの決定が '+_late+' の日付なので、チップの配分には '+_late+' から効きます（この端末の今日は '+_tipHstDay(Date.now())+'）。端末の日付と時刻を確かめてください',
+                  'Approved. Another decision for '+r.name+' is dated '+_late+', so the tip split uses it from '+_late+' (today on this device is '+_tipHstDay(Date.now())+'). Please check this device\'s date and time'),'warning');
+    else if (status==='承認' && _after!=null && _after!==Number(r.rate))
       showToast(t('承認しました。ただし '+r.name+' さんの Tip Rate は '+_rl(_after)+' です（3 か月の 100%・役職・店の決まりなど）', 'Approved. '+r.name+'\'s Tip Rate stays '+_rl(_after)+' (3-month 100%, role or store rules)'),'info');
     else showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
     _redraw();
@@ -81808,12 +81819,16 @@ async function applyTipRaise(){
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:((typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined)});   /* v1092: 決めた日（ハワイの日付） */
+  var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
+  var _late=(typeof tipDecDayLate==='function') ? tipDecDayLate(_dd) : '';
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
   closeModalDirect();
-  showToast(name+' → Tip Rate '+rate+'%','success');
+  if(_late) showToast(t(name+' → Tip Rate '+rate+'%。ほかの決定が '+_late+' の日付なので、チップの配分には '+_late+' から効きます（この端末の今日は '+_tipHstDay(Date.now())+'）。端末の日付と時刻を確かめてください',
+                        name+' → Tip Rate '+rate+'%. Another decision is dated '+_late+', so the tip split uses it from '+_late+' (today on this device is '+_tipHstDay(Date.now())+'). Please check this device\'s date and time'),'warning');
+  else showToast(name+' → Tip Rate '+rate+'%','success');
   if(curPage===_pg) renderPage(curPage);
   try{ if(typeof tipLiveAfterSave==='function') tipLiveAfterSave([name], _saved); }catch(e){}   /* v1091: ほかの端末へすぐ */
 }
