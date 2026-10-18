@@ -7,6 +7,7 @@ import { sha256Hex, contentSignature, classifyDuplicates, aliasKey } from '../..
 import { postedName, uniqueName, monthFolders, reconciledFolders, FOLDER, extensionFor } from '../../../invoice/naming.mjs';
 import { hstDate } from '../../../invoice/dates.mjs';
 import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../invoice/drive.mjs';
+import { groupItems, relink } from '../../../invoice/link.mjs';
 
 const SUPPORTED = { 'application/pdf': true, 'image/jpeg': true, 'image/png': true };
 const READ = ['ceo', 'gm', 'office', 'office_crew'];
@@ -832,6 +833,82 @@ export function createHandler(deps) {
     return r;
   }
 
+  // ------------------------------------------------------------------ 紐づけ 段階 1 (Moto 2026-10-18・UI案55 決まったこと 1〜8)
+  // The Drive intake's items (a vendor's item code, or its printed name with the pack) linked to codes of the current master. Who may:
+  // accounting, 事務Crew, GM, CEO, and the Head Chef / AM accounts (invoice_link_role; nothing else of the intake for those two). A link
+  // changes the mapping table only; then the lines already taken in follow at once (relink: the intake's own mapping step, applied by
+  // invoice_link_apply), so a posted line gets its price history and the month's purchase summary its classes. Amounts never change.
+  const LINK_MAX = 300, APPLY_CHUNK = 500;
+  const str = (x, n) => typeof x === 'string' && x.length > 0 && x.length <= n;
+  const optStr = (x, n) => x == null || (typeof x === 'string' && x.length <= n);
+  const uuidOk = x => typeof x === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+  const verOk = x => x == null || (Number.isInteger(x) && x > 0);
+  const itemOk = x => x && typeof x === 'object' && str(x.vendor_key, 100)
+    && ((str(x.vendor_item_code, 100) && x.alias_key == null) || (x.vendor_item_code == null && str(x.alias_key, 300) && optStr(x.spec_key, 200)));
+  async function linkData(actor, b) {
+    const r = await db.rpc('invoice_link_data', { actor });
+    return { role: r.role, items: groupItems(r.lines || [], { vendors: r.vendors, maps: r.maps, marks: r.marks }), vendors: r.vendors || [],
+      people: r.people || {}, lines: (r.lines || []).length, at: new Date(now()).toISOString() };
+  }
+  // The lines of these vendors follow the links in use. changed: links that changed now (their lines keep them with the new code).
+  // In chunks (one transaction each); a line changed meanwhile is passed over (the next action or そろえる does it).
+  async function linkSync(actor, vendorKeys, changed) {
+    const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [] };
+    if (!vendorKeys.length) return out;
+    const ctx = await context();
+    const lines = await db.rpc('invoice_link_lines', { actor, vendor_keys: vendorKeys });
+    const updates = [];
+    for (const l of lines) { const u = relink(l, ctx.maps, changed); if (u) updates.push(u); }
+    for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
+      const r = await db.rpc('invoice_link_apply', { actor, updates: updates.slice(i, i + APPLY_CHUNK) });
+      out.lines += r.lines || 0; out.prices += r.prices || 0; out.voided += r.voided || 0; out.skipped += r.skipped || 0;
+      out.doc_ids.push(...(r.doc_ids || [])); out.months.push(...(r.months || []));
+    }
+    out.months = [...new Set(out.months)].sort();
+    return out;
+  }
+  async function linkFollow(actor, r, vendorKeys, changed) {
+    r.sync = await linkSync(actor, vendorKeys, changed);
+    // posted lines with a code now count by the code's class in the purchase summary (open months; a closed month stays as it was)
+    r.summary = r.sync.lines ? (await publishSummary(null, { months: r.sync.months, doc_ids: r.sync.doc_ids })).ok : true;
+    return r;
+  }
+  async function linkSave(actor, b) {
+    const links = Array.isArray(b.links) ? b.links : null;
+    if (!links || !links.length || links.length > LINK_MAX) throw new Error('bad_value');
+    const clean = links.map(x => {
+      if (!itemOk(x) || !str(x.ingredient_code, 64) || !(x.map_id == null || uuidOk(x.map_id)) || !verOk(x.version) || (x.map_id != null) !== (x.version != null)
+        || !optStr(x.note, 300)) throw new Error('bad_value');
+      return { vendor_key: x.vendor_key, vendor_item_code: x.vendor_item_code ?? null, alias_key: x.alias_key ?? null, spec_key: x.spec_key ?? '',
+        ingredient_code: x.ingredient_code, map_id: x.map_id ?? null, version: x.version ?? null, note: x.note ?? null };
+    });
+    const r = await db.rpc('invoice_link_save', { actor, links: clean });
+    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))], new Set(r.maps.map(m => m.id)));
+  }
+  async function linkUndo(actor, b) {
+    const maps = Array.isArray(b.maps) ? b.maps : null;
+    if (!maps || !maps.length || maps.length > LINK_MAX || !maps.every(x => x && uuidOk(x.id) && verOk(x.version) && x.version != null)) throw new Error('bad_value');
+    const r = await db.rpc('invoice_link_retire', { actor, maps: maps.map(x => ({ id: x.id, version: x.version })) });
+    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))], new Set());
+  }
+  async function linkMark(actor, b) {
+    const marks = Array.isArray(b.marks) ? b.marks : null;
+    if (!marks || !marks.length || marks.length > LINK_MAX) throw new Error('bad_value');
+    const clean = marks.map(x => {
+      if (!itemOk(x) || !['excluded', 'new_item', 'later', 'included', 'none'].includes(x.state) || !verOk(x.version) || !optStr(x.note, 300)) throw new Error('bad_value');
+      return { vendor_key: x.vendor_key, vendor_item_code: x.vendor_item_code ?? null, alias_key: x.alias_key ?? null, spec_key: x.spec_key ?? '',
+        state: x.state, version: x.version ?? null, note: x.note ?? null };
+    });
+    return db.rpc('invoice_link_mark', { actor, marks: clean });
+  }
+  // そろえる: every vendor's lines follow the links in use (lines taken in before a link, or changed meanwhile). Changes no link.
+  async function linkSyncAll(actor) {
+    const w = await db.rpc('invoice_link_whoami', { actor });
+    if (!w || !w.role) throw new Error('forbidden');
+    const ctx = await context();
+    return linkFollow(actor, { role: w.role }, [...new Set(ctx.maps.map(m => m.vendor_key))], new Set());
+  }
+
   async function folderPlan(actor, b) {
     const who = await db.rpc('invoice_whoami', { actor });
     if (!['ceo', 'gm'].includes(who.role)) throw new Error('forbidden');
@@ -987,12 +1064,19 @@ export function createHandler(deps) {
     vendor_apply: vendorApply,
     vendor_merge_into: vendorMergeInto,
     map_seed: (a, b) => db.rpc('invoice_map_seed', { actor: a, store_id: b.store_id || null, apply: b.apply === true, only_ext: b.only_ext !== false }),
+    // 紐づけ 段階 1 (Moto 2026-10-18・UI案55): 食材マスター › 紐づけ.
+    link_whoami: a => db.rpc('invoice_link_whoami', { actor: a }),
+    link_data: linkData,
+    link_save: linkSave,
+    link_undo: linkUndo,
+    link_mark: linkMark,
+    link_sync: linkSyncAll,
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
     not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409,
-    merged: 409, later_merge: 409 };
+    merged: 409, later_merge: 409, unknown_ingredient: 409 };
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.

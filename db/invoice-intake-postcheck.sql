@@ -1,13 +1,14 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 19・関数 84 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 19 / functions 84 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true
+-- 対象はこの migration の表 21・関数 94 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 21 / functions 94 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
 -- （20261021090000＝複数枚で 1 つの invoice を入れる前は functions 74・multi_file false。入れたあとは 77・true）
 -- （20261022090000＝業者の統合を入れる前は tables 18・functions 77・vendor_merge false。入れたあとは 19・81・true）
 -- （20261024090000＝新しい業者を決める を入れる前は functions 81・vendor_register false。入れたあとは 84・true）
-with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges']) as t), fn as (select unnest(array[
+-- （20261025090000＝紐づけ 段階 1 を入れる前は tables 19・functions 84・item_link false。入れたあとは 21・94・true）
+with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
    'invoice_file_brief', 'invoice_file_claim', 'invoice_file_content_changed', 'invoice_file_fail', 'invoice_file_retry', 'invoice_file_seen',
@@ -20,7 +21,9 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_require', 'invoice_run_log', 'invoice_setting', 'invoice_settings_save',
    'invoice_stage', 'invoice_store_folder', 'invoice_store_save', 'invoice_vendor_save', 'invoice_vendor_seed', 'invoice_whoami',
    'invoice_worker_context', 'invoice_worker_key', 'invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check',
-   'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge', 'invoice_vendor_register', 'invoice_vendor_waiting', 'invoice_vendor_merge_into']) as f)
+   'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge', 'invoice_vendor_register', 'invoice_vendor_waiting', 'invoice_vendor_merge_into',
+   'invoice_code_key', 'invoice_link_hr_ok', 'invoice_link_role', 'invoice_link_whoami', 'invoice_link_lines', 'invoice_link_data', 'invoice_link_save',
+   'invoice_link_retire', 'invoice_link_mark', 'invoice_link_apply']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -146,4 +149,22 @@ select
       where n.nspname = 'public' and p.proname in ('invoice_vendor_register', 'invoice_vendor_merge_into'))
     and (select count(*) = 2 and bool_and(p.prosrc like '%''unknown'', v_unk%')
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_vendor_merge', 'invoice_vendor_unmerge')), false) as vendor_register;
+      where n.nspname = 'public' and p.proname in ('invoice_vendor_merge', 'invoice_vendor_unmerge')), false) as vendor_register,
+  -- 紐づけ 段階 1（20261025090000, Moto 2026-10-18・UI案55）：戻した結びの印（retired_at）と、Head Chef・AM の表・品目の印の表があり、ブラウザーからは
+  -- 読めない。紐づけの関数 10 個はブラウザーからは動かせない。戻した結びは取込と単価に使わない（置き換えた 3 つ）。結ぶのは同じロックの中。
+  coalesce((select count(*) = 2 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_item_maps'
+      and column_name in ('retired_at', 'retired_by'))
+    and (select count(*) = 2 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('invoice_link_members', 'invoice_link_marks') and c.relrowsecurity)
+    and (select count(*) = 10 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_code_key', 'invoice_link_hr_ok', 'invoice_link_role', 'invoice_link_whoami', 'invoice_link_lines',
+        'invoice_link_data', 'invoice_link_save', 'invoice_link_retire', 'invoice_link_mark', 'invoice_link_apply')
+        and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))
+    and (select count(*) = 3 and bool_and(p.prosrc like '%retired_at%') from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_price_insert', 'invoice_worker_context', 'invoice_map_save'))
+    and (select count(*) = 3 and bool_and(p.prosrc like '%pg_advisory_xact_lock(hashtext(''invoice_vendor_rules''))%' and p.prosrc like '%invoice_link_role%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_link_save', 'invoice_link_retire', 'invoice_link_mark'))
+    and (select count(*) = 1 and bool_and(p.prosrc like '%invoice_link_role%' and p.prosrc like '%invoice_price_insert%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = 'invoice_link_apply'), false) as item_link;

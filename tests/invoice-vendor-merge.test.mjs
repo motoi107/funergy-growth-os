@@ -393,8 +393,8 @@ test('業者の統合: the check SQL tells before from after', async () => {
   const dir = new URL('../supabase/migrations/', import.meta.url);
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S4 = '20261022090000_invoice_vendor_merge.sql';
-  // 新しい業者を決める (20261024090000) came after it: the database here is the one 業者の統合 went on.
-  assert.deepEqual(files.slice(-2), [S4, '20261024090000_invoice_vendor_register.sql']);
+  // 新しい業者を決める (20261024090000) and 紐づけ (20261025090000) came after it: the database here is the one 業者の統合 went on.
+  assert.deepEqual(files.slice(-3), [S4, '20261024090000_invoice_vendor_register.sql', '20261025090000_invoice_item_link.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
   try {
@@ -402,7 +402,7 @@ test('業者の統合: the check SQL tells before from after', async () => {
       alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
-    for (const f of files.slice(0, -2)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -3)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_merge, Number(post.tables), Number(post.functions), post.multi_file], [false, 18, 77, true]);
     await pg.exec(fs.readFileSync(new URL(S4, dir), 'utf8'));
