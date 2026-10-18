@@ -443,6 +443,99 @@ test('①（3 回目 P3-1・P3-2）: the weekly heatmap leaves out the labor rat
   assert.match(fnSrc('syncTipLaborFromDB'), /fetchErr: !!\(rows && rows\._err\)/);
 });
 
+/* Codex 6245991596（#74 4e685ac）・6246056356（#75 4bfc3ff）の P2：置き換えられた古い読み込みの答えが、新しい勤怠とクレジットTip調整額を戻した。
+   本物の mdViewerEnsureLabor → syncTipLaborFromDB → fetchTipLaborFromDB → setTipLabor / setCreditTipAdjLocal を通す（時計・タイマー・fetch・保存先は合成） */
+function laborApp() {
+  const c = { console, AbortController, STORE: {}, FETCHES: [], TIMERS: [], NOW: 1000000, IGNORE_ABORT: false };
+  vm.createContext(c);
+  vm.runInContext(['_tipLaborFetchErr', 'fetchTipLaborFromDB', 'syncTipLaborFromDB', 'setTipLabor', 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
+    'normalizeBusinessDate', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
+    Date.now = function(){ return NOW; };
+    var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so
+    var _tipLaborSeq = 0, _tipLaborSaved = {};
+    var _mdLaborMarks = {}, _mdViewLabor = {}, _mdViewInflight = {}, MD_VIEW_LABOR_TIMEOUT_MS = 20000, _mdViewRedrawT = null;
+    var MD_VIEW_LABOR_RETRY_MS = 60000, MD_VIEW_LABOR_EMPTY_RETRY_MS = 600000;
+    var SUPABASE_URL = 'https://x', SUPABASE_ANON = 'a';
+    function bizToday(){ return '2026-10-17'; }
+    function isFrozenMonth(){ return false; } function monthFrozenKey(){ return 'x'; }
+    function mdIsAllViewer(){ return true; } function mdViewStores(){ return ['F01']; }
+    function getStoresAll(){ return [{ id: 'F01', toastGuid: 'g1' }]; }
+    function daysOfYm(ym){ return [{ date: ym + '-01' }, { date: ym + '-31' }]; }
+    function laborCoreForYm(id){ return { noLaborDays: STORE['tip_labor_' + id + '_2026-10-02'] ? [] : ['2026-10-02'] }; }
+    function _mdViewRedrawSoon(){}
+    function getEmployees(){ return [{ name: 'Ken' }]; }
+    function isOrderOnlyAccount(){ return false; }
+    function tipHoursFromShifts(){ return { lunch: 0, dinner: 0 }; }
+    function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
+    function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
+    function _lsRawStr(k){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.stringify(STORE[k]) : null; }
+    function _lsFreeOldLaborKeys(){} function _laborSaveWarn(){}
+    function fetch(url, o){ return new Promise(function(res, rej){
+      var f = { url: url, signal: o && o.signal, res: res, rej: rej };
+      if (f.signal) f.signal.addEventListener('abort', function(){ if (!IGNORE_ABORT) rej(new Error('aborted')); });
+      FETCHES.push(f); }); }
+    function answer(i, hours, adj){ FETCHES[i].res({ ok: true, json: async function(){ return [{ business_date: '2026-10-02', lunch_credit_tip_adj: adj,
+      data: [{ name: 'Ken', lunchHours: hours, dinnerHours: 0 }] }]; } }); }
+    function saved(){ var l = STORE['tip_labor_F01_2026-10-02']; var a = (STORE['m_credit_tip_adj_F01'] || {})['2026-10-02'];
+      return { hours: l && l.Ken ? l.Ken.lunch : null, adj: a ? a.lAdj : null }; }`, c);
+  return c;
+}
+const flush = async () => { for (let i = 0; i < 8; i++) await new Promise(r => setImmediate(r)); };
+
+test('①（Codex 6245991596）: a replaced old read does not put old labor and credit tip adjustments back over a newer read (real save path)', async () => {
+  for (const ignoreAbort of [false, true]) {   // true: the old answer still arrives after the abort (the save guard alone must hold)
+    const c = laborApp(); c.IGNORE_ABORT = ignoreAbort;
+    assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1, 'A starts');
+    await flush(); assert.equal(c.FETCHES.length, 1);
+    run(c, 'NOW += 25000');   // past the time limit, but A's timer has not run yet (a background tab)
+    run(c, 'mdLaborMarksClear()');
+    assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1, 'B starts');
+    await flush(); assert.equal(c.FETCHES.length, 2);
+    assert.equal(c.FETCHES[0].signal.aborted, true, 'A is cancelled when B replaces it');
+    run(c, 'answer(1, 9, 9)'); await flush();
+    assert.deepEqual(plain(run(c, 'saved()')), { hours: 9, adj: 9 }, 'B saved');
+    assert.equal(run(c, "mdLaborFresh('F01','2026-10')"), true);
+    run(c, 'TIMERS[0]()'); await flush();   // A's timer runs late
+    run(c, 'answer(0, 1, 1)'); await flush();   // A's old answer arrives
+    assert.deepEqual(plain(run(c, 'saved()')), { hours: 9, adj: 9 }, 'the old answer does not overwrite (ignoreAbort=' + ignoreAbort + ')');
+    assert.equal(run(c, "mdLaborFresh('F01','2026-10')"), true);
+  }
+});
+
+test('①（Codex 6245991596）: any two reads of the same store and day: the one started later wins, whatever order the answers come in; a read that is no longer used saves nothing', async () => {
+  const c = laborApp();
+  const days = "[{date:'2026-10-01'},{date:'2026-10-31'}]";
+  // started A then B; B answers first, A later: B stays (login sync and month load also go through here)
+  let pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`), pb = run(c, `syncTipLaborFromDB('F01','g1',${days})`);
+  await flush(); run(c, 'answer(1, 9, 9)'); const rb = await pb; run(c, 'answer(0, 1, 1)'); const ra = await pa;
+  assert.deepEqual(plain(run(c, 'saved()')), { hours: 9, adj: 9 });
+  assert.equal(rb.updated, 1); assert.equal(ra.updated, 0); assert.equal(ra.skipped, 1);
+  // in order: the later one saves over the earlier one (as before)
+  pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`); pb = run(c, `syncTipLaborFromDB('F01','g1',${days})`);
+  await flush(); run(c, 'answer(2, 3, 3)'); await pa; run(c, 'answer(3, 4, 4)'); await pb;
+  assert.deepEqual(plain(run(c, 'saved()')), { hours: 4, adj: 4 });
+  // another store's day is not blocked by this store's reads
+  // a read whose caller no longer wants it (alive() false) or that was cancelled saves nothing
+  const p = run(c, `syncTipLaborFromDB('F01','g1',${days},{ alive: function(){ return false; } })`);
+  await flush(); run(c, 'answer(4, 7, 7)'); const r = await p;
+  assert.equal(r.stale, true); assert.equal(r.updated, 0);
+  assert.deepEqual(plain(run(c, 'saved()')), { hours: 4, adj: 4 });
+  // a read that timed out (its own time limit passed and nothing replaced it) does not save its late answer either
+  const t = laborApp(); t.IGNORE_ABORT = true;
+  run(t, "mdViewerEnsureLabor('2026-10', ['F01'])"); await flush();
+  run(t, 'TIMERS[0]()'); await flush();
+  assert.equal(t.FETCHES[0].signal.aborted, true);
+  run(t, 'answer(0, 5, 5)'); await flush();
+  assert.deepEqual(plain(run(t, 'saved()')), { hours: null, adj: null }, 'the timed-out read saves nothing; the next read (a minute later) brings the data');
+  // the same where the browser has no AbortController (nothing can be cancelled): the read is no longer used, so it saves nothing
+  const n = laborApp(); n.AbortController = undefined;
+  run(n, "mdViewerEnsureLabor('2026-10', ['F01'])"); await flush();
+  assert.equal(n.FETCHES[0].signal, undefined);
+  run(n, 'TIMERS[0]()'); await flush();
+  run(n, 'answer(0, 5, 5)'); await flush();
+  assert.deepEqual(plain(run(n, 'saved()')), { hours: null, adj: null });
+});
+
 test('B（独立レビュー P2-2）: tapping the notification switches the receipts screen back to the list, where the reimbursement card is', () => {
   const c = { console }; vm.createContext(c);
   vm.runInContext(fnSrc('rbApplyNotifFocus') + "\nvar _rbView = { ym: '', status: 'all' }; var window = { _invMainView: 'checks' };", c);

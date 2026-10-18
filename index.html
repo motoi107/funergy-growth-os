@@ -1691,14 +1691,25 @@ async function fetchTipLaborFromDB(guid, dateFrom, dateTo, signal) {   /* signal
 }
 /* v1090（独立レビュー 7002a69 P3-2）：読めなかったときは空の配列に印 _err（空の答えと分ける。ほかの使い方は配列のまま） */
 function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
+/* v1090（Codex 6245991596・#74 4e685ac の P2）：前に始めた読み込みの答えが、あとから始めた読み込みが保存した勤怠・クレジットTip調整額を
+   古い値に戻さない。読み込みに始めた順の番号（_tipLaborSeq）を振り、店と日ごとに保存した番号（_tipLaborSaved）を覚えて、
+   もっと新しい番号が保存した日は書かない（どの呼び出しでも。ログインの同期・月の読み込み・ダッシュボード）。
+   あわせて、打ち切った（opts.signal）・使わなくなった（opts.alive() が false）読み込みは何も保存しない */
+var _tipLaborSeq = 0, _tipLaborSaved = {};
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
+  var _seq = ++_tipLaborSeq;
   var rows = await fetchTipLaborFromDB(guid, days[0].date, days[days.length-1].date, opts && opts.signal);
+  if (opts && ((opts.signal && opts.signal.aborted) || (typeof opts.alive === 'function' && !opts.alive())))
+    return { updated: 0, rowCount: 0, emptyData: 0, rawDates: [], savedDates: [], skipped: 0, fetchErr: true, stale: true, diag: '古い読み込み（保存していない）' };
   var staff = getEmployees();
-  var updated = 0, emptyData = 0, savedDates = [];
+  var updated = 0, emptyData = 0, savedDates = [], skipped = 0;
   var rawDates = rows.map(r=>r.business_date);
   rows.forEach(row=>{
     var list = row.data || [];
+    var _sk = storeId + '|' + normalizeBusinessDate(row.business_date);
+    if ((_tipLaborSaved[_sk] || 0) > _seq) { skipped++; return; }   /* あとから始めた読み込みがもう保存した日 */
+    _tipLaborSaved[_sk] = _seq;
     // v635: クレジットTip調整額を取り込み（data空でも保持）。DBがクリアされたらローカルもクリア。
     {
       var _bdA = normalizeBusinessDate(row.business_date);
@@ -1726,8 +1737,8 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     savedDates.push(bd);
     updated++;
   });
-  return { updated, rowCount: rows.length, emptyData, rawDates, savedDates, fetchErr: !!(rows && rows._err),
-    diag: `DB返却${rows.length}行 / 保存${updated}日 / data空${emptyData}行` };
+  return { updated, rowCount: rows.length, emptyData, rawDates, savedDates, skipped, fetchErr: !!(rows && rows._err),
+    diag: `DB返却${rows.length}行 / 保存${updated}日 / data空${emptyData}行` + (skipped ? ` / 新しい読み込みが先に保存${skipped}日` : '') };
 }
 /* ============================================================
    v860 クレジットTip調整だけを引く軽い取り込み
@@ -2640,15 +2651,18 @@ function mdViewerEnsureLabor(ym, stores) {
   todo.forEach(function (s) {
     var k = s.id + '|' + ym, tm = null, tok = {};
     var ac = null; try { ac = (typeof AbortController === 'function') ? new AbortController() : null; } catch (e) { ac = null; }
-    _mdViewInflight[k] = { at: Date.now(), tok: tok };
+    /* 置き換える前の読み込み（時間を過ぎたが、打ち切りのタイマーがまだ動いていないもの）は、ここで打ち切る（Codex 6245991596） */
+    var old = _mdViewInflight[k]; if (old && old.ac) { try { old.ac.abort(); } catch (e) { } }
+    _mdViewInflight[k] = { at: Date.now(), tok: tok, ac: ac };
     var mine = function () { var f = _mdViewInflight[k]; return !!(f && f.tok === tok); };   /* あとから始めた読み込みがあれば、この答えは使わない */
     var cap = new Promise(function (res) { tm = setTimeout(function () { res('__timeout'); }, MD_VIEW_LABOR_TIMEOUT_MS); });
-    var job = Promise.resolve().then(function () { return syncTipLaborFromDB(s.id, s.toastGuid, days, ac ? { signal: ac.signal } : null); });
+    /* alive：使わなくなった読み込み（時間切れ・置き換え）の答えは、保存の前に捨てる */
+    var job = Promise.resolve().then(function () { return syncTipLaborFromDB(s.id, s.toastGuid, days, { signal: ac ? ac.signal : undefined, alive: mine }); });
     /* 時間内は同じ店を二重に読まない（独立レビュー 7002a69 P3-5）。答えか時間切れで「途中」を外す */
     Promise.race([job, cap])
       .then(function (r) {
         clearTimeout(tm);
-        if (!mine()) return;
+        if (!mine()) { try { if (ac) ac.abort(); } catch (e) { } return; }   /* 置き換えられた読み込み：打ち切って、答えは使わない */
         delete _mdViewInflight[k];
         if (r === '__timeout') { try { if (ac) ac.abort(); } catch (e) { } }   /* 時間切れ：打ち切って、次は 1 分あけて読める */
         if (r === '__timeout' || !r || r.fetchErr) { _mdViewLabor[k] = { failAt: Date.now() }; return; }   /* 読めなかった：1 分あけて */
