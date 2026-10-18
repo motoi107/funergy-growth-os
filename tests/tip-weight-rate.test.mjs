@@ -45,7 +45,7 @@ function app() {
   vm.runInContext(['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', 'tipRateOn', '_tipLatestApproved', '_tipDecT', 'firstWorkDate', 'isThreeMonths',
     'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit', 'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel',
     'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf', '_tipHstDay'].map(fnSrc).join('\n')
-    + '\n' + ['_tipDayOk', '_tipDecDayExact', 'tipNoTipOn', 'tipShiftsBefore', 'tipRatesText', 'tipRowNoTipText'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
+    + '\n' + ['_tipDayOk', '_tipDecDayExact'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';
     var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
@@ -61,21 +61,7 @@ function app() {
     var EXCL = {}; function isTipExcluded(s, d, n, slot){ return !!EXCL[s + '|' + d + '|' + n + '|' + slot]; }
     function isOrderOnlyAccount(){ return false; }
     function isStoreLeader(){ return false; }
-    function workedShiftCount(emp){ return NOTIP[emp.name] ? 0 : 99; }   /* today's No Tip on the Tip Rate screen */
-    /* the attendance rows the shift count reads (tip_labor_<store>_<date>): the same synthetic LABOR the distribution uses.
-       HISTORY (on unless a test turns it off): everyone also worked lunch and dinner on 9/29 and 9/30 at the home store, so the staff of the
-       older tests (first shift in the summer or September) are past the No Tip shifts, as they would be in real data. */
-    var HISTORY = true, HIST_DAYS = ['2026-09-29', '2026-09-30'];
-    function lsKeys(p){
-      var ks = Object.keys(LABOR).map(function(k){ var a = k.split('|'); return 'tip_labor_' + a[0] + '_' + a[1]; });
-      if (HISTORY) STORES.forEach(function(st){ HIST_DAYS.forEach(function(d){ ks.push('tip_labor_' + st.id + '_' + d); }); });
-      return ks.filter(function(k){ return k.indexOf(p) === 0; });
-    }
-    function _lsRaw(k, d){
-      var m = /^tip_labor_(.+)_(\\d{4}-\\d{2}-\\d{2})$/.exec(k); if (!m) return d;
-      if (HISTORY && HIST_DAYS.indexOf(m[2]) >= 0 && !LABOR[m[1] + '|' + m[2]]) { var o = {}; EMPS.forEach(function(e){ if (e.store === m[1]) o[e.name] = { lunch: 4, dinner: 4 }; }); return o; }
-      var v = LABOR[m[1] + '|' + m[2]]; return v ? JSON.parse(JSON.stringify(v)) : d;
-    }
+    function workedShiftCount(emp){ return NOTIP[emp.name] ? 0 : 99; }
     function noTipShifts(){ return 3; }
     function getAttOverride(){ return null; }
     var PERIOD = null; function tipPeriodInfo(){ return PERIOD; }
@@ -187,7 +173,7 @@ test('before the start date the numbers are exactly the employee master coeffici
   }
 });
 
-test('No Tip people are left out and the rest share the whole tip by Tip Rate (a new hire with no shift before the start date is No Tip on it)', () => {
+test('No Tip is unchanged: the people whose Tip Rate is No Tip now are left out, and the rest share the whole tip by Tip Rate', () => {
   const c = app();
   c.EMPS = [EMP({ name: 'N', firstWork: '2026-10-10' }), EMP({ name: 'M', firstWork: '2026-09-01' })];
   c.NOTIP = { N: true };
@@ -622,129 +608,4 @@ test('独立レビュー（9c08984）P2-1・P3-1・P3-2: a staff phone whose clo
   assert.deepEqual([day('c2'), day('b3')], ['2026-10-21', '2026-10-20']);
   assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'c2').decHst, '2026-10-20', 'the deciding device’s own date is kept');
   assert.equal(clock().length, 1);
-});
-
-// Moto 2026-10-18「No Tip をその日の時点のシフト数で決める」: from the start date a shift is No Tip when the person had not finished the
-// store's No Tip shifts (noTipShifts, 3 here) before that shift. Before, the count of TODAY decided, so once the new hire passed the period,
-// recalculating the period paid the No Tip days too. Days before the start date keep today's No Tip (paid periods do not change).
-test('Moto 10/18: No Tip is decided per shift at that day: the first 3 shifts stay No Tip after the new hire passed the period; the 4th shift is paid at 80%', () => {
-  const c = app();
-  c.EMPS = [EMP({ name: 'N', firstWork: '2026-10-16' }), EMP({ name: 'M', firstWork: '2026-09-01' })];
-  c.NOTIP = {};   // today N has passed the No Tip period (the Tip Rate screen shows 80%)
-  run(c, 'HISTORY = false; HIST_DAYS = []');
-  c.LABOR['F01|2026-09-29'] = c.LABOR['F01|2026-09-30'] = { M: { lunch: 4, dinner: 4 } };   // M’s earlier shifts (4, no tip on those days)
-  const set = (d, n, m, tip) => { c.LABOR['F01|' + d] = Object.assign({ M: { lunch: 4, dinner: 4 } }, n ? { N: n } : {}); c.TIPS['F01|' + d] = tip; };
-  set('2026-10-16', { lunch: 4, dinner: 4 }, null, { l: 100, d: 120 });   // shifts 1 and 2
-  set('2026-10-17', { lunch: 4, dinner: 4 }, null, { l: 100, d: 120 });   // shift 3 (lunch) and shift 4 (dinner)
-  set('2026-10-18', { lunch: 0, dinner: 5 }, null, { l: 100, d: 120 });   // shift 5 (dinner only)
-  const d16 = plain(run(c, "calcTipDistribution('F01', '2026-10-16')"));
-  const N16 = d16.list.find(r => r.name === 'N'), M16 = d16.list.find(r => r.name === 'M');
-  assert.equal(N16.lunchNoTip, true); assert.equal(N16.dinnerNoTip, true); assert.equal(N16.total, 0, '10/16 is No Tip for N');
-  near(M16.total, 220, '10/16 M gets the whole tip'); near(d16.distSum, 220, '10/16 paid out');
-  const d17 = plain(run(c, "calcTipDistribution('F01', '2026-10-17')"));
-  const N17 = d17.list.find(r => r.name === 'N'), M17 = d17.list.find(r => r.name === 'M');
-  assert.equal(N17.lunchNoTip, true, '10/17 lunch is the 3rd shift: No Tip'); assert.equal(N17.dinnerNoTip, false, '10/17 dinner is the 4th shift');
-  near(N17.lunch, 0, '10/17 N lunch'); near(M17.lunch, 100, '10/17 M lunch');
-  near(N17.dinner, 60, '10/17 N dinner: 4h×80% of 4h×80%+4h×80%'); near(M17.dinner, 60, '10/17 M dinner');
-  near(d17.distSum, 220, '10/17 paid out');
-  const d18 = plain(run(c, "calcTipDistribution('F01', '2026-10-18')"));
-  const N18 = d18.list.find(r => r.name === 'N');
-  assert.equal(N18.dinnerNoTip, false); near(N18.dinner, 120 * 5 / 9, '10/18 N dinner 5h×80% of 5h×80%+4h×80%');
-  // the shift counts themselves
-  assert.equal(run(c, "tipShiftsBefore(EMPS[0], '2026-10-16', 'lunch')"), 0);
-  assert.equal(run(c, "tipShiftsBefore(EMPS[0], '2026-10-16', 'dinner')"), 1, 'the same day’s lunch is before the dinner');
-  assert.equal(run(c, "tipShiftsBefore(EMPS[0], '2026-10-17', 'lunch')"), 2);
-  assert.equal(run(c, "tipShiftsBefore(EMPS[0], '2026-10-18', 'dinner')"), 4, 'a lunch with no hours is not a shift');
-  const capped = run(c, "tipShiftsBefore(EMPS[0], '2026-10-18', 'dinner', 3)");
-  assert.ok(capped >= 3 && capped < 4 + 1, 'stops reading days once the cap is reached (the day that reached it is counted whole): ' + capped);
-  // the period: rates used are No Tip then 80%; the label, the period badge and the staff tab say so; the half-month total matches the days
-  const P = days('2026-10-16', '2026-10-31');
-  c.PERIOD = { from: '2026-10-16', to: '2026-10-31', dates: P, anyDate: '2026-10-20', label: '2026年10月後期', rangeLabel: '2026-10-16 〜 2026-10-31' };
-  const Mx = plain(run(c, 'tipPeriodMatrix("F01", PERIOD)'));
-  assert.deepEqual(Mx.rates, { N: [0, 80], M: [80] });
-  c.Mx = Mx;
-  assert.equal(run(c, 'tipPeriodRateLabel(Mx.rates, "N")'), 'No Tip→80%');
-  assert.equal(run(c, 'tipPeriodRateLabel(Mx.rates, "M")'), '80%');
-  assert.equal(run(c, 'tipRatesText([0])'), 'No Tip');
-  assert.equal(run(c, 'tipRatesText([80, 90])'), '80→90%', 'the old label is the same');
-  assert.match(fnSrc('renderTipPeriodMatrix'), /tipRatesText\(used\)/);
-  assert.match(fnSrc('renderTipPeriodStaff'), /tipRatesText\(_u\)/);
-  const settle = plain(run(c, 'calcHalfMonthSettlement("F01", "2026-10-20")'));
-  const sN = (settle.rows || []).find(r => r.name === 'N');
-  near(sN ? (sN.final != null ? sN.final : sN.total) : 0, 60 + 120 * 5 / 9, 'the half month pays N only the 4th and 5th shifts');
-  // the daily table: 10/17 shows 80% with "L No Tip"; 10/16 shows No Tip
-  const h17 = run(c, `renderTipDaily('F01', { id: 'F01' }, '2026-10-17')`);
-  assert.match(h17, />80% <span style="font-size:9px;color:var\(--muted\)">L No Tip<\/span><\/td>/);
-  const h16 = run(c, `renderTipDaily('F01', { id: 'F01' }, '2026-10-16')`);
-  assert.match(h16, /<td style="text-align:center">No Tip<\/td>/);
-  const odAt = SRC.indexOf('function openTipDayDetail('), od = SRC.slice(odAt, SRC.indexOf('\nfunction ', odAt + 10));
-  assert.ok(odAt > 0); assert.match(od, /\$\{tipRowNoTipText\(r\)\?' <span class="tag tag-gray" style="font-size:9px">'\+tipRowNoTipText\(r\)\+'<\/span>':''\}/, 'the day detail tags the person with the same text');
-  assert.equal(run(c, "tipRowNoTipText({ lunchHours: 4, dinnerHours: 0, lunchNoTip: true })"), 'No Tip', 'only lunch worked, No Tip');
-  assert.equal(run(c, "tipRowNoTipText({ lunchHours: 4, dinnerHours: 4, lunchNoTip: false, dinnerNoTip: true })"), 'D No Tip');
-  assert.equal(run(c, "tipRowNoTipText({ lunchHours: 4, dinnerHours: 4 })"), '');
-});
-
-test('Moto 10/18: the rule of that day decides No Tip (approval by then, 3 months, Waikiki, roles, no first shift); days before the start date keep today’s No Tip; attendance before the first shift and at another store is not counted', () => {
-  const c = app();
-  c.EMPS = [
-    EMP({ name: 'A', firstWork: '2026-10-16' }),                       // approved 90% on 10/16: not No Tip from 10/16
-    EMP({ name: 'B', firstWork: '2026-10-16' }),                       // approved 90% on 10/18: still No Tip on 10/16 and 10/17
-    EMP({ name: 'T', firstWork: '2026-07-10' }),                       // 3 months on 10/10: never No Tip
-    EMP({ name: 'W', firstWork: '2026-10-16', store: 'F03' }),         // Waikiki: never
-    EMP({ name: 'G', firstWork: '2026-10-16', role: 'g2', title: 'Crew Leader' }),   // Crew Leader: never
-    EMP({ name: 'Z', coef: 0 }), EMP({ name: 'Y', coef: 0.9 }),        // no first shift date: master rate 0 → No Tip, 0.9 → not
-    EMP({ name: 'H', firstWork: '2026-10-16', support: ['F03'] }),     // home F01, helps Waikiki
-    EMP({ name: 'K', firstWork: '2026-10-17' }),                       // a training row on 10/16 (before the first shift) does not count
-    EMP({ name: 'V', firstWork: '2026-09-01' }),                       // a veteran (4 shifts on 9/29–9/30)
-    EMP({ name: 'U', firstWork: '2026-10-14' }),                       // 10/14 row without lunch/dinner (1 shift, as on the Tip Rate screen) + 2 on 10/15
-  ];
-  run(c, 'HISTORY = false; HIST_DAYS = []');   // only the rows below: T has none, so only the 3 months keeps T out
-  c.LABOR['F01|2026-09-29'] = c.LABOR['F01|2026-09-30'] = { V: { lunch: 4, dinner: 4 } };
-  c.LABOR['F01|2026-10-14'] = { U: { hours: 6 } }; c.LABOR['F01|2026-10-15'] = { U: { lunch: 3, dinner: 3 } };
-  c.STORE.tip_requests = [
-    { id: 'a', name: 'A', rate: 90, status: '承認', decDay: '2026-10-16', approvedDate: '2026/10/16', decAt: Date.UTC(2026, 9, 16, 22) },
-    { id: 'b', name: 'B', rate: 90, status: '承認', decDay: '2026-10-18', approvedDate: '2026/10/18', decAt: Date.UTC(2026, 9, 18, 22) },
-  ];
-  const all = ['A', 'B', 'T', 'W', 'G', 'Z', 'Y', 'H', 'K', 'V', 'U'];
-  for (const d of ['2026-10-16', '2026-10-17']) {
-    c.LABOR['F01|' + d] = Object.fromEntries(all.filter(n => n !== 'W' && !(n === 'H' && d === '2026-10-17')).map(n => [n, { lunch: 3, dinner: 3 }]));
-    c.TIPS['F01|' + d] = { l: 90, d: 90 };
-  }
-  c.LABOR['F03|2026-10-17'] = { W: { lunch: 0, dinner: 4 }, H: { lunch: 0, dinner: 4 } }; c.TIPS['F03|2026-10-17'] = { l: 0, d: 80 };
-  c.LABOR['F03|2026-10-18'] = { W: { lunch: 0, dinner: 4 }, H: { lunch: 0, dinner: 4 } }; c.TIPS['F03|2026-10-18'] = { l: 0, d: 80 };
-  const nt = (n, d, s) => run(c, `tipNoTipOn('${n}', '${d}', '${s}')`);
-  assert.equal(nt('A', '2026-10-16', 'lunch'), false, 'approved by that day');
-  assert.equal(nt('B', '2026-10-16', 'lunch'), true, 'approved after that day: No Tip then');
-  assert.equal(nt('B', '2026-10-17', 'lunch'), true);
-  assert.equal(nt('B', '2026-10-18', 'lunch'), false);
-  for (const n of ['T', 'W', 'G', 'Y', 'V']) assert.equal(nt(n, '2026-10-16', 'lunch'), false, n);
-  assert.equal(nt('Z', '2026-10-16', 'lunch'), true, 'no first shift date and master rate 0');
-  assert.equal(nt('T', '2026-10-16', 'lunch'), false, '3 months after the first shift, even with no shift on this device');
-  assert.equal(run(c, "tipShiftsBefore(EMPS[10], '2026-10-16', 'lunch')"), 3, 'a row of unknown shape is one shift');
-  assert.equal(nt('U', '2026-10-16', 'lunch'), false);
-  assert.equal(nt('K', '2026-10-17', 'lunch'), true, 'the 10/16 row before the first shift is not a shift');
-  assert.equal(run(c, "tipShiftsBefore(EMPS[8], '2026-10-17', 'dinner')"), 1);
-  assert.equal(nt('nobody', '2026-10-16', 'lunch'), false);
-  // a helper at Waikiki: No Tip by the shifts at the home store (2 on 10/16 → the 10/17 Waikiki dinner is still No Tip; 3 by 10/18 is not reached either)
-  const w17 = plain(run(c, "calcTipDistribution('F03', '2026-10-17')"));
-  assert.equal(w17.list.find(r => r.name === 'H').dinnerNoTip, true); near(w17.list.find(r => r.name === 'W').total, 80, 'W gets the Waikiki tip');
-  c.LABOR['F01|2026-10-18'] = { H: { lunch: 3, dinner: 0 } };
-  const w18 = plain(run(c, "calcTipDistribution('F03', '2026-10-18')"));
-  const H18 = w18.list.find(r => r.name === 'H');
-  assert.equal(H18.dinnerNoTip, false, 'the home lunch on 10/18 is the 3rd shift, so the Waikiki dinner is paid'); near(H18.dinner, 40, 'Waikiki: equal by hours');
-  // the distribution on 10/16: A (90%), T (100%), G (100%), Y (90%), V (80%), U (80%) share; B, Z, H, K are No Tip
-  const d16 = plain(run(c, "calcTipDistribution('F01', '2026-10-16')"));
-  const paid = Object.fromEntries(d16.list.map(r => [r.name, r.total]));
-  for (const n of ['B', 'Z', 'H', 'K']) assert.equal(paid[n], 0, n + ' No Tip');
-  const pts = { A: 0.9, T: 1, G: 1, Y: 0.9, V: 0.8, U: 0.8 }, sum = Object.values(pts).reduce((a, b) => a + b, 0);
-  for (const [n, p] of Object.entries(pts)) near(paid[n], 180 * p / sum, n);
-  // before the start date: today's No Tip, as before (a new hire who has passed the period is paid on old days; one who has not, is not)
-  c.EMPS.push(EMP({ name: 'O', firstWork: '2026-10-14' }));
-  c.LABOR['F01|2026-10-14'] = { O: { lunch: 3, dinner: 3 }, V: { lunch: 3, dinner: 3 } }; c.TIPS['F01|2026-10-14'] = { l: 60, d: 60 };
-  c.NOTIP = {};
-  const o1 = plain(run(c, "calcTipDistribution('F01', '2026-10-14')"));
-  assert.equal(o1.weightBy, 'coef'); near(o1.list.find(r => r.name === 'O').total, 60, 'before the start date: paid (today O is past No Tip)');
-  c.NOTIP = { O: true };
-  const o2 = plain(run(c, "calcTipDistribution('F01', '2026-10-14')"));
-  assert.equal(o2.list.find(r => r.name === 'O').total, 0, 'before the start date: today’s No Tip');
 });

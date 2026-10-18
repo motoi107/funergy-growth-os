@@ -6168,9 +6168,7 @@ function isTipEligibleRole(e){
      その日の Tip Rate（tipRateOn）は Tip Rate の画面と同じ決まり（Waikiki・役職・初回勤務から 3 か月・承認・初回勤務日の無い人は従業員マスターの率）で、
      ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から・v1092 からはハワイの日付 decDay）。
      Waikiki（F03・F03-G）のチップは、だれでも 100%（勤務時間で均等）。
-     No Tip は別の印（noTip＝No Tip の人を配分から外す）。Moto 10/18「その日の時点で決める」：この日からは、そのシフト（ランチ／ディナー）の時点で
-     No Tip の期間（店ごとのシフト数）を終えていない人を外す（tipNoTipOn）。前は「今日の」シフト数で決めたので、期間を終えたあとに計算すると、
-     No Tip だった日の配分にもさかのぼって入った（開始日より前の日は今までどおり今日の No Tip）。
+     No Tip は今までどおり別の印（noTip＝いまの Tip Rate が No Tip の人を配分から外す）。
    【開始日より前】今までどおり評価係数（支給・確定に使った期間の額を変えない。v959 の TIP_SL_SPLIT_END と同じ考え方）。
      10/1〜10/15 も Tip Rate にするなら、この日付を '2026-10-01' にする（期間の区切りの日にする）。 */
 var TIP_RATE_WEIGHT_START = '2026-10-16';
@@ -6273,47 +6271,6 @@ function tipRateOn(emp, dateISO, list) {
   if (!fw) return (emp.coef != null ? Math.round(emp.coef * 100) : 100);   // 初回勤務日も勤務開始日も無い人：Tip Rate の画面と同じく従業員マスターの率
   return 80;
 }
-/* v1092（Moto 10/18「No Tip をその日の時点のシフト数で決める」）：その日・そのシフト（'lunch'／'dinner'）の時点で No Tip の期間中か。
-   Tip Rate の画面（effectiveTipRate）と同じ決まりを「その日の」ことで見る：Waikiki・役職・その日に初回勤務から 3 か月・その日までに決めた承認
-   （tipRateOn と同じ選び方）なら No Tip ではない。初回勤務日も勤務開始日も無い人は、従業員マスターの率が 0 のときだけ No Tip（今までどおり）。
-   それ以外は、そのシフトより前に働いたシフト数（tipShiftsBefore）が No Tip のシフト数（noTipShifts・所属の店）に足りなければ No Tip。 */
-function tipNoTipOn(emp, dateISO, slot, list) {
-  if (typeof emp === 'string') { var _nm = emp; emp = getEmployees().find(function (e) { return e.name === _nm; }); }
-  if (!emp) return false;
-  if (emp.store === 'F03' || emp.store === 'F03-G') return false;   // Waikiki(FSP/WGS)は 80/90/100 制度の外（tipRateOn と同じ）
-  if (emp.role !== 'crew' && emp.role !== 'sl') return false;
-  var day = String(dateISO || '');
-  var fw = firstWorkDate(emp);
-  if (fw) { var tm = new Date(fw); tm.setMonth(tm.getMonth() + 3); if (day >= isoOf(tm)) return false; }   // その日に初回勤務から 3 か月
-  var src = Array.isArray(list) ? list : (ls('tip_requests', []) || []);
-  var ap = _tipLatestApproved(emp.name, src, function (r) { var d = _tipDecDay(r); return !d || d <= day; });
-  if (ap) { var rr = Number(ap.rate); if (isFinite(rr) && rr > 0) return false; }   // その日までに決めた承認
-  if (!fw) return emp.coef != null && Math.round(emp.coef * 100) === 0;              // 初回勤務日の無い人：従業員マスターの率
-  var need = noTipShifts(emp.store);
-  return tipShiftsBefore(emp, day, slot, need) < need;
-}
-/* そのシフトより前に働いたシフト数（cap に届いたら次の日は読まない＝その日の分まで数えるので cap より大きいことがある）。数え方は Tip Rate の画面（workedShiftCount）と同じ：
-   所属の店の勤怠（tip_labor）・初回勤務日から・ランチとディナーをそれぞれ 1 シフト（形の分からない日は 1 日 1 シフト）。
-   同じ日のディナーには、その日のランチを前のシフトとして数える。 */
-function tipShiftsBefore(emp, dateISO, slot, cap) {
-  if (!emp || !emp.store) return 0;
-  var day = String(dateISO || ''), fw = firstWorkDate(emp), fwStr = fw ? isoOf(fw) : null;
-  var name = emp.name, prefix = 'tip_labor_' + emp.store + '_', n = 0, lim = (cap == null ? Infinity : cap);
-  try {
-    var ds = lsKeys(prefix).map(function (k) { return k.slice(prefix.length); })
-      .filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d) && (!fwStr || d >= fwStr) && d <= day; }).sort();
-    for (var i = 0; i < ds.length && n < lim; i++) {
-      var data = _lsRaw(prefix + ds[i], null), e = data && data[name];
-      if (!e) continue;
-      if (ds[i] < day) {
-        if ((e.lunch || 0) > 0) n++;
-        if ((e.dinner || 0) > 0) n++;
-        if (e.lunch == null && e.dinner == null) n++;   // 構造不明時は1日=1（workedShiftCount と同じ）
-      } else if (slot === 'dinner' && (e.lunch || 0) > 0) n++;   // 同じ日のランチは、ディナーの前のシフト
-    }
-  } catch (_) {}
-  return n;
-}
 /* チップ配分計算（Tip Sheetロジック）
    - Store Manager以上(ceo/gm/office/am)は対象外
    - Store Leader(sl)は50%別枠を時間按分で受取＋一般配分にも参加
@@ -6327,21 +6284,16 @@ function calcTipDistribution(storeId, date) {
   // 対象スタッフ: その店のsl/crew（manager以上除外）
   function inStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
   var staff = emps.filter(e=>inStore(e) && isTipEligibleRole(e) && e.status!=='退職' && !isTipExcludedTitle(e.title)); /* v630: g2(Crew Leader)も対象 */
-  /* v1092: 重み（その日の Tip Rate か、開始日より前は評価係数）と No Tip の印は、1 人 1 回だけ求める（重みはランチ・ディナーで同じ。No Tip は開始日からシフトごと） */
+  /* v1092: 重み（その日の Tip Rate か、開始日より前は評価係数）と No Tip の印は、1 人 1 回だけ求める（ランチ・ディナーで同じ） */
   /* Waikiki（F03・F03-G）のチップは、だれでも勤務時間で均等（80/90/100 制度の外。応援の人も同じ＝独立レビュー dc96c7e P2-1） */
   var byRate = tipWeightByRate(date), tipReqs = ls('tip_requests', []) || [], _wt = [];
   var wkk = (storeId==='F03' || storeId==='F03-G');
   function weightOf(e) {
     for (var i = 0; i < _wt.length; i++) if (_wt[i].e === e) return _wt[i].o;   /* 1 人（記録）1 回。同じ名前の別の記録は別に（P3-4） */
     var o;
-    if (byRate) {
-      var rt = wkk ? 100 : tipRateOn(e, date, tipReqs); o = { coef: rt / 100, rate: rt, by: 'rate' };
-      /* No Tip はその日・そのシフトの時点で（Moto 10/18）。Waikiki のチップでも、その人の所属の店の決まり（前と同じ） */
-      o.noTipBy = { lunch: tipNoTipOn(e, date, 'lunch', tipReqs), dinner: tipNoTipOn(e, date, 'dinner', tipReqs) };
-    } else {
-      var c = (e.coef!=null?e.coef:1); o = { coef: c, rate: null, by: 'coef' };
-      o.noTip = (typeof effectiveTipRate==='function' && effectiveTipRate(e.name, tipReqs)===0);   /* 開始日より前の日は今までどおり今日の No Tip */
-    }
+    if (byRate) { var rt = wkk ? 100 : tipRateOn(e, date, tipReqs); o = { coef: rt / 100, rate: rt, by: 'rate' }; }
+    else { var c = (e.coef!=null?e.coef:1); o = { coef: c, rate: null, by: 'coef' }; }
+    o.noTip = (typeof effectiveTipRate==='function' && effectiveTipRate(e.name, tipReqs)===0);
     _wt.push({ e: e, o: o });
     return o;
   }
@@ -6353,7 +6305,7 @@ function calcTipDistribution(storeId, date) {
       var excluded = isTipExcluded(storeId, date, e.name, slot);
       var w = weightOf(e);
       return { name:e.name, role:e.role, coef:w.coef, rate:w.rate, by:w.by, hours:h,
-        pt:h*w.coef, total:0, excluded:excluded, noTip:(w.noTipBy ? !!w.noTipBy[slot] : !!w.noTip) };
+        pt:h*w.coef, total:0, excluded:excluded, noTip:w.noTip };
     }).filter(r=>r.hours>0);
     if (!rows.length || tipTotal<=0) return rows;
     // 対象外の人を除いて按分（外した分は残りに自動再配分）。除外者はtotal=0で行は残す（表示用）
@@ -35358,36 +35310,20 @@ function tipPeriodMatrix(storeId, info){
   }); });
   return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists) };
 }
-/* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。評価係数で配分した日は入れない。
-   働いたシフトがどれも No Tip だった日は 0（No Tip）。1 つでも配分に入ったシフトがあれば、その日の率（Moto 10/18：No Tip はシフトごと） */
+/* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。評価係数で配分した日・No Tip の日は入れない */
 function tipPeriodRates(dists){
   var rates={};
   (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
-    if(r.by!=='rate' || r.rate==null) return;
-    var L=(r.lunchHours||0)>0 && !r.lunchExcl, D=(r.dinnerHours||0)>0 && !r.dinnerExcl, v;   /* 除外したシフトは数えない */
-    if((L && !r.lunchNoTip) || (D && !r.dinnerNoTip)) v=r.rate;
-    else if(L || D) v=0;
-    else return;   /* 両方とも除外した日は入れない */
-    var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==v) a.push(v);
+    if(r.by!=='rate' || r.lunchNoTip || r.dinnerNoTip || r.rate==null) return;
+    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;   /* 両方とも除外した日は入れない */
+    var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==r.rate) a.push(r.rate);
   }); });
   return rates;
-}
-/* 率の並び → 文（80→90%・No Tip→80%・No Tip） */
-function tipRatesText(a){
-  if(!a || !a.length) return '';
-  return a.map(function(v){ return v===0 ? 'No Tip' : String(v); }).join('→') + (a[a.length-1]===0 ? '' : '%');
-}
-/* 日の表：その人の No Tip（働いたシフトがどれも No Tip なら「No Tip」、片方だけなら「L No Tip」「D No Tip」） */
-function tipRowNoTipText(r){
-  var nl=!!r.lunchNoTip, nd=!!r.dinnerNoTip;
-  if(!nl && !nd) return '';
-  if((nl || !((r.lunchHours||0)>0)) && (nd || !((r.dinnerHours||0)>0))) return 'No Tip';
-  return nl ? 'L No Tip' : 'D No Tip';
 }
 /* 表の名前の横・CSV の Tip Rate 列：この期間に配分に使った率（80%→90%）。無ければ今の Tip Rate（今までどおり） */
 function tipPeriodRateLabel(rates, nm){
   var a=rates && rates[nm];
-  if(a && a.length) return tipRatesText(a);
+  if(a && a.length) return a.join('→')+'%';
   try{ return (typeof tipRateLabel==='function')?tipRateLabel(nm):''; }catch(e){ return ''; }
 }
 function exportTipPeriodCsv(){
@@ -35606,7 +35542,7 @@ function renderTipPeriodMatrix(storeId, store, info){
     var used=M.rates && M.rates[nm];   /* v1092: この期間の配分に使った率（80%→90%）。無ければ今の Tip Rate */
     var rt=(used && used.length) ? used[used.length-1] : _rateOf(nm); if(rt==null) return '';
     var rc=(typeof tipRateColor==='function')?tipRateColor(rt):'var(--muted)';
-    var lb=(used && used.length) ? tipRatesText(used) : ((rt===0)?'No Tip':(rt+'%'));
+    var lb=(used && used.length) ? (used.join('→')+'%') : ((rt===0)?'No Tip':(rt+'%'));
     return ' <span title="'+((used && used.length)?t('この期間の配分に使った Tip Rate','Tip Rate used for this period'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
   }
   // 従業員ごと
@@ -35824,7 +35760,7 @@ function openTipDayDetail(storeId, date) {
       }
       var anyExcl = r.lunchExcl || r.dinnerExcl;
       html += `<tr${anyExcl?' style="background:rgba(229,72,77,0.06)"':''}>
-        <td>${r.name}${r.by==='rate'?(r.rate!==100?` <span style="font-size:9px;color:var(--muted)">${r.rate}%</span>`:''):(r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:'')}${tipRowNoTipText(r)?' <span class="tag tag-gray" style="font-size:9px">'+tipRowNoTipText(r)+'</span>':''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Partly excl':'一部除外')+'</span>':''}</td>
+        <td>${r.name}${r.by==='rate'?(r.rate!==100?` <span style="font-size:9px;color:var(--muted)">${r.rate}%</span>`:''):(r.coef!=1?` <span style="font-size:9px;color:var(--muted)">×${r.coef}</span>`:'')}${(r.lunchNoTip||r.dinnerNoTip)?' <span class="tag tag-gray" style="font-size:9px">No Tip</span>':''}${anyExcl?' <span class="tag tag-red" style="font-size:9px">'+(curLang==='en'?'Partly excl':'一部除外')+'</span>':''}</td>
         ${slotCell('lunch')}
         <td style="text-align:right">${r.lunchNoTip?'<span style="color:var(--muted);font-size:10px">No Tip</span>':r.lunchExcl?'<span style="color:var(--red);font-size:10px">'+(curLang==='en'?'Excluded':'除外')+'</span>':((r.lunch||0)>0?'$'+r.lunch.toFixed(2):'—')}</td>
         ${slotCell('dinner')}
@@ -35868,7 +35804,7 @@ function renderTipPeriodStaff(storeId, store, info) {
     var _u = _used[r.name];
     var rate = (_u && _u.length) ? _u[_u.length-1] : effectiveTipRate(r.name);
     var rateTag = rate===0?'<span class="tag tag-red" style="font-size:9px">NoTip</span>':rate>=100?'<span class="tag tag-green" style="font-size:9px">100%</span>':rate>=90?'<span class="tag tag-blue" style="font-size:9px">90%</span>':'<span class="tag tag-yellow" style="font-size:9px">80%</span>';
-    if (_u && _u.length>1) rateTag = '<span class="tag tag-gray" style="font-size:9px">'+tipRatesText(_u)+'</span>';
+    if (_u && _u.length>1) rateTag = '<span class="tag tag-gray" style="font-size:9px">'+_u.join('→')+'%</span>';
     var adj = r.isSL
       ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span>`
       : (r.redistrib>0 ? `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span>` : '<span style="color:var(--muted)">—</span>');
@@ -36575,7 +36511,7 @@ function renderTipDaily(storeId, store, date) {
     dist.list.forEach(r=>{
       html += `<tr>
         <td>${r.name}<div style="font-size:9px;color:var(--muted)">${r.role==='sl'?'Leader':'Crew'}</div></td>
-        <td style="text-align:center">${tipRowNoTipText(r)==='No Tip'?'No Tip':((r.by==='rate'?r.rate+'%':r.coef)+(tipRowNoTipText(r)?' <span style="font-size:9px;color:var(--muted)">'+tipRowNoTipText(r)+'</span>':''))}</td>
+        <td style="text-align:center">${(r.lunchNoTip||r.dinnerNoTip)?'No Tip':(r.by==='rate'?r.rate+'%':r.coef)}</td>
         <td style="text-align:right;color:var(--muted)">${r.lunchHours?r.lunchHours.toFixed(2):'—'}</td>
         <td style="text-align:right;color:var(--muted)">${r.dinnerHours?r.dinnerHours.toFixed(2):'—'}</td>
         <td style="text-align:right">$${r.lunch.toFixed(2)}</td>
