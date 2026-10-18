@@ -2534,6 +2534,53 @@ function mcScopeStores() {
   return [];
 }
 
+/* ============================================================
+   v1090（依頼書 10/17 ①）ダッシュボードで全店を見る人
+   ------------------------------------------------------------
+   AM の Yuki Nagatani さんが、ダッシュボード（Management Dashboard）で全店を見られるようにする。
+   ・人は従業員 ID で決める（表示名では決めない）。設定は GM・CEO が「管轄の割り当て」で付け外しする（md_all_viewers）。
+   ・広げるのはダッシュボードの「見る」範囲だけ。mcScopeStores()（管轄）・担当店舗の設定・予実など他の画面・
+     編集・給与・個人情報の権限は変えない。承認待ちの一覧は今までどおり管轄の店だけ。
+   ・管轄外の店のカードを押すと、予実へは行かずに、ダッシュボードをその店だけにする（見るだけ）。
+   ・対象は AM（mcRole()==='am'）だけ。GM・CEO はもともと全店。AM 全員には広げない。
+   ============================================================ */
+function mdAllViewers() {
+  var m = ls('md_all_viewers', {});
+  return (m && typeof m === 'object' && !Array.isArray(m)) ? m : {};
+}
+function mdIsAllViewer() {
+  try {
+    if (mcRole() !== 'am') return false;
+    var me = (typeof _empMeId === 'function') ? _empMeId() : null;
+    if (!me) return false;
+    var v = mdAllViewers()[String(me)];
+    return !!(v && v.on === true && !v._deleted);
+  } catch (e) { return false; }
+}
+/* ダッシュボードに出す店（見るだけ）。全店を見る人は稼働中の全店、それ以外は管轄（mcScopeStores）のまま */
+function mdViewStores() {
+  var scope = mcScopeStores();
+  if (!mdIsAllViewer()) return scope;
+  try { return activeStores().map(function (s) { return s.id; }); } catch (e) { return scope; }
+}
+/* 全店を見る人がダッシュボードで選んだ店（'' は全店）。選べるのは見られる店だけ */
+function mdPickedStore() {
+  if (!mdIsAllViewer()) return '';
+  var v = mdState.store || '';
+  return (v && mdViewStores().indexOf(v) >= 0) ? v : '';
+}
+function mdSetStore(sid) { mdState.store = sid || ''; renderPage('dashboard'); try { window.scrollTo(0, 0); } catch (e) { } }
+/* 付け外し（GM・CEO だけ）。記録は従業員 ID ごと。外すときも記録を残して on:false にする（合流で古い「付ける」に負けない） */
+function mdSetAllViewer(empId, name, on) {
+  if (['gm', 'ceo'].indexOf(curRole) < 0) { showToast('この設定は GM・CEO のみです', 'warning'); return false; }
+  if (empId == null || empId === '' || String(empId).charAt(0) === '_') { showToast('従業員マスターに登録された人だけ選べます', 'warning'); return false; }
+  var m = mdAllViewers(), k = String(empId), prev = m[k] || {};
+  m[k] = { on: !!on, name: String(name || ''), by: (typeof _actorName === 'function' ? _actorName() : (curUserName || '')),
+           at: (typeof nowJP === 'function' ? nowJP() : new Date().toISOString()), _at: Math.max(Date.now(), (Number(prev._at) || 0) + 1) };
+  lsSet('md_all_viewers', m);
+  return true;
+}
+
 /* アラート基準・評価スコア・管轄割り当ての変更。GMのみ */
 function mcCanConfigure() {
   return mcRole() === 'gm';
@@ -2564,7 +2611,7 @@ function mdCanOpen() {
   return (typeof mcRole === 'function') ? mcRole() !== '' : false;
 }
 
-var mdState = { period: 'month', storeFilter: 'all', kpi: '' };
+var mdState = { period: 'month', storeFilter: 'all', kpi: '', store: '' };   /* v1090: store＝全店を見る人がダッシュボードで選んだ店（'' は全店） */
 function mdSetPeriod(p) { mdState.period = p; renderPage('mgmt_dash'); }
 function mdPeriodYm() {
   var ym = mcYm();
@@ -2585,6 +2632,7 @@ function mdRoleLabel() {
 }
 function mdScopeLabel(stores) {
   var r = mcRole(), n = (stores || []).length;
+  if (mdIsAllViewer()) return mdPickedStore() ? (mcStoreLabel(mdPickedStore()) + '（閲覧）') : ('全店 ' + n + '店（閲覧）');   /* v1090 */
   if (r === 'sm')   return n ? mcStoreLabel(stores[0]) : '自店舗';
   if (r === 'am')   return '管轄店舗 ' + n + '店';
   if (r === 'chef') return '全店 ' + n + '店（原価・仕入）';
@@ -2619,10 +2667,29 @@ function mdHeaderHtml(stores) {
     + '<div style="font-size:11px;color:var(--muted);margin-left:auto"><i class="ti ti-refresh"></i> 売上最終同期：'
     + (last ? escapeHtml(last) : '<b style="color:var(--red)">なし</b>') + '</div>'
     + '</div>'
+    + mdStorePickHtml()
     + '<div class="phase-tabs" style="margin-top:8px">'
     + tab('today', '今日', false) + tab('week', '今週', false)
     + tab('month', '今月', true) + tab('prev', '前月', true)
     + '</div></div>';
+}
+
+/* v1090: 全店を見る人だけ、表示する店を選べる（初めは全店）。管轄外の店は見るだけ */
+function mdStorePickHtml() {
+  if (!mdIsAllViewer()) return '';
+  var all = sortByLoginOrder(activeStores().filter(function (s) { return mdViewStores().indexOf(s.id) >= 0; }));
+  var cur = mdPickedStore(), mine = mcScopeStores();
+  return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:12px">'
+    + '<span style="color:var(--muted)"><i class="ti ti-building-store"></i> 表示する店舗</span>'
+    + '<select id="md-store-pick" onchange="mdSetStore(this.value)" style="font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--surface);max-width:100%">'
+    + '<option value=""' + (cur ? '' : ' selected') + '>全店（' + all.length + '店）</option>'
+    + all.map(function (s) {
+        return '<option value="' + escapeHtml(s.id) + '"' + (s.id === cur ? ' selected' : '') + '>' + escapeHtml(s.name)
+          + (mine.indexOf(s.id) >= 0 ? '' : '（管轄外・見るだけ）') + '</option>';
+      }).join('')
+    + '</select>'
+    + (cur && mine.indexOf(cur) < 0 ? '<span class="tag tag-gray" style="font-size:10px">管轄外の店は見るだけです（予実などは開きません）</span>' : '')
+    + '</div>';
 }
 
 /* 全体判定。画面で最初に目に入る強い表示にする（仕様§3） */
@@ -2806,6 +2873,8 @@ function mdStoresHtml(stores, ym, sc) {
   return h;
 }
 function mdOpenStore(sid) {
+  /* v1090: 全店を見る人が管轄外の店を押したら、予実へは行かずにダッシュボードをその店だけにする（見るだけ） */
+  if (mdIsAllViewer() && mcScopeStores().indexOf(sid) < 0) { mdSetStore(sid); return; }
   try { switchStore(sid); } catch (e) { }
   try { go('budget'); } catch (e) { renderPage('budget'); }
 }
@@ -3425,7 +3494,10 @@ function renderMgmtDash() {
       + '<div style="font-size:13px;color:var(--muted);margin-top:6px">'
       + 'この画面は Store Manager（G4）以上が対象です。</div></div>';
   }
-  var stores = mcScopeStores();
+  /* v1090: scope＝管轄（承認待ちなど、動けるもの）。stores＝見る店（全店を見る人は全店・選んだ店） */
+  var scope = mcScopeStores();
+  var stores = mdViewStores();
+  if (mdPickedStore()) stores = [mdPickedStore()];
   if (!stores.length) {
     return head + '<div class="card" style="text-align:center;padding:24px;color:var(--muted);font-size:13px">'
       + '表示できる店舗がありません。<br>管轄店舗の割り当てを確認してください。</div>';
@@ -3434,7 +3506,7 @@ function renderMgmtDash() {
   var ym = mdPeriodYm(), sc = null;
   var errs = mdErrors();
   var counts = {
-    approvalList: mdPendingApprovals(stores),
+    approvalList: mdPendingApprovals(scope),   /* v1090: 承認待ちは管轄のまま（全店を見る人でも） */
     errorList: errs,
     missDays: mdScopeTotals(stores, ym).missDays,
   };
@@ -8217,7 +8289,7 @@ var SUPA_SETTING_KEYS = ['pl_public','handbook_test_form',   /* v1024: 理解度
   'm_titlewage','m_store_kpi','m_format_kpi','kpi_config','store_positions',
   'tip_policy','tip_leader_split','tip_hours_basis','tip_window',
   'work_conditions','special_rules','shift_rules','lss_rules','skill_rules','required','goals_v2',
-  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config','ocs_cfg'];
+  'store_ops_config','ob_template','budgets_v2','company_message','eval_rubric','eval_levels','grade_axis','bonus_config','ojt_phase_map','salary_display','role_hide_g2','role_hide_g4','grade_hide','skill_lv_desc','ow_limits','sl_config','ocs_cfg','md_all_viewers'];
 var SUPA_SETTING_PREFIX = ['dailyops_template_'];
 
 /* === F2-b: 運用データのクラウド同期（app_state テーブル） === */
@@ -9684,6 +9756,7 @@ var OP_MERGE = {
   bonus_eval_ovr:     { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個人設定。「従業員|適用開始の四半期」の中を部分ごと（外した部分も時刻つき） */
   bonus_eval:         { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個別評価の入力（下書き）。「四半期|従業員|グレード」の中を項目ごと（2 台で同じ人の別の項目を直しても両方残る） */
   bonus_store_q:      { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1074（CEO の指示書）：店舗の目標と実績（四半期の利益の目標・FL の目標率・各月の店舗管理利益）。「四半期|店舗」の中を欄ごと（2 台で別の店・別の欄を直しても両方残る） */
+  md_all_viewers:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1090: ダッシュボードで全店を見る人（従業員 ID ごとに新しい保存が勝つ） */
   ocs_cfg:            { merge: mergeLssRec,    covers: _coversLssRec },      /* v1050: オフィス用 Career Score の正式運用の ON/OFF（新しい保存が勝つ） */   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
      ここが無いと、部分データを持つ端末の保存がクラウドを丸ごと上書きする。 */
@@ -9719,7 +9792,7 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   m_store_kpi:    { merge: mergeMapByKey, covers: _coversMapByKey },
   m_format_kpi:   { merge: mergeMapByKey, covers: _coversMapByKey },
   invoices:       { merge: mergeInvoices, covers: _coversInvoices },
-  reimbursements: { merge: mergeInvoices, covers: _coversInvoices },
+  reimbursements: { merge: mergeInvoices, covers: _coversInvoices, after: function(){ try{ if(typeof rbNotifyRejectedPaid==='function') setTimeout(rbNotifyRejectedPaid, 0); }catch(e){} } },   /* v1090: 合流で「却下・支払済」になったら通知 */
   checks:         { merge: mergeInvoices, covers: _coversInvoices },   /* v1030: 登録端末と経理端末が同じ行を書く */
   tasks_all:      { merge: mergeTasks, covers: _coversTasks },   /* v1088: タスクは廃止（データと合流ルールは残す） */
   /* v722: 日次食材差異の設定。ings/recipes はエントリ単位で新しい方が勝つ(端末間で消えない) */
@@ -13865,6 +13938,7 @@ async function enterAppWithSync(){
   try{ notifRealtimeStart(); }catch(e){}
   try{ checkShiftReminders(); }catch(e){}
   try{ checkTipPromotions(); }catch(e){}
+  try{ rbNotifyRejectedPaid(); }catch(e){}   /* v1090: 建て替え経費の「却下・支払済」を経理・事務Crew に */
   /* v1088: くり返しのタスク・期限の知らせは、タスクと一緒に廃止（UI案52 5A） */
   try{ captureSkillSnapshots(); }catch(e){}
   // ログイン時に全店のToast売上を自動同期（バックグラウンド・UIはブロックしない）
@@ -16630,6 +16704,11 @@ function favRemove(id){
    ・優先アクション／本日のタスクは管轄店舗のまま。入れない店の警告を出しても動けない。 */
 function dashScopeStores(){
   if(curRole!=='am') return getVisibleStores();
+  /* v1090: 全店を見る人は、ダッシュボードで選んだ店（初めは全店）。上のロケーション切替は他の画面のためのもの */
+  if(typeof mdIsAllViewer==='function' && mdIsAllViewer()){
+    var _pk=mdPickedStore();
+    return sortByLoginOrder(activeStores().filter(function(s){ return _pk ? s.id===_pk : true; }));
+  }
   /* 上部で店舗を1つ選んでいるときは、GM と同じくその店だけに絞る。 */
   var out=(curStore==='ALL'||curStore==='OFFICE')
     ? activeStores()
@@ -18893,7 +18972,7 @@ function msKpiCard(mi, scopeName){
     });
     html+='</tbody></table></div>';
   }
-  html+='<div style="font-size:11px;color:var(--muted);margin-top:8px">原価率・ドリンク比率・アップセルはメニュー出数、人件費率はToast勤怠、リピート率等は手入力（KPI管理）から算出。実績が無い項目は「—」。</div></div>';
+  html+='<div style="font-size:11px;color:var(--muted);margin-top:8px">原価率・ドリンク比率・アップセルはメニュー出数、人件費率はToast勤怠、リピート率はToastの来店区分（初回・リピート）から算出（FSP・WGS は手入力）。実績が無い項目は「—」。</div></div>';
   return html;
 }
 
@@ -22324,10 +22403,10 @@ function quarterActuals(storeId,y,q){
       st.sales+=ms.sales||0;
       try{ var pl=plComputeStore(storeId, ym, off); st.food+=pl.cogs||0; st.labor+=pl.labor||0; }catch(e){ st.food+=ms.food||0; st.labor+=ms.labor||0; }
     }
-    var _r=_qbRepeatRate(storeId, ym); st.ftB+=_r.ft; st.rpB+=_r.rp;
+    var _r=_qbRepeatRate(storeId, ym); st.ftB+=_r.ft; st.rpB+=_r.rp; if(_r.has) st.repHas=true;
   });
   st.fcRate=st.sales?Math.round(st.food/st.sales*1000)/10:0; st.laborRate=st.sales?Math.round(st.labor/st.sales*1000)/10:0; st.ppa=st.guests?Math.round(st.sales/st.guests*100)/100:0;
-  st.repeat=(st.ftB+st.rpB)?Math.round(st.rpB/(st.ftB+st.rpB)*1000)/10:0;
+  st.repeat=(st.repHas && (st.ftB+st.rpB))?Math.round(st.rpB/(st.ftB+st.rpB)*1000)/10:null;   /* v1090: データなしは null（前は 0%） */
   return st;
 }
 /* 単月予算(getBudgetForMonth)から四半期目標を自動算出。売上・客数は月次予算合計、率はKPI目標。 */
@@ -22394,7 +22473,8 @@ var QB_FOCUS_ITEMS=[
 function _qbRepeatRate(storeId, ym){
   var da=(typeof getDailyActuals==='function')?_daRO(storeId):{}; var ft=0,rp=0,has=false;
   Object.keys(da).forEach(function(d){ if(d.indexOf(ym)===0){ var v=da[d]||{}; if(v.firstTimeBowls!=null||v.repeatBowls!=null){ ft+=Number(v.firstTimeBowls)||0; rp+=Number(v.repeatBowls)||0; has=true; } } });
-  var tot=ft+rp; return {rate:(has&&tot>0)?Math.round(rp/tot*1000)/10:0, ft:ft, rp:rp, has:has};
+  /* v1090（依頼書 10/17 ②）：来店区分のデータが無い月は 0% ではなく null（＝データなし）。数え方は repeatStats と同じ（RP+SR）÷（FT+RP+SR） */
+  var tot=ft+rp; return {rate:(has&&tot>0)?Math.round(rp/tot*1000)/10:null, ft:ft, rp:rp, has:has&&tot>0};
 }
 function _qbMonthData(storeId, ym){
   var pp=ym.split('-'), yy=+pp[0], mm=+pp[1];
@@ -22452,6 +22532,8 @@ function _qbMonthRationale(b, ym){
 function _qbProgLine(label, act, tgt, opts){
   opts=opts||{}; var unit=opts.unit||''; var money=opts.money, lower=opts.lower;
   var fmt=function(v){ return money?(fmtUSD2(v)):(Math.round(v*10)/10); };
+  /* v1090: nullable の項目（リピート率）は、データが無いとき 0 と出さない */
+  if(opts.nullable && act==null){ return '<div style="margin:4px 0;font-size:11px"><span>'+label+'</span> <span style="color:var(--muted)">'+t('データなし（未取得）','No data (not imported)')+(tgt?(' ・ '+t('目標','Target')+' '+fmt(tgt)+unit):'')+'</span></div>'; }
   if(!tgt){ return '<div style="margin:4px 0;font-size:11px"><span>'+label+'</span> <span style="color:var(--muted)">目標未入力</span>'+(act?(' ・ 実績 '+fmt(act)+unit):'')+'</div>'; }
   if(lower){
     var ok=act>0 && act<=tgt; var over=Math.round((act-tgt)*10)/10; var col=(!act)?'var(--muted)':(ok?'var(--green)':'var(--red)');
@@ -24640,7 +24722,7 @@ function qcCompute(scope, y, q){
   R.tLb=R.wBase?Math.round(R.tLbW/R.wBase*10)/10:0;
   R.aFc=R.aSales?Math.round(R.aFood/R.aSales*1000)/10:0;
   R.aLb=R.aSales?Math.round(R.aLabor/R.aSales*1000)/10:0;
-  R.aRep=R.repBase?Math.round(R.repRp/R.repBase*1000)/10:0;   /* v747: リピート率（客数の質） */
+  R.aRep=R.repBase?Math.round(R.repRp/R.repBase*1000)/10:null;   /* v747: リピート率（客数の質）。v1090: データなしは null（前は 0%） */
   R.tRep=R.wBase?Math.round(R.tRepW/R.wBase*10)/10:0;
   /* 進捗・ペース */
   R.progress = R.tSales? (R.aSales/R.tSales) : null;             /* Q全体に対する進捗 */
@@ -25081,6 +25163,7 @@ function renderQcKpiTable(scope, y, q, R, ser){
     var d=lower?((it.tgt||0)-(it.act||0)):((it.act||0)-(it.tgt||0));
     var ok=(d>=0);
     var dc=ok?'var(--green)':'var(--red)';
+    var noCmp=(it.act==null || it.tgt==null);   /* v1090: 実績か目標が無いときは差を出さない（データなしを −目標 と見せない） */
     var fv=function(v){
       if(v==null) return '—';
       if(it.unit==='%') return (Math.round(v*10)/10)+'%';
@@ -25092,6 +25175,7 @@ function renderQcKpiTable(scope, y, q, R, ser){
     if(it.unit==='%') ds=sg+(Math.round(av*10)/10)+'pt';
     else if(it.money) ds=sg+((it.key==='ppa')?('$'+(Math.round(av*100)/100)):fmtK(av));
     else ds=sg+Math.round(av).toLocaleString();
+    if(noCmp){ ds='—'; dc='var(--muted)'; }
     h+='<div onclick="setQcTab(\''+it.key+'\')" style="display:grid;grid-template-columns:'+cols+';'
       +'gap:3px;align-items:center;padding:5px 0;border-top:1px solid var(--border);cursor:pointer'
       +((_qcTab===it.key)?';background:var(--surface2)':'')+'">'
@@ -25831,9 +25915,11 @@ function renderQCommitSummary(scope, y, q){
         +(Math.round((R.aFc+R.aLb)*10)/10)+'% <span style="color:var(--muted)">/'+(Math.round((R.tFc+R.tLb)*10)/10)+'%</span> → '
         +(R.primeImpact>0?t('利益圧迫','profit hit')+' ':'')+(R.primeImpact>0?'−':'+')+fmtK(Math.abs(R.primeImpact)).slice(1)+'</div>')
     /* リピート率（客数の質） */
-    +((R.aRep||R.tRep)?row(t('リピート率','Repeat'),
-        R.aRep+'% <span style="color:var(--muted)">/ '+R.tRep+'%</span>'
-        +' <b style="color:'+((R.aRep-R.tRep)>=0?'var(--green)':'var(--red)')+'">'+((R.aRep-R.tRep)>=0?'+':'')+(Math.round((R.aRep-R.tRep)*10)/10)+'pt</b>'):'')
+    +((R.aRep!=null||R.tRep)?row(t('リピート率','Repeat'),
+        (R.aRep==null   /* v1090: 来店区分のデータが無いときは 0% と出さない */
+          ? '<span style="color:var(--muted)">'+t('データなし（未取得）','No data (not imported)')+'</span>'+(R.tRep?' <span style="color:var(--muted)">/ '+R.tRep+'%</span>':'')
+          : R.aRep+'% <span style="color:var(--muted)">/ '+R.tRep+'%</span>'
+            +' <b style="color:'+((R.aRep-R.tRep)>=0?'var(--green)':'var(--red)')+'">'+((R.aRep-R.tRep)>=0?'+':'')+(Math.round((R.aRep-R.tRep)*10)/10)+'pt</b>')):'')
     ;
   if(R.unreg.length){
     var names=R.unreg.slice(0,4).map(function(u){ return u.store+' '+u.ym; }).join('、');
@@ -25979,7 +26065,7 @@ function renderQuarterBudget(){
       +_qbProgLine(t('客単価','Avg check'), md.aPpa, md.tPpa, {money:true})
       +_qbProgLine(t('原価率','FC')+(md.cogsSrc?'（'+md.cogsSrc+'）':''), md.aFc, md.tFc, {unit:'%', lower:true})
       +_qbProgLine(t('人件費率','Labor %'), md.aLb, md.tLb, {unit:'%', lower:true})
-      +_qbProgLine(t('リピート率','Repeat rate'), md.aRep, md.tRep, {unit:'%'})
+      +_qbProgLine(t('リピート率','Repeat rate'), md.aRep, md.tRep, {unit:'%', nullable:true})
       +(md.cogsSrc==='仕入合計'?'<div style="font-size:9px;color:var(--yellow);margin-top:2px">'+t('※原価率は棚卸未確定のため仕入合計で暫定。','※ FC is provisional until inventory is finalized.')+'</div>':'')
       /* この月の狙い（考え方）を同じカード内に並べる */
       +'<div style="margin-top:6px;padding-top:6px;border-top:1px dashed var(--border)">'
@@ -29042,7 +29128,9 @@ async function repairApprovedSkills(dryRun){
 async function runCustDebug(){
   var stores=getVisibleStores().filter(function(s){return s.toastGuid;});
   if(!stores.length){ showToast('対象店舗がありません','warning'); return; }
-  var s=stores[0];
+  /* v1090（依頼書 10/17 ②）：前はいつも先頭の店（ToriTon）だった。「店舗別 詳細オプション」で選んだ店を診断する（LaLa の来店区分を確かめるため） */
+  var _scSel=document.getElementById('sc-store'), _scId=_scSel?_scSel.value:'';
+  var s=(_scId && stores.find(function(x){ return x.id===_scId; })) || stores[0];
   // 診断日をプロンプト（既定=昨日）。営業日を指定して確認できるように。
   var d=new Date(); d.setDate(d.getDate()-1);
   var def=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
@@ -29143,7 +29231,7 @@ function openSyncCenter() {
 
     ${(isGM||scG3)?secHead('var(--tm)','点検・診断／バックアップ','データが正しく取り込まれ・クラウド保存されているかの点検と、バックアップ／復元。'):''}
     ${(isGM||scG3)?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openOutboxDiag()"><i class="ti ti-cloud-check"></i> 未送信データ（クラウド書き戻し）を確認${outboxCount()>0?' <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 6px;font-size:10px">'+outboxCount()+'</span>':''}</button>`:''}
-    ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断</button>`:''}
+    ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断（上の「店舗別 詳細オプション」で選んだ店）</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
@@ -36298,6 +36386,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
   'ec_resolutions',    /* v1088: エラーの解除（誰が・いつ・どの理由で。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
+  'md_all_viewers',   /* v1090: ダッシュボードで全店を見る人（手で決めたもの・再生不可） */
   'warnings_',   /* v832: 注意ログ（手入力・再生不可） */
   'lala_tasks'];   /* v804: LaLa（手入力・再生不可） */   /* v801: Shift Leader（手入力・再生不可） */   /* v797: 査定（手入力・再生不可） */   /* v722: 日次食材差異(手入力・設定) */
 function _lsProtectedKey(k){
@@ -37993,7 +38082,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1089';
+const APP_VERSION = '1090';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -72468,6 +72557,7 @@ function onNotifClickPage(id){
   var n=getNotifs().find(function(x){return x.id===id;});
   renderNotifBell();
   if(n && n.page==='approval'){ try{ _apTab=n.apTab||'pending'; }catch(e){} }   /* v1087: 「承認済み（処理してください）」は経理の確認のタブで、承認待ちの知らせは承認待ちのタブで開く */
+  rbApplyNotifFocus(n);   /* v1090 */
   if(n && n.page){ go(n.page); } else { renderPage('notifications'); }
 }
 /* v670+: 通知の「確認しました」ack。承認申請/完了の通知に確認ボタン＋確認済み/未確認を表示。 */
@@ -72605,6 +72695,7 @@ function onNotifClick(id){
   var n=getNotifs().find(function(x){return x.id===id;});
   closeNotifPanel(); renderNotifBell();
   if(n && n.page==='approval'){ try{ _apTab=n.apTab||'pending'; }catch(e){} }   /* v1087 */
+  rbApplyNotifFocus(n);   /* v1090 */
   if(n && n.page){ go(n.page); }
 }
 
@@ -76900,6 +76991,45 @@ function undoReimbursePaid(id){
   if(!confirm('支払済みを取り消しますか？')) return;
   r.payStatus='未払い'; r.paidAt=''; r.paidBy=''; r.payMethodNote=''; invTouch(r); saveReimbursements(arr); renderPage('invoice');   /* v1087 */
 }
+/* v1090（Moto さん 10/17「Bで」）：建て替え経費が「却下・支払済」になったら、経理・事務Crew に通知する（注意の 1 行は今までどおり）。
+   この状態は、同期していない 2 台で「承認 → 支払済」と「却下」が入れ違ったときに、合流で起きる（v1087 の 6e）。画面のボタンでは作れない。
+   ・どの端末が見つけても同じ通知になるよう、通知の id を申請と決定の時刻から作る（mergeNotifs は id で 1 つにまとめる）。
+   ・通知は古いものから消える（150 件）。消えたあとに同じ件を出し直さないよう、見つけた・受け取った件を端末に覚える（rb_rp_seen・同期しない）。
+   ・見つけるのは建て替え経費を見る役割の端末（CEO・GM・経理・事務Crew・AM）。宛先は経理・事務Crew だけ。
+   ・「申請中・支払済」（承認の取り消しのあとに支払済）は通知しない。承認センターで決め直せるので、却下になったときに通知が出る。 */
+function _rbRpKey(r){ return String(r.id)+'|'+String(r._dT||r.approvedAt||''); }
+function _rbRpNotifId(r){ return 'ntf_rbrp_'+_rbRpKey(r).replace(/[^A-Za-z0-9_-]/g,'_'); }
+function rbNotifyRejectedPaid(){
+  try{
+    if(typeof curStoreLogin!=='undefined' && curStoreLogin) return 0;
+    if(['ceo','gm','office','office_crew','am'].indexOf(curRole)<0) return 0;
+    var list=(getReimbursements()||[]).filter(function(r){ return r && r.id!=null && !r._deleted && r.status==='却下' && r.payStatus==='支払済'; });
+    if(!list.length) return 0;
+    var seen=ls('rb_rp_seen', {}); if(!seen || typeof seen!=='object' || Array.isArray(seen)) seen={};
+    var arr=getNotifs(); if(!Array.isArray(arr)) arr=[];
+    var have={}; arr.forEach(function(n){ if(n && n.id!=null) have[n.id]=1; });
+    var added=0, seenCh=false;
+    list.forEach(function(r){
+      var k=_rbRpKey(r), id=_rbRpNotifId(r);
+      if(seen[k]) return;
+      seen[k]=Date.now(); seenCh=true;
+      if(have[id]) return;   /* ほかの端末が出した通知をもう受け取っている */
+      arr.push({ id:id, at:new Date().toISOString(), by:'システム', readBy:[], type:'reject',
+        title:'却下ですが支払済：建て替え経費（確認してください）',
+        text:[_rbStoreName(r.storeId), (r.payer||'')+' $'+(Number(r.amount)||0).toFixed(2),
+              '支払 '+(r.paidAt||'')+(r.paidBy?'・'+r.paidBy:''), (r.approvedBy?'却下 '+r.approvedBy:'')].filter(Boolean).join(' ・ ').slice(0,140),
+        toRoles:['office','office_crew'], page:'invoice', refId:'rbrp_'+k, rbFocus:{ ym:String(r.date||'').slice(0,7), status:'rejected' } });
+      have[id]=1; added++;
+    });
+    if(seenCh) lsSet('rb_rp_seen', seen);
+    if(added){ if(arr.length>150) arr=arr.slice(arr.length-150); lsSet('notifications', arr); try{ renderNotifBell(); }catch(e){} }
+    return added;
+  }catch(e){ return 0; }
+}
+/* 通知を押したら、建て替え経費の「却下」の一覧（その月）を開く */
+function rbApplyNotifFocus(n){
+  try{ if(n && n.rbFocus && typeof _rbView!=='undefined'){ _rbView.status=n.rbFocus.status||'rejected'; if(n.rbFocus.ym) _rbView.ym=n.rbFocus.ym; } }catch(e){}
+}
 function _rbRow(r, mgr){
   var sc=r.status==='承認'?'tag-green':r.status==='却下'?'tag-red':'tag-yellow';
   var pc=r.payStatus==='支払済'?'var(--green)':'var(--yellow)';
@@ -76956,6 +77086,7 @@ function rbStatusOf(r){
 function renderReimburseCard(){
   if(['ceo','gm','office','office_crew','am'].indexOf(curRole)<0
      && !getReimbursements().some(function(r){return r.byUser===curUserName||r.payer===curUserName;})) return '';
+  setTimeout(function(){ try{ rbNotifyRejectedPaid(); }catch(e){} }, 0);   /* v1090 */
   var scoped=reimburseScoped();
   var mgr=canManageReimburse();
   var months=rbMonthsOf(scoped);
@@ -84010,6 +84141,30 @@ function scIssues(){
   });
   return out;
 }
+/* v1090（依頼書 10/17 ①）：ダッシュボードで全店を見る AM。従業員 ID で付け外しする（見るだけ・管轄は変えない） */
+function scAllViewerHtml(people){
+  var list=(people||[]).filter(function(p){ return p.kind==='am' && !p.orphan && p.id!=null && p.id!==''; });
+  var m=(typeof mdAllViewers==='function')?mdAllViewers():{};
+  var h='<div style="font-size:12px;font-weight:700;margin:14px 0 4px"><i class="ti ti-eye" style="color:var(--accent)"></i> ダッシュボードで全店を見る（見るだけ）</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:6px;line-height:1.6">ON にした人は、ダッシュボードで全店の数字を見られます。初めは全店で、店を選ぶとその店だけになります。'
+    +'<b>管轄・予実などほかの画面・編集・給与の範囲は変わりません。</b>承認待ちは管轄の店だけです。</div>';
+  if(!list.length) return h+'<div style="font-size:11.5px;color:var(--muted);padding:4px 0">AM 権限の従業員がいません。</div>';
+  list.forEach(function(p){
+    var v=m[String(p.id)]||null, on=!!(v && v.on===true && !v._deleted);
+    h+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--border)">'
+      +'<div style="flex:1;min-width:0"><div style="font-size:12px;font-weight:700">'+escapeHtml(p.name)+'</div>'
+      +'<div style="font-size:10px;color:var(--muted)">'+(v&&v.at?escapeHtml((on?'ON':'OFF')+'：'+v.at+(v.by?'・'+v.by:'')):'未設定（管轄の店だけ）')+'</div></div>'
+      +'<button class="btn btn-'+(on?'primary':'secondary')+' btn-sm" style="min-width:76px" onclick="scToggleAllViewer('+JSON.stringify(String(p.id)).replace(/"/g,'&quot;')+','+JSON.stringify(p.name).replace(/"/g,'&quot;')+')">'
+      +(on?'<i class="ti ti-check"></i> ON':'OFF')+'</button></div>';
+  });
+  return h;
+}
+function scToggleAllViewer(empId, name){
+  if(['gm','ceo'].indexOf(curRole)<0){ showToast('この設定は GM・CEO のみです','warning'); return; }
+  var v=mdAllViewers()[String(empId)]||null, on=!!(v && v.on===true && !v._deleted);
+  if(mdSetAllViewer(empId, name, !on)) showToast(name+'：ダッシュボードの全店表示を'+(on?'OFF':'ON')+'にしました','success');
+  openScopeAssign();
+}
 function openScopeAssign(){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('管轄の割り当ては GM・CEO のみです','warning'); return; }
   var stores=scStoreList(), people=scPeople(), issues=scIssues();
@@ -84063,6 +84218,7 @@ function openScopeAssign(){
     });
     h+='</tbody></table></div>';
   });
+  h+=scAllViewerHtml(people);   /* v1090 */
   h+='<div style="font-size:10.5px;color:var(--muted);margin-top:10px;line-height:1.6">'
     +'保存先は店舗マスターです（AM は既存の割り当てと同じ場所）。権限で見える店舗の範囲もこれに連動します。<br>'
     +'GM・CEO は全店合算のため、この表には出ません。休止中の店は査定の対象外です。</div>';
