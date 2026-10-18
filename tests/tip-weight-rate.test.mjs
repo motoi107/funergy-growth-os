@@ -182,13 +182,14 @@ test('Waikiki and roles outside 80/90/100 are 100%; legacy approvals without a d
   c.STORE.tip_requests = [
     { id: 'l1', name: 'L', rate: 90, status: '承認' },                     // no date at all (imported): counts on every day
     { id: 'd1', name: 'D', rate: 90, status: '承認', decAt: 3 },           // stamped by tipStampLegacy (not a real time), no approvedDate
-    { id: 'd2', name: 'D', rate: 100, status: '承認', decAt: Date.UTC(2026, 9, 25, 22) },   // a real time without approvedDate: from that day
+    { id: 'd2', name: 'D', rate: 100, status: '承認', decAt: Date.UTC(2026, 9, 25, 22) },   // a time without a date is not a day (could be stamped from the order): every day, newest in order
   ];
   assert.equal(run(c, `tipRateOn('W', '${START}')`), 100);
   assert.equal(run(c, `tipRateOn('L', '${START}')`), 90);
   assert.equal(run(c, "_tipDecDay({ decAt: 3 })"), '');
-  assert.equal(run(c, "tipRateOn('D', '2026-10-20')"), 90);
+  assert.equal(run(c, "tipRateOn('D', '2026-10-20')"), 100);
   assert.equal(run(c, "tipRateOn('D', '2026-10-27')"), 100);
+  assert.equal(run(c, "_tipDecDay({ decDay: '2026-10-25', approvedDate: '2026/10/26' })"), '2026-10-25', 'the Hawaii day first');
   assert.equal(run(c, "_tipDecDay({ approvedDate: '2026/1/5' })"), '2026-01-05');
   assert.equal(run(c, "tipRateOn('nobody', '2026-10-20')"), 100);
   // a rejection does not change the rate; a request decided after the day does not count yet
@@ -213,31 +214,68 @@ test('独立レビュー（dc96c7e）: Waikiki tips are shared by hours for ever
   near(x.list.find(r => r.name === 'Z').total, 280 * 5 / (4 + 5 + 5), 'Z as with the old per-record coefficients');
 });
 
-test('独立レビュー（dc96c7e）: the day an approval counts is the Hawaii day of the decision (an approval made in Japan); estimated times are not days; an undated approval counts on every day in the same order', () => {
+test('独立レビュー（dc96c7e）: the day an approval counts is its Hawaii day (decDay, also when approved in Japan), else the device date; the decision time is never a day; an undated approval counts on every day in the same order', () => {
   const c = app();
-  c.EMPS = [EMP({ name: 'J', firstWork: '2026-09-01' }), EMP({ name: 'L', firstWork: '2026-09-01' }), EMP({ name: 'U', firstWork: '2026-09-01' })];
+  c.EMPS = [EMP({ name: 'J', firstWork: '2026-09-01' }), EMP({ name: 'K1', firstWork: '2026-09-01' }), EMP({ name: 'L', firstWork: '2026-09-01' }), EMP({ name: 'U', firstWork: '2026-09-01' })];
   const hst = (y, m, d, h) => Date.UTC(y, m - 1, d, h + 10);
   c.STORE.tip_requests = [
-    // approved in Japan at 10/20 10:00 JST = 10/19 15:00 HST: the device date says 10/20
-    { id: 'j', name: 'J', rate: 90, status: '承認', approvedDate: '2026/10/20', decAt: hst(2026, 10, 19, 15) },
-    // a v1091 device stamped an old approval with the time of an earlier decision (+1): the day is the approval date
+    // v1092: approved in Japan at 10/20 10:00 JST = 10/19 15:00 HST: the device date says 10/20, the Hawaii day 10/19
+    { id: 'j', name: 'J', rate: 90, status: '承認', approvedDate: '2026/10/20', decAt: hst(2026, 10, 19, 15), decDay: '2026-10-19' },
+    // v1091 (no decDay): the device date
+    { id: 'k', name: 'K1', rate: 90, status: '承認', approvedDate: '2026/10/20', decAt: hst(2026, 10, 19, 15) },
+    // a time stamped from the order (tipStampLegacy) on an old approval: the day is the approval date
     { id: 'l0', name: 'L', rate: 90, status: '承認', approvedDate: '2026/10/05', decAt: hst(2026, 10, 5, 9) },
     { id: 'l1', name: 'L', rate: 100, status: '承認', approvedDate: '2026/10/21', decAt: hst(2026, 10, 5, 9) + 1 },
-    // marked as estimated by v1092
-    { id: 'u0', name: 'U', rate: 90, status: '承認', approvedDate: '2026/10/25', decAt: hst(2026, 10, 25, 9) },
-    { id: 'u1', name: 'U', rate: 100, status: '承認' },                                            // imported, no date: every day
-    { id: 'u2', name: 'U', rate: 80, status: '承認', approvedDate: '2026/10/12', decAt: hst(2026, 10, 12, 9) },
+    { id: 'u0', name: 'U', rate: 90, status: '承認', approvedDate: '2026/10/25', decAt: hst(2026, 10, 25, 9), decDay: '2026-10-25' },
+    { id: 'u1', name: 'U', rate: 100, status: '承認', decAt: hst(2026, 10, 25, 9) + 1 },   // imported, no date (a stamped time only): every day
+    { id: 'u2', name: 'U', rate: 80, status: '承認', approvedDate: '2026/10/12', decAt: hst(2026, 10, 12, 9), decDay: '2026-10-12' },
   ];
   assert.equal(run(c, "tipRateOn('J', '2026-10-19')"), 90, 'from the Hawaii day of the decision');
   assert.equal(run(c, "tipRateOn('J', '2026-10-18')"), 80);
+  assert.equal(run(c, "tipRateOn('K1', '2026-10-19')"), 80, 'a v1091 record: the device date (one day late from Japan)');
+  assert.equal(run(c, "tipRateOn('K1', '2026-10-20')"), 90);
   assert.equal(run(c, "tipRateOn('L', '2026-10-20')"), 90, 'the stamped time is not taken as the day');
   assert.equal(run(c, "tipRateOn('L', '2026-10-21')"), 100);
-  assert.equal(run(c, "_tipDecDay({ approvedDate: '2026/10/21', decAt: " + (hst(2026, 10, 20, 9)) + ", decEst: 1 })"), '2026-10-21', 'estimated (decEst) is never a day');
-  assert.equal(run(c, "_tipDecDay({ decAt: " + hst(2026, 10, 19, 23) + " })"), '2026-10-19', 'Hawaii day, whatever the device');
+  assert.equal(run(c, "_tipDecDay({ decAt: " + hst(2026, 10, 19, 23) + " })"), '', 'a time alone is never a day');
+  assert.equal(run(c, "_tipHstDay(" + hst(2026, 10, 19, 23) + ")"), '2026-10-19', 'Hawaii day, whatever the device');
   assert.equal(run(c, "tipRateOn('U', '2026-10-20')"), 100, 'the undated approval (after the 10/25 one in the list) counts');
   assert.equal(run(c, "tipRateOn('U', '2026-10-26')"), 100, 'the same on later days');
-  // tipStampLegacy marks the times it estimates
-  assert.match(fnSrc('tipStampLegacy'), /r\.decAt=floor; r\.decEst=1; n\+\+;/);
+  // the reviewer's example (an imported approval with no date and no time between two dated ones): the same on every day
+  c.EMPS.push(EMP({ name: 'V', firstWork: '2026-09-01' }));
+  c.STORE.tip_requests = c.STORE.tip_requests.concat([
+    { id: 'v0', name: 'V', rate: 90, status: '承認', approvedDate: '2026/10/25', decAt: hst(2026, 10, 25, 9), decDay: '2026-10-25' },
+    { id: 'v1', name: 'V', rate: 100, status: '承認' },
+    { id: 'v2', name: 'V', rate: 80, status: '承認', approvedDate: '2026/10/12', decAt: hst(2026, 10, 12, 9), decDay: '2026-10-12' },
+  ]);
+  assert.equal(run(c, "tipRateOn('V', '2026-10-20')"), 100);
+  assert.equal(run(c, "tipRateOn('V', '2026-10-26')"), 100);
+});
+
+test('Codex（dc96c7e）: approving a pending request later does not change what past days paid (an undated old approval after a dated one)', async () => {
+  const c = app();
+  vm.runInContext(['approveTip', 'tipStampLegacy', 'tipDecStamp', 'todayJP', 'fmtJP'].map(fnSrc).join('\n') + `
+    var curUserName = 'Moto', curPage = 'tip'; function confirm(){ return true; }
+    Date.now = function(){ return ${Date.UTC(2026, 9, 23, 20)}; };   // approved on 10/23 (Hawaii 10:00)`, c);
+  c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-09-01' })];
+  const hst = (y, m, d, h) => Date.UTC(y, m - 1, d, h + 10);
+  c.STORE.tip_requests = [
+    { id: 'p', name: 'A', rate: 80, status: '申請中', date: '2026/10/01' },
+    { id: 'a90', name: 'A', rate: 90, status: '承認', approvedDate: '2026/10/20', decAt: hst(2026, 10, 20, 9) },
+    { id: 'old', name: 'A', rate: 100, status: '承認' },   // an old approval with no date or time (counts on every day)
+  ];
+  c.LABOR['F01|2026-10-18'] = { A: { lunch: 5, dinner: 0 }, B: { lunch: 5, dinner: 0 } }; c.TIPS['F01|2026-10-18'] = { l: 180, d: 0 };
+  const before = plain(run(c, "calcTipDistribution('F01', '2026-10-18')")).list.map(r => [r.name, +r.total.toFixed(2)]);
+  assert.deepEqual(before, [['A', 100], ['B', 80]]);
+  await run(c, "approveTip('p', '承認')");
+  const st = plain(c.STORE.tip_requests);
+  assert.ok(st.find(r => r.id === 'old').decAt > 1e12, 'the old approval got a time from the order (the case Codex found)');
+  assert.equal(st.find(r => r.id === 'p').decDay, '2026-10-23', 'the new decision keeps its Hawaii day');
+  // from 10/23 the newer decision (80%) counts (Moto: the newer decision)
+  c.LABOR['F01|2026-10-23'] = c.LABOR['F01|2026-10-18']; c.TIPS['F01|2026-10-23'] = { l: 180, d: 0 };
+  assert.deepEqual(plain(run(c, "calcTipDistribution('F01', '2026-10-23')")).list.map(r => [r.name, +r.total.toFixed(2)]), [['A', 90], ['B', 90]]);
+  assert.match(fnSrc('applyTipRaise'), /approvedDate:todayJP\(\), decAt:_dec, decDay:\(\(typeof _tipHstDay==='function'\) \? _tipHstDay\(Date\.now\(\)\) : undefined\)\}\);/, 'a raise keeps its Hawaii day too');
+  const after = plain(run(c, "calcTipDistribution('F01', '2026-10-18')")).list.map(r => [r.name, +r.total.toFixed(2)]);
+  assert.deepEqual(after, before, 'the past day pays the same');
 });
 
 test('the period table, CSV and staff tab show the rates used in the period (80%→90%); the daily table shows Tip Rate; the confirmation keeps the basis and the rates', () => {

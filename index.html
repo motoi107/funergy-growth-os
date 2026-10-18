@@ -6166,7 +6166,7 @@ function isTipEligibleRole(e){
      表示の率と No Tip（配分から外す）にだけ効き、重みには入らなかった（empCoef はどこからも呼ばれていなかった）。
    【いま】TIP_RATE_WEIGHT_START の日からは、重み ＝ その日の Tip Rate ÷ 100（80% → 0.8・90% → 0.9・100% → 1.0）。
      その日の Tip Rate（tipRateOn）は Tip Rate の画面と同じ決まり（Waikiki・役職・初回勤務から 3 か月・承認・初回勤務日の無い人は従業員マスターの率）で、
-     ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から・ハワイの日付）。
+     ちがうのは「その日の」こと：3 か月はその日に 3 か月たっていれば 100%、承認はその日までに決めたもの（承認した日から・v1092 からはハワイの日付 decDay）。
      Waikiki（F03・F03-G）のチップは、だれでも 100%（勤務時間で均等）。
      No Tip は今までどおり別の印（noTip＝いまの Tip Rate が No Tip の人を配分から外す）。
    【開始日より前】今までどおり評価係数（支給・確定に使った期間の額を変えない。v959 の TIP_SL_SPLIT_END と同じ考え方）。
@@ -6174,21 +6174,17 @@ function isTipEligibleRole(e){
 var TIP_RATE_WEIGHT_START = '2026-10-16';
 function tipWeightByRate(dateISO) { return !!dateISO && String(dateISO) >= TIP_RATE_WEIGHT_START; }
 /* 決めた日（ハワイの日付・YYYY-MM-DD）。
-   ・決めた時刻 decAt（v1091 から・本物の時刻）があれば、そのハワイの日付（独立レビュー dc96c7e P3-2：approvedDate は承認した端末の日付なので、
-     日本の端末で承認すると 1 日あとになっていた）。ただし approvedDate より後・2 日以上前なら使わない（v1091 の端末が前の記録に付けた並びの時刻）。
-   ・無ければ approvedDate（承認した端末の日付）。どちらも無ければ ''（いつも効く＝決めた日の分からない前の記録は、どの日にも効く） */
+   ・decDay（v1092 から。承認・却下・引き上げのときのハワイの日付＝日本の端末で承認しても、ハワイのその日から。独立レビュー dc96c7e P3-2）
+   ・無ければ approvedDate（承認した端末の日付）
+   ・どちらも無ければ ''（いつも効く＝決めた日の分からない前の記録は、どの日にも効く）
+   決めた時刻 decAt は日付に使わない（Codex dc96c7e：tipStampLegacy が前の記録に並びから付けた時刻は本物の時刻と見分けられず、
+   後日の承認で付いたとたんに、日付の分からない前の承認が過去の日から外れて、過去の日の配分が変わった） */
 function _tipHstDay(t) { var u = new Date(t - 10 * 3600 * 1000); return u.getUTCFullYear() + '-' + ('0' + (u.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + u.getUTCDate()).slice(-2); }
 function _tipDecDay(r) {
+  var dd = String((r && r.decDay) || '');
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dd)) return dd;
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
-  var ad = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
-  var t = (typeof _tipDecT === 'function') ? _tipDecT(r) : 0;
-  if (t > 1e12 && !(r && r.decEst)) {
-    var hd = _tipHstDay(t);
-    if (!ad) return hd;
-    var gap = (Date.UTC(+ad.slice(0, 4), +ad.slice(5, 7) - 1, +ad.slice(8, 10)) - Date.UTC(+hd.slice(0, 4), +hd.slice(5, 7) - 1, +hd.slice(8, 10))) / 86400000;
-    if (gap >= 0 && gap <= 1) return hd;
-  }
-  return ad;
+  return m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
 }
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
 function tipRateOn(emp, dateISO, list) {
@@ -80843,7 +80839,7 @@ function tipStampLegacy(list, name){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r);
     if(t>0){ if(t>floor) floor=t; return; }
-    if(r.status==='承認' || r.status==='却下'){ r.decAt=floor>0 ? floor : 1; r.decEst=1; n++; }   /* floor は上げない（時刻の無い記録はもともと前の時刻を上げない）・v1092: 並びから付けた時刻（決めた日には使わない） */
+    if(r.status==='承認' || r.status==='却下'){ r.decAt=floor>0 ? floor : 1; n++; }   /* floor は上げない（時刻の無い記録はもともと前の時刻を上げない） */
   });
   return n;
 }
@@ -81749,6 +81745,7 @@ async function approveTip(id, status) {
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
     r.decAt = _dec;
+    r.decDay = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81802,7 +81799,7 @@ async function applyTipRaise(){
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec});
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});   /* v1092: 決めた日（ハワイの日付） */
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
