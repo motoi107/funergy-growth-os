@@ -114,6 +114,7 @@ $$;
 create or replace function public.invoice_map_save(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; m jsonb := p->'map'; r public.invoice_item_maps; rl text; old public.invoice_item_maps;
+ v_reuse boolean := false;
 begin
  rl := public.invoice_require(actor, array['ceo','gm','office','office_crew']);
  if coalesce((m->>'auto_post')::boolean,false) and not coalesce((m->>'verified')::boolean,false) then raise exception 'bad_value'; end if;
@@ -125,14 +126,16 @@ begin
   select * into old from public.invoice_item_maps x where x.vendor_key=m->>'vendor_key' and x.retired_at is not null
    and coalesce(x.store_id,'')=coalesce(m->>'store_id','') and coalesce(x.vendor_item_code,'')=coalesce(m->>'vendor_item_code','')
    and coalesce(x.alias_key,'')=coalesce(m->>'alias_key','') and x.spec_key=coalesce(m->>'spec_key','') and x.purchase_unit=coalesce(m->>'purchase_unit','') for update;
-  if old.id is not null then m := m || jsonb_build_object('id', old.id, 'version', old.version, 'retired_again', true); end if;
+  if old.id is not null then m := m || jsonb_build_object('id', old.id, 'version', old.version); v_reuse := true; end if;
  end if;
  if m ? 'id' then
   update public.invoice_item_maps set ingredient_code=m->>'ingredient_code', count_unit=m->>'count_unit', count_per_purchase=(m->>'count_per_purchase')::numeric,
    base_unit=m->>'base_unit', base_per_purchase=(m->>'base_per_purchase')::numeric, verified=coalesce((m->>'verified')::boolean,false),
    verified_by=case when coalesce((m->>'verified')::boolean,false) then actor::text end, verified_at=case when coalesce((m->>'verified')::boolean,false) then now() end,
-   auto_post=coalesce((m->>'auto_post')::boolean,false), note=m->>'note', version=version+1, updated_at=now(), retired_at=null, retired_by=null
-  where id=(m->>'id')::uuid and version=(m->>'version')::int and (retired_at is null or coalesce((m->>'retired_again')::boolean,false)) returning * into r;
+   auto_post=coalesce((m->>'auto_post')::boolean,false), note=m->>'note', version=version+1, updated_at=now(), retired_at=null, retired_by=null,
+   -- a link made by linking that accounting changes here becomes accounting's own (a Head Chef / AM no longer changes it)
+   source=case when source='review' then 'manual' else source end
+  where id=(m->>'id')::uuid and version=(m->>'version')::int and (retired_at is null or v_reuse) returning * into r;
   if r.id is null then raise exception 'conflict'; end if;
  else
   insert into public.invoice_item_maps(vendor_key, store_id, vendor_item_code, alias_key, spec_key, purchase_unit, ingredient_code, count_unit,
@@ -198,8 +201,9 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 4) what the screen shows
--- The lines of the invoices (to check and posted; purchase invoices with a vendor), newest first, and of some vendors only when
--- p.vendor_keys is given. Values as text, as stored.
+-- The lines of the invoices and credit memos (to check and posted; purchases with a vendor), newest first, and of some vendors only
+-- when p.vendor_keys is given. Values as text, as stored. A page of p.limit (20000 at most) from p.offset: the function reads page
+-- by page until a page is not full, so no line is left out without saying so.
 create or replace function public.invoice_link_lines(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; v_keys text[];
@@ -209,15 +213,16 @@ begin
  if jsonb_typeof(p->'vendor_keys') = 'array' then v_keys := array(select jsonb_array_elements_text(p->'vendor_keys')); end if;
  return (select coalesce(jsonb_agg(to_jsonb(x)), '[]') from (
   select l.id, l.doc_id, l.line_no, l.item_code, l.raw_name, l.spec, l.spec_key, l.purchase_unit, l.qty::text qty, l.unit_price::text unit_price,
-   l.amount_cents, l.map_id, l.ingredient_code, l.reasons, d.store_id, d.vendor_key, d.status,
+   l.amount_cents, l.map_id, l.ingredient_code, l.reasons, d.store_id, d.vendor_key, d.status, d.doc_type,
    coalesce(d.effective_date, d.invoice_date) as day
   from public.invoice_lines l join public.invoice_docs d on d.id=l.doc_id
-  where d.status in ('review','posted') and d.doc_type='invoice' and d.posting_kind='purchase' and d.vendor_key is not null
+  where d.status in ('review','posted') and d.doc_type in ('invoice','credit_memo') and d.posting_kind='purchase' and d.vendor_key is not null
    and (v_keys is null or d.vendor_key = any(v_keys))
   order by coalesce(d.effective_date, d.invoice_date) desc nulls last, l.doc_id, l.line_no
-  limit least(greatest(coalesce((p->>'limit')::int, 30000), 1), 50000)) x);
+  limit least(greatest(coalesce((p->>'limit')::int, 20000), 1), 20000) offset greatest(coalesce((p->>'offset')::int, 0), 0)) x);
 end $$;
 
+-- What the screen shows besides the lines (the function reads those page by page with invoice_link_lines).
 create or replace function public.invoice_link_data(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; rl text; v_people jsonb := '{}';
@@ -236,7 +241,6 @@ begin
   end;
  end if;
  return jsonb_build_object('role', rl,
-  'lines', public.invoice_link_lines(p),
   'maps', (select coalesce(jsonb_agg(to_jsonb(m) order by m.vendor_key, m.updated_at desc), '[]') from (select * from public.invoice_item_maps order by updated_at desc limit 20000) m),
   'marks', (select coalesce(jsonb_agg(to_jsonb(k)), '[]') from public.invoice_link_marks k where k.state <> 'none'),
   'vendors', (select coalesce(jsonb_agg(jsonb_build_object('vendor_key', v.vendor_key, 'display_name', v.display_name, 'food_kind', v.food_kind,
@@ -371,10 +375,11 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 6) the lines follow the links
--- p.updates: [{ line_id, from_map, map_id, ingredient_code, count_unit, count_per_purchase, base_unit, base_per_purchase,
---   price_per_count, price_per_base, reasons }], 1000 at most, as the function worked them out with the links in use (invoice/link.mjs:
--- the intake's own mapping step). A line whose link is no longer from_map (changed meanwhile) is passed over. Only the link and the
--- reasons about it change: any other reason must stay as it is. The line's price per purchase unit is its unit price when it has a
+-- p.updates: [{ line_id, from_map, unit_price, purchase_unit, map_id, ingredient_code, count_unit, count_per_purchase, base_unit,
+--   base_per_purchase, price_per_count, price_per_base, reasons }], 1000 at most, as the function worked them out with the links in use
+-- (invoice/link.mjs: the intake's own mapping step). A line changed since it was read (its link, unit price, purchase unit or any
+-- other reason) is passed over, never fails the others: the next action or そろえる does it. Only the link and the reasons about it
+-- change. The line's price per purchase unit is its unit price when it has a
 -- link. A posted line's active price history row is voided and a new one written when the line is clean (invoice_price_insert).
 -- No amount, version, posting, reconciliation or QuickBooks row of an invoice changes.
 create or replace function public.invoice_link_apply(p jsonb) returns jsonb
@@ -395,13 +400,16 @@ begin
   if v_doc is null then v_skipped := v_skipped + 1; continue; end if;
   select * into d from public.invoice_docs where id=v_doc for update;
   select * into l from public.invoice_lines where id=(u->>'line_id')::uuid for update;
-  if d.status not in ('review','posted') or d.doc_type <> 'invoice' or d.posting_kind <> 'purchase'
-     or l.map_id is distinct from nullif(u->>'from_map','')::uuid then v_skipped := v_skipped + 1; continue; end if;
   if jsonb_typeof(u->'reasons') is distinct from 'array' then raise exception 'bad_value'; end if;
-  -- only the reasons about the link may change
+  if d.status not in ('review','posted') or d.doc_type not in ('invoice','credit_memo') or d.posting_kind <> 'purchase'
+     or l.map_id is distinct from nullif(u->>'from_map','')::uuid
+     or l.unit_price::text is distinct from (u->>'unit_price') or l.purchase_unit is distinct from (u->>'purchase_unit') then
+   v_skipped := v_skipped + 1; continue;
+  end if;
+  -- only the reasons about the link change: a line whose other reasons changed meanwhile (a correction) is passed over
   if (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(l.reasons) c where not (c = any(map_codes)))
      is distinct from (select coalesce(array_agg(distinct c order by c), '{}') from jsonb_array_elements_text(u->'reasons') c where not (c = any(map_codes))) then
-   raise exception 'bad_value';
+   v_skipped := v_skipped + 1; continue;
   end if;
   v_new_map := nullif(u->>'map_id','')::uuid;
   if v_new_map is not null then

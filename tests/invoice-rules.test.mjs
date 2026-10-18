@@ -432,6 +432,30 @@ test('each migration changes only what it says', async () => {
     "  execute format('grant execute on function public.%s to service_role', f);",
     ' end loop;',
     'end $$;'].join('\n'), 'only the grants of the new functions besides functions');
+  // 紐づけ 段階 1 (20261025090000, Moto 2026-10-18・UI案55): the retired mark on the item maps (two columns), the Head Chef・AM accounts
+  // and the item marks (two tables, service role only), three functions replaced so a retired link is never used, ten new ones
+  // (service role only); no row or setting changed.
+  const il = read('supabase/migrations/20261025090000_invoice_item_link.sql');
+  assert.deepEqual([...il.matchAll(fn)].map(m => m[1]), ['invoice_price_insert', 'invoice_worker_context', 'invoice_map_save', 'invoice_code_key',
+    'invoice_link_hr_ok', 'invoice_link_role', 'invoice_link_whoami', 'invoice_link_lines', 'invoice_link_data', 'invoice_link_save', 'invoice_link_retire',
+    'invoice_link_mark', 'invoice_link_apply']);
+  assert.ok([...il.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  const ilRest = il.replace(fn, '').replace(/^--.*\n/gm, '').replace(/ +--.*$/gm, '').replace(/\n+/g, '\n').trim();
+  assert.ok(ilRest.startsWith([
+    'do $$ begin',
+    " if to_regprocedure('public.invoice_vendor_register(jsonb)') is null then",
+    "  raise exception '先に 20261024090000_invoice_vendor_register.sql（新しい業者を決める）を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'alter table public.invoice_item_maps add column if not exists retired_at timestamptz;',
+    'alter table public.invoice_item_maps add column if not exists retired_by text;',
+    'create table if not exists public.invoice_link_members('].join('\n')), ilRest.slice(0, 600));
+  assert.deepEqual([...ilRest.matchAll(/^create table (?:if not exists )?public\.(\w+)/gm)].map(m => m[1]), ['invoice_link_members', 'invoice_link_marks']);
+  assert.equal((ilRest.match(/^alter table/gm) || []).length, 2, 'only the two retired columns are added to an existing table');
+  assert.ok(!/^(drop |insert |update |delete )/im.test(ilRest), 'no row is changed');
+  assert.ok(/foreach t in array array\['invoice_link_members','invoice_link_marks'\] loop/.test(ilRest)
+    && /revoke all on public\.%I from public, anon, authenticated/.test(ilRest) && /enable row level security/.test(ilRest));
+  assert.ok(/'invoice_code_key\(text\)','invoice_link_hr_ok\(text,text\)','invoice_link_role\(uuid\)','invoice_link_whoami\(jsonb\)',\n\s+'invoice_link_lines\(jsonb\)','invoice_link_data\(jsonb\)','invoice_link_save\(jsonb\)','invoice_link_retire\(jsonb\)','invoice_link_mark\(jsonb\)',\n\s+'invoice_link_apply\(jsonb\)'\] loop/.test(ilRest));
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -441,7 +465,8 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261009170000_invoice_office_crew_review.sql', 'supabase/migrations/20261009190000_invoice_office_crew_accounting.sql',
     'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
     'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
-    'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql'])
+    'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql',
+    'supabase/migrations/20261025090000_invoice_item_link.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

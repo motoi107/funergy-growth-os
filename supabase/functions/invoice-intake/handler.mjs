@@ -616,6 +616,9 @@ export function createHandler(deps) {
       const n = result.lines[idx];
       const set = { ...(e.set || {}) };
       for (const k of Object.keys(set)) if (!['qty', 'unit_price', 'amount_cents', 'line_discount_cents', 'purchase_unit', 'map_id'].includes(k)) throw new Error('field_not_editable');
+      // A chosen mapping that is not in use (taken back by linking, or an older screen's list) is refused: the line would keep it with
+      // another mapping's code (紐づけ 2026-10-18, review P3).
+      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error('conflict');
       if ('map_id' in set) Object.assign(set, { ingredient_code: n.ingredient_code ?? null, count_unit: n.count_unit ?? null, count_per_purchase: n.count_per_purchase ?? null,
         base_unit: n.base_unit ?? null, base_per_purchase: n.base_per_purchase ?? null });
       Object.assign(set, { price_per_purchase: n.price_per_purchase ?? null, price_per_count: n.price_per_count ?? null, price_per_base: n.price_per_base ?? null, prev_price: n.prev_price ?? null });
@@ -845,20 +848,35 @@ export function createHandler(deps) {
   const verOk = x => x == null || (Number.isInteger(x) && x > 0);
   const itemOk = x => x && typeof x === 'object' && str(x.vendor_key, 100)
     && ((str(x.vendor_item_code, 100) && x.alias_key == null) || (x.vendor_item_code == null && str(x.alias_key, 300) && optStr(x.spec_key, 200)));
+  // Every line (of these vendors, or all), page by page: nothing is left out without saying so (LINES_PAGE × LINES_PAGES at most).
+  const LINES_PAGE = 20000, LINES_PAGES = 50;
+  async function linkLines(actor, vendorKeys) {
+    const all = [];
+    for (let i = 0; i < LINES_PAGES; i++) {
+      const page = await db.rpc('invoice_link_lines', { actor, ...(vendorKeys ? { vendor_keys: vendorKeys } : {}), limit: LINES_PAGE, offset: i * LINES_PAGE });
+      all.push(...(page || []));
+      if (!page || page.length < LINES_PAGE) return { lines: all, truncated: false };
+    }
+    return { lines: all, truncated: true };
+  }
   async function linkData(actor, b) {
     const r = await db.rpc('invoice_link_data', { actor });
-    return { role: r.role, items: groupItems(r.lines || [], { vendors: r.vendors, maps: r.maps, marks: r.marks }), vendors: r.vendors || [],
-      people: r.people || {}, lines: (r.lines || []).length, at: new Date(now()).toISOString() };
+    const { lines, truncated } = await linkLines(actor, null);
+    // the lines not in step with the links in use (relink would change them): そろえる puts them right
+    const pending = new Set(lines.filter(l => relink(l, r.maps || [])).map(l => l.id));
+    return { role: r.role, items: groupItems(lines, { vendors: r.vendors, maps: r.maps, marks: r.marks, pending }), vendors: r.vendors || [],
+      people: r.people || {}, lines: lines.length, waiting: pending.size, truncated, at: new Date(now()).toISOString() };
   }
-  // The lines of these vendors follow the links in use. changed: links that changed now (their lines keep them with the new code).
-  // In chunks (one transaction each); a line changed meanwhile is passed over (the next action or そろえる does it).
-  async function linkSync(actor, vendorKeys, changed) {
-    const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [] };
-    if (!vendorKeys.length) return out;
+  // The lines of these vendors (null: all) follow the links in use (relink works the whole state out again, so a line left behind is
+  // put right too). In chunks (one transaction each); a line changed meanwhile is passed over (the next action or そろえる does it).
+  async function linkSync(actor, vendorKeys) {
+    const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
+    if (vendorKeys && !vendorKeys.length) return out;
     const ctx = await context();
-    const lines = await db.rpc('invoice_link_lines', { actor, vendor_keys: vendorKeys });
+    const got = await linkLines(actor, vendorKeys);
+    out.truncated = got.truncated;
     const updates = [];
-    for (const l of lines) { const u = relink(l, ctx.maps, changed); if (u) updates.push(u); }
+    for (const l of got.lines) { const u = relink(l, ctx.maps); if (u) updates.push(u); }
     for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
       const r = await db.rpc('invoice_link_apply', { actor, updates: updates.slice(i, i + APPLY_CHUNK) });
       out.lines += r.lines || 0; out.prices += r.prices || 0; out.voided += r.voided || 0; out.skipped += r.skipped || 0;
@@ -867,8 +885,8 @@ export function createHandler(deps) {
     out.months = [...new Set(out.months)].sort();
     return out;
   }
-  async function linkFollow(actor, r, vendorKeys, changed) {
-    r.sync = await linkSync(actor, vendorKeys, changed);
+  async function linkFollow(actor, r, vendorKeys) {
+    r.sync = await linkSync(actor, vendorKeys);
     // posted lines with a code now count by the code's class in the purchase summary (open months; a closed month stays as it was)
     r.summary = r.sync.lines ? (await publishSummary(null, { months: r.sync.months, doc_ids: r.sync.doc_ids })).ok : true;
     return r;
@@ -883,13 +901,13 @@ export function createHandler(deps) {
         ingredient_code: x.ingredient_code, map_id: x.map_id ?? null, version: x.version ?? null, note: x.note ?? null };
     });
     const r = await db.rpc('invoice_link_save', { actor, links: clean });
-    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))], new Set(r.maps.map(m => m.id)));
+    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))]);
   }
   async function linkUndo(actor, b) {
     const maps = Array.isArray(b.maps) ? b.maps : null;
     if (!maps || !maps.length || maps.length > LINK_MAX || !maps.every(x => x && uuidOk(x.id) && verOk(x.version) && x.version != null)) throw new Error('bad_value');
     const r = await db.rpc('invoice_link_retire', { actor, maps: maps.map(x => ({ id: x.id, version: x.version })) });
-    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))], new Set());
+    return linkFollow(actor, r, [...new Set(r.maps.map(m => m.vendor_key))]);
   }
   async function linkMark(actor, b) {
     const marks = Array.isArray(b.marks) ? b.marks : null;
@@ -901,12 +919,11 @@ export function createHandler(deps) {
     });
     return db.rpc('invoice_link_mark', { actor, marks: clean });
   }
-  // そろえる: every vendor's lines follow the links in use (lines taken in before a link, or changed meanwhile). Changes no link.
+  // そろえる: every line follows the links in use (taken in before a link, left on a link taken back, or left behind). Changes no link.
   async function linkSyncAll(actor) {
     const w = await db.rpc('invoice_link_whoami', { actor });
     if (!w || !w.role) throw new Error('forbidden');
-    const ctx = await context();
-    return linkFollow(actor, { role: w.role }, [...new Set(ctx.maps.map(m => m.vendor_key))], new Set());
+    return linkFollow(actor, { role: w.role }, null);
   }
 
   async function folderPlan(actor, b) {

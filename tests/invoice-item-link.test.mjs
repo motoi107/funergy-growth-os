@@ -76,7 +76,7 @@ async function setup() {
      ('40001','手袋','BX','VendorA',1,'{"name":"手袋","nameEN":"Gloves","cat":"40000"}'),
      ('50067','マグロ','g','Maguro',1,'{"name":"マグロ","nameEN":"Ahi","cat":"10000"}');
     insert into public.employees values
-     ('E-OF','Office Person','office','Accounting','在籍','{}'),('E-CH','Chika Test','chef','Head Chef','在籍','{}'),('E-AM','Yuki Test','am','Area Manager','在籍','{}'),
+     ('E-OF','Office Person','office','Accounting','在籍','{}'),('E-CH','Kai Test','chef','Head Chef','在籍','{}'),('E-AM','Lani Test','am','Area Manager','在籍','{}'),
      ('E-LEFT','Left Chef','chef','Head Chef','退職','{}'),('E-CREW','Was AM','crew','Server','在籍','{}'),('E-OS','Os Off','chef','Head Chef','在籍','{"osDisabled":true}'),
      ('E-OFF','Disabled Row','am','Area Manager','在籍','{}');`);
   for (const [k, r, e] of [['gm', 'gm', null], ['office', 'office', 'E-OF'], ['crew', 'office_crew', null], ['ceo', 'ceo', null]]) await pg.query('insert into manager_auth(user_id, role, emp_id) values($1,$2,$3)', [U[k], r, e]);
@@ -115,8 +115,8 @@ async function setup() {
   const q = async (sql, p = []) => (await pg.query(sql, p)).rows;
   const read = async list => {
     const F = {};
-    for (const [tag, no, date, lines, vendor] of list) {
-      fixtures.set(tag, { readable: true, documents: [doc(no, date, lines, { vendor })] });
+    for (const [tag, no, date, lines, vendor, over] of list) {
+      fixtures.set(tag, { readable: true, documents: [{ ...doc(no, date, lines, { vendor }), ...(over || {}) }] });
       F[tag] = drive.file(tag + '.pdf', pdf(tag), 'U6');
     }
     const w = await call({ action: 'worker' }, { 'x-invoice-worker-key': WORKER_KEY });
@@ -370,19 +370,33 @@ test('紐づけ: marks (対象外・新しい品目・あとで・戻す) with v
 
 test('紐づけ: invoice_link_apply only moves the link and its reasons; a line changed meanwhile, a link taken back and other states are passed over', async () => {
   const E = await setup();
-  const A = await E.read([['E-1', '9301', '2026-10-02', [['06666', 'LIME', '2', '30.00', '59.00', 'CS', null]]]]);
+  const A = await E.read([['E-1', '9301', '2026-10-02', [['06666', 'LIME', '2', '30.00', '59.00', 'CS', null]]], ['E-2', '9302', '2026-10-03', [['06666', 'LIME', '1', '30.00', '30.00', 'CS', null]]]]);
   const r = await E.api('tok-office', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '06666', ingredient_code: '10003' }] });
   const m = r.body.maps[0];
-  const [l] = await linesOf(E, A['E-1'].id);
-  assert.ok(l.reasons.includes('line_math') && l.map_id === m.id, JSON.stringify(l.reasons));
-  const base = { line_id: l.id, from_map: m.id, map_id: m.id, ingredient_code: '10003', count_unit: null, count_per_purchase: null, base_unit: null,
-    base_per_purchase: null, price_per_count: null, price_per_base: null, reasons: l.reasons };
-  // another reason than the link's: refused (nothing in the call is saved)
-  await assert.rejects(E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, map_id: null, ingredient_code: null, reasons: ['unmapped'] }] }), /bad_value/);
-  await assert.rejects(E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, reasons: [...l.reasons, 'total_mismatch'] }] }), /bad_value/);
+  const [l] = await linesOf(E, A['E-1'].id), [l2] = await linesOf(E, A['E-2'].id);
+  assert.ok(l.reasons.includes('line_math') && l.map_id === m.id && l2.map_id === m.id, JSON.stringify(l.reasons));
+  const read = (await E.db.rpc('invoice_link_lines', { actor: U.office })).find(x => x.id === l.id);
+  const base = { line_id: l.id, from_map: m.id, unit_price: read.unit_price, purchase_unit: read.purchase_unit, map_id: m.id, ingredient_code: '10003', count_unit: null,
+    count_per_purchase: null, base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null, reasons: l.reasons };
+  const read2 = (await E.db.rpc('invoice_link_lines', { actor: U.office })).find(x => x.id === l2.id);
+  const off2 = { ...base, line_id: l2.id, unit_price: read2.unit_price, purchase_unit: read2.purchase_unit, map_id: null, ingredient_code: null,
+    reasons: [...l2.reasons.filter(c => !MAP_REASONS.includes(c)), 'unmapped'] };
+  // another reason than the link's changed meanwhile (a correction): that line is passed over, the others in the call are done (review P2-2)
+  let x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, map_id: null, ingredient_code: null, reasons: ['unmapped'] }, off2] });
+  assert.deepEqual([x.lines, x.skipped], [1, 1]);
+  assert.deepEqual([(await linesOf(E, A['E-1'].id))[0].map_id, (await linesOf(E, A['E-2'].id))[0].map_id], [m.id, null]);
+  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, reasons: [...l.reasons, 'total_mismatch'] }] });
+  assert.deepEqual([x.lines, x.skipped], [0, 1]);
+  // the unit price or the purchase unit changed since it was read: passed over (the prices per unit were worked out from the old one)
+  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, unit_price: '31.000000' }] });
+  assert.deepEqual([x.lines, x.skipped], [0, 1]);
+  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, purchase_unit: 'EA' }] });
+  assert.deepEqual([x.lines, x.skipped], [0, 1]);
+  await assert.rejects(E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, reasons: 'unmapped' }] }), /bad_value/);
   await assert.rejects(E.db.rpc('invoice_link_apply', { actor: U.other, updates: [] }), /forbidden/);
-  // from_map not what the line has now: passed over
-  let x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, from_map: null, map_id: null, ingredient_code: null, reasons: ['unmapped'] }] });
+  // from_map not what the line has now: passed over (the rest of the update is one the line could take)
+  const offL = [...l.reasons.filter(c => !MAP_REASONS.includes(c)), 'unmapped'];
+  x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, from_map: null, map_id: null, ingredient_code: null, reasons: offL }] });
   assert.deepEqual([x.lines, x.skipped], [0, 1]);
   // a code that is not the link's, a link taken back, a superseded invoice: passed over
   x = await E.db.rpc('invoice_link_apply', { actor: U.office, updates: [{ ...base, ingredient_code: '50067' }] });
@@ -447,6 +461,8 @@ test('紐づけ: relink gives what the intake gives (rules.mjs evaluate), for ev
     { item_code: '01111', description: 'SAKE 6/1.8L', qty: '1', unit: 'EA', pack: '6/1.8L', unit_price: '10.00', amount: '10.00' },
     { item_code: '02222', description: 'MISO 12/500G', qty: '1', unit: 'CS', pack: '12/400G', unit_price: '24.00', amount: '24.00' },
     { item_code: null, description: 'gloves  nitrile l', qty: '1', unit: 'BX', pack: '10/200', unit_price: '12.00', amount: '12.00' },
+    { item_code: '03333', description: 'NORI 10/50', qty: '1', unit: 'CS', pack: '10/50', unit_price: '40.00', amount: '40.00' },
+    { item_code: '04444', description: 'KIWI', qty: '2', unit: null, pack: null, unit_price: '30.00', amount: '60.00' },
   ];
   const maps = [
     { id: 'm1', vendor_key: 'v1', vendor_item_code: '07777', alias_key: null, spec_key: '', purchase_unit: '', ingredient_code: '10003', verified: true, auto_post: false },
@@ -455,15 +471,19 @@ test('紐づけ: relink gives what the intake gives (rules.mjs evaluate), for ev
       base_unit: 'ml', base_per_purchase: 10800, verified: true, auto_post: true },
     { id: 'm4', vendor_key: 'v1', vendor_item_code: '02222', alias_key: null, spec_key: '12/500G', purchase_unit: 'CS', ingredient_code: 'I-1', count_unit: 'BAG', count_per_purchase: 12,
       base_unit: 'g', base_per_purchase: 6000, verified: true, auto_post: false },
+    // another pack than the link's, with no conversion to compare: spec_changed from the pack alone
+    { id: 'm5', vendor_key: 'v1', vendor_item_code: '03333', alias_key: null, spec_key: '10/100', purchase_unit: '', ingredient_code: 'I-3', verified: true, auto_post: true },
+    // a purchase unit the line does not print: unit_unverified
+    { id: 'm6', vendor_key: 'v1', vendor_item_code: '04444', alias_key: null, spec_key: '', purchase_unit: 'CS', ingredient_code: 'I-4', verified: true, auto_post: true },
   ];
   const ctx = m => ({ store, stores: [store], vendors, maps: m, settings: {}, started: true, docCount: 1 });
   const without = await evaluate(ext(L), ctx([]));
   const withMaps = await evaluate(ext(L), ctx(maps));
-  const changed = new Set(maps.map(m => m.id));
+  assert.ok(withMaps.lines[6].reasons.includes('spec_changed') && withMaps.lines[7].reasons.includes('unit_unverified'), 'the made-up lines cover both');
   without.lines.forEach((l, i) => {
     const line = { id: 'l' + i, vendor_key: 'v1', store_id: 'F06', item_code: l.item_code, raw_name: l.raw_name, spec: l.spec, spec_key: l.spec_key,
       purchase_unit: l.purchase_unit, unit_price: l.unit_price, map_id: l.map_id || null, ingredient_code: l.ingredient_code || null, reasons: l.reasons };
-    const u = relink(line, maps, changed);
+    const u = relink(line, maps);
     const w = withMaps.lines[i];
     if (!w.map_id) { assert.equal(u, null, 'line ' + i + ': no link for it (another pack), left as it is'); assert.ok(w.reasons.includes('unmapped')); return; }
     assert.ok(u, 'line ' + i + ' changes');
@@ -471,8 +491,17 @@ test('紐づけ: relink gives what the intake gives (rules.mjs evaluate), for ev
     assert.deepEqual(strip(u.reasons), strip(w.reasons), 'line ' + i);
     assert.deepEqual([u.price_per_count ?? null, u.price_per_base ?? null], [w.price_per_count ?? null, w.price_per_base ?? null], 'line ' + i);
     // and back: taking every link back gives the line the intake writes with none
-    const back = relink({ ...line, map_id: u.map_id, ingredient_code: u.ingredient_code, reasons: u.reasons }, [], new Set());
+    const back = relink({ ...line, map_id: u.map_id, ingredient_code: u.ingredient_code, reasons: u.reasons }, []);
     assert.deepEqual(back ? [back.map_id, strip(back.reasons)] : null, [null, strip(l.reasons)], 'line ' + i + ' back');
+    // a line the intake took in with the links there is in step (nothing to do), and stays so with its link's code changed only in the
+    // line (left behind: review P2-1) until it follows
+    const inStep = { ...line, map_id: w.map_id, ingredient_code: w.ingredient_code, reasons: w.reasons };
+    assert.equal(relink(inStep, maps), null, 'line ' + i + ' in step');
+    const behind = relink({ ...inStep, ingredient_code: 'OLD' }, maps);
+    assert.deepEqual(behind && [behind.map_id, behind.ingredient_code, strip(behind.reasons)], [w.map_id, w.ingredient_code, strip(w.reasons)], 'line ' + i + ' left behind');
+    // a reason about the link saved over it (a correction read before the link): put right
+    const over = relink({ ...inStep, reasons: [...w.reasons, 'unmapped'] }, maps);
+    assert.deepEqual(over && strip(over.reasons), strip(w.reasons), 'line ' + i + ' reason saved over it');
   });
   // the item keys: code, else the printed name with its pack
   assert.deepEqual(itemKey({ item_code: ' 07777 ', raw_name: 'x' }), { vendor_item_code: '07777', alias_key: null, spec_key: '' });
@@ -494,6 +523,129 @@ test('紐づけ: a link taken back is never a source of prices, even on a line t
   const p = await E.api('tok-office', { action: 'post', doc_id: d.id, version: d.version, reason: '確認した' });
   assert.equal(p.status, 200, JSON.stringify(p.body));
   assert.deepEqual(await prices(E, '10003'), []);
+  await E.pg.close();
+});
+
+// The review of ea17b8f (P2-1・P2-3): a line left on an old code or with a reason saved over it, while its link is still in use, is
+// shown as waiting and put right by そろえる (the posted line's old price voided, the new one written). Made by writing the states the
+// review reached (an apply that failed after a link changed; a correction read before the link and saved after it).
+test('紐づけ: lines left behind with a link in use (an apply that failed, a correction saved over it) wait and そろえる puts them right', async () => {
+  const E = await setup();
+  const A = await E.read([['L-1', '9601', '2026-10-02', [AVO]], ['L-2', '9602', '2026-10-03', [AVO]]]);
+  await E.q(`update invoice_docs set status='review' where id=$1`, [A['L-2'].id]);
+  let r = await E.api('tok-office', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '07777', ingredient_code: '10003' }] });
+  const m = r.body.maps[0];
+  assert.deepEqual((await prices(E, '10003')).filter(h => h.status === 'active').length, 1);
+  // linked again to another code, and the step that brings the lines along failed (the link is saved, the lines are not)
+  await E.q(`update invoice_item_maps set ingredient_code='50067', version=version+1 where id=$1`, [m.id]);
+  // and the invoice to check got a correction read before the link and saved after it: the link's reasons of that time
+  await E.q(`update invoice_lines set reasons = reasons || '["unmapped"]'::jsonb where doc_id=$1`, [A['L-2'].id]);
+  let data = (await E.api('tok-chef', { action: 'link_data' })).body;
+  assert.deepEqual([itemOf(data, AVO_ID).link.ingredient_code, itemOf(data, AVO_ID).waiting, data.waiting], ['50067', 2, 2], 'the screen shows them');
+  r = await E.api('tok-chef', { action: 'link_sync' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.sync.lines, r.body.sync.voided, r.body.sync.prices], [2, 1, 1]);
+  const L1 = (await linesOf(E, A['L-1'].id))[0], L2 = (await linesOf(E, A['L-2'].id))[0];
+  assert.deepEqual([L1.ingredient_code, L2.ingredient_code, L2.reasons.includes('unmapped'), L1.map_id, L2.map_id], ['50067', '50067', false, m.id, m.id]);
+  assert.deepEqual((await prices(E, '10003')).map(h => h.status), ['voided']);
+  assert.deepEqual((await prices(E, '50067')).map(h => h.status), ['active']);
+  data = (await E.api('tok-chef', { action: 'link_data' })).body;
+  assert.deepEqual([itemOf(data, AVO_ID).waiting, data.waiting], [0, 0]);
+  assert.equal((await E.api('tok-chef', { action: 'link_sync' })).body.sync.lines, 0, 'nothing more');
+  // a line left on a link taken back (its vendor has no link in use any more) is found too
+  await E.q(`update invoice_item_maps set retired_at=now() where id=$1`, [m.id]);
+  data = (await E.api('tok-office', { action: 'link_data' })).body;
+  assert.equal(data.waiting, 2);
+  r = await E.api('tok-office', { action: 'link_sync' });
+  assert.deepEqual([r.body.sync.lines, r.body.sync.voided], [2, 1]);
+  assert.deepEqual((await linesOf(E, A['L-1'].id))[0].map_id, null);
+  assert.deepEqual((await prices(E, '50067')).map(h => h.status), ['voided']);
+  await E.pg.close();
+});
+
+// The review (P2-4): a line whose purchase unit is not printed keeps "unit not printed" when its link (with a purchase unit) is
+// linked again: no price is written that the intake would not write.
+test('紐づけ: "unit not printed" stays when a link with a purchase unit is linked again (no price the intake would not write)', async () => {
+  const E = await setup();
+  const KIWI = ['08888', 'KIWI', '2', '30.00', '60.00', null, null];
+  const A = await E.read([['K-1', '9701', '2026-10-02', [KIWI]]]);
+  // accounting's mapping, with a purchase unit, not checked yet
+  const ms = await E.api('tok-office', { action: 'map_save', map: { vendor_key: 'v1', store_id: null, vendor_item_code: '08888', alias_key: null, spec_key: '', purchase_unit: 'CS',
+    ingredient_code: '10003', verified: false, auto_post: false, source: 'manual' } });
+  assert.equal(ms.status, 200, JSON.stringify(ms.body));
+  let r = await E.api('tok-office', { action: 'link_sync' });
+  let [l] = await linesOf(E, A['K-1'].id);
+  assert.deepEqual([l.map_id, l.reasons.includes('unit_unverified'), l.reasons.includes('map_unverified')], [ms.body.id, true, true], 'as the intake finds it');
+  // a Head Chef links it again (not checked by accounting: they may)
+  const data = (await E.api('tok-chef', { action: 'link_data' })).body;
+  const it = itemOf(data, 'v1|c:08888');
+  assert.equal(it.link.id, ms.body.id);
+  r = await E.api('tok-chef', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '08888', ingredient_code: '50067', map_id: it.link.id, version: it.link.version }] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  [l] = await linesOf(E, A['K-1'].id);
+  assert.deepEqual([l.ingredient_code, l.reasons.includes('unit_unverified'), l.reasons.includes('map_unverified')], ['50067', true, false]);
+  assert.deepEqual(await prices(E, '50067'), [], 'no price: the unit was never printed');
+  await E.pg.close();
+});
+
+// The review's P3s: credit memos follow the links too (no price from a return); a code item whose lines are linked by their printed name
+// shows that link and changing it changes that link (no second link made); an item with two links shows none of them; a chosen mapping
+// that is not in use is refused by the correction; the mapping screen never takes a reuse flag from the screen; accounting's change makes
+// a link accounting's own; the lines are read page by page.
+test('紐づけ: credit memos, a code item linked by name, several links, the correction and the mapping screen, pages of lines', async () => {
+  const E = await setup();
+  await E.q(`update invoice_settings set value=value||'{"auto_post":false}' where key='mode'`);
+  const A = await E.read([['C-1', '9801', '2026-10-02', [AVO]], ['C-2', 'CM-1', '2026-10-04', [AVO], undefined, { doc_type: 'credit_memo' }]]);
+  assert.equal((await docOf(E, A['C-2'].id)).doc_type, 'credit_memo');
+  let r = await E.api('tok-office', { action: 'link_save', links: [{ vendor_key: 'v1', vendor_item_code: '07777', ingredient_code: '10003' }] });
+  assert.deepEqual([r.body.sync.lines, (await linesOf(E, A['C-2'].id))[0].ingredient_code], [2, '10003'], 'the return is coded too');
+  let data = (await E.api('tok-office', { action: 'link_data' })).body;
+  assert.equal(itemOf(data, AVO_ID).n, 2);
+  await E.api('tok-office', { action: 'link_undo', maps: [{ id: r.body.maps[0].id, version: r.body.maps[0].version }] });
+  // the printed name (no code link) found the lines: the code item shows that link
+  const byName = await E.api('tok-office', { action: 'map_save', map: { vendor_key: 'v1', store_id: null, vendor_item_code: null, alias_key: 'avocado 48s', spec_key: '48CT',
+    purchase_unit: '', ingredient_code: '10003', verified: false, auto_post: false, source: 'manual' } });
+  assert.equal(byName.status, 200, JSON.stringify(byName.body));
+  await E.api('tok-office', { action: 'link_sync' });
+  data = (await E.api('tok-office', { action: 'link_data' })).body;
+  let it = itemOf(data, AVO_ID);
+  assert.deepEqual([it.link && it.link.id, it.links, it.waiting, it.link && it.link.alias_key], [byName.body.id, 1, 0, 'avocado 48s']);
+  r = await E.api('tok-chef', { action: 'link_save', links: [{ vendor_key: 'v1', alias_key: 'avocado 48s', spec_key: '48CT', ingredient_code: '50067', map_id: it.link.id, version: it.link.version }] });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual((await linesOf(E, A['C-1'].id)).map(l => [l.map_id, l.ingredient_code]), [[byName.body.id, '50067']]);
+  assert.equal((await E.q(`select count(*)::int n from invoice_item_maps where vendor_key='v1' and retired_at is null`))[0].n, 1, 'no second link');
+  // accounting changes it in the mapping screen: it becomes accounting's own (a Head Chef / AM no longer changes it)
+  const cur = (await E.q(`select * from invoice_item_maps where id=$1`, [byName.body.id]))[0];
+  const ed = await E.api('tok-office', { action: 'map_save', map: { id: cur.id, version: cur.version, ingredient_code: '50067', verified: true, auto_post: false, note: null } });
+  assert.equal(ed.status, 200, JSON.stringify(ed.body));
+  assert.equal(ed.body.source, 'manual');
+  r = await E.api('tok-chef', { action: 'link_save', links: [{ vendor_key: 'v1', alias_key: 'avocado 48s', spec_key: '48CT', ingredient_code: '10003', map_id: cur.id, version: ed.body.version }] });
+  assert.equal(r.status, 403, JSON.stringify(r.body));
+  // a code link besides it: the item has two links and shows none of them
+  await E.db.rpc('invoice_link_save', { actor: U.office, links: [{ vendor_key: 'v1', vendor_item_code: '07777', ingredient_code: '10003' }] });
+  data = (await E.api('tok-office', { action: 'link_data' })).body;
+  it = itemOf(data, AVO_ID);
+  assert.deepEqual([it.link, it.links], [null, 2]);
+  // the correction: a chosen mapping that is not in use (taken back) is refused, not kept with another mapping's code
+  const codeMap = (await E.q(`select * from invoice_item_maps where vendor_item_code='07777' and retired_at is null`))[0];
+  await E.q(`update invoice_item_maps set retired_at=now() where id=$1`, [codeMap.id]);
+  const d = await docOf(E, A['C-1'].id), [l] = await linesOf(E, A['C-1'].id);
+  const ec = await E.api('tok-office', { action: 'edit', doc_id: d.id, version: d.version, reason: '対応を選んだ', lines: [{ line_id: l.id, set: { map_id: codeMap.id } }] });
+  assert.equal(ec.status, 409, JSON.stringify(ec.body));
+  // the mapping screen: updating a link taken back by its id is refused whatever the screen sends
+  const cm = (await E.q(`select * from invoice_item_maps where id=$1`, [codeMap.id]))[0];
+  const rs = await E.api('tok-office', { action: 'map_save', map: { id: cm.id, version: cm.version, retired_again: true, ingredient_code: '10003', verified: true, auto_post: false, note: null } });
+  assert.equal(rs.status, 409, JSON.stringify(rs.body));
+  // pages: every line, page by page, in one order
+  const all = await E.db.rpc('invoice_link_lines', { actor: U.office });
+  const p1 = await E.db.rpc('invoice_link_lines', { actor: U.office, limit: 1, offset: 0 }), p2 = await E.db.rpc('invoice_link_lines', { actor: U.office, limit: 1, offset: 1 });
+  assert.deepEqual([...p1, ...p2].map(x => x.id), all.map(x => x.id));
+  assert.deepEqual(all.map(x => x.doc_type).sort(), ['credit_memo', 'invoice']);
+  assert.equal((await E.db.rpc('invoice_link_lines', { actor: U.office, limit: 1, offset: 2 })).length, 0);
+  // the made-up groupItems: two links on one item show none; a store's own link on its lines counts as another one
+  const gl = [{ id: 'x1', vendor_key: 'v1', item_code: '1', raw_name: 'A', spec_key: '', doc_id: 'd', store_id: 'F06', status: 'posted', map_id: 's1' }];
+  const g = groupItems(gl, { maps: [{ id: 'k1', vendor_key: 'v1', vendor_item_code: '1', spec_key: '' }, { id: 's1', vendor_key: 'v1', store_id: 'F06', vendor_item_code: '1', spec_key: '' }] });
+  assert.deepEqual([g[0].link, g[0].links], [null, 2]);
   await E.pg.close();
 });
 
@@ -538,7 +690,7 @@ test('紐づけ: the check SQL tells before from after; the add-member SQL adds 
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);
       create table public.employees(id text primary key, name text, role text, title text, status text, data jsonb);
-      insert into public.employees values ('E-CH','Chika Test','chef','Head Chef','在籍','{}'),('E-AM','Yuki Test','am','Area Manager','在籍','{}'),('E-AM2','Yuki Other','crew','Server','退職','{}'),
+      insert into public.employees values ('E-CH','Kai Test','chef','Head Chef','在籍','{}'),('E-AM','Lani Test','am','Area Manager','在籍','{}'),('E-AM2','Lani Other','crew','Server','退職','{}'),
         ('E-X','Sam One','crew','Server','在籍','{}'),('E-Y','Sam Two','crew','Server','在籍','{}');
       insert into auth.users values ('00000000-0000-4000-8000-0000000000c1','chef@example.test'),('00000000-0000-4000-8000-0000000000c2','am@example.test');`);
     for (const f of files.slice(0, -1)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
@@ -553,12 +705,12 @@ test('紐づけ: the check SQL tells before from after; the add-member SQL adds 
     assert.deepEqual([post.item_link, Number(post.browser_can_run)], [false, 1]);
     await pg.exec(`revoke execute on function public.invoice_link_save(jsonb) from anon`);
     const add = (email, name, role) => pg.exec(ADD.replace("'name@example.com'", `'${email}'`).replace("'社員の名前'", `'${name}'`).replace("v_role text := 'chef'", `v_role text := '${role}'`));
-    await add('Chef@Example.test', 'Chika%', 'chef');
-    await add('am@example.test', 'Yuki%', 'am');   // the other Yuki is 退職: one in service
+    await add('Chef@Example.test', 'Kai%', 'chef');
+    await add('am@example.test', 'Lani%', 'am');   // the other Lani is 退職: one in service
     await assert.rejects(add('am@example.test', 'Sam%', 'am'), /在籍の人が 2 人/);
-    await assert.rejects(add('am@example.test', 'Chika Test', 'am'), /役割が am ではありません/);
-    await assert.rejects(add('nobody@example.test', 'Chika%', 'chef'), /アカウントがありません/);
-    await assert.rejects(add('am@example.test', 'Yuki%', 'gm'), /役割は chef/);
+    await assert.rejects(add('am@example.test', 'Kai Test', 'am'), /役割が am ではありません/);
+    await assert.rejects(add('nobody@example.test', 'Kai%', 'chef'), /アカウントがありません/);
+    await assert.rejects(add('am@example.test', 'Lani%', 'gm'), /役割は chef/);
     const rows = (await pg.query(`select user_id::text u, emp_id, role, enabled from public.invoice_link_members order by emp_id`)).rows;
     assert.deepEqual(rows.map(r => [r.emp_id, r.role, r.enabled]), [['E-AM', 'am', true], ['E-CH', 'chef', true]]);
     assert.equal((await pg.query(`select public.invoice_link_role('00000000-0000-4000-8000-0000000000c1') r`)).rows[0].r, 'chef');

@@ -2,9 +2,10 @@
 // What the function invoice-intake needs for it, apart from the database:
 //   itemKey / groupItems : the lines of the invoices as items, keyed the way the intake finds a link for a line (rules.mjs findMap):
 //                          the vendor's item code, or else the printed name with its pack. An item's link is the vendor-wide link of
-//                          that key (one; none; several = accounting tidies the mapping table).
-//   relink              : what a line taken in becomes when the links change. The same as the intake's own mapping step (rules.mjs
-//                          evaluate), without the price comparison (no_price_ref / price_jump are left out: for reference only).
+//                          that key, or the vendor-wide name link its lines have (a code item linked by name before); several, or a
+//                          link of one store or of another item on its lines = accounting tidies the mapping table.
+//   relink              : what a line taken in should be with the links in use. The same as the intake's own mapping step (rules.mjs
+//                          evaluate), without the price comparison (no_price_ref / price_jump stay only while the link stays).
 // Nothing here reads the current master (the screen proposes; a person decides) or changes an amount.
 import { parseMicros, parseQty, ratioToDecimal } from './decimal.mjs';
 import { parsePackSpec, unitPrices, UNIT_DEFS } from './units.mjs';
@@ -42,7 +43,9 @@ const top = (counts, n) => Object.entries(counts).sort((a, b) => b[1] - a[1] || 
 const later = (a, b) => (!b || (a && a > b));
 
 // lines: invoice_link_lines rows. maps: every row of the mapping table (in use and taken back). marks: the items' marks.
-export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
+// pending: ids of the lines relink would change (taken in before a link, or left behind): the item's lines waiting for its link.
+export function groupItems(lines, { vendors = [], maps = [], marks = [], pending = null } = {}) {
+  const active = new Map((maps || []).filter(m => !m.retired_at).map(m => [m.id, m]));
   const groups = new Map();
   for (const l of lines || []) {
     const k = itemKey(l);
@@ -52,7 +55,8 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) 
     let g = groups.get(id);
     if (!g) {
       g = { id, vendor_key: vk, ...k, names: {}, specs: {}, units: {}, n: 0, docs: new Set(), stores: new Set(), posted: 0, review: 0,
-        first: null, last: null, last_price: null, min_price: null, max_price: null, mapped: {}, sample: { raw_name: l.raw_name, spec: l.spec || null } };
+        first: null, last: null, last_price: null, min_price: null, max_price: null, mapped: {}, waiting: 0, aliases: new Set(),
+        sample: { raw_name: l.raw_name, spec: l.spec || null } };
       groups.set(id, g);
     }
     g.n++;
@@ -63,7 +67,11 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) 
     if (l.status === 'posted') g.posted++; else g.review++;
     if (l.day && (!g.first || l.day < g.first)) g.first = l.day;
     if (l.day && later(l.day, g.last)) g.last = l.day;
-    if (l.unit_price != null && l.unit_price !== '') {
+    const al = aliasKey(l.raw_name);
+    if (al) g.aliases.add(al + '|' + (l.spec_key || ''));
+    if (pending && pending.has(l.id)) g.waiting++;
+    // prices of the invoices only (a credit memo's line is a return)
+    if (l.doc_type !== 'credit_memo' && l.unit_price != null && l.unit_price !== '') {
       const p = parseMicros(String(l.unit_price));
       if (p !== null) {
         if (!g.last_price || later(l.day, g.last_price.day)) g.last_price = { unit_price: String(l.unit_price), unit: l.purchase_unit || null, day: l.day || null, store_id: l.store_id };
@@ -79,8 +87,18 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) 
   const out = [];
   for (const g of groups.values()) {
     const k = { vendor_item_code: g.vendor_item_code, alias_key: g.alias_key, spec_key: g.spec_key };
-    const links = linksOf(maps, g.vendor_key, k);
-    const link = links.length === 1 ? links[0] : null;
+    // the item's own key links, and the links its lines have now (in use, this vendor)
+    const own = linksOf(maps, g.vendor_key, k), seen = new Set(own.map(m => m.id)), links = [...own];
+    let others = 0;
+    for (const id of Object.keys(g.mapped)) {
+      const m = id && active.get(id);
+      if (!m || seen.has(m.id)) continue;
+      seen.add(m.id);
+      // a code item's lines linked by their printed name (vendor-wide): the item's link too; anything else is another link on its lines
+      if (k.vendor_item_code && !m.store_id && !m.vendor_item_code && m.alias_key && g.aliases.has(m.alias_key + '|' + (m.spec_key || ''))) links.push(m);
+      else others++;
+    }
+    const link = links.length === 1 && !others ? links[0] : null;
     const retired = (maps || []).filter(m => m.retired_at && m.vendor_key === g.vendor_key && !m.store_id
       && (k.vendor_item_code ? codeKey(m.vendor_item_code) === k.vendor_item_code : (m.alias_key === k.alias_key && (m.spec_key || '') === k.spec_key)));
     const mark = markOf.get(g.id) || null;
@@ -90,13 +108,15 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) 
       posted: g.posted, review: g.review, first: g.first, last: g.last, last_price: g.last_price,
       min_price: g.min_price ? g.min_price.s : null, max_price: g.max_price ? g.max_price.s : null,
       link: link ? { id: link.id, version: link.version, ingredient_code: link.ingredient_code, verified: !!link.verified, source: link.source,
+        vendor_item_code: link.vendor_item_code ? codeKey(link.vendor_item_code) : null, alias_key: link.vendor_item_code ? null : link.alias_key,
         verified_by: link.verified_by || null, verified_at: link.verified_at || null, purchase_unit: link.purchase_unit || '', spec_key: link.spec_key || '',
         count_unit: link.count_unit || null, count_per_purchase: link.count_per_purchase ?? null, base_unit: link.base_unit || null,
         base_per_purchase: link.base_per_purchase ?? null } : null,
-      links: links.length,
-      // lines that have the item's link now, and lines waiting to get it (taken in before the link, or changed meanwhile)
+      // links: how many links the item and its lines have (more than one = accounting tidies them in the mapping table)
+      links: links.length + others,
+      // lines that have the item's link now, and lines waiting for the links in use (taken in before a link, or left behind)
       applied: link ? (g.mapped[link.id] || 0) : 0,
-      waiting: link ? g.n - (g.mapped[link.id] || 0) : 0,
+      waiting: g.waiting,
       retired: retired.map(m => ({ id: m.id, ingredient_code: m.ingredient_code, retired_at: m.retired_at, retired_by: m.retired_by || null })),
       mark: mark && mark.state !== 'none' ? { state: mark.state, version: mark.version, note: mark.note || null, by_actor: mark.by_actor, by_role: mark.by_role, at: mark.at } : null,
       mark_version: mark ? mark.version : null,
@@ -109,35 +129,38 @@ export function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) 
 // A price per counting unit / base unit, as the intake writes it (rules.mjs usd).
 const usd = (r, d = 10) => ratioToDecimal({ num: r.num, den: r.den * 1000000n }, d);
 const num = v => (v === null || v === undefined || v === '' ? null : parseQty(String(v)));
+const PRICE_INFO = new Set(['no_price_ref', 'price_jump']);
 
-// One line taken in (invoice_link_lines row) with the links in use (maps: in use only). changed: ids of links that changed now.
-//   - a line with a link that did not change: left as it is (null)
-//   - a line with a link that changed (linked again to another code): it keeps its link (as a person's choice is kept) with the new code
-//   - a line whose link was taken back: looked up again (another link, or none)
-//   - a line with no link: looked up; left as it is when there is still none (or still several)
+// What one line taken in (invoice_link_lines row) should be with the links in use now (maps: rows of the mapping table; those taken
+// back are left out). The whole state about the link is worked out again every time, so a line left behind (a link changed while the
+// line was taken in, an apply that failed, a correction saved over it) is found and put right by そろえる (P2-1/P2-3 of the review):
+//   - a line whose link is still in use keeps it (as a person's choice is kept) with the link's code now; the link's own reasons are
+//     worked out again (not checked yet / review mode / pack); a purchase unit it differs from is unit_mismatch, and the
+//     "unit not printed" of the intake stays when the line had it (P2-4)
+//   - a line whose link was taken back, or with none: looked up as the intake does (findMap)
+// no_price_ref / price_jump (for reference only) stay while the line's link and code stay; else they are left out (no price comparison).
 // Returns the update for invoice_link_apply, or null when nothing changes.
-export function relink(line, maps, changed) {
+export function relink(line, maps) {
   const vmaps = (maps || []).filter(m => !m.retired_at && m.vendor_key === line.vendor_key);
-  const cur = line.map_id ? vmaps.find(m => m.id === line.map_id) : null;
+  const cur = line.map_id ? vmaps.find(m => m.id === line.map_id && (!m.store_id || m.store_id === line.store_id)) : null;
   const unit = unitKey(line.purchase_unit);
   const reasons = line.reasons || [];
   let fm;
-  if (line.map_id && cur) {
-    if (!changed || !changed.has(line.map_id)) return null;
+  if (cur) {
     fm = { map: cur };
     if (cur.purchase_unit && unit && cur.purchase_unit !== unit) fm.reason = 'unit_mismatch';
-  } else if (line.map_id) {
-    fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
+    else if (cur.purchase_unit && !unit && reasons.includes('unit_unverified')) fm.reason = 'unit_unverified';
   } else {
-    if (!reasons.includes('unmapped') && !reasons.includes('map_ambiguous')) return null;
     fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
-    if (!fm.map) return null;
+    // a line with no link and no reason about it is not one the intake left to link (left as it is)
+    if (!fm.map && !line.map_id && !reasons.includes('unmapped') && !reasons.includes('map_ambiguous')) return null;
   }
   const r = [];
   if (fm.reason) r.push(fm.reason);
   const m = fm.map || null;
-  const out = { line_id: line.id, from_map: line.map_id || null, map_id: null, ingredient_code: null, count_unit: null, count_per_purchase: null,
-    base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null };
+  const out = { line_id: line.id, from_map: line.map_id || null, unit_price: line.unit_price == null ? null : String(line.unit_price),
+    purchase_unit: line.purchase_unit == null ? null : String(line.purchase_unit), map_id: null, ingredient_code: null, count_unit: null,
+    count_per_purchase: null, base_unit: null, base_per_purchase: null, price_per_count: null, price_per_base: null };
   if (m) {
     Object.assign(out, { map_id: m.id, ingredient_code: m.ingredient_code, count_unit: m.count_unit || null, base_unit: m.base_unit || null,
       count_per_purchase: m.count_per_purchase == null ? null : String(m.count_per_purchase), base_per_purchase: m.base_per_purchase == null ? null : String(m.base_per_purchase) });
@@ -157,8 +180,8 @@ export function relink(line, maps, changed) {
       if (up.perBase) out.price_per_base = usd(up.perBase);
     }
   }
-  out.reasons = [...new Set([...reasons.filter(c => !MAPPING.has(c)), ...r])];
-  const same = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null)
-    && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
+  const keepPrice = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null);
+  out.reasons = [...new Set([...reasons.filter(c => !MAPPING.has(c) || (keepPrice && PRICE_INFO.has(c))), ...r])];
+  const same = keepPrice && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
   return same ? null : out;
 }

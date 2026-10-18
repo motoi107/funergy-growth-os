@@ -1047,7 +1047,8 @@ function finalKey(vendors, key) {
 }
 var top = (counts, n) => Object.entries(counts).sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, n);
 var later = (a, b) => !b || a && a > b;
-function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
+function groupItems(lines, { vendors = [], maps = [], marks = [], pending = null } = {}) {
+  const active = new Map((maps || []).filter((m) => !m.retired_at).map((m) => [m.id, m]));
   const groups = /* @__PURE__ */ new Map();
   for (const l of lines || []) {
     const k = itemKey(l);
@@ -1074,6 +1075,8 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
         min_price: null,
         max_price: null,
         mapped: {},
+        waiting: 0,
+        aliases: /* @__PURE__ */ new Set(),
         sample: { raw_name: l.raw_name, spec: l.spec || null }
       };
       groups.set(id, g);
@@ -1088,7 +1091,10 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
     else g.review++;
     if (l.day && (!g.first || l.day < g.first)) g.first = l.day;
     if (l.day && later(l.day, g.last)) g.last = l.day;
-    if (l.unit_price != null && l.unit_price !== "") {
+    const al = aliasKey(l.raw_name);
+    if (al) g.aliases.add(al + "|" + (l.spec_key || ""));
+    if (pending && pending.has(l.id)) g.waiting++;
+    if (l.doc_type !== "credit_memo" && l.unit_price != null && l.unit_price !== "") {
       const p = parseMicros(String(l.unit_price));
       if (p !== null) {
         if (!g.last_price || later(l.day, g.last_price.day)) g.last_price = { unit_price: String(l.unit_price), unit: l.purchase_unit || null, day: l.day || null, store_id: l.store_id };
@@ -1107,8 +1113,16 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
   const out = [];
   for (const g of groups.values()) {
     const k = { vendor_item_code: g.vendor_item_code, alias_key: g.alias_key, spec_key: g.spec_key };
-    const links = linksOf(maps, g.vendor_key, k);
-    const link = links.length === 1 ? links[0] : null;
+    const own = linksOf(maps, g.vendor_key, k), seen = new Set(own.map((m) => m.id)), links = [...own];
+    let others = 0;
+    for (const id of Object.keys(g.mapped)) {
+      const m = id && active.get(id);
+      if (!m || seen.has(m.id)) continue;
+      seen.add(m.id);
+      if (k.vendor_item_code && !m.store_id && !m.vendor_item_code && m.alias_key && g.aliases.has(m.alias_key + "|" + (m.spec_key || ""))) links.push(m);
+      else others++;
+    }
+    const link = links.length === 1 && !others ? links[0] : null;
     const retired = (maps || []).filter((m) => m.retired_at && m.vendor_key === g.vendor_key && !m.store_id && (k.vendor_item_code ? codeKey(m.vendor_item_code) === k.vendor_item_code : m.alias_key === k.alias_key && (m.spec_key || "") === k.spec_key));
     const mark = markOf.get(g.id) || null;
     out.push({
@@ -1136,6 +1150,8 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
         ingredient_code: link.ingredient_code,
         verified: !!link.verified,
         source: link.source,
+        vendor_item_code: link.vendor_item_code ? codeKey(link.vendor_item_code) : null,
+        alias_key: link.vendor_item_code ? null : link.alias_key,
         verified_by: link.verified_by || null,
         verified_at: link.verified_at || null,
         purchase_unit: link.purchase_unit || "",
@@ -1145,10 +1161,11 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
         base_unit: link.base_unit || null,
         base_per_purchase: link.base_per_purchase ?? null
       } : null,
-      links: links.length,
-      // lines that have the item's link now, and lines waiting to get it (taken in before the link, or changed meanwhile)
+      // links: how many links the item and its lines have (more than one = accounting tidies them in the mapping table)
+      links: links.length + others,
+      // lines that have the item's link now, and lines waiting for the links in use (taken in before a link, or left behind)
       applied: link ? g.mapped[link.id] || 0 : 0,
-      waiting: link ? g.n - (g.mapped[link.id] || 0) : 0,
+      waiting: g.waiting,
       retired: retired.map((m) => ({ id: m.id, ingredient_code: m.ingredient_code, retired_at: m.retired_at, retired_by: m.retired_by || null })),
       mark: mark && mark.state !== "none" ? { state: mark.state, version: mark.version, note: mark.note || null, by_actor: mark.by_actor, by_role: mark.by_role, at: mark.at } : null,
       mark_version: mark ? mark.version : null,
@@ -1159,22 +1176,20 @@ function groupItems(lines, { vendors = [], maps = [], marks = [] } = {}) {
 }
 var usd2 = (r, d = 10) => ratioToDecimal({ num: r.num, den: r.den * 1000000n }, d);
 var num2 = (v) => v === null || v === void 0 || v === "" ? null : parseQty(String(v));
-function relink(line, maps, changed) {
+var PRICE_INFO = /* @__PURE__ */ new Set(["no_price_ref", "price_jump"]);
+function relink(line, maps) {
   const vmaps = (maps || []).filter((m2) => !m2.retired_at && m2.vendor_key === line.vendor_key);
-  const cur = line.map_id ? vmaps.find((m2) => m2.id === line.map_id) : null;
+  const cur = line.map_id ? vmaps.find((m2) => m2.id === line.map_id && (!m2.store_id || m2.store_id === line.store_id)) : null;
   const unit = unitKey(line.purchase_unit);
   const reasons = line.reasons || [];
   let fm;
-  if (line.map_id && cur) {
-    if (!changed || !changed.has(line.map_id)) return null;
+  if (cur) {
     fm = { map: cur };
     if (cur.purchase_unit && unit && cur.purchase_unit !== unit) fm.reason = "unit_mismatch";
-  } else if (line.map_id) {
-    fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
+    else if (cur.purchase_unit && !unit && reasons.includes("unit_unverified")) fm.reason = "unit_unverified";
   } else {
-    if (!reasons.includes("unmapped") && !reasons.includes("map_ambiguous")) return null;
     fm = findMap(vmaps, { item_code: line.item_code, unit, pack: line.spec, raw_name: line.raw_name }, line.store_id);
-    if (!fm.map) return null;
+    if (!fm.map && !line.map_id && !reasons.includes("unmapped") && !reasons.includes("map_ambiguous")) return null;
   }
   const r = [];
   if (fm.reason) r.push(fm.reason);
@@ -1182,6 +1197,8 @@ function relink(line, maps, changed) {
   const out = {
     line_id: line.id,
     from_map: line.map_id || null,
+    unit_price: line.unit_price == null ? null : String(line.unit_price),
+    purchase_unit: line.purchase_unit == null ? null : String(line.purchase_unit),
     map_id: null,
     ingredient_code: null,
     count_unit: null,
@@ -1216,8 +1233,9 @@ function relink(line, maps, changed) {
       if (up.perBase) out.price_per_base = usd2(up.perBase);
     }
   }
-  out.reasons = [.../* @__PURE__ */ new Set([...reasons.filter((c) => !MAPPING.has(c)), ...r])];
-  const same = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null) && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
+  const keepPrice = (out.map_id || null) === (line.map_id || null) && (out.ingredient_code || null) === (line.ingredient_code || null);
+  out.reasons = [.../* @__PURE__ */ new Set([...reasons.filter((c) => !MAPPING.has(c) || keepPrice && PRICE_INFO.has(c)), ...r])];
+  const same = keepPrice && [...out.reasons].sort().join() === [...new Set(reasons)].sort().join();
   return same ? null : out;
 }
 
@@ -1977,6 +1995,7 @@ function createHandler(deps) {
       const n = result.lines[idx];
       const set = { ...e.set || {} };
       for (const k of Object.keys(set)) if (!["qty", "unit_price", "amount_cents", "line_discount_cents", "purchase_unit", "map_id"].includes(k)) throw new Error("field_not_editable");
+      if (set.map_id != null && set.map_id !== (n.map_id ?? null)) throw new Error("conflict");
       if ("map_id" in set) Object.assign(set, {
         ingredient_code: n.ingredient_code ?? null,
         count_unit: n.count_unit ?? null,
@@ -2252,25 +2271,40 @@ function createHandler(deps) {
   const uuidOk = (x) => typeof x === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
   const verOk = (x) => x == null || Number.isInteger(x) && x > 0;
   const itemOk = (x) => x && typeof x === "object" && str2(x.vendor_key, 100) && (str2(x.vendor_item_code, 100) && x.alias_key == null || x.vendor_item_code == null && str2(x.alias_key, 300) && optStr(x.spec_key, 200));
+  const LINES_PAGE = 2e4, LINES_PAGES = 50;
+  async function linkLines(actor, vendorKeys) {
+    const all = [];
+    for (let i = 0; i < LINES_PAGES; i++) {
+      const page = await db.rpc("invoice_link_lines", { actor, ...vendorKeys ? { vendor_keys: vendorKeys } : {}, limit: LINES_PAGE, offset: i * LINES_PAGE });
+      all.push(...page || []);
+      if (!page || page.length < LINES_PAGE) return { lines: all, truncated: false };
+    }
+    return { lines: all, truncated: true };
+  }
   async function linkData(actor, b) {
     const r = await db.rpc("invoice_link_data", { actor });
+    const { lines, truncated } = await linkLines(actor, null);
+    const pending = new Set(lines.filter((l) => relink(l, r.maps || [])).map((l) => l.id));
     return {
       role: r.role,
-      items: groupItems(r.lines || [], { vendors: r.vendors, maps: r.maps, marks: r.marks }),
+      items: groupItems(lines, { vendors: r.vendors, maps: r.maps, marks: r.marks, pending }),
       vendors: r.vendors || [],
       people: r.people || {},
-      lines: (r.lines || []).length,
+      lines: lines.length,
+      waiting: pending.size,
+      truncated,
       at: new Date(now()).toISOString()
     };
   }
-  async function linkSync(actor, vendorKeys, changed) {
-    const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [] };
-    if (!vendorKeys.length) return out;
+  async function linkSync(actor, vendorKeys) {
+    const out = { lines: 0, prices: 0, voided: 0, skipped: 0, doc_ids: [], months: [], truncated: false };
+    if (vendorKeys && !vendorKeys.length) return out;
     const ctx = await context();
-    const lines = await db.rpc("invoice_link_lines", { actor, vendor_keys: vendorKeys });
+    const got = await linkLines(actor, vendorKeys);
+    out.truncated = got.truncated;
     const updates = [];
-    for (const l of lines) {
-      const u = relink(l, ctx.maps, changed);
+    for (const l of got.lines) {
+      const u = relink(l, ctx.maps);
       if (u) updates.push(u);
     }
     for (let i = 0; i < updates.length; i += APPLY_CHUNK) {
@@ -2285,8 +2319,8 @@ function createHandler(deps) {
     out.months = [...new Set(out.months)].sort();
     return out;
   }
-  async function linkFollow(actor, r, vendorKeys, changed) {
-    r.sync = await linkSync(actor, vendorKeys, changed);
+  async function linkFollow(actor, r, vendorKeys) {
+    r.sync = await linkSync(actor, vendorKeys);
     r.summary = r.sync.lines ? (await publishSummary(null, { months: r.sync.months, doc_ids: r.sync.doc_ids })).ok : true;
     return r;
   }
@@ -2307,13 +2341,13 @@ function createHandler(deps) {
       };
     });
     const r = await db.rpc("invoice_link_save", { actor, links: clean2 });
-    return linkFollow(actor, r, [...new Set(r.maps.map((m) => m.vendor_key))], new Set(r.maps.map((m) => m.id)));
+    return linkFollow(actor, r, [...new Set(r.maps.map((m) => m.vendor_key))]);
   }
   async function linkUndo(actor, b) {
     const maps = Array.isArray(b.maps) ? b.maps : null;
     if (!maps || !maps.length || maps.length > LINK_MAX || !maps.every((x) => x && uuidOk(x.id) && verOk(x.version) && x.version != null)) throw new Error("bad_value");
     const r = await db.rpc("invoice_link_retire", { actor, maps: maps.map((x) => ({ id: x.id, version: x.version })) });
-    return linkFollow(actor, r, [...new Set(r.maps.map((m) => m.vendor_key))], /* @__PURE__ */ new Set());
+    return linkFollow(actor, r, [...new Set(r.maps.map((m) => m.vendor_key))]);
   }
   async function linkMark(actor, b) {
     const marks = Array.isArray(b.marks) ? b.marks : null;
@@ -2335,8 +2369,7 @@ function createHandler(deps) {
   async function linkSyncAll(actor) {
     const w = await db.rpc("invoice_link_whoami", { actor });
     if (!w || !w.role) throw new Error("forbidden");
-    const ctx = await context();
-    return linkFollow(actor, { role: w.role }, [...new Set(ctx.maps.map((m) => m.vendor_key))], /* @__PURE__ */ new Set());
+    return linkFollow(actor, { role: w.role }, null);
   }
   async function folderPlan(actor, b) {
     const who = await db.rpc("invoice_whoami", { actor });

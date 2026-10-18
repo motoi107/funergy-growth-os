@@ -117,6 +117,9 @@ test('紐づけの画面: suggestions by words, not by a part of a name; marks k
   c.fn('ilkBulkAsk()');
   assert.match(c.modals.at(-1), /2 品目を確定/);
   c.fn(`ilkBulkTick(${JSON.stringify('vc|c:12345')}, false)`);
+  // the master changes while the dialog is open (a sync): the codes shown in the dialog are sent, not new ones (review P3)
+  c.fn(`_ilk.prep[${JSON.stringify('vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ')}].best = { s: 1, c: { code: '999999' } }`);
+  c.fn(`ilkBulkTick(${JSON.stringify('vc|c:12345')}, true)`); c.fn(`ilkBulkTick(${JSON.stringify('vc|c:12345')}, false)`);
   await c.fn('ilkBulkGo()'); await c.run();
   const save = c.calls.find(x => x.action === 'link_save');
   assert.deepEqual(save.links, [{ vendor_key: 'vc', ingredient_code: '600133', alias_key: 'unagi kabayaki tare suzukatsu 6/60floz(1.8l)', spec_key: '6/60FLOZ' }]);
@@ -126,13 +129,14 @@ test('紐づけの画面: suggestions by words, not by a part of a name; marks k
 
 test('紐づけの画面: a linked item (who and when), choose again / undo; accounting\'s own mapping is not changed by a Head Chef / AM; marks with their versions', async () => {
   const linked = (o = {}) => item('va|a:avocado, 48s usa|', 'va', { alias_key: 'avocado, 48s usa', names: [['Avocado, 48s USA', 17]],
-    link: { id: 'm-1', version: 4, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: '2026-10-18 09:10' }, links: 1, applied: 17, ...o });
-  const data = items => ({ role: 'chef', items, vendors: VENDORS(), people: { 'u-1': 'Chika Test' } });
+    link: { id: 'm-1', version: 4, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: '2026-10-18 09:10',
+      vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '' }, links: 1, applied: 17, ...o });
+  const data = items => ({ role: 'chef', items, vendors: VENDORS(), people: { 'u-1': 'Kai Test' } });
   let c = app({ data: data([linked()]) });
   await loaded(c);
   c.fn(`ilkSet('filter','done')`);
   let h = c.page();
-  assert.match(h, /✓ 確定済み<\/span><div class="ilk-s">Chika Test · 2026-10-18 09:10/);
+  assert.match(h, /✓ 確定済み<\/span><div class="ilk-s">Kai Test · 2026-10-18 09:10/);
   assert.match(h, /<div class="ilk-en">Avocado<\/div><div class="ilk-ja">アボカド · 10003/, 'English large, Japanese small');
   c.fn(`ilkUndoAsk(${JSON.stringify('va|a:avocado, 48s usa|')})`);
   await c.fn(`ilkUndo(${JSON.stringify('va|a:avocado, 48s usa|')})`);
@@ -146,7 +150,8 @@ test('紐づけの画面: a linked item (who and when), choose again / undo; acc
   await c.fn('ilkPickGo()'); await c.run();
   assert.deepEqual(c.calls.find(x => x.action === 'link_save').links, [{ vendor_key: 'va', ingredient_code: '50101', alias_key: 'avocado, 48s usa', spec_key: '', map_id: 'm-1', version: 4 }]);
   // accounting's own verified mapping: a Head Chef / AM sees it, cannot change it; accounting can
-  const own = linked({ link: { id: 'm-2', version: 1, ingredient_code: '10003', verified: true, source: 'manual', verified_by: 'u-9', verified_at: 'x' } });
+  const own = linked({ link: { id: 'm-2', version: 1, ingredient_code: '10003', verified: true, source: 'manual', verified_by: 'u-9', verified_at: 'x',
+    vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '' } });
   for (const [role, can] of [['chef', false], ['am', false], ['office', true], ['office_crew', true]]) {
     c = app({ role, data: data([own]) });
     await loaded(c); c.fn(`ilkSet('filter','done')`); h = c.page();
@@ -171,6 +176,18 @@ test('紐づけの画面: a linked item (who and when), choose again / undo; acc
   c.fn(`ilkOpen('va|a:z|')`);
   assert.match(c.modals.at(-1), /対応表にこの品目の対応が複数あります/);
   assert.ok(!/ilk-pick-go/.test(c.modals.at(-1)));
+  // one mapping that is not the item's own (another store's, or another item's on its lines): the same as several (review P3)
+  c = app({ data: data([item('va|a:w|', 'va', { alias_key: 'w', names: [['Avocado', 1]], links: 1, link: null })]) });
+  await loaded(c); c.fn(`ilkSet('filter','check')`); h = c.page();
+  assert.ok(!/ilkConfirmOne/.test(h) && /対応表に同じ品目が複数/.test(h));
+  // a code item whose lines are linked by their printed name: choosing again changes that link, sent with its own key (review P3)
+  const byName = item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 3]],
+    link: { id: 'm-5', version: 2, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: 't', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '' }, links: 1 });
+  c = app({ data: data([byName]) });
+  await loaded(c);
+  c.fn(`ilkOpen('va|c:777')`); c.fn(`ilkPick('50101')`);
+  await c.fn('ilkPickGo()'); await c.run();
+  assert.deepEqual(c.calls.find(x => x.action === 'link_save').links, [{ vendor_key: 'va', ingredient_code: '50101', alias_key: 'avocado, 48s usa', spec_key: '', map_id: 'm-5', version: 2 }]);
 });
 
 test('紐づけの画面: lines waiting for a link are brought in (そろえる); errors are told; the stock-list view counts per store; English', async () => {
@@ -178,7 +195,7 @@ test('紐づけの画面: lines waiting for a link are brought in (そろえる)
     link: { id: 'm-1', version: 4, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: 't' }, links: 1, applied: 12, waiting: 5 });
   let c = app({ data: { role: 'office', items: [waiting, ...ITEMS().slice(0, 2)], vendors: VENDORS(), people: {} } });
   let h = await loaded(c);
-  assert.match(h, /まだコードが入っていない明細が <b>5<\/b> 行/);
+  assert.match(h, /今の結びとそろっていない明細が <b>5<\/b> 行/);
   await c.fn('ilkSyncAll()'); await c.run();
   assert.ok(c.calls.some(x => x.action === 'link_sync'));
   // coverage: the stock lists' items (F06: 3, TOTOYA: 1) — one linked (10003), suggestions for two Cherry items
@@ -197,6 +214,9 @@ test('紐づけの画面: lines waiting for a link are brought in (そろえる)
   c = app({ api: async () => ({ __error: 'x', code: 'forbidden' }) });
   h = await loaded(c);
   assert.match(h, /このメールのアカウントは紐づけに使えません/);
+  // a sign-in after that reads the screen again (the old message does not stay: review P3)
+  c.fn('var _invIn = { loaded: {} }; function invInRerender(){}\n' + lineOf('invInRefresh').trim() + '\ninvInRefresh();');
+  assert.equal(c.fn('_ilk.loaded'), '');
   // English: the labels follow the language
   c = app({ lang: 'en' });
   h = await loaded(c);
@@ -209,7 +229,7 @@ test('紐づけ: the sign-in is kept on the device only for the employee the Hea
   const src = bodyOf('invInAccountIsMine') + '\n' + bodyOf('invInLinkIsMine');
   const run = async (rows, who) => {
     const c = { SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon', INVIN_FN: '/functions/v1/invoice-intake',
-      invInLoginPerson: () => ({ id: 'E-CH', name: 'Chika' }),
+      invInLoginPerson: () => ({ id: 'E-CH', name: 'Kai' }),
       invInAuthFetch: async () => ({ ok: true, json: async () => rows }),
       fetch: async (url, init) => { c.sent = JSON.parse(init.body); return who === null ? { ok: false } : { ok: true, json: async () => who }; } };
     vm.createContext(c); vm.runInContext(src, c);
@@ -238,7 +258,7 @@ test('紐づけ: the screen against the real intake (a Head Chef links Cherry\'s
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz); grant select, insert, update on public.app_state to service_role;
     create table public.ingredients(code text primary key, name text, unit text, vendor text, qty numeric, data jsonb); grant select on public.ingredients to service_role;
     create table public.employees(id text primary key, name text, role text, title text, status text, data jsonb); grant select on public.employees to service_role;
-    insert into public.employees values ('E-CH','Chika Test','chef','Head Chef','在籍','{}');`);
+    insert into public.employees values ('E-CH','Kai Test','chef','Head Chef','在籍','{}');`);
   for (const m of MASTER()) await pg.query(`insert into public.ingredients values($1,$2,$3,$4,1,$5)`, [String(m.code), m.name, m.unit, m.vendor, JSON.stringify({ name: m.name, nameEN: m.nameEN, cat: '10000' })]);
   await pg.query(`insert into manager_auth values($1,'office','E-OF')`, [U.office]);
   await pg.exec(SQL);
