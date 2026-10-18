@@ -449,7 +449,7 @@ function laborApp() {
   const c = { console, AbortController, STORE: {}, FETCHES: [], TIMERS: [], NOW: 1000000, IGNORE_ABORT: false };
   vm.createContext(c);
   vm.runInContext(['_tipLaborFetchErr', 'fetchTipLaborFromDB', 'syncTipLaborFromDB', 'setTipLabor', 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
-    'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
+    'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', '_tipLaborEnsureRow', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
     Date.now = function(){ return NOW; };
     var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so
     var _tipLaborSeq = 0, _tipLaborSaved = {};
@@ -546,31 +546,72 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   run(c, "answerRows(1, [{ business_date: '2026-10-02', lunch_credit_tip_adj: 9, data: [] }])"); await pb;
   run(c, 'answer(0, 6, 1)'); await pa;
   assert.deepEqual(plain(run(c, 'saved()')), { hours: 6, adj: 9 }, 'the labor of the older read is saved; the adjustment of the newer read stays');
-  // an adjustment saved on this device after a read started is not put back by that read's answer
+  // an adjustment saved on this device after a read started is not put back by that read's answer.
+  // POSTs to tip_labor go to a small in-memory PostgREST table (ignore-duplicates = insert only when absent; merge-duplicates = insert or update the sent columns)
   vm.runInContext(`
     var STORES = [{ id: 'F01', toastGuid: 'g1' }], ROLE_CONFIG = { gm: { name: 'GM' } }, curRole = 'gm', curUserName = 'Moto', curPage = 'tip';
-    var UPS = [], FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
+    var HOLD = false, HOLDS = [], TOAST_SYNC_FN = 'https://toast.example/fn'; function toastFnBody(x){ return JSON.stringify(x); }
+    var UPS = [], TABLE = {}, BEFORE = null, FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
     var document = { getElementById: function(id){ return id in FIELDS ? { value: FIELDS[id] } : null; } };
     function creditTipAdjCanEdit(){ return true; } function getCreditTipAdj(s, d){ return (getCreditTipAdjMap(s) || {})[d] || null; }
-    async function supaUpsert(t, rows){ UPS.push(JSON.parse(JSON.stringify(rows[0]))); return true; }
+    function supaHeaders(x){ return Object.assign({ apikey: 'a' }, x || {}); }
+    var _fetchRead = fetch;
+    fetch = function(url, o){
+      if (o && o.method === 'POST' && String(url).endsWith('/rest/v1/tip_labor') && HOLD) {   // a write that has not reached the DB yet
+        return new Promise(function(res){ HOLDS.push(function(){ HOLD = false; res(fetch(url, o)); }); });
+      }
+      if (o && o.method === 'POST' && String(url).endsWith('/rest/v1/tip_labor')) {
+        if (typeof BEFORE === 'function') { var b = BEFORE; BEFORE = null; b(o.headers.Prefer); }
+        JSON.parse(o.body).forEach(function(r){ var k = r.restaurant_guid + '|' + r.business_date;
+          UPS.push({ prefer: o.headers.Prefer, row: JSON.parse(JSON.stringify(r)) });
+          if (/ignore-duplicates/.test(o.headers.Prefer)) { if (!TABLE[k]) TABLE[k] = JSON.parse(JSON.stringify(r)); }
+          else TABLE[k] = Object.assign(TABLE[k] || {}, JSON.parse(JSON.stringify(r))); });
+        return Promise.resolve({ ok: true, text: async function(){ return ''; } });
+      }
+      var one = /business_date=gte\.([0-9-]+)&business_date=lte\.([0-9-]+)/.exec(String(url));   // a one-day read (an old save checked the row first): answered from the table at once
+      if (one && one[1] === one[2]) { var hit = Object.keys(TABLE).filter(function(k){ return k.split('|')[1] === one[1]; }).map(function(k){ return TABLE[k]; });
+        return Promise.resolve({ ok: true, json: async function(){ return JSON.parse(JSON.stringify(hit)); } }); }
+      return _fetchRead(url, o);
+    };
     function showToast(){} function closeModalDirect(){} function renderPage(){} function t(ja){ return ja; }
     function supaErrorText(){ return ''; } function supaLastError(){ return null; }`, c);
+  vm.runInContext(fnSrc('supaUpsert') + '\nvar _lastSupaError = null;', c);
   pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`); await flush();
-  const n0 = c.FETCHES.length;
-  const ps = run(c, "saveCreditTipAdj('F01','2026-10-02')"); await flush();
-  run(c, `answerRows(${n0}, [{ business_date: '2026-10-02', data: [{ name: 'Ken', lunchHours: 6 }] }])`); await ps;   // the save's check: the row exists
-  assert.equal('data' in c.UPS[0], false, 'an existing row: labor is not sent');
+  run(c, "TABLE['g1|2026-10-02'] = { restaurant_guid: 'g1', business_date: '2026-10-02', data: [{ name: 'Ken', lunchHours: 6 }] }");
+  await run(c, "saveCreditTipAdj('F01','2026-10-02')");
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-02'].data")), [{ name: 'Ken', lunchHours: 6 }], 'an existing row: labor stays');
+  assert.equal(run(c, "TABLE['g1|2026-10-02'].lunch_credit_tip_adj"), 42);
   assert.equal(run(c, 'saved().adj'), 42);
-  run(c, `answer(${n0 - 1}, 6, 1)`); await pa;   // the read that started before the save answers with the old adjustment
+  run(c, 'answer(' + (c.FETCHES.length - 1) + ', 6, 1)'); await pa;   // the read that started before the save answers with the old adjustment
   assert.equal(run(c, 'saved().adj'), 42, 'the saved adjustment stays');
-  // the save's check could not be read (HTTP error): the labor list is not sent (it would empty the day's Toast labor)
-  const ps2 = run(c, "saveCreditTipAdj('F01','2026-10-03')"); await flush();
-  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: false, status: 503 })`); await ps2;
-  assert.equal('data' in c.UPS[1], false, 'a failed check never sends data: []');
-  // no row yet (an empty answer): data: [] as before (the column may be NOT NULL)
-  const ps3 = run(c, "saveCreditTipAdj('F01','2026-10-04')"); await flush();
-  run(c, `answerRows(${c.FETCHES.length - 1}, [])`); await ps3;
-  assert.deepEqual(plain(c.UPS[2].data), []);
+  // the save never reads first and never sends labor with merge-duplicates
+  assert.equal(c.UPS.filter(u => /merge-duplicates/.test(u.prefer) && 'data' in u.row).length, 0, 'labor is never sent with merge-duplicates');
+  // no row yet: the row is created with an empty labor list (the column may be NOT NULL), then the adjustment
+  await run(c, "saveCreditTipAdj('F01','2026-10-04')");
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-04'].data")), []);
+  assert.equal(run(c, "TABLE['g1|2026-10-04'].lunch_credit_tip_adj"), 42);
+  // Codex 6246409181: another device or the import adds the day's labor while the save is running (before the row step, or between the two steps)
+  for (const when of ['before-row', 'between']) {
+    const k = when === 'before-row' ? '2026-10-05' : '2026-10-06';
+    vm.runInContext(`BEFORE = function(prefer){
+      var put = function(){ TABLE['g1|${k}'] = Object.assign(TABLE['g1|${k}'] || {}, { restaurant_guid: 'g1', business_date: '${k}', data: [{ name: 'Ken', lunchHours: 9 }] }); };
+      if ('${when}' === 'before-row') put(); else BEFORE = function(){ put(); }; }`, c);
+    await run(c, `saveCreditTipAdj('F01','${k}')`);
+    assert.deepEqual(plain(run(c, `TABLE['g1|${k}'].data`)), [{ name: 'Ken', lunchHours: 9 }], when + ': the labor written meanwhile stays');
+    assert.equal(run(c, `TABLE['g1|${k}'].lunch_credit_tip_adj`), 42);
+  }
+  assert.doesNotMatch(fnSrc('saveCreditTipAdj'), /fetchTipLaborFromDB/, 'no read-then-write');
+  // 27793ab P3-1: Toast labor fetched on this device is not put back by a DB read that started while the device was still writing it to the DB
+  vm.runInContext(fnSrc('fetchTipLabor'), c);
+  run(c, 'HOLD = true');
+  const pf = run(c, "fetchTipLabor('F01', 'g1', '2026-10-07')"); await flush();
+  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: true, json: async function(){ return { employees: [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }] }; } })`); await flush();
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-07'].Ken.lunch"), 8);
+  const pr = run(c, `syncTipLaborFromDB('F01','g1',${days})`); await flush();
+  run(c, `answerRows(${c.FETCHES.length - 1}, [{ business_date: '2026-10-07', data: [{ name: 'Ken', lunchHours: 6 }] }])`); await pr;   // the DB still has the old labor
+  run(c, 'HOLDS[0]()'); await pf;
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-07'].Ken.lunch"), 8, 'after writing to the DB, the fetched labor is put back');
+  assert.deepEqual(plain(run(c, "TABLE['g1|2026-10-07'].data")), [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }]);
   assert.match(fnSrc('fetchTipLabor'), /setTipLabor\(storeId, date, labor\);\n  _tipLaborMark\(storeId, date, 'L'\);/);
   assert.match(fnSrc('syncCreditTipAdjFromDB'), /if\(_tipLaborNewer\(storeId, bd, 'A', _seq\)\) return;/);
 });

@@ -5728,6 +5728,13 @@ function _fmtCtAdjAt(iso){ try{ var d=new Date(iso); return '('+d.getFullYear()+
 function creditTipAdjCanEdit(){ return ['ceo','gm','office','office_crew'].indexOf(curRole) >= 0; }
 
 /* 調整額を tip_labor に保存（supaUpsert。data列を送らない＝既存の勤怠dataは merge で保持）。 */
+/* v1090：その日の行が無いときだけ作る（ある行は何も変えない＝INSERT … ON CONFLICT DO NOTHING） */
+async function _tipLaborEnsureRow(guid, date){
+  var res = await fetch(SUPABASE_URL+'/rest/v1/tip_labor', { method:'POST',
+    headers: supaHeaders({ Prefer:'resolution=ignore-duplicates,return=minimal' }),
+    body: JSON.stringify([{ restaurant_guid: guid, business_date: date, data: [] }]) });
+  return !!(res && res.ok);
+}
 async function saveCreditTipAdj(storeId, date){
   if (!creditTipAdjCanEdit()) { showToast(t('この操作は経理・事務Crew・GM/CEOのみです','Only Accounting / Office Crew / GM / CEO can do this'),'warning'); return; }
   var store = STORES.find(function(s){return s.id===storeId;}) || {};
@@ -5749,15 +5756,12 @@ async function saveCreditTipAdj(storeId, date){
     lunch_credit_tip_adj_reason: lR||null, dinner_credit_tip_adj_reason: dR||null,
     lunch_credit_tip_adj_by: lBy||null, dinner_credit_tip_adj_by: dBy||null,
     lunch_credit_tip_adj_at: lAt||null, dinner_credit_tip_adj_at: dAt||null };
-  /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される。
-     data が NOT NULL の環境では insert が落ちるため、無いときだけ空配列を添える。
-     既存行のときは data を送らない（Toastの勤怠を絶対に上書きしないため）。 */
-  /* v1090（独立レビュー a775888・前から）：行があるかを読めなかったとき（_err）に data: [] を送ると、merge-duplicates で
-     その日の Toast の勤怠を空にした。行が無いと分かったときだけ data: [] を添える（読めなければ送らない＝既存の行の勤怠は触らない） */
-  try {
-    var _exist = await fetchTipLaborFromDB(guid, date, date);
-    if (_exist && !_exist._err && !_exist.length) row.data = [];
-  } catch(e){ /* 確認できなくても保存は試みる（data は送らない） */ }
+  /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される（data が NOT NULL の環境では insert が落ちる）。
+     v1090（独立レビュー a775888・Codex 6246409181・どちらも前からの経路）：前は「行があるか」を読んでから、無ければ data: [] を添えて
+     merge-duplicates で送っていた。読めなかったとき・読んでから送るまでのあいだにほかの端末や取込が勤怠を入れたときに、
+     その日の Toast の勤怠を空にした。→ 読まない。① 行が無いときだけ作る（ignore-duplicates＝ある行は変えない。data: []）
+     ② 調整額の列だけを merge-duplicates で送る（data は送らない）。どの順でほかの書き込みが入っても、勤怠を空にしない */
+  try { await _tipLaborEnsureRow(guid, date); } catch(e){ /* 作れなくても調整額の保存は試みる（行が無ければ下で失敗が出る） */ }
   var ok = false;
   try { ok = await supaUpsert('tip_labor', [row]); } catch(e){ ok = false; }
   if (!ok) {
@@ -6318,6 +6322,8 @@ async function fetchTipLabor(storeId, guid, date) {
   //       古いDB値で上書きし直す（取り直しても戻る）問題があった。生のemployees配列（バッチと同形）を保存。
   var _dbSaved = false;
   try { _dbSaved = await supaUpsert('tip_labor', [{ restaurant_guid: guid, business_date: date, data: j.employees, fetched_at: new Date().toISOString() }]); } catch(e){ console.warn('fetchTipLabor tip_labor upsert', e); }
+  /* v1090（独立レビュー 27793ab P3-1）：DB に書き終えるまでのあいだに始めた読み込みは、まだ古い DB の勤怠を読む。書き終えたら、もう一度入れて印を付ける */
+  if (_dbSaved) { setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
   return { count: Object.keys(labor).length, dbSaved: _dbSaved };
 }
 
