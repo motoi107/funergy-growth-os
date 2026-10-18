@@ -27,13 +27,16 @@ select
   (select string_agg(o.owner, ' ' order by o.owner) from (
      select substr(a.key, 23) owner
      from public.app_state a
+     cross join lateral (select a.value::jsonb j) jv
+     cross join lateral (select case
+         when jsonb_typeof(jv.j) = 'array' then jv.j                                          -- 品目コードの配列
+         when jsonb_typeof(jv.j -> 'v') = 'array' then jv.j -> 'v'                            -- アプリの保存の形 {__st:1, v:[…]}（v750 から）
+         when jsonb_typeof(jv.j -> 'v' -> 'v') = 'array' then jv.j -> 'v' -> 'v'              -- 二重に包まれた形
+         when jsonb_typeof(jv.j -> substr(a.key, 23)) = 'array' then jv.j -> substr(a.key, 23)  -- {店: […]}
+         else '[]'::jsonb end lst) l
      where left(a.key, 22) = 'spl_store_ingredients_'   -- 店の棚卸表の行だけ（_ を 1 文字の何でもにしない）
-       and ((case when jsonb_typeof(a.value::jsonb) = 'array' then a.value::jsonb
-                 when jsonb_typeof(a.value::jsonb -> substr(a.key, 23)) = 'array' then a.value::jsonb -> substr(a.key, 23)
-                 else '[]'::jsonb end) @> to_jsonb(array[i.code::text])
-        or (case when jsonb_typeof(a.value::jsonb) = 'array' then a.value::jsonb
-                 when jsonb_typeof(a.value::jsonb -> substr(a.key, 23)) = 'array' then a.value::jsonb -> substr(a.key, 23)
-                 else '[]'::jsonb end) @> to_jsonb(array[(case when i.code::text ~ '^\d+$' then i.code::text::numeric end)]))   -- Codex 10/17：or を括弧でくくる（無かったので、ほかの行が店に混ざった）
+       and (l.lst @> to_jsonb(array[i.code::text])      -- Codex 10/17：or を括弧でくくる（無かったので、ほかの行が店に混ざった）
+            or case when i.code::text ~ '^\d+$' then l.lst @> to_jsonb(array[i.code::text::numeric]) else false end)   -- 数字のコードだけ数でも比べる（null を作らない）
   ) o) owners,
   concat_ws(' ',
     case when coalesce(i.data->>'nameEN', '') = '' then '英語名' end,

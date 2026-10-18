@@ -2,7 +2,7 @@
 
 ## 2026-10-17 却下・支払済の通知（B）・依頼書 ①〜④（v1090・UI案53・UI案54）
 
-1. 済（Claude・ブランチ `claude/next-1090`）：B・①・② をアプリ v1090 で。独立レビュー（`e77e868`）の P2 2 つと P3 を `2102bd2` で直した。次：`2102bd2` の独立レビュー → Codex → Moto さんがマージ。
+1. 済（Claude・ブランチ `claude/next-1090`）：B・①・② をアプリ v1090 で。独立レビュー（`e77e868`・`2102bd2`・`7002a69`）の P2 と P3、Codex（`e7a833a`・blocked／manual）の P2（勤怠の中身が空でも読んだことになる）と SQL の括弧を直した。次：Codex の再レビュー → Moto さんがマージ。
 2. Moto さん（マージのあと）：GM・CEO が「管轄の割り当て」で Yuki Nagatani を「ダッシュボードで全店を見る」ON。
 3. Moto さん：読むだけの SQL `db/lala-repeat-check-2.sql`（LaLa の来店区分が 0 の理由）・`db/menu-data-check-all.sql`（メニューの表）・`db/ingredient-master-export-current.sql`（今のマスター全体・CSV）の結果を Claude に。
 4. ②：LaLa の来店区分を Toast（店の運用）か hyper-worker（ソースが要る）で入るようにする。業態の目標の初期値を「未設定」にするかは Moto さん。

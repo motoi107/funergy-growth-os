@@ -151,7 +151,7 @@ function mdApp(o) {
   vm.runInContext(['mcRole', 'mcScopeStores', 'mdAllViewers', 'mdIsAllViewer', 'mdViewStores', 'mdPickedStore', 'mdSetStore', 'mdSetAllViewer', 'mdOpenStore',
     'dashScopeStores', 'mdScopeLabel', 'mdStorePickHtml', 'mcStoreLabel', 'activeStores', 'mdPendingApprovals',
     'mdViewOnlyStore', 'mdViewLaborPending', 'mdViewerEnsureLabor', 'mdVerdict', 'mdUnknown', 'mdJudge', 'mdV', 'mdStateLabel', 'mcRound',
-    '_mdMemo', 'mdCacheClear', '_mdBizDay', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdFrozenLoaded', 'mdViewLaborNote', '_mdViewRedrawSoon', 'mdViewLaborGate'].map(fnSrc).join('\n') + `
+    '_mdMemo', 'mdCacheClear', '_mdBizDay', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdFrozenLoaded', 'mdViewLaborNote', '_mdViewRedrawSoon', 'mdViewLaborGate', '_mdNoLaborDays'].map(fnSrc).join('\n') + `
     var mdState = { period:'month', storeFilter:'all', kpi:'', store:'' };
     var STORES_ALL = ${JSON.stringify(STORES)};
     function getStoresAll(){ return STORES_ALL; }
@@ -162,7 +162,8 @@ function mdApp(o) {
     function mySupportStores(){ return SUPPORT.slice(); }
     function getVisibleStores(){ return activeStores().filter(function(s){ return s.id === curStore; }); }   // an AM: the store picked at the top
     var _mdCache = {}, _mdCacheArmed = false;
-    var _mdLaborMarks = {}, _mdViewLabor = {}, MD_VIEW_LABOR_TIMEOUT_MS = 20000, _mdViewRedrawT = null;
+    var _mdLaborMarks = {}, _mdViewLabor = {}, _mdViewInflight = {}, MD_VIEW_LABOR_TIMEOUT_MS = 20000, _mdViewRedrawT = null;
+    var MD_VIEW_LABOR_RETRY_MS = 60000, MD_VIEW_LABOR_EMPTY_RETRY_MS = 600000;
     var DAY = '2026-10-17'; function bizToday(){ return DAY; }
     var FROZEN = {}; function isFrozenMonth(ym){ return ym < '2026-10'; } function monthFrozenKey(id, ym){ return 'monthloaded_' + id + '_' + ym; }
     var MD_KPI = { labor_rate: { label: '人件費率', dir: 'down', unit: '%' }, profit: { label: '営業利益', dir: 'up' }, sales: { label: '売上', dir: 'up' } };
@@ -177,9 +178,10 @@ function mdApp(o) {
     var HANG = false;
     function syncTipLaborFromDB(id, guid, days){ LOADS.push([id, guid, days[0].date, days[days.length - 1].date]);
       if (HANG) return new Promise(function(){});
+      if (FETCHERR) return Promise.resolve({ rowCount: 0, updated: 0, fetchErr: true });
       var k = id + '|' + days[0].date.slice(0, 7), n = ROWS(id), upd = EMPTYDATA ? 0 : n;   // EMPTYDATA: rows in the DB but their labor lists are empty
       return Promise.resolve({ rowCount: n, updated: upd }).then(function(r){ if (r.updated) { if (REMAIN[k]) LABOR[k] = REMAIN[k]; else delete LABOR[k]; } return r; }); }
-    var EMPTYDATA = false, REMAIN = {};   // REMAIN[store|ym]: sales days the DB still has no labor for after the load
+    var EMPTYDATA = false, FETCHERR = false, REMAIN = {};   // REMAIN[store|ym]: sales days the DB still has no labor for after the load
     function ROWS(id){ return 14; }
     function _empMeId(){ return ME; }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
@@ -290,22 +292,22 @@ test('①（独立レビュー P3）: a store she supports is not "view only": i
   assert.equal(run(c, "mdScopeLabel(['F04-K'])"), 'Kaimuki', 'her own store is not "（閲覧）"');
 });
 
-test('①（独立レビュー P2-1・2 回目 P2-A／B）: for the all-store viewer, a store whose labor this device has not read today is "勤怠が未取込", never a low rate; after the read-only load it is judged like the GM sees it', async () => {
+test('①（独立レビュー P2-1・2 回目 P2-A／B・Codex・3 回目）: for the all-store viewer, a view-only store with sales days but no labor on this device is "勤怠が未取込", never a low rate; her own stores are judged as when the setting is off', async () => {
   const wait = ms => new Promise(r => setTimeout(r, ms));
   const c = mdApp({ curPage: 'dashboard' }); c.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
   run(c, "LABOR['F01|2026-09'] = ['2026-09-01','2026-09-02']; LABOR['F04-P|2026-09'] = ['2026-09-03']; LABOR['F04-K|2026-09'] = ['2026-09-04']");
   let v = plain(run(c, "mdVerdict('F01','labor_rate','2026-09')"));
   assert.equal(v.state, 'unknown'); assert.equal(v.reasonCode, 'no_labor'); assert.equal(v.note, '勤怠を読み込み中（2 日）');
   assert.equal(plain(run(c, "mdVerdict('F01','profit','2026-09')")).reasonCode, 'no_labor');
-  // her own store that was not the one picked at login (not synced) is gated too; the one the login sync read is not
-  assert.equal(plain(run(c, "mdVerdict('F04-P','labor_rate','2026-09')")).reasonCode, 'no_labor');
-  run(c, "mdLaborMark('F04-K','2026-09'); mdCacheClear()");
-  assert.equal(plain(run(c, "mdVerdict('F04-K','labor_rate','2026-09')")).note, '勤怠が未取込の日があります（1 日）', 'read today, but a sales day has no labor: still not judged');
-  run(c, "delete LABOR['F04-K|2026-09']");   // what the login sync read filled every day
-  assert.equal(plain(run(c, "mdVerdict('F04-K','labor_rate','2026-09')")).state, 'ok', 'read by the login sync today');
-  // a store with every day's labor already here: judged
+  // 3 回目 P3-4: her own stores (scope or support) are judged like any AM / GM sees them, whatever was read
+  assert.equal(plain(run(c, "mdVerdict('F04-P','labor_rate','2026-09')")).state, 'ok', 'own store: same as with the setting off');
+  assert.equal(plain(run(c, "mdVerdict('F04-K','labor_rate','2026-09')")).state, 'ok');
+  const off = mdApp(); run(off, "LABOR['F04-P|2026-09'] = ['2026-09-03']");
+  assert.equal(plain(run(off, "mdVerdict('F04-P','labor_rate','2026-09')")).state, 'ok', 'the same AM with the setting off');
+  // a view-only store with every day's labor already here: judged
   assert.equal(plain(run(c, "mdVerdict('F05','labor_rate','2026-09')")).state, 'ok');
-  // the dashboard reads every shown store not read today (read only), each once, and redraws as they arrive
+  // the dashboard reads every shown store not read today (read only; her own stores too, so their numbers are complete), each once, and redraws
+  run(c, "mdLaborMark('F04-K','2026-09')");   // the login sync read her store today
   assert.equal(run(c, "mdViewerEnsureLabor('2026-09', mdViewStores())"), 5);
   await wait(0);
   assert.deepEqual(plain(c.LOADS).map(x => x[0]).sort(), ['F01', 'F02', 'F04-P', 'F05', 'F06']);
@@ -315,14 +317,20 @@ test('①（独立レビュー P2-1・2 回目 P2-A／B）: for the all-store vi
   assert.ok(plain(c.CALLS).some(x => x[0] === 'render' && x[1] === 'dashboard'));
   assert.equal(plain(run(c, "mdVerdict('F01','labor_rate','2026-09')")).state, 'ok');
   assert.equal(run(c, "mdViewerEnsureLabor('2026-09', mdViewStores())"), 0, 'read today: not again');
-  // Codex 10/17: read, but a sales day still has no labor in the DB → still not judged (not a low-rate 達成); not read again today
+  // Codex 10/17: read, but a sales day still has no labor in the DB → still not judged; read again after 10 minutes (not every minute)
   run(c, "REMAIN['F06|2026-10'] = ['2026-10-03']; LABOR['F06|2026-10'] = ['2026-10-03','2026-10-04']; mdCacheClear()");
   assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F06'])"), 1);
   await wait(350);
-  assert.equal(run(c, "mdLaborFresh('F06','2026-10')"), true);
   v = plain(run(c, "mdVerdict('F06','labor_rate','2026-10')"));
-  assert.equal(v.reasonCode, 'no_labor'); assert.equal(v.note, '勤怠が未取込の日があります（1 日）');
+  assert.equal(v.reasonCode, 'no_labor'); assert.equal(v.note, 'DB にまだ勤怠が無い日があります（1 日）');
   assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F06'])"), 0);
+  run(c, "Object.keys(_mdViewLabor).forEach(function(k){ if (_mdViewLabor[k]) _mdViewLabor[k].failAt -= 61000; })");
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F06'])"), 0, 'still waiting (10 minutes)');
+  run(c, "REMAIN = {}; Object.keys(_mdViewLabor).forEach(function(k){ if (_mdViewLabor[k]) _mdViewLabor[k].failAt -= 540000; })");
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-10', ['F06'])"), 1, 'after 10 minutes');
+  await wait(350);
+  assert.equal(plain(run(c, "mdVerdict('F06','labor_rate','2026-10')")).state, 'ok', 'the day reached the DB');
+  assert.equal(run(c, "mdLaborFresh('F06','2026-10')"), true);
   // 2 回目 P2-A: the next (Hawaii) day, after 最新に更新 or after logging out and in, it is read again
   run(c, "DAY = '2026-10-18'; mdCacheClear(); LABOR['F01|2026-09'] = ['2026-10-17']");
   assert.equal(plain(run(c, "mdVerdict('F01','labor_rate','2026-09')")).reasonCode, 'no_labor', 'the day changed');
@@ -332,44 +340,85 @@ test('①（独立レビュー P2-1・2 回目 P2-A／B）: for the all-store vi
   assert.equal(run(c, "mdViewLaborPending('F01','2026-09')"), true, 'cleared by 最新に更新 / logout');
   assert.match(fnSrc('refreshNow'), /mdLaborMarksClear\(\)/);
   assert.match(SRC, /\nfunction doLogout\(\) \{[\s\S]{0,600}mdLaborMarksClear\(\)/);
-  assert.match(fnSrc('loginSyncOps'), /mdLaborMark\(s\.id, ym\)/);
-  assert.match(fnSrc('ensureMonthDataLoaded'), /mdLaborMark\(s\.id, ym\)/);
-  // a past month this device fully loaded before (frozen) counts as read
+  // 3 回目 P3-7: the login sync and the month load mark only when they wrote labor
+  for (const f of ['loginSyncOps', 'ensureMonthDataLoaded']) assert.match(fnSrc(f), /if \(_lr && Number\(_lr\.updated\) > 0 && typeof mdLaborMark === 'function'\) mdLaborMark\(s\.id, ym\);/, f);
+  // 3 回目 P3-3: a past month this device loaded before (frozen): not read when nothing is missing; read (once at a time) when a day is missing
   c.STORE['monthloaded_F02_2026-09'] = true;
-  run(c, "LABOR['F02|2026-09'] = ['2026-09-09']; mdCacheClear()");
-  assert.equal(run(c, "mdViewerEnsureLabor('2026-09', ['F02'])"), 0, 'not read again');
-  assert.equal(plain(run(c, "mdVerdict('F02','labor_rate','2026-09')")).note, '勤怠が未取込の日があります（1 日）');
   run(c, "delete LABOR['F02|2026-09']; mdCacheClear()");
-  assert.equal(plain(run(c, "mdVerdict('F02','labor_rate','2026-09')")).state, 'ok');
-  // Codex 10/17: rows in the DB whose labor lists are empty do not count as read
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-09', ['F02'])"), 0, 'nothing missing: not read');
+  run(c, "LABOR['F02|2026-09'] = ['2026-09-30']; mdCacheClear()");
+  assert.equal(plain(run(c, "mdVerdict('F02','labor_rate','2026-09')")).reasonCode, 'no_labor');
+  assert.equal(run(c, "mdViewerEnsureLabor('2026-09', ['F02'])"), 1, 'a missing day: read again');
+  await wait(350);
+  assert.equal(plain(run(c, "mdVerdict('F02','labor_rate','2026-09')")).state, 'ok', 'the day that reached the DB later is shown');
+  // Codex 10/17: rows in the DB whose labor lists are empty fill nothing → still not judged
   const e = mdApp({ curPage: 'dashboard' }); e.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
   run(e, "EMPTYDATA = true; LABOR['F01|2026-10'] = ['2026-10-02']");
   assert.equal(run(e, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1);
   await wait(0); await wait(0);
   assert.equal(run(e, "mdLaborFresh('F01','2026-10')"), false);
-  assert.equal(plain(run(e, "mdVerdict('F01','labor_rate','2026-10')")).note, 'DB に勤怠がありません（1 日・1 分あけて読み直します）');
-  assert.match(fnSrc('loginSyncOps'), /Number\(_lr\.updated\) > 0/);
-  // an empty answer: "DB に勤怠がありません", tried again after a minute
+  assert.equal(plain(run(e, "mdVerdict('F01','labor_rate','2026-10')")).note, 'DB にまだ勤怠が無い日があります（1 日）');
+  // 3 回目 P3-5: an empty answer when nothing is missing (e.g. the 1st of the month) counts as read today: not read on every redraw
   const d = mdApp({ curPage: 'dashboard' }); d.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
-  run(d, "ROWS = function(){ return 0; }; LABOR['F06|2026-10'] = ['2026-10-05']");
+  run(d, "ROWS = function(){ return 0; }");
   assert.equal(run(d, "mdViewerEnsureLabor('2026-10', ['F06'])"), 1);
   await wait(0); await wait(0);
-  assert.equal(plain(run(d, "mdVerdict('F06','labor_rate','2026-10')")).note, 'DB に勤怠がありません（1 日・1 分あけて読み直します）');
-  assert.equal(run(d, "mdViewerEnsureLabor('2026-10', ['F06'])"), 0, 'waits a minute');
-  run(d, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; })");
-  assert.equal(run(d, "mdViewerEnsureLabor('2026-10', ['F06'])"), 1);
-  // 2 回目 P3-2: a request that never answers stops "loading" after the time limit
+  assert.equal(run(d, "mdLaborFresh('F06','2026-10')"), true);
+  assert.equal(run(d, "mdViewerEnsureLabor('2026-10', ['F06'])"), 0);
+  // 3 回目 P3-2: a failed read (HTTP error / network) is "読めませんでした" (1 minute), not "DB にまだ無い"
+  const x = mdApp({ curPage: 'dashboard' }); x.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  run(x, "FETCHERR = true; LABOR['F01|2026-10'] = ['2026-10-02']");
+  assert.equal(run(x, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1);
+  await wait(0); await wait(0);
+  assert.equal(plain(run(x, "mdVerdict('F01','labor_rate','2026-10')")).note, '勤怠を読めませんでした（1 日・1 分あけて読み直します）');
+  run(x, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; })");
+  assert.equal(run(x, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1, 'after a minute');
+  // 2 回目 P3-2 / 3 回目 P3-5: a request that never answers stops "loading" after the time limit, but is not started twice while it is still out
   const h = mdApp({ curPage: 'dashboard' }); h.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
   run(h, "HANG = true; MD_VIEW_LABOR_TIMEOUT_MS = 20; LABOR['F01|2026-10'] = ['2026-10-02']");
   assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 1);
   await wait(60);
-  assert.equal(plain(run(h, "mdVerdict('F01','labor_rate','2026-10')")).note, '勤怠を読めませんでした（1 日・1 分あけて読み直します）');
+  assert.equal(plain(run(h, "mdVerdict('F01','labor_rate','2026-10')")).note, '勤怠を読めませんでした（1 日・1 分あけて読み直します）', 'no endless "loading"');
+  run(h, "Object.keys(_mdViewLabor).forEach(function(k){ _mdViewLabor[k].failAt -= 61000; }); mdLaborMarksClear()");
+  assert.equal(run(h, "mdViewerEnsureLabor('2026-10', ['F01'])"), 0, 'not a second request while the first is out (also after 最新に更新)');
+  assert.equal(plain(h.LOADS).length, 1);
   // people who are not all-store viewers: nothing is loaded and nothing is gated
-  const n = mdApp(); run(n, "LABOR['F04-K|2026-09'] = ['2026-09-03']");
+  const n = mdApp(); run(n, "LABOR['F04-K|2026-09'] = ['2026-09-03']; LABOR['F01|2026-09'] = ['2026-09-03']");
   assert.equal(run(n, "mdViewerEnsureLabor('2026-09')"), 0);
   assert.equal(plain(run(n, "mdVerdict('F04-K','labor_rate','2026-09')")).state, 'ok');
   assert.match(fnSrc('renderMgmtDash'), /mdViewerEnsureLabor\(ym, stores\)/);
   assert.match(SRC, /no_labor:     \{ label: '勤怠が未取込'/);
+});
+
+test('①（3 回目 P3-1・P3-2）: the weekly heatmap leaves out the labor rate of weeks with a missing labor day (view-only stores); the card shows the store’s labor state; a failed read is told apart from an empty answer', async () => {
+  const c = mdApp(); c.STORE.md_all_viewers = { 'e-yuki': { on: true, _at: 5 } };
+  vm.runInContext(fnSrc('mdWeekRates') + `
+    function mdStoreSeries(){ return { budMonth: 1000, weeks: [
+      { sun: '2026-09-28', sales: 100, bud: 100, guests: 10, labor: 20, food: 0, hasAct: true },
+      { sun: '2026-10-05', sales: 100, bud: 100, guests: 10, labor: 20, food: 0, hasAct: true },
+      { sun: '2026-10-12', sales: 100, bud: 100, guests: 10, labor: 20, food: 0, hasAct: true } ] }; }
+    function monthGuestBudget(){ return 0; } function mcYmOffset(y){ return y; }`, c);
+  run(c, "LABOR['F01|2026-10'] = ['2026-10-06']; LABOR['F04-K|2026-10'] = ['2026-10-06']");
+  assert.deepEqual(plain(run(c, "mdWeekRates('F01','2026-10')")).map(w => w.labor_rate), [150, null, 150], 'view-only store: the week of 10/6 has no labor rate');
+  assert.deepEqual(plain(run(c, "mdWeekRates('F04-K','2026-10')")).map(w => w.labor_rate), [150, 150, 150], 'her own store: as before');
+  const n = mdApp(); vm.runInContext(fnSrc('mdWeekRates') + `
+    function mdStoreSeries(){ return { budMonth: 1000, weeks: [{ sun: '2026-10-05', sales: 100, bud: 100, guests: 10, labor: 20, food: 0, hasAct: true }] }; }
+    function monthGuestBudget(){ return 0; } function mcYmOffset(y){ return y; }`, n);
+  run(n, "LABOR['F01|2026-10'] = ['2026-10-06']");
+  assert.deepEqual(plain(run(n, "mdWeekRates('F01','2026-10')")).map(w => w.labor_rate), [150], 'not a viewer: as before');
+  // the store card shows the note (読み込み中／読めなかった／DB にまだ無い) instead of a fixed text
+  assert.match(SRC, /escapeHtml\(\(v\.reasonCode === 'no_labor' && v\.note\) \? v\.note : f\.how\)/);
+  // a failed read is marked (_err) so it is not taken for an empty answer
+  const f = { console };
+  vm.createContext(f);
+  vm.runInContext(fnSrc('_tipLaborFetchErr') + '\n' + fnSrc('fetchTipLaborFromDB') + "\nvar SUPABASE_URL='https://x', SUPABASE_ANON='a'; var RES = null; async function fetch(){ if (RES === 'throw') throw new Error('net'); return RES; }", f);
+  run(f, "RES = { ok: false, status: 500 }"); let r = await run(f, "fetchTipLaborFromDB('g','2026-10-01','2026-10-31')");
+  assert.equal(r.length, 0); assert.equal(r._err, true);
+  run(f, "RES = 'throw'"); r = await run(f, "fetchTipLaborFromDB('g','2026-10-01','2026-10-31')");
+  assert.equal(r._err, true);
+  run(f, "RES = { ok: true, json: async function(){ return []; } }"); r = await run(f, "fetchTipLaborFromDB('g','2026-10-01','2026-10-31')");
+  assert.equal(r.length, 0); assert.equal(r._err, undefined, 'an empty answer is not an error');
+  assert.match(fnSrc('syncTipLaborFromDB'), /fetchErr: !!\(rows && rows\._err\)/);
 });
 
 test('B（独立レビュー P2-2）: tapping the notification switches the receipts screen back to the list, where the reimbursement card is', () => {
