@@ -449,7 +449,7 @@ function laborApp() {
   const c = { console, AbortController, STORE: {}, FETCHES: [], TIMERS: [], NOW: 1000000, IGNORE_ABORT: false };
   vm.createContext(c);
   vm.runInContext(['_tipLaborFetchErr', 'fetchTipLaborFromDB', 'syncTipLaborFromDB', 'setTipLabor', 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
-    'normalizeBusinessDate', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
+    'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
     Date.now = function(){ return NOW; };
     var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so
     var _tipLaborSeq = 0, _tipLaborSaved = {};
@@ -476,6 +476,7 @@ function laborApp() {
       FETCHES.push(f); }); }
     function answer(i, hours, adj){ FETCHES[i].res({ ok: true, json: async function(){ return [{ business_date: '2026-10-02', lunch_credit_tip_adj: adj,
       data: [{ name: 'Ken', lunchHours: hours, dinnerHours: 0 }] }]; } }); }
+    function answerRows(i, rows){ FETCHES[i].res({ ok: true, json: async function(){ return rows; } }); }
     function saved(){ var l = STORE['tip_labor_F01_2026-10-02']; var a = (STORE['m_credit_tip_adj_F01'] || {})['2026-10-02'];
       return { hours: l && l.Ken ? l.Ken.lunch : null, adj: a ? a.lAdj : null }; }`, c);
   return c;
@@ -534,6 +535,44 @@ test('①（Codex 6245991596）: any two reads of the same store and day: the on
   run(n, 'TIMERS[0]()'); await flush();
   run(n, 'answer(0, 5, 5)'); await flush();
   assert.deepEqual(plain(run(n, 'saved()')), { hours: null, adj: null });
+});
+
+test('①（独立レビュー a775888 P3・前からの P2）: labor and adjustments are guarded apart; a saved adjustment or a Toast fetch is not put back by an older read; a failed check never sends an empty labor list', async () => {
+  const c = laborApp();
+  const days = "[{date:'2026-10-01'},{date:'2026-10-31'}]";
+  // a newer read whose row has no labor (only the adjustment) does not stop an older read's labor
+  let pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`), pb = run(c, `syncTipLaborFromDB('F01','g1',${days})`);
+  await flush();
+  run(c, "answerRows(1, [{ business_date: '2026-10-02', lunch_credit_tip_adj: 9, data: [] }])"); await pb;
+  run(c, 'answer(0, 6, 1)'); await pa;
+  assert.deepEqual(plain(run(c, 'saved()')), { hours: 6, adj: 9 }, 'the labor of the older read is saved; the adjustment of the newer read stays');
+  // an adjustment saved on this device after a read started is not put back by that read's answer
+  vm.runInContext(`
+    var STORES = [{ id: 'F01', toastGuid: 'g1' }], ROLE_CONFIG = { gm: { name: 'GM' } }, curRole = 'gm', curUserName = 'Moto', curPage = 'tip';
+    var UPS = [], FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
+    var document = { getElementById: function(id){ return id in FIELDS ? { value: FIELDS[id] } : null; } };
+    function creditTipAdjCanEdit(){ return true; } function getCreditTipAdj(s, d){ return (getCreditTipAdjMap(s) || {})[d] || null; }
+    async function supaUpsert(t, rows){ UPS.push(JSON.parse(JSON.stringify(rows[0]))); return true; }
+    function showToast(){} function closeModalDirect(){} function renderPage(){} function t(ja){ return ja; }
+    function supaErrorText(){ return ''; } function supaLastError(){ return null; }`, c);
+  pa = run(c, `syncTipLaborFromDB('F01','g1',${days})`); await flush();
+  const n0 = c.FETCHES.length;
+  const ps = run(c, "saveCreditTipAdj('F01','2026-10-02')"); await flush();
+  run(c, `answerRows(${n0}, [{ business_date: '2026-10-02', data: [{ name: 'Ken', lunchHours: 6 }] }])`); await ps;   // the save's check: the row exists
+  assert.equal('data' in c.UPS[0], false, 'an existing row: labor is not sent');
+  assert.equal(run(c, 'saved().adj'), 42);
+  run(c, `answer(${n0 - 1}, 6, 1)`); await pa;   // the read that started before the save answers with the old adjustment
+  assert.equal(run(c, 'saved().adj'), 42, 'the saved adjustment stays');
+  // the save's check could not be read (HTTP error): the labor list is not sent (it would empty the day's Toast labor)
+  const ps2 = run(c, "saveCreditTipAdj('F01','2026-10-03')"); await flush();
+  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: false, status: 503 })`); await ps2;
+  assert.equal('data' in c.UPS[1], false, 'a failed check never sends data: []');
+  // no row yet (an empty answer): data: [] as before (the column may be NOT NULL)
+  const ps3 = run(c, "saveCreditTipAdj('F01','2026-10-04')"); await flush();
+  run(c, `answerRows(${c.FETCHES.length - 1}, [])`); await ps3;
+  assert.deepEqual(plain(c.UPS[2].data), []);
+  assert.match(fnSrc('fetchTipLabor'), /setTipLabor\(storeId, date, labor\);\n  _tipLaborMark\(storeId, date, 'L'\);/);
+  assert.match(fnSrc('syncCreditTipAdjFromDB'), /if\(_tipLaborNewer\(storeId, bd, 'A', _seq\)\) return;/);
 });
 
 test('B（独立レビュー P2-2）: tapping the notification switches the receipts screen back to the list, where the reimbursement card is', () => {

@@ -1694,8 +1694,12 @@ function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err'
 /* v1090（Codex 6245991596・#74 4e685ac の P2）：前に始めた読み込みの答えが、あとから始めた読み込みが保存した勤怠・クレジットTip調整額を
    古い値に戻さない。読み込みに始めた順の番号（_tipLaborSeq）を振り、店と日ごとに保存した番号（_tipLaborSaved）を覚えて、
    もっと新しい番号が保存した日は書かない（どの呼び出しでも。ログインの同期・月の読み込み・ダッシュボード）。
-   あわせて、打ち切った（opts.signal）・使わなくなった（opts.alive() が false）読み込みは何も保存しない */
+   あわせて、打ち切った（opts.signal）・使わなくなった（opts.alive() が false）読み込みは何も保存しない。
+   独立レビュー（a775888）P3：勤怠（L）とクレジットTip調整額（A）は別の印（中身の空の行は勤怠の印を取らない）。
+   ほかの書き込み（調整額の保存・Toast から直接の取得・調整額だけの読み込み）も同じ番号を使う */
 var _tipLaborSeq = 0, _tipLaborSaved = {};
+function _tipLaborNewer(storeId, date, part, seq) { return (_tipLaborSaved[storeId + '|' + date + '|' + part] || 0) > seq; }
+function _tipLaborMark(storeId, date, part, seq) { _tipLaborSaved[storeId + '|' + date + '|' + part] = (seq == null) ? ++_tipLaborSeq : seq; }
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
   if (!guid) return { updated: 0, diag:'GUID未設定' };
   var _seq = ++_tipLaborSeq;
@@ -1707,12 +1711,10 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
   var rawDates = rows.map(r=>r.business_date);
   rows.forEach(row=>{
     var list = row.data || [];
-    var _sk = storeId + '|' + normalizeBusinessDate(row.business_date);
-    if ((_tipLaborSaved[_sk] || 0) > _seq) { skipped++; return; }   /* あとから始めた読み込みがもう保存した日 */
-    _tipLaborSaved[_sk] = _seq;
     // v635: クレジットTip調整額を取り込み（data空でも保持）。DBがクリアされたらローカルもクリア。
-    {
-      var _bdA = normalizeBusinessDate(row.business_date);
+    var _bdA = normalizeBusinessDate(row.business_date);
+    if (!_tipLaborNewer(storeId, _bdA, 'A', _seq)) {   /* あとから始めた読み込み・あとの保存がもう書いた日は書かない */
+      _tipLaborMark(storeId, _bdA, 'A', _seq);
       var _hasA = (+row.lunch_credit_tip_adj||0)!==0 || (+row.dinner_credit_tip_adj||0)!==0 || row.lunch_credit_tip_adj_reason || row.dinner_credit_tip_adj_reason;
       setCreditTipAdjLocal(storeId, _bdA, _hasA ? {
         lAdj:+row.lunch_credit_tip_adj||0, dAdj:+row.dinner_credit_tip_adj||0,
@@ -1722,6 +1724,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
       } : null);
     }
     if (!Array.isArray(list) || !list.length) { emptyData++; return; }
+    if (_tipLaborNewer(storeId, _bdA, 'L', _seq)) { skipped++; return; }   /* あとから始めた読み込みがもう勤怠を保存した日 */
     var labor = {};
     list.forEach(emp=>{
       if (isOrderOnlyAccount(emp.name)) return; // Order Only（注文専用アカウント）はレイバー/チップから除外
@@ -1734,6 +1737,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
     // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
     var bd = normalizeBusinessDate(row.business_date);
     setTipLabor(storeId, bd, labor);
+    _tipLaborMark(storeId, bd, 'L', _seq);
     savedDates.push(bd);
     updated++;
   });
@@ -1775,6 +1779,7 @@ function _ctAdjFromRow(row){
 }
 async function syncCreditTipAdjFromDB(storeId, guid, dateFrom, dateTo){
   if(!guid || !dateFrom || !dateTo) return 0;
+  var _seq = ++_tipLaborSeq;   /* v1090: あとから始めた読み込み・あとの保存がもう書いた日は書かない */
   try{
     var url = SUPABASE_URL + '/rest/v1/tip_labor?restaurant_guid=eq.' + encodeURIComponent(guid)
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo
@@ -1785,7 +1790,8 @@ async function syncCreditTipAdjFromDB(storeId, guid, dateFrom, dateTo){
     (rows||[]).forEach(function(row){
       var bd = normalizeBusinessDate(row.business_date); if(!bd) return;
       var o = _ctAdjFromRow(row);
-      setCreditTipAdjLocal(storeId, bd, o);
+      if(_tipLaborNewer(storeId, bd, 'A', _seq)) return;
+      setCreditTipAdjLocal(storeId, bd, o); _tipLaborMark(storeId, bd, 'A', _seq);
       if(o) n++;
     });
     return n;
@@ -5746,10 +5752,12 @@ async function saveCreditTipAdj(storeId, date){
   /* v845: その日の勤怠行がまだ無いと、data 列が空のまま新規作成される。
      data が NOT NULL の環境では insert が落ちるため、無いときだけ空配列を添える。
      既存行のときは data を送らない（Toastの勤怠を絶対に上書きしないため）。 */
+  /* v1090（独立レビュー a775888・前から）：行があるかを読めなかったとき（_err）に data: [] を送ると、merge-duplicates で
+     その日の Toast の勤怠を空にした。行が無いと分かったときだけ data: [] を添える（読めなければ送らない＝既存の行の勤怠は触らない） */
   try {
     var _exist = await fetchTipLaborFromDB(guid, date, date);
-    if (!_exist || !_exist.length) row.data = [];
-  } catch(e){ /* 確認できなくても保存は試みる */ }
+    if (_exist && !_exist._err && !_exist.length) row.data = [];
+  } catch(e){ /* 確認できなくても保存は試みる（data は送らない） */ }
   var ok = false;
   try { ok = await supaUpsert('tip_labor', [row]); } catch(e){ ok = false; }
   if (!ok) {
@@ -5761,6 +5769,7 @@ async function saveCreditTipAdj(storeId, date){
   }
   var hasAdj = (lA!==0)||(dA!==0)||lR||dR;
   setCreditTipAdjLocal(storeId, date, hasAdj ? {lAdj:lA,dAdj:dA,lReason:lR,dReason:dR,lBy:lBy,dBy:dBy,lAt:lAt,dAt:dAt} : null);
+  _tipLaborMark(storeId, date, 'A');   /* v1090: 保存より前に始めた読み込みの古い答えで戻さない */
   showToast(t('クレジットTip調整を保存しました（再取込でも保持）','Saved credit tip adjustment (persists across re-fetch)'),'success');
   closeModalDirect();
   renderPage((typeof curPage!=='undefined')?curPage:'tip');
@@ -6304,6 +6313,7 @@ async function fetchTipLabor(storeId, guid, date) {
     labor[key] = { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name };
   });
   setTipLabor(storeId, date, labor);
+  _tipLaborMark(storeId, date, 'L');   /* v1090: Toast から取った勤怠を、それより前に始めた DB の読み込みの古い答えで戻さない */
   // v633: 取得結果をDB(tip_labor)へもupsert。従来はlocalStorageのみで、次ログインのsyncTipLaborFromDBが
   //       古いDB値で上書きし直す（取り直しても戻る）問題があった。生のemployees配列（バッチと同形）を保存。
   var _dbSaved = false;
