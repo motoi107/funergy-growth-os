@@ -1697,7 +1697,7 @@ function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err'
    あわせて、打ち切った（opts.signal）・使わなくなった（opts.alive() が false）読み込みは何も保存しない。
    独立レビュー（a775888）P3：勤怠（L）とクレジットTip調整額（A）は別の印（中身の空の行は勤怠の印を取らない）。
    ほかの書き込み（調整額の保存・Toast から直接の取得・調整額だけの読み込み）も同じ番号を使う */
-var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {};
+var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {}, _tipLaborFetchDone = {};
 function _tipLaborNewer(storeId, date, part, seq) { return (_tipLaborSaved[storeId + '|' + date + '|' + part] || 0) > seq; }
 function _tipLaborMark(storeId, date, part, seq) { _tipLaborSaved[storeId + '|' + date + '|' + part] = (seq == null) ? ++_tipLaborSeq : seq; }
 async function syncTipLaborFromDB(storeId, guid, days, opts) {
@@ -5730,15 +5730,21 @@ function creditTipAdjCanEdit(){ return ['ceo','gm','office','office_crew'].index
 /* 調整額を tip_labor に保存（supaUpsert。data列を送らない＝既存の勤怠dataは merge で保持）。 */
 /* v1090：その日の行が無いときだけ作る（ある行は何も変えない＝INSERT … ON CONFLICT DO NOTHING） */
 async function _tipLaborEnsureRow(guid, date){
-  var res = await fetch(SUPABASE_URL+'/rest/v1/tip_labor', { method:'POST',
-    headers: supaHeaders({ Prefer:'resolution=ignore-duplicates,return=minimal' }),
-    body: JSON.stringify([{ restaurant_guid: guid, business_date: date, data: [] }]) });
-  return !!(res && res.ok);
+  try {
+    var res = await fetch(SUPABASE_URL+'/rest/v1/tip_labor', { method:'POST',
+      headers: supaHeaders({ Prefer:'resolution=ignore-duplicates,return=minimal' }),
+      body: JSON.stringify([{ restaurant_guid: guid, business_date: date, data: [] }]) });
+    if (res && res.ok) return true;
+    var txt = ''; try { txt = await res.text(); } catch(e){}
+    _lastSupaError = { table:'tip_labor', status: res ? res.status : 0, body: txt, at: new Date().toISOString() };   /* 行を作れなかった理由（下で行が無かったときに出す） */
+    return false;
+  } catch(e){ _lastSupaError = { table:'tip_labor', status: 0, body: String(e && e.message || e), at: new Date().toISOString() }; return false; }
 }
 /* v1090（独立レビュー 9752ac3 P3-1・Codex 9752ac3）：調整額は、その日の行の調整額の列だけを書き換える（UPDATE・PATCH）。
    data の列の決まり（NOT NULL・既定値の有無）に左右されない（upsert は ON CONFLICT の前に NOT NULL を確かめるので、
-   data に既定値の無い表では、行があっても調整額だけの upsert が落ちた）。書き換えた行が無い（行を作れなかった）ときは false */
-async function _tipLaborPatchAdj(guid, date, cols){
+   data に既定値の無い表では、行があっても調整額だけの upsert が落ちた）。書き換えた行が無いときは false。
+   rowErr：① で行を作れなかった理由（行が無かったときはその理由を出す。独立レビュー d3a23ba P3：前は「作れませんでした」だけで本当の理由が出なかった） */
+async function _tipLaborPatchAdj(guid, date, cols, rowErr){
   try {
     var res = await fetch(SUPABASE_URL+'/rest/v1/tip_labor?restaurant_guid=eq.'+encodeURIComponent(guid)+'&business_date=eq.'+encodeURIComponent(date)+'&select=business_date', {
       method:'PATCH', headers: supaHeaders({ Prefer:'return=representation' }), body: JSON.stringify(cols) });
@@ -5746,7 +5752,7 @@ async function _tipLaborPatchAdj(guid, date, cols){
       _lastSupaError = { table:'tip_labor', status: res.status, body: txt, at: new Date().toISOString() }; return false; }
     var a = await res.json();
     if (!Array.isArray(a) || !a.length) {
-      _lastSupaError = { table:'tip_labor', status: 404, body: 'その日の行を作れませんでした（通信を確かめてもう一度） / could not create the row for this day', at: new Date().toISOString() }; return false; }
+      _lastSupaError = rowErr || { table:'tip_labor', status: 404, body: 'その日の行が見つからず、書き換えられませんでした（書き込みの権限（RLS）を確かめてください） / no row was updated (check the write permission)', at: new Date().toISOString() }; return false; }
     _lastSupaError = null; return true;
   } catch(e){ _lastSupaError = { table:'tip_labor', status: 0, body: String(e && e.message || e), at: new Date().toISOString() }; return false; }
 }
@@ -5776,9 +5782,11 @@ async function saveCreditTipAdj(storeId, date){
      merge-duplicates で送っていた。読めなかったとき・読んでから送るまでのあいだにほかの端末や取込が勤怠を入れたときに、
      その日の Toast の勤怠を空にした。→ 読まない。① 行が無いときだけ作る（ignore-duplicates＝ある行は変えない。data: []）
      ② 調整額の列だけをその行に書く（UPDATE。data は送らない・data の列の決まりに左右されない）。どの順でほかの書き込みが入っても、勤怠を空にしない */
-  try { await _tipLaborEnsureRow(guid, date); } catch(e){ /* 作れなくても調整額の保存は試みる（行が無ければ下で失敗が出る） */ }
+  var _rowOk = false;
+  try { _rowOk = await _tipLaborEnsureRow(guid, date); } catch(e){ /* 作れなくても調整額の保存は試みる（行が無ければ下で失敗が出る） */ }
+  var _rowErr = _rowOk ? null : _lastSupaError;
   var ok = false;
-  try { ok = await _tipLaborPatchAdj(guid, date, row); } catch(e){ ok = false; }
+  try { ok = await _tipLaborPatchAdj(guid, date, row, _rowErr); } catch(e){ ok = false; }
   if (!ok) {
     /* v845: 「DB書込エラー」だけでは次の一手が分からないので、中身を出す。 */
     var _d = (typeof supaErrorText==='function') ? supaErrorText() : '';
@@ -6314,7 +6322,8 @@ function showMyTipDetail(storeId, name) {
 
 async function fetchTipLabor(storeId, guid, date) {
   var ymd = date.replace(/-/g,'');
-  /* v1090（独立レビュー 9752ac3 P3-2）：この端末で、同じ店・同じ日の Toast からの取り込みのうち、あとから始めたものだけが書き終えたあとに入れ直す */
+  /* v1090（独立レビュー 9752ac3 P3-2・d3a23ba P3）：この端末で、同じ店・同じ日の Toast からの取り込みのうち、DB に書き終えたものの中であとから始めたものだけが入れ直す
+     （前に始めた取り込みは、あとから始めた取り込みがもう書き終えていれば入れ直さない。あとから始めた取り込みが失敗しても、前の取り込みは入れ直す） */
   var _fgk = storeId + '|' + date, _fg = (_tipLaborFetchGen[_fgk] || 0) + 1; _tipLaborFetchGen[_fgk] = _fg;
   var res = await fetch(TOAST_SYNC_FN, {
     method:'POST', headers:{'Content-Type':'application/json',Authorization:'Bearer '+SUPABASE_ANON},
@@ -6340,7 +6349,7 @@ async function fetchTipLabor(storeId, guid, date) {
   var _dbSaved = false;
   try { _dbSaved = await supaUpsert('tip_labor', [{ restaurant_guid: guid, business_date: date, data: j.employees, fetched_at: new Date().toISOString() }]); } catch(e){ console.warn('fetchTipLabor tip_labor upsert', e); }
   /* v1090（独立レビュー 27793ab P3-1）：DB に書き終えるまでのあいだに始めた読み込みは、まだ古い DB の勤怠を読む。書き終えたら、もう一度入れて印を付ける */
-  if (_dbSaved && _tipLaborFetchGen[_fgk] === _fg) { setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
+  if (_dbSaved && _fg > (_tipLaborFetchDone[_fgk] || 0)) { _tipLaborFetchDone[_fgk] = _fg; setTipLabor(storeId, date, labor); _tipLaborMark(storeId, date, 'L'); }
   return { count: Object.keys(labor).length, dbSaved: _dbSaved };
 }
 

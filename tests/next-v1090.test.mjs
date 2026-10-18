@@ -452,7 +452,7 @@ function laborApp() {
     'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', '_tipLaborEnsureRow', '_tipLaborPatchAdj', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
     Date.now = function(){ return NOW; };
     var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so
-    var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {};
+    var _tipLaborSeq = 0, _tipLaborSaved = {}, _tipLaborFetchGen = {}, _tipLaborFetchDone = {};
     var _mdLaborMarks = {}, _mdViewLabor = {}, _mdViewInflight = {}, MD_VIEW_LABOR_TIMEOUT_MS = 20000, _mdViewRedrawT = null;
     var MD_VIEW_LABOR_RETRY_MS = 60000, MD_VIEW_LABOR_EMPTY_RETRY_MS = 600000;
     var SUPABASE_URL = 'https://x', SUPABASE_ANON = 'a';
@@ -551,7 +551,7 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   vm.runInContext(`
     var STORES = [{ id: 'F01', toastGuid: 'g1' }], ROLE_CONFIG = { gm: { name: 'GM' } }, curRole = 'gm', curUserName = 'Moto', curPage = 'tip';
     var HOLD = false, HOLDS = [], TOAST_SYNC_FN = 'https://toast.example/fn'; function toastFnBody(x){ return JSON.stringify(x); }
-    var UPS = [], TABLE = {}, BEFORE = null, NOTNULL = false, ROWFAIL = false, PATCHFAIL = false, FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
+    var UPS = [], TABLE = {}, BEFORE = null, NOTNULL = false, ROWFAIL = false, PATCHFAIL = false, HIDE = false, FIELDS = { 'ctadj-l': '42', 'ctadj-d': '0', 'ctadj-lr': 'refund', 'ctadj-dr': '' };
     var document = { getElementById: function(id){ return id in FIELDS ? { value: FIELDS[id] } : null; } };
     function creditTipAdjCanEdit(){ return true; } function getCreditTipAdj(s, d){ return (getCreditTipAdjMap(s) || {})[d] || null; }
     function supaHeaders(x){ return Object.assign({ apikey: 'a' }, x || {}); }
@@ -580,7 +580,7 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
         var k2 = q.get('restaurant_guid').slice(3) + '|' + q.get('business_date').slice(3);
         var body = JSON.parse(o.body); UPS.push({ prefer: 'PATCH', row: JSON.parse(JSON.stringify(body)) });
         var hit2 = [];
-        if (TABLE[k2]) { Object.assign(TABLE[k2], body); hit2.push({ business_date: q.get('business_date').slice(3) }); }
+        if (TABLE[k2] && !HIDE) { Object.assign(TABLE[k2], body); hit2.push({ business_date: q.get('business_date').slice(3) }); }   // HIDE: a policy that hides the row from UPDATE (200 and [])
         return Promise.resolve({ ok: true, json: async function(){ return hit2; }, text: async function(){ return JSON.stringify(hit2); } });
       }
       var one = /business_date=gte\.([0-9-]+)&business_date=lte\.([0-9-]+)/.exec(String(url));   // a one-day read (an old save checked the row first): answered from the table at once
@@ -637,8 +637,13 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   await run(c, "saveCreditTipAdj('F01','2026-10-11')");
   assert.equal(run(c, "TABLE['g1|2026-10-11']"), undefined, 'no row made');
   assert.equal(run(c, "(getCreditTipAdjMap('F01') || {})['2026-10-11']"), undefined, 'not kept on the device as saved');
-  assert.match(run(c, "supaErrorText()"), /could not create the row/);
+  assert.match(run(c, "supaErrorText()"), /^down$/, 'the reason the row could not be made is shown (independent review d3a23ba P3)');
   run(c, 'ROWFAIL = false');
+  // the row is there but the update changes no row (a policy hides it): said so, not kept as saved
+  run(c, 'HIDE = true');
+  await run(c, "saveCreditTipAdj('F01','2026-10-10')");
+  assert.match(run(c, "supaErrorText()"), /no row was updated/);
+  run(c, 'HIDE = false');
   // the adjustment write is refused (RLS): the reason from the database is shown, nothing is kept as saved
   run(c, 'PATCHFAIL = true');
   await run(c, "saveCreditTipAdj('F01','2026-10-11')");
@@ -675,6 +680,25 @@ test('①（独立レビュー a775888 P3・前からの P2）: labor and adjust
   run(c, 'LATES[0]()'); await t1;
   assert.equal(run(c, "STORE['tip_labor_F01_2026-10-12'].Ken.lunch"), 8, 'the earlier fetch does not put its older labor back');
   run(c, 'LATE = false');
+  // independent review d3a23ba P3: a later fetch of the same day that fails does not stop the earlier fetch's re-apply
+  run(c, 'HOLD = true');
+  const v1 = run(c, "fetchTipLabor('F01', 'g1', '2026-10-13')"); await flush();
+  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: true, json: async function(){ return { employees: [{ name: 'Ken', lunchHours: 8, dinnerHours: 0 }] }; } })`); await flush();
+  const rd = run(c, "syncTipLaborFromDB('F01','g1',[{date:'2026-10-13'},{date:'2026-10-14'}])"); await flush();   // started after the fetch: the DB still has the old labor
+  run(c, `answerRows(${c.FETCHES.length - 1}, [{ business_date: '2026-10-13', data: [{ name: 'Ken', lunchHours: 3 }] }])`); await rd;
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-13'].Ken.lunch"), 3);
+  const v2 = run(c, "fetchTipLabor('F01', 'g1', '2026-10-13')"); await flush();
+  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: true, json: async function(){ return { error: 'toast down' }; } })`); await v2;
+  run(c, 'HOLDS[HOLDS.length - 1]()'); await v1;
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-13'].Ken.lunch"), 8, 'the written labor is put back');
+  // the next fetch of that day (started later, written later) is put back too
+  run(c, 'HOLD = true');
+  const v3 = run(c, "fetchTipLabor('F01', 'g1', '2026-10-13')"); await flush();
+  run(c, `FETCHES[${c.FETCHES.length - 1}].res({ ok: true, json: async function(){ return { employees: [{ name: 'Ken', lunchHours: 10, dinnerHours: 0 }] }; } })`); await flush();
+  const rd2 = run(c, "syncTipLaborFromDB('F01','g1',[{date:'2026-10-13'},{date:'2026-10-14'}])"); await flush();
+  run(c, `answerRows(${c.FETCHES.length - 1}, [{ business_date: '2026-10-13', data: [{ name: 'Ken', lunchHours: 8 }] }])`); await rd2;
+  run(c, 'HOLDS[HOLDS.length - 1]()'); await v3;
+  assert.equal(run(c, "STORE['tip_labor_F01_2026-10-13'].Ken.lunch"), 10, 'a later fetch written later is put back');
   assert.match(fnSrc('syncCreditTipAdjFromDB'), /if\(_tipLaborNewer\(storeId, bd, 'A', _seq\)\) return;/);
 });
 
