@@ -1,0 +1,301 @@
+// App v1091 (Moto 2026-10-17): "Tip Rate を A 端末で更新しても B 端末に即時反映されない".
+// Two devices run the app's real storage and sync code (ls / lsSet → split rows spl_tip_requests_<name> → opMergePush) against
+// one fake app_state table (rows with updated_at, read and written through fetch like PostgREST). No network, no production data.
+// FUNERGY_INDEX=<path> runs the same checks against another build (v1090 fails them: device B never takes the change).
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const SRC = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
+function fnSrc(name) {
+  const m = new RegExp('^(async )?function ' + name.replace(/\$/g, '\\$') + '\\(', 'm').exec(SRC);
+  if (!m) throw new Error('function not found: ' + name);
+  let i = SRC.indexOf('{', m.index), depth = 0, q = null, tpl = [];
+  for (; i < SRC.length; i++) {
+    const ch = SRC[i], nx = SRC[i + 1];
+    if (q) {
+      if (ch === '\\') { i++; continue; }
+      if (q === '`' && ch === '$' && nx === '{') { tpl.push(depth); depth++; q = null; i++; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '/' && nx === '/') { i = SRC.indexOf('\n', i); continue; }
+    if (ch === '/' && nx === '*') { i = SRC.indexOf('*/', i) + 1; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (tpl.length && depth === tpl[tpl.length - 1]) { tpl.pop(); q = '`'; continue; }
+      if (depth === 0) return SRC.slice(m.index, i + 1);
+    }
+  }
+  throw new Error('unterminated: ' + name);
+}
+function varLine(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(SRC); if (!m) throw new Error('var not found: ' + name); return m[0]; }
+const plain = v => JSON.parse(JSON.stringify(v));
+const settle = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
+
+// The real merge rule line for tip_requests (OP_MERGE) — the devices use exactly what the app registers.
+const MERGE_LINE = /^ {2}tip_requests: +\{ merge: (\w+), +covers: (\w+) \}/m.exec(SRC);
+
+/* ---------- one fake app_state (PostgREST-like) ---------- */
+function makeCloud() {
+  const rows = new Map();   // key -> { value(json string), updated_at }
+  const cloud = { rows, log: [], failPost: false, delay: 1 };
+  cloud.fetch = async (url, opts = {}) => {
+    for (let i = 0; i < cloud.delay; i++) await new Promise(r => setImmediate(r));
+    const u = new URL(url);
+    const ok = (body) => ({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)), text: async () => '' });
+    if ((opts.method || 'GET') === 'POST') {
+      cloud.log.push(['POST', JSON.parse(opts.body).map(r => r.key)]);
+      if (cloud.failPost) return { ok: false, status: 503, text: async () => 'down', json: async () => ({}) };
+      JSON.parse(opts.body).forEach(r => rows.set(r.key, { value: JSON.stringify(r.value), updated_at: r.updated_at || new Date().toISOString() }));
+      return ok([]);
+    }
+    const p = u.searchParams; const eq = p.get('key'); const sel = p.get('select');
+    cloud.log.push(['GET', u.search]);
+    let list = [...rows.entries()].map(([key, r]) => ({ key, value: JSON.parse(r.value), updated_at: r.updated_at }));
+    if (eq && eq.startsWith('eq.')) list = list.filter(r => r.key === eq.slice(3));
+    if (eq && eq.startsWith('like.')) { const pre = eq.slice(5).replace(/\*$/, ''); list = list.filter(r => r.key.startsWith(pre)); }
+    const gte = p.get('updated_at'); if (gte && gte.startsWith('gte.')) list = list.filter(r => r.updated_at >= gte.slice(4));
+    return ok(list.map(r => sel === 'value' ? { value: r.value } : r));
+  };
+  return cloud;
+}
+
+const EMP = [{ name: 'Crew A', store: 'F01', role: 'crew', firstWork: '2026-09-20', status: '在籍' },
+             { name: 'Crew B', store: 'F01', role: 'crew', firstWork: '2026-09-25', status: '在籍' }];
+const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsRaw', '_lsStoreGet', '_lsWriteVerified', '_lsSetVerified', '_lsSplitOnDemandPrefix',
+  '_pushWithOutbox', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
+  '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_srPending', 'mergeSkillReq', '_coversSkillReq',
+  'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
+const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
+  'tipLiveAfterSave', 'tipLivePull', 'tipLiveRerender', 'tipLivePullSoon', 'tipLiveStart', 'tipLiveStop'];
+const NEW_VARS = ['TIP_LIVE_KEY', '_tipLive'];
+
+function device(cloud, { user = 'Moto', role = 'gm', page = 'tiprate', rt = true } = {}) {
+  const store = new Map();
+  const c = {
+    console, cloud, TOASTS: [], RENDERS: [], NOTIFS: [], INTERVALS: [], RT: {},
+    curRole: role, curUserName: user, curPage: page, curLang: 'ja', ROLE_CONFIG: { gm: { name: 'Moto', canApprove: true }, am: { name: 'Yuki', canApprove: true }, crew: { name: 'スタッフ' } },
+    SUPABASE_URL: 'https://db.example', SUPABASE_ANON: 'anon', SUPA_SYNC_ENABLED: true, _supaBooting: false,
+    localStorage: { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => { store.set(k, String(v)); }, removeItem: k => { store.delete(k); },
+      get length() { return store.size; }, key: i => [...store.keys()][i] },
+    fetch: (u, o) => cloud.fetch(u, o), setTimeout, clearTimeout, setImmediate, Promise, JSON, Date, Math,
+    STORE: store,
+  };
+  c.setInterval = (fn, ms) => { c.INTERVALS.push({ fn, ms }); return c.INTERVALS.length; };
+  c.clearInterval = () => {};
+  c.document = { hidden: false, getElementById: id => (c.MODAL && id === 'modal-overlay' ? { classList: { contains: () => true } } : (c.INPUTS && c.INPUTS[id]) || null),
+    addEventListener: () => {}, removeEventListener: () => {} };
+  c.window = rt ? { supabase: { createClient: () => ({ channel: (name) => { const ch = { name, state: 'joined', on: (ev, f, h) => { c.RT[name] = h; return ch; }, subscribe: () => ch }; return ch; },
+    removeChannel: () => {} }) } } : {};
+  vm.createContext(c);
+  const load = names => names.map(n => { try { return fnSrc(n); } catch (_e) { return ''; } }).join('\n');
+  vm.runInContext(load(FUNCS.concat(NEW)) + '\n' + NEW_VARS.map(n => { try { return varLine(n); } catch (_e) { return ''; } }).join('\n') + '\n' + varLine('LS_LOCAL_ONLY') + `
+    var _SPLIT_KEYS = { tip_requests: { type: 'arr', by: function(r){ return r && r.name; } } };
+    var _STAMP_LIST_KEYS = {}, _LS_ONDEMAND_PREFIX = ['spl_tip_history_'], _LS_FETCHED = {}, _LS_SAVE_FAIL = {}, _lsEscalatedAt = 0, _opMergeChain = {}, _opLastPushErr = {}, _lastSupaError = null;
+    var _idbState = 'unavailable', _IDB_MEM = null, _rtClient = null;
+    var SUPA_MASTER_MAP = {}, SUPA_SETTING_KEYS = [], SUPA_SETTING_PREFIX = [], OP_SYNC_KEYS = ['tip_requests'], OP_SYNC_PREFIX = ['spl_'];
+    var OP_MERGE = { tip_requests: { merge: ${MERGE_LINE ? MERGE_LINE[1] : 'mergeSkillReq'}, covers: ${MERGE_LINE ? MERGE_LINE[2] : '_coversSkillReq'} } };
+    var OP_MERGE_PREFIX = { 'spl_tip_requests_': OP_MERGE.tip_requests };   /* as _registerSplitMergeDefs does */
+    function _idbQueue(){ return false; }
+    function lsKeys(p){ var o=[]; for (var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(!p || k.indexOf(p)===0) o.push(k); } return o; }
+    function _lsRequestDeferredPrefix(){} function _lsOnDemand(){ return false; } function _lsMarkFetched(k){ _LS_FETCHED[k]=1; }
+    function _lsNoteSaveFailure(){} function _lsClearSaveFailure(){} function _lsFreeOldLaborKeys(){ return 0; } function freeRecoverableSpace(){}
+    function _outboxAdd(k){ (OUTBOX[k]=1); } function _outboxRemove(k){ delete OUTBOX[k]; } var OUTBOX = {};
+    function _handleLegacySplitRow(){ return false; } function _empTyping(){ return false; } function empPushDirty(){ return true; }
+    function getEmployees(){ return ${JSON.stringify(EMP)}; }
+    function workedShiftCount(){ return 10; } function noTipShifts(){ return 3; }
+    function t(ja){ return ja; } function todayJP(){ return '2026/10/17'; }
+    function showToast(m, k){ TOASTS.push([m, k]); } function renderPage(p){ RENDERS.push(p); } function closeModalDirect(){}
+    function addNotif(n){ NOTIFS.push(n); } function addApproval(){} function apDecidedFromPage(){} function apNotifyAcctApplied(){}
+    function myName(){ return curUserName; } function supaSettingCategory(){ return null; }
+    var STORES = [{ id: 'F01', name: 'ToriTon' }];`, c);
+  return c;
+}
+const run = (c, code) => vm.runInContext(code, c);
+const rate = (c, n = 'Crew A') => run(c, 'effectiveTipRate(' + JSON.stringify(n) + ')');
+const KEY = 'spl_tip_requests_Crew A';
+function seed(cloud, devices, list, at = new Date(Date.now() - 3600e3).toISOString()) {
+  cloud.rows.set(KEY, { value: JSON.stringify(list), updated_at: at });
+  devices.forEach(d => d.STORE.set(KEY, JSON.stringify(list)));
+}
+const OLD80 = [{ id: 'tip100', name: 'Crew A', rate: 80, status: '承認', date: '2026/09/30', approver: 'Moto' }];
+async function raise(c, name, r) {
+  c.INPUTS = { 'tipraise-name': { value: name }, 'tipraise-rate': { value: String(r) } };
+  run(c, 'applyTipRaise()'); await settle();
+}
+
+test('the change on device A reaches device B without logging in again (Realtime signal → B reads the changed rows)', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [A, B], OLD80);
+  run(A, 'tipLiveStart()'); run(B, 'tipLiveStart()');
+  assert.equal(rate(A), 80); assert.equal(rate(B), 80);
+  await raise(A, 'Crew A', 90);
+  assert.equal(rate(A), 90);
+  // saved to the cloud (the person's row), and only then the signal row
+  const row = JSON.parse(cloud.rows.get(KEY).value);
+  assert.equal(row.at(-1).rate, 90); assert.ok(row.at(-1).decAt > 0, 'decision time kept');
+  const posts = cloud.log.filter(x => x[0] === 'POST').map(x => x[1][0]);
+  assert.ok(posts.indexOf('live_tip_rate') > posts.lastIndexOf(KEY), 'signal after the data: ' + posts.join(','));
+  assert.equal(rate(B), 80, 'nothing has pulled on B yet (this is the reported problem without the signal)');
+  // B receives the Realtime event for the signal row → reads the changed rows
+  assert.equal(typeof B.RT['rt-tip-rate'], 'function', 'B subscribed to the signal row');
+  B.RT['rt-tip-rate']({}); await settle();
+  assert.equal(rate(B), 90);
+  assert.ok(B.RENDERS.includes('tiprate'), 'B redraws the page it shows');
+  assert.ok(B.TOASTS.some(x => /ほかの端末で変わった Tip Rate/.test(x[0])));
+  // the signal row is never stored on a device and never sent from one
+  assert.equal(B.STORE.has('live_tip_rate'), false);
+  assert.equal(run(B, "isOpSyncKey('live_tip_rate')"), false);
+});
+
+test('without Realtime, B still takes it on the next poll (every 20 s while visible) and when coming back to the screen', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am', rt: false });
+  seed(cloud, [A, B], OLD80);
+  run(B, 'tipLiveStart()');
+  assert.equal(B.INTERVALS.length, 1); assert.equal(B.INTERVALS[0].ms, 20000);
+  await raise(A, 'Crew A', 100);
+  run(B, '_tipLive.at = 0'); B.INTERVALS[0].fn(); await settle();
+  assert.equal(rate(B), 100);
+  // a poll right after another one does nothing (no request)
+  const n = cloud.log.length; B.INTERVALS[0].fn(); await settle();
+  assert.equal(cloud.log.length, n);
+  // hidden screen: no request
+  B.document.hidden = true; run(B, '_tipLive.at = 0'); B.INTERVALS[0].fn(); await settle();
+  assert.equal(cloud.log.length, n);
+});
+
+test('B reads only rows changed since a little before its last read (5 minutes back for clock differences), and nothing it already has is rewritten', async () => {
+  const cloud = makeCloud(); const B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [B], OLD80);
+  run(B, 'tipLiveStart()');
+  const since = run(B, '_tipLive.since');
+  // another device wrote 4 minutes "before" B's clock (its clock is behind): still read
+  const four = new Date(since - 240e3).toISOString(), six = new Date(since - 360e3).toISOString();
+  cloud.rows.set(KEY, { value: JSON.stringify(OLD80.concat([{ id: 'tip200', name: 'Crew A', rate: 90, status: '承認', decAt: since - 240e3 }])), updated_at: four });
+  cloud.rows.set('spl_tip_requests_Crew B', { value: JSON.stringify([{ id: 'tip300', name: 'Crew B', rate: 100, status: '承認', decAt: 1 }]), updated_at: six });
+  await run(B, "tipLivePull('test')");
+  const q = cloud.log.filter(x => x[0] === 'GET').at(-1)[1];
+  assert.match(q, /key=like\.spl_tip_requests_\*/);
+  assert.equal(new URLSearchParams(q).get('updated_at'), 'gte.' + new Date(since - 300e3).toISOString());
+  assert.equal(rate(B), 90, 'the 4-minute-old row is read');
+  assert.equal(B.STORE.has('spl_tip_requests_Crew B'), false, 'older rows were taken by the login pull, not here');
+  // the same row comes again within 5 minutes: no write, no redraw
+  const r0 = B.RENDERS.length, before = B.STORE.get(KEY);
+  await run(B, "tipLivePull('again')");
+  assert.equal(B.RENDERS.length, r0); assert.equal(B.STORE.get(KEY), before);
+});
+
+test('a change B has not sent yet is kept when B reads the cloud (merge, not replace)', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Crew B', role: 'crew' });
+  seed(cloud, [A, B], OLD80);
+  // B (the staff's phone) made a request while offline: only on B
+  cloud.failPost = true;
+  B.STORE.set(KEY, JSON.stringify(OLD80.concat([{ id: 'tip-req', name: 'Crew A', rate: 100, status: '申請中' }])));
+  cloud.failPost = false;
+  await raise(A, 'Crew A', 90);
+  run(B, 'tipLiveStart()'); B.RT['rt-tip-rate']({}); await settle();
+  const ids = JSON.parse(B.STORE.get(KEY)).map(r => r.id);
+  assert.deepEqual(ids.sort(), ['tip-req', 'tip100', ids.find(x => /^tip\d{10,}$/.test(x))].sort());
+  assert.equal(rate(B), 90);
+});
+
+test('the current rate is the latest decision, not the last record in the list (an old request approved after a raise counts)', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  // a pending 100% request from before; then the manager raised to 90% directly
+  seed(cloud, [A], OLD80.concat([{ id: 'tip150', name: 'Crew A', rate: 100, status: '申請中' }]));
+  await raise(A, 'Crew A', 90);
+  assert.equal(rate(A), 90);
+  // now the old request is approved: it is the newest decision → 100%
+  await run(A, "approveTip('tip150','承認')"); await settle();
+  assert.equal(rate(A), 100, 'the newer decision wins (v1090 kept 90 because the raise is later in the list)');
+  // records from before v1091 (no decision time) keep the old rule: the last one in the list
+  const B = device(cloud);
+  B.STORE.set(KEY, JSON.stringify([{ id: 'a', name: 'Crew A', rate: 90, status: '承認' }, { id: 'b', name: 'Crew A', rate: 100, status: '承認' }, { id: 'c', name: 'Crew A', rate: 80, status: '却下' }]));
+  assert.equal(rate(B), 100);
+});
+
+test('two devices deciding the same request differently end with the same decision everywhere (the newer one; same time → rejected)', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  const PEND = OLD80.concat([{ id: 'tip150', name: 'Crew A', rate: 100, status: '申請中' }]);
+  seed(cloud, [A, B], PEND);
+  // B cannot read the cloud for a moment (offline) and rejects; A approves later … then B's copy reaches the cloud
+  cloud.failPost = true;
+  const fetch0 = cloud.fetch; cloud.fetch = async (u, o) => ((o && o.method === 'POST') || /key=eq/.test(u) ? { ok: false, status: 0, json: async () => null, text: async () => '' } : fetch0(u, o));
+  await run(B, "approveTip('tip150','却下')"); await settle();
+  cloud.fetch = fetch0; cloud.failPost = false;
+  await new Promise(r => setTimeout(r, 5));
+  await run(A, "approveTip('tip150','承認')"); await settle();   // A read the cloud (still pending there) and approved
+  await run(B, "opMergePush('" + KEY + "', _lsRaw('" + KEY + "'))"); await settle();   // B's outbox sends its older rejection
+  const st = () => JSON.parse(cloud.rows.get(KEY).value).find(r => r.id === 'tip150').status;
+  assert.equal(st(), '承認', 'the newer decision (A) stays in the cloud');
+  run(B, 'tipLiveStart()'); B.RT['rt-tip-rate']({}); await settle();
+  assert.equal(JSON.parse(B.STORE.get(KEY)).find(r => r.id === 'tip150').status, '承認', 'B takes the newer decision (v1090 kept its own)');
+  assert.equal(rate(B), 100);
+  // same time: rejected stays, from either side
+  const m = (cl, lo) => plain(run(A, 'mergeTipReq(' + JSON.stringify(cl) + ',' + JSON.stringify(lo) + ')'))[0].status;
+  const ap = { id: 'x', name: 'Crew A', status: '承認', decAt: 500 }, rj = { id: 'x', name: 'Crew A', status: '却下', decAt: 500 };
+  assert.equal(m([ap], [rj]), '却下'); assert.equal(m([rj], [ap]), '却下');
+  // covers: a cloud copy with an older decision is not "saved yet"
+  assert.equal(run(A, '_coversTipReq(' + JSON.stringify([{ ...ap, decAt: 400 }]) + ',' + JSON.stringify([ap]) + ')'), false);
+  assert.equal(run(A, '_coversTipReq(' + JSON.stringify([ap]) + ',' + JSON.stringify([ap]) + ')'), true);
+  assert.equal(run(A, '_coversTipReq(' + JSON.stringify([ap]) + ',' + JSON.stringify([rj]) + ')'), false, 'same time, the cloud has the losing approval');
+});
+
+test('deciding on a device with an old copy: it reads the cloud first, sees the other decision and changes nothing', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  const PEND = OLD80.concat([{ id: 'tip150', name: 'Crew A', rate: 100, status: '申請中' }]);
+  seed(cloud, [A, B], PEND);
+  await run(A, "approveTip('tip150','承認')"); await settle();
+  // B still shows it as pending and presses 却下
+  assert.equal(JSON.parse(B.STORE.get(KEY)).find(r => r.id === 'tip150').status, '申請中');
+  await run(B, "approveTip('tip150','却下')"); await settle();
+  assert.ok(B.TOASTS.some(x => /ほかの端末でもう「承認」/.test(x[0])), 'told it was already approved');
+  assert.equal(JSON.parse(cloud.rows.get(KEY).value).find(r => r.id === 'tip150').status, '承認');
+  assert.equal(rate(B), 100);
+});
+
+test('when the cloud cannot be reached the device says so; the signal is sent only after the rows are saved', async () => {
+  const cloud = makeCloud(); const A = device(cloud);
+  seed(cloud, [A], OLD80);
+  cloud.failPost = true;
+  await raise(A, 'Crew A', 90);
+  assert.ok(A.TOASTS.some(x => /クラウドへ送れていません/.test(x[0])));
+  assert.equal(cloud.rows.has('live_tip_rate'), false);
+  assert.equal(rate(A), 90, 'kept on this device');
+  // the outbox sends it later and then signals (hook in flushOutbox)
+  assert.match(fnSrc('flushOutbox'), /key\.indexOf\('spl_tip_requests_'\)===0 && typeof tipLiveBeacon==='function'\) tipLiveBeacon\(\)/);
+});
+
+test('a page in the middle of typing or with a dialog open is not redrawn; it is redrawn on the next read', async () => {
+  const cloud = makeCloud(); const A = device(cloud), B = device(cloud, { user: 'Yuki', role: 'am' });
+  seed(cloud, [A, B], OLD80);
+  run(B, 'tipLiveStart()');
+  await raise(A, 'Crew A', 90);
+  B.MODAL = true; B.RT['rt-tip-rate']({}); await settle();
+  assert.equal(rate(B), 90, 'the data is taken');
+  assert.equal(B.RENDERS.length, 0, 'not redrawn under the dialog');
+  B.MODAL = false; await run(B, "tipLivePull('later')");
+  assert.deepEqual(plain(B.RENDERS), ['tiprate']);
+});
+
+test('wiring: started at login, stopped at logout, read when the Tip Rate screens open; staff requests also reach approvers', () => {
+  assert.match(SRC, /\n {2}try\{ notifRealtimeStart\(\); \}catch\(e\)\{\}\n {2}try\{ tipLiveStart\(\); \}catch\(e\)\{\}/);
+  assert.match(fnSrc('doLogout'), /tipLiveStop\(\)/);
+  for (const f of ['renderTipRate', 'renderTipMgmt']) assert.match(fnSrc(f), /tipLivePullSoon\(\)/, f);
+  assert.match(SRC, /\nfunction renderMypage\(\) \{\n {2}try\{ if\(typeof tipLivePullSoon==='function'\) tipLivePullSoon\(\); \}catch\(e\)\{\}/);   // fnSrc cannot read renderMypage (a regex literal)
+  for (const f of ['submitTipRequest', 'submitTipFromSkill', 'approveTip', 'applyTipRaise']) assert.match(fnSrc(f), /tipLiveAfterSave\(/, f);
+  assert.ok(MERGE_LINE && MERGE_LINE[1] === 'mergeTipReq' && MERGE_LINE[2] === '_coversTipReq', 'tip_requests uses the new merge rule');
+  assert.match(varLine('LS_LOCAL_ONLY'), /'live_tip_rate'/);
+});
+
+test('version markers are 1091 or later and match', () => {
+  const v = /const APP_VERSION = '(\d+)';/.exec(SRC)[1];
+  const sw = fs.readFileSync(process.env.FUNERGY_SW || new URL('../sw.js', import.meta.url), 'utf8');
+  assert.ok(Number(v) >= 1091, v);
+  assert.equal(/const SW_BUILD = '(\d+)';/.exec(sw)[1], v);
+});
