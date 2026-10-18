@@ -6224,17 +6224,26 @@ function tipDecDayStamp(list, name, self, byReq) {
     if (r === self || !_tipDecided(r)) return;
     var sn = _tipDecSeen(r);
     if (sn && sn.day > ((r.name === name || sn.exact) ? d0 : tm)) up(sn.day);
+    /* 同じ人の決定の日（守りで後ろへ寄せた decDay も）より前にしない＝その人の決定の日は前へ戻らない（Codex 04ce8a4・82e7954 の P2：
+       10/22 の申請を 10/19 の端末で承認して decDay＝10/22、続けて同じ人の古い申請を承認すると 10/19 になり、10/21 の配分が変わった）。
+       ほかの人には寄せた日を使わない（独立レビュー 9c08984 P2-1 のまま） */
+    if (r.name === name) up(_tipDecDay(r));
   });
   return d;
 }
 /* 決める前の確かめ（端末の時計）。だれかの決定の日付か、決める申請の申請した日が、この端末の明日より先（TIP_DEC_CLOCK_DAYS 日まで。
    それより先はこわれた日）なら、いちばん先のもの（{day, name, req}）を返す。サーバーの時刻は使えない（app_state.updated_at も端末が書く）ので、
    決める人に端末の日付を見てもらう（独立レビュー 0a35425 P2(b)：31 日より遅れた端末の決定が、何も出さずに 10/16 からの配分を変えた） */
-function tipDecClockAhead(list, self) {
+function tipDecClockAhead(list, self, name) {   /* name：引き上げのときの人（承認では self の人） */
   var now = Date.now(), tm = _tipHstDay(now + 86400000), lim = _tipHstDay(now + TIP_DEC_CLOCK_DAYS * 86400000), e = null;
+  var nm = (self && self.name) || name || '';
   var see = function (x, r, req) { if (x && x > tm && x <= lim && _tipDayOk(x) && (!e || x > e.day)) e = { day: x, name: (r && r.name) || '', req: !!req }; };
   var st = _tipReqT(self); if (st) see(_tipHstDay(st), self, true);
-  (list || []).forEach(function (r) { if (r !== self && _tipDecided(r)) { var sn = _tipDecSeen(r); if (sn) see(sn.day, r, false); } });
+  (list || []).forEach(function (r) {
+    if (r === self || !_tipDecided(r)) return;
+    var sn = _tipDecSeen(r); if (sn) see(sn.day, r, false);
+    if (nm && r.name === nm) see(_tipDecDay(r), r, false);   /* 同じ人の決定の日が先なら、その日から効くことを確かめる（tipDecDayStamp と同じ） */
+  });
   return e;
 }
 /* 確かめの文（独立レビュー 19eb415 P3-2・P3-6：どの記録か・どうすればよいかを出す。日付はアプリのほかの所と同じ YYYY/MM/DD）。raise：引き上げ */
@@ -81876,7 +81885,7 @@ async function applyTipRaise(){
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
   var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
-  var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests) : '';   /* 明日より先の日付の決定があれば確かめる */
+  var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);

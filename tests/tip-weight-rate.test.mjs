@@ -609,3 +609,42 @@ test('独立レビュー（9c08984）P2-1・P3-1・P3-2: a staff phone whose clo
   assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'c2').decHst, '2026-10-20', 'the deciding device’s own date is kept');
   assert.equal(clock().length, 1);
 });
+
+test('Codex（04ce8a4・82e7954）P2: approving the same person again does not move the day back (10/22 stays; 10/21 still pays $90 / $90) and asks; another person’s pushed day still holds no one back', async () => {
+  const c = app();
+  vm.runInContext(decideFns() + `
+    var curUserName = 'Moto', curPage = 'tip'; var ASKED = [], ANSWER = true; function confirm(m){ ASKED.push(m); return ANSWER; } var NOW = 0;
+    Date.now = function(){ return NOW; };`, c);
+  const clock = () => c.ASKED.filter(m => /端末の日付/.test(m));
+  const hst = (y, m, d, h, mi = 0) => Date.UTC(y, m - 1, d, h + 10, mi);
+  c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-09-01' })];
+  const sub = 'tip' + hst(2026, 10, 22, 12);   // A sent a 100% request on 10/22 (that phone's clock)
+  c.STORE.tip_requests = [
+    { id: 'old90', name: 'A', rate: 90, status: '申請中', date: '2026/10/10' },   // an older 90% request (no time in the id)
+    { id: sub, name: 'A', rate: 100, status: '申請中', date: '2026/10/22' },
+  ];
+  for (const d of ['2026-10-21', '2026-10-22']) { c.LABOR['F01|' + d] = { A: { lunch: 5, dinner: 0 }, B: { lunch: 5, dinner: 0 } }; c.TIPS['F01|' + d] = { l: 180, d: 0 }; }
+  const pay = d => Object.fromEntries(plain(run(c, `calcTipDistribution('F01', '${d}')`)).list.map(r => [r.name, +r.total.toFixed(2)]));
+  assert.deepEqual(pay('2026-10-21'), { A: 90, B: 90 });
+  c.NOW = hst(2026, 10, 19, 10);   // this device reads 10/19
+  await run(c, `approveTip('${sub}', '承認')`);
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === sub).decDay, '2026-10-22');
+  assert.deepEqual(pay('2026-10-21'), { A: 90, B: 90 });
+  c.ASKED.length = 0;
+  await run(c, "approveTip('old90', '承認')");
+  const r2 = plain(c.STORE.tip_requests).find(r => r.id === 'old90');
+  assert.equal(r2.status, '承認');
+  assert.equal(r2.decDay, '2026-10-22', 'not before A’s own earlier decision (before: 10/19)');
+  assert.deepEqual(pay('2026-10-21'), { A: 90, B: 90 }, 'the past day pays the same (before: $95.29 / $84.71)');
+  assert.deepEqual(pay('2026-10-22'), { A: 95.29, B: 84.71 }, 'from 10/22 the newer decision (90%)');
+  assert.equal(clock().length, 1, 'the second approval asks too (before: no clock check)');
+  assert.match(clock()[0], /A さんの Tip Rate の決定（2026\/10\/22 の日付）[\s\S]*2026\/10\/22 から効きます/);
+  // the raise uses the same floor and asks
+  const L = plain(c.STORE.tip_requests); c.L = L;
+  assert.equal(run(c, "tipDecDayStamp(L, 'A')"), '2026-10-22');
+  assert.equal(plain(run(c, "tipDecClockAhead(L, null, 'A')")).day, '2026-10-22');
+  assert.match(fnSrc('applyTipRaise'), /tipDecClockAhead\(requests, null, name\)/);
+  // another person: A’s pushed day (10/22) is not used — B decided today stays today (独立レビュー 9c08984 P2-1)
+  assert.equal(run(c, "tipDecDayStamp(L, 'B')"), '2026-10-19');
+  assert.equal(run(c, "tipDecClockAhead(L, null, 'B')"), null);
+});
