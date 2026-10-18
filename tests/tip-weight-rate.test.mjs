@@ -253,7 +253,7 @@ test('独立レビュー（dc96c7e）: the day an approval counts is its Hawaii 
 
 test('Codex（dc96c7e）: approving a pending request later does not change what past days paid (an undated old approval after a dated one)', async () => {
   const c = app();
-  vm.runInContext(['approveTip', 'tipStampLegacy', 'tipDecStamp', 'todayJP', 'fmtJP'].map(fnSrc).join('\n') + `
+  vm.runInContext(['approveTip', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'todayJP', 'fmtJP'].map(fnSrc).join('\n') + `
     var curUserName = 'Moto', curPage = 'tip'; function confirm(){ return true; }
     Date.now = function(){ return ${Date.UTC(2026, 9, 23, 20)}; };   // approved on 10/23 (Hawaii 10:00)`, c);
   c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-09-01' })];
@@ -273,9 +273,40 @@ test('Codex（dc96c7e）: approving a pending request later does not change what
   // from 10/23 the newer decision (80%) counts (Moto: the newer decision)
   c.LABOR['F01|2026-10-23'] = c.LABOR['F01|2026-10-18']; c.TIPS['F01|2026-10-23'] = { l: 180, d: 0 };
   assert.deepEqual(plain(run(c, "calcTipDistribution('F01', '2026-10-23')")).list.map(r => [r.name, +r.total.toFixed(2)]), [['A', 90], ['B', 90]]);
-  assert.match(fnSrc('applyTipRaise'), /approvedDate:todayJP\(\), decAt:_dec, decDay:\(\(typeof _tipHstDay==='function'\) \? _tipHstDay\(Date\.now\(\)\) : undefined\)\}\);/, 'a raise keeps its Hawaii day too');
+  assert.match(fnSrc('applyTipRaise'), /approvedDate:todayJP\(\), decAt:_dec, decDay:\(\(typeof tipDecDayStamp==='function'\) \? tipDecDayStamp\(requests, name\) : undefined\)\}\);/, 'a raise keeps its Hawaii day too');
   const after = plain(run(c, "calcTipDistribution('F01', '2026-10-18')")).list.map(r => [r.name, +r.total.toFixed(2)]);
   assert.deepEqual(after, before, 'the past day pays the same');
+});
+
+test('独立レビュー（e59f3f9）P1・P3: rejecting an old request changes neither past days nor the rate now; a device whose clock is behind does not move a decision to an earlier day', async () => {
+  const c = app();
+  vm.runInContext(['approveTip', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'todayJP', 'fmtJP'].map(fnSrc).join('\n') + `
+    var curUserName = 'Moto', curPage = 'tip'; function confirm(){ return true; } var NOW = 0;
+    Date.now = function(){ return NOW; };`, c);
+  const hst = (y, m, d, h) => Date.UTC(y, m - 1, d, h + 10);
+  c.EMPS = [EMP({ name: 'A', firstWork: '2026-09-01' }), EMP({ name: 'B', firstWork: '2026-05-01' })];   // B: past 3 months → 100%
+  c.STORE.tip_requests = [
+    { id: 'p', name: 'A', rate: 100, status: '申請中', date: '2026/09/01' },                 // an old request still pending
+    { id: 'l', name: 'A', rate: 80, status: '承認', approvedDate: '2026/09/10' },              // approved before v1091 (no time)
+    { id: 'r', name: 'A', rate: 100, status: '承認', decDay: '2026-10-18', decAt: hst(2026, 10, 18, 9) },   // a raise on 10/18
+  ];
+  c.LABOR['F01|2026-10-20'] = { A: { lunch: 5, dinner: 0 }, B: { lunch: 5, dinner: 0 } }; c.TIPS['F01|2026-10-20'] = { l: 180, d: 0 };
+  const pay = d => plain(run(c, `calcTipDistribution('F01', '${d}')`)).list.map(r => [r.name, +r.total.toFixed(2)]);
+  assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]]);
+  // P1: the old request is rejected on 10/23
+  c.NOW = hst(2026, 10, 23, 10);
+  await run(c, "approveTip('p', '却下')");
+  assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]], 'the past day pays the same (before: $80 / $100)');
+  assert.equal(run(c, "effectiveTipRate('A')"), 100, 'the rate now stays at the raise (before: 80%)');
+  // P3: a device whose clock reads 10/19 23:00 approves a new 90% request: its day is not before the latest decision day
+  c.STORE.tip_requests = plain(c.STORE.tip_requests).concat([{ id: 'q', name: 'A', rate: 90, status: '申請中', date: '2026/10/19' }]);
+  c.NOW = hst(2026, 10, 19, 23);
+  await run(c, "approveTip('q', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(r => r.id === 'q').decDay, '2026-10-23', 'not 10/19');
+  assert.deepEqual(pay('2026-10-20'), [['A', 90], ['B', 90]], 'the past day pays the same (before: the slow clock made it count from 10/19)');
+  // a later day uses the new decision
+  c.LABOR['F01|2026-10-24'] = c.LABOR['F01|2026-10-20']; c.TIPS['F01|2026-10-24'] = { l: 190, d: 0 };
+  assert.deepEqual(pay('2026-10-24'), [['B', 100], ['A', 90]]);
 });
 
 test('the period table, CSV and staff tab show the rates used in the period (80%→90%); the daily table shows Tip Rate; the confirmation keeps the basis and the rates', () => {

@@ -6186,6 +6186,13 @@ function _tipDecDay(r) {
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
   return m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
 }
+/* 決めるときに残す日（ハワイの日付）。その人のどの決定の日（decDay）よりも前にしない（独立レビュー e59f3f9 P3：時計の遅れた端末で
+   決めると前の日になり、あとの決定より新しい時刻のまま前の日から効いて、過ぎた日の配分を変えた。決めた時刻は tipDecStamp で同じ守り） */
+function tipDecDayStamp(list, name) {
+  var d = _tipHstDay(Date.now());
+  (list || []).forEach(function (r) { if (r && r.name === name) { var x = String(r.decDay || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(x) && x > d) d = x; } });
+  return d;
+}
 /* その日（dateISO）の Tip Rate（%）。emp は従業員の記録か名前。No Tip にはしない（No Tip は配分の別の印）。list：Tip Rate の記録（省略すると端末の記録） */
 function tipRateOn(emp, dateISO, list) {
   if (typeof emp === 'string') { var _nm = emp; emp = getEmployees().find(function (e) { return e.name === _nm; }); }
@@ -81745,7 +81752,7 @@ async function approveTip(id, status) {
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
     r.decAt = _dec;
-    r.decDay = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
+    r.decDay = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name) : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
@@ -81799,7 +81806,7 @@ async function applyTipRaise(){
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});   /* v1092: 決めた日（ハワイの日付） */
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:((typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined)});   /* v1092: 決めた日（ハワイの日付） */
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
