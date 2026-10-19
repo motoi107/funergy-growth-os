@@ -42,17 +42,17 @@ function opMergeLine(key) {
   const m = new RegExp('^\\s*' + key + ':\\s*\\{\\s*merge:\\s*([A-Za-z_$][\\w$]*)\\s*,\\s*covers:\\s*([A-Za-z_$][\\w$]*)\\s*(,[^}]*)?\\}', 'm').exec(SRC);
   if (!m) return null;
   const rest = m[3] || '';
-  return { merge: m[1], covers: m[2], keepLocal: /keepLocal:\s*true/.test(rest), strict: /strict:\s*true/.test(rest) };
+  return { merge: m[1], covers: m[2], keepLocal: /keepLocal:\s*true/.test(rest), strict: /strict:\s*true/.test(rest), cas: /cas:\s*true/.test(rest) };
 }
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 
 const FNS = ['mergeHbReads', '_hbReadCmp', '_coversHbReads', '_hbChCmp', 'mergeHbChapters', '_coversHbChapters', '_hbJs', '_logSig', '_canonForSig',
-  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
+  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
   '_hbChRaw', 'getHbChapters', 'ensureHbSeed', 'hbSyncSeedVersion', 'hbChaptersSorted', 'hbStatus', 'renderHandbook', 'hbRenderReader', 'hbRenderAdmin',
-  '_hbLogT', 'hbRenderLog', 'openHbEdit', 'hbSaveChapter', 'hbDeleteChapter', 'hbOpen', 'hbBack', 'hbSetTab'];
-const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy'];
+  '_hbLogT', 'hbRenderLog', 'openHbEdit', 'hbSaveChapter', 'hbDeleteChapter', 'hbOpen', 'hbBack', 'hbSetTab', 'hbCheckScroll'];
+const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy', '_hbOpenV'];
 
 // Two short synthetic chapters (the real seed is not used: its text is not what is being checked).
 const SEED = [
@@ -83,31 +83,51 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
     progBar: () => '<bar>', kpi: (a, b, cc) => '<kpi ' + a + '=' + b + (cc ? ' ' + cc : '') + '>', hbTestCard: () => '', hbTestStatus: () => 'wait', hbTestCell: () => '',
     hbLoadTestResults: () => {}, hbTestCfg: () => ({ eName: 'x' }), hbTestResultOf: () => null, hbRenderTest: () => '<test>', openHbTestCfg: () => {},
     addNotif: n => c.notifs.push(n), openModal: h => c.modals.push(h), closeModalDirect: () => { c.closed++; }, confirm: () => c.confirms,
-    window: { scrollTo: () => {} }, setTimeout: () => 0, document: { getElementById: id => (c.form && id in c.form ? { value: c.form[id] } : null) },
+    window: { scrollTo: () => {} }, setTimeout: (fn, ms) => { if (ms < 1000) setImmediate(fn); return 0; } /* short waits run; the 15 s limits never fire */, document: { getElementById: id => (c.form && id in c.form ? { value: c.form[id] } : null) },
     _outboxGet: () => S.op_outbox.slice(), _outboxAdd: (k, e) => { if (!S.op_outbox.some(x => x.key === k)) S.op_outbox.push({ key: k, lastErr: String(e) }); },
     _outboxRemove: k => { S.op_outbox = S.op_outbox.filter(x => x.key !== k); },
     flushOutbox: async () => { for (const x of S.op_outbox.slice()) { const r = await c.syncMasterToSupabase(x.key, c.ls(x.key, null)); if (r !== false) c._outboxRemove(x.key); } },
     _lsPushBlocked: () => false, _handleLegacySplitRow: () => false, _lsMarkFetched: () => {}, _lsFreeOldLaborKeys: () => 0,
     _lsSetVerified: (k, json) => { S[k] = JSON.parse(json); return true; },
     _lsWriteVerified: (k, json) => { S[k] = JSON.parse(json); return true; },
-    _opUpsertRow: (k, v) => ({ key: k, value: v }),
-    _opMergeDef: k => (DEFS[k] ? { merge: c[DEFS[k].merge], covers: c[DEFS[k].covers], keepLocal: DEFS[k].keepLocal, strict: DEFS[k].strict } : null),
+    _opUpsertRow: (k, v) => ({ key: k, value: v, updated_at: new Date().toISOString() }),
+    _opMergeDef: k => (DEFS[k] ? { merge: c[DEFS[k].merge], covers: c[DEFS[k].covers], keepLocal: DEFS[k].keepLocal, strict: DEFS[k].strict, cas: DEFS[k].cas } : null),
     // syncMasterToSupabase, app_state branch (index.html: a key with a merge rule goes through opMergePush, the others are upserted whole)
     syncMasterToSupabase: async (k, v) => (c._opMergeDef(k) ? c.opMergePush(k, v) : c.supaUpsert('app_state', [{ key: k, value: v }])),
     supaUpsert: async (_t, rows) => {
       c.ups++; if (c.failUpsert || !db) return false;
-      for (const r of rows) await db.query('insert into app_state values($1,$2) on conflict(key) do update set value=excluded.value', [r.key, JSON.stringify(r.value)]);
+      if (c.delay) await c.delay('upsert');
+      for (const r of rows) await db.query('insert into app_state(key,value,updated_at) values($1,$2,coalesce($3::timestamptz, now())) on conflict(key) do update set value=excluded.value, updated_at=excluded.updated_at', [r.key, JSON.stringify(r.value), r.updated_at || null]);
       return true;
     },
     // The cloud's REST GET (index.html's _fetchOpValue and pullOpKey call it): failFetch = no connection, httpError = 503, gate = the answer waits.
-    fetch: async url => {
-      c.gets++;
-      if (c.gate) await c.gate;
+    // v1096: also the compare-and-swap writes (PATCH with the updated_at it read; POST that refuses an existing row with 409), as PostgREST does.
+    fetch: async (url, o = {}) => {
+      const method = (o && o.method) || 'GET';
+      if (method === 'GET') c.gets++;
+      if (c.gate && method === 'GET') await c.gate;
+      if (c.delay) await c.delay(method);
       if (c.failFetch || !db) throw new Error('offline');
       if (c.httpError) return { ok: false, status: 503, json: async () => ({ message: 'unavailable' }) };
+      if ((method === 'PATCH' || method === 'POST') && c.failUpsert) { c.ups++; return { ok: false, status: 500, json: async () => ({}) }; }
+      if (method === 'PATCH') {
+        c.ups++;
+        const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]);
+        const b = JSON.parse(o.body);
+        const ue = /updated_at=eq\.([^&]+)/.exec(url);
+        const r = ue ? await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at=$4::timestamptz returning key', [JSON.stringify(b.value), b.updated_at, k, decodeURIComponent(ue[1])])
+                     : await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at is null returning key', [JSON.stringify(b.value), b.updated_at, k]);
+        return { ok: true, status: 200, json: async () => r.rows.map(x => ({ key: x.key })) };
+      }
+      if (method === 'POST') {
+        c.ups++;
+        const b = JSON.parse(o.body);
+        const r = await db.query('insert into app_state(key,value,updated_at) values($1,$2,$3::timestamptz) on conflict(key) do nothing returning key', [b.key, JSON.stringify(b.value), b.updated_at]);
+        return r.rows.length ? { ok: true, status: 201, json: async () => r.rows.map(x => ({ key: x.key })) } : { ok: false, status: 409, json: async () => ({ code: '23505' }) };
+      }
       const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]);
-      const r = await db.query('select value::text as v from app_state where key=$1', [k]);
-      return { ok: true, json: async () => r.rows.map(x => ({ value: JSON.parse(x.v) })) };
+      const r = await db.query("select value::text as v, to_json(updated_at)#>>'{}' as u from app_state where key=$1", [k]);
+      return { ok: true, json: async () => r.rows.map(x => (/updated_at/.test(url) ? { value: JSON.parse(x.v), updated_at: x.u } : { value: JSON.parse(x.v) })) };
     },
     supaHeaders: () => ({}),
   };
@@ -122,8 +142,8 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
 async function cloudDb(rows = {}) {
   const { PGlite } = await import('./runtime/node_modules/@electric-sql/pglite/dist/index.js');
   const db = new PGlite();
-  await db.exec('create table app_state(key text primary key, value jsonb)');
-  for (const [k, v] of Object.entries(rows)) await db.query('insert into app_state values($1,$2)', [k, JSON.stringify(v)]);
+  await db.exec('create table app_state(key text primary key, value jsonb, updated_at timestamptz)');
+  for (const [k, v] of Object.entries(rows)) await db.query('insert into app_state values($1,$2,now())', [k, JSON.stringify(v)]);
   return db;
 }
 const cloudOf = async (db, k) => { const r = await db.query('select value::text as v from app_state where key=$1', [k]); return r.rows.length ? JSON.parse(r.rows[0].v) : null; };
@@ -359,7 +379,7 @@ test('review P2-1: when the cloud read fails (HTTP 503), an old-copy device does
 test('review P2-2: reads erased from the cloud (an old app version wrote its copy) come back when a device that has them opens the Handbook', async () => {
   const db = await cloudDb({ handbook_reads: { Ann: { ch1: R(3, 1), ch2: R(3, 2) } }, handbook_chapters: SEED });
   const ann = device({ user: 'Ann', db, st: { handbook_reads: { Ann: { ch1: R(3, 1), ch2: R(3, 2) } }, handbook_chapters: plain(SEED) } });
-  await db.query("update app_state set value=$1 where key='handbook_reads'", [JSON.stringify({ Ben: { ch1: R(3, 9) } })]);   // a v1094 device upserted its own copy
+  await db.query("update app_state set value=$1, updated_at=now() where key='handbook_reads'", [JSON.stringify({ Ben: { ch1: R(3, 9) } })]);   // a v1094 device upserted its own copy
   assert.equal(await run(ann, 'hbPullLatest(true)'), true); await tick(30);
   const cloud = await cloudOf(db, 'handbook_reads');
   assert.deepEqual(Object.keys(cloud.Ann || {}).sort(), ['ch1', 'ch2'], "Ann's reads are written back");
@@ -433,7 +453,7 @@ test('review f1d567a P3-1: another admin\'s save of the same chapter lands betwe
   run(A, 'var __n = Date.now; Date.now = function(){ return __n() - 60000; }');   // Ann's save has the earlier time
   const ben = Object.assign(plain(SEED.find(c => c.id === 'ch1')), { titleJa: 'T-Ben', bodyJa: '<p>B</p>', version: 4, updatedBy: 'Ben', _at: Date.now() });
   const orig = A.fetch; let n = 0;
-  A.fetch = async (u, o) => { n++; if (n === 2) { const cur = await cloudOf(db, 'handbook_chapters'); await db.query('update app_state set value=$1 where key=$2', [JSON.stringify(cur.map(c => c.id === 'ch1' ? ben : c)), 'handbook_chapters']); } return orig(u, o); };
+  A.fetch = async (u, o) => { n++; if (n === 2) { const cur = await cloudOf(db, 'handbook_chapters'); await db.query('update app_state set value=$1, updated_at=now() where key=$2', [JSON.stringify(cur.map(c => c.id === 'ch1' ? ben : c)), 'handbook_chapters']); } return orig(u, o); };
   await run(A, "hbSaveChapter('ch1')"); await tick(60);
   const ch1 = (await cloudOf(db, 'handbook_chapters')).find(c => c.id === 'ch1');
   assert.equal(ch1.bodyJa, '<p>B</p>', 'Ben\'s save stays (newer at the same version)');
@@ -442,8 +462,60 @@ test('review f1d567a P3-1: another admin\'s save of the same chapter lands betwe
   await db.close();
 });
 
+test('v1096 (Codex 10/19): reads saved at the same time on several devices are all kept, and each device is told saved only when its read is in the cloud (any order of the requests)', async () => {
+  let seed = 1; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (let round = 0; round < 40; round++) {
+    const db = await cloudDb({ handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: SEED });
+    const devs = [['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Ann', 'ch2']].map(([user, ch]) => {
+      const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } });
+      d.delay = async () => { await tick(Math.floor(rnd() * 6)); };
+      d.ch = ch; return d;
+    });
+    devs.forEach(d => run(d, "hbOpen('" + d.ch + "')"));
+    devs.forEach(d => run(d, "hbMarkRead('" + d.ch + "')"));
+    for (let i = 0; i < 40; i++) await tick(10);
+    const cloud = await cloudOf(db, 'handbook_reads');
+    const want = [['Old', 'ch1'], ['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Ann', 'ch2']];
+    for (const [who, ch] of want) assert.ok(cloud[who] && cloud[who][ch], 'round ' + round + ': the read of ' + who + ' ' + ch + ' is in the cloud ' + JSON.stringify(cloud));
+    for (const d of devs) {
+      const saved = d.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success');
+      const warned = d.toasts.some(([m, k]) => /まだクラウドに送れていません/.test(m) && k === 'warning');
+      assert.ok(saved || warned, 'round ' + round + ': each device is told something');
+      if (saved) assert.ok(cloud[d.curUserName] && cloud[d.curUserName][d.ch], 'told saved and it is in the cloud');
+    }
+    await db.close();
+  }
+});
+
+test('v1096 (Codex 10/19): reading an old version while 「同期」 brings in a new one does not mark the new version as read', async () => {
+  const db = await cloudDb({ handbook_reads: {}, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  run(ann, "hbOpen('ch1')");   // Ann opens ch1 (v3) and reads it
+  // someone saves ch1 v4 while Ann reads v3
+  const cur = await cloudOf(db, 'handbook_chapters');
+  await db.query('update app_state set value=$1, updated_at=now() where key=$2', [JSON.stringify(cur.map(c => c.id === 'ch1' ? Object.assign({}, c, { version: 4, bodyJa: '<p>new</p>', _at: Date.now() }) : c)), 'handbook_chapters']);
+  assert.equal(await run(ann, 'hbPullLatest(true)'), true);   // 「同期」
+  assert.equal(run(ann, "getHbChapters().find(function(c){ return c.id==='ch1'; }).version"), 4);
+  // pressing the read button that was on the screen (v3) does not record v4
+  run(ann, "hbMarkRead('ch1')"); await tick(30);
+  assert.ok(!(ann.S.handbook_reads.Ann && ann.S.handbook_reads.Ann.ch1), 'not marked as read');
+  assert.ok(!((await cloudOf(db, 'handbook_reads')).Ann), 'nothing sent');
+  assert.ok(ann.toasts.some(([m, k]) => /読了にしていません/.test(m) && k === 'warning'));
+  assert.equal(run(ann, '_hbOpenV.v'), 4, 'the new version is opened from the start');
+  // a reader drawn with an old opened version says the chapter changed and has no read button
+  run(ann, "_hbOpenV = { id: 'ch1', v: 3 }; _hbView = 'ch1'");
+  const html = run(ann, 'renderHandbook()');
+  assert.match(html, /読んでいるあいだに、この章が更新されました（v3 → v4）/); assert.match(html, /新しい版を最初から読む/); assert.ok(!/id="hb-read-btn"/.test(html));
+  run(ann, "hbOpen('ch1')");
+  // after reading the new version, the read is the new version
+  run(ann, "hbMarkRead('ch1')"); await tick(30);
+  assert.equal(ann.S.handbook_reads.Ann.ch1.v, 4);
+  assert.equal((await cloudOf(db, 'handbook_reads')).Ann.ch1.v, 4);
+  await db.close();
+});
+
 test('the release markers match', () => {
   const v = (/const APP_VERSION = '(\d+)'/.exec(SRC) || [])[1];
-  assert.ok(Number(v) >= 1095, 'APP_VERSION ' + v);
+  assert.ok(Number(v) >= 1096, 'APP_VERSION ' + v);
   assert.equal((/const SW_BUILD = '(\d+)'/.exec(SW) || [])[1], v);
 });
