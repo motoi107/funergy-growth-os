@@ -46628,6 +46628,7 @@ async function invInPost(){
   /* v1071：反映したら原本の名前を変える（サーバー）。変えた名前、変えられなかったときはそのことを出す */
   var rn = res.rename;
   /* v1094（UI案56）：このシステムが送るときは、反映したらすぐに送り始める（画面を閉じてもサーバーが続ける） */
+  if (rn && rn.ok && res.qb && res.qb.waiting==='gmail') { showToast(t('反映しました。ファイル名：','Posted. File name: ')+rn.name+t('。QuickBooks への送信は Gmail の接続を直すまで待ちます（Invoice取込 → 設定 → Gmail の接続）','. Sending to QuickBooks waits until the Gmail connection is fixed (Settings → Gmail connection)'), 'warning'); _invIn.loaded = {}; _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; invInRerender(); return; }
   if (rn && rn.ok && res.qb && res.qb.sending) { showToast(t('反映しました。ファイル名：','Posted. File name: ')+rn.name+t('。QuickBooks へ送り始めました（画面を閉じても続きます）','. Sending to QuickBooks has started (it goes on if you close the screen)'), 'success'); _invIn.loaded = {}; _invIn.docId = null; _invIn.doc = null; _invIn.edits = null; invInRerender(); return; }
   showToast(rn && rn.ok ? t('反映しました。ファイル名：','Posted. File name: ')+rn.name
     : rn ? t('反映しました。ファイル名はまだ変えていません（あとで自動でやり直します。名前を変えてから QuickBooks へ送ります）','Posted. The file is not renamed yet (retried automatically; it goes to QuickBooks after the rename)')
@@ -46806,13 +46807,15 @@ function invInQbCard(H, P){
   var h = '<div class="card" style="padding:10px 12px"><div class="card-title" style="flex-wrap:wrap"><i class="ti ti-send"></i>'+t('QuickBooks への原本転送','Originals to QuickBooks')+'<span style="margin-left:auto;font-size:11px;font-weight:400;color:var(--muted)">'+t('宛先 ','To ')+e(QS.to||'')+' · '+e(invInQbSinceText(QS.since))+t(' より後に入った原本',' onwards')+'</span></div>'
     + '<div style="font-size:11.5px;margin-bottom:6px;line-height:1.7">'+t('送る担当：','Sender: ')+'<b>'+invInRouteText(QS.route)+'</b>'+(QS.enabled ? '' : ' · '+t('台帳は OFF','ledger off'))
     + (QS.route==='invoice-intake' || GM.status && GM.status!=='none' ? '<br>'+t('送り元の Gmail：','Sender’s Gmail: ')+invInGmailBadge(GM)+(GM.account ? ' '+e(GM.account) : '') : '')+'</div>';
-  if (!Q) return h + '<div class="ivx-note">'+t('読み込み中…','Loading…')+'</div></div>';
-  if (Q.error) {
-    /* 新しいサーバーがまだ入っていない（v1093 の関数）：前の数だけ出す */
+  var renameChip = Number(H.rename_waiting) ? invInChip(t('名前を変える待ち','Waiting for rename')+' '+Number(H.rename_waiting), INVIN_COL.gray) : '';
+  if (!Q || Q.error) {
+    /* くわしい状況（qb_status）をまだ読んでいない・読めない：取込状況の数だけ出す（0 件・正常とは出さない） */
     var qb = H.qb || {};
     return h + '<div style="display:flex;gap:8px;flex-wrap:wrap">'+invInChip(t('送信済み','Sent')+' '+(qb.sent||0), INVIN_COL.blue)+invInChip(t('未送信','Not sent')+' '+(qb.pending||0), INVIN_COL.gray)
-      + invInChip(t('結果不明','Unknown')+' '+(qb.unknown||0), INVIN_COL.org)+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)+'</div>'
-      + '<div class="ivx-note">'+t('サーバーがまだ v1094 の前のため、くわしい状況は出せません（','The server is older than v1094, so no detail is shown (')+e(Q.error)+'）</div></div>';
+      + invInChip(t('結果不明','Unknown')+' '+(qb.unknown||0), INVIN_COL.org)+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)+renameChip+'</div>'
+      + '<div class="ivx-note">'+(!Q ? t('くわしい状況を読み込み中…','Loading the detail…')
+        : /bad_action|unknown_action|not_found/.test(String(Q.error)) ? t('サーバーがまだ v1094 の前のため、くわしい状況は出せません（','The server is older than v1094, so no detail is shown (')+e(Q.error)+t('）',')')
+        : t('くわしい状況を読めませんでした（','The detail could not be read (')+e(Q.error)+t('）。「更新」でもう一度読みます',') . “Refresh” reads it again'))+'</div></div>';
   }
   var cnt = function(route, st){ var c = (Q.counts||{})[route] || {}; return Number(c[st]||0); };
   var me = 'invoice-intake';
@@ -46822,7 +46825,7 @@ function invInQbCard(H, P){
     + invInChip(t('結果不明','Unknown')+' '+(cnt(me,'unknown')+cnt('external','unknown')), INVIN_COL.org)
     + invInChip(t('エラー','Errors')+' '+(cnt(me,'error')+cnt('external','error')), INVIN_COL.red)
     + (Number(Q.external_waiting) ? invInChip(t('前の転送の残り','Left with the forwarder before')+' '+Number(Q.external_waiting), '#5B3A8E') : '')
-    + (Number(H.rename_waiting) ? invInChip(t('名前を変える待ち','Waiting for rename')+' '+Number(H.rename_waiting), INVIN_COL.gray) : '')+'</div>';
+    + renameChip+'</div>';
   if (Number(Q.waiting_30)) h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('30 分以上 送れていない原本が ','Originals waiting more than 30 minutes: ')+Number(Q.waiting_30)+t(' 件あります（Gmail の接続を確かめてください）','. Check the Gmail connection')+'</div>';
   if (Number(Q.notices_failed)) h += '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('知らせ（メール・LINE）を送れなかったものが ','Notices (mail or LINE) not delivered: ')+Number(Q.notices_failed)+t(' 件（7 日以内）',' (7 days)')+'</div>';
   var rows = (Q.rows||[]).slice(0, 30);
@@ -46863,15 +46866,25 @@ function invInGmailCard(S, admin){
     + row(t('送り元','Sender'), G.from ? e(G.from) : '<span style="color:'+INVIN_COL.red+'">'+t('未設定','not set')+'</span>')
     + row(t('許可されたこと','Permissions'), (G.send_scope ? t('送信 ✓','Send ✓') : t('送信 ✗','Send ✗'))+' · '+(G.read_scope ? t('読み取り（送信済みを調べる）✓','Read (sent mail) ✓') : t('読み取り ✗','Read ✗')))
     + row(t('送信済みの検索','Searching sent mail'), cr.search_ok===true ? t('できる','OK') : cr.search_ok===false ? '<span style="color:'+INVIN_COL.red+'">'+t('できない','Failed')+'</span>' : '—')
+    + row(t('送った原本を見つける','Finding a sent original'), invInProbeText(cr))
     + row(t('最後に確かめた','Last checked'), G.checked_at ? e(invInTime(G.checked_at)) : '—')
     + (G.problem_at ? row(t('問題','Problem'), '<span style="color:'+INVIN_COL.red+'">'+e(invInTime(G.problem_at))+' '+e(G.last_error||'')+'</span>') : '')+'</div>';
-  if (st==='expired' || st==='denied') h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('送るのを止めています。台帳に積むのは続けるので、つなぎ直せば待っている分から送ります。','Sending is stopped. Queuing goes on; reconnect and what waits is sent.')+'</div>';
+  if (st==='expired' || st==='denied') h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('送るのを止めています（待っている原本のやり直しの回数は使いません）。台帳に積むのは続けるので、「確かめる」で直っていれば、または「つなぎ直す」と、待っている分から送ります。','Sending is stopped (waiting originals keep their tries). Queuing goes on; when “Check” finds it fixed, or after reconnecting, what waits is sent.')+'</div>';
   if (admin) h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
     + '<button class="btn '+(on?'btn-secondary':'btn-primary')+' btn-sm" style="min-height:40px" onclick="invInGmailConnect()"><i class="ti ti-plug-connected"></i> '+(st==='none' ? t('Gmail をつなぐ（Google の画面へ）','Connect Gmail (Google’s page)') : t('つなぎ直す','Reconnect'))+'</button>'
     + (G.account && st!=='disconnected' ? '<button class="btn btn-secondary btn-sm" style="min-height:40px" onclick="invInGmailCheck()"><i class="ti ti-shield-check"></i> '+t('確かめる','Check')+'</button>'
       + '<button class="btn btn-secondary btn-sm" style="min-height:40px;color:'+INVIN_COL.red+'" onclick="invInGmailDisconnect()">'+t('切る','Disconnect')+'</button>' : '')+'</div>';
   h += '<div class="ivx-note">'+t('Google の画面が開くので、送り元のアカウントでログインして「許可」を押してください（送信と、送信済みを調べる読み取りの 2 つだけ）。別のアカウントで許可したときは使いません。鍵（トークン）はサーバーだけにあり、画面・通知・履歴には出しません。つなぐ・切るのは CEO・GM。','Google’s page opens: sign in with the sender’s account and allow (sending, and reading to search the sent mail; nothing else). Another account is not used. The token stays on the server and is never shown. CEO or GM connect and disconnect.')+'</div></div>';
   return h;
+}
+/* 確かめる：前に送った原本（前の転送のものから）を、送る前と同じ検索で Gmail の送信済みに見つけられるか */
+function invInProbeText(cr){
+  var p = (cr && cr.history_probe) || null;
+  if (!p) return '—';
+  if (!p.tried) return t('まだ（送った原本が台帳にない）','Not yet (no sent original in the ledger)');
+  if (p.found === true) return t('見つかった ✓','Found ✓')+(p.name ? '（'+escapeHtml(p.name)+'）' : '');
+  if (p.found === false) return '<span style="color:'+INVIN_COL.red+'">'+t('見つかりませんでした（切り替えないで Claude に）','Not found (do not switch; tell Claude)')+'</span>'+(p.name ? '（'+escapeHtml(p.name)+'）' : '');
+  return '<span style="color:'+INVIN_COL.yel+'">'+t('調べられませんでした（もう一度「確かめる」）','Could not search (press “Check” again)')+(p.error ? ' '+escapeHtml(p.error) : '')+'</span>';
 }
 /* 設定：QuickBooks の転送の知らせ（アプリ・メール・LINE。決めてほしいこと 1・2・5 は A） */
 function invInNotifyCard(S, admin){
@@ -46885,7 +46898,8 @@ function invInRouteCheckHtml(){
   var C = _invIn.config || {}, S = C.settings || {}, G = S.gmail || {}, cr = G.check_result || {};
   var ok = function(b, txt){ return '<div>'+(b ? '✓ ' : '<span style="color:'+INVIN_COL.red+'">✗ </span>')+txt+'</div>'; };
   return '<div style="line-height:1.8">'+ok(G.status==='ok' && G.from_ok, t('送り元の Gmail がつながっている','The sender’s Gmail is connected')+(G.account?'（'+escapeHtml(G.account)+'）':''))
-    + ok(G.send_scope && G.read_scope && cr.search_ok!==false, t('確かめた：送信・読み取り・送信済みの検索','Checked: send, read, search the sent mail'))
+    + ok(cr.ok===true && G.send_scope && G.read_scope && cr.search_ok===true, t('つないだあと「確かめる」を押した：送信・読み取り・送信済みの検索','“Check” pressed after connecting: send, read, search the sent mail'))
+    + ok(!(cr.history_probe && cr.history_probe.tried) || cr.history_probe.found===true, t('前に送った原本を送信済みに見つけた','A sent original was found in the sent mail')+'（'+invInProbeText(cr)+'）')
     + '<div>✓ '+t('宛先・送り始めは今のまま','The address and the start stay as they are')+'</div>'
     + '<div style="color:var(--muted)">・'+t('変えた時刻より前に台帳に積んだ分は、前の転送（ChatGPT）がそのまま送ります（今の毎時の転送は止めなくて大丈夫。送る行が分かれているので二重には送りません）','Rows queued before the switch stay with the forwarder before (ChatGPT; no need to stop it: each row has one sender)')+'</div>'
     + '<div style="color:var(--muted)">・'+t('変えたあと 1 件反映して、取込状況で 反映 → 名前 → 台帳 → 送信開始 → 送信済み と Gmail の ID を確かめてください','After the switch, post one and check the times and the Gmail ID under Intake status')+'</div></div>';

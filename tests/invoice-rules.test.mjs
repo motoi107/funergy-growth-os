@@ -458,12 +458,13 @@ test('each migration changes only what it says', async () => {
   assert.ok(/'invoice_code_key\(text\)','invoice_link_hr_ok\(text,text\)','invoice_link_role\(uuid\)','invoice_link_whoami\(jsonb\)',\n\s+'invoice_link_lines\(jsonb\)','invoice_link_data\(jsonb\)','invoice_link_save\(jsonb\)','invoice_link_retire\(jsonb\)','invoice_link_mark\(jsonb\)',\n\s+'invoice_link_apply\(jsonb\)'\] loop/.test(ilRest));
   // QuickBooks からすぐ (20261026090000, Moto 2026-10-18・UI案56): the Gmail connection, a connection being made and the notices
   // (three tables, service role only), the two columns of the unknown look-up on the ledger, the notices' setting (added if missing,
-  // never changed), two functions replaced (the settings' save and the settings screen), 21 new ones (service role only); no other row.
+  // never changed), three functions replaced (the settings' save, the settings screen, a ledger result), 23 new ones (service role
+  // only); no other row.
   const qg = read('supabase/migrations/20261026090000_invoice_qb_gmail.sql');
   assert.deepEqual([...qg.matchAll(fn)].map(m => m[1]), ['invoice_settings_save', 'invoice_config', 'invoice_gmail_public', 'invoice_gmail_start',
     'invoice_gmail_take', 'invoice_gmail_save', 'invoice_gmail_creds', 'invoice_gmail_mark', 'invoice_gmail_disconnect', 'invoice_qb_has_due',
-    'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_content_changed', 'invoice_qb_unknown_due', 'invoice_qb_gmail_checked', 'invoice_qb_row',
-    'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim', 'invoice_qb_alert_done',
+    'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_release', 'invoice_qb_probe_row', 'invoice_qb_content_changed', 'invoice_qb_unknown_due',
+    'invoice_qb_gmail_checked', 'invoice_qb_row', 'invoice_qb_result', 'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim', 'invoice_qb_alert_done',
     'invoice_line_route']);
   assert.ok([...qg.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
   const qgRest = qg.replace(fn, '').replace(/^--.*\n/gm, '').replace(/ +--.*$/gm, '').replace(/\n+/g, '\n').trim();

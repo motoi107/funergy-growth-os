@@ -73,29 +73,48 @@ test('取込状況: chips, rows with 反映 → 名前 → 台帳 → 送信開�
   // an older server (no qb_status): the counts it has, said plainly
   const o = app(); o._invIn.qbs = { error: 'unknown_action' };
   assert.match(o.fn('invInQbCard({ qb:{ sent:4, pending:1 }, qb_settings:{} }, null)'), /送信済み 4[\s\S]*v1094 の前/);
+  // another failure is not called an older server; while loading and on a failure the rename count stays (never 0 or "all fine")
+  o._invIn.qbs = { error: 'network' };
+  const fh = o.fn('invInQbCard({ qb:{ sent:4 }, qb_settings:{}, rename_waiting:3 }, null)');
+  assert.match(fh, /名前を変える待ち 3[\s\S]*くわしい状況を読めませんでした（network）/); assert.doesNotMatch(fh, /v1094 の前/);
+  o._invIn.qbs = null;
+  assert.match(o.fn('invInQbCard({ qb:{ sent:4 }, qb_settings:{}, rename_waiting:3 }, null)'), /送信済み 4[\s\S]*名前を変える待ち 3[\s\S]*くわしい状況を読み込み中/);
   // waiting over 30 minutes, notices not delivered
   const w = app(); w._invIn.qbs = STATUS({ waiting_30: 2, notices_failed: 1 });
   assert.match(w.fn('invInQbCard({ qb_settings:{} }, null)'), /30 分以上 送れていない原本が 2 件[\s\S]*知らせ（メール・LINE）を送れなかったものが 1 件/);
 });
 
 test('設定: the Gmail connection (CEO・GM act, others see), the switch check, the notices switches', async () => {
-  const S = { gmail: { status: 'ok', account: 'sender@example.test', from: 'sender@example.test', from_ok: true, send_scope: true, read_scope: true, check_result: { search_ok: true }, checked_at: 'x' },
+  const S = { gmail: { status: 'ok', account: 'sender@example.test', from: 'sender@example.test', from_ok: true, send_scope: true, read_scope: true,
+    check_result: { ok: true, search_ok: true, history_probe: { tried: true, found: true, name: '2026-10-01_VendorA_1.pdf' } }, checked_at: 'x' },
     qb_notify: { app: true, email: true, line: false } };
   const c = app({ role: 'gm', config: { settings: S } });
   let h = c.fn('invInGmailCard(' + JSON.stringify(S) + ', true)');
   assert.match(h, /つながっています/); assert.match(h, /<b>sender@example\.test<\/b>（送り元と同じ ✓）/);
   assert.match(h, /送信 ✓ · 読み取り（送信済みを調べる）✓/); assert.match(h, /送信済みの検索<\/span><span>できる/);
+  assert.match(h, /送った原本を見つける<\/span><span>見つかった ✓（2026-10-01_VendorA_1\.pdf）/);
   assert.match(h, /invInGmailConnect\(\)[\s\S]*つなぎ直す[\s\S]*invInGmailCheck\(\)[\s\S]*invInGmailDisconnect\(\)/);
   assert.ok(!/refresh|token":/i.test(h));
   assert.ok(!/invInGmailConnect/.test(c.fn('invInGmailCard(' + JSON.stringify(S) + ', false)')), 'accounting only sees');
   h = c.fn('invInGmailCard({ gmail:{ status:"none", from:"sender@example.test" } }, true)');
   assert.match(h, /まだ[\s\S]*Gmail をつなぐ（Google の画面へ）/);
   h = c.fn('invInGmailCard({ gmail:{ status:"expired", account:"sender@example.test", from:"sender@example.test", from_ok:true, problem_at:"t", last_error:"gmail_auth_revoked" } }, true)');
-  assert.match(h, /許可が切れました[\s\S]*送るのを止めています。台帳に積むのは続ける/);
+  assert.match(h, /許可が切れました[\s\S]*送るのを止めています（待っている原本のやり直しの回数は使いません）。台帳に積むのは続ける[\s\S]*「確かめる」/);
   assert.match(c.fn('invInGmailCard({}, true)'), /v1094 の前/);
   // the check before the switch
   h = c.fn('invInRouteCheckHtml()');
-  assert.match(h, /✓ 送り元の Gmail がつながっている（sender@example\.test）/); assert.match(h, /✓ 確かめた：送信・読み取り・送信済みの検索/);
+  assert.match(h, /✓ 送り元の Gmail がつながっている（sender@example\.test）/); assert.match(h, /✓ つないだあと「確かめる」を押した：送信・読み取り・送信済みの検索/);
+  assert.match(h, /✓ 前に送った原本を送信済みに見つけた（見つかった ✓/);
+  // connected but not checked since (the callback's result has no ok), or the sent original not found: ✗ (the server refuses too)
+  for (const cr of [{ search_ok: true }, { ok: true, search_ok: true, history_probe: { tried: true, found: false, name: 'x.pdf' } }]) {
+    const u = app({ config: { settings: { gmail: { ...S.gmail, check_result: cr } } } });
+    assert.match(u.fn('invInRouteCheckHtml()'), /✗ <\/span>/);
+  }
+  const nf = app({ config: { settings: { gmail: { ...S.gmail, check_result: { ok: true, search_ok: true, history_probe: { tried: true, found: false, name: 'x.pdf' } } } } } });
+  assert.match(nf.fn('invInRouteCheckHtml()'), /見つかりませんでした（切り替えないで Claude に）/);
+  const none = app({ config: { settings: { gmail: { ...S.gmail, check_result: { ok: true, search_ok: true, history_probe: { tried: false } } } } } });
+  assert.doesNotMatch(none.fn('invInRouteCheckHtml()'), /✗/, 'nothing sent before: nothing to find');
+  assert.match(none.fn('invInRouteCheckHtml()'), /まだ（送った原本が台帳にない）/);
   assert.match(h, /前の転送（ChatGPT）がそのまま送ります/);
   const bad = app({ config: { settings: { gmail: { status: 'none' } } } });
   assert.match(bad.fn('invInRouteCheckHtml()'), /✗ <\/span>送り元の Gmail/);
@@ -173,6 +192,7 @@ test('the page wires it in: the status tab loads qb_status, the settings show Gm
   assert.match(bodyOf('invInRoute'), /route==='invoice-intake' \? invInRouteCheckHtml\(\)/);
   assert.match(bodyOf('invInDetail'), /\(oPick \? '' : invInQbBlock\(G\)\)/);
   assert.match(bodyOf('invInPost'), /res\.qb && res\.qb\.sending[\s\S]*QuickBooks へ送り始めました（画面を閉じても続きます）/);
+  assert.match(bodyOf('invInPost'), /res\.qb && res\.qb\.waiting==='gmail'[\s\S]*Gmail の接続を直すまで待ちます/);
   assert.match(html, /try\{ invQbAlertsStart\(\); \}catch\(e\)\{\}[^\n]*\n\s+try\{ invInGmailReturn\(\); \}catch\(e\)\{\}/);
   assert.equal((html.match(/invQbApplyNotifFocus\(n\);/g) || []).length, 2);
   assert.match(html, /const APP_VERSION = '1094';/);

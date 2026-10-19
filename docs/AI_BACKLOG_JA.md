@@ -4,8 +4,8 @@
 
 1. 済（Moto さん 10/18 18:25 HST）：UI案56 の 1〜6 は A。Gmail はアプリのボタン・知らせはアプリ・メール・LINE・Intuit のメールはブロック中。
 2. 済（Claude・ブランチ `claude/qb-immediate`）：アプリ v1094・migration `20261026090000`・関数 invoice-intake・入れる一式 `deploy/invoice-qb-gmail-v1094/`（`docs/QB_IMMEDIATE_V1094_JA.md`）。試験・わざと壊す。
-3. 次：独立レビュー → Codex のレビュー（とくに送る前の確かめの順・結果不明・予約の時間・Gmail の接続と鍵・知らせの回数・前の転送との分け方）。
-4. Moto さん：Google Cloud（Gmail API・同意画面は内部か本番・スコープ 2 つ・リダイレクト URI）→ SQL → 確認（qb_gmail＝true・tables＝24・functions＝115）→ 関数 → 送り元の SQL（直接渡す）→ マージ → Gmail をつなぐ・確かめる → 送る担当を「このシステム」→ 1 件反映して時刻と Gmail の ID を確かめる。
+3. 済：独立レビュー（P1 なし・P2 4・P3 13）→ 直した（許可の拒否で回数を使わず待つ・混み具合・カード・印を丸ごと検索・確かめるで送った原本を探す・送る担当のあいだだけ送る）。次：Codex のレビュー（とくに送る前の確かめの順・結果不明・予約の時間・行を放すとき・Gmail の接続と鍵・知らせの回数・前の転送との分け方）。
+4. Moto さん：Google Cloud（Gmail API・同意画面は内部か本番・スコープ 2 つ・リダイレクト URI）→ SQL → 確認（qb_gmail＝true・tables＝24・functions＝117）→ 関数 → 送り元の SQL（直接渡す）→ マージ → Gmail をつなぐ・確かめる（送った原本を見つける ✓）→ 送る担当を「このシステム」→ 1 件反映して時刻と Gmail の ID を確かめる。
 5. ChatGPT：切り替えるまで今のまま。切り替え前の行が 0 になったら毎時のタスクを「見るだけ」（`qb_external_monitor`）に。
 6. 残り：Intuit の受付・取込のエラーは見ない（メールはブロック中）。実際の送信の速さは入れたあと 1 件で測る。
 

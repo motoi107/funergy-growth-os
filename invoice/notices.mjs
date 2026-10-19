@@ -54,8 +54,8 @@ export function noticeText(a) {
         NEXT + 'を見てください。（この知らせは 1 日 1 回まで）'];
       break;
     case 'auth':
-      body = ['QuickBooks への送信を止めています。台帳に積むのは続けるので、つなぎ直せば待っている分から送ります。',
-        '次にすること：Funergy+ → Invoice取込 → 設定 → Gmail の接続で「つなぎ直す」（moto@ でログインして許可）。'];
+      body = ['QuickBooks への送信を止めています（待っている原本のやり直しの回数は使いません）。台帳に積むのは続けるので、直れば待っている分から送ります。',
+        '次にすること：Funergy+ → Invoice取込 → 設定 → Gmail の接続で「確かめる」。直っていなければ「つなぎ直す」（送り元のアカウントでログインして許可）。'];
       break;
     case 'intake_error':
       body = [where(d) + '：' + (d.status === 'unsupported' ? '読めない形式です' : '読み取りに 3 回失敗しました') + (d.error ? '（' + clip(d.error, 80) + '）' : '') + '。',

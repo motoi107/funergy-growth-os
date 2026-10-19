@@ -16,6 +16,8 @@ const READ = ['ceo', 'gm', 'office', 'office_crew'];
 // From the store folder itself only these are taken in (a HEIC photo is taken in to show how to send it again).
 const STORE_FOLDER_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
 const QB_ROUTES = ['invoice-intake', 'external'];
+// A reserved row is let go (it waits, not a try) when this system is no longer the sender or the Gmail connection is not good.
+const QB_RELEASE = ['route_changed', 'gmail_not_ok'];
 
 // Constant-time comparison of a presented key with the stored one.
 function keyMatches(given, stored) {
@@ -413,7 +415,7 @@ export function createHandler(deps) {
   // One ledger for every original, whoever sends it. With route 'external' the existing forwarder reads and records through the
   // qb_external_* actions. The rows of this system (route 'invoice-intake') are sent from here, by Gmail (Moto 2026-10-18・UI案56):
   // right after a posting is queued (qbAfterPost), and by every worker run for what that start left (a lost start, a retry).
-  async function qbStep(ctx, owner, stats) {
+  async function qbStep(ctx, owner, stats, deadline) {
     if (ctx.qb.enabled && QB_ROUTES.includes(ctx.qb.route)) {
       await db.rpc('invoice_qb_sweep', {});
       for (const c of await db.rpc('invoice_qb_candidates', { limit: 20 })) {
@@ -421,7 +423,10 @@ export function createHandler(deps) {
         if (r.queued) stats.qb_queued = (stats.qb_queued || 0) + 1;
       }
     }
-    const s = await qbSend('worker');
+    // Sending in a worker run uses what is left of the run (the files and the renaming come first); the main path is the start
+    // right after a posting.
+    const left = deadline ? deadline - now() : 100000;
+    const s = await qbSend('worker', { budgetMs: Math.max(0, Math.min(100000, left)) });
     for (const [k, v] of Object.entries(s)) if (typeof v === 'number') stats['qb_' + k] = (stats['qb_' + k] || 0) + v;
     await qbReconcile(stats);
     await qbNotices(stats);
@@ -441,7 +446,7 @@ export function createHandler(deps) {
   // once a Hawaii day while this system has something to send.
   async function gmailProblem(r) {
     try {
-      const m = await db.rpc('invoice_gmail_mark', { status: /scope|403|insufficient/.test(String(r.error)) ? 'denied' : 'expired', error: r.error || 'gmail_auth' });
+      const m = await db.rpc('invoice_gmail_mark', { status: /scope|403|insufficient|refused/.test(String(r.error)) ? 'denied' : 'expired', error: r.error || 'gmail_auth' });
       const day = new Date(now() - 10 * 3600000).toISOString().slice(0, 10);
       if (m && m.ok) await db.rpc('invoice_qb_alert_put', { kind: 'auth', key: 'auth:' + day, data: { error: r.error || null } });
     } catch (e) { console.error('invoice-intake gmail mark', safeErr(e)); }
@@ -465,17 +470,22 @@ export function createHandler(deps) {
     const tr = newTransport();
     const rd = await tr.ready();
     if (!rd.ok) { if (rd.auth) await gmailProblem(rd); stats.not_ready = 1; return stats; }
-    const owner = 's-' + crypto.randomUUID(), t0 = now(), budget = opts.budgetMs || 100000, max = opts.max || 20;
-    for (let i = 0; i < max && now() - t0 < budget; i++) {
+    const sentIds = [];
+    const owner = 's-' + crypto.randomUUID(), t0 = now(), budget = opts.budgetMs ?? 100000, max = opts.max || 20;
+    // A row is reserved only with time left to search, read, send and record it (about 20 seconds at least).
+    for (let i = 0; i < max && budget - (now() - t0) > 20000; i++) {
       const o = await db.rpc('invoice_qb_reserve', { owner });
       if (!o) break;
       let r;
       try { r = await qbSendOne(o, owner, tr, trigger); }
       catch (e) { console.error('invoice-intake qb send', safeErr(e)); r = 'failed'; }
       stats[r] = (stats[r] || 0) + 1;
-      if (r === 'auth') break;
+      if (r === 'sent' || r === 'found') sentIds.push(o.id);
+      if (r === 'auth' || r === 'released') break;
     }
-    if (stats.sent) await publishSummary(null, null);
+    // The purchase summaries of what was sent (each row's own month and store; a long run refreshes them all once).
+    if (sentIds.length > 5) await publishSummary(null, null);
+    else for (const id of sentIds) await publishSummary(null, { outbox_id: String(id) });
     if (trigger !== 'worker') await qbNotices(null);
     return stats;
   }
@@ -483,11 +493,14 @@ export function createHandler(deps) {
   // One reserved row: the settings again → the sent mail → the Drive bytes → the reservation again → one mail → the Gmail ID.
   async function qbSendOne(o, owner, tr, trigger) {
     const fail = (state, error, result) => qbRecord(o.id, { state, error, ...(result ? { result } : {}) });
+    // Not a try: the row waits as before (sending stays stopped until the route or the connection is good again).
+    const release = async error => { try { await db.rpc('invoice_qb_release', { id: o.id, owner, error }); } catch (e) { console.error('invoice-intake qb release', safeErr(e)); } };
     let c;
     try { c = await db.rpc('invoice_qb_send_context', { id: o.id, owner }); } catch (e) { await fail('error', 'context_failed'); return 'error'; }
     if (!c.ok) {
       if (c.why === 'not_reserved') return 'skipped';
       if (c.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      if (QB_RELEASE.includes(c.why)) { await release(c.why); return 'released'; }
       await fail('error', c.why); return 'error';
     }
     const f = c.file, key = { sha256: o.sha256, driveFileId: f.drive_file_id, attemptKey: o.attempt_key, to: o.to_address, size: f.size };
@@ -495,7 +508,10 @@ export function createHandler(deps) {
     //    failed search is never read as "not sent".
     let prev;
     try { prev = await tr.history(key); }
-    catch (e) { if (e && e.auth) await gmailProblem({ auth: true, error: 'gmail_read_refused' }); await fail('error', 'gmail_history_failed'); return e && e.auth ? 'auth' : 'error'; }
+    catch (e) {
+      if (e && e.auth) { await release(e.code || 'gmail_read_refused'); await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return 'auth'; }
+      await fail('error', 'gmail_history_failed'); return 'error';
+    }
     if (prev.state === 'sent') {
       await qbRecord(o.id, { state: 'sent', message_id: prev.messageId, result: { via: 'gmail_history', own: !!prev.own,
         note: prev.own ? 'この台帳の送信を Gmail の送信済みで見つけた（送り直していない）' : '前の転送で送った（Gmail の送信済みで見つけた・送り直していない）' } });
@@ -518,6 +534,7 @@ export function createHandler(deps) {
     if (!chk.ok) {
       if (chk.why === 'not_reserved') return 'skipped';
       if (chk.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      if (QB_RELEASE.includes(chk.why)) { await release(chk.why); return 'released'; }
       await fail('error', chk.why); return 'error';
     }
     // 4) One mail: the original as its only part, the three marks in the subject, no body.
@@ -533,9 +550,10 @@ export function createHandler(deps) {
       return 'sent';
     }
     if (!res || res.unknown) { await fail('unknown', (res && res.error) || 'send_unknown'); return 'unknown'; }
-    if (res.auth) await gmailProblem({ auth: true, error: res.error });
+    // Gmail refused the permission (nothing was sent): the row waits, not a try; Moto is told; つなぎ直す sends it.
+    if (res.auth) { await release(res.error || 'gmail_send_refused'); await gmailProblem({ auth: true, error: res.error }); return 'auth'; }
     await fail('error', res.error || 'send_failed');
-    return res.auth ? 'auth' : 'error';
+    return 'error';
   }
 
   // Unknown sends of this system are looked for in the sent mail (15 minutes after, then 30, 60 …, six times): a send found by its
@@ -609,8 +627,13 @@ export function createHandler(deps) {
       try { const r = await db.rpc('invoice_qb_enqueue', { file_id: f }); if (r && r.queued) queued++; } catch (e) { console.error('invoice-intake qb enqueue', safeErr(e)); }
     }
     const out = { queued, sending: false };
-    if (queued && ctx.qb.route === 'invoice-intake' && background) {
-      try { background(qbSend(trigger).catch(e => console.error('invoice-intake qb send', safeErr(e)))); out.sending = true; } catch { out.sending = false; }
+    if (queued && ctx.qb.route === 'invoice-intake') {
+      let due = false; try { due = await db.rpc('invoice_qb_has_due', {}); } catch { due = false; }
+      // Not due although queued: the Gmail connection is not good (the row waits; the screen says so).
+      if (!due) out.waiting = 'gmail';
+      else if (background) {
+        try { background(qbSend(trigger).catch(e => console.error('invoice-intake qb send', safeErr(e)))); out.sending = true; } catch { out.sending = false; }
+      }
     }
     return out;
   }
@@ -700,7 +723,7 @@ export function createHandler(deps) {
       if (targets.length) for (const o of await db.rpc('invoice_organize_due', { limit: 10, targets, back })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
       // Posted originals are renamed before the QuickBooks step queues them (Moto 2026-10-12).
       await renameStep(ctx, stats, t0 + budget * 1.3);
-      try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
+      try { await qbStep(ctx, owner, stats, t0 + budget * 1.5); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
       await mirrorStep(ctx, stats);
       await integrityStep(ctx, stats);
       await publishSummary(stats);
@@ -1378,6 +1401,23 @@ export function createHandler(deps) {
     const search = await canSearchWith({ fetch, token: r.token });
     const result = { ok: scopesOk(scopes) && !!account && search, account, send_scope: !!scopes && scopes.includes('https://www.googleapis.com/auth/gmail.send'),
       read_scope: !!scopes && scopes.includes('https://www.googleapis.com/auth/gmail.readonly'), search_ok: search };
+    // The search every send makes, tried on real mail: the newest original already sent to this address (the forwarder before's
+    // first) must be found in the sent mail. Switching to this system needs it found (when there is one).
+    result.history_probe = { tried: false };
+    if (result.ok) {
+      let row = null; try { row = await db.rpc('invoice_qb_probe_row', {}); } catch { row = null; }
+      if (row) {
+        try {
+          const tr = newTransport(), rd = await tr.ready();
+          if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || 'gmail_not_ready' };
+          else {
+            const h = await tr.history({ sha256: row.sha256, driveFileId: row.drive_file_id, attemptKey: row.attempt_key, to: row.to_address, size: row.size });
+            result.history_probe = { tried: true, found: h.state === 'sent', same_id: h.state === 'sent' && h.messageId === row.message_id,
+              state: h.state, route: row.route, name: String(row.current_name || '').slice(0, 120), sent_at: row.sent_at };
+          }
+        } catch (e) { result.history_probe = { tried: true, found: null, error: (e && e.code) || 'gmail_history_failed' }; }
+      }
+    }
     await db.rpc('invoice_gmail_mark', { actor: a, status: result.ok ? 'ok' : (scopes && !scopesOk(scopes) ? 'denied' : undefined), check_result: result,
       ...(result.ok ? { error: null } : {}) });
     return db.rpc('invoice_gmail_public', {});

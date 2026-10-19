@@ -33,10 +33,19 @@ export function authUrl({ clientId, redirectUri, state, challenge, loginHint }) 
   return 'https://accounts.google.com/o/oauth2/v2/auth?' + p.toString();
 }
 
+// One request within the time, the body included (a body that does not come is a timeout too, never a hang).
 async function timed(fetch, url, init, ms) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), ms);
-  try { return await fetch(url, { ...init, signal: ac.signal }); } finally { clearTimeout(t); }
+  try {
+    const r = await fetch(url, { ...init, signal: ac.signal });
+    const body = await r.arrayBuffer();
+    return new Response(r.status === 204 || r.status === 304 ? null : body, { status: r.status, headers: r.headers });
+  } finally { clearTimeout(t); }
 }
+// Gmail's reason for a refusal (error.errors[0].reason).
+const reasonOf = j => (j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || '') : '');
+// A 403 that is a rate or quota limit is a busy Gmail, not a permission taken back.
+const limited = reason => /rate|limit|quota/i.test(reason);
 
 // The code Google returned to the redirect: exchanged once, with the verifier.
 export async function exchangeCode({ fetch, clientId, clientSecret, code, verifier, redirectUri }) {
@@ -199,7 +208,13 @@ export function createGmail({ fetch, getCreds, timeoutMs = 30000, sendTimeoutMs 
   async function getJson(path) {
     let r;
     try { r = await call(path); } catch { const e = new Error('gmail_history_network'); e.code = e.message; throw e; }
-    if (r.status === 401 || r.status === 403) { const e = new Error('gmail_history_' + r.status); e.code = e.message; e.auth = true; throw e; }
+    if (r.status === 401 || r.status === 403) {
+      let j = null; try { j = await r.json(); } catch { j = null; }
+      const reason = reasonOf(j);
+      const e = new Error('gmail_history_' + r.status + (limited(reason) ? '_limit' : '')); e.code = e.message;
+      if (r.status === 401 || !limited(reason)) e.auth = true;
+      throw e;
+    }
     if (!r.ok) { const e = new Error('gmail_history_' + r.status); e.code = e.message; throw e; }
     return r.json();
   }
@@ -207,7 +222,8 @@ export function createGmail({ fetch, getCreds, timeoutMs = 30000, sendTimeoutMs 
   async function search(q) {
     const ids = []; let page = null, n = 0;
     do {
-      const p = new URLSearchParams({ q, maxResults: '100', includeSpamTrash: 'false' }); if (page) p.set('pageToken', page);
+      // A sent mail moved to the trash was sent all the same.
+      const p = new URLSearchParams({ q, maxResults: '100', includeSpamTrash: 'true' }); if (page) p.set('pageToken', page);
       const j = await getJson('/gmail/v1/users/me/messages?' + p.toString());
       for (const m of j.messages || []) ids.push(m.id);
       page = j.nextPageToken || null;
@@ -220,10 +236,11 @@ export function createGmail({ fetch, getCreds, timeoutMs = 30000, sendTimeoutMs 
     const p = new URLSearchParams({ format: 'full', fields: FIELDS });
     return getJson('/gmail/v1/users/me/messages/' + encodeURIComponent(id) + '?' + p.toString());
   }
-  // The sent mail is searched for this content's SHA-256 and for the Drive file (both forms of the forwarder's subject).
+  // The sent mail is searched for this content's mark and for the Drive file's mark, whole (FPQB-SHA256-…, FPQB-ID-…: the search
+  // the forwarder before uses; a whole mark is found whether Gmail splits it at the hyphens or not). Both forms of the subject.
   async function history(o) {
     const ids = new Set();
-    for (const q of [`in:sent "${o.sha256}"`, `in:sent "${o.driveFileId}"`]) for (const id of await search(q)) ids.add(id);
+    for (const q of [`in:sent "FPQB-SHA256-${o.sha256}"`, `in:sent "FPQB-ID-${o.driveFileId}"`]) for (const id of await search(q)) ids.add(id);
     if (ids.size > maxMessages) { const e = new Error('gmail_history_too_many'); e.code = e.message; throw e; }
     const msgs = []; for (const id of ids) msgs.push(await message(id));
     return judgeHistory(msgs, o);
@@ -241,8 +258,8 @@ export function createGmail({ fetch, getCreds, timeoutMs = 30000, sendTimeoutMs 
     if (r.ok && j && typeof j.id === 'string' && j.id) return { ok: true, messageId: j.id, labelIds: j.labelIds || [] };
     if (r.ok) return { ok: false, unknown: true, error: 'gmail_send_no_id' };
     if (r.status >= 500) return { ok: false, unknown: true, error: 'gmail_send_' + r.status };
-    const reason = j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || '') : '';
-    const auth = r.status === 401 || (r.status === 403 && /insufficient|forbidden|authError/i.test(reason));
+    const reason = reasonOf(j);
+    const auth = r.status === 401 || (r.status === 403 && !limited(reason) && /insufficient|forbidden|authError/i.test(reason));
     return { ok: false, auth, error: 'gmail_send_' + r.status + (reason ? '_' + reason.replace(/[^A-Za-z]/g, '').slice(0, 40) : '') };
   }
   return {

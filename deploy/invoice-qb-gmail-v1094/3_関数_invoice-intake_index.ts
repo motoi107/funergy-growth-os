@@ -948,8 +948,8 @@ function createDrive({ fetch, getToken }) {
     async get(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?fields=${encodeURIComponent(FILE_FIELDS)}&supportsAllDrives=true`);
       const errs = r.body && r.body.error && Array.isArray(r.body.error.errors) ? r.body.error.errors : [];
-      const limited = r.status === 403 && errs.some((e) => /rateLimitExceeded/i.test(String(e && e.reason || "")));
-      return { status: r.status, file: r.status === 200 ? r.body : null, limited };
+      const limited2 = r.status === 403 && errs.some((e) => /rateLimitExceeded/i.test(String(e && e.reason || "")));
+      return { status: r.status, file: r.status === 200 ? r.body : null, limited: limited2 };
     },
     async download(fileId) {
       const r = await call(`/files/${encodeURIComponent(fileId)}?alt=media&supportsAllDrives=true`, {}, true);
@@ -1291,11 +1291,15 @@ async function timed(fetch, url, init, ms) {
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
   try {
-    return await fetch(url, { ...init, signal: ac.signal });
+    const r = await fetch(url, { ...init, signal: ac.signal });
+    const body = await r.arrayBuffer();
+    return new Response(r.status === 204 || r.status === 304 ? null : body, { status: r.status, headers: r.headers });
   } finally {
     clearTimeout(t);
   }
 }
+var reasonOf = (j) => j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || "") : "";
+var limited = (reason) => /rate|limit|quota/i.test(reason);
 async function exchangeCode({ fetch, clientId, clientSecret, code, verifier, redirectUri }) {
   try {
     const r = await timed(fetch, TOKEN_URL, {
@@ -1514,9 +1518,16 @@ function createGmail({ fetch, getCreds, timeoutMs = 3e4, sendTimeoutMs = 9e4, ma
       throw e;
     }
     if (r.status === 401 || r.status === 403) {
-      const e = new Error("gmail_history_" + r.status);
+      let j = null;
+      try {
+        j = await r.json();
+      } catch {
+        j = null;
+      }
+      const reason = reasonOf(j);
+      const e = new Error("gmail_history_" + r.status + (limited(reason) ? "_limit" : ""));
       e.code = e.message;
-      e.auth = true;
+      if (r.status === 401 || !limited(reason)) e.auth = true;
       throw e;
     }
     if (!r.ok) {
@@ -1530,7 +1541,7 @@ function createGmail({ fetch, getCreds, timeoutMs = 3e4, sendTimeoutMs = 9e4, ma
     const ids = [];
     let page = null, n = 0;
     do {
-      const p = new URLSearchParams({ q: q2, maxResults: "100", includeSpamTrash: "false" });
+      const p = new URLSearchParams({ q: q2, maxResults: "100", includeSpamTrash: "true" });
       if (page) p.set("pageToken", page);
       const j = await getJson("/gmail/v1/users/me/messages?" + p.toString());
       for (const m of j.messages || []) ids.push(m.id);
@@ -1550,7 +1561,7 @@ function createGmail({ fetch, getCreds, timeoutMs = 3e4, sendTimeoutMs = 9e4, ma
   }
   async function history(o) {
     const ids = /* @__PURE__ */ new Set();
-    for (const q2 of [`in:sent "${o.sha256}"`, `in:sent "${o.driveFileId}"`]) for (const id of await search(q2)) ids.add(id);
+    for (const q2 of [`in:sent "FPQB-SHA256-${o.sha256}"`, `in:sent "FPQB-ID-${o.driveFileId}"`]) for (const id of await search(q2)) ids.add(id);
     if (ids.size > maxMessages) {
       const e = new Error("gmail_history_too_many");
       e.code = e.message;
@@ -1576,8 +1587,8 @@ function createGmail({ fetch, getCreds, timeoutMs = 3e4, sendTimeoutMs = 9e4, ma
     if (r.ok && j && typeof j.id === "string" && j.id) return { ok: true, messageId: j.id, labelIds: j.labelIds || [] };
     if (r.ok) return { ok: false, unknown: true, error: "gmail_send_no_id" };
     if (r.status >= 500) return { ok: false, unknown: true, error: "gmail_send_" + r.status };
-    const reason = j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || "") : "";
-    const auth = r.status === 401 || r.status === 403 && /insufficient|forbidden|authError/i.test(reason);
+    const reason = reasonOf(j);
+    const auth = r.status === 401 || r.status === 403 && !limited(reason) && /insufficient|forbidden|authError/i.test(reason);
     return { ok: false, auth, error: "gmail_send_" + r.status + (reason ? "_" + reason.replace(/[^A-Za-z]/g, "").slice(0, 40) : "") };
   }
   return {
@@ -1654,8 +1665,8 @@ function noticeText(a) {
       break;
     case "auth":
       body = [
-        "QuickBooks \u3078\u306E\u9001\u4FE1\u3092\u6B62\u3081\u3066\u3044\u307E\u3059\u3002\u53F0\u5E33\u306B\u7A4D\u3080\u306E\u306F\u7D9A\u3051\u308B\u306E\u3067\u3001\u3064\u306A\u304E\u76F4\u305B\u3070\u5F85\u3063\u3066\u3044\u308B\u5206\u304B\u3089\u9001\u308A\u307E\u3059\u3002",
-        "\u6B21\u306B\u3059\u308B\u3053\u3068\uFF1AFunergy+ \u2192 Invoice\u53D6\u8FBC \u2192 \u8A2D\u5B9A \u2192 Gmail \u306E\u63A5\u7D9A\u3067\u300C\u3064\u306A\u304E\u76F4\u3059\u300D\uFF08moto@ \u3067\u30ED\u30B0\u30A4\u30F3\u3057\u3066\u8A31\u53EF\uFF09\u3002"
+        "QuickBooks \u3078\u306E\u9001\u4FE1\u3092\u6B62\u3081\u3066\u3044\u307E\u3059\uFF08\u5F85\u3063\u3066\u3044\u308B\u539F\u672C\u306E\u3084\u308A\u76F4\u3057\u306E\u56DE\u6570\u306F\u4F7F\u3044\u307E\u305B\u3093\uFF09\u3002\u53F0\u5E33\u306B\u7A4D\u3080\u306E\u306F\u7D9A\u3051\u308B\u306E\u3067\u3001\u76F4\u308C\u3070\u5F85\u3063\u3066\u3044\u308B\u5206\u304B\u3089\u9001\u308A\u307E\u3059\u3002",
+        "\u6B21\u306B\u3059\u308B\u3053\u3068\uFF1AFunergy+ \u2192 Invoice\u53D6\u8FBC \u2192 \u8A2D\u5B9A \u2192 Gmail \u306E\u63A5\u7D9A\u3067\u300C\u78BA\u304B\u3081\u308B\u300D\u3002\u76F4\u3063\u3066\u3044\u306A\u3051\u308C\u3070\u300C\u3064\u306A\u304E\u76F4\u3059\u300D\uFF08\u9001\u308A\u5143\u306E\u30A2\u30AB\u30A6\u30F3\u30C8\u3067\u30ED\u30B0\u30A4\u30F3\u3057\u3066\u8A31\u53EF\uFF09\u3002"
       ];
       break;
     case "intake_error":
@@ -1679,6 +1690,7 @@ var SUPPORTED = { "application/pdf": true, "image/jpeg": true, "image/png": true
 var READ = ["ceo", "gm", "office", "office_crew"];
 var STORE_FOLDER_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
 var QB_ROUTES = ["invoice-intake", "external"];
+var QB_RELEASE = ["route_changed", "gmail_not_ok"];
 function keyMatches(given, stored) {
   if (!stored || !stored.key || !stored.enabled || typeof given !== "string" || given.length !== stored.key.length) return false;
   let diff = 0;
@@ -2134,7 +2146,7 @@ function createHandler(deps) {
       stats[r.ok ? "renamed" : "rename_errors"] = (stats[r.ok ? "renamed" : "rename_errors"] || 0) + 1;
     }
   }
-  async function qbStep(ctx, owner, stats) {
+  async function qbStep(ctx, owner, stats, deadline) {
     if (ctx.qb.enabled && QB_ROUTES.includes(ctx.qb.route)) {
       await db.rpc("invoice_qb_sweep", {});
       for (const c of await db.rpc("invoice_qb_candidates", { limit: 20 })) {
@@ -2142,7 +2154,8 @@ function createHandler(deps) {
         if (r.queued) stats.qb_queued = (stats.qb_queued || 0) + 1;
       }
     }
-    const s = await qbSend("worker");
+    const left = deadline ? deadline - now() : 1e5;
+    const s = await qbSend("worker", { budgetMs: Math.max(0, Math.min(1e5, left)) });
     for (const [k, v] of Object.entries(s)) if (typeof v === "number") stats["qb_" + k] = (stats["qb_" + k] || 0) + v;
     await qbReconcile(stats);
     await qbNotices(stats);
@@ -2167,7 +2180,7 @@ function createHandler(deps) {
   }
   async function gmailProblem(r) {
     try {
-      const m = await db.rpc("invoice_gmail_mark", { status: /scope|403|insufficient/.test(String(r.error)) ? "denied" : "expired", error: r.error || "gmail_auth" });
+      const m = await db.rpc("invoice_gmail_mark", { status: /scope|403|insufficient|refused/.test(String(r.error)) ? "denied" : "expired", error: r.error || "gmail_auth" });
       const day = new Date(now() - 10 * 36e5).toISOString().slice(0, 10);
       if (m && m.ok) await db.rpc("invoice_qb_alert_put", { kind: "auth", key: "auth:" + day, data: { error: r.error || null } });
     } catch (e) {
@@ -2204,8 +2217,9 @@ function createHandler(deps) {
       stats.not_ready = 1;
       return stats;
     }
-    const owner = "s-" + crypto.randomUUID(), t0 = now(), budget = opts.budgetMs || 1e5, max = opts.max || 20;
-    for (let i = 0; i < max && now() - t0 < budget; i++) {
+    const sentIds = [];
+    const owner = "s-" + crypto.randomUUID(), t0 = now(), budget = opts.budgetMs ?? 1e5, max = opts.max || 20;
+    for (let i = 0; i < max && budget - (now() - t0) > 2e4; i++) {
       const o = await db.rpc("invoice_qb_reserve", { owner });
       if (!o) break;
       let r;
@@ -2216,14 +2230,23 @@ function createHandler(deps) {
         r = "failed";
       }
       stats[r] = (stats[r] || 0) + 1;
-      if (r === "auth") break;
+      if (r === "sent" || r === "found") sentIds.push(o.id);
+      if (r === "auth" || r === "released") break;
     }
-    if (stats.sent) await publishSummary(null, null);
+    if (sentIds.length > 5) await publishSummary(null, null);
+    else for (const id of sentIds) await publishSummary(null, { outbox_id: String(id) });
     if (trigger !== "worker") await qbNotices(null);
     return stats;
   }
   async function qbSendOne(o, owner, tr, trigger) {
     const fail = (state, error, result) => qbRecord(o.id, { state, error, ...result ? { result } : {} });
+    const release = async (error) => {
+      try {
+        await db.rpc("invoice_qb_release", { id: o.id, owner, error });
+      } catch (e) {
+        console.error("invoice-intake qb release", safeErr(e));
+      }
+    };
     let c;
     try {
       c = await db.rpc("invoice_qb_send_context", { id: o.id, owner });
@@ -2237,6 +2260,10 @@ function createHandler(deps) {
         await db.rpc("invoice_qb_content_changed", { id: o.id, owner });
         return "content_changed";
       }
+      if (QB_RELEASE.includes(c.why)) {
+        await release(c.why);
+        return "released";
+      }
       await fail("error", c.why);
       return "error";
     }
@@ -2245,9 +2272,13 @@ function createHandler(deps) {
     try {
       prev = await tr.history(key);
     } catch (e) {
-      if (e && e.auth) await gmailProblem({ auth: true, error: "gmail_read_refused" });
+      if (e && e.auth) {
+        await release(e.code || "gmail_read_refused");
+        await gmailProblem({ auth: true, error: e.code || "gmail_read_refused" });
+        return "auth";
+      }
       await fail("error", "gmail_history_failed");
-      return e && e.auth ? "auth" : "error";
+      return "error";
     }
     if (prev.state === "sent") {
       await qbRecord(o.id, { state: "sent", message_id: prev.messageId, result: {
@@ -2288,6 +2319,10 @@ function createHandler(deps) {
         await db.rpc("invoice_qb_content_changed", { id: o.id, owner });
         return "content_changed";
       }
+      if (QB_RELEASE.includes(chk.why)) {
+        await release(chk.why);
+        return "released";
+      }
       await fail("error", chk.why);
       return "error";
     }
@@ -2312,9 +2347,13 @@ function createHandler(deps) {
       await fail("unknown", res && res.error || "send_unknown");
       return "unknown";
     }
-    if (res.auth) await gmailProblem({ auth: true, error: res.error });
+    if (res.auth) {
+      await release(res.error || "gmail_send_refused");
+      await gmailProblem({ auth: true, error: res.error });
+      return "auth";
+    }
     await fail("error", res.error || "send_failed");
-    return res.auth ? "auth" : "error";
+    return "error";
   }
   async function qbReconcile(stats) {
     let rows = [];
@@ -2423,12 +2462,21 @@ function createHandler(deps) {
       }
     }
     const out = { queued, sending: false };
-    if (queued && ctx.qb.route === "invoice-intake" && background) {
+    if (queued && ctx.qb.route === "invoice-intake") {
+      let due = false;
       try {
-        background(qbSend(trigger).catch((e) => console.error("invoice-intake qb send", safeErr(e))));
-        out.sending = true;
+        due = await db.rpc("invoice_qb_has_due", {});
       } catch {
-        out.sending = false;
+        due = false;
+      }
+      if (!due) out.waiting = "gmail";
+      else if (background) {
+        try {
+          background(qbSend(trigger).catch((e) => console.error("invoice-intake qb send", safeErr(e))));
+          out.sending = true;
+        } catch {
+          out.sending = false;
+        }
       }
     }
     return out;
@@ -2552,7 +2600,7 @@ function createHandler(deps) {
       }
       await renameStep(ctx, stats, t0 + budget * 1.3);
       try {
-        await qbStep(ctx, owner, stats);
+        await qbStep(ctx, owner, stats, t0 + budget * 1.5);
       } catch (e) {
         stats.qb_errors = (stats.qb_errors || 0) + 1;
         console.error("invoice-intake qb", safeErr(e));
@@ -3435,6 +3483,35 @@ function createHandler(deps) {
       read_scope: !!scopes && scopes.includes("https://www.googleapis.com/auth/gmail.readonly"),
       search_ok: search
     };
+    result.history_probe = { tried: false };
+    if (result.ok) {
+      let row = null;
+      try {
+        row = await db.rpc("invoice_qb_probe_row", {});
+      } catch {
+        row = null;
+      }
+      if (row) {
+        try {
+          const tr = newTransport(), rd = await tr.ready();
+          if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || "gmail_not_ready" };
+          else {
+            const h = await tr.history({ sha256: row.sha256, driveFileId: row.drive_file_id, attemptKey: row.attempt_key, to: row.to_address, size: row.size });
+            result.history_probe = {
+              tried: true,
+              found: h.state === "sent",
+              same_id: h.state === "sent" && h.messageId === row.message_id,
+              state: h.state,
+              route: row.route,
+              name: String(row.current_name || "").slice(0, 120),
+              sent_at: row.sent_at
+            };
+          }
+        } catch (e) {
+          result.history_probe = { tried: true, found: null, error: e && e.code || "gmail_history_failed" };
+        }
+      }
+    }
     await db.rpc("invoice_gmail_mark", {
       actor: a,
       status: result.ok ? "ok" : scopes && !scopesOk(scopes) ? "denied" : void 0,

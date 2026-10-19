@@ -63,7 +63,7 @@ function parseMime(bytes) {
 }
 
 function google({ accounts = { [SECRET_REFRESH]: 'sender@example.test' } } = {}) {
-  const G = { sent: [], line: [], calls: [], codes: new Map(), tokens: new Map(), searchFail: 0, sendMode: 'ok', tokenMode: 'ok', gate: null, n: 0, scopes: [SEND, READ],
+  const G = { sent: [], line: [], calls: [], codes: new Map(), tokens: new Map(), searchFail: 0, searchErr: null, queries: [], sendMode: 'ok', tokenMode: 'ok', gate: null, n: 0, scopes: [SEND, READ],
     tokenInfoScopes: null, logged: [] };
   G.addSent = (subject, { to = TO, attachments = [{ filename: 'old.pdf', size: 10 }], labels = ['SENT'] } = {}) => {
     const id = 'old' + (++G.n);
@@ -99,9 +99,13 @@ function google({ accounts = { [SECRET_REFRESH]: 'sender@example.test' } } = {})
       if (u.pathname === '/gmail/v1/users/me/profile') return json({ emailAddress: acct });
       if (u.pathname === '/gmail/v1/users/me/messages' && (init.method || 'GET') === 'GET') {
         if (G.searchFail > 0) { G.searchFail--; return json({ error: { code: 500 } }, 500); }
+        if (G.searchErr && G.searchErr.n > 0) { G.searchErr.n--; return json({ error: { code: G.searchErr.status, errors: [{ reason: G.searchErr.reason }] } }, G.searchErr.status); }
         const q = u.searchParams.get('q') || '';
+        G.queries.push(q);
         const phrase = (/"([^"]+)"/.exec(q) || [])[1];
-        const all = G.sent.filter(m => (!q.startsWith('in:sent') || m.labelIds.includes('SENT')) && (!phrase || m.mime.subject.includes(phrase)));
+        // Like Gmail at its strictest: a quoted word matches a whole word of the subject (a mark is not split at its hyphens).
+        const hit = subj => !phrase || (/\s/.test(phrase) ? subj.includes(phrase) : subj.split(/\s+/).includes(phrase));
+        const all = G.sent.filter(m => (!q.startsWith('in:sent') || m.labelIds.includes('SENT')) && hit(m.mime.subject));
         const start = Number(u.searchParams.get('pageToken') || 0), size = Math.min(Number(u.searchParams.get('maxResults') || 100), 2);   // two a page: paging is exercised
         const page = all.slice(start, start + size);
         return json({ messages: page.map(m => ({ id: m.id })), nextPageToken: start + size < all.length ? String(start + size) : undefined, resultSizeEstimate: all.length });
@@ -184,8 +188,8 @@ const hst = t => new Date(t).toISOString();
 // ---------------------------------------------------------------- the mail and the judging of the sent mail
 test('(10) the mail: from, to, the three marks, one attachment of the original bytes and type, no body, no CC/BCC', () => {
   const bytes = Buffer.from(pdf('MIME-1') + 'x'.repeat(500));
-  const subject = qbSubject({ currentName: '2026-10-06_VendorA_1001.pdf', driveFileId: '1_j33Ez-ab', sha256: 'a'.repeat(64), attemptKey: 'qb-' + 'a'.repeat(64) + '-' + 'b'.repeat(32) });
-  assert.equal(subject, '2026-10-06_VendorA_1001.pdf FPQB-ID-1_j33Ez-ab FPQB-SHA256-' + 'a'.repeat(64) + ' FPQB-ATTEMPT-qb-' + 'a'.repeat(64) + '-' + 'b'.repeat(32));
+  const subject = qbSubject({ currentName: '2026-10-06_VendorA_1001.pdf', driveFileId: 'drive-file-0001', sha256: 'a'.repeat(64), attemptKey: 'qb-' + 'a'.repeat(64) + '-' + 'b'.repeat(32) });
+  assert.equal(subject, '2026-10-06_VendorA_1001.pdf FPQB-ID-drive-file-0001 FPQB-SHA256-' + 'a'.repeat(64) + ' FPQB-ATTEMPT-qb-' + 'a'.repeat(64) + '-' + 'b'.repeat(32));
   const m = parseMime(buildQbMime({ from: 'sender@example.test', to: TO, subject, filename: '2026-10-06_VendorA_1001.pdf', mime: 'application/pdf', bytes }));
   assert.equal(m.from, 'sender@example.test'); assert.equal(m.to, TO); assert.equal(m.cc, undefined); assert.equal(m.bcc, undefined);
   assert.equal(m.subject, subject);                                   // folding keeps the subject exactly
@@ -508,8 +512,11 @@ test('the outside forwarder keeps its rows (6A); with the route on this system o
     assert.equal((await X.row(a.id)).route, 'external'); assert.equal(X.qbSent().length, 0);
     await X.worker(); await X.settle();
     assert.equal((await X.row(a.id)).state, 'pending', 'this system never sends the forwarder’s row');
-    // switching to this system needs the connected Gmail of qb.from; then the next posting is this system's
+    // switching to this system needs the connected Gmail of qb.from, checked (確かめる); then the next posting is this system's
     let r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
+    assert.deepEqual([r.status, r.body.error], [409, 'gmail_not_ready'], 'not checked yet');
+    assert.equal((await X.api('tok-gm', { action: 'gmail_check' })).body.check_result.history_probe.tried, false, 'nothing was sent before: nothing to look up');
+    r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
     assert.equal(r.status, 200); assert.ok(r.body.route_since);
     const b = await X.review('QB-NEW', '7802');
     await X.post(b.doc); await X.settle();
@@ -716,6 +723,149 @@ test('the 取込状況 card from the real qb_status: the sent row with its times
     assert.ok(h.includes(sent.message_id) && /メール送信済み/.test(h) && /反映 \d\d\/\d\d \d\d:\d\d:\d\d → 名前 [\d:]+ → 台帳 [\d:]+ → 送信開始 [\d:]+ → 送信済み [\d:]+/.test(h));
     assert.ok(h.includes("invInQbLookup('" + unk.id + "')"));
     assert.match(h, /送信済み 1[\s\S]*結果不明 1/);
+  } finally { await X.pg.close(); }
+});
+
+// Review (2026-10-18, P2-1): Gmail refusing the permission (a 403 on the send or the read, the refresh still working) stops sending
+// without using the row's tries: the row waits, the connection is "denied", 確かめる (when fixed) sends what waited.
+test('a permission Gmail refuses (403 on the send or the read): the row waits with its tries; 確かめる sends it once fixed', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||jsonb_build_object('route_since', now() - interval '1 hour') where key='qb'`);
+    const a = await X.review('QB-403S', '8101');
+    X.G.sendMode = '403';
+    let r = await X.post(a.doc); await X.settle();
+    assert.equal(r.body.qb.sending, true);
+    let o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts, o.reserved_by], ['pending', 0, null], 'let go, the try not counted');
+    let g = (await X.q('select status, last_error from invoice_gmail_auth'))[0];
+    assert.equal(g.status, 'denied'); assert.match(g.last_error, /gmail_send_403/);
+    for (let i = 0; i < 4; i++) { await X.worker(); await X.settle(); }
+    o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts], ['pending', 0], 'nothing is reserved while the connection is not good');
+    assert.equal(X.qbSent().length, 0);
+    assert.equal((await X.q(`select count(*)::int n from invoice_qb_alerts where kind='auth'`))[0].n, 1, 'told once (a day)');
+    // a posting meanwhile waits too, and says so
+    const b = await X.review('QB-403S2', '8102');
+    r = await X.post(b.doc); await X.settle();
+    assert.equal(r.body.qb.sending, false); assert.equal(r.body.qb.waiting, 'gmail');
+    // fixed at Google: 確かめる finds the connection good again, the next run sends both
+    X.G.sendMode = 'ok';
+    const c = await X.api('tok-gm', { action: 'gmail_check' });
+    assert.equal(c.body.status, 'ok');
+    await X.worker(); await X.settle();
+    assert.equal((await X.row(a.id)).state, 'sent'); assert.equal((await X.row(b.id)).state, 'sent');
+    assert.equal((await X.row(a.id)).attempts, 1);
+    // the read refused (403, not a rate limit): the same
+    const d = await X.review('QB-403R', '8103');
+    X.G.searchErr = { status: 403, reason: 'insufficientPermissions', n: 1 };
+    await X.post(d.doc); await X.settle();
+    o = await X.row(d.id);
+    assert.deepEqual([o.state, o.attempts], ['pending', 0]);
+    g = (await X.q('select status, last_error from invoice_gmail_auth'))[0];
+    assert.deepEqual([g.status, g.last_error], ['denied', 'gmail_history_403']);
+  } finally { await X.pg.close(); }
+});
+
+// Review (P2-2): a 403 that is Gmail's rate limit is a busy Gmail, not a lost permission: no "許可が切れました", a try with its wait.
+test('a rate limit on the search (403 userRateLimitExceeded) is not a lost permission: an ordinary retry later', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||jsonb_build_object('route_since', now() - interval '1 hour') where key='qb'`);
+    const a = await X.review('QB-RATE', '8201');
+    X.G.searchErr = { status: 403, reason: 'userRateLimitExceeded', n: 1 };
+    await X.post(a.doc); await X.settle();
+    let o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts, o.last_error], ['error', 1, 'gmail_history_failed']);
+    assert.equal((await X.q('select status from invoice_gmail_auth'))[0].status, 'ok');
+    assert.equal((await X.q(`select count(*)::int n from invoice_qb_alerts where kind='auth'`))[0].n, 0);
+    await X.q(`update invoice_qb_outbox set next_at=now() where id=$1`, [o.id]);
+    await X.worker(); await X.settle();
+    assert.equal((await X.row(a.id)).state, 'sent');
+  } finally { await X.pg.close(); }
+});
+
+// Review (deploy order): this system sends only while it is the sender. Rows of this system that wait when the route goes back to the
+// forwarder before stay (nobody sends them, nothing is lost) and are sent when it is this system again.
+test('this system sends only while it is the sender: its waiting rows stay with the route given back, and go on after', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_gmail_auth set status='expired'`);
+    const a = await X.review('QB-ROUTE', '8301');
+    const r = await X.post(a.doc); await X.settle();
+    assert.equal(r.body.qb.waiting, 'gmail');
+    assert.equal((await X.row(a.id)).route, 'invoice-intake');
+    await X.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+    await X.q(`update invoice_gmail_auth set status='ok'`);
+    for (let i = 0; i < 2; i++) { await X.worker(); await X.settle(); }
+    assert.deepEqual([(await X.row(a.id)).state, (await X.row(a.id)).attempts, (await X.row(a.id)).last_error], ['pending', 0, null], 'not even reserved');
+    assert.equal(X.qbSent().length, 0);
+    // a reserved row whose route went back meanwhile is let go, not a try
+    await X.q(`update invoice_settings set value=value||'{"route":"invoice-intake"}' where key='qb'`);
+    X.hook('invoice_qb_send_context', async () => { await X.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`); });
+    await X.worker(); await X.settle();
+    assert.deepEqual([(await X.row(a.id)).state, (await X.row(a.id)).attempts, (await X.row(a.id)).last_error], ['pending', 0, 'route_changed']);
+    await X.q(`update invoice_settings set value=value||'{"route":"invoice-intake"}' where key='qb'`);
+    await X.worker(); await X.settle();
+    assert.equal((await X.row(a.id)).state, 'sent'); assert.equal(X.qbSent().length, 1);
+  } finally { await X.pg.close(); }
+});
+
+// Review (P2-4): before the switch, 確かめる looks up the newest original already sent (the forwarder before's) with the very search
+// every send makes; the switch needs it found. The search uses the whole marks (found whether or not Gmail splits them).
+test('確かめる finds a sent original in the sent mail with the send’s own search; not found, the switch is refused', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+    const a = await X.review('QB-PROBE', '8401');
+    await X.post(a.doc); await X.settle();
+    const row = await X.row(a.id);
+    assert.equal(row.route, 'external');
+    const size = X.drive.items.get(a.id).bytes.length;
+    const mid = X.G.addSent(`2026-10-06_x.pdf FPQB-ID-${a.id} FPQB-SHA256-${row.sha256} FPQB-ATTEMPT-${row.attempt_key}`, { attachments: [{ filename: 'x.pdf', size }] });
+    await X.q(`update invoice_qb_outbox set state='sent', message_id=$2, sent_at=now() where id=$1`, [row.id, mid]);
+    // not in the sent mail (moved away): found false, the switch refused
+    const keep = X.G.sent.splice(0);
+    let c = (await X.api('tok-gm', { action: 'gmail_check' })).body;
+    assert.equal(c.status, 'ok'); assert.deepEqual([c.check_result.history_probe.tried, c.check_result.history_probe.found], [true, false]);
+    let r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
+    assert.deepEqual([r.status, r.body.error], [409, 'gmail_not_ready']);
+    // in the sent mail: found (the same Gmail ID), the switch goes
+    X.G.sent.push(...keep);
+    c = (await X.api('tok-gm', { action: 'gmail_check' })).body;
+    assert.deepEqual([c.check_result.history_probe.found, c.check_result.history_probe.same_id, c.check_result.history_probe.route], [true, true, 'external']);
+    r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
+    assert.equal(r.status, 200);
+    // the searches are the whole marks
+    assert.ok(X.G.queries.includes(`in:sent "FPQB-SHA256-${row.sha256}"`) && X.G.queries.includes(`in:sent "FPQB-ID-${a.id}"`), X.G.queries.join(' | '));
+  } finally { await X.pg.close(); }
+});
+
+// Review (P3): a person who checked and sends an unknown row again gives it one more try, even when it had used its five.
+test('a person’s 「確かめて、もう一度送る」 gives an unknown row one more try (it had used its five): it is sent, once', async () => {
+  const X = await env0();
+  try {
+    const a = await X.review('QB-FIVE', '8501');
+    X.G.sendMode = 'timeout';
+    await X.post(a.doc); await X.settle();
+    let o = await X.row(a.id);
+    assert.equal(o.state, 'unknown');
+    // a later posting runs the sender again: it never takes the unknown row along
+    X.G.sendMode = 'ok';
+    const b = await X.review('QB-FIVE2', '8502');
+    await X.post(b.doc); await X.settle(); await X.worker(); await X.settle();
+    assert.equal((await X.row(b.id)).state, 'sent');
+    assert.equal((await X.row(a.id)).state, 'unknown', 'an unknown row is left for a person'); assert.equal(X.sentFor(a.id), 0);
+    await X.q(`update invoice_qb_outbox set attempts=5 where id=$1`, [o.id]);
+    X.G.sent.splice(0);   // looked for, not in the sent mail
+    const r = await X.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'pending', note: '送信済みに無いのを確かめた' });
+    assert.equal(r.status, 200);
+    o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts], ['pending', 4], 'one more try, no more');
+    X.G.sendMode = 'ok';
+    await X.worker(); await X.settle();
+    o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts], ['sent', 5]); assert.equal(X.sentFor(a.id), 1);
   } finally { await X.pg.close(); }
 });
 

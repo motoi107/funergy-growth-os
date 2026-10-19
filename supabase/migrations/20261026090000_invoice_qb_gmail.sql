@@ -97,7 +97,7 @@ on conflict (key) do nothing;
 create or replace function public.invoice_settings_save(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid; k text := p->>'key'; v jsonb := p->'value'; cur jsonb;
- g_status text; g_token text; g_account text; g_scopes text[];
+ g_status text; g_token text; g_account text; g_scopes text[]; g_check jsonb;
 begin
  perform public.invoice_require(actor, array['ceo','gm']);
  if k not in ('mode','rules','qb','qb_external','qb_notify') then raise exception 'bad_key'; end if;
@@ -116,11 +116,14 @@ begin
  if k='qb' and (v ? 'to') then raise exception 'field_not_editable'; end if;
  -- The sender (set once by SQL) and the moment this system took over are never set from a screen.
  if k='qb' and ((v ? 'from') or (v ? 'route_since')) then raise exception 'field_not_editable'; end if;
- -- This system sends only from the Gmail of qb.from, connected with both scopes (sending, and reading the sent mail).
+ -- This system sends only from the Gmail of qb.from, connected with both scopes (sending, and reading the sent mail), checked
+ -- (確かめる) after connecting, and, when an original had been sent before, found again in the sent mail by the same search.
  if k='qb' and v->>'route' = 'invoice-intake' and coalesce(cur->>'route','') <> 'invoice-intake' then
-  select status, refresh_token, account, scopes into g_status, g_token, g_account, g_scopes from public.invoice_gmail_auth where id=1;
+  select status, refresh_token, account, scopes, check_result into g_status, g_token, g_account, g_scopes, g_check from public.invoice_gmail_auth where id=1;
   if g_status is distinct from 'ok' or g_token is null or nullif(cur->>'from','') is null or lower(coalesce(g_account,'')) <> lower(cur->>'from')
-     or not coalesce(g_scopes @> array['https://www.googleapis.com/auth/gmail.send','https://www.googleapis.com/auth/gmail.readonly'], false) then
+     or not coalesce(g_scopes @> array['https://www.googleapis.com/auth/gmail.send','https://www.googleapis.com/auth/gmail.readonly'], false)
+     or coalesce(g_check->>'ok', '') <> 'true'
+     or (coalesce(g_check->'history_probe'->>'tried', '') = 'true' and coalesce(g_check->'history_probe'->>'found', '') <> 'true') then
    raise exception 'gmail_not_ready';
   end if;
   v := v || jsonb_build_object('route_since', now());
@@ -243,7 +246,7 @@ begin
  return jsonb_build_object('ok', true, 'changed', s is not null and s <> g.status);
 end $$;
 
--- 切る (CEO・GM): the token is dropped here (the function asks Google to take it back first).
+-- 切る (CEO・GM): the token is forgotten here. Nothing asks Google to take it back (the Drive connection may share the grant).
 create or replace function public.invoice_gmail_disconnect(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare actor uuid := nullif(p->>'actor','')::uuid;
@@ -255,15 +258,20 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 4) one send
--- Rows of this system ready to be reserved (the function starts Gmail only when there is one).
+-- Rows of this system ready to be reserved (the function starts Gmail only when there is one), while this system is the sender and
+-- the Gmail connection is good: with the route given back or the permission taken back, nothing is reserved and the rows wait
+-- (their tries are not used up). A person's つなぎ直す or 確かめる sets the connection good again.
 create or replace function public.invoice_qb_has_due(p jsonb) returns boolean
 language sql stable security invoker set search_path=public,pg_temp as $$
- select exists(select 1 from public.invoice_qb_outbox where route='invoice-intake' and state in ('pending','error') and (next_at is null or next_at<=now()) and attempts < 5);
+ select coalesce(public.invoice_setting('qb')->>'route', '') = 'invoice-intake'
+  and exists(select 1 from public.invoice_gmail_auth where id=1 and status='ok' and refresh_token is not null)
+  and exists(select 1 from public.invoice_qb_outbox where route='invoice-intake' and state in ('pending','error') and (next_at is null or next_at<=now()) and attempts < 5);
 $$;
 
 -- What a reserved row is sent as, with the settings read again (enabled, the address, the start, the rename, the sender).
--- why: not_reserved (another sender has it, or the reservation is gone) · qb_off · to_changed · before_since · not_posted ·
--- rename_waiting · content_changed (the database already knows a new content) · sender_mismatch.
+-- why: not_reserved (another sender has it, or the reservation is gone) · qb_off · route_changed · to_changed · before_since ·
+-- not_posted · rename_waiting · content_changed (the database already knows a new content) · gmail_not_ok · sender_mismatch.
+-- route_changed and gmail_not_ok let the row go (invoice_qb_release: it waits, the try is not counted).
 create or replace function public.invoice_qb_send_context(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 declare o public.invoice_qb_outbox; f public.invoice_files; q jsonb := public.invoice_setting('qb'); g public.invoice_gmail_auth; v_why text;
@@ -274,12 +282,14 @@ begin
  select * into g from public.invoice_gmail_auth where id=1;
  v_why := case
   when not coalesce((q->>'enabled')::boolean, false) then 'qb_off'
+  when coalesce(q->>'route', '') <> 'invoice-intake' then 'route_changed'
   when o.to_address is distinct from q->>'to' then 'to_changed'
   when not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then 'before_since'
   when f.intake_status <> 'posted' then 'not_posted'
   when f.current_sha256 is distinct from o.sha256 then 'content_changed'
   when public.invoice_rename_waiting(f.id) then 'rename_waiting'
-  when g.id is null or g.account is null or lower(g.account) <> lower(coalesce(q->>'from','')) then 'sender_mismatch'
+  when g.id is null or g.status is distinct from 'ok' or g.refresh_token is null then 'gmail_not_ok'
+  when g.account is null or lower(g.account) <> lower(coalesce(q->>'from','')) then 'sender_mismatch'
  end;
  if v_why is not null then return jsonb_build_object('ok', false, 'why', v_why); end if;
  return jsonb_build_object('ok', true, 'to', o.to_address, 'from', g.account, 'attempt_key', o.attempt_key, 'sha256', o.sha256,
@@ -304,6 +314,33 @@ begin
  if not (c->>'ok')::boolean then return c; end if;
  return jsonb_build_object('ok', true);
 end $$;
+
+-- A reserved row let go without a try (the route was given back, the connection is no longer good, Gmail refused the permission):
+-- it waits as before, its try is not counted. Only the sender that holds the reservation lets it go.
+create or replace function public.invoice_qb_release(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox;
+begin
+ update public.invoice_qb_outbox set state='pending', attempts=greatest(attempts-1, 0), reserved_by=null, reserved_at=null,
+  last_error=left(p->>'error', 300), next_at=null, updated_at=now()
+ where id=(p->>'id')::uuid and state='sending' and reserved_by is not distinct from p->>'owner'
+ returning * into o;
+ if o.id is null then return jsonb_build_object('ok', false); end if;
+ perform public.invoice_event(null, o.file_id, 'worker', 'qb_released', jsonb_build_object('error', left(p->>'error', 300)));
+ return jsonb_build_object('ok', true);
+end $$;
+
+-- For 確かめる: the newest original already sent to this address and recorded with its Gmail ID (the forwarder before's first),
+-- to look it up in the sent mail the way every send does before sending (the search is checked on real mail before the switch).
+create or replace function public.invoice_qb_probe_row(p jsonb) returns jsonb
+language sql stable security invoker set search_path=public,pg_temp as $$
+ select to_jsonb(x) from (
+  select o.id, o.route, o.sha256, o.to_address, o.attempt_key, o.message_id, o.sent_at, f.drive_file_id, f.current_name,
+   (select v.size_bytes from public.invoice_file_versions v where v.file_id=f.id and v.sha256=o.sha256 limit 1) size
+  from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+  where o.state='sent' and o.message_id is not null and o.route in ('external','invoice-intake') and o.to_address = public.invoice_setting('qb')->>'to'
+  order by (o.route = 'external') desc, o.sent_at desc nulls last limit 1) x;
+$$;
 
 -- The Drive bytes are not the content that was posted and queued: the row is set aside (nothing was sent) and the original is
 -- checked again soon (a new content goes to review as before). A person is told (content_changed).
@@ -348,6 +385,38 @@ begin
    'drive_file_id', f.drive_file_id, 'current_name', f.current_name,
    'size', (select v.size_bytes from public.invoice_file_versions v where v.file_id=f.id and v.sha256=o.sha256 limit 1))
   from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id where o.id=(p->>'id')::uuid);
+end $$;
+
+-- (replaced) a result: as before, and a person who checked the sent mail and sends an unknown row again gives it one more try
+-- (a row that had used its five tries would otherwise wait forever, told to nobody). Never more than one, never a reset.
+create or replace function public.invoice_qb_result(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare o public.invoice_qb_outbox; s text := p->>'state';
+begin
+ if s not in ('sent','error','unknown','pending') then raise exception 'bad_state'; end if;
+ select * into o from public.invoice_qb_outbox where id=(p->>'id')::uuid for update;
+ if o.id is null then raise exception 'not_found'; end if;
+ -- A person (accounting, 事務Crew, GM, CEO) may only settle an unknown result after checking the sender's records.
+ if nullif(p->>'actor','') is not null and p->>'actor' <> 'external' then
+  perform public.invoice_require((p->>'actor')::uuid, array['ceo','gm','office','office_crew']);
+  if o.state <> 'unknown' or s not in ('sent','pending') then raise exception 'invalid_state'; end if;
+ end if;
+ -- The external sender may only report on its own rows, and only after reserving them.
+ if p->>'actor' = 'external' and (o.route <> 'external' or o.state not in ('sending','unknown') or s = 'pending') then raise exception 'invalid_state'; end if;
+ if s='pending' then
+  -- Only a person who checked the sender's records may re-queue an unknown send.
+  if o.state<>'unknown' then raise exception 'invalid_state'; end if;
+  perform public.invoice_require(nullif(p->>'actor','')::uuid, array['ceo','gm','office','office_crew']);
+ end if;
+ if o.state='sent' then return jsonb_build_object('ok', true, 'state', 'sent'); end if;
+ update public.invoice_qb_outbox set state=s, sent_at=case when s='sent' then now() else sent_at end,
+  message_id=coalesce(p->>'message_id', message_id), result=coalesce(p->'result', result), last_error=left(p->>'error',300),
+  next_at=case when s='error' then now() + make_interval(mins => least(720, 15 * power(2, least(attempts,5))::int)) end,
+  -- a person who checked the sent mail and sends again gives one more try (no more): a row that had used its five would wait forever
+  attempts=case when s='pending' then least(attempts, 4) else attempts end, updated_at=now()
+ where id=o.id;
+ perform public.invoice_event(null, o.file_id, coalesce(p->>'actor','worker'), 'qb_'||s, jsonb_build_object('message_id', p->>'message_id', 'error', left(p->>'error',300)));
+ return jsonb_build_object('ok', true, 'state', s);
 end $$;
 
 -- ---------------------------------------------------------------- 5) the 取込状況 card
@@ -505,7 +574,7 @@ do $$ declare f text; begin
    'invoice_gmail_creds(jsonb)','invoice_gmail_mark(jsonb)','invoice_gmail_disconnect(jsonb)','invoice_qb_has_due(jsonb)','invoice_qb_send_context(jsonb)',
    'invoice_qb_send_check(jsonb)','invoice_qb_content_changed(jsonb)','invoice_qb_unknown_due(jsonb)','invoice_qb_gmail_checked(jsonb)','invoice_qb_row(jsonb)',
    'invoice_qb_status(jsonb)','invoice_qb_alerts_publish(jsonb)','invoice_qb_alert_put(jsonb)','invoice_qb_alert_scan(jsonb)','invoice_qb_alert_claim(jsonb)',
-   'invoice_qb_alert_done(jsonb)','invoice_line_route(jsonb)'] loop
+   'invoice_qb_alert_done(jsonb)','invoice_line_route(jsonb)','invoice_qb_release(jsonb)','invoice_qb_probe_row(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;
