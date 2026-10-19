@@ -6181,7 +6181,12 @@ function tipWeightByRate(dateISO) { return !!dateISO && String(dateISO) >= TIP_R
    後日の承認で付いたとたんに、日付の分からない前の承認が過去の日から外れて、過去の日の配分が変わった） */
 function _tipHstDay(t) { var u = new Date(t - 10 * 3600 * 1000); return u.getUTCFullYear() + '-' + ('0' + (u.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + u.getUTCDate()).slice(-2); }
 function _tipDecDayExact(r) { var dd = String((r && r.decDay) || ''); return /^\d{4}-\d{2}-\d{2}$/.test(dd) && _tipDayOk(dd); }   /* v1092 のハワイの日付 decDay がある */
-function _tipDecDay(r) {
+/* v1095（Moto さん 10/19・UI案57 Q1〜Q4 は A）：適用開始日 fromDay（人が選んだハワイの日付・その日の勤務から）。あれば配分に効く日はこの日。
+   無い記録（v1094 以前）は今までどおり決めた日。どの承認が勝つかは今までどおり決めた時刻のいちばん新しいもの（あとの変更で置き換える＝Q4 A）。
+   時計の守り（tipDecDayStamp・tipDecClockAhead）は決めた日（_tipDecDayRaw）で見る（先の日付の適用開始日を時計のずれと取り違えない） */
+function _tipFromOk(r) { var fd = String((r && r.fromDay) || ''); return /^\d{4}-\d{2}-\d{2}$/.test(fd) && _tipDayOk(fd); }
+function _tipDecDay(r) { return _tipFromOk(r) ? String(r.fromDay) : _tipDecDayRaw(r); }
+function _tipDecDayRaw(r) {
   if (_tipDecDayExact(r)) return String(r.decDay);   /* ありえない日（10/99 など）なら approvedDate（独立レビュー 0a35425 P3-2） */
   var m = String((r && r.approvedDate) || '').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
   var a = m ? (m[1] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[3]).slice(-2)) : '';
@@ -6227,7 +6232,7 @@ function tipDecDayStamp(list, name, self, byReq) {
     /* 同じ人の決定の日（守りで後ろへ寄せた decDay も）より前にしない＝その人の決定の日は前へ戻らない（Codex 04ce8a4・82e7954 の P2：
        10/22 の申請を 10/19 の端末で承認して decDay＝10/22、続けて同じ人の古い申請を承認すると 10/19 になり、10/21 の配分が変わった）。
        ほかの人には寄せた日を使わない（独立レビュー 9c08984 P2-1 のまま） */
-    if (r.name === name) up(_tipDecDay(r));
+    if (r.name === name) up(_tipDecDayRaw(r));
   });
   return d;
 }
@@ -6242,7 +6247,7 @@ function tipDecClockAhead(list, self, name) {   /* name：引き上げのとき�
   (list || []).forEach(function (r) {
     if (r === self || !_tipDecided(r)) return;
     var sn = _tipDecSeen(r); if (sn) see(sn.day, r, false);
-    if (nm && r.name === nm) see(_tipDecDay(r), r, false);   /* 同じ人の決定の日が先なら、その日から効くことを確かめる（tipDecDayStamp と同じ） */
+    if (nm && r.name === nm) see(_tipDecDayRaw(r), r, false);   /* 同じ人の決定の日が先なら、その日から効くことを確かめる（tipDecDayStamp と同じ） */
   });
   return e;
 }
@@ -6285,7 +6290,7 @@ function tipRateOn(emp, dateISO, list) {
    - Store Leader(sl)は50%別枠を時間按分で受取＋一般配分にも参加
    - 残りを全スタッフ(sl含む)で「hours × 重み」按分。重みは v1092 から、TIP_RATE_WEIGHT_START の日からはその日の Tip Rate、それより前は評価係数
    - Lunch/Dinner別 */
-function calcTipDistribution(storeId, date) {
+function calcTipDistribution(storeId, date, reqsOverride) {   /* reqsOverride：v1095 の試算（変える前と後）に使う Tip Rate の記録 */
   var tip = tipForDay(storeId, date);
   var labor = getTipLabor(storeId, date); // {empName:{lunch,dinner}} or null
   var leaderSplit = getTipLeaderSplit();
@@ -6295,7 +6300,7 @@ function calcTipDistribution(storeId, date) {
   var staff = emps.filter(e=>inStore(e) && isTipEligibleRole(e) && e.status!=='退職' && !isTipExcludedTitle(e.title)); /* v630: g2(Crew Leader)も対象 */
   /* v1092: 重み（その日の Tip Rate か、開始日より前は評価係数）と No Tip の印は、1 人 1 回だけ求める（ランチ・ディナーで同じ） */
   /* Waikiki（F03・F03-G）のチップは、だれでも勤務時間で均等（80/90/100 制度の外。応援の人も同じ＝独立レビュー dc96c7e P2-1） */
-  var byRate = tipWeightByRate(date), tipReqs = ls('tip_requests', []) || [], _wt = [];
+  var byRate = tipWeightByRate(date), tipReqs = Array.isArray(reqsOverride) ? reqsOverride : (ls('tip_requests', []) || []), _wt = [];
   var wkk = (storeId==='F03' || storeId==='F03-G');
   function weightOf(e) {
     for (var i = 0; i < _wt.length; i++) if (_wt[i].e === e) return _wt[i].o;   /* 1 人（記録）1 回。同じ名前の別の記録は別に（P3-4） */
@@ -8733,8 +8738,13 @@ function outboxLabel(key){
 }
 
 /* lsSet から呼ばれる：push を試み、失敗ならoutboxへ、成功ならoutboxから除去（fire-and-forget） */
+/* v1095: 最後に lsSet したキーの送った結果（Promise）。true＝クラウドに書けた／false＝送れず未送信に積んだ／
+   'booting'＝起動・取り込みの途中で送っていない／'deferred'＝未取得の必要時キーで未送信に積んだ／undefined＝クラウドに送らないキー。
+   画面が「保存しました」と出してよいかを決めるのに使う（Handbook の読了）。ほかの呼び出し元の動きは変えない */
+var _lsPushP = {};
 function _pushWithOutbox(key, val){
-  if(typeof _supaBooting!=='undefined' && _supaBooting) return; // 起動/プル中は押し上げも記録もしない
+  var _pp=(typeof _lsPushP!=='undefined' && _lsPushP)?_lsPushP:{};   /* 結果の置き場（無いときは覚えないだけ） */
+  if(typeof _supaBooting!=='undefined' && _supaBooting){ _pp[key]=Promise.resolve('booting'); return; } // 起動/プル中は押し上げも記録もしない
   /* v721【クラウド保護】まだ取得していない「必要時取得」キーは押し上げない。
      syncMasterToSupabase はマージ定義の無いキーを丸ごと上書きするため、
      部分データを送るとクラウド側の履歴・ログが消える。未送信キューに積み、
@@ -8742,12 +8752,13 @@ function _pushWithOutbox(key, val){
   try{
     if(_lsPushBlocked(key)){
       try{ _outboxAdd(key, 'deferred: not fetched yet'); }catch(e){}
+      _pp[key]=Promise.resolve('deferred');
       return;
     }
   }catch(e){}
-  Promise.resolve().then(function(){ return syncMasterToSupabase(key, val); })
-    .then(function(r){ if(r===false) _outboxAdd(key,'push failed'); else if(r===true) _outboxRemove(key); /* undefined=対象外→何もしない */ })
-    .catch(function(e){ _outboxAdd(key, (e&&e.message)||e); });
+  _pp[key]=Promise.resolve().then(function(){ return syncMasterToSupabase(key, val); })
+    .then(function(r){ if(r===false) _outboxAdd(key,'push failed'); else if(r===true) _outboxRemove(key); /* undefined=対象外→何もしない */ return r; })
+    .catch(function(e){ _outboxAdd(key, (e&&e.message)||e); return false; });
 }
 
 /* 未送信キューを再送。値は都度ローカルから読み直す（stale上書き防止）。 */
@@ -10110,6 +10121,12 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   menu_log:       { merge: mergeAppendLog, covers: _coversLog },
   reject_log:     { merge: mergeAppendLog, covers: _coversLog },
   handbook_log:   { merge: mergeAppendLog, covers: _coversLog },
+  /* v1095: 読了の記録と章。前は合流の決まりが無く、送るとき・受け取るときに全員分を丸ごと置き換えていた（mergeHbReads の説明） */
+  /* keepLocal：送っているあいだに読んだ章を、書き戻しで消さない（合流は足すだけなので安全）。
+     strict：クラウドを読めなかったとき（通信の失敗・HTTP のエラー）は書かずに失敗にする（未送信に残る）。前の決まりの「読めなければ端末の写しで書く」は、
+     古い写しの端末がほかの人の読了を消す道だった（独立レビュー v1095 P2-1） */
+  handbook_reads:    { merge: mergeHbReads,    covers: _coversHbReads,    keepLocal: true, strict: true },
+  handbook_chapters: { merge: mergeHbChapters, covers: _coversHbChapters, keepLocal: true, strict: true },
   /* v1024: 理解度チェックの端末側の記録。名前ごとに独立しているので名前単位で合流する（handbook_reads と違い、2台が同時に書いても消し合わない）。 */
   handbook_tests: { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v1025: OJTの受講記録。人ごとに独立しているので名前単位で合流する。 */
@@ -10550,12 +10567,17 @@ function _coversApprovals(check, want){
 }
 var _opMergeChain = {}; // キー別に直列化（自クライアント内の連続書き込みが互いを潰さないように）
 
-function _fetchOpValue(key, table){
+function _fetchOpValue(key, table, strict){
   table = table || 'app_state';
-  return fetch(SUPABASE_URL+'/rest/v1/'+table+'?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() })
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(rows){ return (rows && rows.length) ? rows[0].value : null; })
-    .catch(function(){ return undefined; }); // undefined=取得失敗（マージせず素通し）
+  /* v1095: strict（合流の決まりの strict の付いたキー）は、HTTP のエラーも「読めなかった」（undefined）にし、15 秒で打ち切る。
+     前は HTTP のエラーを「行が無い」（null）と同じに読んでいた。strict でないキーは今までどおり */
+  var ctl=null, tm=null;
+  if(strict){ try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; } }
+  var opts={ headers: supaHeaders() }; if(ctl) opts.signal=ctl.signal;
+  return fetch(SUPABASE_URL+'/rest/v1/'+table+'?key=eq.'+encodeURIComponent(key)+'&select=value', opts)
+    .then(function(r){ if(r.ok) return r.json(); if(strict) throw new Error('http '+r.status); return null; })
+    .then(function(rows){ if(tm) clearTimeout(tm); return (rows && rows.length) ? rows[0].value : null; })
+    .catch(function(){ if(tm) clearTimeout(tm); return undefined; }); // undefined=取得失敗（マージせず素通し）
 }
 function _opUpsertRow(key, value, table){
   return (table==='app_settings')
@@ -10695,6 +10717,78 @@ function mergeAppendLog(cloudArr, localArr){
   (Array.isArray(localArr)?localArr:[]).forEach(add);
   if(out.length && out.every(function(x){return x&&x.ts!=null;})) out.sort(function(a,b){ return a.ts-b.ts; });
   return out;
+}
+/* ===== v1095: Handbook の読了の記録（handbook_reads）と章（handbook_chapters）の合流 =====
+   依頼：Moto さん 10/19「Handbook の読了が正しく保存されていない」。
+   原因：どちらも合流の決まりが無く、送るとき（syncMasterToSupabase）は全員分を丸ごと上書きし、受け取るとき（_applyKvRows・pullOpKey）は
+   クラウドの値で丸ごと置き換えていた。そのため、古い写しを持つ端末で 1 章読むと、そのあとにほかの人（同じ人のほかの端末）が読んだ章が
+   クラウドから消え、まだ送れていない読了はログイン・「最新に更新」の取り込みで端末からも消えた。
+   ・handbook_reads：{ 名前: { 章の id: { v: 読んだ章の版, at: 'YYYY/MM/DD HH:mm', _t: 時刻（v1095 から） } } }。
+     名前・章ごとに合わせる。版の大きいほう → 同じ版なら読了の時刻（_t → at）の新しいほう。どちらかにしか無い記録は必ず残す（読了を消す操作は無い）。
+   ・handbook_chapters：[ { id, order, version, titleJa, … } ]。章の id ごとに、版の大きいほう → 同じ版なら保存の時刻（_at → updatedAt）の新しいほう。
+     章の削除は印（_deleted・版を 1 つ上げる）で残す（消した章がほかの端末の古い写しやシードから戻らない）。
+   どちらも、どの順で合わせても同じ結果になる（最後は中身の文字列で決める）。 */
+function _hbJs(x){ try{ return _logSig(x)||''; }catch(e){ return ''; }}   /* キーの順によらない（クラウドの jsonb はキーを並べ替えて返す） */
+function _hbReadCmp(a, b){   /* a が b より新しい（勝つ）なら正 */
+  var av=Number(a&&a.v)||0, bv=Number(b&&b.v)||0; if(av!==bv) return av-bv;
+  var at=Number(a&&a._t)||0, bt=Number(b&&b._t)||0; if(at!==bt) return at-bt;
+  var as=String((a&&a.at)||''), bs=String((b&&b.at)||''); if(as!==bs) return as<bs?-1:1;
+  var aj=_hbJs(a), bj=_hbJs(b); return aj===bj?0:(aj<bj?-1:1);
+}
+function mergeHbReads(cloud, local){
+  var out={}, srcs=[cloud, local];
+  srcs.forEach(function(s){
+    if(!s || typeof s!=='object' || Array.isArray(s)) return;
+    Object.keys(s).forEach(function(nm){
+      var m=s[nm]; if(!m || typeof m!=='object' || Array.isArray(m)) return;
+      var o=out[nm] || (out[nm]={});
+      Object.keys(m).forEach(function(ch){
+        var r=m[ch]; if(!r || typeof r!=='object') return;
+        if(!o[ch] || _hbReadCmp(r, o[ch])>0) o[ch]=r;
+      });
+    });
+  });
+  return out;
+}
+function _coversHbReads(check, want){
+  if(!check || typeof check!=='object') return false;
+  for(var nm in want){ if(!want.hasOwnProperty(nm)) continue;
+    var wm=want[nm]; if(!wm || typeof wm!=='object') continue;
+    var hm=check[nm]; if(!hm || typeof hm!=='object') return false;
+    for(var ch in wm){ if(!wm.hasOwnProperty(ch)) continue;
+      var w=wm[ch]; if(!w || typeof w!=='object') continue;
+      if(!hm[ch] || _hbReadCmp(w, hm[ch])>0) return false;
+    }
+  }
+  return true;
+}
+function _hbChCmp(a, b){   /* a が b より新しい（勝つ）なら正 */
+  /* 削除の印はいつも勝つ（元に戻す操作は無い）。シードの版があとで上がっても、消した章は戻らない（独立レビュー v1095 P3-2） */
+  var ad=!!(a&&a._deleted), bd=!!(b&&b._deleted); if(ad!==bd) return ad?1:-1;
+  var av=Number(a&&a.version)||1, bv=Number(b&&b.version)||1; if(av!==bv) return av-bv;
+  var at=Number(a&&a._at)||0, bt=Number(b&&b._at)||0; if(at!==bt) return at-bt;
+  var as=String((a&&a.updatedAt)||''), bs=String((b&&b.updatedAt)||''); if(as!==bs) return as<bs?-1:1;   /* 人が直した章（updatedAt あり）がシードに勝つ */
+  var aj=_hbJs(a), bj=_hbJs(b); return aj===bj?0:(aj<bj?-1:1);
+}
+function mergeHbChapters(cloud, local){
+  var by={};
+  [cloud, local].forEach(function(s){
+    (Array.isArray(s)?s:[]).forEach(function(c){
+      if(!c || typeof c!=='object' || !c.id) return;
+      var k=String(c.id);
+      if(!by[k] || _hbChCmp(c, by[k])>0) by[k]=c;
+    });
+  });
+  return Object.keys(by).map(function(k){ return by[k]; }).sort(function(a,b){
+    return ((Number(a.order)||0)-(Number(b.order)||0)) || (String(a.id)<String(b.id)?-1:(String(a.id)>String(b.id)?1:0));
+  });
+}
+function _coversHbChapters(check, want){
+  if(!Array.isArray(check)) return false;
+  var have={}; check.forEach(function(c){ if(c && c.id) have[String(c.id)]=c; });
+  for(var i=0;i<(want||[]).length;i++){ var w=want[i]; if(!w || !w.id) continue;
+    var h=have[String(w.id)]; if(!h || _hbChCmp(w, h)>0) return false; }
+  return true;
 }
 /* ===== v748: エラーセンター過去ログ(ec_log)の追記マージ =====
    ecSnapshot は「日付 x タイトル で1件」を前提に重複排除している。
@@ -10921,7 +11015,8 @@ function opMergePush(key, localVal, table){
     try{
       var desired = localVal;
       for(var attempt=0; attempt<3; attempt++){
-        var cloud = await _fetchOpValue(key, table);
+        var cloud = await _fetchOpValue(key, table, !!def.strict);
+        if(cloud===undefined && def.strict){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }   /* v1095: 端末の写しで丸ごと書かない */
         if(cloud===undefined){ // 取得失敗→マージせず素通し
           var _u0 = await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
           _opWriteBack(key, def, desired);                         /* v763 → v1034: 手元の新しい保存を残す */
@@ -20555,15 +20650,17 @@ var SYNC_SCOPE_META = {
   hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
   food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
-  settings:{ label:'設定', toast:false, pull:null }
+  settings:{ label:'設定', toast:false, pull:null },
+  handbook:{ label:'Handbook', toast:false, pull: async function(){ try{ await hbPullLatest(true); }catch(e){} } },   /* v1095: 読了と章を読み直す（前は人材管理の読み直しで、読了・章を読まなかった） */
+  acctrev: { label:'経理レビュー', toast:true, pull: async function(){ return await arPullLatest(true); } }   /* v1095（UI案57 ③）：読めなければ false（「最新」と出さない） */
 };
 var PAGE_SYNC_SCOPE = {
   dashboard:'dash', store_cmd:'dash',
   budget:'budget', meeting:'budget', purchase:'budget', labor:'budget', kpi_master:'budget', dailyops:'budget', monthly:'budget',
   tasks:'tasks', biz_guide:'tasks',
-  staff_master:'hr', hiring:'hr', onboarding:'hr', tip:'hr', hr:'hr', vacation:'hr', mileage:'hr', expense:'hr', attendance:'hr', crew_handbook:'hr',
+  staff_master:'hr', hiring:'hr', onboarding:'hr', tip:'hr', hr:'hr', vacation:'hr', mileage:'hr', expense:'hr', attendance:'hr', crew_handbook:'handbook',
   skill:'growth', ojt_admin:'growth', growth_mgr:'growth', leadership:'growth', growthhub:'growth', tiprate:'growth',
-  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', purchase_detail:'food', invoice:'food', acct_review:'food',
+  menu:'food', recipe:'food', ingredient_master:'food', ing_transfer:'food', vendor_master:'food', inventory:'food', purchase_detail:'food', invoice:'food', acct_review:'acctrev',
   store_master:'settings', required:'settings', settings:'settings'
 };  /* shift_admin は専用バー(availDiag)を持つため意図的に除外 */
 function pageSyncScope(page){ return PAGE_SYNC_SCOPE[page] || null; }
@@ -20575,7 +20672,14 @@ async function pageSync(scope){
   try{ showToast(t('同期中…','Syncing…'),'info'); }catch(e){}
   try{ await flushOutbox(); }catch(e){}          // ① 未送信を先に押し上げ（保存を確実にクラウド化）
   try{ await new Promise(function(res){ setTimeout(res, 350); }); }catch(e){}  // 送信中の書き込みがクラウドへ着地するのを待つ（取得で上書きしないため）
-  try{ if(m.pull) await m.pull(); }catch(e){}     // ② マージ取得（既存pull=マージ方式・上書きなし）
+  var _pr; try{ if(m.pull) _pr=await m.pull(); }catch(e){ _pr=false; }     // ② マージ取得（既存pull=マージ方式・上書きなし）
+  /* v1095（UI案57 ③）：読み直しが false を返したら「最新に同期しました」と出さない（前は読めなくても出した）。
+     今までの pull は何も返さないので、今までどおり */
+  if(_pr===false){
+    try{ showToast(t('クラウドから読み直せませんでした。この端末の写しを出しています','Could not read the latest from the cloud; showing this device’s copy'),'warning'); }catch(e){}
+    try{ renderPage((typeof curPage!=='undefined')?curPage:'budget'); }catch(e){}
+    return;
+  }
   try{ markSynced(scope); }catch(e){}
   try{ var n=(typeof outboxCount==='function')?outboxCount():0; showToast(n?('同期しました（未送信'+n+'件）'):t('最新に同期しました','Synced'), n?'warning':'success'); }catch(e){}
   try{ renderPage((typeof curPage!=='undefined')?curPage:'budget'); }catch(e){}
@@ -35319,17 +35423,33 @@ function tipPeriodMatrix(storeId, info){
     if(!unmatched[u.name]) unmatched[u.name]={ name:u.name, days:0, reason:u.reason };
     unmatched[u.name].days++;
   }); });
-  return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists) };
+  return { dists:dists, names:names, unmatched:Object.values(unmatched), rates:tipPeriodRates(dists), rateFrom:tipPeriodRateFrom(dists) };
 }
-/* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。評価係数で配分した日・No Tip の日は入れない */
+/* v1092: この期間の配分に使った Tip Rate（日の順・続けて同じ率は 1 つ）。No Tip の日は入れない。
+   v1095（UI案57 Q5：「80%,90%,100%で表示」）：評価係数で配分した日（TIP_RATE_WEIGHT_START より前）も、使った係数を % で入れる（0.8 → 80）。
+   前は評価係数の期間には何も入れず、名前の横に「今の Tip Rate」を出していた（額は係数なのに、変えた Tip Rate が前期に出て、反映されたように見えた） */
+function _tipUsedRate(r){ if(r.by==='rate') return (r.rate==null?null:r.rate); if(r.by==='coef'){ var c=Number(r.coef); return isFinite(c)?Math.round(c*100):null; } return null; }
 function tipPeriodRates(dists){
   var rates={};
   (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
-    if(r.by!=='rate' || r.lunchNoTip || r.dinnerNoTip || r.rate==null) return;
+    var rt=_tipUsedRate(r);
+    if(rt==null || r.lunchNoTip || r.dinnerNoTip) return;
     if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;   /* 両方とも除外した日は入れない */
-    var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==r.rate) a.push(r.rate);
+    var a=rates[r.name]||(rates[r.name]=[]); if(a[a.length-1]!==rt) a.push(rt);
   }); });
   return rates;
+}
+/* v1095: 期間の中で率が変わった人の、最後の率を使い始めた日（名前の横に「80→100%（10/19〜）」と出す） */
+function tipPeriodRateFrom(dists){
+  var last={}, from={}, n={};
+  (dists||[]).forEach(function(x){ ((x.dist||{}).list||[]).forEach(function(r){
+    var rt=_tipUsedRate(r);
+    if(rt==null || r.lunchNoTip || r.dinnerNoTip) return;
+    if(!(((r.lunchHours||0)>0 && !r.lunchExcl) || ((r.dinnerHours||0)>0 && !r.dinnerExcl))) return;
+    if(last[r.name]!==rt){ last[r.name]=rt; from[r.name]=x.date; n[r.name]=(n[r.name]||0)+1; }
+  }); });
+  var out={}; Object.keys(n).forEach(function(k){ if(n[k]>1) out[k]=from[k]; });
+  return out;
 }
 /* 表の名前の横・CSV の Tip Rate 列：この期間に配分に使った率（80%→90%）。無ければ今の Tip Rate（今までどおり） */
 function tipPeriodRateLabel(rates, nm){
@@ -35553,8 +35673,9 @@ function renderTipPeriodMatrix(storeId, store, info){
     var used=M.rates && M.rates[nm];   /* v1092: この期間の配分に使った率（80%→90%）。無ければ今の Tip Rate */
     var rt=(used && used.length) ? used[used.length-1] : _rateOf(nm); if(rt==null) return '';
     var rc=(typeof tipRateColor==='function')?tipRateColor(rt):'var(--muted)';
-    var lb=(used && used.length) ? (used.join('→')+'%') : ((rt===0)?'No Tip':(rt+'%'));
-    return ' <span title="'+((used && used.length)?t('この期間の配分に使った Tip Rate','Tip Rate used for this period'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
+    var _fr=M.rateFrom && M.rateFrom[nm];   /* v1095: 期間の途中で変わったら、最後の率を使い始めた日 */
+    var lb=(used && used.length) ? (used.join('→')+'%'+(_fr?'（'+String(_fr).slice(5).replace('-','/')+'〜）':'')) : ((rt===0)?'No Tip':(rt+'%'));
+    return ' <span title="'+((used && used.length)?t('この期間の配分に使った率（評価係数の日は係数を % で）','Rate used for this period (coefficient days as %)'):'Tip Rate')+'" style="font-size:9px;font-weight:700;color:'+rc+';border:1px solid '+rc+';border-radius:3px;padding:0 3px;margin-left:2px;white-space:nowrap;vertical-align:middle">'+lb+'</span>';
   }
   // 従業員ごと
   M.names.forEach(function(nm){
@@ -36740,6 +36861,7 @@ async function loadStoreLabor(sid, guid, days, liveFill){
    OP_SYNC_PREFIX の 'inv_' により「再取得可」と判定され、空き容量作成で削除され得た。
    クラウド未送信の状態で消すと入力が失われるため保護する（'inv_hist_' も内包される）。 */
 var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なので消したら再生できない */
+  'handbook_reads','handbook_chapters',   /* v1095: Handbook の読了と章（手入力。消すと取り込むまで進捗が 0 に見える） */
   'pl_public','pl_actual',   /* v910: 会計PLの取込値。容量整理で消さない */
   'spl_cc_plans_','hq_goals','spl_hq_goals_','cc_actions','spl_cc_actions_',   /* v767 */
   'spl_cc_metrics_','cc_scores','spl_cc_scores_',   /* v768 */
@@ -38450,7 +38572,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1094';
+const APP_VERSION = '1095';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43380,7 +43502,7 @@ function _acPend(){
     var v=0; try{ v=nfn()||0; }catch(e){ return; }
     if(v>0) out.push({ sub:sub, label:label, n:v });
   }
-  add('invoice','未確認のInvoice', function(){
+  add('acctrev','未確認のInvoice', function(){   /* v1095: 確認・差し戻しをする本体（区分・承認）へ */
     return (typeof pendingAcctReviewCount==='function') ? pendingAcctReviewCount() : 0; });
   add('invoice','画像が付いていない伝票', function(){
     return (ls('invoices',[])||[]).filter(function(v){ return v && !v._deleted && v.imageMissing && !v.imagePath; }).length; });
@@ -43433,7 +43555,7 @@ function _acStoreName(id){
 /* kind ごとの取り出し方。third は第3軸のラベルと値の取り方。 */
 function _acRows(kind){
   var inv = function(f){
-    return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && f(v); })
+    return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && !invIsIntake(v) && f(v); })   /* v1095: Invoice取込の写しは出さない（Q8） */
       .map(function(v){
         return { id:v.id, kind:'inv', date:_acDate(v.docDate||v.date), store:v.storeId,
                  third:(v.vendor||''), amount:Number(v.total||0),
@@ -43444,9 +43566,15 @@ function _acRows(kind){
   if(kind==='invoice') return { label:'業者', rows: inv(function(v){ return v.docType!=='Receipt' && v.docType!=='Reimburse'; }) };
   if(kind==='receipt') return { label:'購入店', rows: inv(function(v){ return v.docType==='Receipt'; }) };
   if(kind==='reimb'){
-    var r = inv(function(v){ return v.docType==='Reimburse'; });
-    r.forEach(function(x){ x.third = x.who || x.third; });
-    return { label:'申請者', rows:r };
+    /* v1095（Q9 A）：今の保存先（reimbursements）を読む。前の保存先（invoices の Reimburse）の記録も残っていれば出す */
+    var r = (typeof getReimbursements==='function' ? getReimbursements() : []).filter(function(v){ return v && !v._deleted; }).map(function(v){
+      return { id:v.id, kind:'rb', date:_acDate(v.date), store:v.storeId, third:(v.payer||''), amount:Number(v.amount||0),
+               sub:[v.vendor||'', v.purpose||'', (v.status==='承認' ? (v.payStatus||'未払い') : '')].filter(Boolean).join(' · '),
+               who:(v.byUser||''), img:!!(v.imagePath||v.driveUrl), pending:false, status:(v.status||'申請中') };
+    });
+    var old = inv(function(v){ return v.docType==='Reimburse'; });
+    old.forEach(function(x){ x.third = x.who || x.third; x.sub = [x.sub, t('前の保存先','Old record')].filter(Boolean).join(' · '); });
+    return { label:'申請者', rows:r.concat(old) };
   }
   if(kind==='check'){
     /* v1030: チェック（小切手）。checks から作る。Drive に入っていない行は補足に出す。 */
@@ -48095,6 +48223,8 @@ function acSetCat(id){
   _acCat = id;
   var c = AC_TABS.find(function(x){ return x.id===id; });
   _acSub = (c && c.subs[0]) ? c.subs[0].id : '';
+  /* v1095（UI案57 ③）：経理レビューは「区分・承認」（独立した経理レビューと同じ本体）から開く。タブの数・並び・名前は変えない */
+  if(id==='review' && c && c.subs.some(function(s){ return s.id==='acctrev'; })) _acSub = 'acctrev';
   renderPage('acct_center');
 }
 function acSetSub(id){ _acSub = id; _acF = { store:'', ym:'', third:'', st:'' }; renderPage('acct_center'); }
@@ -78275,8 +78405,79 @@ function renderReimburseCard(){
 var AR_STATUSES = ['未確認','確認中','確認済み','差し戻し'];
 function arStatusColor(s){ return s==='差し戻し'?'var(--red)':s==='確認済み'?'var(--green)':s==='確認中'?'var(--yellow)':'var(--muted)'; }
 function arStatusRank(s){ return s==='未確認'?0:s==='確認中'?1:s==='差し戻し'?2:3; }
-function arYm(inv){ var d=parseJaDate(inv.date); if(!d) return ''; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
-function arSetFilter(key, val){ window['_ar'+key]=val; renderPage('acct_review'); }
+function arYm(inv){ var d=parseJaDate(inv.date); if(!d) return ''; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }   /* Drive の整理先の月（登録日・今までどおり） */
+/* v1095（UI案57 ③・Moto 10/19「7はい 8出さない 9はい」）：
+   ・経理レビューの本体は 1 つ（renderAcctReview）。独立した「経理レビュー」と経理センターの「区分・承認」で同じものを出す。
+     押したあとは今いる入口のまま描き直す（arRerender。前は renderPage('acct_review') で経理センターの外へ出た）。
+   ・月は伝票の日付（無ければ登録日）＝計上の決まり（_invDate・v681）。Drive の整理先の月（arYm）は変えない。
+   ・Invoice取込（Drive）から写した記録は出さない・数えない（Invoice取込の画面で扱う）。
+   ・確認済み（Drive 整理）と削除は、終わるまで同じ書類のボタンを止める（_arBusy。二重に Drive を動かさない）。
+   ・最終取得の時刻と「最新を取得」。読めなかったときは「最新」と出さず「この端末の写し」と［もう一度読む］ */
+function arDocYm(inv){ var d=null; try{ d=_invDate(inv); }catch(e){ d=null; } if(!d || !isFinite(d.getTime())) return ''; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function arReviewList(){ return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && !invIsIntake(v); }); }
+var _arBusy = {};
+var _arPull = { at:0, tried:0, ok:null, busy:0, gen:0, off:false };
+function arOnPage(){
+  if(typeof curPage==='undefined') return false;
+  return curPage==='acct_review' || (curPage==='acct_center' && typeof _acCat!=='undefined' && _acCat==='review' && _acSub==='acctrev');
+}
+function arRerender(){
+  try{ if(typeof curPage==='undefined') return; if(curPage==='acct_review' || curPage==='acct_center' || curPage==='invoice') renderPage(curPage); }catch(e){}
+}
+function arSetFilter(key, val){ window['_ar'+key]=val; arRerender(); }
+function _arSig(){ try{ return (ls('invoices',[])||[]).map(function(v){ return v ? (v.id+':'+(v._mut||'')+':'+(v.reviewStatus||'')+':'+(v._deleted?1:0)) : ''; }).join('|'); }catch(e){ return ''; } }
+/* 請求書の行をクラウドから読み直す（端末と合流する。pullInvoicesAll と同じ合わせ方）。読めなければ false（端末はそのまま） */
+async function _arFetchInvoices(){
+  var ctl=(typeof AbortController!=='undefined')?new AbortController():null, tm=null;
+  try{
+    if(ctl) tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000);
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.spl_invoices_*', { headers: supaHeaders(), signal: ctl?ctl.signal:undefined });
+    if(!res || !res.ok) return false;
+    var rows=await res.json();
+    if(!Array.isArray(rows)) return false;
+    var ok=true;
+    rows.forEach(function(r){
+      if(!r || !r.key) return;
+      try{
+        var loc=_lsRaw(r.key, null);
+        var out=(typeof mergeInvoices==='function') ? mergeInvoices(r.value, loc) : r.value;
+        if(!_lsWriteVerified(r.key, JSON.stringify(out))) ok=false;
+      }catch(e){ ok=false; }
+    });
+    return ok;
+  }catch(e){ return false; }
+  finally{ if(tm) clearTimeout(tm); }
+}
+async function arPullLatest(force){
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _arPull.off=true; _arPull.ok=false; return false; }
+  _arPull.off=false;
+  if(_arPull.busy && (Date.now()-_arPull.busy)<20000) return _arPull.ok;   /* 20 秒たっても終わらない読み直しは待たない */
+  if(!force && _arPull.tried && (Date.now()-_arPull.tried)<60000) return _arPull.ok;   /* 開いたときは 60 秒に 1 回まで（失敗でもくり返さない） */
+  var gen=(_arPull.gen||0)+1;
+  _arPull.gen=gen; _arPull.busy=Date.now(); _arPull.tried=Date.now();
+  try{ if(arOnPage()) arRerender(); }catch(e){}   /* 「読み直しています…」を出す */
+  var before=_arSig(), ok=false;
+  try{ ok=!!(await _arFetchInvoices()); }catch(e){ ok=false; }
+  if(_arPull.gen!==gen) return ok;   /* あとから始めた読み直しがある */
+  _arPull.busy=0; _arPull.ok=ok; if(ok) _arPull.at=Date.now();
+  try{ if(arOnPage()) arRerender(); }catch(e){}
+  return ok;
+}
+function arFreshHtml(){
+  var hm=function(ts){ var d=new Date(ts); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+  var btn=function(lbl){ return '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="arPullLatest(true)"><i class="ti ti-refresh"></i> '+lbl+'</button>'; };
+  if(_arPull.off) return '<div class="alert alert-warning" style="padding:8px 11px;margin-bottom:8px"><i class="ti ti-cloud-off"></i><div style="font-size:12.5px">'
+    +t('クラウド同期が OFF のため、この端末の写しを出しています','Cloud sync is off; showing this device’s copy')+'</div></div>';
+  if(_arPull.busy) return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin:0 2px 8px"><i class="ti ti-loader-2"></i> '
+    +t('クラウドから読み直しています…','Reading the latest from the cloud…')+'</div>';
+  if(_arPull.ok===false) return '<div class="alert alert-warning" style="padding:8px 11px;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-alert-triangle"></i><div style="font-size:12.5px;flex:1;min-width:200px">'
+    +t('クラウドから読み直せませんでした。この端末の写し'+(_arPull.at?'（'+hm(_arPull.at)+' に取得）':'')+'を出しています',
+       'Could not read the latest from the cloud; showing this device’s copy'+(_arPull.at?' (read at '+hm(_arPull.at)+')':''))+'</div>'+btn(t('もう一度読む','Try again'))+'</div>';
+  if(_arPull.ok && _arPull.at) return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin:0 2px 8px">'
+    +t('最終取得 ','Last read ')+hm(_arPull.at)+btn(t('最新を取得','Get latest'))+'</div>';
+  return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin:0 2px 8px">'
+    +t('まだクラウドから読み直していません（この端末の写し）','Not read from the cloud yet (this device’s copy)')+btn(t('最新を取得','Get latest'))+'</div>';
+}
 /* アップロード者メール特定：byEmail → byUser/by を従業員名照合 */
 function arUploaderEmail(inv){
   if(inv.byEmail) return inv.byEmail;
@@ -78290,7 +78491,8 @@ function renderAcctReview(){
   if(!['ceo','gm','office','office_crew'].includes(curRole)){
     return '<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-lock" style="font-size:32px;display:block;margin-bottom:8px"></i>この画面は経理（office／事務Crew）／GM／CEO専用です</div>';
   }
-  var all = ls('invoices', []);
+  var all = arReviewList();   /* v1095: Invoice取込の写し・削除済みは出さない（Q8） */
+  try{ setTimeout(function(){ try{ arPullLatest(false); }catch(e){} }, 0); }catch(e){}   /* v1095: 開いたら読み直す（60 秒に 1 回まで・描いている途中には描き直さない） */
   // フィルタ既定値
   window._arType   = window._arType   || 'ALL';
   window._arStore  = window._arStore  || 'ALL';
@@ -78302,14 +78504,14 @@ function renderAcctReview(){
   all.forEach(function(inv){ var s=inv.reviewStatus||'未確認'; if(counts.hasOwnProperty(s)) counts[s]++; });
 
   // 月の選択肢（請求書から抽出・降順）
-  var months={}; all.forEach(function(inv){ var ym=arYm(inv); if(ym) months[ym]=1; });
+  var months={}; all.forEach(function(inv){ var ym=arDocYm(inv); if(ym) months[ym]=1; });   /* v1095: 伝票の日付（Q7 A） */
   var monthList=Object.keys(months).sort().reverse();
 
   // フィルタ適用
   var rows = all.filter(function(inv){
     if(window._arType!=='ALL'  && (inv.docType||'Invoice')!==window._arType) return false;
     if(window._arStore!=='ALL' && inv.storeId!==window._arStore) return false;
-    if(window._arMonth!=='ALL' && arYm(inv)!==window._arMonth) return false;
+    if(window._arMonth!=='ALL' && arDocYm(inv)!==window._arMonth) return false;
     if(window._arStatus!=='ALL'&& (inv.reviewStatus||'未確認')!==window._arStatus) return false;
     return true;
   });
@@ -78317,16 +78519,17 @@ function renderAcctReview(){
   rows.sort(function(a,b){
     var ra=arStatusRank(a.reviewStatus||'未確認'), rb=arStatusRank(b.reviewStatus||'未確認');
     if(ra!==rb) return ra-rb;
-    var da=parseJaDate(a.date), db=parseJaDate(b.date);
-    return (db?db.getTime():0)-(da?da.getTime():0);
+    var da=_invDate(a), db=_invDate(b);
+    return ((db&&isFinite(db.getTime()))?db.getTime():0)-((da&&isFinite(da.getTime()))?da.getTime():0);
   });
 
   var storeOpts = '<option value="ALL">全店舗</option>'+activeStores().map(function(s){return '<option value="'+s.id+'" '+(window._arStore===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('');
-  var monthOpts = '<option value="ALL">全期間</option>'+monthList.map(function(ym){return '<option value="'+ym+'" '+(window._arMonth===ym?'selected':'')+'>'+ym+'</option>';}).join('');
+  var monthOpts = '<option value="ALL">全期間（月＝伝票の日付）</option>'+monthList.map(function(ym){return '<option value="'+ym+'" '+(window._arMonth===ym?'selected':'')+'>'+ym+'</option>';}).join('');
   var statusOpts= '<option value="ALL">全ステータス</option>'+AR_STATUSES.map(function(s){return '<option value="'+s+'" '+(window._arStatus===s?'selected':'')+'>'+s+'</option>';}).join('');
   var typeOpts  = ['ALL','Invoice','Receipt'].map(function(t){return '<option value="'+t+'" '+(window._arType===t?'selected':'')+'>'+(t==='ALL'?'全種別':t==='Receipt'?'レシート':'Invoice')+'</option>';}).join('');
 
   var html = '<div class="section-header"><div><div class="section-title">経理レビュー</div><div class="section-sub">アップロード書類の確認・差し戻し → 確認済みでDrive整理</div></div></div>';
+  html += arFreshHtml();   /* v1095 */
 
   // ステータスサマリー（タップでフィルタ）
   html += '<div class="card" style="padding:10px"><div style="display:flex;gap:8px;flex-wrap:wrap">'
@@ -78347,6 +78550,11 @@ function renderAcctReview(){
     + '<select class="form-select" style="flex:1;min-width:110px" onchange="arSetFilter(\'Status\',this.value)">'+statusOpts+'</select>'
     + '</div></div>';
 
+  /* v1095: 絞り込んだ件数と合計 */
+  var _arTot = rows.reduce(function(a,inv){ return a+(Number(inv.total)||0); },0);
+  html += '<div style="font-size:12.5px;color:var(--tm);margin:2px 2px 8px">'+rows.length+' 件 ・ 合計 $'+_arTot.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})
+    +(rows.length!==all.length?'<span style="color:var(--muted)">（全 '+all.length+' 件）</span>':'')+'</div>';
+
   if(!rows.length){
     html += '<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-checklist" style="font-size:32px;display:block;margin-bottom:8px"></i>該当する書類はありません</div>';
     return html;
@@ -78364,7 +78572,7 @@ function renderAcctReview(){
     html += '<div class="card">'
       + '<div class="approval-header">'
       +   '<div><div class="approval-title">'+escapeHtml(inv.vendor)+'</div>'
-      +     '<div class="approval-meta">'+storeBadge+escapeHtml(inv.date)+' · '+typeLabel+' · '+(inv.lines?inv.lines.length:0)+'品目 · $'+(inv.total||0).toFixed(2)+empMeta+'</div></div>'
+      +     '<div class="approval-meta">'+storeBadge+((inv.docDate && String(inv.docDate)!==String(inv.date))?('伝票 '+escapeHtml(inv.docDate)+'（登録 '+escapeHtml(inv.date)+'）'):escapeHtml(inv.date))+' · '+typeLabel+' · '+(inv.lines?inv.lines.length:0)+'品目 · $'+(inv.total||0).toFixed(2)+empMeta+'</div></div>'
       +   '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end">'
       +     (inv.imagePath?'<button class="btn btn-secondary btn-sm" style="padding:3px 8px" onclick="viewInvoiceImage(\''+String(inv.imagePath).replace(/'/g,"\\'")+'\')"><i class="ti ti-photo"></i></button>':'')
       +     (inv.driveUrl?'<a class="btn btn-secondary btn-sm" style="padding:3px 8px" href="'+inv.driveUrl+'" target="_blank" title="Driveで開く"><i class="ti ti-brand-google-drive"></i></a>':'')
@@ -78391,6 +78599,12 @@ function renderAcctReview(){
     html += renderReviewThread(inv);
 
     // アクションボタン
+    /* v1095: Drive の整理・削除の途中は、この書類のボタンを止める（終わるまで二重に動かない） */
+    if(_arBusy[inv.id]){
+      html += '<div style="font-size:12px;color:var(--muted);margin-top:8px;padding:8px 10px;border:1px dashed var(--border);border-radius:8px"><i class="ti ti-loader-2"></i> '
+        + (_arBusy[inv.id]==='delete' ? '削除しています…' : 'Drive に整理しています…') + '<br><span style="font-size:11px">終わるまで同じボタンは押せません（二重に動かない）。</span></div></div>';
+      return;
+    }
     html += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">';
     if(rs!=='確認中' && rs!=='確認済み'){
       html += '<button class="btn btn-secondary btn-sm" onclick="arSetStatus(\''+inv.id+'\',\'確認中\')"><i class="ti ti-eye"></i> 確認中</button>';
@@ -78416,18 +78630,28 @@ function renderAcctReview(){
 
 /* 確認中など、Drive移動を伴わない状態更新 */
 function arSetStatus(id, status){
+  if(_arBusy[id]){ showToast('この書類は処理しています。終わるまで待ってください','info'); return; }   /* v1095 */
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  if(invInGuardOld(inv)) return;   /* v1095: Invoice取込の写しは Invoice取込の画面で（Q8） */
   inv.reviewStatus=status; invTouch(inv);
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
   inv.reviewedAt = nowJP();
   lsSet('invoices', invoices);
-  renderPage('acct_review');
+  arRerender();   /* v1095: 今いる入口のまま */
 }
 
 /* 確認済み：Driveでファイルを正式フォルダへ移動（社員ごと/店舗ごと）し、状態更新 */
 async function arApprove(id){
+  if(_arBusy[id]){ showToast('Drive に整理しています。終わるまで待ってください','info'); return; }   /* v1095: 二重に押しても 1 回だけ */
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
   if(invInGuardOld(inv)) return;   /* v1052 */
+  _arBusy[id]='approve'; arRerender();
+  try{ await _arApproveCore(id); }
+  finally{ delete _arBusy[id]; arRerender(); }
+}
+async function _arApproveCore(id){
+  var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
+  var _moved=null;   /* v1095: Drive の結果（待っているあいだに端末の記録が読み直されても、読み直した記録に付ける） */
   if(inv.driveFileId && !inv.driveMoved){
     var ym=arYm(inv) || curYm();
     var so=STORES.find(function(x){return x.id===inv.storeId;});
@@ -78436,13 +78660,16 @@ async function arApprove(id){
     showToast('Driveでファイルを整理中…','info');
     var res=await driveSync('move', { fileId:inv.driveFileId, kind:kind, store:storeName, employee:(inv.empName||''), ym:ym });
     if(res && res.ok){
-      inv.driveMoved=true; invTouch(inv);
-      if(res.webViewLink) inv.driveUrl=res.webViewLink;
+      _moved={ url:(res.webViewLink||'') };
     } else if(res && res.error==='not_configured'){
       showToast('Drive未連携のため移動はスキップ（状態のみ更新）','warning');
     } else {
       showToast('Drive移動に失敗：'+(res&&res.error||'不明')+'（状態は更新します）','warning');
     }
+    /* v1095: Drive を待っているあいだに端末の記録が読み直された・消されたかもしれないので、読み直してから書く（前は待つ前の写しで書き戻した） */
+    invoices=ls('invoices',[]); inv=invoices.find(function(x){return x.id===id;});
+    if(!inv){ showToast('この書類はほかで削除されていました（状態は変えていません）','warning'); return; }
+    if(_moved){ inv.driveMoved=true; invTouch(inv); if(_moved.url) inv.driveUrl=_moved.url; }
   }
   inv.reviewStatus='確認済み'; invTouch(inv);
   inv.reviewedBy = curUserName || (ROLE_CONFIG[curRole]||{}).name || '';
@@ -78450,7 +78677,6 @@ async function arApprove(id){
   lsSet('invoices', invoices);
   try{ var _so3=STORES.find(function(x){return x.id===inv.storeId;}); var _stN3=_so3?_so3.name:(inv.storeId||''); addNotif({ type:'approved', title:'請求書が承認されました', text:(_stN3+' / '+inv.vendor+' $'+(inv.total||0).toFixed(2)).slice(0,140), toUser:(inv.byUser||''), page:'invoice', refId:inv.id }); }catch(e){}
   showToast('確認済みにしました','success');
-  renderPage('acct_review');
 }
 
 /* 差し戻し：理由入力モーダル */
@@ -78471,6 +78697,7 @@ function arRejectModal(id){
 async function arRejectConfirm(id){
   var reason=(docVal('ar-reason')||'').trim();
   if(!reason){ showToast('差し戻し理由を入力してください','warning'); return; }
+  if(_arBusy[id]){ showToast('この書類は処理しています。終わるまで待ってください','info'); return; }   /* v1095 */
   var invoices=ls('invoices',[]); var inv=invoices.find(function(x){return x.id===id;}); if(!inv) return;
   inv.reviewStatus='差し戻し'; invTouch(inv);
   inv.reviewNote=reason;
@@ -78481,7 +78708,7 @@ async function arRejectConfirm(id){
   lsSet('invoices', invoices);
   closeModalDirect();
   showToast('差し戻しました（アップロード者のレシート管理に表示されます）','success');
-  renderPage('acct_review');
+  arRerender();   /* v1095: 今いる入口のまま */
 }
 
 /* ===== OS内やり取り・再提出・削除 ===== */
@@ -78577,9 +78804,17 @@ function deleteInvoiceConfirm(id){
     +'<button class="btn btn-primary" style="background:var(--red);border-color:var(--red)" onclick="deleteInvoiceDo(\''+inv.id+'\')"><i class="ti ti-trash"></i> 削除する</button></div>');
 }
 async function deleteInvoiceDo(id){
+  if(_arBusy[id]){ showToast('この書類は処理しています。終わるまで待ってください','info'); return; }   /* v1095: 二重に押しても 1 回だけ（Drive を 2 回消さない） */
   var invoices=ls('invoices',[]); var idx=invoices.findIndex(function(x){return x.id===id;}); if(idx<0) return;
   var inv=invoices[idx];
   if(!canDeleteInvoice(inv)){ showToast('削除権限がありません','warning'); return; }
+  _arBusy[id]='delete';
+  try{ var _db=document.querySelector('.modal .btn-primary'); if(_db){ _db.disabled=true; _db.textContent='削除しています…'; } }catch(e){}
+  try{ arRerender(); }catch(e){}
+  try{ await _deleteInvoiceCore(id, inv); }
+  finally{ delete _arBusy[id]; arRerender(); }
+}
+async function _deleteInvoiceCore(id, inv){
   // 1) Drive削除（結果を確認）
   var driveState='none'; // none(IDなし)/ok/failed/not_configured
   if(inv.driveFileId){
@@ -78597,10 +78832,14 @@ async function deleteInvoiceDo(id){
     catch(e){ storageOk=false; }
   }
   // 3) 一覧から削除（同期にも反映）
-  /* v679: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外される） */
-  invoices[idx]._deleted=true; invTouch(invoices[idx]);   /* v736 */
-  invoices[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
-  lsSet('invoices', invoices);
+  /* v679: 物理削除→論理削除。端末間マージで復活しないようtombstoneを残す（読み取りでは除外される）
+     v1095: Drive・Storage を待っているあいだに読み直された記録に付ける（前は待つ前の写しを書き戻した） */
+  var invoices=ls('invoices',[]); var idx=invoices.findIndex(function(x){return x.id===id;});
+  if(idx>=0){
+    invoices[idx]._deleted=true; invTouch(invoices[idx]);   /* v736 */
+    invoices[idx]._deletedAt=(typeof nowJP==='function'?nowJP():'');
+    lsSet('invoices', invoices);
+  }
   closeModalDirect();
   // 4) 結果に応じて正確に通知
   var driveFail = (driveState==='failed');
@@ -78619,7 +78858,6 @@ async function deleteInvoiceDo(id){
   } else {
     showToast('削除しました','success');
   }
-  renderPage(curPage==='acct_review'?'acct_review':'invoice');
 }
 
 /* ============================================================
@@ -81615,7 +81853,8 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
   // 3ヶ月自動100%
   if (isThreeMonths(emp)) return 100;
   // 承認済み最新
-  var approved = _tipLatestApproved(name, list);   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後） */
+  var _today = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : '';
+  var approved = _tipLatestApproved(name, list, function (r) { return !(_today && typeof _tipFromOk==='function' && _tipFromOk(r) && String(r.fromDay) > _today); });   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後）。v1095: 適用開始日がまだ来ていない変更は数えない */
   if (approved) return approved.rate;
   // 初回勤務日が未設定なら、既存の評価係数（coef）を尊重（インポートデータ保護）
   var fw = firstWorkDate(emp);
@@ -81624,6 +81863,82 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
   var shifts = workedShiftCount(emp);
   if (shifts < noTipShifts(emp.store)) return 0; // No Tip期間中
   return 80;                                     // 期間終了 → 自動80%
+}
+/* ===== v1095：適用開始日（UI案57） =====
+   選べるのは、いまの期間（1〜15 日・16 日〜末日）の初日（ハワイの今日）から 366 日先まで（Q2 A：前の期間は選べない）。初めは今日（Q3 A） */
+function tipFromRange() {
+  var d = _tipHstDay(Date.now());
+  return { min: d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16'), max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+}
+function tipFromCheck(fd) {
+  var g = tipFromRange(), f = function (x) { return String(x).replace(/-/g, '/'); };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fd || '')) || !_tipDayOk(fd)) return t('適用開始日を選んでください', 'Choose the start date');
+  if (fd < g.min) return t('適用開始日は ' + f(g.min) + '（いまの期間の初日）から選べます。前の期間を直すときは Claude に', 'The start date can be from ' + f(g.min) + ' (the first day of this period)');
+  if (fd > g.max) return t('適用開始日が先すぎます（' + f(g.max) + ' まで）', 'The start date is too far ahead (until ' + f(g.max) + ')');
+  return '';
+}
+function tipDayLabel(d) {
+  var x = new Date(String(d) + 'T00:00:00Z'); if (!isFinite(x.getTime())) return String(d || '');
+  var w = (curLang === 'en') ? ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][x.getUTCDay()] : '日月火水木金土'[x.getUTCDay()];
+  return (x.getUTCMonth() + 1) + '/' + x.getUTCDate() + (curLang === 'en' ? ' (' + w + ')' : '（' + w + '）');
+}
+/* 変える前と後の、この人の配分の差（試算）。決める前の確かめに出す。
+   ・before：適用開始日の日に、変えなければ効く率。after：変えたあとにその日に効く率（3 か月の 100%・店・役職の決まりも入れる）。
+   ・差は、適用開始日（評価係数の期間は 10/16 から）から今日（ハワイ）までの、勤怠の入っている日だけを、その人の店（応援先も）で計算し直す。期間ごと。
+   ・本当の額は、勤怠・チップが入ったあとに期間の表で計算する（これは試算） */
+function tipChangePreview(name, rate, fromDay) {
+  var emp = getEmployees().find(function (e) { return e.name === name; });
+  var reqs = ls('tip_requests', []) || [];
+  var sim = reqs.concat([{ id: 'tip_preview', name: name, rate: Number(rate), status: '承認', fromDay: fromDay, decAt: tipDecStamp(reqs, name) }]);
+  var out = { before: null, after: null, periods: [], coefDays: String(fromDay) < TIP_RATE_WEIGHT_START, future: false };
+  if (!emp) return out;
+  out.before = tipRateOn(emp, fromDay, reqs); out.after = tipRateOn(emp, fromDay, sim);
+  var g = tipFromRange(), start = (String(fromDay) < TIP_RATE_WEIGHT_START) ? TIP_RATE_WEIGHT_START : String(fromDay);
+  if (start > g.today) { out.future = true; return out; }
+  var stores = [emp.store].concat(emp.support || []).filter(function (x, i, a) { return x && a.indexOf(x) === i; });
+  var by = {}, d = start, guard = 0;
+  while (d <= g.today && guard++ < 400) {
+    var pk = d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '1' : '2');
+    stores.forEach(function (sid) {
+      var a = calcTipDistribution(sid, d, reqs), b = calcTipDistribution(sid, d, sim);
+      var ra = (a.list || []).find(function (x) { return x.name === name; }), rb = (b.list || []).find(function (x) { return x.name === name; });
+      if (!ra && !rb) return;
+      var p = by[pk] || (by[pk] = { key: pk, delta: 0, first: d, last: d });
+      p.delta += ((rb && rb.total) || 0) - ((ra && ra.total) || 0); p.last = d;
+    });
+    var nx = new Date(d + 'T00:00:00Z'); nx.setUTCDate(nx.getUTCDate() + 1); d = nx.toISOString().slice(0, 10);
+  }
+  out.periods = Object.keys(by).sort().map(function (k) { return by[k]; });
+  return out;
+}
+function tipPreviewText(name, rate, fromDay, pv) {
+  var rl = function (v) { return v === 0 ? 'No Tip' : (v + '%'); }, f = function (x) { return String(x).replace(/-/g, '/').slice(5); };
+  var lines = [];
+  if (pv.before == null) return t('この人は従業員マスターにいません', 'This person is not in the staff master');
+  lines.push(t(name + ' さんの Tip Rate：' + tipDayLabel(fromDay) + 'の勤務から ' + rl(pv.before) + ' → ' + rl(pv.after) + (pv.after < pv.before ? '（下がります）' : (pv.after === pv.before ? '（変わりません）' : '')),
+               name + '\'s Tip Rate: from ' + tipDayLabel(fromDay) + ' ' + rl(pv.before) + ' → ' + rl(pv.after)));
+  if (pv.after !== Number(rate)) lines.push(t('（3 か月の 100%・店・役職の決まりで ' + rl(pv.after) + ' です）', '(' + rl(pv.after) + ' by the 3-month / store / role rules)'));
+  if (pv.coefDays) lines.push(t(f(TIP_RATE_WEIGHT_START) + ' より前は評価係数の期間なので、その分の額は変わりません', 'Days before ' + f(TIP_RATE_WEIGHT_START) + ' use the coefficient and do not change'));
+  if (pv.future) lines.push(t('まだその日が来ていないので、いまの額は変わりません', 'That day has not come yet; no amount changes now'));
+  pv.periods.forEach(function (p) {
+    var half = p.key.slice(-1) === '1' ? t('前期', '1st half') : t('後期', '2nd half');
+    var dl = (p.delta >= 0 ? '+' : '−') + '$' + Math.abs(p.delta).toFixed(2);
+    lines.push(t(p.key.slice(0, 7).replace('-', '/') + ' ' + half + '：この人 ' + dl + '（試算・勤怠の入っている ' + f(p.first) + '〜' + f(p.last) + ' の分。同じ時間帯のほかの人は合わせて同じ額だけ変わります）',
+                 p.key.slice(0, 7) + ' ' + half + ': this person ' + dl + ' (estimate, days with hours ' + f(p.first) + '–' + f(p.last) + ')'));
+  });
+  if (!pv.future && !pv.periods.length && !pv.coefDays) lines.push(t('まだ勤怠の入っている日がないので、いまの額は変わりません', 'No days with hours yet; no amount changes now'));
+  return lines.join('\n');
+}
+/* 履歴の「置き換え」（Q4 A）：同じ人のあとの決定（承認）が、この承認の適用開始日以前から効くなら、この承認はどの日にも効かない */
+function tipReplacedBy(r, list) {
+  if (!r || r.status !== '承認') return null;
+  var d0 = _tipDecDay(r) || '0000-00-00', t0 = _tipDecT(r), best = null;
+  (list || []).forEach(function (x) {
+    if (!x || x === r || x.name !== r.name || x.status !== '承認') return;
+    var tx = _tipDecT(x); if (!(tx > t0)) return;
+    if ((_tipDecDay(x) || '0000-00-00') <= d0 && (!best || tx < _tipDecT(best))) best = x;
+  });
+  return best;
 }
 /* 表示用ラベル */
 function tipRateLabel(name) {
@@ -82488,6 +82803,12 @@ function renderTipRate() {
       var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||r.store) : '';
       html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} ${r.basis==='skill'?'<span class="tag tag-green" style="font-size:9px">'+t('条件達成','Qualified')+'</span>':''}</div>
         <div class="approval-meta">${t('申請','Requested')} ${r.rate}%${storeName?' · '+storeName:''}${r.reason?' · '+r.reason:''}</div></div><span class="tag tag-yellow">${r.rate}%</span></div>
+        ${(function(){ var g=tipFromRange(); var rq=(function(){ var m=String(r.date||'').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/); return m?(m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2)):''; })();
+          var rqOk=rq && rq>=g.min && rq<=g.max && rq!==g.today;
+          return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0"><label for="tipfrom-'+r.id+'" style="font-size:11px;font-weight:700">'+t('適用開始日（この日の勤務から）','Start date (from this day\'s shifts)')+'</label>'
+            +'<input type="date" class="form-input" id="tipfrom-'+r.id+'" value="'+g.today+'" min="'+g.min+'" max="'+g.max+'" style="max-width:170px;padding:6px 8px">'
+            +'<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'tipfrom-'+r.id+'\').value=\''+g.today+'\'">'+t('今日','Today')+'</button>'
+            +(rqOk?'<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'tipfrom-'+r.id+'\').value=\''+rq+'\'">'+t('申請した日','Request day')+'（'+rq.slice(5).replace('-','/')+'）</button>':'')+'</div>'; })()}
         <div class="approval-actions">
           <button class="btn btn-success btn-sm" onclick="approveTip('${r.id}','承認')"><i class="ti ti-check"></i> ${t('承認','Approve')}</button>
           <button class="btn btn-danger btn-sm" onclick="approveTip('${r.id}','却下')"><i class="ti ti-x"></i> ${t('却下','Reject')}</button>
@@ -82496,14 +82817,22 @@ function renderTipRate() {
     html += '</div>';
   }
 
-  var history = requests.filter(r=>r.status!=='申請中');
+  /* v1095（UI案57）：変更履歴に、変える前 → 後・適用開始日・変えた人・変えた日時（ハワイ）・種類・置き換え。新しい決定から 20 件 */
+  var history = requests.map(function(r,i){ return {r:r, i:i}; }).filter(function(x){ return x.r && x.r.status!=='申請中'; })
+    .sort(function(a,b){ return (_tipDecT(b.r)-_tipDecT(a.r)) || (b.i-a.i); }).map(function(x){ return x.r; });
   if (history.length) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-history"></i>${t('Tip Rate 変更履歴','Tip Rate History')}</div>`;
-    history.slice().reverse().slice(0,10).forEach(r => {
+    history.slice(0,20).forEach(r => {
       var storeName = r.store ? ((STORES.find(s=>s.id===r.store)||{}).name||'') : '';
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${r.name} · ${r.rate}%</div>
-        <span class="tag ${r.status==='承認'?'tag-green':'tag-red'}">${curLang==='en'?(r.status==='承認'?'Approved':'Rejected'):r.status}</span></div>
-        <div class="approval-meta">${r.approvedDate||r.date}${storeName?' · '+storeName:''}${r.approver?(curLang==='en'?' · by '+r.approver:' · 承認: '+r.approver):''}${r.basis==='skill'?(curLang==='en'?' · Skill criteria met':' · スキル条件達成'):''}</div></div>`;
+      var rep = tipReplacedBy(r, requests);
+      var rl = function(v){ return Number(v)===0 ? 'No Tip' : (v+'%'); };
+      var chg = (r.status==='承認') ? ((r.prevRate!=null && r.prevRate!=='') ? rl(r.prevRate)+' → '+rl(r.rate) : '→ '+rl(r.rate)) : (t('申請 ','Request ')+rl(r.rate));
+      var day = (r.status==='承認') ? (_tipFromOk(r) ? tipDayLabel(r.fromDay)+t('から',' on') : ((_tipDecDayRaw(r)) ? tipDayLabel(_tipDecDayRaw(r))+t('から（決めた日）',' on (decision day)') : '')) : '';
+      var when = (r.decHst || r.decDay) && _tipDecT(r)>1 ? (function(){ var u=new Date(_tipDecT(r)-10*3600*1000); return (u.getUTCMonth()+1)+'/'+u.getUTCDate()+' '+String(u.getUTCHours()).padStart(2,'0')+':'+String(u.getUTCMinutes()).padStart(2,'0')+t('（ハワイ）',' HST'); })() : (r.approvedDate||r.date||'');
+      var kind = r.status==='却下' ? t('却下','Rejected') : (r.basis==='manual' ? t('引き上げ','Raised') : t('申請を承認','Request approved'));
+      html += `<div class="approval-item" style="${rep?'opacity:.6':''}"><div class="approval-header"><div class="approval-title" style="${rep?'text-decoration:line-through':''}">${escapeHtml(r.name)} · ${chg}</div>
+        <span class="tag ${r.status==='承認'?(rep?'tag-gray':'tag-green'):'tag-red'}">${rep?t('置き換え','Replaced'):kind}</span></div>
+        <div class="approval-meta">${day?day+' · ':''}${when}${storeName?' · '+escapeHtml(storeName):''}${r.approver?(curLang==='en'?' · by '+escapeHtml(r.approver):' · '+escapeHtml(r.approver)):''}${r.basis==='skill'?(curLang==='en'?' · Skill criteria met':' · スキル条件達成'):''}${rep?t(' · あとの変更（'+(rep.approver||'')+'）で置き換え',' · replaced by a later change'):''}</div></div>`;
     });
     html += '</div>';
   }
@@ -82568,6 +82897,14 @@ async function approveTip(id, status) {
        下がるときは確かめる。変わらないときは知らせる（独立レビュー 6f75b67 P2-1・P3-3） */
     var _rl = function(v){ return v===0 ? 'No Tip' : (v+'%'); };
     var _before = (typeof effectiveTipRate==='function') ? effectiveTipRate(r.name) : null, _after = null;
+    /* v1095（UI案57）：承認は適用開始日（その日の勤務から）。初めは今日（ハワイ）。決める前に、変わる率と額の差（試算）を出して確かめる */
+    var _from = null, _pv = null;
+    if (status==='承認' && typeof tipFromRange==='function') {
+      var _fe = (typeof document!=='undefined' && document.getElementById) ? document.getElementById('tipfrom-'+id) : null;
+      _from = (_fe && _fe.value) ? String(_fe.value) : tipFromRange().today;   /* 欄が無いとき（承認待ちの一覧の外）は今日 */
+      var _fx = tipFromCheck(_from); if (_fx) { showToast(_fx,'warning'); return; }
+      if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
+    }
     /* 却下でも付ける（独立レビュー v1092 e59f3f9 の P1：前からある申請を却下すると、その申請に新しい時刻が付き、並びでそのあとにある時刻の無い前の承認が
        その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
@@ -82578,8 +82915,11 @@ async function approveTip(id, status) {
       var _ah = tipDecClockAhead(requests, r);
       if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _day))) return;
     }
-    if (status==='承認' && _before!=null) {
-      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec }) : x; }));
+    if (status==='承認' && _pv) {
+      _after = _pv.after;
+      if (typeof confirm==='function' && !confirm(tipPreviewText(r.name, r.rate, _from, _pv)+'\n\n'+t('承認しますか？','Approve?'))) return;
+    } else if (status==='承認' && _before!=null) {   /* 試算が使えないとき（今までどおり、下がるときだけ確かめる） */
+      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec, fromDay:_from||undefined }) : x; }));
       if (_after < _before && typeof confirm==='function'
         && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_rl(_before)+' です。承認すると '+_rl(_after)+' に下がります。承認しますか？',
                       r.name+'\'s Tip Rate is '+_rl(_before)+' now. Approving lowers it to '+_rl(_after)+'. Approve?'))) return;
@@ -82590,10 +82930,11 @@ async function approveTip(id, status) {
     r.decAt = _dec;
     r.decDay = _day;
     r.decHst = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined;   /* v1092: 決めた端末のその日のハワイの日付（ほかの決定の手がかり） */
+    if (status==='承認' && _from) { r.fromDay = _from; if (_pv && _pv.before!=null) r.prevRate = _pv.before; }   /* v1095: 適用開始日と変える前の率 */
     var _saved = lsSet('tip_requests', requests);
     // Tip変更履歴
     var h = ls('tip_history', []);
-    h.push({name:r.name, rate:r.rate, store:r.store||'', status:status, by:r.approver, date:r.approvedDate, basis:r.basis||'manual'});
+    h.push({name:r.name, rate:r.rate, store:r.store||'', status:status, by:r.approver, date:r.approvedDate, basis:r.basis||'manual', fromDay:(status==='承認'?_from:undefined), prevRate:(_pv?_pv.before:undefined), at:_dec});
     lsSet('tip_history', h);
     /* v1087: 承認センターの案件も済みにして知らせる（前の申請は ref が無いので名前と率で探す） */
     try{ apDecidedFromPage('TipRate', r.id, (status==='承認'?'approved':'rejected'), {applicant:r.name, page:'tiprate', title:(r.name+' Tip Rate '+r.rate+'%'),
@@ -82613,16 +82954,33 @@ function openTipRaiseModal(){
   staff.sort(function(a,b){ return effectiveTipRate(a.name)-effectiveTipRate(b.name); });
   var opts = staff.map(function(e){ var rt=effectiveTipRate(e.name); var st=(STORES.find(function(s){return s.id===e.store;})||{}).name||e.store; return '<option value="'+escapeHtml(e.name)+'">'+escapeHtml(e.name)+' ('+escapeHtml(st)+' · '+(rt===0?'No Tip':rt+'%')+')</option>'; }).join('');
   openModal('<div class="modal-title">'+t('Tip Rate 引き上げ','Raise Tip Rate')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">'+t('管理者が直接 Tip Rate を引き上げます（承認済みとして即反映）。','Managers can raise the Tip Rate directly (applied immediately as approved).')+'</div>'
-    +'<div class="form-group"><label class="form-label">'+t('スタッフ','Staff')+'</label><select class="form-select" id="tipraise-name">'+opts+'</select></div>'
-    +'<div class="form-group"><label class="form-label">'+t('新しい Tip Rate','New Tip Rate')+'</label><select class="form-select" id="tipraise-rate"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option></select></div>'
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">'+t('管理者が直接 Tip Rate を変えます（承認済みとして、適用開始日の勤務から反映）。','Managers can change the Tip Rate directly (approved, from the start date\'s shifts).')+'</div>'
+    +'<div class="form-group"><label class="form-label">'+t('スタッフ','Staff')+'</label><select class="form-select" id="tipraise-name" onchange="tipRaisePreview()">'+opts+'</select></div>'
+    +'<div class="form-group"><label class="form-label">'+t('新しい Tip Rate','New Tip Rate')+'</label><select class="form-select" id="tipraise-rate" onchange="tipRaisePreview()"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option></select></div>'
+    +(function(){ var g=tipFromRange(); return '<div class="form-group"><label class="form-label" for="tipraise-from">'+t('適用開始日（この日の勤務から・ハワイの日付）','Start date (from this day\'s shifts, Hawaii date)')+'</label>'
+      +'<input type="date" class="form-input" id="tipraise-from" value="'+g.today+'" min="'+g.min+'" max="'+g.max+'" onchange="tipRaisePreview()">'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('選べるのは、いまの期間の初日（'+g.min.slice(5).replace('-','/')+'）から先の日','From the first day of this period ('+g.min.slice(5).replace('-','/')+')')+'</div></div>'; })()
+    +'<div id="tipraise-preview" style="white-space:pre-line;font-size:12px;line-height:1.7;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:var(--surface2)"></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
-    +'<button class="btn btn-primary" onclick="applyTipRaise()"><i class="ti ti-arrow-up"></i> '+t('引き上げる','Raise')+'</button></div>');
+    +'<button class="btn btn-primary" onclick="applyTipRaise()"><i class="ti ti-arrow-up"></i> '+t('適用開始日から変える','Change from the start date')+'</button></div>');
+  try{ tipRaisePreview(); }catch(e){}
+}
+/* v1095: 引き上げの画面の「保存する前に確かめてください」（選び直すたびに計算し直す） */
+function tipRaisePreview(){
+  var box=document.getElementById('tipraise-preview'); if(!box) return;
+  var nm=(document.getElementById('tipraise-name')||{}).value, rt=parseInt((document.getElementById('tipraise-rate')||{}).value,10), fd=(document.getElementById('tipraise-from')||{}).value;
+  var bad=tipFromCheck(fd);
+  if(!nm || !rt){ box.textContent=''; return; }
+  if(bad){ box.textContent=bad; return; }
+  try{ box.textContent=t('保存する前に確かめてください','Please check before saving')+'\n'+tipPreviewText(nm, rt, fd, tipChangePreview(nm, rt, fd)); }catch(e){ box.textContent=''; }
 }
 async function applyTipRaise(){
   var name=(document.getElementById('tipraise-name')||{}).value;
   var rate=parseInt((document.getElementById('tipraise-rate')||{}).value,10);
+  var _fe0=document.getElementById('tipraise-from');
+  var fromDay=_fe0 ? String(_fe0.value||'') : ((typeof tipFromRange==='function') ? tipFromRange().today : '');   /* v1095: 適用開始日（欄が無いときは今日） */
   if(!name||!rate) return;
+  var _fx0=(typeof tipFromCheck==='function') ? tipFromCheck(fromDay) : ''; if(_fx0){ showToast(_fx0,'warning'); return; }
   if(applyTipRaise._busy){ showToast(t('クラウドの最新を確かめています。少し待ってください','Checking the latest in the cloud. Please wait'),'info'); return; }   /* v1091: 読み直しの途中にもう一度押した */
   var _who=curUserName, _role=curRole, _pg=curPage;
   /* v1091（独立レビュー 10/17）：時刻を付ける前にその人の行を読み直す（ほかの端末のもっと新しい決定に負けない時刻にする） */
@@ -82635,7 +82993,8 @@ async function applyTipRaise(){
     /* 読み直しのあいだに画面を閉じた・選び直した：引き上げない（独立レビュー 6f75b67 P3-2） */
     var _ov=document.getElementById('modal-overlay'), _ne=document.getElementById('tipraise-name'), _re=document.getElementById('tipraise-rate');
     if(!_ne || !_re || (_ov && _ov.classList && !_ov.classList.contains('open'))){ showToast(t('画面を閉じたので、引き上げていません','The dialog was closed; nothing was raised'),'info'); return; }
-    if(_ne.value!==name || parseInt(_re.value,10)!==rate){ showToast(t('選び直したので、もう一度「引き上げる」を押してください','You changed the selection; press Raise again'),'info'); return; }
+    var _fe2=document.getElementById('tipraise-from');
+    if(_ne.value!==name || parseInt(_re.value,10)!==rate || (_fe2 && String(_fe2.value)!==fromDay)){ showToast(t('選び直したので、もう一度押してください','You changed the selection; press the button again'),'info'); return; }
     if(_fr===false) showToast(t('クラウドの最新を読めませんでした。この端末の内容で引き上げます','Could not read the latest from the cloud; raising with this device’s copy'),'warning');
   }
   var emp=getEmployees().find(function(e){return e.name===name;});
@@ -82646,12 +83005,13 @@ async function applyTipRaise(){
   var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
-  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
+  var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
+  requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
-  var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual'}); lsSet('tip_history',h);
+  var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual', fromDay:fromDay, prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), at:_dec}); lsSet('tip_history',h);
   try{ addNotif({ type:'approved', title:t('Tip Rateが引き上げられました','Your Tip Rate was raised'), text:rate+'%', toUser:name, page:'tiprate' }); }catch(e){}
   closeModalDirect();
-  showToast(name+' → Tip Rate '+rate+'%','success');
+  showToast(name+' → Tip Rate '+rate+'%'+((fromDay && typeof tipDayLabel==='function')?'（'+tipDayLabel(fromDay)+t('から','')+'）':''),'success');
   if(curPage===_pg) renderPage(curPage);
   try{ if(typeof tipLiveAfterSave==='function') tipLiveAfterSave([name], _saved); }catch(e){}   /* v1091: ほかの端末へすぐ */
 }
@@ -86242,35 +86602,48 @@ function showToast(msg, type) {
    バージョン管理（更新で要再確認に戻る）・更新ログ・進捗管理（誰がどこまで読んだか）。
    データ: handbook_chapters / handbook_reads {name:{chId:{v,at}}} / handbook_log（すべてSupabase同期） */
 var HANDBOOK_SEED = [{"id": "ch1", "order": 1, "titleJa": "理念とビジョン", "titleEn": "Philosophy and Vision", "bodyJa": "<h4>Founder Message</h4>\n<p>数ある会社の中から、当社を選んでいただき、ありがとうございます。</p>\n<p>私たちは、飲食店を運営することだけを目的とした会社ではありません。</p>\n<p>[楽しむを大切に]を理念に掲げ、人を育て、地域を元気にし、日本のおもてなしの文化を広げていくことを使命としています。</p>\n<p>私たちは、<strong>楽しもうとする行動や意識は、自分自身の幸せにつながり、その幸せが仲間やお客様、地域社会へと広がっていく</strong>と信じています。</p>\n<p>そんな幸せの循環をつくることが、Funergy Groupの目指す未来です。</p>\n<p>このHandbookには、会社のルールだけではなく、私たちが大切にしている考え方や価値観、そして仲間と共に働く上での約束がまとめられています。</p>\n<p>私たちは、皆さん一人ひとりが挑戦し、成長し、仕事を楽しみながら活躍できる会社を目指しています。</p>\n<p>そして、会社の成長とともに、一人ひとりが「この会社で働いて良かった」と思える人生を歩んでいただけたら、これほど嬉しいことはありません。</p>\n<p>これから、一緒に楽しみ、一緒に成長し、たくさんの笑顔を生み出していきましょう。</p>\n<h4>Takuya Tsutsumi</h4>\n<p>Founder &amp; President</p>\n<p>Funergy Group Inc.</p>\n<p>第<strong>1章　理念・ビジョン</strong></p>\n<h4>1.1 企業理念</h4>\n<h4>「楽しむ」を大切に、自分自身を含む全従業員と地域を元気にすること。</h4>\n<p>Funergy Group Inc.は、ハワイという多様性に富んだ環境の中で、日本の「おもてなし」と食文化、そして思いやり（利他）の心を大切にしています。</p>\n<p>私たちは、飲食店を運営することだけを目的とした会社ではありません。</p>\n<p>働く仲間が仕事を通じて成長し、お客様が笑顔になり、その笑顔が地域へ広がっていく。そのような良い循環をつくることが私たちの使命です</p>\n<p>変化を恐れず挑戦しながらも、大切にすべき価値観は決して変えません。</p>\n<p>100年後も地域から必要とされ、愛され続ける企業を目指します。</p>\n<p>「楽しむ」とは</p>\n<p>Funergy Groupが最も大切にしている価値観が「楽しむ」です。</p>\n<p>ここでいう「楽しむ」とは、ただ楽をすることや好き勝手に行動することではありません。</p>\n<p>仲間と協力し、困難にも前向きに挑戦し、自分自身の成長を楽しみ、お客様に喜んでいただくことを楽しむという考え方です。</p>\n<p>仕事には、大変なことや思い通りにならないこともあります。</p>\n<p>だからこそ私たちは、自分自身の考え方や行動を前向きに選択し、周囲へ良い影響を与えられる人でありたいと考えています。</p>\n<p>楽しむ気持ちは、お客様だけでなく、一緒に働く仲間にも伝わります。</p>\n<p>一人の笑顔や前向きな行動が、お店全体の雰囲気を変え、会社全体の文化をつくります。</p>\n<p>「おもいやり」の心</p>\n<p>私たちは、自分だけが良ければいいとは考えません。</p>\n<p>仲間、お客様、地域社会。</p>\n<p>相手の立場を考え、思いやりを持って行動することを大切にしています。</p>\n<p>困っている仲間がいたら助ける。</p>\n<p>感謝を言葉で伝える。</p>\n<p>誰かの成功を心から喜ぶ。</p>\n<p>その積み重ねが、Funergy Groupの文化です。</p>\n<h4>1.2 Mission（使命）</h4>\n<h4>「日本の誇りをハワイから全米へ」</h4>\n<p>私たちは、日本の食文化、おもてなし、そして思いやりの心を、店舗・サービス・人財を通じてハワイから全米へ広げていきます。</p>\n<p>店舗数を増やすことが目的ではありません。</p>\n<p>会社が成長することで、一人ひとりが新しいことへ挑戦できる環境をつくり、人として成長できる機会を増やすことが、私たちの本当の目的です。</p>\n<p>挑戦する人が増えれば会社も成長する。</p>\n<p>会社が成長すれば、さらに多くの挑戦の機会が生まれる。</p>\n<p>私たちは、この良い循環を大切にしています。</p>\n<h4>1.3 Vision（目指す姿）</h4>\n<p>私たちは、次の未来を目指します。</p>\n<ul>\n<li><blockquote>\n<p>地域に根ざし、地域から愛される会社になる</p>\n</blockquote></li>\n<li><blockquote>\n<p>社員一人ひとりが主役となり、挑戦と成長を楽しめる会社になる</p>\n</blockquote></li>\n<li><blockquote>\n<p>ハワイから全米へ、日本の魅力を伝える架け橋となる</p>\n</blockquote></li>\n<li><blockquote>\n<p>人を育てることで、地域社会へ貢献し続ける会社になる</p>\n</blockquote></li>\n</ul>\n<h4>1.4 リーダーであるための行動指針</h4>\n<p>Funergy Groupでは、リーダーとは役職ではなく、行動で信頼を得る人だと考えています。</p>\n<p>部下に指示を出すだけではなく、自ら率先して行動し、仲間の成長を支え、会社の理念を体現する存在であることを期待しています。</p>\n<p>私たちは、次の行動を大切にします。</p>\n<ul>\n<li><blockquote>\n<p>自ら率先して楽しみ、周囲へ明るさと活力を届ける</p>\n</blockquote></li>\n<li><blockquote>\n<p>感謝の気持ちと誇りを持ち、どんな仕事にも真摯に向き合う</p>\n</blockquote></li>\n<li><blockquote>\n<p>他責ではなく自責で考え、失敗を成長へつなげる</p>\n</blockquote></li>\n<li><blockquote>\n<p>仲間・お客様・地域を尊重し、信頼を積み重ねる</p>\n</blockquote></li>\n<li><blockquote>\n<p>常に学び続け、変化を恐れず挑戦する</p>\n</blockquote></li>\n</ul>\n<p>リーダーは、結果だけではなく、その姿勢や日々の行動によって周囲へ良い影響を与える存在であることを目指します。</p>\n<h4>1.5 全社員共通の10の約束</h4>\n<p>Funergy Groupでは、役職や経験に関係なく、全員が次の約束を大切にしています。</p>\n<ol type=\"1\">\n<li><blockquote>\n<p>挨拶を大切にしよう（関わるすべての人へ元気な挨拶を）</p>\n</blockquote></li>\n<li><blockquote>\n<p>自ら楽しみ、前向きな気持ちで仕事に取り組もう</p>\n</blockquote></li>\n<li><blockquote>\n<p>不機嫌は禁止。伝えたいことは態度ではなく言葉で伝えよう</p>\n</blockquote></li>\n<li><blockquote>\n<p>仲間同士、協調性を大切にしよう</p>\n</blockquote></li>\n<li><blockquote>\n<p>お客様に喜ばれ、感謝される店をつくろう</p>\n</blockquote></li>\n<li><blockquote>\n<p>自分自身、そして仲間の成長を楽しもう</p>\n</blockquote></li>\n<li><blockquote>\n<p>コミュニケーションを大切にしよう</p>\n</blockquote></li>\n<li><blockquote>\n<p>仲間を認め、称賛し、喜びを分かち合おう</p>\n</blockquote></li>\n<li><blockquote>\n<p>苦手なことにも挑戦し、営業中はプロフェッショナルとして行動しよう</p>\n</blockquote></li>\n<li><blockquote>\n<p>嘘やごまかしをせず、約束を守ろう</p>\n</blockquote></li>\n</ol>\n<h4>1.6 店舗コンセプト</h4>\n<p>私たちは、それぞれの店舗が掲げるコンセプトを大切にし、日々の業務に取り組みます。</p>\n<ul>\n<li><blockquote>\n<p><strong>Office</strong>：会社を支え、利益と成長を最大化すること</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Izakaya Tori Ton</strong>：地域で一番愛される店（まずは私たちがお客様を愛すること）</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Izakaya Tenkichi</strong>：活気を大切に、小さな「楽しい」をみんなでつくる店</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Five Star Poke</strong>：常に新鮮で、美味しいを届ける店</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Waikiki Garlic Shack</strong>：ハワイで一番美味しいガーリックシュリンプを目指す店</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Totoya</strong>：また来たいと思っていただける、本物の日本の空間と味を届ける店</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Marujuu</strong>：世代を超えて楽しめる、ワクワクする店</p>\n</blockquote></li>\n<li><blockquote>\n<p><strong>Lala（楽ら）</strong>：居心地が良く、楽しく、愛のある店</p>\n</blockquote></li>\n</ul>\n<p>各店舗には、それぞれの運営ルールや業務マニュアルがあります。</p>\n<p>詳細については、各店舗マニュアルおよび社内OSに従ってください。</p>", "bodyEn": "<h4>Founder Message</h4>\n<p>Thank you for choosing Funergy Group.</p>\n<p>We are not a company whose only purpose is to operate restaurants.</p>\n<p>Our mission is to value the spirit of <strong>“Enjoy”</strong>, develop people, energize the community, and share the culture of Japanese hospitality.</p>\n<p>We believe that the willingness and effort to enjoy what we do leads to our own happiness. That happiness then spreads to our teammates, our guests, and the community around us.</p>\n<p>Creating that positive cycle of happiness is the future that Funergy Group aims to build.</p>\n<p>This Handbook includes not only company rules, but also the values, beliefs, and promises that we share as members of Funergy Group.</p>\n<p>We aim to create a company where each person can challenge themselves, grow, enjoy their work, and play an active role.</p>\n<p>As the company grows, nothing would make us happier than seeing each of you feel that working here became a meaningful part of your life.</p>\n<p>Let’s enjoy the journey together, grow together, and create many smiles together.</p>\n<h4>Takuya Tsutsumi</h4>\n<p>Founder &amp; President</p>\n<p>Funergy Group Inc.</p>\n<h3>Chapter 1: Philosophy and Vision</h3>\n<h4>1.1 Company Philosophy</h4>\n<h4>To value “Enjoyment and energize all employees, ourselves and the community around us.</h4>\n<p>Funergy Group Inc. values Japanese hospitality, Japanese food culture, and the spirit of thoughtfulness and consideration within the diverse environment of Hawaii.</p>\n<p>We are not a company whose only purpose is to operate restaurants.</p>\n<p>Our mission is to create a positive cycle where our team members grow through their work, our guests smile, and those smiles spread throughout the community.</p>\n<p>We will continue to challenge ourselves without fear of change, while never losing sight of the values we must protect.</p>\n<p>We aim to be a company that is needed, loved, and trusted by the community even 100 years from now.</p>\n<h4>What “Enjoy” Means</h4>\n<p>The most important value at Funergy Group is <strong>“Enjoy.”</strong></p>\n<p>In this Handbook, “Enjoy” does not mean taking the easy way out or doing whatever we want.</p>\n<p>It means working together with our teammates, facing challenges with a positive attitude, enjoying our own growth, and finding joy in making our guests happy.</p>\n<p>Work can be difficult. Things do not always go as planned.</p>\n<p>That is why we believe it is important to choose a positive mindset and actions, and to become people who can have a positive influence on those around us.</p>\n<p>The spirit of enjoying our work is felt not only by our guests, but also by the teammates we work with.</p>\n<p>One person’s smile and positive actions can change the atmosphere of the entire restaurant and help create the culture of the entire company.</p>\n<h4>The Spirit of Thoughtfulness</h4>\n<p>We do not believe that it is enough for only ourselves to be okay.</p>\n<p>Our teammates, our guests, and our community all matter.</p>\n<p>We value thinking from the other person’s point of view and acting with thoughtfulness.</p>\n<p>Help a teammate who is struggling.</p>\n<p>Express gratitude in words.</p>\n<p>Celebrate someone else’s success sincerely.</p>\n<p>These small actions, repeated every day, create the culture of Funergy Group.</p>\n<h4>1.2 Mission</h4>\n<h4>Bringing the pride of Japan from Hawaii to the rest of America.</h4>\n<p>We will share Japanese food culture, hospitality, and the spirit of thoughtfulness through our restaurants, service, and people.</p>\n<p>Our goal is not simply to increase the number of restaurants.</p>\n<p>Our true purpose is to grow as a company so that each person has more opportunities to take on new challenges and grow as a person.</p>\n<p>When more people take on challenges, the company grows.</p>\n<p>When the company grows, even more opportunities for challenge are created.</p>\n<p>We value this positive cycle.</p>\n<h4>1.3 Vision</h4>\n<p>We aim to build the following future:</p>\n<ul>\n<li><p>To become a company rooted in the community and loved by the community.</p></li>\n<li><p>To create a company where each team member can be a main character, take on challenges, and enjoy growth.</p></li>\n<li><p>To become a bridge that shares the appeal of Japan from Hawaii to the rest of America.</p></li>\n<li><p>To continue contributing to the community by developing people.</p></li>\n</ul>\n<h4>1.4 Principles for Being a Leader</h4>\n<p>At Funergy Group, we believe that a leader is not defined by position, but by earning trust through actions.</p>\n<p>A leader is not someone who only gives instructions to others.</p>\n<p>A leader is someone who takes initiative, supports the growth of teammates, and embodies the company’s philosophy.</p>\n<p>We value the following actions:</p>\n<ul>\n<li><p>Take initiative in enjoying the work and bring brightness and energy to those around you.</p></li>\n<li><p>Work sincerely with gratitude and pride, no matter what the task is.</p></li>\n<li><p>Think with ownership instead of blaming others, and turn failures into growth.</p></li>\n<li><p>Respect teammates, guests, and the community, and build trust through daily actions.</p></li>\n<li><p>Continue learning and challenge change without fear.</p></li>\n</ul>\n<p>A leader should aim to have a positive influence on others not only through results, but also through attitude and daily behavior.</p>\n<h4>1.5 The 10 Promises Shared by All Team Members</h4>\n<p>At Funergy Group, everyone values the following promises, regardless of position or experience.</p>\n<ol type=\"1\">\n<li><p>Value greetings. Greet everyone you interact with in a positive and energetic way.</p></li>\n<li><p>Enjoy your work and approach it with a positive mindset.</p></li>\n<li><p>Do not show a bad attitude. If you have something to say, communicate it with words, not with attitude.</p></li>\n<li><p>Respect teamwork and cooperation with your teammates.</p></li>\n<li><p>Create a restaurant that guests appreciate and feel happy to visit.</p></li>\n<li><p>Enjoy your own growth and the growth of your teammates.</p></li>\n<li><p>Value communication.</p></li>\n<li><p>Recognize, praise, and share joy with your teammates.</p></li>\n<li><p>Challenge things you are not good at, and act professionally during service.</p></li>\n<li><p>Do not lie, hide the truth, or make excuses. Keep your promises.</p></li>\n</ol>\n<h4>1.6 Restaurant Concepts</h4>\n<p>We value the concept of each restaurant and use it as a guide in our daily work.</p>\n<ul>\n<li><p><strong>Office:</strong> Support the company and maximize profit and growth.</p></li>\n<li><p><strong>Izakaya Tori Ton:</strong> Continuing to create the store that is most loved in our community.</p></li>\n<li><p><strong>Izakaya Tenkichi:</strong> Keep the Store lively and energetic and keep creating small joys together</p></li>\n<li><p><strong>Five Star Poke:</strong> Always deliver fresh and delicious food.</p></li>\n<li><p><strong>Waikiki Garlic Shack:</strong> Aim to serve the best garlic shrimp in Hawaii.</p></li>\n<li><p><strong>Totoya:</strong> Create an authentic Japanese atmosphere and taste that makes guests want to return.</p></li>\n<li><p><strong>Marujuu:</strong> Create an exciting restaurant that can be enjoyed across generations.</p></li>\n<li><p><strong>Izakaya Lala</strong>  A warm, fun place made with love.</p></li>\n</ul>\n<p>Each restaurant has its own operating rules and manuals.</p>\n<p>Please follow each restaurant’s manual and the internal OS for details.</p>", "version": 3}, {"id": "ch2", "order": 2, "titleJa": "事業戦略と経営理念", "titleEn": "Business Strategy & Management Philosophy", "bodyJa": "<p>第<strong>2章　経営方針・戦略</strong></p>\n<h4>2.1 中期ビジョン</h4>\n<p>Funergy Groupは、「楽しむ」という理念を大切にしながら、持続的に成長し、地域から必要とされる会社を目指しています。</p>\n<p>私たちは、店舗数を増やすことだけを目的とは考えていません。</p>\n<p>会社が成長することで、一人ひとりが新しいことへ挑戦できる機会が増え、人財が育ち、その成長がお客様や地域社会へのより大きな価値につながると考えています。</p>\n<h4>短期ビジョン（約1-2年）</h4>\n<ul>\n<li><p>ハワイにおける運営基盤をさらに強化する</p></li>\n<li><p>全店舗が安定した品質・サービス・利益を生み出せる組織をつくる</p></li>\n<li><p>次世代のリーダーを育成し、挑戦できる環境を整える</p></li>\n</ul>\n<h4>中長期ビジョン（2～5年）</h4>\n<ul>\n<li><p>ハワイにおけるブランド価値の向上</p></li>\n<li><p>アメリカ本土への出店</p></li>\n<li><p>フランチャイズモデルの構築</p></li>\n<li><p>社員独立支援制度の検討・導入</p></li>\n<li><p>日本のおもてなし文化を全米へ広げる</p></li>\n</ul>\n<h4>2.2 Funergy Groupの5つの強み</h4>\n<p>私たちは、次の5つを会社の強みとして大切にしています。</p>\n<h4>① 人を育てる会社であること</h4>\n<p>Funergy Groupは、人財育成を会社の最も大切な仕事だと考えています。</p>\n<p>店舗を増やすことよりも、人を育てることを優先し、一人ひとりが挑戦し続けられる環境をつくります。</p>\n<h4>② 挑戦できる環境があること</h4>\n<p>失敗を恐れず挑戦することを大切にしています。</p>\n<p>会社の成長は、一人ひとりの挑戦の積み重ねによって生まれます。</p>\n<p>挑戦する人を応援し、その経験を次の成長につなげる文化があります。</p>\n<h4>③ 「楽しむ」文化があること</h4>\n<p>私たちは、楽しむことが良い仕事につながると考えています。</p>\n<p>働く仲間が楽しみ、お客様も楽しみ、その空間全体が笑顔になることを目指しています。</p>\n<p>楽しむとは、自分勝手に行動することではなく、仲間と協力し、前向きに挑戦し、成長を喜び合うことです。</p>\n<h4>④ 地域から愛される店づくり</h4>\n<p>地域のお客様に愛されることを何より大切にしています。</p>\n<p>地域ごとの特徴や文化を理解し、それぞれの街で必要とされる店舗づくりを続けます。</p>\n<h4>⑤ 品質へのこだわり</h4>\n<p>料理・サービス・清潔感・おもてなし。</p>\n<p>私たちは、日本人らしい細やかな気配りと品質へのこだわりを大切にしています。</p>\n<p>一つひとつの積み重ねが、お客様からの信頼につながると考えています。</p>\n<h4>2.3 経営目標</h4>\n<p>Funergy Groupでは、会社全体の目標を共有し、一人ひとりが同じ方向を向いて成長することを大切にしています。</p>\n<p>会社全体および各店舗では、毎年KGI・KPIを設定し、定期的に進捗を確認しています。</p>\n<p>具体的な目標数値や運用方法については、社内OSに定めます。</p>\n<p>私たちは、数字を追うことだけを目的とは考えていません。</p>\n<p>お客様に喜んでいただき、仲間が成長し、その結果として会社も成長していくことを目指しています。</p>\n<h4>2.4 全社方針</h4>\n<p>Funergy Groupでは、次の考え方を全社共通の方針としています。</p>\n<p>・現場主義</p>\n<p>現場で働く仲間の声を大切にし、共に考え、共に改善していきます。</p>\n<p>・挑戦とスピード</p>\n<p>変化を恐れず、新しいことへ挑戦します。</p>\n<p>現場で起きていることを素早く判断し、改善につなげることを大切にしています。</p>\n<p>・数字と人の両立</p>\n<p>利益は会社を成長させるために必要です。</p>\n<p>しかし、利益だけを追い求める会社にはしません。人を大切にしながら利益を生み出すこと。その両立を目指します。</p>\n<p>・人への投資</p>\n<p>会社にとって最も大切な財産は「人財」です。</p>\n<p>教育、経験、挑戦を通じて、一人ひとりが成長できる環境を整えます。</p>\n<p>・地域への貢献</p>\n<p>私たちは、地域から必要とされる会社を目指します。</p>\n<p>店舗を通じて笑顔を届け、お客様・従業員・地域社会と共に成長し続けます。</p>\n<h4>2.5 Funergyが目指す会社</h4>\n<p>私たちは、会社を大きくすることだけを目指しているのではありません。</p>\n<p>「楽しむ」という理念を大切にしながら、お客様、仲間、地域社会から信頼され、必要とされる会社を目指しています。</p>\n<p>一人ひとりの挑戦が店舗を成長させ、店舗の成長が会社を成長させます。</p>\n<p>そして、その成長が新たな挑戦の機会を生み出し、より多くの人財が活躍できる未来へとつながっていきます。</p>\n<h4>私たちは、会社を大きくすることではなく、より良い会社をつくることを目指しています。</h4>\n<p>その結果として、地域から必要とされ、社員一人ひとりが誇りを持って働ける会社となり、日本の誇りである食文化、おもてなし、そして思いやりの心を、ハワイから全米へ広げていきます。</p>", "bodyEn": "<h3>Chapter 2: Business Strategy &amp; Management Philosophy</h3>\n<h4>2.1 Mid-Term Vision</h4>\n<p>At Funergy Group, we are committed to sustainable growth while staying true to our philosophy of <strong>“Enjoy.”</strong> Our goal is to become a company that is valued and trusted by the communities we serve.</p>\n<p>Our purpose is not simply to open more restaurants.</p>\n<p>As the company grows, we create more opportunities for our team members to take on new challenges, develop their skills, and build meaningful careers. We believe that when our people grow, we create greater value for our guests and our community.</p>\n<h4>Short-Term Vision (Approximately 2 Years)</h4>\n<ul>\n<li><p>Strengthen our operational foundation throughout Hawaii.</p></li>\n<li><p>Build an organization where every restaurant consistently delivers excellent quality, service, and profitability.</p></li>\n<li><p>Develop the next generation of leaders and provide opportunities for growth.</p></li>\n</ul>\n<h4>Mid-to-Long-Term Vision (2–5 Years)</h4>\n<ul>\n<li><p>Strengthen the Funergy Group brand throughout Hawaii.</p></li>\n<li><p>Expand into the U.S. mainland.</p></li>\n<li><p>Develop a franchise business model.</p></li>\n<li><p>Introduce a support program for employees who wish to become business owners.</p></li>\n<li><p>Share Japanese hospitality and culture across the United States.</p></li>\n</ul>\n<h4>2.2 Five Strengths of Funergy Group</h4>\n<p>We believe the following five strengths define who we are as a company.</p>\n<h4>1. We Develop People</h4>\n<p>At Funergy Group, developing people is our highest priority.</p>\n<p>Rather than focusing only on opening more restaurants, we invest in creating an environment where every team member can continue learning, growing, and taking on new challenges.</p>\n<h4>2. We Encourage Challenges</h4>\n<p>We believe that growth comes from having the courage to try something new.</p>\n<p>Mistakes are part of learning, and every challenge creates an opportunity to improve.</p>\n<p>We support people who are willing to step outside their comfort zone.</p>\n<h4>3. We Have a Culture of “Enjoy”</h4>\n<p>We believe that enjoying what we do leads to better work.</p>\n<p>When our team enjoys their work, our guests enjoy their experience, creating a positive atmosphere throughout the restaurant.</p>\n<p>To us, “Enjoy” does not mean doing whatever we want.</p>\n<p>It means working together, embracing challenges with a positive attitude, and celebrating growth together.</p>\n<h4>4. We Build Restaurants Loved by the Community</h4>\n<p>Being loved by our local community is one of our greatest goals.</p>\n<p>We respect the unique culture of each neighborhood and strive to create restaurants that become a valued part of the community.</p>\n<h4>5. We Pursue Japanese Quality</h4>\n<p>Whether it’s our food, service, cleanliness, or hospitality, we are committed to the high standards that represent Japanese quality.</p>\n<p>We believe that excellence is built through consistent attention to detail, and that every small effort strengthens the trust our guests place in us.</p>\n<h4>2.3 Management Goals</h4>\n<p>At Funergy Group, we believe everyone should understand the direction of the company and work toward shared goals.</p>\n<p>Each year, the company and every restaurant establish <strong>KGIs (Key Goal Indicators)</strong> and <strong>KPIs (Key Performance Indicators)</strong> to measure progress.</p>\n<p>Specific goals, targets, and operating procedures are outlined in the company OS.</p>\n<p>While performance metrics are important, our ultimate goal is not simply to achieve numbers.</p>\n<p>We believe that when we delight our guests and help our people grow, strong business results naturally follow.</p>\n<h4>2.4 Company-Wide Principles</h4>\n<p>The following principles guide everything we do at Funergy Group.</p>\n<h4>Field-First Leadership</h4>\n<p>We value the voices of the people working in our restaurants.</p>\n<p>By listening, learning, and improving together, we build a stronger company.</p>\n<h4>Challenge and Speed</h4>\n<p>We embrace change and are willing to take on new challenges.</p>\n<p>We believe that making timely decisions and continuously improving are essential for growth.</p>\n<h4>Balancing People and Performance</h4>\n<p>Profit is essential for a healthy and growing company.</p>\n<p>However, we do not believe in pursuing profit at the expense of people.</p>\n<p>Our goal is to achieve both business success and a workplace where people are valued and respected.</p>\n<h4>Investing in People</h4>\n<p>Our greatest asset is our people.</p>\n<p>We are committed to providing education, experience, and opportunities that help every team member grow.</p>\n<h4>Contributing to the Community</h4>\n<p>We strive to become a company that our community is proud to support.</p>\n<p>Through our restaurants, we hope to bring smiles to our guests while growing together with our employees and the communities we serve.</p>\n<h4>2.5 The Company We Aspire to Be</h4>\n<p>Our goal is not simply to become a larger company.</p>\n<p>We strive to become a better company—one that is trusted by our guests, respected by our team members, and valued by the community while staying true to our philosophy of <strong>“Enjoy.”</strong></p>\n<p>Each person’s growth strengthens our restaurants.</p>\n<p>Strong restaurants strengthen our company.</p>\n<p>As our company grows, even more opportunities are created for people to challenge themselves and build meaningful careers.</p>\n<p>Ultimately, we hope to become a company where every employee can take pride in their work while sharing the best of Japanese food culture, hospitality, and thoughtfulness from Hawaii to communities across America.</p>", "version": 3}, {"id": "ch3", "order": 3, "titleJa": "組織・Grade制度・人材育成", "titleEn": "Organization, Grade System & People Development", "bodyJa": "<p>第<strong>3章　組織・Grade制度・人財育成</strong></p>\n<h4>3.1 組織の考え方</h4>\n<p>Funergy Groupは、「現場が主役」の会社です。</p>\n<p>会社の成長は、現場で働く一人ひとりの挑戦と成長によって生まれると考えています。</p>\n<p>そのため、役職や立場に関係なく意見を出し合い、お互いを尊重しながら、より良い会社づくりを目指します。</p>\n<p>私たちは、役職は「偉さ」ではなく、「責任」の大きさであると考えています。</p>\n<p>より多くの仲間を支え、より大きな責任を担うことで、自分自身もさらに成長していきます。</p>\n<h4>3.2 Grade制度</h4>\n<p>Funergy Groupでは、役職・責任・成長を明確にするため、Grade（G）制度を導入しています。</p>\n<p>Gradeは、役割・責任・理念の実践・人間性・会社への貢献などを総合的に判断し決定します。</p>\n<p>Gradeが上がることは、偉くなることではありません。</p>\n<p>より多くの仲間を支え、より広い視野で会社へ貢献できるようになることを意味します。</p>\n<p>現在のGradeは、次のとおりです。</p>\n<ul>\n<li><p><strong>G1　Crew</strong></p></li>\n<li><p><strong>G1-P　Prep Specialist</strong></p></li>\n<li><p><strong>G2　Crew Leader</strong></p></li>\n<li><p><strong>G3　Store Leader（Server / Kitchen / Operation）</strong></p></li>\n<li><p><strong>G4　Store Manager</strong></p></li>\n<li><p><strong>G5　Area Manager</strong></p></li>\n<li><p><strong>G6　General Manager</strong></p></li>\n</ul>\n<p>各Gradeの役割や責任については、社内OSに定めます。</p>\n<h4>3.3 Trainee制度</h4>\n<p>Funergy Groupでは、新しい役割へ昇格する前に、Trainee（トレーニー）制度を設けています。</p>\n<p>Trainee期間は、次の役割に必要な知識・技術・考え方・責任を身につけるための準備期間です。</p>\n<p>会社は、実際の業務を通して一定期間評価を行い、基準を満たした場合に正式昇格とします。</p>\n<p>Trainee制度は、本人と会社がお互いに適性を確認し、安心して次の役割へ進むための制度です。</p>\n<p>詳細な運用については、社内OSに定めます。</p>\n<h4>3.4 Career Score（成長評価制度）</h4>\n<p>Funergy Groupでは、「人としての成長」を何より大切にしています。</p>\n<p>そのため、評価制度としてCareer Scoreを導入しています。</p>\n<p>ただし、評価方法はGradeによって異なります。</p>\n<ul>\n<li><p><strong>G1</strong>：基本スキル（Skill Level）を中心に評価します。</p></li>\n<li><p><strong>G2以上</strong>：Career Scoreにより総合的に評価します。</p></li>\n</ul>\n<p>Career Scoreでは、理念の実践、人間性、責任感、チームへの貢献、リーダーシップ、成果などを総合的に評価します。</p>\n<p>評価結果はLevel（L1〜L5）として表されます。</p>\n<p>Career Scoreや評価基準の詳細については、社内OSに定めます。</p>\n<h4>3.5 働き方について</h4>\n<p>Funergy Groupでは、「正社員」「アルバイト」という区分だけではなく、Gradeに応じた役割と責任を大切にしています。</p>\n<p><strong>G3以上</strong>は、会社の中心となって活躍するフルタイムメンバーとして位置付けています。</p>\n<p>原則として、<strong>週40時間勤務</strong>を基準とします。</p>\n<p>なお、役割や業務内容によっては、会社と本人の合意のもと、40時間を超えて勤務する場合があります。</p>\n<p>その場合は、法令および会社規程に基づき適切に対応します。</p>\n<h4>3.6 試用期間</h4>\n<p>入社後は、Gradeに関係なく<strong>3か月間</strong>を試用期間とします。</p>\n<p>試用期間は、給与や待遇を変更するための期間ではありません。</p>\n<p>本人と会社がお互いに理解を深め、「Funergyで共に働いていけるか」を確認する大切な期間です。</p>\n<p>なお、トライアル勤務中（店舗ごとに定める10〜15時間程度）は、原則としてチップ支給の対象外となります。</p>\n<h4>3.7 私たちが求める人財</h4>\n<p>Funergy Groupでは、経験や技術だけではなく、人間性や価値観を大切にしています。</p>\n<p>私たちが共に働きたいと考える人は、次のような人です。</p>\n<ul>\n<li><p>「楽しむ」を大切にできる人</p></li>\n<li><p>仲間やお客様を思いやれる人</p></li>\n<li><p>挑戦することを恐れない人</p></li>\n<li><p>素直に学び続けられる人</p></li>\n<li><p>約束を守り、誠実に行動できる人</p></li>\n</ul>\n<p>スキルは、入社後に身につけることができます。</p>\n<p>しかし、人としての姿勢や考え方は、Funergy Groupが最も大切にしている価値です。</p>\n<h4>3.8 人財育成</h4>\n<p>Funergy Groupでは、教育は会社だけが行うものではないと考えています。</p>\n<p>教える人も、教わる人も共に成長し、お互いが学び合う文化を大切にしています。</p>\n<p>新人教育、OJT、面談、Career Scoreなどを通じて、一人ひとりが次の目標へ挑戦できる環境を整えています。</p>\n<p>詳細な教育内容や評価制度については、社内OSに定めます。</p>", "bodyEn": "<h3>Chapter 3: Organization, Grade System &amp; People Development</h3>\n<h4>3.1 Our Organizational Philosophy</h4>\n<p>At Funergy Group, we believe that <strong>our restaurants are the heart of our company.</strong></p>\n<p>The growth of our company comes from the growth, dedication, and continuous improvement of every team member working in our restaurants.</p>\n<p>Regardless of position or title, we encourage everyone to share ideas, respect one another, and work together to build a better company.</p>\n<p>To us, a title does not represent status—it represents responsibility.</p>\n<p>As you take on greater responsibility and support more people, you also continue to grow as a leader.</p>\n<h4>3.2 Grade System</h4>\n<p>To clearly define responsibilities, growth opportunities, and career progression, Funergy Group uses a <strong>Grade (G) System</strong>.</p>\n<p>Grades are determined by evaluating an individual’s responsibilities, leadership, performance, character, commitment to our philosophy, and contribution to the company.</p>\n<p>Moving to a higher Grade does not mean becoming more important than others.</p>\n<p>It means taking greater responsibility, supporting more teammates, and contributing to the company’s success in a larger way.</p>\n<p>Our current Grade structure is:</p>\n<ul>\n<li><p><strong>G1 – Crew</strong></p></li>\n<li><p><strong>G1-P – Prep Specialist</strong></p></li>\n<li><p><strong>G2 – Crew Leader</strong></p></li>\n<li><p><strong>G3 – Store Leader (Server / Kitchen / Operation)</strong></p></li>\n<li><p><strong>G4 – Store Manager</strong></p></li>\n<li><p><strong>G5 – Area Manager</strong></p></li>\n<li><p><strong>G6 – General Manager</strong></p></li>\n</ul>\n<p>Detailed responsibilities for each Grade are provided in the Company OS.</p>\n<h4>3.3 Trainee Program</h4>\n<p>Before being promoted to a new Grade, team members participate in our <strong>Trainee Program</strong>.</p>\n<p>This period allows employees to develop the knowledge, skills, mindset, and leadership required for the next position.</p>\n<p>Performance is evaluated through daily work, coaching, and observation.</p>\n<p>Promotion is granted after the employee demonstrates that they are ready for the responsibilities of the new role.</p>\n<p>The Trainee Program helps both the employee and the company confirm that the next step is the right fit.</p>\n<p>Detailed procedures are outlined in the Company OS.</p>\n<h4>3.4 Career Score (Growth Evaluation System)</h4>\n<p>At Funergy Group, we believe that <strong>personal growth is just as important as job performance.</strong></p>\n<p>For this reason, we use our <strong>Career Score</strong> evaluation system.</p>\n<p>The evaluation method differs by Grade.</p>\n<h4>G1</h4>\n<p>Crew members are evaluated primarily through <strong>Skill Level</strong>, which measures their ability to perform fundamental job skills.</p>\n<h4>G2 and Above</h4>\n<p>Beginning at G2, evaluations are based on the <strong>Career Score</strong> system.</p>\n<p>Career Score measures overall growth by evaluating:</p>\n<ul>\n<li><p>Living our company philosophy</p></li>\n<li><p>Character and professionalism</p></li>\n<li><p>Sense of responsibility</p></li>\n<li><p>Contribution to the team</p></li>\n<li><p>Leadership</p></li>\n<li><p>Performance and results</p></li>\n</ul>\n<p>Evaluation results are expressed as <strong>Level 1 through Level 5</strong>.</p>\n<p>Detailed evaluation criteria are provided in the Company OS.</p>\n<h4>3.5 Our Working Style</h4>\n<p>At Funergy Group, we value responsibilities and contributions more than employment classification.</p>\n<p>Rather than focusing only on whether someone is full-time or part-time, we recognize the role each Grade plays within the organization.</p>\n<p>Team members at <strong>G3 and above</strong> are considered core members of the company.</p>\n<p>Their standard work schedule is generally <strong>40 hours per week</strong>.</p>\n<p>Depending on operational needs and mutual agreement, additional working hours may occasionally be required.</p>\n<p>In such cases, all applicable labor laws and company policies will be followed.</p>\n<h4>3.6 Probationary Period</h4>\n<p>All new employees, regardless of Grade, complete a <strong>three-month probationary period</strong>.</p>\n<p>The probationary period is <strong>not intended to reduce pay or benefits</strong>.</p>\n<p>Its purpose is to allow both the employee and the company to determine whether Funergy Group is the right place to build a successful future together.</p>\n<p>During the initial <strong>trial training period</strong> (generally 10–15 hours depending on the restaurant), employees are not eligible to participate in the tip distribution system.</p>\n<h4>3.7 The People We Want on Our Team</h4>\n<p>At Funergy Group, we value character just as much as experience and technical skills.</p>\n<p>We are looking for people who:</p>\n<ul>\n<li><p>Value our philosophy of <strong>“Enjoy.”</strong></p></li>\n<li><p>Care about their teammates and guests.</p></li>\n<li><p>Are willing to take on new challenges.</p></li>\n<li><p>Continue learning with humility.</p></li>\n<li><p>Keep their promises and act with integrity.</p></li>\n</ul>\n<p>Skills can always be learned.</p>\n<p>Character, attitude, and values are what truly define our team.</p>\n<h4>3.8 Developing Our People</h4>\n<p>We believe that developing people is everyone’s responsibility—not just management’s.</p>\n<p>Those who teach continue learning.</p>\n<p>Those who learn will someday teach others.</p>\n<p>By creating this cycle, everyone grows together.</p>\n<p>Through onboarding, on-the-job training, coaching, one-on-one meetings, and the Career Score system, we provide opportunities for every team member to continue growing.</p>\n<p>Additional details regarding training programs and evaluation systems are available in the Company OS.</p>", "version": 3}, {"id": "ch4", "order": 4, "titleJa": "Funergy Groupで働くこと", "titleEn": "Working at Funergy Group", "bodyJa": "<p>第<strong>4章　働き方・休暇・福利厚生</strong></p>\n<h4>4.1 働き方の考え方</h4>\n<p>Funergy Groupでは、役職や雇用区分だけではなく、それぞれのGradeに応じた役割と責任を大切にしています。</p>\n<p>働き方はGradeによって異なりますが、すべてのメンバーが互いを尊重し、協力しながら店舗を支えることを共通の考え方としています。</p>\n<p>勤務時間だけでなく、仕事への姿勢や仲間への思いやり、責任感を大切にし、一人ひとりが成長できる環境づくりを目指しています。</p>\n<h4>G1（Crew）</h4>\n<p>勤務時間に制限はありません。</p>\n<p>ライフスタイルや希望に合わせて勤務することができます。</p>\n<h4>G2（Crew Leader）</h4>\n<p>勤務時間に一定の基準はありませんが、リーダーとしての役割を担うため、勤務時間について条件を設ける場合があります。</p>\n<p>詳細は、会社および店舗の運営状況に応じて決定します。</p>\n<h4>G3以上</h4>\n<p>G3以上は、会社の中心となって活躍するメンバーです。</p>\n<p>原則として<strong>週40時間勤務</strong>を基準とします。</p>\n<p>なお、役割や業務内容によっては、会社と本人の合意のもと、40時間を超えて勤務する場合があります。</p>\n<p>その場合は、法令および会社規程に基づき適切に対応します。</p>\n<h4>4.2 試用期間</h4>\n<p>入社後は、Gradeに関わらず<strong>3か月間</strong>を試用期間とします。</p>\n<p>試用期間は、給与や待遇を変更するための期間ではありません。</p>\n<p>本人と会社がお互いを理解し、Funergy Groupで共に成長していけるかを確認するための大切な期間です。</p>\n<h4>4.3 トライアル勤務</h4>\n<p>店舗でのトライアル勤務は、仕事内容や店舗の雰囲気をお互いに確認するための時間です。</p>\n<p>トライアル勤務中は、原則として<strong>チップ支給の対象外</strong>となります。</p>\n<p>詳細については、店舗責任者より説明します。</p>\n<h4>4.4 勤務時間・残業</h4>\n<p>勤務時間は、店舗ごとのシフトに基づいて決定します。</p>\n<p>残業は、<strong>会社または上司の許可を得た場合</strong>に行うものとします。</p>\n<p>無断での残業は認められません。</p>\n<p>法令に基づき、必要な残業代を支給します。</p>\n<h4>4.5 休暇制度</h4>\n<p>Funergy Groupでは、仕事とプライベートの両立を大切にしています。</p>\n<p>各種休暇制度は、<strong>G3以上かつ会社が定める勤務条件を満たすメンバー</strong>を対象とします。</p>\n<p>対象となる休暇制度は、会社規程に基づき運用します。</p>\n<h4>主な休暇制度</h4>\n<ul>\n<li><p>年次有給休暇</p></li>\n<li><p>病気休暇（Sick Leave）</p></li>\n<li><p>誕生日休暇</p></li>\n<li><p>結婚休暇</p></li>\n<li><p>忌引休暇</p></li>\n<li><p>産前・産後・育児に関する休暇</p></li>\n<li><p><strong>祝日休暇</strong></p></li>\n</ul>\n<p>祝日休暇は、会社が定める日に一律で休業する制度ではありません。</p>\n<p>店舗運営上、祝日に勤務する場合もあるため、会社が定めるルールに基づき取得する制度です。</p>\n<p>詳細については、社内OSおよび会社規程に定めます。</p>\n<h4>4.6 福利厚生</h4>\n<p>Funergy Groupでは、安心して長く働ける環境づくりを大切にしています。</p>\n<p>対象者には、会社規程に基づき各種福利厚生を提供します。</p>\n<h4>主な福利厚生</h4>\n<ul>\n<li><p>健康保険</p></li>\n<li><p>労災保険</p></li>\n<li><p>雇用保険</p></li>\n<li><p>社会保険制度</p></li>\n<li><p>社員割引制度</p></li>\n<li><p>各種研修制度</p></li>\n<li><p>昇格・キャリアアップ制度</p></li>\n</ul>\n<p>詳細については、社内OSおよび会社規程に定めます。</p>\n<h4>4.7 社員割引制度</h4>\n<p>社員割引制度は、日頃の貢献への感謝と、自社の商品やサービスをより深く知っていただくことを目的としています。</p>\n<p>社員割引制度は、日頃の貢献への感謝と、自社の商品やサービスをより深く知っていただくことを目的としています。</p>\n<p>割引率はGradeに応じて適用されます。</p>\n<ul>\n<li><p><strong>G1・G2：20％</strong></p></li>\n<li><p><strong>G3以上：30％</strong></p></li>\n</ul>\n<h4>利用ルール</h4>\n<p>社員割引制度を利用する際は、次のルールを守ってください。</p>\n<h4>1. 利用対象</h4>\n<ul>\n<li><p>社員割引は、<strong>本人が同席している場合に限り利用できます。</strong>（代理での会計はできません。）</p></li>\n<li><p><strong>本人が不在の場合でも、2親等以内の家族のみ利用可能</strong>とします。</p>\n<ul>\n<li><p>G1・G2の家族：<strong>15％割引</strong></p></li>\n<li><p>G3以上の家族：<strong>20％割引</strong></p></li>\n</ul></li>\n<li><p>本人不在で友人のみが利用する場合は、社員割引の対象外となります。</p></li>\n<li><p>家族が利用する場合でも、その家族の友人が同席している場合は社員割引の対象外となります。</p></li>\n</ul>\n<h4>2. 利用人数</h4>\n<ul>\n<li><p>社員割引は、<strong>1グループ8名まで</strong>適用されます。</p></li>\n<li><p>入れ替わりがあった場合でも、<strong>合計8名を超える場合は社員割引の対象外</strong>となります。</p></li>\n</ul>\n<h4>3. 会計について</h4>\n<ul>\n<li><p>会計を分けることで人数制限を回避することはできません。</p></li>\n<li><p>同一グループと判断される場合は、店舗責任者の判断により社員割引の適用をお断りする場合があります。</p></li>\n<li><p>店舗スタッフは、お客様へルールを丁寧に説明し、誤解が生じないよう努めてください。</p></li>\n</ul>\n<h4>4.8 社内恋愛について</h4>\n<p>Funergy Groupでは、従業員同士の交際自体を禁止していません。</p>\n<p>しかし、上司と部下など、業務上の公平性や職場環境に影響を与える関係については、会社として適切に対応します。</p>\n<p>必要に応じて、配置転換や担当変更を行う場合があります。</p>\n<p>また、ハラスメントや不適切な関係により職場環境へ重大な影響を与えた場合は、就業規則に基づき懲戒処分の対象となることがあります。</p>\n<h4>4.9 最後に</h4>\n<p>Funergy Groupは、会社と従業員が共に成長し、長く安心して働ける環境づくりを大切にしています。</p>\n<p>働きやすさだけでなく、「働きがい」のある会社であり続けるために、お互いを尊重し、支え合いながら、より良い職場を一緒につくっていきましょう。</p>\n<p>なお、G3以上はFunergy Groupの中核メンバーとして位置付けられます。勤務条件や福利厚生など、一部制度はGradeに応じて適用されます。詳細は各制度をご確認ください。</p>", "bodyEn": "<h3>Chapter 4: Working at Funergy Group</h3>\n<h4>4.1 Our Approach to Work</h4>\n<p>At Funergy Group, we believe that every team member plays an important role in our success.</p>\n<p>Rather than focusing only on employment status, we recognize each person’s responsibilities based on their Grade.</p>\n<p>Regardless of your position, we expect everyone to support one another, work as a team, and contribute to creating an outstanding guest experience.</p>\n<p>We value not only how many hours you work, but also your attitude, professionalism, responsibility, and willingness to help others grow.</p>\n<h4>G1 (Crew)</h4>\n<p>There are no minimum hour requirements for G1 team members.</p>\n<p>Schedules are arranged based on business needs and individual availability.</p>\n<h4>G2 (Crew Leader)</h4>\n<p>There is no fixed minimum schedule requirement.</p>\n<p>However, because Crew Leaders have leadership responsibilities, minimum scheduling requirements may apply depending on the needs of the restaurant.</p>\n<h4>G3 and Above</h4>\n<p>G3 and above are considered core members of Funergy Group.</p>\n<p>The standard work schedule is generally <strong>40 hours per week</strong>.</p>\n<p>Depending on operational needs and mutual agreement, additional working hours may occasionally be required.</p>\n<p>In all cases, Funergy Group complies with applicable labor laws and company policies.</p>\n<h4>4.2 Probationary Period</h4>\n<p>All new employees complete a <strong>three-month probationary period</strong>, regardless of Grade.</p>\n<p>The probationary period is not intended to reduce pay or benefits.</p>\n<p>Its purpose is to allow both the employee and the company to determine whether Funergy Group is the right place to grow together.</p>\n<h4>4.3 Trial Training</h4>\n<p>Trial training allows both the employee and the restaurant to become familiar with each other before regular employment begins.</p>\n<p>During this period, employees are generally <strong>not eligible to participate in the tip pool.</strong></p>\n<p>Your manager will explain the details before training begins.</p>\n<h4>4.4 Work Hours &amp; Overtime</h4>\n<p>Work schedules are determined based on each restaurant’s operating needs.</p>\n<p>Overtime must be approved in advance by a supervisor or manager.</p>\n<p>Unauthorized overtime is not permitted.</p>\n<p>When overtime is required, employees will be compensated in accordance with applicable laws and company policy.</p>\n<h4>4.5 Time Off &amp; Leave Benefits</h4>\n<p>At Funergy Group, we believe that maintaining a healthy work-life balance is important.</p>\n<p>Leave benefits are generally available to <strong>G3 and above</strong> who meet the company’s eligibility requirements.</p>\n<p>Available leave may include:</p>\n<ul>\n<li><p>Paid Time Off (PTO)</p></li>\n<li><p>Sick Leave</p></li>\n<li><p>Birthday Leave</p></li>\n<li><p>Marriage Leave</p></li>\n<li><p>Bereavement Leave</p></li>\n<li><p>Maternity / Parental Leave</p></li>\n<li><p>Holiday Benefits</p></li>\n</ul>\n<p>Holiday benefits do not necessarily mean that restaurants close on public holidays.</p>\n<p>Because many of our restaurants operate during holidays, holiday benefits are provided according to company policy.</p>\n<p>For detailed eligibility and procedures, please refer to the Company OS.</p>\n<h4>4.6 Employee Benefits</h4>\n<p>Funergy Group is committed to creating an environment where our employees can build long-term careers.</p>\n<p>Eligible employees may receive benefits in accordance with company policy.</p>\n<p>Benefits may include:</p>\n<ul>\n<li><p>Health Insurance</p></li>\n<li><p>Workers’ Compensation Insurance</p></li>\n<li><p>Unemployment Insurance</p></li>\n<li><p>Other legally required employment benefits</p></li>\n<li><p>Employee Discount Program</p></li>\n<li><p>Training &amp; Development Programs</p></li>\n<li><p>Promotion &amp; Career Development Opportunities</p></li>\n</ul>\n<p>Please refer to the Company OS for complete details.</p>\n<h4>4.7 Employee Discount Program</h4>\n<p>Our Employee Discount Program is designed to thank our team members for their contributions while encouraging them to enjoy and better understand our restaurants.</p>\n<h4>Discount Rates</h4>\n<ul>\n<li><p><strong>G1 &amp; G2:</strong> 20% Discount</p></li>\n<li><p><strong>G3 and Above:</strong> 30% Discount</p></li>\n</ul>\n<h4>Eligibility</h4>\n<ul>\n<li><p>The employee must be present to receive the employee discount.</p></li>\n<li><p>If the employee is not present, only immediate family members (within the second degree of relationship) are eligible.</p>\n<ul>\n<li><p>Family of G1 &amp; G2 employees: <strong>15% discount</strong></p></li>\n<li><p>Family of G3 and above: <strong>20% discount</strong></p></li>\n</ul></li>\n<li><p>Friends visiting without the employee are not eligible.</p></li>\n<li><p>If family members dine together with friends while the employee is absent, the discount does not apply.</p></li>\n</ul>\n<h4>Party Size</h4>\n<ul>\n<li><p>Employee discounts are limited to <strong>a maximum of eight (8) guests</strong> per party.</p></li>\n<li><p>The limit applies to the total number of guests, even if people join or leave during the visit.</p></li>\n</ul>\n<h4>Payment Rules</h4>\n<ul>\n<li><p>Splitting the check to avoid the guest limit is not permitted.</p></li>\n<li><p>If multiple parties are determined to be one group, management may deny the discount.</p></li>\n<li><p>Team members should explain the policy politely and clearly to avoid misunderstandings.</p></li>\n</ul>\n<h4>4.8 Workplace Relationships</h4>\n<p>Funergy Group does not prohibit employees from having personal relationships.</p>\n<p>However, relationships that create a conflict of interest—such as between supervisors and their direct reports—must be disclosed to the company.</p>\n<p>When necessary, the company may adjust reporting relationships or work assignments to maintain fairness and professionalism.</p>\n<p>Relationships that negatively affect the workplace or involve harassment or inappropriate conduct may result in disciplinary action under company policy.</p>\n<h4>4.9 Growing Together</h4>\n<p>Funergy Group believes that the company and its people grow together.</p>\n<p>Our goal is not only to provide a good place to work, but also to create a workplace where people find purpose, continue growing, and build meaningful careers.</p>\n<p>Core team members (G3 and above) play an especially important role in supporting our company, and some benefits and employment policies may differ depending on Grade.</p>\n<p>Please refer to the Company OS for additional details.</p>", "version": 3}, {"id": "ch5", "order": 5, "titleJa": "報酬・チップ・評価", "titleEn": "Compensation, Tips & Performance Evaluation", "bodyJa": "<p>第<strong>5章　報酬• チップ・成長評価制度</strong></p>\n<h4>5.1 基本的な考え方</h4>\n<p>Funergy Groupでは、給与は単に勤務時間に対して支払われるものではありません。</p>\n<p>一人ひとりの役割、責任、成長、そして会社への貢献を総合的に評価し、給与へ反映していきます。</p>\n<p>私たちは、長く働くことだけを評価する会社ではありません。</p>\n<p>挑戦し、成長し、仲間や会社へより大きく貢献できる人が活躍できる会社を目指しています。</p>\n<p>そのため、Funergy GroupではGrade制度と成長評価制度（Career Score）を導入しています。</p>\n<h4>5.2 報酬制度</h4>\n<p>給与は、Grade、役割、能力、経験、会社への貢献などを総合的に判断し決定します。昇給は勤続年数だけではなく、成長や責任の拡大に応じて行います。</p>\n<p>また、会社全体および店舗の業績なども総合的に考慮します。</p>\n<p>詳細な給与制度については、会社規程および社内OSに定めます。</p>\n<h4>5.3 チップ制度</h4>\n<p>Funergy Groupでは、店舗ごとにチップ制度を導入しています。</p>\n<p>店舗の業態や営業形態に応じて配分方法は異なります。</p>\n<p>また、会社の方針や店舗運営の状況に応じて、配分方法を見直す場合があります。</p>\n<p>詳細については、各店舗ルールおよび社内OSに定めます。</p>\n<h4>5.4 チャージバック・返金等への対応</h4>\n<p>クレジットカードのチャージバックや返金などにより、会社へ売上が入らなかった場合は、売上については会社が負担します。</p>\n<p>ただし、当該取引に対して支給済みのチップについては、実際に売上が成立していないことを踏まえ、後日調整させていただく場合があります。</p>\n<p>詳細な運用については、会社規程および社内OSに定めます。</p>\n<h4>5.5 成長評価制度（Career Score）</h4>\n<p>Funergy Groupでは、「人としての成長」を何より大切にしています。</p>\n<p>評価方法は、Gradeによって異なります。</p>\n<h4>G1（Crew）</h4>\n<p>G1では、基本的な業務を確実に習得することを目的としています。</p>\n<p>業務スキルは、店舗ごとに定める**Skill Level（スキルレベル）**に基づいて評価します。</p>\n<p>一定の基準を満たしたメンバーは、G2への昇格対象となります。</p>\n<h4>G2以上</h4>\n<p>G2へ昇格すると、評価方法は<strong>Skill Level</strong>から<strong>Career Score</strong>へ変わります。</p>\n<p>Career Scoreでは、業務スキルだけではなく、</p>\n<ul>\n<li><p>理念の実践</p></li>\n<li><p>人間性</p></li>\n<li><p>責任感</p></li>\n<li><p>チームへの貢献</p></li>\n<li><p>リーダーシップ</p></li>\n<li><p>成果</p></li>\n</ul>\n<p>などを総合的に評価します。</p>\n<p>評価結果は**Level（L1〜L5）**として表され、昇格やキャリアアップの判断材料となります。</p>\n<p>詳細な評価項目や運用方法については、社内OSに定めます。</p>\n<h4>5.6 将来の評価制度について</h4>\n<p>Funergy Groupでは、会社と従業員が共に成長できる制度づくりを進めています。</p>\n<p>Grade、Career Score、会社および店舗業績などを総合的に考慮した評価制度を導入予定です。</p>\n<p>対象者や運用方法については、制度開始前に別途案内します。</p>\n<h4>5.7 成長を通じて報われる会社へ</h4>\n<p>Funergy Groupでは、単純な昇給だけを目的とは考えていません。</p>\n<p>責任が増え、人として成長し、会社へより大きく貢献できる人が、さらに活躍できる環境をつくることを大切にしています。</p>\n<p>Gradeが上がることは、より大きな責任と挑戦の機会を得ることでもあります。</p>\n<p>給与は会社が一方的に決めるものではなく、社員一人ひとりの成長と会社の成長を結び付ける大切な制度です。</p>\n<p>Funergy Groupは、一人ひとりの努力や挑戦が正しく評価され、成長を実感できる会社を目指しています。</p>", "bodyEn": "<h3>Chapter 5: Compensation, Tips &amp; Performance Evaluation</h3>\n<h4>5.1 Our Compensation Philosophy</h4>\n<p>At Funergy Group, compensation is not based solely on the number of hours worked.</p>\n<p>We consider each employee’s role, responsibilities, personal growth, and overall contribution to the company.</p>\n<p>We are not a company that rewards seniority alone.</p>\n<p>Instead, we recognize and reward people who continue to challenge themselves, grow, and make a positive impact on their teammates and the company.</p>\n<p>To support this philosophy, Funergy Group has implemented both the <strong>Grade System</strong> and the <strong>Career Score</strong> evaluation system.</p>\n<h4>5.2 Compensation System</h4>\n<p>Compensation is determined based on a combination of factors, including:</p>\n<ul>\n<li><p>Grade</p></li>\n<li><p>Job responsibilities</p></li>\n<li><p>Skills and abilities</p></li>\n<li><p>Experience</p></li>\n<li><p>Individual contribution to the company</p></li>\n</ul>\n<p>Pay increases are based not only on length of service, but also on growth, performance, and increased responsibilities.</p>\n<p>Company performance and restaurant performance may also be considered.</p>\n<p>For detailed compensation policies, please refer to the Company OS.</p>\n<h4>5.3 Tip Program</h4>\n<p>Many Funergy Group restaurants participate in a tip program.</p>\n<p>Tip distribution varies depending on the restaurant concept and operating style.</p>\n<p>The company may revise tip distribution methods when necessary to support fair operations and changing business needs.</p>\n<p>Please refer to each restaurant’s policies and the Company OS for details.</p>\n<h4>5.4 Chargebacks &amp; Refunds</h4>\n<p>Occasionally, credit card chargebacks or refunds may result in the company not receiving payment for a transaction.</p>\n<p>In these situations, the company assumes responsibility for the lost revenue.</p>\n<p>However, if tips have already been distributed for a transaction that is later reversed, previously paid tips may be adjusted to reflect the final sales amount.</p>\n<p>Detailed procedures are available in the Company OS.</p>\n<h4>5.5 Career Score (Performance Evaluation)</h4>\n<p>At Funergy Group, we believe that <strong>personal growth is just as important as business results.</strong></p>\n<p>Evaluation methods differ depending on Grade.</p>\n<h4>G1 (Crew)</h4>\n<p>Crew members are evaluated primarily through the <strong>Skill Level</strong> program, which measures proficiency in essential job skills.</p>\n<p>Once the required Skill Level has been achieved, employees become eligible to advance to G2.</p>\n<h4>G2 and Above</h4>\n<p>Beginning at G2, employees are evaluated using the <strong>Career Score</strong> system.</p>\n<p>Career Score evaluates not only job performance, but also:</p>\n<ul>\n<li><p>Living our company philosophy</p></li>\n<li><p>Character and professionalism</p></li>\n<li><p>Responsibility</p></li>\n<li><p>Contribution to the team</p></li>\n<li><p>Leadership</p></li>\n<li><p>Results and performance</p></li>\n</ul>\n<p>Evaluation results are expressed as <strong>Level 1 through Level 5</strong> and are used as one of the factors in promotion and career development.</p>\n<p>Detailed evaluation criteria are provided in the Company OS.</p>\n<h4>5.6 Future Development of Our Evaluation System</h4>\n<p>Funergy Group continuously works to improve its evaluation and compensation systems.</p>\n<p>Beginning in 2027 and beyond, we plan to further integrate Grade, Career Score, company performance, and restaurant performance into our overall evaluation process.</p>\n<p>Any future changes will be communicated before implementation.</p>\n<h4>5.7 Growing Together</h4>\n<p>At Funergy Group, compensation is more than just a paycheck.</p>\n<p>As employees grow, accept greater responsibility, and contribute more to the success of the company, they create greater opportunities for themselves.</p>\n<p>Advancing to a higher Grade means taking on greater responsibility and making a larger impact on the team.</p>\n<p>Our goal is to create a workplace where effort, growth, leadership, and commitment are recognized and rewarded fairly.</p>\n<p>We are committed to helping every employee continue growing while building a stronger company together.</p>", "version": 3}, {"id": "ch6", "order": 6, "titleJa": "経費", "titleEn": "Business Expenses", "bodyJa": "<p>第<strong>6章　経費・会社資産</strong></p>\n<h4>6.1 基本的な考え方</h4>\n<p>Funergy Groupでは、会社の経費は店舗運営や会社の成長に必要なものへ適切に使用することを基本としています。</p>\n<p>会社が負担する経費は、業務上必要と認められるものに限ります。</p>\n<p>経費の利用にあたっては、一人ひとりが責任を持ち、適切に運用してください。</p>\n<h4>6.2 通常業務経費</h4>\n<p>店舗運営に必要な通常業務については、会社が経費を負担します。</p>\n<p>主な対象</p>\n<ul>\n<li><p>店舗間移動</p></li>\n<li><p>食材・備品などの買い出し</p></li>\n<li><p>業務上必要な駐車場利用</p></li>\n<li><p>採用面接</p></li>\n<li><p>評価面談</p></li>\n<li><p>業務上必要な打ち合わせ</p></li>\n<li><p>その他、会社が必要と認めるもの</p></li>\n</ul>\n<p>経費を利用する際は、会社規程に従い、必要に応じてレシートを提出してください。</p>\n<h4>6.3 Store Manager以上の経費利用(G3 or up)</h4>\n<p>営業中に発生する食材や備品などの買い出しを除き、会社経費の利用は、原則として<strong>Store Manager以上</strong>を対象とします。</p>\n<p>Store Managerは、事務作業について原則として店舗内およびアイドリングタイムを活用して行います。</p>\n<p>ただし、次のような場合は、店舗外での業務を認める場合があります。</p>\n<ul>\n<li><p>面接や評価面談など、店舗で実施することが適切ではない場合</p></li>\n<li><p>営業中で店舗内での対応が困難な場合</p></li>\n<li><p>その他、会社が必要と判断した場合</p></li>\n</ul>\n<p>詳細な利用条件や上限については、会社規程および社内OSに定めます。</p>\n<h4>6.4 自社店舗視察</h4>\n<p>自社店舗視察は、Area Manager以上を対象とします。</p>\n<p>店舗運営、品質、サービス、商品、改善提案など、業務上必要な視察については会社が負担します。</p>\n<p>店舗視察に同行できるのは、業務上必要と認められた従業員のみとします。</p>\n<p>家族や友人など、業務に関係のない方の費用は対象となりません。</p>\n<p>詳細は会社規程に定めます。</p>\n<h4>6.5 特別案件</h4>\n<p>店舗合同ミーティング、チームビルディング、採用イベント、特別研修など、通常業務以外で会社が必要と認める活動については、事前申請および承認により会社経費を利用することができます。</p>\n<p>参加者、目的、内容が分かる形で申請を行ってください。</p>\n<h4>6.6 最後に</h4>\n<p>会社の経費や各種制度は、会社と従業員の信頼関係のもとで成り立っています。</p>\n<p>Funergy Groupでは、お互いを信頼し、ルールを守りながら、より良い職場環境をつくることを大切にしています。</p>\n<p>制度を正しく活用し、仲間と協力しながら店舗運営と会社の成長につなげていきましょう。</p>", "bodyEn": "<h3>Chapter 6: Business Expenses</h3>\n<h4>6.1 Basic Principles</h4>\n<p>At Funergy Group, company expenses should be used responsibly and only for legitimate business purposes that support restaurant operations and company growth.</p>\n<p>Employees are expected to use company funds responsibly and in accordance with company policies.</p>\n<h4>6.2 Business Expenses</h4>\n<p>The company will reimburse reasonable business expenses that are necessary for daily operations.</p>\n<p>Examples include:</p>\n<ul>\n<li><p>Travel between company locations</p></li>\n<li><p>Purchasing food, beverages, or operating supplies</p></li>\n<li><p>Parking required for business purposes</p></li>\n<li><p>Job interviews</p></li>\n<li><p>Performance review meetings</p></li>\n<li><p>Business meetings</p></li>\n<li><p>Other expenses approved by the company</p></li>\n</ul>\n<p>Receipts and any required documentation must be submitted in accordance with company policy.</p>\n<h4>6.3 Expense Eligibility (Store Manager and Above)</h4>\n<p>With the exception of purchasing food, beverages, or operational supplies, company expenses are generally available only to <strong>Store Managers and above</strong>.</p>\n<p>Store Managers are expected to complete administrative work at their restaurant during slower business hours whenever possible.</p>\n<p>However, working outside the restaurant may be approved in situations such as:</p>\n<ul>\n<li><p>Conducting interviews or performance reviews where privacy is needed</p></li>\n<li><p>When business operations make it impractical to work inside the restaurant</p></li>\n<li><p>Other situations approved by the company</p></li>\n</ul>\n<p>Store Managers may use company funds for these purposes, up to <strong>$100 per month</strong>, for reasonable workspace expenses such as a café or similar location.</p>\n<p>Area Managers and General Managers are subject to separate expense policies.</p>\n<p>Please refer to the Company OS for detailed guidelines and approval procedures.</p>\n<h4>6.4 Funergy owned Restaurant Visits</h4>\n<p>Company owned Restaurant visits are generally available for <strong>Area Managers and above</strong>.</p>\n<p>Business-related visits for operational reviews, quality checks, service evaluations, menu development, or coaching are considered company business and may be reimbursed.</p>\n<p>Only employees whose attendance is required for business purposes may participate.</p>\n<p>Expenses for family members or friends are not covered.</p>\n<p>Please refer to company policy for additional details.</p>\n<h4>6.5 Special Activities</h4>\n<p>Special activities outside normal operations—such as team-building events, multi-store meetings, recruiting events, or special training sessions—may be approved as company expenses.</p>\n<p>Prior approval is required.</p>\n<p>Employees must submit a request describing the purpose, participants, and expected expenses before the event.</p>\n<h4>6.6 Working Together with Trust</h4>\n<p>Our expense policies and employee programs are built on mutual trust.</p>\n<p>By following these guidelines and using company resources responsibly, we help create a fair workplace while supporting the continued growth of both our restaurants and our company.</p>", "version": 3}, {"id": "ch7", "order": 7, "titleJa": "Grade制度・Career Score・キャリア開発", "titleEn": "Grade System, Career Score & Career Development", "bodyJa": "<p>第<strong>7章　Grade制度・Career Score・キャリアアップ</strong></p>\n<h4>7.1 成長を大切にする会社</h4>\n<p>Funergy Groupでは、「人として成長し続けること」を何より大切にしています。</p>\n<p>経験年数だけで昇格する会社ではありません。</p>\n<p>一人ひとりが挑戦し、学び、責任を持ち、仲間へ良い影響を与えられる人へ成長していくことを大切にしています。</p>\n<p>Grade制度は、その成長を分かりやすく示すための仕組みです。</p>\n<h4>7.2 Career Map（キャリアマップ）</h4>\n<p>あなたの成長が、<strong>Funergy Groupの未来をつくる。</strong></p>\n<p>Gradeが上がるにつれて、仕事の範囲だけではなく、責任や求められる視点も広がっていきます。</p>\n<p>私たちは、役職を「偉さ」ではなく、「責任」と考えています。</p>\n<p>仲間を支え、店舗を支え、会社を支える力が大きくなること。それがFunergy Groupにおけるキャリアアップです。</p>\n<h4>7.3 Gradeごとの役割</h4>\n<h4>G1　Crew</h4>\n<p>与えられた仕事を正確に、丁寧に、スピーディーに行い、店舗運営の土台を支える役割です。</p>\n<p>評価はSkill Levelによって行われます。</p>\n<h4>G1-P　Prep Specialist</h4>\n<p>営業時間外を中心に仕込み業務を担当する専門職です。</p>\n<p>品質と段取りで店舗を支える重要な役割です。</p>\n<h4>G2　Crew Leader</h4>\n<p>営業中の店舗運営を支える最初のリーダーです。</p>\n<p>自分の仕事だけではなく、周囲を見ながら店舗全体を支えることが求められます。</p>\n<p>評価はCareer Scoreへ移行します。</p>\n<h4>G3　(Store/Server/Kitchen/operation) Leader</h4>\n<p>各専門分野を担当します。</p>\n<p>担当部門の品質、人財育成、チームづくりなどを担う役割です。</p>\n<p>ここから会社の中核メンバーとなります。</p>\n<h4>G4　Store Manager</h4>\n<p>店舗全体の責任者です。</p>\n<p>売上、利益、品質、人財育成など、店舗経営全体を担当します。</p>\n<h4>G5　Area Manager</h4>\n<p>複数店舗を統括し、店長育成とエリア全体の成長を担います。</p>\n<p>会社の方針を現場へ伝え、各店舗を支援する役割です。</p>\n<h4>G6　General Manager</h4>\n<p>会社全体の運営を統括します。</p>\n<p>経営方針を実現し、会社全体の成長に責任を持つ最終責任者です。</p>\n<h4>7.4 Career Score</h4>\n<p>Funergy Groupでは、G2以上のメンバーを対象にCareer Scoreによる評価を行います</p>\n<p>Career Scoreは、仕事の成果だけではなく、</p>\n<ul>\n<li><p>理念の実践</p></li>\n<li><p>人間性</p></li>\n<li><p>責任感</p></li>\n<li><p>チームへの貢献</p></li>\n<li><p>リーダーシップ</p></li>\n<li><p>成果</p></li>\n</ul>\n<p>などを総合的に評価します。</p>\n<p>評価結果は<strong>Level1〜Level5</strong>で表されます。</p>\n<p>詳細な評価基準については、社内OSに定めます。</p>\n<h4>7.5 G1からG2へのステップ</h4>\n<p>G1では、店舗ごとに定められたSkill Levelを習得することを目標とします。</p>\n<p>一定の基準を満たしたメンバーは、G2へのチャレンジ資格を得ます。</p>\n<p>G2へ昇格すると、評価制度はSkill LevelからCareer Scoreへ変わります。</p>\n<p>ここからは、仕事だけではなく、人としての成長や仲間への貢献も評価対象となります。</p>\n<h4>7.6 Trainee制度</h4>\n<p>Funergy Groupでは、次のGradeへ昇格する前にTrainee期間を設けています。</p>\n<ul>\n<li><p>G3 Trainee</p></li>\n<li><p>G4 Trainee</p></li>\n<li><p>G5 Trainee</p></li>\n<li><p>G6 Trainee</p></li>\n</ul>\n<p>Trainee期間は、次の役職に必要な知識・技術・考え方・責任を身につけるための準備期間です。</p>\n<p>会社は日々の業務や面談を通じて総合的に評価し、基準を満たした場合に正式昇格とします。</p>\n<h4>7.7 キャリアアップとこれからの評価制度</h4>\n<p>Funergy Groupでは、一人ひとりの挑戦を応援しています。</p>\n<p>入社時の経験に関係なく、努力と成長によって責任ある役割へ挑戦することができます。</p>\n<p>キャリアアップは会社から与えられるものではありません。</p>\n<p>自ら学び、挑戦し、仲間から信頼されることで、新しい役割への道が開かれていきます。</p>\n<p>将来的には、Career Score、Grade、会社・店舗業績などを総合的に評価し、成長や会社への貢献が報酬へ反映される制度づくりを進めていきます。</p>\n<p>Grade制度やCareer Scoreは、順位を付けるための制度ではありません。</p>\n<p>一人ひとりが昨日の自分より成長し、新しい挑戦へ進むための道しるべです。</p>\n<p>Gradeが上がるということは、より多くの仲間を支え、より大きな責任を担うということです。</p>\n<p>Funergy Groupは、一人ひとりの努力や挑戦が正しく評価され、成長を実感できる会社を目指しています。</p>", "bodyEn": "<h3>Chapter 7: Grade System, Career Score &amp; Career Development</h3>\n<h4>7.1 We Value Growth</h4>\n<p>At Funergy Group, we believe that <strong>continuous personal growth</strong> is one of the most important parts of our culture.</p>\n<p>Promotions are not based simply on years of service.</p>\n<p>We value people who continue to learn, accept responsibility, support their teammates, and make a positive impact on those around them.</p>\n<p>Our Grade System was created to make that growth visible and to provide a clear path for career development.</p>\n<h4>7.2 Career Map</h4>\n<h4>Your Growth Builds the Future of Funergy Group</h4>\n<p>As your Grade increases, so do your responsibilities, leadership opportunities, and influence within the company.</p>\n<p>At Funergy Group, a promotion is not about status—it is about taking greater responsibility and helping more people succeed.</p>\n<h4>7.3 Roles by Grade</h4>\n<h4>G1 – Crew</h4>\n<p>Responsible for performing assigned tasks accurately, efficiently, and consistently while supporting daily restaurant operations.</p>\n<p>Performance is evaluated through the <strong>Skill Level</strong> program.</p>\n<h4>G1-P – Prep Specialist</h4>\n<p>Responsible primarily for food preparation outside of service hours.</p>\n<p>This position plays an essential role in maintaining quality and operational efficiency.</p>\n<h4>G2 – Crew Leader</h4>\n<p>The first level of leadership within the restaurant.</p>\n<p>Crew Leaders are expected not only to perform their own responsibilities, but also to support teammates and help ensure smooth daily operations.</p>\n<p>Performance is evaluated through the <strong>Career Score</strong> system.</p>\n<h4>G3 – Store Leader</h4>\n<p>Leads one of the restaurant’s core areas:</p>\n<ul>\n<li><p>Service</p></li>\n<li><p>Kitchen</p></li>\n<li><p>Operations</p></li>\n</ul>\n<p>Store Leaders are responsible for quality, team development, and leadership within their department.</p>\n<p>This is considered the beginning of Funergy Group’s core leadership team.</p>\n<h4>G4 – Store Manager</h4>\n<p>Responsible for the overall operation of one restaurant.</p>\n<p>Responsibilities include sales, profitability, quality, team development, staffing, and daily operations.</p>\n<h4>G5 – Area Manager</h4>\n<p>Provides leadership across multiple restaurants.</p>\n<p>Area Managers coach Store Managers, improve operational performance, and help implement company strategy.</p>\n<h4>G6 – General Manager</h4>\n<p>Leads the entire company.</p>\n<p>The General Manager is responsible for company-wide operations, organizational development, and achieving Funergy Group’s long-term vision.</p>\n<h4>7.4 Career Score</h4>\n<p>Beginning at <strong>G2</strong>, employees are evaluated using the <strong>Career Score</strong> system.</p>\n<p>Career Score measures more than job performance.</p>\n<p>It evaluates overall professional growth, including:</p>\n<ul>\n<li><p>Living our company philosophy</p></li>\n<li><p>Character and professionalism</p></li>\n<li><p>Responsibility</p></li>\n<li><p>Contribution to the team</p></li>\n<li><p>Leadership</p></li>\n<li><p>Results</p></li>\n</ul>\n<p>Evaluation results are expressed as <strong>Level 1 through Level 5</strong>.</p>\n<p>Detailed evaluation criteria are available in the Company OS.</p>\n<h4>7.5 From G1 to G2</h4>\n<p>At the G1 level, employees focus on developing fundamental job skills through the <strong>Skill Level</strong> program.</p>\n<p>Once the required Skill Level has been achieved, employees become eligible to pursue promotion to G2.</p>\n<p>Beginning with G2, evaluations transition from Skill Level to Career Score.</p>\n<p>From this point forward, growth as a teammate and leader becomes just as important as technical skills.</p>\n<h4>7.6 Trainee Program</h4>\n<p>Before promotion to the next Grade, employees participate in the appropriate <strong>Trainee Program</strong>.</p>\n<ul>\n<li><p>G3 Trainee</p></li>\n<li><p>G4 Trainee</p></li>\n<li><p>G5 Trainee</p></li>\n<li><p>G6 Trainee</p></li>\n</ul>\n<p>During this period, employees develop the knowledge, leadership skills, and responsibilities required for the next position.</p>\n<p>Promotion is granted after management determines that the employee has demonstrated readiness for the role.</p>\n<h4>7.7 Career Development</h4>\n<p>At Funergy Group, we encourage every employee to continue growing throughout their career.</p>\n<p>Career advancement is not simply given—it is earned through continuous learning, taking on new challenges, and gaining the trust of teammates.</p>\n<p>In the future, Career Score, Grade, company performance, and restaurant performance will all be considered as part of our overall evaluation and compensation system.</p>\n<p>Our Grade System and Career Score are <strong>not designed to rank people.</strong></p>\n<p>They exist to help every employee continue improving, challenge themselves, and reach their full potential.</p>\n<p>As your Grade increases, so does your opportunity to support others and make a greater impact on the company.</p>\n<p>Funergy Group is committed to recognizing growth, rewarding effort, and creating opportunities for every employee to succeed.</p>", "version": 3}, {"id": "ch8", "order": 8, "titleJa": "店舗運営と職場基準", "titleEn": "Restaurant Operations & Workplace Standards", "bodyJa": "<p>第<strong>8章　店舗運営・職場ルール</strong></p>\n<h4>8.1 店舗運営の考え方</h4>\n<p>Funergy Groupでは、料理やサービスだけでなく、お客様が店舗で過ごす時間そのものを商品であると考えています。</p>\n<p>お客様に「また来たい」と思っていただける店舗づくりを目指し、一人ひとりが責任を持って日々の営業に取り組みます。</p>\n<p>店舗は、一人でつくるものではありません。</p>\n<p>仲間と協力し、お互いを支え合いながら、チーム全員でより良い店舗づくりを目指します。</p>\n<h4>8.2 接客の基本姿勢</h4>\n<p>私たちは、お客様一人ひとりとの出会いを大切にします。</p>\n<p>笑顔、挨拶、感謝の気持ちを忘れず、お客様の立場に立ったサービスを心掛けてください。</p>\n<p>困っているお客様を見かけたら、自分から声を掛けることを大切にしています。</p>\n<p>接客方法やサービス基準については、各店舗マニュアルおよび社内OSに定めます。</p>\n<h4>8.3 衛生・安全管理</h4>\n<p>飲食店において、衛生管理と安全管理は最も重要な仕事の一つです。</p>\n<p>店舗・厨房・客席・トイレ・設備などは常に清潔な状態を保ち、お客様に安心してご利用いただける環境を維持してください。</p>\n<p>また、食材管理、温度管理、手洗い、衛生ルールなどについては、会社が定める基準を遵守してください。</p>\n<p>詳細な運用については、各店舗マニュアルおよび社内OSに定めます。</p>\n<h4>8.4 報告・連絡・相談（報・連・相）</h4>\n<p>仕事を円滑に進めるためには、報告・連絡・相談が欠かせません。</p>\n<p>問題やミスが発生した場合は、隠したり自己判断したりせず、速やかに上司へ報告してください。</p>\n<p>早めの相談が、お客様や仲間を守り、店舗全体の成長につながります。</p>\n<h4>8.5 クレーム・事故・緊急時の対応</h4>\n<p>お客様からのご意見やご指摘は、店舗をより良くするための大切な機会です。</p>\n<p>感情的にならず、お客様のお話を最後まで伺い、誠実に対応してください。</p>\n<p>自分だけで判断せず、必要に応じて責任者へ報告・相談してください。</p>\n<p>事故や災害などの緊急時は、お客様と従業員の安全を最優先とし、会社が定める手順に従って対応してください。</p>\n<p>詳細については、店舗マニュアルおよび社内OSに定めます。</p>\n<h4>8.6 名前の呼び方について</h4>\n<p>Funergy Groupでは、役職や立場に関係なく、お互いを尊重し、本音で意見を言い合える職場づくりを大切にしています。</p>\n<p>そのため、特別な希望がない限り、役職名ではなく<strong>ファーストネームやニックネーム</strong>で呼び合うことを推奨しています。</p>\n<p>ただし、親しみやすさと礼儀は別です。</p>\n<p>相手への敬意を欠く呼び方や、不快感を与える呼称は禁止します。</p>\n<p>お互いを尊重し、気持ちよくコミュニケーションが取れる職場を目指しましょう。</p>\n<h4>8.7 就業時の服装・身だしなみ</h4>\n<p>Funergy Groupでは、ある程度自由な服装を認めていますが、飲食店で働く以上、<strong>清潔感・安全・衛生</strong>を最優先とします。</p>\n<p>勤務中は、次のルールを守ってください。</p>\n<ul>\n<li><p>会社が定めた制服を着用すること。</p></li>\n<li><p>シューズは足の甲が完全に覆われたものを着用すること（サンダル・オープントゥ不可）。</p></li>\n<li><p>爪は指先から5mm以上出ない長さとし、派手なジェルネイルや装飾ネイルは禁止します。</p></li>\n<li><p>食材を扱うポジションでは、髪をまとめる、または帽子を着用してください。</p></li>\n<li><p>派手すぎるネックレスや装飾品は着用しないでください。</p></li>\n</ul>\n<p>これらのルールは、お客様へ安心・安全なサービスを提供するとともに、従業員自身の安全と衛生を守るために定めています。</p>\n<p>Funergy Groupの一員として、一人ひとりが責任を持って遵守してください。</p>\n<h4>8.8 最後に</h4>\n<p>店舗の雰囲気は、一人ひとりの日々の行動によってつくられます。</p>\n<p>笑顔で挨拶をすること。</p>\n<p>仲間を思いやること。</p>\n<p>お客様へ感謝の気持ちを持つこと。</p>\n<p>小さな積み重ねが、お客様の「また来たい」という気持ちにつながり、Funergy Groupのブランドを育てていきます。</p>\n<p>私たちは、料理だけではなく、「また来たい」と思っていただける時間と空間を提供できるチームを目指します。</p>", "bodyEn": "<h3>Chapter 8: Restaurant Operations &amp; Workplace Standards</h3>\n<h4>8.1 Our Approach to Restaurant Operations</h4>\n<p>At Funergy Group, we believe that we provide more than great food and service.</p>\n<p>We create memorable experiences for our guests.</p>\n<p>Our goal is to build restaurants where guests genuinely want to return.</p>\n<p>Every team member plays an important role in creating that experience through teamwork, responsibility, and daily commitment to excellence.</p>\n<p>No great restaurant is built by one person alone.</p>\n<p>We succeed by supporting one another and working together as one team.</p>\n<h4>8.2 Guest Service Standards</h4>\n<p>Every guest is important to us.</p>\n<p>We greet each guest with a smile, show genuine appreciation, and always strive to provide thoughtful and attentive service.</p>\n<p>If you notice that a guest needs assistance, take the initiative to help.</p>\n<p>Detailed service standards and operating procedures are provided in each restaurant’s operating manual and the Company OS.</p>\n<h4>8.3 Food Safety &amp; Sanitation</h4>\n<p>Food safety and cleanliness are among the most important responsibilities in our restaurants.</p>\n<p>All work areas—including kitchens, dining rooms, restrooms, equipment, and storage areas—must be kept clean and organized at all times.</p>\n<p>Employees are expected to follow all company food safety standards, including proper food handling, temperature control, hand washing, and sanitation procedures.</p>\n<p>Detailed requirements are available in the restaurant operating manuals and the Company OS.</p>\n<h4>8.4 Communication (Report • Inform • Consult)</h4>\n<p>Good communication is essential to a successful restaurant.</p>\n<p>If a problem, mistake, or unexpected situation occurs, report it promptly rather than trying to solve it alone or hide it.</p>\n<p>Early communication helps protect our guests, support our teammates, and improve our operations.</p>\n<h4>8.5 Guest Complaints, Accidents &amp; Emergencies</h4>\n<p>Guest feedback, including complaints, provides valuable opportunities to improve.</p>\n<p>Always remain calm, listen carefully, and respond respectfully.</p>\n<p>Do not make important decisions on your own.</p>\n<p>When necessary, involve your supervisor or manager immediately.</p>\n<p>In the event of an accident or emergency, the safety of our guests and employees is always the highest priority.</p>\n<p>Please follow company procedures and your manager’s instructions.</p>\n<p>Detailed emergency procedures are available in the Company OS.</p>\n<h4>8.6 How We Address One Another</h4>\n<p>At Funergy Group, we believe that open communication builds strong teams.</p>\n<p>Regardless of position or title, we encourage employees to address one another by their <strong>first name or preferred nickname</strong>, unless someone requests otherwise.</p>\n<p>Being approachable does not mean forgetting respect.</p>\n<p>Always communicate with courtesy, professionalism, and consideration for others.</p>\n<h4>8.7 Workplace Appearance &amp; Uniform Standards</h4>\n<p>Funergy Group allows reasonable personal expression while maintaining high standards of professionalism, cleanliness, and food safety.</p>\n<p>While on duty, all employees are expected to follow these standards:</p>\n<ul>\n<li><p>Wear the company-approved uniform.</p></li>\n<li><p>Wear closed-toe, non-slip shoes.</p></li>\n<li><p>Keep fingernails clean and at an appropriate length. Decorative or excessive nail designs are not permitted.</p></li>\n<li><p>Employees handling food must tie back long hair or wear approved headwear when required.</p></li>\n<li><p>Avoid excessive jewelry or accessories that may affect safety, sanitation, or professionalism.</p></li>\n</ul>\n<p>These standards help protect our guests, our teammates, and ourselves while maintaining the quality and professionalism that guests expect from Funergy Group.</p>\n<h4>8.8 Creating the Funergy Experience</h4>\n<p>Every action we take contributes to the atmosphere of our restaurants.</p>\n<p>A smile.</p>\n<p>A warm greeting.</p>\n<p>Helping a teammate.</p>\n<p>Showing appreciation.</p>\n<p>These small actions create memorable experiences for our guests and strengthen the culture of Funergy Group.</p>\n<p>Our goal is not only to serve great food, but also to create an environment where guests genuinely look forward to returning.</p>", "version": 3}, {"id": "ch9", "order": 9, "titleJa": "コンプライアンスと情報セキュリティ", "titleEn": "Compliance & Information Security", "bodyJa": "<p>第<strong>9章　コンプライアンス・情報管理</strong></p>\n<h4>9.1 コンプライアンスについて</h4>\n<p>Funergy Groupでは、法令を守り、社会から信頼される会社であり続けることを大切にしています。</p>\n<p>会社のルールだけではなく、法律や社会的なルールを理解し、一人ひとりが責任ある行動を心掛けてください。</p>\n<p>判断に迷う場合や不安がある場合は、一人で判断せず、上司または会社へ相談してください。</p>\n<h4>9.2 ハラスメントの禁止</h4>\n<p>Funergy Groupでは、すべての従業員がお互いを尊重し、安心して働ける職場づくりを目指しています。</p>\n<p>次のような行為は認めません。</p>\n<ul>\n<li><p>パワーハラスメント</p></li>\n<li><p>セクシュアルハラスメント</p></li>\n<li><p>差別的な発言や行動</p></li>\n<li><p>暴力、威圧的な言動</p></li>\n<li><p>いじめ、嫌がらせ</p></li>\n<li><p>その他、相手に精神的・身体的苦痛を与える行為</p></li>\n</ul>\n<p>ハラスメントを受けた場合、または見聞きした場合は、一人で抱え込まず、速やかに上司または会社へ相談してください。</p>\n<p>会社は、相談者および関係者のプライバシーに配慮し、公平かつ適切に対応します。</p>\n<h4>9.3 個人情報・会社情報の取り扱い</h4>\n<p>業務を通じて知り得た、お客様、従業員、取引先、会社に関する情報は、適切に管理してください。</p>\n<p>業務上知り得た情報を、会社の許可なく第三者へ開示したり、不適切に利用したりすることは禁止します。</p>\n<p>退職後も、業務上知り得た機密情報を無断で使用・開示してはいけません。</p>\n<h4>9.4 会社システム・アカウントの利用</h4>\n<p>会社から付与されるメールアドレス、Google Workspace、POS、予約システム、各種アカウント等は、業務目的で利用してください。</p>\n<p>パスワードの共有や、会社の許可のない第三者への情報提供は禁止します。</p>\n<p>アカウントやシステムの利用に不明点がある場合は、上司または会社へ確認してください。</p>\n<h4>9.5 相談・報告</h4>\n<p>コンプライアンス、ハラスメント、情報管理、職場環境に関する問題がある場合は、一人で抱え込まず相談してください。</p>\n<p>相談したことによって、不利益な扱いを受けることはありません。</p>\n<p>問題を早く共有することは、会社・店舗・仲間を守るために大切な行動です。</p>\n<h4>9.6 最後に</h4>\n<p>Funergy Groupでは、「正しいことを正しく行う」ことを大切にしています。</p>\n<p>コンプライアンスは、会社を守るためだけのものではありません。</p>\n<p>働く仲間、お客様、地域社会、そして自分自身を守るための大切な考え方です。</p>\n<p>一人ひとりの誠実な行動が、Funergy Groupへの信頼につながります。</p>\n<p>私たちは、これからも社会から信頼され、誇りを持って働ける会社を目指します。</p>", "bodyEn": "<h3>Chapter 9: Compliance &amp; Information Security</h3>\n<h4>9.1 Compliance</h4>\n<p>At Funergy Group, we are committed to operating with integrity and complying with all applicable laws and regulations.</p>\n<p>Every employee is expected to understand and follow not only company policies, but also legal and ethical standards.</p>\n<p>If you are ever unsure about the appropriate course of action, do not make the decision alone.</p>\n<p>Please consult your supervisor or the company for guidance.</p>\n<h4>9.2 Harassment-Free Workplace</h4>\n<p>Funergy Group is committed to providing a workplace where everyone is treated with dignity and respect.</p>\n<p>The following behavior will not be tolerated:</p>\n<ul>\n<li><p>Harassment of any kind</p></li>\n<li><p>Sexual harassment</p></li>\n<li><p>Discrimination</p></li>\n<li><p>Bullying or intimidation</p></li>\n<li><p>Violence or threatening behavior</p></li>\n<li><p>Any conduct that creates an unsafe, hostile, or disrespectful work environment</p></li>\n</ul>\n<p>If you experience or witness inappropriate behavior, report it to your supervisor or the company as soon as possible.</p>\n<p>All reports will be handled fairly and confidentially to the extent possible.</p>\n<h4>9.3 Confidential Information</h4>\n<p>During your employment, you may have access to confidential information regarding our guests, employees, suppliers, or company operations.</p>\n<p>This information must be handled responsibly and may not be disclosed, shared, or used for personal benefit without authorization.</p>\n<p>These confidentiality obligations continue even after your employment ends.</p>\n<h4>9.4 Company Systems &amp; Accounts</h4>\n<p>Company-provided systems—including email accounts, Google Workspace, POS systems, reservation platforms, and other business applications—are provided for business purposes.</p>\n<p>Employees are responsible for protecting company accounts and passwords.</p>\n<p>Do not share login credentials or provide company information to unauthorized individuals.</p>\n<p>If you have questions about the proper use of company systems, please consult your supervisor or the company.</p>\n<h4>9.5 Reporting Concerns</h4>\n<p>If you have concerns regarding compliance, harassment, workplace conduct, or company policies, please speak with your supervisor or contact the company.</p>\n<p>Reporting concerns in good faith will not result in retaliation.</p>\n<p>Addressing issues early helps protect our teammates, our guests, and the company as a whole.</p>\n<h4>9.6 Our Commitment</h4>\n<p>At Funergy Group, we believe that <strong>doing the right thing is always the right choice.</strong></p>\n<p>Compliance is not simply about following rules.</p>\n<p>It is about protecting our teammates, our guests, our communities, and the trust we have built together.</p>\n<p>Every employee’s honesty, integrity, and professionalism contribute to the reputation and future of Funergy Group.</p>\n<p>Together, we will continue building a company that our employees are proud to work for and our communities are proud to support.</p>", "version": 3}, {"id": "ch10", "order": 10, "titleJa": "私たちが築く未来", "titleEn": "The Future We Are Building", "bodyJa": "<p>第<strong>10章　Funergy Groupが目指す未来</strong></p>\n<h4>10.1 会社の未来像</h4>\n<p>Funergy Groupは、**「関わるすべての人が楽しめる環境をつくること」**を大切にしています。</p>\n<p>私たちは、<strong>楽しもうとする行動や意識が、自分自身の幸福を高め、その笑顔や前向きな姿勢が仲間やお客様、地域社会へと広がっていく</strong>と信じています。</p>\n<p>そのような幸せの循環を生み出しながら、ハワイを中心に笑顔あふれる人が活躍し、10年後、100年後も地域社会に愛される会社を目指します。</p>\n<p>また、日本の文化と誇りである「食」「おもてなし」「思いやりの心」を世界へ広げ、日本の魂をハワイ、そして全米へ根付かせていきます。</p>\n<h4>10.2 社員の未来像</h4>\n<p>Funergy Groupは、社員一人ひとりが安心して挑戦し、成長できる環境を提供します。</p>\n<p>成長することを楽しみ、自分の可能性を広げ、お客様や地域社会へ貢献することに喜びを感じられる人財を育てていきます。</p>\n<p>また、Store Leader、Store Manager、Area Manager、General Manager、本部スタッフなど、多様なキャリアパスを用意し、一人ひとりが自信と誇りを持って活躍できる会社を目指します。</p>\n<h4>10.3 中長期キャリア支援</h4>\n<p>Funergy Groupでは、一人ひとりの成長を継続的に支援します。</p>\n<ul>\n<li><p>定期的な評価や面談を通じて、キャリア目標を確認します。</p></li>\n<li><p>一人ひとりの強みを活かし、長期的に活躍できる環境づくりを進めます。</p></li>\n<li><p>挑戦する人を応援し、努力や成長が正しく評価される仕組みをつくっていきます。</p></li>\n</ul>\n<p>会社の成長と社員一人ひとりの成長は、切り離すことのできないものだと私たちは考えています。</p>\n<h4>10.4 最後に</h4>\n<p>Funergy Groupは、飲食店を運営する会社である前に、**「人が成長する会社」**でありたいと考えています。</p>\n<p>どんなに会社が大きくなっても、一番大切なのは「人」です。</p>\n<p>仲間を思いやり、お客様に感謝し、地域社会へ貢献する。</p>\n<p>その積み重ねが、自分自身の成長につながり、会社の未来をつくります。</p>\n<p>このHandbookは、ルールを覚えるためだけのものではありません。</p>\n<p>Funergy Groupが大切にしている考え方や価値観を共有し、全員が同じ方向を向いて成長していくためのガイドブックです。</p>\n<p>一人では実現できない夢も、仲間となら実現できます。</p>\n<h4>「楽しむを大切に。」</h4>\n<p>その一歩が、自分自身を幸せにし、仲間を幸せにし、お客様を幸せにし、地域社会へと笑顔を広げていく。</p>\n<p>私たちは、その幸せの循環を未来へつなぎ、100年先も地域社会に愛される会社を目指していきます。</p>", "bodyEn": "<h3>Chapter 10: The Future We Are Building</h3>\n<h4>10.1 Our Vision for the Future</h4>\n<p>At Funergy Group, we believe in creating an environment where <strong>everyone connected to our company can truly enjoy what they do.</strong></p>\n<p>We believe that choosing to approach our work with a positive attitude and a willingness to enjoy the journey leads to our own happiness.</p>\n<p>That happiness spreads naturally to our teammates, our guests, and the communities we serve.</p>\n<p>Creating this positive cycle of happiness is the future that Funergy Group strives to build.</p>\n<p>As we continue growing from Hawaii, we are committed to sharing the pride of Japanese food culture, hospitality, and thoughtfulness with communities across the United States.</p>\n<p>Our goal is not simply to become a larger company.</p>\n<p>Our goal is to become a company that continues to be trusted, valued, and loved by the community for generations to come.</p>\n<h4>10.2 Our Vision for Our People</h4>\n<p>At Funergy Group, we are committed to creating an environment where every employee can continue to challenge themselves and grow.</p>\n<p>We want our people to enjoy learning, discover their potential, and find fulfillment in contributing to our guests, teammates, and communities.</p>\n<p>We also provide multiple career paths—including Store Leader, Store Manager, Area Manager, General Manager, and Corporate positions—so that every team member has opportunities to build a meaningful career.</p>\n<h4>10.3 Supporting Long-Term Growth</h4>\n<p>We believe that personal growth never stops.</p>\n<p>To support long-term career development, Funergy Group provides:</p>\n<ul>\n<li><p>Regular performance evaluations and one-on-one discussions.</p></li>\n<li><p>Opportunities to develop individual strengths.</p></li>\n<li><p>A workplace that encourages continuous learning and new challenges.</p></li>\n<li><p>A fair evaluation system that recognizes effort, growth, leadership, and contribution.</p></li>\n</ul>\n<p>As our employees grow, our company grows with them.</p>\n<h4>10.4 Looking Ahead</h4>\n<p>At Funergy Group, we believe we are more than a restaurant company.</p>\n<p>We are a company that develops people.</p>\n<p>No matter how much we grow, <strong>people will always be our greatest strength.</strong></p>\n<p>When we care for one another, appreciate our guests, and contribute to our communities, we create a stronger future together.</p>\n<p>This Handbook is more than a collection of policies.</p>\n<p>It represents the values, culture, and philosophy that guide who we are and how we work together.</p>\n<h4>“Enjoy.”</h4>\n<p>A positive attitude and the willingness to enjoy the journey create happiness within ourselves.</p>\n<p>That happiness spreads to our teammates, our guests, and our communities.</p>\n<p>Together, we will continue creating that positive cycle for generations to come.</p>", "version": 3}];
-function getHbChapters(){ var v=ls('handbook_chapters', null); return (v&&v.length)?v:null; }
+/* v1095: 章の記録そのもの（消した章の印 _deleted も入っている）。画面に出すのは getHbChapters（印を除く）。
+   章を消すと、版を 1 つ上げた印を残す（mergeHbChapters）。前は配列から外すだけで、ほかの端末の古い写しやシードから戻っていた */
+function _hbChRaw(){ var v=ls('handbook_chapters', null); return Array.isArray(v)?v:[]; }
+function getHbChapters(){ var v=_hbChRaw().filter(function(c){ return c && !c._deleted; }); return v.length?v:null; }
 function ensureHbSeed(){
-  if(getHbChapters()){ hbSyncSeedVersion(); return; }
-  lsSet('handbook_chapters', HANDBOOK_SEED.map(function(c){ return Object.assign({}, c); }));
+  if(_hbChRaw().length){ hbSyncSeedVersion(); return; }
+  lsSet('handbook_chapters', HANDBOOK_SEED.map(function(c){ return Object.assign({}, c); }));   /* クラウドとは章ごとに合流する（クラウドの新しい版・人が直した章が勝つ） */
+  /* v1095: 「初版」の記録は、クラウドの更新ログを読み終えて空のときだけ（前は、更新ログをまだ読んでいない端末ごとに「初版」が増えていた） */
   var lg=ls('handbook_log',[])||[];
-  if(!lg.length){ lg.push({at:nowJP(), by:'システム', ch:'全10章', ver:1, note:'Crew Hand Book 初版（v1）を登録'}); lsSet('handbook_log', lg); }
+  if(!lg.length && _LS_FETCHED['handbook_log']){ lg.push({at:nowJP(), ts:Date.now(), by:'システム', ch:'全10章', ver:1, note:'Crew Hand Book 初版（v1）を登録'}); lsSet('handbook_log', lg); }
 }
 /* シード版が上がっていれば、本文・タイトルを最新に差し替える。
    既読レコードはそのまま残るが、version上昇により hbStatus が自動で「要再確認(stale)」を返す。 */
 function hbSyncSeedVersion(){
   try{
-    var cur=getHbChapters(); if(!cur) return;
-    var byId={}; cur.forEach(function(c){ byId[c.id]=c; });
-    var changed=false, updatedChs=[];
+    var cur=_hbChRaw().map(function(c){ return Object.assign({}, c); }); if(!cur.length) return;
+    var byId={}; cur.forEach(function(c){ if(c && c.id) byId[c.id]=c; });
+    var changed=false, vers={};
     HANDBOOK_SEED.forEach(function(sd){
       var ex=byId[sd.id];
-      if(!ex){ cur.push(Object.assign({}, sd)); changed=true; updatedChs.push(sd.order+'章'); return; }
+      if(ex && ex._deleted) return;   /* v1095: 消した章はシードから戻さない */
+      if(!ex){ cur.push(Object.assign({}, sd)); changed=true; vers[sd.version||1]=1; return; }
       // シード版が既存版より新しい場合のみ内容を上書き（管理者が手編集した新しい版は保護）
       if((sd.version||1) > (ex.version||1)){
         ex.titleJa=sd.titleJa; ex.titleEn=sd.titleEn; ex.bodyJa=sd.bodyJa; ex.bodyEn=sd.bodyEn; ex.version=sd.version;
-        changed=true; updatedChs.push(sd.order+'章');
+        changed=true; vers[sd.version||1]=1;
       }
     });
     if(changed){
       cur.sort(function(a,b){ return (a.order||0)-(b.order||0); });
       lsSet('handbook_chapters', cur);
-      var lg=ls('handbook_log',[])||[];
-      lg.push({at:nowJP(), by:'システム', ch:updatedChs.join('・'), ver:2, note:'Crew Hand Book を最新版（v2）に更新。該当章は「要再確認」になります'});
-      lsSet('handbook_log', lg);
+      /* v1095: 更新ログは、シードの版ごとに決まった中身で 1 件（どの端末が受け取っても同じ中身なので、合流で 1 件にまとまる）。
+         前は端末ごとに時刻の違う記録が増え、版はいつも「v2」と書いていた。シードの版が上がった日はアプリからは分からないので、時刻は持たない */
+      var lg=ls('handbook_log',[])||[], add=false;
+      Object.keys(vers).map(Number).sort(function(a,b){ return a-b; }).forEach(function(v){
+        var sid='hb_seed_v'+v;
+        if(lg.some(function(l){ return l && l.sid===sid; })) return;
+        var chs=HANDBOOK_SEED.filter(function(x){ return (x.version||1)===v; }).map(function(x){ return x.order+'章'; }).join('・');
+        lg.push({sid:sid, by:'システム', ch:chs, ver:v, note:'Crew Hand Book をアプリの最新版（v'+v+'）に更新。該当章は「要再確認」になります'});
+        add=true;
+      });
+      if(add) lsSet('handbook_log', lg);
     }
   }catch(e){ console.warn('hbSyncSeedVersion', e); }
 }
@@ -86290,19 +86663,81 @@ function hbCheckScroll(){
     var h=document.getElementById('hb-scroll-hint'); if(h) h.style.display='none';
   }
 }
+/* v1095: 読了の保存。端末に書いたあと、クラウドに書けたかを待ってから「保存しました」と出す（前は送る前に「記録しました」と出していた）。
+   送れなければ未送信に残り（つながったら自動で送る）、章の一覧の上に「まだ送れていません」と出る。
+   読了の記録は人・章ごとに合流するので、送り直しで重ならず、古い端末の写しで消えない（mergeHbReads） */
 function hbMarkRead(id){
   var ch=(getHbChapters()||[]).find(function(c){return c.id===id;}); if(!ch) return;
   var me=curUserName||''; if(!me){ showToast('ログインユーザーが特定できません','warning'); return; }
   var reads=ls('handbook_reads',{})||{};
-  if(!reads[me]) reads[me]={};
-  reads[me][id]={v:ch.version||1, at:nowJP()};
-  lsSet('handbook_reads', reads);
-  showToast('第'+(ch.order||'')+'章を読了として記録しました','success');
+  reads[me]=Object.assign({}, reads[me]||{});
+  reads[me][id]={v:ch.version||1, at:nowJP(), _t:Date.now()};
+  var label='第'+(ch.order||'')+'章';
+  try{ delete _lsPushP['handbook_reads']; }catch(e){}
+  var okLocal=lsSet('handbook_reads', reads);
+  var sync=(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED);
+  var pushP=sync ? (_lsPushP['handbook_reads'] || Promise.resolve(false)) : Promise.resolve('off');
+  var labelEn='Chapter '+(ch.order||'');
+  if(!okLocal) showToast(t(label+'の読了を端末に保存できませんでした（保存容量）。クラウドへの送信は続けます', labelEn+': could not be saved on this device (storage). Still sending to the cloud'),'error');
+  else showToast(t(label+'の読了を保存しています…', labelEn+': saving…'),'info');
+  pushP.then(function(r){ hbAfterReadSave(label, r, labelEn); }, function(){ hbAfterReadSave(label, false, labelEn); });
   /* v1024: 全章が読了になった瞬間だけ、理解度チェックの開始画面へ（未回答のときだけ。回答済み・申告済みなら一覧へ）。 */
   _hbView=null;
   try{ if(hbTestStatus(me, hbChaptersSorted(), reads[me]||{})==='pending') _hbView='__test'; }catch(e){ _hbView=null; }
   renderPage('crew_handbook');
   if(_hbView==='__test') window.scrollTo(0,0);
+}
+function hbAfterReadSave(label, r, labelEn){
+  labelEn=labelEn||label;
+  if(r===true){ showToast(t(label+'の読了を保存しました', labelEn+': read is saved'),'success'); }
+  else if(r==='off'){ showToast(t(label+'の読了をこの端末に記録しました（クラウド同期が OFF のため、ほかの端末には出ません）', labelEn+': recorded on this device only (cloud sync is off)'),'warning'); }
+  else {
+    /* 起動の途中（_supaBooting）は lsSet が未送信に積まないので、ここで積む（あとで flushOutbox が端末の記録を読み直して送る） */
+    if(r==='booting'){ try{ _outboxAdd('handbook_reads', 'booting'); }catch(e){} }
+    showToast(t(label+'の読了をこの端末に記録しました。まだクラウドに送れていません（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': recorded on this device but not sent yet (it is sent again when you open the Handbook or press Sync)'),'warning');
+  }
+  try{ if(typeof curPage!=='undefined' && curPage==='crew_handbook' && !_hbView) renderPage('crew_handbook'); }catch(e){}
+}
+/* v1095: 読了と章をクラウドから読み直す（合流するので、この端末のまだ送れていない読了は消えない）。
+   Handbook を開いたとき（60 秒に 1 回まで）と、ページの「同期」で。前はログイン・「最新に更新」のときしか読み直さず、
+   進捗管理がほかの端末の読了を出さなかった。読み直した結果は進捗管理に出す（読めなかったときは「この端末の写し」と出す） */
+var _hbPull={ at:0, ok:null, busy:false, gen:0 };
+/* 1 つのキーを読み直す：クラウドと合流して端末に書き、端末にしかない記録（古い版の端末やほかの道で消された読了・章）があればクラウドへ書き戻す
+   （独立レビュー v1095 P2-2：前は読むだけで、v1094 の端末が消した読了は、それを持っている v1095 の端末が開いても戻らなかった）。
+   読めなければ false（端末はそのまま） */
+async function _hbPullKey(key){
+  var def=_opMergeDef(key); if(!def) return false;
+  var cloud=await _fetchOpValue(key, 'app_state', true);
+  if(cloud===undefined) return false;
+  var local=_lsRaw(key, null);
+  var merged=def.merge(cloud, local);
+  if(!_lsWriteVerified(key, JSON.stringify(merged))) return false;
+  try{ _lsMarkFetched(key); }catch(e){}
+  var empty=Array.isArray(merged)?[]:{};
+  if(!def.covers(cloud==null?empty:cloud, merged)){ try{ _pushWithOutbox(key, merged); }catch(e){} }
+  return true;
+}
+async function hbPullLatest(force){
+  if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED) return false;
+  if(_hbPull.busy && (Date.now()-_hbPull.busy)<20000) return _hbPull.ok;   /* 20 秒たっても終わらない読み直しは待たない（答えの来ない通信で止まらない） */
+  if(!force && _hbPull.at && (Date.now()-_hbPull.at)<60000) return _hbPull.ok;
+  var gen=(_hbPull.gen||0)+1;
+  _hbPull={ at:_hbPull.at, ok:_hbPull.ok, busy:Date.now(), gen:gen };
+  var before=_hbJs(ls('handbook_reads',{}))+'|'+_hbJs(ls('handbook_chapters',null)), ok=false;
+  try{ if(_hbUnsent()) await flushOutbox(); }catch(e){}   /* まだ送れていない読了があれば、先に送り直す */
+  try{ var a=await _hbPullKey('handbook_reads'); var b=await _hbPullKey('handbook_chapters'); ok=!!(a && b); }catch(e){ ok=false; }
+  if(_hbPull.gen!==gen) return ok;   /* あとから始めた読み直しがある（この結果は出さない） */
+  _hbPull={ at:Date.now(), ok:ok, busy:false, gen:gen };
+  var after=_hbJs(ls('handbook_reads',{}))+'|'+_hbJs(ls('handbook_chapters',null));
+  try{ if(typeof curPage!=='undefined' && curPage==='crew_handbook' && !_hbView && (before!==after || !ok || _hbTab==='admin')) renderPage('crew_handbook'); }catch(e){}
+  return ok;
+}
+function _hbUnsent(){ try{ return _outboxGet().some(function(x){ return x && x.key==='handbook_reads'; }); }catch(e){ return false; } }
+function hbSendNow(){
+  try{
+    if(typeof _outboxFlushing!=='undefined' && _outboxFlushing){ showToast(t('送っています。少し待ってから、もう一度見てください','Sending now. Please check again in a moment'),'info'); return; }
+    Promise.resolve(flushOutbox()).then(function(){ showToast(_hbUnsent()?t('まだ送れていません。通信を確かめて、もう一度押してください','Not sent yet. Check the connection and try again'):t('読了をクラウドに送りました','Sent to the cloud'), _hbUnsent()?'warning':'success'); renderPage('crew_handbook'); });
+  }catch(e){}
 }
 /* v1024:start hbtest */
 /* ============================================================
@@ -86499,6 +86934,7 @@ function hbTestCfgSave(){
 function renderHandbook(){
   ensureHbSeed();
   try{ hbLoadTestResults(); }catch(e){}   /* v1024: 理解度チェックの結果（60秒に1回まで。変われば描き直す） */
+  try{ hbPullLatest(false); }catch(e){}   /* v1095: 読了と章を読み直す（60 秒に 1 回まで。変われば描き直す） */
   var chs=hbChaptersSorted();
   var me=curUserName||'';
   var reads=ls('handbook_reads',{})||{}; var mine=reads[me]||{};
@@ -86528,6 +86964,7 @@ function renderHandbook(){
     +'<div style="display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:6px"><b style="font-size:14px">'+(allDone?'<i class="ti ti-circle-check" style="color:var(--green)"></i> 全章読了済み！':'あなたの読了状況')+'</b><span style="font-weight:800;color:'+(allDone?'var(--green)':'var(--accent)')+'">'+readN+' / '+chs.length+'章（'+pct+'%）</span></div>'
     +''+'<div style="margin-top:8px">'+progBar(pct,{h:10,color:allDone?'var(--green)':'var(--accent)'})+'</div>'+''
     +(staleN>0?'<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> 更新された章が'+staleN+'章あります。再度読んで読了チェックしてください。':'')
+    +(_hbUnsent()?'<div style="font-size:11px;color:var(--red);margin-top:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><i class="ti ti-cloud-off"></i> 読了の記録がまだクラウドに送れていません（この端末には記録済み。開いたとき・「同期」で送り直します） / Not sent to the cloud yet <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="hbSendNow()">今すぐ送る</button></div>':'')
     +'</div>';
   h+=hbTestCard(chs, mine);   /* v1024: 全章読了後の理解度チェック（未回答のあいだ残る） */
   chs.forEach(function(c){
@@ -86577,7 +87014,12 @@ function hbRenderAdmin(chs, reads){
     +'<span style="font-size:11px;color:var(--muted)">対象 '+emps.length+'名</span>'
     +(['ceo','gm'].indexOf(curRole)>=0?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openHbTestCfg()"><i class="ti ti-settings"></i> フォーム設定</button>':'')+'</div>';
   /* v1024: 理解度チェックの状態を人ごとに持つ（列・KPI・未回答一覧で使う） */
-  var _tc=hbTestCfg(), _tDone=0, _tPend=0, _tClaim=0, _tPending=[], _tScore=0, _tMax=0;
+  /* v1095: いつの読了を出しているか。読み直せなかったときは「この端末の写し」と出す（最新とは出さない） */
+  var _hm=function(t){ var d=new Date(t); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); };
+  if(_hbPull.busy && _hbPull.ok===null) h+='<div style="font-size:11px;color:var(--muted);margin:0 0 6px"><i class="ti ti-loader-2"></i> 読了の記録をクラウドから読み直しています…</div>';
+  else if(_hbPull.ok===false) h+='<div class="alert alert-warning" style="font-size:11.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-cloud-off"></i> 読了の記録をクラウドから読み直せませんでした。この端末の写しを出しています（ほかの端末の読了が入っていないことがあります）。<button class="btn btn-secondary btn-sm" onclick="hbPullLatest(true)">もう一度読む</button></div>';
+  else if(_hbPull.ok===true) h+='<div style="font-size:11px;color:var(--muted);margin:0 0 6px"><i class="ti ti-cloud-check"></i> 読了の記録：'+_hm(_hbPull.at)+' にクラウドから読み直し</div>';
+  var _tc=hbTestCfg(), _tDone=0, _tPend=0, _tClaim=0, _tPending=[], _tScore=0, _tMax=0, _tScored=0;
   if(['ceo','gm'].indexOf(curRole)>=0 && !_tc.eName && !_tc.eStore && !_tc.eLang)
     h+='<div class="alert alert-warning" style="font-size:11.5px"><i class="ti ti-alert-triangle"></i> 理解度チェックのフォームに entry ID が入っていません。名前・店舗・言語が自動入力されないので、「フォーム設定」で入れてください。</div>';
   var doneAll=0, incomplete=[];
@@ -86596,7 +87038,7 @@ function hbRenderAdmin(chs, reads){
       +'<td style="text-align:center;font-weight:800;color:'+(ok?'var(--green)':'var(--tm)')+'">'+readN+'/'+chs.length+(staleN?'<br><span style="font-size:9px;color:var(--yellow)">要再確認'+staleN+'</span>':'')+'</td>'+cells
       +'<td class="hb-test-td" style="text-align:center;white-space:nowrap">'+(function(){
           var _ts=hbTestStatus(e.name, chs, mine);
-          if(_ts==='done'){ _tDone++; var _r=hbTestResultOf(e.name); if(_r && _r.score!=null && _r.max_score!=null){ _tScore+=Number(_r.score)||0; _tMax+=Number(_r.max_score)||0; } }
+          if(_ts==='done'){ _tDone++; var _r=hbTestResultOf(e.name); if(_r && _r.score!=null && _r.max_score!=null){ _tScore+=Number(_r.score)||0; _tMax+=Number(_r.max_score)||0; _tScored++; } }
           else if(_ts==='claimed'){ _tClaim++; }
           else if(_ts==='pending'){ _tPend++; _tPending.push(e.name); }
           return hbTestCell(e.name, chs, mine);
@@ -86604,7 +87046,7 @@ function hbRenderAdmin(chs, reads){
   }).join('');
   h+='<div class="kpi-grid" style="margin-bottom:8px">'+kpi('全章読了', doneAll+' / '+emps.length+'名', '', doneAll===emps.length&&emps.length>0?'var(--green)':'var(--accent)')
     +kpi('未完了', String(emps.length-doneAll)+'名', '', emps.length-doneAll>0?'var(--yellow)':'var(--green)')
-    +kpi('チェック回答済み', _tDone+' / '+emps.length+'名', '未回答 '+_tPend+'名'+(_tClaim?'・申告のみ '+_tClaim+'名':'')+(_tMax>0?'　平均 '+(Math.round(_tScore/_tDone*10)/10)+'/'+(Math.round(_tMax/_tDone*10)/10):''), _tDone===emps.length&&emps.length>0?'var(--green)':'var(--accent)')+'</div>';
+    +kpi('チェック回答済み', _tDone+' / '+emps.length+'名', '未回答 '+_tPend+'名'+(_tClaim?'・申告のみ '+_tClaim+'名':'')+(_tMax>0&&_tScored>0?'　平均 '+(Math.round(_tScore/_tScored*10)/10)+'/'+(Math.round(_tMax/_tScored*10)/10):''), _tDone===emps.length&&emps.length>0?'var(--green)':'var(--accent)')+'</div>';
   h+='<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:'+(340+chs.length*40)+'px;font-size:11px"><thead><tr><th style="text-align:left">スタッフ</th><th>進捗</th>'
     +chs.map(function(c){return '<th title="'+escapeHtml(c.titleJa||'')+'">'+(c.order||'')+'</th>';}).join('')+'<th class="hb-test-th" style="white-space:nowrap">理解度チェック</th></tr></thead><tbody>'+rows+'</tbody></table></div>'
     +'<div style="font-size:10px;color:var(--muted);margin-top:6px">✓=読了　●=更新あり・要再確認　－=未読。列番号は章番号（タップ不可・タイトルは長押し/ホバー）。</div>'
@@ -86614,12 +87056,20 @@ function hbRenderAdmin(chs, reads){
   if(incomplete.length) h+='<div class="card" style="margin-top:8px"><div class="card-title"><i class="ti ti-alert-circle" style="color:var(--yellow)"></i>未完了者（残り章数）</div><div style="font-size:11.5px;line-height:1.9">'+incomplete.map(escapeHtml).join('、 ')+'</div></div>';
   return h;
 }
+/* v1095: 更新ログの時刻（ts → at）。時刻の無い記録（シードの版上げ）は、並びで前の記録の時刻とみなす */
+function _hbLogT(l){
+  if(l && Number(l.ts)) return Number(l.ts);
+  var m=String((l&&l.at)||'').match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+  return m ? new Date(+m[1], +m[2]-1, +m[3], +m[4], +m[5]).getTime() : 0;
+}
 function hbRenderLog(){
-  var lg=(ls('handbook_log',[])||[]).slice().reverse();
+  /* v1095: 新しい順（前は保存の並びの逆。合流で端末の記録があとに付くので、新しい順にならないことがあった） */
+  var _last=0, lg=(ls('handbook_log',[])||[]).map(function(l, i){ var tt=_hbLogT(l)||_last; _last=tt; return { l:l, i:i, t:tt }; })
+    .sort(function(a,b){ return (b.t-a.t) || (b.i-a.i); }).map(function(x){ return x.l; });
   if(!lg.length) return '<div class="card" style="text-align:center;color:var(--muted);padding:24px">更新ログはまだありません。</div>';
   var h='<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--accent)"></i>更新ログ</div>';
   lg.forEach(function(l){
-    h+='<div style="padding:8px 0;border-bottom:1px dashed var(--border);font-size:12px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>'+escapeHtml(l.ch||'')+' → v'+(l.ver||'')+'</b><span style="font-size:10px;color:var(--muted)">'+escapeHtml(l.at||'')+'　'+escapeHtml(l.by||'')+'</span></div>'
+    h+='<div style="padding:8px 0;border-bottom:1px dashed var(--border);font-size:12px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>'+escapeHtml(l.ch||'')+' → v'+(l.ver||'')+'</b><span style="font-size:10px;color:var(--muted)">'+escapeHtml(l.at||(l.sid?'アプリの更新':''))+'　'+escapeHtml(l.by||'')+'</span></div>'
       +(l.note?'<div style="font-size:11px;color:var(--tm);margin-top:2px">'+escapeHtml(l.note)+'</div>':'')+'</div>';
   });
   return h+'</div>';
@@ -86631,6 +87081,7 @@ function openHbEdit(id){
   var c=id?chs.find(function(x){return x.id===id;}):null;
   var maxOrder=chs.reduce(function(m,x){return Math.max(m,x.order||0);},0);
   openModal('<div class="modal-title">'+(c?('第'+(c.order||'')+'章を編集（現在 v'+(c.version||1)+'）'):'新しい章を追加')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<input type="hidden" id="hbe-v" value="'+(c?(c.version||1):'')+'">'   /* v1095: 開いたときの版（保存の前に、ほかの人が先に直していないか見る） */
     +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><div class="form-group"><label class="form-label">章番号（表示順）</label><input class="form-input" id="hbe-order" type="number" value="'+(c?(c.order||1):(maxOrder+1))+'"></div><div></div></div>'
     +'<div class="form-group"><label class="form-label">タイトル（日本語）</label><input class="form-input" id="hbe-tja" value="'+escapeHtml(c?c.titleJa||'':'')+'"></div>'
     +'<div class="form-group"><label class="form-label">Title (English)</label><input class="form-input" id="hbe-ten" value="'+escapeHtml(c?c.titleEn||'':'')+'"></div>'
@@ -86638,38 +87089,83 @@ function openHbEdit(id){
     +'<div class="form-group"><label class="form-label">Body (English / HTML)</label><textarea class="form-textarea" id="hbe-ben" style="min-height:160px;font-size:11px">'+escapeHtml(c?c.bodyEn||'':'')+'</textarea></div>'
     +'<div class="form-group"><label class="form-label">更新メモ（必須・更新ログに記録され、全スタッフへの通知にも使われます）</label><input class="form-input" id="hbe-note" placeholder="例: 従業員割引の人数上限を変更"></div>'
     +'<div style="font-size:10px;color:var(--muted);margin-bottom:8px">保存するとバージョンが上がり、全スタッフの読了状態が「要再確認」に戻ります（新規追加は「未読」から）。</div>'
-    +'<div class="btn-row">'+(c?'<button class="btn btn-secondary" style="color:var(--red);border-color:var(--red)" onclick="hbDeleteChapter(\''+c.id+'\')">削除</button>':'')+'<button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" onclick="hbSaveChapter('+(c?('\''+c.id+'\''):'null')+')">保存</button></div>');
+    +'<div class="btn-row">'+(c?'<button class="btn btn-secondary" id="hbe-del" style="color:var(--red);border-color:var(--red)" onclick="hbDeleteChapter(\''+c.id+'\')">削除</button>':'')+'<button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" id="hbe-save" onclick="hbSaveChapter('+(c?('\''+c.id+'\''):'null')+')">保存</button></div>');
 }
-function hbSaveChapter(id){
+async function hbSaveChapter(id){
   var gv=function(x){ var el=document.getElementById(x); return el?el.value:''; };
   var tja=gv('hbe-tja').trim(), ten=gv('hbe-ten').trim(), bja=gv('hbe-bja').trim(), ben=gv('hbe-ben').trim(), note=gv('hbe-note').trim();
   var order=parseInt(gv('hbe-order'))||1;
   if(!tja&&!ten){ showToast('タイトルを入力してください','warning'); return; }
   if(!bja&&!ben){ showToast('本文を入力してください','warning'); return; }
   if(!note){ showToast('更新メモを入力してください','warning'); return; }
-  var chs=getHbChapters()||[]; var lg=ls('handbook_log',[])||[];
+  /* v1095: 保存の前にクラウドの章を読み直し、開いたあとにほかの人が直していれば保存しない（前は端末の古い写しの版に 1 を足し、
+     ほかの人の版と同じ番号の別の中身ができた）。読み直すあいだはボタンを止め、二度押し・閉じたあとの保存をしない（独立レビュー v1095 P2-3）。
+     クラウドを読めなければ保存しない（P3-7：古い写しで同じ版ができる） */
+  if(_hbEditBusy){ showToast(t('保存しています。少し待ってください','Saving. Please wait'),'info'); return; }
+  var openedV=gv('hbe-v');
+  var syncOn=(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED);
+  _hbEditBusy=true; _hbEditBtns(true);
+  var pulled=true;
+  try{ if(syncOn) pulled=await _hbPullKey('handbook_chapters'); }catch(e){ pulled=false; }
+  _hbEditBusy=false; _hbEditBtns(false);
+  if(!document.getElementById('hbe-note')){ showToast(t('画面を閉じたので保存していません','The dialog was closed, so nothing was saved'),'info'); return; }
+  if(!pulled){ showToast(t('クラウドの章を読めなかったので保存していません。通信を確かめて、もう一度押してください','Could not read the chapters from the cloud, so nothing was saved. Check the connection and try again'),'warning'); return; }
+  var chs=_hbChRaw().map(function(x){ return Object.assign({}, x); }); var lg=ls('handbook_log',[])||[];
   var isNew=!id; var c;
   if(isNew){ c={id:'ch'+Date.now(), version:1}; chs.push(c); }
-  else { c=chs.find(function(x){return x.id===id;}); if(!c) return; c.version=(c.version||1)+1; }
+  else {
+    c=chs.find(function(x){return x.id===id;});
+    if(!c || c._deleted){ showToast('この章はほかの人が削除しました。保存していません','warning'); closeModalDirect(); renderPage('crew_handbook'); return; }
+    if(openedV && String(c.version||1)!==String(openedV)){ showToast('ほかの人が先にこの章を更新しました（いま v'+(c.version||1)+'）。保存していません。開き直して内容を確かめてから直してください','warning'); return; }
+    c.version=(c.version||1)+1;
+  }
   c.order=order; c.titleJa=tja; c.titleEn=ten; c.bodyJa=bja; c.bodyEn=ben;
-  c.updatedAt=nowJP(); c.updatedBy=curUserName||'';
+  c.updatedAt=nowJP(); c.updatedBy=curUserName||''; c._at=Date.now();
+  try{ delete _lsPushP['handbook_chapters']; }catch(e){}
   lsSet('handbook_chapters', chs);
-  lg.push({at:nowJP(), by:curUserName||'', ch:'第'+order+'章 '+(tja||ten), ver:c.version, note:note});
+  var chP=_lsPushP['handbook_chapters'];
+  lg.push({at:nowJP(), ts:Date.now(), by:curUserName||'', ch:'第'+order+'章 '+(tja||ten), ver:c.version, note:note});
   lsSet('handbook_log', lg);
   try{ addNotif({ type:'handbook', title:isNew?'ハンドブックに新しい章が追加されました':'ハンドブックが更新されました',
     text:('第'+order+'章「'+(tja||ten)+'」'+(isNew?'を追加':'を更新（v'+c.version+'）')+'：'+note+'。確認して読了チェックをお願いします').slice(0,140),
     toRoles:['crew','sl','am','gm','ceo','office','office_crew'], page:'crew_handbook', refId:'hb_'+c.id+'_v'+c.version }); }catch(e){}
-  closeModalDirect(); showToast(isNew?'章を追加しました':'章を更新しました（v'+c.version+'・全員が要再確認になります）','success');
+  closeModalDirect(); showToast(isNew?'章を追加しています…':'章を保存しています…（v'+c.version+'）','info');
   renderPage('crew_handbook');
+  var _r=!syncOn ? 'off' : (chP ? await chP.catch(function(){ return false; }) : false);
+  if(_r===true) showToast(isNew?'章を追加しました':'章を更新しました（v'+c.version+'・全員が要再確認になります）','success');
+  else if(_r==='off') showToast((isNew?'章を追加':'章を更新')+'しました（クラウド同期が OFF のため、この端末だけ）','warning');
+  else showToast((isNew?'章を追加':'章を更新')+'しましたが、まだクラウドに送れていません（この端末には保存済み。「同期」で送り直します）','warning');
 }
-function hbDeleteChapter(id){
+var _hbEditBusy=false;
+function _hbEditBtns(off){ ['hbe-save','hbe-del'].forEach(function(id){ var b=document.getElementById(id); if(b){ b.disabled=!!off; } }); }
+async function hbDeleteChapter(id){
   if(['ceo','gm'].indexOf(curRole)<0) return;
-  var chs=getHbChapters()||[]; var c=chs.find(function(x){return x.id===id;}); if(!c) return;
-  if(!confirm('第'+(c.order||'')+'章「'+(c.titleJa||c.titleEn||'')+'」を削除しますか？読了記録からも消えます。')) return;
-  chs=chs.filter(function(x){return x.id!==id;});
+  if(_hbEditBusy){ showToast(t('保存しています。少し待ってください','Saving. Please wait'),'info'); return; }
+  /* v1095: 消す前にクラウドの章を読み直し、開いたあとにほかの人が直していれば消さない（独立レビュー v1095 P3-1：古い写しで消すと、
+     版の新しい直しがあっても消える）。読めなければ消さない */
+  var _ov=(document.getElementById('hbe-v')||{}).value||'';
+  var syncOn=(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED);
+  _hbEditBusy=true; _hbEditBtns(true);
+  var pulled=true;
+  try{ if(syncOn) pulled=await _hbPullKey('handbook_chapters'); }catch(e){ pulled=false; }
+  _hbEditBusy=false; _hbEditBtns(false);
+  if(!pulled){ showToast(t('クラウドの章を読めなかったので削除していません。通信を確かめて、もう一度押してください','Could not read the chapters from the cloud, so nothing was deleted'),'warning'); return; }
+  var chs=_hbChRaw().map(function(x){ return Object.assign({}, x); }); var i=chs.findIndex(function(x){return x && x.id===id && !x._deleted;});
+  if(i<0){ showToast(t('この章はもう削除されています','This chapter is already deleted'),'info'); closeModalDirect(); renderPage('crew_handbook'); return; }
+  var c=chs[i];
+  if(_ov && String(c.version||1)!==String(_ov)){ showToast('ほかの人が先にこの章を更新しました（いま v'+(c.version||1)+'）。削除していません。開き直して確かめてください','warning'); return; }
+  if(!confirm('第'+(c.order||'')+'章「'+(c.titleJa||c.titleEn||'')+'」を削除しますか？\n読了の記録は残りますが、進捗には数えなくなります。')) return;
+  /* v1095: 配列から外すのではなく、版を 1 つ上げた印を残す（ほかの端末の古い写し・シードから戻らない） */
+  chs[i]={ id:c.id, order:c.order, titleJa:c.titleJa, titleEn:c.titleEn, version:(c.version||1)+1, _deleted:true, _at:Date.now(), updatedAt:nowJP(), updatedBy:curUserName||'' };
+  try{ delete _lsPushP['handbook_chapters']; }catch(e){}
   lsSet('handbook_chapters', chs);
-  var lg=ls('handbook_log',[])||[]; lg.push({at:nowJP(), by:curUserName||'', ch:'第'+(c.order||'')+'章 '+(c.titleJa||c.titleEn||''), ver:c.version||1, note:'章を削除'}); lsSet('handbook_log', lg);
-  closeModalDirect(); showToast('章を削除しました','success'); renderPage('crew_handbook');
+  var chP=_lsPushP['handbook_chapters'];
+  var lg=ls('handbook_log',[])||[]; lg.push({at:nowJP(), ts:Date.now(), by:curUserName||'', ch:'第'+(c.order||'')+'章 '+(c.titleJa||c.titleEn||''), ver:c.version||1, note:'章を削除'}); lsSet('handbook_log', lg);
+  closeModalDirect(); renderPage('crew_handbook');
+  var _r=!syncOn ? 'off' : (chP ? await chP.catch(function(){ return false; }) : false);
+  if(_r===true) showToast('章を削除しました','success');
+  else if(_r==='off') showToast('章を削除しました（クラウド同期が OFF のため、この端末だけ）','warning');
+  else showToast('章を削除しましたが、まだクラウドに送れていません（この端末には保存済み。「同期」で送り直します）','warning');
 }
 
 /* 招待リンク（?onboard=token）で開かれたか検知。

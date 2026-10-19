@@ -219,6 +219,7 @@ test('the page wires it in: the status tab loads qb_status, the settings show Gm
   assert.match(bodyOf('invInPost'), /res\.qb && res\.qb\.waiting==='gmail'[\s\S]*Gmail の接続を直すまで待ちます/);
   assert.match(html, /try\{ invQbAlertsStart\(\); \}catch\(e\)\{\}[^\n]*\n\s+try\{ invInGmailReturn\(\); \}catch\(e\)\{\}/);
   assert.equal((html.match(/invQbApplyNotifFocus\(n\);/g) || []).length, 2);
-  assert.match(html, /const APP_VERSION = '1094';/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1094';/);
+  const ver = (/const APP_VERSION = '(\d+)';/.exec(html) || [])[1];   // v1094 から（あとの版でも通る）
+  assert.ok(Number(ver) >= 1094, 'APP_VERSION ' + ver);
+  assert.equal((/const SW_BUILD = '(\d+)';/.exec(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8')) || [])[1], ver);
 });

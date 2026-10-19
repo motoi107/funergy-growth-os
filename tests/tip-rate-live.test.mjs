@@ -88,7 +88,8 @@ const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsR
   'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
 const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveGetJson', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
   'tipLiveAfterSave', 'tipLivePull', 'tipLiveRerender', 'tipLivePullSoon', 'tipLiveStart', 'tipLiveStop',
-  'tipLiveAutoPage', 'tipLivePill', 'tipLiveApply', 'tipLiveFastPage', '_tipLiveRateSig', '_tipLiveTake', '_tipLiveSigKeys', 'tipLivePillFor', 'tipStampLegacy'];
+  'tipLiveAutoPage', 'tipLivePill', 'tipLiveApply', 'tipLiveFastPage', '_tipLiveRateSig', '_tipLiveTake', '_tipLiveSigKeys', 'tipLivePillFor', 'tipStampLegacy',
+  '_tipHstDay', '_tipFromOk', '_tipDayOk'];   // v1095: the current rate leaves out start dates that have not come yet
 const NEW_VARS = ['TIP_LIVE_KEY', 'TIP_LIVE_LIKE', '_tipLive'];
 
 function device(cloud, { user = 'Moto', role = 'gm', page = 'tiprate', view = 'matrix', rt = true } = {}) {
@@ -604,7 +605,7 @@ test('review 2 P3-2: after the cloud read, approve / raise do not redraw a page 
   B.INPUTS['tipraise-rate'].value = '100'; await run(B, 'applyTipRaise()');
   assert.ok(B.TOASTS.some(x => /確かめています。少し待ってください/.test(x[0])), 'the second press is not silent');
   await p; await settle(60); cloud.delay = 1;
-  assert.ok(B.TOASTS.some(x => /選び直したので、もう一度「引き上げる」を押してください/.test(x[0])));
+  assert.ok(B.TOASTS.some(x => /選び直したので、もう一度(「引き上げる」を)?押してください/.test(x[0])));
   assert.equal(JSON.parse(B.STORE.get('spl_tip_requests_Crew B') || '[]').some(r => r.basis === 'manual'), false, 'no raise recorded');
 });
 
