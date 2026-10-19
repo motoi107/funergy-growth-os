@@ -20651,7 +20651,7 @@ var SYNC_SCOPE_META = {
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
   food:    { label:'食材管理', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
   settings:{ label:'設定', toast:false, pull:null },
-  handbook:{ label:'Handbook', toast:false, pull: async function(){ try{ await hbPullLatest(true); }catch(e){} } },   /* v1095: 読了と章を読み直す（前は人材管理の読み直しで、読了・章を読まなかった） */
+  handbook:{ label:'Handbook', toast:false, pull: async function(){ try{ return await hbPullLatest(true); }catch(e){ return false; } } },   /* v1095（独立レビュー f1d567a P3-2）：読めなければ false */   /* v1095: 読了と章を読み直す（前は人材管理の読み直しで、読了・章を読まなかった） */
   acctrev: { label:'経理レビュー', toast:true, pull: async function(){ return await arPullLatest(true); } }   /* v1095（UI案57 ③）：読めなければ false（「最新」と出さない） */
 };
 var PAGE_SYNC_SCOPE = {
@@ -35937,6 +35937,7 @@ function renderTipPeriodStaff(storeId, store, info) {
     var rate = (_u && _u.length) ? _u[_u.length-1] : effectiveTipRate(r.name);
     var rateTag = rate===0?'<span class="tag tag-red" style="font-size:9px">NoTip</span>':rate>=100?'<span class="tag tag-green" style="font-size:9px">100%</span>':rate>=90?'<span class="tag tag-blue" style="font-size:9px">90%</span>':'<span class="tag tag-yellow" style="font-size:9px">80%</span>';
     if (_u && _u.length>1) rateTag = '<span class="tag tag-gray" style="font-size:9px">'+_u.join('→')+'%</span>';
+    else if ([0,80,90,100].indexOf(Number(rate))<0) rateTag = '<span class="tag tag-gray" style="font-size:9px">'+rate+'%</span>';   /* v1095（Q5）：評価係数の期間は係数の %（0.85 → 85%）。80/90/100 の札に丸めない */
     var adj = r.isSL
       ? `<span style="color:var(--red)">−$${r.contribution.toFixed(2)}</span>`
       : (r.redistrib>0 ? `<span style="color:var(--green)">+$${r.redistrib.toFixed(2)}</span>` : '<span style="color:var(--muted)">—</span>');
@@ -41118,7 +41119,7 @@ function openCellAssign(storeId, week, key, day, period, pos) {
     var av = avail.find(a=>a.name===e.name);
     var available = av && av.slots.some(s=>s.day===day && s.period===period);
     var onLeave = isOnLeaveDow(e.name, week, day);
-    var tip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(e.name) : ls('tip_requests',[]).filter(r=>r.name===e.name&&r.status==='承認').slice(-1)[0];   /* v1091 */
+    var tip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(e.name, null, (typeof _tipNotFuture==='function')?_tipNotFuture:null) : ls('tip_requests',[]).filter(r=>r.name===e.name&&r.status==='承認').slice(-1)[0];   /* v1091。v1095：まだ来ていない適用開始日は数えない */
     var ap = approvedPositions(e.name);
     var posOk = ap.includes(pos);
     var isLeader = leaderSkillApproved(e.name);
@@ -70576,7 +70577,7 @@ function renderPGD(empName, isManagerView) {
   if (!emp) return '<div class="card"><p style="color:var(--muted)">'+t('従業員データが見つかりません','Employee data not found')+'</p></div>';
   var store = STORES.find(s=>s.id===emp.store) || {name:emp.store};
   var tipReqs = ls('tip_requests', []).filter(r=>r.name===empName);
-  var curTip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(empName) : tipReqs.filter(r=>r.status==='承認').slice(-1)[0];   /* v1091 */
+  var curTip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(empName, null, (typeof _tipNotFuture==='function')?_tipNotFuture:null) : tipReqs.filter(r=>r.status==='承認').slice(-1)[0];   /* v1091。v1095：まだ来ていない適用開始日は数えない */
   var evalHist = ls('eval_history', []).filter(h=>h.name===empName);
   var warnings = []; STORES.forEach(s=>{ getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
   var obs = ls('onboardings', []).filter(o=>o.name===empName);
@@ -78416,7 +78417,7 @@ function arYm(inv){ var d=parseJaDate(inv.date); if(!d) return ''; return d.getF
 function arDocYm(inv){ var d=null; try{ d=_invDate(inv); }catch(e){ d=null; } if(!d || !isFinite(d.getTime())) return ''; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function arReviewList(){ return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && !invIsIntake(v); }); }
 var _arBusy = {};
-var _arPull = { at:0, tried:0, ok:null, busy:0, gen:0, off:false };
+var _arPull = { at:0, tried:0, ok:null, busy:0, gen:0, off:false, p:null };
 function arOnPage(){
   if(typeof curPage==='undefined') return false;
   return curPage==='acct_review' || (curPage==='acct_center' && typeof _acCat!=='undefined' && _acCat==='review' && _acSub==='acctrev');
@@ -78425,7 +78426,6 @@ function arRerender(){
   try{ if(typeof curPage==='undefined') return; if(curPage==='acct_review' || curPage==='acct_center' || curPage==='invoice') renderPage(curPage); }catch(e){}
 }
 function arSetFilter(key, val){ window['_ar'+key]=val; arRerender(); }
-function _arSig(){ try{ return (ls('invoices',[])||[]).map(function(v){ return v ? (v.id+':'+(v._mut||'')+':'+(v.reviewStatus||'')+':'+(v._deleted?1:0)) : ''; }).join('|'); }catch(e){ return ''; } }
 /* 請求書の行をクラウドから読み直す（端末と合流する。pullInvoicesAll と同じ合わせ方）。読めなければ false（端末はそのまま） */
 async function _arFetchInvoices(){
   var ctl=(typeof AbortController!=='undefined')?new AbortController():null, tm=null;
@@ -78451,13 +78451,17 @@ async function _arFetchInvoices(){
 async function arPullLatest(force){
   if(typeof SUPA_SYNC_ENABLED==='undefined' || !SUPA_SYNC_ENABLED){ _arPull.off=true; _arPull.ok=false; return false; }
   _arPull.off=false;
-  if(_arPull.busy && (Date.now()-_arPull.busy)<20000) return _arPull.ok;   /* 20 秒たっても終わらない読み直しは待たない */
-  if(!force && _arPull.tried && (Date.now()-_arPull.tried)<60000) return _arPull.ok;   /* 開いたときは 60 秒に 1 回まで（失敗でもくり返さない） */
+  if(_arPull.busy && (Date.now()-_arPull.busy)<20000){   /* 20 秒たっても終わらない読み直しは待たない */
+    if(force && _arPull.p){ try{ return !!(await _arPull.p); }catch(e){ return false; } }   /* 「同期」は読み直しの途中なら、その結果を待つ（独立レビュー f1d567a P3-3） */
+    return _arPull.ok;
+  }
+  if(!force && _arPull.tried && (Date.now()-_arPull.tried)<300000) return _arPull.ok;   /* 開いたときは 5 分に 1 回まで（全店の請求書を読むので。失敗でもくり返さない・P3-6） */
   var gen=(_arPull.gen||0)+1;
   _arPull.gen=gen; _arPull.busy=Date.now(); _arPull.tried=Date.now();
   try{ if(arOnPage()) arRerender(); }catch(e){}   /* 「読み直しています…」を出す */
-  var before=_arSig(), ok=false;
-  try{ ok=!!(await _arFetchInvoices()); }catch(e){ ok=false; }
+  var ok=false;
+  _arPull.p=_arFetchInvoices();
+  try{ ok=!!(await _arPull.p); }catch(e){ ok=false; }
   if(_arPull.gen!==gen) return ok;   /* あとから始めた読み直しがある */
   _arPull.busy=0; _arPull.ok=ok; if(ok) _arPull.at=Date.now();
   try{ if(arOnPage()) arRerender(); }catch(e){}
@@ -78524,7 +78528,7 @@ function renderAcctReview(){
   });
 
   var storeOpts = '<option value="ALL">全店舗</option>'+activeStores().map(function(s){return '<option value="'+s.id+'" '+(window._arStore===s.id?'selected':'')+'>'+escapeHtml(s.name)+'</option>';}).join('');
-  var monthOpts = '<option value="ALL">全期間（月＝伝票の日付）</option>'+monthList.map(function(ym){return '<option value="'+ym+'" '+(window._arMonth===ym?'selected':'')+'>'+ym+'</option>';}).join('');
+  var monthOpts = '<option value="ALL">全期間（伝票日）</option>'+monthList.map(function(ym){return '<option value="'+ym+'" '+(window._arMonth===ym?'selected':'')+'>'+ym+'</option>';}).join('');
   var statusOpts= '<option value="ALL">全ステータス</option>'+AR_STATUSES.map(function(s){return '<option value="'+s+'" '+(window._arStatus===s?'selected':'')+'>'+s+'</option>';}).join('');
   var typeOpts  = ['ALL','Invoice','Receipt'].map(function(t){return '<option value="'+t+'" '+(window._arType===t?'selected':'')+'>'+(t==='ALL'?'全種別':t==='Receipt'?'レシート':'Invoice')+'</option>';}).join('');
 
@@ -81853,8 +81857,7 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
   // 3ヶ月自動100%
   if (isThreeMonths(emp)) return 100;
   // 承認済み最新
-  var _today = (typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : '';
-  var approved = _tipLatestApproved(name, list, function (r) { return !(_today && typeof _tipFromOk==='function' && _tipFromOk(r) && String(r.fromDay) > _today); });   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後）。v1095: 適用開始日がまだ来ていない変更は数えない */
+  var approved = _tipLatestApproved(name, list, function (r) { return (typeof _tipNotFuture!=='function') || _tipNotFuture(r); });   /* v1091: 決めた時刻のいちばん新しい承認（前は並びの最後）。v1095: 適用開始日がまだ来ていない変更は数えない */
   if (approved) return approved.rate;
   // 初回勤務日が未設定なら、既存の評価係数（coef）を尊重（インポートデータ保護）
   var fw = firstWorkDate(emp);
@@ -81869,6 +81872,27 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
 function tipFromRange() {
   var d = _tipHstDay(Date.now());
   return { min: d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16'), max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+}
+/* 期間の初日（1〜15 日なら 1 日・16 日〜なら 16 日） */
+function tipPeriodStartOf(d) { d = String(d || ''); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16') : ''; }
+/* v1095（独立レビュー f1d567a P2-1）：選べる日はこの端末の時計で決めるので、時計の遅れた端末だと前の期間（締めた期間かもしれない）を選べた。
+   決めた日（tipDecDayStamp：ほかの決定の日付で守った日）の期間の初日より前は、決める直前にも断る */
+function tipFromGuard(fd, decDay) {
+  var m = tipPeriodStartOf(decDay), f = function (x) { return String(x).replace(/-/g, '/'); };
+  if (!m || !fd || String(fd) >= m) return '';
+  return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、いまの期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
+           'The start date can be from ' + f(m) + ' (other decisions show the current period starts then; check this device’s date)');
+}
+/* 承認待ちの行で選んだ適用開始日（描き直しても今日に戻さない：独立レビュー f1d567a P2-2） */
+var _tipFromSel = {};
+function tipFromSet(id, v, setInput) {
+  _tipFromSel[id] = String(v || '');
+  if (setInput) { try { var el = document.getElementById('tipfrom-' + id); if (el) el.value = String(v || ''); } catch (e) {} }
+}
+/* まだ来ていない適用開始日の承認は、いまの率に数えない（いまの率を出す画面で使う） */
+function _tipNotFuture(r) {
+  var d = (typeof _tipHstDay === 'function') ? _tipHstDay(Date.now()) : '';
+  return !(d && typeof _tipFromOk === 'function' && _tipFromOk(r) && String(r.fromDay) > d);
 }
 function tipFromCheck(fd) {
   var g = tipFromRange(), f = function (x) { return String(x).replace(/-/g, '/'); };
@@ -82051,7 +82075,7 @@ async function tipLiveAfterSave(names, saved){
   return true;
 }
 /* いまの率の目印（だれかの率が変わったかを見る） */
-function _tipLiveRateSig(name){ try{ var r=_tipLatestApproved(name); return r ? (String(r.id)+'|'+String(r.rate)) : ''; }catch(e){ return '?'; } }
+function _tipLiveRateSig(name){ try{ var r=_tipLatestApproved(name, null, (typeof _tipNotFuture==='function')?_tipNotFuture:null); return r ? (String(r.id)+'|'+String(r.rate)) : ''; }catch(e){ return '?'; } }
 /* クラウドの行を 1 つ合流して入れる（同じなら書かない） */
 function _tipLiveTake(x, st){
   if(!x || typeof x.key!=='string' || x.key.indexOf(TIP_LIVE_PRE)!==0) return;
@@ -82806,9 +82830,9 @@ function renderTipRate() {
         ${(function(){ var g=tipFromRange(); var rq=(function(){ var m=String(r.date||'').match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/); return m?(m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2)):''; })();
           var rqOk=rq && rq>=g.min && rq<=g.max && rq!==g.today;
           return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0"><label for="tipfrom-'+r.id+'" style="font-size:11px;font-weight:700">'+t('適用開始日（この日の勤務から）','Start date (from this day\'s shifts)')+'</label>'
-            +'<input type="date" class="form-input" id="tipfrom-'+r.id+'" value="'+g.today+'" min="'+g.min+'" max="'+g.max+'" style="max-width:170px;padding:6px 8px">'
-            +'<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'tipfrom-'+r.id+'\').value=\''+g.today+'\'">'+t('今日','Today')+'</button>'
-            +(rqOk?'<button class="btn btn-secondary btn-sm" onclick="document.getElementById(\'tipfrom-'+r.id+'\').value=\''+rq+'\'">'+t('申請した日','Request day')+'（'+rq.slice(5).replace('-','/')+'）</button>':'')+'</div>'; })()}
+            +'<input type="date" class="form-input" id="tipfrom-'+r.id+'" value="'+((typeof _tipFromSel!=='undefined' && _tipFromSel[r.id]) || g.today)+'" min="'+g.min+'" max="'+g.max+'" style="max-width:170px;padding:6px 8px" onchange="tipFromSet(\''+r.id+'\',this.value)" oninput="tipFromSet(\''+r.id+'\',this.value)">'
+            +'<button class="btn btn-secondary btn-sm" onclick="tipFromSet(\''+r.id+'\',\''+g.today+'\',true)">'+t('今日','Today')+'</button>'
+            +(rqOk?'<button class="btn btn-secondary btn-sm" onclick="tipFromSet(\''+r.id+'\',\''+rq+'\',true)">'+t('申請した日','Request day')+'（'+rq.slice(5).replace('-','/')+'）</button>':'')+'</div>'; })()}
         <div class="approval-actions">
           <button class="btn btn-success btn-sm" onclick="approveTip('${r.id}','承認')"><i class="ti ti-check"></i> ${t('承認','Approve')}</button>
           <button class="btn btn-danger btn-sm" onclick="approveTip('${r.id}','却下')"><i class="ti ti-x"></i> ${t('却下','Reject')}</button>
@@ -82901,7 +82925,7 @@ async function approveTip(id, status) {
     var _from = null, _pv = null;
     if (status==='承認' && typeof tipFromRange==='function') {
       var _fe = (typeof document!=='undefined' && document.getElementById) ? document.getElementById('tipfrom-'+id) : null;
-      _from = (_fe && _fe.value) ? String(_fe.value) : tipFromRange().today;   /* 欄が無いとき（承認待ちの一覧の外）は今日 */
+      _from = (_fe && _fe.value) ? String(_fe.value) : ((typeof _tipFromSel!=='undefined' && _tipFromSel[id]) || tipFromRange().today);   /* 欄が無いとき（承認待ちの一覧の外）は選んだ日、無ければ今日 */
       var _fx = tipFromCheck(_from); if (_fx) { showToast(_fx,'warning'); return; }
       if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
     }
@@ -82910,10 +82934,12 @@ async function approveTip(id, status) {
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
     var _dec = (typeof tipDecStamp==='function') ? tipDecStamp(requests, r.name) : Date.now();   /* v1091: 決めた時刻（いまの率と 2 台の合流に使う） */
     var _day = (typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, r.name, r, status==='承認') : undefined;   /* v1092: 決めた日（ハワイの日付・配分の率が変わる日） */
+    /* v1095（独立レビュー f1d567a P2-1）：適用開始日は、決めた日（ほかの決定の日付で守った日）の期間の初日より前にしない */
+    if (status==='承認' && _from && typeof tipFromGuard==='function') { var _fg = tipFromGuard(_from, _day); if (_fg) { showToast(_fg,'warning'); return; } }
     /* v1092: 明日より先の日付の決定があれば、決める前に端末の日付を確かめてもらう（Codex 2ad1047・独立レビュー 0a35425） */
     if (status==='承認' && typeof tipDecClockAhead==='function') {
       var _ah = tipDecClockAhead(requests, r);
-      if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _day))) return;
+      if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _from || _day))) return;   /* v1095: 効く日は適用開始日 */
     }
     if (status==='承認' && _pv) {
       _after = _pv.after;
@@ -82943,6 +82969,7 @@ async function approveTip(id, status) {
     if (status==='承認' && _after!=null && _after!==Number(r.rate))
       showToast(t('承認しました。ただし '+r.name+' さんの Tip Rate は '+_rl(_after)+' です（3 か月の 100%・役職・店の決まりなど）', 'Approved. '+r.name+'\'s Tip Rate stays '+_rl(_after)+' (3-month 100%, role or store rules)'),'info');
     else showToast(status==='承認'?'承認しました':'却下しました', status==='承認'?'success':'danger');
+    try{ if(typeof _tipFromSel!=='undefined') delete _tipFromSel[id]; }catch(e){}
     _redraw();
     try{ if(typeof tipLiveAfterSave==='function') tipLiveAfterSave([r.name], _saved); }catch(e){}   /* v1091: ほかの端末へすぐ */
   }
@@ -83003,8 +83030,9 @@ async function applyTipRaise(){
   var requests=ls('tip_requests',[]);
   var _dec=(typeof tipDecStamp==='function') ? tipDecStamp(requests, name) : Date.now();   /* v1091: 決めた時刻 */
   var _dd=(typeof tipDecDayStamp==='function') ? tipDecDayStamp(requests, name) : undefined;   /* v1092: 決めた日（ハワイの日付） */
+  if(fromDay && typeof tipFromGuard==='function'){ var _fg0=tipFromGuard(fromDay, _dd); if(_fg0){ showToast(_fg0,'warning'); return; } }   /* v1095（独立レビュー f1d567a P2-1） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
-  if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _dd, true))) return;
+  if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, fromDay || _dd, true))) return;   /* v1095: 効く日は適用開始日 */
   var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
@@ -87132,6 +87160,9 @@ async function hbSaveChapter(id){
   closeModalDirect(); showToast(isNew?'章を追加しています…':'章を保存しています…（v'+c.version+'）','info');
   renderPage('crew_handbook');
   var _r=!syncOn ? 'off' : (chP ? await chP.catch(function(){ return false; }) : false);
+  /* v1095（独立レビュー f1d567a P3-1）：送れても、合流でほかの人の同じ版の保存・削除が残ったら「保存しました」と出さない */
+  var _mine=true; try{ var _nowC=_hbChRaw().find(function(x){ return x && x.id===c.id; }); _mine=!!(_nowC && !_nowC._deleted && _hbJs(_nowC)===_hbJs(c)); }catch(e){}
+  if(_r===true && !_mine){ showToast(t('ほかの人が同じときにこの章を更新・削除したため、いまはその内容になっています。開き直して確かめてください','Someone else changed or deleted this chapter at the same time; it now shows their version. Reopen it to check'),'warning'); try{ renderPage('crew_handbook'); }catch(e){} return; }
   if(_r===true) showToast(isNew?'章を追加しました':'章を更新しました（v'+c.version+'・全員が要再確認になります）','success');
   else if(_r==='off') showToast((isNew?'章を追加':'章を更新')+'しました（クラウド同期が OFF のため、この端末だけ）','warning');
   else showToast((isNew?'章を追加':'章を更新')+'しましたが、まだクラウドに送れていません（この端末には保存済み。「同期」で送り直します）','warning');

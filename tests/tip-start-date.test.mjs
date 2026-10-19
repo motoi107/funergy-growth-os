@@ -45,7 +45,7 @@ const HST = (y, m, d, h = 9, mi = 0) => Date.UTC(y, m - 1, d, h + 10, mi);   // 
 const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDayRaw', '_tipFromOk', '_tipDecDayExact', '_tipDayOk', 'tipRateOn', '_tipLatestApproved',
   '_tipDecT', 'firstWorkDate', 'isThreeMonths', 'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit',
   'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel', 'tipPeriodRateFrom', '_tipUsedRate', 'tipPeriodMatrix', 'isoOf', '_tipHstDay',
-  'tipFromRange', 'tipFromCheck', 'tipDayLabel', 'tipChangePreview', 'tipPreviewText', 'tipReplacedBy', 'renderTipRate',
+  'tipFromRange', 'tipFromCheck', 'tipPeriodStartOf', 'tipFromGuard', 'tipFromSet', '_tipNotFuture', '_tipLiveRateSig', 'tipDayLabel', 'tipChangePreview', 'tipPreviewText', 'tipReplacedBy', 'renderTipRate',
   'approveTip', 'applyTipRaise', 'tipRaisePreview', 'openTipRaiseModal', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'tipDecClockAhead', 'tipDecClockMsg',
   '_tipDecided', '_tipReqT', '_tipDecSeen', 'todayJP', 'fmtJP'];
 
@@ -59,6 +59,7 @@ function app(now) {
     var TIP_DEC_DAY_AHEAD = ${AHEAD || 31}, TIP_DEC_CLOCK_DAYS = ${CLOCK || 400};
     var TIP_EXCLUDED_TITLES = ['Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
     var TIP_OPTIONS = [80, 90, 100];
+    var _tipFromSel = {};
     var ROLE_ALIAS = { g2: 'sl', g4: 'am' };
     var STORES = [{ id: 'F01', name: 'Store One' }, { id: 'F02', name: 'Store Two' }];
     var ROLE_CONFIG = { gm: { name: 'Moto', canApprove: true }, crew: { name: 'Crew' } }, curRole = 'gm', curLang = 'ja', curStore = 'ALL', curUserName = 'Moto', curPage = 'tiprate';
@@ -211,6 +212,10 @@ test('raising: the dialog has the start date and shows the change before saving;
   c.EL['tipraise-from'] = { value: '2026-10-10' };
   await run(c, 'applyTipRaise()');
   assert.equal(plain(c.STORE.tip_requests).length, 1);
+  // a date too far ahead, or not a date, is refused too
+  for (const bad of ['2027-12-01', '2026-10-99']) { c.EL['tipraise-from'] = { value: bad }; await run(c, 'applyTipRaise()'); }
+  assert.equal(plain(c.STORE.tip_requests).length, 1);
+  assert.ok(c.TOASTS.some(([m]) => /先すぎます/.test(m)) && c.TOASTS.some(([m]) => /選んでください/.test(m)));
 });
 
 test('Q1 A and Q5: days before the switch keep the employee master coefficient; the period label shows the coefficient as % and, when the rate changes in a period, the day it changed', () => {
@@ -265,4 +270,62 @@ test('guards: a broken start date falls back to the decision day; a future start
   const html = run(c, 'renderTipRate()');
   const at = s => html.indexOf(s);
   assert.ok(at('Y · 90% → 100%') >= 0 && at('Y · 90% → 100%') < at('X · 90% → 100%') && at('X · 90% → 100%') < at('X · 80% → 90%'));
+});
+
+test('review f1d567a P2-1: a device whose clock is behind cannot put a change into an earlier period (other decisions show the real period); the clock question names the start date', async () => {
+  // real date 11/20 (Hawaii); this device thinks it is 11/10; another person's decision was made on 11/20 by a correct device
+  const c = app(HST(2026, 11, 10, 9));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-10-01' }), EMP({ name: 'Y', firstWork: '2026-10-01' })];
+  c.STORE.tip_requests = [
+    { id: 'o', name: 'Y', rate: 90, status: '承認', decAt: HST(2026, 11, 20, 8), decDay: '2026-11-20', decHst: '2026-11-20', approvedDate: '2026/11/20' },
+    { id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/09' }];
+  c.EL['tipfrom-p'] = { value: run(c, 'tipFromRange().today') };
+  assert.equal(c.EL['tipfrom-p'].value, '2026-11-10');
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中', 'not saved into 11/1–15');
+  assert.ok(c.TOASTS.some(([m]) => /2026\/11\/16 から選べます/.test(m)));
+  // choosing a day in the real period: the clock question is asked and names that day
+  c.EL['tipfrom-p'] = { value: '2026-11-16' }; c.CONFIRMS.length = 0;
+  await run(c, "approveTip('p', '承認')");
+  assert.ok(c.CONFIRMS.some(m => /2026\/11\/16 から効きます/.test(m)), c.CONFIRMS.join('\n'));
+  const r = plain(c.STORE.tip_requests).find(x => x.id === 'p');
+  assert.equal(r.status, '承認'); assert.equal(r.fromDay, '2026-11-16');
+  // the raise has the same guard
+  const d = app(HST(2026, 11, 10, 9)); d.EMPS = c.EMPS;
+  d.STORE.tip_requests = [{ id: 'o', name: 'Y', rate: 90, status: '承認', decAt: HST(2026, 11, 20, 8), decDay: '2026-11-20', decHst: '2026-11-20', approvedDate: '2026/11/20' }];
+  d.EL['tipraise-name'] = { value: 'X' }; d.EL['tipraise-rate'] = { value: '100' }; d.EL['tipraise-from'] = { value: '2026-11-10' };
+  await run(d, 'applyTipRaise()');
+  assert.equal(plain(d.STORE.tip_requests).length, 1, 'not raised into 11/1–15');
+  assert.ok(d.TOASTS.some(([m]) => /2026\/11\/16 から選べます/.test(m)));
+  // with no other decision ahead, nothing changes (today's period)
+  assert.equal(run(d, "tipFromGuard('2026-11-10', '2026-11-10')"), '');
+});
+
+test('review f1d567a P2-2: the start date chosen on a pending row is kept when the page is drawn again, and is the one saved', async () => {
+  const c = app(HST(2026, 10, 19, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' }), EMP({ name: 'Y', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [{ id: 'p', name: 'X', rate: 90, status: '申請中', date: '2026/10/18', store: 'F01' }, { id: 'q', name: 'Y', rate: 90, status: '申請中', date: '2026/10/18', store: 'F01' }];
+  assert.match(run(c, 'renderTipRate()'), /id="tipfrom-p" value="2026-10-19"/);
+  run(c, "tipFromSet('p', '2026-10-16')");   // the person picks 10/16 for X
+  await run(c, "approveTip('q', '承認')");   // approving Y draws the page again
+  const html = run(c, 'renderTipRate()');
+  assert.match(html, /id="tipfrom-p" value="2026-10-16"/, 'still 10/16 after the page is drawn again');
+  assert.match(html, /onchange="tipFromSet\('p',this.value\)"/);
+  await run(c, "approveTip('p', '承認')");   // no input element in this test: the chosen value is used
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').fromDay, '2026-10-16');
+  assert.equal(run(c, "_tipFromSel['p']"), undefined, 'forgotten after the decision');
+  // the buttons set the value too
+  run(c, "tipFromSet('z', '2026-10-18', true)"); assert.equal(run(c, "_tipFromSel['z']"), '2026-10-18');
+});
+
+test('review f1d567a P3-5: screens that show the current rate leave out a change whose start date has not come', () => {
+  const c = app(HST(2026, 10, 19, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [
+    { id: 'a', name: 'X', rate: 90, status: '承認', fromDay: '2026-10-16', decAt: HST(2026, 10, 16), decDay: '2026-10-16' },
+    { id: 'b', name: 'X', rate: 100, status: '承認', fromDay: '2026-10-25', decAt: HST(2026, 10, 19), decDay: '2026-10-19' }];
+  assert.equal(run(c, "_tipLatestApproved('X', null, _tipNotFuture).id"), 'a');
+  assert.equal(run(c, "_tipLiveRateSig('X')"), 'a|90');
+  assert.match(SRC, /_tipLatestApproved\(e\.name, null, \(typeof _tipNotFuture==='function'\)\?_tipNotFuture:null\)/);
+  assert.match(SRC, /_tipLatestApproved\(empName, null, \(typeof _tipNotFuture==='function'\)\?_tipNotFuture:null\)/);
 });

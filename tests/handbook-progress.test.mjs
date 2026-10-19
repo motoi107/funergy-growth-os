@@ -426,6 +426,22 @@ test('review P3: saving a chapter with sync off says this device only', async ()
   assert.ok(!gm.toasts.some(([m]) => /送り直します/.test(m)));
 });
 
+test('review f1d567a P3-1: another admin\'s save of the same chapter lands between this save\'s read and its send, and wins the merge: this admin is told (not 章を更新しました)', async () => {
+  const db = await cloudDb({ handbook_chapters: SEED, handbook_log: [] });
+  const A = device({ user: 'Ann', role: 'gm', db, st: { handbook_chapters: plain(SEED), handbook_log: [] } });
+  A.form = { 'hbe-v': '3', 'hbe-order': '1', 'hbe-tja': 'T-Ann', 'hbe-ten': 'E', 'hbe-bja': '<p>A</p>', 'hbe-ben': '<p>A</p>', 'hbe-note': 'n' };
+  run(A, 'var __n = Date.now; Date.now = function(){ return __n() - 60000; }');   // Ann's save has the earlier time
+  const ben = Object.assign(plain(SEED.find(c => c.id === 'ch1')), { titleJa: 'T-Ben', bodyJa: '<p>B</p>', version: 4, updatedBy: 'Ben', _at: Date.now() });
+  const orig = A.fetch; let n = 0;
+  A.fetch = async (u, o) => { n++; if (n === 2) { const cur = await cloudOf(db, 'handbook_chapters'); await db.query('update app_state set value=$1 where key=$2', [JSON.stringify(cur.map(c => c.id === 'ch1' ? ben : c)), 'handbook_chapters']); } return orig(u, o); };
+  await run(A, "hbSaveChapter('ch1')"); await tick(60);
+  const ch1 = (await cloudOf(db, 'handbook_chapters')).find(c => c.id === 'ch1');
+  assert.equal(ch1.bodyJa, '<p>B</p>', 'Ben\'s save stays (newer at the same version)');
+  assert.ok(!A.toasts.some(([m, k]) => /章を更新しました/.test(m) && k === 'success'), 'Ann is not told saved');
+  assert.ok(A.toasts.some(([m, k]) => /ほかの人が同じときにこの章を更新・削除した/.test(m) && k === 'warning'));
+  await db.close();
+});
+
 test('the release markers match', () => {
   const v = (/const APP_VERSION = '(\d+)'/.exec(SRC) || [])[1];
   assert.ok(Number(v) >= 1095, 'APP_VERSION ' + v);

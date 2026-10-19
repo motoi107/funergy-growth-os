@@ -60,7 +60,7 @@ function varSrc(name) {   // `var NAME = <expr>;` (arrays / objects over several
 }
 const plain = v => JSON.parse(JSON.stringify(v));
 
-const FNS = ['renderAcctReview', 'arStatusColor', 'arStatusRank', 'arYm', 'arDocYm', 'arReviewList', 'arOnPage', 'arRerender', 'arSetFilter', '_arSig',
+const FNS = ['renderAcctReview', 'arStatusColor', 'arStatusRank', 'arYm', 'arDocYm', 'arReviewList', 'arOnPage', 'arRerender', 'arSetFilter',
   '_arFetchInvoices', 'arPullLatest', 'arFreshHtml', 'arSetStatus', 'arApprove', '_arApproveCore', 'arRejectModal', 'arRejectConfirm', 'deleteInvoiceDo', '_deleteInvoiceCore',
   'canDeleteInvoice', 'invIsIntake', 'invInGuardOld', 'invIsMine', 'renderReviewThread', 'addReviewThread', '_invDate', 'parseJaDate', 'invTouch',
   'acSetCat', 'acSetSub', '_acPend', '_acPendHtml', '_acRows', '_acDate', '_acYm', '_acStoreName', 'acUploadList', '_acStatus', '_acStCol', '_acStRank',
@@ -243,7 +243,8 @@ test('削除: pressing twice deletes once (Drive file once); an invoice that arr
 test('reading the latest: a failed or hanging read is shown as this device’s copy (not as the latest) with “try again”; a good read shows the time and merges', async () => {
   const c = app();
   seed(c, [INV({ id: 'i1', date: '2026/10/18' })]);
-  c.fetchImpl = () => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) });
+  // an HTTP error is not read as data, even when the error page has a body shaped like rows
+  c.fetchImpl = () => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve([{ key: 'spl_invoices_F01', value: [] }]) });
   assert.equal(await run(c, 'arPullLatest(true)'), false);
   let html = run(c, 'renderAcctReview()');
   assert.match(html, /クラウドから読み直せませんでした。この端末の写しを出しています/); assert.match(html, /もう一度読む/); assert.ok(!/最終取得/.test(html));
@@ -298,4 +299,26 @@ test('opening the review reads the latest once after drawing (not while drawing)
     assert.match(run(x, 'renderAcctReview()'), /この画面は経理（office／事務Crew）／GM／CEO専用です/);
   }
   for (const role of ['office', 'gm']) { const x = app({ role }); seed(x, [INV({ id: 'i1' })]); assert.match(run(x, 'renderAcctReview()'), /arApprove\('i1'\)/); }
+});
+
+test('review f1d567a P3-2/3/6: the Handbook 「同期」 reports a failed read; 「同期」 during an automatic read waits for its result; opening reads at most every 5 minutes', async () => {
+  const c = app();
+  run(c, 'var HBR = false; async function hbPullLatest(){ return HBR; }');
+  await run(c, "pageSync('handbook')");
+  assert.ok(!c.TOASTS.some(([m]) => /最新に同期しました/.test(m)), 'a failed Handbook read is not reported as synced');
+  run(c, 'HBR = true'); c.TOASTS.length = 0;
+  await run(c, "pageSync('handbook')");
+  assert.ok(c.TOASTS.some(([m]) => /最新に同期しました/.test(m)));
+  // an automatic read is still running when 「同期」 is pressed: the button waits for that read
+  let open; const g = new Promise(r => { open = r; });
+  c.fetchImpl = () => g;
+  const auto = run(c, 'arPullLatest(false)');
+  const press = run(c, 'arPullLatest(true)');
+  open({ ok: true, json: () => Promise.resolve([]) });
+  assert.equal(await press, true, 'the button reports the result of the read, not the earlier state');
+  assert.equal(await auto, true);
+  // opening again 2 minutes later does not read; 6 minutes later it does
+  const n = c.FETCHES.length;
+  run(c, '_arPull.tried = Date.now() - 120000'); await run(c, 'arPullLatest(false)'); assert.equal(c.FETCHES.length, n);
+  run(c, '_arPull.tried = Date.now() - 360000'); await run(c, 'arPullLatest(false)'); assert.equal(c.FETCHES.length, n + 1);
 });
