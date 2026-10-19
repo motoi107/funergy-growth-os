@@ -657,7 +657,7 @@ const CASES = [
   ["即時: an unknown send is treated as failed (and sent again)", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!res || res.unknown) { await fail('unknown', (res && res.error) || 'send_unknown'); return 'unknown'; }", "    if (!res) { await fail('unknown', 'send_unknown'); return 'unknown'; }"]]],
   ["即時: a row is reserved while the ledger is off", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!ctx.qb.enabled) return stats;                                     // the ledger is off: nothing is sent", ""]]],
   ["即時: Gmail's problem goes on reserving rows", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!rd.ok) { if (rd.auth) await gmailProblem(rd); stats.not_ready = 1; return stats; }", "    if (!rd.ok && false) { return stats; }"]]],
-  ["即時: the posting does not start the send", QG, [["supabase/functions/invoice-intake/handler.mjs", "      else if (background) {", "      else if (false) {"]]],
+  ["即時: the posting does not start the send", QG, [["supabase/functions/invoice-intake/handler.mjs", "      } else if (background) {", "      } else if (false) {"]]],
   ["即時: an automatic posting does not start the send", QG, [["supabase/functions/invoice-intake/handler.mjs", "        const q = await qbAfterPost([f.id], ctx, 'auto');", "        const q = null;"]]],
   ["即時: a body part is added to the mail", QG, [["invoice/gmail.mjs", "    '--' + bd, `Content-Type: ${mime}; ${p.ct}`,", "    '--' + bd, 'Content-Type: text/plain; charset=UTF-8', '', 'Forwarded by Funergy+', '--' + bd, `Content-Type: ${mime}; ${p.ct}`,"]]],
   ["即時: the subject lacks the attempt mark", QG, [["invoice/gmail.mjs", "  return `${currentName} FPQB-ID-${driveFileId} FPQB-SHA256-${sha256} FPQB-ATTEMPT-${attemptKey}`;", "  return `${currentName} FPQB-ID-${driveFileId} FPQB-SHA256-${sha256}`;"]]],
@@ -690,6 +690,11 @@ const CASES = [
   ["即時: a posting says sending although Gmail is not good", QG, [["supabase/functions/invoice-intake/handler.mjs", "      let due = false; try { due = await db.rpc('invoice_qb_has_due', {}); } catch { due = false; }", "      let due = true;"]]],
   ["即時 app: the rename count is gone while the detail loads or fails", QU, [["index.html", "+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)+renameChip+'</div>'", "+invInChip(t('送信エラー','Errors')+' '+(qb.error||0), INVIN_COL.red)+'</div>'"]]],
   ["即時 app: the switch check passes without 確かめる", QU, [["index.html", "    + ok(cr.ok===true && G.send_scope && G.read_scope && cr.search_ok===true,", "    + ok(G.send_scope && G.read_scope && cr.search_ok!==false,"]]],
+  // the second independent review (9319a56)
+  ["即時: the ledger turned off during a send uses up a try", QG, [["supabase/functions/invoice-intake/handler.mjs", "const QB_RELEASE = ['route_changed', 'gmail_not_ok', 'qb_off'];", "const QB_RELEASE = ['route_changed', 'gmail_not_ok'];"]]],
+  ["即時: a refused read uses up an unknown row's look-ups", QG, [["supabase/functions/invoice-intake/handler.mjs", "        if (e && e.auth) { await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return; }\n        continue;", "        h = null;"]]],
+  ["即時: a second unknown after a person's resend is not told", QG, [["db/invoice-intake.sql", " || ':'\n     || (select count(*) from public.invoice_events e where e.file_id = r.file_id and e.kind = 'qb_pending'), 'data',", ", 'data',"]]],
+  ["即時: the look-up before the switch skips rows without a Gmail ID", QG, [["db/invoice-intake.sql", "  where o.state='sent' and o.route in ('external','invoice-intake') and o.to_address = public.invoice_setting('qb')->>'to'", "  where o.state='sent' and o.message_id is not null and o.route in ('external','invoice-intake') and o.to_address = public.invoice_setting('qb')->>'to'"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {

@@ -330,7 +330,7 @@ begin
  return jsonb_build_object('ok', true);
 end $$;
 
--- For 確かめる: the newest original already sent to this address and recorded with its Gmail ID (the forwarder before's first),
+-- For 確かめる: the newest original already sent to this address (the forwarder before's first; with or without a Gmail ID),
 -- to look it up in the sent mail the way every send does before sending (the search is checked on real mail before the switch).
 create or replace function public.invoice_qb_probe_row(p jsonb) returns jsonb
 language sql stable security invoker set search_path=public,pg_temp as $$
@@ -338,7 +338,7 @@ language sql stable security invoker set search_path=public,pg_temp as $$
   select o.id, o.route, o.sha256, o.to_address, o.attempt_key, o.message_id, o.sent_at, f.drive_file_id, f.current_name,
    (select v.size_bytes from public.invoice_file_versions v where v.file_id=f.id and v.sha256=o.sha256 limit 1) size
   from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
-  where o.state='sent' and o.message_id is not null and o.route in ('external','invoice-intake') and o.to_address = public.invoice_setting('qb')->>'to'
+  where o.state='sent' and o.route in ('external','invoice-intake') and o.to_address = public.invoice_setting('qb')->>'to'
   order by (o.route = 'external') desc, o.sent_at desc nulls last limit 1) x;
 $$;
 
@@ -489,9 +489,11 @@ begin
   if public.invoice_qb_alert_put(jsonb_build_object('kind', 'first_sent', 'key', 'first_sent:' || rs::text, 'data', jsonb_build_object('name', r.current_name, 'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id),
      'posted_at', r.posted_at, 'renamed_at', r.renamed_at, 'queued_at', r.created_at, 'started_at', r.reserved_at, 'sent_at', r.sent_at, 'message_id', r.message_id))) then v_n := v_n + 1; end if;
  end loop;
- for r in select o.id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+ for r in select o.id, o.file_id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
   where o.state='unknown' and o.updated_at >= rs order by o.updated_at limit 20 loop
-  if public.invoice_qb_alert_put(jsonb_build_object('kind', 'unknown', 'key', 'unknown:' || r.id || ':' || r.attempts, 'data', jsonb_build_object('name', r.current_name,
+  -- once per unknown: the try, and how many times a person sent it again (a resend can end unknown at the same try)
+  if public.invoice_qb_alert_put(jsonb_build_object('kind', 'unknown', 'key', 'unknown:' || r.id || ':' || r.attempts || ':'
+     || (select count(*) from public.invoice_events e where e.file_id = r.file_id and e.kind = 'qb_pending'), 'data', jsonb_build_object('name', r.current_name,
      'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id), 'outbox_id', r.id, 'route', r.route, 'error', r.last_error, 'at', r.updated_at))) then v_n := v_n + 1; end if;
  end loop;
  for r in select o.id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id

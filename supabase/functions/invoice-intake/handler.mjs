@@ -16,8 +16,9 @@ const READ = ['ceo', 'gm', 'office', 'office_crew'];
 // From the store folder itself only these are taken in (a HEIC photo is taken in to show how to send it again).
 const STORE_FOLDER_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
 const QB_ROUTES = ['invoice-intake', 'external'];
-// A reserved row is let go (it waits, not a try) when this system is no longer the sender or the Gmail connection is not good.
-const QB_RELEASE = ['route_changed', 'gmail_not_ok'];
+// A reserved row is let go (it waits, not a try) when this system is no longer the sender, the ledger was turned off or the Gmail
+// connection is not good.
+const QB_RELEASE = ['route_changed', 'gmail_not_ok', 'qb_off'];
 
 // Constant-time comparison of a presented key with the stored one.
 function keyMatches(given, stored) {
@@ -494,7 +495,13 @@ export function createHandler(deps) {
   async function qbSendOne(o, owner, tr, trigger) {
     const fail = (state, error, result) => qbRecord(o.id, { state, error, ...(result ? { result } : {}) });
     // Not a try: the row waits as before (sending stays stopped until the route or the connection is good again).
-    const release = async error => { try { await db.rpc('invoice_qb_release', { id: o.id, owner, error }); } catch (e) { console.error('invoice-intake qb release', safeErr(e)); } };
+    const release = async error => {
+      try {
+        const r = await db.rpc('invoice_qb_release', { id: o.id, owner, error });
+        // Not let go: the reservation was already gone (swept to unknown after 15 minutes); a person decides, as for any unknown.
+        if (!r || !r.ok) console.error('invoice-intake qb release: not reserved any more', String(o.id));
+      } catch (e) { console.error('invoice-intake qb release', safeErr(e)); }
+    };
     let c;
     try { c = await db.rpc('invoice_qb_send_context', { id: o.id, owner }); } catch (e) { await fail('error', 'context_failed'); return 'error'; }
     if (!c.ok) {
@@ -566,7 +573,12 @@ export function createHandler(deps) {
     if (!rd.ok) { if (rd.auth) await gmailProblem(rd); return; }
     for (const r of rows) {
       let h = null;
-      try { h = await tr.history({ sha256: r.sha256, driveFileId: r.drive_file_id, attemptKey: r.attempt_key, to: r.to_address, size: r.size }); } catch { h = null; }
+      try { h = await tr.history({ sha256: r.sha256, driveFileId: r.drive_file_id, attemptKey: r.attempt_key, to: r.to_address, size: r.size }); }
+      catch (e) {
+        // A refused read stops the look-ups (the connection shows it); a failed one is tried again next run. Neither is counted.
+        if (e && e.auth) { await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return; }
+        continue;
+      }
       if (h && h.state === 'sent') {
         await qbRecord(r.id, { state: 'sent', message_id: h.messageId, result: { via: 'gmail_history', own: !!h.own,
           note: '結果が分からなかった送信を Gmail の送信済みで見つけた（送り直していない）' } });
@@ -629,10 +641,15 @@ export function createHandler(deps) {
     const out = { queued, sending: false };
     if (queued && ctx.qb.route === 'invoice-intake') {
       let due = false; try { due = await db.rpc('invoice_qb_has_due', {}); } catch { due = false; }
-      // Not due although queued: the Gmail connection is not good (the row waits; the screen says so).
-      if (!due) out.waiting = 'gmail';
-      else if (background) {
-        try { background(qbSend(trigger).catch(e => console.error('invoice-intake qb send', safeErr(e)))); out.sending = true; } catch { out.sending = false; }
+      if (!due) {
+        // Not due although queued: the screen says "waits for Gmail" only when the connection is in fact not good (another sender
+        // may already have the row; the 5-minute run sends what is left).
+        let g = null; try { g = await db.rpc('invoice_gmail_public', {}); } catch { g = null; }
+        if (g && g.status !== 'ok') out.waiting = 'gmail';
+      } else if (background) {
+        // Inside a worker run (an automatic posting) the send keeps within what is left of the run.
+        const opts = ctx.deadline ? { budgetMs: Math.max(0, Math.min(100000, ctx.deadline - now())) } : {};
+        try { background(qbSend(trigger, opts).catch(e => console.error('invoice-intake qb send', safeErr(e)))); out.sending = true; } catch { out.sending = false; }
       }
     }
     return out;
@@ -701,6 +718,7 @@ export function createHandler(deps) {
     const started = new Date(t0).toISOString();
     try {
       const ctx = await context();
+      ctx.deadline = t0 + (Number(body.budget_ms) || 100000) * 1.5;
       if (!ctx.mode.intake) {
         // With intake off, reconciling and QuickBooks results still move invoices: the summaries follow them.
         const st = { off: true }; await publishSummary(st);
@@ -1412,7 +1430,7 @@ export function createHandler(deps) {
           if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || 'gmail_not_ready' };
           else {
             const h = await tr.history({ sha256: row.sha256, driveFileId: row.drive_file_id, attemptKey: row.attempt_key, to: row.to_address, size: row.size });
-            result.history_probe = { tried: true, found: h.state === 'sent', same_id: h.state === 'sent' && h.messageId === row.message_id,
+            result.history_probe = { tried: true, found: h.state === 'sent', same_id: h.state === 'sent' && !!row.message_id && h.messageId === row.message_id,
               state: h.state, route: row.route, name: String(row.current_name || '').slice(0, 120), sent_at: row.sent_at };
           }
         } catch (e) { result.history_probe = { tried: true, found: null, error: (e && e.code) || 'gmail_history_failed' }; }

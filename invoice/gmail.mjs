@@ -42,10 +42,11 @@ async function timed(fetch, url, init, ms) {
     return new Response(r.status === 204 || r.status === 304 ? null : body, { status: r.status, headers: r.headers });
   } finally { clearTimeout(t); }
 }
-// Gmail's reason for a refusal (error.errors[0].reason).
-const reasonOf = j => (j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || '') : '');
-// A 403 that is a rate or quota limit is a busy Gmail, not a permission taken back.
-const limited = reason => /rate|limit|quota/i.test(reason);
+// Gmail's reason for a refusal (error.errors[0].reason, or the newer error.status).
+const reasonOf = j => (j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || '')
+  : j && j.error && j.error.status ? String(j.error.status) : '');
+// A 403 that is a rate or quota limit is a busy Gmail, not a permission taken back (Google's own names for it).
+const limited = reason => /^(rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|quotaExceeded|RESOURCE_EXHAUSTED)$/.test(reason);
 
 // The code Google returned to the redirect: exchanged once, with the verifier.
 export async function exchangeCode({ fetch, clientId, clientSecret, code, verifier, redirectUri }) {

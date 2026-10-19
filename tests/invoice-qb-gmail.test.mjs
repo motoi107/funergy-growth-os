@@ -8,9 +8,10 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
+import http from 'node:http';
 import { createHandler } from '../supabase/functions/invoice-intake/handler.mjs';
 import { parseResponse } from '../invoice/extract.mjs';
-import { buildQbMime, judgeHistory, qbSubject, headerValue } from '../invoice/gmail.mjs';
+import { buildQbMime, judgeHistory, qbSubject, headerValue, createGmail } from '../invoice/gmail.mjs';
 import { noticeText } from '../invoice/notices.mjs';
 
 // The integration fixture (tests/invoice-intake.test.mjs) without running its tests.
@@ -392,22 +393,24 @@ test('(7) a replaced original, a start before the switch, another address or the
     await X.q(`insert into invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key) select f.id, f.current_sha256, $2, 'invoice-intake', 'qb-' || f.current_sha256 || '-off'
       from invoice_files f where f.drive_file_id=$1`, [b.id, TO]);
     await X.worker(); await X.settle();
-    assert.deepEqual([(await X.row(b.id)).state, (await X.row(b.id)).attempts], ['pending', 0]);
+    assert.deepEqual([(await X.row(b.id)).state, (await X.row(b.id)).attempts, (await X.row(b.id)).reserved_by, (await X.row(b.id)).last_error], ['pending', 0, null, null]);
     await X.q(`update invoice_settings set value=value||'{"enabled":true}' where key='qb'`);
     await X.worker(); await X.settle();
     assert.equal((await X.row(b.id)).state, 'sent');
-    // the settings change between the reservation and the send: read again, nothing sent (an error, retried later)
-    for (const [tag, no, change, why] of [
-      ['QB-SINCE', '7603', `update invoice_settings set value=value||'{"since":"2027-01-01"}' where key='qb'`, 'before_since'],
-      ['QB-TO', '7604', `update invoice_settings set value=value||'{"to":"other@example.test"}' where key='qb'`, 'to_changed'],
-      ['QB-FROM', '7605', `update invoice_settings set value=value||'{"from":"someone@example.test"}' where key='qb'`, 'sender_mismatch'],
-      ['QB-QOFF', '7606', `update invoice_settings set value=value||'{"enabled":false}' where key='qb'`, 'qb_off']]) {
+    // the settings change between the reservation and the send: read again, nothing sent (an error, retried later; the ledger
+    // turned off lets the row go without a try: it waits for the ledger)
+    for (const [tag, no, change, why, state] of [
+      ['QB-SINCE', '7603', `update invoice_settings set value=value||'{"since":"2027-01-01"}' where key='qb'`, 'before_since', 'error'],
+      ['QB-TO', '7604', `update invoice_settings set value=value||'{"to":"other@example.test"}' where key='qb'`, 'to_changed', 'error'],
+      ['QB-FROM', '7605', `update invoice_settings set value=value||'{"from":"someone@example.test"}' where key='qb'`, 'sender_mismatch', 'error'],
+      ['QB-QOFF', '7606', `update invoice_settings set value=value||'{"enabled":false}' where key='qb'`, 'qb_off', 'pending']]) {
       const c = await X.review(tag, no);
       const keep = (await X.q(`select value from invoice_settings where key='qb'`))[0].value;
       X.hook('invoice_qb_send_context', () => X.q(change));
       r = await X.post(c.doc); await X.settle();
       const o = await X.row(c.id);
-      assert.deepEqual([o.state, o.last_error], ['error', why], tag);
+      assert.deepEqual([o.state, o.last_error], [state, why], tag);
+      if (state === 'pending') assert.equal(o.attempts, 0, tag);
       assert.equal(X.sentFor(c.id), 0, tag);
       await X.q(`update invoice_settings set value=$1 where key='qb'`, [keep]);
     }
@@ -866,6 +869,112 @@ test('a person’s 「確かめて、もう一度送る」 gives an unknown row 
     await X.worker(); await X.settle();
     o = await X.row(a.id);
     assert.deepEqual([o.state, o.attempts], ['sent', 5]); assert.equal(X.sentFor(a.id), 1);
+  } finally { await X.pg.close(); }
+});
+
+// Second independent review (9319a56, 2026-10-18) — timed(): a body that never finishes
+test('timed(): headers then a stalled body is cut at the timeout (no hang); a send whose answer never ends is unknown; 205 is a network error', async () => {
+  const srv = http.createServer((req, res) => {
+    if (req.url.startsWith('/s205')) { res.writeHead(205); res.end(); return; }
+    res.writeHead(403, { 'content-type': 'application/json' }); res.write('{"error":{"errors":[{"reason":"insuff');   // never ends
+  });
+  await new Promise(r => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  let mode = 'stall';
+  const fetchLocal = (url, init) => {
+    const u = new URL(String(url));
+    if (u.origin === 'https://oauth2.googleapis.com') return Promise.resolve(Response.json({ access_token: 't' }));
+    return fetch(`http://127.0.0.1:${port}${mode === '205' ? '/s205' : ''}${u.pathname}${u.search}`, init);
+  };
+  try {
+    const g = createGmail({ fetch: fetchLocal, getCreds: async () => ({ clientId: 'c', clientSecret: 's', refreshToken: 'r', account: 'a@x' }), timeoutMs: 400, sendTimeoutMs: 400 });
+    assert.equal((await g.ready()).ok, true);
+    const t0 = Date.now();
+    await assert.rejects(g.history({ sha256: 'a'.repeat(64), driveFileId: 'd', attemptKey: 'k', to: 'x@y', size: 1 }), e => e.code === 'gmail_history_network' && !e.auth);
+    assert.ok(Date.now() - t0 < 3000, 'cut at the timeout');
+    const s = await g.send({ from: 'a@x', to: 'x@y', subject: 's', attachment: { name: 'a.pdf', mime: 'application/pdf', bytes: new Uint8Array(3) } });
+    assert.deepEqual([s.ok, s.unknown], [false, true], 'a send whose answer body never ends is unknown');
+    mode = '205';
+    await assert.rejects(g.history({ sha256: 'a'.repeat(64), driveFileId: 'd', attemptKey: 'k', to: 'x@y', size: 1 }), e => e.code === 'gmail_history_network');
+  } finally { srv.closeAllConnections?.(); srv.close(); }
+});
+
+// Second independent review (9319a56, 2026-10-18) — P3: the ledger turned off mid-run burns tries (route_changed does not)
+test('the ledger turned OFF while a send run is going: the reserved row is let go (not a try), nothing more is reserved', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_gmail_auth set status='expired'`);
+    const a = await X.review('QB2-OFF1', '9101'); await X.post(a.doc); await X.settle();
+    const b = await X.review('QB2-OFF2', '9102'); await X.post(b.doc); await X.settle();
+    assert.equal((await X.row(a.id)).state, 'pending'); assert.equal((await X.row(b.id)).state, 'pending');
+    await X.q(`update invoice_gmail_auth set status='ok'`);
+    // The CEO turns the ledger off just as the worker's sender reserves its first row.
+    X.hook('invoice_qb_reserve', async () => { await X.q(`update invoice_settings set value=value||'{"enabled":false}' where key='qb'`); });
+    await X.worker(); await X.settle();
+    const ra = await X.row(a.id), rb = await X.row(b.id);
+    assert.deepEqual([ra.state, ra.attempts, ra.last_error, rb.state, rb.attempts, rb.last_error], ['pending', 0, 'qb_off', 'pending', 0, null],
+      'the first row is let go, the second is not reserved: ' + JSON.stringify([ra.state, ra.attempts, ra.last_error, rb.state, rb.attempts, rb.last_error]));
+  } finally { await X.pg.close(); }
+});
+
+// Second independent review (9319a56, 2026-10-18) — P3: unknown rows' automatic look-ups are used up by a refused read
+test('an unknown row looked up while Gmail refuses the read (403): the look-up is not counted, the connection is marked', async () => {
+  const X = await env0();
+  try {
+    const a = await X.review('QB2-UNK', '9201');
+    X.G.sendMode = '500_after';                     // sent, but the answer is a 5xx: unknown
+    await X.post(a.doc); await X.settle();
+    let o = await X.row(a.id);
+    assert.equal(o.state, 'unknown');
+    X.G.sendMode = 'ok';
+    await X.q(`update invoice_qb_outbox set updated_at=now() - interval '20 minutes' where id=$1`, [o.id]);
+    X.G.searchErr = { status: 403, reason: 'insufficientPermissions', n: 100 };
+    await X.worker(); await X.settle();
+    o = await X.row(a.id);
+    const g = (await X.q('select status from invoice_gmail_auth'))[0];
+    assert.deepEqual([o.state, o.gmail_checks, g.status], ['unknown', 0, 'denied'],
+      'a refused read should not use a look-up and should mark the connection: ' + JSON.stringify([o.state, o.gmail_checks, g.status]));
+  } finally { await X.pg.close(); }
+});
+
+// Second independent review (9319a56, 2026-10-18) — P3: the probe is skipped when the forwarder recorded no Gmail IDs
+test('確かめる: a forwarder row sent without a Gmail ID is looked up too; not in the sent mail, the switch is refused', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+    const a = await X.review('QB2-NOID', '9301');
+    await X.post(a.doc); await X.settle();
+    const row = await X.row(a.id);
+    assert.equal(row.route, 'external');
+    await X.q(`update invoice_qb_outbox set state='sent', message_id=null, sent_at=now() where id=$1`, [row.id]);   // sent, no Gmail ID recorded
+    X.G.sent.splice(0);                              // and nothing in the sent mail at all
+    const c = (await X.api('tok-gm', { action: 'gmail_check' })).body;
+    const r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
+    assert.deepEqual([c.check_result.history_probe.tried, r.status], [true, 409],
+      'a sent forwarder row exists; the search should be tried on it: ' + JSON.stringify([c.check_result.history_probe, r.status]));
+  } finally { await X.pg.close(); }
+});
+
+// Second independent review (9319a56, 2026-10-18) — P3: the second unknown after a person's resend is not told
+test('a person resends an unknown row that had used its five; it is unknown again: a new "unknown" notice is made', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||jsonb_build_object('route_since', now() - interval '1 hour') where key='qb'`);
+    const a = await X.review('QB2-UNK5', '9401');
+    X.G.sendMode = 'timeout';
+    await X.post(a.doc); await X.settle();
+    let o = await X.row(a.id);
+    assert.equal(o.state, 'unknown');
+    await X.q(`update invoice_qb_outbox set attempts=5, updated_at=now() where id=$1`, [o.id]);   // its fifth try was the unknown one
+    await X.worker(); await X.settle();
+    const n1 = (await X.q(`select count(*)::int n from invoice_qb_alerts where kind='unknown'`))[0].n;
+    X.G.sent.splice(0);
+    assert.equal((await X.api('tok-office', { action: 'qb_resolve', id: o.id, state: 'pending', note: '送信済みに無い' })).status, 200);
+    await X.worker(); await X.settle();
+    o = await X.row(a.id);
+    assert.deepEqual([o.state, o.attempts], ['unknown', 5]);
+    const n2 = (await X.q(`select count(*)::int n from invoice_qb_alerts where kind='unknown'`))[0].n;
+    assert.equal(n2, n1 + 1, `the second unknown of the same row is told too (alerts before ${n1}, after ${n2})`);
   } finally { await X.pg.close(); }
 });
 

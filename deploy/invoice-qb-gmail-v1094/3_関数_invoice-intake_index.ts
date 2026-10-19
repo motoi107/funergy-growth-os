@@ -1298,8 +1298,8 @@ async function timed(fetch, url, init, ms) {
     clearTimeout(t);
   }
 }
-var reasonOf = (j) => j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || "") : "";
-var limited = (reason) => /rate|limit|quota/i.test(reason);
+var reasonOf = (j) => j && j.error && Array.isArray(j.error.errors) && j.error.errors[0] ? String(j.error.errors[0].reason || "") : j && j.error && j.error.status ? String(j.error.status) : "";
+var limited = (reason) => /^(rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|quotaExceeded|RESOURCE_EXHAUSTED)$/.test(reason);
 async function exchangeCode({ fetch, clientId, clientSecret, code, verifier, redirectUri }) {
   try {
     const r = await timed(fetch, TOKEN_URL, {
@@ -1690,7 +1690,7 @@ var SUPPORTED = { "application/pdf": true, "image/jpeg": true, "image/png": true
 var READ = ["ceo", "gm", "office", "office_crew"];
 var STORE_FOLDER_TYPES = ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif"];
 var QB_ROUTES = ["invoice-intake", "external"];
-var QB_RELEASE = ["route_changed", "gmail_not_ok"];
+var QB_RELEASE = ["route_changed", "gmail_not_ok", "qb_off"];
 function keyMatches(given, stored) {
   if (!stored || !stored.key || !stored.enabled || typeof given !== "string" || given.length !== stored.key.length) return false;
   let diff = 0;
@@ -2242,7 +2242,8 @@ function createHandler(deps) {
     const fail = (state, error, result) => qbRecord(o.id, { state, error, ...result ? { result } : {} });
     const release = async (error) => {
       try {
-        await db.rpc("invoice_qb_release", { id: o.id, owner, error });
+        const r = await db.rpc("invoice_qb_release", { id: o.id, owner, error });
+        if (!r || !r.ok) console.error("invoice-intake qb release: not reserved any more", String(o.id));
       } catch (e) {
         console.error("invoice-intake qb release", safeErr(e));
       }
@@ -2372,8 +2373,12 @@ function createHandler(deps) {
       let h = null;
       try {
         h = await tr.history({ sha256: r.sha256, driveFileId: r.drive_file_id, attemptKey: r.attempt_key, to: r.to_address, size: r.size });
-      } catch {
-        h = null;
+      } catch (e) {
+        if (e && e.auth) {
+          await gmailProblem({ auth: true, error: e.code || "gmail_read_refused" });
+          return;
+        }
+        continue;
       }
       if (h && h.state === "sent") {
         await qbRecord(r.id, { state: "sent", message_id: h.messageId, result: {
@@ -2469,10 +2474,18 @@ function createHandler(deps) {
       } catch {
         due = false;
       }
-      if (!due) out.waiting = "gmail";
-      else if (background) {
+      if (!due) {
+        let g = null;
         try {
-          background(qbSend(trigger).catch((e) => console.error("invoice-intake qb send", safeErr(e))));
+          g = await db.rpc("invoice_gmail_public", {});
+        } catch {
+          g = null;
+        }
+        if (g && g.status !== "ok") out.waiting = "gmail";
+      } else if (background) {
+        const opts = ctx.deadline ? { budgetMs: Math.max(0, Math.min(1e5, ctx.deadline - now())) } : {};
+        try {
+          background(qbSend(trigger, opts).catch((e) => console.error("invoice-intake qb send", safeErr(e))));
           out.sending = true;
         } catch {
           out.sending = false;
@@ -2569,6 +2582,7 @@ function createHandler(deps) {
     const started = new Date(t0).toISOString();
     try {
       const ctx = await context();
+      ctx.deadline = t0 + (Number(body.budget_ms) || 1e5) * 1.5;
       if (!ctx.mode.intake) {
         const st = { off: true };
         await publishSummary(st);
@@ -3500,7 +3514,7 @@ function createHandler(deps) {
             result.history_probe = {
               tried: true,
               found: h.state === "sent",
-              same_id: h.state === "sent" && h.messageId === row.message_id,
+              same_id: h.state === "sent" && !!row.message_id && h.messageId === row.message_id,
               state: h.state,
               route: row.route,
               name: String(row.current_name || "").slice(0, 120),
