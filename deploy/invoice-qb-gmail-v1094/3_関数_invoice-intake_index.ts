@@ -3499,13 +3499,14 @@ function createHandler(deps) {
     };
     result.history_probe = { tried: false };
     if (result.ok) {
-      let row = null;
+      let row = null, readFailed = false;
       try {
         row = await db.rpc("invoice_qb_probe_row", {});
       } catch {
-        row = null;
+        readFailed = true;
       }
-      if (row) {
+      if (readFailed) result.history_probe = { tried: true, found: null, error: "probe_read_failed" };
+      else if (row) {
         try {
           const tr = newTransport(), rd = await tr.ready();
           if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || "gmail_not_ready" };

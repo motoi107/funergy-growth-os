@@ -1423,8 +1423,11 @@ export function createHandler(deps) {
     // first) must be found in the sent mail. Switching to this system needs it found (when there is one).
     result.history_probe = { tried: false };
     if (result.ok) {
-      let row = null; try { row = await db.rpc('invoice_qb_probe_row', {}); } catch { row = null; }
-      if (row) {
+      // A ledger that cannot be read is not "nothing sent before": the check fails (the switch is refused) and is tried again.
+      let row = null, readFailed = false;
+      try { row = await db.rpc('invoice_qb_probe_row', {}); } catch { readFailed = true; }
+      if (readFailed) result.history_probe = { tried: true, found: null, error: 'probe_read_failed' };
+      else if (row) {
         try {
           const tr = newTransport(), rd = await tr.ready();
           if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || 'gmail_not_ready' };

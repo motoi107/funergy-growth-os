@@ -978,6 +978,67 @@ test('a person resends an unknown row that had used its five; it is unknown agai
   } finally { await X.pg.close(); }
 });
 
+// Codex (375a985, P2-1): the status keeps what needs a person apart from the recent rows (an old unknown is never pushed out).
+test('qb_status lists what needs a person (unknown, stopped) apart from the 40 recent rows, oldest first', async () => {
+  const X = await env0();
+  try {
+    const a = await X.review('QB-OPEN', '8601');
+    X.G.sendMode = 'timeout';
+    await X.post(a.doc); await X.settle();
+    const unk = await X.row(a.id);
+    assert.equal(unk.state, 'unknown');
+    // 45 newer rows sent after it (synthetic ledger rows), and one of this system's rows that used its five tries
+    await X.q(`insert into invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key, state, attempts, sent_at, message_id, created_at, updated_at)
+      select $1, md5('s' || i) || md5('t' || i), $2, 'invoice-intake', 'qb-new-' || i, 'sent', 1, now(), 'm' || i, now(), now() + make_interval(secs => i)
+      from generate_series(1, 45) i`, [unk.file_id, TO]);
+    await X.q(`insert into invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key, state, attempts, last_error, created_at, updated_at)
+      values ($1, md5('stop') || md5('stop2'), $2, 'invoice-intake', 'qb-stop', 'error', 5, 'gmail_send_429', now(), now() + interval '1 minute')`, [unk.file_id, TO]);
+    const st = (await X.api('tok-office', { action: 'qb_status' })).body;
+    assert.equal(st.rows.length, 40); assert.ok(!st.rows.some(r => r.id === unk.id), 'pushed out of the recent rows');
+    assert.equal(st.open_total, 2);
+    assert.deepEqual(st.open.map(r => r.state), ['unknown', 'error']);
+    assert.equal(st.open[0].id, unk.id); assert.ok(st.open[0].current_name);
+  } finally { await X.pg.close(); }
+});
+
+// Codex (375a985, P2-2): a ledger that cannot be read is not "nothing sent before": the check fails and the switch is refused.
+test('確かめる: the ledger look-up failing is a failed check (the switch refused), not "nothing sent before"', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||'{"route":"external"}' where key='qb'`);
+    const a = await X.review('QB-PRERR', '8701');
+    await X.post(a.doc); await X.settle();
+    const row = await X.row(a.id);
+    await X.q(`update invoice_qb_outbox set state='sent', message_id='m-x', sent_at=now() where id=$1`, [row.id]);
+    X.hook('invoice_qb_probe_row', () => { throw new Error('connection reset'); });
+    const c = (await X.api('tok-gm', { action: 'gmail_check' })).body;
+    assert.deepEqual([c.check_result.history_probe.tried, c.check_result.history_probe.found, c.check_result.history_probe.error], [true, null, 'probe_read_failed']);
+    const r = await X.api('tok-gm', { action: 'settings_save', key: 'qb', value: { route: 'invoice-intake' } });
+    assert.deepEqual([r.status, r.body.error], [409, 'gmail_not_ready']);
+  } finally { await X.pg.close(); }
+});
+
+// Codex (375a985, P2-3): each scan leaves out what was already told before taking 20, so 41 unknown rows are all told.
+test('notices: 41 unknown rows are all told over three scans (20, 20, 1); stopped rows the same', async () => {
+  const X = await env0();
+  try {
+    await X.q(`update invoice_settings set value=value||jsonb_build_object('route_since', now() - interval '1 hour') where key='qb'`);
+    const a = await X.review('QB-MANY', '8801');
+    const f = (await X.q(`select id from invoice_files where drive_file_id=$1`, [a.id]))[0].id;
+    await X.q(`insert into invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key, state, attempts, last_error, created_at, updated_at)
+      select $1, md5('u' || i) || md5('v' || i), $2, 'invoice-intake', 'qb-unk-' || i, 'unknown', 1, 'gmail_send_no_answer', now(), now() - make_interval(mins => 50 - i)
+      from generate_series(1, 41) i`, [f, TO]);
+    await X.q(`insert into invoice_qb_outbox(file_id, sha256, to_address, route, attempt_key, state, attempts, last_error, created_at, updated_at)
+      select $1, md5('e' || i) || md5('f' || i), $2, 'invoice-intake', 'qb-err-' || i, 'error', 5, 'gmail_send_429', now(), now() - make_interval(mins => 50 - i)
+      from generate_series(1, 22) i`, [f, TO]);
+    const made = [];
+    for (let i = 0; i < 4; i++) made.push((await X.q(`select invoice_qb_alert_scan('{}'::jsonb) r`))[0].r.made);
+    const n = async k => (await X.q(`select count(*)::int n from invoice_qb_alerts where kind=$1`, [k]))[0].n;
+    assert.equal(await n('unknown'), 41); assert.equal(await n('error_final'), 22);
+    assert.deepEqual(made.slice(0, 3).map(Number).map(x => x > 0), [true, true, true]); assert.equal(Number(made[3]), 0, 'nothing more once all are told');
+  } finally { await X.pg.close(); }
+});
+
 // The sender is set once by SQL (the template; the real address is handed to Moto directly, never written here).
 test('the sender SQL: the template stops as it is; an address is kept in lower case once; not changed while this system sends', async () => {
   const X = await env0();

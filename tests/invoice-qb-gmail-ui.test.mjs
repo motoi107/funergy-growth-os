@@ -142,6 +142,27 @@ test('1 件の画面: 反映 and QuickBooks への転送 apart; QuickBooks で�
   assert.match(h, /送信エラー[\s\S]*やり直し 2 \/ 5 · 次 09:45:00（自動）/);
   assert.match(c.fn('invInQbBlock(' + G(null) + ')'), /まだ台帳にありません（名前を変えてから積みます）/);
   assert.equal(c.fn('invInQbBlock({ doc:{ status:"review" }, qb:[] })'), '');
+  // Codex (375a985, P2-1): an unknown send can be settled from the invoice itself (accounting, 事務Crew, GM, CEO), not only from the list
+  h = c.fn('invInQbBlock(' + G(ROW({ id: 'u9', state: 'unknown', message_id: null, sent_at: null, last_error: 'gmail_send_no_answer' })) + ')');
+  assert.ok(h.includes("invInQbLookup('u9')") && h.includes("invInQbResolve('u9','pending')") && h.includes("invInQbResolve('u9','sent')"));
+  const am = app({ role: 'am' });
+  assert.ok(!/invInQbLookup/.test(am.fn('invInQbBlock(' + G(ROW({ id: 'u9', state: 'unknown' })) + ')')));
+});
+
+// Codex (375a985, P2-1): what needs a person is listed apart from the recent rows, so an old unknown is never pushed out of sight.
+test('取込状況: an old unknown (and a stopped row) stay with their buttons however many newer sends come after', () => {
+  const c = app();
+  const recent = Array.from({ length: 30 }, (_, i) => ROW({ id: 'n' + i, updated_at: '2026-10-19T20:' + String(i).padStart(2, '0') + ':00Z' }));
+  const old = ROW({ id: 'old1', state: 'unknown', message_id: null, sent_at: null, last_error: 'gmail_send_no_answer', updated_at: '2026-10-10T19:00:00Z', current_name: 'old-unknown.pdf' });
+  const stop = ROW({ id: 'old2', state: 'error', attempts: 5, message_id: null, sent_at: null, last_error: 'gmail_send_429', current_name: 'old-stopped.pdf' });
+  c._invIn.qbs = STATUS({ rows: recent, open: [old, stop], open_total: 3 });
+  const h = c.fn('invInQbCard({ qb_settings:{} }, null)');
+  assert.match(h, /対応が要るもの 3 件（古い順）[\s\S]*old-unknown\.pdf[\s\S]*invInQbLookup\('old1'\)[\s\S]*old-stopped\.pdf[\s\S]*やり直し 5 回を使い切りました[\s\S]*ほか 1 件[\s\S]*最近の転送/);
+  assert.equal((h.match(/invInQbLookup\('old1'\)/g) || []).length, 1, 'shown once even when it is also among the recent rows');
+  c._invIn.qbs = STATUS({ rows: [old, ...recent], open: [old], open_total: 1 });
+  assert.equal((c.fn('invInQbCard({ qb_settings:{} }, null)').match(/invInQbLookup\('old1'\)/g) || []).length, 1);
+  // after a look-up or a decision the card and the open invoice are read again
+  assert.match(bodyOf('invInQbResolveDo'), /delete _invIn\.loaded\.qbs; delete _invIn\.loaded\.doc;/);
 });
 
 test('アプリの通知 (CEO・GM): each notice once on any device, opening Invoice取込; nothing for other roles', async () => {
@@ -182,6 +203,9 @@ test('「Gmail の送信済みを調べる」: found → sent; not found → not
   await c.fn('invInQbLookup("o2")');
   assert.match(c.toasts.at(-1)[0], /見つかりませんでした。原本を確かめて「確かめて、もう一度送る」/);
   assert.deepEqual(c.calls.map(x => x.action), ['qb_lookup', 'qb_lookup']);
+  c._invIn.loaded = { qbs: 1, doc: 1, health: 1 };
+  await c.fn('invInQbLookup("o2")');
+  assert.deepEqual(c._invIn.loaded, {}, 'the card and the open invoice are read again');
 });
 
 test('the page wires it in: the status tab loads qb_status, the settings show Gmail and notices, the hooks run after login, v1094', () => {

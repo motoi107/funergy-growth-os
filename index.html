@@ -46828,8 +46828,11 @@ function invInQbCard(H, P){
     + renameChip+'</div>';
   if (Number(Q.waiting_30)) h += '<div class="ivx-note" style="color:'+INVIN_COL.red+'">'+t('30 分以上 送れていない原本が ','Originals waiting more than 30 minutes: ')+Number(Q.waiting_30)+t(' 件あります（Gmail の接続を確かめてください）','. Check the Gmail connection')+'</div>';
   if (Number(Q.notices_failed)) h += '<div class="ivx-note" style="color:'+INVIN_COL.yel+'">'+t('知らせ（メール・LINE）を送れなかったものが ','Notices (mail or LINE) not delivered: ')+Number(Q.notices_failed)+t(' 件（7 日以内）',' (7 days)')+'</div>';
-  var rows = (Q.rows||[]).slice(0, 30);
-  h += rows.map(function(o){
+  /* 対応が要るもの（結果不明・5 回で止まった）は、最近の送信とは別に全部（古い順・100 件まで）。新しい送信に押し出されない */
+  var open = Q.open || [], seen = {};
+  open.forEach(function(o){ seen[o.id] = 1; });
+  var rows = (Q.rows||[]).filter(function(o){ return !seen[o.id]; }).slice(0, 30);
+  var rowHtml = function(o){
     var st = invInQbState(o), via = o.result && o.result.via, note = o.result && o.result.note;
     var times = [t('反映 ','Posted ')+invInQbTime(o.posted_at), t('名前 ','Renamed ')+invInQbTime(o.renamed_at, false), t('台帳 ','Queued ')+invInQbTime(o.created_at, false)]
       .concat(o.reserved_at ? [t('送信開始 ','Started ')+invInQbTime(o.reserved_at, false)] : []).concat(o.sent_at ? [t('送信済み ','Sent ')+invInQbTime(o.sent_at, false)] : []);
@@ -46844,7 +46847,11 @@ function invInQbCard(H, P){
       + (invInCanEdit() && o.state==='unknown' ? '<span style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbLookup(\''+invInId(o.id)+'\')"><i class="ti ti-search"></i> '+t('Gmail の送信済みを調べる','Search the sent mail')+'</button>'
         + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'pending\')">'+t('確かめて、もう一度送る','Checked: send again')+'</button>'
         + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'sent\')">'+t('送信済みにする（確かめた）','Mark as sent (checked)')+'</button></span>' : '')+'</div>';
-  }).join('');
+  };
+  if (open.length) h += '<div style="margin-top:10px;font-size:12px;font-weight:700;color:'+INVIN_COL.org+'">'+t('対応が要るもの ','Needs a person ')+Number(Q.open_total||open.length)+t(' 件（古い順）',' (oldest first)')+'</div>'
+    + open.map(rowHtml).join('')
+    + (Number(Q.open_total) > open.length ? '<div class="ivx-note">'+t('ほか ','And ')+(Number(Q.open_total)-open.length)+t(' 件（先頭の分を片づけると出ます）',' more (shown as the first ones are settled)')+'</div>' : '');
+  if (rows.length) h += '<div style="margin-top:10px;font-size:12px;font-weight:700">'+t('最近の転送','Recent forwarding')+'</div>' + rows.map(rowHtml).join('');
   h += '<div class="ivx-note">'+t('「メール送信済み」は QuickBooks 宛てにメールを送ったところまで。QuickBooks に取り込まれたか・記帳・銀行照合は QuickBooks で確かめてください（Intuit からのメールは受け取っていません）。結果不明は自動では送り直しません（二重送信を防ぐため）。','“Email sent” means the mail to QuickBooks was sent. Whether QuickBooks took it in, booked or bank-matched it is checked in QuickBooks (Intuit’s mails are not received here). Unknown results are never resent automatically.')+'</div></div>';
   return h;
 }
@@ -46930,7 +46937,7 @@ async function invInQbLookup(id){
   else if (r.conflict) showToast(invInQbErr(r.conflict), 'warning');
   else if (r.error) showToast(invInQbErr(r.error), 'warning');
   else showToast(t('送信済みには見つかりませんでした。原本を確かめて「確かめて、もう一度送る」を押すか、そのままにしてください','Not found in the sent mail. Check, then “Checked: send again”, or leave it'), 'warning');
-  delete _invIn.loaded.qbs; delete _invIn.loaded.health; delete _invIn.loaded.problems; invInRerender();
+  delete _invIn.loaded.qbs; delete _invIn.loaded.health; delete _invIn.loaded.problems; delete _invIn.loaded.doc; invInRerender();
 }
 /* 1 件の画面：反映（経理の確認）と QuickBooks への転送を分けて出す */
 function invInQbBlock(G){
@@ -46946,7 +46953,10 @@ function invInQbBlock(G){
     line = invInChip(st[0], st[1]) + ' '
       + (o.state==='sent' ? invInQbTime(o.sent_at)+(o.message_id ? ' · Gmail ID <span style="font-family:ui-monospace,monospace">'+e(o.message_id)+'</span>' : '')+'<br>'+t('台帳 ','Queued ')+invInQbTime(o.created_at, false)+(o.reserved_at ? ' → '+t('送信開始 ','Started ')+invInQbTime(o.reserved_at, false) : '')+' → '+t('送信済み ','Sent ')+invInQbTime(o.sent_at, false)+(o.result && o.result.note ? '<br>'+e(o.result.note) : '')
         : o.state==='error' ? (Number(o.attempts)>=5 ? t('やり直し 5 回を使い切りました','All 5 tries used') : t('やり直し ','Try ')+Number(o.attempts)+' / 5'+(o.next_at ? t(' · 次 ',' · next ')+invInQbTime(o.next_at, false)+t('（自動）',' (automatic)') : ''))+'<br>'+e(invInQbErr(o.last_error))
-        : o.state==='unknown' ? e(invInQbErr(o.last_error))+'<br>'+t('取込状況で「Gmail の送信済みを調べる」','Use “Search the sent mail” under Intake status')
+        : o.state==='unknown' ? e(invInQbErr(o.last_error))
+          + (invInCanEdit() ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px"><button class="btn btn-primary btn-sm" style="min-height:36px" onclick="invInQbLookup(\''+invInId(o.id)+'\')"><i class="ti ti-search"></i> '+t('Gmail の送信済みを調べる','Search the sent mail')+'</button>'
+            + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'pending\')">'+t('確かめて、もう一度送る','Checked: send again')+'</button>'
+            + '<button class="btn btn-secondary btn-sm" style="min-height:36px" onclick="invInQbResolve(\''+invInId(o.id)+'\',\'sent\')">'+t('送信済みにする（確かめた）','Mark as sent (checked)')+'</button></div>' : '')
         : o.state==='cancelled' ? t('台帳に積んだときと中身が違います','The content differs from what was queued')
         : t('台帳 ','Queued ')+invInQbTime(o.created_at, false)+(o.reserved_at ? ' → '+t('送信開始 ','Started ')+invInQbTime(o.reserved_at, false) : ''));
   }
@@ -47034,7 +47044,7 @@ async function invInQbResolveDo(id, state){
   var note = String((document.getElementById('ivx-qb-note')||{}).value||'').trim();
   if (!note) { showToast(invInL(INVIN_ERR.reason_required), 'warning'); return; }
   try { await invInDo(function(){ return invInAPI({ action:'qb_resolve', id:id, state:state, note:note }); }, t('記録しました','Recorded')); } catch(e) { return; }
-  closeModalDirect(); delete _invIn.loaded.problems; delete _invIn.loaded.health; invInRerender();
+  closeModalDirect(); delete _invIn.loaded.problems; delete _invIn.loaded.health; delete _invIn.loaded.qbs; delete _invIn.loaded.doc; invInRerender();
 }
 
 /* ===================================================================== ⑤ 設定 */

@@ -439,6 +439,15 @@ begin
      from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
      where o.state <> 'cancelled' or o.last_error = 'content_changed'
      order by o.updated_at desc limit least(coalesce((p->>'limit')::int, 40), 100)) x),
+  -- What needs a person (unknown, or this system's row that used its five tries), oldest first, apart from the recent rows: an old
+  -- one is never pushed out of sight by newer sends.
+  'open_total', (select count(*) from public.invoice_qb_outbox where state='unknown' or (route='invoice-intake' and state='error' and attempts >= 5)),
+  'open', (select coalesce(jsonb_agg(to_jsonb(x) order by x.updated_at), '[]') from (
+     select o.id, o.route, o.state, o.attempts, o.next_at, o.last_error, o.message_id, o.created_at, o.reserved_at, o.sent_at, o.updated_at, o.result,
+      f.store_id, f.current_name, f.drive_file_id, f.renamed_at, (select max(d.posted_at) from public.invoice_docs d where d.file_id=f.id and d.status='posted') posted_at
+     from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+     where o.state='unknown' or (o.route='invoice-intake' and o.state='error' and o.attempts >= 5)
+     order by o.updated_at limit 100) x),
   'notices_failed', (select count(*) from public.invoice_qb_alerts where created_at > now() - interval '7 days' and (email_state='failed' or line_state='failed')),
   'gmail', public.invoice_gmail_public('{}'::jsonb),
   'qb', public.invoice_setting('qb'),
@@ -489,25 +498,30 @@ begin
   if public.invoice_qb_alert_put(jsonb_build_object('kind', 'first_sent', 'key', 'first_sent:' || rs::text, 'data', jsonb_build_object('name', r.current_name, 'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id),
      'posted_at', r.posted_at, 'renamed_at', r.renamed_at, 'queued_at', r.created_at, 'started_at', r.reserved_at, 'sent_at', r.sent_at, 'message_id', r.message_id))) then v_n := v_n + 1; end if;
  end loop;
- for r in select o.id, o.file_id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
-  where o.state='unknown' and o.updated_at >= rs order by o.updated_at limit 20 loop
-  -- once per unknown: the try, and how many times a person sent it again (a resend can end unknown at the same try)
-  if public.invoice_qb_alert_put(jsonb_build_object('kind', 'unknown', 'key', 'unknown:' || r.id || ':' || r.attempts || ':'
-     || (select count(*) from public.invoice_events e where e.file_id = r.file_id and e.kind = 'qb_pending'), 'data', jsonb_build_object('name', r.current_name,
+ -- Each kind leaves out what was already told before taking 20, so the next scan goes on to what is not told yet.
+ -- unknown: once per unknown (the try, and how many times a person sent it again: a resend can end unknown at the same try).
+ for r in select o.id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id, k.key from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
+  cross join lateral (select 'unknown:' || o.id || ':' || o.attempts || ':'
+     || (select count(*) from public.invoice_events e where e.file_id = o.file_id and e.kind = 'qb_pending') as key) k
+  where o.state='unknown' and o.updated_at >= rs and not exists(select 1 from public.invoice_qb_alerts a where a.key = k.key) order by o.updated_at limit 20 loop
+  if public.invoice_qb_alert_put(jsonb_build_object('kind', 'unknown', 'key', r.key, 'data', jsonb_build_object('name', r.current_name,
      'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id), 'outbox_id', r.id, 'route', r.route, 'error', r.last_error, 'at', r.updated_at))) then v_n := v_n + 1; end if;
  end loop;
  for r in select o.id, o.route, o.attempts, o.last_error, o.updated_at, f.current_name, f.store_id from public.invoice_qb_outbox o join public.invoice_files f on f.id=o.file_id
-  where o.state='error' and o.attempts >= 5 and o.updated_at >= rs order by o.updated_at limit 20 loop
+  where o.state='error' and o.attempts >= 5 and o.updated_at >= rs and not exists(select 1 from public.invoice_qb_alerts a where a.key = 'error_final:' || o.id)
+  order by o.updated_at limit 20 loop
   if public.invoice_qb_alert_put(jsonb_build_object('kind', 'error_final', 'key', 'error_final:' || r.id, 'data', jsonb_build_object('name', r.current_name,
      'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id), 'outbox_id', r.id, 'route', r.route, 'error', r.last_error, 'attempts', r.attempts, 'at', r.updated_at))) then v_n := v_n + 1; end if;
  end loop;
  for r in select f.id, f.current_name, f.store_id, f.intake_status, f.last_error, f.updated_at from public.invoice_files f
-  where ((f.intake_status = 'error' and f.attempts >= 3) or f.intake_status = 'unsupported') and f.updated_at >= rs order by f.updated_at limit 20 loop
+  where ((f.intake_status = 'error' and f.attempts >= 3) or f.intake_status = 'unsupported') and f.updated_at >= rs
+   and not exists(select 1 from public.invoice_qb_alerts a where a.key = 'intake_error:' || f.id || ':' || f.intake_status) order by f.updated_at limit 20 loop
   if public.invoice_qb_alert_put(jsonb_build_object('kind', 'intake_error', 'key', 'intake_error:' || r.id || ':' || r.intake_status, 'data', jsonb_build_object('name', r.current_name,
      'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id), 'status', r.intake_status, 'error', left(r.last_error, 120), 'at', r.updated_at))) then v_n := v_n + 1; end if;
  end loop;
  for r in select f.id, f.current_name, f.store_id, f.rename_error, f.updated_at from public.invoice_files f
-  where f.rename_state = 'error' and f.rename_attempts >= 3 and f.updated_at >= rs order by f.updated_at limit 20 loop
+  where f.rename_state = 'error' and f.rename_attempts >= 3 and f.updated_at >= rs
+   and not exists(select 1 from public.invoice_qb_alerts a where a.key = 'rename_error:' || f.id) order by f.updated_at limit 20 loop
   if public.invoice_qb_alert_put(jsonb_build_object('kind', 'rename_error', 'key', 'rename_error:' || r.id, 'data', jsonb_build_object('name', r.current_name,
      'store', r.store_id, 'store_label', (select s.label from public.invoice_stores s where s.store_id=r.store_id), 'error', left(r.rename_error, 120), 'at', r.updated_at))) then v_n := v_n + 1; end if;
  end loop;
