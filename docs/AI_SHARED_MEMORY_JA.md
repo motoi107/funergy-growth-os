@@ -1,6 +1,6 @@
 # Claude / Codex 共通記録
 
-## 2026-10-18 QuickBooks への原本転送を「反映したらすぐ」：アプリ v1094・migration 20261026090000・関数 invoice-intake（Claude・ブランチ `claude/qb-immediate`・本番未反映）
+## 2026-10-18 QuickBooks への原本転送を「反映したらすぐ」：アプリ v1094・migration 20261026090000・関数 invoice-intake（Claude・ブランチ `claude/qb-immediate`・PR #78・本番未反映）
 
 - 依頼：Moto さん 10/18 18:02 HST「残タスクありますか？区切りが良ければ次お願いします」＋添付の仕様（QuickBooks への原本即時転送：反映 → 名前 → 台帳のコミットのすぐあとにサーバーが送る・送る前に Gmail の送信済み（全ページ・前の印も）と原本の SHA-256・結果不明は自動で送り直さない・試験 (1)〜(12)）。選択肢の回答：Gmail はアプリのボタンでつなぐ・知らせはアプリ・メール・LINE・前の転送の印は ChatGPT に聞く・Intuit のメールはブロック中（アプリは「メール送信済み」まで）。UI案56（Design・非公開）→ 18:25 HST「１〜６ A」（LINE は本部業務連絡・処理残は 30 分から 1 日 1 回・つなぐ／切り替えは CEO・GM・Gmail を調べるのは経理・事務Crew・GM・CEO・初めての 1 通だけ知らせる・切り替え前の行は ChatGPT が送り終える）。ChatGPT の答え（今の件名・9 月の前の形・前と新しい送り手が同じ原本を同時に扱わないこと）も Moto さん経由で受けた（本物のアドレス・ID はリポジトリに書かない）。仕様は `docs/QB_IMMEDIATE_V1094_JA.md`、入れる一式は `deploy/invoice-qb-gmail-v1094/`。
 - 作り：反映（人・まとめて・自動・反映済みの訂正）→ 名前 → `invoice_qb_enqueue` → `EdgeRuntime.waitUntil` で送り始める（答えは待たない）。5 分ごとの取込も待っている分を送る。1 行ずつ：予約（このシステムの行だけ・skip locked）→ 設定を読み直す（`invoice_qb_send_context`）→ Gmail の送信済み（全ページ・SENT・宛先・SHA の印・添付 1 つとサイズ）→ Drive の原本の SHA-256 → 送る直前の確かめ（13 分・`invoice_qb_send_check`）→ 1 通（multipart/mixed・添付だけ・本文なし・件名に 3 つの印）→ Gmail の ID で記録（3 回まで書き直す・書けなければ 15 分で結果不明 → 送信済みで見つけて記録）。結果不明は送り直さず 15・30・60…分で 6 回まで Gmail を調べる。4xx は 5 回まで。401／403 は接続を「切れた」にして予約をやめる。知らせ（`invoice_qb_alerts`・1 回ずつ）はアプリ（app_state `invoice_qb_alerts`・CEO・GM の端末）・メール（送り元から自分あて）・LINE（業務Bot の finance の宛先・`X-Line-Retry-Key`）。
