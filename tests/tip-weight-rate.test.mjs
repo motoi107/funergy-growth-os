@@ -45,7 +45,7 @@ function app() {
   vm.runInContext(['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', 'tipRateOn', '_tipLatestApproved', '_tipDecT', 'firstWorkDate', 'isThreeMonths',
     'effectiveTipRate', 'isTipEligibleRole', 'tipBaseRole', 'isTipExcludedTitle', 'getTipLeaderSplit', 'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel',
     'tipPeriodMatrix', 'calcHalfMonthSettlement', 'halfMonthRange', 'halfMonthDates', 'confirmTip', 'renderTipDaily', 'isoOf', '_tipHstDay'].map(fnSrc).join('\n')
-    + '\n' + ['_tipDayOk', '_tipDecDayExact'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
+    + '\n' + ['_tipDayOk', '_tipDecDayExact', '_tipFromOk', '_tipDecDayRaw', '_tipUsedRate', 'tipPeriodRateFrom'].map(n => { try { return fnSrc(n); } catch (e) { return ''; } }).join('\n') + `
     var TIP_RATE_WEIGHT_START = ${JSON.stringify(START || '2026-10-16')};
     var TIP_SL_SPLIT_END = '2026-08-01';
     var TIP_EXCLUDED_TITLES = ['Prep','Prep Specialist','Store Manager','Area Manager','General Manager','CEO','Office Crew','Accountant'];
@@ -533,12 +533,13 @@ test('the period table, CSV and staff tab show the rates used in the period (80%
   c.M = M;
   assert.equal(run(c, 'tipPeriodRateLabel(M.rates, "B")'), '80→90%');
   assert.equal(run(c, 'tipPeriodRateLabel(M.rates, "K")'), '80%');
-  // before the start date nothing is "used" (weighted by the coefficient): the current Tip Rate, as before
+  // before the start date the weight is the employee master coefficient: v1095 (UI案57 Q5 「80%,90%,100%で表示」) shows it as % (1.0 → 100%),
+  // not the current Tip Rate (v1092 showed 90% here although the amounts used the coefficient)
   const E = days('2026-10-01', '2026-10-15');
   for (const d of E) { c.LABOR['F01|' + d] = { B: { lunch: 3, dinner: 3 }, K: { lunch: 3, dinner: 3 } }; c.TIPS['F01|' + d] = { l: 100, d: 100 }; }
   c.PERIOD0 = { from: '2026-10-01', to: '2026-10-15', dates: E, anyDate: '2026-10-05' };
-  assert.deepEqual(plain(run(c, 'tipPeriodMatrix("F01", PERIOD0)')).rates, {});
-  assert.equal(run(c, 'tipPeriodRateLabel({}, "B")'), '90%');
+  assert.deepEqual(plain(run(c, 'tipPeriodMatrix("F01", PERIOD0)')).rates, { B: [100], K: [100] });
+  assert.equal(run(c, 'tipPeriodRateLabel({}, "B")'), '90%', 'a period with no days worked still falls back to the current Tip Rate');
   // the screens use these
   assert.match(fnSrc('renderTipPeriodMatrix'), /var used=M\.rates && M\.rates\[nm\]/);
   assert.match(fnSrc('exportTipPeriodCsv'), /_rcCsv\[nm\]=tipPeriodRateLabel\(M\.rates, nm\)/);

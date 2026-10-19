@@ -1,11 +1,19 @@
 # 改修・自動化の作業記録
 
+## 2026-10-19 Handbook の進捗保存・Tip rate の適用開始日・経理レビューの統一（v1095・UI案57）
+
+1. 済（Claude・ブランチ `claude/fixes-1095`）：① Handbook・② Tip rate の適用開始日・③ 経理レビューの統一（v1095・`docs/HANDBOOK_TIP_REVIEW_V1095_JA.md`）。試験 18・13・11・わざと壊す（共有記録）。
+2. 済（Moto さん 10/19 11:12 HST）：UI案57 の Q1〜Q4・Q7・Q9 は A、Q5 は係数を %、Q8 は出さない。
+3. 済：独立レビュー 2 回目（`f1d567a`）の P2 3・P3 8 → 直した（v1094 と v1095 の違いは端末をそろえる）。次：PR → Codex → Moto さんがマージ（アプリだけ）→ Tip Rate を決める人・期間を確定する人の端末をすべて v1095 に → 実機。
+4. Moto さん（Q6）：`db/tip-rate-october-check.sql`（読むだけ・結果に名前が出るので GitHub に貼らない）の結果で、意図した人・率・開始日を確かめる → v1095 のあと「%チップ率」の［引き上げ］で適用開始日 10/16 を選んで保存（10/31 まで）。
+5. 済（v1095）：v1094 の手順.md の「5 回で止まった」の説明（Codex の P3）。
+
 ## 2026-10-18 QuickBooks への原本転送を「反映したらすぐ」（UI案56・v1094）
 
 1. 済（Moto さん 10/18 18:25 HST）：UI案56 の 1〜6 は A。Gmail はアプリのボタン・知らせはアプリ・メール・LINE・Intuit のメールはブロック中。
 2. 済（Claude・ブランチ `claude/qb-immediate`・PR #78）：アプリ v1094・migration `20261026090000`・関数 invoice-intake・入れる一式 `deploy/invoice-qb-gmail-v1094/`（`docs/QB_IMMEDIATE_V1094_JA.md`）。試験・わざと壊す。
 3. 済：独立レビュー（P1 なし・P2 4・P3 13）→ 直した（許可の拒否で回数を使わず待つ・混み具合・カード・印を丸ごと検索・確かめるで送った原本を探す・送る担当のあいだだけ送る）。直したあとの独立レビュー（`9319a56`）は P1・P2 なし・P3 9 → `03c5609` で直した。Codex（`375a985`）blocked・P2 3（古い結果不明のボタンが消える・台帳を読めないと確かめるが通る・未解決 20 件で次の知らせが止まる）→ 直した。Codex の再レビュー（`b277fb2`・6274914506）は前回の P2 は解消・新しい P1・P2 なし・blocked／manual。
-4. 済（Moto さん 10/19 朝）：Google Cloud（Gmail API・同意画面は内部・スコープ 2 つ・ウェブ アプリケーションのクライアントとリダイレクト URI）。済（Claude 10/19）：入れる一式を Moto さんに渡した。Moto さん：Supabase の Secrets（`GMAIL_OAUTH_CLIENT_ID`／`SECRET`）→ SQL → 確認（qb_gmail＝true・tables＝24・functions＝117）→ 関数 → 送り元の SQL（直接渡す）→ マージ → Gmail をつなぐ・確かめる（送った原本を見つける ✓）→ 送る担当を「このシステム」→ 1 件反映して時刻と Gmail の ID を確かめる。
+4. 済（Moto さん 10/19 朝）：Google Cloud（Gmail API・同意画面は内部・スコープ 2 つ・ウェブ アプリケーションのクライアントとリダイレクト URI）。済（Claude 10/19）：入れる一式を Moto さんに渡した。済（Moto さん 10/19 09:19 HST）：SQL・確認・関数・送り元の SQL・PR #78 のマージ。次（Moto さん）：Supabase の Secrets（`GMAIL_OAUTH_CLIENT_ID`／`SECRET`）を確かめる → Gmail をつなぐ・確かめる（送った原本を見つける ✓・写真を Claude に）→ 送る担当を「このシステム」→ 1 件反映して時刻と Gmail の ID を確かめる。
 5. ChatGPT：切り替えるまで今のまま。切り替え前の行が 0 になったら毎時のタスクを「見るだけ」（`qb_external_monitor`）に。
 6. 残り：Intuit の受付・取込のエラーは見ない（メールはブロック中）。実際の送信の速さは入れたあと 1 件で測る。
 7. 5 回で止まった行の送り直し（Codex の再レビューの P3）：今は手順.md のとおり、原因を直したあと Claude がその行だけ回数を 1 回分戻す SQL を渡す。画面の道（ボタン）を足すかは UI 案を見て Moto さんが決める。
