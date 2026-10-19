@@ -94,7 +94,10 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
   await pg.exec(`
     update invoice_settings set value=value||'{"intake":true,"auto_post":true,"organize":true,"mirror":true,"start_at":"2026-10-01T00:00:00Z","rename":true,"rename_since":"2026-10-01T00:00:00Z"}' where key='mode';
     update invoice_settings set value=value||'{"currency_when_absent":"USD","closed_through":"2026-08","batch":10}' where key='rules';
-    update invoice_settings set value=value||'{"route":"invoice-intake","enabled":true}' where key='qb';
+    update invoice_settings set value=value||'{"route":"invoice-intake","enabled":true,"from":"sender@example.test"}' where key='qb';
+    -- This system sends from the connected Gmail of qb.from (UI案56); the stand-in mailer sends in its place.
+    do $g$ begin if to_regclass('public.invoice_gmail_auth') is not null then insert into invoice_gmail_auth(id, account, refresh_token, scopes, status)
+      values (1, 'sender@example.test', 'synthetic-refresh', '{https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly}', 'ok'); end if; end $g$;
     insert into invoice_stores(store_id,label,root_folder_id,upload_folder_id,active,auto_post,aliases) values
      ('F06','LaLa','R6','U6',true,true,'{"LaLa Izakaya","100 Test Street"}'),('F04-K','Kaimuki','RK','UK',true,true,'{"Totoya Kaimuki","200 Sample Ave"}');
     insert into invoice_vendor_rules(vendor_key,display_name,aliases,food_kind,auto_post) values
@@ -394,7 +397,7 @@ test('業者の統合: the check SQL tells before from after', async () => {
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S4 = '20261022090000_invoice_vendor_merge.sql';
   // 新しい業者を決める (20261024090000) and 紐づけ (20261025090000) came after it: the database here is the one 業者の統合 went on.
-  assert.deepEqual(files.slice(-3), [S4, '20261024090000_invoice_vendor_register.sql', '20261025090000_invoice_item_link.sql']);
+  assert.deepEqual(files.slice(-4), [S4, '20261024090000_invoice_vendor_register.sql', '20261025090000_invoice_item_link.sql', '20261026090000_invoice_qb_gmail.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
   try {
@@ -402,7 +405,7 @@ test('業者の統合: the check SQL tells before from after', async () => {
       alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
-    for (const f of files.slice(0, -3)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -4)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_merge, Number(post.tables), Number(post.functions), post.multi_file], [false, 18, 77, true]);
     await pg.exec(fs.readFileSync(new URL(S4, dir), 'utf8'));

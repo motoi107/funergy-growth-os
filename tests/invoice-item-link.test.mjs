@@ -795,17 +795,18 @@ test('紐づけ: the reasons that keep a line from a price are the same in invoi
   assert.deepEqual(arr(body('invoice_link_apply'), /no_price text\[\] := array\[([^\]]*)\]/), arr(body('invoice_price_insert'), /l\.reasons \?\| array\[([^\]]*)\]/));
 });
 
-test('紐づけ deploy folder: the copies are the repository files and the one-file function is built from the sources in use',
+test('紐づけ deploy folder: the migration copy is the repository file; the check SQL and the one-file function stay as handed over',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, async () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
   const D = 'deploy/invoice-item-link-v1093/';
   assert.ok(rd(D + '1_追加のSQL_紐づけ.sql').equals(rd('supabase/migrations/20261025090000_invoice_item_link.sql')));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The sources and the check SQL moved on with QuickBooks からすぐ (deploy/invoice-qb-gmail-v1094 is built from the current ones):
+  // this folder is what went in for 紐づけ (2026-10-18), and the function to go back to from QuickBooks からすぐ.
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), 'e19242e16b892a3d089f18ee2961402a05c7db8daa499a55f03345a486654751');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
-  // Every source of the one-file function is the repository's as it is now: change one, build the function again.
-  for (const [f, h] of Object.entries(src.sources)) assert.equal(sha(rd(f)), h, f + ' changed: build 3_関数 again');
+  assert.equal(src.bundle_sha256, '785863e937e9e530281691e09e61f0d8a9283e2e8f5a0098288d7cccb44b526b');
   assert.deepEqual(Object.keys(src.sources).sort(), ['invoice/dates.mjs', 'invoice/decimal.mjs', 'invoice/dedupe.mjs', 'invoice/drive.mjs', 'invoice/extract.mjs', 'invoice/link.mjs',
     'invoice/naming.mjs', 'invoice/rules.mjs', 'invoice/units.mjs', 'supabase/functions/invoice-intake/handler.mjs', 'supabase/functions/invoice-intake/index.ts']);
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
@@ -826,7 +827,9 @@ test('紐づけ deploy folder: the copies are the repository files and the one-f
 test('紐づけ: the check SQL tells before from after; the add-member SQL adds a Head Chef / AM in the role only', async () => {
   const dir = new URL('../supabase/migrations/', import.meta.url);
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
-  assert.equal(files.at(-1), '20261025090000_invoice_item_link.sql');
+  const S6 = '20261025090000_invoice_item_link.sql';
+  // QuickBooks からすぐ (20261026090000) came after it: the database here is the one 紐づけ went on.
+  assert.deepEqual(files.slice(-2), [S6, '20261026090000_invoice_qb_gmail.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const ADD = fs.readFileSync(new URL('../db/invoice-link-add-member.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
@@ -839,10 +842,10 @@ test('紐づけ: the check SQL tells before from after; the add-member SQL adds 
       insert into public.employees values ('E-CH','Kai Test','chef','Head Chef','在籍','{}'),('E-AM','Lani Test','am','Area Manager','在籍','{}'),('E-AM2','Lani Other','crew','Server','退職','{}'),
         ('E-X','Sam One','crew','Server','在籍','{}'),('E-Y','Sam Two','crew','Server','在籍','{}');
       insert into auth.users values ('00000000-0000-4000-8000-0000000000c1','chef@example.test'),('00000000-0000-4000-8000-0000000000c2','am@example.test');`);
-    for (const f of files.slice(0, -1)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -2)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.item_link, post.vendor_register, Number(post.tables), Number(post.functions)], [false, true, 19, 84]);
-    await pg.exec(fs.readFileSync(new URL(files.at(-1), dir), 'utf8'));
+    await pg.exec(fs.readFileSync(new URL(S6, dir), 'utf8'));
     post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.item_link, post.vendor_register, Number(post.tables), Number(post.functions), Number(post.browser_can_read), Number(post.browser_can_run)],
       [true, true, 21, 94, 0, 0]);

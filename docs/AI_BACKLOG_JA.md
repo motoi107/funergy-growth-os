@@ -1,10 +1,19 @@
 # 改修・自動化の作業記録
 
+## 2026-10-18 QuickBooks への原本転送を「反映したらすぐ」（UI案56・v1094）
+
+1. 済（Moto さん 10/18 18:25 HST）：UI案56 の 1〜6 は A。Gmail はアプリのボタン・知らせはアプリ・メール・LINE・Intuit のメールはブロック中。
+2. 済（Claude・ブランチ `claude/qb-immediate`）：アプリ v1094・migration `20261026090000`・関数 invoice-intake・入れる一式 `deploy/invoice-qb-gmail-v1094/`（`docs/QB_IMMEDIATE_V1094_JA.md`）。試験・わざと壊す。
+3. 次：独立レビュー → Codex のレビュー（とくに送る前の確かめの順・結果不明・予約の時間・Gmail の接続と鍵・知らせの回数・前の転送との分け方）。
+4. Moto さん：Google Cloud（Gmail API・同意画面は内部か本番・スコープ 2 つ・リダイレクト URI）→ SQL → 確認（qb_gmail＝true・tables＝24・functions＝115）→ 関数 → 送り元の SQL（直接渡す）→ マージ → Gmail をつなぐ・確かめる → 送る担当を「このシステム」→ 1 件反映して時刻と Gmail の ID を確かめる。
+5. ChatGPT：切り替えるまで今のまま。切り替え前の行が 0 になったら毎時のタスクを「見るだけ」（`qb_external_monitor`）に。
+6. 残り：Intuit の受付・取込のエラーは見ない（メールはブロック中）。実際の送信の速さは入れたあと 1 件で測る。
+
 ## 2026-10-18 食材マスターの紐づけ（UI案55・段階 1 は v1093）
 
 1. 済（Moto さん 10/18 08:45・09:03 HST）：UI案55 の 1〜8（8 は Drive 取込から）・Head Chef と AM にもメールのアカウント。
 2. 済（Claude・ブランチ `claude/ingredient-link-1093`）：段階 1＝Drive 取込の品目を今のマスターに結ぶ（アプリ v1093・migration `20261025090000`・関数 invoice-intake・`docs/ITEM_LINK_V1093_JA.md`）。試験・わざと壊す 52 通り・Chromium・独立レビュー 2 回（1 回目 P2 4、2 回目 P1 1。どちらも直した）。
-3. 済：Codex（`a0f3ff3`）blocked・P2 1（古いそろえる・戻すが新しい結びを上書き）→ 直した（対応表のロックと業者の結びの印）。次：Codex の再レビュー → Moto さんが `deploy/invoice-item-link-v1093/手順.md` の順に入れる → Chika さん・Yuki さんのアカウントと足す SQL（直接渡した）→ 実機。
+3. 済：Codex（`a0f3ff3`）blocked・P2 1（古いそろえる・戻すが新しい結びを上書き）→ 直した（対応表のロックと業者の結びの印）。Codex の再レビュー（`5481abf`・6255481606）は前回の P2 は解消・blocked／manual。Moto さんが 10/18 12:24 HST にマージ（main `ee659b0`）。次：Moto さんが `deploy/invoice-item-link-v1093/手順.md` の順に入れる → Chika さん・Yuki さんのアカウントと足す SQL（直接渡した）→ 実機。
 4. Moto さんに伝えること・決めてほしいこと：消耗品などの区分のコードに結ぶと、締めていない月の仕入れ集計で原価から移る。Head Chef・AM にも比べるための品目の単価（最後・幅・どの店か）が見える・Head Chef・AM も「そろえる」（全業者）を押せる（どちらも、だめなら外す）。
 5. 段階 2：規格（入数・量）を AI の読み・名前・今のマスターから自動で（合わない物だけ人）。1 個・1 g あたりの単価。
 6. 段階 3：新マスター（アプリの invoice・2,018 行）を同じ画面で。今の legacyCode（417 行）は確かめ前に戻す。アプリの invoice の照合（名前の一部で自動で結ぶ）を直す。

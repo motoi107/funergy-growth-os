@@ -456,6 +456,34 @@ test('each migration changes only what it says', async () => {
   assert.ok(/foreach t in array array\['invoice_link_members','invoice_link_marks'\] loop/.test(ilRest)
     && /revoke all on public\.%I from public, anon, authenticated/.test(ilRest) && /enable row level security/.test(ilRest));
   assert.ok(/'invoice_code_key\(text\)','invoice_link_hr_ok\(text,text\)','invoice_link_role\(uuid\)','invoice_link_whoami\(jsonb\)',\n\s+'invoice_link_lines\(jsonb\)','invoice_link_data\(jsonb\)','invoice_link_save\(jsonb\)','invoice_link_retire\(jsonb\)','invoice_link_mark\(jsonb\)',\n\s+'invoice_link_apply\(jsonb\)'\] loop/.test(ilRest));
+  // QuickBooks からすぐ (20261026090000, Moto 2026-10-18・UI案56): the Gmail connection, a connection being made and the notices
+  // (three tables, service role only), the two columns of the unknown look-up on the ledger, the notices' setting (added if missing,
+  // never changed), two functions replaced (the settings' save and the settings screen), 21 new ones (service role only); no other row.
+  const qg = read('supabase/migrations/20261026090000_invoice_qb_gmail.sql');
+  assert.deepEqual([...qg.matchAll(fn)].map(m => m[1]), ['invoice_settings_save', 'invoice_config', 'invoice_gmail_public', 'invoice_gmail_start',
+    'invoice_gmail_take', 'invoice_gmail_save', 'invoice_gmail_creds', 'invoice_gmail_mark', 'invoice_gmail_disconnect', 'invoice_qb_has_due',
+    'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_content_changed', 'invoice_qb_unknown_due', 'invoice_qb_gmail_checked', 'invoice_qb_row',
+    'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim', 'invoice_qb_alert_done',
+    'invoice_line_route']);
+  assert.ok([...qg.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  const qgRest = qg.replace(fn, '').replace(/^--.*\n/gm, '').replace(/ +--.*$/gm, '').replace(/\n+/g, '\n').trim();
+  assert.ok(qgRest.startsWith([
+    'do $$ begin',
+    " if to_regprocedure('public.invoice_link_apply(jsonb)') is null then",
+    "  raise exception '先に 20261025090000_invoice_item_link.sql（紐づけ 段階 1）を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'create table if not exists public.invoice_gmail_auth('].join('\n')), qgRest.slice(0, 600));
+  assert.deepEqual([...qgRest.matchAll(/^create table (?:if not exists )?public\.(\w+)/gm)].map(m => m[1]), ['invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts']);
+  assert.deepEqual([...qgRest.matchAll(/^alter table public\.(\w+) add column if not exists (\w+)/gm)].map(m => m[1] + '.' + m[2]),
+    ['invoice_qb_outbox.gmail_checked_at', 'invoice_qb_outbox.gmail_checks']);
+  assert.ok(!/^(drop |update |delete )/im.test(qgRest), 'no row is changed');
+  assert.deepEqual([...qgRest.matchAll(/^insert into (\S+)/gm)].map(m => m[1]), ['public.invoice_settings(key,']);
+  assert.ok(/values \('qb_notify', [^\n]*\)\non conflict \(key\) do nothing;/.test(qgRest), 'the notices setting is added only when missing');
+  assert.ok(/foreach t in array array\['invoice_gmail_auth','invoice_gmail_oauth','invoice_qb_alerts'\] loop/.test(qgRest)
+    && /revoke all on public\.%I from public, anon, authenticated/.test(qgRest) && /enable row level security/.test(qgRest));
+  assert.equal((qgRest.match(/^grant /gm) || []).length, 1, 'besides the loops, only deleting a used connection state is granted (to the service role)');
+  assert.ok(/^grant delete on public\.invoice_gmail_oauth to service_role;$/m.test(qgRest));
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -466,7 +494,7 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
     'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
     'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql',
-    'supabase/migrations/20261025090000_invoice_item_link.sql'])
+    'supabase/migrations/20261025090000_invoice_item_link.sql', 'supabase/migrations/20261026090000_invoice_qb_gmail.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

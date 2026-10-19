@@ -14,7 +14,8 @@ const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.s
   'db/invoice-purchase-stop.sql', 'db/invoice-purchase-start.sql', 'db/invoice-purchase-report.sql', 'db/invoice-purchase-before-start-check.sql', 'index.html', 'tests/invoice-purchase-summary.test.mjs', 'tests/invoice-purchase-ui.test.mjs', 'tests/invoice-multi-file-ui.test.mjs',
   'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs',
   'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js',
-  'supabase/migrations/20261025090000_invoice_item_link.sql', 'tests/invoice-item-link.test.mjs', 'tests/invoice-item-link-ui.test.mjs', 'db/invoice-link-add-member.sql'];
+  'supabase/migrations/20261025090000_invoice_item_link.sql', 'tests/invoice-item-link.test.mjs', 'tests/invoice-item-link-ui.test.mjs', 'db/invoice-link-add-member.sql',
+  'supabase/migrations/20261026090000_invoice_qb_gmail.sql', 'tests/invoice-qb-gmail.test.mjs', 'tests/invoice-qb-gmail-ui.test.mjs', 'db/invoice-qb-sender.sql'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -41,6 +42,7 @@ const MU = 'tests/invoice-multi-file-ui.test.mjs';   // 段階 3 の画面（同
 const VM = 'tests/invoice-vendor-merge.test.mjs', VU = 'tests/invoice-vendor-merge-ui.test.mjs';   // 業者の統合（Moto 2026-10-15・UI案51）
 const VR = 'tests/invoice-vendor-register.test.mjs', VD = 'tests/invoice-vendor-decide-ui.test.mjs';   // 新しい業者を決める（Moto 2026-10-16・UI案52 ③）
 const LK = 'tests/invoice-item-link.test.mjs', LU = 'tests/invoice-item-link-ui.test.mjs';   // 紐づけ 段階 1（Moto 2026-10-18・UI案55）
+const QG = 'tests/invoice-qb-gmail.test.mjs', QU = 'tests/invoice-qb-gmail-ui.test.mjs';   // QuickBooks からすぐ（Moto 2026-10-18・UI案56）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -54,11 +56,11 @@ const CASES = [
     ['db/invoice-intake.sql', "  if exists(select 1 from public.invoice_lines il, jsonb_array_elements_text(il.reasons) c where il.doc_id=d.id and not (c = any(info))) then raise exception 'not_eligible'; end if;", ''],
     ['db/invoice-intake.sql', "select r->>'code' into blocking from jsonb_array_elements(d.reasons) r where r->>'code' = any(must_fix) limit 1;", 'blocking := null;']]],
   ['unknown QuickBooks results resent automatically', E2E, [['db/invoice-intake.sql', "where state in ('pending','error') and (next_at is null or next_at<=now())", "where state in ('pending','error','unknown') and (next_at is null or next_at<=now())"]]],
-  ['QuickBooks route not checked (worker and database)', E2E, [
-    ['supabase/functions/invoice-intake/handler.mjs', "if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route)) return;", 'if (!ctx.qb.enabled) return;'],
+  ['QuickBooks route not checked (worker, posting and database)', E2E, [
+    ['supabase/functions/invoice-intake/handler.mjs', "    if (ctx.qb.enabled && QB_ROUTES.includes(ctx.qb.route)) {", '    if (ctx.qb.enabled) {'],
+    ['supabase/functions/invoice-intake/handler.mjs', "    if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route) || !files.length) return null;", '    if (!ctx.qb.enabled || !files.length) return null;'],
     ['db/invoice-intake.sql', " if coalesce(q->>'route','') not in ('invoice-intake','external') then return jsonb_build_object('queued', false, 'why', 'route_not_assigned'); end if;", '']]],
-  ['rows of the outside forwarder sent from here (worker and database)', E2E, [
-    ['supabase/functions/invoice-intake/handler.mjs', "if (ctx.qb.route !== 'invoice-intake' || !mailer) return;", 'if (!mailer) return;'],
+  ['rows of the outside forwarder sent from here (the reservation)', QG, [
     ['db/invoice-intake.sql', "and attempts < 5 and route='invoice-intake' order by created_at", 'and attempts < 5 order by created_at']]],
   ['forwarder key not checked', E2E, [['supabase/functions/invoice-intake/handler.mjs',
     "if (!keyMatches(req.headers.get('x-invoice-qb-key') || '', await db.rpc('invoice_qb_external_key', {}))) return json({ error: 'unauthorized' }, 401);", '']]],
@@ -178,8 +180,8 @@ const CASES = [
     "    if (b.folder_id === store.root_folder_id) throw new Error('bad_value');", ""]]],
   // 事務Crew does the invoice work like accounting (Moto 2026-10-09); settings and automatic posting stay with GM・CEO.
   ['事務Crew: may change the settings', E2E, [['db/invoice-intake.sql',
-    "k text := p->>'key'; v jsonb := p->'value'; cur jsonb;\nbegin\n perform public.invoice_require(actor, array['ceo','gm']);",
-    "k text := p->>'key'; v jsonb := p->'value'; cur jsonb;\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office_crew']);"]]],
+    "g_status text; g_token text; g_account text; g_scopes text[];\nbegin\n perform public.invoice_require(actor, array['ceo','gm']);",
+    "g_status text; g_token text; g_account text; g_scopes text[];\nbegin\n perform public.invoice_require(actor, array['ceo','gm','office_crew']);"]]],
   ['事務Crew: may turn automatic posting on for a vendor', E2E, [['db/invoice-intake.sql',
     "if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm')",
     "if coalesce((v->>'auto_post')::boolean,false) and public.invoice_actor_role(actor) not in ('ceo','gm','office_crew')"]]],
@@ -638,6 +640,41 @@ const CASES = [
   ["紐づけ app: an error stays after a new sign-in", LU, [["index.html", "if (typeof ilkReset === 'function' && typeof _ilk !== 'undefined' && _ilk.loaded === 'err') ilkReset(); ", ""]]],
   ["紐づけ app: lines on another mapping are not told", LU, [["index.html", "    if (it.other_lines) flags.push(", "    if (false) flags.push("]]],
   ["紐づけ app: choosing again sends the item's key, not its link's", LU, [["index.html", "k = it.link || it;", "k = it;"]]],
+  // QuickBooks からすぐ（Moto 2026-10-18・UI案56）
+  ["即時: the sent mail is not searched before sending", QG, [["supabase/functions/invoice-intake/handler.mjs", "    try { prev = await tr.history(key); }", "    try { prev = { state: 'none' }; }"]]],
+  ["即時: a failed search is read as not sent", QG, [["invoice/gmail.mjs", "    if (!r.ok) { const e = new Error('gmail_history_' + r.status); e.code = e.message; throw e; }", "    if (!r.ok) return { messages: [] };"]]],
+  ["即時: only the first page of the search", QG, [["invoice/gmail.mjs", "    } while (page);\n    return ids;", "    } while (false);\n    return ids;"]]],
+  ["即時: a mail not marked SENT counts", QG, [["invoice/gmail.mjs", "    if (!(m.labelIds || []).includes('SENT')) continue;\n", ""]]],
+  ["即時: a mail to another address counts", QG, [["invoice/gmail.mjs", "    if (!hdr(m, 'to').toLowerCase().includes(toLc)) continue;\n", ""]]],
+  ["即時: the same Drive file with another content counts as sent", QG, [["invoice/gmail.mjs", "    if (!shaMark) { conflict = conflict || { reason: 'same_drive_id_other_content', messageId: m.id }; continue; }", "    if (!shaMark) { sent.push({ id: m.id, own: false, internalDate: 0 }); continue; }"]]],
+  ["即時: a mail without its one attachment counts as sent", QG, [["invoice/gmail.mjs", "    const okAtt = att.length === 1 && (size == null || att[0].size == null || Number(att[0].size) === Number(size));", "    const okAtt = true;"]]],
+  ["即時: the Drive bytes are not compared", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }\n    // 3)", "    // 3)"]]],
+  ["即時: no last check before sending", QG, [["supabase/functions/invoice-intake/handler.mjs", "    try { chk = await db.rpc('invoice_qb_send_check', { id: o.id, owner, sha256: o.sha256, attempt_key: o.attempt_key, drive_file_id: f.drive_file_id }); }", "    try { chk = { ok: true }; }"]]],
+  ["即時: an old reservation is used", QG, [["db/invoice-intake.sql", " if o.reserved_at < now() - interval '13 minutes' then return jsonb_build_object('ok', false, 'why', 'reservation_expired'); end if;\n", ""]]],
+  ["即時: the start is not read again", QG, [["db/invoice-intake.sql", "  when not coalesce(f.drive_created_at >= public.invoice_qb_since_at(), false) then 'before_since'\n", ""]]],
+  ["即時: the address is not read again", QG, [["db/invoice-intake.sql", "  when o.to_address is distinct from q->>'to' then 'to_changed'\n", ""]]],
+  ["即時: the sender's account is not read again", QG, [["db/invoice-intake.sql", "  when g.id is null or g.account is null or lower(g.account) <> lower(coalesce(q->>'from','')) then 'sender_mismatch'\n", ""]]],
+  ["即時: an unknown send is treated as failed (and sent again)", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!res || res.unknown) { await fail('unknown', (res && res.error) || 'send_unknown'); return 'unknown'; }", "    if (!res) { await fail('unknown', 'send_unknown'); return 'unknown'; }"]]],
+  ["即時: a row is reserved while the ledger is off", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!ctx.qb.enabled) return stats;                                     // the ledger is off: nothing is sent", ""]]],
+  ["即時: Gmail's problem goes on reserving rows", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!rd.ok) { if (rd.auth) await gmailProblem(rd); stats.not_ready = 1; return stats; }", "    if (!rd.ok && false) { return stats; }"]]],
+  ["即時: the posting does not start the send", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (queued && ctx.qb.route === 'invoice-intake' && background) {", "    if (false) {"]]],
+  ["即時: an automatic posting does not start the send", QG, [["supabase/functions/invoice-intake/handler.mjs", "        const q = await qbAfterPost([f.id], ctx, 'auto');", "        const q = null;"]]],
+  ["即時: a body part is added to the mail", QG, [["invoice/gmail.mjs", "    '--' + bd, `Content-Type: ${mime}; ${p.ct}`,", "    '--' + bd, 'Content-Type: text/plain; charset=UTF-8', '', 'Forwarded by Funergy+', '--' + bd, `Content-Type: ${mime}; ${p.ct}`,"]]],
+  ["即時: the subject lacks the attempt mark", QG, [["invoice/gmail.mjs", "  return `${currentName} FPQB-ID-${driveFileId} FPQB-SHA256-${sha256} FPQB-ATTEMPT-${attemptKey}`;", "  return `${currentName} FPQB-ID-${driveFileId} FPQB-SHA256-${sha256}`;"]]],
+  ["即時: the route switches without the sender's Gmail", QG, [["db/invoice-intake.sql", "   raise exception 'gmail_not_ready';\n", ""]]],
+  ["即時: another account is kept", QG, [["db/invoice-intake.sql", " if lower(coalesce(p->>'account','')) <> lower(v_from) then raise exception 'wrong_account'; end if;\n", ""]]],
+  ["即時: a connection without both scopes is kept", QG, [["supabase/functions/invoice-intake/handler.mjs", "    if (!scopesOk(ex.scopes)) return back('scope_missing');\n", ""], ["db/invoice-intake.sql", " if not (v_scopes @> array['https://www.googleapis.com/auth/gmail.send','https://www.googleapis.com/auth/gmail.readonly']) then raise exception 'scope_missing'; end if;\n", ""]]],
+  ["即時: the state is used twice", QG, [["db/invoice-intake.sql", " where state_hash=p->>'state_hash' and used_at is null and created_at > now() - interval '10 minutes'", " where state_hash=p->>'state_hash'"]]],
+  ["即時: the token reaches the screen", QG, [["db/invoice-intake.sql", "  'connected_at', g.connected_at, 'connected_by', g.connected_by,", "  'connected_at', g.connected_at, 'token', g.refresh_token, 'connected_by', g.connected_by,"]]],
+  ["即時: the first send is told more than once", QG, [["db/invoice-intake.sql", "'key', 'first_sent:' || rs::text,", "'key', 'first_sent:' || clock_timestamp()::text,"]]],
+  ["即時: LINE is told when turned off", QG, [["db/invoice-intake.sql", " case when coalesce((n->>'line')::boolean, true) then 'pending' else 'off' end)", " 'pending')"]]],
+  ["即時: the notice mail goes to QuickBooks", QG, [["supabase/functions/invoice-intake/handler.mjs", "            let r; try { r = await tr.notify({ to: rd.account,", "            let r; try { r = await tr.notify({ to: 'funergy+expenses@assist.intuit.com',"]]],
+  ["即時: a person outside accounting looks an unknown send up", QG, [["db/invoice-intake.sql", " perform public.invoice_require(actor, array['ceo','gm','office','office_crew']);\n return (select jsonb_build_object('id', o.id, 'state', o.state, 'route', o.route,", " return (select jsonb_build_object('id', o.id, 'state', o.state, 'route', o.route,"]]],
+  ["即時 app: the look-up buttons for every role", QU, [["index.html", "      + (invInCanEdit() && o.state==='unknown' ? '<span style=\"display:flex;gap:6px;flex-wrap:wrap\"><button class=\"btn btn-primary btn-sm\"", "      + (o.state==='unknown' ? '<span style=\"display:flex;gap:6px;flex-wrap:wrap\"><button class=\"btn btn-primary btn-sm\""]]],
+  ["即時 app: the notices for every role", QU, [["index.html", "    if (['ceo','gm'].indexOf(curRole) < 0 || typeof _fetchOpValue!=='function') return;", "    if (typeof _fetchOpValue!=='function') return;"]]],
+  ["即時 app: the address Google comes back with stays in the URL", QU, [["index.html", "    try { history.replaceState(null, '', location.pathname + location.hash); } catch(e){}", ""]]],
+  ["即時: the sender SQL keeps the template's address", QG, [["db/invoice-qb-sender.sql", " or v_from like '%@example.com'", ""]]],
+  ["即時: the sender SQL changes the sender while this system sends", QG, [["db/invoice-qb-sender.sql", " if coalesce(public.invoice_setting('qb')->>'route', '') = 'invoice-intake' and lower(coalesce(public.invoice_setting('qb')->>'from', '')) <> v_from then", " if false then"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
@@ -661,6 +698,10 @@ test('every protection is covered by a failing test when removed', async (t) => 
   if (!only || only.test('紐づけ')) {
     assert.equal(run([], LK), 0, 'the unmodified linking test must pass (without the deploy-folder check)');
     assert.equal(run([], LU), 0, 'the unmodified linking screen test must pass');
+  }
+  if (!only || only.test('即時')) {
+    assert.equal(run([], QG), 0, 'the unmodified QuickBooks Gmail test must pass (without the deploy-folder check)');
+    assert.equal(run([], QU), 0, 'the unmodified QuickBooks Gmail screen test must pass');
   }
   // INVOICE_MUTATION_ONLY=<regex>: run only the matching cases (for checking one protection quickly).
   for (const [name, file, muts] of CASES) {
