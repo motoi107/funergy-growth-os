@@ -74,7 +74,7 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
   const c = {
     console, S, curUserName: user, curRole: role, curPage: 'crew_handbook', curStore: 'ALL', SUPA_SYNC_ENABLED: sync, _supaBooting: booting,
     HANDBOOK_SEED: plain(SEED), toasts: [], rendered: [], notifs: [], modals: [], closed: 0, confirms: true, ups: 0, failUpsert, failFetch, httpError, gate: null, gets: 0,
-    t: (ja) => ja, clearTimeout: () => {}, AbortController: class { constructor() { this.signal = {}; } abort() {} },
+    t: (ja) => ja, clearTimeout: () => {}, AbortController: class { constructor() { const L = []; this.signal = { aborted: false, addEventListener: (_e, f) => L.push(f) }; this._l = L; } abort() { this.signal.aborted = true; this._l.forEach(f => f()); } },
     _LS_FETCHED: { handbook_log: 1 }, _opMergeChain: {}, _opLastPushErr: {}, _hbLang: 'ja', _hbTab: 'chapters', _hbStore: 'ALL',
     STORES: [{ id: 'F01', name: 'One' }, { id: 'F02', name: 'Two' }], SUPABASE_URL: 'https://cloud.invalid',
     ls: (k, d) => (k in S ? JSON.parse(JSON.stringify(S[k])) : d), _lsRaw: (k, d) => (k in S ? JSON.parse(JSON.stringify(S[k])) : d),
@@ -83,7 +83,7 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
     progBar: () => '<bar>', kpi: (a, b, cc) => '<kpi ' + a + '=' + b + (cc ? ' ' + cc : '') + '>', hbTestCard: () => '', hbTestStatus: () => 'wait', hbTestCell: () => '',
     hbLoadTestResults: () => {}, hbTestCfg: () => ({ eName: 'x' }), hbTestResultOf: () => null, hbRenderTest: () => '<test>', openHbTestCfg: () => {},
     addNotif: n => c.notifs.push(n), openModal: h => c.modals.push(h), closeModalDirect: () => { c.closed++; }, confirm: () => c.confirms,
-    window: { scrollTo: () => {} }, setTimeout: (fn, ms) => { if (ms < 1000) setImmediate(fn); return 0; } /* short waits run; the 15 s limits never fire */, document: { getElementById: id => (c.form && id in c.form ? { value: c.form[id] } : null) },
+    window: { scrollTo: () => {} }, setTimeout: (fn, ms) => { if (ms < 1000) setImmediate(fn); else c.timers.push([fn, ms]); return 0; } /* short waits run; the long ones are kept for the test to run */, timers: [], document: { getElementById: id => (c.form && id in c.form ? { value: c.form[id] } : null) },
     _outboxGet: () => S.op_outbox.slice(), _outboxAdd: (k, e) => { if (!S.op_outbox.some(x => x.key === k)) S.op_outbox.push({ key: k, lastErr: String(e) }); },
     _outboxRemove: k => { S.op_outbox = S.op_outbox.filter(x => x.key !== k); },
     flushOutbox: async () => { for (const x of S.op_outbox.slice()) { const r = await c.syncMasterToSupabase(x.key, c.ls(x.key, null)); if (r !== false) c._outboxRemove(x.key); } },
@@ -110,6 +110,8 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
       if (c.failFetch || !db) throw new Error('offline');
       if (c.httpError) return { ok: false, status: 503, json: async () => ({ message: 'unavailable' }) };
       if ((method === 'PATCH' || method === 'POST') && c.failUpsert) { c.ups++; return { ok: false, status: 500, json: async () => ({}) }; }
+      if (method === 'PATCH' && c.hangPatch) { c.ups++; return new Promise((_res, rej) => { if (o.signal && o.signal.addEventListener) o.signal.addEventListener('abort', () => rej(new Error('aborted'))); }); }
+      if (method === 'PATCH' && c.patchNoop) { c.ups++; return { ok: true, status: 200, json: async () => [] }; }   // e.g. a policy that lets nothing be updated
       if (method === 'PATCH') {
         c.ups++;
         const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]);
@@ -511,6 +513,66 @@ test('v1096 (Codex 10/19): reading an old version while 「同期」 brings in a
   run(ann, "hbMarkRead('ch1')"); await tick(30);
   assert.equal(ann.S.handbook_reads.Ann.ch1.v, 4);
   assert.equal((await cloudOf(db, 'handbook_reads')).Ann.ch1.v, 4);
+  await db.close();
+});
+
+test('v1096 review: a write the cloud never accepts (0 rows, nobody else wrote) is not retried six times, is not called saved, and stays unsent', async () => {
+  const db = await cloudDb({ handbook_reads: {}, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  ann.patchNoop = true;
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(40);
+  assert.equal(ann.ups, 1, 'one write, then it stops');
+  assert.match(run(ann, "_opLastPushErr['handbook_reads']"), /受け付けませんでした/);
+  assert.ok(!ann.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'));
+  assert.equal(run(ann, '_hbUnsent()'), true);
+  await db.close();
+});
+
+test('v1096 review: a write that never answers is stopped after 15 s; the read stays unsent and the next push is not blocked', async () => {
+  const db = await cloudDb({ handbook_reads: {}, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  ann.hangPatch = true;
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(20);
+  const lim = ann.timers.filter(([, ms]) => ms === 15000); assert.ok(lim.length >= 2, 'the read and the write each have a 15 s limit');
+  ann.hangPatch = false; lim.forEach(([f]) => f()); await tick(40);
+  assert.ok(!ann.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'));
+  assert.equal(run(ann, '_hbUnsent()'), true);
+  await run(ann, 'flushOutbox()'); await tick(20);
+  assert.ok((await cloudOf(db, 'handbook_reads')).Ann.ch1, 'sent after the stuck write was stopped');
+  await db.close();
+});
+
+test('v1096 review: when nobody has saved a read yet (no row) or the row has no update time, devices saving at once all keep their reads', async () => {
+  let seed = 7; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (const kind of ['no row', 'null time']) {
+    for (let round = 0; round < 12; round++) {
+      const db = await cloudDb({ handbook_chapters: SEED });
+      if (kind === 'null time') await db.query("insert into app_state values('handbook_reads', $1, null)", [JSON.stringify({ Old: { ch1: R(3, 1) } })]);
+      const devs = ['Ann', 'Ben', 'Cat'].map(user => { const d = device({ user, db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } }); d.delay = async () => { await tick(Math.floor(rnd() * 5)); }; return d; });
+      devs.forEach(d => { run(d, "hbOpen('ch1')"); run(d, "hbMarkRead('ch1')"); });
+      for (let i = 0; i < 40; i++) await tick(10);
+      const cloud = await cloudOf(db, 'handbook_reads');
+      for (const d of devs) {
+        assert.ok(cloud[d.curUserName] && cloud[d.curUserName].ch1, kind + ' round ' + round + ': ' + d.curUserName + ' ' + JSON.stringify(cloud));
+        assert.ok(d.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), kind + ': told saved');
+      }
+      if (kind === 'null time') assert.ok(cloud.Old.ch1);
+      await db.close();
+    }
+  }
+});
+
+test('v1096 review P2 (rollout): an older device that writes its whole copy over a saved read is undone by the check a little after the save', async () => {
+  const db = await cloudDb({ handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: plain(SEED) } });
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(40);
+  assert.ok((await cloudOf(db, 'handbook_reads')).Ann.ch1);
+  // a v1095 device upserts its older copy (no Ann) over the row
+  await db.query("update app_state set value=$1, updated_at=now() where key='handbook_reads'", [JSON.stringify({ Ben: { ch1: R(3, 5) } })]);
+  const later = ann.timers.filter(([, ms]) => ms === 20000); assert.equal(later.length, 1, 'one check is planned after the save');
+  later[0][0](); await tick(40);
+  const cloud = await cloudOf(db, 'handbook_reads');
+  assert.ok(cloud.Ann && cloud.Ann.ch1 && cloud.Ben.ch1, 'Ann\'s read is back');
   await db.close();
 });
 

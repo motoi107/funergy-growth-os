@@ -10596,6 +10596,10 @@ function _casTs(){ var s=new Date().toISOString(); return s.slice(0,23)+String(M
 function _opCasWrite(key, value, row){
   var h=Object.assign({}, supaHeaders(), { 'Content-Type':'application/json', 'Prefer':'return=representation' });
   var body={ value:value, updated_at:_casTs() };
+  /* 15 秒で打ち切る（答えの来ない書き込みで、このキーの送る順番と未送信の送り直しが止まらないように：独立レビュー 9f23211 P3）。
+     打ち切ったあとに書けていても、次の送り直しは読み直して同じ中身を書くだけ */
+  var ctl=null, tm=null;
+  try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
   var url, opt;
   if(row && row.exists){
     url=SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&updated_at='+(row.updatedAt==null ? 'is.null' : ('eq.'+encodeURIComponent(row.updatedAt)))+'&select=key';
@@ -10604,11 +10608,12 @@ function _opCasWrite(key, value, row){
     url=SUPABASE_URL+'/rest/v1/app_state?select=key';
     opt={ method:'POST', headers:h, body:JSON.stringify(Object.assign({ key:key }, body)) };
   }
+  if(ctl) opt.signal=ctl.signal;
   return fetch(url, opt).then(function(r){
     if(r.status===409) return 'conflict';   /* 行が無いと読んだあとに、ほかの端末が作った */
     if(!r.ok) return 'fail';
     return r.json().then(function(rows){ return (Array.isArray(rows) && rows.length===1) ? 'ok' : 'conflict'; });
-  }).catch(function(){ return 'fail'; });
+  }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
 }
 function _opUpsertRow(key, value, table){
   return (table==='app_settings')
@@ -11049,14 +11054,18 @@ function opMergePush(key, localVal, table){
          前は 2 台がほぼ同時に送ると、両方が同じ古い行に足して書き、あとの書き込みが先の読了を消した（書いたあとの確かめも、
          あとの書き込みの前に済んでいたので、両方に「保存しました」と出た）。読んだ行の updated_at が変わっていたら、読み直して合わせ直す */
       if(def.cas && table==='app_state'){
+        var _lastConf=null;
         for(var ca=0; ca<6; ca++){
           var row = await _fetchOpRow(key);
           if(row===undefined){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
+          /* 前の書き込みが 0 行だったのに、読み直した行が変わっていない＝ほかの端末は書いていない（権限などで書けない）。くり返さない（独立レビュー 9f23211 P3） */
+          if(_lastConf && row.exists===_lastConf.exists && String(row.updatedAt)===String(_lastConf.updatedAt)){ _ok=false; _err='クラウドが書き込みを受け付けませんでした（権限など。未送信に残します）'; break; }
           var cm = def.merge(row.exists ? row.value : null, desired);
           _opWriteBack(key, def, cm);
           var w = await _opCasWrite(key, cm, row);
           if(w==='ok'){ desired=cm; _ok=true; break; }
           if(w!=='conflict'){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
+          _lastConf = row;
           desired = cm;   /* ほかの端末が先に書いた：読み直して合わせ直す */
           await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });
         }
@@ -86777,7 +86786,11 @@ function hbMarkRead(id){
 }
 function hbAfterReadSave(label, r, labelEn){
   labelEn=labelEn||label;
-  if(r===true){ showToast(t(label+'の読了を保存しました', labelEn+': read is saved'),'success'); }
+  if(r===true){ showToast(t(label+'の読了を保存しました', labelEn+': read is saved'),'success');
+    /* v1096（独立レビュー 9f23211 P2）：入れ替えのあいだ、v1095 以前の端末は行を丸ごと書くので、保存した読了を古い写しで消すことがある。
+       少しあとにもう一度読み、クラウドに無ければ書き戻す（_hbPullKey）。端末をすべて v1096 にするまでの守り */
+    try{ setTimeout(function(){ try{ _hbPullKey('handbook_reads'); }catch(e){} }, 20000); }catch(e){}
+  }
   else if(r==='off'){ showToast(t(label+'の読了をこの端末に記録しました（クラウド同期が OFF のため、ほかの端末には出ません）', labelEn+': recorded on this device only (cloud sync is off)'),'warning'); }
   else {
     /* 起動の途中（_supaBooting）は lsSet が未送信に積まないので、ここで積む（あとで flushOutbox が端末の記録を読み直して送る） */
