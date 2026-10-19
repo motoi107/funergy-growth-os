@@ -8,12 +8,17 @@ import { postedName, uniqueName, monthFolders, reconciledFolders, FOLDER, extens
 import { hstDate } from '../../../invoice/dates.mjs';
 import { createDrive, googleAccessToken, viewUrl, folderUrl } from '../../../invoice/drive.mjs';
 import { groupItems, relink } from '../../../invoice/link.mjs';
+import { createGmail, authUrl, pkcePair, randomState, sha256Text, exchangeCode, profileOf, canSearchWith, scopesOk, qbSubject, refreshAccess, tokenScopes } from '../../../invoice/gmail.mjs';
+import { noticeText } from '../../../invoice/notices.mjs';
 
 const SUPPORTED = { 'application/pdf': true, 'image/jpeg': true, 'image/png': true };
 const READ = ['ceo', 'gm', 'office', 'office_crew'];
 // From the store folder itself only these are taken in (a HEIC photo is taken in to show how to send it again).
 const STORE_FOLDER_TYPES = ['application/pdf', 'image/jpeg', 'image/png', 'image/heic', 'image/heif'];
 const QB_ROUTES = ['invoice-intake', 'external'];
+// A reserved row is let go (it waits, not a try) when this system is no longer the sender, the ledger was turned off or the Gmail
+// connection is not good.
+const QB_RELEASE = ['route_changed', 'gmail_not_ok', 'qb_off'];
 
 // Constant-time comparison of a presented key with the stored one.
 function keyMatches(given, stored) {
@@ -71,6 +76,31 @@ export function createHandler(deps) {
   const ai = deps.ai || (parts => callModel({ fetch, apiKey: env('ANTHROPIC_API_KEY'), model: env('INVOICE_AI_MODEL') || 'claude-sonnet-4-6', parts }));
   const mailer = deps.mailer || null;
   const now = deps.now || (() => Date.now());
+  // Work that goes on after the answer (index.ts passes EdgeRuntime.waitUntil): a posting answers at once and the send runs on.
+  const background = deps.background || null;
+  const sleep = deps.sleep || (ms => new Promise(r => setTimeout(r, ms)));
+  // Gmail (UI案56): the OAuth client is the function's own (GMAIL_OAUTH_CLIENT_ID/SECRET) or else the one the Drive connection uses.
+  async function googleClient() {
+    let id = env('GMAIL_OAUTH_CLIENT_ID'), secret = env('GMAIL_OAUTH_CLIENT_SECRET');
+    if (!id || !secret) {
+      let saved = null; try { saved = await db.rpc('invoice_drive_credentials', {}); } catch { saved = null; }
+      id = saved && saved.client_id; secret = saved && saved.client_secret;
+    }
+    return { clientId: id || null, clientSecret: secret || null };
+  }
+  const redirectUri = () => env('GMAIL_OAUTH_REDIRECT_URI') || (url + '/functions/v1/invoice-intake');
+  const appUrl = () => env('INVOICE_APP_URL') || origins[0] + '/';
+  async function gmailCreds() {
+    const c = await db.rpc('invoice_gmail_creds', {});
+    if (!c || !c.refresh_token) return null;
+    return { ...(await googleClient()), refreshToken: c.refresh_token, account: c.account };
+  }
+  // What sends: Gmail (production); a stand-in in tests (qbTransport, or the older mailer stand-in).
+  function newTransport() {
+    if (deps.qbTransport) return deps.qbTransport();
+    if (mailer) return mailerTransport(mailer);
+    return createGmail({ fetch, getCreds: gmailCreds });
+  }
   const origins = ['https://funergy-plus.com', ...String(env('INVOICE_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
 
   // ------------------------------------------------------------------ worker
@@ -130,6 +160,7 @@ export function createHandler(deps) {
 
   async function stageDocs(f, store, sha, raw, ctx, pageCount, stats) {
     const docs = raw && raw.readable && raw.documents && raw.documents.length ? raw.documents : [null];
+    let posted = 0;
     for (let i = 0; i < docs.length; i++) {
       const ext = docs[i];
       let result;
@@ -158,7 +189,7 @@ export function createHandler(deps) {
         ai: ext ? { prompt_version: PROMPT_VERSION, doc_index: i } : null });
       stats.staged = (stats.staged || 0) + (st.existed ? 0 : 1);
       if (!st.existed && result.autoEligible && ctx.mode.auto_post && ctx.started) {
-        try { await db.rpc('invoice_post', { doc_id: st.doc_id, version: st.version }); stats.posted = (stats.posted || 0) + 1; }
+        try { await db.rpc('invoice_post', { doc_id: st.doc_id, version: st.version }); stats.posted = (stats.posted || 0) + 1; posted++; }
         catch (e) { stats.post_refused = (stats.post_refused || 0) + 1; }
       }
       // Filed by invoice month only when vendor, date and store are not in doubt; otherwise it stays in 00_Upload.
@@ -167,6 +198,7 @@ export function createHandler(deps) {
         await db.rpc('invoice_organize_request', { file_id: f.id, target: 'unreconciled' });
       }
     }
+    return posted;
   }
 
   async function processFile(f, ctx, owner, stats) {
@@ -202,8 +234,14 @@ export function createHandler(deps) {
         const value = { readable: res.readable, reason: res.reason || null, documents: res.documents, stop_reason: res.stop_reason || null };
         raw = await db.rpc('invoice_extraction', { sha256: sha, prompt_version: PROMPT_VERSION, model: res.model || null, raw: value });
       } else stats.ai_reused = (stats.ai_reused || 0) + 1;
-      await stageDocs(f, store, sha, raw, ctx, mime === 'application/pdf' ? pdfPages(bytes) : 1, stats);
+      const posted = await stageDocs(f, store, sha, raw, ctx, mime === 'application/pdf' ? pdfPages(bytes) : 1, stats);
       await db.rpc('invoice_file_settle', { file_id: f.id, owner });
+      // Posted automatically: the same way as a person's posting (UI案56): renamed now, queued now, and the send starts now.
+      if (posted) {
+        if (ctx.mode.rename) await renameNow(null, f.id, ctx);
+        const q = await qbAfterPost([f.id], ctx, 'auto');
+        if (q && q.queued) stats.qb_queued = (stats.qb_queued || 0) + q.queued;
+      }
     } catch (e) {
       stats.file_errors = (stats.file_errors || 0) + 1;
       await fail(safeErr(e));
@@ -375,37 +413,246 @@ export function createHandler(deps) {
     }
   }
 
-  // One ledger for every original, whoever sends it. With route 'external' the existing forwarder
-  // reads and records through the qb_external_* actions and nothing is sent from here.
-  async function qbStep(ctx, owner, stats) {
-    if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route)) return;
-    await db.rpc('invoice_qb_sweep', {});
-    for (const c of await db.rpc('invoice_qb_candidates', { limit: 20 })) {
-      const r = await db.rpc('invoice_qb_enqueue', { file_id: c.file_id });
-      if (r.queued) stats.qb_queued = (stats.qb_queued || 0) + 1;
-    }
-    if (ctx.qb.route !== 'invoice-intake' || !mailer) return;   // sending is done by the assigned route only
-    for (let i = 0; i < 3; i++) {
-      const o = await db.rpc('invoice_qb_reserve', { owner });
-      if (!o) break;
-      try {
-        if (mailer.lookup) {
-          const prev = await mailer.lookup(o.attempt_key);
-          if (prev && prev.found) { await db.rpc('invoice_qb_result', { id: o.id, state: 'sent', message_id: prev.messageId, result: { via: 'lookup' } }); continue; }
-        }
-        const f = await db.rpc('invoice_file_brief', { file_id: o.file_id });
-        const bytes = await drive.download(f.drive_file_id);
-        if ((await sha256Hex(bytes)) !== o.sha256) throw Object.assign(new Error('content_changed'), { definitive: true });
-        const res = await mailer.send({ to: o.to_address, idempotencyKey: o.attempt_key, subject: f.current_name,
-          text: 'Original document forwarded by Funergy+ invoice intake.', attachment: { name: f.current_name, mime: f.mime_type, bytes } });
-        if (res.ok) await db.rpc('invoice_qb_result', { id: o.id, state: 'sent', message_id: res.messageId || null, result: { accepted: true } });
-        else await db.rpc('invoice_qb_result', { id: o.id, state: res.unknown ? 'unknown' : 'error', error: res.error || null });
-        stats.qb_sent = (stats.qb_sent || 0) + (res.ok ? 1 : 0);
-      } catch (e) {
-        // A failure after the message may have left the sender is "unknown", not "failed".
-        await db.rpc('invoice_qb_result', { id: o.id, state: e && e.definitive ? 'error' : 'unknown', error: safeErr(e) });
+  // One ledger for every original, whoever sends it. With route 'external' the existing forwarder reads and records through the
+  // qb_external_* actions. The rows of this system (route 'invoice-intake') are sent from here, by Gmail (Moto 2026-10-18・UI案56):
+  // right after a posting is queued (qbAfterPost), and by every worker run for what that start left (a lost start, a retry).
+  async function qbStep(ctx, owner, stats, deadline) {
+    if (ctx.qb.enabled && QB_ROUTES.includes(ctx.qb.route)) {
+      await db.rpc('invoice_qb_sweep', {});
+      for (const c of await db.rpc('invoice_qb_candidates', { limit: 20 })) {
+        const r = await db.rpc('invoice_qb_enqueue', { file_id: c.file_id });
+        if (r.queued) stats.qb_queued = (stats.qb_queued || 0) + 1;
       }
     }
+    // Sending in a worker run uses what is left of the run (the files and the renaming come first); the main path is the start
+    // right after a posting.
+    const left = deadline ? deadline - now() : 100000;
+    const s = await qbSend('worker', { budgetMs: Math.max(0, Math.min(100000, left)) });
+    for (const [k, v] of Object.entries(s)) if (typeof v === 'number') stats['qb_' + k] = (stats['qb_' + k] || 0) + v;
+    await qbReconcile(stats);
+    await qbNotices(stats);
+  }
+
+  // The older stand-in for tests that predate Gmail: it records what would be sent and finds what it sent by the attempt key.
+  function mailerTransport(m) {
+    return {
+      async ready() { return { ok: true, account: 'synthetic-sender' }; },
+      async history(o) { if (!m.lookup) return { state: 'none' }; const p = await m.lookup(o.attemptKey); return p && p.found ? { state: 'sent', messageId: p.messageId, own: true } : { state: 'none' }; },
+      async send(x) { return m.send({ to: x.to, idempotencyKey: x.idempotencyKey, subject: x.subject, attachment: x.attachment }); },
+      async notify() { return { ok: false, error: 'not_supported' }; },
+    };
+  }
+
+  // The permission was taken back, ran out or lacks a scope: sending stops (the rows wait), the connection shows it, Moto is told
+  // once a Hawaii day while this system has something to send.
+  async function gmailProblem(r) {
+    try {
+      const m = await db.rpc('invoice_gmail_mark', { status: /scope|403|insufficient|refused/.test(String(r.error)) ? 'denied' : 'expired', error: r.error || 'gmail_auth' });
+      const day = new Date(now() - 10 * 3600000).toISOString().slice(0, 10);
+      if (m && m.ok) await db.rpc('invoice_qb_alert_put', { kind: 'auth', key: 'auth:' + day, data: { error: r.error || null } });
+    } catch (e) { console.error('invoice-intake gmail mark', safeErr(e)); }
+  }
+
+  // A result is written once more after a short wait when the database does not answer; a sent message is never sent again for it
+  // (a row still "sending" becomes unknown after 15 minutes and is then found by its attempt mark in the sent mail).
+  async function qbRecord(id, p) {
+    for (let i = 0; i < 3; i++) {
+      try { return await db.rpc('invoice_qb_result', { id, ...p }); }
+      catch (e) { if (i === 2) { console.error('invoice-intake qb result', p.state, safeErr(e)); return null; } await sleep(1000 * (i + 1)); }
+    }
+  }
+
+  async function qbSend(trigger, opts = {}) {
+    const stats = {};
+    let ctx;
+    try { ctx = await context(); } catch (e) { return { context_errors: 1 }; }
+    if (!ctx.qb.enabled) return stats;                                     // the ledger is off: nothing is sent
+    if (!(await db.rpc('invoice_qb_has_due', {}))) return stats;
+    const tr = newTransport();
+    const rd = await tr.ready();
+    if (!rd.ok) { if (rd.auth) await gmailProblem(rd); stats.not_ready = 1; return stats; }
+    const sentIds = [];
+    const owner = 's-' + crypto.randomUUID(), t0 = now(), budget = opts.budgetMs ?? 100000, max = opts.max || 20;
+    // A row is reserved only with time left to search, read, send and record it (about 20 seconds at least).
+    for (let i = 0; i < max && budget - (now() - t0) > 20000; i++) {
+      const o = await db.rpc('invoice_qb_reserve', { owner });
+      if (!o) break;
+      let r;
+      try { r = await qbSendOne(o, owner, tr, trigger); }
+      catch (e) { console.error('invoice-intake qb send', safeErr(e)); r = 'failed'; }
+      stats[r] = (stats[r] || 0) + 1;
+      if (r === 'sent' || r === 'found') sentIds.push(o.id);
+      if (r === 'auth' || r === 'released') break;
+    }
+    // The purchase summaries of what was sent (each row's own month and store; a long run refreshes them all once).
+    if (sentIds.length > 5) await publishSummary(null, null);
+    else for (const id of sentIds) await publishSummary(null, { outbox_id: String(id) });
+    if (trigger !== 'worker') await qbNotices(null);
+    return stats;
+  }
+
+  // One reserved row: the settings again → the sent mail → the Drive bytes → the reservation again → one mail → the Gmail ID.
+  async function qbSendOne(o, owner, tr, trigger) {
+    const fail = (state, error, result) => qbRecord(o.id, { state, error, ...(result ? { result } : {}) });
+    // Not a try: the row waits as before (sending stays stopped until the route or the connection is good again).
+    const release = async error => {
+      try {
+        const r = await db.rpc('invoice_qb_release', { id: o.id, owner, error });
+        // Not let go: the reservation was already gone (swept to unknown after 15 minutes); a person decides, as for any unknown.
+        if (!r || !r.ok) console.error('invoice-intake qb release: not reserved any more', String(o.id));
+      } catch (e) { console.error('invoice-intake qb release', safeErr(e)); }
+    };
+    let c;
+    try { c = await db.rpc('invoice_qb_send_context', { id: o.id, owner }); } catch (e) { await fail('error', 'context_failed'); return 'error'; }
+    if (!c.ok) {
+      if (c.why === 'not_reserved') return 'skipped';
+      if (c.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      if (QB_RELEASE.includes(c.why)) { await release(c.why); return 'released'; }
+      await fail('error', c.why); return 'error';
+    }
+    const f = c.file, key = { sha256: o.sha256, driveFileId: f.drive_file_id, attemptKey: o.attempt_key, to: o.to_address, size: f.size };
+    // 1) Gmail's sent mail, every page: a send found (this ledger's, or the forwarder's before) is recorded, never sent again; a
+    //    failed search is never read as "not sent".
+    let prev;
+    try { prev = await tr.history(key); }
+    catch (e) {
+      if (e && e.auth) { await release(e.code || 'gmail_read_refused'); await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return 'auth'; }
+      await fail('error', 'gmail_history_failed'); return 'error';
+    }
+    if (prev.state === 'sent') {
+      await qbRecord(o.id, { state: 'sent', message_id: prev.messageId, result: { via: 'gmail_history', own: !!prev.own,
+        note: prev.own ? 'この台帳の送信を Gmail の送信済みで見つけた（送り直していない）' : '前の転送で送った（Gmail の送信済みで見つけた・送り直していない）' } });
+      return 'found';
+    }
+    if (prev.state === 'conflict') {
+      await fail('unknown', prev.reason, { via: 'gmail_history', seen_message: prev.messageId || null,
+        note: prev.reason === 'same_drive_id_other_content' ? '同じ原本（Drive の ID）を前に別の中身で送っています。人が確かめてください（送っていない）'
+          : '送信済みに同じ原本の印がありますが、添付を確かめられません。人が確かめてください（送っていない）' });
+      return 'conflict';
+    }
+    // 2) The original's bytes: the content that was posted and queued, or nothing is sent.
+    let bytes;
+    try { bytes = await drive.download(f.drive_file_id); } catch (e) { await fail('error', 'drive_download_failed'); return 'error'; }
+    if ((await sha256Hex(bytes)) !== o.sha256) { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+    // 3) Just before sending: still this sender's reservation, young enough, nothing changed.
+    let chk;
+    try { chk = await db.rpc('invoice_qb_send_check', { id: o.id, owner, sha256: o.sha256, attempt_key: o.attempt_key, drive_file_id: f.drive_file_id }); }
+    catch (e) { chk = { ok: false, why: 'check_failed' }; }
+    if (!chk.ok) {
+      if (chk.why === 'not_reserved') return 'skipped';
+      if (chk.why === 'content_changed') { await db.rpc('invoice_qb_content_changed', { id: o.id, owner }); return 'content_changed'; }
+      if (QB_RELEASE.includes(chk.why)) { await release(chk.why); return 'released'; }
+      await fail('error', chk.why); return 'error';
+    }
+    // 4) One mail: the original as its only part, the three marks in the subject, no body.
+    const started = new Date(now()).toISOString();
+    let res;
+    try {
+      res = await tr.send({ from: c.from, to: c.to, idempotencyKey: o.attempt_key,
+        subject: qbSubject({ currentName: f.current_name, driveFileId: f.drive_file_id, sha256: o.sha256, attemptKey: o.attempt_key }),
+        attachment: { name: f.current_name, mime: f.mime_type || 'application/octet-stream', bytes } });
+    } catch (e) { res = { ok: false, unknown: true, error: 'gmail_send_failed' }; }
+    if (res && res.ok) {
+      await qbRecord(o.id, { state: 'sent', message_id: res.messageId || null, result: { via: 'gmail', started_at: started, sent_at: new Date(now()).toISOString(), trigger: trigger || null } });
+      return 'sent';
+    }
+    if (!res || res.unknown) { await fail('unknown', (res && res.error) || 'send_unknown'); return 'unknown'; }
+    // Gmail refused the permission (nothing was sent): the row waits, not a try; Moto is told; つなぎ直す sends it.
+    if (res.auth) { await release(res.error || 'gmail_send_refused'); await gmailProblem({ auth: true, error: res.error }); return 'auth'; }
+    await fail('error', res.error || 'send_failed');
+    return 'error';
+  }
+
+  // Unknown sends of this system are looked for in the sent mail (15 minutes after, then 30, 60 …, six times): a send found by its
+  // marks is recorded as sent. Nothing is ever sent again from here; what is not found stays for a person.
+  async function qbReconcile(stats) {
+    let rows = [];
+    try { rows = await db.rpc('invoice_qb_unknown_due', { limit: 5 }); } catch { rows = []; }
+    if (!rows.length) return;
+    const tr = newTransport(), rd = await tr.ready();
+    if (!rd.ok) { if (rd.auth) await gmailProblem(rd); return; }
+    for (const r of rows) {
+      let h = null;
+      try { h = await tr.history({ sha256: r.sha256, driveFileId: r.drive_file_id, attemptKey: r.attempt_key, to: r.to_address, size: r.size }); }
+      catch (e) {
+        // A refused read stops the look-ups (the connection shows it); a failed one is tried again next run. Neither is counted.
+        if (e && e.auth) { await gmailProblem({ auth: true, error: e.code || 'gmail_read_refused' }); return; }
+        continue;
+      }
+      if (h && h.state === 'sent') {
+        await qbRecord(r.id, { state: 'sent', message_id: h.messageId, result: { via: 'gmail_history', own: !!h.own,
+          note: '結果が分からなかった送信を Gmail の送信済みで見つけた（送り直していない）' } });
+        if (stats) stats.qb_found_later = (stats.qb_found_later || 0) + 1;
+      } else await db.rpc('invoice_qb_gmail_checked', { id: r.id });
+    }
+  }
+
+  // Notices to Moto (decisions 1・2・5): made once in the database, then the mail and LINE (the app reads its own copy).
+  async function qbNotices(stats) {
+    try { await db.rpc('invoice_qb_alert_scan', {}); } catch (e) { console.error('invoice-intake notices', safeErr(e)); }
+    try {
+      const lines = await db.rpc('invoice_qb_alert_claim', { channel: 'line', limit: 10 });
+      if (lines.length) {
+        let route = null; try { route = await db.rpc('invoice_line_route', {}); } catch { route = null; }
+        const tok = env('LINE_CHANNEL_ACCESS_TOKEN');
+        for (const a of lines) {
+          const st = route && tok ? await linePush(route, tok, a) : 'skipped';
+          await db.rpc('invoice_qb_alert_done', { id: a.id, channel: 'line', state: st });
+        }
+      }
+      const mails = await db.rpc('invoice_qb_alert_claim', { channel: 'email', limit: 10 });
+      if (mails.length) {
+        const tr = newTransport(), rd = await tr.ready();
+        for (const a of mails) {
+          let st;
+          if (!rd.ok) st = rd.auth || rd.error === 'gmail_not_connected' ? 'skipped' : 'pending';
+          else {
+            const t = noticeText(a);
+            let r; try { r = await tr.notify({ to: rd.account, subject: '【Funergy+】' + t.title, text: t.text }); } catch { r = { ok: false, unknown: true }; }
+            st = r && r.ok ? 'sent' : r && r.unknown ? 'failed' : r && r.error === 'not_supported' ? 'skipped' : 'pending';
+          }
+          await db.rpc('invoice_qb_alert_done', { id: a.id, channel: 'email', state: st });
+        }
+      }
+    } catch (e) { if (stats) stats.notice_errors = (stats.notice_errors || 0) + 1; console.error('invoice-intake notices', safeErr(e)); }
+  }
+  async function linePush(route, tok, a) {
+    try {
+      const ac = new AbortController(), tm = setTimeout(() => ac.abort(), 15000);
+      let r;
+      try {
+        r = await fetch('https://api.line.me/v2/bot/message/push', { method: 'POST', signal: ac.signal,
+          headers: { authorization: 'Bearer ' + tok, 'content-type': 'application/json', 'x-line-retry-key': a.id },
+          body: JSON.stringify({ to: route.group_id, messages: [{ type: 'text', text: noticeText(a).line.slice(0, 4900) }] }) });
+      } finally { clearTimeout(tm); }
+      if (r.ok || (r.status === 409 && r.headers.get('x-line-accepted-request-id'))) return 'sent';
+      return r.status >= 400 && r.status < 500 && r.status !== 429 ? 'failed' : 'pending';
+    } catch { return 'pending'; }
+  }
+
+  // After a posting (a person's, or automatic): the original is queued at once (it was renamed just before when renaming is on),
+  // and when this system sends, the send starts now and goes on after the answer (the posting never waits for Gmail).
+  async function qbAfterPost(files, ctx, trigger) {
+    if (!ctx.qb.enabled || !QB_ROUTES.includes(ctx.qb.route) || !files.length) return null;
+    let queued = 0;
+    for (const f of files) {
+      try { const r = await db.rpc('invoice_qb_enqueue', { file_id: f }); if (r && r.queued) queued++; } catch (e) { console.error('invoice-intake qb enqueue', safeErr(e)); }
+    }
+    const out = { queued, sending: false };
+    if (queued && ctx.qb.route === 'invoice-intake') {
+      let due = false; try { due = await db.rpc('invoice_qb_has_due', {}); } catch { due = false; }
+      if (!due) {
+        // Not due although queued: the screen says "waits for Gmail" only when the connection is in fact not good (another sender
+        // may already have the row; the 5-minute run sends what is left).
+        let g = null; try { g = await db.rpc('invoice_gmail_public', {}); } catch { g = null; }
+        if (g && g.status !== 'ok') out.waiting = 'gmail';
+      } else if (background) {
+        // Inside a worker run (an automatic posting) the send keeps within what is left of the run.
+        const opts = ctx.deadline ? { budgetMs: Math.max(0, Math.min(100000, ctx.deadline - now())) } : {};
+        try { background(qbSend(trigger, opts).catch(e => console.error('invoice-intake qb send', safeErr(e)))); out.sending = true; } catch { out.sending = false; }
+      }
+    }
+    return out;
   }
 
   async function mirrorStep(ctx, stats) {
@@ -471,6 +718,7 @@ export function createHandler(deps) {
     const started = new Date(t0).toISOString();
     try {
       const ctx = await context();
+      ctx.deadline = t0 + (Number(body.budget_ms) || 100000) * 1.5;
       if (!ctx.mode.intake) {
         // With intake off, reconciling and QuickBooks results still move invoices: the summaries follow them.
         const st = { off: true }; await publishSummary(st);
@@ -493,7 +741,7 @@ export function createHandler(deps) {
       if (targets.length) for (const o of await db.rpc('invoice_organize_due', { limit: 10, targets, back })) { if (now() - t0 > budget * 1.3) break; await organizeOne(o, ctx, stats); }
       // Posted originals are renamed before the QuickBooks step queues them (Moto 2026-10-12).
       await renameStep(ctx, stats, t0 + budget * 1.3);
-      try { await qbStep(ctx, owner, stats); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
+      try { await qbStep(ctx, owner, stats, t0 + budget * 1.5); } catch (e) { stats.qb_errors = (stats.qb_errors || 0) + 1; console.error('invoice-intake qb', safeErr(e)); }
       await mirrorStep(ctx, stats);
       await integrityStep(ctx, stats);
       await publishSummary(stats);
@@ -641,6 +889,8 @@ export function createHandler(deps) {
       saved.rename = await renameNow(actor, g.doc.file_id, ctx);
       for (const x of g.parts || []) await renameNow(actor, x.file_id, ctx);   // the other originals of the invoice (_p2 …)
     }
+    // An original that was waiting for its name goes to the ledger now (one already queued or sent is not queued again).
+    if (g.doc.status === 'posted' && saved) { try { saved.qb = await qbAfterPost([g.doc.file_id], ctx, 'correction'); } catch { saved.qb = null; } }
     return saved;
   }
 
@@ -1064,6 +1314,8 @@ export function createHandler(deps) {
         r.rename = await renameNow(a, files[0], ctx);
         for (const f of files.slice(1)) await renameNow(a, f, ctx);
       }
+      // UI案56: queued at once, and this system's send starts now (it goes on after this answer; the posting stands either way).
+      try { r.qb = await qbAfterPost(files, ctx, 'post'); } catch (e) { r.qb = null; }
       return r;
     }, b => ids(b.doc_id, b.supersedes)),
     // A preview saves nothing (and writes no summary).
@@ -1102,12 +1354,117 @@ export function createHandler(deps) {
     link_undo: linkUndo,
     link_mark: linkMark,
     link_sync: linkSyncAll,
+    // QuickBooks からすぐ (Moto 2026-10-18・UI案56): the 取込状況 card, the Gmail connection, and looking an unknown send up.
+    qb_status: a => db.rpc('invoice_qb_status', { actor: a }).then(r => ({ ...r, rows: (r.rows || []).map(o => ({ ...o, original_url: viewUrl(o.drive_file_id) })) })),
+    gmail_connect: gmailConnect,
+    gmail_check: gmailCheck,
+    gmail_disconnect: gmailDisconnect,
+    qb_lookup: thenSummary(qbLookup, b => ({ outbox_id: String(b.id || '') })),
   };
   const ERR = { forbidden: 403, actor_required: 401, conflict: 409, not_found: 404, line_not_found: 404, closed_month: 409, duplicate: 409, invalid_state: 409,
     reason_required: 400, note_required: 400, field_not_editable: 400, bad_value: 400, bad_key: 400, bad_result: 400, bad_relation: 400, bad_action: 400,
     bad_state: 400, bad_target: 400, duplicate_of_required: 400, relation_required: 409, auto_off: 409, not_eligible: 409, bad_supersede: 409,
     not_a_purchase: 409, header_incomplete: 409, posted_use_correction: 409, has_parts: 409, bad_merge: 409, route_not_assigned: 409, qb_in_progress: 409,
-    merged: 409, later_merge: 409, unknown_ingredient: 409, map_not_usable: 409 };
+    merged: 409, later_merge: 409, unknown_ingredient: 409, map_not_usable: 409, gmail_not_ready: 409, from_not_set: 409, not_configured: 409 };
+
+  // ------------------------------------------------------------------ Gmail (UI案56)
+  // 「Gmail をつなぐ」 (CEO・GM): a Google page for the account of qb.from; the state and the PKCE verifier stay here.
+  async function gmailConnect(a) {
+    const g = await googleClient();
+    if (!g.clientId || !g.clientSecret) throw new Error('not_configured');
+    const state = randomState(), pk = await pkcePair();
+    const st = await db.rpc('invoice_gmail_start', { actor: a, state_hash: await sha256Text(state), verifier: pk.verifier });
+    return { url: authUrl({ clientId: g.clientId, redirectUri: redirectUri(), state, challenge: pk.challenge, loginHint: st.from }), redirect_uri: redirectUri() };
+  }
+  // Google's answer: the code is exchanged once; the connection is kept only for the account of qb.from with both scopes. The person
+  // is sent back to the app with a short result (never a token). A connection that is not kept is only forgotten (never revoked:
+  // that would take back the grant the Drive connection may share).
+  async function gmailCallback(u) {
+    const back = code => new Response(null, { status: 302, headers: { location: appUrl() + (appUrl().includes('?') ? '&' : '?') + 'invoice_gmail=' + encodeURIComponent(code), 'cache-control': 'no-store' } });
+    let taken;
+    try { taken = await db.rpc('invoice_gmail_take', { state_hash: await sha256Text(u.searchParams.get('state') || '') }); } catch { return back('bad_state'); }
+    const code = u.searchParams.get('code');
+    if (u.searchParams.get('error') || !code) return back('denied');
+    const g = await googleClient();
+    if (!g.clientId || !g.clientSecret) return back('not_configured');
+    const ex = await exchangeCode({ fetch, ...g, code, verifier: taken.verifier, redirectUri: redirectUri() });
+    if (!ex.ok) return back(ex.error === 'no_refresh_token' ? 'no_refresh_token' : 'exchange_failed');
+    if (!scopesOk(ex.scopes)) return back('scope_missing');
+    const account = await profileOf({ fetch, token: ex.accessToken });
+    if (!account) return back('profile_failed');
+    const search = await canSearchWith({ fetch, token: ex.accessToken });
+    try {
+      await db.rpc('invoice_gmail_save', { actor: taken.actor, account, refresh_token: ex.refreshToken, scopes: ex.scopes,
+        check_result: { account, send_scope: true, read_scope: true, search_ok: search } });
+    } catch (e) {
+      const c = String(e.message || '').split(/[\s:]/)[0];
+      return back(['wrong_account', 'scope_missing', 'forbidden', 'from_not_set'].includes(c) ? c : 'save_failed');
+    }
+    return back(search ? 'ok' : 'ok_search_failed');
+  }
+  // 「確かめる」 (CEO・GM): a new access token, the scopes it carries, the account, a search of the sent mail. No secret is shown.
+  async function gmailCheck(a) {
+    const who = await db.rpc('invoice_whoami', { actor: a });
+    if (!['ceo', 'gm'].includes(who.role)) throw new Error('forbidden');
+    const c = await gmailCreds();
+    if (!c) throw new Error('gmail_not_ready');
+    const r = await refreshAccess({ fetch, ...c });
+    if (!r.ok) {
+      if (r.auth) await db.rpc('invoice_gmail_mark', { actor: a, status: 'expired', error: r.error, check_result: { ok: false, error: r.error } });
+      else await db.rpc('invoice_gmail_mark', { actor: a, check_result: { ok: false, error: r.error } });
+      return db.rpc('invoice_gmail_public', {});
+    }
+    const scopes = await tokenScopes({ fetch, token: r.token });
+    const account = await profileOf({ fetch, token: r.token });
+    const search = await canSearchWith({ fetch, token: r.token });
+    const result = { ok: scopesOk(scopes) && !!account && search, account, send_scope: !!scopes && scopes.includes('https://www.googleapis.com/auth/gmail.send'),
+      read_scope: !!scopes && scopes.includes('https://www.googleapis.com/auth/gmail.readonly'), search_ok: search };
+    // The search every send makes, tried on real mail: the newest original already sent to this address (the forwarder before's
+    // first) must be found in the sent mail. Switching to this system needs it found (when there is one).
+    result.history_probe = { tried: false };
+    if (result.ok) {
+      // A ledger that cannot be read is not "nothing sent before": the check fails (the switch is refused) and is tried again.
+      let row = null, readFailed = false;
+      try { row = await db.rpc('invoice_qb_probe_row', {}); } catch { readFailed = true; }
+      if (readFailed) result.history_probe = { tried: true, found: null, error: 'probe_read_failed' };
+      else if (row) {
+        try {
+          const tr = newTransport(), rd = await tr.ready();
+          if (!rd.ok) result.history_probe = { tried: true, found: null, error: rd.error || 'gmail_not_ready' };
+          else {
+            const h = await tr.history({ sha256: row.sha256, driveFileId: row.drive_file_id, attemptKey: row.attempt_key, to: row.to_address, size: row.size });
+            result.history_probe = { tried: true, found: h.state === 'sent', same_id: h.state === 'sent' && !!row.message_id && h.messageId === row.message_id,
+              state: h.state, route: row.route, name: String(row.current_name || '').slice(0, 120), sent_at: row.sent_at };
+          }
+        } catch (e) { result.history_probe = { tried: true, found: null, error: (e && e.code) || 'gmail_history_failed' }; }
+      }
+    }
+    await db.rpc('invoice_gmail_mark', { actor: a, status: result.ok ? 'ok' : (scopes && !scopesOk(scopes) ? 'denied' : undefined), check_result: result,
+      ...(result.ok ? { error: null } : {}) });
+    return db.rpc('invoice_gmail_public', {});
+  }
+  // 「切る」 (CEO・GM): the token is forgotten here. Sending stops; the rows wait. (Taking the access away in the Google account is
+  // left to the person: Google would take back the whole grant.)
+  async function gmailDisconnect(a) { return db.rpc('invoice_gmail_disconnect', { actor: a }); }
+  // 「Gmail の送信済みを調べる」 for an unknown send (accounting, 事務Crew, GM, CEO; decision 4A): found by its marks → sent with the
+  // message's ID; not found → nothing changes (the person decides with 「確かめて、もう一度送る」).
+  async function qbLookup(a, b) {
+    const row = await db.rpc('invoice_qb_row', { actor: a, id: b.id });
+    if (!row) throw new Error('not_found');
+    if (row.state !== 'unknown') throw new Error('invalid_state');
+    const tr = newTransport(), rd = await tr.ready();
+    if (!rd.ok) { if (rd.auth) await gmailProblem(rd); throw new Error('gmail_not_ready'); }
+    let h;
+    try { h = await tr.history({ sha256: row.sha256, driveFileId: row.drive_file_id, attemptKey: row.attempt_key, to: row.to_address, size: row.size }); }
+    catch (e) { return { found: false, error: 'gmail_history_failed' }; }
+    if (h.state === 'sent') {
+      await db.rpc('invoice_qb_result', { actor: a, id: row.id, state: 'sent', message_id: h.messageId,
+        result: { via: 'gmail_lookup', own: !!h.own, checked_by: a, note: 'Gmail の送信済みで見つけた（送り直していない）' } });
+      return { found: true, message_id: h.messageId };
+    }
+    if (h.state === 'conflict') return { found: false, conflict: h.reason };
+    return { found: false };
+  }
 
   // The forwarder that runs outside this system (qb.route = 'external'). It presents its own key and can only
   // list what is due, reserve one row, and record what happened to that row.
@@ -1115,6 +1472,14 @@ export function createHandler(deps) {
     qb_external_list: async b => ({ rows: (await db.rpc('invoice_qb_external_list', { limit: Math.max(1, Math.min(100, Number(b.limit) || 20)) }))
       .map(r => ({ ...r, original_url: viewUrl(r.drive_file_id) })) }),
     qb_external_reserve: b => db.rpc('invoice_qb_external_reserve', { id: b.id }),
+    // Read only (UI案56 切り替えの 6): once this system sends, the forwarder before watches what waits, what is unknown and what stopped.
+    qb_external_monitor: async () => {
+      const r = await db.rpc('invoice_qb_status', { monitor: true });
+      return { counts: r.counts, stopped: r.stopped, waiting_30: r.waiting_30, external_waiting: r.external_waiting, oldest_waiting: r.oldest_waiting,
+        gmail: r.gmail ? r.gmail.status : null, route: r.qb ? r.qb.route || null : null,
+        problems: (r.rows || []).filter(o => ['unknown', 'error'].includes(o.state) || o.last_error === 'content_changed')
+          .map(o => ({ id: o.id, route: o.route, state: o.state, attempts: o.attempts, last_error: o.last_error, current_name: o.current_name, updated_at: o.updated_at })) };
+    },
     qb_external_result: async b => {
       if (!['sent', 'error', 'unknown'].includes(b.state)) throw new Error('bad_state');
       const r = await db.rpc('invoice_qb_result', { actor: 'external', id: b.id, state: b.state, message_id: b.message_id ? String(b.message_id).slice(0, 300) : null,
@@ -1131,6 +1496,12 @@ export function createHandler(deps) {
     const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, apikey, content-type', 'access-control-allow-methods': 'POST, OPTIONS', vary: 'origin' } : {};
     const json = (v, s = 200) => new Response(JSON.stringify(v), { status: s, headers: { 'content-type': 'application/json', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    // Google comes back here after 「Gmail をつなぐ」 (a page opened by the person, no key): the state decides everything.
+    if (req.method === 'GET') {
+      let u = null; try { u = new URL(req.url); } catch { u = null; }
+      if (u && u.searchParams.has('state')) return gmailCallback(u);
+      return json({ error: 'method' }, 405);
+    }
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
     try { const t = await req.text(); if (t.length > 200000) return json({ error: 'too_large' }, 413); body = JSON.parse(t || '{}'); } catch { return json({ error: 'bad_json' }, 400); }

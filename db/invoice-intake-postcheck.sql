@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 21・関数 94 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 21 / functions 94 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true
+-- 対象はこの migration の表 24・関数 117 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 24 / functions 117 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
@@ -8,7 +8,8 @@
 -- （20261022090000＝業者の統合を入れる前は tables 18・functions 77・vendor_merge false。入れたあとは 19・81・true）
 -- （20261024090000＝新しい業者を決める を入れる前は functions 81・vendor_register false。入れたあとは 84・true）
 -- （20261025090000＝紐づけ 段階 1 を入れる前は tables 19・functions 84・item_link false。入れたあとは 21・94・true）
-with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks']) as t), fn as (select unnest(array[
+-- （20261026090000＝QuickBooks からすぐ（Gmail）を入れる前は tables 21・functions 94・qb_gmail false。入れたあとは 24・117・true）
+with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks', 'invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
    'invoice_file_brief', 'invoice_file_claim', 'invoice_file_content_changed', 'invoice_file_fail', 'invoice_file_retry', 'invoice_file_seen',
@@ -23,7 +24,11 @@ with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice
    'invoice_worker_context', 'invoice_worker_key', 'invoice_purchase_classes', 'invoice_purchase_month', 'invoice_purchase_publish', 'invoice_purchase_check',
    'invoice_merge', 'invoice_unmerge', 'invoice_qb_manual', 'invoice_vendor_final', 'invoice_vendor_usage', 'invoice_vendor_merge', 'invoice_vendor_unmerge', 'invoice_vendor_register', 'invoice_vendor_waiting', 'invoice_vendor_merge_into',
    'invoice_code_key', 'invoice_link_hr_ok', 'invoice_link_role', 'invoice_link_whoami', 'invoice_link_lines', 'invoice_link_data', 'invoice_link_save',
-   'invoice_link_retire', 'invoice_link_mark', 'invoice_link_apply']) as f)
+   'invoice_link_retire', 'invoice_link_mark', 'invoice_link_apply',
+   'invoice_gmail_public', 'invoice_gmail_start', 'invoice_gmail_take', 'invoice_gmail_save', 'invoice_gmail_creds', 'invoice_gmail_mark', 'invoice_gmail_disconnect',
+   'invoice_qb_has_due', 'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_content_changed', 'invoice_qb_unknown_due', 'invoice_qb_gmail_checked',
+   'invoice_qb_row', 'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put', 'invoice_qb_alert_scan', 'invoice_qb_alert_claim',
+   'invoice_qb_alert_done', 'invoice_line_route', 'invoice_qb_release', 'invoice_qb_probe_row']) as f)
 select
   (select count(*) from mine where to_regclass('public.' || t) is not null) as tables,
   (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace join fn on fn.f = p.proname where n.nspname = 'public') as functions,
@@ -167,4 +172,25 @@ select
       where n.nspname = 'public' and p.proname in ('invoice_link_save', 'invoice_link_retire', 'invoice_link_mark'))
     and (select count(*) = 1 and bool_and(p.prosrc like '%invoice_link_role%' and p.prosrc like '%invoice_price_insert%')
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname = 'invoice_link_apply'), false) as item_link;
+      where n.nspname = 'public' and p.proname = 'invoice_link_apply'), false) as item_link,
+  -- QuickBooks からすぐ（20261026090000, Moto 2026-10-18・UI案56）：Gmail の接続・つなぐ途中・知らせの表 3 つ（ブラウザーからは読めない）、
+  -- 関数 21 個（ブラウザーからは動かせない）、台帳の「Gmail で調べた」の欄、知らせの出し先の設定。送る担当を「このシステム」にするのは
+  -- qb.from の Gmail がつながっているときだけ（置き換えた設定の保存）。送る直前に予約・中身・設定をもう一度確かめる。
+  coalesce((select count(*) = 3 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts') and c.relrowsecurity)
+    and (select count(*) = 23 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_gmail_public', 'invoice_gmail_start', 'invoice_gmail_take', 'invoice_gmail_save', 'invoice_gmail_creds',
+        'invoice_gmail_mark', 'invoice_gmail_disconnect', 'invoice_qb_has_due', 'invoice_qb_send_context', 'invoice_qb_send_check', 'invoice_qb_content_changed',
+        'invoice_qb_unknown_due', 'invoice_qb_gmail_checked', 'invoice_qb_row', 'invoice_qb_status', 'invoice_qb_alerts_publish', 'invoice_qb_alert_put',
+        'invoice_qb_alert_scan', 'invoice_qb_alert_claim', 'invoice_qb_alert_done', 'invoice_line_route', 'invoice_qb_release', 'invoice_qb_probe_row')
+        and not has_function_privilege('anon', p.oid, 'execute') and not has_function_privilege('authenticated', p.oid, 'execute'))
+    and (select count(*) = 2 from information_schema.columns where table_schema = 'public' and table_name = 'invoice_qb_outbox'
+      and column_name in ('gmail_checked_at', 'gmail_checks'))
+    and exists(select 1 from public.invoice_settings where key = 'qb_notify')
+    and (select count(*) = 5 and bool_and(case p.proname when 'invoice_settings_save' then p.prosrc like '%gmail_not_ready%' and p.prosrc like '%route_since%' and p.prosrc like '%history_probe%'
+        when 'invoice_config' then p.prosrc like '%invoice_gmail_public%'
+        when 'invoice_qb_send_check' then p.prosrc like '%13 minutes%' and p.prosrc like '%invoice_qb_send_context%'
+        when 'invoice_qb_has_due' then p.prosrc like '%invoice_gmail_auth%'
+        when 'invoice_qb_result' then p.prosrc like '%least(attempts, 4)%' end)
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_config', 'invoice_qb_send_check', 'invoice_qb_has_due', 'invoice_qb_result')), false) as qb_gmail;

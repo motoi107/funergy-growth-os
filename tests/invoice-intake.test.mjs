@@ -95,7 +95,10 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
   await pg.exec(`
     update invoice_settings set value=value||'{"intake":true,"auto_post":true,"organize":true,"mirror":true,"start_at":"2026-10-01T00:00:00Z","rename":true,"rename_since":"2026-10-01T00:00:00Z"}' where key='mode';
     update invoice_settings set value=value||'{"currency_when_absent":"USD","closed_through":"2026-08","batch":10}' where key='rules';
-    update invoice_settings set value=value||'{"route":"invoice-intake","enabled":true}' where key='qb';
+    update invoice_settings set value=value||'{"route":"invoice-intake","enabled":true,"from":"sender@example.test"}' where key='qb';
+    -- This system sends from the connected Gmail of qb.from (UI案56); the stand-in mailer sends in its place.
+    do $g$ begin if to_regclass('public.invoice_gmail_auth') is not null then insert into invoice_gmail_auth(id, account, refresh_token, scopes, status)
+      values (1, 'sender@example.test', 'synthetic-refresh', '{https://www.googleapis.com/auth/gmail.send,https://www.googleapis.com/auth/gmail.readonly}', 'ok'); end if; end $g$;
     insert into invoice_stores(store_id,label,root_folder_id,upload_folder_id,active,auto_post,aliases) values
      ('F06','LaLa','R6','U6',true,true,'{"LaLa Izakaya","100 Test Street"}'),('F04-K','Kaimuki','RK','UK',true,true,'{"Totoya Kaimuki","200 Sample Ave"}');
     insert into invoice_vendor_rules(vendor_key,display_name,aliases,food_kind,auto_post) values
@@ -530,7 +533,9 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     assert.equal(new Set(E.sent.map(m => m.idempotencyKey)).size, E.sent.length);
     // Only posted originals, each sent after it was named 日付_業者名_番号 (Moto 2026-10-12).
     assert.ok(out.every(o => o.intake_status === 'posted'));
-    assert.ok(E.sent.every(m => /^\d{4}-\d{2}-\d{2}_VendorA_[A-Za-z0-9-]+(_v\d+)?\.pdf$/.test(m.attachment.name) && m.subject === m.attachment.name), JSON.stringify(E.sent.map(m => m.attachment.name)));
+    // The subject: the name and the forwarder's three marks (UI案56: <current_name> FPQB-ID-… FPQB-SHA256-… FPQB-ATTEMPT-…).
+    assert.ok(E.sent.every(m => /^\d{4}-\d{2}-\d{2}_VendorA_[A-Za-z0-9-]+(_v\d+)?\.pdf$/.test(m.attachment.name)
+      && m.subject.startsWith(m.attachment.name + ' FPQB-ID-') && m.subject.endsWith(' FPQB-ATTEMPT-' + m.idempotencyKey)), JSON.stringify(E.sent.map(m => m.attachment.name)));
     // The list says "sent" only; there is no "booked" state to claim.
     const list = (await E.api('tok-gm', { action: 'list', limit: 200 })).body.rows;
     assert.ok(list.some(r => r.qb_state === 'sent')); assert.ok(!list.some(r => /book|記帳/.test(String(r.qb_state))));
@@ -1140,9 +1145,9 @@ test('deploy checks and the guarded rollback', async () => {
   const post = (await pg.query(POST)).rows[0];
   const created = [...SQL.matchAll(/^create (?:or replace )?function public\.(\w+)\(/gm)].map(m => m[1]);
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
-    { tables: 21, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
+    { tables: 24, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true, qb_gmail: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates
@@ -1154,7 +1159,7 @@ test('deploy checks and the guarded rollback', async () => {
   await pg.query(`insert into public.invoice_stores(store_id, label) values('F06', 'LaLa')`);
   await pg.query(`insert into public.invoice_files(drive_file_id, store_id, source, original_name, current_name) values('f1', 'F06', 'drive', 'a.pdf', 'a.pdf')`);
   await assert.rejects(pg.exec(BACK), /取込の記録が 1 件/);
-  assert.equal(Number((await pg.query(POST)).rows[0].tables), 21, 'nothing was removed');
+  assert.equal(Number((await pg.query(POST)).rows[0].tables), 24, 'nothing was removed');
   await pg.query(`delete from public.invoice_files`);
   await pg.query(`insert into public.app_state values('invoice_purchase_status', '{"v":1,"months":{"2026-10":{}}}', now())`);
   await pg.exec(BACK);
