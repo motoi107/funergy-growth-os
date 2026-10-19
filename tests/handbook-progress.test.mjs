@@ -46,6 +46,7 @@ function opMergeLine(key) {
 }
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
+const ROUNDS = Number(process.env.HB_ROUNDS) || 0;   // fewer rounds of the random-order tests (the mutation runs set it); 0 = the full number
 const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 
 const FNS = ['mergeHbReads', '_hbReadCmp', '_coversHbReads', '_hbChCmp', 'mergeHbChapters', '_coversHbChapters', '_hbJs', '_logSig', '_canonForSig',
@@ -466,7 +467,7 @@ test('review f1d567a P3-1: another admin\'s save of the same chapter lands betwe
 
 test('v1096 (Codex 10/19): reads saved at the same time on several devices are all kept, and each device is told saved only when its read is in the cloud (any order of the requests)', async () => {
   let seed = 1; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
-  for (let round = 0; round < 40; round++) {
+  for (let round = 0; round < (ROUNDS || 40); round++) {
     const db = await cloudDb({ handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: SEED });
     const devs = [['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Ann', 'ch2']].map(([user, ch]) => {
       const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } });
@@ -545,7 +546,7 @@ test('v1096 review: a write that never answers is stopped after 15 s; the read s
 test('v1096 review: when nobody has saved a read yet (no row) or the row has no update time, devices saving at once all keep their reads', async () => {
   let seed = 7; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
   for (const kind of ['no row', 'null time']) {
-    for (let round = 0; round < 12; round++) {
+    for (let round = 0; round < (ROUNDS || 12); round++) {
       const db = await cloudDb({ handbook_chapters: SEED });
       if (kind === 'null time') await db.query("insert into app_state values('handbook_reads', $1, null)", [JSON.stringify({ Old: { ch1: R(3, 1) } })]);
       const devs = ['Ann', 'Ben', 'Cat'].map(user => { const d = device({ user, db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } }); d.delay = async () => { await tick(Math.floor(rnd() * 5)); }; return d; });
