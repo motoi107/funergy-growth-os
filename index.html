@@ -10602,9 +10602,10 @@ function _tsMicro(s){
   if(!isFinite(sec)) return null;
   return sec*1000 + Number(((m[3]||'')+'000000').slice(0,6));
 }
-/* v1096（Codex の P2）: 書く時刻は、読んだ行の時刻より必ず 1 ms 以上あと（端末の時計が遅れていても・同じミリ秒・同じ乱数でも）。
+/* v1096（Codex の P2）: 書く時刻は、読んだ行の時刻より後の、次のミリ秒の境目以降（.000123 なら .001・.999999 なら次の秒の .000＝1 µs あと。
+   端末の時計が遅れていても・同じミリ秒・同じ乱数でも、読んだ時刻と同じ値にならない）。
    前は「端末の時計＋0〜999 の乱数」で、ほかの端末が同じ値を書くと、その値を読んだ古い書き込みが条件をすり抜けて、保存できた読了を消せた。
-   ms で進めるので、DB の時刻の精度がミリ秒でも同じ値にならない。行が無い・時刻が空なら今の時刻。読んだ時刻を読めなければ null（書かない） */
+   ミリ秒の境目に置くので、DB の時刻の精度がミリ秒でも読んだ時刻と同じ値にならない。行が無い・時刻が空なら今の時刻。読んだ時刻を読めなければ null（書かない） */
 function _casTs(readTs){
   var now=Date.now();
   if(readTs==null) return new Date(now).toISOString();
@@ -11060,6 +11061,7 @@ function _coversMapByKey(check, want){
   return true;
 }
 var _opLastPushErr = {};   /* v744: キーごとの最後の失敗理由（未送信の原因表示に使う） */
+var _opLastPushWhy = {};   /* v1097: cas の道の最後の失敗の理由のコード（'stale' など）。知らせの分け方は文言ではなくこれで決める（PR #81 の Claude・Codex のレビュー P3） */
 /* v1034: 押し上げはクラウドを取りに行っている間（await）に、同じキーへ新しい保存が入ることがある。
    以前は取りに行く前の値で端末を書き戻していたので、オフラインや遅い回線だと、あとから入れたイベント・メモが端末から消えた
    （本物の画面2つの確認で再現）。keepLocal の付いたキー（日次実績）は、書き戻す直前の手元の値と合流してから書く。
@@ -11085,26 +11087,27 @@ function opMergePush(key, localVal, table){
          前は 2 台がほぼ同時に送ると、両方が同じ古い行に足して書き、あとの書き込みが先の読了を消した（書いたあとの確かめも、
          あとの書き込みの前に済んでいたので、両方に「保存しました」と出た）。読んだ行の updated_at が変わっていたら、読み直して合わせ直す */
       if(def.cas && table==='app_state'){
-        var _lastConf=null;
+        var _lastConf=null, _why='';
         for(var ca=0; ca<6; ca++){
           var row = await _fetchOpRow(key);
-          if(row===undefined){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
+          if(row===undefined){ _ok=false; _why='read'; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
           /* 前の書き込みが 0 行だったのに、読み直した行が変わっていない＝ほかの端末は書いていない（権限などで書けない）。くり返さない（独立レビュー 9f23211 P3） */
-          if(_lastConf && row.exists===_lastConf.exists && String(row.updatedAt)===String(_lastConf.updatedAt)){ _ok=false; _err='クラウドが書き込みを受け付けませんでした（権限など。未送信に残します）'; break; }
+          if(_lastConf && row.exists===_lastConf.exists && String(row.updatedAt)===String(_lastConf.updatedAt)){ _ok=false; _why='refused'; _err='クラウドが書き込みを受け付けませんでした（権限など。未送信に残します）'; break; }
           var cm = def.merge(row.exists ? row.value : null, desired);
           _opWriteBack(key, def, cm);
           var w = await _opCasWrite(key, cm, row);
           if(w==='ok'){ desired=cm; _ok=true; break; }
-          if(w==='badts'){ _ok=false; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
-          if(w==='stale'){ _ok=false; _err='書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられなかったので、ほかの端末の保存と重なっていないか分かりません（未送信に残して送り直します）'; break; }
-          if(w!=='conflict'){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
+          if(w==='badts'){ _ok=false; _why='badts'; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
+          if(w==='stale'){ _ok=false; _why='stale'; _err='書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられなかったので、ほかの端末の保存と重なっていないか分かりません（未送信に残して送り直します）'; break; }
+          if(w!=='conflict'){ _ok=false; _why='fail'; _err='クラウドへの書き込みに失敗しました'; break; }
           _lastConf = row;
           desired = cm;   /* ほかの端末が先に書いた：読み直して合わせ直す */
           await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });
         }
-        if(!_ok && !_err) _err='他の端末の更新と重なり、6 回試しても書けませんでした（未送信に残し、あとで送り直します）';
+        if(!_ok && !_err){ _why='conflict'; _err='他の端末の更新と重なり、6 回試しても書けませんでした（未送信に残し、あとで送り直します）'; }
         try{ if(def.after) def.after(); }catch(e){}
         _opLastPushErr[key] = _ok ? '' : _err;
+        try{ _opLastPushWhy[key] = _ok ? '' : _why; }catch(e){}
         return _ok;
       }
       for(var attempt=0; attempt<3; attempt++){
@@ -86829,8 +86832,8 @@ function hbAfterReadSave(label, r, labelEn){
     /* 起動の途中（_supaBooting）は lsSet が未送信に積まないので、ここで積む（あとで flushOutbox が端末の記録を読み直して送る） */
     if(r==='booting'){ try{ _outboxAdd('handbook_reads', 'booting'); }catch(e){} }
     /* v1097（独立レビュー 1b45d62 P3-2）：書けたが、ほかの端末の保存と重なっていないかを確かめられなかったとき（'stale'）は、そう言う */
-    var _he=''; try{ _he=String((typeof _opLastPushErr!=='undefined' && _opLastPushErr['handbook_reads'])||''); }catch(e){}
-    if(/^書き込みましたが/.test(_he)) showToast(t(label+'の読了はクラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': written to the cloud, but it could not be checked against saves from other devices (it is sent again when you open the Handbook or press Sync)'),'warning');
+    var _hw=''; try{ _hw=String((typeof _opLastPushWhy!=='undefined' && _opLastPushWhy['handbook_reads'])||''); }catch(e){}
+    if(_hw==='stale') showToast(t(label+'の読了はクラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': written to the cloud, but it could not be checked against saves from other devices (it is sent again when you open the Handbook or press Sync)'),'warning');
     else showToast(t(label+'の読了をこの端末に記録しました。まだクラウドに送れていません（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': recorded on this device but not sent yet (it is sent again when you open the Handbook or press Sync)'),'warning');
   }
   try{ if(typeof curPage!=='undefined' && curPage==='crew_handbook' && !_hbView) renderPage('crew_handbook'); }catch(e){}

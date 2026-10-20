@@ -53,7 +53,7 @@ const FNS = ['mergeHbReads', '_hbReadCmp', '_coversHbReads', '_hbChCmp', 'mergeH
   'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_tsMicro', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
   '_hbChRaw', 'getHbChapters', 'ensureHbSeed', 'hbSyncSeedVersion', 'hbChaptersSorted', 'hbStatus', 'renderHandbook', 'hbRenderReader', 'hbRenderAdmin',
   '_hbLogT', 'hbRenderLog', 'openHbEdit', 'hbSaveChapter', 'hbDeleteChapter', 'hbOpen', 'hbBack', 'hbSetTab', 'hbCheckScroll'];
-const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy', '_hbOpenV'];
+const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy', '_hbOpenV', '_opLastPushWhy'];
 
 // Two short synthetic chapters (the real seed is not used: its text is not what is being checked).
 const SEED = [
@@ -711,6 +711,8 @@ test('v1096 (Codex P2): a row whose update time is not in a form the app can rea
   run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(40);
   assert.equal(ann.ups, 0, 'not written');
   assert.match(run(ann, "_opLastPushErr['handbook_reads']"), /更新時刻の形を読めなかった/);
+  assert.equal(run(ann, "_opLastPushWhy['handbook_reads']"), 'badts');
+  assert.ok(ann.toasts.some(([m, k]) => /まだクラウドに送れていません/.test(m) && k === 'warning') && !ann.toasts.some(([m]) => /クラウドに書きましたが/.test(m)), 'not written: not said to be written');
   assert.equal(run(ann, '_hbUnsent()'), true);
   assert.deepEqual(await cloudOf(db, 'handbook_reads'), { Ben: { ch1: R(3, 5) } });
   // The write's answer does not say the new update time (or says it in a form the app cannot read): it cannot be checked that the
@@ -722,6 +724,8 @@ test('v1096 (Codex P2): a row whose update time is not in a form the app can rea
     run(cat, "hbOpen('ch2')"); run(cat, "hbMarkRead('ch2')"); await tick(40);
     assert.ok(!cat.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), 'answer ' + bad + ': not told saved');
     assert.match(run(cat, "_opLastPushErr['handbook_reads']"), /更新時刻が読んだ時刻より進んだのを確かめられなかった/);
+    assert.equal(run(cat, "_opLastPushWhy['handbook_reads']"), 'stale');
+    assert.ok(cat.toasts.some(([m, k]) => /クラウドに書きましたが/.test(m) && k === 'warning'), 'the message is chosen by the reason code');
     assert.equal(run(cat, '_hbUnsent()'), true);
   }
   await db.close();
