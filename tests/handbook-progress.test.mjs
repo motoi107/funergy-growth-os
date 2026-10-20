@@ -736,6 +736,18 @@ test('v1096 (Codex P2): a row whose update time is not in a form the app can rea
   await db.close();
 });
 
+test('v1097 (PR #81 Claude 6281611289 P3): the reason of an earlier push is not used for a read that was not sent this time', async () => {
+  const db = await cloudDb({ handbook_reads: {}, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  run(ann, "_opLastPushWhy['handbook_reads'] = 'stale'");   // an earlier push was written but could not be checked
+  ann.lsSet = (k, v) => { ann.S[k] = plain(v); return true; };   // this time the read is kept on the device and nothing is pushed
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(20);
+  assert.ok(ann.toasts.some(([m, k]) => /まだクラウドに送れていません/.test(m) && k === 'warning'), 'told not sent');
+  assert.ok(!ann.toasts.some(([m]) => /クラウドに書きましたが/.test(m)), 'not told written');
+  assert.equal(ann.ups, 0);
+  await db.close();
+});
+
 test('v1096 (Codex 6279636993 P3): an answer whose headers come but whose body never ends (write, new row, read; written or not) stops after 15 s; two chapters read in a row both stay unsent and are sent later', async () => {
   for (const [kind, hasRow] of [['before', true], ['after', true], ['before', false], ['after', false], ['get', true]]) {
     const tag = kind + (hasRow ? ' (row)' : ' (no row)') + ': ';
