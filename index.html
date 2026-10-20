@@ -11088,7 +11088,6 @@ function opMergePush(key, localVal, table){
          あとの書き込みの前に済んでいたので、両方に「保存しました」と出た）。読んだ行の updated_at が変わっていたら、読み直して合わせ直す */
       if(def.cas && table==='app_state'){
         var _lastConf=null, _why='';
-        try{ _opLastPushWhy[key]=''; }catch(e){}   /* 前の送信の理由を残さない（途中で例外になっても、前の 'stale' を今回の結果にしない：PR #81 Claude 6281611289 P3） */
         for(var ca=0; ca<6; ca++){
           var row = await _fetchOpRow(key);
           if(row===undefined){ _ok=false; _why='read'; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
@@ -11131,7 +11130,10 @@ function opMergePush(key, localVal, table){
         _err='他の端末の更新と競合し、3回試しても確認できませんでした';
       }
       try{ if(def.after) def.after(); }catch(e){}
-    }catch(e){ console.warn('opMergePush', key, e); _ok=false; _err=String((e&&e.message)||e); }
+    }catch(e){ console.warn('opMergePush', key, e); _ok=false; _err=String((e&&e.message)||e);
+      /* v1097: cas の道の途中の例外も理由を書く（前の送信の 'stale' を今回の結果にしない：PR #81 Claude 6281616813 P3）。
+         始めに消すと、前の送信の知らせがまだ出ていないうちに消えるので、終わりに書く */
+      if(def && def.cas){ try{ _opLastPushWhy[key]='error'; }catch(e2){} } }
     _opLastPushErr[key] = _ok ? '' : (_err||'原因不明');
     return _ok;
   })(); };

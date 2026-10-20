@@ -748,6 +748,30 @@ test('v1097 (PR #81 Claude 6281611289 P3): the reason of an earlier push is not 
   await db.close();
 });
 
+test('v1097 (PR #81 Claude 6281616813 P3): a push that fails with an error after an earlier push ended as stale is not told written', async () => {
+  const db = await cloudDb({ handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: plain(SEED) } });
+  const o2 = ann.fetch;
+  // the first write's answer does not show the new update time (stale); the first write waits until released
+  let release, n = 0; const gate = new Promise(r => { release = r; });
+  ann.fetch = async (u, o) => {
+    if (o && o.method === 'PATCH' && ++n === 1) { await gate; const r = await o2(u, o); const rows = await r.json(); return { ok: true, status: 200, json: async () => rows.map(x => ({ key: x.key })) }; }
+    return o2(u, o);
+  };
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(20);      // push 1 waits at its write
+  run(ann, "hbOpen('ch2')"); run(ann, "hbMarkRead('ch2')"); await tick(5);       // push 2 waits behind push 1
+  const wb = ann._opWriteBack; ann._opWriteBack = () => { throw new Error('device storage error'); };   // push 2 fails with an error
+  release(); for (let i = 0; i < 10; i++) await tick(10);
+  ann._opWriteBack = wb;
+  const t1 = ann.toasts.filter(([m]) => /第1章/.test(m)), t2 = ann.toasts.filter(([m]) => /第2章/.test(m));
+  assert.ok(t1.some(([m, k]) => /クラウドに書きましたが/.test(m) && k === 'warning'), 'chapter 1: written but not checked');
+  assert.ok(t2.some(([m, k]) => /まだクラウドに送れていません/.test(m) && k === 'warning'), 'chapter 2: not sent ' + JSON.stringify(t2));
+  assert.ok(!t2.some(([m]) => /クラウドに書きましたが/.test(m)), 'chapter 2 is not told written from the reason of chapter 1');
+  assert.equal(run(ann, "_opLastPushWhy['handbook_reads']"), 'error');
+  assert.equal(run(ann, '_hbUnsent()'), true);
+  await db.close();
+});
+
 test('v1096 (Codex 6279636993 P3): an answer whose headers come but whose body never ends (write, new row, read; written or not) stops after 15 s; two chapters read in a row both stay unsent and are sent later', async () => {
   for (const [kind, hasRow] of [['before', true], ['after', true], ['before', false], ['after', false], ['get', true]]) {
     const tag = kind + (hasRow ? ' (row)' : ' (no row)') + ': ';
