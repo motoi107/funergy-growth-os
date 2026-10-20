@@ -109,6 +109,7 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
       if (c.gate && method === 'GET') await c.gate;
       if (c.delay) await c.delay(method);
       if (c.failFetch || !db) throw new Error('offline');
+      if (c.failGet && method === 'GET') throw new Error('offline (read)');
       if (c.httpError) return { ok: false, status: 503, json: async () => ({ message: 'unavailable' }) };
       if ((method === 'PATCH' || method === 'POST') && c.failUpsert) { c.ups++; return { ok: false, status: 500, json: async () => ({}) }; }
       if (method === 'PATCH' && c.hangPatch) { c.ups++; return new Promise((_res, rej) => { if (o.signal && o.signal.addEventListener) o.signal.addEventListener('abort', () => rej(new Error('aborted'))); }); }
@@ -529,6 +530,18 @@ test('v1096 review: a write the cloud never accepts (0 rows, nobody else wrote) 
   await db.close();
 });
 
+test('v1096: when the cloud row cannot be read, nothing is written (not even a new row) and the read stays unsent', async () => {
+  const db = await cloudDb({ handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  ann.failGet = true;
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(40);
+  assert.equal(ann.ups, 0, 'no write without reading the row first');
+  assert.match(run(ann, "_opLastPushErr['handbook_reads']"), /読めなかった/);
+  assert.equal(run(ann, '_hbUnsent()'), true);
+  assert.deepEqual(await cloudOf(db, 'handbook_reads'), { Ben: { ch1: R(3, 5) } });
+  await db.close();
+});
+
 test('v1096 review: a write that never answers is stopped after 15 s; the read stays unsent and the next push is not blocked', async () => {
   const db = await cloudDb({ handbook_reads: {}, handbook_chapters: SEED });
   const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
@@ -560,6 +573,25 @@ test('v1096 review: when nobody has saved a read yet (no row) or the row has no 
       if (kind === 'null time') assert.ok(cloud.Old.ch1);
       await db.close();
     }
+  }
+});
+
+test('v1096: two writes in the same millisecond do not get the same update time (a device that read the first one cannot overwrite the second)', async () => {
+  let seed = 11; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (let round = 0; round < (ROUNDS || 12); round++) {
+    const db = await cloudDb({ handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: SEED });
+    const devs = [['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Dan', 'ch2']].map(([user, ch], i) => {
+      const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } });
+      // every device's clock shows the same millisecond; its random numbers never repeat another device's
+      run(d, 'var __D = Date, __T = 1792450000000; Date = function(a){ return arguments.length ? new __D(a) : new __D(__T); }; Date.now = function(){ return __T; }; Date.UTC = __D.UTC; var __k = 0; Math.random = function(){ return ((' + i + ' * 200 + (__k++ % 200)) + 0.5) / 1000; };');
+      d.delay = async () => { await tick(Math.floor(rnd() * 6)); };
+      d.ch = ch; return d;
+    });
+    devs.forEach(d => { run(d, "hbOpen('" + d.ch + "')"); run(d, "hbMarkRead('" + d.ch + "')"); });
+    for (let i = 0; i < 40; i++) await tick(10);
+    const cloud = await cloudOf(db, 'handbook_reads');
+    for (const d of devs) assert.ok(cloud[d.curUserName] && cloud[d.curUserName][d.ch], 'round ' + round + ': ' + d.curUserName + ' ' + JSON.stringify(cloud));
+    await db.close();
   }
 });
 
