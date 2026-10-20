@@ -1,5 +1,19 @@
 # Claude / Codex 共通記録
 
+## 2026-10-20 引き継ぎ：#81（v1097）はマージ済み・本番は v1097（Claude）
+
+- Moto さんが 10/20 09:25 HST に PR #81（head `85a046e`）をマージ（main `d7c3da9`）。Growth OS checks は成功。Pages の公開はこの記録の時点で実行中（公開中のサイトはこの環境からは読めない）。
+- これで本番に入ったもの：v1095（Handbook の進捗保存・Tip Rate の適用開始日・経理レビューの統一）→ v1096（Handbook の書き込みを updated_at で確かめる・開いた版でしか読了にしない）→ v1097（書く時刻は読んだ時刻より後の次のミリ秒の境目以降・書いた時刻を確かめる・理由のコード `_opLastPushWhy`）。
+- レビュー：Codex の最後の判定（`50cc4fc`・6282820006）は新しい P1・P2・P3 なし（blocked／manual＝アプリと SQL を含むので人の確認）。Claude の最後（`85a046e`）も指摘なし。開いている指摘は無い。
+- まだのこと（次のチャットで聞く・自分から持ち出さない）：
+  1. 端末をすべて v1097 に（v1095 以前の端末は読了を丸ごと書く。v1096 の端末は乱数の書く時刻のまま）。
+  2. （任意）Moto さんが `db/handbook-updated-at-check.sql`（読むだけ）を流して結果を Claude に（本番の updated_at の精度 6 か 3・updated_at に触る見張りが無いこと）。
+  3. 実機：2 台で同時に読了・旧版を開いたまま「同期」・PWA の更新。日英の表示。
+  4. Tip Rate：Moto さんの報告（10/19 15:34 HST「Tip rate終わりました」＝2 人を 10/16 から 90%）。本番のデータは Claude からは見えない（確かめるなら `db/tip-rate-october-check.sql`）。
+  5. QuickBooks の Gmail（v1094）：10/19 14:14 に「つながっています」・確かめるも通った（Moto さんの写真）。残りは送る担当の切り替え → 1 件試す（`deploy/invoice-qb-gmail-v1094/手順.md`）。
+  6. Moto さんが保留にしたこと：Supabase のコネクタの操作で「常に実行」を選べない件（Claude の組織の設定で、組織のオーナーだけが変えられる。Funergy+ の DB・RLS・関数・定期の処理は変えない前提）。
+- 次のチャット：Moto さんの次の依頼から。
+
 ## 2026-10-19 Handbook の書く時刻の衝突：アプリ v1097（Codex の P2・Claude・ブランチ `claude/fixes-1097`・本番未反映）
 
 - 経緯：PR #80（v1096・head `6ab89dc`）は、Codex の P2（下の v1096 の節）を直す前に Moto さんがマージ（10/19 15:12 HST・main `74b9406`・Growth OS checks と Pages の公開は成功。本番は GitHub の記録では v1096。公開中のサイトはこの環境からは読めない）。直しはこのブランチ（main の上・版 1097）。v1096 は v1095 より安全なので戻さない（Moto さんに 15:3x HST に伝えた）。
