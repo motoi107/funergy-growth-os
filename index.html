@@ -10125,8 +10125,8 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   /* keepLocal：送っているあいだに読んだ章を、書き戻しで消さない（合流は足すだけなので安全）。
      strict：クラウドを読めなかったとき（通信の失敗・HTTP のエラー）は書かずに失敗にする（未送信に残る）。前の決まりの「読めなければ端末の写しで書く」は、
      古い写しの端末がほかの人の読了を消す道だった（独立レビュー v1095 P2-1） */
-  handbook_reads:    { merge: mergeHbReads,    covers: _coversHbReads,    keepLocal: true, strict: true },
-  handbook_chapters: { merge: mergeHbChapters, covers: _coversHbChapters, keepLocal: true, strict: true },
+  handbook_reads:    { merge: mergeHbReads,    covers: _coversHbReads,    keepLocal: true, strict: true, cas: true },
+  handbook_chapters: { merge: mergeHbChapters, covers: _coversHbChapters, keepLocal: true, strict: true, cas: true },
   /* v1024: 理解度チェックの端末側の記録。名前ごとに独立しているので名前単位で合流する（handbook_reads と違い、2台が同時に書いても消し合わない）。 */
   handbook_tests: { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v1025: OJTの受講記録。人ごとに独立しているので名前単位で合流する。 */
@@ -10579,6 +10579,42 @@ function _fetchOpValue(key, table, strict){
     .then(function(rows){ if(tm) clearTimeout(tm); return (rows && rows.length) ? rows[0].value : null; })
     .catch(function(){ if(tm) clearTimeout(tm); return undefined; }); // undefined=取得失敗（マージせず素通し）
 }
+/* v1096: cas のキーの行を、値と updated_at で読む。読めなければ undefined（15 秒で打ち切る）。行が無ければ { exists:false } */
+function _fetchOpRow(key){
+  var ctl=null, tm=null;
+  try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
+  var opts={ headers: supaHeaders() }; if(ctl) opts.signal=ctl.signal;
+  return fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value,updated_at', opts)
+    .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+    .then(function(rows){ if(tm) clearTimeout(tm); if(!Array.isArray(rows)) return undefined;
+      return rows.length ? { exists:true, value:rows[0].value, updatedAt:(rows[0].updated_at==null?null:String(rows[0].updated_at)) } : { exists:false, value:null, updatedAt:null }; })
+    .catch(function(){ if(tm) clearTimeout(tm); return undefined; });
+}
+/* v1096: 書く時刻（マイクロ秒まで・同じミリ秒に 2 台が書いても同じにならない） */
+function _casTs(){ var s=new Date().toISOString(); return s.slice(0,23)+String(Math.floor(Math.random()*1000)).padStart(3,'0')+'Z'; }
+/* v1096: 読んだ行が変わっていないときだけ書く。'ok'／'conflict'（ほかの端末が先に書いた）／'fail' */
+function _opCasWrite(key, value, row){
+  var h=Object.assign({}, supaHeaders(), { 'Content-Type':'application/json', 'Prefer':'return=representation' });
+  var body={ value:value, updated_at:_casTs() };
+  /* 15 秒で打ち切る（答えの来ない書き込みで、このキーの送る順番と未送信の送り直しが止まらないように：独立レビュー 9f23211 P3）。
+     打ち切ったあとに書けていても、次の送り直しは読み直して同じ中身を書くだけ */
+  var ctl=null, tm=null;
+  try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
+  var url, opt;
+  if(row && row.exists){
+    url=SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&updated_at='+(row.updatedAt==null ? 'is.null' : ('eq.'+encodeURIComponent(row.updatedAt)))+'&select=key';
+    opt={ method:'PATCH', headers:h, body:JSON.stringify(body) };
+  } else {
+    url=SUPABASE_URL+'/rest/v1/app_state?select=key';
+    opt={ method:'POST', headers:h, body:JSON.stringify(Object.assign({ key:key }, body)) };
+  }
+  if(ctl) opt.signal=ctl.signal;
+  return fetch(url, opt).then(function(r){
+    if(r.status===409) return 'conflict';   /* 行が無いと読んだあとに、ほかの端末が作った */
+    if(!r.ok) return 'fail';
+    return r.json().then(function(rows){ return (Array.isArray(rows) && rows.length===1) ? 'ok' : 'conflict'; });
+  }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
+}
 function _opUpsertRow(key, value, table){
   return (table==='app_settings')
     ? { key:key, value:value, category:(typeof supaSettingCategory==='function'?supaSettingCategory(key):null) }
@@ -11014,6 +11050,30 @@ function opMergePush(key, localVal, table){
     var _ok=false, _err='';
     try{
       var desired = localVal;
+      /* v1096（Codex の再現・Moto さん 10/19）：cas の付いたキー（Handbook の読了・章）は「読んだときのまま」のときだけ書く。
+         前は 2 台がほぼ同時に送ると、両方が同じ古い行に足して書き、あとの書き込みが先の読了を消した（書いたあとの確かめも、
+         あとの書き込みの前に済んでいたので、両方に「保存しました」と出た）。読んだ行の updated_at が変わっていたら、読み直して合わせ直す */
+      if(def.cas && table==='app_state'){
+        var _lastConf=null;
+        for(var ca=0; ca<6; ca++){
+          var row = await _fetchOpRow(key);
+          if(row===undefined){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
+          /* 前の書き込みが 0 行だったのに、読み直した行が変わっていない＝ほかの端末は書いていない（権限などで書けない）。くり返さない（独立レビュー 9f23211 P3） */
+          if(_lastConf && row.exists===_lastConf.exists && String(row.updatedAt)===String(_lastConf.updatedAt)){ _ok=false; _err='クラウドが書き込みを受け付けませんでした（権限など。未送信に残します）'; break; }
+          var cm = def.merge(row.exists ? row.value : null, desired);
+          _opWriteBack(key, def, cm);
+          var w = await _opCasWrite(key, cm, row);
+          if(w==='ok'){ desired=cm; _ok=true; break; }
+          if(w!=='conflict'){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
+          _lastConf = row;
+          desired = cm;   /* ほかの端末が先に書いた：読み直して合わせ直す */
+          await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });
+        }
+        if(!_ok && !_err) _err='他の端末の更新と重なり、6 回試しても書けませんでした（未送信に残し、あとで送り直します）';
+        try{ if(def.after) def.after(); }catch(e){}
+        _opLastPushErr[key] = _ok ? '' : _err;
+        return _ok;
+      }
       for(var attempt=0; attempt<3; attempt++){
         var cloud = await _fetchOpValue(key, table, !!def.strict);
         if(cloud===undefined && def.strict){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }   /* v1095: 端末の写しで丸ごと書かない */
@@ -38573,7 +38633,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1095';
+const APP_VERSION = '1096';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -86679,10 +86739,13 @@ function hbChaptersSorted(){ return (getHbChapters()||[]).slice().sort(function(
 function hbStatus(ch, rec){ if(!rec) return 'unread'; if((rec.v||0)<(ch.version||1)) return 'stale'; return 'read'; }
 var _hbView=null, _hbLang='ja', _hbTab='chapters', _hbStore='ALL';
 function hbSetLang(l){ _hbLang=l; renderPage('crew_handbook'); if(_hbView) setTimeout(hbCheckScroll, 250); }
-function hbSetTab(t){ _hbTab=t; _hbView=null; renderPage('crew_handbook'); }
+function hbSetTab(t){ _hbTab=t; _hbView=null; _hbOpenV=null; renderPage('crew_handbook'); }
 function hbSetStore(v){ _hbStore=v; renderPage('crew_handbook'); }
-function hbOpen(id){ _hbView=id; renderPage('crew_handbook'); setTimeout(hbCheckScroll, 300); window.scrollTo(0,0); }
-function hbBack(){ _hbView=null; renderPage('crew_handbook'); }
+/* v1096（Codex の再現・Moto さん 10/19）：開いた版を覚える。読んでいるあいだに「同期」などで新しい版が入っても、
+   読了は開いた版でしか付けない（前は押したときの版を付けたので、読んでいない新しい版が読了になった） */
+var _hbOpenV=null;
+function hbOpen(id){ var _c=(getHbChapters()||[]).find(function(x){ return x.id===id; }); _hbOpenV={ id:id, v:Number((_c&&_c.version)||1) }; _hbView=id; renderPage('crew_handbook'); setTimeout(hbCheckScroll, 300); window.scrollTo(0,0); }
+function hbBack(){ _hbView=null; _hbOpenV=null; renderPage('crew_handbook'); }
 function hbCheckScroll(){
   var el=document.getElementById('hb-body'), btn=document.getElementById('hb-read-btn');
   if(!el||!btn||!btn.disabled) return;
@@ -86697,6 +86760,12 @@ function hbCheckScroll(){
 function hbMarkRead(id){
   var ch=(getHbChapters()||[]).find(function(c){return c.id===id;}); if(!ch) return;
   var me=curUserName||''; if(!me){ showToast('ログインユーザーが特定できません','warning'); return; }
+  var _ov=(_hbOpenV && _hbOpenV.id===id) ? Number(_hbOpenV.v) : null;
+  if(_ov!=null && _ov!==Number(ch.version||1)){
+    showToast(t('読んでいるあいだに、この章が更新されました（v'+_ov+' → v'+(ch.version||1)+'）。読了にしていません。新しい版を最初から読んでから、もう一度押してください',
+                'This chapter was updated while you were reading (v'+_ov+' → v'+(ch.version||1)+'). Not marked as read. Read the new version from the start, then press again'),'warning');
+    hbOpen(id); return;
+  }
   var reads=ls('handbook_reads',{})||{};
   reads[me]=Object.assign({}, reads[me]||{});
   reads[me][id]={v:ch.version||1, at:nowJP(), _t:Date.now()};
@@ -86710,14 +86779,18 @@ function hbMarkRead(id){
   else showToast(t(label+'の読了を保存しています…', labelEn+': saving…'),'info');
   pushP.then(function(r){ hbAfterReadSave(label, r, labelEn); }, function(){ hbAfterReadSave(label, false, labelEn); });
   /* v1024: 全章が読了になった瞬間だけ、理解度チェックの開始画面へ（未回答のときだけ。回答済み・申告済みなら一覧へ）。 */
-  _hbView=null;
+  _hbView=null; _hbOpenV=null;
   try{ if(hbTestStatus(me, hbChaptersSorted(), reads[me]||{})==='pending') _hbView='__test'; }catch(e){ _hbView=null; }
   renderPage('crew_handbook');
   if(_hbView==='__test') window.scrollTo(0,0);
 }
 function hbAfterReadSave(label, r, labelEn){
   labelEn=labelEn||label;
-  if(r===true){ showToast(t(label+'の読了を保存しました', labelEn+': read is saved'),'success'); }
+  if(r===true){ showToast(t(label+'の読了を保存しました', labelEn+': read is saved'),'success');
+    /* v1096（独立レビュー 9f23211 P2）：入れ替えのあいだ、v1095 以前の端末は行を丸ごと書くので、保存した読了を古い写しで消すことがある。
+       少しあとにもう一度読み、クラウドに無ければ書き戻す（_hbPullKey）。端末をすべて v1096 にするまでの守り */
+    try{ setTimeout(function(){ try{ _hbPullKey('handbook_reads'); }catch(e){} }, 20000); }catch(e){}
+  }
   else if(r==='off'){ showToast(t(label+'の読了をこの端末に記録しました（クラウド同期が OFF のため、ほかの端末には出ません）', labelEn+': recorded on this device only (cloud sync is off)'),'warning'); }
   else {
     /* 起動の途中（_supaBooting）は lsSet が未送信に積まないので、ここで積む（あとで flushOutbox が端末の記録を読み直して送る） */
@@ -87023,7 +87096,13 @@ function hbRenderReader(chs, mine){
   if(st==='stale') h+='<div class="alert alert-warning" style="padding:8px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i> この章は読了後に更新されました（現在 v'+(c.version||1)+'）。最新の内容を確認して、もう一度読了チェックしてください。</div>';
   h+='<style>#hb-body p{margin:0 0 12px;line-height:1.9}#hb-body h3{font-size:16px;font-weight:800;color:var(--accent);margin:22px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--border)}#hb-body h4{font-size:14px;font-weight:800;color:var(--text);margin:20px 0 8px}#hb-body ul,#hb-body ol{margin:0 0 14px;padding-left:22px}#hb-body li{margin:0 0 7px;line-height:1.85}#hb-body h3:first-child,#hb-body h4:first-child{margin-top:0}#hb-body strong{font-weight:700}</style>';
   h+='<div class="card" style="padding:0"><div id="hb-body" onscroll="hbCheckScroll()" style="max-height:62vh;overflow-y:auto;padding:18px 18px 26px;font-size:13.5px">'+body+'</div></div>';
-  if(st==='read'){
+  /* v1096: 開いたあとに新しい版が入ったら、読了ボタンを出さず、新しい版を最初から読んでもらう */
+  var _ov=(_hbOpenV && _hbOpenV.id===c.id) ? Number(_hbOpenV.v) : null;
+  if(_ov!=null && _ov!==Number(c.version||1)){
+    h+='<div class="alert alert-warning" style="padding:9px 11px;margin-top:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-refresh-alert"></i><div style="font-size:12px;flex:1;min-width:200px">'
+      +t('読んでいるあいだに、この章が更新されました（v'+_ov+' → v'+(c.version||1)+'）。新しい版を最初から読んでください','This chapter was updated while you were reading (v'+_ov+' → v'+(c.version||1)+'). Please read the new version from the start')+'</div>'
+      +'<button class="btn btn-primary btn-sm" onclick="hbOpen(\''+c.id+'\')">'+t('新しい版を最初から読む','Read the new version')+'</button></div>';
+  } else if(st==='read'){
     h+='<div style="text-align:center;margin-top:10px;font-size:12px;color:var(--green)"><i class="ti ti-circle-check"></i> 読了済み（'+escapeHtml((mine[c.id]||{}).at||'')+'）</div>';
   } else {
     h+='<div id="hb-scroll-hint" style="text-align:center;font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-arrow-down"></i> 最後までスクロールすると読了ボタンが押せます / Scroll to the bottom to enable</div>'
