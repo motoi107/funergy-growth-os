@@ -693,7 +693,8 @@ test('v1096 (Codex P2, precision): a database that keeps milliseconds still refu
     } else {
       // whole seconds: B's time 40.001 is kept as 40, the same as the time it read, so B is not told saved and keeps its read unsent
       assert.ok(!saved(B) && run(B, '_hbUnsent()'), 'B is not told saved');
-      assert.match(run(B, "_opLastPushErr['handbook_reads']"), /更新時刻が進まなかった/);
+      assert.match(run(B, "_opLastPushErr['handbook_reads']"), /更新時刻が読んだ時刻より進んだのを確かめられなかった/);
+      assert.ok(B.toasts.some(([m, k]) => /クラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした/.test(m) && k === 'warning'), 'B is told what happened');
       await run(B, 'flushOutbox()'); await run(C, 'flushOutbox()'); await tick(20);
       const after = await cloudOf(db, 'handbook_reads');
       assert.ok(after.Ann && after.Ben && after.Cat, 'sending again puts every read in the cloud ' + JSON.stringify(after));
@@ -720,7 +721,7 @@ test('v1096 (Codex P2): a row whose update time is not in a form the app can rea
     cat.fetch = async (u, o) => { const r = await o2(u, o); if (o && o.method === 'PATCH' && r.ok) { const rows = await r.json(); return { ok: true, status: 200, json: async () => rows.map(x => (bad === undefined ? { key: x.key } : Object.assign({}, x, { updated_at: bad }))) }; } return r; };
     run(cat, "hbOpen('ch2')"); run(cat, "hbMarkRead('ch2')"); await tick(40);
     assert.ok(!cat.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), 'answer ' + bad + ': not told saved');
-    assert.match(run(cat, "_opLastPushErr['handbook_reads']"), /更新時刻が進まなかった/);
+    assert.match(run(cat, "_opLastPushErr['handbook_reads']"), /更新時刻が読んだ時刻より進んだのを確かめられなかった/);
     assert.equal(run(cat, '_hbUnsent()'), true);
   }
   await db.close();
@@ -768,6 +769,6 @@ test('v1096 review P2 (rollout): an older device that writes its whole copy over
 
 test('the release markers match', () => {
   const v = (/const APP_VERSION = '(\d+)'/.exec(SRC) || [])[1];
-  assert.ok(Number(v) >= 1096, 'APP_VERSION ' + v);
+  assert.ok(Number(v) >= 1097, 'APP_VERSION ' + v);
   assert.equal((/const SW_BUILD = '(\d+)'/.exec(SW) || [])[1], v);
 });

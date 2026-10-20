@@ -11096,7 +11096,7 @@ function opMergePush(key, localVal, table){
           var w = await _opCasWrite(key, cm, row);
           if(w==='ok'){ desired=cm; _ok=true; break; }
           if(w==='badts'){ _ok=false; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
-          if(w==='stale'){ _ok=false; _err='書き込みましたが、クラウドの更新時刻が進まなかったので、ほかの端末の保存と重なっていないか確かめられません（未送信に残して送り直します）'; break; }
+          if(w==='stale'){ _ok=false; _err='書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられなかったので、ほかの端末の保存と重なっていないか分かりません（未送信に残して送り直します）'; break; }
           if(w!=='conflict'){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
           _lastConf = row;
           desired = cm;   /* ほかの端末が先に書いた：読み直して合わせ直す */
@@ -38666,7 +38666,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1096';
+const APP_VERSION = '1097';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -86828,7 +86828,10 @@ function hbAfterReadSave(label, r, labelEn){
   else {
     /* 起動の途中（_supaBooting）は lsSet が未送信に積まないので、ここで積む（あとで flushOutbox が端末の記録を読み直して送る） */
     if(r==='booting'){ try{ _outboxAdd('handbook_reads', 'booting'); }catch(e){} }
-    showToast(t(label+'の読了をこの端末に記録しました。まだクラウドに送れていません（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': recorded on this device but not sent yet (it is sent again when you open the Handbook or press Sync)'),'warning');
+    /* v1097（独立レビュー 1b45d62 P3-2）：書けたが、ほかの端末の保存と重なっていないかを確かめられなかったとき（'stale'）は、そう言う */
+    var _he=''; try{ _he=String((typeof _opLastPushErr!=='undefined' && _opLastPushErr['handbook_reads'])||''); }catch(e){}
+    if(/^書き込みましたが/.test(_he)) showToast(t(label+'の読了はクラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': written to the cloud, but it could not be checked against saves from other devices (it is sent again when you open the Handbook or press Sync)'),'warning');
+    else showToast(t(label+'の読了をこの端末に記録しました。まだクラウドに送れていません（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': recorded on this device but not sent yet (it is sent again when you open the Handbook or press Sync)'),'warning');
   }
   try{ if(typeof curPage!=='undefined' && curPage==='crew_handbook' && !_hbView) renderPage('crew_handbook'); }catch(e){}
 }
