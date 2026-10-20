@@ -10590,19 +10590,44 @@ function _fetchOpRow(key){
       return rows.length ? { exists:true, value:rows[0].value, updatedAt:(rows[0].updated_at==null?null:String(rows[0].updated_at)) } : { exists:false, value:null, updatedAt:null }; })
     .catch(function(){ if(tm) clearTimeout(tm); return undefined; });
 }
-/* v1096: 書く時刻（マイクロ秒まで・同じミリ秒に 2 台が書いても同じにならない） */
-function _casTs(){ var s=new Date().toISOString(); return s.slice(0,23)+String(Math.floor(Math.random()*1000)).padStart(3,'0')+'Z'; }
-/* v1096: 読んだ行が変わっていないときだけ書く。'ok'／'conflict'（ほかの端末が先に書いた）／'fail' */
+/* v1096（Codex 6280195693・6280318169 の P2）: PostgREST の updated_at（"2026-10-19T22:46:40.000123+00:00"。小数は 0〜6 桁、
+   末尾の 0 は省かれる）をマイクロ秒の整数に。時差の書いていない形は UTC とみなす。この形でなければ null（推して読まない） */
+function _tsMicro(s){
+  if(s==null) return null;
+  var m=/^(\d{4}-\d{2}-\d{2})[Tt ](\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|z|[+-]\d{2}(?::?\d{2})?)?$/.exec(String(s).trim());
+  if(!m) return null;
+  var off=m[4]||'Z';
+  if(off!=='Z' && off!=='z'){ var o=off.replace(':',''); if(o.length===3) o+='00'; off=o.slice(0,3)+':'+o.slice(3,5); } else off='Z';
+  var sec=Date.parse(m[1]+'T'+m[2]+off);
+  if(!isFinite(sec)) return null;
+  return sec*1000 + Number(((m[3]||'')+'000000').slice(0,6));
+}
+/* v1096（Codex の P2）: 書く時刻は、読んだ行の時刻より必ず 1 ms 以上あと（端末の時計が遅れていても・同じミリ秒・同じ乱数でも）。
+   前は「端末の時計＋0〜999 の乱数」で、ほかの端末が同じ値を書くと、その値を読んだ古い書き込みが条件をすり抜けて、保存できた読了を消せた。
+   ms で進めるので、DB の時刻の精度がミリ秒でも同じ値にならない。行が無い・時刻が空なら今の時刻。読んだ時刻を読めなければ null（書かない） */
+function _casTs(readTs){
+  var now=Date.now();
+  if(readTs==null) return new Date(now).toISOString();
+  var b=_tsMicro(readTs);
+  if(b==null) return null;
+  return new Date(Math.max(now, Math.floor(b/1000)+1)).toISOString();
+}
+/* v1096: 読んだ行が変わっていないときだけ書く。'ok'／'conflict'（ほかの端末が先に書いた）／'fail'／
+   'badts'（読んだ時刻の形を読めない：書かない）／'stale'（書けたが、書いた行の時刻が読んだ時刻より進んでいない） */
 function _opCasWrite(key, value, row){
   var h=Object.assign({}, supaHeaders(), { 'Content-Type':'application/json', 'Prefer':'return=representation' });
-  var body={ value:value, updated_at:_casTs() };
+  var _rt=(row && row.exists) ? row.updatedAt : null;
+  var _ts=_casTs(_rt);
+  if(_ts==null) return Promise.resolve('badts');
+  var _base=(_rt==null) ? null : _tsMicro(_rt);
+  var body={ value:value, updated_at:_ts };
   /* 15 秒で打ち切る（答えの来ない書き込みで、このキーの送る順番と未送信の送り直しが止まらないように：独立レビュー 9f23211 P3）。
      打ち切ったあとに書けていても、次の送り直しは読み直して同じ中身を書くだけ */
   var ctl=null, tm=null;
   try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
   var url, opt;
   if(row && row.exists){
-    url=SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&updated_at='+(row.updatedAt==null ? 'is.null' : ('eq.'+encodeURIComponent(row.updatedAt)))+'&select=key';
+    url=SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&updated_at='+(row.updatedAt==null ? 'is.null' : ('eq.'+encodeURIComponent(row.updatedAt)))+'&select=key,updated_at';
     opt={ method:'PATCH', headers:h, body:JSON.stringify(body) };
   } else {
     url=SUPABASE_URL+'/rest/v1/app_state?select=key';
@@ -10612,7 +10637,13 @@ function _opCasWrite(key, value, row){
   return fetch(url, opt).then(function(r){
     if(r.status===409) return 'conflict';   /* 行が無いと読んだあとに、ほかの端末が作った */
     if(!r.ok) return 'fail';
-    return r.json().then(function(rows){ return (Array.isArray(rows) && rows.length===1) ? 'ok' : 'conflict'; });
+    return r.json().then(function(rows){
+      if(!(Array.isArray(rows) && rows.length===1)) return 'conflict';
+      /* 書いた行の時刻が、読んだ時刻より進んだのを確かめてから「書けた」にする（DB の時刻の精度が粗い・時刻を戻す仕組みがあると、
+         次の古い書き込みが同じ時刻の条件をすり抜けうるので、保存できたとは言わない） */
+      if(_base!=null){ var _got=_tsMicro(rows[0] && rows[0].updated_at); if(_got==null || _got<=_base) return 'stale'; }
+      return 'ok';
+    });
   }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
 }
 function _opUpsertRow(key, value, table){
@@ -11064,6 +11095,8 @@ function opMergePush(key, localVal, table){
           _opWriteBack(key, def, cm);
           var w = await _opCasWrite(key, cm, row);
           if(w==='ok'){ desired=cm; _ok=true; break; }
+          if(w==='badts'){ _ok=false; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
+          if(w==='stale'){ _ok=false; _err='書き込みましたが、クラウドの更新時刻が進まなかったので、ほかの端末の保存と重なっていないか確かめられません（未送信に残して送り直します）'; break; }
           if(w!=='conflict'){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
           _lastConf = row;
           desired = cm;   /* ほかの端末が先に書いた：読み直して合わせ直す */

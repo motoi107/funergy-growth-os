@@ -50,7 +50,7 @@ const ROUNDS = Number(process.env.HB_ROUNDS) || 0;   // fewer rounds of the rand
 const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 
 const FNS = ['mergeHbReads', '_hbReadCmp', '_coversHbReads', '_hbChCmp', 'mergeHbChapters', '_coversHbChapters', '_hbJs', '_logSig', '_canonForSig',
-  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
+  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_tsMicro', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
   '_hbChRaw', 'getHbChapters', 'ensureHbSeed', 'hbSyncSeedVersion', 'hbChaptersSorted', 'hbStatus', 'renderHandbook', 'hbRenderReader', 'hbRenderAdmin',
   '_hbLogT', 'hbRenderLog', 'openHbEdit', 'hbSaveChapter', 'hbDeleteChapter', 'hbOpen', 'hbBack', 'hbSetTab', 'hbCheckScroll'];
 const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy', '_hbOpenV'];
@@ -113,20 +113,28 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
       if (c.httpError) return { ok: false, status: 503, json: async () => ({ message: 'unavailable' }) };
       if ((method === 'PATCH' || method === 'POST') && c.failUpsert) { c.ups++; return { ok: false, status: 500, json: async () => ({}) }; }
       if (method === 'PATCH' && c.hangPatch) { c.ups++; return new Promise((_res, rej) => { if (o.signal && o.signal.addEventListener) o.signal.addEventListener('abort', () => rej(new Error('aborted'))); }); }
+      // stallBody: the answer's headers come (200/201) but its body never ends, as a cut connection can do. 'before': nothing was written;
+      // 'after': the cloud already took the write. Aborting the request (the app's 15 s limit) fails the body read, as fetch does.
+      const stall = () => ({ ok: true, status: method === 'POST' ? 201 : 200, json: () => new Promise((_res, rej) => { if (o.signal && o.signal.addEventListener) o.signal.addEventListener('abort', () => rej(new Error('aborted'))); }) });
+      if (c.stallBody === 'before' && (method === 'PATCH' || method === 'POST')) { c.ups++; return stall(); }
+      if (c.stallBody === 'get' && method === 'GET') return stall();
       if (method === 'PATCH' && c.patchNoop) { c.ups++; return { ok: true, status: 200, json: async () => [] }; }   // e.g. a policy that lets nothing be updated
       if (method === 'PATCH') {
         c.ups++;
         const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]);
         const b = JSON.parse(o.body);
         const ue = /updated_at=eq\.([^&]+)/.exec(url);
-        const r = ue ? await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at=$4::timestamptz returning key', [JSON.stringify(b.value), b.updated_at, k, decodeURIComponent(ue[1])])
-                     : await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at is null returning key', [JSON.stringify(b.value), b.updated_at, k]);
-        return { ok: true, status: 200, json: async () => r.rows.map(x => ({ key: x.key })) };
+        const ret = "returning key, to_json(updated_at)#>>'{}' as u";
+        const r = ue ? await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at=$4::timestamptz ' + ret, [JSON.stringify(b.value), b.updated_at, k, decodeURIComponent(ue[1])])
+                     : await db.query('update app_state set value=$1, updated_at=$2::timestamptz where key=$3 and updated_at is null ' + ret, [JSON.stringify(b.value), b.updated_at, k]);
+        if (c.stallBody === 'after') return stall();
+        return { ok: true, status: 200, json: async () => r.rows.map(x => (/select=[^&]*updated_at/.test(url) ? { key: x.key, updated_at: x.u } : { key: x.key })) };
       }
       if (method === 'POST') {
         c.ups++;
         const b = JSON.parse(o.body);
         const r = await db.query('insert into app_state(key,value,updated_at) values($1,$2,$3::timestamptz) on conflict(key) do nothing returning key', [b.key, JSON.stringify(b.value), b.updated_at]);
+        if (c.stallBody === 'after' && r.rows.length) return stall();
         return r.rows.length ? { ok: true, status: 201, json: async () => r.rows.map(x => ({ key: x.key })) } : { ok: false, status: 409, json: async () => ({ code: '23505' }) };
       }
       const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]);
@@ -143,10 +151,10 @@ function device({ user = 'Ann', role = 'crew', st = {}, db = null, sync = true, 
   if (!c._pushWithOutbox) c._pushWithOutbox = (k, v) => { Promise.resolve(c.syncMasterToSupabase(k, v)).then(r => { if (r === false) c._outboxAdd(k, 'push failed'); }); };
   return c;
 }
-async function cloudDb(rows = {}) {
+async function cloudDb(rows = {}, tsType = 'timestamptz') {
   const { PGlite } = await import('./runtime/node_modules/@electric-sql/pglite/dist/index.js');
   const db = new PGlite();
-  await db.exec('create table app_state(key text primary key, value jsonb, updated_at timestamptz)');
+  await db.exec('create table app_state(key text primary key, value jsonb, updated_at ' + tsType + ')');
   for (const [k, v] of Object.entries(rows)) await db.query('insert into app_state values($1,$2,now())', [k, JSON.stringify(v)]);
   return db;
 }
@@ -576,21 +584,170 @@ test('v1096 review: when nobody has saved a read yet (no row) or the row has no 
   }
 });
 
-test('v1096: two writes in the same millisecond do not get the same update time (a device that read the first one cannot overwrite the second)', async () => {
+// A device whose clock is frozen at T (+ off ms) and whose Math.random always gives the same number: two devices can then compute the
+// same update time, as Codex reproduced (6280195693). Date.parse and Date.UTC stay the real ones.
+const FROZEN = (off = 0, rnd = 0.1234) => 'var __D = Date, __T = Date.UTC(2026, 9, 19, 22, 46, 40) + (' + off + '); Date = function(a){ return arguments.length ? new __D(a) : new __D(__T); }; Date.now = function(){ return __T; }; Date.UTC = __D.UTC; Date.parse = __D.parse; Math.random = function(){ return ' + rnd + '; };';
+
+test('v1096 (Codex 6280195693): every device shows the same millisecond and gets the same random numbers: no read is lost, in any order of the requests', async () => {
   let seed = 11; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
   for (let round = 0; round < (ROUNDS || 12); round++) {
     const db = await cloudDb({ handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: SEED });
-    const devs = [['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Dan', 'ch2']].map(([user, ch], i) => {
+    const devs = [['Ann', 'ch1'], ['Ben', 'ch1'], ['Cat', 'ch2'], ['Dan', 'ch2']].map(([user, ch]) => {
       const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } });
-      // every device's clock shows the same millisecond; its random numbers never repeat another device's
-      run(d, 'var __D = Date, __T = 1792450000000; Date = function(a){ return arguments.length ? new __D(a) : new __D(__T); }; Date.now = function(){ return __T; }; Date.UTC = __D.UTC; var __k = 0; Math.random = function(){ return ((' + i + ' * 200 + (__k++ % 200)) + 0.5) / 1000; };');
+      run(d, FROZEN());
       d.delay = async () => { await tick(Math.floor(rnd() * 6)); };
       d.ch = ch; return d;
     });
     devs.forEach(d => { run(d, "hbOpen('" + d.ch + "')"); run(d, "hbMarkRead('" + d.ch + "')"); });
     for (let i = 0; i < 40; i++) await tick(10);
     const cloud = await cloudOf(db, 'handbook_reads');
-    for (const d of devs) assert.ok(cloud[d.curUserName] && cloud[d.curUserName][d.ch], 'round ' + round + ': ' + d.curUserName + ' ' + JSON.stringify(cloud));
+    for (const d of devs) {
+      assert.ok(cloud[d.curUserName] && cloud[d.curUserName][d.ch], 'round ' + round + ': ' + d.curUserName + ' ' + JSON.stringify(cloud));
+      if (d.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success')) assert.equal(run(d, '_hbUnsent()'), false);
+    }
+    await db.close();
+  }
+});
+
+test('v1096 (Codex 6280318169, deterministic): C reads the row at T and waits before its write; B writes with the same clock and random; C\'s old write is refused and merged again: nothing is lost', async () => {
+  // [B's clock, C's clock] in ms from T: the same clock (Codex's case), and clocks that are behind or ahead.
+  for (const [ob, oc] of [[0, 0], [-3600000, 0], [0, -3600000], [5000, -5000], [-1, -1]]) {
+    const db = await cloudDb({ handbook_chapters: SEED });
+    await db.query("insert into app_state values('handbook_reads', $1, '2026-10-19T22:46:39+00:00')", [JSON.stringify({ Old: { ch1: R(3, 1) } })]);
+    const mk = (user, off) => { const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } }); run(d, FROZEN(off)); return d; };
+    const A = mk('Ann', 0), B = mk('Ben', ob), C = mk('Cat', oc);
+    run(A, "hbOpen('ch1')"); run(A, "hbMarkRead('ch1')"); await tick(40);       // A saves: the row's time is now T
+    let release, atPatch = false; const gate = new Promise(r => { release = r; });
+    C.delay = async m => { if (m === 'PATCH' && !atPatch) { atPatch = true; await gate; } };
+    run(C, "hbOpen('ch2')"); run(C, "hbMarkRead('ch2')");                        // C reads the row at T and stops before its write
+    for (let i = 0; i < 20 && !atPatch; i++) await tick(5);
+    assert.ok(atPatch, 'C is waiting before its write');
+    run(B, "hbOpen('ch1')"); run(B, "hbMarkRead('ch1')"); await tick(40);       // B reads T, adds its read and writes
+    assert.ok((await cloudOf(db, 'handbook_reads')).Ben, 'B\'s read is in the cloud');
+    release(); for (let i = 0; i < 10; i++) await tick(10);                     // C's write with the old time goes out
+    const cloud = await cloudOf(db, 'handbook_reads');
+    const tag = 'clocks ' + ob + '/' + oc + ': ';
+    assert.ok(cloud.Ann && cloud.Ann.ch1 && cloud.Ben && cloud.Ben.ch1 && cloud.Cat && cloud.Cat.ch2 && cloud.Old.ch1, tag + JSON.stringify(cloud));
+    assert.equal(C.ups, 2, tag + 'C\'s first write was refused (0 rows) and C wrote again after reading');
+    for (const d of [A, B, C]) {
+      assert.ok(d.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), tag + d.curUserName + ' told saved');
+      assert.equal(run(d, '_hbUnsent()'), false, tag + d.curUserName + ' nothing unsent');
+    }
+    const t = (await db.query("select to_json(updated_at)#>>'{}' as u from app_state where key='handbook_reads'")).rows[0].u;
+    assert.ok(new Date(t).getTime() > Date.UTC(2026, 9, 19, 22, 46, 40) + Math.max(0, ob, oc) - 1, tag + 'the time only moves forward: ' + t);
+    await db.close();
+  }
+});
+
+test('v1096 (Codex P2): the update time a device writes is always after the one it read: PostgREST forms, clocks behind and ahead, carry over a second, checked by the database', async () => {
+  const d = device({});
+  const T = Date.UTC(2026, 9, 19, 22, 46, 40);
+  // the forms PostgREST and Postgres give back (trailing zeros are dropped; other offsets)
+  const forms = [['2026-10-19T22:46:40.000123+00:00', T * 1000 + 123], ['2026-10-19T22:46:40+00:00', T * 1000], ['2026-10-19T22:46:40.1+00:00', T * 1000 + 100000],
+    ['2026-10-19 22:46:40.123456Z', T * 1000 + 123456], ['2026-10-19T12:46:40.5-10:00', T * 1000 + 500000], ['2026-10-20T07:46:40+0900', T * 1000], ['2026-10-19T22:46:40+00', T * 1000],
+    ['2026-10-19T22:46:40.000000001Z', T * 1000], ['2026-10-19T22:46:40', T * 1000]];
+  for (const [f, us] of forms) assert.equal(run(d, '_tsMicro(' + JSON.stringify(f) + ')'), us, f);
+  for (const f of ['yesterday', '2026/10/19 22:46:40', '', '2026-10-19T22:46:40+05:30:15']) assert.equal(run(d, '_tsMicro(' + JSON.stringify(f) + ')'), null, 'not guessed: ' + f);
+  assert.equal(run(d, "_casTs('yesterday')"), null, 'a time it cannot read is not written over');
+  run(d, FROZEN(0));
+  assert.equal(run(d, '_casTs(null)'), '2026-10-19T22:46:40.000Z', 'no row: the clock');
+  assert.equal(run(d, "_casTs('2026-10-19T22:46:40.000123+00:00')"), '2026-10-19T22:46:40.001Z', 'same millisecond: 1 ms later');
+  assert.equal(run(d, "_casTs('2026-10-19T22:46:40.999999+00:00')"), '2026-10-19T22:46:41.000Z', 'carry into the next second');
+  assert.equal(run(d, "_casTs('2026-10-19T23:46:40.5+00:00')"), '2026-10-19T23:46:40.501Z', 'a row written by a clock an hour ahead: after it');
+  assert.equal(run(d, "_casTs('2026-10-19T21:46:40+00:00')"), '2026-10-19T22:46:40.000Z', 'an older row: the clock');
+  // Random read times (0-6 fraction digits, offsets) and clocks: the database itself says the written time is later.
+  const db = await cloudDb({});
+  let seed = 5; const rnd = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 400; i++) {
+    const base = T + Math.floor((rnd() - 0.5) * 7200000);
+    const digits = Math.floor(rnd() * 7), frac = String(Math.floor(rnd() * 1e6)).padStart(6, '0').slice(0, digits);
+    const offH = Math.floor(rnd() * 25) - 12;
+    const local = new Date(base + offH * 3600000).toISOString().slice(0, 19);
+    const read = local + (digits ? '.' + frac : '') + (offH === 0 && rnd() < 0.5 ? 'Z' : (offH < 0 ? '-' : '+') + String(Math.abs(offH)).padStart(2, '0') + ':00');
+    const dd = device({}); run(dd, FROZEN(Math.floor((rnd() - 0.5) * 7200000)));
+    const w = run(dd, '_casTs(' + JSON.stringify(read) + ')');
+    const r = await db.query('select $1::timestamptz > $2::timestamptz as later, $1::timestamptz(3) > $2::timestamptz as later_ms', [w, read]);
+    assert.ok(r.rows[0].later && r.rows[0].later_ms, read + ' -> ' + w);
+  }
+  await db.close();
+});
+
+test('v1096 (Codex P2, precision): a database that keeps milliseconds still refuses the old write; one that keeps whole seconds cannot, so the device is not told saved', async () => {
+  for (const tsType of ['timestamptz(3)', 'timestamptz(0)']) {
+    const db = await cloudDb({ handbook_chapters: SEED }, tsType);
+    await db.query("insert into app_state values('handbook_reads', $1, '2026-10-19T22:46:39+00:00')", [JSON.stringify({ Old: { ch1: R(3, 1) } })]);
+    const mk = user => { const d = device({ user, db, st: { handbook_reads: { Old: { ch1: R(3, 1) } }, handbook_chapters: plain(SEED) } }); run(d, FROZEN(0)); return d; };
+    const A = mk('Ann'), B = mk('Ben'), C = mk('Cat');
+    run(A, "hbOpen('ch1')"); run(A, "hbMarkRead('ch1')"); await tick(40);
+    let release, atPatch = false; const gate = new Promise(r => { release = r; });
+    C.delay = async m => { if (m === 'PATCH' && !atPatch) { atPatch = true; await gate; } };
+    run(C, "hbOpen('ch2')"); run(C, "hbMarkRead('ch2')"); for (let i = 0; i < 20 && !atPatch; i++) await tick(5);
+    run(B, "hbOpen('ch1')"); run(B, "hbMarkRead('ch1')"); await tick(40);
+    release(); for (let i = 0; i < 10; i++) await tick(10);
+    const cloud = await cloudOf(db, 'handbook_reads');
+    const saved = d => d.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success');
+    for (const d of [A, B, C]) if (saved(d)) assert.ok(cloud[d.curUserName], tsType + ': ' + d.curUserName + ' told saved and it is in the cloud ' + JSON.stringify(cloud));
+    if (tsType === 'timestamptz(3)') {
+      assert.ok(cloud.Ann && cloud.Ben && cloud.Cat, 'milliseconds: all three kept ' + JSON.stringify(cloud));
+      assert.ok([A, B, C].every(saved));
+    } else {
+      // whole seconds: B's time 40.001 is kept as 40, the same as the time it read, so B is not told saved and keeps its read unsent
+      assert.ok(!saved(B) && run(B, '_hbUnsent()'), 'B is not told saved');
+      assert.match(run(B, "_opLastPushErr['handbook_reads']"), /更新時刻が進まなかった/);
+      await run(B, 'flushOutbox()'); await run(C, 'flushOutbox()'); await tick(20);
+      const after = await cloudOf(db, 'handbook_reads');
+      assert.ok(after.Ann && after.Ben && after.Cat, 'sending again puts every read in the cloud ' + JSON.stringify(after));
+    }
+    await db.close();
+  }
+});
+
+test('v1096 (Codex P2): a row whose update time is not in a form the app can read is not written over; a write whose answer does not show a later update time is not called saved', async () => {
+  const db = await cloudDb({ handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: SEED });
+  const ann = device({ user: 'Ann', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+  const orig = ann.fetch;
+  ann.fetch = async (u, o) => { const r = await orig(u, o); if (!(o && o.method) && /updated_at/.test(u)) { const rows = await r.json(); return { ok: true, json: async () => rows.map(x => Object.assign({}, x, { updated_at: '19/10/2026 22:46' })) }; } return r; };
+  run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(40);
+  assert.equal(ann.ups, 0, 'not written');
+  assert.match(run(ann, "_opLastPushErr['handbook_reads']"), /更新時刻の形を読めなかった/);
+  assert.equal(run(ann, '_hbUnsent()'), true);
+  assert.deepEqual(await cloudOf(db, 'handbook_reads'), { Ben: { ch1: R(3, 5) } });
+  // The write's answer does not say the new update time (or says it in a form the app cannot read): it cannot be checked that the
+  // time moved on, so the device is not told saved; the read stays unsent (it is in the cloud, and sending it again changes nothing).
+  for (const bad of [undefined, 'soon']) {
+    const cat = device({ user: 'Cat', db, st: { handbook_reads: {}, handbook_chapters: plain(SEED) } });
+    const o2 = cat.fetch;
+    cat.fetch = async (u, o) => { const r = await o2(u, o); if (o && o.method === 'PATCH' && r.ok) { const rows = await r.json(); return { ok: true, status: 200, json: async () => rows.map(x => (bad === undefined ? { key: x.key } : Object.assign({}, x, { updated_at: bad }))) }; } return r; };
+    run(cat, "hbOpen('ch2')"); run(cat, "hbMarkRead('ch2')"); await tick(40);
+    assert.ok(!cat.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), 'answer ' + bad + ': not told saved');
+    assert.match(run(cat, "_opLastPushErr['handbook_reads']"), /更新時刻が進まなかった/);
+    assert.equal(run(cat, '_hbUnsent()'), true);
+  }
+  await db.close();
+});
+
+test('v1096 (Codex 6279636993 P3): an answer whose headers come but whose body never ends (write, new row, read; written or not) stops after 15 s; two chapters read in a row both stay unsent and are sent later', async () => {
+  for (const [kind, hasRow] of [['before', true], ['after', true], ['before', false], ['after', false], ['get', true]]) {
+    const tag = kind + (hasRow ? ' (row)' : ' (no row)') + ': ';
+    const db = await cloudDb(hasRow ? { handbook_reads: { Ben: { ch1: R(3, 5) } }, handbook_chapters: SEED } : { handbook_chapters: SEED });
+    const ann = device({ user: 'Ann', db, st: { handbook_reads: hasRow ? { Ben: { ch1: R(3, 5) } } : {}, handbook_chapters: plain(SEED) } });
+    ann.stallBody = kind;
+    run(ann, "hbOpen('ch1')"); run(ann, "hbMarkRead('ch1')"); await tick(20);
+    run(ann, "hbOpen('ch2')"); run(ann, "hbMarkRead('ch2')"); await tick(20);
+    // the 15 s limits are run (the test's setTimeout keeps them) until nothing is waiting; the second read is not blocked by the first
+    let fired = 0;
+    for (let k = 0; k < 6; k++) { const lim = ann.timers.filter(([, ms]) => ms === 15000); ann.timers = ann.timers.filter(([, ms]) => ms !== 15000); if (!lim.length) break; lim.forEach(([f]) => f()); fired += lim.length; await tick(40); }
+    assert.ok(fired >= 2, tag + 'the limits ran');
+    assert.ok(!ann.toasts.some(([m, k]) => /読了を保存しました/.test(m) && k === 'success'), tag + 'not told saved');
+    assert.ok(ann.S.handbook_reads.Ann && ann.S.handbook_reads.Ann.ch1 && ann.S.handbook_reads.Ann.ch2, tag + 'both reads are on the device');
+    assert.equal(run(ann, '_hbUnsent()'), true, tag + 'unsent');
+    assert.equal(run(ann, "!!_lsPushP['handbook_reads']") && (await Promise.race([ann._lsPushP.handbook_reads.then(() => 'done'), new Promise(r => setTimeout(() => r('stuck'), 200))])), 'done', tag + 'the push chain has ended');
+    ann.stallBody = null;
+    await run(ann, 'flushOutbox()'); await tick(30);
+    const cloud = await cloudOf(db, 'handbook_reads');
+    assert.ok(cloud.Ann && cloud.Ann.ch1 && cloud.Ann.ch2, tag + 'both sent ' + JSON.stringify(cloud));
+    if (hasRow) assert.ok(cloud.Ben.ch1, tag + 'nothing of the others lost');
+    assert.equal(run(ann, '_hbUnsent()'), false, tag + 'nothing unsent');
     await db.close();
   }
 });
