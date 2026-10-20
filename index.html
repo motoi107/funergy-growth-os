@@ -11088,6 +11088,7 @@ function opMergePush(key, localVal, table){
          あとの書き込みの前に済んでいたので、両方に「保存しました」と出た）。読んだ行の updated_at が変わっていたら、読み直して合わせ直す */
       if(def.cas && table==='app_state'){
         var _lastConf=null, _why='';
+        try{ _opLastPushWhy[key]=''; }catch(e){}   /* 前の送信の理由を残さない（途中で例外になっても、前の 'stale' を今回の結果にしない：PR #81 Claude 6281611289 P3） */
         for(var ca=0; ca<6; ca++){
           var row = await _fetchOpRow(key);
           if(row===undefined){ _ok=false; _why='read'; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
@@ -86807,6 +86808,7 @@ function hbMarkRead(id){
   reads[me][id]={v:ch.version||1, at:nowJP(), _t:Date.now()};
   var label='第'+(ch.order||'')+'章';
   try{ delete _lsPushP['handbook_reads']; }catch(e){}
+  try{ _opLastPushWhy['handbook_reads']=''; }catch(e){}   /* v1097: 送らなかったとき（起動の途中など）に、前の送信の理由で知らせない */
   var okLocal=lsSet('handbook_reads', reads);
   var sync=(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED);
   var pushP=sync ? (_lsPushP['handbook_reads'] || Promise.resolve(false)) : Promise.resolve('off');
@@ -86833,7 +86835,7 @@ function hbAfterReadSave(label, r, labelEn){
     if(r==='booting'){ try{ _outboxAdd('handbook_reads', 'booting'); }catch(e){} }
     /* v1097（独立レビュー 1b45d62 P3-2）：書けたが、ほかの端末の保存と重なっていないかを確かめられなかったとき（'stale'）は、そう言う */
     var _hw=''; try{ _hw=String((typeof _opLastPushWhy!=='undefined' && _opLastPushWhy['handbook_reads'])||''); }catch(e){}
-    if(_hw==='stale') showToast(t(label+'の読了はクラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': written to the cloud, but it could not be checked against saves from other devices (it is sent again when you open the Handbook or press Sync)'),'warning');
+    if(r===false && _hw==='stale') showToast(t(label+'の読了はクラウドに書きましたが、ほかの端末の保存と重なっていないかを確かめられませんでした（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': written to the cloud, but it could not be checked against saves from other devices (it is sent again when you open the Handbook or press Sync)'),'warning');
     else showToast(t(label+'の読了をこの端末に記録しました。まだクラウドに送れていません（未送信に残し、Handbook を開いたとき・「同期」で送り直します）', labelEn+': recorded on this device but not sent yet (it is sent again when you open the Handbook or press Sync)'),'warning');
   }
   try{ if(typeof curPage!=='undefined' && curPage==='crew_handbook' && !_hbView) renderPage('crew_handbook'); }catch(e){}

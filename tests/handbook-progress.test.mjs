@@ -727,6 +727,11 @@ test('v1096 (Codex P2): a row whose update time is not in a form the app can rea
     assert.equal(run(cat, "_opLastPushWhy['handbook_reads']"), 'stale');
     assert.ok(cat.toasts.some(([m, k]) => /クラウドに書きましたが/.test(m) && k === 'warning'), 'the message is chosen by the reason code');
     assert.equal(run(cat, '_hbUnsent()'), true);
+    // PR #81 Claude 6281611289 P3: a later read that is not sent (start-up) is not told 書きました from the earlier reason
+    cat.toasts.length = 0; cat._supaBooting = true;
+    run(cat, "hbOpen('ch1')"); run(cat, "hbMarkRead('ch1')"); await tick(20);
+    assert.ok(cat.toasts.some(([m, k]) => /まだクラウドに送れていません/.test(m) && k === 'warning') && !cat.toasts.some(([m]) => /クラウドに書きましたが/.test(m)), 'answer ' + bad + ': the old reason is not used');
+    assert.equal(run(cat, "_opLastPushWhy['handbook_reads']"), '');
   }
   await db.close();
 });
