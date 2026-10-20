@@ -1,7 +1,9 @@
 -- 読むだけ（v1097・独立レビュー 1b45d62 P3-3）。何も書き換えない。Supabase の SQL Editor でそのまま流す。
 -- Handbook の読了・章（app_state の handbook_reads・handbook_chapters）は、読んだ行の updated_at が変わっていないときだけ書き、
--- 書く時刻は読んだ時刻より必ず 1 ms 以上あとにする。その前提を本番で確かめる：
---   1 行目  updated_at の型と精度（timestamp with time zone・6 が前提。3 でも動く。0〜2 だと読了が「保存しました」にならない）
+-- 書く時刻は読んだ時刻より後の、次のミリ秒の境目以降にする（.000123 なら .001、.999999 なら次の秒の .000＝1 µs あと）。
+-- 書いた行の時刻が読んだ時刻より進んだのを確かめてから「保存しました」と出す。その前提を本番で確かめる：
+--   1 行目  updated_at の型と精度（timestamp with time zone・6 が前提。3 でも動く。0〜2 だと、丸めた時刻が読んだ時刻より進まない
+--           ときに「保存しました」と出さず、未送信に残して送り直す（丸めて進めば、ふつうに「保存しました」））
 --   trigger app_state の見張り（offboard_record_guard_trg だけのはず。「updated_at に触る」と出たら Claude に）
 --   row     2 つのキーの今の時刻（PostgREST が返す形）。今より先なら、その差も出す（時計の進んだ端末が書いた。働きには影響しない）
 select 'column' as what, data_type::text as a, coalesce(datetime_precision::text, '') as b, is_nullable::text as c
