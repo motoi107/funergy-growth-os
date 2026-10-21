@@ -279,6 +279,13 @@ test('mixed devices C: a personal ① of a G2 store person (240 / 12) re-saved o
   assert.deepEqual(one(N, sp, 'ray').slice(0, 3), [96, 60, 3]);
   sp.STORE.bonus_eval_ovr = v1099Resave(sp.STORE, `kevOvrOpen('ray', 'c')`, {}, spec).store.bonus_eval_ovr;
   assert.equal(N.person(sp, 'ray').blocked, 'eval');
+  // a number typed for the specialist on the v1099 device (55): not used, and not put into the v1100 field
+  saveForm(sp, `kevOvrOpen('ray', 'c')`, { bp: '60', bs: '3' });
+  sp.STORE.bonus_eval_ovr = v1099Resave(sp.STORE, `kevOvrOpen('ray', 'c')`, { bp: '55', bs: '3' }, spec).store.bonus_eval_ovr;
+  assert.equal(N.person(sp, 'ray').blocked, 'eval');
+  run(sp, `kevOvrOpen('ray', 'c')`);
+  assert.deepEqual(run(sp, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp, !!window._kevForm.cs.legacy.lost]`), [false, true, true]);
+  assert.doesNotMatch(sp.MODAL.at(-1), /id="kevf-bp"[^>]*value="55"/);
   // other G2 people are not affected
   c.EMPS.push({ id: 'bea', name: 'Bea Sample', title: 'Crew Leader', g: 'G2', store: 'S1', role: '', status: '在籍' });
   c.SCORES['Bea Sample'] = J(c.SCORES['Aki Sample']);
