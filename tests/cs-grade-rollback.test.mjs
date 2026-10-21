@@ -295,8 +295,9 @@ test('mixed devices C: a personal ① of a G2 store person (240 / 12) re-saved o
   assert.deepEqual(one(N, c, 'aki'), [420, 240, 12, 1.15, null]);
   // the previous quarter's v1100 version counts too (a v1099 device made the next quarter's version)
   const d = N.co();
-  d.STORE.bonus_eval_rule = { 'G2|2026-Q2': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bs8: 13 } }, _at: 1 },
-    [`G2|${Q}`]: { set: { c: { on: true, lo: 0.85, hi: 1.1, g2: 1, g3: 1, bp: null, bs: null } }, _at: 2 } };
+  const c8 = { b8: 1, bp8: 260, bs8: 13 };   // the last v1100 ① of the level (written by v1100, copied with the version by v1099)
+  d.STORE.bonus_eval_rule = { 'G2|2026-Q2': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bs8: 13 }, c8 }, _at: 1 },
+    [`G2|${Q}`]: { set: { c: { on: true, lo: 0.85, hi: 1.1, g2: 1, g3: 1, bp: null, bs: null }, c8 }, _at: 2 } };
   assert.equal(N.person(d, 'aki').blocked, 'eval');
   // a v1099 device saving another part (②) keeps the v1100 ① as it is
   const e = N.co();
@@ -324,10 +325,10 @@ test('Codex 31277db P1: a v1099 device that makes two (or more) quarter versions
   st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, '2027-Q2').store;
   c.STORE.bonus_eval_rule = st.bonus_eval_rule;
   assert.deepEqual(at(c, '2027-Q2').slice(2, 4), [true, true]);
-  // re-entered in v1100 for 2027-Q1 → that quarter is used again; the later v1099 version (2027-Q2) still waits
+  // re-entered in v1100 for 2027-Q1 → that quarter is used again; the later v1099 version (2027-Q2, made before) still waits, compared with what it was copied from
   c.STORE.bonus_eval_rule['G2|2027-Q1'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 255, bs8: 13 };
   assert.deepEqual(at(c, '2027-Q1').slice(0, 4), [255, 13, false, false]);
-  assert.deepEqual(at(c, '2027-Q2').slice(2, 5), [true, true, { bp: 255, bs: 13 }]);
+  assert.deepEqual(at(c, '2027-Q2').slice(2, 5), [true, true, { bp: 260, bs: 13 }]);   // 2027-Q2 was copied before the re-entry: its v1100 value is 260
   assert.deepEqual(at(c, '2026-Q4').slice(2, 5), [true, true, { bp: 260, bs: 13 }]);   // a later quarter is not the "before" of an earlier one
   // the v1099 device first re-saved the v1100 quarter itself, then made the next one (the v1100 value is in the history of 2026-Q3)
   const f = N.co();
@@ -345,12 +346,70 @@ test('Codex 31277db P1: a v1099 device that makes two (or more) quarter versions
   assert.deepEqual(at(d, '2027-Q1', "'aki'").slice(2, 5), [true, true, { bp: 240, bs: 12 }]);
   // company-wide (no screen for ① there since v1099; written here directly)
   const e = N.co();
-  e.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { c: { b8: 1, bp8: 300 } }, _at: 1 }, '_common|2026-Q4': { set: { c: { g2: 1, g3: 1 } }, _at: 2 }, '_common|2027-Q1': { set: { c: { g2: 1, g3: 1 } }, _at: 3 } };
+  const k8 = { b8: 1, bp8: 300, bs8: null };
+  e.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { c: { b8: 1, bp8: 300 }, c8: k8 }, _at: 1 }, '_common|2026-Q4': { set: { c: { g2: 1, g3: 1 }, c8: k8 }, _at: 2 }, '_common|2027-Q1': { set: { c: { g2: 1, g3: 1 }, c8: k8 }, _at: 3 } };
   assert.deepEqual(at(e, '2027-Q1', 'null', 'G4').slice(2, 5), [true, true, { bp: 300, bs: null }]);
   // a level whose ① was taken away in between (no ① in 2026-Q4) is not a replacement of the v1100 value
-  e.STORE.bonus_eval_ovr = { 'mia|2026-Q3': { set: { c: { b8: 1, bp8: 280, bs8: 13 } }, _at: 1 }, 'mia|2026-Q4': { set: { s: { on: true } }, _at: 2 }, 'mia|2027-Q1': { set: { c: { bp: 300, bs: 13 } }, _at: 3 } };
+  e.STORE.bonus_eval_ovr = { 'mia|2026-Q3': { set: { c: { b8: 1, bp8: 280, bs8: 13 }, c8: { b8: 1, bp8: 280, bs8: 13 } }, _at: 1 }, 'mia|2026-Q4': { set: { s: { on: true } }, _at: 2 }, 'mia|2027-Q1': { set: { c: { bp: 300, bs: 13 } }, _at: 3 } };
   e.STORE.bonus_eval_rule = {};
   assert.deepEqual(at(e, '2027-Q1', "'mia'", 'G4').slice(0, 4), [300, 13, false, false]);
+});
+
+test('independent review 5db2653 P2: the comparison is with the last v1100 ① of that lineage (c8), not with whatever the earlier quarter says now — later edits, versions that existed before, ① taken away in between, 20+ saves', () => {
+  const at = (c, q, emp = 'null', scope = 'G2') => run(c, `(function(){ var RF=kevRuleFor('${scope}', '${q}', ${emp}, null, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, '${scope}'); return [B.bp, B.bs, !!B.legacy, !!B.lost]; })()`);
+  // S1: G4 260 in Q3 (v1100) → a v1099 device makes Q4 keeping 260 → later a v1100 user changes Q3 to 280: Q4 is still 260 and not stopped
+  const a = N.co();
+  saveForm(a, `kevRuleOpen('G4', 'c')`, { bp: '260' });
+  a.STORE.bonus_eval_rule = v1099Resave(a.STORE, `kevRuleOpen('G4', 'c')`, {}, null, '2026-Q4').store.bonus_eval_rule;
+  assert.deepEqual(at(a, '2026-Q4', 'null', 'G4'), [260, 13, false, false]);
+  saveForm(a, `kevRuleOpen('G4', 'c')`, { bp: '280' });
+  assert.deepEqual([at(a, Q, 'null', 'G4'), at(a, '2026-Q4', 'null', 'G4')], [[280, 13, false, false], [260, 13, false, false]]);
+  assert.ok(!run(a, `kevMisfits3('2026-Q4')`).block.some(x => /G4・①/.test(x.t)));
+  // S2: a Q4 version that already existed before v1100 (v1099 / v1098 values) is not stopped when v1100 sets Q3
+  const b = N.co();
+  b.STORE.bonus_eval_rule = { 'G4|2026-Q4': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 310 } }, _at: 1 }, 'G2|2026-Q4': { set: { c: { on: true, lo: 0.9, hi: 1.1 } }, _at: 1 } };
+  saveForm(b, `kevRuleOpen('G4', 'c')`, { bp: '260' });
+  saveForm(b, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  assert.deepEqual([at(b, '2026-Q4', 'null', 'G4'), at(b, '2026-Q4')], [[310, 13, false, false], [252, 13, false, false]]);
+  // S3: mia 240 / 12 in Q3 (v1100) → a v1099 device saves 2027-Q1 blank (lost) → a v1100 user takes away her ① in 2026-Q4: 2027-Q1 still waits
+  const d = N.co();
+  saveForm(d, `kevOvrOpen('mia', 'c')`, { bp: '240', bs: '12' });
+  d.STORE.bonus_eval_ovr = v1099Resave(d.STORE, `kevOvrOpen('mia', 'c')`, {}, null, '2027-Q1').store.bonus_eval_ovr;
+  assert.deepEqual(at(d, '2027-Q1', "'mia'", 'G4').slice(2), [true, true]);
+  assert.equal(run(d, `kevPutVer('bonus_eval_ovr', kevOvrAll(), 'mia', '2026-Q4', {}, '外す', '① の個人設定を外した', ['c','w'])`), true);
+  assert.equal('c8' in J(d.STORE.bonus_eval_ovr['mia|2026-Q4'].set), false);   // taking ① away in v1100 takes the v1100 ① away too
+  // …and that wins over an older copy of the same version in the sync merge (the time of the part)
+  const stale = J(d.STORE.bonus_eval_ovr['mia|2026-Q4']); stale.set.c = { b8: 1, bp8: 240, bs8: 12 }; stale.set.c8 = { b8: 1, bp8: 240, bs8: 12 }; stale._t = { c: 1, c8: 1, w: 1 }; stale._at = 1;
+  const merged = run(d, `kevMergeVerRec(${JSON.stringify(stale)}, ${JSON.stringify(J(d.STORE.bonus_eval_ovr['mia|2026-Q4']))})`);
+  assert.deepEqual(['c' in merged.set, 'c8' in merged.set], [false, false]);
+  assert.deepEqual(at(d, '2027-Q1', "'mia'", 'G4').slice(2), [true, true]);
+  assert.deepEqual(at(d, '2026-Q4', "'mia'", 'G4'), [315, 13, false, false]);
+  // after ① was taken away in v1100, a ① added later on a v1099 device in a later quarter is not a replacement of a v1100 value
+  d.STORE.bonus_eval_ovr = v1099Resave(J(d.STORE), `kevOvrOpen('mia', 'c')`, { bp: '300', bs: '13' }, null, '2027-Q2').store.bonus_eval_ovr;
+  // (the v1099 device's base for 2027-Q2 is 2027-Q1, which still carries the v1100 ① → still compared with it)
+  assert.equal(at(d, '2027-Q2', "'mia'", 'G4')[3], true);
+  // 20+ saves of other parts after the v1099 re-save (the history keeps 20): still found
+  const f = N.co();
+  saveForm(f, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  const old = v1099Resave(f.STORE, `kevRuleOpen('G2', 'c')`).old;
+  for (let i = 0; i < 22; i++) assert.equal(run(old, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, 'v1099 の端末 ${i}', '② を変更')`), true);
+  f.STORE.bonus_eval_rule = J(old.STORE.bonus_eval_rule);
+  assert.equal(J(f.STORE.bonus_eval_rule[`G2|${Q}`].hist).length, 20);
+  assert.deepEqual(at(f, Q).slice(2), [true, true]);
+  // the sync merge keeps c8 (part by part)
+  const m = run(f, `kevMergeVerRec(${JSON.stringify(f.STORE.bonus_eval_rule[`G2|${Q}`])}, ${JSON.stringify(J(N.co().STORE.bonus_eval_rule || {})[`G2|${Q}`] || { set: {}, _at: 1 })})`);
+  assert.deepEqual(m.set.c8, { b8: 1, bp8: 260, bs8: 13 });
+});
+
+test('independent review 5db2653 P3: the preview of taking away another personal part (②) still checks a lost ① — and taking away ① itself does not', () => {
+  const c = N.co();
+  saveForm(c, `kevOvrOpen('mia', 'c')`, { bp: '240', bs: '12' });
+  assert.equal(run(c, `kevOvrSave('mia', '${Q}', {s:{on:false, lo:0.95, hi:1.05, g2:1, g3:1}}, '試験', '② を変更')`), true);
+  c.STORE.bonus_eval_ovr = v1099Resave(c.STORE, `kevOvrOpen('mia', 'c')`).store.bonus_eval_ovr;
+  assert.equal(N.person(c, 'mia').blocked, 'eval');
+  const pv = parts => run(c, `(function(){ var v=kevVer(kevOvrAll(), 'mia', '${Q}'), s=JSON.parse(JSON.stringify(v.set)); ${JSON.stringify(parts)}.forEach(function(p){ delete s[p]; }); var RF=kevRuleFor('G4', '${Q}', 'mia', {level:'person', empId:'mia', set:s, replace:true}, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, 'G4'); return [B.bp, !!B.lost]; })()`);
+  assert.deepEqual(pv(['s']), [315, true]);        // 5db2653: [315, false] — the preview showed an amount
+  assert.deepEqual(pv(['c', 'w']), [315, false]);  // after taking ① away the grade value is used
 });
 
 test('back from v1099: a v1099 device that types a G2 value (140 / 7 on 225 points) → v1100 does not use it silently (the amount waits, listed to re-enter)', () => {

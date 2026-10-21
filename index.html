@@ -64685,7 +64685,7 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2){
     lz(all, '_common', cm, 'common', simC && sim.level==='common');
     if(scope==='G6') lz(all, 'G5', g5, 'g5', simC && sim.level==='grade' && sim.scope==='G5');
     if(scope) lz(all, scope, gr, 'grade', simC && sim.level==='grade' && sim.scope===scope);
-    if(empId) lz(kevOvrAll(), empId, ov, 'person', !!(sim && sim.level==='person' && sim.empId===empId && (simC || sim.replace)));
+    if(empId) lz(null, empId, ov, 'person', !!(sim && sim.level==='person' && sim.empId===empId && (simC || (sim.replace && !(sim.set && sim.set.c && typeof sim.set.c==='object')))));   /* 外す試算：① が残るなら ① は見る（独立レビュー 5db2653 の P3） */
   }
   return {r:R, src:M, ovr:ov, grade:gr, g5:g5, common:cm, scope:scope, gen3:gen3, csLost:lost};
 }
@@ -66779,13 +66779,17 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
      ・G3 以上のグレード・職種の設定：v1099 も 420 点満点なので、同じ値を書く（v1099 の画面にも出て、v1099 の端末で保存し直しても変わらない。独立レビュー 8a04750 の P2-1）
      ・G2（G1）のグレードの設定・会社共通・個人設定：v1099 では G2 が 225 点満点なので書かない。同じ層に前からあった値をそのまま残す
        （前の版に戻すと、前の版のときの点か初期値で数える。v1100 の 420 点満点の点が v1099 の 225 点満点の計算に入らない）。このブランチの途中のコミット（公開していない）が付けた印 cs8 の値は残さない */
+  var c8T=false;
   if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && set && set.c && typeof set.c==='object' && kevN(set.c.b8) && cur.c && typeof cur.c==='object'){
     var bc=(base && base.set && base.set.c && typeof base.set.c==='object') ? base.set.c : null, mir=(key==='bonus_eval_rule' && KEV_SCOPES.indexOf(prefix)>=0 && kevCsTrackKey(prefix)!=='G2');
     ['bp','bs'].forEach(function(f){ delete cur.c[f];
       if(mir){ var m8=kevN(cur.c[f+'8']); if(m8!=null && (f!=='bs' || m8>0)) cur.c[f]=m8; return; }
       if(bc && !kevN(bc.cs8) && kevN(bc[f])!=null) cur.c[f]=bc[f]; });
     delete cur.c.cs8;
+    /* v1100（独立レビュー 5db2653 の P2）：この層の v1100 の ① を別の部分 c8 にも残す（v1099 の端末が c を保存し直しても残り、版を写すと一緒に写る。kevCsLost が比べる） */
+    cur.c8={b8:1, bp8:kevN(cur.c.bp8), bs8:kevN(cur.c.bs8)}; c8T=true;
   }
+  if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && (replaceParts||[]).indexOf('c')>=0 && !(set && set.c) && cur.c8){ delete cur.c8; c8T=true; }   /* ① を外した：v1100 の ① も無い */
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
   if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at, _t:prev._t});   /* v1075：部分ごとの保存時刻も残す（前の版の値の時刻） */
   var rec=kevStamp({set:cur, why:why, what:what, hist:hist}, prev);
@@ -66807,6 +66811,7 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
   Object.keys(cur).forEach(function(p){ var x=bT ? Number(bT[p])||0 : (Number(base && base._at)||0); if(x) T[p]=x; });
   if(bT) Object.keys(bT).forEach(function(p){ if(!(p in T) && Number(bT[p])) T[p]=Number(bT[p]); });
   (replaceParts||[]).concat(Object.keys(set||{})).forEach(function(p){ T[p]=rec._at; });
+  if(c8T) T.c8=rec._at;   /* 合流は部分ごと（外したことも時刻で伝わる） */
   rec._t=T;
   all[prefix+'|'+from]=rec;
   if(lsSet(key, all)===false) return false;
@@ -67333,23 +67338,14 @@ function kevCsPick(R, RF, f){
   if(ra>=0) return {v:a, src:sa, v8:false};
   return {v:null, src:'default', v8:false};
 }
-/* v1100（独立レビュー 8a04750 の P2-1）：この層の ① が v1099 の端末で保存し直され（印 b8 が無い）、その前の v1100 の基準得点・1 段と違うか。
-   その前の状態を新しい順にさかのぼる：同じ版の変更の履歴 → 前の四半期の版（その版の今の値 → その版の履歴）→ さらに前の四半期の版 …。
-   印 b8 の ① がいちばん先に見つかったところと比べる（Codex 31277db の P1：v1099 の端末が四半期の版を 2 つ以上続けて作っても見失わない）。
-   ① の無い状態（外していた）に当たったら、そこで切れる（v1100 の点を置き換えたのではない）。違う欄だけ {bp, bs, ref:{bp, bs}}（同じなら null） */
+/* v1100（独立レビュー 8a04750 の P2-1）：この層の ① が v1099 の端末で保存し直され（印 b8 が無い）、v1100 で入れた基準得点・1 段と違うか。
+   v1100 で入れた点は、同じ版の別の部分 c8（v1100 で ① を保存したときに書く・個人設定の ① を外すと消す）にある。v1099 の端末の保存は保存した部分だけ
+   （c）を入れ替え、版を写すときも同期の合流も部分ごとなので、c8 はそのまま残って v1099 の版にも写る。保存の順・四半期の順をたどらない
+   （Codex 31277db の P1・独立レビュー 5db2653 の P2：前の四半期をあとから直す・あいだに ① の無い版を作る・変更の履歴の 20 件）。違う欄だけ {bp, bs, ref:{bp, bs}}（同じなら null） */
 function kevCsLost(all, prefix, v){
-  var c=(v && v.set && v.set.c && typeof v.set.c==='object') ? v.set.c : null;
+  var set=(v && v.set && typeof v.set==='object') ? v.set : null, c=(set && set.c && typeof set.c==='object') ? set.c : null;
   if(!c || kevN(c.b8)) return null;
-  var st=[], hs=function(w){ var h=Array.isArray(w && w.hist) ? w.hist : []; for(var i=h.length-1; i>=0; i--) st.push(h[i] && h[i].set); };
-  hs(v);
-  var vs=kevVersions(all, prefix).filter(function(w){ return w.from<v.from; });
-  for(var k=vs.length-1; k>=0; k--){ st.push(vs[k].set); hs(vs[k]); }
-  var ref=null;
-  for(var j=0; j<st.length && !ref; j++){
-    var x=(st[j] && typeof st[j]==='object') ? st[j].c : null;
-    if(!x || typeof x!=='object') return null;
-    if(kevN(x.b8)) ref=x;
-  }
+  var ref=(set.c8 && typeof set.c8==='object' && kevN(set.c8.b8)) ? set.c8 : null;
   if(!ref) return null;
   var pos=function(n){ return (n!=null && n>0) ? n : null; }, rb=kevN(ref.bp8), rs=pos(kevN(ref.bs8));
   var bp=(kevN(c.bp)!==rb), bs=(pos(kevN(c.bs))!==rs);
