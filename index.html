@@ -9565,7 +9565,11 @@ async function supaFetchAll(table, select, filter){
    起動直後の重い app_state を裏取得する際にも再利用する。処理は従来のインラインと同一。 */
 function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、端末に取り込めた行のキーを入れる（差分の取り込みの記録に使う） */
   var cnt=0;
-  if(Array.isArray(rows)) rows.forEach(function(row){
+  /* v1098: 前の統合行（_SPLIT_KEYS の行）は最後に畳み込む。分割の行（spl_…）が先に端末に入っていれば、統合行にしか無い記録だけを足す。
+     まとめ取りを主キーの順にしたので「invoices」が「spl_invoices_…」より先に来るようになり、初めての端末では
+     分割の行が無いうちに統合行を全部の分割の行へ書いて送っていた（読み直し・確かめで約 8.6MB。中身は同じ） */
+  var _list = Array.isArray(rows) ? rows.filter(function(r){ return !(r && r.key && _SPLIT_KEYS && _SPLIT_KEYS[r.key]); }).concat(rows.filter(function(r){ return !!(r && r.key && _SPLIT_KEYS && _SPLIT_KEYS[r.key]); })) : null;
+  if(_list) _list.forEach(function(row){
     if(!row || !row.key) return;
     try{
       /* v720: 分割保存へ移行済みのキーは、旧・統合行を端末に置かない（請求書の二重保存を解消）。 */
@@ -16949,7 +16953,7 @@ function renderPage(page) {
     case 'goals':        el.innerHTML = renderGoals(); break;
     case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
     case 'labor':        el.innerHTML = renderLabor(); break;
-    case 'lala':         el.innerHTML = renderLala(); try{ lalaRealtimeStart(); }catch(e){} break;   /* v804 */
+    case 'lala':         el.innerHTML = renderLala(); try{ if(!_lalaPollTimer) lalaRealtimeStart(); }catch(e){} break;   /* v804。v1098：動いていれば始め直さない（描き直すたびに始め直し、取り直し → 描き直し → 始め直し…と続いていた） */
     case 'tip':          el.innerHTML = renderTipMgmt(); break;
     case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
     case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
@@ -81317,7 +81321,9 @@ function lalaRealtimeStart(){
   lalaRealtimeStop();
   try{
     if(window.supabase && window.supabase.createClient){
-      var cl=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      /* v1098：通知・Tip Rate と同じ 1 つの接続を使う（前は始めるたびに新しい接続を作り、タイマーと受け口が残っていた） */
+      if(!_rtClient) _rtClient=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      var cl=_rtClient;
       _lalaRtChannel=cl.channel('rt-lala')
         .on('postgres_changes', { event:'*', schema:'public', table:'app_state', filter:'key=eq.lala_tasks' }, function(){ lalaPullNow(); })
         .subscribe();
@@ -81333,7 +81339,7 @@ function lalaRealtimeStart(){
   lalaPullNow();
 }
 function lalaRealtimeStop(){
-  try{ if(_lalaRtChannel && _lalaRtChannel.unsubscribe) _lalaRtChannel.unsubscribe(); }catch(e){}
+  try{ if(_lalaRtChannel && _rtClient && _rtClient.removeChannel) _rtClient.removeChannel(_lalaRtChannel); else if(_lalaRtChannel && _lalaRtChannel.unsubscribe) _lalaRtChannel.unsubscribe(); }catch(e){}
   _lalaRtChannel=null;
   if(_lalaPollTimer){ clearInterval(_lalaPollTimer); _lalaPollTimer=null; }
 }

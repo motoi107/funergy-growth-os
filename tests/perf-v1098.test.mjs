@@ -311,6 +311,18 @@ test('④-11 a row asked for by name that is not in the answer (key spelling, de
   assert.deepEqual(JSON.parse(h.c.STORE.get('notifications')), [{ id: 'n2' }]);
 });
 
+test('④-12 old combined rows are folded after the split rows, whatever order the rows came in (the fold then adds only what the split rows lack)', () => {
+  const h = app();
+  h.run(`var ORDER = []; _handleLegacySplitRow = function(key, val){ _handleLegacySplitRow._ok = false; if(!_SPLIT_KEYS[key]) return false; ORDER.push(key + (STORE.has('spl_invoices_F01') ? ':split-rows-present' : ':split-rows-missing')); _handleLegacySplitRow._ok = true; return true; };`);
+  const rows = [row('invoices', [{ id: 'a', storeId: 'F01' }]), row('notifications', [{ id: 'n' }]), row('spl_invoices_F01', [{ id: 'a', storeId: 'F01' }]), row('tasks_all', [])];
+  h.c.ROWS = rows;
+  const ok = [];
+  h.c.OK = ok;
+  h.run('_applyKvRows(ROWS, OK)');
+  assert.deepEqual(JSON.parse(JSON.stringify(h.run('ORDER'))), ['invoices:split-rows-present', 'tasks_all:split-rows-present']);
+  assert.deepEqual(JSON.parse(JSON.stringify(ok)).sort(), ['invoices', 'notifications', 'spl_invoices_F01', 'tasks_all']);
+});
+
 test('⑥ release markers: APP_VERSION and SW_BUILD are 1098', () => {
   assert.match(source, /APP_VERSION = '1098'/);
   assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1098';/);

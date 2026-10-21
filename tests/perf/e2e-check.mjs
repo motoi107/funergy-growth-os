@@ -8,6 +8,7 @@
 //   F) 読むだけの写し（lsSplitRO）を、どのページも書き換えない（全部のページを開いたあと、写しと解き直した値が同じ）
 //   A の比べ方：端末がログインのたびに自分の時刻で書く欄（_at・_ts・savedAt・updatedTs・_im）と空の既読（ackBy: []）、端末が自分で足す知らせ（notifications）は比べない。
 //     日次実績から数え直す値（予算の actual）は、ログインの自動同期のあとで数え直すので、両方の端末を 12 秒待ってから比べる
+//   H) LaLa のページにいるあいだ、取り直しと接続を作り直し続けない
 //   G) ログインの同期の画面のあいだ（アプリの枠が出ていない）に画面を描かない（見えない画面を描いて、今日の売上を Toast に余分に聞いていた）
 // 使い方：模擬サーバー（server.mjs）を v1098 の index.html で動かしてから  node e2e-check.mjs
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
@@ -136,6 +137,13 @@ console.log('cloud changes', JSON.stringify(changes));
   });
   ok('F どのページも読むだけの写し（Invoice・立替）を書き換えない', Object.values(roF.out).every(x => x.same), roF);
 
+  // H) LaLa のページにいるあいだ、取り直し → 描き直し → 始め直し…が続かない（v1097 まで：10 秒で約 165 回の取り直しと 181 本の接続）
+  await a.page.evaluate(() => go('lala')); await sleep(1500);
+  await ctl('/__log?reset'); await sleep(6000);
+  const LH = (await ctl('/__log')).log;
+  const hReq = LH.filter(e => /app_state/.test(e.p)).length, hWs = LH.filter(e => /realtime/.test(e.p)).length;
+  await a.page.evaluate(() => go('dashboard'));
+  ok('H LaLa のページに 6 秒いても、取り直しと接続が続かない', hReq <= 3 && hWs <= 2, { appState: hReq, websocket: hWs });
   ok('ページの例外なし（2 回目）', a.errors.length === 0, a.errors.slice(0, 3));
   await a.ctx.close();
   const ka = Object.keys(stateA).sort(), kb = Object.keys(stateB).sort();
