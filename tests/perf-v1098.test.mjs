@@ -46,7 +46,7 @@ function app({ tables, failWrite = new Set(), noIndex = false } = {}) {
     decl('_SUPA_FETCH_ORDER'), decl('_SPLIT_RO'), decl('_LS_ONDEMAND_KEYS'), decl('_LS_ONDEMAND_PREFIX'),
     decl('KV_SEEN_KEY'), decl('KV_SKIP_PREFIX'), decl('KV_FULL_EVERY_MS'), decl('_kvRpcMissing'), decl('_kvLast'), decl('LS_LOCAL_ONLY'),
     ['_supaFetchOrder', 'supaFetchAll', '_ymOf', '_lsYmPrev', '_pdOf', '_lsPdPrev', '_lsOnDemand', 'isLocalOnlyKey', '_splitPrefix', 'lsSplitRO',
-      '_kvSeenGet', '_kvSkipKey', '_kvDiscarded', '_kvQuote', '_kvIndexRpc', '_kvIndexKeys', '_kvFetchKeys', '_kvPullRows', '_kvSeenRecord', '_applyKvRows'].map(fn).join('\n'),
+      '_kvFp', '_kvSeenGet', '_kvSkipKey', '_kvDiscarded', '_kvQuote', '_kvIndexRpc', '_kvIndexKeys', '_kvFetchKeys', '_kvPullRows', '_kvSeenRecord', '_applyKvRows'].map(fn).join('\n'),
     `function supaHeaders(){ return { apikey:'k', Authorization:'Bearer k', 'Content-Type':'application/json' }; }
      var _SPLIT_KEYS = { invoices:{type:'arr', by:function(r){return r&&r.storeId;}}, tasks_all:{type:'arr', by:function(r){return r&&r.store;}} };
      function _lsStoreGet(k){ return STORE.has(k) ? STORE.get(k) : null; }
@@ -230,6 +230,58 @@ test('④-6 a broken or empty index is not trusted (everything is taken as befor
   h.mock.handle = (m, u, hd, b) => (/rpc\/app_state_index/.test(u.pathname) ? { status: 200, body: '[{"key":"x","h":"nothex"}]' } : real(m, u, hd, b));
   const r2 = await pull(h);
   assert.equal(r2.how, 'all');
+});
+
+test('④-7 the device copy changed after the import (own push, Realtime, old IndexedDB value): taken again even if the cloud mark is the same', async () => {
+  // 独立レビューの P2：A が v1 を取り込み（印 H1）→ A が v2 に直して送る → B が v1 に戻す（クラウドの印はまた H1）→ A のログイン
+  const h = app({ tables: { app_state: seedCloud() } });
+  await pull(h);
+  const cloudText = JSON.stringify(h.mock.T.app_state.find(r => r.key === 'notifications').value);
+  assert.equal(h.c.STORE.get('notifications'), cloudText);
+  h.c.STORE.set('notifications', JSON.stringify([{ id: 'n1' }, { id: 'mine-v2' }]));   // 端末だけ変わった（クラウドは前と同じ文字）
+  const r = await pull(h);
+  assert.equal(r.how, 'keys');
+  assert.deepEqual(r.keys, ['notifications'], 'only the row whose device copy changed');
+  assert.equal(h.c.STORE.get('notifications'), cloudText, 'the device has the cloud value again (no merge rule = overwrite, as before)');
+  const r2 = await pull(h);
+  assert.deepEqual(r2.keys, [], 'and then it is skipped again');
+  const seen = JSON.parse(h.c.STORE.get('kv_seen_v1'));
+  assert.equal(seen.v, 2);
+  assert.match(seen.rows.notifications, /^h:[0-9a-f]{32}#[0-9a-z]+\.[0-9a-z]+\.[0-9a-z]+$/);
+  assert.match(seen.rows.invoices, /^h:[0-9a-f]{32}$/, 'old combined rows: cloud mark only');
+});
+
+test('④-8 a full pull recorded with a clock in the future does not stop the weekly full pull', async () => {
+  const h = app({ tables: { app_state: seedCloud() } });
+  await pull(h);
+  const seen = JSON.parse(h.c.STORE.get('kv_seen_v1'));
+  seen.fullAt = Date.now() + 5 * 86400000; h.c.STORE.set('kv_seen_v1', JSON.stringify(seen));
+  const r = await pull(h);
+  assert.equal(r.how, 'all');
+  assert.ok(JSON.parse(h.c.STORE.get('kv_seen_v1')).fullAt <= Date.now());
+});
+
+test('④-9 one failed call of the SQL function does not throw away the marks (the next login is still only the changes)', async () => {
+  const h = app({ tables: { app_state: seedCloud() } });
+  await pull(h);
+  const real = h.mock.handle; let failed = 0;
+  h.mock.handle = (m, u, hd, b) => (/rpc\/app_state_index/.test(u.pathname) && !failed++ ? { status: 500, body: '{"message":"busy"}' } : real(m, u, hd, b));
+  const r1 = await pull(h);
+  assert.equal(r1.how, 'all', 'fallback: everything as before');
+  const r2 = await pull(h);
+  assert.equal(r2.how, 'keys');
+  assert.deepEqual(r2.keys.filter(k => k !== 'invoices' && k !== 'tasks_all'), [], 'no ordinary row is taken again (old combined rows are folded once more)');
+});
+
+test('④-10 while IndexedDB is still starting, the marks are not recorded (the next login decides from the earlier record)', async () => {
+  const h = app({ tables: { app_state: seedCloud() } });
+  h.run("var _idbState = 'init';");
+  await pull(h);
+  assert.equal(h.c.STORE.has('kv_seen_v1'), false);
+  h.run("_idbState = 'ready';");
+  const r = await pull(h);
+  assert.equal(r.how, 'all');
+  assert.ok(h.c.STORE.has('kv_seen_v1'));
 });
 
 test('⑤ the SQL to paste is the same as the migration and the check (deploy/perf-v1098)', () => {

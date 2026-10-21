@@ -4,6 +4,8 @@
 //   B) 2 回目のログインで値を取ったのは変わった行だけ（rpc の一覧 + in.() の 1 回）
 //   C) 初めて開いた端末で、Service Worker が入っても読み込み直さない（v1097 までは 1 回読み込み直した）
 //   D) 名簿のある端末は、名簿の取得を待たずにログイン画面が出る（名簿の取得を 4 秒遅らせても出る）
+//   E) 端末の写しだけが変わった行（この端末で直して送った・ほかの経路で書き換わった）は、クラウドの印が同じでも取り直す（独立レビューの P2）
+//   F) 読むだけの写し（lsSplitRO）を、どのページも書き換えない（全部のページを開いたあと、写しと解き直した値が同じ）
 // 使い方：模擬サーバー（server.mjs）を v1098 の index.html で動かしてから  node e2e-check.mjs
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
 import fs from 'node:fs';
@@ -82,6 +84,9 @@ console.log('cloud changes', JSON.stringify(changes));
   ok('D 名簿の取得を 4 秒遅らせても、ログイン画面は名簿を待たずに出る', tl < 3500, { ms: tl });
   await ctl('/__delay?path=' + encodeURIComponent('/rest/v1/employees') + '&ms=0');
   await sleep(4500);
+  // E) 合流の決まりの無い行を 1 つ選び、端末の写しだけ変える（クラウドは 1 回目に取り込んだときの文字のまま）
+  const kE = await a.page.evaluate(ch => lsKeys('').filter(k => { try { return isOpSyncKey(k) && !_opMergeDef(k) && !(_SPLIT_KEYS && _SPLIT_KEYS[k]) && !_lsOnDemand(k) && !isLocalOnlyKey(k) && k.indexOf('spl_') !== 0 && ch.indexOf(k) < 0 && (_lsStoreGet(k) || '').length > 20; } catch (e) { return false; } }).sort()[0], changes.changedKeys);
+  const eBefore = await a.page.evaluate(k => { const s = _lsStoreGet(k); const v = JSON.parse(s); const v2 = (v && typeof v === 'object' && !Array.isArray(v)) ? Object.assign({}, v, { __e2e_local: 1 }) : (Array.isArray(v) ? v.concat([{ __e2e_local: 1 }]) : { __e2e_local: v }); _lsWriteVerified(k, JSON.stringify(v2)); try { _idbFlush(); } catch (e) { } return s; }, kE);
   await ctl('/__log?reset');
   await login(a.page);
   const L = (await ctl('/__log')).log;
@@ -91,10 +96,23 @@ console.log('cloud changes', JSON.stringify(changes));
   // 取った行＝別の端末が変えた行＋この端末が 1 回目に自分で書いた行（そのあと印が変わる）。それ以外は取らない
   const fetchedKeys = await a.page.evaluate(() => (_kvLastKeys || []).slice());
   const selfWritten = new Set(firstWrites);
-  const extra = fetchedKeys.filter(k => !changes.changedKeys.includes(k) && !selfWritten.has(k));
+  const extra = fetchedKeys.filter(k => !changes.changedKeys.includes(k) && !selfWritten.has(k) && k !== kE);
+  ok('E 端末の写しだけ変わった行は、クラウドの印が同じでも取り直し、クラウドの値に戻った', !!kE && fetchedKeys.includes(kE) && (await a.page.evaluate(k => _lsStoreGet(k), kE)) === eBefore, { key: kE ? kE.replace(/_[^_]*$/, '_…') : null });
   const missed = changes.changedKeys.filter(k => !fetchedKeys.includes(k));
   ok('B 取った行は「変わった行」だけで、変わった行は全部取った', extra.length === 0 && missed.length === 0, { fetched: fetchedKeys.length, extra: extra.slice(0, 8), missed, selfWritten: selfWritten.size });
   const stateA = await deviceState(a.page);
+  // F) すべてのページを開いたあと、読むだけの写しが解き直した値と同じ（どこかが写しを書き換えていれば違う）
+  const roF = await a.page.evaluate(async () => {
+    const pages = []; groupsForRole().forEach(g => (g.children || []).filter(c => typeof navChildAllowed !== 'function' || navChildAllowed(c)).forEach(c => { if (pages.indexOf(c) < 0) pages.push(c); }));
+    const keys = ['invoices', 'reimbursements'];
+    keys.forEach(k => { try { lsSplitRO(k); } catch (e) { } });
+    for (const p of pages) { try { go(p); } catch (e) { } await new Promise(r => setTimeout(r, 120)); }
+    try { go('dashboard'); } catch (e) { } await new Promise(r => setTimeout(r, 1500));
+    const out = {};
+    keys.forEach(k => { const ro = JSON.stringify(lsSplitRO(k)); const fresh = JSON.stringify(_SPLIT_KEYS && _SPLIT_KEYS[k] ? ls(k, []) : ls(k, [])); out[k] = { same: ro === fresh, n: (lsSplitRO(k) || []).length }; });
+    return { pages: pages.length, out };
+  });
+  ok('F どのページも読むだけの写し（Invoice・立替）を書き換えない', Object.values(roF.out).every(x => x.same), roF);
   ok('ページの例外なし（2 回目）', a.errors.length === 0, a.errors.slice(0, 3));
   await a.ctx.close();
   // ---- A) まっさらな端末で全部取ったものと比べる

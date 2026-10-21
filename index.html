@@ -9604,16 +9604,30 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
      分割へ移った古い行。今は前の版の端末しか書かない）にだけ使う（変わっていなければ取らない）。ほかの行は今までどおり全部取る。
    【取り込みで捨てる行】必要時だけ取る行（ec_log・人別の履歴など）と端末だけのキーは、前から取り込みで捨てていたので、取りに行かない。
    【念のため】7 日に 1 回と「クラウドから取り込む」（設定）は、印によらず全部取る。
+   【端末の写しが変わったとき】記録には、取り込んだ直後の端末の文字の印（_kvFp：長さと 64 ビットの印）も残す。
+     取らないのは「クラウドの印が同じ」かつ「端末の文字がそのときのまま」の行だけ。
+     この端末で直して送った・ほかの経路（Realtime・読み直し）で書き換わった・IndexedDB の古い値が戻った、などで
+     端末の文字が変わっていれば、クラウドの印が同じでも取り直す（今までと同じ取り込み＝合流・上書きを通す）。
    ============================================================ */
 var KV_SEEN_KEY = 'kv_seen_v1';                                   /* この端末だけ（クラウドへ送らない・クラウドから受け取らない） */
+/* 端末に置いた文字の印（同じ文字なら同じ印）。長さ＋64 ビット（2 本の 32 ビット）。暗号ではない（くらべるためだけ） */
+function _kvFp(s){
+  if(s==null) return '';
+  s=String(s);
+  var h1=0xdeadbeef|0, h2=0x41c6ce57|0, n=s.length;
+  for(var i=0;i<n;i++){ var c=s.charCodeAt(i); h1=Math.imul(h1^c, 2654435761); h2=Math.imul(h2^c, 1597334677); }
+  h1=Math.imul(h1^(h1>>>16), 2246822507) ^ Math.imul(h2^(h2>>>13), 3266489909);
+  h2=Math.imul(h2^(h2>>>16), 2246822507) ^ Math.imul(h1^(h1>>>13), 3266489909);
+  return n.toString(36)+'.'+(h2>>>0).toString(36)+'.'+(h1>>>0).toString(36);
+}
 var KV_SKIP_PREFIX = ['invoice_purchase_', 'lunch_photo_'];      /* まとめ取りに入れない行（v1077・v1080 から） */
 var KV_FULL_EVERY_MS = 7 * 86400000;
 var _kvRpcMissing = false;
 var _kvLast = null;                                               /* 最後の取り込みの様子（計測・確かめ用。中身は出さない） */
 var _kvLastKeys = null;                                           /* 最後に取った行のキー（確かめ用・メモリだけ） */
 function _kvSeenGet(){
-  try{ var s=_lsStoreGet(KV_SEEN_KEY); var o=s?JSON.parse(s):null; if(o && o.v===1 && o.rows && typeof o.rows==='object') return o; }catch(e){}
-  return { v:1, rows:{}, fullAt:0 };
+  try{ var s=_lsStoreGet(KV_SEEN_KEY); var o=s?JSON.parse(s):null; if(o && o.v===2 && o.rows && typeof o.rows==='object') return o; }catch(e){}
+  return { v:2, rows:{}, fullAt:0 };   /* v:2＝クラウドの印#端末の文字の印（v:1 の記録は使わない＝一度全部取る） */
 }
 function _kvSkipKey(k){
   for(var i=0;i<KV_SKIP_PREFIX.length;i++){ if(String(k).indexOf(KV_SKIP_PREFIX[i])===0) return true; }
@@ -9684,7 +9698,8 @@ async function _kvPullRows(force){
   var t0=Date.now();
   try{ if(typeof _idbBootP!=='undefined' && _idbBootP) await Promise.race([_idbBootP, new Promise(function(r){ setTimeout(r, 3000); })]); }catch(e){}   /* 端末に何があるかを IndexedDB から読み終えてから決める */
   var seen=_kvSeenGet();
-  if(!force && !(Number(seen.fullAt)>0 && Date.now()-Number(seen.fullAt)<KV_FULL_EVERY_MS)) force='weekly';
+  var _fa=Number(seen.fullAt)||0, _now=Date.now();
+  if(!force && !(_fa>0 && _fa<=_now+60000 && _now-_fa<KV_FULL_EVERY_MS)) force='weekly';   /* 先の時刻の記録（時計の進んだ端末）も全部取り直す */
   var idx=null, exact=false;
   idx=await _kvIndexRpc(); if(idx) exact=true;
   if(!idx){ try{ idx=await _kvIndexKeys(); }catch(e){ idx=null; } }
@@ -9697,7 +9712,14 @@ async function _kvPullRows(force){
         return;
       }
       if(_kvDiscarded(k)){ skip[k]=1; return; }
-      if(exact && !force && seen.rows[k]===r.v && _lsStoreGet(k)!=null){ skip[k]=1; sameSkip++; return; }
+      if(exact && !force){
+        var _sr=seen.rows[k], _cut=(typeof _sr==='string') ? _sr.indexOf('#') : -1;
+        /* クラウドの印が同じで、端末の文字が取り込んだ直後のまま（印が同じ）なら取らない */
+        if(_cut>0 && _sr.slice(0,_cut)===r.v && _sr.slice(_cut+1)===_kvFp(_lsStoreGet(k))){
+          skip[k]=1; sameSkip++; try{ _lsMarkFetched(k); }catch(e){}   /* このセッションでクラウドと同じと確かめた（取り込んだときと同じ扱い） */
+          return;
+        }
+      }
       need.push(k);
     });
   }
@@ -9726,14 +9748,24 @@ async function _kvPullRows(force){
 function _kvSeenRecord(rows, okKeys){
   try{
     var m=rows && rows._kv; if(!m || !m.idx) return;
+    /* IndexedDB を読み終える前（init）は記録しない（あとで IndexedDB の値が戻ることがあるため。次も今の記録で決める） */
+    try{ if(typeof _idbState!=='undefined' && _idbState==='init') return; }catch(e){}
     var seen=_kvSeenGet(), next={}, ok={}, got={};
     (okKeys||[]).forEach(function(k){ ok[k]=1; });
     (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
     Object.keys(m.ver).forEach(function(k){
-      if(ok[k]) next[k]=m.ver[k];
-      else if(!got[k] && seen.rows[k]===m.ver[k]) next[k]=m.ver[k];   /* 取らなかった（変わっていない）行 */
+      var legacy=!!(_SPLIT_KEYS && _SPLIT_KEYS[k]);
+      if(ok[k]){
+        if(legacy) next[k]=m.ver[k];                                   /* 前の統合行：畳み込むだけ（端末にそのまま置かない）なので、クラウドの印だけ */
+        else if(m.exact) next[k]=m.ver[k]+'#'+_kvFp(_lsStoreGet(k));    /* 取り込んだ直後の端末の文字の印も残す */
+        else if(seen.rows[k]!=null) next[k]=seen.rows[k];              /* 関数が使えなかった回：前の記録のまま（端末の文字の印でまた確かめる） */
+      }
+      else if(!got[k] && seen.rows[k]!=null){                         /* 取らなかった（変わっていない）行：記録はそのまま */
+        var _sr=String(seen.rows[k]), _cut=_sr.indexOf('#');
+        if((_cut>0 ? _sr.slice(0,_cut) : _sr)===m.ver[k]) next[k]=seen.rows[k];
+      }
     });
-    var o={ v:1, rows:next, fullAt:(m.force ? Date.now() : (Number(seen.fullAt)||0)), mode:(m.exact?'h':'u') };
+    var o={ v:2, rows:next, fullAt:(m.force ? Date.now() : (Number(seen.fullAt)||0)), mode:(m.exact?'h':'u') };
     _lsWriteVerified(KV_SEEN_KEY, JSON.stringify(o));
   }catch(e){ console.warn('kv seen', e); }
 }
@@ -9792,7 +9824,7 @@ async function supaPullAllMasters(opt){
     try{ if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function') renderPage(curPage); }catch(e){}
   };
   var _heavyTimer = setTimeout(_heavyDone, 8000);
-  Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
+  var _deferredP = Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
@@ -9800,6 +9832,7 @@ async function supaPullAllMasters(opt){
     _heavyDone();
   }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); try{ clearTimeout(_heavyTimer); }catch(_e){} _heavyDone(); });
   results.push('ingredients/app_state: 裏で取得中（完了後に再描画）');
+  try{ Object.defineProperty(results, '_done', { value:_deferredP, enumerable:false }); }catch(e){}   /* v1098: 裏の取り込みの終わりを待てるように（設定の「クラウドから取り込む」） */
   return results;
 }
 /* 既存のローカル運用データを一度だけクラウドへ移行（クラウドに無いキーのみ） */
@@ -11453,6 +11486,9 @@ async function runSupaPullAll(){
   showToast('クラウドから取り込み中…','info');
   try {
     var results = await supaPullAllMasters({ full:true });   /* v1098: 印によらず全部取る */
+    /* v1098: 裏で取る運用データ（app_state・食材）を取り込み終えてから読み込み直す（前は 1.8 秒後に読み込み直し、途中の取り込みが切れることがあった）。3 分まで待つ */
+    if(el) el.innerHTML = '<i class="ti ti-loader"></i> 運用データを取り込み中…';
+    try{ if(results && results._done) await Promise.race([ results._done, new Promise(function(r){ setTimeout(r, 180000); }) ]); }catch(e){}
     if(el) el.innerHTML = '<b>取込結果:</b><br>'+results.join('<br>')+'<br><span style="color:var(--accent2)">画面を再読み込みします…</span>';
     showToast('取り込み完了。再読み込みします','success');
     setTimeout(function(){ location.reload(); }, 1800);
@@ -14434,6 +14470,8 @@ function loginBackToLocation() {
   refreshLoginLabels();
 }
 function loginBackToName() {
+  if (_loginRosterDirty && loginLocation) { _loginRosterDirty = false; try { loginPickLocation(loginLocation); return; } catch(e){} }   /* v1098: PIN の段にいるあいだに名簿が新しくなっていたら、名前の並びを描き直す */
+  _loginRosterDirty = false;
   document.getElementById('login-step-name').style.display='block';
   document.getElementById('login-step-pin').style.display='none';
   refreshLoginLabels();
@@ -14611,7 +14649,9 @@ async function loginSyncOps(){
         await syncCreditTipAdjFromDB(s.id, s.toastGuid, _pfrom, _pto);
       } catch(e){ console.warn('loginSyncOps ctadj', s.id, e); } })());
       _jobs.push((async function(){ try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); } })());
-      try { backfillRecentLabor(s.id, s.toastGuid, days).catch(function(e){ console.warn('loginSyncOps laborTail', s.id, e); }); } catch(e){} // v643: 直近Laborのライブ補完はToast往復を待たず裏で実行（ログイン高速化）
+      /* v643: 直近Laborのライブ補完はToast往復を待たず裏で実行（ログイン高速化）。
+         v1098: 今までと同じく、売上・DB の勤怠・クレジットTip調整を読み終えてから始める（DB の行が届く前にライブで取り直さない） */
+      Promise.all(_jobs.slice(0, 3)).then(function(){ return backfillRecentLabor(s.id, s.toastGuid, days); }).catch(function(e){ console.warn('loginSyncOps laborTail', s.id, e); });
       await Promise.all(_jobs);
       done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
     }));
@@ -14728,12 +14768,17 @@ function _loginHasRoster(){
   try{ var e=_lsStoreGet('m_employees'), st=_lsStoreGet('m_stores'); return !!(e && st && e.length>20 && st.length>20); }catch(e){ return false; }
 }
 /* 裏で取り直した名簿が変わっていたら、いま出している段（所属・名前）を描き直す（PIN の段はそのまま） */
-function _loginRosterRefreshed(){
+var _loginTapAt = 0, _loginRosterDirty = false;
+try{ document.addEventListener('pointerdown', function(){ _loginTapAt=Date.now(); }, { capture:true, passive:true }); }catch(e){}
+function _loginRosterRefreshed(tries){
   try{
     var scr=document.getElementById('login-screen'); if(!scr || scr.style.display==='none') return;
-    var loc=document.getElementById('login-step-location'), nm=document.getElementById('login-step-name');
-    if(loc && loc.style.display!=='none') bootLogin();
-    else if(nm && nm.style.display!=='none' && loginLocation) loginPickLocation(loginLocation);
+    /* 押している最中に並びが変わらないように、押した直後は少し待ってから描き直す */
+    if(Date.now()-_loginTapAt<700 && (tries||0)<6){ setTimeout(function(){ _loginRosterRefreshed((tries||0)+1); }, 700); return; }
+    var loc=document.getElementById('login-step-location'), nm=document.getElementById('login-step-name'), pin=document.getElementById('login-step-pin');
+    try{ bootLogin(); }catch(e){}   /* 所属の並び（見えていなくても、戻ったときに新しい並び） */
+    if(nm && nm.style.display!=='none' && loginLocation) loginPickLocation(loginLocation);
+    else if(pin && pin.style.display!=='none') _loginRosterDirty = true;   /* PIN の段はそのまま。名前の段へ戻ったときに描き直す */
   }catch(e){}
 }
 async function loginBootstrapPull(opt){
