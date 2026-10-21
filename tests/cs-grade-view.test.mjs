@@ -325,3 +325,19 @@ test('independent review P2-3: the view shown to the person has one verdict (no 
   assert.match(self, /kdHeadHtml\(e, g, gcol, lv, true\)/);
   assert.equal((SRC.match(/kdHeadHtml\(e, g, gcol, lv\);/g) || []).length, 1, 'the manager page');
 });
+
+test('specialists (department sheet, by role): the view uses the department categories of the person it is given, without re-reading the roster; base = the store share × 96', () => {
+  const c = co();
+  vm.runInContext(`function specialistCats(d){ return d ? ['A','B','C','D','E','F','G','H'].map(function(k){ return {key:k, name:d+' '+k, en:k, icon:'ti-star', items:['1','2','3','4']}; }) : null; }
+    function lssCatsForName(n){ var e=getEmployees().find(function(x){ return x.name===n; }), d=e ? empSpecialistDept(e) : null; return (d && specialistCats(d)) || lssCatsOrdered(); }   /* like the real one (the bonus side reads it) */
+    var _ge0 = getEmployees, GE_CALLS = 0; getEmployees = function(){ GE_CALLS++; return _ge0(); };`, c);
+  const sc = {}; for (const k of ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']) for (let i = 0; i < 4; i++) sc[k + i] = 2;
+  c.SCORES['Ray Sample'] = { evaluator: 'GM', date: '2026/09/20', scores: sc, status: '確定' };
+  c.GE_CALLS = 0;
+  const v = view(c, 'ray');
+  assert.deepEqual([v.sheet, v.cats.length, v.max, v.score, v.bp, v.state], ['spec', 8, 96, 64, 72, 'notmet']);
+  assert.equal(v.bp, person(c, 'ray').segs[0].items.c.base.bp, 'the same base as the bonus ①');
+  c.GE_CALLS = 0;
+  run(c, `(function(){ var e=EMPS.find(function(x){ return x.id==='aki'; }); for(var i=0;i<20;i++) csvView(e); })()`);
+  assert.equal(c.GE_CALLS, 0, 'no roster read per person');
+});
