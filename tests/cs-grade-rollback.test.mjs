@@ -16,15 +16,17 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const V1100 = process.env.FUNERGY_INDEX || path.join(root, 'index.html');
 const V1099_COMMIT = 'c79e3226d7d3166bb07c8324932090dfb466db5b';   // main after PR #84 (the v1099 release)
-let v1099src;
-try {
-  v1099src = execFileSync('git', ['show', `${V1099_COMMIT}:index.html`], { cwd: root, encoding: 'utf8', maxBuffer: 3e7 });
-} catch (err) {
-  throw new Error(`this test reads index.html of the v1099 release ${V1099_COMMIT} from the local git history (git fetch --unshallow): ${err.message}`);
-}
+const V1100_COMMIT = 'a5a101be535d78f59e8144dd7ab9bdcd0dadf6bc';   // PR #86 as merged (the v1100 release; its ① has no c8)
+const show = commit => {
+  try { return execFileSync('git', ['show', `${commit}:index.html`], { cwd: root, encoding: 'utf8', maxBuffer: 3e7 }); }
+  catch (err) { throw new Error(`this test reads index.html of ${commit} from the local git history (git fetch --unshallow): ${err.message}`); }
+};
+const v1099src = show(V1099_COMMIT), v1100src = show(V1100_COMMIT);
 assert.match(v1099src, /const APP_VERSION = '1099';/);
-const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'funergy-v1099-')), V1099 = path.join(TMP, 'index.html');
+assert.match(v1100src, /const APP_VERSION = '1100';/);
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'funergy-v1099-')), V1099 = path.join(TMP, 'index.html'), V1100R = path.join(TMP, 'index-1100.html');
 fs.writeFileSync(V1099, v1099src);
+fs.writeFileSync(V1100R, v1100src);
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const fixtureSrc = fs.readFileSync(new URL('./karte-eval.test.mjs', import.meta.url), 'utf8').split("test('the fictional company")[0];
@@ -44,7 +46,7 @@ async function harness(file) {
   };
   return { co, person: m.person, Q: m.Q };
 }
-const N = await harness(V1100), O = await harness(V1099);
+const N = await harness(V1100), O = await harness(V1099), R1100 = await harness(V1100R);
 const Q = N.Q;
 const J = x => JSON.parse(JSON.stringify(x));
 const run = (c, code) => { const v = vm.runInContext(code, c); return v === undefined ? v : J(v); };
@@ -410,6 +412,78 @@ test('independent review 5db2653 P3: the preview of taking away another personal
   const pv = parts => run(c, `(function(){ var v=kevVer(kevOvrAll(), 'mia', '${Q}'), s=JSON.parse(JSON.stringify(v.set)); ${JSON.stringify(parts)}.forEach(function(p){ delete s[p]; }); var RF=kevRuleFor('G4', '${Q}', 'mia', {level:'person', empId:'mia', set:s, replace:true}, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, 'G4'); return [B.bp, !!B.lost]; })()`);
   assert.deepEqual(pv(['s']), [315, true]);        // 5db2653: [315, false] — the preview showed an amount
   assert.deepEqual(pv(['c', 'w']), [315, false]);  // after taking ① away the grade value is used
+});
+
+// a device on the released v1100 (a5a101b) saves on its real form: no c8
+function v1100Save(store, open, vals, from = Q) {
+  const d = R1100.co();
+  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr']) if (store[k]) d.STORE[k] = J(store[k]);
+  run(d, open);
+  d.DOM['@kevf-on'] = { value: '1' };
+  Object.assign(d.DOM, { 'kevf-lo': { value: '0.85' }, 'kevf-hi': { value: '1.15' }, 'kevf-bp': { value: vals.bp ?? '' }, 'kevf-bs': { value: vals.bs ?? '' }, 'kevf-why': { value: 'v1100 の端末' }, 'kevf-from': { value: from } });
+  d.TOASTS.length = 0; run(d, 'kevFormSave()');
+  assert.match(String((d.TOASTS.at(-1) || [''])[0]), /保存しました/, JSON.stringify(d.TOASTS));
+  return J(d.STORE);
+}
+const tick = () => { const t = Date.now() + 3; while (Date.now() < t) { /* the stores' save times (_at) must differ */ } };
+
+test('v1101: settings saved by the released v1100 (no c8) — a v1099 re-save is still found by a walk that follows the save times; saving in v1101 gives them c8', () => {
+  const at = (c, q, emp = 'null', scope = 'G2') => run(c, `(function(){ var RF=kevRuleFor('${scope}', '${q}', ${emp}, null, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, '${scope}'); return [B.bp, B.bs, !!B.legacy, !!B.lost, B.lost ? B.lost.ref : null]; })()`);
+  // G2 260 / 13 saved on v1100 (a5a101b): no c8
+  let st = v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  assert.equal('c8' in st.bonus_eval_rule[`G2|${Q}`].set, false);
+  const c = N.co(); c.STORE.bonus_eval_rule = J(st.bonus_eval_rule);
+  assert.deepEqual(at(c, Q), [260, 13, false, false, null]);
+  // a v1099 device: re-save of the same version, then 2026-Q4 and 2027-Q1
+  tick(); st = v1099Resave(st, `kevRuleOpen('G2', 'c')`).store;
+  tick(); st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, '2026-Q4').store;
+  tick(); st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, '2027-Q1').store;
+  c.STORE.bonus_eval_rule = J(st.bonus_eval_rule);
+  for (const q of [Q, '2026-Q4', '2027-Q1']) assert.deepEqual(at(c, q), [252, 13, true, true, { bp: 260, bs: 13 }], q);
+  // S1 with v1100 records: G4 260 (v1100) → v1099 makes Q4 keeping 260 → a v1100 device changes Q3 to 280 later: Q4 is not stopped
+  let s1 = v1100Save({}, `kevRuleOpen('G4', 'c')`, { bp: '260' });
+  tick(); s1 = v1099Resave(s1, `kevRuleOpen('G4', 'c')`, {}, null, '2026-Q4').store;
+  tick(); s1 = v1100Save(s1, `kevRuleOpen('G4', 'c')`, { bp: '280' });
+  const a = N.co(); a.STORE.bonus_eval_rule = J(s1.bonus_eval_rule);
+  assert.deepEqual([at(a, Q, 'null', 'G4').slice(0, 4), at(a, '2026-Q4', 'null', 'G4').slice(0, 4)], [[280, 13, false, false], [260, 13, false, false]]);
+  // …and a v1099 value typed in Q4 against that 260 is found (compared with the Q3 state when Q4 was made, 260)
+  tick(); const s1b = v1099Resave(s1, `kevRuleOpen('G4', 'c')`, { bp: '300' }, null, '2026-Q4').store;
+  a.STORE.bonus_eval_rule = J(s1b.bonus_eval_rule);
+  assert.deepEqual(at(a, '2026-Q4', 'null', 'G4').slice(3), [true, { bp: 260, bs: null }]);
+  // a value changed in v1101 replaces c8 (a later v1099 range-only save keeps the mirrored G4 value → not stopped)
+  const h = N.co();
+  saveForm(h, `kevRuleOpen('G4', 'c')`, { bp: '260' });
+  saveForm(h, `kevRuleOpen('G4', 'c')`, { bp: '280' });
+  assert.deepEqual(J(h.STORE.bonus_eval_rule[`G4|${Q}`].set.c8), { b8: 1, bp8: 280, bs8: null });
+  h.STORE.bonus_eval_rule = v1099Resave(J(h.STORE), `kevRuleOpen('G4', 'c')`).store.bonus_eval_rule;
+  assert.deepEqual(at(h, Q, 'null', 'G4').slice(0, 4), [280, 13, false, false]);
+  // S2: a Q4 version that existed before v1100 set Q3 is not stopped
+  const s2 = { bonus_eval_rule: { 'G4|2026-Q4': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 310 } }, _at: Date.now() - 86400000 } } };
+  const b = N.co(); b.STORE.bonus_eval_rule = J(v1100Save(s2, `kevRuleOpen('G4', 'c')`, { bp: '260' }).bonus_eval_rule);
+  assert.deepEqual(at(b, '2026-Q4', 'null', 'G4').slice(0, 4), [310, 13, false, false]);
+  // S3: mia 240 / 12 (v1100) → v1099 2027-Q1 blank → later a v1100 device takes her ① away in 2026-Q4: 2027-Q1 still waits
+  let s3 = v1100Save({}, `kevOvrOpen('mia', 'c')`, { bp: '240', bs: '12' });
+  tick(); s3 = v1099Resave(s3, `kevOvrOpen('mia', 'c')`, {}, null, '2027-Q1').store;
+  tick();
+  const d = N.co(); d.STORE.bonus_eval_ovr = J(s3.bonus_eval_ovr);
+  d.STORE.bonus_eval_ovr['mia|2026-Q4'] = { set: { s: { on: true } }, _at: Date.now() };
+  assert.deepEqual(at(d, '2027-Q1', "'mia'", 'G4').slice(3), [true, { bp: 240, bs: 12 }]);
+  // a version made later for an earlier quarter is not where 2027-Q1 was copied from: Q3 changed to 250 by v1100 after 2027-Q1 was made, then Q4 made from it
+  let s4 = v1100Save({}, `kevOvrOpen('mia', 'c')`, { bp: '240', bs: '12' });
+  tick(); s4 = v1099Resave(s4, `kevOvrOpen('mia', 'c')`, {}, null, '2027-Q1').store;
+  tick(); s4 = v1100Save(s4, `kevOvrOpen('mia', 'c')`, { bp: '250', bs: '12' });
+  tick(); s4 = v1100Save(s4, `kevOvrOpen('mia', 'c')`, { bp: '250', bs: '12' }, '2026-Q4');
+  const g = N.co(); g.STORE.bonus_eval_ovr = J(s4.bonus_eval_ovr);
+  assert.deepEqual(at(g, '2027-Q1', "'mia'", 'G4').slice(3), [true, { bp: 240, bs: 12 }]);
+  // a malformed history entry is skipped, not the end
+  const e = N.co(); e.STORE.bonus_eval_rule = J(st.bonus_eval_rule);
+  e.STORE.bonus_eval_rule[`G2|${Q}`].hist.push({ at: 'x' });
+  assert.deepEqual(at(e, Q).slice(2, 4), [true, true]);
+  // saving another part in v1101 gives the v1100 ① its c8 (then the lineage no longer needs the walk)
+  const f = N.co(); f.STORE.bonus_eval_rule = J(v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' }).bonus_eval_rule);
+  assert.equal(run(f, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, '試験', '② を変更')`), true);
+  assert.deepEqual(J(f.STORE.bonus_eval_rule[`G2|${Q}`].set.c8), { b8: 1, bp8: 260, bs8: 13 });
+  assert.ok(Number(J(f.STORE.bonus_eval_rule[`G2|${Q}`])._t.c8) > 0);
 });
 
 test('back from v1099: a v1099 device that types a G2 value (140 / 7 on 225 points) → v1100 does not use it silently (the amount waits, listed to re-enter)', () => {

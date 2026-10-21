@@ -38960,7 +38960,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1100';
+const APP_VERSION = '1101';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64660,7 +64660,7 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2){
       FP=null;
   Object.keys(R).forEach(function(g){ Object.keys(R[g]).forEach(function(f){ M[g+'.'+f]='common'; }); });
   R.stores=null; M.stores=null;
-  var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ov=empId ? kevVer(kevOvrAll(), empId, q) : null;
+  var all=kevRuleAll(), cm=kevVer(all, '_common', q), gr=scope ? kevVer(all, scope, q) : null, ovAll=empId ? kevOvrAll() : null, ov=empId ? kevVer(ovAll, empId, q) : null;
   /* v1075：前の版の個人設定は、部分ごとに、その値を決めた四半期に前の版で効いていた値と比べる（あとで次の四半期の版を作っても変わらない） */
   if(gen2) FP={noSP:true, noRng:true, noJ:true, onDev:kevOvrV1Base(scope, empId, q), noRngC:gen3, noCOld:gen3};
   if(gen2 && force2 && kevGen3(q)){ FC.noG3=true; FR.noG3=true; FP.noG3=true; }   /* v1099：前の決め方で比べる */
@@ -64685,7 +64685,7 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2){
     lz(all, '_common', cm, 'common', simC && sim.level==='common');
     if(scope==='G6') lz(all, 'G5', g5, 'g5', simC && sim.level==='grade' && sim.scope==='G5');
     if(scope) lz(all, scope, gr, 'grade', simC && sim.level==='grade' && sim.scope===scope);
-    if(empId) lz(null, empId, ov, 'person', !!(sim && sim.level==='person' && sim.empId===empId && (simC || (sim.replace && !(sim.set && sim.set.c && typeof sim.set.c==='object')))));   /* 外す試算：① が残るなら ① は見る（独立レビュー 5db2653 の P3） */
+    if(empId) lz(ovAll, empId, ov, 'person', !!(sim && sim.level==='person' && sim.empId===empId && (simC || (sim.replace && !(sim.set && sim.set.c && typeof sim.set.c==='object')))));   /* 外す試算：① が残るなら ① は見る（独立レビュー 5db2653 の P3） */
   }
   return {r:R, src:M, ovr:ov, grade:gr, g5:g5, common:cm, scope:scope, gen3:gen3, csLost:lost};
 }
@@ -66790,6 +66790,7 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
     cur.c8={b8:1, bp8:kevN(cur.c.bp8), bs8:kevN(cur.c.bs8)}; c8T=true;
   }
   if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && (replaceParts||[]).indexOf('c')>=0 && !(set && set.c) && cur.c8){ delete cur.c8; c8T=true; }   /* ① を外した：v1100 の ① も無い */
+  if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && cur.c && typeof cur.c==='object' && kevN(cur.c.b8) && !(cur.c8 && typeof cur.c8==='object')){ cur.c8={b8:1, bp8:kevN(cur.c.bp8), bs8:kevN(cur.c.bs8)}; c8T=true; }   /* v1101：v1100 で保存した ①（c8 なし）にも、ほかの部分を保存したときに付ける */
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
   if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at, _t:prev._t});   /* v1075：部分ごとの保存時刻も残す（前の版の値の時刻） */
   var rec=kevStamp({set:cur, why:why, what:what, hist:hist}, prev);
@@ -67345,11 +67346,35 @@ function kevCsPick(R, RF, f){
 function kevCsLost(all, prefix, v){
   var set=(v && v.set && typeof v.set==='object') ? v.set : null, c=(set && set.c && typeof set.c==='object') ? set.c : null;
   if(!c || kevN(c.b8)) return null;
-  var ref=(set.c8 && typeof set.c8==='object' && kevN(set.c8.b8)) ? set.c8 : null;
+  var ref=(set.c8 && typeof set.c8==='object' && kevN(set.c8.b8)) ? set.c8 : kevCsLostWalk(all, prefix, v);   /* v1101：c8 の無い記録（v1100 で保存）はたどって探す */
   if(!ref) return null;
   var pos=function(n){ return (n!=null && n>0) ? n : null; }, rb=kevN(ref.bp8), rs=pos(kevN(ref.bs8));
   var bp=(kevN(c.bp)!==rb), bs=(pos(kevN(c.bs))!==rs);
   return (bp || bs) ? {bp:bp, bs:bs, ref:{bp:rb, bs:rs}} : null;
+}
+/* v1101：c8 の無い記録（v1100 ＝ a5a101b で保存した ①）のための探し方。新しい順にたどり、印 b8 の ① が最初に見つかったところ。
+   前の四半期の版へ移るときは、時刻（_at）で、今の版を作ったときまでにあった版・状態だけを見る（独立レビュー 5db2653 の P2：あとで前の四半期を直した・
+   あとで作った版・v1100 より前からあった版を、写した元とみなさない）。① の無い状態に当たったら切れる。形の崩れた履歴は飛ばす。時刻の無い記録は前の決め方のまま */
+function kevCsLostWalk(all, prefix, v){
+  if(!all || typeof all!=='object') return null;
+  var T=function(x){ var n=Number(x && x._at); return (isFinite(n) && n>0) ? n : 0; };
+  var states=function(w){ var h=Array.isArray(w && w.hist) ? w.hist : [], out=[]; h.forEach(function(e){ if(e && typeof e==='object') out.push({set:e.set, at:T(e)}); }); out.push({set:w && w.set, at:T(w)}); return out; };
+  var born=function(w){ var m=0; states(w).forEach(function(x){ if(x.at && (!m || x.at<m)) m=x.at; }); return m; };
+  var vs=kevVersions(all, prefix), cur=v, ss=states(v), i=ss.length-2, upto=0;
+  for(var g=0; g<200; g++){
+    for(; i>=0; i--){
+      var st=ss[i].set;
+      if(!st || typeof st!=='object') continue;
+      if(upto && ss[i].at && ss[i].at>upto) continue;
+      var x=st.c;
+      if(!x || typeof x!=='object') return null;
+      if(kevN(x.b8)) return x;
+    }
+    var tb=born(cur), cand=vs.filter(function(w){ var b=born(w); return w.from<cur.from && (!tb || !b || b<=tb); });
+    if(!cand.length) return null;
+    cur=cand[cand.length-1]; ss=states(cur); i=ss.length-1; upto=tb;
+  }
+  return null;
 }
 /* 解決した設定の基準得点・1 段が、v1099 の端末の保存で消えた v1100 の点の代わりか（消えた層が、使っている点の層と同じか細かい） */
 function kevCsLostParts(RF, pB, pS){
