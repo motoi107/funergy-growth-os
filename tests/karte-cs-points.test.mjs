@@ -440,3 +440,69 @@ test('criteria guide: initial drafts for 35 groups, 8 categories × G2–G5 and 
   c.curRole = 'am';
   assert.equal(run(c, 'csgCan()'), false);
 });
+
+test('independent review P2: a grade change confirmed before v1099 (no per-category unscored count) is not counted until GM/CEO checks it', () => {
+  const c = co();
+  c.SEGS.ken = [{ g: 'G2', from: '2026-07-01', to: '2026-08-14', days: 45 }, { g: 'G3', from: '2026-08-15', to: '2026-09-30', days: 47 }];
+  c.STORE.bonus_eval[`${Q}|ken|G2`] = { st: 'done', _at: 1 };
+  const cats = run(c, `lssSummary('Ken Sample').cats`).map(x => ({ key: x.key, score: x.score, max: x.max }));
+  c.STORE.grade_hist = { ken: { recs: [{ d: '2026-08-14', g: 'G3', from: 'G2', start: false, prevEval: { g: 'G2', kv: 1, hUn: 0, cats, at: '2026-08-14 10:00', by: 'CEO' } }] } };
+  let p = person(c, 'ken');
+  assert.equal(p.blocked, 'eval');
+  assert.equal(p.segs[0].items.c.total.missing, 'legacy');
+  assert.match(p.missing.join(), /未評価の項目があったか分かりません.*この記録で数える/);
+  // GM/CEO checks it and records a reason → counted (H, A, B, C of the record: 40 + 36 + 36 + 42 = 154 → 2 steps over 135 → 1.10)
+  c.prompt = () => 'Career Score の履歴で全項目の採点を確認';
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), true);
+  const ack = c.STORE.bonus_eval[`${Q}|ken|G2`].legAck;
+  assert.deepEqual([ack.why, ack.by], ['Career Score の履歴で全項目の採点を確認', 'CEO Sample']);
+  p = person(c, 'ken');
+  assert.deepEqual([p.segs[0].items.c.total.missing, p.segs[0].items.c.score, p.segs[0].coefs.c], [null, 154, 1.1]);
+  assert.match(p.missing.join() || '', /^$|評価完了/, 'only the re-done mark is left (the check changed the record)');
+  // no reason → nothing is recorded
+  c.prompt = () => '  ';
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), false);
+  // taken back → 未評価 again
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', true)`), true);
+  assert.equal(person(c, 'ken').segs[0].items.c.total.missing, 'legacy');
+  // a v1099 record (with the per-category count) needs nothing
+  c.STORE.grade_hist.ken.recs[0].prevEval.kv = 2;
+  c.STORE.grade_hist.ken.recs[0].prevEval.cun = Object.fromEntries(cats.map(x => [x.key, 0]));
+  assert.equal(person(c, 'ken').segs[0].items.c.total.missing, null);
+  // only GM/CEO
+  c.curRole = 'am';
+  c.STORE.grade_hist.ken.recs[0].prevEval.kv = 1; delete c.STORE.grade_hist.ken.recs[0].prevEval.cun;
+  c.prompt = () => '確認';
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), false);
+});
+
+test('independent review P3: ① ranges saved by v1074–v1098 are not used either; the special pool is not saved when the cloud cannot be read', async () => {
+  const c = co();
+  c.STORE.bonus_eval_rule = { 'G3-sv|2026-Q3': { set: { c: { on: true, lo: 0.7, hi: 1.3, g2: 1 } }, _at: 1 } };
+  assert.deepEqual([seg(c, 'ken').items.c.rule.lo, seg(c, 'ken').items.c.rule.hi, person(c, 'ken').blocked], [0.85, 1.15, null]);
+  assert.match(run(c, `kevMisfits3('${Q}')`).info.join(), /v1098 までに保存した ① の幅（G3 サーバーリーダー 0\.70〜1\.30）も使いません/);
+  // the special pool: offline / sync off → not saved; the cloud read fails → not saved; another device's newer value wins → told, not "saved"
+  c.EMPS = c.EMPS.filter(e => e.id === 'gus'); c.POOL = 10000;
+  Object.assign(c.DOM, { 'kpx-v': { value: '700' }, 'kpx-why': { value: '特別' }, 'kpx-at': { value: '0' } });
+  vm.runInContext(`var SUPA_SYNC_ENABLED = false; function pullOpKey(){ return Promise.resolve(PULL_OK); } var PULL_OK = true;`, c);
+  assert.equal(await runP(c, `Promise.resolve(kevPxSaveUi('${Q}'))`), false);
+  assert.match(lastToast(c), /同期が OFF.*保存していません/);
+  vm.runInContext(`SUPA_SYNC_ENABLED = true; PULL_OK = false;`, c);
+  assert.equal(await runP(c, `Promise.resolve(kevPxSaveUi('${Q}'))`), false);
+  assert.match(lastToast(c), /読めなかったため、保存していません/);
+  assert.equal(totals(c).extra, 0);
+  vm.runInContext(`PULL_OK = true; function _lsRaw(k){ return ls(k, null); } function opMergePush(k, v){ var m = ls(k, {}); m['${Q}'] = Object.assign({}, m['${Q}'], { v: 900, why: 'ほかの端末', _at: m['${Q}']._at + 5 }); lsSet(k, m); return Promise.resolve(true); }`, c);
+  assert.equal(await runP(c, `Promise.resolve(kevPxSaveUi('${Q}'))`), false);
+  assert.match(lastToast(c), /ほかの端末で特別原資が先に変わっていました（いまは \$900\.00）/);
+});
+
+test('independent review P3: the guide can be written for a department axis without a draft; history differences need the same maximum', () => {
+  const c = co();
+  vm.runInContext(`function specialistCats(d){ return d === 'サービス' ? [{ key:'A', name:'A', items:['1'] }] : null; }`, c);
+  assert.deepEqual(run(c, `csgDefOf('spec|サービス|A')`), {});
+  assert.equal(run(c, `csgDefOf('spec|サービス|Z')`), null);
+  assert.equal(run(c, `csgSaveRec('spec|サービス|A', 'ja', {what:'接客の基本'}, '初めて書いた', 0)`).ok, true);
+  assert.equal(run(c, `csgGet('spec|サービス|A', 'ja').what`), '接客の基本');
+  assert.equal(run(c, `lssHistDiff({score:300, max:420, prevScore:150, prevMax:225})`), null, 'different maximum: no point difference');
+  assert.equal(run(c, `lssHistDiff({score:300, max:420, prevScore:290, prevMax:420})`).d, 10);
+});
