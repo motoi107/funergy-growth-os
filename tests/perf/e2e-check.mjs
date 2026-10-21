@@ -6,6 +6,7 @@
 //   D) 名簿のある端末は、名簿の取得を待たずにログイン画面が出る（名簿の取得を 4 秒遅らせても出る）
 //   E) 端末の写しだけが変わった行（この端末で直して送った・ほかの経路で書き換わった）は、クラウドの印が同じでも取り直す（独立レビューの P2）
 //   F) 読むだけの写し（lsSplitRO）を、どのページも書き換えない（全部のページを開いたあと、写しと解き直した値が同じ）
+//   G) ログインの同期の画面のあいだ（アプリの枠が出ていない）に画面を描かない（見えない画面を描いて、今日の売上を Toast に余分に聞いていた）
 // 使い方：模擬サーバー（server.mjs）を v1098 の index.html で動かしてから  node e2e-check.mjs
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
 import fs from 'node:fs';
@@ -24,6 +25,11 @@ async function open(dir) {
   const ctx = await chromium.launchPersistentContext(dir, { headless: true, args: ARGS, ignoreHTTPSErrors: true, viewport: { width: 390, height: 844 } });
   const page = ctx.pages()[0] || await ctx.newPage();
   const errors = []; page.on('pageerror', e => errors.push(String(e.message || e).slice(0, 160)));
+  await page.addInitScript(() => {   // G) アプリの枠が出ていないときの renderPage を数える
+    window.__hiddenRenders = 0; window.__renders = 0;
+    const iv = setInterval(() => { const f = window.renderPage; if (typeof f !== 'function' || f.__w) return; const g = function () { window.__renders++; const ap = document.getElementById('app-shell'); if (ap && getComputedStyle(ap).display === 'none') window.__hiddenRenders++; return f.apply(this, arguments); }; g.__w = 1; window.renderPage = g; }, 5);
+    setTimeout(() => clearInterval(iv), 120000);
+  });
   let navs = 0; page.on('framenavigated', f => { if (f === page.mainFrame()) navs++; });
   return { ctx, page, errors, navs: () => navs };
 }
@@ -92,6 +98,10 @@ console.log('cloud changes', JSON.stringify(changes));
   const L = (await ctl('/__log')).log;
   const vals = L.filter(e => e.p.startsWith('/rest/v1/app_state?select=key,value'));
   const kv = await a.page.evaluate(() => _kvLast);
+  const rG = await a.page.evaluate(() => ({ hidden: window.__hiddenRenders, all: window.__renders }));
+  ok('G ログインの同期の画面のあいだに画面を描かない', rG.hidden === 0 && rG.all > 0, rG);
+  const hw = L.filter(e => /functions\/v1\/hyper-worker/.test(e.p)).length;
+  ok('G ログインのあとの Toast の呼び出しは、店ごとに 2 回まで（今日の売上 1 回・ログインの自動同期 1 回）', hw <= 2 * (await a.page.evaluate(() => getStoresAll().filter(s => s.toastGuid).length)), { hyperWorker: hw });
   ok('B 2 回目は変わった行だけ取った（一覧 1 回＋値 1 回）', kv && kv.how === 'keys' && vals.length === 1 && L.filter(e => /rpc\/app_state_index/.test(e.p)).length === 1, { kv, valueRequests: vals.length, bytes: vals.reduce((x, e) => x + e.b, 0) });
   // 取った行＝別の端末が変えた行＋この端末が 1 回目に自分で書いた行（そのあと印が変わる）。それ以外は取らない
   const fetchedKeys = await a.page.evaluate(() => (_kvLastKeys || []).slice());
