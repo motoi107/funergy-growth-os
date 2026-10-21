@@ -67334,13 +67334,22 @@ function kevCsPick(R, RF, f){
   return {v:null, src:'default', v8:false};
 }
 /* v1100（独立レビュー 8a04750 の P2-1）：この層の ① が v1099 の端末で保存し直され（印 b8 が無い）、その前の v1100 の基準得点・1 段と違うか。
-   その前＝同じ版の変更の履歴か、前の四半期の版にある、印 b8 のいちばん新しい ①。違う欄だけ {bp, bs, ref:{bp, bs}}（同じなら null） */
+   その前の状態を新しい順にさかのぼる：同じ版の変更の履歴 → 前の四半期の版（その版の今の値 → その版の履歴）→ さらに前の四半期の版 …。
+   印 b8 の ① がいちばん先に見つかったところと比べる（Codex 31277db の P1：v1099 の端末が四半期の版を 2 つ以上続けて作っても見失わない）。
+   ① の無い状態（外していた）に当たったら、そこで切れる（v1100 の点を置き換えたのではない）。違う欄だけ {bp, bs, ref:{bp, bs}}（同じなら null） */
 function kevCsLost(all, prefix, v){
   var c=(v && v.set && v.set.c && typeof v.set.c==='object') ? v.set.c : null;
   if(!c || kevN(c.b8)) return null;
-  var ref=null, h=Array.isArray(v.hist) ? v.hist : [];
-  for(var i=h.length-1; i>=0 && !ref; i--){ var x=h[i] && h[i].set && h[i].set.c; if(x && typeof x==='object' && kevN(x.b8)) ref=x; }
-  if(!ref){ var vs=kevVersions(all, prefix).filter(function(w){ return w.from<v.from; }), p=vs.length ? vs[vs.length-1] : null, y=p && p.set && p.set.c; if(y && typeof y==='object' && kevN(y.b8)) ref=y; }
+  var st=[], hs=function(w){ var h=Array.isArray(w && w.hist) ? w.hist : []; for(var i=h.length-1; i>=0; i--) st.push(h[i] && h[i].set); };
+  hs(v);
+  var vs=kevVersions(all, prefix).filter(function(w){ return w.from<v.from; });
+  for(var k=vs.length-1; k>=0; k--){ st.push(vs[k].set); hs(vs[k]); }
+  var ref=null;
+  for(var j=0; j<st.length && !ref; j++){
+    var x=(st[j] && typeof st[j]==='object') ? st[j].c : null;
+    if(!x || typeof x!=='object') return null;
+    if(kevN(x.b8)) ref=x;
+  }
   if(!ref) return null;
   var pos=function(n){ return (n!=null && n>0) ? n : null; }, rb=kevN(ref.bp8), rs=pos(kevN(ref.bs8));
   var bp=(kevN(c.bp)!==rb), bs=(pos(kevN(c.bs))!==rs);
@@ -67488,17 +67497,17 @@ function kevMisfits3(q, cfg){
       var g=ghNormG(empGrade(e)), sc=(g==='G3') ? ('G3-'+((bonusTrackFor(e, q)||{}).t || 'op')) : g, RF=kevRuleFor(sc, q, e.id, null, cfg);
       ['c','s','f','p'].forEach(function(p){ if(!ov.set[p] || kevItemSrc(RF.src, p)!=='person') return; var rb=kevRange3Bad(RF.r[p]);
         if(rb) block.push({t:'個人設定 '+(e.name||'')+'・'+kevItemNm(p)+'：'+rb+'（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'"+p+"')"}); });
+      /* v1100：個人設定の ① の基準得点・1 段（同じ RF で：v1099 の端末の保存で v1100 の点が消えた／G2 の人の v1099 の値） */
+      if(ov.set.c){ var B=kevCsBase(RF.r, RF, {sheet:kevCsSheet(e), max:kevCsStoreMax(sc)}, sc), Bp=B;
+        if(B.lost && B.lost.lv.some(function(x){ return x.lv==='person'; })) block.push({t:'個人設定 '+(e.name||'')+'・'+kevCsLostTxt({lv:Bp.lost.lv.filter(function(x){ return x.lv==='person'; }), ref:Bp.lost.lv.filter(function(x){ return x.lv==='person'; })[0].ref})+'。入れ直してください', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"});
+        else if(g==='G2' && B.legacy && !B.lost && (B.srcBp==='person' || B.srcBs==='person')) block.push({t:'個人設定 '+(e.name||'')+'・① の基準得点・1 段：v1099（G2 は 225 点満点）のときの値です。選び直してください（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"});
+      }
     });
   }catch(err){}
   /* v1100（独立レビュー 8a04750 の P2-1）：v1099 の端末の保存で v1100 の点が消えたグレード・職種の設定・個人設定 */
   try{ ['G2','G3-op','G3-sv','G3-kt','G4','G5','G6'].forEach(function(k){ var RFk=kevRuleFor(k, q, null, null, cfg), Bk=kevCsBase(RFk.r, RFk, {sheet:'store', max:kevCsStoreMax(k)}, k);
     if(Bk.lost) block.push({t:kevScopeLabel(k)+'・'+kevCsLostTxt(Bk.lost)+'。入れ直してください', act:"kevRuleOpen('"+k+"','c')"}); }); }catch(err){}
-  try{ karteEligibleEmps().forEach(function(e){ var ov=kevVer(kevOvrAll(), e.id, q); if(!ov || !ov.set || !ov.set.c) return;
-    var g=ghNormG(empGrade(e)), sc=(g==='G3') ? ('G3-'+((bonusTrackFor(e, q)||{}).t || 'op')) : g, RF=kevRuleFor(sc, q, e.id, null, cfg), Bp=kevCsBase(RF.r, RF, {sheet:kevCsSheet(e), max:kevCsStoreMax(sc)}, sc);
-    if(Bp.lost && Bp.lost.lv.some(function(x){ return x.lv==='person'; })) block.push({t:'個人設定 '+(e.name||'')+'・'+kevCsLostTxt({lv:Bp.lost.lv.filter(function(x){ return x.lv==='person'; }), ref:Bp.lost.lv.filter(function(x){ return x.lv==='person'; })[0].ref})+'。入れ直してください', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"}); }); }catch(err){}
   try{ var _R2=kevRuleFor('G2', q, null, null, cfg), _B2=kevCsBase(_R2.r, _R2, {sheet:'store', max:kevCsStoreMax('G2')}, 'G2'); if(_B2.legacy && !_B2.lost) block.push({t:'G2・① の基準得点・1 段：v1099（4 カテゴリー・225 点満点）のときの値です。v1100 から G2 も 8 カテゴリー（420 点満点）で数えるため、選び直してください', act:"kevRuleOpen('G2','c')"}); }catch(err){}
-  try{ karteEligibleEmps().forEach(function(e){ if(ghNormG(empGrade(e))!=='G2') return; var ov=kevVer(kevOvrAll(), e.id, q); if(!ov || !ov.set || !ov.set.c) return; var RF=kevRuleFor('G2', q, e.id, null, cfg), B=kevCsBase(RF.r, RF, {sheet:kevCsSheet(e), max:kevCsStoreMax('G2')}, 'G2');
-    if(B.legacy && !B.lost && (B.srcBp==='person' || B.srcBs==='person')) block.push({t:'個人設定 '+(e.name||'')+'・① の基準得点・1 段：v1099（G2 は 225 点満点）のときの値です。選び直してください（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"}); }); }catch(err){}
   try{ karteEligibleEmps().forEach(function(e){ ghRecs(e.id).forEach(function(r){ var pe=r.prevEval;
     if(!pe || ghNormG(pe.g)!=='G2' || !(Number(pe.kv)>=2) || !pe.cun || typeof pe.cun!=='object' || ghQOf(r.d)!==q) return;
     var g2=cscCatKeys('G2'), un=Object.keys(pe.cun).filter(function(k){ return Number(pe.cun[k])>0; });

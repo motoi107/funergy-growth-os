@@ -182,7 +182,7 @@ test('G3 and above (grade / track settings): v1099 reads them on the same 420 po
 
 // a v1099 device opens the real v1099 form, keeps what it shows and changes only the upper end of the range
 const valOf = (html, id) => { const m = html.match(new RegExp('id="' + id + '"[^>]*value="([^"]*)"')); return m ? m[1] : ''; };
-function v1099Resave(store, open, vals = {}, prep = null) {
+function v1099Resave(store, open, vals = {}, prep = null, from = Q) {
   const old = O.co();
   if (prep) prep(old);
   for (const k of ['bonus_eval_rule', 'bonus_eval_ovr']) if (store[k]) old.STORE[k] = J(store[k]);
@@ -190,7 +190,7 @@ function v1099Resave(store, open, vals = {}, prep = null) {
   const html = old.MODAL.at(-1), shown = { bp: valOf(html, 'kevf-bp'), bs: valOf(html, 'kevf-bs') };
   old.DOM['@kevf-on'] = { value: '1' };
   Object.assign(old.DOM, { 'kevf-lo': { value: '0.85' }, 'kevf-hi': { value: '1.10' }, 'kevf-bp': { value: vals.bp ?? shown.bp }, 'kevf-bs': { value: vals.bs ?? shown.bs },
-    'kevf-why': { value: 'v1099 の端末' }, 'kevf-from': { value: Q } });
+    'kevf-why': { value: 'v1099 の端末' }, 'kevf-from': { value: from } });
   old.TOASTS.length = 0;
   run(old, 'kevFormSave()');
   assert.match(String((old.TOASTS.at(-1) || [''])[0]), /保存しました/, JSON.stringify(old.TOASTS));
@@ -305,6 +305,52 @@ test('mixed devices C: a personal ① of a G2 store person (240 / 12) re-saved o
   assert.equal(run(old, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, 'v1099 の端末', '② を変更')`), true);
   e.STORE.bonus_eval_rule = J(old.STORE.bonus_eval_rule);
   assert.deepEqual(one(N, e, 'aki'), [420, 260, 13, 1.05, null]);
+});
+
+test('Codex 31277db P1: a v1099 device that makes two (or more) quarter versions in a row does not hide the v1100 value — grade, personal and company-wide levels', () => {
+  const at = (c, q, emp = 'null', scope = 'G2') => run(c, `(function(){ var RF=kevRuleFor('${scope}', '${q}', ${emp}, null, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, '${scope}'); return [B.bp, B.bs, !!B.legacy, !!B.lost, B.lost ? B.lost.ref : null]; })()`);
+  // grade (G2): v1100 sets 2026-Q3 to 260 / 13 → a v1099 device saves 2026-Q4, then 2027-Q1 (range only, what its form shows)
+  const c = N.co();
+  saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  let st = c.STORE;
+  for (const q of ['2026-Q4', '2027-Q1']) st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, q).store;
+  assert.deepEqual(Object.keys(st.bonus_eval_rule).sort(), ['G2|2026-Q3', 'G2|2026-Q4', 'G2|2027-Q1']);
+  c.STORE.bonus_eval_rule = st.bonus_eval_rule;
+  for (const q of ['2026-Q4', '2027-Q1']) assert.deepEqual(at(c, q), [252, 13, true, true, { bp: 260, bs: 13 }], q);   // 31277db: 2027-Q1 → [252, 13, false, false, null]
+  assert.deepEqual(at(c, Q), [260, 13, false, false, null]);   // the v1100 quarter itself is untouched
+  assert.ok(run(c, `kevMisfits3('2027-Q1')`).block.some(x => /^G2・① の基準得点・1 段が v1099 の端末で保存し直され、v1100 で入れた点（基準得点 260 点・1 段 13 点）/.test(x.t)));
+  // three in a row, and several saves inside one version, are still found
+  st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, '2027-Q2').store;
+  st = v1099Resave(st, `kevRuleOpen('G2', 'c')`, {}, null, '2027-Q2').store;
+  c.STORE.bonus_eval_rule = st.bonus_eval_rule;
+  assert.deepEqual(at(c, '2027-Q2').slice(2, 4), [true, true]);
+  // re-entered in v1100 for 2027-Q1 → that quarter is used again; the later v1099 version (2027-Q2) still waits
+  c.STORE.bonus_eval_rule['G2|2027-Q1'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 255, bs8: 13 };
+  assert.deepEqual(at(c, '2027-Q1').slice(0, 4), [255, 13, false, false]);
+  assert.deepEqual(at(c, '2027-Q2').slice(2, 5), [true, true, { bp: 255, bs: 13 }]);
+  assert.deepEqual(at(c, '2026-Q4').slice(2, 5), [true, true, { bp: 260, bs: 13 }]);   // a later quarter is not the "before" of an earlier one
+  // the v1099 device first re-saved the v1100 quarter itself, then made the next one (the v1100 value is in the history of 2026-Q3)
+  const f = N.co();
+  saveForm(f, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  let sf = v1099Resave(f.STORE, `kevRuleOpen('G2', 'c')`).store;
+  sf = v1099Resave(sf, `kevRuleOpen('G2', 'c')`, {}, null, '2026-Q4').store;
+  f.STORE.bonus_eval_rule = sf.bonus_eval_rule;
+  assert.deepEqual(at(f, '2026-Q4').slice(2, 5), [true, true, { bp: 260, bs: 13 }]);
+  // personal (G2 store person): v1100 2026-Q3 240 / 12 → a v1099 device saves 2026-Q4 and 2027-Q1
+  const d = N.co();
+  saveForm(d, `kevOvrOpen('aki', 'c')`, { bp: '240', bs: '12' });
+  let so = d.STORE;
+  for (const q of ['2026-Q4', '2027-Q1']) so = v1099Resave(so, `kevOvrOpen('aki', 'c')`, {}, null, q).store;
+  d.STORE.bonus_eval_ovr = so.bonus_eval_ovr;
+  assert.deepEqual(at(d, '2027-Q1', "'aki'").slice(2, 5), [true, true, { bp: 240, bs: 12 }]);
+  // company-wide (no screen for ① there since v1099; written here directly)
+  const e = N.co();
+  e.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { c: { b8: 1, bp8: 300 } }, _at: 1 }, '_common|2026-Q4': { set: { c: { g2: 1, g3: 1 } }, _at: 2 }, '_common|2027-Q1': { set: { c: { g2: 1, g3: 1 } }, _at: 3 } };
+  assert.deepEqual(at(e, '2027-Q1', 'null', 'G4').slice(2, 5), [true, true, { bp: 300, bs: null }]);
+  // a level whose ① was taken away in between (no ① in 2026-Q4) is not a replacement of the v1100 value
+  e.STORE.bonus_eval_ovr = { 'mia|2026-Q3': { set: { c: { b8: 1, bp8: 280, bs8: 13 } }, _at: 1 }, 'mia|2026-Q4': { set: { s: { on: true } }, _at: 2 }, 'mia|2027-Q1': { set: { c: { bp: 300, bs: 13 } }, _at: 3 } };
+  e.STORE.bonus_eval_rule = {};
+  assert.deepEqual(at(e, '2027-Q1', "'mia'", 'G4').slice(0, 4), [300, 13, false, false]);
 });
 
 test('back from v1099: a v1099 device that types a G2 value (140 / 7 on 225 points) → v1100 does not use it silently (the amount waits, listed to re-enter)', () => {
