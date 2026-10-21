@@ -6,6 +6,8 @@
 //   D) 名簿のある端末は、名簿の取得を待たずにログイン画面が出る（名簿の取得を 4 秒遅らせても出る）
 //   E) 端末の写しだけが変わった行（この端末で直して送った・ほかの経路で書き換わった）は、クラウドの印が同じでも取り直す（独立レビューの P2）
 //   F) 読むだけの写し（lsSplitRO）を、どのページも書き換えない（全部のページを開いたあと、写しと解き直した値が同じ）
+//   A の比べ方：端末がログインのたびに自分の時刻で書く欄（_at・_ts・savedAt・updatedTs・_im）と空の既読（ackBy: []）、端末が自分で足す知らせ（notifications）は比べない。
+//     日次実績から数え直す値（予算の actual）は、ログインの自動同期のあとで数え直すので、両方の端末を 12 秒待ってから比べる
 //   G) ログインの同期の画面のあいだ（アプリの枠が出ていない）に画面を描かない（見えない画面を描いて、今日の売上を Toast に余分に聞いていた）
 // 使い方：模擬サーバー（server.mjs）を v1098 の index.html で動かしてから  node e2e-check.mjs
 import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
@@ -106,11 +108,21 @@ console.log('cloud changes', JSON.stringify(changes));
   // 取った行＝別の端末が変えた行＋この端末が 1 回目に自分で書いた行（そのあと印が変わる）。それ以外は取らない
   const fetchedKeys = await a.page.evaluate(() => (_kvLastKeys || []).slice());
   const selfWritten = new Set(firstWrites);
-  const extra = fetchedKeys.filter(k => !changes.changedKeys.includes(k) && !selfWritten.has(k) && k !== kE);
+  // 前の統合行のうち畳み込めないもの（記録に id が無い：合成データの inv_hist_*）は、前と同じく毎回取る（記録しない＝次も取る）
+  const unfoldable = new Set(await a.page.evaluate(ks => ks.filter(k => { try { return !!_SPLIT_KEYS[k] && !(JSON.parse(_lsStoreGet('kv_seen_v1') || '{"rows":{}}').rows[k]); } catch (e) { return false; } }), fetchedKeys));
+  const extra = fetchedKeys.filter(k => !changes.changedKeys.includes(k) && !selfWritten.has(k) && k !== kE && !unfoldable.has(k));
   ok('E 端末の写しだけ変わった行は、クラウドの印が同じでも取り直し、クラウドの値に戻った', !!kE && fetchedKeys.includes(kE) && (await a.page.evaluate(k => _lsStoreGet(k), kE)) === eBefore, { key: kE ? kE.replace(/_[^_]*$/, '_…') : null });
   const missed = changes.changedKeys.filter(k => !fetchedKeys.includes(k));
-  ok('B 取った行は「変わった行」だけで、変わった行は全部取った', extra.length === 0 && missed.length === 0, { fetched: fetchedKeys.length, extra: extra.slice(0, 8), missed, selfWritten: selfWritten.size });
+  ok('B 取った行は「変わった行」だけで、変わった行は全部取った', extra.length === 0 && missed.length === 0, { fetched: fetchedKeys.length, extra: extra.slice(0, 8), missed, selfWritten: selfWritten.size, unfoldableLegacy: unfoldable.size });
+  // A) ログインしたばかりの端末（差分で取り込んだ）と、まっさらな端末（全部取る）を比べる。ページを開く（シードを書いて送るなど）前に
+  // ログインの自動同期（Toast）のあとに日次実績から数え直す値（予算の actual など）があるので、落ち着くまで待ってから比べる（どの版も同じ）
+  await sleep(12000); await a.page.evaluate(() => { try { _idbFlush(); } catch (e) { } }); await sleep(1000);
   const stateA = await deviceState(a.page);
+  const b = await open(D2);
+  await b.page.goto(APP); await loginReady(b.page); await sleep(3500); await login(b.page);
+  await sleep(12000);
+  const stateB = await deviceState(b.page);
+  await b.ctx.close();
   // F) すべてのページを開いたあと、読むだけの写しが解き直した値と同じ（どこかが写しを書き換えていれば違う）
   const roF = await a.page.evaluate(async () => {
     const pages = []; groupsForRole().forEach(g => (g.children || []).filter(c => typeof navChildAllowed !== 'function' || navChildAllowed(c)).forEach(c => { if (pages.indexOf(c) < 0) pages.push(c); }));
@@ -123,18 +135,22 @@ console.log('cloud changes', JSON.stringify(changes));
     return { pages: pages.length, out };
   });
   ok('F どのページも読むだけの写し（Invoice・立替）を書き換えない', Object.values(roF.out).every(x => x.same), roF);
+
   ok('ページの例外なし（2 回目）', a.errors.length === 0, a.errors.slice(0, 3));
   await a.ctx.close();
-  // ---- A) まっさらな端末で全部取ったものと比べる
-  const b = await open(D2);
-  await b.page.goto(APP); await loginReady(b.page); await sleep(3500); await login(b.page);
-  const stateB = await deviceState(b.page);
-  await b.ctx.close();
   const ka = Object.keys(stateA).sort(), kb = Object.keys(stateB).sort();
   const diffKeys = ka.filter(k => !(k in stateB)).concat(kb.filter(k => !(k in stateA)));
-  const diffVals = ka.filter(k => k in stateB && stateA[k] !== stateB[k]);
+  // 端末がログインのたびに自分の時刻で書く欄（_at・_ts・savedAt・updatedTs）と、端末が足す空の既読（ackBy: []）は比べない
+  const VOL = ['_at', '_ts', 'savedAt', 'updatedTs', '_im'];   // _im：出数（menu_mix）の品目ごとの時刻
+  // notifications は比べない：どの端末もログインのときに自分で知らせを足す（前日のキャッシュチップ未入力など）。一覧には上限があるので、
+  // 2 台が持つ範囲がずれる（v1097 でも同じ。合成データは前日のキャッシュチップが無く、上限を超える 978 件がある）
+  const SKIP_A = new Set(['notifications']);
+  const norm = s => { try { return JSON.stringify(JSON.parse(s, (k, v) => (VOL.includes(k) ? undefined : (k === 'ackBy' && Array.isArray(v) && !v.length ? undefined : v)))); } catch (e) { return s; } };
+  const diffVals = ka.filter(k => k in stateB && !SKIP_A.has(k) && norm(stateA[k]) !== norm(stateB[k]));
   ok('A 差分で取り込んだ端末と、全部を取り直した端末で、app_state のキーが同じ', diffKeys.length === 0, { only: diffKeys.slice(0, 8), a: ka.length, b: kb.length });
-  ok('A 中身も同じ', diffVals.length === 0, { differ: diffVals.slice(0, 8) });
+  const firstDiff = (x, y, p = '') => { if (typeof x !== typeof y || Array.isArray(x) !== Array.isArray(y)) return p + ' type'; if (x && typeof x === 'object') { const ks = Array.from(new Set(Object.keys(x).concat(Object.keys(y)))).sort(); for (const k of ks) { if (!(k in x) || !(k in y)) return p + '.' + k + (k in x ? ' only A' : ' only B'); const r = firstDiff(x[k], y[k], p + '.' + k); if (r) return r; } return null; } return x === y ? null : p + ' value'; };
+  const where = diffVals.slice(0, 8).map(k => { try { return k.replace(/_[^_]*$/, '_…') + ' ' + firstDiff(JSON.parse(norm(stateA[k])), JSON.parse(norm(stateB[k]))); } catch (e) { return k; } });
+  ok('A 中身も同じ', diffVals.length === 0, { differ: where });
 }
 fs.writeFileSync(SCR + '/e2e-result.json', JSON.stringify(results, null, 1));
 const ng = results.filter(r => !r.ok).length;
