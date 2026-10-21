@@ -1405,11 +1405,670 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
 </div>
 
 <script>
+/* Financial Web compatibility guard. Install before original startup/migrations.
+ * No endpoint, credential or production activation is embedded in this file.
+ * read(keys) => {rows:[{key,value,version,exists}]}; commit(request) and
+ * receipt({requestId}) => {status,requestId,versions?}. Requests include expected
+ * {key:null|{value,updated_at}} from the immutable read, plus expectedVersions.
+ * The server must enforce
+ * atomic CAS and immutable request-id replay independently of this browser.
+ */
+(function (root) {
+  'use strict';
+  const STORES = ['F01', 'F02', 'F03', 'F03-G', 'F04-A', 'F04-K', 'F04-P', 'F05', 'F06', 'F07'];
+  const WRITERS = ['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView',
+    'saveEvent', 'deleteEvent', 'saveDailyActual', 'saveDayMemo', 'bbSave', 'saveDow', 'saveSeg',
+    'saveDayBudget', 'saveBasis', 'deleteBasis', '_reviewBeforeSubmit', '_saveRationaleDraft',
+    '_doSubmitBudget', 'approveBudgetSeg', 'rejectBudgetSeg', 'reopenBudget',
+    'migrateBudgetStatusYmFix', 'migrateBudgetStatusYm', 'normalizeBudgetsDemo'];
+  const RECOVERY_KEY = '_financial_save_recovery_v1';
+  const OPENERS = { openDailyActualModal: 'actual', openDayMemo: 'memo', bbOpen: 'budget',
+    openEventModal: 'event', openDowEditor: 'dow', openSegEditor: 'segment', openDayBudgetEditor: 'day-budget',
+    openBasisModal: 'basis', submitBudget: 'rationale', openBudgetReview: 'review', openBudgetEditor: 'editor' };
+  const FORM_WRITERS = { saveDailyActual: 'actual', saveDayMemo: 'memo', bbSave: 'budget', saveEvent: 'event',
+    saveDow: 'dow', saveSeg: 'segment', saveDayBudget: 'day-budget', saveBasis: 'basis',
+    _reviewBeforeSubmit: 'rationale', _saveRationaleDraft: 'rationale', _doSubmitBudget: 'review' };
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const financial = key => key === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(key));
+  const rowKey = key => STORES.some(id => key === 'daily_actuals_' + id || key === 'spl_budgets_v2_' + id);
+  const rowStore = key => String(key).replace(/^(daily_actuals_|spl_budgets_v2_)/, '');
+  const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  function copy(value) {
+    const seen = new Set(); let nodes = 0, size = 0;
+    function visit(v, depth) {
+      if (++nodes > 200000 || depth > 24) throw new Error('financial_value_too_large');
+      if (v === null || typeof v === 'boolean') return v;
+      if (typeof v === 'string') { size += v.length; if (size > 4000000) throw new Error('financial_value_too_large'); return v; }
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      if (!v || typeof v !== 'object' || seen.has(v)) throw new Error('invalid_financial_value');
+      const prototype = Object.getPrototypeOf(v);
+      if (!Array.isArray(v) && prototype !== null && Object.getPrototypeOf(prototype) !== null) throw new Error('invalid_financial_value');
+      seen.add(v);
+      const keys = Reflect.ownKeys(v);
+      if (keys.some(k => typeof k !== 'string' || ['__proto__', 'constructor', 'prototype'].includes(k))
+        || Object.values(Object.getOwnPropertyDescriptors(v)).some(d => !Object.prototype.hasOwnProperty.call(d, 'value')))
+        throw new Error('invalid_financial_value');
+      let out;
+      if (Array.isArray(v)) {
+        if (keys.length !== v.length + 1 || Object.keys(v).some((k, i) => k !== String(i))) throw new Error('invalid_financial_value');
+        out = v.map(x => visit(x, depth + 1));
+      } else {
+        if (Object.keys(v).length !== keys.length) throw new Error('invalid_financial_value');
+        out = {}; for (const k of keys) out[k] = visit(v[k], depth + 1);
+      }
+      seen.delete(v); return out;
+    }
+    return visit(value, 0);
+  }
+  function freeze(v) { if (v && typeof v === 'object') { Object.values(v).forEach(freeze); Object.freeze(v); } return v; }
+  function micros(value) {
+    const m = typeof value === 'string' && /^(\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d)(?:\.(\d{1,6}))?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.exec(value);
+    if (!m || !Number.isFinite(Date.parse(m[1] + m[3]))) throw new Error('invalid_financial_version');
+    if (new Date(m[1] + 'Z').toISOString().slice(0, 19) !== m[1]) throw new Error('invalid_financial_version');
+    return BigInt(Date.parse(m[1] + m[3])) * 1000n + BigInt((m[2] || '').padEnd(6, '0'));
+  }
+  function install(win, options) {
+    if (options?.enabled !== true) return Object.freeze({ enabled: false });
+    if (win.FUNERGY_FINANCIAL_SAVE) throw new Error('financial_guard_already_installed');
+    const transport = options.transport;
+    if (!transport || !['read', 'commit', 'receipt'].every(k => typeof transport[k] === 'function')) throw new Error('financial_transport_required');
+    const makeId = options.makeRequestId || (() => win.crypto.randomUUID());
+    const timeoutMs = options.timeoutMs || 30000;
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60000) throw new Error('invalid_financial_timeout');
+    const original = {};
+    const captureNames = ['ls', 'lsSet', '_lsRaw', '_lsWriteVerified', '_outboxGet', '_outboxRemove', '_lsPushBlocked',
+      '_pushWithOutbox', 'syncMasterToSupabase', 'opMergePush', 'supaUpsert', 'getBudgets', 'saveBudgets',
+      'getDailyActuals', 'setDailyActuals', 'openDailyActualModal', 'openDayMemo', 'bbOpen',
+      'closeModalDirect', 'renderPage', 'showToast', 'bbClearDirty', ...WRITERS];
+    captureNames.push(...Object.keys(OPENERS), 'openInputModal', 'apDecidedFromPage', 'addApproval',
+      'snapshotApprovedBudget', 'diagBudgets', 'closeDowEditor', '_daRO', 'flushOutbox', 'addNotif', '_apRerender');
+    captureNames.push('mergeBudgets', '_budHasReal');
+    captureNames.forEach(name => { if (typeof win[name] === 'function') original[name] = win[name]; });
+    for (const name of ['ls', 'lsSet', '_lsRaw', '_lsWriteVerified', '_outboxGet', '_outboxRemove',
+      '_pushWithOutbox', 'syncMasterToSupabase', 'opMergePush', 'supaUpsert', 'getBudgets', 'saveBudgets',
+      'getDailyActuals', 'setDailyActuals', 'openDailyActualModal', 'openDayMemo', 'bbOpen', 'showToast'])
+      if (!original[name]) throw new Error('financial_source_changed:' + name);
+    const canonical = new Map(), provenance = new WeakMap(), localBefore = new WeakMap(), readEpochs = new Map(), readOnlyCache = new WeakMap();
+    let active = null, pending = null, form = null, openEpoch = 0, callDepth = 0, lastReceipt = null;
+    let operationQueue = Promise.resolve();
+    let bulkBusy = false, localPreserved = false;
+    const notify = (message, kind = 'warning') => original.showToast.call(win, message, kind);
+    function lockInputs() {
+      const elements = Array.from(win.document?.querySelectorAll?.('#modal-body input, #modal-body textarea, #modal-body select, #modal-body button, .bb-day, #bb-save-bottom, [oninput^="bbDowIn("], [onclick^="bb"]') || []);
+      const previous = elements.map(el => [el, el.disabled]);
+      elements.forEach(el => { el.disabled = true; });
+      return () => previous.forEach(([el, disabled]) => { el.disabled = disabled; });
+    }
+    function runEffects(effects) {
+      for (const effect of effects) {
+        try { effect(); } catch (_) { notify('サーバーへの保存は完了しています。画面を再読み込みしてください。'); }
+      }
+    }
+    function deadline(work) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('financial_result_unknown')), timeoutMs);
+        Promise.resolve().then(work).then(resolve, reject).finally(() => clearTimeout(timer));
+      });
+    }
+    function recoveryEntries() {
+      const value = original._lsRaw.call(win, RECOVERY_KEY, []);
+      if (!Array.isArray(value)) throw new Error('financial_recovery_invalid');
+      return value;
+    }
+    function retain(entry) {
+      const record = copy(entry); let all = recoveryEntries();
+      if (record.reason === 'committed_receipt') {
+        // Completed request payloads contain whole rows. Once the receipt is
+        // stored atomically they must not accumulate with every ordinary save.
+        all = all.filter(x => !(x.reason === 'pending_request' && x.request?.requestId === record.requestId));
+        const receipts = all.filter(x => x.reason === 'committed_receipt');
+        const remove = new Set(receipts.slice(0, Math.max(0, receipts.length - 49)));
+        all = all.filter(x => !remove.has(x));
+      }
+      if (!all.some(x => equal(x, record))) {
+        all.push(record);
+        if (original._lsWriteVerified.call(win, RECOVERY_KEY, JSON.stringify(all)) !== true)
+          throw new Error('financial_recovery_storage_failed');
+      }
+    }
+    function preserveLocal() {
+      if (localPreserved) return true;
+      if (recoveryEntries().some(entry => entry.reason === 'pre_guard_local')) { localPreserved = true; return true; }
+      const value = {};
+      for (const key of ['budgets_v2', ...STORES.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id])]) {
+        const raw = original._lsRaw.call(win, key, null);
+        if (raw !== null) value[key] = raw;
+      }
+      if (Object.keys(value).length) retain({ reason: 'pre_guard_local', value });
+      localPreserved = true;
+      return true;
+    }
+    function quarantine() {
+      for (const item of original._outboxGet.call(win)) {
+        if (!financial(item.key)) continue;
+        retain({ reason: 'legacy_outbox', key: item.key, value: original._lsRaw.call(win, item.key, null), outbox: copy(item) });
+      }
+    }
+    function recoverPending() {
+      if (active || pending) return;
+      const entries = recoveryEntries(), resolved = new Set(entries.filter(x => x.reason === 'committed_receipt').map(x => x.requestId));
+      for (const item of entries) if (['conflict', 'discarded_conflict'].includes(item.reason) && item.request) resolved.add(item.request.requestId);
+      const unfinished = entries.filter(x => x.reason === 'pending_request' && x.request && !resolved.has(x.request.requestId));
+      if (!unfinished.length) return;
+      if (unfinished.length !== 1) throw new Error('financial_multiple_unresolved_saves');
+      const entry = copy(unfinished[0]), request = entry.request, keys = Object.keys(request.writes || {});
+      if (!uuid.test(request.requestId) || keys.length < 1 || keys.length > 2 || keys.some(k => !rowKey(k))
+        || new Set(keys.map(rowStore)).size !== 1 || !equal(keys.slice().sort(), Object.keys(request.expectedVersions || {}).sort())
+        || !equal(keys.slice().sort(), Object.keys(request.expected || {}).sort()))
+        throw new Error('financial_recovery_invalid');
+      for (const key of keys) {
+        if (request.expectedVersions[key] !== null) micros(request.expectedVersions[key]);
+        const before = entry.before?.[key];
+        if (!before || before.key !== key || before.version !== request.expectedVersions[key]) throw new Error('financial_recovery_invalid');
+        if (!equal(request.expected[key], before.exists ? { value: before.value, updated_at: before.version } : null))
+          throw new Error('financial_recovery_invalid');
+      }
+      pending = { request: freeze(request), before: new Map(keys.map(key => [key, entry.before[key]])), effects: [], unlock: () => {}, status: 'unknown', busy: false };
+    }
+    function rejectLegacy(key, value) {
+      try { retain({ reason: 'unversioned_write', key, value: value === undefined ? null : value }); }
+      catch (_) { notify('入力の退避を確認できません。画面を閉じず、そのままお待ちください。'); return false; }
+      if (win._opLastPushErr) win._opLastPushErr[key] = '未送信の入力を保管しています。最新を確認してから保存し直してください。';
+      if (win._opLastPushWhy) win._opLastPushWhy[key] = 'financial_baseline_required';
+      return false;
+    }
+    // These fences also cover direct recovery, old outbox retry and a fetch
+    // failure. No protected key may fall back to the original upsert/merge path.
+    for (const name of ['syncMasterToSupabase', 'opMergePush']) win[name] = function (key, value, ...args) {
+      if (financial(key)) return Promise.resolve(rejectLegacy(key, value));
+      return original[name].call(this, key, value, ...args);
+    };
+    win._pushWithOutbox = function (key, value) {
+      if (!financial(key)) return original._pushWithOutbox.apply(this, arguments);
+      const result = Promise.resolve(rejectLegacy(key, value));
+      if (win._lsPushP) win._lsPushP[key] = result;
+      return result;
+    };
+    win.supaUpsert = function (table, rows) {
+      const list = Array.isArray(rows) ? rows : [rows];
+      if (['app_state', 'app_settings'].includes(table) && list.some(r => financial(r?.key))) {
+        list.filter(r => financial(r?.key)).forEach(r => rejectLegacy(r.key, r.value));
+        const unrelated = list.filter(r => !financial(r?.key));
+        if (!unrelated.length) return Promise.resolve(false);
+        // Legacy startup uploads batch many unrelated operational keys. Keep
+        // their normal upload while making the withheld financial rows explicit.
+        return Promise.resolve(original.supaUpsert.call(this, table, unrelated)).then(() => false);
+      }
+      return original.supaUpsert.apply(this, arguments);
+    };
+    win._outboxRemove = function (key) { if (financial(key)) return false; return original._outboxRemove.apply(this, arguments); };
+    if (original._lsPushBlocked) win._lsPushBlocked = function (key) { return financial(key) || original._lsPushBlocked.apply(this, arguments); };
+    function rowsForReads() {
+      const result = new Map(canonical);
+      if (form) for (const [key, row] of form.rows) result.set(key, row);
+      if (active) {
+        for (const [key, row] of active.before) result.set(key, row);
+        for (const [key, value] of active.writes) result.set(key, { ...result.get(key), value, exists: true });
+      }
+      return result;
+    }
+    function localValue(key, fallback) {
+      const rows = rowsForReads();
+      if (key === 'budgets_v2') {
+        const old = original.ls.call(win, key, fallback) || [];
+        if (!Array.isArray(old)) throw new Error('invalid_financial_budget_cache');
+        const byStore = new Map(old.map(b => [b.storeId, b]));
+        for (const [k, row] of rows) if (k.startsWith('spl_budgets_v2_')) {
+          byStore.delete(rowStore(k)); if (row.exists) byStore.set(rowStore(k), copy(row.value[0]));
+        }
+        return [...byStore.values()];
+      }
+      if (rows.has(key)) { const row = rows.get(key); return row.exists ? copy(row.value) : fallback; }
+      return original.ls.call(win, key, fallback);
+    }
+    win.ls = function (key, fallback) {
+      if (!financial(key)) return original.ls.apply(this, arguments);
+      const value = localValue(key, fallback);
+      return capture(value, key === 'budgets_v2' && Array.isArray(value) ? value.map(b => 'spl_budgets_v2_' + b.storeId) : [key]);
+    };
+    function capture(value, keys) {
+      const bases = new Map();
+      for (const key of keys) {
+        const row = active?.before.get(key) || form?.rows.get(key) || canonical.get(key);
+        if (row) bases.set(key, row);
+      }
+      if (value && typeof value === 'object') { provenance.set(value, bases); localBefore.set(value, copy(value)); }
+      return value;
+    }
+    win.getDailyActuals = function (store) {
+      const key = 'daily_actuals_' + store;
+      return capture(copy(win.ls(key, {})), [key]);
+    };
+    if (original._daRO) win._daRO = function (store) {
+      const key = 'daily_actuals_' + store, row = rowsForReads().get(key);
+      if (!row) return original._daRO.apply(this, arguments);
+      if (!row.exists) return Object.freeze({});
+      if (!readOnlyCache.has(row.value)) readOnlyCache.set(row.value, freeze(copy(row.value)));
+      return readOnlyCache.get(row.value);
+    };
+    win.getBudgets = function () {
+      const value = original.getBudgets.apply(this, arguments);
+      return capture(value, value.map(b => 'spl_budgets_v2_' + b.storeId));
+    };
+    function stage(key, value, bases) {
+      if (!active || !rowKey(key)) throw new Error('financial_transaction_required');
+      const base = active.before.get(key) || bases?.get(key);
+      if (!base) throw new Error('financial_pristine_baseline_required');
+      if (active.before.has(key) && bases?.has(key) && !equal(active.before.get(key), bases.get(key)))
+        throw new Error('financial_baseline_changed');
+      active.before.set(key, base);
+      const next = copy(value);
+      if (equal(next, base.value)) active.writes.delete(key); else active.writes.set(key, next);
+    }
+    win.lsSet = function (key, value) {
+      if (active && callDepth > 0 && key === 'approvals') {
+        const snapshot = copy(value); active.effects.push(() => original.lsSet.call(win, key, snapshot)); return true;
+      }
+      if (!financial(key)) return original.lsSet.apply(this, arguments);
+      try {
+        if (key === 'budgets_v2') {
+          if (!Array.isArray(value)) throw new Error('invalid_financial_budget');
+          const bases = provenance.get(value);
+          for (const budget of value) {
+            const k = 'spl_budgets_v2_' + budget.storeId, base = active?.before.get(k) || bases?.get(k);
+            if (base && equal(base.value, [budget])) continue;
+            if (equal(localBefore.get(value)?.find(b => b.storeId === budget.storeId), budget)) continue;
+            stage(k, [budget], bases);
+          }
+        } else stage(key, value, provenance.get(value));
+        return true;
+      } catch (error) {
+        rejectLegacy(key, value);
+        if (active) { active.failure = error; throw error; }
+        notify('保存前のデータを確認できないため送信していません。入力は退避しています。');
+        throw error;
+      }
+    };
+    win.setDailyActuals = function () { return original.setDailyActuals.apply(this, arguments); };
+    win.saveBudgets = function () { return original.saveBudgets.apply(this, arguments); };
+    for (const name of ['closeModalDirect', 'renderPage', 'bbClearDirty', 'apDecidedFromPage', 'addApproval', 'snapshotApprovedBudget', 'diagBudgets', 'closeDowEditor', 'addNotif', '_apRerender']) if (original[name]) win[name] = function (...args) {
+      if (active && callDepth > 0) { active.effects.push(() => original[name].apply(win, args)); return; }
+      if (name === 'closeModalDirect') {
+        if (pending) { showStatus(); return; }
+        form = null;
+      }
+      return original[name].apply(this, args);
+    };
+    win.showToast = function (message, kind, ...args) {
+      if (active && callDepth > 0 && (kind === 'success' || kind === 'info')) { active.effects.push(() => original.showToast.call(win, message, kind, ...args)); return; }
+      return original.showToast.apply(this, arguments);
+    };
+    if (original.flushOutbox) win.flushOutbox = function (...args) {
+      // The original submit path attaches success to this promise without
+      // awaiting it. Its continuation must not run before financial commit.
+      if (active?.name === '_doSubmitBudget' && callDepth > 0) return new Promise((resolve, reject) => {
+        active.effects.push(() => Promise.resolve(original.flushOutbox.apply(win, args)).then(resolve, reject));
+      });
+      return original.flushOutbox.apply(this, args);
+    };
+    function validateRows(raw, keys) {
+      const result = copy(raw);
+      if (!result || !Array.isArray(result.rows) || result.rows.length !== keys.length) throw new Error('financial_rows_mismatch');
+      const rows = new Map();
+      for (const row of result.rows) {
+        if (!keys.includes(row.key) || rows.has(row.key) || typeof row.exists !== 'boolean') throw new Error('financial_rows_mismatch');
+        if (row.exists) {
+          micros(row.version);
+          if (row.key.startsWith('daily_actuals_')) {
+            if (!row.value || typeof row.value !== 'object' || Array.isArray(row.value)) throw new Error('invalid_financial_actuals');
+          } else if (!Array.isArray(row.value) || row.value.length !== 1 || row.value[0]?.storeId !== rowStore(row.key))
+            throw new Error('invalid_financial_budget');
+        } else if (row.value !== null || row.version !== null) throw new Error('financial_absence_unverified');
+        rows.set(row.key, freeze(row));
+      }
+      return rows;
+    }
+    async function refresh(keys) {
+      if (!Array.isArray(keys) || !keys.length || keys.length > STORES.length * 2 || new Set(keys).size !== keys.length || keys.some(k => !rowKey(k)))
+        throw new Error('invalid_financial_read_scope');
+      preserveLocal(); quarantine(); recoverPending();
+      if (pending) throw new Error('financial_unresolved_save');
+      const reads = new Map(keys.map(key => { const epoch = (readEpochs.get(key) || 0) + 1; readEpochs.set(key, epoch); return [key, epoch]; }));
+      const rows = validateRows(await deadline(() => transport.read(keys.slice())), keys);
+      for (const [key, row] of rows) if (readEpochs.get(key) === reads.get(key)) canonical.set(key, row);
+      return rows;
+    }
+    function committed(answer, request) {
+      if (!answer || answer.requestId !== request.requestId || answer.status !== 'committed'
+        || !answer.versions || !equal(Object.keys(answer.versions).sort(), Object.keys(request.writes).sort())) return false;
+      for (const [key, stamp] of Object.entries(answer.versions)) {
+        const after = micros(stamp), before = request.expectedVersions[key];
+        if (before !== null && after <= micros(before)) return false;
+      }
+      return true;
+    }
+    function status() {
+      return Object.freeze({ enabled: true, status: pending?.status || (active ? 'editing-save' : lastReceipt ? 'committed' : 'idle'),
+        requestId: pending?.request.requestId || null, hasRecovery: recoveryEntries().length > 0 });
+    }
+    function showStatus() {
+      if (typeof options.onState === 'function') { try { options.onState(status()); } catch (_) {} }
+      const doc = win.document;
+      if (!doc?.createElement || !doc.body) return;
+      let panel = doc.getElementById('financial-save-status');
+      if (!pending) { panel?.remove(); return; }
+      if (!panel) {
+        panel = doc.createElement('aside'); panel.id = 'financial-save-status'; panel.setAttribute('role', 'status');
+        panel.style.cssText = 'position:fixed;left:12px;right:12px;bottom:20px;z-index:2147483646;padding:14px;background:#fff5d8;color:#4d3700;border:1px solid #c69b35;border-radius:12px;font:14px system-ui;box-shadow:0 3px 16px #0003';
+        doc.body.appendChild(panel);
+      }
+      panel.replaceChildren();
+      const message = doc.createElement('p'); message.style.margin = '0 0 8px';
+      message.textContent = pending.busy ? '保存結果を確認しています。入力はそのまま残しています。'
+        : pending.status === 'conflict' ? 'ほかの画面で更新されています。上書きせず入力を保管しました。最新を確認して保存し直してください。'
+          : '保存結果がまだ確認できていません。同じ保存の結果を確認してください。';
+      panel.appendChild(message);
+      const button = (label, action) => {
+        const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.disabled = pending.busy;
+        el.style.cssText = 'margin:3px;padding:8px;border:1px solid #b79b4e;border-radius:7px;background:white;color:#4d3700';
+        el.addEventListener('click', action); panel.appendChild(el);
+      };
+      if (pending.status === 'conflict') button('最新データを確認', () => api.reloadForm());
+      else {
+        button('保存結果を確認', () => api.reconcile());
+        button('同じ内容で再送', () => api.retry());
+      }
+    }
+    async function transmit(isReceipt) {
+      if (!pending || pending.busy || pending.status === 'conflict') return false;
+      const entry = pending; entry.busy = true; entry.status = isReceipt ? 'checking' : 'saving';
+      showStatus();
+      try {
+        const answer = await deadline(() => isReceipt ? transport.receipt({ requestId: entry.request.requestId }) : transport.commit(entry.request));
+        if (committed(answer, entry.request)) {
+          for (const [key, value] of Object.entries(entry.request.writes)) {
+            const row = freeze({ key, exists: true, value: copy(value), version: answer.versions[key] });
+            canonical.set(key, row);
+            if (!original._lsWriteVerified.call(win, key, JSON.stringify(value))) notify('サーバーへ保存しました。表示を最新にするには再読み込みしてください。');
+          }
+          lastReceipt = freeze(copy(answer)); pending = null;
+          if (entry.clearForm) form = null;
+          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }); }
+          catch (_) { notify('保存は完了していますが、この端末への結果の記録を確認できません。再読み込み後に保存結果を確認してください。'); }
+          entry.unlock(); runEffects(entry.effects);
+          return true;
+        }
+        if (answer?.requestId === entry.request.requestId && answer.status === 'conflict') {
+          entry.status = 'conflict'; win._bbDirty = true;
+          retain({ reason: 'conflict', request: entry.request, before: Object.fromEntries(entry.before) });
+          entry.unlock();
+          notify('他の画面で更新されています。上書きせず入力を残しました。最新データを確認してから保存してください。');
+        } else { entry.status = 'unknown'; notify('保存結果を確認できません。入力を残しています。「保存結果を確認」から確認してください。'); }
+      } catch (_) { entry.status = 'unknown'; notify('保存結果を確認できません。入力を残しています。同じ内容で保存結果を確認できます。'); }
+      finally { entry.busy = false; showStatus(); }
+      return false;
+    }
+    function invoke(name, fn, args, baseline) {
+      if (active && callDepth > 0) return fn.apply(win, args);
+      const result = operationQueue.then(() => perform(name, fn, args, baseline));
+      operationQueue = result.then(() => {}, () => {});
+      return result;
+    }
+    async function perform(name, fn, args, baseline) {
+      if (bulkBusy && name !== 'restore-store') { notify('予算の復元結果を確認してから保存してください。'); return false; }
+      try { recoverPending(); } catch (_) { notify('保管した入力の確認が必要なため、追加の保存を停止しています。'); return false; }
+      if (active || pending) { notify('前の保存結果を確認してから次の入力を保存してください。'); return false; }
+      // Automatic sources have no entered form. Read their exact server state
+      // once at the start of their queued operation, then freeze it across await.
+      if (['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView'].includes(name)) {
+        try {
+          const keys = ['daily_actuals_' + args[0]];
+          if (name !== 'fetchWeatherForView') keys.push('spl_budgets_v2_' + args[0]);
+          await refresh(keys);
+        } catch (_) { notify('最新データを確認できないため同期を停止しています。'); return false; }
+      }
+      const tx = { name, before: new Map(baseline || canonical), writes: new Map(), effects: [], failure: null, unlock: lockInputs() };
+      const expectedForm = FORM_WRITERS[name];
+      if (expectedForm) {
+        const store = name === 'bbSave' ? win._bbStore : name === 'saveDow' ? win.dowEditState?.storeId : args[0];
+        if (!form || form.kind !== expectedForm || form.args[0] !== store
+          || (['actual', 'memo', 'event', 'segment'].includes(expectedForm) && form.args[1] !== args[1])) {
+          tx.unlock(); notify('入力画面を開き直してから保存してください。'); return false;
+        }
+        for (const [key, row] of form.rows) tx.before.set(key, row);
+      }
+      active = tx; let result;
+      const retainedDow = name === 'saveDow' ? copy(win.dowEditState) : null;
+      try {
+        callDepth++;
+        try { result = fn.apply(win, args); } finally { callDepth--; }
+        result = await result;
+        if (retainedDow) {
+          win.dowEditState = retainedDow;
+          tx.effects.push(() => { win.dowEditState = null; });
+        }
+        if (tx.failure) throw tx.failure;
+        if (!tx.writes.size) { active = null; tx.unlock(); runEffects(tx.effects); return result; }
+        const keys = [...tx.writes.keys()];
+        if (keys.length > 2 || new Set(keys.map(rowStore)).size !== 1) throw new Error('financial_multi_store_review_required');
+        const requestId = makeId(); if (!uuid.test(requestId)) throw new Error('invalid_financial_request_id');
+        const request = freeze({ requestId,
+          expectedVersions: Object.fromEntries(keys.map(key => [key, tx.before.get(key).version])),
+          expected: Object.fromEntries(keys.map(key => { const row = tx.before.get(key); return [key, row.exists ? { value: row.value, updated_at: row.version } : null]; })),
+          writes: Object.fromEntries(tx.writes) });
+        // Keep the full read snapshot only while calculating the transaction.
+        // Recovery needs just the rows this request can change, not every store
+        // that happened to be loaded on the page.
+        const touchedBefore = new Map(keys.map(key => [key, tx.before.get(key)]));
+        // Save the exact request before dispatch so refresh/force-close cannot
+        // turn an unknown response into a new id or silently lose entered data.
+        retain({ reason: 'pending_request', request, before: Object.fromEntries(touchedBefore) });
+        active = null;
+        pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false };
+        return await transmit(false) ? result : false;
+      } catch (error) {
+        active = null;
+        if (retainedDow) win.dowEditState = retainedDow;
+        tx.unlock();
+        if (tx.writes.size) { try { retain({ reason: 'unverified_transaction', value: Object.fromEntries(tx.writes),
+          before: Object.fromEntries([...tx.before].filter(([key]) => tx.writes.has(key))) }); } catch (_) {} }
+        notify('保存前の状態を確認できないため送信していません。入力を残して、最新データを確認してください。');
+        return false;
+      }
+    }
+    for (const name of WRITERS) if (original[name]) win[name] = function (...args) {
+      const result = invoke(name, original[name], args);
+      if (['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView'].includes(name))
+        return Promise.resolve(result).then(value => value === false ? { error: '保存結果を確認できないため同期を完了していません。入力は保管しています。' } : value);
+      return result;
+    };
+    if (original.openInputModal) win.openInputModal = function (config, callback) {
+      if (!active || callDepth === 0) return original.openInputModal.apply(this, arguments);
+      const baseline = new Map(active.before);
+      return original.openInputModal.call(win, config, (...args) => invoke('input-callback', callback, args, baseline));
+    };
+    async function open(kind, name, args) {
+      if (active && callDepth > 0) { active.effects.push(() => open(kind, name, args)); return; }
+      if (active || pending || bulkBusy) { notify('保存結果を確認してから別の入力画面を開いてください。'); return false; }
+      const store = args[0]; if (!STORES.includes(store)) { notify('この店舗の保存は最新データの確認が必要です。'); return false; }
+      const epoch = ++openEpoch;
+      const keys = ['memo', 'event'].includes(kind) ? ['daily_actuals_' + store] : kind !== 'actual' ? ['spl_budgets_v2_' + store]
+        : ['daily_actuals_' + store, 'spl_budgets_v2_' + store];
+      try {
+        const rows = await refresh(keys);
+        if (epoch !== openEpoch || active || pending) return false;
+        form = { kind, args: args.slice(), rows };
+        return original[name].apply(win, args);
+      } catch (_) { notify('最新データを確認できません。通信を確認して、入力画面をもう一度開いてください。'); return false; }
+    }
+    for (const [name, kind] of Object.entries(OPENERS)) if (original[name]) win[name] = function (...args) { return open(kind, name, args); };
+    async function restoreBudgets(input, restoreOptions = {}) {
+      await operationQueue;
+      if (active || pending || bulkBusy) { notify('前の保存結果を確認してから復元してください。'); return { error: 'financial_unresolved_save' }; }
+      const mode = restoreOptions.mode || 'merge';
+      if (!['merge', 'fill-empty', 'overwrite'].includes(mode)) throw new Error('invalid_financial_restore_mode');
+      if (!original.mergeBudgets || !original._budHasReal) throw new Error('financial_restore_source_changed');
+      const candidate = copy(input);
+      if (!Array.isArray(candidate) || !candidate.length || candidate.length > STORES.length
+        || candidate.some(b => !b || !STORES.includes(b.storeId)) || new Set(candidate.map(b => b.storeId)).size !== candidate.length)
+        throw new Error('invalid_financial_restore');
+      bulkBusy = true;
+      const result = { saved: [], unchanged: [], retained: [], conflicted: [] };
+      try {
+        const keys = candidate.map(b => 'spl_budgets_v2_' + b.storeId);
+        const before = await refresh(keys), changes = [];
+        for (const proposed of candidate) {
+          const key = 'spl_budgets_v2_' + proposed.storeId, row = before.get(key), current = row.exists ? row.value : [];
+          const next = mode === 'overwrite' ? [proposed]
+            : mode === 'fill-empty' && current.length && original._budHasReal(current[0]) ? current
+              : original.mergeBudgets.call(win, copy(current), [copy(proposed)]);
+          if (equal(current, next)) { result.unchanged.push(proposed.storeId); continue; }
+          if (!Array.isArray(next) || next.length !== 1 || next[0].storeId !== proposed.storeId) throw new Error('invalid_financial_restore');
+          changes.push({ key, value: freeze(copy(next)), storeId: proposed.storeId });
+        }
+        if (!changes.length) { notify('現在の予算と同じため、変更はありません。', 'info'); return result; }
+        const label = typeof restoreOptions.label === 'string' ? restoreOptions.label.slice(0, 120) : '保管した予算';
+        const confirm = restoreOptions.confirm || win.confirm;
+        if (typeof confirm !== 'function' || !await confirm.call(win, label + 'から ' + changes.map(x => x.storeId).join('・')
+          + ' の予算を復元します。最新データを確認済みです。途中で別の更新があれば上書きせず止め、残りは保管します。'))
+          return { ...result, cancelled: true };
+        retain({ reason: 'bulk_restore_proposal', mode, label, value: candidate, before: Object.fromEntries(before) });
+        for (let i = 0; i < changes.length; i++) {
+          const change = changes[i];
+          const saved = await invoke('restore-store', () => {
+            const budgets = win.getBudgets();
+            const index = budgets.findIndex(b => b.storeId === change.storeId);
+            if (index < 0) budgets.push(copy(change.value[0])); else budgets[index] = copy(change.value[0]);
+            win.saveBudgets(budgets); return true;
+          }, [], new Map([[change.key, before.get(change.key)]]));
+          if (saved === true) { result.saved.push(change.storeId); continue; }
+          result.retained.push(...changes.slice(i).map(x => x.storeId));
+          if (pending?.status === 'conflict') result.conflicted.push(change.storeId);
+          retain({ reason: 'bulk_restore_remainder', mode, label, value: changes.slice(i), before: Object.fromEntries(before), outcome: result });
+          break;
+        }
+        retain({ reason: 'bulk_restore_result', mode, label, outcome: result });
+        if (result.retained.length) notify('保存できた店舗: ' + (result.saved.join('・') || 'なし') + '。未完了の店舗: '
+          + result.retained.join('・') + '。未完了の入力は保管しています。');
+        else notify(result.saved.join('・') + ' の予算を復元しました。', 'success');
+        if (!pending) original.renderPage?.call(win, 'budget');
+        return copy(result);
+      } catch (error) {
+        let retained = false;
+        try { retain({ reason: 'bulk_restore_unverified', mode, value: candidate }); retained = true; } catch (_) {}
+        notify(retained ? '復元を完了できませんでした。選んだ予算は保管しています。'
+          : '復元を完了できず、この端末への入力の保管も確認できません。元のデータを残してください。');
+        return { ...result, error: String(error?.message || error) };
+      } finally { bulkBusy = false; }
+    }
+    const api = Object.freeze({ enabled: true, refresh, getState: status, retry: () => transmit(false), reconcile: () => transmit(true),
+      restoreBudgets, preserveLocal,
+      captureCallback(callback) {
+        if (typeof callback !== 'function') throw new Error('financial_callback_required');
+        const baseline = new Map(active?.before || canonical);
+        return function (...args) { return invoke('captured-callback', callback, args, baseline); };
+      },
+      getRecovery: () => copy(recoveryEntries()),
+      async reloadForm() {
+        if (active || pending?.busy || (pending && pending.status !== 'conflict')) return false;
+        const last = form, keys = pending ? Object.keys(pending.request.writes) : [];
+        if (pending) retain({ reason: 'discarded_conflict', request: pending.request, before: Object.fromEntries(pending.before) });
+        pending = null; form = null; showStatus();
+        if (!last) {
+          if (keys.length) await refresh(keys);
+          original.renderPage?.call(win, 'budget');
+          return true;
+        }
+        const name = Object.keys(OPENERS).find(name => OPENERS[name] === last.kind);
+        return open(last.kind, name, last.args);
+      }
+    });
+    Object.defineProperty(win, 'FUNERGY_FINANCIAL_SAVE', { value: api, configurable: false, writable: false });
+    if (options.deferStartup !== true) { recoverPending(); showStatus(); }
+    return api;
+  }
+  root.FunergyFinancialSave = Object.freeze({ install, financialKey: financial, writerNames: Object.freeze(WRITERS.slice()), storeIds: Object.freeze(STORES.slice()) });
+})(globalThis);
+
+/* Uses the existing Web caller's headers/RLS. No new identity or key. */
+(function (root) {
+  'use strict';
+  const stores = ['F01','F02','F03','F03-G','F04-A','F04-K','F04-P','F05','F06','F07'];
+  const allKeys = stores.flatMap(store => ['daily_actuals_'+store,'spl_budgets_v2_'+store]);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  function create({url,headers,fetch:fetcher}) {
+    if (!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(url) || typeof headers !== 'function' || typeof fetcher !== 'function') throw new Error('financial_transport_invalid');
+    async function request(path, body) {
+      const response = await fetcher(url+'/rest/v1/'+path,{method:body===undefined?'GET':'POST',
+        headers:headers(body===undefined?{}:{'Content-Type':'application/json'}),
+        redirect:'error',cache:'no-store',signal:AbortSignal.timeout(30000),...(body===undefined?{}:{body:JSON.stringify(body)})});
+      const text = await response.text();
+      if (text.length > 16000000) throw new Error('financial_response_too_large');
+      let data; try {data=JSON.parse(text);} catch {throw new Error('financial_response_invalid');}
+      if (!response.ok) { const error=new Error(data?.message || 'financial_request_failed'); error.status=response.status; error.code=data?.code; throw error; }
+      return data;
+    }
+    function ack(data,id,expected) {
+      if (!data || data.request_id !== id) throw new Error('financial_receipt_invalid');
+      if (data.status==='not-found') return {status:'not-found',requestId:id};
+      if (data.status!=='committed' || !stores.includes(data.store_id) || !['daily-actual.save','daily-memo.save','budget-month.save'].includes(data.action)
+          || (expected && (data.action!==expected.action || data.store_id!==expected.store))) throw new Error('financial_receipt_invalid');
+      const keys=data.action==='daily-actual.save'?['daily_actuals_'+data.store_id,'spl_budgets_v2_'+data.store_id]
+        :[data.action==='daily-memo.save'?'daily_actuals_'+data.store_id:'spl_budgets_v2_'+data.store_id];
+      if (!data.versions || typeof data.versions!=='object' || Array.isArray(data.versions)
+          || Object.keys(data.versions).sort().join(',')!==keys.join(',')
+          || Object.values(data.versions).some(value=>typeof value!=='string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(Date.parse(value))))
+        throw new Error('financial_receipt_invalid');
+      return {status:'committed',requestId:id,versions:data.versions};
+    }
+    return Object.freeze({
+      async read(keys) {
+        if (!Array.isArray(keys) || !keys.length || new Set(keys).size!==keys.length || keys.some(k=>!allKeys.includes(k))) throw new Error('financial_keys_invalid');
+        const data=await request('app_state?select=key,value,updated_at&key=in.('+keys.map(encodeURIComponent).join(',')+')&limit=21');
+        if (!Array.isArray(data) || data.length>keys.length || data.some(row=>!keys.includes(row.key)) || new Set(data.map(row=>row.key)).size!==data.length) throw new Error('financial_rows_invalid');
+        return {rows:keys.map(key=>{ const row=data.find(x=>x.key===key); return row?{key,value:row.value,version:row.updated_at,exists:true}:{key,value:null,version:null,exists:false}; })};
+      },
+      async commit(input) {
+        if (!uuid.test(input?.requestId)) throw new Error('financial_request_id_invalid');
+        const keys=Object.keys(input.writes||{}).sort();
+        if (!keys.length || keys.length>2 || keys.some(k=>!allKeys.includes(k))) throw new Error('financial_keys_invalid');
+        const store=keys[0].replace(/^(daily_actuals_|spl_budgets_v2_)/,'');
+        if (keys.some(k=>!k.endsWith('_'+store))) throw new Error('financial_keys_invalid');
+        const action=keys.length===2?'daily-actual.save':keys[0].startsWith('daily_actuals_')?'daily-memo.save':'budget-month.save';
+        try {
+          return ack(await request('rpc/financial_web_commit',{p_request_id:input.requestId,p_action:action,p_store:store,p_expected:input.expected,p_writes:input.writes}),input.requestId,{action,store});
+        } catch (error) {
+          if (error.code==='40001' && error.message==='financial_guard_version_conflict') return {status:'conflict',requestId:input.requestId};
+          throw error;
+        }
+      },
+      async receipt({requestId}) {
+        if (!uuid.test(requestId)) throw new Error('financial_request_id_invalid');
+        return ack(await request('rpc/financial_web_receipt',{p_request_id:requestId}),requestId);
+      }
+    });
+  }
+  root.FunergyFinancialTransport=Object.freeze({create,keys:Object.freeze(allKeys)});
+})(globalThis);
+
+</script>
+<script>
 /* ============================================================
    SUPABASE / TOAST 連携設定
 ============================================================ */
 const SUPABASE_URL = 'https://tgbhgxzehzeouopklhje.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRnYmhneHplaHplb3VvcGtsaGplIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODExMTIzODAsImV4cCI6MjA5NjY4ODM4MH0.A0cdXLDONy_HPvQhaHbfP-flsNYImg0ZFJd5AIQihdM';
+/* FUNERGY_FINANCIAL_WEB_INTEGRATION_V1: original functions are hoisted.
+   Install fences before startup; native previews keep their separate gateway. */
+if (!window.FUNERGY_NATIVE_CONFIG) {
+  FunergyFinancialSave.install(window, {enabled:true, deferStartup:true,
+    transport:FunergyFinancialTransport.create({url:SUPABASE_URL,headers:extra=>supaHeaders(extra),fetch:(...args)=>fetch(...args)})});
+  document.addEventListener('DOMContentLoaded', function(){
+    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).catch(function(){
+      showToast(t('売上・予算の最新データを確認できません。入力を保管し、保存時に再確認します。','Financial data could not be verified. Your input is retained; reconnect before saving.'),'warning');
+    });
+  });
+}
 const TOAST_SYNC_FN = SUPABASE_URL + '/functions/v1/hyper-worker';
 /* v1061: hyper-worker（Toast 取込）への呼び出しに、ログインの印を付ける。
    印は PIN の照合に通ったとき auth-pin（v1061）が返す（window._hwSession・14 日の期限・PIN は入っていない）。
@@ -10020,6 +10679,7 @@ function restoreBudgetsFromFile(){
       try{
         var j=JSON.parse(r.result);
         var arr=j.budgets||j;
+        if(window.FUNERGY_FINANCIAL_SAVE){ void FUNERGY_FINANCIAL_SAVE.restoreBudgets(arr,{mode:'merge',label:'選んだバックアップ'}).catch(function(e){showToast(e.message,'danger');}); return; }
         if(!Array.isArray(arr)) throw new Error('形式が違います');
         var cur=ls('budgets_v2', [])||[];
         var merged=mergeBudgets(cur, arr);      /* 現在の内容と和集合（消さない） */
@@ -10067,6 +10727,10 @@ function _budContent(b){
    【安全性】mergeBudgets を通すだけ＝内容の濃い方・新しい方が残り、月データは和集合。削除はしない。
 ============================================================ */
 function repairBudgetDupes(silent){
+  if(window.FUNERGY_FINANCIAL_SAVE){
+    if(!silent)showToast('重複の修復には個別の確認が必要です。現在の予算は変更せず、そのまま残しています。','warning');
+    return {fixed:0,checked:0,blocked:true};
+  }
   var fixed=0, checked=0;
   try{
     var keys=[];
@@ -10243,6 +10907,7 @@ async function diagBudgets(){
   if(box) box.innerHTML=h;
 }
 async function pullBudgetsNow(){
+  if(window.FUNERGY_FINANCIAL_SAVE){try{var local=_splitRead('budgets_v2',[])||[];if(local.length)return await FUNERGY_FINANCIAL_SAVE.restoreBudgets(local,{mode:'merge',label:'端末に保管された予算'});await FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys.filter(k=>k.startsWith('spl_budgets_v2_')));showToast('最新の予算を取り込みました','success');diagBudgets();return;}catch(e){showToast('取り込みを完了できませんでした。端末の入力は保持しています。','warning');return;}}
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドから取り込み中…';
   try{
@@ -10260,6 +10925,7 @@ async function pullBudgetsNow(){
   diagBudgets();
 }
 async function pushBudgetsNow(){
+  if(window.FUNERGY_FINANCIAL_SAVE){return FUNERGY_FINANCIAL_SAVE.restoreBudgets(_splitRead('budgets_v2',[])||[],{mode:'merge',label:'端末に保管された予算'});}
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドへ反映中…';
   try{
@@ -18269,7 +18935,7 @@ function showDailyReport(storeId, date) {
   var gt = guestCountType(storeId);
   var guestLabel = guestCountLabel(storeId);
   var gv = dayGuestValue(storeId, av);
-  var html = `<div class="modal-title">📋 ${t('日報','Daily Report')} — ${store.name} ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var html = `<div class="modal-title">📋 ${t('日報','Daily Report')} — ${escapeHtml(store.name||'')} ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:13px;line-height:1.8">
     <div style="font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin-bottom:6px">${t('売上','Sales')}</div>
     ${t('予算','Budget')}: ${fmtUSD2(bud)}　${t('実績','Actual')}: ${fmtUSD2(act)}　${t('達成','Achieved')}: ${bud?Math.round(act/bud*100):0}%<br>
@@ -18281,7 +18947,7 @@ function showDailyReport(storeId, date) {
     ${t('キャッシュ','Cash')}: $${(tip.lunchCash+tip.dinnerCash).toFixed(2)}<br>
     <b>${t('チップ総額','Total tips')}: $${tip.total.toFixed(2)}</b>（L$${tip.lunchTotal.toFixed(2)}/D$${tip.dinnerTotal.toFixed(2)}）<br>
     <div style="font-weight:700;border-bottom:1px solid var(--border);padding-bottom:4px;margin:8px 0 6px">${t('天気・イベント','Weather / Events')}</div>
-    ${weatherIcon(av.weather||'')} ${av.weather||'—'}　${av.event||''}
+    ${weatherIcon(av.weather||'')} ${escapeHtml(av.weather||'—')}　${escapeHtml(av.event||'')}
     </div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="copyDailyReport('${storeId}','${date}')"><i class="ti ti-copy"></i> ${t('テキストコピー','Copy text')}</button>
     <button class="btn btn-primary" onclick="closeModalDirect()">${t('閉じる','Close')}</button></div>`;
@@ -18431,6 +19097,7 @@ function budgetSnapshotList(){
 }
 /* 穴埋め復元：スナップショットにあって今は空になっている店だけ戻す（今ある実データは壊さない） */
 function restoreBudgetSnapshot(k){
+  if(window.FUNERGY_FINANCIAL_SAVE){var v=_lsRaw(k,null); if(!v||!Array.isArray(v.budgets)){showToast('スナップショットが読めません','danger');return;} return FUNERGY_FINANCIAL_SAVE.restoreBudgets(v.budgets,{mode:'fill-empty',label:'保存前スナップショット'});}
   try{
     var v=_lsRaw(k, null);                                        /* v763 */
     if(!v || !Array.isArray(v.budgets)){ showToast('スナップショットが読めません','danger'); return; }
@@ -18444,6 +19111,7 @@ function restoreBudgetSnapshot(k){
    legacy行を外してから lsSet することで _splitWrite が全店を「変更あり」と判定して書き出す。
    空(未取込)の状態では移行しない＝欠けた状態を「正」として固定しないためのガード。 */
 function migrateBudgetsSplit(){
+  if(window.FUNERGY_FINANCIAL_SAVE) return; /* retain legacy input; no unversioned migration */
   try{
     if(localStorage.getItem('_bud_split_done')==='1') return;
     var legacy=_lsRaw('budgets_v2', null);
@@ -18500,6 +19168,7 @@ function approvedBudgetList(){
 }
 /* 承認時点で【上書き】する。GMの明示操作なので _ts を今にして必ず勝たせる。触るのはその店の行だけ。 */
 function restoreApprovedBudget(k){
+  if(window.FUNERGY_FINANCIAL_SAVE){var v=ls(k,null);if(!v||!v.budget){showToast('承認コピーが読めません','danger');return;}var snap=JSON.parse(JSON.stringify(v.budget));snap._ts=Date.now();return FUNERGY_FINANCIAL_SAVE.restoreBudgets([snap],{mode:'overwrite',label:'GM承認時点のコピー（現在の予算を置換）'});}
   try{
     var v=ls(k, null);
     if(!v || !v.budget || !v.storeId){ showToast('承認コピーが読めません','danger'); return; }
@@ -19236,6 +19905,7 @@ function budMonMeta(b, ym){
    ・補正するのは「その月に月データが無い」場合だけ（＝ラベルを動かすだけで、数字は動かさない）
    ・移動先にも月データが無いことを確認してから動かす */
 function migrateBudgetStatusYmFix(){
+  if(window.FUNERGY_FINANCIAL_SAVE) return; /* retain legacy input; no unversioned migration */
   try{
     if(localStorage.getItem('_bud_status_ym_fix_v731')==='1') return;
     var budgets=ls('budgets_v2', null);
@@ -19264,6 +19934,7 @@ function migrateBudgetStatusYmFix(){
 }
 /* 旧データの補完（一度だけ・非破壊）: status がどの月のものかを記録する */
 function migrateBudgetStatusYm(){
+  if(window.FUNERGY_FINANCIAL_SAVE) return; /* retain legacy input; no unversioned migration */
   try{
     if(localStorage.getItem('_bud_status_ym_v729')==='1') return;
     var budgets=ls('budgets_v2', null);
@@ -20968,6 +21639,7 @@ function budgetHasData(b){ if(!b) return false; if(Array.isArray(b.bases)&&b.bas
 function budgetIsRegistered(b){ return !!budgetAuthorLabel(b) || budgetHasData(b); } // 登録者がある、または店長が実データ(基準値/曜日/区分/考え方)を入力済みの予算は有効。空(デモ)のみ未登録扱い
 /* デモ/空予算（作成者なし・実データなし）を「未登録（0・下書き）」に正規化 */
 function normalizeBudgetsDemo(){
+  if(window.FUNERGY_FINANCIAL_SAVE) return; /* retain legacy input; no unversioned migration */
   try{
     var budgets=getBudgets(); var changed=false;
     budgets.forEach(function(b){
@@ -28751,21 +29423,23 @@ async function ensureMonthDataLoaded(ym){
   var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []).filter(function(s){ return s.toastGuid; });
   if (!stores.length) return;
   if (_ensureMonthInflight[ym]) return _ensureMonthInflight[ym];
-  var froze = isFrozenMonth(ym);
+  var froze = isFrozenMonth(ym), _financialMonthErrors=[];
   var days = daysOfYm(ym);
   var p = (async function(){
     await Promise.all(stores.map(async function(s){
       if (froze && ls(monthFrozenKey(s.id, ym), false)) return; // 凍結済み→スキップ（固定・再取得しない）
-      try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth actuals', s.id, ym, e); }
+      var _financialActualsReady=false; try { var _far=await syncStoreActualsFromToast(s.id, s.toastGuid, days); _financialActualsReady=!!_far && !_far.error; } catch(e){ console.warn('ensureMonth actuals', s.id, ym, e); }
+      if(!_financialActualsReady)_financialMonthErrors.push(s.id+' の売上保存は未完了');
       try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('ensureMonth labor', s.id, ym, e); }   /* v1090: 読んだ店と月の印 */
       if (!froze) { try { await backfillRecentLabor(s.id, s.toastGuid, days); } catch(e){ console.warn('ensureMonth laborTail', s.id, e); } } // 当月のみ直近Laborをライブ補完
       try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('ensureMonth mix', s.id, ym, e); }
-      if (froze) lsSet(monthFrozenKey(s.id, ym), true); // 過去月のみ凍結（今月はフラグを立てない）
+      if (froze && _financialActualsReady) lsSet(monthFrozenKey(s.id, ym), true); // 過去月のみ凍結（今月はフラグを立てない）
     }));
+    return {error:_financialMonthErrors.join(' / ')||null};
   })();
   _ensureMonthInflight[ym] = p;
-  try { await p; } finally { delete _ensureMonthInflight[ym]; }
-  markSynced('ops');
+  var _financialMonthResult; try { _financialMonthResult=await p; } finally { delete _ensureMonthInflight[ym]; }
+  if(!_financialMonthResult.error)markSynced('ops'); return _financialMonthResult;
 }
 /* 月ナビ操作後：表示中の月をDBから読み込んでから再描画（過去月は初回だけ取得） */
 function loadMonthAndRerender(ym, page){
@@ -28777,7 +29451,7 @@ function loadMonthAndRerender(ym, page){
    各ページは開いた時に自前で最新を引くため（再取得フラグをリセット）、これ1つで全体が最新化される。
 ============================================================ */
 async function refreshNow(){
-  showSyncSplash('最新に更新中…');
+  showSyncSplash('最新に更新中…'); var _financialRefreshError=null;
   try {
     await supaPullAllMasters();                 // マスター/設定/運用データ
     try { refreshStores(); } catch(e){}
@@ -28790,7 +29464,7 @@ async function refreshNow(){
     try { if (typeof mdLaborMarksClear === 'function') mdLaborMarksClear(); } catch(e){}   /* v1090: ダッシュボードの勤怠の印も（全店を見る人は読み直す） */
     try { _laborTailTried={}; } catch(e){} // 直近Laborのライブ補完を再試行できるようにする
     setSyncSplash('当月データを同期中…');
-    await ensureMonthDataLoaded(curYm());        // 当月の売上・客数・勤怠・出数
+    var _financialMonth=await ensureMonthDataLoaded(curYm()); if(_financialMonth&&_financialMonth.error)_financialRefreshError=_financialMonth.error;        // 当月の売上・客数・勤怠・出数
     // Funergy Now / 予実を見る時は、表示中スコープの「当日」をToastからリアルタイム取得
     try {
       var _nowStores = (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){ return s.toastGuid; });
@@ -28798,16 +29472,16 @@ async function refreshNow(){
         setSyncSplash('本日の売上をToastから取得中…');
         var _td = todayDays();
         for (var _i=0;_i<_nowStores.length;_i++){
-          try{ await syncCenterRunStore(_nowStores[_i].id, _td); }catch(e){}
+          try{var _financialStore=await syncCenterRunStore(_nowStores[_i].id,_td);if(!_financialStore||_financialStore.err)_financialRefreshError=(_financialStore&&_financialStore.err)||'保存結果を確認できません';}catch(e){_financialRefreshError=String(e);}
         }
       }
     } catch(e){ console.warn('refreshNow toast today', e); }
-    setSyncSplash('最新に更新しました');
+    setSyncSplash(_financialRefreshError?'一部の更新が未完了です':'最新に更新しました');
     await new Promise(function(r){ setTimeout(r,300); });
-  } catch(e){ console.warn('refreshNow', e); }
+  } catch(e){ _financialRefreshError=String(e); console.warn('refreshNow', e); }
   hideSyncSplash();
   try { renderPage(curPage); } catch(e){}
-  try { showToast('最新の情報に更新しました','success'); } catch(e){}
+  try { showToast(_financialRefreshError?'一部の更新が未完了です。保存結果を確認してください。':'最新の情報に更新しました',_financialRefreshError?'warning':'success'); } catch(e){}
 }
 /* 基礎根拠から曜日別の日次予算を取得 */
 /* 日別予算：b.days['YYYY-MM-DD'] の手動値を最優先。未設定日は従来の曜日別/区分から自動算出 */
@@ -29843,7 +30517,7 @@ async function syncCenterRunStore(storeId, daysArg) {
       var r2 = await syncTipLaborFromDB(storeId, guid, _days);
       if (r2 && r2.error) err = err||r2.error; else if (r2) detail.push('Tip/Labor '+(r2.updated!=null?r2.updated+'日':'OK'));
     } else { detail.push('GUID未設定（Toastスキップ）'); }
-    try { if (typeof doWeatherSyncSilent==='function'){ await doWeatherSyncSilent(storeId); detail.push('天気'); } } catch(e){}
+    try { if (typeof doWeatherSyncSilent==='function'){ var _financialWeather=await doWeatherSyncSilent(storeId); if(!_financialWeather||_financialWeather.error) err=err||((_financialWeather&&_financialWeather.error)||'天気の保存結果を確認できません'); else detail.push('天気'); } } catch(e){err=err||String(e);}
   } catch(e){ err = String(e); }
   setSyncState(storeId, { last:nowJP(), status:err?'failed':'success', error:err||null, detail:detail.join(' · ') });
   return { storeId:storeId, err:err, detail:detail.join(' · ') };
@@ -29852,14 +30526,14 @@ async function syncCenterRunStore(storeId, daysArg) {
 async function syncCenterRunAll() {
   var box = document.getElementById('sync-center-result');
   var stores = getVisibleStores();
-  var lines = [];
+  var lines = [], _financialHadError=false;
   for (var i=0;i<stores.length;i++){
     var s = stores[i];
     if (box) box.innerHTML = '<i class="ti ti-loader"></i> 同期中… ('+(i+1)+'/'+stores.length+') '+escapeHtml(s.name);
-    var r = await syncCenterRunStore(s.id);
+    var r = await syncCenterRunStore(s.id); if(!r)r={err:'同期結果を確認できません'}; if(r.err)_financialHadError=true;
     lines.push((r.err?'⚠ ':'✓ ')+s.name+'：'+(r.err?r.err:(r.detail||'完了')));
   }
-  showToast('同期が完了しました','success');
+  showToast(_financialHadError?'一部の同期を完了できませんでした。結果を確認してください。':'同期が完了しました',_financialHadError?'warning':'success');
   openSyncCenter();
   var box2 = document.getElementById('sync-center-result');
   if (box2) box2.innerHTML = '<b>結果:</b><br>'+lines.map(escapeHtml).join('<br>');
@@ -30096,7 +30770,7 @@ async function syncAllData(storeId, guid) {
       detail.push('Toast GUID未設定（売上スキップ）');
     }
     // 天気・祝日
-    try { if (typeof doWeatherSyncSilent==='function') { await doWeatherSyncSilent(storeId); detail.push('天気/祝日'); } } catch(e){}
+    try { if (typeof doWeatherSyncSilent==='function') { var _financialWeather=await doWeatherSyncSilent(storeId); if(!_financialWeather||_financialWeather.error) hadError=hadError||((_financialWeather&&_financialWeather.error)||'天気の保存結果を確認できません'); else detail.push('天気/祝日'); } } catch(e){hadError=hadError||String(e);}
   } catch(e) { hadError = String(e); }
 
   var now = new Date();
@@ -30125,7 +30799,7 @@ async function doToastFetchToday(storeId, guid) {
     if (r && r.ok) {
       if (el) el.textContent = `取得成功: ${r.date} 売上${fmtUSD2(r.net_sales)} / ${r.guests}名。DB反映ボタンで表示更新`;
       // すぐ反映
-      await syncStoreActualsFromToast(storeId, guid, monthDays());
+      var _financialToday=await syncStoreActualsFromToast(storeId,guid,monthDays()); if(!_financialToday||_financialToday.error){if(el)el.textContent='売上の保存は未完了: '+((_financialToday&&_financialToday.error)||'結果を確認できません');return;}
       renderPage('budget');
     } else {
       if (el) el.textContent = 'エラー: ' + JSON.stringify(r).slice(0,120);
@@ -30151,6 +30825,7 @@ function openRangeModal(storeId, guid) {
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>
     <button class="btn btn-primary" id="rg-start" onclick="doRangeImport('${storeId}','${guid}')"><i class="ti ti-download"></i> 取り込み開始</button></div>`);
 }
+/* FUNERGY_FINANCIAL_CALLER_FIXES_V1 */
 async function doRangeImport(storeId, guid) {
   var from = document.getElementById('rg-from').value;
   var to = document.getElementById('rg-to').value;
@@ -30170,7 +30845,7 @@ async function doRangeImport(storeId, guid) {
     var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail){
       if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
     });
-    if (res && res.error) { lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(res.error)+'</div>'); continue; }
+    if (!res || res.error) { sumFail++; dbError=(res&&res.error)||'保存結果を確認できません'; lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(dbError)+'</div>'); continue; }
     sumOk += (res.ok||0); sumFail += (res.fail||0); sumSales += (res.sumSales||0);
     ldMissing += (res.ldMissing||0); if (res.dbError) dbError = res.dbError;
     lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')+'</div>');
@@ -31368,7 +32043,7 @@ function openDailyActualModal(storeId, date, dow) {
         <select class="form-select" id="da-weather">${['','快晴','晴','曇','霧','小雨','雨','嵐','雪'].map(w=>`<option value="${w}"${ov.weather===w?' selected':''}>${w?weatherIcon(w)+' '+w:'—'}</option>`).join('')}</select>
       </div>
     </div>
-    <div class="form-group"><label class="form-label">お店メモ（イベント・特記）</label>${(function(){var _h=(typeof dayEventFor==='function')?dayEventFor(date):'';return _h?'<div style=\"font-size:11px;color:var(--accent);margin-bottom:3px\">'+_h+'</div>':'';})()}<input class="form-input" id="da-event" value="${(ov.event&&!ov.eventAuto)?ov.event:''}" placeholder="例: 近隣で祭り / 団体予約20名"></div>
+    <div class="form-group"><label class="form-label">お店メモ（イベント・特記）</label>${(function(){var _h=(typeof dayEventFor==='function')?dayEventFor(date):'';return _h?'<div style=\"font-size:11px;color:var(--accent);margin-bottom:3px\">'+_h+'</div>':'';})()}<input class="form-input" id="da-event" value="${escapeHtml((ov.event&&!ov.eventAuto)?ov.event:'')}" placeholder="例: 近隣で祭り / 団体予約20名"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">当日原価 ($)</label><input class="form-input" id="da-food" type="number" inputmode="decimal" value="${ov.foodCost!=null?ov.foodCost:''}" placeholder="任意"></div>
       <div class="form-group"><label class="form-label">当日人件費 ($)</label><input class="form-input" id="da-labor" type="number" inputmode="decimal" value="${ov.labor!=null?ov.labor:''}" placeholder="任意"></div>
@@ -34953,7 +35628,7 @@ async function tipRefreshPeriodFromToast(storeId, fromISO, toISO){
     var s = stores[si], guid = s.toastGuid;
     var pfx = (stores.length>1 ? (s.name+' ') : '');
     // 売上（fetchToastRange: toast_sales(DB)＋ローカル daily_actuals＋予実 実績も更新）
-    try { await fetchToastRange(s.id, guid, days[0], days[days.length-1], function(dn,tot){ setS(pfx+t('売上','Sales')+' '+dn+'/'+tot); }); okS++; }
+    try { var _financialSalesResult=await fetchToastRange(s.id, guid, days[0], days[days.length-1], function(dn,tot){ setS(pfx+t('売上','Sales')+' '+dn+'/'+tot); }); if(!_financialSalesResult || _financialSalesResult.error){ fail++; } else { okS++; fail+=Number(_financialSalesResult.fail)||0; } }
     catch(e){ fail++; }
     // 勤怠（fetchTipLabor: tip_labor(DB)にも保存＝v633）
     for (var di=0; di<days.length; di++){
@@ -36569,8 +37244,8 @@ async function attBackfillMonth(storeId, guid) {
   if (target.length) {
     try {
       var _sres = await fetchToastRange(storeId, guid, target[0].date, target[target.length-1].date, function(done,total){ if(el) el.textContent='売上を取得中… '+done+'/'+total+'日'; });
-      salesOk=(_sres&&_sres.ok)||0; salesFail=(_sres&&_sres.fail)||0;
-    } catch(e){ /* 売上失敗でも勤怠は続行 */ }
+      salesOk=(_sres&&_sres.ok)||0; salesFail=(!_sres||_sres.error)?Math.max(1,target.length):((_sres&&_sres.fail)||0);
+    } catch(e){ salesFail=Math.max(1,target.length); /* 売上失敗でも勤怠は続行 */ }
   }
   var ok=0, withData=0, fail=0;
   for (var i=0;i<target.length;i++){
@@ -36583,8 +37258,8 @@ async function attBackfillMonth(storeId, guid) {
     } catch(e){ fail++; }
   }
   if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> この月を最新化（売上＋勤怠）'; }
-  if (el) el.innerHTML=`<span style="color:var(--green)">最新化完了: 売上${salesOk}日 / 勤怠${ok}日（うち勤怠あり${withData}日）${(fail||salesFail)?' / 失敗 売上'+salesFail+'・勤怠'+fail+'日':''}</span>`;
-  showToast(`この月をToastから最新化しました（売上${salesOk}日 / 勤怠${withData}日）`, 'success');
+  if (el) el.innerHTML=`<span style="color:${(fail||salesFail)?'var(--yellow)':'var(--green)'}">${(fail||salesFail)?'一部未完了':'最新化完了'}: 売上${salesOk}日 / 勤怠${ok}日（うち勤怠あり${withData}日）${(fail||salesFail)?' / 失敗 売上'+salesFail+'・勤怠'+fail+'日':''}</span>`;
+  showToast(`${(fail||salesFail)?'一部の最新化を完了できませんでした':'この月をToastから最新化しました'}（売上${salesOk}日 / 勤怠${withData}日）`, (fail||salesFail)?'warning':'success');
   renderPage((typeof curPage!=='undefined')?curPage:'attendance');
 }
 
@@ -38960,7 +39635,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1100';
+const APP_VERSION = '1101';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -72714,10 +73389,22 @@ async function reopenApproval(id, fresh){
   if(a.type==='TipRate' || a.type==='Leadership'){ var _rs1=_apRecordState(a);
     if(!_rs1 && a.via==='page') _rs1={ state:a.status, label:(a.type==='TipRate'?'Tip Rate':'Leadership') };   /* 申請と結んでいない前の案件：画面で決めた印で */
     if(_rs1 && (_rs1.state==='approved' || _rs1.state==='rejected')){ alert(t('この申請は「'+_rs1.label+'」の画面で'+(_rs1.state==='approved'?'承認':'却下')+'され、反映済みです。承認センターからは取り消せません。','This request was decided and applied on the '+_rs1.label+' page. It cannot be undone from the approval center.')); return; } }
+  if(window.FUNERGY_FINANCIAL_SAVE && a.type==='予算' && a.ref){try{await FUNERGY_FINANCIAL_SAVE.refresh(['spl_budgets_v2_'+a.ref]);}catch(e){showToast('最新の予算を確認できないため、承認は取り消していません。','warning');return;}}
   if(a.type==='退職' && a.ref){ if(!(await _reopenOffboardApproval(a, fresh))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }   /* v1085 */
   else if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
   var _by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
   var _rn=Math.max(Date.now(), _apStT(a)+1, _apMut(a)+1);   /* v1087: 申請の記録と案件で同じ取り消しの時刻 */
+  if(window.FUNERGY_FINANCIAL_SAVE && a.type==='予算' && a.ref){
+    return FUNERGY_FINANCIAL_SAVE.captureCallback(function(){
+      var _buds=getBudgets(), _b=_buds.find(function(x){return x.storeId===a.ref;});
+      if(!_b)throw new Error('対象の予算を確認できません');
+      _b.status='GM承認待ち'; saveBudgets(_buds);
+      _apReopenRec(a,_rn); lsSet('approvals',approvals);
+      addNotif({type:'approval',title:t('承認が取り消されました','Approval undone')+'：'+a.type,text:(a.title||'').slice(0,140),toUser:(a.from||''),page:'budget',refId:a.id});
+      showToast(t('承認を取り消し、承認待ちに戻しました','Approval undone; back to pending'),'info'); _apRerender();
+      return true;
+    })();
+  }
   try{
     if(a.type==='スキル'){
       var _sreqs=getSkillRequests();
@@ -88457,11 +89144,12 @@ async function saveBowlCatCfg(sid){
     var now=new Date();
     var from=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0')+'-01';
     var toISO=now.toISOString().slice(0,10);
-    await fetchToastRange(sid, guid, from, toISO, function(done,total){
+    var _financialRangeResult=await fetchToastRange(sid, guid, from, toISO, function(done,total){
       var t=document.getElementById('toast-sync-status'); if(t) t.textContent='再集計中… '+done+'/'+total;
     });
+    if(!_financialRangeResult || _financialRangeResult.error) throw new Error((_financialRangeResult&&_financialRangeResult.error)||'保存結果を確認できません');
     // DB→アプリへ反映
-    if(typeof syncStoreActualsFromToast==='function') await syncStoreActualsFromToast(sid, guid, monthDays());
+    if(typeof syncStoreActualsFromToast==='function'){var _financialImportResult=await syncStoreActualsFromToast(sid,guid,monthDays());if(!_financialImportResult||_financialImportResult.error)throw new Error((_financialImportResult&&_financialImportResult.error)||'保存結果を確認できません');}
     showToast('丼数を再集計しました','success');
   }catch(e){ showToast('再集計でエラー: '+String(e),'warning'); }
   renderPage('kpi_master');
@@ -89945,7 +90633,7 @@ try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
 /* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
 try { migrateBudgetStatusYm(); } catch(e) { console.error('migrateBudgetStatusYm', e); }
 try { migrateBudgetStatusYmFix(); } catch(e) { console.error('migrateBudgetStatusYmFix', e); }
-try { if(localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
+try { if(!window.FUNERGY_FINANCIAL_SAVE && localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
 try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
 try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
 try { _v2VendorNormOnce(); } catch(e) { console.error('_v2VendorNormOnce', e); }
