@@ -91,7 +91,7 @@ function app({ state = {}, role = 'gm', visible = ['F06', 'F01'], lang = 'ja', f
   };
   vm.createContext(c);
   vm.runInContext(['parseJaDate', '_invDate', '_invStoreIds', 'fcCostPurposes', '_fcInCost', 'dateInYm', 'monthInvoiceCostYm', 'monthPurchaseCostYm', 'foodCostOf',
-    '_invDayCostMap', 'fcBreakdownSub', 'budPage'].map(fn).join('\n') + '\n' + MOD, c);   // v1084: 仕入れは独立したページ（budPage が描き直す先を決める）
+    '_invDayCostMap', 'fcBreakdownSub', 'budPage', 'lsSplitRO'].map(fn).join('\n') + '\n' + MOD, c);   // v1084: 仕入れは独立したページ（budPage が描き直す先を決める）
   return c;
 }
 const run = (c, code) => vm.runInContext(code, c);
@@ -313,8 +313,12 @@ test('the purchases chip uses one count per month for every store; English has n
   // the login pull (all of app_state) leaves out the summaries; they are fetched by month
   // (assert.ok, not assert.match: a failed match would print the whole 7 MB page)
   // (v1080: other heavy rows may be left out too, e.g. lunch_photo_*; the summaries must stay out)
-  assert.ok(/supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*(&key=not\.like\.[a-z_]+\*)*'\)/.test(source), 'the login pull leaves the summaries out');
-  assert.ok(/async function supaFetchAll\(table, select, filter\)[\s\S]{0,400}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/.test(source), 'supaFetchAll takes the filter');
+  // (v1098: the pull reads only the changed rows; every way it reads app_state takes the rows it leaves out from KV_SKIP_PREFIX)
+  const skipM = /var KV_SKIP_PREFIX = (\[[^\]]*\]);/.exec(source);
+  assert.ok(skipM && JSON.parse(skipM[1].replace(/'/g, '"')).includes('invoice_purchase_'), 'the login pull leaves the summaries out');
+  assert.ok(/body:JSON\.stringify\(\{ p_skip_prefix:KV_SKIP_PREFIX \}\)/.test(source), 'the index of rows leaves them out');
+  assert.ok(/var f=KV_SKIP_PREFIX\.map\(function\(p\)\{ return 'key=not\.like\.'\+p\+'\*'; \}\)\.join\('&'\);[\s\S]{0,600}rows=await supaFetchAll\('app_state', 'key,value', f\)/.test(source), 'the full read leaves them out');
+  assert.ok(/async function supaFetchAll\(table, select, filter\)[\s\S]{0,800}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/.test(source), 'supaFetchAll takes the filter');
   // the bonus lock reads the summaries of the quarter again before it locks
   const k = { IPS_START: '2026-10', _bonusQParse: () => ({ y: 2026, q: 4 }), _quarterMonths: () => ['2026-10', '2026-11', '2026-12'], _ymToOffset: ym => (ym <= '2026-11' ? 0 : 1),
     kbCfg: () => ({}), karteEligibleEmps: () => [], kevStoresExtra: () => [] };
