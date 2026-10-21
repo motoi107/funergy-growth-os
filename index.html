@@ -1571,9 +1571,19 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       return original._lsRawDel.apply(this, arguments);
     };
     function quarantine() {
+      const archived = recoveryEntries().filter(entry => entry.reason === 'legacy_outbox');
       for (const item of original._outboxGet.call(win)) {
         if (!financial(item.key)) continue;
-        retain({ reason: 'legacy_outbox', key: item.key, value: original._lsRaw.call(win, item.key, null), outbox: copy(item) });
+        const outbox = copy(item);
+        // The legacy queue stores a key, not a frozen value, and remains intact.
+        // Once its exact entry has been archived, later acknowledged saves must
+        // not turn the current local row into another supposed unsent draft.
+        // Compare durable identities so this also holds after a page reload;
+        // changed queue entries still retain their own original input.
+        if (archived.some(entry => entry.key === item.key && equal(entry.outbox, outbox))) continue;
+        const record = { reason: 'legacy_outbox', key: item.key, value: original._lsRaw.call(win, item.key, null), outbox };
+        retain(record);
+        archived.push(record);
       }
     }
     function recoverPending() {

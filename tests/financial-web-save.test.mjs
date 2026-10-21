@@ -475,6 +475,64 @@ test('repeated acknowledged saves compact completed payloads to 50 summaries whi
   for (const draft of drafts) assert.deepEqual(records.find(x => x.reason === draft.reason), draft);
 });
 
+test('a live legacy outbox keeps one original snapshot through 80 successful saves and module recreation', async () => {
+  const recoveryKey = '_financial_save_recovery_v1';
+  const outbox = [{ key: DAILY, attempts: 1, lastErr: 'Original offline save', ts: 1 }];
+  const f = fixture();
+  const unsent = initial()[DAILY]; unsent['2026-10-01'].event = 'Original unsent memo';
+  f.storage.set(DAILY, JSON.stringify(unsent)); f.storage.set('op_outbox', JSON.stringify(outbox));
+  await f.api.refresh([DAILY, BUDGET]);
+  const originalLocal = clone(f.api.getRecovery().find(x => x.reason === 'pre_guard_local'));
+  const originalOutbox = clone(f.api.getRecovery().find(x => x.reason === 'legacy_outbox'));
+  let sizeAt50;
+  for (let i = 0; i < 80; i++) {
+    await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Memo-' + String(i).padStart(3, '0'));
+    await f.context.saveDayMemo('F01', '2026-10-01');
+    if (i === 49) sizeAt50 = f.storage.get(recoveryKey).length;
+  }
+  assert.equal(f.commits.length, 80);
+  assert.equal(f.api.getRecovery().filter(x => x.reason === 'committed_receipt').length, 50);
+  assert.equal(f.storage.get(recoveryKey).length, sizeAt50);
+  assert.deepEqual(clone(f.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [originalOutbox]);
+  assert.deepEqual(originalOutbox.value, unsent);
+  assert.deepEqual(JSON.parse(f.storage.get('op_outbox')), outbox);
+  assert.equal(JSON.parse(f.storage.get(DAILY))['2026-10-01'].event, 'Memo-079');
+  const beforeReload = f.storage.get(recoveryKey);
+  const again = fixture({ storage: f.storage, database: f.database, receipts: f.receipts });
+  await again.api.refresh([DAILY, BUDGET]);
+  assert.equal(again.storage.get(recoveryKey), beforeReload);
+  assert.deepEqual(clone(again.api.getRecovery().find(x => x.reason === 'pre_guard_local')), originalLocal);
+  assert.deepEqual(clone(again.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [originalOutbox]);
+});
+
+test('a distinct legacy outbox identity archives its own input only after durable retention succeeds', async () => {
+  const recoveryKey = '_financial_save_recovery_v1'; let rejectRecovery = false, reads = 0;
+  const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey),
+    read: async keys => { reads++; return { rows: keys.map(key => clone(f.database.get(key))) }; } });
+  f.storage.set('op_outbox', JSON.stringify([{ key: DAILY, attempts: 1, lastErr: 'Old input', ts: 1 }]));
+  await f.api.refresh([DAILY]);
+  const first = clone(f.api.getRecovery().find(x => x.reason === 'legacy_outbox'));
+  const originalLocal = clone(f.api.getRecovery().find(x => x.reason === 'pre_guard_local'));
+  const nextInput = initial()[DAILY]; nextInput['2026-10-01'].event = 'New unsent input';
+  f.storage.set(DAILY, JSON.stringify(nextInput));
+  f.context._outboxAdd(DAILY, 'A separate offline write');
+  const nextOutbox = JSON.parse(f.storage.get('op_outbox'));
+  const beforeFailure = f.storage.get(recoveryKey); rejectRecovery = true;
+  await assert.rejects(f.api.refresh([DAILY]), /financial_recovery_storage_failed/);
+  assert.equal(reads, 1); assert.equal(f.commits.length, 0);
+  assert.equal(f.storage.get(recoveryKey), beforeFailure);
+  assert.deepEqual(JSON.parse(f.storage.get(DAILY)), nextInput);
+  assert.deepEqual(JSON.parse(f.storage.get('op_outbox')), nextOutbox);
+  rejectRecovery = false; await f.api.refresh([DAILY]);
+  assert.deepEqual(clone(f.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [first,
+    { reason: 'legacy_outbox', key: DAILY, value: nextInput, outbox: nextOutbox[0] }]);
+  assert.deepEqual(clone(f.api.getRecovery().find(x => x.reason === 'pre_guard_local')), originalLocal);
+  const afterCapture = f.storage.get(recoveryKey);
+  f.storage.set(DAILY, JSON.stringify(initial()[DAILY]));
+  await f.api.refresh([DAILY]);
+  assert.equal(f.storage.get(recoveryKey), afterCapture);
+});
+
 test('recovery storage exhaustion refuses dispatch and preserves the entered form and previous recovery', async () => {
   let rejectRecovery = false;
   const recoveryKey = '_financial_save_recovery_v1';
