@@ -45,9 +45,9 @@ function fixture(options = {}) {
   };
   const raw = (key, fallback) => storage.has(key) ? JSON.parse(storage.get(key)) : fallback;
   const context = vm.createContext({ console, setTimeout, clearTimeout, Promise, crypto: { randomUUID: () => `00000000-0000-4000-8000-${String(nextId++).padStart(12, '0')}` },
-    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, val) => storage.set(key, String(val)) },
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, val) => storage.set(key, String(val)), removeItem: key => storage.delete(key) },
     document: { getElementById: id => fields.get(id) || null, querySelectorAll: query => query === '.bb-day' ? dayFields : [...fields.values(), ...dayFields] },
-    _lsRaw: raw, _lsStoreGet: key => storage.get(key) ?? null, _lsWriteVerified: (key, serialized) => {
+    _lsRaw: raw, _lsStoreGet: key => storage.get(key) ?? null, _lsRawDel: key => storage.delete(key), _lsWriteVerified: (key, serialized) => {
       if (options.writeVerified?.(key, serialized) === false) return false;
       storage.set(key, serialized); return true;
     },
@@ -85,6 +85,7 @@ function fixture(options = {}) {
     'verifyBudgetSaved', 'openDowEditor', 'saveDow', 'getDow', 'dowCellInput', 'doWeatherSync', '_doSubmitBudget', 'budRationale',
     'mergeBudgets', '_budTs', '_budWeight', '_mergeBudMonths'];
   vm.runInContext(roleConfig + '\n' + names.map(webFunction).join('\n'), context);
+  options.beforeInstall?.(context);
   vm.runInContext(guard, context);
   const answer = request => {
     if (receipts.has(request.requestId)) return clone(receipts.get(request.requestId));
@@ -105,7 +106,8 @@ function fixture(options = {}) {
     commit: async request => { commits.push(request); return options.commit ? options.commit(request, answer) : answer(request); },
     receipt: options.receipt || (async ({ requestId }) => receipts.get(requestId) || { status: 'not-found', requestId })
   };
-  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup });
+  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup,
+    awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)) });
   return { context, api, fields, dayFields, toasts, effects, legacy, commits, database, storage, receipts, answer,
     set: (id, value) => { const field = fields.get(id) || { disabled: false }; field.value = value; fields.set(id, field); },
     advance(key, fn) { const old = clone(database.get(key)); fn(old.value); old.version = AFTER; database.set(key, old); },
@@ -218,6 +220,10 @@ test('actual legacy outbox retains protected entries including missing values wh
   await f.context.outboxRetryOne('daily_actuals_F02'); f.context._outboxRemove(DAILY);
   assert.equal(JSON.parse(f.storage.get('op_outbox')).length, 2);
   assert.equal(f.api.getRecovery().filter(x => x.reason === 'legacy_outbox').length, 2);
+  const queueBefore = f.storage.get('op_outbox'), recoveryBefore = JSON.stringify(f.api.getRecovery());
+  for (let i = 0; i < 20; i++) { await f.context.flushOutbox(); await f.context.outboxRetryOne(DAILY); await f.api.refresh([DAILY]); }
+  assert.equal(f.storage.get('op_outbox'), queueBefore);
+  assert.equal(JSON.stringify(f.api.getRecovery()), recoveryBefore);
   assert.equal(await f.context.opMergePush(DAILY, {}), false);
   assert.equal(await f.context.syncMasterToSupabase(BUDGET, []), false);
   assert.equal(await f.context.supaUpsert('app_state', [{ key: DAILY, value: {} }, { key: 'tasks_all', value: [] }]), false);
@@ -497,5 +503,49 @@ test('bulk restore never claims durable retention when recovery storage rejects 
   assert.equal(f.commits.length, 0); assert.equal(f.storage.get(recoveryKey), previous);
   assert.equal(f.toasts.some(x => x.message.includes('保管しています')), false);
   assert.equal(f.toasts.some(x => x.message.includes('保管も確認できません')), true);
+  assert.equal(f.toasts.some(x => x.kind === 'success'), false);
+});
+
+test('delayed actual IndexedDB reader is archived before canonical reads or any protected local overwrite', async () => {
+  const gate = deferred(); let reads = 0;
+  const f = fixture({
+    beforeInstall: context => vm.runInContext("var _idbState='init', _IDB_MEM=null;\n"
+      + source.match(/^function _lsRaw\(key, def\).*$/m)[0] + '\n' + webFunction('_lsStoreGet'), context),
+    awaitLocalReady: async context => { await gate.promise; return context._idbState === 'ready'; },
+    read: async keys => {
+      reads++;
+      const archived = f.api.getRecovery().find(x => x.reason === 'pre_guard_local');
+      assert.equal(archived.value[DAILY]['2026-10-01'].event, 'Only in hydrated IndexedDB');
+      return { rows: keys.map(key => clone(f.database.get(key))) };
+    }
+  });
+  const reading = f.api.refresh([DAILY, BUDGET]); await settle();
+  assert.equal(reads, 0); assert.equal(f.api.getRecovery().some(x => x.reason === 'pre_guard_local'), false);
+  assert.equal(f.context._lsWriteVerified(DAILY, JSON.stringify({ cloud: 'too early' })), false);
+  assert.equal(f.context._lsRawDel(DAILY), false);
+  assert.equal(JSON.parse(f.storage.get(DAILY))['2026-10-01'].event, 'Before');
+  assert.equal(f.context._lsWriteVerified('unrelated', JSON.stringify({ allowed: true })), true);
+  f.context._IDB_MEM = new Map([[DAILY, JSON.stringify({ '2026-10-01': { actual: 999, event: 'Only in hydrated IndexedDB' } })]]);
+  f.context._idbState = 'ready'; gate.resolve(); await reading;
+  assert.equal(reads, 1); assert.equal(f.api.getRecovery().filter(x => x.reason === 'pre_guard_local').length, 1);
+  assert.equal(f.context._lsWriteVerified(DAILY, JSON.stringify({ archived: 'safe to replace' })), true);
+});
+
+test('storage hydration failure blocks reads, automatic saves and restores without marking a fallback archive complete', async () => {
+  let reads = 0, fetched = 0;
+  const f = fixture({ awaitLocalReady: async () => false,
+    read: async () => { reads++; throw new Error('must not read'); },
+    fetchToastSales: async () => { fetched++; throw new Error('must not fetch'); } });
+  await assert.rejects(f.api.refresh([DAILY]), /financial_local_unverified/);
+  const sync = await f.context.syncStoreActualsFromToast('F01', 'guid', [{ date: '2026-10-01' }]);
+  assert.ok(sync.error);
+  const restored = await f.api.restoreBudgets([{ storeId: 'F01', actual: 999 }]);
+  assert.equal(restored.error, 'financial_local_unverified');
+  assert.equal(reads, 0); assert.equal(fetched, 0); assert.equal(f.commits.length, 0);
+  assert.equal(f.api.getRecovery().some(x => x.reason === 'pre_guard_local'), false);
+  assert.equal(f.context._lsWriteVerified(DAILY, '{}'), false);
+  assert.equal(f.context._lsRawDel(BUDGET), false);
+  assert.equal(f.context._lsWriteVerified('unrelated', '{"preserved":true}'), true);
+  assert.equal(f.toasts.some(x => x.message.includes('送信を停止')), true);
   assert.equal(f.toasts.some(x => x.kind === 'success'), false);
 });

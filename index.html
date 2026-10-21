@@ -1482,7 +1482,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       'closeModalDirect', 'renderPage', 'showToast', 'bbClearDirty', ...WRITERS];
     captureNames.push(...Object.keys(OPENERS), 'openInputModal', 'apDecidedFromPage', 'addApproval',
       'snapshotApprovedBudget', 'diagBudgets', 'closeDowEditor', '_daRO', 'flushOutbox', 'addNotif', '_apRerender');
-    captureNames.push('mergeBudgets', '_budHasReal');
+    captureNames.push('mergeBudgets', '_budHasReal', '_lsRawDel');
     captureNames.forEach(name => { if (typeof win[name] === 'function') original[name] = win[name]; });
     for (const name of ['ls', 'lsSet', '_lsRaw', '_lsWriteVerified', '_outboxGet', '_outboxRemove',
       '_pushWithOutbox', 'syncMasterToSupabase', 'opMergePush', 'supaUpsert', 'getBudgets', 'saveBudgets',
@@ -1492,6 +1492,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     let active = null, pending = null, form = null, openEpoch = 0, callDepth = 0, lastReceipt = null;
     let operationQueue = Promise.resolve();
     let bulkBusy = false, localPreserved = false;
+    let localReady = typeof options.awaitLocalReady !== 'function', localReadiness = null;
     const notify = (message, kind = 'warning') => original.showToast.call(win, message, kind);
     function lockInputs() {
       const elements = Array.from(win.document?.querySelectorAll?.('#modal-body input, #modal-body textarea, #modal-body select, #modal-body button, .bb-day, #bb-save-bottom, [oninput^="bbDowIn("], [onclick^="bb"]') || []);
@@ -1531,7 +1532,22 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           throw new Error('financial_recovery_storage_failed');
       }
     }
-    function preserveLocal() {
+    async function preserveLocal() {
+      if (!localReady) {
+        if (!localReadiness) localReadiness = deadline(() => options.awaitLocalReady()).then(ready => {
+          if (ready !== true) throw new Error('financial_local_unverified');
+          localReady = true;
+        }).catch(() => { localReadiness = null; throw new Error('financial_local_unverified'); });
+        try { await localReadiness; }
+        catch (error) {
+          notify('この端末に残っている入力を読み出せないため、売上・予算の送信を停止しています。画面を閉じず、端末の保存領域を確認してください。');
+          throw error;
+        }
+      }
+      return archiveLocal();
+    }
+    function archiveLocal() {
+      if (!localReady) throw new Error('financial_local_unverified');
       if (localPreserved) return true;
       if (recoveryEntries().some(entry => entry.reason === 'pre_guard_local')) { localPreserved = true; return true; }
       const value = {};
@@ -1543,6 +1559,17 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       localPreserved = true;
       return true;
     }
+    // Startup pulls can finish before IndexedDB hydration. They may keep
+    // updating unrelated data, but must not overwrite or delete an unarchived
+    // financial row through the original local-storage helpers.
+    win._lsWriteVerified = function (key) {
+      if (financial(key) && !localPreserved) return false;
+      return original._lsWriteVerified.apply(this, arguments);
+    };
+    if (original._lsRawDel) win._lsRawDel = function (key) {
+      if (financial(key) && !localPreserved) return false;
+      return original._lsRawDel.apply(this, arguments);
+    };
     function quarantine() {
       for (const item of original._outboxGet.call(win)) {
         if (!financial(item.key)) continue;
@@ -1731,7 +1758,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     async function refresh(keys) {
       if (!Array.isArray(keys) || !keys.length || keys.length > STORES.length * 2 || new Set(keys).size !== keys.length || keys.some(k => !rowKey(k)))
         throw new Error('invalid_financial_read_scope');
-      preserveLocal(); quarantine(); recoverPending();
+      await preserveLocal(); quarantine(); recoverPending();
       if (pending) throw new Error('financial_unresolved_save');
       const reads = new Map(keys.map(key => { const epoch = (readEpochs.get(key) || 0) + 1; readEpochs.set(key, epoch); return [key, epoch]; }));
       const rows = validateRows(await deadline(() => transport.read(keys.slice())), keys);
@@ -1816,6 +1843,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     }
     async function perform(name, fn, args, baseline) {
       if (bulkBusy && name !== 'restore-store') { notify('予算の復元結果を確認してから保存してください。'); return false; }
+      try { await preserveLocal(); } catch (_) { return false; }
       try { recoverPending(); } catch (_) { notify('保管した入力の確認が必要なため、追加の保存を停止しています。'); return false; }
       if (active || pending) { notify('前の保存結果を確認してから次の入力を保存してください。'); return false; }
       // Automatic sources have no entered form. Read their exact server state
@@ -1899,7 +1927,10 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         if (epoch !== openEpoch || active || pending) return false;
         form = { kind, args: args.slice(), rows };
         return original[name].apply(win, args);
-      } catch (_) { notify('最新データを確認できません。通信を確認して、入力画面をもう一度開いてください。'); return false; }
+      } catch (error) {
+        if (error?.message !== 'financial_local_unverified') notify('最新データを確認できません。通信を確認して、入力画面をもう一度開いてください。');
+        return false;
+      }
     }
     for (const [name, kind] of Object.entries(OPENERS)) if (original[name]) win[name] = function (...args) { return open(kind, name, args); };
     async function restoreBudgets(input, restoreOptions = {}) {
@@ -1912,6 +1943,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       if (!Array.isArray(candidate) || !candidate.length || candidate.length > STORES.length
         || candidate.some(b => !b || !STORES.includes(b.storeId)) || new Set(candidate.map(b => b.storeId)).size !== candidate.length)
         throw new Error('invalid_financial_restore');
+      try { await preserveLocal(); } catch (error) { return { error: String(error?.message || error) }; }
       bulkBusy = true;
       const result = { saved: [], unchanged: [], retained: [], conflicted: [] };
       try {
@@ -2062,10 +2094,15 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
    Install fences before startup; native previews keep their separate gateway. */
 if (!window.FUNERGY_NATIVE_CONFIG) {
   FunergyFinancialSave.install(window, {enabled:true, deferStartup:true,
+    awaitLocalReady:async function(){
+      await Promise.resolve().then(function(){return _idbBootP;});
+      return _idbState==='ready' && _IDB_MEM instanceof Map;
+    },
     transport:FunergyFinancialTransport.create({url:SUPABASE_URL,headers:extra=>supaHeaders(extra),fetch:(...args)=>fetch(...args)})});
   document.addEventListener('DOMContentLoaded', function(){
-    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).catch(function(){
-      showToast(t('売上・予算の最新データを確認できません。入力を保管し、保存時に再確認します。','Financial data could not be verified. Your input is retained; reconnect before saving.'),'warning');
+    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).catch(function(error){
+      if(error.message==='financial_local_unverified')return;
+      showToast(t('売上・予算の最新データを確認できません。元の入力を残して、もう一度確認してください。','Financial data could not be verified. Keep the original input and check again.'),'warning');
     });
   });
 }
@@ -10436,6 +10473,7 @@ function _kvSeenRecord(rows, okKeys){
   }catch(e){ console.warn('kv seen', e); }
 }
 async function supaPullAllMasters(opt){
+  if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){/* financial local writes remain fenced; unrelated masters may load */}}
   var results = [];
   /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
   var _mp = {}; for (var _k in SUPA_MASTER_MAP){ _mp[_k] = supaFetchAll(SUPA_MASTER_MAP[_k].table, 'data'); }
@@ -10907,7 +10945,7 @@ async function diagBudgets(){
   if(box) box.innerHTML=h;
 }
 async function pullBudgetsNow(){
-  if(window.FUNERGY_FINANCIAL_SAVE){try{var local=_splitRead('budgets_v2',[])||[];if(local.length)return await FUNERGY_FINANCIAL_SAVE.restoreBudgets(local,{mode:'merge',label:'端末に保管された予算'});await FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys.filter(k=>k.startsWith('spl_budgets_v2_')));showToast('最新の予算を取り込みました','success');diagBudgets();return;}catch(e){showToast('取り込みを完了できませんでした。端末の入力は保持しています。','warning');return;}}
+  if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();var local=_splitRead('budgets_v2',_SPLIT_KEYS.budgets_v2)||[];if(local.length)return await FUNERGY_FINANCIAL_SAVE.restoreBudgets(local,{mode:'merge',label:'端末に保管された予算'});await FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys.filter(k=>k.startsWith('spl_budgets_v2_')));showToast('最新の予算を取り込みました','success');diagBudgets();return;}catch(e){if(e.message!=='financial_local_unverified')showToast('取り込みを完了できませんでした。元の入力を残してください。','warning');return;}}
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドから取り込み中…';
   try{
@@ -10925,7 +10963,7 @@ async function pullBudgetsNow(){
   diagBudgets();
 }
 async function pushBudgetsNow(){
-  if(window.FUNERGY_FINANCIAL_SAVE){return FUNERGY_FINANCIAL_SAVE.restoreBudgets(_splitRead('budgets_v2',[])||[],{mode:'merge',label:'端末に保管された予算'});}
+  if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return;}return FUNERGY_FINANCIAL_SAVE.restoreBudgets(_splitRead('budgets_v2',_SPLIT_KEYS.budgets_v2)||[],{mode:'merge',label:'端末に保管された予算'});}
   var box=document.getElementById('sync-center-result');
   if(box) box.innerHTML='<i class="ti ti-loader"></i> クラウドへ反映中…';
   try{
@@ -12104,6 +12142,7 @@ function _lsSetVerified(key, json){
   return _lsWriteVerified(key, json);
 }
 async function pullOpKey(key){
+  if(window.FUNERGY_FINANCIAL_SAVE && FunergyFinancialSave.financialKey(key)){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return false;}}
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
     if(!res.ok) return false;
@@ -19096,8 +19135,8 @@ function budgetSnapshotList(){
   return out;
 }
 /* 穴埋め復元：スナップショットにあって今は空になっている店だけ戻す（今ある実データは壊さない） */
-function restoreBudgetSnapshot(k){
-  if(window.FUNERGY_FINANCIAL_SAVE){var v=_lsRaw(k,null); if(!v||!Array.isArray(v.budgets)){showToast('スナップショットが読めません','danger');return;} return FUNERGY_FINANCIAL_SAVE.restoreBudgets(v.budgets,{mode:'fill-empty',label:'保存前スナップショット'});}
+async function restoreBudgetSnapshot(k){
+  if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return;}var v=_lsRaw(k,null); if(!v||!Array.isArray(v.budgets)){showToast('スナップショットが読めません','danger');return;} return FUNERGY_FINANCIAL_SAVE.restoreBudgets(v.budgets,{mode:'fill-empty',label:'保存前スナップショット'});}
   try{
     var v=_lsRaw(k, null);                                        /* v763 */
     if(!v || !Array.isArray(v.budgets)){ showToast('スナップショットが読めません','danger'); return; }
@@ -19167,8 +19206,8 @@ function approvedBudgetList(){
   return out;
 }
 /* 承認時点で【上書き】する。GMの明示操作なので _ts を今にして必ず勝たせる。触るのはその店の行だけ。 */
-function restoreApprovedBudget(k){
-  if(window.FUNERGY_FINANCIAL_SAVE){var v=ls(k,null);if(!v||!v.budget){showToast('承認コピーが読めません','danger');return;}var snap=JSON.parse(JSON.stringify(v.budget));snap._ts=Date.now();return FUNERGY_FINANCIAL_SAVE.restoreBudgets([snap],{mode:'overwrite',label:'GM承認時点のコピー（現在の予算を置換）'});}
+async function restoreApprovedBudget(k){
+  if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return;}var v=ls(k,null);if(!v||!v.budget){showToast('承認コピーが読めません','danger');return;}var snap=JSON.parse(JSON.stringify(v.budget));snap._ts=Date.now();return FUNERGY_FINANCIAL_SAVE.restoreBudgets([snap],{mode:'overwrite',label:'GM承認時点のコピー（現在の予算を置換）'});}
   try{
     var v=ls(k, null);
     if(!v || !v.budget || !v.storeId){ showToast('承認コピーが読めません','danger'); return; }
