@@ -81,20 +81,22 @@ test('① total, not per category: two people with the same total get the same c
   assert.ok(cats.every(x => x.un === 0));
 });
 
-test('① what is counted: G2 = H·A·B·C (225 points, base 135 = 60%, step 7), G3 and above = all eight (420); unscored items are 未評価, never 0', () => {
+test('① what is counted (v1100 · Moto 10/21): every grade counts all eight categories — G2 too (420 points, base 252 = 60%, step 13); unscored items are 未評価, never 0', () => {
   const c = co();
   const aki = seg(c, 'aki');
-  assert.deepEqual([aki.items.c.max, aki.items.c.base.bp, aki.items.c.base.bs, aki.items.c.total.keys.slice().sort().join('')], [225, 135, 7, 'ABCH']);
-  assert.deepEqual([aki.items.c.score, aki.items.c.step, aki.coefs.c], [152, 2, 1.1]);
-  // an unscored item in D (not counted for G2) changes nothing
+  assert.deepEqual([aki.items.c.max, aki.items.c.base.bp, aki.items.c.base.bs, aki.items.c.total.keys.slice().sort().join('')], [420, 252, 13, 'ABCDEFGH']);
+  // H 38 + A 36 + B 36 + C 42 + D 34 + E 48 + F 24 + G 24 = 282 → 30 over 252 → 2 steps → 1.10
+  assert.deepEqual([aki.items.c.score, aki.items.c.step, aki.coefs.c], [282, 2, 1.1]);
+  assert.equal(oracleCoef(282, 252, 13), 1.1);
+  // an unscored item in D (counted for G2 from v1100) → 未評価: no coefficient, no amount, the reason names the category; it is not counted as 0
   delete c.SCORES['Aki Sample'].scores.D3;
-  assert.equal(seg(c, 'aki').coefs.c, 1.1);
-  // an unscored item in A (counted) → 未評価: no coefficient, no amount, the reason names the category; it is not counted as 0
-  delete c.SCORES['Aki Sample'].scores.A0;
   const p = person(c, 'aki');
   assert.equal(p.blocked, 'eval');
   assert.equal(p.segs[0].items.c.coef, null);
-  assert.match(p.missing.join(), /未評価の項目が 1 あります.*0 点では数えません/);
+  assert.match(p.missing.join(), /未評価の項目が 1 あります（マーケティング 1 項目）.*0 点では数えません/);
+  // the promotion line into G2 (for G1 people) is a separate thing and still uses H, A, B, C
+  assert.deepEqual(run(c, `cscCatKeys('G2')`), ['H', 'A', 'B', 'C']);
+  for (const sc of ['G1', 'G2', 'G3-op', 'G3-sv', 'G3-kt', 'G4', 'G5', 'G6']) assert.equal(run(c, `kevCsStoreKeys('${sc}').length`), 8, sc);
   // for G3 the D item counts
   const c2 = co();
   delete c2.SCORES['Ken Sample'].scores.D3;
@@ -370,13 +372,13 @@ test('a quarter confirmed with the v1074–v1098 rules stays as it was (not reco
   assert.equal(person(c, 'ken').segs[0].coefs.c, t0.rows.find(r => r.e.id === 'ken').b.segs[0].coefs.c);
 });
 
-test('the settings form (v1099): 7-level selects, base points within the maximum, the j rule with ±0.05 steps; marks g2 and g3', () => {
+test('the settings form (v1099): 7-level selects, base points within the maximum, the j rule with ±0.05 steps; marks g2 and g3 (v1100: the base / step go to bp8 / bs8 with the mark b8, never to bp / bs)', () => {
   const c = co();
   c.DOM['@kevf-on'] = { value: '1' };
   Object.assign(c.DOM, { 'kevf-lo': { value: '0.90' }, 'kevf-hi': { value: '1.10' }, 'kevf-bp': { value: '300' }, 'kevf-bs': { value: '' } });
   vm.runInContext(`window._kevForm = { kind:'rule', scope:'G4', part:'c', pre:'kevf-', q:'${Q}', cs:{ max:420, sheet:'store', def:{ bp:315, bs:13 }, own:{} } };`, c);
   let set = run(c, `kevFormRead('c', 'kevf-')`);
-  assert.deepEqual(set, { c: { on: true, lo: 0.9, hi: 1.1, g2: 1, g3: 1, bp: 300, bs: null } });
+  assert.deepEqual(set, { c: { on: true, lo: 0.9, hi: 1.1, g2: 1, g3: 1, b8: 1, bp8: 300, bs8: null } });
   assert.equal(run(c, `kevFormBad('c', ${JSON.stringify(set)})`), '');
   c.DOM['kevf-bp'].value = '421';
   assert.match(run(c, `kevFormBad('c', kevFormRead('c', 'kevf-'))`), /基準得点は 0〜420 点/);
@@ -387,7 +389,7 @@ test('the settings form (v1099): 7-level selects, base points within the maximum
   // the saved part is used by v1099 (g3) and ignored by the v1098 comparison
   c.DOM['kevf-lo'].value = '0.90';
   assert.equal(run(c, `kevRuleSave('G4', '${Q}', kevFormRead('c', 'kevf-'), 'テスト', '① を変更')`), true);
-  assert.deepEqual(run(c, `[kevRuleFor('G4', '${Q}').r.c.lo, kevRuleFor('G4', '${Q}').r.c.bp, kevRuleFor('G4', '${Q}', null, null, null, true).r.c.bp == null]`), [0.9, 300, true]);
+  assert.deepEqual(run(c, `[kevRuleFor('G4', '${Q}').r.c.lo, kevRuleFor('G4', '${Q}').r.c.bp8, 'bp' in kevRuleFor('G4', '${Q}').r.c, kevRuleFor('G4', '${Q}', null, null, null, true).r.c.bp8 == null]`), [0.9, 300, false, true]);
   // the company rule (j)
   vm.runInContext(`window._kevForm = { kind:'rule', scope:'_common', part:'j', pre:'kevf-', q:'${Q}' };`, c);
   Object.assign(c.DOM, { 'kevf-j_sx0': { value: '90' }, 'kevf-j_sx1': { value: '100' }, 'kevf-j_sx2': { value: '110' }, 'kevf-j_fpt': { value: '2' }, 'kevf-j_pd': { value: '5' },
@@ -451,13 +453,13 @@ test('independent review P2: a grade change confirmed before v1099 (no per-categ
   assert.equal(p.blocked, 'eval');
   assert.equal(p.segs[0].items.c.total.missing, 'legacy');
   assert.match(p.missing.join(), /未評価の項目があったか分かりません.*この記録で数える/);
-  // GM/CEO checks it and records a reason → counted (H, A, B, C of the record: 40 + 36 + 36 + 42 = 154 → 2 steps over 135 → 1.10)
+  // GM/CEO checks it and records a reason → counted (all eight categories of the record from v1100: 40+36+36+42+34+48+24+24 = 284 → 2 steps over 252 → 1.10)
   c.prompt = () => 'Career Score の履歴で全項目の採点を確認';
   assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), true);
   const ack = c.STORE.bonus_eval[`${Q}|ken|G2`].legAck;
   assert.deepEqual([ack.why, ack.by], ['Career Score の履歴で全項目の採点を確認', 'CEO Sample']);
   p = person(c, 'ken');
-  assert.deepEqual([p.segs[0].items.c.total.missing, p.segs[0].items.c.score, p.segs[0].coefs.c], [null, 154, 1.1]);
+  assert.deepEqual([p.segs[0].items.c.total.missing, p.segs[0].items.c.score, p.segs[0].coefs.c], [null, 284, 1.1]);
   assert.match(p.missing.join() || '', /^$|評価完了/, 'only the re-done mark is left (the check changed the record)');
   // no reason → nothing is recorded
   c.prompt = () => '  ';
