@@ -32,7 +32,7 @@ const PCT = [90, 100, 110];
 // the synthetic company on the CEO formula: G4 people have an FL improvement action
 function ceo(opts = {}) {
   const c = company(opts);
-  vm.runInContext(`KEV2_START = '2026-Q3'; var document = { getElementById:function(){ return null; }, querySelector:function(){ return null; }, querySelectorAll:function(){ return []; } };`, c);
+  vm.runInContext(`KEV2_START = '2026-Q3'; KEV3_START = '2099-Q1'; var document = { getElementById:function(){ return null; }, querySelector:function(){ return null; }, querySelectorAll:function(){ return []; } };`, c);
   for (const id of ['mia', 'ray']) c.STORE.bonus_eval[`${Q}|${id}|G4`].fx = { lv: 3, why: '発注量とシフトの見直し（7/15〜）', c_cause: true, c_plan: true, c_exec: true, c_due: true, c_svc: true };
   return c;
 }
@@ -454,7 +454,7 @@ test('store table sync: two devices change different stores / fields, both survi
   const src = fs.readFileSync(index, 'utf8').replace(/\r\n/g, '\n');
   assert.match(src, /'karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q',/);
   assert.match(src, /\n  bonus_store_q:\s+\{ merge: kevMergeMap, covers: kevCoversMap, keepLocal: true \}/);
-  assert.match(src, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q',\n/);
+  assert.match(src, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q',(?:'bonus_pool_extra','cs_guide',)?[^\n]*\n/);   // v1099 adds the special pool and the criteria guide on the same line
   const swB = (fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8').match(/const SW_BUILD = '(\d+)';/) || [])[1];
   assert.ok(Number((src.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1074 && (src.match(/const APP_VERSION = '(\d+)';/) || [])[1] === swB, 'v1074 or later, page and service worker on the same release');
   const d0 = run(a, `kevLockDigest('${Q}')`);

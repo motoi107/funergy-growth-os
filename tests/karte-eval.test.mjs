@@ -327,7 +327,7 @@ test('philosophy source: the grade change record for the earlier segment, a froz
   c3.SCORES['Aki Sample'].date = '2026/09/22'; c3.SCORES['Aki Sample'].scores.H0 = 2; c3.SCORES['Aki Sample'].scores.H1 = 2;
   run(c3, `bqLockQuarter('${Q}')`);
   const fz = run(c3, `bqGet('${Q}').csFreeze.aki`);
-  assert.deepEqual([run(c3, `bqGet('${Q}').locked`), fz.kv, fz.date, fz.hUn], [true, 1, '2026-09-22', 0]);
+  assert.deepEqual([run(c3, `bqGet('${Q}').locked`), fz.kv, fz.date, fz.hUn], [true, 2, '2026-09-22', 0]);   // v1099: the freeze also keeps the unscored count per category (kv 2)
   // office staff: the office Career Score of the quarter, category A
   const c2 = company();
   c2.OCS['Gus Sample'] = true;
