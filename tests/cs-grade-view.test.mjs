@@ -25,6 +25,7 @@ const fnSrc = name => { const i = SRC.indexOf('\nfunction ' + name + '('); asser
 function co() {
   const c = company();
   vm.runInContext(`KEV2_START = '2026-Q3';
+    var DOM = {}; var document = { getElementById:function(id){ return Object.prototype.hasOwnProperty.call(DOM, id) ? DOM[id] : null; }, querySelector:function(sel){ var m=String(sel).match(/name="([^"]+)"/); return (m && DOM['@'+m[1]]) || null; }, querySelectorAll:function(){ return []; } };
     function bizToday(){ return '2026-09-20'; }
     function healthRing(p, col, size){ return '<ring p="'+Math.round(p)+'" c="'+col+'"></ring>'; }
     function ghBadge(g){ return '<badge>'+g+'</badge>'; }`, c);
@@ -236,4 +237,91 @@ test('the bonus ① card for G2: the category table marks the categories outside
   c.ID = 'aki';
   assert.equal(run(c, `kevCsUnFor(EMPS.find(function(e){ return e.id===ID; }), 'G2', null, {H:0, A:0, B:0, C:0, D:1, E:0, F:0, G:0})`), 1);
   assert.equal(run(c, `kevCsUnFor(EMPS.find(function(e){ return e.id===ID; }), 'G2', null, {H:0, A:0, B:0, C:0, D:0, E:0, F:0, G:0})`), 0);
+});
+
+test('independent review P1-1: the settings forms do not put a v1099 G2 base back into the fields (a plain re-save must not mark 225-point values as 420-point ones)', () => {
+  const c = co();
+  c.curRole = 'gm';
+  c.STORE.bonus_eval_rule = { 'G2|2026-Q3': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 135, bs: 7 } }, _at: 1 } };
+  run(c, `kevRuleOpen('G2', 'c')`);
+  const F = run(c, `window._kevForm.cs`);
+  assert.deepEqual([F.own.bp, F.own.bs, F.def.bp, F.def.bs, F.max, F.legacy], [false, false, 252, 13, 420, { bp: true, bs: true }]);
+  const html = c.MODAL.at(-1);
+  assert.match(html, /id="kevf-bp"[^>]*value=""[^>]*placeholder="252"/);
+  assert.doesNotMatch(html, /value="135"|value="7"/);
+  assert.match(html, /v1099（G2 は 4 カテゴリー・225 点満点）のときの点なので、ここには入れていません/);
+  // the GM only changes the range and saves as it is: the base goes back to the default (252), not 135
+  c.DOM['@kevf-on'] = { value: '1' };
+  Object.assign(c.DOM, { 'kevf-lo': { value: '0.90' }, 'kevf-hi': { value: '1.15' }, 'kevf-bp': { value: '' }, 'kevf-bs': { value: '' } });
+  const set = run(c, `kevFormRead('c', 'kevf-')`);
+  assert.deepEqual([set.c.bp, set.c.bs, set.c.cs8], [null, null, 1]);
+  assert.equal(run(c, `kevRuleSave('G2', '${Q}', ${JSON.stringify(set)}, 'v1100 で選び直し', '① を変更')`), true);
+  const p = person(c, 'aki');
+  assert.deepEqual([p.blocked, p.segs[0].items.c.base.bp, p.segs[0].items.c.base.bs, p.segs[0].coefs.c], [null, 252, 13, 1.1]);
+  assert.deepEqual([view(c, 'aki').bp, view(c, 'aki').state], [252, 'met']);
+  // a v1100 value (with cs8) is shown in the field again
+  c.STORE.bonus_eval_rule['G2|2026-Q3'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 260, cs8: 1 };
+  run(c, `kevRuleOpen('G2', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp]`), [true, false]);
+  assert.match(c.MODAL.at(-1), /id="kevf-bp"[^>]*value="260"/);
+  // a v1099 value that comes from the company-wide level is not used as the field's default either
+  c.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { c: { bp: 135, bs: 7 } }, _at: 1 } };
+  run(c, `kevRuleOpen('G2', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.def.bp, window._kevForm.cs.def.bs, window._kevForm.cs.legacy.bp]`), [false, 252, 13, true]);
+  assert.equal(view(c, 'aki').base.why, 'legacy');
+  // G3 and above: a v1099 value is kept in the field (it was on 420 points already)
+  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 300 } }, _at: 1 } };
+  run(c, `kevRuleOpen('G4', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp]`), [true, false]);
+  // the personal form of a G2 store person with a v1099 personal value
+  c.STORE.bonus_eval_rule = {};
+  c.STORE.bonus_eval_ovr = { 'aki|2026-Q3': { set: { c: { bp: 140, g2: 1, g3: 1 } }, _at: 1 } };
+  run(c, `kevOvrOpen('aki', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.def.bp, window._kevForm.cs.legacy.bp]`), [false, 252, true]);
+  assert.doesNotMatch(c.MODAL.at(-1), /value="140"/);
+});
+
+test('independent review P2-1: the person view uses the quarter being assessed (the growth-chart quarter), like the bonus — not today\'s quarter', () => {
+  const c = co();
+  vm.runInContext(`function ghQOf(){ return '2026-Q4'; }`, c);   // today is in Q4, the growth chart still assesses Q3
+  c.STORE.bonus_eval_rule = { 'G2|2026-Q4': { set: { c: { bp: 300, cs8: 1 } }, _at: 1 } };
+  assert.deepEqual([view(c, 'aki').q, view(c, 'aki').bp, view(c, 'aki').state], ['2026-Q3', 252, 'met']);
+  assert.equal(view(c, 'aki').bp, person(c, 'aki').segs[0].items.c.base.bp);
+  // the Q3 track chosen by GM/CEO is used for a G3 person without a track title
+  c.EMPS.push({ id: 'ola', name: 'Ola Sample', title: 'Store Leader', role: 'sl', store: 'S1', status: '在籍' });
+  c.SCORES['Ola Sample'] = J(c.SCORES['Ken Sample']);
+  c.STORE.bonus_eval_rule['G3-kt|2026-Q3'] = { set: { c: { bp: 280, cs8: 1 } }, _at: 1 };
+  c.STORE.bonus_track = { [`${Q}|ola`]: { t: 'kt', at: 'x', by: 'GM', _at: 1 } };
+  assert.deepEqual([view(c, 'ola').scope, view(c, 'ola').bp], ['G3-kt', 280]);
+  // when the growth-chart quarter cannot be read, today's quarter
+  vm.runInContext(`var _kbCfg0 = kbCfg; kbCfg = function(){ return Object.assign(_kbCfg0(), {quarter:''}); };`, c);
+  assert.equal(view(c, 'aki').q, '2026-Q4');
+});
+
+test('independent review P2-2: a G2 grade change confirmed under v1099 with only D–G unscored is named as such (not counted as 0) and listed', () => {
+  const c = co();
+  c.SEGS.ken = [{ g: 'G2', from: '2026-07-01', to: '2026-08-14', days: 45 }, { g: 'G3', from: '2026-08-15', to: '2026-09-30', days: 47 }];
+  c.STORE.bonus_eval[`${Q}|ken|G2`] = { st: 'done', _at: 1 };
+  const cats = run(c, `lssSummary('Ken Sample').cats`).map(x => ({ key: x.key, score: x.score, max: x.max }));
+  const cun = Object.fromEntries(cats.map(x => [x.key, 0])); cun.D = 2; cun.F = 1;
+  c.STORE.grade_hist = { ken: { recs: [{ d: '2026-08-14', g: 'G3', from: 'G2', start: false, prevEval: { g: 'G2', kv: 2, hUn: 0, cun, cats, at: '2026-08-14 10:00', by: 'CEO' } }] } };
+  const p = person(c, 'ken');
+  assert.equal(p.blocked, 'eval');
+  assert.equal(p.segs[0].items.c.total.missing, 'unscored');
+  assert.equal(p.segs[0].items.c.total.g2old, true);
+  assert.match(p.missing.join(), /未評価の項目が 3 あります.*0 点では数えません（v1099 で確定した記録で、そのときは G2 を理念・基本業務・サービス・キッチン\/プレップの 4 カテゴリーで確かめていました/);
+  const M = run(c, `kevMisfits3('${Q}')`);
+  assert.ok(M.block.some(x => /Ken Sample：8\/14 に G2 から変えたときの評価（v1099 で確定）に、v1100 から数える マーケティング 2・数字管理 1 項目の未評価があります/.test(x.t) && /kevOpenPerson/.test(x.act)));
+  // an unscored H item is a plain 未評価 (it was checked under v1099 too): not named as a v1099 gap, not listed
+  cun.D = 0; cun.F = 0; cun.H = 1;
+  const p2 = person(c, 'ken');
+  assert.deepEqual([p2.segs[0].items.c.total.missing, !!p2.segs[0].items.c.total.g2old], ['unscored', false]);
+  assert.ok(!run(c, `kevMisfits3('${Q}')`).block.some(x => /v1099 で確定/.test(x.t)));
+});
+
+test('independent review P2-3: the view shown to the person has one verdict (no Level badge in its header); the manager page keeps it', () => {
+  assert.match(fnSrc('kdHeadHtml'), /\(noLv \? '' : '<span/);
+  const self = fnSrc('renderKarteSelfView');
+  assert.match(self, /kdHeadHtml\(e, g, gcol, lv, true\)/);
+  assert.equal((SRC.match(/kdHeadHtml\(e, g, gcol, lv\);/g) || []).length, 1, 'the manager page');
 });
