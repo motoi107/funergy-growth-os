@@ -338,7 +338,13 @@ test('saved records merge one by one (two managers on different things keep both
 });
 
 test('photos: made small, saved as their own rows, never in the bulk pull, fetched only when shown and only as images', async () => {
-  assert.match(html, /supaFetchAll\('app_state', 'key,value', 'key=not\.like\.invoice_purchase_\*&key=not\.like\.lunch_photo_\*'\)/);
+  // v1098: the bulk pull reads only the changed rows. The rows left out are kept in one list (KV_SKIP_PREFIX), used by every way
+  // the pull reads app_state: the index of rows (app_state_index), the list of keys without the function, and the full read.
+  const skip = JSON.parse(/var KV_SKIP_PREFIX = (\[[^\]]*\]);/.exec(html)[1].replace(/'/g, '"'));
+  assert.deepEqual(skip, ['invoice_purchase_', 'lunch_photo_']);
+  assert.match(html, /body:JSON\.stringify\(\{ p_skip_prefix:KV_SKIP_PREFIX \}\)/);
+  assert.match(html, /supaFetchAll\('app_state', 'key,updated_at', KV_SKIP_PREFIX\.map\(function\(p\)\{ return 'key=not\.like\.'\+p\+'\*'; \}\)\.join\('&'\)\)/);
+  assert.match(html, /var f=KV_SKIP_PREFIX\.map\(function\(p\)\{ return 'key=not\.like\.'\+p\+'\*'; \}\)\.join\('&'\);[\s\S]{0,600}rows=await supaFetchAll\('app_state', 'key,value', f\)/);
   const img = 'data:image/jpeg;base64,' + 'A'.repeat(64);
   const c = app({ role: 'gm', user: 'GM', days: { '2026-10-01': day(60) }, api: url => [{ key: 'lunch_photo_abc123', value: { img } }, { key: 'lunch_photo_bad999', value: { img: 'javascript:alert(1)' } }] });
   setCfg(c, '2026-10', [{ t: '60', photo: 'lunch_photo_abc123' }, { t: '70', photo: 'lunch_photo_bad999' }, { t: '80', photo: '../x' }]);
