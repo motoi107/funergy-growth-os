@@ -323,9 +323,10 @@ test('④-12 old combined rows are folded after the split rows, whatever order t
   assert.deepEqual(JSON.parse(JSON.stringify(ok)).sort(), ['invoices', 'notifications', 'spl_invoices_F01', 'tasks_all']);
 });
 
-test('⑥ release markers: APP_VERSION and SW_BUILD are 1098', () => {
-  assert.match(source, /APP_VERSION = '1098'/);
-  assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1098';/);
+test('⑥ release markers: APP_VERSION and SW_BUILD are 1098 or later and the same', () => {   // v1099: later releases keep the v1098 update path
+  const app = (source.match(/const APP_VERSION = '(\d+)';/) || [])[1], sw = (fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8').match(/const SW_BUILD = '(\d+)';/) || [])[1];
+  assert.ok(Number(app) >= 1098, 'APP_VERSION ' + app);
+  assert.equal(app, sw, 'page and service worker on the same release');
   assert.match(source, /window\._swUpdateAsked=true;   \/\* v1098 \*\/\n      try\{ worker\.postMessage\(\{type:'SKIP_WAITING'\}\); \}catch\(e\)\{\}/);
 });
 
