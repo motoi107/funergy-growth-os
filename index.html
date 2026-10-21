@@ -7864,6 +7864,31 @@ function lastEditNote(baseKey, id){
   if(!lb) return '';
   return '<div style="font-size:10px;color:var(--muted);text-align:right;margin-top:4px"><i class="ti ti-user-check" style="font-size:10px"></i> '+escapeHtml(lb)+'</div>';
 }
+/* v1098（速さ）：読むだけの分割キー（invoices・reimbursements）。
+   ダッシュボードは 1 回の描画で ls('invoices') を 500 回以上呼び、そのたびに全店分の Invoice（本番 約 4.5MB）を解き直していた
+   （_invDayCostMap は作ったものを覚えていたが、覚えた中身が使えるかを確かめる前に ls('invoices') を呼んでいた）。
+   端末に置いてある文字（統合キーと分割の行のすべて）が前と同じなら、前に解いた値をそのまま返す（_daRO と同じ考え方）。
+   文字が 1 つでも違えば（保存・取り込み・ほかのタブ）、今までどおり ls() で解き直す（取得の仕組みもそのまま）。
+   ★返したもの（配列と中の記録）を書き換えないこと。書き換えて保存する処理は今までどおり ls() を使う（そちらは毎回新しく解く）。 */
+var _SPLIT_RO = {};
+function lsSplitRO(key){
+  var sp=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS) ? _SPLIT_KEYS[key] : null;
+  if(!sp || sp.type!=='arr') return ls(key, [])||[];
+  var sig=null;
+  try{
+    sig=[_lsStoreGet(key)];
+    lsKeys(_splitPrefix(key)).forEach(function(k){ sig.push(k, _lsStoreGet(k)); });
+  }catch(e){ return ls(key, [])||[]; }
+  var c=_SPLIT_RO[key];
+  if(c && c.sig.length===sig.length){
+    var same=true;
+    for(var i=0;i<sig.length;i++){ if(c.sig[i]!==sig[i]){ same=false; break; } }
+    if(same) return c.val;
+  }
+  var val=ls(key, [])||[];
+  _SPLIT_RO[key]={sig:sig, val:val};
+  return val;
+}
 function _splitRead(key, sp, rawMode){
   var pre=_splitPrefix(key);
   if(sp.type==='obj'){
@@ -8029,12 +8054,13 @@ function _foldLegacyIntoPartitions(key, cloudVal){
 /* クラウドから分割済みキーの統合行を受け取ったときの共通処理。
    true を返したら呼び出し元は「bare キーを端末に書かない」。 */
 function _handleLegacySplitRow(key, cloudVal){
+  _handleLegacySplitRow._ok = false;   /* v1098: 畳み込めたか（差分の取り込みの記録に使う） */
   if(!(_SPLIT_KEYS && _SPLIT_KEYS[key])) return false;
   try{
     var r=_foldLegacyIntoPartitions(key, cloudVal);
     /* 畳み込めた場合のみ端末の統合キーを解放する。
        畳み込めない(id無し等)場合は従来どおり残す＝データを先に消さない。 */
-    if(r.ok){ _lsRawDel(key); }                                   /* v763 */
+    if(r.ok){ _lsRawDel(key); _handleLegacySplitRow._ok = true; }   /* v763 */
   }catch(e){ console.warn('fold legacy split row', key, e); }
   return true;
 }
@@ -8662,7 +8688,7 @@ function obPushSecret(ob){
    pl_actual: 実PLの確定値（opex / netop / 科目明細）。
      v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
      実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
-var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate'];   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
+var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1'];   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
 function isLocalOnlyKey(key){ return LS_LOCAL_ONLY.indexOf(String(key||'')) >= 0; }
 function isOpSyncKey(key){
   if (isLocalOnlyKey(key)) return false;   /* v919 */
@@ -9499,15 +9525,30 @@ async function supaPushAllMasters(){
 }
 
 /* PostgRESTからテーブルの全行を取得 */
+/* v1098（速さ）：ページは Range ヘッダーではなく limit・offset で取る。
+   ブラウザは Range ヘッダーの付いた要求に「Accept-Encoding: identity」を付ける（Fetch の決まり。Chromium で確かめた）ので、
+   答えが圧縮されずに届いていた（ログインのたびの app_state 約 22.7MB がそのまま）。
+   ページの境目で行が重ならない・抜けないように、主キーの順に並べる（主キーの分からない表は今までどおり並べない）。 */
+var _SUPA_FETCH_ORDER = { app_state:'key', app_settings:'key' };
+function _supaFetchOrder(table){
+  if(typeof _SUPA_FETCH_ORDER!=='undefined' && _SUPA_FETCH_ORDER[table]) return _SUPA_FETCH_ORDER[table];
+  try{ if(typeof SUPA_MASTER_MAP!=='undefined') for(var k in SUPA_MASTER_MAP){ if(SUPA_MASTER_MAP.hasOwnProperty(k) && SUPA_MASTER_MAP[k].table===table && SUPA_MASTER_MAP[k].pk) return SUPA_MASTER_MAP[k].pk; } }catch(e){}
+  return '';
+}
 async function supaFetchAll(table, select, filter){
   // ページング取得：分割でapp_stateの行数が増えたため、既定の行数上限で切り捨てられないよう全行を取得
   // v1077: filter（PostgREST の条件。例 key=not.like.invoice_purchase_*）を付けられる
   var all=[]; var pageSize=1000; var from=0; var got=false;
+  var ord=''; try{ ord=(typeof _supaFetchOrder==='function') ? _supaFetchOrder(table) : ''; }catch(e){ ord=''; }
   try {
     while(true){
-      var res = await fetch(SUPABASE_URL+'/rest/v1/'+table+'?select='+encodeURIComponent(select||'*')+(filter?'&'+filter:''),
-        { headers: Object.assign({}, supaHeaders(), {'Range-Unit':'items','Range':from+'-'+(from+pageSize-1)}) });
-      if(!res.ok){ if(!got){ console.warn('supaFetchAll '+table+' failed', res.status); return null; } break; }
+      var res = await fetch(SUPABASE_URL+'/rest/v1/'+table+'?select='+encodeURIComponent(select||'*')+(filter?'&'+filter:'')+(ord?'&order='+encodeURIComponent(ord)+'.asc':'')+'&limit='+pageSize+'&offset='+from,
+        { headers: supaHeaders() });
+      /* 並べる列を表が持っていなかったら（400）、並べずに取り直す（前と同じ取り方） */
+      if(!res.ok && res.status===400 && ord && !got){ ord=''; continue; }
+      /* v1098: 2 ページ目より後で失敗したときも「読めなかった」（null）。途中までの行を全件として返さない
+         （マスターは丸ごと置き換えるので、途中まででは残りの行が端末から消えていた） */
+      if(!res.ok){ console.warn('supaFetchAll '+table+' failed', res.status, got?'(after page 1)':''); return null; }
       var rows = await res.json();
       got=true;
       if(!Array.isArray(rows) || !rows.length) break;
@@ -9517,18 +9558,18 @@ async function supaFetchAll(table, select, filter){
       if(from > 200000) break;              // 安全弁（無限ループ防止）
     }
     return all;
-  } catch(e){ console.warn('supaFetchAll error', table, e); return all.length?all:null; }
+  } catch(e){ console.warn('supaFetchAll error', table, e); return null; }   /* v1098: 途中まででも「読めなかった」 */
 }
 /* クラウド→この端末: 全マスターをSupabaseから取り込みlocalStorageへ反映（クラウドにデータがある分のみ上書き） */
 /* v646: app_settings / app_state の key/value 行をローカルへ適用（マージ定義があれば和集合マージ・無ければ上書き）。
    起動直後の重い app_state を裏取得する際にも再利用する。処理は従来のインラインと同一。 */
-function _applyKvRows(rows){
+function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、端末に取り込めた行のキーを入れる（差分の取り込みの記録に使う） */
   var cnt=0;
   if(Array.isArray(rows)) rows.forEach(function(row){
     if(!row || !row.key) return;
     try{
       /* v720: 分割保存へ移行済みのキーは、旧・統合行を端末に置かない（請求書の二重保存を解消）。 */
-      if(_handleLegacySplitRow(row.key, row.value)){ cnt++; return; }
+      if(_handleLegacySplitRow(row.key, row.value)){ cnt++; if(okOut && _handleLegacySplitRow._ok) okOut.push(row.key); return; }
       /* v721: 必要時だけ取得する行は端末に書かない（クラウドの行はそのまま残る）。
          読まれた時点で ls() が自動取得するため、データが見えなくなることはない。 */
       if(_lsOnDemand(row.key)) return;
@@ -9540,21 +9581,170 @@ function _applyKvRows(rows){
       var _val=row.value;
       if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
-      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; }
+      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; if(okOut) okOut.push(row.key); }
       else { _lsNoteSaveFailure(row.key); }
     }catch(e){}
   });
   return cnt;
 }
 
-async function supaPullAllMasters(){
+/* ============================================================
+   v1098（速さ）：app_state を「前に取り込んでから変わった行」だけ取る
+   ------------------------------------------------------------
+   【前】ログインのたび（と「最新に更新」のたび）に app_state を全部取っていた。本番は 786 行・約 22.7MB
+     （10/20 の読むだけの SQL）。そのうえ Range ヘッダーで取っていたので圧縮されずに届いていた（supaFetchAll の v1098）。
+     取った全部の行を端末で解いて、合流して、書き直していた。
+   【いま】
+     1) 先に行の一覧（キーと中身の印）を取る。印は rpc/app_state_index（md5(value::text)）。
+        中身が 1 文字でも変われば印が変わる（書いた人・端末の時計によらない）。
+     2) 前に取り込んだときの印（この端末だけの記録 kv_seen_v1）と同じで、端末に値がある行は取らない。
+        変わった行・端末に無い行・初めての端末は今までどおり取る。取り込み方（合流・上書き・分割の畳み込み）は 1 行も変えない。
+     3) 取り込めた行だけ、その印を記録する（取り込めなかった行は次も取る）。
+   【関数がまだ無いとき（SQL を入れる前）】行の一覧を key・updated_at で取り、印は「前の統合行」（invoices・tasks_all など、
+     分割へ移った古い行。今は前の版の端末しか書かない）にだけ使う（変わっていなければ取らない）。ほかの行は今までどおり全部取る。
+   【取り込みで捨てる行】必要時だけ取る行（ec_log・人別の履歴など）と端末だけのキーは、前から取り込みで捨てていたので、取りに行かない。
+   【念のため】7 日に 1 回と「クラウドから取り込む」（設定）は、印によらず全部取る。
+   ============================================================ */
+var KV_SEEN_KEY = 'kv_seen_v1';                                   /* この端末だけ（クラウドへ送らない・クラウドから受け取らない） */
+var KV_SKIP_PREFIX = ['invoice_purchase_', 'lunch_photo_'];      /* まとめ取りに入れない行（v1077・v1080 から） */
+var KV_FULL_EVERY_MS = 7 * 86400000;
+var _kvRpcMissing = false;
+var _kvLast = null;                                               /* 最後の取り込みの様子（計測・確かめ用。中身は出さない） */
+var _kvLastKeys = null;                                           /* 最後に取った行のキー（確かめ用・メモリだけ） */
+function _kvSeenGet(){
+  try{ var s=_lsStoreGet(KV_SEEN_KEY); var o=s?JSON.parse(s):null; if(o && o.v===1 && o.rows && typeof o.rows==='object') return o; }catch(e){}
+  return { v:1, rows:{}, fullAt:0 };
+}
+function _kvSkipKey(k){
+  for(var i=0;i<KV_SKIP_PREFIX.length;i++){ if(String(k).indexOf(KV_SKIP_PREFIX[i])===0) return true; }
+  return false;
+}
+/* 取り込みで捨てる行（_applyKvRows と同じ順で判定：前の統合行は畳み込むので捨てない） */
+function _kvDiscarded(k){
+  if(_SPLIT_KEYS && _SPLIT_KEYS[k]) return false;
+  try{ if(_lsOnDemand(k)) return true; }catch(e){}
+  try{ if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(k)) return true; }catch(e){}
+  return false;
+}
+/* PostgREST の in.() / not.in.() に入れる値（引用符で囲む） */
+function _kvQuote(k){ return '"'+String(k).replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"'; }
+/* 行の一覧（印つき）。関数が無ければ null（_kvRpcMissing を立てる）。読めなければ null */
+async function _kvIndexRpc(){
+  if(_kvRpcMissing) return null;
+  var out=[], off=0, page=1000;
+  for(var guard=0; guard<200; guard++){
+    var r=null;
+    try{
+      r=await fetch(SUPABASE_URL+'/rest/v1/rpc/app_state_index?order=key.asc&limit='+page+'&offset='+off,
+        { method:'POST', headers:supaHeaders(), body:JSON.stringify({ p_skip_prefix:KV_SKIP_PREFIX }) });
+    }catch(e){ return null; }
+    if(r.status===404){ _kvRpcMissing=true; return null; }
+    if(!r.ok){ var tx=''; try{ tx=await r.text(); }catch(e){} if(/PGRST202|Could not find the function/i.test(tx)) _kvRpcMissing=true; return null; }
+    var rows=null; try{ rows=await r.json(); }catch(e){ return null; }
+    if(!Array.isArray(rows)) return null;
+    for(var i=0;i<rows.length;i++){
+      var x=rows[i];
+      if(!x || typeof x.key!=='string' || !/^[0-9a-f]{32}$/.test(String(x.h||''))) return null;   /* 形が違えば使わない */
+      out.push({ key:x.key, v:'h:'+x.h });
+    }
+    if(rows.length<page) break;
+    off+=page;
+  }
+  return out.length ? out : null;   /* 0 行は信じない（今までどおり全部取る） */
+}
+async function _kvIndexKeys(){
+  var rows=await supaFetchAll('app_state', 'key,updated_at', KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&'));
+  if(!Array.isArray(rows) || !rows.length) return null;
+  return rows.filter(function(x){ return x && typeof x.key==='string'; }).map(function(x){ return { key:x.key, v:'u:'+String(x.updated_at==null?'':x.updated_at) }; });
+}
+/* 指定したキーの行だけ取る（URL が長くなりすぎないように分ける）。どれかが読めなければ null */
+async function _kvFetchKeys(keys){
+  var out=[], batch=[], len=0;
+  var flush=async function(){
+    if(!batch.length) return true;
+    var q=encodeURIComponent('('+batch.join(',')+')');
+    var r=null;
+    try{ r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=in.'+q, { headers:supaHeaders() }); }catch(e){ return false; }
+    if(!r.ok) return false;
+    var rows=null; try{ rows=await r.json(); }catch(e){ return false; }
+    if(!Array.isArray(rows)) return false;
+    out=out.concat(rows); batch=[]; len=0; return true;
+  };
+  for(var i=0;i<keys.length;i++){
+    var q1=_kvQuote(keys[i]); var el=encodeURIComponent(q1).length+3;
+    if(len+el>5500 && batch.length){ if(!(await flush())) return null; }
+    batch.push(q1); len+=el;
+  }
+  if(!(await flush())) return null;
+  return out;
+}
+/* ログイン・「最新に更新」の app_state の取り込み。返すのは _applyKvRows に渡す行（今までと同じ形）。
+   行に印の一覧（_kv）を付けて返す。取り込んだあと _kvSeenRecord に渡す */
+async function _kvPullRows(force){
+  var t0=Date.now();
+  try{ if(typeof _idbBootP!=='undefined' && _idbBootP) await Promise.race([_idbBootP, new Promise(function(r){ setTimeout(r, 3000); })]); }catch(e){}   /* 端末に何があるかを IndexedDB から読み終えてから決める */
+  var seen=_kvSeenGet();
+  if(!force && !(Number(seen.fullAt)>0 && Date.now()-Number(seen.fullAt)<KV_FULL_EVERY_MS)) force='weekly';
+  var idx=null, exact=false;
+  idx=await _kvIndexRpc(); if(idx) exact=true;
+  if(!idx){ try{ idx=await _kvIndexKeys(); }catch(e){ idx=null; } }
+  var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
+  if(idx){
+    idx.forEach(function(r){
+      var k=r.key; ver[k]=r.v; n++;
+      if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
+        if(!force && seen.rows[k]===r.v){ skip[k]=1; legacySkip++; } else need.push(k);
+        return;
+      }
+      if(_kvDiscarded(k)){ skip[k]=1; return; }
+      if(exact && !force && seen.rows[k]===r.v && _lsStoreGet(k)!=null){ skip[k]=1; sameSkip++; return; }
+      need.push(k);
+    });
+  }
+  var rows=null, how='';
+  if(idx && exact && !force && need.length<=Math.max(200, Math.floor(n*0.5))){   /* 全部取るとき（初めて・7 日ごと・設定）は今までと同じ取り方 */
+    rows=await _kvFetchKeys(need); how='keys';
+  }
+  if(!rows){
+    /* 全部取る（今までと同じ取り方）。取り込みで捨てる行と、変わっていない前の統合行はサーバーで外す */
+    var ex=[];
+    if(idx){ Object.keys(skip).forEach(function(k){ if(_SPLIT_KEYS && _SPLIT_KEYS[k]) ex.push(_kvQuote(k)); }); }
+    try{ (_LS_ONDEMAND_KEYS||[]).forEach(function(k){ ex.push(_kvQuote(k)); }); }catch(e){}
+    var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
+    try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
+    if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
+    rows=await supaFetchAll('app_state', 'key,value', f); how='all';
+  }
+  if(Array.isArray(rows)){
+    try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
+  }
+  _kvLastKeys = Array.isArray(rows) ? rows.map(function(r){ return r && r.key; }) : null;
+  _kvLast={ at:Date.now(), ms:Date.now()-t0, exact:exact, idx:!!idx, force:force||false, how:how, index:n, need:need.length, fetched:Array.isArray(rows)?rows.length:-1, legacySkip:legacySkip, sameSkip:sameSkip };
+  return rows;
+}
+/* 取り込めた行の印を記録する。一覧に無くなった行の記録は消す。取ったのに取り込めなかった行の記録も消す（次も取る） */
+function _kvSeenRecord(rows, okKeys){
+  try{
+    var m=rows && rows._kv; if(!m || !m.idx) return;
+    var seen=_kvSeenGet(), next={}, ok={}, got={};
+    (okKeys||[]).forEach(function(k){ ok[k]=1; });
+    (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
+    Object.keys(m.ver).forEach(function(k){
+      if(ok[k]) next[k]=m.ver[k];
+      else if(!got[k] && seen.rows[k]===m.ver[k]) next[k]=m.ver[k];   /* 取らなかった（変わっていない）行 */
+    });
+    var o={ v:1, rows:next, fullAt:(m.force ? Date.now() : (Number(seen.fullAt)||0)), mode:(m.exact?'h':'u') };
+    _lsWriteVerified(KV_SEEN_KEY, JSON.stringify(o));
+  }catch(e){ console.warn('kv seen', e); }
+}
+async function supaPullAllMasters(opt){
   var results = [];
   /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
   var _mp = {}; for (var _k in SUPA_MASTER_MAP){ _mp[_k] = supaFetchAll(SUPA_MASTER_MAP[_k].table, 'data'); }
   var _settingsP = supaFetchAll('app_settings', 'key,value');
   /* v1077: 確認済みの仕入れ集計（invoice_purchase_*）はサーバーが書く行で数が多い。まとめ取りには入れず、使う月だけ取る（ipsEnsure）
      v1080: ランチチャレンジの写真（lunch_photo_*）も入れない（重い。見るときだけ lcFetchPhotos が取る・端末には保存しない） */
-  var _opstP = supaFetchAll('app_state', 'key,value', 'key=not.like.invoice_purchase_*&key=not.like.lunch_photo_*');
+  var _opstP = _kvPullRows(!!(opt && opt.full));   /* v1098: 変わった行だけ（中は上の _kvPullRows） */
   for (var key in SUPA_MASTER_MAP){
     var def = SUPA_MASTER_MAP[key];
     if (def.table === 'ingredients') continue; // v646: ingredientsは後で裏取得
@@ -9604,7 +9794,7 @@ async function supaPullAllMasters(){
   var _heavyTimer = setTimeout(_heavyDone, 8000);
   Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
-    try { _applyKvRows(_dres[1]); } catch(e){}
+    try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -9618,7 +9808,9 @@ async function migrateUploadLocalOps(){
   try{
     if (localStorage.getItem('_f2b_opsync2')==='1') return;
     var cloud = await supaFetchAll('app_state', 'key');
-    var have = {}; (cloud||[]).forEach(function(r){ if(r&&r.key) have[r.key]=1; });
+    /* v1098: クラウドの一覧を読めなかったら、何も送らない（前は「クラウドに 1 つも無い」とみなして端末の全部を送っていた） */
+    if (!Array.isArray(cloud)) return;
+    var have = {}; cloud.forEach(function(r){ if(r&&r.key) have[r.key]=1; });
     var batch=[];
     for (var i=0;i<localStorage.length;i++){
       var key=localStorage.key(i); if(!key||have[key]) continue;
@@ -11260,7 +11452,7 @@ async function runSupaPullAll(){
   if(el) el.innerHTML='<i class="ti ti-loader"></i> クラウドから取り込み中…';
   showToast('クラウドから取り込み中…','info');
   try {
-    var results = await supaPullAllMasters();
+    var results = await supaPullAllMasters({ full:true });   /* v1098: 印によらず全部取る */
     if(el) el.innerHTML = '<b>取込結果:</b><br>'+results.join('<br>')+'<br><span style="color:var(--accent2)">画面を再読み込みします…</span>';
     showToast('取り込み完了。再読み込みします','success');
     setTimeout(function(){ location.reload(); }, 1800);
@@ -11649,7 +11841,7 @@ function plVcVal(cfg, ovr, sid, ym, cat){
   return Number((cfg.vcAvg[sid]||{})[cat])||0;
 }
 function plReimburseTotal(sid, ym){
-  return getReimbursements().filter(function(r){ return r.storeId===sid && r.status==='承認' && String(r.date||'').slice(0,7)===ym; })
+  return lsSplitRO('reimbursements').filter(   /* v1098: 読むだけ（店・月ごとに何度も呼ばれる） */function(r){ return r.storeId===sid && r.status==='承認' && String(r.date||'').slice(0,7)===ym; })
     .reduce(function(a,r){ return a+(Number(r.amount)||0); },0);
 }
 function plComputeStore(sid, ym, off){
@@ -14404,18 +14596,23 @@ async function loginSyncOps(){
     setSyncSplash('売上・客数・勤怠・出数を同期中… (0/'+total+')');
     // 店舗ごとに並列。売上・勤怠・出数をまとめて取得（どれが欠けても各種計算が成立しないため）
     await Promise.all(stores.map(async function(s){
-      try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); }
-      try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); }   /* v1090: 読んだ店と月の印 */
+      /* v1098（速さ）：売上・勤怠・前月のクレジットTip調整・出数は、別々の表を読んで別々のキーに書く（互いの結果を使わない）ので、
+         同時に取る（前は 1 つずつ答えを待っていた＝店ごとに往復 4 回ぶん）。直近 Labor のライブ補完は今までどおり裏で。
+         同じ日を書く勤怠とクレジットTip調整の順は、v1090 の読み込みの番号（_tipLaborSeq）がこれまでどおり守る */
+      var _jobs = [];
+      _jobs.push((async function(){ try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());
+      _jobs.push((async function(){ try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); } })());   /* v1090: 読んだ店と月の印 */
       /* v860: クレジットTip調整は前月の日付を直すことが多い。
          他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */
-      try {
+      _jobs.push((async function(){ try {
         var _pm = new Date(); _pm.setDate(1); _pm.setMonth(_pm.getMonth()-1);
         var _pfrom = _ymdLocal(new Date(_pm.getFullYear(), _pm.getMonth(), 1));
         var _pto   = _ymdLocal(new Date(_pm.getFullYear(), _pm.getMonth()+1, 0));
         await syncCreditTipAdjFromDB(s.id, s.toastGuid, _pfrom, _pto);
-      } catch(e){ console.warn('loginSyncOps ctadj', s.id, e); }
+      } catch(e){ console.warn('loginSyncOps ctadj', s.id, e); } })());
+      _jobs.push((async function(){ try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); } })());
       try { backfillRecentLabor(s.id, s.toastGuid, days).catch(function(e){ console.warn('loginSyncOps laborTail', s.id, e); }); } catch(e){} // v643: 直近Laborのライブ補完はToast往復を待たず裏で実行（ログイン高速化）
-      try { await loadMenuMixFromDB(s.id, s.toastGuid, ym); } catch(e){ console.warn('loginSyncOps mix', s.id, e); }
+      await Promise.all(_jobs);
       done++; setSyncSplash('売上・客数・勤怠・出数を同期中… ('+done+'/'+total+')');
     }));
     markSynced('ops');
@@ -14522,22 +14719,47 @@ function resolveLoginIdentity(){
 }
 /* ログイン画面表示前に、クラウドから従業員・店舗・PINだけ先読みする（軽量）。
    共有リンクを初めて開いた端末（localStorageが空）でも、最新の名簿・役職でログインできる。 */
-async function loginBootstrapPull(){
+/* v1098（速さ）：この端末に名簿（従業員・店舗）があれば、ログイン画面をすぐ出し、名簿は裏で取り直す。
+   前は開くたびに「スタッフ情報を読み込み中…」で 3 つの取得（従業員・店舗・PIN）を 1 つずつ待っていた。
+   名簿が無い端末（初めて開いた端末）は今までどおり取り終えてから出す。
+   PIN はサーバーで確かめ、ログインのあとは取り直した名簿で役職・退職を確かめ直す（resolveLoginIdentity・empBlocked）ので、
+   名簿が古いあいだに選んだ人でも、今までと同じ確かめを通る。 */
+function _loginHasRoster(){
+  try{ var e=_lsStoreGet('m_employees'), st=_lsStoreGet('m_stores'); return !!(e && st && e.length>20 && st.length>20); }catch(e){ return false; }
+}
+/* 裏で取り直した名簿が変わっていたら、いま出している段（所属・名前）を描き直す（PIN の段はそのまま） */
+function _loginRosterRefreshed(){
+  try{
+    var scr=document.getElementById('login-screen'); if(!scr || scr.style.display==='none') return;
+    var loc=document.getElementById('login-step-location'), nm=document.getElementById('login-step-name');
+    if(loc && loc.style.display!=='none') bootLogin();
+    else if(nm && nm.style.display!=='none' && loginLocation) loginPickLocation(loginLocation);
+  }catch(e){}
+}
+async function loginBootstrapPull(opt){
   if (ls('login_autosync', true)===false) return;
+  var bg = !!(opt && opt.background);   /* v1098: true＝画面を止めずに裏で */
+  var before = bg ? [_lsStoreGet('m_employees'), _lsStoreGet('m_stores')] : null;
   try {
-    showSyncSplash('スタッフ情報を読み込み中…');
+    if (!bg) showSyncSplash('スタッフ情報を読み込み中…');
     var work = (async function(){
-      var emps = await supaFetchAll('employees','data');
+      /* v1098: 3 つを同時に取る（前は 1 つずつ） */
+      var _r = await Promise.all([ supaFetchAll('employees','data'), supaFetchAll('stores','data'),
+        (async function(){ try { await refreshStaffPinsFromCloud(); } catch(e){} })() ]);
+      var emps = _r[0];
       if (Array.isArray(emps) && emps.length){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) _lsWriteVerified('m_employees', JSON.stringify(_empMergeCloud(a))); }   /* v763 → v1085: 送れていない変更を残す */
-      var sts = await supaFetchAll('stores','data');
+      var sts = _r[1];
       if (Array.isArray(sts) && sts.length){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
-      try { await refreshStaffPinsFromCloud(); } catch(e){}
       try { refreshStores(); } catch(e){}
     })();
-    var to = new Promise(function(res){ setTimeout(function(){ res('t'); }, 12000); });
-    await Promise.race([work, to]);
+    if (bg) await work;
+    else {
+      var to = new Promise(function(res){ setTimeout(function(){ res('t'); }, 12000); });
+      await Promise.race([work, to]);
+    }
   } catch(e){ console.warn('loginBootstrapPull', e); }
-  finally { hideSyncSplash(); }
+  finally { if (!bg) hideSyncSplash(); }
+  if (bg) { try { if (_lsStoreGet('m_employees')!==before[0] || _lsStoreGet('m_stores')!==before[1]) _loginRosterRefreshed(); } catch(e){} }
 }
 function toggleLoginAutosync(){
   var cur = ls('login_autosync', true)!==false;
@@ -14775,7 +14997,7 @@ function navBadgeCount(pid, memo){
   if (pid==='approval') return ls('approvals', []).filter(a=>a.status==='pending').length;
   if (pid==='vacation') return getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   if (pid==='acct_review' || pid==='invoice') {
-    var _invAll = memo.inv || (memo.inv = ls('invoices', []));
+    var _invAll = memo.inv || (memo.inv = lsSplitRO('invoices'));   /* v1098: 読むだけ */
     if (pid==='acct_review') return _invAll.filter(function(i){var s=i.reviewStatus||'未確認'; return s==='未確認'||s==='確認中';}).length;
     return _invAll.filter(function(i){ return (i.reviewStatus==='差し戻し') && invIsMine(i); }).length;
   }
@@ -19087,10 +19309,12 @@ function storeMonthlyStaff(storeId){
 }
 /* 実数原価: Invoice読取（Receipt買出しは対象店舗で按分）を店舗×日付で集計。手入力foodCostが無い日の実数として使用 */
 function _invDayCostMap(){
-  var inv = ls('invoices', [])||[];
+  /* v1098: 読むだけの写し（端末の文字が同じなら解き直さない）。覚えた日別の原価は、写しが同じもののときだけ使う
+     （前は件数で比べていたので、件数が同じまま金額・日付を直した Invoice が日別の原価に出なかった） */
+  var inv = lsSplitRO('invoices');
   /* v1077: 確認済みの仕入れ集計が入れ替わったときも作り直す */
   var _ipsS = (typeof ipsStamp==='function') ? ipsStamp() : '';
-  if (window._idcN===inv.length && window._idcPs===_ipsS && window._idc) return window._idc;
+  if (window._idcV===inv && window._idcPs===_ipsS && window._idc) return window._idc;
   var m = {};
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
@@ -19104,7 +19328,7 @@ function _invDayCostMap(){
     sids.forEach(function(sid){ (m[sid]=m[sid]||{})[iso]=(m[sid][iso]||0)+share; });
   });
   if(typeof ipsAddDayCosts==='function') ipsAddDayCosts(m);
-  window._idc=m; window._idcN=inv.length; window._idcPs=_ipsS; return m;
+  window._idc=m; window._idcN=inv.length; window._idcV=inv; window._idcPs=_ipsS; return m;
 }
 function dayCostReal(sid, iso){ var m=_invDayCostMap(); return (m[sid]&&m[sid][iso])||0; }
 /* ============================================================
@@ -27920,7 +28144,7 @@ function fcVendorMonth(scopeStores, ym){
   var ids={}; (scopeStores||[]).forEach(function(st){ ids[st.id]=1; });
   /* 請求書。★1枚を複数店で分けている場合は、スコープに入っている店の数だけ足す。
      monthInvoiceTotalYm を店ごとに呼ぶのと同じ結果になる。 */
-  var inv=[]; try{ inv=ls('invoices',[])||[]; }catch(e){ inv=[]; }
+  var inv=[]; try{ inv=lsSplitRO('invoices'); }catch(e){ inv=[]; }   /* v1098: 読むだけ */
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
     var d=null; try{ d=_invDate(v); }catch(e){}
@@ -31437,7 +31661,7 @@ function _invPastPurpose(vendorName){
   try{
     if(!vendorName) return null;
     var cnt={}, tot=0;
-    (ls('invoices',[])||[]).forEach(function(v){
+    lsSplitRO('invoices').forEach(function(v){   /* v1098: 読むだけ */
       if(!v || v.deleted) return;
       if(String(v.vendor||'').toLowerCase()!==String(vendorName).toLowerCase()) return;
       var p=String(v.purpose||'').trim(); if(!p) return;
@@ -31508,7 +31732,7 @@ function _fcInCost(purpose){
 /* 原価対象のInvoice合計（店舗按分後・削除済み除外・Receipt/Reimburse除外）
    v1077: opt.noDrive … Drive の取込の写し（src:'drive-intake'）を数えない（確認済みの仕入れ集計に置き換えるとき・ipsLink） */
 function monthInvoiceCostYm(storeId, ym, opt){
-  var inv=ls('invoices',[])||[]; var sum=0; var noDrive=!!(opt&&opt.noDrive);
+  var inv=lsSplitRO('invoices'); var sum=0;   /* v1098: 読むだけ */ var noDrive=!!(opt&&opt.noDrive);
   inv.forEach(function(v){
     if(!v || v.docType==='Receipt' || v.docType==='Reimburse') return;
     if(noDrive && v.src==='drive-intake') return;
@@ -31533,7 +31757,7 @@ function monthPurchaseCostYm(storeId, ym){
 function monthNonCostYm(storeId, ym){
   var out={total:0, byPurpose:{}};
   try{
-    (ls('invoices',[])||[]).forEach(function(v){
+    lsSplitRO('invoices').forEach(function(v){   /* v1098: 読むだけ */
       if(!v || v.docType==='Receipt' || v.docType==='Reimburse') return;
       if(_fcInCost(v.purpose)) return;
       var d=_invDate(v); if(!d) return;
@@ -31927,7 +32151,7 @@ function ipsSales(sid, ym){
 function ipsManualList(sid, ym){
   var out = [];
   try {
-    (ls('invoices', []) || []).forEach(function(v){
+    lsSplitRO('invoices').forEach(function(v){   /* v1098: 読むだけ */
       if (!v || v._deleted || v.src === 'drive-intake' || v.docType === 'Receipt' || v.docType === 'Reimburse') return;
       if (typeof _fcInCost === 'function' && !_fcInCost(v.purpose)) return;
       var d = _invDate(v); if (!d) return;
@@ -32267,7 +32491,7 @@ function ipsFcBreakdown(scopeStores, ym){
 }
 /* FUNERGY_PURCHASE_SUMMARY_END */
 function monthInvoiceTotalYm(storeId, ym){
-  var inv=ls('invoices',[])||[]; var sum=0;
+  var inv=lsSplitRO('invoices'); var sum=0;   /* v1098: 読むだけ */
   inv.forEach(function(v){
     if(v.docType==='Receipt' || v.docType==='Reimburse') return;
     var d=_invDate(v); if(!d) return;
@@ -38672,7 +38896,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1097';
+const APP_VERSION = '1098';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43605,7 +43829,7 @@ function _acPend(){
   add('acctrev','未確認のInvoice', function(){   /* v1095: 確認・差し戻しをする本体（区分・承認）へ */
     return (typeof pendingAcctReviewCount==='function') ? pendingAcctReviewCount() : 0; });
   add('invoice','画像が付いていない伝票', function(){
-    return (ls('invoices',[])||[]).filter(function(v){ return v && !v._deleted && v.imageMissing && !v.imagePath; }).length; });
+    return lsSplitRO('invoices').filter(function(v){ return v && !v._deleted && v.imageMissing && !v.imagePath; }).length; });   /* v1098: 読むだけ */
   add('check','未確認のチェック', function(){   /* v1030 */
     return (typeof getChecks==='function')
       ? getChecks().filter(function(c){ return (c.reviewStatus||'未確認')==='未確認'; }).length : 0; });
@@ -43655,7 +43879,7 @@ function _acStoreName(id){
 /* kind ごとの取り出し方。third は第3軸のラベルと値の取り方。 */
 function _acRows(kind){
   var inv = function(f){
-    return (ls('invoices', [])||[]).filter(function(v){ return v && !v._deleted && !invIsIntake(v) && f(v); })   /* v1095: Invoice取込の写しは出さない（Q8） */
+    return lsSplitRO('invoices').filter(function(v){ return v && !v._deleted && !invIsIntake(v) && f(v); })   /* v1098: 読むだけ（下で新しい行を作る） */   /* v1095: Invoice取込の写しは出さない（Q8） */
       .map(function(v){
         return { id:v.id, kind:'inv', date:_acDate(v.docDate||v.date), store:v.storeId,
                  third:(v.vendor||''), amount:Number(v.total||0),
@@ -54795,7 +55019,7 @@ function renderOfficeMgr(bare){
 }
 
 /* ---------- ① ダッシュボード ---------- */
-function pendingAcctReviewCount(){ try{ return ls('invoices',[]).filter(function(i){var s=i.reviewStatus||'未確認'; return s==='未確認'||s==='確認中';}).length; }catch(e){ return 0; } }
+function pendingAcctReviewCount(){ try{ return lsSplitRO('invoices').filter(function(i){var s=i.reviewStatus||'未確認'; return s==='未確認'||s==='確認中';}).length; }catch(e){ return 0; } }
 function officeTodayStr(){ return todayISO(); }
 function officeOnDutyCount(){
   var today=officeTodayStr(), n=0;
@@ -86648,8 +86872,13 @@ function hapticDiagHtml(){
         }).catch(function(){});
         // 「更新」押下後、新 SW が制御を取ったら一度だけリロード
         var _swReloaded=false;
+        /* v1098: 初めて開いた端末では、Service Worker が入ったとき（sw.js の clients.claim）にも controllerchange が来る。
+           前はそこでも読み込み直していた（開いて 1〜3 秒後。PIN を打っている途中でも消えた）。
+           読み込み直すのは、前の版の Service Worker が動いていた（＝更新）か、「更新」を押したときだけ */
+        var _swHadController=!!navigator.serviceWorker.controller;
         navigator.serviceWorker.addEventListener('controllerchange', function(){
-          if(_swReloaded) return; _swReloaded=true; location.reload();
+          if(!_swHadController && !window._swUpdateAsked) return;
+          if(_swReloaded) return; _swReloaded=true; window._swReloaded=true; location.reload();
         });
       });
     }
@@ -86676,6 +86905,7 @@ function showUpdateBanner(worker){
     btn.textContent=isEn?'Update':'更新';
     btn.onclick=function(){
       btn.disabled=true; btn.textContent=isEn?'Updating…':'更新中…';
+      window._swUpdateAsked=true;   /* v1098 */
       try{ worker.postMessage({type:'SKIP_WAITING'}); }catch(e){}
       // 念のためのフォールバック（controllerchange が来ない環境向け）
       setTimeout(function(){ if(!window._swReloaded){ location.reload(); } }, 2500);
@@ -87520,8 +87750,14 @@ try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
 try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
 /* v764: IndexedDB の起動。既存の起動処理とは独立に走らせる（描画を待たせない）。
    失敗しても _idbState='unavailable' になるだけで、アプリの動作は変わらない。 */
-setTimeout(function(){ try{ _idbBoot(); }catch(e){} }, 0);
-(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) { try { await loginBootstrapPull(); } catch(_){} bootLogin(); } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
+var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.resolve(_idbBoot()).then(res, res); }catch(e){ res(); } }, 0); });   /* v1098: 起動の終わりを待てるように（ログイン画面・差分の取り込み） */
+(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) {
+  /* v1098: 名簿のある端末はログイン画面をすぐ出す（IndexedDB を読み終えてから。3 秒まで）。名簿は裏で取り直す */
+  var _warm = false;
+  try { await Promise.race([ _idbBootP, new Promise(function(r){ setTimeout(r, 3000); }) ]); _warm = (ls('login_autosync', true)!==false) && _loginHasRoster(); } catch(_){}
+  if (_warm) { bootLogin(); try { loginBootstrapPull({ background:true }); } catch(_){} }
+  else { try { await loginBootstrapPull(); } catch(_){} bootLogin(); }
+} } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
 </script>
 </body>
