@@ -67247,8 +67247,8 @@ function kevCsTotal(e, seg, kv, scope){
     fin(pe.cats.map(function(c){ return {key:c && c.key, score:c && c.score, max:c && c.max, un:(cun ? (Number(cun[c && c.key])||0) : ((c && c.key==='H' && Number(pe.kv)>=1) ? (Number(pe.hUn)||0) : null))}; }));
     if(out.legacy && !out.missing){   /* 未評価が 0 点で記録されているかもしれない：確かめるまで数えない（0 点で埋めない） */
       var ack=(typeof kevEvGet==='function') ? kevEvGet(q, e.id, seg.g) : null, la=ack && ack.legAck;
-      if(la && typeof la==='object' && String(la.why||'').trim()) out.legAck={at:String(la.at||''), by:String(la.by||''), why:String(la.why||'')};
-      else out.missing='legacy';
+      if(la && typeof la==='object' && String(la.why||'').trim() && la.fp===kevLegFp(pe)) out.legAck={at:String(la.at||''), by:String(la.by||''), why:String(la.why||''), fp:la.fp};
+      else { out.missing='legacy'; if(la && typeof la==='object') out.legStale=true; }   /* 記録が差し替わった：前に確かめた印は効かない */
     }
     return out;
   }
@@ -67350,7 +67350,7 @@ function kevSnapSeg3(x, slim){
   o.gen=3;
   o.items.c=slim(c, {gen:3, score:c.score, max:c.max, step:c.step, raw:c.raw, capped:!!c.capped,
     base:{bp:B.bp, bs:B.bs, max:B.max, storeMax:B.storeMax, pct:B.pct, sheet:B.sheet, derived:!!B.derived, srcBp:B.srcBp||null, srcBs:B.srcBs||null},
-    total:{src:T.src||null, label:T.label||'', date:T.date||'', by:T.by||'', sheet:T.sheet||null, un:Number(T.un)||0, legacy:!!T.legacy,
+    total:{src:T.src||null, label:T.label||'', date:T.date||'', by:T.by||'', sheet:T.sheet||null, un:Number(T.un)||0, legacy:!!T.legacy, legAck:(T.legAck ? {at:T.legAck.at, by:T.legAck.by, why:T.legAck.why} : null),
       cats:(T.cats||[]).map(function(k){ return {key:k.key, name:k.name, score:k.score, max:k.max, un:k.un}; })}});
   ['s','f','p'].forEach(function(k){ if(o.items[k]) o.items[k].gen=3; });
   return o;
@@ -67407,6 +67407,8 @@ function kevMisfits3(q, cfg){
   if(old.length) info.push('前のグレード係数の幅（'+old.join('・')+'）は ① に使いません → ① の幅 0.85〜1.15（回答 3）');
   try{ var c2=[]; Object.keys(kevRuleAll()).forEach(function(k){ var v=kevRuleAll()[k], x=v && v.set && v.set.c; if(x && !kevN(x.g3) && (kevN(x.lo)!=null || kevN(x.hi)!=null) && String(k).split('|')[1]<=q) c2.push(kevScopeLabel(String(k).split('|')[0])+' '+(kevN(x.lo)==null ? '—' : kevF3(x.lo))+'〜'+(kevN(x.hi)==null ? '—' : kevF3(x.hi))); });
     if(c2.length) info.push('v1098 までに保存した ① の幅（'+c2.join('・')+'）も使いません（4 要素の点の幅だったため）→ 0.85〜1.15。変えるときは ② の表で選び直す'); }catch(err){}
+  try{ var c3=[], emps=getEmployees(); Object.keys(kevOvrAll()).forEach(function(k){ var v=kevOvrAll()[k], x=v && v.set && v.set.c, id=String(k).split('|')[0], fr=String(k).split('|')[1]; if(!x || kevN(x.g3) || fr>q || (kevN(x.lo)==null && kevN(x.hi)==null)) return; var e=emps.find(function(z){ return z.id===id; }); c3.push(((e && e.name) || id)+' '+(kevN(x.lo)==null ? '—' : kevF3(x.lo))+'〜'+(kevN(x.hi)==null ? '—' : kevF3(x.hi))); });
+    if(c3.length) info.push('個人設定で v1098 までに保存した ① の幅（'+c3.join('・')+'）も使いません → グレード・職種の幅。変えるときは個人設定で選び直す'); }catch(err){}
   info.push('賞与用の 4 要素（能力・知識・理念・仕事の質）の入力：記録として残し、計算には使いません');
   return {block:block, info:info};
 }
@@ -67442,7 +67444,7 @@ function kevPxPush(q, okMsg, at){
   var key='bonus_pool_extra';
   var done=function(ok){
     var now=kevPxAll()[q];
-    if(at && ok!==false && !(now && Number(now._at)===Number(at))){ showToast('ほかの端末で特別原資が先に変わっていました（いまは '+kevUsd2(kevPxGet(q).v)+'）。この変更は入っていません。確かめてから、もう一度してください','warning'); try{ kbRefresh(); }catch(e){} return false; }   /* 送ったあと、ほかの端末の新しい変更が勝った */
+    if(at && !(now && Number(now._at)===Number(at))){ showToast('ほかの端末で特別原資が先に変わっていました（いまは '+kevUsd2(kevPxGet(q).v)+'）。この変更は入っていません。確かめてから、もう一度してください','warning'); try{ kbRefresh(); }catch(e){} return false; }   /* 送ったあと、ほかの端末の新しい変更が勝った */
     if(ok===false){ try{ if(typeof _outboxAdd==='function') _outboxAdd(key, 'push failed'); }catch(e){} showToast(okMsg+'。この端末に保存しました（クラウドへはまだ送れていません。つながったら自動で送ります）','warning'); }
     else showToast(okMsg+'（クラウドにも保存）','success');
     try{ kbRefresh(); }catch(e){} return true;
@@ -67632,12 +67634,19 @@ function kevOldEvHtml(ev){
   return '<details style="margin-top:6px"><summary style="cursor:pointer;font-size:11.5px;color:var(--muted);min-height:28px">前の評価（能力・知識・仕事の質の段階と根拠）を見る — 記録として残しています（計算には使いません）</summary>'
     +'<div style="font-size:11.5px;line-height:1.7;padding:4px 2px">'+parts.map(function(x){ var p=ev[x[0]]; return '<div><b>'+x[1]+'</b> 段階 '+(Number(p.lv)||'—')+(String(p.ev||'').trim() ? '：'+escapeHtml(String(p.ev)) : '')+'</div>'; }).join('')+'</div></details>';
 }
+/* 確かめた記録の印（確定した時刻・人・カテゴリーの点）。記録が差し替わると変わる */
+function kevLegFp(pe){ if(!pe || typeof pe!=='object') return ''; return String(pe.at||'')+'|'+String(pe.by||'')+'|'+(Array.isArray(pe.cats) ? pe.cats.map(function(c){ return String(c && c.key)+':'+Number(c && c.score)+'/'+Number(c && c.max); }).join(',') : ''); }
 /* v1099（独立レビュー P2）：v1098 以前のグレード変更の記録を、確かめたうえで数える／取り消す（GM・CEO・理由を残す。評価の記録 bonus_eval の legAck） */
 function kevLegAck(empId, g, q, off){
+  var e0=getEmployees().find(function(x){ return x.id===empId; }), pe=null, T0=null;
+  try{ var cfg0=kbCfg(), kv0=kevApplies(cfg0), b0=(e0 && kv0) ? kevBonusForEmp(e0, cfg0, kv0) : null;
+    var s0=b0 ? (b0.segs||[]).find(function(x){ return x.elig && ghNormG(x.g)===ghNormG(g) && x.items && x.items.c && x.items.c.total && x.items.c.total.src==='grade'; }) : null;
+    if(s0){ T0=s0.items.c.total; pe=bonusSegEval(e0, s0); } }catch(err){}
+  if(!off && !(T0 && T0.missing==='legacy' && pe)){ showToast(T0 && T0.missing ? 'この区間はほかに足りないものがあります（'+kevCsMissTxt(T0).slice(0,60)+'…）。先にそちらを直してください' : 'この区間は確かめる必要がありません','info'); return false; }   /* 押しても変わらないときは書かない */
   var why=off ? '' : String((typeof prompt==='function' ? prompt('この区間の Career Score の記録（グレードを変えたときに確定した点）に未評価の項目が無かったことを確かめた理由を書いてください（例：Career Score の履歴で全項目の採点を確認）', '') : '')||'').trim();
   if(!off && !why){ showToast('理由が無いため、数えていません','info'); return false; }
   if(off && !confirm('「この記録で数える」を取り消します（その区間は「未評価」に戻り、金額を出しません）。よろしいですか？')) return false;
-  var ok=kevEvEdit(empId, g, 'legAck', off ? null : {why:why.slice(0,500), at:kevNow(), by:kevMe()}, q);
+  var ok=kevEvEdit(empId, g, 'legAck', off ? null : {why:why.slice(0,500), at:kevNow(), by:kevMe(), fp:kevLegFp(pe)}, q);
   if(ok){ showToast(off ? '取り消しました' : 'この記録で数えます（評価完了をもう一度押してください）','success'); try{ karteRerender(); }catch(e){} }
   return ok;
 }
@@ -67659,7 +67668,8 @@ function kevCareerCardHtml3(e, c, I, kv){
     var _can=kevCanEditEmp(e) && !kv.locked && !kv.snap;
     if(T.legAck) h+='<div style="font-size:11px;color:var(--muted)">v1098 以前に確定した記録です。'+escapeHtml(T.legAck.by)+'（'+escapeHtml(String(T.legAck.at).slice(0,16))+'）が確かめて、この記録で数えています：'+escapeHtml(T.legAck.why)+(_can ? ' <button class="kev-chip" onclick="kevLegAck('+cscJsArg(e.id)+','+cscJsArg(I.sc.g)+','+cscJsArg(kv.q)+',true)">取り消す</button>' : '')+'</div>';
     else h+='<div style="font-size:11.5px;color:var(--yellow);line-height:1.6">v1098 以前に確定した記録のため、理念以外のカテゴリーに未評価があったか分かりません（未評価は 0 点として記録されています）。Career Score の記録を確かめてから数えます。'
-      +(_can ? '<br><button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="kevLegAck('+cscJsArg(e.id)+','+cscJsArg(I.sc.g)+','+cscJsArg(kv.q)+',false)"><i class="ti ti-check"></i> この記録で数える（確かめた）</button>' : '')+'</div>';
+      +(T.legStale ? '<br>前に確かめた印は、そのあと記録が差し替わったため使っていません。' : '')
+      +((_can && T.missing==='legacy') ? '<br><button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="kevLegAck('+cscJsArg(e.id)+','+cscJsArg(I.sc.g)+','+cscJsArg(kv.q)+',false)"><i class="ti ti-check"></i> この記録で数える（確かめた）</button>' : '')+'</div>';
   }
   if(T.oldFreeze) h+='<div style="font-size:11px;color:var(--muted)">前の版で固定した評価（'+escapeHtml(String(T.oldFreeze).slice(0,10))+'）はカテゴリーごとの未評価の数を持たないため使わず、正式な最新の評価で数えています（査定の確定で固定し直します）。</div>';
   h+=kevCsCatTableHtml(T, scope, dept, ghNormG(I.sc.g));
@@ -67673,6 +67683,7 @@ function kevSnapCareerHtml3(c, kv, scope){
   var h='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+kevItemHead('①', 'Career Score（総合点）', {on:!!c.on, coef:c.coef}, 'grade', scope, (c.score==null ? '' : kevPtsTxt(c.score)+' / '+kevPtsTxt(c.max)+' 点'), false);
   h+='<div style="font-size:12.5px;line-height:1.7">基準得点 '+kevPtsTxt(B.bp)+' 点・1 段 '+kevPtsTxt(B.bs)+' 点'+(c.step!=null ? ' → '+(c.step>=0 ? '基準以上 '+c.step+' 段' : '基準より '+(-c.step)+' 段下')+' → ×'+kevF2(c.coef!=null ? c.coef : c.raw)+(c.capped ? '（幅 '+kevF2(r.lo)+'〜'+kevF2(r.hi)+' で止めた）' : '') : '')+'</div>';
   h+='<div style="font-size:11px;color:var(--muted)">'+escapeHtml(T.label||'')+(T.date ? ' ・ 評価日 '+escapeHtml(ghMD(T.date)) : '')+(T.by ? ' ・ '+escapeHtml(T.by) : '')+'（確定したときの点）</div>';
+  if(T.legAck) h+='<div style="font-size:11px;color:var(--muted)">v1098 以前の記録を '+escapeHtml(T.legAck.by||'')+'（'+escapeHtml(String(T.legAck.at||'').slice(0,16))+'）が確かめて数えた：'+escapeHtml(T.legAck.why||'')+'</div>';
   if((T.cats||[]).length) h+='<div style="font-size:12px;line-height:1.8">'+T.cats.map(function(k){ return escapeHtml(k.name||k.key)+' '+(k.score==null ? '—' : kevPtsTxt(k.score))+'/'+kevPtsTxt(k.max); }).join('・')+'</div>';
   return h+'</div>';
 }
@@ -68908,10 +68919,13 @@ function csgSave(reset){
     csgBack(); return true;
   };
   /* v1099：保存の前にクラウドの最新を読む（ほかの端末で先に直されていたら保存しない） */
-  if(typeof pullOpKey!=='function' || (typeof kevLockSyncBlock==='function' && kevLockSyncBlock())) return go();
+  if(typeof pullOpKey!=='function') return go();   /* クラウドの仕組みが無い画面（試験の VM など） */
+  var blk=(typeof kevLockSyncBlock==='function') ? kevLockSyncBlock() : '';
+  if(blk){ showToast(t('オフライン、またはクラウド同期が OFF のため保存していません（ほかの端末で直した文を消さないため）。つながってから保存してください','Not saved: offline or cloud sync is off (so edits made on other devices are not lost). Save again when online'),'danger'); return false; }
   if(window._csgBusy) return false;
   window._csgBusy=1;
-  return Promise.resolve().then(function(){ return pullOpKey('cs_guide'); }).then(function(){ return go(); }, function(){ return go(); }).then(function(r){ window._csgBusy=0; return r; }, function(){ window._csgBusy=0; return false; });
+  var bad=function(){ showToast(t('クラウドから最新の文を読めなかったため、保存していません。もう一度押してください','Could not read the latest text from the cloud; not saved. Please try again'),'danger'); return false; };
+  return Promise.resolve().then(function(){ return pullOpKey('cs_guide'); }).then(function(r){ return (r===true) ? go() : bad(); }, bad).then(function(r){ window._csgBusy=0; return r; }, function(){ window._csgBusy=0; return false; });
 }
 /* Career Score の画面（採点）の「評価基準・例を見る」 */
 function csgOpenFor(name, cat, gi){

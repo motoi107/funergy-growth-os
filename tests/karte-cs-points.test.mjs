@@ -465,6 +465,20 @@ test('independent review P2: a grade change confirmed before v1099 (no per-categ
   // taken back → 未評価 again
   assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', true)`), true);
   assert.equal(person(c, 'ken').segs[0].items.c.total.missing, 'legacy');
+  // the check is tied to the record it was made for: a replaced record (re-confirmed elsewhere) is not counted with the old check
+  c.prompt = () => '確認した';
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), true);
+  assert.equal(person(c, 'ken').segs[0].items.c.total.missing, null);
+  c.STORE.grade_hist.ken.recs[0].prevEval = Object.assign({}, c.STORE.grade_hist.ken.recs[0].prevEval, { at: '2026-08-20 09:00', cats: cats.map(x => Object.assign({}, x, { score: 0 })) });
+  let T = person(c, 'ken').segs[0].items.c.total;
+  assert.deepEqual([T.missing, T.legStale], ['legacy', true]);
+  // a legacy record that already misses something else (unscored philosophy items): the check would not help, so it is refused
+  c.STORE.grade_hist.ken.recs[0].prevEval.hUn = 2;
+  T = person(c, 'ken').segs[0].items.c.total;
+  assert.equal(T.missing, 'unscored');
+  assert.equal(run(c, `kevLegAck('ken', 'G2', '${Q}', false)`), false);
+  assert.match(lastToast(c), /ほかに足りないもの/);
+  c.STORE.grade_hist.ken.recs[0].prevEval.hUn = 0;
   // a v1099 record (with the per-category count) needs nothing
   c.STORE.grade_hist.ken.recs[0].prevEval.kv = 2;
   c.STORE.grade_hist.ken.recs[0].prevEval.cun = Object.fromEntries(cats.map(x => [x.key, 0]));
@@ -494,6 +508,19 @@ test('independent review P3: ① ranges saved by v1074–v1098 are not used eith
   vm.runInContext(`PULL_OK = true; function _lsRaw(k){ return ls(k, null); } function opMergePush(k, v){ var m = ls(k, {}); m['${Q}'] = Object.assign({}, m['${Q}'], { v: 900, why: 'ほかの端末', _at: m['${Q}']._at + 5 }); lsSet(k, m); return Promise.resolve(true); }`, c);
   assert.equal(await runP(c, `Promise.resolve(kevPxSaveUi('${Q}'))`), false);
   assert.match(lastToast(c), /ほかの端末で特別原資が先に変わっていました（いまは \$900\.00）/);
+  // the push fails after another device's newer value already won the merge: told the same (not "saved on this device")
+  vm.runInContext(`function opMergePush(k, v){ var m = ls(k, {}); m['${Q}'] = Object.assign({}, m['${Q}'], { v: 950, _at: m['${Q}']._at + 5 }); lsSet(k, m); return Promise.resolve(false); }`, c);
+  c.DOM['kpx-at'].value = String(c.STORE.bonus_pool_extra[Q]._at);
+  assert.equal(await runP(c, `Promise.resolve(kevPxSaveUi('${Q}'))`), false);
+  assert.match(lastToast(c), /先に変わっていました（いまは \$950\.00）/);
+  // the criteria guide is not saved when the cloud cannot be read
+  vm.runInContext(`PULL_OK = false; window._csgEd = { key:'grp|A|0', L:'ja', at0:0 }; window._csg = null;`, c);
+  c.DOM['csg-what'] = { value: '新しい文' };
+  assert.equal(await runP(c, 'Promise.resolve(csgSave(false))'), false);
+  assert.equal(run(c, `csgGet('grp|A|0', 'ja').edited`), false);
+  vm.runInContext(`PULL_OK = true;`, c);
+  assert.equal(await runP(c, 'Promise.resolve(csgSave(false))'), true);
+  assert.equal(run(c, `csgGet('grp|A|0', 'ja').what`), '新しい文');
 });
 
 test('independent review P3: the guide can be written for a department axis without a draft; history differences need the same maximum', () => {
