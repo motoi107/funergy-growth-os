@@ -171,7 +171,7 @@ test('7 levels: saved ranges must be on 0.85–1.15 by 0.05 with 1.00 inside; ot
   assert.equal(run(c, 'kevRange3Bad({on:false, lo:0.975, hi:1.05})'), '', '1.00 fixed: the saved range does not matter');
   // the company rule: final range and FL action must be on 0.05 steps
   c.STORE.bonus_eval_rule = { '_common|2026-Q3': { set: { j: { clo: 0.8, chi: 1.2, a5: 7, g3: 1 } }, _at: 1 } };
-  assert.match(run(c, `kevJ3Bad(kevJ3(kevRuleFor(null, '${Q}').r))`), /最終係数の幅.*0\.05 刻み／FL 改善行動の調整率は 0\.05/);
+  assert.match(run(c, `kevJ3Bad(kevJ3(kevRuleFor(null, '${Q}').r))`), /最終係数の幅 0\.80〜1\.20 は.*／FL 改善行動の調整率は 0\.05/);
   assert.equal(person(c, 'aki').blocked, 'eval', 'everyone waits until the company rule is chosen again');
 });
 
@@ -187,6 +187,10 @@ test('②③④ 0.05 steps: the conversion table equals the coefficient, ties go
       if (r.from != null) assert.ok(run(c, `kevCoef2(${r.from - 0.01}, {lo:${lo}, hi:${hi}}, ${JSON.stringify(pts)}, kevJ3({}))`) < r.coef, 'just below is the lower step');
     }
   }
+  // the table shows a boundary that does not end at 2 decimals with "…" (108.333…% is not shown as a reachable 108.33%)
+  const th = run(c, `kevThreshHtml(kevThresh3(0.85, 1.15, 90, 100, 110), '%')`).replace(/<[^>]+>/g, ' ');
+  assert.match(th, /108\.33…% 以上/);
+  assert.match(th, /105% 以上・108\.33…% 未満/);
   // 102.5% on 0.95–1.05 is exactly between 1.00 and 1.05 → 1.05 (upper step); 102.49% → 1.00
   assert.equal(run(c, 'kevCoef2(105, {lo:0.95, hi:1.05}, [90,100,110], kevJ3({}))'), 1.05);
   assert.equal(run(c, 'kevCoef2(102.5, {lo:0.9, hi:1.1}, [90,100,110], kevJ3({}))'), 1.05);

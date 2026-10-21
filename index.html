@@ -38960,7 +38960,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1098';
+const APP_VERSION = '1099';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -63568,7 +63568,7 @@ function cscCritTxt(c, max){
   if(c.m==='pts') return '<b>'+cscN(v)+t(' 点',' pt')+'</b> '+t('以上','or more')+dt;
   var bp=(max!=null && Number(max)>0) ? cscCritPts({m:'pct', v:v}, Number(max)) : null;
   if(bp==null) return '<b>'+cscN(v)+'%</b> '+t('以上','or more')+dt;
-  return '<b>'+cscN(bp)+t(' 点',' pt')+'</b> '+t('以上','or more')+dt+'<div style="font-size:10px;color:var(--muted)">'+t('（基準 ','(base ')+cscN(v)+'%＝'+cscN(bp)+t(' 点）',' pt)')+'</div>';
+  return '<b>'+cscN(bp)+t(' 点',' pt')+'</b> '+t('以上','or more')+dt+'<div style="font-size:10px;color:var(--muted)">'+t('（基準 ','(base ')+cscN(v)+t('%＝','% = ')+cscN(bp)+t(' 点）',' pt)')+'</div>';
 }
 /* 昇格の基準の表（次のグレード）。v1099：獲得点 ／ 基準点 ／ あと何点（% ではなく点） */
 function cscTrackTableHtml(name, J){
@@ -63620,7 +63620,7 @@ function cscMyLineHtml(name){
 function cscMyScoreLineHtml(name){
   if(cscPromoState(name)) return cscMyLineHtml(name);
   var el=lssEligibility(name), ok=el.promo.ok, sm=lssSummary(name), bp=lssPctBasePts(el.promo.min, sm && sm.totalMax);   /* v1099：% ではなく点（判定は今までどおり） */
-  var base=(bp!=null) ? t('昇格の基準 ','promotion base ')+cscN(bp)+t(' 点',' pt')+'＝'+cscN(el.promo.min)+'%' : t('基準','min')+' '+cscN(el.promo.min)+'%';
+  var base=(bp!=null) ? t('昇格の基準 ','promotion base ')+cscN(bp)+t(' 点',' pt')+t('＝',' = ')+cscN(el.promo.min)+'%' : t('基準','min')+' '+cscN(el.promo.min)+'%';
   var gap=(el.hasData && bp!=null) ? (ok ? ' <b style="color:var(--green)">'+t('基準達成 ＋','Met +')+cscN(Math.max(0, sm.totalScore-bp))+'</b>' : ' <b style="color:var(--red)">'+t('あと ','')+cscN(Math.max(0, bp-sm.totalScore))+t(' 点',' pt to go')+'</b>') : '';
   return '<div style="font-size:12px;display:flex;align-items:center;gap:6px;padding:2px 0;flex-wrap:wrap"><i class="ti '+(ok?'ti-circle-check':'ti-circle')+'" style="color:'+(ok?'var(--green)':'var(--muted)')+'"></i> '
     +t('Career Score 総合','Career Score total')+' '+(el.hasData?cscPts(sm.totalScore, sm.totalMax):t('未評価','not scored'))+' <span style="color:var(--muted)">（'+base+'）</span>'+gap+'</div>';
@@ -63695,7 +63695,7 @@ function cscEditTableHtml(E, can){
   cscCatKeys(k).forEach(function(key){
     var c=E.d[key]||null, m=c?c.m:'', nm=escapeHtml(cscCatName(key));
     var _ev=(m==='pct') ? cscNum(c.v) : (m==='' ? dv : null), _eb=(_ev!=null && isFinite(_ev) && _ev>=0 && _ev<=100) ? cscCritPts({m:'pct', v:_ev}, cscCatMax(key)) : null;
-    var eq=(_eb!=null) ? ' <span style="font-size:10.5px;color:var(--muted)">＝ '+cscN(_eb)+t(' 点',' pt')+'</span>' : '';   /* v1099：% の基準を点でも見せる（保存は % のまま） */
+    var eq=(m==='pct' || m==='') ? ' <span id="csc-eq-'+key+'" style="font-size:10.5px;color:var(--muted)">'+(_eb!=null ? '＝ '+cscN(_eb)+t(' 点',' pt') : '')+'</span>' : '';   /* v1099：% の基準を点でも見せる（保存は % のまま） */
     h+='<tr><td style="font-weight:700">'+nm+'</td><td style="text-align:right;color:var(--muted);white-space:nowrap">'+cscCatMax(key)+t('点','pt')+'</td>'
       +'<td><select class="form-select" style="font-size:12px;padding:4px 8px;width:auto" aria-label="'+nm+' '+t('判定方法','method')+'"'+dis+' onchange="cscModalSet(\''+key+'\',\'m\',this.value)">'
       +'<option value=""'+(m===''?' selected':'')+'>'+t('初期値（'+dv+'% 以上）','Default ('+dv+'% or more)')+'</option>'
@@ -63745,6 +63745,10 @@ function cscModalSet(key, field, val){
   if(!E.d[key]) return;
   var n=cscNum(val);   /* 全角（７９．７）や「%」「点」つきも数字に直して見せる。数字でないものはそのまま（保存のときに知らせる） */
   if(n!==null && isFinite(n) && String(n)!==String(val)){ E.d[key].v=String(n); cscModalRender(); } else E.d[key].v=val;
+  try{   /* v1099：入れた % の点をその場で直す（描き直さない） */
+    var _sp=document.getElementById('csc-eq-'+key);
+    if(_sp && E.d[key] && E.d[key].m==='pct'){ var _n=cscNum(E.d[key].v), _b=(_n!=null && isFinite(_n) && _n>=0 && _n<=100) ? cscCritPts({m:'pct', v:_n}, cscCatMax(key)) : null; _sp.textContent=(_b!=null) ? '＝ '+cscN(_b)+t(' 点',' pt') : ''; }
+  }catch(err){}
 }
 function cscModalSave(){
   var E=window._cscEdit; if(!E) return;
@@ -63804,7 +63808,7 @@ function cscHistModal(k){
   if(!hs.length) h+='<div style="font-size:12px;color:var(--muted)">'+t('まだありません','None yet')+'</div>';
   hs.slice().reverse().forEach(function(x){
     h+='<div style="border-top:1px solid var(--border);padding:7px 0;font-size:12px"><div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(String(x.at||'').slice(0,16))+'・'+escapeHtml(x.by||'')+'</div>'
-      +cscCatKeys(k).map(function(key){ var c=x.cats&&x.cats[key]; return escapeHtml(cscCatName(key))+' '+(c?(c.m==='none'?t('対象外','not used'):(c.m==='pct'?(cscN(c.v)+'%＝'+cscN(cscCritPts({m:'pct', v:c.v}, cscCatMax(key)))+t('点','pt')):(cscN(c.v)+t('点','pt')))):t('初期値','default')); }).join(' / ')+'</div>';   /* v1099：% の基準は点も */
+      +cscCatKeys(k).map(function(key){ var c=x.cats&&x.cats[key]; return escapeHtml(cscCatName(key))+' '+(c?(c.m==='none'?t('対象外','not used'):(c.m==='pct'?(cscN(c.v)+t('%＝','% = ')+cscN(cscCritPts({m:'pct', v:c.v}, cscCatMax(key)))+t('点','pt')):(cscN(c.v)+t('点','pt')))):t('初期値','default')); }).join(' / ')+'</div>';   /* v1099：% の基準は点も */
   });
   h+='<div class="btn-row"><button class="btn btn-secondary" onclick="'+back+'">'+t('戻る','Back')+'</button></div>';
   openModal(h);
@@ -65966,7 +65970,7 @@ function kevPersonMainHtml(e, b, seg, kv, tot){
     +'<div style="text-align:right"><b style="font-size:15px">'+(ph.pts!=null && !ph.missing ? kevR1(ph.pts)+' 点' : '—')+'</b></div></div>';
   h+=kevLvRowHtml(e, g, 'qu', '仕事の質', '正確さ・準備・確認・引継ぎ', c.parts.qu, KEV_LV_TXT.qu, can, qq);
   var sm=(typeof lssSummary==='function') ? lssSummary(e.name) : null;
-  if(sm && sm.hasData) h+='<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px">根拠の参考（昇格用 Career Score のほかのカテゴリー・点には使わない）：'+escapeHtml((sm.cats||[]).filter(function(x){ return x.key!=='H'; }).map(function(x){ return (x.name||x.key)+' '+x.pct+'%'; }).join('・'))+'</div>';
+  if(sm && sm.hasData) h+='<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px">根拠の参考（昇格用 Career Score のほかのカテゴリー・点には使わない）：'+escapeHtml((sm.cats||[]).filter(function(x){ return x.key!=='H'; }).map(function(x){ return (x.name||x.key)+' '+cscPts(x.score, x.max, true); }).join('・'))+'</div>';   /* v1099：% ではなく点 */
   h+=kevMissHtml(c)+'</div>';
   /* ② */
   var s=it.s;
@@ -66217,7 +66221,7 @@ function kevCareerCardHtml(e, g, c, I, kv, can, qq, scope, g2){
     +'<div style="text-align:right"><b style="font-size:15px">'+(ph.pts!=null && !ph.missing ? kevR1(ph.pts)+' 点' : '—')+'</b></div></div>';
   h+=kevLvRowHtml(e, g, 'qu', '仕事の質', '正確さ・準備・確認・引継ぎ', c.parts.qu, KEV_LV_TXT.qu, can, qq);
   var sm=(typeof lssSummary==='function') ? lssSummary(e.name) : null;
-  if(sm && sm.hasData) h+='<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px">根拠の参考（昇格用 Career Score のほかのカテゴリー・点には使わない）：'+escapeHtml((sm.cats||[]).filter(function(x){ return x.key!=='H'; }).map(function(x){ return (x.name||x.key)+' '+x.pct+'%'; }).join('・'))+'</div>';
+  if(sm && sm.hasData) h+='<div style="font-size:11px;color:var(--muted);border-top:1px solid var(--border);padding-top:6px">根拠の参考（昇格用 Career Score のほかのカテゴリー・点には使わない）：'+escapeHtml((sm.cats||[]).filter(function(x){ return x.key!=='H'; }).map(function(x){ return (x.name||x.key)+' '+cscPts(x.score, x.max, true); }).join('・'))+'</div>';   /* v1099：% ではなく点 */
   h+=kevMissHtml(c)+'</div>';
   return h;
 }
@@ -67152,13 +67156,14 @@ function kevGen3(q){ return kevGen2(q) && String(q)>=KEV3_START; }
 function kevItemNm(k){ return {c:'① Career Score', s:'② 売上', f:'③ FL', p:'④ 利益'}[k] || String(k||''); }
 function kevUsd2(n){ var v=Math.round((Number(n)||0)*100)/100, neg=v<0; v=Math.abs(v); return (neg ? '−' : '')+'$'+v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 function kevPtsTxt(n){ var v=Number(n); if(n==null || !isFinite(v)) return '—'; return (Math.round(v)===v) ? String(v) : (Math.round(v*10)/10).toFixed(1); }
+function kevF3(v){ var n=kevN(v); if(n==null) return '—'; var r=Math.round(n*10000)/10000; return (Math.abs(r*100-Math.round(r*100))<1e-9) ? r.toFixed(2) : String(r); }   /* 係数を丸めずに（0.975 は 0.975・0.8 は 0.80） */
 function kevLvOk(v){ var n=kevN(v); return n!=null && KEV3_LV.some(function(x){ return Math.abs(x-n)<1e-9; }); }
 function kevLvLbl(v){ var n=kevN(v); if(n==null) return ''; return n<1-1e-9 ? '減額' : (n>1+1e-9 ? '増額' : '基準'); }
 /* 幅が新しい決まり（7 種類・1.00 を含む）に合わなければ理由。1.00 固定は見ない */
 function kevRange3Bad(r){
   if(!r || r.on===false) return '';
   var lo=kevN(r.lo), hi=kevN(r.hi);
-  if(!kevLvOk(lo) || !kevLvOk(hi) || lo>1+1e-9 || hi<1-1e-9) return '幅 '+(lo==null ? '—' : kevF2(lo))+'〜'+(hi==null ? '—' : kevF2(hi))+' は新しい決まり（0.85〜1.15 の 0.05 刻み・1.00 を含む）に合いません';
+  if(!kevLvOk(lo) || !kevLvOk(hi) || lo>1+1e-9 || hi<1-1e-9) return '幅 '+(lo==null ? '—' : kevF3(lo))+'〜'+(hi==null ? '—' : kevF3(hi))+' は新しい決まり（0.85〜1.15 の 0.05 刻み・1.00 を含む）に合いません';   /* 丸めずに見せる（0.975 を 0.97 と出さない） */
   return '';
 }
 /* グレード・職種の初期値（反映か 1.00 固定か）：今までどおり G2・G3 は ①、G4 は ①②③、G5・G6 は ②④。① の幅は 0.85〜1.15（前のグレード係数の幅は写さない） */
@@ -67179,7 +67184,7 @@ function kevJ3(R){
 function kevJ3Bad(J){
   var p=[];
   if(!J) return '設定がありません';
-  if(!kevLvOk(J.clo) || !kevLvOk(J.chi) || Number(J.clo)>1+1e-9 || Number(J.chi)<1-1e-9) p.push('個人の最終係数の幅 '+kevF2(J.clo)+'〜'+kevF2(J.chi)+' は新しい決まり（0.85〜1.15 の 0.05 刻み）に合いません');
+  if(!kevLvOk(J.clo) || !kevLvOk(J.chi) || Number(J.clo)>1+1e-9 || Number(J.chi)<1-1e-9) p.push('個人の最終係数の幅 '+kevF3(J.clo)+'〜'+kevF3(J.chi)+' は新しい決まり（0.85〜1.15 の 0.05 刻み）に合いません');
   if(['a5','a4','a3','a2','a1'].some(function(k){ var n=Number(J[k]); return !isFinite(n) || Math.abs(Math.round(n/5)*5-n)>1e-9; })) p.push('FL 改善行動の調整率は 0.05（5%）刻みにしてください');
   return p.join('／');
 }
@@ -67357,6 +67362,7 @@ function kevThresh3(lo, hi, x0, x1, x2){
 function kevNumTxt(v, unit){ var n=Number(v); if(!isFinite(n)) return '—'; var r=Math.round(n*100)/100; return (Math.round(r)===r ? String(r) : (Math.round(r*10)===r*10 ? r.toFixed(1) : r.toFixed(2)))+(unit||''); }
 /* 対応表の HTML（unit：'%'・'pt'。dir＝'fl'：FL は目標との差（目標 − 実績）） */
 function kevThreshHtml(rows, unit, dir){
+  var kevNumTxt=function(v, u){ var n=Number(v); if(!isFinite(n)) return '—'; var r=Math.round(n*100)/100, t=(Math.round(r)===r ? String(r) : (Math.round(r*10)===r*10 ? r.toFixed(1) : r.toFixed(2))); return t+(Math.abs(n-r)>1e-7 ? '…' : '')+(u||''); };   /* v1099：割り切れない境目は「…」 */
   return '<table style="border-collapse:collapse;font-size:12px;width:100%">'+rows.map(function(r, i){
     var nxt=rows[i-1];   /* 1 つ上の段 */
     var cond;
@@ -67557,7 +67563,7 @@ function kevCompareHtml(cfg, kv){
     +['氏名','グレード','① 前 → 今','②③④ 前 → 今','調整前 前 → 今','差の内訳'].map(function(x, i){ return '<th style="padding:6px 8px;font-size:10.5px;color:var(--muted)'+(i===4 ? ';text-align:right' : '')+'">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
   C.rows.forEach(function(r){
     var o=r.old, n=r.now, br='';
-    if(o && n && !o.blocked && !n.blocked && r.mix!=null){ var d1=r.mix-o.amount, d2=n.amount-r.mix; br=(d1 ? '① 参照元 '+sg(d1) : '')+(d1 && d2 ? '・' : '')+(d2 ? '刻み '+sg(d2) : '')+((!d1 && !d2) ? '変わらない' : ''); }
+    if(o && n && !o.blocked && !n.blocked && r.mix!=null){ var d1=r.mix-o.amount, d2=n.amount-r.mix; br=(d1 ? '① 参照元 '+sg(d1) : '')+(d1 && d2 ? '・' : '')+(d2 ? '刻み・設定 '+sg(d2) : '')+((!d1 && !d2) ? '変わらない' : ''); }
     else if(n && n.blocked) br='<span style="color:var(--red)">'+escapeHtml(((n.missing||[])[0]||'不足'))+'</span>';
     h+='<tr style="border-top:1px solid var(--border)"><td style="padding:6px 8px;font-weight:700">'+escapeHtml(r.e.name||'')+'</td><td style="padding:6px 8px">'+escapeHtml(ghNormG(empGrade(r.e))||'')+'</td>'
       +'<td style="padding:6px 8px">'+cTxt(o, false)+' → '+cTxt(n, true)+'</td><td style="padding:6px 8px">'+oTxt(o, false)+' → '+oTxt(n, true)+'</td>'
@@ -67567,7 +67573,7 @@ function kevCompareHtml(cfg, kv){
     +'<span>調整前の合計：前 '+kevUsd(C.a.total)+(C.a.nBlocked ? '（不足 '+C.a.nBlocked+' 名を除く）' : '')+' → 今 '+(C.b.nBlocked ? '試算未完了（'+C.b.nBlocked+' 名）' : kevUsd(C.b.total))+'</span>'
     +'<span>支給上限：前 '+(C.a.cap==null ? '—' : kevUsd2(C.a.cap))+' → 今 '+(C.b.cap==null ? '—' : kevUsd2(C.b.cap))+(C.b.extra ? '（特別原資 '+kevUsd2(C.b.extra)+'）' : '')+'</span>'
     +'<span>共通調整係数：前 '+(C.a.k==null ? '—' : Number(C.a.k).toFixed(3))+' → 今 '+((C.b.k==null || C.b.nBlocked) ? '—（そろってから）' : Number(C.b.k).toFixed(3))+'</span></div>'
-    +'<div style="font-size:10.5px;color:var(--muted);padding:6px 14px 10px;line-height:1.6">差の内訳は ① を先に変え（参照元＝賞与用 4 要素 → Career Score の総合点）、次に ②③④ の刻み（0.25% → 0.05）の順で分けます。原資の調整の前の額です。</div></div>';
+    +'<div style="font-size:10.5px;color:var(--muted);padding:6px 14px 10px;line-height:1.6">差の内訳は ① を先に変え（参照元＝賞与用 4 要素 → Career Score の総合点）、次に ②③④ の刻み（0.25% → 0.05）と v1099 で保存した設定の順で分けます。原資の調整の前の額です。</div></div>';
   return h;
 }
 
@@ -67583,7 +67589,7 @@ function kevCsLadderHtml(c){
   }).join('')+'</div>';
 }
 /* カテゴリーの表（獲得点 ／ その人のグレード・職種の基準点（参考）／ あと何点）。基準は昇格の判定と同じ基準ライン */
-function kevCsCatTableHtml(T, scope, sheetDept){
+function kevCsCatTableHtml(T, scope, sheetDept, grade){
   var tk=kevCsTrackKey(scope), en=(T.sheet==='store') ? cscEntry(tk) : null;
   var rows=(T.cats||[]).map(function(c){
     var base=null, note='';
@@ -67594,7 +67600,7 @@ function kevCsCatTableHtml(T, scope, sheetDept){
     else if(Number(c.un)>0) st='<span style="color:var(--yellow)">'+t('未評価 ','Not scored ')+Number(c.un)+t(' 項目',' items')+'</span>';
     else if(base==null) st='<span style="color:var(--muted)">'+escapeHtml(note||'—')+'</span>';
     else { var dl=Math.round((Number(c.score)-base)*10)/10; st=(dl>=0) ? '<b style="color:var(--green)">'+t('基準達成 ＋','Met +')+kevPtsTxt(dl)+'</b>' : '<b style="color:var(--red)">'+t('あと ','To go ')+kevPtsTxt(-dl)+t(' 点',' pt')+'</b>'; }
-    var btn=(T.sheet==='office' || c.ocs) ? '' : '<button class="kev-chip" onclick="csgOpen('+cscJsArg(c.key)+',null,'+cscJsArg(sheetDept||'')+')">'+t('評価基準・例を見る','Criteria & examples')+'</button>';
+    var btn=(T.sheet==='office' || c.ocs) ? '' : '<button class="kev-chip" onclick="csgOpen('+cscJsArg(c.key)+',null,'+cscJsArg(sheetDept||'')+','+cscJsArg(grade||'')+')">'+t('評価基準・例を見る','Criteria & examples')+'</button>';
     return '<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;font-weight:700">'+escapeHtml(c.name||c.key)+'</td>'
       +'<td style="padding:5px 6px;text-align:right;white-space:nowrap">'+(c.score==null ? '—' : kevPtsTxt(c.score))+' / '+kevPtsTxt(c.max)+'</td>'
       +'<td style="padding:5px 6px;text-align:right;white-space:nowrap">'+(base==null ? '<span style="color:var(--muted)">'+escapeHtml(note||'—')+'</span>' : kevPtsTxt(base)+t(' 点',' pt'))+'</td>'
@@ -67627,7 +67633,7 @@ function kevCareerCardHtml3(e, c, I, kv){
   h+=kevCsLadderHtml(c);
   h+='<div style="font-size:11px;color:var(--muted)">'+escapeHtml(T.label||'Career Score')+(T.date ? ' ・ 評価日 '+escapeHtml(ghMD(T.date)) : '')+(T.by ? ' ・ 評価者 '+escapeHtml(T.by) : '')+' ・ 対象 '+escapeHtml(kv.q)+' ・ '+(T.frozen ? '固定済み' : '未固定（査定の確定で固定）')+'</div>';
   if(T.legacy) h+='<div style="font-size:11px;color:var(--yellow)">v1098 以前に確定した記録のため、理念以外のカテゴリーに未評価があったかは分かりません（そのとき 0 点として数えた点のままです）。</div>';
-  h+=kevCsCatTableHtml(T, scope, dept);
+  h+=kevCsCatTableHtml(T, scope, dept, ghNormG(I.sc.g));
   h+='<div style="font-size:11px;color:var(--muted);line-height:1.6">賞与は<b>総合点</b>で決まります（得意なカテゴリーで苦手を補えます）。カテゴリーの基準点は昇格の判定と同じ基準ラインで、ここでは参考です。採点は Career Score の画面で行います（ここでは採点しません）。'+(T.sheet==='store' && ghNormG(I.sc.g)==='G2' ? 'G2 は 理念・基本業務・サービス・キッチン/プレップ の 4 カテゴリーで数えます。' : '')+'</div>';
   h+=kevMissHtml(c)+kevOldEvHtml(I.ev);
   return h+'</div>';
@@ -68747,7 +68753,7 @@ function csgHasText(v){ if(typeof v==='string') return !!v.trim(); if(Array.isAr
 /* 表示する文（言語 L）：直した文があればそれ、無ければ初期の文。edited＝直した欄があるか */
 function csgGet(key, L){
   L=L||csgLang();
-  var li=(L==='en') ? 1 : 0, d=csgDefOf(key)||{}, s=csgAll()[key], ok=(s && typeof s==='object' && !s._deleted), sv=(ok && s[L] && typeof s[L]==='object') ? s[L] : {};
+  var li=(L==='en') ? 1 : 0, d=csgDefOf(key)||{}, s=csgAll()[key+'@'+L], ok=(s && typeof s==='object' && !s._deleted), sv=(ok && s.v && typeof s.v==='object') ? s.v : {};   /* 言語ごとの記録（<キー>@ja・<キー>@en） */
   var pick=function(v, dv){ return (typeof v==='string' && v.trim()) ? v : (Array.isArray(dv) ? String(dv[li]||dv[0]||'') : String(dv||'')); };
   var o={what:pick(sv.what, d.what), lv:[0,1,2,3].map(function(i){ return pick(sv.lv && sv.lv[i], d.lv && d.lv[i]); }), ex:[0,1,2,3].map(function(i){ return pick(sv.ex && sv.ex[i], d.ex && d.ex[i]); }),
     cm:[0,1].map(function(i){ return pick(sv.cm && sv.cm[i], d.cm && d.cm[i]); }), exp:{}};
@@ -68849,15 +68855,15 @@ function csgReadForm(key, L){
   return {what:keep(v('what'), D.what), lv:[0,1,2,3].map(function(i){ return keep(v('lv'+i), D.lv && D.lv[i]); }), ex:[0,1,2,3].map(function(i){ return keep(v('ex'+i), D.ex && D.ex[i]); }), cm:[0,1].map(function(i){ return keep(v('cm'+i), D.cm && D.cm[i]); })};
 }
 function csgSaveRec(key, L, vals, why, at0, reset){
-  var all=csgAll(), prev=all[key], ok=(prev && typeof prev==='object' && !prev._deleted), curAt=(ok && Number(prev._at)) || 0;
+  var k=key+'@'+L, all=csgAll(), prev=all[k], ok=(prev && typeof prev==='object' && !prev._deleted), curAt=(ok && Number(prev._at)) || 0;
   if((Number(at0)||0)!==curAt) return {ok:false, conflict:true};
-  var rec=ok ? JSON.parse(JSON.stringify(prev)) : {}, before=(rec[L] && typeof rec[L]==='object') ? rec[L] : null, now=kevNow(), me=kevMe();
+  var rec=ok ? JSON.parse(JSON.stringify(prev)) : {}, before=(rec.v && typeof rec.v==='object') ? rec.v : null, now=kevNow(), me=kevMe();
   var hist=Array.isArray(rec.hist) ? rec.hist.slice(-19) : [];
-  hist.push({L:L, before:before, why:String(why||'').slice(0,300), at:now, by:me, reset:!!reset});
-  rec[L]=vals; rec.hist=hist; rec.at=now; rec.by=me; rec._at=Math.max(Date.now(), curAt+1); delete rec._deleted;
-  all[key]=rec;
+  hist.push({before:before, why:String(why||'').slice(0,300), at:now, by:me, reset:!!reset});
+  rec.v=vals; rec.L=L; rec.key=key; rec.hist=hist; rec.at=now; rec.by=me; rec._at=Math.max(Date.now(), curAt+1); delete rec._deleted;
+  all[k]=rec;
   if(lsSet('cs_guide', all)===false) return {ok:false};
-  var back=csgAll()[key];
+  var back=csgAll()[k];
   return {ok:!!(back && back._at===rec._at)};
 }
 function csgSave(reset){
@@ -68865,11 +68871,18 @@ function csgSave(reset){
   if(!csgCan()){ showToast(t('直せるのは GM・CEO です','Only GM or CEO can edit'),'warning'); return; }
   if(reset && !confirm(t('この文を初期の文（たたき台）に戻します。よろしいですか？','Reset this text to the initial draft?'))) return;
   var vals=reset ? {} : csgReadForm(E.key, E.L), why=String((document.getElementById('csg-why')||{}).value||'').trim();
-  var r=csgSaveRec(E.key, E.L, vals, why, E.at0, reset);
-  if(r.conflict){ showToast(t('ほかの端末でこの文が直されていました。開き直してから直してください','This text was changed on another device. Open it again before editing'),'warning'); csgBack(); return; }
-  if(!r.ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return; }
-  showToast(reset ? t('初期の文に戻しました','Reset to the draft') : t('保存しました（すべての画面で同じ文が出ます）','Saved (the same text shows everywhere)'),'success');
-  csgBack();
+  var go=function(){
+    var r=csgSaveRec(E.key, E.L, vals, why, E.at0, reset);
+    if(r.conflict){ showToast(t('ほかの端末でこの文が直されていました。開き直してから直してください','This text was changed on another device. Open it again before editing'),'warning'); csgBack(); return false; }
+    if(!r.ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return false; }
+    showToast(reset ? t('初期の文に戻しました','Reset to the draft') : t('保存しました（すべての画面で同じ文が出ます）','Saved (the same text shows everywhere)'),'success');
+    csgBack(); return true;
+  };
+  /* v1099：保存の前にクラウドの最新を読む（ほかの端末で先に直されていたら保存しない） */
+  if(typeof pullOpKey!=='function' || (typeof kevLockSyncBlock==='function' && kevLockSyncBlock())) return go();
+  if(window._csgBusy) return false;
+  window._csgBusy=1;
+  return Promise.resolve().then(function(){ return pullOpKey('cs_guide'); }).then(function(){ return go(); }, function(){ return go(); }).then(function(r){ window._csgBusy=0; return r; }, function(){ window._csgBusy=0; return false; });
 }
 /* Career Score の画面（採点）の「評価基準・例を見る」 */
 function csgOpenFor(name, cat, gi){
@@ -71624,22 +71637,24 @@ function lssNextTargetHtml(name) {
   if (!saved) return '';
   var elig = lssEligibility(name);
   var rules = getLssRules();
+  var _sm = lssSummary(name);   /* v1099：% ではなく点（判定は今までどおり総合％） */
   var canApply = ['ceo','gm','am','sl'].includes(curRole);
   var blocks = '';
   [['promo','昇格・役職変更','ti-crown']].forEach(function(t){
     var kind=t[0], label=t[1], icon=t[2];
     var e=elig[kind]; var pend=lssPendingFor(name, kind);
+    var _bp=lssPctBasePts(e.min, _sm.totalMax);
     var col = e.ok?'var(--green)':'var(--accent2)';
     blocks += `<div style="border-top:1px solid var(--border);padding-top:8px;margin-top:8px">
-      <div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700"><i class="ti ${icon}" style="color:var(--accent)"></i>${label} <span style="font-size:10px;color:var(--muted);font-weight:400">（${rules[kind].minPct}%以上で申請可）</span></div>`;
+      <div style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700"><i class="ti ${icon}" style="color:var(--accent)"></i>${label} <span style="font-size:10px;color:var(--muted);font-weight:400">（${_bp!=null?_bp+' 点（'+cscN(e.min)+'%）':cscN(e.min)+'%'}以上で申請可）</span></div>`;
     if (pend) {
       blocks += `<div class="alert alert-warning" style="margin:6px 0 0;padding:6px 10px"><i class="ti ti-clock"></i>申請中（承認待ち）</div>`;
     } else if (e.ok) {
       blocks += `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-        <span style="flex:1;font-size:11px;color:var(--green)"><i class="ti ti-circle-check"></i> 条件達成（${elig.pct}% ≥ ${e.min}%）</span>
+        <span style="flex:1;font-size:11px;color:var(--green)"><i class="ti ti-circle-check"></i> 条件達成（${_bp!=null?cscPts(_sm.totalScore,_sm.totalMax)+' ≥ '+_bp+' 点':elig.pct+'% ≥ '+e.min+'%'}）</span>
         ${canApply?`<button class="btn btn-primary btn-sm" onclick="openLssApply('${name.replace(/'/g,"\\'")}','${kind}')"><i class="ti ti-send"></i> 申請</button>`:''}</div>`;
     } else {
-      blocks += `<div style="font-size:11px;color:var(--accent2);margin-top:6px"><i class="ti ti-info-circle"></i> あと ${e.remain}% で申請可（現在 ${elig.pct}%）</div>`;
+      blocks += `<div style="font-size:11px;color:var(--accent2);margin-top:6px"><i class="ti ti-info-circle"></i> あと ${_bp!=null?Math.max(0,_bp-_sm.totalScore)+' 点':e.remain+'%'} で申請可（現在 ${_bp!=null?cscPts(_sm.totalScore,_sm.totalMax):elig.pct+'%'}）</div>`;
     }
     blocks += `</div>`;
   });
@@ -74607,8 +74622,7 @@ function renderMypage() {
       var llv = lssLevel(lsum.totalPct);
       var lcolor = llv.color.replace('var(--eval-top)','#1d4fd0').replace('var(--eval-high)','#3b82f6').replace('var(--eval-mid)','#e8920b').replace('var(--eval-low)','#e23b3b').replace('var(--eval-none)','#9b938a').replace('var(--green)','#15a66a').replace('var(--accent)','#f0661f').replace('var(--yellow)','#d98908').replace('var(--red)','#e5484d');
       var lhist = ls('lss_history', []).filter(h=>h.name===me);
-      var lastDiff = null;
-      if (lhist.length>=1 && lhist[lhist.length-1].prevPct!=null) lastDiff = lhist[lhist.length-1].pct - lhist[lhist.length-1].prevPct;
+      var lastDiff = lhist.length ? lssHistDiff(lhist[lhist.length-1]) : null;   /* v1099：点の差（点の無い前の記録は % の差） */
       var lastReason = (canViewLssChangeReason() && lhist.length>=1 && lhist[lhist.length-1].changeReason) ? lhist[lhist.length-1].changeReason : null;
       // 改善カテゴリ TOP3（今月のフォーカス）
       var focusCats = lsum.cats.slice().sort((a,b)=>a.pct-b.pct).slice(0,3);
@@ -74618,17 +74632,17 @@ function renderMypage() {
           <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openLssDetail('${me.replace(/'/g,"\\'")}')">${t('詳細','Detail')}</button></div>
         <div style="display:flex;align-items:center;gap:14px;margin-bottom:8px">
           <div style="position:relative;flex-shrink:0">${healthRing(lsum.totalPct, lcolor, 60)}
-            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${llv.color}">${lsum.totalPct}%</div></div>
+            <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:800;color:${llv.color}">${lssRingPts(lsum)}</div></div>
           <div style="flex:1;min-width:0">
             <div><span class="tag" style="background:${llv.color};color:#fff;font-size:10px">${llv.label}</span></div>
             <div style="margin-top:4px">${gradeLevelBadgeHtml(meEmpL,{pct:false})}</div>
-            <div style="font-size:11px;color:var(--muted);margin-top:3px">${lsum.totalScore}/${lsum.totalMax}${t('点','pt')}${lastDiff!=null?` · <span style="color:${lastDiff>=0?'var(--green)':'var(--red)'}">${lastDiff>=0?'+':''}${lastDiff}pt</span> ${t('前回比','vs last')}`:''}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px">${lsum.totalScore}/${lsum.totalMax}${t('点','pt')}${lastDiff?` · <span style="color:${lastDiff.d>=0?'var(--green)':'var(--red)'}">${lastDiff.txt}</span> ${t('前回比','vs last')}`:''}</div>
           </div>
         </div>
         ${lastReason?`<div style="font-size:11px;color:var(--tm);margin:0 0 8px;padding:6px 9px;background:var(--bg);border-radius:7px;border-left:2px solid var(--accent)"><span style="font-weight:700;color:var(--accent)"><i class="ti ti-message-2" style="font-size:11px"></i> ${t('前回の変更理由','Last change note')}</span><br>${escapeHtml(lastReason)}</div>`:''}
         <div style="border-top:1px solid var(--border);padding-top:8px">
           <div style="font-size:11px;font-weight:700;margin-bottom:4px">${t('今月のフォーカス','Focus This Month')}</div>
-          ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${c.icon||cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${curLang==='en'?(cd.en||c.name):c.name}</span><span style="font-size:11px;color:var(--accent2)">${c.pct}%</span></div>`;}).join('')}
+          ${focusCats.map(c=>{var cd=LSS_CATEGORIES.find(x=>x.key===c.key)||{};return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0"><i class="ti ${c.icon||cd.icon}" style="color:var(--accent2)"></i><span style="flex:1">${curLang==='en'?(cd.en||c.name):c.name}</span><span style="font-size:11px;color:var(--accent2)">${cscPts(c.score, c.max, true)}</span></div>`;}).join('')}
         </div>`;
       // 昇格パス（OJT修了 ＋ スコア。v1058：担当軸 L4 の条件は一旦廃止）
       var gpe = gradePromoEval(meEmpL);
@@ -84610,6 +84624,7 @@ function ojtPhaseEval(e){
   var allCleared = clearedCount>=phases.length;
   var currentIdx = allCleared ? phases.length-1 : clearedCount;
   return {phases:phases, hasData:hasData, totalPct:totalPct, minLv:minLv, perAxis:perAxis, axes:ax.axes||[],
+    totalScore:(sum && sum.hasData) ? sum.totalScore : null, totalMax:(sum && sum.hasData) ? sum.totalMax : null,   /* v1099：表示用の点（判定は総合％のまま） */
     clearedCount:clearedCount, currentIdx:currentIdx, allCleared:allCleared};
 }
 
@@ -84665,7 +84680,7 @@ function ojtLadderHtml(e, ev){
     +     '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(e.title||'Crew')+' · '+escapeHtml(storeName)+'</div></div>'
     +   '<div style="text-align:right"><div style="font-size:24px;font-weight:800;color:'+rateCol+';line-height:1">'+rateStr+'</div><div style="font-size:10px;color:var(--muted)">'+t('現在Tip','Current Tip')+'</div></div>'
     + '</div>'
-    + '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px">'+chips+'<span style="font-size:11px;color:var(--muted);margin-left:4px">'+t('総合','Total')+' '+ev.totalPct+'%</span></div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px">'+chips+'<span style="font-size:11px;color:var(--muted);margin-left:4px">'+t('総合','Total')+' '+(sb ? ev.totalPct+'%' : (_lssHasPts(ev.totalScore, ev.totalMax) ? cscPts(ev.totalScore, ev.totalMax) : t('未評価','Not scored')))+'</span></div>'   /* v1099：Career Score は点 */
     + '<div style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px">'
     +   '<i class="ti ti-flag" style="color:var(--accent2)"></i>'
     +   '<div style="font-size:12px;flex:1">'+t('現在','Now')+' <b>'+curPh.key+' '+escapeHtml(curPh.name)+'</b>'+(ev.allCleared?' <span class="tag tag-green" style="font-size:9px">'+t('一人前到達','Fully qualified')+'</span>':' · '+t('次の解禁','Next unlock')+' <b style="color:var(--accent2)">'+escapeHtml(curPh.unlock)+'</b>')+'</div>'
@@ -84701,7 +84716,7 @@ function ojtLadderHtml(e, ev){
       +     unlockBadge
       +   '</div>'
       +   '<div style="font-size:11px;color:var(--muted)">'+escapeHtml(ph.note)+'</div>'
-      +   '<div style="font-size:12px;margin-top:6px">'+(sb?t('ゲート：スキル 全ポジション ≥ Lv','Gate: all positions ≥ Lv'):t('ゲート：担当軸 全て ≥ L','Gate: all axes ≥ L'))+ph.minAxisLevel+' ＋ '+t('総合','Total')+' ≥ '+ph.minTotalPct+'%</div>';
+      +   '<div style="font-size:12px;margin-top:6px">'+(sb?t('ゲート：スキル 全ポジション ≥ Lv','Gate: all positions ≥ Lv'):t('ゲート：担当軸 全て ≥ L','Gate: all axes ≥ L'))+ph.minAxisLevel+' ＋ '+t('総合','Total')+' ≥ '+((!sb && _lssHasPts(ev.totalScore, ev.totalMax) && lssPctBasePts(ph.minTotalPct, ev.totalMax)!=null) ? cscN(lssPctBasePts(ph.minTotalPct, ev.totalMax))+t(' 点（',' pt (')+ph.minTotalPct+'%）' : ph.minTotalPct+'%')+'</div>';
 
     if(st==='current' && !ev.allCleared){
       var rows='';
@@ -84714,7 +84729,10 @@ function ojtLadderHtml(e, ev){
         rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+(sb?t('スキル評価の入力が必要','Skill evaluation input required'):t('Career Score評価の入力が必要','Career Score input required'))+'</div>';
       }
       if(ev.totalPct < ph.minTotalPct){
-        rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+t('総合','Total')+' '+ev.totalPct+'% → '+ph.minTotalPct+'%'+t('（あと',' (')+(ph.minTotalPct-ev.totalPct)+'pt'+t('）',' to go)')+'</div>';
+        var _obp=(!sb && _lssHasPts(ev.totalScore, ev.totalMax)) ? lssPctBasePts(ph.minTotalPct, ev.totalMax) : null;   /* v1099：Career Score は点 */
+        rows += '<div style="font-size:12px;color:var(--muted)"><i class="ti ti-circle" style="color:var(--yellow)"></i> '+t('総合','Total')+' '
+          +(_obp!=null ? cscPts(ev.totalScore, ev.totalMax)+' → '+cscN(_obp)+t(' 点（あと ',' pt (')+cscN(Math.max(0, _obp-ev.totalScore))+t(' 点）',' pt to go)')
+                       : ev.totalPct+'% → '+ph.minTotalPct+'%'+t('（あと',' (')+(ph.minTotalPct-ev.totalPct)+'pt'+t('）',' to go)'))+'</div>';
       }
       if(rows){
         html += '<div style="border-top:1px solid var(--border);margin-top:8px;padding-top:8px;display:flex;flex-direction:column;gap:4px">'+rows+'</div>';
