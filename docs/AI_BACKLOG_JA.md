@@ -8,7 +8,8 @@
 ## 2026-10-21 専門職キャリアの整備（依頼 10/21 12:37・12:46 HST）
 
 1. 済（Claude）：今のコードの調べ（既存の専門職は `SPECIALIST_DEPTS` の 経理・調理・サービス・マーケ。経理・調理は部門別の評価表 8 軸 × 4 項目・96 点、サービス・マーケは項目なし。オフィス用 Career Score 35 項目・100 点は別）。
-2. 次：4 つの専門職 × グレード・肩書き・基準点の対応表と UI 案・確認事項 → Moto さんの判断 → 実装（v1102 の予定）。
+2. 済（Claude・ブランチ `claude/specialist-career`）：対応表（`docs/SPECIALIST_CAREER_JA.md`）と UI案59（Design・9 枚）・決めてほしいこと 9。
+3. 次：Moto さんの回答と UI の OK → v1102（v1101 の上）で実装 → 試験・独立レビュー → PR → Codex。
 
 
 1. 済（Claude・ブランチ `claude/cs-grade-base`）：全グレード 8 カテゴリー（賞与 ① の G2 も）・本人には「総合点 ／ 今のグレードの基準点」・基準達成／基準未達／評価途中／未評価・内訳はたたむ・昇格は別（`docs/CS_GRADE_VIEW_V1100_JA.md`）。試験 `tests/cs-grade-view.test.mjs`。
