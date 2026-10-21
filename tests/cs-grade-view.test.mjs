@@ -95,14 +95,14 @@ test('2–3. the main view: current grade · total / the base of the current gra
 
 test('2. the base is the official setting of settings ② (and a personal setting if there is one), not a fixed number', () => {
   const c = co();
-  // GM/CEO set G4 to 300 in v1100 (the form marks cs8)
-  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { c: { bp: 300, cs8: 1, g3: 1, g2: 1 } }, _at: 1 } };
+  // GM/CEO set G4 to 300 in v1100 (the form writes bp8 with the mark b8)
+  c.STORE.bonus_eval_rule = { 'G4|2026-Q3': { set: { c: { bp8: 300, b8: 1, g3: 1, g2: 1 } }, _at: 1 } };
   assert.deepEqual([view(c, 'mia').bp, view(c, 'mia').state], [300, 'notmet']);
   // a personal setting wins
-  c.STORE.bonus_eval_ovr = { 'mia|2026-Q3': { set: { c: { bp: 270, cs8: 1, g3: 1, g2: 1 } }, _at: 1 } };
+  c.STORE.bonus_eval_ovr = { 'mia|2026-Q3': { set: { c: { bp8: 270, b8: 1, g3: 1, g2: 1 } }, _at: 1 } };
   assert.deepEqual([view(c, 'mia').bp, view(c, 'mia').state, view(c, 'mia').diff], [270, 'met', 11]);
   // a later quarter's version does not apply to this quarter
-  c.STORE.bonus_eval_rule['G3-sv|2026-Q4'] = { set: { c: { bp: 250, cs8: 1 } }, _at: 1 };
+  c.STORE.bonus_eval_rule['G3-sv|2026-Q4'] = { set: { c: { bp8: 250, b8: 1 } }, _at: 1 };
   assert.equal(view(c, 'ken').bp, 294);
 });
 
@@ -166,7 +166,7 @@ test('bases that cannot be shown: G1 (no setting), G3 without a track (unless th
   c.EMPS.push({ id: 'ola', name: 'Ola Sample', title: 'Store Leader', role: 'sl', store: 'S1', status: '在籍' });
   c.SCORES['Ola Sample'] = J(c.SCORES['Ken Sample']);
   assert.deepEqual([view(c, 'ola').bp, view(c, 'ola').state, view(c, 'ola').base.anyTrack], [294, 'notmet', true]);
-  c.STORE.bonus_eval_rule = { 'G3-kt|2026-Q3': { set: { c: { bp: 280, cs8: 1 } }, _at: 1 } };
+  c.STORE.bonus_eval_rule = { 'G3-kt|2026-Q3': { set: { c: { bp8: 280, b8: 1 } }, _at: 1 } };
   assert.deepEqual([view(c, 'ola').bp, view(c, 'ola').state, view(c, 'ola').base.why], [null, 'nobase', 'track']);
   // the quarter's track chosen by GM/CEO decides it
   c.STORE.bonus_track = { [`${Q}|ola`]: { t: 'kt', at: 'x', by: 'GM', _at: 1 } };
@@ -178,7 +178,7 @@ test('bases that cannot be shown: G1 (no setting), G3 without a track (unless th
 
 test('a G2 base saved before v1100 (on the 225-point four-category sheet) is not used: listed, the amount waits, the person sees "確認中"', () => {
   const c = co();
-  // saved in v1099 for G2 (no cs8 mark): 135 points / step 7 on 225
+  // saved in v1099 for G2 (bp / bs, no mark b8): 135 points / step 7 on 225
   c.STORE.bonus_eval_rule = { 'G2|2026-Q3': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 135, bs: 7 } }, _at: 1 } };
   const p = person(c, 'aki');
   assert.equal(p.blocked, 'eval');
@@ -193,8 +193,8 @@ test('a G2 base saved before v1100 (on the 225-point four-category sheet) is not
   c.curRole = 'gm';
   assert.match(run(c, `kevCsBaseCardHtml(kbCfg())`), /225 点満点のときの値・選び直し/);
   assert.match(run(c, `kevCsBaseCardHtml(kbCfg())`), /<badge>G2<\/badge> G2<\/td><td[^>]*>8 カテゴリー・420 点/);
-  // re-selected on the v1100 form (cs8) → used again
-  c.STORE.bonus_eval_rule['G2|2026-Q3'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 260, bs: 13, cs8: 1 };
+  // re-selected on the v1100 form (bp8 / bs8 with the mark b8; the v1099 values stay in bp / bs for v1099) → used again
+  c.STORE.bonus_eval_rule['G2|2026-Q3'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bs8: 13, bp: 135, bs: 7 };
   assert.deepEqual([person(c, 'aki').segs[0].coefs.c, view(c, 'aki').bp, view(c, 'aki').state], [1.05, 260, 'met']);
   assert.ok(!run(c, `kevMisfits3('${Q}')`).block.some(x => /G2・①/.test(x.t)));
   // only the base or only the step from v1099 is still not used
@@ -254,13 +254,13 @@ test('independent review P1-1: the settings forms do not put a v1099 G2 base bac
   c.DOM['@kevf-on'] = { value: '1' };
   Object.assign(c.DOM, { 'kevf-lo': { value: '0.90' }, 'kevf-hi': { value: '1.15' }, 'kevf-bp': { value: '' }, 'kevf-bs': { value: '' } });
   const set = run(c, `kevFormRead('c', 'kevf-')`);
-  assert.deepEqual([set.c.bp, set.c.bs, set.c.cs8], [null, null, 1]);
+  assert.deepEqual([set.c.bp8, set.c.bs8, set.c.b8, 'bp' in set.c, 'bs' in set.c, 'cs8' in set.c], [null, null, 1, false, false, false]);
   assert.equal(run(c, `kevRuleSave('G2', '${Q}', ${JSON.stringify(set)}, 'v1100 で選び直し', '① を変更')`), true);
   const p = person(c, 'aki');
   assert.deepEqual([p.blocked, p.segs[0].items.c.base.bp, p.segs[0].items.c.base.bs, p.segs[0].coefs.c], [null, 252, 13, 1.1]);
   assert.deepEqual([view(c, 'aki').bp, view(c, 'aki').state], [252, 'met']);
-  // a v1100 value (with cs8) is shown in the field again
-  c.STORE.bonus_eval_rule['G2|2026-Q3'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 260, cs8: 1 };
+  // a v1100 value (bp8) is shown in the field again
+  c.STORE.bonus_eval_rule['G2|2026-Q3'].set.c = { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bp: 135, bs: 7 };
   run(c, `kevRuleOpen('G2', 'c')`);
   assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp]`), [true, false]);
   assert.match(c.MODAL.at(-1), /id="kevf-bp"[^>]*value="260"/);
@@ -284,13 +284,13 @@ test('independent review P1-1: the settings forms do not put a v1099 G2 base bac
 test('independent review P2-1: the person view uses the quarter being assessed (the growth-chart quarter), like the bonus — not today\'s quarter', () => {
   const c = co();
   vm.runInContext(`function ghQOf(){ return '2026-Q4'; }`, c);   // today is in Q4, the growth chart still assesses Q3
-  c.STORE.bonus_eval_rule = { 'G2|2026-Q4': { set: { c: { bp: 300, cs8: 1 } }, _at: 1 } };
+  c.STORE.bonus_eval_rule = { 'G2|2026-Q4': { set: { c: { bp8: 300, b8: 1 } }, _at: 1 } };
   assert.deepEqual([view(c, 'aki').q, view(c, 'aki').bp, view(c, 'aki').state], ['2026-Q3', 252, 'met']);
   assert.equal(view(c, 'aki').bp, person(c, 'aki').segs[0].items.c.base.bp);
   // the Q3 track chosen by GM/CEO is used for a G3 person without a track title
   c.EMPS.push({ id: 'ola', name: 'Ola Sample', title: 'Store Leader', role: 'sl', store: 'S1', status: '在籍' });
   c.SCORES['Ola Sample'] = J(c.SCORES['Ken Sample']);
-  c.STORE.bonus_eval_rule['G3-kt|2026-Q3'] = { set: { c: { bp: 280, cs8: 1 } }, _at: 1 };
+  c.STORE.bonus_eval_rule['G3-kt|2026-Q3'] = { set: { c: { bp8: 280, b8: 1 } }, _at: 1 };
   c.STORE.bonus_track = { [`${Q}|ola`]: { t: 'kt', at: 'x', by: 'GM', _at: 1 } };
   assert.deepEqual([view(c, 'ola').scope, view(c, 'ola').bp], ['G3-kt', 280]);
   // when the growth-chart quarter cannot be read, today's quarter

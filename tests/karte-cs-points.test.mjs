@@ -372,13 +372,13 @@ test('a quarter confirmed with the v1074–v1098 rules stays as it was (not reco
   assert.equal(person(c, 'ken').segs[0].coefs.c, t0.rows.find(r => r.e.id === 'ken').b.segs[0].coefs.c);
 });
 
-test('the settings form (v1099): 7-level selects, base points within the maximum, the j rule with ±0.05 steps; marks g2 and g3 (and cs8 from v1100)', () => {
+test('the settings form (v1099): 7-level selects, base points within the maximum, the j rule with ±0.05 steps; marks g2 and g3 (v1100: the base / step go to bp8 / bs8 with the mark b8, never to bp / bs)', () => {
   const c = co();
   c.DOM['@kevf-on'] = { value: '1' };
   Object.assign(c.DOM, { 'kevf-lo': { value: '0.90' }, 'kevf-hi': { value: '1.10' }, 'kevf-bp': { value: '300' }, 'kevf-bs': { value: '' } });
   vm.runInContext(`window._kevForm = { kind:'rule', scope:'G4', part:'c', pre:'kevf-', q:'${Q}', cs:{ max:420, sheet:'store', def:{ bp:315, bs:13 }, own:{} } };`, c);
   let set = run(c, `kevFormRead('c', 'kevf-')`);
-  assert.deepEqual(set, { c: { on: true, lo: 0.9, hi: 1.1, g2: 1, g3: 1, bp: 300, bs: null, cs8: 1 } });
+  assert.deepEqual(set, { c: { on: true, lo: 0.9, hi: 1.1, g2: 1, g3: 1, b8: 1, bp8: 300, bs8: null } });
   assert.equal(run(c, `kevFormBad('c', ${JSON.stringify(set)})`), '');
   c.DOM['kevf-bp'].value = '421';
   assert.match(run(c, `kevFormBad('c', kevFormRead('c', 'kevf-'))`), /基準得点は 0〜420 点/);
@@ -389,7 +389,7 @@ test('the settings form (v1099): 7-level selects, base points within the maximum
   // the saved part is used by v1099 (g3) and ignored by the v1098 comparison
   c.DOM['kevf-lo'].value = '0.90';
   assert.equal(run(c, `kevRuleSave('G4', '${Q}', kevFormRead('c', 'kevf-'), 'テスト', '① を変更')`), true);
-  assert.deepEqual(run(c, `[kevRuleFor('G4', '${Q}').r.c.lo, kevRuleFor('G4', '${Q}').r.c.bp, kevRuleFor('G4', '${Q}', null, null, null, true).r.c.bp == null]`), [0.9, 300, true]);
+  assert.deepEqual(run(c, `[kevRuleFor('G4', '${Q}').r.c.lo, kevRuleFor('G4', '${Q}').r.c.bp8, 'bp' in kevRuleFor('G4', '${Q}').r.c, kevRuleFor('G4', '${Q}', null, null, null, true).r.c.bp8 == null]`), [0.9, 300, false, true]);
   // the company rule (j)
   vm.runInContext(`window._kevForm = { kind:'rule', scope:'_common', part:'j', pre:'kevf-', q:'${Q}' };`, c);
   Object.assign(c.DOM, { 'kevf-j_sx0': { value: '90' }, 'kevf-j_sx1': { value: '100' }, 'kevf-j_sx2': { value: '110' }, 'kevf-j_fpt': { value: '2' }, 'kevf-j_pd': { value: '5' },

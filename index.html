@@ -64590,9 +64590,11 @@ function kevMerge(R, set, src, M, F){
       if(F && F.noCOld && g==='c' && (f==='x0' || f==='x1' || f==='x2')) return;   /* v1099：4 要素の点の決め方は使わない */
       if(F && F.noG3 && kevN(x.g3)) return;   /* v1099：前の決め方（v1098）と比べるときは、v1099 で保存した設定を使わない */
       if(F && F.onDev && f==='on' && !kevN(x.g2) && F.onDev[g] && ((x.on!==false && x.on!=='false')===(F.onDev[g].on!==false))) return;   /* 前の版の個人設定の「反映・固定」は、前の版の初期値とわざと変えたときだけ使う */
+      /* v1100（Codex 34d2ed9 の P1・前の版に戻すとき）：この版で保存した ① の部分（印 b8）の基準得点・1 段は bp8・bs8。同じ部分の bp・bs は前の版（v1099）が読む値（G2 は 225 点満点）なので、この版では使わない */
+      if(g==='c' && (f==='bp' || f==='bs') && kevN(x.b8)) return;
+      if(F && F.noCBase && g==='c' && (f==='bp' || f==='bs' || f==='bp8' || f==='bs8')) return;   /* 試算：保存するとこの層の ① は部分ごと入れ替わるので、保存済みの点は見せない */
       if(f==='on'){ R[g].on=(x.on!==false && x.on!=='false'); M[g+'.on']=src; return; }   /* 同期で来た値：反映か固定か */
       var n=kevN(x[f]); if(n==null) return; R[g][f]=n; M[g+'.'+f]=src;                      /* それ以外は数だけ（文字は使わない） */
-      if(g==='c' && (f==='bp' || f==='bs')) M['_cs8.'+f]=!!kevN(x.cs8);   /* v1100：この版の画面で入れた ① の基準得点・1 段の印（G2 は v1099 まで 4 カテゴリー・225 点満点の点だった） */
     });
   });
   if(Array.isArray(set.stores) && set.stores.length){ R.stores=set.stores.filter(function(s){ return typeof s==='string' && s; }); if(R.stores.length) M.stores=src; else R.stores=null; }
@@ -64662,15 +64664,17 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2){
   /* v1075：前の版の個人設定は、部分ごとに、その値を決めた四半期に前の版で効いていた値と比べる（あとで次の四半期の版を作っても変わらない） */
   if(gen2) FP={noSP:true, noRng:true, noJ:true, onDev:kevOvrV1Base(scope, empId, q), noRngC:gen3, noCOld:gen3};
   if(gen2 && force2 && kevGen3(q)){ FC.noG3=true; FR.noG3=true; FP.noG3=true; }   /* v1099：前の決め方で比べる */
-  if(cm) kevMerge(R, cm.set, 'common', M, FC);
+  /* v1100：試算で ① を変えるとき（印 b8）、同じ層に保存してある ① の基準得点・1 段は見せない（保存すると部分ごと入れ替わる。空欄＝上の層か初期値） */
+  var simC=!!(sim && sim.set && sim.set.c && typeof sim.set.c==='object' && kevN(sim.set.c.b8)), noCB=function(F0, same){ return (simC && same) ? Object.assign({}, F0||{}, {noCBase:true}) : F0; };
+  if(cm) kevMerge(R, cm.set, 'common', M, noCB(FC, sim && sim.level==='common'));
   if(sim && sim.level==='common') kevMerge(R, sim.set, 'common', M, FC);
   if(scope) kevMerge(R, gen3 ? kevGradeDefaults3(scope) : (gen2 ? kevGradeDefaults2(scope) : kevGradeDefaults(scope)), 'gradeDef', M);
   var g5=(scope==='G6') ? kevVer(all, 'G5', q) : null;   /* G6 は G5 と同じ（Motoさん 10/11）：G6 で別に決めていない値は G5 の設定 */
-  if(g5) kevMerge(R, g5.set, 'g5', M, FR);
+  if(g5) kevMerge(R, g5.set, 'g5', M, noCB(FR, sim && sim.level==='grade' && sim.scope==='G5' && scope==='G6'));
   if(sim && sim.level==='grade' && sim.scope==='G5' && scope==='G6') kevMerge(R, sim.set, 'g5', M, FR);
-  if(gr) kevMerge(R, gr.set, 'grade', M, FR);
+  if(gr) kevMerge(R, gr.set, 'grade', M, noCB(FR, sim && sim.level==='grade' && sim.scope===scope));
   if(sim && sim.level==='grade' && sim.scope===scope) kevMerge(R, sim.set, 'grade', M, FR);
-  if(ov && !(sim && sim.level==='person' && sim.empId===empId && sim.replace)) kevMerge(R, ov.set, 'person', M, FP);
+  if(ov && !(sim && sim.level==='person' && sim.empId===empId && sim.replace)) kevMerge(R, ov.set, 'person', M, noCB(FP, sim && sim.level==='person' && sim.empId===empId));
   if(sim && sim.level==='person' && sim.empId===empId) kevMerge(R, sim.set, 'person', M, FP);
   return {r:R, src:M, ovr:ov, grade:gr, g5:g5, common:cm, scope:scope, gen3:gen3};
 }
@@ -66545,7 +66549,7 @@ function kevFormLadUpd(F, set){
       el.innerHTML='<div style="font-size:11.5px;font-weight:700;margin-bottom:3px">② 売上の達成率 → 係数（G4 の幅 '+kevF2(r4.s.lo)+'〜'+kevF2(r4.s.hi)+'）</div>'+kevThreshHtml(kevThresh3(r4.s.lo, r4.s.hi, jj.sx0, jj.sx1, jj.sx2), '%'); return; }
     var x=set[p] || {}, lo=kevN(x.lo), hi=kevN(x.hi);
     if(lo==null || hi==null || kevRange3Bad({on:true, lo:lo, hi:hi})){ el.innerHTML=''; return; }
-    if(p==='c'){ var cs=F.cs||{}, d=cs.def||{}, bp=(x.bp!=null) ? x.bp : d.bp, bs=(x.bs!=null && x.bs>0) ? x.bs : d.bs;
+    if(p==='c'){ var cs=F.cs||{}, d=cs.def||{}, bp=(x.bp8!=null) ? x.bp8 : d.bp, bs=(x.bs8!=null && x.bs8>0) ? x.bs8 : d.bs;
       el.innerHTML='<div style="font-size:11.5px;font-weight:700">総合点 → 係数（'+(cs.max ? cs.max+' 点満点' : '')+'）</div>'+kevCsLadderHtml({base:{bp:bp, bs:bs}, rule:{lo:lo, hi:hi}, step:null}); return; }
     var rows=(p==='f') ? kevThresh3(lo, hi, -J.fpt, 0, J.fpt) : kevThresh3(lo, hi, J.sx0, J.sx1, J.sx2);
     el.innerHTML='<div style="font-size:11.5px;font-weight:700;margin-bottom:3px">'+(p==='f' ? '目標率 − 実績率 → 係数' : '達成率 → 係数')+'</div>'+kevThreshHtml(rows, p==='f' ? 'pt' : '%', p==='f' ? 'fl' : '');
@@ -66587,9 +66591,9 @@ function kevFormHtml(part, r, pre, common){
       +'<label style="display:flex;gap:6px;align-items:center;font-size:13px"><input type="radio" name="'+pre+'on" value="0"'+(it.on===false ? ' checked' : '')+' onchange="kevFormPreview()"> 1.00 固定（評価は記録）</label></div>';
     h+='<div style="display:flex;gap:10px;flex-wrap:wrap">'+kevLvSel(pre+'lo', it.lo, '下限の係数')+kevLvSel(pre+'hi', it.hi, '上限の係数')+'</div>';
     if(part==='c'){
-      var F3=window._kevForm||{}, cs=F3.cs||{}, d3=cs.def||{}, own=cs.own||{};
+      var F3=window._kevForm||{}, cs=F3.cs||{}, d3=cs.def||{}, own=cs.own||{}, cur=cs.cur||{};   /* v1100：今の値は kevCsPick（bp8 か bp） */
       var inpP=function(id, v, lbl, ph){ return '<label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted);max-width:240px">'+escapeHtml(lbl)+'<input id="'+pre+id+'" class="form-input" style="width:100px;text-align:right;font-size:16px" inputmode="decimal" value="'+escapeHtml(v==null ? '' : String(v))+'" placeholder="'+escapeHtml(ph==null ? '' : String(ph))+'" oninput="kevFormPreview()"></label>'; };
-      h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">'+inpP('bp', own.bp ? it.bp : null, '基準得点（この点以上で ×1.00）', d3.bp)+inpP('bs', own.bs ? it.bs : null, '1 段の点（ごとに 0.05 上下）', d3.bs)+'</div>';
+      h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">'+inpP('bp', own.bp ? cur.bp : null, '基準得点（この点以上で ×1.00）', d3.bp)+inpP('bs', own.bs ? cur.bs : null, '1 段の点（ごとに 0.05 上下）', d3.bs)+'</div>';
       if(cs.legacy && (cs.legacy.bp || cs.legacy.bs)) h+='<div style="font-size:11.5px;color:var(--red);margin-top:6px;line-height:1.6">保存されていた基準得点・1 段は v1099（G2 は 4 カテゴリー・225 点満点）のときの点なので、ここには入れていません。420 点満点で入れ直すか、空欄（初期値）で保存してください。</div>';   /* v1100（独立レビュー P1-1） */
       h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">'+escapeHtml((cs.sheet ? kevCsSheetName(cs.sheet)+'・' : '')+(cs.max ? '満点 '+cs.max+' 点。' : ''))+'空欄は初期値（'+escapeHtml(d3.bp==null ? '—' : String(d3.bp))+' 点・1 段 '+escapeHtml(d3.bs==null ? '—' : String(d3.bs))+' 点）。総合点が基準得点以上で ×1.00、1 段ごとに 0.05 上下し、幅で止めます（境目ちょうどは上の段）。</div>';
     } else {
@@ -66624,7 +66628,7 @@ function kevFormRead(part, pre){
   var onEl=document.querySelector('input[name="'+pre+'on"]:checked'), set={};
   if(kevFormG3() && (part==='c' || part==='s' || part==='f' || part==='p')){   /* v1099：g2・g3 の印（v1099 で保存した部分） */
     set[part]={on:!(onEl && onEl.value==='0'), lo:kevN(v('lo')), hi:kevN(v('hi')), g2:1, g3:1};
-    if(part==='c'){ set.c.bp=kevN(v('bp')); set.c.bs=kevN(v('bs')); set.c.cs8=1; }   /* v1100：8 カテゴリー（G2 も 420 点満点）で入れた印 */
+    if(part==='c'){ set.c.b8=1; set.c.bp8=kevN(v('bp')); set.c.bs8=kevN(v('bs')); }   /* v1100：8 カテゴリー（G2 も 420 点満点）の点は bp8・bs8（v1099 が読む bp・bs には書かない。Codex 34d2ed9 の P1） */
     return set;
   }
   if(kevFormG2()){   /* v1074：この版で保存した印（g2）。前の版で保存した「反映・固定」と区別する */
@@ -66644,8 +66648,8 @@ function kevFormBad(part, set){
     var x3=set[part]||{}, rb3=kevRange3Bad(Object.assign({}, x3, {on:true})); if(rb3) return rb3+'。7 種類から選んでください';
     if(part==='c'){
       var mx=Number(((window._kevForm||{}).cs||{}).max)||0, d1=function(n){ return Math.abs(Math.round(n*10)-n*10)<1e-6; };
-      if(x3.bp!=null && !(x3.bp>=0 && (!mx || x3.bp<=mx) && d1(x3.bp))) return '基準得点は 0〜'+(mx||'満点')+' 点（小数 1 桁まで）で入れてください';
-      if(x3.bs!=null && !(x3.bs>0 && (!mx || x3.bs<=mx) && d1(x3.bs))) return '1 段の点は 0 より大きく '+(mx||'満点')+' 点以下（小数 1 桁まで）で入れてください';
+      if(x3.bp8!=null && !(x3.bp8>=0 && (!mx || x3.bp8<=mx) && d1(x3.bp8))) return '基準得点は 0〜'+(mx||'満点')+' 点（小数 1 桁まで）で入れてください';
+      if(x3.bs8!=null && !(x3.bs8>0 && (!mx || x3.bs8<=mx) && d1(x3.bs8))) return '1 段の点は 0 より大きく '+(mx||'満点')+' 点以下（小数 1 桁まで）で入れてください';
     }
     return '';
   }
@@ -66670,8 +66674,8 @@ function kevOvrOpen(empId, part){
     var _c=I.items.c, _sk=(I.sc && I.sc.key) || 'G3-op', _RFg=kevRuleFor(_sk, kv.q, null, null, cfg), _Bg=kevCsBase(_RFg.r, _RFg, _c.total, _sk);
     /* v1100（独立レビュー P1-1）：v1099 の G2 の値（225 点満点）は入力欄にも初期値にも入れない */
     var _st=((_c.total||{}).sheet==='store'), _lgP=kevCsLegacyParts(I.RF, _sk, null), _lgG=kevCsLegacyParts(_RFg, _sk, null), _dB=kevCsDefBase(_sk);
-    var _pBp=I.RF.src['c.bp']==='person', _pBs=I.RF.src['c.bs']==='person';
-    window._kevForm.cs={max:_c.max, sheet:(_c.total||{}).sheet, def:{bp:(_lgG.bp ? (_st ? _dB.bp : null) : _Bg.bp), bs:(_lgG.bs ? (_st ? _dB.bs : null) : _Bg.bs)}, own:{bp:_pBp && !(_st && _lgP.bp), bs:_pBs && !(_st && _lgP.bs)}, legacy:{bp:(_st && _pBp ? _lgP.bp : _lgG.bp), bs:(_st && _pBs ? _lgP.bs : _lgG.bs)}};
+    var _kB=kevCsPick(I.RF.r, I.RF, 'bp'), _kS=kevCsPick(I.RF.r, I.RF, 'bs'), _pBp=_kB.src==='person', _pBs=_kS.src==='person';
+    window._kevForm.cs={max:_c.max, sheet:(_c.total||{}).sheet, def:{bp:(_lgG.bp ? (_st ? _dB.bp : null) : _Bg.bp), bs:(_lgG.bs ? (_st ? _dB.bs : null) : _Bg.bs)}, own:{bp:_pBp && !(_st && _lgP.bp), bs:_pBs && !(_st && _lgP.bs)}, cur:{bp:_kB.v, bs:_kS.v}, legacy:{bp:(_st && _pBp ? _lgP.bp : _lgG.bp), bs:(_st && _pBs ? _lgP.bs : _lgG.bs)}};
   }
   openModal('<div class="modal-title"><i class="ti ti-adjustments"></i> 個人設定：'+escapeHtml(e.name||'')+' ・ '+escapeHtml(kevPartLabel(part))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +kevFormHtml(part, R, 'kevf-')
@@ -66688,12 +66692,12 @@ function kevRuleOpen(scope, part){
   var q=kv ? kv.q : KEV_START, R=JSON.parse(JSON.stringify(kevRuleFor(scope==='_common' ? null : scope, q, null, null, cfg).r));
   window._kevForm={kind:'rule', scope:scope, part:part, pre:'kevf-', q:q};
   if(kevGen3(q) && part==='c' && scope!=='_common'){   /* v1099：店舗用の評価表の満点・初期値（G6 は G5 の値） */
-    var _d=kevCsDefBase(scope), _RF0=kevRuleFor(scope, q, null, null, cfg), _ob=_RF0.src['c.bp']==='grade', _os=_RF0.src['c.bs']==='grade';
-    var _inh=function(f, dv){ if(scope==='G6'){ var n=kevN(kevRuleFor('G5', q, null, null, cfg).r.c[f]); if(n!=null && (f!=='bs' || n>0)) return n; } return dv; };
-    var _cur=function(f, dv){ var n=kevN(_RF0.r.c[f]); return (n!=null && (f!=='bs' || n>0)) ? n : dv; };
-    /* v1100（独立レビュー P1-1）：v1099 で保存した G2 の基準得点・1 段（225 点満点・印 cs8 なし）は入力欄に入れない（そのまま保存すると印が付いて 420 点満点の基準として使われるため）。空欄＝初期値 */
+    var _d=kevCsDefBase(scope), _RF0=kevRuleFor(scope, q, null, null, cfg), _kB=kevCsPick(_RF0.r, _RF0, 'bp'), _kS=kevCsPick(_RF0.r, _RF0, 'bs'), _ob=_kB.src==='grade', _os=_kS.src==='grade';
+    var _inh=function(f, dv){ if(scope==='G6'){ var _R5=kevRuleFor('G5', q, null, null, cfg), n=kevCsPick(_R5.r, _R5, f).v; if(n!=null) return n; } return dv; };
+    var _cur=function(f, dv){ var n=kevCsPick(_RF0.r, _RF0, f).v; return (n!=null) ? n : dv; };
+    /* v1100（独立レビュー P1-1）：v1099 で保存した G2 の基準得点・1 段（bp・bs の欄・225 点満点）は入力欄に入れない（そのまま保存すると 420 点満点の基準として使われるため）。空欄＝初期値 */
     var _lg=kevCsLegacyParts(_RF0, scope, null);
-    window._kevForm.cs={max:_d.max, sheet:'store', def:{bp:_lg.bp ? _d.bp : (_ob ? _inh('bp', _d.bp) : _cur('bp', _d.bp)), bs:_lg.bs ? _d.bs : (_os ? _inh('bs', _d.bs) : _cur('bs', _d.bs))}, own:{bp:_ob && !_lg.bp, bs:_os && !_lg.bs}, legacy:_lg};
+    window._kevForm.cs={max:_d.max, sheet:'store', def:{bp:_lg.bp ? _d.bp : (_ob ? _inh('bp', _d.bp) : _cur('bp', _d.bp)), bs:_lg.bs ? _d.bs : (_os ? _inh('bs', _d.bs) : _cur('bs', _d.bs))}, own:{bp:_ob && !_lg.bp, bs:_os && !_lg.bs}, cur:{bp:_kB.v, bs:_kS.v}, legacy:_lg};
   }
   openModal('<div class="modal-title"><i class="ti ti-settings"></i> '+escapeHtml(kevScopeLabel(scope))+(scope==='_common' ? (part==='j' ? '' : '（会社共通の初期値）') : ' の設定')+' ・ '+escapeHtml(kevPartLabel(part))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +((scope==='_common' && part!=='j') ? '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">グレード・職種で決めていない値に使います（グレード・職種の設定と個人設定が優先）。</div>' : '')
@@ -66759,6 +66763,13 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
   var cur=JSON.parse(JSON.stringify((base && base.set) || {}));
   (replaceParts||[]).forEach(function(p){ delete cur[p]; });
   Object.keys(set||{}).forEach(function(k){ if(k==='stores'){ if(set.stores && set.stores.length) cur.stores=set.stores.slice(); else delete cur.stores; return; } cur[k]=Object.assign({}, set[k]); });
+  /* v1100（Codex 34d2ed9 の P1）：この版の ① の部分（印 b8）は bp8・bs8 に書く。前の版（v1099）が読む bp・bs は、同じ層に前からあった値をそのまま残す
+     （前の版に戻すと、前の版のときの点か初期値で数える。v1100 の 420 点満点の点が v1099 の 225 点満点の計算に入らない）。このブランチの途中のコミット（公開していない）が付けた印 cs8 の値は残さない */
+  if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && set && set.c && typeof set.c==='object' && kevN(set.c.b8) && cur.c && typeof cur.c==='object'){
+    var bc=(base && base.set && base.set.c && typeof base.set.c==='object') ? base.set.c : null;
+    ['bp','bs'].forEach(function(f){ delete cur.c[f]; if(bc && !kevN(bc.cs8) && kevN(bc[f])!=null) cur.c[f]=bc[f]; });
+    delete cur.c.cs8;
+  }
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
   if(prev && prev.at) hist.push({set:prev.set, why:prev.why, what:prev.what, at:prev.at, by:prev.by, _at:prev._at, _t:prev._t});   /* v1075：部分ごとの保存時刻も残す（前の版の値の時刻） */
   var rec=kevStamp({set:cur, why:why, what:what, hist:hist}, prev);
@@ -66850,7 +66861,7 @@ function kevRuleCardHtml(cfg){
     var chip=function(it){
       var v=R[it], txt=(v.on===false) ? '1.00 固定' : ('反映 '+kevF2(v.lo)+'〜'+kevF2(v.hi)), extra=(it==='f' && v.on!==false && !g2) ? '<div style="font-size:10px;color:var(--muted)">行動 '+R.fl.aw+'%・結果 '+R.fl.rw+'%</div>' : '';
       var rb=gen3 ? kevRange3Bad(v) : '';   /* v1099：7 種類に合わない保存済みの幅 */
-      if(gen3 && it==='c' && r[1]){ var cd=kevCsDefBase(key), bp=(kevN(v.bp)!=null) ? kevN(v.bp) : cd.bp, bs=(kevN(v.bs)>0) ? kevN(v.bs) : cd.bs; extra+='<div style="font-size:10px;color:var(--muted)">基準 '+kevPtsTxt(bp)+' / '+cd.max+' 点・1 段 '+kevPtsTxt(bs)+'</div>'; }
+      if(gen3 && it==='c' && r[1]){ var cd=kevCsDefBase(key), cB=kevCsBase(R, RF, {sheet:'store', max:cd.max}, key), bp=cB.bp, bs=cB.bs; extra+='<div style="font-size:10px;color:'+(cB.legacy ? 'var(--red)' : 'var(--muted)')+'">基準 '+kevPtsTxt(bp)+' / '+cd.max+' 点・1 段 '+kevPtsTxt(bs)+(cB.legacy ? '（225 点満点のときの値・選び直し）' : '')+'</div>'; }   /* v1100：kevCsPick（bp8 か bp） */
       if(rb) extra+='<div style="font-size:10px;color:var(--red);font-weight:700">設定の確認が必要（選び直す）</div>';
       return '<td style="padding:6px 8px"><button class="kev-chip'+(v.on===false ? '' : ' on')+'"'+(rb ? ' style="border-color:var(--red);color:var(--red)"' : '')+dis+' onclick="kevRuleOpen(\''+key+'\',\''+it+'\')">'+txt+'</button>'+extra+'</td>';
     };
@@ -67294,14 +67305,26 @@ function kevCsMissTxt(T){
   }
   return '不足';
 }
-/* 基準得点・1 段の点（R.c.bp・R.c.bs。無ければ初期値）。専門職・オフィスは個人設定の点が無ければ店舗の点と同じ割合 × 満点 */
+/* v1100（Codex 34d2ed9 の P1）：① の基準得点・1 段は、この版では bp8・bs8 に書く（前の版 v1099 が読む bp・bs には書かない）。
+   読むときは bp8 と bp（bs8 と bs）のうち、決めた層が細かいほう（会社共通 → G5 → グレード → 個人。同じ層なら bp8）。{v, src, v8}
+   bp・bs から来た値は v1099 で保存した点（G2 は 4 カテゴリー・225 点満点） */
+var KEV_CS_LV={common:1, gradeDef:2, g5:3, grade:4, person:5};
+function kevCsPick(R, RF, f){
+  var c=(R && R.c) || {}, src=(RF && RF.src) || {}, ok=function(n){ return n!=null && (f!=='bs' || n>0); };
+  var a=kevN(c[f]), b=kevN(c[f+'8']), sa=src['c.'+f]||'grade', sb=src['c.'+f+'8']||'grade';
+  var ra=ok(a) ? (KEV_CS_LV[sa]||4) : -1, rb=ok(b) ? (KEV_CS_LV[sb]||4) : -1;
+  if(rb>=0 && rb>=ra) return {v:b, src:sb, v8:true};
+  if(ra>=0) return {v:a, src:sa, v8:false};
+  return {v:null, src:'default', v8:false};
+}
+/* 基準得点・1 段の点（kevCsPick。無ければ初期値）。専門職・オフィスは個人設定の点が無ければ店舗の点と同じ割合 × 満点 */
 function kevCsBase(R, RF, T, scope){
-  var d=kevCsDefBase(scope), c=(R && R.c) || {}, bp=kevN(c.bp), bs=kevN(c.bs), src=(RF && RF.src) || {};
-  var sBp=(bp!=null) ? (src['c.bp']||'grade') : 'default', sBs=(bs!=null && bs>0) ? (src['c.bs']||'grade') : 'default';
-  var stBp=(bp!=null) ? bp : d.bp, stBs=(bs!=null && bs>0) ? bs : d.bs;
+  var d=kevCsDefBase(scope), pB=kevCsPick(R, RF, 'bp'), pS=kevCsPick(R, RF, 'bs'), bp=pB.v, bs=pS.v;
+  var sBp=pB.src, sBs=pS.src;
+  var stBp=(bp!=null) ? bp : d.bp, stBs=(bs!=null) ? bs : d.bs;
   var o={sheet:T.sheet, max:T.max, storeMax:d.max, pct:d.pct, srcBp:sBp, srcBs:sBs, storeBp:stBp, storeBs:stBs, derived:false, derivedS:false};
-  /* v1100：G2 の基準得点・1 段は v1099 まで 4 カテゴリー（225 点満点）の点。この版の印（cs8）の無い保存は 420 点満点に合わないので使わない（自動で直さない・設定の確認が必要） */
-  var g2=(kevCsTrackKey(scope)==='G2'), lgBp=g2 && sBp!=='default' && !src['_cs8.bp'], lgBs=g2 && sBs!=='default' && !src['_cs8.bs'];
+  /* v1100：G2 の基準得点・1 段は v1099 まで 4 カテゴリー（225 点満点）の点。bp・bs（v1099 の欄）から来た G2 の点は 420 点満点に合わないので使わない（自動で直さない・設定の確認が必要） */
+  var g2=(kevCsTrackKey(scope)==='G2'), lgBp=g2 && sBp!=='default' && !pB.v8, lgBs=g2 && sBs!=='default' && !pS.v8;
   if(T.sheet==='store'){ o.bp=stBp; o.bs=stBs; o.legacy=!!(lgBp || lgBs); return o; }
   o.legacy=!!((sBp!=='person' && lgBp) || (sBs!=='person' && lgBs));   /* 専門職・オフィスの個人設定の点はその評価表の点（満点は変わらない） */
   var mx=Number(T.max)||0;
@@ -67309,11 +67332,11 @@ function kevCsBase(R, RF, T, scope){
   if(sBs==='person'){ o.bs=bs; } else { o.bs=(d.max>0 && mx>0) ? Math.max(1, Math.round(stBs*mx/d.max)) : null; o.derivedS=true; }
   return o;
 }
-/* v1100：解決した設定の基準得点・1 段のうち、v1099 の G2 の値（印 cs8 なし・225 点満点）はどれか。{bp, bs} */
+/* v1100：解決した設定の基準得点・1 段のうち、v1099 の G2 の値（bp・bs の欄・225 点満点）はどれか。{bp, bs} */
 function kevCsLegacyParts(RF, scope, B){
   if(kevCsTrackKey(scope)!=='G2' || !RF) return {bp:false, bs:false};
-  var c=(RF.r && RF.r.c) || {}, src=RF.src || {}, bp=kevN(c.bp), bs=kevN(c.bs);
-  return {bp:bp!=null && !src['_cs8.bp'], bs:(bs!=null && bs>0) && !src['_cs8.bs']};
+  var pB=kevCsPick(RF.r, RF, 'bp'), pS=kevCsPick(RF.r, RF, 'bs');
+  return {bp:pB.v!=null && !pB.v8, bs:pS.v!=null && !pS.v8};
 }
 /* 何段か（−3〜＋3）：基準得点以上は 1 段ごとに上・未満は下（境目ちょうどは上の段） */
 function kevCsStep(S, B, w){
@@ -67727,14 +67750,14 @@ function kevCsBaseCardHtml(cfg){
   h+='<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:860px"><thead><tr style="background:var(--surface2);text-align:left">'
     +['グレード・職種','数えるカテゴリー・満点','基準得点','1 段','1.15','1.10','1.05','1.00','0.95','0.90','① の幅',''].map(function(x, i){ return '<th style="padding:6px 7px;font-size:10.5px;color:var(--muted);white-space:nowrap'+((i>=2 && i<=9) ? ';text-align:right' : '')+'">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
   rows.forEach(function(x){
-    var key=x[1], RF=kevRuleFor(key, q, null, null, cfg), R=RF.r, d=kevCsDefBase(key), bp=(kevN(R.c.bp)!=null) ? kevN(R.c.bp) : d.bp, bs=(kevN(R.c.bs)>0) ? kevN(R.c.bs) : d.bs;
+    var key=x[1], RF=kevRuleFor(key, q, null, null, cfg), R=RF.r, d=kevCsDefBase(key), _B=kevCsBase(R, RF, {sheet:'store', max:d.max}, key), bp=_B.bp, bs=_B.bs;   /* v1100：kevCsPick（bp8 か bp） */
     var lad=kevCsLadder(bp, bs, Number(R.c.lo), Number(R.c.hi)), at=function(st){ var y=lad.filter(function(z){ return z.st===st; })[0]; return y && y.from!=null ? kevPtsTxt(y.from)+'〜' : '—'; };
     var rb=kevRange3Bad(R.c), cats='8 カテゴリー';   /* v1100：G2 も 8 カテゴリー */
-    var _lg=false; try{ _lg=!!kevCsBase(R, RF, {sheet:'store', max:d.max}, key).legacy; }catch(err){}
+    var _lg=!!_B.legacy;
     h+='<tr style="border-top:1px solid var(--border)"><td style="padding:6px 7px;white-space:nowrap">'+ghBadge(x[0])+' '+escapeHtml(kevScopeLabel(key))+(key==='G6' ? '<div style="font-size:10px;color:var(--muted)">G5 と同じ（決めていない値）</div>' : '')+'</td>'
       +'<td style="padding:6px 7px;font-size:11.5px">'+cats+'・'+d.max+' 点</td>'
-      +'<td style="padding:6px 7px;text-align:right'+(_lg ? ';color:var(--red)' : '')+'"><b>'+kevPtsTxt(bp)+'</b>'+(kevN(R.c.bp)==null ? '<div style="font-size:10px;color:var(--muted)">初期 '+d.pct+'%</div>' : '')+(_lg ? '<div style="font-size:10px;font-weight:700">225 点満点のときの値・選び直し</div>' : '')+'</td>'
-      +'<td style="padding:6px 7px;text-align:right">'+kevPtsTxt(bs)+(kevN(R.c.bs)==null ? '<div style="font-size:10px;color:var(--muted)">満点の 3%</div>' : '')+'</td>'
+      +'<td style="padding:6px 7px;text-align:right'+(_lg ? ';color:var(--red)' : '')+'"><b>'+kevPtsTxt(bp)+'</b>'+(_B.srcBp==='default' ? '<div style="font-size:10px;color:var(--muted)">初期 '+d.pct+'%</div>' : '')+(_lg ? '<div style="font-size:10px;font-weight:700">225 点満点のときの値・選び直し</div>' : '')+'</td>'
+      +'<td style="padding:6px 7px;text-align:right">'+kevPtsTxt(bs)+(_B.srcBs==='default' ? '<div style="font-size:10px;color:var(--muted)">満点の 3%</div>' : '')+'</td>'
       +[3,2,1,0,-1,-2].map(function(st){ return '<td style="padding:6px 7px;text-align:right'+(st===0 ? ';font-weight:800' : '')+'">'+at(st)+'</td>'; }).join('')
       +'<td style="padding:6px 7px;white-space:nowrap'+(rb ? ';color:var(--red);font-weight:700' : '')+'">'+(R.c.on===false ? '1.00 固定' : kevF2(R.c.lo)+'〜'+kevF2(R.c.hi))+(rb ? '<div style="font-size:10px">設定の確認が必要</div>' : '')+'</td>'
       +'<td style="padding:6px 7px"><button class="kev-chip"'+dis+' onclick="kevRuleOpen(\''+key+'\',\'c\')">変える</button></td></tr>';
