@@ -4,7 +4,7 @@
 // Runs the real v1100 code (this working tree, or FUNERGY_INDEX) and the real v1099 code (index.html of the v1099 release c79e322,
 // read from the local git history with `git show`: read-only, no network) on the synthetic company of tests/karte-eval.test.mjs
 // (fictional staff and numbers). No production data, no browser storage.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -23,8 +23,9 @@ try {
   throw new Error(`this test reads index.html of the v1099 release ${V1099_COMMIT} from the local git history (git fetch --unshallow): ${err.message}`);
 }
 assert.match(v1099src, /const APP_VERSION = '1099';/);
-const V1099 = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'funergy-v1099-')), 'index.html');
+const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'funergy-v1099-')), V1099 = path.join(TMP, 'index.html');
 fs.writeFileSync(V1099, v1099src);
+after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
 const fixtureSrc = fs.readFileSync(new URL('./karte-eval.test.mjs', import.meta.url), 'utf8').split("test('the fictional company")[0];
 async function harness(file) {
@@ -151,18 +152,22 @@ test('a personal setting of a G2 store person saved in v1100 is not read by v109
   assert.deepEqual(onV1099(d.STORE, 'aki'), before);
 });
 
-test('G3 and above saved in v1100 are not read by v1099 either (v1099 keeps its own values or default); v1099 values are still used by v1100', () => {
+test('G3 and above (grade / track settings): v1099 reads them on the same 420 points, so v1100 writes bp / bs too — after going back v1099 uses the v1100 value', () => {
   const c = N.co();
   saveForm(c, `kevRuleOpen('G4', 'c')`, { bp: '260' });
   assert.deepEqual(one(N, c, 'mia').slice(1, 4), [260, 13, 1.05]);
-  assert.deepEqual(onV1099(c.STORE, 'mia'), BEFORE.mia);
-  // a v1099 G4 value (300) is used by v1100 until it is re-selected, and stays for v1099 afterwards
+  assert.deepEqual(onV1099(c.STORE, 'mia'), [420, 260, 13, 1.05, null]);
+  assert.deepEqual(J(c.STORE.bonus_eval_rule[`G4|${Q}`].set.c), { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bs8: null, bp: 260 });
+  // a v1099 G4 value (300) is used by v1100 until it is re-selected
   const d = N.co();
   d.STORE.bonus_eval_rule = { [`G4|${Q}`]: { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 300 } }, _at: 1 } };
   assert.deepEqual(one(N, d, 'mia').slice(1, 3), [300, 13]);
   saveForm(d, `kevRuleOpen('G4', 'c')`, { bp: '260' });
   assert.deepEqual(one(N, d, 'mia').slice(1, 3), [260, 13]);
-  assert.deepEqual(onV1099(d.STORE, 'mia').slice(1, 3), [300, 13]);
+  assert.deepEqual(onV1099(d.STORE, 'mia').slice(1, 3), [260, 13]);
+  // blank in v1100 → both versions use their default (315)
+  saveForm(d, `kevRuleOpen('G4', 'c')`, {});
+  assert.deepEqual([one(N, d, 'mia').slice(1, 3), onV1099(d.STORE, 'mia').slice(1, 3)], [[315, 13], [315, 13]]);
   // the G6 form starts from the G5 value saved in v1100 (G6 uses G5's settings)
   saveForm(d, `kevRuleOpen('G5', 'c')`, { bp: '330' });
   run(d, `kevRuleOpen('G6', 'c')`);
@@ -170,23 +175,141 @@ test('G3 and above saved in v1100 are not read by v1099 either (v1099 keeps its 
   saveForm(d, `kevRuleOpen('G6', 'c')`, { bp: '340' });
   run(d, `kevRuleOpen('G6', 'c')`);
   assert.deepEqual(run(d, `[window._kevForm.cs.own.bp, window._kevForm.cs.cur.bp, window._kevForm.cs.def.bp]`), [true, 340, 330]);   // blank would give G5's 330
+  // G1 is on the G2 track: not mirrored
+  saveForm(d, `kevRuleOpen('G1', 'c')`, { bp: '260' });
+  assert.equal('bp' in J(d.STORE.bonus_eval_rule[`G1|${Q}`].set.c), false);
 });
 
-test('back from v1099: a v1099 device that re-saves the G2 ① writes bp / bs again → v1100 does not use it silently (the amount waits, listed to re-select)', () => {
+// a v1099 device opens the real v1099 form, keeps what it shows and changes only the upper end of the range
+const valOf = (html, id) => { const m = html.match(new RegExp('id="' + id + '"[^>]*value="([^"]*)"')); return m ? m[1] : ''; };
+function v1099Resave(store, open, vals = {}, prep = null) {
+  const old = O.co();
+  if (prep) prep(old);
+  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr']) if (store[k]) old.STORE[k] = J(store[k]);
+  run(old, open);
+  const html = old.MODAL.at(-1), shown = { bp: valOf(html, 'kevf-bp'), bs: valOf(html, 'kevf-bs') };
+  old.DOM['@kevf-on'] = { value: '1' };
+  Object.assign(old.DOM, { 'kevf-lo': { value: '0.85' }, 'kevf-hi': { value: '1.10' }, 'kevf-bp': { value: vals.bp ?? shown.bp }, 'kevf-bs': { value: vals.bs ?? shown.bs },
+    'kevf-why': { value: 'v1099 の端末' }, 'kevf-from': { value: Q } });
+  old.TOASTS.length = 0;
+  run(old, 'kevFormSave()');
+  assert.match(String((old.TOASTS.at(-1) || [''])[0]), /保存しました/, JSON.stringify(old.TOASTS));
+  return { shown, old, store: J(old.STORE) };
+}
+// the person view (FUNERGY_CS_GRADE_VIEW of v1100) in the same company
+const CSV = (() => { const S = fs.readFileSync(V1100, 'utf8').replace(/\r\n/g, '\n'), i = S.indexOf('/* FUNERGY_CS_GRADE_VIEW_BEGIN */'), j = S.indexOf('/* FUNERGY_CS_GRADE_VIEW_END */'); assert.ok(i > 0 && j > i); return S.slice(i, j); })();
+const withCsv = c => vm.runInContext(`function bizToday(){ return '2026-09-20'; } function healthRing(){ return ''; }\n` + CSV, c);
+const misfits = c => run(c, `kevMisfits3('${Q}')`).block.map(x => x.t + ' → ' + x.act);
+
+test('mixed devices A (independent review 8a04750 P2-1): G2 set to 260 / 13 in v1100; a v1099 device changes only the range of ① → v1100 does not quietly fall back to 252 — it waits and says why', () => {
   const c = N.co();
   saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
-  const old = O.co();
-  old.STORE.bonus_eval_rule = J(c.STORE.bonus_eval_rule);
-  old.DOM['@kevf-on'] = { value: '1' };
-  Object.assign(old.DOM, { 'kevf-lo': { value: '0.85' }, 'kevf-hi': { value: '1.15' }, 'kevf-bp': { value: '140' }, 'kevf-bs': { value: '7' } });
-  vm.runInContext(`window._kevForm = { kind:'rule', scope:'G2', part:'c', pre:'kevf-', q:'${Q}', cs:{ max:225, sheet:'store', def:{ bp:135, bs:7 }, own:{} } };`, old);
-  assert.equal(run(old, `kevRuleSave('G2', '${Q}', kevFormRead('c', 'kevf-'), 'v1099 の端末', '① を変更')`), true);
-  assert.deepEqual(one(O, old, 'aki').slice(0, 3), [225, 140, 7]);
-  c.STORE.bonus_eval_rule = J(old.STORE.bonus_eval_rule);
+  const r = v1099Resave(c.STORE, `kevRuleOpen('G2', 'c')`);
+  assert.deepEqual(r.shown, { bp: '', bs: '' });                 // the v1099 form cannot show the v1100 value (not written for v1099)
+  assert.deepEqual(onV1099(r.store, 'aki'), BEFORE.aki);   // v1099 itself: its default 135 / 7
+  c.STORE.bonus_eval_rule = r.store.bonus_eval_rule;
+  const p = N.person(c, 'aki');
+  assert.deepEqual([p.blocked, p.segs[0].items.c.coef], ['eval', null]);
+  assert.match(p.missing.join(), /v1099 の端末で保存し直され、v1100 で入れた点（基準得点 260 点・1 段 13 点）が使われていません（グレード・職種（G2） 2026-Q3〜）/);
+  assert.ok(misfits(c).some(x => /^G2・① の基準得点・1 段が v1099 の端末で保存し直され.*kevRuleOpen\('G2','c'\)$/.test(x)), misfits(c).join('\n'));
+  assert.ok(!misfits(c).some(x => /225 点満点）のときの値です/.test(x)));
+  // the person sees "確認中", the settings table marks it, the form says what was lost and does not fill a value in
+  withCsv(c);
+  assert.deepEqual(run(c, `(function(){ var V=csvView(EMPS.find(function(e){ return e.id==='aki'; })); return [V.state, V.bp, V.base.why]; })()`), ['nobase', null, 'legacy']);
+  assert.match(run(c, `kevCsBaseCardHtml(kbCfg())`), /\[G2\] G2<\/td>.*?v1099 の端末で保存し直し・入れ直し/);
+  assert.match(run(c, `kevRuleCardHtml(kbCfg())`), /基準 252 \/ 420 点・1 段 13（v1099 の端末で保存し直し・入れ直し）/);
+  // a person with their own v1100 value (more specific than the lost grade value) is not stopped
+  c.STORE.bonus_eval_ovr = { [`aki|${Q}`]: { set: { c: { b8: 1, bp8: 250, bs8: 13 } }, _at: 1 } };
+  assert.deepEqual(one(N, c, 'aki'), [420, 250, 13, 1.1, null]);
+  // …but only the base of their own: the step still comes from the lost grade value → stopped
+  c.STORE.bonus_eval_ovr = { [`aki|${Q}`]: { set: { c: { b8: 1, bp8: 250 } }, _at: 1 } };
+  assert.equal(N.person(c, 'aki').blocked, 'eval');
+  c.STORE.bonus_eval_ovr = {};
+  run(c, `kevRuleOpen('G2', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.def.bp, window._kevForm.cs.legacy.bp]`), [false, 252, true]);
+  assert.match(c.MODAL.at(-1), /v1100 で入れた点（基準得点 260 点・1 段 13 点）が使われていません/);
+  // the preview of a re-entry is not blocked; saving it in v1100 ends it
+  assert.equal(run(c, `(function(){ var RF=kevRuleFor('G2', '${Q}', null, {level:'grade', scope:'G2', set:{c:{on:true, lo:0.85, hi:1.1, g2:1, g3:1, b8:1, bp8:260, bs8:13}}}); return !!kevCsBase(RF.r, RF, {sheet:'store', max:420}, 'G2').legacy; })()`), false);
+  saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  assert.deepEqual(one(N, c, 'aki'), [420, 260, 13, 1.05, null]);
+  assert.ok(!misfits(c).some(x => /G2・①/.test(x)));
+});
+
+test('mixed devices B: G4 (v1099 had 300) set to 260 in v1100; the v1099 form shows 260 and a range-only save keeps it — nothing lost, nothing to re-select', () => {
+  const d = N.co();
+  d.STORE.bonus_eval_rule = { [`G4|${Q}`]: { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 300 } }, _at: 1 } };
+  saveForm(d, `kevRuleOpen('G4', 'c')`, { bp: '260' });
+  const r = v1099Resave(d.STORE, `kevRuleOpen('G4', 'c')`);
+  assert.equal(r.shown.bp, '260');
+  d.STORE.bonus_eval_rule = r.store.bonus_eval_rule;
+  assert.deepEqual(one(N, d, 'mia').slice(1, 5), [260, 13, 1.05, null]);
+  assert.ok(!misfits(d).some(x => /G4・①/.test(x)));
+  // a different value typed on the v1099 device (same 420-point sheet for G4) is not silently taken over the v1100 value either
+  const r2 = v1099Resave(J(d.STORE), `kevRuleOpen('G4', 'c')`, { bp: '300' });
+  d.STORE.bonus_eval_rule = r2.store.bonus_eval_rule;
+  assert.equal(N.person(d, 'mia').blocked, 'eval');
+  assert.ok(misfits(d).some(x => /^G4・① の基準得点・1 段が v1099 の端末で保存し直され、v1100 で入れた点（基準得点 260 点・1 段 初期値）/.test(x)), misfits(d).join('\n'));
+});
+
+test('mixed devices C: a personal ① of a G2 store person (240 / 12) re-saved on a v1099 device → v1100 waits and lists the person; the grade-level value is not touched', () => {
+  const c = N.co();
+  saveForm(c, `kevOvrOpen('aki', 'c')`, { bp: '240', bs: '12' });
+  const r = v1099Resave(c.STORE, `kevOvrOpen('aki', 'c')`);
+  assert.deepEqual(r.shown, { bp: '', bs: '' });
+  c.STORE.bonus_eval_ovr = r.store.bonus_eval_ovr;
+  assert.equal(N.person(c, 'aki').blocked, 'eval');
+  assert.ok(misfits(c).some(x => /^個人設定 Aki Sample・① の基準得点・1 段が v1099 の端末で保存し直され、v1100 で入れた点（基準得点 240 点・1 段 12 点）.*kevOvrOpen\(.*aki.*,'c'\)$/.test(x)), misfits(c).join('\n'));
+  assert.ok(!misfits(c).some(x => /^G2・①/.test(x)));
+  run(c, `kevOvrOpen('aki', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp, !!window._kevForm.cs.legacy.lost]`), [false, true, true]);
+  // a value typed on the v1099 device for the person (140 on 225 points): one entry (lost), the field stays empty
+  const t = N.co();
+  saveForm(t, `kevOvrOpen('aki', 'c')`, { bp: '240', bs: '12' });
+  t.STORE.bonus_eval_ovr = v1099Resave(t.STORE, `kevOvrOpen('aki', 'c')`, { bp: '140', bs: '7' }).store.bonus_eval_ovr;
+  assert.equal(N.person(t, 'aki').blocked, 'eval');
+  assert.equal(misfits(t).filter(x => /^個人設定 Aki Sample/.test(x)).length, 1, misfits(t).join('\n'));
+  assert.ok(!misfits(t).some(x => /225 点満点）のときの値です/.test(x)));
+  run(t, `kevOvrOpen('aki', 'c')`);
+  assert.deepEqual(run(t, `[window._kevForm.cs.own.bp, window._kevForm.cs.legacy.bp]`), [false, true]);
+  assert.doesNotMatch(t.MODAL.at(-1), /value="140"/);
+  // a specialist (department sheet, 96 points): the personal ① re-saved on a v1099 device is not used either
+  const spec = c => { c.SPEC = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'].map(k => ({ key: k, name: k, en: k, icon: 'ti-star', items: ['1', '2', '3', '4'] })); vm.runInContext(`lssCatsForName = function(n){ return n === 'Ray Sample' ? SPEC : lssCatsOrdered(); };`, c); };
+  const sp = N.co(); spec(sp);
+  saveForm(sp, `kevOvrOpen('ray', 'c')`, { bp: '60', bs: '3' });
+  assert.deepEqual(one(N, sp, 'ray').slice(0, 3), [96, 60, 3]);
+  sp.STORE.bonus_eval_ovr = v1099Resave(sp.STORE, `kevOvrOpen('ray', 'c')`, {}, spec).store.bonus_eval_ovr;
+  assert.equal(N.person(sp, 'ray').blocked, 'eval');
+  // other G2 people are not affected
+  c.EMPS.push({ id: 'bea', name: 'Bea Sample', title: 'Crew Leader', g: 'G2', store: 'S1', role: '', status: '在籍' });
+  c.SCORES['Bea Sample'] = J(c.SCORES['Aki Sample']);
+  assert.equal(N.person(c, 'bea').blocked, null);
+  // re-entered in v1100 → used again
+  saveForm(c, `kevOvrOpen('aki', 'c')`, { bp: '240', bs: '12' });
+  assert.deepEqual(one(N, c, 'aki'), [420, 240, 12, 1.15, null]);
+  // the previous quarter's v1100 version counts too (a v1099 device made the next quarter's version)
+  const d = N.co();
+  d.STORE.bonus_eval_rule = { 'G2|2026-Q2': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, b8: 1, bp8: 260, bs8: 13 } }, _at: 1 },
+    [`G2|${Q}`]: { set: { c: { on: true, lo: 0.85, hi: 1.1, g2: 1, g3: 1, bp: null, bs: null } }, _at: 2 } };
+  assert.equal(N.person(d, 'aki').blocked, 'eval');
+  // a v1099 device saving another part (②) keeps the v1100 ① as it is
+  const e = N.co();
+  saveForm(e, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  const old = O.co(); old.STORE.bonus_eval_rule = J(e.STORE.bonus_eval_rule);
+  assert.equal(run(old, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, 'v1099 の端末', '② を変更')`), true);
+  e.STORE.bonus_eval_rule = J(old.STORE.bonus_eval_rule);
+  assert.deepEqual(one(N, e, 'aki'), [420, 260, 13, 1.05, null]);
+});
+
+test('back from v1099: a v1099 device that types a G2 value (140 / 7 on 225 points) → v1100 does not use it silently (the amount waits, listed to re-enter)', () => {
+  const c = N.co();
+  saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  const r = v1099Resave(c.STORE, `kevRuleOpen('G2', 'c')`, { bp: '140', bs: '7' });
+  assert.deepEqual(one(O, r.old, 'aki').slice(0, 3), [225, 140, 7]);
+  c.STORE.bonus_eval_rule = r.store.bonus_eval_rule;
   const p = N.person(c, 'aki');
   assert.equal(p.blocked, 'eval');
-  assert.match(p.missing.join(), /G2 の基準得点・1 段の点は v1099（4 カテゴリー・225 点満点）のときに保存された値です/);
-  assert.ok(run(c, `kevMisfits3('${Q}')`).block.some(x => /G2・① の基準得点・1 段：v1099/.test(x.t)));
+  assert.match(p.missing.join(), /v1099 の端末で保存し直され、v1100 で入れた点（基準得点 260 点・1 段 13 点）が使われていません/);
+  assert.ok(misfits(c).some(x => /^G2・① の基準得点・1 段が v1099 の端末で保存し直され/.test(x)));
 });
 
 test('the preview of the ① form shows the value the save will give: a blank field means the upper level or the default (the stored value of the same level is replaced)', () => {

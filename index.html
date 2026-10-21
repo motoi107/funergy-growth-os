@@ -64676,7 +64676,18 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2){
   if(sim && sim.level==='grade' && sim.scope===scope) kevMerge(R, sim.set, 'grade', M, FR);
   if(ov && !(sim && sim.level==='person' && sim.empId===empId && sim.replace)) kevMerge(R, ov.set, 'person', M, noCB(FP, sim && sim.level==='person' && sim.empId===empId));
   if(sim && sim.level==='person' && sim.empId===empId) kevMerge(R, sim.set, 'person', M, FP);
-  return {r:R, src:M, ovr:ov, grade:gr, g5:g5, common:cm, scope:scope, gen3:gen3};
+  /* v1100（独立レビュー 8a04750 の P2-1）：v1099 の端末が ① を保存し直して v1100 の基準得点・1 段が消えた層（試算で置き換える層は見ない）。{bp, bs：層の細かさ, lv:[…], ref} */
+  var lost=null;
+  if(gen3){
+    var lz=function(all0, prefix, v, lv, same){ if(!v || same) return; var L=kevCsLost(all0, prefix, v); if(!L) return; var rk=KEV_CS_LV[lv]||0;
+      lost=lost || {bp:0, bs:0, lv:[], ref:null, rk:0}; if(L.bp && rk>lost.bp) lost.bp=rk; if(L.bs && rk>lost.bs) lost.bs=rk;
+      lost.lv.push({lv:lv, prefix:prefix, from:v.from, ref:L.ref}); if(rk>=lost.rk){ lost.rk=rk; lost.ref=L.ref; } };
+    lz(all, '_common', cm, 'common', simC && sim.level==='common');
+    if(scope==='G6') lz(all, 'G5', g5, 'g5', simC && sim.level==='grade' && sim.scope==='G5');
+    if(scope) lz(all, scope, gr, 'grade', simC && sim.level==='grade' && sim.scope===scope);
+    if(empId) lz(kevOvrAll(), empId, ov, 'person', !!(sim && sim.level==='person' && sim.empId===empId && (simC || sim.replace)));
+  }
+  return {r:R, src:M, ovr:ov, grade:gr, g5:g5, common:cm, scope:scope, gen3:gen3, csLost:lost};
 }
 /* 項目ごとの出所（個人 > グレード > 共通） */
 function kevItemSrc(src, item){
@@ -66594,7 +66605,7 @@ function kevFormHtml(part, r, pre, common){
       var F3=window._kevForm||{}, cs=F3.cs||{}, d3=cs.def||{}, own=cs.own||{}, cur=cs.cur||{};   /* v1100：今の値は kevCsPick（bp8 か bp） */
       var inpP=function(id, v, lbl, ph){ return '<label style="display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--muted);max-width:240px">'+escapeHtml(lbl)+'<input id="'+pre+id+'" class="form-input" style="width:100px;text-align:right;font-size:16px" inputmode="decimal" value="'+escapeHtml(v==null ? '' : String(v))+'" placeholder="'+escapeHtml(ph==null ? '' : String(ph))+'" oninput="kevFormPreview()"></label>'; };
       h+='<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px">'+inpP('bp', own.bp ? cur.bp : null, '基準得点（この点以上で ×1.00）', d3.bp)+inpP('bs', own.bs ? cur.bs : null, '1 段の点（ごとに 0.05 上下）', d3.bs)+'</div>';
-      if(cs.legacy && (cs.legacy.bp || cs.legacy.bs)) h+='<div style="font-size:11.5px;color:var(--red);margin-top:6px;line-height:1.6">保存されていた基準得点・1 段は v1099（G2 は 4 カテゴリー・225 点満点）のときの点なので、ここには入れていません。420 点満点で入れ直すか、空欄（初期値）で保存してください。</div>';   /* v1100（独立レビュー P1-1） */
+      if(cs.legacy && (cs.legacy.bp || cs.legacy.bs)) h+='<div style="font-size:11.5px;color:var(--red);margin-top:6px;line-height:1.6">'+(cs.legacy.lost ? escapeHtml(kevCsLostTxt(cs.legacy.lost))+'。入れ直すか、空欄（初期値）で保存してください。' : '保存されていた基準得点・1 段は v1099（G2 は 4 カテゴリー・225 点満点）のときの点なので、ここには入れていません。420 点満点で入れ直すか、空欄（初期値）で保存してください。')+'</div>';   /* v1100（独立レビュー P1-1・8a04750 の P2-1） */
       h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">'+escapeHtml((cs.sheet ? kevCsSheetName(cs.sheet)+'・' : '')+(cs.max ? '満点 '+cs.max+' 点。' : ''))+'空欄は初期値（'+escapeHtml(d3.bp==null ? '—' : String(d3.bp))+' 点・1 段 '+escapeHtml(d3.bs==null ? '—' : String(d3.bs))+' 点）。総合点が基準得点以上で ×1.00、1 段ごとに 0.05 上下し、幅で止めます（境目ちょうどは上の段）。</div>';
     } else {
       var J3=kevJ3(r), how=(part==='f') ? 'FL 率が目標より '+J3.fpt+'pt 低い → 上限・目標どおり → 1.00・'+J3.fpt+'pt 高い → 下限' : '達成率 '+J3.sx0+'% → 下限・'+J3.sx1+'% → 1.00・'+J3.sx2+'% → 上限'+(part==='p' ? '（利益の目標が 0 以下なら差 ÷ 売上予算 ±'+J3.pd+'pt）' : '');
@@ -66675,7 +66686,8 @@ function kevOvrOpen(empId, part){
     /* v1100（独立レビュー P1-1）：v1099 の G2 の値（225 点満点）は入力欄にも初期値にも入れない */
     var _st=((_c.total||{}).sheet==='store'), _lgP=kevCsLegacyParts(I.RF, _sk, null), _lgG=kevCsLegacyParts(_RFg, _sk, null), _dB=kevCsDefBase(_sk);
     var _kB=kevCsPick(I.RF.r, I.RF, 'bp'), _kS=kevCsPick(I.RF.r, I.RF, 'bs'), _pBp=_kB.src==='person', _pBs=_kS.src==='person';
-    window._kevForm.cs={max:_c.max, sheet:(_c.total||{}).sheet, def:{bp:(_lgG.bp ? (_st ? _dB.bp : null) : _Bg.bp), bs:(_lgG.bs ? (_st ? _dB.bs : null) : _Bg.bs)}, own:{bp:_pBp && !(_st && _lgP.bp), bs:_pBs && !(_st && _lgP.bs)}, cur:{bp:_kB.v, bs:_kS.v}, legacy:{bp:(_st && _pBp ? _lgP.bp : _lgG.bp), bs:(_st && _pBs ? _lgP.bs : _lgG.bs)}};
+    /* v1100（独立レビュー 8a04750 の P2-1）：v1099 の端末の保存で v1100 の点が消えた値も入れない */
+    window._kevForm.cs={max:_c.max, sheet:(_c.total||{}).sheet, def:{bp:(_lgG.bp ? (_st ? _dB.bp : null) : _Bg.bp), bs:(_lgG.bs ? (_st ? _dB.bs : null) : _Bg.bs)}, own:{bp:_pBp && !(_st && _lgP.g2bp) && !_lgP.lostBp, bs:_pBs && !(_st && _lgP.g2bs) && !_lgP.lostBs}, cur:{bp:_kB.v, bs:_kS.v}, legacy:{bp:(_st && _pBp ? _lgP.g2bp : _lgG.g2bp) || _lgP.lostBp, bs:(_st && _pBs ? _lgP.g2bs : _lgG.g2bs) || _lgP.lostBs, lost:_lgP.lost || _lgG.lost}};
   }
   openModal('<div class="modal-title"><i class="ti ti-adjustments"></i> 個人設定：'+escapeHtml(e.name||'')+' ・ '+escapeHtml(kevPartLabel(part))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +kevFormHtml(part, R, 'kevf-')
@@ -66763,11 +66775,15 @@ function kevPutVer(key, all, prefix, from, set, why, what, replaceParts){
   var cur=JSON.parse(JSON.stringify((base && base.set) || {}));
   (replaceParts||[]).forEach(function(p){ delete cur[p]; });
   Object.keys(set||{}).forEach(function(k){ if(k==='stores'){ if(set.stores && set.stores.length) cur.stores=set.stores.slice(); else delete cur.stores; return; } cur[k]=Object.assign({}, set[k]); });
-  /* v1100（Codex 34d2ed9 の P1）：この版の ① の部分（印 b8）は bp8・bs8 に書く。前の版（v1099）が読む bp・bs は、同じ層に前からあった値をそのまま残す
-     （前の版に戻すと、前の版のときの点か初期値で数える。v1100 の 420 点満点の点が v1099 の 225 点満点の計算に入らない）。このブランチの途中のコミット（公開していない）が付けた印 cs8 の値は残さない */
+  /* v1100（Codex 34d2ed9 の P1）：この版の ① の部分（印 b8）は bp8・bs8 に書く。前の版（v1099）が読む bp・bs は：
+     ・G3 以上のグレード・職種の設定：v1099 も 420 点満点なので、同じ値を書く（v1099 の画面にも出て、v1099 の端末で保存し直しても変わらない。独立レビュー 8a04750 の P2-1）
+     ・G2（G1）のグレードの設定・会社共通・個人設定：v1099 では G2 が 225 点満点なので書かない。同じ層に前からあった値をそのまま残す
+       （前の版に戻すと、前の版のときの点か初期値で数える。v1100 の 420 点満点の点が v1099 の 225 点満点の計算に入らない）。このブランチの途中のコミット（公開していない）が付けた印 cs8 の値は残さない */
   if((key==='bonus_eval_rule' || key==='bonus_eval_ovr') && set && set.c && typeof set.c==='object' && kevN(set.c.b8) && cur.c && typeof cur.c==='object'){
-    var bc=(base && base.set && base.set.c && typeof base.set.c==='object') ? base.set.c : null;
-    ['bp','bs'].forEach(function(f){ delete cur.c[f]; if(bc && !kevN(bc.cs8) && kevN(bc[f])!=null) cur.c[f]=bc[f]; });
+    var bc=(base && base.set && base.set.c && typeof base.set.c==='object') ? base.set.c : null, mir=(key==='bonus_eval_rule' && KEV_SCOPES.indexOf(prefix)>=0 && kevCsTrackKey(prefix)!=='G2');
+    ['bp','bs'].forEach(function(f){ delete cur.c[f];
+      if(mir){ var m8=kevN(cur.c[f+'8']); if(m8!=null && (f!=='bs' || m8>0)) cur.c[f]=m8; return; }
+      if(bc && !kevN(bc.cs8) && kevN(bc[f])!=null) cur.c[f]=bc[f]; });
     delete cur.c.cs8;
   }
   var hist=(prev && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
@@ -66861,7 +66877,7 @@ function kevRuleCardHtml(cfg){
     var chip=function(it){
       var v=R[it], txt=(v.on===false) ? '1.00 固定' : ('反映 '+kevF2(v.lo)+'〜'+kevF2(v.hi)), extra=(it==='f' && v.on!==false && !g2) ? '<div style="font-size:10px;color:var(--muted)">行動 '+R.fl.aw+'%・結果 '+R.fl.rw+'%</div>' : '';
       var rb=gen3 ? kevRange3Bad(v) : '';   /* v1099：7 種類に合わない保存済みの幅 */
-      if(gen3 && it==='c' && r[1]){ var cd=kevCsDefBase(key), cB=kevCsBase(R, RF, {sheet:'store', max:cd.max}, key), bp=cB.bp, bs=cB.bs; extra+='<div style="font-size:10px;color:'+(cB.legacy ? 'var(--red)' : 'var(--muted)')+'">基準 '+kevPtsTxt(bp)+' / '+cd.max+' 点・1 段 '+kevPtsTxt(bs)+(cB.legacy ? '（225 点満点のときの値・選び直し）' : '')+'</div>'; }   /* v1100：kevCsPick（bp8 か bp） */
+      if(gen3 && it==='c' && r[1]){ var cd=kevCsDefBase(key), cB=kevCsBase(R, RF, {sheet:'store', max:cd.max}, key), bp=cB.bp, bs=cB.bs; extra+='<div style="font-size:10px;color:'+(cB.legacy ? 'var(--red)' : 'var(--muted)')+'">基準 '+kevPtsTxt(bp)+' / '+cd.max+' 点・1 段 '+kevPtsTxt(bs)+(cB.legacy ? (cB.lost ? '（v1099 の端末で保存し直し・入れ直し）' : '（225 点満点のときの値・選び直し）') : '')+'</div>'; }   /* v1100：kevCsPick（bp8 か bp） */
       if(rb) extra+='<div style="font-size:10px;color:var(--red);font-weight:700">設定の確認が必要（選び直す）</div>';
       return '<td style="padding:6px 8px"><button class="kev-chip'+(v.on===false ? '' : ' on')+'"'+(rb ? ' style="border-color:var(--red);color:var(--red)"' : '')+dis+' onclick="kevRuleOpen(\''+key+'\',\''+it+'\')">'+txt+'</button>'+extra+'</td>';
     };
@@ -67317,6 +67333,26 @@ function kevCsPick(R, RF, f){
   if(ra>=0) return {v:a, src:sa, v8:false};
   return {v:null, src:'default', v8:false};
 }
+/* v1100（独立レビュー 8a04750 の P2-1）：この層の ① が v1099 の端末で保存し直され（印 b8 が無い）、その前の v1100 の基準得点・1 段と違うか。
+   その前＝同じ版の変更の履歴か、前の四半期の版にある、印 b8 のいちばん新しい ①。違う欄だけ {bp, bs, ref:{bp, bs}}（同じなら null） */
+function kevCsLost(all, prefix, v){
+  var c=(v && v.set && v.set.c && typeof v.set.c==='object') ? v.set.c : null;
+  if(!c || kevN(c.b8)) return null;
+  var ref=null, h=Array.isArray(v.hist) ? v.hist : [];
+  for(var i=h.length-1; i>=0 && !ref; i--){ var x=h[i] && h[i].set && h[i].set.c; if(x && typeof x==='object' && kevN(x.b8)) ref=x; }
+  if(!ref){ var vs=kevVersions(all, prefix).filter(function(w){ return w.from<v.from; }), p=vs.length ? vs[vs.length-1] : null, y=p && p.set && p.set.c; if(y && typeof y==='object' && kevN(y.b8)) ref=y; }
+  if(!ref) return null;
+  var pos=function(n){ return (n!=null && n>0) ? n : null; }, rb=kevN(ref.bp8), rs=pos(kevN(ref.bs8));
+  var bp=(kevN(c.bp)!==rb), bs=(pos(kevN(c.bs))!==rs);
+  return (bp || bs) ? {bp:bp, bs:bs, ref:{bp:rb, bs:rs}} : null;
+}
+/* 解決した設定の基準得点・1 段が、v1099 の端末の保存で消えた v1100 の点の代わりか（消えた層が、使っている点の層と同じか細かい） */
+function kevCsLostParts(RF, pB, pS){
+  var L=(RF && RF.csLost) || null;
+  if(!L) return {bp:false, bs:false, lost:null};
+  var b=!!(L.bp && L.bp>=(KEV_CS_LV[pB.src]||0)), s=!!(L.bs && L.bs>=(KEV_CS_LV[pS.src]||0));
+  return {bp:b, bs:s, lost:(b || s) ? L : null};
+}
 /* 基準得点・1 段の点（kevCsPick。無ければ初期値）。専門職・オフィスは個人設定の点が無ければ店舗の点と同じ割合 × 満点 */
 function kevCsBase(R, RF, T, scope){
   var d=kevCsDefBase(scope), pB=kevCsPick(R, RF, 'bp'), pS=kevCsPick(R, RF, 'bs'), bp=pB.v, bs=pS.v;
@@ -67325,18 +67361,26 @@ function kevCsBase(R, RF, T, scope){
   var o={sheet:T.sheet, max:T.max, storeMax:d.max, pct:d.pct, srcBp:sBp, srcBs:sBs, storeBp:stBp, storeBs:stBs, derived:false, derivedS:false};
   /* v1100：G2 の基準得点・1 段は v1099 まで 4 カテゴリー（225 点満点）の点。bp・bs（v1099 の欄）から来た G2 の点は 420 点満点に合わないので使わない（自動で直さない・設定の確認が必要） */
   var g2=(kevCsTrackKey(scope)==='G2'), lgBp=g2 && sBp!=='default' && !pB.v8, lgBs=g2 && sBs!=='default' && !pS.v8;
-  if(T.sheet==='store'){ o.bp=stBp; o.bs=stBs; o.legacy=!!(lgBp || lgBs); return o; }
-  o.legacy=!!((sBp!=='person' && lgBp) || (sBs!=='person' && lgBs));   /* 専門職・オフィスの個人設定の点はその評価表の点（満点は変わらない） */
+  var LP=kevCsLostParts(RF, pB, pS); o.lost=LP.lost;   /* v1100（独立レビュー 8a04750 の P2-1）：v1099 の端末の保存で v1100 の点が消えた（使わない・設定の確認が必要） */
+  if(T.sheet==='store'){ o.bp=stBp; o.bs=stBs; o.legacy=!!(lgBp || lgBs || LP.lost); return o; }
+  o.legacy=!!((sBp!=='person' && lgBp) || (sBs!=='person' && lgBs) || LP.lost);   /* 専門職・オフィスの個人設定の点はその評価表の点（満点は変わらない） */
   var mx=Number(T.max)||0;
   if(sBp==='person'){ o.bp=bp; } else { o.bp=(d.max>0 && mx>0) ? Math.ceil(stBp*mx/d.max-1e-9) : null; o.derived=true; }
   if(sBs==='person'){ o.bs=bs; } else { o.bs=(d.max>0 && mx>0) ? Math.max(1, Math.round(stBs*mx/d.max)) : null; o.derivedS=true; }
   return o;
 }
-/* v1100：解決した設定の基準得点・1 段のうち、v1099 の G2 の値（bp・bs の欄・225 点満点）はどれか。{bp, bs} */
+/* v1100：解決した設定の基準得点・1 段のうち、使えない値はどれか。{bp, bs, g2bp, g2bs：v1099 の G2 の値（bp・bs の欄・225 点満点）, lostBp, lostBs, lost：v1099 の端末の保存で v1100 の点が消えた} */
 function kevCsLegacyParts(RF, scope, B){
-  if(kevCsTrackKey(scope)!=='G2' || !RF) return {bp:false, bs:false};
-  var pB=kevCsPick(RF.r, RF, 'bp'), pS=kevCsPick(RF.r, RF, 'bs');
-  return {bp:pB.v!=null && !pB.v8, bs:pS.v!=null && !pS.v8};
+  if(!RF) return {bp:false, bs:false, g2bp:false, g2bs:false, lostBp:false, lostBs:false, lost:null};
+  var pB=kevCsPick(RF.r, RF, 'bp'), pS=kevCsPick(RF.r, RF, 'bs'), g2=(kevCsTrackKey(scope)==='G2'), LP=kevCsLostParts(RF, pB, pS);
+  var gb=g2 && pB.v!=null && !pB.v8, gs=g2 && pS.v!=null && !pS.v8;
+  return {bp:gb || LP.bp, bs:gs || LP.bs, g2bp:gb, g2bs:gs, lostBp:LP.bp, lostBs:LP.bs, lost:LP.lost};
+}
+/* 消えた v1100 の点の言葉（画面・理由の文） */
+function kevCsLostTxt(L){
+  var r=(L && L.ref) || {}, lv={common:'会社共通', g5:'G5', grade:'グレード・職種', person:'個人設定'};
+  var where=((L && L.lv) || []).map(function(x){ return (lv[x.lv] || x.lv)+(x.lv==='grade' || x.lv==='g5' ? '（'+kevScopeLabel(x.prefix)+'）' : '')+' '+x.from+'〜'; }).join('・');
+  return '① の基準得点・1 段が v1099 の端末で保存し直され、v1100 で入れた点（基準得点 '+(r.bp==null ? '初期値' : kevPtsTxt(r.bp)+' 点')+'・1 段 '+(r.bs==null ? '初期値' : kevPtsTxt(r.bs)+' 点')+'）が使われていません'+(where ? '（'+where+'）' : '');
 }
 /* 何段か（−3〜＋3）：基準得点以上は 1 段ごとに上・未満は下（境目ちょうどは上の段） */
 function kevCsStep(S, B, w){
@@ -67359,7 +67403,8 @@ function kevCareer3(e, seg, R, RF, kv, scope){
   if(T.missing) miss.push('① '+kevCsMissTxt(T));
   if(rb) miss.push('① '+rb+'（設定の確認が必要：設定タブ ② か個人設定で選び直してください）');
   if(B.bp==null || !(B.bs>0)) miss.push('① 基準得点・1 段の点が決まっていません（設定タブ ②）');
-  if(B.legacy) miss.push('① G2 の基準得点・1 段の点は v1099（4 カテゴリー・225 点満点）のときに保存された値です。v1100 から G2 も 8 カテゴリー（420 点満点）で数えるため、設定タブ ②（個人設定なら個人設定）で選び直してください（設定の確認が必要・自動では直しません）');
+  if(B.legacy && B.lost) miss.push(kevCsLostTxt(B.lost)+'。設定タブ ②（個人設定なら個別評価の個人設定）で入れ直してください（設定の確認が必要・自動では直しません）');
+  else if(B.legacy) miss.push('① G2 の基準得点・1 段の点は v1099（4 カテゴリー・225 点満点）のときに保存された値です。v1100 から G2 も 8 カテゴリー（420 点満点）で数えるため、設定タブ ②（個人設定なら個人設定）で選び直してください（設定の確認が必要・自動では直しません）');
   var st=null, raw=null, coef=null, capped=false, nxt=null;
   if(T.score!=null && B.bp!=null && B.bs>0){
     st=kevCsStep(T.score, B.bp, B.bs); raw=Math.round((1+st*0.05)*100)/100;
@@ -67445,9 +67490,15 @@ function kevMisfits3(q, cfg){
         if(rb) block.push({t:'個人設定 '+(e.name||'')+'・'+kevItemNm(p)+'：'+rb+'（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'"+p+"')"}); });
     });
   }catch(err){}
-  try{ var _R2=kevRuleFor('G2', q, null, null, cfg); if(kevCsBase(_R2.r, _R2, {sheet:'store', max:kevCsStoreMax('G2')}, 'G2').legacy) block.push({t:'G2・① の基準得点・1 段：v1099（4 カテゴリー・225 点満点）のときの値です。v1100 から G2 も 8 カテゴリー（420 点満点）で数えるため、選び直してください', act:"kevRuleOpen('G2','c')"}); }catch(err){}
+  /* v1100（独立レビュー 8a04750 の P2-1）：v1099 の端末の保存で v1100 の点が消えたグレード・職種の設定・個人設定 */
+  try{ ['G2','G3-op','G3-sv','G3-kt','G4','G5','G6'].forEach(function(k){ var RFk=kevRuleFor(k, q, null, null, cfg), Bk=kevCsBase(RFk.r, RFk, {sheet:'store', max:kevCsStoreMax(k)}, k);
+    if(Bk.lost) block.push({t:kevScopeLabel(k)+'・'+kevCsLostTxt(Bk.lost)+'。入れ直してください', act:"kevRuleOpen('"+k+"','c')"}); }); }catch(err){}
+  try{ karteEligibleEmps().forEach(function(e){ var ov=kevVer(kevOvrAll(), e.id, q); if(!ov || !ov.set || !ov.set.c) return;
+    var g=ghNormG(empGrade(e)), sc=(g==='G3') ? ('G3-'+((bonusTrackFor(e, q)||{}).t || 'op')) : g, RF=kevRuleFor(sc, q, e.id, null, cfg), Bp=kevCsBase(RF.r, RF, {sheet:kevCsSheet(e), max:kevCsStoreMax(sc)}, sc);
+    if(Bp.lost && Bp.lost.lv.some(function(x){ return x.lv==='person'; })) block.push({t:'個人設定 '+(e.name||'')+'・'+kevCsLostTxt({lv:Bp.lost.lv.filter(function(x){ return x.lv==='person'; }), ref:Bp.lost.lv.filter(function(x){ return x.lv==='person'; })[0].ref})+'。入れ直してください', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"}); }); }catch(err){}
+  try{ var _R2=kevRuleFor('G2', q, null, null, cfg), _B2=kevCsBase(_R2.r, _R2, {sheet:'store', max:kevCsStoreMax('G2')}, 'G2'); if(_B2.legacy && !_B2.lost) block.push({t:'G2・① の基準得点・1 段：v1099（4 カテゴリー・225 点満点）のときの値です。v1100 から G2 も 8 カテゴリー（420 点満点）で数えるため、選び直してください', act:"kevRuleOpen('G2','c')"}); }catch(err){}
   try{ karteEligibleEmps().forEach(function(e){ if(ghNormG(empGrade(e))!=='G2') return; var ov=kevVer(kevOvrAll(), e.id, q); if(!ov || !ov.set || !ov.set.c) return; var RF=kevRuleFor('G2', q, e.id, null, cfg), B=kevCsBase(RF.r, RF, {sheet:kevCsSheet(e), max:kevCsStoreMax('G2')}, 'G2');
-    if(B.legacy && (B.srcBp==='person' || B.srcBs==='person')) block.push({t:'個人設定 '+(e.name||'')+'・① の基準得点・1 段：v1099（G2 は 225 点満点）のときの値です。選び直してください（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"}); }); }catch(err){}
+    if(B.legacy && !B.lost && (B.srcBp==='person' || B.srcBs==='person')) block.push({t:'個人設定 '+(e.name||'')+'・① の基準得点・1 段：v1099（G2 は 225 点満点）のときの値です。選び直してください（'+ov.from+'〜）', act:'kevOvrOpen('+cscJsArg(e.id)+",'c')"}); }); }catch(err){}
   try{ karteEligibleEmps().forEach(function(e){ ghRecs(e.id).forEach(function(r){ var pe=r.prevEval;
     if(!pe || ghNormG(pe.g)!=='G2' || !(Number(pe.kv)>=2) || !pe.cun || typeof pe.cun!=='object' || ghQOf(r.d)!==q) return;
     var g2=cscCatKeys('G2'), un=Object.keys(pe.cun).filter(function(k){ return Number(pe.cun[k])>0; });
@@ -67756,7 +67807,7 @@ function kevCsBaseCardHtml(cfg){
     var _lg=!!_B.legacy;
     h+='<tr style="border-top:1px solid var(--border)"><td style="padding:6px 7px;white-space:nowrap">'+ghBadge(x[0])+' '+escapeHtml(kevScopeLabel(key))+(key==='G6' ? '<div style="font-size:10px;color:var(--muted)">G5 と同じ（決めていない値）</div>' : '')+'</td>'
       +'<td style="padding:6px 7px;font-size:11.5px">'+cats+'・'+d.max+' 点</td>'
-      +'<td style="padding:6px 7px;text-align:right'+(_lg ? ';color:var(--red)' : '')+'"><b>'+kevPtsTxt(bp)+'</b>'+(_B.srcBp==='default' ? '<div style="font-size:10px;color:var(--muted)">初期 '+d.pct+'%</div>' : '')+(_lg ? '<div style="font-size:10px;font-weight:700">225 点満点のときの値・選び直し</div>' : '')+'</td>'
+      +'<td style="padding:6px 7px;text-align:right'+(_lg ? ';color:var(--red)' : '')+'"><b>'+kevPtsTxt(bp)+'</b>'+(_B.srcBp==='default' ? '<div style="font-size:10px;color:var(--muted)">初期 '+d.pct+'%</div>' : '')+(_lg ? '<div style="font-size:10px;font-weight:700">'+(_B.lost ? 'v1099 の端末で保存し直し・入れ直し' : '225 点満点のときの値・選び直し')+'</div>' : '')+'</td>'
       +'<td style="padding:6px 7px;text-align:right">'+kevPtsTxt(bs)+(_B.srcBs==='default' ? '<div style="font-size:10px;color:var(--muted)">満点の 3%</div>' : '')+'</td>'
       +[3,2,1,0,-1,-2].map(function(st){ return '<td style="padding:6px 7px;text-align:right'+(st===0 ? ';font-weight:800' : '')+'">'+at(st)+'</td>'; }).join('')
       +'<td style="padding:6px 7px;white-space:nowrap'+(rb ? ';color:var(--red);font-weight:700' : '')+'">'+(R.c.on===false ? '1.00 固定' : kevF2(R.c.lo)+'〜'+kevF2(R.c.hi))+(rb ? '<div style="font-size:10px">設定の確認が必要</div>' : '')+'</td>'

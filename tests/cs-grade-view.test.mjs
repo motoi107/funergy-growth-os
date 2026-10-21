@@ -245,7 +245,7 @@ test('independent review P1-1: the settings forms do not put a v1099 G2 base bac
   c.STORE.bonus_eval_rule = { 'G2|2026-Q3': { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 135, bs: 7 } }, _at: 1 } };
   run(c, `kevRuleOpen('G2', 'c')`);
   const F = run(c, `window._kevForm.cs`);
-  assert.deepEqual([F.own.bp, F.own.bs, F.def.bp, F.def.bs, F.max, F.legacy], [false, false, 252, 13, 420, { bp: true, bs: true }]);
+  assert.deepEqual([F.own.bp, F.own.bs, F.def.bp, F.def.bs, F.max, F.legacy.bp, F.legacy.bs, F.legacy.g2bp, F.legacy.lost], [false, false, 252, 13, 420, true, true, true, null]);
   const html = c.MODAL.at(-1);
   assert.match(html, /id="kevf-bp"[^>]*value=""[^>]*placeholder="252"/);
   assert.doesNotMatch(html, /value="135"|value="7"/);
