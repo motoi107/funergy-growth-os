@@ -4,6 +4,7 @@
 //   ③ supaFetchAll：Range ヘッダーを使わない（圧縮されるように）・主キーの順・途中のページが読めなければ null
 //   ④ app_state の差分の取り込み（_kvPullRows・_applyKvRows・_kvSeenRecord）
 //      初めての端末は全部／2 回目は変わった行だけ／関数が無ければ前の統合行だけ印で外す／取り込めなかった行は次も取る／7 日ごとに全部
+//   ⑥ 版・Service Worker（初めて入ったときは読み込み直さない）　⑦ ログイン画面の名簿の描き直し　⑧ 裏の名簿の取得が遅れて届いても新しい値を戻さない
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -294,12 +295,103 @@ test('⑤ the SQL to paste is the same as the migration and the check (deploy/pe
   assert.ok(!/\b(insert|update|delete|alter table|drop table|truncate)\b/i.test(mig.replace(/--[^\n]*/g, '')), 'reads only');
 });
 
-test('⑥ release markers: APP_VERSION and SW_BUILD are 1098; the first-install reload is guarded', () => {
+test('④-11 a row asked for by name that is not in the answer (key spelling, deleted in between) is not taken as gone: that pull takes everything', async () => {
+  const h = app({ tables: { app_state: seedCloud() } });
+  await pull(h);
+  h.mock.T.app_state.find(r => r.key === 'notifications').value = [{ id: 'n2' }];
+  const real = h.mock.handle;
+  h.mock.handle = (m, u, hd, b) => {
+    const r = real(m, u, hd, b);
+    if (m === 'GET' && u.pathname === '/rest/v1/app_state' && /key=in\./.test(decodeURIComponent(u.search))) return { status: r.status, body: JSON.stringify(JSON.parse(r.body).filter(x => x.key !== 'notifications')) };
+    return r;
+  };
+  const r = await pull(h);
+  assert.equal(r.how, 'all', 'falls back to the full pull');
+  assert.ok(r.keys.includes('notifications'));
+  assert.deepEqual(JSON.parse(h.c.STORE.get('notifications')), [{ id: 'n2' }]);
+});
+
+test('⑥ release markers: APP_VERSION and SW_BUILD are 1098', () => {
   assert.match(source, /APP_VERSION = '1098'/);
   assert.match(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'), /const SW_BUILD = '1098';/);
-  const i = source.indexOf("navigator.serviceWorker.addEventListener('controllerchange'");
-  const block = source.slice(i - 400, i + 400);
-  assert.match(block, /var _swHadController=!!navigator\.serviceWorker\.controller;/);
-  assert.match(block, /if\(!_swHadController && !window\._swUpdateAsked\) return;/);
   assert.match(source, /window\._swUpdateAsked=true;   \/\* v1098 \*\/\n      try\{ worker\.postMessage\(\{type:'SKIP_WAITING'\}\); \}catch\(e\)\{\}/);
+});
+
+// Service Worker の controllerchange（本物のコードを、偽の navigator・location で動かす）
+function swListener(hadController) {
+  const i = source.indexOf('        var _swReloaded=false;');
+  const j = source.indexOf('        });', source.indexOf("navigator.serviceWorker.addEventListener('controllerchange'", i)) + '        });'.length;
+  assert.ok(i > 0 && j > i);
+  const c = { window: {}, reloads: 0, cb: null };
+  c.navigator = { serviceWorker: { controller: hadController ? {} : null, addEventListener: (ev, f) => { if (ev === 'controllerchange') c.cb = f; } } };
+  c.location = { reload: () => { c.reloads++; } };
+  vm.createContext(c); vm.runInContext(source.slice(i, j), c);
+  return c;
+}
+test('⑥-2 service worker: the first install on a new device does not reload; a later update does (once)', () => {
+  const a = swListener(false);
+  a.cb(); assert.equal(a.reloads, 0, 'first install (clients.claim): no reload');
+  a.cb(); assert.equal(a.reloads, 1, 'a later update from another tab reloads, as before');
+  a.cb(); assert.equal(a.reloads, 1, 'only once');
+  const b = swListener(true);
+  b.cb(); assert.equal(b.reloads, 1, 'a device that already had a worker: an update reloads, as before');
+  const d = swListener(false); d.window._swUpdateAsked = true;
+  d.cb(); assert.equal(d.reloads, 1, '"更新" pressed on this tab: reload');
+});
+
+// ログイン画面：裏で名簿を取り直したときの描き直し（偽の DOM）
+function loginApp() {
+  const el = id => ({ id, style: { display: 'none' } });
+  const E = { 'login-screen': el('login-screen'), 'login-step-location': el('login-step-location'), 'login-step-name': el('login-step-name'), 'login-step-pin': el('login-step-pin') };
+  E['login-screen'].style.display = 'flex';
+  const c = { Date, setTimeout, calls: [], document: { getElementById: id => E[id] || null } };
+  vm.createContext(c);
+  vm.runInContext(['var loginLocation = null;', 'var _loginTapAt = 0, _loginRosterDirty = false;', fn('_loginRosterRefreshed'), fn('loginBackToName'), fn('loginBackToLocation'),
+    "function bootLogin(){ calls.push('boot'); } function refreshLoginLabels(){ calls.push('labels'); } function loginPickLocation(l){ calls.push('pick:' + l); document.getElementById('login-step-name').style.display='block'; document.getElementById('login-step-pin').style.display='none'; }"].join('\n'), c);
+  return { c, E, run: code => vm.runInContext(code, c) };
+}
+test('⑦ login: a roster refresh redraws the location and name steps, but never the PIN step (it redraws on Back)', () => {
+  const a = loginApp();
+  a.E['login-step-location'].style.display = 'block';
+  a.run('_loginRosterRefreshed()');
+  assert.deepEqual(a.c.calls, ['boot'], 'location step: the store buttons are redrawn');
+  const b = loginApp();
+  b.run("loginLocation = 'F01'"); b.E['login-step-name'].style.display = 'block';
+  b.run('_loginRosterRefreshed()');
+  assert.deepEqual(b.c.calls, ['boot', 'pick:F01'], 'name step: the names are redrawn');
+  const p = loginApp();
+  p.run("loginLocation = 'F01'"); p.E['login-step-pin'].style.display = 'block';
+  p.run('_loginRosterRefreshed()');
+  assert.deepEqual(p.c.calls, [], 'PIN step: nothing is touched (typed PIN, "確認中…", server messages stay)');
+  assert.equal(p.run('_loginRosterDirty'), true);
+  p.run('loginBackToName()');
+  assert.deepEqual(p.c.calls, ['boot', 'pick:F01'], 'Back: the new roster is drawn');
+  assert.equal(p.run('_loginRosterDirty'), false);
+  const q = loginApp();
+  q.run("loginLocation = 'F01'"); q.E['login-step-pin'].style.display = 'block';
+  q.run('_loginRosterRefreshed()'); q.run('loginBackToLocation()');
+  assert.deepEqual(q.c.calls, ['boot', 'labels'], 'Back to the locations: the store buttons are redrawn');
+  const t = loginApp();
+  t.E['login-step-location'].style.display = 'block'; t.run('_loginTapAt = Date.now()');
+  t.run('_loginRosterRefreshed()');
+  assert.deepEqual(t.c.calls, [], 'just tapped: waits before redrawing');
+});
+
+test('⑧ background roster fetch: a key written by someone else after it started (login import, an edit) is not overwritten by the late answer', async () => {
+  const emp = [{ id: 'e1', data: { id: 'e1', name: 'A' } }];
+  const st = [{ id: 'F01', data: { id: 'F01', name: 'Store' } }];
+  const h = app({ tables: { employees: emp, stores: st } });
+  let open; const gate = new Promise(r => { open = r; });
+  const f0 = h.c.fetch; h.c.fetch = async (u, o) => { await gate; return f0(u, o); };
+  vm.runInContext(fn('loginBootstrapPull') + `
+    function ls(k, d){ return d; } function showSyncSplash(){ } function hideSyncSplash(){ }
+    async function refreshStaffPinsFromCloud(){ } function refreshStores(){ } function _empMergeCloud(a){ return a; }
+    function _loginRosterRefreshed(){ ROSTER = (typeof ROSTER === 'number' ? ROSTER : 0) + 1; }`, h.c);
+  h.c.STORE.set('m_employees', JSON.stringify([{ id: 'e1', name: 'old' }]));
+  h.c.STORE.set('m_stores', JSON.stringify([{ id: 'F01', name: 'old' }]));
+  const p = h.run('loginBootstrapPull({ background: true })');
+  h.c.STORE.set('m_stores', JSON.stringify([{ id: 'F01', name: 'newer (written after login)' }]));
+  open(); await p;
+  assert.equal(JSON.parse(h.c.STORE.get('m_stores'))[0].name, 'newer (written after login)', 'the newer stores are kept');
+  assert.equal(JSON.parse(h.c.STORE.get('m_employees'))[0].name, 'A', 'the untouched key is updated from the cloud');
 });

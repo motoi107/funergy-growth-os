@@ -9690,6 +9690,9 @@ async function _kvFetchKeys(keys){
     batch.push(q1); len+=el;
   }
   if(!(await flush())) return null;
+  var _got={}; out.forEach(function(r){ if(r && typeof r.key==='string') _got[r.key]=1; });
+  var _miss=0; keys.forEach(function(k){ if(!_got[k]) _miss++; });
+  if(_miss){ console.warn('kv keys: '+_miss+' requested rows missing; full pull'); return null; }   /* キーの名前はログに出さない */
   return out;
 }
 /* ログイン・「最新に更新」の app_state の取り込み。返すのは _applyKvRows に渡す行（今までと同じ形）。
@@ -14464,13 +14467,14 @@ function loginPickStoreAccount(storeId) {
 }
 
 function loginBackToLocation() {
+  if (_loginRosterDirty) { _loginRosterDirty = false; try { bootLogin(); } catch(e){} }   /* v1098: PIN の段のあいだに取り直した名簿で所属の並びを描き直す */
   document.getElementById('login-step-location').style.display='block';
   document.getElementById('login-step-name').style.display='none';
   document.getElementById('login-step-pin').style.display='none';
   refreshLoginLabels();
 }
 function loginBackToName() {
-  if (_loginRosterDirty && loginLocation) { _loginRosterDirty = false; try { loginPickLocation(loginLocation); return; } catch(e){} }   /* v1098: PIN の段にいるあいだに名簿が新しくなっていたら、名前の並びを描き直す */
+  if (_loginRosterDirty && loginLocation) { _loginRosterDirty = false; try { bootLogin(); loginPickLocation(loginLocation); return; } catch(e){} }   /* v1098: PIN の段にいるあいだに名簿が新しくなっていたら、所属と名前の並びを描き直す */
   _loginRosterDirty = false;
   document.getElementById('login-step-name').style.display='block';
   document.getElementById('login-step-pin').style.display='none';
@@ -14775,10 +14779,11 @@ function _loginRosterRefreshed(tries){
     var scr=document.getElementById('login-screen'); if(!scr || scr.style.display==='none') return;
     /* 押している最中に並びが変わらないように、押した直後は少し待ってから描き直す */
     if(Date.now()-_loginTapAt<700 && (tries||0)<6){ setTimeout(function(){ _loginRosterRefreshed((tries||0)+1); }, 700); return; }
-    var loc=document.getElementById('login-step-location'), nm=document.getElementById('login-step-name'), pin=document.getElementById('login-step-pin');
+    var nm=document.getElementById('login-step-name'), pin=document.getElementById('login-step-pin');
+    /* PIN の段は何も描き直さない（打った PIN・「確認中…」・サーバーの知らせ・店舗PINの説明をそのまま）。戻ったときに描き直す */
+    if(pin && pin.style.display!=='none'){ _loginRosterDirty = true; return; }
     try{ bootLogin(); }catch(e){}   /* 所属の並び（見えていなくても、戻ったときに新しい並び） */
     if(nm && nm.style.display!=='none' && loginLocation) loginPickLocation(loginLocation);
-    else if(pin && pin.style.display!=='none') _loginRosterDirty = true;   /* PIN の段はそのまま。名前の段へ戻ったときに描き直す */
   }catch(e){}
 }
 async function loginBootstrapPull(opt){
@@ -14792,9 +14797,11 @@ async function loginBootstrapPull(opt){
       var _r = await Promise.all([ supaFetchAll('employees','data'), supaFetchAll('stores','data'),
         (async function(){ try { await refreshStaffPinsFromCloud(); } catch(e){} })() ]);
       var emps = _r[0];
-      if (Array.isArray(emps) && emps.length){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) _lsWriteVerified('m_employees', JSON.stringify(_empMergeCloud(a))); }   /* v763 → v1085: 送れていない変更を残す */
+      /* v1098: 裏で取るときは、取り始めたあとにほかが書いたキー（ログインのあとのまとめ取り・編集）は書かない（遅れて届いた古い名簿で戻さない） */
+      var _mine = function(k, i){ return !bg || _lsStoreGet(k)===before[i]; };
+      if (Array.isArray(emps) && emps.length && _mine('m_employees', 0)){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) _lsWriteVerified('m_employees', JSON.stringify(_empMergeCloud(a))); }   /* v763 → v1085: 送れていない変更を残す */
       var sts = _r[1];
-      if (Array.isArray(sts) && sts.length){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
+      if (Array.isArray(sts) && sts.length && _mine('m_stores', 1)){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
       try { refreshStores(); } catch(e){}
     })();
     if (bg) await work;
@@ -86922,7 +86929,7 @@ function hapticDiagHtml(){
            読み込み直すのは、前の版の Service Worker が動いていた（＝更新）か、「更新」を押したときだけ */
         var _swHadController=!!navigator.serviceWorker.controller;
         navigator.serviceWorker.addEventListener('controllerchange', function(){
-          if(!_swHadController && !window._swUpdateAsked) return;
+          if(!_swHadController && !window._swUpdateAsked){ _swHadController=true; return; }   /* 初めて入ったときの 1 回だけ見送る */
           if(_swReloaded) return; _swReloaded=true; window._swReloaded=true; location.reload();
         });
       });
