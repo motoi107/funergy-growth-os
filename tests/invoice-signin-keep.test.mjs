@@ -225,7 +225,7 @@ test('logging out or signing in meanwhile: the restore hands nothing over and ov
   c.M._invIn.health = { review: 3 }; c.M._invIn.review = { rows: [1] }; c.M._invIn.loaded = { health: 1 }; c.M._invIn.restoreTried = 'e:E2'; c.M._invIn.keptSession = {}; c.M._invIn.error = 'e';
   c.run('invInReset()');
   assert.deepEqual([c.M._invIn.health, c.M._invIn.review, c.M._invIn.restoreTried, c.M._invIn.keptSession, c.M._invIn.error, Object.keys(c.M._invIn.loaded).length], [null, null, null, null, '', 0]);
-  const logout = html.slice(html.indexOf('function doLogout()'), html.indexOf('function doLogout()') + 900);
+  const logout = html.slice(html.indexOf('function doLogout()'), html.indexOf('\n}', html.indexOf('function doLogout()')));   // v1098: the whole function (a line added near the top pushed these past 900 characters)
   assert.match(logout, /botResetShared\(\);[^\n]*\n\s*if\(typeof invInReset==='function'\) invInReset\(\);/);
 });
 

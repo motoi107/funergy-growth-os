@@ -190,11 +190,11 @@ LaLa のページを描くたびに Realtime を始め直し、始め直すと�
 ## 6. 確かめたこと
 
 - 合成データ（`tests/perf/gen-data.mjs`。行の数と大きさは本番に合わせた・名前と金額は作りもの）と模擬サーバー。本番の Supabase にはつないでいない・本番のデータは読み書きしていない。
-- `tests/perf-v1098.test.mjs` 20/20・`tests/app-state-index-sql.test.mjs` 2/2（PGlite・value が jsonb と json）。直しの試験は、その直しの前のコミットで落ちる。
+- `tests/perf-v1098.test.mjs` 22/22・`tests/app-state-index-sql.test.mjs` 2/2（PGlite・value が jsonb と json）。直しの試験は、その直しの前のコミットで落ちる（LaLa の見張りの 2 件⑨は `e55c7a5` で落ちる：LaLa から LaLa を押しても取り直さない・遅れて届いた答えで描き直す・400 ミリ秒あとの描き直しが見張りを見ない）。
 - `tests/perf/e2e-check.mjs`（模擬サーバー・合成データ・VM の Chromium・2 台）：17 項目すべて OK（最後のコードで流した）。初めての端末で Service Worker が入っても読み込み直さない・1 回目は全部取って印を記録・名簿を 4 秒遅らせてもログイン画面は待たない・同期の画面のあいだに描かない・Toast の呼び出しは店ごとに 2 回まで・2 回目は変わった行だけ（一覧 1 回・値 1 回・取りこぼしも余分も無し）・端末の写しだけ変わった行は取り直す・39 ページのどれも読むだけの写しを書き換えない・LaLa のページに 6 秒いても取り直しと接続が続かない・離れたら止まり、開き直すと始め直す・2 回のログインでページの例外なし・差分で取り込んだ端末と全部取り直した端末で app_state のキー（424）と中身が同じ。あわせて LaLa のページに 10 秒いたときの通信は 3 件（v1097 は約 330 件）。
 - `tests/perf/leak-check.mjs`（GM・39 ページを 3 周・そのあと 120 秒置く）：v1097 はタイマー 7 → 10 → 13 → 16・window の受け口 28 → 40 → 52 → 64 と周ごとに増えた（LaLa のページ）。v1098（`e3d0a68`）は 3 周とも タイマー 7・受け口 28（window）・8（document）・DOM の要素 1,493 のまま（document の受け口が v1097 より 1 つ多いのは、ログイン画面で最後に触った時刻を覚える受け口で、初めに 1 回だけ付ける）。JavaScript のメモリは両方の版とも 1 周に約 1MB ずつ増えた（v1097 29 → 32MB・v1098 35 → 38MB。3 周しか見ていないので、どこかで止まるかは分からない）。置いておいた 120 秒の通信は 32 件・14.8KB → 28 件・14.2KB（Realtime の接続 14 → 12 件）。
 - `python3 scripts/check-static-release.py`：pass・版 1098（index.html 7,599,025 バイト・gzip の見積もり 2,150,034 バイト。構文と版の確かめだけ）。
-- `node --test tests/*.test.mjs`（`invoice-mutations` 以外）：v1097（`c4dd031`）994 件のうち 27 件が落ちる。v1098 は 1,016 件で、同じ 27 件のほかに 12 件が落ちた → 3 つの試験ファイル（`acct-review-unify`・`invoice-purchase-ui`・`lunch-challenge`）が、アプリの関数を抜き出して動かすときに `lsSplitRO` を入れていなかった・まとめ取りの文字そのものを見ていた。アプリは直さず、試験を直した（`lsSplitRO` を足す・まとめ取りで除く行を `KV_SKIP_PREFIX` から見る）。3 つは 44/44。落ちる 27 件（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）は v1097 と同じ名前。
+- `node --test tests/*.test.mjs`（`invoice-mutations` 以外）：v1097（`c4dd031`）994 件のうち 27 件が落ちる。v1098 は 1,016 件で、同じ 27 件のほかに 12 件が落ちた → 3 つの試験ファイル（`acct-review-unify`・`invoice-purchase-ui`・`lunch-challenge`）が、アプリの関数を抜き出して動かすときに `lsSplitRO` を入れていなかった・まとめ取りの文字そのものを見ていた。アプリは直さず、試験を直した（`lsSplitRO` を足す・まとめ取りで除く行を `KV_SKIP_PREFIX` から見る）。3 つは 44/44。`e55c7a5` ではもう 1 件（`invoice-signin-keep` の「logging out or signing in meanwhile」）が落ちた → ログアウトに LaLa の見張りを止める 1 行を足したので、試験が `doLogout` の初めの 900 文字の中に探していた行がその外に出た。試験が関数の終わりまで読むように直した（12/12）。落ちる 27 件（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）は v1097 と同じ名前。
 
 ## 7. 限界・確かめていないこと・残っていること
 
@@ -202,6 +202,7 @@ LaLa のページを描くたびに Realtime を始め直し、始め直すと�
 - 本番の Supabase の速さ（`app_state_index` の SQL の時間・行の一覧の時間）は測っていない。合成データで本物の PostgreSQL（PGlite）に流して、value が jsonb・json のどちらでも、答えの形・`md5(value::text)` と同じこと・中身を変えると印が変わること・接頭辞の行を返さないこと・確認の SQL が 6 行 OK・外す SQL で消えることだけ確かめた（`tests/app-state-index-sql.test.mjs`）。
 - `app_state_index` は呼ぶたびに全部の行の md5 を計算する（786 行・22.7MB なら 1 ページ）。行が 1,000 を超えると 2 ページ目でもう一度計算する（関数は `set search_path` を付けているので、PostgreSQL がまとめて実行しない）。行がもっと増えたら、書くたびに印を表に残す見張り（trigger）に変える（表を変えるので、今回はしない）。
 - 初めて開いた端末で、ちょうど開いているあいだに新しい版が公開されると、読み込み直さないぶん、次に開くまで前の版の画面のまま（「更新」の知らせは出る）。前は読み込み直していた。
+- 4 回目の独立レビュー（`e55c7a5`・LaLa の見張りの直し）：P1・P2 なし。P3 のうち 4 つを直した（止めたあとに届いた答えでは描かない・始め直さない／go を通らずにほかのページを描いたときも止める／LaLa から LaLa を押したら始め直さずに 1 回取り直す／接続の名前は時刻ではなく数え札）。残したもの（v1091・前から）：通知（`rt-notifications`）と Tip Rate（`rt-tip-rate`）の Realtime は決まった名前の接続で、閉じている途中に同じ名前で作り直すと、閉じかけの接続を使うことがある（LaLa だけ別の名前にした）。
 - 3 回目の独立レビュー（`49e8c54`・`e3d0a68`）の P3 で、直さずに残したもの（どれも v1097 から）：
   - 遅い回線の初めての端末では、8 秒たつと取り込みの途中でも画面を描き（v652）、取り込みが終わっても描き直さない。そのページを開き直すまで、app_state の行の無い画面のまま（2 回目からの端末は前の写しが見える）。終わったときに描き直すと、打ちかけの入力が消えることがあるので、「新しいデータを取り込みました［表示を更新］」のような知らせにするのがよい（画面の動きが変わるので UI 案から）。
   - 経理・GM・CEO の管理画面（`showManagerSecure`）も、裏の取り込みが終わる前に描く。

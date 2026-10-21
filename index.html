@@ -15105,7 +15105,8 @@ function goGroup(groupId) {
 
 function go(page) {
   try{ page = navResolvePage(page); }catch(e){}   /* v1084: 廃止・移動した画面の古い行き先 */
-  try{ if(((curPage==='lala' && page!=='lala') || (_lalaPollTimer && !(curPage==='lala' && page==='lala'))) && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v804。v1098：ほかの道で離れて動いたままなら止める（LaLa を開くときは始め直して、すぐ取り直す） */
+  try{ if(((curPage==='lala' && page!=='lala') || (_lalaPollTimer && !(curPage==='lala' && page==='lala'))) && typeof lalaRealtimeStop==='function') lalaRealtimeStop();
+       else if(curPage==='lala' && page==='lala' && _lalaPollTimer && typeof lalaPullNow==='function') lalaPullNow(); }catch(e){}   /* v804。v1098：ほかの道で離れて動いたままなら止める（LaLa を開くときは始め直して、すぐ取り直す）・LaLa から LaLa を押したら始め直さずに 1 回取り直す */
   // 全店: シフト作成(shift_admin)は既定を翌週に。離れたら今週に戻す（スタッフ閲覧側は今週基準を保つ）。
   try { if (page==='shift_admin' && curPage!=='shift_admin') { _shiftWeekOff = 1; } else if (page!=='shift_admin' && curPage==='shift_admin') { _shiftWeekOff = 0; } } catch(e){}
   /* v897: 割引カードから離れたら秒時計を止める（setInterval の残留防止） */
@@ -16881,6 +16882,7 @@ function renderPage(page) {
   /* v1084: 廃止・移動した画面の古い行き先は今の画面へ（go を通らずに来たとき。ナビの表示もそろえる） */
   try { var _np = navResolvePage(page); if (_np !== page) { page = _np; curPage = _np; curGroup = groupOfPage(_np).id; buildNav(); } } catch(e){}
   if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
+  try{ if(page!=='lala' && _lalaPollTimer && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa 以外を描くときは LaLa の見張りを止める（go を通らない道でも） */
   var el = document.getElementById('main-content');
   /* v841: 統合コンソールのときだけ .main の幅制限を外す。他画面には影響しない。 */
   try { document.body.classList.toggle('md-wide',
@@ -81083,7 +81085,7 @@ function _lalaCommit(id, field, value, key, isRetry){
   if(r.reason==='conflict'){
     _lalaMark(key,'error');
     showToast('このタスクは他の人が更新しました。最新の内容を読み込みます','warning');
-    setTimeout(function(){ if(curPage==='lala') renderPage('lala'); }, 400);   /* v1098：もう離れていたら描かない */
+    setTimeout(function(){ if(curPage==='lala' && _lalaPollTimer) renderPage('lala'); }, 400);   /* v1098：もう離れていた・ログアウトしたら描かない */
     return;
   }
   _lalaMark(key,'error');   /* 入力内容は _lalaDraft に残したまま */
@@ -81304,11 +81306,11 @@ function lalaConfirmDelete(id){
   try{ lalaPushNow(); }catch(e){} renderPage('lala');
 }
 /* ---- 同期（通知と同じ仕組み） ---- */
-var _lalaRtChannel=null, _lalaPollTimer=null;
+var _lalaRtChannel=null, _lalaPollTimer=null, _lalaRtSeq=0;
 async function lalaPullNow(){
   try{
     if(typeof pullOpKey==='function'){ await pullOpKey('lala_tasks'); }
-    if(curPage==='lala') renderPage('lala');
+    if(curPage==='lala' && _lalaPollTimer) renderPage('lala');   /* v1098：止めたあと（離れた・ログアウト）に届いた答えでは描かない・始め直さない */
   }catch(e){}
 }
 async function lalaPushNow(){
@@ -81325,7 +81327,7 @@ function lalaRealtimeStart(){
       /* v1098：通知・Tip Rate と同じ 1 つの接続を使う（前は始めるたびに新しい接続を作り、タイマーと受け口が残っていた） */
       if(!_rtClient) _rtClient=window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
       var cl=_rtClient;
-      _lalaRtChannel=cl.channel('rt-lala-'+Date.now())   /* v1098：毎回別の名前（閉じている途中の同じ名前の購読を使わない） */
+      _lalaRtChannel=cl.channel('rt-lala-'+(++_lalaRtSeq))   /* v1098：毎回別の名前（閉じている途中の同じ名前の購読を使わない・同じミリ秒でも別） */
         .on('postgres_changes', { event:'*', schema:'public', table:'app_state', filter:'key=eq.lala_tasks' }, function(){ lalaPullNow(); })
         .subscribe();
     }

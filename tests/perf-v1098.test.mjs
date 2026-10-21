@@ -407,3 +407,72 @@ test('⑧ background roster fetch: a key written by someone else after it starte
   assert.equal(JSON.parse(h.c.STORE.get('m_stores'))[0].name, 'newer (written after login)', 'the newer stores are kept');
   assert.equal(JSON.parse(h.c.STORE.get('m_employees'))[0].name, 'A', 'the untouched key is updated from the cloud');
 });
+
+function lalaApp() {
+  const timers = new Map(); let tid = 0;
+  const channels = [], removed = [];
+  const el = { innerHTML: '' };
+  const c = {
+    Date: { now: () => 1760000000000 },   // the same millisecond every time
+    setInterval: (f) => { timers.set(++tid, f); return tid; },
+    clearInterval: (id) => { timers.delete(id); },
+    console,
+    document: { hidden: false, getElementById: () => el, body: { classList: { toggle() {} } } },
+    supabase: { createClient: () => ({
+      channel(name) { const ch = { name, state: 'joined', on() { return ch; }, subscribe() { return ch; } }; channels.push(ch); return ch; },
+      removeChannel(ch) { removed.push(ch.name); },
+    }) },
+  };
+  c.window = c; c.scrollTo = () => {};
+  vm.createContext(c);
+  vm.runInContext([
+    "var curPage = 'settings', curGroup = '', curStore = 'F06', _shiftWeekOff = 0, _rtClient = null, SUPABASE_URL = 'u', SUPABASE_ANON = 'k';",
+    'var _lalaRtChannel=null, _lalaPollTimer=null, _lalaRtSeq=0;',
+    'var PULLS = 0, GATE = null, LALA_DRAWS = 0;',
+    'async function pullOpKey(k){ PULLS++; if (GATE) await GATE; }',
+    "function renderLala(){ LALA_DRAWS++; return 'lala'; } function renderSettings(){ return 'settings'; } function attachPageEvents(){}",
+    'function navResolvePage(p){ return p; } function groupOfPage(p){ return { id: p }; } function buildNav(){}',
+    fn('lalaPullNow'), fn('lalaRealtimeStart'), fn('lalaRealtimeStop'), fn('go'), fn('renderPage'),
+  ].join('\n'), c);
+  const run = code => vm.runInContext(code, c);
+  const tick = () => new Promise(r => setImmediate(r));
+  return { c, run, tick, timers, channels, removed };
+}
+test('⑨ LaLa watcher: starts once on opening, is not restarted by its own pull, stops on any way out, and a late answer does not restart it', async () => {
+  const a = lalaApp();
+  a.run("go('lala')"); await a.tick();
+  assert.equal(a.run('PULLS'), 1, 'opening LaLa pulls once');
+  assert.equal(a.channels.length, 1, 'one Realtime channel');
+  assert.equal(a.timers.size, 1, 'one poll timer');
+  assert.equal(a.run('LALA_DRAWS'), 2, 'drawn on opening and once more when the pull came back');
+  await a.tick();
+  assert.equal(a.run('PULLS'), 1, 'its own redraw does not start it again (v1097 looped here)');
+
+  a.run("go('lala')"); await a.tick();
+  assert.equal(a.run('PULLS'), 2, 'pressing LaLa while on LaLa pulls once more');
+  assert.equal(a.channels.length, 1, '…without starting the channel again');
+
+  a.run("curPage = 'settings'; renderPage('settings')");
+  assert.equal(a.timers.size, 0, 'drawing another page without go() stops the timer');
+  assert.equal(a.removed.length, 1, '…and removes the channel');
+  assert.equal(a.run('_lalaPollTimer'), null);
+
+  a.run("go('lala')"); await a.tick();
+  assert.equal(a.channels.length, 2, 'coming back starts it again');
+  assert.notEqual(a.channels[0].name, a.channels[1].name, 'a new channel name even in the same millisecond');
+  assert.equal(a.timers.size, 1);
+
+  let open; a.c.GATE = new Promise(r => { open = r; });
+  a.run("go('lala')");                       // a pull is now waiting for its answer
+  const draws = a.run('LALA_DRAWS'), chans = a.channels.length;
+  a.run('lalaRealtimeStop()');               // what logout does (curPage is still 'lala')
+  open(); await a.tick(); await a.tick();
+  assert.equal(a.run('LALA_DRAWS'), draws, 'the late answer after logout does not draw');
+  assert.equal(a.channels.length, chans, '…and does not start the watcher again');
+  assert.equal(a.timers.size, 0);
+});
+test('⑨-2 LaLa watcher: logout stops it; the delayed redraw after a save conflict only happens while the watcher runs', () => {
+  const s = source.slice(source.indexOf('\nfunction doLogout('), source.indexOf('\n}', source.indexOf('\nfunction doLogout(') + 1));
+  assert.ok(/lalaRealtimeStop\(\)/.test(s), 'doLogout stops the LaLa watcher');
+  assert.ok(/setTimeout\(function\(\)\{ if\(curPage==='lala' && _lalaPollTimer\) renderPage\('lala'\); \}, 400\)/.test(source), 'the 400 ms redraw checks the watcher');
+});
