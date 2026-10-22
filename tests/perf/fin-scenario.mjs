@@ -74,6 +74,7 @@ R.open = await page.evaluate(async () => {
 const MEMO = arg('memo', '');
 if (MEMO) {
   await page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
+  if (arg('page', '')) { await page.evaluate(p => { try { go(p); } catch (e) { } }, arg('page', '')); await sleep(1500); }   // 入力画面を開く元のページ（予実など）
   await sleep(500);
   R.memo_open = await page.evaluate(async () => { let r; try { r = await openDayMemo('F01', '2026-10-20', '月'); } catch (e) { return 'THROW ' + e.message; } await new Promise(res => setTimeout(res, 500)); return !!document.getElementById('dm-memo'); });
   if (R.memo_open === true) {
