@@ -45255,7 +45255,7 @@ function botScan(){
 }
 function botKindText(kinds,lang){
   var en={auto:'Possible automatic clock-out (time-window estimate)',reverse:'Clock-in/out reversed',bad:'Invalid or missing time',long:'Long shift',short:'Very short shift',overlap:'Overlapping shifts'};
-  return (kinds||[]).map(function(k){return lang==='en'?(en[k]||k):(CE_KIND_LABEL[k]||k);}).join(' / ');
+  return (kinds||[]).map(function(k){if(/^job_/.test(String(k))&&typeof botJobKindText==='function')return botJobKindText(k,'16:30',lang);return lang==='en'?(en[k]||k):(CE_KIND_LABEL[k]||k);}).join(' / ');   /* v1105: Job確認の理由も */
 }
 function botDraftText(r,lang){
   var lines=lang==='en'?['[Funergy | Attendance check]',r.storeName+' / '+r.date,'Team member: '+r.name,'Please confirm: '+botKindText(r.kinds,'en')]:['【Funergy｜勤怠確認】',r.storeName+' / '+r.date,'対象：'+r.name,'確認内容：'+botKindText(r.kinds,'ja')];
@@ -45311,7 +45311,8 @@ function botStatus(s){var ja={review:'確認待ち',waiting:'返信待ち',corre
 function botCaseKind(k){return ({labor:t('勤怠','Attendance'),void:t('決済Void','Payment Void'),unpaid:t('未決済','Unpaid'),purchase:t('発注','Purchase')})[k]||k;}
 function botSuggestedDraft(c){
   var p=c.payload||{},en=curLang==='en',text='';
-  if(c.kind==='labor'){
+  if(c.kind==='labor'&&botIsJobCase(c)){ text=botJobDraft(c); }   /* v1105: Job確認（16:30 基準） */
+  else if(c.kind==='labor'){
     text=(en?'Please check the attendance entry for ':'勤怠をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botKindText(p.kinds,en?'en':'ja');
     (p.shifts||[]).forEach(function(s){text+='\n'+_ceClock(s.inDate)+' → '+_ceClock(s.outDate);});
     if(p.open_shift)text+='\n'+(en?'Clock-out is missing. Please confirm whether this shift is still ongoing.':'退勤時刻がありません。勤務継続中か、打刻漏れかをご確認ください。');
@@ -45562,13 +45563,13 @@ function _botSharedBody(){
 }
 function _botCaseListHtml(d){
   var esc=escapeHtml, stores=d.stores||[], all=d.cases||[];
-  var rows=all.filter(function(c){return (!_botShared.store||c.store_id===_botShared.store)&&(!_botShared.kind||c.kind===_botShared.kind)&&(!_botShared.status||c.status===_botShared.status);});
+  var rows=all.filter(function(c){return (!_botShared.store||c.store_id===_botShared.store)&&(!_botShared.kind||(_botShared.kind==='job'?botIsJobCase(c):c.kind===_botShared.kind))&&(!_botShared.status||c.status===_botShared.status);});   /* v1105: 「Job確認」で絞り込める（勤怠には Job確認も入る） */
   var filtered=!!(_botShared.store||_botShared.kind||_botShared.status);
   var h='<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>'+t('案件一覧','Cases')
     +'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="botNewPurchase()"><i class="ti ti-plus"></i> '+t('発注依頼','Purchase request')+'</button></div>'
     +'<div class="bot-filter">'
     +'<select class="form-select" onchange="botSetFilter(\'store\',this.value)"><option value="">'+t('全店舗','All stores')+'</option>'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'"'+(_botShared.store===s.store_id?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select>'
-    +'<select class="form-select" onchange="botSetFilter(\'kind\',this.value)"><option value="">'+t('全種類','All types')+'</option>'+['labor','void','unpaid','purchase'].map(function(k){return '<option value="'+k+'"'+(_botShared.kind===k?' selected':'')+'>'+botCaseKind(k)+'</option>';}).join('')+'</select>'
+    +'<select class="form-select" onchange="botSetFilter(\'kind\',this.value)"><option value="">'+t('全種類','All types')+'</option>'+['labor','void','unpaid','purchase'].map(function(k){return '<option value="'+k+'"'+(_botShared.kind===k?' selected':'')+'>'+botCaseKind(k)+'</option>';}).join('')+'<option value="job"'+(_botShared.kind==='job'?' selected':'')+'>'+t('Job確認（16:30）','Job check (16:30)')+'</option></select>'
     +'<select class="form-select" onchange="botSetFilter(\'status\',this.value)"><option value="">'+t('全状況','All statuses')+'</option>'+['review','waiting','correction','verify','hq_review','ready','done'].map(function(s){return '<option value="'+s+'"'+(_botShared.status===s?' selected':'')+'>'+botStatus(s)+'</option>';}).join('')+'</select>'
     +'</div>'
     +'<div class="bot-note" style="margin:0 0 4px">'+t('更新順・最新200件','Latest 200 cases by update time')+' · '
@@ -45576,8 +45577,8 @@ function _botCaseListHtml(d){
   if(!rows.length) h+='<div style="font-size:12px;color:var(--muted);padding:8px 2px">'+t('表示対象の案件はありません。未取得の店舗について異常なしを示すものではありません。','No cases in this view. Stores not yet scanned have not been assessed.')+'</div>';
   rows.forEach(function(c){
     h+='<div class="bot-row tap" onclick="botCaseModal(\''+esc(c.id)+'\')">'
-      +'<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+botStatusTag(c.status)+'</div>'
-      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKind(c.kind))+' · '+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+' · '+esc(c.assignee||t('店舗マネージャー','Store manager'))+'</div></div>';
+      +'<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+(botIsJobCase(c)&&botJobUnsure(c)?'<span class="tag tag-yellow">'+t('判定不能','Cannot judge')+'</span>':'')+botStatusTag(c.status)+'</div>'
+      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKindOf(c))+' · '+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+' · '+esc(c.assignee||t('店舗マネージャー','Store manager'))+'</div></div>';
   });
   return h+'</div>';
 }
@@ -45623,7 +45624,8 @@ function _botSettingsHtml(d){
              +b('botWorkerToggle()',d.worker_enabled?'ti-player-pause':'ti-player-play',d.worker_enabled?t('自動取得を停止','Pause collection'):t('自動取得を有効化','Enable collection'))
              +b('botFinanceToggle()','ti-receipt',d.finance_enabled?t('決済の自動取得を停止','Pause payment collection'):t('決済Void・未決済の自動取得を有効化','Enable payment Void and unpaid collection'))
              +b('botGroupsModal()','ti-brand-line',t('LINEグループ設定','LINE group settings'))
-             +b('botClosureRulesModal()','ti-shield-check',t('本部確認の条件','HQ review rules'));
+             +b('botClosureRulesModal()','ti-shield-check',t('本部確認の条件','HQ review rules'))
+             +b('botJobCheckModal()','ti-clock-hour-4',t('Job確認（16:30 基準）','Job check (16:30 rule)'));   /* v1105 */
   if(office) h+=b('botOwnersModal()','ti-users',t('店舗の担当者設定','Store assignees'))
              +b('botResponseAccessModal()','ti-user-check',t('LINE回答権限の登録','LINE response permissions'));
   h+=b('botLineLinksModal()','ti-message-circle',t('LINE担当者登録','LINE assignee registration'));
@@ -45665,7 +45667,7 @@ function botDailyPanel(){
     }
     acts+='<button class="btn btn-secondary btn-sm" onclick="botMorningOpen(\''+c.id+'\',false)"><i class="ti ti-history"></i> '+t('案件・履歴を確認','Review case and history')+'</button>';
     return '<div class="bot-row"><div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+carry+botStatusTag(c.status)+'</div>'
-      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKind(c.kind))+' · '+esc((c.payload&&c.payload.store_name)||botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))
+      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKindOf(c))+' · '+esc((c.payload&&c.payload.store_name)||botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))
       +' · '+t('最終確認','Last checked')+' '+esc(botTime(c.last_checked_at))+(c.due_date?' · '+t('期限','Due')+' '+esc(botDay(c.due_date)):'')+'</div>'
       +(c.status==='hq_review'?'<div class="meta" style="color:var(--accent)">'+t('本部が承認または差し戻してください','HQ: approve or return')+'</div>':'')
       +'<div class="bot-actions">'+acts+'</div></div>';
@@ -45778,7 +45780,8 @@ async function botCaseModal(id,morning){
   var h='<div class="bot-ui"><div class="modal-title"><span class="bot-mt"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(c.code)+' '+esc(botCaseKind(c.kind))+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>';
   h+='<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1;font-size:15px">'+esc(c.subject)+'</b>'+botStatusTag(c.status)+'</div>'
     +'<div class="bot-note" style="margin-top:2px">'+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+(c.due_date?' · '+t('期限','Due')+' '+esc(botDay(c.due_date)):'')+'</div>';
-  if(c.kind==='labor'){
+  if(c.kind==='labor'&&botIsJobCase(c)) h+=botJobCaseHtml(c);   /* v1105: Job確認は今の勤怠の表示（_ceKindTags）を使わない */
+  else if(c.kind==='labor'){
     var lv=(p.kinds||[]).some(function(k){return CE_ERROR_KINDS.indexOf(k)>=0;})?'error':'warn';
     h+='<div class="bot-row" style="margin-top:8px">'+_ceKindTags(p.kinds||[], lv)
       +'<div style="font-size:11px;margin-top:4px;color:'+(lv==='error'?'var(--red)':'var(--yellow)')+'">'+(p.shifts||[]).map(function(sh){return esc(_ceClock(sh.inDate)+' → '+_ceClock(sh.outDate));}).join(' / ')+'</div>'
@@ -45871,6 +45874,150 @@ async function botCaseModal(id,morning){
 }
 
 setTimeout(botFetchSharedClock,0);
+/* ===== v1105: Job確認（16:30 基準）=====
+   判定は ops-bot（bot/job-check.mjs）。画面は 案件の表示・下書き・設定（GM・CEO）だけ。
+   Bot は打刻・Job・時給を直さない。 */
+var BOT_JOB_CHECK='job_1630';
+var BOT_JOB_UNSURE=['job_unknown','job_emp_unknown','job_class_unset','job_start_unknown'];
+function botIsJobCase(c){var p=(c&&c.payload)||{};return p.check===BOT_JOB_CHECK||(p.kinds||[]).some(function(k){return /^job_/.test(String(k));});}
+function botJobUnsure(c){var k=((c&&c.payload)||{}).kinds||[];return k.length>0&&k.every(function(x){return BOT_JOB_UNSURE.indexOf(x)>=0;});}
+function botJobCut(c){var cfg=((c&&c.payload)||{}).cfg||{};return /^\d{2}:\d{2}$/.test(cfg.cutoff||'')?cfg.cutoff:'16:30';}
+function botJobKindText(k,cut,lang){
+  cut=/^\d{2}:\d{2}$/.test(cut||'')?cut:'16:30';
+  var ja={job_before:cut+'前のためPrepか確認',job_after:cut+'以降のため営業用Jobか確認',job_straddle:cut+'をまたぐPrep（確認）',job_unknown:'判定不能：Jobが未分類（設定で選ぶ）',job_emp_unknown:'判定不能：従業員マスターに名前が見つからない',job_class_unset:'判定不能：G1-Pの扱いが未設定',job_start_unknown:'判定不能：開始時刻が分からない'};
+  var en={job_before:'Started before '+cut+': should be Prep',job_after:'Started at or after '+cut+': should be a service Job',job_straddle:'Prep continued past '+cut+' (check)',job_unknown:'Cannot judge: Job not classified (choose in settings)',job_emp_unknown:'Cannot judge: name not found in the employee master',job_class_unset:'Cannot judge: G1-P handling not set',job_start_unknown:'Cannot judge: start time unknown'};
+  return (lang==='en'?en:ja)[k]||k;
+}
+/* 営業日の 0 時（ハワイ時間）からの秒。日をまたいだ 0:30 は 24:30。Toast の +0000 も読む */
+function botJobSecs(v,bd){
+  if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(bd||''))return null;
+  var s=v.replace(/([+-]\d{2})(\d{2})$/,'$1:$2'),at=Date.parse(s),mid=Date.parse(bd+'T00:00:00-10:00');
+  if(!isFinite(at)||!isFinite(mid))return null;
+  var x=Math.floor((at-mid)/1000);return x>=0&&x<48*3600?x:null;
+}
+function botJobClock(x){if(x===null||x===undefined)return null;var h=Math.floor(x/3600),m=Math.floor(x%3600/60),s=x%60;return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
+function botJobGrade(c,lang){var cfg=((c&&c.payload)||{}).cfg||{};var g=cfg.grade;return g==='g1'?(lang==='en'?'Regular G1':'通常G1'):g==='g1p'?'G1-P':(lang==='en'?'Grade unknown':'区分不明');}
+/* 「LaLa／通常G1／15:00:12開始／Server → 16:30前のためPrepか確認」（ops-bot の jobCaseLine と同じ並び） */
+function botJobLine(c,lang){
+  var p=(c&&c.payload)||{},sh=(p.shifts||[])[0]||{},cut=botJobCut(c),en=lang==='en';
+  var secs=botJobSecs(sh.inDate,String(c.business_date||'').slice(0,10));
+  var start=secs===null?(en?'start unknown':'開始時刻不明'):(en?'started '+botJobClock(secs):botJobClock(secs)+'開始');
+  var store=String(p.store_name||botStoreName(c.store_id)||c.store_id||'');
+  return [store,botJobGrade(c,lang),start,(sh.job_name||(en?'Job unknown':'Job不明'))+' → '+(p.kinds||[]).map(function(k){return botJobKindText(k,cut,lang);}).join(en?' / ':'・')].join(en?' / ':'／');
+}
+function botCaseKindOf(c){return botIsJobCase(c)?t('勤怠・Job確認','Attendance · Job check'):botCaseKind(c.kind);}
+function botJobCaseHtml(c){
+  var esc=escapeHtml,p=c.payload||{},cfg=p.cfg||{},sh=(p.shifts||[])[0]||{},en=curLang==='en',cut=botJobCut(c),unsure=botJobUnsure(c);
+  var bd=String(c.business_date||'').slice(0,10),a=botJobSecs(sh.inDate,bd),b=botJobSecs(sh.outDate,bd);
+  var exp=cfg.expected==='prep'?'Prep':cfg.expected==='service'?t('営業用 Job','service Job'):'—';
+  var h='<div class="bot-row" style="margin-top:8px">'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(p.kinds||[]).map(function(k){return '<span class="tag '+(BOT_JOB_UNSURE.indexOf(k)>=0?'tag-yellow':'tag-red')+'">'+esc(botJobKindText(k,cut,en?'en':'ja'))+'</span>';}).join('')+'</div>'
+    +'<div style="font-size:12.5px;margin-top:6px;line-height:1.6"><b>'+esc(botJobLine(c,en?'en':'ja'))+'</b></div>'
+    +'<div style="font-size:12px;line-height:1.8;margin-top:4px">'
+    +'<div><span style="color:var(--muted)">'+t('打刻（ハワイ時間・営業日の 0 時から）','Punch (Hawaii time, from business-day midnight)')+'</span>　'+esc((a===null?t('不明','unknown'):botJobClock(a))+' 〜 '+(b===null?t('退勤なし','no clock-out'):botJobClock(b)))+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('実際の Job → 期待','Actual Job → expected')+'</span>　'+esc((sh.job_name||t('不明','unknown'))+' → '+exp)+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('判定したときの区分','Grade when checked')+'</span>　'+esc(botJobGrade(c,en?'en':'ja'))+(cfg.app_employee?' · '+t('従業員マスター','Employee master')+' '+esc(cfg.app_employee):'')+(p.graded_at?' · '+esc(botTime(p.graded_at)):'')+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('基準','Rule')+'</span>　'+esc(t(cut+' より前に始めた打刻は Prep、'+cut+':00 ちょうど以降は営業用 Job（丸めない）',
+        'Punches starting before '+cut+' are Prep; at or after '+cut+':00 a service Job (no rounding)'))+(cfg.from?' · '+esc(t(botDay(cfg.from)+' の勤怠から','from '+botDay(cfg.from))):'')+'</div>'
+    +'</div>';
+  if(unsure) h+='<div class="bot-note" style="color:var(--yellow);margin-top:4px"><i class="ti ti-help-circle"></i> '+t('判定不能：違反ではありません。設定（Job の区分・G1-P の扱い）か従業員マスターを確かめてください。','Cannot judge: not a violation. Check the settings (Job classes, G1-P handling) or the employee master.')+'</div>';
+  return h+'<div class="bot-note" style="margin-top:4px"><i class="ti ti-info-circle"></i> '+t('Bot は打刻・Job・時給を直しません。Toast で Job を直すと、次の確認で解決になります。','The Bot never edits punches, Jobs or wages. Once the Job is corrected in Toast, the next recheck resolves the case.')+'</div></div>';
+}
+function botJobDraft(c){
+  var p=c.payload||{},en=curLang==='en',cut=botJobCut(c);
+  if(botJobUnsure(c)) return (en?'[Job check] The Bot could not judge this punch. Please confirm the Job for ':'【Job確認】判定できなかった打刻です。Job をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botJobLine(c,en?'en':'ja');
+  return (en?'Please check the Job for ':'Job をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botJobLine(c,en?'en':'ja')+'\n'
+    +(en?'Regular G1 shifts that start before '+cut+' are clocked in as Prep; from '+cut+' on, as a service Job. If the Job in Toast is wrong, please correct it in Toast and reply with this case code and the correction. If it is correct, please reply with the reason.'
+        :'通常 G1 は '+cut+' より前に始める勤務を Prep、'+cut+' 以降を営業用の Job で打刻します。Toast の Job が違っていれば Toast で直し、この案件番号と直した内容をご返信ください。正しい場合は理由をご返信ください。');
+}
+
+/* --- 設定（GM・CEO）：店ごと。Toast の Job の ID で区分を決める --- */
+var _botJob={store:'',data:null,busy:false,error:'',form:null};
+var BOT_JOB_CLS=['','prep','service','exclude'];
+function botJobClsLabel(v){return ({'':t('未分類','Unclassified'),prep:'Prep',service:t('営業用','Service'),exclude:t('対象外','Excluded')})[v]||v;}
+function botJobDefaultFrom(store){return store==='F06'?'2026-10-16':(typeof bizToday==='function'?bizToday():botYesterday());}
+function botJobCheckModal(store){
+  var d=_botShared.data;if(!d||['gm','ceo'].indexOf(d.actor&&d.actor.role)<0)return;
+  var stores=d.stores||[];store=store||_botJob.store||((stores.find(function(s){return s.store_id==='F06';})||stores[0]||{}).store_id||'');
+  _botJob={store:store,data:null,busy:true,error:'',form:null};botJobRender();
+  if(!store){_botJob.busy=false;_botJob.error=t('店舗がありません','No stores');botJobRender();return;}
+  botAPI({action:'job_list',store_id:store}).then(function(r){if(_botJob.store!==store)return;_botJob.data=r;_botJob.form=botJobFormFrom(r,store);})
+    .catch(function(e){if(_botJob.store===store)_botJob.error=e.message;}).then(function(){if(_botJob.store===store){_botJob.busy=false;botJobRender();}});
+}
+function botJobFormFrom(r,store){
+  var c=r.config||{},jobs={};
+  Object.keys(c.jobs||{}).forEach(function(g){var j=c.jobs[g];jobs[g]={name:j.name||'',cls:j.cls||'',deleted:!!j.deleted,inToast:false};});
+  (r.jobs||[]).forEach(function(j){var o=jobs[j.guid]||{cls:''};jobs[j.guid]={name:j.title||o.name||'',cls:o.cls||'',deleted:!!j.deleted,inToast:true};});
+  return {enabled:!!c.enabled,cutoff:c.cutoff||'16:30',from:c.from||botJobDefaultFrom(store),g1p:c.g1p||'exclude',straddle:{enabled:!!(c.straddle&&c.straddle.enabled),minutes:(c.straddle&&c.straddle.minutes)||30},jobs:jobs,rev:Number(r.rev)||0,updated_at:r.updated_at||null,read_at:r.read_at||null};
+}
+function botJobRender(){
+  var esc=escapeHtml,d=_botShared.data||{},stores=d.stores||[],f=_botJob.form;
+  var h='<div class="bot-ui"><div class="modal-title"><span class="bot-mt"><i class="ti ti-clock-hour-4"></i> '+t('Job確認（16:30 基準）','Job check (16:30 rule)')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="bot-desc">'+t('打刻（Job の区間）の開始が基準の時刻より前なら Prep、ちょうど以降なら Prep 以外か。営業日の 0 時（ハワイ時間）から数え、日をまたいだ 0:30 は 24:30 として見ます。名前ではなく Job の ID で判定します。変えられるのは GM・CEO。','Checks whether a punch (Job segment) that starts before the cutoff is Prep and one that starts at or after it is not. Counted from business-day midnight (Hawaii); 0:30 after midnight counts as 24:30. Judged by Job ID, not name. GM or CEO only.')+'</div>'
+    +'<div class="form-group" style="margin-top:10px"><label class="form-label">'+t('店舗','Store')+'</label><select class="form-select" id="bot-job-store" onchange="botJobCheckModal(this.value)">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'"'+(s.store_id===_botJob.store?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select></div>';
+  if(_botJob.error) h+='<div class="alert alert-danger" role="alert"><i class="ti ti-alert-circle"></i><div>'+esc(_botJob.error)+'</div></div>';
+  if(_botJob.busy) h+='<div class="bot-note"><i class="ti ti-loader"></i> '+t('Toast の Job と今の設定を読んでいます…','Reading Toast Jobs and the current settings…')+'</div>';
+  if(f){
+    h+='<label class="bot-row" style="display:flex;gap:10px;align-items:center;font-size:13px;cursor:pointer"><input type="checkbox" id="bot-job-enabled" '+(f.enabled?'checked':'')+'> '+t('この店で使う','Use for this store')+'</label>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">'+t('基準の時刻（店の時間）','Cutoff (store time)')+'</label><input type="time" step="60" id="bot-job-cutoff" class="form-input" value="'+esc(f.cutoff)+'"></div>'
+      +'<div class="form-group"><label class="form-label">'+t('この日の勤怠から','From business date')+'</label><input type="date" id="bot-job-from" class="form-input" value="'+esc(f.from)+'"></div></div>'
+      +'<div class="bot-note" style="margin-top:0">'+t('知らせる先：朝 9:00 の勤怠管理（Moto・Yuki）の報告。同じ指摘は重ねて出しません。','Reported in the 09:00 attendance report (Moto, Yuki). The same finding is not repeated.')+'</div>';
+    var keys=Object.keys(f.jobs).sort(function(a,b){var x=f.jobs[a],y=f.jobs[b];return (y.inToast-x.inToast)||String(x.name).localeCompare(String(y.name))||a.localeCompare(b);});
+    var unset=keys.filter(function(g){return !f.jobs[g].cls&&f.jobs[g].inToast&&!f.jobs[g].deleted;}).length;
+    h+='<div class="bot-sec"><i class="ti ti-tags"></i>'+t('Job の区分（Toast のこの店の Job）','Job classes (this store’s Toast Jobs)')+'</div>'
+      +'<div class="bot-note" style="margin:0 0 6px">'+t('読み込んだ日時','Read at')+' '+esc(botTime(f.read_at))+' · '+keys.length+t('件','')+(unset?' · <b style="color:var(--yellow)">'+t('未分類','Unclassified')+' '+unset+'</b>':'')+'</div>'
+      +(keys.length?keys.map(function(g){var j=f.jobs[g];
+        return '<div class="bot-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:140px"><b>'+esc(j.name||t('（名前なし）','(no name)'))+'</b> <span class="bot-note" style="margin:0">…'+esc(g.slice(-4))+'</span>'
+          +(j.deleted?' <span class="tag tag-gray">'+t('Toast で削除済み','Deleted in Toast')+'</span>':'')+(!j.inToast?' <span class="tag tag-gray">'+t('Toast の一覧に無い','Not in Toast list')+'</span>':'')+'</div>'
+          +'<select class="form-select" style="width:auto" data-job="'+esc(g)+'" onchange="botJobSetCls(this.dataset.job,this.value)">'+BOT_JOB_CLS.map(function(v){return '<option value="'+v+'"'+(j.cls===v?' selected':'')+'>'+botJobClsLabel(v)+'</option>';}).join('')+'</select></div>';
+      }).join(''):'<div class="bot-note">'+t('Toast の Job がありません。','No Toast Jobs.')+'</div>')
+      +'<div class="bot-note">'+t('未分類の Job の打刻は「判定不能（Job 要確認）」になります。Prep 以外の通常の Job は「営業用」、見なくてよい Job（Server Default など）は「対象外」。','Punches on an unclassified Job are reported as “cannot judge (check Job)”. Mark normal non-Prep Jobs “Service” and Jobs to ignore (e.g. Server Default) “Excluded”.')+'</div>';
+    h+='<div class="bot-sec"><i class="ti ti-users"></i>'+t('だれを見るか（勤務した時点の区分）','Who is checked (grade at the time of the shift)')+'</div>'
+      +'<div class="bot-note" style="margin:0 0 6px">'+t('通常 G1（従業員マスターのグレード G1・Prep の印なし）は見る。G2 以上・ほかの店の人は見ない。判定したときの区分を案件に残します。','Regular G1 (grade G1 without the Prep mark) is checked; G2 and above are not. The grade at the time of checking is kept on the case.')+'</div>'
+      +[['exclude',t('G1-P（Prep 専門職）は見ない（Prep 専任・'+f.cutoff+' 以降も Prep でよい）','G1-P (Prep specialist) is not checked (Prep after '+f.cutoff+' is fine)')],['check',t('G1-P も通常 G1 と同じに見る','Check G1-P like regular G1')],['unset',t('G1-P は判定せず「要設定」と出す','Report G1-P as “needs setting” without judging')]].map(function(x){
+        return '<label class="bot-row" style="display:flex;gap:10px;align-items:center;font-size:12.5px;cursor:pointer"><input type="radio" name="bot-job-g1p" value="'+x[0]+'" '+(f.g1p===x[0]?'checked':'')+'> '+x[1]+'</label>';}).join('')
+      +'<label class="bot-row" style="display:flex;gap:8px;align-items:center;font-size:12.5px;flex-wrap:wrap"><input type="checkbox" id="bot-job-straddle" '+(f.straddle.enabled?'checked':'')+'> '+t('補助の確認：基準より前に Prep で始めて、基準を','Extra check: Prep started before the cutoff continues')+' <input type="number" min="1" max="600" step="1" id="bot-job-straddle-min" class="form-input" style="width:72px" value="'+esc(String(f.straddle.minutes))+'"> '+t('分より長く過ぎても Prep のまま（違反にはせず「確認」）','minutes past it (shown as “check”, not a violation)')+'</label>'
+      +'<div class="bot-note">'+t('Bot は打刻・Job・時給を直しません。設定を変えると、次の確認から新しい決まりで見ます（過去の案件の区分は残ります）。','The Bot never edits punches, Jobs or wages. New settings apply from the next check; existing cases keep the grade recorded when checked.')+'</div>'
+      +(f.updated_at?'<div class="bot-note">'+t('最後に保存','Last saved')+' '+esc(botTime(f.updated_at))+'</div>':'')
+      +'<div class="bot-actions"><button class="btn btn-secondary btn-sm" onclick="botJobCheckModal(_botJob.store)"><i class="ti ti-refresh"></i> '+t('Toast から読み直す','Reload from Toast')+'</button></div>'
+      +'<button class="btn btn-primary" style="width:100%;margin-top:8px" id="bot-job-save" onclick="botJobSave()"><i class="ti ti-device-floppy"></i> '+t('保存（GM・CEO）','Save (GM / CEO)')+'</button>';
+  }
+  h+='</div>';
+  if(document.getElementById('bot-job-store'))document.getElementById('bot-job-store').closest('.bot-ui').outerHTML=h;else openModal(h);
+}
+function botJobReadForm(){
+  var f=_botJob.form;if(!f)return null;
+  var g=function(id){return document.getElementById(id);},r=document.querySelector('input[name="bot-job-g1p"]:checked');
+  if(g('bot-job-enabled'))f.enabled=g('bot-job-enabled').checked;
+  if(g('bot-job-cutoff'))f.cutoff=g('bot-job-cutoff').value;
+  if(g('bot-job-from'))f.from=g('bot-job-from').value;
+  if(r)f.g1p=r.value;
+  if(g('bot-job-straddle'))f.straddle.enabled=g('bot-job-straddle').checked;
+  if(g('bot-job-straddle-min'))f.straddle.minutes=Number(g('bot-job-straddle-min').value);
+  return f;
+}
+function botJobSetCls(guid,v){botJobReadForm();if(_botJob.form&&_botJob.form.jobs[guid]&&BOT_JOB_CLS.indexOf(v)>=0)_botJob.form.jobs[guid].cls=v;}
+function botJobConfig(f){
+  var jobs={};Object.keys(f.jobs).forEach(function(g){var j=f.jobs[g];jobs[g]={name:String(j.name||'').slice(0,120),cls:j.cls||null,deleted:!!j.deleted};});
+  return {enabled:!!f.enabled,cutoff:f.cutoff,from:f.from,g1p:f.g1p,straddle:{enabled:!!f.straddle.enabled,minutes:f.straddle.minutes},jobs:jobs};
+}
+async function botJobSave(){
+  var f=botJobReadForm(),btn=document.getElementById('bot-job-save');if(!f||_botJob.busy)return;
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(f.cutoff||'')){showToast(t('基準の時刻を HH:MM で入れてください','Enter the cutoff as HH:MM'),'warning');return;}
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(f.from||'')){showToast(t('開始の日を選んでください','Choose the start date'),'warning');return;}
+  if(!Number.isInteger(f.straddle.minutes)||f.straddle.minutes<1||f.straddle.minutes>600){showToast(t('補助の確認の分は 1〜600','Extra-check minutes must be 1–600'),'warning');return;}
+  var store=_botJob.store;_botJob.busy=true;if(btn)btn.disabled=true;
+  try{
+    var r=await botAPI({action:'job_check',store_id:store,config:botJobConfig(f),expect_rev:f.rev});
+    if(_botJob.store===store&&_botJob.form===f){f.rev=r.rev;f.updated_at=r.updated_at;}
+    showToast(t('保存しました（次の確認から使います）','Saved (applies from the next check)'),'success');
+    _botJob.busy=false;botJobRender();
+  }catch(e){
+    _botJob.busy=false;
+    if(/他の担当者|Another reviewer|conflict/.test(e.message)){showToast(t('ほかの人が先にこの店の設定を保存しました。読み直します（入力した内容は保存していません）','Someone else saved this store’s settings first. Reloading (your changes were not saved)'),'warning');botJobCheckModal(store);}
+    else{showToast(e.message,'warning');if(btn)btn.disabled=false;}
+  }
+}
 /* FUNERGY_BOT_SHARED_END */
 /* FUNERGY_BOT_CENTER_END */
 /* FUNERGY_INVOICE_INTAKE_BEGIN */

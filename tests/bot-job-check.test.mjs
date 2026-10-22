@@ -124,7 +124,7 @@ test('morning report line for a Job case', () => {
 });
 
 // ---- handler：scan・確かめ直し・設定（Supabase・Toast はまね）
-function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:00:00', SERVER)], role = 'gm', employees = app(), recheckEntry = null, existing = null } = {}) {
+function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:00:00', SERVER)], role = 'gm', employees = app(), recheckEntry = null, existing = null, rowDb = null } = {}) {
   const writes = [], records = [], saved = [];
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'svc', SUPABASE_ANON_KEY: 'anon', TOAST_CLIENT_ID: 'x', TOAST_CLIENT_SECRET: 'y' })[k];
   const handler = createHandler({ env, fetch: async (url, init = {}) => {
@@ -133,6 +133,21 @@ function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:0
     if (u.includes('/manager_auth?')) return Response.json([{ role }]);
     if (u.includes('/store_config?')) return Response.json([{ store_id: 'F06', restaurant_guid: id(77), name: 'LaLa' }]);
     if (u.includes('/bot_settings?key=eq.clock')) return Response.json([{ value: { nightFrom: '03:00', nightTo: '05:00', longH: 12, shortMin: 15 } }]);
+    if (rowDb && u.includes('/bot_settings?key=eq.job_check')) {
+      if ((init.method || 'GET') === 'GET') return Response.json(rowDb.row ? [{ value: structuredClone(rowDb.row.value) }] : []);
+      // PATCH：版（value->>rev）が同じ行だけ書く（PostgREST の絞り込みのまね）
+      rowDb.beforeWrite?.(rowDb);
+      const q = decodeURIComponent(u.split('?')[1]), rev = rowDb.row?.value?.rev;
+      const ok = rowDb.row && (/value->>rev=is\.null/.test(q) ? rev === undefined || rev === null : q.includes('value->>rev=eq.' + rev));
+      if (!ok) return Response.json([]);
+      rowDb.row = { value: JSON.parse(init.body).value }; saved.push({ value: rowDb.row.value }); return Response.json([rowDb.row]);
+    }
+    if (rowDb && u.includes('/bot_settings?on_conflict=key')) {
+      rowDb.beforeWrite?.(rowDb);
+      assert.match(init.headers.Prefer, /ignore-duplicates/);
+      if (rowDb.row) return Response.json([]);
+      rowDb.row = { value: JSON.parse(init.body).value }; saved.push({ value: rowDb.row.value }); return Response.json([rowDb.row]);
+    }
     if (u.includes('/bot_settings?key=eq.job_check')) return Response.json(setting ? [{ value: setting }] : []);
     if (u.includes('/bot_settings?on_conflict=key')) { saved.push(JSON.parse(init.body)); return new Response('', { status: 201 }); }
     if (u.endsWith('/rpc/bot_take_run')) return Response.json(true);
@@ -197,8 +212,46 @@ test('settings actions: GM/CEO only, jobs listed by ID without wages, other stor
   assert.equal(list.status, 200);
   assert.deepEqual(list.body.jobs, [{ guid: PREP, title: 'Prep', deleted: false }, { guid: SERVER, title: 'Server', deleted: false }]);
   assert.doesNotMatch(JSON.stringify(list.body), /defaultWage|99/);
-  const saved = await h.call({ action: 'job_check', store_id: 'F06', config: scfg() });
-  assert.equal(saved.status, 200);
-  assert.deepEqual(Object.keys(h.saved[0].value.stores).sort(), ['F01', 'F06']);
-  assert.equal((await harness().call({ action: 'job_check', store_id: 'F06', config: { ...scfg(), cutoff: '9' } })).status, 400);
+  assert.equal(list.body.rev, 0, 'a store without a setting starts at version 0');
+  assert.equal((await harness().call({ action: 'job_check', store_id: 'F06', config: { ...scfg(), cutoff: '9' }, expect_rev: 1 })).status, 400);
+  assert.equal((await harness().call({ action: 'job_check', store_id: 'F06', config: scfg() })).status, 400, 'the version read is required');
+});
+
+test('settings save: version per store, other stores kept even when saved at the same time', async () => {
+  // 前の形（版なし）の行：F01 だけ
+  const rowDb = { row: { value: { stores: { F01: scfg({ enabled: false }) } } } };
+  let h = harness({ rowDb });
+  let r = await h.call({ action: 'job_check', store_id: 'F06', config: scfg(), expect_rev: 0 });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(r.body.rev, 1);
+  assert.deepEqual(Object.keys(rowDb.row.value.stores).sort(), ['F01', 'F06']);
+  assert.equal(rowDb.row.value.rev, 1); assert.equal(rowDb.row.value.stores.F06.rev, 1); assert.equal(rowDb.row.value.stores.F06.updated_by, id(99));
+  // 古い画面（F06 を版 0 で読んだまま）の保存は断る＝先の保存を上書きしない
+  r = await h.call({ action: 'job_check', store_id: 'F06', config: scfg({ cutoff: '17:00' }), expect_rev: 0 });
+  assert.equal(r.status, 409); assert.equal(rowDb.row.value.stores.F06.cutoff, '16:30');
+  // 前の形の店（版なし）は版 1 とみなす
+  r = await h.call({ action: 'job_check', store_id: 'F01', config: scfg({ enabled: true }), expect_rev: 0 });
+  assert.equal(r.status, 409);
+  // 書く直前にほかの人が別の店（F01）を保存した → 読み直して F01 の変更を残したまま F06 を書く
+  let once = true;
+  rowDb.beforeWrite = db => { if (!once) return; once = false; db.row = { value: { ...db.row.value, rev: db.row.value.rev + 1, stores: { ...db.row.value.stores, F01: { ...scfg({ enabled: true, cutoff: '15:00' }), rev: 2 } } } }; };
+  r = await h.call({ action: 'job_check', store_id: 'F06', config: scfg({ cutoff: '17:00' }), expect_rev: 1 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(rowDb.row.value.stores.F01.cutoff, '15:00', 'the other store saved meanwhile is kept');
+  assert.equal(rowDb.row.value.stores.F06.cutoff, '17:00'); assert.equal(rowDb.row.value.stores.F06.rev, 2); assert.equal(rowDb.row.value.rev, 3);
+  // 書く直前に同じ店（F06）をほかの人が保存した → 読み直すと版が違うので断る
+  once = true;
+  rowDb.beforeWrite = db => { if (!once) return; once = false; db.row = { value: { ...db.row.value, rev: db.row.value.rev + 1, stores: { ...db.row.value.stores, F06: { ...db.row.value.stores.F06, cutoff: '18:00', rev: 3 } } } }; };
+  r = await h.call({ action: 'job_check', store_id: 'F06', config: scfg({ cutoff: '16:00' }), expect_rev: 2 });
+  assert.equal(r.status, 409); assert.equal(rowDb.row.value.stores.F06.cutoff, '18:00');
+  // まだ行が無い：作る。作る直前にほかの人が作っていたら読み直して合わせる
+  const empty = { row: null };
+  once = true;
+  empty.beforeWrite = db => { if (!once) return; once = false; db.row = { value: { rev: 1, stores: { F01: { ...scfg(), rev: 1 } } } }; };
+  h = harness({ rowDb: empty });
+  r = await h.call({ action: 'job_check', store_id: 'F06', config: scfg(), expect_rev: 0 });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual(Object.keys(empty.row.value.stores).sort(), ['F01', 'F06']);
+  // job_list は店の版を返す
+  const list = await h.call({ action: 'job_list', store_id: 'F06' });
+  assert.equal(list.body.rev, 1); assert.equal(list.body.config.cutoff, '16:30');
 });

@@ -281,6 +281,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   }catch{return c;} // Explicit unavailable labels preserve delivery when Toast is down.
  }
  // v1105：従業員マスター（Job確認の「だれを見るか」）。給与・連絡先は読まない
+ const jobRev=s=>Number.isInteger(s?.rev)&&s.rev>=0?s.rev:(s?1:0); // 版の無い前の設定は 1
  async function appEmployees(){return db('employees?select=name,title,role,status,prep:data->prep');}
  async function scan(storeID,date,actor,withVoids=false){
   const store=await getStore(storeID),cfg=validConfig(await setting('clock'));
@@ -672,13 +673,27 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='job_list'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id),get=await toastClient(store);
     const jobs=(await get('/labor/v1/jobs')).filter(j=>j&&UUID.test(j.guid||'')).map(j=>({guid:j.guid.toLowerCase(),title:String(j.title||'').slice(0,120),deleted:j.deleted===true}));
-    return json({store_id:store.store_id,jobs,read_at:new Date().toISOString(),config:storeJobCheck(await setting('job_check'),store.store_id)});
+    const current=await setting('job_check'),raw=current?.stores?.[store.store_id];
+    return json({store_id:store.store_id,jobs,read_at:new Date().toISOString(),config:storeJobCheck(current,store.store_id),rev:jobRev(raw),updated_at:raw?.updated_at||null});
    }
    if(body.action==='job_check'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id);
+    if(!Number.isInteger(body.expect_rev)||body.expect_rev<0)throw Error('invalid_job_check');
     const one=validJobCheck({stores:{[store.store_id]:body.config}},[store.store_id]).stores[store.store_id];
-    const current=await setting('job_check'),value={stores:{...(current?.stores||{}),[store.store_id]:{...one,updated_at:new Date().toISOString(),updated_by:actor.id}}};
-    await db('bot_settings?on_conflict=key','POST',{key:'job_check',value,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true,config:one});
+    // 読んだときの版（店ごと）と違えば保存しない（ほかの人の変更を上書きしない）。行全体は版つきで書く（ほかの店の同時の保存も消さない）
+    for(let attempt=0;attempt<4;attempt++){
+     const row=(await db('bot_settings?key=eq.job_check&select=value'))[0]||null,cur=row?.value||null;
+     const was=cur?.stores?.[store.store_id];
+     if(jobRev(was)!==body.expect_rev)throw Error('conflict');
+     const top=Number.isInteger(cur?.rev)?cur.rev:0,at=new Date().toISOString();
+     const saved={...one,rev:jobRev(was)+1,updated_at:at,updated_by:actor.id};
+     const value={rev:top+1,stores:{...(cur?.stores||{}),[store.store_id]:saved}};
+     const written=row
+      ?await db('bot_settings?key=eq.job_check&'+(Number.isInteger(cur?.rev)?'value->>rev=eq.'+top:'value->>rev=is.null'),'PATCH',{value,updated_at:at},'return=representation')
+      :await db('bot_settings?on_conflict=key','POST',{key:'job_check',value,updated_at:at},'resolution=ignore-duplicates,return=representation');
+     if(Array.isArray(written)&&written.length)return json({ok:true,config:one,rev:saved.rev,updated_at:at});
+    }
+    throw Error('conflict');
    }
    if(body.action==='worker_config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');
