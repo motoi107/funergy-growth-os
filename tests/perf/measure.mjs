@@ -141,6 +141,8 @@ async function oneRun(i) {
   if (arg('count', '')) R.counts = await page.evaluate(() => Object.fromEntries(Object.entries(window.__cnt || {}).map(([k, v]) => [k, { n: v.n, ms: Math.round(v.ms) }])));
   R.m3 = await metrics(); R.lt3 = await lt();
   R.net3 = net(await logSince(tAuthLog));
+  // v1104：--timeline：ログインからの要求の並び（売上・予算の保存と Toast の取り込みが直列になっていないか）
+  if (arg('timeline', '')) R.timeline = (await logSince(tAuthLog)).filter(e => /financial_web|hyper-worker|toast_sales|app_state\?select=key,value,updated_at/.test(e.p || '')).map(e => ({ t: e.t - tAuthLog, ms: e.ms, p: (e.p || '').replace(/^\/(rest|functions)\/v1\//, '').slice(0, 60), b: e.b }));
 
   // ④・⑤ ページ
   if (PAGES !== 'none' && !WARMUP) {
