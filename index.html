@@ -2087,7 +2087,12 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           const keys = ['daily_actuals_' + args[0]];
           if (name !== 'fetchWeatherForView') keys.push('spl_budgets_v2_' + args[0]);
           await refresh(keys, INNER);   // 保存の始めに読み直したので、記録はもう一度読み直さない
-        } catch (_) { notify('最新データを確認できないため同期を停止しています。'); return false; }
+        } catch (_) {
+          // v1105：読めなかったことはアプリの「取得の状態」に伝える。アプリが静かにしてよいと答えたとき（ログインの同期・自動のやり直し）は知らせを出さない
+          let quiet = false; try { quiet = typeof options.onAutoRefused === 'function' && options.onAutoRefused(name, args) === true; } catch (_) {}
+          if (!quiet) notify('最新データを確認できないため同期を停止しています。');
+          return false;
+        }
       }
       const tx = { name, before: new Map(baseline || canonical), writes: new Map(), effects: [], failure: null, unlock: lockInputs() };
       const expectedForm = FORM_WRITERS[name];
@@ -2344,11 +2349,18 @@ if (!window.FUNERGY_NATIVE_CONFIG) {
       await Promise.resolve().then(function(){return _idbBootP;});
       return _idbState==='ready' && _IDB_MEM instanceof Map;
     },
+    /* v1105：自動の売上の取り込みを、保護が「最新を読めない」で止めたとき：帯にその店の売上の失敗を出す。ログインの同期・帯の自動のやり直しのあいだは知らせ（トースト）を出さない */
+    onAutoRefused:function(name, args){
+      try{ if(name==='syncStoreActualsFromToast'&&typeof fstNote==='function') fstNote('sales', args&&args[0], false, 'financial_read'); }catch(e){}
+      return !!window._fstQuiet;
+    },
     transport:FunergyFinancialTransport.create({url:SUPABASE_URL,headers:extra=>supaHeaders(extra),fetch:(...args)=>fetch(...args)})});
   document.addEventListener('DOMContentLoaded', function(){
-    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).catch(function(error){
-      if(error.message==='financial_local_unverified')return;
-      showToast(t('売上・予算の最新データを確認できません。元の入力を残して、もう一度確認してください。','Financial data could not be verified. Keep the original input and check again.'),'warning');
+    /* v1105（UI案60 ① 1A）：起動の知らせ（トースト）はやめ、ダッシュボード・予実・会議の上の「取得の状態」に出す。取れなければ 3 回まで自動でやり直す */
+    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).then(function(){
+      if(typeof fstNote==='function') fstNote('guard',null,true);
+    }).catch(function(error){
+      if(typeof fstNote==='function') fstNote('guard',null,false,error&&error.message);
     });
   });
 }
@@ -2379,10 +2391,13 @@ async function fetchToastSales(guid, dateFrom, dateTo) {
     var url = SUPABASE_URL + '/rest/v1/toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid)
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (e) { console.error('fetchToastSales', e); return []; }
+    if (!res.ok) return _toastSalesErr();
+    var j = await res.json();
+    return Array.isArray(j) ? j : _toastSalesErr();
+  } catch (e) { console.error('fetchToastSales', e); return _toastSalesErr(); }
 }
+/* v1105：読めなかったときは空の配列に印 _err（「売上の行が無い」と分ける。ほかの使い方は今までどおり配列） */
+function _toastSalesErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
 async function syncToastDay(guid, businessDateYmd) {
   var _bc = (typeof getBowlCatCfgByGuid==='function') ? getBowlCatCfgByGuid(guid) : null;
   var _body = { restaurantGuid: guid, businessDate: businessDateYmd };
@@ -2587,6 +2602,9 @@ async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   /* v1104（2 回目の独立レビュー P3）：先に読んだ行は 20 秒以内のものだけ使う（保護の順番を長く待つと、そのあいだにほかの端末が入れた新しい売上を古い値で戻すため） */
   var _fresh = Array.isArray(prefetchedRows) && !(prefetchedRows._fetchedAt && Date.now() - prefetchedRows._fetchedAt > 20000);
   var rows = _fresh ? prefetchedRows : await fetchToastSales(guid, days[0].date, days[days.length-1].date);
+  /* v1105（UI案60 ①）：Toast の売上を読めなかったら何も書かない（前の値のまま）。帯に「取れませんでした」 */
+  if (rows && rows._err) { try { if (typeof fstNote === 'function') fstNote('sales', storeId, false, 'toast_sales'); } catch (e) { } return { error: 'Toast の売上を読めませんでした', updated: 0, fetched: 0, fetchErr: true }; }
+  try { if (typeof fstNote === 'function') fstNote('sales', storeId, true); } catch (e) { }
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -2631,10 +2649,12 @@ async function fetchTipLaborFromDB(guid, dateFrom, dateTo, signal) {   /* signal
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
     var _fo = { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } }; if (signal) _fo.signal = signal;
     var res = await fetch(url, _fo);
-    if (!res.ok) return _tipLaborFetchErr();
-    return await res.json();
-  } catch (e) { return _tipLaborFetchErr(); }
+    if (!res.ok) { if (typeof _fstLabor === 'function') _fstLabor(guid, false); return _tipLaborFetchErr(); }
+    var _j = await res.json(); if (typeof _fstLabor === 'function') _fstLabor(guid, true); return _j;
+  } catch (e) { if (typeof _fstLabor === 'function') _fstLabor(guid, false); return _tipLaborFetchErr(); }
 }
+/* v1105（UI案60 ①）：勤怠を読めたか（店ごと）を「取得の状態」に残す */
+function _fstLabor(guid, ok) { try { if (typeof fstNote === 'function' && typeof fstStoreOfGuid === 'function') fstNote('labor', fstStoreOfGuid(guid), ok, ok ? null : 'tip_labor'); } catch (e) { } }
 /* v1090（独立レビュー 7002a69 P3-2）：読めなかったときは空の配列に印 _err（空の答えと分ける。ほかの使い方は配列のまま） */
 function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
 /* v1090（Codex 6245991596・#74 4e685ac の P2）：前に始めた読み込みの答えが、あとから始めた読み込みが保存した勤怠・クレジットTip調整額を
@@ -15714,6 +15734,7 @@ function setSyncSplash(msg){ var m=document.getElementById('sync-splash-msg'); i
    - 勤怠・Labor = tip_labor（同cronが保存済み）→ ローカルtip_laborに反映
    この1関数で両方そろえる事で Labor率(=Labor÷売上) まで成立させる。新端末でもログイン1回で復元される。 */
 async function loginSyncOps(){
+  window._fstQuiet = true;   /* v1105：ログインの同期のあいだは、保護が売上の取り込みを止めても知らせを出さない（帯に出す） */
   try {
     var stores = (typeof getVisibleStores==='function' ? getVisibleStores() : []).filter(function(s){ return s.toastGuid; });
     var days = (typeof monthDays==='function') ? monthDays() : null;
@@ -15727,7 +15748,7 @@ async function loginSyncOps(){
          同時に取る（前は 1 つずつ答えを待っていた＝店ごとに往復 4 回ぶん）。直近 Labor のライブ補完は今までどおり裏で。
          同じ日を書く勤怠とクレジットTip調整の順は、v1090 の読み込みの番号（_tipLaborSeq）がこれまでどおり守る */
       var _jobs = [];
-      _jobs.push((async function(){ try { var _toastRows = await fetchToastSales(s.toastGuid, days[0].date, days[days.length-1].date); try { Object.defineProperty(_toastRows, '_fetchedAt', { value: Date.now() }); } catch (e) { } await syncStoreActualsFromToast(s.id, s.toastGuid, days, _toastRows); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());   /* v1104: 読むのは同時・保存は保護が順に */
+      _jobs.push((async function(){ try { var _toastRows = await fetchToastSales(s.toastGuid, days[0].date, days[days.length-1].date); try { Object.defineProperty(_toastRows, '_fetchedAt', { value: Date.now() }); } catch (e) { } await fstSalesSync(s.id, s.toastGuid, days, _toastRows); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());   /* v1104: 読むのは同時・保存は保護が順に */
       _jobs.push((async function(){ try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); } })());   /* v1090: 読んだ店と月の印 */
       /* v860: クレジットTip調整は前月の日付を直すことが多い。
          他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */
@@ -15746,6 +15767,7 @@ async function loginSyncOps(){
     }));
     markSynced('ops');
   } catch(e){ console.warn('loginSyncOps', e); }
+  finally { window._fstQuiet = false; }
 }
 
 /* クラウド(Supabase)から最新マスター/設定＋当月の勤怠を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
@@ -22113,8 +22135,8 @@ function pageSyncBar(opts){
    最重要: 「同期」は必ず「①未送信をクラウドへ押し上げ(flushOutbox) → ②マージ取得」の順。
    取得(pull)は既存のマージ方式を使い、ローカルの未保存を上書きしない。 */
 var SYNC_SCOPE_META = {
-  dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
-  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ var bad=false; try{ await fstGuardRefresh(); }catch(e){} try{ var r=await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); if(r&&r.error) bad=true; }catch(e){ bad=true; } return (bad||fstAnyFail())?false:undefined; } },   /* v1105：売上・予算の記録も確かめる・取れなかったら「最新に同期しました」と出さない */
+  budget:  { label:'予実', toast:true,  pull: async function(){ var bad=false; try{ await fstGuardRefresh(); }catch(e){} try{ await pullInvoicesAll(); }catch(e){} try{ var r=await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); if(r&&r.error) bad=true; }catch(e){ bad=true; } return (bad||fstAnyFail())?false:undefined; } },
   tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await apPullLatest(); }catch(e){} try{ await ecPullLatest(); }catch(e){} } },   /* v1088: タスクは廃止。承認とエラーの解除を読み直す */
   hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
@@ -22154,11 +22176,166 @@ async function pageSync(scope){
   try{ renderPage((typeof curPage!=='undefined')?curPage:'budget'); }catch(e){}
 }
 
+/* ===== v1105（UI案60 ① 1A）：売上・予算・勤怠の「取得の状態」=====
+   ダッシュボード・予実・会議などの上の帯に、何をいつ取れたか／取れなかったかを出す（ログインの知らせは出さない）。
+   ・取得＝通信が通って答えを読めた時刻（この端末）。取れなかったものは 0 や空にせず、前の値のまま「前回 ○○ の情報を表示中」。
+   ・売上＝Toast の売上（店ごと）と、保護（v1101）が確かめる売上・日報の記録。予算＝保護が確かめる予算の記録。勤怠＝Toast の勤怠（店ごと）。
+   ・取れなかったら 3 回まで自動でやり直す（15 秒・30 秒・60 秒）。そのあとは押したときだけ。
+   ・記録はこの端末だけ（_ で始まるキー＝同期しない）。 */
+var FST_KEY='_fetch_status_v1', FST_KINDS=['sales','budget','labor'], FST_AUTO=[15000,30000,60000];
+var _fst=null, _fstTimer={}, _fstBusy={}, _fstFresh=false;
+function fstState(){
+  if(_fst) return _fst;
+  var o=null; try{ o=JSON.parse(localStorage.getItem(FST_KEY)||'null'); }catch(e){}
+  _fst=(o&&typeof o==='object')?o:{};
+  if(!_fst.guard||typeof _fst.guard!=='object') _fst.guard={};
+  ['sales','labor'].forEach(function(k){ if(!_fst[k]||typeof _fst[k]!=='object'||!_fst[k].by||typeof _fst[k].by!=='object') _fst[k]={by:{}}; });
+  _fst.tries={};   /* 自動のやり直しの回数は、この画面を開いているあいだだけ（読み込み直すとまた 3 回まで） */
+  return _fst;
+}
+function fstSave(){ try{ var o={}; Object.keys(_fst).forEach(function(k){ if(k!=='tries') o[k]=_fst[k]; }); localStorage.setItem(FST_KEY, JSON.stringify(o)); }catch(e){} }
+function fstStoreOfGuid(guid){ try{ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.toastGuid===guid;}); return s?s.id:null; }catch(e){ return null; } }
+/* 1 回の取得の結果を残す。kind：'sales'・'labor'（店ごと）・'guard'（保護の記録＝売上・予算） */
+function fstNote(kind, storeId, ok, code){
+  try{
+    var st=fstState(), now=new Date().toISOString(), rec;
+    if(kind==='guard') rec=st.guard;
+    else { if(!st[kind]||!storeId) return; rec=st[kind].by[storeId]||(st[kind].by[storeId]={}); }
+    if(ok){ rec.ok=now; rec.fail=null; rec.err=null; rec.last='ok'; }
+    else { rec.fail=now; rec.err=String(code||'failed').slice(0,60); rec.last='fail'; }   /* last：同じミリ秒でも、いちばん新しい結果で決める */
+    fstSave();
+    var shown=kind==='guard'?['sales','budget']:[kind];
+    shown.forEach(function(k){ if(ok&&fstStatus(k).state==='ok') st.tries[k]=0; });
+    if(!ok) fstAuto(kind==='guard'?(fstGuardOn()?'budget':'sales'):kind);   /* 保護の記録の読み直しは 1 つ（予算のやり直し）でまとめて行う */
+    fstPaint();
+  }catch(e){}
+}
+function fstStores(){ try{ return (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s&&s.toastGuid;}); }catch(e){ return []; } }
+function fstGuardOn(){ return !!(typeof window!=='undefined'&&window.FUNERGY_FINANCIAL_SAVE&&typeof FunergyFinancialTransport!=='undefined'); }
+/* 帯に出す 1 つの状態：{state:'ok'|'fail'|'none'|'partial', ok:最後に取れた時刻（いちばん古い店）, bad:[取れなかった店], none:[まだの店]} */
+function fstFailing(r){ return !!r && (r.last ? r.last==='fail' : !!(r.fail&&(!r.ok||r.fail>r.ok))); }
+function fstStatus(kind){
+  var st=fstState(), out={state:'none', ok:null, bad:[], none:[], guardBad:false};
+  function older(a,b){ return !a?b:(!b?a:(a<b?a:b)); }
+  if(kind==='budget'){
+    if(!fstGuardOn()) return {state:'off'};
+    var g=st.guard; if(fstFailing(g)) return {state:'fail', ok:g.ok||null, bad:[], none:[], guardBad:true};
+    return g.ok?{state:'ok', ok:g.ok, bad:[], none:[]}:out;
+  }
+  var stores=fstStores(), by=(st[kind]&&st[kind].by)||{}, oks=0;
+  stores.forEach(function(s){ var r=by[s.id]||{};
+    if(fstFailing(r)){ out.bad.push(s); out.ok=older(out.ok, r.ok||null); if(!r.ok) out.prevMissing=(out.prevMissing||0)+1; }   /* この端末で一度も取れていない店：前の情報は無い */
+    else if(r.ok){ oks++; out.ok=older(out.ok, r.ok); }
+    else out.none.push(s); });
+  if(kind==='sales'&&fstGuardOn()){ var gg=st.guard;
+    if(fstFailing(gg)) out.guardBad=true;
+    if(gg.ok) out.ok=older(out.ok, gg.ok); }
+  out.state=(out.bad.length||out.guardBad)?'fail':(!stores.length?'none':(out.none.length?(oks?'partial':'none'):'ok'));
+  return out;
+}
+function fstClock(iso){
+  if(!iso) return '';
+  try{
+    var d=new Date(iso), tz='Pacific/Honolulu';
+    var hm=d.toLocaleTimeString('ja-JP',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false});
+    var day=d.toLocaleDateString('en-CA',{timeZone:tz}), today=new Date().toLocaleDateString('en-CA',{timeZone:tz});
+    var hst=new Date().getTimezoneOffset()!==600;
+    return (day!==today?(Number(day.slice(5,7))+'/'+Number(day.slice(8,10))+' '):'')+hm+(hst?' HST':'');
+  }catch(e){ return ''; }
+}
+function fstLabel(kind){ return ({sales:t('売上','Sales'),budget:t('予算','Budget'),labor:t('勤怠','Labor')})[kind]||kind; }
+function fstNames(list){ var n=list.map(function(s){return (typeof _bStoreAbbr==='function'?_bStoreAbbr(s):s.name)||s.id;}); return n.length>3?n.slice(0,3).join('・')+t(' ほか'+(n.length-3)+'店',' +'+(n.length-3)):n.join('・'); }
+function fstChip(kind){
+  var s=fstStatus(kind), esc=escapeHtml, L=fstLabel(kind);
+  if(s.state==='off') return '';
+  var btn=function(label){ return ' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="fstRetry(\''+kind+'\',true)"'+(_fstBusy[kind]?' disabled':'')+'><i class="ti ti-refresh"></i> '+label+'</button>'; };
+  if(_fstBusy[kind]) return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-loader"></i> '+esc(L)+' '+t('取得中…','Fetching…')+'</span>';
+  if(s.state==='ok') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-check" style="color:var(--green)"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+'</span>';
+  if(s.state==='partial') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-dashed"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+' · '+t('まだ：','not yet: ')+esc(fstNames(s.none))+'</span>';
+  if(s.state==='none') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+esc(L)+t('：まだ取れていません',': not fetched yet')+btn(t('もう一度','Try again'))+'</span>';
+  var who=s.bad.length?'（'+esc(fstNames(s.bad))+'）':'';
+  return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--red)"><i class="ti ti-alert-circle"></i> '+esc(L)+t('：取れませんでした',': could not fetch')+who
+    +(s.ok&&!s.prevMissing?t('。前回 '+esc(fstClock(s.ok))+' の情報を表示中','. Showing data from '+esc(fstClock(s.ok)))
+      :(s.ok&&s.prevMissing<s.bad.length?t('。前の情報が無い店があります','. Some stores have no earlier data'):t('。前の情報もありません','. No earlier data')))
+    +btn(t(L+'をもう一度','Retry '+L.toLowerCase()))+'</span>';
+}
+function fstChipsHtml(){
+  var h=FST_KINDS.map(fstChip).filter(Boolean).join('');
+  if(_fstFresh) h+='<span class="fst-chip"><button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="fstShowFresh()"><i class="ti ti-refresh"></i> '+t('新しい情報を取りました：表示を更新','New data fetched: refresh view')+'</button></span>';
+  return '<span id="fst-chips" style="display:inline-flex;align-items:center;gap:6px 12px;flex-wrap:wrap;font-size:11px;font-weight:600">'+h+'</span>';
+}
+function fstPaint(){ try{ var el=document.getElementById('fst-chips'); if(el) el.outerHTML=fstChipsHtml(); }catch(e){} }
+function fstShowFresh(){ _fstFresh=false; try{ renderPage((typeof curPage!=='undefined')?curPage:'dashboard'); }catch(e){} }
+/* 入力中（入力の画面・予算の編集を開いている・保存の途中や確認待ち）は、自動のやり直しを待つ。
+   自動のやり直しは売上の記録を保存することがあり、開いている入力の画面を止め、そのあとの保存が「ほかの画面で更新」になるため */
+function fstUserBusy(){
+  try{
+    var ov=(typeof document!=='undefined'&&document.getElementById)?document.getElementById('modal-overlay'):null;
+    if(ov&&ov.classList&&ov.classList.contains('open')) return true;
+    if(typeof _bbStore!=='undefined'&&_bbStore) return true;
+    if(typeof window!=='undefined'&&window.FUNERGY_FINANCIAL_SAVE&&typeof FUNERGY_FINANCIAL_SAVE.getState==='function'){ var gs=FUNERGY_FINANCIAL_SAVE.getState().status; if(gs&&gs!=='idle'&&gs!=='committed') return true; }
+  }catch(e){}
+  return false;
+}
+function fstAuto(kind){
+  var st=fstState(), n=st.tries[kind]||0;
+  if(_fstTimer[kind]||n>=FST_AUTO.length) return;
+  _fstTimer[kind]=setTimeout(function(){
+    _fstTimer[kind]=null;
+    if((typeof document!=='undefined'&&document.hidden)||(typeof navigator!=='undefined'&&navigator.onLine===false)||fstUserBusy()){ fstAuto(kind); return; }   /* 見えていない・通信なし・入力中：回数を使わずに待つ */
+    if(fstStatus(kind).state!=='fail') return;
+    st.tries[kind]=(st.tries[kind]||0)+1; fstSave();
+    fstRetry(kind,false);
+  }, FST_AUTO[n]);
+}
+async function fstGuardRefresh(){
+  if(!fstGuardOn()) return true;
+  try{ await FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys); fstNote('guard',null,true); return true; }
+  catch(e){ fstNote('guard',null,false,e&&e.message); return false; }
+}
+/* 売上の取り込み 1 店。保存が通らなかったとき（保護が断った・答えが確かめられない・競合）も帯に「取れませんでした」を出す（読めなかったときは中で出している） */
+async function fstSalesSync(storeId, guid, days, rows){
+  var r = await syncStoreActualsFromToast(storeId, guid, days, rows);
+  if (r && r.error && !r.fetchErr) fstNote('sales', storeId, false, 'save_refused');
+  return r;
+}
+/* もう一度：取れなかったもの（とまだのもの）だけを取り直す。押したときは画面を描き直す。自動のときは帯だけ（入力中の画面を消さない） */
+async function fstRetry(kind, manual){
+  if(_fstBusy[kind]) return;
+  if(manual){ var st0=fstState(); st0.tries[kind]=0; fstSave(); }
+  _fstBusy[kind]=true; fstPaint(); if(!manual) window._fstQuiet=true;
+  var before=JSON.stringify(fstState()), days=(typeof monthDays==='function')?monthDays():null;
+  try{
+    var s=fstStatus(kind);
+    if(kind==='budget'||(kind==='sales'&&s.guardBad&&(manual||!fstGuardOn()))) await fstGuardRefresh();   /* 自動のときの保護の読み直しは予算のやり直しだけ */
+    if((kind==='sales'||kind==='labor')&&days&&days.length){
+      var todo=manual?(s.bad||[]).concat(s.none||[]):(s.bad||[]);   /* 自動は取れなかった店だけ（ログインの前に、まだ読んでいない店を読みにいかない） */
+      await Promise.all(todo.map(function(x){
+        return (kind==='sales'?fstSalesSync(x.id,x.toastGuid,days):syncTipLaborFromDB(x.id,x.toastGuid,days)).catch(function(e){ fstNote(kind,x.id,false,e&&e.message); });
+      }));
+    }
+  }catch(e){}
+  _fstBusy[kind]=false; if(!manual) window._fstQuiet=false;
+  var changed=JSON.stringify(fstState())!==before;
+  if(manual){ try{ renderPage((typeof curPage!=='undefined')?curPage:'dashboard'); }catch(e){} }
+  else { if(changed&&fstStatus(kind).state==='ok') _fstFresh=true; fstPaint(); }
+}
+function fstAnyFail(){ return FST_KINDS.some(function(k){ return fstStatus(k).state==='fail'; }); }
+
 /* ページ上部に出す共通ストリップ（鮮度＋同期＋診断） */
 function pageSyncStrip(scope){
   var iso=(typeof getSyncedAt==='function')?getSyncedAt(scope):'';
   var ago=iso?((typeof notifAgo==='function')?notifAgo(iso):''):'';
   var ob=(typeof outboxCount==='function')?outboxCount():0;
+  /* v1105（UI案60 ① 1A）：ダッシュボード・予実・会議などは「何をいつ取れたか」を売上・予算・勤怠ごとに出す（前の「同期 ◯分前」の代わり） */
+  if(scope==='dash'||scope==='budget'){
+    return '<div class="fst-strip" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
+      +fstChipsHtml()
+      +(ob>0?'<span style="font-size:10.5px;font-weight:600;color:var(--red);display:inline-flex;align-items:center;gap:4px"><i class="ti ti-cloud-upload"></i>'+t('未送信','Unsent')+ob+'</span>':'')
+      +'<button class="btn btn-secondary btn-sm" onclick="pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('最新情報を取得','Get latest')+'</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="openDiag(\''+scope+'\')"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>'
+      +'</div>';
+  }
   var col = ob>0?'var(--red)':(iso?'var(--muted)':'var(--yellow)');
   var txt = ob>0?('未送信'+ob):(iso?(t('同期','Synced')+' '+ago):t('未同期','—'));
   return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
@@ -22224,7 +22401,6 @@ function renderBudget() {
     <div><div class="section-title">${t('予実管理','Budget vs Actual')}</div><div class="section-sub">${t('対象月を選択（前月実績の確認・来月の予算設定）',"Select a month (review last month, set next month's budget)")}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
@@ -22271,15 +22447,13 @@ function renderMeetingPage(){
   return `<div class="section-header">
     <div><div class="section-title">${t('会議','Meeting')}</div><div class="section-sub">${t('中間MTG・月初MTG（対象月を選択）','Mid-month and month-start meetings (select a month)')}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
-  </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>` + renderMeetingReview();
+  </div>` + renderMeetingReview();   /* v1105：取得の状態は上の帯（売上・予算・勤怠） */
 }
 function renderPurchasePage(){
   normalizeBudgetsDemo();
   return `<div class="section-header">
     <div><div class="section-title">${t('仕入れ','Purchases')}</div><div class="section-sub">${t('確認済みの invoice の仕入れ（店舗・業者別）','Confirmed invoice purchases by store and vendor')}</div></div>
-  </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>` + renderPurchaseTab();
+  </div>` + renderPurchaseTab();   /* v1105：取得の状態は上の帯 */
 }
 /* ============================================================
    v956: 施策分析
@@ -40045,7 +40219,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1104';
+const APP_VERSION = '1105';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -45255,7 +45429,7 @@ function botScan(){
 }
 function botKindText(kinds,lang){
   var en={auto:'Possible automatic clock-out (time-window estimate)',reverse:'Clock-in/out reversed',bad:'Invalid or missing time',long:'Long shift',short:'Very short shift',overlap:'Overlapping shifts'};
-  return (kinds||[]).map(function(k){return lang==='en'?(en[k]||k):(CE_KIND_LABEL[k]||k);}).join(' / ');
+  return (kinds||[]).map(function(k){if(/^job_/.test(String(k))&&typeof botJobKindText==='function')return botJobKindText(k,'16:30',lang);return lang==='en'?(en[k]||k):(CE_KIND_LABEL[k]||k);}).join(' / ');   /* v1105: Job確認の理由も */
 }
 function botDraftText(r,lang){
   var lines=lang==='en'?['[Funergy | Attendance check]',r.storeName+' / '+r.date,'Team member: '+r.name,'Please confirm: '+botKindText(r.kinds,'en')]:['【Funergy｜勤怠確認】',r.storeName+' / '+r.date,'対象：'+r.name,'確認内容：'+botKindText(r.kinds,'ja')];
@@ -45311,7 +45485,8 @@ function botStatus(s){var ja={review:'確認待ち',waiting:'返信待ち',corre
 function botCaseKind(k){return ({labor:t('勤怠','Attendance'),void:t('決済Void','Payment Void'),unpaid:t('未決済','Unpaid'),purchase:t('発注','Purchase')})[k]||k;}
 function botSuggestedDraft(c){
   var p=c.payload||{},en=curLang==='en',text='';
-  if(c.kind==='labor'){
+  if(c.kind==='labor'&&botIsJobCase(c)){ text=botJobDraft(c); }   /* v1105: Job確認（16:30 基準） */
+  else if(c.kind==='labor'){
     text=(en?'Please check the attendance entry for ':'勤怠をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botKindText(p.kinds,en?'en':'ja');
     (p.shifts||[]).forEach(function(s){text+='\n'+_ceClock(s.inDate)+' → '+_ceClock(s.outDate);});
     if(p.open_shift)text+='\n'+(en?'Clock-out is missing. Please confirm whether this shift is still ongoing.':'退勤時刻がありません。勤務継続中か、打刻漏れかをご確認ください。');
@@ -45562,13 +45737,13 @@ function _botSharedBody(){
 }
 function _botCaseListHtml(d){
   var esc=escapeHtml, stores=d.stores||[], all=d.cases||[];
-  var rows=all.filter(function(c){return (!_botShared.store||c.store_id===_botShared.store)&&(!_botShared.kind||c.kind===_botShared.kind)&&(!_botShared.status||c.status===_botShared.status);});
+  var rows=all.filter(function(c){return (!_botShared.store||c.store_id===_botShared.store)&&(!_botShared.kind||(_botShared.kind==='job'?botIsJobCase(c):c.kind===_botShared.kind))&&(!_botShared.status||c.status===_botShared.status);});   /* v1105: 「Job確認」で絞り込める（勤怠には Job確認も入る） */
   var filtered=!!(_botShared.store||_botShared.kind||_botShared.status);
   var h='<div class="card"><div class="card-title"><i class="ti ti-list-check"></i>'+t('案件一覧','Cases')
     +'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="botNewPurchase()"><i class="ti ti-plus"></i> '+t('発注依頼','Purchase request')+'</button></div>'
     +'<div class="bot-filter">'
     +'<select class="form-select" onchange="botSetFilter(\'store\',this.value)"><option value="">'+t('全店舗','All stores')+'</option>'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'"'+(_botShared.store===s.store_id?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select>'
-    +'<select class="form-select" onchange="botSetFilter(\'kind\',this.value)"><option value="">'+t('全種類','All types')+'</option>'+['labor','void','unpaid','purchase'].map(function(k){return '<option value="'+k+'"'+(_botShared.kind===k?' selected':'')+'>'+botCaseKind(k)+'</option>';}).join('')+'</select>'
+    +'<select class="form-select" onchange="botSetFilter(\'kind\',this.value)"><option value="">'+t('全種類','All types')+'</option>'+['labor','void','unpaid','purchase'].map(function(k){return '<option value="'+k+'"'+(_botShared.kind===k?' selected':'')+'>'+botCaseKind(k)+'</option>';}).join('')+'<option value="job"'+(_botShared.kind==='job'?' selected':'')+'>'+t('Job確認（16:30）','Job check (16:30)')+'</option></select>'
     +'<select class="form-select" onchange="botSetFilter(\'status\',this.value)"><option value="">'+t('全状況','All statuses')+'</option>'+['review','waiting','correction','verify','hq_review','ready','done'].map(function(s){return '<option value="'+s+'"'+(_botShared.status===s?' selected':'')+'>'+botStatus(s)+'</option>';}).join('')+'</select>'
     +'</div>'
     +'<div class="bot-note" style="margin:0 0 4px">'+t('更新順・最新200件','Latest 200 cases by update time')+' · '
@@ -45576,8 +45751,8 @@ function _botCaseListHtml(d){
   if(!rows.length) h+='<div style="font-size:12px;color:var(--muted);padding:8px 2px">'+t('表示対象の案件はありません。未取得の店舗について異常なしを示すものではありません。','No cases in this view. Stores not yet scanned have not been assessed.')+'</div>';
   rows.forEach(function(c){
     h+='<div class="bot-row tap" onclick="botCaseModal(\''+esc(c.id)+'\')">'
-      +'<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+botStatusTag(c.status)+'</div>'
-      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKind(c.kind))+' · '+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+' · '+esc(c.assignee||t('店舗マネージャー','Store manager'))+'</div></div>';
+      +'<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+(botIsJobCase(c)&&botJobUnsure(c)?'<span class="tag tag-yellow">'+t('判定不能','Cannot judge')+'</span>':'')+botStatusTag(c.status)+'</div>'
+      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKindOf(c))+' · '+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+' · '+esc(c.assignee||t('店舗マネージャー','Store manager'))+'</div></div>';
   });
   return h+'</div>';
 }
@@ -45623,7 +45798,8 @@ function _botSettingsHtml(d){
              +b('botWorkerToggle()',d.worker_enabled?'ti-player-pause':'ti-player-play',d.worker_enabled?t('自動取得を停止','Pause collection'):t('自動取得を有効化','Enable collection'))
              +b('botFinanceToggle()','ti-receipt',d.finance_enabled?t('決済の自動取得を停止','Pause payment collection'):t('決済Void・未決済の自動取得を有効化','Enable payment Void and unpaid collection'))
              +b('botGroupsModal()','ti-brand-line',t('LINEグループ設定','LINE group settings'))
-             +b('botClosureRulesModal()','ti-shield-check',t('本部確認の条件','HQ review rules'));
+             +b('botClosureRulesModal()','ti-shield-check',t('本部確認の条件','HQ review rules'))
+             +b('botJobCheckModal()','ti-clock-hour-4',t('Job確認（16:30 基準）','Job check (16:30 rule)'));   /* v1105 */
   if(office) h+=b('botOwnersModal()','ti-users',t('店舗の担当者設定','Store assignees'))
              +b('botResponseAccessModal()','ti-user-check',t('LINE回答権限の登録','LINE response permissions'));
   h+=b('botLineLinksModal()','ti-message-circle',t('LINE担当者登録','LINE assignee registration'));
@@ -45665,7 +45841,7 @@ function botDailyPanel(){
     }
     acts+='<button class="btn btn-secondary btn-sm" onclick="botMorningOpen(\''+c.id+'\',false)"><i class="ti ti-history"></i> '+t('案件・履歴を確認','Review case and history')+'</button>';
     return '<div class="bot-row"><div style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap"><b style="flex:1">'+esc(c.code)+' '+esc(c.subject)+'</b>'+carry+botStatusTag(c.status)+'</div>'
-      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKind(c.kind))+' · '+esc((c.payload&&c.payload.store_name)||botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))
+      +'<div class="meta"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(botCaseKindOf(c))+' · '+esc((c.payload&&c.payload.store_name)||botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))
       +' · '+t('最終確認','Last checked')+' '+esc(botTime(c.last_checked_at))+(c.due_date?' · '+t('期限','Due')+' '+esc(botDay(c.due_date)):'')+'</div>'
       +(c.status==='hq_review'?'<div class="meta" style="color:var(--accent)">'+t('本部が承認または差し戻してください','HQ: approve or return')+'</div>':'')
       +'<div class="bot-actions">'+acts+'</div></div>';
@@ -45778,7 +45954,8 @@ async function botCaseModal(id,morning){
   var h='<div class="bot-ui"><div class="modal-title"><span class="bot-mt"><i class="ti '+(BOT_KIND_ICON[c.kind]||'ti-inbox')+'"></i> '+esc(c.code)+' '+esc(botCaseKind(c.kind))+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>';
   h+='<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><b style="flex:1;font-size:15px">'+esc(c.subject)+'</b>'+botStatusTag(c.status)+'</div>'
     +'<div class="bot-note" style="margin-top:2px">'+esc(botStoreName(c.store_id))+' · '+esc(botDay(c.business_date))+(c.due_date?' · '+t('期限','Due')+' '+esc(botDay(c.due_date)):'')+'</div>';
-  if(c.kind==='labor'){
+  if(c.kind==='labor'&&botIsJobCase(c)) h+=botJobCaseHtml(c);   /* v1105: Job確認は今の勤怠の表示（_ceKindTags）を使わない */
+  else if(c.kind==='labor'){
     var lv=(p.kinds||[]).some(function(k){return CE_ERROR_KINDS.indexOf(k)>=0;})?'error':'warn';
     h+='<div class="bot-row" style="margin-top:8px">'+_ceKindTags(p.kinds||[], lv)
       +'<div style="font-size:11px;margin-top:4px;color:'+(lv==='error'?'var(--red)':'var(--yellow)')+'">'+(p.shifts||[]).map(function(sh){return esc(_ceClock(sh.inDate)+' → '+_ceClock(sh.outDate));}).join(' / ')+'</div>'
@@ -45871,6 +46048,153 @@ async function botCaseModal(id,morning){
 }
 
 setTimeout(botFetchSharedClock,0);
+/* ===== v1105: Job確認（16:30 基準）=====
+   判定は ops-bot（bot/job-check.mjs）。画面は 案件の表示・下書き・設定（GM・CEO）だけ。
+   Bot は打刻・Job・時給を直さない。 */
+var BOT_JOB_CHECK='job_1630';
+var BOT_JOB_UNSURE=['job_unknown','job_emp_unknown','job_class_unset','job_start_unknown'];
+function botIsJobCase(c){var p=(c&&c.payload)||{};return p.check===BOT_JOB_CHECK||(p.kinds||[]).some(function(k){return /^job_/.test(String(k));});}
+function botJobUnsure(c){var k=((c&&c.payload)||{}).kinds||[];return k.length>0&&k.every(function(x){return BOT_JOB_UNSURE.indexOf(x)>=0;});}
+function botJobCut(c){var cfg=((c&&c.payload)||{}).cfg||{};return /^\d{2}:\d{2}$/.test(cfg.cutoff||'')?cfg.cutoff:'16:30';}
+function botJobKindText(k,cut,lang){
+  cut=/^\d{2}:\d{2}$/.test(cut||'')?cut:'16:30';
+  var ja={job_before:cut+'前のためPrepか確認',job_after:cut+'以降のため営業用Jobか確認',job_straddle:cut+'をまたぐPrep（確認）',job_unknown:'判定不能：Jobが未分類（設定で選ぶ）',job_emp_unknown:'判定不能：従業員マスターに名前が見つからない',job_class_unset:'判定不能：G1-Pの扱いが未設定',job_start_unknown:'判定不能：開始時刻が分からない'};
+  var en={job_before:'Started before '+cut+': should be Prep',job_after:'Started at or after '+cut+': should be a service Job',job_straddle:'Prep continued past '+cut+' (check)',job_unknown:'Cannot judge: Job not classified (choose in settings)',job_emp_unknown:'Cannot judge: name not found in the employee master',job_class_unset:'Cannot judge: G1-P handling not set',job_start_unknown:'Cannot judge: start time unknown'};
+  return (lang==='en'?en:ja)[k]||k;
+}
+/* 営業日の 0 時（ハワイ時間）からの秒。日をまたいだ 0:30 は 24:30。Toast の +0000 も読む */
+function botJobSecs(v,bd){
+  if(typeof v!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(bd||''))return null;
+  var s=v.replace(/([+-]\d{2})(\d{2})$/,'$1:$2'),at=Date.parse(s),mid=Date.parse(bd+'T00:00:00-10:00');
+  if(!isFinite(at)||!isFinite(mid))return null;
+  var x=Math.floor((at-mid)/1000);return x>-24*3600&&x<48*3600?x:null;   /* 営業日の 0 時より前に始めた打刻（前日）も出す */
+}
+function botJobClock(x){if(x===null||x===undefined)return null;if(x<0)return t('前日 ','Prev. day ')+botJobClock(x+86400);var h=Math.floor(x/3600),m=Math.floor(x%3600/60),s=x%60;return String(h).padStart(2,'0')+':'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0');}
+function botJobGrade(c,lang){var cfg=((c&&c.payload)||{}).cfg||{};var g=cfg.grade;return g==='g1'?(lang==='en'?'Regular G1':'通常G1'):g==='g1p'?'G1-P':(lang==='en'?'Grade unknown':'区分不明');}
+/* 「LaLa／通常G1／15:00:12開始／Server → 16:30前のためPrepか確認」（ops-bot の jobCaseLine と同じ並び） */
+function botJobLine(c,lang){
+  var p=(c&&c.payload)||{},sh=(p.shifts||[])[0]||{},cut=botJobCut(c),en=lang==='en';
+  var secs=botJobSecs(sh.inDate,String(c.business_date||'').slice(0,10));
+  var start=secs===null?(en?'start unknown':'開始時刻不明'):(en?'started '+botJobClock(secs):botJobClock(secs)+'開始');
+  var store=String(p.store_name||botStoreName(c.store_id)||c.store_id||'');
+  return [store,botJobGrade(c,lang),start,(sh.job_name||(en?'Job unknown':'Job不明'))+' → '+(p.kinds||[]).map(function(k){return botJobKindText(k,cut,lang);}).join(en?' / ':'・')].join(en?' / ':'／');
+}
+function botCaseKindOf(c){return botIsJobCase(c)?t('勤怠・Job確認','Attendance · Job check'):botCaseKind(c.kind);}
+function botJobCaseHtml(c){
+  var esc=escapeHtml,p=c.payload||{},cfg=p.cfg||{},sh=(p.shifts||[])[0]||{},en=curLang==='en',cut=botJobCut(c),unsure=botJobUnsure(c);
+  var bd=String(c.business_date||'').slice(0,10),a=botJobSecs(sh.inDate,bd),b=botJobSecs(sh.outDate,bd);
+  var exp=cfg.expected==='prep'?'Prep':cfg.expected==='service'?t('営業用 Job','service Job'):'—';
+  var h='<div class="bot-row" style="margin-top:8px">'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(p.kinds||[]).map(function(k){return '<span class="tag '+(BOT_JOB_UNSURE.indexOf(k)>=0?'tag-yellow':'tag-red')+'">'+esc(botJobKindText(k,cut,en?'en':'ja'))+'</span>';}).join('')+'</div>'
+    +'<div style="font-size:12.5px;margin-top:6px;line-height:1.6"><b>'+esc(botJobLine(c,en?'en':'ja'))+'</b></div>'
+    +'<div style="font-size:12px;line-height:1.8;margin-top:4px">'
+    +'<div><span style="color:var(--muted)">'+t('打刻（ハワイ時間・営業日の 0 時から）','Punch (Hawaii time, from business-day midnight)')+'</span>　'+esc((a===null?t('不明','unknown'):botJobClock(a))+' 〜 '+(b===null?t('退勤なし','no clock-out'):botJobClock(b)))+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('実際の Job → 期待','Actual Job → expected')+'</span>　'+esc((sh.job_name||t('不明','unknown'))+' → '+exp)+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('判定したときの区分','Grade when checked')+'</span>　'+esc(botJobGrade(c,en?'en':'ja'))+(cfg.app_employee?' · '+t('従業員マスター','Employee master')+' '+esc(cfg.app_employee):'')+(p.graded_at?' · '+esc(botTime(p.graded_at)):'')+'</div>'
+    +'<div><span style="color:var(--muted)">'+t('基準','Rule')+'</span>　'+esc(t(cut+' より前に始めた打刻は Prep、'+cut+':00 ちょうど以降は営業用 Job（丸めない）',
+        'Punches starting before '+cut+' are Prep; at or after '+cut+':00 a service Job (no rounding)'))+(cfg.from?' · '+esc(t(botDay(cfg.from)+' の勤怠から','from '+botDay(cfg.from))):'')+'</div>'
+    +'</div>';
+  if(unsure) h+='<div class="bot-note" style="color:var(--yellow);margin-top:4px"><i class="ti ti-help-circle"></i> '+t('判定不能：違反ではありません。設定（Job の区分・G1-P の扱い）か従業員マスターを確かめてください。','Cannot judge: not a violation. Check the settings (Job classes, G1-P handling) or the employee master.')+'</div>';
+  return h+'<div class="bot-note" style="margin-top:4px"><i class="ti ti-info-circle"></i> '+t('Bot は打刻・Job・時給を直しません。Toast で Job を直すと、次の確認で解決になります。','The Bot never edits punches, Jobs or wages. Once the Job is corrected in Toast, the next recheck resolves the case.')+'</div></div>';
+}
+function botJobDraft(c){
+  var p=c.payload||{},en=curLang==='en',cut=botJobCut(c);
+  if(botJobUnsure(c)) return (en?'[Job check] The Bot could not judge this punch. Please confirm the Job for ':'【Job確認】判定できなかった打刻です。Job をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botJobLine(c,en?'en':'ja');
+  return (en?'Please check the Job for ':'Job をご確認ください：')+(p.employee_name||c.subject)+' / '+c.business_date+'\n'+botJobLine(c,en?'en':'ja')+'\n'
+    +(en?'Regular G1 shifts that start before '+cut+' are clocked in as Prep; from '+cut+' on, as a service Job. If the Job in Toast is wrong, please correct it in Toast and reply with this case code and the correction. If it is correct, please reply with the reason.'
+        :'通常 G1 は '+cut+' より前に始める勤務を Prep、'+cut+' 以降を営業用の Job で打刻します。Toast の Job が違っていれば Toast で直し、この案件番号と直した内容をご返信ください。正しい場合は理由をご返信ください。');
+}
+
+/* --- 設定（GM・CEO）：店ごと。Toast の Job の ID で区分を決める --- */
+var _botJob={store:'',data:null,busy:false,error:'',form:null};
+var BOT_JOB_CLS=['','prep','service','exclude'];
+function botJobClsLabel(v){return ({'':t('未分類','Unclassified'),prep:'Prep',service:t('営業用','Service'),exclude:t('対象外','Excluded')})[v]||v;}
+function botJobDefaultFrom(store){return store==='F06'?'2026-10-16':(typeof bizToday==='function'?bizToday():botYesterday());}
+function botJobCheckModal(store){
+  var d=_botShared.data;if(!d||['gm','ceo'].indexOf(d.actor&&d.actor.role)<0)return;
+  var stores=d.stores||[];store=store||_botJob.store||((stores.find(function(s){return s.store_id==='F06';})||stores[0]||{}).store_id||'');
+  _botJob={store:store,data:null,busy:true,error:'',form:null};botJobRender();
+  if(!store){_botJob.busy=false;_botJob.error=t('店舗がありません','No stores');botJobRender();return;}
+  botAPI({action:'job_list',store_id:store}).then(function(r){if(_botJob.store!==store)return;_botJob.data=r;_botJob.form=botJobFormFrom(r,store);})
+    .catch(function(e){if(_botJob.store===store)_botJob.error=e.message;}).then(function(){if(_botJob.store===store){_botJob.busy=false;botJobRender();}});
+}
+function botJobFormFrom(r,store){
+  var c=r.config||{},jobs={};
+  Object.keys(c.jobs||{}).forEach(function(g){var j=c.jobs[g];jobs[g]={name:j.name||'',cls:j.cls||'',deleted:!!j.deleted,inToast:false};});
+  (r.jobs||[]).forEach(function(j){var o=jobs[j.guid]||{cls:''};jobs[j.guid]={name:j.title||o.name||'',cls:o.cls||'',deleted:!!j.deleted,inToast:true};});
+  return {enabled:!!c.enabled,cutoff:c.cutoff||'16:30',from:c.from||botJobDefaultFrom(store),g1p:c.g1p||'exclude',straddle:{enabled:!!(c.straddle&&c.straddle.enabled),minutes:(c.straddle&&c.straddle.minutes)||30},jobs:jobs,rev:Number(r.rev)||0,updated_at:r.updated_at||null,read_at:r.read_at||null};
+}
+function botJobRender(){
+  var esc=escapeHtml,d=_botShared.data||{},stores=d.stores||[],f=_botJob.form;
+  var h='<div class="bot-ui"><div class="modal-title"><span class="bot-mt"><i class="ti ti-clock-hour-4"></i> '+t('Job確認（16:30 基準）','Job check (16:30 rule)')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div class="bot-desc">'+t('打刻（Job の区間）の開始が基準の時刻より前なら Prep、ちょうど以降なら Prep 以外か。営業日の 0 時（ハワイ時間）から数え、日をまたいだ 0:30 は 24:30 として見ます。名前ではなく Job の ID で判定します。変えられるのは GM・CEO。','Checks whether a punch (Job segment) that starts before the cutoff is Prep and one that starts at or after it is not. Counted from business-day midnight (Hawaii); 0:30 after midnight counts as 24:30. Judged by Job ID, not name. GM or CEO only.')+'</div>'
+    +'<div class="form-group" style="margin-top:10px"><label class="form-label">'+t('店舗','Store')+'</label><select class="form-select" id="bot-job-store" onchange="botJobCheckModal(this.value)">'+stores.map(function(s){return '<option value="'+esc(s.store_id)+'"'+(s.store_id===_botJob.store?' selected':'')+'>'+esc(s.name)+'</option>';}).join('')+'</select></div>';
+  if(_botJob.error) h+='<div class="alert alert-danger" role="alert"><i class="ti ti-alert-circle"></i><div>'+esc(_botJob.error)+'</div></div>';
+  if(_botJob.data&&_botJob.data.config_invalid) h+='<div class="alert alert-danger" role="alert"><i class="ti ti-alert-circle"></i><div>'+t('保存されているこの店の設定の形が読めないため、この店の Job確認は止まっています。下は初期値です。内容を確かめて保存し直してください。','The saved settings for this store cannot be read, so the Job check is stopped for this store. Defaults are shown below. Check them and save again.')+'</div></div>';
+  if(_botJob.busy) h+='<div class="bot-note"><i class="ti ti-loader"></i> '+t('Toast の Job と今の設定を読んでいます…','Reading Toast Jobs and the current settings…')+'</div>';
+  if(f){
+    h+='<label class="bot-row" style="display:flex;gap:10px;align-items:center;font-size:13px;cursor:pointer"><input type="checkbox" id="bot-job-enabled" '+(f.enabled?'checked':'')+'> '+t('この店で使う','Use for this store')+'</label>'
+      +'<div class="form-row"><div class="form-group"><label class="form-label">'+t('基準の時刻（店の時間）','Cutoff (store time)')+'</label><input type="time" step="60" id="bot-job-cutoff" class="form-input" value="'+esc(f.cutoff)+'"></div>'
+      +'<div class="form-group"><label class="form-label">'+t('この日の勤怠から','From business date')+'</label><input type="date" id="bot-job-from" class="form-input" value="'+esc(f.from)+'"></div></div>'
+      +'<div class="bot-note" style="margin-top:0">'+t('知らせる先：朝 9:00 の勤怠管理（Moto・Yuki）の報告。同じ指摘は重ねて出しません。','Reported in the 09:00 attendance report (Moto, Yuki). The same finding is not repeated.')+'</div>';
+    var keys=Object.keys(f.jobs).sort(function(a,b){var x=f.jobs[a],y=f.jobs[b];return (y.inToast-x.inToast)||String(x.name).localeCompare(String(y.name))||a.localeCompare(b);});
+    var unset=keys.filter(function(g){return !f.jobs[g].cls&&f.jobs[g].inToast&&!f.jobs[g].deleted;}).length;
+    h+='<div class="bot-sec"><i class="ti ti-tags"></i>'+t('Job の区分（Toast のこの店の Job）','Job classes (this store’s Toast Jobs)')+'</div>'
+      +'<div class="bot-note" style="margin:0 0 6px">'+t('読み込んだ日時','Read at')+' '+esc(botTime(f.read_at))+' · '+keys.length+t('件','')+(unset?' · <b style="color:var(--yellow)">'+t('未分類','Unclassified')+' '+unset+'</b>':'')+'</div>'
+      +(keys.length?keys.map(function(g){var j=f.jobs[g];
+        return '<div class="bot-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><div style="flex:1;min-width:140px"><b>'+esc(j.name||t('（名前なし）','(no name)'))+'</b> <span class="bot-note" style="margin:0">…'+esc(g.slice(-4))+'</span>'
+          +(j.deleted?' <span class="tag tag-gray">'+t('Toast で削除済み','Deleted in Toast')+'</span>':'')+(!j.inToast?' <span class="tag tag-gray">'+t('Toast の一覧に無い','Not in Toast list')+'</span>':'')+'</div>'
+          +'<select class="form-select" style="width:auto" data-job="'+esc(g)+'" onchange="botJobSetCls(this.dataset.job,this.value)">'+BOT_JOB_CLS.map(function(v){return '<option value="'+v+'"'+(j.cls===v?' selected':'')+'>'+botJobClsLabel(v)+'</option>';}).join('')+'</select></div>';
+      }).join(''):'<div class="bot-note">'+t('Toast の Job がありません。','No Toast Jobs.')+'</div>')
+      +'<div class="bot-note">'+t('未分類の Job の打刻は「判定不能（Job 要確認）」になります。Prep 以外の通常の Job は「営業用」、見なくてよい Job（Server Default など）は「対象外」。','Punches on an unclassified Job are reported as “cannot judge (check Job)”. Mark normal non-Prep Jobs “Service” and Jobs to ignore (e.g. Server Default) “Excluded”.')+'</div>';
+    h+='<div class="bot-sec"><i class="ti ti-users"></i>'+t('だれを見るか（勤務した時点の区分）','Who is checked (grade at the time of the shift)')+'</div>'
+      +'<div class="bot-note" style="margin:0 0 6px">'+t('通常 G1（従業員マスターのグレード G1・Prep の印なし）は見る。G2 以上は見ない。Toast の名前で従業員マスター全体（ほかの店の人も）から在籍の人を探し、同じ名前の人が 2 人以上いれば「判定不能」。判定したときの区分を案件に残します。','Regular G1 (grade G1 without the Prep mark) is checked; G2 and above are not. The Toast name is matched against all current staff in the employee master (any store); if two or more share the name, the case is “cannot judge”. The grade at the time of checking is kept on the case.')+'</div>'
+      +[['exclude',t('G1-P（Prep 専門職）は見ない（Prep 専任・'+f.cutoff+' 以降も Prep でよい）','G1-P (Prep specialist) is not checked (Prep after '+f.cutoff+' is fine)')],['check',t('G1-P も通常 G1 と同じに見る','Check G1-P like regular G1')],['unset',t('G1-P は判定せず「要設定」と出す','Report G1-P as “needs setting” without judging')]].map(function(x){
+        return '<label class="bot-row" style="display:flex;gap:10px;align-items:center;font-size:12.5px;cursor:pointer"><input type="radio" name="bot-job-g1p" value="'+x[0]+'" '+(f.g1p===x[0]?'checked':'')+'> '+x[1]+'</label>';}).join('')
+      +'<label class="bot-row" style="display:flex;gap:8px;align-items:center;font-size:12.5px;flex-wrap:wrap"><input type="checkbox" id="bot-job-straddle" '+(f.straddle.enabled?'checked':'')+'> '+t('補助の確認：基準より前に Prep で始めて、基準を','Extra check: Prep started before the cutoff continues')+' <input type="number" min="1" max="600" step="1" id="bot-job-straddle-min" class="form-input" style="width:72px" value="'+esc(String(f.straddle.minutes))+'"> '+t('分より長く過ぎても Prep のまま（違反にはせず「確認」）','minutes past it (shown as “check”, not a violation)')+'</label>'
+      +'<div class="bot-note">'+t('Bot は打刻・Job・時給を直しません。設定を変えると、次の確認から新しい決まりで見ます（過去の案件の区分は残ります）。','The Bot never edits punches, Jobs or wages. New settings apply from the next check; existing cases keep the grade recorded when checked.')+'</div>'
+      +(f.updated_at?'<div class="bot-note">'+t('最後に保存','Last saved')+' '+esc(botTime(f.updated_at))+'</div>':'')
+      +'<div class="bot-actions"><button class="btn btn-secondary btn-sm" onclick="botJobCheckModal(_botJob.store)"><i class="ti ti-refresh"></i> '+t('Toast から読み直す','Reload from Toast')+'</button></div>'
+      +'<button class="btn btn-primary" style="width:100%;margin-top:8px" id="bot-job-save" onclick="botJobSave()"><i class="ti ti-device-floppy"></i> '+t('保存（GM・CEO）','Save (GM / CEO)')+'</button>';
+  }
+  h+='</div>';
+  if(document.getElementById('bot-job-store'))document.getElementById('bot-job-store').closest('.bot-ui').outerHTML=h;else openModal(h);
+}
+function botJobReadForm(){
+  var f=_botJob.form;if(!f)return null;
+  var g=function(id){return document.getElementById(id);},r=document.querySelector('input[name="bot-job-g1p"]:checked');
+  if(g('bot-job-enabled'))f.enabled=g('bot-job-enabled').checked;
+  if(g('bot-job-cutoff'))f.cutoff=g('bot-job-cutoff').value;
+  if(g('bot-job-from'))f.from=g('bot-job-from').value;
+  if(r)f.g1p=r.value;
+  if(g('bot-job-straddle'))f.straddle.enabled=g('bot-job-straddle').checked;
+  if(g('bot-job-straddle-min'))f.straddle.minutes=Number(g('bot-job-straddle-min').value);
+  return f;
+}
+function botJobSetCls(guid,v){botJobReadForm();if(_botJob.form&&_botJob.form.jobs[guid]&&BOT_JOB_CLS.indexOf(v)>=0)_botJob.form.jobs[guid].cls=v;}
+function botJobConfig(f){
+  var jobs={};Object.keys(f.jobs).forEach(function(g){var j=f.jobs[g];jobs[g]={name:String(j.name||'').slice(0,120),cls:j.cls||null,deleted:!!j.deleted};});
+  return {enabled:!!f.enabled,cutoff:f.cutoff,from:f.from,g1p:f.g1p,straddle:{enabled:!!f.straddle.enabled,minutes:f.straddle.minutes},jobs:jobs};
+}
+async function botJobSave(){
+  var f=botJobReadForm(),btn=document.getElementById('bot-job-save');if(!f||_botJob.busy)return;
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(f.cutoff||'')){showToast(t('基準の時刻を HH:MM で入れてください','Enter the cutoff as HH:MM'),'warning');return;}
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(f.from||'')){showToast(t('開始の日を選んでください','Choose the start date'),'warning');return;}
+  var okMin=Number.isInteger(f.straddle.minutes)&&f.straddle.minutes>=1&&f.straddle.minutes<=600;
+  if(!f.straddle.enabled&&!okMin)f.straddle.minutes=30;   /* 補助の確認を使わないときは、分の欄が空でも保存できる */
+  else if(!okMin){showToast(t('補助の確認の分は 1〜600','Extra-check minutes must be 1–600'),'warning');return;}
+  var store=_botJob.store;_botJob.busy=true;if(btn)btn.disabled=true;
+  try{
+    var r=await botAPI({action:'job_check',store_id:store,config:botJobConfig(f),expect_rev:f.rev});
+    if(_botJob.store===store&&_botJob.form===f){f.rev=r.rev;f.updated_at=r.updated_at;}
+    showToast(t('保存しました（次の確認から使います）','Saved (applies from the next check)'),'success');
+    _botJob.busy=false;botJobRender();
+  }catch(e){
+    _botJob.busy=false;
+    if(/他の担当者|Another reviewer|conflict/.test(e.message)){showToast(t('ほかの人が先にこの店の設定を保存しました。読み直します（入力した内容は保存していません）','Someone else saved this store’s settings first. Reloading (your changes were not saved)'),'warning');botJobCheckModal(store);}
+    else{showToast(e.message,'warning');if(btn)btn.disabled=false;}
+  }
+}
 /* FUNERGY_BOT_SHARED_END */
 /* FUNERGY_BOT_CENTER_END */
 /* FUNERGY_INVOICE_INTAKE_BEGIN */

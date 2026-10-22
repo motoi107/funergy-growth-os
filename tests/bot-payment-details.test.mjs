@@ -39,6 +39,7 @@ test('the actual scan path preserves order metadata for payments voided on a lat
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'worker',finance_enabled:true}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.collection_range'))return Response.json([]);
+  if(url.includes('key=eq.job_check'))return Response.json([]);
   if(url.includes('/store_config?'))return Response.json([store]);
   if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
   if(url.endsWith('/authentication/login'))return Response.json({token:{accessToken:'synthetic'}});
