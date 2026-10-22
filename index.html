@@ -1426,7 +1426,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
   // 売上・予算の最新の取り込み（端末へ書けない）・保存・入力画面・Toast の反映がすべて止まっていた。
   // 前の名前（v1101〜v1103）の記録は、端末の保存領域を読めるようになったときに 1 回だけ新しい名前へ移す。
   // 大きい「保護の前の端末の値」は別の名前に置き、保存のたびに読み書きする記録を小さく保つ。
-  const RECOVERY_KEY = 'financial_save_recovery_v2';
+  const RECOVERY_PREFIX = 'financial_save_recovery_v2/';   // v1104（独立レビュー）：1 件ずつの名前
   const LEGACY_RECOVERY_KEY = '_financial_save_recovery_v1';
   const ARCHIVE_KEY = 'financial_pre_guard_archive_v1';
   const OPENERS = { openDailyActualModal: 'actual', openDayMemo: 'memo', bbOpen: 'budget',
@@ -1521,59 +1521,127 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     // v1104：端末の保存領域を読めるまで（IndexedDB の読み込みの前）は記録を読まない・書かない
     // （その間の localStorage の写しは古いことがある）。その間に断った書き込みの退避はここに持ち、読めるようになったら記録へ書く。
     // 断った値そのものは端末に残っている（保護が上書き・削除を止めている）。
+    // v1104（独立レビュー 4e573bb の P1・P2）：記録は 1 件ずつ別の名前（RECOVERY_PREFIX＋時刻と番号）に置く。
+    //   1 つの名前を読み直して書き直すと、同じ端末のほかのタブ（それぞれ自分の写しを持つ）が書いた記録を消していた。
+    //   1 件ずつなら、足すのも消すのもその 1 件だけ。ほかのタブの記録は、保存・読み直しの前に端末の保存領域から読み直して見る。
+    //   保存の前の記録（pending_request）は、端末の保存領域に書き終えたのを待ってから送る（押した直後に閉じても残る）。
+    const store = options.recoveryStore || defaultRecoveryStore();
     const waitingRetains = [];
-    let legacyMoved = false;
-    function readRecovery() {
-      const value = original._lsRaw.call(win, RECOVERY_KEY, []);
-      if (!Array.isArray(value)) throw new Error('financial_recovery_invalid');
-      return value;
+    const entryCache = new Map();
+    let legacyMoved = false, entrySeq = 0, migrating = null, archiving = null;
+    function defaultRecoveryStore() {
+      // 試験・ほかの入れ方のための既定：localStorage と同じ関数（書き終わりは待てない）
+      const ls = win.localStorage;
+      return {
+        get: key => original._lsStoreGet ? original._lsStoreGet.call(win, key) : (ls ? ls.getItem(key) : null),
+        keys: prefix => {
+          if (typeof original.lsKeys === 'function') return original.lsKeys.call(win, prefix) || [];
+          const out = []; try { for (let i = 0; i < ls.length; i++) { const k = ls.key(i); if (k && k.startsWith(prefix)) out.push(k); } } catch (_) {}
+          return out;
+        },
+        set: (key, json) => original._lsWriteVerified.call(win, key, json) === true,
+        del: key => { if (original._lsRawDel) original._lsRawDel.call(win, key); return true; },
+        persist: async () => true,
+        reload: async () => true
+      };
     }
-    // v1104：記録は IndexedDB へ入る（localStorage が満杯でも）。IndexedDB へは少し後でまとめて書く仕組みなので、
-    // 送る前の記録（pending_request）がすぐ端末に残るよう、書いたらその場で書き出す（options.flushLocal）。
-    function flushLocal() { if (typeof options.flushLocal === 'function') { try { options.flushLocal(); } catch (_) {} } }
-    function writeRecovery(all) {
-      if (original._lsWriteVerified.call(win, RECOVERY_KEY, JSON.stringify(all)) !== true)
-        throw new Error('financial_recovery_storage_failed');
-      flushLocal();
+    function entryKey() {
+      return RECOVERY_PREFIX + String(Date.now()).padStart(13, '0') + '-' + String(++entrySeq).padStart(6, '0') + '-' + Math.random().toString(36).slice(2, 10);
     }
-    function moveLegacyRecovery() {
-      if (legacyMoved) return;
-      const old = original._lsRaw.call(win, LEGACY_RECOVERY_KEY, null);
-      if (old !== null) {
-        if (!Array.isArray(old)) throw new Error('financial_recovery_invalid');
-        const current = readRecovery();
-        const merged = old.concat(current.filter(x => !old.some(o => equal(o, x))));
-        writeRecovery(merged);
-        if (!equal(readRecovery(), merged)) throw new Error('financial_recovery_storage_failed');
-        if (original._lsRawDel) original._lsRawDel.call(win, LEGACY_RECOVERY_KEY);
+    // このタブが知っている記録（名前の順＝書いた順）。中身の文字が同じあいだは解き直さない
+    function readEntries() {
+      const keys = (store.keys(RECOVERY_PREFIX) || []).slice().sort(), seen = new Set(keys), out = [];
+      for (const key of keys) {
+        const json = store.get(key);
+        if (json === null || json === undefined) continue;
+        let c = entryCache.get(key);
+        if (!c || c.json !== json) {
+          let value; try { value = JSON.parse(json); } catch (_) { throw new Error('financial_recovery_invalid'); }
+          if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('financial_recovery_invalid');
+          c = { key, json, value }; entryCache.set(key, c);
+        }
+        out.push(c);
       }
-      legacyMoved = true;
+      for (const key of [...entryCache.keys()]) if (!seen.has(key)) entryCache.delete(key);
+      return out;
+    }
+    // 前の名前（v1101〜v1103）の記録。新しい名前へ移し終えるまでは、それも記録として扱う
+    function legacyEntries() {
+      if (legacyMoved) return [];
+      const old = original._lsRaw.call(win, LEGACY_RECOVERY_KEY, null);
+      if (old === null) return [];
+      if (!Array.isArray(old)) throw new Error('financial_recovery_invalid');
+      return old;
     }
     function recoveryEntries() {
       if (!localReady) return waitingRetains.slice();
-      moveLegacyRecovery();
-      return readRecovery();
+      const current = readEntries();
+      const old = legacyEntries();
+      if (!old.length) return current.map(c => c.value);
+      const have = new Set(current.map(c => c.json));
+      return old.filter(x => !have.has(JSON.stringify(x))).concat(current.map(c => c.value));
+    }
+    function addEntry(record, json) {
+      const key = entryKey();
+      if (store.set(key, json) !== true || store.get(key) !== json) {
+        try { store.del(key); } catch (_) {}
+        throw new Error('financial_recovery_storage_failed');
+      }
+      entryCache.set(key, { key, json, value: record });
+      return key;
+    }
+    function removeEntry(key) { try { store.del(key); } catch (_) {} entryCache.delete(key); }
+    async function persistRecovery() {
+      try { return (await store.persist()) === true; } catch (_) { return false; }
     }
     function flushWaiting() {
       while (waitingRetains.length) { retain(waitingRetains[0]); waitingRetains.shift(); }
     }
+    // 記録を 1 件足す。足した名前を返す（同じ中身がもうあれば null）
     function retain(entry) {
       const record = copy(entry);
-      if (!localReady) { if (!waitingRetains.some(x => equal(x, record))) waitingRetains.push(record); return; }
-      let all = recoveryEntries();
+      if (!localReady) { if (!waitingRetains.some(x => equal(x, record))) waitingRetains.push(record); return null; }
+      const json = JSON.stringify(record), current = readEntries();
       if (record.reason === 'committed_receipt') {
+        // 受け取りを先に足してから、その保存の前の記録と古い受け取り（50 件より前）を消す（途中で閉じても、受け取りがあれば済みとわかる）
         // Completed request payloads contain whole rows. Once the receipt is
-        // stored atomically they must not accumulate with every ordinary save.
-        all = all.filter(x => !(x.reason === 'pending_request' && x.request?.requestId === record.requestId));
-        const receipts = all.filter(x => x.reason === 'committed_receipt');
-        const remove = new Set(receipts.slice(0, Math.max(0, receipts.length - 49)));
-        all = all.filter(x => !remove.has(x));
+        // stored they must not accumulate with every ordinary save.
+        const key = current.some(c => c.json === json) ? null : addEntry(record, json);
+        for (const c of current) if (c.value.reason === 'pending_request' && c.value.request?.requestId === record.requestId) removeEntry(c.key);
+        const receipts = readEntries().filter(c => c.value.reason === 'committed_receipt');
+        for (const c of receipts.slice(0, Math.max(0, receipts.length - 50))) removeEntry(c.key);
+        return key;
       }
-      const recordJson = JSON.stringify(record);   // v1104：比べる相手ごとに大きい記録を文字にし直さない
-      if (!all.some(x => JSON.stringify(x) === recordJson)) {
-        all.push(record);
-        writeRecovery(all);
-      }
+      if (current.some(c => c.json === json)) return null;
+      if (legacyEntries().some(x => JSON.stringify(x) === json)) return null;
+      return addEntry(record, json);
+    }
+    // 前の名前の記録を 1 回だけ新しい名前へ移す。新しい名前の記録が端末の保存領域に入り終えてから前の名前を消す
+    // （先に消すと、その間に閉じたときに両方なくなる）。大きい「保護の前の端末の値」は別の名前に置く
+    function migrateLegacy() {
+      if (legacyMoved) return Promise.resolve();
+      if (!migrating) migrating = (async () => {
+        const old = legacyEntries();
+        if (old.length) {
+          const have = new Set(readEntries().map(c => c.json));
+          for (const raw of old) {
+            const entry = raw && raw.reason === 'pre_guard_local' && !raw.archive && raw.value && typeof raw.value === 'object' ? archiveInline(raw) : raw;
+            const json = JSON.stringify(entry);
+            if (!have.has(json)) { addEntry(copy(entry), json); have.add(json); }
+          }
+          if (!(await persistRecovery())) throw new Error('financial_recovery_storage_failed');
+        }
+        if (original._lsRaw.call(win, LEGACY_RECOVERY_KEY, null) !== null && original._lsRawDel) original._lsRawDel.call(win, LEGACY_RECOVERY_KEY);
+        legacyMoved = true;
+      })().finally(() => { migrating = null; });
+      return migrating;
+    }
+    function archiveInline(entry) {
+      const json = JSON.stringify(entry.value);
+      let key = ARCHIVE_KEY;
+      for (let i = 1; ; i++) { const have = store.get(key); if (have === null || have === undefined || have === json) break; key = ARCHIVE_KEY + '/legacy-' + i; }
+      if (store.get(key) !== json && (store.set(key, json) !== true || store.get(key) !== json)) throw new Error('financial_recovery_storage_failed');
+      return { reason: 'pre_guard_local', archive: key, keys: Object.keys(entry.value) };
     }
     async function preserveLocal() {
       if (!localReady) {
@@ -1587,28 +1655,35 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           throw error;
         }
       }
+      // 同じ端末のほかのタブが書いた・消した記録を読み直す（読めなければこのタブが知っている記録のまま）
+      try { await store.reload(RECOVERY_PREFIX); } catch (_) {}
+      await migrateLegacy();
+      flushWaiting();
       return archiveLocal();
     }
     function archiveLocal() {
-      if (!localReady) throw new Error('financial_local_unverified');
-      moveLegacyRecovery(); flushWaiting();
-      if (localPreserved) return true;
-      if (recoveryEntries().some(entry => entry.reason === 'pre_guard_local')) { localPreserved = true; return true; }
-      const value = {};
-      for (const key of ['budgets_v2', ...STORES.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id])]) {
-        const raw = original._lsRaw.call(win, key, null);
-        if (raw !== null) value[key] = raw;
-      }
-      if (Object.keys(value).length) {
-        // v1104：値は別の名前に置き、記録には置き場所とキーだけを書く（書けたことを確かめてから記録する）
-        const json = JSON.stringify(copy(value));
-        if (original._lsWriteVerified.call(win, ARCHIVE_KEY, json) !== true
-          || (original._lsStoreGet && original._lsStoreGet.call(win, ARCHIVE_KEY) !== json))
-          throw new Error('financial_recovery_storage_failed');
-        retain({ reason: 'pre_guard_local', archive: ARCHIVE_KEY, keys: Object.keys(value) });
-      }
-      localPreserved = true;
-      return true;
+      if (!localReady) return Promise.reject(new Error('financial_local_unverified'));
+      if (localPreserved) return Promise.resolve(true);
+      if (!archiving) archiving = (async () => {
+        if (recoveryEntries().some(entry => entry.reason === 'pre_guard_local')) { localPreserved = true; return true; }
+        const value = {};
+        for (const key of ['budgets_v2', ...STORES.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id])]) {
+          const raw = original._lsRaw.call(win, key, null);
+          if (raw !== null) value[key] = raw;
+        }
+        if (Object.keys(value).length) {
+          // v1104：値は別の名前に置き、記録には置き場所とキーだけを書く（書けたことを確かめてから記録する）
+          // v1104（独立レビュー P2）：端末の値は保存の文字を解いたもの。全部の合計に大きさの上限をかけない（写しも作らない）
+          const json = JSON.stringify(value);
+          if (store.set(ARCHIVE_KEY, json) !== true || store.get(ARCHIVE_KEY) !== json) throw new Error('financial_recovery_storage_failed');
+          retain({ reason: 'pre_guard_local', archive: ARCHIVE_KEY, keys: Object.keys(value) });
+          // 端末の保存領域に入り終えてから、保護の前の値への上書きを許す
+          if (!(await persistRecovery())) throw new Error('financial_recovery_storage_failed');
+        }
+        localPreserved = true;
+        return true;
+      })().finally(() => { archiving = null; });
+      return archiving;
     }
     // Startup pulls can finish before IndexedDB hydration. They may keep
     // updating unrelated data, but must not overwrite or delete an unarchived
@@ -1927,7 +2002,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           }
           lastReceipt = freeze(copy(answer)); pending = null;
           if (entry.clearForm) form = null;
-          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }); }
+          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }); persistRecovery(); }   // v1104：済みの記録もすぐ書き出す（待たない）
           catch (_) { notify('保存は完了していますが、この端末への結果の記録を確認できません。再読み込み後に保存結果を確認してください。'); }
           entry.unlock(); runEffects(entry.effects);
           return true;
@@ -1942,9 +2017,15 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       finally { entry.busy = false; showStatus(); }
       return false;
     }
+    // v1104（独立レビュー P1）：同じ端末のほかのタブと保存を 1 つずつにする（ほかのタブの送り中の保存を、読み直した記録で見てから決める）
+    function crossTab(work) {
+      const locks = win.navigator && win.navigator.locks;
+      if (!locks || typeof locks.request !== 'function') return work();
+      return locks.request('funergy-financial-save', () => work());
+    }
     function invoke(name, fn, args, baseline) {
       if (active && callDepth > 0) return fn.apply(win, args);
-      const result = operationQueue.then(() => perform(name, fn, args, baseline));
+      const result = operationQueue.then(() => crossTab(() => perform(name, fn, args, baseline)));
       operationQueue = result.then(() => {}, () => {});
       return result;
     }
@@ -1997,7 +2078,10 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const touchedBefore = new Map(keys.map(key => [key, tx.before.get(key)]));
         // Save the exact request before dispatch so refresh/force-close cannot
         // turn an unknown response into a new id or silently lose entered data.
-        retain({ reason: 'pending_request', request, before: Object.fromEntries(touchedBefore) });
+        const pendingKey = retain({ reason: 'pending_request', request, before: Object.fromEntries(touchedBefore) });
+        // v1104（独立レビュー P2）：送る前に、この記録が端末の保存領域に入り終えたのを待つ（押した直後に閉じても残る）。
+        // 入れられなければ送らない（送っていない保存の記録は消す。入力はそのまま残る）
+        if (!(await persistRecovery())) { if (pendingKey) removeEntry(pendingKey); throw new Error('financial_recovery_storage_failed'); }
         active = null;
         pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false };
         return await transmit(false) ? result : false;
@@ -2107,8 +2191,12 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const baseline = new Map(active?.before || canonical);
         return function (...args) { return invoke('captured-callback', callback, args, baseline); };
       },
-      getRecovery: () => copy(recoveryEntries().map(x => x.reason === 'pre_guard_local' && x.archive
-        ? { ...x, value: original._lsRaw.call(win, x.archive, null) } : x)),
+      // 退避の値（保護の前の端末の値）は保存の文字を解き直して渡す（全部の合計に大きさの上限をかけない・毎回別の値）
+      getRecovery: () => recoveryEntries().map(x => {
+        if (x.reason !== 'pre_guard_local' || !x.archive) return copy(x);
+        const json = store.get(x.archive); let value = null; try { value = json == null ? null : JSON.parse(json); } catch (_) {}
+        return { ...copy(x), value };
+      }),
       async reloadForm() {
         if (active || pending?.busy || (pending && pending.status !== 'conflict')) return false;
         const last = form, keys = pending ? Object.keys(pending.request.writes) : [];
@@ -2202,7 +2290,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
    Install fences before startup; native previews keep their separate gateway. */
 if (!window.FUNERGY_NATIVE_CONFIG) {
   FunergyFinancialSave.install(window, {enabled:true, deferStartup:true,
-    flushLocal:function(){ if(typeof _idbFlush==='function') _idbFlush(); },   /* v1104: 退避の記録をすぐ IndexedDB へ */
+    recoveryStore:(typeof financialRecoveryStore==='function'?financialRecoveryStore():undefined),   /* v1104: 退避の記録は IndexedDB だけ・1 件ずつ・送る前に書き終わりを待つ */
     awaitLocalReady:async function(){
       await Promise.resolve().then(function(){return _idbBootP;});
       return _idbState==='ready' && _IDB_MEM instanceof Map;
@@ -7985,12 +8073,26 @@ function _idbLoadAll() {
   });
 }
 
+/* v1104（独立レビュー P2）：書き出しが端末の保存領域に入り終えたか（oncomplete）を待てるように、書き出しごとの約束を持つ */
+var _idbInflight = new Set();
+function _idbTrack(tx) {
+  var p = new Promise(function (res) {
+    try {
+      tx.addEventListener('complete', function () { res(true); });
+      tx.addEventListener('error', function () { res(false); });
+      tx.addEventListener('abort', function () { res(false); });
+    } catch (e) { res(false); }
+  });
+  _idbInflight.add(p); p.then(function () { _idbInflight.delete(p); });
+  return p;
+}
 function _idbFlush() {
   if (!_idbDB || !_idbQ.size) return;
   var batch = _idbQ; _idbQ = new Map();
   var n = batch.size;
   try {
     var tx = _idbDB.transaction(IDB_STORE, 'readwrite');
+    _idbTrack(tx);
     var st = tx.objectStore(IDB_STORE);
     batch.forEach(function (v, k) {
       try {
@@ -8004,7 +8106,52 @@ function _idbFlush() {
     };
     tx.onerror = function () { _idbStat.failed += n; _idbRequeue(batch); };
     tx.onabort = function () { _idbStat.failed += n; _idbRequeue(batch); };
-  } catch (e) { _idbStat.failed += n; _idbRequeue(batch); }
+  } catch (e) { _idbStat.failed += n; _idbRequeue(batch); var _f = Promise.resolve(false); _idbInflight.add(_f); _f.then(function () { _idbInflight.delete(_f); }); }
+}
+/* v1104（独立レビュー P2）：いま待っている書き込みをすぐ書き出し、端末の保存領域に入り終えるまで待つ。
+   入った＝true。書き出せなかった（積み直した）・IndexedDB が使えない＝false。あとから積んだ別の書き込みは待たない */
+function _idbFlushP() {
+  if (_idbState !== 'ready' || !_idbDB) return Promise.resolve(false);
+  if (_idbTimer) { clearTimeout(_idbTimer); _idbTimer = null; }
+  _idbFlush();
+  return Promise.all(Array.from(_idbInflight)).then(function (r) { return r.every(function (x) { return x === true; }); });
+}
+/* v1104（独立レビュー P1）：名前が prefix で始まるものを端末の保存領域から読み直し、このタブの写し（_IDB_MEM）を合わせる。
+   同じ端末のほかのタブが書いた・消したものが見える。このタブでまだ書き出していないもの（_idbQ）はこのタブの値のまま。
+   先に書き出すので、このタブの書き込みは読み直しの前に入る（IndexedDB は同じ範囲の書き込み→読み取りを順に通す） */
+function _idbReloadPrefix(prefix) {
+  return new Promise(function (res) {
+    if (_idbState !== 'ready' || !_idbDB || !_IDB_MEM || !prefix) return res(false);
+    try {
+      _idbFlush();
+      var out = new Map(), tx = _idbDB.transaction(IDB_STORE, 'readonly');
+      var cur = tx.objectStore(IDB_STORE).openCursor(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+      cur.onsuccess = function () { var c = cur.result; if (c) { out.set(c.key, c.value); c.continue(); } };
+      tx.oncomplete = function () {
+        try {
+          Array.from(_IDB_MEM.keys()).forEach(function (k) {
+            if (String(k).indexOf(prefix) === 0 && !out.has(k) && !_idbQ.has(k)) { _IDB_MEM.delete(k); _lskBump(); }
+          });
+          out.forEach(function (v, k) { if (_idbQ.has(k)) return; if (!_IDB_MEM.has(k)) _lskBump(); _IDB_MEM.set(k, v); });
+          res(true);
+        } catch (e) { res(false); }
+      };
+      tx.onerror = function () { res(false); };
+      tx.onabort = function () { res(false); };
+    } catch (e) { res(false); }
+  });
+}
+/* v1104：売上・予算の保護（v1101）の退避の記録の置き場所。IndexedDB だけに置く（localStorage は満杯のことがあり、
+   古い写しが残ると新しい値の邪魔をする）。保護は端末の保存領域を読めるようになってから（_idbState==='ready'）しか書かない */
+function financialRecoveryStore() {
+  return {
+    get: function (k) { try { return (_idbState === 'ready' && _IDB_MEM && _IDB_MEM.has(k)) ? _IDB_MEM.get(k) : null; } catch (e) { return null; } },
+    keys: function (p) { try { return _IDB_MEM ? Array.from(_IDB_MEM.keys()).filter(function (k) { return String(k).indexOf(p) === 0; }) : []; } catch (e) { return []; } },
+    set: function (k, json) { return _idbQueue(k, json) === true; },
+    del: function (k) { var ok = _idbQueue(k, null) === true; try { localStorage.removeItem(k); } catch (e) { } return ok; },
+    persist: function () { return _idbFlushP(); },
+    reload: function (p) { return _idbReloadPrefix(p); }
+  };
 }
 
 /* v765: IndexedDB への書き込みが失敗したら積み直して再試行する。
@@ -9501,8 +9648,9 @@ function obPushSecret(ob){
    pl_actual: 実PLの確定値（opex / netop / 科目明細）。
      v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
      実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
-var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1'];   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
-function isLocalOnlyKey(key){ return LS_LOCAL_ONLY.indexOf(String(key||'')) >= 0; }
+var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1'];
+var LS_LOCAL_ONLY_PREFIX = ['financial_save_recovery_v2/', 'financial_pre_guard_archive_v1/'];   /* v1104: 退避の記録は 1 件ずつの名前 */   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
+function isLocalOnlyKey(key){ var k=String(key||''); return LS_LOCAL_ONLY.indexOf(k) >= 0 || LS_LOCAL_ONLY_PREFIX.some(function(p){ return k.indexOf(p)===0; }); }
 function isOpSyncKey(key){
   if (isLocalOnlyKey(key)) return false;   /* v919 */
   if (!key) return false;

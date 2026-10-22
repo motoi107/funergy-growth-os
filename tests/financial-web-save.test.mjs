@@ -28,6 +28,10 @@ function webFunction(name) {
 const roleConfig = source.match(/const ROLE_CONFIG = \{[\s\S]*?\n\};/)[0];
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 const settle = () => new Promise(resolve => setImmediate(resolve));
+// v1104（独立レビュー）：退避の記録は 1 件ずつの名前（RECOVERY_PREFIX＋時刻と番号）
+const RECOVERY_PREFIX = 'financial_save_recovery_v2/';
+const recoveryKeys = storage => [...storage.keys()].filter(k => k.startsWith(RECOVERY_PREFIX)).sort();
+const recoveryText = storage => recoveryKeys(storage).map(k => storage.get(k)).join('\n');
 
 function fixture(options = {}) {
   const storage = options.storage || new Map();
@@ -106,8 +110,17 @@ function fixture(options = {}) {
     commit: async request => { commits.push(request); return options.commit ? options.commit(request, answer) : answer(request); },
     receipt: options.receipt || (async ({ requestId }) => receipts.get(requestId) || { status: 'not-found', requestId })
   };
+  // 記録の置き場所：本物の端末の関数（realStorage）があればそれ、なければ storage（Map）
+  const mapStore = {
+    get: key => storage.get(key) ?? null,
+    keys: prefix => [...storage.keys()].filter(k => k.startsWith(prefix)),
+    set: (key, json) => { if (options.writeVerified?.(key, json) === false) return false; storage.set(key, json); return true; },
+    del: key => { storage.delete(key); return true; },
+    persist: options.persist || (async () => true),
+    reload: async () => true };
+  const recoveryStore = options.recoveryStore || (typeof context.financialRecoveryStore === 'function' ? context.financialRecoveryStore() : mapStore);
   const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup,
-    awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)) });
+    awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)), recoveryStore });
   return { context, api, fields, dayFields, toasts, effects, legacy, commits, database, storage, receipts, answer,
     set: (id, value) => { const field = fields.get(id) || { disabled: false }; field.value = value; fields.set(id, field); },
     advance(key, fn) { const old = clone(database.get(key)); fn(old.value); old.version = AFTER; database.set(key, old); },
@@ -462,7 +475,7 @@ test('repeated acknowledged saves compact completed payloads to 50 summaries whi
   for (let i = 0; i < 80; i++) {
     await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Memo-' + String(i).padStart(3, '0'));
     await f.context.saveDayMemo('F01', '2026-10-01');
-    if (i === 49) sizeAt50 = f.storage.get(recoveryKey).length;
+    if (i === 49) sizeAt50 = recoveryText(f.storage).length;
   }
   const records = clone(f.api.getRecovery());
   assert.equal(f.commits.length, 80);
@@ -472,7 +485,7 @@ test('repeated acknowledged saves compact completed payloads to 50 summaries whi
   assert.equal(summaries[0].requestId, f.commits[30].requestId);
   assert.equal(summaries.at(-1).requestId, f.commits[79].requestId);
   assert.equal(summaries.every(x => !x.before && !x.request && !x.value), true);
-  assert.equal(f.storage.get(recoveryKey).length, sizeAt50);
+  assert.equal(recoveryText(f.storage).length, sizeAt50);
   for (const draft of drafts) assert.deepEqual(records.find(x => x.reason === draft.reason), draft);
   assert.equal(f.storage.has(legacyKey), false);
 });
@@ -490,26 +503,26 @@ test('a live legacy outbox keeps one original snapshot through 80 successful sav
   for (let i = 0; i < 80; i++) {
     await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Memo-' + String(i).padStart(3, '0'));
     await f.context.saveDayMemo('F01', '2026-10-01');
-    if (i === 49) sizeAt50 = f.storage.get(recoveryKey).length;
+    if (i === 49) sizeAt50 = recoveryText(f.storage).length;
   }
   assert.equal(f.commits.length, 80);
   assert.equal(f.api.getRecovery().filter(x => x.reason === 'committed_receipt').length, 50);
-  assert.equal(f.storage.get(recoveryKey).length, sizeAt50);
+  assert.equal(recoveryText(f.storage).length, sizeAt50);
   assert.deepEqual(clone(f.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [originalOutbox]);
   assert.deepEqual(originalOutbox.value, unsent);
   assert.deepEqual(JSON.parse(f.storage.get('op_outbox')), outbox);
   assert.equal(JSON.parse(f.storage.get(DAILY))['2026-10-01'].event, 'Memo-079');
-  const beforeReload = f.storage.get(recoveryKey);
+  const beforeReload = recoveryText(f.storage);
   const again = fixture({ storage: f.storage, database: f.database, receipts: f.receipts });
   await again.api.refresh([DAILY, BUDGET]);
-  assert.equal(again.storage.get(recoveryKey), beforeReload);
+  assert.equal(recoveryText(again.storage), beforeReload);
   assert.deepEqual(clone(again.api.getRecovery().find(x => x.reason === 'pre_guard_local')), originalLocal);
   assert.deepEqual(clone(again.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [originalOutbox]);
 });
 
 test('a distinct legacy outbox identity archives its own input only after durable retention succeeds', async () => {
   const recoveryKey = 'financial_save_recovery_v2'; let rejectRecovery = false, reads = 0;
-  const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey),
+  const f = fixture({ writeVerified: key => !(rejectRecovery && key.startsWith(RECOVERY_PREFIX)),
     read: async keys => { reads++; return { rows: keys.map(key => clone(f.database.get(key))) }; } });
   f.storage.set('op_outbox', JSON.stringify([{ key: DAILY, attempts: 1, lastErr: 'Old input', ts: 1 }]));
   await f.api.refresh([DAILY]);
@@ -519,32 +532,32 @@ test('a distinct legacy outbox identity archives its own input only after durabl
   f.storage.set(DAILY, JSON.stringify(nextInput));
   f.context._outboxAdd(DAILY, 'A separate offline write');
   const nextOutbox = JSON.parse(f.storage.get('op_outbox'));
-  const beforeFailure = f.storage.get(recoveryKey); rejectRecovery = true;
+  const beforeFailure = recoveryText(f.storage); rejectRecovery = true;
   await assert.rejects(f.api.refresh([DAILY]), /financial_recovery_storage_failed/);
   assert.equal(reads, 1); assert.equal(f.commits.length, 0);
-  assert.equal(f.storage.get(recoveryKey), beforeFailure);
+  assert.equal(recoveryText(f.storage), beforeFailure);
   assert.deepEqual(JSON.parse(f.storage.get(DAILY)), nextInput);
   assert.deepEqual(JSON.parse(f.storage.get('op_outbox')), nextOutbox);
   rejectRecovery = false; await f.api.refresh([DAILY]);
   assert.deepEqual(clone(f.api.getRecovery().filter(x => x.reason === 'legacy_outbox')), [first,
     { reason: 'legacy_outbox', key: DAILY, value: nextInput, outbox: nextOutbox[0] }]);
   assert.deepEqual(clone(f.api.getRecovery().find(x => x.reason === 'pre_guard_local')), originalLocal);
-  const afterCapture = f.storage.get(recoveryKey);
+  const afterCapture = recoveryText(f.storage);
   f.storage.set(DAILY, JSON.stringify(initial()[DAILY]));
   await f.api.refresh([DAILY]);
-  assert.equal(f.storage.get(recoveryKey), afterCapture);
+  assert.equal(recoveryText(f.storage), afterCapture);
 });
 
 test('recovery storage exhaustion refuses dispatch and preserves the entered form and previous recovery', async () => {
   let rejectRecovery = false;
   const recoveryKey = 'financial_save_recovery_v2';
-  const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey) });
+  const f = fixture({ writeVerified: key => !(rejectRecovery && key.startsWith(RECOVERY_PREFIX)) });
   await f.context.openDayMemo('F01', '2026-10-01', '木');
-  const previous = f.storage.get(recoveryKey);
+  const previous = recoveryText(f.storage);
   f.set('dm-memo', 'Retain visible input on quota failure'); rejectRecovery = true;
   await f.context.saveDayMemo('F01', '2026-10-01');
   assert.equal(f.commits.length, 0);
-  assert.equal(f.storage.get(recoveryKey), previous);
+  assert.equal(recoveryText(f.storage), previous);
   assert.equal(f.fields.get('dm-memo').value, 'Retain visible input on quota failure');
   assert.equal(f.fields.get('dm-memo').disabled, false);
   assert.equal(f.effects.includes('close'), false);
@@ -554,13 +567,13 @@ test('recovery storage exhaustion refuses dispatch and preserves the entered for
 test('bulk restore never claims durable retention when recovery storage rejects the candidate', async () => {
   let rejectRecovery = false;
   const recoveryKey = 'financial_save_recovery_v2';
-  const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey) });
-  await f.api.refresh([BUDGET]); const previous = f.storage.get(recoveryKey);
+  const f = fixture({ writeVerified: key => !(rejectRecovery && key.startsWith(RECOVERY_PREFIX)) });
+  await f.api.refresh([BUDGET]); const previous = recoveryText(f.storage);
   const result = await f.api.restoreBudgets([{ storeId: 'F01', actual: 987 }], {
     mode: 'overwrite', confirm: () => { rejectRecovery = true; return true; }
   });
   assert.equal(result.error, 'financial_recovery_storage_failed');
-  assert.equal(f.commits.length, 0); assert.equal(f.storage.get(recoveryKey), previous);
+  assert.equal(f.commits.length, 0); assert.equal(recoveryText(f.storage), previous);
   assert.equal(f.toasts.some(x => x.message.includes('保管しています')), false);
   assert.equal(f.toasts.some(x => x.message.includes('保管も確認できません')), true);
   assert.equal(f.toasts.some(x => x.kind === 'success'), false);
@@ -614,7 +627,10 @@ test('storage hydration failure blocks reads, automatic saves and restores witho
 // recovery log under '_financial_save_recovery_v1'; keys starting with '_' never go to IndexedDB, so the
 // pre-guard archive (all local sales/budget rows) could not be written and the guard stayed closed: no fresh rows
 // on the device, no input screens, no saves. These tests run the app's real storage helpers.
-function realStorage(context, storage, limit) {
+// disk = what IndexedDB has on disk (shared by tabs of one device); each tab has its own _IDB_MEM loaded from it.
+// _idbFlush() puts this tab's queue on disk (what the real one does once its transaction completes);
+// opts.holdFlush keeps the queue in memory (a page killed before the write reached disk).
+function realStorage(context, storage, limit, disk = new Map(), opts = {}) {
   const used = () => [...storage].reduce((n, [k, v]) => n + k.length + v.length, 0);
   context.localStorage = {
     getItem: key => storage.get(key) ?? null,
@@ -625,9 +641,14 @@ function realStorage(context, storage, limit) {
     },
     removeItem: key => storage.delete(key)
   };
-  vm.runInContext("var _idbState='ready', _IDB_MEM=new Map(), _idbQ=new Map(), _idbTimer=null; function _idbFlush(){} function _lskBump(){}\n"
+  context.__disk = disk; context.__opts = opts;
+  vm.runInContext("var _idbState='ready', _IDB_MEM=new Map(__disk), _idbQ=new Map(), _idbTimer=null; function _lskBump(){}\n"
+    + "function _idbFlush(){ if(__opts.holdFlush) return; _idbQ.forEach(function(v,k){ if(v===null) __disk.delete(k); else __disk.set(k,v); }); _idbQ=new Map(); }\n"
+    + "function _idbFlushP(){ if(__opts.failPersist) return Promise.resolve(false); _idbFlush(); return Promise.resolve(!__opts.holdFlush); }\n"
+    + "function _idbReloadPrefix(p){ _idbFlush(); Array.from(_IDB_MEM.keys()).forEach(function(k){ if(String(k).indexOf(p)===0&&!__disk.has(k)&&!_idbQ.has(k)) _IDB_MEM.delete(k); });"
+    + " __disk.forEach(function(v,k){ if(String(k).indexOf(p)===0&&!_idbQ.has(k)) _IDB_MEM.set(k,v); }); return Promise.resolve(true); }\n"
     + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n'
-    + ['lsIsDeviceLocal', '_idbQueue', '_lsStoreGet', '_lsWriteVerified'].map(webFunction).join('\n') + '\n'
+    + ['lsIsDeviceLocal', '_idbQueue', '_lsStoreGet', '_lsWriteVerified', 'financialRecoveryStore'].map(webFunction).join('\n') + '\n'
     + source.match(/^function _lsRaw\(key, def\).*$/m)[0] + '\n'
     + "function _lsRawDel(key){ try{ _idbQueue(key, null); }catch(e){} try{ localStorage.removeItem(key); return true; }catch(e){ return false; } }", context);
 }
@@ -646,7 +667,8 @@ test('v1104: a used device with full localStorage archives into IndexedDB, then 
   const archived = f.api.getRecovery().find(x => x.reason === 'pre_guard_local');
   assert.equal(archived.archive, 'financial_pre_guard_archive_v1');
   assert.deepEqual(clone(archived.value[DAILY]), initial()[DAILY]);
-  assert.equal(f.context._IDB_MEM.has('financial_save_recovery_v2'), true);
+  assert.equal([...f.context._IDB_MEM.keys()].some(k => k.startsWith(RECOVERY_PREFIX)), true);
+  assert.equal([...storage.keys()].some(k => k.startsWith(RECOVERY_PREFIX) || k === 'financial_pre_guard_archive_v1'), false, 'the log and the archive stay out of localStorage');
   assert.equal(f.context._IDB_MEM.has('financial_pre_guard_archive_v1'), true);
   assert.equal(storage.has('_financial_save_recovery_v1'), false);
   // the fence opened: fresh cloud rows can be written to the device again
@@ -664,13 +686,13 @@ test('v1104: a v1101-v1103 recovery log on the device moves once into the new ke
   const old = [{ reason: 'unversioned_write', key: DAILY, value: { '2026-10-01': { actual: 5 } } },
     { reason: 'committed_receipt', requestId: '00000000-0000-4000-8000-000000000999', receipt: { status: 'committed' } }];
   storage.set('_financial_save_recovery_v1', JSON.stringify(old));
-  const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, 1e9), awaitLocalReady: async () => true });
+  const disk = new Map();
+  const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, 1e9, disk), awaitLocalReady: async () => true });
   await f.api.refresh([DAILY]);
   const records = clone(f.api.getRecovery());
   assert.deepEqual(records.slice(0, 2), old);
   assert.equal(storage.has('_financial_save_recovery_v1'), false);
-  const again = fixture({ storage, database: f.database, receipts: f.receipts, beforeInstall: context => {
-    realStorage(context, storage, 1e9); context._IDB_MEM = new Map(f.context._IDB_MEM); }, awaitLocalReady: async () => true });
+  const again = fixture({ storage, database: f.database, receipts: f.receipts, beforeInstall: context => realStorage(context, storage, 1e9, disk), awaitLocalReady: async () => true });
   await again.api.refresh([DAILY]);
   assert.deepEqual(clone(again.api.getRecovery()), records);
 });
@@ -680,8 +702,8 @@ test('v1104: legacy writes refused before device storage is readable wait in mem
   const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, 1e9),
     awaitLocalReady: async () => { await gate.promise; return true; } });
   await f.context.supaUpsert('app_state', [{ key: DAILY, value: { '2026-10-09': { actual: 9 } } }]);
-  assert.equal(f.context._IDB_MEM.has('financial_save_recovery_v2'), false);
-  assert.equal(storage.has('financial_save_recovery_v2'), false);
+  assert.equal([...f.context._IDB_MEM.keys()].some(k => k.startsWith(RECOVERY_PREFIX)), false);
+  assert.equal(recoveryKeys(storage).length, 0);
   assert.equal(f.api.getState().hasRecovery, true);
   const reading = f.api.refresh([DAILY]); gate.resolve(); await reading;
   const kept = f.api.getRecovery().filter(x => x.reason === 'unversioned_write');
@@ -722,4 +744,159 @@ test('v1104: local budgets are parsed once per stored text, handed out fresh, an
   await f.api.refresh([BUDGET]);
   assert.equal(f.context.getBudgets().find(b => b.storeId === 'F01').actual, 100);
   assert.equal(parses, 2);
+});
+
+// ---- v1104 independent review (4e573bb): P1 two tabs overwrote the one recovery log; P2 a save killed right after
+// tapping lost its request; P2 the v1101-v1103 log was deleted before the new one was on disk; P2 the one-time
+// archive checked the size of all rows together. The log is now one key per record, kept in IndexedDB only.
+const ALL = ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]);
+function device() {
+  const storage = new Map(Object.entries(initial()).map(([k, v]) => [k, JSON.stringify(v)]));
+  const database = new Map(Object.entries(initial()).map(([key, value]) => [key, { key, value, exists: true, version: BASE }]));
+  database.set('daily_actuals_F02', { key: 'daily_actuals_F02', value: { '2026-10-01': { actual: 1 } }, exists: true, version: BASE });
+  return { storage, database, disk: new Map([...storage]), receipts: new Map() };
+}
+const onDisk = (disk, text) => [...disk].some(([k, v]) => k.startsWith(RECOVERY_PREFIX) && v.includes(text));
+
+test('v1104 review P1: another tab no longer overwrites the recovery log; a reload finds the first tab\'s unsent save', async () => {
+  const d = device(); let offline = true;
+  const tab = (opts = {}) => fixture({ storage: d.storage, database: d.database, receipts: d.receipts, awaitLocalReady: async () => true,
+    beforeInstall: c => realStorage(c, d.storage, 1e9, d.disk, opts),
+    commit: (req, answer) => offline ? Promise.reject(new Error('offline')) : answer(req) });
+  const A = tab(); await A.api.refresh(ALL);
+  const B = tab(); await B.api.refresh(ALL);   // B was opened before A saved: its copy of the device does not have A's record
+  await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'Tab A unsent memo');
+  assert.equal(await A.context.saveDayMemo('F01', '2026-10-01'), false);
+  assert.equal(A.api.getState().status, 'unknown');
+  assert.equal(onDisk(d.disk, 'Tab A unsent memo'), true);
+  // B records something of its own (a refused old-style write) and then tries to save: it reads the device first
+  await B.context.supaUpsert('app_state', [{ key: 'daily_actuals_F02', value: { '2026-10-09': { actual: 9 } } }]);
+  offline = false;
+  assert.equal(await B.context.openDayMemo('F02', '2026-10-01', '木'), false, 'B sees A\'s unresolved save and waits for it');
+  assert.equal(B.api.getState().status, 'unknown'); assert.equal(B.commits.length, 0);
+  assert.equal(onDisk(d.disk, 'Tab A unsent memo'), true, 'A\'s record is still on the device');
+  // reload: the unsent save is there and can be sent once, with the same request id
+  const C = tab();
+  await assert.rejects(C.api.refresh([DAILY]), /financial_unresolved_save/);
+  assert.equal(C.api.getState().status, 'unknown');
+  assert.equal(await C.api.reconcile(), false, 'nothing reached the server');
+  assert.equal(await C.api.retry(), true);
+  assert.equal(d.database.get(DAILY).value['2026-10-01'].event, 'Tab A unsent memo');
+  assert.equal(C.commits[0].requestId, A.commits[0].requestId);
+  assert.equal(onDisk(d.disk, '"pending_request"'), false);
+  // both tabs' own records survive
+  const D = tab(); await D.api.refresh(ALL);
+  assert.equal(D.api.getRecovery().some(x => x.reason === 'unversioned_write' && x.key === 'daily_actuals_F02'), true);
+  assert.equal(D.api.getState().status, 'idle');
+  // the stale first tab still believes the save is open, but writing its own records does not bring it back
+  await A.context.supaUpsert('app_state', [{ key: DAILY, value: { '2026-10-09': { actual: 4 } } }]);
+  const E = tab(); await E.api.refresh(ALL);
+  assert.equal(E.api.getState().status, 'idle', 'a resolved save is not resurrected by an older tab');
+  assert.equal(await A.api.reconcile(), true, 'the stale tab finds the receipt');
+});
+
+test('v1104 review P2: the request is on the device before it is sent, also when the page is closed right after', async () => {
+  for (const limit of [1e9, 3000]) {
+    const d = device(); let sentAfterDisk = null;
+    const f = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true,
+      beforeInstall: c => realStorage(c, d.storage, limit, d.disk),
+      commit: req => { sentAfterDisk = onDisk(d.disk, req.requestId); return Promise.reject(new Error('offline')); } });
+    await f.api.refresh(ALL);
+    await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Entered then app killed');
+    await f.context.saveDayMemo('F01', '2026-10-01');
+    assert.equal(sentAfterDisk, true, 'limit ' + limit);
+    // the page is gone: a new page reads only what is on the device
+    const C = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, limit, new Map(d.disk)) });
+    await assert.rejects(C.api.refresh([DAILY]), /financial_unresolved_save/);
+    assert.equal(JSON.stringify(C.api.getRecovery()).includes('Entered then app killed'), true);
+    assert.equal(C.api.getState().status, 'unknown');
+  }
+});
+
+test('v1104 review P2: when the device cannot store the request, nothing is sent and the entered memo stays', async () => {
+  const d = device(), opts = {};
+  const f = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, 1e9, d.disk, opts) });
+  await f.api.refresh(ALL);
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Keep me');
+  opts.failPersist = true;
+  assert.equal(await f.context.saveDayMemo('F01', '2026-10-01'), false);
+  assert.equal(f.commits.length, 0);
+  assert.equal(f.fields.get('dm-memo').value, 'Keep me'); assert.equal(f.effects.includes('close'), false);
+  assert.equal(f.api.getRecovery().some(x => x.reason === 'pending_request'), false, 'a request that was never sent is not left to be replayed');
+  assert.equal(f.api.getState().status, 'idle');
+  opts.failPersist = false;
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Keep me');
+  assert.notEqual(await f.context.saveDayMemo('F01', '2026-10-01'), false);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Keep me');
+});
+
+test('v1104 review P2: the v1101-v1103 log is removed only after the new records are on the device', async () => {
+  const d = device();
+  const old = [{ reason: 'conflict', request: { requestId: '00000000-0000-4000-8000-999999999999', writes: { [DAILY]: { memo: 'v1103 conflict draft' } } } },
+    { reason: 'pre_guard_local', value: { [DAILY]: { '2026-09-01': { actual: 77, event: 'Before the guard' } } } }];
+  d.storage.set('_financial_save_recovery_v1', JSON.stringify(old));
+  const limit = [...d.storage].reduce((n, [k, v]) => n + k.length + v.length, 0) + 50;   // full
+  const opts = { holdFlush: true };   // the first boot is killed before anything reaches the device
+  const A = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, limit, d.disk, opts) });
+  await assert.rejects(A.api.refresh([DAILY]), /financial_recovery_storage_failed/);
+  assert.equal(d.storage.has('_financial_save_recovery_v1'), true, 'the old log is kept');
+  const C = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, limit, d.disk) });
+  await C.api.refresh([DAILY]);
+  assert.equal(JSON.stringify(C.api.getRecovery()).includes('v1103 conflict draft'), true);
+  assert.equal(d.storage.has('_financial_save_recovery_v1'), false, 'removed once the new records are on the device');
+  assert.equal(onDisk(d.disk, 'v1103 conflict draft'), true);
+  // P3: the large value from before the guard moves out of the log into its own key, and is still shown
+  const marker = [...d.disk].filter(([k]) => k.startsWith(RECOVERY_PREFIX)).map(([, v]) => JSON.parse(v)).find(x => x.reason === 'pre_guard_local');
+  assert.deepEqual(marker, { reason: 'pre_guard_local', archive: 'financial_pre_guard_archive_v1', keys: [DAILY] });
+  assert.equal(C.api.getRecovery().find(x => x.reason === 'pre_guard_local').value[DAILY]['2026-09-01'].event, 'Before the guard');
+  // a second boot does not add anything
+  const before = recoveryText(d.disk);
+  const E = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, limit, d.disk) });
+  await E.api.refresh([DAILY]);
+  assert.equal(recoveryText(d.disk), before);
+});
+
+test('v1104 review P2: a device whose rows add up to more than 200,000 values still archives and opens the fence', async () => {
+  const d = device();
+  const day = i => ({ actual: i, guests: 10, lunchSales: 1, dinnerSales: 2, lunchGuests: 3, dinnerGuests: 4, bowls: 5, takeout: 6, foodCost: 7, by: 'x', at: 'y', toastSrc: true, creditTip: 1, cashTip: 2, event: '', weather: '' });
+  for (const id of ids.slice(0, 9)) { const o = {}; for (let i = 0; i < 1400; i++) o['d' + i] = day(i); d.storage.set('daily_actuals_' + id, JSON.stringify(o)); }
+  d.disk = new Map([...d.storage]);
+  const f = fixture({ storage: d.storage, database: d.database, awaitLocalReady: async () => true, beforeInstall: c => realStorage(c, d.storage, 1e9, d.disk) });
+  await f.api.refresh(ALL);
+  assert.equal(f.context._lsWriteVerified(DAILY, '{}'), true, 'the fence is open');
+  assert.notEqual(await f.context.openDayMemo('F01', '2026-10-01', '木'), false);
+  assert.equal(Object.keys(f.api.getRecovery().find(x => x.reason === 'pre_guard_local').value).length, 10);   // 9 stores' sales + F01's budget
+});
+
+test('v1104: the real IndexedDB helpers wait for the write to reach the device and see other tabs', async () => {
+  const { IDBFactory, IDBKeyRange } = await import('./runtime/node_modules/fake-indexeddb/build/esm/index.js');
+  const factory = new IDBFactory();
+  const names = ['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbTrack', '_idbFlush', '_idbRequeue', '_idbFlushP', '_idbReloadPrefix', '_idbQueue', 'lsIsDeviceLocal', 'financialRecoveryStore'];
+  const boot = async () => {
+    const c = vm.createContext({ indexedDB: factory, IDBKeyRange, setTimeout, clearTimeout, Promise, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, console });
+    vm.runInContext("var IDB_NAME='funergy_os_kv', IDB_STORE='kv', IDB_VER=1, _idbDB=null, _idbState='init', _IDB_MEM=null, _idbQ=new Map(), _idbTimer=null, _idbStat={loaded:0,wrote:0,failed:0,backfilled:0,at:''};\n"
+      + "function _lskBump(){} function _lsNoteSaveFailure(){}\n" + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n' + source.match(/^var _idbInflight = .*$/m)[0] + '\n'
+      + names.map(webFunction).join('\n'), c);
+    await c._idbOpen(); c._IDB_MEM = await c._idbLoadAll(); c._idbState = 'ready';
+    return c;
+  };
+  const A = await boot(), B = await boot();
+  const sa = A.financialRecoveryStore(), sb = B.financialRecoveryStore();
+  const K = RECOVERY_PREFIX + '0001', K2 = RECOVERY_PREFIX + '0002';
+  assert.equal(sa.set(K, '{"reason":"a"}'), true);
+  assert.equal(await sa.persist(), true);
+  // what is on the device now: a fresh page sees it
+  const C = await boot(); assert.equal(C._IDB_MEM.get(K), '{"reason":"a"}');
+  // B was opened before: it sees A's record only after reading the device again
+  assert.equal(sb.get(K), null);
+  assert.equal(await sb.reload(RECOVERY_PREFIX), true); assert.equal(sb.get(K), '{"reason":"a"}');
+  // a record B has not written out yet is kept while B reads the device
+  sb.set(K2, '{"reason":"b"}'); A.financialRecoveryStore().del(K); await sa.persist();
+  assert.equal(await sb.reload(RECOVERY_PREFIX), true);
+  assert.equal(sb.get(K), null, 'a record deleted in another tab goes away');
+  assert.equal(sb.get(K2), '{"reason":"b"}');
+  assert.equal(await sb.persist(), true);
+  const D = await boot(); assert.equal(D._IDB_MEM.get(K2), '{"reason":"b"}'); assert.equal(D._IDB_MEM.has(K), false);
+  // a page without IndexedDB cannot claim the write reached the device
+  const E = await boot(); E._idbState = 'unavailable'; assert.equal(await E.financialRecoveryStore().persist(), false);
 });
