@@ -1489,7 +1489,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       'closeModalDirect', 'renderPage', 'showToast', 'bbClearDirty', ...WRITERS];
     captureNames.push(...Object.keys(OPENERS), 'openInputModal', 'apDecidedFromPage', 'addApproval',
       'snapshotApprovedBudget', 'diagBudgets', 'closeDowEditor', '_daRO', 'flushOutbox', 'addNotif', '_apRerender');
-    captureNames.push('mergeBudgets', '_budHasReal', '_lsRawDel', '_lsStoreGet');
+    captureNames.push('mergeBudgets', '_budHasReal', '_lsRawDel', '_lsStoreGet', 'lsKeys');
     captureNames.forEach(name => { if (typeof win[name] === 'function') original[name] = win[name]; });
     for (const name of ['ls', 'lsSet', '_lsRaw', '_lsWriteVerified', '_outboxGet', '_outboxRemove',
       '_pushWithOutbox', 'syncMasterToSupabase', 'opMergePush', 'supaUpsert', 'getBudgets', 'saveBudgets',
@@ -1703,6 +1703,20 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     function rowValue(row) { return JSON.parse(rowText(row)); }
     // 行から作った予算の 1 件 → その JSON（読んだときの姿を覚えるときに文字にし直さない。覚えたら消す）
     const partJson = new WeakMap();
+    // v1104：端末の予算（budgets_v2 と spl_budgets_v2_*）を解いた結果を、保存してある文字が同じあいだ店ごとの JSON で覚える。
+    // クラウドの行で置き換える店は解かない（前は 1 回読むたびに端末の全店とクラウドの全店を両方解いていた）。
+    let budgetBase = null;
+    function localBudgetParts(fallback) {
+      if (!original.lsKeys || !original._lsStoreGet) return null;
+      const sig = [original._lsStoreGet.call(win, 'budgets_v2')];
+      for (const k of original.lsKeys.call(win, 'spl_budgets_v2_')) sig.push(k, original._lsStoreGet.call(win, k));
+      if (!budgetBase || budgetBase.sig.length !== sig.length || budgetBase.sig.some((x, i) => x !== sig[i])) {
+        const old = original.ls.call(win, 'budgets_v2', fallback) || [];
+        if (!Array.isArray(old)) throw new Error('invalid_financial_budget_cache');
+        budgetBase = { sig, parts: old.map(b => ({ storeId: b && b.storeId, json: JSON.stringify(b) ?? 'null' })) };
+      }
+      return budgetBase.parts;
+    }
     function rowsForReads() {
       const result = new Map(canonical);
       if (form) for (const [key, row] of form.rows) result.set(key, row);
@@ -1715,7 +1729,13 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     function localValue(key, fallback) {
       const rows = rowsForReads();
       if (key === 'budgets_v2') {
-        const old = original.ls.call(win, key, fallback) || [];
+        const parts = localBudgetParts(fallback);
+        let old;
+        if (parts) {
+          const replaced = new Set();
+          for (const k of rows.keys()) if (k.startsWith('spl_budgets_v2_')) replaced.add(rowStore(k));
+          old = parts.filter(p => !replaced.has(p.storeId)).map(p => { const b = JSON.parse(p.json); if (b && typeof b === 'object') partJson.set(b, p.json); return b; });
+        } else old = original.ls.call(win, key, fallback) || [];
         if (!Array.isArray(old)) throw new Error('invalid_financial_budget_cache');
         const byStore = new Map(old.map(b => [b.storeId, b]));
         for (const [k, row] of rows) if (k.startsWith('spl_budgets_v2_')) {
@@ -2423,9 +2443,11 @@ async function syncMenuFromToast(storeId, guid, period) {
   }
   return { added, updated, gone:goneCount, items:items.length, mixUpdated };
 }
-async function syncStoreActualsFromToast(storeId, guid, days) {
+async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   if (!guid) return { error: 'GUID未設定' };
-  var rows = await fetchToastSales(guid, days[0].date, days[days.length-1].date);
+  /* v1104：ログインの同期では Toast の売上を先に全店同時に読んでから渡す（prefetchedRows）。
+     v1101 の保護は売上・予算の保存を 1 つずつ順に通すので、ここで読むと店の数だけ往復を待っていた（日本からだと 1 店あたり約 0.2 秒以上）。 */
+  var rows = Array.isArray(prefetchedRows) ? prefetchedRows : await fetchToastSales(guid, days[0].date, days[days.length-1].date);
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -15452,7 +15474,7 @@ async function loginSyncOps(){
          同時に取る（前は 1 つずつ答えを待っていた＝店ごとに往復 4 回ぶん）。直近 Labor のライブ補完は今までどおり裏で。
          同じ日を書く勤怠とクレジットTip調整の順は、v1090 の読み込みの番号（_tipLaborSeq）がこれまでどおり守る */
       var _jobs = [];
-      _jobs.push((async function(){ try { await syncStoreActualsFromToast(s.id, s.toastGuid, days); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());
+      _jobs.push((async function(){ try { var _toastRows = await fetchToastSales(s.toastGuid, days[0].date, days[days.length-1].date); await syncStoreActualsFromToast(s.id, s.toastGuid, days, _toastRows); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());   /* v1104: 読むのは同時・保存は保護が順に */
       _jobs.push((async function(){ try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); } })());   /* v1090: 読んだ店と月の印 */
       /* v860: クレジットTip調整は前月の日付を直すことが多い。
          他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */

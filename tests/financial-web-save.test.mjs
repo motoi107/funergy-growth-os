@@ -704,3 +704,22 @@ test('v1104: reads hand out independent values without changing what a budget sa
   assert.deepEqual(Object.keys(f.commits[0].writes).sort(), [DAILY, BUDGET].sort());
   assert.equal(f.commits[0].writes[BUDGET][0].actual, 345);
 });
+
+test('v1104: local budgets are parsed once per stored text, handed out fresh, and re-read when the device row changes', async () => {
+  let parses = 0; const storage = new Map();
+  const f = fixture({ storage, beforeInstall: context => {
+    const ls = context.ls; context.ls = (key, fallback) => { if (key === 'budgets_v2') parses++; return ls(key, fallback); };
+    context.lsKeys = prefix => [...storage.keys()].filter(k => k.startsWith(prefix));
+  } });
+  // no server rows yet: everything comes from the device
+  const first = f.context.getBudgets(); assert.equal(parses, 1);
+  first.find(b => b.storeId === 'F01').actual = -5;
+  const second = f.context.getBudgets(); assert.equal(parses, 1);
+  assert.equal(second.find(b => b.storeId === 'F01').actual, 100);
+  f.storage.set(BUDGET, JSON.stringify([{ ...initial()[BUDGET][0], actual: 222 }]));
+  assert.equal(f.context.getBudgets().find(b => b.storeId === 'F01').actual, 222); assert.equal(parses, 2);
+  // with server rows the canonical row wins, and local parts are not re-parsed while the text is unchanged
+  await f.api.refresh([BUDGET]);
+  assert.equal(f.context.getBudgets().find(b => b.storeId === 'F01').actual, 100);
+  assert.equal(parses, 2);
+});
