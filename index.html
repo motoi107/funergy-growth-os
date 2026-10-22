@@ -22189,8 +22189,8 @@ function fstNote(kind, storeId, ok, code){
     var st=fstState(), now=new Date().toISOString(), rec;
     if(kind==='guard') rec=st.guard;
     else { if(!st[kind]||!storeId) return; rec=st[kind].by[storeId]||(st[kind].by[storeId]={}); }
-    if(ok){ rec.ok=now; rec.fail=null; rec.err=null; }
-    else { rec.fail=now; rec.err=String(code||'failed').slice(0,60); }
+    if(ok){ rec.ok=now; rec.fail=null; rec.err=null; rec.last='ok'; }
+    else { rec.fail=now; rec.err=String(code||'failed').slice(0,60); rec.last='fail'; }   /* last：同じミリ秒でも、いちばん新しい結果で決める */
     fstSave();
     var shown=kind==='guard'?['sales','budget']:[kind];
     shown.forEach(function(k){ if(ok&&fstStatus(k).state==='ok') st.tries[k]=0; else if(!ok) fstAuto(k); });
@@ -22200,21 +22200,22 @@ function fstNote(kind, storeId, ok, code){
 function fstStores(){ try{ return (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s&&s.toastGuid;}); }catch(e){ return []; } }
 function fstGuardOn(){ return !!(typeof window!=='undefined'&&window.FUNERGY_FINANCIAL_SAVE&&typeof FunergyFinancialTransport!=='undefined'); }
 /* 帯に出す 1 つの状態：{state:'ok'|'fail'|'none'|'partial', ok:最後に取れた時刻（いちばん古い店）, bad:[取れなかった店], none:[まだの店]} */
+function fstFailing(r){ return !!r && (r.last ? r.last==='fail' : !!(r.fail&&(!r.ok||r.fail>r.ok))); }
 function fstStatus(kind){
   var st=fstState(), out={state:'none', ok:null, bad:[], none:[], guardBad:false};
   function older(a,b){ return !a?b:(!b?a:(a<b?a:b)); }
   if(kind==='budget'){
     if(!fstGuardOn()) return {state:'off'};
-    var g=st.guard; if(g.fail&&(!g.ok||g.fail>g.ok)) return {state:'fail', ok:g.ok||null, bad:[], none:[], guardBad:true};
+    var g=st.guard; if(fstFailing(g)) return {state:'fail', ok:g.ok||null, bad:[], none:[], guardBad:true};
     return g.ok?{state:'ok', ok:g.ok, bad:[], none:[]}:out;
   }
   var stores=fstStores(), by=(st[kind]&&st[kind].by)||{}, oks=0;
   stores.forEach(function(s){ var r=by[s.id]||{};
-    if(r.fail&&(!r.ok||r.fail>r.ok)){ out.bad.push(s); out.ok=older(out.ok, r.ok||null); }
+    if(fstFailing(r)){ out.bad.push(s); out.ok=older(out.ok, r.ok||null); }
     else if(r.ok){ oks++; out.ok=older(out.ok, r.ok); }
     else out.none.push(s); });
   if(kind==='sales'&&fstGuardOn()){ var gg=st.guard;
-    if(gg.fail&&(!gg.ok||gg.fail>gg.ok)) out.guardBad=true;
+    if(fstFailing(gg)) out.guardBad=true;
     if(gg.ok) out.ok=older(out.ok, gg.ok); }
   out.state=(out.bad.length||out.guardBad)?'fail':(!stores.length?'none':(out.none.length?(oks?'partial':'none'):'ok'));
   return out;
@@ -22277,7 +22278,7 @@ async function fstRetry(kind, manual){
     var s=fstStatus(kind);
     if(kind==='budget'||(kind==='sales'&&s.guardBad)) await fstGuardRefresh();
     if((kind==='sales'||kind==='labor')&&days&&days.length){
-      var todo=(s.bad||[]).concat(s.none||[]);
+      var todo=manual?(s.bad||[]).concat(s.none||[]):(s.bad||[]);   /* 自動は取れなかった店だけ（ログインの前に、まだ読んでいない店を読みにいかない） */
       await Promise.all(todo.map(function(x){
         return (kind==='sales'?syncStoreActualsFromToast(x.id,x.toastGuid,days):syncTipLaborFromDB(x.id,x.toastGuid,days)).catch(function(e){ fstNote(kind,x.id,false,e&&e.message); });
       }));
@@ -40187,7 +40188,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1104';
+const APP_VERSION = '1105';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
