@@ -9722,7 +9722,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log','ec_resolutions',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
+  'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','prep_cfg','prep_tables','prep_certs','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
    唯一の入口 openLaborHourModal() に呼び出し元が無く（doToastLaborFetch も同じ）、
@@ -11392,7 +11392,11 @@ var OP_MERGE = {
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう） */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
-  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
+  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },
+  /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう */
+  prep_cfg:           { merge: mergeMapByTime, covers: _coversMapByTime },
+  prep_tables:        { merge: mergeMapByTime, covers: _coversMapByTime },
+  prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
   vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
   bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
   bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
@@ -19907,7 +19911,7 @@ function laborGradeSub(scopeStores, days){
     Object.keys(core.byName||{}).forEach(function(n){
       if(mNames[n]) return;
       var a=core.byName[n]; var cost=0;
-      try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot}).total; }catch(e){}
+      try{ cost=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay}).total; }catch(e){}
       if(cost>0){ has=true; if(gradeOf(n)>=2) g2+=cost; else g1+=cost; }
     });
   });
@@ -20412,7 +20416,7 @@ function toastLaborCostForDate(storeId, dateISO){
   Object.keys(labor).forEach(function(n){
     var e = labor[n];
     var h = _laborHrs(e);
-    if (h>0) cost += h*(empWage(n)||0);
+    if (h>0) cost += h*(empWageAt(n, storeId, dateISO)||0);   /* v1106: プレップの認定はその店・その日の時給 */
   });
   return cost;
 }
@@ -26077,7 +26081,7 @@ function _meetLaborLD(storeId, ym){
       var wL=Number(e.lunch)||0,    wD=Number(e.dinner)||0;
       /* _laborHrs と同じ選び方（合計が大きい側を採用）にそろえる */
       var useRaw=(rL+rD)>=(wL+wD);
-      var w=0; try{ w=empWage(n)||0; }catch(e2){}
+      var w=0; try{ w=empWageAt(n, storeId, d.date)||0; }catch(e2){}   /* v1106 */
       lc+=(useRaw?rL:wL)*w; dc+=(useRaw?rD:wD)*w;
     });
   });
@@ -30502,7 +30506,7 @@ function ldLaborDay(storeId, date){
   Object.keys(lab).forEach(function(n){
     var e=lab[n]; if(!e) return;
     var rL=Number(e.rawLunch)||0, rD=Number(e.rawDinner)||0, wL=Number(e.lunch)||0, wD=Number(e.dinner)||0;
-    var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=_ldWage(n)||0; }catch(e2){}   /* v1048 */
+    var useRaw=(rL+rD)>=(wL+wD), hL=useRaw?rL:wL, hD=useRaw?rD:wD, w=0; try{ w=(pmHasAt(n, storeId)?empWageAt(n, storeId, date):_ldWage(n))||0; }catch(e2){}   /* v1048・v1106: プレップの認定はその日の時給 */
     r.hL+=hL; r.hD+=hD; r.cL+=hL*w; r.cD+=hD*w;
   });
   return r;
@@ -38520,6 +38524,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_guide','career_cfg',   /* v1099：特別原資・評価基準・例（手で決めたもの・再生不可）。v1103：専門職 × グレードの権限 */
   'emp_dirty_q',       /* v1085: 従業員の送れていない変更（退職など。端末だけ・再生不可） */
   'lunch_challenge',   /* v1080: Tenkichi ランチチャレンジ（月の設定・日の印・確定・食事会。手入力・再生不可） */
+  'prep_cfg','prep_tables','prep_certs',   /* v1106: プレップの店の設定・Lv と時給の表・認定（手で決めたもの・再生不可） */
   'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
   'ec_resolutions',    /* v1088: エラーの解除（誰が・いつ・どの理由で。手で決めたもの・再生不可） */
   'sl_config','sl_manual_','ocs_asg_','ocs_ev_','ocs_cfg',   /* v1050: オフィス用 Career Score（手入力・再生不可） */
@@ -38849,7 +38854,7 @@ function renderLaborHours(storeId, store) {
     if (actualH<=0 && sales<=0 && plannedH<=0) return;
     if (d.date<=todayStr) { cumHours+=actualH; cumSales+=sales; cumPlanned+=plannedH; }
     var laborCost = 0;
-    if (labor) Object.keys(labor).forEach(n=>{ var w=empWage(n)||0; var h=_laborHrs(labor[n]); laborCost += w*h; });
+    if (labor) Object.keys(labor).forEach(n=>{ var w=empWageAt(n, storeId, d.date)||0; var h=_laborHrs(labor[n]); laborCost += w*h; });   /* v1106 */
     if (actualH>0) laborCost += storeSalaryDaily(storeId, d.date.slice(0,7)); // 月給制の日割り（生・税なし＝時給と同扱い）
     rows.push({date:d.date, dow:d.dow, sales, plannedH, actualH, diff:actualH-plannedH,
       laborCost, laborRate: sales?Math.round(laborCost/sales*1000)/10:0,
@@ -38920,7 +38925,7 @@ function laborBreakdownForPeriod(storeId, days){
     var _ym = String(days[0].date).slice(0,7);
     var _core = laborCoreForYm(storeId, _ym);
     var rows = Object.keys(_core.byName).map(function(n){
-      var a=_core.byName[n]; var calc=laborForEmployee(n,{regular:a.reg,ot:a.ot});
+      var a=_core.byName[n]; var calc=laborForEmployee(n,{regular:a.reg,ot:a.ot,pay:a.pay});
       return { name:n, hours:a.hours, reg:a.reg, ot:a.ot, wage:calc.wage, amount:Math.round(calc.total*100)/100 };
     }).filter(function(r){ return r.hours>0 && !((storeMonthlyStaff(storeId)||[]).some(function(e){return e.name===r.name && empMonthlyOf(e)>0;})); })
       .sort(function(x,y){ return (y.amount-x.amount)||(y.hours-x.hours); });
@@ -38953,13 +38958,16 @@ function laborBreakdownForPeriod(storeId, days){
       if(empIsMonthlyByName(n)) return; // 月給者は時給集計に含めない（別途 月給日割り）
       if(!agg[n]) agg[n] = {name:n, hours:0, wage: empWage(n)||0, toastName:(e.toastName||n)};
       agg[n].hours += h;
+      if(pmHasAt(n, storeId)){ var _cw=pmCertWage(n, storeId, d.date); if(_cw!=null) agg[n]._pmUsed=1; agg[n].pay=(agg[n].pay||0)+h*(_cw!=null?_cw:(empWage(n)||0)); }   /* v1106: プレップの認定は日ごとの時給 */
     });
     if(hadAny) daysWithData++;
   });
   var rows = Object.keys(agg).map(function(n){
     var a=agg[n];
     a.hours = Math.round(a.hours*100)/100;
-    a.amount = Math.round(a.hours*a.wage*100)/100;
+    if (a._pmUsed) { a.amount = Math.round(a.pay*100)/100; if (a.hours>0) a.wage = Math.round(a.pay/a.hours*100)/100; }   /* v1106 */
+    else a.amount = Math.round(a.hours*a.wage*100)/100;
+    delete a.pay; delete a._pmUsed;
     return a;
   }).filter(function(a){return a.hours>0;}).sort(function(x,y){return (y.amount-x.amount)||(y.hours-x.hours);});
   var wageBase = Math.round(rows.reduce(function(s,r){return s+r.amount;},0)*100)/100;
@@ -39104,7 +39112,7 @@ function sumWeekStats(storeId, dates) {
     if (ov.foodCost!=null) food += ov.foodCost;
     var labor = getTipLabor(storeId, date);
     var hadH=false;   /* v1057: 実働（Labor 集計と同じ _laborHrs）。lunch/dinner は Tip の対象時間で、営業時間のみの店は窓の外が抜ける */
-    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWage(n)||0); });
+    if (labor) Object.keys(labor).forEach(n=>{ var h=_laborHrs(labor[n]); if(h>0)hadH=true; hours+=h; laborCost+=h*(empWageAt(n, storeId, date)||0); });   /* v1106 */
     if (hadH) laborCost += storeSalaryDaily(storeId, date.slice(0,7)); // 月給制の日割り（生）
   });
   return {sales, guests, hours, laborCost, food,
@@ -39205,9 +39213,15 @@ function setLaborDetailWeek(v){ laborDetailWeek = v||''; renderPage('labor'); }
 
 function laborForEmployee(name, entry) {
   // entry: {regular, ot} があればそれを使う（Toast/手入力）。無ければ0
-  var wage = empWage(name);
   var reg = (entry && entry.regular!=null) ? entry.regular : 0;
   var ot = (entry && entry.ot!=null) ? entry.ot : 0;
+  /* v1106: 日によって時給が変わる人（プレップの認定）は、共通コアが週ごとに計算した額（pay）。wage はならした時給（表示用） */
+  if (entry && entry.pay!=null && isFinite(Number(entry.pay))) {
+    var _pay=Number(entry.pay), _u=reg+ot*1.5, _w=(_u>0)?Math.round(_pay/_u*100)/100:empWage(name);
+    var _rp=(_u>0)?_pay*reg/_u:0;
+    return { wage:_w, reg:reg, ot:ot, regPay:_rp, otPay:_pay-_rp, total:_pay, mixed:true };
+  }
+  var wage = empWage(name);
   var regPay = reg*wage;
   var otPay = ot*wage*1.5;
   return { wage, reg, ot, regPay, otPay, total: regPay+otPay };
@@ -39235,25 +39249,29 @@ function _laborCoreForYmRaw(storeId, ym, opts){
   var weeks = laborMonthWeeks(ym).filter(function(w){ return !opts.weekSun || w.sun===opts.weekSun; });
   var inRange = function(dt){ return String(dt).slice(0,7)===ym && (!cutoff || dt<cutoff); };
   var byName = {};
+  var certPay = {}, certUsed = {};   /* v1106: この店でプレップの認定がある人だけ。週ごとに Σ(その日の時間×その日の時給)、40h 超は週の平均の時給×1.5。
+                                       この月に認定の時給の日が 1 日も無ければ使わない（今までと同じ計算） */
   weeks.forEach(function(w){
-    var weekHours = {};
+    var weekHours = {}, weekPay = {};
     laborWeekDays(w.sun).forEach(function(dt){
       if(!inRange(dt)) return;
       var labor = getTipLabor(storeId, dt); if(!labor) return;
-      Object.keys(labor).forEach(function(n){ var e=labor[n]; var h=_laborHrs(e); if(h>0) weekHours[n]=(weekHours[n]||0)+h; });
+      Object.keys(labor).forEach(function(n){ var e=labor[n]; var h=_laborHrs(e); if(h>0){ weekHours[n]=(weekHours[n]||0)+h;
+        if(pmHasAt(n, storeId)){ var _cw=pmCertWage(n, storeId, dt); if(_cw!=null) certUsed[n]=1; weekPay[n]=(weekPay[n]||0)+h*(_cw!=null?_cw:(empWage(n)||0)); } } });
     });
     Object.keys(weekHours).forEach(function(n){
       var wh=weekHours[n]; var ot=Math.max(0, wh-40), reg=wh-ot;
       if(!byName[n]) byName[n]={reg:0, ot:0, hours:0};
       byName[n].reg+=reg; byName[n].ot+=ot; byName[n].hours+=wh;
+      if(weekPay[n]!=null){ var _avg=weekPay[n]/wh; certPay[n]=(certPay[n]||0)+reg*_avg+ot*_avg*1.5; }
     });
   });
-  Object.keys(byName).forEach(function(n){ byName[n].reg=Math.round(byName[n].reg*100)/100; byName[n].ot=Math.round(byName[n].ot*100)/100; byName[n].hours=Math.round(byName[n].hours*100)/100; });
+  Object.keys(byName).forEach(function(n){ byName[n].reg=Math.round(byName[n].reg*100)/100; byName[n].ot=Math.round(byName[n].ot*100)/100; byName[n].hours=Math.round(byName[n].hours*100)/100; if(certUsed[n] && certPay[n]!=null) byName[n].pay=Math.round(certPay[n]*100)/100; });
   var monthlyNames = {};
   var mStaff = (typeof storeMonthlyStaff==='function') ? (storeMonthlyStaff(storeId)||[]) : [];
   mStaff.forEach(function(e){ if((typeof empMonthlyOf==='function'?empMonthlyOf(e):0)>0) monthlyNames[e.name]=1; });
   var hourly = 0;
-  Object.keys(byName).forEach(function(n){ if(monthlyNames[n]) return; var a=byName[n]; hourly += laborForEmployee(n, {regular:a.reg, ot:a.ot}).total; });
+  Object.keys(byName).forEach(function(n){ if(monthlyNames[n]) return; var a=byName[n]; hourly += laborForEmployee(n, {regular:a.reg, ot:a.ot, pay:a.pay}).total; });
   // ★ 有給消化中の時給者: 期間内の営業日 × 標準時間 × 時給 を店舗Laborに加算（月給者は月額按分で計上済みのため対象外）
   var leavePay = 0, leaveDays = 0;
   try {
@@ -39265,14 +39283,17 @@ function _laborCoreForYmRaw(storeId, ym, opts){
       var lh = (le.leaveHrs!=null && le.leaveHrs!=='') ? Number(le.leaveHrs) : 8;
       if(!(lh>0)) return;
       var lw = (typeof empWage==='function') ? (Number(empWage(le.name))||0) : 0;
-      if(!(lw>0)) return;
+      var _lwp = pmHasAt(le.name, storeId);   /* v1106: プレップの認定がある人は、その日の時給 */
+      if(!(lw>0) && !_lwp) return;
       _ymDays.forEach(function(dd){
         var dt=dd.date;
         if(dt<le.leaveStart || dt>le.leaveEnd) return;
         if(!inRange(dt)) return; // 当月・前日まで（cutoff整合）
         var dow=new Date(dt+'T00:00:00').getDay(); // 0=日..6=土（店休判定と同規約）
         if((typeof dayClosureMode==='function') && dayClosureMode(storeId, dt, dow)==='closed') return; // 全休日はスキップ
-        leaveDays++; leavePay += lh*lw;
+        var _lwd = _lwp ? (Number(empWageAt(le.name, storeId, dt))||0) : lw;
+        if(!(_lwd>0)) return;
+        leaveDays++; leavePay += lh*_lwd;
       });
     });
   } catch(e){}
@@ -39900,7 +39921,7 @@ function renderLaborDetail(storeId, store) {
       var _e = (getEmployees()||[]).find(function(x){ return x && x.name===n; });
       if(!(_e && typeof isHqStaff==='function' && isHqStaff(_e))) return;
       var _a = agg[n]; if(!(_a && (_a.reg>0 || _a.ot>0))) return;
-      _hqCnt++; _hqAmt += laborForEmployee(n, {regular:_a.reg, ot:_a.ot}).total;
+      _hqCnt++; _hqAmt += laborForEmployee(n, {regular:_a.reg, ot:_a.ot, pay:_a.pay}).total;
     });
     _hqAmt = Math.round(_hqAmt*100)/100;
   } catch(e){}
@@ -39945,7 +39966,7 @@ function renderLaborDetail(storeId, store) {
     if(typeof empPayType==='function' && empPayType(e)==='monthly') return; // 月給制は下の固定給セクションで計上
     var a = agg[e.name];
     if(!a || (a.reg<=0 && a.ot<=0)) return; // この期間に勤務が無い人は省略
-    var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot});
+    var calc = laborForEmployee(e.name, {regular:a.reg, ot:a.ot, pay:a.pay});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
     _shown[e.name] = 1;   /* v916 */
     _tbody += `<tr>
@@ -39981,7 +40002,7 @@ function renderLaborDetail(storeId, store) {
   var _unreg = [];   /* v916: 本当にマスターに居ない人だけ（下の注意書き用） */
   _rest.forEach(function(name){
     var a = agg[name];
-    var calc = laborForEmployee(name, {regular:a.reg, ot:a.ot});
+    var calc = laborForEmployee(name, {regular:a.reg, ot:a.ot, pay:a.pay});
     totalCost+=calc.total; totalReg+=calc.reg; totalOt+=calc.ot; shownCount++;
     _shown[name] = 1;
     var _uEmp = null;
@@ -40219,7 +40240,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1105';
+const APP_VERSION = '1106';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -43906,7 +43927,7 @@ function renderShiftLabor(storeId, week) {
   var crewCost=0, leaderCost=0, crewHours=0, leaderHours=0, crewShifts=0;
   Object.keys(hoursByName).forEach(name => {
     var e = emps.find(x=>x.name===name); if(!e) return;
-    var wage = empWageOf(e);
+    var wage = pmHasAt(name, storeId) ? empWageAt(name, storeId, bizToday()) : empWageOf(e);   /* v1106: プレップの認定は今日のその店の時給（試算） */
     var cost = hoursByName[name]*wage;
     if (e.role==='sl'||e.role==='am') { leaderCost+=cost; leaderHours+=hoursByName[name]; }
     else { crewCost+=cost; crewHours+=hoursByName[name]; crewShifts += Object.keys(plan.cells).filter(k=>plan.cells[k]===name).length; }
@@ -53284,7 +53305,7 @@ function payFieldsHtml(e) {
   } else {
     var defw = (e.title&&tbl[e.title]&&tbl[e.title].wage!=null)?tbl[e.title].wage:(WAGE[e.role]||16);
     return `<input class="form-input" id="e-wage" type="number" inputmode="decimal" step="0.25" value="${e.wage!=null?e.wage:''}" placeholder="時給 $/h（デフォルト ${defw}）">
-      <input type="hidden" id="e-monthly" value="">`;
+      <input type="hidden" id="e-monthly" value="">${pmMasterNoteHtml(e)}`;
   }
 }
 /* 役職変更時に給与欄を月給/時給で切り替え */
@@ -58972,7 +58993,9 @@ function skillOverallPct(name, storeId){
 /* 従業員のGrade・評価基準（G1=スキル総合 / G2以上=Career Score総合）→ Level自動算出 */
 function empEvalInfo(e){
   if(!e) return {grade:'', gnum:0, basis:'', pct:0, hasData:false, level:null};
-  if(e.prep){ var _pl=e.prepLv||1; return {grade:'G1-P', gnum:1, basis:'prep', pct:Math.round(_pl/5*100), hasData:true, level:{n:_pl, label:'プレップLv'+_pl, min:0, color:evalLevelColor(_pl)}}; }
+  if(e.prep){ var _pl=0; try{ var _pw=e.store?pmWageOn(e, e.store, pmToday()):null; _pl=_pw?_pw.lv:0; }catch(_e){} if(!_pl) _pl=e.prepLv||0;   /* v1106: 所属店の認定 Lv（無ければ前の Lv） */
+    if(!_pl) return {grade:'G1-P', gnum:1, basis:'prep', pct:0, hasData:false, level:{n:0, label:'プレップ（未認定）', min:0, color:evalLevelColor(1)}};
+    return {grade:'G1-P', gnum:1, basis:'prep', pct:Math.round(_pl/5*100), hasData:true, level:{n:_pl, label:'プレップLv'+_pl, min:0, color:evalLevelColor(_pl)}}; }
   var grade=empGrade(e), gnum=gradeNum(grade);
   var basis = gnum>=2 ? 'career' : 'skill';
   var pct=0, hasData=false, _sc=null, _mx=null;
@@ -60998,180 +61021,925 @@ function openGradeDetail(gid){
   openModal(html);
 }
 
-/* ===== プレップ・スキルレベル（実運用：評価→時給連動） ===== */
+/* FUNERGY_PREP_BEGIN */
+/* ===== プレップ・スキルレベル ===== */
+/* v1105 までの全社 1 つの表（役割と責任マップの G1-P・$16〜$22）。v1106 からは「前の時給」を見せるときだけ使う */
 function PREP_LEVELS(){ var d=(typeof GRADE_MAP_DATA!=='undefined')?GRADE_MAP_DATA.find(function(x){return x.g==='G1-P';}):null; return (d&&d.levels)?d.levels:[]; }
 function prepWageForLv(lv){ var L=PREP_LEVELS().find(function(x){return Number(x.lv)===Number(lv);}); return L?parseFloat(L.wage):16; }
 function getPrepHistory(){ return ls('prep_history',[]); }
 function addPrepHistory(rec){ var h=getPrepHistory(); h.unshift(rec); if(h.length>200) h=h.slice(0,200); lsSet('prep_history',h); }
-/* ===== (1) Prep 店舗別スキルマトリクス（評価レベル＝時給レベル / 従業員マスター連動） ===== */
+/* ===== (1) Prep 店舗別スキルマトリクス（v1105 までの項目。v1106 は店の設定が無いときの初期値） ===== */
 var DEFAULT_PREP_POSITIONS = {
   'F01':['チキン','ポーク','キッチン','仕込み段取り・量','鮮度・衛生','在庫','引継ぎ報連相','理念'],
   'F03':['魚のカット','ソース','野菜のカット','在庫','引継ぎ報連相','理念'],
   'F03-G':['ガーリックソース','野菜のカット','揚げ仕込み','在庫','引継ぎ報連相','理念']
 };
 var DEFAULT_PREP_POSITIONS_GENERIC = ['仕込み','鮮度・衛生','在庫','引継ぎ報連相','理念'];
-function getPrepPositions(storeId){
+function getPrepPositionsLegacy(storeId){
   var all = ls('prep_positions', null);
   if(all && all[storeId] && all[storeId].length) return all[storeId];
   return DEFAULT_PREP_POSITIONS[storeId] || DEFAULT_PREP_POSITIONS_GENERIC;
 }
+/* v1106: 使っている評価項目の名前（マイページ・スタッフ別の表示が使う） */
+function getPrepPositions(storeId){ return pmItems(storeId).map(function(i){ return i.name; }); }
 function setPrepPositions(storeId, arr){
   var all = ls('prep_positions', {}) || {}; all[storeId] = arr; lsSet('prep_positions', all);
 }
 function getPrepLevelMethod(){ return ls('prep_level_method','avg'); }
 function setPrepLevelMethod(m){ lsSet('prep_level_method', m); }
 var PREP_SKILL_LEGEND = ['','まだできない','補助があればできる','独力でできる','安定して速く正確','指導・改善できる'];
-function prepSkillsOf(e, storeId){ return (e && e.prepSkills && e.prepSkills[storeId]) ? e.prepSkills[storeId] : {}; }
-function prepOverallLevel(e, storeId){
-  var pos = getPrepPositions(storeId), sk = prepSkillsOf(e, storeId);
-  var vals = pos.map(function(p){ return Number(sk[p]||0); }).filter(function(v){ return v>=1; });
-  if(!vals.length) return Number((e&&e.prepLv)||1);
-  var lv = (getPrepLevelMethod()==='min')
-    ? Math.min.apply(null, vals)
-    : Math.round(vals.reduce(function(a,b){return a+b;},0)/vals.length);
-  return Math.max(1, Math.min(5, lv));
+/* v1106: 採点は項目の id で持つ（前の項目は id＝名前なので、前の採点はそのまま読める）。ここは名前で返す（前の呼び出し用） */
+function prepSkillsOf(e, storeId){
+  var raw=pmRawScores(e, storeId), out={};
+  pmItems(storeId).forEach(function(it){ var v=Number(raw[it.id]); if(v>=1 && v<=5) out[it.name]=v; });
+  return out;
 }
-function setPrepSkill(empId, storeId, posIdx, level){
-  if(!canEditWages()){ alert('時給に連動するため、評価はGM/CEOのみです。'); return; }
-  var emps = getEmployees(), e = emps.find(function(x){return x.id===empId;}); if(!e) return;
-  var position = getPrepPositions(storeId)[posIdx]; if(position==null) return;
-  if(!e.prepSkills) e.prepSkills = {}; if(!e.prepSkills[storeId]) e.prepSkills[storeId] = {};
-  if(Number(e.prepSkills[storeId][position])===Number(level)) e.prepSkills[storeId][position]=0;
-  else e.prepSkills[storeId][position] = Number(level);
-  var prevLv = e.prepLv||0, newLv = prepOverallLevel(e, storeId);
-  e.prepLv = newLv; e.wage = prepWageForLv(newLv);
+/* v1106: 採点から出した総合 Lv（採点が無ければ前の Lv）。時給とは関係ない（時給は認定で決まる） */
+function prepOverallLevel(e, storeId){ var s=pmScore(e, storeId); return s.lv!=null ? s.lv : Number((e&&e.prepLv)||1); }
+
+/* ============================================================
+   v1106（UI案60 ③・Moto 10/21「9 A 10 A 11 AまたはGMが引き上げ 12 A 13 A 14 A 15 A」・置き場所は「今と同じ形」）
+   プレップ専門職（G1-P）：店ごとの評価項目・Lv と時給の表・認定
+   ------------------------------------------------------------
+   ・店ごとの設定（prep_cfg）：使うか・評価項目（id・名前・説明・使う）・設定案か・総合 Lv の決め方・「段取り・速さ」の決まり。
+   ・店ごとの Lv と時給の表（prep_tables）：版ごとに適用開始日と Lv1〜5 の名前・時給。前の版は変えない。
+   ・認定（prep_certs）：人・店・Lv・適用開始日・どの版で承認したか・だれが・なぜ。時給の額は持たない（表と Lv から計算）。
+   ・採点しただけでは時給は変わらない。「Lv の認定を申請」→ 承認センター（プレップ認定）で GM が適用開始日を選んで承認。
+     GM・CEO はこの画面で Lv を直接決めることもできる（理由つき）。
+   ・新しい版への切り替えは、対象者と差額の一覧を GM・CEO が確かめて一括で承認。承認するまで時給は変わらない。
+   ・人件費：その店・その日に効いている認定の Lv × その人がその店で承認された表のうちいちばん新しい版。
+     認定の無い人・日・店は今までの時給（従業員マスター）。適用開始日は今日より前にしない（過ぎた日の人件費・給与は変えない）。
+   ・Toast・給与計算の時給はアプリから変えない。「反映した」の印だけ付ける。
+   ・Career Score・賞与には足さない。通常 G1 には関係しない（対象は Prep の印のある人）。
+   ============================================================ */
+var PM_CFG='prep_cfg', PM_TBL='prep_tables', PM_CERT='prep_certs', PM_AP='プレップ認定', PM_LALA='F06';
+var PM_DEF_CENTS=[1700,1825,1950,2075,2200];   /* 10A：$17.00・$18.25・$19.50・$20.75・$22.00 */
+var PM_MAX_CENTS=20000;
+/* 15A：LaLa の評価項目の設定案（［ ］の説明は例。レシピ・手順を確かめていないので正式な基準にしない） */
+var PM_LALA_DRAFT=[
+  {id:'ll_recipe',  name:'レシピどおりの品質・分量',   desc:'［例：計量どおりに作り、仕上がりの見本と合う］'},
+  {id:'ll_hygiene', name:'衛生・保管・表示',           desc:'［例：日付ラベル・温度・保管場所を守る］'},
+  {id:'ll_amount',  name:'食材の確認・仕込み量',       desc:'［例：在庫と予約から仕込み量を決める］'},
+  {id:'ll_tidy',    name:'整理整頓・片付け',           desc:'［例：作業後に持ち場を元に戻す］'},
+  {id:'ll_speed',   name:'段取り・速さ（品質を保って）', desc:'［例：決めた時刻までに品質を保って終える］'},
+  {id:'ll_report',  name:'時間・報告・相談',           desc:'［例：遅れ・不明点・異常をすぐ伝える］'},
+  {id:'ll_mission', name:'理念',                       desc:'［例：ToriTon と同じ］'}
+];
+var _pm={ busy:false, store:null, form:null, sw:null };
+function pmT(ja, en){ return (typeof t==='function') ? t(ja, en) : ja; }
+function pmToday(){ return (typeof bizToday==='function') ? bizToday() : new Date().toISOString().slice(0,10); }
+function pmAddDay(d, n){ var p=String(d).split('-'); var x=new Date(Date.UTC(+p[0], +p[1]-1, +p[2]+n)); return x.toISOString().slice(0,10); }
+function pmDateOk(d){ return /^\d{4}-\d{2}-\d{2}$/.test(String(d||'')) && pmAddDay(d, 0)===d; }
+function pmMD(d){ return pmDateOk(d) ? (Number(d.slice(5,7))+'/'+Number(d.slice(8,10))) : ''; }
+function pmUsd(c){ return '$'+(Number(c)/100).toFixed(2); }
+/* 「17」「17.5」「$18.25」→ セント（数でなければ null） */
+function pmCents(v){
+  var s=String(v==null?'':v).trim().replace(/^\$/, '');
+  if(!/^\d{1,3}(\.\d{1,2})?$/.test(s)) return null;
+  var p=s.split('.'); return Number(p[0])*100 + Number(((p[1]||'')+'00').slice(0,2));
+}
+function pmId(p){ return p+Date.now().toString(36)+Math.random().toString(36).slice(2,8); }
+function pmStoreName(sid){ try{ var s=(getStoresAll()||[]).find(function(x){ return x.id===sid; }); return s ? s.name : String(sid); }catch(e){ return String(sid); } }
+function pmMe(){ return (typeof myName==='function' ? myName() : '') || curUserName || ''; }
+/* 権限：設定・表・採点・認定は GM・CEO（時給にかかわるので今と同じ）。評価項目の名前と説明は、その店の店長も直せる（15A）。
+   「反映した」の印は GM・CEO・経理。見るのは今と同じく給与を見られる人（canViewWages）。 */
+function pmCanAdmin(){ return curRole==='gm' || curRole==='ceo'; }
+function pmCanItems(sid){
+  if(pmCanAdmin()) return true;
+  try{ if(typeof isStoreManager==='function' && isStoreManager()){ var me=getEmployees().find(function(x){ return x.name===curUserName; }); return !!(me && (me.store===sid || (me.support||[]).indexOf(sid)>=0)); } }catch(e){}
+  return false;
+}
+function pmCanToast(){ return curRole==='gm' || curRole==='ceo' || curRole==='office'; }
+function pmMap(k){ var m=ls(k, {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
+/* いくつかの記録を 1 回で保存する（[[id, 中身], …]）。時刻は前の記録より必ず新しく */
+function pmSaveMany(k, list){
+  var m=Object.assign({}, pmMap(k)), now=Date.now(), out=[];
+  list.forEach(function(x){
+    var old=m[x[0]], at=Math.max(now, old ? (Number(old._at)||0)+1 : 0);
+    m[x[0]]=Object.assign({}, x[1], { _at:at }); out.push(m[x[0]]);
+  });
+  lsSet(k, m);
+  try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
+  return out;
+}
+/* 変える前にクラウドの最新を読む。読めなければ何も変えない（同期を切っている端末は、この端末の記録で） */
+async function pmPull(keys){
+  if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return true;
+  if(typeof pullOpKey!=='function') return false;
+  try{
+    var r=await Promise.all(keys.map(function(k){ return Promise.race([pullOpKey(k), new Promise(function(res){ setTimeout(function(){ res(false); }, 15000); })]); }));
+    try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
+    return r.every(function(x){ return !!x; });
+  }catch(e){ return false; }
+}
+async function pmPullForSave(keys){
+  if(_pm.busy) return false;
+  _pm.busy=true;
+  var ok=false;
+  try{ ok=await pmPull(keys); }finally{ _pm.busy=false; }
+  if(!ok) showToast(pmT('最新の記録を読めませんでした。通信（または端末の保存容量）を確かめて、もう一度押してください（何も変えていません）','Could not read the latest records. Check the connection and try again (nothing was changed)'),'warning');
+  return ok;
+}
+function pmRerender(){ try{ renderPage(typeof curPage!=='undefined'&&curPage?curPage:'skill'); }catch(e){} }
+
+/* ---------- 店の設定 ---------- */
+function pmRawScores(e, sid){ return (e && e.prepSkills && e.prepSkills[sid] && typeof e.prepSkills[sid]==='object') ? e.prepSkills[sid] : {}; }
+function pmAtStore(e, sid){ return !!(e && (e.store===sid || (e.support||[]).indexOf(sid)>=0)); }
+function pmStaff(sid){ return getEmployees().filter(function(e){ return e && e.prep===true && e.status!=='退職' && pmAtStore(e, sid); }); }
+function pmCands(sid){ return getEmployees().filter(function(e){ return e && !e.prep && e.status!=='退職' && (e.role==='crew'||e.role==='office_crew') && pmAtStore(e, sid); }); }
+function pmNormItem(x){
+  return { id:String(x.id), name:String(x.name||'').slice(0,40), desc:String(x.desc||'').slice(0,200), on:x.on!==false };
+}
+function pmCfgRec(sid){ var r=pmMap(PM_CFG)[sid]; return (r && typeof r==='object' && Array.isArray(r.items)) ? r : null; }
+function pmCfg(sid){
+  return _mdMemo('pmcfg', String(sid), function(){
+    var r=pmCfgRec(sid);
+    if(r) return { on:r.on!==false, items:r.items.filter(function(x){ return x && x.id!=null; }).map(pmNormItem), draft:!!r.draft,
+      method:(r.method==='min'?'min':'avg'), speed:String(r.speed||''), saved:true, _at:Number(r._at)||0, by:r.by||'' };
+    /* 設定が無い店：v1105 までの項目（前の採点は名前で持っているので、id＝名前）。
+       LaLa は前の項目も採点も無ければ設定案の 7 項目（15A） */
+    var legacy=(ls('prep_positions', null)||{})[sid];
+    /* 前の項目（id＝名前）の採点があれば前の項目のまま。設定案の id（ll_…）の採点は数えない（採点したら前の項目に戻る、にしない） */
+    var draftIds={}; PM_LALA_DRAFT.forEach(function(x){ draftIds[x.id]=1; });
+    var hasScores=getEmployees().some(function(e){ var s=pmRawScores(e, sid); return Object.keys(s).some(function(k){ return !draftIds[k] && Number(s[k])>=1; }); });
+    var draft=(sid===PM_LALA) && !(legacy && legacy.length) && !hasScores;
+    var items=draft ? PM_LALA_DRAFT.map(function(x){ return Object.assign({on:true}, x); })
+      : getPrepPositionsLegacy(sid).map(function(n){ return { id:String(n), name:String(n), desc:'', on:true }; });
+    var sp=items.find(function(i){ return /速さ/.test(i.name); });
+    var on=(sid==='F01' || sid===PM_LALA || pmStaff(sid).length>0);
+    return { on:on, items:items, draft:draft, method:(getPrepLevelMethod()==='min'?'min':'avg'), speed:sp?sp.id:'', saved:false, _at:0, by:'' };
+  });
+}
+function pmItems(sid){ return pmCfg(sid).items.filter(function(i){ return i.on!==false; }); }
+/* 総合 Lv（採点から）。採点していない項目は数えない。全部の項目を付けるまで申請はできない。
+   「段取り・速さ」の 4・5 は、ほかの項目がすべて 3 以上のときだけ（満たさなければ 3 として数える） */
+function pmScore(e, sid){
+  var cfg=pmCfg(sid), items=cfg.items.filter(function(i){ return i.on!==false; }), raw=pmRawScores(e, sid);
+  var vals={}, n=0;
+  items.forEach(function(i){ var v=Number(raw[i.id]); if(v>=1 && v<=5 && v===Math.floor(v)){ vals[i.id]=v; n++; } });
+  var capped=false;
+  if(cfg.speed && vals[cfg.speed]>3 && !pmSpeedOk(items, vals, cfg.speed)){ vals[cfg.speed]=3; capped=true; }
+  var arr=Object.keys(vals).map(function(k){ return vals[k]; }), lv=null;
+  if(arr.length){
+    lv = (cfg.method==='min') ? Math.min.apply(null, arr) : Math.round(arr.reduce(function(a,b){ return a+b; },0)/arr.length);
+    lv = Math.max(1, Math.min(5, lv));
+  }
+  return { lv:lv, n:n, total:items.length, full:(items.length>0 && n===items.length), capped:capped, method:cfg.method, vals:vals };
+}
+function pmSpeedOk(items, vals, speedId){
+  return items.every(function(i){ return i.id===speedId || (Number(vals[i.id])||0)>=3; });
+}
+
+/* ---------- Lv と時給の表 ---------- */
+function pmTablesAll(){ var m=pmMap(PM_TBL); return Object.keys(m).map(function(id){ return Object.assign({}, m[id], {id:id}); }); }
+function pmTableValid(r){
+  return !!(r && pmDateOk(r.from) && Array.isArray(r.levels) && r.levels.length===5 && r.levels.every(function(L, i){ return L && Number(L.lv)===i+1 && Number(L.cents)>0; }));
+}
+function pmTables(sid){
+  return pmTablesAll().filter(function(r){ return r.store===sid && !r.void && pmTableValid(r); })
+    .sort(function(a,b){ return a.from<b.from?-1:a.from>b.from?1:((Number(a._at)||0)-(Number(b._at)||0)) || (a.id<b.id?-1:1); });
+}
+function pmTableOn(sid, date){ var out=null; pmTables(sid).forEach(function(r){ if(r.from<=date) out=r; }); return out; }
+function pmLvCents(tbl, lv){ var L=((tbl&&tbl.levels)||[]).find(function(x){ return Number(x.lv)===Number(lv); }); return L ? Number(L.cents) : null; }
+function pmLvName(tbl, lv){ var L=((tbl&&tbl.levels)||[]).find(function(x){ return Number(x.lv)===Number(lv); }); return L ? String(L.name||'') : ''; }
+function pmTableNo(sid, id){ var l=pmTables(sid); for(var i=0;i<l.length;i++) if(l[i].id===id) return i+1; return 0; }
+
+/* ---------- 認定 ---------- */
+function pmCertsAll(){ var m=pmMap(PM_CERT); return Object.keys(m).map(function(id){ return Object.assign({}, m[id], {id:id}); }).filter(function(r){ return r && r.emp && r.store; }); }
+/* 承認された認定を、人・店ごとに「その日から何が効くか」の列に（1 回の描画で 1 回だけ作る） */
+function pmIdx(){
+  return _mdMemo('pmidx', '', function(){
+    var tbl={}, rank={};
+    pmTablesAll().forEach(function(r){ if(!r.void && pmTableValid(r)) tbl[r.id]=r; });
+    Object.keys(tbl).forEach(function(id){ rank[id]=pmTableNo(tbl[id].store, id); });
+    var by={};
+    pmCertsAll().forEach(function(c){
+      if(c.state!=='approved' || !pmDateOk(c.from)) return;
+      if(c.kind!=='end' && !(Number(c.lv)>=1 && Number(c.lv)<=5)) return;
+      (by[c.emp+'|'+c.store]=by[c.emp+'|'+c.store]||[]).push(c);
+    });
+    var seg={}, emps={};
+    Object.keys(by).forEach(function(k){
+      var l=by[k].sort(function(a,b){ return a.from<b.from?-1:a.from>b.from?1:((Number(a.dt)||0)-(Number(b.dt)||0)) || (a.id<b.id?-1:1); });
+      var cur={ lv:null, tbl:null, rank:0 }, out=[];
+      l.forEach(function(c){
+        if(c.kind==='end'){ cur={ lv:null, tbl:null, rank:0 }; }
+        else {
+          var r=rank[c.tbl]||0;
+          if(r>cur.rank && tbl[c.tbl] && tbl[c.tbl].store===c.store){ cur.rank=r; cur.tbl=c.tbl; }
+          cur.lv=Number(c.lv);
+        }
+        var s={ from:c.from, lv:cur.lv, tbl:cur.tbl, cert:c.id, kind:c.kind };
+        if(out.length && out[out.length-1].from===c.from) out[out.length-1]=s; else out.push(s);
+      });
+      seg[k]=out; emps[k.split('|')[0]]=1;
+    });
+    var byName={}, empObj={};
+    getEmployees().forEach(function(e){ if(e && e.name!=null && !Object.prototype.hasOwnProperty.call(byName, e.name)){ byName[e.name]=e.id; } if(e && e.id!=null) empObj[e.id]=e; });
+    return { tbl:tbl, seg:seg, emps:emps, byName:byName, empObj:empObj };
+  });
+}
+function pmSegOn(empId, sid, date){
+  var l=pmIdx().seg[empId+'|'+sid]; if(!l) return null;
+  var out=null; for(var i=0;i<l.length;i++){ if(l[i].from<=date) out=l[i]; else break; }
+  return out;
+}
+/* その日、その店で効いている認定の時給（無ければ null＝今までの時給） */
+function pmWageOn(e, sid, date){
+  if(!e) return null;
+  var s=pmSegOn(e.id, sid, date); if(!s || s.lv==null || !s.tbl) return null;
+  var c=pmLvCents(pmIdx().tbl[s.tbl], s.lv);
+  return (c==null) ? null : { cents:c, lv:s.lv, tbl:s.tbl, from:s.from, cert:s.cert };
+}
+/* これから効くものも入れた、いちばん先の認定 Lv（申請するか決めるときに使う。0＝未認定） */
+function pmLatestLv(e, sid){ var s=pmSegOn(e.id, sid, '9999-12-31'); return (s && s.lv!=null) ? s.lv : 0; }
+function pmHasAt(name, sid){ try{ var x=pmIdx(), id=x.byName[name]; return !!(id!=null && x.seg[id+'|'+sid]); }catch(e){ return false; } }
+/* v1106: その店・その日にプレップの認定が効いていればその時給（無ければ null） */
+function pmCertWage(name, sid, date){
+  try{
+    if(!(sid && date && pmHasAt(name, sid))) return null;
+    var x=pmIdx(), e=x.empObj[x.byName[name]];
+    if(!e || (typeof empPayType==='function' && empPayType(e)==='monthly')) return null;
+    var w=pmWageOn(e, sid, date); return w ? w.cents/100 : null;
+  }catch(err){ return null; }
+}
+/* v1106: その店・その日の時給。プレップの認定が効いていればその時給、ほかは今までどおり empWage（従業員マスター） */
+function empWageAt(name, sid, date){ var w=pmCertWage(name, sid, date); return (w!=null) ? w : empWage(name); }
+/* 今日の認定（Lv と時給）・これからの認定・申請中 */
+function pmState(e, sid){
+  var today=pmToday(), cur=pmWageOn(e, sid, today), seg=pmSegOn(e.id, sid, today);
+  var all=pmCertsAll().filter(function(c){ return c.emp===e.id && c.store===sid; });
+  var pending=all.filter(function(c){ return c.state==='pending'; }).sort(function(a,b){ return (Number(b._at)||0)-(Number(a._at)||0); })[0]||null;
+  var future=all.filter(function(c){ return c.state==='approved' && pmDateOk(c.from) && c.from>today; }).sort(function(a,b){ return a.from<b.from?-1:1; })[0]||null;
+  return { cur:cur, lv:(seg && seg.lv!=null)?seg.lv:null, pending:pending, future:future, ended:!!(seg && seg.kind==='end') };
+}
+/* 認定が効く前の時給（v1105 までの時給・従業員マスター）を見せられるのは、個人の給与を見られる人だけ */
+function pmLegacyWageText(e){
+  if(typeof canViewIndividualWage==='function' && canViewIndividualWage()){ var w=empWage(e.name); return w>0 ? ('$'+Number(w).toFixed(2)) : '—'; }
+  return '';
+}
+
+/* ---------- 採点 ---------- */
+function setPrepSkill(empId, storeId, itemIdx, level){
+  if(!pmCanAdmin()){ alert(pmT('採点は GM・CEO だけです（時給の認定にかかわるため）','Only GM/CEO can score (it feeds the wage certification)')); return; }
+  var cfg=pmCfg(storeId), it=cfg.items[itemIdx]; if(!it || it.on===false) return;
+  var emps=getEmployees(), e=emps.find(function(x){ return x.id===empId; }); if(!e) return;
+  level=Number(level);
+  if(!e.prepSkills || typeof e.prepSkills!=='object') e.prepSkills={};
+  if(!e.prepSkills[storeId] || typeof e.prepSkills[storeId]!=='object') e.prepSkills[storeId]={};
+  var cur=Number(e.prepSkills[storeId][it.id])||0;
+  if(cur===level){ e.prepSkills[storeId][it.id]=0; }   /* 同じ数字をもう一度押すと外す（今と同じ） */
+  else {
+    if(cfg.speed && it.id===cfg.speed && level>=4){
+      var items=cfg.items.filter(function(i){ return i.on!==false; }), raw=e.prepSkills[storeId], vals={};
+      items.forEach(function(i){ vals[i.id]=Number(raw[i.id])||0; });
+      if(!pmSpeedOk(items, vals, cfg.speed)){ alert(pmT('「'+it.name+'」の 4・5 は、ほかの項目がすべて 3 以上のときだけ付けられます（速さだけで上の段にしない）。','A 4 or 5 on “'+it.name+'” needs every other item at 3 or more.')); return; }
+    }
+    e.prepSkills[storeId][it.id]=level;
+  }
+  /* v1106: 採点しただけでは Lv・時給は変えない（前は e.prepLv と e.wage を書いていた。e.wage は端末にしか残らず、すぐ元に戻っていた） */
   lsSet('m_employees', emps);
-  if(newLv!==prevLv) addPrepHistory({name:e.name, store:storeId, fromLv:prevLv, toLv:newLv, wage:e.wage, by:myName(), at:new Date().toISOString()});
-  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
-}
-function openPrepPosModal(storeId){
-  if(!canEditWages()) return;
-  var pos = getPrepPositions(storeId);
-  var sname = (STORES.find(function(s){return s.id===storeId;})||{name:storeId}).name;
-  openModal(`<div class="modal-title">Prep評価項目の編集 · ${escapeHtml(sname)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">1行＝1項目。順番も保存されます。共通項目（在庫・引継ぎ報連相・理念）も自由に追加/編集できます。</div>
-    <textarea id="prepPosTa" class="form-input" style="width:100%;height:210px;font-size:13px;line-height:1.7">${pos.join(String.fromCharCode(10))}</textarea>
-    <div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="savePrepPos('${storeId}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
-}
-function savePrepPos(storeId){
-  var ta = document.getElementById('prepPosTa'); if(!ta) return;
-  var arr = ta.value.split(String.fromCharCode(10)).map(function(x){return x.trim();}).filter(function(x){return x.length;});
-  if(!arr.length){ alert('1項目以上必要です'); return; }
-  setPrepPositions(storeId, arr);
-  closeModalDirect(); showToast('Prep評価項目を保存しました','success');
-  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+  try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e2){}
+  pmRerender();
 }
 function prepCellBg(v){ return v>=5?'#1d4fd0':v===4?'var(--accent)':v===3?'var(--green)':v===2?'var(--yellow)':v===1?'var(--red)':'transparent'; }
-function openPrepCellPopup(empId, storeId, posIdx){
-  if(!canEditWages()) return;
+function openPrepCellPopup(empId, storeId, itemIdx){
+  if(!pmCanAdmin()) return;
   var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
-  var position=getPrepPositions(storeId)[posIdx]; if(position==null) return;
-  var cur=Number((prepSkillsOf(e,storeId)[position])||0);
-  var html=`<div class="modal-title">${escapeHtml(e.name)} · ${escapeHtml(position)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:11px;color:var(--muted);margin-bottom:10px">レベルを選択（総合レベル＝時給に連動）。同じ数字をもう一度押すと解除。</div>
-    <div style="display:flex;flex-direction:column;gap:8px">`;
+  var cfg=pmCfg(storeId), it=cfg.items[itemIdx]; if(!it) return;
+  var cur=Number(pmRawScores(e, storeId)[it.id])||0;
+  var gate=(cfg.speed && it.id===cfg.speed) ? '<div style="font-size:11px;color:var(--amber);margin-bottom:8px">'+escapeHtml(pmT('4・5 は、ほかの項目がすべて 3 以上のときだけ付けられます','4–5 only when every other item is 3+'))+'</div>' : '';
+  var html='<div class="modal-title">'+escapeHtml(e.name)+' · '+escapeHtml(it.name)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +(it.desc?'<div style="font-size:12px;color:var(--tm);margin-bottom:6px">'+escapeHtml(it.desc)+'</div>':'')
+    +'<div style="font-size:11px;color:var(--muted);margin-bottom:10px">'+escapeHtml(pmT('採点しただけでは時給は変わりません（総合 Lv が上がったら認定を申請）。同じ数字をもう一度押すと外します。','Scoring alone does not change the wage. Press the same number again to clear.'))+'</div>'+gate
+    +'<div style="display:flex;flex-direction:column;gap:8px">';
   [1,2,3,4,5].forEach(function(n){
     var on=cur===n;
-    html+=`<div onclick="setPrepSkill('${empId}','${storeId}',${posIdx},${n});closeModalDirect()" style="display:flex;align-items:center;gap:10px;border:1.5px solid ${on?'var(--accent)':'var(--border)'};border-radius:10px;padding:10px 12px;cursor:pointer">
-      <span style="flex-shrink:0;width:26px;height:26px;border-radius:7px;background:${prepCellBg(n)};color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center">${n}</span>
-      <span style="font-size:13px;font-weight:600">${PREP_SKILL_LEGEND[n]}</span>${on?' <span style="font-size:10px;color:var(--accent);margin-left:auto">現在</span>':''}</div>`;
+    html+='<div onclick="setPrepSkill(\''+empId+'\',\''+storeId+'\','+itemIdx+','+n+');closeModalDirect()" style="display:flex;align-items:center;gap:10px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';border-radius:10px;padding:10px 12px;cursor:pointer">'
+      +'<span style="flex-shrink:0;width:26px;height:26px;border-radius:7px;background:'+prepCellBg(n)+';color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center">'+n+'</span>'
+      +'<span style="font-size:13px;font-weight:600">'+PREP_SKILL_LEGEND[n]+'</span>'+(on?' <span style="font-size:10px;color:var(--accent);margin-left:auto">'+pmT('現在','Current')+'</span>':'')+'</div>';
   });
-  html+=`</div><div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`;
+  html+='</div><div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+pmT('閉じる','Close')+'</button></div>';
   openModal(html);
 }
+/* スマホ：1 人の項目を縦に並べて採点（PhonePrep） */
+function pmOpenPerson(empId, sid){
+  var e=getEmployees().find(function(x){ return x.id===empId; }); if(!e) return;
+  var cfg=pmCfg(sid), sc=pmScore(e, sid), st=pmState(e, sid), raw=pmRawScores(e, sid), can=pmCanAdmin();
+  var h='<div class="modal-title">'+escapeHtml(e.name)+' · '+escapeHtml(pmStoreName(sid))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:6px">G1-P · '+pmCertText(e, sid, st)+' · '+pmT('採点','Scored')+' '+sc.n+'／'+sc.total+'</div>'
+    +(cfg.draft?'<div style="font-size:11px;color:var(--amber);margin-bottom:6px">'+pmT('評価項目は設定案（店長・GM が直すまで）','Items are a draft (until the store manager or GM revises them)')+'</div>':'');
+  cfg.items.forEach(function(it, idx){
+    if(it.on===false) return;
+    var v=Number(raw[it.id])||0;
+    h+='<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)"><div style="flex:1;min-width:0;font-size:13px">'+escapeHtml(it.name)+'</div><div style="display:flex;gap:4px">';
+    [1,2,3,4,5].forEach(function(n){
+      var on=v===n;
+      h+='<span '+(can?'onclick="setPrepSkill(\''+empId+'\',\''+sid+'\','+idx+','+n+');pmOpenPerson(\''+empId+'\',\''+sid+'\')" ':'')+'style="width:30px;height:30px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;cursor:'+(can?'pointer':'default')+';border:1px solid '+(on?prepCellBg(n):'var(--border)')+';background:'+(on?prepCellBg(n):'var(--surface2)')+';color:'+(on?'#fff':'var(--muted)')+'">'+n+'</span>';
+    });
+    h+='</div></div>';
+  });
+  h+='<div style="margin-top:10px;font-size:13px">'+pmT('総合','Overall')+' <b style="color:var(--accent)">'+(sc.lv!=null?'Lv'+sc.lv:pmT('未採点','not scored'))+'</b>（'+(sc.method==='min'?pmT('いちばん低い項目','lowest item'):pmT('平均','average'))+'）'+(sc.capped?' <span style="font-size:11px;color:var(--amber)">'+pmT('速さは 3 として数えています','speed counted as 3')+'</span>':'')+'</div>'
+    +'<div style="margin-top:10px">'+pmActionsHtml(e, sid, sc, st)+'</div>'
+    +'<div class="btn-row" style="margin-top:12px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+pmT('閉じる','Close')+'</button></div>';
+  openModal(h);
+}
+function pmCertText(e, sid, st){
+  st=st||pmState(e, sid);
+  if(st.cur) return pmT('認定 Lv','Certified Lv')+st.cur.lv+(canViewWages()?'（'+pmUsd(st.cur.cents)+'）':'');
+  if(st.lv!=null) return pmT('認定 Lv','Certified Lv')+st.lv+'（'+pmT('表が見つかりません','table missing')+'）';
+  return pmT('未認定','Not certified');
+}
+/* 申請・直接決める・取り消しのボタン */
+function pmActionsHtml(e, sid, sc, st){
+  if(!pmCanAdmin()) return '';
+  var out=[], today=pmToday(), hasTbl=pmTables(sid).length>0;
+  if(st.pending){
+    out.push('<span class="tag tag-yellow" style="font-size:11px">Lv'+escapeHtml(st.pending.lv)+' '+pmT('の認定を申請中（承認センター・GM）','requested (approval center · GM)')+'</span>');
+    return out.join(' ');
+  }
+  if(!hasTbl){ out.push('<span style="font-size:11px;color:var(--muted)">'+pmT('Lv と時給の表がまだ無いので、認定できません（設定で作る）','No wage table yet — create one in settings')+'</span>'); return out.join(' '); }
+  var certLv=pmLatestLv(e, sid);
+  if(sc.full && sc.lv!=null && sc.lv>certLv){
+    out.push('<button class="btn btn-primary btn-sm" onclick="pmRequest(\''+e.id+'\',\''+sid+'\')"><i class="ti ti-send"></i> Lv'+sc.lv+' '+pmT('の認定を申請','— request certification')+'</button>');
+  } else if(!sc.full && sc.lv!=null && sc.lv>certLv){
+    out.push('<span style="font-size:11px;color:var(--muted)">'+pmT('全部の項目を付けると申請できます','Score every item to request')+'（'+sc.n+'／'+sc.total+'）</span>');
+  }
+  out.push('<button class="btn btn-secondary btn-sm" onclick="pmOpenDecide(\''+e.id+'\',\''+sid+'\')"><i class="ti ti-stairs-up"></i> '+pmT('Lv を決める（GM・CEO）','Set Lv (GM/CEO)')+'</button>');
+  return out.join(' ');
+}
+/* 11A：「Lv の認定を申請」→ 承認センターの「プレップ認定」。GM が承認するときに適用開始日を選ぶ */
+async function pmRequest(empId, sid){
+  if(!pmCanAdmin()) return;
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_CERT, PM_TBL, PM_CFG]))) return;
+  if(pmMe()!==me) return;
+  var e=getEmployees().find(function(x){ return x.id===empId; }); if(!e) return;
+  if(e.prep!==true || e.status==='退職'){ showToast(pmT('プレップ専門職ではありません','Not a Prep specialist'),'warning'); pmRerender(); return; }
+  var sc=pmScore(e, sid), st=pmState(e, sid);
+  if(st.pending){ showToast(pmT('もう申請しています（承認センターで決めてください）','Already requested'),'info'); pmRerender(); return; }
+  if(!pmTables(sid).length){ showToast(pmT('先に Lv と時給の表を作ってください','Create the wage table first'),'warning'); return; }
+  var certLv=pmLatestLv(e, sid);
+  if(!sc.full || sc.lv==null || !(sc.lv>certLv)){ showToast(pmT('全部の項目を付けて、総合 Lv が認定 Lv より上のときだけ申請できます','Score every item; the overall Lv must be above the certified Lv'),'warning'); pmRerender(); return; }
+  var cfg=pmCfg(sid), snap={};
+  cfg.items.forEach(function(i){ if(i.on!==false) snap[i.name]=sc.vals[i.id]||0; });
+  if(!confirm(pmT(e.name+' さんの '+pmStoreName(sid)+' の Lv'+sc.lv+' の認定を申請します。\n承認センターの「プレップ認定」で GM が適用開始日を選んで承認すると、その日から '+pmStoreName(sid)+' の時給が変わります。','Request Lv'+sc.lv+' for '+e.name+' at '+pmStoreName(sid)+'?'))) return;
+  var id=pmId('pc');
+  pmSaveMany(PM_CERT, [[id, { emp:e.id, name:e.name, store:sid, lv:sc.lv, kind:'req', state:'pending', from:'', tbl:'', scores:snap, n:sc.n, total:sc.total, method:sc.method, capped:sc.capped,
+    prevLv:certLv||0, by:me, at:new Date().toISOString(), reason:'' }]]);
+  try{ addApproval({ type:PM_AP, title:e.name+'：'+pmStoreName(sid)+' プレップ Lv'+sc.lv+' の認定', from:me, store:sid, ref:id, prepEmp:e.name, prepLv:sc.lv, prepFromLv:certLv||0 }); }catch(err){}
+  showToast(pmT('認定を申請しました（承認センター）','Requested (approval center)'),'success');
+  closeModalDirect(); pmRerender();
+}
+/* 11「GM が引き上げ」：GM・CEO が Lv と適用開始日を決める（理由つき。下げることもできる） */
+function pmOpenDecide(empId, sid){
+  if(!pmCanAdmin()) return;
+  var e=getEmployees().find(function(x){ return x.id===empId; }); if(!e) return;
+  var sc=pmScore(e, sid), st=pmState(e, sid), today=pmToday();
+  if(st.pending){ showToast(pmT('申請中です。承認センターで決めてください','A request is pending — decide it in the approval center'),'info'); return; }
+  var certLv=pmLatestLv(e, sid), defLv=(sc.lv!=null?sc.lv:(certLv||1));
+  var h='<div class="modal-title">'+escapeHtml(e.name)+' · '+escapeHtml(pmStoreName(sid))+' '+pmT('の Lv を決める','— set Lv')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:8px">'+pmT('今','Now')+'：'+pmCertText(e, sid, st)+' · '+pmT('採点の総合','Scored overall')+' '+(sc.lv!=null?'Lv'+sc.lv:pmT('未採点','not scored'))+'（'+sc.n+'／'+sc.total+'）</div>'
+    +'<div class="form-group"><label class="form-label">Lv</label><select id="pmDecLv" class="form-select" onchange="pmDecidePreview(\''+empId+'\',\''+sid+'\')">'
+    +[1,2,3,4,5].map(function(n){ return '<option value="'+n+'"'+(n===defLv?' selected':'')+'>Lv'+n+'</option>'; }).join('')+'</select></div>'
+    +'<div class="form-group"><label class="form-label">'+pmT('適用開始日（この日から時給が変わる）','Effective date')+'</label><input id="pmDecFrom" class="form-input" type="date" min="'+today+'" value="'+pmAddDay(today,1)+'" onchange="pmDecidePreview(\''+empId+'\',\''+sid+'\')"></div>'
+    +'<div class="form-group"><label class="form-label">'+pmT('理由（必須）','Reason (required)')+'</label><textarea id="pmDecWhy" class="form-input" style="height:60px"></textarea></div>'
+    +'<div id="pmDecPrev" style="font-size:12px;margin:6px 0"></div>'
+    +(sc.full?'':'<div style="font-size:11px;color:var(--amber)">'+pmT('採点が全部済んでいません。採点しないで決めるときは、理由に根拠を書いてください。','Not every item is scored. Write the basis in the reason.')+'</div>')
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">'+pmT('キャンセル','Cancel')+'</button>'
+    +'<button class="btn btn-primary" onclick="pmDecide(\''+empId+'\',\''+sid+'\')"><i class="ti ti-check"></i> '+pmT('決める','Set')+'</button></div>';
+  openModal(h); pmDecidePreview(empId, sid);
+}
+function pmDecidePreview(empId, sid){
+  var el=document.getElementById('pmDecPrev'); if(!el) return;
+  var lv=Number((document.getElementById('pmDecLv')||{}).value), from=String((document.getElementById('pmDecFrom')||{}).value||'');
+  var tbl=pmDateOk(from)?pmTableOn(sid, from):null;
+  if(!tbl){ el.innerHTML='<span style="color:var(--red)">'+escapeHtml(pmT('その日に使える Lv と時給の表がありません','No wage table on that date'))+'</span>'; return; }
+  el.innerHTML=canViewWages()?(escapeHtml(pmT('この日からの '+pmStoreName(sid)+' の時給','Wage at '+pmStoreName(sid)+' from this date'))+'：<b>'+pmUsd(pmLvCents(tbl, lv))+'</b>（'+escapeHtml(pmT('版','Version'))+' '+pmTableNo(sid, tbl.id)+'）'):'';
+}
+async function pmDecide(empId, sid){
+  if(!pmCanAdmin()) return;
+  var lv=Number((document.getElementById('pmDecLv')||{}).value), from=String((document.getElementById('pmDecFrom')||{}).value||''), why=String((document.getElementById('pmDecWhy')||{}).value||'').trim();
+  var me=pmMe(), today=pmToday();
+  if(!(lv>=1 && lv<=5)) return;
+  if(!pmDateOk(from) || from<today){ showToast(pmT('適用開始日は今日か、それより後にしてください（過ぎた日の時給は変えない）','The effective date must be today or later'),'warning'); return; }
+  if(from>pmAddDay(today, 366)){ showToast(pmT('適用開始日は 1 年以内にしてください','Within one year'),'warning'); return; }
+  if(!why){ showToast(pmT('理由を入れてください','Enter a reason'),'warning'); return; }
+  if(!(await pmPullForSave([PM_CERT, PM_TBL, PM_CFG]))) return;
+  if(pmMe()!==me) return;
+  var e=getEmployees().find(function(x){ return x.id===empId; }); if(!e) return;
+  if(e.prep!==true || e.status==='退職'){ showToast(pmT('プレップ専門職ではありません','Not a Prep specialist'),'warning'); closeModalDirect(); pmRerender(); return; }
+  var st=pmState(e, sid);
+  if(st.pending){ showToast(pmT('ほかの人が申請しました。承認センターで決めてください','A request was made meanwhile — decide it in the approval center'),'info'); closeModalDirect(); pmRerender(); return; }
+  var tbl=pmTableOn(sid, from); if(!tbl){ showToast(pmT('その日に使える Lv と時給の表がありません','No wage table on that date'),'warning'); return; }
+  var sc=pmScore(e, sid), snap={}; pmCfg(sid).items.forEach(function(i){ if(i.on!==false) snap[i.name]=sc.vals[i.id]||0; });
+  var prev=pmSegOn(e.id, sid, from)||pmSegOn(e.id, sid, today), now=Date.now();
+  var rec={ emp:e.id, name:e.name, store:sid, lv:lv, kind:'raise', state:'approved', from:from, tbl:tbl.id, scores:snap, n:sc.n, total:sc.total, method:sc.method,
+    prevLv:(prev&&prev.lv!=null)?prev.lv:0, by:me, at:new Date(now).toISOString(), dBy:me, dAt:new Date(now).toISOString(), dt:now, reason:why.slice(0,300), toast:null };
+  pmSaveMany(PM_CERT, [[pmId('pc'), rec]]);
+  pmNotifyDecided(rec, true);
+  showToast(pmT(e.name+' さんを Lv'+lv+'（'+pmMD(from)+' から）にしました','Set to Lv'+lv+' from '+pmMD(from)),'success');
+  closeModalDirect(); pmRerender();
+}
+/* 認定が決まったら：本人（Lv と日付だけ）と経理・事務Crew（Toast・給与計算に入れる） */
+function pmNotifyDecided(c, viaPage){
+  try{ addNotif({ type:'approved', title:pmT('プレップ Lv'+c.lv+' に認定されました','Certified as Prep Lv'+c.lv), text:(pmStoreName(c.store)+'・'+pmMD(c.from)+pmT(' から',' from')).slice(0,140), toUser:c.name, page:'mypage' }); }catch(e){}
+  if(viaPage){ try{ apNotifyAcctApplied(PM_AP, c.name, pmStoreName(c.store)+'・Lv'+c.lv+'（'+pmMD(c.from)+pmT(' から',' from')+'）・'+pmT('Toast・給与計算の時給を変える','update Toast/payroll')); }catch(e){} }
+}
+
+/* ---------- 承認センター（プレップ認定） ---------- */
+/* 承認するときに適用開始日を選ぶ（12A：初期値は承認した日の翌日・今日より前は選べない）。キャンセルは null */
+function pmAskFrom(a){
+  return new Promise(function(resolve){
+    var c=pmMap(PM_CERT)[a && a.ref], sid=(c&&c.store)||(a&&a.store)||'', today=pmToday(), done=false, iv=null;
+    window._pmAskDone=function(v, keep){ if(done) return; done=true; window._pmAskDone=null; if(iv) clearInterval(iv); if(!keep){ try{ closeModalDirect(); }catch(e){} } resolve(v); };
+    var h='<div class="modal-title">'+pmT('プレップ認定の適用開始日','Effective date')+' <button class="modal-close" onclick="window._pmAskDone&&window._pmAskDone(null)">×</button></div>'
+      +'<div style="font-size:12px;margin-bottom:8px">'+escapeHtml((c&&c.name)||(a&&a.prepEmp)||'')+' · '+escapeHtml(pmStoreName(sid))+' · Lv'+escapeHtml((c&&c.lv)||(a&&a.prepLv)||'')+'</div>'
+      +'<div class="form-group"><label class="form-label">'+pmT('この日から時給が変わります（前の日の勤務は前の時給のまま）','The wage changes from this date (earlier work keeps the old wage)')+'</label>'
+      +'<input id="pmAskFrom" class="form-input" type="date" min="'+today+'" max="'+pmAddDay(today,366)+'" value="'+pmAddDay(today,1)+'"></div>'
+      +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="window._pmAskDone&&window._pmAskDone(null)">'+pmT('キャンセル','Cancel')+'</button>'
+      +'<button class="btn btn-primary" onclick="(function(){var v=String((document.getElementById(\'pmAskFrom\')||{}).value||\'\');if(!pmDateOk(v)||v<pmToday()){showToast(pmT(\'今日か、それより後の日を選んでください\',\'Pick today or later\'),\'warning\');return;}window._pmAskDone&&window._pmAskDone(v);})()"><i class="ti ti-check"></i> '+pmT('この日で承認','Approve with this date')+'</button></div>';
+    try{ openModal(h); }catch(e){ window._pmAskDone(null, true); return; }
+    /* 外を押して閉じた・ほかの画面に変わった：キャンセルと同じ（承認は待ちのまま） */
+    iv=setInterval(function(){ try{ var ov=document.getElementById('modal-overlay'); if(!document.getElementById('pmAskFrom') || (ov && !ov.classList.contains('open'))) window._pmAskDone && window._pmAskDone(null, true); }catch(e){} }, 400);
+  });
+}
+/* 承認・却下の前に：認定の記録を読み直し、決められるか確かめる。だめなら知らせて null（承認センターは何も変えない） */
+async function pmCheckForApproval(a, status, opt){
+  if(!(await pmPull([PM_CERT, PM_TBL]))){ showToast(pmT('最新の認定を読めませんでした（何も変えていません）。もう一度押してください','Could not read the latest certifications (nothing changed)'),'warning'); return null; }
+  var c=pmMap(PM_CERT)[a.ref];
+  if(!c){ showToast(pmT('認定の申請が見つからないため、決めていません','The certification request was not found (nothing changed)'),'warning'); return null; }
+  if(c.state!=='pending') return { match:(c.state==='approved'||c.state==='rejected'||c.state==='withdrawn')?c.state:'withdrawn' };
+  if(status!=='approved') return { cert:c, id:a.ref, from:'', tbl:null };
+  var e=getEmployees().find(function(x){ return x.id===c.emp; });
+  if(!e || e.prep!==true || e.status==='退職'){ showToast(pmT((c.name||'')+' さんは今プレップ専門職ではありません（何も変えていません）。却下してください','This person is no longer a Prep specialist (nothing changed). Please reject.'),'warning'); return null; }
+  var from=opt && opt.prepFrom, today=pmToday();
+  if(!pmDateOk(from) || from<today){ showToast(pmT('適用開始日が今日より前です（何も変えていません）','The effective date is in the past (nothing changed)'),'warning'); return null; }
+  var tbl=pmTableOn(c.store, from);
+  if(!tbl){ showToast(pmT(pmStoreName(c.store)+' の、その日に使える Lv と時給の表がありません（何も変えていません）','No wage table on that date (nothing changed)'),'warning'); return null; }
+  return { cert:c, id:a.ref, from:from, tbl:tbl };
+}
+/* 従業員マスターの時給の欄の下：プレップの認定があれば、その店の時給は表で決まることを出す */
+function pmMasterNoteHtml(e){
+  try{
+    if(!e || !e.id) return '';
+    var x=pmIdx(), today=pmToday(), out=[];
+    Object.keys(x.seg).forEach(function(k){ var p=k.split('|'); if(p[0]!==String(e.id)) return; var w=pmWageOn(e, p[1], today); if(w) out.push(escapeHtml(pmStoreName(p[1]))+' Lv'+w.lv+(canViewWages()?' '+pmUsd(w.cents):'')); });
+    if(!out.length) return '';
+    return '<div style="font-size:10.5px;color:var(--accent);margin-top:4px;line-height:1.5"><i class="ti ti-tools-kitchen-2"></i> '+pmT('プレップの認定','Prep certification')+'：'+out.join(' · ')+'。'+pmT('この店の時給はプレップの表で決まります。ここの時給は、認定の無い日・店に使います。','At these stores the wage comes from the Prep table; this field is used on other days/stores.')+'</div>';
+  }catch(err){ return ''; }
+}
+function pmApplyDecision(chk, a, status, reason){
+  var c=Object.assign({}, chk.cert), now=Date.now(), me=(typeof _actorName==='function')?_actorName():pmMe();
+  if(status==='approved'){
+    var prev=pmSegOn(c.emp, c.store, chk.from);
+    Object.assign(c, { state:'approved', from:chk.from, tbl:chk.tbl.id, dBy:me, dAt:new Date(now).toISOString(), dt:now, apId:a.id, prevLv:(prev&&prev.lv!=null)?prev.lv:(c.prevLv||0), toast:null });
+  } else {
+    Object.assign(c, { state:'rejected', dBy:me, dAt:new Date(now).toISOString(), dt:now, apId:a.id, reason:String(reason||'').slice(0,300) });
+  }
+  delete c.id;
+  pmSaveMany(PM_CERT, [[chk.id, c]]);
+  if(status==='approved') pmNotifyDecided(c, false);
+}
+/* 承認を取り消す（GM・CEO）：適用開始日がまだ来ていなければ申請中に戻す。来ていれば戻さない（過ぎた日の時給を変えない） */
+async function pmReopen(a){
+  if(!(await pmPull([PM_CERT]))){ alert(pmT('最新の認定を読めませんでした（何も変えていません）','Could not read the latest certifications (nothing changed)')); return false; }
+  var c=pmMap(PM_CERT)[a.ref]; if(!c) return true;
+  if(c.state==='approved' && pmDateOk(c.from) && c.from<=pmToday()){ alert(pmT('適用開始日（'+c.from+'）が来た認定は、承認センターからは取り消せません。プレップLv の画面で Lv を決め直してください。','This certification is already in effect. Set the Lv again on the Prep page.')); return false; }
+  var r=Object.assign({}, c, { state:'pending', from:'', tbl:'', dBy:'', dAt:'', dt:0, toast:null }); delete r.id;
+  pmSaveMany(PM_CERT, [[a.ref, r]]);
+  return true;
+}
+/* 承認センターの案件に、店・人・Lv・採点・時給を出す */
+function pmApprovalDetailHtml(a){
+  try{
+    var c=pmMap(PM_CERT)[a.ref]; if(!c) return '<div style="font-size:11px;color:var(--red);margin:4px 0">'+escapeHtml(pmT('認定の申請がこの端末にありません（承認するときに読み直します）','The request is not on this device yet'))+'</div>';
+    var tbl=pmTableOn(c.store, pmAddDay(pmToday(),1)), e=getEmployees().find(function(x){ return x.id===c.emp; });
+    var cur=e?pmWageOn(e, c.store, pmToday()):null;
+    var wage=canViewWages()&&tbl?(' · '+pmT('時給','Wage')+' '+(cur?pmUsd(cur.cents):pmT('今の時給','current'))+' → <b>'+pmUsd(pmLvCents(tbl, c.lv))+'</b>'):'';
+    return '<div style="display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:8px;padding:6px 10px;margin:4px 0 5px;flex-wrap:wrap;font-size:12px">'
+      +'<b>'+escapeHtml(c.name||'')+'</b> · '+escapeHtml(pmStoreName(c.store))+' · '+(c.prevLv?'Lv'+escapeHtml(c.prevLv):pmT('未認定','not certified'))+' → <b>Lv'+escapeHtml(c.lv)+'</b> · '+pmT('採点','Scored')+' '+escapeHtml(c.n)+'／'+escapeHtml(c.total)+'（'+(c.method==='min'?pmT('いちばん低い項目','lowest'):pmT('平均','avg'))+'）'+wage
+      +'<div style="width:100%;font-size:11px;color:var(--muted)">'+escapeHtml(pmT('承認するときに適用開始日を選びます（初期値は明日）。Toast・給与計算の時給はアプリから変えません。','You pick the effective date when approving. Toast/payroll are not changed by the app.'))+'</div></div>';
+  }catch(e){ return ''; }
+}
+
+/* ---------- 店に足す・外す ---------- */
+async function addPrepEmp(empId, sid){
+  if(!pmCanAdmin()){ alert('GM/CEOのみ設定できます。'); return; }
+  if(!empId) return;
+  var emps=getEmployees(), e=emps.find(function(x){return x.id===empId;}); if(!e) return;
+  e.prep=true;
+  if(!e.title || e.title==='P-Crew' || e.title==='Crew') e.title='Prep Specialist';
+  /* v1106: Lv と時給は付けない（未認定。採点して認定してから）。前は Lv1・$16 にしていた */
+  lsSet('m_employees', emps);
+  try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e2){}
+  showToast(pmT(e.name+' をプレップ専門職(G1-P)にしました（未認定。採点して認定すると時給が変わります）', e.name+' is now a Prep specialist (not certified yet)'),'success');
+  pmRerender();
+}
+async function removePrepEmp(empId){
+  if(!pmCanAdmin()) return;
+  var e0=getEmployees().find(function(x){return x.id===empId;}); if(!e0) return;
+  var stores=Object.keys(pmIdx().seg).filter(function(k){ return k.split('|')[0]===empId; }).map(function(k){ return k.split('|')[1]; });
+  var today=pmToday(), live=stores.filter(function(sid){ var s=pmSegOn(empId, sid, pmAddDay(today, 400)); return s && s.lv!=null; });
+  if(!confirm(pmT('プレップ専門職の指定を外しますか？'+(live.length?'\n明日から、'+live.map(pmStoreName).join('・')+' の時給は従業員マスターの時給に戻ります（今日までの勤務はプレップの時給のまま）。従業員マスターの時給を確かめてください。':'\n（時給はそのまま残ります）'),'Remove the Prep specialist mark?'))) return;
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_CERT, PM_TBL]))) return;
+  if(pmMe()!==me) return;
+  var emps=getEmployees(), e=emps.find(function(x){return x.id===empId;}); if(!e) return;
+  /* 読み直したあとの認定で決め直す */
+  live=Object.keys(pmIdx().seg).filter(function(k){ return k.split('|')[0]===empId; }).map(function(k){ return k.split('|')[1]; })
+    .filter(function(sid){ var s=pmSegOn(empId, sid, pmAddDay(today, 400)); return s && s.lv!=null; });
+  e.prep=false; lsSet('m_employees', emps);
+  var now=Date.now(), from=pmAddDay(today,1);
+  /* 明日から終わり。明日より後に始まる認定・どの店の申請中も取り下げる（外したあとにまた効かないように） */
+  var later=pmCertsAll().filter(function(c){ return c.emp===e.id && ((c.state==='approved' && live.indexOf(c.store)>=0 && pmDateOk(c.from) && c.from>from) || c.state==='pending'); });
+  if(live.length || later.length){
+    pmSaveMany(PM_CERT, live.map(function(sid){ return [pmId('pc'), { emp:e.id, name:e.name, store:sid, lv:0, kind:'end', state:'approved', from:from, tbl:'', by:me, at:new Date(now).toISOString(), dBy:me, dAt:new Date(now).toISOString(), dt:now, reason:pmT('プレップ専門職の指定を外した','Prep mark removed'), toast:null }]; })
+      .concat(later.map(function(c){ var r=Object.assign({}, c, { state:'withdrawn', wBy:me, wAt:new Date(now).toISOString() }); delete r.id; return [c.id, r]; })));
+    if(live.length) try{ apNotifyAcctApplied(PM_AP, e.name, live.map(pmStoreName).join('・')+'・'+pmT('プレップの時給は ','Prep wage ends ')+pmMD(from)+pmT(' から従業員マスターの時給',' — use the master wage')); }catch(err){}
+    later.forEach(function(c){ if(c.state==='pending'){ try{ resolveApprovalByRef(PM_AP, c.id, 'withdrawn', null, pmT('プレップ専門職の指定を外した','Prep mark removed'), 'page'); }catch(err){} } });
+  }
+  try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e2){}
+  pmRerender();
+}
+function setPrepMatrixStore(id){ window._prepMatrixStore=id; renderPage('skill'); }
+
+/* ---------- 画面：店ごとのマトリクス ---------- */
 function renderStorePrepPanel(storeId){
   if(typeof canViewWages==='function' && !canViewWages()) return '';
-  var canEdit = (typeof canEditWages==='function') ? canEditWages() : false;
-  var emps = getEmployees();
-  function atStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
-  var preps = emps.filter(function(e){ return e.prep===true && e.status!=='退職' && atStore(e); });
-  var cands = emps.filter(function(e){ return !e.prep && e.status!=='退職' && (e.role==='crew'||e.role==='office_crew') && atStore(e); });
-  if(!preps.length && !canEdit) return '';
-  var positions = getPrepPositions(storeId);
-  var method = getPrepLevelMethod();
-  var levels = PREP_LEVELS();
-  var h = `<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>Prep スキルマトリクス（評価＝時給連動）${canEdit?`<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="openPrepPosModal('${storeId}')"><i class="ti ti-settings"></i> 項目編集</button>`:''}</div>`;
-  h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:10px;color:var(--muted)">${levels.map(function(l){return 'Lv'+l.lv+' $'+l.wage;}).join(' / ')}</span>`;
-  if(canEdit){
-    h += `<span style="margin-left:auto;font-size:10px;color:var(--muted)">総合:</span><div style="display:flex;gap:4px">`;
-    [['avg','平均'],['min','弱点基準']].forEach(function(m){
-      var on = method===m[0];
-      h += `<span onclick="setPrepLevelMethod('${m[0]}');renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin')" style="font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;cursor:pointer;border:1px solid ${on?'var(--accent)':'var(--border)'};background:${on?'var(--accent)':'var(--surface2)'};color:${on?'#fff':'var(--muted)'}">${m[1]}</span>`;
-    });
-    h += `</div>`;
-  }
-  h += `</div>`;
-  if(!preps.length){
-    h += `<div style="font-size:12px;color:var(--muted)">この店舗のプレップ専門職は未登録です。下から追加できます。</div>`;
+  var canEdit=pmCanAdmin(), canItems=pmCanItems(storeId), cfg=pmCfg(storeId), staff=pmStaff(storeId);
+  if(!canEdit && (!cfg.on || !staff.length)) return '';
+  var today=pmToday(), tbls=pmTables(storeId), tbl=pmTableOn(storeId, today), next=tbls.filter(function(r){ return r.from>today; })[0]||null;
+  var items=cfg.items.map(function(it, idx){ return { it:it, idx:idx }; }).filter(function(x){ return x.it.on!==false; });
+  var h='<div class="card"><div class="card-title"><i class="ti ti-tools-kitchen-2" style="color:#7d9b4e"></i>'+pmT('プレップLv','Prep Lv')+'：'+escapeHtml(pmStoreName(storeId))
+    +((canItems||canEdit)?'<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="pmOpenSettings(\''+storeId+'\')"><i class="ti ti-settings"></i> '+pmT('プレップの設定','Prep settings')+'</button>':'')+'</div>';
+  if(!cfg.on){ h+='<div style="font-size:12px;color:var(--muted)">'+pmT('この店は Prep を使っていません（設定で「使う」にする）','This store does not use Prep (turn it on in settings)')+'</div></div>'; return h; }
+  h+='<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-bottom:6px">'
+    +pmT('総合 Lv の決め方','Overall Lv')+'：<b>'+(cfg.method==='min'?pmT('いちばん低い項目','lowest item'):pmT('平均','average'))+'</b>（'+pmT('この店','this store')+'）'
+    +' · '+pmT('時給の表','Wage table')+'：'+(tbl?('<b>'+pmT('版','v')+' '+pmTableNo(storeId, tbl.id)+'</b>（'+escapeHtml(tbl.from)+pmT(' から',' ~')+(canViewWages()?' · Lv1 '+pmUsd(pmLvCents(tbl,1))+'〜Lv5 '+pmUsd(pmLvCents(tbl,5)):'')+'）'):'<span style="color:var(--amber)">'+pmT('今日から使える版はありません','none in effect today')+'</span>')
+    +(next?' · '+pmT('次の版','Next')+' '+escapeHtml(next.from)+pmT(' から',' ~'):'')
+    +(cfg.speed&&items.some(function(x){ return x.it.id===cfg.speed; })?' · '+pmT('「速さ」の 4・5 は、ほかがすべて 3 以上のとき','speed 4–5 only when others ≥ 3'):'')
+    +'</div>';
+  if(cfg.draft) h+='<div style="font-size:11px;color:var(--amber);margin-bottom:6px"><i class="ti ti-info-circle"></i> '+pmT('評価項目は「設定案」です（店長・GM が直すまで。正式な基準にしない）','Items are a draft until the store manager or GM revises them')+'</div>';
+  if(!staff.length){
+    h+='<div style="font-size:12px;color:var(--muted)">'+pmT('この店舗のプレップ専門職は未登録です。下の「従業員マスターから選ぶ」で足します。','No Prep specialists yet. Add one below.')+'</div>';
   } else {
-    h += `<div style="overflow-x:auto"><table class="inv-table" style="min-width:500px"><thead><tr><th>スタッフ</th>${positions.map(function(p){return `<th style="font-size:10px" title="${escapeHtml(p)}">${escapeHtml(p.slice(0,5))}</th>`;}).join('')}<th style="font-size:10px">総合/時給</th></tr></thead><tbody>`;
-    preps.forEach(function(e){
-      var sk = prepSkillsOf(e, storeId);
-      var lv = prepOverallLevel(e, storeId);
-      var wage = prepWageForLv(lv);
-      h += `<tr><td style="font-weight:600;font-size:12px${canEdit?';cursor:pointer':''}"${canEdit?` onclick="removePrepEmp('${e.id}')" title="タップで指定解除"`:''}>${escapeHtml(e.name)}</td>${positions.map(function(p,i){
-        var v=Number(sk[p]||0); var bg=prepCellBg(v);
-        return `<td ${canEdit?`onclick="openPrepCellPopup('${e.id}','${storeId}',${i})"`:''} style="text-align:center;cursor:${canEdit?'pointer':'default'};color:${v?'#fff':'var(--muted)'};background:${bg};border-radius:4px">${v||'-'}</td>`;
-      }).join('')}<td style="text-align:center;font-size:11px"><b style="color:var(--accent)">Lv${lv}</b><div style="font-family:ui-monospace,monospace;color:#15a66a;font-size:10px">$${Number(wage).toFixed(2)}</div></td></tr>`;
+    h+='<div style="overflow-x:auto"><table class="inv-table" style="min-width:'+(260+items.length*60)+'px"><thead><tr><th>'+pmT('スタッフ','Staff')+'</th>'
+      +items.map(function(x){ return '<th style="font-size:10px;max-width:70px;white-space:normal" title="'+escapeHtml(x.it.desc||x.it.name)+'">'+escapeHtml(x.it.name)+'</th>'; }).join('')
+      +'<th style="font-size:10px">'+pmT('総合 Lv','Overall')+'</th><th style="font-size:10px">'+escapeHtml(pmStoreName(storeId))+pmT('の時給',' wage')+'</th><th style="font-size:10px">'+pmT('状態','Status')+'</th></tr></thead><tbody>';
+    staff.forEach(function(e){
+      var sc=pmScore(e, storeId), st=pmState(e, storeId), raw=pmRawScores(e, storeId);
+      h+='<tr><td style="font-weight:600;font-size:12px;cursor:pointer" onclick="pmOpenPerson(\''+e.id+'\',\''+storeId+'\')">'+escapeHtml(e.name)+'<div style="font-size:9px;color:var(--muted);font-weight:400">G1-P · '+escapeHtml(pmStoreName(e.store))+'</div></td>'
+        +items.map(function(x){
+          var v=Number(raw[x.it.id])||0, cap=(sc.capped && x.it.id===cfg.speed);
+          return '<td '+(canEdit?'onclick="openPrepCellPopup(\''+e.id+'\',\''+storeId+'\','+x.idx+')"':'')+' style="text-align:center;cursor:'+(canEdit?'pointer':'default')+';color:'+(v?'#fff':'var(--muted)')+';background:'+prepCellBg(v)+';border-radius:4px"'+(cap?' title="'+escapeHtml(pmT('3 として数えています','counted as 3'))+'"':'')+'>'+(v||'－')+(cap?'*':'')+'</td>';
+        }).join('')
+        +'<td style="text-align:center;font-size:11px"><b style="color:'+(sc.full?'var(--accent)':'var(--muted)')+'">'+(sc.lv!=null?'Lv'+sc.lv:'－')+'</b><div style="font-size:9px;color:var(--muted)">'+pmT('採点','scored')+' '+sc.n+'／'+sc.total+(sc.full?'':pmT('（途中）',' (partial)'))+'</div></td>'
+        +'<td style="text-align:center;font-size:11px">'+(st.cur?('<b style="font-family:ui-monospace,monospace;color:#15a66a">'+pmUsd(st.cur.cents)+'</b><div style="font-size:9px;color:var(--muted)">'+pmT('認定','Cert')+' Lv'+st.cur.lv+'</div>'):('<span style="color:var(--muted)">'+pmT('未認定','Not certified')+'</span>'+(pmLegacyWageText(e)?'<div style="font-size:9px;color:var(--muted)">'+pmT('今','now')+' '+pmLegacyWageText(e)+'</div>':'')))+'</td>'
+        +'<td style="font-size:11px;min-width:150px">'+pmStatusHtml(e, storeId, sc, st)+'</td></tr>';
     });
-    h += `</tbody></table></div>`;
-    h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">セルをタップで評価（1:${PREP_SKILL_LEGEND[1]} / 2:${PREP_SKILL_LEGEND[2]} / 3:${PREP_SKILL_LEGEND[3]} / 4:${PREP_SKILL_LEGEND[4]} / 5:${PREP_SKILL_LEGEND[5]}）· 「総合/時給」＝${method==='min'?'最低項目':'平均'}で算出した時給連動レベル${canEdit?' · 氏名タップで指定解除':''}</div>`;
+    h+='</tbody></table></div>';
+    h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">'+pmT('採点の目安','Scale')+'：1 '+PREP_SKILL_LEGEND[1]+' · 2 '+PREP_SKILL_LEGEND[2]+' · 3 '+PREP_SKILL_LEGEND[3]+' · 4 '+PREP_SKILL_LEGEND[4]+' · 5 '+PREP_SKILL_LEGEND[5]
+      +'<br>'+pmT('採点しただけでは時給は変わりません。総合 Lv が認定 Lv より上がったら「認定を申請」→ 承認センターで GM が適用開始日を選んで承認すると、その日から この店の時給が変わります。名前を押すと 1 人ずつ採点できます。','Scoring alone does not change the wage. Request certification; when GM approves with a date, this store’s wage changes from that date. Tap a name to score one person.')+'</div>';
   }
-  if(canEdit && cands.length){
-    h += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px"><select id="prepAddSelSk" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:12px"><option value="">クルーを選択…</option>${cands.map(function(e){return `<option value="${e.id}">${escapeHtml(e.name)}</option>`;}).join('')}</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById('prepAddSelSk').value)">プレップに追加</button></div>`;
+  if(canEdit){
+    var cands=pmCands(storeId);
+    h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">'
+      +(cands.length?'<select id="prepAddSelSk" class="form-select" style="flex:1;min-width:140px;padding:7px;font-size:12px"><option value="">'+pmT('従業員マスターから選ぶ…','Pick from the employee master…')+'</option>'+cands.map(function(e){ return '<option value="'+escapeHtml(e.id)+'">'+escapeHtml(e.name)+'</option>'; }).join('')+'</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById(\'prepAddSelSk\').value,\''+storeId+'\')">'+pmT('プレップに足す','Add to Prep')+'</button>'
+        :'<span style="font-size:11px;color:var(--muted)">'+pmT('この店で働くクルー（従業員マスター）で、足せる人はいません','No crew at this store to add')+'</span>')
+      +'</div>';
   }
-  h += `</div>`;
+  h+=pmToastListHtml(storeId)+pmHistoryHtml(storeId);
+  h+='</div>';
   return h;
 }
-
-
-
-function setPrepLv(empId, lv){
-  if(!canEditWages()){ alert('時給に連動するため、レベルの変更はGM/CEOのみです。'); return; }
-  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
-  var prevLv=e.prepLv||0; lv=Number(lv);
-  e.prepLv=lv; e.wage=prepWageForLv(lv);
-  lsSet('m_employees', emps);
-  addPrepHistory({name:e.name, store:e.store||'', fromLv:prevLv, toLv:lv, wage:e.wage, by:myName(), at:new Date().toISOString()});
-  showToast(e.name+' → プレップ Lv'+lv+'（$'+e.wage.toFixed(2)+'）に評価しました','success');
-  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+function pmStatusHtml(e, sid, sc, st){
+  var out=[];
+  if(st.pending) out.push('<span class="tag tag-yellow" style="font-size:10px">Lv'+escapeHtml(st.pending.lv)+' '+pmT('の認定を申請中','requested')+'</span><div style="font-size:9px;color:var(--muted)">'+pmT('GM の承認待ち','waiting for GM')+(canViewWages()&&pmTables(sid).length?'・'+pmT('承認すると ','then ')+pmUsd(pmLvCents(pmTableOn(sid, pmAddDay(pmToday(),1))||pmTables(sid)[pmTables(sid).length-1], st.pending.lv)):'')+'</div>');
+  if(st.future) out.push('<span class="tag tag-blue" style="font-size:10px">'+(st.future.kind==='end'?pmT('プレップの時給は終わり','prep wage ends'):'Lv'+escapeHtml(st.future.lv))+'（'+pmMD(st.future.from)+pmT(' から',' ~')+'）</span>');
+  if(pmCanAdmin() && !st.pending) out.push('<div style="margin-top:4px">'+pmActionsHtml(e, sid, sc, st)+'</div>');
+  return out.join(' ');
 }
-function addPrepEmp(empId){
-  if(!canEditWages()){ alert('GM/CEOのみ設定できます。'); return; }
-  if(!empId) return;
-  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
-  e.prep=true; if(!e.prepLv) e.prepLv=1; e.wage=prepWageForLv(e.prepLv);
-  if(!e.title || e.title==='P-Crew' || e.title==='Crew') e.title='Prep Specialist';
-  lsSet('m_employees', emps);
-  addPrepHistory({name:e.name, store:e.store||'', fromLv:0, toLv:e.prepLv, wage:e.wage, by:myName(), at:new Date().toISOString()});
-  showToast(e.name+' をプレップ専門職(G1-P)に設定しました','success');
-  renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+/* Toast・給与計算に反映していない認定（アプリは Toast の時給を変えない。反映したら印） */
+function pmToastPending(sid){
+  return pmCertsAll().filter(function(c){ return c.store===sid && c.state==='approved' && !(c.toast && c.toast.at); })
+    .sort(function(a,b){ return a.from<b.from?-1:a.from>b.from?1:0; });
 }
-function removePrepEmp(empId){
-  if(!canEditWages()) return;
-  if(!confirm('プレップ専門職の指定を外しますか？（時給はそのまま残ります）')) return;
-  var emps=getEmployees(); var e=emps.find(function(x){return x.id===empId;}); if(!e) return;
-  e.prep=false; lsSet('m_employees', emps); renderPage(typeof curPage!=='undefined'&&curPage?curPage:'ojt_admin');
+function pmToastListHtml(sid){
+  var l=pmToastPending(sid); if(!l.length) return '';
+  var idx=pmIdx(), cv=canViewWages();
+  var h='<div style="margin-top:10px;border:1px solid var(--amber);border-radius:8px;padding:8px 10px"><div style="font-size:12px;font-weight:700;color:var(--amber)"><i class="ti ti-alert-triangle"></i> '+pmT('Toast・給与計算に反映していない人','Not yet in Toast/payroll')+'：'+l.length+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin:2px 0 6px">'+pmT('アプリは Toast・給与計算の時給を変えません。そちらで直したら「反映した」を押します。','The app does not change Toast/payroll. Press “Done” after updating them.')+'</div>';
+  l.forEach(function(c){
+    var wage=(c.kind!=='end' && cv && idx.tbl[c.tbl])?' · '+pmUsd(pmLvCents(idx.tbl[c.tbl], c.lv)):'';
+    h+='<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;padding:3px 0;border-top:1px solid var(--border)"><span style="flex:1;min-width:0">'+escapeHtml(c.name||'')+' · '+(c.kind==='end'?pmT('プレップの時給は終わり','prep wage ends'):'Lv'+escapeHtml(c.lv))+wage+' · '+escapeHtml(c.from)+pmT(' から',' ~')+'</span>'
+      +(pmCanToast()?'<button class="btn btn-secondary btn-sm" style="padding:2px 10px" onclick="pmMarkToast(\''+escapeHtml(c.id)+'\')"><i class="ti ti-check"></i> '+pmT('反映した','Done')+'</button>':'')+'</div>';
+  });
+  return h+'</div>';
+}
+async function pmMarkToast(id){
+  if(!pmCanToast()) return;
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_CERT]))) return;
+  if(pmMe()!==me) return;
+  var c=pmMap(PM_CERT)[id]; if(!c || c.state!=='approved') { pmRerender(); return; }
+  if(c.toast && c.toast.at){ showToast(pmT('もう反映済みです（'+(c.toast.by||'')+'）','Already marked'),'info'); pmRerender(); return; }
+  var r=Object.assign({}, c, { toast:{ by:me, at:new Date().toISOString() } }); delete r.id;
+  pmSaveMany(PM_CERT, [[id, r]]);
+  showToast(pmT('「反映した」にしました','Marked as done'),'success'); pmRerender();
+}
+/* 認定の履歴（前後の Lv と時給・理由・決めた人・適用開始日）。時給は表と Lv から出す（記録には額を持たない） */
+function pmHistoryHtml(sid){
+  var idx=pmIdx(), cv=canViewWages();
+  var l=pmCertsAll().filter(function(c){ return c.store===sid && (c.state==='approved' || c.state==='rejected'); })
+    .sort(function(a,b){ return (Number(b.dt)||0)-(Number(a.dt)||0); }).slice(0,12);
+  var old=getPrepHistory().filter(function(r){ return r && r.store===sid; }).slice(0,6);
+  if(!l.length && !old.length) return '';
+  var kindL={ req:pmT('申請・承認','request'), raise:pmT('GM・CEO が決めた','set by GM/CEO'), 'switch':pmT('表の切り替え','table switch'), end:pmT('指定を外した','removed') };
+  var h='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:12px 0 4px">'+pmT('認定の記録','Certification history')+'</div><div style="font-size:11.5px;color:var(--muted);line-height:1.7">';
+  l.forEach(function(c){
+    var to=(c.kind==='end')?pmT('プレップの時給は終わり','prep wage ends'):('Lv'+c.lv+((cv&&idx.tbl[c.tbl])?'（'+pmUsd(pmLvCents(idx.tbl[c.tbl], c.lv))+'）':''));
+    h+='・'+escapeHtml(c.name||'')+'：'+(c.prevLv?'Lv'+escapeHtml(c.prevLv)+' → ':'')+escapeHtml(to)
+      +(c.state==='rejected'?' <span class="tag tag-red" style="font-size:9px">'+pmT('却下','rejected')+'</span>':' · '+escapeHtml(c.from)+pmT(' から',' ~'))
+      +' · '+escapeHtml(kindL[c.kind]||'')+' · '+escapeHtml(c.dBy||c.by||'')+(c.reason?' · '+escapeHtml(c.reason):'')
+      +(c.toast&&c.toast.at?' · <span style="color:var(--green)">'+pmT('Toast 反映','Toast done')+'</span>':'')+'<br>';
+  });
+  if(old.length){
+    h+='<details style="margin-top:4px"><summary style="cursor:pointer">'+pmT('v1105 までの記録','Records up to v1105')+'</summary>';
+    old.forEach(function(r){ h+='・'+escapeHtml(r.name)+'：'+(r.fromLv?'Lv'+r.fromLv+'→':'')+'Lv'+escapeHtml(r.toLv)+(cv&&r.wage!=null?'（$'+Number(r.wage).toFixed(2)+'）':'')+'　<span style="opacity:.7">'+escapeHtml((r.at||'').slice(0,10))+' / '+escapeHtml(r.by||'')+'</span><br>'; });
+    h+='</details>';
+  }
+  return h+'</div>';
 }
 
-function setPrepMatrixStore(id){ window._prepMatrixStore=id; renderPage('skill'); }
+/* ---------- 画面：プレップの設定（店・評価項目・決め方・Lv と時給の表） ---------- */
+function pmFormFrom(sid){
+  var c=pmCfg(sid);
+  return { sid:sid, on:c.on, items:c.items.map(function(i){ return Object.assign({}, i); }), draft:c.draft, method:c.method, speed:c.speed, base:c._at||0, saved:c.saved, dirty:false };
+}
+function pmOpenSettings(sid){
+  if(!pmCanItems(sid)) return;
+  _pm.form=pmFormFrom(sid);
+  pmRenderSettings();
+}
+function pmRenderSettings(){
+  var f=_pm.form; if(!f) return;
+  var sid=f.sid, admin=pmCanAdmin(), canIt=pmCanItems(sid);
+  var all=(getStoresAll()||[]).filter(function(s){ return s.active!==false; });
+  var h='<div class="modal-title">'+pmT('プレップの設定','Prep settings')+' <button class="modal-close" onclick="pmCloseSettings()">×</button></div>';
+  /* 店舗 */
+  h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:2px 0 4px">'+pmT('店舗','Stores')+'</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">';
+  all.forEach(function(s){
+    var c=pmCfg(s.id), on=c.on, cur=s.id===sid;
+    h+='<span onclick="pmSettingsStore(\''+s.id+'\')" style="cursor:pointer;font-size:11px;padding:4px 9px;border-radius:7px;border:1.5px solid '+(cur?'var(--accent)':'var(--border)')+';background:'+(on?'var(--surface2)':'transparent')+';color:'+(on?'var(--tm)':'var(--muted)')+'">'+escapeHtml(s.name)+' · '+(on?pmT('使う','on')+'・'+c.items.filter(function(i){return i.on!==false;}).length+pmT(' 項目',''):pmT('使わない','off'))+'</span>';
+  });
+  h+='</div>';
+  if(admin) h+='<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-bottom:6px"><input type="checkbox" '+(f.on?'checked':'')+' onchange="_pm.form.on=this.checked;_pm.form.dirty=true"> '+escapeHtml(pmStoreName(sid))+' '+pmT('で Prep を使う','uses Prep')+'</label>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-bottom:8px">'+pmT('店を足すときは「ひな形から写す」で項目だけを写します。評価・認定・個人の時給は写しません。','“Copy from a template” copies the items only — never scores, certifications or wages.')+'</div>';
+  /* 評価項目 */
+  h+='<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:6px 0 4px"><div style="font-weight:800;font-size:12px;color:var(--accent)">'+escapeHtml(pmStoreName(sid))+' '+pmT('の評価項目','items')+'</div>'
+    +(canIt?'<select class="form-select" style="font-size:11px;padding:3px 6px;margin-left:auto" onchange="pmCopyTemplate(this.value);this.value=\'\'"><option value="">'+pmT('ひな形から写す…','Copy from a template…')+'</option><option value="F01">ToriTon</option><option value="generic">'+pmT('共通','Generic')+'</option><option value="lala">'+pmT('LaLa の設定案','LaLa draft')+'</option></select>'
+      +'<button class="btn btn-secondary btn-sm" onclick="pmAddItem()">＋ '+pmT('項目','Item')+'</button>':'')+'</div>';
+  /* 1 項目＝1 つの枠（スマホでも横に流れない）：番号・順・名前・使う／説明 */
+  f.items.forEach(function(it, i){
+    h+='<div style="border:1px solid var(--border);border-radius:8px;padding:6px 8px;margin-bottom:6px;'+(it.on===false?'opacity:.6':'')+'">'
+      +'<div style="display:flex;gap:6px;align-items:center"><span style="font-size:11px;color:var(--muted);min-width:16px">'+(i+1)+'</span>'
+      +(canIt?'<span style="cursor:pointer;padding:2px 4px" onclick="pmMoveItem('+i+',-1)">↑</span><span style="cursor:pointer;padding:2px 4px" onclick="pmMoveItem('+i+',1)">↓</span>':'')
+      +'<input class="form-input" style="flex:1;min-width:0;font-size:12px;padding:5px" maxlength="40" placeholder="'+escapeHtml(pmT('項目','Item'))+'" value="'+escapeHtml(it.name)+'" '+(canIt?'':'disabled ')+'oninput="_pm.form.items['+i+'].name=this.value;_pm.form.dirty=true">'
+      +'<label style="font-size:11px;white-space:nowrap;display:flex;align-items:center;gap:3px"><input type="checkbox" '+(it.on!==false?'checked':'')+' '+(canIt?'':'disabled ')+'onchange="_pm.form.items['+i+'].on=this.checked;_pm.form.dirty=true">'+pmT('使う','On')+'</label></div>'
+      +'<input class="form-input" style="width:100%;box-sizing:border-box;font-size:12px;padding:5px;margin-top:4px" maxlength="200" placeholder="'+escapeHtml(pmT('説明（観察できる行動）','Description (observable)'))+'" value="'+escapeHtml(it.desc||'')+'" '+(canIt?'':'disabled ')+'oninput="_pm.form.items['+i+'].desc=this.value;_pm.form.dirty=true"></div>';
+  });
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:4px 0 8px">'+pmT('［ ］は設定案（例文は評価に自動で入れません）。項目を消すときは「使う」を外します（前の評価に使った項目は記録で読めます）。この店を変えても、ほかの店は変わりません。','[ ] marks draft text. Untick “On” instead of deleting. Other stores are not affected.')+'</div>';
+  /* 総合 Lv・設定案・速さ（GM・CEO） */
+  if(admin){
+    h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:6px 0 4px">'+pmT('総合 Lv・認定','Overall Lv')+'</div>'
+      +'<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px;align-items:center">'+pmT('総合 Lv の決め方（この店）','How overall Lv is set')+'：'
+      +'<label><input type="radio" name="pmMeth" '+(f.method!=='min'?'checked':'')+' onchange="_pm.form.method=\'avg\';_pm.form.dirty=true"> '+pmT('平均（今と同じ）','Average')+'</label>'
+      +'<label><input type="radio" name="pmMeth" '+(f.method==='min'?'checked':'')+' onchange="_pm.form.method=\'min\';_pm.form.dirty=true"> '+pmT('いちばん低い項目','Lowest item')+'</label></div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px;align-items:center;margin-top:6px">'+pmT('「速さ」の項目（4・5 はほかがすべて 3 以上のときだけ）','Speed item (4–5 only when others ≥ 3)')+'：<select class="form-select" style="font-size:12px;padding:3px 6px" onchange="_pm.form.speed=this.value;_pm.form.dirty=true"><option value="">'+pmT('使わない','none')+'</option>'
+      +f.items.map(function(it){ return '<option value="'+escapeHtml(it.id)+'"'+(it.id===f.speed?' selected':'')+'>'+escapeHtml(it.name)+'</option>'; }).join('')+'</select></div>'
+      +'<label style="font-size:12px;display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" '+(f.draft?'':'checked')+' onchange="_pm.form.draft=!this.checked;_pm.form.dirty=true"> '+pmT('この評価項目を正式な基準にする（外すと「設定案」と出す）','These items are the official standard (untick = draft)')+'</label>';
+  }
+  h+='<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="pmCloseSettings()">'+pmT('閉じる','Close')+'</button>'
+    +(canIt?'<button class="btn btn-primary" onclick="pmSaveSettings()"><i class="ti ti-device-floppy"></i> '+pmT('この店の設定を保存','Save this store')+'</button>':'')+'</div>';
+  /* Lv と時給の表 */
+  if(admin) h+=pmTablesHtml(sid);
+  openModal(h);
+}
+function pmCloseSettings(){
+  if(_pm.form && _pm.form.dirty && !confirm(pmT('保存していない変更があります。閉じますか？','Discard unsaved changes?'))) return;
+  _pm.form=null; closeModalDirect(); pmRerender();
+}
+function pmSettingsStore(sid){
+  if(_pm.form && _pm.form.dirty && !confirm(pmT('保存していない変更があります。ほかの店を開きますか？','Discard unsaved changes?'))) return;
+  if(!pmCanItems(sid)){ showToast(pmT('この店の設定は直せません','You cannot edit this store'),'info'); return; }
+  _pm.form=pmFormFrom(sid); pmRenderSettings();
+}
+function pmAddItem(){ var f=_pm.form; if(!f) return; f.items.push({ id:pmId('pi'), name:'', desc:'', on:true }); f.dirty=true; pmRenderSettings(); }
+function pmMoveItem(i, d){ var f=_pm.form; if(!f) return; var j=i+d; if(j<0||j>=f.items.length) return; var x=f.items[i]; f.items[i]=f.items[j]; f.items[j]=x; f.dirty=true; pmRenderSettings(); }
+/* ひな形から写す：項目だけ（新しい id）。今の項目は「使わない」にして残す（前の評価を読めるように） */
+function pmCopyTemplate(k){
+  var f=_pm.form; if(!f || !k) return;
+  var src=(k==='lala') ? PM_LALA_DRAFT : (k==='generic' ? DEFAULT_PREP_POSITIONS_GENERIC.map(function(n){ return {name:n, desc:''}; }) : pmCfg(k).items.filter(function(i){ return i.on!==false; }));
+  if(f.items.some(function(i){ return i.on!==false; }) && !confirm(pmT('今の項目は「使わない」にして残し、ひな形の項目を足します（評価・認定・時給は写しません）。よろしいですか？','Current items will be turned off and the template items added. OK?'))) return;
+  f.items.forEach(function(i){ i.on=false; });
+  src.forEach(function(s){ f.items.push({ id:pmId('pi'), name:String(s.name||'').slice(0,40), desc:String(s.desc||'').slice(0,200), on:true }); });
+  if(k==='lala'){ f.draft=true; var sp=f.items.filter(function(i){ return i.on!==false && /速さ/.test(i.name); })[0]; if(sp) f.speed=sp.id; }
+  f.dirty=true; pmRenderSettings();
+}
+async function pmSaveSettings(){
+  var f=_pm.form; if(!f) return;
+  var sid=f.sid; if(!pmCanItems(sid)) return;
+  var names={}, bad='';
+  f.items.forEach(function(i){ i.name=String(i.name||'').trim(); i.desc=String(i.desc||'').trim(); if(i.on!==false){ if(!i.name) bad=pmT('名前の無い項目があります','An item has no name'); else if(names[i.name]) bad=pmT('同じ名前の項目が 2 つあります：','Duplicate item: ')+i.name; names[i.name]=1; } });
+  if(!bad && !f.items.some(function(i){ return i.on!==false; })) bad=pmT('使う項目が 1 つも無いと採点できません','At least one item must be on');
+  if(bad){ showToast(bad,'warning'); return; }
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_CFG]))) return;
+  if(pmMe()!==me || _pm.form!==f) return;
+  var cur=pmCfgRec(sid);
+  if((cur?Number(cur._at)||0:0)!==(Number(f.base)||0)){
+    showToast(pmT('ほかの人がこの店の設定を先に保存しました。今の設定を出したので、もう一度直してください','Someone saved this store first. Please redo your changes'),'warning');
+    _pm.form=pmFormFrom(sid); pmRenderSettings(); return;
+  }
+  var admin=pmCanAdmin(), prev=pmCfg(sid);
+  /* 店長は項目の名前・説明・順・使うだけ（決め方・速さ・設定案・使う店は GM・CEO） */
+  var rec={ on:admin?!!f.on:prev.on, items:f.items.map(pmNormItem), draft:admin?!!f.draft:prev.draft, method:admin?(f.method==='min'?'min':'avg'):prev.method,
+    speed:admin?String(f.speed||''):prev.speed, by:me, at:new Date().toISOString() };
+  if(rec.speed && !rec.items.some(function(i){ return i.id===rec.speed; })) rec.speed='';
+  pmSaveMany(PM_CFG, [[sid, rec]]);
+  showToast(pmT(pmStoreName(sid)+' のプレップの設定を保存しました','Saved'),'success');
+  _pm.form=pmFormFrom(sid); pmRenderSettings();
+}
+/* Lv と時給の表（版ごと）。新しい版の適用開始日は、今日より後で、前の版より後（期間が重ならない） */
+function pmTablesHtml(sid){
+  var l=pmTables(sid), today=pmToday(), cv=canViewWages();
+  var h='<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px"><div style="font-weight:800;font-size:12px;color:var(--accent);margin-bottom:4px">'+escapeHtml(pmStoreName(sid))+' '+pmT('の Lv と時給の表（USD／時）','Lv & wage table (USD/h)')+'</div>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'+pmT('版ごとに適用開始日。前の版は変えません。表を変えても人の認定 Lv は変わりません（切り替えは「対象者と差額」で承認）。','Each version has a start date and is never edited. Changing the table does not change anyone’s Lv — approve the switch in “People and differences”.')+'</div>';
+  if(!l.length) h+='<div style="font-size:12px;color:var(--muted)">'+pmT('まだありません','None yet')+'</div>';
+  l.forEach(function(r, i){
+    var used=pmCertsAll().some(function(c){ return c.tbl===r.id && c.state==='approved'; });
+    h+='<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><b>'+pmT('版','v')+' '+(i+1)+'</b> · '+escapeHtml(r.from)+pmT(' から',' ~')+' · '
+      +r.levels.map(function(L){ return 'Lv'+L.lv+(L.name?'「'+escapeHtml(L.name)+'」':'')+(cv?' '+pmUsd(L.cents):''); }).join(' / ')
+      +' <span style="color:var(--muted)">'+escapeHtml(r.by||'')+'</span>'
+      +' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="pmOpenSwitch(\''+escapeHtml(r.id)+'\')">'+pmT('対象者と差額','People & differences')+'</button>'
+      +((r.from>today && !used)?' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="pmVoidTable(\''+escapeHtml(r.id)+'\')">'+pmT('この版を取り消す','Cancel this version')+'</button>':'')+'</div>';
+  });
+  var last=l[l.length-1], minFrom=last?pmAddDay(last.from>today?last.from:today, 1):pmAddDay(today, 1);
+  var base=last?last.levels:PREP_LEVELS().map(function(L, i){ return { lv:i+1, name:(i===0?'基本の仕込み':i===4?'プレップのマスター':String(L.ja||'').split('（')[0]), cents:PM_DEF_CENTS[i] }; });
+  if(!base.length) base=PM_DEF_CENTS.map(function(c, i){ return { lv:i+1, name:'', cents:c }; });
+  h+='<details style="margin-top:8px"'+(l.length?'':' open')+'><summary style="cursor:pointer;font-size:12px;font-weight:700">'+pmT('新しい版を作る','Create a new version')+'</summary>'
+    +'<table class="inv-table" style="margin-top:6px"><thead><tr><th>Lv</th><th>'+pmT('名前','Name')+'</th><th>'+pmT('時給','Wage')+'</th></tr></thead><tbody>';
+  [0,1,2,3,4].forEach(function(i){
+    var L=base[i]||{ lv:i+1, name:'', cents:PM_DEF_CENTS[i] };
+    h+='<tr><td>Lv'+(i+1)+'</td><td><input id="pmTn'+i+'" class="form-input" style="font-size:12px;padding:5px" maxlength="40" value="'+escapeHtml(L.name||'')+'"></td>'
+      +'<td><input id="pmTw'+i+'" class="form-input" style="font-size:12px;padding:5px;width:90px" inputmode="decimal" value="'+(Number(L.cents)/100).toFixed(2)+'"></td></tr>';
+  });
+  h+='</tbody></table><div class="form-group" style="margin-top:6px"><label class="form-label">'+pmT('この表の適用開始日','Start date of this version')+'</label><input id="pmTfrom" class="form-input" type="date" min="'+minFrom+'" value="'+minFrom+'"></div>'
+    +'<div style="font-size:10.5px;color:var(--muted)">'+pmT('保存する前に確かめます：Lv の順に時給が上がる・$0 より大きい・期間が前の版と重ならない。','Checked before saving: wages rise with Lv, are above $0, and do not overlap the previous version.')+'</div>'
+    +'<div class="btn-row" style="margin-top:6px"><button class="btn btn-primary btn-sm" onclick="pmSaveTable(\''+sid+'\')">'+pmT('新しい版として保存 → 対象者と差額へ','Save as a new version → People & differences')+'</button></div></details></div>';
+  return h;
+}
+function pmCheckTable(sid, from, levels){
+  var today=pmToday(), l=pmTables(sid), last=l[l.length-1];
+  if(!pmDateOk(from)) return pmT('適用開始日を入れてください','Enter the start date');
+  if(from<=today) return pmT('適用開始日は明日以降にしてください（過ぎた日・今日の時給は変えない。切り替えはその前に承認する）','The start date must be tomorrow or later');
+  if(last && from<=last.from) return pmT('適用開始日は前の版（'+last.from+' から）より後にしてください（期間を重ねない）','The start date must be after the previous version ('+last.from+')');
+  if(from>pmAddDay(today, 366)) return pmT('適用開始日は 1 年以内にしてください','Within one year');
+  for(var i=0;i<5;i++){
+    var L=levels[i];
+    if(!L || L.cents==null) return 'Lv'+(i+1)+pmT('：時給は数（例 17 か 18.25）で入れてください',': enter the wage as a number (e.g. 17 or 18.25)');
+    if(!(L.cents>0) || L.cents>PM_MAX_CENTS) return 'Lv'+(i+1)+pmT('：時給は $0 より大きく $200 以下にしてください',': the wage must be above $0 and at most $200');
+    if(!String(L.name||'').trim()) return 'Lv'+(i+1)+pmT('：名前を入れてください',': enter a name');
+    if(i>0 && !(L.cents>levels[i-1].cents)) return pmT('時給は Lv の順に上がるようにしてください（Lv'+i+' ＜ Lv'+(i+1)+'）','Wages must rise with Lv');
+  }
+  return '';
+}
+async function pmSaveTable(sid){
+  if(!pmCanAdmin()) return;
+  var levels=[0,1,2,3,4].map(function(i){ return { lv:i+1, name:String((document.getElementById('pmTn'+i)||{}).value||'').trim().slice(0,40), cents:pmCents((document.getElementById('pmTw'+i)||{}).value) }; });
+  var from=String((document.getElementById('pmTfrom')||{}).value||'');
+  var err=pmCheckTable(sid, from, levels); if(err){ showToast(err,'warning'); return; }
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_TBL, PM_CERT]))) return;
+  if(pmMe()!==me) return;
+  err=pmCheckTable(sid, from, levels); if(err){ showToast(err,'warning'); if(_pm.form) pmRenderSettings(); return; }
+  var id=pmId('pt');
+  pmSaveMany(PM_TBL, [[id, { store:sid, from:from, levels:levels, by:me, at:new Date().toISOString() }]]);
+  showToast(pmT('新しい版を保存しました（承認するまで、だれの時給も変わりません）','Saved (no one’s wage changes until you approve)'),'success');
+  if(_pm.form) _pm.form.dirty=false;
+  pmOpenSwitch(id);
+}
+async function pmVoidTable(id){
+  if(!pmCanAdmin()) return;
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_TBL, PM_CERT]))) return;
+  if(pmMe()!==me) return;
+  var r=pmMap(PM_TBL)[id]; if(!r) return;
+  if(!(r.from>pmToday()) || pmCertsAll().some(function(c){ return c.tbl===id && (c.state==='approved' || c.state==='pending'); })){ showToast(pmT('この版はもう使われているので取り消せません','This version is in use and cannot be cancelled'),'warning'); return; }
+  if(!confirm(pmT('この版（'+r.from+' から）を取り消しますか？','Cancel this version?'))) return;
+  var x=Object.assign({}, r, { 'void':true, voidBy:me, voidAt:new Date().toISOString() });
+  pmSaveMany(PM_TBL, [[id, x]]);
+  showToast(pmT('取り消しました','Cancelled'),'info');
+  if(_pm.form) pmRenderSettings(); else pmRerender();
+}
+
+/* ---------- 時給の切り替え（13A：対象者と差額 → GM が一括で承認） ---------- */
+function pmSwitchRows(tblId){
+  var T=pmMap(PM_TBL)[tblId]; if(!T || !pmTableValid(T)) return null;
+  var sid=T.store, from=T.from, hist=getPrepHistory();
+  var rows=[], seen={};
+  var people=pmStaff(sid).slice();
+  Object.keys(pmIdx().seg).forEach(function(k){ var p=k.split('|'); if(p[1]===sid && !people.some(function(e){ return e.id===p[0]; })){ var e=pmIdx().empObj[p[0]]; if(e && e.status!=='退職') people.push(e); } });
+  people.forEach(function(e){
+    if(seen[e.id]) return; seen[e.id]=1;
+    var segAt=pmSegOn(e.id, sid, from), done=pmCertsAll().some(function(c){ return c.emp===e.id && c.store===sid && c.state==='approved' && c.tbl===tblId && c.kind==='switch'; });
+    var r={ e:e, lv:null, src:'', curCents:null, curText:'', newCents:null, warn:'', ok:false, done:done };
+    if(segAt && segAt.lv!=null){
+      r.lv=segAt.lv; r.src='cert';
+      var w=pmWageOn(e, sid, from); r.curCents=w?w.cents:null; r.curText=w?pmUsd(w.cents):'—';
+      if(segAt.tbl===tblId) r.done=true;
+    } else if(segAt && segAt.kind==='end'){
+      r.warn=pmT('プレップの時給を終えています','prep wage ended');
+    } else if(Number(e.prepLv)>=1 && Number(e.prepLv)<=5 && e.store===sid){
+      r.lv=Number(e.prepLv); r.src='legacy';
+      var lw=empWage(e.name); r.curCents=Math.round(Number(lw)*100); r.curText=(typeof canViewIndividualWage==='function'&&canViewIndividualWage())?('$'+Number(lw).toFixed(2)):'—';
+      var evid=hist.some(function(h){ return h && h.name===e.name && Number(h.toLv)===r.lv; }) || Object.keys(pmRawScores(e, sid)).some(function(k){ return Number(pmRawScores(e, sid)[k])>=1; });
+      if(!evid){ r.warn=pmT('Lv の根拠（採点・記録）が見つかりません。採点・認定してから','No basis for this Lv was found — score and certify first'); r.lv=null; r.src=''; }
+      else if(Math.round(prepWageForLv(r.lv)*100)!==r.curCents) r.warn=pmT('個人の時給（表と違う）。新しい表の額に変えてよいか確かめる（外せる）','Individual wage differs from the table — check before switching (can be unticked)');
+    }
+    if(r.lv!=null){ r.newCents=pmLvCents(T, r.lv); r.ok=!r.done; }
+    rows.push(r);
+  });
+  return { T:T, sid:sid, from:from, rows:rows };
+}
+/* 直近 4 週（前日まで）にこの店で働いた時間 */
+function pmRecentHours(sid, name){
+  var h=0, today=pmToday();
+  for(var i=1;i<=28;i++){ try{ var lb=getTipLabor(sid, pmAddDay(today, -i)); if(lb && lb[name]) h+=_laborHrs(lb[name]); }catch(e){} }
+  return h;
+}
+async function pmOpenSwitch(tblId){
+  if(!pmCanAdmin()) return;
+  try{ await pmPull(['prep_history', PM_CERT, PM_TBL]); }catch(e){}   /* v1105 までの記録（Lv の根拠）・今の認定を読んでから */
+  var d=pmSwitchRows(tblId); if(!d){ showToast(pmT('この版が見つかりません','Version not found'),'warning'); return; }
+  _pm.sw={ id:tblId, pick:{} };
+  d.rows.forEach(function(r){ if(r.ok && r.src==='cert') _pm.sw.pick[r.e.id]=true; else if(r.ok && r.src==='legacy') _pm.sw.pick[r.e.id]=true; });
+  pmRenderSwitch();
+}
+function pmRenderSwitch(){
+  var s=_pm.sw; if(!s) return;
+  var d=pmSwitchRows(s.id); if(!d) return;
+  var cv=canViewWages(), n=0, diff=0, wk=0;
+  var h='<div class="modal-title">'+pmT('時給の切り替え','Wage switch')+' · '+escapeHtml(pmStoreName(d.sid))+' <button class="modal-close" onclick="_pm.sw=null;closeModalDirect();pmRerender()">×</button></div>'
+    +'<div style="font-size:12px;margin-bottom:8px">'+escapeHtml(pmT(pmStoreName(d.sid)+' の新しい表を '+d.from+' から。今の認定 Lv のまま、新しい表の額に変わる人の一覧です。承認するまで時給は変わりません。','From '+d.from+'. People whose wage changes to the new table at their current Lv. Nothing changes until you approve.'))+'</div>'
+    +'<div style="overflow-x:auto"><table class="inv-table" style="min-width:'+(cv?440:300)+'px"><thead><tr><th></th><th>'+pmT('スタッフ','Staff')+'</th><th>'+pmT('認定 Lv','Lv')+'</th>'+(cv?'<th>'+pmT('今の時給','Now')+'</th><th>'+pmT('新しい時給','New')+'</th><th>'+pmT('差','Diff')+'</th>':'')+'<th>'+pmT('注意','Note')+'</th></tr></thead><tbody>';
+  d.rows.forEach(function(r){
+    var on=!!(r.ok && s.pick[r.e.id]);
+    if(on){ n++; if(r.curCents!=null && r.newCents!=null){ diff+=(r.newCents-r.curCents); wk+=(r.newCents-r.curCents)*pmRecentHours(d.sid, r.e.name)/4; } }
+    h+='<tr><td>'+(r.ok?'<input type="checkbox" '+(on?'checked':'')+' onchange="_pm.sw.pick[\''+r.e.id+'\']=this.checked;pmRenderSwitch()">':'')+'</td>'
+      +'<td style="font-size:12px">'+escapeHtml(r.e.name)+'</td>'
+      +'<td style="font-size:12px">'+(r.lv!=null?'Lv'+r.lv+(r.src==='legacy'?'<div style="font-size:9px;color:var(--muted)">'+pmT('v1105 までの Lv','Lv up to v1105')+'</div>':''):pmT('未認定','Not certified'))+'</td>'
+      +(cv?'<td style="font-size:12px">'+(r.curText||'—')+'</td><td style="font-size:12px">'+(r.newCents!=null?'<b>'+pmUsd(r.newCents)+'</b>':pmT('要設定','To set'))+'</td><td style="font-size:12px">'+((r.curCents!=null&&r.newCents!=null)?((r.newCents>=r.curCents?'+':'−')+pmUsd(Math.abs(r.newCents-r.curCents))):'－')+'</td>':'')
+      +'<td style="font-size:11px;min-width:120px;white-space:normal;color:'+(r.warn?'var(--amber)':'var(--muted)')+'">'+(r.done?pmT('切り替え済み','Switched'):(r.lv==null&&!r.warn?pmT('Lv を推測で付けません。プレップLv で採点・認定してから','No Lv is guessed — score and certify first'):escapeHtml(r.warn||'－')))+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  if(cv) h+='<div style="font-size:12px;margin-top:6px">'+pmT('対象','Selected')+' '+n+pmT(' 人',' people')+' · '+pmT('1 時間あたりの差の合計','Sum of hourly differences')+' <b>'+(diff>=0?'+':'−')+pmUsd(Math.abs(diff))+'</b> · '+pmT('直近 4 週のこの店の時間で試算した差','Estimate from the last 4 weeks')+'：<b>'+(wk>=0?'+':'−')+pmUsd(Math.abs(Math.round(wk)))+'</b>／'+pmT('週','week')+'</div>';
+  h+='<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">'+pmT('承認すると、'+d.from+' から この店のこの人の時給が新しい額になります。前の日の勤務・確定した給与・過去の人件費は変えません。Toast・給与計算の時給は変えません（反映したら「反映した」に印）。','From '+d.from+' this store’s wage for each person becomes the new amount. Earlier work, closed payroll and past labor cost are unchanged. Toast/payroll are not changed — mark them when done.')+'</div>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="_pm.sw=null;closeModalDirect();pmRerender()">'+pmT('閉じる','Close')+'</button>'
+    +'<button class="btn btn-primary" '+(n?'':'disabled ')+'onclick="pmApproveSwitch()"><i class="ti ti-check"></i> '+pmT(n+' 人を承認（GM）','Approve '+n+' (GM)')+'</button></div>';
+  openModal(h);
+}
+async function pmApproveSwitch(){
+  var s=_pm.sw; if(!s || !pmCanAdmin()) return;
+  var me=pmMe();
+  if(!(await pmPullForSave([PM_CERT, PM_TBL]))) return;
+  if(pmMe()!==me || _pm.sw!==s) return;
+  var d=pmSwitchRows(s.id); if(!d){ showToast(pmT('この版が見つかりません','Version not found'),'warning'); return; }
+  if(!(d.from>pmToday())){ showToast(pmT('この版の適用開始日が来ています（過ぎた日の時給は変えない）。新しい版を作ってください','This version has started; create a new one'),'warning'); return; }
+  var pick=d.rows.filter(function(r){ return r.ok && s.pick[r.e.id]; });
+  if(!pick.length){ showToast(pmT('対象がいません（ほかの端末で切り替え済みかもしれません）','Nothing to approve'),'info'); pmRenderSwitch(); return; }
+  if(!confirm(pmT(pick.length+' 人を '+d.from+' から新しい表に切り替えます。よろしいですか？','Switch '+pick.length+' people from '+d.from+'?'))) return;
+  var now=Date.now();
+  pmSaveMany(PM_CERT, pick.map(function(r, i){ return [pmId('pc'), { emp:r.e.id, name:r.e.name, store:d.sid, lv:r.lv, kind:'switch', state:'approved', from:d.from, tbl:s.id, prevLv:r.lv, src:r.src,
+    by:me, at:new Date(now).toISOString(), dBy:me, dAt:new Date(now).toISOString(), dt:now+i, reason:pmT('表の切り替え（版 '+pmTableNo(d.sid, s.id)+'）','Table switch'), toast:null }]; }));
+  try{ apNotifyAcctApplied(PM_AP, pmStoreName(d.sid), pick.length+pmT(' 人・新しい表（',' people · new table (')+d.from+pmT(' から）・Toast・給与計算の時給を変える',') · update Toast/payroll')); }catch(err){}
+  showToast(pmT(pick.length+' 人を承認しました（'+d.from+' から）','Approved '+pick.length),'success');
+  pmRenderSwitch();
+}
+
 function renderPrepRadars(storeId){
   if(typeof canViewWages==='function' && !canViewWages()) return '';
-  var emps=getEmployees();
-  function atStore(e){ return e.store===storeId || (e.support||[]).includes(storeId); }
-  var preps=emps.filter(function(e){ return e.prep===true && e.status!=='退職' && atStore(e); });
-  var positions=getPrepPositions(storeId);
-  if(!preps.length || positions.length<3) return '';
+  var preps=pmStaff(storeId), items=pmItems(storeId);
+  if(!preps.length || items.length<3) return '';
+  var names=items.map(function(i){ return i.name; });
   var h='<div class="card"><div class="card-title"><i class="ti ti-chart-radar"></i>Prep スキルレーダー</div>';
   h+='<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center">';
   preps.forEach(function(e){
-    var sk=prepSkillsOf(e, storeId);
-    var vals=positions.map(function(p){ return Number(sk[p]||0); });
-    var lv=prepOverallLevel(e, storeId);
+    var raw=pmRawScores(e, storeId), vals=items.map(function(i){ return Number(raw[i.id])||0; }), sc=pmScore(e, storeId);
     h+='<div style="text-align:center;width:210px;margin-bottom:6px">'
-      +'<div style="font-weight:800;font-size:12px;color:var(--tm);margin-bottom:2px">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--accent)">Lv'+lv+'</span></div>'
-      +skillRadarSvg(positions, vals, 5, {size:200})
+      +'<div style="font-weight:800;font-size:12px;color:var(--tm);margin-bottom:2px">'+escapeHtml(e.name)+' <span style="font-size:10px;color:var(--accent)">'+(sc.lv!=null?'Lv'+sc.lv:'')+'</span></div>'
+      +skillRadarSvg(names, vals, 5, {size:200})
       +'</div>';
   });
   h+='</div><div style="font-size:10.5px;color:var(--muted);margin-top:4px">軸＝評価項目 ／ 外周＝Lv5。マトリクスのセルをタップで評価するとレーダーも更新されます。</div></div>';
@@ -61179,94 +61947,27 @@ function renderPrepRadars(storeId){
 }
 
 function renderPrepLevel(){
-  var css='<style>'
-    +'.pl-wrap{max-width:760px}'
-    +'.pl-ladder{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0 16px}'
-    +'.pl-ladder th{font-size:10px;color:var(--muted);text-align:left;padding:4px 8px;border-bottom:1px solid var(--border)}'
-    +'.pl-ladder td{border:1px solid var(--border);padding:6px 9px;vertical-align:top;color:var(--tm)}'
-    +'.pl-ladder td.lv{font-weight:800;color:var(--accent);text-align:center;width:46px}'
-    +'.pl-ladder td.wg{font-family:ui-monospace,monospace;font-weight:700;text-align:right;width:62px;color:#15a66a}'
-    +'.pl-emp{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:10px}'
-    +'.pl-emp .top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}'
-    +'.pl-name{font-weight:800;font-size:14px;color:var(--tm)}'
-    +'.pl-sub{font-size:11px;color:var(--muted)}'
-    +'.pl-wage{font-family:ui-monospace,monospace;font-weight:800;font-size:15px;color:#15a66a}'
-    +'.pl-lvbtns{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}'
-    +'.pl-lvbtn{flex:1;min-width:54px;text-align:center;font-weight:800;font-size:12px;padding:7px 4px;border-radius:8px;border:1px solid var(--border);background:var(--surface2);color:var(--muted);cursor:pointer}'
-    +'.pl-lvbtn.on{background:var(--accent);color:#fff;border-color:var(--accent)}'
-    +'.pl-lvbtn.dis{cursor:default;opacity:.85}'
-    +'.pl-lvbtn small{display:block;font-size:9px;font-weight:600;font-family:ui-monospace,monospace;margin-top:1px}'
-    +'.pl-add{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px}'
-    +'.pl-add select{flex:1;min-width:160px;padding:8px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--tm);font-size:13px}'
-    +'.pl-hist{font-size:11.5px;color:var(--muted);line-height:1.7;margin-top:4px}'
-    +'.pl-note{font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px}'
-    +'</style>';
-
+  var css='<style>.pl-wrap{max-width:980px}.pl-note{font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:10px}</style>';
   if(!canViewWages()) return css+'<div class="card" style="text-align:center;padding:24px;color:var(--muted)">プレップ評価（時給連動）は、給与閲覧権限のある方のみ表示されます。</div>';
-  var canEdit=canEditWages();
-  var levels=PREP_LEVELS();
-  var emps=getEmployees();
-  var preps=emps.filter(function(e){return e.prep===true && e.status!=='退職';});
-  var cands=emps.filter(function(e){return !e.prep && e.status!=='退職' && (e.role==='crew'||e.role==='office_crew');});
-
   var h=css+'<div class="pl-wrap">';
-  h+='<div class="pl-note">プレップ専門職(G1-P)の<b>スキルレベル(Lv1〜5)</b>を評価すると、<b>時給が自動で連動</b>します（評価できるのはGM/CEO）。レベルと時給は「役割と責任マップ」のG1-Pと同じ基準です。</div>';
-
-  // ladder
-  h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin-bottom:4px">スキルレベルと時給</div>';
-  h+='<table class="pl-ladder"><thead><tr><th>Lv</th><th>時給</th><th>到達基準</th></tr></thead><tbody>';
-  levels.forEach(function(l){ h+='<tr><td class="lv">Lv'+l.lv+'</td><td class="wg">$'+l.wage+'</td><td>'+_t(l)+'</td></tr>'; });
-  h+='</tbody></table>';
-
-  // ポジション別評価（店舗選択＋マトリクス＋レーダー） v659
-  var _pvis=(typeof getVisibleStores==='function')?getVisibleStores():[];
-  if(!window._prepMatrixStore || !_pvis.find(function(s){return s.id===window._prepMatrixStore;})){ window._prepMatrixStore=(curStore!=='ALL'?curStore:(_pvis[0]?_pvis[0].id:'F01')); }
-  var _pmStore=window._prepMatrixStore;
-  h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:16px 0 4px"><i class="ti ti-tools-kitchen-2"></i> ポジション別評価（店舗を選択してタップ評価）</div>';
-  h+=bStoreChips(_pmStore,'setPrepMatrixStore',{stores:_pvis,showAll:false});
-  h+=renderStorePrepPanel(_pmStore);
-  h+=renderPrepRadars(_pmStore);
-
-  // roster
-  h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin-bottom:6px">プレップ専門職 一覧（'+preps.length+'名）</div>';
-  if(!preps.length){ h+='<div class="pl-note">まだプレップ専門職が登録されていません。下から追加してください。</div>'; }
-  preps.forEach(function(e){
-    var lv=e.prepLv||1; var wage=(e.wage!=null?e.wage:prepWageForLv(lv));
-    h+='<div class="pl-emp"><div class="top"><div><div class="pl-name">'+escapeHtml(e.name)+'</div><div class="pl-sub">'+escapeHtml(e.store||'')+' · 現在 Lv'+lv+(canEdit?'':' （閲覧のみ）')+'</div></div><div class="pl-wage">$'+Number(wage).toFixed(2)+'</div></div>';
-    h+='<div class="pl-lvbtns">';
-    levels.forEach(function(l){
-      var on=Number(l.lv)===Number(lv);
-      h+='<div class="pl-lvbtn'+(on?' on':'')+(canEdit?'':' dis')+'"'+(canEdit?' onclick="setPrepLv(\''+e.id+'\','+l.lv+')"':'')+'>Lv'+l.lv+'<small>$'+l.wage+'</small></div>';
-    });
-    h+='</div>';
-    if(canEdit) h+='<div style="text-align:right;margin-top:7px"><button class="btn btn-secondary btn-sm" style="font-size:10px" onclick="removePrepEmp(\''+e.id+'\')">指定を外す</button></div>';
-    h+='</div>';
-  });
-
-  // add
-  if(canEdit){
-    h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:14px 0 4px">プレップ専門職に追加</div>';
-    if(!cands.length){ h+='<div class="pl-note">追加できるクルーがいません。</div>'; }
-    else{
-      h+='<div class="pl-add"><select id="prepAddSel"><option value="">クルーを選択…</option>'
-        +cands.map(function(e){return '<option value="'+e.id+'">'+escapeHtml(e.name)+'（'+escapeHtml(e.store||'')+'）</option>';}).join('')
-        +'</select><button class="btn btn-primary btn-sm" onclick="addPrepEmp(document.getElementById(\'prepAddSel\').value)">追加</button></div>';
-      h+='<div class="pl-note" style="margin-top:4px">追加すると Lv1（$16）からスタートします。</div>';
-    }
+  h+='<div class="pl-note">'+pmT('プレップ専門職(G1-P)を<b>店ごと</b>に採点し、総合 Lv が上がったら<b>認定</b>します。時給は<b>認定 Lv × その店の Lv と時給の表</b>で、承認した適用開始日から変わります（採点しただけでは変わりません）。通常 G1・Career Score・賞与には関係しません。Toast・給与計算の時給はアプリから変えません。','Score Prep specialists (G1-P) per store and certify their Lv. The wage = certified Lv × the store’s wage table, from the approved date. Not related to normal G1, Career Score or bonus.')+'</div>';
+  var vis=(typeof getVisibleStores==='function')?getVisibleStores():[];
+  var stores=vis.filter(function(s){ return pmCfg(s.id).on || pmStaff(s.id).length; });
+  if(pmCanAdmin()) stores=vis.slice();
+  if(!stores.length){ return h+'<div class="pl-note">'+pmT('Prep を使っている店がありません','No store uses Prep')+'</div></div>'; }
+  if(!window._prepMatrixStore || !stores.find(function(s){ return s.id===window._prepMatrixStore; })){
+    var pref=stores.find(function(s){ return s.id===curStore; }) || stores.find(function(s){ return pmCfg(s.id).on; }) || stores[0];
+    window._prepMatrixStore=pref.id;
   }
-
-  // history
-  var hist=getPrepHistory().slice(0,8);
-  if(hist.length){
-    h+='<div style="font-weight:800;font-size:12px;color:var(--accent);margin:14px 0 4px">最近の評価履歴</div><div class="pl-hist">';
-    hist.forEach(function(r){ h+='・'+escapeHtml(r.name)+'：'+(r.fromLv?'Lv'+r.fromLv+'→':'')+'Lv'+r.toLv+'（$'+Number(r.wage).toFixed(2)+'）　<span style="opacity:.7">'+(r.at||'').slice(0,10)+' / '+escapeHtml(r.by||'')+'</span><br>'; });
-    h+='</div>';
-  }
-
+  var sid=window._prepMatrixStore;
+  h+=bStoreChips(sid,'setPrepMatrixStore',{stores:stores,showAll:false});
+  h+=renderStorePrepPanel(sid);
+  h+=renderPrepRadars(sid);
   h+='</div>';
   return h;
 }
 
+/* FUNERGY_PREP_END */
 /* ===== Trainee枠 チェックリスト（G3/G4/G5 本昇進判定） ===== */
 var DEFAULT_TRAINEE_DEFS = {
   G3:[
@@ -74323,7 +75024,7 @@ function resolveApprovalByRef(type, ref, status, ym, reason, via, st) {
    ・押す前にクラウドの最新を読み直す（ほかの端末でもう決まっていたら知らせて何もしない）。
    ============================================================ */
 /* 経理が処理する種類（お金・給与に関わる）。予算・月間行動計画・シフト変更は入れない。 */
-var AP_ACCT_TYPES = ['経費','建替経費','ガソリン代','休暇','スキル','採用','退職'];
+var AP_ACCT_TYPES = ['経費','建替経費','ガソリン代','休暇','スキル','採用','退職','プレップ認定'];   /* v1106: プレップ認定（Toast・給与計算の時給を変える） */
 /* Tip Rate・Leadership（昇格）は、承認センターで承認しても申請には反映しない（前から。画面で承認したときに反映）。
    なので経理・事務Crew への「承認済み（処理してください）」は、画面で承認して反映したときに出す（apNotifyAcctApplied）。 */
 function apNotifyAcctApplied(kind, who, text){
@@ -74708,12 +75409,17 @@ async function signoffApproval(id){
   var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
   var roles=_approvalMyRoles(a);
   if(!roles.length){ alert('あなたが承認できる役職枠がありません（他の承認者待ち、または権限対象外）'); _apRerender(); return; }
+  /* v1106: プレップ認定は、最後の承認のときに適用開始日を選ぶ（キャンセルなら何も変えない） */
+  var _pmFrom=null;
+  if(a.type==='プレップ認定'){ var _after=((a.signoffs)||[]).map(function(s){ return s.role; }).concat(roles);
+    if(approvalRequiredRoles(a).every(function(r){ return _after.indexOf(r)>=0; })){ _pmFrom=await pmAskFrom(a); if(!_pmFrom){ _apRerender(); return; }
+      approvals = ls('approvals', []); a = approvals.find(function(x){return x.id===id;}); if(!a || a.status!=='pending'){ _apRerender(); return; } } }
   a.signoffs = a.signoffs||[];
   var nm=_actorName(), now=Date.now();
   roles.forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm, at:nowJP(), _t:now}); });
   a._mut=now; lsSet('approvals', approvals);
   if(_approvalAllDone(a)){
-    await approveItem(id,'approved', null, {fresh:true}); /* 全承認(直上＋GM等)で確定。approveItem内で反映＋通知 */
+    await approveItem(id,'approved', null, {fresh:true, prepFrom:_pmFrom}); /* 全承認(直上＋GM等)で確定。approveItem内で反映＋通知 */
   } else {
     var req=approvalRequiredRoles(a); var m=_approvalSignedMap(a);
     var remain=req.filter(function(r){return !m[r];});
@@ -74730,11 +75436,13 @@ async function overrideApproveAll(id){
   if(!(await _apFreshPending(id))) return;
   var approvals = ls('approvals', []);
   var a = approvals.find(function(x){return x.id===id;}); if(!a) return;
+  var _pmFrom=null;   /* v1106: プレップ認定は適用開始日を選ぶ */
+  if(a.type==='プレップ認定'){ _pmFrom=await pmAskFrom(a); if(!_pmFrom){ _apRerender(); return; } approvals = ls('approvals', []); a = approvals.find(function(x){return x.id===id;}); if(!a || a.status!=='pending'){ _apRerender(); return; } }
   a.signoffs = a.signoffs||[];
   var nm=(ROLE_CONFIG[curRole]||{}).name || curUserName || curRole, now=Date.now();
   approvalRequiredRoles(a).forEach(function(role){ if(!a.signoffs.some(function(s){return s.role===role;})) a.signoffs.push({role:role, name:nm+'(代理)', at:nowJP(), _t:now}); });
   a._mut=now; lsSet('approvals', approvals);
-  await approveItem(id,'approved', null, {fresh:true});
+  await approveItem(id,'approved', null, {fresh:true, prepFrom:_pmFrom});
   } finally { delete _apBusy[id]; }
 }
 /* v1087: 承認がそろっているのに承認待ちのもの（2 台でほぼ同時に押したとき）を確定する */
@@ -74744,7 +75452,8 @@ async function apFinalize(id){
     var a=await _apFreshPending(id); if(!a) return;
     if(!_approvalAllDone(a)){ showToast(t('まだ承認がそろっていません','Not all approvals are in yet'),'info'); _apRerender(); return; }
     if(!(curRole==='gm'||curRole==='ceo'||(a.signoffs||[]).some(function(s){return s && s.name===_actorName();}))){ alert(t('確定できるのは、この申請を承認した人と GM・CEO です','Only an approver of this request or GM/CEO can finalize')); return; }
-    await approveItem(id,'approved', null, {fresh:true});
+    var _pmFrom=null; if(a.type==='プレップ認定'){ _pmFrom=await pmAskFrom(a); if(!_pmFrom){ _apRerender(); return; } }   /* v1106 */
+    await approveItem(id,'approved', null, {fresh:true, prepFrom:_pmFrom});
   } finally { delete _apBusy[id]; }
 }
 function rejectApprovalItem(id){
@@ -74814,7 +75523,10 @@ async function reopenApproval(id, fresh){
     if(_rs1 && (_rs1.state==='approved' || _rs1.state==='rejected')){ alert(t('この申請は「'+_rs1.label+'」の画面で'+(_rs1.state==='approved'?'承認':'却下')+'され、反映済みです。承認センターからは取り消せません。','This request was decided and applied on the '+_rs1.label+' page. It cannot be undone from the approval center.')); return; } }
   if(window.FUNERGY_FINANCIAL_SAVE && a.type==='予算' && a.ref){try{await FUNERGY_FINANCIAL_SAVE.refresh(['spl_budgets_v2_'+a.ref]);}catch(e){showToast('最新の予算を確認できないため、承認は取り消していません。','warning');return;}}
   if(a.type==='退職' && a.ref){ if(!(await _reopenOffboardApproval(a, fresh))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }   /* v1085 */
-  else if(!confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
+  else if(a.type==='プレップ認定' && a.ref){   /* v1106: 適用開始日が来ていなければ、認定を申請中に戻す（来ていれば戻さない） */
+    if(!confirm(t('この承認を取り消して「承認待ち」に戻します。認定も申請中に戻します（適用開始日が来ていないときだけ）。よろしいですか？','Undo this approval and return the certification to pending?'))) return;
+    if(!(await pmReopen(a))) return; approvals=ls('approvals',[]); a=approvals.find(function(x){return x.id===id;}); if(!a) return; }
+  else if(a.type!=='プレップ認定' && !confirm(t('この承認を取り消して「承認待ち」に戻します。反映済みの内容（スキルLv・各種ステータス）も元に戻します。給与に関わるため慎重にご確認ください。よろしいですか？','Undo this approval and revert to pending, reverting any applied changes (skill level, statuses). This affects payroll. Continue?'))) return;
   var _by=(ROLE_CONFIG[curRole]||{}).name||curUserName;
   var _rn=Math.max(Date.now(), _apStT(a)+1, _apMut(a)+1);   /* v1087: 申請の記録と案件で同じ取り消しの時刻 */
   if(window.FUNERGY_FINANCIAL_SAVE && a.type==='予算' && a.ref){
@@ -74963,7 +75675,7 @@ function renderApproval() {
     var _inScope=function(a){ var st=_approvalStore(a); return _vId.indexOf(st.id)>=0 || _vNm.indexOf(st.name)>=0; };
     pending = pending.filter(_inScope); done = done.filter(_inScope);
   }
-  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice','建替経費':'ti-receipt','ガソリン代':'ti-car','Leadership':'ti-medal','月間行動計画':'ti-target'};
+  var typeIcon = {'シフト変更':'ti-calendar','シフト':'ti-calendar','休暇':'ti-beach','採用':'ti-user-plus','TipRate':'ti-coin','スキル':'ti-stairs-up','発注':'ti-clipboard-list','評価':'ti-star','予算':'ti-chart-bar','退職':'ti-user-off','経費':'ti-file-invoice','建替経費':'ti-receipt','ガソリン代':'ti-car','Leadership':'ti-medal','月間行動計画':'ti-target','プレップ認定':'ti-tools-kitchen-2'};
   var acctList = apSeesAcct() ? apAcctPending(done) : [];
   if (_apTab==='acct' && !apSeesAcct()) _apTab='pending';
   if (['pending','acct','history'].indexOf(_apTab)<0) _apTab='pending';
@@ -75060,6 +75772,7 @@ function renderApproval() {
         }
         /* v791: 月間行動計画は中身が見えないと承認できない（読み取りのみ） */
         if (a.type==='月間行動計画') { try{ html += ccApprovalDetailHtml(a); }catch(e){} }
+        if (a.type==='プレップ認定') { try{ html += pmApprovalDetailHtml(a); }catch(e){} }   /* v1106 */
         html += _approvalChainHtml(a);
         if (isBudget) {
           var _bb = getBudgets().find(function(x){return x.storeId===a.ref;});
@@ -75251,6 +75964,20 @@ async function approveItem(id, status, reason, opt) {
       }
     }
   }
+  /* v1106: プレップ認定は、認定の記録を読み直して決められるか確かめてから（承認は適用開始日・その日の表が要る）。だめなら何も変えない */
+  var _pmc=null;
+  if (a.type==='プレップ認定') {
+    if (status==='approved' && !opt.prepFrom) { opt.prepFrom = await pmAskFrom(a); if(!opt.prepFrom){ _apRerender(); return; } }
+    _pmc = await pmCheckForApproval(a, status, opt);
+    approvals = ls('approvals', []); a = approvals.find(function(x){ return x && x.id===id; });
+    if (!a || a.status!=='pending') { _apRerender(); return; }
+    if (!_pmc) { _apRerender(); return; }
+    if (_pmc.match) {   /* 認定の記録のほうでもう決まっている（指定を外して取り下げたなど）：承認センターを合わせる */
+      _apMarkDecided(a, _pmc.match, null, 'page'); lsSet('approvals', approvals);
+      showToast(t('この認定の申請は、もう'+(_pmc.match==='approved'?'承認':_pmc.match==='rejected'?'却下':'取り下げ')+'されています。承認センターも合わせました','Already decided; the approval center now matches'),'info');
+      _apRerender(); return;
+    }
+  }
   /* v1087: 決定の印は、案件の前の時刻と申請の記録の前の時刻の両方より後。案件と申請の記録に同じ印を書く
      （2 台が同じ時刻に別々に決めても、合流で案件と申請に同じ決定が残る） */
   var _rk=AP_REC_KEYS[a.type], _rr=null;
@@ -75307,8 +76034,9 @@ async function approveItem(id, status, reason, opt) {
   if (a.type==='ガソリン代' && a.ref) { try{ var _ms=getMileageRequests(); var _m=_ms.find(function(x){return x.id===a.ref;}); if(_m){ _m.status=(_ap?'承認':'却下'); _m.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _m.approvedAt=nowJP(); if(!_ap&&reason) _m.rejectReason=reason; _m._stT=Math.max(_dst.t, _rtStT(_m)+1); _m._stK=_dst.k; _m._dT=_dst.t; _m._dG=_apGen(a); saveMileageReqs(_ms); } }catch(_e){} }
   if (a.type==='経費' && a.ref) { try{ var _es=getExpenseRequests(); var _ex=_es.find(function(x){return x.id===a.ref;}); if(_ex){ _ex.status=(_ap?'承認':'却下'); _ex.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _ex.approvedAt=nowJP(); if(!_ap&&reason) _ex.rejectReason=reason; _ex._stT=Math.max(_dst.t, _rtStT(_ex)+1); _ex._stK=_dst.k; _ex._dT=_dst.t; _ex._dG=_apGen(a); saveExpenseReqs(_es); } }catch(_e){} }
   if (a.type==='建替経費' && a.ref) { try{ var _rbs=getReimbursements(); var _rb=_rbs.find(function(x){return x.id===a.ref;}); if(_rb){ _rb.status=(_ap?'承認':'却下'); _rb.approvedBy=(curUserName||(ROLE_CONFIG[curRole]||{}).name||''); _rb.approvedAt=nowJP(); if(!_ap&&reason) _rb.rejectReason=reason; _rb._mut=Math.max(_dst.t, (Number(_rb._mut)||0)+1); _rb._stK=_dst.k; _rb._dT=_dst.t; _rb._dG=_apGen(a); saveReimbursements(_rbs); } }catch(_e){} }   /* v1087: 保存時刻を進める（古い写しで「申請中」に戻らない） */
+  if (_pmc) { try{ pmApplyDecision(_pmc, a, status, reason); }catch(_e){ console.warn('pmApplyDecision', _e); } }   /* v1106: プレップ認定（適用開始日から、その店の時給） */
   /* v1087: 申請した人へ（スキルは上で専用の知らせ）。最後の承認で、経理と事務Crew へ（退職は「退職手続き開始」が届く） */
-  apNotifyDecision(a, status, { reason:reason, noApplicant:(a.type==='スキル'), noAcct:(a.type==='退職') });
+  apNotifyDecision(a, status, { reason:reason, noApplicant:(a.type==='スキル'), noAcct:(a.type==='退職'), page:(a.type==='プレップ認定'?'skill':undefined) });
   _apRerender(); showToast(status==='approved'?'承認しました':'却下しました', status==='approved'?'success':'danger');
 }
 
@@ -77112,7 +77840,7 @@ function renderMypage() {
     }
   }
   var meEmpRec = getEmployees().find(x=>x.name===me) || {role:curRole};
-  var wage = empWageOf(meEmpRec);
+  var wage = (meEmpRec.id && pmHasAt(me, storeId)) ? empWageAt(me, storeId, bizToday()) : empWageOf(meEmpRec);   /* v1106: プレップの認定は今日のその店の時給（目安） */
   // 給与サイクル（1–15日 / 16–末日）。実勤怠(Toast)を優先し、未記録日は公開シフトで補完
   var cyc = payCycleRange();
   maybePullCycleShifts(storeId, cyc);
@@ -78749,8 +79477,8 @@ function onNotifIncoming(arr){
 }
 
 /* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
-var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職','休暇','ガソリン代','経費'];
-function _aprDefaultRoles(t){ return ({'休暇':['am'],'ガソリン代':['am'],'経費':['gm'],'予算':['gm'],'スキル':['gm','am','sm','sl']})[t] || ['office','gm','am']; }
+var APPROVAL_TYPES = ['予算','シフト変更','採用','Leadership','TipRate','スキル','退職','休暇','ガソリン代','経費','プレップ認定'];   /* v1106: プレップ認定（GM） */
+function _aprDefaultRoles(t){ return ({'休暇':['am'],'ガソリン代':['am'],'経費':['gm'],'予算':['gm'],'スキル':['gm','am','sm','sl'],'プレップ認定':['gm']})[t] || ['office','gm','am']; }
 var APPROVER_ROLE_OPTS = [['office','経理'],['gm','GM'],['am','AM'],['sm','SM'],['sl','SL'],['ceo','CEO']];
 function defaultApprovalRouting(){ var d={}; APPROVAL_TYPES.forEach(function(t){ d[t]=_aprDefaultRoles(t); }); return d; }
 function getApprovalRouting(){
@@ -89769,10 +90497,10 @@ function renderSkillStaffView() {
           var sObj=STORES.find(function(s){return s.id===sid;})||{name:sid,color:'#7d9b4e'};
           var positions=(typeof getPrepPositions==='function')?getPrepPositions(sid):[];
           var sk=(typeof prepSkillsOf==='function')?prepSkillsOf(e,sid):{};
-          var lv=(typeof prepOverallLevel==='function')?prepOverallLevel(e,sid):(e.prepLv||1);
+          var _pst=pmState(e, sid), lv=(_pst.cur?_pst.cur.lv:null);   /* v1106: 認定 Lv（採点からの推測はしない） */
           var vals=positions.map(function(p){return Number(sk[p]||0);});
           html+='<div style="padding:6px 0;border-bottom:1px solid var(--border)">'
-            +'<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:'+sObj.color+'"></span><b>'+escapeHtml(sObj.name)+'</b><span style="color:var(--muted)">プレップ Lv'+lv+'</span></div>'
+            +'<div style="display:flex;align-items:center;gap:6px;font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:'+sObj.color+'"></span><b>'+escapeHtml(sObj.name)+'</b><span style="color:var(--muted)">'+(lv!=null?'プレップ Lv'+lv:'プレップ（未認定）')+'</span></div>'
             +'<div style="margin-top:6px">'+(positions.length>=3?skillRadarSvg(positions,vals,5,{size:210}):'<span style="font-size:11px;color:var(--muted)">評価項目が3つ未満のためレーダー非表示</span>')+'</div>'
             +'</div>';
         });

@@ -31,6 +31,7 @@ function app() {
     function plannedHoursForDate(sid, d){ return PLAN[d] || {}; }
     function getDailyActuals(){ return {}; }
     function empWage(){ return 20; }
+    function empWageAt(n){ return empWage(n); }   // v1106: the store-and-day wage (Prep certification); no certification here
     function storeSalaryDaily(){ return 0; }
     function getStoresAll(){ return [{ id:'F06' }]; }
     function getShiftPlan(){ return null; }
