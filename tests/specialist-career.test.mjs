@@ -434,7 +434,7 @@ test('saving permissions: the record per career × grade (role, hidden pages, li
   assert.match(toast(c), /ほかの端末で先に変えられていました/);
   // synced: one merge rule per career × grade, never freed by the storage cleanup
   assert.match(SRC, /career_cfg:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(SRC, /'lunch_challenge','career_cfg'\];/);
+  assert.match(SRC, /'cs_guide','career_cfg','reimbursements'/);
   assert.match(SRC, /'cs_guide','career_cfg',/);
 });
 
