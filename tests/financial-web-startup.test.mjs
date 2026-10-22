@@ -15,10 +15,11 @@ function extract(name) {
 test('production installer waits for the later assigned IDB boot promise and accepts only a fully hydrated Map', async () => {
   const gate = deferred(), context = vm.createContext({ document: { addEventListener() {} },
     FunergyFinancialSave: { install(_win, options) { context.options = options; } },
-    FunergyFinancialTransport: { create() { return {}; } }, SUPABASE_URL: 'fixture' });
+    FunergyFinancialTransport: { create() { return {}; } }, SUPABASE_URL: 'fixture', financialRecoveryStore: () => ({ marker: 'idb-store' }) });
   context.window = context;
   vm.runInContext('var _idbBootP, _idbState="init", _IDB_MEM=null;\n' + source.slice(
     source.indexOf('/* FUNERGY_FINANCIAL_WEB_INTEGRATION_V1'), source.indexOf('const TOAST_SYNC_FN')), context);
+  assert.equal(context.options.recoveryStore.marker, 'idb-store', 'the guard keeps its log in the IndexedDB store');
   let done = false; const readiness = context.options.awaitLocalReady().then(value => { done = true; return value; });
   context._idbBootP = gate.promise; await settle(); assert.equal(done, false);
   vm.runInContext('_idbState="ready"; _IDB_MEM=new Map();', context);

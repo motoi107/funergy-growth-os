@@ -38,6 +38,7 @@ for (const [role, n] of roles) for (let i = 0; i < n; i++) {
   employees.push({ id: 'e' + (eid++), name, role, store: st, support: [], emp: role === 'crew' ? 'パート' : '正社員', step: 2, status: '在籍', perms: 'staff', coef: 1, title: role === 'gm' ? 'GM' : role === 'ceo' ? 'CEO' : '', isSL: role === 'sl', firstWorkDate: iso(daysBack(ri(100, 900))), startDate: iso(daysBack(ri(100, 900))), lang: 'ja', note: 'x'.repeat(ri(80, 160)) });
 }
 const GM = employees.find(e => e.role === 'gm');
+const CEO = employees.find(e => e.role === 'ceo');
 const CREW = employees.find(e => e.role === 'crew' && e.store === 'F01');
 const SL = employees.find(e => e.role === 'sl');
 
@@ -91,7 +92,7 @@ daStores.concat([STORES[9]]).forEach((s, i) => put('purchases_' + s.id, fillArr(
 for (let i = 0; i < 38; i++) { const s = toastStores[i % toastStores.length]; const d = daysBack(i * 10); put('menu_mix_' + s.id + '_' + d.getUTCFullYear() + '.' + (d.getUTCMonth() + 1) + (i >= 6 ? '_' + i : ''), { items: fillObj(215415 / 38 - 80, k => 'r' + k, () => ri(0, 400)), sales: ri(1e5, 9e5), savedAt: nowIso, toastSrc: true }); }
 put('notifications', fillArr(193952, n => ({ id: 'n' + n, to: pick(['gm', 'office', 'am']), title: 'Notice ' + n, body: 'b'.repeat(ri(40, 160)), at: new Date(T.getTime() - n * 6e5).toISOString(), readBy: [] })));
 const SH = []; for (let i = 0; i < 110; i++) { const arr = fillArr(171461 / 110, n => ({ id: 'sh' + i + '_' + n, name: employees[i].name, pos: 'Hall', level: ri(1, 4), at: nowIso, by: 'Staff' })); SH.push(...arr); put('spl_skill_history_' + employees[i].name, arr); }
-daStores.concat([STORES[9]]).forEach((s, i) => put('spl_budgets_v2_' + s.id, { storeId: s.id, period: '2026.10', status: '承認済み', actual: 0, months: fillObj(137471 / 10 - 120, k => '2026-' + String((k % 12) + 1).padStart(2, '0') + (k >= 12 ? '_' + k : ''), () => ({ sales: ri(1e5, 9e5), guests: ri(1000, 9000), days: fillObj(300, d => 'd' + d, () => ri(1000, 9000)) })), _ts: T.getTime() - ri(0, 9e9) }));
+daStores.concat([STORES[9]]).forEach((s, i) => put('spl_budgets_v2_' + s.id, [{ storeId: s.id, period: '2026.10', status: '承認済み', actual: 0, months: fillObj(137471 / 10 - 120, k => '2026-' + String((k % 12) + 1).padStart(2, '0') + (k >= 12 ? '_' + k : ''), () => ({ sales: ri(1e5, 9e5), guests: ri(1000, 9000), days: fillObj(300, d => 'd' + d, () => ri(1000, 9000)) })), _ts: T.getTime() - ri(0, 9e9) }]));   // v1104：本番と同じく分割の行は [予算 1 件]（v1101 の保護が形を確かめる）
 daStores.forEach((s, i) => put('skills_st_' + s.id, fillObj(i === 0 ? 42292 : (129922 - 42292) / 8, k => 'Person ' + k, () => ({ Hall: { level: ri(1, 4), status: '承認', _at: T.getTime() - ri(0, 9e9) }, Kitchen: { level: ri(1, 4), status: '承認', _at: 1 } }))));
 for (let i = 0; i < 7; i++) put('cash_tips_' + toastStores[i % toastStores.length].id + (i >= 6 ? '_x' : ''), fillObj(i === 0 ? 21934 : (121626 - 21934) / 6, k => iso(daysBack(k)), () => ({ lunch: ri(0, 9000) / 100, dinner: ri(0, 12000) / 100, entered: true, by: 'Staff', at: nowIso })));
 put('inv_ALL', fillArr(114161, n => ({ code: 10000 + n, qty: ri(0, 50) }))); put('inv_x', [1, 2, 3]);
@@ -170,7 +171,7 @@ toastStores.forEach((s, si) => {
 app_state.push({ key: 'ing_v2_backfill_done', value: true, updated_at: T.toISOString() });
 app_state.push({ key: 'ing_v2_storeprice_fix', value: true, updated_at: T.toISOString() });
 const data = {
-  today: TODAY, login: { gm: GM.name, gmId: GM.id, crew: CREW.name, crewId: CREW.id, crewStore: CREW.store, sl: SL.name, slId: SL.id, slStore: SL.store },
+  today: TODAY, login: { ceo: CEO.name, ceoId: CEO.id, gm: GM.name, gmId: GM.id, crew: CREW.name, crewId: CREW.id, crewStore: CREW.store, sl: SL.name, slId: SL.id, slStore: SL.store },
   tables: {
     app_state, app_settings,
     employees: employees.map(e => ({ id: e.id, name: e.name, role: e.role, data: e })),

@@ -63,9 +63,19 @@ function project(rows, sel) {
 }
 function nowTs() { const d = new Date(); return d.toISOString().replace('Z', '') + String(Math.floor(Math.random() * 1000)).padStart(3, '0') + '+00:00'; }
 
+// v1104：v1101 の共有保存保護（本番は Codex が別に入れた SQL。このリポジトリに SQL は無い）のまね。
+// 保護 ON（FIN_GUARD=1・既定）のとき、10 店 20 キーへの古い無条件の書き込み（POST・PATCH）は、
+// 同じ要求の中のほかの行ごと断る（PostgreSQL の trigger が 1 つの文をまるごと止めるのと同じ）。
+// 書けるのは rpc/financial_web_commit だけ（行全体の値と版を照らす・同じ request_id は同じ答え）。
+const FIN_STORES = ['F01', 'F02', 'F03', 'F03-G', 'F04-A', 'F04-K', 'F04-P', 'F05', 'F06', 'F07'];
+const FIN_KEYS = new Set(FIN_STORES.flatMap(s => ['daily_actuals_' + s, 'spl_budgets_v2_' + s]));
+function finTs() { const d = new Date(); return d.toISOString().replace(/\.(\d{3})Z$/, (m, ms) => '.' + ms + String(Math.floor(Math.random() * 1000)).padStart(3, '0') + '+00:00'); }
+
 export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
-  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500) };
+  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0' };
+  const receipts = new Map();
+  const fin = { drop: 0, commits: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数
   const keyOf = (t, r) => (PK[t] || ['id']).map(c => String(r[c])).join('|');
   const idx = {}; function index(t) { if (!idx[t]) { idx[t] = new Map(); T[t].forEach((r, i) => idx[t].set(keyOf(t, r), i)); } return idx[t]; }
   const json = (status, body, headers) => ({ status, body: body === undefined ? '' : JSON.stringify(body), headers });
@@ -86,6 +96,8 @@ export function createMock(data) {
     }
     if (method === 'POST') {
       let arr = JSON.parse(body || '[]'); if (!Array.isArray(arr)) arr = [arr];
+      if (table === 'app_state' && opts.finGuard && arr.some(r => FIN_KEYS.has(r && r.key)))
+        return json(400, { code: 'P0001', message: 'financial_guard_legacy_write_rejected' });
       const ix = index(table); const out = [];
       for (const r of arr) {
         const rec = Object.assign({}, r);
@@ -98,6 +110,8 @@ export function createMock(data) {
     }
     if (method === 'PATCH') {
       const patch = JSON.parse(body || '{}'); const hit = filterRows(rows, u);
+      if (table === 'app_state' && opts.finGuard && hit.some(r => FIN_KEYS.has(r.key)))
+        return json(400, { code: 'P0001', message: 'financial_guard_legacy_write_rejected' });
       for (const r of hit) Object.assign(r, patch, table === 'app_state' && !patch.updated_at ? { updated_at: nowTs() } : {});
       return /return=representation/.test(headers['prefer'] || '') ? json(200, project(hit, u.searchParams.get('select'))) : json(204);
     }
@@ -114,6 +128,33 @@ export function createMock(data) {
       return json(200, out.slice(off, off + lim));
     }
     if (name === 'employee_access_state') return json(200, { blocked: false, pin: 'ok', manager: 'none', stopped: false });
+    if (name === 'financial_web_receipt') {
+      const p = JSON.parse(body || '{}');
+      return json(200, receipts.get(p.p_request_id) || { status: 'not-found', request_id: p.p_request_id });
+    }
+    if (name === 'financial_web_commit') {
+      const p = JSON.parse(body || '{}');
+      if (receipts.has(p.p_request_id)) return json(200, receipts.get(p.p_request_id));
+      const keys = Object.keys(p.p_writes || {});
+      if (!keys.length || keys.some(k => !FIN_KEYS.has(k) || !k.endsWith('_' + p.p_store))) return json(400, { code: '22023', message: 'financial_guard_invalid' });
+      const ix = index('app_state');
+      for (const k of keys) {
+        const cur = ix.has(k) ? T.app_state[ix.get(k)] : null, exp = p.p_expected ? p.p_expected[k] : undefined;
+        const same = exp === null ? !cur : (cur && exp && cur.updated_at === exp.updated_at && JSON.stringify(cur.value) === JSON.stringify(exp.value));
+        if (!same) return json(409, { code: '40001', message: 'financial_guard_version_conflict' });
+      }
+      const versions = {};
+      for (const k of keys) {
+        const at = finTs(); versions[k] = at;
+        if (ix.has(k)) T.app_state[ix.get(k)] = { key: k, value: p.p_writes[k], updated_at: at };
+        else { ix.set(k, T.app_state.length); T.app_state.push({ key: k, value: p.p_writes[k], updated_at: at }); }
+      }
+      const r = { status: 'committed', request_id: p.p_request_id, store_id: p.p_store, action: p.p_action, versions };
+      receipts.set(p.p_request_id, r);
+      fin.commits++;
+      if (fin.drop > 0) { fin.drop--; return { status: 502, body: '' }; }   // 書けたが答えが届かない
+      return json(200, r);
+    }
     return json(404, { code: 'PGRST202', message: 'Could not find the function' });
   }
   function fn(name, body) {
@@ -126,7 +167,7 @@ export function createMock(data) {
     }
   }
   return {
-    T,
+    T, fin,
     handle(method, u, headers, body) {
       const m = u.pathname.match(/^\/rest\/v1\/rpc\/([\w-]+)$/); if (m) return rpc(m[1], body, u);
       const t = u.pathname.match(/^\/rest\/v1\/([\w-]+)$/); if (t) return rest(method, t[1], u, headers, body);
