@@ -2346,9 +2346,11 @@ if (!window.FUNERGY_NATIVE_CONFIG) {
     },
     transport:FunergyFinancialTransport.create({url:SUPABASE_URL,headers:extra=>supaHeaders(extra),fetch:(...args)=>fetch(...args)})});
   document.addEventListener('DOMContentLoaded', function(){
-    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).catch(function(error){
-      if(error.message==='financial_local_unverified')return;
-      showToast(t('売上・予算の最新データを確認できません。元の入力を残して、もう一度確認してください。','Financial data could not be verified. Keep the original input and check again.'),'warning');
+    /* v1105（UI案60 ① 1A）：起動の知らせ（トースト）はやめ、ダッシュボード・予実・会議の上の「取得の状態」に出す。取れなければ 3 回まで自動でやり直す */
+    FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys).then(function(){
+      if(typeof fstNote==='function') fstNote('guard',null,true);
+    }).catch(function(error){
+      if(typeof fstNote==='function') fstNote('guard',null,false,error&&error.message);
     });
   });
 }
@@ -2379,10 +2381,13 @@ async function fetchToastSales(guid, dateFrom, dateTo) {
     var url = SUPABASE_URL + '/rest/v1/toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid)
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) return [];
-    return await res.json();
-  } catch (e) { console.error('fetchToastSales', e); return []; }
+    if (!res.ok) return _toastSalesErr();
+    var j = await res.json();
+    return Array.isArray(j) ? j : _toastSalesErr();
+  } catch (e) { console.error('fetchToastSales', e); return _toastSalesErr(); }
 }
+/* v1105：読めなかったときは空の配列に印 _err（「売上の行が無い」と分ける。ほかの使い方は今までどおり配列） */
+function _toastSalesErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
 async function syncToastDay(guid, businessDateYmd) {
   var _bc = (typeof getBowlCatCfgByGuid==='function') ? getBowlCatCfgByGuid(guid) : null;
   var _body = { restaurantGuid: guid, businessDate: businessDateYmd };
@@ -2587,6 +2592,9 @@ async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   /* v1104（2 回目の独立レビュー P3）：先に読んだ行は 20 秒以内のものだけ使う（保護の順番を長く待つと、そのあいだにほかの端末が入れた新しい売上を古い値で戻すため） */
   var _fresh = Array.isArray(prefetchedRows) && !(prefetchedRows._fetchedAt && Date.now() - prefetchedRows._fetchedAt > 20000);
   var rows = _fresh ? prefetchedRows : await fetchToastSales(guid, days[0].date, days[days.length-1].date);
+  /* v1105（UI案60 ①）：Toast の売上を読めなかったら何も書かない（前の値のまま）。帯に「取れませんでした」 */
+  if (rows && rows._err) { try { if (typeof fstNote === 'function') fstNote('sales', storeId, false, 'toast_sales'); } catch (e) { } return { error: 'Toast の売上を読めませんでした', updated: 0, fetched: 0, fetchErr: true }; }
+  try { if (typeof fstNote === 'function') fstNote('sales', storeId, true); } catch (e) { }
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -2631,10 +2639,12 @@ async function fetchTipLaborFromDB(guid, dateFrom, dateTo, signal) {   /* signal
       + '&business_date=gte.' + dateFrom + '&business_date=lte.' + dateTo + '&order=business_date.asc';
     var _fo = { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } }; if (signal) _fo.signal = signal;
     var res = await fetch(url, _fo);
-    if (!res.ok) return _tipLaborFetchErr();
-    return await res.json();
-  } catch (e) { return _tipLaborFetchErr(); }
+    if (!res.ok) { if (typeof _fstLabor === 'function') _fstLabor(guid, false); return _tipLaborFetchErr(); }
+    var _j = await res.json(); if (typeof _fstLabor === 'function') _fstLabor(guid, true); return _j;
+  } catch (e) { if (typeof _fstLabor === 'function') _fstLabor(guid, false); return _tipLaborFetchErr(); }
 }
+/* v1105（UI案60 ①）：勤怠を読めたか（店ごと）を「取得の状態」に残す */
+function _fstLabor(guid, ok) { try { if (typeof fstNote === 'function' && typeof fstStoreOfGuid === 'function') fstNote('labor', fstStoreOfGuid(guid), ok, ok ? null : 'tip_labor'); } catch (e) { } }
 /* v1090（独立レビュー 7002a69 P3-2）：読めなかったときは空の配列に印 _err（空の答えと分ける。ほかの使い方は配列のまま） */
 function _tipLaborFetchErr() { var a = []; try { Object.defineProperty(a, '_err', { value: true }); } catch (e) { } return a; }
 /* v1090（Codex 6245991596・#74 4e685ac の P2）：前に始めた読み込みの答えが、あとから始めた読み込みが保存した勤怠・クレジットTip調整額を
@@ -22113,8 +22123,8 @@ function pageSyncBar(opts){
    最重要: 「同期」は必ず「①未送信をクラウドへ押し上げ(flushOutbox) → ②マージ取得」の順。
    取得(pull)は既存のマージ方式を使い、ローカルの未保存を上書きしない。 */
 var SYNC_SCOPE_META = {
-  dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
-  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} } },
+  dash:    { label:'ダッシュボード', toast:true,  pull: async function(){ try{ await fstGuardRefresh(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} return fstAnyFail()?false:undefined; } },   /* v1105：売上・予算の記録も確かめる・取れなかったら「最新に同期しました」と出さない */
+  budget:  { label:'予実', toast:true,  pull: async function(){ try{ await fstGuardRefresh(); }catch(e){} try{ await pullInvoicesAll(); }catch(e){} try{ await ensureMonthDataLoaded((typeof curYm==='function')?curYm():null); }catch(e){} return fstAnyFail()?false:undefined; } },
   tasks:   { label:'ワークセンター', toast:false, pull: async function(){ try{ await apPullLatest(); }catch(e){} try{ await ecPullLatest(); }catch(e){} } },   /* v1088: タスクは廃止。承認とエラーの解除を読み直す */
   hr:      { label:'人材管理', toast:false, pull: async function(){ try{ await maybePullVacations(true); }catch(e){} try{ await maybePullOnboardings(true); }catch(e){} try{ await refreshStaffPinsFromCloud(); }catch(e){} } },
   growth:  { label:'育成・評価', toast:false, pull: async function(){ try{ _skillAllPulled=false; }catch(e){} try{ maybePullAllSkillStores(); }catch(e){} } },
@@ -22154,11 +22164,146 @@ async function pageSync(scope){
   try{ renderPage((typeof curPage!=='undefined')?curPage:'budget'); }catch(e){}
 }
 
+/* ===== v1105（UI案60 ① 1A）：売上・予算・勤怠の「取得の状態」=====
+   ダッシュボード・予実・会議などの上の帯に、何をいつ取れたか／取れなかったかを出す（ログインの知らせは出さない）。
+   ・取得＝通信が通って答えを読めた時刻（この端末）。取れなかったものは 0 や空にせず、前の値のまま「前回 ○○ の情報を表示中」。
+   ・売上＝Toast の売上（店ごと）と、保護（v1101）が確かめる売上・日報の記録。予算＝保護が確かめる予算の記録。勤怠＝Toast の勤怠（店ごと）。
+   ・取れなかったら 3 回まで自動でやり直す（15 秒・30 秒・60 秒）。そのあとは押したときだけ。
+   ・記録はこの端末だけ（_ で始まるキー＝同期しない）。 */
+var FST_KEY='_fetch_status_v1', FST_KINDS=['sales','budget','labor'], FST_AUTO=[15000,30000,60000];
+var _fst=null, _fstTimer={}, _fstBusy={}, _fstFresh=false;
+function fstState(){
+  if(_fst) return _fst;
+  var o=null; try{ o=JSON.parse(localStorage.getItem(FST_KEY)||'null'); }catch(e){}
+  _fst=(o&&typeof o==='object')?o:{};
+  if(!_fst.guard||typeof _fst.guard!=='object') _fst.guard={};
+  ['sales','labor'].forEach(function(k){ if(!_fst[k]||typeof _fst[k]!=='object'||!_fst[k].by||typeof _fst[k].by!=='object') _fst[k]={by:{}}; });
+  if(!_fst.tries||typeof _fst.tries!=='object') _fst.tries={};
+  return _fst;
+}
+function fstSave(){ try{ localStorage.setItem(FST_KEY, JSON.stringify(_fst)); }catch(e){} }
+function fstStoreOfGuid(guid){ try{ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.toastGuid===guid;}); return s?s.id:null; }catch(e){ return null; } }
+/* 1 回の取得の結果を残す。kind：'sales'・'labor'（店ごと）・'guard'（保護の記録＝売上・予算） */
+function fstNote(kind, storeId, ok, code){
+  try{
+    var st=fstState(), now=new Date().toISOString(), rec;
+    if(kind==='guard') rec=st.guard;
+    else { if(!st[kind]||!storeId) return; rec=st[kind].by[storeId]||(st[kind].by[storeId]={}); }
+    if(ok){ rec.ok=now; rec.fail=null; rec.err=null; }
+    else { rec.fail=now; rec.err=String(code||'failed').slice(0,60); }
+    fstSave();
+    var shown=kind==='guard'?['sales','budget']:[kind];
+    shown.forEach(function(k){ if(ok&&fstStatus(k).state==='ok') st.tries[k]=0; else if(!ok) fstAuto(k); });
+    fstPaint();
+  }catch(e){}
+}
+function fstStores(){ try{ return (typeof getVisibleStores==='function'?getVisibleStores():[]).filter(function(s){return s&&s.toastGuid;}); }catch(e){ return []; } }
+function fstGuardOn(){ return !!(typeof window!=='undefined'&&window.FUNERGY_FINANCIAL_SAVE&&typeof FunergyFinancialTransport!=='undefined'); }
+/* 帯に出す 1 つの状態：{state:'ok'|'fail'|'none'|'partial', ok:最後に取れた時刻（いちばん古い店）, bad:[取れなかった店], none:[まだの店]} */
+function fstStatus(kind){
+  var st=fstState(), out={state:'none', ok:null, bad:[], none:[], guardBad:false};
+  function older(a,b){ return !a?b:(!b?a:(a<b?a:b)); }
+  if(kind==='budget'){
+    if(!fstGuardOn()) return {state:'off'};
+    var g=st.guard; if(g.fail&&(!g.ok||g.fail>g.ok)) return {state:'fail', ok:g.ok||null, bad:[], none:[], guardBad:true};
+    return g.ok?{state:'ok', ok:g.ok, bad:[], none:[]}:out;
+  }
+  var stores=fstStores(), by=(st[kind]&&st[kind].by)||{}, oks=0;
+  stores.forEach(function(s){ var r=by[s.id]||{};
+    if(r.fail&&(!r.ok||r.fail>r.ok)){ out.bad.push(s); out.ok=older(out.ok, r.ok||null); }
+    else if(r.ok){ oks++; out.ok=older(out.ok, r.ok); }
+    else out.none.push(s); });
+  if(kind==='sales'&&fstGuardOn()){ var gg=st.guard;
+    if(gg.fail&&(!gg.ok||gg.fail>gg.ok)) out.guardBad=true;
+    if(gg.ok) out.ok=older(out.ok, gg.ok); }
+  out.state=(out.bad.length||out.guardBad)?'fail':(!stores.length?'none':(out.none.length?(oks?'partial':'none'):'ok'));
+  return out;
+}
+function fstClock(iso){
+  if(!iso) return '';
+  try{
+    var d=new Date(iso), tz='Pacific/Honolulu';
+    var hm=d.toLocaleTimeString('ja-JP',{timeZone:tz,hour:'2-digit',minute:'2-digit',hour12:false});
+    var day=d.toLocaleDateString('en-CA',{timeZone:tz}), today=new Date().toLocaleDateString('en-CA',{timeZone:tz});
+    var hst=new Date().getTimezoneOffset()!==600;
+    return (day!==today?(Number(day.slice(5,7))+'/'+Number(day.slice(8,10))+' '):'')+hm+(hst?' HST':'');
+  }catch(e){ return ''; }
+}
+function fstLabel(kind){ return ({sales:t('売上','Sales'),budget:t('予算','Budget'),labor:t('勤怠','Labor')})[kind]||kind; }
+function fstNames(list){ var n=list.map(function(s){return (typeof _bStoreAbbr==='function'?_bStoreAbbr(s):s.name)||s.id;}); return n.length>3?n.slice(0,3).join('・')+t(' ほか'+(n.length-3)+'店',' +'+(n.length-3)):n.join('・'); }
+function fstChip(kind){
+  var s=fstStatus(kind), esc=escapeHtml, L=fstLabel(kind);
+  if(s.state==='off') return '';
+  var btn=function(label){ return ' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="fstRetry(\''+kind+'\',true)"'+(_fstBusy[kind]?' disabled':'')+'><i class="ti ti-refresh"></i> '+label+'</button>'; };
+  if(_fstBusy[kind]) return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-loader"></i> '+esc(L)+' '+t('取得中…','Fetching…')+'</span>';
+  if(s.state==='ok') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-check" style="color:var(--green)"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+'</span>';
+  if(s.state==='partial') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-dashed"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+' · '+t('まだ：','not yet: ')+esc(fstNames(s.none))+'</span>';
+  if(s.state==='none') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+esc(L)+t('：まだ取れていません',': not fetched yet')+btn(t('もう一度','Try again'))+'</span>';
+  var who=s.bad.length?'（'+esc(fstNames(s.bad))+'）':'';
+  return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--red)"><i class="ti ti-alert-circle"></i> '+esc(L)+t('：取れませんでした',': could not fetch')+who
+    +(s.ok?t('。前回 '+esc(fstClock(s.ok))+' の情報を表示中','. Showing data from '+esc(fstClock(s.ok))):t('。前の情報もありません','. No earlier data'))
+    +btn(t(L+'をもう一度','Retry '+L.toLowerCase()))+'</span>';
+}
+function fstChipsHtml(){
+  var h=FST_KINDS.map(fstChip).filter(Boolean).join('');
+  if(_fstFresh) h+='<span class="fst-chip"><button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="fstShowFresh()"><i class="ti ti-refresh"></i> '+t('新しい情報を取りました：表示を更新','New data fetched: refresh view')+'</button></span>';
+  return '<span id="fst-chips" style="display:inline-flex;align-items:center;gap:6px 12px;flex-wrap:wrap;font-size:11px;font-weight:600">'+h+'</span>';
+}
+function fstPaint(){ try{ var el=document.getElementById('fst-chips'); if(el) el.outerHTML=fstChipsHtml(); }catch(e){} }
+function fstShowFresh(){ _fstFresh=false; try{ renderPage((typeof curPage!=='undefined')?curPage:'dashboard'); }catch(e){} }
+function fstAuto(kind){
+  var st=fstState(), n=st.tries[kind]||0;
+  if(_fstTimer[kind]||n>=FST_AUTO.length) return;
+  _fstTimer[kind]=setTimeout(function(){
+    _fstTimer[kind]=null;
+    if((typeof document!=='undefined'&&document.hidden)||(typeof navigator!=='undefined'&&navigator.onLine===false)){ fstAuto(kind); return; }   /* 見えていない・通信なし：回数を使わずに待つ */
+    if(fstStatus(kind).state!=='fail') return;
+    st.tries[kind]=(st.tries[kind]||0)+1; fstSave();
+    fstRetry(kind,false);
+  }, FST_AUTO[n]);
+}
+async function fstGuardRefresh(){
+  if(!fstGuardOn()) return true;
+  try{ await FUNERGY_FINANCIAL_SAVE.refresh(FunergyFinancialTransport.keys); fstNote('guard',null,true); return true; }
+  catch(e){ fstNote('guard',null,false,e&&e.message); return false; }
+}
+/* もう一度：取れなかったもの（とまだのもの）だけを取り直す。押したときは画面を描き直す。自動のときは帯だけ（入力中の画面を消さない） */
+async function fstRetry(kind, manual){
+  if(_fstBusy[kind]) return;
+  if(manual){ var st0=fstState(); st0.tries[kind]=0; fstSave(); }
+  _fstBusy[kind]=true; fstPaint();
+  var before=JSON.stringify(fstState()), days=(typeof monthDays==='function')?monthDays():null;
+  try{
+    var s=fstStatus(kind);
+    if(kind==='budget'||(kind==='sales'&&s.guardBad)) await fstGuardRefresh();
+    if((kind==='sales'||kind==='labor')&&days&&days.length){
+      var todo=(s.bad||[]).concat(s.none||[]);
+      await Promise.all(todo.map(function(x){
+        return (kind==='sales'?syncStoreActualsFromToast(x.id,x.toastGuid,days):syncTipLaborFromDB(x.id,x.toastGuid,days)).catch(function(e){ fstNote(kind,x.id,false,e&&e.message); });
+      }));
+    }
+  }catch(e){}
+  _fstBusy[kind]=false;
+  var changed=JSON.stringify(fstState())!==before;
+  if(manual){ try{ renderPage((typeof curPage!=='undefined')?curPage:'dashboard'); }catch(e){} }
+  else { if(changed&&fstStatus(kind).state==='ok') _fstFresh=true; fstPaint(); }
+}
+function fstAnyFail(){ return FST_KINDS.some(function(k){ return fstStatus(k).state==='fail'; }); }
+
 /* ページ上部に出す共通ストリップ（鮮度＋同期＋診断） */
 function pageSyncStrip(scope){
   var iso=(typeof getSyncedAt==='function')?getSyncedAt(scope):'';
   var ago=iso?((typeof notifAgo==='function')?notifAgo(iso):''):'';
   var ob=(typeof outboxCount==='function')?outboxCount():0;
+  /* v1105（UI案60 ① 1A）：ダッシュボード・予実・会議などは「何をいつ取れたか」を売上・予算・勤怠ごとに出す（前の「同期 ◯分前」の代わり） */
+  if(scope==='dash'||scope==='budget'){
+    return '<div class="fst-strip" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
+      +fstChipsHtml()
+      +(ob>0?'<span style="font-size:10.5px;font-weight:600;color:var(--red);display:inline-flex;align-items:center;gap:4px"><i class="ti ti-cloud-upload"></i>'+t('未送信','Unsent')+ob+'</span>':'')
+      +'<button class="btn btn-secondary btn-sm" onclick="pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('最新情報を取得','Get latest')+'</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="openDiag(\''+scope+'\')"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>'
+      +'</div>';
+  }
   var col = ob>0?'var(--red)':(iso?'var(--muted)':'var(--yellow)');
   var txt = ob>0?('未送信'+ob):(iso?(t('同期','Synced')+' '+ago):t('未同期','—'));
   return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
@@ -22224,7 +22369,6 @@ function renderBudget() {
     <div><div class="section-title">${t('予実管理','Budget vs Actual')}</div><div class="section-sub">${t('対象月を選択（前月実績の確認・来月の予算設定）',"Select a month (review last month, set next month's budget)")}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
   </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>
   <div class="phase-tabs">
     <div class="phase-tab${budgetTab==='daily'?' active':''}" onclick="setBudgetTab('daily')">${t('日次進捗','Daily')}</div>
     <div class="phase-tab${budgetTab==='quarter'?' active':''}" onclick="setBudgetTab('quarter')">${t('Qコミットビュー','Q Commit')}</div>
@@ -22271,15 +22415,13 @@ function renderMeetingPage(){
   return `<div class="section-header">
     <div><div class="section-title">${t('会議','Meeting')}</div><div class="section-sub">${t('中間MTG・月初MTG（対象月を選択）','Mid-month and month-start meetings (select a month)')}</div></div>
     <select class="form-select" style="width:auto;min-width:150px;font-size:13px" onchange="setBudgetMonthSel(this.value)">${budgetMonthOptions()}</select>
-  </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>` + renderMeetingReview();
+  </div>` + renderMeetingReview();   /* v1105：取得の状態は上の帯（売上・予算・勤怠） */
 }
 function renderPurchasePage(){
   normalizeBudgetsDemo();
   return `<div class="section-header">
     <div><div class="section-title">${t('仕入れ','Purchases')}</div><div class="section-sub">${t('確認済みの invoice の仕入れ（店舗・業者別）','Confirmed invoice purchases by store and vendor')}</div></div>
-  </div>
-  <div style="margin:0 0 8px">${syncFreshBadge()}</div>` + renderPurchaseTab();
+  </div>` + renderPurchaseTab();   /* v1105：取得の状態は上の帯 */
 }
 /* ============================================================
    v956: 施策分析
