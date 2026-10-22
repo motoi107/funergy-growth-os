@@ -10,8 +10,8 @@
 1. 済（Claude）：今のコードの調べ（既存の専門職は `SPECIALIST_DEPTS` の 経理・調理・サービス・マーケ。経理・調理は部門別の評価表 8 軸 × 4 項目・96 点、サービス・マーケは項目なし。オフィス用 Career Score 35 項目・100 点は別）。
 2. 済（Claude・ブランチ `claude/specialist-career`）：対応表（`docs/SPECIALIST_CAREER_JA.md`）と UI案59（Design・9 枚）・決めてほしいこと 9。
 3. 済（Moto さん 10/21 13:52 HST）：回答 1〜9（`docs/SPECIALIST_CAREER_JA.md` の 10）。
-4. 済（Claude）：v1102 を実装・試験 24・わざと壊す 48/48・Chromium（`docs/SPECIALIST_CAREER_JA.md` の 11〜13）。独立レビュー（`197e4da`：P1 なし・P2 2・P3 6）はすべて直した。
-5. 次：PR → Codex → Moto さんがマージ（PR #87 の v1101 が先）→ 端末を 1102 に（v1101 以前の端末で新しい肩書きの人を保存すると肩書きが空になる）。
+4. 済（Claude）：v1103（作業中は v1102）を実装・試験 24・わざと壊す 48/48・Chromium（`docs/SPECIALIST_CAREER_JA.md` の 11〜13）。独立レビュー（`197e4da`：P1 なし・P2 2・P3 6）はすべて直した。
+5. 次：PR → Codex → Moto さんがマージ（PR #87 の v1102 が先）→ 端末を 1103 に（v1102 以前の端末で新しい肩書きの人を保存すると肩書きが空になる）。
 6. Moto さん（2026 Q3 を確定する前）：Score管理 で今いる人の専門職 × グレードの基準点を 2026 Q3 から（入れるまでその人の ① は止まる）・必要なら権限・新しい肩書きの時給の既定。
 
 

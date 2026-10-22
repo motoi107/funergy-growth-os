@@ -4308,7 +4308,7 @@ function groupsForRole() {
     var _gh = gradeHideFor(myGradeKey());
     if (_gh && _gh.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return _gh.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; });
   }
-  /* v1102（回答 7）：専門職 × グレードで決めた「隠す画面」（グレードの決まりに足す）と、Career Score を見る・付ける・承認する人に入れた役職の入口 */
+  /* v1103（回答 7）：専門職 × グレードで決めた「隠す画面」（グレードの決まりに足す）と、Career Score を見る・付ける・承認する人に入れた役職の入口 */
   try { var _ch = (typeof cgHideForMe==='function') ? cgHideForMe() : [];
     if (_ch.length) groups = groups.map(function(g){ return Object.assign({}, g, {children: g.children.filter(function(c){ return _ch.indexOf(c)<0; })}); }).filter(function(g){ return g.children && g.children.length>0; }); } catch(e){}
   try { if (typeof cgCsGrantForMe==='function' && !groups.some(function(g){ return (g.children||[]).indexOf('leadership')>=0; }) && cgCsGrantForMe() && !(typeof isPageHiddenForMe==='function' && isPageHiddenForMe('leadership')))   /* グレード・専門職で隠した画面は足さない（独立レビュー P3-6） */
@@ -4354,7 +4354,7 @@ function renderGradeHideConfig(){
   html+='<div style="font-size:11px;color:var(--muted);margin:0 0 6px"><i class="ti ti-info-circle"></i> Grade（G1〜G5）ごとに表示しない画面を設定します。財務(売上)可否は別途（Grade下限ロジック）で管理。G6/CEO/経理は常に全表示です。</div>';
   ['G1','G2','G3','G4','G5'].forEach(function(gk){
     var base=_baseRoleForGrade(gk); var ids=_pagesForBaseRole(base); var hide=_gradeHideInherit(m[gk], m);   /* v1084 */
-    var titles=((typeof GRADE_TITLES!=='undefined'&&GRADE_TITLES[gk])||[]).map(function(k){ return (typeof jobTitleLabel==='function') ? jobTitleLabel(k) : k; }).join(' / ');   /* v1102：Office Manager は Accounting Manager */
+    var titles=((typeof GRADE_TITLES!=='undefined'&&GRADE_TITLES[gk])||[]).map(function(k){ return (typeof jobTitleLabel==='function') ? jobTitleLabel(k) : k; }).join(' / ');   /* v1103：Office Manager は Accounting Manager */
     html+='<div class="card"><div class="card-title"><i class="ti ti-eye-off" style="color:var(--accent)"></i> '+gk+' の非表示ページ'+(titles?'<span style="font-size:10px;color:var(--muted);font-weight:400"> ('+escapeHtml(titles)+')</span>':'')+'</div>';
     html+='<div style="font-size:11px;color:var(--muted);margin-bottom:4px">チェックした画面は '+gk+' には表示されません。<span style="color:var(--yellow)">'+hide.filter(function(p){ return ids.indexOf(p)>=0; }).length+'件 非表示中</span></div>';
     if(!ids.length){ html+='<div style="font-size:11px;color:var(--muted)">このGradeの対象ページはありません</div>'; }
@@ -4391,7 +4391,7 @@ function navChildAllowed(pid){
   if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
   if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
   if (pid==='mid_review') return (typeof mrCanSee==='function') ? mrCanSee() : false;   /* v1066 */
-  if (pid==='leadership' && typeof cgCsGrantForMe==='function' && cgCsGrantForMe()) return true;   /* v1102：専門職 × グレードで Career Score を見る・付ける・承認する人に入れた役職 */
+  if (pid==='leadership' && typeof cgCsGrantForMe==='function' && cgCsGrantForMe()) return true;   /* v1103：専門職 × グレードで Career Score を見る・付ける・承認する人に入れた役職 */
   var it = (typeof NAV_ITEMS!=='undefined') ? NAV_ITEMS.find(function(n){return n.id===pid;}) : null;
   return !it || !it.roles || it.roles.includes(curRole);
 }
@@ -6966,7 +6966,7 @@ var ROLE_ALIAS = { g2:'sl', g4:'am' };
 function _applyRole(raw){ curRealRole = raw || null; curRole = (raw && ROLE_ALIAS[raw]) ? ROLE_ALIAS[raw] : raw; }
 function getRoleHide(sub){ return ls('role_hide_'+sub, [])||[]; }
 function setRoleHide(sub, arr){ lsSet('role_hide_'+sub, arr||[]); }
-function isPageHiddenForMe(pid){ if (typeof _gradeHideApplies==='function' && _gradeHideApplies() && gradeHideFor(myGradeKey()).indexOf(pid)>=0) return true; try { return (typeof cgHideForMe==='function') && cgHideForMe().indexOf(pid)>=0; } catch(e){ return false; } }   /* v1102：専門職 × グレードの「隠す画面」も */
+function isPageHiddenForMe(pid){ if (typeof _gradeHideApplies==='function' && _gradeHideApplies() && gradeHideFor(myGradeKey()).indexOf(pid)>=0) return true; try { return (typeof cgHideForMe==='function') && cgHideForMe().indexOf(pid)>=0; } catch(e){ return false; } }   /* v1103：専門職 × グレードの「隠す画面」も */
 var curSLName = 'Store Leader';
 var curStoreLogin = false;
 var curUserName = null;
@@ -10302,7 +10302,7 @@ var OP_MERGE = {
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
   grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
-  career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1102: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう） */
+  career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう） */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
   vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
@@ -37265,7 +37265,7 @@ var LS_NEVER_FREE = ['initiatives',   /* v956: 施策の定義。手入力なの
   'invoices','spl_invoices_','purchases_','skills_st_','spl_skills_st_','skills_v2','skill_lv_desc',
   'lss_emp_','att_approve_','att_day_approve_','cash_tips_','tip_exclude_','my_vacations','spl_my_vacations_',
   'fv_count_','fv_moves_','fv_review_','fv_config',
-  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_guide','career_cfg',   /* v1099：特別原資・評価基準・例（手で決めたもの・再生不可）。v1102：専門職 × グレードの権限 */
+  'bonus_q','spl_bonus_q_','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_guide','career_cfg',   /* v1099：特別原資・評価基準・例（手で決めたもの・再生不可）。v1103：専門職 × グレードの権限 */
   'emp_dirty_q',       /* v1085: 従業員の送れていない変更（退職など。端末だけ・再生不可） */
   'lunch_challenge',   /* v1080: Tenkichi ランチチャレンジ（月の設定・日の印・確定・食事会。手入力・再生不可） */
   'vendor_merges',     /* v1083: 業者の統合（どの名前をどの業者にまとめたか。手で決めたもの・再生不可） */
@@ -38967,7 +38967,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1102';
+const APP_VERSION = '1103';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -39129,10 +39129,10 @@ const JOB_TITLES = [
   {key:'Customer Service Manager', label:'Customer Service Manager', payType:'monthly', permRole:'am', defMonthly:7000, defSiteWage:17},
   {key:'General Manager',label:'General Manager',payType:'monthly', permRole:'gm',   defMonthly:8000, defSiteWage:17},
   {key:'Office Crew',    label:'事務Crew',       en:'Office Crew', payType:'hourly',  permRole:'office_crew', defWage:18},
-  {key:'Office Crew Leader', label:'事務Crew Leader', en:'Office Crew Leader', payType:'hourly'},   /* v1102（回答 4・6）：経理の G2・時給（事務Crew と同じ）。既定の権限ロール・時給は決めない（Score管理 の専門職 × グレードで決めるまで、選んでもロールを変えない） */
-  {key:'Accounting Leader', label:'Accounting Leader', payType:'hourly'},   /* v1102（回答 6）：経理の G3・時給 */
+  {key:'Office Crew Leader', label:'事務Crew Leader', en:'Office Crew Leader', payType:'hourly'},   /* v1103（回答 4・6）：経理の G2・時給（事務Crew と同じ）。既定の権限ロール・時給は決めない（Score管理 の専門職 × グレードで決めるまで、選んでもロールを変えない） */
+  {key:'Accounting Leader', label:'Accounting Leader', payType:'hourly'},   /* v1103（回答 6）：経理の G3・時給 */
   {key:'Accountant',     label:'Accountant',     payType:'monthly', permRole:'office',defMonthly:6000},
-  {key:'Office Manager', label:'Accounting Manager', payType:'monthly', permRole:'office',defMonthly:6000},   /* v1102（回答 5 C）：表示名を Accounting Manager に。保存のキーは 'Office Manager' のまま（今の人の記録・給与表・グレード・権限はそのまま） */
+  {key:'Office Manager', label:'Accounting Manager', payType:'monthly', permRole:'office',defMonthly:6000},   /* v1103（回答 5 C）：表示名を Accounting Manager に。保存のキーは 'Office Manager' のまま（今の人の記録・給与表・グレード・権限はそのまま） */
   {key:'CEO',            label:'CEO',            payType:'monthly', permRole:'ceo',  defMonthly:10000},
 ];
 /* 四半期ボーナス基準額・Level係数（フェーズ5で使用） */
@@ -51895,7 +51895,7 @@ function empTitleChanged() {
   var title = document.getElementById('e-title').value;
   var wrap = document.getElementById('e-pay-fields');
   if (!wrap) return;
-  // 役職に応じた権限ロールの自動セット（任意・利便性）。v1102（回答 7）：専門職 × グレードで決めたロール → 役職マスターの既定。どちらも無ければ変えない（新しい肩書きで空のロールを入れない）
+  // 役職に応じた権限ロールの自動セット（任意・利便性）。v1103（回答 7）：専門職 × グレードで決めたロール → 役職マスターの既定。どちらも無ければ変えない（新しい肩書きで空のロールを入れない）
   try{ cgEmpFormSync(true); }catch(err){ var jt = jobTitle(title); if (jt && jt.permRole) { var rsel=document.getElementById('e-role'); if(rsel && rsel.value!==jt.permRole) rsel.value=jt.permRole; } }
   wrap.innerHTML = payFieldsHtml({title:title});
 }
@@ -52089,7 +52089,7 @@ function openEmpModal(empId) {
       <button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
       <button class="btn btn-primary" onclick="saveEmp('${e.id}')">${isNew?'登録':'保存'}</button>
     </div>`);
-  try{ window._cgEmpOk=null; cgEmpFormSync(false); }catch(err){}   /* v1102：専門職は肩書きから・表示の見本 */
+  try{ window._cgEmpOk=null; cgEmpFormSync(false); }catch(err){}   /* v1103：専門職は肩書きから・表示の見本 */
 }
 
 function saveEmp(empId) {
@@ -52145,7 +52145,7 @@ function saveEmp(empId) {
   var coefEl = document.getElementById('e-coef');
   if (coefEl) { data.coef = parseFloat(coefEl.value)||1; }
   data.prep = (data.title==='Prep'||data.title==='Prep Specialist');
-  /* v1102：専門職が肩書きで決まるときは欄を空に（肩書きから）。専門職（評価表）が変わるときは確かめてから */
+  /* v1103：専門職が肩書きで決まるときは欄を空に（肩書きから）。専門職（評価表）が変わるときは確かめてから */
   var _cgB = (typeof cgEmpBeforeSave==='function') ? cgEmpBeforeSave(empId, data) : {ok:true, career:data.career};
   if (!_cgB.ok) return;
   data.career = _cgB.career;
@@ -57513,8 +57513,8 @@ function resetEvalRubric(){ if(!confirm('評価基準を初期値に戻します
 var GRADE_TITLES = {
   G1: ['Crew','Office Crew','Office Staff'],
   'G1-P': ['Prep','Prep Specialist'],
-  G2: ['Crew Leader','Office Crew Leader'],   /* v1102：事務Crew Leader＝経理の G2 */
-  G3: ['Server Leader','Kitchen Leader','Operation Leader','Store Leader','Accounting Leader'],   /* v1102：Accounting Leader＝経理の G3 */
+  G2: ['Crew Leader','Office Crew Leader'],   /* v1103：事務Crew Leader＝経理の G2 */
+  G3: ['Server Leader','Kitchen Leader','Operation Leader','Store Leader','Accounting Leader'],   /* v1103：Accounting Leader＝経理の G3 */
   G4: ['Store Manager','Head Chef','Office Manager','Accountant'],
   G5: ['Area Manager','Corporate Chef','Customer Service Manager'],
   G6: ['General Manager'],
@@ -57595,7 +57595,7 @@ var SPECIALIST_DEPTS = {
 };
 var SPECIALIST_TITLE_DEPT = {
   'Accountant':'経理', 'Office Manager':'経理',
-  'Office Crew Leader':'経理', 'Accounting Leader':'経理',   /* v1102（回答 4）：事務Crew Leader＝経理の G2・Accounting Leader＝経理の G3（Office Manager は表示名 Accounting Manager） */
+  'Office Crew Leader':'経理', 'Accounting Leader':'経理',   /* v1103（回答 4）：事務Crew Leader＝経理の G2・Accounting Leader＝経理の G3（Office Manager は表示名 Accounting Manager） */
   /* v994: Head Chef を追加（Motoさん判断）。
      ★Corporate Chef の前段階なので、同じ軸で評価する。
      ★経理も同じ考え方：Accountant / Office Manager が同じ経理の軸を使う。 */
@@ -58254,7 +58254,7 @@ function canEditLss(name) {
   if (!name || name === meName) return false;
   var target = getEmployees().find(x=>x.name===name) || {};
   if (target.role === 'ceo') return false;
-  /* v1102（回答 7）：専門職 × グレードで「付ける人」を決めていれば、GM・CEO と決めた役職だけ（G4 は担当店の G3・G2・AM 以上は自分より上の人は付けない）。
+  /* v1103（回答 7）：専門職 × グレードで「付ける人」を決めていれば、GM・CEO と決めた役職だけ（G4 は担当店の G3・G2・AM 以上は自分より上の人は付けない）。
      決めていなければ今の決まり（下）。AM より下の役職が付けた点は承認を通す（lssNeedsApproval） */
   var _cgP = (typeof cgPermList==='function' && target.name) ? cgPermList(target, 'csEdit') : null;
   if (_cgP) {
@@ -62003,7 +62003,7 @@ function renderKarteQuarterBar(cfg){
   var _sg=(_kvq && _kvq.snap) ? (Number(_kvq.snap.gen)||1) : 0;   /* v1099：確定したときの決め方（1＝v1065〜v1068・2＝v1074〜v1098・3＝v1099） */
   if(_kvq && kevGen2(_kvq.q) && _sg===1) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px"><i class="ti ti-lock"></i> この四半期は前の版（v1065〜v1068）の式で確定しています。'+escapeHtml(KEV2_START)+' からは CEO の指示書の式で計算します。新しい式にするには、査定一覧で「確定を解除」してから評価・店舗の表を確かめて確定し直してください。</div>';
   if(_kvq && kevGen3(_kvq.q) && _sg===2) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px;line-height:1.6"><i class="ti ti-lock"></i> この四半期は前の版（v1074〜v1098）の決め方で確定しています（① は賞与用 4 要素・係数は 0.25% 刻み・特別原資なし）。'+escapeHtml(KEV3_START)+' からは Career Score の総合点・7 種類の係数・特別原資で計算します。新しい決め方にするには、査定一覧で「確定を解除」してから確定し直してください（解除するまで、確定した金額はそのままです）。</div>';
-  try{ var _cgOld=(_kvq && _kvq.snap && typeof cgOldSnapNames==='function') ? cgOldSnapNames(_kvq.snap) : []; if(_cgOld.length) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px;line-height:1.6"><i class="ti ti-lock"></i> この四半期は v1101 以前の端末で確定しています。専門職（'+escapeHtml(_cgOld.join('・'))+'）の ① は、店舗の基準得点と同じ割合 × 満点で計算されています（v1102 からは専門職 × グレードの基準点）。新しい決め方にするには、専門職 × グレードの基準点を入れてから、査定一覧で「確定を解除」して確定し直してください（解除するまで、確定した金額はそのままです）。</div>'; }catch(err){}   /* v1102（独立レビュー P2-2） */
+  try{ var _cgOld=(_kvq && _kvq.snap && typeof cgOldSnapNames==='function') ? cgOldSnapNames(_kvq.snap) : []; if(_cgOld.length) h+='<div style="font-size:11px;color:var(--yellow);margin-top:6px;line-height:1.6"><i class="ti ti-lock"></i> この四半期は v1102 以前の端末で確定しています。専門職（'+escapeHtml(_cgOld.join('・'))+'）の ① は、店舗の基準得点と同じ割合 × 満点で計算されています（v1103 からは専門職 × グレードの基準点）。新しい決め方にするには、専門職 × グレードの基準点を入れてから、査定一覧で「確定を解除」して確定し直してください（解除するまで、確定した金額はそのままです）。</div>'; }catch(err){}   /* v1103（独立レビュー P2-2） */
   if(_kvq && kevGen3(_kvq.q) && _sg!==1 && _sg!==2){   /* v1099 */
     var _J3=(_sg>=3 && _kvq.snap.j) ? kevJ3({j:Object.assign({}, _kvq.snap.j, {g3:1})}) : kevJ3(kevRuleFor(null, _kvq.q, null, null, cfg).r);
     h+='<div style="font-size:12px;line-height:1.8;background:var(--surface2);border-radius:10px;padding:7px 12px;margin-top:8px"><b>個人のボーナス</b> ＝ 基準額（日割り）× <b style="color:var(--accent)">最終係数</b>（G2・G3 は ①、G4 は ①②③、G5・G6 は ②④。各項目の係数は 0.85〜1.15 の 0.05 刻み（7 種類）。① は Career Score の総合点がグレード・職種の基準得点以上で ×1.00。掛けた値を '+kevF2(_J3.clo)+'〜'+kevF2(_J3.chi)+' に収める）→ 合計が <b>支給上限</b>（通常原資 ＋ 特別原資）を超えたら全員に同じ割合を掛けて収める（'+escapeHtml(KEV3_START)+' から・v1099）</div>';
@@ -64678,7 +64678,7 @@ function kevV1On(scope, q){
   return o;
 }
 /* scope（G2・G3-sv など）・四半期・人の設定。sim＝試算（保存前の値を一段だけ差し込む：{level:'common'|'grade'|'person', set}） */
-function kevRuleFor(scope, q, empId, sim, cfg, force2, cgx){   /* v1102：cgx＝人を渡さないときのキャリア × グレード（{dept, g, prefix}・個人設定の画面の「個人設定が無いとき」など） */
+function kevRuleFor(scope, q, empId, sim, cfg, force2, cgx){   /* v1103：cgx＝人を渡さないときのキャリア × グレード（{dept, g, prefix}・個人設定の画面の「個人設定が無いとき」など） */
   var R=kevBaseDefaults(cfg), M={}, gen2=kevGen2(q), gen3=gen2 && kevGen3(q) && !force2;   /* v1099：force2＝前の決め方（v1098）で計算する（比べるため） */
   if(gen2){ ['s','f','p'].forEach(function(p){ R[p].lo=KEV2_DEF_RNG[p][0]; R[p].hi=KEV2_DEF_RNG[p][1]; }); }   /* v1074：CEO の指示書の今の幅（保存した幅があればそちら） */
   if(gen3){ R.c.lo=KEV3_C_DEF[0]; R.c.hi=KEV3_C_DEF[1]; }   /* v1099（回答 3）：① の幅の初期値 0.85〜1.15 */
@@ -64703,7 +64703,7 @@ function kevRuleFor(scope, q, empId, sim, cfg, force2, cgx){   /* v1102：cgx＝
   if(sim && sim.level==='grade' && sim.scope==='G5' && scope==='G6') kevMerge(R, sim.set, 'g5', M, FR);
   if(gr) kevMerge(R, gr.set, 'grade', M, noCB(FR, sim && sim.level==='grade' && sim.scope===scope));
   if(sim && sim.level==='grade' && sim.scope===scope) kevMerge(R, sim.set, 'grade', M, FR);
-  /* v1102（Motoさん 10/21 13:52 の回答 2・3・9）：部門別の専門職・オフィス用 Career Score の人は、2026 Q3 から「キャリア × グレード」の層（グレード・職種の設定より細かく、個人設定より粗い）。
+  /* v1103（Motoさん 10/21 13:52 の回答 2・3・9）：部門別の専門職・オフィス用 Career Score の人は、2026 Q3 から「キャリア × グレード」の層（グレード・職種の設定より細かく、個人設定より粗い）。
      ① の基準得点・1 段はこの層の値だけを使う（専門職は通常グレードの値で代わりに計算しない＝kevCsBase）。G5 の専門職は ① を反映（初期値） */
   var cg=null, cgv=null;
   if(gen3 && typeof cgAtScope==='function'){
@@ -64736,7 +64736,7 @@ function kevItemSrc(src, item){
   var keys=Object.keys(src||{}).filter(function(k){ return k.indexOf(item+'.')===0 || (item==='c' && k.indexOf('w.')===0) || (item==='f' && k.indexOf('fl.')===0) || (item==='stores' && k==='stores'); });
   var lv=keys.map(function(k){ return src[k]; });
   if(lv.indexOf('person')>=0) return 'person';
-  if(lv.indexOf('career')>=0 || lv.indexOf('careerDef')>=0) return 'career';   /* v1102 */
+  if(lv.indexOf('career')>=0 || lv.indexOf('careerDef')>=0) return 'career';   /* v1103 */
   if(lv.indexOf('grade')>=0) return 'grade';
   if(lv.indexOf('g5')>=0) return 'g5';
   if(lv.indexOf('gradeDef')>=0) return 'grade';
@@ -64778,7 +64778,7 @@ function kevScopeOf(e, seg, q){
   var ev=(typeof bonusSegEval==='function') ? bonusSegEval(e, seg) : null;
   if(ev && ev.track && CSC_TRACK_NAME[ev.track]) return {key:'G3-'+ev.track, g:g, track:ev.track, trackSrc:'grade'};
   var T=bonusTrackFor(e, q);
-  if(!T.t && kevGen3(q) && typeof cgOf==='function' && cgOf(e)) return {key:'G3-op', g:g, track:null, trackSrc:'career'};   /* v1102：専門職・オフィス用の G3 は職種で ① の基準点が変わらない（キャリア × グレードの点） */
+  if(!T.t && kevGen3(q) && typeof cgOf==='function' && cgOf(e)) return {key:'G3-op', g:g, track:null, trackSrc:'career'};   /* v1103：専門職・オフィス用の G3 は職種で ① の基準点が変わらない（キャリア × グレードの点） */
   if(!T.t) return {key:null, g:g, blocked:'track'};
   return {key:'G3-'+T.t, g:g, track:T.t, trackSrc:T.src};
 }
@@ -65710,7 +65710,7 @@ function kevLockCommit(q, dg0, quiet){
   if(kevGen2(q)){ d.evSnap.gen=2; d.evSnap.start2=KEV2_START; d.evSnap.j=kevJ(kevRuleFor(null, q, null, null, cfg).r); d.evSnap.stores=kevStoreSnap(q, cfg); }   /* v1074：判定の決まり・店舗の表も固定 */
   if(kevGen3(q)){   /* v1099：① 総合点・7 種類の係数・特別原資（通常原資・特別原資・上限・理由も固定） */
     d.evSnap.gen=3; d.evSnap.start3=KEV3_START; d.evSnap.j=kevJ3(kevRuleFor(null, q, null, null, cfg).r);
-    d.evSnap.cg=1;   /* v1102：専門職 × グレードの基準点で確定した（v1101 以前の端末の確定は印が無い） */
+    d.evSnap.cg=1;   /* v1103：専門職 × グレードの基準点で確定した（v1102 以前の端末の確定は印が無い） */
     d.evSnap.P=tot.poolP; d.evSnap.E=tot.extra; d.evSnap.cap=tot.cap;
     var _er=tot.extraRec; d.evSnap.Erec=_er ? {v:tot.extra, why:String(_er.why||'').slice(0,500), at:_er.at||'', by:_er.by||''} : null;
   }
@@ -66727,7 +66727,7 @@ function kevOvrOpen(empId, part){
   if(part==='stores') R.stores=I.stores.ids.slice();
   window._kevForm={kind:'ovr', empId:empId, part:part, pre:'kevf-', q:kv.q, before:b.amount, beforeBlocked:b.blocked};
   if(I.gen===3 && part==='c' && I.items && I.items.c && I.items.c.gen===3){   /* v1099：その人の評価表の満点・個人設定が無いときの基準得点 */
-    var _c=I.items.c, _sk=(I.sc && I.sc.key) || 'G3-op', _RFg=kevRuleFor(_sk, kv.q, null, null, cfg, false, (typeof cgOfId==='function') ? cgOfId(e.id) : null), _Bg=kevCsBase(_RFg.r, _RFg, _c.total, _sk);   /* v1102：専門職はキャリア × グレードの点（無ければ空欄） */
+    var _c=I.items.c, _sk=(I.sc && I.sc.key) || 'G3-op', _RFg=kevRuleFor(_sk, kv.q, null, null, cfg, false, (typeof cgOfId==='function') ? cgOfId(e.id) : null), _Bg=kevCsBase(_RFg.r, _RFg, _c.total, _sk);   /* v1103：専門職はキャリア × グレードの点（無ければ空欄） */
     /* v1100（独立レビュー P1-1）：v1099 の G2 の値（225 点満点）は入力欄にも初期値にも入れない */
     var _st=((_c.total||{}).sheet==='store'), _lgP=kevCsLegacyParts(I.RF, _sk, null), _lgG=kevCsLegacyParts(_RFg, _sk, null), _dB=kevCsDefBase(_sk);
     var _kB=kevCsPick(I.RF.r, I.RF, 'bp'), _kS=kevCsPick(I.RF.r, I.RF, 'bs'), _pBp=_kB.src==='person', _pBs=_kS.src==='person';
@@ -67375,7 +67375,7 @@ function kevCsMissTxt(T){
 /* v1100（Codex 34d2ed9 の P1）：① の基準得点・1 段は、この版では bp8・bs8 に書く（前の版 v1099 が読む bp・bs には書かない）。
    読むときは bp8 と bp（bs8 と bs）のうち、決めた層が細かいほう（会社共通 → G5 → グレード → 個人。同じ層なら bp8）。{v, src, v8}
    bp・bs から来た値は v1099 で保存した点（G2 は 4 カテゴリー・225 点満点） */
-var KEV_CS_LV={common:1, gradeDef:2, g5:3, grade:4, careerDef:4.2, career:4.5, person:5};   /* v1102：キャリア × グレードはグレード・職種より細かく、個人設定より粗い */
+var KEV_CS_LV={common:1, gradeDef:2, g5:3, grade:4, careerDef:4.2, career:4.5, person:5};   /* v1103：キャリア × グレードはグレード・職種より細かく、個人設定より粗い */
 function kevCsPick(R, RF, f){
   var c=(R && R.c) || {}, src=(RF && RF.src) || {}, ok=function(n){ return n!=null && (f!=='bs' || n>0); };
   var a=kevN(c[f]), b=kevN(c[f+'8']), sa=src['c.'+f]||'grade', sb=src['c.'+f+'8']||'grade';
@@ -67440,7 +67440,7 @@ function kevCsBase(R, RF, T, scope){
   var cgm=!!(RF && RF.cg && RF.gen3 && T.sheet!=='store');
   if(cgm) o.cg={dept:RF.cg.dept, g:RF.cg.g, prefix:RF.cg.prefix, from:(RF.cgv ? RF.cgv.from : null), set:(sBp==='career')};
   if(T.sheet==='store'){ o.bp=stBp; o.bs=stBs; o.legacy=!!(lgBp || lgBs || LP.lost); return o; }
-  /* v1102（回答 2）：部門別の専門職は、キャリア × グレード（か個人設定）の基準得点だけ。無ければ「基準未設定」（通常グレードの点 × 満点 ÷ 420 では計算しない）。
+  /* v1103（回答 2）：部門別の専門職は、キャリア × グレード（か個人設定）の基準得点だけ。無ければ「基準未設定」（通常グレードの点 × 満点 ÷ 420 では計算しない）。
      1 段を決めていなければ、その評価表の満点の 3% */
   if(cgm && T.sheet==='spec'){
     var okB=(sBp==='person' || sBp==='career'), okS=(sBs==='person' || sBs==='career'), mx0=Number(T.max)||0;
@@ -67451,7 +67451,7 @@ function kevCsBase(R, RF, T, scope){
   }
   o.legacy=!!((sBp!=='person' && lgBp) || (sBs!=='person' && lgBs) || LP.lost);   /* 専門職・オフィスの個人設定の点はその評価表の点（満点は変わらない） */
   var mx=Number(T.max)||0;
-  if(sBp==='person' || sBp==='career'){ o.bp=bp; } else { o.bp=(d.max>0 && mx>0) ? Math.ceil(stBp*mx/d.max-1e-9) : null; o.derived=true; }   /* v1102（回答 8）：オフィス用は Score管理 で入れた点（無ければ今の決まり） */
+  if(sBp==='person' || sBp==='career'){ o.bp=bp; } else { o.bp=(d.max>0 && mx>0) ? Math.ceil(stBp*mx/d.max-1e-9) : null; o.derived=true; }   /* v1103（回答 8）：オフィス用は Score管理 で入れた点（無ければ今の決まり） */
   if(sBs==='person' || sBs==='career'){ o.bs=bs; } else { o.bs=(d.max>0 && mx>0) ? Math.max(1, Math.round(stBs*mx/d.max)) : null; o.derivedS=true; }
   return o;
 }
@@ -67526,7 +67526,7 @@ function kevSnapSeg3(x, slim){
   o.gen=3;
   o.items.c=slim(c, {gen:3, score:c.score, max:c.max, step:c.step, raw:c.raw, capped:!!c.capped,
     base:{bp:B.bp, bs:B.bs, max:B.max, storeMax:B.storeMax, pct:B.pct, sheet:B.sheet, derived:!!B.derived, srcBp:B.srcBp||null, srcBs:B.srcBs||null,
-      cg:(B.cg ? {dept:B.cg.dept, g:B.cg.g, prefix:B.cg.prefix, from:B.cg.from||null} : null), unset:!!B.unset, title:c.title||''},   /* v1102：確定のときのキャリア × グレード・肩書き */
+      cg:(B.cg ? {dept:B.cg.dept, g:B.cg.g, prefix:B.cg.prefix, from:B.cg.from||null} : null), unset:!!B.unset, title:c.title||''},   /* v1103：確定のときのキャリア × グレード・肩書き */
     total:{src:T.src||null, label:T.label||'', date:T.date||'', by:T.by||'', sheet:T.sheet||null, un:Number(T.un)||0, legacy:!!T.legacy, legAck:(T.legAck ? {at:T.legAck.at, by:T.legAck.by, why:T.legAck.why} : null),
       cats:(T.cats||[]).map(function(k){ return {key:k.key, name:k.name, score:k.score, max:k.max, un:k.un}; })}});
   ['s','f','p'].forEach(function(k){ if(o.items[k]) o.items[k].gen=3; });
@@ -67591,7 +67591,7 @@ function kevMisfits3(q, cfg){
     if(!pe || ghNormG(pe.g)!=='G2' || !(Number(pe.kv)>=2) || !pe.cun || typeof pe.cun!=='object' || ghQOf(r.d)!==q) return;
     var g2=cscCatKeys('G2'), un=Object.keys(pe.cun).filter(function(k){ return Number(pe.cun[k])>0; });
     if(un.length && un.every(function(k){ return g2.indexOf(k)<0; })) block.push({t:(e.name||'')+'：'+ghMD(r.d)+' に G2 から変えたときの評価（v1099 で確定）に、v1100 から数える '+un.map(function(k){ return cscCatName(k)+' '+Number(pe.cun[k]); }).join('・')+' 項目の未評価があります（そのときは 4 カテゴリーで確かめていました）。この区間の ① は「未評価」で、四半期の確定が止まります。扱いを決めてください', act:'kevOpenPerson('+cscJsArg(e.id)+')'}); }); }); }catch(err){}   /* v1100（独立レビュー P2-2） */
-  /* v1102（回答 2）：専門職 × グレードの基準点が未設定（その人の ① は止まる） */
+  /* v1103（回答 2）：専門職 × グレードの基準点が未設定（その人の ① は止まる） */
   /* 区間ごと（グレードを変える前の区間は、その区間のグレード）。① を反映しない人（1.00 固定）は止まらないので出さない（独立レビュー P3-3・P3-4） */
   try{ var _cgU={}, _qr=ghQRange(q), _d=bqGet(q); karteEligibleEmps().forEach(function(e){ var c=cgOf(e); if(!c || c.sheet!=='spec') return;
       bonusSegs(e, _qr, _d).forEach(function(x){ var g=ghNormG(x.g); if(['G2','G3','G4','G5','G6'].indexOf(g)<0) return; var sc=(g==='G3') ? 'G3-op' : g, RF=kevRuleFor(sc, q, e.id, null, cfg); if(RF.r.c.on===false) return;
@@ -67853,7 +67853,7 @@ function kevCareerCardHtml3(e, c, I, kv){
   var T=c.total||{}, B=c.base||{}, r=c.rule||{}, scope=I.sc.key || ghNormG(I.sc.g), dept=(T.sheet==='spec' && typeof empSpecialistDept==='function') ? (empSpecialistDept(e)||'') : '';
   var val=(T.score==null) ? '' : kevPtsTxt(T.score)+' / '+kevPtsTxt(T.max)+' 点';
   var h='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0'+(c.on ? ';border-color:rgba(240,102,31,.45)' : '')+'">'+kevItemHead('①', 'Career Score（総合点）', c, I.src.c, scope, val, false);
-  /* v1102（UI案59）：どちらの基準で計算しているか（専門職 × グレード／オフィス用／通常） */
+  /* v1103（UI案59）：どちらの基準で計算しているか（専門職 × グレード／オフィス用／通常） */
   var _ref=B.cg ? (B.cg.dept==='office' ? 'オフィス用 Career Score（'+B.cg.g+'）' : '専門職（'+cgComboName(B.cg.dept, B.cg.g)+'）') : '通常（'+kevScopeLabel(scope)+'）';
   var _refH='<span style="display:inline-block;border-radius:6px;padding:1px 8px;font-weight:700;font-size:12px;'+(B.unset ? 'background:#fbf0dc;color:#7a4f05' : 'background:var(--surface2)')+'">参照している基準：'+escapeHtml(_ref)+(B.unset ? '・基準未設定' : '')+'</span>'
     +(B.cg ? ' <a style="color:var(--accent);cursor:pointer;font-size:11.5px;font-weight:700" onclick="cgGoScoreMgmt('+cscJsArg(B.cg.dept)+','+cscJsArg(B.cg.g)+')">Score管理</a>' : '')+'<br>';
@@ -67884,7 +67884,7 @@ function kevCareerCardHtml3(e, c, I, kv){
 function kevSnapCareerHtml3(c, kv, scope){
   var T=c.total||{}, B=c.base||{}, r=c.rule||{};
   var h='<div class="card" style="display:flex;flex-direction:column;gap:6px;margin:0">'+kevItemHead('①', 'Career Score（総合点）', {on:!!c.on, coef:c.coef}, 'grade', scope, (c.score==null ? '' : kevPtsTxt(c.score)+' / '+kevPtsTxt(c.max)+' 点'), false);
-  if(B.cg && typeof B.cg==='object') h+='<div style="font-size:12px"><span style="display:inline-block;background:var(--surface2);border-radius:6px;padding:1px 8px;font-weight:700">参照している基準：'+escapeHtml(B.cg.dept==='office' ? 'オフィス用 Career Score（'+B.cg.g+'）' : '専門職（'+((typeof cgComboName==='function') ? cgComboName(B.cg.dept, B.cg.g) : B.cg.dept+' × '+B.cg.g)+'）')+'</span>'+(B.title ? ' <span style="color:var(--muted)">'+escapeHtml((typeof jobTitleLabel==='function') ? jobTitleLabel(B.title) : B.title)+'</span>' : '')+' <span style="color:var(--muted)">（確定したときの値）</span></div>';   /* v1102 */
+  if(B.cg && typeof B.cg==='object') h+='<div style="font-size:12px"><span style="display:inline-block;background:var(--surface2);border-radius:6px;padding:1px 8px;font-weight:700">参照している基準：'+escapeHtml(B.cg.dept==='office' ? 'オフィス用 Career Score（'+B.cg.g+'）' : '専門職（'+((typeof cgComboName==='function') ? cgComboName(B.cg.dept, B.cg.g) : B.cg.dept+' × '+B.cg.g)+'）')+'</span>'+(B.title ? ' <span style="color:var(--muted)">'+escapeHtml((typeof jobTitleLabel==='function') ? jobTitleLabel(B.title) : B.title)+'</span>' : '')+' <span style="color:var(--muted)">（確定したときの値）</span></div>';   /* v1103 */
   h+='<div style="font-size:12.5px;line-height:1.7">基準得点 '+kevPtsTxt(B.bp)+' 点・1 段 '+kevPtsTxt(B.bs)+' 点'+(c.step!=null ? ' → '+(c.step>=0 ? '基準以上 '+c.step+' 段' : '基準より '+(-c.step)+' 段下')+' → ×'+kevF2(c.coef!=null ? c.coef : c.raw)+(c.capped ? '（幅 '+kevF2(r.lo)+'〜'+kevF2(r.hi)+' で止めた）' : '') : '')+'</div>';
   h+='<div style="font-size:11px;color:var(--muted)">'+escapeHtml(T.label||'')+(T.date ? ' ・ 評価日 '+escapeHtml(ghMD(T.date)) : '')+(T.by ? ' ・ '+escapeHtml(T.by) : '')+'（確定したときの点）</div>';
   if(T.legAck) h+='<div style="font-size:11px;color:var(--muted)">v1098 以前の記録を '+escapeHtml(T.legAck.by||'')+'（'+escapeHtml(String(T.legAck.at||'').slice(0,16))+'）が確かめて数えた：'+escapeHtml(T.legAck.why||'')+'</div>';
@@ -67916,9 +67916,9 @@ function kevCsBaseCardHtml(cfg){
   h+='</tbody></table></div>';
   var g4=kevCsDefBase('G4'), g3=kevCsDefBase('G3-op'), sp=Math.ceil(g4.bp*96/g4.max-1e-9), spS=Math.max(1, Math.round(g4.bs*96/g4.max)), of=Math.ceil(g3.bp*100/g3.max-1e-9);
   h+='<div style="font-size:11px;color:var(--muted);line-height:1.7;margin-top:8px">・0.85 の段は 0.90 の段より下（表の「0.90」の点に届かないとき）。① の幅を狭くすると、その外の段は幅で止めます。<br>'
-    +'・部門別の専門職（経理・調理 96 点満点・サービス・マーケ 24 点満点）の基準得点は、下の「専門職 × グレード」の表（Career Score › Score管理 と同じ記録）。入れるまで「基準未設定」で、通常グレードの点では計算しません（v1102・'+escapeHtml(KEV3_START)+' から）。オフィス用 Career Score（100 点満点）は、入れていなければ今までどおり店舗の基準得点と同じ割合 × 満点（例：G3 '+of+' 点）。どちらも個人設定で点を直せます。<br>'
+    +'・部門別の専門職（経理・調理 96 点満点・サービス・マーケ 24 点満点）の基準得点は、下の「専門職 × グレード」の表（Career Score › Score管理 と同じ記録）。入れるまで「基準未設定」で、通常グレードの点では計算しません（v1103・'+escapeHtml(KEV3_START)+' から）。オフィス用 Career Score（100 点満点）は、入れていなければ今までどおり店舗の基準得点と同じ割合 × 満点（例：G3 '+of+' 点）。どちらも個人設定で点を直せます。<br>'
     +'・数えるカテゴリーに未評価の項目がある人は「未評価」で、金額を出しません（0 点では数えません）。</div>';
-  try{ h+=cgSettingsTableHtml(q, kevCanEdit() && !(kv && kv.locked)); }catch(err){}   /* v1102 */
+  try{ h+=cgSettingsTableHtml(q, kevCanEdit() && !(kv && kv.locked)); }catch(err){}   /* v1103 */
   return h+'</div>';
 }
 /* 設定タブ ③（2026 Q3 から）：判定の決まりと ②③④ の対応表 */
@@ -68992,7 +68992,7 @@ function csgDefOf(key){
   var D=(typeof CS_GUIDE_DEF!=='undefined') ? CS_GUIDE_DEF : null, p=String(key||'').split('|'); if(!D) return null;
   if(p[0]==='grp') return (D.groups||{})[p[1]+'|'+p[2]] || null;
   if(p[0]==='spec'){ var sp=(D.spec||{})[p[1]+'|'+p[2]]; if(sp) return sp; try{ var sc=(typeof specialistCats==='function') ? (specialistCats(p[1])||[]) : []; if(sc.some(function(c){ return c && c.key===p[2]; })) return {}; }catch(err){} return null; }   /* 初期の文が無い部門の軸も、空の文から書ける */
-  if(p[0]==='cg') return ((p[1]==='office' || SPECIALIST_DEPTS[p[1]]) && ['G2','G3','G4','G5'].indexOf(p[2])>=0) ? {} : null;   /* v1102：専門職 × グレードで期待すること（空の文から書く） */
+  if(p[0]==='cg') return ((p[1]==='office' || SPECIALIST_DEPTS[p[1]]) && ['G2','G3','G4','G5'].indexOf(p[2])>=0) ? {} : null;   /* v1103：専門職 × グレードで期待すること（空の文から書く） */
   if(p[0]==='cat'){ var o={exp:{}}; ['G2','G3','G4','G5'].forEach(function(g){ var x=(D.expect||{})[p[1]+'|'+g]; if(x) o.exp[g]=x; }); return o; }
   return null;
 }
@@ -69079,7 +69079,7 @@ function csgEdit(key){
   h+='<div style="padding:12px 16px;overflow-y:auto"><div style="font-size:11px;color:var(--muted);line-height:1.6;margin-bottom:4px">'
     +t('保存すると、Career Score の画面・個別評価・スマホの「評価基準・例を見る」すべてに同じ文が出ます（1 つの元）。空にした欄は初期の文（たたき台）に戻ります。英語の画面の文は、英語の画面で直します。','Saving shows the same text everywhere “Criteria & examples” opens (one source). An empty field goes back to the initial draft. Japanese text is edited on the Japanese screen.')+'</div>';
   if(isCat) h+=['G2','G3','G4','G5'].map(function(g){ return ta('exp-'+g, X.exp[g], g+' '+t('に期待すること','— expectation')); }).join('');
-  else if(isCg){ var _cp=String(key).split('|'); h+=ta('what', X.what, ((typeof cgComboName==='function') ? cgComboName(_cp[1], _cp[2]) : _cp[1]+' × '+_cp[2])+' '+t('で期待すること','— what is expected')); }   /* v1102 */
+  else if(isCg){ var _cp=String(key).split('|'); h+=ta('what', X.what, ((typeof cgComboName==='function') ? cgComboName(_cp[1], _cp[2]) : _cp[1]+' × '+_cp[2])+' '+t('で期待すること','— what is expected')); }   /* v1103 */
   else {
     h+=ta('what', X.what, t('何を評価するか','What it evaluates'));
     [3,2,1,0].forEach(function(lv){ h+=ta('lv'+lv, X.lv[lv], lv+' '+t('の判断基準','— criterion'))+ta('ex'+lv, X.ex[lv], lv+' '+t('の行動例','— example')); });
@@ -69100,7 +69100,7 @@ function csgReadForm(key, L){
   var D=csgDefOf(key)||{}, li=(L==='en') ? 1 : 0, dv=function(x){ return Array.isArray(x) ? String(x[li]||'') : String(x||''); };
   var keep=function(s, def){ return (s && s!==dv(def)) ? s : ''; };
   if(String(key).indexOf('cat|')===0){ var exp={}; ['G2','G3','G4','G5'].forEach(function(g){ exp[g]=keep(v('exp-'+g), D.exp && D.exp[g]); }); return {exp:exp}; }
-  if(String(key).indexOf('cg|')===0) return {what:keep(v('what'), D.what)};   /* v1102 */
+  if(String(key).indexOf('cg|')===0) return {what:keep(v('what'), D.what)};   /* v1103 */
   return {what:keep(v('what'), D.what), lv:[0,1,2,3].map(function(i){ return keep(v('lv'+i), D.lv && D.lv[i]); }), ex:[0,1,2,3].map(function(i){ return keep(v('ex'+i), D.ex && D.ex[i]); }), cm:[0,1].map(function(i){ return keep(v('cm'+i), D.cm && D.cm[i]); })};
 }
 function csgSaveRec(key, L, vals, why, at0, reset){
@@ -69125,7 +69125,7 @@ function csgSave(reset){
     if(r.conflict){ showToast(t('ほかの端末でこの文が直されていました。開き直してから直してください','This text was changed on another device. Open it again before editing'),'warning'); csgBack(); return false; }
     if(!r.ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return false; }
     showToast(reset ? t('初期の文に戻しました','Reset to the draft') : t('保存しました（すべての画面で同じ文が出ます）','Saved (the same text shows everywhere)'),'success');
-    csgBack(); if(String(E.key).indexOf('cg|')===0){ try{ renderPage(curPage); }catch(err){} }   /* v1102：Score管理 の文を描き直す */
+    csgBack(); if(String(E.key).indexOf('cg|')===0){ try{ renderPage(curPage); }catch(err){} }   /* v1103：Score管理 の文を描き直す */
     return true;
   };
   /* v1099：保存の前にクラウドの最新を読む（ほかの端末で先に直されていたら保存しない） */
@@ -69173,7 +69173,7 @@ function csvScope(e, q){
   if(g!=='G3') return {g:g, scope:g};
   var T=null; try{ T=(typeof bonusTrackFor==='function') ? bonusTrackFor(e, q) : {t:cscTrackOfTitle(e && e.title)}; }catch(err){ T=null; }
   if(T && T.t && CSC_TRACK_NAME[T.t]) return {g:g, scope:'G3-'+T.t, track:T.t};
-  if(typeof cgOf==='function' && cgOf(e)) return {g:g, scope:'G3-op', cgTrack:true};   /* v1102：専門職・オフィス用の G3 は職種によらない */
+  if(typeof cgOf==='function' && cgOf(e)) return {g:g, scope:'G3-op', cgTrack:true};   /* v1103：専門職・オフィス用の G3 は職種によらない */
   return {g:g, scope:null, why:'track'};
 }
 /* 今のグレードの基準点（賞与 ① と同じ決め方：kevRuleFor → kevCsBase）。{bp, why}。G3 で職種が決まらないときは 3 職種が同じ点ならそれ */
@@ -69185,7 +69185,7 @@ function csvBase(e, S, sheet, max, q){
     try{ var RF=kevRuleFor(s, q, e && e.id, null, cfg); return kevCsBase(RF.r, RF, {sheet:sheet, max:max}, s); }catch(err){ return null; }
   });
   if(list.some(function(B){ return !B; })) return {bp:null, why:'unset'};
-  if(list.some(function(B){ return B.unset; })) return {bp:null, why:'cgunset', cg:list[0].cg};   /* v1102：専門職 × グレードの基準点が未設定 */
+  if(list.some(function(B){ return B.unset; })) return {bp:null, why:'cgunset', cg:list[0].cg};   /* v1103：専門職 × グレードの基準点が未設定 */
   if(list.some(function(B){ return B.legacy; })) return {bp:null, why:'legacy'};
   var bp=list[0].bp;
   if(bp==null || !isFinite(Number(bp)) || list.some(function(B){ return B.bp!==bp; })) return {bp:null, why:(S.scope ? 'unset' : 'track')};
@@ -69198,7 +69198,7 @@ function csvView(e, opt){
   var rec=live ? null : ((typeof getLssScores==='function') ? getLssScores(name) : null);
   var sc=live ? (opt.scores||{}) : ((rec && rec.scores) || {});
   var sheet=(typeof kevCsSheet==='function') ? kevCsSheet(e) : 'store';
-  var cg0=(sheet==='spec' || sheet==='office') && typeof cgOf==='function' ? cgOf(e) : null;   /* v1102 */
+  var cg0=(sheet==='spec' || sheet==='office') && typeof cgOf==='function' ? cgOf(e) : null;   /* v1103 */
   /* 評価表のカテゴリー（lssCatsForName と同じ決め方。名簿を読み直さないよう、渡された人で決める＝一覧で人数ぶん名簿を解かない・Codex の P3） */
   var defs=null; try{ var _dp=(typeof empSpecialistDept==='function' && e) ? empSpecialistDept(e) : null; if(_dp && typeof specialistCats==='function') defs=specialistCats(_dp); }catch(err){ defs=null; }
   if(!defs) defs=cscStoreCats() || [];
@@ -69238,13 +69238,13 @@ function csvWhyTxt(B){
   if(w==='track') return t('G3 の職種が決まっていないため、基準点を出せません','The G3 track is not set, so there is no base yet');
   if(w==='legacy') return t('基準点の設定を確認中です（GM・CEO が設定タブ ② で選び直します）','The base is being re-checked (GM/CEO will re-select it in settings ②)');
   if(w==='office') return t('オフィス用 Career Score（オフィス タブ）で評価しています','Evaluated on the office Career Score (Office tab)');
-  if(w==='cgunset' && B.cg) return t(cgComboName(B.cg.dept, B.cg.g)+' の基準点はまだ設定されていません（GM・CEO が設定します）', 'No base is set yet for '+cgComboName(B.cg.dept, B.cg.g)+' (GM/CEO set it)');   /* v1102 */
+  if(w==='cgunset' && B.cg) return t(cgComboName(B.cg.dept, B.cg.g)+' の基準点はまだ設定されていません（GM・CEO が設定します）', 'No base is set yet for '+cgComboName(B.cg.dept, B.cg.g)+' (GM/CEO set it)');   /* v1103 */
   if(w==='grade') return t('グレードが分からないため、基準点を出せません','The grade is unknown, so there is no base');
   return t('基準点が設定されていません','No base points are set');
 }
 /* 今のグレード（G バッジ＋職種または役職名） */
 function csvGradeHtml(V){
-  /* v1102：肩書き（Office Manager は Accounting Manager）と専門職（小さく） */
+  /* v1103：肩書き（Office Manager は Accounting Manager）と専門職（小さく） */
   var e=V.e||{}, nm=(V.track && !V.cg) ? cscTrackName(V.track) : ((typeof empTitleLabel==='function') ? empTitleLabel(e) : String(e.title||'')), dp=null;
   try{ dp=empSpecialistDept(e); }catch(err){ dp=null; }
   return (V.g ? ghBadge(V.g) : '<span style="color:var(--muted)">—</span>')+(nm ? ' <span style="font-size:12.5px;font-weight:700">'+escapeHtml(nm)+'</span>' : '')+(dp && typeof cgName==='function' ? ' <span style="font-size:11px;color:var(--muted)">'+escapeHtml(cgName(dp))+'</span>' : '');
@@ -69300,7 +69300,7 @@ function csvMainHtml(V, opt){
       +(opt.extra||'')
     +'</div></div>'
     +(opt.noCats ? '' : csvCatsHtml(V, opt.openCats))
-    +((V.cg && !opt.noExpect && typeof cgExpectHtml==='function') ? cgExpectHtml((typeof cgPermOf==='function' && cgPermOf(V.e)) || V.cg) : '');   /* v1102：期待されること（専門職 × グレード） */
+    +((V.cg && !opt.noExpect && typeof cgExpectHtml==='function') ? cgExpectHtml((typeof cgPermOf==='function' && cgPermOf(V.e)) || V.cg) : '');   /* v1103：期待されること（専門職 × グレード） */
 }
 /* 一覧のカード用の 1 行（グレード・総合点 ／ 基準点・達成） */
 function csvLineHtml(V){
@@ -69309,7 +69309,7 @@ function csvLineHtml(V){
 }
 /* FUNERGY_CS_GRADE_VIEW_END */
 /* FUNERGY_SPECIALIST_CAREER_BEGIN */
-/* ===== v1102（Motoさん 10/21 12:37・12:46 HST の依頼、13:52 HST の回答・UI案59）：専門職キャリア × グレード =====
+/* ===== v1103（Motoさん 10/21 12:37・12:46 HST の依頼、13:52 HST の回答・UI案59）：専門職キャリア × グレード =====
    回答：
    1. 採点は今の部門の評価表のまま（Career Score › Score管理 にある評価項目：経理・調理 8 軸 × 4 項目＝96 点、サービス・マーケ 8 軸 × 1 項目＝24 点）。
       基準点は「専門職 × グレード」ごとに持つ。
@@ -69864,7 +69864,7 @@ function cgSettingsTableHtml(q, can){
   });
   return h+'</tbody></table></div>';
 }
-/* v1102（独立レビュー P2-2）：v1101 以前の端末で 2026 Q3 以降を確定した記録（印 cg が無い）に、部門別の専門職の区間があるか。その人の名前 */
+/* v1103（独立レビュー P2-2）：v1102 以前の端末で 2026 Q3 以降を確定した記録（印 cg が無い）に、部門別の専門職の区間があるか。その人の名前 */
 function cgOldSnapNames(snap){
   if(!snap || typeof snap!=='object' || Number(snap.gen)<3 || snap.cg) return [];
   var out=[], P=(snap.people && typeof snap.people==='object') ? snap.people : {};
@@ -69911,7 +69911,7 @@ function canScoreLss(name){ if (typeof ocsOldLocked==='function' && ocsOldLocked
 function lssNeedsApproval(name){
   if (lssCanSelfRequest(name)) return true;
   if (curRealRole === 'g4') return true;
-  /* v1102：専門職 × グレードで「付ける人」に入れた AM より下の役職（経理・Head Chef など）が付けた点は、承認を通す */
+  /* v1103：専門職 × グレードで「付ける人」に入れた AM より下の役職（経理・Head Chef など）が付けた点は、承認を通す */
   var _rr = curRealRole || curRole;
   return ['ceo','gm','am'].indexOf(_rr) < 0 && typeof canEditLss==='function' && canEditLss(name);
 }
@@ -69996,7 +69996,7 @@ function submitLssScoreRequest(name){
      role が 'ceo' の Tacさんには届かない。★try/catch は addApproval と同じ書き方。 */
   try{ addNotif({ type:'approval', title:'承認待ち：Career Score',
     text:(name + ' の変更 ' + diff.length + '項目（' + by + ' 申請）'),
-    toRoles:((typeof lssApproveRolesFor==='function') ? lssApproveRolesFor(name) : ['gm']), page:'leadership', refId:'lssq' }); }catch(e){}   /* v1102：専門職 × グレードで決めた「承認する人」にも */
+    toRoles:((typeof lssApproveRolesFor==='function') ? lssApproveRolesFor(name) : ['gm']), page:'leadership', refId:'lssq' }); }catch(e){}   /* v1103：専門職 × グレードで決めた「承認する人」にも */
   showToast(name+' のCareer Score変更を申請しました（承認後に反映されます）','success');
   renderPage('leadership');
 }
@@ -70004,9 +70004,9 @@ function submitLssScoreRequest(name){
    ★curRealRole で見る。既存の承認エンジンは ceo を gm の代理として通すので、
      そこには載せずに、ここで宛先を決める。 */
 function lssCanApproveScore(){ return (curRealRole||curRole) === 'gm'; }
-/* v1102：承認・却下した人の名前（GM は今までどおり。ほかの役職は役職の既定の名前ではなく、その人） */
+/* v1103：承認・却下した人の名前（GM は今までどおり。ほかの役職は役職の既定の名前ではなく、その人） */
 function lssApproverName(){ var rr=curRealRole||curRole; return (rr==='gm' ? ((ROLE_CONFIG[curRole]||{}).name || curUserName) : (curUserName || (ROLE_CONFIG[curRole]||{}).name)) || ''; }
-/* v1102：自分が出した申請か（GM 以外は自分の申請を承認しない） */
+/* v1103：自分が出した申請か（GM 以外は自分の申請を承認しない） */
 function lssReqByMe(r){ var me=curUserName || (ROLE_CONFIG[curRole]||{}).name || ''; return !!(r && r.by && me && r.by===me && (curRealRole||curRole)!=='gm'); }
 function lssPendingScoreReqs(){
   return getLssRequests().filter(function(r){ return r && r.kind==='score' && _srPending(r); });
@@ -70068,7 +70068,7 @@ function lssScoreDiffHtml(r){
 }
 /* ★v999: 承認カード。GM だけに出す。 */
 function lssScoreApprovalCardHtml(){
-  var reqs = lssPendingScoreReqs().filter(function(r){ return (typeof lssCanApproveScoreFor==='function') ? (lssCanApproveScoreFor(r.name) && !(typeof lssReqByMe==='function' && lssReqByMe(r))) : lssCanApproveScore(); });   /* v1102：専門職 × グレードで決めた「承認する人」にも（自分の申請は除く） */
+  var reqs = lssPendingScoreReqs().filter(function(r){ return (typeof lssCanApproveScoreFor==='function') ? (lssCanApproveScoreFor(r.name) && !(typeof lssReqByMe==='function' && lssReqByMe(r))) : lssCanApproveScore(); });   /* v1103：専門職 × グレードで決めた「承認する人」にも（自分の申請は除く） */
   if (!reqs.length) return '';
   var h = '<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>'
     + t('Career Score の変更承認','Career Score changes') + ' (' + reqs.length + ')</div>';
@@ -70129,7 +70129,7 @@ function approveLssScoreRequest(id){
   var reqs = getLssRequests();
   var r = reqs.find(function(x){ return x.id===id; });
   if (!r || r.kind!=='score' || !_srPending(r)) { showToast(t('この申請は処理済みです','Already handled'),'info'); return; }
-  if (!((typeof lssCanApproveScoreFor==='function') ? lssCanApproveScoreFor(r.name) : lssCanApproveScore()) || (typeof lssReqByMe==='function' && lssReqByMe(r))) { showToast(t('承認できるのはGM（と Score管理 で決めた役職）です。自分の申請は承認できません','Only the GM (and roles set in Score admin) can approve; not your own request'),'warning'); return; }   /* v1102 */
+  if (!((typeof lssCanApproveScoreFor==='function') ? lssCanApproveScoreFor(r.name) : lssCanApproveScore()) || (typeof lssReqByMe==='function' && lssReqByMe(r))) { showToast(t('承認できるのはGM（と Score管理 で決めた役職）です。自分の申請は承認できません','Only the GM (and roles set in Score admin) can approve; not your own request'),'warning'); return; }   /* v1103 */
   if (lssScoreSetNg(r)) { showToast(t('評価項目が入れ替わっています。申請しなおしてください','The item set changed — ask for a new request'),'warning'); return; }
   var rec = getLssScores(r.name) || {};
   var _ps0 = lssSummary(r.name), prevPct = _ps0.totalPct;
@@ -70142,7 +70142,7 @@ function approveLssScoreRequest(id){
   setLssScores(r.name, { evaluator: (r.by||''), date: todayJP(), scores: scores,
     comment: (r.comment||''), status: '確定' });
   var _ps1 = lssSummary(r.name), newPct = _ps1.totalPct;
-  var me = (typeof lssApproverName==='function') ? lssApproverName() : ((ROLE_CONFIG[curRole]||{}).name || curUserName || '');   /* v1102（独立レビュー P2-1）：GM 以外も承認するので、その人の名前 */
+  var me = (typeof lssApproverName==='function') ? lssApproverName() : ((ROLE_CONFIG[curRole]||{}).name || curUserName || '');   /* v1103（独立レビュー P2-1）：GM 以外も承認するので、その人の名前 */
   var hist = ls('lss_history', []);
   var entry = { name:r.name, pct:newPct, prevPct:prevPct, score:_ps1.totalScore, max:_ps1.totalMax, prevScore:_ps0.totalScore, prevMax:_ps0.totalMax, by:(r.by||''), approver:me,   /* v1099：点も残す（pct は前の版の端末のため） */
     date: todayJP(), ts: Date.now(), comment:(r.comment||''), items:((r.diff||[]).length) };
@@ -70162,9 +70162,9 @@ function rejectLssScoreRequest(id){
   var reqs = getLssRequests();
   var r = reqs.find(function(x){ return x.id===id; });
   if (!r || r.kind!=='score' || !_srPending(r)) { showToast(t('この申請は処理済みです','Already handled'),'info'); return; }
-  if (!((typeof lssCanApproveScoreFor==='function') ? lssCanApproveScoreFor(r.name) : lssCanApproveScore()) || (typeof lssReqByMe==='function' && lssReqByMe(r))) { showToast(t('却下できるのはGM（と Score管理 で決めた役職）です','Only the GM (and roles set in Score admin) can reject'),'warning'); return; }   /* v1102 */
+  if (!((typeof lssCanApproveScoreFor==='function') ? lssCanApproveScoreFor(r.name) : lssCanApproveScore()) || (typeof lssReqByMe==='function' && lssReqByMe(r))) { showToast(t('却下できるのはGM（と Score管理 で決めた役職）です','Only the GM (and roles set in Score admin) can reject'),'warning'); return; }   /* v1103 */
   var el = document.getElementById('lssrj-' + id);
-  var me = (typeof lssApproverName==='function') ? lssApproverName() : ((ROLE_CONFIG[curRole]||{}).name || curUserName || '');   /* v1102（独立レビュー P2-1）：GM 以外も承認するので、その人の名前 */
+  var me = (typeof lssApproverName==='function') ? lssApproverName() : ((ROLE_CONFIG[curRole]||{}).name || curUserName || '');   /* v1103（独立レビュー P2-1）：GM 以外も承認するので、その人の名前 */
   r.status = '却下'; r.approver = me; r.approvedDate = todayJP(); r.decidedAt = Date.now();
   r.rejectReason = ((el && el.value) || '').trim();
   lsSet('lss_requests', reqs);
@@ -70373,7 +70373,7 @@ function approveEval(staffId) {
    ============================================================ */
 var lssView = 'score';
 function setLssView(v){ lssView = v; renderPage('leadership'); }
-/* v1102：通常（店舗）のときに出す、今までの一覧（担当軸）。専門職 × グレードは renderScoreMgmt（FUNERGY_SPECIALIST_CAREER） */
+/* v1103：通常（店舗）のときに出す、今までの一覧（担当軸）。専門職 × グレードは renderScoreMgmt（FUNERGY_SPECIALIST_CAREER） */
 function renderScoreMgmtGeneral(){
   function axName(k){ var c=LSS_CATEGORIES.find(function(x){return x.key===k;}); return c?c.name:k; }
   function axChips(keys){ return (keys||[]).map(function(k){ return `<span class="tag tag-blue" style="font-size:9px" title="${escapeHtml(axName(k))}">${k} ${escapeHtml(axName(k))}</span>`; }).join(' '); }
@@ -71539,7 +71539,7 @@ function ocsOpenItemsModal(){
   openModal(h);
 }
 /* 対象者の追加：★名前で人を決めない。従業員マスターから ID で選ぶ */
-function ocsOfficeLike(e){ return ['office','office_crew'].indexOf(e.role)>=0 || ['Office Crew','Office Staff','Accountant','Office Manager','Office Crew Leader','Accounting Leader'].indexOf(e.title)>=0; }   /* v1102：経理の新しい肩書き */
+function ocsOfficeLike(e){ return ['office','office_crew'].indexOf(e.role)>=0 || ['Office Crew','Office Staff','Accountant','Office Manager','Office Crew Leader','Accounting Leader'].indexOf(e.title)>=0; }   /* v1103：経理の新しい肩書き */
 function ocsOpenAddModal(){
   if(!ocsCanAssign()){ showToast(t('対象者の追加は GM・CEO だけです','Only the GM and CEO can add people'),'warning'); return; }
   var have={}; ocsAsgIds().forEach(function(id){ have[id]=1; });
@@ -72366,7 +72366,7 @@ function ocsOldBannerHtml(){
 }
 function renderLeadership() {
   // 対象＝リーダー以上
-  var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo' && (typeof canViewLssOfEmp==='function' ? canViewLssOfEmp(e) : lssG4Sees(e)));   /* v1051: G4 は G4 以下だけ。v1102：専門職 × グレードで決めた「見る人」 */
+  var leaders = visibleStaffForManager().filter(e=>(isLeaderPlus(e) || gradeNum(empGrade(e))>=2) && e.status!=='退職' && e.role!=='ceo' && (typeof canViewLssOfEmp==='function' ? canViewLssOfEmp(e) : lssG4Sees(e)));   /* v1051: G4 は G4 以下だけ。v1103：専門職 × グレードで決めた「見る人」 */
   leaders.sort(function(a,b){ var d=gradeNum(empGrade(a))-gradeNum(empGrade(b)); return d!==0?d:String(a.name).localeCompare(String(b.name)); });
   // 自分がリーダー以上なら自分も含める
   var meName = (ROLE_CONFIG[curRole]||{}).name||curUserName;
@@ -72376,7 +72376,7 @@ function renderLeadership() {
   if (!viewOthers) {
     var realMe = curUserName || meName;
     var meEmp = getEmployees().find(e=>e.name===realMe);
-    /* v1102：専門職 × グレードで「見る人」に入れた役職は、その人たちも */
+    /* v1103：専門職 × グレードで「見る人」に入れた役職は、その人たちも */
     var _cgSee = (typeof cgCsGranted==='function') ? getEmployees().filter(function(e){ return e && e.name!==realMe && e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2 && cgCsGranted(e) && canViewLssOfEmp(e); }) : [];
     leaders = (meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe)).concat(_cgSee);
   }
@@ -72516,7 +72516,7 @@ function saveLssRules() {
 }
 async function openLssDetail(name) {
   var realMe = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  if (name !== realMe && typeof canViewLssOf==='function' && !canViewLssOf(name)) { showToast((curRealRole==='g4' && canViewOthersLss()) ? 'G4 が見られるのは G4 以下のスタッフの Career Score です' : '他のスタッフのCareer Scoreは閲覧できません','warning'); return; }   /* v1051・v1102：専門職 × グレードで決めた「見る人」 */
+  if (name !== realMe && typeof canViewLssOf==='function' && !canViewLssOf(name)) { showToast((curRealRole==='g4' && canViewOthersLss()) ? 'G4 が見られるのは G4 以下のスタッフの Career Score です' : '他のスタッフのCareer Scoreは閲覧できません','warning'); return; }   /* v1051・v1103：専門職 × グレードで決めた「見る人」 */
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(LSS_EMP_PREFIX+name); }catch(e){}
   window._lssName = name;
   window._lssCat = window._lssCat || 'H';

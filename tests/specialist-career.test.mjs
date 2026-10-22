@@ -1,4 +1,4 @@
-// v1102 (Moto 10/21 12:37 · 12:46 HST requests, 13:52 HST answers to UI案59): specialist careers × grades.
+// v1103 (Moto 10/21 12:37 · 12:46 HST requests, 13:52 HST answers to UI案59): specialist careers × grades.
 //  1. the scoring items stay the department sheets (経理・調理 96 points, サービス・マーケ 24 points); the base is held per career × grade;
 //  2. every career × grade base starts "基準未設定"; the store grade base is never used instead; an unset base stops that person's bonus ① (with the reason);
 //  3. from 2026 Q3 (not confirmed yet → recalculated);
@@ -481,11 +481,11 @@ test('independent review P2-1: an approver below GM is recorded by their own nam
   const as = (role, name) => { c.curRole = role === 'g4' ? 'am' : role; c.curUserName = name; vm.runInContext(`curRealRole = ${JSON.stringify(role)};`, c); };
   as('g4', 'Gina Manager'); assert.equal(run(c, 'lssApproverName()'), 'Gina Manager');
   as('office', 'Zed Office'); assert.equal(run(c, 'lssApproverName()'), 'Zed Office');
-  as('gm', 'GM Sample'); assert.equal(run(c, 'lssApproverName()'), 'GM', 'GM keeps the name recorded before v1102');
+  as('gm', 'GM Sample'); assert.equal(run(c, 'lssApproverName()'), 'GM', 'GM keeps the name recorded before v1103');
   for (const f of ['approveLssScoreRequest', 'rejectLssScoreRequest']) assert.match(fnSrc(f), /var me = \(typeof lssApproverName==='function'\) \? lssApproverName\(\)/, f);
 });
 
-test('independent review P2-2: a 2026 Q3+ quarter confirmed by a v1101 device (no cg mark) with a specialist is named; v1102 confirmations carry the mark', () => {
+test('independent review P2-2: a 2026 Q3+ quarter confirmed by a v1102 device (no cg mark) with a specialist is named; v1103 confirmations carry the mark', () => {
   const c = co();
   const snap = { gen: 3, people: { ray: { name: 'Ray Sample', segs: [{ items: { c: { base: { sheet: 'spec', bp: 72 } } } }] }, mia: { name: 'Mia Sample', segs: [{ items: { c: { base: { sheet: 'store', bp: 315 } } } }] } } };
   assert.deepEqual(run(c, `cgOldSnapNames(${JSON.stringify(snap)})`), ['Ray Sample']);
