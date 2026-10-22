@@ -427,7 +427,7 @@ function v1100Save(store, open, vals, from = Q) {
 }
 const tick = () => { const t = Date.now() + 3; while (Date.now() < t) { /* the stores' save times (_at) must differ */ } };
 
-test('v1101: settings saved by the released v1100 (no c8) — a v1099 re-save is still found by a walk that follows the save times; saving in v1101 gives them c8', () => {
+test('v1102: settings saved by the released v1100 (no c8) — a v1099 re-save is still found by a walk that follows the save times; saving in v1102 gives them c8', () => {
   const at = (c, q, emp = 'null', scope = 'G2') => run(c, `(function(){ var RF=kevRuleFor('${scope}', '${q}', ${emp}, null, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, '${scope}'); return [B.bp, B.bs, !!B.legacy, !!B.lost, B.lost ? B.lost.ref : null]; })()`);
   // G2 260 / 13 saved on v1100 (a5a101b): no c8
   let st = v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
@@ -450,7 +450,7 @@ test('v1101: settings saved by the released v1100 (no c8) — a v1099 re-save is
   tick(); const s1b = v1099Resave(s1, `kevRuleOpen('G4', 'c')`, { bp: '300' }, null, '2026-Q4').store;
   a.STORE.bonus_eval_rule = J(s1b.bonus_eval_rule);
   assert.deepEqual(at(a, '2026-Q4', 'null', 'G4').slice(3), [true, { bp: 260, bs: null }]);
-  // a value changed in v1101 replaces c8 (a later v1099 range-only save keeps the mirrored G4 value → not stopped)
+  // a value changed in v1102 replaces c8 (a later v1099 range-only save keeps the mirrored G4 value → not stopped)
   const h = N.co();
   saveForm(h, `kevRuleOpen('G4', 'c')`, { bp: '260' });
   saveForm(h, `kevRuleOpen('G4', 'c')`, { bp: '280' });
@@ -479,7 +479,7 @@ test('v1101: settings saved by the released v1100 (no c8) — a v1099 re-save is
   const e = N.co(); e.STORE.bonus_eval_rule = J(st.bonus_eval_rule);
   e.STORE.bonus_eval_rule[`G2|${Q}`].hist.push({ at: 'x' });
   assert.deepEqual(at(e, Q).slice(2, 4), [true, true]);
-  // saving another part in v1101 gives the v1100 ① its c8 (then the lineage no longer needs the walk)
+  // saving another part in v1102 gives the v1100 ① its c8 (then the lineage no longer needs the walk)
   const f = N.co(); f.STORE.bonus_eval_rule = J(v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' }).bonus_eval_rule);
   assert.equal(run(f, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, '試験', '② を変更')`), true);
   assert.deepEqual(J(f.STORE.bonus_eval_rule[`G2|${Q}`].set.c8), { b8: 1, bp8: 260, bs8: 13 });
@@ -521,7 +521,7 @@ test('Codex 98c1b60 P2: the history (20 entries) dropped the v1100 ① of a reco
   const q4 = v1099Resave(J(old.STORE), `kevRuleOpen('G2', 'c')`, {}, null, '2026-Q4').store;
   const c4 = N.co(); c4.STORE.bonus_eval_rule = J(q4.bonus_eval_rule);
   assert.deepEqual(at(c4, '2026-Q4'), [252, 13, true, true, UNKNOWN]);
-  // entering ① again in v1101 ends it
+  // entering ① again in v1102 ends it
   saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
   assert.deepEqual(one(N, c, 'aki'), [420, 260, 13, 1.05, null]);
   assert.ok(!misfits(c).some(x => /G2・①/.test(x)));
