@@ -42,7 +42,7 @@ function co() {
     function ghBadge(g){ return '<badge>'+g+'</badge>'; }`, c);
   vm.runInContext([varBlock('SPECIALIST_DEPTS', '\n};'), varBlock('SPECIALIST_AXIS_ITEMS', '\n};'), fnSrc('specialistCats'), varBlock('JOB_TITLES', '\n];'), fnSrc('jobTitle'),
     varBlock('CS_GUIDE_DEF', '\n};'), CSV, SPEC,
-    ...['lssRoleRank', 'canEditLss', 'canViewOthersLss', 'lssG4Sees', 'lssIsSelf', 'lssCanSelfRequest', 'lssNeedsApproval', 'lssCanApproveScore', 'lssReqByMe', 'gradeNum', 'ocsOfficeLike'].map(fnSrc)].join('\n'), c);
+    ...['lssRoleRank', 'canEditLss', 'canViewOthersLss', 'lssG4Sees', 'lssIsSelf', 'lssCanSelfRequest', 'lssNeedsApproval', 'lssCanApproveScore', 'lssReqByMe', 'lssApproverName', 'gradeNum', 'ocsOfficeLike'].map(fnSrc)].join('\n'), c);
   vm.runInContext(`
     lssCatsForName = function(n){ var e=EMPS.find(function(x){ return x.name===n; }), d=e ? empSpecialistDept(e) : null; return d ? specialistCats(d) : lssCatsOrdered(); };
     ROLE_CONFIG = { ceo:{name:'CEO', label:'CEO'}, gm:{name:'GM', label:'GM'}, am:{label:'AM'}, g4:{label:'Store Manager'}, sl:{label:'Store Leader'}, g2:{label:'Crew Leader'}, crew:{label:'Crew'}, office:{label:'経理'}, office_crew:{label:'事務Crew'}, chef:{label:'Head Chef'} };
@@ -450,10 +450,8 @@ test('the expectation text is one cs_guide record per career × grade and langua
 });
 
 test('display: one helper for "G4 Head Chef 調理" on the lists, profile, Career Score, growth chart and bonus screens', () => {
-  for (const name of ['openStaffDetail', 'renderStaffMaster', 'kevEvalListHtml', 'renderLeadership'].filter(n => SRC.includes('\nfunction ' + n + '('))) {
-    const s = fnSrc(name);
-    if (/\.title/.test(s)) assert.match(s, /empTitleHtml/, name);
-  }
+  for (const name of ['renderStaffMaster', 'kevTabHtml', 'kevListTableHtml', 'renderLeadership']) assert.match(fnSrc(name), /empTitleHtml/, name);
+  assert.match(fnSrc('renderGradeHideConfig'), /jobTitleLabel/);
   assert.ok((SRC.match(/empTitleHtml\(/g) || []).length >= 9);
   assert.match(fnSrc('csvGradeHtml'), /empTitleLabel/);
   // the title select is grouped by career with the grade (Store Leader only for someone who still has it)
@@ -475,4 +473,71 @@ test('the individual evaluation ① card names the base it uses (専門職 × �
   const h = run(c, `(function(){ var cfg=kbCfg(), kv=kevApplies(cfg), e=EMPS.find(function(x){ return x.id==='ray'; }), b=kevBonusForEmp(e, cfg, kv), x=b.segs[0], I={sc:{key:x.key, g:x.g}, src:x.src}; return kevCareerCardHtml3(e, x.items.c, I, kv); })()`);
   assert.match(h, /参照している基準：専門職（調理 × G4）・基準未設定/);
   assert.match(h, /調理 × G4 の基準点が未設定。通常 G4 の基準点では計算しません/);
+});
+
+test('independent review P2-1: an approver below GM is recorded by their own name (GM as before)', () => {
+  const c = co();
+  vm.runInContext(`ROLE_CONFIG.g4 = {label:'G4', name:'Store Manager'}; ROLE_CONFIG.am.name = 'AM Default'; ROLE_CONFIG.office.name = 'Office Default';`, c);
+  const as = (role, name) => { c.curRole = role === 'g4' ? 'am' : role; c.curUserName = name; vm.runInContext(`curRealRole = ${JSON.stringify(role)};`, c); };
+  as('g4', 'Gina Manager'); assert.equal(run(c, 'lssApproverName()'), 'Gina Manager');
+  as('office', 'Zed Office'); assert.equal(run(c, 'lssApproverName()'), 'Zed Office');
+  as('gm', 'GM Sample'); assert.equal(run(c, 'lssApproverName()'), 'GM', 'GM keeps the name recorded before v1102');
+  for (const f of ['approveLssScoreRequest', 'rejectLssScoreRequest']) assert.match(fnSrc(f), /var me = \(typeof lssApproverName==='function'\) \? lssApproverName\(\)/, f);
+});
+
+test('independent review P2-2: a 2026 Q3+ quarter confirmed by a v1101 device (no cg mark) with a specialist is named; v1102 confirmations carry the mark', () => {
+  const c = co();
+  const snap = { gen: 3, people: { ray: { name: 'Ray Sample', segs: [{ items: { c: { base: { sheet: 'spec', bp: 72 } } } }] }, mia: { name: 'Mia Sample', segs: [{ items: { c: { base: { sheet: 'store', bp: 315 } } } }] } } };
+  assert.deepEqual(run(c, `cgOldSnapNames(${JSON.stringify(snap)})`), ['Ray Sample']);
+  assert.deepEqual(run(c, `cgOldSnapNames(${JSON.stringify(Object.assign({}, snap, { cg: 1 }))})`), []);
+  assert.deepEqual(run(c, `cgOldSnapNames(${JSON.stringify(Object.assign({}, snap, { gen: 2 }))})`), []);
+  assert.match(SRC, /d\.evSnap\.gen=3; d\.evSnap\.start3=KEV3_START;[^\n]*\n    d\.evSnap\.cg=1;/);
+  assert.match(SRC, /cgOldSnapNames\(_kvq\.snap\)/);
+});
+
+test('independent review P3-3・P3-4: the unset list follows the segments (a store period before becoming a specialist) and skips ① fixed at 1.00', () => {
+  const c = co();
+  c.STORE.bonus_eval_ovr['ray|2026-Q3'].set.c = { on: false, g2: 1 };
+  let M = run(c, `kevMisfits3('${Q}')`);
+  assert.ok(!M.block.some(x => /Ray Sample/.test(x.t)), 'Ray computes at 1.00: not listed');
+  assert.equal(person(c, 'ray').blocked, null);
+  // Neo: Kitchen Leader (store G3) until 8/15, Head Chef from 8/16 → the G3 period is judged on 調理 × G3
+  const n = c.EMPS.find(e => e.id === 'neo'); n.title = 'Head Chef'; n.g = 'G4';
+  c.SEGS.neo = [{ g: 'G3', from: '2026-07-01', to: '2026-08-15', days: 46 }, { g: 'G4', from: '2026-08-16', to: '2026-09-30', days: 46 }];
+  setBase(c, '調理', 'G4', 60, 3);
+  M = run(c, `kevMisfits3('${Q}')`);
+  const hit = M.block.find(x => /調理 × G3 の基準点が未設定/.test(x.t));
+  assert.ok(hit && /Neo Sample/.test(hit.t) && /cgBaseOpen\(&quot;調理&quot;,&quot;G3&quot;\)/.test(hit.act), JSON.stringify(M.block));
+});
+
+test('independent review P3-5: an accountant on the office sheet takes permissions and expectations from 経理 × G#, and the base from オフィス用 × G#', () => {
+  const c = co();
+  c.OCS['Max Sample'] = true;
+  assert.deepEqual([run(c, `cgOf(EMPS.find(function(e){ return e.id==='max'; })).key`), run(c, `cgPermOf(EMPS.find(function(e){ return e.id==='max'; })).key`)], ['office|G4', '経理|G4']);
+  c.STORE.career_cfg = { '経理|G4': { csEdit: ['office_crew'], hide: ['budget'], _at: 1 }, 'office|G4': { csEdit: ['sl'], _at: 1 } };
+  c.curRole = 'office_crew'; c.curUserName = 'Zed'; vm.runInContext(`curRealRole = 'office_crew';`, c);
+  assert.equal(run(c, `canEditLss('Max Sample')`), true);
+  c.curUserName = 'Max Sample';
+  assert.deepEqual(run(c, 'cgHideForMe()'), ['budget']);
+  // Score管理 lists Max in both rows: 経理 × G4 (permissions) and オフィス用 × G4 (base); the office row has no permission card
+  vm.runInContext(`curRealRole = 'gm'; function navItemById(p){ return {label:p}; }`, c); c.curRole = 'gm'; c.curUserName = 'GM Sample';
+  assert.deepEqual(run(c, `cgPeople('経理', 'G4').map(function(e){ return e.name; })`), ['Max Sample']);
+  assert.deepEqual(run(c, `cgPeople('office', 'G4').map(function(e){ return e.name; })`), ['Max Sample']);
+  vm.runInContext(`window._smSel = {c:'経理', g:'G4'};`, c);
+  assert.match(run(c, 'renderScoreMgmt()'), /オフィス用 Career Score で評価している人（Max Sample）の基準点は「オフィス用 × G4」の行/);
+  vm.runInContext(`window._smSel = {c:'office', g:'G4'};`, c);
+  const h = run(c, 'renderScoreMgmt()');
+  assert.doesNotMatch(h, /権限を設定する/);
+  assert.match(h, /肩書きの専門職（経理など）の行で決めます/);
+});
+
+test('independent review P3-6・P3-7: a role granted to score or approve can also view; the extra menu entry is not added to a page the grade rule hides', () => {
+  const c = co();
+  c.STORE.career_cfg = { '経理|G2': { csApprove: ['office'], _at: 1 } };
+  c.curRole = 'office'; c.curUserName = 'Zed'; vm.runInContext(`curRealRole = 'office';`, c);
+  assert.deepEqual([run(c, `canViewLssOf('Oli Sample')`), run(c, `lssCanApproveScoreFor('Oli Sample')`), run(c, `canEditLss('Oli Sample')`)], [true, true, false]);
+  c.STORE.career_cfg = { '経理|G2': { csEdit: ['office'], _at: 1 } };
+  assert.deepEqual([run(c, `canViewLssOf('Oli Sample')`), run(c, `canEditLss('Oli Sample')`)], [true, true]);
+  assert.match(fnSrc('groupsForRole'), /!\(typeof isPageHiddenForMe==='function' && isPageHiddenForMe\('leadership'\)\)/);
+  assert.match(fnSrc('renderLeadership'), /cgCsGranted\(e\)/);
 });
