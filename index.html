@@ -67348,13 +67348,25 @@ function kevCsLost(all, prefix, v){
   if(!c || kevN(c.b8)) return null;
   var ref=(set.c8 && typeof set.c8==='object' && kevN(set.c8.b8)) ? set.c8 : kevCsLostWalk(all, prefix, v);   /* v1101：c8 の無い記録（v1100 で保存）はたどって探す */
   if(!ref) return null;
+  if(ref.unknown) return {bp:true, bs:true, ref:{bp:null, bs:null, unknown:true}};
   var pos=function(n){ return (n!=null && n>0) ? n : null; }, rb=kevN(ref.bp8), rs=pos(kevN(ref.bs8));
   var bp=(kevN(c.bp)!==rb), bs=(pos(kevN(c.bs))!==rs);
   return (bp || bs) ? {bp:bp, bs:bs, ref:{bp:rb, bs:rs}} : null;
 }
 /* v1101：c8 の無い記録（v1100 ＝ a5a101b で保存した ①）のための探し方。新しい順にたどり、印 b8 の ① が最初に見つかったところ。
    前の四半期の版へ移るときは、時刻（_at）で、今の版を作ったときまでにあった版・状態だけを見る（独立レビュー 5db2653 の P2：あとで前の四半期を直した・
-   あとで作った版・v1100 より前からあった版を、写した元とみなさない）。① の無い状態に当たったら切れる。形の崩れた履歴は飛ばす。時刻の無い記録は前の決め方のまま */
+   あとで作った版・v1100 より前からあった版を、写した元とみなさない）。① の無い状態に当たったら切れる。形の崩れた履歴は飛ばす。時刻の無い記録は前の決め方のまま。
+   見つからないまま、変更の履歴（20 件まで）が切れた版に当たり、その残っているいちばん古い状態が v1100 を使えたころ（KEV_CS_LOST_SINCE）より後なら、
+   切れた所に v1100 の ① があったか分からない → {unknown:true}（Codex 98c1b60 の P2：黙って通常の計算に進まない）。v1099 の値だけの記録でも、
+   v1100 を使えたころより後に同じ版を 20 回より多く保存すると分からないになる（安全なほうに止まる・① を入れ直せば終わる） */
+var KEV_CS_LOST_SINCE=Date.UTC(2026, 9, 21, 10, 0, 0);   /* 2026-10-21 0:00 HST（v1100 は 12:04 HST に公開。端末の時計のずれの余裕） */
+var KEV_HIST_KEEP=20;   /* kevPutVer が残す変更の履歴の数 */
+function kevCsHistCut(w, upto){
+  var h=Array.isArray(w && w.hist) ? w.hist : [];
+  if(h.length<KEV_HIST_KEEP) return false;
+  var e0=0; h.forEach(function(e){ var n=Number(e && e._at); if(isFinite(n) && n>0 && (!e0 || n<e0)) e0=n; });
+  return !!(e0 && e0>=KEV_CS_LOST_SINCE && (!upto || upto>=KEV_CS_LOST_SINCE));
+}
 function kevCsLostWalk(all, prefix, v){
   if(!all || typeof all!=='object') return null;
   var T=function(x){ var n=Number(x && x._at); return (isFinite(n) && n>0) ? n : 0; };
@@ -67370,9 +67382,17 @@ function kevCsLostWalk(all, prefix, v){
       if(!x || typeof x!=='object') return null;
       if(kevN(x.b8)) return x;
     }
-    var tb=born(cur), cand=vs.filter(function(w){ var b=born(w); return w.from<cur.from && (!tb || !b || b<=tb); });
-    if(!cand.length) return null;
-    cur=cand[cand.length-1]; ss=states(cur); i=ss.length-1; upto=tb;
+    if(kevCsHistCut(cur, upto)) return {unknown:true};
+    /* 写した元：前の四半期の版のうち、今の版を作ったとき（tb）までにあった、いちばん新しい版。変更の履歴が切れた版は、残っている状態が tb より後でも
+       tb のときにあったかもしれない（作られた時刻が分からない）→ その版より前の版を写した元とみなさず、分からない（Codex 98c1b60 の P2 と同じ・四半期をまたぐとき） */
+    var tb=born(cur), nx=null;
+    for(var k=vs.length-1; k>=0; k--){
+      var w=vs[k], b; if(!(w.from<cur.from)) continue;
+      b=born(w); if(!tb || !b || b<=tb){ nx=w; break; }
+      if(kevCsHistCut(w, tb)) return {unknown:true};
+    }
+    if(!nx) return null;
+    cur=nx; ss=states(cur); i=ss.length-1; upto=tb;
   }
   return null;
 }
@@ -67410,6 +67430,7 @@ function kevCsLegacyParts(RF, scope, B){
 function kevCsLostTxt(L){
   var r=(L && L.ref) || {}, lv={common:'会社共通', g5:'G5', grade:'グレード・職種', person:'個人設定'};
   var where=((L && L.lv) || []).map(function(x){ return (lv[x.lv] || x.lv)+(x.lv==='grade' || x.lv==='g5' ? '（'+kevScopeLabel(x.prefix)+'）' : '')+' '+x.from+'〜'; }).join('・');
+  if(r.unknown) return '① の基準得点・1 段が v1099 の端末で保存し直されています。その前に v1100 で入れた点があったかを、変更の履歴（20 件まで）からは確かめられないため、この点では計算しません'+(where ? '（'+where+'）' : '');
   return '① の基準得点・1 段が v1099 の端末で保存し直され、v1100 で入れた点（基準得点 '+(r.bp==null ? '初期値' : kevPtsTxt(r.bp)+' 点')+'・1 段 '+(r.bs==null ? '初期値' : kevPtsTxt(r.bs)+' 点')+'）が使われていません'+(where ? '（'+where+'）' : '');
 }
 /* 何段か（−3〜＋3）：基準得点以上は 1 段ごとに上・未満は下（境目ちょうどは上の段） */

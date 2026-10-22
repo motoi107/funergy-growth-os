@@ -486,6 +486,93 @@ test('v1101: settings saved by the released v1100 (no c8) — a v1099 re-save is
   assert.ok(Number(J(f.STORE.bonus_eval_rule[`G2|${Q}`])._t.c8) > 0);
 });
 
+// a device clock that can run in the v1099 days (before v1100 existed) — the stores' save times (_at) come from Date.now()
+const OLD_DAYS = Date.UTC(2026, 8, 1, 10);   // 2026-09-01 0:00 HST
+const fakeClock = c => vm.runInContext(`(function(){ var real=Date.now, t=${OLD_DAYS}; globalThis.__oldDays=true; Date.now=function(){ return globalThis.__oldDays ? (t+=1000) : real(); }; })();`, c);
+const realClock = c => vm.runInContext('globalThis.__oldDays=false;', c);
+const saveS = (c, scope, n, from = Q) => { for (let i = 0; i < n; i++) assert.equal(run(c, `kevRuleSave('${scope}', '${from}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, 'v1099 の端末 ${i}', '② を変更')`), true); };
+
+test('Codex 98c1b60 P2: the history (20 entries) dropped the v1100 ① of a record saved by the released v1100 (no c8) — the head stops instead of computing; v1099-only records from before v1100 are not stopped', () => {
+  const at = (c, q, emp = 'null', scope = 'G2') => run(c, `(function(){ var RF=kevRuleFor('${scope}', '${q}', ${emp}, null, kbCfg()); var B=kevCsBase(RF.r, RF, {sheet:'store', max:420}, '${scope}'); return [B.bp, B.bs, !!B.legacy, !!B.lost, B.lost ? B.lost.ref : null]; })()`);
+  const SINCE = Date.UTC(2026, 9, 21, 10);                            // 2026-10-21 0:00 HST: from when a v1100 ① can exist (KEV_CS_LOST_SINCE)
+  assert.ok(Date.now() >= SINCE);                                     // the saves below (real clock) are after v1100 could be used
+  const UNKNOWN = { bp: null, bs: null, unknown: true };
+  // Codex's sequence: a5a101b form G2 260 / 13 → c79e322 re-saves ① of the same version → 22 saves of ② on that v1099 device
+  const st = v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  tick();
+  const old = v1099Resave(st, `kevRuleOpen('G2', 'c')`).old;
+  saveS(old, 'G2', 22);
+  const rec = J(old.STORE.bonus_eval_rule[`G2|${Q}`]);
+  assert.equal(rec.hist.length, 20);
+  assert.equal('c8' in rec.set, false);
+  assert.ok(!rec.hist.some(h => h.set && h.set.c && h.set.c.b8));   // the v1100 ① is no longer anywhere in the record
+  const c = N.co(); c.STORE.bonus_eval_rule = J(old.STORE.bonus_eval_rule);
+  assert.deepEqual(at(c, Q), [252, 13, true, true, UNKNOWN]);         // 98c1b60: [252, 13, false, false, null] — the normal computation
+  const p = N.person(c, 'aki');
+  assert.deepEqual([p.blocked, p.segs[0].items.c.coef], ['eval', null]);
+  assert.match(p.missing.join(), /① の基準得点・1 段が v1099 の端末で保存し直されています。その前に v1100 で入れた点があったかを、変更の履歴（20 件まで）からは確かめられないため、この点では計算しません（グレード・職種（G2） 2026-Q3〜）/);
+  assert.ok(misfits(c).some(x => /^G2・① の基準得点・1 段が v1099 の端末で保存し直されています。その前に v1100 で入れた点があったか.*kevRuleOpen\('G2','c'\)$/.test(x)), misfits(c).join('\n'));
+  withCsv(c);
+  assert.deepEqual(run(c, `(function(){ var V=csvView(EMPS.find(function(e){ return e.id==='aki'; })); return [V.state, V.bp, V.base.why]; })()`), ['nobase', null, 'legacy']);
+  run(c, `kevRuleOpen('G2', 'c')`);
+  assert.deepEqual(run(c, `[window._kevForm.cs.own.bp, window._kevForm.cs.def.bp, window._kevForm.cs.legacy.bp, window._kevForm.cs.legacy.bs]`), [false, 252, true, true]);
+  assert.match(c.MODAL.at(-1), /変更の履歴（20 件まで）からは確かめられないため/);
+  // a later quarter made from it by the v1099 device waits too (the walk reaches the cut version)
+  const q4 = v1099Resave(J(old.STORE), `kevRuleOpen('G2', 'c')`, {}, null, '2026-Q4').store;
+  const c4 = N.co(); c4.STORE.bonus_eval_rule = J(q4.bonus_eval_rule);
+  assert.deepEqual(at(c4, '2026-Q4'), [252, 13, true, true, UNKNOWN]);
+  // entering ① again in v1101 ends it
+  saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  assert.deepEqual(one(N, c, 'aki'), [420, 260, 13, 1.05, null]);
+  assert.ok(!misfits(c).some(x => /G2・①/.test(x)));
+
+  // a cut history that still holds the v1100 ①: found with its values (not "unknown")
+  const s2 = v1099Resave({}, `kevRuleOpen('G2', 'c')`, { bp: '140', bs: '7' });
+  saveS(s2.old, 'G2', 25);
+  tick(); const s2b = v1100Save(J(s2.old.STORE), `kevRuleOpen('G2', 'c')`, { bp: '270', bs: '13' });
+  tick(); const s2c = v1099Resave(s2b, `kevRuleOpen('G2', 'c')`).store;
+  assert.equal(s2c.bonus_eval_rule[`G2|${Q}`].hist.length, 20);
+  const d2 = N.co(); d2.STORE.bonus_eval_rule = J(s2c.bonus_eval_rule);
+  assert.deepEqual(at(d2, Q), [140, 7, true, true, { bp: 270, bs: 13 }]);   // 140 / 7: the v1099 (225-point) value kept at that level — not used
+
+  // a quarter made by the v1099 device from a v1100 quarter, then the v1100 quarter is saved 20+ times: the version it was copied from cannot be told → waits
+  // (98c1b60 + the walk: the earlier quarter looked "made later" and was skipped → [252, 13, false, false, null])
+  let s3 = v1100Save({}, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
+  tick(); const r3 = v1099Resave(s3, `kevRuleOpen('G2', 'c')`, {}, null, '2026-Q4');
+  tick(); const d3 = R1100.co(); d3.STORE.bonus_eval_rule = J(r3.store.bonus_eval_rule);
+  for (let i = 0; i < 22; i++) assert.equal(run(d3, `kevRuleSave('G2', '${Q}', {s:{on:true, lo:0.95, hi:1.05, g2:1, g3:1}}, 'v1100 の端末 ${i}', '② を変更')`), true);
+  const c3 = N.co(); c3.STORE.bonus_eval_rule = J(d3.STORE.bonus_eval_rule);
+  assert.equal(c3.STORE.bonus_eval_rule[`G2|${Q}`].hist.length, 20);
+  assert.deepEqual(at(c3, Q).slice(2, 4), [false, false]);              // the 2026-Q3 version itself still has the v1100 ① (b8)
+  assert.deepEqual(at(c3, '2026-Q4'), [252, 13, true, true, UNKNOWN]);
+  // …but a quarter made by v1099 before v1100 existed is not stopped by later saves of the earlier quarter (nothing it was copied from can be a v1100 ①)
+  const c5 = N.co();
+  c5.STORE.bonus_eval_rule = J(c3.STORE.bonus_eval_rule);
+  c5.STORE.bonus_eval_rule['G4|2026-Q4'] = { set: { c: { on: true, lo: 0.85, hi: 1.15, g2: 1, g3: 1, bp: 310 } }, at: '2026/09/10', _at: OLD_DAYS + 9 * 86400000 };
+  const g4q3 = J(c3.STORE.bonus_eval_rule[`G2|${Q}`]);
+  c5.STORE.bonus_eval_rule[`G4|${Q}`] = g4q3;                            // 20 kept states, all after v1100, from a5a101b's G2 record (only the shape matters)
+  assert.deepEqual(at(c5, '2026-Q4', 'null', 'G4').slice(0, 4), [310, 13, false, false]);
+
+  // v1099-only record (G4 300) saved 22 times in the v1099 days: not stopped; history partly after v1100: not stopped
+  const g = v1099Resave({}, `kevRuleOpen('G4', 'c')`, { bp: '300' }, fakeClock);
+  saveS(g.old, 'G4', 22);
+  const e = N.co(); e.STORE.bonus_eval_rule = J(g.old.STORE.bonus_eval_rule);
+  assert.equal(e.STORE.bonus_eval_rule[`G4|${Q}`].hist.length, 20);
+  assert.deepEqual(at(e, Q, 'null', 'G4'), [300, 13, false, false, null]);
+  realClock(g.old); saveS(g.old, 'G4', 8);
+  e.STORE.bonus_eval_rule = J(g.old.STORE.bonus_eval_rule);
+  const hs = e.STORE.bonus_eval_rule[`G4|${Q}`].hist.map(h => h._at < SINCE);
+  assert.ok(hs.includes(true) && hs.includes(false));
+  assert.deepEqual(at(e, Q, 'null', 'G4'), [300, 13, false, false, null]);
+  // the accepted limit: more than 20 saves of the same version after v1100 could be used → it cannot be told any more → waits (safe side) until ① is entered again
+  saveS(g.old, 'G4', 20);
+  e.STORE.bonus_eval_rule = J(g.old.STORE.bonus_eval_rule);
+  assert.deepEqual(at(e, Q, 'null', 'G4'), [300, 13, true, true, UNKNOWN]);
+  saveForm(e, `kevRuleOpen('G4', 'c')`, { bp: '300' });
+  assert.deepEqual(at(e, Q, 'null', 'G4'), [300, 13, false, false, null]);
+  assert.equal(run(e, 'KEV_CS_LOST_SINCE'), SINCE);
+});
+
 test('back from v1099: a v1099 device that types a G2 value (140 / 7 on 225 points) → v1100 does not use it silently (the amount waits, listed to re-enter)', () => {
   const c = N.co();
   saveForm(c, `kevRuleOpen('G2', 'c')`, { bp: '260', bs: '13' });
