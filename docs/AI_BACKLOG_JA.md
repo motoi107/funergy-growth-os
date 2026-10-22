@@ -9,7 +9,10 @@
 
 1. 済（Claude）：今のコードの調べ（既存の専門職は `SPECIALIST_DEPTS` の 経理・調理・サービス・マーケ。経理・調理は部門別の評価表 8 軸 × 4 項目・96 点、サービス・マーケは項目なし。オフィス用 Career Score 35 項目・100 点は別）。
 2. 済（Claude・ブランチ `claude/specialist-career`）：対応表（`docs/SPECIALIST_CAREER_JA.md`）と UI案59（Design・9 枚）・決めてほしいこと 9。
-3. 次：Moto さんの回答と UI の OK → v1102（v1101 の上）で実装 → 試験・独立レビュー → PR → Codex。
+3. 済（Moto さん 10/21 13:52 HST）：回答 1〜9（`docs/SPECIALIST_CAREER_JA.md` の 10）。
+4. 済（Claude）：v1102 を実装・試験 19・わざと壊す 41/41・Chromium（`docs/SPECIALIST_CAREER_JA.md` の 11〜13）。
+5. 次：独立レビュー → PR → Codex → Moto さんがマージ（PR #87 の v1101 が先）→ 端末を 1102 に。
+6. Moto さん（2026 Q3 を確定する前）：Score管理 で今いる人の専門職 × グレードの基準点を 2026 Q3 から（入れるまでその人の ① は止まる）・必要なら権限・新しい肩書きの時給の既定。
 
 
 1. 済（Claude・ブランチ `claude/cs-grade-base`）：全グレード 8 カテゴリー（賞与 ① の G2 も）・本人には「総合点 ／ 今のグレードの基準点」・基準達成／基準未達／評価途中／未評価・内訳はたたむ・昇格は別（`docs/CS_GRADE_VIEW_V1100_JA.md`）。試験 `tests/cs-grade-view.test.mjs`。
