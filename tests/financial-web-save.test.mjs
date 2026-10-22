@@ -119,7 +119,7 @@ function fixture(options = {}) {
     persist: options.persist || (async () => true),
     reload: async () => true };
   const recoveryStore = options.recoveryStore || (typeof context.financialRecoveryStore === 'function' ? context.financialRecoveryStore() : mapStore);
-  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup,
+  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup, lockWaitMs: options.lockWaitMs,
     awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)), recoveryStore });
   return { context, api, fields, dayFields, toasts, effects, legacy, commits, database, storage, receipts, answer,
     set: (id, value) => { const field = fields.get(id) || { disabled: false }; field.value = value; fields.set(id, field); },
@@ -647,8 +647,8 @@ function realStorage(context, storage, limit, disk = new Map(), opts = {}) {
     + "function _idbFlushP(){ if(__opts.failPersist) return Promise.resolve(false); _idbFlush(); return Promise.resolve(!__opts.holdFlush); }\n"
     + "function _idbReloadPrefix(p){ _idbFlush(); Array.from(_IDB_MEM.keys()).forEach(function(k){ if(String(k).indexOf(p)===0&&!__disk.has(k)&&!_idbQ.has(k)) _IDB_MEM.delete(k); });"
     + " __disk.forEach(function(v,k){ if(String(k).indexOf(p)===0&&!_idbQ.has(k)) _IDB_MEM.set(k,v); }); return Promise.resolve(true); }\n"
-    + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n'
-    + ['lsIsDeviceLocal', '_idbQueue', '_lsStoreGet', '_lsWriteVerified', 'financialRecoveryStore'].map(webFunction).join('\n') + '\n'
+    + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n' + source.match(/^var _IDB_WATCH = .*$/m)[0] + '\n' + source.match(/^var _idbGen = .*$/m)[0] + '\n'
+    + ['lsIsDeviceLocal', '_idbQueue', '_idbWatched', '_lsStoreGet', '_lsWriteVerified', 'financialRecoveryStore'].map(webFunction).join('\n') + '\n'
     + source.match(/^function _lsRaw\(key, def\).*$/m)[0] + '\n'
     + "function _lsRawDel(key){ try{ _idbQueue(key, null); }catch(e){} try{ localStorage.removeItem(key); return true; }catch(e){ return false; } }", context);
 }
@@ -871,11 +871,12 @@ test('v1104 review P2: a device whose rows add up to more than 200,000 values st
 test('v1104: the real IndexedDB helpers wait for the write to reach the device and see other tabs', async () => {
   const { IDBFactory, IDBKeyRange } = await import('./runtime/node_modules/fake-indexeddb/build/esm/index.js');
   const factory = new IDBFactory();
-  const names = ['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbTrack', '_idbFlush', '_idbRequeue', '_idbFlushP', '_idbReloadPrefix', '_idbQueue', 'lsIsDeviceLocal', 'financialRecoveryStore'];
+  const names = ['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbWatched', '_idbTrack', '_idbWriteBatch', '_idbFlush', '_idbRequeue', '_idbFlushP', '_idbReopen', '_idbReloadPrefix', '_idbQueue', 'lsIsDeviceLocal', 'financialRecoveryStore'];
   const boot = async () => {
     const c = vm.createContext({ indexedDB: factory, IDBKeyRange, setTimeout, clearTimeout, Promise, localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, console });
     vm.runInContext("var IDB_NAME='funergy_os_kv', IDB_STORE='kv', IDB_VER=1, _idbDB=null, _idbState='init', _IDB_MEM=null, _idbQ=new Map(), _idbTimer=null, _idbStat={loaded:0,wrote:0,failed:0,backfilled:0,at:''};\n"
       + "function _lskBump(){} function _lsNoteSaveFailure(){}\n" + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n' + source.match(/^var _idbInflight = .*$/m)[0] + '\n'
+      + source.match(/^var _IDB_WATCH = .*$/m)[0] + '\n' + source.match(/^var _idbGen = .*$/m)[0] + '\n' + source.match(/^var _idbReopening = .*$/m)[0] + '\n'
       + names.map(webFunction).join('\n'), c);
     await c._idbOpen(); c._IDB_MEM = await c._idbLoadAll(); c._idbState = 'ready';
     return c;
@@ -899,4 +900,192 @@ test('v1104: the real IndexedDB helpers wait for the write to reach the device a
   const D = await boot(); assert.equal(D._IDB_MEM.get(K2), '{"reason":"b"}'); assert.equal(D._IDB_MEM.has(K), false);
   // a page without IndexedDB cannot claim the write reached the device
   const E = await boot(); E._idbState = 'unavailable'; assert.equal(await E.financialRecoveryStore().persist(), false);
+});
+
+// ---- v1104 second independent review (bc1fdb2): P1 a reload racing this tab's own write dropped a record (orphan
+// requests, an overwritten pre-guard archive); P1 two tabs moving the old log stored it twice (blocked for good);
+// P2 a tab kept another tab's finished save; P3 unrelated write failures / lost connection refused saves.
+// These run the app's real IndexedDB layer on fake-indexeddb: one factory = one device, one vm context = one tab.
+const { IDBFactory: FakeIDBFactory, IDBKeyRange: FakeIDBKeyRange } = await import('./runtime/node_modules/fake-indexeddb/build/esm/index.js');
+const varLine = re => source.match(re)[0].replace(/\r$/, '');
+const IDB_CODE = [/^var IDB_NAME = .*$/m, /^var _idbDB = .*$/m, /^var _idbState = .*$/m, /^var _IDB_MEM = .*$/m, /^var _idbQ = .*$/m, /^var _idbTimer = .*$/m,
+  /^var _idbStat = .*$/m, /^var _idbInflight = .*$/m, /^var _IDB_WATCH = .*$/m, /^var _idbGen = .*$/m, /^var _idbReopening = .*$/m, /^var LS_DEVICE_LOCAL = .*$/m].map(varLine)
+  .concat(['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbWatched', '_idbTrack', '_idbWriteBatch', '_idbFlush', '_idbFlushP', '_idbReopen', '_idbReloadPrefix',
+    'financialRecoveryStore', '_idbRequeue', '_idbQueue', '_idbBackfill', '_idbBoot', 'lsIsDeviceLocal', '_lsStoreGet', '_lsRawStr', '_lsRawDel', '_lsWriteVerified'].map(webFunction),
+  [varLine(/^function _lsRaw\(key, def\).*$/m), 'function _lskBump(){} function _lsNoteSaveFailure(){}',
+    'function lsKeys(p){ p=p||""; var s=new Set(); for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k&&k.indexOf(p)===0) s.add(k);} if(_idbState==="ready"&&_IDB_MEM) _IDB_MEM.forEach(function(v,k){ if(String(k).indexOf(p)===0) s.add(k); }); return Array.from(s); }',
+    "var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.resolve(_idbBoot()).then(res, res); }catch(e){ res(); } }, 0); });",
+    "var __ready = async function(){ await Promise.resolve().then(function(){return _idbBootP;}); return _idbState==='ready' && _IDB_MEM instanceof Map; };"]).join('\n');
+const lsObject = map => ({ getItem: k => map.has(k) ? map.get(k) : null, setItem: (k, v) => { map.set(k, String(v)); }, removeItem: k => { map.delete(k); },
+  key: i => [...map.keys()][i] ?? null, get length() { return map.size; } });
+function sharedLocks() {
+  const queues = new Map(); let held = 0;
+  return { get held() { return held; }, request(name, a, b) {
+    const cb = typeof a === 'function' ? a : b, signal = typeof a === 'function' ? null : a?.signal;
+    return new Promise((resolve, reject) => {
+      const q = queues.get(name) || []; queues.set(name, q); let started = false;
+      const run = async () => { started = true; held++; try { resolve(await cb({ name })); } catch (e) { reject(e); } finally { held--; q.shift(); if (q.length) q[0](); } };
+      signal?.addEventListener('abort', () => { if (started) return; q.splice(q.indexOf(run), 1); const e = new Error('aborted'); e.name = 'AbortError'; reject(e); });
+      q.push(run); if (q.length === 1) run();
+    });
+  } };
+}
+function idbDevice({ locks = false } = {}) {
+  const rows = initial();
+  return { ls: new Map(Object.entries(rows).map(([k, v]) => [k, JSON.stringify(v)])), factory: new FakeIDBFactory(), locks: locks ? sharedLocks() : null, receipts: new Map(),
+    database: new Map(Object.entries(rows).map(([key, value]) => [key, { key, value, exists: true, version: BASE }])) };
+}
+function idbTab(dev, extra = {}) {
+  return fixture({ storage: dev.ls, database: dev.database, receipts: dev.receipts, deferStartup: true, ...extra,
+    beforeInstall: c => {
+      c.crypto = { randomUUID: () => globalThis.crypto.randomUUID() }; c.indexedDB = dev.factory; c.IDBKeyRange = FakeIDBKeyRange; c.localStorage = lsObject(dev.ls);
+      c.addEventListener = () => {}; c.AbortSignal = AbortSignal;
+      if (dev.locks) c.navigator = { locks: dev.locks };
+      vm.runInContext(IDB_CODE, c);
+      if (extra.faults) c._idbBootP.then(() => { const db = c._idbDB, orig = db.transaction.bind(db);
+        db.transaction = (...a) => { if (extra.faults.throwOnTx?.()) { const e = new Error('lost'); e.name = 'InvalidStateError'; throw e; } const tx = orig(...a); extra.faults.onTx?.(tx, a[1]); return tx; }; });
+      extra.beforeInstall?.(c);
+    },
+    awaitLocalReady: c => c.__ready() });
+}
+function diskOf(factory, prefix) {
+  return new Promise(res => { const rq = factory.open('funergy_os_kv', 1); rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+    rq.onsuccess = () => { const db = rq.result, out = new Map(), tx = db.transaction('kv', 'readonly'), cur = tx.objectStore('kv').openCursor();
+      cur.onsuccess = () => { const c = cur.result; if (c) { if (String(c.key).startsWith(prefix)) out.set(c.key, c.value); c.continue(); } };
+      tx.oncomplete = () => { db.close(); res(out); }; }; });
+}
+const diskRecs = async factory => [...await diskOf(factory, RECOVERY_PREFIX)].sort(([a], [b]) => a < b ? -1 : 1).map(([, v]) => JSON.parse(v));
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const legacyPending = () => {
+  const next = initial()[DAILY]; next['2026-10-01'].event = 'v1103 unanswered memo';
+  return [{ reason: 'pre_guard_local', value: { [DAILY]: { '2026-09-01': { actual: 77, event: 'value from before the guard (v1101)' } } } },
+    { reason: 'pending_request', request: { requestId: '00000000-0000-4000-8000-00000000abcd', expectedVersions: { [DAILY]: BASE },
+      expected: { [DAILY]: { value: initial()[DAILY], updated_at: BASE } }, writes: { [DAILY]: next } },
+      before: { [DAILY]: { key: DAILY, exists: true, value: initial()[DAILY], version: BASE } } }];
+};
+
+test('v1104 review 2 P1-1: a reload racing this tab\'s own write keeps the write (real IndexedDB layer)', { timeout: 20000 }, async () => {
+  const dev = idbDevice(), A = idbTab(dev), c = A.context; await c.__ready();
+  const OLD = RECOVERY_PREFIX + '0000000000001-a', NEW = RECOVERY_PREFIX + '0000000000002-b';
+  c._idbQueue(OLD, '{"reason":"x"}'); assert.equal(await c._idbFlushP('financial_'), true);
+  let r = c._idbReloadPrefix(RECOVERY_PREFIX); c._idbQueue(NEW, '{"reason":"y"}'); const p = c._idbFlushP('financial_');
+  assert.equal(await r, true); assert.equal(await p, true);
+  assert.equal(c._IDB_MEM.has(NEW), true, 'a record written during the reload stays');
+  r = c._idbReloadPrefix(RECOVERY_PREFIX); c._idbQueue(OLD, null); await c._idbFlushP('financial_'); await r;
+  assert.equal(c._IDB_MEM.has(OLD), false, 'a record deleted during the reload stays deleted');
+  assert.deepEqual([...(await diskOf(dev.factory, RECOVERY_PREFIX)).keys()], [NEW]);
+});
+
+test('v1104 review 2 P1-1: a save overlapping another startup read leaves no stale request, even after 50 more saves', { timeout: 20000 }, async () => {
+  const dev = idbDevice(); let race = false, A;
+  A = idbTab(dev, { read: async keys => { if (race) { race = false; A.api.preserveLocal(); } return { rows: keys.map(k => clone(dev.database.get(k) || { key: k, exists: false, value: null, version: null })) }; } });
+  await A.api.refresh(ALL); race = true;
+  const r = await A.context.syncStoreActualsFromToast('F01', 'g', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 555 }]);
+  assert.equal(r.updated, 1); await wait(30);
+  assert.equal((await diskRecs(dev.factory)).some(x => x.reason === 'pending_request'), false);
+  for (let i = 0; i < 50; i++) { await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'memo ' + i); await A.context.saveDayMemo('F01', '2026-10-01'); }
+  await wait(30);
+  const C = idbTab(dev); await C.api.refresh(ALL);
+  assert.equal(C.api.getState().status, 'idle');
+  assert.equal(C.context.getDailyActuals('F01')['2026-10-01'].event, 'memo 49');
+});
+
+test('v1104 review 2 P1-2: two tabs moving the old log store it once; the unanswered save is sent once', { timeout: 20000 }, async () => {
+  for (const locks of [false, true]) {
+    const dev = idbDevice({ locks }); dev.ls.set('_financial_save_recovery_v1', JSON.stringify(legacyPending()));
+    const A = idbTab(dev), B = idbTab(dev);
+    await Promise.allSettled([A.api.refresh(ALL), B.api.refresh(ALL)]); await wait(30);
+    const disk = await diskRecs(dev.factory);
+    assert.equal(disk.filter(x => x.reason === 'pending_request').length, 1, 'locks ' + locks);
+    assert.equal(disk.filter(x => x.reason === 'pre_guard_local').length, 1);
+    assert.equal(dev.ls.has('_financial_save_recovery_v1'), false);
+    const C = idbTab(dev);
+    await assert.rejects(C.api.refresh(ALL), /financial_unresolved_save/);
+    assert.equal(C.api.getState().status, 'unknown');
+    assert.equal(await C.api.retry(), true);
+    assert.equal(dev.database.get(DAILY).value['2026-10-01'].event, 'v1103 unanswered memo');
+    await C.api.refresh(ALL); assert.equal(C.api.getState().status, 'committed');
+  }
+});
+
+test('v1104 review 2 P1-1: the archive from before the guard is never overwritten by a second startup caller', { timeout: 20000 }, async () => {
+  const dev = idbDevice(); dev.ls.set('_financial_save_recovery_v1', JSON.stringify(legacyPending().slice(0, 1)));
+  const A = idbTab(dev);
+  await Promise.all([A.api.refresh(ALL), A.api.preserveLocal()]); await wait(30);
+  const archive = (await diskOf(dev.factory, 'financial_pre_guard_archive_v1')).get('financial_pre_guard_archive_v1');
+  assert.match(archive, /value from before the guard/);
+  assert.equal((await diskRecs(dev.factory)).filter(x => x.reason === 'pre_guard_local').length, 1);
+});
+
+test('v1104 review 2 P2-1: a tab that saw another tab\'s save in flight lets go once it is finished', { timeout: 20000 }, async () => {
+  const dev = idbDevice({ locks: true }); let gate;
+  const A = idbTab(dev, { commit: (req, answer) => new Promise(r => { gate = () => r(answer(req)); }), timeoutMs: 5000 });
+  const B = idbTab(dev, { timeoutMs: 5000 });
+  await A.api.refresh(ALL); await B.api.refresh(ALL);
+  await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'A in flight');
+  const saving = A.context.saveDayMemo('F01', '2026-10-01'); await wait(30);
+  assert.equal(await B.context.openDayMemo('F02', '2026-10-01', '木'), false);
+  assert.match(B.toasts.at(-1).message, /前の保存の結果がまだ確認できていません/);
+  gate(); await saving; await wait(30);
+  assert.notEqual(await B.context.openDayMemo('F02', '2026-10-01', '木'), false, 'B opens again after A finished');
+  assert.equal(B.api.getState().status, 'idle');
+});
+
+test('v1104 review 2 P3: an unrelated write that IndexedDB refuses does not refuse a sales save', { timeout: 20000 }, async () => {
+  const dev = idbDevice(); let same = false, refuse = true;
+  const faults = { onTx(tx, mode) { if (mode !== 'readwrite' || !refuse) return; const os = tx.objectStore.bind(tx);
+    tx.objectStore = n => { const st = os(n), put = st.put.bind(st); st.put = (v, k) => { if (k === 'big_unrelated_cache') Promise.resolve().then(() => { try { tx.abort(); } catch (_) {} }); return put(v, k); }; return st; }; } };
+  const A = idbTab(dev, { faults, beforeInstall: c => { const orig = c.saveDayMemo; c.saveDayMemo = function (...a) { if (same) c._lsWriteVerified('big_unrelated_cache', 'x'.repeat(1000)); return orig.apply(this, a); }; } });
+  await A.api.refresh(ALL);
+  A.context._lsWriteVerified('big_unrelated_cache', 'x');
+  for (let i = 0; i < 4; i++) {
+    same = i >= 2; await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'memo ' + i);
+    assert.notEqual(await A.context.saveDayMemo('F01', '2026-10-01'), false, 'save ' + i); await wait(20);
+  }
+  assert.equal(A.commits.length, 4);
+  refuse = false; clearTimeout(A.context._idbTimer); A.context._idbTimer = null;   // the app retries the refused write every 5 s; end it
+});
+
+test('v1104 review 2 P3: after the IndexedDB connection is lost, the next save reconnects instead of refusing', { timeout: 20000 }, async () => {
+  const dev = idbDevice(); let lost = false;
+  const A = idbTab(dev, { faults: { throwOnTx: () => lost } });   // only the lost connection throws; a new one works
+  await A.api.refresh(ALL); lost = true;
+  await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'after the connection was lost');
+  assert.notEqual(await A.context.saveDayMemo('F01', '2026-10-01'), false);
+  assert.equal(dev.database.get(DAILY).value['2026-10-01'].event, 'after the connection was lost');
+  assert.equal((await diskRecs(dev.factory)).some(x => x.reason === 'committed_receipt'), true);
+});
+
+test('v1104 review 2 P3: two unanswered saves (no locks) are checked one after the other instead of blocking', { timeout: 20000 }, async () => {
+  const dev = idbDevice(); let offline = true;
+  const mk = () => idbTab(dev, { commit: (req, answer) => offline ? Promise.reject(new Error('offline')) : answer(req) });
+  const A = mk(), B = mk(); await A.api.refresh(ALL); await B.api.refresh(ALL);
+  await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'A offline');
+  await B.context.openDayMemo('F02', '2026-10-01', '木'); B.set('dm-memo', 'B offline');
+  await Promise.all([A.context.saveDayMemo('F01', '2026-10-01'), B.context.saveDayMemo('F02', '2026-10-01')]); await wait(30);
+  assert.equal((await diskRecs(dev.factory)).filter(x => x.reason === 'pending_request').length, 2);
+  offline = false;
+  const C = mk();
+  for (let i = 0; i < 2; i++) { await assert.rejects(C.api.refresh(ALL), /financial_unresolved_save/); assert.equal(await C.api.retry(), true); }
+  await C.api.refresh(ALL);
+  assert.equal(dev.database.get(DAILY).value['2026-10-01'].event, 'A offline');
+  assert.equal(dev.database.get('daily_actuals_F02').value['2026-10-01'].event, 'B offline');
+});
+
+test('v1104 review 2 P3: a save does not wait for ever behind another tab; old prefetched Toast rows are read again', { timeout: 20000 }, async () => {
+  const dev = idbDevice({ locks: true }); let gate;
+  const A = idbTab(dev, { commit: (req, answer) => new Promise(r => { gate = () => r(answer(req)); }), timeoutMs: 5000 });
+  const B = idbTab(dev, { timeoutMs: 5000, lockWaitMs: 50 });
+  await A.api.refresh(ALL); await B.api.refresh(ALL);
+  await A.context.openDayMemo('F01', '2026-10-01', '木'); A.set('dm-memo', 'A slow');
+  const saving = A.context.saveDayMemo('F01', '2026-10-01'); await wait(20);
+  const r = await B.context.syncStoreActualsFromToast('F02', 'g', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 9 }]);
+  assert.ok(r.error); assert.match(B.toasts.at(-1).message, /ほかの画面（タブ）で売上・予算の保存が続いています/);
+  gate(); await saving;
+  // rows read more than 20 s before the save are read again inside it
+  let fetched = 0; const stale = [{ business_date: '2026-10-01', net_sales: 1 }]; Object.defineProperty(stale, '_fetchedAt', { value: Date.now() - 60000 });
+  const F = fixture({ fetchToastSales: async () => { fetched++; return [{ business_date: '2026-10-01', net_sales: 777 }]; } });
+  await F.api.refresh(ALL);
+  await F.context.syncStoreActualsFromToast('F01', 'g', [{ date: '2026-10-01' }], stale);
+  assert.equal(fetched, 1); assert.equal(F.database.get(DAILY).value['2026-10-01'].actual, 777);
 });

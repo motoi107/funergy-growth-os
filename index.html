@@ -1581,8 +1581,17 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       const have = new Set(current.map(c => c.json));
       return old.filter(x => !have.has(JSON.stringify(x))).concat(current.map(c => c.value));
     }
-    function addEntry(record, json) {
-      const key = entryKey();
+    function hashText(s) {   // 文字から決まる短い名前（FNV-1a 53 ビット）
+      let h1 = 0x811c9dc5, h2 = 0x01000193;
+      for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 16777619) >>> 0; h2 = Math.imul(h2 ^ c, 2246822519) >>> 0; }
+      return h1.toString(16).padStart(8, '0') + (h2 & 0x1fffff).toString(16).padStart(6, '0') + '-' + s.length.toString(36);
+    }
+    function legacyKey(index, json) {   // 前の順番＋中身（同じ記録を同じ順番で移せば同じ名前）
+      const base = RECOVERY_PREFIX + '0000000000000-legacy-' + String(index).padStart(6, '0') + '-' + hashText(json);
+      for (let i = 0, key = base; ; key = base + '-' + (++i)) { const have = store.get(key); if (have === null || have === undefined || have === json) return key; }
+    }
+    function addEntry(record, json, fixedKey) {
+      const key = fixedKey || entryKey();
       if (store.set(key, json) !== true || store.get(key) !== json) {
         try { store.del(key); } catch (_) {}
         throw new Error('financial_recovery_storage_failed');
@@ -1597,8 +1606,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     function flushWaiting() {
       while (waitingRetains.length) { retain(waitingRetains[0]); waitingRetains.shift(); }
     }
-    // 記録を 1 件足す。足した名前を返す（同じ中身がもうあれば null）
-    function retain(entry) {
+    // 記録を 1 件足す。足した名前を返す（同じ中身がもうあれば null）。removeKey：受け取りのとき、その保存の前の記録の名前（このタブが書いたもの）
+    function retain(entry, removeKey) {
       const record = copy(entry);
       if (!localReady) { if (!waitingRetains.some(x => equal(x, record))) waitingRetains.push(record); return null; }
       const json = JSON.stringify(record), current = readEntries();
@@ -1607,8 +1616,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         // Completed request payloads contain whole rows. Once the receipt is
         // stored they must not accumulate with every ordinary save.
         const key = current.some(c => c.json === json) ? null : addEntry(record, json);
+        if (removeKey) removeEntry(removeKey);   // v1104（2 回目の独立レビュー P1-1）：このタブの写しに無くても、書いた名前で消す
         for (const c of current) if (c.value.reason === 'pending_request' && c.value.request?.requestId === record.requestId) removeEntry(c.key);
-        const receipts = readEntries().filter(c => c.value.reason === 'committed_receipt');
+        // 済んでいない保存の前の記録が残っている受け取りは消さない（消すと、その記録が「結果不明」に戻る）
+        const after = readEntries(), open = new Set(after.filter(c => c.value.reason === 'pending_request').map(c => c.value.request?.requestId));
+        const receipts = after.filter(c => c.value.reason === 'committed_receipt' && !open.has(c.value.requestId));
         for (const c of receipts.slice(0, Math.max(0, receipts.length - 50))) removeEntry(c.key);
         return key;
       }
@@ -1627,7 +1639,9 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           for (const raw of old) {
             const entry = raw && raw.reason === 'pre_guard_local' && !raw.archive && raw.value && typeof raw.value === 'object' ? archiveInline(raw) : raw;
             const json = JSON.stringify(entry);
-            if (!have.has(json)) { addEntry(copy(entry), json); have.add(json); }
+            // v1104（2 回目の独立レビュー P1-2）：移した記録の名前は前の順番と中身から決める（ほかのタブが同時に移しても同じ名前＝2 つにならない）。
+            // 前の記録は新しい記録より前に、前の順番で並ぶ（0000000000000-legacy-<順番>）
+            if (!have.has(json)) { addEntry(copy(entry), json, legacyKey(old.indexOf(raw), json)); have.add(json); }
           }
           if (!(await persistRecovery())) throw new Error('financial_recovery_storage_failed');
         }
@@ -1643,7 +1657,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       if (store.get(key) !== json && (store.set(key, json) !== true || store.get(key) !== json)) throw new Error('financial_recovery_storage_failed');
       return { reason: 'pre_guard_local', archive: key, keys: Object.keys(entry.value) };
     }
-    async function preserveLocal() {
+    async function preserveLocal(skipReload) {
       if (!localReady) {
         if (!localReadiness) localReadiness = deadline(() => options.awaitLocalReady()).then(ready => {
           if (ready !== true) throw new Error('financial_local_unverified');
@@ -1655,10 +1669,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           throw error;
         }
       }
-      // 同じ端末のほかのタブが書いた・消した記録を読み直す（読めなければこのタブが知っている記録のまま）
-      try { await store.reload(RECOVERY_PREFIX); } catch (_) {}
+      // 同じ端末のほかのタブが書いた・消した記録を読み直す（読めなければこのタブが知っている記録のまま）。保存の中の読み直しでは 1 回だけ
+      if (skipReload !== true) { try { await store.reload(RECOVERY_PREFIX); } catch (_) {} }
       await migrateLegacy();
       flushWaiting();
+      releaseSettled();
       return archiveLocal();
     }
     function archiveLocal() {
@@ -1675,8 +1690,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           // v1104：値は別の名前に置き、記録には置き場所とキーだけを書く（書けたことを確かめてから記録する）
           // v1104（独立レビュー P2）：端末の値は保存の文字を解いたもの。全部の合計に大きさの上限をかけない（写しも作らない）
           const json = JSON.stringify(value);
-          if (store.set(ARCHIVE_KEY, json) !== true || store.get(ARCHIVE_KEY) !== json) throw new Error('financial_recovery_storage_failed');
-          retain({ reason: 'pre_guard_local', archive: ARCHIVE_KEY, keys: Object.keys(value) });
+          // v1104（2 回目の独立レビュー P1-1）：前の退避（v1101〜v1103 の値など）を上書きしない。別の名前に置く
+          const prior = store.get(ARCHIVE_KEY), archive = (prior === null || prior === undefined || prior === json) ? ARCHIVE_KEY
+            : ARCHIVE_KEY + '/' + String(Date.now()).padStart(13, '0') + '-' + Math.random().toString(36).slice(2, 8);
+          if (store.set(archive, json) !== true || store.get(archive) !== json) throw new Error('financial_recovery_storage_failed');
+          retain({ reason: 'pre_guard_local', archive, keys: Object.keys(value) });
           // 端末の保存領域に入り終えてから、保護の前の値への上書きを許す
           if (!(await persistRecovery())) throw new Error('financial_recovery_storage_failed');
         }
@@ -1712,14 +1730,34 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         archived.push(record);
       }
     }
+    // 記録（名前つき）。前の名前の記録は名前なし
+    function entryRecords() {
+      if (!localReady) return waitingRetains.map(value => ({ key: null, value }));
+      const current = readEntries(), have = new Set(current.map(c => c.json));
+      return legacyEntries().filter(x => !have.has(JSON.stringify(x))).map(value => ({ key: null, value })).concat(current.map(c => ({ key: c.key, value: c.value })));
+    }
+    function settledIds(entries) {
+      const resolved = new Set(entries.filter(x => x.reason === 'committed_receipt').map(x => x.requestId));
+      for (const item of entries) if (['conflict', 'discarded_conflict'].includes(item.reason) && item.request) resolved.add(item.request.requestId);
+      return resolved;
+    }
+    // v1104（2 回目の独立レビュー P2-1）：端末の記録から引き取った保存は、ほかのタブで済んだ（受け取り・競合）・消えたら放す
+    function releaseSettled() {
+      if (!pending || !pending.fromDisk || pending.busy) return;
+      const entries = recoveryEntries(), id = pending.request.requestId;
+      if (settledIds(entries).has(id) || !entries.some(x => x.reason === 'pending_request' && x.request?.requestId === id)) { pending = null; showStatus(); }
+    }
     function recoverPending() {
       if (active || pending) return;
-      const entries = recoveryEntries(), resolved = new Set(entries.filter(x => x.reason === 'committed_receipt').map(x => x.requestId));
-      for (const item of entries) if (['conflict', 'discarded_conflict'].includes(item.reason) && item.request) resolved.add(item.request.requestId);
-      const unfinished = entries.filter(x => x.reason === 'pending_request' && x.request && !resolved.has(x.request.requestId));
+      const records = entryRecords(), resolved = settledIds(records.map(r => r.value)), seen = new Set(), unfinished = [];
+      for (const r of records) {
+        const x = r.value;
+        if (x.reason !== 'pending_request' || !x.request || resolved.has(x.request.requestId) || seen.has(x.request.requestId)) continue;
+        seen.add(x.request.requestId); unfinished.push(r);
+      }
       if (!unfinished.length) return;
-      if (unfinished.length !== 1) throw new Error('financial_multiple_unresolved_saves');
-      const entry = copy(unfinished[0]), request = entry.request, keys = Object.keys(request.writes || {});
+      // v1104（2 回目の独立レビュー P1-2）：結果不明の保存が 2 つ以上あっても止めない。古いものから 1 つずつ確かめる（同じ保存の記録は 1 つに数える）
+      const entry = copy(unfinished[0].value), request = entry.request, keys = Object.keys(request.writes || {});
       if (!uuid.test(request.requestId) || keys.length < 1 || keys.length > 2 || keys.some(k => !rowKey(k))
         || new Set(keys.map(rowStore)).size !== 1 || !equal(keys.slice().sort(), Object.keys(request.expectedVersions || {}).sort())
         || !equal(keys.slice().sort(), Object.keys(request.expected || {}).sort()))
@@ -1731,7 +1769,9 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         if (!equal(request.expected[key], before.exists ? { value: before.value, updated_at: before.version } : null))
           throw new Error('financial_recovery_invalid');
       }
-      pending = { request: freeze(request), before: new Map(keys.map(key => [key, entry.before[key]])), effects: [], unlock: () => {}, status: 'unknown', busy: false };
+      pending = { request: freeze(request), before: new Map(keys.map(key => [key, entry.before[key]])), effects: [], unlock: () => {}, status: 'unknown', busy: false,
+        key: unfinished[0].key, fromDisk: true };
+      showStatus();   // v1104（2 回目の独立レビュー P3）：引き取ったら帯を出す
     }
     function rejectLegacy(key, value) {
       try { retain({ reason: 'unversioned_write', key, value: value === undefined ? null : value }); }
@@ -1937,10 +1977,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       }
       return rows;
     }
-    async function refresh(keys) {
+    const INNER = Object.freeze({});
+    async function refresh(keys, inner) {
       if (!Array.isArray(keys) || !keys.length || keys.length > STORES.length * 2 || new Set(keys).size !== keys.length || keys.some(k => !rowKey(k)))
         throw new Error('invalid_financial_read_scope');
-      await preserveLocal(); quarantine(); recoverPending();
+      await preserveLocal(inner === INNER); quarantine(); recoverPending();
       if (pending) throw new Error('financial_unresolved_save');
       const reads = new Map(keys.map(key => { const epoch = (readEpochs.get(key) || 0) + 1; readEpochs.set(key, epoch); return [key, epoch]; }));
       const rows = validateRows(await deadline(() => transport.read(keys.slice())), keys);
@@ -2002,7 +2043,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           }
           lastReceipt = freeze(copy(answer)); pending = null;
           if (entry.clearForm) form = null;
-          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }); persistRecovery(); }   // v1104：済みの記録もすぐ書き出す（待たない）
+          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }, entry.key); persistRecovery(); }   // v1104：済みの記録もすぐ書き出す（待たない）
           catch (_) { notify('保存は完了していますが、この端末への結果の記録を確認できません。再読み込み後に保存結果を確認してください。'); }
           entry.unlock(); runEffects(entry.effects);
           return true;
@@ -2018,10 +2059,15 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       return false;
     }
     // v1104（独立レビュー P1）：同じ端末のほかのタブと保存を 1 つずつにする（ほかのタブの送り中の保存を、読み直した記録で見てから決める）
+    // 待つのは 20 秒まで（ほかのタブの保存が通信で止まっていても、ずっとは待たない。入力は残す）
     function crossTab(work) {
       const locks = win.navigator && win.navigator.locks;
       if (!locks || typeof locks.request !== 'function') return work();
-      return locks.request('funergy-financial-save', () => work());
+      let signal = null; try { signal = AbortSignal.timeout(options.lockWaitMs || 20000); } catch (_) {}
+      return locks.request('funergy-financial-save', signal ? { signal } : {}, () => work()).catch(error => {
+        if (error && error.name === 'AbortError') { notify('ほかの画面（タブ）で売上・予算の保存が続いています。少し待ってからもう一度保存してください。入力は残しています。'); return false; }
+        throw error;
+      });
     }
     function invoke(name, fn, args, baseline) {
       if (active && callDepth > 0) return fn.apply(win, args);
@@ -2040,7 +2086,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         try {
           const keys = ['daily_actuals_' + args[0]];
           if (name !== 'fetchWeatherForView') keys.push('spl_budgets_v2_' + args[0]);
-          await refresh(keys);
+          await refresh(keys, INNER);   // 保存の始めに読み直したので、記録はもう一度読み直さない
         } catch (_) { notify('最新データを確認できないため同期を停止しています。'); return false; }
       }
       const tx = { name, before: new Map(baseline || canonical), writes: new Map(), effects: [], failure: null, unlock: lockInputs() };
@@ -2083,7 +2129,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         // 入れられなければ送らない（送っていない保存の記録は消す。入力はそのまま残る）
         if (!(await persistRecovery())) { if (pendingKey) removeEntry(pendingKey); throw new Error('financial_recovery_storage_failed'); }
         active = null;
-        pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false };
+        pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false, key: pendingKey };
         return await transmit(false) ? result : false;
       } catch (error) {
         active = null;
@@ -2108,6 +2154,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     };
     async function open(kind, name, args) {
       if (active && callDepth > 0) { active.effects.push(() => open(kind, name, args)); return; }
+      // v1104（2 回目の独立レビュー P2-1）：端末の記録から引き取った保存は、ほかのタブで済んでいれば先に放す
+      if (!active && !bulkBusy && pending && pending.fromDisk && !pending.busy) { try { await preserveLocal(); } catch (_) {} }
       if (active || pending || bulkBusy) { notify('保存結果を確認してから別の入力画面を開いてください。'); return false; }
       const store = args[0]; if (!STORES.includes(store)) { notify('この店舗の保存は最新データの確認が必要です。'); return false; }
       const epoch = ++openEpoch;
@@ -2119,7 +2167,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         form = { kind, args: args.slice(), rows };
         return original[name].apply(win, args);
       } catch (error) {
-        if (error?.message !== 'financial_local_unverified') notify('最新データを確認できません。通信を確認して、入力画面をもう一度開いてください。');
+        if (error?.message === 'financial_unresolved_save') notify('前の保存の結果がまだ確認できていません。画面の下の帯で確かめてから開き直してください（ほかの画面で保存中のときは、少し待ってから）。');
+        else if (error?.message !== 'financial_local_unverified') notify('最新データを確認できません。通信を確認して、入力画面をもう一度開いてください。');
         return false;
       }
     }
@@ -2535,7 +2584,9 @@ async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   if (!guid) return { error: 'GUID未設定' };
   /* v1104：ログインの同期では Toast の売上を先に全店同時に読んでから渡す（prefetchedRows）。
      v1101 の保護は売上・予算の保存を 1 つずつ順に通すので、ここで読むと店の数だけ往復を待っていた（日本からだと 1 店あたり約 0.2 秒以上）。 */
-  var rows = Array.isArray(prefetchedRows) ? prefetchedRows : await fetchToastSales(guid, days[0].date, days[days.length-1].date);
+  /* v1104（2 回目の独立レビュー P3）：先に読んだ行は 20 秒以内のものだけ使う（保護の順番を長く待つと、そのあいだにほかの端末が入れた新しい売上を古い値で戻すため） */
+  var _fresh = Array.isArray(prefetchedRows) && !(prefetchedRows._fetchedAt && Date.now() - prefetchedRows._fetchedAt > 20000);
+  var rows = _fresh ? prefetchedRows : await fetchToastSales(guid, days[0].date, days[days.length-1].date);
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -8047,7 +8098,7 @@ function _idbOpen() {
     rq.onupgradeneeded = function () {
       try { var db = rq.result; if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); } catch (e) { }
     };
-    rq.onsuccess = function () { _idbDB = rq.result; res(_idbDB); };
+    rq.onsuccess = function () { _idbDB = rq.result; try { _idbDB.onclose = function () { if (_idbDB === rq.result) _idbDB = null; }; } catch (e) { } res(_idbDB); };   /* v1104：接続が切れたら、次の書き出しでつなぎ直す */
     rq.onerror = function () { _idbState = 'unavailable'; res(null); };
     rq.onblocked = function () { _idbState = 'unavailable'; res(null); };
     /* プライベートモード等で open が永久に返らない端末がある。待ち続けない */
@@ -8073,9 +8124,13 @@ function _idbLoadAll() {
   });
 }
 
-/* v1104（独立レビュー P2）：書き出しが端末の保存領域に入り終えたか（oncomplete）を待てるように、書き出しごとの約束を持つ */
+/* v1104（独立レビュー P2）：書き出しが端末の保存領域に入り終えたか（complete）を待てるように、書き出しごとの約束を持つ。
+   保護の記録（_IDB_WATCH の名前）は、どの書き出しに入ったか（_idbKeyTx）と、このタブで何番目に積んだか（_idbKeyGen）も覚える */
 var _idbInflight = new Set();
-function _idbTrack(tx) {
+var _IDB_WATCH = ['financial_save_recovery_v2/', 'financial_pre_guard_archive_v1'];
+var _idbGen = 0, _idbKeyGen = new Map(), _idbKeyTx = new Map();
+function _idbWatched(k) { k = String(k); return _IDB_WATCH.some(function (p) { return k.indexOf(p) === 0; }); }
+function _idbTrack(tx, keys) {
   var p = new Promise(function (res) {
     try {
       tx.addEventListener('complete', function () { res(true); });
@@ -8083,16 +8138,17 @@ function _idbTrack(tx) {
       tx.addEventListener('abort', function () { res(false); });
     } catch (e) { res(false); }
   });
-  _idbInflight.add(p); p.then(function () { _idbInflight.delete(p); });
+  _idbInflight.add(p);
+  (keys || []).forEach(function (k) { if (_idbWatched(k)) _idbKeyTx.set(k, p); });
+  p.then(function () { _idbInflight.delete(p); (keys || []).forEach(function (k) { if (_idbKeyTx.get(k) === p) _idbKeyTx.delete(k); }); });
   return p;
 }
-function _idbFlush() {
-  if (!_idbDB || !_idbQ.size) return;
-  var batch = _idbQ; _idbQ = new Map();
+/* 1 つの書き出し（batch：key → 文字 か null）。書き出しの約束を返す（入った＝true） */
+function _idbWriteBatch(batch, txOpts) {
   var n = batch.size;
   try {
-    var tx = _idbDB.transaction(IDB_STORE, 'readwrite');
-    _idbTrack(tx);
+    var tx = txOpts ? _idbDB.transaction(IDB_STORE, 'readwrite', txOpts) : _idbDB.transaction(IDB_STORE, 'readwrite');
+    var p = _idbTrack(tx, Array.from(batch.keys()));
     var st = tx.objectStore(IDB_STORE);
     batch.forEach(function (v, k) {
       try {
@@ -8106,22 +8162,71 @@ function _idbFlush() {
     };
     tx.onerror = function () { _idbStat.failed += n; _idbRequeue(batch); };
     tx.onabort = function () { _idbStat.failed += n; _idbRequeue(batch); };
-  } catch (e) { _idbStat.failed += n; _idbRequeue(batch); var _f = Promise.resolve(false); _idbInflight.add(_f); _f.then(function () { _idbInflight.delete(_f); }); }
+    return p;
+  } catch (e) {
+    _idbStat.failed += n; _idbRequeue(batch);
+    var _f = Promise.resolve(false); _idbInflight.add(_f); _f.then(function () { _idbInflight.delete(_f); });
+    return _f;
+  }
 }
-/* v1104（独立レビュー P2）：いま待っている書き込みをすぐ書き出し、端末の保存領域に入り終えるまで待つ。
-   入った＝true。書き出せなかった（積み直した）・IndexedDB が使えない＝false。あとから積んだ別の書き込みは待たない */
-function _idbFlushP() {
-  if (_idbState !== 'ready' || !_idbDB) return Promise.resolve(false);
-  if (_idbTimer) { clearTimeout(_idbTimer); _idbTimer = null; }
-  _idbFlush();
-  return Promise.all(Array.from(_idbInflight)).then(function (r) { return r.every(function (x) { return x === true; }); });
+function _idbFlush() {
+  if (!_idbDB || !_idbQ.size) return;
+  var batch = _idbQ; _idbQ = new Map();
+  _idbWriteBatch(batch);
 }
-/* v1104（独立レビュー P1）：名前が prefix で始まるものを端末の保存領域から読み直し、このタブの写し（_IDB_MEM）を合わせる。
-   同じ端末のほかのタブが書いた・消したものが見える。このタブでまだ書き出していないもの（_idbQ）はこのタブの値のまま。
-   先に書き出すので、このタブの書き込みは読み直しの前に入る（IndexedDB は同じ範囲の書き込み→読み取りを順に通す） */
+/* v1104（独立レビュー P2・2 回目の P3）：いま待っている書き込みをすぐ書き出し、端末の保存領域に入り終えるまで待つ。
+   prefix を渡すと、その名前のものだけを別の書き出し（durability: strict）にして、その名前の書き出しだけを待つ
+   （ほかの書き込みが断られても、保護の記録は止まらない）。入った＝true。
+   書き出せなかったら 1 回だけ IndexedDB につなぎ直してやり直す（iOS の「接続が切れた」）。 */
+function _idbFlushP(prefix) {
+  if (_idbState !== 'ready') return Promise.resolve(false);
+  function run() {
+    if (!_idbDB) return Promise.resolve(false);
+    var waits = [];
+    if (prefix) {
+      var batch = new Map();
+      _idbQ.forEach(function (v, k) { if (String(k).indexOf(prefix) === 0) batch.set(k, v); });
+      batch.forEach(function (v, k) { _idbQ.delete(k); });
+      _idbKeyTx.forEach(function (p, k) { if (String(k).indexOf(prefix) === 0) waits.push(p); });
+      if (batch.size) waits.push(_idbWriteBatch(batch, { durability: 'strict' }));
+    } else {
+      if (_idbTimer) { clearTimeout(_idbTimer); _idbTimer = null; }
+      _idbFlush();
+      waits = Array.from(_idbInflight);
+    }
+    return Promise.all(waits).then(function (r) { return r.every(function (x) { return x === true; }); });
+  }
+  return run().then(function (ok) {
+    if (ok) return true;
+    return _idbReopen().then(function (again) { return again ? run() : false; });
+  });
+}
+/* v1104（2 回目の独立レビュー P3）：IndexedDB の接続が切れたとき（iOS で起きる）につなぎ直す。中身の写し（_IDB_MEM）はそのまま */
+var _idbReopening = null;
+function _idbReopen() {
+  if (_idbState !== 'ready' || !_idbAvailable()) return Promise.resolve(false);
+  if (!_idbReopening) _idbReopening = new Promise(function (res) {
+    var old = _idbDB; _idbDB = null;
+    try { if (old) old.close(); } catch (e) { }
+    var rq;
+    try { rq = indexedDB.open(IDB_NAME, IDB_VER); } catch (e) { return res(false); }
+    var done = false, fin = function (ok) { if (!done) { done = true; res(ok); } };
+    rq.onupgradeneeded = function () { try { var db = rq.result; if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); } catch (e) { } };
+    rq.onsuccess = function () { _idbDB = rq.result; try { _idbDB.onclose = function () { if (_idbDB === rq.result) _idbDB = null; }; } catch (e) { } fin(true); };
+    rq.onerror = function () { fin(false); };
+    rq.onblocked = function () { fin(false); };
+    setTimeout(function () { fin(!!_idbDB); }, 4000);
+  }).then(function (ok) { _idbReopening = null; return ok; });
+  return _idbReopening;
+}
+/* v1104（独立レビュー P1・2 回目の P1）：名前が prefix で始まるものを端末の保存領域から読み直し、このタブの写し（_IDB_MEM）を合わせる。
+   同じ端末のほかのタブが書いた・消したものが見える。先に書き出すので、それまでのこのタブの書き込みは読み直しに入る
+   （IndexedDB は同じ範囲の書き込み→読み取りを順に通す）。読み直しの途中でこのタブが積んだもの（_idbQ にある・
+   読み直しを始めたあとに積んだ＝_idbKeyGen が大きい）は、このタブの値のまま（前は書き出しに移ったものを「ほかのタブが消した」とみなした） */
 function _idbReloadPrefix(prefix) {
   return new Promise(function (res) {
     if (_idbState !== 'ready' || !_idbDB || !_IDB_MEM || !prefix) return res(false);
+    var g0 = _idbGen, mine = function (k) { return _idbQ.has(k) || (_idbKeyGen.get(k) || 0) > g0; };
     try {
       _idbFlush();
       var out = new Map(), tx = _idbDB.transaction(IDB_STORE, 'readonly');
@@ -8130,9 +8235,9 @@ function _idbReloadPrefix(prefix) {
       tx.oncomplete = function () {
         try {
           Array.from(_IDB_MEM.keys()).forEach(function (k) {
-            if (String(k).indexOf(prefix) === 0 && !out.has(k) && !_idbQ.has(k)) { _IDB_MEM.delete(k); _lskBump(); }
+            if (String(k).indexOf(prefix) === 0 && !out.has(k) && !mine(k)) { _IDB_MEM.delete(k); _lskBump(); }
           });
-          out.forEach(function (v, k) { if (_idbQ.has(k)) return; if (!_IDB_MEM.has(k)) _lskBump(); _IDB_MEM.set(k, v); });
+          out.forEach(function (v, k) { if (mine(k)) return; if (!_IDB_MEM.has(k)) _lskBump(); _IDB_MEM.set(k, v); });
           res(true);
         } catch (e) { res(false); }
       };
@@ -8149,7 +8254,7 @@ function financialRecoveryStore() {
     keys: function (p) { try { return _IDB_MEM ? Array.from(_IDB_MEM.keys()).filter(function (k) { return String(k).indexOf(p) === 0; }) : []; } catch (e) { return []; } },
     set: function (k, json) { return _idbQueue(k, json) === true; },
     del: function (k) { var ok = _idbQueue(k, null) === true; try { localStorage.removeItem(k); } catch (e) { } return ok; },
-    persist: function () { return _idbFlushP(); },
+    persist: function () { return _idbFlushP('financial_'); },   /* 保護の記録と退避だけを、別の書き出しで */
     reload: function (p) { return _idbReloadPrefix(p); }
   };
 }
@@ -8169,7 +8274,7 @@ function _idbRequeue(batch) {
       } catch (e) { }
     });
     if (_idbTimer) clearTimeout(_idbTimer);
-    _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 5000);
+    _idbTimer = setTimeout(function () { _idbTimer = null; if (_idbDB) _idbFlush(); else _idbReopen().then(function (ok) { if (ok) _idbFlush(); }); }, 5000);   /* v1104：接続が切れていたらつなぎ直す */
   } catch (e) { }
 }
 
@@ -8182,6 +8287,7 @@ function _idbQueue(key, json) {
     /* v765: メモリ側を同期で更新する。保存した直後の読み取りが
        書き込み完了(非同期)を待たずに新しい値を見られるようにするため。 */
     if (_IDB_MEM) { if ((json === null) === _IDB_MEM.has(key)) _lskBump(); if (json === null) _IDB_MEM.delete(key); else _IDB_MEM.set(key, json); }   /* v1049: 顔ぶれが変わるときだけ世代を進める */
+    if (_idbWatched(key)) _idbKeyGen.set(key, ++_idbGen);   /* v1104：保護の記録は、このタブで積んだ順を覚える（読み直しと重なったときのため） */
     _idbQ.set(key, json);
     if (_idbTimer) clearTimeout(_idbTimer);
     _idbTimer = setTimeout(function () { _idbTimer = null; _idbFlush(); }, 300);
@@ -15621,7 +15727,7 @@ async function loginSyncOps(){
          同時に取る（前は 1 つずつ答えを待っていた＝店ごとに往復 4 回ぶん）。直近 Labor のライブ補完は今までどおり裏で。
          同じ日を書く勤怠とクレジットTip調整の順は、v1090 の読み込みの番号（_tipLaborSeq）がこれまでどおり守る */
       var _jobs = [];
-      _jobs.push((async function(){ try { var _toastRows = await fetchToastSales(s.toastGuid, days[0].date, days[days.length-1].date); await syncStoreActualsFromToast(s.id, s.toastGuid, days, _toastRows); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());   /* v1104: 読むのは同時・保存は保護が順に */
+      _jobs.push((async function(){ try { var _toastRows = await fetchToastSales(s.toastGuid, days[0].date, days[days.length-1].date); try { Object.defineProperty(_toastRows, '_fetchedAt', { value: Date.now() }); } catch (e) { } await syncStoreActualsFromToast(s.id, s.toastGuid, days, _toastRows); } catch(e){ console.warn('loginSyncOps actuals', s.id, e); } })());   /* v1104: 読むのは同時・保存は保護が順に */
       _jobs.push((async function(){ try { var _lr = await syncTipLaborFromDB(s.id, s.toastGuid, days); if (_lr && Number(_lr.updated) > 0 && typeof mdLaborMark === 'function') mdLaborMark(s.id, ym); } catch(e){ console.warn('loginSyncOps labor', s.id, e); } })());   /* v1090: 読んだ店と月の印 */
       /* v860: クレジットTip調整は前月の日付を直すことが多い。
          他の同期は当月しか見ないので、調整の列だけ前月も引く（軽い）。 */
