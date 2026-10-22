@@ -104,6 +104,8 @@ const appServer = http.createServer(async (req, res) => {
     const bu = T.find(r => r.key === 'spl_budgets_v2_' + store); if (bu) { bu.value = [Object.assign({}, bu.value[0], { note: 'bumped ' + at })]; bu.updated_at = at; }
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ at, store, day })); return;
   }
+  if (u.pathname === '/__fin_drop') { mock.fin.drop = Number(u.searchParams.get('n') || 1); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.fin)); return; }
+  if (u.pathname === '/__fin_stat') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.fin)); return; }
   if (u.pathname === '/__fin_row') {   // クラウドの行の版と、その日の値（中身の全部は返さない）
     const T = mock.T.app_state, key = u.searchParams.get('key'), day = u.searchParams.get('day');
     const r = T.find(x => x.key === key);
@@ -146,6 +148,8 @@ const ext = https.createServer({ key: fs.readFileSync(path.join(CERT, 'key.pem')
     const h = Object.assign({ 'content-type': 'application/json' }, r.headers || {});
     await reply(req, res, r.status, h, Buffer.from(r.body == null ? '' : r.body), r.kind || 'api');
     if (wkeys) log[log.length - 1].keys = wkeys;
+    // v1104：Toast の取り込みで頼んだ日付（時間帯の確かめ。日付だけを記録する）
+    if (u.pathname === '/functions/v1/hyper-worker') { try { const j = JSON.parse(body || '{}'); const d = {}; for (const k of Object.keys(j)) if (/date|day|from|to|ym|month/i.test(k) && typeof j[k] === 'string' && j[k].length <= 32) d[k] = j[k]; log[log.length - 1].dates = d; } catch (e) { } }
     return;
   }
   return reply(req, res, 404, { 'content-type': 'text/plain' }, Buffer.from('nf'), 'ext');

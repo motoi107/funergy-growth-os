@@ -81,13 +81,43 @@ if (MEMO) {
     await page.evaluate(m => { document.getElementById('dm-memo').value = m; return saveDayMemo('F01', '2026-10-20'); }, MEMO);
     await sleep(2500);
     const after = await ctl('/__fin_row?key=daily_actuals_F01&day=2026-10-20');
-    R.memo_saved = { versionAdvanced: !!(before && after && after.updated_at !== before.updated_at), cloudHasMemo: !!(after && after.day && after.day.event === MEMO), state: await page.evaluate(() => FUNERGY_FINANCIAL_SAVE.getState()) };
+    R.memo_saved = { versionAdvanced: !!(before && after && after.updated_at !== before.updated_at), cloudHasMemo: !!(after && after.day && after.day.event === MEMO), state: await page.evaluate(() => window.FUNERGY_FINANCIAL_SAVE ? FUNERGY_FINANCIAL_SAVE.getState() : null) };
     await page.evaluate(() => { try { _idbFlush(); } catch (e) { } });
     await sleep(800);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await sleep(5000);
     R.memo_after_reload = await page.evaluate(() => { try { return (_lsRaw('daily_actuals_F01', {})['2026-10-20'] || {}).event || null; } catch (e) { return 'ERR ' + e.message; } });
   }
+}
+// --drop：保存の答えだけが届かない（サーバーには書けた）→「保存結果を確認」で 1 回だけ書けたことを確かめる
+if (arg('drop', '')) {
+  await page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
+  const c0 = (await ctl('/__fin_stat')).commits;
+  await ctl('/__fin_drop?n=1');
+  await page.evaluate(async () => { await openDayMemo('F01', '2026-10-19', '日'); await new Promise(r => setTimeout(r, 400)); document.getElementById('dm-memo').value = 'drop-check'; return saveDayMemo('F01', '2026-10-19'); });
+  await sleep(1500);
+  const mid = await page.evaluate(() => ({ state: FUNERGY_FINANCIAL_SAVE.getState().status, panel: !!document.getElementById('financial-save-status'), input: (document.getElementById('dm-memo') || {}).value || null }));
+  const ok = await page.evaluate(() => FUNERGY_FINANCIAL_SAVE.reconcile());
+  await sleep(800);
+  const c1 = (await ctl('/__fin_stat')).commits;
+  const row = await ctl('/__fin_row?key=daily_actuals_F01&day=2026-10-19');
+  R.drop = { mid, reconciled: ok, commitsOnServer: c1 - c0, cloudHasMemo: !!(row && row.day && row.day.event === 'drop-check'), after: await page.evaluate(() => ({ state: FUNERGY_FINANCIAL_SAVE.getState().status, panel: !!document.getElementById('financial-save-status') })) };
+}
+// --conflict：入力画面を開いたあとで別の端末が同じ店の売上を保存 → 上書きしない・入力を残す → 開き直して保存
+if (arg('conflict', '')) {
+  await page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
+  await page.evaluate(async () => { await openDayMemo('F01', '2026-10-18', '土'); await new Promise(r => setTimeout(r, 400)); document.getElementById('dm-memo').value = 'mine'; });
+  await ctl('/__fin_bump?store=F01&day=2026-10-17');
+  await page.evaluate(() => saveDayMemo('F01', '2026-10-18'));
+  await sleep(1500);
+  const mid = await page.evaluate(() => ({ state: FUNERGY_FINANCIAL_SAVE.getState().status, panel: (document.getElementById('financial-save-status') || {}).textContent || null, input: (document.getElementById('dm-memo') || {}).value || null }));
+  const rowMid = await ctl('/__fin_row?key=daily_actuals_F01&day=2026-10-17');
+  await page.evaluate(() => FUNERGY_FINANCIAL_SAVE.reloadForm());
+  await sleep(1000);
+  await page.evaluate(() => { document.getElementById('dm-memo').value = 'mine'; return saveDayMemo('F01', '2026-10-18'); });
+  await sleep(1500);
+  const r18 = await ctl('/__fin_row?key=daily_actuals_F01&day=2026-10-18'), r17 = await ctl('/__fin_row?key=daily_actuals_F01&day=2026-10-17');
+  R.conflict = { mid, otherKeptWhileConflict: !!(rowMid && rowMid.day && rowMid.day.actual === 4321.5), after: await page.evaluate(() => FUNERGY_FINANCIAL_SAVE.getState().status), mineSaved: !!(r18 && r18.day && r18.day.event === 'mine'), otherDeviceKept: !!(r17 && r17.day && r17.day.actual === 4321.5) };
 }
 // --expect-memo <文>：この端末（別の端末のつもり）でログインしたあと、F01・2026-10-20 のメモがその文か
 if (arg('expect-memo', '')) R.memo_seen = await page.evaluate(() => { try { return (_lsRaw('daily_actuals_F01', {})['2026-10-20'] || {}).event || null; } catch (e) { return 'ERR ' + e.message; } }) === arg('expect-memo', '');
@@ -102,4 +132,4 @@ await page.evaluate(() => { try { _idbFlush(); } catch (e) { } });
 await sleep(1000);
 await ctx.close();
 fs.writeFileSync(OUT, JSON.stringify(R, null, 1));
-console.log(JSON.stringify({ first: R.t_first_screen, latestSales: R.got_latest_sales, latestBudget: R.got_latest_budget, rawLatestSales: R.raw_latest_sales, rawLatestBudget: R.raw_latest_budget, saveFail: R.after_login.saveFailKeys, state: R.after_login.state, open: R.open, memo_open: R.memo_open, memo_saved: R.memo_saved, memo_after_reload: R.memo_after_reload, memo_seen: R.memo_seen, toasts: R.toasts.map(x => x.m) }, null, 1));
+console.log(JSON.stringify({ first: R.t_first_screen, latestSales: R.got_latest_sales, latestBudget: R.got_latest_budget, rawLatestSales: R.raw_latest_sales, rawLatestBudget: R.raw_latest_budget, saveFail: R.after_login.saveFailKeys, state: R.after_login.state, open: R.open, memo_open: R.memo_open, memo_saved: R.memo_saved, memo_after_reload: R.memo_after_reload, memo_seen: R.memo_seen, drop: R.drop, conflict: R.conflict, toasts: R.toasts.map(x => x.m) }, null, 1));

@@ -75,6 +75,7 @@ export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
   const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0' };
   const receipts = new Map();
+  const fin = { drop: 0, commits: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数
   const keyOf = (t, r) => (PK[t] || ['id']).map(c => String(r[c])).join('|');
   const idx = {}; function index(t) { if (!idx[t]) { idx[t] = new Map(); T[t].forEach((r, i) => idx[t].set(keyOf(t, r), i)); } return idx[t]; }
   const json = (status, body, headers) => ({ status, body: body === undefined ? '' : JSON.stringify(body), headers });
@@ -150,6 +151,8 @@ export function createMock(data) {
       }
       const r = { status: 'committed', request_id: p.p_request_id, store_id: p.p_store, action: p.p_action, versions };
       receipts.set(p.p_request_id, r);
+      fin.commits++;
+      if (fin.drop > 0) { fin.drop--; return { status: 502, body: '' }; }   // 書けたが答えが届かない
       return json(200, r);
     }
     return json(404, { code: 'PGRST202', message: 'Could not find the function' });
@@ -164,7 +167,7 @@ export function createMock(data) {
     }
   }
   return {
-    T,
+    T, fin,
     handle(method, u, headers, body) {
       const m = u.pathname.match(/^\/rest\/v1\/rpc\/([\w-]+)$/); if (m) return rpc(m[1], body, u);
       const t = u.pathname.match(/^\/rest\/v1\/([\w-]+)$/); if (t) return rest(method, t[1], u, headers, body);

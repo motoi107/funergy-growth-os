@@ -1528,9 +1528,13 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       if (!Array.isArray(value)) throw new Error('financial_recovery_invalid');
       return value;
     }
+    // v1104：記録は IndexedDB へ入る（localStorage が満杯でも）。IndexedDB へは少し後でまとめて書く仕組みなので、
+    // 送る前の記録（pending_request）がすぐ端末に残るよう、書いたらその場で書き出す（options.flushLocal）。
+    function flushLocal() { if (typeof options.flushLocal === 'function') { try { options.flushLocal(); } catch (_) {} } }
     function writeRecovery(all) {
       if (original._lsWriteVerified.call(win, RECOVERY_KEY, JSON.stringify(all)) !== true)
         throw new Error('financial_recovery_storage_failed');
+      flushLocal();
     }
     function moveLegacyRecovery() {
       if (legacyMoved) return;
@@ -2178,6 +2182,7 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
    Install fences before startup; native previews keep their separate gateway. */
 if (!window.FUNERGY_NATIVE_CONFIG) {
   FunergyFinancialSave.install(window, {enabled:true, deferStartup:true,
+    flushLocal:function(){ if(typeof _idbFlush==='function') _idbFlush(); },   /* v1104: 退避の記録をすぐ IndexedDB へ */
     awaitLocalReady:async function(){
       await Promise.resolve().then(function(){return _idbBootP;});
       return _idbState==='ready' && _IDB_MEM instanceof Map;
