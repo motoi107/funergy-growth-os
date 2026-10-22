@@ -112,6 +112,7 @@ function app(fns, { role = 'office', user = 'Marcia', st = {}, cloud = null, rou
     else S[k] = cloud[key];
     return true;
   };
+  c.window = c;   // as in the browser (v1101 / PR #88 reads window.FUNERGY_FINANCIAL_SAVE in reopenApproval; the financial module itself is not loaded here)
   vm.createContext(c);
   // Missing names are skipped so the same checks can run on an older build (FUNERGY_INDEX); a call to one then fails the test.
   const code = fns.map(n => { try { return fnSrc(n); } catch (_e) { return ''; } }).concat(VARS.map(n => { try { return varSrc(n); } catch (_e) { return ''; } })).join('\n');

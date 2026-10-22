@@ -223,7 +223,7 @@ test('the screens use the new view: My page, the Career Score list, the growth c
   assert.equal((SRC.match(/_kTile\('Career Score', \(V\.state==='none'/g) || []).length, 2, 'the person view and the manager view of the growth chart');
   assert.doesNotMatch(SRC, /G2 は 理念・基本業務・サービス・キッチン\/プレップ の 4 カテゴリーで数えます/);
   assert.doesNotMatch(SRC, /cats=\(ghNormG\(x\[0\]\)==='G2'\) \? '4 カテゴリー'/);
-  assert.match(SRC, /const APP_VERSION = '1100';/);
+  assert.ok(Number((SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1100);
 });
 
 test('the bonus ① card for G2: the category table marks the categories outside the G2 promotion line; a grade change of a G2 person needs all eight scored', () => {
