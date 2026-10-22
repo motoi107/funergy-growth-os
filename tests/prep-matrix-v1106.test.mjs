@@ -1,0 +1,720 @@
+// App v1106 (UI案60 ③, Moto 2026-10-21: "9 A 10 A 11 AまたはGMが引き上げ 12 A 13 A 14 A 15 A"; storage "今と同じ形"):
+//  Prep specialists (G1-P) per store — items, overall Lv, wage tables by version, certification (request → approval center with
+//  an effective date, or GM/CEO sets it), the switch list for a new table, Toast "done" marks — and the labor cost from the
+//  certified Lv × the store's table, by day. Without any certification every labor number is the same as v1105.
+// Runs the real functions from index.html in a VM with synthetic data. No network, no production data.
+// FUNERGY_INDEX=<path> runs the same checks against another build. FUNERGY_BASE=<commit> is the v1105 build compared for "no change".
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import { execFileSync } from 'node:child_process';
+
+const ROOT = new URL('..', import.meta.url);
+const SRC = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const BASE_SHA = process.env.FUNERGY_BASE || '0d8e6e57d755682af3f2f50811b0c87ec9e8f509';   // v1105 (PR #93 head)
+let OLD = null;
+try { OLD = execFileSync('git', ['show', BASE_SHA + ':index.html'], { cwd: ROOT, maxBuffer: 64 << 20 }).toString('utf8').replace(/\r\n/g, '\n'); } catch (_e) { OLD = null; }
+
+function fnFrom(src, name) {
+  const m = new RegExp('^(async )?function ' + name.replace(/\$/g, '\\$') + '\\(', 'm').exec(src);
+  if (!m) throw new Error('function not found: ' + name);
+  let i = src.indexOf('{', m.index), depth = 0, q = null, tpl = [];
+  for (; i < src.length; i++) {
+    const ch = src[i], nx = src[i + 1];
+    if (q) {
+      if (ch === '\\') { i++; continue; }
+      if (q === '`' && ch === '$' && nx === '{') { tpl.push(depth); depth++; q = null; i++; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '/' && nx === '/') { i = src.indexOf('\n', i); continue; }
+    if (ch === '/' && nx === '*') { i = src.indexOf('*/', i) + 1; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (tpl.length && depth === tpl[tpl.length - 1]) { tpl.pop(); q = '`'; continue; }
+      if (depth === 0) return src.slice(m.index, i + 1);
+    }
+  }
+  throw new Error('unterminated: ' + name);
+}
+const fnSrc = n => fnFrom(SRC, n);
+function varFrom(src, name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm').exec(src); if (!m) throw new Error('var not found: ' + name); return m[0]; }
+const PM = (() => { const a = SRC.indexOf('/* FUNERGY_PREP_BEGIN */'), b = SRC.indexOf('/* FUNERGY_PREP_END */'); assert.ok(a > 0 && b > a, 'prep module markers'); return SRC.slice(a, b); })();
+
+const LABOR = ['_laborHrs', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', 'isoOf', 'isoLocalDate', 'laborForEmployee', '_laborCoreForYmRaw',
+  'toastLaborCostForDate', 'ldLaborDay', '_ldWage', 'laborBreakdownForPeriod', 'empWage', 'empWageOf', 'empPayType', '_mdMemo', 'mdCacheClear'];
+const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
+  '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', 'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'approveItem', 'reopenApproval',
+  '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', '_apRecordState', '_apMarkDecided', 'apNotifyDecision', 'apNeedsAcct', 'apWithOfficeCrew', '_apStoreLabel', '_apReopenRec',
+  'resolveApprovalByRef', '_apResolveLocal', '_apRecTime', '_apPullRecord', 'apDecStamp', '_apStT', '_apMut', '_apGen', '_apSyncRecStamp', '_rtStT', '_rtStK', '_rtDecT', '_rtDecG',
+  'getNotifs', 'addNotif', 'mergeMapByTime', '_recAt', '_coversMapByTime'];
+const AP_VARS = ['AP_ACCT_TYPES', '_apBusy', '_apTab', '_apPullAt', 'AP_REC_KEYS', 'AP_REC_FIELD', 'RT_DEC_FIELDS'];
+
+const ROLE_CONFIG = { ceo: { name: 'Tac' }, gm: { name: 'Moto' }, office: { name: 'Marcia' }, am: { name: 'Yuki' }, sl: { name: 'Store Leader' }, crew: { name: 'スタッフ' } };
+// F01 = ToriTon, F06 = LaLa. Prep people: Pia (ToriTon, Lv2 from v1105, an individual wage $18.00), Pete (ToriTon, Lv1, $16),
+// Lani (LaLa, no Lv yet), Sam (ToriTon home, also works at LaLa). Cora is a normal G1 (not prep).
+const EMPS = () => [
+  { id: 'e1', name: 'Pia', store: 'F01', role: 'crew', prep: true, prepLv: 2, wage: 18, title: 'Prep Specialist' },
+  { id: 'e2', name: 'Pete', store: 'F01', role: 'crew', prep: true, prepLv: 1, wage: 16, title: 'Prep Specialist' },
+  { id: 'e3', name: 'Lani', store: 'F06', role: 'crew', prep: true, wage: 17, title: 'Prep Specialist' },
+  { id: 'e4', name: 'Sam', store: 'F01', support: ['F06'], role: 'crew', prep: true, prepLv: 3, wage: 19, title: 'Prep Specialist' },
+  { id: 'e5', name: 'Cora', store: 'F01', role: 'crew', wage: 16.5, title: 'Crew' },
+  { id: 'e6', name: 'Gone', store: 'F06', role: 'crew', prep: true, prepLv: 4, wage: 20, status: '退職' },
+];
+// Synthetic Toast hours (Oct–Dec 2026) — fixed pseudo-random so every run is the same.
+function laborData() {
+  let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const out = { F01: {}, F06: {} };
+  for (let d = new Date(Date.UTC(2026, 8, 27)); d <= new Date(Date.UTC(2026, 11, 31)); d.setUTCDate(d.getUTCDate() + 1)) {
+    const iso = d.toISOString().slice(0, 10);
+    for (const sid of ['F01', 'F06']) {
+      const day = {};
+      for (const n of ['Pia', 'Pete', 'Lani', 'Sam', 'Cora']) {
+        if (sid === 'F01' && n === 'Lani') continue;
+        if (sid === 'F06' && (n === 'Pia' || n === 'Pete' || n === 'Cora')) continue;
+        if (rnd() < 0.2) continue;
+        const h = Math.round((3 + rnd() * 6) * 4) / 4;   // 3–9 h in quarter hours; some weeks pass 40 h
+        const lunch = Math.round(h * 40) / 100;
+        day[n] = { rawLunch: lunch, rawDinner: Math.round((h - lunch) * 100) / 100, lunch: lunch, dinner: Math.round((h - lunch) * 100) / 100 };
+      }
+      out[sid][iso] = day;
+    }
+  }
+  return out;
+}
+const LAB = laborData();
+
+// Per-record merge (newer _at wins) — the cloud side of mergeMapByTime for these tests.
+const mergeRec = (a, b) => { const out = Object.assign({}, a || {}); for (const [k, v] of Object.entries(b || {})) { const o = out[k]; if (!o || (Number(v && v._at) || 0) >= (Number(o && o._at) || 0)) out[k] = v; } return out; };
+function app(src, { role = 'gm', user = 'Moto', st = {}, today = '2026-10-22', fns = [], withPm = true, cloud = null } = {}) {
+  const S = JSON.parse(JSON.stringify(Object.assign({ m_employees: EMPS() }, st)));
+  const c = {
+    curRole: role, curUserName: user, curStore: 'ALL', curStoreLogin: false, curLang: 'ja', curPage: 'skill', ROLE_CONFIG, today,
+    STORES: [{ id: 'F01', name: 'ToriTon' }, { id: 'F06', name: 'LaLa' }, { id: 'F02', name: 'Tenkichi' }],
+    alerts: [], toasts: [], rendered: [], modals: [], notifs: [], S, PAYROLL_TAX_RATE: 0.17, WAGE: { crew: 16 },
+    t: (ja) => ja, ls: (k, d) => (k in S ? JSON.parse(JSON.stringify(S[k])) : d), lsSet: (k, v) => { S[k] = JSON.parse(JSON.stringify(v)); if (c.pushOnSave && cloud && /^prep_/.test(k)) cloud[k] = mergeRec(cloud[k], S[k]); return true; },   // pushOnSave: the normal push (read the cloud, merge, write)
+    alert: m => c.alerts.push(m), confirm: () => true, showToast: (m, k) => c.toasts.push([m, k]), renderPage: p => c.rendered.push(p),
+    openModal: h => c.modals.push(h), closeModalDirect: () => {}, openInputModal: (o, cb) => cb('理由'),
+    escapeHtml: s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    nowJP: () => '2026/10/22 09:10', todayJP: () => '2026/10/22', bizToday: () => c.today, curYm: () => c.today.slice(0, 7),
+    getEmployees: () => JSON.parse(JSON.stringify(S.m_employees)), getStoresAll: () => c.STORES, getVisibleStores: () => c.STORES,
+    getTipLabor: (sid, dt) => (LAB[sid] && LAB[sid][dt]) || null, storeMonthlyStaff: () => [], empMonthlyOf: () => 0, empIsMonthlyByName: () => false,
+    daysOfYm: ym => { const out = []; const [y, m] = ym.split('-').map(Number); const n = new Date(Date.UTC(y, m, 0)).getUTCDate(); for (let i = 1; i <= n; i++) out.push({ date: ym + '-' + String(i).padStart(2, '0') }); return out; },
+    daysInMonthOf: ym => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m, 0)).getUTCDate(); },
+    dayClosureMode: () => 'open', _daRO: () => ({}), storeInsuranceDaily: () => 0, isFrozenMonth: () => false, storeSalaryMonthly: () => 0, storeInsuranceMonthly: () => 0,
+    getTitleWageTable: () => ({}), isMonthlyTitle: () => false, empSiteWageOf: () => 0,
+    canViewWages: () => ['gm', 'ceo', 'office', 'am'].indexOf(c.curRole) >= 0, canViewIndividualWage: () => ['gm', 'ceo', 'office'].indexOf(c.curRole) >= 0,
+    canEditWages: () => c.curRole === 'gm' || c.curRole === 'ceo', isStoreManager: () => c.curRole === 'sl' && c.curUserName === 'Store Leader',
+    myName: () => c.curUserName, GRADE_MAP_DATA: [{ g: 'G1-P', levels: [16, 17.5, 19, 20.5, 22].map((w, i) => ({ lv: i + 1, wage: w.toFixed(2), ja: ['基本の仕込み（指示通り）', '主要メニュー', '品質', '段取り', 'プレップのマスター（指導）'][i] })) }],
+    skillRadarSvg: () => '<svg></svg>', bStoreChips: () => '', getNotifs: () => S.notifications || [],
+    empGradeNum: () => 1, myGradeNum: () => 6, myAmStores: () => [], approversForType: t => (t === 'プレップ認定' ? ['gm'] : ['office', 'gm', 'am']),
+    renderNotifBell: () => {}, renderNotifPanel: () => {}, document: { getElementById: id => (c.dom && c.dom[id]) || null }, setTimeout, clearTimeout,
+    SUPA_SYNC_ENABLED: !!cloud, getSkillRequests: () => [], getOffboardings: () => [], setOffboardings: () => {},
+  };
+  if (cloud) {
+    // A cloud row read with its version (the JSON of the value) and written only if that version is unchanged — like _fetchOpRow / _opCasWrite.
+    const ver = key => (key in cloud ? JSON.stringify(cloud[key]) : null);
+    c._fetchOpRow = async key => { (c.casReads = c.casReads || []).push(key); if (c.onCasRead) await c.onCasRead(key); if (cloud.fail && cloud.fail.indexOf(key) >= 0) return undefined; return key in cloud ? { exists: true, value: JSON.parse(ver(key)), updatedAt: ver(key) } : { exists: false, value: null, updatedAt: null }; };
+    c._opCasWrite = async (key, value, row) => { if (c.beforeCasWrite) await c.beforeCasWrite(key); if ((row.exists ? row.updatedAt : null) !== ver(key)) { (c.casConflicts = c.casConflicts || []).push(key); return 'conflict'; } cloud[key] = JSON.parse(JSON.stringify(value)); (c.casWrites = c.casWrites || []).push(key); return 'ok'; };
+    c._opMergeDef = () => ({ merge: (a, b) => mergeRec(a, b) });
+    c._opWriteBack = (key, def, v) => { S[key] = JSON.parse(JSON.stringify(v)); return v; };
+  }
+  if (cloud) c.pullOpKey = async key => { (c.pulled = c.pulled || []).push(key); if (cloud.fail && cloud.fail.indexOf(key) >= 0) return false; if (key in cloud) S[key] = c.mergeMapByTime ? c.mergeMapByTime(cloud[key], S[key] || {}) : cloud[key]; return true; };
+  c.window = c;
+  vm.createContext(c);
+  const names = LABOR.concat(fns);
+  const code = names.map(n => { try { return fnFrom(src, n); } catch (_e) { return ''; } }).join('\n')
+    + '\n' + AP_VARS.map(n => { try { return varFrom(src, n); } catch (_e) { return ''; } }).join('\n')
+    + '\nvar _mdCache = {}, _mdCacheArmed = false;\n' + (withPm ? PM : '');
+  vm.runInContext(code, c);
+  return c;
+}
+const run = (c, expr) => vm.runInContext(expr, c);
+const plain = v => JSON.parse(JSON.stringify(v));
+const clear = c => run(c, 'mdCacheClear()');
+const LV5 = [1700, 1825, 1950, 2075, 2200];
+const table = (store, from, cents = LV5, extra = {}) => ({ store, from, levels: cents.map((x, i) => ({ lv: i + 1, name: 'L' + (i + 1), cents: x })), by: 'Moto', _at: 10, ...extra });
+const cert = (emp, name, store, lv, from, tbl, extra = {}) => ({ emp, name, store, lv, from, tbl, kind: 'raise', state: 'approved', dt: 100, _at: 100, by: 'Moto', dBy: 'Moto', ...extra });
+
+/* -------------------- no change without certification -------------------- */
+test('labor: without any Prep data, every labor number is the same as v1105 (core, per day, L/D, one-day breakdown)', { skip: OLD ? false : 'v1105 build (git history) not available' }, () => {
+  const a = app(OLD, { withPm: false }), b = app(SRC);
+  for (const sid of ['F01', 'F06']) for (const ym of ['2026-10', '2026-11', '2026-12']) {
+    assert.deepEqual(plain(run(b, `_laborCoreForYmRaw('${sid}','${ym}',{})`)), plain(run(a, `_laborCoreForYmRaw('${sid}','${ym}',{})`)), sid + ' ' + ym);
+  }
+  for (const dt of ['2026-10-05', '2026-11-03', '2026-12-24']) for (const sid of ['F01', 'F06']) {
+    assert.equal(run(b, `toastLaborCostForDate('${sid}','${dt}')`), run(a, `toastLaborCostForDate('${sid}','${dt}')`));
+    assert.deepEqual(plain(run(b, `ldLaborDay('${sid}','${dt}')`)), plain(run(a, `ldLaborDay('${sid}','${dt}')`)));
+    assert.deepEqual(plain(run(b, `laborBreakdownForPeriod('${sid}',[{date:'${dt}'}]).rows`)), plain(run(a, `laborBreakdownForPeriod('${sid}',[{date:'${dt}'}]).rows`)));
+  }
+});
+
+test('labor: a certification at LaLa changes only that person at LaLa; ToriTon and everyone else are the same as v1105', { skip: OLD ? false : 'v1105 build (git history) not available' }, () => {
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: { c1: cert('e4', 'Sam', 'F06', 3, '2026-11-01', 't1') } };
+  const a = app(OLD, { withPm: false, st }), b = app(SRC, { st });
+  for (const ym of ['2026-10', '2026-11', '2026-12']) {
+    assert.deepEqual(plain(run(b, `_laborCoreForYmRaw('F01','${ym}',{})`)), plain(run(a, `_laborCoreForYmRaw('F01','${ym}',{})`)), 'F01 ' + ym);
+    const nb = plain(run(b, `_laborCoreForYmRaw('F06','${ym}',{})`)), na = plain(run(a, `_laborCoreForYmRaw('F06','${ym}',{})`));
+    for (const n of Object.keys(na.byName)) {
+      if (n === 'Sam') continue;
+      assert.deepEqual(nb.byName[n], na.byName[n], ym + ' ' + n);
+    }
+    if (ym === '2026-10') assert.deepEqual(nb, na);   // before the effective date: nothing changes, even for Sam
+  }
+});
+
+test('labor: from the effective date the store pays certified Lv × its table, by day; weeks over 40 h use the week’s average × 1.5', () => {
+  // Sam: LaLa v1 from 11/1 at Lv2 (switch), promoted to Lv3 from 11/18 (GM). Before 11/1: the master wage $19.
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') },
+    prep_certs: { c1: cert('e4', 'Sam', 'F06', 2, '2026-11-01', 't1', { kind: 'switch', src: 'legacy' }), c2: cert('e4', 'Sam', 'F06', 3, '2026-11-18', 't1', { kind: 'raise', dt: 200, _at: 200 }) } };
+  const c = app(SRC, { st });
+  const wageOn = dt => (dt < '2026-11-01' ? 19 : dt < '2026-11-18' ? 18.25 : 19.5);
+  for (const ym of ['2026-11', '2026-12']) {
+    // Independent calculation: weeks Sun–Sat, only the month's days, OT over 40 h at the week's average × 1.5.
+    let pay = 0;
+    const [y, m] = ym.split('-').map(Number), first = new Date(Date.UTC(y, m - 1, 1)), last = new Date(Date.UTC(y, m, 0));
+    const s = new Date(first); s.setUTCDate(s.getUTCDate() - s.getUTCDay());
+    for (const w = new Date(s); w <= last; w.setUTCDate(w.getUTCDate() + 7)) {
+      let h = 0, hw = 0;
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(w); d.setUTCDate(d.getUTCDate() + i); const iso = d.toISOString().slice(0, 10);
+        if (iso.slice(0, 7) !== ym) continue;
+        const e = (LAB.F06[iso] || {}).Sam; if (!e) continue;
+        const hh = Math.max(e.rawLunch + e.rawDinner, e.lunch + e.dinner); h += hh; hw += hh * wageOn(iso);
+      }
+      if (h > 0) { const ot = Math.max(0, h - 40), avg = hw / h; pay += (h - ot) * avg + ot * avg * 1.5; }
+    }
+    const core = plain(run(c, `_laborCoreForYmRaw('F06','${ym}',{})`));
+    assert.equal(core.byName.Sam.pay, Math.round(pay * 100) / 100, ym);
+    // The store's hourly total = Sam's certified pay + Lani at her master wage ($17, weekly OT × 1.5).
+    const la = core.byName.Lani, laniPay = la.reg * 17 + la.ot * 17 * 1.5;
+    assert.equal(core.hourly, Math.round((core.byName.Sam.pay + laniPay) * 100) / 100, ym + ' hourly');
+    const lfe = plain(run(c, `laborForEmployee('Sam', {regular:${core.byName.Sam.reg}, ot:${core.byName.Sam.ot}, pay:${core.byName.Sam.pay}})`));
+    assert.equal(lfe.total, core.byName.Sam.pay);
+    assert.equal(lfe.mixed, true);
+  }
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-10-31')`), 19);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-11-01')`), 18.25);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-11-18')`), 19.5);
+  assert.equal(run(c, `empWageAt('Sam','F01','2026-11-18')`), 19);   // 14A: ToriTon keeps its own wage
+  // A monthly-paid person never gets the Prep table wage (even with a certificate).
+  const mo = app(SRC, { st: { ...st, m_employees: EMPS().map(e => (e.id === 'e4' ? { ...e, monthlySalary: 4000 } : e)) } });
+  assert.equal(run(mo, `pmCertWage('Sam','F06','2026-11-20')`), null);
+  // Per-day screens use the same wage.
+  const e = LAB.F06['2026-11-20'].Sam;
+  if (e) {
+    const hh = Math.max(e.rawLunch + e.rawDinner, e.lunch + e.dinner);
+    const all = Object.keys(LAB.F06['2026-11-20']).reduce((s2, n) => { const x = LAB.F06['2026-11-20'][n]; const h2 = Math.max(x.rawLunch + x.rawDinner, x.lunch + x.dinner); return s2 + h2 * (n === 'Sam' ? 19.5 : { Lani: 17 }[n]); }, 0);
+    assert.ok(Math.abs(run(c, `toastLaborCostForDate('F06','2026-11-20')`) - all) < 1e-9);
+    const bd = plain(run(c, `laborBreakdownForPeriod('F06',[{date:'2026-11-20'}]).rows`)).find(r => r.name === 'Sam');
+    assert.equal(bd.amount, Math.round(hh * 19.5 * 100) / 100);
+  }
+});
+
+test('labor: a new table changes no one until the switch is approved; a later approval of an older-table certificate does not undo the switch', () => {
+  const base = { t1: table('F01', '2026-11-01', [1600, 1750, 1900, 2050, 2200]), t2: table('F01', '2026-12-01', LV5, { _at: 20 }) };
+  // Pia: on v1 from 11/1 (Lv2). v2 exists from 12/1, not approved for her → still v1.
+  let c = app(SRC, { st: { prep_tables: base, prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-11-01', 't1') } } });
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-12-10')`), 17.5);
+  // The switch to v2 from 12/1 is approved. A promotion to Lv3 from 12/15 was approved earlier against v1 (dt smaller).
+  c = app(SRC, { st: { prep_tables: base, prep_certs: {
+    a: cert('e1', 'Pia', 'F01', 2, '2026-11-01', 't1'),
+    p: cert('e1', 'Pia', 'F01', 3, '2026-12-15', 't1', { kind: 'req', dt: 150 }),
+    s: cert('e1', 'Pia', 'F01', 2, '2026-12-01', 't2', { kind: 'switch', src: 'cert', dt: 300 }) } } });
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-11-30')`), 17.5);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-12-01')`), 18.25);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-12-15')`), 19.5);   // Lv3 on v2 (the newest table she was approved on)
+  // Removing the Prep mark ends the Prep wage the next day; afterwards the master wage again.
+  c = app(SRC, { st: { prep_tables: base, prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-11-01', 't1'), z: cert('e1', 'Pia', 'F01', 0, '2026-11-20', '', { kind: 'end', dt: 400 }) } } });
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-11-19')`), 17.5);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-11-20')`), 18);
+  // A certification whose table was cancelled or never existed does not invent a wage.
+  c = app(SRC, { st: { prep_tables: { t1: table('F01', '2026-11-01', LV5, { void: true }) }, prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-11-01', 't1') } } });
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-11-10')`), 18);
+});
+
+/* -------------------- scoring and items -------------------- */
+test('scores: overall Lv by average (rounded) or lowest item, counts only scored items, and the speed rule counts 4–5 as 3 unless the others are 3+', () => {
+  const c = app(SRC, { st: { prep_cfg: { F06: { on: true, items: [
+    { id: 'a', name: 'A', on: true }, { id: 'b', name: 'B', on: true }, { id: 'sp', name: '段取り・速さ', on: true }, { id: 'x', name: 'Old', on: false }], method: 'avg', speed: 'sp', _at: 5 } } } });
+  const set = (sk) => { const em = c.S.m_employees; em[2].prepSkills = { F06: sk }; clear(c); return plain(run(c, `pmScore(getEmployees()[2],'F06')`)); };
+  let s = set({ a: 3, b: 4 });
+  assert.deepEqual([s.lv, s.n, s.total, s.full], [4, 2, 3, false]);   // (3+4)/2 = 3.5 → 4
+  s = set({ a: 3, b: 4, sp: 5 });
+  assert.deepEqual([s.lv, s.full, s.capped], [4, true, false]);       // others ≥3 → speed 5 counts: (3+4+5)/3 = 4
+  s = set({ a: 2, b: 4, sp: 5, x: 5 });
+  assert.deepEqual([s.lv, s.capped], [3, true]);                      // a = 2 → speed counted as 3: (2+4+3)/3 = 3; the item that is off is not counted
+  c.S.prep_cfg.F06.method = 'min'; s = set({ a: 2, b: 4, sp: 3 });
+  assert.equal(s.lv, 2);
+  // The real scoring button refuses 4–5 on the speed item while another item is below 3, and never writes Lv or wage.
+  c.S.prep_cfg.F06.method = 'avg'; set({ a: 2, b: 4 });
+  run(c, `setPrepSkill('e3','F06','sp',4)`);
+  assert.match(c.alerts.pop(), /ほかの項目がすべて 3 以上/);
+  run(c, `setPrepSkill('e3','F06','a',3)`); run(c, `setPrepSkill('e3','F06','sp',4)`);
+  const e3 = c.S.m_employees.find(e => e.id === 'e3');
+  assert.deepEqual(e3.prepSkills.F06, { a: 3, b: 4, sp: 4 });
+  assert.equal(e3.wage, 17); assert.equal(e3.prepLv, undefined);
+  run(c, `setPrepSkill('e3','F06','sp',4)`);   // the same number again clears it
+  assert.equal(c.S.m_employees.find(e => e.id === 'e3').prepSkills.F06.sp, 0);
+  // Only GM/CEO score.
+  const am = app(SRC, { role: 'am', user: 'Yuki' }); run(am, `setPrepSkill('e3','F06','ll_recipe',3)`); assert.equal(am.alerts.length, 1);
+  // Scoring is by item id: reordering items on another device does not change which item a tap scores.
+  c.S.prep_cfg.F06.items.reverse(); clear(c);
+  run(c, `setPrepSkill('e3','F06','b',2)`);
+  assert.equal(c.S.m_employees.find(e => e.id === 'e3').prepSkills.F06.b, 2);
+});
+
+test('items: LaLa starts from the 7 draft items (15A) and stays on them after scoring; a store with v1105 items keeps them (id = name, old scores read)', () => {
+  const c = app(SRC);
+  const lala = plain(run(c, `pmCfg('F06')`));
+  assert.equal(lala.items.length, 7); assert.equal(lala.draft, true); assert.equal(lala.speed, 'll_speed'); assert.equal(lala.on, true);
+  c.S.m_employees[2].prepSkills = { F06: { ll_recipe: 3 } }; clear(c);
+  assert.equal(plain(run(c, `pmCfg('F06')`)).items[0].id, 'll_recipe');
+  const tori = plain(run(c, `pmCfg('F01')`));
+  assert.equal(tori.items[0].id, 'チキン'); assert.equal(tori.draft, false); assert.equal(tori.speed, '');
+  c.S.m_employees[0].prepSkills = { F01: { 'チキン': 4, 'ポーク': 2 } }; clear(c);
+  assert.deepEqual(plain(run(c, `prepSkillsOf(getEmployees()[0],'F01')`)), { 'チキン': 4, 'ポーク': 2 });   // the old name-keyed reader still works
+  assert.deepEqual(plain(run(c, `getPrepPositions('F06')`)).length, 7);
+  // LaLa with v1105 scores under the generic items keeps those items (no hidden scores).
+  const d = app(SRC); d.S.m_employees[2].prepSkills = { F06: { '仕込み': 2 } }; clear(d);
+  assert.equal(plain(run(d, `pmCfg('F06')`)).items[0].id, '仕込み');
+  // A store without Prep staff is off by default.
+  assert.equal(plain(run(c, `pmCfg('F02')`)).on, false);
+});
+
+test('settings: a saved store keeps its own items; copying a template copies items only and keeps the old items off (scores readable)', async () => {
+  const c = app(SRC, { fns: [] });
+  c.S.m_employees[0].prepSkills = { F01: { 'チキン': 4 } };
+  run(c, `_pm.form=pmFormFrom('F06')`);
+  run(c, `_pm.form.items[0].name='レシピの品質'; _pm.form.items.push({id:'n1',name:'新しい項目',desc:'',on:true}); _pm.form.draft=false`);
+  await run(c, `pmSaveSettings()`);
+  const r = c.S.prep_cfg.F06;
+  assert.equal(r.items[0].id, 'll_recipe'); assert.equal(r.items[0].name, 'レシピの品質'); assert.equal(r.items.length, 8); assert.equal(r.draft, false);
+  assert.equal(c.S.prep_cfg.F01, undefined);   // ToriTon unchanged
+  run(c, `_pm.form=pmFormFrom('F02'); pmCopyTemplate('F01')`);
+  const f = plain(run(c, `_pm.form`));
+  assert.equal(f.items.filter(i => i.on).length, 8);
+  assert.ok(f.items.every(i => i.id !== 'チキン'));   // new ids
+  assert.equal(JSON.stringify(f).includes('"prepSkills"'), false);
+  // Someone else saved first → nothing is overwritten.
+  run(c, `_pm.form=pmFormFrom('F06')`); c.S.prep_cfg.F06._at = 999; run(c, `_pm.form.items[0].name='X'`);
+  await run(c, `pmSaveSettings()`);
+  assert.equal(c.S.prep_cfg.F06.items[0].name, 'レシピの品質');
+  assert.match(c.toasts.pop()[0], /先に保存/);
+  // A store manager may edit items of their own store only, not the method/speed/official flag.
+  const sm = app(SRC, { role: 'sl', user: 'Store Leader', st: { m_employees: EMPS().concat([{ id: 'm1', name: 'Store Leader', store: 'F06', role: 'sl', title: 'Store Manager' }]) } });
+  assert.equal(run(sm, `pmCanItems('F06')`), true); assert.equal(run(sm, `pmCanItems('F01')`), false);
+  const sm2 = app(SRC, { role: 'sl', user: 'Store Leader', st: { m_employees: EMPS().concat([{ id: 'm1', name: 'Store Leader', store: 'F01', support: ['F06'], role: 'sl', title: 'Store Manager' }]) } });
+  assert.equal(run(sm2, `pmCanItems('F06')`), false);   // a store they only support: not theirs to edit
+  run(sm, `_pm.form=pmFormFrom('F06'); _pm.form.method='min'; _pm.form.draft=false; _pm.form.items[0].desc='計量'`);
+  await run(sm, `pmSaveSettings()`);
+  assert.equal(sm.S.prep_cfg.F06.method, 'avg'); assert.equal(sm.S.prep_cfg.F06.draft, true); assert.equal(sm.S.prep_cfg.F06.items[0].desc, '計量');
+});
+
+/* -------------------- tables -------------------- */
+test('tables: wages must rise with Lv, be above $0, start after today and after the previous version (no overlap)', () => {
+  const c = app(SRC, { st: { prep_tables: { t1: table('F06', '2026-11-01') } } });
+  const lv = cents => cents.map((x, i) => ({ lv: i + 1, name: 'L' + (i + 1), cents: x }));
+  const chk = (from, cents) => run(c, `pmCheckTable('F06','${from}',${JSON.stringify(lv(cents))})`);
+  assert.equal(chk('2026-11-02', LV5), '');
+  assert.match(chk('2026-11-01', LV5), /前の版/);
+  assert.match(chk('2026-10-22', LV5), /明日以降/);
+  assert.match(chk('2026-11-05', [1700, 1700, 1950, 2075, 2200]), /Lv の順に上がる/);
+  assert.match(chk('2026-11-05', [0, 1825, 1950, 2075, 2200]), /\$0 より大きく/);
+  assert.match(run(c, `pmCheckTable('F06','2026-11-05',[{lv:1,name:'',cents:1700}].concat(${JSON.stringify(lv(LV5).slice(1))}))`), /名前/);
+  assert.equal(run(c, `pmCents('18.25')`), 1825); assert.equal(run(c, `pmCents('$17')`), 1700); assert.equal(run(c, `pmCents('17.5')`), 1750); assert.equal(run(c, `pmCents('1e3')`), null);
+  // A different store's version does not block LaLa.
+  const d = app(SRC, { st: { prep_tables: { t1: table('F01', '2026-12-01') } } });
+  assert.equal(run(d, `pmCheckTable('F06','2026-11-02',${JSON.stringify(lv(LV5))})`), '');
+});
+
+/* -------------------- switch list (13A) -------------------- */
+test('switch: current Lv stays, new amount; v1105 Lv needs a basis; individual wages are flagged; never guesses a Lv; approval writes no wage', async () => {
+  const st = { prep_tables: { t1: table('F01', '2026-11-01') }, prep_history: [{ name: 'Pia', store: 'F01', toLv: 2 }] };
+  const c = app(SRC, { st, fns: ['apNotifyAcctApplied', 'addNotif', 'getNotifs'] });
+  c.S.m_employees[3].prepSkills = { F01: { 'チキン': 3 } };   // Sam: a score is a basis
+  clear(c);
+  const d = plain(run(c, `pmSwitchRows('t1')`)), row = n => d.rows.find(r => r.e.name === n);
+  assert.deepEqual([row('Pia').lv, row('Pia').newCents, row('Pia').ok], [2, 1825, true]);
+  assert.match(row('Pia').warn, /個人の時給/);                         // $18.00 vs the v1105 table $17.50
+  assert.deepEqual([row('Pete').lv, row('Pete').ok], [null, false]);    // Lv1 with no record or score → not guessed
+  assert.match(row('Pete').warn, /根拠/);
+  assert.deepEqual([row('Sam').lv, row('Sam').newCents], [3, 1950]);
+  assert.equal(d.rows.some(r => r.e.name === 'Lani' || r.e.name === 'Gone' || r.e.name === 'Cora'), false);   // other store / resigned / not prep
+  // LaLa: Lani has no Lv → 要設定, Sam (support) too — Lv from v1105 counts only at the home store.
+  const e = app(SRC, { st: { prep_tables: { t9: table('F06', '2026-11-01') } } });
+  e.S.m_employees[3].prepSkills = { F06: { ll_recipe: 3 } };   // Sam has a LaLa score, but his v1105 Lv belongs to ToriTon
+  clear(e);
+  const dl = plain(run(e, `pmSwitchRows('t9')`));
+  assert.deepEqual(dl.rows.map(r => [r.e.name, r.lv]).sort(), [['Lani', null], ['Sam', null]]);
+  // Approve: certs with the Lv and the table, no wage amounts; the same rows are not switched twice.
+  run(c, `_pm.sw={id:'t1',pick:{e1:true,e4:true}}`);
+  await run(c, `pmApproveSwitch()`);
+  const certs = Object.values(c.S.prep_certs);
+  assert.deepEqual(certs.map(x => [x.name, x.lv, x.from, x.tbl, x.kind, x.state]).sort(), [['Pia', 2, '2026-11-01', 't1', 'switch', 'approved'], ['Sam', 3, '2026-11-01', 't1', 'switch', 'approved']]);
+  assert.equal(/cents|wage/.test(JSON.stringify(c.S.prep_certs)), false);
+  clear(c);
+  assert.deepEqual(plain(run(c, `pmSwitchRows('t1')`)).rows.filter(r => r.ok).map(r => r.e.name), []);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-11-01')`), 18.25);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-10-31')`), 18);
+  assert.ok(c.S.notifications.some(n => /プレップ認定/.test(n.title) && n.toRoles.indexOf('office') >= 0 && !/\$/.test(n.text)));
+  // A version whose start date has come cannot be approved any more.
+  const late = app(SRC, { st, today: '2026-11-01' }); run(late, `_pm.sw={id:'t1',pick:{e1:true}}`);
+  await run(late, `pmApproveSwitch()`);
+  assert.equal(late.S.prep_certs, undefined);
+});
+
+/* -------------------- request, approval center, direct decision -------------------- */
+const APX = APPROVAL.concat([]);
+test('approval center: a request goes to「プレップ認定」; GM approves with an effective date; the wage changes from that date only', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') } };
+  // CEO scores Lani fully at LaLa and requests Lv3.
+  const ceo = app(SRC, { role: 'ceo', user: 'Tac', st, fns: APX });
+  ceo.S.m_employees[2].prepSkills = { F06: { ll_recipe: 3, ll_hygiene: 3, ll_amount: 3, ll_tidy: 3, ll_speed: 3, ll_report: 3, ll_mission: 3 } };
+  clear(ceo);
+  await run(ceo, `pmRequest('e3','F06')`);
+  const req = Object.entries(ceo.S.prep_certs)[0];
+  assert.equal(req[1].state, 'pending'); assert.equal(req[1].lv, 3); assert.equal(req[1].n, 7);
+  const ap = ceo.S.approvals.find(a => a.type === 'プレップ認定');
+  assert.equal(ap.ref, req[0]); assert.equal(ap.store, 'F06'); assert.equal(ap.from, 'Tac');
+  // Partial scores cannot be requested.
+  const part = app(SRC, { role: 'ceo', user: 'Tac', st, fns: APX });
+  part.S.m_employees[2].prepSkills = { F06: { ll_recipe: 4, ll_hygiene: 4 } }; clear(part);
+  await run(part, `pmRequest('e3','F06')`);
+  assert.equal(part.S.prep_certs, undefined); assert.match(part.toasts.pop()[0], /全部の項目/);
+  // A second request while pending is refused.
+  await run(ceo, `pmRequest('e3','F06')`); assert.equal(Object.keys(ceo.S.prep_certs).length, 1);
+  // GM (another device with the same data) approves: picks 2026-11-05.
+  const gm = app(SRC, { st: plain(ceo.S), fns: APX });
+  run(gm, `pmAskFrom = async function(){ return '2026-11-05'; }`);
+  await run(gm, `signoffApproval('${ap.id}')`);
+  const done = gm.S.prep_certs[req[0]];
+  assert.deepEqual([done.state, done.from, done.tbl, done.dBy], ['approved', '2026-11-05', 't1', 'Moto']);
+  assert.equal(gm.S.approvals.find(a => a.id === ap.id).status, 'approved');
+  clear(gm);
+  assert.equal(run(gm, `empWageAt('Lani','F06','2026-11-04')`), 17);
+  assert.equal(run(gm, `empWageAt('Lani','F06','2026-11-05')`), 19.5);
+  assert.ok(gm.S.notifications.some(n => n.toUser === 'Lani' && /Lv3/.test(n.title) && !/\$/.test(n.text)));
+  assert.ok(gm.S.notifications.some(n => /承認済み：プレップ認定/.test(n.title) && n.toRoles.indexOf('office') >= 0));
+  // The requester cannot approve their own request.
+  assert.deepEqual(plain(run(ceo, `_approvalMyRoles(ls('approvals',[])[0])`)), []);
+  // Undo before the date → back to pending; after the date → refused.
+  const gm2 = app(SRC, { st: plain(gm.S), fns: APX.concat(['_reopenOffboardApproval']) });
+  await run(gm2, `reopenApproval('${ap.id}', true)`);
+  assert.equal(gm2.S.prep_certs[req[0]].state, 'pending');
+  const gm3 = app(SRC, { st: plain(gm.S), fns: APX, today: '2026-11-05' });
+  await run(gm3, `reopenApproval('${ap.id}', true)`);
+  assert.equal(gm3.S.prep_certs[req[0]].state, 'approved');
+  assert.match(gm3.alerts.pop(), /取り消せません/);
+});
+
+test('approval center: cancelling the date changes nothing; a missing table, a past date, a removed person or a decided record holds or matches', async () => {
+  const mk = (over = {}) => {
+    const st = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: { r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 2, kind: 'req', state: 'pending', n: 7, total: 7, _at: 5 } },
+      approvals: [{ id: 'ap9', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'pending', _mut: 5, signoffs: [] }], ...over };
+    return app(SRC, { st, fns: APX });
+  };
+  let c = mk(); run(c, `pmAskFrom = async function(){ return null; }`);
+  await run(c, `signoffApproval('ap9')`);
+  assert.equal(c.S.approvals[0].status, 'pending'); assert.deepEqual(c.S.approvals[0].signoffs, []); assert.equal(c.S.prep_certs.r1.state, 'pending');
+  c = mk({ prep_tables: { t1: table('F06', '2026-12-01') } }); run(c, `pmAskFrom = async function(){ return '2026-11-05'; }`);
+  await run(c, `signoffApproval('ap9')`);
+  assert.equal(c.S.approvals[0].status, 'pending'); assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.match(c.toasts.pop()[0], /表がありません/);
+  c = mk(); run(c, `pmAskFrom = async function(){ return '2026-10-01'; }`);
+  await run(c, `approveItem('ap9','approved',null,{fresh:true, prepFrom:'2026-10-01'})`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.match(c.toasts.pop()[0], /今日より前/);
+  c = mk(); c.S.m_employees[2].prep = false;
+  await run(c, `approveItem('ap9','approved',null,{fresh:true, prepFrom:'2026-11-05'})`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.match(c.toasts.pop()[0], /プレップ専門職ではありません/);
+  c = mk(); c.S.prep_certs.r1.state = 'withdrawn';
+  await run(c, `approveItem('ap9','approved',null,{fresh:true, prepFrom:'2026-11-05'})`);
+  assert.equal(c.S.approvals[0].status, 'withdrawn');   // the approval center follows the record
+  // Reject: the record is rejected with the reason; nothing approved.
+  c = mk(); await run(c, `approveItem('ap9','rejected','まだ早い',{fresh:true})`);
+  assert.deepEqual([c.S.prep_certs.r1.state, c.S.prep_certs.r1.reason, c.S.approvals[0].status], ['rejected', 'まだ早い', 'rejected']);
+  // The cloud cannot be read → nothing is decided.
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: { r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 2, kind: 'req', state: 'pending', _at: 5 } },
+    approvals: [{ id: 'ap9', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'pending', _mut: 5, signoffs: [] }] };
+  c = app(SRC, { st, fns: APX, cloud: { fail: ['prep_certs'] } });
+  await run(c, `approveItem('ap9','approved',null,{fresh:true, prepFrom:'2026-11-05'})`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.equal(c.S.approvals[0].status, 'pending');
+});
+
+test('GM/CEO set the Lv directly (11 “GMが引き上げ”): reason and a date from today are required; blocked while a request is pending', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') } };
+  const c = app(SRC, { st });
+  const dom = (lv, from, why) => { c.dom = { pmDecLv: { value: String(lv) }, pmDecFrom: { value: from }, pmDecWhy: { value: why } }; };
+  dom(2, '2026-11-03', ''); await run(c, `pmDecide('e3','F06')`);
+  assert.equal(c.S.prep_certs, undefined); assert.match(c.toasts.pop()[0], /理由/);
+  dom(2, '2026-10-21', '面談'); await run(c, `pmDecide('e3','F06')`);
+  assert.equal(c.S.prep_certs, undefined); assert.match(c.toasts.pop()[0], /今日か/);
+  dom(2, '2026-10-25', '面談'); await run(c, `pmDecide('e3','F06')`);
+  assert.equal(c.S.prep_certs, undefined); assert.match(c.toasts.pop()[0], /表がありません/);   // the table starts 11/1
+  dom(2, '2027-11-03', '面談'); await run(c, `pmDecide('e3','F06')`);
+  assert.equal(c.S.prep_certs, undefined); assert.match(c.toasts.pop()[0], /1 年以内/);
+  dom(2, '2026-11-03', '面談で確認'); await run(c, `pmDecide('e3','F06')`);
+  const r = Object.values(c.S.prep_certs)[0];
+  assert.deepEqual([r.lv, r.from, r.kind, r.state, r.reason, r.tbl], [2, '2026-11-03', 'raise', 'approved', '面談で確認', 't1']);
+  clear(c);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-11-03')`), 18.25);
+  // A store manager / AM cannot.
+  const am = app(SRC, { role: 'am', user: 'Yuki', st }); am.dom = c.dom; await run(am, `pmDecide('e3','F06')`); assert.equal(am.S.prep_certs, undefined);
+  // Pending request → blocked.
+  const p = app(SRC, { st: { ...st, prep_certs: { q: { emp: 'e3', name: 'Lani', store: 'F06', lv: 3, kind: 'req', state: 'pending', _at: 1 } } } });
+  p.dom = c.dom; await run(p, `pmDecide('e3','F06')`);
+  assert.equal(Object.keys(p.S.prep_certs).length, 1); assert.match(p.toasts.pop()[0], /承認センター/);
+});
+
+test('remove the Prep mark: ends the Prep wage tomorrow, withdraws later certificates and pending requests (and their approval items)', async () => {
+  const st = { prep_tables: { t1: table('F01', '2026-11-01') },
+    prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-10-15', 't1'), f: cert('e1', 'Pia', 'F01', 3, '2026-12-01', 't1', { dt: 200 }), q: { emp: 'e1', name: 'Pia', store: 'F06', lv: 2, kind: 'req', state: 'pending', _at: 3 } },
+    approvals: [{ id: 'apq', type: 'プレップ認定', ref: 'q', status: 'pending', _mut: 3, from: 'Tac', store: 'F06' }] };
+  st.prep_tables.t1.from = '2026-10-01';
+  const c = app(SRC, { st, fns: ['resolveApprovalByRef', '_apMarkDecided', 'apDecStamp', '_apStT', '_apMut', '_actorName', 'apNotifyAcctApplied', 'addNotif', 'getNotifs'] });
+  await run(c, `removePrepEmp('e1')`);
+  const certs = c.S.prep_certs;
+  assert.equal(c.S.m_employees.find(e => e.id === 'e1').prep, false);
+  assert.equal(certs.f.state, 'withdrawn'); assert.equal(certs.q.state, 'withdrawn');
+  const end = Object.values(certs).find(x => x.kind === 'end');
+  assert.deepEqual([end.store, end.from], ['F01', '2026-10-23']);
+  assert.equal(c.S.approvals[0].status, 'withdrawn');
+  clear(c);
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-10-22')`), 18.25);   // today: still the Prep wage (Lv2 on the table)
+  assert.equal(run(c, `empWageAt('Pia','F01','2026-12-05')`), 18);      // after the end: the master wage again
+});
+
+test('Toast marks: approved certificates wait for “反映した” (GM/CEO/accounting); the record keeps who and when', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: { a: cert('e3', 'Lani', 'F06', 2, '2026-11-01', 't1', { toast: null }) } };
+  const c = app(SRC, { st });
+  assert.equal(plain(run(c, `pmToastPending('F06')`)).length, 1);
+  await run(c, `pmMarkToast('a')`);
+  assert.equal(c.S.prep_certs.a.toast.by, 'Moto');
+  clear(c); assert.equal(plain(run(c, `pmToastPending('F06')`)).length, 0);
+  const am = app(SRC, { role: 'am', user: 'Yuki', st }); await run(am, `pmMarkToast('a')`); assert.equal(am.S.prep_certs.a.toast, null);
+});
+
+test('screens: matrix, person sheet, approval detail, settings and switch render without errors; AM sees wages as today, crew sees nothing', () => {
+  const st = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: { a: cert('e4', 'Sam', 'F06', 2, '2026-10-01', 't1', { toast: null }), r: { emp: 'e3', name: 'Lani', store: 'F06', lv: 3, kind: 'req', state: 'pending', n: 7, total: 7, method: 'avg', _at: 9 } },
+    approvals: [{ id: 'apr', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r', status: 'pending', _mut: 9, signoffs: [] }] };
+  st.prep_tables.t1.from = '2026-10-01';
+  const c = app(SRC, { st });
+  const h = run(c, `renderStorePrepPanel('F06')`);
+  assert.match(h, /プレップLv：LaLa/); assert.match(h, /設定案/); assert.match(h, /\$18\.25/); assert.match(h, /申請中/); assert.match(h, /反映していない人：1/);
+  assert.match(run(c, `renderPrepLevel()`), /店ごと/);
+  run(c, `pmOpenPerson('e3','F06')`); assert.match(c.modals.pop(), /レシピどおり/);
+  assert.match(run(c, `pmApprovalDetailHtml({ref:'r'})`), /Lv3/);
+  run(c, `pmOpenSettings('F06')`); assert.match(c.modals.pop(), /Lv と時給の表/);
+  const am = app(SRC, { role: 'am', user: 'Yuki', st });
+  assert.match(run(am, `renderStorePrepPanel('F06')`), /\$18\.25/);
+  assert.doesNotMatch(run(am, `renderStorePrepPanel('F06')`), /Lv を決める/);
+  const crew = app(SRC, { role: 'crew', user: 'Lani', st });
+  assert.equal(run(crew, `renderStorePrepPanel('F06')`), '');
+});
+
+/* -------------------- independent review (c21b085) -------------------- */
+test('review P1: the newest decision wins from its date onward; a table switch moves only the table (R1, R1b, R1c)', async () => {
+  // R1: v1 from 10/1, v2 from 12/1. Pia Lv2 on v1. The v2 switch is approved on 10/22; on 10/23 GM sets Lv3 from 11/2 (on v1).
+  const base = { t1: table('F01', '2026-10-01', [1600, 1750, 1900, 2050, 2200]), t2: table('F01', '2026-12-01', LV5, { _at: 20 }) };
+  let c = app(SRC, { st: { prep_tables: base, prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-10-15', 't1', { kind: 'raise', dt: 50 }) } }, fns: ['apNotifyAcctApplied', 'addNotif', 'getNotifs'] });
+  run(c, `_pm.sw={id:'t2',pick:{e1:true}}`); await run(c, `pmApproveSwitch()`);
+  c.today = '2026-10-23'; clear(c);
+  c.dom = { pmDecLv: { value: '3' }, pmDecFrom: { value: '2026-11-02' }, pmDecWhy: { value: '面談' } };
+  await run(c, `pmDecide('e1','F01')`); clear(c);
+  assert.deepEqual([run(c, `empWageAt('Pia','F01','2026-11-10')`), run(c, `empWageAt('Pia','F01','2026-12-10')`), run(c, `pmLatestLv(getEmployees()[0],'F01')`)], [19, 19.5, 3]);
+  // The Toast list shows what really applies from each date (12/1: Lv3 on v2, not the switch's old Lv2).
+  const tl = plain(run(c, `pmToastPending('F01')`)).map(x => x.kind + ':' + x.from);
+  assert.deepEqual(tl.sort(), ['raise:2026-10-15', 'raise:2026-11-02', 'switch:2026-12-01']);
+  assert.match(run(c, `pmToastListHtml('F01')`), /Lv3 · \$19\.50 · 2026-12-01/);
+  // R1b: a plan decided earlier (Lv3 from 12/1) no longer applies after a later decision with an earlier date (Lv4 from 10/24).
+  c = app(SRC, { st: { prep_tables: { t1: table('F06', '2026-10-01') } } });
+  c.dom = { pmDecLv: { value: '3' }, pmDecFrom: { value: '2026-12-01' }, pmDecWhy: { value: '12月から' } };
+  await run(c, `pmDecide('e3','F06')`);
+  c.today = '2026-10-23'; clear(c);
+  run(c, `pmOpenDecide('e3','F06')`); assert.match(c.modals.pop(), /これから効く認定（Lv3・12\/1 から）は、この決定のあとは使われません/);
+  c.dom = { pmDecLv: { value: '4' }, pmDecFrom: { value: '2026-10-24' }, pmDecWhy: { value: '前倒し' } };
+  await run(c, `pmDecide('e3','F06')`); clear(c);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-12-10')`), 20.75);
+  assert.equal(plain(run(c, `pmToastPending('F06')`)).length, 1);   // the superseded plan is not sent to accounting
+  assert.match(run(c, `pmHistoryHtml('F06')`), /あとの決定で使われない/);
+  // R1c: Lv3 from 11/1 approved, switch approved, then the 11/1 approval is undone and rejected → Lv2 on v2 from 12/1.
+  const st = { prep_tables: base, prep_certs: { a: cert('e1', 'Pia', 'F01', 2, '2026-10-15', 't1', { kind: 'raise', dt: 50 }), r: cert('e1', 'Pia', 'F01', 3, '2026-11-01', 't1', { kind: 'req', dt: 60, apId: 'ap1' }) },
+    approvals: [{ id: 'ap1', type: 'プレップ認定', title: 'Pia', from: 'Tac', store: 'F01', ref: 'r', status: 'approved', _mut: 60, signoffs: [{ role: 'gm', name: 'Moto', _t: 60 }] }] };
+  c = app(SRC, { st, fns: APX.concat(['_reopenOffboardApproval']) });
+  run(c, `_pm.sw={id:'t2',pick:{e1:true}}`); await run(c, `pmApproveSwitch()`); clear(c);
+  await run(c, `reopenApproval('ap1', true)`); await run(c, `approveItem('ap1','rejected','まだ',{fresh:true})`); clear(c);
+  assert.equal(c.S.prep_certs.r.state, 'rejected');
+  assert.deepEqual([run(c, `empWageAt('Pia','F01','2026-11-10')`), run(c, `empWageAt('Pia','F01','2026-12-10')`)], [17.5, 18.25]);
+  // Decision time is always after the person's earlier decisions (a device with a slow clock cannot lose to an older decision).
+  c = app(SRC, { st: { prep_tables: { t1: table('F06', '2026-10-01') }, prep_certs: { a: cert('e3', 'Lani', 'F06', 2, '2026-11-01', 't1', { kind: 'raise', dt: 9e15 }) } } });
+  c.dom = { pmDecLv: { value: '4' }, pmDecFrom: { value: '2026-11-01' }, pmDecWhy: { value: '直す' } };
+  await run(c, `pmDecide('e3','F06')`); clear(c);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-11-01')`), 20.75);
+});
+
+test('review P2: a v1105 device that decided the approval item without the record is shown and fixed on v1106; undo tells accounting and the person', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-10-01') },
+    prep_certs: { r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 2, kind: 'req', state: 'pending', n: 7, total: 7, _at: 5 } },
+    approvals: [{ id: 'ap9', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'approved', _mut: 5, signoffs: [{ role: 'gm', name: 'Moto' }], decidedAt: '2026-10-22T01:00:00Z' }] };
+  let c = app(SRC, { st, fns: APX });
+  assert.equal(plain(run(c, `pmState(getEmployees()[2],'F06')`)).mismatch, 'approved');
+  assert.match(run(c, `renderStorePrepPanel('F06')`), /適用開始日を選んで認定する/);
+  run(c, `pmAskFrom = async function(){ return '2026-10-25'; }`);
+  await run(c, `pmFixMismatch('r1')`); clear(c);
+  assert.deepEqual([c.S.prep_certs.r1.state, c.S.prep_certs.r1.from], ['approved', '2026-10-25']);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-10-25')`), 18.25);
+  // Rejected there → the record follows; no approval item at all → withdrawn.
+  c = app(SRC, { st: { ...st, approvals: [{ ...st.approvals[0], status: 'rejected' }] }, fns: APX });
+  await run(c, `pmFixMismatch('r1')`); assert.equal(c.S.prep_certs.r1.state, 'rejected');
+  c = app(SRC, { st: { ...st, approvals: [] }, fns: APX });
+  assert.equal(plain(run(c, `pmState(getEmployees()[2],'F06')`)).mismatch, 'missing');
+  await run(c, `pmFixMismatch('r1')`); assert.equal(c.S.prep_certs.r1.state, 'withdrawn');
+  // Undo of an approval already marked in Toast: accounting is told to revert it, the person is told too.
+  const st2 = { prep_tables: st.prep_tables, prep_certs: { r1: { ...st.prep_certs.r1, state: 'approved', from: '2026-11-05', tbl: 't1', dt: 10, toast: { by: 'Marcia', at: 'x' } } },
+    approvals: [{ ...st.approvals[0], ref: 'r1' }] };
+  c = app(SRC, { st: st2, fns: APX.concat(['_reopenOffboardApproval']) });
+  await run(c, `reopenApproval('ap9', true)`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.equal(c.S.prep_certs.r1.undone.lv, 2);
+  assert.ok(c.S.notifications.some(n => n.toRoles && n.toRoles.indexOf('office') >= 0 && /取り消した/.test(n.text) && /元に戻す/.test(n.text)));
+  assert.ok(c.S.notifications.some(n => n.toUser === 'Lani' && /取り消されました/.test(n.title)));
+});
+
+test('review P3: escaped onclick ids, voided version, reject without the record, one-year limit, own request, failed approval item', async () => {
+  // A key with quotes stays a string inside the inline handler.
+  const bad = "x');alert(1);('";
+  let c = app(SRC, { st: { prep_tables: { [bad]: table('F06', '2026-11-01') }, prep_certs: { [bad]: cert('e3', 'Lani', 'F06', 2, '2026-11-01', bad, { toast: null }) } } });
+  const h = run(c, `pmToastListHtml('F06') + pmTablesHtml('F06')`);
+  assert.ok(!h.includes("('x');alert"), 'no raw quote break-out');
+  assert.match(h, /pmMarkToast\(&quot;x'\);alert\(1\);\('&quot;\)/);
+  // A cancelled version cannot be switched to, even from a list that was opened before.
+  c = app(SRC, { st: { prep_tables: { t1: table('F01', '2026-11-01', LV5, { void: true }) }, prep_history: [{ name: 'Pia', store: 'F01', toLv: 2 }] } });
+  assert.equal(run(c, `pmSwitchRows('t1')`), null);
+  run(c, `_pm.sw={id:'t1',pick:{e1:true}}`); await run(c, `pmApproveSwitch()`);
+  assert.equal(c.S.prep_certs, undefined);
+  // An approval item whose record is missing can still be rejected (not stuck); GM/CEO only.
+  const st = { prep_tables: { t1: table('F06', '2026-10-01') }, approvals: [{ id: 'ap7', type: 'プレップ認定', title: 'x', from: 'Tac', store: 'F06', ref: 'gone', status: 'pending', _mut: 5, signoffs: [] }] };
+  c = app(SRC, { st, fns: APX }); await run(c, `approveItem('ap7','rejected','記録なし',{fresh:true})`);
+  assert.equal(c.S.approvals[0].status, 'rejected');
+  c = app(SRC, { role: 'office', user: 'Marcia', st, fns: APX }); await run(c, `approveItem('ap7','rejected','x',{fresh:true})`);
+  assert.equal(c.S.approvals[0].status, 'pending'); assert.match(c.toasts.pop()[0], /GM・CEO/);
+  // More than one year ahead is refused on approval too.
+  const st3 = { prep_tables: { t1: table('F06', '2026-10-01') }, prep_certs: { r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 2, kind: 'req', state: 'pending', _at: 5 } },
+    approvals: [{ id: 'ap9', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'pending', _mut: 5, signoffs: [] }] };
+  c = app(SRC, { st: st3, fns: APX }); await run(c, `approveItem('ap9','approved',null,{fresh:true, prepFrom:'2027-12-01'})`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.match(c.toasts.pop()[0], /1 年以内/);
+  // "Approve all (override)" cannot approve your own request.
+  c = app(SRC, { role: 'gm', user: 'Tac', st: st3, fns: APX }); run(c, `pmAskFrom = async function(){ return '2026-11-01'; }`);
+  await run(c, `overrideApproveAll('ap9')`);
+  assert.equal(c.S.prep_certs.r1.state, 'pending'); assert.match(c.alerts.pop(), /自分が出した申請/);
+  // If the approval item cannot be created, the request is withdrawn (not left pending without an item).
+  c = app(SRC, { role: 'ceo', user: 'Tac', st: { prep_tables: st.prep_tables } });
+  c.S.m_employees[2].prepSkills = { F06: { ll_recipe: 3, ll_hygiene: 3, ll_amount: 3, ll_tidy: 3, ll_speed: 3, ll_report: 3, ll_mission: 3 } }; clear(c);
+  run(c, `addApproval = function(){ throw new Error('x'); }`);
+  await run(c, `pmRequest('e3','F06')`);
+  assert.equal(Object.values(c.S.prep_certs)[0].state, 'withdrawn');
+});
+
+/* -------------------- Codex 6340525082 (d9ad68d) P2: two devices saving at the same time -------------------- */
+test('Codex P2: two devices that read the same versions and save a new version for the same store and date at once end with one version (the second re-reads and stops)', async () => {
+  const cloud = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: {}, prep_history: [] };
+  const A = app(SRC, { cloud, st: { prep_tables: { t1: table('F06', '2026-11-01') } } });
+  const B = app(SRC, { role: 'ceo', user: 'Tac', cloud, st: { prep_tables: { t1: table('F06', '2026-11-01') } } });
+  const form = cents => { const d = { pmTfrom: { value: '2026-12-01' } }; cents.forEach((x, i) => { d['pmTn' + i] = { value: 'L' + (i + 1) }; d['pmTw' + i] = { value: String(x / 100) }; }); return d; };
+  A.dom = form(LV5); B.dom = form([1800, 1900, 2000, 2100, 2300]);
+  A.pushOnSave = B.pushOnSave = true;   // a save that goes through the normal push (as before) reaches the cloud too
+  // Both read the cloud before either writes: A waits for B's read, B waits for A's write.
+  let bRead, aWrote; const bReadP = new Promise(r => { bRead = r; }), aWroteP = new Promise(r => { aWrote = r; });
+  B.onCasRead = async key => { if (key === 'prep_tables') bRead(); };
+  A.beforeCasWrite = async key => { if (key === 'prep_tables') await bReadP; };
+  const aWrite = A._opCasWrite; A._opCasWrite = async (...x) => { const r = await aWrite(...x); aWrote(); return r; };
+  B.beforeCasWrite = async key => { if (key === 'prep_tables') await aWroteP; };
+  await Promise.all([run(A, `pmSaveTable('F06')`), run(B, `pmSaveTable('F06')`)]);
+  const vs = Object.values(cloud.prep_tables).filter(r => r.store === 'F06' && r.from === '2026-12-01');
+  assert.equal(vs.length, 1, 'one version for F06 from 12/1');
+  assert.deepEqual(vs[0].levels.map(L => L.cents), LV5);           // A's
+  assert.deepEqual(B.casConflicts, ['prep_tables']);              // B's write was refused, it re-read and checked again
+  assert.ok(B.toasts.some(t => /前の版（2026-12-01 から）より後/.test(t[0])), 'B is told a version already exists');
+  clear(B); assert.equal(run(B, `pmTableConflictAt('F06','2026-12-01')`), null);
+  assert.equal(Object.keys(B.S.prep_tables).length, 2);         // B now has A's version too
+  // The cloud cannot be read: nothing is written anywhere.
+  const C = app(SRC, { cloud: { ...cloud, fail: ['prep_tables'] } }); C.dom = form(LV5); C.dom.pmTfrom.value = '2027-01-01';
+  await run(C, `pmSaveTable('F06')`);
+  assert.equal(C.S.prep_tables, undefined); assert.match(C.toasts.pop()[0], /読めませんでした/);
+});
+
+test('Codex P2: two devices editing the same store settings at once — the second save is refused and shows the saved settings (no silent overwrite)', async () => {
+  const cloud = { prep_cfg: {} };
+  const A = app(SRC, { cloud }), B = app(SRC, { role: 'ceo', user: 'Tac', cloud });
+  run(A, `_pm.form=pmFormFrom('F06'); _pm.form.items[0].name='A案'`);
+  run(B, `_pm.form=pmFormFrom('F06'); _pm.form.items[1].name='B案'`);
+  A.pushOnSave = B.pushOnSave = true;
+  let bRead, aWrote; const bReadP = new Promise(r => { bRead = r; }), aWroteP = new Promise(r => { aWrote = r; });
+  B.onCasRead = async key => { if (key === 'prep_cfg') bRead(); };
+  A.beforeCasWrite = async key => { if (key === 'prep_cfg') await bReadP; };
+  const aWrite = A._opCasWrite; A._opCasWrite = async (...x) => { const r = await aWrite(...x); aWrote(); return r; };
+  B.beforeCasWrite = async key => { if (key === 'prep_cfg') await aWroteP; };
+  await Promise.all([run(A, `pmSaveSettings()`), run(B, `pmSaveSettings()`)]);
+  const r = cloud.prep_cfg.F06;
+  assert.deepEqual([r.items[0].name, r.items[1].name], ['A案', '衛生・保管・表示']);
+  assert.ok(B.toasts.some(t => /先に保存/.test(t[0])));
+  assert.equal(run(B, `_pm.form.items[0].name`), 'A案');            // B sees what was saved
+  assert.deepEqual(B.casConflicts, ['prep_cfg']);
+});
+
+test('Codex P2: if two versions of the same date exist anyway (old data, an unconfirmed write), everyone uses the first one, approvals on that date stop, and cancelling one fixes it', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-10-01', [1600, 1750, 1900, 2050, 2200]), ta: table('F06', '2026-12-01', LV5, { _at: 20 }), tb: table('F06', '2026-12-01', [1800, 1900, 2000, 2100, 2300], { _at: 30 }) },
+    prep_certs: {
+      l1: cert('e3', 'Lani', 'F06', 2, '2026-10-15', 't1', { dt: 50 }), l2: cert('e3', 'Lani', 'F06', 2, '2026-12-01', 'ta', { kind: 'switch', src: 'cert', dt: 60 }),
+      s1: cert('e4', 'Sam', 'F06', 3, '2026-10-15', 't1', { dt: 50 }), s2: cert('e4', 'Sam', 'F06', 3, '2026-12-01', 'tb', { kind: 'switch', src: 'cert', dt: 70 }),
+      r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 3, kind: 'req', state: 'pending', n: 7, total: 7, _at: 5 } },
+    approvals: [{ id: 'ap1', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'pending', _mut: 5, signoffs: [] }] };
+  const c = app(SRC, { st });
+  assert.deepEqual(plain(run(c, `pmTableConflictAt('F06','2026-12-01')`)), ['ta', 'tb']);
+  // Same Lv on the same day → the same wage for both people, from the first-made version (no split by person).
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-12-05')`), 18.25);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 19.5);
+  assert.equal(run(c, `pmTableOn('F06','2026-12-05').id`), 'ta');
+  assert.match(run(c, `renderStorePrepPanel('F06')`), /同じ適用開始日（2026-12-01）の版が 2 つ/);
+  assert.match(run(c, `pmTablesHtml('F06')`), /いま時給に使っている/);
+  // Approvals, direct decisions and switches on that date are held.
+  assert.equal(await run(c, `pmCheckForApproval({ref:'r1'},'approved',{prepFrom:'2026-12-05'})`), null);
+  assert.match(c.toasts.pop()[0], /同じ適用開始日（2026-12-01）の版が 2 つ/);
+  c.dom = { pmDecLv: { value: '4' }, pmDecFrom: { value: '2026-12-05' }, pmDecWhy: { value: '面談' } };
+  const n0 = Object.keys(c.S.prep_certs).length;
+  await run(c, `pmDecide('e4','F06')`);
+  assert.equal(Object.keys(c.S.prep_certs).length, n0); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  await run(c, `pmOpenSwitch('tb')`); assert.equal(run(c, `_pm.sw`), null); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  run(c, `_pm.sw={id:'ta',pick:{e3:true,e4:true}}`); await run(c, `pmApproveSwitch()`);   // a switch list opened before the second version arrived
+  assert.equal(Object.keys(c.S.prep_certs).length, n0); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  // Cancel the extra version: its people use the kept version (no amount changes), the conflict is gone.
+  await run(c, `pmVoidTable('tb')`); clear(c);
+  assert.deepEqual([c.S.prep_tables.tb.void, c.S.prep_tables.tb.alias], [true, 'ta']);
+  assert.equal(run(c, `pmTableConflictAt('F06','2026-12-01')`), null);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 19.5);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-12-05')`), 18.25);
+  await run(c, `pmDecide('e4','F06')`); clear(c);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 20.75);
+  // Once the date has come, the version in use (the first one) cannot be cancelled (past wages stay).
+  const d = app(SRC, { st, today: '2026-12-02' });
+  await run(d, `pmVoidTable('ta')`);
+  assert.equal(d.S.prep_tables.ta.void, undefined); assert.match(d.toasts.pop()[0], /もう始まっています/);
+  await run(d, `pmVoidTable('tb')`); assert.equal(d.S.prep_tables.tb.alias, 'ta');
+});
+
+test('sync: the three new keys are synced, merged per record and never freed; the approval type and accounting notice exist', () => {
+  const arr = d => { const i = SRC.indexOf(d); assert.ok(i >= 0, d); return SRC.slice(i, SRC.indexOf('];', i)); };
+  const SYNC = arr('var OP_SYNC_KEYS = [');
+  for (const k of ['prep_cfg', 'prep_tables', 'prep_certs']) {
+    assert.ok(SYNC.indexOf("'" + k + "'") >= 0, 'OP_SYNC_KEYS ' + k);
+    assert.match(SRC, new RegExp('  ' + k + ': +\\{ merge: mergeMapByTime, covers: _coversMapByTime' + (k === 'prep_certs' ? ' \\}' : ', keepLocal: true, cas: true \\}')));
+    assert.match(SRC, new RegExp("var LS_NEVER_FREE[\\s\\S]*'" + k + "'[\\s\\S]*function _lsProtectedKey"));
+  }
+  assert.match(varFrom(SRC, 'APPROVAL_TYPES'), /'プレップ認定'/);
+  assert.match(fnSrc('_aprDefaultRoles'), /'プレップ認定':\['gm'\]/);
+  assert.match(varFrom(SRC, 'AP_ACCT_TYPES'), /'プレップ認定'/);
+  // The v1106 code never writes a per-person wage into shared data (prep_history / e.wage) any more.
+  assert.equal(/addPrepHistory\(/.test(PM.replace(/function addPrepHistory\(/, '')), false);
+  assert.equal(/e\.wage\s*=/.test(PM), false);
+});

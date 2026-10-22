@@ -368,6 +368,7 @@ function realPl(c, src) {
     function curYm(){ return '2026-10'; }
     function getTipLabor(sid, dt){ var v=SRC.labor && SRC.labor[sid+'|'+dt]; return v===undefined ? null : v; }
     function laborForEmployee(n, x){ return {total:(x.regular+x.ot*1.5)*20}; }
+    function pmHasAt(){ return false; }   // v1106: no Prep certification in this check (the labor core asks per person)
     function storeMonthlyStaff(){ return []; }
     function daysInMonthOf(ym){ return new Date(+ym.slice(0,4),+ym.slice(5),0).getDate(); }
     function daysOfYm(ym){ return Array.from({length:daysInMonthOf(ym)},(_,i)=>({date:ym+'-'+String(i+1).padStart(2,'0')})); }
