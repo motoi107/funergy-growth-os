@@ -11392,11 +11392,12 @@ var OP_MERGE = {
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう） */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
-  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },
-  /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう */
-  prep_cfg:           { merge: mergeMapByTime, covers: _coversMapByTime },
-  prep_tables:        { merge: mergeMapByTime, covers: _coversMapByTime },
-  prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
+  lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
+  /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう。
+     店の設定と表は cas（読んだ行が変わっていないときだけ書く・Handbook と同じ）：2 台がほぼ同時に送っても、あとの書き込みが先の版・設定を消さない（Codex 6340525082 の P2） */
+  prep_cfg:           { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
+  prep_tables:        { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
+  prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime },
   vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
   bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
   bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
@@ -61114,15 +61115,71 @@ function pmCanItems(sid){
 function pmCanToast(){ return curRole==='gm' || curRole==='ceo' || curRole==='office'; }
 function pmMap(k){ var m=ls(k, {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
 /* いくつかの記録を 1 回で保存する（[[id, 中身], …]）。時刻は前の記録より必ず新しく */
-function pmSaveMany(k, list){
-  var m=Object.assign({}, pmMap(k)), now=Date.now(), out=[];
+function pmApplyMany(m0, list){
+  var m=Object.assign({}, m0||{}), now=Date.now(), out=[];
   list.forEach(function(x){
     var old=m[x[0]], at=Math.max(now, old ? (Number(old._at)||0)+1 : 0);
     m[x[0]]=Object.assign({}, x[1], { _at:at }); out.push(m[x[0]]);
   });
-  lsSet(k, m);
+  return { map:m, out:out };
+}
+function pmSaveMany(k, list){
+  var r=pmApplyMany(pmMap(k), list);
+  lsSet(k, r.map);
   try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
-  return out;
+  return r.out;
+}
+/* v1106（Codex 6340525082 の P2）: 新しい版を作る・店の設定を保存するときは、クラウドの行を読み、その最新で確かめてから、
+   読んだ行が変わっていないときだけ書く（_opCasWrite）。ほかの端末が先に書いていれば、読み直して確かめ直す
+   （2 台が同じ版を読んで同時に保存しても、同じ店・同じ日の版を 2 つ作らない・先に保存された設定を黙って上書きしない）。
+   build() はこの端末の写し（読んだ最新を入れたもの）で確かめ、{ err } か { list:[[id, 中身], …] } を返す。
+   r：'ok'・'local'（同期を切っている端末：この端末の記録で）・'check'（確かめで止めた）・'read'（読めない＝何も変えない）・
+   'conflict'（何度試しても重なる）・'refused'・'stale'（書けたが重なっていないか確かめられない）・'badts'・'fail'・'busy' */
+async function pmCasSave(key, build){
+  var cas=(typeof SUPA_SYNC_ENABLED==='undefined' || SUPA_SYNC_ENABLED) && typeof _fetchOpRow==='function' && typeof _opCasWrite==='function' && typeof _opMergeDef==='function';
+  if(!cas){
+    if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ return { r:'read' }; }   /* 同期しているのに cas で書けない：書かない */
+    var b0=build(); if(!b0 || b0.err) return { r:'check', err:b0&&b0.err };
+    pmSaveMany(key, b0.list); return { r:'local', b:b0 };
+  }
+  if(_pm.busy) return { r:'busy' };
+  _pm.busy=true;
+  try{
+    var def=_opMergeDef(key), last=null;
+    for(var i=0;i<5;i++){
+      var row=await _fetchOpRow(key);
+      if(row===undefined) return { r:'read' };
+      if(last && row.exists===last.exists && String(row.updatedAt)===String(last.updatedAt)) return { r:'refused' };
+      var merged=def.merge(row.exists ? row.value : null, pmMap(key));
+      if(typeof _opWriteBack==='function') _opWriteBack(key, def, merged); else lsSet(key, merged);
+      try{ if(typeof _lsMarkFetched==='function') _lsMarkFetched(key); }catch(e){}
+      try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
+      var b=build();
+      if(!b || b.err) return { r:'check', err:b&&b.err };
+      var next=pmApplyMany(pmMap(key), b.list).map;
+      var w=await _opCasWrite(key, next, row);
+      if(w==='ok' || w==='stale'){
+        if(typeof _opWriteBack==='function') _opWriteBack(key, def, next); else lsSet(key, next);
+        try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
+        return { r:w, b:b };
+      }
+      if(w!=='conflict') return { r:w };
+      last=row;
+      await new Promise(function(res){ setTimeout(res, 40+Math.floor(Math.random()*160)); });
+    }
+    return { r:'conflict' };
+  }finally{ _pm.busy=false; }
+}
+/* pmCasSave の結果を知らせる。保存できたら true */
+function pmCasDone(res){
+  var r=res && res.r;
+  if(r==='ok' || r==='local') return true;
+  if(r==='stale'){ showToast(pmT('保存しましたが、ほかの端末の保存と重なっていないかを確かめられませんでした。少したってから開き直して確かめてください（同じ日の版が 2 つになったら、ここに出ます）','Saved, but could not confirm it did not overlap another device. Reopen later to check'),'warning'); return true; }
+  if(r==='busy') return false;
+  if(r==='check'){ if(res.err) showToast(res.err,'warning'); return false; }
+  if(r==='read'){ showToast(pmT('クラウドの最新を読めませんでした。通信を確かめて、もう一度押してください（何も変えていません）','Could not read the latest data (nothing changed)'),'warning'); return false; }
+  showToast(pmT('ほかの端末の保存と重なったか、通信のため保存できませんでした。もう一度押してください（何も変えていません）','Could not save (another device saved at the same time, or the connection failed). Try again (nothing changed)'),'warning');
+  return false;
 }
 /* 変える前にクラウドの最新を読む。読めなければ何も変えない（同期を切っている端末は、この端末の記録で） */
 async function pmPull(keys){
@@ -61201,7 +61258,11 @@ function pmTables(sid){
   return pmTablesAll().filter(function(r){ return r.store===sid && !r.void && pmTableValid(r); })
     .sort(function(a,b){ return a.from<b.from?-1:a.from>b.from?1:((Number(a._at)||0)-(Number(b._at)||0)) || (a.id<b.id?-1:1); });
 }
-function pmTableOn(sid, date){ var out=null; pmTables(sid).forEach(function(r){ if(r.from<=date) out=r; }); return out; }
+function pmTableOn(sid, date){ var out=null; pmTables(sid).forEach(function(r){ if(r.from<=date && !(out && out.from===r.from)) out=r; }); return out; }   /* 同じ日の版が 2 つあれば先に作った版 */
+function pmTblFirst(a, b){ return ((Number(a._at)||0)-(Number(b._at)||0)) || (a.id<b.id?-1:a.id>b.id?1:0); }
+/* その店・その日の版が 2 つ以上あれば、その id の一覧（先に作った版が先頭）。無ければ null */
+function pmTableConflictAt(sid, from){ var l=pmIdx().conflict[sid+'|'+from]; return (l && l.length>1) ? l : null; }
+function pmConflictMsg(sid, from){ return pmT(pmStoreName(sid)+' の Lv と時給の表に、同じ適用開始日（'+from+'）の版が 2 つあります。プレップの設定で使わないほうを取り消してください（何も変えていません）','Two wage-table versions of '+pmStoreName(sid)+' start on '+from+'. Cancel one in Prep settings (nothing changed)'); }
 function pmLvCents(tbl, lv){ var L=((tbl&&tbl.levels)||[]).find(function(x){ return Number(x.lv)===Number(lv); }); return L ? Number(L.cents) : null; }
 function pmLvName(tbl, lv){ var L=((tbl&&tbl.levels)||[]).find(function(x){ return Number(x.lv)===Number(lv); }); return L ? String(L.name||'') : ''; }
 function pmTableNo(sid, id){ var l=pmTables(sid); for(var i=0;i<l.length;i++) if(l[i].id===id) return i+1; return 0; }
@@ -61221,6 +61282,19 @@ function pmIdx(){
     var tbl={}, rank={};
     pmTablesAll().forEach(function(r){ if(!r.void && pmTableValid(r)) tbl[r.id]=r; });
     Object.keys(tbl).forEach(function(id){ rank[id]=pmTableNo(tbl[id].store, id); });
+    /* v1106（Codex 6340525082 の P2）: 同じ店・同じ適用開始日の版が 2 つ以上ある（2 台が同時に作った など）ときは、先に作った版（_at・id の順）の
+       額と順位を、どちらの版で承認された人にも使う（人によって違う時給にしない）。その日の版での承認・切り替え・認定は、取り消して 1 つにするまで止める。
+       取り消した版が残した版を指していれば（alias）、その版で承認した人は残した版の額 */
+    var grp={}, conflict={};
+    Object.keys(tbl).forEach(function(id){ var r=tbl[id], k=r.store+'|'+r.from; (grp[k]=grp[k]||[]).push(r); });
+    Object.keys(grp).forEach(function(k){
+      var l=grp[k].sort(pmTblFirst); if(l.length<2) return;
+      conflict[k]=l.map(function(r){ return r.id; });
+      l.slice(1).forEach(function(r){ tbl[r.id]=l[0]; rank[r.id]=rank[l[0].id]; });
+    });
+    for(var ap=0; ap<3; ap++) pmTablesAll().forEach(function(r){
+      if(r.void && r.alias && !tbl[r.id] && tbl[r.alias] && tbl[r.alias].store===r.store && tbl[r.alias].from===r.from){ tbl[r.id]=tbl[r.alias]; rank[r.id]=rank[r.alias]; }
+    });
     var by={};
     pmCertsAll().forEach(function(c){
       if(c.state!=='approved' || !pmDateOk(c.from)) return;
@@ -61235,7 +61309,7 @@ function pmIdx(){
     });
     var byName={}, empObj={};
     getEmployees().forEach(function(e){ if(e && e.name!=null && !Object.prototype.hasOwnProperty.call(byName, e.name)){ byName[e.name]=e.id; } if(e && e.id!=null) empObj[e.id]=e; });
-    return { tbl:tbl, rank:rank, seg:seg, sup:sup, emps:emps, byName:byName, empObj:empObj };
+    return { tbl:tbl, rank:rank, seg:seg, sup:sup, emps:emps, byName:byName, empObj:empObj, conflict:conflict };
   });
 }
 /* その日に効いているもの：{ lv（null＝認定の時給なし）, tbl, cert, kind, from }。認定が 1 つも始まっていなければ null */
@@ -61497,6 +61571,7 @@ async function pmDecide(empId, sid){
   var st=pmState(e, sid);
   if(st.pending){ showToast(pmT('ほかの人が申請しました。承認センターで決めてください','A request was made meanwhile — decide it in the approval center'),'info'); closeModalDirect(); pmRerender(); return; }
   var tbl=pmTableOn(sid, from); if(!tbl){ showToast(pmT('その日に使える Lv と時給の表がありません','No wage table on that date'),'warning'); return; }
+  if(pmTableConflictAt(sid, tbl.from)){ showToast(pmConflictMsg(sid, tbl.from),'warning'); return; }
   var sc=pmScore(e, sid), snap={}; pmCfg(sid).items.forEach(function(i){ if(i.on!==false) snap[i.name]=sc.vals[i.id]||0; });
   var prev=pmSegOn(e.id, sid, from)||pmSegOn(e.id, sid, today), now=Date.now();
   var rec={ emp:e.id, name:e.name, store:sid, lv:lv, kind:'raise', state:'approved', from:from, tbl:tbl.id, scores:snap, n:sc.n, total:sc.total, method:sc.method,
@@ -61546,6 +61621,7 @@ async function pmCheckForApproval(a, status, opt){
   if(from>pmAddDay(today, 366)){ showToast(pmT('適用開始日は 1 年以内にしてください（何も変えていません）','Within one year (nothing changed)'),'warning'); return null; }
   var tbl=pmTableOn(c.store, from);
   if(!tbl){ showToast(pmT(pmStoreName(c.store)+' の、その日に使える Lv と時給の表がありません（何も変えていません）','No wage table on that date (nothing changed)'),'warning'); return null; }
+  if(pmTableConflictAt(c.store, tbl.from)){ showToast(pmConflictMsg(c.store, tbl.from),'warning'); return null; }
   return { cert:c, id:a.ref, from:from, tbl:tbl };
 }
 /* 従業員マスターの時給の欄の下：プレップの認定があれば、その店の時給は表で決まることを出す */
@@ -61655,6 +61731,7 @@ function renderStorePrepPanel(storeId){
     +(next?' · '+pmT('次の版','Next')+' '+escapeHtml(next.from)+pmT(' から',' ~'):'')
     +(cfg.speed&&items.some(function(x){ return x.it.id===cfg.speed; })?' · '+pmT('「速さ」の 4・5 は、ほかがすべて 3 以上のとき','speed 4–5 only when others ≥ 3'):'')
     +'</div>';
+  h+=pmConflictHtml(storeId);
   if(cfg.draft) h+='<div style="font-size:11px;color:var(--amber);margin-bottom:6px"><i class="ti ti-info-circle"></i> '+pmT('評価項目は「設定案」です（店長・GM が直すまで。正式な基準にしない）','Items are a draft until the store manager or GM revises them')+'</div>';
   if(!staff.length){
     h+='<div style="font-size:12px;color:var(--muted)">'+pmT('この店舗のプレップ専門職は未登録です。下の「従業員マスターから選ぶ」で足します。','No Prep specialists yet. Add one below.')+'</div>';
@@ -61833,22 +61910,38 @@ async function pmSaveSettings(){
   f.items.forEach(function(i){ i.name=String(i.name||'').trim(); i.desc=String(i.desc||'').trim(); if(i.on!==false){ if(!i.name) bad=pmT('名前の無い項目があります','An item has no name'); else if(names[i.name]) bad=pmT('同じ名前の項目が 2 つあります：','Duplicate item: ')+i.name; names[i.name]=1; } });
   if(!bad && !f.items.some(function(i){ return i.on!==false; })) bad=pmT('使う項目が 1 つも無いと採点できません','At least one item must be on');
   if(bad){ showToast(bad,'warning'); return; }
-  var me=pmMe();
-  if(!(await pmPullForSave([PM_CFG]))) return;
+  var me=pmMe(), admin=pmCanAdmin(), FIRST='\u0001first';
+  /* 読んだクラウドの最新で「ほかの人が先に保存していないか」を確かめ、読んだ行が変わっていないときだけ書く（Codex 6340525082 の P2） */
+  var res=await pmCasSave(PM_CFG, function(){
+    var cur=pmCfgRec(sid);
+    if((cur?Number(cur._at)||0:0)!==(Number(f.base)||0)) return { err:FIRST };
+    var prev=pmCfg(sid);
+    /* 店長は項目の名前・説明・順・使うだけ（決め方・速さ・設定案・使う店は GM・CEO） */
+    var rec={ on:admin?!!f.on:prev.on, items:f.items.map(pmNormItem), draft:admin?!!f.draft:prev.draft, method:admin?(f.method==='min'?'min':'avg'):prev.method,
+      speed:admin?String(f.speed||''):prev.speed, by:me, at:new Date().toISOString() };
+    if(rec.speed && !rec.items.some(function(i){ return i.id===rec.speed; })) rec.speed='';
+    return { list:[[sid, rec]] };
+  });
   if(pmMe()!==me || _pm.form!==f) return;
-  var cur=pmCfgRec(sid);
-  if((cur?Number(cur._at)||0:0)!==(Number(f.base)||0)){
+  if(res && res.r==='check' && res.err===FIRST){
     showToast(pmT('ほかの人がこの店の設定を先に保存しました。今の設定を出したので、もう一度直してください','Someone saved this store first. Please redo your changes'),'warning');
     _pm.form=pmFormFrom(sid); pmRenderSettings(); return;
   }
-  var admin=pmCanAdmin(), prev=pmCfg(sid);
-  /* 店長は項目の名前・説明・順・使うだけ（決め方・速さ・設定案・使う店は GM・CEO） */
-  var rec={ on:admin?!!f.on:prev.on, items:f.items.map(pmNormItem), draft:admin?!!f.draft:prev.draft, method:admin?(f.method==='min'?'min':'avg'):prev.method,
-    speed:admin?String(f.speed||''):prev.speed, by:me, at:new Date().toISOString() };
-  if(rec.speed && !rec.items.some(function(i){ return i.id===rec.speed; })) rec.speed='';
-  pmSaveMany(PM_CFG, [[sid, rec]]);
+  if(!pmCasDone(res)) return;
   showToast(pmT(pmStoreName(sid)+' のプレップの設定を保存しました','Saved'),'success');
   _pm.form=pmFormFrom(sid); pmRenderSettings();
+}
+/* 同じ店・同じ日の版が 2 つ以上あるときの知らせ（GM・CEO が 1 つに直す） */
+function pmConflictHtml(sid){
+  var x=pmIdx(), out='';
+  Object.keys(x.conflict).forEach(function(k){
+    var p=k.split('|'); if(p[0]!==sid) return;
+    var l=x.conflict[k];
+    out+='<div style="font-size:11.5px;color:var(--red);border:1px solid var(--red);border-radius:8px;padding:6px 10px;margin:6px 0;line-height:1.6"><i class="ti ti-alert-triangle"></i> '
+      +escapeHtml(pmT('Lv と時給の表に、同じ適用開始日（'+p[1]+'）の版が '+l.length+' つあります（2 台で同時に作ったなど）。時給は先に作った版（版 '+pmTableNo(sid, l[0])+'）の額で計算し、この日の版での承認・切り替え・認定は止めています。プレップの設定で、使わないほうの版を取り消してください（その版で承認した人は、残した版の額になります）。',
+        'Two or more wage-table versions start on '+p[1]+'. Wages use the first one (v'+pmTableNo(sid, l[0])+'); approvals on that date are paused. Cancel the extra version in Prep settings.'))+'</div>';
+  });
+  return out;
 }
 /* Lv と時給の表（版ごと）。新しい版の適用開始日は、今日より後で、前の版より後（期間が重ならない） */
 function pmTablesHtml(sid){
@@ -61856,13 +61949,16 @@ function pmTablesHtml(sid){
   var h='<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px"><div style="font-weight:800;font-size:12px;color:var(--accent);margin-bottom:4px">'+escapeHtml(pmStoreName(sid))+' '+pmT('の Lv と時給の表（USD／時）','Lv & wage table (USD/h)')+'</div>'
     +'<div style="font-size:10.5px;color:var(--muted);margin-bottom:6px">'+pmT('版ごとに適用開始日。前の版は変えません。表を変えても人の認定 Lv は変わりません（切り替えは「対象者と差額」で承認）。','Each version has a start date and is never edited. Changing the table does not change anyone’s Lv — approve the switch in “People and differences”.')+'</div>';
   if(!l.length) h+='<div style="font-size:12px;color:var(--muted)">'+pmT('まだありません','None yet')+'</div>';
+  h+=pmConflictHtml(sid);
   l.forEach(function(r, i){
     var used=pmCertsAll().some(function(c){ return c.tbl===r.id && c.state==='approved'; });
+    var cg=pmTableConflictAt(sid, r.from), canCancel=cg ? (cg[0]!==r.id || r.from>today) : (r.from>today && !used);
     h+='<div style="font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)"><b>'+pmT('版','v')+' '+(i+1)+'</b> · '+escapeHtml(r.from)+pmT(' から',' ~')+' · '
       +r.levels.map(function(L){ return 'Lv'+L.lv+(L.name?'「'+escapeHtml(L.name)+'」':'')+(cv?' '+pmUsd(L.cents):''); }).join(' / ')
       +' <span style="color:var(--muted)">'+escapeHtml(r.by||'')+'</span>'
       +' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="pmOpenSwitch('+pmA(r.id)+')">'+pmT('対象者と差額','People & differences')+'</button>'
-      +((r.from>today && !used)?' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="pmVoidTable('+pmA(r.id)+')">'+pmT('この版を取り消す','Cancel this version')+'</button>':'')+'</div>';
+      +(canCancel?' <button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="pmVoidTable('+pmA(r.id)+')">'+pmT('この版を取り消す','Cancel this version')+'</button>':'')
+      +(cg?' <span style="color:var(--red);font-weight:700">'+(cg[0]===r.id?pmT('（同じ日の版：いま時給に使っている）','(same date — in use)'):pmT('（同じ日の版：時給には使っていない）','(same date — not used)'))+'</span>':'')+'</div>';
   });
   var last=l[l.length-1], minFrom=last?pmAddDay(last.from>today?last.from:today, 1):pmAddDay(today, 1);
   var base=last?last.levels:PREP_LEVELS().map(function(L, i){ return { lv:i+1, name:(i===0?'基本の仕込み':i===4?'プレップのマスター':String(L.ja||'').split('（')[0]), cents:PM_DEF_CENTS[i] }; });
@@ -61900,11 +61996,13 @@ async function pmSaveTable(sid){
   var from=String((document.getElementById('pmTfrom')||{}).value||'');
   var err=pmCheckTable(sid, from, levels); if(err){ showToast(err,'warning'); return; }
   var me=pmMe();
-  if(!(await pmPullForSave([PM_TBL, PM_CERT]))) return;
+  if(!(await pmPullForSave([PM_CERT]))) return;
   if(pmMe()!==me) return;
-  err=pmCheckTable(sid, from, levels); if(err){ showToast(err,'warning'); if(_pm.form) pmRenderSettings(); return; }
+  /* 読んだクラウドの最新で確かめ、読んだ行が変わっていないときだけ書く（2 台で同じ日の版を作らない：Codex 6340525082 の P2） */
   var id=pmId('pt');
-  pmSaveMany(PM_TBL, [[id, { store:sid, from:from, levels:levels, by:me, at:new Date().toISOString() }]]);
+  var res=await pmCasSave(PM_TBL, function(){ var e2=pmCheckTable(sid, from, levels); return e2 ? { err:e2 } : { list:[[id, { store:sid, from:from, levels:levels, by:me, at:new Date().toISOString() }]] }; });
+  if(pmMe()!==me) return;
+  if(!pmCasDone(res)){ if(res && res.r==='check' && _pm.form) pmRenderSettings(); return; }
   showToast(pmT('新しい版を保存しました（承認するまで、だれの時給も変わりません）','Saved (no one’s wage changes until you approve)'),'success');
   if(_pm.form) _pm.form.dirty=false;
   pmOpenSwitch(id);
@@ -61915,9 +62013,19 @@ async function pmVoidTable(id){
   if(!(await pmPullForSave([PM_TBL, PM_CERT]))) return;
   if(pmMe()!==me) return;
   var r=pmMap(PM_TBL)[id]; if(!r) return;
-  if(!(r.from>pmToday()) || pmCertsAll().some(function(c){ return c.tbl===id && (c.state==='approved' || c.state==='pending'); })){ showToast(pmT('この版はもう使われているので取り消せません','This version is in use and cannot be cancelled'),'warning'); return; }
-  if(!confirm(pmT('この版（'+r.from+' から）を取り消しますか？','Cancel this version?'))) return;
-  var x=Object.assign({}, r, { 'void':true, voidBy:me, voidAt:new Date().toISOString() });
+  var grp=(!r.void && pmTableConflictAt(r.store, r.from))||[], x;
+  if(grp.indexOf(id)>=0){
+    /* 同じ日の版が 2 つ以上：取り消して 1 つにする。この版で承認した人は、残した版の額になる（alias）。
+       先に作った版（いま額に使っている版）は、始まる前だけ取り消せる（過ぎた日の時給を変えない） */
+    var keep=(grp[0]===id) ? grp[1] : grp[0];
+    if(grp[0]===id && !(r.from>pmToday())){ showToast(pmT('この版はいま時給に使っていて、もう始まっています。もう一方の版を取り消してください','This version is in use and has started. Cancel the other one'),'warning'); return; }
+    if(!confirm(pmT('この版（'+r.from+' から）を取り消し、この版で承認した人は「版 '+pmTableNo(r.store, keep)+'」の額にします。よろしいですか？','Cancel this version? People approved on it will use version '+pmTableNo(r.store, keep)+'.'))) return;
+    x=Object.assign({}, r, { 'void':true, voidBy:me, voidAt:new Date().toISOString(), alias:keep });
+  } else {
+    if(!(r.from>pmToday()) || pmCertsAll().some(function(c){ return c.tbl===id && (c.state==='approved' || c.state==='pending'); })){ showToast(pmT('この版はもう使われているので取り消せません','This version is in use and cannot be cancelled'),'warning'); return; }
+    if(!confirm(pmT('この版（'+r.from+' から）を取り消しますか？','Cancel this version?'))) return;
+    x=Object.assign({}, r, { 'void':true, voidBy:me, voidAt:new Date().toISOString() });
+  }
   pmSaveMany(PM_TBL, [[id, x]]);
   showToast(pmT('取り消しました','Cancelled'),'info');
   if(_pm.form) pmRenderSettings(); else pmRerender();
@@ -61966,6 +62074,7 @@ async function pmOpenSwitch(tblId){
   if(!pmCanAdmin()) return;
   try{ await pmPull(['prep_history', PM_CERT, PM_TBL]); }catch(e){}   /* v1105 までの記録（Lv の根拠）・今の認定を読んでから */
   var d=pmSwitchRows(tblId); if(!d){ showToast(pmT('この版が見つかりません','Version not found'),'warning'); return; }
+  if(pmTableConflictAt(d.sid, d.from)){ showToast(pmConflictMsg(d.sid, d.from),'warning'); return; }
   _pm.sw={ id:tblId, pick:{} };
   d.rows.forEach(function(r){ if(r.ok && r.src==='cert') _pm.sw.pick[r.e.id]=true; else if(r.ok && r.src==='legacy') _pm.sw.pick[r.e.id]=true; });
   pmRenderSwitch();
@@ -61999,6 +62108,7 @@ async function pmApproveSwitch(){
   if(!(await pmPullForSave([PM_CERT, PM_TBL]))) return;
   if(pmMe()!==me || _pm.sw!==s) return;
   var d=pmSwitchRows(s.id); if(!d){ showToast(pmT('この版が見つかりません','Version not found'),'warning'); return; }
+  if(pmTableConflictAt(d.sid, d.from)){ showToast(pmConflictMsg(d.sid, d.from),'warning'); _pm.sw=null; try{ closeModalDirect(); }catch(e){} return; }
   if(!(d.from>pmToday())){ showToast(pmT('この版の適用開始日が来ています（過ぎた日の時給は変えない）。新しい版を作ってください','This version has started; create a new one'),'warning'); return; }
   var pick=d.rows.filter(function(r){ return r.ok && s.pick[r.e.id]; });
   if(!pick.length){ showToast(pmT('対象がいません（ほかの端末で切り替え済みかもしれません）','Nothing to approve'),'info'); pmRenderSwitch(); return; }

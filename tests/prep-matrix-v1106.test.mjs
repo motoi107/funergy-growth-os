@@ -87,13 +87,15 @@ function laborData() {
 }
 const LAB = laborData();
 
+// Per-record merge (newer _at wins) — the cloud side of mergeMapByTime for these tests.
+const mergeRec = (a, b) => { const out = Object.assign({}, a || {}); for (const [k, v] of Object.entries(b || {})) { const o = out[k]; if (!o || (Number(v && v._at) || 0) >= (Number(o && o._at) || 0)) out[k] = v; } return out; };
 function app(src, { role = 'gm', user = 'Moto', st = {}, today = '2026-10-22', fns = [], withPm = true, cloud = null } = {}) {
   const S = JSON.parse(JSON.stringify(Object.assign({ m_employees: EMPS() }, st)));
   const c = {
     curRole: role, curUserName: user, curStore: 'ALL', curStoreLogin: false, curLang: 'ja', curPage: 'skill', ROLE_CONFIG, today,
     STORES: [{ id: 'F01', name: 'ToriTon' }, { id: 'F06', name: 'LaLa' }, { id: 'F02', name: 'Tenkichi' }],
     alerts: [], toasts: [], rendered: [], modals: [], notifs: [], S, PAYROLL_TAX_RATE: 0.17, WAGE: { crew: 16 },
-    t: (ja) => ja, ls: (k, d) => (k in S ? JSON.parse(JSON.stringify(S[k])) : d), lsSet: (k, v) => { S[k] = JSON.parse(JSON.stringify(v)); return true; },
+    t: (ja) => ja, ls: (k, d) => (k in S ? JSON.parse(JSON.stringify(S[k])) : d), lsSet: (k, v) => { S[k] = JSON.parse(JSON.stringify(v)); if (c.pushOnSave && cloud && /^prep_/.test(k)) cloud[k] = mergeRec(cloud[k], S[k]); return true; },   // pushOnSave: the normal push (read the cloud, merge, write)
     alert: m => c.alerts.push(m), confirm: () => true, showToast: (m, k) => c.toasts.push([m, k]), renderPage: p => c.rendered.push(p),
     openModal: h => c.modals.push(h), closeModalDirect: () => {}, openInputModal: (o, cb) => cb('理由'),
     escapeHtml: s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
@@ -112,6 +114,14 @@ function app(src, { role = 'gm', user = 'Moto', st = {}, today = '2026-10-22', f
     renderNotifBell: () => {}, renderNotifPanel: () => {}, document: { getElementById: id => (c.dom && c.dom[id]) || null }, setTimeout, clearTimeout,
     SUPA_SYNC_ENABLED: !!cloud, getSkillRequests: () => [], getOffboardings: () => [], setOffboardings: () => {},
   };
+  if (cloud) {
+    // A cloud row read with its version (the JSON of the value) and written only if that version is unchanged — like _fetchOpRow / _opCasWrite.
+    const ver = key => (key in cloud ? JSON.stringify(cloud[key]) : null);
+    c._fetchOpRow = async key => { (c.casReads = c.casReads || []).push(key); if (c.onCasRead) await c.onCasRead(key); if (cloud.fail && cloud.fail.indexOf(key) >= 0) return undefined; return key in cloud ? { exists: true, value: JSON.parse(ver(key)), updatedAt: ver(key) } : { exists: false, value: null, updatedAt: null }; };
+    c._opCasWrite = async (key, value, row) => { if (c.beforeCasWrite) await c.beforeCasWrite(key); if ((row.exists ? row.updatedAt : null) !== ver(key)) { (c.casConflicts = c.casConflicts || []).push(key); return 'conflict'; } cloud[key] = JSON.parse(JSON.stringify(value)); (c.casWrites = c.casWrites || []).push(key); return 'ok'; };
+    c._opMergeDef = () => ({ merge: (a, b) => mergeRec(a, b) });
+    c._opWriteBack = (key, def, v) => { S[key] = JSON.parse(JSON.stringify(v)); return v; };
+  }
   if (cloud) c.pullOpKey = async key => { (c.pulled = c.pulled || []).push(key); if (cloud.fail && cloud.fail.indexOf(key) >= 0) return false; if (key in cloud) S[key] = c.mergeMapByTime ? c.mergeMapByTime(cloud[key], S[key] || {}) : cloud[key]; return true; };
   c.window = c;
   vm.createContext(c);
@@ -606,12 +616,99 @@ test('review P3: escaped onclick ids, voided version, reject without the record,
   assert.equal(Object.values(c.S.prep_certs)[0].state, 'withdrawn');
 });
 
+/* -------------------- Codex 6340525082 (d9ad68d) P2: two devices saving at the same time -------------------- */
+test('Codex P2: two devices that read the same versions and save a new version for the same store and date at once end with one version (the second re-reads and stops)', async () => {
+  const cloud = { prep_tables: { t1: table('F06', '2026-11-01') }, prep_certs: {}, prep_history: [] };
+  const A = app(SRC, { cloud, st: { prep_tables: { t1: table('F06', '2026-11-01') } } });
+  const B = app(SRC, { role: 'ceo', user: 'Tac', cloud, st: { prep_tables: { t1: table('F06', '2026-11-01') } } });
+  const form = cents => { const d = { pmTfrom: { value: '2026-12-01' } }; cents.forEach((x, i) => { d['pmTn' + i] = { value: 'L' + (i + 1) }; d['pmTw' + i] = { value: String(x / 100) }; }); return d; };
+  A.dom = form(LV5); B.dom = form([1800, 1900, 2000, 2100, 2300]);
+  A.pushOnSave = B.pushOnSave = true;   // a save that goes through the normal push (as before) reaches the cloud too
+  // Both read the cloud before either writes: A waits for B's read, B waits for A's write.
+  let bRead, aWrote; const bReadP = new Promise(r => { bRead = r; }), aWroteP = new Promise(r => { aWrote = r; });
+  B.onCasRead = async key => { if (key === 'prep_tables') bRead(); };
+  A.beforeCasWrite = async key => { if (key === 'prep_tables') await bReadP; };
+  const aWrite = A._opCasWrite; A._opCasWrite = async (...x) => { const r = await aWrite(...x); aWrote(); return r; };
+  B.beforeCasWrite = async key => { if (key === 'prep_tables') await aWroteP; };
+  await Promise.all([run(A, `pmSaveTable('F06')`), run(B, `pmSaveTable('F06')`)]);
+  const vs = Object.values(cloud.prep_tables).filter(r => r.store === 'F06' && r.from === '2026-12-01');
+  assert.equal(vs.length, 1, 'one version for F06 from 12/1');
+  assert.deepEqual(vs[0].levels.map(L => L.cents), LV5);           // A's
+  assert.deepEqual(B.casConflicts, ['prep_tables']);              // B's write was refused, it re-read and checked again
+  assert.ok(B.toasts.some(t => /前の版（2026-12-01 から）より後/.test(t[0])), 'B is told a version already exists');
+  clear(B); assert.equal(run(B, `pmTableConflictAt('F06','2026-12-01')`), null);
+  assert.equal(Object.keys(B.S.prep_tables).length, 2);         // B now has A's version too
+  // The cloud cannot be read: nothing is written anywhere.
+  const C = app(SRC, { cloud: { ...cloud, fail: ['prep_tables'] } }); C.dom = form(LV5); C.dom.pmTfrom.value = '2027-01-01';
+  await run(C, `pmSaveTable('F06')`);
+  assert.equal(C.S.prep_tables, undefined); assert.match(C.toasts.pop()[0], /読めませんでした/);
+});
+
+test('Codex P2: two devices editing the same store settings at once — the second save is refused and shows the saved settings (no silent overwrite)', async () => {
+  const cloud = { prep_cfg: {} };
+  const A = app(SRC, { cloud }), B = app(SRC, { role: 'ceo', user: 'Tac', cloud });
+  run(A, `_pm.form=pmFormFrom('F06'); _pm.form.items[0].name='A案'`);
+  run(B, `_pm.form=pmFormFrom('F06'); _pm.form.items[1].name='B案'`);
+  A.pushOnSave = B.pushOnSave = true;
+  let bRead, aWrote; const bReadP = new Promise(r => { bRead = r; }), aWroteP = new Promise(r => { aWrote = r; });
+  B.onCasRead = async key => { if (key === 'prep_cfg') bRead(); };
+  A.beforeCasWrite = async key => { if (key === 'prep_cfg') await bReadP; };
+  const aWrite = A._opCasWrite; A._opCasWrite = async (...x) => { const r = await aWrite(...x); aWrote(); return r; };
+  B.beforeCasWrite = async key => { if (key === 'prep_cfg') await aWroteP; };
+  await Promise.all([run(A, `pmSaveSettings()`), run(B, `pmSaveSettings()`)]);
+  const r = cloud.prep_cfg.F06;
+  assert.deepEqual([r.items[0].name, r.items[1].name], ['A案', '衛生・保管・表示']);
+  assert.ok(B.toasts.some(t => /先に保存/.test(t[0])));
+  assert.equal(run(B, `_pm.form.items[0].name`), 'A案');            // B sees what was saved
+  assert.deepEqual(B.casConflicts, ['prep_cfg']);
+});
+
+test('Codex P2: if two versions of the same date exist anyway (old data, an unconfirmed write), everyone uses the first one, approvals on that date stop, and cancelling one fixes it', async () => {
+  const st = { prep_tables: { t1: table('F06', '2026-10-01', [1600, 1750, 1900, 2050, 2200]), ta: table('F06', '2026-12-01', LV5, { _at: 20 }), tb: table('F06', '2026-12-01', [1800, 1900, 2000, 2100, 2300], { _at: 30 }) },
+    prep_certs: {
+      l1: cert('e3', 'Lani', 'F06', 2, '2026-10-15', 't1', { dt: 50 }), l2: cert('e3', 'Lani', 'F06', 2, '2026-12-01', 'ta', { kind: 'switch', src: 'cert', dt: 60 }),
+      s1: cert('e4', 'Sam', 'F06', 3, '2026-10-15', 't1', { dt: 50 }), s2: cert('e4', 'Sam', 'F06', 3, '2026-12-01', 'tb', { kind: 'switch', src: 'cert', dt: 70 }),
+      r1: { emp: 'e3', name: 'Lani', store: 'F06', lv: 3, kind: 'req', state: 'pending', n: 7, total: 7, _at: 5 } },
+    approvals: [{ id: 'ap1', type: 'プレップ認定', title: 'Lani', from: 'Tac', store: 'F06', ref: 'r1', status: 'pending', _mut: 5, signoffs: [] }] };
+  const c = app(SRC, { st });
+  assert.deepEqual(plain(run(c, `pmTableConflictAt('F06','2026-12-01')`)), ['ta', 'tb']);
+  // Same Lv on the same day → the same wage for both people, from the first-made version (no split by person).
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-12-05')`), 18.25);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 19.5);
+  assert.equal(run(c, `pmTableOn('F06','2026-12-05').id`), 'ta');
+  assert.match(run(c, `renderStorePrepPanel('F06')`), /同じ適用開始日（2026-12-01）の版が 2 つ/);
+  assert.match(run(c, `pmTablesHtml('F06')`), /いま時給に使っている/);
+  // Approvals, direct decisions and switches on that date are held.
+  assert.equal(await run(c, `pmCheckForApproval({ref:'r1'},'approved',{prepFrom:'2026-12-05'})`), null);
+  assert.match(c.toasts.pop()[0], /同じ適用開始日（2026-12-01）の版が 2 つ/);
+  c.dom = { pmDecLv: { value: '4' }, pmDecFrom: { value: '2026-12-05' }, pmDecWhy: { value: '面談' } };
+  const n0 = Object.keys(c.S.prep_certs).length;
+  await run(c, `pmDecide('e4','F06')`);
+  assert.equal(Object.keys(c.S.prep_certs).length, n0); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  await run(c, `pmOpenSwitch('tb')`); assert.equal(run(c, `_pm.sw`), null); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  run(c, `_pm.sw={id:'ta',pick:{e3:true,e4:true}}`); await run(c, `pmApproveSwitch()`);   // a switch list opened before the second version arrived
+  assert.equal(Object.keys(c.S.prep_certs).length, n0); assert.match(c.toasts.pop()[0], /同じ適用開始日/);
+  // Cancel the extra version: its people use the kept version (no amount changes), the conflict is gone.
+  await run(c, `pmVoidTable('tb')`); clear(c);
+  assert.deepEqual([c.S.prep_tables.tb.void, c.S.prep_tables.tb.alias], [true, 'ta']);
+  assert.equal(run(c, `pmTableConflictAt('F06','2026-12-01')`), null);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 19.5);
+  assert.equal(run(c, `empWageAt('Lani','F06','2026-12-05')`), 18.25);
+  await run(c, `pmDecide('e4','F06')`); clear(c);
+  assert.equal(run(c, `empWageAt('Sam','F06','2026-12-05')`), 20.75);
+  // Once the date has come, the version in use (the first one) cannot be cancelled (past wages stay).
+  const d = app(SRC, { st, today: '2026-12-02' });
+  await run(d, `pmVoidTable('ta')`);
+  assert.equal(d.S.prep_tables.ta.void, undefined); assert.match(d.toasts.pop()[0], /もう始まっています/);
+  await run(d, `pmVoidTable('tb')`); assert.equal(d.S.prep_tables.tb.alias, 'ta');
+});
+
 test('sync: the three new keys are synced, merged per record and never freed; the approval type and accounting notice exist', () => {
   const arr = d => { const i = SRC.indexOf(d); assert.ok(i >= 0, d); return SRC.slice(i, SRC.indexOf('];', i)); };
   const SYNC = arr('var OP_SYNC_KEYS = [');
   for (const k of ['prep_cfg', 'prep_tables', 'prep_certs']) {
     assert.ok(SYNC.indexOf("'" + k + "'") >= 0, 'OP_SYNC_KEYS ' + k);
-    assert.match(SRC, new RegExp('  ' + k + ': +\\{ merge: mergeMapByTime, covers: _coversMapByTime \\}'));
+    assert.match(SRC, new RegExp('  ' + k + ': +\\{ merge: mergeMapByTime, covers: _coversMapByTime' + (k === 'prep_certs' ? ' \\}' : ', keepLocal: true, cas: true \\}')));
     assert.match(SRC, new RegExp("var LS_NEVER_FREE[\\s\\S]*'" + k + "'[\\s\\S]*function _lsProtectedKey"));
   }
   assert.match(varFrom(SRC, 'APPROVAL_TYPES'), /'プレップ認定'/);
