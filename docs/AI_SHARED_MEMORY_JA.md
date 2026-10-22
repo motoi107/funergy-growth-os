@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-10-21 v1104：売上・予算の保護が使っている端末で止まる不具合と CEO の端末の重さ（Claude・ブランチ `claude/load-save-1104`・本番未反映）／② ③ は UI案60 で回答待ち
+
+- 依頼：Moto さん 10/21 18:49 HST の添付（① CEO 端末の遅さ・保存と最新取得の不具合／② LaLa の G1 の 16:30 Job確認／③ LaLa・ToriTon の Prep 専門職マトリクスと Lv 別時給）。① は直して PR、② ③ は今の作りの調べと UI案60（Design・Moto さんの非公開の canvas・10 枚・決めてほしいこと 15）。仕様・原因・数字・手順は `docs/LOAD_SAVE_V1104_JA.md`。
+- ① の原因（模擬サーバー・合成データで再現）：v1101（PR #88・Codex）の保護の退避の記録 `_financial_save_recovery_v1` は `_` で始まる＝`lsIsDeviceLocal` で IndexedDB に入らず localStorage だけ。使っている端末の localStorage はほぼ満杯（合成データ 4.44M 文字）で、最初の退避（端末の売上・予算 約 1.6M 文字）が `QuotaExceededError` → `financial_recovery_storage_failed` → 保護が「退避前」のまま：クラウドの売上・予算を端末に書けない（`_lsWriteVerified` が断る・保存できない項目 9 つ）・入力画面が開かない・保存も Toast の売上の反映も黙って止まる・起動のたびに「売上・予算の最新データを確認できません」。2 回目以降の起動のすべての端末（GM・CEO ほど当たる）。あわせて、保護が読むたびに `copy`（形を確かめる深い写し）を 2〜3 回していた（CEO のログインで `getDailyActuals` 324 回・`getBudgets` 198 回・約 4.1 秒）。
+- 直し（アプリだけ・`4e573bb`・`8d148b0`・`75f0199`）：記録を `financial_save_recovery_v2`（IndexedDB にも入る・`LS_LOCAL_ONLY`）、保護の前の値は `financial_pre_guard_archive_v1`、前の名前の記録は 1 回だけ移して消す／IndexedDB を読めるまで記録を読まない・書かない（断った書き込みの退避はメモリに持つ）／記録を書いたらその場で `_idbFlush`（`options.flushLocal`）／読むときの写しをやめる（行の JSON を覚えて解く・予算の読んだときの姿は `getBudgets` 1 回につき JSON 1 回・端末の予算は保存の文字が同じあいだ店ごとの JSON で覚える）／取り込んだ行は 1 行ずつ確かめる（20 万の上限が 20 行の合計にかかっていた）／ログインの Toast の売上は全店同時に読んでから保護に渡す（`syncStoreActualsFromToast` の 4 つ目の引数）。保護の決まり（版を照らす・競合は上書きしない・確認できた保存だけ完了）は変えていない。
+- 数字（CEO・v1100 で使っていた端末を更新・最初の画面まで）：近い回線 v1100 4.6 秒・v1103 9.0〜9.3・v1104 5.1〜5.2／CPU 4 倍 12.0・33.6〜34.3・14.2〜14.4／遠い回線（往復 200ms・1MB/s・日本時間）CPU 4 倍 12.8・34.0〜34.9・17.0〜17.3。日本の回線・時間帯は主な原因ではない（端末の時間帯を日本にしても bizToday・Toast の営業日・予算の月はハワイ時間）。
+- 試験：`tests/financial-web-*.test.mjs` 58/58（v1104 で 5 足した。うち 2 つは v1103 のコードで落ちる）・static release pass/1104・全体（重いもの以外）の失敗は main と同じ。模擬環境（`tests/perf/fin-scenario.mjs`・`tz-check.mjs`・`measure.mjs --profile used`）：v1103 の再現・v1104 で解消・メモの保存 → 再読込 → 別の端末・答えが届かない保存（1 回だけ書ける）・競合（上書きしない・開き直して保存）・v1100 の端末は保護のある本番で保存できない（黙って）。模擬サーバーは保護の RPC と古い書き込みを断る動き（文ごと）を足した。
+- 独立レビュー（Claude の別エージェント）：`4e573bb` を依頼中（結果は次の節に足す）。Codex のレビューはまだ。
+- ② の調べ：業務Bot（ops-bot）の勤怠は Toast の timeEntries を店・日ごとに直接読み、`laborFindings` で `jobReference` を捨てている。Job の一覧（ID → 名前）はどこにも無い（`/labor/v1/jobs` を読む）。Toast の人とアプリの従業員は名前で結ぶだけ。`ghNormG` は G1-P を G1 にするので、グレードの履歴では通常 G1 と G1-P を分けられない。今の勤怠の案件の指紋（shifts・kinds・cfg）を変えると今月の案件が全部開き直るので、Job の確認は別の案件のキーにする。設定は `bot_settings` の別のキー（`clock` は認証なしで返る）。`checkCase` にも Job の決まりを教えないと、Job だけの指摘が「きれい」で閉じる。
+- ③ の調べ：プレップLv（`renderPrepLevel`）は店ごとに項目（`prep_positions`）・1〜5 の採点・総合 Lv は平均か最低（全社で 1 つ）・Lv1〜5 の時給はコードに固定（$16〜$22）・承認なし（GM・CEO が押すと即時）・時給は人に 1 つ。**不具合**：`setPrepLv` などは `m_employees` の `wage` を端末に書くだけで、給与は機密情報（`emp-private`）から読み直すので、GM・CEO の画面でもすぐ元の時給に戻る（コードで確認・実行はしていない）。LaLa は項目の既定が無く共通の 5 項目。
+- 次：独立レビューの結果 → PR → Codex → Moto さんがマージ（アプリだけ）→ 全員の端末を 1104 に → `db/load-save-1104-check.sql`（読むだけ）の結果。② ③ は UI案60 の回答から。
+
 ## 2026-10-21 引き継ぎ：#87（v1102）・#90（v1103）はマージ済み・本番は v1103（Claude）
 
 - Moto さんが 10/21 18:12 HST に PR #87（head `96a0eed`・main `616b0bf`）、18:13 HST に PR #90（head `d604cf6`・main `93ce034`）をマージ。どちらも Growth OS checks と Pages の公開は成功（main の APP_VERSION・SW_BUILD は 1103）。公開中のサイトはこの環境からは読めない。アプリだけ（index.html・sw.js。SQL・関数なし）。
