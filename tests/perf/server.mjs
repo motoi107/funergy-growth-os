@@ -97,6 +97,18 @@ const appServer = http.createServer(async (req, res) => {
     const ec = T.find(r => r.key === 'ec_log'); if (ec) { ec.value = ec.value.concat([{ d: 'x' }]); ec.updated_at = at; }   // 必要時だけ取る行（取りに行かないはず）
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ changedKeys: changed })); return;
   }
+  // v1104：別の端末が売上（daily_actuals）と予算（spl_budgets_v2）を保存したつもりで、クラウドの行を新しくする
+  if (u.pathname === '/__fin_bump') {
+    const T = mock.T.app_state, at = new Date().toISOString().replace('Z', '123+00:00'), store = u.searchParams.get('store') || 'F01', day = u.searchParams.get('day') || '2026-10-21';
+    const da = T.find(r => r.key === 'daily_actuals_' + store); if (da) { da.value = Object.assign({}, da.value, { [day]: { actual: 4321.5, guests: 99, toastSrc: true, _at: Date.now() } }); da.updated_at = at; }
+    const bu = T.find(r => r.key === 'spl_budgets_v2_' + store); if (bu) { bu.value = [Object.assign({}, bu.value[0], { note: 'bumped ' + at })]; bu.updated_at = at; }
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ at, store, day })); return;
+  }
+  if (u.pathname === '/__fin_row') {   // クラウドの行の版と、その日の値（中身の全部は返さない）
+    const T = mock.T.app_state, key = u.searchParams.get('key'), day = u.searchParams.get('day');
+    const r = T.find(x => x.key === key);
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r ? { key, updated_at: r.updated_at, day: day && r.value && !Array.isArray(r.value) ? r.value[day] || null : undefined, note: Array.isArray(r.value) ? r.value[0].note || null : undefined } : null)); return;
+  }
   if (u.pathname === '/__index') { process.env.HAS_INDEX = u.searchParams.get('on') === '0' ? '0' : '1'; mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); res.writeHead(200); res.end(process.env.HAS_INDEX); return; }   // SQL の関数がある／無い
   if (u.pathname === '/__delay') { delays[u.searchParams.get('path')] = Number(u.searchParams.get('ms') || 0); res.writeHead(200); res.end('ok'); return; }
   let p = decodeURIComponent(u.pathname); if (p.endsWith('/')) p += 'index.html';

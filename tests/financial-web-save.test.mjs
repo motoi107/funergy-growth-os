@@ -448,13 +448,14 @@ test('one-store pending, conflict and discarded drafts retain only touched rows 
 });
 
 test('repeated acknowledged saves compact completed payloads to 50 summaries while retaining drafts losslessly', async () => {
-  const recoveryKey = '_financial_save_recovery_v1';
+  // v1104: drafts written by v1101-v1103 under the old device-local key move once into the IndexedDB-capable key.
+  const recoveryKey = 'financial_save_recovery_v2', legacyKey = '_financial_save_recovery_v1';
   const drafts = [
     { reason: 'conflict', request: { requestId: '00000000-0000-4000-8000-999999999999', writes: { [DAILY]: { memo: 'Conflict draft' } } } },
     { reason: 'bulk_restore_proposal', value: [{ storeId: 'F07', actual: 77, notes: 'Original import' }] },
     { reason: 'legacy_outbox', key: BUDGET, value: [{ storeId: 'F01', actual: 876 }], outbox: { key: BUDGET } }
   ];
-  const storage = new Map([[recoveryKey, JSON.stringify(drafts)]]);
+  const storage = new Map([[legacyKey, JSON.stringify(drafts)]]);
   const f = fixture({ storage });
   await f.api.refresh(ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]));
   let sizeAt50;
@@ -473,10 +474,11 @@ test('repeated acknowledged saves compact completed payloads to 50 summaries whi
   assert.equal(summaries.every(x => !x.before && !x.request && !x.value), true);
   assert.equal(f.storage.get(recoveryKey).length, sizeAt50);
   for (const draft of drafts) assert.deepEqual(records.find(x => x.reason === draft.reason), draft);
+  assert.equal(f.storage.has(legacyKey), false);
 });
 
 test('a live legacy outbox keeps one original snapshot through 80 successful saves and module recreation', async () => {
-  const recoveryKey = '_financial_save_recovery_v1';
+  const recoveryKey = 'financial_save_recovery_v2';
   const outbox = [{ key: DAILY, attempts: 1, lastErr: 'Original offline save', ts: 1 }];
   const f = fixture();
   const unsent = initial()[DAILY]; unsent['2026-10-01'].event = 'Original unsent memo';
@@ -506,7 +508,7 @@ test('a live legacy outbox keeps one original snapshot through 80 successful sav
 });
 
 test('a distinct legacy outbox identity archives its own input only after durable retention succeeds', async () => {
-  const recoveryKey = '_financial_save_recovery_v1'; let rejectRecovery = false, reads = 0;
+  const recoveryKey = 'financial_save_recovery_v2'; let rejectRecovery = false, reads = 0;
   const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey),
     read: async keys => { reads++; return { rows: keys.map(key => clone(f.database.get(key))) }; } });
   f.storage.set('op_outbox', JSON.stringify([{ key: DAILY, attempts: 1, lastErr: 'Old input', ts: 1 }]));
@@ -535,7 +537,7 @@ test('a distinct legacy outbox identity archives its own input only after durabl
 
 test('recovery storage exhaustion refuses dispatch and preserves the entered form and previous recovery', async () => {
   let rejectRecovery = false;
-  const recoveryKey = '_financial_save_recovery_v1';
+  const recoveryKey = 'financial_save_recovery_v2';
   const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey) });
   await f.context.openDayMemo('F01', '2026-10-01', '木');
   const previous = f.storage.get(recoveryKey);
@@ -551,7 +553,7 @@ test('recovery storage exhaustion refuses dispatch and preserves the entered for
 
 test('bulk restore never claims durable retention when recovery storage rejects the candidate', async () => {
   let rejectRecovery = false;
-  const recoveryKey = '_financial_save_recovery_v1';
+  const recoveryKey = 'financial_save_recovery_v2';
   const f = fixture({ writeVerified: key => !(rejectRecovery && key === recoveryKey) });
   await f.api.refresh([BUDGET]); const previous = f.storage.get(recoveryKey);
   const result = await f.api.restoreBudgets([{ storeId: 'F01', actual: 987 }], {
@@ -606,4 +608,99 @@ test('storage hydration failure blocks reads, automatic saves and restores witho
   assert.equal(f.context._lsWriteVerified('unrelated', '{"preserved":true}'), true);
   assert.equal(f.toasts.some(x => x.message.includes('送信を停止')), true);
   assert.equal(f.toasts.some(x => x.kind === 'success'), false);
+});
+
+// ---- v1104: a used device's localStorage is full (production keeps ~4.4M chars there). v1101-v1103 kept the
+// recovery log under '_financial_save_recovery_v1'; keys starting with '_' never go to IndexedDB, so the
+// pre-guard archive (all local sales/budget rows) could not be written and the guard stayed closed: no fresh rows
+// on the device, no input screens, no saves. These tests run the app's real storage helpers.
+function realStorage(context, storage, limit) {
+  const used = () => [...storage].reduce((n, [k, v]) => n + k.length + v.length, 0);
+  context.localStorage = {
+    getItem: key => storage.get(key) ?? null,
+    setItem: (key, val) => {
+      const next = used() - (storage.has(key) ? key.length + storage.get(key).length : 0) + key.length + String(val).length;
+      if (next > limit) { const e = new Error('quota'); e.name = 'QuotaExceededError'; throw e; }
+      storage.set(key, String(val));
+    },
+    removeItem: key => storage.delete(key)
+  };
+  vm.runInContext("var _idbState='ready', _IDB_MEM=new Map(), _idbQ=new Map(), _idbTimer=null; function _idbFlush(){} function _lskBump(){}\n"
+    + source.match(/^var LS_DEVICE_LOCAL = .*$/m)[0] + '\n'
+    + ['lsIsDeviceLocal', '_idbQueue', '_lsStoreGet', '_lsWriteVerified'].map(webFunction).join('\n') + '\n'
+    + source.match(/^function _lsRaw\(key, def\).*$/m)[0] + '\n'
+    + "function _lsRawDel(key){ try{ _idbQueue(key, null); }catch(e){} try{ localStorage.removeItem(key); return true; }catch(e){ return false; } }", context);
+}
+const fullDevice = () => {
+  const storage = new Map(Object.entries(initial()).map(([key, value]) => [key, JSON.stringify(value)]));
+  storage.set('other_data', 'x'.repeat(5000));
+  return storage;
+};
+
+test('v1104: a used device with full localStorage archives into IndexedDB, then refreshes and saves', async () => {
+  const storage = fullDevice();
+  const limit = [...storage].reduce((n, [k, v]) => n + k.length + v.length, 0) + 200;   // no room for the archive
+  const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, limit), awaitLocalReady: async () => true });
+  const rows = await f.api.refresh(ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]));
+  assert.equal(rows.get(DAILY).exists, true);
+  const archived = f.api.getRecovery().find(x => x.reason === 'pre_guard_local');
+  assert.equal(archived.archive, 'financial_pre_guard_archive_v1');
+  assert.deepEqual(clone(archived.value[DAILY]), initial()[DAILY]);
+  assert.equal(f.context._IDB_MEM.has('financial_save_recovery_v2'), true);
+  assert.equal(f.context._IDB_MEM.has('financial_pre_guard_archive_v1'), true);
+  assert.equal(storage.has('_financial_save_recovery_v1'), false);
+  // the fence opened: fresh cloud rows can be written to the device again
+  assert.equal(f.context._lsWriteVerified(DAILY, JSON.stringify({ '2026-10-02': { actual: 7 } })), true);
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Saved on a full device');
+  await f.context.saveDayMemo('F01', '2026-10-01');
+  assert.equal(f.commits.length, 1);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Saved on a full device');
+  assert.equal(f.toasts.filter(x => x.kind === 'success').length, 1);
+  assert.equal(f.toasts.some(x => x.kind === 'warning'), false);
+});
+
+test('v1104: a v1101-v1103 recovery log on the device moves once into the new key without losing entries', async () => {
+  const storage = fullDevice();
+  const old = [{ reason: 'unversioned_write', key: DAILY, value: { '2026-10-01': { actual: 5 } } },
+    { reason: 'committed_receipt', requestId: '00000000-0000-4000-8000-000000000999', receipt: { status: 'committed' } }];
+  storage.set('_financial_save_recovery_v1', JSON.stringify(old));
+  const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, 1e9), awaitLocalReady: async () => true });
+  await f.api.refresh([DAILY]);
+  const records = clone(f.api.getRecovery());
+  assert.deepEqual(records.slice(0, 2), old);
+  assert.equal(storage.has('_financial_save_recovery_v1'), false);
+  const again = fixture({ storage, database: f.database, receipts: f.receipts, beforeInstall: context => {
+    realStorage(context, storage, 1e9); context._IDB_MEM = new Map(f.context._IDB_MEM); }, awaitLocalReady: async () => true });
+  await again.api.refresh([DAILY]);
+  assert.deepEqual(clone(again.api.getRecovery()), records);
+});
+
+test('v1104: legacy writes refused before device storage is readable wait in memory and are recorded once it is', async () => {
+  const gate = deferred(); const storage = fullDevice();
+  const f = fixture({ storage, beforeInstall: context => realStorage(context, storage, 1e9),
+    awaitLocalReady: async () => { await gate.promise; return true; } });
+  await f.context.supaUpsert('app_state', [{ key: DAILY, value: { '2026-10-09': { actual: 9 } } }]);
+  assert.equal(f.context._IDB_MEM.has('financial_save_recovery_v2'), false);
+  assert.equal(storage.has('financial_save_recovery_v2'), false);
+  assert.equal(f.api.getState().hasRecovery, true);
+  const reading = f.api.refresh([DAILY]); gate.resolve(); await reading;
+  const kept = f.api.getRecovery().filter(x => x.reason === 'unversioned_write');
+  assert.deepEqual(clone(kept), [{ reason: 'unversioned_write', key: DAILY, value: { '2026-10-09': { actual: 9 } } }]);
+});
+
+test('v1104: reads hand out independent values without changing what a budget save sends', async () => {
+  const f = fixture();
+  await f.api.refresh(ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]));
+  const a = f.context.getDailyActuals('F01'); a['2026-10-01'].actual = -1;
+  assert.equal(f.context.getDailyActuals('F01')['2026-10-01'].actual, 100);
+  const b = f.context.getBudgets(); b.find(x => x.storeId === 'F01').actual = -2;
+  assert.equal(f.context.getBudgets().find(x => x.storeId === 'F01').actual, 100);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].actual, 100);
+  // unchanged budgets are not staged; the changed store is the only write
+  await f.context.openDailyActualModal('F01', '2026-10-01', '木');
+  f.set('da-actual', '345');
+  await f.context.saveDailyActual('F01', '2026-10-01');
+  assert.equal(f.commits.length, 1);
+  assert.deepEqual(Object.keys(f.commits[0].writes).sort(), [DAILY, BUDGET].sort());
+  assert.equal(f.commits[0].writes[BUDGET][0].actual, 345);
 });

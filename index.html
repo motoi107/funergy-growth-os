@@ -1421,7 +1421,14 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     'saveDayBudget', 'saveBasis', 'deleteBasis', '_reviewBeforeSubmit', '_saveRationaleDraft',
     '_doSubmitBudget', 'approveBudgetSeg', 'rejectBudgetSeg', 'reopenBudget',
     'migrateBudgetStatusYmFix', 'migrateBudgetStatusYm', 'normalizeBudgetsDemo'];
-  const RECOVERY_KEY = '_financial_save_recovery_v1';
+  // v1104：退避の記録は IndexedDB にも置ける名前にする。'_' で始まる名前は端末の localStorage（約 5MB）にしか置かれず、
+  // 使っている端末では満杯で「保護の前の端末の値」を退避できなかった。すると保護が止まったままになり、
+  // 売上・予算の最新の取り込み（端末へ書けない）・保存・入力画面・Toast の反映がすべて止まっていた。
+  // 前の名前（v1101〜v1103）の記録は、端末の保存領域を読めるようになったときに 1 回だけ新しい名前へ移す。
+  // 大きい「保護の前の端末の値」は別の名前に置き、保存のたびに読み書きする記録を小さく保つ。
+  const RECOVERY_KEY = 'financial_save_recovery_v2';
+  const LEGACY_RECOVERY_KEY = '_financial_save_recovery_v1';
+  const ARCHIVE_KEY = 'financial_pre_guard_archive_v1';
   const OPENERS = { openDailyActualModal: 'actual', openDayMemo: 'memo', bbOpen: 'budget',
     openEventModal: 'event', openDowEditor: 'dow', openSegEditor: 'segment', openDayBudgetEditor: 'day-budget',
     openBasisModal: 'basis', submitBudget: 'rationale', openBudgetReview: 'review', openBudgetEditor: 'editor' };
@@ -1482,7 +1489,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       'closeModalDirect', 'renderPage', 'showToast', 'bbClearDirty', ...WRITERS];
     captureNames.push(...Object.keys(OPENERS), 'openInputModal', 'apDecidedFromPage', 'addApproval',
       'snapshotApprovedBudget', 'diagBudgets', 'closeDowEditor', '_daRO', 'flushOutbox', 'addNotif', '_apRerender');
-    captureNames.push('mergeBudgets', '_budHasReal', '_lsRawDel');
+    captureNames.push('mergeBudgets', '_budHasReal', '_lsRawDel', '_lsStoreGet');
     captureNames.forEach(name => { if (typeof win[name] === 'function') original[name] = win[name]; });
     for (const name of ['ls', 'lsSet', '_lsRaw', '_lsWriteVerified', '_outboxGet', '_outboxRemove',
       '_pushWithOutbox', 'syncMasterToSupabase', 'opMergePush', 'supaUpsert', 'getBudgets', 'saveBudgets',
@@ -1511,13 +1518,45 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         Promise.resolve().then(work).then(resolve, reject).finally(() => clearTimeout(timer));
       });
     }
-    function recoveryEntries() {
+    // v1104：端末の保存領域を読めるまで（IndexedDB の読み込みの前）は記録を読まない・書かない
+    // （その間の localStorage の写しは古いことがある）。その間に断った書き込みの退避はここに持ち、読めるようになったら記録へ書く。
+    // 断った値そのものは端末に残っている（保護が上書き・削除を止めている）。
+    const waitingRetains = [];
+    let legacyMoved = false;
+    function readRecovery() {
       const value = original._lsRaw.call(win, RECOVERY_KEY, []);
       if (!Array.isArray(value)) throw new Error('financial_recovery_invalid');
       return value;
     }
+    function writeRecovery(all) {
+      if (original._lsWriteVerified.call(win, RECOVERY_KEY, JSON.stringify(all)) !== true)
+        throw new Error('financial_recovery_storage_failed');
+    }
+    function moveLegacyRecovery() {
+      if (legacyMoved) return;
+      const old = original._lsRaw.call(win, LEGACY_RECOVERY_KEY, null);
+      if (old !== null) {
+        if (!Array.isArray(old)) throw new Error('financial_recovery_invalid');
+        const current = readRecovery();
+        const merged = old.concat(current.filter(x => !old.some(o => equal(o, x))));
+        writeRecovery(merged);
+        if (!equal(readRecovery(), merged)) throw new Error('financial_recovery_storage_failed');
+        if (original._lsRawDel) original._lsRawDel.call(win, LEGACY_RECOVERY_KEY);
+      }
+      legacyMoved = true;
+    }
+    function recoveryEntries() {
+      if (!localReady) return waitingRetains.slice();
+      moveLegacyRecovery();
+      return readRecovery();
+    }
+    function flushWaiting() {
+      while (waitingRetains.length) { retain(waitingRetains[0]); waitingRetains.shift(); }
+    }
     function retain(entry) {
-      const record = copy(entry); let all = recoveryEntries();
+      const record = copy(entry);
+      if (!localReady) { if (!waitingRetains.some(x => equal(x, record))) waitingRetains.push(record); return; }
+      let all = recoveryEntries();
       if (record.reason === 'committed_receipt') {
         // Completed request payloads contain whole rows. Once the receipt is
         // stored atomically they must not accumulate with every ordinary save.
@@ -1526,10 +1565,10 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const remove = new Set(receipts.slice(0, Math.max(0, receipts.length - 49)));
         all = all.filter(x => !remove.has(x));
       }
-      if (!all.some(x => equal(x, record))) {
+      const recordJson = JSON.stringify(record);   // v1104：比べる相手ごとに大きい記録を文字にし直さない
+      if (!all.some(x => JSON.stringify(x) === recordJson)) {
         all.push(record);
-        if (original._lsWriteVerified.call(win, RECOVERY_KEY, JSON.stringify(all)) !== true)
-          throw new Error('financial_recovery_storage_failed');
+        writeRecovery(all);
       }
     }
     async function preserveLocal() {
@@ -1548,6 +1587,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     }
     function archiveLocal() {
       if (!localReady) throw new Error('financial_local_unverified');
+      moveLegacyRecovery(); flushWaiting();
       if (localPreserved) return true;
       if (recoveryEntries().some(entry => entry.reason === 'pre_guard_local')) { localPreserved = true; return true; }
       const value = {};
@@ -1555,7 +1595,14 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const raw = original._lsRaw.call(win, key, null);
         if (raw !== null) value[key] = raw;
       }
-      if (Object.keys(value).length) retain({ reason: 'pre_guard_local', value });
+      if (Object.keys(value).length) {
+        // v1104：値は別の名前に置き、記録には置き場所とキーだけを書く（書けたことを確かめてから記録する）
+        const json = JSON.stringify(copy(value));
+        if (original._lsWriteVerified.call(win, ARCHIVE_KEY, json) !== true
+          || (original._lsStoreGet && original._lsStoreGet.call(win, ARCHIVE_KEY) !== json))
+          throw new Error('financial_recovery_storage_failed');
+        retain({ reason: 'pre_guard_local', archive: ARCHIVE_KEY, keys: Object.keys(value) });
+      }
       localPreserved = true;
       return true;
     }
@@ -1640,6 +1687,18 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     };
     win._outboxRemove = function (key) { if (financial(key)) return false; return original._outboxRemove.apply(this, arguments); };
     if (original._lsPushBlocked) win._lsPushBlocked = function (key) { return financial(key) || original._lsPushBlocked.apply(this, arguments); };
+    // v1104：読むたびの深い写し（copy は 1 つ 1 つの値と形を確かめる）が、CEO のログインからダッシュボードまでで
+    // 約 4 秒かかっていた（getDailyActuals 324 回・getBudgets 198 回）。行は取り込むときに確かめて凍結してあるので、
+    // 読むときは JSON の文字列を 1 回作って覚え、毎回それを解く（v1100 と同じ「1 回解く」重さ）。
+    const rowJson = new WeakMap();
+    function rowText(row) {
+      let json = rowJson.get(row);
+      if (json === undefined) { json = JSON.stringify(row.value); rowJson.set(row, json); }
+      return json;
+    }
+    function rowValue(row) { return JSON.parse(rowText(row)); }
+    // 行から作った予算の 1 件 → その JSON（読んだときの姿を覚えるときに文字にし直さない。覚えたら消す）
+    const partJson = new WeakMap();
     function rowsForReads() {
       const result = new Map(canonical);
       if (form) for (const [key, row] of form.rows) result.set(key, row);
@@ -1656,30 +1715,41 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         if (!Array.isArray(old)) throw new Error('invalid_financial_budget_cache');
         const byStore = new Map(old.map(b => [b.storeId, b]));
         for (const [k, row] of rows) if (k.startsWith('spl_budgets_v2_')) {
-          byStore.delete(rowStore(k)); if (row.exists) byStore.set(rowStore(k), copy(row.value[0]));
+          byStore.delete(rowStore(k));
+          if (row.exists) { const json = rowText(row), budget = JSON.parse(json)[0]; partJson.set(budget, json.slice(1, -1)); byStore.set(rowStore(k), budget); }
         }
         return [...byStore.values()];
       }
-      if (rows.has(key)) { const row = rows.get(key); return row.exists ? copy(row.value) : fallback; }
+      if (rows.has(key)) { const row = rows.get(key); return row.exists ? rowValue(row) : fallback; }
       return original.ls.call(win, key, fallback);
     }
+    // v1104：getBudgets の中の ls('budgets_v2') では姿を覚えない（getBudgets が店を足し終えた配列で 1 回だけ覚える）
+    let budgetRead = 0;
     win.ls = function (key, fallback) {
       if (!financial(key)) return original.ls.apply(this, arguments);
       const value = localValue(key, fallback);
-      return capture(value, key === 'budgets_v2' && Array.isArray(value) ? value.map(b => 'spl_budgets_v2_' + b.storeId) : [key]);
+      return capture(value, key === 'budgets_v2' && Array.isArray(value) ? value.map(b => 'spl_budgets_v2_' + b.storeId) : [key], budgetRead > 0);
     };
-    function capture(value, keys) {
+    function capture(value, keys, skipSnapshot) {
       const bases = new Map();
       for (const key of keys) {
         const row = active?.before.get(key) || form?.rows.get(key) || canonical.get(key);
         if (row) bases.set(key, row);
       }
-      if (value && typeof value === 'object') { provenance.set(value, bases); localBefore.set(value, copy(value)); }
+      // v1104：読んだときの姿は予算（budgets_v2 の配列）だけに要る（lsSet の「変わっていない店は送らない」）。
+      // 日次の実績では使わないので覚えない。覚えるときも深い写しではなく JSON の文字列にする。
+      if (value && typeof value === 'object') {
+        provenance.set(value, bases);
+        if (!skipSnapshot && Array.isArray(value) && keys.length && keys.every(k => k.startsWith('spl_budgets_v2_'))) {
+          // JSON.stringify(value) と同じ文字。行から作ったばかりの 1 件は、その行の JSON をそのまま使う
+          localBefore.set(value, '[' + value.map(b => { const j = partJson.get(b); partJson.delete(b); return j !== undefined ? j : (JSON.stringify(b) ?? 'null'); }).join(',') + ']');
+        }
+      }
       return value;
     }
     win.getDailyActuals = function (store) {
-      const key = 'daily_actuals_' + store;
-      return capture(copy(win.ls(key, {})), [key]);
+      // v1104：win.ls が返すのは毎回新しい値（解いたもの・行の写し）で、出どころも覚えてある。もう 1 回写さない。
+      return win.ls('daily_actuals_' + store, {});
     };
     if (original._daRO) win._daRO = function (store) {
       const key = 'daily_actuals_' + store, row = rowsForReads().get(key);
@@ -1689,7 +1759,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       return readOnlyCache.get(row.value);
     };
     win.getBudgets = function () {
-      const value = original.getBudgets.apply(this, arguments);
+      let value; budgetRead++;
+      try { value = original.getBudgets.apply(this, arguments); } finally { budgetRead--; }
       return capture(value, value.map(b => 'spl_budgets_v2_' + b.storeId));
     };
     function stage(key, value, bases) {
@@ -1711,10 +1782,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         if (key === 'budgets_v2') {
           if (!Array.isArray(value)) throw new Error('invalid_financial_budget');
           const bases = provenance.get(value);
+          const readJson = localBefore.get(value), read = readJson === undefined ? undefined : JSON.parse(readJson);
           for (const budget of value) {
             const k = 'spl_budgets_v2_' + budget.storeId, base = active?.before.get(k) || bases?.get(k);
             if (base && equal(base.value, [budget])) continue;
-            if (equal(localBefore.get(value)?.find(b => b.storeId === budget.storeId), budget)) continue;
+            if (equal(read?.find(b => b.storeId === budget.storeId), budget)) continue;
             stage(k, [budget], bases);
           }
         } else stage(key, value, provenance.get(value));
@@ -1749,10 +1821,11 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       return original.flushOutbox.apply(this, args);
     };
     function validateRows(raw, keys) {
-      const result = copy(raw);
-      if (!result || !Array.isArray(result.rows) || result.rows.length !== keys.length) throw new Error('financial_rows_mismatch');
+      // v1104：行ごとに確かめて写す。全店 20 行をまとめて 1 回で写すと、値の数の上限（20 万）・文字の上限（400 万）が
+      // 20 行の合計にかかり、日次の実績が毎日増えるといつか起動時の取り込みが必ず失敗する。1 行ごとの上限は今までどおり。
+      if (!raw || typeof raw !== 'object' || !Array.isArray(raw.rows) || raw.rows.length !== keys.length) throw new Error('financial_rows_mismatch');
       const rows = new Map();
-      for (const row of result.rows) {
+      for (const row of raw.rows.map(item => copy(item))) {
         if (!keys.includes(row.key) || rows.has(row.key) || typeof row.exists !== 'boolean') throw new Error('financial_rows_mismatch');
         if (row.exists) {
           micros(row.version);
@@ -2010,7 +2083,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const baseline = new Map(active?.before || canonical);
         return function (...args) { return invoke('captured-callback', callback, args, baseline); };
       },
-      getRecovery: () => copy(recoveryEntries()),
+      getRecovery: () => copy(recoveryEntries().map(x => x.reason === 'pre_guard_local' && x.archive
+        ? { ...x, value: original._lsRaw.call(win, x.archive, null) } : x)),
       async reloadForm() {
         if (active || pending?.busy || (pending && pending.status !== 'conflict')) return false;
         const last = form, keys = pending ? Object.keys(pending.request.writes) : [];
@@ -9400,7 +9474,7 @@ function obPushSecret(ob){
    pl_actual: 実PLの確定値（opex / netop / 科目明細）。
      v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
      実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
-var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1'];   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
+var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1'];   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
 function isLocalOnlyKey(key){ return LS_LOCAL_ONLY.indexOf(String(key||'')) >= 0; }
 function isOpSyncKey(key){
   if (isLocalOnlyKey(key)) return false;   /* v919 */
@@ -39691,7 +39765,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1103';
+const APP_VERSION = '1104';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

@@ -15,14 +15,14 @@ import path from 'node:path';
 const arg = (k, d) => { const i = process.argv.indexOf('--' + k); return i > 0 ? process.argv[i + 1] : d; };
 const RUNS = Number(arg('runs', 3));
 const ROLE = arg('role', 'gm');
-const PROFILE = arg('profile', 'cold');          // cold：毎回まっさらな端末／warm：一度ログインした端末で開き直す
+const PROFILE = arg('profile', 'cold');          // cold：毎回まっさらな端末／warm：一度ログインした端末で開き直す／used：--userdir の端末をそのまま使う（v1104：前の版で使っていた端末の写し）
 const CPU = Number(arg('cpu', 1));
 const OUT = arg('out', 'result.json');
 const APP = arg('app', 'http://localhost:8080/');
 const PAGES = arg('pages', 'all');               // all：その役職のナビにある全ページ／none
 const RTT = Number(arg('rtt', 80)), BPS = Number(arg('bps', 2_500_000));
-const DATA = JSON.parse(fs.readFileSync(arg('data', '/tmp/claude-0/-home-claude/423fb030-9b70-5ea3-9a87-b6d14aa1c5ff/scratchpad/perf/data.json'), 'utf8')).login;
-const USERDIR = arg('userdir', '/tmp/claude-0/-home-claude/423fb030-9b70-5ea3-9a87-b6d14aa1c5ff/scratchpad/perf/profile-' + ROLE);
+const DATA = JSON.parse(fs.readFileSync(arg('data', process.env.PERF_DATA || 'data.json'), 'utf8')).login;
+const USERDIR = arg('userdir', (process.env.PERF_DIR || '.') + '/profile-' + ROLE);
 const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.0.1, MAP cdn.jsdelivr.net 127.0.0.1, MAP api.open-meteo.com 127.0.0.1, MAP archive-api.open-meteo.com 127.0.0.1', '--ignore-certificate-errors', '--no-proxy-server'];
 
 const ctl = async (p) => { const t = await (await fetch(new URL(p, APP))).text(); try { return JSON.parse(t); } catch (e) { return t; } };
@@ -49,7 +49,8 @@ async function waitNetIdle(quietMs = 1500, cap = 30000) {
 async function oneRun(i) {
   await ctl('/__reset'); await ctl('/__index?on=' + (arg('index', '1') === '0' ? '0' : '1')); await ctl(`/__net?rtt=${RTT}&bps=${BPS}`);
   if (PROFILE === 'cold') fs.rmSync(USERDIR, { recursive: true, force: true });
-  const ctx = await chromium.launchPersistentContext(USERDIR, { headless: true, args: ARGS, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, ignoreHTTPSErrors: true, serviceWorkers: 'allow' });
+  const TZ = arg('tz', '');   // v1104：端末の時間帯（例 Asia/Tokyo・Pacific/Honolulu）
+  const ctx = await chromium.launchPersistentContext(USERDIR, { headless: true, args: ARGS, viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true, ignoreHTTPSErrors: true, serviceWorkers: 'allow', ...(TZ ? { timezoneId: TZ } : {}) });
   const page = ctx.pages()[0] || await ctx.newPage();
   page.on('pageerror', e => errors.push(String(e && e.message || e).slice(0, 200)));
   page.on('crash', () => { console.error('renderer crashed'); });
@@ -58,6 +59,10 @@ async function oneRun(i) {
   await cdp.send('Performance.enable');
   if (CPU > 1) await cdp.send('Emulation.setCPUThrottlingRate', { rate: CPU });
   await page.addInitScript(() => {
+    // v1104：出た知らせ（showToast）の文と時刻を覚える（「売上・予算の最新データを確認できません」などが出たか）
+    // showToast は body に div を足す。足された直下の要素の文を覚える（保護の知らせは元の showToast を直接呼ぶので、関数を包む方法では取れない）
+    window.__toasts = [];
+    document.addEventListener('DOMContentLoaded', () => { try { new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) { if (n.nodeType === 1 && n.parentNode === document.body && n.tagName === 'DIV' && !n.id) { const tx = (n.textContent || '').trim(); if (tx && tx.length < 300) window.__toasts.push({ t: Math.round(performance.now()), m: tx.slice(0, 140) }); } } }).observe(document.body, { childList: true }); } catch (e) { } }, { capture: true });
     window.__lt = 0; window.__ltN = 0;
     try { new PerformanceObserver(l => { for (const e of l.getEntries()) { window.__lt += e.duration; window.__ltN++; } }).observe({ type: 'longtask', buffered: true }); } catch (e) { }
   });
@@ -90,11 +95,19 @@ async function oneRun(i) {
   R.net1 = net((await ctl('/__log')).log);
 
   // ② ログイン（所属 → 名前 → PIN）
-  const who = ROLE === 'gm' ? { loc: 'OFFICE', name: DATA.gm } : ROLE === 'crew' ? { loc: DATA.crewStore, name: DATA.crew } : { loc: DATA.slStore, name: DATA.sl };
+  const who = ROLE === 'ceo' ? { loc: 'OFFICE', name: DATA.ceo } : ROLE === 'gm' ? { loc: 'OFFICE', name: DATA.gm } : ROLE === 'crew' ? { loc: DATA.crewStore, name: DATA.crew } : { loc: DATA.slStore, name: DATA.sl };
   await page.evaluate(loc => loginPickLocation(loc), who.loc);
   await page.locator('#login-name-grid .store-btn', { hasText: who.name }).first().click();
   await page.fill('#login-pin-input', '1234');
+  // v1104：--count：ログインから最初の画面までの、売上・予算の読み取りの回数と時間（関数を包んで数える）
+  if (arg('count', '')) await page.evaluate(() => {
+    window.__cnt = {}; const fin = k => k === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(k));
+    const wrap = (name, pick) => { const f = window[name]; if (typeof f !== 'function') return; window[name] = function () { const t = performance.now(); try { return f.apply(this, arguments); } finally { const k = pick(arguments); if (k) { const c = window.__cnt[name + ':' + k] = window.__cnt[name + ':' + k] || { n: 0, ms: 0 }; c.n++; c.ms += performance.now() - t; } } }; };
+    wrap('ls', a => fin(a[0]) ? (String(a[0]).replace(/_F.*$/, '_*')) : null);
+    wrap('getBudgets', () => 'all'); wrap('getDailyActuals', () => 'store'); wrap('_daRO', () => 'store');
+  });
   const tAuthLog = await now();
+  if (arg('cpuprofile', '')) { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 500 }); await cdp.send('Profiler.start'); }
   const t2 = Date.now();
   const authResp = page.waitForResponse(r => /functions\/v1\/auth-pin/.test(r.url()), { timeout: 30000 });
   await page.click('#login-pin-btn');
@@ -117,6 +130,15 @@ async function oneRun(i) {
     await page.waitForFunction(() => { try { return _lsStoreGet('spl_invoices_F02') != null; } catch (e) { return false; } }, null, { polling: 100, timeout: 120000 }).catch(() => { });
     R.t3d_data = Date.now() - t2;
   }
+  if (arg('cpuprofile', '')) {
+    const { profile } = await cdp.send('Profiler.stop');
+    // 関数ごとの自分の時間（ミリ秒）の上位。中身・データは記録しない（関数の名前と行だけ）
+    const self = new Map(); const dt = profile.timeDeltas || []; const byId = new Map(profile.nodes.map(n => [n.id, n]));
+    (profile.samples || []).forEach((id, k) => { const n = byId.get(id); const f = n.callFrame; const key = (f.functionName || '(anon)') + ':' + (f.lineNumber + 1); self.set(key, (self.get(key) || 0) + (dt[k] || 0) / 1000); });
+    R.cpu_top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, v]) => [k, Math.round(v)]);
+  }
+  R.toasts = await page.evaluate(() => (window.__toasts || []).slice(0, 40)).catch(() => []);
+  if (arg('count', '')) R.counts = await page.evaluate(() => Object.fromEntries(Object.entries(window.__cnt || {}).map(([k, v]) => [k, { n: v.n, ms: Math.round(v.ms) }])));
   R.m3 = await metrics(); R.lt3 = await lt();
   R.net3 = net(await logSince(tAuthLog));
 
