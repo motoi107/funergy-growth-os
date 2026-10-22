@@ -162,7 +162,7 @@ UI案59 からの読み替え（Claude が決めた・Moto さんに伝えた）
 
 - `tests/specialist-career.test.mjs` 24（本物のコードを VM で：肩書き・基準未設定で止まる・通常の基準を使わない・キャリアの基準点・個人設定が勝つ・G5 の ①・2026 Q3 から・グレード変更の区間・オフィス用・本人の画面・保存の画面（理由・確定済み・満点・GM・CEO・初めては Q3）・確定の記録・設定 ② の表・Score管理・既定のロール・従業員マスター・キャリア変更の確かめ・Career Score の見る／付ける／承認・隠す画面・権限の保存と競合・期待されることの文・表示・個別評価の ①、独立レビューの直し 5 件）。
 - わざと壊す 48 通り（守りを 1 つずつ外す）すべてで落ちる。
-- 関連（cs-grade-view・cs-grade-rollback・karte-cs-points・karte-eval・karte-eval-sync・karte-bonus-ceo・karte-settings・career-criteria・dashboard-ui41・office-crew-approvals）と合わせて 189/189。
+- 関連（cs-grade-view・cs-grade-rollback・karte-cs-points・karte-eval・karte-eval-sync・karte-bonus-ceo・karte-settings・career-criteria・dashboard-ui41・office-crew-approvals）と合わせて 190/190（PR #87 の v1102 を取り込んだあと。PR #88 の financial-web 53/53 も通る）。
 - 全体（`tests/*.test.mjs`・重いもの以外）：失敗は main と同じ 27 件（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4）。static release pass/1103。
 - 独立レビュー（Claude の別エージェント・作業を見ていない・`197e4da`）：P1 なし・**P2 2**（GM 以外が承認・却下すると記録の名前が役職の既定の名前になる／v1102 以前の端末で確定した 2026 Q3 の専門職の ① が店舗の割合 × 満点のまま気づけない）・P3 6（未設定の一覧が 1.00 固定の人・グレードを変える前の区間を見ない／権限が評価表で決まりオフィス用の経理の人に経理の権限が効かない／Career Score の入口が隠した画面を見ない／付ける・承認する人が見られない／試験の名前・グレードの非表示の画面の肩書き）→ すべて直した（上の 11 と試験）。直したあとの独立レビューは無し。
 - 本物のアプリ（模擬サーバー・合成データ・Chromium・390px 日本語／1280px 英語）：Score管理（通常・経理 × G3）・基準点の画面（保存）・権限の画面（保存）・Career Score の一覧と本人の画面・従業員マスター（肩書きで専門職を固定・ロールの知らせ）・成長カルテ › 設定 ②・個別評価の ①。pageerror 0・横スクロールなし。
