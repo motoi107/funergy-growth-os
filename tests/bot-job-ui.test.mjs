@@ -152,12 +152,14 @@ test('settings: bad input is not sent; a conflict reloads without saving', async
   ctx.botJobCheckModal(); await new Promise(r => setImmediate(r));
   ctx.els['bot-job-cutoff'] = { value: '9' };
   await ctx.botJobSave(); assert.equal(calls.filter(c => c.action === 'job_check').length, 0);
-  ctx.els['bot-job-cutoff'] = { value: '16:30' }; ctx.els['bot-job-straddle-min'] = { value: '0' };
-  await ctx.botJobSave(); assert.equal(calls.filter(c => c.action === 'job_check').length, 0);
-  ctx.els['bot-job-straddle-min'] = { value: '45' }; ctx.els['bot-job-g1p:checked'] = { value: 'check' };
+  ctx.els['bot-job-cutoff'] = { value: '16:30' }; ctx.els['bot-job-straddle'] = { checked: true }; ctx.els['bot-job-straddle-min'] = { value: '0' };
+  await ctx.botJobSave(); assert.equal(calls.filter(c => c.action === 'job_check').length, 0, 'the minutes are checked while the extra check is on');
+  // v1105（独立レビュー P3）：補助の確認を使わないときは、分の欄が空でも保存できる（30 分に戻す）
+  ctx.els['bot-job-straddle'] = { checked: false }; ctx.els['bot-job-straddle-min'] = { value: '' }; ctx.els['bot-job-g1p:checked'] = { value: 'check' };
   await ctx.botJobSave();
   assert.equal(calls.filter(c => c.action === 'job_check').length, 1);
   assert.equal(calls.filter(c => c.action === 'job_check')[0].config.g1p, 'check');
+  assert.equal(JSON.stringify(calls.filter(c => c.action === 'job_check')[0].config.straddle), JSON.stringify({ enabled: false, minutes: 30 }));
   assert.equal(calls.filter(c => c.action === 'job_list').length, 2, 'a conflict reads the store again');
   assert.ok(ctx.toasts.some(([m]) => /先にこの店の設定を保存/.test(m)));
 });
@@ -165,4 +167,28 @@ test('settings: bad input is not sent; a conflict reloads without saving', async
 test('the attendance detector region is untouched by the Job check', () => {
   const start = source.indexOf('var CE_DEFAULT_CFG ='), end = source.indexOf('/* 1週(日〜土)。', start);
   assert.doesNotMatch(source.slice(start, end), /job_|botJob/);
+});
+
+// ---- v1105 独立レビュー（a9b2e32c4894cb2e1・cc7830c）の指摘
+test('review P3: a start before business-day midnight shows as the previous day (same as ops-bot)', () => {
+  const ctx = context();
+  const v = '2026-10-19T23:00:00.000-1000';
+  assert.equal(ctx.botJobSecs(v, '2026-10-20'), J.secondsFromBizMidnight(v, '2026-10-20'));
+  assert.equal(ctx.botJobClock(ctx.botJobSecs(v, '2026-10-20')), '前日 23:00:00');
+  assert.equal(J.clockText(J.secondsFromBizMidnight(v, '2026-10-20')), '前日 23:00:00');
+  const c = caseOf(te(1, '15:00:00', SERVER, { inDate: v }));
+  const html = ctx.botJobCaseHtml(c);
+  assert.match(html, /前日 23:00:00/); assert.doesNotMatch(html, /-1:00/);
+});
+
+test('review P3: a broken stored setting is shown as stopped (not as a silent default); the matching text is right', async () => {
+  const ctx = context({ role: 'gm' });
+  ctx.botAPI = async body => body.action === 'job_list' ? { store_id: 'F06', jobs: [], rev: 2, config: null, config_invalid: true, read_at: null } : {};
+  ctx.botJobCheckModal(); await new Promise(r => setImmediate(r));
+  assert.match(ctx.modal, /設定の形が読めないため、この店の Job確認は止まっています/);
+  ctx.botAPI = async body => body.action === 'job_list' ? { store_id: 'F06', jobs: [], rev: 2, config: scfg(), config_invalid: false, read_at: null } : {};
+  ctx.botJobCheckModal(); await new Promise(r => setImmediate(r));
+  assert.doesNotMatch(ctx.modal, /設定の形が読めない/);
+  assert.doesNotMatch(ctx.modal, /ほかの店の人は見ない/, 'matching uses the whole employee master');
+  assert.match(ctx.modal, /従業員マスター全体（ほかの店の人も）/);
 });

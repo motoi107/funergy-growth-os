@@ -124,7 +124,7 @@ test('morning report line for a Job case', () => {
 });
 
 // ---- handler：scan・確かめ直し・設定（Supabase・Toast はまね）
-function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:00:00', SERVER)], role = 'gm', employees = app(), recheckEntry = null, existing = null, rowDb = null } = {}) {
+function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:00:00', SERVER)], role = 'gm', employees = app(), recheckEntry = null, existing = null, rowDb = null, fail = {} } = {}) {
   const writes = [], records = [], saved = [];
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'svc', SUPABASE_ANON_KEY: 'anon', TOAST_CLIENT_ID: 'x', TOAST_CLIENT_SECRET: 'y' })[k];
   const handler = createHandler({ env, fetch: async (url, init = {}) => {
@@ -132,6 +132,8 @@ function harness({ setting = { stores: { F06: scfg() } }, entries = [te(1, '15:0
     if (u.endsWith('/auth/v1/user')) return Response.json({ id: id(99) });
     if (u.includes('/manager_auth?')) return Response.json([{ role }]);
     if (u.includes('/store_config?')) return Response.json([{ store_id: 'F06', restaurant_guid: id(77), name: 'LaLa' }]);
+    if (fail.setting && u.includes('/bot_settings?key=eq.job_check')) return new Response('{}', { status: 500 });
+    if (fail.employees && u.includes('/employees?')) return new Response('{}', { status: 500 });
     if (u.includes('/bot_settings?key=eq.clock')) return Response.json([{ value: { nightFrom: '03:00', nightTo: '05:00', longH: 12, shortMin: 15 } }]);
     if (rowDb && u.includes('/bot_settings?key=eq.job_check')) {
       if ((init.method || 'GET') === 'GET') return Response.json(rowDb.row ? [{ value: structuredClone(rowDb.row.value) }] : []);
@@ -254,4 +256,70 @@ test('settings save: version per store, other stores kept even when saved at the
   // job_list は店の版を返す
   const list = await h.call({ action: 'job_list', store_id: 'F06' });
   assert.equal(list.body.rev, 1); assert.equal(list.body.config.cutoff, '16:30');
+});
+
+// ---- v1105 独立レビュー（a9b2e32c4894cb2e1・cc7830c）の指摘の試験
+test('review P2: if the Job setting or the employee master cannot be read, the attendance check still runs', async () => {
+  const late = te(1, '15:00:00', SERVER, { outDate: '2026-10-21T06:00:00.000-10:00' });   // 15 時間：勤怠の「長時間勤務」
+  for (const fail of [{ setting: true }, { employees: true }]) {
+    const h = harness({ entries: [late], fail });
+    const r = await h.call({ action: 'scan', store_id: 'F06', date: '2026-10-20' });
+    assert.equal(r.status, 200, JSON.stringify(fail) + ' ' + JSON.stringify(r.body));
+    const keys = h.writes.map(w => w.p_data.source_key);
+    assert.ok(keys.some(k => /^labor:/.test(k)), 'the attendance case is written: ' + keys.join(','));
+    assert.equal(keys.filter(k => /^labor_job:/.test(k)).length, 0);
+    assert.equal(r.body.job_error, 'database_error');
+  }
+  const ok = harness({ entries: [late] }); const r = await ok.call({ action: 'scan', store_id: 'F06', date: '2026-10-20' });
+  assert.equal(r.body.job_error, undefined); assert.ok(ok.writes.some(w => /^labor_job:/.test(w.p_data.source_key)));
+});
+
+test('review P2: a resigned employee with the same name does not make a current G1 undetermined', () => {
+  const resigned = { name: 'Synthetic Crew', title: 'Store Manager', role: 'g4', status: '退職' };
+  assert.deepEqual(kinds('15:00:00', SERVER, { app: [resigned, ...app()] }), ['job_before'], 'the current G1 is checked');
+  assert.deepEqual(kinds('15:00:00', SERVER, { app: [{ ...app()[0], status: '退職' }] }), ['job_before'], 'only a resigned person with the name: that person');
+  assert.deepEqual(kinds('15:00:00', SERVER, { app: [resigned, ...app(), ...app()] }), ['job_emp_unknown'], 'two current people with the name stay undetermined');
+  assert.equal(J.matchEmployee('Synthetic Crew', [resigned, { ...resigned }]).error, 'ambiguous');
+});
+
+test('review P2: the Job case does not carry the time entry ID where the rollback version would read it', () => {
+  const f = find([te(1, '15:00:00', SERVER)])[0];
+  assert.equal(f.payload.time_entry_guid, id(1));
+  assert.equal(f.payload.shifts.length, 1); assert.equal('guid' in f.payload.shifts[0], false);
+  assert.equal(f.payload.shifts[0].inDate, te(1, '15:00:00', SERVER).inDate);
+});
+
+test('review P3: an unreadable start only matters for people who are checked; a start before midnight reads as the previous day', () => {
+  assert.deepEqual(kinds(null, SERVER, { app: app({ title: 'Store Manager' }) }), [], 'G4: not checked even without a start');
+  assert.deepEqual(kinds(null, SERVER, { app: app({ title: 'Prep' }) }), [], 'G1-P excluded: not checked');
+  assert.deepEqual(kinds(null, SERVER), ['job_start_unknown'], 'regular G1: undetermined');
+  assert.deepEqual(kinds(null, SERVER, { app: [] }), ['job_emp_unknown']);
+  assert.equal(J.clockText(-3600), '前日 23:00:00'); assert.equal(J.clockText(59400), '16:30:00');
+  const early = find([te(9, '15:00:00', SERVER, { inDate: '2026-10-19T23:00:00.000-10:00' })])[0];
+  assert.deepEqual(early.payload.kinds, ['job_before']);
+  assert.match(J.jobCaseLine({ ...early.payload, shift_cfg: early.payload.cfg, store_name: 'LaLa', business_date: '2026-10-20' }), /前日 23:00:00開始/);
+  assert.doesNotMatch(J.jobCaseLine({ ...early.payload, shift_cfg: early.payload.cfg, store_name: 'LaLa', business_date: '2026-10-20' }), /-1:/);
+});
+
+test('review P3: settings: the straddle minutes only matter while the straddle check is on', () => {
+  const off = J.validJobCheck({ stores: { F06: { ...scfg(), straddle: { enabled: false, minutes: null } } } }).stores.F06;
+  assert.deepEqual(off.straddle, { enabled: false, minutes: 30 });
+  assert.throws(() => J.validJobCheck({ stores: { F06: { ...scfg(), straddle: { enabled: true, minutes: 0 } } } }), /invalid_job_check/);
+  const input = { stores: { F06: { ...scfg(), straddle: { enabled: false, minutes: 'x' } } } };
+  J.validJobCheck(input); assert.equal(input.stores.F06.straddle.minutes, 'x', 'the input is not changed');
+});
+
+test('review P3: list does not send the Job setting; a broken stored setting is reported; a non-number whole-row version still saves', async () => {
+  const listLine = readFileSync(new URL('../supabase/functions/ops-bot/handler.mjs', import.meta.url), 'utf8').match(/body\.action==='list'.*$/m)[0];
+  assert.doesNotMatch(listLine, /job_check/, 'the list for every bot user does not carry the Job setting (updated_by)');
+  const h = harness({ setting: { rev: 4, stores: { F06: { ...scfg(), updated_by: id(98) } } } });
+  const jobList = await h.call({ action: 'job_list', store_id: 'F06' });
+  assert.equal(jobList.body.config_invalid, false);
+  const broken = await harness({ setting: { stores: { F06: { ...scfg(), cutoff: '25:00' } } } }).call({ action: 'job_list', store_id: 'F06' });
+  assert.equal(broken.status, 200); assert.equal(broken.body.config, null); assert.equal(broken.body.config_invalid, true);
+  const none = await harness({ setting: null }).call({ action: 'job_list', store_id: 'F06' });
+  assert.equal(none.body.config_invalid, false, 'no setting yet is not broken');
+  const rowDb = { row: { value: { rev: '2', stores: { F06: { ...scfg(), rev: 1 } } } } };
+  const r = await harness({ rowDb }).call({ action: 'job_check', store_id: 'F06', config: scfg({ cutoff: '17:00' }), expect_rev: 1 });
+  assert.equal(r.status, 200, JSON.stringify(r.body)); assert.equal(rowDb.row.value.rev, 3); assert.equal(rowDb.row.value.stores.F06.cutoff, '17:00');
 });

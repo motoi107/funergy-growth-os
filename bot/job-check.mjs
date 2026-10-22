@@ -39,8 +39,14 @@ export function gradeClass(e) {
 const norm = s => String(s || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
 export function toastName(e) { return (((e?.firstName || '') + ' ' + (e?.lastName || '')).trim()) || e?.name || ''; }
 // Toast の名前 → 従業員マスターの人。そのまま同じ名前 → 表記をそろえて同じ名前（1 人だけのとき）。名前の一部では結ばない。
+// 在籍の人（status が「退職」でない）から先に探す（同じ名前の退職した人がいても在籍の人で決まる）。在籍の人に無いときだけ退職した人も見る。
 export function matchEmployee(name, employees) {
-  const list = Array.isArray(employees) ? employees : [];
+  const all = Array.isArray(employees) ? employees.filter(Boolean) : [];
+  const active = all.filter(e => e.status !== '退職');
+  const first = matchIn(name, active);
+  return first.error === 'not_found' && active.length < all.length ? matchIn(name, all.filter(e => e.status === '退職')) : first;
+}
+function matchIn(name, list) {
   const exact = list.filter(e => e && e.name === name);
   if (exact.length === 1) return { emp: exact[0] };
   if (exact.length > 1) return { error: 'ambiguous' };
@@ -64,6 +70,7 @@ export function secondsFromBizMidnight(inDate, businessDate) {
 const cutoffSeconds = cutoff => { const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(cutoff || ''); return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 : null; };
 export function clockText(seconds) {
   if (!Number.isFinite(seconds)) return '時刻不明';
+  if (seconds < 0) return '前日 ' + clockText(seconds + 86400);   // 営業日の 0 時より前に始めた打刻
   const s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
   return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(sec).padStart(2, '0');
 }
@@ -78,8 +85,10 @@ export function validJobCheck(input, storeIds = null) {
     if (!/^[A-Z0-9-]{2,10}$/.test(id) || (storeIds && !storeIds.includes(id))) throw Error('invalid_store');
     const s = input.stores[id];
     if (!s || typeof s !== 'object' || typeof s.enabled !== 'boolean' || cutoffSeconds(s.cutoff) === null || !isoDate(s.from) || !G1P_MODES.includes(s.g1p)) throw Error('invalid_job_check');
-    const straddle = s.straddle || { enabled: false, minutes: 30 };
-    if (typeof straddle.enabled !== 'boolean' || !Number.isInteger(straddle.minutes) || straddle.minutes < 1 || straddle.minutes > 600) throw Error('invalid_job_check');
+    const straddle = s.straddle && typeof s.straddle === 'object' ? { ...s.straddle } : { enabled: false, minutes: 30 };
+    const okMinutes = Number.isInteger(straddle.minutes) && straddle.minutes >= 1 && straddle.minutes <= 600;
+    if (typeof straddle.enabled !== 'boolean' || (straddle.enabled && !okMinutes)) throw Error('invalid_job_check');
+    if (!okMinutes) straddle.minutes = 30;   // 補助の確認を使わないときは、分の欄が空でも保存できる（前の 30 分に戻す）
     const jobs = {};
     const entries = Object.entries(s.jobs || {});
     if (entries.length > 300) throw Error('invalid_job_check');
@@ -107,11 +116,12 @@ export function jobVerdict(te, { grade, employeeError = null }, scfg, businessDa
   const jobGuid = String(te?.jobReference?.guid || '').toLowerCase(), job = jobGuid ? scfg.jobs[jobGuid] : null;
   const base = { seconds: secs, job_guid: jobGuid || null, job_name: job?.name || null, job_class: job?.cls || null, cutoff: scfg.cutoff, business_date: bd };
   if (job?.cls === 'exclude') return { ...base, skip: true, reason: 'job_excluded' };
-  if (secs === null) return { ...base, kinds: ['job_start_unknown'], expected: null };
-  const expected = secs < cut ? 'prep' : 'service';
+  const expected = secs === null ? null : secs < cut ? 'prep' : 'service';
   if (employeeError) return { ...base, kinds: ['job_emp_unknown'], expected, employee_error: employeeError };
+  // 見ない人（G2 以上・G1-P を見ない設定）は、開始時刻が読めなくても案件にしない
   if (grade === 'other' || !grade) return { ...base, skip: true, reason: 'grade_out_of_scope' };
   if (grade === 'g1p' && scfg.g1p === 'exclude') return { ...base, skip: true, reason: 'g1p_excluded' };
+  if (secs === null) return { ...base, kinds: ['job_start_unknown'], expected: null };
   if (grade === 'g1p' && scfg.g1p === 'unset') return { ...base, kinds: ['job_class_unset'], expected };
   if (!jobGuid || !job || !job.cls) return { ...base, kinds: ['job_unknown'], expected };
   const kinds = [];
@@ -135,7 +145,8 @@ export function jobFindings({ entries, toastEmployees, appEmployees, scfg, store
     const grade = m.emp ? gradeClass(m.emp) : null;
     const v = jobVerdict(te, { grade, employeeError: m.error || null }, scfg, date);
     if (v.skip || !v.kinds.length) continue;
-    const shift = { guid: te.guid, inDate: te.inDate ?? null, outDate: te.outDate ?? null, employee_guid: id, job_guid: v.job_guid, job_name: v.job_name, job_class: v.job_class };
+    // 打刻の ID は time_entry_guid だけに置く（shifts[].guid は前の版の確かめ直し（勤怠の決まり）が読むので入れない＝ops-bot を前に戻しても Job の案件を「直った」で閉じない）
+    const shift = { inDate: te.inDate ?? null, outDate: te.outDate ?? null, employee_guid: id, job_guid: v.job_guid, job_name: v.job_name, job_class: v.job_class };
     const cfg = { check: JOB_CHECK, cutoff: scfg.cutoff, expected: v.expected, grade, grade_name: GRADE_JA[grade] || null, app_employee: m.emp?.name || null, employee_error: v.employee_error || null, from: scfg.from };
     out.push({
       source_key: 'labor_job:' + store.store_id + ':' + date + ':' + te.guid, kind: 'labor', store_id: store.store_id, business_date: date,

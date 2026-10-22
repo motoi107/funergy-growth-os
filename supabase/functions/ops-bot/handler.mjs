@@ -292,9 +292,13 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const overrides=await db('app_state?key=eq.'+encodeURIComponent('att_override_'+storeID+'_'+date)+'&select=value');
    const override=!!overrides[0]?.value?.data;
    const findings=laborFindings(entries,employees,cfg,store,date,override);
-   // v1105：Job確認（16:30 基準）。設定で使う店・適用開始日より後の日だけ
-   const jobCfg=storeJobCheck(await setting('job_check'),storeID);
-   if(jobCfg?.enabled&&date>=jobCfg.from)findings.push(...jobFindings({entries,toastEmployees:employees,appEmployees:await appEmployees(),scfg:jobCfg,store,date,isSystemAccount:isBotSystemAccount}));
+   // v1105：Job確認（16:30 基準）。設定で使う店・適用開始日より後の日だけ。
+   // 設定・従業員マスターを読めなくても、今の勤怠（と会計）の確認は止めない（Job確認だけの失敗として残す）
+   let jobError=null;
+   try{
+    const jobCfg=storeJobCheck(await setting('job_check'),storeID);
+    if(jobCfg?.enabled&&date>=jobCfg.from)findings.push(...jobFindings({entries,toastEmployees:employees,appEmployees:await appEmployees(),scfg:jobCfg,store,date,isSystemAccount:isBotSystemAccount}));
+   }catch(e){jobError=/^[a-z_]+$/.test(e?.message||'')?e.message:'job_check_failed';}
    if(withVoids){const orders=[];let complete=false;
     for(let page=1;page<=40;page++){const batch=await get('/orders/v2/ordersBulk?businessDate='+bd+'&pageSize=100&page='+page);orders.push(...batch);if(batch.length<100){complete=true;break;}}
     if(!complete)throw Error('toast_pagination_limit');
@@ -308,8 +312,8 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     findings.push(...voidFindings(payments,store,date,reasons,employees));
    }
    for(const f of findings)await rpc('bot_case_write',{p_op:'finding',p_actor:actor,p_data:f});
-   await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_success:new Date().toISOString(),last_error:null});
-   return {created_or_matched:findings.length,override,entries:entries.length};
+   await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_success:new Date().toISOString(),last_error:jobError?('job_check:'+jobError).slice(0,80):null});
+   return {created_or_matched:findings.length,override,entries:entries.length,...(jobError?{job_error:jobError}:{})};
   }catch(e){await db('bot_runs?store_id=eq.'+encodeURIComponent(storeID),'PATCH',{running_until:null,last_error:String(e.message).slice(0,80)}).catch(()=>{});throw e;}
  }
  async function rangeRun(storeID){
@@ -657,7 +661,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }
    const actor=await authorize(req);
    if(body.action==='daily')return json(await dailyOverview(body.after));
-   if(body.action==='list')return json({actor,job_check:await setting('job_check'),daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),line_responders:await db('bot_settings?key=like.line_responder:*&select=key,value'),closure_rules:await setting('closure_rules'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),line_responders:await db('bot_settings?key=like.line_responder:*&select=key,value'),closure_rules:await setting('closure_rules'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -674,7 +678,9 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id),get=await toastClient(store);
     const jobs=(await get('/labor/v1/jobs')).filter(j=>j&&UUID.test(j.guid||'')).map(j=>({guid:j.guid.toLowerCase(),title:String(j.title||'').slice(0,120),deleted:j.deleted===true}));
     const current=await setting('job_check'),raw=current?.stores?.[store.store_id];
-    return json({store_id:store.store_id,jobs,read_at:new Date().toISOString(),config:storeJobCheck(current,store.store_id),rev:jobRev(raw),updated_at:raw?.updated_at||null});
+    const config=storeJobCheck(current,store.store_id);
+    // 保存されている設定の形が壊れていると、Job確認は止まる（画面に知らせる。初期値を出して黙って OFF に見せない）
+    return json({store_id:store.store_id,jobs,read_at:new Date().toISOString(),config,config_invalid:!!raw&&!config,rev:jobRev(raw),updated_at:raw?.updated_at||null});
    }
    if(body.action==='job_check'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id);
@@ -685,11 +691,12 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
      const row=(await db('bot_settings?key=eq.job_check&select=value'))[0]||null,cur=row?.value||null;
      const was=cur?.stores?.[store.store_id];
      if(jobRev(was)!==body.expect_rev)throw Error('conflict');
-     const top=Number.isInteger(cur?.rev)?cur.rev:0,at=new Date().toISOString();
+     // 行全体の版（value.rev）。数でないものが入っていても、その文字のまま照らして書く（ずっと 409 にならない）
+     const hasTop=cur?.rev!==undefined&&cur?.rev!==null,n=Math.floor(Number(cur?.rev)),top=Number.isFinite(n)&&n>=0?n:0,at=new Date().toISOString();   // 次の版はいつも前の文字と違う数
      const saved={...one,rev:jobRev(was)+1,updated_at:at,updated_by:actor.id};
      const value={rev:top+1,stores:{...(cur?.stores||{}),[store.store_id]:saved}};
      const written=row
-      ?await db('bot_settings?key=eq.job_check&'+(Number.isInteger(cur?.rev)?'value->>rev=eq.'+top:'value->>rev=is.null'),'PATCH',{value,updated_at:at},'return=representation')
+      ?await db('bot_settings?key=eq.job_check&'+(hasTop?'value->>rev=eq.'+encodeURIComponent(typeof cur.rev==='string'?cur.rev:JSON.stringify(cur.rev)):'value->>rev=is.null'),'PATCH',{value,updated_at:at},'return=representation')
       :await db('bot_settings?on_conflict=key','POST',{key:'job_check',value,updated_at:at},'resolution=ignore-duplicates,return=representation');
      if(Array.isArray(written)&&written.length)return json({ok:true,config:one,rev:saved.rev,updated_at:at});
     }

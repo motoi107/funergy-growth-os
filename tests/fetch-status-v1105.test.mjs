@@ -14,7 +14,7 @@ function fn(name) {
 }
 const line = re => { const m = source.match(re); assert.ok(m, String(re)); return m[0]; };
 const NAMES = ['fstState', 'fstFailing', 'fstSave', 'fstStoreOfGuid', 'fstNote', 'fstStores', 'fstGuardOn', 'fstStatus', 'fstClock', 'fstLabel', 'fstNames', 'fstChip',
-  'fstChipsHtml', 'fstPaint', 'fstShowFresh', 'fstAuto', 'fstGuardRefresh', 'fstRetry', 'fstAnyFail', 'pageSyncStrip', '_toastSalesErr', 'fetchToastSales',
+  'fstChipsHtml', 'fstPaint', 'fstShowFresh', 'fstUserBusy', 'fstAuto', 'fstGuardRefresh', 'fstSalesSync', 'fstRetry', 'fstAnyFail', 'pageSyncStrip', '_toastSalesErr', 'fetchToastSales',
   'syncStoreActualsFromToast', 'fetchTipLaborFromDB', '_fstLabor', '_tipLaborFetchErr'];
 const STORES = [{ id: 'F01', name: 'ToriTon', toastGuid: 'g1' }, { id: 'F06', name: 'LaLa', toastGuid: 'g6' }, { id: 'F07', name: 'Kapolei' }];
 
@@ -152,4 +152,70 @@ test('the startup notice is gone; budget, meeting and purchase pages rely on the
   assert.doesNotMatch(block, /showToast/); assert.match(block, /fstNote\('guard',null,true\)/); assert.match(block, /fstNote\('guard',null,false/);
   for (const name of ['renderBudget', 'renderMeetingPage', 'renderPurchasePage']) assert.doesNotMatch(fn(name), /syncFreshBadge/, name);
   assert.equal(source.includes("'売上・予算の最新データを確認できません。元の入力を残して、もう一度確認してください。'"), false);
+});
+
+// ---- v1105 独立レビュー（a9b2e32c4894cb2e1・cc7830c）の指摘
+const flush = async (n = 6) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
+
+test('review P2: an automatic retry waits while an input form or the budget editor is open (no try is used)', async () => {
+  let reads = 0;
+  const c = context({ fetch: async () => { reads++; throw Error('offline'); } });
+  const overlay = { classList: { contains: k => k === 'open' && overlay.open }, open: true };
+  c.document.getElementById = id => id === 'modal-overlay' ? overlay : null;
+  await c.syncStoreActualsFromToast('F06', 'g6', c.monthDays()); assert.equal(reads, 1);
+  c.timers.shift().f(); await flush();
+  assert.equal(reads, 1, 'nothing is fetched (and nothing saved) while the form is open');
+  assert.deepEqual(Array.from(c.timers, x => x.ms), [15000], 'the first try is still unused');
+  overlay.open = false; c._bbStore = 'F01';
+  c.timers.shift().f(); await flush(); assert.equal(reads, 1, 'the budget editor counts as entering');
+  c._bbStore = null; c.window.FUNERGY_FINANCIAL_SAVE.getState = () => ({ status: 'unknown' });
+  c.timers.shift().f(); await flush(); assert.equal(reads, 1, 'a save waiting for its result counts as entering');
+  c.window.FUNERGY_FINANCIAL_SAVE.getState = () => ({ status: 'idle' });
+  c.timers.shift().f(); await flush(); assert.equal(reads, 2, 'then it retries');
+  assert.deepEqual(Array.from(c.timers, x => x.ms), [30000]);
+});
+
+test('review P3: a store never fetched here does not borrow another store\'s time; the retry count is per page; one guard failure is retried once', async () => {
+  const c = context();
+  c.fstNote('sales', 'F01', true); c.fstNote('sales', 'F06', false, 'toast_sales');
+  const chip = c.fstChip('sales');
+  assert.match(chip, /取れませんでした（LaLa）/); assert.doesNotMatch(chip, /前回 .* の情報を表示中/); assert.match(chip, /前の情報もありません/);
+  c.fstNote('sales', 'F01', false, 'toast_sales');
+  assert.match(c.fstChip('sales'), /取れませんでした（ToriTon・LaLa）。前の情報が無い店があります/, 'one failing store had data before, one never');
+  // tries are not kept on the device: a new page retries again
+  c.fstState().tries.sales = 3; c.fstSave();
+  assert.equal(JSON.parse(c.ls.get('_fetch_status_v1')).tries, undefined);
+  const again = context(); for (const [k, v] of c.ls) again.ls.set(k, v);
+  assert.equal(again.fstState().tries.sales, undefined);
+  // a guard failure schedules one retry (budget), which reads the records once
+  let refresh = 0;
+  const g = context(); g.window.FUNERGY_FINANCIAL_SAVE.refresh = g.FUNERGY_FINANCIAL_SAVE.refresh = async () => { refresh++; throw Error('down'); };
+  g.fstNote('sales', 'F01', true); g.fstNote('sales', 'F06', true);
+  g.fstNote('guard', null, false, 'financial_read');
+  assert.equal(g.timers.length, 1, 'not one timer for sales and one for budget');
+  g.timers.shift().f(); await flush();
+  assert.equal(refresh, 1);
+});
+
+test('review P3: a sales import the guard refused shows in the strip; the dashboard pull does not say "synced" when the month read failed', async () => {
+  const c = context();
+  c.fstNote('sales', 'F01', true); c.fstNote('sales', 'F06', true);
+  c.syncStoreActualsFromToast = async () => ({ error: '保存結果を確認できないため同期を完了していません。' });
+  await c.fstSalesSync('F06', 'g6', c.monthDays(), []);
+  assert.equal(c.fstStatus('sales').state, 'fail'); assert.match(c.fstChip('sales'), /取れませんでした（LaLa）/);
+  c.syncStoreActualsFromToast = async () => ({ updated: 0, fetched: 1 });
+  await c.fstSalesSync('F06', 'g6', c.monthDays(), []); c.fstNote('sales', 'F06', true);
+  assert.equal(c.fstStatus('sales').state, 'ok');
+  // the guard calls onAutoRefused before its notice; the app notes the store and stays quiet during login and automatic retries
+  const inst = source.slice(source.indexOf('onAutoRefused:function(name, args){'), source.indexOf('transport:FunergyFinancialTransport.create('));
+  assert.match(inst, /fstNote\('sales', args&&args\[0\], false/); assert.match(inst, /return !!window\._fstQuiet/);
+  assert.match(fn('loginSyncOps'), /window\._fstQuiet = true[\s\S]*finally \{ window\._fstQuiet = false; \}/);
+  assert.match(fn('loginSyncOps'), /await fstSalesSync\(s\.id, s\.toastGuid, days, _toastRows\)/);
+  // pull of the dashboard and budget pages
+  const meta = source.slice(source.indexOf('var SYNC_SCOPE_META = {'), source.indexOf('\n};', source.indexOf('var SYNC_SCOPE_META = {')) + 3);
+  for (const [scope, monthResult, anyFail, expected] of [['dash', { error: 'x' }, false, false], ['dash', undefined, false, undefined], ['budget', { error: 'x' }, false, false], ['budget', undefined, true, false]]) {
+    const p = { fstGuardRefresh: async () => true, ensureMonthDataLoaded: async () => monthResult, fstAnyFail: () => anyFail, pullInvoicesAll: async () => {}, curYm: () => '2026-10', console };
+    vm.createContext(p); vm.runInContext(meta + '\nvar __m = SYNC_SCOPE_META;', p);
+    assert.equal(await p.__m[scope].pull(), expected, scope + ' ' + JSON.stringify(monthResult));
+  }
 });

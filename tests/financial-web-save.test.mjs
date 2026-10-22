@@ -119,7 +119,7 @@ function fixture(options = {}) {
     persist: options.persist || (async () => true),
     reload: async () => true };
   const recoveryStore = options.recoveryStore || (typeof context.financialRecoveryStore === 'function' ? context.financialRecoveryStore() : mapStore);
-  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup, lockWaitMs: options.lockWaitMs,
+  const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup, lockWaitMs: options.lockWaitMs, onAutoRefused: options.onAutoRefused,
     awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)), recoveryStore });
   return { context, api, fields, dayFields, toasts, effects, legacy, commits, database, storage, receipts, answer,
     set: (id, value) => { const field = fields.get(id) || { disabled: false }; field.value = value; fields.set(id, field); },
@@ -1088,4 +1088,19 @@ test('v1104 review 2 P3: a save does not wait for ever behind another tab; old p
   await F.api.refresh(ALL);
   await F.context.syncStoreActualsFromToast('F01', 'g', [{ date: '2026-10-01' }], stale);
   assert.equal(fetched, 1); assert.equal(F.database.get(DAILY).value['2026-10-01'].actual, 777);
+});
+
+test('v1105: when the guard cannot read the latest rows for an automatic sales import, the app is told and may keep it quiet', async () => {
+  for (const quiet of [true, false]) {
+    const told = []; let failRead = false;
+    const database = new Map(Object.entries(initial()).map(([key, value]) => [key, { key, value, exists: true, version: BASE }]));
+    const f = fixture({ database, onAutoRefused: (name, args) => { told.push([name, args[0]]); return quiet; },
+      read: async keys => { if (failRead) throw new Error('down'); return { rows: keys.map(key => database.has(key) ? clone(database.get(key)) : { key, exists: false, value: null, version: null }) }; } });
+    await f.api.refresh(ALL); failRead = true;
+    const before = f.toasts.length;
+    const r = await f.context.syncStoreActualsFromToast('F01', 'g', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 9 }]);
+    assert.ok(r.error); assert.equal(f.commits.length, 0);
+    assert.deepEqual(told, [['syncStoreActualsFromToast', 'F01']]);
+    assert.equal(f.toasts.length - before, quiet ? 0 : 1, 'quiet ' + quiet);
+  }
 });

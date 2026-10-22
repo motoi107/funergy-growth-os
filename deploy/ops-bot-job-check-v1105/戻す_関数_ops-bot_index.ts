@@ -1,4 +1,4 @@
-// ../../../tmp/opsbot-rollback-fcsGiP/bot/payment-details.mjs
+// bot/payment-details.mjs
 var field = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 100);
 function paymentIdentity(order, check, payment = {}) {
   return { order_number: order.displayNumber ?? null, check_number: check.displayNumber ?? null, order_opened_date: order.openedDate ?? null, payment_paid_date: payment.paidDate ?? null };
@@ -26,7 +26,7 @@ function paymentVoidDetails(c) {
   return lines.join("\n");
 }
 
-// ../../../tmp/opsbot-rollback-fcsGiP/bot/case-replies.mjs
+// bot/case-replies.mjs
 function parseCaseReply(input) {
   const text = String(input || "").normalize("NFKC").trim();
   const m = /^(#\d+|B-[A-F0-9]{12})\s+(.+)$/is.exec(text);
@@ -82,7 +82,7 @@ function completionReceipt(result) {
   return header + "\n\n" + (result.results || []).map((c) => `${c.code}\uFF5C${c.error === "not_found" ? "\u5BFE\u8C61\u6848\u4EF6\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093 / Not found" : c.error === "invalid_kind" ? "\u5B8C\u4E86\u5831\u544A\u306E\u5BFE\u8C61\u5916 / Unsupported" : c.already_closed ? "\u5B8C\u4E86\u6E08\u307F / Already closed" : c.status === "done" ? "\u5B8C\u4E86 / Closed" : "\u53D7\u4ED8\u3067\u304D\u307E\u305B\u3093 / Not accepted"}${c.subject ? "\uFF5C" + String(c.subject).slice(0, 100) : ""}`).join("\n");
 }
 
-// ../../../tmp/opsbot-rollback-fcsGiP/bot/clock-detector.mjs
+// bot/clock-detector.mjs
 function createClockDetector({ getTipLabor, getCeCfg }) {
   if (typeof getTipLabor !== "function" || typeof getCeCfg !== "function")
     throw new TypeError("Effective labor and configuration providers are required");
@@ -197,7 +197,7 @@ function createClockDetector({ getTipLabor, getCeCfg }) {
   return { ceIsSystemAccount: ceIsSystemAccount2, ceCheckShift, ceScanDay, _ceOverlap, _ceClock, CE_DEFAULT_CFG, CE_KIND_LABEL, CE_ERROR_KINDS };
 }
 
-// ../../../tmp/opsbot-rollback-fcsGiP/bot/cash-tip-report.mjs
+// bot/cash-tip-report.mjs
 var DAYS = ["\u65E5", "\u6708", "\u706B", "\u6C34", "\u6728", "\u91D1", "\u571F"];
 var clean = (value) => String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").slice(0, 100);
 function cashTipEntered(record, side) {
@@ -257,7 +257,7 @@ function caseCategory(kind) {
   return kind === "labor" ? "labor" : ["void", "unpaid"].includes(kind) ? "finance" : null;
 }
 
-// ../../../tmp/opsbot-rollback-fcsGiP/supabase/functions/ops-bot/handler.mjs
+// supabase/functions/ops-bot/handler.mjs
 var ROLES = ["ceo", "gm", "office", "office_crew"];
 var APPROVERS = ["ceo", "gm", "office"];
 var UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -1226,5 +1226,5 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
   };
 }
 
-// ../../../tmp/opsbot-rollback-fcsGiP/supabase/functions/ops-bot/index.ts
+// supabase/functions/ops-bot/index.ts
 Deno.serve(createHandler({ env: (key) => Deno.env.get(key) }));

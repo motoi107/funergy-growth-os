@@ -23,10 +23,21 @@ test('the bundle was built from the current ops-bot sources', () => {
   for (const f of [BUNDLE, ROLLBACK]) assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /^\s*import\s|\bimport\(/m, 'one file without imports');
 });
 
-test('rebuilding gives the same bytes (when esbuild is available)', { skip: !fs.existsSync('/opt/npm-tools/node_modules/.bin/esbuild') && 'esbuild not installed here' }, () => {
+const ESBUILD = '/opt/npm-tools/node_modules/.bin/esbuild';
+const { bundle, rollbackSources } = await import('../deploy/ops-bot-job-check-v1105/build.mjs');
+test('rebuilding gives the same bytes, from any folder (when esbuild is available)', { skip: !fs.existsSync(ESBUILD) && 'esbuild not installed here' }, () => {
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'opsbot-')), 'b.ts');
-  execFileSync('/opt/npm-tools/node_modules/.bin/esbuild', [path.join(root, 'supabase/functions/ops-bot/index.ts'), '--bundle', '--format=esm', '--platform=neutral', '--target=es2022', '--log-level=warning', '--outfile=' + out]);
+  const was = process.cwd();
+  try { process.chdir(os.tmpdir()); bundle(root, out, ESBUILD); } finally { process.chdir(was); }
   assert.equal(sha(fs.readFileSync(out)), meta.bundle_sha256);
+});
+const hasRollbackCommit = (() => { try { execFileSync('git', ['-C', root, 'cat-file', '-e', meta.rollback_commit + '^{commit}'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+test('the rollback file rebuilds to the same bytes from the rollback commit (in a different folder each time)', { skip: (!fs.existsSync(ESBUILD) && 'esbuild not installed here') || (!hasRollbackCommit && 'the rollback commit is not in this clone') }, () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'opsbot-rb-src-')), out = path.join(src, 'out.ts');
+  rollbackSources(root, path.join(src, 'tree'));
+  bundle(path.join(src, 'tree'), out, ESBUILD);
+  assert.equal(sha(fs.readFileSync(out)), meta.rollback_sha256);
+  assert.doesNotMatch(fs.readFileSync(ROLLBACK, 'utf8'), /tmp|opsbot-rollback/, 'no temporary folder names in the file');
 });
 
 async function load(file) {
@@ -69,4 +80,44 @@ test('the bundled function answers the Job check actions; the rollback bundle is
     assert.doesNotMatch(fs.readFileSync(ROLLBACK, 'utf8'), /job_1630|labor_job:/);
     assert.match(fs.readFileSync(BUNDLE, 'utf8'), /labor_job:/);
   } finally { globalThis.fetch = saved; }
+});
+
+
+// v1105（独立レビュー P2）：ops-bot を前に戻しても、Job の案件を「直った（Toast で確かめた）」で閉じない
+test('after a rollback, a Job case still wrong in Toast is not closed by the old function', async () => {
+  const J = await import('../bot/job-check.mjs');
+  const g = n => '00000000-0000-4000-8000-' + String(n).padStart(12, '0');
+  const SERVER = g(502);
+  const scfg = { enabled: true, cutoff: '16:30', from: '2026-10-16', g1p: 'exclude', straddle: { enabled: false, minutes: 30 }, jobs: { [SERVER]: { name: 'Server', cls: 'service' } } };
+  const entry = { guid: g(1), employeeReference: { guid: g(900) }, jobReference: { guid: SERVER }, inDate: '2026-10-20T15:00:00.000-10:00', outDate: '2026-10-20T22:00:00.000-10:00', businessDate: '20261020' };
+  const f = J.jobFindings({ entries: [entry], toastEmployees: [{ guid: g(900), firstName: 'Synthetic', lastName: 'Crew' }], appEmployees: [{ name: 'Synthetic Crew', title: 'Crew', role: 'crew' }], scfg, store: { store_id: 'F06', name: 'LaLa' }, date: '2026-10-20' })[0];
+  const theCase = { id: g(10), version: 4, kind: 'labor', store_id: 'F06', business_date: '2026-10-20', status: 'review', payload: f.payload };
+  const saved = globalThis.fetch;
+  for (const [file, label] of [[ROLLBACK, 'rollback'], [BUNDLE, 'current']]) {
+    const writes = [], checks = [];
+    globalThis.fetch = async (url, init = {}) => {
+      const u = String(url);
+      if (u.endsWith('/auth/v1/user')) return Response.json({ id: g(99) });
+      if (u.includes('/manager_auth?')) return Response.json([{ role: 'gm' }]);
+      if (u.includes('/bot_users?')) return Response.json([]);
+      if (u.includes('/bot_cases?id=')) return Response.json([theCase]);
+      if (u.includes('/store_config?')) return Response.json([{ store_id: 'F06', restaurant_guid: g(77), name: 'LaLa' }]);
+      if (u.includes('/bot_settings?key=eq.clock')) return Response.json([{ value: { nightFrom: '03:00', nightTo: '05:00', longH: 12, shortMin: 15 } }]);
+      if (u.includes('/bot_settings?key=eq.job_check')) return Response.json([{ value: { stores: { F06: scfg } } }]);
+      if (u.includes('/authentication/v1/authentication/login')) return Response.json({ token: { accessToken: 't' } });
+      if (u.includes('/app_state?')) return Response.json([]);
+      if (u.includes('/labor/v1/timeEntries?')) return Response.json([entry]);
+      if (u.includes('/labor/v1/employees')) return Response.json([{ guid: g(900), firstName: 'Synthetic', lastName: 'Crew' }]);
+      if (u.endsWith('/rpc/bot_case_write')) { writes.push(JSON.parse(init.body)); return Response.json({ id: g(10), status: 'done' }); }
+      if (u.endsWith('/rpc/bot_record_check')) { checks.push(JSON.parse(init.body)); return Response.json({}); }
+      throw Error('unexpected ' + u);
+    };
+    try {
+      const h = await load(file);
+      const r = await call(h, { action: 'recheck', id: g(10), version: 4 });
+      assert.equal(writes.filter(w => w.p_op === 'verified').length, 0, label + ': the case is not closed (' + r.status + ')');
+      assert.ok(checks.length >= 1, label + ': the check is recorded as not clean');
+      if (label === 'rollback') assert.notEqual(r.status, 200);
+    } finally { globalThis.fetch = saved; }
+  }
 });

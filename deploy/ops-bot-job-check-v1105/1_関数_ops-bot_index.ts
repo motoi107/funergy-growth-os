@@ -296,7 +296,12 @@ function toastName(e) {
   return ((e?.firstName || "") + " " + (e?.lastName || "")).trim() || e?.name || "";
 }
 function matchEmployee(name, employees) {
-  const list = Array.isArray(employees) ? employees : [];
+  const all = Array.isArray(employees) ? employees.filter(Boolean) : [];
+  const active = all.filter((e) => e.status !== "\u9000\u8077");
+  const first = matchIn(name, active);
+  return first.error === "not_found" && active.length < all.length ? matchIn(name, all.filter((e) => e.status === "\u9000\u8077")) : first;
+}
+function matchIn(name, list) {
   const exact = list.filter((e) => e && e.name === name);
   if (exact.length === 1) return { emp: exact[0] };
   if (exact.length > 1) return { error: "ambiguous" };
@@ -322,6 +327,7 @@ var cutoffSeconds = (cutoff) => {
 };
 function clockText(seconds) {
   if (!Number.isFinite(seconds)) return "\u6642\u523B\u4E0D\u660E";
+  if (seconds < 0) return "\u524D\u65E5 " + clockText(seconds + 86400);
   const s = Math.floor(seconds), h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
   return String(h).padStart(2, "0") + ":" + String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
 }
@@ -334,8 +340,10 @@ function validJobCheck(input, storeIds = null) {
     if (!/^[A-Z0-9-]{2,10}$/.test(id) || storeIds && !storeIds.includes(id)) throw Error("invalid_store");
     const s = input.stores[id];
     if (!s || typeof s !== "object" || typeof s.enabled !== "boolean" || cutoffSeconds(s.cutoff) === null || !isoDate(s.from) || !G1P_MODES.includes(s.g1p)) throw Error("invalid_job_check");
-    const straddle = s.straddle || { enabled: false, minutes: 30 };
-    if (typeof straddle.enabled !== "boolean" || !Number.isInteger(straddle.minutes) || straddle.minutes < 1 || straddle.minutes > 600) throw Error("invalid_job_check");
+    const straddle = s.straddle && typeof s.straddle === "object" ? { ...s.straddle } : { enabled: false, minutes: 30 };
+    const okMinutes = Number.isInteger(straddle.minutes) && straddle.minutes >= 1 && straddle.minutes <= 600;
+    if (typeof straddle.enabled !== "boolean" || straddle.enabled && !okMinutes) throw Error("invalid_job_check");
+    if (!okMinutes) straddle.minutes = 30;
     const jobs = {};
     const entries = Object.entries(s.jobs || {});
     if (entries.length > 300) throw Error("invalid_job_check");
@@ -365,11 +373,11 @@ function jobVerdict(te, { grade, employeeError = null }, scfg, businessDate2) {
   const jobGuid = String(te?.jobReference?.guid || "").toLowerCase(), job = jobGuid ? scfg.jobs[jobGuid] : null;
   const base = { seconds: secs, job_guid: jobGuid || null, job_name: job?.name || null, job_class: job?.cls || null, cutoff: scfg.cutoff, business_date: bd };
   if (job?.cls === "exclude") return { ...base, skip: true, reason: "job_excluded" };
-  if (secs === null) return { ...base, kinds: ["job_start_unknown"], expected: null };
-  const expected = secs < cut ? "prep" : "service";
+  const expected = secs === null ? null : secs < cut ? "prep" : "service";
   if (employeeError) return { ...base, kinds: ["job_emp_unknown"], expected, employee_error: employeeError };
   if (grade === "other" || !grade) return { ...base, skip: true, reason: "grade_out_of_scope" };
   if (grade === "g1p" && scfg.g1p === "exclude") return { ...base, skip: true, reason: "g1p_excluded" };
+  if (secs === null) return { ...base, kinds: ["job_start_unknown"], expected: null };
   if (grade === "g1p" && scfg.g1p === "unset") return { ...base, kinds: ["job_class_unset"], expected };
   if (!jobGuid || !job || !job.cls) return { ...base, kinds: ["job_unknown"], expected };
   const kinds = [];
@@ -391,7 +399,7 @@ function jobFindings({ entries, toastEmployees, appEmployees, scfg, store, date,
     const grade = m.emp ? gradeClass(m.emp) : null;
     const v = jobVerdict(te, { grade, employeeError: m.error || null }, scfg, date);
     if (v.skip || !v.kinds.length) continue;
-    const shift = { guid: te.guid, inDate: te.inDate ?? null, outDate: te.outDate ?? null, employee_guid: id, job_guid: v.job_guid, job_name: v.job_name, job_class: v.job_class };
+    const shift = { inDate: te.inDate ?? null, outDate: te.outDate ?? null, employee_guid: id, job_guid: v.job_guid, job_name: v.job_name, job_class: v.job_class };
     const cfg = { check: JOB_CHECK, cutoff: scfg.cutoff, expected: v.expected, grade, grade_name: GRADE_JA[grade] || null, app_employee: m.emp?.name || null, employee_error: v.employee_error || null, from: scfg.from };
     out.push({
       source_key: "labor_job:" + store.store_id + ":" + date + ":" + te.guid,
@@ -819,8 +827,13 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
       const overrides = await db("app_state?key=eq." + encodeURIComponent("att_override_" + storeID + "_" + date) + "&select=value");
       const override = !!overrides[0]?.value?.data;
       const findings = laborFindings(entries, employees, cfg, store, date, override);
-      const jobCfg = storeJobCheck(await setting("job_check"), storeID);
-      if (jobCfg?.enabled && date >= jobCfg.from) findings.push(...jobFindings({ entries, toastEmployees: employees, appEmployees: await appEmployees(), scfg: jobCfg, store, date, isSystemAccount: isBotSystemAccount }));
+      let jobError = null;
+      try {
+        const jobCfg = storeJobCheck(await setting("job_check"), storeID);
+        if (jobCfg?.enabled && date >= jobCfg.from) findings.push(...jobFindings({ entries, toastEmployees: employees, appEmployees: await appEmployees(), scfg: jobCfg, store, date, isSystemAccount: isBotSystemAccount }));
+      } catch (e) {
+        jobError = /^[a-z_]+$/.test(e?.message || "") ? e.message : "job_check_failed";
+      }
       if (withVoids) {
         const orders = [];
         let complete = false;
@@ -853,8 +866,8 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
         findings.push(...voidFindings(payments, store, date, reasons, employees));
       }
       for (const f of findings) await rpc("bot_case_write", { p_op: "finding", p_actor: actor, p_data: f });
-      await db("bot_runs?store_id=eq." + encodeURIComponent(storeID), "PATCH", { running_until: null, last_success: (/* @__PURE__ */ new Date()).toISOString(), last_error: null });
-      return { created_or_matched: findings.length, override, entries: entries.length };
+      await db("bot_runs?store_id=eq." + encodeURIComponent(storeID), "PATCH", { running_until: null, last_success: (/* @__PURE__ */ new Date()).toISOString(), last_error: jobError ? ("job_check:" + jobError).slice(0, 80) : null });
+      return { created_or_matched: findings.length, override, entries: entries.length, ...jobError ? { job_error: jobError } : {} };
     } catch (e) {
       await db("bot_runs?store_id=eq." + encodeURIComponent(storeID), "PATCH", { running_until: null, last_error: String(e.message).slice(0, 80) }).catch(() => {
       });
@@ -1318,7 +1331,7 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
       }
       const actor = await authorize(req);
       if (body.action === "daily") return json(await dailyOverview(body.after));
-      if (body.action === "list") return json({ actor, job_check: await setting("job_check"), daily: await dailyOverview(), cases: await db("bot_cases?or=" + encodeURIComponent("(kind.neq.void,payload->>scope.eq.payment)") + "&order=updated_at.desc&limit=200"), groups: await db("bot_groups?order=group_id"), line_candidates: await db("bot_settings?key=like.line_candidate:*&select=key,value"), line_links: await db("bot_settings?key=like.line_link:*&select=key,value"), line_responders: await db("bot_settings?key=like.line_responder:*&select=key,value"), closure_rules: await setting("closure_rules"), owners: await db("bot_settings?key=like.owner:*&select=key,value"), intakes: await db("bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50"), runs: await db("bot_runs"), clock: await setting("clock"), worker_enabled: !!(await setting("worker"))?.enabled, finance_enabled: !!(await setting("worker"))?.finance_enabled, line: { secret: !!env("LINE_CHANNEL_SECRET"), token: !!env("LINE_CHANNEL_ACCESS_TOKEN") }, stores: await db("store_config?active=eq.true&select=store_id,name") });
+      if (body.action === "list") return json({ actor, daily: await dailyOverview(), cases: await db("bot_cases?or=" + encodeURIComponent("(kind.neq.void,payload->>scope.eq.payment)") + "&order=updated_at.desc&limit=200"), groups: await db("bot_groups?order=group_id"), line_candidates: await db("bot_settings?key=like.line_candidate:*&select=key,value"), line_links: await db("bot_settings?key=like.line_link:*&select=key,value"), line_responders: await db("bot_settings?key=like.line_responder:*&select=key,value"), closure_rules: await setting("closure_rules"), owners: await db("bot_settings?key=like.owner:*&select=key,value"), intakes: await db("bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50"), runs: await db("bot_runs"), clock: await setting("clock"), worker_enabled: !!(await setting("worker"))?.enabled, finance_enabled: !!(await setting("worker"))?.finance_enabled, line: { secret: !!env("LINE_CHANNEL_SECRET"), token: !!env("LINE_CHANNEL_ACCESS_TOKEN") }, stores: await db("store_config?active=eq.true&select=store_id,name") });
       if (body.action === "resolve_send") {
         if (!APPROVERS.includes(actor.role) || !UUID2.test(body.outbox_id || "")) throw Error("forbidden");
         await rpc("bot_resolve_send", { p_actor: actor.id, p_id: body.outbox_id, p_state: body.state, p_note: String(body.note || "").trim() });
@@ -1339,7 +1352,8 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
         const store = await getStore(body.store_id), get = await toastClient(store);
         const jobs = (await get("/labor/v1/jobs")).filter((j) => j && UUID2.test(j.guid || "")).map((j) => ({ guid: j.guid.toLowerCase(), title: String(j.title || "").slice(0, 120), deleted: j.deleted === true }));
         const current = await setting("job_check"), raw = current?.stores?.[store.store_id];
-        return json({ store_id: store.store_id, jobs, read_at: (/* @__PURE__ */ new Date()).toISOString(), config: storeJobCheck(current, store.store_id), rev: jobRev(raw), updated_at: raw?.updated_at || null });
+        const config = storeJobCheck(current, store.store_id);
+        return json({ store_id: store.store_id, jobs, read_at: (/* @__PURE__ */ new Date()).toISOString(), config, config_invalid: !!raw && !config, rev: jobRev(raw), updated_at: raw?.updated_at || null });
       }
       if (body.action === "job_check") {
         if (!["gm", "ceo"].includes(actor.role)) throw Error("forbidden");
@@ -1350,10 +1364,10 @@ function createHandler({ env, fetch: fetcher = globalThis.fetch }) {
           const row = (await db("bot_settings?key=eq.job_check&select=value"))[0] || null, cur = row?.value || null;
           const was = cur?.stores?.[store.store_id];
           if (jobRev(was) !== body.expect_rev) throw Error("conflict");
-          const top = Number.isInteger(cur?.rev) ? cur.rev : 0, at = (/* @__PURE__ */ new Date()).toISOString();
+          const hasTop = cur?.rev !== void 0 && cur?.rev !== null, n = Math.floor(Number(cur?.rev)), top = Number.isFinite(n) && n >= 0 ? n : 0, at = (/* @__PURE__ */ new Date()).toISOString();
           const saved = { ...one, rev: jobRev(was) + 1, updated_at: at, updated_by: actor.id };
           const value = { rev: top + 1, stores: { ...cur?.stores || {}, [store.store_id]: saved } };
-          const written = row ? await db("bot_settings?key=eq.job_check&" + (Number.isInteger(cur?.rev) ? "value->>rev=eq." + top : "value->>rev=is.null"), "PATCH", { value, updated_at: at }, "return=representation") : await db("bot_settings?on_conflict=key", "POST", { key: "job_check", value, updated_at: at }, "resolution=ignore-duplicates,return=representation");
+          const written = row ? await db("bot_settings?key=eq.job_check&" + (hasTop ? "value->>rev=eq." + encodeURIComponent(typeof cur.rev === "string" ? cur.rev : JSON.stringify(cur.rev)) : "value->>rev=is.null"), "PATCH", { value, updated_at: at }, "return=representation") : await db("bot_settings?on_conflict=key", "POST", { key: "job_check", value, updated_at: at }, "resolution=ignore-duplicates,return=representation");
           if (Array.isArray(written) && written.length) return json({ ok: true, config: one, rev: saved.rev, updated_at: at });
         }
         throw Error("conflict");

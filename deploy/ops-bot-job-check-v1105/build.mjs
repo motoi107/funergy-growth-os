@@ -18,18 +18,24 @@ export const ROLLBACK_COMMIT = 'a1348be';
 const ARGS = ['--bundle', '--format=esm', '--platform=neutral', '--target=es2022', '--log-level=warning'];
 const sha = b => createHash('sha256').update(b).digest('hex');
 
-function bundle(dir, out) {
-  execFileSync(esbuild, [path.join(dir, 'supabase/functions/ops-bot/index.ts'), ...ARGS, '--outfile=' + out], { stdio: 'inherit' });
+// どこから流しても同じ中身になるように、元のフォルダの中で流す（esbuild はファイルの場所を cwd からの名前でコメントに書く）
+export function bundle(dir, out, bin = esbuild) {
+  execFileSync(bin, ['supabase/functions/ops-bot/index.ts', ...ARGS, '--outfile=' + out], { stdio: 'inherit', cwd: dir });
+}
+// 戻す方：ROLLBACK_COMMIT のときの ops-bot と bot を決まったフォルダに出す
+export function rollbackSources(rootDir, dest) {
+  fs.rmSync(dest, { recursive: true, force: true });
+  const files = execFileSync('git', ['-C', rootDir, 'ls-tree', '-r', '--name-only', ROLLBACK_COMMIT, 'supabase/functions/ops-bot', 'bot'], { encoding: 'utf8' }).trim().split('\n');
+  for (const f of files) {
+    fs.mkdirSync(path.join(dest, path.dirname(f)), { recursive: true });
+    fs.writeFileSync(path.join(dest, f), execFileSync('git', ['-C', rootDir, 'show', ROLLBACK_COMMIT + ':' + f]));
+  }
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   bundle(root, path.join(here, '1_関数_ops-bot_index.ts'));
   // 戻す方：main のときのソースを一時フォルダに出してまとめる
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'opsbot-rollback-'));
-  const files = execFileSync('git', ['-C', root, 'ls-tree', '-r', '--name-only', ROLLBACK_COMMIT, 'supabase/functions/ops-bot', 'bot'], { encoding: 'utf8' }).trim().split('\n');
-  for (const f of files) {
-    fs.mkdirSync(path.join(tmp, path.dirname(f)), { recursive: true });
-    fs.writeFileSync(path.join(tmp, f), execFileSync('git', ['-C', root, 'show', ROLLBACK_COMMIT + ':' + f]));
-  }
+  const tmp = path.join(os.tmpdir(), 'opsbot-rollback-' + ROLLBACK_COMMIT);
+  rollbackSources(root, tmp);
   bundle(tmp, path.join(here, '戻す_関数_ops-bot_index.ts'));
   fs.rmSync(tmp, { recursive: true, force: true });
   const version = execFileSync(esbuild, ['--version'], { encoding: 'utf8' }).trim();
