@@ -2,6 +2,7 @@ import {parseCompletionReply,completionReceipt,parseCaseReply,replyHelp,replyCho
 import { createClockDetector } from '../../../bot/clock-detector.mjs';
 import {cashTipFindings,formatCashTipReport,reportRoute,caseCategory} from '../../../bot/cash-tip-report.mjs';
 import {paymentIdentity,paymentVoidDetails} from '../../../bot/payment-details.mjs';
+import {JOB_CHECK,jobFindings,storeJobCheck,validJobCheck,jobVerdict,matchEmployee,gradeClass,toastName,isJobCase,jobCaseLine} from '../../../bot/job-check.mjs';
 const ROLES=['ceo','gm','office','office_crew'], APPROVERS=['ceo','gm','office'];
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const enc=new TextEncoder();
@@ -114,7 +115,7 @@ export function lineMentionMessage(text,user){
  if(escaped.length+12>5000)throw Error('invalid_message');
  return {type:'textV2',text:'{assignee}\n'+escaped,substitution:{assignee:{type:'mention',mentionee:{type:'user',userId:user}}}};
 }
-const MORNING_KIND_JA={auto:'自動クロックアウト疑い',reverse:'IN/OUT逆転',bad:'時刻不正',long:'長時間勤務',short:'極端に短い勤務',overlap:'打刻重複'};
+const MORNING_KIND_JA={auto:'自動クロックアウト疑い',reverse:'IN/OUT逆転',bad:'時刻不正',long:'長時間勤務',short:'極端に短い勤務',overlap:'打刻重複',job_before:'Job確認（基準より前・Prepか）',job_after:'Job確認（基準以降・営業用Jobか）',job_straddle:'Job確認（基準をまたぐPrep）',job_unknown:'Job確認：Job未分類',job_emp_unknown:'Job確認：名前が見つからない',job_class_unset:'Job確認：G1-P未設定',job_start_unknown:'Job確認：開始時刻不明'};
 const MORNING_PROGRESS={not_sent:'🔴 未通知',notify_failed:'🔴 通知失敗・要確認',waiting:'🟠 対応待ち',reminder_failed:'🟠 対応待ち（再通知失敗）',in_progress:'🟡 修正対応中',recheck:'🔵 完了報告済み・Toast再確認待ち',send_check:'⚪ 送信結果確認',review:'⚪ 本部確認待ち'};
 function morningField(value,max=120){return String(value??'').replace(/[\u0000-\u001f\u007f-\u009f]+/g,' ').replace(/\s+/g,' ').trim().slice(0,max);}
 function morningIssue(c){
@@ -145,6 +146,8 @@ function morningCaseBlock(c,index,category=null){
  const date=morningField(c.business_date,10).slice(5).replace('-','/'),code=morningField(c.code,20),progress=morningProgress(c),assignee=category==='labor'?'Moto・Yuki':category==='finance'?'経理':morningField(c.assignee,100)||'店舗担当者未設定';
  if(c.kind==='labor'){
   const name=morningField(c.employee_name||c.subject||'氏名不明',100);
+  // v1105：Job確認（16:30 基準）の案件は、打刻 1 件の判定を 1 行で出す
+  if(isJobCase(c))return index+'. '+name+'（'+date+'）\n内容：Job確認（'+morningField(c.shift_cfg?.cutoff||'16:30',5)+' 基準）\n'+morningField(jobCaseLine(c),300)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
   return index+'. '+name+'（'+date+'）\n内容：'+morningIssue(c)+'\n'+morningShiftLines(c)+'\n進捗：'+progress+'\n担当：'+assignee+'\n案件：'+code;
  }
  const ref=morningField(c.subject,100).replace(/^Payment Void \/\s*|^Unpaid \/\s*/i,''),hasAmount=c.amount!==null&&c.amount!==undefined&&c.amount!=='',amount=Number(c.amount),money=hasAmount&&Number.isFinite(amount)?'$'+amount.toFixed(2):'金額不明';
@@ -277,6 +280,8 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    return {...c,payload:{...p,...missing}};
   }catch{return c;} // Explicit unavailable labels preserve delivery when Toast is down.
  }
+ // v1105：従業員マスター（Job確認の「だれを見るか」）。給与・連絡先は読まない
+ async function appEmployees(){return db('employees?select=name,title,role,status,prep:data->prep');}
  async function scan(storeID,date,actor,withVoids=false){
   const store=await getStore(storeID),cfg=validConfig(await setting('clock'));
   if(!(await rpc('bot_take_run',{p_store:storeID})))throw Error('scan_busy');
@@ -286,6 +291,9 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const overrides=await db('app_state?key=eq.'+encodeURIComponent('att_override_'+storeID+'_'+date)+'&select=value');
    const override=!!overrides[0]?.value?.data;
    const findings=laborFindings(entries,employees,cfg,store,date,override);
+   // v1105：Job確認（16:30 基準）。設定で使う店・適用開始日より後の日だけ
+   const jobCfg=storeJobCheck(await setting('job_check'),storeID);
+   if(jobCfg?.enabled&&date>=jobCfg.from)findings.push(...jobFindings({entries,toastEmployees:employees,appEmployees:await appEmployees(),scfg:jobCfg,store,date,isSystemAccount:isBotSystemAccount}));
    if(withVoids){const orders=[];let complete=false;
     for(let page=1;page<=40;page++){const batch=await get('/orders/v2/ordersBulk?businessDate='+bd+'&pageSize=100&page='+page);orders.push(...batch);if(batch.length<100){complete=true;break;}}
     if(!complete)throw Error('toast_pagination_limit');
@@ -505,6 +513,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    const updated=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:evidence});
    return {...evidence,case:updated};
   }
+  if(c.payload?.check===JOB_CHECK)return checkJobCase(c,actor);
   const ids=(c.payload.shifts||[]).map(x=>x.guid);if(!ids.length||ids.length>100||ids.some(x=>!UUID.test(x)))throw Error('time_entry_ids_required');
   const store=await getStore(c.store_id), get=await toastClient(store),cfg=validConfig(await setting('clock'));
   const entries=[];
@@ -521,6 +530,28 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
   if(entries.some(x=>String(x.businessDate)!==c.business_date.replaceAll('-','')))clean=false;
   if(!clean){const result={clean:false,message:'still_flagged_or_manual_review',checked_at:new Date().toISOString()};await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;}
   const result=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:{clean:true,checked_at:new Date().toISOString(),time_entry_ids:ids,cfg}});return {clean:true,case:result};
+ }
+ // v1105：Job確認の案件を確かめ直す。打刻 1 件を ID で読み、案件に残した区分（判定した日の区分）で判定し直す。
+ // 直っていれば閉じる（verified）。名前が見つからなかった打刻だけは、今の従業員マスターで結び直す。
+ async function checkJobCase(c,actor){
+  const p=c.payload||{},checked=()=>new Date().toISOString();
+  const record=async message=>{const result={clean:false,message,checked_at:checked()};await rpc('bot_record_check',{p_id:c.id,p_version:c.version,p_actor:actor,p_result:result});return result;};
+  const scfg=storeJobCheck(await setting('job_check'),c.store_id);
+  if(!scfg?.enabled)return record('job_check_disabled');
+  const id=p.time_entry_guid;if(!UUID.test(id||''))throw Error('time_entry_ids_required');
+  const store=await getStore(c.store_id),get=await toastClient(store);
+  const hit=(await get('/labor/v1/timeEntries?timeEntryIds='+encodeURIComponent(id))).filter(x=>x.guid===id);
+  if(hit.length!==1)throw Error('time_entry_missing_manual_review');
+  const te=hit[0];
+  const verified=async type=>{const data={clean:true,verification_type:type,checked_at:checked(),time_entry_ids:[id]};const updated=await rpc('bot_case_write',{p_op:'verified',p_actor:actor,p_id:c.id,p_version:c.version,p_data:data});return {...data,case:updated};};
+  if(te.deleted)return verified('time_entry_deleted');
+  if(String(te.businessDate)!==c.business_date.replaceAll('-','')||te.employeeReference?.guid!==p.employee_guid)return record('still_flagged_or_manual_review');
+  let grade=p.grade||null,employeeError=null;
+  if(!grade){const emps=await get('/labor/v1/employees'),m=matchEmployee(toastName(emps.find(e=>e.guid===p.employee_guid))||p.employee_name,await appEmployees());grade=m.emp?gradeClass(m.emp):null;employeeError=m.error||null;}
+  const v=jobVerdict(te,{grade,employeeError},scfg,c.business_date);
+  if(v.skip)return verified('job_scope_excluded');
+  if(v.kinds.length)return record('still_flagged_or_manual_review');
+  return verified('job_corrected');
  }
  async function lineMember(group,user){
   if(!/^C[a-f0-9]{32}$/i.test(group||'')||!/^U[a-f0-9]{32}$/i.test(user||''))throw Error('invalid_line_user');
@@ -625,7 +656,7 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    }
    const actor=await authorize(req);
    if(body.action==='daily')return json(await dailyOverview(body.after));
-   if(body.action==='list')return json({actor,daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),line_responders:await db('bot_settings?key=like.line_responder:*&select=key,value'),closure_rules:await setting('closure_rules'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
+   if(body.action==='list')return json({actor,job_check:await setting('job_check'),daily:await dailyOverview(),cases:await db('bot_cases?or='+encodeURIComponent('(kind.neq.void,payload->>scope.eq.payment)')+'&order=updated_at.desc&limit=200'),groups:await db('bot_groups?order=group_id'),line_candidates:await db('bot_settings?key=like.line_candidate:*&select=key,value'),line_links:await db('bot_settings?key=like.line_link:*&select=key,value'),line_responders:await db('bot_settings?key=like.line_responder:*&select=key,value'),closure_rules:await setting('closure_rules'),owners:await db('bot_settings?key=like.owner:*&select=key,value'),intakes:await db('bot_events?kind=eq.line_needs_store&case_id=is.null&order=id.asc&limit=50'),runs:await db('bot_runs'),clock:await setting('clock'),worker_enabled:!!(await setting('worker'))?.enabled,finance_enabled:!!(await setting('worker'))?.finance_enabled,line:{secret:!!env('LINE_CHANNEL_SECRET'),token:!!env('LINE_CHANNEL_ACCESS_TOKEN')},stores:await db('store_config?active=eq.true&select=store_id,name')});
    if(body.action==='resolve_send'){
     if(!APPROVERS.includes(actor.role)||!UUID.test(body.outbox_id||''))throw Error('forbidden');
     await rpc('bot_resolve_send',{p_actor:actor.id,p_id:body.outbox_id,p_state:body.state,p_note:String(body.note||'').trim()});return json({ok:true});
@@ -636,6 +667,18 @@ export function createHandler({env,fetch:fetcher=globalThis.fetch}){
    if(body.action==='config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const clock=validConfig(body.clock);
     await db('bot_settings?on_conflict=key','POST',{key:'clock',value:clock,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({clock});
+   }
+   // v1105：Job確認の設定（GM・CEO）。Toast の Job の一覧を読む／店ごとの設定を保存する（ほかの店の設定は残す）
+   if(body.action==='job_list'){
+    if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id),get=await toastClient(store);
+    const jobs=(await get('/labor/v1/jobs')).filter(j=>j&&UUID.test(j.guid||'')).map(j=>({guid:j.guid.toLowerCase(),title:String(j.title||'').slice(0,120),deleted:j.deleted===true}));
+    return json({store_id:store.store_id,jobs,read_at:new Date().toISOString(),config:storeJobCheck(await setting('job_check'),store.store_id)});
+   }
+   if(body.action==='job_check'){
+    if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const store=await getStore(body.store_id);
+    const one=validJobCheck({stores:{[store.store_id]:body.config}},[store.store_id]).stores[store.store_id];
+    const current=await setting('job_check'),value={stores:{...(current?.stores||{}),[store.store_id]:{...one,updated_at:new Date().toISOString(),updated_by:actor.id}}};
+    await db('bot_settings?on_conflict=key','POST',{key:'job_check',value,updated_at:new Date().toISOString()},'resolution=merge-duplicates');return json({ok:true,config:one});
    }
    if(body.action==='worker_config'){
     if(!['gm','ceo'].includes(actor.role))throw Error('forbidden');const c=await setting('worker');if(!c)throw Error('worker_not_configured');

@@ -95,6 +95,7 @@ test('manual default and scheduled collection call labor only; legacy item sends
   if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',name:'Test',restaurant_guid:guid(2)}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.collection_range'))return Response.json([]);
+  if(url.includes('key=eq.job_check'))return Response.json([]);
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'synthetic-worker'}}]);
   if(url.endsWith('/rpc/bot_take_run'))return Response.json(true);
   if(url.includes('/authentication/v1/'))return Response.json({token:{accessToken:'synthetic-toast'}});
@@ -226,6 +227,7 @@ test('monthly worker uses leased business dates and records failures without sen
   if(url.includes('key=eq.worker'))return Response.json([{value:{enabled:true,key:'test',finance_enabled:false}}]);
   if(url.includes('key=eq.clock'))return Response.json([{value:cfg}]);
   if(url.includes('key=eq.collection_range'))return Response.json([{value:{mode:'month_to_yesterday'}}]);
+  if(url.includes('key=eq.job_check'))return Response.json([]);
   if(url.endsWith('/rpc/bot_claim_range'))return Response.json(job?{business_date:'2026-09-01',lease_id:guid(44)}:null);
   if(url.endsWith('/rpc/bot_finish_range_v2')){results.push(JSON.parse(init.body));return Response.json(true);}
   if(url.includes('/store_config?'))return Response.json([{store_id:'TEST',restaurant_guid:guid(1)}]);
