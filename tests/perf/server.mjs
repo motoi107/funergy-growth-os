@@ -104,6 +104,9 @@ const appServer = http.createServer(async (req, res) => {
     const bu = T.find(r => r.key === 'spl_budgets_v2_' + store); if (bu) { bu.value = [Object.assign({}, bu.value[0], { note: 'bumped ' + at })]; bu.updated_at = at; }
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ at, store, day })); return;
   }
+  // v1107：店の保存をサーバーのエラーにする（n 回）・Toast の売上を少し変える（ログインの取り込みが書くように）
+  if (u.pathname === '/__fin_fail') { mock.fin.fail[u.searchParams.get('store') || 'F01'] = Number(u.searchParams.get('n') || 1); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.fin)); return; }
+  if (u.pathname === '/__toast_bump') { const T = mock.T.toast_sales || []; let n = 0; for (const r of T) { r.net_sales = Math.round((Number(r.net_sales) + 1.25) * 100) / 100; n++; } res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ rows: n })); return; }
   if (u.pathname === '/__fin_drop') { mock.fin.drop = Number(u.searchParams.get('n') || 1); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.fin)); return; }
   if (u.pathname === '/__fin_stat') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.fin)); return; }
   if (u.pathname === '/__fin_row') {   // クラウドの行の版と、その日の値（中身の全部は返さない）

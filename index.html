@@ -1421,6 +1421,10 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     'saveDayBudget', 'saveBasis', 'deleteBasis', '_reviewBeforeSubmit', '_saveRationaleDraft',
     '_doSubmitBudget', 'approveBudgetSeg', 'rejectBudgetSeg', 'reopenBudget',
     'migrateBudgetStatusYmFix', 'migrateBudgetStatusYm', 'normalizeBudgetsDemo'];
+  // v1107：人が入力していない自動の保存（Toast の売上の取り込み・期間の取り込み・天気・予算の印の移し替え）。
+  // 答えが確かめられない・ほかの端末の保存と重なったときは、その保存を放して、ほかの店・予算の読み込みと保存を止めない。
+  const AUTO_SOURCES = ['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView',
+    'migrateBudgetStatusYmFix', 'migrateBudgetStatusYm', 'normalizeBudgetsDemo'];
   // v1104：退避の記録は IndexedDB にも置ける名前にする。'_' で始まる名前は端末の localStorage（約 5MB）にしか置かれず、
   // 使っている端末では満杯で「保護の前の端末の値」を退避できなかった。すると保護が止まったままになり、
   // 売上・予算の最新の取り込み（端末へ書けない）・保存・入力画面・Toast の反映がすべて止まっていた。
@@ -1440,6 +1444,39 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
   const rowKey = key => STORES.some(id => key === 'daily_actuals_' + id || key === 'spl_budgets_v2_' + id);
   const rowStore = key => String(key).replace(/^(daily_actuals_|spl_budgets_v2_)/, '');
   const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // v1107：v1106 までの記録にはどの保存かの印が無い。変わった所が Toast の売上・天気の欄（予算は合計の actual）だけなら自動の取り込み。
+  // 人の入力（日次の実績・メモ・予算）は、入れた人・時刻の欄（by・at・_at など）も変わるので、ここには当たらない。
+  const AUTO_DAY_FIELDS = new Set(['actual', 'toastSrc', 'guests', 'lunchSales', 'dinnerSales', 'lunchGuests', 'dinnerGuests', 'bowls', 'lunchBowls', 'dinnerBowls',
+    'takeout', 'toLunchSales', 'toDinnerSales', 'toLunchCount', 'toDinnerCount', 'takeoutBowls', 'lunchTakeoutBowls', 'dinnerTakeoutBowls',
+    'firstTimeBowls', 'repeatBowls', 'firstTimeBowlsLunch', 'repeatBowlsLunch', 'firstTimeBowlsDinner', 'repeatBowlsDinner', 'superRegular',
+    'misoTotal', 'misoUpgrade', 'ikuraShower', 'ikuraBowls', 'creditTip', 'lunchCreditTip', 'dinnerCreditTip', 'cashTip', 'lunchCashTip', 'dinnerCashTip',
+    'weather', 'weatherAuto']);
+  function looksAutomatic(request, before) {
+    try {
+      let changed = false;
+      for (const [key, next] of Object.entries(request?.writes || {})) {
+        const row = before?.[key], prev = row && row.exists ? row.value : null;
+        if (key.startsWith('daily_actuals_')) {
+          if (!next || typeof next !== 'object' || Array.isArray(next)) return false;
+          const days = prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {};
+          for (const date of new Set([...Object.keys(days), ...Object.keys(next)])) {
+            const a = days[date], b = next[date];
+            if (equal(a, b)) continue;
+            if (!b || typeof b !== 'object' || Array.isArray(b)) return false;
+            const was = a && typeof a === 'object' && !Array.isArray(a) ? a : {};
+            for (const field of new Set([...Object.keys(was), ...Object.keys(b)]))
+              if (!equal(was[field], b[field])) { if (!AUTO_DAY_FIELDS.has(field) || !(field in b)) return false; changed = true; }
+          }
+        } else {
+          if (!Array.isArray(next) || next.length !== 1 || !Array.isArray(prev) || prev.length !== 1) return false;
+          const was = prev[0] && typeof prev[0] === 'object' ? prev[0] : {}, b = next[0] && typeof next[0] === 'object' ? next[0] : {};
+          for (const field of new Set([...Object.keys(was), ...Object.keys(b)]))
+            if (!equal(was[field], b[field])) { if (field !== 'actual' && field !== '_ts') return false; changed = true; }   // 取り込みは予算の合計（actual）と保存の時刻（_ts）だけを変える
+        }
+      }
+      return changed;
+    } catch (_) { return false; }
+  }
   function copy(value) {
     const seen = new Set(); let nodes = 0, size = 0;
     function visit(v, depth) {
@@ -1497,6 +1534,9 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       if (!original[name]) throw new Error('financial_source_changed:' + name);
     const canonical = new Map(), provenance = new WeakMap(), localBefore = new WeakMap(), readEpochs = new Map(), readOnlyCache = new WeakMap();
     let active = null, pending = null, form = null, openEpoch = 0, callDepth = 0, lastReceipt = null;
+    // v1107：答えが確かめられない保存を、押さなくても確かめる（間をあけて何回か。画面に戻ったとき・通信が戻ったときはすぐ）
+    const AUTO_STEPS = Array.isArray(options.autoCheckMs) && options.autoCheckMs.length ? options.autoCheckMs.slice() : [2000, 10000, 30000, 60000, 120000, 300000];
+    let autoTimer = null, autoStep = 0, autoFor = null, lastAutoAt = 0, lastRelease = null;
     let operationQueue = Promise.resolve();
     let bulkBusy = false, localPreserved = false;
     let localReady = typeof options.awaitLocalReady !== 'function', localReadiness = null;
@@ -1737,8 +1777,9 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       return legacyEntries().filter(x => !have.has(JSON.stringify(x))).map(value => ({ key: null, value })).concat(current.map(c => ({ key: c.key, value: c.value })));
     }
     function settledIds(entries) {
-      const resolved = new Set(entries.filter(x => x.reason === 'committed_receipt').map(x => x.requestId));
-      for (const item of entries) if (['conflict', 'discarded_conflict'].includes(item.reason) && item.request) resolved.add(item.request.requestId);
+      // v1107：自動の保存を放した印（auto_released）・「保存をやめて入力を保管」した記録（abandoned_unconfirmed）も、その保存は済み
+      const resolved = new Set(entries.filter(x => x.reason === 'committed_receipt' || x.reason === 'auto_released').map(x => x.requestId));
+      for (const item of entries) if (['conflict', 'discarded_conflict', 'abandoned_unconfirmed'].includes(item.reason) && item.request) resolved.add(item.request.requestId);
       return resolved;
     }
     // v1104（2 回目の独立レビュー P2-1）：端末の記録から引き取った保存は、ほかのタブで済んだ（受け取り・競合）・消えたら放す
@@ -1769,9 +1810,12 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         if (!equal(request.expected[key], before.exists ? { value: before.value, updated_at: before.version } : null))
           throw new Error('financial_recovery_invalid');
       }
+      // v1107：v1106 までの記録には source が無い。変わった所から自動の取り込みかを見分ける（見分けたものは、放しても記録を消さない）
+      const source = typeof entry.source === 'string' ? entry.source : null, guessed = source === null && looksAutomatic(request, entry.before);
       pending = { request: freeze(request), before: new Map(keys.map(key => [key, entry.before[key]])), effects: [], unlock: () => {}, status: 'unknown', busy: false,
-        key: unfinished[0].key, fromDisk: true };
+        key: unfinished[0].key, fromDisk: true, source: source || (guessed ? 'guessed-import' : null), auto: guessed || AUTO_SOURCES.includes(source), guessed };
       showStatus();   // v1104（2 回目の独立レビュー P3）：引き取ったら帯を出す
+      scheduleAuto(true);   // v1107：引き取った保存は、押さなくても確かめる
     }
     function rejectLegacy(key, value) {
       try { retain({ reason: 'unversioned_write', key, value: value === undefined ? null : value }); }
@@ -1999,7 +2043,8 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     }
     function status() {
       return Object.freeze({ enabled: true, status: pending?.status || (active ? 'editing-save' : lastReceipt ? 'committed' : 'idle'),
-        requestId: pending?.request.requestId || null, hasRecovery: recoveryEntries().length > 0 });
+        requestId: pending?.request.requestId || null, hasRecovery: recoveryEntries().length > 0,
+        why: pending?.why || null, notFound: Boolean(pending?.notFound), oddReceipt: Boolean(pending?.oddReceipt), auto: Boolean(pending?.auto), released: lastRelease });
     }
     function showStatus() {
       if (typeof options.onState === 'function') { try { options.onState(status()); } catch (_) {} }
@@ -2016,8 +2061,16 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       const message = doc.createElement('p'); message.style.margin = '0 0 8px';
       message.textContent = pending.busy ? '保存結果を確認しています。入力はそのまま残しています。'
         : pending.status === 'conflict' ? 'ほかの画面で更新されています。上書きせず入力を保管しました。最新を確認して保存し直してください。'
-          : '保存結果がまだ確認できていません。同じ保存の結果を確認してください。';
+          : pending.notFound ? 'この保存はまだサーバーに届いていません（入力はこの端末に残しています）。［同じ内容で再送］で送れます。送れないときは［保存をやめて入力を保管］を選べます。'
+            : pending.oddReceipt ? 'サーバーの答えを、このアプリが確かめられませんでした（入力はこの端末に残しています）。保存が済んでいることもあります。［保存をやめて入力を保管］を押すと、最新のデータを読み直します。'
+              : '保存結果がまだ確認できていません。同じ保存の結果を確認してください（自動でも確かめています）。';
       panel.appendChild(message);
+      // v1107：答えが確かめられなかった理由（原因を確かめるため）と、この保存が片づくまで止めているもの
+      if (!pending.busy && pending.status !== 'conflict') {
+        const note = doc.createElement('p'); note.style.cssText = 'margin:0 0 6px;font-size:12px;opacity:.85';
+        note.textContent = (pending.why ? '理由：' + whyText(pending.why) + '。' : '') + 'この保存が片づくまで、売上・予算の読み込みと保存を止めています。';
+        panel.appendChild(note);
+      }
       const button = (label, action) => {
         const el = doc.createElement('button'); el.type = 'button'; el.textContent = label; el.disabled = pending.busy;
         el.style.cssText = 'margin:3px;padding:8px;border:1px solid #b79b4e;border-radius:7px;background:white;color:#4d3700';
@@ -2027,37 +2080,136 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       else {
         button('保存結果を確認', () => api.reconcile());
         button('同じ内容で再送', () => api.retry());
+        if (pending.notFound || pending.oddReceipt) button('保存をやめて入力を保管', () => api.abandon());
       }
     }
-    async function transmit(isReceipt) {
+    // v1107：答えが確かめられなかった理由（帯に小さく出す・アプリの「取得の状態」に渡す）
+    function errorWhy(error) {
+      const m = String(error?.message || '');
+      if (m === 'financial_result_unknown' || error?.name === 'TimeoutError') return 'timeout';
+      if (Number.isInteger(error?.status)) return 'http_' + error.status + (error.code ? '_' + String(error.code).replace(/[^A-Za-z0-9]/g, '').slice(0, 12) : '');
+      if (/receipt_invalid|response_invalid|response_too_large/.test(m)) return 'invalid_answer';
+      return 'network';
+    }
+    function whyText(why) {
+      if (why === 'not-found') return 'サーバーに届いていません';
+      if (why === 'timeout') return '答えが時間内に届きませんでした';
+      if (why === 'network') return '通信できませんでした';
+      if (why === 'invalid_answer') return 'サーバーの答えを確かめられませんでした';
+      if (why === 'conflict') return 'ほかの端末の保存と重なりました';
+      const m = /^http_(\d+)(?:_(\w+))?$/.exec(String(why || ''));
+      if (m) return 'サーバーのエラー（HTTP ' + m[1] + (m[2] ? '・' + m[2] : '') + '）';
+      return String(why || '').slice(0, 40);
+    }
+    function settleCommitted(entry, answer) {
+      for (const [key, value] of Object.entries(entry.request.writes)) {
+        const row = freeze({ key, exists: true, value: copy(value), version: answer.versions[key] });
+        canonical.set(key, row);
+        if (!original._lsWriteVerified.call(win, key, JSON.stringify(value))) notify('サーバーへ保存しました。表示を最新にするには再読み込みしてください。');
+      }
+      lastReceipt = freeze(copy(answer)); pending = null;
+      if (entry.clearForm) form = null;
+      try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }, entry.key); persistRecovery(); }   // v1104：済みの記録もすぐ書き出す（待たない）
+      catch (_) { notify('保存は完了していますが、この端末への結果の記録を確認できません。再読み込み後に保存結果を確認してください。'); }
+      entry.unlock(); runEffects(entry.effects);
+    }
+    // v1107：自動の保存（人の入力は無い）は、答えが確かめられない・重なったときに放す。ほかの店・予算の読み込みと保存を止めない。
+    //   その店は次の取り込みで最新を読み直して送り直す。放した保存がサーバーで遅れて書けても、次の保存は版を照らすので上書きしない。
+    //   記録には小さな印（auto_released・30 件まで）だけを残し、行の中身は残さない（人の入力ではないため）。
+    function release(entry, why) {
+      if (pending !== entry) return;
+      pending = null; entry.status = 'released';
+      const id = entry.request.requestId;
+      for (let i = waitingRetains.length - 1; i >= 0; i--)
+        if (waitingRetains[i].reason === 'pending_request' && waitingRetains[i].request?.requestId === id) waitingRetains.splice(i, 1);
+      try {
+        retain({ reason: 'auto_released', requestId: id, source: entry.source || null, why: why || null, at: new Date().toISOString(),
+          keys: Object.keys(entry.request.writes).sort() });
+        if (localReady && !entry.guessed) {   // 見分けただけの古い記録は消さない（念のため中身を残す）
+          if (entry.key) removeEntry(entry.key);
+          for (const c of readEntries()) if (c.value.reason === 'pending_request' && c.value.request?.requestId === id) removeEntry(c.key);
+        }
+        if (localReady) {
+          const marks = readEntries().filter(c => c.value.reason === 'auto_released');
+          for (const c of marks.slice(0, Math.max(0, marks.length - 30))) removeEntry(c.key);
+        }
+        persistRecovery();
+      } catch (_) {}   // 印を残せなくても、保存の前の記録は残る（読み込み直すと、もう一度確かめて放す）
+      lastRelease = Object.freeze({ source: entry.source || null, why: why || null, store: rowStore(Object.keys(entry.request.writes)[0]), at: new Date().toISOString() });
+      entry.unlock();
+      showStatus();
+    }
+    async function transmit(isReceipt, quietly) {
       if (!pending || pending.busy || pending.status === 'conflict') return false;
       const entry = pending; entry.busy = true; entry.status = isReceipt ? 'checking' : 'saving';
       showStatus();
+      let why = null, definite = false;
       try {
         const answer = await deadline(() => isReceipt ? transport.receipt({ requestId: entry.request.requestId }) : transport.commit(entry.request));
-        if (committed(answer, entry.request)) {
-          for (const [key, value] of Object.entries(entry.request.writes)) {
-            const row = freeze({ key, exists: true, value: copy(value), version: answer.versions[key] });
-            canonical.set(key, row);
-            if (!original._lsWriteVerified.call(win, key, JSON.stringify(value))) notify('サーバーへ保存しました。表示を最新にするには再読み込みしてください。');
-          }
-          lastReceipt = freeze(copy(answer)); pending = null;
-          if (entry.clearForm) form = null;
-          try { retain({ reason: 'committed_receipt', requestId: entry.request.requestId, receipt: answer }, entry.key); persistRecovery(); }   // v1104：済みの記録もすぐ書き出す（待たない）
-          catch (_) { notify('保存は完了していますが、この端末への結果の記録を確認できません。再読み込み後に保存結果を確認してください。'); }
-          entry.unlock(); runEffects(entry.effects);
-          return true;
-        }
-        if (answer?.requestId === entry.request.requestId && answer.status === 'conflict') {
-          entry.status = 'conflict'; win._bbDirty = true;
-          retain({ reason: 'conflict', request: entry.request, before: Object.fromEntries(entry.before) });
-          entry.unlock();
-          notify('他の画面で更新されています。上書きせず入力を残しました。最新データを確認してから保存してください。');
-        } else { entry.status = 'unknown'; notify('保存結果を確認できません。入力を残しています。「保存結果を確認」から確認してください。'); }
-      } catch (_) { entry.status = 'unknown'; notify('保存結果を確認できません。入力を残しています。同じ内容で保存結果を確認できます。'); }
-      finally { entry.busy = false; showStatus(); }
-      return false;
+        if (committed(answer, entry.request)) { entry.busy = false; settleCommitted(entry, answer); showStatus(); return true; }
+        why = answer?.requestId !== entry.request.requestId ? 'invalid_answer'
+          : answer.status === 'conflict' ? 'conflict' : isReceipt && answer.status === 'not-found' ? 'not-found' : 'invalid_answer';
+      } catch (error) {
+        why = errorWhy(error);
+        // サーバー（PostgREST）がエラーの番号つきで答えた＝その送信は書かれていない（取り消された）。通信が切れた・時間切れ・形の違う答えは分からない
+        definite = Number.isInteger(error?.status) && Boolean(error?.code);
+      }
+      entry.busy = false; entry.why = why;
+      if (!isReceipt) entry.sendWhy = why;
+      if (pending !== entry) { showStatus(); return false; }   // 待つあいだに、ほかで片づいた
+      if (why === 'conflict') {
+        if (entry.auto) { release(entry, 'conflict'); return false; }   // v1107：自動の保存は放す（次の取り込みで最新を読み直す）
+        entry.status = 'conflict'; win._bbDirty = true;
+        try { retain({ reason: 'conflict', request: entry.request, before: Object.fromEntries(entry.before) }); }
+        catch (_) { entry.status = 'unknown'; notify('保存結果を確認できません。入力を残しています。同じ内容で保存結果を確認できます。'); showStatus(); return false; }
+        entry.unlock();
+        notify('他の画面で更新されています。上書きせず入力を残しました。最新データを確認してから保存してください。');
+        showStatus(); return false;
+      }
+      entry.status = 'unknown';
+      // 「届いていない」は、サーバーが受け取りで届いていないと答え、そのあとの送信も書かれていないと分かるあいだだけ
+      if (why === 'not-found') entry.notFound = true; else if (!isReceipt && !definite) entry.notFound = false;
+      if (isReceipt && why === 'invalid_answer') entry.oddReceipt = true;   // サーバーは受け取りに答えたが、このアプリが確かめられない形だった
+      if (entry.auto) {
+        // v1107：自動の保存は、送った答えが確かめられなければ届いたかを 1 回だけ確かめ、届いていなければ放す
+        if (!isReceipt) return transmit(true, true);
+        release(entry, entry.sendWhy && entry.sendWhy !== 'not-found' ? entry.sendWhy : why); return false;
+      }
+      if (!quietly) notify(entry.notFound ? 'この保存はまだサーバーに届いていません。入力は残しています。画面の下の帯から、同じ内容で送り直せます。'
+        : why === 'invalid_answer' ? '保存結果を確認できません。入力を残しています。「保存結果を確認」から確認してください。'
+          : '保存結果を確認できません。入力を残しています。同じ内容で保存結果を確認できます。');
+      scheduleAuto(false);
+      showStatus(); return false;
     }
+    // v1107：答えが確かめられない人の保存を、押さなくても確かめる。届いていなければ同じ内容（同じ番号）で送り直す（サーバーは同じ番号を 1 回しか書かない・版を照らす）
+    function scheduleAuto(reset, delayMs) {
+      if (!pending || pending.status === 'conflict') { if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; } return; }
+      const id = pending.request.requestId;
+      if (autoFor !== id || reset) { autoFor = id; autoStep = 0; }
+      if (autoTimer) { if (delayMs === undefined) return; clearTimeout(autoTimer); }
+      autoTimer = setTimeout(runAuto, delayMs !== undefined ? delayMs : AUTO_STEPS[Math.min(autoStep, AUTO_STEPS.length - 1)]);
+      try { if (autoTimer && typeof autoTimer.unref === 'function') autoTimer.unref(); } catch (_) {}
+    }
+    async function runAuto() {
+      autoTimer = null;
+      const entry = pending;
+      if (!entry || entry.status !== 'unknown' || entry.request.requestId !== autoFor) return;
+      if (entry.busy || active || bulkBusy) { scheduleAuto(false); return; }
+      if (win.document?.hidden === true || win.navigator?.onLine === false) return;   // 画面に戻ったとき・通信が戻ったときに確かめる
+      autoStep++; lastAutoAt = Date.now();
+      if (await transmit(true, true)) return;
+      if (pending === entry && entry.status === 'unknown' && entry.notFound && !entry.busy) { if (await transmit(false, true)) return; }
+      if (pending === entry && entry.status === 'unknown') scheduleAuto(false);
+    }
+    function wakeAuto() {
+      if (!pending || pending.status !== 'unknown' || pending.busy || Date.now() - lastAutoAt < 5000) return;
+      scheduleAuto(false, 300);
+    }
+    try {
+      if (typeof win.addEventListener === 'function') { win.addEventListener('online', wakeAuto); win.addEventListener('pageshow', wakeAuto); }
+      if (win.document && typeof win.document.addEventListener === 'function')
+        win.document.addEventListener('visibilitychange', () => { if (!win.document.hidden) wakeAuto(); });
+    } catch (_) {}
     // v1104（独立レビュー P1）：同じ端末のほかのタブと保存を 1 つずつにする（ほかのタブの送り中の保存を、読み直した記録で見てから決める）
     // 待つのは 20 秒まで（ほかのタブの保存が通信で止まっていても、ずっとは待たない。入力は残す）
     function crossTab(work) {
@@ -2069,17 +2221,17 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         throw error;
       });
     }
-    function invoke(name, fn, args, baseline) {
+    function invoke(name, fn, args, baseline, token) {
       if (active && callDepth > 0) return fn.apply(win, args);
-      const result = operationQueue.then(() => crossTab(() => perform(name, fn, args, baseline)));
+      const result = operationQueue.then(() => crossTab(() => perform(name, fn, args, baseline, token)));
       operationQueue = result.then(() => {}, () => {});
       return result;
     }
-    async function perform(name, fn, args, baseline) {
+    async function perform(name, fn, args, baseline, token) {
       if (bulkBusy && name !== 'restore-store') { notify('予算の復元結果を確認してから保存してください。'); return false; }
       try { await preserveLocal(); } catch (_) { return false; }
       try { recoverPending(); } catch (_) { notify('保管した入力の確認が必要なため、追加の保存を停止しています。'); return false; }
-      if (active || pending) { notify('前の保存結果を確認してから次の入力を保存してください。'); return false; }
+      if (active || pending) { if (token) token.why = 'pending'; notify('前の保存結果を確認してから次の入力を保存してください。'); return false; }
       // Automatic sources have no entered form. Read their exact server state
       // once at the start of their queued operation, then freeze it across await.
       if (['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView'].includes(name)) {
@@ -2091,6 +2243,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
           // v1105：読めなかったことはアプリの「取得の状態」に伝える。アプリが静かにしてよいと答えたとき（ログインの同期・自動のやり直し）は知らせを出さない
           let quiet = false; try { quiet = typeof options.onAutoRefused === 'function' && options.onAutoRefused(name, args) === true; } catch (_) {}
           if (!quiet) notify('最新データを確認できないため同期を停止しています。');
+          if (token) token.why = 'financial_read';
           return false;
         }
       }
@@ -2129,13 +2282,17 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
         const touchedBefore = new Map(keys.map(key => [key, tx.before.get(key)]));
         // Save the exact request before dispatch so refresh/force-close cannot
         // turn an unknown response into a new id or silently lose entered data.
-        const pendingKey = retain({ reason: 'pending_request', request, before: Object.fromEntries(touchedBefore) });
+        const pendingKey = retain({ reason: 'pending_request', request, before: Object.fromEntries(touchedBefore), source: name });   // v1107：どの保存か（自動の保存は放せる）
         // v1104（独立レビュー P2）：送る前に、この記録が端末の保存領域に入り終えたのを待つ（押した直後に閉じても残る）。
         // 入れられなければ送らない（送っていない保存の記録は消す。入力はそのまま残る）
         if (!(await persistRecovery())) { if (pendingKey) removeEntry(pendingKey); throw new Error('financial_recovery_storage_failed'); }
         active = null;
-        pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false, key: pendingKey };
-        return await transmit(false) ? result : false;
+        pending = { request, before: touchedBefore, effects: tx.effects, unlock: tx.unlock, clearForm: Boolean(expectedForm), status: 'unknown', busy: false, key: pendingKey,
+          source: name, auto: AUTO_SOURCES.includes(name) };
+        const sent = pending;
+        if (await transmit(false)) return result;
+        if (token) token.why = sent.sendWhy || sent.why || 'unknown';
+        return false;
       } catch (error) {
         active = null;
         if (retainedDow) win.dowEditState = retainedDow;
@@ -2147,9 +2304,10 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
       }
     }
     for (const name of WRITERS) if (original[name]) win[name] = function (...args) {
-      const result = invoke(name, original[name], args);
+      const token = {};   // v1107：保存できなかった理由（code）を呼んだ側へ返す
+      const result = invoke(name, original[name], args, undefined, token);
       if (['syncStoreActualsFromToast', 'fetchToastRange', 'fetchWeatherForView'].includes(name))
-        return Promise.resolve(result).then(value => value === false ? { error: '保存結果を確認できないため同期を完了していません。入力は保管しています。' } : value);
+        return Promise.resolve(result).then(value => value === false ? { error: '保存結果を確認できないため同期を完了していません。入力は保管しています。', code: token.why || 'save_refused' } : value);
       return result;
     };
     if (original.openInputModal) win.openInputModal = function (config, callback) {
@@ -2240,6 +2398,28 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     }
     const api = Object.freeze({ enabled: true, refresh, getState: status, retry: () => transmit(false), reconcile: () => transmit(true),
       restoreBudgets, preserveLocal,
+      // v1107：サーバーが「この保存は届いていない」と答えた人の保存は、やめられる（入力はこの端末の記録に残す・画面は最新のデータに戻す）
+      async abandon() {
+        const entry = pending;
+        if (!entry || entry.busy || entry.status !== 'unknown' || !(entry.notFound || entry.oddReceipt)) return false;
+        const ask = win.confirm;
+        if (typeof ask === 'function' && !(await ask.call(win, entry.notFound
+          ? 'この保存はサーバーに届いていません。保存をやめると、入力はこの端末の記録に残り、画面の売上・予算は最新のデータに戻ります。保存をやめますか？'
+          : 'サーバーの答えを確かめられませんでした。保存をやめると、入力はこの端末の記録に残り、画面の売上・予算はサーバーの最新のデータに戻ります（保存が済んでいれば、それが出ます）。保存をやめますか？'))) return false;
+        if (pending !== entry || entry.busy || entry.status !== 'unknown') return false;
+        try { retain({ reason: 'abandoned_unconfirmed', request: entry.request, before: Object.fromEntries(entry.before), why: entry.sendWhy || entry.why || null, at: new Date().toISOString() }); }
+        catch (_) { notify('この端末に入力を残せないため、保存をやめていません。'); return false; }
+        if ((await persistRecovery()) && localReady) {   // やめた記録が端末に入り終えてから、保存の前の記録を消す（行の中身を 2 つ持たない）
+          if (entry.key) removeEntry(entry.key);
+          for (const c of readEntries()) if (c.value.reason === 'pending_request' && c.value.request?.requestId === entry.request.requestId) removeEntry(c.key);
+        }
+        if (pending !== entry) return false;
+        pending = null; entry.status = 'abandoned'; entry.unlock(); if (entry.clearForm) form = null;
+        showStatus();
+        notify('保存をやめました。入力はこの端末の記録に残しています。', 'info');
+        try { await refresh(Object.keys(entry.request.writes)); } catch (_) {}
+        return true;
+      },
       captureCallback(callback) {
         if (typeof callback !== 'function') throw new Error('financial_callback_required');
         const baseline = new Map(active?.before || canonical);
@@ -2354,6 +2534,8 @@ if (!window.FUNERGY_NATIVE_CONFIG) {
       try{ if(name==='syncStoreActualsFromToast'&&typeof fstNote==='function') fstNote('sales', args&&args[0], false, 'financial_read'); }catch(e){}
       return !!window._fstQuiet;
     },
+    /* v1107：保存の確認待ち（下の黄色い帯）が片づいたら、取れなかった売上・予算をすぐ取り直す。帯の「取れませんでした」に理由も出す */
+    onState:function(s){ try{ if(typeof fstOnGuardState==='function') fstOnGuardState(s); }catch(e){} },
     transport:FunergyFinancialTransport.create({url:SUPABASE_URL,headers:extra=>supaHeaders(extra),fetch:(...args)=>fetch(...args)})});
   document.addEventListener('DOMContentLoaded', function(){
     /* v1105（UI案60 ① 1A）：起動の知らせ（トースト）はやめ、ダッシュボード・予実・会議の上の「取得の状態」に出す。取れなければ 3 回まで自動でやり直す */
@@ -22259,9 +22441,11 @@ function fstChip(kind){
   if(s.state==='partial') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-dashed"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+' · '+t('まだ：','not yet: ')+esc(fstNames(s.none))+'</span>';
   if(s.state==='none') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+esc(L)+t('：まだ取れていません',': not fetched yet')+btn(t('もう一度','Try again'))+'</span>';
   var who=s.bad.length?'（'+esc(fstNames(s.bad))+'）':'';
+  var why=fstWhyOf(kind, s.bad);   /* v1107：理由 */
   return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--red)"><i class="ti ti-alert-circle"></i> '+esc(L)+t('：取れませんでした',': could not fetch')+who
     +(s.ok&&!s.prevMissing?t('。前回 '+esc(fstClock(s.ok))+' の情報を表示中','. Showing data from '+esc(fstClock(s.ok)))
       :(s.ok&&s.prevMissing<s.bad.length?t('。前の情報が無い店があります','. Some stores have no earlier data'):t('。前の情報もありません','. No earlier data')))
+    +(why?'<span style="font-weight:500">'+t('。理由：','. Reason: ')+esc(why)+'</span>':'')
     +btn(t(L+'をもう一度','Retry '+L.toLowerCase()))+'</span>';
 }
 function fstChipsHtml(){
@@ -22301,7 +22485,8 @@ async function fstGuardRefresh(){
 /* 売上の取り込み 1 店。保存が通らなかったとき（保護が断った・答えが確かめられない・競合）も帯に「取れませんでした」を出す（読めなかったときは中で出している） */
 async function fstSalesSync(storeId, guid, days, rows){
   var r = await syncStoreActualsFromToast(storeId, guid, days, rows);
-  if (r && r.error && !r.fetchErr) fstNote('sales', storeId, false, 'save_refused');
+  /* v1107：保存できなかった理由（保護が返す code）を残す（帯に短く出す） */
+  if (r && r.error && !r.fetchErr) fstNote('sales', storeId, false, r.code ? 'save:' + String(r.code).slice(0, 40) : 'save_refused');
   return r;
 }
 /* もう一度：取れなかったもの（とまだのもの）だけを取り直す。押したときは画面を描き直す。自動のときは帯だけ（入力中の画面を消さない） */
@@ -22326,6 +22511,47 @@ async function fstRetry(kind, manual){
   else { if(changed&&fstStatus(kind).state==='ok') _fstFresh=true; fstPaint(); }
 }
 function fstAnyFail(){ return FST_KINDS.some(function(k){ return fstStatus(k).state==='fail'; }); }
+/* v1107：保護の保存の状態が変わったとき（下の黄色い帯）。確認待ちが片づいたら、取れなかった売上・予算を 1 秒後に取り直す（自動・知らせなし） */
+var _fstGuardWas=null;
+function fstGuardPendingNow(){ try{ var gs=FUNERGY_FINANCIAL_SAVE.getState().status; return gs==='unknown'||gs==='conflict'||gs==='checking'||gs==='saving'; }catch(e){ return false; } }
+function fstOnGuardState(s){
+  var st=s&&s.status, busy=st==='unknown'||st==='conflict'||st==='checking'||st==='saving';
+  var was=_fstGuardWas; _fstGuardWas=busy;
+  if(was&&!busy){
+    ['sales','budget'].forEach(function(k){
+      if(fstStatus(k).state!=='fail') return;
+      if(_fstTimer[k]){ clearTimeout(_fstTimer[k]); _fstTimer[k]=null; }
+      if(window._fstQuiet){ fstAuto(k); return; }   /* ログインの同期の途中：いつもの間隔で */
+      _fstTimer[k]=setTimeout(function(){ _fstTimer[k]=null; if(fstUserBusy()){ fstAuto(k); return; } fstRetry(k,false); }, 1000);
+    });
+  }
+  if(was!==busy) fstPaint();
+}
+/* v1107：「取れませんでした」の理由（保存が通らなかったとき）。保護の code → 短い文 */
+function fstSaveWhy(code){
+  var c=String(code||'');
+  if(c.indexOf('save:')!==0) return '';
+  c=c.slice(5);
+  if(c==='pending') return t('保存の確認待ち','waiting for a save to be confirmed');
+  if(c==='conflict') return t('ほかの端末の保存と重なりました','overlapped with another device');
+  if(c==='timeout') return t('保存の答えが届きませんでした','no answer to the save');
+  if(c==='network') return t('通信できませんでした','network error');
+  if(c==='not-found') return t('保存がサーバーに届きませんでした','the save did not reach the server');
+  if(c==='financial_read') return t('最新を読めませんでした','could not read the latest');
+  if(c==='invalid_answer') return t('サーバーの答えを確かめられませんでした','could not check the answer');
+  var m=/^http_(\d+)(?:_(\w+))?$/.exec(c);
+  if(m) return t('サーバーのエラー','server error')+'（HTTP '+m[1]+(m[2]?'・'+m[2]:'')+'）';
+  return '';
+}
+function fstWhyOf(kind, bad){
+  try{
+    if((kind==='sales'||kind==='budget')&&fstGuardOn()&&fstGuardPendingNow()) return t('下の黄色い帯の保存を先に確かめてください','check the save in the yellow bar below first');
+    if(kind!=='sales') return '';
+    var by=(fstState().sales||{}).by||{};
+    for(var i=0;i<(bad||[]).length;i++){ var w=fstSaveWhy((by[bad[i].id]||{}).err); if(w) return w; }
+  }catch(e){}
+  return '';
+}
 
 /* ページ上部に出す共通ストリップ（鮮度＋同期＋診断） */
 function pageSyncStrip(scope){
@@ -40241,7 +40467,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1106';
+const APP_VERSION = '1107';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

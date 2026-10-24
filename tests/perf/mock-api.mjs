@@ -75,7 +75,7 @@ export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
   const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0' };
   const receipts = new Map();
-  const fin = { drop: 0, commits: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数
+  const fin = { drop: 0, commits: 0, fail: {}, failed: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数／v1107：店ごとに保存をサーバーのエラー（3 秒の上限で取り消し）にする回数
   const keyOf = (t, r) => (PK[t] || ['id']).map(c => String(r[c])).join('|');
   const idx = {}; function index(t) { if (!idx[t]) { idx[t] = new Map(); T[t].forEach((r, i) => idx[t].set(keyOf(t, r), i)); } return idx[t]; }
   const json = (status, body, headers) => ({ status, body: body === undefined ? '' : JSON.stringify(body), headers });
@@ -135,6 +135,8 @@ export function createMock(data) {
     if (name === 'financial_web_commit') {
       const p = JSON.parse(body || '{}');
       if (receipts.has(p.p_request_id)) return json(200, receipts.get(p.p_request_id));
+      // v1107：本番の anon の statement_timeout（3 秒）で取り消されたときと同じ答え（書かない・受け取りも残さない）
+      if ((fin.fail[p.p_store] || 0) > 0) { fin.fail[p.p_store]--; fin.failed++; return json(500, { code: '57014', message: 'canceling statement due to statement timeout' }); }
       const keys = Object.keys(p.p_writes || {});
       if (!keys.length || keys.some(k => !FIN_KEYS.has(k) || !k.endsWith('_' + p.p_store))) return json(400, { code: '22023', message: 'financial_guard_invalid' });
       const ix = index('app_state');
