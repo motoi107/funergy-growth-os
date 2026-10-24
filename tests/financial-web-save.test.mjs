@@ -119,7 +119,9 @@ function fixture(options = {}) {
     persist: options.persist || (async () => true),
     reload: async () => true };
   const recoveryStore = options.recoveryStore || (typeof context.financialRecoveryStore === 'function' ? context.financialRecoveryStore() : mapStore);
+  // v1107：答えが確かめられない保存の自動の確かめ。前からの試験では遅くして（10 分）、その試験の中では動かさない
   const api = context.FunergyFinancialSave.install(context, { enabled: true, transport, timeoutMs: options.timeoutMs || 300, deferStartup: options.deferStartup, lockWaitMs: options.lockWaitMs, onAutoRefused: options.onAutoRefused,
+    autoCheckMs: options.autoCheckMs || [600000],
     awaitLocalReady: options.awaitLocalReady && (() => options.awaitLocalReady(context)), recoveryStore });
   return { context, api, fields, dayFields, toasts, effects, legacy, commits, database, storage, receipts, answer,
     set: (id, value) => { const field = fields.get(id) || { disabled: false }; field.value = value; fields.set(id, field); },
@@ -256,7 +258,9 @@ test('actual async Toast write uses baseline frozen before await and never falls
   await f.api.refresh([DAILY, BUDGET]);
   gate.resolve([{ business_date: '2026-10-01', net_sales: 321 }]); await writing;
   assert.equal(f.commits.length, 1); assert.equal(f.commits[0].expectedVersions[DAILY], BASE);
-  assert.equal(f.api.getState().status, 'conflict'); assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Other editor');
+  // v1107：自動の取り込みが重なったら、上書きせずに放す（帯で止めない・送り直さない）
+  assert.equal(f.api.getState().status, 'idle'); assert.equal(f.api.getState().released.why, 'conflict');
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Other editor');
   assert.equal(f.legacy.length, 0);
 });
 
@@ -309,7 +313,7 @@ test('parallel automatic Toast operations queue and acquire independent pristine
 test('actual weather caller reports refusal instead of success after a conflicting write', async () => {
   const f = fixture({ commit: request => ({ status: 'conflict', requestId: request.requestId }) });
   await f.context.doWeatherSync('F01');
-  assert.equal(f.api.getState().status, 'conflict');
+  assert.equal(f.api.getState().status, 'idle'); assert.equal(f.api.getState().released.why, 'conflict');   // v1107：自動の保存は放す
   assert.equal(f.toasts.some(x => x.kind === 'success'), false);
 });
 
@@ -344,12 +348,20 @@ test('actual budget submission flush continuation and approval side effects wait
   assert.equal(f.toasts.some(x => x.kind === 'success'), true);
 });
 
-test('background conflict has a working explicit reload path and never automatically retries', async () => {
+test('background conflict lets go without overwriting or retrying; a typed conflict keeps the explicit reload path', async () => {
+  // v1107：自動の保存（天気）が重なったら放す：帯で止めない・送り直さない・小さな印だけ残す
   const f = fixture({ commit: request => ({ status: 'conflict', requestId: request.requestId }) });
   await f.context.fetchWeatherForView('F01', [{ date: '2026-10-01' }]);
-  assert.equal(f.api.getState().status, 'conflict');
-  assert.equal(await f.api.reloadForm(), true);
   assert.equal(f.api.getState().status, 'idle'); assert.equal(f.commits.length, 1);
+  assert.equal(f.api.getRecovery().some(x => x.reason === 'auto_released' && x.why === 'conflict' && x.source === 'fetchWeatherForView'), true);
+  assert.equal(f.api.getRecovery().some(x => x.reason === 'pending_request'), false);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Before');
+  // 人の入力の保存が重なったときは今までどおり：帯で止めて、最新を確認する道で放す
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Typed');
+  await f.context.saveDayMemo('F01', '2026-10-01');
+  assert.equal(f.api.getState().status, 'conflict');
+  await f.api.reloadForm();   // 入力の画面を開き直す
+  assert.equal(f.api.getState().status, 'idle'); assert.equal(f.commits.length, 2);
   assert.equal(f.api.getRecovery().some(x => x.reason === 'discarded_conflict'), true);
 });
 
@@ -421,7 +433,7 @@ test('unrelated approval and notification effects during an async financial read
   assert.equal(f.effects.some(x => Array.isArray(x) && x[0] === 'addApproval'), true);
   assert.equal(f.toasts.some(x => x.message === 'Vacation saved'), true);
   gate.resolve([{ business_date: '2026-10-01', net_sales: 222 }]); await writing;
-  assert.equal(f.api.getState().status, 'conflict');
+  assert.equal(f.api.getState().status, 'idle'); assert.equal(f.api.getState().released.why, 'conflict');   // v1107：自動の保存は放す
   assert.equal(JSON.parse(f.storage.get('approvals'))[0].id, 'vacation-1');
 });
 
@@ -1103,4 +1115,189 @@ test('v1105: when the guard cannot read the latest rows for an automatic sales i
     assert.deepEqual(told, [['syncStoreActualsFromToast', 'F01']]);
     assert.equal(f.toasts.length - before, quiet ? 0 : 1, 'quiet ' + quiet);
   }
+});
+
+// ===== v1107：答えが確かめられない保存で、売上・予算の読み込みと保存がすべて止まっていた（本番 10/24 の帯） =====
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const serverError = () => { const e = new Error('canceling statement due to statement timeout'); e.status = 500; e.code = '57014'; return e; };
+const networkError = () => new TypeError('Failed to fetch');
+async function until(check, ms = 2000) { const end = Date.now() + ms; while (Date.now() < end) { if (check()) return true; await sleep(5); } return check(); }
+function seedStore(f, id) {
+  f.database.set('daily_actuals_' + id, { key: 'daily_actuals_' + id, version: BASE, exists: true, value: {} });
+  f.database.set('spl_budgets_v2_' + id, { key: 'spl_budgets_v2_' + id, version: BASE, exists: true, value: [{ storeId: id, actual: 0 }] });
+}
+
+test('v1107: an automatic Toast import whose save fails no longer stops the other stores and the budget read', async () => {
+  // ログインの同期と同じ：F01 の保存がサーバーのエラーで返らない → 前は F01 が「結果不明」で残り、F02 の取り込みも予算の読み込みも止まっていた
+  const f = fixture({ commit: (request, answer) => { if (request.writes.daily_actuals_F01) throw serverError(); return answer(request); } });
+  seedStore(f, 'F02');
+  const rows = [{ business_date: '2026-10-01', net_sales: 333 }];
+  const [one, two] = await Promise.all([
+    f.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], rows),
+    f.context.syncStoreActualsFromToast('F02', 'two', [{ date: '2026-10-01' }], rows)]);
+  assert.equal(one.error !== undefined, true); assert.equal(one.code, 'http_500_57014');
+  assert.equal(two.error, undefined); assert.equal(two.updated, 1);
+  assert.equal(f.database.get('daily_actuals_F02').value['2026-10-01'].actual, 333);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].actual, 100);   // F01 は書けていない（前の値のまま・0 にしない）
+  const state = f.api.getState();
+  assert.equal(state.status, 'committed'); assert.equal(state.released.store, 'F01'); assert.equal(state.released.why, 'http_500_57014');
+  const all = await f.api.refresh(ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]));   // 予算・売上の読み込みは止まらない
+  assert.equal(all.size, 20);
+  const rec = f.api.getRecovery();
+  assert.equal(rec.some(x => x.reason === 'pending_request'), false);   // 自動の保存の行の中身は残さない（印だけ）
+  assert.equal(rec.filter(x => x.reason === 'auto_released').length, 1);
+  // 次の取り込みは最新を読み直して送る（前の番号は使わない）
+  const again = await f.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], rows);
+  assert.equal(again.code, 'http_500_57014'); assert.equal(f.api.getState().status, 'committed');
+});
+
+test('v1107: an automatic import whose answer was lost after the server wrote it is confirmed at once (no second write)', async () => {
+  const f = fixture({ commit: (request, answer) => { answer(request); throw networkError(); } });
+  const r = await f.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 444 }]);
+  assert.equal(r.error, undefined); assert.equal(r.updated, 1);
+  assert.equal(f.commits.length, 1); assert.equal(f.api.getState().status, 'committed');
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].actual, 444);
+});
+
+test('v1107: a typed save whose answer did not come back is checked and sent again without pressing', async () => {
+  let calls = 0;
+  const f = fixture({ autoCheckMs: [5, 5, 5], commit: (request, answer) => { calls++; if (calls === 1) throw networkError(); return answer(request); } });
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Typed while the network dropped');
+  assert.equal(await f.context.saveDayMemo('F01', '2026-10-01'), false);
+  assert.equal(f.api.getState().status, 'unknown'); assert.equal(f.api.getState().why, 'network');
+  assert.equal(await until(() => f.api.getState().status === 'committed'), true);
+  assert.equal(f.commits.length, 2); assert.equal(f.commits[1], f.commits[0]);   // 同じ番号・同じ中身
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Typed while the network dropped');
+});
+
+test('v1107: when the server keeps refusing a typed save, the user can stop it and keep the input', async () => {
+  const f = fixture({ autoCheckMs: [5, 600000], commit: () => { throw serverError(); } });
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Keep me');
+  await f.context.saveDayMemo('F01', '2026-10-01');
+  assert.equal(await f.api.abandon(), false);   // 届いていないとまだ分からない：やめられない
+  assert.equal(await until(() => f.api.getState().notFound === true && f.commits.length === 2), true);   // 確かめた → 届いていない → 送り直した
+  await settle();
+  const s1 = f.api.getState();
+  assert.equal(s1.status, 'unknown'); assert.equal(s1.why, 'http_500_57014');
+  await assert.rejects(f.api.refresh([DAILY]), /financial_unresolved_save/);   // 片づくまでは読み込みを止める（今までどおり）
+  assert.equal(await f.api.abandon(), true);
+  assert.equal(f.api.getState().status, 'idle');
+  const rec = f.api.getRecovery();
+  const kept = rec.find(x => x.reason === 'abandoned_unconfirmed');
+  assert.equal(kept.request.writes[DAILY]['2026-10-01'].event, 'Keep me');   // 入力はこの端末の記録に残る
+  assert.equal(kept.why, 'http_500_57014');
+  assert.equal(rec.some(x => x.reason === 'pending_request'), false);
+  assert.equal((await f.api.refresh([DAILY, BUDGET])).size, 2);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].event, 'Before');
+  // 読み込み直しても、やめた保存は戻らない
+  const again = fixture({ storage: f.storage, database: f.database, receipts: f.receipts });
+  assert.equal((await again.api.refresh([DAILY])).size, 1); assert.equal(again.api.getState().status, 'idle');
+});
+
+test('v1107: a v1106 record (no source) found at startup is checked without pressing; conflicts stay explicit', async () => {
+  const lost = fixture({ timeoutMs: 10, commit: (request, answer) => { answer(request); return new Promise(() => {}); } });
+  await lost.context.openDayMemo('F01', '2026-10-01', '木'); lost.set('dm-memo', 'Written, answer lost');
+  await lost.context.saveDayMemo('F01', '2026-10-01');
+  const strip = storage => { for (const k of recoveryKeys(storage)) { const v = JSON.parse(storage.get(k)); if (v.reason === 'pending_request') { delete v.source; storage.set(k, JSON.stringify(v)); } } };
+  strip(lost.storage);
+  const a = fixture({ storage: lost.storage, database: lost.database, receipts: lost.receipts, deferStartup: true, autoCheckMs: [5] });
+  await assert.rejects(a.api.refresh([DAILY]), /financial_unresolved_save/);   // 起動の読み込みで引き取る
+  assert.equal(await until(() => a.api.getState().status === 'committed'), true);
+  assert.equal(a.commits.length, 0);   // 受け取りで済んだ（送り直さない）
+  assert.equal((await a.api.refresh([DAILY, BUDGET])).size, 2);
+  // 届いていない古い記録：同じ内容で送り直すと、そのあいだにほかの端末が直していれば「重なった」で止める（人の保存かもしれないので放さない）
+  const typed = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}) });
+  await typed.context.openDayMemo('F01', '2026-10-01', '木'); typed.set('dm-memo', 'Never arrived');
+  await typed.context.saveDayMemo('F01', '2026-10-01');
+  strip(typed.storage);
+  typed.advance(DAILY, value => { value['2026-10-01'].event = 'Other device'; });
+  const b = fixture({ storage: typed.storage, database: typed.database, receipts: typed.receipts, deferStartup: true, autoCheckMs: [5] });
+  await assert.rejects(b.api.refresh([DAILY]), /financial_unresolved_save/);
+  assert.equal(await until(() => b.api.getState().status === 'conflict'), true);
+  assert.equal(b.commits.length, 1); assert.equal(b.database.get(DAILY).value['2026-10-01'].event, 'Other device');
+});
+
+test('v1107: an automatic import found unfinished at startup is let go once the server says it never arrived', async () => {
+  const first = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}) });
+  const r = await first.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 555 }]);
+  assert.equal(r.code, 'timeout'); assert.equal(first.api.getState().status, 'idle');
+  // 閉じる前に放せなかった記録（保存の前の記録だけが残った）を作る
+  const g = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}), receipt: () => new Promise(() => {}) });
+  const req = g.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 555 }]);
+  await until(() => recoveryText(g.storage).includes('pending_request'));
+  const snapshot = new Map(g.storage);
+  await req;
+  const b = fixture({ storage: snapshot, database: g.database, deferStartup: true, autoCheckMs: [5] });
+  await assert.rejects(b.api.refresh([DAILY]), /financial_unresolved_save/);
+  assert.equal(await until(() => b.api.getState().status === 'idle'), true);
+  assert.equal(b.commits.length, 0);   // 自動の保存は送り直さない（次の取り込みで最新を読み直す）
+  assert.equal(b.api.getState().released.source, 'syncStoreActualsFromToast');
+  assert.equal((await b.api.refresh([DAILY, BUDGET])).size, 2);
+});
+
+test('v1107: an automatic import refused because a typed save is still open says why; marks stay at 30', async () => {
+  const f = fixture({ timeoutMs: 10, commit: (request, answer) => request.writes[DAILY] && request.writes[DAILY]['2026-10-01'].event === 'Pending memo' ? new Promise(() => {}) : answer(request) });
+  await f.context.openDayMemo('F01', '2026-10-01', '木'); f.set('dm-memo', 'Pending memo');
+  await f.context.saveDayMemo('F01', '2026-10-01');
+  seedStore(f, 'F02');
+  const r = await f.context.syncStoreActualsFromToast('F02', 'two', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 1 }]);
+  assert.equal(r.code, 'pending');
+  const m = fixture({ commit: () => { throw serverError(); } });
+  for (let i = 0; i < 35; i++) await m.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 600 + i }]);
+  assert.equal(m.api.getRecovery().filter(x => x.reason === 'auto_released').length, 30);
+  assert.equal(m.api.getRecovery().some(x => x.reason === 'pending_request'), false);
+});
+
+test('v1107: a v1101-v1106 record of a Toast import is recognised at startup and let go without pressing; the record is kept', async () => {
+  // 本番 10/24：v1106 の端末に、答えの来ない Toast の売上の取り込みの記録が残り、どのボタンでも片づかなかった
+  const g = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}), receipt: () => new Promise(() => {}) });
+  const req = g.context.syncStoreActualsFromToast('F01', 'one', [{ date: '2026-10-01' }], [{ business_date: '2026-10-01', net_sales: 777, guest_count: 12 }]);
+  await until(() => recoveryText(g.storage).includes('pending_request'));
+  const snapshot = new Map(g.storage); await req;
+  for (const k of recoveryKeys(snapshot)) { const v = JSON.parse(snapshot.get(k)); if (v.reason === 'pending_request') { assert.equal(v.source, 'syncStoreActualsFromToast'); delete v.source; snapshot.set(k, JSON.stringify(v)); } }
+  const refused = () => { throw serverError(); };
+  const b = fixture({ storage: snapshot, database: g.database, deferStartup: true, autoCheckMs: [5], commit: refused });
+  await assert.rejects(b.api.refresh([DAILY]), /financial_unresolved_save/);
+  assert.equal(b.api.getState().auto, true);
+  assert.equal(await until(() => b.api.getState().status === 'idle'), true);
+  assert.equal(b.commits.length, 0); assert.equal(b.api.getState().released.source, 'guessed-import');
+  assert.equal((await b.api.refresh(ids.flatMap(id => ['daily_actuals_' + id, 'spl_budgets_v2_' + id]))).size, 20);
+  const rec = b.api.getRecovery();
+  assert.equal(rec.some(x => x.reason === 'pending_request'), true);   // 見分けただけなので記録は消さない
+  assert.equal(rec.some(x => x.reason === 'auto_released'), true);
+  const c = fixture({ storage: snapshot, database: g.database, deferStartup: true });
+  assert.equal((await c.api.refresh([DAILY])).size, 1); assert.equal(c.api.getState().status, 'idle');   // 読み込み直しても戻らない
+});
+
+test('v1107: a typed v1106 record is not mistaken for an import; an answer the app cannot accept still offers the way out', async () => {
+  const g = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}) });
+  await g.context.openDailyActualModal('F01', '2026-10-01', '木'); g.set('da-actual', '345');
+  await g.context.saveDailyActual('F01', '2026-10-01');
+  for (const k of recoveryKeys(g.storage)) { const v = JSON.parse(g.storage.get(k)); if (v.reason === 'pending_request') { delete v.source; g.storage.set(k, JSON.stringify(v)); } }
+  // サーバーは「済み」と答えるが、版が新しくなっていない（このアプリは受け取れない形）
+  const odd = async ({ requestId }) => ({ status: 'committed', requestId, versions: { [DAILY]: BASE, [BUDGET]: BASE } });
+  const b = fixture({ storage: g.storage, database: g.database, deferStartup: true, autoCheckMs: [5, 600000], receipt: odd, commit: () => { throw networkError(); } });
+  await assert.rejects(b.api.refresh([DAILY]), /financial_unresolved_save/);
+  assert.equal(b.api.getState().auto, false);
+  assert.equal(await until(() => b.api.getState().oddReceipt === true), true);
+  await settle();
+  assert.equal(b.api.getState().status, 'unknown');
+  assert.equal(await b.api.abandon(), true);
+  assert.equal(b.api.getState().status, 'idle');
+  assert.equal(b.api.getRecovery().find(x => x.reason === 'abandoned_unconfirmed').request.writes[DAILY]['2026-10-01'].actual, 345);
+});
+
+test('v1107: typed memo and budget records without a source are never taken for an automatic import', async () => {
+  const strip = storage => { for (const k of recoveryKeys(storage)) { const v = JSON.parse(storage.get(k)); if (v.reason === 'pending_request') { delete v.source; storage.set(k, JSON.stringify(v)); } } };
+  const memo = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}) });
+  await memo.context.openDayMemo('F01', '2026-10-01', '木'); memo.set('dm-memo', 'Typed memo');
+  await memo.context.saveDayMemo('F01', '2026-10-01'); strip(memo.storage);
+  const m = fixture({ storage: memo.storage, database: memo.database, deferStartup: true });
+  await assert.rejects(m.api.refresh([DAILY]), /financial_unresolved_save/); assert.equal(m.api.getState().auto, false);
+  const bud = fixture({ timeoutMs: 10, commit: () => new Promise(() => {}) });
+  await bud.context.bbOpen('F01'); bud.context._bbDow.lunch[0].guests = 99;
+  bud.dayFields.push({ value: '123.5', disabled: false, getAttribute: () => '2026-10-02' });
+  await bud.context.bbSave(); strip(bud.storage);
+  const b = fixture({ storage: bud.storage, database: bud.database, deferStartup: true });
+  await assert.rejects(b.api.refresh([BUDGET]), /financial_unresolved_save/); assert.equal(b.api.getState().auto, false);
 });

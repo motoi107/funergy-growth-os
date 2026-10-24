@@ -15,7 +15,8 @@ function fn(name) {
 const line = re => { const m = source.match(re); assert.ok(m, String(re)); return m[0]; };
 const NAMES = ['fstState', 'fstFailing', 'fstSave', 'fstStoreOfGuid', 'fstNote', 'fstStores', 'fstGuardOn', 'fstStatus', 'fstClock', 'fstLabel', 'fstNames', 'fstChip',
   'fstChipsHtml', 'fstPaint', 'fstShowFresh', 'fstUserBusy', 'fstAuto', 'fstGuardRefresh', 'fstSalesSync', 'fstRetry', 'fstAnyFail', 'pageSyncStrip', '_toastSalesErr', 'fetchToastSales',
-  'syncStoreActualsFromToast', 'fetchTipLaborFromDB', '_fstLabor', '_tipLaborFetchErr'];
+  'syncStoreActualsFromToast', 'fetchTipLaborFromDB', '_fstLabor', '_tipLaborFetchErr',
+  'fstGuardPendingNow', 'fstOnGuardState', 'fstSaveWhy', 'fstWhyOf'];   // v1107
 const STORES = [{ id: 'F01', name: 'ToriTon', toastGuid: 'g1' }, { id: 'F06', name: 'LaLa', toastGuid: 'g6' }, { id: 'F07', name: 'Kapolei' }];
 
 function context({ guard = true, fetch } = {}) {
@@ -37,7 +38,7 @@ function context({ guard = true, fetch } = {}) {
   };
   if (guard) { ctx.window.FUNERGY_FINANCIAL_SAVE = ctx.FUNERGY_FINANCIAL_SAVE = { refresh: async () => [] }; ctx.FunergyFinancialTransport = { keys: ['daily_actuals_F01'] }; }
   vm.createContext(ctx);
-  vm.runInContext(line(/^var FST_KEY=.*$/m) + '\n' + line(/^var _fst=null.*$/m) + '\n' + NAMES.map(fn).join('\n'), ctx);
+  vm.runInContext(line(/^var FST_KEY=.*$/m) + '\n' + line(/^var _fst=null.*$/m) + '\n' + line(/^var _fstGuardWas=.*$/m) + '\n' + NAMES.map(fn).join('\n'), ctx);
   return ctx;
 }
 
@@ -218,4 +219,49 @@ test('review P3: a sales import the guard refused shows in the strip; the dashbo
     vm.createContext(p); vm.runInContext(meta + '\nvar __m = SYNC_SCOPE_META;', p);
     assert.equal(await p.__m[scope].pull(), expected, scope + ' ' + JSON.stringify(monthResult));
   }
+});
+
+test('v1107: the strip says why a sales import was not saved, and points at the yellow bar while a save waits', async () => {
+  const c = context();
+  c.fstNote('sales', 'F01', true); c.fstNote('sales', 'F06', true);
+  c.syncStoreActualsFromToast = async () => ({ error: 'x', code: 'http_500_57014' });
+  await c.fstSalesSync('F06', 'g6', c.monthDays(), []);
+  assert.equal(c.fstState().sales.by.F06.err, 'save:http_500_57014');
+  assert.match(c.fstChip('sales'), /取れませんでした（LaLa）[\s\S]*理由：サーバーのエラー（HTTP 500・57014）/);
+  c.syncStoreActualsFromToast = async () => ({ error: 'x', code: 'conflict' });
+  await c.fstSalesSync('F06', 'g6', c.monthDays(), []);
+  assert.match(c.fstChip('sales'), /理由：ほかの端末の保存と重なりました/);
+  c.syncStoreActualsFromToast = async () => ({ error: 'x' });   // 理由の無い前の形
+  await c.fstSalesSync('F06', 'g6', c.monthDays(), []);
+  assert.doesNotMatch(c.fstChip('sales'), /理由/);
+  // 保存の確認待ちのあいだは、帯の保存を先に確かめるように出す（売上・予算とも）
+  c.FUNERGY_FINANCIAL_SAVE.getState = () => ({ status: 'unknown' });
+  c.fstNote('guard', null, false, 'financial_unresolved_save');
+  assert.match(c.fstChip('sales'), /下の黄色い帯の保存を先に確かめてください/);
+  assert.match(c.fstChip('budget'), /下の黄色い帯の保存を先に確かめてください/);
+});
+
+test('v1107: when the waiting save is settled, failed sales and budget are fetched again after 1 second', async () => {
+  const c = context();
+  let state = 'unknown'; c.FUNERGY_FINANCIAL_SAVE.getState = () => ({ status: state });
+  c.fstNote('sales', 'F01', false, 'save:pending'); c.fstNote('guard', null, false, 'financial_unresolved_save');
+  c.fstOnGuardState({ status: 'unknown' });
+  const before = c.timers.length;
+  state = 'idle'; c.fstOnGuardState({ status: 'idle' });
+  const kicks = c.timers.slice(before).filter(x => x.ms === 1000);
+  assert.equal(kicks.length, 2);   // 売上と予算
+  let refreshed = 0; c.FUNERGY_FINANCIAL_SAVE.refresh = async () => { refreshed++; return []; };
+  const synced = []; c.syncStoreActualsFromToast = async id => { synced.push(id); return { updated: 1 }; };
+  for (const k of kicks) await k.f();
+  await new Promise(r => setImmediate(r)); await new Promise(r => setImmediate(r));
+  assert.equal(refreshed >= 1, true); assert.deepEqual(synced, ['F01']);
+  // 片づいていないあいだ（idle → idle）・ログインの同期の途中は、すぐには取り直さない
+  const n = c.timers.length; c.fstOnGuardState({ status: 'idle' });
+  assert.equal(c.timers.length, n);
+  c.fstOnGuardState({ status: 'unknown' }); c.window._fstQuiet = true; c.fstNote('sales', 'F06', false, 'save:pending');
+  const m = c.timers.length; c.fstOnGuardState({ status: 'idle' });
+  assert.equal(c.timers.slice(m).some(x => x.ms === 1000), false);
+  // 保護が保存の状態を伝える口がアプリにある
+  const inst = source.slice(source.indexOf('FunergyFinancialSave.install(window, {enabled:true'), source.indexOf('transport:FunergyFinancialTransport.create('));
+  assert.match(inst, /onState:function\(s\)\{ try\{ if\(typeof fstOnGuardState==='function'\) fstOnGuardState\(s\);/);
 });
