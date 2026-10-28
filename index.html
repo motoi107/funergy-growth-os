@@ -40468,7 +40468,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1108';
+const APP_VERSION = '1109';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -62738,7 +62738,7 @@ function bqCsFreezeAll(q){
 function bqCsUnfreeze(q, empId){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
   var d=bqGet(q);
-  if(d.locked){ showToast('査定が確定しています。先に査定確定を解除してください','warning'); return; }
+  if(bqEditLocked(d)){ showToast('査定が確定しています。先に査定確定を解除してください','warning'); return; }
   delete d.csFreeze[empId]; bqSet(q,d);
   showToast('確定を解除しました（最新の評価に戻ります）','info'); bqRefresh();
 }
@@ -62779,6 +62779,7 @@ function bqStageState(q, cfg){
 }
 function bqLockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('確定は GM・CEO のみです','warning'); return; }
+  if(typeof bcOwns==='function' && bcOwns(q)){ showToast(q+' は「ボーナスの締め」（仮締め → 支給額を確定）で確定します','info'); return; }   /* v1109 */
   if(typeof kevApplies==='function' && kevApplies(Object.assign({}, kbCfg(), {quarter:q}))){ return kevLockQuarter(q); }   /* v1065：4 項目の式の四半期は、全員の評価・最終額を固定する（v1067：読み直して確かめるあいだは Promise を返す） */
   var cfg=kbCfg(), st=bqStageState(q,cfg), d=bqGet(q);
   if(d.locked){ showToast('すでに確定しています','info'); return; }
@@ -62813,6 +62814,7 @@ function bqLockQuarter(q){
 }
 function bqUnlockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
+  if(typeof bcOwns==='function' && bcOwns(q)){ showToast(q+' は「ボーナスの締め」の「確定版から修正」で直します（確定の解除はしません）','info'); return; }   /* v1109 */
   if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
   var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null; d.rangeLock=''; d.evSnap=null;   /* v1062・v1065 */   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
   bqSet(q,d); showToast('解除しました','info'); bqRefresh();
@@ -62911,7 +62913,12 @@ function renderBqPipeline(q, cfg){
     h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> '
       +'この四半期は進行中です。予算達成率は経過ぶんの予算と比べた「途中経過」を表示しています。確定は四半期終了後に行ってください。</div>';
   }
-  if(canLock){
+  if(canLock && typeof bcOwns==='function' && bcOwns(q)){   /* v1109：確定は下の「ボーナスの締め」（サーバーの版） */
+    h+='<div class="btn-row" style="margin-top:8px;align-items:center">';
+    if(!d.locked) h+='<button class="btn btn-secondary btn-sm" onclick="bqCsFreezeAll(\''+escapeHtml(q)+'\')"><i class="ti ti-star"></i> Career Score を今の評価で確定</button>';
+    h+='<span style="font-size:11px;color:var(--muted)">仮締め・支給額の確定・修正は下の「ボーナスの締め」で行います。</span></div>';
+  }
+  else if(canLock){
     h+='<div class="btn-row" style="margin-top:8px">';
     if(d.locked){
       h+='<button class="btn btn-secondary btn-sm" onclick="bqUnlockQuarter(\''+escapeHtml(q)+'\')"><i class="ti ti-lock-open"></i> 確定を解除</button>';
@@ -63210,7 +63217,7 @@ function bonusSetCo(field, v){
   if(!q){ showToast('四半期を入れてください','warning'); return; }
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('原資を変えられるのは GM・CEO です','warning'); return; }
   var d=bqGet(q);
-  if(d.locked){ showToast(q+' の査定は確定済みです（原資は確定したときの数字で固定）','warning'); return; }
+  if(typeof bqEditLocked==='function' ? bqEditLocked(d) : d.locked){ showToast(q+' の査定は確定済みです（原資は確定したときの数字で固定）','warning'); return; }   /* v1109：確定版から修正のあいだは直せる */
   var n=_bpNum(v);
   if(n==null && !_bpBlank(v)){ showToast('数字で入れてください（例 '+(field==='margin'?'11.1':'338550')+'）','warning'); kbRefresh(); return; }   /* 打ち間違いで消さない */
   var c=Object.assign({}, d.co||{});
@@ -63225,7 +63232,7 @@ function bonusSetCo(field, v){
 function bonusPoolInfo(cfg, q){
   cfg=cfg||kbCfg(); q=String(q||(cfg&&cfg.quarter)||'').trim();
   var d=(q && typeof bqGet==='function') ? bqGet(q) : {};
-  if(d.locked && d.poolSnap && typeof d.poolSnap==='object'){
+  if((typeof bqEditLocked==='function' ? bqEditLocked(d) : d.locked) && d.poolSnap && typeof d.poolSnap==='object'){   /* v1109：確定版から修正のあいだは今の原資（有効な確定版の原資は evSnap のまま） */
     var sp=d.poolSnap, amt=_bpNum(sp.amount);
     return {q:q, profit:_bpNum(sp.profit), margin:_bpNum(sp.margin), rate:_bpNum(sp.rate), row:(_bpNum(sp.rate)==null?null:{lo:sp.lo, hi:sp.hi, r:sp.rate}),
             amount:amt, known:amt!=null, snap:true, at:sp.at||'', by:sp.by||'', legacy:false};
@@ -63248,7 +63255,7 @@ function bonusTotals(cfg){
 /* --- 設定タブ：ボーナス原資のカード --- */
 function renderBonusPoolCard(cfg){
   var q=String(cfg.quarter||'').trim(), pi=bonusPoolInfo(cfg), d=q?bqGet(q):{};
-  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=!!d.locked;
+  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=(typeof bqEditLocked==='function') ? bqEditLocked(d) : !!d.locked;   /* v1109 */
   var dis=(locked||!canEdit)?' disabled':'';
   var h='<div class="card"><div class="card-title"><span class="kc-num">1</span>ボーナス原資（四半期）'
     +(locked?'<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>':'')+'</div>';
@@ -64132,7 +64139,7 @@ function bonusInclSet(empId, on){
   var cfg=kbCfg(), qr=ghQRange(String(cfg.quarter||'').trim());
   if(!qr){ showToast('四半期を入れてください','warning'); return; }
   var d=bqGet(qr.q);
-  if(d.locked){ showToast(qr.q+' の査定は確定済みです（例外は変えられません）','warning'); return; }
+  if(bqEditLocked(d)){ showToast(qr.q+' の査定は確定済みです（例外は変えられません）','warning'); return; }
   var e=ghEmp(empId), inc=Object.assign({}, d.incl||{});
   if(on){
     if(!confirm((e?e.name:'')+' を '+qr.q+' のボーナスに例外として入れます。\n在籍していた期間を日割りで計算します。よろしいですか？')) return;
@@ -64209,7 +64216,7 @@ function kbListTableHtml(cfg, tot){
 /* 対象外の人（途中退職・休職など）と例外 */
 function kbExcCardHtml(cfg, tot){
   var ctx=bonusEligCtx(cfg); if(!ctx) return '';
-  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=!!ctx.d.locked;
+  var canEdit=['gm','ceo'].indexOf(curRole)>=0, locked=bqEditLocked(ctx.d);
   var list=getEmployees().map(function(e){ return {e:e, st:bonusElig(e, cfg, ctx)}; }).filter(function(x){ return x.st && x.st.out && !x.st.hide; })
     .sort(function(a,b){ return (b.st.exc?1:0)-(a.st.exc?1:0) || String(a.e.name||'').localeCompare(String(b.e.name||'')); });
   if(!list.length) return '';
@@ -64320,7 +64327,7 @@ function kdBonusHist(e, k, b, cfg, cur){
   var cr=ghQRange(String(cfg.quarter||'').trim());
   if(cr && !by[cr.q] && cur && !cur.out && cur.amt>0){
     var el=(b.segs||[]).filter(function(x){ return x.elig; });
-    by[cr.q]={amt:cur.amt, g:(el.length>1?(el[0].g+'→'+el[el.length-1].g):(el[0]?el[0].g:ghNormG(b.grade))), cur:true};
+    by[cr.q]={amt:cur.amt, g:(el.length>1?(el[0].g+'→'+el[el.length-1].g):(el[0]?el[0].g:ghNormG(b.grade))), cur:true, eff:!!cur.eff};
   }
   return Object.keys(by).sort().slice(-6).map(function(q){ return Object.assign({q:q}, by[q]); });
 }
@@ -64334,7 +64341,7 @@ function kdBonusTrendHtml(e, k, b, cfg, cur){
     var hh=Math.max(4, Math.round(x.amt/mx*86)), col=x.g?ghColor(String(x.g).split('→').pop()):'var(--accent)';
     h+='<div style="flex:1;min-width:0;text-align:center"><div style="font-size:11px;font-weight:800;margin-bottom:3px;white-space:nowrap">'+_money(x.amt).replace(/\.00$/,'')+'</div>'
       +'<div style="height:'+hh+'px;background:'+col+';border-radius:6px 6px 0 0;opacity:'+(x.cur?'0.5':'0.85')+(x.cur?';outline:1.5px dashed '+col+';outline-offset:1px':'')+'"></div>'
-      +'<div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.4">'+escapeHtml(x.q)+'<br>'+escapeHtml(x.g||'')+(x.cur?'<span style="white-space:nowrap">（査定中）</span>':'')+'</div></div>';
+      +'<div style="font-size:10px;color:var(--muted);margin-top:3px;line-height:1.4">'+escapeHtml(x.q)+'<br>'+escapeHtml(x.g||'')+(x.cur?'<span style="white-space:nowrap">'+(x.eff?'（支給額確定）':'（査定中）')+'</span>':'')+'</div></div>';
   });
   return h+'</div></div>';
 }
@@ -64394,7 +64401,7 @@ function kdGradeCardHtml(e, cfg){
 }
 /* 本人に見せる表示：原資・経常利益率・計算式（係数）・給与・ほかの人は出さない */
 function renderKarteSelfView(e, x){
-  var cfg=x.cfg, k=x.k, b=x.b, sum=x.sum, pct=x.pct, lv=x.lv, g=x.g, gcol=x.gcol, cur=kdCurAmount(e, b, cfg);
+  var cfg=x.cfg, k=x.k, b=x.b, sum=x.sum, pct=x.pct, lv=x.lv, g=x.g, gcol=x.gcol, cur=(typeof bcSelfCur==='function') ? bcSelfCur(e, b, cfg) : kdCurAmount(e, b, cfg);   /* v1109（回答 8）：2026 Q3 からは有効な確定版の額だけ */
   /* 本人に見せる表示のあいだは、セキュアページの見出し（ログアウト・ログイン中のメール）を隠す。印刷ではボタンの行を出さない */
   var h='<style>'+(window._secureMode?'#manager-secure-screen .sec-shell>div:not(#mgr-secure-body){display:none!important}':'')+'@media print{.kd-noprint{display:none!important}}</style>'
     +'<div class="kd-noprint" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="karteSelfView(false)"><i class="ti ti-arrow-left"></i> 管理の表示に戻る</button>'
@@ -64405,12 +64412,12 @@ function renderKarteSelfView(e, x){
   var goals=(k.goals||[]).filter(function(z){ return z && z.text; }), done=goals.filter(function(z){ return z.done; }).length;
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
     +(function(){ var V=csvView(e), R=cssEvaluate(e); return _kTile('Career Score', escapeHtml(cssTileVal(R)), escapeHtml((V.g||'—')+'・'+cssPtsTxt(V)), 'var(--accent)'); })()   /* v1108（UI案61）：大きな字は強み、小さな字は点（総合点 ／ 基準点）。v1100 は総合点 ／ 基準点 */
-    +_kTile('今期のボーナス', cur.out?'対象外':(cur.blocked?'評価中':_money(cur.amt)), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':(cur.blocked?'・金額は評価のあと':'・査定中'))), gcol)
+    +_kTile('今期のボーナス', cur.out?'対象外':(cur.pending?'査定中':(cur.blocked?'評価中':_money(cur.amt))), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':(cur.pending?'・会社全体の支給額が決まってから':(cur.eff?'・支給額確定':(cur.blocked?'・金額は評価のあと':'・査定中'))))), gcol)
     +_kTile('次期の目標', goals.length?(done+' / '+goals.length):'—', goals.length?'達成・進行中':'これから決めます', 'var(--green)')+'</div>';
   h+='<div class="card">'+cssProfileHtml(e, {self:true, V:csvView(e)})+'</div>';   /* v1108（UI案61）：本人に見せる表示も強みが主（点は「評価の内訳を見る」） */
   if(b && b.v4 && typeof kevSelfProgressHtml==='function') h+=kevSelfProgressHtml(e, b, cfg, k);   /* v1075（UI案47）：評価がどこまで進んだか */
   h+=kdBonusTrendHtml(e, k, b, cfg, cur);
-  if(b && b.v4 && typeof kevSelfExplainHtml==='function') h+=kevSelfExplainHtml(e, b, cfg);   /* v1065：評価で決まる額と、原資の調整（全員同じ割合） */
+  if(b && b.v4 && typeof bcSelfExplainHtml==='function') h+=bcSelfExplainHtml(e, b, cfg);   /* v1065：評価で決まる額と、原資の調整（全員同じ割合）。v1109：2026 Q3 からは有効な確定版だけ（bcSelfExplainHtml がそれ以外は今までどおり） */
   /* v1108：カテゴリー別の点は上の「強み」のカードの「評価の内訳を見る」の中（ここに 2 回出さない） */
   var notes=[['strengthsNote','強み（すばらしい点）','var(--green)'], ['growthNote','次に伸ばす点','var(--accent2)'], ['improveNote','改善してほしい点','var(--accent)'], ['overall','総合所見','var(--tm)']]
     .filter(function(z){ return String(k[z[0]]||'').trim(); });
@@ -64671,9 +64678,17 @@ function _karteStoreSel(cfg,e,b){
 }
 
 function kbResultHtml(){
-  var cfg=kbCfg(); var tot=bonusTotals(cfg);
+  var cfg=kbCfg();
+  var _bq=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim();
+  var _kv0=(typeof bcOwns==='function' && bcOwns(_bq) && bcCan() && typeof kevApplies==='function') ? kevApplies(cfg) : null;
+  if(_kv0 && kevGen3(_kv0.q) && !_kv0.v2){   /* v1109（UI案61 ②）：ボーナスの締め（サーバーの版）。今の計算は見せるときだけ（全員の計算を 1 回の描画で 2 回しない） */
+    bcEnsure(_kv0.q);
+    var _V=bcView(Object.assign({}, cfg, {quarter:_kv0.q}), function(){ return kevTotals(cfg, _kv0); }, _kv0);
+    return renderBqPipeline(String(cfg.quarter||'').trim(), cfg)+kevCss()+bcPanelHtml(cfg, _V)+kevResultTopHtml(cfg, _V.tot)+kevListTableHtml(cfg, _V.tot, _V)+kbExcCardHtml(cfg, _V.tot);
+  }
+  var tot=bonusTotals(cfg);
   var h=renderBqPipeline(String(cfg.quarter||'').trim(), cfg);   /* v1062（UI案39）：査定の進み具合と確定は査定一覧の上（設定タブから移した） */
-  if(tot.v4){ h+=kevCss()+kevResultTopHtml(cfg, tot)+kevListTableHtml(cfg, tot)+kbExcCardHtml(cfg, tot); return h; }   /* v1065（UI案42）：4 項目の式の四半期 */
+  if(tot.v4){ h+=kevCss()+kevResultTopHtml(cfg, tot)+kevListTableHtml(cfg, tot)+kbExcCardHtml(cfg, tot); return h; }   /* v1065（UI案42）：4 項目の式の四半期 */   /* v1065（UI案42）：4 項目の式の四半期 */
   if(typeof kevOldLock==='function' && kevOldLock(cfg)) h+='<div class="alert alert-warning" style="margin-bottom:10px"><i class="ti ti-alert-triangle"></i> この四半期は前の版の式で確定しています。4 項目の式（2026 Q3 から）で計算し直すには「確定を解除」してから、個別評価タブで評価して確定し直してください（同じ四半期の自動の記録は上書きされます）。</div>';
   /* 原資サマリ */
   var _pi=tot.poolInfo||{};   /* v1042: 原資は経常利益率から（未入力なら決まらない＝上限を掛けない） */
@@ -64969,7 +64984,7 @@ function kartePayAdd(empId){ var k=getKarte(empId); k.payLog=k.payLog||[]; k.pay
 function kartePaySet(empId,pid,field,val){ var k=getKarte(empId); (k.payLog||[]).forEach(function(p){ if(p.id===pid){ p[field]=val; p._at=Math.max(Date.now(), kartePayT(p)+1); } }); saveKarte(empId,k); }
 function kartePayDel(empId,pid){ var k=getKarte(empId), t=Date.now(); (k.payLog||[]).forEach(function(p){ if(p.id===pid) t=Math.max(t, kartePayT(p)+1); }); k.payLog=(k.payLog||[]).filter(function(p){return p.id!==pid;}); if(pid!=null && pid!==''){ k.payDel=(k.payDel && typeof k.payDel==='object') ? k.payDel : {}; k.payDel[String(pid)]=Math.max(t, Number(k.payDel[String(pid)])||0); } saveKarte(empId,k); openKarteDetail(empId); }
 /* ===== ボーナス査定の自動記録（給与・ボーナス履歴への連携 / v547） ===== */
-function _bonusWritePay(e,b,q,payAmt,adj,lk){   /* lk：v1067（独立レビュー P2-3）どの確定から書いたか {id, t}（4 項目の式の記録だけ） */
+function _bonusWritePay(e,b,q,payAmt,adj,lk,payDate){   /* payDate：v1109 支給日（「支給済みとして記録」）。無ければ今日 */   /* lk：v1067（独立レビュー P2-3）どの確定から書いたか {id, t}（4 項目の式の記録だけ） */
   var all=getKarteAll(); var now=new Date().toISOString(); var by=(typeof myName==='function'?myName():(curUserName||''));
   var k=all[e.id]||{}; k.payLog=k.payLog||[];
   var snap={grade:b.grade, base:b.base, baPct:b.baPct, baCoef:b.baCoef, csPct:b.csPct, csCoef:b.csCoef, spPct:b.spPct, spCoef:b.spCoef, hasCS:b.hasCS, raw:b.amount, adj:adj,
@@ -64978,8 +64993,9 @@ function _bonusWritePay(e,b,q,payAmt,adj,lk){   /* lk：v1067（独立レビュ�
     gcoef:b.coef, gcoefKey:b.coefKey, track:b.track, coefSrc:b.coefSrc, rangeMode:!!b.rangeMode, cm:(b.rangeMode?bonusCmCompact(b.cm,false):null)};   /* v1062：幅と基準ラインの達成 */   /* v1058: グレード・職種係数（coef は旧式の個人係数の名前なので使わない） */   /* v1044: 日割りの区間も残す */
   if(b && b.v4 && typeof kevPaySnap==='function') snap=kevPaySnap(b, adj);   /* v1065：4 項目の式（確定した記録） */
   var ex=null; for(var i=0;i<k.payLog.length;i++){ if(k.payLog[i].src==='auto' && k.payLog[i].quarter===q){ ex=k.payLog[i]; break; } }
-  if(ex){ ex.amount=String(payAmt); ex.date=(typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; ex._at=Math.max(Date.now(), (typeof kartePayT==='function' ? kartePayT(ex) : 0)+1); }   /* v1067：行の時刻（行ごとの合流） */
-  else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:(typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now, _at:Date.now()}); }
+  var _pd=(typeof payDate==='string' && /^\d{4}-\d{2}-\d{2}$/.test(payDate)) ? payDate : null;
+  if(ex){ ex.amount=String(payAmt); ex.date=_pd || (typeof todayISO==='function'?todayISO():ex.date); ex.snap=snap; ex.by=by; ex.at=now; ex._at=Math.max(Date.now(), (typeof kartePayT==='function' ? kartePayT(ex) : 0)+1); }   /* v1067：行の時刻（行ごとの合流） */
+  else { k.payLog.push({id:'p'+Date.now().toString(36)+Math.random().toString(36).slice(2,5), date:_pd || (typeof todayISO==='function'?todayISO():''), type:'ボーナス', amount:String(payAmt), note:'四半期査定（自動記録）', src:'auto', quarter:q, snap:snap, by:by, at:now, _at:Date.now()}); }
   var _row=ex || k.payLog[k.payLog.length-1];
   if(lk && lk.id){ _row.lk=String(lk.id); if(Number(lk.t)>0) _row.lkt=Number(lk.t); else delete _row.lkt; } else { delete _row.lk; delete _row.lkt; }   /* v1067（独立レビュー P2-3）：確定し直したあとの記録が、前の確定からの記録に負けないように */
   if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：_at を新しくする前に */
@@ -64987,6 +65003,7 @@ function _bonusWritePay(e,b,q,payAmt,adj,lk){   /* lk：v1067（独立レビュ�
 }
 function bonusConfirmQuarter(){
   var cfg=kbCfg(); var tot=bonusTotals(cfg); var q=String(cfg.quarter||'').trim();
+  if(typeof bcOwns==='function' && bcOwns((typeof bonusQKey==='function') ? bonusQKey(cfg) : q)){ showToast('「ボーナスの締め」の「支給済みとして記録」で記録します','info'); return; }   /* v1109（回答 6） */
   if(!q){ alert('四半期が未設定です。設定タブで四半期を入力してください。'); return; }
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
@@ -65002,6 +65019,7 @@ function bonusConfirmQuarter(){
 }
 function bonusConfirmOne(empId){
   var cfg=kbCfg(); var e=getEmployees().find(function(x){return x.id===empId;}); if(!e) return;
+  if(typeof bcOwns==='function' && bcOwns((typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim())){ showToast('「ボーナスの締め」の「支給済みとして記録」で記録します','info'); return; }   /* v1109（回答 6） */
   var q=String(cfg.quarter||'').trim(); if(!q){ alert('四半期が未設定です（設定タブで入力）。'); return; }
   if(['gm','ceo'].indexOf(curRole)<0){ alert('記録できるのは GM・CEO です。'); return; }
   if(!bqGet((typeof bonusQKey==='function') ? bonusQKey(cfg) : q).locked){ alert('先に「この四半期の査定を確定」をしてください（査定確定 → 履歴に記録の順）。'); return; }   /* v1065（Motoさん 10/11） */
@@ -66608,7 +66626,7 @@ function bonusSetTrack(empId, tr){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('職種を選べるのは GM・CEO です','warning'); return; }
   var cfg=kbCfg(), q=bonusQKey(cfg); if(!q) return;
   var d=bqGet(q);
-  if(d.locked && !(d.coefSnap && typeof d.coefSnap==='object' && !d.coefSnap[empId])){ showToast(q+' の査定は確定済みです','warning'); return; }   /* 確定したときの記録に無い人（あとで対象になった人）だけは選べる */
+  if((typeof bqEditLocked==='function' ? bqEditLocked(d) : d.locked) && !(d.coefSnap && typeof d.coefSnap==='object' && !d.coefSnap[empId])){ showToast(q+' の査定は確定済みです','warning'); return; }   /* v1109：確定版から修正のあいだは選べる */   /* 確定したときの記録に無い人（あとで対象になった人）だけは選べる */
   var m=btrAll(), k=btrKey(q, empId), old=m[k], t=(tr && CSC_TRACK_NAME[tr]) ? tr : null;
   m[k]={t:t, at:_bqNow(), by:_bqWho(), _at:Math.max(Date.now(), (Number(old && old._at)||0)+1)};   /* 外すときも消さずに「なし」を新しい時刻で（合流で前の選択が戻らない） */
   var tx=ghTxnBegin(), w=lsSet('bonus_track', m); if(w===false) tx.fail.push('bonus_track');   /* 端末に保存できなかったら同期にも送らない */
@@ -66732,7 +66750,7 @@ function bonusTrackPickHtml(e, b, cfg){
   var picked=bonusCoefParts(b).filter(function(x){ return x.g==='G3' && x.trackSrc==='quarter'; })[0];
   if(b.blocked!=='track' && !picked) return '';
   var q=bonusQKey(cfg), d=q?bqGet(q):{};
-  if(d.locked && !(d.coefSnap && typeof d.coefSnap==='object' && !d.coefSnap[e.id])) return '';
+  if((typeof bqEditLocked==='function' ? bqEditLocked(d) : d.locked) && !(d.coefSnap && typeof d.coefSnap==='object' && !d.coefSnap[e.id])) return '';
   var cur=picked ? picked.track : null, id=cscJsArg(e.id);
   return '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:11px;color:var(--tm)"><span>この四半期（'+escapeHtml(q)+'）の G3 職種：</span>'
     +['op','sv','kt'].map(function(tr){ return '<button class="btn '+(tr===cur?'btn-primary':'btn-secondary')+' btn-sm" style="font-size:11px;padding:2px 8px" onclick="bonusSetTrack('+id+',\''+tr+'\')">'+escapeHtml(cscTrackName(tr))+'</button>'; }).join('')
@@ -67265,6 +67283,8 @@ function kevSrcLabel(src, scope){ if(src==='career') return 'キャリア × グ
 
 /* ---- この四半期に新しい式を使うか ---- */
 function kevSnapOk(d){ return !!(d && d.locked && d.evSnap && typeof d.evSnap==='object' && d.evSnap.lk===String(d.lockedAt)+'|'+String(d.lockedBy)); }
+/* v1109：直せないか（確定していて、確定版から修正の途中でない） */
+function bqEditLocked(d){ return !!(d && d.locked && !(d.bcFix && typeof d.bcFix==='object' && kevSnapOk(d))); }
 function kevApplies(cfg){
   try{
     var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String((cfg&&cfg.quarter)||'').trim();
@@ -67272,6 +67292,9 @@ function kevApplies(cfg){
     if(!qr || !kevQOk(qr.q) || qr.q<KEV_START) return null;
     var d=bqGet(qr.q);
     if(d.locked && !kevSnapOk(d)) return null;   /* 前の版で確定した四半期：確定したときの式のまま */
+    /* v1109：確定版から修正のあいだ（d.bcFix）は、評価・数字を直せて計算は今の値。有効な確定版は d.evSnap のまま（本人に見せる額・記録はそれ）。
+       固定した Career Score（csFreeze）と、確定したときのグレードの区間（segSnap）は使わない（新しい評価・グレード履歴を取り込むための修正なので） */
+    if(d.locked && d.bcFix && typeof d.bcFix==='object') return {q:qr.q, qr:qr, d:Object.assign({}, d, {csFreeze:{}, segSnap:null}), cfg:cfg, locked:false, snap:null, cache:{}, fix:d.bcFix, eff:d.evSnap};
     return {q:qr.q, qr:qr, d:d, cfg:cfg, locked:!!d.locked, snap:(d.locked ? d.evSnap : null), cache:{}};
   }catch(err){ return null; }
 }
@@ -67911,14 +67934,19 @@ function kevBonusForEmp(e, cfg, kv, sim){
     o.key=I.sc.key; o.track=I.sc.track||null; o.trackSrc=I.sc.trackSrc||null; o.items=I.items; o.src=I.src; o.stores=I.stores; o.ev=I.ev;
     o.evSt=I.ev ? (I.ev.st||'draft') : null;
     if(!firstInfo) firstInfo=I;
-    if(I.sc.blocked){ o.blocked='track'; if(!blocked) blocked='track'; out.push(o); return; }
+    if(I.sc.blocked){ o.blocked='track'; if(!blocked || blocked==='unsel') blocked='track'; out.push(o); return; }
     var m=[]; KEV_ITEMS.forEach(function(it){ var v=I.items[it[0]]; if(v.on) m=m.concat(v.miss); });
     if(I.jBad) m.push('判定の決まり：'+I.jBad+'（設定の確認が必要：設定タブ ③ で選び直してください）');   /* v1099 */
     o.miss=m; o.gen=I.gen;
-    if(!I.ev || I.ev.st!=='done') notDone=true;
-    if(m.length){ o.blocked='eval'; if(!blocked) blocked='eval'; miss=miss.concat(m.map(function(s){ return {g:sg, m:s}; })); out.push(o); return; }
-    var f=function(v){ return v.on ? v.coef : 1; };
-    o.coefs={c:f(I.items.c), s:f(I.items.s), f:f(I.items.f), p:f(I.items.p)};
+    var segND=(!I.ev || I.ev.st!=='done');
+    if(segND) notDone=true;
+    /* v1109（UI案61 ②）：ボーナスの締めの画面だけ（kv.adopt があるとき）、未確定の部分に選んだ値を使う。設定の確認が必要なものは仮の値で解消しない */
+    var A=(kv.adopt && typeof kv.adopt==='object' && I.gen===3) ? kevAdoptSeg(e, I, kv, segND) : null;
+    if(A) o.ad=A;
+    var stop=A ? A.cfg.concat(A.unsel) : m;
+    if(stop.length){ o.blocked=(A && !A.cfg.length) ? 'unsel' : 'eval'; if(!blocked || (blocked==='unsel' && o.blocked!=='unsel')) blocked=o.blocked; miss=miss.concat(stop.map(function(s){ return {g:sg, m:s}; })); out.push(o); return; }
+    var f=function(v, k){ return v.on ? ((A && A.coef[k]!=null) ? A.coef[k] : v.coef) : 1; };
+    o.coefs={c:f(I.items.c, 'c'), s:f(I.items.s, 's'), f:f(I.items.f, 'f'), p:f(I.items.p, 'p')};
     if([o.coefs.c, o.coefs.s, o.coefs.f, o.coefs.p].some(function(v){ return v==null; })){ o.blocked='eval'; if(!blocked) blocked='eval'; miss.push({g:sg, m:'係数の決め方を確かめてください（設定タブ ②）'}); out.push(o); return; }
     o.mult=o.coefs.c*o.coefs.s*o.coefs.f*o.coefs.p;
     if(I.gen>=2){   /* v1074（CEO の指示書 ⑦）：掛けた値（丸めない）を個人の最終係数の幅で止める（v1099 も同じ・回答 6） */
@@ -67930,6 +67958,7 @@ function kevBonusForEmp(e, cfg, kv, sim){
   });
   var el=out.filter(function(x){ return x.elig; }), cur=ghNormG(empGrade(e));
   miss=miss.map(function(x){ return typeof x==='string' ? x : ((el.length>1 ? x.g+'：' : '')+x.m); });
+  var AP=kv.adopt ? kevAdoptPerson(out) : null;   /* v1109：人ごとの未確定の部分（区間をまとめる） */
   var whole=(el.length===1 && el[0].days===qr.n && el[0].g===cur && out.length===1);
   var c0=el.length && el[0].coefs ? el[0].coefs : {c:1, s:1, f:1, p:1}, I0=firstInfo;
   return { v4:true, gen:((kevGen3(kv.q) && !kv.v2) ? 3 : (kevGen2(kv.q) ? 2 : 1)), q:kv.q, grade:g, base:base, segs:out, amount:(blocked ? 0 : total), raw:(blocked ? null : total), prBase:(el.length ? el.reduce(function(a,x){ return a+x.pr; }, 0) : 0),
@@ -67937,7 +67966,78 @@ function kevBonusForEmp(e, cfg, kv, sim){
     stores:(I0 ? I0.stores.ids : []), storeSrc:(I0 ? I0.stores.src : 'auto'), storeBasis:(I0 ? I0.stores.basis : ''), S:(I0 ? I0.S : null), C:(I0 ? I0.C : null), P:(I0 ? I0.P : null),
     /* 前の画面（個人ページの古い部品）が読んでも落ちないための値 */
     baCoef:c0.s, spCoef:c0.p, csCoef:1, coef:c0.c, baPct:(I0 && I0.items.s.pct!=null ? Math.round(I0.items.s.pct) : null), spPct:(I0 && I0.items.p.pct!=null ? Math.round(I0.items.p.pct) : null),
-    ba:{noData:!(I0 && I0.items.s.pct!=null)}, hasCS:true, csPct:null, rangeMode:false, segCs:false, full:null, profitStores:(I0 ? I0.stores.ids : []), profitStore:(I0 && I0.stores.ids[0]) || e.store };
+    ba:{noData:!(I0 && I0.items.s.pct!=null)}, hasCS:true, csPct:null, rangeMode:false, segCs:false, full:null, profitStores:(I0 ? I0.stores.ids : []), profitStore:(I0 && I0.stores.ids[0]) || e.store,
+    parts:(AP ? AP.parts : null), unselN:(AP ? AP.unsel : 0), provN:(AP ? AP.prov : 0), adopt:(AP ? AP.used : null) };
+}
+/* ---- v1109（UI案61 ②・Moto さんの回答 5〜8 は A）：未確定の部分と、そこに使う値 ----
+   未確定に数えるもの（仮の値を選べる）：Career Score の評価途中（未採点）・未評価・評価日が四半期より前・前の記録の確かめ・承認待ち（店舗用の点の変更）・
+     オフィス用の未確定／売上・利益・FL の予算や実績・目標の不足／FL 改善行動の未選択／個別評価の「評価完了」がまだ（d）。
+   仮の値で解消しないもの（設定の確認が必要）：① の基準点・1 段・幅の設定、②③④ の幅が 7 種類に合わない、判定の決まり、G3 の職種。
+   選び方（kv.adopt[従業員][部分]）：input＝入力中を仮採用（使える値があるときだけ：承認待ちのときの今の正式な点、評価完了の前の入力）／
+     tmp＝暫定 1.00／set＝7 段階のうちその人の幅の中（理由が要る）。未採点を 0 点や推測で埋めない（input は未採点があると選べない）。
+   kv.adopt が無いときは今までと同じ（未確定なら金額を出さない）。 */
+function kevAdoptCfgMiss(k, v){
+  var miss=v.miss||[];
+  if(k==='c'){ var T=v.total||{}, ev=T.missing ? '① '+kevCsMissTxt(T) : null; return miss.filter(function(t){ return t!==ev; }); }
+  if(v.cfgBad){ var head=kevItemNm(k)+'：'+v.cfgBad; return miss.filter(function(t){ return String(t).indexOf(head)===0; }); }
+  return [];
+}
+function kevAdoptPending(e, I){
+  var c=I.items.c, T=(c && c.total) || {};
+  if(T.sheet==='office' || T.src==='frozen' || T.src==='grade') return false;   /* 店舗用・部門別の正式な点を使うときだけ（固定した点・グレード変更時の確定は申請と関係ない） */
+  try{ return !!(typeof lssPendingFor==='function' && lssPendingFor(e.name, 'score')); }catch(err){ return false; }
+}
+function kevAdoptVal(c, P){
+  if(!c || typeof c!=='object') return null;
+  if(c.m==='input') return (P.input!=null && P.input!==true) ? Number(P.input) : null;
+  if(c.m==='tmp') return (1>=P.lo-1e-9 && 1<=P.hi+1e-9) ? 1 : null;
+  if(c.m==='set'){
+    var v=Number(c.v);
+    if(!KEV3_LV.some(function(x){ return Math.abs(x-v)<1e-9; }) || !(v>=P.lo-1e-9 && v<=P.hi+1e-9) || !String(c.why||'').trim()) return null;
+    return Math.round(v*100)/100;
+  }
+  return null;
+}
+function kevAdoptSeg(e, I, kv, segND){
+  var ch=(kv.adopt[e.id] && typeof kv.adopt[e.id]==='object') ? kv.adopt[e.id] : {}, out={cfg:[], unsel:[], coef:{}, parts:{}, used:{}};
+  if(I.jBad) out.cfg.push('判定の決まり：'+I.jBad+'（設定の確認が必要：設定タブ ③ で選び直してください）');
+  KEV_ITEMS.forEach(function(it){
+    var k=it[0], v=I.items[k]; if(!v || !v.on) return;
+    var cfgM=kevAdoptCfgMiss(k, v), evM=(v.miss||[]).filter(function(t){ return cfgM.indexOf(t)<0; });
+    if(cfgM.length){ out.cfg=out.cfg.concat(cfgM); return; }
+    var pend=(k==='c' && !evM.length && v.coef!=null && kevAdoptPending(e, I));
+    if(!evM.length && !pend) return;
+    var lo=Number(v.rule && v.rule.lo), hi=Number(v.rule && v.rule.hi);
+    var P={k:k, why:(pend ? ['① 点の変更の申請が承認待ちです（承認されるまでは今の正式な点）'] : evM), lo:(isFinite(lo) ? lo : 1), hi:(isFinite(hi) ? hi : 1), input:(pend ? v.coef : null)};
+    out.parts[k]=P;
+    var c=ch[k], val=kevAdoptVal(c, P);
+    if(val==null){ out.unsel.push(it[2]+'：使う値を選んでいません'+((c && typeof c==='object') ? '（選んだ値はいまは使えません）' : '')); return; }
+    out.coef[k]=val; out.used[k]={m:c.m, v:val};
+  });
+  if(segND){
+    out.parts.d={k:'d', why:['個別評価の「評価完了」がまだです'], lo:1, hi:1, input:true};
+    var cd=ch.d;
+    if(cd && typeof cd==='object' && cd.m==='input') out.used.d={m:'input', v:null};
+    else out.unsel.push('評価完了がまだ：使う値を選んでいません');
+  }
+  return out;
+}
+/* 人ごと：区間の未確定の部分をまとめる（幅は区間の共通の範囲・入力中を仮採用はどの区間でも使えるときだけ） */
+function kevAdoptPerson(segs){
+  var parts={}, order=['c','s','f','p','d'], unsel=0, prov=0, used={};
+  (segs||[]).forEach(function(x){
+    if(!x.ad) return;
+    Object.keys(x.ad.parts).forEach(function(k){
+      var P=x.ad.parts[k], Q=parts[k] || (parts[k]={k:k, why:[], lo:-Infinity, hi:Infinity, input:true, open:0, ok:0, g:[]});
+      Q.open++; if(x.ad.used[k]) Q.ok++; if(Q.g.indexOf(x.g)<0) Q.g.push(x.g);
+      (P.why||[]).forEach(function(w){ if(Q.why.indexOf(w)<0) Q.why.push(w); });
+      Q.lo=Math.max(Q.lo, Number(P.lo)); Q.hi=Math.min(Q.hi, Number(P.hi));
+      if(P.input==null) Q.input=false;
+      if(x.ad.used[k] && !used[k]) used[k]=x.ad.used[k];
+    });
+  });
+  var list=order.filter(function(k){ return parts[k]; }).map(function(k){ var Q=parts[k]; Q.unsel=(Q.ok<Q.open); if(Q.unsel) unsel++; else prov++; if(!isFinite(Q.lo)) Q.lo=1; if(!isFinite(Q.hi)) Q.hi=1; return Q; });
+  return {parts:list, unsel:unsel, prov:prov, used:used};
 }
 /* 確定した四半期：固定した記録から（計算し直さない） */
 function kevFromSnap(e, cfg, kv){
@@ -67994,7 +68094,11 @@ function kevTotals(cfg, kv, sim){
     over:(cap!=null && S>cap), factor:(k==null ? 1 : k), k:k,
     diff:(cap==null ? 0 : Math.round((cap-S)*100)/100), short:((cap!=null && !nB) ? Math.max(0, Math.round((S-cap)*100)/100) : null),   /* 不足額（全員そろったときだけ） */
     finals:(al ? al.finals : null), paid:(al ? al.sum : null),
-    nBlocked:nB, nNotDone:rows.filter(function(r){ return !r.b.blocked && r.b.notDone; }).length};
+    nBlocked:nB, nNotDone:rows.filter(function(r){ return !r.b.blocked && r.b.notDone; }).length,
+    /* v1109：ボーナスの締めの画面（kv.adopt）のとき：未選択の部分・仮の値を使う部分・設定の確認が必要な人 */
+    adopt:!!kv.adopt, unsel:rows.reduce(function(a, r){ return a+(Number(r.b.unselN)||0); }, 0), prov:rows.reduce(function(a, r){ return a+(Number(r.b.provN)||0); }, 0),
+    nUnsel:rows.filter(function(r){ return Number(r.b.unselN)>0; }).length, nProv:rows.filter(function(r){ return Number(r.b.provN)>0; }).length,
+    nCfg:rows.filter(function(r){ return r.b.blocked==='eval' || r.b.blocked==='track'; }).length};
 }
 /* その人の支給見込額（確定前は見込み） */
 function kevFinalOf(tot, e){ if(!tot || !tot.finals) return null; var v=tot.finals[e.id]; return (v==null) ? null : Number(v); }
@@ -68310,11 +68414,12 @@ function kevRecordGuard(q, lid0, write){
   }).then(fin, function(err){ try{ console.warn('kevRecord', err); }catch(e){} showToast('記録の前の確認でエラーが出たため、記録していません。もう一度押してください','danger'); return fin(false); });
 }
 /* 読み直した確定から書く（ids：記録する人。null＝全員） */
-function kevRecordWrite(q, ids){
+function kevRecordWrite(q, ids, payDate){
   var cfg=Object.assign({}, kbCfg(), {quarter:q}), kv=kevApplies(cfg);
+  if(kv && !kv.snap && kv.eff) kv=Object.assign({}, kv, {snap:kv.eff, locked:true});   /* v1109：確定版から修正のあいだも、記録は有効な確定版から */
   if(!kv || !kv.snap) return null;
   var tot=kevTotals(cfg, kv), ref=kevLockRef(kv.snap), n=0;
-  tot.rows.forEach(function(r){ if(r.b.out || (ids && ids.indexOf(r.e.id)<0)) return; _bonusWritePay(r.e, r.b, q, r.b.final, tot.k, ref); n++; });
+  tot.rows.forEach(function(r){ if(r.b.out || (ids && ids.indexOf(r.e.id)<0)) return; _bonusWritePay(r.e, r.b, q, r.b.final, tot.k, ref, payDate); n++; });
   return {n:n, tot:tot};
 }
 function kevRecordQuarter(cfg, tot){
@@ -68394,6 +68499,8 @@ function kevEvalSegs(e, b, kv){
 }
 function kevPersonState(e, b, kv){
   if(kv.locked) return {k:'lock', t:'賞与確定', c:'var(--green)'};
+  if(kv.snap) return {k:'prov', t:'仮締め', c:'var(--accent)'};   /* v1109：仮締めの版を見ている */
+  if(b && b.blocked==='unsel') return {k:'unsel', t:'使う値が未選択', c:'var(--red)'};   /* v1109：ボーナスの締めの画面 */
   var segs=kevEvalSegs(e, b, kv), evs=segs.map(function(x){ return kevEvGet(kv.q, e.id, x.g); });
   if(evs.every(function(x){ return !x; })) return {k:'none', t:'未着手', c:'var(--muted)'};
   if(evs.some(function(x){ return x && x.st==='edit'; })) return {k:'edit', t:'評価済み・直している', c:'var(--yellow)'};
@@ -68946,7 +69053,7 @@ function kevStoreGuard(q, kind){
   if(q!==cur){ showToast('表示中の四半期が変わったため、保存していません（画面を開き直してください）','warning'); bqRefresh(); return null; }
   if(!kevGen2(q)){ showToast('この四半期は前の式です','warning'); return null; }
   var d=bqGet(q);
-  if(d.locked){ showToast(q+' は査定を確定しています（確定を解除すると直せます）','warning'); return null; }
+  if(bqEditLocked(d)){ showToast(q+' は査定を確定しています（「ボーナスの締め」の「確定版から修正」で直せます）','warning'); return null; }
   if((kind==='act' || kind==='tgtp') && d.profitLocked){ showToast(q+' の利益は確定しています（設定 ④ の「利益の確定を解除」で直せます）','warning'); return null; }
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('入れられるのは GM・CEO です','warning'); return null; }   /* 成長カルテ（GM・CEO だけの画面）の設定タブにある */
   return {cfg:cfg, d:d};
@@ -69005,7 +69112,7 @@ function kevPlFill(q){
 }
 function kevStoreCardHtml(cfg){
   var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim(), d=bqGet(q), sids=bqStores(cfg), months=kevQMonths(q);
-  var locked=!!d.locked, snap=(locked && kevSnapOk(d) && d.evSnap.gen===2 && d.evSnap.stores) ? d.evSnap.stores : null;
+  var locked=bqEditLocked(d), snap=(locked && kevSnapOk(d) && d.evSnap.gen===2 && d.evSnap.stores) ? d.evSnap.stores : null;   /* v1109：確定版から修正のあいだは直せる */
   var canT=['gm','ceo'].indexOf(curRole)>=0 && !locked, canTp=canT && !d.profitLocked, canA=canTp;
   var qa=escapeHtml(JSON.stringify(q)), kv=kevStoreKv(q, cfg);
   var h='<div class="card"><div class="card-title"><span class="kc-num">4</span>店舗の目標と実績（'+escapeHtml(q)+'）'+(locked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">確定済み</span>' : (d.profitLocked ? '<span class="tag tag-green" style="margin-left:6px;font-size:10px">利益は確定</span>' : ''))+'</div>';
@@ -69327,7 +69434,7 @@ function kevFormSave(){
   if(!why){ showToast('理由を入れてください','warning'); return; }
   var from=String((document.getElementById('kevf-from')||{}).value||F.q);
   if(!kevQOk(from) || from<KEV_START){ showToast('適用開始の四半期を選んでください','warning'); return; }
-  var d=bqGet(from); if(d.locked){ showToast(from+' は査定を確定しています。次の四半期から適用してください','warning'); return; }
+  var d=bqGet(from); if(bqEditLocked(d)){ showToast(from+' は査定を確定しています。次の四半期から適用してください（「確定版から修正」のあいだは直せます）','warning'); return; }
   var ok=(F.kind==='ovr') ? kevOvrSave(F.empId, from, set, why, kevPartLabel(F.part)+'を変更') : kevRuleSave(F.scope, from, set, why, kevPartLabel(F.part)+'を変更');
   if(!ok){ showToast('保存できませんでした','danger'); return; }
   var later=kevFormLater(F, from);
@@ -69418,7 +69525,7 @@ function kevOvrClearSave(){
   var why=String((document.getElementById('kevf-why')||{}).value||'').trim();
   if(!why){ showToast('理由を入れてください','warning'); return; }
   var e=getEmployees().find(function(x){ return x.id===F.empId; }); if(!kevCanEditEmp(e)) return;
-  if(bqGet(F.q).locked){ showToast(F.q+' は査定を確定しています。外すには確定を解除してください','warning'); return; }
+  if(bqEditLocked(bqGet(F.q))){ showToast(F.q+' は査定を確定しています。外すには「ボーナスの締め」の「確定版から修正」から','warning'); return; }
   var parts=[F.part]; if(F.part==='c') parts.push('w'); if(F.part==='f') parts.push('fl');
   if(!kevPutVer('bonus_eval_ovr', kevOvrAll(), F.empId, F.q, {}, why, kevPartLabel(F.part)+'の個人設定を外した', parts)){ showToast('保存できませんでした','danger'); return; }
   var later=kevFormLater(F, F.q);
@@ -69486,8 +69593,8 @@ function kevCommonCardHtml(cfg){
 }
 
 /* ======================= 査定一覧（2026 Q3 以降） ======================= */
-function kevListTableHtml(cfg, tot){
-  var kv=tot.kv, cols=['氏名・役職','店舗・範囲','グレード・期間','基準額（日割り）','①②③④','評価','調整前','調整後','個人設定'];
+function kevListTableHtml(cfg, tot, V){
+  var kv=tot.kv, bcV=(V && V.mode!=='live') ? V : null, cols=['氏名・役職','店舗・範囲','グレード・期間','基準額（日割り）','①②③④','評価'].concat(bcV ? ['未確定の部分に使う値'] : []).concat(['調整前','調整後','個人設定']);   /* v1109 */
   var right={'基準額（日割り）':1,'調整前':1,'調整後':1};
   var h='<div class="card" style="padding:0;overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:12px;min-width:900px">';
   h+='<thead><tr style="background:var(--surface2);text-align:left">'+cols.map(function(x){ return '<th style="padding:7px 8px;font-size:10.5px;color:var(--muted);white-space:nowrap'+(right[x] ? ';text-align:right' : '')+'">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
@@ -69495,8 +69602,9 @@ function kevListTableHtml(cfg, tot){
   tot.rows.forEach(function(r){
     var e=r.e, b=r.b, el=(b.segs||[]).filter(function(x){ return x.elig; }), st=kevPersonState(e, b, kv), fin=kevFinalOf(tot, e), ov=kv.snap ? null : kevVer(kevOvrAll(), e.id, kv.q);
     var cf=el.map(function(x){
-      if(x.blocked) return '<span style="color:var(--red);font-weight:700">'+(x.blocked==='track' ? '職種の設定が必要' : '不足')+'</span>';
-      return KEV_ITEMS.map(function(it){ var on=x.items ? x.items[it[0]].on : (x.coefs && x.coefs[it[0]]!==1); var v=x.coefs ? x.coefs[it[0]] : 1; return on===false ? '<span style="color:var(--muted)">固</span>' : '<b>'+(x.gen>=2 ? kevFcG(v, x.gen) : kevF2(v))+'</b>'; }).join(' · ')
+      if(x.blocked) return '<span style="color:var(--red);font-weight:700">'+(x.blocked==='track' ? '職種の設定が必要' : (x.blocked==='unsel' ? '使う値が未選択' : '不足'))+'</span>';
+      var _u=(x.ad && x.ad.used) || {};   /* v1109：仮の値は印（暫定 1.00 は「1.00 固定」と分ける） */
+      return KEV_ITEMS.map(function(it){ var on=x.items ? x.items[it[0]].on : (x.coefs && x.coefs[it[0]]!==1); var v=x.coefs ? x.coefs[it[0]] : 1; return on===false ? '<span style="color:var(--muted)">固</span>' : '<b'+(_u[it[0]] ? ' style="color:var(--yellow)" title="'+escapeHtml(bcUsedTxt(_u[it[0]]))+'"' : '')+'>'+(x.gen>=2 ? kevFcG(v, x.gen) : kevF2(v))+(_u[it[0]] ? (_u[it[0]].m==='tmp' ? '暫' : '仮') : '')+'</b>'; }).join(' · ')
         +((x.gen>=2 && x.fmult!=null) ? '<div style="font-size:10.5px">→ 最終 <b style="color:var(--accent)">×'+kevFcG(x.fmult, x.gen)+'</b>'+(x.clamped ? '（止めた）' : '')+'</div>' : '');   /* v1074 */
     }).join('<br>');
     h+='<tr style="border-top:1px solid var(--border);cursor:pointer'+(b.blocked ? ';background:rgba(226,59,59,.05)' : '')+'" onclick="kevOpenEval('+cscJsArg(e.id)+')">'
@@ -69507,12 +69615,13 @@ function kevListTableHtml(cfg, tot){
       +'<td style="padding:7px 8px;text-align:right;white-space:nowrap">'+kevUsd(el.reduce(function(a, x){ return a+(Number(x.pr)||0); }, 0))+'</td>'
       +'<td style="padding:7px 8px;white-space:nowrap">'+cf+'</td>'
       +'<td style="padding:7px 8px;white-space:nowrap"><span class="tag" style="color:'+st.c+'">'+escapeHtml(st.t)+'</span></td>'
+      +(bcV ? '<td style="padding:7px 8px">'+bcPartsCellHtml(e, b, bcV)+'</td>' : '')
       +'<td style="padding:7px 8px;text-align:right;white-space:nowrap">'+(b.blocked ? '—' : kevUsd(b.amount))+'</td>'
       +'<td style="padding:7px 8px;text-align:right;white-space:nowrap;font-weight:800;color:var(--accent)">'+(b.blocked || fin==null ? '—' : kevUsd(fin))+'</td>'
       +'<td style="padding:7px 8px;white-space:nowrap">'+(ov ? '<span class="kev-src p">あり</span>' : '<span style="color:var(--muted)">—</span>')+'</td></tr>';
   });
   h+='</tbody></table></div>';
-  h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0;line-height:1.6"><i class="ti ti-info-circle"></i> ①②③④＝その区間の係数（固＝1.00 固定）。'+(kevGen2(kv.q) ? '→ 最終＝掛けた値を個人の最終係数の幅（初期 0.85〜1.15）に収めたもの。' : '')+'調整後＝原資の共通調整のあと（$1 未満は切り捨て、残りを端数の大きい順に $1 ずつ。合計は原資を超えない）。行を押すと個別評価タブでその人を開きます。</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin:6px 2px 0;line-height:1.6"><i class="ti ti-info-circle"></i> ①②③④＝その区間の係数（固＝1.00 固定'+(bcV ? '・暫＝暫定 1.00・仮＝入力中を仮採用か指定（ボーナスの締めの画面だけ）' : '')+'）。'+(kevGen2(kv.q) ? '→ 最終＝掛けた値を個人の最終係数の幅（初期 0.85〜1.15）に収めたもの。' : '')+'調整後＝原資の共通調整のあと（$1 未満は切り捨て、残りを端数の大きい順に $1 ずつ。合計は原資を超えない）。行を押すと個別評価タブでその人を開きます。</div>';
   return h;
 }
 function kevResultTopHtml(cfg, tot){
@@ -69528,12 +69637,18 @@ function kevResultTopHtml(cfg, tot){
   else if(tot.gen3 && tot.short>0 && !kv.locked) h+='<div style="font-size:11px;color:var(--red);line-height:1.5;flex:1;min-width:200px">支給上限に対して '+kevUsd2(tot.short)+' 不足しています（全員に ×'+Number(tot.k).toFixed(3)+'）。補う場合は設定タブ ① の特別原資で「不足分を補う」。</div>';
   h+='<div style="flex-basis:100%;font-size:11px;color:var(--muted);line-height:1.6">'+escapeHtml(kv.q)+'：'+ghMD(kv.qr.qs)+'〜'+ghMD(kv.qr.qe)+'（'+kv.qr.n+' 日）。'+(tot.gen3 ? '個人の額 ＝ 基準額（日割り）× 最終係数（反映する項目の係数（0.85〜1.15 の 0.05 刻み）を掛けて個人の最終係数の幅に収める）。① は Career Score の総合点とグレード・職種の基準得点。合計が支給上限（通常原資 ＋ 特別原資）を超えたら全員に同じ割合（調整後は最終係数の下限より下になることがある）。' : '')+((!tot.gen3 && kevGen2(kv.q) && !(kv.snap && (Number(kv.snap.gen)||1)===1)) ? '個人の額 ＝ 基準額（日割り）× 最終係数（反映する項目の係数を掛けて個人の最終係数の幅に収める）。合計が原資を超えたら全員に同じ割合（調整後は最終係数の下限より下になることがある）。' : '')+((!tot.gen3 && !(kevGen2(kv.q) && !(kv.snap && (Number(kv.snap.gen)||1)===1))) ? '個人の額 ＝ 基準額（日割り）× ① Career × ② 売上 × ③ FL × ④ 利益（グレード・職種ごとに反映か 1.00 固定）。合計が原資を超えたら全員に同じ割合。' : '')+'</div>';
   var q=kv.q, cst=(cfg.confirmedLog && cfg.confirmedLog[q]) || null, can=['gm','ceo'].indexOf(curRole)>=0;
+  if(tot.gen3 && typeof bcOwns==='function' && bcOwns(q)){ h+='</div></div>'; return h+kevResultTopTail(cfg, tot, kv); }   /* v1109：記録・確定は「ボーナスの締め」 */
   h+='<div style="flex-basis:100%;display:flex;gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:6px;padding-top:10px">';
   if(can) h+='<button class="btn '+(kv.locked ? 'btn-primary' : 'btn-secondary')+' btn-sm"'+(kv.locked ? '' : ' disabled')+' onclick="bonusConfirmQuarter()"><i class="ti ti-check"></i> 履歴に記録</button>';
   h+='<span style="font-size:11px;color:'+(cst ? 'var(--green)' : 'var(--muted)')+'">'+(cst ? '<i class="ti ti-circle-check"></i> 記録済み '+escapeHtml(q)+'：'+cst.n+' 名'+(cst.at ? '（'+new Date(cst.at).toLocaleString('ja')+'）' : '') : (kv.locked ? '確定した最終額を、各人の給与・ボーナス履歴に書きます' : '先に「この四半期の査定を確定」をしてください（確定 → 履歴に記録の順）'))+'</span>';
   h+='</div></div></div>';
   var probs=kv.locked ? [] : kevLockProblems(tot);
   if(probs.length) h+='<div class="alert alert-warning" style="margin-bottom:10px;line-height:1.7"><i class="ti ti-alert-triangle"></i> 確定の前に必要なこと（'+probs.length+' 件）：<br>'+probs.slice(0,8).map(escapeHtml).join('<br>')+(probs.length>8 ? '<br>ほか '+(probs.length-8)+' 件' : '')+'</div>';
+  return h+kevResultTopTail(cfg, tot, kv);
+}
+/* 比べるボタン（前の決め方 v1098 と） */
+function kevResultTopTail(cfg, tot, kv){
+  var h='';
   if(tot.gen3 && !kv.locked){   /* v1099：前の決め方（v1098）との比べ（押したときだけ計算する） */
     var on=!!window._kevCmp;
     h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px"><button class="btn btn-secondary btn-sm" onclick="window._kevCmp=!window._kevCmp;karteRerender()"><i class="ti ti-arrows-diff"></i> '+(on ? '比べるのを閉じる' : '前の決め方（v1098）と比べる')+'</button><span style="font-size:10.5px;color:var(--muted)">確定していない四半期だけ。確定した四半期の金額は変わりません。</span></div>';
@@ -69551,8 +69666,9 @@ function kevPersonInnerHtml(e, b, cfg, k){
   var rec=(k.payLog||[]).some(function(p){ return p.src==='auto' && p.quarter===q; });
   h+='<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">';
   h+='<button class="btn btn-secondary btn-sm" onclick="kevOpenEval('+cscJsArg(e.id)+')"><i class="ti ti-list-check"></i> 個別評価で開く</button>';
-  if(['gm','ceo'].indexOf(curRole)>=0) h+='<button class="btn '+(kv.locked && !rec ? 'btn-primary' : 'btn-secondary')+' btn-sm"'+(kv.locked ? '' : ' disabled')+' onclick="bonusConfirmOne('+cscJsArg(e.id)+')"><i class="ti ti-check"></i> '+(rec ? 'この四半期を再記録' : 'この四半期を履歴に記録')+'</button>';
-  h+='<span style="font-size:10.5px;color:'+(rec ? 'var(--green)' : 'var(--muted)')+'">'+(rec ? '<i class="ti ti-circle-check"></i> '+escapeHtml(q)+' 記録済み' : (kv.locked ? '' : '履歴への記録は、査定を確定したあと'))+'</span></div>';
+  var _bc=(typeof bcOwns==='function' && bcOwns(q));   /* v1109：記録は「ボーナスの締め」の「支給済みとして記録」 */
+  if(['gm','ceo'].indexOf(curRole)>=0 && !_bc) h+='<button class="btn '+(kv.locked && !rec ? 'btn-primary' : 'btn-secondary')+' btn-sm"'+(kv.locked ? '' : ' disabled')+' onclick="bonusConfirmOne('+cscJsArg(e.id)+')"><i class="ti ti-check"></i> '+(rec ? 'この四半期を再記録' : 'この四半期を履歴に記録')+'</button>';
+  h+='<span style="font-size:10.5px;color:'+(rec ? 'var(--green)' : 'var(--muted)')+'">'+(rec ? '<i class="ti ti-circle-check"></i> '+escapeHtml(q)+' 記録済み' : (_bc ? '支給額の確定と記録は、査定一覧の「ボーナスの締め」' : (kv.locked ? '' : '履歴への記録は、査定を確定したあと')))+'</span></div>';
   h+='<div style="margin-top:8px;font-size:11.5px;line-height:1.7;color:var(--tm)"><div style="font-weight:700;color:var(--muted);margin-bottom:2px"><i class="ti ti-info-circle"></i> この金額になった理由（説明用）</div><ul style="margin:0;padding-left:18px">'
     +kevExplainList(e, b, kv, tot).map(function(s){ return '<li>'+s+'</li>'; }).join('')+'</ul></div>';
   return h;
@@ -69573,6 +69689,7 @@ function kevExplainList(e, b, kv, tot){
    本人に効く項目（反映するものだけ）→ 評価の完了 → 査定の確定 → ボーナスの記録。足りないものの細かい中身（店舗の数字・画面の操作）は出さず、本人向けの言葉で */
 function kevSelfProgress(e, b, cfg, k){
   var kv=kevApplies(cfg); if(!kv || !b || !b.v4) return null;
+  if(kv.eff && !kv.snap){ kv=Object.assign({}, kv, {snap:kv.eff, locked:true, cache:{}}); b=kevFromSnap(e, kv.cfg || cfg, kv); }   /* v1109：確定版から修正のあいだも、本人には有効な確定版 */
   var el=(b.segs||[]).filter(function(x){ return x.elig; }); if(!el.length) return null;
   var rec=((k && k.payLog) || []).some(function(p){ return p && p.src==='auto' && p.quarter===kv.q; });
   var rows=[], NM={c:'Career Score の評価', s:'売上の達成率', f:'FL 管理', p:'利益の達成率'};
@@ -70222,9 +70339,10 @@ function kevPxSaveUi(q){
   return Promise.resolve().then(function(){ return pullOpKey('bonus_pool_extra'); }).then(function(r){ return (r===true) ? go(true) : bad(); }, bad).then(fin, function(){ return fin(false); });
 }
 /* 不足分を補う：押した時点の不足（D0）だけを足す。最新の評価・原資を読み直し、不足または特別原資が変わっていたら足さない */
-function kevPxFill(q, D0, at0){
+function kevPxKv(kv, useBc){ return (useBc && kv && typeof bcAdoptKv==='function') ? bcAdoptKv(kv) : kv; }   /* v1109：ボーナスの締めの画面からは、選んだ値で計算した不足 */
+function kevPxFill(q, D0, at0, useBc){
   var G=kevPxGuard(q); if(!G) return false;
-  var tot=kevTotals(G.cfg, G.kv), at1=(tot.extraRec && Number(tot.extraRec._at)) || 0;
+  var tot=kevTotals(G.cfg, kevPxKv(G.kv, useBc)), at1=(tot.extraRec && Number(tot.extraRec._at)) || 0;
   if(!tot.poolKnown){ showToast('通常原資が未設定のため、不足額を出せません（設定タブ ① で経常利益と経常利益率を入れてください）','warning'); return false; }
   if(tot.nBlocked){ showToast('試算未完了：評価が足りない人が '+tot.nBlocked+' 名いるため、不足額が決まりません','warning'); return false; }
   if(!(tot.short>0)){ showToast('不足はありません','info'); try{ kbRefresh(); }catch(e){} return false; }
@@ -70240,14 +70358,14 @@ function kevPxFill(q, D0, at0){
     var cfg2=Object.assign({}, kbCfg(), {quarter:q}), kv2=kevApplies(cfg2);
     if(!kv2 || kv2.locked){ showToast('ほかの端末で '+q+' の査定が確定されています（足していません）','info'); try{ kbRefresh(); }catch(e){} return false; }
     if(typeof mdCacheClear==='function') mdCacheClear();
-    var t2=kevTotals(cfg2, kv2), at2=(t2.extraRec && Number(t2.extraRec._at)) || 0;
+    var t2=kevTotals(cfg2, kevPxKv(kv2, useBc)), at2=(t2.extraRec && Number(t2.extraRec._at)) || 0;
     if(at2!==(Number(at0)||0)){ showToast('特別原資はほかの端末で '+kevUsd2(t2.extra)+' に変わっていました。新しい不足額は '+(t2.short==null ? '試算未完了' : kevUsd2(t2.short))+' です。足していません。確かめてから、もう一度押してください','warning'); try{ kbRefresh(); }catch(e){} return false; }
     if(t2.short==null || Math.abs(t2.short-Number(D0))>0.004){ showToast('ほかの端末で評価・原資などが変わり、不足額が '+(t2.short==null ? '試算未完了' : kevUsd2(t2.short))+' になりました。足していません。確かめてから、もう一度押してください','warning'); try{ kbRefresh(); }catch(e){} return false; }
     var nv=Math.round((t2.extra+Number(D0))*100)/100;
     var w=kevPxWrite(q, nv, '不足分を補う（不足 '+kevUsd2(D0)+'）', 'fill', at0, Number(D0));
     if(w.conflict){ showToast('特別原資がほかの端末で変わったため、足していません。もう一度押してください','warning'); try{ kbRefresh(); }catch(e){} return false; }
     if(!w.ok){ showToast('保存できませんでした','danger'); return false; }
-    return kevPxPush(q, '不足分 '+kevUsd2(D0)+' を特別原資に足しました（'+kevUsd2(t2.extra)+' → '+kevUsd2(nv)+'）', w.rec && w.rec._at);
+    return Promise.resolve(kevPxPush(q, '不足分 '+kevUsd2(D0)+' を特別原資に足しました（'+kevUsd2(t2.extra)+' → '+kevUsd2(nv)+'）', w.rec && w.rec._at)).then(function(r){ if(useBc && typeof bcRerender==='function') bcRerender(); return r; });
   }).then(fin, function(err){ try{ console.warn('kevPxFill', err); }catch(e){} showToast('読み直しでエラーが出たため、足していません。もう一度押してください','danger'); return fin(false); });
 }
 /* 設定タブ ① の下：特別原資と支給上限（2026 Q3 から） */
@@ -71690,6 +71808,781 @@ function csgLssBtnHtml(name, cat, gi){
   return '<button class="btn btn-secondary btn-sm" style="font-size:11px;padding:3px 9px" onclick="csgOpen('+cscJsArg(cat)+','+(gi==null ? 'null' : Number(gi))+','+cscJsArg(dept)+','+cscJsArg(g)+')"><i class="ti ti-book-2"></i> '+t('評価基準・例を見る','Criteria & examples')+'</button>';
 }
 /* FUNERGY_KARTE_EVAL_END */
+/* FUNERGY_BONUS_CLOSE_BEGIN */
+/* v1109（UI案61 ②・Moto さんの回答 5〜8 は A）：ボーナスの仮締め・支給額確定・修正・支給済み・調整記録。仕様 docs/BONUS_CLOSE_V1109_JA.md
+   ・版はサーバー（Edge Function bonus-close・表 bc_*）。書けるのはメールで認証した GM・CEO（サーバーが manager_auth で確かめる）。経理は読むだけ。
+   ・計算は今の賞与の式（FUNERGY_KARTE_EVAL）のまま。未確定の部分に選んだ値（kv.adopt）を使うのは、この画面と、ここで保存する版だけ。
+     Career Score・実績・設定は書き換えない。Career Score の係数は ① の 1 回だけ（今と同じ・二重に掛けない）。
+   ・有効な確定版の写しは今までどおり bonus_q（spl_bonus_q_<四半期>）の evSnap。ほかの画面・本人に見せる表示・給与・ボーナス履歴はそれを読む。
+   ・確定・再計算だけで、支払・控除・給与への送信はしない。本人へは自動で出さない（本人に見せる表示は有効な確定版の額だけ・回答 8）。 */
+var BC_FN = '/functions/v1/bonus-close';
+var _bc = {q:'', data:null, load:'', err:'', errCode:'', draft:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:0};
+/* この四半期は新しい締め（サーバーの版）で扱うか：2026 Q3（v1099 の式）から */
+function bcOwns(q){ try{ return !!(q && typeof kevQOk==='function' && kevQOk(q) && typeof kevGen3==='function' && kevGen3(q)); }catch(err){ return false; } }
+function bcCan(){ return ['gm','ceo'].indexOf(curRole)>=0 && !curStoreLogin; }
+var BC_ERR = {
+  signin:'メールで認証してください（業務Bot・Invoice取込と同じ、本部に登録したメール）',
+  network:'ボーナスの締めのサーバー（bonus-close）につながりません。まだ配備されていないか、通信できません',
+  unauthorized:'メールの認証が切れました。もう一度認証してください',
+  forbidden:'このアカウントでは保存できません（GM・CEO のメールのアカウントだけ）',
+  bad_value:'送った内容の形がちがうため、保存していません（画面を開き直してください）',
+  conflict:'ほかの端末（ほかの人）がこの四半期を先に変えていました。保存していません。画面を新しい内容にしました',
+  not_editable:'いまの状態ではできません（ほかの端末で状態が変わっていないか、画面を新しくして確かめてください）',
+  not_found:'見つかりません（画面を新しくしてください）',
+  bad_snapshot:'版の中身がそろっていないため、保存していません（画面を開き直してください）',
+  bad_amounts:'金額の合計が合わないため、保存していません（端数・原資の調整を確かめてください）',
+  unselected:'使う値を選んでいない部分があるため、保存していません',
+  no_pool:'原資が未設定のため、保存していません（$0 とは別。設定タブ ①）',
+  why_required:'理由を入れてください',
+  memo_required:'やったことのメモを入れてください',
+  already_paid:'この四半期はもう支給済みとして記録しています（差は調整記録へ）',
+  fixing:'修正の途中です。先に「再確定」か「修正をやめる」をしてください'
+};
+function bcErrText(code, status){ return BC_ERR[code] || ('うまくいきませんでした'+(/^[a-z_]{1,40}$/.test(String(code||'')) ? '（'+code+'）' : (/^\d{3}$/.test(String(status||'')) ? '（HTTP '+status+'）' : ''))); }
+function bcSession(){ return (typeof invInSession==='function') ? invInSession() : null; }
+async function bcAPI(payload, retried){
+  var s=bcSession();
+  if(!s || !s.access_token){ var e0=new Error(bcErrText('signin')); e0.code='signin'; throw e0; }
+  var r, ac=(typeof AbortController!=='undefined') ? new AbortController() : null, tm=ac ? setTimeout(function(){ try{ ac.abort(); }catch(e){} }, 45000) : null;
+  try{ r=await fetch(SUPABASE_URL+BC_FN, {method:'POST', headers:{apikey:SUPABASE_ANON, Authorization:'Bearer '+s.access_token, 'Content-Type':'application/json'}, body:JSON.stringify(payload), signal:ac ? ac.signal : undefined}); }
+  catch(e){ var ne=new Error(bcErrText('network')); ne.code='network'; throw ne; }
+  finally{ if(tm) clearTimeout(tm); }
+  if(r.status===401 && !retried && s.refresh_token && typeof invInSessionRefresh==='function'){
+    var ns=await invInSessionRefresh(s);
+    if(ns && bcSession()===ns) return bcAPI(payload, true);
+  }
+  var j=null; try{ j=await r.json(); }catch(e){ j=null; }
+  if(!r.ok){ var c=(j && typeof j.error==='string') ? j.error : ''; var err=new Error(bcErrText(c, r.status)); err.code=c; err.status=r.status; throw err; }
+  return j;
+}
+function bcJ(v){ return JSON.parse(JSON.stringify(v==null ? null : v)); }
+function bcRerender(){ try{ if(typeof kbRefresh==='function') kbRefresh(); }catch(e){} }
+function bcReset(q){ _bc={q:q||'', data:null, load:'', err:'', errCode:'', draft:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:(_bc.seq||0)+1}; }
+/* 読み込み（画面を開いたとき・押したあと）。下書きを直している途中なら、手元の下書きは残す */
+function bcLoad(q, keepDraft){
+  if(!bcSession()){ _bc.load='signin'; return Promise.resolve(false); }
+  var seq=++_bc.seq; _bc.load='loading';
+  return bcAPI({action:'get', quarter:q}).then(function(D){
+    if(seq!==_bc.seq || _bc.q!==q) return false;
+    _bc.data=D; _bc.load='ok'; _bc.err=''; _bc.errCode='';
+    if(!keepDraft || !_bc.dirty || !_bc.draft){ _bc.draft=bcJ((D && D.draft) || {}); _bc.dirty=false; }
+    if(!_bc.draft.choices || typeof _bc.draft.choices!=='object') _bc.draft.choices={};
+    if(!Array.isArray(_bc.draft.bulk)) _bc.draft.bulk=[];
+    bcReconcile(q, D);
+    return true;
+  }, function(e){
+    if(seq!==_bc.seq) return false;
+    _bc.load=(e && e.code==='signin') ? 'signin' : 'err'; _bc.err=String((e && e.message) || e); _bc.errCode=(e && e.code) || '';
+    return false;
+  }).then(function(r){ if(!_bc.busy) bcRerender(); return r; });
+}
+function bcEnsure(q){
+  if(_bc.q!==q) bcReset(q);
+  if(!_bc.load){ _bc.load='loading'; setTimeout(function(){ if(_bc.q===q) bcLoad(q); }, 0); }
+}
+function bcChoices(){ return (_bc.draft && _bc.draft.choices && typeof _bc.draft.choices==='object') ? _bc.draft.choices : {}; }
+
+/* ---- 状態（サーバーの版から） ---- */
+function bcStateOf(D){
+  if(!D) return {k:'none', editable:false};
+  var vs=Array.isArray(D.versions) ? D.versions : [], ef=vs.filter(function(v){ return v.status==='effective'; })[0] || null, last=vs.length ? vs[vs.length-1] : null;
+  var paid=vs.filter(function(v){ return !!v.paid_at; })[0] || null, fixing=(D.fixing==null) ? null : Number(D.fixing), k;
+  if(fixing!=null) k=ef ? 'fixFinal' : 'fixProv';
+  else if(ef) k=ef.paid_at ? 'paid' : (paid ? 'reconf' : 'final');
+  else if(last) k='prov';
+  else k='draft';
+  return {k:k, ef:ef, last:last, paid:paid, fixing:fixing, vs:vs, editable:(k==='draft' || k==='fixProv' || k==='fixFinal'),
+    open:(Array.isArray(D.adjust) ? D.adjust.filter(function(x){ return x.state==='open'; }).length : 0)};
+}
+function bcStateLabel(S){
+  var v=function(x){ return 'v'+(x ? x.ver : '?'); };
+  switch(S.k){
+    case 'draft': return {t:'作成中・試算中', c:'var(--muted)'};
+    case 'prov': return {t:'仮締め '+v(S.last), c:'var(--accent)'};
+    case 'fixProv': return {t:'修正中（'+v({ver:S.fixing})+' から）', c:'var(--yellow)'};
+    case 'final': return {t:'支給額確定 '+v(S.ef)+(S.ef.has_prov ? '・未確定評価あり・仮採用済' : ''), c:'var(--green)'};
+    case 'fixFinal': return {t:'確定版から修正中（有効なのは '+v(S.ef)+' のまま）', c:'var(--yellow)'};
+    case 'paid': return {t:'支給済み '+v(S.ef)+'（'+String(S.ef.paid_on||'')+'）', c:'var(--green)'};
+    case 'reconf': return {t:'支給済み '+v(S.paid)+'・確定し直し '+v(S.ef)+(S.open ? '（調整記録 '+S.open+' 件が未対応）' : ''), c:'var(--green)'};
+  }
+  return {t:'—', c:'var(--muted)'};
+}
+
+/* ---- 計算：選んだ値で（この画面だけ） ---- */
+function bcLiveKv(cfg, choices, fixFinal){
+  var kv=kevApplies(cfg); if(!kv) return null;
+  kv=Object.assign({}, kv, {locked:false, snap:null, cache:{}, adopt:(choices || {})});
+  if(fixFinal && kv.d) kv.d=Object.assign({}, kv.d, {csFreeze:{}, segSnap:null});   /* 確定版から修正：固定した Career Score・区間は使わない（kevApplies の bcFix と同じ） */
+  return kv;
+}
+/* 「不足分を補う」（kevPxFill）が、この画面で選んだ値で計算した不足を使う */
+function bcAdoptKv(kv){
+  var S=bcStateOf(_bc.q===(kv && kv.q) ? _bc.data : null);
+  return S.editable ? Object.assign({}, kv, {adopt:bcChoices(), cache:{}}) : kv;
+}
+/* 画面に出す数字：直せる状態は今の評価＋選んだ値、仮締め・確定は保存した版の数字 */
+function bcView(cfg, tot0, kv0){
+  /* tot0：今の計算（kevTotals）か、それを返す関数（要るときだけ計算する：全員の計算は重いので、1 回の描画で 1 回だけ） */
+  var T=(typeof tot0==='function') ? tot0 : function(){ return tot0; }, K=kv0 || ((typeof tot0==='function') ? null : tot0.kv);
+  var q=K.q, D=(_bc.q===q) ? _bc.data : null, S=bcStateOf(D);
+  if(!D) return {mode:'live', tot:T(), S:S, q:q};
+  if(S.k==='draft' && (K.locked || K.snap)) return {mode:'live', tot:T(), S:S, q:q, oldLock:true};   /* 前の版（v1108 まで）で確定：取り込むまで見るだけ */
+  if(S.editable){
+    var kv=bcLiveKv(cfg, bcChoices(), S.k==='fixFinal'), t=kevTotals(cfg, kv);
+    if(t.nBlocked) t=Object.assign({}, t, {k:null, paid:null, finals:null, short:null});   /* 算定未完了：原資の調整と人ごとの見込額は出さない */
+    return {mode:'edit', tot:t, S:S, q:q, kv:kv};
+  }
+  if(S.k==='prov'){
+    var sn=D.latest && D.latest.snap;
+    if(!sn) return {mode:'live', tot:T(), S:S, q:q};
+    return {mode:'ver', ver:S.last.ver, tot:kevTotals(cfg, Object.assign({}, K, {snap:sn, locked:false, cache:{}})), S:S, q:q, snap:sn};
+  }
+  var lid='BC-'+q+'-v'+S.ef.ver;
+  if(K.snap && K.snap.lid===lid) return {mode:'ver', ver:S.ef.ver, tot:T(), S:S, q:q, snap:K.snap};
+  var esn=(D.effective && D.effective.snap) || (D.effective && D.effective.same && D.latest && D.latest.snap) || null;
+  if(!esn) return {mode:'live', tot:T(), S:S, q:q, mirrorBad:true};
+  return {mode:'ver', ver:S.ef.ver, tot:kevTotals(cfg, Object.assign({}, K, {snap:esn, locked:true, cache:{}})), S:S, q:q, snap:esn, mirrorBad:true};
+}
+
+/* ---- 版の中身（今の確定 kevLockCommit と同じ形＋選んだ値） ---- */
+function bcUsedChoices(tot, choices){
+  var out={};
+  tot.rows.forEach(function(r){
+    var b=r.b, id=r.e.id, ch=choices[id]; if(!ch || !b.adopt) return;
+    Object.keys(b.adopt).forEach(function(k){
+      var c=ch[k]; if(!c || typeof c!=='object') return;
+      var o={m:c.m}; if(c.m==='set') o.v=Number(c.v);
+      if(c.why) o.why=String(c.why).slice(0, 300); if(c.at) o.at=String(c.at).slice(0, 40); if(c.by) o.by=String(c.by).slice(0, 80);
+      (out[id]=out[id]||{})[k]=o;
+    });
+  });
+  return out;
+}
+function bcBuild(q, cfg, choices, bulk, fixFinal){
+  var kv=bcLiveKv(Object.assign({}, cfg, {quarter:q}), choices, !!fixFinal);
+  if(!kv || kv.q!==q) return {err:'四半期を確かめてください'};
+  if(typeof mdCacheClear==='function') mdCacheClear();
+  var tot=kevTotals(Object.assign({}, cfg, {quarter:q}), kv);
+  if(!tot.poolKnown) return {err:'原資が未設定です（設定タブ ① で経常利益と経常利益率を入れてください。$0 とは別）', tot:tot};
+  if(tot.nCfg) return {err:'設定の確認が必要な人が '+tot.nCfg+' 名います（'+tot.rows.filter(function(r){ return r.b.blocked==='eval' || r.b.blocked==='track'; }).slice(0, 4).map(function(r){ return r.e.name; }).join('・')+'）。仮の値では解消しません', tot:tot};
+  if(tot.unsel) return {err:'使う値を選んでいない部分が '+tot.unsel+' あります（算定未完了）', tot:tot};
+  if(tot.nBlocked) return {err:'金額を出せない人がいます', tot:tot};
+  var badId=tot.rows.filter(function(r){ return !/^[A-Za-z0-9_.:@-]{1,64}$/.test(String(r.e.id)); });
+  if(badId.length) return {err:'従業員 ID の形がサーバーの決まりと合わない人がいます（'+badId.slice(0, 3).map(function(r){ return r.e.name; }).join('・')+'）。Claude に知らせてください', tot:tot};
+  var people={}, order=[], segSnap={}, coefSnap={}, used=bcUsedChoices(tot, choices);
+  tot.rows.forEach(function(r){
+    var e=r.e, b=r.b, el=b.segs.filter(function(x){ return x.elig; });
+    order.push(e.id);
+    people[e.id]={name:e.name, grade:b.grade, base:b.base, raw:b.amount, final:tot.finals[e.id], prBase:b.prBase, prorated:b.prorated, stores:b.stores, storeSrc:b.storeSrc, storeBasis:b.storeBasis,
+      segs:el.map(kevSnapSeg), adopt:(used[e.id] || null), parts:(b.parts || []).map(function(P){ return {k:P.k, why:(P.why||[]).slice(0, 4), lo:P.lo, hi:P.hi}; })};
+    segSnap[e.id]=b.segs.map(function(x){ return {g:x.g, from:x.from, to:x.to, days:x.days, noHist:!!x.noHist}; });
+    var cs=function(x){ var c=(x.items && x.items.c && x.items.c.rule) || {}; return {g:x.g, key:x.key, track:x.track||null, v:null, rv:null, gb:x.gbase, lo:(kevN(c.lo)==null ? 0.7 : kevN(c.lo)), hi:(kevN(c.hi)==null ? 1.3 : kevN(c.hi)), from:x.from, to:x.to}; };
+    coefSnap[e.id]={cur:(el.length ? cs(el[el.length-1]) : null), segs:el.map(cs)};
+  });
+  var pi=bonusPoolInfo(cfg, q), now=kevNow(), who=kevMe(), _er=tot.extraRec;
+  var sn={v:1, q:q, at:now, by:who, start:KEV_START, start2:KEV2_START, start3:KEV3_START, gen:3, cg:1, j:kevJ3(kevRuleFor(null, q, null, null, cfg).r), stores:kevStoreSnap(q, cfg),
+    S:tot.total, P:tot.poolP, E:tot.extra, cap:tot.cap, k:tot.k, paid:tot.paid, finals:tot.finals, people:people, order:order,
+    Erec:(_er ? {v:tot.extra, why:String(_er.why||'').slice(0,500), at:_er.at||'', by:_er.by||''} : null),
+    poolSnap:{profit:pi.profit, margin:pi.margin, rate:pi.rate, lo:(pi.row ? pi.row.lo : null), hi:(pi.row ? pi.row.hi : null), amount:pi.amount, at:now, by:who},
+    segSnap:segSnap, coefSnap:coefSnap, unsel:tot.unsel, prov:tot.prov, choices:used, bulk:(Array.isArray(bulk) ? bulk.slice(-50) : [])};
+  return {sn:sn, tot:tot};
+}
+/* 押したときの中身と、読み直したあとの中身が同じか（時刻・押した人は比べない） */
+function bcDigest(sn){ if(!sn) return 'none:'+Math.random(); var x=Object.assign({}, sn); delete x.at; delete x.by; if(x.poolSnap){ x.poolSnap=Object.assign({}, x.poolSnap); delete x.poolSnap.at; delete x.poolSnap.by; } return kevStableStr(x); }
+
+/* ---- 有効な確定版の写し（bonus_q.evSnap）：ほかの画面・本人に見せる表示・履歴の記録はこれを読む ---- */
+function bcMirrorWrite(q, row, snap, quiet){
+  var d=bqGet(q);
+  d.locked=true; d.lockedAt=String(row.made_at||kevNow()); d.lockedBy=String(row.made_by||'');
+  d.rangeLock=d.lockedAt+'|'+d.lockedBy;
+  d.evSnap=Object.assign({}, snap, {lk:d.lockedAt+'|'+d.lockedBy, bc:{ver:row.ver, prov:!!row.has_prov, made_at:row.made_at, made_by:row.made_by}});
+  if(snap.poolSnap) d.poolSnap=snap.poolSnap;
+  d.segSnap=snap.segSnap || null; d.coefSnap=snap.coefSnap || null;
+  delete d.bcFix;
+  if(bqSet(q, d)===false){ if(!quiet) showToast('この端末に確定の写しを書けませんでした（端末の保存容量）','danger'); return Promise.resolve(false); }
+  return bcPushQ(q);
+}
+function bcPushQ(q){
+  var key='spl_bonus_q_'+q;
+  if(typeof opMergePush!=='function' || typeof _lsRaw!=='function') return Promise.resolve(true);
+  var val=_lsRaw(key, null); if(val==null) return Promise.resolve(false);
+  return Promise.resolve().then(function(){ return opMergePush(key, val); }).then(function(r){ if(r===false){ try{ if(typeof _outboxAdd==='function') _outboxAdd(key, 'push failed'); }catch(e){} } return r!==false; }, function(){ return false; });
+}
+function bcSetFix(q, on, ver){
+  var d=bqGet(q);
+  if(on){ if(!(d.locked && kevSnapOk(d))) return Promise.resolve(false); d.bcFix={ver:ver, at:kevNow(), by:kevMe()}; }
+  else { if(!d.bcFix) return Promise.resolve(true); delete d.bcFix; }
+  if(bqSet(q, d)===false) return Promise.resolve(false);
+  return bcPushQ(q);
+}
+/* 読み込んだとき：写しとサーバーの版を合わせる（GM・CEO の端末だけ。金額は変えない＝修正中の印だけ） */
+function bcReconcile(q, D){
+  if(!bcCan() || !D || !D.me || !D.me.write) return;
+  var S=bcStateOf(D), d=bqGet(q);
+  if(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===('BC-'+q+'-v'+S.ef.ver)){
+    if(S.k==='fixFinal' && !d.bcFix) bcSetFix(q, true, S.ef.ver);
+    else if(S.k!=='fixFinal' && d.bcFix) bcSetFix(q, false);
+  } else if(!S.ef && d.bcFix) bcSetFix(q, false);
+}
+function bcMirrorState(q, S){
+  var d=bqGet(q), lidOk=!!(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===('BC-'+q+'-v'+S.ef.ver));
+  if(S.ef) return lidOk ? 'ok' : 'bad';
+  if(d.locked && kevSnapOk(d) && String(d.evSnap.lid||'').indexOf('BC-')!==0) return 'old';   /* 前の版（v1108 まで）で確定した四半期 */
+  if(d.locked) return 'odd';
+  return 'none';
+}
+
+/* ---- 画面 ---- */
+function bcBtn(label, on, primary, dis, title){ return '<button class="btn '+(primary ? 'btn-primary' : 'btn-secondary')+' btn-sm" style="min-height:40px"'+(dis ? ' disabled' : '')+(title ? ' title="'+escapeHtml(title)+'"' : '')+' onclick="'+on+'">'+label+'</button>'; }
+function bcTile(label, val, sub, col){ return '<div style="flex:1 1 150px;min-width:140px;background:var(--surface2);border-radius:10px;padding:8px 11px"><div style="font-size:10.5px;color:var(--muted)">'+label+'</div><div style="font-size:17px;font-weight:800'+(col ? ';color:'+col : '')+'">'+val+'</div>'+(sub ? '<div style="font-size:10.5px;color:var(--muted);line-height:1.5">'+sub+'</div>' : '')+'</div>'; }
+function bcPanelHtml(cfg, V){
+  if(!bcCan()) return '';
+  var q=V.q, qq=cscJsArg(q), h='<div class="card" id="bc-panel" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-lock-square" style="color:var(--accent)"></i>ボーナスの締め（'+escapeHtml(q)+'）';
+  if(!bcSession()){
+    return h+'</div><div style="font-size:12px;line-height:1.7;color:var(--tm)">仮締め・支給額の確定・修正・支給済みの記録は、メールで認証した GM・CEO がサーバーに保存します（全員分をまとめて・ほかの人が先に変えていたら保存しません）。下の一覧は今の見込みです（未確定の人の金額は出しません）。</div>'
+      +'<div class="btn-row" style="margin-top:8px">'+bcBtn('<i class="ti ti-mail"></i> メールで認証', 'bcLoginModal()', true)+'</div></div>';
+  }
+  if(_bc.load==='loading' || !_bc.load) return h+'</div><div style="font-size:12px;color:var(--muted)">サーバーの版を読み込んでいます…</div></div>';
+  if(_bc.load==='err' || _bc.load==='signin'){
+    return h+'</div><div style="font-size:12px;color:var(--red);line-height:1.7">'+escapeHtml(_bc.err || bcErrText(_bc.errCode))+'</div><div class="btn-row" style="margin-top:8px">'
+      +(_bc.load==='signin' || _bc.errCode==='unauthorized' ? bcBtn('<i class="ti ti-mail"></i> メールで認証', 'bcLoginModal()', true) : '')+bcBtn('<i class="ti ti-refresh"></i> もう一度', 'bcRefresh('+qq+')')+'</div></div>';
+  }
+  var D=_bc.data, S=V.S, L=bcStateLabel(S), tot=V.tot, me=D.me || {}, w=!!me.write && !_bc.busy, ms=bcMirrorState(q, S);
+  h+='<span style="margin-left:8px;font-size:11.5px;font-weight:800;color:'+L.c+';background:var(--surface2);border-radius:6px;padding:2px 8px">'+escapeHtml(L.t)+'</span>';
+  h+='<span id="bc-busy" role="status" style="margin-left:8px;font-size:11px;color:var(--muted)">'+(_bc.busy ? '<i class="ti ti-loader"></i> '+escapeHtml(_bc.busy) : '')+'</span>';
+  h+='</div>';
+  /* 下書き */
+  if(S.editable) h+='<div style="font-size:11px;color:'+(_bc.dirty ? 'var(--yellow)' : 'var(--muted)')+';margin:-4px 0 6px">'+(_bc.dirty ? '<i class="ti ti-alert-triangle"></i> 保存していない変更があります（「下書き保存」でサーバーに）' : (D.draft_at ? '下書き：サーバーに保存済み '+escapeHtml(bcTime(D.draft_at))+'（'+escapeHtml(D.draft_by||'')+'）' : '下書き：まだありません'))+'</div>';
+  /* 知らせ */
+  if(ms==='bad') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> アプリの確定の記録（ほかの画面・本人に見せる表示・履歴の記録が読むもの）が、サーバーの有効な確定版 v'+S.ef.ver+' と違います。'+(w ? ' '+bcBtn('アプリの記録を v'+S.ef.ver+' に合わせる', 'bcMirrorFix('+qq+')', true) : '')+'</div>';
+  if(ms==='old') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> この四半期は前の版（v1108 まで）のアプリで確定しています。サーバーにはまだ版がありません。今の確定の数字をそのまま版にしてサーバーに入れると、ここから修正・支給済みの記録ができます。'+(w ? ' '+bcBtn('今の確定をサーバーに取り込む', 'bcImport('+qq+')', true) : '')+'</div>';
+  if(ms==='odd') h+='<div class="alert alert-warning" style="margin:4px 0 8px"><i class="ti ti-alert-triangle"></i> アプリの記録では確定していますが、サーバーに有効な確定版がありません。画面を新しくしてください（直らなければ Claude に）。</div>';
+  var ne=(V.mode==='ver' && !S.editable) ? bcNewEvalLater(V) : null;
+  if(ne && ne.length) h+='<div style="background:#fdf3dc;border-radius:10px;padding:8px 11px;margin:4px 0 8px;font-size:12px;line-height:1.6"><b>新しい評価があります（'+ne.length+' 人）</b>：'+escapeHtml(ne.slice(0, 6).map(function(x){ return x.name+'（'+x.why+'）'; }).join('・'))+(ne.length>6 ? ' ほか' : '')+'。保存した v'+V.ver+' は変わりません。取り込むときは「'+(S.ef ? '確定版から修正' : '修正を開始')+'」。</div>';
+  /* 数字 */
+  var unsel=tot.unsel||0, nCfg=tot.nCfg||0, incomplete=(V.mode==='edit' && (unsel>0 || nCfg>0 || tot.nBlocked>0)) || !tot.poolKnown || tot.paid==null;
+  var lastProv=S.vs.filter(function(v){ return v.kind==='provisional'; }).slice(-1)[0] || null;
+  h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">'
+    +bcTile(V.mode==='ver' ? '支給の合計（v'+V.ver+'）' : (V.oldLock ? '支給の合計（前の版の確定）' : '支給見込総額'), incomplete ? '<span style="color:var(--red)">算定未完了</span>' : kevUsd(tot.paid), incomplete ? (!tot.poolKnown ? '原資が未設定（$0 とは別）' : (unsel ? '使う値を選んでいない部分 '+unsel : '')+(nCfg ? (unsel ? '・' : '')+'設定の確認が必要 '+nCfg+' 名' : '')) : '調整前 '+kevUsd(tot.total)+'・k ×'+(tot.k==null ? '—' : Number(tot.k).toFixed(3)))
+    +bcTile('原資（支給の上限）', tot.cap==null ? '—' : kevUsd2(tot.cap), '通常 '+(tot.poolKnown ? kevUsd2(tot.poolP) : '未設定')+' ＋ 特別 '+kevUsd2(tot.extra))
+    +bcTile('前回の仮締め', lastProv ? 'v'+lastProv.ver+' '+kevUsd(lastProv.paid_total) : '—', lastProv ? escapeHtml(bcTime(lastProv.made_at)+' '+lastProv.made_by) : 'まだありません')
+    +bcTile('今の確定版', S.ef ? 'v'+S.ef.ver+' '+kevUsd(S.ef.paid_total) : '—', S.ef ? escapeHtml(bcTime(S.ef.made_at)+' '+S.ef.made_by)+(S.ef.has_prov ? '・未確定評価あり・仮採用済' : '') : 'まだありません')
+    +(V.mode==='edit' ? bcTile('未確定の部分がある人', String((tot.nProv||0)+(tot.nUnsel||0)), 'うち仮の値 '+(tot.nProv||0)+'・未選択 '+(tot.nUnsel||0)+(nCfg ? '・設定の確認が必要 '+nCfg : ''), (tot.nUnsel ? 'var(--red)' : '')) : '')
+    +'</div>';
+  if(V.mode==='edit' && unsel) h+='<div style="font-size:11.5px;color:var(--red);margin:-2px 0 8px;line-height:1.6">使う値を選んでいない人がいるので、原資の調整（k）も人ごとの見込額も出しません（全員がそろうと出ます）。</div>';
+  /* ボタン */
+  h+='<div class="btn-row" style="flex-wrap:wrap;gap:6px">';
+  var wd=!w;
+  if(V.oldLock || ms==='odd'){ /* 取り込むまで直さない */ }
+  else if(S.k==='draft' || S.k==='fixProv' || S.k==='fixFinal'){
+    h+=bcBtn('<i class="ti ti-device-floppy"></i> 下書き保存', 'bcDraftSave('+qq+')', false, wd || !_bc.dirty);
+    h+=bcBtn('<i class="ti ti-wand"></i> 未確定部分を 1.00 で試算'+(unsel ? '（未選択 '+unsel+'）' : ''), 'bcBulkOpen('+qq+')', false, wd || !unsel);
+    if(S.k==='fixFinal') h+=bcBtn('<i class="ti ti-lock-check"></i> 再確定（新しい版を有効に）', 'bcSaveVersion('+qq+',\'final\')', true, wd || incomplete);
+    else h+=bcBtn('<i class="ti ti-lock"></i> 仮締めを保存'+(S.k==='fixProv' ? '（次の版）' : ''), 'bcSaveVersion('+qq+',\'provisional\')', true, wd || incomplete, incomplete ? '未選択・設定の確認が 0 になると押せます' : '');
+    if(S.k!=='draft') h+=bcBtn('<i class="ti ti-arrow-back-up"></i> 修正をやめる', 'bcFixCancel('+qq+')', false, wd);
+    if(tot.short>0 && !tot.nBlocked && tot.poolKnown) h+=bcBtn('<i class="ti ti-plus"></i> 不足分を補う（＋'+kevUsd2(tot.short)+'）', 'kevPxFill('+qq+','+escapeHtml(String(tot.short))+','+escapeHtml(String((tot.extraRec && Number(tot.extraRec._at)) || 0))+',true)', false, wd || _bc.dirty, _bc.dirty ? '先に下書き保存' : '');
+    if(S.k!=='draft') h+=bcBtn('<i class="ti ti-arrows-diff"></i> 差額を見る（v'+S.fixing+' と）', 'bcCmpOpen('+qq+','+Number(S.fixing)+')');
+  } else if(S.k==='prov'){
+    h+=bcBtn('<i class="ti ti-pencil"></i> 修正を開始', 'bcFixStart('+qq+')', false, wd);
+    h+=bcBtn('<i class="ti ti-lock-check"></i> 支給額を確定（v'+S.last.ver+' の額）', 'bcConfirm('+qq+')', true, wd);
+    h+=bcBtn('<i class="ti ti-arrows-diff"></i> 差額を見る（今の評価と）', 'bcCmpOpen('+qq+',\'live\')');
+  } else if(S.k==='final'){
+    h+=bcBtn('<i class="ti ti-pencil"></i> 確定版から修正', 'bcFixStart('+qq+')', false, wd);
+    h+=bcBtn('<i class="ti ti-cash"></i> 支給済みとして記録', 'bcPaidOpen('+qq+')', true, wd || ms!=='ok', ms!=='ok' ? '先にアプリの記録を合わせてください' : '');
+  } else if(S.k==='paid' || S.k==='reconf'){
+    h+=bcBtn('<i class="ti ti-pencil"></i> 確定版から修正（差は調整記録へ）', 'bcFixStart('+qq+')', false, wd);
+    if(S.k==='paid') h+=bcBtn('<i class="ti ti-history"></i> 給与・ボーナス履歴に書き直す', 'bcRewritePay('+qq+')', false, wd || ms!=='ok', '支給済みの記録（v'+S.ef.ver+'）から、この四半期の自動の行を書き直します');
+  }
+  h+=bcBtn('<i class="ti ti-history"></i> 履歴（'+S.vs.length+'）', 'bcHistToggle()');
+  h+=bcBtn('<i class="ti ti-refresh"></i> 最新に', 'bcRefresh('+qq+')');
+  h+='</div>';
+  if(!me.write) h+='<div style="font-size:11px;color:var(--muted);margin-top:6px">このアカウント（'+escapeHtml(me.role||'')+'）は見るだけです。保存できるのは GM・CEO のメールのアカウントです。</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:8px">「1.00 固定」は賞与に反映しない項目（設定）。「暫定 1.00」は評価が足りないので仮に 1.00 にしたもの（この版の中だけ）。版は消さず、どの版も保存したときの数字で開けます。確定・再計算だけで支払・控除・給与への送信はしません。本人に見せる表示は、有効な確定版の額だけです。</div>';
+  if(_bc.hist) h+=bcHistHtml(q, S);
+  if(Array.isArray(D.adjust) && D.adjust.length) h+=bcAdjHtml(q, D.adjust, w);
+  if(_bc.cmp) h+=bcCmpHtml(cfg, V);
+  return h+'</div>';
+}
+function bcTime(iso){ try{ return (typeof ocsFmt==='function') ? ocsFmt(iso) : String(iso||'').slice(0, 16); }catch(e){ return String(iso||'').slice(0, 16); } }
+function bcHistToggle(){ _bc.hist=!_bc.hist; bcRerender(); }
+function bcRefresh(q){ bcReset(q); bcLoad(q); bcRerender(); }
+function bcHistHtml(q, S){
+  var qq=cscJsArg(q), KIND={provisional:'仮締め', final:'支給額確定'}, ST={kept:'', effective:'有効', replaced:'置き換え済み'};
+  var h='<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px"><div style="font-size:12.5px;font-weight:800;margin-bottom:4px">版の履歴</div>';
+  if(!S.vs.length) return h+'<div style="font-size:11.5px;color:var(--muted)">まだ版がありません。</div></div>';
+  h+='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:620px"><thead><tr style="text-align:left;color:var(--muted);font-size:10.5px">'+['版','状態','保存','支給の合計','k','人数','理由',''].map(function(x){ return '<th style="padding:4px 6px">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
+  S.vs.slice().reverse().forEach(function(v){
+    h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;font-weight:800">v'+v.ver+'</td><td style="padding:5px 6px">'+escapeHtml(KIND[v.kind]||v.kind)+(ST[v.status] ? '・'+escapeHtml(ST[v.status]) : '')+(v.has_prov ? '<div style="font-size:10px;color:var(--yellow)">未確定評価あり・仮採用済</div>' : '')+(v.paid_on ? '<div style="font-size:10px;color:var(--green)">支給済み '+escapeHtml(v.paid_on)+'</div>' : '')+(v.from_ver ? '<div style="font-size:10px;color:var(--muted)">v'+v.from_ver+' の額</div>' : '')+'</td>'
+      +'<td style="padding:5px 6px;white-space:nowrap">'+escapeHtml(bcTime(v.made_at))+'<div style="font-size:10px;color:var(--muted)">'+escapeHtml(v.made_by||'')+'</div></td><td style="padding:5px 6px;text-align:right">'+kevUsd(v.paid_total)+'</td><td style="padding:5px 6px">×'+Number(v.k).toFixed(3)+'</td><td style="padding:5px 6px">'+Number(v.n)+'</td>'
+      +'<td style="padding:5px 6px;max-width:220px">'+escapeHtml(v.why||'')+'</td><td style="padding:5px 6px;white-space:nowrap">'+bcBtn('開く', 'bcCmpOpen('+qq+','+Number(v.ver)+',true)')+'</td></tr>';
+  });
+  return h+'</tbody></table></div></div>';
+}
+function bcAdjHtml(q, list, w){
+  var qq=cscJsArg(q), h='<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px"><div style="font-size:12.5px;font-weight:800">調整記録（支給済みのあとに確定し直した差）</div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin:2px 0 6px">支給済みの額は書き換えません。アプリは差を記録するだけで、払う・差し引く・給与に送る・本人に知らせるは人が決めて行います。</div>';
+  h+='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:620px"><thead><tr style="text-align:left;color:var(--muted);font-size:10.5px">'+['名前','前の確定','新しい確定','差','状態・メモ',''].map(function(x){ return '<th style="padding:4px 6px">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
+  list.forEach(function(x){
+    var d=Number(x.diff);
+    h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;font-weight:700">'+escapeHtml(x.emp_name||x.emp_id)+'</td><td style="padding:5px 6px">v'+Number(x.prev_ver)+' '+kevUsd(x.prev_amount)+'</td><td style="padding:5px 6px">v'+Number(x.new_ver)+' '+kevUsd(x.new_amount)+'</td>'
+      +'<td style="padding:5px 6px;font-weight:800;color:'+(d>0 ? 'var(--green)' : 'var(--red)')+'">'+(d>0 ? '＋' : '−')+kevUsd(Math.abs(d))+'</td>'
+      +'<td style="padding:5px 6px">'+(x.state==='done' ? '<span style="color:var(--green)">対応済み</span> '+escapeHtml(bcTime(x.done_at)+' '+(x.done_by||''))+'<div style="font-size:10.5px">'+escapeHtml(x.memo||'')+'</div>' : '<span style="color:var(--yellow)">未対応</span>')+'</td>'
+      +'<td style="padding:5px 6px">'+(x.state!=='done' && w ? bcBtn('対応済みにする', 'bcAdjDoneOpen('+qq+','+Number(x.id)+')') : '')+'</td></tr>';
+  });
+  return h+'</tbody></table></div></div>';
+}
+
+/* ---- 一覧の「未確定の部分に使う値」 ---- */
+var BC_PNM = {c:'①', s:'②', f:'③', p:'④', d:'評価完了'};
+function bcUsedTxt(u){ if(!u) return ''; if(u.m==='input') return '入力中を仮採用'; if(u.m==='tmp') return '暫定 1.00'; if(u.m==='set') return '指定 '+kevF2(u.v); return ''; }
+function bcPartsCellHtml(e, b, V){
+  if(!V || V.mode==='live') return '';
+  var parts=b.parts || [], used=b.adopt || {};
+  if(V.mode==='ver'){
+    var sp=(V.snap && V.snap.people && V.snap.people[e.id]) || {}, ad=sp.adopt || {};
+    var ks=Object.keys(ad); if(!ks.length) return '<span style="color:var(--muted)">—</span>';
+    return ks.map(function(k){ return '<div style="font-size:11px;white-space:nowrap"><b>'+escapeHtml(BC_PNM[k]||k)+'</b> '+escapeHtml(bcUsedTxt(ad[k]))+'</div>'; }).join('');
+  }
+  if(!parts.length){
+    if(b.blocked==='eval' || b.blocked==='track') return '<span style="color:var(--red);font-size:11px;font-weight:700">設定の確認が必要</span>';
+    return '<span style="color:var(--muted)">—</span>';
+  }
+  var ch=bcChoices()[e.id] || {};
+  var t=parts.map(function(P){
+    var c=ch[P.k], u=used[P.k];
+    var txt=P.unsel ? '<span style="color:var(--red);font-weight:700">'+(c ? '選び直す' : '未選択')+'</span>' : escapeHtml(bcUsedTxt(u || c));
+    return '<div style="font-size:11px;white-space:nowrap"><b>'+escapeHtml(BC_PNM[P.k]||P.k)+'</b> '+txt+'</div>';
+  }).join('');
+  var can=bcCan() && _bc.data && _bc.data.me && _bc.data.me.write && !_bc.busy;
+  return t+(can ? '<button class="btn btn-secondary btn-sm" style="min-height:36px;margin-top:3px" onclick="event.stopPropagation();bcChooseOpen('+cscJsArg(e.id)+')">選ぶ</button>' : '');
+}
+/* 1 人の未確定の部分に使う値を選ぶ */
+function bcChooseOpen(empId){
+  var q=_bc.q, cfg=Object.assign({}, kbCfg(), {quarter:q}), S=bcStateOf(_bc.data);
+  if(!S.editable){ showToast('いまは選べません（作成中か修正中のときだけ）','warning'); return; }
+  var kv=bcLiveKv(cfg, bcChoices(), S.k==='fixFinal'), e=getEmployees().find(function(x){ return x.id===empId; }); if(!kv || !e) return;
+  var b=kevBonusForEmp(e, cfg, kv), parts=b.parts || [], ch=bcChoices()[empId] || {};
+  if(!parts.length){ showToast('この人には未確定の部分がありません','info'); return; }
+  var h='<div class="modal-title"><span><i class="ti ti-adjustments"></i> '+escapeHtml(e.name)+'：未確定の部分に使う値</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">選んだ値は、この画面と保存する版の中だけで使います（Career Score・実績・設定は書き換えません）。未採点を 0 点や推測で埋めません。</div>';
+  parts.forEach(function(P){
+    var c=ch[P.k] || {}, nm=(P.k==='d') ? '個別評価の「評価完了」' : kevItemNm(P.k), id='bcch-'+P.k;
+    h+='<div style="border-top:1px solid var(--border);padding:8px 0"><div style="font-size:13px;font-weight:800">'+escapeHtml(nm)+(P.g && P.g.length>1 ? ' <span style="font-size:11px;color:var(--muted)">（'+escapeHtml(P.g.join('・'))+'）</span>' : '')+'</div>'
+      +'<div style="font-size:11px;color:var(--muted);line-height:1.55;margin:2px 0 6px">'+escapeHtml((P.why||[]).slice(0, 3).join('／'))+'</div>';
+    var opt=function(m, label, dis, note){ return '<label style="display:flex;gap:8px;align-items:flex-start;min-height:36px;font-size:12.5px;cursor:'+(dis ? 'not-allowed' : 'pointer')+';color:'+(dis ? 'var(--muted)' : 'var(--tm)')+'"><input type="radio" name="'+id+'" value="'+m+'"'+(c.m===m ? ' checked' : '')+(dis ? ' disabled' : '')+' style="margin-top:3px"><span>'+label+(note ? '<br><span style="font-size:10.5px;color:var(--muted)">'+note+'</span>' : '')+'</span></label>'; };
+    if(P.k==='d'){
+      h+=opt('input', '評価完了の前の入力を仮採用', false, '入力されている評価・数字のまま試算します（評価完了の印は付けません）');
+    } else {
+      h+=opt('input', '入力中を仮採用', !P.input, P.input ? '今の正式な点で試算します' : '選べません：未採点がある・使える値がありません（0 点や推測で埋めないので計算できません）');
+      h+=opt('tmp', '暫定 1.00', false, '評価が終わるまで 1.00 として試算します（「1.00 固定」とは分けて出します）');
+      var steps=KEV3_LV.filter(function(v){ return v>=P.lo-1e-9 && v<=P.hi+1e-9; });
+      h+=opt('set', '係数を指定', false, 'この人の幅（'+kevF2(P.lo)+'〜'+kevF2(P.hi)+'）から。理由が要ります')
+        +'<div style="display:flex;gap:4px;flex-wrap:wrap;margin:2px 0 4px 24px">'+steps.map(function(v){ return '<label style="display:inline-flex;align-items:center;gap:3px;min-height:36px;padding:0 8px;border:1px solid var(--border);border-radius:8px;font-size:12px"><input type="radio" name="'+id+'-v" value="'+v+'"'+(c.m==='set' && Math.abs(Number(c.v)-v)<1e-9 ? ' checked' : '')+'>'+kevF2(v)+'</label>'; }).join('')+'</div>';
+    }
+    h+=opt('', '戻す（未選択）', false, '')
+      +'<input id="'+id+'-why" class="form-input" style="min-height:40px;font-size:14px;margin-top:4px" maxlength="300" placeholder="理由（指定のときは必須）" value="'+escapeHtml(c.why||'')+'"></div>';
+  });
+  h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" style="min-height:44px" onclick="bcChooseApply('+cscJsArg(empId)+')">この値で試算</button></div>';
+  openModal(h);
+}
+function bcChooseApply(empId){
+  var q=_bc.q, cfg=Object.assign({}, kbCfg(), {quarter:q}), S=bcStateOf(_bc.data);
+  if(!S.editable){ closeModalDirect(); return; }
+  var kv=bcLiveKv(cfg, bcChoices(), S.k==='fixFinal'), e=getEmployees().find(function(x){ return x.id===empId; }); if(!kv || !e) return;
+  var b=kevBonusForEmp(e, cfg, kv), parts=b.parts || [], all=bcChoices(), next=Object.assign({}, all[empId] || {}), now=String(kevNow()).slice(0, 40), who=String(kevMe()).slice(0, 80), bad='';
+  parts.forEach(function(P){
+    var id='bcch-'+P.k, sel=document.querySelector('input[name="'+id+'"]:checked'), m=sel ? sel.value : '', why=String((document.getElementById(id+'-why')||{}).value||'').trim();
+    if(!m){ delete next[P.k]; return; }
+    if(m==='set'){
+      var vs=document.querySelector('input[name="'+id+'-v"]:checked'), v=vs ? Number(vs.value) : NaN;
+      if(!isFinite(v)){ bad='係数を選んでください（'+(BC_PNM[P.k]||P.k)+'）'; return; }
+      if(!why){ bad='指定のときは理由を入れてください（'+(BC_PNM[P.k]||P.k)+'）'; return; }
+      next[P.k]={m:'set', v:v, why:why.slice(0, 300), at:now, by:who};
+    } else if(m==='input' && P.k!=='d' && !P.input){ bad='入力中を仮採用は選べません（'+(BC_PNM[P.k]||P.k)+'）'; }
+    else next[P.k]={m:m, why:why.slice(0, 300), at:now, by:who};
+  });
+  if(bad){ showToast(bad, 'warning'); return; }
+  if(Object.keys(next).length) all[empId]=next; else delete all[empId];
+  _bc.dirty=true; closeModalDirect(); bcRerender();
+}
+/* 未確定部分を 1.00 で試算：「未選択」のところだけ（選んだ値は変えない）。評価完了の部分は「入力どおり」 */
+function bcBulkParts(cfg){
+  var S=bcStateOf(_bc.data), kv=bcLiveKv(cfg, bcChoices(), S.k==='fixFinal'), tot=kevTotals(cfg, kv), out=[];
+  tot.rows.forEach(function(r){ (r.b.parts||[]).forEach(function(P){ if(P.unsel && !(bcChoices()[r.e.id] || {})[P.k]) out.push({e:r.e, k:P.k, why:(P.why||[])[0]||''}); else if(P.unsel) out.push({e:r.e, k:P.k, why:'選んだ値がいまは使えない（選び直し）', redo:true}); }); });
+  return {tot:tot, parts:out};
+}
+function bcBulkOpen(q){
+  var cfg=Object.assign({}, kbCfg(), {quarter:q}), B=bcBulkParts(cfg), fill=B.parts.filter(function(x){ return !x.redo; });
+  if(!fill.length){ showToast('「未選択」の部分はありません'+(B.parts.length ? '（選び直しの部分は 1 人ずつ選んでください）' : ''),'info'); return; }
+  var ch=bcJ(bcChoices()), now=String(kevNow()).slice(0, 40), who=String(kevMe()).slice(0, 80);
+  fill.forEach(function(x){ ch[x.e.id]=ch[x.e.id]||{}; ch[x.e.id][x.k]=(x.k==='d') ? {m:'input', at:now, by:who} : {m:'tmp', at:now, by:who}; });
+  var S=bcStateOf(_bc.data), t2=kevTotals(cfg, bcLiveKv(cfg, ch, S.k==='fixFinal')), t1=B.tot;
+  var row=function(l, a, b){ return '<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px">'+l+'</td><td style="padding:5px 6px;text-align:right">'+a+'</td><td style="padding:5px 6px;text-align:right;font-weight:800">'+b+'</td></tr>'; };
+  var ok1=!t1.nBlocked, ok2=!t2.nBlocked;
+  window._bcBulk={q:q, fill:fill.map(function(x){ return [x.e.id, x.k]; })};
+  openModal('<div class="modal-title"><span><i class="ti ti-wand"></i> 未確定部分を 1.00 で試算</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;line-height:1.6;margin-bottom:6px">「未選択」のところだけに入れます（もう選んである値は変えません）。項目は「暫定 1.00」、評価完了がまだの部分は「入力どおり」。あとで 1 人ずつ別の値に変えられます。</div>'
+    +'<div style="max-height:30vh;overflow:auto;font-size:12px;background:var(--surface2);border-radius:8px;padding:6px 10px">'+fill.map(function(x){ return '<div style="padding:3px 0"><b>'+escapeHtml(x.e.name)+'</b>・'+escapeHtml(x.k==='d' ? '評価完了（入力どおり）' : kevItemNm(x.k)+'（暫定 1.00）')+'<span style="color:var(--muted);font-size:10.5px">　'+escapeHtml(x.why)+'</span></div>'; }).join('')+'</div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="color:var(--muted);font-size:10.5px;text-align:left"><th style="padding:4px 6px">影響</th><th style="padding:4px 6px;text-align:right">いま</th><th style="padding:4px 6px;text-align:right">1.00 を入れると</th></tr></thead><tbody>'
+    +row('調整前の合計（S）', ok1 ? kevUsd(t1.total) : '算定未完了', ok2 ? kevUsd(t2.total) : '算定未完了（ほかに選べない部分あり）')
+    +row('原資（P＋E）', t1.cap==null ? '—' : kevUsd2(t1.cap), t2.cap==null ? '—' : kevUsd2(t2.cap))
+    +row('共通調整 k', (ok1 && t1.k!=null) ? '×'+Number(t1.k).toFixed(3) : '—', (ok2 && t2.k!=null) ? '×'+Number(t2.k).toFixed(3) : '—')
+    +row('支給見込総額', ok1 ? kevUsd(t1.paid) : '算定未完了', ok2 ? kevUsd(t2.paid) : '算定未完了')+'</tbody></table>'
+    +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px;margin-top:8px">理由（必須）<input id="bc-bulk-why" class="form-input" style="min-height:44px" maxlength="300"></label>'
+    +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">押した人・時刻・四半期・入れた人と項目・理由を記録します。見込額は今の端数の決め方（$1 単位）。</div>'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" style="min-height:44px" onclick="bcBulkApply()">1.00 を入れる</button></div>');
+}
+function bcBulkApply(){
+  var B=window._bcBulk; if(!B || B.q!==_bc.q){ closeModalDirect(); return; }
+  var why=String((document.getElementById('bc-bulk-why')||{}).value||'').trim();
+  if(!why){ showToast('理由を入れてください','warning'); return; }
+  var all=bcChoices(), now=String(kevNow()).slice(0, 40), who=String(kevMe()).slice(0, 80), done=[];
+  B.fill.forEach(function(x){ var id=x[0], k=x[1]; all[id]=all[id]||{}; if(all[id][k]) return; all[id][k]=(k==='d') ? {m:'input', why:why.slice(0,300), at:now, by:who} : {m:'tmp', why:why.slice(0,300), at:now, by:who}; done.push([id, k]); });
+  _bc.draft.bulk=(_bc.draft.bulk||[]).concat([{at:now, by:who, why:why.slice(0,300), parts:done}]).slice(-50);
+  _bc.dirty=true; window._bcBulk=null; closeModalDirect(); showToast(done.length+' 部分に入れました（まだ下書きです。「下書き保存」か「仮締めを保存」で残ります）','success'); bcRerender();
+}
+
+/* ---- 保存（どれも、押したあとサーバーの版の印 rev を送る。ほかの人が先に変えていたら保存しない） ---- */
+function bcGuard(q, need){
+  if(!bcCan()){ showToast('GM・CEO だけができます','warning'); return null; }
+  if(_bc.q!==q || !_bc.data){ showToast('画面を新しくしてください','warning'); return null; }
+  if(_bc.busy){ showToast('いま保存しています。終わるまでお待ちください','info'); return null; }
+  if(!(_bc.data.me && _bc.data.me.write)){ showToast(bcErrText('forbidden'),'warning'); return null; }
+  var S=bcStateOf(_bc.data);
+  if(need && need.indexOf(S.k)<0){ showToast(bcErrText('not_editable'),'warning'); return null; }
+  return S;
+}
+/* 保存しているあいだ：画面全体は描き直さず（全員の計算は重い）、締めの欄のボタンを止めて「保存しています」を出す。終わったら 1 回だけ描き直す */
+function bcBusyDom(label){
+  try{
+    var el=(typeof document!=='undefined' && document.getElementById) ? document.getElementById('bc-panel') : null; if(!el) return;
+    if(el.querySelectorAll) [].forEach.call(el.querySelectorAll('button'), function(b){ b.disabled=true; });
+    var st=document.getElementById('bc-busy'); if(st) st.innerHTML='<i class="ti ti-loader"></i> '+escapeHtml(label);
+  }catch(err){}
+}
+function bcRun(q, label, fn){
+  _bc.busy=label; bcBusyDom(label);
+  return Promise.resolve().then(fn).then(function(r){ _bc.busy=''; bcRerender(); return r; }, function(e){
+    _bc.busy='';
+    var code=(e && e.code) || '';
+    showToast(String((e && e.message) || e), code==='conflict' ? 'warning' : 'danger');
+    if(code==='conflict' || code==='not_editable' || code==='already_paid' || code==='fixing') return bcLoad(q, true).then(function(){ return false; });
+    bcRerender(); return false;
+  });
+}
+function bcDraftSave(q){
+  var S=bcGuard(q, ['draft','fixProv','fixFinal']); if(!S) return false;
+  var draft={choices:bcChoices(), bulk:(_bc.draft.bulk||[])};
+  return bcRun(q, '下書きを保存しています…', function(){
+    return bcAPI({action:'draft_save', quarter:q, expect_rev:Number(_bc.data.rev), draft:draft}).then(function(r){
+      _bc.dirty=false; showToast('下書きをサーバーに保存しました','success'); return bcLoad(q, false);
+    });
+  });
+}
+/* 仮締め（provisional）・再確定（final）：読み直して同じ中身か確かめてから、全員分を 1 回で保存 */
+function bcSaveVersion(q, kind){
+  var S=bcGuard(q, kind==='final' ? ['fixFinal'] : ['draft','fixProv']); if(!S) return false;
+  var fx=(S.k==='fixFinal'), cfg=Object.assign({}, kbCfg(), {quarter:q}), choices=bcJ(bcChoices()), bulk=bcJ(_bc.draft.bulk||[]), B=bcBuild(q, cfg, choices, bulk, fx);
+  if(B.err){ showToast('保存できません：'+B.err, 'warning'); return false; }
+  var block=kevLockSyncBlock(); if(block){ showToast(block.replace('確定していません','保存していません'),'danger'); return false; }
+  var t=B.tot, msg=(kind==='final' ? q+' の修正案を再確定します（新しい版を有効にし、v'+S.ef.ver+' は置き換え済みとして残します）' : q+' の仮締めを保存します')
+    +'（'+t.rows.length+' 名・調整前 '+kevUsd(t.total)+'・支給上限 '+kevUsd2(t.cap)+'・k ×'+Number(t.k).toFixed(3)+'・支給の合計 '+kevUsd(t.paid)+(t.prov ? '・仮の値 '+t.prov+' 部分' : '')+'）。';
+  var ask=function(why){
+    return bcRun(q, kind==='final' ? '再確定しています…' : '仮締めを保存しています…', function(){
+      showToast('ほかの端末の最新の評価・設定を読み直しています…','info');
+      var pull=(typeof pullOpKey==='function') ? kevLockPull(q) : Promise.resolve(true);
+      return pull.then(function(ok){
+        if(!ok){ showToast('クラウドから最新の内容を読み切れなかったため、保存していません。通信と端末の保存容量を確かめて、もう一度押してください','danger'); return false; }
+        var B2=bcBuild(q, Object.assign({}, kbCfg(), {quarter:q}), choices, bulk, fx);
+        if(B2.err || bcDigest(B2.sn)!==bcDigest(B.sn)){ showToast('ほかの端末で評価・設定・原資などが変わっていたため、保存していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); return bcLoad(q, true).then(function(){ return false; }); }
+        return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:kind, snap:B2.sn, why:why||''}).then(function(r){
+          var done=function(){ _bc.dirty=false; showToast(kind==='final' ? '再確定しました（v'+r.ver+' が有効）' : '仮締め v'+r.ver+' を保存しました','success'); return bcLoad(q, false); };
+          if(kind!=='final') return done();
+          return bcAPI({action:'version', quarter:q, ver:r.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
+            if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
+            return done();
+          });
+        });
+      });
+    });
+  };
+  if(kind==='final'){ bcAskModal('再確定', msg+'\n確定・再計算だけで支払・控除・給与への送信はしません。'+(S.paid ? '\n支給済み（v'+S.paid.ver+'）との差は調整記録に出します（支給済みの額は書き換えません）。' : ''), true, ask); return true; }
+  if(!confirm(msg+'\n押したあと、ほかの端末の最新の評価・設定を読み直し、変わっていたら保存しません。保存した版は消えず、あとで評価が変わっても自動では変わりません。よろしいですか？')) return false;
+  return ask('');
+}
+/* 支給額を確定（仮締めの版の額のまま。新しい評価を入れるときは「修正を開始」） */
+function bcConfirm(q){
+  var S=bcGuard(q, ['prov']); if(!S) return false;
+  var lv=S.last, cfg=Object.assign({}, kbCfg(), {quarter:q}), V=bcView(cfg, kevTotals(cfg, kevApplies(cfg))), ne=bcNewEval(cfg, V) || [];
+  var msg=q+' の支給額を v'+lv.ver+' の額で確定します（支給の合計 '+kevUsd(lv.paid_total)+'・'+lv.n+' 名）。'+(lv.has_prov ? '\nこの版には未確定の評価に仮の値を使った部分があります（「支給額確定／未確定評価あり・仮採用済」と記録します）。' : '')
+    +(ne.length ? '\n新しい評価が '+ne.length+' 人あります（この確定には入りません。入れるなら先に「修正を開始」）。' : '')+'\n確定だけで支払・控除・給与への送信はしません。本人に見せる表示は、この確定の額になります。';
+  bcAskModal('支給額を確定', msg, !!lv.has_prov, function(why){
+    return bcRun(q, '確定しています…', function(){
+      return bcAPI({action:'confirm', quarter:q, expect_rev:Number(_bc.data.rev), ver:lv.ver, why:why||''}).then(function(r){
+        return bcAPI({action:'version', quarter:q, ver:r.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
+          if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
+          showToast('支給額を確定しました（v'+r.ver+'）','success'); return bcLoad(q, false);
+        });
+      });
+    });
+  });
+  return true;
+}
+function bcFixStart(q){
+  var S=bcGuard(q, ['prov','final','paid','reconf']); if(!S) return false;
+  if(!confirm(S.ef ? q+' の確定版 v'+S.ef.ver+' から修正を始めます。\n再確定するまで、有効なのは v'+S.ef.ver+' のままです（支給・給与・ボーナス履歴への記録・本人に見せる表示は v'+S.ef.ver+' の額）。修正のあいだは評価・数字を直せ、計算は今の評価で行います。'+(S.paid ? '\n支給済みのあとで再確定すると、差は調整記録に出します（支給済みの額は書き換えません）。' : '')+'\nよろしいですか？' : q+' の仮締め v'+S.last.ver+' から修正を始めます（v'+S.last.ver+' は残ります）。よろしいですか？')) return false;
+  return bcRun(q, '修正を始めています…', function(){
+    return bcAPI({action:'fix_start', quarter:q, expect_rev:Number(_bc.data.rev)}).then(function(r){
+      var p=S.ef ? bcSetFix(q, true, S.ef.ver) : Promise.resolve(true);
+      return p.then(function(ok){ if(ok===false) showToast('この端末の「修正中」の印を書けませんでした。画面を新しくしてください','warning'); showToast('修正を始めました（v'+r.fixing+' から）','success'); return bcLoad(q, false); });
+    });
+  });
+}
+function bcFixCancel(q){
+  var S=bcGuard(q, ['fixProv','fixFinal']); if(!S) return false;
+  if(!confirm('修正をやめて v'+S.fixing+' のままにします'+(_bc.dirty ? '（保存していない変更は消えます）' : '')+'。よろしいですか？')) return false;
+  return bcRun(q, '修正をやめています…', function(){
+    return bcAPI({action:'fix_cancel', quarter:q, expect_rev:Number(_bc.data.rev)}).then(function(){
+      return bcSetFix(q, false).then(function(){ _bc.dirty=false; showToast('修正をやめました（v'+S.fixing+' のまま）','success'); return bcLoad(q, false); });
+    });
+  });
+}
+/* 支給済みとして記録（回答 6：今の「履歴に記録」の置き換え）。支給日を入れる。確定版の額から給与・ボーナス履歴に書く */
+function bcPaidOpen(q){
+  var S=bcGuard(q, ['final']); if(!S) return false;
+  if(bcMirrorState(q, S)!=='ok'){ showToast('先にアプリの確定の記録を v'+S.ef.ver+' に合わせてください','warning'); return false; }
+  var today=(typeof bizToday==='function') ? bizToday() : '';
+  openModal('<div class="modal-title"><span><i class="ti ti-cash"></i> 支給済みとして記録</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12.5px;line-height:1.7">'+escapeHtml(q)+' の確定版 v'+S.ef.ver+'（支給の合計 '+kevUsd(S.ef.paid_total)+'・'+Number(S.ef.n)+' 名）を、支給済みとして記録し、各人の給与・ボーナス履歴に書きます。<br>アプリは払う・差し引く・給与に送ることはしません（支給は人が行ったあとに記録します）。</div>'
+    +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px;margin-top:8px">支給日<input id="bc-paid-on" type="date" class="form-input" style="min-height:44px" value="'+escapeHtml(today)+'"></label>'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" style="min-height:44px" onclick="bcPaidApply('+cscJsArg(q)+')">支給済みとして記録</button></div>');
+  return true;
+}
+function bcPaidApply(q){
+  var S=bcGuard(q, ['final']); if(!S){ closeModalDirect(); return false; }
+  var on=String((document.getElementById('bc-paid-on')||{}).value||'');
+  if(!/^20\d{2}-\d{2}-\d{2}$/.test(on)){ showToast('支給日を入れてください','warning'); return false; }
+  closeModalDirect();
+  var lid='BC-'+q+'-v'+S.ef.ver;
+  return bcRun(q, '記録しています…', function(){
+    /* この端末の写しと、クラウドの写しが、サーバーの有効な確定版と同じか（kevCloudLockId：生の行） */
+    return Promise.resolve().then(function(){ return (typeof pullOpKey==='function') ? pullOpKey('spl_bonus_q_'+q) : true; }).then(function(){ return kevCloudLockId(q); }).then(function(cloud){
+      var d=bqGet(q);
+      if(!(d.locked && kevSnapOk(d) && d.evSnap.lid===lid)){ showToast('この端末の確定の写しが v'+S.ef.ver+' と違うため、記録していません（「アプリの記録を合わせる」）','warning'); return false; }
+      if(cloud && cloud.ok===true && cloud.id!==lid){ showToast('確定の写しがまだクラウドに届いていないため、記録していません。少し待ってから、もう一度押してください','warning'); return false; }
+      if(!cloud || cloud.ok!==true){ showToast('クラウドの確定の写しを読めなかったため、記録していません。通信を確かめて、もう一度押してください','danger'); return false; }
+      return bcAPI({action:'mark_paid', quarter:q, expect_rev:Number(_bc.data.rev), ver:S.ef.ver, paid_on:on}).then(function(){
+        var w=kevRecordWrite(q, null, on);
+        if(!w) showToast('サーバーには支給済みと記録しましたが、給与・ボーナス履歴に書けませんでした。「給与・ボーナス履歴に書き直す」を押してください','danger');
+        else {
+          var c=kbCfg(); c.confirmedLog=c.confirmedLog||{}; c.confirmedLog[q]={at:new Date().toISOString(), n:w.n, by:kevMe(), total:w.tot.paid, over:!!(Number(w.tot.k)<1), v4:true, paidOn:on, ver:S.ef.ver}; kbSave(c);
+          showToast(q+' を支給済みとして記録しました（'+w.n+' 名・支給日 '+on+'）','success');
+        }
+        return bcLoad(q, false);
+      });
+    });
+  });
+}
+function bcRewritePay(q){
+  var S=bcGuard(q, ['paid']); if(!S) return false;
+  if(bcMirrorState(q, S)!=='ok'){ showToast('先にアプリの確定の記録を合わせてください','warning'); return false; }
+  if(!confirm(q+' の給与・ボーナス履歴（自動の行）を、支給済みの記録 v'+S.ef.ver+'（支給日 '+S.ef.paid_on+'）の額で書き直します。よろしいですか？')) return false;
+  var w=kevRecordWrite(q, null, String(S.ef.paid_on||''));
+  showToast(w ? w.n+' 名を書き直しました' : '書けませんでした', w ? 'success' : 'danger'); bcRerender();
+  return !!w;
+}
+function bcAdjDoneOpen(q, id){
+  if(!bcGuard(q)) return false;
+  window._bcAdj={q:q, id:id};
+  openModal('<div class="modal-title"><span>調整記録を対応済みにする</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;line-height:1.6">やったことのメモを付けてください（例：次の四半期の支給で調整）。押した人・時刻を記録します。金額は変えません。</div>'
+    +'<input id="bc-adj-memo" class="form-input" style="min-height:44px;margin-top:8px" maxlength="500">'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" style="min-height:44px" onclick="bcAdjDoneApply()">対応済みにする</button></div>');
+  return true;
+}
+function bcAdjDoneApply(){
+  var A=window._bcAdj; if(!A || !bcGuard(A.q)){ closeModalDirect(); return false; }
+  var memo=String((document.getElementById('bc-adj-memo')||{}).value||'').trim();
+  if(!memo){ showToast(bcErrText('memo_required'),'warning'); return false; }
+  closeModalDirect();
+  return bcRun(A.q, '記録しています…', function(){ return bcAPI({action:'adjust_done', quarter:A.q, expect_rev:Number(_bc.data.rev), id:Number(A.id), memo:memo}).then(function(){ showToast('対応済みにしました','success'); return bcLoad(A.q, false); }); });
+}
+/* アプリの確定の写しを、サーバーの有効な確定版に合わせる */
+function bcMirrorFix(q){
+  var S=bcGuard(q); if(!S || !S.ef) return false;
+  if(!confirm('アプリの確定の記録（ほかの画面・本人に見せる表示・履歴の記録が読むもの）を、サーバーの有効な確定版 v'+S.ef.ver+' に合わせます。よろしいですか？')) return false;
+  return bcRun(q, '合わせています…', function(){
+    return bcAPI({action:'version', quarter:q, ver:S.ef.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap).then(function(){ if(S.k==='fixFinal') return bcSetFix(q, true, S.ef.ver); }); })
+      .then(function(){ showToast('アプリの記録を v'+S.ef.ver+' に合わせました','success'); return bcLoad(q, true); });
+  });
+}
+/* 前の版（v1108 まで）で確定した四半期：その確定の数字をそのまま版にして取り込む（仮締め → 支給額を確定の 2 つ。数字は変えない） */
+function bcImport(q){
+  var S=bcGuard(q, ['draft']); if(!S) return false;
+  var d=bqGet(q); if(!(d.locked && kevSnapOk(d))){ showToast('取り込む確定がありません','warning'); return false; }
+  var e0=d.evSnap, sn=bcJ(e0);
+  sn.q=q; sn.cap=(kevN(e0.cap)!=null) ? Number(e0.cap) : Math.round(((Number(e0.P)||0)+(Number(e0.E)||0))*100)/100; sn.unsel=0; sn.prov=0; sn.choices={}; sn.bulk=[];
+  sn.poolSnap=d.poolSnap||null; sn.segSnap=d.segSnap||null; sn.coefSnap=d.coefSnap||null; sn.imported={lid:e0.lid||'', at:d.lockedAt||'', by:d.lockedBy||''};
+  delete sn.lk; delete sn.lid; delete sn.lt;
+  if(!confirm(q+' の前の版の確定（'+(d.lockedAt||'')+' '+(d.lockedBy||'')+'・支給の合計 '+kevUsd(e0.paid)+'）を、数字を変えずにサーバーの版にします（仮締め v1 → 支給額を確定 v2）。よろしいですか？')) return false;
+  return bcRun(q, '取り込んでいます…', function(){
+    return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:'provisional', snap:sn, why:'前の版（v1108 まで）の確定を取り込み'}).then(function(r){
+      return bcAPI({action:'confirm', quarter:q, expect_rev:Number(r.rev), ver:r.ver, why:'前の版の確定（'+String(d.lockedAt||'')+' '+String(d.lockedBy||'')+'）を取り込み'}).then(function(c){
+        return bcAPI({action:'version', quarter:q, ver:c.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(){ showToast('取り込みました（v'+c.ver+' が有効）','success'); return bcLoad(q, false); });
+      });
+    });
+  });
+}
+/* 理由を書く確かめの画面（need：理由が必須） */
+function bcAskModal(title, msg, need, fn){
+  window._bcAsk={fn:fn, need:!!need};
+  openModal('<div class="modal-title"><span>'+escapeHtml(title)+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12.5px;line-height:1.7">'+escapeHtml(msg).replace(/\n/g, '<br>')+'</div>'
+    +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px;margin-top:8px">理由'+(need ? '（必須）' : '（任意）')+'<input id="bc-ask-why" class="form-input" style="min-height:44px" maxlength="500"></label>'
+    +'<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button><button class="btn btn-primary" style="min-height:44px" onclick="bcAskOk()">'+escapeHtml(title)+'</button></div>');
+}
+function bcAskOk(){
+  var A=window._bcAsk; if(!A) return;
+  var why=String((document.getElementById('bc-ask-why')||{}).value||'').trim();
+  if(A.need && !why){ showToast(bcErrText('why_required'),'warning'); return; }
+  window._bcAsk=null; closeModalDirect(); A.fn(why);
+}
+
+/* ---- 新しい評価があります（保存した版のあとに、仮の値を使った部分の評価が届いた・数字が変わった） ----
+   全員を今の評価で計算するので重い：サーバーの版を読むたび（画面を開いた・「最新に」・押したあと）に 1 回、画面を出したあとで計算して出す */
+var _bcNE={key:'', list:null, pending:''};
+function bcNewEvalLater(V){
+  var key=V.q+'|'+V.ver+'|'+_bc.seq;
+  if(_bcNE.key===key) return _bcNE.list;
+  if(_bcNE.pending!==key){
+    _bcNE.pending=key;
+    var run=function(){ if(_bcNE.pending!==key) return; var l=bcNewEval(Object.assign({}, kbCfg(), {quarter:V.q}), V) || []; _bcNE={key:key, list:l, pending:''}; if(l.length) bcRerender(); };
+    if(typeof setTimeout==='function') setTimeout(run, 60); else run();
+  }
+  return null;
+}
+function bcNewEval(cfg, V){
+  try{
+    if(!V.snap || !V.snap.people) return null;
+    var sn=V.snap, S=V.S, kv=bcLiveKv(cfg, sn.choices || {}, S.k==='fixFinal'), t=kevTotals(cfg, kv), out=[];
+    t.rows.forEach(function(r){
+      var p=sn.people[r.e.id]; if(!p) return;
+      var ad=p.adopt || {}, gone=Object.keys(ad).filter(function(k){ return !(r.b.parts || []).some(function(P){ return P.k===k; }); });
+      if(gone.length) out.push({id:r.e.id, name:r.e.name, why:gone.map(function(k){ return (BC_PNM[k]||k)+' の評価が届いた'; }).join('・')});
+      else if(!r.b.blocked && Number(r.b.amount)!==Number(p.raw)) out.push({id:r.e.id, name:r.e.name, why:'調整前 '+kevUsd(p.raw)+' → '+kevUsd(r.b.amount)});
+    });
+    return out;
+  }catch(err){ return null; }
+}
+
+/* ---- 差額を見る（版と、今の修正案・別の版） ---- */
+function bcCmpOpen(q, target, only){
+  _bc.cmp={q:q, target:target, only:!!only, snap:null, err:''};
+  var ver=(target==='live') ? (bcStateOf(_bc.data).last || {}).ver : Number(target);
+  var have=(_bc.data.latest && _bc.data.latest.ver===ver) ? _bc.data.latest.snap : ((_bc.data.effective && _bc.data.effective.ver===ver && _bc.data.effective.snap) ? _bc.data.effective.snap : null);
+  if(have){ _bc.cmp.snap=have; _bc.cmp.ver=ver; bcRerender(); return; }
+  _bc.cmp.ver=ver; bcRerender();
+  bcAPI({action:'version', quarter:q, ver:ver}).then(function(v){ if(_bc.cmp && _bc.cmp.ver===ver){ _bc.cmp.snap=v.snap; bcRerender(); } }, function(e){ if(_bc.cmp){ _bc.cmp.err=String((e && e.message) || e); bcRerender(); } });
+}
+function bcCmpClose(){ _bc.cmp=null; bcRerender(); }
+function bcCmpHtml(cfg, V){
+  var C=_bc.cmp, h='<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px"><div style="display:flex;align-items:center;gap:8px"><b style="font-size:12.5px">'+(C.only ? 'v'+C.ver+'（保存したときの数字）' : 'v'+C.ver+' と '+(V.mode==='edit' ? '修正案' : '今の評価')+' の差')+'</b><span style="margin-left:auto">'+bcBtn('閉じる', 'bcCmpClose()')+'</span></div>';
+  if(C.err) return h+'<div style="color:var(--red);font-size:12px">'+escapeHtml(C.err)+'</div></div>';
+  if(!C.snap) return h+'<div style="font-size:12px;color:var(--muted)">読み込んでいます…</div></div>';
+  var A=C.snap, Bt=null;
+  if(!C.only){ Bt=(V.mode==='edit') ? V.tot : kevTotals(cfg, bcLiveKv(cfg, A.choices || {}, V.S.k==='fixFinal')); }
+  var ids=(A.order || []).slice(); if(Bt) Bt.rows.forEach(function(r){ if(ids.indexOf(r.e.id)<0) ids.push(r.e.id); });
+  var byB={}; if(Bt) Bt.rows.forEach(function(r){ byB[r.e.id]=r; });
+  var adTxt=function(ad){ var ks=Object.keys(ad||{}); return ks.length ? ks.map(function(k){ return (BC_PNM[k]||k)+' '+bcUsedTxt(ad[k]); }).join('・') : '—'; };
+  h+='<div style="overflow:auto"><table style="width:100%;border-collapse:collapse;font-size:11.5px;min-width:'+(C.only ? 520 : 760)+'px"><thead><tr style="text-align:left;color:var(--muted);font-size:10.5px">'
+    +(C.only ? ['名前','使う値','調整前','支給'] : ['名前','使う値 v'+C.ver+' → 今','調整前 v'+C.ver+' → 今','v'+C.ver,'今','差']).map(function(x, i){ return '<th style="padding:4px 6px'+(i>=2 ? ';text-align:right' : '')+'">'+x+'</th>'; }).join('')+'</tr></thead><tbody>';
+  var sd=0;
+  ids.forEach(function(id){
+    var p=(A.people||{})[id], r=byB[id], nm=(p && p.name) || (r && r.e.name) || id, a1=p ? Number((A.finals||{})[id])||0 : null;
+    if(C.only){ h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;font-weight:700">'+escapeHtml(nm)+'</td><td style="padding:5px 6px">'+escapeHtml(adTxt(p && p.adopt))+'</td><td style="padding:5px 6px;text-align:right">'+(p ? kevUsd(p.raw) : '—')+'</td><td style="padding:5px 6px;text-align:right;font-weight:800">'+(a1==null ? '—' : kevUsd(a1))+'</td></tr>'; return; }
+    var b2=r && !r.b.blocked && Bt.finals ? Bt.finals[id] : null, d=(a1!=null && b2!=null) ? b2-a1 : null; if(d) sd+=d;
+    h+='<tr style="border-top:1px solid var(--border)"><td style="padding:5px 6px;font-weight:700">'+escapeHtml(nm)+'</td><td style="padding:5px 6px;font-size:11px">'+escapeHtml(adTxt(p && p.adopt))+' → '+escapeHtml(r ? adTxt(r.b.adopt) : '—')+'</td>'
+      +'<td style="padding:5px 6px;text-align:right">'+(p ? kevUsd(p.raw) : '—')+' → '+(r && !r.b.blocked ? kevUsd(r.b.amount) : '—')+'</td><td style="padding:5px 6px;text-align:right">'+(a1==null ? '—' : kevUsd(a1))+'</td><td style="padding:5px 6px;text-align:right;font-weight:800">'+(b2==null ? '—' : kevUsd(b2))+'</td>'
+      +'<td style="padding:5px 6px;text-align:right;color:'+(d>0 ? 'var(--green)' : (d<0 ? 'var(--red)' : 'var(--muted)'))+'">'+(d==null ? '—' : (d===0 ? '0' : (d>0 ? '＋' : '−')+kevUsd(Math.abs(d))))+'</td></tr>';
+  });
+  h+='</tbody></table></div>';
+  h+='<div style="display:flex;gap:14px;flex-wrap:wrap;font-size:12px;background:var(--surface2);border-radius:8px;padding:7px 10px;margin-top:6px">'
+    +'<span>調整前の合計 S：'+kevUsd(A.S)+(Bt ? ' → '+(Bt.nBlocked ? '算定未完了' : kevUsd(Bt.total)) : '')+'</span>'
+    +'<span>原資 P＋E：'+kevUsd2(A.cap)+(Bt ? ' → '+(Bt.cap==null ? '—' : kevUsd2(Bt.cap)) : '')+'</span>'
+    +'<span>k：×'+Number(A.k).toFixed(3)+(Bt ? ' → '+((Bt.nBlocked || Bt.k==null) ? '—' : '×'+Number(Bt.k).toFixed(3)) : '')+'</span>'
+    +'<span>支給の合計：'+kevUsd(A.paid)+(Bt ? ' → '+(Bt.nBlocked ? '算定未完了' : kevUsd(Bt.paid)) : '')+'</span></div>';
+  if(!C.only) h+='<div style="font-size:10.5px;color:var(--muted);margin-top:4px;line-height:1.6">原資が同じなら、上がる人がいるとほかの人が下がります（全員を計算し直す）。額は毎回 S と原資から（丸めた k から計算し直さない）。</div>';
+  return h+'</div>';
+}
+
+/* ---- メールの認証（Invoice取込・業務Bot と同じログイン） ---- */
+function bcLoginModal(){
+  openModal('<div class="modal-title"><span><i class="ti ti-mail"></i> ボーナスの締めのメール認証</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">本部に登録したメール・パスワード（業務Bot・Invoice取込と同じ）。保存できるのは GM・CEO のアカウントです。</div>'
+    +'<div class="form-group"><label class="form-label" for="bc-email">メールアドレス</label><input id="bc-email" class="form-input" type="email" autocomplete="username"></div>'
+    +'<div class="form-group"><label class="form-label" for="bc-password">パスワード</label><input id="bc-password" class="form-input" type="password" autocomplete="current-password"></div>'
+    +((typeof invInKeepBoxHtml==='function') ? invInKeepBoxHtml(['ボーナスの締め・Invoice取込・業務Bot','bonus close, invoice intake and the Operations Bot']) : '')
+    +'<div id="bc-login-error" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px"></div>'
+    +'<button id="bc-login-button" class="btn btn-primary" style="width:100%;min-height:44px" onclick="bcLogin()"><i class="ti ti-login"></i> 認証</button>');
+}
+async function bcLogin(){
+  var email=document.getElementById('bc-email'), pass=document.getElementById('bc-password'), btn=document.getElementById('bc-login-button');
+  if(!email || !pass || !btn) return; btn.disabled=true;
+  try{
+    var r=await fetch(SUPABASE_URL+'/auth/v1/token?grant_type=password', {method:'POST', headers:{apikey:SUPABASE_ANON, 'Content-Type':'application/json'}, body:JSON.stringify({email:email.value.trim(), password:pass.value})});
+    pass.value='';
+    if(!r.ok) throw new Error('メール・パスワードを確認してください');
+    var j=await r.json();
+    if(typeof botResetShared==='function') botResetShared();
+    _botSession={access_token:j.access_token, refresh_token:j.refresh_token};
+    var keep=document.getElementById('invin-keep');
+    if(typeof invInKeepWho==='function' && invInKeepWho() && keep && keep.checked && typeof invInAccountIsMine==='function'){
+      var mine=await invInAccountIsMine(j.access_token);
+      if(mine===true && invInKeepSet(j.refresh_token)) _invIn.keptSession=_botSession; else invInKeepSet(null);
+    } else if(typeof invInKeepWho==='function' && invInKeepWho()) invInKeepSet(null);
+    closeModalDirect(); bcRefresh(_bc.q || bonusQKey(kbCfg()));
+  }catch(e){ var el=document.getElementById('bc-login-error'); if(el) el.textContent=e.message; }
+  finally{ btn.disabled=false; }
+}
+
+/* ---- 本人に見せる表示（回答 8）：有効な確定版の額だけ。それまでは「査定中」（仮締め額・見込額は出さない） ---- */
+function bcEffSnap(q){ var d=bqGet(q); return (d.locked && kevSnapOk(d)) ? d.evSnap : null; }
+function bcSelfCur(e, b, cfg){
+  var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim();
+  if(!b || !b.v4 || !bcOwns(q)) return kdCurAmount(e, b, cfg);
+  var k0=getKarte(e.id), paidRec=(k0.payLog||[]).find(function(p){ return p && p.src==='auto' && p.quarter===q; });
+  if(paidRec) return {amt:Number(String(paidRec.amount||'').replace(/[$,\s]/g,''))||0, recorded:true, out:false};   /* 支給済みとして記録した額（そのあと再確定しても、差は調整記録で人が扱う） */
+  var eff=bcEffSnap(q), inRows=karteEligibleEmps().some(function(x){ return x.id===e.id; });
+  if(!eff) return inRows ? {amt:0, pending:true, recorded:false, out:false} : {amt:0, out:true};
+  if(!eff.people || !eff.people[e.id]) return {amt:0, out:true};
+  var k=getKarte(e.id), rec=(k.payLog||[]).some(function(p){ return p && p.src==='auto' && p.quarter===q; });
+  return {amt:Number((eff.finals||{})[e.id])||0, recorded:rec, out:false, eff:true};
+}
+function bcSelfExplainHtml(e, b, cfg){
+  var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim();
+  if(!b || !b.v4 || !bcOwns(q)) return (typeof kevSelfExplainHtml==='function') ? kevSelfExplainHtml(e, b, cfg) : '';
+  var eff=bcEffSnap(q), qr=ghQRange(q), k1=getKarte(e.id), pr=(k1.payLog||[]).find(function(p){ return p && p.src==='auto' && p.quarter===q; });
+  if(pr && eff && pr.lk && pr.lk!==eff.lid) return '';   /* 支給済みのあとに確定し直した：支給済みの額と違う説明は出さない（差の扱いは人が決める） */
+  if(eff && qr){
+    var kv={q:q, qr:qr, d:bqGet(q), cfg:Object.assign({}, cfg, {quarter:q}), locked:true, snap:eff, cache:{}}, bE=kevFromSnap(e, kv.cfg, kv), tot=kevTotals(kv.cfg, kv), fin=kevFinalOf(tot, e);
+    if(bE.out) return '';
+    var el=(bE.segs||[]).filter(function(x){ return x.elig; }), used=((eff.people[e.id] || {}).adopt) || {};
+    var h='<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div><div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は <b>'+kevUsd(bE.amount)+'</b>（'
+      +el.map(function(x){ var it=x.items||{}; var on=KEV_ITEMS.filter(function(k){ return it[k[0]] && it[k[0]].on; }); return '基準額 '+kevUsd(x.pr)+(on.length ? ' × '+on.map(function(k){ return k[2]+' '+kevFcG((x.coefs||{})[k[0]], 3)+(used[k[0]] ? '（評価が終わる前の値）' : ''); }).join(' × ') : ''); }).join('、')+'）。</div>';
+    if(fin!=null) h+='<div style="font-size:12.5px;line-height:1.8">会社全体の原資に合わせて、<b>全員同じ割合（×'+Number(tot.k).toFixed(3)+'）</b>で調整しました。支給額は <b>'+kevUsd(fin)+'</b> です。</div>';
+    return h+'</div>';
+  }
+  /* 確定の前：分かっている係数と「評価中」「集計中」だけ（金額は出さない） */
+  var el2=(b.segs||[]).filter(function(x){ return x.elig && x.blocked!=='track'; });
+  if(!el2.length) return '';
+  return '<div class="card"><div class="card-title"><i class="ti ti-math-symbols" style="color:var(--accent)"></i>今期のボーナスの決まり方</div><div style="font-size:12.5px;line-height:1.8">あなたの評価で決まる額は、'
+    +el2.map(function(x){ var on=KEV_ITEMS.filter(function(it){ return x.items && x.items[it[0]] && x.items[it[0]].on; });
+      return '基準額 '+kevUsd(x.pr)+(on.length ? ' × '+on.map(function(it){ var v=x.items[it[0]], m=v.miss||[], wait=(it[0]==='c' || (it[0]==='f' && m.some(function(t){ return /^FL 改善行動/.test(t); }))) ? '評価中' : '集計中';
+        return it[2]+' '+((m.length || v.coef==null) ? '<span style="color:var(--muted)">（'+wait+'）</span>' : kevFcG(v.coef, 3)); }).join(' × ') : ''); }).join('、')
+    +' で決まります。会社全体の支給額が決まると、金額が出ます（それまでは「査定中」）。</div></div>';
+}
+/* FUNERGY_BONUS_CLOSE_END */
+
 /* FUNERGY_CS_GRADE_VIEW_BEGIN */
 /* ===== v1100（Motoさん 10/21「キャリアスコアの評価対象と点数表示」。前の指示と食い違うところはこちらが先） =====
    1. 評価対象は全グレード共通：店舗用の Career Score は G2 も 8 カテゴリーすべてを評価し、総合点に数える（賞与 ① の総合点も）。
@@ -72604,7 +73497,7 @@ function cgQChoices(){
 }
 function cgBaseOpen(dept, g){
   if(!kevCanEdit()){ showToast(t('変えられるのは GM・CEO です','Only GM or CEO can change this'),'warning'); return; }
-  var q=cgQ(), qs=cgQChoices().filter(function(x){ return !bqGet(x).locked; });
+  var q=cgQ(), qs=cgQChoices().filter(function(x){ return !(typeof bqEditLocked==='function' ? bqEditLocked(bqGet(x)) : bqGet(x).locked); });
   if(!qs.length){ showToast(t('変えられる四半期がありません（確定済み）','No open quarter (all confirmed)'),'warning'); return; }
   /* 初めて入れるときは、まだ確定していない一番前の四半期から（回答 3：2026 Q3 から使う）。2 回目からは表示中の四半期 */
   var first=!kevVersions(kevRuleAll(), cgPrefix(dept, g)).length, from=first ? qs[0] : ((qs.indexOf(q)>=0) ? q : qs[0]), B=cgBaseAt(dept, g, from), mx=cgSheetMax(dept), stp=cgStepDef(dept);
@@ -72657,7 +73550,7 @@ function cgBaseSave(clear){
   var why=String((document.getElementById('cgf-why')||{}).value||'').trim();
   if(!why){ showToast(t('理由を入れてください','Enter a reason'),'warning'); return false; }
   if(!kevQOk(R.from) || R.from<KEV3_START){ showToast(t('適用開始の四半期を選んでください','Choose the start quarter'),'warning'); return false; }
-  if(bqGet(R.from).locked){ showToast(R.from+t(' は査定を確定しています。次の四半期から適用してください',' is confirmed. Apply from the next quarter'),'warning'); return false; }
+  if(typeof bqEditLocked==='function' ? bqEditLocked(bqGet(R.from)) : bqGet(R.from).locked){ showToast(R.from+t(' は査定を確定しています。次の四半期から適用してください',' is confirmed. Apply from the next quarter'),'warning'); return false; }
   if(clear && !confirm(t('この四半期から基準点を外します（未設定に戻す・その人の賞与 ① は止まります）。よろしいですか？','Clear the base from this quarter (back to not set; that person\'s bonus ① stops)?'))) return false;
   var ok=kevPutVer('bonus_eval_rule', kevRuleAll(), cgPrefix(F.dept, F.g), R.from, clear ? {} : {c:{b8:1, bp8:R.bp, bs8:R.bs}}, why.slice(0,300), cgComboName(F.dept, F.g)+(clear ? ' の基準点を外した' : ' の基準点を '+R.bp+' 点・1 段 '+R.bs+' 点に'), ['c']);
   if(!ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return false; }

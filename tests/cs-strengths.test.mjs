@@ -415,6 +415,6 @@ test('wiring: My page, the Career Score list and screen, the growth chart and it
   assert.match(SRC, /\n  cs_strength_rule:   \{ merge: mergeMapByTime, covers: _coversMapByTime \},/);
   assert.equal((SRC.match(/'bonus_pool_extra','cs_strength_rule','cs_guide',/g) || []).length, 2);
   // release markers
-  assert.match(SRC, /const APP_VERSION = '1108';/);
-  assert.match(SW, /const SW_BUILD = '1108';/);
+  const app = (SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1], sw = (SW.match(/const SW_BUILD = '(\d+)';/) || [])[1];   // v1109: later releases keep the strengths
+  assert.ok(Number(app) >= 1108 && app === sw, 'APP_VERSION ' + app + ' / SW_BUILD ' + sw);
 });
