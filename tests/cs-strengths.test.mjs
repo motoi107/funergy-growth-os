@@ -29,15 +29,17 @@ function app() {
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('SPECIALIST_DEPTS', '\n};'), varBlock('SPECIALIST_AXIS_ITEMS', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'),
     varBlock('OCS_GROUPS', '\n];'), varBlock('OCS_CATS', '\n];'), varBlock('OCS_ITEMS', '\n];'),
     ...['lssCatsOrdered', 'lssItemId', 'specialistCats', 'empSpecialistDept', 'kevCsSheet', 'ghDate', 'ghYMD', 'cscN', 'defaultEvalRubric', 'getEvalRubric',
-      'ocsGrpOfCat', 'ocsNum', 'ocsIsTarget', '_recAt', 'mergeMapByTime', '_coversMapByTime'].map(fn), CSS].join('\n') + `
+      'ocsGrpOfCat', 'ocsNum', 'ocsIsTarget', 'ocsFmt', '_recAt', 'mergeMapByTime', '_coversMapByTime'].map(fn), CSS].join('\n') + `
     var window = this;
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
     function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
+    function _lsStoreGet(k){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.stringify(STORE[k]) : null; }
     function t(a, b){ return curLang === 'en' ? b : a; }
     function escapeHtml(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
     function getLssScores(n){ return SCORES[n] ? JSON.parse(JSON.stringify(SCORES[n])) : null; }
     function getEmployees(){ return EMPS; }
-    function lssPendingFor(n, k){ return k === 'score' && PENDING[n] ? {id:'r1'} : undefined; }
+    function getLssRequests(){ return Object.keys(PENDING).filter(function(n){ return PENDING[n]; }).map(function(n){ return {id:'r-'+n, name:n, kind:'score', status:'申請中'}; })
+      .concat([{id:'r-x', name:'Other Sample', kind:'score', status:'承認'}, {id:'r-y', name:'Skill Sample', kind:'skill', status:'申請中'}]); }
     function ocsOldLocked(n){ return !!OFFICE[n]; }
     function ocsLastConfirmed(id){ return OCSEV[id] || null; }
     function getKarte(id){ return KARTE[id] || {}; }
@@ -93,7 +95,7 @@ test('rule A (the default, a proposal): all evidence scored, all at 2 or above, 
   const R = evalOf(c, 'aoi');
   assert.equal(R.state, 'done');
   assert.deepEqual(R.list, [['S1', 3, 5]], 'お客様対応 is a strength (3 of 5 at 3); 提案 is not (1 of 4)');
-  assert.deepEqual(run(c, 'cssRule()'), { minItems: 3, top: 'half', set: false, at: '', by: '', _at: 0 });
+  assert.deepEqual(run(c, 'cssRule()'), { minItems: 3, top: 'half', set: false, at: '', by: '', _at: 0, rawAt: 0 });
   assert.equal(run(c, 'cssRuleTxt()'), '根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上');
 });
 
@@ -203,6 +205,19 @@ test('the breakdown keeps the old points: total / base and the categories inside
   run(c, `cssBdKeep({getAttribute:function(){ return 'lss|aoi'; }, open:false})`);
   h = run(c, `cssProfileHtml(EMPS.find(function(e){ return e.id===ID; }), {V:VV, bdKey:'lss|aoi', bdOpen:true})`);
   assert.match(h, /<details data-k="lss\|aoi"/, 'closed once the person closed it');
+  // the selected strength and "see all" stay across the redraws of the scoring screen (review P3-8)
+  person(c, 'many', storeRec({ B0: 3, B1: 3, B2: 3, B3: 3, B4: 3, B6: 3, B7: 3, B8: 3, B9: 3, C0: 3, C1: 3, C2: 3, C3: 3, C4: 3, G0: 3, G1: 3, G2: 3, G3: 3, E9: 3 }));
+  c.ID = 'many';
+  const ids = run(c, `cssEvaluate(EMPS.find(function(e){ return e.id===ID; })).list.map(function(x){ return x.d.id; })`);
+  assert.ok(ids.length >= 4, 'needs a fourth strength for "see all"');
+  run(c, `cssSelKeep({getAttribute:function(){ return 'lss|many'; }}, 's', ${JSON.stringify(ids[3])}); cssSelKeep({getAttribute:function(){ return 'lss|many'; }}, 'more', true)`);
+  h = run(c, `cssProfileHtml(EMPS.find(function(e){ return e.id===ID; }), {V:VV, bdKey:'lss|many'})`);
+  assert.match(h, new RegExp('data-s="' + ids[3] + '" aria-pressed="true"'));
+  assert.match(h, new RegExp('data-s="' + ids[0] + '" aria-pressed="false"'));
+  assert.match(h, /aria-expanded="true"[^>]*>閉じる<\/button><div id="cssp\d+-rest">/);
+  // other screens (no key) start from the first strength
+  h = run(c, `cssProfileHtml(EMPS.find(function(e){ return e.id===ID; }), {V:VV})`);
+  assert.match(h, new RegExp('data-s="' + ids[0] + '" aria-pressed="true"'));
 });
 
 test('only the official record: pending score requests are not mixed in; changed item sets and missing records are not judged', () => {
@@ -214,6 +229,9 @@ test('only the official record: pending score requests are not mixed in; changed
   const h = html(c, 'pend');
   assert.match(h, />承認待ちあり</);
   assert.match(h, /点の変更の申請が承認待ちです。承認されるまでは、今の正式な評価で表示します（申請中の点は混ぜません）。/);
+  // only a score request that is still waiting counts (a skill request, or a score request already decided, does not)
+  person(c, 'Skill', storeRec()); person(c, 'Other', storeRec());
+  assert.deepEqual([evalOf(c, 'Skill').pending, evalOf(c, 'Other').pending], [false, false]);
   // the record was made with another item set (the same IDs ask different questions) → checking, not judged
   person(c, 'moved', storeRec({ B0: 3, B1: 3, B2: 3, B3: 3, B4: 3 }, { _set: '経理' }));
   assert.deepEqual([evalOf(c, 'moved').state, evalOf(c, 'moved').list], ['set', []]);
@@ -221,6 +239,10 @@ test('only the official record: pending score requests are not mixed in; changed
   // an old store record without the set mark is read as the store sheet
   person(c, 'old', storeRec({ B0: 3, B1: 3, B2: 3, B3: 3, B4: 3 }, { _set: undefined }));
   assert.deepEqual(evalOf(c, 'old').list, [['S1', 5, 5]]);
+  // a record with no score at all is "not evaluated" (not "in progress"; review P3-6)
+  const empty = storeRec(); for (const k of Object.keys(empty.scores)) empty.scores[k] = null;
+  person(c, 'empty', empty);
+  assert.equal(evalOf(c, 'empty').state, 'none');
   // no record at all
   person(c, 'none', null);
   assert.deepEqual(evalOf(c, 'none'), { state: 'none', un: 0, pending: false, date: '', by: '', q: '', kind: 'store', list: [] });
@@ -251,6 +273,22 @@ test('the strength rule (GM/CEO, display only): stored values change the judgeme
   const older = { rule: { minItems: 5, top: 'all', _at: 1 } }, newer = { rule: { reset: true, _at: 2 } };
   assert.deepEqual(run(c, `mergeMapByTime(${JSON.stringify(older)}, ${JSON.stringify(newer)})`), newer);
   assert.deepEqual(run(c, `mergeMapByTime(${JSON.stringify(newer)}, ${JSON.stringify({ rule: { minItems: 4, top: 'one', _at: 3 } })})`).rule.minItems, 4);
+  // after a reset the modal reads the time of the record now, so the next save is not refused as a conflict (review P2)
+  c.curRole = 'gm';
+  run(c, 'openCssRuleModal()');
+  assert.equal(c.window._cssRuleAt0, c.STORE.cs_strength_rule.rule._at);
+  assert.equal(run(c, `cssSaveRuleRec({minItems:4, top:'half'}, 'again', window._cssRuleAt0, false)`).ok, true);
+  assert.deepEqual([run(c, 'cssRule()').minItems, run(c, 'cssRule()').set], [4, true]);
+  // a rule that asks for more items than a sheet has: "few" says it is the rule, not the sheet; the modal warns
+  c.STORE.cs_strength_rule = { rule: { minItems: 5, top: 'half', _at: 120 } };
+  const acc = { scores: {}, evaluator: 'GM Sample', date: '2026/10/18', _set: '経理', _at: 1 };
+  for (const a of 'ABCDEFGH') for (let i = 0; i < 4; i++) acc.scores[a + i] = 3;
+  person(c, 'acc5', acc, { title: 'Accountant' });
+  assert.equal(evalOf(c, 'acc5').state, 'few');
+  assert.match(html(c, 'acc5'), /強みの決まり（根拠の項目が 5 つ以上）に届く分野が、この評価表にはありません。決まりは GM・CEO が変えられます。/);
+  c.ID = 'acc5'; assert.match(run(c, `cssStripHtml(EMPS.find(function(e){ return e.id===ID; }))`), /決まりの根拠の数に届く分野がありません/);
+  run(c, 'openCssRuleModal()');
+  assert.match(c.MODALS.at(-1), /根拠の項目を 5 つ以上にすると、経理・調理（1 軸 4 項目）では強みが出ません/);
   // GM/CEO see the current rule above the list (with the default marked as a proposal); others do not
   c.STORE.cs_strength_rule = { rule: { reset: true, _at: 99 } };
   assert.match(run(c, 'cssRuleBarHtml()'), /強みの決まり（表示だけ）：根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上（初期値・設定案）<\/span><button[^>]*min-height:44px[^>]*onclick="openCssRuleModal\(\)">変える</);
@@ -258,8 +296,9 @@ test('the strength rule (GM/CEO, display only): stored values change the judgeme
   // only GM/CEO (and not a store login) can open or save it
   c.curRole = 'am';
   assert.equal(run(c, 'cssRuleBarHtml()'), '');
+  const nModals = c.MODALS.length;
   run(c, 'openCssRuleModal()');
-  assert.equal(c.MODALS.length, 0);
+  assert.equal(c.MODALS.length, nModals);
   assert.equal(run(c, 'cssSaveRule(false)'), false);
   c.curRole = 'ceo';
   run(c, 'openCssRuleModal()');
@@ -301,8 +340,13 @@ test('the office sheet: only the latest confirmed evaluation, only the items in 
   s['O-B1'] = 3; s['O-B2'] = 3; s['O-B3'] = 3; s['O-B4'] = 3; s['O-B5'] = 3;   // the out-of-scope items are high too (must not count)
   c.OCSEV.off = { period: '2026-Q3', conf: { state: 'confirmed', s, at: '2026-10-05T01:00:00Z', by: 'GM Sample' }, meta: { asg, weights: { A: 20, P: 60, F: 20, G: 0 } } };
   const R = evalOf(c, 'off');
-  // A: 3 of 5 at 3 → strength. B: 2 items in scope < 3 → not judged. G: the weight-0 group (development record) is not used
-  assert.deepEqual([R.kind, R.state, R.q, R.date, R.list], ['office', 'done', '2026 Q3', '2026/10/05', [['OF-A', 3, 5]]]);
+  // A: 3 of 5 at 3 → strength. B: 2 items in scope < 3 → not judged. G: the weight-0 group (development record) is not used.
+  // The date is the Hawaii date (10/05 01:00 UTC is 10/04 in Hawaii; review P3-4)
+  assert.deepEqual([R.kind, R.state, R.q, R.date, R.by, R.list], ['office', 'done', '2026 Q3', '2026/10/04', 'GM Sample', [['OF-A', 3, 5]]]);
+  // a revised confirmation shows who revised it and when
+  c.OCSEV.off.conf.revisedAt = '2026-10-20T20:00:00Z'; c.OCSEV.off.conf.revisedBy = 'CEO Sample';
+  assert.deepEqual([evalOf(c, 'off').date, evalOf(c, 'off').by], ['2026/10/20', 'CEO Sample']);
+  delete c.OCSEV.off.conf.revisedAt; delete c.OCSEV.off.conf.revisedBy;
   // the mgr / self parts are never read: only conf.s
   c.OCSEV.off.mgr = { s: Object.fromEntries(Object.keys(s).map(k => [k, 3])) };
   assert.deepEqual(evalOf(c, 'off').list, [['OF-A', 3, 5]]);
@@ -340,6 +384,8 @@ test('display only: judging and drawing write nothing (no shared data, no bonus,
 test('wiring: My page, the Career Score list and screen, the growth chart and its talk points use the strengths; the shared key and the release', () => {
   // My page: the profile instead of the total / base headline; the categories only inside the breakdown
   assert.match(SRC, /\$\{cssProfileHtml\(meEmpL, \{self:true, V:lV, bdExtra:lExtra\}\)\}/);
+  // the folded category breakdown (now on every list card) is a 44px target (review P3-1)
+  assert.match(fn('csvCatsHtml'), /<summary style="[^"]*min-height:44px/);
   assert.doesNotMatch(SRC, /csvMainHtml\(lV, \{size:60, extra:lExtra, noCats:true\}\)/);
   // the list cards: no points ring; strengths strip, a small points line and the folded categories
   const list = fn('renderLeadership');
@@ -355,6 +401,9 @@ test('wiring: My page, the Career Score list and screen, the growth chart and it
   assert.equal((SRC.match(/return _kTile\('Career Score', escapeHtml\(cssTileVal\(R\)\)/g) || []).length, 2);
   assert.match(fn('renderKarteDetailPage'), /h\+='<div class="card">'\+cssProfileHtml\(e, \{V:csvView\(e\)\}\)\+'<\/div>';/);
   assert.match(fn('renderKarteSelfView'), /cssProfileHtml\(e, \{self:true, V:csvView\(e\)\}\)/);
+  // talk points: strengths also for people who have no store-sheet record (office sheet; review P3-9)
+  const ks = fn('karteAutoSkills');
+  assert.ok(ks.indexOf('strong=cssEvaluate(e)') < ks.indexOf('if(!sum||!sum.hasData) return {strong:strong'), ks);
   assert.doesNotMatch(fn('renderKarteSelfView'), /Career Score の内訳/);
   // the old "strengths" (top category share) are gone from the growth chart; the weak side stays as it was
   const ak = fn('karteAutoSkills');

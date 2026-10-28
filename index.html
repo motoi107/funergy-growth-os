@@ -64449,10 +64449,10 @@ function karteDelCert(empId, cid){ var k=getKarte(empId); k.certs=(k.certs||[]).
 
 function karteAutoSkills(e){
   var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
-  if(!sum||!sum.hasData) return {strong:[],weak:[],sum:sum};
-  var cats=sum.cats.slice().sort(function(a,b){return b.pct-a.pct;});
-  /* v1108（UI案61）：強みは決まり（根拠の項目の評価）で選ぶ。カテゴリーの得点率の上位では選ばない */
+  /* v1108（UI案61）：強みは決まり（根拠の項目の評価）で選ぶ。カテゴリーの得点率の上位では選ばない。オフィス用の人（店舗用の記録が無い）も出す（独立レビュー P3-9） */
   var strong=[]; try{ strong=cssEvaluate(e).list.slice(0,3).map(function(x){ return {key:x.d.id, name:cssDefName(x.d), txt:t('模範（3）'+x.threes+' / '+x.n+' 項目', x.threes+' of '+x.n+' at 3')}; }); }catch(err){ strong=[]; }
+  if(!sum||!sum.hasData) return {strong:strong,weak:[],sum:sum};
+  var cats=sum.cats.slice().sort(function(a,b){return b.pct-a.pct;});
   var weak=cats.slice().sort(function(a,b){return a.pct-b.pct;}).slice(0,3).map(function(c){return {key:c.key,name:c.name,pct:c.pct,score:c.score,max:c.max};});
   return {strong:strong, weak:weak, sum:sum};
 }
@@ -71823,7 +71823,7 @@ function csvCatsHtml(V, open){
       +'<span style="flex:0 0 auto;text-align:right;white-space:nowrap;font-weight:700">'+cscN(c.score)+' / '+cscN(c.max)+'</span>'
       +(c.un>0 ? '<span style="flex:0 0 auto;font-size:10px;color:var(--yellow);white-space:nowrap">'+t('未評価 ','')+c.un+t('',' not scored')+'</span>' : '')+'</div>';
   }).join('');
-  return '<details style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px"'+(open ? ' open' : '')+'><summary style="font-size:12px;font-weight:700;cursor:pointer;min-height:28px;line-height:1.6;padding:3px 0"><i class="ti ti-chart-donut" style="color:var(--accent)"></i> <span style="white-space:nowrap">'+t('カテゴリー別の内訳','Breakdown by category')+'</span> <span style="font-size:10.5px;color:var(--muted);font-weight:400">（'+V.cats.length+t(' カテゴリー・評価表の満点 ',' categories · sheet max ')+cscN(V.max)+t(' 点）',' pt)')+'</span></summary>'
+  return '<details style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px"'+(open ? ' open' : '')+'><summary style="font-size:12px;font-weight:700;cursor:pointer;min-height:44px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;line-height:1.4;padding:3px 0"><i class="ti ti-chart-donut" style="color:var(--accent)"></i> <span style="white-space:nowrap">'+t('カテゴリー別の内訳','Breakdown by category')+'</span> <span style="font-size:10.5px;color:var(--muted);font-weight:400">（'+V.cats.length+t(' カテゴリー・評価表の満点 ',' categories · sheet max ')+cscN(V.max)+t(' 点）',' pt)')+'</span></summary>'
     +'<div style="margin-top:4px">'+rows+'</div>'
     +'<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">'+t('基準点は今のグレードに求められる総合点です。得意なカテゴリーで補えます。次のグレード（昇格）の条件は別に見ます。','The base is the total score expected for your current grade; strong categories can make up for weaker ones. The next grade (promotion) is judged separately.')+'</div></details>';
 }
@@ -71908,15 +71908,33 @@ function cssDefName(d){ return curLang==='en' ? d.en : d.n; }
 function cssDefCan(d){ return curLang==='en' ? d.cen : d.can; }
 function cssDefShort(d){ return curLang==='en' ? d.se : d.s; }
 /* 決まり（cs_strength_rule の rule。無ければ初期値＝設定案）。表示のための決まりだけ */
+/* 一覧はカードごとに読むので、保存した文字が同じあいだは前に読んだ決まり・承認待ちの人を使う（変われば読み直す） */
+var _cssMemo={};
 function cssRule(){
+  var key=null; try{ key=(typeof _lsStoreGet==='function') ? _lsStoreGet('cs_strength_rule') : null; }catch(err){ key=null; }
+  if(key!=null && _cssMemo.ruleKey===key && _cssMemo.rule) return Object.assign({}, _cssMemo.rule);
+  var M={};
   var m=null; try{ m=ls('cs_strength_rule', null); }catch(err){ m=null; }
-  var r=(m && typeof m==='object' && m.rule && typeof m.rule==='object' && !m.rule._deleted && !m.rule.reset) ? m.rule : null;   /* reset＝初期値に戻した記録（_deleted は合流で時刻より先に勝つので使わない） */
+  var raw=(m && typeof m==='object' && m.rule && typeof m.rule==='object') ? m.rule : null;
+  var r=(raw && !raw._deleted && !raw.reset) ? raw : null;   /* reset＝初期値に戻した記録（_deleted は合流で時刻より先に勝つので使わない） */
   var mi=r ? parseInt(r.minItems, 10) : NaN, tp=r ? String(r.top||'') : '';
-  return {
+  M.rule={
     minItems:(isFinite(mi) && mi>=3 && mi<=6) ? mi : CSS_RULE_DEFAULT.minItems,
     top:(CSS_TOPS.indexOf(tp)>=0) ? tp : CSS_RULE_DEFAULT.top,
-    set:!!r, at:r ? String(r.at||'') : '', by:r ? String(r.by||'') : '', _at:r ? (Number(r._at)||0) : 0
+    set:!!r, at:r ? String(r.at||'') : '', by:r ? String(r.by||'') : '', _at:r ? (Number(r._at)||0) : 0,
+    rawAt:raw ? (Number(raw._at)||0) : 0   /* 保存の確かめに使う時刻（初期値に戻した記録・読めない記録でも、いまの記録の時刻。独立レビュー P2） */
   };
+  if(key!=null){ _cssMemo.ruleKey=key; _cssMemo.rule=M.rule; } else { _cssMemo.ruleKey=undefined; _cssMemo.rule=null; }
+  return Object.assign({}, M.rule);
+}
+/* 点の変更の申請が承認待ちの人（lssPendingFor と同じ決まり：kind score・申請中）。読み取りは v1098 の lsSplitRO（保存が同じなら同じ配列） */
+function cssPendingNames(){
+  var arr=null;
+  try{ arr=(typeof lsSplitRO==='function') ? lsSplitRO('lss_requests') : ((typeof getLssRequests==='function') ? getLssRequests() : []); }catch(err){ arr=[]; }
+  if(typeof lsSplitRO==='function' && arr && _cssMemo.pendArr===arr && _cssMemo.pend) return _cssMemo.pend;
+  var o={};
+  (Array.isArray(arr) ? arr : []).forEach(function(r){ if(r && r.kind==='score' && r.status==='申請中' && r.name) o[r.name]=1; });
+  _cssMemo.pendArr=arr; _cssMemo.pend=o; return o;
 }
 function cssTopTxt(top){ return ({half:t('3（模範）が半分以上','half or more at 3 (role model)'), one:t('3（模範）が 1 つ以上','at least one at 3 (role model)'), all:t('すべて 3（模範）','all at 3 (role model)')})[top] || ''; }
 function cssRuleTxt(R){ R=R||cssRule(); return t('根拠の項目が '+R.minItems+' つ以上・すべて 2 以上・', R.minItems+'+ evidence items, all at 2 or above, ')+cssTopTxt(R.top); }
@@ -71957,10 +71975,10 @@ function cssEvaluate(e){
   if(!e || !e.name) return R;
   var S=cssSheetOf(e); R.kind=S.kind; R.dept=S.dept || null;
   if(S.kind==='office') return cssEvalOffice(e, R);
-  try{ R.pending=!!(typeof lssPendingFor==='function' && lssPendingFor(e.name, 'score')); }catch(err){ R.pending=false; }
+  R.pending=!!cssPendingNames()[e.name];
   var rec=null; try{ rec=getLssScores(e.name); }catch(err){ rec=null; }
   var sc=(rec && rec.scores && typeof rec.scores==='object') ? rec.scores : {};
-  if(!rec || !Object.keys(sc).length) return R;
+  if(!rec || !Object.keys(sc).some(function(k){ return cssScore(sc[k])!=null; })) return R;   /* 点が 1 つも無い記録は「未評価」（独立レビュー P3-6） */
   R.date=String(rec.date||''); R.by=String(rec.evaluator||rec._by||''); R.q=cssQLabel(rec.date);
   /* 評価項目のセットが違えば、同じ ID が別の質問を指す（v994）。判定しない。印の無い前の記録は店舗用なら店舗用として読む */
   var was=rec._set || (S.kind==='store' ? 'general' : null);
@@ -71979,7 +71997,8 @@ function cssEvaluate(e){
     if(!cssTopOk(R.rule.top, th, ev.length)) return;
     cand.push({d:d, ev:ev, threes:th, n:ev.length, i:i});
   });
-  if(!defs.length || !defs.some(function(d){ var n=d.it ? d.it.filter(function(id){ return L.label[id]!=null; }).length : (L.axis[d.ax] || []).length; return n>=R.rule.minItems; })){ R.state='few'; R.list=[]; return R; }
+  var nMax=defs.reduce(function(a, d){ var n=d.it ? d.it.filter(function(id){ return L.label[id]!=null; }).length : (L.axis[d.ax] || []).length; return Math.max(a, n); }, 0);
+  if(nMax<R.rule.minItems){ R.state='few'; R.fewRule=(nMax>=CSS_RULE_DEFAULT.minItems); R.list=[]; return R; }   /* fewRule：決まり（根拠の数）を上げたため（評価表そのものは判定できる） */
   R.list=cssRank(cand);
   return R;
 }
@@ -71988,7 +72007,8 @@ function cssEvalOffice(e, R){
   var ev=null; try{ ev=(typeof ocsLastConfirmed==='function') ? ocsLastConfirmed(e.id) : null; }catch(err){ ev=null; }
   if(!ev || !ev.conf) return R;
   var s=ev.conf.s || {}, meta=ev.meta || {}, asg=meta.asg || {}, W=meta.weights || {}, defsSnap=Array.isArray(meta.defs) ? meta.defs : (typeof OCS_ITEMS!=='undefined' ? OCS_ITEMS : []);
-  R.date=String(ev.conf.at||'').slice(0, 10).replace(/-/g, '/'); R.by=String(ev.conf.by||''); R.q=String(ev.period||'').replace('-', ' ');
+  var _at=ev.conf.revisedAt || ev.conf.at || '';   /* ハワイの日付（独立レビュー P3-4）。直した確定は直した人と日 */
+  R.date=(typeof ocsFmt==='function') ? String(ocsFmt(_at)||'').slice(0, 10) : String(_at).slice(0, 10).replace(/-/g, '/'); R.by=String(ev.conf.revisedBy || ev.conf.by || ''); R.q=String(ev.period||'').replace('-', ' ');
   var un=0, byCat={};
   defsSnap.forEach(function(d){
     if(!d || !d.c) return;
@@ -71998,9 +72018,10 @@ function cssEvalOffice(e, R){
     (byCat[d.cat]=byCat[d.cat]||[]).push({id:d.c, label:(curLang==='en' ? (d.en||d.ja) : d.ja), desc:(curLang==='en' ? (d.den||d.dja) : d.dja), v:v});
   });
   R.un=un; R.state=un>0 ? 'partial' : 'done';
-  var defs=CS_STRENGTHS.filter(function(d){ return d.sh==='office'; }), cand=[], any=false;
+  var defs=CS_STRENGTHS.filter(function(d){ return d.sh==='office'; }), cand=[], any=false, nMax=0;
   defs.forEach(function(d, i){
     var ev2=byCat[d.ax] || [];
+    nMax=Math.max(nMax, ev2.length);
     if(ev2.length<R.rule.minItems) return;
     any=true;
     if(ev2.some(function(x){ return x.v==null; }) || ev2.some(function(x){ return x.v<2; })) return;
@@ -72008,7 +72029,7 @@ function cssEvalOffice(e, R){
     if(!cssTopOk(R.rule.top, th, ev2.length)) return;
     cand.push({d:d, ev:ev2, threes:th, n:ev2.length, i:i});
   });
-  if(!any){ R.state='few'; return R; }
+  if(!any){ R.state='few'; R.fewRule=(nMax>=CSS_RULE_DEFAULT.minItems); return R; }
   R.list=cssRank(cand);
   return R;
 }
@@ -72079,10 +72100,10 @@ function cssBadgeHtml(u, x, on){
    opt.bdOpen：初めから内訳を開く／opt.bdExtra：内訳の中に足す HTML／opt.draftNote：採点の画面（強みは保存した正式な評価から出すと書く） */
 function cssProfileHtml(e, opt){
   opt=opt||{};
-  var R=cssEvaluate(e), u='cssp'+(++_cssSeq), V=opt.V || null;
+  var R=cssEvaluate(e), u='cssp'+(++_cssSeq), V=opt.V || null, K=opt.bdKey || '', mem=(K && window._cssSelMem && window._cssSelMem[K]) || {};
   var grade=(V && typeof csvGradeHtml==='function') ? csvGradeHtml(V) : '';
   var meta=[R.q ? escapeHtml(t(R.q+' の評価', R.q+' evaluation')) : '', R.date ? escapeHtml(t('更新 ', 'Updated ')+R.date) : ''].filter(Boolean).join(' ・ ');
-  var h='<section id="'+u+'" aria-label="'+escapeHtml(opt.self ? t('あなたの強み','Your strengths') : t('強み','Strengths'))+'" style="display:flex;flex-direction:column;gap:10px">'
+  var h='<section id="'+u+'"'+(K ? ' data-k="'+escapeHtml(K)+'"' : '')+' aria-label="'+escapeHtml(opt.self ? t('あなたの強み','Your strengths') : t('強み','Strengths'))+'" style="display:flex;flex-direction:column;gap:10px">'
     +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:15px;font-weight:800">'+(opt.self ? t('あなたの強み','Your strengths') : t('強み','Strengths'))+'</span><span style="margin-left:auto;display:inline-flex;gap:4px;flex-wrap:wrap">'+cssTagHtml(R)+'</span></div>'
     +((grade || meta) ? '<div style="font-size:11.5px;color:var(--muted);line-height:1.5;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+grade+(grade && meta ? '<span>・</span>' : '')+'<span>'+meta+'</span></div>' : '');
   if(R.state==='none'){
@@ -72090,13 +72111,14 @@ function cssProfileHtml(e, opt){
   } else if(R.state==='set'){
     h+=cssCheckingHtml(t('評価項目が入れ替わったため、強みを確認中です（今の項目で評価し直すと出ます）。','The evaluation items have changed, so strengths are being checked (they appear once evaluated on the current items).'));
   } else if(R.state==='few'){
-    h+=cssCheckingHtml(t('この評価表は分野ごとの項目が少ないため、強みを判定していません。','This evaluation sheet has too few items per area to judge strengths.'));
+    h+=cssCheckingHtml(R.fewRule ? t('強みの決まり（根拠の項目が '+R.rule.minItems+' つ以上）に届く分野が、この評価表にはありません。決まりは GM・CEO が変えられます。','No area on this sheet has as many evidence items as the strength rule asks ('+R.rule.minItems+' or more). GM or CEO can change the rule.')
+      : t('この評価表は分野ごとの項目が少ないため、強みを判定していません。','This evaluation sheet has too few items per area to judge strengths.'));
   } else if(!R.list.length){
     h+=cssCheckingHtml(R.state==='partial'
       ? t('採点していない項目が '+R.un+' あります。評価が終わると、ほかの分野も判定します（採点していない項目を 0 点や推測で埋めません）。', R.un+' items are not scored yet. Other areas are judged once the evaluation is complete (unscored items are never filled with 0 or a guess).')
       : t('評価はそろっています。強みとして出す決まり（'+cssRuleTxt(R.rule)+'）に当たる分野は、まだありません。','The evaluation is complete. No area meets the rule for a strength yet ('+cssRuleTxt(R.rule)+').'));
   } else {
-    var top=R.list.slice(0, 3), rest=R.list.slice(3), sel=top[0];
+    var top=R.list.slice(0, 3), rest=R.list.slice(3), sel=R.list.filter(function(x){ return x.d.id===mem.s; })[0] || top[0], more=!!(mem.more && rest.length);   /* 描き直しても選んだ強み・「すべて見る」を残す（独立レビュー P3-8） */
     if(R.state==='partial') h+='<div style="font-size:12px;font-weight:700">'+t('現時点で確認できている強み','Strengths confirmed so far')+'</div>';
     h+='<div role="group" aria-label="'+escapeHtml(t('強み（押すと根拠が出ます）','Strengths (press to see why)'))+'" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:480px">'+top.map(function(x){ return cssBadgeHtml(u, x, x===sel); }).join('')+'</div>';
     h+='<p style="margin:0;font-size:15px;font-weight:800;line-height:1.5">'+escapeHtml(cssSentence(R))+'</p>';
@@ -72104,8 +72126,8 @@ function cssProfileHtml(e, opt){
     h+='<div id="'+u+'-ev" aria-live="polite" style="background:var(--surface2,#f7f3ee);border-radius:12px;padding:12px">'+cssEvHtml(R, sel)+'</div>';
     h+=R.list.map(function(x){ return '<template id="'+u+'-t-'+escapeHtml(x.d.id)+'">'+cssEvHtml(R, x)+'</template>'; }).join('');
     if(rest.length){
-      h+='<button type="button" aria-expanded="false" aria-controls="'+u+'-rest" data-u="'+u+'" data-n="'+R.list.length+'" onclick="cssMore(this)" style="font-family:inherit;min-height:44px;border:1px solid var(--border);background:var(--surface,#fff);border-radius:10px;font-size:13px;font-weight:700;color:var(--tm);cursor:pointer">'+t('強みをすべて見る（'+R.list.length+'）','See all strengths ('+R.list.length+')')+'</button>'
-        +'<div id="'+u+'-rest" hidden><div role="group" aria-label="'+escapeHtml(t('ほかの強み','Other strengths'))+'" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:480px">'+rest.map(function(x){ return cssBadgeHtml(u, x, false); }).join('')+'</div></div>';
+      h+='<button type="button" aria-expanded="'+(more ? 'true' : 'false')+'" aria-controls="'+u+'-rest" data-u="'+u+'" data-n="'+R.list.length+'" onclick="cssMore(this)" style="font-family:inherit;min-height:44px;border:1px solid var(--border);background:var(--surface,#fff);border-radius:10px;font-size:13px;font-weight:700;color:var(--tm);cursor:pointer">'+(more ? t('閉じる','Close') : t('強みをすべて見る（'+R.list.length+'）','See all strengths ('+R.list.length+')'))+'</button>'
+        +'<div id="'+u+'-rest"'+(more ? '' : ' hidden')+'><div role="group" aria-label="'+escapeHtml(t('ほかの強み','Other strengths'))+'" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:480px">'+rest.map(function(x){ return cssBadgeHtml(u, x, x===sel); }).join('')+'</div></div>';
     }
   }
   if(R.pending) h+='<div style="font-size:11.5px;color:var(--muted);line-height:1.55">'+t('点の変更の申請が承認待ちです。承認されるまでは、今の正式な評価で表示します（申請中の点は混ぜません）。','A score change is waiting for approval. Until it is approved, this shows the current official evaluation (pending scores are not mixed in).')+'</div>';
@@ -72132,8 +72154,10 @@ function cssSel(btn){
     });
     var tpl=document.getElementById(u+'-t-'+s), live=document.getElementById(u+'-ev');
     if(tpl && live) live.innerHTML=tpl.innerHTML;
+    cssSelKeep(root, 's', s);
   }catch(err){}
 }
+function cssSelKeep(root, k, v){ try{ var K=root && root.getAttribute('data-k'); if(!K) return; window._cssSelMem=window._cssSelMem||{}; var m=window._cssSelMem[K]=window._cssSelMem[K]||{}; m[k]=v; }catch(err){} }
 function cssMore(btn){
   try{
     var u=btn.getAttribute('data-u'), box=document.getElementById(u+'-rest'); if(!box) return;
@@ -72141,6 +72165,7 @@ function cssMore(btn){
     if(open) box.removeAttribute('hidden'); else box.setAttribute('hidden', '');
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     btn.textContent=open ? t('閉じる','Close') : t('強みをすべて見る（'+btn.getAttribute('data-n')+'）','See all strengths ('+btn.getAttribute('data-n')+')');
+    cssSelKeep(document.getElementById(u), 'more', open);
   }catch(err){}
 }
 /* 内訳の開き具合を覚える（採点の画面は点を入れるたびに描き直すので） */
@@ -72156,7 +72181,7 @@ function cssStripHtml(e, R){
   if(R.state==='set') msg+=t('（評価項目が入れ替わっています）',' (the items have changed)');
   else if(R.state==='partial') msg+=t('（採点していない項目 '+R.un+'）',' ('+R.un+' items not scored)');
   else if(R.state==='done') msg+=t('（決まりに当たる分野がまだありません）',' (no area meets the rule yet)');
-  else if(R.state==='few') msg+=t('（評価表の項目が少ないため判定していません）',' (too few items to judge)');
+  else if(R.state==='few') msg+=R.fewRule ? t('（決まりの根拠の数に届く分野がありません）',' (no area has as many items as the rule asks)') : t('（評価表の項目が少ないため判定していません）',' (too few items to judge)');
   return '<div style="font-size:12.5px;color:var(--tm);background:var(--surface2,#f7f3ee);border-radius:10px;padding:8px 10px;margin-top:8px">'+escapeHtml(msg)+'</div>';
 }
 /* 成長カルテのタイル用：大きな字は強みの短い言い方（2 つまで）、小さな字は点（内訳） */
@@ -72168,7 +72193,7 @@ function cssTileVal(R){
 function cssCanEditRule(){ return !curStoreLogin && ['gm','ceo'].indexOf(curRole)>=0; }
 function openCssRuleModal(){
   if(!cssCanEditRule()){ showToast(t('変えられるのは GM・CEO です','Only GM or CEO can change this'),'warning'); return; }
-  var R=cssRule(); window._cssRuleAt0=R._at;
+  var R=cssRule(); window._cssRuleAt0=R.rawAt;
   var opt=function(v, cur, label){ return '<option value="'+v+'"'+(String(v)===String(cur) ? ' selected' : '')+'>'+escapeHtml(label)+'</option>'; };
   var map=CS_STRENGTHS.map(function(d){
     var ev=d.it ? d.it.join('・') : t('その軸・カテゴリーの項目すべて','all items of that axis / category');
@@ -72182,6 +72207,7 @@ function openCssRuleModal(){
       +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px">'+t('根拠の項目の数（これより少ない強みは出さない）','Minimum evidence items')+'<select id="css-r-min" class="form-input" style="min-height:44px">'+[3,4,5,6].map(function(n){ return opt(n, R.minItems, t(n+' つ以上', n+' or more')); }).join('')+'</select></label>'
       +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px">'+t('3（模範）の数','Items at 3 (role model)')+'<select id="css-r-top" class="form-input" style="min-height:44px">'+opt('half', R.top, t('半分以上（初期値）','Half or more (default)'))+opt('one', R.top, t('1 つ以上（出やすい）','At least one (shows more)'))+opt('all', R.top, t('すべて（出にくい）','All (shows fewer)'))+'</select></label>'
     +'</div>'
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:6px">'+t('根拠の項目を 5 つ以上にすると、経理・調理（1 軸 4 項目）では強みが出ません。6 つにすると、オフィス用（1 カテゴリー 5 項目）でも出ません。','With 5 or more evidence items, accounting and culinary sheets (4 items per axis) show no strengths; with 6, the office sheet (5 items per category) shows none either.')+'</div>'
     +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px;margin-top:8px">'+t('理由（任意）','Reason (optional)')+'<input id="css-r-why" class="form-input" style="min-height:44px" maxlength="200"></label>'
     +'<div style="font-size:11.5px;color:var(--muted);margin-top:6px">'+(R.set ? escapeHtml(t('今の決まり：'+cssRuleTxt(R)+'（'+R.at+' '+R.by+'）', 'Current: '+cssRuleTxt(R)+' ('+R.at+' '+R.by+')')) : escapeHtml(t('今の決まり：初期値（設定案）＝'+cssRuleTxt(R), 'Current: the default (proposed) = '+cssRuleTxt(R))))+'</div>'
     +'<details style="margin-top:10px"><summary style="min-height:44px;display:flex;align-items:center;font-size:12.5px;font-weight:700;cursor:pointer">'+t('強みの対応表（'+CS_STRENGTHS.length+'）','The strength table ('+CS_STRENGTHS.length+')')+'</summary><div style="max-height:46vh;overflow-y:auto">'+map+'</div></details>'
@@ -72222,7 +72248,9 @@ function cssSaveRule(reset){
   if(window._cssBusy) return false;
   window._cssBusy=1;
   var bad=function(){ showToast(t('クラウドから最新の決まりを読めなかったため、保存していません。もう一度押してください','Could not read the latest rule from the cloud; not saved. Please try again'),'danger'); return false; };
-  return Promise.resolve().then(function(){ return pullOpKey('cs_strength_rule'); }).then(function(r){ return (r===true) ? go() : bad(); }, bad).then(function(r){ window._cssBusy=0; return r; }, function(){ window._cssBusy=0; return false; });
+  var pull=Promise.resolve().then(function(){ return pullOpKey('cs_strength_rule'); });
+  if(typeof setTimeout==='function') pull=Promise.race([pull, new Promise(function(res){ setTimeout(function(){ res(false); }, 45000); })]);   /* 返事が無いときに押せないままにしない（独立レビュー P3-7） */
+  return pull.then(function(r){ return (r===true) ? go() : bad(); }, bad).then(function(r){ window._cssBusy=0; return r; }, function(){ window._cssBusy=0; return false; });
 }
 /* 一覧のカードの 1 行（グレード・強みの評価の状態・更新日）と、点の小さな行（評価の内訳） */
 function cssListLineHtml(V, R){
@@ -72440,7 +72468,7 @@ function empTitleTxt(e){ if(!e) return ''; var lbl=empTitleLabel(e), dept=null; 
 function cgExpectHtml(cg){
   if(!cg || cg.g==='G1') return '';
   var X=(typeof csgGet==='function') ? csgGet('cg|'+cg.dept+'|'+cg.g) : {what:''}, txt=String(X.what||'').trim();
-  var h='<details style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px"><summary style="font-size:12px;font-weight:700;cursor:pointer;min-height:28px;line-height:1.6;padding:3px 0"><i class="ti ti-target" style="color:var(--accent)"></i> '+t('期待されること','What is expected')+' <span style="font-size:10.5px;color:var(--muted);font-weight:400">（'+escapeHtml(cgComboName(cg.dept, cg.g))+'）</span></summary>';
+  var h='<details style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px"><summary style="font-size:12px;font-weight:700;cursor:pointer;min-height:44px;display:flex;align-items:center;flex-wrap:wrap;gap:4px;line-height:1.4;padding:3px 0"><i class="ti ti-target" style="color:var(--accent)"></i> '+t('期待されること','What is expected')+' <span style="font-size:10.5px;color:var(--muted);font-weight:400">（'+escapeHtml(cgComboName(cg.dept, cg.g))+'）</span></summary>';
   h+='<div style="font-size:12px;line-height:1.65;margin-top:4px;white-space:pre-wrap">'+(txt ? escapeHtml(txt) : '<span style="color:var(--muted)">'+t('まだ書かれていません（GM・CEO が Career Score › Score管理 で書きます）','Not written yet (GM/CEO write it in Career Score › Score admin)')+'</span>')+'</div>';
   if(cg.dept!==CG_OFFICE) h+='<button class="btn btn-secondary btn-sm" style="margin-top:6px;font-size:11px" onclick="csgOpen(\'A\',null,'+cscJsArg(cg.dept)+','+cscJsArg(cg.g)+')"><i class="ti ti-book-2"></i> '+t('各項目の評価基準・例（0〜3 点の目安）','Criteria & examples for each item (0–3)')+'</button>';
   return h+'</details>';
