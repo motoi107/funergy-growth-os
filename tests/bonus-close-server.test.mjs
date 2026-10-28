@@ -257,3 +257,37 @@ test('the anon key is not a sign-in: refused without asking Auth', async () => {
   const r2 = await handler(new Request('https://fn.test/bonus-close', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'get', quarter: Q }) }));
   assert.equal(r2.status, 401);
 });
+
+test('a $0 pool closes (k 0, everyone $0); each person gets the floor of raw × cap ÷ S or one dollar more (random cases from the app\'s rounding pass)', async () => {
+  const { call, pg } = await setup();
+  const zero = snap(Q, [['a', 3000], ['b', 2000]], 0);
+  assert.deepEqual([zero.k, zero.paid, zero.finals.a, zero.finals.b], [0, 0, 0, 0]);
+  const r1 = await call('gm', { action: 'save', quarter: Q, expect_rev: 0, kind: 'provisional', snap: zero });
+  assert.equal(r1.body.ver, 1, JSON.stringify(r1.body));
+  const r2 = await call('gm', { action: 'confirm', quarter: Q, expect_rev: r1.body.rev, ver: 1, why: '' });
+  assert.equal(r2.body.ver, 2, JSON.stringify(r2.body));
+  assert.equal((await call('gm', { action: 'mark_paid', quarter: Q, expect_rev: r2.body.rev, ver: 2, paid_on: '2026-11-13' })).status, 200);
+  // the split per person: the totals add up but the amounts are moved between people → refused
+  const ok = snap(Q, [['a', 3000], ['b', 2000]], 4000);
+  assert.deepEqual(J(ok.finals), { a: 2400, b: 1600 });
+  const moved = { ...ok, finals: { a: 2000, b: 2000 }, people: { a: { ...ok.people.a, final: 2000 }, b: { ...ok.people.b, final: 2000 } } };
+  const chk = async s => { try { await pg.query('select public.bc_snap_check($1, $2::jsonb) as v', [Q, JSON.stringify(s)]); return 'ok'; } catch (e) { return e.message; } };
+  assert.equal(await chk(ok), 'ok');
+  assert.equal(await chk(moved), 'bad_amounts');
+  const two = { ...ok, finals: { a: 2402, b: 1598 }, people: { a: { ...ok.people.a, final: 2402 }, b: { ...ok.people.b, final: 1598 } } };
+  assert.equal(await chk(two), 'bad_amounts');
+  // two dollars more for one person (the others still at least the floor, the total the same): refused
+  const t3 = snap(Q, [['a', 100], ['b', 100], ['c', 100]], 200.5);
+  assert.deepEqual(J(t3.finals), { a: 67, b: 67, c: 66 });
+  assert.equal(await chk(t3), 'ok');
+  assert.equal(await chk({ ...t3, finals: { a: 68, b: 66, c: 66 }, people: { a: { ...t3.people.a, final: 68 }, b: { ...t3.people.b, final: 66 }, c: { ...t3.people.c, final: 66 } } }), 'bad_amounts');
+  // random people and pools (cents, ties, large amounts): every split the app makes is accepted
+  let seed = 7; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  for (let t = 0; t < 300; t++) {
+    const n = 1 + rnd(30), people = [];
+    for (let i = 0; i < n; i++) people.push(['E' + i, rnd(4) === 0 ? 1500 : rnd(t % 3 === 0 ? 9000000 : 9000)]);
+    const S = people.reduce((a, x) => a + x[1], 0), cap = Math.round(rnd(Math.max(1, S)) * 100 + rnd(100)) / 100;
+    const s = snap(Q, people, cap);
+    assert.equal(await chk(s), 'ok', JSON.stringify([people.length, S, cap]));
+  }
+});

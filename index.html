@@ -16123,6 +16123,7 @@ function doLogout() {
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
+  if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
   window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
@@ -62814,7 +62815,7 @@ function bqLockQuarter(q){
 }
 function bqUnlockQuarter(q){
   if(['gm','ceo'].indexOf(curRole)<0){ showToast('解除は GM・CEO のみです','warning'); return; }
-  if(typeof bcOwns==='function' && bcOwns(q)){ showToast(q+' は「ボーナスの締め」の「確定版から修正」で直します（確定の解除はしません）','info'); return; }   /* v1109 */
+  if(typeof bcOwns==='function' && bcOwns(q) && !(typeof bcOldFormulaLock==='function' && bcOldFormulaLock(q))){ showToast(q+' は「ボーナスの締め」の「確定版から修正」で直します（確定の解除はしません）','info'); return; }   /* v1109（前の式の確定だけは解除して締め直す） */
   if(!confirm(q+' の査定確定を解除します。\n利益と評価が再び編集できるようになり、査定額が変わる可能性があります。\n給与・ボーナス履歴に記録済みの金額は自動では変わりません。よろしいですか？')) return;
   var d=bqGet(q); d.locked=false; d.lockedAt=''; d.lockedBy=''; d.poolSnap=null; d.segSnap=null; d.coefSnap=null; d.rangeLock=''; d.evSnap=null;   /* v1062・v1065 */   /* v1058: 係数も */   /* v1042: 確定したときの原資も外す・v1044: 区間も */
   bqSet(q,d); showToast('解除しました','info'); bqRefresh();
@@ -62913,7 +62914,7 @@ function renderBqPipeline(q, cfg){
     h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:6px"><i class="ti ti-alert-triangle"></i> '
       +'この四半期は進行中です。予算達成率は経過ぶんの予算と比べた「途中経過」を表示しています。確定は四半期終了後に行ってください。</div>';
   }
-  if(canLock && typeof bcOwns==='function' && bcOwns(q)){   /* v1109：確定は下の「ボーナスの締め」（サーバーの版） */
+  if(canLock && typeof bcOwns==='function' && bcOwns(q) && !(typeof bcOldFormulaLock==='function' && bcOldFormulaLock(q))){   /* v1109：確定は下の「ボーナスの締め」（サーバーの版）。前の式の確定は下で解除 */
     h+='<div class="btn-row" style="margin-top:8px;align-items:center">';
     if(!d.locked) h+='<button class="btn btn-secondary btn-sm" onclick="bqCsFreezeAll(\''+escapeHtml(q)+'\')"><i class="ti ti-star"></i> Career Score を今の評価で確定</button>';
     h+='<span style="font-size:11px;color:var(--muted)">仮締め・支給額の確定・修正は下の「ボーナスの締め」で行います。</span></div>';
@@ -71816,7 +71817,8 @@ function csgLssBtnHtml(name, cat, gi){
    ・有効な確定版の写しは今までどおり bonus_q（spl_bonus_q_<四半期>）の evSnap。ほかの画面・本人に見せる表示・給与・ボーナス履歴はそれを読む。
    ・確定・再計算だけで、支払・控除・給与への送信はしない。本人へは自動で出さない（本人に見せる表示は有効な確定版の額だけ・回答 8）。 */
 var BC_FN = '/functions/v1/bonus-close';
-var _bc = {q:'', data:null, load:'', err:'', errCode:'', draft:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:0};
+var _bc = {q:'', data:null, load:'', err:'', errCode:'', draft:null, base:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:0};
+var _bcStash = {}, _bcHeal = {};   /* 四半期を切り替えたときの保存していない選び方／写しを合わせている途中 */
 /* この四半期は新しい締め（サーバーの版）で扱うか：2026 Q3（v1099 の式）から */
 function bcOwns(q){ try{ return !!(q && typeof kevQOk==='function' && kevQOk(q) && typeof kevGen3==='function' && kevGen3(q)); }catch(err){ return false; } }
 function bcCan(){ return ['gm','ceo'].indexOf(curRole)>=0 && !curStoreLogin; }
@@ -71857,7 +71859,28 @@ async function bcAPI(payload, retried){
 }
 function bcJ(v){ return JSON.parse(JSON.stringify(v==null ? null : v)); }
 function bcRerender(){ try{ if(typeof kbRefresh==='function') kbRefresh(); }catch(e){} }
-function bcReset(q){ _bc={q:q||'', data:null, load:'', err:'', errCode:'', draft:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:(_bc.seq||0)+1}; }
+function bcReset(q){ _bc={q:q||'', data:null, load:'', err:'', errCode:'', draft:null, base:null, dirty:false, busy:'', hist:false, cmp:null, view:null, seq:(_bc.seq||0)+1}; }
+function bcForget(){ _bcStash={}; bcReset(''); }
+function bcDraftNorm(d){ d=bcJ(d || {}) || {}; if(!d.choices || typeof d.choices!=='object' || Array.isArray(d.choices)) d.choices={}; if(!Array.isArray(d.bulk)) d.bulk=[]; return {choices:d.choices, bulk:d.bulk}; }
+/* ほかの人が先に下書きを保存していたとき：その内容（theirs）に、この画面のまだ保存していない選び方（mine）を重ねる。
+   読んだときの下書き（base）から変えたところだけ。同じところを両方が違う値にしたら、先に保存した人の値（数を返す） */
+function bcMergeDraft(base, mine, theirs){
+  var B=bcDraftNorm(base), M=bcDraftNorm(mine), T=bcDraftNorm(theirs), s=function(v){ return v==null ? '' : kevStableStr(v); }, out={}, both=0, ids={};
+  [B.choices, M.choices, T.choices].forEach(function(o){ Object.keys(o).forEach(function(id){ ids[id]=1; }); });
+  Object.keys(ids).forEach(function(id){
+    var b0=B.choices[id] || {}, m0=M.choices[id] || {}, t0=T.choices[id] || {}, ks={};
+    [b0, m0, t0].forEach(function(o){ Object.keys(o).forEach(function(k){ ks[k]=1; }); });
+    Object.keys(ks).forEach(function(k){
+      var b=b0[k], m=m0[k], t=t0[k], v;
+      if(s(m)===s(b)) v=t; else if(s(t)===s(b) || s(t)===s(m)) v=m; else { v=t; both++; }
+      if(v!=null) (out[id]=out[id]||{})[k]=bcJ(v);
+    });
+  });
+  var key=function(x){ return x ? String(x.at||'')+'|'+String(x.by||'')+'|'+String(x.why||'') : ''; }, seen={}, was={};
+  T.bulk.forEach(function(x){ seen[key(x)]=1; }); B.bulk.forEach(function(x){ was[key(x)]=1; });
+  var bulk=T.bulk.concat(M.bulk.filter(function(x){ return !seen[key(x)] && !was[key(x)]; })).slice(-50), draft={choices:out, bulk:bcJ(bulk)};
+  return {draft:draft, dirty:s(draft)!==s(T), theirs:s(T)!==s(B), both:both};
+}
 /* 読み込み（画面を開いたとき・押したあと）。下書きを直している途中なら、手元の下書きは残す */
 function bcLoad(q, keepDraft){
   if(!bcSession()){ _bc.load='signin'; return Promise.resolve(false); }
@@ -71865,9 +71888,13 @@ function bcLoad(q, keepDraft){
   return bcAPI({action:'get', quarter:q}).then(function(D){
     if(seq!==_bc.seq || _bc.q!==q) return false;
     _bc.data=D; _bc.load='ok'; _bc.err=''; _bc.errCode='';
-    if(!keepDraft || !_bc.dirty || !_bc.draft){ _bc.draft=bcJ((D && D.draft) || {}); _bc.dirty=false; }
-    if(!_bc.draft.choices || typeof _bc.draft.choices!=='object') _bc.draft.choices={};
-    if(!Array.isArray(_bc.draft.bulk)) _bc.draft.bulk=[];
+    var srv=bcDraftNorm(D && D.draft);
+    if(!keepDraft || !_bc.dirty || !_bc.draft){ _bc.draft=srv; _bc.dirty=false; }
+    else {
+      var mg=bcMergeDraft(_bc.base, _bc.draft, srv); _bc.draft=mg.draft; _bc.dirty=mg.dirty;
+      if(mg.theirs) showToast('ほかの人（'+escapeHtml(String(D.draft_by||'ほかの端末'))+'）が先に下書きを保存していました。その内容に、この画面のまだ保存していない選び方を重ねています'+(mg.both ? '（同じところを両方が違う値にした '+mg.both+' か所は、先に保存した人の値にしました）' : '')+'。確かめてから、もう一度保存してください','warning');
+    }
+    _bc.base=bcJ(srv);
     bcReconcile(q, D);
     return true;
   }, function(e){
@@ -71877,8 +71904,12 @@ function bcLoad(q, keepDraft){
   }).then(function(r){ if(!_bc.busy) bcRerender(); return r; });
 }
 function bcEnsure(q){
-  if(_bc.q!==q) bcReset(q);
-  if(!_bc.load){ _bc.load='loading'; setTimeout(function(){ if(_bc.q===q) bcLoad(q); }, 0); }
+  if(_bc.q!==q){
+    if(_bc.q && _bc.dirty && _bc.draft) _bcStash[_bc.q]={draft:bcJ(_bc.draft), base:bcJ(_bc.base)};   /* 四半期を切り替えても、保存していない選び方は戻ると残る（P3-7） */
+    bcReset(q);
+    var st=_bcStash[q]; if(st){ delete _bcStash[q]; _bc.draft=st.draft; _bc.base=st.base; _bc.dirty=true; }
+  }
+  if(!_bc.load){ _bc.load='loading'; var keep=!!_bc.dirty; setTimeout(function(){ if(_bc.q===q) bcLoad(q, keep); }, 0); }
 }
 function bcChoices(){ return (_bc.draft && _bc.draft.choices && typeof _bc.draft.choices==='object') ? _bc.draft.choices : {}; }
 
@@ -71964,11 +71995,11 @@ function bcBuild(q, cfg, choices, bulk, fixFinal){
   if(typeof mdCacheClear==='function') mdCacheClear();
   var tot=kevTotals(Object.assign({}, cfg, {quarter:q}), kv);
   if(!tot.poolKnown) return {err:'原資が未設定です（設定タブ ① で経常利益と経常利益率を入れてください。$0 とは別）', tot:tot};
-  if(tot.nCfg) return {err:'設定の確認が必要な人が '+tot.nCfg+' 名います（'+tot.rows.filter(function(r){ return r.b.blocked==='eval' || r.b.blocked==='track'; }).slice(0, 4).map(function(r){ return r.e.name; }).join('・')+'）。仮の値では解消しません', tot:tot};
+  if(tot.nCfg) return {err:'設定の確認が必要な人が '+tot.nCfg+' 名います（'+tot.rows.filter(function(r){ return r.b.blocked==='eval' || r.b.blocked==='track'; }).slice(0, 4).map(function(r){ return escapeHtml(r.e.name); }).join('・')+'）。仮の値では解消しません', tot:tot};
   if(tot.unsel) return {err:'使う値を選んでいない部分が '+tot.unsel+' あります（算定未完了）', tot:tot};
   if(tot.nBlocked) return {err:'金額を出せない人がいます', tot:tot};
   var badId=tot.rows.filter(function(r){ return !/^[A-Za-z0-9_.:@-]{1,64}$/.test(String(r.e.id)); });
-  if(badId.length) return {err:'従業員 ID の形がサーバーの決まりと合わない人がいます（'+badId.slice(0, 3).map(function(r){ return r.e.name; }).join('・')+'）。Claude に知らせてください', tot:tot};
+  if(badId.length) return {err:'従業員 ID の形がサーバーの決まりと合わない人がいます（'+badId.slice(0, 3).map(function(r){ return escapeHtml(r.e.name); }).join('・')+'）。Claude に知らせてください', tot:tot};
   var people={}, order=[], segSnap={}, coefSnap={}, used=bcUsedChoices(tot, choices);
   tot.rows.forEach(function(r){
     var e=r.e, b=r.b, el=b.segs.filter(function(x){ return x.elig; });
@@ -71991,9 +72022,23 @@ function bcBuild(q, cfg, choices, bulk, fixFinal){
 function bcDigest(sn){ if(!sn) return 'none:'+Math.random(); var x=Object.assign({}, sn); delete x.at; delete x.by; if(x.poolSnap){ x.poolSnap=Object.assign({}, x.poolSnap); delete x.poolSnap.at; delete x.poolSnap.by; } return kevStableStr(x); }
 
 /* ---- 有効な確定版の写し（bonus_q.evSnap）：ほかの画面・本人に見せる表示・履歴の記録はこれを読む ---- */
+/* 共通データ（bonus_q）に入れる確定の写し：選んだ理由・一括の記録はサーバーの版だけに残す（形は同じ。理由の文は入れない） */
+function bcMirrorCopy(snap){
+  var s=bcJ(snap) || {}, cut=function(o){ return (o && typeof o==='object') ? Object.assign({m:o.m}, (o.v!=null ? {v:o.v} : {}), (o.why ? {why:'（理由はサーバーの版）'} : {})) : o; };
+  if(s.choices && typeof s.choices==='object') Object.keys(s.choices).forEach(function(id){ var c=s.choices[id]; if(c && typeof c==='object') Object.keys(c).forEach(function(k){ c[k]=cut(c[k]); }); });
+  if(s.people && typeof s.people==='object') Object.keys(s.people).forEach(function(id){ var a=s.people[id] && s.people[id].adopt; if(a && typeof a==='object') Object.keys(a).forEach(function(k){ a[k]=cut(a[k]); }); });
+  if(Array.isArray(s.bulk)) s.bulk=s.bulk.map(function(x){ return {at:(x && x.at) || '', n:(x && Array.isArray(x.parts)) ? x.parts.length : 0}; });
+  if(s.Erec && typeof s.Erec==='object') s.Erec=Object.assign({}, s.Erec, {why:s.Erec.why ? '（理由はサーバーの版）' : ''});
+  return s;
+}
+/* 書く前にクラウドの行を読む（ほかの端末がこのあいだに直した入力を、古い写しで戻さない） */
+function bcPullQ(q){ if(typeof pullOpKey!=='function') return Promise.resolve(true); return Promise.resolve().then(function(){ return pullOpKey('spl_bonus_q_'+q); }).then(function(r){ return r===true; }, function(){ return false; }); }
 function bcMirrorWrite(q, row, snap, quiet){
+  return bcPullQ(q).then(function(){ return bcMirrorWrite1(q, row, bcMirrorCopy(snap), quiet); });
+}
+function bcMirrorWrite1(q, row, snap, quiet){
   var d=bqGet(q);
-  d.locked=true; d.lockedAt=String(row.made_at||kevNow()); d.lockedBy=String(row.made_by||'');
+  d.locked=true; d.lockedAt=String((row.made_at && bcTime(row.made_at)) || kevNow()); d.lockedBy=String(row.made_by||'');   /* 確定の日時は画面と同じ書き方（UTC のままにしない） */
   d.rangeLock=d.lockedAt+'|'+d.lockedBy;
   d.evSnap=Object.assign({}, snap, {lk:d.lockedAt+'|'+d.lockedBy, bc:{ver:row.ver, prov:!!row.has_prov, made_at:row.made_at, made_by:row.made_by}});
   if(snap.poolSnap) d.poolSnap=snap.poolSnap;
@@ -72009,27 +72054,52 @@ function bcPushQ(q){
   return Promise.resolve().then(function(){ return opMergePush(key, val); }).then(function(r){ if(r===false){ try{ if(typeof _outboxAdd==='function') _outboxAdd(key, 'push failed'); }catch(e){} } return r!==false; }, function(){ return false; });
 }
 function bcSetFix(q, on, ver){
-  var d=bqGet(q);
-  if(on){ if(!(d.locked && kevSnapOk(d))) return Promise.resolve(false); d.bcFix={ver:ver, at:kevNow(), by:kevMe()}; }
-  else { if(!d.bcFix) return Promise.resolve(true); delete d.bcFix; }
-  if(bqSet(q, d)===false) return Promise.resolve(false);
-  return bcPushQ(q);
+  return bcPullQ(q).then(function(){
+    var d=bqGet(q);
+    if(on){ if(!(d.locked && kevSnapOk(d))) return false; if(d.bcFix && Number(d.bcFix.ver)===Number(ver)) return true; d.bcFix={ver:ver, at:kevNow(), by:kevMe()}; }
+    else { if(!d.bcFix) return true; delete d.bcFix; }
+    if(bqSet(q, d)===false) return false;
+    return bcPushQ(q);
+  });
 }
 /* 読み込んだとき：写しとサーバーの版を合わせる（GM・CEO の端末だけ。金額は変えない＝修正中の印だけ） */
 function bcReconcile(q, D){
   if(!bcCan() || !D || !D.me || !D.me.write) return;
-  var S=bcStateOf(D), d=bqGet(q);
-  if(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===('BC-'+q+'-v'+S.ef.ver)){
+  var S=bcStateOf(D), d=bqGet(q), want=S.ef ? 'BC-'+q+'-v'+S.ef.ver : '';
+  if(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===want){
     if(S.k==='fixFinal' && !d.bcFix) bcSetFix(q, true, S.ef.ver);
     else if(S.k!=='fixFinal' && d.bcFix) bcSetFix(q, false);
-  } else if(!S.ef && d.bcFix) bcSetFix(q, false);
+    return;
+  }
+  if(!S.ef){ if(d.bcFix) bcSetFix(q, false); return; }
+  /* サーバーに有効な確定版があるのに、写しが違う。この画面の流れで書けなかった（確定のあとの読み込みが通信で切れたなど）と分かるときだけ、
+     自動でサーバーの版に合わせる：写しが無い・修正中の印が残っている・前の番号の版・取り込んだ前の版の確定そのもの。
+     前の版の端末がそのあと確定し直したものは、人が決める（「アプリの記録を合わせる」） */
+  var lid=String((d.locked && d.evSnap && d.evSnap.lid) || ''), m=lid.match(/^BC-(\d{4}-Q[1-4])-v(\d+)$/);
+  var ours=!(d.locked && kevSnapOk(d)) || !!d.bcFix || !!(m && m[1]===q && Number(m[2])<Number(S.ef.ver));
+  if(!ours && !(lid && !m)) return;
+  if(_bcHeal[q]) return; _bcHeal[q]=want;
+  bcAPI({action:'version', quarter:q, ver:S.ef.ver}).then(function(v){
+    if(!v || !v.snap || v.ver!==S.ef.ver) return false;
+    var d2=bqGet(q), lid2=String((d2.locked && d2.evSnap && d2.evSnap.lid) || '');
+    if(lid2===want) return true;
+    var imp=!!(v.snap.imported && v.snap.imported.lid && v.snap.imported.lid===lid2);
+    if(!ours && !imp) return false;
+    return bcMirrorWrite(q, v, v.snap, true).then(function(){ return (S.k==='fixFinal') ? bcSetFix(q, true, S.ef.ver) : true; }).then(function(){ if(_bc.q===q && !_bc.busy) bcRerender(); return true; });
+  }).then(function(){ delete _bcHeal[q]; }, function(){ delete _bcHeal[q]; });
 }
 function bcMirrorState(q, S){
   var d=bqGet(q), lidOk=!!(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===('BC-'+q+'-v'+S.ef.ver));
   if(S.ef) return lidOk ? 'ok' : 'bad';
-  if(d.locked && kevSnapOk(d) && String(d.evSnap.lid||'').indexOf('BC-')!==0) return 'old';   /* 前の版（v1108 まで）で確定した四半期 */
+  if(bcOldFormulaLock(q)) return 'oldGen';   /* 今の式（v1099〜）より前の式で確定：解除して締め直す */
+  if(d.locked && kevSnapOk(d) && String(d.evSnap.lid||'').indexOf('BC-')!==0) return (S.vs && S.vs.length) ? 'oldMix' : 'old';   /* 前の版（v1108 まで）で確定した四半期 */
   if(d.locked) return 'odd';
   return 'none';
+}
+/* 2026 Q3 以降なのに、今の式（v1099 の ① 総合点）より前の決め方で確定している（確定の写しが無い・gen が 3 より前）。
+   取り込まず、確定を解除して今の式で締め直す（v1099 からの決まり）。ボーナスの締めの版がある四半期は除く */
+function bcOldFormulaLock(q){
+  try{ var d=bqGet(q); if(!d.locked || !bcOwns(q)) return false; if(!kevSnapOk(d)) return true; if(String(d.evSnap.lid||'').indexOf('BC-')===0) return false; return (Number(d.evSnap.gen)||1)<3; }catch(err){ return false; }
 }
 
 /* ---- 画面 ---- */
@@ -72037,7 +72107,7 @@ function bcBtn(label, on, primary, dis, title){ return '<button class="btn '+(pr
 function bcTile(label, val, sub, col){ return '<div style="flex:1 1 150px;min-width:140px;background:var(--surface2);border-radius:10px;padding:8px 11px"><div style="font-size:10.5px;color:var(--muted)">'+label+'</div><div style="font-size:17px;font-weight:800'+(col ? ';color:'+col : '')+'">'+val+'</div>'+(sub ? '<div style="font-size:10.5px;color:var(--muted);line-height:1.5">'+sub+'</div>' : '')+'</div>'; }
 function bcPanelHtml(cfg, V){
   if(!bcCan()) return '';
-  var q=V.q, qq=cscJsArg(q), h='<div class="card" id="bc-panel" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-lock-square" style="color:var(--accent)"></i>ボーナスの締め（'+escapeHtml(q)+'）';
+  var q=V.q, qq=cscJsArg(q), h='<style>#bc-panel button:disabled{opacity:.45;cursor:not-allowed}</style><div class="card" id="bc-panel" style="border-left:3px solid var(--accent)"><div class="card-title"><i class="ti ti-lock-square" style="color:var(--accent)"></i>ボーナスの締め（'+escapeHtml(q)+'）';
   if(!bcSession()){
     return h+'</div><div style="font-size:12px;line-height:1.7;color:var(--tm)">仮締め・支給額の確定・修正・支給済みの記録は、メールで認証した GM・CEO がサーバーに保存します（全員分をまとめて・ほかの人が先に変えていたら保存しません）。下の一覧は今の見込みです（未確定の人の金額は出しません）。</div>'
       +'<div class="btn-row" style="margin-top:8px">'+bcBtn('<i class="ti ti-mail"></i> メールで認証', 'bcLoginModal()', true)+'</div></div>';
@@ -72056,6 +72126,8 @@ function bcPanelHtml(cfg, V){
   /* 知らせ */
   if(ms==='bad') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> アプリの確定の記録（ほかの画面・本人に見せる表示・履歴の記録が読むもの）が、サーバーの有効な確定版 v'+S.ef.ver+' と違います。'+(w ? ' '+bcBtn('アプリの記録を v'+S.ef.ver+' に合わせる', 'bcMirrorFix('+qq+')', true) : '')+'</div>';
   if(ms==='old') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> この四半期は前の版（v1108 まで）のアプリで確定しています。サーバーにはまだ版がありません。今の確定の数字をそのまま版にしてサーバーに入れると、ここから修正・支給済みの記録ができます。'+(w ? ' '+bcBtn('今の確定をサーバーに取り込む', 'bcImport('+qq+')', true) : '')+'</div>';
+  if(ms==='oldMix') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> 前の版（v1108 まで）の端末でこの四半期を確定した記録が、アプリに残っています（サーバーの仮締め v'+(S.last ? S.last.ver : '?')+' とは別）。サーバーの版で「支給額を確定」すると、アプリの記録はサーバーの版に置き換わります（取り込みの途中で止まったときも、これで終わります）。前の版の端末をすべて 1109 にしてください。</div>';
+  if(ms==='oldGen') h+='<div class="alert alert-warning" style="margin:4px 0 8px;line-height:1.6"><i class="ti ti-alert-triangle"></i> この四半期は前の式（v1098 まで）で確定しています。今の式（Career Score の総合点・7 種類の係数）で締めるため、取り込まずに確定を解除してから、ここで仮締め・支給額の確定をしてください。給与・ボーナス履歴に記録済みの額は自動では変わりません。'+(w ? ' '+bcBtn('前の式の確定を解除', 'bqUnlockQuarter('+qq+')', true) : '')+'</div>';
   if(ms==='odd') h+='<div class="alert alert-warning" style="margin:4px 0 8px"><i class="ti ti-alert-triangle"></i> アプリの記録では確定していますが、サーバーに有効な確定版がありません。画面を新しくしてください（直らなければ Claude に）。</div>';
   var ne=(V.mode==='ver' && !S.editable) ? bcNewEvalLater(V) : null;
   if(ne && ne.length) h+='<div style="background:#fdf3dc;border-radius:10px;padding:8px 11px;margin:4px 0 8px;font-size:12px;line-height:1.6"><b>新しい評価があります（'+ne.length+' 人）</b>：'+escapeHtml(ne.slice(0, 6).map(function(x){ return x.name+'（'+x.why+'）'; }).join('・'))+(ne.length>6 ? ' ほか' : '')+'。保存した v'+V.ver+' は変わりません。取り込むときは「'+(S.ef ? '確定版から修正' : '修正を開始')+'」。</div>';
@@ -72105,7 +72177,11 @@ function bcPanelHtml(cfg, V){
 }
 function bcTime(iso){ try{ return (typeof ocsFmt==='function') ? ocsFmt(iso) : String(iso||'').slice(0, 16); }catch(e){ return String(iso||'').slice(0, 16); } }
 function bcHistToggle(){ _bc.hist=!_bc.hist; bcRerender(); }
-function bcRefresh(q){ bcReset(q); bcLoad(q); bcRerender(); }
+function bcRefresh(q){
+  var keep=(_bc.q===q && _bc.dirty && _bc.draft) ? {draft:bcJ(_bc.draft), base:bcJ(_bc.base)} : null;
+  bcReset(q); if(keep){ _bc.draft=keep.draft; _bc.base=keep.base; _bc.dirty=true; }
+  bcLoad(q, !!keep); bcRerender();
+}
 function bcHistHtml(q, S){
   var qq=cscJsArg(q), KIND={provisional:'仮締め', final:'支給額確定'}, ST={kept:'', effective:'有効', replaced:'置き換え済み'};
   var h='<div style="margin-top:10px;border-top:1px solid var(--border);padding-top:8px"><div style="font-size:12.5px;font-weight:800;margin-bottom:4px">版の履歴</div>';
@@ -72265,7 +72341,7 @@ function bcRun(q, label, fn){
   return Promise.resolve().then(fn).then(function(r){ _bc.busy=''; bcRerender(); return r; }, function(e){
     _bc.busy='';
     var code=(e && e.code) || '';
-    showToast(String((e && e.message) || e), code==='conflict' ? 'warning' : 'danger');
+    showToast(escapeHtml(String((e && e.message) || e)), code==='conflict' ? 'warning' : 'danger');
     if(code==='conflict' || code==='not_editable' || code==='already_paid' || code==='fixing') return bcLoad(q, true).then(function(){ return false; });
     bcRerender(); return false;
   });
@@ -72298,10 +72374,7 @@ function bcSaveVersion(q, kind){
         return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:kind, snap:B2.sn, why:why||''}).then(function(r){
           var done=function(){ _bc.dirty=false; showToast(kind==='final' ? '再確定しました（v'+r.ver+' が有効）' : '仮締め v'+r.ver+' を保存しました','success'); return bcLoad(q, false); };
           if(kind!=='final') return done();
-          return bcAPI({action:'version', quarter:q, ver:r.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
-            if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
-            return done();
-          });
+          return bcAfterFinal(q, r.ver).then(done);
         });
       });
     });
@@ -72309,6 +72382,16 @@ function bcSaveVersion(q, kind){
   if(kind==='final'){ bcAskModal('再確定', msg+'\n確定・再計算だけで支払・控除・給与への送信はしません。'+(S.paid ? '\n支給済み（v'+S.paid.ver+'）との差は調整記録に出します（支給済みの額は書き換えません）。' : ''), true, ask); return true; }
   if(!confirm(msg+'\n押したあと、ほかの端末の最新の評価・設定を読み直し、変わっていたら保存しません。保存した版は消えず、あとで評価が変わっても自動では変わりません。よろしいですか？')) return false;
   return ask('');
+}
+/* サーバーに有効な確定版ができたあと：アプリの確定の写しを書く。ここで通信が切れても確定は済んでいる（読み込むたびに合わせ直す） */
+function bcAfterFinal(q, ver){
+  return bcAPI({action:'version', quarter:q, ver:ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
+    if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
+    return true;
+  }, function(){
+    showToast('サーバーには v'+ver+' を確定として保存しました。アプリの確定の記録（ほかの画面・本人に見せる表示が読むもの）はまだ前のままです。この画面を開き直すと自動で合わせます（直らなければ「アプリの記録を合わせる」）','warning');
+    return false;
+  });
 }
 /* 支給額を確定（仮締めの版の額のまま。新しい評価を入れるときは「修正を開始」） */
 function bcConfirm(q){
@@ -72319,10 +72402,8 @@ function bcConfirm(q){
   bcAskModal('支給額を確定', msg, !!lv.has_prov, function(why){
     return bcRun(q, '確定しています…', function(){
       return bcAPI({action:'confirm', quarter:q, expect_rev:Number(_bc.data.rev), ver:lv.ver, why:why||''}).then(function(r){
-        return bcAPI({action:'version', quarter:q, ver:r.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
-          if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
-          showToast('支給額を確定しました（v'+r.ver+'）','success'); return bcLoad(q, false);
-        });
+        showToast('支給額を確定しました（v'+r.ver+'）','success');
+        return bcAfterFinal(q, r.ver).then(function(){ return bcLoad(q, false); });
       });
     });
   });
@@ -72420,6 +72501,7 @@ function bcMirrorFix(q){
 function bcImport(q){
   var S=bcGuard(q, ['draft']); if(!S) return false;
   var d=bqGet(q); if(!(d.locked && kevSnapOk(d))){ showToast('取り込む確定がありません','warning'); return false; }
+  if(bcOldFormulaLock(q)){ showToast('前の式（v1098 まで）の確定は取り込みません。確定を解除してから締めてください','warning'); return false; }
   var e0=d.evSnap, sn=bcJ(e0);
   sn.q=q; sn.cap=(kevN(e0.cap)!=null) ? Number(e0.cap) : Math.round(((Number(e0.P)||0)+(Number(e0.E)||0))*100)/100; sn.unsel=0; sn.prov=0; sn.choices={}; sn.bulk=[];
   sn.poolSnap=d.poolSnap||null; sn.segSnap=d.segSnap||null; sn.coefSnap=d.coefSnap||null; sn.imported={lid:e0.lid||'', at:d.lockedAt||'', by:d.lockedBy||''};
@@ -72428,7 +72510,8 @@ function bcImport(q){
   return bcRun(q, '取り込んでいます…', function(){
     return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:'provisional', snap:sn, why:'前の版（v1108 まで）の確定を取り込み'}).then(function(r){
       return bcAPI({action:'confirm', quarter:q, expect_rev:Number(r.rev), ver:r.ver, why:'前の版の確定（'+String(d.lockedAt||'')+' '+String(d.lockedBy||'')+'）を取り込み'}).then(function(c){
-        return bcAPI({action:'version', quarter:q, ver:c.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(){ showToast('取り込みました（v'+c.ver+' が有効）','success'); return bcLoad(q, false); });
+        showToast('取り込みました（v'+c.ver+' が有効）','success');
+        return bcAfterFinal(q, c.ver).then(function(){ return bcLoad(q, false); });
       });
     });
   });
@@ -72562,7 +72645,7 @@ function bcSelfExplainHtml(e, b, cfg){
   var q=(typeof bonusQKey==='function') ? bonusQKey(cfg) : String(cfg.quarter||'').trim();
   if(!b || !b.v4 || !bcOwns(q)) return (typeof kevSelfExplainHtml==='function') ? kevSelfExplainHtml(e, b, cfg) : '';
   var eff=bcEffSnap(q), qr=ghQRange(q), k1=getKarte(e.id), pr=(k1.payLog||[]).find(function(p){ return p && p.src==='auto' && p.quarter===q; });
-  if(pr && eff && pr.lk && pr.lk!==eff.lid) return '';   /* 支給済みのあとに確定し直した：支給済みの額と違う説明は出さない（差の扱いは人が決める） */
+  if(pr && eff){ var pa=Number(String(pr.amount||'').replace(/[$,\s]/g,'')), ea=Number((eff.finals||{})[e.id]); if(!(isFinite(pa) && isFinite(ea) && pa===ea)) return ''; }   /* 支給済みのあとに確定し直して額が変わった：支給済みの額と違う説明は出さない（差の扱いは人が決める） */
   if(eff && qr){
     var kv={q:q, qr:qr, d:bqGet(q), cfg:Object.assign({}, cfg, {quarter:q}), locked:true, snap:eff, cache:{}}, bE=kevFromSnap(e, kv.cfg, kv), tot=kevTotals(kv.cfg, kv), fin=kevFinalOf(tot, e);
     if(bE.out) return '';

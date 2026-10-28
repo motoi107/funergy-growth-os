@@ -13,8 +13,9 @@
 -- What this never does: pay, deduct or send anything to payroll; change evaluations, Career Score, sales, settings or
 -- the bonus formula; publish an amount to the person. The bonus formula stays in the app (FUNERGY_KARTE_EVAL). Here the
 -- server checks who may write, that nobody else changed the quarter since the screen read it (rev), that a snapshot adds
--- up (the same rounding as the app: $1 units, floor, then the largest remainders), and that a quarter has at most one
--- effective final version. Versions are never deleted or rewritten (a replaced version keeps its numbers).
+-- up (k = min(1, cap / S); $1 units: the total is the whole dollars of the cap or S, and each person gets the floor of
+-- raw × cap / S or one dollar more — the order of the remainders is the app's and is not checked here), and that a quarter
+-- has at most one effective final version. Versions are never deleted or rewritten (a replaced version keeps its numbers).
 
 create table if not exists public.bc_quarters(
  quarter text primary key check (quarter ~ '^[0-9]{4}-Q[1-4]$'),
@@ -37,7 +38,7 @@ create table if not exists public.bc_versions(
  n integer not null check (n >= 0),
  total_raw bigint not null check (total_raw >= 0),
  cap numeric(14,2) not null check (cap >= 0),
- k double precision not null check (k > 0 and k <= 1),
+ k double precision not null check (k >= 0 and k <= 1),   -- a $0 pool (with S > 0) is k = 0: everyone $0
  paid_total bigint not null check (paid_total >= 0),
  has_prov boolean not null default false,
  base_ver integer,
@@ -213,7 +214,7 @@ $$;
 -- unsel (unselected parts — must be 0), prov (parts that used a chosen value), choices / bulk (as in the draft).
 create or replace function public.bc_snap_check(q text, s jsonb) returns integer
 language plpgsql immutable security invoker set search_path=public,pg_temp as $$
-declare ids text[]; id text; n integer; raw numeric; fin numeric; sraw numeric := 0; spaid numeric := 0; cap numeric; k double precision; tgt numeric; prov integer;
+declare ids text[]; id text; n integer; raw numeric; fin numeric; sraw numeric := 0; spaid numeric := 0; cap numeric; k double precision; tgt numeric; prov integer; ex numeric;
 begin
  if jsonb_typeof(s) is distinct from 'object' or length(s::text) > 6000000 then raise exception 'bad_snapshot'; end if;
  if coalesce(s->>'q','') <> q then raise exception 'bad_snapshot'; end if;
@@ -251,6 +252,14 @@ begin
   tgt := least(sraw, floor(cap));
   if spaid <> tgt then raise exception 'bad_amounts'; end if;
   if cap >= sraw and spaid <> sraw then raise exception 'bad_amounts'; end if;
+  -- each person: the floor of raw × cap / S, or one dollar more (the app's largest remainders; a small margin for the app's
+  -- floating point on very large amounts)
+  if cap < sraw then
+   foreach id in array ids loop
+    raw := (s->'people'->id->>'raw')::numeric; fin := (s->'finals'->>id)::numeric; ex := raw * cap / sraw;
+    if fin < floor(ex - 0.000001) or fin > floor(ex + 0.000001) + 1 then raise exception 'bad_amounts'; end if;
+   end loop;
+  end if;
  end if;
  return prov;
 end $$;

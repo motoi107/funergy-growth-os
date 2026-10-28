@@ -307,21 +307,48 @@ test('correcting from the final: v2 stays effective until re-confirmed; after pa
   assert.deepEqual(run(c, '_bc.data.versions').map(v => [v.ver, v.kind, v.status]), [[1, 'provisional', 'kept'], [2, 'final', 'replaced'], [3, 'final', 'effective']]);
 });
 
-test('another GM saved first: the save is refused (conflict), the screen reloads and keeps the unsaved choices', async () => {
+test('another GM saved first: the save is refused (conflict), the screen reloads and lays the unsaved choices on the other person\'s draft', async () => {
   const srv = await server();
   const c = co(srv);
   unconfirmed(c);
   await load(c);
   vm.runInContext(`_bc.draft.choices = { ken: { c: { m: 'tmp' } } }; _bc.dirty = true;`, c);
-  // the CEO saves a draft from another device
-  assert.equal((await srv.direct('ceo', { action: 'draft_save', quarter: Q, expect_rev: 0, draft: { choices: { neo: { d: { m: 'input' } } } } })).status, 200);
+  // the CEO saves a draft from another device (Neo's 評価完了, and a different value for Ken, and a bulk record)
+  const bulk = [{ at: '2026-10-28 09:00', by: 'CEO Sample', why: 'CEO の試算', parts: [['neo', 'd']] }];
+  assert.equal((await srv.direct('ceo', { action: 'draft_save', quarter: Q, expect_rev: 0, draft: { choices: { neo: { d: { m: 'input' } }, ken: { c: { m: 'set', v: 1.05, why: '面談で確認' } } }, bulk } })).status, 200);
   assert.equal(await runP(c, `bcDraftSave('${Q}')`), false);
-  assert.match(c.TOASTS.map(x => x[0]).join('|'), /ほかの端末（ほかの人）がこの四半期を先に変えていました/);
+  const toasts = c.TOASTS.map(x => x[0]).join('|');
+  assert.match(toasts, /ほかの端末（ほかの人）がこの四半期を先に変えていました/);
+  assert.match(toasts, /CEO Sample）が先に下書きを保存していました.*同じところを両方が違う値にした 1 か所は、先に保存した人の値/);
   assert.equal(run(c, '_bc.data.rev'), 1);
-  assert.deepEqual(run(c, '_bc.draft.choices'), { ken: { c: { m: 'tmp' } } }, 'the unsaved choices stay on the screen');
+  // the CEO's choices and bulk record are kept; Ken (changed on both sides) takes the CEO's value; nothing is lost silently
+  assert.deepEqual(run(c, '_bc.draft.choices'), { neo: { d: { m: 'input' } }, ken: { c: { m: 'set', v: 1.05, why: '面談で確認' } } });
+  assert.deepEqual(run(c, '_bc.draft.bulk'), bulk);
+  assert.equal(run(c, '_bc.dirty'), false, 'nothing of this screen is left to save');
+  // a part only this screen changed is laid on top (and stays to be saved)
+  vm.runInContext(`_bc.draft.choices.aki = { c: { m: 'tmp' } }; _bc.dirty = true;`, c);
+  assert.equal((await srv.direct('ceo', { action: 'draft_save', quarter: Q, expect_rev: 1, draft: { choices: { neo: { d: { m: 'input' } }, ken: { c: { m: 'tmp' } } }, bulk } })).status, 200);
+  assert.equal(await runP(c, `bcDraftSave('${Q}')`), false);
+  assert.deepEqual(run(c, '_bc.draft.choices'), { neo: { d: { m: 'input' } }, ken: { c: { m: 'tmp' } }, aki: { c: { m: 'tmp' } } });
+  assert.equal(run(c, '_bc.dirty'), true);
   assert.equal(run(c, '_bc.data.draft_by'), 'CEO Sample');
   assert.equal(await runP(c, `bcDraftSave('${Q}')`), true, lastToast(c));
-  assert.equal(run(c, '_bc.data.rev'), 2);
+  assert.equal(run(c, '_bc.data.rev'), 3);
+  assert.deepEqual(J(run(c, '_bc.data.draft.choices')), { neo: { d: { m: 'input' } }, ken: { c: { m: 'tmp' } }, aki: { c: { m: 'tmp' } } });
+  assert.deepEqual(run(c, '_bc.data.draft.bulk'), bulk, 'the CEO\'s bulk record is still there');
+  // switching to another quarter and back keeps unsaved choices (memory only; cleared on sign-out)
+  vm.runInContext(`_bc.draft.choices.sam = { c: { m: 'tmp' } }; _bc.dirty = true; bcEnsure('2026-Q2');`, c);
+  assert.equal(run(c, '_bc.q'), '2026-Q2');
+  vm.runInContext(`bcEnsure('${Q}')`, c);
+  await new Promise(r => setTimeout(r, 300));
+  assert.deepEqual(run(c, '_bc.draft.choices.sam'), { c: { m: 'tmp' } });
+  assert.equal(run(c, '_bc.dirty'), true);
+  // sign-out (bcForget) drops them, also the ones kept for a quarter switched away from
+  vm.runInContext(`_bc.draft.choices.sam = { c: { m: 'tmp' } }; _bc.dirty = true; bcEnsure('2026-Q2'); bcForget(); bcEnsure('${Q}');`, c);
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(run(c, '_bc.draft.choices.sam'), undefined);
+  assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+  assert.equal(run(c, '_bc.data.rev'), 3);
   // accounting reads only: the buttons are not offered, the server refuses writes
   assert.equal((await srv.direct('office', { action: 'draft_save', quarter: Q, expect_rev: 2, draft: {} })).status, 403);
   c.SESSION.access_token = 'tok-office';
@@ -437,4 +464,138 @@ test('the app record must be the server\'s effective final: a different copy is 
   assert.equal(await runP(c, `bcMirrorFix('${Q}')`), true, lastToast(c));
   assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v2`);
   assert.equal(run(c, `bcPaidOpen('${Q}')`), true);
+});
+
+test('a dropped call after the server confirmed (re-confirm v3): the toast says it is saved, and the next load sets the app record to v3 by itself', async () => {
+  const srv = await server();
+  const c = co(srv);
+  unconfirmed(c);
+  await load(c);
+  vm.runInContext(`_bc.draft.choices = { ken: { c: { m: 'tmp' } }, neo: { d: { m: 'input' } } }; _bc.dirty = true;`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c));
+  vm.runInContext(`bcConfirm('${Q}')`, c); c.DOM['bc-ask-why'] = { value: '仮の値で確定' }; vm.runInContext('bcAskOk()', c);
+  await new Promise(r => setTimeout(r, 300));
+  const v2 = run(c, `bqGet('${Q}').evSnap`);
+  c.SCORES['Ken Sample'].scores.D3 = 3;
+  for (const k of ['A', 'B']) for (let i = 0; i < 30; i++) if (c.SCORES['Ken Sample'].scores[k + i] === 2) c.SCORES['Ken Sample'].scores[k + i] = 3;
+  assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+  // the network drops every 'version' call for a while (after the server has saved v3)
+  let drop = 2;
+  c.fetch = async (url, init) => { if (JSON.parse(init.body).action === 'version' && drop > 0) { drop--; throw new TypeError('Failed to fetch'); } return srv.fetch(url, init); };
+  assert.equal(run(c, `bcSaveVersion('${Q}','final')`), true);
+  c.DOM['bc-ask-why'] = { value: 'Ken の評価が届いた' }; vm.runInContext('bcAskOk()', c);
+  await new Promise(r => setTimeout(r, 400));
+  const toasts = c.TOASTS.map(x => x[0]).join('|');
+  assert.match(toasts, /サーバーには v3 を確定として保存しました。アプリの確定の記録.*まだ前のまま/);
+  assert.doesNotMatch(toasts, /サーバーにつながりませんでした/, 'the confirm itself did not fail');
+  let S = state(c);
+  assert.deepEqual([S.k, S.ef.ver], ['final', 3]);
+  // the copy is still v2 with 修正中 (both calls dropped); the panel says it differs
+  assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v2`);
+  assert.equal(run(c, `bcMirrorState('${Q}', bcStateOf(_bc.data))`), 'bad');
+  // the next load (network back) sets it to v3 and clears 修正中; the person sees v3
+  assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+  await new Promise(r => setTimeout(r, 300));
+  const d = run(c, `bqGet('${Q}')`);
+  assert.equal(d.evSnap.lid, `BC-${Q}-v3`);
+  assert.equal(d.bcFix, undefined);
+  assert.equal(run(c, `kevApplies(kbCfg()).locked`), true);
+  assert.equal(run(c, `bcMirrorState('${Q}', bcStateOf(_bc.data))`), 'ok');
+  const self = run(c, `(function(){ var e=EMPS.find(function(x){ return x.id==='ken'; }); return bcSelfCur(e, bonusForEmp(e, kbCfg()), kbCfg()); })()`);
+  assert.deepEqual([self.eff, self.amt], [true, d.evSnap.finals.ken]);
+  assert.notEqual(d.evSnap.finals.ken, v2.finals.ken);
+  // a copy rewritten later by an older device is not overwritten by itself (people decide)
+  vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.evSnap.lid='Lold-1'; bqSet('${Q}', x); })()`, c);
+  assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), 'Lold-1');
+});
+
+test('the shared copy keeps the reasons out (they stay in the server versions); a $0 pool closes with k 0 and everyone $0', async () => {
+  const srv = await server();
+  const c = co(srv);
+  unconfirmed(c);
+  await load(c);
+  vm.runInContext(`_bc.draft.choices = { ken: { c: { m: 'set', v: 1.05, why: '面談で確認（個別の事情）', at: 'x', by: 'GM' } }, neo: { d: { m: 'input', why: '評価待ちの理由' } } }; _bc.draft.bulk = [{ at: 'x', by: 'GM', why: '一括の理由', parts: [['neo', 'd']] }]; _bc.dirty = true;`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c));
+  // another device changed an input of this quarter's row meanwhile: the copy is written after reading the cloud row (the input stays)
+  // (the stub puts the cloud row in place, as the newest-wins merge does: a write before the read would be lost)
+  vm.runInContext(`var PULLS = [], CLOUD = JSON.stringify(bqAll()['${Q}'] || {}); function pullOpKey(k){ PULLS.push(k); if(k === 'spl_bonus_q_${Q}'){ var m = bqAll(); m['${Q}'] = Object.assign(JSON.parse(CLOUD), {co:{memo:'ほかの端末の入力'}}); lsSet('bonus_q', m); } return Promise.resolve(true); }`, c);
+  vm.runInContext(`bcConfirm('${Q}')`, c); c.DOM['bc-ask-why'] = { value: '確定' }; vm.runInContext('bcAskOk()', c);
+  await new Promise(r => setTimeout(r, 300));
+  assert.ok(run(c, 'PULLS').includes(`spl_bonus_q_${Q}`));
+  assert.equal(run(c, `bqGet('${Q}').co.memo`), 'ほかの端末の入力');
+  const shared = JSON.stringify(run(c, `bqGet('${Q}')`));
+  for (const s of ['面談で確認', '評価待ちの理由', '一括の理由']) assert.ok(!shared.includes(s), s);
+  const ev = run(c, `bqGet('${Q}').evSnap`);
+  assert.deepEqual(ev.people.ken.adopt, { c: { m: 'set', v: 1.05, why: '（理由はサーバーの版）' } });
+  assert.equal(ev.lid, `BC-${Q}-v2`);
+  // the screens that read the copy work the same: the list column, the new-evaluation check, the person's explanation
+  assert.equal(run(c, `bcNewEval(kbCfg(), bcView(kbCfg(), kevTotals(kbCfg(), kevApplies(kbCfg())))).length`), 0);
+  assert.match(run(c, `(function(){ var e=EMPS.find(function(x){ return x.id==='ken'; }); return bcSelfExplainHtml(e, bonusForEmp(e, kbCfg()), kbCfg()); })()`), /評価が終わる前の値/);
+  // the server version keeps them
+  const v = (await srv.direct('gm', { action: 'version', quarter: Q, ver: 2 })).body;
+  assert.equal(v.snap.people.ken.adopt.c.why, '面談で確認（個別の事情）');
+  // a $0 pool (S > 0): k 0, everyone $0 — saved and confirmed like any other quarter
+  const srv2 = await server();
+  const c2 = co(srv2);
+  c2.POOL = 0;
+  await load(c2);
+  assert.equal(await runP(c2, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c2));
+  let S = state(c2);
+  assert.deepEqual([S.last.paid_total, Number(S.last.k)], [0, 0]);
+  assert.ok(Number(S.last.total_raw) > 0);
+  vm.runInContext(`bcConfirm('${Q}')`, c2); c2.DOM['bc-ask-why'] = { value: '' }; vm.runInContext('bcAskOk()', c2);
+  await new Promise(r => setTimeout(r, 300));
+  S = state(c2);
+  assert.deepEqual([S.k, S.ef.paid_total], ['final', 0], lastToast(c2));
+  const self = run(c2, `(function(){ var e=EMPS.find(function(x){ return x.id==='ken'; }); return bcSelfCur(e, bonusForEmp(e, kbCfg()), kbCfg()); })()`);
+  assert.deepEqual([self.eff, self.amt], [true, 0]);
+});
+
+test('older locks: a lock by an older formula (before v1099, or without a snapshot) is released and closed again; a v1108 lock is imported; names in toasts are escaped', async () => {
+  const srv = await server();
+  const c = co(srv);
+  vm.runInContext(`function bqRefresh(){}
+    ${fnSrc('bqUnlockQuarter')}`, c);
+  c.CONFIRM = true;
+  assert.equal(run(c, `kevLockCommit('${Q}', null, true)`), true);
+  await load(c);
+  assert.equal(run(c, `bcOldFormulaLock('${Q}')`), false, 'a v1108 lock (the current formula) is imported, not released');
+  run(c, `bqUnlockQuarter('${Q}')`);
+  assert.equal(run(c, `bqGet('${Q}').locked`), true);
+  assert.match(lastToast(c), /確定版から修正/);
+  // the same lock made by the v1074–v1098 formula (gen 2): not imported; the panel offers to release it
+  vm.runInContext(`(function(){ var d=bqGet('${Q}'); d.evSnap.gen=2; bqSet('${Q}', d); })()`, c);
+  assert.equal(run(c, `bcOldFormulaLock('${Q}')`), true);
+  assert.equal(run(c, `bcMirrorState('${Q}', bcStateOf(_bc.data))`), 'oldGen');
+  const h = run(c, `(function(){ var cfg=kbCfg(), tot=kevTotals(cfg, kevApplies(cfg)); return bcPanelHtml(cfg, bcView(cfg, tot)); })()`);
+  assert.match(h, /前の式（v1098 まで）で確定しています/);
+  assert.match(h, /前の式の確定を解除/);
+  assert.doesNotMatch(h, /今の確定をサーバーに取り込む/);
+  assert.equal(run(c, `bcImport('${Q}')`), false);
+  assert.match(lastToast(c), /取り込みません/);
+  run(c, `bqUnlockQuarter('${Q}')`);
+  assert.equal(run(c, `bqGet('${Q}').locked`), false);
+  // a lock without a snapshot (before v1065) is also released
+  vm.runInContext(`(function(){ var d=bqGet('${Q}'); d.locked=true; d.lockedAt='2026/10/05 10:00'; d.lockedBy='GM'; d.evSnap=null; bqSet('${Q}', d); })()`, c);
+  assert.equal(run(c, `bcOldFormulaLock('${Q}')`), true);
+  run(c, `bqUnlockQuarter('${Q}')`);
+  assert.equal(run(c, `bqGet('${Q}').locked`), false);
+  // a lock made by v1108 after the server already has a provisional version: the message says so (not "no version yet")
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c));
+  assert.equal(run(c, `kevLockCommit('${Q}', null, true)`), true);
+  assert.equal(run(c, `bcMirrorState('${Q}', bcStateOf(_bc.data))`), 'oldMix');
+  const h2 = run(c, `(function(){ var cfg=kbCfg(), tot=kevTotals(cfg, kevApplies(cfg)); return bcPanelHtml(cfg, bcView(cfg, tot)); })()`);
+  assert.match(h2, /サーバーの仮締め v1 とは別/);
+  assert.doesNotMatch(h2, /サーバーにはまだ版がありません/);
+  // names from synced data are escaped in toasts (G3 without a job track: 設定の確認が必要)
+  const c3 = co(await server());
+  c3.EMPS.find(e => e.id === 'ken').title = 'Store Leader';
+  c3.EMPS.find(e => e.id === 'ken').name = 'Ken <img src=x onerror=alert(1)>';
+  c3.SCORES['Ken <img src=x onerror=alert(1)>'] = c3.SCORES['Ken Sample'];
+  await load(c3);
+  assert.equal(run(c3, `bcSaveVersion('${Q}','provisional')`), false);
+  assert.match(lastToast(c3), /設定の確認が必要な人が 1 名.*Ken &lt;img/);
+  assert.doesNotMatch(lastToast(c3), /<img/);
 });
