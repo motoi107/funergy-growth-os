@@ -19071,24 +19071,34 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
   }, refresh: () => win.renderPage(win.curPage), exitEditor: () => originalNavigation("ocsBack", []), openAssignmentPerson: (id2) => originalNavigation("ocsOpen", [id2]) });
   function render(page, original) {
     if (closed) fail("web_office_closed");
-    if (!handles(page) && !lastContext) return original();
+    // v1110 (independent review of 04471d6, P3-2): an Office request for a page that is not the current one (for example
+    // ocsRerender after the person moved on) could only fail with web_office_page_changed. It must not replace a waiting
+    // request for the screen that is showing (that screen was left undrawn, and frozen when the tab was hidden).
+    if (handles(page) && page !== win.curPage) return;
+    if (!handles(page) && !lastContext) {
+      latest = -1;
+      return original();
+    }
     const ticket = ++serial, el = doc.getElementById("main-content");
     latest = ticket;
     pending++;
     if (el) el.inert = true;
-    let office = true;
+    let office = true, tried = false;
     const task = queue.then(async () => {
       if (closed) return;
       office = handles(page);
-      // v1111 (Codex re-review of cd11039, P2): a request to draw a screen that is not Office is replaced only by a
+      // v1110 (Codex re-review of cd11039, P2): a request to draw a screen that is not Office is replaced only by a
       // newer request. Hiding the tab (serial++) must not drop it: after an Office screen had been shown, the other
       // screen used to stay undrawn and frozen. Office loads are still dropped when the tab is hidden.
       if (ticket !== (office ? serial : latest)) return;
       if (!host.canNavigate()) fail("web_office_inputs_unretained");
       if (!office) {
         await host.deactivate();
+        // v1110 (independent review P3-1): a newer request, or a screen drawn directly meanwhile (latest = -1), wins
+        if (closed || ticket !== latest) return;
         lastContext = null;
         retireBackend();
+        tried = true;
         original();
         if (el) el.inert = false;
         return;
@@ -19114,11 +19124,12 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
     });
     queue = task.then(() => {
       pending--;
-      if (ticket !== serial) release(el);
+      release(el);
     }, async (error) => {
       pending--;
-      report(error);
-      await recover(ticket, page, el, error, office ? null : original);
+      // v1110 (independent review P3-5): a request that was replaced (or an Office load dropped by hiding the tab) does not warn
+      if (ticket === (office ? serial : latest)) report(error);
+      await recover(ticket, page, el, error, office, office || tried ? null : original);
     });
     return task;
   }
@@ -19133,11 +19144,11 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
   // (for example the server answered 400), do not leave the main area frozen.
   // Show the reason with "try again" / "back", and let other screens work again.
   // If the screen holds inputs that are not saved yet, keep the old protection (stay frozen).
-  // v1111 (Codex re-review of cd11039): for a screen that is not Office (draw), the request stays live until a newer
-  // request replaces it, and after the clean-up the screen that was asked for is drawn.
-  async function recover(ticket, page, el, error, draw) {
+  // v1110 (Codex re-review of cd11039): for a screen that is not Office (office false), the request stays live until a newer
+  // request replaces it, and after the clean-up the screen that was asked for is drawn (draw; null when it was already tried).
+  async function recover(ticket, page, el, error, office, draw) {
     if (closed || !el) return;
-    const live = () => ticket === (draw ? latest : serial);
+    const live = () => ticket === (office ? serial : latest);
     if (!live()) return release(el);
     let free = false;
     try {
@@ -19155,8 +19166,8 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
     retireBackend();
     el.inert = false;
     if (win.curPage !== page) return;
-    if (draw) {
-      if (!handles(win.curPage)) try {
+    if (!office) {
+      if (draw && !handles(win.curPage)) try {
         draw();
       } catch (e) {
         report(e);
@@ -19256,7 +19267,10 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
     return Promise.resolve(host.deactivate()).then(() => {
       lastContext = null;
       retireBackend();
-      return original();
+      const out = original();
+      // v1110 (independent review P3-3): the screen was drawn directly; a load that settled meanwhile could not unfreeze it
+      release(doc.getElementById("main-content"));
+      return out;
     }).catch((e) => {
       report(e);
       throw e;

@@ -225,6 +225,8 @@ test('Codex P2 (cd11039): shown once, drawn again, another screen asked for, tab
   assert.match(w.el.innerHTML, /dashboard/);
   assert.equal(w.el.inert, false, 'the dashboard can be used');
   assert.equal(s.guard.inspect().context, null, 'the Office context is let go');
+  // independent review of 04471d6 (P3-5): the load that was replaced by hiding the tab does not warn
+  assert.ok(!w.toasts.some((m) => m.includes('web_cas_identity_changed')), w.toasts.join(' | '));
 });
 
 test('Codex P2 (cd11039): Career Score switched from the Office tab to another tab, tab hidden: the other tab is drawn', async () => {
@@ -317,4 +319,125 @@ test('Codex P2 (cd11039): the clean-up fails and the Career Score view went back
   w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { drawn++; }).catch(() => {});
   await settle();
   assert.equal(drawn, 0);
+});
+
+// Independent review of 04471d6 (Claude, another agent): orderings around go() from the side menu and stray Office requests.
+const goTo = (w, page, draw) => w.win.FUNERGY_WEB_OFFICE_NAVIGATE('go', [page], () => { w.win.curPage = page; return w.win.FUNERGY_WEB_OFFICE_RENDER(page, draw); });
+
+for (const hidden of [false, true]) {
+  test('review P3-1' + (hidden ? ' (tab hidden)' : '') + ': a waiting request for another screen is not drawn over the screen go() drew afterwards', async () => {
+    const w = world();
+    const s = await shownOnce(w);
+    w.win.curPage = 'office_mgr';
+    let stale = 0, dash = 0;
+    w.win.FUNERGY_WEB_OFFICE_RENDER('office_mgr', () => { stale++; w.el.innerHTML = '<div>office_mgr</div>'; }).catch(() => {});
+    goTo(w, 'dashboard', () => { dash++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+    await settle();
+    if (hidden) s.hide();
+    s.open(); await settle();
+    if (hidden) { s.show(); await settle(); }
+    assert.equal(stale, 0, 'the older request is not drawn');
+    assert.equal(dash, 1);
+    assert.match(w.el.innerHTML, /dashboard/);
+    assert.equal(w.el.inert, false);
+  });
+}
+
+test('review P3-2: an Office request for a page that is no longer showing (ocsRerender) is ignored and does not replace the waiting screen', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  w.win.curPage = 'office_mgr';
+  let mgr = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('office_mgr', () => { mgr++; w.el.innerHTML = '<div>office_mgr</div>'; }).catch(() => {});
+  const r = w.win.FUNERGY_WEB_OFFICE_RENDER('office_career', () => { throw Error('must_not_draw'); });
+  assert.equal(r, undefined);
+  s.hide(); await settle();
+  s.show(); await settle();
+  assert.equal(mgr, 1);
+  assert.equal(w.el.inert, false);
+  assert.ok(!w.toasts.some((m) => /web_office_page_changed|must_not_draw/.test(m)), w.toasts.join(' | '));
+});
+
+test('review P3-3: go() whose clean-up waits across hiding the tab: the screen it draws is not left frozen', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  let openD; const gD = new Promise((r) => { openD = r; });
+  w.host.deactivate = async () => { w.calls.push('deactivate'); await gD; };
+  let dash = 0;
+  goTo(w, 'dashboard', () => { dash++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+  s.hide();
+  s.open(); await settle();
+  openD(); await settle();
+  s.show(); await settle();
+  assert.equal(dash, 1);
+  assert.equal(w.el.inert, false);
+});
+
+test('review P3-4: the app\'s own drawing of another screen throws: it is tried once, one warning, not frozen', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  w.win.curPage = 'dashboard';
+  let n = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { n++; throw Error('render_broke'); }).catch(() => {});
+  await settle();
+  assert.equal(n, 1);
+  assert.equal(w.el.inert, false);
+  assert.equal(w.toasts.filter((m) => m.includes('render_broke')).length, 1);
+  // the queue keeps working
+  let ok = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { ok++; });
+  await settle();
+  assert.equal(ok, 1);
+});
+
+test('review P3-6: the clean-up fails and the person is on another page meanwhile: the old request is not drawn', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  w.host.deactivate = async () => { w.calls.push('deactivate'); w.win.curPage = 'skill'; throw Error('office_root_busy'); };
+  w.win.curPage = 'dashboard';
+  let d = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { d++; }).catch(() => {});
+  await settle();
+  assert.equal(d, 0);
+  assert.equal(w.el.inert, false);
+});
+
+test('review P3-1: go() draws another screen while an older request still waits for the clean-up: the older one is not drawn after it', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  let n = 0, openD; const gD = new Promise((r) => { openD = r; });
+  w.host.deactivate = async () => { w.calls.push('deactivate'); if (++n === 1) await gD; };
+  w.win.curPage = 'office_mgr';
+  let stale = 0, dash = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('office_mgr', () => { stale++; w.el.innerHTML = '<div>office_mgr</div>'; }).catch(() => {});
+  await settle();                                   // the older request now waits for its clean-up
+  goTo(w, 'dashboard', () => { dash++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+  await settle();
+  openD(); await settle();
+  assert.equal(dash, 1);
+  assert.equal(stale, 0);
+  assert.match(w.el.innerHTML, /dashboard/);
+  assert.equal(w.el.inert, false);
+});
+
+test('an Office load waiting in the queue when the tab is hidden and shown again is still dropped (it does not load again)', async () => {
+  const w = world();
+  let vis = null, release0; const hold = new Promise((r) => { release0 = r; });
+  w.doc.addEventListener = (k, f) => { if (k === 'visibilitychange') vis = f; };
+  let prepares = 0;
+  w.host.prepare = async () => { prepares++; await hold; };
+  const install = loadInstall();
+  await install({ win: w.win, doc: w.doc, baseUrl: 'https://example.supabase.co/', fetch: w.fetch,
+    archiveFactory: async () => w.archive, storageFactory: async () => ({}), createHost: () => w.host });
+  w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => {}).catch(() => {});
+  await settle();                                   // the first load has started (waits in prepare)
+  w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => {}).catch(() => {});   // waits behind the first
+  w.doc.hidden = true; vis();
+  w.doc.hidden = false; vis();                     // the app draws the screen again on its own (renderPage)
+  release0(); await settle();
+  assert.equal(prepares, 1, 'only the first load started');
 });
