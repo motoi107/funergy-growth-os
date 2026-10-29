@@ -6707,6 +6707,8 @@ function ingCostByCode(code) {
 function getVendors() { return ls('m_vendors', DEFAULT_VENDORS); }
 /* v1087: 業者ごとの発注リスト（order_lists）を読み書きする関数は、発注の画面と一緒に外した（記録と同期はそのまま） */
 function getEmployees() {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 getEmployees */
+var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE():null;if(answer===null)return (function getEmployees() {
   /* v1085: 読んだときの表（文字のまま）を覚えておく。保存のとき、この画面が変えた欄だけを、いまの表に重ねる（_empOnLocalSave） */
   var _src = null, emps = null;
   try { _src = _lsStoreGet('m_employees'); emps = _src ? JSON.parse(_src) : null; } catch(e){ emps = null; }
@@ -6718,6 +6720,19 @@ function getEmployees() {
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
   if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
   return emps;
+}).apply(this,arguments);var originalStoreGet=_lsStoreGet;return (function(_lsStoreGet){return (function getEmployees() {
+  /* v1085: 読んだときの表（文字のまま）を覚えておく。保存のとき、この画面が変えた欄だけを、いまの表に重ねる（_empOnLocalSave） */
+  var _src = null, emps = null;
+  try { _src = _lsStoreGet('m_employees'); emps = _src ? JSON.parse(_src) : null; } catch(e){ emps = null; }
+  if (!Array.isArray(emps)) { emps = ls('m_employees', DEFAULT_EMPLOYEES); try { _src = JSON.stringify(emps); } catch(e){ _src = null; } }
+  try { Object.defineProperty(emps, '__src', { value:_src, enumerable:false, configurable:true, writable:true }); } catch(e){}
+  emps.forEach(e=>{
+    if(e.coef===undefined) e.coef = 1.0;
+  });
+  /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
+  if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
+  return emps;
+}).call(this);}).call(this,function(key){return key==='m_employees'?answer:originalStoreGet(key);});
 }
 /* 機微情報（給与/メール/電話）を権限者だけサーバーから取得して上書き用に保持 */
 async function fetchEmpPrivate(){
@@ -8611,6 +8626,8 @@ function _lsKeysScan(prefix){
 var _LSK = { gen:0, sig:null, mem:null, all:null, by:{} };
 function _lskBump(){ try{ _LSK.gen++; }catch(e){} }   /* 起動の途中で _LSK がまだ無くても、呼んだ側を止めない */
 function lsKeys(prefix){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 lsKeys */
+var original=(function lsKeys(prefix){
   try{
     var p=(prefix==null?'':String(prefix));
     var ready=!!(_idbState==='ready' && _IDB_MEM);
@@ -8622,6 +8639,7 @@ function lsKeys(prefix){
     if(!hit){ hit = p ? _LSK.all.filter(function(k){ return k.indexOf(p)===0; }) : _LSK.all; _LSK.by[p]=hit; }
     return hit.slice();
   }catch(e){ return _lsKeysScan(prefix); }
+}).apply(this,arguments);return typeof window.FUNERGY_WEB_OFFICE_KEYS==='function'?window.FUNERGY_WEB_OFFICE_KEYS(prefix,original):original;
 }
 /* v1049: localStorage のキーの顔ぶれが変わったら世代を進める（直接 setItem・removeItem している所も漏らさない） */
 (function(){
@@ -9481,6 +9499,8 @@ function backupInvHistory(){
   }catch(e){ showToast('書き出しに失敗しました','danger'); console.warn('backupInvHistory', e); }
 }
 function ls(key, def) {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ls */
+if(typeof window.FUNERGY_WEB_OFFICE_READ==='function'){var answer=window.FUNERGY_WEB_OFFICE_READ(key,def);if(answer)return answer.value;}return (function ls(key, def) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key];
   if(sp){
     /* v721: 人別履歴など「必要時だけ取得」の分割キーは、読まれた時点でまとめて取りに行く。
@@ -9499,6 +9519,7 @@ function ls(key, def) {
     return v ? JSON.parse(v) : def;
   }
   catch(e) { return def; }
+}).apply(this,arguments);
 }
 var _lsQuotaWarned=false;
 /* ===== 端末保存容量（localStorage）管理：メーター・整理・自動整理 ===== */
@@ -9818,6 +9839,8 @@ function _lsRenderSaveFailBanner(){
 }
 
 function lsSet(key, val) {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 lsSet */
+if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE_WRITE(key,val);else if(/^ocs_(?:asg|ev)_/.test(key))throw Error('web_office_not_ready');return (function lsSet(key, val) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
      重ねられなかったときは書かない（古い写しの表をそのまま書くと、退職した人が戻る） */
@@ -9849,6 +9872,7 @@ function lsSet(key, val) {
   // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
   try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
   return _ok;
+}).apply(this,arguments);
 }
 
 /* ============================================================
@@ -10613,6 +10637,8 @@ async function empAccessCheck(why){
   } finally { _eacBusy=false; }
 }
 function empForceLogout(rec){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 empForceLogout */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('empForceLogout',Array.from(arguments),()=>(function empForceLogout(rec){
   var id=rec && rec.id!=null ? String(rec.id) : _empMeId();
   try{ _empForgetSignin(id); }catch(e){}
   try{ if(rec && rec.id!=null){ var cur=_lsRaw('m_employees', [])||[]; var by=_empById(cur); if(by[id] && !empBlocked(by[id]) && empBlocked(rec)) _empApplyServerRow(rec); } }catch(e){}
@@ -10622,6 +10648,17 @@ function empForceLogout(rec){
   else { window._forceLogout=true; try{ doLogout(); }catch(e){} window._forceLogout=false; }
   try{ var el=document.getElementById('login-forced-msg'); if(!el){ var sub=document.getElementById('login-step-sub'); if(sub && sub.parentNode){ el=document.createElement('div'); el.id='login-forced-msg'; el.style.cssText='margin:8px 0 4px;padding:10px 12px;border-radius:8px;background:#fdecec;color:#b42318;font-size:13px;font-weight:600;text-align:center;line-height:1.5'; sub.parentNode.insertBefore(el, sub.nextSibling); } } if(el){ el.textContent=msg; el.style.display='block'; } }catch(e){}
   try{ if(typeof showToast==='function') showToast(msg, 'danger'); }catch(e){}
+}).apply(this,arguments));return (function empForceLogout(rec){
+  var id=rec && rec.id!=null ? String(rec.id) : _empMeId();
+  try{ _empForgetSignin(id); }catch(e){}
+  try{ if(rec && rec.id!=null){ var cur=_lsRaw('m_employees', [])||[]; var by=_empById(cur); if(by[id] && !empBlocked(by[id]) && empBlocked(rec)) _empApplyServerRow(rec); } }catch(e){}
+  window._sessionPin=null; window._hwSession=null; window._empPrivate=null;
+  var msg=t('このアカウントは退職（または停止）になったため、ログアウトしました。','You were signed out because this account was stopped (resigned).');
+  if(window._secureMode && typeof managerLogout==='function'){ try{ managerLogout(); }catch(e){} }
+  else { window._forceLogout=true; try{ doLogout(); }catch(e){} window._forceLogout=false; }
+  try{ var el=document.getElementById('login-forced-msg'); if(!el){ var sub=document.getElementById('login-step-sub'); if(sub && sub.parentNode){ el=document.createElement('div'); el.id='login-forced-msg'; el.style.cssText='margin:8px 0 4px;padding:10px 12px;border-radius:8px;background:#fdecec;color:#b42318;font-size:13px;font-weight:600;text-align:center;line-height:1.5'; sub.parentNode.insertBefore(el, sub.nextSibling); } } if(el){ el.textContent=msg; el.style.display='block'; } }catch(e){}
+  try{ if(typeof showToast==='function') showToast(msg, 'danger'); }catch(e){}
+}).apply(this,arguments);
 }
 function empAccessWatch(){
   try{
@@ -15600,12 +15637,22 @@ function savePlActual(sid){
   closeModalDirect(); showToast('実PLを保存しました','success'); _secRerender();
 }
 function managerLogout(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 managerLogout */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('managerLogout',Array.from(arguments),()=>(function managerLogout(){
   window._authSession=null; if(typeof botResetShared==='function') botResetShared();
   window._secureMode=false; window._karteUnlocked=false; window._karteSelf=false;   /* v1045 */
   curRole=null; curUserName=null; curStore=null;
   var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
   var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
   var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
+}).apply(this,arguments));return (function managerLogout(){
+  window._authSession=null; if(typeof botResetShared==='function') botResetShared();
+  window._secureMode=false; window._karteUnlocked=false; window._karteSelf=false;   /* v1045 */
+  curRole=null; curUserName=null; curStore=null;
+  var sec=document.getElementById('manager-secure-screen'); if(sec) sec.style.display='none';
+  var m=document.getElementById('manager-login-screen'); if(m) m.style.display='none';
+  var ls=document.getElementById('login-screen'); if(ls) ls.style.display='flex';
+}).apply(this,arguments);
 }
 function bootLogin() {
   applyLangToggle();
@@ -16115,6 +16162,8 @@ function toggleLoginAutosync(){
 }
 
 function doLogout() {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 doLogout */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('doLogout',Array.from(arguments),()=>(function doLogout() {
   if (!window._forceLogout && typeof mrUnsaved === 'function' && mrUnsaved() && !confirm(t('中間レビューに保存されていない入力があります。ログアウトしますか？（入力は消えます）','The mid-month review has unsaved input. Log out anyway? (it will be lost)'))) return;   /* v1066 */
   try{ notifRealtimeStop(); }catch(e){}
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
@@ -16134,6 +16183,27 @@ function doLogout() {
   var _pe=document.getElementById('login-pin-err'); if(_pe) _pe.style.display='none';
   loginBackToLocation();
   bootLogin();
+}).apply(this,arguments));return (function doLogout() {
+  if (!window._forceLogout && typeof mrUnsaved === 'function' && mrUnsaved() && !confirm(t('中間レビューに保存されていない入力があります。ログアウトしますか？（入力は消えます）','The mid-month review has unsaved input. Log out anyway? (it will be lost)'))) return;   /* v1066 */
+  try{ notifRealtimeStop(); }catch(e){}
+  try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
+  try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
+  try{ tipLiveStop(); }catch(e){}   /* v1091 */
+  curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
+  loginLocation = null; loginPerson = null;
+  window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
+  if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
+  window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
+  if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
+  if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
+  document.getElementById('app-shell').style.display = 'none';
+  document.getElementById('login-screen').style.display = 'flex';
+  /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
+  var _pb=document.getElementById('login-pin-btn'); if(_pb){ _pb.disabled=false; _pb.textContent=t('ログイン','Log in'); }
+  var _pe=document.getElementById('login-pin-err'); if(_pe) _pe.style.display='none';
+  loginBackToLocation();
+  bootLogin();
+}).apply(this,arguments);
 }
 
 /* ============ 今月の会社メッセージ ============ */
@@ -16393,6 +16463,8 @@ function goGroup(groupId) {
 }
 
 function go(page) {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 go */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('go',Array.from(arguments),()=>(function go(page) {
   try{ page = navResolvePage(page); }catch(e){}   /* v1084: 廃止・移動した画面の古い行き先 */
   try{ if(((curPage==='lala' && page!=='lala') || (_lalaPollTimer && !(curPage==='lala' && page==='lala'))) && typeof lalaRealtimeStop==='function') lalaRealtimeStop();
        else if(curPage==='lala' && page==='lala' && _lalaPollTimer && typeof lalaPullNow==='function') lalaPullNow(); }catch(e){}   /* v804。v1098：ほかの道で離れて動いたままなら止める（LaLa を開くときは始め直して、すぐ取り直す）・LaLa から LaLa を押したら始め直さずに 1 回取り直す */
@@ -16405,6 +16477,20 @@ function go(page) {
   buildNav();
   renderPage(page);
   window.scrollTo(0,0);
+}).apply(this,arguments));return (function go(page) {
+  try{ page = navResolvePage(page); }catch(e){}   /* v1084: 廃止・移動した画面の古い行き先 */
+  try{ if(((curPage==='lala' && page!=='lala') || (_lalaPollTimer && !(curPage==='lala' && page==='lala'))) && typeof lalaRealtimeStop==='function') lalaRealtimeStop();
+       else if(curPage==='lala' && page==='lala' && _lalaPollTimer && typeof lalaPullNow==='function') lalaPullNow(); }catch(e){}   /* v804。v1098：ほかの道で離れて動いたままなら止める（LaLa を開くときは始め直して、すぐ取り直す）・LaLa から LaLa を押したら始め直さずに 1 回取り直す */
+  // 全店: シフト作成(shift_admin)は既定を翌週に。離れたら今週に戻す（スタッフ閲覧側は今週基準を保つ）。
+  try { if (page==='shift_admin' && curPage!=='shift_admin') { _shiftWeekOff = 1; } else if (page!=='shift_admin' && curPage==='shift_admin') { _shiftWeekOff = 0; } } catch(e){}
+  /* v897: 割引カードから離れたら秒時計を止める（setInterval の残留防止） */
+  try{ if(curPage==='discount' && page!=='discount' && typeof stopCardClock==='function') stopCardClock(); }catch(e){}
+  curPage = page;
+  curGroup = groupOfPage(page).id;
+  buildNav();
+  renderPage(page);
+  window.scrollTo(0,0);
+}).apply(this,arguments);
 }
 
 /* ============================================================
@@ -18166,6 +18252,8 @@ function mrScopeSave(){
 /* ===== v1066 中間レビュー ここまで ===== */
 
 function renderPage(page) {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 renderPage */
+if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WEB_OFFICE_RENDER(page,()=>(function renderPage(page) {
   try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
   try{ if(typeof tipLivePill==='function') tipLivePill(false); }catch(e){}   /* v1091: 描き直せば新しい Tip Rate で出るので「表示を更新」の帯は消す */
   /* v1084: 廃止・移動した画面の古い行き先は今の画面へ（go を通らずに来たとき。ナビの表示もそろえる） */
@@ -18298,6 +18386,140 @@ case 'acct_center':
   attachPageEvents();
   try{ renderNotifBell(); }catch(e){}
   try{ updateFavStar(); }catch(e){}
+}).apply(this,arguments));return (function renderPage(page) {
+  try{ mdCacheClear(); }catch(e){}   /* v859: 描画のたびに集計キャッシュを捨てる */
+  try{ if(typeof tipLivePill==='function') tipLivePill(false); }catch(e){}   /* v1091: 描き直せば新しい Tip Rate で出るので「表示を更新」の帯は消す */
+  /* v1084: 廃止・移動した画面の古い行き先は今の画面へ（go を通らずに来たとき。ナビの表示もそろえる） */
+  try { var _np = navResolvePage(page); if (_np !== page) { page = _np; curPage = _np; curGroup = groupOfPage(_np).id; buildNav(); } } catch(e){}
+  if (typeof isPageHiddenForMe==='function' && isPageHiddenForMe(page)) { var _ga=groupsForRole()[0]; page = (_ga && _ga.children && _ga.children[0]) || 'mypage'; }
+  try{ if(page!=='lala' && _lalaPollTimer && typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa 以外を描くときは LaLa の見張りを止める（go を通らない道でも） */
+  var el = document.getElementById('main-content');
+  /* v841: 統合コンソールのときだけ .main の幅制限を外す。他画面には影響しない。 */
+  try { document.body.classList.toggle('md-wide',
+    (page === 'dashboard' || page === 'mgmt_dash') && typeof mdCanOpen === 'function' && mdCanOpen()); } catch (e) { }
+  /* v864: シフト作成のときだけ .main の 900px 制限を外す。他画面には影響しない。 */
+  try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
+  try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
+  /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
+  try { if (typeof kevFlushText === 'function') kevFlushText(); } catch (e) { }
+  /* v1065: 成長カルテの「個別評価」タブ（PC は一覧・入力・計算の内訳を横に並べる） */
+  try { document.body.classList.toggle('kev-wide', page === 'growth_karte' && !!window._karteUnlocked && !window._karteViewEmp
+    && (window._karteTab === 'eval' || ((window._karteTab || 'list') === 'list' && typeof kevApplies === 'function' && !!kevApplies(kbCfg())))); } catch (e) { }
+  /* v927: 会議のときだけ .main の 900px 制限を外す。他画面には影響しない。
+     v1084: 会議は予実管理のタブから独立したページ（meeting）になった。 */
+  try { document.body.classList.toggle('meet-wide', page === 'meeting'); } catch (e) { }
+  /* v982: 日次進捗のときだけ .main の 900px 制限を外す。他のタブ・他画面には影響しない。
+     setBudgetTab() は renderPage('budget') を通るので、タブを切り替えると付け外しされる。 */
+  try { document.body.classList.toggle('bud-wide',
+    page === 'budget' && typeof budgetTab !== 'undefined' && budgetTab === 'daily'); } catch (e) { }
+  // v652: コールドスタート時のみ、重いデータ裏取得中はスケルトン表示。完了後の再描画で本物へ差し替え。ウォームは即表示。
+  if (window._heavyPending && localStorage.getItem('heavy_ready')!=='1' && !SKEL_LIGHT_PAGES[page]) {
+    if(el){ el.innerHTML = skeletonMain(); }
+    try{ renderNotifBell(); }catch(e){}
+    try{ updateFavStar(); }catch(e){}
+    window.scrollTo(0,0);
+    return;
+  }
+  if (curStore === 'OFFICE' && OFFICE_OK_PAGES.indexOf(page) < 0) { el.innerHTML = renderOfficeMgr(); window.scrollTo(0,0); return; }
+  switch(page) {
+    /* v840: ダッシュボードと管理ダッシュボードを統合。G4以上はコンソール、
+       それ以外（経理・G3・Crew）は従来のダッシュボードのまま。 */
+    case 'dashboard':    el.innerHTML = (typeof mdCanOpen==='function' && mdCanOpen())
+                           ? renderMgmtDash() : (renderFavCard() + renderDashboard()); break;
+    case 'store_cmd':    el.innerHTML = renderStoreCmd(); break;
+    case 'lunch_challenge': el.innerHTML = renderLunchChallenge(); break;   /* v1080: Tenkichi ランチチャレンジ（入口はマイページと店舗オペレーション） */
+    case 'store_ops_settings': el.innerHTML = renderStoreOpsSettings(); break;
+    case 'budget':       el.innerHTML = renderBudget(); break;
+    case 'mid_review':   el.innerHTML = renderMidReview(); break;   /* v1066 */
+    case 'meeting':      el.innerHTML = renderMeetingPage(); break;    /* v1084: 予実管理から独立 */
+    case 'purchase':     el.innerHTML = renderPurchasePage(); break;   /* v1084: 予実管理から独立（原価率(FC)の位置） */
+    case 'monthly':      el.innerHTML = renderMonthlySummary(); break;
+    case 'store_power':  el.innerHTML = renderStorePower(); break;
+    case 'menu':         el.innerHTML = renderMenu(); break;
+    case 'recipe':       el.innerHTML = renderRecipe(); break;
+    case 'costsheet':    el.innerHTML = renderCostSheet(); break;
+    case 'purchase_detail': el.innerHTML = renderPurchaseDetail(); break;
+    case 'invoice':      el.innerHTML = renderInvoice(); break;
+    case 'crew_handbook': el.innerHTML = renderHandbook(); break;
+    /* v897: 割引カード。innerHTML 反映後に時計を起動する（#main-content 方式のため） */
+    case 'discount':     el.innerHTML = renderDiscount(); try{ startCardClock(); }catch(e){} break;
+    case 'acct_review':  el.innerHTML = renderAcctReview(); break;
+    case 'office_mgr':
+      /* v882: Office管理は経理センターの「経理ダッシュボード」に統合済み。
+         最後に開いたページが保存されているため、office_mgr のままだと
+         ナビだけ新しくなって中身が古い画面に取り残される。経理センターへ回す。
+         ページ自体は残すので、店舗側や直リンクからは今までどおり開ける。 */
+      if (['ceo','gm','office','office_crew'].indexOf(curRole) >= 0) {
+        curPage = 'acct_center'; _acCat = 'dash'; _acSub = 'dash';
+        el.innerHTML = renderAcctCenter(); break;
+      }
+      el.innerHTML = renderOfficeMgr(); break;
+    case 'office_export': el.innerHTML = '<div class="section-header"><div><div class="section-title"><i class="ti ti-file-export"></i> 出力センター</div><div class="section-sub">全ての帳票・CSV出力</div></div></div>' + renderOfficeExport(); break;
+    case 'mgmt_dash':    renderPage('dashboard'); return;   /* v840: 統合したので別名 */
+    case 'error_center': workTab='error'; el.innerHTML = renderWorkCenter(); break;
+    case 'inventory':    el.innerHTML = renderInventory(); break;
+    case 'dailyops':     el.innerHTML = renderDailyOps(); break;
+    case 'tasks':        el.innerHTML = renderWorkCenter(); break;
+    case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
+    case 'required':     el.innerHTML = renderRequired(); break;
+    case 'cc_plan':      el.innerHTML = renderCcPlan(); break;   /* v767 */
+    case 'goals':        el.innerHTML = renderGoals(); break;
+    case 'announce':     workTab='announce'; el.innerHTML = renderWorkCenter(); break;
+    case 'labor':        el.innerHTML = renderLabor(); break;
+    case 'lala':         el.innerHTML = renderLala(); try{ if(!_lalaPollTimer) lalaRealtimeStart(); }catch(e){} break;   /* v804。v1098：動いていれば始め直さない（描き直すたびに始め直し、取り直し → 描き直し → 始め直し…と続いていた） */
+    case 'tip':          el.innerHTML = renderTipMgmt(); break;
+    case 'attendance':   laborTab='attendance'; el.innerHTML = renderLabor(); break;
+    case 'shift_admin':  el.innerHTML = renderShiftAdmin(); break;
+    case 'shift_staff':  el.innerHTML = renderShiftStaff(); break;
+    case 'vacation':     el.innerHTML = renderVacation(); break;
+    case 'mileage':      el.innerHTML = renderMileage(); break;
+case 'lost_receipt': el.innerHTML = renderLostReceipt(); break;
+case 'acct_center':
+      /* v886: 描画関数が例外を投げると el.innerHTML への代入自体が起きず、前の画面が
+         残ってボタンも効かない。v885 で実際にこれが起きた（AC_TABS 未定義）。
+         「何も変わらない」ではなく「落ちた事実」が画面に出るようにする。 */
+      try { el.innerHTML = renderAcctCenter(); }
+      catch(e){
+        try{ console.error('renderAcctCenter', e); }catch(_){}
+        el.innerHTML = '<div class="alert alert-warning" style="padding:12px 14px">'
+          + '<i class="ti ti-alert-triangle"></i><div style="font-size:12.5px">'
+          + '<b>' + t('経理センターの描画に失敗しました','Failed to render the accounting center') + '</b><br>'
+          + escapeHtml(String(e && e.message || e)) + '</div></div>';
+      }
+      break;
+    case 'expense':      el.innerHTML = renderExpense(); break;
+    case 'hr':           el.innerHTML = renderHR(); break;
+    case 'hiring':       el.innerHTML = renderHiring(); break;
+    case 'onboarding':   hiringTab='onboard'; el.innerHTML = renderHiring(); break;
+    case 'staff_master': el.innerHTML = renderStaffMaster(); break;
+    case 'ingredient_master': el.innerHTML = renderIngredientMaster(); break;
+    case 'ing_transfer': el.innerHTML = renderIngTransfer(); break;
+    case 'vendor_master': el.innerHTML = renderVendorMaster(); break;
+    case 'leadership':   el.innerHTML = renderLeadership(); break;
+    case 'office_career': el.innerHTML = renderOfficeCareer(); break;   /* v1050: オフィス用 Career Score */
+    case 'skill':        el.innerHTML = renderSkill(); break;
+    case 'tiprate':      el.innerHTML = renderTipRate(); break;
+    case 'ojtmap':       el.innerHTML = renderOjtMap(); break;
+    case 'totoya_docs':  el.innerHTML = renderTotoyaDocs(); break;
+    case 'growthhub':    el.innerHTML = renderGrowthHub(); break;
+    case 'growth_mgr':   el.innerHTML = renderGrowthManager(); break;
+    case 'ojt_admin':    el.innerHTML = renderOjtAdmin(); break;
+    case 'approval':     workTab='approval'; el.innerHTML = renderWorkCenter(); break;
+    case 'mypage':       el.innerHTML = _myOjtOpen ? myOjtCard() : (renderFavCard() + myOjtCard() + renderMypage()); break;   /* v1025: OJTを開いている間はOJT画面だけ */
+    case 'store_master': el.innerHTML = renderStoreMaster(); break;
+    case 'kpi_master': el.innerHTML = renderKpiMaster(); break;
+    case 'acct_export':  el.innerHTML = renderAcctExport(); break;
+    case 'company_msg_edit': el.innerHTML = renderCompanyMsgEdit(); break;
+    case 'notifications': el.innerHTML = renderNotifications(); break;
+    case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
+    case 'settings':     el.innerHTML = renderSettings(); break;
+    default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
+  }
+  try{ var _psc=pageSyncScope(page); if(_psc){ el.innerHTML = pageSyncStrip(_psc) + el.innerHTML; } }catch(e){}
+  attachPageEvents();
+  try{ renderNotifBell(); }catch(e){}
+  try{ updateFavStar(); }catch(e){}
+}).apply(this,arguments);
 }
 
 function attachPageEvents() {
@@ -75297,23 +75519,48 @@ window._ocsOpenCats = window._ocsOpenCats || {};
 function ocsRerender(){ try{ renderPage(curPage==='leadership' ? 'leadership' : 'office_career'); }catch(e){} }
 function ocsTabVisible(){ return ocsCanOpenList(); }
 async function ocsOpen(empId){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsOpen */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('ocsOpen',Array.from(arguments),()=>(async function ocsOpen(empId){
   var e=ocsEmp(empId); if(!e || !ocsCanView(e)){ showToast(t('この評価は見られません','You cannot view this evaluation'),'warning'); return; }
   window._ocsSel=empId; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; window._ocsOpenCats={};
   ocsRerender(); window.scrollTo(0,0);
   /* 別端末で保存された最新を取りに行く（今の Career Score の openLssDetail と同じ） */
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ await pullOpKey(OCS_ASG_PREFIX+empId); await pullOpKey(OCS_EV_PREFIX+empId); } }catch(err){}
   if(window._ocsSel===empId && !window._ocsEdit && !window._ocsAsgEdit) ocsRerender();
+}).apply(this,arguments));return (async function ocsOpen(empId){
+  var e=ocsEmp(empId); if(!e || !ocsCanView(e)){ showToast(t('この評価は見られません','You cannot view this evaluation'),'warning'); return; }
+  window._ocsSel=empId; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; window._ocsOpenCats={};
+  ocsRerender(); window.scrollTo(0,0);
+  /* 別端末で保存された最新を取りに行く（今の Career Score の openLssDetail と同じ） */
+  try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ await pullOpKey(OCS_ASG_PREFIX+empId); await pullOpKey(OCS_EV_PREFIX+empId); } }catch(err){}
+  if(window._ocsSel===empId && !window._ocsEdit && !window._ocsAsgEdit) ocsRerender();
+}).apply(this,arguments);
 }
 function ocsBack(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsBack */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('ocsBack',Array.from(arguments),()=>(function ocsBack(){
   if(window._ocsEdit && window._ocsEdit.dirty && !confirm(t('保存していない入力があります。破棄して戻りますか？','You have unsaved input. Discard and go back?'))) return;
   window._ocsEdit=null; window._ocsAsgEdit=null;
   if(window._ocsSel && ocsCanOpenList()){ window._ocsSel=null; ocsRerender(); return; }
   window._ocsSel=null;
   if(curPage==='office_career') go('mypage'); else ocsRerender();
+}).apply(this,arguments));return (function ocsBack(){
+  if(window._ocsEdit && window._ocsEdit.dirty && !confirm(t('保存していない入力があります。破棄して戻りますか？','You have unsaved input. Discard and go back?'))) return;
+  window._ocsEdit=null; window._ocsAsgEdit=null;
+  if(window._ocsSel && ocsCanOpenList()){ window._ocsSel=null; ocsRerender(); return; }
+  window._ocsSel=null;
+  if(curPage==='office_career') go('mypage'); else ocsRerender();
+}).apply(this,arguments);
 }
 function ocsGoMine(){ var me=getEmployees().find(function(e){ return e && e.name===ocsMe(); }); if(!me) return; window._ocsSel=me.id; window._ocsPeriod=null; window._ocsEdit=null; window._ocsAsgEdit=null; go('office_career'); }
-function ocsSetPeriod(p){ if(window._ocsEdit){ showToast(t('入力中です。保存かキャンセルをしてから切り替えてください','Save or cancel your input first'),'warning'); return; } window._ocsPeriod=p; ocsRerender(); }
-function ocsToggleAll(){ window._ocsAll=!window._ocsAll; ocsRerender(); }
+function ocsSetPeriod(p){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsSetPeriod */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('ocsSetPeriod',Array.from(arguments),()=>(function ocsSetPeriod(p){ if(window._ocsEdit){ showToast(t('入力中です。保存かキャンセルをしてから切り替えてください','Save or cancel your input first'),'warning'); return; } window._ocsPeriod=p; ocsRerender(); }).apply(this,arguments));return (function ocsSetPeriod(p){ if(window._ocsEdit){ showToast(t('入力中です。保存かキャンセルをしてから切り替えてください','Save or cancel your input first'),'warning'); return; } window._ocsPeriod=p; ocsRerender(); }).apply(this,arguments);
+}
+function ocsToggleAll(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsToggleAll */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('ocsToggleAll',Array.from(arguments),()=>(function ocsToggleAll(){ window._ocsAll=!window._ocsAll; ocsRerender(); }).apply(this,arguments));return (function ocsToggleAll(){ window._ocsAll=!window._ocsAll; ocsRerender(); }).apply(this,arguments);
+}
 function ocsCatToggle(k, el){ try{ window._ocsOpenCats[k]=!!(el && el.open); }catch(e){} }
 function ocsDeny(msg){ return '<div class="card" style="text-align:center;padding:24px;color:var(--muted)"><i class="ti ti-lock" style="font-size:22px"></i><div style="margin-top:6px;font-size:13px">'+escapeHtml(msg)+'</div></div>'; }
 function ocsHeaderHtml(sub){
@@ -75420,6 +75667,8 @@ function ocsListRefresh(){
   }).catch(function(){});
 }
 function ocsListHtml(){
+  if(typeof window.FUNERGY_NATIVE_OFFICE_ASSIGNMENT_CONTEXT==='function')window.FUNERGY_NATIVE_OFFICE_ASSIGNMENT_CONTEXT(ocsPeriodNow());
+  var html=(function ocsListHtml(){
   try{ ocsListRefresh(); }catch(e){}
   var ids=ocsAsgIds(), rows=[];
   ids.forEach(function(id){ var e=ocsEmp(id), a=ocsAsg(id); if(!e || !a) return; if(!ocsCanView(e)) return; rows.push({e:e, a:a}); });
@@ -75459,6 +75708,8 @@ function ocsListHtml(){
     +t('★旧方式の Career Score（経理の8軸など）は消していません・新しい35項目に変換もしていません。各人の画面の下に「旧テンプレートの履歴」として出ます。','★The old Career Score (e.g. the 8 accounting axes) is kept as is and is not converted to the 35 items. It appears at the bottom of each person\'s page as old-template history.')
     +'<br>'+t('★この点数は時給・給与・チップ・賞与・Grade には連動しません（ボーナスの計算は今までどおり旧方式の Career Score を使います）。','★This score is not linked to wages, salary, tips, bonus or grade (the bonus still uses the old Career Score).')+'</div>';
   return h;
+}).call(this);
+  return '<section data-local-office-assignment-list>'+html+'</section>';
 }
 /* 項目と配点の一覧（誰でも読める説明） */
 function ocsOpenItemsModal(){
@@ -75491,6 +75742,8 @@ function ocsOpenItemsModal(){
 /* 対象者の追加：★名前で人を決めない。従業員マスターから ID で選ぶ */
 function ocsOfficeLike(e){ return ['office','office_crew'].indexOf(e.role)>=0 || ['Office Crew','Office Staff','Accountant','Office Manager','Office Crew Leader','Accounting Leader'].indexOf(e.title)>=0; }   /* v1103：経理の新しい肩書き */
 function ocsOpenAddModal(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsOpenAddModal */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsOpenAddModal',Array.from(arguments),()=>(function ocsOpenAddModal(){
   if(!ocsCanAssign()){ showToast(t('対象者の追加は GM・CEO だけです','Only the GM and CEO can add people'),'warning'); return; }
   var have={}; ocsAsgIds().forEach(function(id){ have[id]=1; });
   var emps=getEmployees().filter(function(e){ return e && e.id && e.status!=='退職' && e.role!=='ceo' && !have[e.id]; });
@@ -75510,8 +75763,11 @@ function ocsOpenAddModal(){
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="ocsAddSubmit()"><i class="ti ti-check"></i> '+t('下書きを作る','Create draft')+'</button></div>';
   openModal(h);
   ocsAddCheck(true);
+}).apply(this,arguments));
 }
 function ocsAddCheck(fromProp){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAddCheck */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAddCheck',Array.from(arguments),()=>(function ocsAddCheck(fromProp){
   var id=(document.getElementById('ocs-add-emp')||{}).value||'', pk=(document.getElementById('ocs-add-prop')||{}).value||'blank';
   var gs=document.getElementById('ocs-add-grade'), p=OCS_PROPOSALS[pk];
   if(fromProp && gs && p && p.grade) gs.value=p.grade;
@@ -75524,8 +75780,11 @@ function ocsAddCheck(fromProp){
   }
   var el=document.getElementById('ocs-add-warn');
   if(el) el.innerHTML=w.map(function(x){ return '<div style="border:1px solid var(--yellow);border-radius:8px;padding:7px 10px;margin-bottom:8px;font-size:11px;line-height:1.6;color:var(--tm)"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> '+x+'</div>'; }).join('');
+}).apply(this,arguments));
 }
 function ocsAddSubmit(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAddSubmit */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAddSubmit',Array.from(arguments),()=>(function ocsAddSubmit(){
   if(!ocsCanAssign()) return;
   var id=(document.getElementById('ocs-add-emp')||{}).value||'', pk=(document.getElementById('ocs-add-prop')||{}).value||'blank', g=(document.getElementById('ocs-add-grade')||{}).value||'';
   var e=id?ocsEmp(id):null;
@@ -75537,16 +75796,22 @@ function ocsAddSubmit(){
   window._ocsSel=e.id; window._ocsPeriod=null; window._ocsEdit=null;
   ocsStartAsgEdit(e.id);
   showToast(t('下書きを作りました。担当範囲を確認してから「有効にする」を押してください','Draft created. Check the scope, then press "Activate"'),'success');
+}).apply(this,arguments));
 }
 
 /* ---------- 担当設定の編集（GM・CEO） ---------- */
 function ocsStartAsgEdit(empId){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsStartAsgEdit */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsStartAsgEdit',Array.from(arguments),()=>(function ocsStartAsgEdit(empId){
   if(!ocsCanAssign()){ showToast(t('担当設定の変更は GM・CEO だけです','Only the GM and CEO can change plans'),'warning'); return; }
   var a=ocsAsg(empId); if(!a) return;
   window._ocsAsgEdit={empId:empId, a:ocsCopy(a), baseAt:Number(a._at)||0, dirty:false};
   ocsRerender(); window.scrollTo(0,0);
+}).apply(this,arguments));
 }
 function ocsAsgSet(code, field, val){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgSet */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgSet',Array.from(arguments),()=>(function ocsAsgSet(code, field, val){
   var E=window._ocsAsgEdit; if(!E) return; var it=E.a.items[code]; if(!it) return;
   if(field==='w'){ var n=parseFloat(val); it.w=(n>0 && n<=10) ? Math.round(n*10)/10 : 1; }
   else if(field==='role'){ it.role=val; if(val==='na'||val==='dev') it.scored=false; if(val==='dev') it.dev=true; }
@@ -75555,40 +75820,61 @@ function ocsAsgSet(code, field, val){
   if(field==='scored' && it.scored && (it.role==='na'||it.role==='dev')) it.role='main';
   E.dirty=true;
   if(field!=='scope') ocsRerender();
+}).apply(this,arguments));
 }
 function ocsAsgUseHint(code){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgUseHint */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgUseHint',Array.from(arguments),()=>(function ocsAsgUseHint(code){
   var E=window._ocsAsgEdit; if(!E) return; var h=ocsHint(code, E.a.proposal, E.a.grade); if(!h) return;
   E.a.items[code].scope=ocsTx(h); E.dirty=true; ocsRerender();
+}).apply(this,arguments));
 }
 function ocsAsgUseAllHints(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgUseAllHints */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgUseAllHints',Array.from(arguments),()=>(function ocsAsgUseAllHints(){
   var E=window._ocsAsgEdit; if(!E) return; var n=0;
   OCS_ITEMS.forEach(function(d){ var it=E.a.items[d.c]; if(!it || it.role==='na' || String(it.scope||'').trim()) return; var h=ocsHint(d.c, E.a.proposal, E.a.grade); if(h){ it.scope=ocsTx(h); n++; } });
   E.dirty=true; ocsRerender(); showToast(t(n+'項目の空欄に案を入れました（保存するまで確定しません）', n+' empty scopes filled from the plan (not saved yet)'),'info');
+}).apply(this,arguments));
 }
 function ocsAsgSetGrade(g){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgSetGrade */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgSetGrade',Array.from(arguments),()=>(function ocsAsgSetGrade(g){
   var E=window._ocsAsgEdit; if(!E) return; g=ocsNormGrade(g); if(!g) return;
   E.a.grade=g; E.a.weights=ocsWeightsFor(g); E.dirty=true; ocsRerender();
+}).apply(this,arguments));
 }
 /* v1051: 上長評価をする人（従業員ID・空＝指定しない）と、役職から見た Grade とのずれの確認 */
 function ocsAsgSetMgrBy(id){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgSetMgrBy */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgSetMgrBy',Array.from(arguments),()=>(function ocsAsgSetMgrBy(id){
   var E=window._ocsAsgEdit; if(!E) return; id=String(id||'');
   if(id && id===E.empId){ showToast(t('本人は指定できません','The person cannot review themselves'),'warning'); ocsRerender(); return; }
   E.a.mgrBy=id; E.dirty=true; ocsRerender();
+}).apply(this,arguments));
 }
 function ocsGradeOkValid(e, a){
   var ok=a && a.gradeOk; if(!ok || !e) return false;
   return ok.grade===ocsNormGrade(a.grade) && ok.title===String(e.title||'') && ok.tg===(ocsNormGrade(empGrade(e))||String(empGrade(e)||''));
 }
 function ocsAsgSetGradeOk(on){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgSetGradeOk */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgSetGradeOk',Array.from(arguments),()=>(function ocsAsgSetGradeOk(on){
   var E=window._ocsAsgEdit; if(!E) return; var e=ocsEmp(E.empId); if(!e) return;
   E.a.gradeOk = on ? {by:ocsMe(), at:ocsNowIso(), grade:ocsNormGrade(E.a.grade), title:String(e.title||''), tg:(ocsNormGrade(empGrade(e))||String(empGrade(e)||''))} : null;
   E.dirty=true; ocsRerender();
+}).apply(this,arguments));
 }
 function ocsAsgCancel(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgCancel */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgCancel',Array.from(arguments),()=>(function ocsAsgCancel(){
   var E=window._ocsAsgEdit; if(E && E.dirty && !confirm(t('保存していない変更を破棄しますか？','Discard unsaved changes?'))) return;
   window._ocsAsgEdit=null; ocsRerender();
+}).apply(this,arguments));
 }
 async function ocsAsgSave(activate){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsAsgSave */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsAsgSave',Array.from(arguments),()=>(async function ocsAsgSave(activate){
   var E=window._ocsAsgEdit; if(!E || !ocsCanAssign()) return;
   /* 画面の担当範囲の入力を拾う（onchange の前に押されたときのため） */
   OCS_ITEMS.forEach(function(d){ var el=document.getElementById('ocs-scope-'+d.c); if(el) E.a.items[d.c].scope=String(el.value||'').slice(0,400); });
@@ -75618,6 +75904,7 @@ async function ocsAsgSave(activate){
   if(wasActive && ev && !(ev.conf && ev.conf.state==='confirmed') && !ev.void)
     setTimeout(function(){ showToast(t('今期の評価は作成時の設定で計算しています。新しい設定を今期にも使うには、評価画面の「条件を最新にする」を押してください','This quarter\'s evaluation keeps the plan from when it started. Use "Apply latest plan" on the evaluation to change it'),'info'); }, 1800);
   ocsRerender();
+}).apply(this,arguments));
 }
 function ocsShowProblems(title, list){
   openModal('<div class="modal-title">'+escapeHtml(title)+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
@@ -75749,10 +76036,12 @@ function ocsScaleHtml(total, prov){
     +'<span style="position:absolute;left:66.7%;transform:translateX(-50%);text-align:center;color:var(--tm)">66.7<br>'+t('自立して実行','independent')+'</span><span style="position:absolute;right:0;text-align:right">100<br>'+t('安定・改善','stable')+'</span></div>';
 }
 function ocsDetailHtml(e){
+  var nativeOfficeDetailHtml=(function(){
   var a=ocsAsg(e.id), me=ocsMe();
   var periods=ocsPeriods(e.id), now=ocsPeriodNow();
   if(periods.indexOf(now)<0) periods.unshift(now);
   var p=window._ocsPeriod && periods.indexOf(window._ocsPeriod)>=0 ? window._ocsPeriod : now;
+  if(typeof window.FUNERGY_NATIVE_OFFICE_EVALUATION_CONTEXT==='function')window.FUNERGY_NATIVE_OFFICE_EVALUATION_CONTEXT(e.id,p);
   var ev=ocsEv(e.id, p), E=(window._ocsEdit && window._ocsEdit.empId===e.id && window._ocsEdit.period===p) ? window._ocsEdit : null;
   var meta=ev ? ev.meta : (a ? {grade:a.grade, tpl:a.tpl, tplVer:a.tplVer, asg:a.items, weights:a.weights, asgRev:a.rev} : null);
   var st=ocsEvState(ev), conf=(st.k==='ok');
@@ -75850,6 +76139,9 @@ function ocsDetailHtml(e){
       +'</div></div>';
   }
   return h;
+
+  }).call(this);
+  return '<section data-local-office-evaluation-detail>'+nativeOfficeDetailHtml+'</section>';
 }
 function ocsStateText(k, calc, ev, showMgr, isSelf){
   if(k==='ok') return t('確定済み：','Confirmed: ')+'<b>'+escapeHtml((ev.conf.by||''))+'</b> '+escapeHtml(ocsFmt(ev.conf.at))+(ev.conf.ver>1?' · '+t('修正 ','revised ')+(ev.conf.ver-1)+t('回',' time(s)'):'');
@@ -76089,6 +76381,8 @@ function ocsHistoryHtml(e, cur){
 
 /* ---------- 入力（自己評価・上長評価） ---------- */
 function ocsStartEdit(part, revise){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsStartEdit */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsStartEdit',Array.from(arguments),()=>(function ocsStartEdit(part, revise){
   var e=ocsEmp(window._ocsSel); if(!e) return;
   var a=ocsAsg(e.id), p=window._ocsPeriod || ocsPeriodNow(), ev=ocsEv(e.id, p);
   if(!ev && (!a || a.state!=='active')){ showToast(t('担当設定が有効になっていません','The plan is not active'),'warning'); return; }
@@ -76101,10 +76395,14 @@ function ocsStartEdit(part, revise){
     s:ocsCopy((revise && ev.conf) ? (ev.conf.s||{}) : ((cur&&cur.s)||{}))||{}, ev:ocsCopy((cur&&cur.ev)||{})||{},
     cm:(cur&&cur.cm)||'', strengths:(cur&&cur.strengths)||'', issues:ocsCopy((cur&&cur.issues)||[])||[], dirty:false };
   ocsRerender(); window.scrollTo(0,0);
+}).apply(this,arguments));
 }
 function ocsCancelEdit(){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsCancelEdit */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsCancelEdit',Array.from(arguments),()=>(function ocsCancelEdit(){
   var E=window._ocsEdit; if(E && E.dirty && !confirm(t('保存していない入力を破棄しますか？','Discard unsaved input?'))) return;
   window._ocsEdit=null; ocsRerender();
+}).apply(this,arguments));
 }
 function ocsCollectTexts(){
   var E=window._ocsEdit; if(!E) return;
@@ -76117,6 +76415,8 @@ function ocsCollectTexts(){
   } else { var sc=g('ocs-self-cm'); if(sc!=null) E.cm=sc.slice(0,2000); }
 }
 function ocsOpenScore(code){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsOpenScore */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsOpenScore',Array.from(arguments),()=>(function ocsOpenScore(code){
   var E=window._ocsEdit; if(!E) return; ocsCollectTexts();
   var d=ocsItemDef(code), ev=ocsEv(E.empId, E.period), a=ocsAsg(E.empId);
   var meta=ev ? ev.meta : {asg:a.items, grade:a.grade}, it=(meta.asg||{})[code]||{};
@@ -76146,9 +76446,12 @@ function ocsOpenScore(code){
     +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="ocsPickScore(\''+code+'\',null)">'+t('根拠を残して閉じる','Keep evidence and close')+'</button></div>'
     +'</div></div>';
   document.body.appendChild(ov);
+}).apply(this,arguments));
 }
 function closeOcsScore(){ var o=document.getElementById('ocs-score-ov'); if(o){ try{ document.body.removeChild(o); }catch(e){} } }
 function ocsPickScore(code, v){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsPickScore */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsPickScore',Array.from(arguments),()=>(function ocsPickScore(code, v){
   var E=window._ocsEdit; if(!E) return;
   var el=document.getElementById('ocs-evid'); var evid=el ? String(el.value||'').trim().slice(0,300) : (E.ev[code]||'');
   if(ocsSensitiveHit(evid)){ showToast(t('根拠に番号（SSN・口座など）のようなものがあります。案件番号や保管場所だけを書いてください','The evidence looks like it contains an ID or account number. Write only a case number or file location'),'warning'); return; }
@@ -76157,8 +76460,11 @@ function ocsPickScore(code, v){
   E.dirty=true;
   try{ haptic('tap'); }catch(e){}
   closeOcsScore(); ocsRerender();
+}).apply(this,arguments));
 }
 async function ocsSaveEdit(submit){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsSaveEdit */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsSaveEdit',Array.from(arguments),()=>(async function ocsSaveEdit(submit){
   var E=window._ocsEdit; if(!E) return; ocsCollectTexts();
   var e=ocsEmp(E.empId); if(!e) return;
   var texts=[E.cm, E.strengths].concat((E.issues||[]).map(function(x){ return x.t; })).concat(Object.keys(E.ev).map(function(k){ return E.ev[k]; }));
@@ -76206,9 +76512,12 @@ async function ocsSaveEdit(submit){
   window._ocsEdit=null;
   ocsRerender();
   ocsAfterSave(OCS_EV_PREFIX+E.empId, ok, E.part==='self' ? (submit?t('自己評価を提出しました','Self-review submitted'):t('自己評価の下書きを保存しました','Self-review draft saved')) : (E.revise?t('修正を保存しました','Revision saved'):t('上長評価を保存しました','Manager review saved')));
+}).apply(this,arguments));
 }
 /* 確定（GM）：担当範囲あり・未確認なし・課題2〜3件 */
 async function ocsConfirm(empId, period){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsConfirm */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsConfirm',Array.from(arguments),()=>(async function ocsConfirm(empId, period){
   var e=ocsEmp(empId); if(!e || !ocsCanConfirm(e)){ showToast(t('確定は GM だけです','Only the GM can confirm'),'warning'); return; }
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
   var ev=ocsEv(empId, period); if(!ev || !ev.mgr){ showToast(t('上長評価がまだありません','No manager review yet'),'warning'); return; }
@@ -76228,8 +76537,11 @@ async function ocsConfirm(empId, period){
   var ok=ocsPutEv(empId, ev);
   ocsRerender();
   ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('評価を確定しました','Evaluation confirmed'));
+}).apply(this,arguments));
 }
 async function ocsPromoMark(empId, period, k){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsPromoMark */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsPromoMark',Array.from(arguments),()=>(async function ocsPromoMark(empId, period, k){
   var e=ocsEmp(empId); if(!e || !ocsCanConfirm(e)) return;
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
   var ev=ocsEv(empId, period); if(!ev) return;
@@ -76240,8 +76552,11 @@ async function ocsPromoMark(empId, period, k){
   pr[k]= cur.ok ? {ok:false, by:ocsMe(), at:ocsNowIso(), note:''} : {ok:true, by:ocsMe(), at:ocsNowIso(), note:note};
   ev.promo=ocsStamp(pr, ev.promo);
   var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('昇格候補の確認を保存しました','Saved'));
+}).apply(this,arguments));
 }
 async function ocsVoid(empId, period){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsVoid */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsVoid',Array.from(arguments),()=>(async function ocsVoid(empId, period){
   if(!ocsCanAssign()) return;
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED) await pullOpKey(OCS_EV_PREFIX+empId); }catch(err){}
   var ev=ocsEv(empId, period); if(!ev) return;
@@ -76250,8 +76565,11 @@ async function ocsVoid(empId, period){
   if(reason==null) return; reason=String(reason).trim(); if(!reason){ showToast(t('理由を入れてください','Please enter a reason'),'warning'); return; }
   ev.void=ocsStamp({by:ocsMe(), at:ocsNowIso(), reason:reason.slice(0,300)}, ev.void);
   var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('破棄しました','Discarded'));
+}).apply(this,arguments));
 }
 async function ocsApplyLatestPlan(empId, period){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsApplyLatestPlan */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsApplyLatestPlan',Array.from(arguments),()=>(async function ocsApplyLatestPlan(empId, period){
   if(!ocsCanAssign()) return;
   try{ if(typeof SUPA_SYNC_ENABLED!=='undefined' && SUPA_SYNC_ENABLED){ await pullOpKey(OCS_EV_PREFIX+empId); await pullOpKey(OCS_ASG_PREFIX+empId); } }catch(err){}
   var ev=ocsEv(empId, period), a=ocsAsg(empId); if(!ev || !a) return;
@@ -76265,8 +76583,11 @@ async function ocsApplyLatestPlan(empId, period){
   var after=ocsCalc(ev.meta, (ev.mgr&&ev.mgr.s)||{}).total;
   ev.revs=(ev.revs||[]).concat([{id:'rv'+Date.now().toString(36)+Math.random().toString(36).slice(2,6), at:ocsNowIso(), by:ocsMe(), what:'plan', reason:reason.slice(0,300), diff:[], from:before, to:after, asgFrom:oldRev, asgTo:a.rev||0, _at:Date.now()}]);
   var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('評価の条件を最新の担当設定にしました','Applied the latest plan'));
+}).apply(this,arguments));
 }
 async function ocsSaveObjection(empId, period, ack){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsSaveObjection */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsSaveObjection',Array.from(arguments),()=>(async function ocsSaveObjection(empId, period, ack){
   var e=ocsEmp(empId); if(!e || !ocsIsSelf(e) || !ocsLive()) return;
   var txt=String((document.getElementById('ocs-obj')||{}).value||'').trim().slice(0,2000);
   if(ocsSensitiveHit(txt)){ showToast(t('番号（SSN・口座など）のようなものがあります。消してから保存してください','It looks like it contains an ID or account number'),'warning'); return; }
@@ -76277,9 +76598,12 @@ async function ocsSaveObjection(empId, period, ack){
   if(ack){ s.ack=true; s.ackAt=ocsNowIso(); }
   ev.self=ocsStamp(s, ev.self);
   var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, ack?t('確認しました','Acknowledged'):t('補足・異議を保存しました','Notes saved'));
+}).apply(this,arguments));
 }
 /* 月次の進捗確認（上長評価の権限を持つ人） */
 function ocsOpenCheck(empId, period){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsOpenCheck */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsOpenCheck',Array.from(arguments),()=>(function ocsOpenCheck(empId, period){
   var e=ocsEmp(empId); if(!e || !ocsCanMgr(e)) return;
   var ev=ocsEv(empId, period); if(!ev || !ev.mgr) return;
   var iss=(ev.mgr.issues||[]).filter(function(x){ return x && (x.t||x.c); });
@@ -76292,8 +76616,11 @@ function ocsOpenCheck(empId, period){
         +'<input class="form-input" id="ocs-ck-n-'+i+'" style="flex:1;padding:5px 8px;font-size:12px" value="'+escapeHtml(pv.note||'')+'" placeholder="'+escapeHtml(t('メモ（短く）','Note (short)'))+'"></div></div>'; }).join('')
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button><button class="btn btn-primary" onclick="ocsSaveCheck(\''+ocsQ(empId)+'\',\''+period+'\')"><i class="ti ti-device-floppy"></i> '+t('保存','Save')+'</button></div>';
   openModal(h);
+}).apply(this,arguments));
 }
 async function ocsSaveCheck(empId, period){
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 ocsSaveCheck */
+if(typeof window.FUNERGY_WEB_OFFICE_ACTION!=='function')throw Error('web_office_not_ready');return window.FUNERGY_WEB_OFFICE_ACTION('ocsSaveCheck',Array.from(arguments),()=>(async function ocsSaveCheck(empId, period){
   var e=ocsEmp(empId); if(!e || !ocsCanMgr(e)) return;
   var ev0=ocsEv(empId, period); if(!ev0 || !ev0.mgr) return;
   var iss=(ev0.mgr.issues||[]).filter(function(x){ return x && (x.t||x.c); });
@@ -76307,6 +76634,7 @@ async function ocsSaveCheck(empId, period){
   var prevCk=(ev.checks||[]).find(function(c){ return c.id===ck.id; }); if(prevCk) ck._at=Math.max(ck._at, (Number(prevCk._at)||0)+1);
   ev.checks=(ev.checks||[]).filter(function(c){ return c.id!==ck.id; }).concat([ck]);
   var ok=ocsPutEv(empId, ev); ocsRerender(); ocsAfterSave(OCS_EV_PREFIX+empId, ok, t('月次の確認を保存しました','Monthly check saved'));
+}).apply(this,arguments));
 }
 /* 旧方式（lss_emp_）の詳細に出す帯：正式運用後・担当設定が有効な人 */
 function ocsOldBannerHtml(){
@@ -93706,7 +94034,12 @@ function closeModal(e) {
   if (e.target === document.getElementById('modal-overlay')) closeModalDirect();
 }
 function closeModalDirect() {
+/* FUNERGY_WEB_OFFICE_SOURCE_V1 closeModalDirect */
+if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_WEB_OFFICE_NAVIGATE('closeModalDirect',Array.from(arguments),()=>(function closeModalDirect() {
   document.getElementById('modal-overlay').classList.remove('open');
+}).apply(this,arguments));return (function closeModalDirect() {
+  document.getElementById('modal-overlay').classList.remove('open');
+}).apply(this,arguments);
 }
 
 /* ============================================================
@@ -94733,5 +95066,6 @@ var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.r
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
 </script>
+<script type="module" src="./web-office-cas.175ff94adfb98628b42f365581c64ed98ecceaf3151e4a3aff52f8fc8b43545f.js"></script>
 </body>
 </html>
