@@ -2,8 +2,9 @@
 
 ## 2026-10-29 従業員の表の書き込み（PR #99 の Codex の P1・Moto さんの決定 (c)＋あとで (b)）
 
-1. 済（Claude・ブランチ `claude/employee-field-log`）：従業員の変更記録（migration `20261029090000`・`deploy/employee-field-log/`）。試験 7・わざと壊す 9/9。
-2. 済：PR #101・Codex（`f5693a0`・blocked）の P1（列だけの書き換えが記録されない）を直した（列も見る）。次：Codex の再レビュー → Moto さんが手順.md の順に入れる（SQL → 確認）。
+1. 済（Claude・ブランチ `claude/employee-field-log`）：従業員の変更記録（migration `20261029090000`・`deploy/employee-field-log/`）。試験 8・わざと壊す 17/17（最初の版は 7・9/9）。
+2. 済：PR #101・Codex（`f5693a0`・blocked）の P1（列だけの書き換えが記録されない）を直した（列も見る・`64293ae`）。済：Codex の再レビュー（`64293ae`・6506870744）＝P1 は解消・新しい P1・P2 なし（blocked／manual は SQL を含むため）。次：Moto さんが手順.md の順に入れる（SQL → 確認）→ マージ。
+2b. 入れたあと数日（Moto さん・任意）：`3_変更記録を見る` の「メモ」に、アプリからの保存なのに「中身と違う値」の行が並んでいないか（本番の列の型が試験と違うときに出る）。
 3. (b) 1 段目（あとで）：tip_labor・employees を人ごとの権限に。書く道（アプリ・Toast の取り込み・ops-bot・hyper-worker）を調べ、共有の端末（店舗の PIN）のログインの UI 案を先に出す。
 4. (b) 2 段目：notification_outbox・management_*（app_settings・kv_store・app_state は調べてから）。3 段目：credit_card_receipts・shift_*・マスター。
 
