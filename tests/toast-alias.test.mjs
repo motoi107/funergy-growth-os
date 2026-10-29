@@ -20,13 +20,16 @@ function pick(src, name) {
 }
 const H = (d, hm, plus) => { const [y, m, dd] = d.split('-').map(Number), [h, mi] = hm.split(':').map(Number); return new Date(Date.UTC(y, m - 1, dd + (plus ? 1 : 0), h + 10, mi)).toISOString(); };
 
-const NEW = ['toastNameKey', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
-  '_toastNameTokens', 'toastNameCandidates', 'toastAliasProblem', 'toastLinkCan', '_toastLinkPreview', 'unregisteredClockIns'];
+const NEW = ['toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
+  '_toastNameTokens', 'toastNameCandidates', 'toastNameOwnerNow', 'toastAliasMovesFrom', 'toastAliasProblem', 'toastLinkCan', 'toastLinkItemOk', 'empAliasCanEdit',
+  'toastLinkPeriodStart', 'toastLinkEarliest', '_toastLinkPreview', 'unregisteredClockIns', 'empAliasChanges', '_empAliasProbe',
+  'toastAliasStamps', '_toastPrevMonthStart', 'toastAliasCatchUp', 'tipPeriodStartOf'];
 function app(src, names) {
-  const c = { console, STORE: {}, EMPS: [], ROWS: [], curRole: 'gm', Object, JSON, Math, Date, String, Array, Number };
+  const c = { console, STORE: {}, EMPS: [], ROWS: [], SYNCS: [], SYNC_FAIL: false, TODAY: '2026-10-29', curRole: 'gm', curRealRole: 'gm', Object, JSON, Math, Date, String, Array, Number, Promise };
   vm.createContext(c);
   vm.runInContext(names.map(n => pick(src, n)).join('\n') + `
     var _tipLaborSeq = 0, _tipLaborSaved = {};
+    var TOAST_ALIAS_SEEN = '_toast_alias_seen_v1', _toastAliasCatchQ = Promise.resolve();
     function _tipLaborNewer(){ return false; }
     function _tipLaborMark(){}
     function normalizeBusinessDate(d){ return String(d); }
@@ -38,19 +41,30 @@ function app(src, names) {
     async function fetchTipLaborFromDB(){ return ROWS; }
     function lsKeys(p){ return Object.keys(STORE).filter(function(k){ return k.indexOf(p) === 0; }); }
     function _lsRaw(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
+    function ls(k, d){ return _lsRaw(k, d); }
+    function lsSet(k, v){ STORE[k] = JSON.parse(JSON.stringify(v)); }
     function _laborHrs(e){ return (+e.rawLunch||0) + (+e.rawDinner||0); }
     function isoOf(d){ return '2026-10-01'; }
+    function bizToday(){ return TODAY; }
+    function myAmStores(){ return ['F04-P']; }
+    function getVisibleStores(){ return [{ id: 'F04-P', toastGuid: 'g4p' }, { id: 'F01', toastGuid: 'g1' }, { id: 'F06' }]; }
     function t(ja){ return ja; }`, c);
+  if (!names.includes('syncTipLaborFromDB'))
+    vm.runInContext(`async function syncTipLaborFromDB(id, guid, days){ SYNCS.push([id, days[0].date, days[days.length-1].date]); return SYNC_FAIL ? { fetchErr: true } : { updated: 1 }; }`, c);
   return c;
 }
 const run = (c, code) => vm.runInContext(code, c);
+const plain = (v) => JSON.parse(JSON.stringify(v));
 const entry = (name, d, a, b) => ({ name, lunchHours: 0, dinnerHours: (Date.parse(H(d, b)) - Date.parse(H(d, a))) / 3600000, shifts: [{ inDate: H(d, a), outDate: H(d, b) }] });
+const al = (n, from, extra) => Object.assign({ n, from, at: '2026-10-29T00:00:00Z', by: 'GM', via: 'unreg' }, extra || {});
+const fld = (n) => 'toastAlias_' + n.normalize('NFKC').toLowerCase().replace(/[\s\-.,'_]/g, '');
 const EMPS = () => [
   { id: 'e9', name: 'Kana Mori-Sample', status: '退職', store: 'F04-P' },      // the duplicate that was resigned (sorts first)
   { id: 'imp1', name: 'Kana Mori-Sample', status: '在籍', store: 'F04-P' },
   { id: 'imp2', name: 'Aoi Example', status: '在籍', store: 'F04-P' },
   { id: 'imp3', name: 'Ren Placeholder', status: '在籍', store: 'F04-P' },
 ];
+const linkKana = (emps, from = '2026-10-16') => { emps[1][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', from); return emps; };
 async function sync(c, rows) { c.ROWS = rows; return run(c, `syncTipLaborFromDB('F04-P', 'g', [{date:'${rows[0].business_date}'},{date:'${rows[rows.length - 1].business_date}'}])`); }
 
 test('a Toast name that differs only in hyphens is not matched without an alias (as before)', async () => {
@@ -62,7 +76,7 @@ test('a Toast name that differs only in hyphens is not matched without an alias 
 
 test('with an alias from 10/16, the punches from 10/16 count as the employee; earlier days do not', async () => {
   const c = app(source, ['syncTipLaborFromDB', ...NEW]);
-  c.EMPS = EMPS(); c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16', at: 'x', by: 'GM', via: 'unreg' }];
+  c.EMPS = linkKana(EMPS());
   await sync(c, [
     { business_date: '2026-10-15', data: [entry('Kana-Mori Sample', '2026-10-15', '17:00', '20:00')] },
     { business_date: '2026-10-20', data: [entry('Kana-Mori Sample', '2026-10-20', '17:00', '21:00')] },
@@ -74,9 +88,17 @@ test('with an alias from 10/16, the punches from 10/16 count as the employee; ea
   assert.equal(d20['Kana Mori-Sample'].toastName, 'Kana-Mori Sample');
 });
 
+test('a removed alias (off) no longer counts', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = EMPS(); c.EMPS[1][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', '2026-10-16', { off: true });
+  await sync(c, [{ business_date: '2026-10-20', data: [entry('Kana-Mori Sample', '2026-10-20', '17:00', '21:00')] }]);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-20']), ['Kana-Mori Sample']);
+  assert.deepEqual(plain(run(c, 'empToastAliases(getEmployees()[1])')), []);
+});
+
 test('two punches of the same person on one day are added (4A); overlap is marked and still counted', async () => {
   const c = app(source, ['syncTipLaborFromDB', ...NEW]);
-  c.EMPS = EMPS(); c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16' }];
+  c.EMPS = linkKana(EMPS());
   await sync(c, [
     { business_date: '2026-10-20', data: [entry('Kana Mori-Sample', '2026-10-20', '17:00', '20:00'), entry('Kana-Mori Sample', '2026-10-20', '20:30', '23:00')] },
     { business_date: '2026-10-22', data: [entry('Kana Mori-Sample', '2026-10-22', '17:00', '21:00'), entry('Kana-Mori Sample', '2026-10-22', '19:00', '22:00')] },
@@ -88,29 +110,18 @@ test('two punches of the same person on one day are added (4A); overlap is marke
   const b = c.STORE['tip_labor_F04-P_2026-10-22']['Kana Mori-Sample'];
   assert.equal(b.rawDinner, 7); assert.equal(b.overlap, true);
   await sync(c, [{ business_date: '2026-10-23', data: [entry('Kana Mori-Sample', '2026-10-23', '17:00', '20:00'), entry('Kana-Mori Sample', '2026-10-23', '20:00', '22:00')] }]);
-  const t = c.STORE['tip_labor_F04-P_2026-10-23']['Kana Mori-Sample'];
-  assert.equal(t.rawDinner, 5); assert.ok(!t.overlap, 'one ends when the other starts: not an overlap');
+  const t2 = c.STORE['tip_labor_F04-P_2026-10-23']['Kana Mori-Sample'];
+  assert.equal(t2.rawDinner, 5); assert.ok(!t2.overlap, 'one ends when the other starts: not an overlap');
 });
 
-test('weekly labor import (Toast regular / OT hours) uses the alias and adds the two records of one person', async () => {
-  const c = app(source, ['doToastLaborFetch', ...NEW]);
-  c.EMPS = EMPS(); c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16' }];
-  c.LIVE = [{ name: 'Kana Mori-Sample', regularHours: 10, overtimeHours: 0 }, { name: 'Kana-Mori Sample', regularHours: 25, overtimeHours: 2 }, { name: 'Aoi Example', regularHours: 8, overtimeHours: 0 }];
-  c.HOURS = { 'Kana Mori-Sample': { regular: 99, ot: 9, source: 'toast', toastName: 'Kana Mori-Sample' } };   // last week's fetch of the same week
-  run(c, `var TOAST_SYNC_FN = 'x', SUPABASE_ANON = 'k', laborLastFetch = null, document = { getElementById: function(){ return null; } };
-    function toastFnBody(o){ return JSON.stringify(o); }
-    function laborWeekRange(){ return { from: '2026-10-19', to: '2026-10-25' }; }
-    async function fetch(){ return { json: async function(){ return { employees: LIVE }; } }; }
-    function getLaborHours(){ return JSON.parse(JSON.stringify(HOURS)); }
-    function setLaborHours(s, w, v){ HOURS = v; }
-    function staffForStore(){ return getEmployees().filter(function(e){ return e.status !== '退職'; }); }
-    function renderPage(){}`);
-  await run(c, `doToastLaborFetch('F04-P', 'g', '2026-W43')`);
-  const h = JSON.parse(JSON.stringify(c.HOURS));
-  assert.deepEqual(h['Kana Mori-Sample'], { regular: 35, ot: 2, source: 'toast', toastName: 'Kana Mori-Sample', toastNames: ['Kana Mori-Sample', 'Kana-Mori Sample'] });
-  assert.ok(!h['Kana-Mori Sample']);
-  assert.equal(h['Aoi Example'].regular, 8);
-  assert.match(c.laborLastFetch, /マスター一致2名/);
+test('review P3-1: only one of the two has punch times: the times are not kept, so re-reading does not drop the other hours', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = linkKana(EMPS());
+  const noTimes = { name: 'Kana-Mori Sample', lunchHours: 2, dinnerHours: 0 };
+  await sync(c, [{ business_date: '2026-10-20', data: [entry('Kana Mori-Sample', '2026-10-20', '17:00', '20:00'), noTimes] }]);
+  const e = c.STORE['tip_labor_F04-P_2026-10-20']['Kana Mori-Sample'];
+  assert.deepEqual(plain(e.shifts), []);
+  assert.equal(e.lunch + e.dinner, 5); assert.equal(e.rawLunch + e.rawDinner, 5);
 });
 
 test('two Toast records with the employee\'s own name (or only upper / lower case different) on one day are added too', async () => {
@@ -129,6 +140,26 @@ test('a "part of the name" match is not added to (as before, the later one is ke
   assert.equal(e.rawDinner, 5); assert.equal(e.toastName, 'Ann Leeson'); assert.ok(!e.toastNames);
 });
 
+test('review P2-1: a person who came back under a new record: the old (resigned) name goes to the new record from the alias date', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = [{ id: 'old', name: 'Kai Return', status: '退職' }, { id: 'new', name: 'Kai R Sample', status: '在籍' }];
+  c.EMPS[1][fld('Kai Return')] = al('Kai Return', '2026-10-16');
+  await sync(c, [{ business_date: '2026-10-10', data: [entry('Kai Return', '2026-10-10', '10:00', '12:00')] }, { business_date: '2026-10-20', data: [entry('Kai Return', '2026-10-20', '10:00', '13:00')] }]);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-10']), ['Kai Return'], 'before the alias date: as before');
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-20']), ['Kai R Sample']);
+  // an active person with exactly that name still keeps it
+  c.EMPS[0].status = '在籍';
+  await sync(c, [{ business_date: '2026-10-21', data: [entry('Kai Return', '2026-10-21', '10:00', '13:00')] }]);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-21']), ['Kai Return']);
+});
+
+test('the same alias on two active people (two devices at the same time): not linked to either', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = linkKana(EMPS()); c.EMPS[3][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', '2026-10-16');
+  await sync(c, [{ business_date: '2026-10-20', data: [entry('Kana-Mori Sample', '2026-10-20', '17:00', '21:00')] }]);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-20']), ['Kana-Mori Sample']);
+});
+
 test('without aliases the result is the same as before (v1110) on random synthetic days', async () => {
   let old;
   try { old = read(execFileSync('git', ['show', '337e779:index.html'], { cwd: new URL('..', import.meta.url), maxBuffer: 1 << 28 }).toString('utf8')); }
@@ -144,16 +175,16 @@ test('without aliases the result is the same as before (v1110) on random synthet
       rows.push({ business_date: day, data });
     }
     const A = app(source, ['syncTipLaborFromDB', ...NEW]), B = app(old, ['syncTipLaborFromDB']);
-    const emps = [{ id: 'x1', name: 'Aoi Example' }, { id: 'x2', name: 'Kana Mori-Sample' }, { id: 'x3', name: 'Ann' }, { id: 'x4', name: 'Ren Placeholder' }];
+    const emps = [{ id: 'x1', name: 'Aoi Example' }, { id: 'x2', name: 'Kana Mori-Sample', status: k % 2 ? '退職' : '在籍' }, { id: 'x3', name: 'Ann' }, { id: 'x4', name: 'Ren Placeholder' }];
     A.EMPS = emps; B.EMPS = emps;
     await sync(A, rows); await sync(B, rows);
-    assert.deepEqual(JSON.parse(JSON.stringify(A.STORE)), JSON.parse(JSON.stringify(B.STORE)), 'case ' + k);
+    assert.deepEqual(plain(A.STORE), plain(B.STORE), 'case ' + k);
   }
 });
 
 test('live Toast import (fetchTipLabor) uses the same alias and adding', async () => {
   const c = app(source, ['fetchTipLabor', ...NEW]);
-  c.EMPS = EMPS(); c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16' }];
+  c.EMPS = linkKana(EMPS());
   run(c, `var _tipLaborFetchGen = {}, _tipLaborFetchDone = {}, TOAST_SYNC_FN = 'x', SUPABASE_ANON = 'k';
     function toastFnBody(o){ return JSON.stringify(o); }
     async function supaUpsert(){ return false; }`);
@@ -165,81 +196,130 @@ test('live Toast import (fetchTipLabor) uses the same alias and adding', async (
   assert.equal(e.rawDinner, 7); assert.deepEqual(e.toastNames, ['Kana Mori-Sample', 'Kana-Mori Sample']);
 });
 
-test('linking rules: other active employee with that name, or someone else\'s alias, is refused; a resigned duplicate is not', () => {
+test('linking rules: another active employee\'s name or alias is refused; a resigned person\'s name or alias is not', () => {
   const c = app(source, NEW);
-  c.EMPS = EMPS(); c.EMPS[2].toastAliases = [{ n: 'Ren P', from: '' }];
+  c.EMPS = EMPS(); c.EMPS[2][fld('Ren P')] = al('Ren P', '');
+  c.EMPS.push({ id: 'gone', name: 'Old Timer', status: '退職', [fld('Mio K')]: al('Mio K', '') });
   const p = (id, alias) => run(c, `toastAliasProblem(getEmployees().find(function(e){ return e.id==='${id}'; }), ${JSON.stringify(alias)})`);
   assert.equal(p('imp1', 'Kana-Mori Sample'), null);                                  // only the resigned e9 has that name
   assert.match(p('imp1', 'aoi-example'), /ほかの従業員/);                               // another active person's name
   assert.match(p('imp1', 'Ren  P'), /別名に入っています/);                              // already someone else's alias
+  assert.equal(p('imp1', 'mio k'), null);                                              // a resigned person's alias does not block
   assert.match(p('imp1', ''), /入れてください/);
-  c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16' }];
+  c.EMPS = linkKana(c.EMPS);
   assert.match(p('imp1', 'kana mori sample'), /もう入っています/);
+});
+
+test('review P1-1: an alias that would take punches from another active person (part of the name) is asked first; an AM cannot take them from outside their stores', () => {
+  const c = app(source, NEW);
+  c.EMPS = [{ id: 'ann', name: 'Ann', status: '在籍', store: 'F01', support: [] }, { id: 'bob', name: 'Bob Example', status: '在籍', store: 'F04-P', support: [] }, { id: 'cy', name: 'Cy', status: '在籍', store: 'F04-P', support: [] }];
+  assert.equal(run(c, `toastAliasMovesFrom(getEmployees()[1], 'Ann Leeson').id`), 'ann');
+  assert.equal(run(c, `toastAliasMovesFrom(getEmployees()[1], 'Zed Q')`), null);
+  assert.equal(run(c, `toastAliasProblem(getEmployees()[1], 'Ann Leeson')`), null, 'GM: asked in the screen, not refused');
+  c.curRole = 'am'; c.curRealRole = 'am';
+  assert.match(run(c, `toastAliasProblem(getEmployees()[1], 'Ann Leeson')`), /担当外/);
+  assert.equal(run(c, `toastAliasProblem(getEmployees()[1], 'Cy Long')`), null, 'from a person of the AM\'s own store: asked, not refused');
+  assert.equal(run(c, `toastAliasMovesFrom(getEmployees()[1], 'Cy Long').id`), 'cy');
 });
 
 test('candidates: same letters first, resigned people never; preview counts days from the chosen start', () => {
   const c = app(source, NEW);
   c.EMPS = EMPS();
   const cand = run(c, `toastNameCandidates('Kana-Mori Sample').map(function(x){ return [x.emp.id, x.same]; })`);
-  assert.deepEqual(JSON.parse(JSON.stringify(cand)), [['imp1', true]]);
+  assert.deepEqual(plain(cand), [['imp1', true]]);
   assert.equal(run(c, `toastNameCandidates('Zzz Unknown').length`), 0);
-  const pv = run(c, `JSON.stringify([_toastLinkPreview({byDate:{'2026-10-15':3,'2026-10-20':4,'2026-10-21':2.5}}, '2026-10-16'), _toastLinkPreview({byDate:{'2026-10-15':3,'2026-10-20':4}}, '')])`);
+  const pv = run(c, `JSON.stringify([_toastLinkPreview({byDate:{'2026-10-15':3,'2026-10-20':4,'2026-10-21':2.5}}, '2026-10-16'), _toastLinkPreview({byDate:{'2026-10-15':3,'2026-10-20':4}}, '2026-10-01')])`);
   assert.deepEqual(JSON.parse(pv), [{ days: 2, hours: 6.5 }, { days: 2, hours: 7 }]);
+  assert.equal(run(c, `toastLinkEarliest({byDate:{'2026-10-20':1,'2026-09-29':2}})`), '2026-09-16');
+  assert.equal(run(c, `toastLinkPeriodStart()`), '2026-10-16');
 });
 
 test('the unregistered list leaves out names that are linked, and keeps hours per day for the preview', () => {
   const c = app(source, NEW);
   c.EMPS = EMPS();
   c.STORE['tip_labor_F04-P_2026-10-20'] = { 'Kana-Mori Sample': { rawLunch: 0, rawDinner: 4, toastName: 'Kana-Mori Sample' }, 'New Person': { rawLunch: 1, rawDinner: 2, toastName: 'New Person' } };
-  let list = JSON.parse(JSON.stringify(run(c, `unregisteredClockIns(3650)`)));
+  let list = plain(run(c, `unregisteredClockIns(3650)`));
   assert.deepEqual(list.map(x => x.name).sort(), ['Kana-Mori Sample', 'New Person']);
   assert.deepEqual(list.find(x => x.name === 'New Person').byDate, { '2026-10-20': 3 });
-  c.EMPS[1].toastAliases = [{ n: 'Kana-Mori Sample', from: '2026-10-16' }];
-  list = JSON.parse(JSON.stringify(run(c, `unregisteredClockIns(3650)`)));
+  c.EMPS = linkKana(c.EMPS);
+  list = plain(run(c, `unregisteredClockIns(3650)`));
   assert.deepEqual(list.map(x => x.name), ['New Person']);
 });
 
-test('employee editor: only what this screen added / removed is put on the current record (an alias added on another device stays)', () => {
-  const c = app(source, [...NEW, 'empAliasMerge']);
-  c.EMPS = EMPS();
-  c.EMPS[1].toastAliases = [{ n: 'K Sample', from: '2026-10-01' }, { n: 'Kana M', from: '2026-10-16' }];   // 'Kana M' was added on another device
-  const orig = [{ n: 'K Sample', from: '2026-10-01' }];
-  const now = [{ n: 'Kana-Mori Sample', from: '2026-10-16', via: 'emp' }];          // this screen removed 'K Sample' and added one
-  const r = JSON.parse(JSON.stringify(run(c, `empAliasMerge(getEmployees()[1], ${JSON.stringify(orig)}, ${JSON.stringify(now)})`)));
-  assert.deepEqual(r.after.map(a => a.n), ['Kana M', 'Kana-Mori Sample']);
-  assert.deepEqual(r.before.map(a => a.n), ['K Sample', 'Kana M']);
-  c.EMPS[3].toastAliases = [{ n: 'kana mori sample', from: '' }];                     // meanwhile linked to someone else
-  const p = JSON.parse(JSON.stringify(run(c, `empAliasMerge(getEmployees()[1], ${JSON.stringify(orig)}, ${JSON.stringify(now)})`)));
-  assert.match(p.problem, /Ren Placeholder/);
-  c.EMPS[1].toastName = 'Legacy Name'; c.EMPS[3].toastAliases = [];
-  const q = JSON.parse(JSON.stringify(run(c, `empAliasMerge(getEmployees()[1], ${JSON.stringify(orig.concat([{ n: 'Legacy Name', from: '', via: 'legacy' }]))}, ${JSON.stringify(now)})`)));
-  assert.deepEqual(q.after.map(a => a.n), ['Kana M', 'Kana-Mori Sample']);                // the old single field was removed on this screen
+test('employee editor: only what this screen added / removed is written, each alias in its own field (another device\'s alias is not touched)', () => {
+  const c = app(source, NEW);
+  const orig = [al('K Sample', '2026-10-01'), al('Kana M', '2026-10-16')];
+  const now = [al('Kana M', '2026-10-16'), al('Kana-Mori Sample', '2026-10-16', { via: 'emp' })];
+  const ch = plain(run(c, `empAliasChanges(${JSON.stringify(orig)}, ${JSON.stringify(now)})`));
+  assert.deepEqual(ch.add.map(a => a.n), ['Kana-Mori Sample']);
+  assert.deepEqual(ch.remove.map(a => a.n), ['K Sample']);
+  assert.deepEqual(plain(run(c, `empAliasChanges(${JSON.stringify(orig)}, ${JSON.stringify(orig)})`)), { add: [], remove: [] });
+  assert.equal(run(c, `toastAliasField('Kana-Mori Sample')`), run(c, `toastAliasField('kana mori sample')`));
+  assert.notEqual(run(c, `toastAliasField('Kana M')`), run(c, `toastAliasField('Kana-Mori Sample')`));
+  const probe = plain(run(c, `_empAliasProbe({ id:'x', name:'X', toastAlias_old:{ n:'Old', from:'' } }, [{ n:'New One', from:'2026-10-16' }])`));
+  assert.deepEqual(Object.keys(probe).sort(), ['id', 'name', 'toastAlias_newone']);
 });
 
-test('old single toastName field is read as an alias for all days', () => {
+test('the old single toastName field is not taken as an alias (nothing changes for records that have it)', () => {
   const c = app(source, NEW);
-  const a = JSON.parse(JSON.stringify(run(c, `empToastAliases({ toastName: 'Old Name', toastAliases: [{ n: 'New Name', from: '2026-10-16' }, { n: '' }, null] })`)));
-  assert.deepEqual(a.map(x => [x.n, x.from, x.via]), [['New Name', '2026-10-16', ''], ['Old Name', '', 'legacy']]);
+  assert.deepEqual(plain(run(c, `empToastAliases({ toastName: 'Old Name', toastAlias_x: { n: '' }, toastAlias_y: null, other: { n: 'Z' } })`)), []);
+});
+
+test('review P2-2: who can link: CEO / GM / AM / accounting (not a Store Manager); an AM only punches and people of their stores', () => {
+  const c = app(source, NEW);
+  c.EMPS = EMPS(); c.EMPS.push({ id: 'imp7', name: 'Far Away', status: '在籍', store: 'F01', support: [] }, { id: 'imp8', name: 'Helps Here', status: '在籍', store: 'F01', support: ['F04-P'] });
+  const can = (role, real, code) => { c.curRole = role; c.curRealRole = real; return run(c, code); };
+  for (const r of ['ceo', 'gm', 'office']) {
+    assert.equal(can(r, r, `toastLinkItemOk({ stores:['F01'] })`), true, r);
+    assert.equal(can(r, r, `empAliasCanEdit(getEmployees()[4])`), true, r);
+  }
+  for (const r of ['sl', 'crew', 'office_crew']) assert.equal(can(r, r, `toastLinkItemOk({ stores:['F04-P'] })`), false, r);
+  assert.equal(can('am', 'g4', `toastLinkCan()`), false, 'Store Manager (G4 shows as am)');
+  assert.equal(can('am', 'g4', `toastLinkItemOk({ stores:['F04-P'] })`), false);
+  assert.equal(can('am', 'am', `toastLinkItemOk({ stores:['F01'] })`), false);
+  assert.equal(can('am', 'am', `toastLinkItemOk({ stores:['F01','F04-P'] })`), true);
+  assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[4])`), false);   // another store only
+  assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[5])`), true);    // helps at the AM's store
+  assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[1])`), true);
+});
+
+test('review P2-4: after a link or removal (also made on another device), this device re-reads attendance of its stores from the alias date, once', async () => {
+  const c = app(source, NEW);
+  c.EMPS = EMPS();
+  let r = plain(await run(c, 'toastAliasCatchUp()'));
+  assert.equal(r.ran, false); assert.deepEqual(c.SYNCS, []);
+  c.EMPS = linkKana(c.EMPS, '2026-10-01');
+  r = plain(await run(c, 'toastAliasCatchUp()'));
+  assert.equal(r.ran, true);
+  assert.deepEqual(plain(c.SYNCS), [['F04-P', '2026-10-01', '2026-10-29'], ['F01', '2026-10-01', '2026-10-29']], 'only stores with Toast, from the alias date to today');
+  c.SYNCS.length = 0;
+  r = plain(await run(c, 'toastAliasCatchUp()'));
+  assert.equal(r.ran, false, 'already re-read');
+  // removed on another device: the field becomes off with a new time
+  c.EMPS[1][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', '2026-09-16', { off: true, at: '2026-10-30T00:00:00Z' });
+  c.TODAY = '2026-11-02';
+  c.SYNC_FAIL = true;
+  r = plain(await run(c, 'toastAliasCatchUp()'));
+  assert.equal(r.fail, 2);
+  assert.deepEqual(plain(c.SYNCS[0]), ['F04-P', '2026-10-01', '2026-11-02'], 'not before the 1st of the previous month');
+  c.SYNCS.length = 0; c.SYNC_FAIL = false;
+  r = plain(await run(c, 'toastAliasCatchUp()'));
+  assert.equal(r.ran, true, 'could not read last time: tried again');
+  c.SYNCS.length = 0;
+  assert.equal(plain(await run(c, 'toastAliasCatchUp()')).ran, false);
+  assert.equal(run(c, `_toastPrevMonthStart('2026-01-05')`), '2025-12-01');
+});
+
+test('the labor import, the sign-in sync and the save of the employee editor are wired to the alias', () => {
+  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, _bdA, _aidx\);/);
+  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, date, _aidx\);/);
+  assert.match(source, /try \{ await toastAliasCatchUp\(\); \} catch\(e\)\{ console\.warn\('toastAliasCatchUp', e\); \}\n    markSynced\('ops'\);/);
+  assert.match(source, /var _alC = empAliasChanges\(_alF\.aliasOrig, _alF\.aliases\);/);
+  assert.match(source, /data\[toastAliasField\(a\.n\)\] = \{ n:a\.n, from:a\.from\|\|'', at:_alNow, by:curUserName\|\|'', via:a\.via\|\|'', off:true \};/);
+  assert.match(source, /Toast: \$\{escapeHtml\(e\.toastName\)\}/);
 });
 
 test('release markers are 1111 or later and the same', () => {
   const v = /const APP_VERSION = '(\d+)';/.exec(source)[1], sw = /const SW_BUILD = '(\d+)';/.exec(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'))[1];
   assert.equal(v, sw); assert.ok(Number(v) >= 1111);
-});
-
-test('who can link: CEO / GM / AM / accounting; an AM only punches of their stores and people of their stores', () => {
-  const c = app(source, [...NEW, 'toastLinkItemOk', 'empAliasCanEdit']);
-  c.EMPS = EMPS(); c.EMPS.push({ id: 'imp7', name: 'Far Away', status: '在籍', store: 'F01', support: [] }, { id: 'imp8', name: 'Helps Here', status: '在籍', store: 'F01', support: ['F04-P'] });
-  run(c, `function myAmStores(){ return ['F04-P']; }`);
-  const can = (role, code) => { c.curRole = role; return run(c, code); };
-  for (const r of ['ceo', 'gm', 'office']) {
-    assert.equal(can(r, `toastLinkItemOk({ stores:['F01'] })`), true, r);
-    assert.equal(can(r, `empAliasCanEdit(getEmployees()[4])`), true, r);
-  }
-  for (const r of ['sl', 'crew', 'g4', 'office_crew']) assert.equal(can(r, `toastLinkItemOk({ stores:['F04-P'] })`), false, r);
-  assert.equal(can('am', `toastLinkItemOk({ stores:['F01'] })`), false);
-  assert.equal(can('am', `toastLinkItemOk({ stores:['F01','F04-P'] })`), true);
-  assert.equal(can('am', `empAliasCanEdit(getEmployees()[4])`), false);   // another store only
-  assert.equal(can('am', `empAliasCanEdit(getEmployees()[5])`), true);    // helps at the AM's store
-  assert.equal(can('am', `empAliasCanEdit(getEmployees()[1])`), true);
 });
