@@ -449,7 +449,7 @@ function laborApp() {
   const c = { console, AbortController, STORE: {}, FETCHES: [], TIMERS: [], NOW: 1000000, IGNORE_ABORT: false };
   vm.createContext(c);
   vm.runInContext(['_tipLaborFetchErr', 'fetchTipLaborFromDB', 'syncTipLaborFromDB', 'setTipLabor',
-    'toastNameKey', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',   /* v1111: helpers the labor import uses */ 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
+    'toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',   /* v1111: helpers the labor import uses */ 'setCreditTipAdjLocal', 'getCreditTipAdjMap', '_ctAdjKey',
     'normalizeBusinessDate', '_tipLaborNewer', '_tipLaborMark', 'saveCreditTipAdj', '_tipLaborEnsureRow', '_tipLaborPatchAdj', 'mdViewerEnsureLabor', '_mdViewBusy', 'mdLaborMark', 'mdLaborFresh', 'mdLaborMarksClear', '_mdBizDay', '_mdNoLaborDays', '_mdFrozenLoaded'].map(fnSrc).join('\n') + `
     Date.now = function(){ return NOW; };
     var setTimeout = function(fn, ms){ TIMERS.push(fn); return TIMERS.length; }, clearTimeout = function(){};   // timers run only when the test says so

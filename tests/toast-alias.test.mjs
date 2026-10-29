@@ -23,9 +23,10 @@ const H = (d, hm, plus) => { const [y, m, dd] = d.split('-').map(Number), [h, mi
 const NEW = ['toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
   '_toastNameTokens', 'toastNameCandidates', 'toastNameOwnerNow', 'toastAliasMovesFrom', 'toastAliasProblem', 'toastLinkCan', 'toastLinkItemOk', 'empAliasCanEdit',
   'toastLinkPeriodStart', 'toastLinkEarliest', '_toastLinkPreview', 'unregisteredClockIns', 'empAliasChanges', '_empAliasProbe',
-  'toastAliasStamps', '_toastPrevMonthStart', 'toastAliasCatchUp', 'tipPeriodStartOf'];
+  'toastAliasStamps', '_toastPrevMonthStart', 'toastAliasCatchUp', 'tipPeriodStartOf',
+  'toastAliasCovers', 'toastAliasScope', 'toastAliasEntries', '_toastLinkByDate', '_empAliasGroups', '_empAliasRemovable'];
 function app(src, names) {
-  const c = { console, STORE: {}, EMPS: [], ROWS: [], SYNCS: [], SYNC_FAIL: false, TODAY: '2026-10-29', curRole: 'gm', curRealRole: 'gm', Object, JSON, Math, Date, String, Array, Number, Promise };
+  const c = { console, STORE: {}, EMPS: [], ROWS: [], SYNCS: [], SYNC_FAIL: false, TODAY: '2026-10-29', curRole: 'gm', curRealRole: 'gm', curUserName: 'Am Sample', Object, JSON, Math, Date, String, Array, Number, Promise };
   vm.createContext(c);
   vm.runInContext(names.map(n => pick(src, n)).join('\n') + `
     var _tipLaborSeq = 0, _tipLaborSaved = {};
@@ -65,7 +66,7 @@ const EMPS = () => [
   { id: 'imp3', name: 'Ren Placeholder', status: '在籍', store: 'F04-P' },
 ];
 const linkKana = (emps, from = '2026-10-16') => { emps[1][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', from); return emps; };
-async function sync(c, rows) { c.ROWS = rows; return run(c, `syncTipLaborFromDB('F04-P', 'g', [{date:'${rows[0].business_date}'},{date:'${rows[rows.length - 1].business_date}'}])`); }
+async function sync(c, rows, store = 'F04-P') { c.ROWS = rows; return run(c, `syncTipLaborFromDB('${store}', 'g', [{date:'${rows[0].business_date}'},{date:'${rows[rows.length - 1].business_date}'}])`); }
 
 test('a Toast name that differs only in hyphens is not matched without an alias (as before)', async () => {
   const c = app(source, ['syncTipLaborFromDB', ...NEW]);
@@ -281,7 +282,7 @@ test('review P2-2: who can link: CEO / GM / AM / accounting (not a Store Manager
   assert.equal(can('am', 'g4', `toastLinkCan()`), false, 'Store Manager (G4 shows as am)');
   assert.equal(can('am', 'g4', `toastLinkItemOk({ stores:['F04-P'] })`), false);
   assert.equal(can('am', 'am', `toastLinkItemOk({ stores:['F01'] })`), false);
-  assert.equal(can('am', 'am', `toastLinkItemOk({ stores:['F01','F04-P'] })`), true);
+  assert.equal(can('am', 'am', `toastLinkItemOk({ stores:['F01','F04-P'] })`), true, 'allowed, but only the F04-P punches are linked (see the Codex P1 test below)');
   assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[4])`), false);   // another store only
   assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[5])`), true);    // helps at the AM's store
   assert.equal(can('am', 'am', `empAliasCanEdit(getEmployees()[1])`), true);
@@ -315,15 +316,118 @@ test('review P2-4: after a link or removal (also made on another device), this d
 });
 
 test('the labor import, the sign-in sync and the save of the employee editor are wired to the alias', () => {
-  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, _bdA, _aidx\);/);
-  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, date, _aidx\);/);
+  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, _bdA, _aidx, storeId\);/);
+  assert.match(source, /var _r = toastAliasResolve\(m, emp\.name, date, _aidx, storeId\);/);
   assert.match(source, /try \{ await toastAliasCatchUp\(\); \} catch\(e\)\{ console\.warn\('toastAliasCatchUp', e\); \}\n    markSynced\('ops'\);/);
   assert.match(source, /var _alC = empAliasChanges\(_alF\.aliasOrig, _alF\.aliases\);/);
-  assert.match(source, /data\[toastAliasField\(a\.n\)\] = \{ n:a\.n, from:a\.from\|\|'', at:_alNow, by:curUserName\|\|'', via:a\.via\|\|'', off:true \};/);
+  assert.match(source, /var f = a\.f\|\|toastAliasField\(a\.n, a\.store\); data\[f\] = \{ n:a\.n, from:a\.from\|\|'', at:_alNow, by:curUserName\|\|'', via:a\.via\|\|'', off:true \}; if \(a\.store\) data\[f\]\.store = a\.store;/);
+  assert.match(source, /var _alOut = _alC\.add\.concat\(_alC\.remove\)\.find\(function\(a\)\{ return curRole==='am' && !_empAliasRemovable\(a\); \}\);/);
+  assert.match(source, /toastAliasEntries\(target, alias, from, 'unreg', sc\)\.forEach/);
+  assert.match(source, /F\.aliases=F\.aliases\.concat\(toastAliasEntries\(probe, v, ps, 'emp', sc\)\);/);
   assert.match(source, /Toast: \$\{escapeHtml\(e\.toastName\)\}/);
 });
 
 test('release markers are 1111 or later and the same', () => {
   const v = /const APP_VERSION = '(\d+)';/.exec(source)[1], sw = /const SW_BUILD = '(\d+)';/.exec(fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8'))[1];
   assert.equal(v, sw); assert.ok(Number(v) >= 1111);
+});
+
+// Codex review of 62339b9 (P1): the same Toast name punched at an AM's store (F04-P) and at a store outside (F01).
+// The AM may link it, but only for their stores: attendance and tips at F01 must not change.
+const KANA = 'Kana-Mori Sample';
+const rowsAt = (d) => [{ business_date: d, data: [entry(KANA, d, '17:00', '21:00')] }];
+async function importAt(c, store, d) { await sync(c, rowsAt(d), store); return plain(c.STORE['tip_labor_' + store + '_' + d]); }
+
+test('Codex P1 (62339b9): an AM links a name punched at their store and outside: only their store changes; the other store is the same as with no alias', async () => {
+  const before = app(source, ['syncTipLaborFromDB', ...NEW]);
+  before.EMPS = EMPS();
+  const f01Before = await importAt(before, 'F01', '2026-10-20');
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = EMPS(); c.curRole = 'am'; c.curRealRole = 'am';
+  const sc = plain(run(c, 'toastAliasScope()'));
+  assert.deepEqual(sc, ['F04-P']);
+  assert.equal(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, toastAliasScope())`), null);
+  const ents = plain(run(c, `toastAliasEntries(getEmployees()[1], ${JSON.stringify(KANA)}, '2026-10-16', 'unreg', toastAliasScope())`));
+  assert.deepEqual(ents.map(a => [a.store, a.f]), [['F04-P', fld(KANA) + '@F04-P']]);
+  ents.forEach(a => { c.EMPS[1][a.f] = { n: a.n, from: a.from, at: a.at, by: a.by, via: a.via, store: a.store }; });
+  const p = await importAt(c, 'F04-P', '2026-10-20');
+  assert.deepEqual(Object.keys(p), ['Kana Mori-Sample'], 'the AM\'s store: linked');
+  const o = await importAt(c, 'F01', '2026-10-20');
+  assert.deepEqual(o, f01Before, 'the store outside: exactly as with no alias');
+  assert.deepEqual(Object.keys(o), [KANA]);
+  // the live Toast import too
+  run(c, `var _tipLaborFetchGen = {}, _tipLaborFetchDone = {}, TOAST_SYNC_FN = 'x', SUPABASE_ANON = 'k';
+    function toastFnBody(o){ return JSON.stringify(o); }
+    async function supaUpsert(){ return false; }
+    async function fetch(){ return { json: async function(){ return { employees: LIVE }; } }; }`);
+  vm.runInContext(pick(source, 'fetchTipLabor'), c);
+  c.LIVE = [entry(KANA, '2026-10-21', '17:00', '21:00')];
+  await run(c, `fetchTipLabor('F01', 'g', '2026-10-21')`);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F01_2026-10-21']), [KANA]);
+  await run(c, `fetchTipLabor('F04-P', 'g', '2026-10-21')`);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-21']), ['Kana Mori-Sample']);
+});
+
+test('Codex P1 (62339b9): a store alias needs the field name to match its store; a GM link counts at every store', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = EMPS();
+  c.EMPS[1][fld(KANA) + '@F01'] = al(KANA, '2026-10-16', { store: 'F04-P' });   // field says F01, record says F04-P: not used
+  c.EMPS[1][fld(KANA)] = al(KANA, '2026-10-16', { store: 'F04-P' });            // a store record in the all-stores field: not used
+  assert.deepEqual(plain(run(c, 'empToastAliases(getEmployees()[1])')), []);
+  c.EMPS = EMPS(); c.EMPS[1][fld(KANA)] = al(KANA, '2026-10-16');                // GM (all stores)
+  assert.deepEqual(Object.keys(await importAt(c, 'F01', '2026-10-20')), ['Kana Mori-Sample']);
+  assert.deepEqual(Object.keys(await importAt(c, 'F04-P', '2026-10-20')), ['Kana Mori-Sample']);
+  assert.equal(run(c, `toastAliasField('a@b', 'F01')`), 'toastAlias_ab@F01', 'an @ in a Toast name cannot look like a store');
+});
+
+test('Codex P1 (62339b9): the unregistered list keeps the punches of the store outside after an AM links the name for their store', () => {
+  const c = app(source, NEW);
+  c.EMPS = EMPS();
+  c.STORE['tip_labor_F04-P_2026-10-20'] = { [KANA]: { rawLunch: 0, rawDinner: 4, toastName: KANA } };
+  c.STORE['tip_labor_F01_2026-10-21'] = { [KANA]: { rawLunch: 1, rawDinner: 2, toastName: KANA } };
+  let list = plain(run(c, `unregisteredClockIns(3650)`));
+  assert.deepEqual(list[0].stores.sort(), ['F01', 'F04-P']); assert.equal(list[0].hours, 7);
+  c.EMPS[1][fld(KANA) + '@F04-P'] = al(KANA, '2026-10-16', { store: 'F04-P' });
+  list = plain(run(c, `unregisteredClockIns(3650)`));
+  assert.equal(list.length, 1);
+  assert.deepEqual(list[0].stores, ['F01']); assert.equal(list[0].hours, 3); assert.equal(list[0].days, 1);
+  assert.deepEqual(list[0].byDate, { '2026-10-21': 3 }); assert.equal(list[0].last, '2026-10-21');
+  c.EMPS[1][fld(KANA)] = al(KANA, '2026-10-16');                                  // then a GM links it for all stores
+  assert.deepEqual(plain(run(c, `unregisteredClockIns(3650)`)), []);
+});
+
+test('Codex P1 (62339b9): the link screen counts only the AM\'s stores', () => {
+  const c = app(source, NEW);
+  const item = { byDate: { '2026-09-29': 2, '2026-10-20': 4, '2026-10-21': 3 }, per: { 'F04-P': { byDate: { '2026-10-20': 4 } }, F01: { byDate: { '2026-09-29': 2, '2026-10-21': 3 } } } };
+  assert.deepEqual(plain(run(c, `_toastLinkPreview(${JSON.stringify(item)}, '2026-10-16', null)`)), { days: 2, hours: 7 });
+  assert.deepEqual(plain(run(c, `_toastLinkPreview(${JSON.stringify(item)}, '2026-10-16', ['F04-P'])`)), { days: 1, hours: 4 });
+  assert.equal(run(c, `toastLinkEarliest(${JSON.stringify(item)}, null)`), '2026-09-16');
+  assert.equal(run(c, `toastLinkEarliest(${JSON.stringify(item)}, ['F04-P'])`), '2026-10-16');
+});
+
+test('Codex P1 (62339b9): an AM cannot remove or overwrite an all-stores alias, nor another store\'s; linking rules look at the same stores only', () => {
+  const c = app(source, NEW);
+  c.curRole = 'am'; c.curRealRole = 'am';
+  assert.equal(run(c, `_empAliasRemovable({ n:'A', store:'' })`), false, 'an all-stores alias (made by GM / CEO / accounting)');
+  assert.equal(run(c, `_empAliasRemovable({ n:'A', store:'F01' })`), false, 'another store');
+  assert.equal(run(c, `_empAliasRemovable({ n:'A', store:'F04-P' })`), true);
+  c.curRole = 'gm'; c.curRealRole = 'gm';
+  assert.equal(run(c, `_empAliasRemovable({ n:'A', store:'' })`), true);
+  // another person's alias at F01 only does not block an AM of F04-P, but blocks a GM (all stores)
+  c.EMPS = EMPS(); c.EMPS[3][fld(KANA) + '@F01'] = al(KANA, '2026-10-16', { store: 'F01' });
+  assert.match(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, null)`), /別名に入っています/);
+  assert.equal(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, ['F04-P'])`), null);
+  assert.match(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, ['F01','F04-P'])`), /別名に入っています/);
+  // already linked: an all-stores alias covers an AM's stores; a store alias does not stop a GM from adding the all-stores one
+  c.EMPS = EMPS(); c.EMPS[1][fld(KANA) + '@F04-P'] = al(KANA, '2026-10-16', { store: 'F04-P' });
+  assert.match(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, ['F04-P'])`), /もう入っています/);
+  assert.equal(run(c, `toastAliasProblem(getEmployees()[1], ${JSON.stringify(KANA)}, null)`), null);
+  assert.equal(run(c, `toastAliasEntries(getEmployees()[1], ${JSON.stringify(KANA)}, '2026-10-16', 'emp', ['F04-P','F06']).map(function(a){ return a.store; }).join()`), 'F06', 'only stores not covered yet');
+  assert.match(run(c, `toastAliasProblem(getEmployees()[1], 'New Name', [])`), /担当の店がありません/);
+  // the editor: rows group the store aliases added together; changes are per field
+  const list = [al(KANA, '2026-10-16', { store: 'F04-P', f: fld(KANA) + '@F04-P' }), al(KANA, '2026-10-16', { store: 'F06', f: fld(KANA) + '@F06' }), al('K M', '2026-10-01', { f: fld('K M') })];
+  const g = plain(run(c, `_empAliasGroups(${JSON.stringify(list)})`));
+  assert.deepEqual(g.map(x => [x.n, x.global, x.stores, x.idx]), [[KANA, false, ['F04-P', 'F06'], [0, 1]], ['K M', true, [], [2]]]);
+  const ch = plain(run(c, `empAliasChanges(${JSON.stringify(list)}, ${JSON.stringify([list[1], list[2]])})`));
+  assert.deepEqual(ch.remove.map(a => a.f), [fld(KANA) + '@F04-P']); assert.deepEqual(ch.add, []);
 });
