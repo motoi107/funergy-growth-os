@@ -1,5 +1,16 @@
 # Claude / Codex 共通記録
 
+## 2026-10-29 PR #99 の Codex の P1（従業員の表はアプリの公開の鍵で書ける）の扱い：(c) で受け入れ・変更記録を足す・(b) はあとで 3 段階（Claude・ブランチ `claude/employee-field-log`・migration `20261029090000`・本番未反映）
+
+- 経緯：PR #99（v1111）の Codex の P1＝AM が担当外の店の別名を書けないのは画面の制限だけで、従業員の表（employees）はアプリの公開の鍵で書ける（前から・v1085 の見張りは在籍の欄だけ）。選択肢 (a) サーバーで別名の欄の書き込みを役職ごとに止める／(b) 人ごとの権限（RLS・ログインした人の書き込み）／(c) 受け入れて変更記録を足す。
+- Moto さんの決定（10/29「進めてください」）：**いまは (c)**＝受け入れ、従業員の変更記録を足す。**(b) はあとで 3 段階**：1 段目 tip_labor・employees／2 段目 notification_outbox・management_*（app_settings・kv_store・app_state は調べてから）／3 段目 credit_card_receipts・shift_*・マスター。共有の端末（店舗の PIN）のログインの作りは UI 案を先に出す。
+- 作ったもの（データベースだけ・アプリ・関数・従業員の表の中身・書き込みの決まりは変えない）：表 `employee_field_log`（サーバーだけ・RLS・公開の鍵では読めない・書けない）と従業員の表の見張り（書いたあと・`security definer`）。data の欄 name・role・title・perms・store・support・coef と `toastAlias_…`（別名・店ごとの別名も）が変わったときだけ 1 欄 1 行（前 → 後・insert／update／delete・どの鍵か＝anon／authenticated／service_role／admin・ログインの印は authenticated のときだけ）。記録に失敗しても従業員の保存は通る（警告だけ）。v1085 の退職の守りとは別に動く（無くても入る）。
+- だれが押したかまでは分からない（アプリも公開の鍵で書くため）。気づいて元に戻すための記録。戻すときは記録 ID を Claude に伝えてもらい、戻す SQL を渡す。
+- 入れる一式 `deploy/employee-field-log/`（手順.md・1_追加のSQL・2_確認のSQL_読むだけ・3_変更記録を見る_読むだけ・止める.sql）。見方は `db/employee-field-log-check.sql`（＝3）。
+- 試験（合成データ・本物の退職の守りの SQL と一緒に）：`tests/employee-field-log.test.mjs` 7・わざと壊す 9 通りすべてで落ちる（1 回目は 6/9 → 試験を足した：公開の鍵の印を残さない・行のセキュリティ・行を消したとき）。
+- 未確認：本番の Supabase の既定の権限（試験は既定で anon・authenticated に全部を許す形で確かめた）。独立レビュー・Codex のレビューはまだ。
+- 次：PR → Codex → Moto さんが手順.md の順に入れる。そのあと (b) の 1 段目の調べ（tip_labor・employees を書く道・ログインの作り）と UI 案。
+
 ## 2026-10-29 v1111：Toast での名前（別名）・同じ日の 2 つの打刻を足す（UI案62・Claude・ブランチ `claude/toast-alias-1111`・v1110（PR #98）の上・本番未反映）
 
 - 依頼：ある店のスタッフの Toast の名前が従業員マスターとハイフン・空白の位置だけ違い、10 月後半の打刻が勤怠・チップに入っていなかった（名前は公開しない）。UI案62（Design・非公開・5 枚）→ Moto さん 10/29「1 A 2 A 3 A 4 A」。

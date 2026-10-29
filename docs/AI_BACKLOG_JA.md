@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-29 従業員の表の書き込み（PR #99 の Codex の P1・Moto さんの決定 (c)＋あとで (b)）
+
+1. 済（Claude・ブランチ `claude/employee-field-log`）：従業員の変更記録（migration `20261029090000`・`deploy/employee-field-log/`）。試験 7・わざと壊す 9/9。
+2. 次：PR → Codex → Moto さんが手順.md の順に入れる（SQL → 確認）。
+3. (b) 1 段目（あとで）：tip_labor・employees を人ごとの権限に。書く道（アプリ・Toast の取り込み・ops-bot・hyper-worker）を調べ、共有の端末（店舗の PIN）のログインの UI 案を先に出す。
+4. (b) 2 段目：notification_outbox・management_*（app_settings・kv_store・app_state は調べてから）。3 段目：credit_card_receipts・shift_*・マスター。
+
 ## 2026-10-29 Toast での名前（別名）（UI案62・回答 10/29）
 
 1. 済（Claude・ブランチ `claude/toast-alias-1111`）：v1111 別名で今の従業員に結ぶ・同じ日の 2 つの打刻を足す（`docs/TOAST_ALIAS_V1111_JA.md`）。
