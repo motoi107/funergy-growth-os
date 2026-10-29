@@ -8,8 +8,10 @@
 - だれが押したかまでは分からない（アプリも公開の鍵で書くため）。気づいて元に戻すための記録。戻すときは記録 ID を Claude に伝えてもらい、戻す SQL を渡す。
 - 入れる一式 `deploy/employee-field-log/`（手順.md・1_追加のSQL・2_確認のSQL_読むだけ・3_変更記録を見る_読むだけ・止める.sql）。見方は `db/employee-field-log-check.sql`（＝3）。
 - 試験（合成データ・本物の退職の守りの SQL と一緒に）：`tests/employee-field-log.test.mjs` 7・わざと壊す 9 通りすべてで落ちる（1 回目は 6/9 → 試験を足した：公開の鍵の印を残さない・行のセキュリティ・行を消したとき）。
-- 未確認：本番の Supabase の既定の権限（試験は既定で anon・authenticated に全部を許す形で確かめた）。独立レビュー・Codex のレビューはまだ。
-- 次：PR → Codex → Moto さんが手順.md の順に入れる。そのあと (b) の 1 段目の調べ（tip_labor・employees を書く道・ログインの作り）と UI 案。
+- PR #101。Claude のルーティン（6506213116・`f5693a0`）：P1・P2 なし・P3 2（保持期間なし・押した人は分からない）。**Codex（6506302380・`f5693a0`）：blocked／manual・P1 1**：見張りが data だけを比べるので、公開の鍵で表の列（name・role・title・store・status・id など）だけを書き換えると変わっても記録 0 行（data.id だけの変更も 0 行）。サーバーの SQL（`mr_am_hr_ok`・`mr_member_role` など）は列を読む。
+- 直し（Claude）：表の列 id・name・emp_code・role・perms・title・store・support・status・emp_type も見る（`employee_field_columns`）。data の対応する欄が同じ書き込みで同じ値に変わったときは data の 1 行だけ（アプリのふだんの保存）、そうでなければ列の行 `col:<列>`（`note`＝column_only／differs_from_data）。data の欄に id・status・emp・empCode を足した。見方の SQL に「（列）」と「メモ」。試験 8（公開の鍵で列ごとに書き換える 10 通り × 退職の守りあり・なし・data.id だけ・ふだんの保存・列と data が違う値）・わざと壊す 17 通りすべてで落ちる（入れる一式の一致の試験を除いて数えた）。退職の守りがあると、在籍の列だけの書き換えは守りが data にも写すので data の 1 行になる。
+- 未確認：本番の Supabase の既定の権限・本番の employees の列（試験はアプリの SUPA_MASTER_MAP の列）。直したあとの独立レビューは無し・Codex の再レビューはまだ。
+- 次：Codex の再レビュー → Moto さんが手順.md の順に入れる。そのあと (b) の 1 段目の調べ（tip_labor・employees を書く道・ログインの作り）と UI 案。
 
 ## 2026-10-29 v1111：Toast での名前（別名）・同じ日の 2 つの打刻を足す（UI案62・Claude・ブランチ `claude/toast-alias-1111`・v1110（PR #98）の上・本番未反映）
 

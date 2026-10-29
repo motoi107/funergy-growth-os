@@ -50,7 +50,7 @@ async function upsert(pg, o, role = 'anon', claims) {
     [o.id, o.name, o.role || null, o.title || null, o.store || null, JSON.stringify(o.support || []), o.status || null, JSON.stringify(o)]);
   }, claims);
 }
-const log = async (pg, id) => (await pg.query('select field, old_value, new_value, op, writer, who, emp_name from employee_field_log where emp_id=$1 order by id', [id])).rows;
+const log = async (pg, id) => (await pg.query('select field, old_value, new_value, op, writer, who, emp_name, note from employee_field_log where emp_id=$1 order by id', [id])).rows;
 
 test('an alias, a Tip Rate, a name, a role, a title and a store change are each written once, with what was before and after', async () => {
   const pg = await setup();
@@ -59,7 +59,7 @@ test('an alias, a Tip Rate, a name, a role, a title and a store change are each 
   const alias = { n: 'Ann-Sample', from: '2026-10-16', at: '2026-10-29T17:40:00Z', by: 'Gina Sample', via: 'unreg' };
   await upsert(pg, { ...d, toastAlias_annsample: alias });
   await upsert(pg, { ...d, toastAlias_annsample: alias });                                 // the same row sent again: nothing new
-  assert.deepEqual(await log(pg, 'e1'), [{ field: 'toastAlias_annsample', old_value: null, new_value: alias, op: 'update', writer: 'anon', who: null, emp_name: 'Ann Sample' }]);
+  assert.deepEqual(await log(pg, 'e1'), [{ field: 'toastAlias_annsample', old_value: null, new_value: alias, op: 'update', writer: 'anon', who: null, emp_name: 'Ann Sample', note: null }]);
   await upsert(pg, { ...d, toastAlias_annsample: { ...alias, off: true }, coef: 0.8, name: 'Ann B Sample', role: 'sl', title: 'Shift Leader', store: 'F01', support: ['F04-K'], phone: 'x' });
   const rows = (await log(pg, 'e1')).slice(1);
   assert.deepEqual(rows.map(r => [r.field, r.old_value, r.new_value]), [
@@ -72,7 +72,8 @@ test('an alias, a Tip Rate, a name, a role, a title and a store change are each 
   assert.deepEqual((await log(pg, 'e1')).slice(-1).map(r => [r.field, r.old_value, r.new_value]), [['coef', 0.8, null]]);
   // a store-only alias (AM) and a new person
   await upsert(pg, { id: 'e9', name: 'New Sample', status: '在籍', coef: 1, 'toastAlias_newsample@F04-P': { n: 'New Sample', store: 'F04-P' } });
-  assert.deepEqual((await log(pg, 'e9')).map(r => [r.field, r.op, r.old_value]), [['coef', 'insert', null], ['name', 'insert', null], ['toastAlias_newsample@F04-P', 'insert', null]]);
+  assert.deepEqual((await log(pg, 'e9')).map(r => [r.field, r.op, r.old_value, r.new_value]), [['coef', 'insert', null, 1], ['id', 'insert', null, 'e9'], ['name', 'insert', null, 'New Sample'],
+    ['status', 'insert', null, '在籍'], ['toastAlias_newsample@F04-P', 'insert', null, { n: 'New Sample', store: 'F04-P' }]], 'the columns the app fills the same are not logged twice');
 });
 
 test('which key wrote it: the app (anon), the server (service_role), the SQL Editor (admin), and a signed-in mark when there is one', async () => {
@@ -112,11 +113,61 @@ test('the public key can neither read nor change the log, and a failing log neve
   const bare = await setup({ guard: false });
   await as(bare, 'service_role', () => bare.query(`update employees set data = '[]' where id='e2'`));
   await as(bare, 'service_role', () => bare.query(`update employees set data = '{"name":"Bob Sample","coef":1}' where id='e2'`));
-  assert.deepEqual((await log(bare, 'e2')).map(r => [r.field, r.old_value, r.new_value]), [['coef', 0.9, null], ['name', 'Bob Sample', null], ['role', 'crew', null],
-    ['store', 'F01', null], ['support', [], null], ['title', 'Cook', null], ['coef', null, 1], ['name', null, 'Bob Sample']]);
-  // a row taken away is logged too (what it had, as delete)
+  assert.deepEqual((await log(bare, 'e2')).map(r => [r.field, r.old_value, r.new_value, r.note]), [['coef', 0.9, null, null], ['id', 'e2', null, null], ['name', 'Bob Sample', null, null],
+    ['role', 'crew', null, null], ['status', '在籍', null, null], ['store', 'F01', null, null], ['support', [], null, null], ['title', 'Cook', null, null],
+    ['coef', null, 1, null], ['name', null, 'Bob Sample', null]], 'the columns stayed: only data rows');
+  // a row taken away is logged too (what it had, as delete); the columns data no longer carried are logged as columns
   await as(bare, 'service_role', () => bare.query(`delete from employees where id='e2'`));
-  assert.deepEqual((await log(bare, 'e2')).slice(-2).map(r => [r.field, r.op, r.old_value, r.new_value, r.emp_name]), [['coef', 'delete', 1, null, 'Bob Sample'], ['name', 'delete', 'Bob Sample', null, 'Bob Sample']]);
+  assert.deepEqual((await log(bare, 'e2')).slice(-7).map(r => [r.field, r.op, r.old_value, r.new_value, r.emp_name, r.note]), [
+    ['coef', 'delete', 1, null, 'Bob Sample', null], ['name', 'delete', 'Bob Sample', null, 'Bob Sample', null],
+    ['col:id', 'delete', 'e2', null, 'Bob Sample', 'column_only'], ['col:role', 'delete', 'crew', null, 'Bob Sample', 'column_only'],
+    ['col:status', 'delete', '在籍', null, 'Bob Sample', 'column_only'], ['col:store', 'delete', 'F01', null, 'Bob Sample', 'column_only'],
+    ['col:title', 'delete', 'Cook', null, 'Bob Sample', 'column_only']]);
+});
+
+// Codex PR #101 P1: the public key can change the columns (name, role, title, store, support, perms, status, id) without data;
+// server SQL reads those columns. Every column that really changed is logged, with or without the resignation guard.
+test('a change to the columns alone is logged (the public key, no data), and so is data.id alone; the app\'s own save is one row per field', async () => {
+  const COLS = { name: `'Bob Changed'`, role: `'am'`, title: `'Area Manager'`, store: `'F05'`, support: `'["F04-K"]'::jsonb`, perms: `'gm'`, status: `'退職'`, emp_code: `'X9'`, emp_type: `'ft'`, id: `'e2x'` };
+  for (const guard of [true, false]) {
+    for (const [col, val] of Object.entries(COLS)) {
+      const pg = await setup({ guard });
+      const before = (await pg.query('select * from employees where id=$1', ['e2'])).rows[0];
+      let err = null;
+      try { await as(pg, 'anon', () => pg.query(`update employees set ${col} = ${val} where id = 'e2'`)); } catch (e) { err = e; }
+      const after = (await pg.query('select * from employees where id=$1', [col === 'id' && !err ? 'e2x' : 'e2'])).rows[0];
+      const changed = !!after && JSON.stringify(after[col]) !== JSON.stringify(before[col]);
+      const rows = (await pg.query(`select field, old_value, new_value, op, writer, note, emp_name from employee_field_log order by id`)).rows;
+      const tag = `${guard ? 'guard' : 'bare'} ${col}`;
+      if (!changed) { assert.deepEqual(rows, [], tag + ': not changed, nothing logged'); continue; }
+      const colRow = rows.find(r => r.field === 'col:' + col);
+      if (colRow) {
+        assert.deepEqual([colRow.op, colRow.writer, colRow.note, colRow.old_value, colRow.new_value, colRow.emp_name],
+          ['update', 'anon', 'column_only', before[col], after[col], 'Bob Sample'], tag + ': the column row');
+      } else {
+        // the resignation guard copies a changed status column into data: then the data row says it (the same value)
+        const k = { emp_code: 'empCode', emp_type: 'emp' }[col] || col;
+        const dataRow = rows.find(r => r.field === k);
+        assert.ok(guard && dataRow && JSON.stringify(dataRow.new_value) === JSON.stringify(after[col]), tag + ': logged in the column or in data with the same value');
+      }
+    }
+  }
+  // without the guard every one of them goes through (so each is checked above)
+  const bare = await setup({ guard: false });
+  for (const [col, val] of Object.entries(COLS)) if (col !== 'id') await as(bare, 'anon', () => bare.query(`update employees set ${col} = ${val} where id = 'e1'`));
+  assert.deepEqual((await bare.query(`select field from employee_field_log where emp_id='e1' order by id`)).rows.map(r => r.field),
+    ['col:name', 'col:role', 'col:title', 'col:store', 'col:support', 'col:perms', 'col:status', 'col:emp_code', 'col:emp_type']);
+  // data.id alone
+  const pg = await setup();
+  await as(pg, 'anon', () => pg.query(`update employees set data = jsonb_set(data, '{id}', '"zz"') where id = 'e1'`));
+  assert.equal((await data(pg, 'e1')).id, 'zz', 'the public key could change it (the guard does not look at data.id)');
+  assert.deepEqual((await log(pg, 'e1')).map(r => [r.field, r.old_value, r.new_value, r.writer]), [['id', 'e1', 'zz', 'anon']]);
+  // the app's save (columns and data together, the same values): one row per field, no column rows
+  await upsert(pg, { ...(await data(pg, 'e2')), name: 'Bob B Sample', role: 'sl', title: 'Shift Leader', store: 'F04-K', support: ['F01'] });
+  assert.deepEqual((await log(pg, 'e2')).map(r => r.field), ['name', 'role', 'store', 'support', 'title']);
+  // columns and data saying different things: the data row, and the column row marked as differing
+  await as(pg, 'anon', () => pg.query(`update employees set role = 'am', data = jsonb_set(data, '{role}', '"crew"') where id = 'e2'`));
+  assert.deepEqual((await log(pg, 'e2')).slice(-2).map(r => [r.field, r.old_value, r.new_value, r.note]), [['role', 'sl', 'crew', null], ['col:role', 'sl', 'am', 'differs_from_data']]);
 });
 
 test('the resignation guard keeps working with the log beside it, and the SQL runs twice to the same result', async () => {
@@ -127,7 +178,7 @@ test('the resignation guard keeps working with the log beside it, and the SQL ru
   assert.equal(after.status, '退職');
   await upsert(pg, { ...d, coef: 0.5 });                                           // a stale copy (still 在籍, version 1): the status stays
   assert.equal((await data(pg, 'e1')).status, '退職', 'the guard still keeps the resignation');
-  assert.deepEqual((await log(pg, 'e1')).map(r => r.field), ['coef'], 'only the tracked field; the status has its own log');
+  assert.deepEqual((await log(pg, 'e1')).map(r => r.field), ['status', 'coef'], 'the resignation once (data and column the same: one row), then the tracked field; the stale status is not a change');
   const before = (await pg.query('select count(*)::int n from employee_field_log')).rows[0].n;
   await pg.exec(MIG);
   assert.equal((await pg.query('select count(*)::int n from employee_field_log')).rows[0].n, before, 'running it again keeps the log');
@@ -157,6 +208,13 @@ test('the read-only check lists the changes newest first and writes nothing', as
   assert.match(rows[1]['後'], /Ann-Sample/);
   assert.equal(rows[0]['前'], '1');
   assert.match(rows[0]['従業員'], /^Ann Sample \[e1\]$/);
+  assert.deepEqual(rows.map(r => r['メモ']), ['', '']);
+  // a column changed alone (and a column and data at odds) is named as a column, with a note
+  await as(pg, 'anon', () => pg.query(`update employees set role = 'am' where id = 'e1'`));
+  await as(pg, 'anon', () => pg.query(`update employees set title = 'GM', data = jsonb_set(data, '{title}', '"Cook2"') where id = 'e2'`));
+  const r2 = (await pg.query(CHECK)).rows;
+  assert.deepEqual(r2.slice(0, 3).map(r => [r['欄'], r['前'], r['後'], r['メモ']]), [['肩書き（列）', '"Cook"', '"GM"', '中身と違う値'], ['肩書き', '"Cook"', '"Cook2"', ''],
+    ['役割（列）', '"crew"', '"am"', '列だけ（中身はそのまま）']]);
 });
 
 test('the deploy folder holds exactly the migration and the check; the confirmation reads OK after it and NG before it', async () => {

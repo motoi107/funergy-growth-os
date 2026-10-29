@@ -3,7 +3,7 @@
 ## 2026-10-29 従業員の表の書き込み（PR #99 の Codex の P1・Moto さんの決定 (c)＋あとで (b)）
 
 1. 済（Claude・ブランチ `claude/employee-field-log`）：従業員の変更記録（migration `20261029090000`・`deploy/employee-field-log/`）。試験 7・わざと壊す 9/9。
-2. 次：PR → Codex → Moto さんが手順.md の順に入れる（SQL → 確認）。
+2. 済：PR #101・Codex（`f5693a0`・blocked）の P1（列だけの書き換えが記録されない）を直した（列も見る）。次：Codex の再レビュー → Moto さんが手順.md の順に入れる（SQL → 確認）。
 3. (b) 1 段目（あとで）：tip_labor・employees を人ごとの権限に。書く道（アプリ・Toast の取り込み・ops-bot・hyper-worker）を調べ、共有の端末（店舗の PIN）のログインの UI 案を先に出す。
 4. (b) 2 段目：notification_outbox・management_*（app_settings・kv_store・app_state は調べてから）。3 段目：credit_card_receipts・shift_*・マスター。
 
