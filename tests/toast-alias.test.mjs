@@ -158,6 +158,10 @@ test('the same alias on two active people (two devices at the same time): not li
   c.EMPS = linkKana(EMPS()); c.EMPS[3][fld('Kana-Mori Sample')] = al('Kana-Mori Sample', '2026-10-16');
   await sync(c, [{ business_date: '2026-10-20', data: [entry('Kana-Mori Sample', '2026-10-20', '17:00', '21:00')] }]);
   assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-20']), ['Kana-Mori Sample']);
+  // a resigned person and an active person with the same alias: the active person
+  c.EMPS[3].status = '退職';
+  await sync(c, [{ business_date: '2026-10-21', data: [entry('Kana-Mori Sample', '2026-10-21', '17:00', '21:00')] }]);
+  assert.deepEqual(Object.keys(c.STORE['tip_labor_F04-P_2026-10-21']), ['Kana Mori-Sample']);
 });
 
 test('without aliases the result is the same as before (v1110) on random synthetic days', async () => {
