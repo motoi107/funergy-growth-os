@@ -101,3 +101,73 @@ test('English labels go through t()', async () => {
   assert.match(w.el.innerHTML, /Could not open the Office evaluation/);
   assert.match(w.el.innerHTML, /Back to Career Score/);
 });
+
+// Independent review of 337e779 (P2): the person leaves the Office screen from the side menu while it is still loading,
+// the tab is hidden (switching apps), and then the load fails or comes back. The other screen must not stay frozen.
+const settle = async () => { for (let i = 0; i < 30; i++) await new Promise((r) => setTimeout(r, 0)); };
+
+test('review P2: left for another screen while loading, tab hidden, then the load fails: the other screen is not frozen', async () => {
+  const w = world();
+  let answer; const gate = new Promise((r) => { answer = r; });
+  w.fetch = async () => { w.calls.push('fetch'); await gate; return new Response('{"code":"P0001"}', { status: 400 }); };
+  let vis = null;
+  w.doc.addEventListener = (k, f) => { if (k === 'visibilitychange') vis = f; };
+  const install = loadInstall();
+  await install({ win: w.win, doc: w.doc, baseUrl: 'https://example.supabase.co/', fetch: w.fetch,
+    archiveFactory: async () => w.archive, storageFactory: async () => ({}), createHost: () => w.host });
+  const p = w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { w.el.innerHTML = '<div>office page</div>'; });
+  p.catch(() => {});
+  await settle();
+  assert.equal(w.el.inert, true, 'frozen while loading (as before)');
+  // the side menu is outside the main area: go('dashboard') draws the dashboard directly (nothing Office is mounted yet)
+  w.win.curPage = 'dashboard';
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { w.el.innerHTML = '<div>dashboard</div>'; });
+  assert.match(w.el.innerHTML, /dashboard/);
+  w.doc.hidden = true; vis && vis();          // switch apps
+  answer(); await settle();
+  assert.equal(w.el.inert, false, 'the dashboard can be used');
+  assert.doesNotMatch(w.el.innerHTML, /data-web-office-open-failed/);
+});
+
+test('review P2: the tab is hidden before the queued load even starts, and the person is on another screen: not frozen', async () => {
+  const w = world();
+  let vis = null, release0; const hold = new Promise((r) => { release0 = r; });
+  w.doc.addEventListener = (k, f) => { if (k === 'visibilitychange') vis = f; };
+  w.host.prepare = async () => { await hold; w.calls.push('prepare'); };
+  const install = loadInstall();
+  await install({ win: w.win, doc: w.doc, baseUrl: 'https://example.supabase.co/', fetch: w.fetch,
+    archiveFactory: async () => w.archive, storageFactory: async () => ({}), createHost: () => w.host });
+  const p1 = w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => {}); p1.catch(() => {});
+  const p2 = w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => {}); p2.catch(() => {});   // a second render waits behind the first
+  w.win.curPage = 'dashboard';
+  w.doc.hidden = true; vis && vis();
+  release0(); await settle();
+  assert.equal(w.el.inert, false);
+});
+
+test('review P2: still on the Office screen when the tab comes back: it stays as it was until the screen is drawn again (no card over it)', async () => {
+  const w = world();
+  let answer; const gate = new Promise((r) => { answer = r; });
+  w.fetch = async () => { w.calls.push('fetch'); await gate; return new Response('{"code":"P0001"}', { status: 400 }); };
+  let vis = null;
+  w.doc.addEventListener = (k, f) => { if (k === 'visibilitychange') vis = f; };
+  let redraws = 0; w.win.renderPage = () => { redraws++; };
+  const install = loadInstall();
+  await install({ win: w.win, doc: w.doc, baseUrl: 'https://example.supabase.co/', fetch: w.fetch,
+    archiveFactory: async () => w.archive, storageFactory: async () => ({}), createHost: () => w.host });
+  const p = w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => {}); p.catch(() => {});
+  await settle();
+  w.doc.hidden = true; vis && vis();
+  answer(); await settle();
+  assert.equal(w.el.inert, true, 'an Office screen is still showing: left for the redraw when the tab comes back');
+  w.doc.hidden = false; vis && vis();
+  assert.equal(redraws, 1, 'coming back draws the Office screen again');
+});
+
+test('review P3: Career Score view switched away from Office while loading: the card is not drawn over it', async () => {
+  const w = world();
+  w.host.prepare = async () => { w.calls.push('prepare'); w.win.lssView = 'score'; };
+  await openOffice(w);
+  assert.equal(w.el.inert, false);
+  assert.doesNotMatch(w.el.innerHTML, /data-web-office-open-failed/);
+});
