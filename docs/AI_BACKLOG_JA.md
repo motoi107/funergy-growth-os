@@ -1,5 +1,13 @@
 # 改修・自動化の作業記録
 
+## 2026-10-29 Career Score の「オフィス」で web_cas_http_400（Codex の直接のコミット c3eeb3a・b24f61c）
+
+1. 済（Claude・ブランチ `claude/office-open-fix`）：v1110 開くのに失敗しても画面が固まらない（理由と［もう一度］［戻る］）。
+2. 次：PR → Moto さんがマージ（アプリだけ）。
+3. Moto さん：読むだけの SQL（Claude が渡した `1_確かめ_読むだけ_Office保存の接続.sql`）の結果を Claude に → サーバーが 400 を返す理由。
+4. Moto さん・Codex：Office の保存の仕組みを直して続けるか、`c3eeb3a`・`b24f61c` を戻すか。どちらでも、包みで切り出せなくなった試験 30 件（employee-resign-sync など）を直すか戻す。
+5. Codex の変更（PR なし）の Claude のレビューはまだ。
+
 ## 2026-10-28 キャリアスコアの強み表示・ボーナスの仮締めと修正（UI案61・回答 10/28）
 
 1. 済（Claude・ブランチ `claude/cs-strengths-1108`）：v1108 強みの表示（アプリだけ・`docs/CS_STRENGTHS_V1108_JA.md`）。
