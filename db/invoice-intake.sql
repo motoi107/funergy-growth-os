@@ -3955,3 +3955,4 @@ create table if not exists public.invoice_purchase_snapshots(
 alter table public.invoice_purchase_snapshots enable row level security;
 revoke all on public.invoice_purchase_snapshots from public, anon, authenticated;
 grant select, insert on public.invoice_purchase_snapshots to service_role;
+revoke update, delete, truncate on public.invoice_purchase_snapshots from service_role;

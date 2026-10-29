@@ -196,9 +196,10 @@ select
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_config', 'invoice_qb_send_check', 'invoice_qb_has_due', 'invoice_qb_result')), false) as qb_gmail,
   -- 確認済み＝人の反映か照合済み（20261029100000, Moto 2026-10-29）：経理などが人で反映したもの（または照合済み）を確認済みにし、
-  -- QuickBooks へ送ったかは条件にしない。置き換える前の集計を残す表（ブラウザーからは読めない）。
+  -- QuickBooks へ送ったかは条件にしない。置き換える前の集計を残す表（ブラウザーからは読めない・サーバーも書き換え・消去はできない）。
   coalesce((select count(*) = 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind = 'r' and c.relname = 'invoice_purchase_snapshots' and c.relrowsecurity)
+      where n.nspname = 'public' and c.relkind = 'r' and c.relname = 'invoice_purchase_snapshots' and c.relrowsecurity
+        and not has_table_privilege('service_role', c.oid, 'update') and not has_table_privilege('service_role', c.oid, 'delete'))
     and (select bool_and(p.prosrc like '%posted_or_reconciled%' and p.prosrc like '%when posted_mode=''manual'' and not appdup then ''A''%'
         and p.prosrc not like '%when qbs=''sent'' or preledger then ''A''%')
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace

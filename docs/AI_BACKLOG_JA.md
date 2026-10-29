@@ -3,7 +3,8 @@
 ## 2026-10-29 仕入れタブに経理確認済みの invoice が入らない（v1112・migration 20261029100000）
 
 1. 済（Claude・ブランチ `claude/invoice-purchase-posted`）：原因の裏付け（読むだけの SQL）・Moto さんの決定 2 つ・集計の決まりの直し・前の集計を残す表・比べる／戻す／すぐ作る SQL・アプリ v1112 の言葉・試験（`docs/INVOICE_PURCHASE_POSTED_JA.md`）。
-2. 次：独立レビュー → PR → Codex → Moto さんが `deploy/invoice-purchase-posted/手順.md` の順で入れる（0 と 4 の比べる SQL・6 の開始前の分の結果を Claude に）。
+2. 済：独立レビュー（P2 1・P3 の一部を直した）。次：PR → Codex → Moto さんが `deploy/invoice-purchase-posted/手順.md` の順で入れる（0 と 4 の比べる SQL・6 の開始前の分の結果を Claude に）。
+2b. Moto さんの確認（任意）：締めがどの月までか（10 月以降を締めていると、その月は前の決まりのまま・あとで invoice が変わると月全部が新しい決まりに）。
 3. 残り：照合が進むまで、自動で反映したもの・差異あり・アプリと同じかもしれないものは原価に入らない。開始前に Drive に入った invoice のアプリの登録の有無（6 の結果）。
 
 ## 2026-10-29 Toast での名前（別名）（UI案62・回答 10/29）

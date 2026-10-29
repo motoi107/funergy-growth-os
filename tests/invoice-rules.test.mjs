@@ -516,10 +516,12 @@ test('each migration changes only what it says', async () => {
     'alter table public.invoice_purchase_snapshots enable row level security;',
     'revoke all on public.invoice_purchase_snapshots from public, anon, authenticated;',
     'grant select, insert on public.invoice_purchase_snapshots to service_role;',
+    'revoke update, delete, truncate on public.invoice_purchase_snapshots from service_role;',
     'insert into public.invoice_purchase_snapshots(reason, ym, hash, published_at, checked_at, closed, summary, lines, inputs)',
     "select 'before 20261029100000 (confirmed = posted by a person or reconciled)', p.ym, p.hash, p.published_at, p.checked_at, p.closed, p.summary, p.lines, p.inputs",
     'from public.invoice_purchase_published p',
-    'where not exists(select 1 from public.invoice_purchase_snapshots s',
+    "where coalesce(p.summary ->> 'rule', '') <> 'posted_or_reconciled'",
+    ' and not exists(select 1 from public.invoice_purchase_snapshots s',
     "  where s.reason = 'before 20261029100000 (confirmed = posted by a person or reconciled)' and s.ym = p.ym);"].join('\n'), 'only the snapshot besides the function');
   // the revert puts back the 段階 3 version of the function, and nothing else
   const rv = read('db/invoice-purchase-posted-revert.sql'), mf3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');

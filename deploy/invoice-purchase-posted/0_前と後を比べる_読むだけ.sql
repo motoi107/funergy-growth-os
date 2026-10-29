@@ -4,15 +4,17 @@
 --   ・入れる前：「前」と「見込み」（今の集計の各 invoice に新しい決まりを当てた数）が出る。「後」は前と同じ（関数がまだ前の決まり）。
 --   ・入れたあと：「前」は残した集計（invoice_purchase_snapshots）、「後」は今の関数で計算した数。「見込み」と「後」が同じなら決まりどおり。
 --     （入れたあとに反映・照合が進んだ分だけ、「後」は「見込み」より増えることがある）
--- 月は下の '2026-10' を変えると、ほかの月も見られる。金額は原本の合計（クレジットはマイナス）、原価対象は食材・お酒・飲料の分（消耗品・食材以外は入らない）。
+-- 月は下の '2026-10' を変えると、ほかの月も見られる（入れたあとに初めて集計した月は残していないので、「前」も新しい決まりの数になる＝「前の出どころ」に出る）。金額は原本の合計（クレジットはマイナス）、原価対象は食材・お酒・飲料の分（消耗品・食材以外は入らない）。
 -- アプリ（予実管理の原価率）は「後」の確認済み（原価対象）＋アプリで登録した invoice（Drive の外）＋買い出し＋食材移動で出す（v1077 から変わらない）。
 with p as (select '2026-10'::text ym),
--- 残した集計（入れる前は表が無いので読まない。中身は base64 で受け渡す＝業者名の記号もそのまま）
+-- 残した集計（入れる前は表が無いので読まない。中身は base64 で受け渡す＝業者名の記号もそのまま。
+-- その月を残していなければ空＝<table> だけが返る）
 snap as (
- select case when to_regclass('public.invoice_purchase_snapshots') is not null then
-   convert_from(decode((xpath('/row/s/text()', query_to_xml(format(
+ select to_regclass('public.invoice_purchase_snapshots') is not null as has_table,
+  case when to_regclass('public.invoice_purchase_snapshots') is not null then
+   convert_from(decode((xpath('/table/row/s/text()', query_to_xml(format(
      'select encode(convert_to(summary::text, ''UTF8''), ''base64'') s from public.invoice_purchase_snapshots where ym = %L and reason = %L order by id limit 1',
-     p.ym, 'before 20261029100000 (confirmed = posted by a person or reconciled)'), false, true, '')))[1]::text, 'base64'), 'UTF8')::jsonb end summary
+     p.ym, 'before 20261029100000 (confirmed = posted by a person or reconciled)'), false, false, '')))[1]::text, 'base64'), 'UTF8')::jsonb end summary
  from p
 ),
 before as (
@@ -71,6 +73,8 @@ select (select ym from p) as "月", t.sid as "店舗",
  t.q_n as "後：うち QuickBooks 未転送 件", to_char(t.q_c / 100.0, 'FM999,999,990.00') as "後：QuickBooks 未転送 $",
  t.p_dup as "照合を待つ（アプリと同じかも）", t.p_auto as "照合を待つ（自動で反映）",
  coalesce((select s ->> 'rule' from live), '前の決まり') as "後の決まり",
- case when (select summary from snap) is not null then '残した集計' else 'いまの集計（まだ入れていない）' end as "前の出どころ"
+ case when (select summary from snap) is not null then '残した集計'
+  when (select has_table from snap) then 'この月は残していない（前も新しい決まり）'
+  else 'いまの集計（まだ入れていない）' end as "前の出どころ"
 from t
 order by t.o, t.sid;

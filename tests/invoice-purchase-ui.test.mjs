@@ -124,7 +124,7 @@ test('the fixed example in the app: 仕入率 11.0%, cost $1,350 and 13.5% with 
   assert.match(h, /仕入率（棚卸未反映）<\/div><div class="v">11\.0%/);
   assert.match(h, /原価（棚卸反映後）<\/div><div class="v">\$1,350\.00 <span style="font-size:12px">13\.5%/);
   assert.match(h, /暫定/); assert.doesNotMatch(h, />確定</, 'not final: $500 not forwarded and $400 not reconciled remain');
-  assert.match(h, /まだ入っていない invoice 2 件/);
+  assert.match(h, /まだ入っていない invoice 2 件（確認待ち）/, 'only what there is: nothing is "not forwarded" under the 2026-10-29 rule');
   assert.match(h, /返品・クレジット −\$100\.00/);
   // the KPI tile's breakdown on 予実管理 shows what goes in and what the previous count would be
   const kb = run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
@@ -342,7 +342,7 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   assert.match(h, /集計保留<\/div><div class="v">\$70\.00/);
   assert.match(h, /うちアプリでの登録で数えるもの 1件/);
   assert.match(h, /まだ入っていない \$900\.00/, '$500 not forwarded + $400 waiting; not the $70 the app entry counts');
-  assert.match(h, /まだ入っていない invoice 2 件/);
+  assert.match(h, /まだ入っていない invoice 2 件（確認待ち）/, 'the held invoice the app entry counts is not named');
   const kb = run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
   assert.match(kb, /保留 \$0/);
   const vrow = /<tr class="ips-row" onclick="ipsOpenVendor\(\d+\)"><td><b>Minato[\s\S]*?<\/tr>/.exec(h)[0];
@@ -560,4 +560,10 @@ test('2026-10-29: posted by a person is in the cost before reconciling; "not sen
   h = run(c, `renderPurchaseTab()`);
   assert.match(h, /確認済み・未転送<\/div><div class="v">\$500\.00 <span style="font-size:12px">1件/);
   assert.doesNotMatch(h, /確認済みのうち QuickBooks 未転送/);
+  assert.match(h, /まだ入っていない invoice 3 件（未転送・確認待ち）/, 'the earlier rule\'s "not forwarded" is named while it is there');
+  // a month before October 2026 is not in the cost from the summary: the tile does not say it is
+  const sep = run(c, `ipsTilesHtml('2026-09', {}, [], ipsSum([${JSON.stringify(P.rows['invoice_purchase_2026-10'].stores.F06)}]), 0)`);
+  assert.match(sep, /確認済みのうち QuickBooks 未転送<\/div><div class="v">\$800\.00[\s\S]*?この画面からは送りません/);
+  assert.doesNotMatch(sep, /原価には入っています/);
+  assert.match(run(c, `ipsTilesHtml('2026-10', {}, [], ipsSum([${JSON.stringify(P.rows['invoice_purchase_2026-10'].stores.F06)}]), 0)`), /原価には入っています（この画面からは送りません）/);
 });

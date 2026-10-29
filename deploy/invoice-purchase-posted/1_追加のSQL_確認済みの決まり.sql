@@ -39,10 +39,14 @@ create table if not exists public.invoice_purchase_snapshots(
 alter table public.invoice_purchase_snapshots enable row level security;
 revoke all on public.invoice_purchase_snapshots from public, anon, authenticated;
 grant select, insert on public.invoice_purchase_snapshots to service_role;
+-- 残したものは書き換えない・消さない（Supabase の既定でサーバーの鍵に付く権限も外す）
+revoke update, delete, truncate on public.invoice_purchase_snapshots from service_role;
+-- 前の決まりで作った集計だけを写す（流し直しても、新しい決まりで初めて作った月は「前」として残さない）
 insert into public.invoice_purchase_snapshots(reason, ym, hash, published_at, checked_at, closed, summary, lines, inputs)
 select 'before 20261029100000 (confirmed = posted by a person or reconciled)', p.ym, p.hash, p.published_at, p.checked_at, p.closed, p.summary, p.lines, p.inputs
 from public.invoice_purchase_published p
-where not exists(select 1 from public.invoice_purchase_snapshots s
+where coalesce(p.summary ->> 'rule', '') <> 'posted_or_reconciled'
+ and not exists(select 1 from public.invoice_purchase_snapshots s
   where s.reason = 'before 20261029100000 (confirmed = posted by a person or reconciled)' and s.ym = p.ym);
 
 -- ---------------------------------------------------------------- 2) 集計の決まり

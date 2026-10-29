@@ -771,9 +771,25 @@ test('2026-10-29 deploy: the old summary is kept, the compare SQL shows before, 
   assert.deepEqual([byId(after.stores.F06, m1.id).why, byId(after.stores.F06, m2.id).why, byId(after.stores.F06, r1.id).why], [['posted_manual'], ['posted_manual', 'qb_pending'], ['reconciled', 'qb_pending']]);
   assert.deepEqual(await ledger(), ledger0);
   assert.deepEqual((await E.publish()).changed, [], 'published again: nothing more changes (no double count)');
+  // a month first made after the change (November) has no kept summary: the compare SQL still runs and says so
+  await E.doc({ total: 9000, date: '2026-11-03', recon: 'unreconciled', qb: null });   // no ledger row (the ledger is compared below)
+  assert.deepEqual((await E.publish()).changed, ['2026-11']);
+  const cmpAt = async ym => { await E.pg.exec('reset role'); const r = (await E.pg.exec(CMP.replace("'2026-10'::text ym", `'${ym}'::text ym`))).at(-1).rows; await E.pg.exec('set role service_role'); return r; };
+  rows = await cmpAt('2026-11'); all = row(rows, '合計');
+  assert.deepEqual([all['前：確認済み 件'], all['後：確認済み 件'], row(rows, 'F06')['前の出どころ'], row(rows, 'F06')['後の決まり']],
+    ['1', '1', 'この月は残していない（前も新しい決まり）', 'posted_or_reconciled']);
+  rows = await cmpAt('2026-12');   // a month with nothing in it: runs, all zero
+  assert.deepEqual([row(rows, '合計')['前：確認済み 件'], row(rows, '合計')['後：確認済み 件'], row(rows, 'F06')['前の出どころ']], ['0', '0', 'この月は残していない（前も新しい決まり）']);
+  // the change run again (as the steps say after an older SQL is run again): November is not kept as "before"
+  await E.pg.exec('reset role'); await E.pg.exec(MIG); await E.pg.exec('set role service_role');
+  assert.deepEqual((await E.q(`select ym from invoice_purchase_snapshots order by id`)).map(s => s.ym), ['2026-10']);
+  // what is kept cannot be changed or taken away, by the server key either
+  for (const sql of [`update invoice_purchase_snapshots set summary='{}'`, `delete from invoice_purchase_snapshots`, `truncate invoice_purchase_snapshots`])
+    await assert.rejects(E.pg.query(sql), /permission denied/, sql);
+  assert.deepEqual((await E.q(`select summary from invoice_purchase_snapshots`))[0].summary, snaps[0].summary);
   // undo: the earlier rule again (the kept summary stays)
   await E.pg.exec('reset role'); await E.pg.exec(REVERT); await E.pg.exec(REVERT); await E.pg.exec('set role service_role');
-  assert.deepEqual((await E.publish()).changed, ['2026-10']);
+  assert.deepEqual((await E.publish()).changed, ['2026-10', '2026-11']);
   const back = await E.state('invoice_purchase_2026-10');
   const strip = v => { const x = JSON.parse(JSON.stringify(v)); delete x.generated_at; return x; };
   assert.deepEqual(strip(back), strip(before), 'the same summary as before the change');
