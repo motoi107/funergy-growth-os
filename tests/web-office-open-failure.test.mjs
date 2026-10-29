@@ -143,6 +143,8 @@ test('review P2: the tab is hidden before the queued load even starts, and the p
   w.doc.hidden = true; vis && vis();
   release0(); await settle();
   assert.equal(w.el.inert, false);
+  // v1111: an Office load that waited in the queue is still dropped quietly when the tab is hidden (no warning)
+  assert.ok(!w.toasts.some((m) => m.includes('web_office_identity_required')), w.toasts.join(' | '));
 });
 
 test('review P2: still on the Office screen when the tab comes back: it stays as it was until the screen is drawn again (no card over it)', async () => {
@@ -170,4 +172,149 @@ test('review P3: Career Score view switched away from Office while loading: the 
   await openOffice(w);
   assert.equal(w.el.inert, false);
   assert.doesNotMatch(w.el.innerHTML, /data-web-office-open-failed/);
+});
+
+// Codex re-review of cd11039 (P2): the Office screen had been shown once (so an Office context exists), it is being
+// drawn again, the person leaves it, and the tab is hidden before the queue gets to the other screen.
+// The other screen must still be drawn and usable when the tab comes back (it used to stay frozen and undrawn).
+function okRows(body) {
+  const rs = JSON.parse(body).p_routes;
+  const emp = { id: 'e2', name: 'Gm Sample', role: 'gm', status: '在籍' };
+  const rows = rs.map((r) => {
+    if (r.table === 'employees') return { table: r.table, slot: r.slot, exists: true, version: 1, value: [emp], physical: [{ id: 'e2', data: emp }] };
+    if (r.table === 'stores') { const s = [{ id: 'F01', name: 'Store One' }, { id: 'F02', name: 'Store Two' }]; return { table: r.table, slot: r.slot, exists: true, version: 1, value: s, physical: s.map((d) => ({ id: d.id, data: d })) }; }
+    return { table: r.table, slot: r.slot, exists: false, version: 0, value: null, physical: null };
+  });
+  return JSON.stringify({ schema: 1, rows });
+}
+async function shownOnce(w) {
+  const mem = new Map();
+  // values stay objects of the module's own realm (its copy() refuses objects from another realm)
+  w.archive = { get: async (k) => (mem.has(k) ? mem.get(k) : null), put: async () => true,
+    compareAndSet: async (k, exp, v) => { const cur = mem.has(k) ? mem.get(k) : null; if (JSON.stringify(cur) !== JSON.stringify(exp)) return false; mem.set(k, v); return true; }, close: () => {} };
+  w.win.crypto = crypto.webcrypto;
+  let gate = null;
+  w.fetch = async (url, init) => { w.calls.push('fetch'); if (gate) await gate; return new Response(okRows(init.body), { status: 200 }); };
+  let vis = null;
+  w.doc.addEventListener = (k, f) => { if (k === 'visibilitychange') vis = f; };
+  const install = loadInstall();
+  const guard = await install({ win: w.win, doc: w.doc, baseUrl: 'https://example.supabase.co/', fetch: w.fetch,
+    archiveFactory: async () => w.archive, storageFactory: async () => ({}), createHost: () => w.host });
+  await w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { w.el.innerHTML = '<div>office page</div>'; });
+  await settle();
+  assert.ok(guard.inspect().context, 'the Office screen was shown (an Office context exists)');
+  assert.equal(w.el.inert, false);
+  let open; gate = new Promise((r) => { open = r; });
+  const again = w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { w.el.innerHTML = '<div>office page</div>'; });
+  again.catch(() => {});
+  await settle();
+  assert.equal(w.el.inert, true, 'frozen while it is drawn again (as before)');
+  return { guard, hide: () => { w.doc.hidden = true; vis(); }, show: () => { w.doc.hidden = false; vis(); }, open: () => open() };
+}
+
+test('Codex P2 (cd11039): shown once, drawn again, another screen asked for, tab hidden: the other screen is drawn and usable', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  w.win.curPage = 'dashboard';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { drawn++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+  s.hide();
+  s.open(); await settle();
+  s.show(); await settle();
+  assert.equal(drawn, 1, 'the dashboard is drawn');
+  assert.match(w.el.innerHTML, /dashboard/);
+  assert.equal(w.el.inert, false, 'the dashboard can be used');
+  assert.equal(s.guard.inspect().context, null, 'the Office context is let go');
+});
+
+test('Codex P2 (cd11039): Career Score switched from the Office tab to another tab, tab hidden: the other tab is drawn', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  w.win.lssView = 'score';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { drawn++; w.el.innerHTML = '<div>score tab</div>'; }).catch(() => {});
+  s.hide();
+  s.open(); await settle();
+  s.show(); await settle();
+  assert.equal(drawn, 1);
+  assert.match(w.el.innerHTML, /score tab/);
+  assert.equal(w.el.inert, false);
+});
+
+test('Codex P2 (cd11039): two screens asked for while hidden: only the newest one is drawn', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  const drawn = [];
+  w.win.curPage = 'dashboard';
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { drawn.push('dashboard'); }).catch(() => {});
+  s.hide();
+  w.win.curPage = 'skill';
+  w.win.FUNERGY_WEB_OFFICE_RENDER('skill', () => { drawn.push('skill'); w.el.innerHTML = '<div>skill</div>'; }).catch(() => {});
+  s.open(); await settle();
+  assert.deepEqual(drawn, ['skill']);
+  assert.equal(w.el.inert, false);
+});
+
+test('Codex P2 (cd11039): inputs that are not saved yet: the other screen is still not drawn over them (old protection)', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  w.host.canNavigate = () => false;
+  w.win.curPage = 'dashboard';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { drawn++; }).catch(() => {});
+  s.hide();
+  s.open(); await settle();
+  s.show(); await settle();
+  assert.equal(drawn, 0);
+  assert.equal(w.el.inert, true);
+});
+
+test('after the fix: a non-Office screen whose clean-up fails is still drawn (nothing unsaved)', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  assert.ok(s.guard.inspect().context, 'drawn again');
+  let n = 0;
+  w.host.deactivate = async () => { n++; if (n === 1) throw Error('office_root_busy'); };
+  w.win.curPage = 'dashboard';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { drawn++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+  await settle();
+  assert.equal(drawn, 1);
+  assert.equal(w.el.inert, false);
+  assert.doesNotMatch(w.el.innerHTML, /data-web-office-open-failed/);
+  // and the queue keeps working afterwards
+  w.win.curPage = 'leadership';
+  let office = 0;
+  await w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { office++; });
+  await settle();
+  assert.equal(office, 1);
+  assert.equal(w.el.inert, false);
+});
+
+test('Codex P2 (cd11039): tab hidden, then the clean-up for the other screen fails once: it is still drawn', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  let boom = false;
+  w.host.deactivate = async () => { w.calls.push('deactivate'); if (boom) { boom = false; throw Error('office_root_busy'); } };
+  w.win.curPage = 'dashboard';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('dashboard', () => { drawn++; w.el.innerHTML = '<div>dashboard</div>'; }).catch(() => {});
+  s.hide();
+  boom = true;
+  s.open(); await settle();
+  assert.equal(drawn, 1);
+  assert.equal(w.el.inert, false);
+});
+
+test('Codex P2 (cd11039): the clean-up fails and the Career Score view went back to Office meanwhile: the other tab is not drawn', async () => {
+  const w = world();
+  const s = await shownOnce(w);
+  s.open(); await settle();
+  w.host.deactivate = async () => { w.calls.push('deactivate'); w.win.lssView = 'office'; throw Error('office_root_busy'); };
+  w.win.lssView = 'score';
+  let drawn = 0;
+  w.win.FUNERGY_WEB_OFFICE_RENDER('leadership', () => { drawn++; }).catch(() => {});
+  await settle();
+  assert.equal(drawn, 0);
 });
