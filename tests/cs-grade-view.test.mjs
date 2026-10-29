@@ -212,15 +212,15 @@ test('a G2 base saved before v1100 (on the 225-point four-category sheet) is not
 test('the screens use the new view: My page, the Career Score list, the growth chart tiles; the bonus ① card no longer says "G2 は 4 カテゴリー"', () => {
   const my = SRC.slice(SRC.indexOf('// 6b. Your Leadership Skill'), SRC.indexOf('// 6c. My Career Journey'));
   assert.match(my, /var lV = csvView\(meEmpL\);/);
-  assert.match(my, /csvMainHtml\(lV, \{size:60, extra:lExtra, noCats:true\}\)/);
-  assert.match(my, /csvCatsHtml\(lV, false\)/);
+  // v1108 (UI案61): the main display is the strengths; this view (total / base, categories) is inside "評価の内訳を見る" (tests/cs-strengths.test.mjs)
+  assert.match(my, /cssProfileHtml\(meEmpL, \{self:true, V:lV, bdExtra:lExtra\}\)/);
   assert.doesNotMatch(my, /focusCats|llv\.label|lssLevel\(/);
   const list = SRC.slice(SRC.indexOf('// リーダー一覧（スコアカード）'), SRC.indexOf('// 履歴（スコア＋申請承認）'));
   assert.match(list, /var cV = csvView\(e\);/);
-  assert.match(list, /csvRingHtml\(cV, 60\)/);
-  assert.match(list, /csvLineHtml\(cV\)/);
+  assert.match(list, /cssPtsLineHtml\(cV\) \+ csvCatsHtml\(cV, false\)/);
+  assert.match(list, /cssListLineHtml\(cV, cR\)/);
   assert.doesNotMatch(list, /lv\.label|lssRingPts/);
-  assert.equal((SRC.match(/_kTile\('Career Score', \(V\.state==='none'/g) || []).length, 2, 'the person view and the manager view of the growth chart');
+  assert.equal((SRC.match(/_kTile\('Career Score', escapeHtml\(cssTileVal\(R\)\), escapeHtml\(\(V\.g\|\|'—'\)\+'・'\+cssPtsTxt\(V\)\)/g) || []).length, 2, 'the person view and the manager view of the growth chart');
   assert.doesNotMatch(SRC, /G2 は 理念・基本業務・サービス・キッチン\/プレップ の 4 カテゴリーで数えます/);
   assert.doesNotMatch(SRC, /cats=\(ghNormG\(x\[0\]\)==='G2'\) \? '4 カテゴリー'/);
   assert.ok(Number((SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1100);
