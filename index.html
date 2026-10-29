@@ -16123,10 +16123,10 @@ function doLogout() {
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
-  if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof invInReset==='function') invInReset();   /* v1063: 前の人の Invoice取込 の内容を残さない（覚えた認証はその人の分として残る） */
   window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
+  if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -71883,6 +71883,7 @@ function bcMergeDraft(base, mine, theirs){
 }
 /* 読み込み（画面を開いたとき・押したあと）。下書きを直している途中なら、手元の下書きは残す */
 function bcLoad(q, keepDraft){
+  if(_bc.q!==q) return Promise.resolve(false);   /* 保存の途中でほかの四半期に切り替えた：今の画面の四半期を触らない */
   if(!bcSession()){ _bc.load='signin'; return Promise.resolve(false); }
   var seq=++_bc.seq; _bc.load='loading';
   return bcAPI({action:'get', quarter:q}).then(function(D){
@@ -72028,13 +72029,20 @@ function bcMirrorCopy(snap){
   if(s.choices && typeof s.choices==='object') Object.keys(s.choices).forEach(function(id){ var c=s.choices[id]; if(c && typeof c==='object') Object.keys(c).forEach(function(k){ c[k]=cut(c[k]); }); });
   if(s.people && typeof s.people==='object') Object.keys(s.people).forEach(function(id){ var a=s.people[id] && s.people[id].adopt; if(a && typeof a==='object') Object.keys(a).forEach(function(k){ a[k]=cut(a[k]); }); });
   if(Array.isArray(s.bulk)) s.bulk=s.bulk.map(function(x){ return {at:(x && x.at) || '', n:(x && Array.isArray(x.parts)) ? x.parts.length : 0}; });
-  if(s.Erec && typeof s.Erec==='object') s.Erec=Object.assign({}, s.Erec, {why:s.Erec.why ? '（理由はサーバーの版）' : ''});
   return s;
 }
 /* 書く前にクラウドの行を読む（ほかの端末がこのあいだに直した入力を、古い写しで戻さない） */
 function bcPullQ(q){ if(typeof pullOpKey!=='function') return Promise.resolve(true); return Promise.resolve().then(function(){ return pullOpKey('spl_bonus_q_'+q); }).then(function(r){ return r===true; }, function(){ return false; }); }
-function bcMirrorWrite(q, row, snap, quiet){
-  return bcPullQ(q).then(function(){ return bcMirrorWrite1(q, row, bcMirrorCopy(snap), quiet); });
+var BC_LID_RE=/^BC-(\d{4}-Q[1-4])-v(\d+)$/;
+function bcCopyLid(d){ return String((d && d.locked && kevSnapOk(d) && d.evSnap.lid) || ''); }
+/* 戻り：true＝書いて送った・false＝書いたが送れていない（か端末に書けなかった）・'skip'＝書かなかった（もっと新しい写しがある・guard が断った） */
+function bcMirrorWrite(q, row, snap, quiet, guard){
+  return bcPullQ(q).then(function(pulled){
+    var d=bqGet(q), m=bcCopyLid(d).match(BC_LID_RE);
+    if(m && m[1]===q && Number(m[2])>Number(row.ver)) return 'skip';   /* ほかの端末がもっと新しい確定版の写しを書いていた */
+    if(guard && !guard(d, pulled)) return 'skip';
+    return bcMirrorWrite1(q, row, bcMirrorCopy(snap), quiet);
+  });
 }
 function bcMirrorWrite1(q, row, snap, quiet){
   var d=bqGet(q);
@@ -72056,7 +72064,8 @@ function bcPushQ(q){
 function bcSetFix(q, on, ver){
   return bcPullQ(q).then(function(){
     var d=bqGet(q);
-    if(on){ if(!(d.locked && kevSnapOk(d))) return false; if(d.bcFix && Number(d.bcFix.ver)===Number(ver)) return true; d.bcFix={ver:ver, at:kevNow(), by:kevMe()}; }
+    var lid='BC-'+q+'-v'+ver;
+    if(on){ if(bcCopyLid(d)!==lid) return false; if(d.bcFix && Number(d.bcFix.ver)===Number(ver) && d.bcFix.lid===lid) return true; d.bcFix={ver:ver, lid:lid, at:kevNow(), by:kevMe()}; }
     else { if(!d.bcFix) return true; delete d.bcFix; }
     if(bqSet(q, d)===false) return false;
     return bcPushQ(q);
@@ -72072,21 +72081,24 @@ function bcReconcile(q, D){
     return;
   }
   if(!S.ef){ if(d.bcFix) bcSetFix(q, false); return; }
-  /* サーバーに有効な確定版があるのに、写しが違う。この画面の流れで書けなかった（確定のあとの読み込みが通信で切れたなど）と分かるときだけ、
-     自動でサーバーの版に合わせる：写しが無い・修正中の印が残っている・前の番号の版・取り込んだ前の版の確定そのもの。
-     前の版の端末がそのあと確定し直したものは、人が決める（「アプリの記録を合わせる」） */
-  var lid=String((d.locked && d.evSnap && d.evSnap.lid) || ''), m=lid.match(/^BC-(\d{4}-Q[1-4])-v(\d+)$/);
-  var ours=!(d.locked && kevSnapOk(d)) || !!d.bcFix || !!(m && m[1]===q && Number(m[2])<Number(S.ef.ver));
-  if(!ours && !(lid && !m)) return;
-  if(_bcHeal[q]) return; _bcHeal[q]=want;
+  /* サーバーに有効な確定版があるのに、写しが違う。この画面の流れで書けなかった（確定のあとの読み込みが通信で切れた・前の版の端末で解除しただけ）と
+     分かるときだけ、自動でサーバーの版に合わせる：写しが無い・この四半期の前の番号の版・取り込んだ前の版の確定そのもの。クラウドの行を読んでから
+     もう一度決める（読めなければ書かない）。前の版の端末がそのあと確定し直した写しと、もっと新しい写しは変えない（「アプリの記録を合わせる」で人が決める） */
+  var need=function(x){ var l=bcCopyLid(x), mm=l.match(BC_LID_RE); if(l===want) return 'same'; if(!l) return 'heal'; if(mm) return (mm[1]===q && Number(mm[2])<Number(S.ef.ver)) ? 'heal' : 'no'; return 'imp'; };
+  if(['same','no'].indexOf(need(d))>=0 || _bcHeal[q]) return;
+  _bcHeal[q]=want;
+  var seq0=_bc.seq;
   bcAPI({action:'version', quarter:q, ver:S.ef.ver}).then(function(v){
-    if(!v || !v.snap || v.ver!==S.ef.ver) return false;
-    var d2=bqGet(q), lid2=String((d2.locked && d2.evSnap && d2.evSnap.lid) || '');
-    if(lid2===want) return true;
-    var imp=!!(v.snap.imported && v.snap.imported.lid && v.snap.imported.lid===lid2);
-    if(!ours && !imp) return false;
-    return bcMirrorWrite(q, v, v.snap, true).then(function(){ return (S.k==='fixFinal') ? bcSetFix(q, true, S.ef.ver) : true; }).then(function(){ if(_bc.q===q && !_bc.busy) bcRerender(); return true; });
-  }).then(function(){ delete _bcHeal[q]; }, function(){ delete _bcHeal[q]; });
+    if(!v || !v.snap || Number(v.ver)!==Number(S.ef.ver)) return false;
+    var imp=String((v.snap.imported && v.snap.imported.lid) || '');
+    return bcMirrorWrite(q, v, v.snap, true, function(x, pulled){
+      if(!pulled || _bc.q!==q || _bc.seq!==seq0 || _bc.busy) return false;   /* クラウドを読めない・画面が先に進んだ：次に読み込んだときに */
+      var n=need(x); return n==='heal' || (n==='imp' && !!imp && bcCopyLid(x)===imp);
+    }).then(function(w){ if(w==='skip') return false; return (S.k==='fixFinal') ? bcSetFix(q, true, S.ef.ver) : true; })
+      .then(function(r){ if(r!==false && _bc.q===q && !_bc.busy) bcRerender(); return r; });
+  }).then(function(){ delete _bcHeal[q]; }, function(){ delete _bcHeal[q]; }).then(function(){
+    if(_bc.q===q && _bc.seq!==seq0 && !_bc.busy && _bc.data && _bc.load==='ok') bcReconcile(q, _bc.data);   /* そのあいだに読み込み直した：新しい内容でもう一度 */
+  });
 }
 function bcMirrorState(q, S){
   var d=bqGet(q), lidOk=!!(S.ef && d.locked && kevSnapOk(d) && d.evSnap.lid===('BC-'+q+'-v'+S.ef.ver));
@@ -72351,7 +72363,7 @@ function bcDraftSave(q){
   var draft={choices:bcChoices(), bulk:(_bc.draft.bulk||[])};
   return bcRun(q, '下書きを保存しています…', function(){
     return bcAPI({action:'draft_save', quarter:q, expect_rev:Number(_bc.data.rev), draft:draft}).then(function(r){
-      _bc.dirty=false; showToast('下書きをサーバーに保存しました','success'); return bcLoad(q, false);
+      if(_bc.q===q) _bc.dirty=false; showToast('下書きをサーバーに保存しました','success'); return bcLoad(q, false);
     });
   });
 }
@@ -72372,9 +72384,9 @@ function bcSaveVersion(q, kind){
         var B2=bcBuild(q, Object.assign({}, kbCfg(), {quarter:q}), choices, bulk, fx);
         if(B2.err || bcDigest(B2.sn)!==bcDigest(B.sn)){ showToast('ほかの端末で評価・設定・原資などが変わっていたため、保存していません。画面を新しい内容にしました。確かめてから、もう一度押してください','warning'); return bcLoad(q, true).then(function(){ return false; }); }
         return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:kind, snap:B2.sn, why:why||''}).then(function(r){
-          var done=function(){ _bc.dirty=false; showToast(kind==='final' ? '再確定しました（v'+r.ver+' が有効）' : '仮締め v'+r.ver+' を保存しました','success'); return bcLoad(q, false); };
-          if(kind!=='final') return done();
-          return bcAfterFinal(q, r.ver).then(done);
+          var done=function(){ if(_bc.q===q) _bc.dirty=false; return bcLoad(q, false); };
+          if(kind!=='final'){ showToast('仮締め v'+r.ver+' を保存しました','success'); return done(); }
+          return bcAfterFinal(q, r.ver, '再確定しました（v'+r.ver+' が有効）').then(done);
         });
       });
     });
@@ -72384,9 +72396,10 @@ function bcSaveVersion(q, kind){
   return ask('');
 }
 /* サーバーに有効な確定版ができたあと：アプリの確定の写しを書く。ここで通信が切れても確定は済んでいる（読み込むたびに合わせ直す） */
-function bcAfterFinal(q, ver){
+function bcAfterFinal(q, ver, okMsg){
   return bcAPI({action:'version', quarter:q, ver:ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap); }).then(function(pushed){
-    if(pushed===false) showToast('確定の写しをクラウドへまだ送れていません（つながったら自動で送ります）','warning');
+    if(pushed===false) showToast(okMsg+'（確定の写しをクラウドへまだ送れていません。つながったら自動で送ります）','warning');
+    else showToast(okMsg,'success');
     return true;
   }, function(){
     showToast('サーバーには v'+ver+' を確定として保存しました。アプリの確定の記録（ほかの画面・本人に見せる表示が読むもの）はまだ前のままです。この画面を開き直すと自動で合わせます（直らなければ「アプリの記録を合わせる」）','warning');
@@ -72402,8 +72415,7 @@ function bcConfirm(q){
   bcAskModal('支給額を確定', msg, !!lv.has_prov, function(why){
     return bcRun(q, '確定しています…', function(){
       return bcAPI({action:'confirm', quarter:q, expect_rev:Number(_bc.data.rev), ver:lv.ver, why:why||''}).then(function(r){
-        showToast('支給額を確定しました（v'+r.ver+'）','success');
-        return bcAfterFinal(q, r.ver).then(function(){ return bcLoad(q, false); });
+        return bcAfterFinal(q, r.ver, '支給額を確定しました（v'+r.ver+'）').then(function(){ return bcLoad(q, false); });
       });
     });
   });
@@ -72424,7 +72436,7 @@ function bcFixCancel(q){
   if(!confirm('修正をやめて v'+S.fixing+' のままにします'+(_bc.dirty ? '（保存していない変更は消えます）' : '')+'。よろしいですか？')) return false;
   return bcRun(q, '修正をやめています…', function(){
     return bcAPI({action:'fix_cancel', quarter:q, expect_rev:Number(_bc.data.rev)}).then(function(){
-      return bcSetFix(q, false).then(function(){ _bc.dirty=false; showToast('修正をやめました（v'+S.fixing+' のまま）','success'); return bcLoad(q, false); });
+      return bcSetFix(q, false).then(function(){ if(_bc.q===q) _bc.dirty=false; showToast('修正をやめました（v'+S.fixing+' のまま）','success'); return bcLoad(q, false); });
     });
   });
 }
@@ -72493,8 +72505,8 @@ function bcMirrorFix(q){
   var S=bcGuard(q); if(!S || !S.ef) return false;
   if(!confirm('アプリの確定の記録（ほかの画面・本人に見せる表示・履歴の記録が読むもの）を、サーバーの有効な確定版 v'+S.ef.ver+' に合わせます。よろしいですか？')) return false;
   return bcRun(q, '合わせています…', function(){
-    return bcAPI({action:'version', quarter:q, ver:S.ef.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap).then(function(){ if(S.k==='fixFinal') return bcSetFix(q, true, S.ef.ver); }); })
-      .then(function(){ showToast('アプリの記録を v'+S.ef.ver+' に合わせました','success'); return bcLoad(q, true); });
+    return bcAPI({action:'version', quarter:q, ver:S.ef.ver}).then(function(v){ return bcMirrorWrite(q, v, v.snap).then(function(w){ if(w==='skip') return 'skip'; if(S.k==='fixFinal') return bcSetFix(q, true, S.ef.ver); }); })
+      .then(function(w){ if(w==='skip') showToast('もっと新しい確定版の写しがあるため、変えていません。画面を新しくしてください','warning'); else showToast('アプリの記録を v'+S.ef.ver+' に合わせました','success'); return bcLoad(q, true); });
   });
 }
 /* 前の版（v1108 まで）で確定した四半期：その確定の数字をそのまま版にして取り込む（仮締め → 支給額を確定の 2 つ。数字は変えない） */
@@ -72510,8 +72522,7 @@ function bcImport(q){
   return bcRun(q, '取り込んでいます…', function(){
     return bcAPI({action:'save', quarter:q, expect_rev:Number(_bc.data.rev), kind:'provisional', snap:sn, why:'前の版（v1108 まで）の確定を取り込み'}).then(function(r){
       return bcAPI({action:'confirm', quarter:q, expect_rev:Number(r.rev), ver:r.ver, why:'前の版の確定（'+String(d.lockedAt||'')+' '+String(d.lockedBy||'')+'）を取り込み'}).then(function(c){
-        showToast('取り込みました（v'+c.ver+' が有効）','success');
-        return bcAfterFinal(q, c.ver).then(function(){ return bcLoad(q, false); });
+        return bcAfterFinal(q, c.ver, '取り込みました（v'+c.ver+' が有効）').then(function(){ return bcLoad(q, false); });
       });
     });
   });

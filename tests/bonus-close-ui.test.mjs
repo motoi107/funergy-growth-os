@@ -487,6 +487,7 @@ test('a dropped call after the server confirmed (re-confirm v3): the toast says 
   await new Promise(r => setTimeout(r, 400));
   const toasts = c.TOASTS.map(x => x[0]).join('|');
   assert.match(toasts, /サーバーには v3 を確定として保存しました。アプリの確定の記録.*まだ前のまま/);
+  assert.match(lastToast(c), /サーバーには v3 を確定として保存しました/, 'the warning is the last one (not covered by a success toast)');
   assert.doesNotMatch(toasts, /サーバーにつながりませんでした/, 'the confirm itself did not fail');
   let S = state(c);
   assert.deepEqual([S.k, S.ef.ver], ['final', 3]);
@@ -504,6 +505,11 @@ test('a dropped call after the server confirmed (re-confirm v3): the toast says 
   const self = run(c, `(function(){ var e=EMPS.find(function(x){ return x.id==='ken'; }); return bcSelfCur(e, bonusForEmp(e, kbCfg()), kbCfg()); })()`);
   assert.deepEqual([self.eff, self.amt], [true, d.evSnap.finals.ken]);
   assert.notEqual(d.evSnap.finals.ken, v2.finals.ken);
+  // when the copy is right, a load asks nothing more of the server
+  const nv = srv.calls.filter(x => x === 'version').length;
+  assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+  await new Promise(r => setTimeout(r, 200));
+  assert.equal(srv.calls.filter(x => x === 'version').length, nv);
   // a copy rewritten later by an older device is not overwritten by itself (people decide)
   vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.evSnap.lid='Lold-1'; bqSet('${Q}', x); })()`, c);
   assert.equal(await runP(c, `bcLoad('${Q}')`), true);
@@ -598,4 +604,121 @@ test('older locks: a lock by an older formula (before v1099, or without a snapsh
   assert.equal(run(c3, `bcSaveVersion('${Q}','provisional')`), false);
   assert.match(lastToast(c3), /設定の確認が必要な人が 1 名.*Ken &lt;img/);
   assert.doesNotMatch(lastToast(c3), /<img/);
+});
+
+// confirm v2 (with provisional values) through the real server
+async function confirmV2(c) {
+  unconfirmed(c);
+  await load(c);
+  vm.runInContext(`_bc.draft.choices = { ken: { c: { m: 'tmp' } }, neo: { d: { m: 'input' } } }; _bc.dirty = true;`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), true, lastToast(c));
+  vm.runInContext(`bcConfirm('${Q}')`, c); c.DOM['bc-ask-why'] = { value: '仮の値で確定' }; vm.runInContext('bcAskOk()', c);
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v2`);
+}
+// the cloud row as another device left it (pullOpKey puts it in place, as the newest-wins merge does)
+function cloudRow(c, edit) {
+  const row = run(c, `bqGet('${Q}')`); edit(row); row._at = Date.now() + 1000;
+  c.CLOUDROW = JSON.stringify(row);
+  vm.runInContext(`function pullOpKey(k){ if(k === 'spl_bonus_q_${Q}' && typeof CLOUDROW === 'string'){ var m = bqAll(); m['${Q}'] = JSON.parse(CLOUDROW); lsSet('bonus_q', m); } return Promise.resolve(true); }`, c);
+}
+
+test('the heal on load decides after reading the cloud row: a v1108 re-lock or a newer copy is never overwritten; not while a button is running', async () => {
+  // A: during 確定版から修正, a v1108 device unlocks and re-locks (it keeps bcFix, which it does not know): not overwritten
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+    await new Promise(r => setTimeout(r, 200));
+    assert.equal(run(c, `bqGet('${Q}').bcFix.lid`), `BC-${Q}-v2`, 'the mark remembers which copy it marked');
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.evSnap=Object.assign({}, x.evSnap, {lid:'L108-relock', bc:undefined}); bqSet('${Q}', x); })()`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), 'L108-relock');
+    assert.equal(run(c, `bcMirrorState('${Q}', bcStateOf(_bc.data))`), 'bad', 'people decide (アプリの記録を合わせる)');
+  }
+  // B: this device's copy is stale (not locked) but the cloud has a v1108 lock: the heal reads the cloud first and leaves it
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    cloudRow(c, row => { row.evSnap.lid = 'L108-cloud'; delete row.evSnap.bc; });
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.locked=false; x.lockedAt=''; x.lockedBy=''; x.evSnap=null; var m=bqAll(); m['${Q}']=x; lsSet('bonus_q', m); })()`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), 'L108-cloud');
+  }
+  // D: this device has an older copy (v1), the cloud a newer one: not replaced by the older answer
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    cloudRow(c, row => { row.evSnap.lid = `BC-${Q}-v9`; });
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.evSnap.lid='BC-${Q}-v1'; var m=bqAll(); m['${Q}']=x; lsSet('bonus_q', m); })()`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v9`);
+    // the button 「アプリの記録を合わせる」 does not write an older version over it either
+    assert.equal(await runP(c, `bcMirrorFix('${Q}')`), true);
+    assert.match(c.TOASTS.map(x => x[0]).join('|'), /もっと新しい確定版の写しがあるため、変えていません/);
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v9`);
+  }
+  // E: correcting from the final, this device has v2 without the mark and the cloud has a v1108 re-lock: the mark is not put on it
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+    await new Promise(r => setTimeout(r, 200));
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); delete x.bcFix; var m=bqAll(); m['${Q}']=x; lsSet('bonus_q', m); })()`, c);
+    cloudRow(c, row => { row.evSnap.lid = 'L108-relock'; delete row.evSnap.bc; delete row.bcFix; });
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), 'L108-relock');
+    assert.equal(run(c, `bqGet('${Q}').bcFix`), undefined);
+  }
+  // the cloud row cannot be read: nothing is written by itself
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.locked=false; x.lockedAt=''; x.lockedBy=''; x.evSnap=null; var m=bqAll(); m['${Q}']=x; lsSet('bonus_q', m); })(); function pullOpKey(){ return Promise.resolve(false); }`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').locked`), false);
+    // read again: set back to the server's v2 (a v1108 device that only unlocked)
+    vm.runInContext(`pullOpKey = function(){ return Promise.resolve(true); };`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v2`);
+  }
+  // a button pressed while the heal waits for the server: the heal leaves it (the next load does it)
+  {
+    const srv = await server();
+    const c = co(srv);
+    await confirmV2(c);
+    vm.runInContext(`(function(){ var x=bqGet('${Q}'); x.locked=false; x.lockedAt=''; x.lockedBy=''; x.evSnap=null; var m=bqAll(); m['${Q}']=x; lsSet('bonus_q', m); })()`, c);
+    let busy = true;
+    c.fetch = async (url, init) => { if (busy && JSON.parse(init.body).action === 'version') vm.runInContext(`_bc.busy='保存しています…'`, c); return srv.fetch(url, init); };
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').locked`), false);
+    busy = false; vm.runInContext(`_bc.busy=''`, c);
+    assert.equal(await runP(c, `bcLoad('${Q}')`), true);
+    await new Promise(r => setTimeout(r, 300));
+    assert.equal(run(c, `bqGet('${Q}').evSnap.lid`), `BC-${Q}-v2`);
+  }
+  // a save that finishes after switching to another quarter does not touch that quarter's screen
+  {
+    const srv = await server();
+    const c = co(srv);
+    await load(c);
+    vm.runInContext(`bcEnsure('2026-Q2')`, c);
+    await new Promise(r => setTimeout(r, 200));
+    vm.runInContext(`_bc.dirty = true; _bc.draft = { choices: { sam: { c: { m: 'tmp' } } }, bulk: [] };`, c);
+    const seq = run(c, '_bc.seq');
+    assert.equal(await runP(c, `bcLoad('${Q}')`), false);
+    assert.deepEqual([run(c, '_bc.q'), run(c, '_bc.dirty'), run(c, '_bc.load'), run(c, '_bc.seq')], ['2026-Q2', true, 'ok', seq]);
+  }
 });

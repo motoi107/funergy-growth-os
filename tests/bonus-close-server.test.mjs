@@ -291,3 +291,26 @@ test('a $0 pool closes (k 0, everyone $0); each person gets the floor of raw × 
     assert.equal(await chk(s), 'ok', JSON.stringify([people.length, S, cap]));
   }
 });
+
+// the app's own rounding (kevAlloc from index.html, including its floating-point branch for large amounts) against the server's check
+test('every split the app makes (kevAlloc, both branches, cents in the pool) passes the server check', async () => {
+  const vm = await import('node:vm');
+  const SRC = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const s0 = SRC.indexOf('\nfunction kevAlloc('), fn = SRC.slice(s0 + 1, SRC.indexOf('\n}', s0 + 1) + 2);
+  const ctx = vm.createContext({}); vm.runInContext(fn, ctx);
+  const { pg } = await setup();
+  let seed = 11, nFloat = 0, n = 0; const rnd = m => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % m; };
+  for (let t = 0; t < 600; t++) {
+    const k = 1 + rnd(25), list = [], big = t % 2 === 0;
+    for (let i = 0; i < k; i++) list.push({ id: 'E' + i, raw: big ? 10000000 + rnd(90000000) : rnd(9000) });
+    const S = list.reduce((a, x) => a + x.raw, 0); if (!S) continue;
+    const cap = Math.round((rnd(Math.max(1, Math.min(S, 2000000000))) + rnd(100) / 100) * 100) / 100;
+    if (!(list.every(x => Math.abs(x.raw * Math.round(cap * 100)) < 9e15) && S * 100 < 9e15)) nFloat++;
+    const al = vm.runInContext(`kevAlloc(${JSON.stringify(list)}, ${cap})`, ctx), P = {};
+    list.forEach(x => { P[x.id] = { raw: x.raw, final: al.finals[x.id] }; });
+    const sn = { q: Q, order: list.map(x => x.id), people: P, finals: al.finals, S, paid: al.sum, cap: al.P, k: al.k, unsel: 0, prov: 0, choices: {} };
+    await pg.query('select public.bc_snap_check($1, $2::jsonb) as v', [Q, JSON.stringify(sn)]);
+    n++;
+  }
+  assert.ok(n > 500 && nFloat > 100, JSON.stringify({ n, nFloat }));
+});
