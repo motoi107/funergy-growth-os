@@ -485,6 +485,47 @@ test('each migration changes only what it says', async () => {
     && /revoke all on public\.%I from public, anon, authenticated/.test(qgRest) && /enable row level security/.test(qgRest));
   assert.equal((qgRest.match(/^grant /gm) || []).length, 1, 'besides the loops, only deleting a used connection state is granted (to the service role)');
   assert.ok(/^grant delete on public\.invoice_gmail_oauth to service_role;$/m.test(qgRest));
+  // 確認済み＝人の反映か照合済み (20261029100000, Moto 2026-10-29): invoice_purchase_month replaced (posted by a person or reconciled;
+  // QuickBooks not a condition), the snapshot table (service role only) and one copy of what is published now into it; nothing
+  // else (no invoice, line, ledger row, setting or app row is changed).
+  const pp = read('supabase/migrations/20261029100000_invoice_purchase_posted.sql');
+  assert.deepEqual([...pp.matchAll(fn)].map(m => m[1]), ['invoice_purchase_month']);
+  assert.ok([...pp.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  assert.equal(pp.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
+    'do $$ begin',
+    " if to_regclass('public.invoice_purchase_published') is null or to_regprocedure('public.invoice_purchase_month(text,jsonb)') is null then",
+    "  raise exception '先に 20261019090000_invoice_purchase_summary.sql を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    " if not exists(select 1 from information_schema.columns where table_schema='public' and table_name='invoice_docs' and column_name='merged_into') then",
+    "  raise exception '先に 20261021090000_invoice_multi_file.sql を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;',
+    'create table if not exists public.invoice_purchase_snapshots(',
+    ' id bigint generated always as identity primary key,',
+    ' taken_at timestamptz not null default now(),',
+    ' reason text not null,',
+    ' ym text not null,',
+    ' hash text,',
+    ' published_at timestamptz,',
+    ' checked_at timestamptz,',
+    ' closed boolean,',
+    ' summary jsonb,',
+    ' lines jsonb,',
+    ' inputs text',
+    ');',
+    'alter table public.invoice_purchase_snapshots enable row level security;',
+    'revoke all on public.invoice_purchase_snapshots from public, anon, authenticated;',
+    'grant select, insert on public.invoice_purchase_snapshots to service_role;',
+    'insert into public.invoice_purchase_snapshots(reason, ym, hash, published_at, checked_at, closed, summary, lines, inputs)',
+    "select 'before 20261029100000 (confirmed = posted by a person or reconciled)', p.ym, p.hash, p.published_at, p.checked_at, p.closed, p.summary, p.lines, p.inputs",
+    'from public.invoice_purchase_published p',
+    'where not exists(select 1 from public.invoice_purchase_snapshots s',
+    "  where s.reason = 'before 20261029100000 (confirmed = posted by a person or reconciled)' and s.ym = p.ym);"].join('\n'), 'only the snapshot besides the function');
+  // the revert puts back the 段階 3 version of the function, and nothing else
+  const rv = read('db/invoice-purchase-posted-revert.sql'), mf3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
+  const pm3 = [...mf3.matchAll(fn)].find(m => m[1] === 'invoice_purchase_month')[0];
+  assert.deepEqual([...rv.matchAll(fn)].map(m => m[0]), [pm3]);
+  assert.ok(!/^(create table|alter |drop |insert |update |delete |grant |revoke )/im.test(rv.replace(fn, '')), 'the revert only replaces the function');
   // The whole schema has each of these functions once, as the migrations leave it.
   const full = read('db/invoice-intake.sql');
   const inFull = Object.fromEntries([...full.matchAll(fn)].map(m => [m[1], m[0]]));
@@ -495,7 +536,8 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261012120000_invoice_rename_after_post.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql',
     'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
     'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql',
-    'supabase/migrations/20261025090000_invoice_item_link.sql', 'supabase/migrations/20261026090000_invoice_qb_gmail.sql'])
+    'supabase/migrations/20261025090000_invoice_item_link.sql', 'supabase/migrations/20261026090000_invoice_qb_gmail.sql',
+    'supabase/migrations/20261029100000_invoice_purchase_posted.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

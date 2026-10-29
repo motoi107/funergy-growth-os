@@ -829,7 +829,8 @@ test('紐づけ: the check SQL tells before from after; the add-member SQL adds 
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S6 = '20261025090000_invoice_item_link.sql';
   // QuickBooks からすぐ (20261026090000) came after it: the database here is the one 紐づけ went on.
-  assert.deepEqual(files.slice(-2), [S6, '20261026090000_invoice_qb_gmail.sql']);
+  // 確認済み＝人の反映か照合済み (20261029100000) came after that too.
+  assert.deepEqual(files.slice(-3), [S6, '20261026090000_invoice_qb_gmail.sql', '20261029100000_invoice_purchase_posted.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const ADD = fs.readFileSync(new URL('../db/invoice-link-add-member.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
@@ -842,7 +843,7 @@ test('紐づけ: the check SQL tells before from after; the add-member SQL adds 
       insert into public.employees values ('E-CH','Kai Test','chef','Head Chef','在籍','{}'),('E-AM','Lani Test','am','Area Manager','在籍','{}'),('E-AM2','Lani Other','crew','Server','退職','{}'),
         ('E-X','Sam One','crew','Server','在籍','{}'),('E-Y','Sam Two','crew','Server','在籍','{}');
       insert into auth.users values ('00000000-0000-4000-8000-0000000000c1','chef@example.test'),('00000000-0000-4000-8000-0000000000c2','am@example.test');`);
-    for (const f of files.slice(0, -2)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -3)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.item_link, post.vendor_register, Number(post.tables), Number(post.functions)], [false, true, 19, 84]);
     await pg.exec(fs.readFileSync(new URL(S6, dir), 'utf8'));

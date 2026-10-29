@@ -1,6 +1,6 @@
 -- 入ったことの確認（読むだけ。鍵は表示しません）
--- 対象はこの migration の表 24・関数 117 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
--- 期待：tables 24 / functions 117 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true
+-- 対象はこの migration の表 25・関数 117 の名前だけ（別の仕組みの invoice_uploads などは数えない）。
+-- 期待：tables 25 / functions 117 / 運転の項目は配備直後はすべて false / rls_on true / browser_can_read 0 / browser_can_run 0 / review_fixes true / accounting_checks true / store_folder_intake true / office_crew_accounting true / rename_after_post true / purchase_summary true / reconciled_folder true / multi_file true / vendor_merge true / vendor_register true / item_link true / qb_gmail true / purchase_posted true
 -- （20261012120000 を入れる前の本番では functions 65・rename_after_post false。入れたあとは 70・true。rename_on は「反映したら名前を変える」の設定で、入れた直後は false）
 -- （20261019090000＝確認済みの仕入れ集計 を入れる前は tables 16・functions 70・purchase_summary false。入れたあとは 18・74・true）
 -- （20261020090000＝照合済みフォルダ・Packing list を入れる前は reconciled_folder false。入れたあとは true。表と関数の数は変わらない）
@@ -9,7 +9,8 @@
 -- （20261024090000＝新しい業者を決める を入れる前は functions 81・vendor_register false。入れたあとは 84・true）
 -- （20261025090000＝紐づけ 段階 1 を入れる前は tables 19・functions 84・item_link false。入れたあとは 21・94・true）
 -- （20261026090000＝QuickBooks からすぐ（Gmail）を入れる前は tables 21・functions 94・qb_gmail false。入れたあとは 24・117・true）
-with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks', 'invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts']) as t), fn as (select unnest(array[
+-- （20261029100000＝確認済み＝人の反映か照合済み を入れる前は tables 24・purchase_posted false。入れたあとは 25・true。関数の数は変わらない）
+with mine as (select unnest(array['invoice_settings', 'invoice_stores', 'invoice_folders', 'invoice_files', 'invoice_file_versions', 'invoice_extractions', 'invoice_vendor_rules', 'invoice_docs', 'invoice_lines', 'invoice_item_maps', 'invoice_price_history', 'invoice_events', 'invoice_qb_outbox', 'invoice_leases', 'invoice_runs', 'invoice_app_mirror', 'invoice_purchase_checks', 'invoice_purchase_published', 'invoice_vendor_merges', 'invoice_link_members', 'invoice_link_marks', 'invoice_gmail_auth', 'invoice_gmail_oauth', 'invoice_qb_alerts', 'invoice_purchase_snapshots']) as t), fn as (select unnest(array[
    'invoice_actor_role', 'invoice_app_drive_ids', 'invoice_app_records', 'invoice_backfill_register', 'invoice_config', 'invoice_drive_conn',
    'invoice_drive_credentials', 'invoice_drive_status', 'invoice_dup_scope', 'invoice_edit', 'invoice_event', 'invoice_extraction',
    'invoice_file_brief', 'invoice_file_claim', 'invoice_file_content_changed', 'invoice_file_fail', 'invoice_file_retry', 'invoice_file_seen',
@@ -193,4 +194,12 @@ select
         when 'invoice_qb_has_due' then p.prosrc like '%invoice_gmail_auth%'
         when 'invoice_qb_result' then p.prosrc like '%least(attempts, 4)%' end)
       from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-      where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_config', 'invoice_qb_send_check', 'invoice_qb_has_due', 'invoice_qb_result')), false) as qb_gmail;
+      where n.nspname = 'public' and p.proname in ('invoice_settings_save', 'invoice_config', 'invoice_qb_send_check', 'invoice_qb_has_due', 'invoice_qb_result')), false) as qb_gmail,
+  -- 確認済み＝人の反映か照合済み（20261029100000, Moto 2026-10-29）：経理などが人で反映したもの（または照合済み）を確認済みにし、
+  -- QuickBooks へ送ったかは条件にしない。置き換える前の集計を残す表（ブラウザーからは読めない）。
+  coalesce((select count(*) = 1 from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r' and c.relname = 'invoice_purchase_snapshots' and c.relrowsecurity)
+    and (select bool_and(p.prosrc like '%posted_or_reconciled%' and p.prosrc like '%when posted_mode=''manual'' and not appdup then ''A''%'
+        and p.prosrc not like '%when qbs=''sent'' or preledger then ''A''%')
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = 'public' and p.proname = 'invoice_purchase_month'), false) as purchase_posted;

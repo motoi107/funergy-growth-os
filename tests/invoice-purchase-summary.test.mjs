@@ -1,8 +1,10 @@
 // 確認済み invoice の全店仕入れ集計（Moto 2026-10-14・UI案48）— the server side.
 // Real SQL (db/invoice-intake.sql on PGlite) and the real handler, with synthetic stores, vendors, invoices, lines, QuickBooks
 // ledger rows and app copies. Nothing here reaches production, Drive, QuickBooks or mail.
-//   A 確認済み (posted, reconciled, sent to QuickBooks or put in Drive before the ledger) / B 確認済み・未転送 / C 確認待ち /
-//   D 除外 / E 集計保留. Lines take tax, shipping and discounts in proportion to their amounts, in whole cents.
+//   A 確認済み (posted by a person — 「この内容で反映する」・まとめて反映 — or reconciled by accounting; whether the original was sent
+//   to QuickBooks is not a condition: Moto 2026-10-29) / C 確認待ち (automatic and not reconciled, reconciled with a difference, or
+//   possibly the same as an app entry) / D 除外 / E 集計保留. B 確認済み・未転送 is gone (only months made before 10/29 have it).
+//   Lines take tax, shipping and discounts in proportion to their amounts, in whole cents.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -92,13 +94,12 @@ test('the fixed example of the request: confirmed $1,100 for cost, $200 not for 
   const E = await setup();
   const inv = await E.doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });                 // 食材 1,200 + 消耗品 200
   const cm = await E.doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: inv.id });   // 食材の返品 100
-  await E.doc({ total: 50000, lines: [[50000, 'I-MISO']], qb: 'pending' });                                   // 確認済み・未転送 500
-  await E.doc({ total: 40000, lines: [[40000, 'I-MISO']], recon: 'unreconciled' });                           // 未確認 400
+  const nf = await E.doc({ total: 50000, lines: [[50000, 'I-MISO']], qb: 'pending', mode: 'auto', recon: 'unreconciled' });   // 自動で反映・未照合 500（未転送）
+  await E.doc({ total: 40000, lines: [[40000, 'I-MISO']], recon: 'unreconciled', mode: 'auto' });               // 自動で反映・未照合 400
   const s = (await E.month('2026-10')).summary.stores.F06;
   assert.deepEqual([N(tot(s, 'A').cost), N(tot(s, 'A').non), N(tot(s, 'A').c), N(tot(s, 'A').n)], [110000, 20000, 130000, 2]);
-  assert.deepEqual([N(tot(s, 'B').c), N(tot(s, 'B').n), N(tot(s, 'C').c), N(tot(s, 'C').n)], [50000, 1, 40000, 1]);
-  assert.deepEqual(s.tot.B.by, { qb_pending: { n: 1, c: 50000, u: 0 } });
-  assert.deepEqual(s.tot.C.by, { unreconciled: { n: 1, c: 40000, u: 0 } });
+  assert.deepEqual([N(tot(s, 'B').c), N(tot(s, 'B').n), N(tot(s, 'C').c), N(tot(s, 'C').n)], [0, 0, 90000, 2]);
+  assert.deepEqual(s.tot.C.by, { unreconciled: { n: 2, c: 90000, u: 0 } });
   assert.deepEqual(s.cls, { food: 110000, liquor: 0, beverage: 0, supply: 20000, nonfood: 0 });
   assert.deepEqual(s.cr, { n: 1, c: -10000 });
   const c = byId(s, cm.id);
@@ -107,6 +108,51 @@ test('the fixed example of the request: confirmed $1,100 for cost, $200 not for 
   assert.deepEqual([v.a.n, N(v.a.c), N(v.a.cost), N(v.a.non), v.cr.n, N(v.cr.c), v.p.n, N(v.p.c)], [2, 130000, 110000, 20000, 1, -10000, 2, 90000]);
   // 仕入率 (棚卸未反映) = 1,100 ÷ 10,000 = 11.0%; 原価 = 2,000 + 1,100 + 100 − 50 − 1,800 = 1,350 → 13.5% (the app computes these; tests/invoice-purchase-ui.test.mjs)
   assert.equal(Math.round(N(tot(s, 'A').cost) / 1000000 * 1000) / 10, 11);
+  assert.deepEqual(s.qbn, { n: 0, c: 0, u: 0, by: {} });
+  // accounting reconciles the $500: confirmed at once, while its original is still waiting for QuickBooks (shown apart, not resent)
+  await E.q(`update invoice_docs set recon_status='reconciled', recon_at=now(), version=version+1 where id=$1`, [nf.id]);
+  const s2 = (await E.month('2026-10')).summary.stores.F06;
+  assert.deepEqual([byId(s2, nf.id).cat, byId(s2, nf.id).why], ['A', ['reconciled', 'qb_pending']]);
+  assert.deepEqual([N(tot(s2, 'A').cost), N(tot(s2, 'A').n), N(tot(s2, 'C').c), tot(s2, 'B').n], [160000, 3, 40000, 0]);
+  assert.deepEqual(s2.qbn, { n: 1, c: 50000, u: 0, by: { qb_pending: { n: 1, c: 50000 } } });
+  assert.equal((await E.q(`select count(*)::int n from invoice_qb_outbox`))[0].n, 4, 'nothing queued or resent for QuickBooks (the 4 rows made above)');
+});
+
+test('2026-10-29: posted by a person counts without reconciling or sending; the 10/29 production pattern (posted, not reconciled) is confirmed', async () => {
+  const E = await setup();
+  // what production showed on 10/29: accounting posted (and so renamed) the invoices, almost none reconciled, most sent to QuickBooks
+  const posted = [];
+  for (let i = 0; i < 6; i++) posted.push(await E.doc({ total: 10000 + i * 100, lines: [[10000 + i * 100, 'I-MISO']], recon: 'unreconciled', qb: i < 5 ? 'sent' : 'pending',
+    name: '2026-10-0' + (i + 1) + '_Minato-Seika_' + (900 + i) + '.pdf' }));
+  const auto = await E.doc({ total: 7000, recon: 'unreconciled', mode: 'auto' });                         // automatic: waits for reconciliation
+  const autoRec = await E.doc({ total: 6000, mode: 'auto', qb: null });                                    // automatic and reconciled: confirmed
+  const diff = await E.doc({ total: 5000, recon: 'discrepancy' });                                         // a person posted, reconciled with a difference
+  const dup = await E.doc({ total: 4000, recon: 'unreconciled', reasons: ['app_duplicate_candidate'] });   // may be in the app already
+  const dupRec = await E.doc({ total: 3000, reasons: ['app_duplicate_candidate'] });                       // ... reconciled: confirmed
+  const review = await E.doc({ status: 'review', recon: 'unreconciled', qb: null, total: 2000 });         // not posted yet
+  const s = (await E.month('2026-10')).summary.stores.F06;
+  for (const [i, d] of posted.entries()) assert.deepEqual([byId(s, d.id).cat, byId(s, d.id).why], ['A', i < 5 ? ['posted_manual'] : ['posted_manual', 'qb_pending']]);
+  assert.deepEqual([byId(s, auto.id).cat, byId(s, auto.id).why], ['C', ['unreconciled']]);
+  assert.deepEqual([byId(s, autoRec.id).cat, byId(s, autoRec.id).why], ['A', ['reconciled', 'qb_none']]);
+  assert.deepEqual([byId(s, diff.id).cat, byId(s, diff.id).why], ['C', ['discrepancy']]);
+  assert.deepEqual([byId(s, dup.id).cat, byId(s, dup.id).why], ['C', ['unreconciled', 'app_dup']]);
+  assert.deepEqual([byId(s, dupRec.id).cat, byId(s, dupRec.id).why], ['A', ['reconciled']]);
+  assert.deepEqual([byId(s, review.id).cat, byId(s, review.id).why], ['C', ['review']]);
+  const sum6 = 6 * 10000 + 1500;
+  assert.deepEqual([tot(s, 'A').n, N(tot(s, 'A').c), N(tot(s, 'A').cost)], [8, sum6 + 6000 + 3000, sum6 + 6000 + 3000]);
+  assert.deepEqual(s.tot.A.by, { posted_manual: { n: 6, c: sum6, u: 0 }, reconciled: { n: 2, c: 9000, u: 0 } });
+  assert.deepEqual([tot(s, 'C').n, N(tot(s, 'C').c), tot(s, 'B').n], [4, 7000 + 5000 + 4000 + 2000, 0]);
+  assert.deepEqual(s.qbn, { n: 2, c: 10500 + 6000, u: 0, by: { qb_pending: { n: 1, c: 10500 }, qb_none: { n: 1, c: 6000 } } });
+  assert.deepEqual(s.ad, { n: 2, c: 7000 }, 'possible app duplicates still shown (the one waiting and the reconciled one)');
+  assert.equal(byId(s, posted[0].id).fn, '2026-10-01_Minato-Seika_900.pdf', 'the new file name is shown; the invoice is found by its id, never by name');
+  // un-reconciling or reconciling again changes nothing for what a person posted; for an automatic one it decides
+  await E.q(`update invoice_docs set recon_status='reconciled', version=version+1 where id=$1`, [posted[0].id]);
+  await E.q(`update invoice_docs set recon_status='unreconciled', version=version+1 where id=$1`, [autoRec.id]);
+  const s2 = (await E.month('2026-10')).summary.stores.F06;
+  assert.deepEqual([byId(s2, posted[0].id).cat, byId(s2, posted[0].id).why], ['A', ['reconciled']]);
+  assert.deepEqual([byId(s2, autoRec.id).cat, byId(s2, autoRec.id).why], ['C', ['unreconciled']]);
+  // the summary says which rule made it
+  assert.equal((await E.month('2026-10')).summary.rule, 'posted_or_reconciled');
 });
 
 test('lines take tax, shipping and discounts in proportion, in whole cents that add up to the total', async () => {
@@ -126,7 +172,7 @@ test('lines take tax, shipping and discounts in proportion, in whole cents that 
   assert.deepEqual([N(byId(m.summary.stores.F01, a.id).pc), N(byId(m.summary.stores.F01, b.id).pc)], [10301, 0], 'provisional (by vendor) only where no product is mapped');
 });
 
-test('2・3・4: reconciled but not sent is B; automatic and sent but not reconciled is C; sending, error, unknown and none are B', async () => {
+test('2・3・4: reconciled but not sent is confirmed (QuickBooks shown apart); automatic and sent but not reconciled is C', async () => {
   const E = await setup();
   const ids = {};
   for (const st of ['pending', 'sending', 'error', 'unknown']) ids[st] = (await E.doc({ qb: st })).id;
@@ -137,14 +183,16 @@ test('2・3・4: reconciled but not sent is B; automatic and sent but not reconc
   ids.noamt = (await E.doc({ status: 'review', recon: 'unreconciled', qb: null, total: null, lines: [[null, null]] })).id;
   ids.unread = (await E.doc({ status: 'review', type: 'unknown', recon: 'unreconciled', qb: null, total: null, lines: [] })).id;
   const s = (await E.month('2026-10')).summary.stores.F06;
-  for (const st of ['pending', 'sending', 'error', 'unknown', 'none']) { assert.equal(byId(s, ids[st]).cat, 'B', st); assert.deepEqual(byId(s, ids[st]).why, ['qb_' + st]); }
+  for (const st of ['pending', 'sending', 'error', 'unknown', 'none']) { assert.equal(byId(s, ids[st]).cat, 'A', st); assert.deepEqual(byId(s, ids[st]).why, ['reconciled', 'qb_' + st]); }
   assert.deepEqual([byId(s, ids.auto).cat, byId(s, ids.auto).why], ['C', ['unreconciled']]);
   assert.deepEqual([byId(s, ids.diff).cat, byId(s, ids.diff).why], ['C', ['discrepancy']]);
   assert.deepEqual([byId(s, ids.review).cat, byId(s, ids.review).why], ['C', ['review']]);
   assert.deepEqual([byId(s, ids.noamt).cat, byId(s, ids.noamt).why, byId(s, ids.noamt).c], ['C', ['review', 'no_amount'], null]);
   assert.deepEqual([byId(s, ids.unread).cat, byId(s, ids.unread).why], ['C', ['review', 'unreadable', 'no_amount']]);
-  assert.deepEqual([tot(s, 'B').n, N(tot(s, 'B').c), tot(s, 'C').n, N(tot(s, 'C').c), tot(s, 'C').u], [5, 50000, 5, 30000, 2], 'an unknown amount is counted, never as $0');
-  assert.equal(tot(s, 'A').n, 0);
+  assert.deepEqual([tot(s, 'B').n, N(tot(s, 'B').c), tot(s, 'C').n, N(tot(s, 'C').c), tot(s, 'C').u], [0, 0, 5, 30000, 2], 'an unknown amount is counted, never as $0');
+  assert.deepEqual([tot(s, 'A').n, N(tot(s, 'A').c)], [5, 50000]);
+  assert.deepEqual(s.qbn, { n: 5, c: 50000, u: 0, by: Object.fromEntries(['pending', 'sending', 'error', 'unknown', 'none'].map(st => ['qb_' + st, { n: 1, c: 10000 }])) });
+  assert.deepEqual([s.vendors[0].p.n, N(s.vendors[0].p.c)], [5, 30000], '"not in yet" is the waiting ones only');
 });
 
 test('4・7: no class, several stores on one page, not USD and a closed-month adjustment are held (E), each counted once', async () => {
@@ -165,30 +213,33 @@ test('4・7: no class, several stores on one page, not USD and a closed-month ad
   assert.deepEqual(s.ad, { n: 0, c: 0 }, 'a held invoice is not also shown as a possible app duplicate');
 });
 
-test('8・pre-ledger・start: the invoice month decides; before the ledger, reconciled is enough; taken in before the start, the app counts it', async () => {
+test('8・pre-ledger・start: the invoice month decides; QuickBooks is shown apart; taken in before the start, the app counts it', async () => {
   const E = await setup();
   const late = await E.doc({ date: '2026-10-30', created: '2026-11-02T01:00:00Z', qb: 'sent' });   // October invoice, sent and reconciled in November
   const pre = await E.doc({ created: '2026-10-12T20:00:00Z', qb: null });                      // in Drive before qb.since: no ledger row expected
-  const preUnrec = await E.doc({ created: '2026-10-12T20:00:00Z', qb: null, recon: 'unreconciled' });
-  const after = await E.doc({ created: '2026-10-13T17:00:01Z', qb: null });                    // just after qb.since: must be sent
+  const preUnrec = await E.doc({ created: '2026-10-12T20:00:00Z', qb: null, recon: 'unreconciled', mode: 'auto' });
+  const preManual = await E.doc({ created: '2026-10-12T20:00:00Z', qb: null, recon: 'unreconciled' });   // a person posted it: confirmed
+  const after = await E.doc({ created: '2026-10-13T17:00:01Z', qb: null });                    // just after qb.since: not sent yet (shown apart)
   const app = await E.doc({ source: 'app', created: '2026-10-15T00:00:00Z', qb: null });        // not a Drive original: never forwarded by the ledger
   const before = await E.doc({ created: '2026-09-30T23:00:00Z', ingested: '2026-09-30T23:00:00Z' });           // taken in before the start, not copied
   const copied = await E.doc({ created: '2026-09-30T23:00:00Z', ingested: '2026-09-30T23:00:00Z', mirror: 'mirrored' });   // copied under an earlier start
   const deleted = await E.doc({ mirror: 'tombstoned' });                                      // its app copy was deleted in the app
   const oct = (await E.month('2026-10')).summary.stores.F06, nov = (await E.month('2026-11')).summary.stores.F06;
   assert.equal(byId(oct, late.id).cat, 'A'); assert.equal(nov.docs.length, 0);
-  assert.deepEqual([byId(oct, pre.id).cat, byId(oct, pre.id).why], ['A', ['pre_ledger']]);
+  assert.deepEqual([byId(oct, pre.id).cat, byId(oct, pre.id).why], ['A', ['reconciled', 'pre_ledger']]);
   assert.equal(byId(oct, preUnrec.id).cat, 'C');
-  assert.deepEqual([byId(oct, after.id).cat, byId(oct, after.id).why], ['B', ['qb_none']]);
-  assert.deepEqual([byId(oct, app.id).cat, byId(oct, app.id).why], ['A', ['pre_ledger']]);
+  assert.deepEqual([byId(oct, preManual.id).cat, byId(oct, preManual.id).why], ['A', ['posted_manual', 'pre_ledger']]);
+  assert.deepEqual([byId(oct, after.id).cat, byId(oct, after.id).why], ['A', ['reconciled', 'qb_none']]);
+  assert.deepEqual(oct.qbn, { n: 1, c: 10000, u: 0, by: { qb_none: { n: 1, c: 10000 } } }, 'only what the ledger expects (not before it, not from the app)');
+  assert.deepEqual([byId(oct, app.id).cat, byId(oct, app.id).why], ['A', ['reconciled', 'pre_ledger']]);
   assert.deepEqual([byId(oct, before.id).cat, byId(oct, before.id).why], ['E', ['before_start']]);
   assert.equal(byId(oct, copied.id).cat, 'A');
   assert.deepEqual([byId(oct, deleted.id).cat, byId(oct, deleted.id).why], ['E', ['deleted_in_app']]);
-  assert.deepEqual(oct.pre, { n: 2, c: 20000 });
+  assert.deepEqual(oct.pre, { n: 3, c: 30000 });
   // held because the app's own entry counts them (before the start, copy deleted): not "not in yet", also per vendor
   assert.deepEqual(oct.ap, { n: 2, c: 20000, u: 0 });
   const vm = oct.vendors.find(v => v.k === 'minato');
-  assert.deepEqual([vm.p.n, N(vm.p.c)], [2, 20000], 'waiting (unreconciled) and not forwarded only');
+  assert.deepEqual([vm.p.n, N(vm.p.c)], [1, 10000], 'waiting (automatic, unreconciled) only');
   // held (a closed month met when copying): counted when its copy is in the app; without a copy it is left to check
   // (the store may or may not have entered it), so neither counted nor taken as counted by the app
   const heldIn = await E.doc({ mirror: 'held' }), heldOut = await E.doc({ mirror: 'held' }), heldDel = await E.doc({ mirror: 'held' });
@@ -200,14 +251,14 @@ test('8・pre-ledger・start: the invoice month decides; before the ledger, reco
   assert.deepEqual(byId(hm, heldDel.id).why, ['held_no_copy'], 'a copy deleted in the app is no copy');
   assert.deepEqual(hm.ap, { n: 2, c: 20000, u: 0 }, 'not taken as counted by the app');
   const hv = hm.vendors.find(v => v.k === 'minato');
-  assert.deepEqual([hv.p.n, N(hv.p.c)], [4, 40000], 'still to check, so "not in yet"');
+  assert.deepEqual([hv.p.n, N(hv.p.c)], [3, 30000], 'still to check, so "not in yet"');
   // the ledger is per address (qb.to): a send recorded to another address is not a send
   const elsewhere = await E.doc({ qb: null });
   await E.q(`insert into invoice_qb_outbox(file_id,sha256,to_address,route,state,attempt_key,sent_at) values($1,$2,'other@example.test','external','sent','qb-elsewhere',now())`, [elsewhere.file, elsewhere.sha]);
-  assert.deepEqual([byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).cat, byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).why], ['B', ['qb_none']]);
-  // With no qb.since set the ledger never started: nothing is exempted.
+  assert.deepEqual([byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).cat, byId((await E.month('2026-10')).summary.stores.F06, elsewhere.id).why], ['A', ['reconciled', 'qb_none']]);
+  // With no qb.since set the ledger never started: nothing is exempted (still confirmed: QuickBooks is not a condition).
   await E.q(`update invoice_settings set value=value-'since' where key='qb'`);
-  assert.equal(byId((await E.month('2026-10')).summary.stores.F06, pre.id).cat, 'B');
+  assert.deepEqual(byId((await E.month('2026-10')).summary.stores.F06, pre.id).why, ['reconciled', 'qb_none']);
   // With copies to the app turned off, an original the app has no copy of is held (the store's own app entry counts it), never counted twice
   await E.q(`update invoice_settings set value=value||'{"mirror":false}' where key='mode'`);
   const off = (await E.month('2026-10')).summary.stores.F06;
@@ -286,11 +337,15 @@ function model(docs, since, start) {
     else if (!link) cat = 'E';
     else if (d.status === 'review') cat = 'C';
     else if (d.multi || d.currency !== 'USD' || d.adj || unc !== 0 || d.total == null) cat = 'E';
-    else if (d.recon !== 'reconciled') cat = 'C';
-    else if (d.qb === 'sent' || pre) cat = 'A';
-    else cat = 'B';
+    // Moto 2026-10-29: posted by a person or reconciled; reconciled with a difference waits; possibly in the app already waits
+    // unless reconciled; QuickBooks is not a condition.
+    else if (d.recon === 'discrepancy') cat = 'C';
+    else if (d.recon === 'reconciled') cat = 'A';
+    else if (d.mode === 'manual' && !d.appdup) cat = 'A';
+    else cat = 'C';
     const z = x => (x === 0 ? 0 : x);   // no −0
-    out[d.id] = { cat, c: d.total == null ? null : z(mul * Math.abs(d.total)), cost: z(mul * cost), non: z(mul * non), unc: z(mul * unc), store: d.store, ym: d.date.slice(0, 7) };
+    out[d.id] = { cat, c: d.total == null ? null : z(mul * Math.abs(d.total)), cost: z(mul * cost), non: z(mul * non), unc: z(mul * unc), store: d.store, ym: d.date.slice(0, 7),
+      qbn: cat === 'A' && d.qb !== 'sent' && !pre };
   }
   return out;
 }
@@ -315,8 +370,10 @@ test('random invoices: every invoice is in the place the rules give, with the sa
       mirror: pick([undefined, undefined, 'mirrored', 'tombstoned', 'held', 'error']), lines, adj: rnd() < 0.05, currency: rnd() < 0.05 ? 'CAD' : 'USD' };
     d.ingested = rnd() < 0.15 ? '2026-09-29T00:00:00Z' : d.created;
     d.multi = rnd() < 0.06;
+    d.mode = rnd() < 0.3 ? 'auto' : 'manual';
+    d.appdup = rnd() < 0.1;
     d.fk = d.vk === 'clean' ? 'nonfood' : d.vk === 'nokind' ? null : 'food';
-    const r = await E.doc({ ...d, lines: lines.map(([x, c]) => [x, c]), reasons: d.multi ? ['multi_store'] : [] });
+    const r = await E.doc({ ...d, lines: lines.map(([x, c]) => [x, c]), reasons: [...(d.multi ? ['multi_store'] : []), ...(d.appdup ? ['app_duplicate_candidate'] : [])] });
     docs.push({ ...d, lines: lines.map(([x, c]) => [x, c ? codes[c] : null]), id: r.id });
   }
   const want = model(docs, SINCE, '2026-10-01T00:00:00Z');
@@ -338,6 +395,9 @@ test('random invoices: every invoice is in the place the rules give, with the sa
         assert.equal(N(tot(s, cat).cost), mine.reduce((a, d) => a + N(d.cost), 0), sid + cat);
       }
       assert.equal(s.vendors.reduce((a, v) => a + N((v.a || {}).c || 0), 0), N(tot(s, 'A').c));
+      const q = s.docs.filter(d => want[d.id].qbn);
+      assert.deepEqual([s.qbn.n, N(s.qbn.c)], [q.length, q.reduce((a, d) => a + (d.c == null ? 0 : N(d.c)), 0)], sid + ' not sent to QuickBooks');
+      assert.equal(tot(s, 'B').n, 0, 'nothing is B any more');
     }
     assert.equal(Object.values(m.summary.stores).reduce((a, s) => a + s.docs.length, 0), docs.filter(d => d.date.startsWith(ym)).length, 'every invoice of the month once');
   }
@@ -370,7 +430,7 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   assert.deepEqual([p2.changed, p2.frozen], [['2026-10'], ['2026-08']]);
   assert.equal((await E.state('invoice_purchase_2026-08')).stores.F06.vendors[0].n, 'Minato Seika');
   // ... and is written again when its invoices change: one reconciled after closing reaches the month's cost (still closed)
-  const lateAug = await E.doc({ total: 500, date: '2026-08-21', recon: 'unreconciled' });
+  const lateAug = await E.doc({ total: 500, date: '2026-08-21', recon: 'unreconciled', mode: 'auto' });
   let p3 = await E.publish();
   assert.deepEqual([p3.changed, p3.frozen], [['2026-08'], []]);
   let aug2 = await E.state('invoice_purchase_2026-08');
@@ -466,7 +526,7 @@ test('publishing: rows for the app, a closed month kept as it was, the switch to
   // browsers cannot read the new tables or run the new functions
   await E.pg.exec('reset role');
   for (const role of ['anon', 'authenticated']) {
-    for (const t of ['invoice_purchase_checks', 'invoice_purchase_published'])
+    for (const t of ['invoice_purchase_checks', 'invoice_purchase_published', 'invoice_purchase_snapshots'])
       assert.equal((await E.q(`select has_table_privilege($1, 'public.' || $2, 'select,insert,update,delete') v`, [role, t]))[0].v, false);
     for (const f of ['invoice_purchase_classes(text[])', 'invoice_purchase_month(text,jsonb)', 'invoice_purchase_publish(jsonb)', 'invoice_purchase_check(jsonb)'])
       assert.equal((await E.q(`select has_function_privilege($1, 'public.' || $2, 'execute') v`, [role, f]))[0].v, false);
@@ -512,20 +572,20 @@ test('11: the statement check is for accounting, 事務Crew, GM and CEO; checked
 
 test('people\'s actions, the forwarder\'s result and the worker write the summary at once; the action stands if the summary fails', async () => {
   const E = await setup();
-  const a = await E.doc({ total: 4200, recon: 'unreconciled', qb: 'sending' });
+  const a = await E.doc({ total: 4200, recon: 'unreconciled', qb: 'sending', mode: 'auto' });
   await E.publish();
   const [d] = await E.q(`select version from invoice_docs where id=$1`, [a.id]);
   const r = await E.api('tok-office', { action: 'reconcile', doc_id: a.id, version: d.version, result: 'reconciled' });
   assert.equal(r.status, 200); assert.equal(r.body.summary, true);
   let s = (await E.state('invoice_purchase_2026-10')).stores.F06;
-  assert.deepEqual([byId(s, a.id).cat, byId(s, a.id).rby], ['B', 'Akane Sample']);
-  // the outside forwarder records the send: confirmed at once
+  assert.deepEqual([byId(s, a.id).cat, byId(s, a.id).why, byId(s, a.id).rby], ['A', ['reconciled', 'qb_sending'], 'Akane Sample']);
+  // the outside forwarder records the send: no longer shown as not sent
   await E.q(`update invoice_settings set value=jsonb_build_object('key','qb-key-0123456789','enabled',true) where key='qb_external'`);
   const [o] = await E.q(`select id from invoice_qb_outbox where sha256=$1`, [a.sha]);
   const x = await E.call({ action: 'qb_external_result', id: o.id, state: 'sent', message_id: 'm1' }, { 'x-invoice-qb-key': 'qb-key-0123456789' });
   assert.equal(x.status, 200);
   s = (await E.state('invoice_purchase_2026-10')).stores.F06;
-  assert.equal(byId(s, a.id).cat, 'A');
+  assert.deepEqual([byId(s, a.id).cat, byId(s, a.id).why, s.qbn.n], ['A', ['reconciled'], 0]);
   // the worker (intake off) still writes
   const b = await E.doc({ total: 100 });
   const w = await E.worker();
@@ -536,7 +596,7 @@ test('people\'s actions, the forwarder\'s result and the worker write the summar
   // a broken summary never undoes the action
   await E.q(`update invoice_settings set value=value||'{"start_at":"not a date"}' where key='mode'`);
   await E.pg.exec(`reset role; alter function public.invoice_purchase_publish(jsonb) rename to invoice_purchase_publish_off; set role service_role;`);
-  const c = await E.doc({ total: 900, recon: 'unreconciled' });
+  const c = await E.doc({ total: 900, recon: 'unreconciled', mode: 'auto' });
   const [dc] = await E.q(`select version from invoice_docs where id=$1`, [c.id]);
   const r2 = await E.api('tok-office', { action: 'reconcile', doc_id: c.id, version: dc.version, result: 'reconciled' });
   assert.equal(r2.status, 200); assert.equal(r2.body.summary, false);
@@ -547,8 +607,9 @@ test('the store and month report (read only) puts the summary next to the app\'s
   const E = await setup();
   const inv = await E.doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });
   await E.doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: inv.id });
-  await E.doc({ total: 50000, qb: 'pending' });
-  await E.doc({ total: 40000, recon: 'unreconciled' });
+  await E.doc({ total: 50000, qb: 'pending', recon: 'unreconciled', mode: 'auto' });
+  await E.doc({ total: 40000, recon: 'unreconciled', mode: 'auto' });
+  await E.doc({ total: 30000, qb: 'error' });                                                       // confirmed, original not sent yet
   await E.doc({ total: 7000, created: '2026-09-30T23:00:00Z', ingested: '2026-09-30T23:00:00Z' });   // before the start
   await E.publish();
   await E.pg.exec(`reset role;
@@ -568,13 +629,14 @@ test('the store and month report (read only) puts the summary next to the app\'s
     set role service_role;`);
   const rows = await E.q(fs.readFileSync(new URL('../db/invoice-purchase-report.sql', import.meta.url), 'utf8'));
   const r = rows.find(x => x['店舗'] === 'F06' && x['月'] === '2026-10');
-  assert.equal(r['確認済み（原本の純額）'], '2 件 / $1,300.00');
-  assert.equal(r['原価対象 / 対象外'], '$1,100.00 / $200.00（仮分類 $0.00）');
-  assert.equal(r['未転送 B'], '1 件 / $500.00'); assert.equal(r['確認待ち C'], '1 件 / $400.00');
+  assert.equal(r['確認済み（原本の純額）'], '3 件 / $1,600.00');
+  assert.equal(r['原価対象 / 対象外'], '$1,400.00 / $200.00（仮分類 $300.00）');
+  assert.equal(r['未転送 B'], '0 件 / $0.00'); assert.equal(r['確認待ち C'], '2 件 / $900.00');
+  assert.equal(r['QuickBooks 未転送（確認済みのうち）'], '1 件 / $300.00');
   assert.equal(r['保留 E'], '1 件 / $70.00（開始前 1 件）');
   assert.equal(r['返品・クレジット（確認済み）'], '1 件 / -$100.00');
   assert.equal(r['アプリの登録'], '$120.00', '$80 + half of $60 (split with another store) + $5.50 + $4.50 (loose dates); receipts, deleted ones and totals that are not numbers are not counted');
-  assert.equal(r['今までの数え方'], '$2,020.00'); assert.equal(r['新しい数え方'], '$1,220.00'); assert.equal(r['差'], '$800.00');
+  assert.equal(r['今までの数え方'], '$2,020.00'); assert.equal(r['新しい数え方'], '$1,520.00'); assert.equal(r['差'], '$500.00');
   assert.equal(r['期末棚卸'], '$1,800.00');
   const f01 = rows.find(x => x['店舗'] === 'F01' && x['月'] === '2026-10');
   assert.equal(f01['アプリの登録'], '$30.00'); assert.equal(f01['期末棚卸'], 'まだ');
@@ -627,7 +689,9 @@ test('the deploy folder: the SQL files are the repository files, the one-file fu
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const D = 'deploy/invoice-purchase-v1077/';
   for (const [copy, orig] of [['1_追加のSQL_仕入れ集計.sql', 'supabase/migrations/20261019090000_invoice_purchase_summary.sql'], ['4_すぐに集計を作る.sql', 'db/invoice-purchase-start.sql'],
-    ['5_照合の結果_読むだけ.sql', 'db/invoice-purchase-report.sql'], ['止める.sql', 'db/invoice-purchase-stop.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+    ['止める.sql', 'db/invoice-purchase-stop.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  // The report stays as it was handed over on 10/14; the current one (with "QuickBooks 未転送", 2026-10-29) is in deploy/invoice-purchase-posted/.
+  assert.equal(crypto.createHash('sha256').update(rd(D + '5_照合の結果_読むだけ.sql')).digest('hex'), '0c859fe8da5a1f6ee60a3241db9faaecb6d2512090076e4f0f55bb0fc27a3477');
   const src = JSON.parse(rd(D + 'source.json'));
   // The one-file function stays as it was handed over (the sources moved on with 段階 2: deploy/invoice-stage2-v1081 is
   // built from the current ones and checked in tests/invoice-intake.test.mjs). It is the version to go back to.
@@ -653,4 +717,85 @@ test('the deploy folder: the SQL files are the repository files, the one-file fu
   await bare.exec(`create role anon; create role authenticated; create role service_role bypassrls;`);
   await assert.rejects(bare.exec(rd(D + '1_追加のSQL_仕入れ集計.sql').toString()), /20261012120000/);
   await bare.close();
+});
+
+// 2026-10-29 の入れ方：本番は前の決まり（照合済みかつ送信済み）で集計していた。migration 20261029100000 は今の集計を残してから決まりを変え、
+// 比べる SQL（読むだけ）は入れる前に「前」と「見込み」、入れたあとに「後」を出す。戻す SQL は前の決まりに戻す。QuickBooks の台帳は何も変わらない。
+test('2026-10-29 deploy: the old summary is kept, the compare SQL shows before, expected and after, nothing is queued for QuickBooks, and it can be undone', async () => {
+  const E = await setup();
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
+  const MIG = rd('supabase/migrations/20261029100000_invoice_purchase_posted.sql'), REVERT = rd('db/invoice-purchase-posted-revert.sql'), CMP = rd('db/invoice-purchase-posted-compare.sql');
+  // production before 10/29: the earlier rule and no snapshot table
+  await E.pg.exec(`reset role; drop table public.invoice_purchase_snapshots;`); await E.pg.exec(REVERT); await E.pg.exec('set role service_role');
+  const m1 = await E.doc({ total: 10000, recon: 'unreconciled' });                                       // posted by a person, sent: C → A
+  const m2 = await E.doc({ total: 5000, recon: 'unreconciled', qb: 'pending' });                         // posted by a person, not sent: C → A (not sent)
+  await E.doc({ total: 7000, recon: 'unreconciled', mode: 'auto' });                                     // automatic: C both
+  const r1 = await E.doc({ total: 3000, qb: 'pending' });                                                 // reconciled, not sent: B → A (not sent)
+  await E.doc({ total: 20000 });                                                                         // reconciled and sent: A both
+  await E.doc({ total: 4000, recon: 'unreconciled', reasons: ['app_duplicate_candidate'] });            // may be in the app: C both
+  await E.doc({ total: 2000, recon: 'discrepancy' });                                                   // a difference: C both
+  await E.doc({ total: 1000, status: 'review', recon: 'unreconciled', qb: null });                      // not posted: C both
+  await E.doc({ total: 6000, created: '2026-09-30T23:00:00Z', ingested: '2026-09-30T23:00:00Z' });     // before the start: E both (the app entry counts it)
+  await E.doc({ store: 'F01', total: 8000, recon: 'unreconciled' });                                     // another store: C → A
+  await E.publish();
+  const before = await E.state('invoice_purchase_2026-10');
+  assert.deepEqual([tot(before.stores.F06, 'A').n, N(tot(before.stores.F06, 'A').cost), tot(before.stores.F06, 'B').n, tot(before.stores.F06, 'C').n], [1, 20000, 1, 6]);
+  const ledger = async () => (await E.q(`select id, state, attempt_key from invoice_qb_outbox order by id`));
+  const ledger0 = await ledger();
+  const cmp = async () => { await E.pg.exec('reset role'); const r = (await E.pg.exec(CMP)).at(-1).rows; await E.pg.exec('set role service_role'); return r; };
+  const POST = rd('db/invoice-intake-postcheck.sql');
+  const posted = async () => { await E.pg.exec('reset role'); const r = (await E.pg.query(POST)).rows[0]; await E.pg.exec('set role service_role'); return [r.purchase_posted, Number(r.tables)]; };
+  assert.deepEqual(await posted(), [false, 24], 'the check SQL: not in yet');
+  const row = (rows, sid) => { const r = rows.find(x => x['店舗'] === sid); return Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v == null ? v : String(v)])); };
+  // before the change: before and expected; "after" is still the earlier rule
+  let rows = await cmp();
+  let all = row(rows, '合計'), f06 = row(rows, 'F06');
+  assert.deepEqual([all['前：確認済み 件'], all['前：原価対象 $'], all['前：未転送 件'], all['見込み：確認済み 件'], all['見込み：原価対象 $'], all['見込み：増える原価 $']],
+    ['1', '200.00', '1', '5', '460.00', '260.00']);
+  assert.deepEqual([f06['照合を待つ（アプリと同じかも）'], f06['照合を待つ（自動で反映）'], f06['後：確認済み 件'], f06['後の決まり'], f06['前の出どころ']],
+    ['1', '1', '1', '前の決まり', 'いまの集計（まだ入れていない）']);
+  // the change: the earlier summary kept once (twice run, still once), then the new rule
+  await E.pg.exec('reset role'); await E.pg.exec(MIG); await E.pg.exec(MIG); await E.pg.exec('set role service_role');
+  assert.deepEqual(await posted(), [true, 25], 'the check SQL: in');
+  const snaps = await E.q(`select ym, summary from invoice_purchase_snapshots order by id`);
+  assert.deepEqual(snaps.map(s => s.ym), ['2026-10']);
+  assert.deepEqual(snaps[0].summary, (await E.q(`select summary from invoice_purchase_published where ym='2026-10'`))[0].summary);
+  rows = await cmp(); all = row(rows, '合計'); f06 = row(rows, 'F06');
+  assert.deepEqual([all['前：確認済み 件'], all['見込み：確認済み 件'], all['後：確認済み 件'], all['後：原価対象 $'], all['後：うち人の反映（未照合）'], all['後：うち QuickBooks 未転送 件'], all['後：QuickBooks 未転送 $']],
+    ['1', '5', '5', '460.00', '3', '2', '80.00'], 'after = expected');
+  assert.deepEqual([f06['後：確認待ち 件'], f06['後：確認待ち $'], f06['後の決まり'], f06['前の出どころ']], ['4', '140.00', 'posted_or_reconciled', '残した集計']);
+  // published within the next run: the app sees the new numbers; the ledger is as it was (nothing queued, sent or resent)
+  assert.deepEqual((await E.publish()).changed, ['2026-10']);
+  const after = await E.state('invoice_purchase_2026-10');
+  assert.deepEqual([tot(after.stores.F06, 'A').n, N(tot(after.stores.F06, 'A').cost), tot(after.stores.F06, 'B').n, tot(after.stores.F01, 'A').n], [4, 38000, 0, 1]);
+  assert.deepEqual([byId(after.stores.F06, m1.id).why, byId(after.stores.F06, m2.id).why, byId(after.stores.F06, r1.id).why], [['posted_manual'], ['posted_manual', 'qb_pending'], ['reconciled', 'qb_pending']]);
+  assert.deepEqual(await ledger(), ledger0);
+  assert.deepEqual((await E.publish()).changed, [], 'published again: nothing more changes (no double count)');
+  // undo: the earlier rule again (the kept summary stays)
+  await E.pg.exec('reset role'); await E.pg.exec(REVERT); await E.pg.exec(REVERT); await E.pg.exec('set role service_role');
+  assert.deepEqual((await E.publish()).changed, ['2026-10']);
+  const back = await E.state('invoice_purchase_2026-10');
+  const strip = v => { const x = JSON.parse(JSON.stringify(v)); delete x.generated_at; return x; };
+  assert.deepEqual(strip(back), strip(before), 'the same summary as before the change');
+  assert.equal((await E.q(`select count(*)::int n from invoice_purchase_snapshots`))[0].n, 1);
+  assert.deepEqual(await ledger(), ledger0);
+});
+
+test('deploy/invoice-purchase-posted: the copies are the repository files and the steps are in order (no function, nothing sent)',
+  { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, () => {
+  const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
+  const D = 'deploy/invoice-purchase-posted/';
+  assert.deepEqual(fs.readdirSync(new URL('../' + D, import.meta.url)).sort(), ['0_前と後を比べる_読むだけ.sql', '1_追加のSQL_確認済みの決まり.sql', '2_確認のSQL_読むだけ.sql',
+    '3_すぐに集計を作る.sql', '4_開始前の分_読むだけ.sql', '戻す.sql', '手順.md'].sort());
+  for (const [copy, orig] of [['0_前と後を比べる_読むだけ.sql', 'db/invoice-purchase-posted-compare.sql'], ['1_追加のSQL_確認済みの決まり.sql', 'supabase/migrations/20261029100000_invoice_purchase_posted.sql'],
+    ['2_確認のSQL_読むだけ.sql', 'db/invoice-intake-postcheck.sql'], ['3_すぐに集計を作る.sql', 'db/invoice-purchase-publish-now.sql'],
+    ['4_開始前の分_読むだけ.sql', 'db/invoice-purchase-before-start-check.sql'], ['戻す.sql', 'db/invoice-purchase-posted-revert.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  // publishing now never turns a stopped summary back on (unlike db/invoice-purchase-start.sql)
+  assert.ok(!/invoice_settings/.test(rd('db/invoice-purchase-publish-now.sql').toString().replace(/^--.*$/gm, '')));
+  const steps = rd(D + '手順.md').toString();
+  const at = k => { const i = steps.indexOf(k); assert.ok(i >= 0, k); return i; };
+  assert.ok(at('0. **Supabase → SQL Editor** に `0_前と後を比べる') < at('1. `1_追加のSQL') && at('1. `1_追加のSQL') < at('2. `2_確認のSQL')
+    && at('2. `2_確認のSQL') < at('3. `3_すぐに集計を作る') && at('3. `3_すぐに集計を作る') < at('4. もう一度 `0_前と後を比べる') && at('4. もう一度') < at('5. この PR をマージ')
+    && at('5. この PR をマージ') < at('6. `4_開始前の分'));
+  for (const k of ['tables 25・purchase_posted true', 'QuickBooks へは何も送らない・送り直さない', '関数（Edge Function）は変えない', '戻す.sql']) assert.ok(steps.includes(k), k);
 });

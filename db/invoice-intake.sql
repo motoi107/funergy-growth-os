@@ -1847,8 +1847,8 @@ do $$ declare f text; begin
 end $$;
 
 -- 確認済み invoice の全店仕入れ集計（Moto 2026-10-14・UI案48）。
--- 確認済み仕入れ＝反映済み・経理の照合済み（recon_status='reconciled'）・QuickBooks へ原本を送った記録がある。
--- QuickBooks の台帳（qb.since）より前に Drive に入った原本は台帳に送った記録が無い（前の経路で送られた）ので、照合済みだけで入れる（Moto 10/14）。
+-- 確認済み仕入れ＝反映済みで、経理などが人で反映したもの（「この内容で反映する」・まとめて反映）か、経理の照合済み（recon_status='reconciled'）。
+-- 自動で反映したものは照合済みになってから。QuickBooks へ送ったかは条件にしない（Moto 2026-10-29・20261029100000。それまでは照合済みかつ送信済み）。
 -- 予実管理の原価率は 2026 年 10 月から、この確認済みの数字で出す（アプリ v1077。Moto 10/14「① B」「10 月から」）。
 --
 -- What this adds (service_role only, like every other invoice_ object):
@@ -2079,9 +2079,13 @@ begin
     when not link then 'E'
     when status='review' then 'C'
     when multi or coalesce(currency,'USD')<>'USD' or needs_adjustment or unclass_m<>0 or tp is null then 'E'
-    when recon_status<>'reconciled' then 'C'
-    when qbs='sent' or preledger then 'A'
-    else 'B' end cat
+    -- 経理の確認（Moto 2026-10-29）：経理などが人で反映したもの（「この内容で反映する」・まとめて反映＝posted_mode 'manual'）か、
+    -- 経理の照合済み。自動で反映したものは照合済みになってから。照合で差異ありにしたもの、アプリでの登録と同じかもしれないもの
+    -- （人が反映していても）は照合を待つ。QuickBooks へ送ったかは条件にしない（送っていない分は qbn に別に出す・送り直さない）。
+    when recon_status='discrepancy' then 'C'
+    when recon_status='reconciled' then 'A'
+    when posted_mode='manual' and not appdup then 'A'
+    else 'C' end cat
   from dd1
  ),
  dd as (
@@ -2095,9 +2099,14 @@ begin
      else array_remove(array[case when multi then 'multi_store' end, case when coalesce(currency,'USD')<>'USD' then 'currency' end,
       case when needs_adjustment then 'closed_adjustment' end, case when unclass_m<>0 then 'no_class' end, case when tp is null then 'no_amount' end], null) end
     when 'C' then case when status='review' then array_remove(array['review', case when doc_type='unknown' then 'unreadable' end,
-      case when nodate then 'no_date' end, case when tp is null then 'no_amount' end], null) else array[recon_status] end
+      case when nodate then 'no_date' end, case when tp is null then 'no_amount' end], null)
+     when recon_status='discrepancy' then array['discrepancy']
+     when posted_mode='manual' then array['unreconciled', 'app_dup']
+     else array['unreconciled'] end
     when 'B' then array['qb_' || coalesce(qbs, 'none')]
-    else case when qbs is distinct from 'sent' then array['pre_ledger'] else array[]::text[] end end why
+    -- A: how it was confirmed first (the breakdown groups by it), then whether its original was sent to QuickBooks.
+    else array_remove(array[case when recon_status='reconciled' then 'reconciled' else 'posted_manual' end,
+      case when qbs is distinct from 'sent' then case when preledger then 'pre_ledger' else 'qb_' || coalesce(qbs, 'none') end end], null) end why
   from dd2
  ),
  sto as (
@@ -2170,7 +2179,8 @@ begin
   from dd left join lg on lg.doc_id=dd.id
  )
  select jsonb_build_object(
-  'summary', jsonb_build_object('v', 1, 'ym', p_ym, 'closed', v_closed is not null and p_ym <= v_closed,
+  -- rule: what "confirmed" means in this summary (posted by a person or reconciled, 2026-10-29). Older summaries have none.
+  'summary', jsonb_build_object('v', 1, 'rule', 'posted_or_reconciled', 'ym', p_ym, 'closed', v_closed is not null and p_ym <= v_closed,
    'start_at', v_start, 'qb_since', v_since,
    'stores', coalesce((select jsonb_object_agg(s.store_id, jsonb_build_object(
      'tot', coalesce((select jsonb_object_agg(tj.cat, tj.j) from tj where tj.store_id=s.store_id), '{}'::jsonb),
@@ -2178,6 +2188,12 @@ begin
         'supply', coalesce(sum(mul * supply_m), 0), 'nonfood', coalesce(sum(mul * nonfood_m), 0)) from dd where dd.store_id=s.store_id and dd.cat='A'),
      'cr', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents), 0)) from dd where dd.store_id=s.store_id and dd.cat='A' and dd.credit),
      'pre', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents), 0)) from dd where dd.store_id=s.store_id and dd.cat='A' and 'pre_ledger' = any(dd.why)),
+     -- confirmed (in the cost) but its original not sent to QuickBooks yet: shown apart, never resent from here (Moto 2026-10-29)
+     'qbn', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0), 'u', count(*) filter (where cents is null),
+        'by', coalesce((select jsonb_object_agg(z.k, jsonb_build_object('n', z.n, 'c', z.c)) from (
+          select 'qb_' || coalesce(y.qbs, 'none') k, count(*) n, coalesce(sum(y.cents) filter (where y.cents is not null), 0) c
+          from dd y where y.store_id=s.store_id and y.cat='A' and y.qbs is distinct from 'sent' and not y.preledger group by 1) z), '{}'::jsonb))
+        from dd where dd.store_id=s.store_id and dd.cat='A' and dd.qbs is distinct from 'sent' and not dd.preledger),
      'ad', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0)) from dd where dd.store_id=s.store_id and dd.cat in ('A','B','C') and dd.appdup),
      -- held because the app's own entry counts them (taken in before the start, no copy, copy deleted): not "not in yet"
      'ap', (select jsonb_build_object('n', count(*), 'c', coalesce(sum(cents) filter (where cents is not null), 0), 'u', count(*) filter (where cents is null))
@@ -2191,7 +2207,6 @@ begin
  into v_res;
  return v_res;
 end $$;
-
 -- Writes the months whose content changed: every month that has purchase documents, a statement check or an earlier summary
 -- (the worker, on every run), or only the months of the invoices, file or ledger row a person's action touched (p.doc_ids,
 -- p.file_id, p.outbox_id, p.months). A closed month (rules.closed_through) is written once more when it is closed; after that
@@ -3920,3 +3935,23 @@ do $$ declare f text; begin
   execute format('grant execute on function public.%s to service_role', f);
  end loop;
 end $$;
+
+-- ================================================================ 確認済み＝人の反映か照合済み（20261029100000・Moto 2026-10-29）
+-- invoice_purchase_month は上で置き換え済み（経理の確認＝人が反映したもの・または照合済み。QuickBooks は条件にしない）。
+-- 置き換える前の集計を残す表（サーバーだけ）。本番では migration が今の invoice_purchase_published を 1 回だけ写す。
+create table if not exists public.invoice_purchase_snapshots(
+ id bigint generated always as identity primary key,
+ taken_at timestamptz not null default now(),
+ reason text not null,
+ ym text not null,
+ hash text,
+ published_at timestamptz,
+ checked_at timestamptz,
+ closed boolean,
+ summary jsonb,
+ lines jsonb,
+ inputs text
+);
+alter table public.invoice_purchase_snapshots enable row level security;
+revoke all on public.invoice_purchase_snapshots from public, anon, authenticated;
+grant select, insert on public.invoice_purchase_snapshots to service_role;

@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-10-29 v1112：仕入れタブに経理確認済みの invoice が入らない（Claude・ブランチ `claude/invoice-purchase-posted`・migration `20261029100000`・本番未反映）
+
+- 依頼：Moto さん 10/29 の添付（原因を裏付け → 直す → 戻す → 確かめる。外部の会計へ送らない・予算と売上を変えない・戻す前の状態を残す・推測で埋めない）。仕様と決まりは `docs/INVOICE_PURCHASE_POSTED_JA.md`、入れる一式は `deploy/invoice-purchase-posted/`。
+- 原因（10/29 08:15 HST・本番を読むだけの `db/invoice-purchase-trace-check.sql`）：集計は「照合済みかつ QuickBooks 送信済み」だけを確認済み（A）にしていた。経理の確認は Invoice取込の反映（名前の変更もそこ）で、照合は別の作業で 10 月はほとんど進んでいない → 人が反映した invoice の大半が確認待ち（C）で原価に入らなかった。QuickBooks の台帳・5 分ごとの書き出し・アプリの読み込み・識別子（doc id・Drive の file id・sha256）は問題なし。本番の件数・金額はリポジトリに書かない（Moto さんに直接）。
+- Moto さんの決定（10/29・選択肢）：確認済み＝人が反映したもの（自動で反映したものは照合済みになってから・照合は別の作業のまま）／QuickBooks は条件から外す（未転送は別に出す・送り直さない）。
+- 直し：`invoice_purchase_month` の区分（差異あり → C・照合済み → A・人の反映でアプリと同じかもしれない印なし → A・ほか → C。B は作らない）・A の理由（確かめ方と QuickBooks の状態）・店ごとの `qbn`（確認済みのうち未転送）・`rule`。表 `invoice_purchase_snapshots`（migration が今の集計を 1 回だけ写す）。postcheck `purchase_posted`・表 25。アプリ v1112 は言葉と「QuickBooks 未転送」だけ（計算は変えない）。比べる SQL（前・見込み・後）・戻す SQL・すぐ作る SQL（止めた設定を変えない）・照合の表に未転送の列。関数（Edge Function）は変えない。
+- 守ったこと：二重に数えない（C → A に移るだけ・作り直しは同じ中身なら書かない・アプリと同じかもしれないものと開始前の分は今までどおり）／QuickBooks の台帳は 1 行も増えない・変わらない（試験）／締めた月は今の決まり／予算・売上・棚卸・食材移動は触らない。
+- 試験（合成データ）：purchase-summary 19・purchase-ui 13・purchase-trace-sql 2・invoice の全ファイル（mutations 以外）の失敗 0。わざと壊す 10/29 の 12 通り（結果は下に追記）。static release pass/1112。本番のデータでは確かめていない。
+- 次：独立レビュー → PR → Codex → Moto さんが `deploy/invoice-purchase-posted/手順.md` の順（比べる → SQL → 確認 → すぐ作る → 比べる → マージ → 開始前の分）→ 結果を Claude に。
+
 ## 2026-10-29 v1111：Toast での名前（別名）・同じ日の 2 つの打刻を足す（UI案62・Claude・ブランチ `claude/toast-alias-1111`・v1110（PR #98）の上・本番未反映）
 
 - 依頼：ある店のスタッフの Toast の名前が従業員マスターとハイフン・空白の位置だけ違い、10 月後半の打刻が勤怠・チップに入っていなかった（名前は公開しない）。UI案62（Design・非公開・5 枚）→ Moto さん 10/29「1 A 2 A 3 A 4 A」。
