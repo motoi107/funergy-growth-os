@@ -2865,7 +2865,7 @@ function toastAliasField(n, store){ return 'toastAlias_' + toastNameKey(n) + (st
 function _toastAliasRec(a){
   if(!a || typeof a!=='object' || typeof a.n!=='string' || !a.n.trim()) return null;
   return { n:a.n.trim(), from:(typeof a.from==='string' && /^\d{4}-\d{2}-\d{2}$/.test(a.from)) ? a.from : '', at:String(a.at||''), by:String(a.by||''), via:String(a.via||''), off:a.off===true,
-           store:(typeof a.store==='string' && /^[A-Za-z0-9_-]{1,30}$/.test(a.store)) ? a.store : '' };
+           store:(typeof a.store==='string' && a.store.length<=60 && a.store.trim()===a.store) ? a.store : '' };   /* 店の ID は店舗マスターで自由に入れられる（独立レビュー 7d234a4 P3-2） */
 }
 /* その人の別名（外したものは除く）。store が空なら全店、店が入っていればその店だけ。欄の名前と中身（名前・店）が合わないものは使わない */
 function empToastAliases(e){
@@ -53668,7 +53668,9 @@ function unregisteredClockIns(days){
     }
   }catch(e){}
   var emps=getEmployees(), _aIdx=toastAliasIndex(emps);
-  var _cov=function(key, sid){ return (_aIdx[key]||[]).some(function(a){ return !a.store || a.store===sid; }); };
+  /* その店で別名がちょうど 1 人に決まるときだけ「結んだ」とみなす（取り込みと同じ決め方。2 人に当たると、どちらにも入らないので一覧に残す・独立レビュー 7d234a4 P3-1） */
+  var _cov=function(key, sid){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
+    (act.length ? act : ok).forEach(function(a){ ids[a.emp.id]=1; }); return Object.keys(ids).length===1; };
   var out=[];
   Object.keys(map).forEach(function(name){
     var m=map[name];
@@ -53851,7 +53853,7 @@ function empAliasCanEdit(e){
 function _empAliasGroups(list){
   var g=[], at={};
   (list||[]).forEach(function(a, i){
-    var key=a.store ? 's|'+toastNameKey(a.n)+'|'+a.from+'|'+a.at : 'g|'+i;
+    var key=a.store ? 's|'+toastNameKey(a.n)+'|'+a.from+'|'+a.at+'|'+a.by : 'g|'+i;
     if(at[key]===undefined){ at[key]=g.length; g.push({ n:a.n, from:a.from, at:a.at, by:a.by, via:a.via, global:!a.store, stores:[], idx:[] }); }
     var x=g[at[key]]; x.idx.push(i); if(a.store) x.stores.push(a.store);
   });
@@ -53901,7 +53903,7 @@ function empAliasRemove(gi){
   var days=0, k=toastNameKey(a.n);
   try{ lsKeys('tip_labor_').forEach(function(key){ var dt=key.slice(key.lastIndexOf('_')+1); if(!/^\d{4}-\d{2}-\d{2}$/.test(dt) || (a.from && dt<a.from)) return; if(rmStores && rmStores.indexOf(key.slice(10, key.lastIndexOf('_')))<0) return; var d=_lsRaw(key,null), e=d&&d[nm]; if(!e) return;
     var ns=Array.isArray(e.toastNames)&&e.toastNames.length?e.toastNames:[e.toastName]; if(ns.some(function(x){ return toastNameKey(x)===k; })) days++; }); }catch(err){}
-  if(!confirm(t('「'+a.n+'」を外しますか？\n外すと、この名前の打刻は '+nm+' さんの勤怠に数えなくなります（未登録の打刻検知に戻ります）。\n'+(a.from?a.from.replace(/-/g,'/')+' からの':'')+'チップの配分が変わります'+(days?'（この端末で '+days+' 日）':'')+'。\nアプリは払う・差し引くをしません。支給済みの額との差は経理が確かめます。','Remove "'+a.n+'"?\nPunches under this name will no longer count for '+nm+'. Tip splits change'+(days?' ('+days+' days on this device)':'')+'.'))) return;
+  if(!confirm(t('「'+a.n+'」'+(rmStores?'（'+rmStores.map(toastLinkStoreName).join('・')+' の分）':'')+'を外しますか？\n外すと、この名前の打刻は '+nm+' さんの勤怠に数えなくなります（未登録の打刻検知に戻ります）。\n'+(a.from?a.from.replace(/-/g,'/')+' からの':'')+'チップの配分が変わります'+(days?'（この端末で '+days+' 日）':'')+'。\nアプリは払う・差し引くをしません。支給済みの額との差は経理が確かめます。','Remove "'+a.n+'"'+(rmStores?' ('+rmStores.map(toastLinkStoreName).join(', ')+')':'')+'?\nPunches under this name will no longer count for '+nm+'. Tip splits change'+(days?' ('+days+' days on this device)':'')+'.'))) return;
   F.aliases=F.aliases.filter(function(_, j){ return rm.indexOf(j)<0; });
   empAliasRender();
 }

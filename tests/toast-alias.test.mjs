@@ -431,3 +431,33 @@ test('Codex P1 (62339b9): an AM cannot remove or overwrite an all-stores alias, 
   const ch = plain(run(c, `empAliasChanges(${JSON.stringify(list)}, ${JSON.stringify([list[1], list[2]])})`));
   assert.deepEqual(ch.remove.map(a => a.f), [fld(KANA) + '@F04-P']); assert.deepEqual(ch.add, []);
 });
+
+// Independent review of 7d234a4 (Claude, another agent)
+test('review P3-1 (7d234a4): two people\'s aliases meet at one store (saved at the same time on two devices): the punch counts for nobody there, and it stays in the unregistered list', async () => {
+  const c = app(source, ['syncTipLaborFromDB', ...NEW]);
+  c.EMPS = EMPS();
+  c.EMPS[1][fld(KANA) + '@F04-P'] = al(KANA, '2026-10-16', { store: 'F04-P' });   // an AM, for her store
+  c.EMPS[3][fld(KANA)] = al(KANA, '2026-10-16');                                  // a GM, for another person, all stores
+  assert.deepEqual(Object.keys(await importAt(c, 'F04-P', '2026-10-20')), [KANA], 'not linked to either at F04-P');
+  assert.deepEqual(Object.keys(await importAt(c, 'F01', '2026-10-20')), ['Ren Placeholder'], 'only the all-stores alias at F01');
+  c.STORE = {};
+  c.STORE['tip_labor_F04-P_2026-10-20'] = { [KANA]: { rawLunch: 0, rawDinner: 4, toastName: KANA } };
+  c.STORE['tip_labor_F01_2026-10-21'] = { [KANA]: { rawLunch: 0, rawDinner: 3, toastName: KANA } };
+  const list = plain(run(c, `unregisteredClockIns(3650)`));
+  assert.equal(list.length, 1); assert.deepEqual(list[0].stores, ['F04-P']); assert.equal(list[0].hours, 4);
+  // a resigned person's alias and an active person's alias at the same store: the active one (as in the import)
+  c.EMPS[3].status = '退職';
+  assert.deepEqual(plain(run(c, `unregisteredClockIns(3650)`)), []);
+});
+
+test('review P3-2 (7d234a4): a store ID with a space (the store master takes free text) still works for a store alias', () => {
+  const c = app(source, NEW);
+  c.EMPS = EMPS();
+  const ents = plain(run(c, `toastAliasEntries(getEmployees()[1], ${JSON.stringify(KANA)}, '2026-10-16', 'unreg', ['F04-P', 'F07 Kapolei'])`));
+  ents.forEach(a => { c.EMPS[1][a.f] = { n: a.n, from: a.from, at: a.at, by: a.by, via: a.via, store: a.store }; });
+  const got = plain(run(c, 'empToastAliases(getEmployees()[1]).map(function(a){ return a.store; })'));
+  assert.deepEqual(got.sort(), ['F04-P', 'F07 Kapolei']);
+  assert.equal(run(c, `toastAliasCovers(getEmployees()[1], toastNameKey(${JSON.stringify(KANA)}), 'F07 Kapolei')`), true);
+  c.EMPS[1][fld(KANA) + '@ F01'] = al(KANA, '2026-10-16', { store: ' F01' });          // spaces around: not used
+  assert.equal(plain(run(c, 'empToastAliases(getEmployees()[1]).length')), 2);
+});
