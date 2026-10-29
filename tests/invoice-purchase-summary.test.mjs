@@ -726,7 +726,9 @@ test('2026-10-29 deploy: the old summary is kept, the compare SQL shows before, 
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url), 'utf8');
   const MIG = rd('supabase/migrations/20261029100000_invoice_purchase_posted.sql'), REVERT = rd('db/invoice-purchase-posted-revert.sql'), CMP = rd('db/invoice-purchase-posted-compare.sql');
   // production before 10/29: the earlier rule and no snapshot table
-  await E.pg.exec(`reset role; drop table public.invoice_purchase_snapshots;`); await E.pg.exec(REVERT); await E.pg.exec('set role service_role');
+  // (like Supabase: a new table in public is granted to every key by default, the server key too)
+  await E.pg.exec(`reset role; drop table public.invoice_purchase_snapshots;
+    alter default privileges in schema public grant all on tables to anon, authenticated, service_role;`); await E.pg.exec(REVERT); await E.pg.exec('set role service_role');
   const m1 = await E.doc({ total: 10000, recon: 'unreconciled' });                                       // posted by a person, sent: C → A
   const m2 = await E.doc({ total: 5000, recon: 'unreconciled', qb: 'pending' });                         // posted by a person, not sent: C → A (not sent)
   await E.doc({ total: 7000, recon: 'unreconciled', mode: 'auto' });                                     // automatic: C both

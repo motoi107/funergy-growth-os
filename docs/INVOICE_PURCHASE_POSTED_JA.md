@@ -49,7 +49,7 @@
 
 - `tests/invoice-purchase-summary.test.mjs` 18（新しい決まりの 10/29 の本番の形・ランダムな invoice の独立した模型（人の反映・自動・アプリと同じかもしれない を足した）・入れ方（前の決まり → 残す → 比べる → 作る → 台帳が変わらない → 戻す）・入れる一式）、
   `tests/invoice-purchase-ui.test.mjs` 13（本物のアプリのコードを VM で・日英・前の決まりの月）、`tests/invoice-purchase-trace-sql.test.mjs` 2、ほかの invoice の試験は件数と migration の並びを足しただけ。
-- わざと壊す：`tests/invoice-mutations.test.mjs` に 10/29 の通り（1 回目 12 通りすべてで落ちる。レビューの直しのあとの数は 7 と共有記録）。
+- わざと壊す：`tests/invoice-mutations.test.mjs` の 10/29 の通り。`c358757` で 12 通りすべてで落ちる。レビューの直しのあと 18 通りすべてで落ちる（「サーバーの鍵で書き換えられる」は、試験に Supabase の既定の権限を足して落ちるようにした）。
 - 本番のデータでは確かめていない（入れたあと、比べる SQL の「後」が「見込み」と同じかで確かめる）。
 
 ## 7. 独立レビュー（Claude の別エージェント・作業を見ていない・`c358757`）と直し
