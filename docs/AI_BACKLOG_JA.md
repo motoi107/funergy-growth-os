@@ -1,5 +1,11 @@
 # 改修・自動化の作業記録
 
+## 2026-10-29 Career Score の一覧のカード・専門職のカテゴリーのアイコン（UI案63）
+
+1. 済（Claude・ブランチ `claude/cs-card-icons`）：原因の確認（`specialistCats` がすべて `ti-star`）と UI案63（A 案カード型・B 案一覧型・専門職のアイコン・採点のタブ）。
+2. Moto さん：決めてほしいこと 1〜3（A か B／常に開く範囲／アイコン・オフィス用・英語名）。
+3. 次：回答 → v1113（アプリだけ）→ 試験 → 独立レビュー → PR。
+
 ## 2026-10-29 仕入れタブに経理確認済みの invoice が入らない（v1112・migration 20261029100000）
 
 1. 済（Claude・ブランチ `claude/invoice-purchase-posted`）：原因の裏付け（読むだけの SQL）・Moto さんの決定 2 つ・集計の決まりの直し・前の集計を残す表・比べる／戻す／すぐ作る SQL・アプリ v1112 の言葉・試験（`docs/INVOICE_PURCHASE_POSTED_JA.md`）。
