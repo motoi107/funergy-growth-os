@@ -19104,8 +19104,42 @@ async function installWebOfficeGuard({ win = window, doc = document, baseUrl, fe
       if (ticket !== serial || !equal(who, actor()) || !equal(c, context())) fail("web_office_context_changed");
       if (el) el.inert = false;
     });
-    queue = task.catch(report);
+    queue = task.catch(async (error) => {
+      report(error);
+      await recover(ticket, page, el, error);
+    });
     return task;
+  }
+  // v1110 (Claude): when opening the Office screen fails before anything is entered
+  // (for example the server answered 400), do not leave the main area frozen.
+  // Show the reason with "try again" / "back", and let other screens work again.
+  // If the screen holds inputs that are not saved yet, keep the old protection (stay frozen).
+  async function recover(ticket, page, el, error) {
+    if (closed || ticket !== serial || !el) return;
+    let free = false;
+    try {
+      free = host.canNavigate();
+    } catch {
+      free = false;
+    }
+    if (!free) return;
+    try {
+      await host.deactivate();
+    } catch {
+    }
+    if (closed || ticket !== serial) return;
+    lastContext = null;
+    retireBackend();
+    el.inert = false;
+    if (win.curPage !== page) return;
+    el.innerHTML = failureCard(page, error);
+  }
+  function failureCard(page, error) {
+    const tr = (ja, en) => typeof win.t === "function" ? win.t(ja, en) : ja;
+    const code = typeof error?.message === "string" && /^[a-z0-9_:-]{1,100}$/.test(error.message) ? error.message : "unknown";
+    const back = page === "leadership" ? "setLssView('score')" : "go('mypage')";
+    const backLabel = page === "leadership" ? tr("Career Score \u306B\u623B\u308B", "Back to Career Score") : tr("\u30DE\u30A4\u30DA\u30FC\u30B8\u306B\u623B\u308B", "Back to My page");
+    return '<div class="card" data-web-office-open-failed="" style="border-left:3px solid var(--yellow)"><div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i> ' + tr("Office \u306E\u8A55\u4FA1\u3092\u958B\u3051\u307E\u305B\u3093\u3067\u3057\u305F", "Could not open the Office evaluation") + '</div><div style="font-size:12px;color:var(--muted);line-height:1.7;margin:4px 0 10px">' + tr("\u30B5\u30FC\u30D0\u30FC\u304B\u3089\u8AAD\u3081\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u5165\u529B\u306F\u9001\u3063\u3066\u3044\u307E\u305B\u3093\u3002\u307B\u304B\u306E\u753B\u9762\u306F\u305D\u306E\u307E\u307E\u4F7F\u3048\u307E\u3059\u3002", "It could not be read from the server. Nothing was sent. Other screens keep working.") + ' (' + code + ')</div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-sm" onclick="renderPage(curPage)"><i class="ti ti-refresh"></i> ' + tr("\u3082\u3046\u4E00\u5EA6", "Try again") + '</button><button class="btn btn-sm" onclick="' + back + '">' + backLabel + '</button></div></div>';
   }
   const prior = {};
   function patch(k, value) {
