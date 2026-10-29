@@ -15,7 +15,8 @@ const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.s
   'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'tests/invoice-vendor-merge.test.mjs', 'tests/invoice-vendor-merge-ui.test.mjs',
   'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js',
   'supabase/migrations/20261025090000_invoice_item_link.sql', 'tests/invoice-item-link.test.mjs', 'tests/invoice-item-link-ui.test.mjs', 'db/invoice-link-add-member.sql',
-  'supabase/migrations/20261026090000_invoice_qb_gmail.sql', 'tests/invoice-qb-gmail.test.mjs', 'tests/invoice-qb-gmail-ui.test.mjs', 'db/invoice-qb-sender.sql'];
+  'supabase/migrations/20261026090000_invoice_qb_gmail.sql', 'tests/invoice-qb-gmail.test.mjs', 'tests/invoice-qb-gmail-ui.test.mjs', 'db/invoice-qb-sender.sql',
+  'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'db/invoice-purchase-posted-revert.sql', 'db/invoice-purchase-posted-compare.sql'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -255,8 +256,25 @@ const CASES = [
     "      const moved = await drive.update(o.drive_file_id, { addParents: parents.includes(target) ? null : target,",
     "      const moved = await drive.update(o.drive_file_id, { name: 'organized_' + o.original_name, addParents: parents.includes(target) ? null : target,"]]],
   // 確認済み invoice の仕入れ集計（Moto 2026-10-14・UI案48）: the server
-  ['purchases: not reconciled counted as confirmed', PS, [['db/invoice-intake.sql', "    when recon_status<>'reconciled' then 'C'\n", '']]],
-  ['purchases: a send not recorded counts as confirmed', PS, [['db/invoice-intake.sql', "    when qbs='sent' or preledger then 'A'\n", "    when true then 'A'\n"]]],
+  // 確認済み＝人の反映か照合済み（Moto 2026-10-29）
+  ['purchases 10/29: automatic and not reconciled counted as confirmed', PS, [['db/invoice-intake.sql', "    when posted_mode='manual' and not appdup then 'A'\n", "    when not appdup then 'A'\n"]]],
+  ['purchases 10/29: possibly in the app counted without reconciling', PS, [['db/invoice-intake.sql', "    when posted_mode='manual' and not appdup then 'A'\n", "    when posted_mode='manual' then 'A'\n"]]],
+  ['purchases 10/29: QuickBooks made a condition again', PS, [['db/invoice-intake.sql', "    when recon_status='reconciled' then 'A'\n", "    when recon_status='reconciled' and qbs='sent' then 'A'\n"]]],
+  ['purchases 10/29: a difference counted as confirmed', PS, [['db/invoice-intake.sql', "    when recon_status='discrepancy' then 'C'\n", '']]],
+  ['purchases 10/29: what a person posted waits for reconciling again', PS, [['db/invoice-intake.sql', "    when posted_mode='manual' and not appdup then 'A'\n", '']]],
+  ['purchases 10/29: before the ledger shown as not sent', PS, [['db/invoice-intake.sql', " and dd.qbs is distinct from 'sent' and not dd.preledger),", " and dd.qbs is distinct from 'sent'),"]]],
+  ['purchases 10/29: the change does not keep the old summary', PS, [['supabase/migrations/20261029100000_invoice_purchase_posted.sql', "from public.invoice_purchase_published p\nwhere coalesce(", "from public.invoice_purchase_published p\nwhere false and coalesce("]]],
+  ['purchases 10/29: the change keeps the old summary twice', PS, [['supabase/migrations/20261029100000_invoice_purchase_posted.sql', "\n and not exists(select 1 from public.invoice_purchase_snapshots s\n  where s.reason = 'before 20261029100000 (confirmed = posted by a person or reconciled)' and s.ym = p.ym);", ";"]]],
+  ['purchases 10/29: run again, a month made with the new rule is kept as "before"', PS, [['supabase/migrations/20261029100000_invoice_purchase_posted.sql', "where coalesce(p.summary ->> 'rule', '') <> 'posted_or_reconciled'\n and not exists", "where not exists"]]],
+  ['purchases 10/29: the server key can change what is kept', PS, [['supabase/migrations/20261029100000_invoice_purchase_posted.sql', "revoke update, delete, truncate on public.invoice_purchase_snapshots from service_role;\n", '']]],
+  ['purchases 10/29: the compare SQL stops on a month not kept', PS, [['db/invoice-purchase-posted-compare.sql', "xpath('/table/row/s/text()'", "xpath('/row/s/text()'"], ['db/invoice-purchase-posted-compare.sql', "p.ym, 'before 20261029100000 (confirmed = posted by a person or reconciled)'), false, false, '')", "p.ym, 'before 20261029100000 (confirmed = posted by a person or reconciled)'), false, true, '')"]]],
+  ['purchases 10/29: the compare SQL calls a month not kept "not in yet"', PS, [['db/invoice-purchase-posted-compare.sql', "  when (select has_table from snap) then 'この月は残していない（前も新しい決まり）'\n", '']]],
+  ['purchases 10/29: the compare SQL expects the automatic ones too', PS, [['db/invoice-purchase-posted-compare.sql', " and x ->> 'pm' = 'manual'\n    and not coalesce((x ->> 'ad')::boolean, false))) pa_n,", "\n    and not coalesce((x ->> 'ad')::boolean, false))) pa_n,"]]],
+  ['app: 10/29 the old "not forwarded" tile on a month made with the new rule', PU, [['index.html', "  if (B.n) h += _ipsTile(t('確認済み・未転送'", "  if (true) h += _ipsTile(t('確認済み・未転送'"]]],
+  ['app: 10/29 the store table shows B for not sent', PU, [['index.html', "ipsMoney(x.B.n ? x.B.c : x.qbn.c)", "ipsMoney(x.B.c)"]]],
+  ['app: 10/29 a month before October says it is in the cost', PU, [['index.html', "    + (ym >= IPS_START ? t('原価には入っています", "    + (true ? t('原価には入っています"]]],
+  ['app: 10/29 the reason names "not forwarded" when there is none', PU, [['index.html', "[sum.B.n ? '未転送' : '', sum.C.n ? '確認待ち' : ''", "['未転送', sum.C.n ? '確認待ち' : ''"]]],
+  ['app: 10/29 the posted-by-accounting line is gone', PU, [['index.html', "    + (_ipsHas(A.by, 'posted_manual') && A.by.posted_manual.n ?", "    + (false ?"]]],
   ['purchases: every original exempt from the ledger when qb.since is not set', PS, [['db/invoice-intake.sql', "(v_since is not null and not (d0.fsource='drive'", "(not (d0.fsource='drive'"]]],
   ['purchases: taken in before the start counted (twice with the app entry)', PS, [['db/invoice-intake.sql', "    when not link then 'E'\n", '']]],
   ['purchases: a credit memo printed positive is added', PS, [['db/invoice-intake.sql', "case when d1.credit then -1 else d1.f end mul", 'd1.f mul']]],

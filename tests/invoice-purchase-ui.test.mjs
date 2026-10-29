@@ -37,24 +37,25 @@ async function published(extra, { base = true, keep = false } = {}) {
     insert into invoice_vendor_rules(vendor_key,display_name,food_kind) values('minato','Minato <b>Seika</b> "Q''s"','food'),('clean','Clean Co','nonfood');`);
   await pg.exec('set role service_role');
   let n = 0;
-  const doc = async ({ store = 'F06', vk = 'minato', type = 'invoice', status = 'posted', total, recon = 'reconciled', qb = 'sent', lines, related = null, date = '2026-10-05', ingested = '2026-10-14T00:00:00Z' }) => {
+  const doc = async ({ store = 'F06', vk = 'minato', type = 'invoice', status = 'posted', total, recon = 'reconciled', qb = 'sent', lines, related = null, date = '2026-10-05', ingested = '2026-10-14T00:00:00Z', mode = 'manual', reasons = [] }) => {
     n++; const sha = n.toString(16).padStart(64, '0');
     const f = (await pg.query(`insert into invoice_files(drive_file_id,store_id,source,original_name,current_name,drive_created_at,current_sha256,intake_status,ingested_at)
       values($1,$2,'drive',$3,$3,$5,$4,'posted',$5) returning id`, ['1AbCdEfGhIjKlMnOp' + n, store, 'scan ' + n + '.pdf', sha, ingested])).rows[0].id;
-    const d = (await pg.query(`insert into invoice_docs(source_key,file_id,sha256,internal_no,store_id,doc_type,posting_kind,vendor_key,vendor_name,food_kind,invoice_no,invoice_date,effective_date,currency,total_cents,status,recon_status,related_doc_id,relation,posted_mode,posted_at)
-      values($1,$2,$3,$4,$5,$6,'purchase',$7,$7,(select food_kind from invoice_vendor_rules where vendor_key=$7),$8,$9,$9,'USD',$10,$11,$12,$13,$14,'manual',now()) returning id`,
-      ['k' + n, f, sha, 'INT-' + n, store, type, vk, String(48200 + n), date, total, status, recon, related, related ? 'credit_for' : null])).rows[0].id;
+    const d = (await pg.query(`insert into invoice_docs(source_key,file_id,sha256,internal_no,store_id,doc_type,posting_kind,vendor_key,vendor_name,food_kind,invoice_no,invoice_date,effective_date,currency,total_cents,status,recon_status,related_doc_id,relation,posted_mode,posted_at,reasons)
+      values($1,$2,$3,$4,$5,$6,'purchase',$7,$7,(select food_kind from invoice_vendor_rules where vendor_key=$7),$8,$9,$9,'USD',$10,$11,$12,$13,$14,$15,now(),$16) returning id`,
+      ['k' + n, f, sha, 'INT-' + n, store, type, vk, String(48200 + n), date, total, status, recon, related, related ? 'credit_for' : null, mode, JSON.stringify(reasons.map(code => ({ code })))])).rows[0].id;
     let i = 0; for (const [amt, code] of lines) { i++; await pg.query(`insert into invoice_lines(doc_id,line_no,raw_name,raw,qty,amount_cents,ingredient_code) values($1,$2,$3,'{}',2,$4,$5)`, [d, i, i === 1 ? 'Shiro <img src=x onerror=alert(1)> miso' : 'item ' + i, amt, code]); }
     if (qb) await pg.query(`insert into invoice_qb_outbox(file_id,sha256,to_address,route,state,attempt_key,sent_at) values($1,$2,'qb@example.test','external',$3,$4,case when $3='sent' then now() end)`, [f, sha, qb, 'qb-' + n]);
     return d;
   };
-  // the fixed example of the request (8): $1,400 = food $1,200 + supplies $200; a $100 food credit; $500 not forwarded; $400 not reconciled
+  // the fixed example of the request (8): $1,400 = food $1,200 + supplies $200; a $100 food credit; $500 and $400 posted automatically and
+  // not reconciled ($500 not forwarded either). Since 2026-10-29 what a person posted counts without reconciling (tests below).
   const ids = {};
   if (base) {
     ids.inv = await doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']] });
     ids.cm = await doc({ type: 'credit_memo', total: 10000, lines: [[10000, 'I-MISO']], related: ids.inv });
-    ids.b = await doc({ total: 50000, lines: [[50000, null]], qb: 'pending' });
-    ids.c = await doc({ total: 40000, lines: [[40000, null]], recon: 'unreconciled' });
+    ids.b = await doc({ total: 50000, lines: [[50000, null]], qb: 'pending', recon: 'unreconciled', mode: 'auto' });
+    ids.c = await doc({ total: 40000, lines: [[40000, null]], recon: 'unreconciled', mode: 'auto' });
   }
   if (extra) await extra(doc, ids, pg);
   const publish = async () => (await pg.query(`select public.invoice_purchase_publish('{}') v`)).rows[0].v;
@@ -116,19 +117,21 @@ test('the fixed example in the app: 仕入率 11.0%, cost $1,350 and 13.5% with 
   const h = run(c, `renderPurchaseTab()`);
   assert.match(h, /確認済みの仕入れ（原価対象）<\/div><div class="v">\$1,100\.00/);
   assert.match(h, /原本の純額 \$1,300\.00・原価対象外 \$200\.00/);
-  assert.match(h, /確認済み・未転送<\/div><div class="v">\$500\.00 <span style="font-size:12px">1件/);
-  assert.match(h, /経理の確認待ち<\/div><div class="v">\$400\.00 <span style="font-size:12px">1件/);
+  assert.match(h, /確認済みのうち QuickBooks 未転送<\/div><div class="v">\$0\.00 <span style="font-size:12px">0件<\/span><\/div><div class="s">原価には入っています（この画面からは送りません）/);
+  assert.doesNotMatch(h, /確認済み・未転送/, 'no "confirmed, not forwarded" tile for a month made with the 2026-10-29 rule');
+  assert.match(h, /経理の確認待ち<\/div><div class="v">\$900\.00 <span style="font-size:12px">2件/);
+  assert.match(h, /確認済み＝経理などが Invoice取込で反映したもの（「この内容で反映する」・まとめて反映）と、経理の照合済みのもの。/);
   assert.match(h, /仕入率（棚卸未反映）<\/div><div class="v">11\.0%/);
   assert.match(h, /原価（棚卸反映後）<\/div><div class="v">\$1,350\.00 <span style="font-size:12px">13\.5%/);
   assert.match(h, /暫定/); assert.doesNotMatch(h, />確定</, 'not final: $500 not forwarded and $400 not reconciled remain');
-  assert.match(h, /まだ入っていない invoice 2 件/);
+  assert.match(h, /まだ入っていない invoice 2 件（確認待ち）/, 'only what there is: nothing is "not forwarded" under the 2026-10-29 rule');
   assert.match(h, /返品・クレジット −\$100\.00/);
   // the KPI tile's breakdown on 予実管理 shows what goes in and what the previous count would be
   const kb = run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
   assert.match(kb, /確認済みの invoice（原価対象）<\/span><b>\$1,100/);
   assert.match(kb, /当月仕入:\$1,100/, 'the purchases chip is the same as in food cost');
   assert.match(kb, /今までの数え方（Drive の写しを含む invoice）なら \$2,300/);
-  assert.match(kb, /確認済み・未転送 \$500・確認待ち \$400・保留 \$0/);
+  assert.match(kb, /まだ入っていない：確認待ち \$900・保留 \$0/);
 });
 
 test('one count per purchase: app invoices outside Drive still count; months before October 2026, stores outside Drive, no summary and a stopped summary keep the previous count', async () => {
@@ -197,7 +200,7 @@ test('the 仕入れ tab: stores the person may see only, vendors, invoices, line
   h = run(c, `renderPurchaseTab()`);
   assert.match(h, /業者の一覧へ/);
   for (const no of ['48201', '48202', '48203', '48204']) assert.match(h, new RegExp(no));
-  assert.match(h, /QuickBooks へ送る順番待ち/); assert.match(h, /経理の照合を待っている/);
+  assert.match(h, /経理の照合済み/); assert.match(h, /経理の照合を待っている/);
   assert.match(h, /href="https:\/\/drive\.google\.com\/file\/d\/1AbCdEfGhIjKlMnOp1\/view"/);
   await run(c, `ipsOpenDoc('2026-10', 'F06', '${P.ids.inv}')`);
   const m = c.modals[c.modals.length - 1];
@@ -339,7 +342,7 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   assert.match(h, /集計保留<\/div><div class="v">\$70\.00/);
   assert.match(h, /うちアプリでの登録で数えるもの 1件/);
   assert.match(h, /まだ入っていない \$900\.00/, '$500 not forwarded + $400 waiting; not the $70 the app entry counts');
-  assert.match(h, /まだ入っていない invoice 2 件/);
+  assert.match(h, /まだ入っていない invoice 2 件（確認待ち）/, 'the held invoice the app entry counts is not named');
   const kb = run(c, `fcBreakdownSub([{id:'F06'}], [{date:'2026-10-01'}])`);
   assert.match(kb, /保留 \$0/);
   const vrow = /<tr class="ips-row" onclick="ipsOpenVendor\(\d+\)"><td><b>Minato[\s\S]*?<\/tr>/.exec(h)[0];
@@ -379,7 +382,7 @@ test('held invoices the app entry counts are not "not in yet"; lines follow the 
   Object.assign(c, { monthSalesOfYm: () => ({ sales: 10000, days: 13 }), monthEventSalesYm: () => ({ sales: 0, count: 0 }), monthNonCostYm: () => ({ total: 0, byPurpose: {} }),
     _fcPrevYm: () => '2026-09', _fcMoney: v => '$' + Number(v).toFixed(2) });
   const card = run(c, `renderInvCogsCard('F06', '2026-10', null)`);
-  assert.match(card, /確認済みの invoice（照合・QuickBooks 送信済み・原価対象）\$1,100\.00＋アプリで登録した invoice \$80\.00。まだ入っていない 2 件 \$900\.00/);
+  assert.match(card, /確認済みの invoice（経理の反映・照合済み・原価対象）\$1,100\.00＋アプリで登録した invoice \$80\.00。まだ入っていない 2 件 \$900\.00/);
   assert.doesNotMatch(card, /原価外を含む全伝票/);
   const sep = run(c, `renderInvCogsCard('F06', '2026-09', null)`);
   assert.doesNotMatch(sep, /確認済みの invoice/, 'September: as before');
@@ -505,4 +508,62 @@ test('a vendor with no invoice and a "missing" statement keeps the month provisi
   assert.match(h, /<td class="r ips-hide-m">1\/2<\/td><\/tr>/, 'LaLa: 1 of 2 statements done (the missing one counts)');
   assert.match(h, /0\/1 店/, 'the vendor with no invoice: 0 of 1 store');
   await E.pg.close();
+});
+
+// 2026-10-29（Moto）：経理の確認＝人が反映したもの（または照合済み）。QuickBooks へ送ったかは条件にしない（未転送は別に出す・送り直さない）。
+test('2026-10-29: posted by a person is in the cost before reconciling; "not sent to QuickBooks" is shown apart; an older month keeps its tile', async () => {
+  const P = await published(async doc => {
+    await doc({ total: 140000, lines: [[120000, 'I-MISO'], [20000, 'I-GLOVE']], recon: 'unreconciled' });           // a person posted it, not reconciled
+    await doc({ total: 50000, lines: [[50000, 'I-MISO']], qb: 'pending' });                                         // reconciled, not sent yet
+    await doc({ total: 30000, lines: [[30000, 'I-MISO']], recon: 'unreconciled', qb: 'error' });                      // posted, not sent (failed, will retry)
+    await doc({ total: 40000, lines: [[40000, 'I-MISO']], recon: 'unreconciled', mode: 'auto' });                     // automatic: waits for reconciling
+    await doc({ total: 20000, lines: [[20000, 'I-MISO']], recon: 'unreconciled', reasons: ['app_duplicate_candidate'] });   // may be in the app: waits
+    await doc({ store: 'F01', total: 10000, lines: [[10000, 'I-MISO']], recon: 'unreconciled' });
+  }, { base: false });
+  const app0 = [{ id: 'drv_INT-1', src: 'drive-intake', storeId: 'F06', docType: 'Invoice', docDate: '2026/10/05', total: 1400, purpose: '仕入れ・仕込み' }];
+  let c = app({ state: { ...P.rows, invoices: app0 }, sales: { F06: 10000, F01: 10000 }, visible: ['F06'] });
+  const r = run(c, `foodCostOf('F06', '2026-10', 10000)`);
+  assert.equal(r.invoice, 1200 + 500 + 300, 'cost = what a person posted or reconciled ($1,200 + $500 + $300), whether sent to QuickBooks or not; the Drive copy is replaced');
+  run(c, `ipsSetScope('F06')`);   // GM: the tab opens on all stores with invoices; this part looks at LaLa
+  let h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /確認済みの仕入れ（原価対象）<\/div><div class="v">\$2,000\.00/);
+  assert.match(h, /うち経理が反映（照合はまだ） 2件/);
+  assert.match(h, /確認済みのうち QuickBooks 未転送<\/div><div class="v">\$800\.00 <span style="font-size:12px">2件<\/span><\/div><div class="s">QuickBooks へ送る順番待ち 1件<br>QuickBooks へ送れなかった（やり直し待ち） 1件<br>原価には入っています（この画面からは送りません）/);
+  assert.match(h, /経理の確認待ち<\/div><div class="v">\$600\.00 <span style="font-size:12px">2件/);
+  assert.match(h, /アプリでの登録と同じかもしれない invoice が 1 件（\$200\.00）/);
+  assert.equal(c.calls.length, 0, 'nothing is sent from the tab');
+  // the invoice list says how each was confirmed
+  const ref = /ipsOpenVendor\((\d+)\)/.exec(h)[1];
+  run(c, `ipsOpenVendor(${ref})`);
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /経理が反映した（照合はまだ）/); assert.match(h, /経理の照合済み・QuickBooks へ送る順番待ち/);
+  assert.match(h, /経理が反映した（照合はまだ）・QuickBooks へ送れなかった（やり直し待ち）/);
+  assert.match(h, /経理の照合を待っている・アプリでの登録と同じかもしれない（照合で確かめる）/);
+  // all stores: the store table's column is "not sent to QuickBooks"
+  c = app({ state: { ...P.rows, invoices: app0 }, sales: { F06: 10000, F01: 10000 } });
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /<th class="r">QuickBooks 未転送<\/th>/);
+  assert.match(h, /<td class="r">\$800\.00<div class="ips-sub">2件<\/div><\/td>/);
+  assert.match(h, /確認済みの仕入れ（原価対象）<\/div><div class="v">\$2,100\.00/, 'with ToriTon\'s $100 posted by a person');
+  // English
+  c = app({ state: { ...P.rows, invoices: app0 }, sales: { F06: 10000 }, visible: ['F06'], lang: 'en' });
+  run(c, `ipsSetScope('F06')`);
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /Confirmed, not sent to QuickBooks/); assert.match(h, /Already in the cost \(nothing is sent from here\)/);
+  assert.match(h, /Posted by accounting, not reconciled yet 2/); assert.match(h, /Confirmed = posted by accounting in invoice intake/);
+  // a month made with the earlier rule (no qbn, a B tile): shown as it was
+  const old = JSON.parse(JSON.stringify(P.rows['invoice_purchase_2026-10']));
+  delete old.rule; for (const s of Object.values(old.stores)) delete s.qbn;
+  old.stores.F06.tot.B = { n: 1, c: 50000, u: 0, cost: 50000, non: 0, unc: 0, pc: 0, pn: 0, by: { qb_pending: { n: 1, c: 50000, u: 0 } } };
+  c = app({ state: { ...P.rows, 'invoice_purchase_2026-10': old, invoices: app0 }, sales: { F06: 10000 }, visible: ['F06'] });
+  run(c, `ipsSetScope('F06')`);
+  h = run(c, `renderPurchaseTab()`);
+  assert.match(h, /確認済み・未転送<\/div><div class="v">\$500\.00 <span style="font-size:12px">1件/);
+  assert.doesNotMatch(h, /確認済みのうち QuickBooks 未転送/);
+  assert.match(h, /まだ入っていない invoice 3 件（未転送・確認待ち）/, 'the earlier rule\'s "not forwarded" is named while it is there');
+  // a month before October 2026 is not in the cost from the summary: the tile does not say it is
+  const sep = run(c, `ipsTilesHtml('2026-09', {}, [], ipsSum([${JSON.stringify(P.rows['invoice_purchase_2026-10'].stores.F06)}]), 0)`);
+  assert.match(sep, /確認済みのうち QuickBooks 未転送<\/div><div class="v">\$800\.00[\s\S]*?この画面からは送りません/);
+  assert.doesNotMatch(sep, /原価には入っています/);
+  assert.match(run(c, `ipsTilesHtml('2026-10', {}, [], ipsSum([${JSON.stringify(P.rows['invoice_purchase_2026-10'].stores.F06)}]), 0)`), /原価には入っています（この画面からは送りません）/);
 });

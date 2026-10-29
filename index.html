@@ -33705,8 +33705,10 @@ function fcModeBadge(r){
    ・サーバー（invoice-intake）が、店舗・業者・月ごとの集計を app_state に書く
      （invoice_purchase_<月>・invoice_purchase_lines_<月>_<店>・invoice_purchase_status）。アプリは読むだけ。
      見るのにメールの認証は要らない（Moto「だれでも見れるように・認証とかいらない」）。画面に出すのは今までどおり自分の店（getVisibleStores）。
-   ・A 確認済み＝反映済み・経理の照合済み・QuickBooks へ原本を送った記録がある（台帳の前に Drive に入った原本は照合済みだけ・Moto 10/14）。
-     B 確認済み・未転送／C 確認待ち／D 除外／E 集計保留。
+   ・A 確認済み＝反映済みで、経理などが人で反映したもの（「この内容で反映する」・まとめて反映）か、経理の照合済み（v1112・Moto 10/29。
+     自動で反映したもの・照合で差異あり・アプリでの登録と同じかもしれないものは照合を待つ。QuickBooks へ送ったかは条件にしない＝
+     送っていない分は店ごとの qbn に別に出す・この画面からは送らない）。それまでは照合済みかつ QuickBooks 送信済み（台帳の前は照合済みだけ・Moto 10/14）。
+     B 確認済み・未転送（10/29 より前の決まりの月だけ）／C 確認待ち／D 除外／E 集計保留。
    ・明細ごとの区分は商品マスター（対応のない明細は業者の区分で仮分類・Moto 10/14）。税・送料・値引きは明細の割合で按分（サーバー）。
    ・予実管理の原価率（foodCostOf）は 2026 年 10 月から、invoice を「確認済み（原価対象）＋アプリで登録した invoice（Drive の取込の外）」で出す
      （Moto「① B」「10 月から」）。Drive の写し（src:'drive-intake'）はこの集計に置き換わる（足さない＝二重にしない）。
@@ -33893,7 +33895,9 @@ var IPS_WHY = {
   multi_store:['複数の店舗分が 1 枚（配賦の記録がない）','Several stores on one page (no allocation)'], currency:['USD ではない（換算しない）','Not USD (not converted)'],
   closed_adjustment:['締め済みの月の調整（今までの手順で）','Closed-month adjustment (existing procedure)'],
   no_class:['費用区分が決まっていない（業者の区分か商品の対応を決める）','No class (set the vendor class or map the products)'],
-  pre_ledger:['QuickBooks の台帳の前に入った原本（送信の記録なし・照合済みで集計）','Before the QuickBooks ledger (no send record; reconciled is enough)'],
+  pre_ledger:['QuickBooks の台帳の前に入った原本（送信の記録なし）','Before the QuickBooks ledger (no send record)'],
+  posted_manual:['経理が反映した（照合はまだ）','Posted by accounting (not reconciled yet)'], reconciled:['経理の照合済み','Reconciled by accounting'],
+  app_dup:['アプリでの登録と同じかもしれない（照合で確かめる）','May be the same as an app entry (check by reconciling)'],
   rejected:['対象外にした','Rejected'], duplicate:['重複','Duplicate'], superseded:['訂正で置き換えた','Replaced by a correction']
 };
 var IPS_CLS = { food:['食材','Food'], liquor:['お酒','Liquor'], beverage:['飲料','Beverage'], supply:['消耗品','Supplies'], nonfood:['食材以外の業者','Non-food vendor'], unclass:['未分類','Unclassified'] };
@@ -33933,7 +33937,8 @@ function ipsChip(cat){
 function ipsCan(){ return (typeof invInCanEdit === 'function') ? invInCanEdit() : false; }
 function ipsSum(stores){
   var z = function(){ return { n:0, c:0, u:0, cost:0, non:0, unc:0, pc:0, pn:0, by:Object.create(null) }; };
-  var out = { A:z(), B:z(), C:z(), D:z(), E:z(), cr:{ n:0, c:0 }, pre:{ n:0, c:0 }, ad:{ n:0, c:0 }, ap:{ n:0, c:0, u:0 }, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 } };
+  var out = { A:z(), B:z(), C:z(), D:z(), E:z(), cr:{ n:0, c:0 }, pre:{ n:0, c:0 }, ad:{ n:0, c:0 }, ap:{ n:0, c:0, u:0 }, cls:{ food:0, liquor:0, beverage:0, supply:0, nonfood:0 },
+    qbn:{ n:0, c:0, u:0, by:Object.create(null) } };
   (stores || []).forEach(function(s){
     if (!s || typeof s !== 'object') return;
     ['A', 'B', 'C', 'D', 'E'].forEach(function(k){
@@ -33944,6 +33949,12 @@ function ipsSum(stores){
       Object.keys(_ipsObj(x.by) || {}).forEach(function(b){ if (!_ipsHas(IPS_WHY, b)) return; var y = _ipsObj(x.by[b]) || {}, q = o.by[b] || (o.by[b] = { n:0, c:0, u:0 }); q.n += Number(y.n) || 0; q.c += Number(y.c) || 0; q.u += Number(y.u) || 0; });
     });
     ['cr', 'pre', 'ad', 'ap'].forEach(function(k){ var x = _ipsObj(s[k]) || {}; out[k].n += Number(x.n) || 0; out[k].c += Number(x.c) || 0; if (k === 'ap') out.ap.u += Number(x.u) || 0; });
+    /* 確認済み（原価に入っている）のうち QuickBooks へ原本をまだ送っていないもの（v1112 からの集計だけにある・送り直しはしない） */
+    var q = _ipsObj(s.qbn);
+    if (q) {
+      out.qbn.n += Number(q.n) || 0; out.qbn.c += Number(q.c) || 0; out.qbn.u += Number(q.u) || 0;
+      Object.keys(_ipsObj(q.by) || {}).forEach(function(b){ if (!_ipsHas(IPS_WHY, b)) return; var y = _ipsObj(q.by[b]) || {}, o = out.qbn.by[b] || (out.qbn.by[b] = { n:0, c:0, u:0 }); o.n += Number(y.n) || 0; o.c += Number(y.c) || 0; });
+    }
     Object.keys(out.cls).forEach(function(k){ out.cls[k] += Number(_ipsGet(s.cls, k, 0)) || 0; });
   });
   return out;
@@ -34086,8 +34097,8 @@ function renderPurchaseTab(){
   if (_ipsScope === 'ALL' && withData.length > 1) h += ipsStoreTableHtml(ym, withData);
   h += ipsVendorTableHtml(ym, d, withData);
   if (_ipsScope !== 'ALL' && withData.length === 1) h += ipsManualHtml(withData[0].sid, ym);
-  h += '<div class="ips-note">' + t('確認済み＝経理の照合済みで、QuickBooks へ原本を送った記録があるもの（QuickBooks の台帳の前に Drive に入った原本は照合済みだけで集計）。QuickBooks の「送った」はメールを送ったところまでで、QuickBooks への登録・記帳の完了ではありません。月は請求日（ハワイ時間）で分けます。税・送料・値引きは明細の金額の割合で分け、商品に対応していない明細は業者の区分で仮に分けています。',
-    'Confirmed = reconciled by accounting, with a record of the original sent to QuickBooks (originals put in Drive before the QuickBooks ledger need reconciliation only). “Sent” means the email was sent, not that QuickBooks booked it. Months follow the invoice date (Hawaii). Tax, shipping and discounts are shared in proportion to line amounts; lines not mapped to a product are classed by the vendor for now.')
+  h += '<div class="ips-note">' + t('確認済み＝経理などが Invoice取込で反映したもの（「この内容で反映する」・まとめて反映）と、経理の照合済みのもの。自動で反映したものは照合済みになってから。照合で差異ありにしたもの・アプリでの登録と同じかもしれないものは照合を待ちます。QuickBooks へ原本を送ったかどうかは条件にしません（送っていない分は「QuickBooks 未転送」に別に出します。QuickBooks の「送った」はメールを送ったところまでです）。月は請求日（ハワイ時間）で分けます。税・送料・値引きは明細の金額の割合で分け、商品に対応していない明細は業者の区分で仮に分けています。',
+    'Confirmed = posted by accounting in invoice intake (“Post as shown” or batch posting), or reconciled by accounting. Automatically posted invoices count once reconciled. Invoices reconciled with a difference, or that may be the same as an app entry, wait for reconciliation. Whether the original was sent to QuickBooks is not a condition (those not sent are shown apart as “not sent to QuickBooks”; “sent” means the email was sent). Months follow the invoice date (Hawaii). Tax, shipping and discounts are shared in proportion to line amounts; lines not mapped to a product are classed by the vendor for now.')
     + (ym >= IPS_START ? t('　予実管理の原価率は、2026 年 10 月から「確認済み（原価対象）＋アプリで登録した invoice（Drive の外）＋買い出し＋食材移動」です。', ' From October 2026, food cost on Budget vs Actual = confirmed (cost) + invoices registered in the app (outside Drive) + receipts + transfers.') : '') + '</div>';
   return h;
 }
@@ -34103,8 +34114,14 @@ function ipsTilesHtml(ym, d, withData, sum, sales){
     t('原本の純額 ', 'Net of originals ') + ipsMoney(A.c) + t('・原価対象外 ', ' · not for cost ') + ipsMoney(A.non)
     + '<br>' + t('うち業者の区分で仮分類 ', 'Classed by vendor for now ') + ipsMoney(A.pc + A.pn)
     + (sum.cr.n ? '<br>' + t('返品・クレジット ', 'Credits ') + ipsMoney(sum.cr.c) + t('（', ' (') + sum.cr.n + t('件）', ')') : '')
-    + (sum.pre.n ? '<br>' + t('台帳の前の原本 ', 'Before the ledger ') + sum.pre.n + t('件（送信の記録なし）', ' (no send record)') : '') + '<br>' + A.n + t('件', ' invoices'));
-  h += _ipsTile(t('確認済み・未転送', 'Confirmed, not forwarded'), ipsMoney(B.c) + ' <span style="font-size:12px">' + B.n + t('件', '') + '</span>', _ipsByLine(B, ['qb_pending', 'qb_sending', 'qb_error', 'qb_unknown', 'qb_none']) + unk(B));
+    + (sum.pre.n ? '<br>' + t('台帳の前の原本 ', 'Before the ledger ') + sum.pre.n + t('件（送信の記録なし）', ' (no send record)') : '')
+    + (_ipsHas(A.by, 'posted_manual') && A.by.posted_manual.n ? '<br>' + t('うち経理が反映（照合はまだ） ', 'Posted by accounting, not reconciled yet ') + A.by.posted_manual.n + t('件', '') : '') + '<br>' + A.n + t('件', ' invoices'));
+  /* 10/29 より前の決まりで作った月（締めた月など）は「確認済み・未転送」（原価に入っていない）。v1112 からは、確認済み（原価に入っている）のうち
+     QuickBooks へ原本をまだ送っていないものを別に出す（送るのは今までどおり Invoice取込・転送の仕組み。ここからは送らない） */
+  if (B.n) h += _ipsTile(t('確認済み・未転送', 'Confirmed, not forwarded'), ipsMoney(B.c) + ' <span style="font-size:12px">' + B.n + t('件', '') + '</span>', _ipsByLine(B, ['qb_pending', 'qb_sending', 'qb_error', 'qb_unknown', 'qb_none']) + unk(B));
+  else h += _ipsTile(t('確認済みのうち QuickBooks 未転送', 'Confirmed, not sent to QuickBooks'), ipsMoney(sum.qbn.c) + ' <span style="font-size:12px">' + sum.qbn.n + t('件', '') + '</span>',
+    _ipsByLine(sum.qbn, ['qb_pending', 'qb_sending', 'qb_error', 'qb_unknown', 'qb_none']) + (sum.qbn.n ? '<br>' : '')
+    + (ym >= IPS_START ? t('原価には入っています（この画面からは送りません）', 'Already in the cost (nothing is sent from here)') : t('この画面からは送りません', 'Nothing is sent from here')));
   h += _ipsTile(t('経理の確認待ち', 'Waiting for accounting'), ipsMoney(C.c) + ' <span style="font-size:12px">' + C.n + t('件', '') + '</span>', _ipsByLine(C, ['review', 'unreconciled', 'discrepancy']) + unk(C));
   h += _ipsTile(t('集計保留', 'Held'), ipsMoney(E.c) + ' <span style="font-size:12px">' + E.n + t('件', '') + '</span>', _ipsByLine(E, Object.keys(E.by)) + unk(E)
     + (sum.ap.n ? '<br>' + t('うちアプリでの登録で数えるもの ', 'Counted through app entries ') + sum.ap.n + t('件（まだ入っていないには入れない）', ' (not in “not in yet”)') : ''));
@@ -34137,7 +34154,7 @@ function ipsCostTile(ym, d, withData, sum){
     cost += r.cost;
   });
   var pend = ipsPending(sum).n;
-  if (pend) reasons.push(t('まだ入っていない invoice ' + pend + ' 件（未転送・確認待ち・保留）', pend + ' invoice(s) not in yet'));
+  if (pend) reasons.push(t('まだ入っていない invoice ' + pend + ' 件（' + [sum.B.n ? '未転送' : '', sum.C.n ? '確認待ち' : '', sum.E.n - sum.ap.n > 0 ? '保留' : ''].filter(Boolean).join('・') + '）', pend + ' invoice(s) not in yet'));
   var vend = ipsVendorRows(withData), need = 0, done = 0;
   var miss = 0;
   vend.forEach(function(v){ v.chks.forEach(function(c){ if (!_ipsChkNeed(c)) return; need++; if (_ipsChkDone(c)) done++; if (c.chk && c.chk.s === 'missing') miss++; }); });
@@ -34163,7 +34180,7 @@ function ipsStoreTableHtml(ym, withData){
     vs.forEach(function(v){ v.chks.forEach(function(c){ if (!_ipsChkNeed(c)) return; need++; if (_ipsChkDone(c)) done++; }); });
     return '<tr class="ips-row" onclick="ipsSetScope(\'' + _ipsId(e.sid, IPS_RE.sid) + '\')"><td><b>' + escapeHtml(e.name) + '</b>' + (e.closed ? ' <span style="font-size:10px;color:var(--muted)">' + t('閉店', 'closed') + '</span>' : '') + '</td>'
       + '<td class="r"><b>' + ipsMoney(x.A.cost) + '</b></td><td class="r ips-hide-m">' + ipsMoney(x.A.c) + '</td>'
-      + '<td class="r">' + ipsMoney(x.B.c) + '<div class="ips-sub">' + x.B.n + t('件', '') + '</div></td>'
+      + '<td class="r">' + ipsMoney(x.B.n ? x.B.c : x.qbn.c) + '<div class="ips-sub">' + (x.B.n ? x.B.n : x.qbn.n) + t('件', '') + '</div></td>'
       + '<td class="r">' + ipsMoney(x.C.c) + '<div class="ips-sub">' + x.C.n + t('件', '') + (x.C.u ? t('・未確定 ', ' · ') + x.C.u : '') + '</div></td>'
       + '<td class="r ips-hide-m">' + ipsMoney(x.E.c) + '<div class="ips-sub">' + x.E.n + t('件', '') + '</div></td>'
       + '<td class="r ips-hide-m">$' + Math.round(man).toLocaleString('en-US') + '</td>'
@@ -34171,7 +34188,7 @@ function ipsStoreTableHtml(ym, withData){
   }).join('');
   return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>' + t('店舗別', 'By store') + '</div><div class="ips-scroll"><table class="ips-t"><thead><tr>'
     + '<th>' + t('店舗', 'Store') + '</th><th class="r">' + t('確認済み（原価対象）', 'Confirmed (cost)') + '</th><th class="r ips-hide-m">' + t('原本の純額', 'Net') + '</th>'
-    + '<th class="r">' + t('未転送', 'Not fwd') + '</th><th class="r">' + t('確認待ち', 'Waiting') + '</th><th class="r ips-hide-m">' + t('保留', 'Held') + '</th>'
+    + '<th class="r">' + t('QuickBooks 未転送', 'Not sent to QB') + '</th><th class="r">' + t('確認待ち', 'Waiting') + '</th><th class="r ips-hide-m">' + t('保留', 'Held') + '</th>'
     + '<th class="r ips-hide-m">' + t('アプリで登録（Drive の外）', 'App entries (outside Drive)') + '</th><th class="r">' + t('仕入率', 'Ratio') + '</th><th class="r ips-hide-m">' + t('そろった', 'Checked') + '</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div></div>';
 }
@@ -34348,7 +34365,7 @@ function ipsCogsNote(sid, ym){
   var l = ipsLink(sid, ym); if (!l || !l.ok) return '';
   var d = ipsMonth(ym), s = d && _ipsGet(d.stores, sid, null); if (!s) return '';
   var p = ipsPending(ipsSum([s]));
-  return '確認済みの invoice（照合・QuickBooks 送信済み・原価対象）' + _ipsFcMoney(l.confirmed) + '＋アプリで登録した invoice ' + _ipsFcMoney(l.manual)
+  return '確認済みの invoice（経理の反映・照合済み・原価対象）' + _ipsFcMoney(l.confirmed) + '＋アプリで登録した invoice ' + _ipsFcMoney(l.manual)
     + (p.n ? '。まだ入っていない ' + p.n + ' 件 ' + ipsMoney(p.c) + '（予実 ›「仕入れ」）' : '');
 }
 function _ipsFcMoney(v){ v = Number(v) || 0; return (v < 0 ? '−$' : '$') + Math.abs(v).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
@@ -34370,7 +34387,7 @@ function ipsFcBreakdown(scopeStores, ym){
   return '<div style="margin-top:8px;border:1px solid var(--border);border-radius:10px;padding:8px 10px;font-size:12px">'
     + '<div style="font-weight:700;margin-bottom:4px">' + t('原価率の仕入れ（2026 年 10 月から確認済みの invoice）', 'Purchases in food cost (confirmed invoices from Oct 2026)') + '</div>'
     + rows.map(function(r){ return '<div style="display:flex;justify-content:space-between;padding:2px 0"><span>' + r[0] + '</span><b>' + r[1] + '</b></div>'; }).join('')
-    + '<div style="background:var(--surface2);border-radius:8px;padding:6px 8px;margin-top:6px;line-height:1.7">' + t('まだ入っていない', 'Not in yet') + t('：', ': ') + t('確認済み・未転送 ', 'not forwarded ') + m(sum.B.c / 100) + t('・', ' · ') + t('確認待ち ', 'waiting ') + m(sum.C.c / 100) + t('・', ' · ') + t('保留 ', 'held ') + m((sum.E.c - sum.ap.c) / 100)
+    + '<div style="background:var(--surface2);border-radius:8px;padding:6px 8px;margin-top:6px;line-height:1.7">' + t('まだ入っていない', 'Not in yet') + t('：', ': ') + (sum.B.n ? t('確認済み・未転送 ', 'not forwarded ') + m(sum.B.c / 100) + t('・', ' · ') : '') + t('確認待ち ', 'waiting ') + m(sum.C.c / 100) + t('・', ' · ') + t('保留 ', 'held ') + m((sum.E.c - sum.ap.c) / 100)
     + '<br><span style="color:var(--muted)">' + t('今までの数え方（Drive の写しを含む invoice）なら ', 'With the previous count (incl. Drive copies): ') + m(legacy) + '</span></div>'
     + (on.length < (scopeStores || []).length ? '<div class="ips-note">' + t('Drive の取込の外の店は今までの数え方。', 'Stores outside the Drive intake use the previous count.') + '</div>' : '')
     + (ipsStale() ? '<div class="ips-note" style="color:var(--yellow)">' + t('集計が ' + ipsAgo(ipsStatus().checked_at) + ' から確かめられていません（数字は最後に作った時点のもの）。', 'The summary has not been checked since ' + ipsAgo(ipsStatus().checked_at) + ' (figures as of the last summary).') + '</div>' : '')
@@ -40800,7 +40817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1111';
+const APP_VERSION = '1112';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

@@ -1073,7 +1073,8 @@ test('deploy folder v1094: the copies are the repository files; the one-file fun
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
   const D = 'deploy/invoice-qb-gmail-v1094/';
   assert.ok(rd(D + '1_追加のSQL_QuickBooksからすぐ.sql').equals(rd('supabase/migrations/20261026090000_invoice_qb_gmail.sql')));
-  assert.ok(rd(D + '2_確認のSQL_読むだけ.sql').equals(rd('db/invoice-intake-postcheck.sql')));
+  // The check SQL stays as it was handed over (tables 24); the postcheck moved on with 20261029100000 (deploy/invoice-purchase-posted/).
+  assert.equal(sha(rd(D + '2_確認のSQL_読むだけ.sql')), '45e0ee325eb8c7eead8c3683ccbc88bcee8ff6fad2c1286c389df92dae174804');
   const src = JSON.parse(rd(D + 'source.json'));
   assert.equal(sha(rd(D + '3_関数_invoice-intake_index.ts')), src.bundle_sha256);
   const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
