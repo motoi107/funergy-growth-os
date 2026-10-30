@@ -6,6 +6,8 @@ select 'guard trigger on vendors', exists (select 1 from pg_trigger t join pg_cl
 union all
 select 'browser roles cannot run the guard directly', not (has_function_privilege('anon', 'public.vendors_keep_state()', 'execute') or has_function_privilege('authenticated', 'public.vendors_keep_state()', 'execute')), ''
 union all
+select 'invoice seed skips deleted vendors', coalesce((select position('''deleted''' in p.prosrc) > 0 from pg_proc p where p.pronamespace = 'public'::regnamespace and p.proname = 'invoice_vendor_seed' limit 1), false), ''
+union all
 select 'vendors (all rows)', true, count(*)::text from public.vendors
 union all
 select 'deleted (kept as a mark)', true, count(*) filter (where data ->> 'vst' = 'deleted')::text from public.vendors

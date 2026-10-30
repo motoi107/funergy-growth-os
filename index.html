@@ -11258,6 +11258,7 @@ async function supaPullAllMasters(opt){
   if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){/* financial local writes remain fenced; unrelated masters may load */}}
   var results = [];
   /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
+  var _vT0 = Date.now();   /* v1121: 読み始めた時刻（このあとに送った業者は、この読みで戻さない） */
   var _mp = {}; for (var _k in SUPA_MASTER_MAP){ _mp[_k] = supaFetchAll(SUPA_MASTER_MAP[_k].table, 'data'); }
   var _settingsP = supaFetchAll('app_settings', 'key,value');
   /* v1077: 確認済みの仕入れ集計（invoice_purchase_*）はサーバーが書く行で数が多い。まとめ取りには入れず、使う月だけ取る（ipsEnsure）
@@ -11271,7 +11272,7 @@ async function supaPullAllMasters(opt){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
       arr = _stripTestRows(key, arr);                             /* v850 */
       if (key === 'm_employees') arr = _empMergeCloud(arr);       /* v1085: 送れていない変更（退職など）を取り込みで消さない */
-      if (key === 'm_vendors') arr = vendorMergePulled(arr);      /* v1121: 送れていない業者の変更を消さない・読んだ姿を覚える */
+      if (key === 'm_vendors') arr = vendorMergePulled(arr, _vT0);      /* v1121: 送れていない業者の変更を消さない・読んだ姿を覚える */
       if (arr.length){
         _lsWriteVerified(key, JSON.stringify(arr));               /* v763 */
         results.push(def.table+': '+arr.length+'件 取込');
@@ -48778,12 +48779,16 @@ function ivdMakeCard(key, nm, kind, cardId){
   var cur = cardId != null ? vs.find(function(v){ return v && String(v.id) === String(cardId); }) : null;
   if (!cur) cur = vs.find(function(v){ return v && v.name && ivdKey(v.name) === ivdKey(nm) && !(typeof vmgCardHidden === 'function' && vmgCardHidden(v)); }) || null;
   if (!cur) {
-    vs.push({ id:key, name:nm, kind:kind || '', kindBy:me, kindAt:when, contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'',
-      leadtime:1, minOrder:0, delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, src:'invoice_intake' });
+    /* v1121：同じ id の削除した業者があれば、人が作り直した印（_recreate）を付ける（送るときに使う状態に戻す） */
+    var raw = ls('m_vendors', []) || [], bs = (typeof _vbBase === 'function' ? _vbBase() : null) || {}, del = raw.some(function(v){ return v && String(v.id) === String(key) && v.vst === 'deleted'; }) || (bs[String(key)] && bs[String(key)].vst === 'deleted');
+    var card = { id:key, name:nm, kind:kind || '', kindBy:me, kindAt:when, contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'',
+      leadtime:1, minOrder:0, delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, src:'invoice_intake' };
+    if (del) card._recreate = true;
+    vs.push(card);
     var ok = lsSet('m_vendors', vs) !== false;
     return { ok:ok, made:ok };
   }
-  if ((kind === 'food' || kind === 'nonfood') && cur.kind !== 'food' && cur.kind !== 'nonfood') { cur.kind = kind; cur.kindBy = me; cur.kindAt = when; return { ok:lsSet('m_vendors', vs) !== false, made:false }; }
+  if ((kind === 'food' || kind === 'nonfood') && cur.kind !== 'food' && cur.kind !== 'nonfood') { cur.kind = kind; cur.kindBy = me; cur.kindAt = when; if (typeof vendorTouch === 'function') vendorTouch(cur.id, ['kind','kindBy','kindAt']); return { ok:lsSet('m_vendors', vs) !== false, made:false }; }
   return { ok:true, made:false };
 }
 /* 開いたとき：この印字名をまとめた Invoice取込の統合（この画面から・答えが返らなかったもの）に、アプリの記録が無ければ書く
@@ -59347,7 +59352,21 @@ function vendorStateOf(v){ return (v && (v.vst === 'inactive' || v.vst === 'dele
 function getVendorsPickable(){ return (getVendors() || []).filter(function(v){ return v && !(typeof vmgCardHidden === 'function' && vmgCardHidden(v)) && vendorStateOf(v) === ''; }); }
 function _vbBase(){ var b = ls(VENDOR_BASE_KEY, null); return (b && typeof b === 'object' && !Array.isArray(b)) ? b : null; }
 function _vbJson(v){ try { return JSON.stringify(v); } catch(e) { return ''; } }
-function _vbEq(a, b){ return _vbJson(a === undefined ? null : a) === _vbJson(b === undefined ? null : b); }
+/* 比べるときは、空（無い・null・''・{}・[]）を同じに、キーの順を気にしない（v1121 レビュー R2：空の欄を送ってほかの端末のメモを消さない） */
+function _vbNorm(v){
+  if (v === undefined || v === null || v === '') return null;
+  if (Array.isArray(v)) { var a = v.map(_vbNorm); return a.length ? a : null; }
+  if (typeof v === 'object') { var o = {}, n = 0; Object.keys(v).sort().forEach(function(k){ var x = _vbNorm(v[k]); if (x !== null) { o[k] = x; n++; } }); return n ? o : null; }
+  return v;
+}
+function _vbEq(a, b){ return _vbJson(_vbNorm(a)) === _vbJson(_vbNorm(b)); }
+/* 状態の履歴：両方の記録を残す（同じもの 1 つ・時刻の順・20 件まで） */
+function _vbLog(a, b){
+  var all = [].concat(Array.isArray(a) ? a : [], Array.isArray(b) ? b : []).filter(function(h){ return h && typeof h === 'object'; }), seen = {}, out = [];
+  all.forEach(function(h){ var k = [h.at, h.st, h.by, h.why].map(function(x){ return String(x == null ? '' : x); }).join('|'); if (!seen[k]) { seen[k] = 1; out.push(h); } });
+  out.sort(function(x, y){ return String(x.at || '') < String(y.at || '') ? -1 : String(x.at || '') > String(y.at || '') ? 1 : 0; });
+  return out.length ? out.slice(-20) : undefined;
+}
 function _vbStamp(r, f){ return String((r && r[f]) || ''); }
 /* 1 枚を合わせる：base（前に読んだ姿）・l（この端末）・c（クラウド）。この端末で変えた欄だけ l、ほかは c。
    状態と区分は時刻の新しいほう（読んだ姿の無い端末でも、古い状態・区分で上書きしない） */
@@ -59364,6 +59383,8 @@ function vendorMerge3(base, l, c){
     var src = _vbStamp(l, g[1]) >= _vbStamp(c, g[1]) ? l : c;
     g[0].forEach(function(f){ if (src[f] === undefined) delete out[f]; else out[f] = src[f]; });
   });
+  var lg = _vbLog(l.vstLog, c.vstLog); if (lg) out.vstLog = lg; else delete out.vstLog;
+  delete out._recreate;
   return out;
 }
 /* 状態・区分の時刻：今と、前の時刻より 1 ミリ秒あとの遅いほう（端末の時計が遅れていても、前の変更より新しくする） */
@@ -59371,9 +59392,9 @@ function vendorStampAfter(prev){ return new Date(Math.max(Date.now(), (Date.pars
 /* クラウドの業者の行（id → data）。読めなければ null */
 async function vendorFetchRows(ids){
   try {
-    var list = (ids || []).map(function(x){ return String(x).replace(/["\\]/g, ''); }).filter(Boolean), out = {};
+    var list = (ids || []).map(function(x){ return String(x); }).filter(Boolean), out = {};
     for (var i = 0; i < list.length; i += 40) {
-      var part = list.slice(i, i + 40).map(function(x){ return '"' + x + '"'; }).join(',');
+      var part = list.slice(i, i + 40).map(function(x){ return '"' + x.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }).join(',');
       var ac = (typeof AbortController === 'function') ? new AbortController() : null, tm = ac ? setTimeout(function(){ ac.abort(); }, 15000) : null;
       var res = await fetch(SUPABASE_URL + '/rest/v1/vendors?select=id,data&id=in.(' + encodeURIComponent(part) + ')', { headers:supaHeaders({}), signal:ac ? ac.signal : undefined });
       var rows = res.ok ? await res.json() : null;
@@ -59384,20 +59405,31 @@ async function vendorFetchRows(ids){
     return out;
   } catch(e) { return null; }
 }
-/* 取り込み（supaPullAllMasters）：クラウドの業者に、この端末でまだ送っていない変更を重ねる。読んだ姿はクラウドのまま覚える */
-function vendorMergePulled(cloud){
+/* 取り込み（supaPullAllMasters）：クラウドの業者に、この端末でまだ送っていない変更を重ねる。読んだ姿はクラウドのまま覚える。
+   t0：取り込みが読み始めた時刻。そのあとにこの端末が送った業者は、読んだ姿もこの端末の行もそのまま（v1121 レビュー：古い読みで戻さない） */
+var _vendorPushedAt = {};
+function vendorMergePulled(cloud, t0){
   var base = _vbBase(), local = ls('m_vendors', null), L = {}, out = [], seen = {}, nb = {};
   (Array.isArray(local) ? local : []).forEach(function(v){ if (v && v.id != null) L[String(v.id)] = v; });
   (cloud || []).forEach(function(c){
     if (!c || c.id == null) return;
     var id = String(c.id), l = L[id], b = base ? base[id] : null;
-    seen[id] = 1; nb[id] = c;
+    seen[id] = 1;
+    if (t0 && (_vendorPushedAt[id] || 0) >= t0 && b) { nb[id] = b; out.push(l || b); return; }
+    nb[id] = c;
     out.push((l && b && !_vbEq(l, b)) ? vendorMerge3(b, l, c) : c);   /* 読んだ姿の無い端末（v1121 の最初）はクラウドのまま（前の版と同じ） */
   });
-  Object.keys(L).forEach(function(id){ if (!seen[id] && !(base && base[id])) out.push(L[id]); });   /* まだ送っていない新しい業者は残す。前に読んだのにクラウドに無いものは落とす */
+  Object.keys(L).forEach(function(id){
+    if (seen[id]) return;
+    if (t0 && (_vendorPushedAt[id] || 0) >= t0) { out.push(L[id]); if (base && base[id]) nb[id] = base[id]; return; }
+    if (!(base && base[id])) out.push(L[id]);   /* まだ送っていない新しい業者は残す。前に読んだのにクラウドに無いものは落とす */
+  });
   lsSet(VENDOR_BASE_KEY, nb);
   return out;
 }
+/* この端末で変えた欄（読んだ姿が無い端末で、どの欄を送るかに使う。メモリだけ） */
+var _vendorTouched = {};
+function vendorTouch(id, fields){ var k = String(id), o = _vendorTouched[k] || (_vendorTouched[k] = {}); (fields || []).forEach(function(f){ o[f] = 1; }); }
 /* 送る（syncMasterToSupabase の m_vendors）：読んだ姿と違う業者だけ、クラウドの最新に重ねて 1 行ずつ。書けたら読み直して確かめる */
 var _vendorPushQ = Promise.resolve();
 function vendorPushDirty(val){
@@ -59408,31 +59440,53 @@ function vendorPushDirty(val){
 }
 async function _vendorPushDirty(val){
   if (!Array.isArray(val)) return;
-  var base = _vbBase() || {}, rows = (typeof _stripTestRows === 'function' ? _stripTestRows('m_vendors', val) : val).filter(function(v){ return v && v.id != null; });
-  var dirty = rows.filter(function(v){ var b = base[String(v.id)]; return !b || !_vbEq(v, b); });
+  var base0 = _vbBase(), base = base0 || {}, rows = (typeof _stripTestRows === 'function' ? _stripTestRows('m_vendors', val) : val).filter(function(v){ return v && v.id != null; });
+  /* 読んだ姿の無い端末（まだクラウドから読んでいない・取り込みが止まった）：クラウドを先に読み、この端末で変えた欄と新しい業者だけを送る。
+     ほかはクラウドのまま（前は全部の業者をこの端末の値で送り、ほかの端末の変更を戻していた。v1121 レビュー R3） */
+  var dirty = base0 ? rows.filter(function(v){ var b = base[String(v.id)]; return !b || !_vbEq(v, b); }) : rows;
   if (!dirty.length) return true;
   var ids = dirty.map(function(v){ return String(v.id); });
   var cloud = await vendorFetchRows(ids);
   if (cloud === null) { if (typeof _opLastPushErr !== 'undefined' && _opLastPushErr) _opLastPushErr.m_vendors = t('業者をクラウドから読めませんでした','Could not read vendors from the cloud'); return false; }
-  var me = (typeof myName === 'function' ? myName() : '') || '';
-  var send = dirty.map(function(l){
+  var me = (typeof myName === 'function' ? myName() : '') || '', adopt = {};
+  var send = [];
+  dirty.forEach(function(l){
     var id = String(l.id), b = base[id] || null, c = cloud[id] || null, x = Object.assign({}, l);
-    /* 削除した業者を同じ id で作り直した（この端末は削除を知っていて、新しいカードに状態が無い）：使う状態に戻す */
-    if (b && b.vst === 'deleted' && !x.vst) { x.vst = ''; x.vstAt = vendorStampAfter(c && c.vstAt > b.vstAt ? c.vstAt : b.vstAt); x.vstBy = me; x.vstWhy = t('作り直し','Re-created'); }
-    return vendorMerge3(b, x, c);
+    /* 削除した業者を同じ id で作り直した（人が「新しい業者として登録」などで作り直したときだけ印 _recreate が付く）：使う状態に戻す。
+       印の無い行は状態の時刻で決める（前は「状態が無い」だけで作り直しとみなし、端末だけ戻した行が削除を取り消していた。v1121 レビュー R1） */
+    if (x._recreate && c && c.vst === 'deleted') { x.vst = ''; x.vstAt = vendorStampAfter(c.vstAt > (b && b.vstAt || '') ? c.vstAt : (b && b.vstAt)); x.vstBy = me; x.vstWhy = t('作り直し','Re-created');
+      x.vstLog = _vbLog(c.vstLog, [{ st:'', at:x.vstAt, by:me, why:x.vstWhy }]); }
+    if (!base0 && c) {
+      var tc = _vendorTouched[id];
+      if (!tc && !x._recreate) { adopt[id] = c; return; }   /* この端末で変えていない：クラウドのまま */
+      var y = Object.assign({}, c);
+      Object.keys(tc || {}).forEach(function(f){ if (x[f] === undefined) delete y[f]; else y[f] = x[f]; });
+      if (x._recreate) ['vst','vstAt','vstBy','vstWhy','vstLog'].forEach(function(f){ if (x[f] !== undefined) y[f] = x[f]; });
+      send.push(vendorMerge3(c, y, c));   /* 状態・区分は時刻の新しいほう・履歴は両方 */
+      return;
+    }
+    send.push(vendorMerge3(b, x, c));
   });
   var def = SUPA_MASTER_MAP.m_vendors;
-  var ok = await supaUpsert(def.table, send.map(def.map));
-  if (!ok) return false;
-  var back = await vendorFetchRows(ids);
+  if (send.length) {
+    var at0 = Date.now(); send.forEach(function(v){ _vendorPushedAt[String(v.id)] = at0; });
+    var ok = await supaUpsert(def.table, send.map(def.map));
+    if (!ok) return false;
+  }
+  var sentIds = send.map(function(v){ return String(v.id); });
+  var back = sentIds.length ? await vendorFetchRows(sentIds) : {};
   if (back === null) { if (typeof _opLastPushErr !== 'undefined' && _opLastPushErr) _opLastPushErr.m_vendors = t('書いたあとに読み直せませんでした','Could not re-read after writing'); return false; }
+  Object.keys(adopt).forEach(function(id){ back[id] = adopt[id]; });
   var nb = Object.assign({}, _vbBase() || {}), cur = ls('m_vendors', null), changed = false, missing = 0;
-  ids.forEach(function(id){ if (back[id]) nb[id] = back[id]; else missing++; });
+  sentIds.forEach(function(id){ if (back[id]) { nb[id] = back[id]; delete _vendorTouched[id]; } else missing++; });
+  Object.keys(adopt).forEach(function(id){ nb[id] = adopt[id]; });
+  if (!base0) Object.keys(cloud).forEach(function(id){ if (!nb[id]) nb[id] = cloud[id]; });
   lsSet(VENDOR_BASE_KEY, nb);
   /* 送っているあいだにこの端末で変えていない業者だけ、クラウドに入った姿にする（見張りが状態・区分を残したときも合う） */
   if (Array.isArray(cur)) {
     var sent = {}; dirty.forEach(function(v){ sent[String(v.id)] = _vbJson(v); });
-    cur = cur.map(function(v){ var id = v && v.id != null ? String(v.id) : ''; if (id && back[id] && sent[id] === _vbJson(v) && !_vbEq(v, back[id])) { changed = true; return back[id]; } return v; });
+    cur = cur.map(function(v){ var id = v && v.id != null ? String(v.id) : ''; if (id && back[id] && sent[id] === _vbJson(v) && !_vbEq(v, back[id])) { changed = true; return back[id]; }
+      if (id && back[id] && sent[id] === _vbJson(v) && v._recreate) { changed = true; return back[id]; } return v; });
     if (changed && typeof _lsWriteVerified === 'function') _lsWriteVerified('m_vendors', JSON.stringify(cur));
   }
   return missing ? false : true;
@@ -59446,7 +59500,12 @@ function vendorRefs(v){
   try { var pool = (typeof vmgPool === 'function') ? vmgPool() : {}; Object.keys(pool).forEach(function(n){ if (pool[n] && pool[n].key === key) ps.push(pool[n]); }); } catch(e) {}
   ps.forEach(function(p){ out.inv += p.inv || 0; out.prod += p.prod || 0; out.unk += p.unk || 0; out.merged += (p.merged || []).length; });
   try { var k = String(v.name).trim().toLowerCase(); (getIngredients() || []).forEach(function(i){ if (i && i.vendor && String(i.vendor).trim().toLowerCase() === k) out.ing++; }); } catch(e) {}
-  if (typeof _vmg !== 'undefined' && _vmg && _vmg.usage && !_vmg.usageErr) out.intake = ps.reduce(function(a, p){ return a + (p.intake || 0); }, 0);
+  if (typeof _vmg !== 'undefined' && _vmg && _vmg.usage && !_vmg.usageErr) {
+    out.intake = ps.reduce(function(a, p){ return a + (p.intake || 0); }, 0);
+    /* 名前を変えたカード：Invoice取込はカードの id（vendor_key）で持つので、id でも数える（名前で数えたものは重ねない） */
+    var vks = {}; ps.forEach(function(p){ (p.vks || []).forEach(function(k){ vks[k] = 1; }); });
+    (_vmg.usage.vendors || []).forEach(function(x){ if (x && x.vendor_key === String(v.id) && !vks[x.vendor_key]) out.intake += Number(x.docs) || 0; });
+  }
   out.total = out.inv + out.prod + out.ing + out.unk + out.merged + (out.intake || 0);
   return out;
 }
@@ -59458,27 +59517,41 @@ async function vendorSetState(id, st, why){
   var prev = {}; VENDOR_STATE_F.concat(['vstLog']).forEach(function(f){ prev[f] = v[f]; });
   var at = vendorStampAfter(v.vstAt), me = (typeof myName === 'function' ? myName() : '') || '';
   v.vst = st; v.vstAt = at; v.vstBy = me; v.vstWhy = String(why || '').slice(0, 300);
-  v.vstLog = (Array.isArray(v.vstLog) ? v.vstLog.slice(-19) : []).concat([{ st:st, at:at, by:me, why:v.vstWhy }]);   /* 履歴（20 件まで） */
+  v.vstLog = _vbLog(v.vstLog, [{ st:st, at:at, by:me, why:v.vstWhy }]);   /* 履歴（20 件まで） */
+  vendorTouch(id, VENDOR_STATE_F.concat(['vstLog']));
   if (lsSet('m_vendors', all) === false) return { ok:false, why:t('端末に保存できませんでした','Could not save on this device') };
   var r = (typeof _lsPushP !== 'undefined' && _lsPushP && _lsPushP.m_vendors) ? await _lsPushP.m_vendors : undefined;
-  var back = (r === true) ? await vendorFetchRows([id]) : null, row = back ? back[String(id)] : null;
+  /* 送れたときは、送るときに読み直したクラウドの姿（読んだ姿）で確かめる。送れなかったときも、書けていることがあるので読み直す */
+  var row = null, known = true;
+  if (r === true) { var bs = _vbBase(); row = bs ? bs[String(id)] || null : null; }
+  else { var back = await vendorFetchRows([id]); if (back === null) known = false; else row = back[String(id)] || null; }
   if (row && (row.vst || '') === st && row.vstAt === at) return { ok:true };
-  /* クラウドに入らなかった：この端末も元に戻す（入ったように見せない） */
+  /* 入ったかどうか分からない（読めない）：この端末は戻さない（戻すと、入っていた削除をあとで取り消してしまう。v1121 レビュー R1） */
+  if (!known) return { ok:false, unknown:true, why:t('クラウドに入ったかを確かめられませんでした（通信）。少し待ってから画面を読み直して確かめてください（この端末の表示はそのままです）。','Could not confirm it reached the cloud (network). Reload in a moment to check (this device keeps the change).') };
+  /* クラウドに入らなかったと分かった：この端末も元に戻す（入ったように見せない） */
   var all2 = ls('m_vendors', null), v2 = Array.isArray(all2) ? all2.find(function(x){ return x && String(x.id) === String(id); }) : null;
-  if (v2 && v2.vstAt === at) { Object.keys(prev).forEach(function(f){ if (prev[f] === undefined) delete v2[f]; else v2[f] = prev[f]; }); lsSet('m_vendors', all2); }
+  if (v2 && v2.vstAt === at) {
+    if (row) { VENDOR_STATE_F.concat(['vstLog']).forEach(function(f){ if (row[f] === undefined) delete v2[f]; else v2[f] = row[f]; }); }
+    else Object.keys(prev).forEach(function(f){ if (prev[f] === undefined) delete v2[f]; else v2[f] = prev[f]; });
+    lsSet('m_vendors', all2);
+  }
   if (row && row.vstAt && row.vstAt > at) return { ok:false, why:t('ほかの端末がこの業者の状態を先に変えました。画面を読み直してください。','Another device changed this vendor first. Reload.') };
   return { ok:false, why:(r === 'booting' ? t('起動の途中です。少し待ってからもう一度。','Still starting. Try again shortly.') : t('クラウドに送れませんでした（通信）。','Could not send to the cloud (network).')) };
 }
+/* 区分を変える。クラウドで自分の時刻が残ったものだけを「変えた」と数える（ほかの端末の新しい区分が残ったものは lost） */
 async function vendorSetCats(ids, cat){
   if (typeof SUPA_SYNC_ENABLED !== 'undefined' && !SUPA_SYNC_ENABLED) return { ok:false, n:0, local:false };
   var all = ls('m_vendors', null); if (!Array.isArray(all)) return { ok:false, n:0 };
-  var me = (typeof myName === 'function' ? myName() : '') || '', want = {}, n = 0;
+  var me = (typeof myName === 'function' ? myName() : '') || '', want = {}, n = 0, stamp = {};
   ids.forEach(function(id){ want[String(id)] = 1; });
-  all.forEach(function(v){ if (v && want[String(v.id)]) { v.vcat = cat || 'none'; v.vcatAt = vendorStampAfter(v.vcatAt); v.vcatBy = me; n++; } });
+  all.forEach(function(v){ if (v && want[String(v.id)]) { v.vcat = cat || 'none'; v.vcatAt = vendorStampAfter(v.vcatAt); v.vcatBy = me; stamp[String(v.id)] = v.vcatAt; vendorTouch(v.id, VENDOR_CAT_F); n++; } });
   if (!n) return { ok:false, n:0 };
   if (lsSet('m_vendors', all) === false) return { ok:false, n:0, local:false };
   var r = (typeof _lsPushP !== 'undefined' && _lsPushP && _lsPushP.m_vendors) ? await _lsPushP.m_vendors : undefined;
-  return { ok:r === true, n:n, local:true };
+  if (r !== true) return { ok:false, n:n, local:true };
+  var bs = _vbBase() || {}, won = 0;
+  Object.keys(stamp).forEach(function(id){ if (bs[id] && bs[id].vcatAt === stamp[id]) won++; });
+  return { ok:won === n, n:won, lost:n - won, local:true };
 }
 /* ---- 工事関係業者（v1121：前は画面の中の一覧。業者マスターのカードにする） ---- */
 function vendorSeedId(name){ var s = String(name || '').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48); return 'vc-' + (s || 'x'); }
@@ -59487,8 +59560,8 @@ function vendorConstructionSeeds(){
   (typeof CONSTRUCTION_VENDORS !== 'undefined' ? CONSTRUCTION_VENDORS : []).forEach(function(g){
     (g.vendors || []).forEach(function(v){
       var id = vendorSeedId(v.name), n = 2; while (used[id]) id = vendorSeedId(v.name) + '-' + (n++); used[id] = 1;
-      out.push({ id:id, name:v.name, contact:v.person && v.person !== v.name ? v.person : '', phone:v.phone || '', sms:'', email:v.email || '', line:v.line || '', method:'', cutoff:'', leadtime:1, minOrder:0,
-        delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, memo:v.note || '', addr:v.addr || '', w9:v.w9 || '', w9note:v.w9note || '', cgroup:g.cat || '', cicon:g.icon || '',
+      out.push({ id:id, name:v.name, contact:v.person && v.person !== v.name ? v.person : '', phone:v.phone || '', sms:'', email:v.email || '', line:typeof v.line === 'string' ? v.line : '', method:'', cutoff:'', leadtime:1, minOrder:0,
+        delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, memo:(v.note || '') + (v.line === true ? t('（LINE で連絡）',' (contact by LINE)') : ''), addr:v.addr || '', w9:v.w9 || '', w9note:v.w9note || '', cgroup:g.cat || '', cicon:g.icon || '',
         vcat:'construction', vcatAt:'2026-10-30T00:00:00.000Z', vcatBy:'v1121', src:'construction_list' });
     });
   });
@@ -59500,10 +59573,11 @@ async function vendorSeedConstruction(){
   if (_vendorSeedBusy || typeof SUPA_SYNC_ENABLED === 'undefined' || !SUPA_SYNC_ENABLED) return false;
   if (typeof _supaBooting !== 'undefined' && _supaBooting) return false;
   if (!_vbBase()) return false;   /* まだクラウドから読んでいない */
-  var seeds = vendorConstructionSeeds(), have = {};
-  (ls('m_vendors', []) || []).forEach(function(v){ if (v && v.id != null) have[String(v.id)] = 1; });
-  Object.keys(_vbBase()).forEach(function(id){ have[id] = 1; });
-  var miss = seeds.filter(function(s){ return !have[s.id]; });
+  var seeds = vendorConstructionSeeds(), have = {}, names = {}, nk = function(n){ return String(n || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim(); };
+  (ls('m_vendors', []) || []).forEach(function(v){ if (v && v.id != null) { have[String(v.id)] = 1; if (v.src !== 'construction_list') names[nk(v.name)] = 1; } });
+  Object.keys(_vbBase()).forEach(function(id){ have[id] = 1; var b = _vbBase()[id]; if (b && b.src !== 'construction_list') names[nk(b.name)] = 1; });
+  /* 同じ名前のカード（どの状態でも）がもうある業者は入れない（重複を作らない・削除した業者を戻さない） */
+  var miss = seeds.filter(function(s){ return !have[s.id] && !names[nk(s.name)]; });
   if (!miss.length) return true;
   _vendorSeedBusy = true;
   try {
@@ -59635,7 +59709,18 @@ function openVendorModal(vId) {
     + '<button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>'
     + '<button class="btn btn-primary" id="v-save" onclick="saveVendor('+q(vId||'')+')">'+(isNew?'登録':'保存')+'</button></div>');
   window._vendorRating = v.rating || 3;
+  window._vmOpen = isNew ? null : { id:String(v.id), vals:_vendorFormVals(v), sm:_vendorSmOf(v) };
 }
+/* 開いたときにフォームに出した値（読むときと同じ形）。保存では、ここから変えた欄だけを書く（v1121 レビュー R2：
+   開いたあとにほかの端末が直した欄・フォームに空で出る欄を、この端末の古い値・空で上書きしない） */
+function _vendorFormVals(v){
+  var s = function(x){ return String(x == null ? '' : x).trim(); }, has = function(list, x){ return list.indexOf(x) >= 0 ? x : ''; };
+  return { name:s(v.name), contact:s(v.contact), phone:s(v.phone), sms:s(v.sms), email:s(v.email), line:s(v.line),
+    method:v.method ? (ORDER_METHODS.indexOf(v.method) >= 0 ? v.method : (ORDER_METHODS[0] || '')) : '', webform:s(v.webform), cutoff:s(v.cutoff),
+    leadtime:parseInt(s(v.leadtime || 1)) || 1, minOrder:parseInt(s(v.minOrder || 0)) || 0, terms:has(['','NET15','NET30','NET60','COD'], v.terms || ''), delivery:s(v.delivery),
+    rating:v.rating || 3, memo:s(v.memo), addr:s(v.addr), cgroup:s(v.cgroup), w9:has(['','必要','不要'], v.w9 || ''), w9note:s(v.w9note) };
+}
+function _vendorSmOf(v){ var o = {}; (typeof STORES !== 'undefined' ? STORES : []).forEach(function(st){ var m = v && v.storeMethods ? v.storeMethods[st.id] : ''; if (m && ORDER_METHODS.indexOf(m) >= 0) o[st.id] = m; }); return o; }
 
 function setVendorRating(r, btn) {
   window._vendorRating = r;
@@ -59658,15 +59743,25 @@ async function saveVendor(vId) {
   if (vId) data.storeMethods = storeMethods;
   var vendors = getVendors(), v = vId ? vendors.find(function(x){ return String(x.id) === String(vId); }) : null;
   if (vId && !v) { showToast(t('この業者はほかの端末で削除されました。','This vendor was deleted on another device.'), 'warning'); closeModalDirect(); renderPage('vendor_master'); return; }
-  var cat = g('v-cat'), curCat = v ? (vendorCatOf(v) || 'none') : 'none';
-  if (cat && (cat !== curCat || (!v && cat !== 'none'))) { data.vcat = cat; data.vcatAt = vendorStampAfter(v && v.vcatAt); data.vcatBy = (typeof myName === 'function' ? myName() : '') || ''; }
-  if (v) Object.assign(v, data);
+  var cat = g('v-cat'), curCat = v ? (vendorCatOf(v) || 'none') : 'none', catAt = '';
+  if (cat && (cat !== curCat || (!v && cat !== 'none'))) { data.vcat = cat; data.vcatAt = catAt = vendorStampAfter(v && v.vcatAt); data.vcatBy = (typeof myName === 'function' ? myName() : '') || ''; }
+  if (v) {
+    var o = (window._vmOpen && window._vmOpen.id === String(v.id)) ? window._vmOpen : { vals:_vendorFormVals(v), sm:_vendorSmOf(v) }, chg = [];
+    Object.keys(o.vals).forEach(function(k){ if (!_vbEq(o.vals[k], data[k])) { v[k] = data[k]; chg.push(k); } });
+    if (!_vbEq(o.sm, storeMethods)) { var sm = Object.assign({}, v.storeMethods || {}); (typeof STORES !== 'undefined' ? STORES : []).forEach(function(st){ if (storeMethods[st.id]) sm[st.id] = storeMethods[st.id]; else delete sm[st.id]; }); v.storeMethods = sm; chg.push('storeMethods'); }
+    if (data.vcat) { v.vcat = data.vcat; v.vcatAt = data.vcatAt; v.vcatBy = data.vcatBy; chg = chg.concat(VENDOR_CAT_F); }
+    if (!chg.length) { closeModalDirect(); showToast(t('変えていません','Nothing changed'), 'info'); return; }
+    vendorTouch(v.id, chg);
+  }
   else { data.id = 'v' + Date.now(); data.storeMethods = storeMethods; vendors.push(data); }
   var btn = document.getElementById('v-save'); if (btn) { btn.disabled = true; btn.textContent = t('保存中…','Saving…'); }
   if (lsSet('m_vendors', vendors) === false) { if (btn) { btn.disabled = false; btn.textContent = vId ? '保存' : '登録'; } alert(t('端末に保存できませんでした','Could not save on this device')); return; }
   var r = (typeof SUPA_SYNC_ENABLED !== 'undefined' && SUPA_SYNC_ENABLED && typeof _lsPushP !== 'undefined' && _lsPushP && _lsPushP.m_vendors) ? await _lsPushP.m_vendors : undefined;
   closeModalDirect();
-  if (r === true) showToast(vId?'業者情報を更新しました':'業者を登録しました', 'success');
+  var lostCat = false;
+  if (r === true && catAt) { var bs = _vbBase() || {}, row = bs[String(v ? v.id : data.id)]; lostCat = !!(row && row.vcatAt !== catAt); }
+  if (r === true && lostCat) showToast(t('保存しました。区分はほかの端末が先に変えたもの（' + vendorCatLabel(vendorCatOf(row)) + '）が残りました。','Saved. The category another device set first was kept.'), 'warning');
+  else if (r === true) showToast(vId?'業者情報を更新しました':'業者を登録しました', 'success');
   else showToast(t('この端末に保存しました。クラウドへはまだ送れていません（未送信に残しています。通信が戻ると送ります）。','Saved on this device. Not yet sent to the cloud (kept in the outbox).'), 'warning');
   renderPage('vendor_master');
 }
@@ -59728,6 +59823,7 @@ async function vendorBulkPurchaseGo(){
   var r = await vendorSetCats(ids, 'purchase');
   closeModalDirect();
   if (r.ok) showToast(t(r.n+' 社を仕入れ業者にしました',r.n+' set as purchase'), 'success');
+  else if (r.lost) showToast(t(r.n+' 社を仕入れ業者にしました。' + r.lost + ' 社は、ほかの端末が先に変えた区分が残りました。', r.n+' set as purchase; ' + r.lost + ' kept the category another device set first.'), 'warning');
   else if (r.local) showToast(t('この端末に保存しました。クラウドへはまだ送れていません（未送信に残しています）。','Saved on this device. Not yet sent to the cloud.'), 'warning');
   else showToast(t('保存できませんでした','Could not save'), 'danger');
   renderPage('vendor_master');
@@ -86304,6 +86400,8 @@ function matchVendorBest(raw){
   /* v1083：業者の統合でまとめた名前は、まとめた先の業者 */
   try{ var _c=vmgCardFor(q); if(_c && vendorCanon(q)!==normVendor(q)) return {vendor:_c, score:1, reason:'まとめた名前'}; }catch(e){}
   var vendors=(typeof getVendorsPickable==='function')?getVendorsPickable():(typeof getVendorsVisible==='function')?getVendorsVisible():((typeof getVendors==='function')?getVendors():[]);   /* v1121：無効の業者は候補にしない */
+  /* v1121：工事関係業者は自動の当てはめに使わない（「Mark」「Joe」など短い名前が前方一致で別の業者を書き換えるため。選ぶ一覧には出る） */
+  if(typeof vendorCatOf==='function') vendors=vendors.filter(function(v){ return vendorCatOf(v)!=='construction'; });
   if(!vendors.length) return null;
   var qn=_vnNorm(q), qt=_vnTokens(q);
   var best=null;

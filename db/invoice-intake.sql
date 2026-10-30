@@ -1669,12 +1669,13 @@ begin
  perform public.invoice_require(actor, array['ceo','gm']);
  -- A card whose name a vendor already has (its own name or one of its names, also a vendor merged into another one) is not
  -- added again (業者の統合, Moto 2026-10-15): the name would belong to two vendors and match neither.
+ -- A card deleted in the vendor master (data.vst = 'deleted', v1121) is not offered either: it would come back through the intake.
  select coalesce(jsonb_agg(jsonb_build_object('vendor_key', v.id::text, 'display_name', v.name,
    'food_kind', case when v.data->>'kind' in ('food','nonfood') then v.data->>'kind' end,
    'exists', exists(select 1 from public.invoice_vendor_rules r where r.vendor_key=v.id::text
      or exists(select 1 from unnest(array[r.display_name] || r.aliases) a(n)
        where nullif(btrim(regexp_replace(lower(normalize(a.n, NFKC)), '\s+', ' ', 'g')), '') = nullif(btrim(regexp_replace(lower(normalize(v.name, NFKC)), '\s+', ' ', 'g')), '')))) order by v.name), '[]')
- into rows from public.vendors v where coalesce(v.name,'') <> '' and v.id::text ~ '^[A-Za-z0-9_.:@-]{1,80}$';
+ into rows from public.vendors v where coalesce(v.name,'') <> '' and coalesce(v.data->>'vst','') <> 'deleted' and v.id::text ~ '^[A-Za-z0-9_.:@-]{1,80}$';
  if coalesce((p->>'apply')::boolean,false) then
   insert into public.invoice_vendor_rules(vendor_key, display_name, food_kind, auto_post)
   select x->>'vendor_key', x->>'display_name', x->>'food_kind', false from jsonb_array_elements(rows) x

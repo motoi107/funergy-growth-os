@@ -523,6 +523,21 @@ test('each migration changes only what it says', async () => {
     "where coalesce(p.summary ->> 'rule', '') <> 'posted_or_reconciled'",
     ' and not exists(select 1 from public.invoice_purchase_snapshots s',
     "  where s.reason = 'before 20261029100000 (confirmed = posted by a person or reconciled)' and s.ym = p.ym);"].join('\n'), 'only the snapshot besides the function');
+  // 削除した業者を候補にしない (20261101100000, 業者マスター v1121・10/30 の依頼 ③): invoice_vendor_seed replaced (skips vendors
+  // the vendor master deleted); nothing else besides the stop when 業者の統合 is not there.
+  const sd = read('supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql');
+  assert.deepEqual([...sd.matchAll(fn)].map(m => m[1]), ['invoice_vendor_seed']);
+  assert.ok([...sd.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  assert.equal(sd.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim(), [
+    'do $$ begin',
+    " if to_regprocedure('public.invoice_vendor_seed(jsonb)') is null",
+    "    or not exists(select 1 from information_schema.columns where table_schema='public' and table_name='invoice_vendor_rules' and column_name='merged_into') then",
+    "  raise exception '先に 20261022090000_invoice_vendor_merge.sql を流してください（この SQL はそのあとに流します）';",
+    ' end if;',
+    'end $$;'].join('\n'), 'only the stop besides the function');
+  const vm4 = [...read('supabase/migrations/20261022090000_invoice_vendor_merge.sql').matchAll(fn)].find(m => m[1] === 'invoice_vendor_seed')[0];
+  const sd1 = [...sd.matchAll(fn)][0][0];
+  assert.equal(sd1.replace(" and coalesce(v.data->>'vst','') <> 'deleted'", '').replace(/^ -- A card deleted in the vendor master[^\n]*\n/m, ''), vm4, 'the same function besides skipping deleted vendors');
   // the revert puts back the 段階 3 version of the function, and nothing else
   const rv = read('db/invoice-purchase-posted-revert.sql'), mf3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
   const pm3 = [...mf3.matchAll(fn)].find(m => m[1] === 'invoice_purchase_month')[0];
@@ -539,7 +554,7 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
     'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql',
     'supabase/migrations/20261025090000_invoice_item_link.sql', 'supabase/migrations/20261026090000_invoice_qb_gmail.sql',
-    'supabase/migrations/20261029100000_invoice_purchase_posted.sql'])
+    'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

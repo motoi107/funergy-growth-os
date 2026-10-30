@@ -22,11 +22,12 @@ function pick(src, name) {
   assert.fail('missing ' + name);
 }
 const varLine = (src, name) => { const m = src.match(new RegExp('\\nvar ' + name + ' = [^\\n]*')); assert.ok(m, 'missing var ' + name); return m[0].slice(1); };
-const NAMES = ['getVendors', 'vendorCatOf', 'vendorCatLabel', 'vendorStateOf', 'getVendorsPickable', '_vbBase', '_vbJson', '_vbEq', '_vbStamp', 'vendorMerge3', 'vendorStampAfter',
+const NAMES = ['getVendors', 'vendorCatOf', 'vendorCatLabel', 'vendorStateOf', 'getVendorsPickable', '_vbBase', '_vbJson', '_vbNorm', '_vbEq', '_vbLog', '_vbStamp', 'vendorMerge3', 'vendorStampAfter', 'vendorTouch',
+  '_vendorFormVals', '_vendorSmOf', 'matchVendorBest', '_vnNorm', '_vnTokens',
   'vendorFetchRows', 'vendorMergePulled', 'vendorPushDirty', '_vendorPushDirty', 'vendorRefs', 'vendorSetState', 'vendorSetCats', 'vendorSeedId', 'vendorConstructionSeeds',
   'vendorSeedConstruction', 'setVmView', 'renderVendorMaster', 'openVendorModal', 'saveVendor', 'deleteVendor', 'vendorDeleteRender', 'vendorDoState', 'vendorsSorted', 'ingVendorOptions',
   'vendorCanon', 'normVendor', 'vmgAll', 'vmgHas', 'vmgRec', 'vmgResolve', 'vmgHiddenIds', 'vmgCardHidden', 'getIngV2', 'vmgKey', 'getVendorsVisible', 'vmgPool', 'escapeHtml', 't'];
-const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', '_vendorSeedBusy', 'VMG_KEY', '_vmgC'];
+const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', '_vendorSeedBusy', 'VMG_KEY', '_vmgC', '_vendorPushedAt', '_vendorTouched'];
 
 async function cloud() {
   const pg = new PGlite();
@@ -36,7 +37,7 @@ async function cloud() {
     create table public.vendors(id text primary key, name text, contact text, phone text, email text, method text, data jsonb);
     grant select, insert, update on public.vendors to anon, authenticated;`);
   await pg.exec(MIGRATION);
-  const S = { pg, fail: null, calls: [], posted: [] };
+  const S = { pg, fail: null, failAfter: null, calls: [], posted: [] };
   S.asAnon = async (sql, params) => { await pg.exec('set role anon'); try { return await pg.query(sql, params); } finally { await pg.exec('reset role'); } };
   S.fetch = async (url, opt = {}) => {
     const u = new URL(url), method = (opt.method || 'GET').toUpperCase();
@@ -44,7 +45,7 @@ async function cloud() {
     if (S.fail && S.fail(method, u)) return { ok: false, status: 500, json: async () => ({}), text: async () => 'down' };
     assert.equal(u.pathname, '/rest/v1/vendors');
     if (method === 'GET') {
-      const ids = [...String(u.searchParams.get('id') || '').matchAll(/"([^"]*)"/g)].map(m => m[1]);
+      const ids = [...String(u.searchParams.get('id') || '').matchAll(/"((?:[^"\\]|\\.)*)"/g)].map(m => m[1].replace(/\\(.)/g, '$1'));   // PostgREST's quoted values
       const r = await S.asAnon('select id, data from public.vendors where id = any($1) order by id', [ids]);
       return { ok: true, status: 200, json: async () => r.rows };
     }
@@ -55,6 +56,7 @@ async function cloud() {
         on conflict (id) do ${ignore ? 'nothing' : 'update set name = excluded.name, contact = excluded.contact, phone = excluded.phone, email = excluded.email, method = excluded.method, data = excluded.data'}`,
         [r.id, r.name, r.contact, r.phone, r.email, r.method, JSON.stringify(r.data)]);
     }
+    if (S.failAfter && S.failAfter(method, u)) return { ok: false, status: 504, json: async () => ({}), text: async () => 'timeout' };   // written, but the answer was lost
     return { ok: true, status: 201, json: async () => ({}), text: async () => '' };
   };
   S.row = async (id) => (await pg.query('select data from public.vendors where id = $1', [id])).rows[0]?.data || null;
@@ -99,7 +101,7 @@ const run = (c, code) => vm.runInContext(code, c);
 const plain = v => JSON.parse(JSON.stringify(v));
 const V = (id, name, extra) => Object.assign({ id, name, contact: '', phone: '', email: '', method: 'Email', rating: 3, minOrder: 0, delivery: '', terms: 'NET30', storeMethods: {} }, extra || {});
 async function seedCloud(S, list) { for (const v of list) await S.pg.query('insert into public.vendors(id, name, data) values ($1,$2,$3)', [v.id, v.name, JSON.stringify(v)]); }
-async function pull(S, c) { const arr = (await S.rows()); c.STORE.m_vendors = plain(run(c, `vendorMergePulled(${JSON.stringify(arr)})`)); }
+async function pull(S, c, t0) { const arr = (await S.rows()); c.STORE.m_vendors = plain(run(c, `vendorMergePulled(${JSON.stringify(arr)}${t0 ? ', ' + t0 : ''})`)); }
 const ids = c => plain(run(c, 'getVendors()')).map(v => v.id).sort();
 const pushed = async c => run(c, '_lsPushP.m_vendors');
 
@@ -284,9 +286,16 @@ test('a vendor this device knew was deleted and then created again with the same
   const A = device(S);
   await pull(S, A);
   assert.deepEqual(ids(A), ['v2']);
-  run(A, `var a = getVendors(); a.push({ id:'k-1', name:'Key Vendor', kind:'food', src:'invoice_intake' }); lsSet('m_vendors', a)`);   // like ivdMakeCard
+  // a card with the same id but without the re-create mark (an old copy, a row put back on this device) stays deleted
+  run(A, `var a = getVendors(); a.push({ id:'k-1', name:'Key Vendor', phone:'old' }); lsSet('m_vendors', a)`);
+  assert.equal(await pushed(A), true);
+  assert.equal((await S.row('k-1')).vst, 'deleted', 'no mark: the deletion stays');
+  await pull(S, A);
+  run(A, `var a = getVendors(); a.push({ id:'k-1', name:'Key Vendor', kind:'food', src:'invoice_intake', _recreate:true }); lsSet('m_vendors', a)`);   // like ivdMakeCard
   assert.equal(await pushed(A), true);
   const k = await S.row('k-1');
+  assert.equal(k._recreate, undefined, 'the mark is not stored');
+  assert.equal(plain(run(A, `ls('m_vendors', [])`)).find(v => v.id === 'k-1')._recreate, undefined, 'and not left on this device');
   assert.equal(k.vst, ''); assert.ok(k.vstAt > '2026-10-29T00:00:00.000Z'); assert.equal(k.kind, 'food');
   // a change that could not be sent survives the next pull
   S.fail = (m) => m === 'POST';
@@ -336,7 +345,9 @@ test('the app sends vendors through the new path and keeps the read copy on this
   const body = (name) => pick(source, name);
   const sync = body('syncMasterToSupabase');
   assert.ok(sync.indexOf("if (key === 'm_vendors') return await vendorPushDirty(val);") >= 0 && sync.indexOf("if (key === 'm_vendors')") < sync.indexOf("def.type==='rows'"), 'vendors do not go through the whole-list upsert');
-  assert.ok(/if \(key === 'm_vendors'\) arr = vendorMergePulled\(arr\);/.test(body('supaPullAllMasters')));
+  assert.ok(/if \(key === 'm_vendors'\) arr = vendorMergePulled\(arr, _vT0\);/.test(body('supaPullAllMasters')));
+  assert.ok(/var _vT0 = Date\.now\(\);[^\n]*\n\s*var _mp = \{\}; for \(var _k in SUPA_MASTER_MAP\)/.test(body('supaPullAllMasters')), 'the time is taken before the reads start');
+  assert.ok(/if \(del\) card\._recreate = true;/.test(body('ivdMakeCard')), 'the intake marks a re-created card');
   assert.ok(/key === 'm_vendors' && Array\.isArray\(val\) && val\.length\) \{\s*var _vp = await vendorPushDirty\(val\);/.test(body('supaPushAllMasters')));
   assert.ok(/var LS_LOCAL_ONLY = \[[^\]]*'vendor_base_v1'/.test(source));
   assert.ok(/matchVendorBest[\s\S]{0,600}getVendorsPickable\(\)/.test(body('matchVendorBest')));
@@ -398,6 +409,16 @@ test('the deploy set: the SQL to paste is the migration, the check is read-only 
   await seedCloud(S, [V('v1', 'A', { vst: 'deleted', vstAt: '2026-10-30T00:00:00.000Z', vcat: 'purchase' })]);
   const rows = (await S.pg.query(fs.readFileSync(new URL('2_確認のSQL_読むだけ.sql', dir), 'utf8'))).rows;
   for (const n of ['guard function', 'guard trigger on vendors', 'browser roles cannot run the guard directly']) assert.equal(rows.find(r => r.name === n).ok, true, n);
+  assert.equal(rows.find(r => r.name === 'invoice seed skips deleted vendors').ok, false, 'not yet');
+  // 1b: the Invoice intake's vendor candidates (the migration as it is); it stops without 業者の統合 and changes nothing
+  assert.equal(fs.readFileSync(new URL('1b_追加のSQL_Invoice取込の候補.sql', dir), 'utf8'), fs.readFileSync(new URL('../supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql', import.meta.url), 'utf8'));
+  await assert.rejects(S.pg.exec(fs.readFileSync(new URL('1b_追加のSQL_Invoice取込の候補.sql', dir), 'utf8')), /先に 20261022090000/);
+  await S.pg.exec(`create table public.invoice_vendor_rules(vendor_key text primary key, merged_into text);
+    create function public.invoice_vendor_seed(p jsonb) returns jsonb language sql as $$ select '{}'::jsonb $$;`);
+  await S.pg.exec(fs.readFileSync(new URL('1b_追加のSQL_Invoice取込の候補.sql', dir), 'utf8'));
+  await S.pg.exec(fs.readFileSync(new URL('1b_追加のSQL_Invoice取込の候補.sql', dir), 'utf8'));   // twice is the same
+  const rows2 = (await S.pg.query(fs.readFileSync(new URL('2_確認のSQL_読むだけ.sql', dir), 'utf8'))).rows;
+  assert.equal(rows2.find(r => r.name === 'invoice seed skips deleted vendors').ok, true);
   assert.equal(rows.find(r => r.name === 'deleted (kept as a mark)').note, '1');
   await S.pg.exec(fs.readFileSync(new URL('止める.sql', dir), 'utf8'));
   assert.equal((await S.pg.query(`select to_regprocedure('public.vendors_keep_state()') as f`)).rows[0].f, null);
@@ -405,4 +426,172 @@ test('the deploy set: the SQL to paste is the migration, the check is read-only 
   // without the table the SQL stops and changes nothing
   const pg2 = new PGlite();
   await assert.rejects(pg2.exec(MIGRATION), /public\.vendors がありません/);
+});
+
+// ---------------------------------------------------------------- the independent review of e95b7d4 (R1–R5 and the P3 items)
+const FORM_OF = (name, extra) => Object.assign({ 'v-name': name, 'v-cat': 'none', 'v-contact': '', 'v-phone': '', 'v-sms': '', 'v-email': '', 'v-line': '', 'v-method': 'Email', 'v-webform': '', 'v-cutoff': '',
+  'v-leadtime': '1', 'v-min': '0', 'v-terms': 'NET30', 'v-delivery': '', 'v-memo': '', 'v-addr': '', 'v-cgroup': '', 'v-w9': '', 'v-w9note': '' }, extra || {});
+
+test('R1: a deletion that reached the cloud is not undone — a lost answer is checked by reading again, a row without a state does not re-create it, the history is kept', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v9', 'Unused Example'), V('v8', 'Other Unused')]);
+  const A = device(S); await pull(S, A);
+  run(A, `_vmg.usage = { vendors: [], unknown: [] }`);
+  // the write lands but its answer is lost: reading again shows it, so it is done (nothing goes back)
+  S.failAfter = (m) => m === 'POST';
+  let r = plain(await run(A, `vendorSetState('v9', 'deleted', 'gone')`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  S.failAfter = null;
+  assert.equal((await S.row('v9')).vst, 'deleted');
+  // the write and the reading both fail: not known — this device keeps the change and does not say it failed for sure
+  S.fail = () => true;
+  r = plain(await run(A, `vendorSetState('v8', 'deleted', 'gone too')`));
+  assert.equal(r.ok, false); assert.equal(r.unknown, true); assert.match(r.why, /確かめられませんでした/);
+  assert.equal(plain(run(A, `ls('m_vendors', [])`)).find(v => v.id === 'v8').vst, 'deleted', 'not put back');
+  S.fail = null;
+  run(A, `lsSet('m_vendors', ls('m_vendors', []))`);   // the outbox sends it again later
+  assert.equal(await pushed(A), true);
+  assert.equal((await S.row('v8')).vst, 'deleted');
+  // a row on this device without a state (an old copy) is sent: the deletion stays and its history is kept
+  const log0 = (await S.row('v9')).vstLog.length;
+  run(A, `var a = ls('m_vendors', []); var x = a.find(function(v){ return v.id==='v9'; }); delete x.vst; delete x.vstAt; delete x.vstLog; x.phone = '1'; lsSet('m_vendors', a)`);
+  assert.equal(await pushed(A), true);
+  const z = await S.row('v9');
+  assert.equal(z.vst, 'deleted'); assert.equal(z.vstLog.length, log0, 'history kept'); assert.equal(z.phone, '1');
+});
+
+test('R1 (history): two devices change the state at the same time — both entries stay in the history', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods')]);
+  const A = device(S), B = device(S);
+  await pull(S, A); await pull(S, B);
+  assert.equal(plain(await run(A, `vendorSetState('v1', 'inactive', 'A says')`)).ok, true);
+  assert.equal(plain(await run(B, `vendorSetState('v1', '', 'B says')`)).ok, true);   // B has not pulled; its stamp is later
+  const v = await S.row('v1');
+  assert.equal(v.vst, '');
+  assert.deepEqual(v.vstLog.map(h => h.why), ['A says', 'B says']);
+});
+
+test('R2: saving the form writes only what was changed there — another device\'s memo, address, W9 note and store methods stay', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods', { phone: '808-000' })]);
+  const A = device(S), B = device(S);
+  await pull(S, A); await pull(S, B);
+  // B adds a memo, address, W9 note and a store method
+  run(B, `var b = ls('m_vendors', []); var x = b[0]; x.memo = 'B memo'; x.addr = 'B addr'; x.w9note = 'B w9'; x.storeMethods = { F01:'Phone' }; lsSet('m_vendors', b)`);
+  assert.equal(await pushed(B), true);
+  // A (stale) opens the form and changes only the phone
+  run(A, `openVendorModal('v1')`);
+  Object.assign(A.FORM, FORM_OF('Alpha Foods', { 'v-phone': '808-111' }));
+  await run(A, `saveVendor('v1')`);
+  const v = await S.row('v1');
+  assert.equal(v.phone, '808-111');
+  assert.equal(v.memo, 'B memo'); assert.equal(v.addr, 'B addr'); assert.equal(v.w9note, 'B w9');
+  assert.deepEqual(v.storeMethods, { F01: 'Phone' });
+  // clearing a field on purpose is still written
+  await pull(S, A);
+  run(A, `openVendorModal('v1')`);   // the form shows B memo; the person empties it
+  Object.assign(A.FORM, FORM_OF('Alpha Foods', { 'v-phone': '808-111', 'v-memo': '' }));
+  await run(A, `saveVendor('v1')`);
+  assert.equal((await S.row('v1')).memo, '', 'cleared');
+  // the empty value and a missing one are the same; the key order of an object does not matter
+  assert.equal(run(A, `_vbEq({ a:'', b:{ x:1, y:2 } }, { b:{ y:2, x:1 } })`), true);
+  assert.equal(run(A, `_vbEq({ memo:'' }, { memo:'x' })`), false);
+});
+
+test('R3: a device that has no read copy reads the cloud first and sends only what it changed and new vendors', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods', { phone: 'NEW-from-other' }), V('v2', 'Beta Supply', { phone: 'B-NEW', memo: 'B memo', storeMethods: { F01: 'Phone' } }), V('v4', 'Delta Co', { contact: 'B-contact' })]);
+  const A = device(S);
+  A.STORE.m_vendors = [V('v1', 'Alpha Foods', { phone: 'old-copy' }), V('v2', 'Beta Supply'), V('v4', 'Delta Co', { contact: 'old' })];   // an old copy, never pulled (no read copy)
+  run(A, `openVendorModal('v2')`);
+  Object.assign(A.FORM, FORM_OF('Beta Supply', { 'v-delivery': 'Fri' }));
+  run(A, `var a = ls('m_vendors', []); a.push({ id:'v3', name:'Brand New' }); STORE.m_vendors = a`);
+  await run(A, `saveVendor('v2')`);
+  assert.equal((await S.row('v1')).phone, 'NEW-from-other', 'the other device\'s phone is not undone');
+  assert.equal((await S.row('v2')).delivery, 'Fri', 'this device\'s change is sent');
+  assert.equal((await S.row('v2')).phone, 'B-NEW', 'only the field changed in the form is sent');
+  assert.equal((await S.row('v2')).memo, 'B memo');
+  assert.deepEqual((await S.row('v2')).storeMethods, { F01: 'Phone' });
+  assert.equal((await S.row('v3')).name, 'Brand New', 'a new vendor is sent');
+  assert.ok(!S.posted.flat().includes('v1'), 'v1 was not sent');
+  assert.equal(plain(run(A, `ls('m_vendors', [])`)).find(v => v.id === 'v1').phone, 'NEW-from-other', 'this device now shows the cloud');
+  assert.ok(run(A, `!!_vbBase() && !!_vbBase().v1`), 'a read copy now exists');
+  // a state change on a device with no read copy sends the state only
+  const B = device(S);
+  B.STORE.m_vendors = [V('v4', 'Delta Co', { contact: 'old' })];
+  assert.equal(plain(await run(B, `vendorSetState('v4', 'inactive', 'no copy')`)).ok, true);
+  assert.equal((await S.row('v4')).vst, 'inactive');
+  assert.equal((await S.row('v4')).contact, 'B-contact', 'the old contact is not sent');
+});
+
+test('R2: a field another device changed after the form was opened is not undone by saving the form (the values the form showed are kept from opening)', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods', { contact: 'Ann', leadtime: '2' })]);
+  const A = device(S), B = device(S);
+  await pull(S, A); await pull(S, B);
+  run(A, `openVendorModal('v1')`);   // the form shows Ann
+  run(B, `var b = ls('m_vendors', []); b[0].contact = 'Bob'; lsSet('m_vendors', b)`);
+  assert.equal(await pushed(B), true);
+  await pull(S, A);   // A's copy now has Bob, the open form still shows Ann
+  Object.assign(A.FORM, FORM_OF('Alpha Foods', { 'v-contact': 'Ann', 'v-phone': '808-9', 'v-leadtime': '2' }));
+  await run(A, `saveVendor('v1')`);
+  const v = await S.row('v1');
+  assert.equal(v.contact, 'Bob'); assert.equal(v.phone, '808-9');
+  assert.equal(v.leadtime, '2', 'a number shown as it was is not rewritten');
+});
+
+test('a pull that was read before this device sent a change does not put the old state back on this device', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods')]);
+  const A = device(S); await pull(S, A);
+  const t0 = Date.now(), old = await S.rows();   // the pull starts reading
+  await new Promise(r => setTimeout(r, 2));
+  assert.equal(plain(await run(A, `vendorSetState('v1', 'inactive', 'now')`)).ok, true);
+  A.STORE.m_vendors = plain(run(A, `vendorMergePulled(${JSON.stringify(old)}, ${t0})`));   // …and lands after the change
+  assert.equal(plain(run(A, `ls('m_vendors', [])`))[0].vst, 'inactive');
+  assert.equal(run(A, `_vbBase().v1.vst`), 'inactive');
+  // a pull that started after the change takes the cloud as usual
+  await pull(S, A, Date.now() + 1);
+  assert.equal(plain(run(A, `ls('m_vendors', [])`))[0].vst, 'inactive');
+});
+
+test('categories: a choice that another device\'s newer category beat is not reported as done', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods'), V('v2', 'Beta Supply')]);
+  const A = device(S); await pull(S, A);
+  await S.pg.query(`update public.vendors set data = data || '{"vcat":"construction","vcatAt":"2099-01-01T00:00:00.000Z"}' where id = 'v1'`);
+  const r = plain(await run(A, `vendorSetCats(['v1','v2'], 'purchase')`));
+  assert.equal(r.ok, false); assert.equal(r.n, 1); assert.equal(r.lost, 1);
+  assert.equal((await S.row('v1')).vcat, 'construction'); assert.equal((await S.row('v2')).vcat, 'purchase');
+});
+
+test('R5 and the construction cards: contractors are not matched automatically; a name a card already has is not added again; LINE is a note, not an id', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Pipe Example LLC', { phone: 'mine' })]);
+  const A = device(S);
+  A.CONSTRUCTION_VENDORS = [{ cat: 'AC', icon: 'ti-x', vendors: [{ name: 'Mark', note: 'aircon', line: true, phone: '808' }, { name: 'Pipe Example LLC', note: 'dup' }] }];
+  await pull(S, A);
+  assert.equal(await run(A, 'vendorSeedConstruction()'), 'added');
+  const rows = await S.rows();
+  assert.equal(rows.filter(v => v.name === 'Pipe Example LLC').length, 1, 'no second card with the same name');
+  const mark = rows.find(v => v.name === 'Mark');
+  assert.equal(mark.line, ''); assert.match(mark.memo, /aircon（LINE で連絡）/);
+  await pull(S, A);
+  run(A, `var a = ls('m_vendors', []); a.push({ id:'p1', name:'Market Fresh Produce Co' }); STORE.m_vendors = a`);
+  const m = plain(run(A, `matchVendorBest('Market Fresh Produce')`));
+  assert.equal(m && m.vendor.id, 'p1', 'not “Mark”');
+  assert.equal(run(A, `matchVendorBest('Mark')`) && plain(run(A, `matchVendorBest('Mark')`)).vendor.id === mark.id, false, 'a contractor is never the automatic match');
+  assert.ok(plain(run(A, 'vendorsSorted()')).some(v => v.name === 'Mark'), 'still in the list to choose from');
+});
+
+test('usage: Invoice intake documents filed under the card\'s id count too (a renamed card cannot be deleted while in use); an id with a quote is read back', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('vk-1', 'Renamed In App'), V('q"1', 'Quote Id')]);
+  const A = device(S); await pull(S, A);
+  run(A, `_vmg.usage = { vendors: [{ vendor_key:'vk-1', display_name:'Old Intake Name', docs:4 }], unknown: [] }`);
+  assert.equal(plain(run(A, `vendorRefs(getVendors().find(function(v){ return v.id==='vk-1'; }))`)).intake, 4);
+  const r = plain(await run(A, `vendorSetState('q"1', 'inactive', 'x')`));
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal((await S.row('q"1')).vst, 'inactive');
 });
