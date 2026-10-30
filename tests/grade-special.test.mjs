@@ -73,17 +73,17 @@ test('special with no Career Score at all: the reason is required (not empty, no
   run(c, `ghSetChangeMode('special')`);
   let m = lastModal(c);
   assert.match(m, /キャリアスコアの評価を伴わずにグレードを変更します。変更理由と操作履歴が記録されます。/);
-  assert.match(m, /対象従業員<\/td><td><b>Neo Sample<\/b><div[^>]*>Kitchen Leader → Store Manager<\/div>/);
-  assert.match(m, /現在のグレード<\/td><td><span[^>]*>G3<\/span>/);
-  assert.match(m, /変更後のグレード<\/td><td><span[^>]*>G4<\/span>/);
-  assert.match(m, /適用日<\/td><td><span id="gh-sp-apply"><b>2026\/8\/21<\/b> から（確定日 2026\/8\/20 の翌日）<\/span>/);
-  assert.match(m, /職種（G3 の期間）<\/td><td><b>G3 [^<]+<\/b><div[^>]*>役職名 Kitchen Leader から<\/div>/);
+  assert.match(m, /対象従業員<\/td><td[^>]*><b>Neo Sample<\/b><div[^>]*>Kitchen Leader → Store Manager<\/div>/);
+  assert.match(m, /現在のグレード<\/td><td[^>]*><span[^>]*>G3<\/span>/);
+  assert.match(m, /変更後のグレード<\/td><td[^>]*><span[^>]*>G4<\/span>/);
+  assert.match(m, /適用日<\/td><td[^>]*><span id="gh-sp-apply"><b>2026\/8\/21<\/b> から（確定日 2026\/8\/20 の翌日）<\/span>/);
+  assert.match(m, /職種（G3 の期間）<\/td><td[^>]*><b>G3 [^<]+<\/b><div[^>]*>役職名 Kitchen Leader から<\/div>/);
   // the apply date follows the date field
   c.FORM['gh-sp-apply'] = { innerHTML: '' };
   run(c, `ghConfirmDate('2026-08-18')`);
   assert.match(c.FORM['gh-sp-apply'].innerHTML, /<b>2026\/8\/19<\/b> から（確定日 2026\/8\/18 の翌日）/);
   run(c, `ghConfirmDate('2026-08-20')`);
-  assert.match(m, /Career Score<\/td><td>まだ評価がありません（未評価のまま残ります）/);
+  assert.match(m, /Career Score<\/td><td[^>]*>まだ評価がありません（未評価のまま残ります）/);
   assert.doesNotMatch(m, /G3 の期間の評価を確定（日割り）/, 'no evaluation block in the special change');
   assert.match(m, /<label class="form-label" for="gh-sp-reason">特例変更の理由（必須）<\/label><textarea[^>]*id="gh-sp-reason"/);
   assert.match(m, /<button id="gh-cf-go"[^>]*disabled[^>]*>.*特例変更の理由を入れてください<\/button>/);
@@ -146,7 +146,7 @@ test('special while the evaluation is in progress: the scores and their unscored
   run(c, `saveEmp('ken'); ghEvalConfirm();`);   // the GM had already confirmed the evaluation in the normal way …
   assert.ok(run(c, `window._ghPend.ev`));
   run(c, `ghSetChangeMode('special')`);
-  assert.match(lastModal(c), /Career Score<\/td><td>評価途中（採点していない項目 \d+）・今の点 /);
+  assert.match(lastModal(c), /Career Score<\/td><td[^>]*>評価途中（採点していない項目 \d+）・今の点 /);
   run(c, `ghSpecialReason('役割の変更（評価は途中）'); ghSpecialReview(); ghConfirmGo();`);
   assert.equal(empOf(c, 'ken').title, 'Store Manager');
   const r = c.STORE.grade_hist.ken.recs[0];
