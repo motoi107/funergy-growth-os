@@ -13,7 +13,8 @@
 - 試験（合成データ）：新しい `tests/bonus-base-special.test.mjs` 12・関連 17 ファイル通る・static release pass/1116。わざと壊す：最初の 66 通りのうち 63（残り 3 は二重の守りと、入れる一式の確かめと同じ試験にある STOP）・独立レビューの直しの 32 通りすべて。本物のアプリ（模擬サーバー・合成 57 名・本物の handler と SQL・GM と CEO の 2 つの端末・Chromium 1280／390px）24/24・pageerror 0。
 - 全体（重い 2 つ以外・4 並列・直したあと）：89 ファイル・1,384 件のうち 54 件が落ちる＝落ちたファイルは main と同じ（bot-center・bot-database・cooking-sake・employee-resign-sync（main `3063e0c` でも単独で 27 件）・ingredient-transfers・meeting-budget・meeting-sales・next-v1090・perf-v1098）。重いときだけ落ちるもの（ops-bot-deploy-v1105・employee-field-log）は単独では通る。
 - 独立レビュー（Claude の別エージェント・作業を見ていない・`52f8a69`）：P1 なし・**P2 5**（基準額支給の人の選んだ値が版で消える／締めの欄を開いていない端末で不足額と「不足分を補う」が違う額／自分に特別報酬・基準額支給を入れられる／知らせの名前がエスケープされていない／基準額支給の額をサーバーが確かめず合計に上限が無い）・P3 7 → 直した（仕様の 6）。残した P3：1115 以前の端末で個別評価が出ないことがある・amt0／amt1 は画面の値・$0 の基準額・v1109 の SQL の流し直し。直したあとの独立レビューは無し。Codex のレビューはまだ。
-- 次：PR（#105 の上）→ Codex → Moto さんが #105 → この PR の順にマージ（手順.md の順）→ 使う端末をすべて 1116 に → 実機（iPhone）。
+- PR #106（base main・#105 の上）。
+- 次：Codex → Moto さんが #105 → #106 の順にマージ（手順.md の順）→ 使う端末をすべて 1116 に → 実機（iPhone）。
 
 ## 2026-10-29 v1115：特例でのグレード変更（キャリアスコア評価なし）（Claude・ブランチ `claude/grade-special`・main `3063e0c`（v1114）の上・アプリだけ・本番未反映）
 

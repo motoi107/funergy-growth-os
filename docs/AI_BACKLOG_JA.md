@@ -3,7 +3,7 @@
 ## 2026-10-29 ボーナスの基準額支給と個人別の特別報酬
 
 1. 済（Claude・ブランチ `claude/bonus-base-special`・#105 の上）：v1116（SQL `20261030090000`・関数 `bonus-close`・アプリ・`docs/BONUS_BASE_SPECIAL_V1116_JA.md`）・試験 12・わざと壊す・Chromium 24/24・独立レビュー（P2 5・P3 は直した）。
-2. 次：PR → Codex → Moto さんが #105 → この PR の順にマージ（`deploy/bonus-close-base-special-v1116/手順.md`：最初に確認 → SQL → 確認 → 関数 → マージ）→ GM・CEO の端末をすべて 1116 に → 実機（iPhone）。
+2. 済：PR #106。次：Codex → Moto さんが #105 → #106 の順にマージ（`deploy/bonus-close-base-special-v1116/手順.md`：最初に確認 → SQL → 確認 → 関数 → マージ）→ GM・CEO の端末をすべて 1116 に → 実機（iPhone）。
 3. Moto さんの判断（任意）：特別報酬の理由を本人に見せるか（今は見せない）・「無条件で基準額」を区間の一部だけにできるようにするか（今は四半期全体）。
 
 ## 2026-10-29 特例でのグレード変更（キャリアスコア評価なし）
