@@ -24,13 +24,13 @@ function pick(src, name) {
 const varLine = (src, name) => { const m = src.match(new RegExp('\\nvar ' + name + ' = [^\\n]*')); assert.ok(m, 'missing var ' + name); return m[0].slice(1); };
 const NAMES = ['getVendors', 'vendorCatOf', 'vendorCatLabel', 'vendorStateOf', 'getVendorsPickable', '_vbBase', '_vbJson', '_vbNorm', '_vbEq', '_vbLog', '_vbStamp', 'vendorMerge3', 'vendorStampAfter', 'vendorTouch',
   '_vendorFormVals', '_vendorSmOf', 'matchVendorBest', '_vnNorm', '_vnTokens',
-  'vendorFetchRows', 'vendorMergePulled', 'vendorPushDirty', '_vendorPushDirty', 'vendorRefs', 'vendorSetState', 'vendorSetCats', 'vendorSeedId', 'vendorConstructionSeeds',
-  'vendorSeedConstruction', 'setVmView', 'renderVendorMaster', 'openVendorModal', 'saveVendor', 'deleteVendor', 'vendorDeleteRender', 'vendorDoState', 'vendorsSorted', 'ingVendorOptions',
+  'vendorFetchRows', 'vendorMergePulled', 'vendorPushDirty', '_vendorPushDirty', 'vendorRefs', 'vendorSetState', 'vendorSetCats',
+  'setVmView', 'renderVendorMaster', 'openVendorModal', 'saveVendor', 'deleteVendor', 'vendorDeleteRender', 'vendorDoState', 'vendorsSorted', 'ingVendorOptions',
   'vendorCanon', 'normVendor', 'vmgAll', 'vmgHas', 'vmgRec', 'vmgResolve', 'vmgHiddenIds', 'vmgCardHidden', 'getIngV2', 'vmgKey', 'getVendorsVisible', 'vmgPool', 'escapeHtml', 't'];
 // the names the Codex fixes on acba177 added (and the ones they replaced): taken when present, so the file also runs on acba177 (VENDOR_INDEX_PATH) to show the new tests fail there
 const has = n => new RegExp('\\n(async )?function ' + n + '\\(|\\nvar ' + n + ' = ').test(source);
 const OPT_NAMES = ['vendorTouchedAll', '_vendorTouchedPut', 'vendorTouchedClear', '_vendorOverlayTouched', 'vendorsWithDeleted'].filter(has);
-const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', '_vendorSeedBusy', 'VMG_KEY', '_vmgC', '_vendorPushedAt'].concat(['_vendorTouched', 'VENDOR_TOUCHED_KEY', '_vendorTouchedMem'].filter(has));
+const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', 'VMG_KEY', '_vmgC', '_vendorPushedAt'].concat(['_vendorTouched', 'VENDOR_TOUCHED_KEY', '_vendorTouchedMem'].filter(has));
 
 async function cloud() {
   const pg = new PGlite();
@@ -70,9 +70,7 @@ async function cloud() {
 function device(S, role = 'office') {
   const c = { console, window: {}, STORE: {}, TOASTS: [], MODAL: {}, FORM: {}, curRole: role, curLang: 'ja', curPage: 'vendor_master', curUserName: 'Synthetic ' + role, SUPA_SYNC_ENABLED: true, SUPABASE_URL: 'https://db.test',
     Object, JSON, Math, Date, String, Array, Number, Promise, URL, encodeURIComponent, AbortController, setTimeout, clearTimeout,
-    STORES: [{ id: 'F01', name: 'Store One' }], ORDER_METHODS: ['Email', 'Phone', 'LINE'], DEFAULT_VENDORS: [],
-    CONSTRUCTION_VENDORS: [{ cat: 'Plumbing', icon: 'ti-droplet', vendors: [{ name: 'Pipe Example LLC', note: 'pipes', w9: '必要', phone: '808-000-0001' }, { name: 'Pipe Example LLC', note: 'same name twice', w9: '' }] },
-      { cat: 'Electric', icon: 'ti-bolt', vendors: [{ name: 'Volt <Sample>', person: 'Sam Person', email: 'volt@example.test' }] }] };
+    STORES: [{ id: 'F01', name: 'Store One' }], ORDER_METHODS: ['Email', 'Phone', 'LINE'], DEFAULT_VENDORS: [] };
   c.fetch = S.fetch;
   vm.createContext(c);
   vm.runInContext(VARS.map(v => varLine(source, v)).join('\n') + '\n' + NAMES.concat(OPT_NAMES).map(n => pick(source, n)).join('\n') + `
@@ -253,34 +251,24 @@ test('categories: saved, changed, filtered; unclassified by default; the bulk "p
   assert.equal((await S.row('v1')).vcat, 'none');
 });
 
-test('construction vendors become vendor cards once; an edited or deleted card is never put back', async () => {
+test('Moto (10/30): the construction list with personal contacts is not in the public code; cards put in the cloud by the private SQL are read, listed and escaped', async () => {
+  assert.doesNotMatch(source, /\nvar CONSTRUCTION_VENDORS = /, 'the list is not in the app');
+  assert.doesNotMatch(source, /vendorSeedConstruction|vendorConstructionSeeds/, 'the app does not seed cards any more');
   const S = await cloud();
-  await seedCloud(S, [V('v1', 'Alpha Foods')]);
-  const A = device(S), B = device(S);
-  assert.equal(await run(A, 'vendorSeedConstruction()'), false, 'not before the vendors were read');
-  await pull(S, A); await pull(S, B);
-  assert.equal(await run(A, 'vendorSeedConstruction()'), 'added');
-  const all = await S.rows();
-  const seeds = all.filter(v => v.vcat === 'construction');
-  assert.equal(seeds.length, 3);
-  assert.equal(new Set(seeds.map(v => v.id)).size, 3, 'two cards with the same name get two ids');
-  const pipe = seeds.find(v => v.name === 'Pipe Example LLC' && v.memo === 'pipes');
-  assert.equal(pipe.w9, '必要'); assert.equal(pipe.cgroup, 'Plumbing'); assert.equal(pipe.phone, '808-000-0001');
-  assert.equal(seeds.find(v => v.email === 'volt@example.test').contact, 'Sam Person');
-  assert.equal(await run(A, 'vendorSeedConstruction()'), true, 'nothing missing: nothing written');
-  // someone edits one and deletes another; a device that has not seen them seeds again: nothing changes
-  await S.pg.query(`update public.vendors set data = jsonb_set(data, '{phone}', '"808-EDITED"') where id = $1`, [pipe.id]);
-  const volt = seeds.find(v => v.email === 'volt@example.test');
-  await S.pg.query(`update public.vendors set data = data || '{"vst":"deleted","vstAt":"2026-10-31T00:00:00.000Z"}' where id = $1`, [volt.id]);
-  B.STORE.vendor_base_v1 = { v1: V('v1', 'Alpha Foods') };   // B never saw the construction cards
-  assert.equal(await run(B, 'vendorSeedConstruction()'), 'added');
-  assert.equal((await S.row(pipe.id)).phone, '808-EDITED');
-  assert.equal((await S.row(volt.id)).vst, 'deleted');
-  await pull(S, B);
-  assert.ok(!ids(B).includes(volt.id));
-  const html = run(B, `setVmView('construction'); renderVendorMaster()`);
-  assert.ok(!html.includes('<Sample>'), 'escaped / deleted');
+  const card = (id, name, extra) => V(id, name, Object.assign({ vcat: 'construction', vcatAt: '2026-10-30T00:00:00.000Z', vcatBy: 'v1121', src: 'construction_list', method: '' }, extra));
+  await seedCloud(S, [V('v1', 'Alpha Foods'), card('vc-pipe', 'Pipe Example LLC', { w9: '必要', cgroup: 'Plumbing', cicon: 'ti-droplet', phone: '808-000-0001' }),
+    card('vc-volt', 'Volt <Sample>', { cgroup: 'Electric', contact: 'Sam Person' }), card('vc-gone', 'Gone Contractor', { vst: 'deleted', vstAt: '2026-10-31T00:00:00.000Z' })]);
+  const A = device(S); await pull(S, A);
+  assert.deepEqual(ids(A).filter(x => x.startsWith('vc-')).sort(), ['vc-pipe', 'vc-volt'], 'the deleted card is not on the device');
+  const html = run(A, `setVmView('construction'); renderVendorMaster()`);
   assert.ok(html.includes('Pipe Example LLC'));
+  assert.ok(!html.includes('<Sample>') && html.includes('Volt &lt;Sample&gt;'), 'escaped');
+  assert.ok(!html.includes('Gone Contractor'));
+  // the card is edited on a device: only that field goes back to the cloud
+  run(A, `var a = ls('m_vendors', []); a.find(function(v){ return v.id==='vc-pipe'; }).phone = '808-EDITED'; vendorTouch('vc-pipe', ['phone']); lsSet('m_vendors', a)`);
+  await run(A, 'vendorPushDirty()');
+  const pipe = await S.row('vc-pipe');
+  assert.equal(pipe.phone, '808-EDITED'); assert.equal(pipe.w9, '必要'); assert.equal(pipe.vcat, 'construction');
 });
 
 test('a vendor this device knew was deleted and then created again with the same id comes back; a pull keeps changes not sent yet', async () => {
@@ -572,18 +560,14 @@ test('categories: a choice that another device\'s newer category beat is not rep
   assert.equal((await S.row('v1')).vcat, 'construction'); assert.equal((await S.row('v2')).vcat, 'purchase');
 });
 
-test('R5 and the construction cards: contractors are not matched automatically; a name a card already has is not added again; LINE is a note, not an id', async () => {
+test('R5 and the construction cards: contractors are not matched automatically; LINE is a note, not an id', async () => {
   const S = await cloud();
-  await seedCloud(S, [V('v1', 'Pipe Example LLC', { phone: 'mine' })]);
+  await seedCloud(S, [V('v1', 'Pipe Example LLC', { phone: 'mine' }),
+    V('vc-mark', 'Mark', { vcat: 'construction', vcatAt: '2026-10-30T00:00:00.000Z', src: 'construction_list', memo: 'aircon（LINE で連絡）', line: '', phone: '808', method: '' })]);
   const A = device(S);
-  A.CONSTRUCTION_VENDORS = [{ cat: 'AC', icon: 'ti-x', vendors: [{ name: 'Mark', note: 'aircon', line: true, phone: '808' }, { name: 'Pipe Example LLC', note: 'dup' }] }];
   await pull(S, A);
-  assert.equal(await run(A, 'vendorSeedConstruction()'), 'added');
-  const rows = await S.rows();
-  assert.equal(rows.filter(v => v.name === 'Pipe Example LLC').length, 1, 'no second card with the same name');
-  const mark = rows.find(v => v.name === 'Mark');
+  const mark = plain(run(A, `getVendors().find(function(v){ return v.id==='vc-mark'; })`));
   assert.equal(mark.line, ''); assert.match(mark.memo, /aircon（LINE で連絡）/);
-  await pull(S, A);
   run(A, `var a = ls('m_vendors', []); a.push({ id:'p1', name:'Market Fresh Produce Co' }); STORE.m_vendors = a`);
   const m = plain(run(A, `matchVendorBest('Market Fresh Produce')`));
   assert.equal(m && m.vendor.id, 'p1', 'not “Mark”');
