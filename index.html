@@ -67631,7 +67631,17 @@ function bonusSegCs(e, seg, d){
    ・グレード履歴の記録に mode:'special'・reason（操作者・日時は記録の by・at）。評価（prevEval）は残さない。
    ・Career Score（点・未評価・評価途中）は触らない（0 点や評価済みにしない・自動で確定しない）。
      前のグレードの期間のボーナスは、今までどおり四半期の評価で計算する（無ければ「未評価」）。確定済みの給与・ボーナス・評価の記録は書き換えない。 */
-function ghSpReason(p){ return String((p && p.reason)||'').replace(/[\u00AD\u115F\u1160\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u3164\uFEFF\uFFA0]/g, '').trim().slice(0, 500); }   /* 見えない文字だけの理由は理由にしない */
+/* 見えない文字だけの理由は理由にしない（Codex の P2：前は一部の文字だけを並べていたので、U+2066〜2069・U+034F・U+FE0F などが残った）。
+   Unicode の Default_Ignorable_Code_Point（双方向の制御・結合文字の結合子・異体字セレクター・ハングルの埋め字・タグ文字など）と、
+   制御文字・書式文字・私用・未割り当てを除いてから前後の空白を落とし、500 字にする。残りに文字・数字・句読点・記号が 1 つも無ければ（空白・
+   結合する記号だけ・点字の空白だけ）理由なし。\p{…} が使えない古いブラウザーでは同じ範囲を並べた式で */
+var GH_SP_IGN = (function(){ try{ return new RegExp('[\\p{Default_Ignorable_Code_Point}\\p{Cc}\\p{Cf}\\p{Co}\\p{Cn}\\p{Cs}]', 'gu'); }
+  catch(e){ return /[\u0000-\u001F\u007F-\u009F\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF0-\uFFFB\uE000-\uF8FF]|\uDB40[\uDC00-\uDFFF]|\uD82F[\uDCA0-\uDCA3]|\uD834[\uDD73-\uDD7A]/g; } })();
+var GH_SP_VIS = (function(){ try{ return new RegExp('[\\p{L}\\p{N}\\p{P}\\p{S}]', 'u'); }catch(e){ return /[^\s\u0300-\u036F]/; } })();
+function ghSpReason(p){
+  var s=Array.from(String((p && p.reason)||'').replace(GH_SP_IGN, '').trim()).slice(0, 500).join('').trim();
+  return GH_SP_VIS.test(s.replace(/\u2800/g, '')) ? s : '';
+}
 /* 記録に足す欄：特例の印・理由・操作者と日時（同じ日の記録に足すときも）・G3 の職種（ボーナスの職種係数。評価ではないので残す） */
 function ghSpecialRec(p){
   if(!(p && p.mode==='special' && ghEvalNeeded(p))) return null;

@@ -19,7 +19,8 @@
 - 本物のアプリ（模擬サーバー・合成データ・GM・Chromium 1280／390px）：一度も採点していない人・評価途中の人・専門職（Head Chef → Corporate Chef・調理）を特例で変える → 職種を選んでも理由が残る → 履歴の編集の画面に札と理由 → グレード履歴のタブが動く → 通常の変更は評価が無いと保存できない → 別の端末（新しいプロファイル）でログインし直して役職・グレード・履歴が残る → 再読み込み → AM は特例を押せない。49/49・pageerror 0・横スクロールなし・特例の表は枠からはみ出さない。
 - 全体（重い 2 つ以外・4 並列・`cfdc7c5`）：88 ファイル・1,369 件のうち 51 件が落ちる＝落ちたファイルは main と同じ（bot-center・bot-database・cooking-sake・employee-resign-sync・ingredient-transfers・meeting-budget・meeting-sales・next-v1090・perf-v1098。前からの失敗）。employee-field-log の 1 件は重いときだけで、単独では 8/8。
 - 独立レビュー（Claude の別エージェント・作業を見ていない）：1 回目（`93d196f`）P1 なし・**P2 1**（`ghSetMode` の名前の重なり）・P3 7 → 6 つを直した（`84a8b19`）。2 回目（`93d196f..d4df172`）**P1・P2 なし**・P3 4 → 直した。直したあとの独立レビューは無し。Codex のレビューはまだ。
-- 次：PR → Codex → Moto さんがマージ（アプリだけ）→ GM・CEO の端末を 1115 に → 実機（iPhone）で 1 人。
+- PR #105。Claude のルーティン（`a1ffe7e`・6515526498）新しい P1・P2 なし。**Codex（`a1ffe7e`・6515565343）：blocked／manual・P2 1**（U+2066〜2069・U+034F・U+FE0F だけの理由が必須の確かめを通る）→ 直した：見えない文字は Unicode の性質（Default_Ignorable_Code_Point・Cc・Cf・Co・Cn・Cs）でまとめて除き、文字・数字・句読点・記号が 1 つも無ければ理由なし。試験に 31 文字を足した（前のコードでは落ちる）。grade-special 14/14。
+- 次：Codex の再レビュー（PR #105 の最新の head）→ Moto さんがマージ（アプリだけ）→ GM・CEO の端末を 1115 に → 実機（iPhone）で 1 人。
 
 ## 2026-10-29 v1114：強みが無い人の「良いところ」（UI案64 の回答・Claude・ブランチ `claude/cs-good-points`・PR #104・アプリだけ・**10/29 17:27 HST に `d5c4d1b` でマージ（main `3063e0c`）＝本番 v1114**。この節の中の「まだ」は書いた時点の状態）
 
