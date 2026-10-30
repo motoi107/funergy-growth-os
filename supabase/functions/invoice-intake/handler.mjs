@@ -709,8 +709,8 @@ export function createHandler(deps) {
       console.error('invoice-intake purchase summary', safeErr(e));
       out = { ok: false };
     }
-    // (a QuickBooks send alone does not change a price)
-    if (!(only && only.outbox_id && Object.keys(only).length === 1)) await publishPrices(stats);
+    // The price comparison is written by the 5-minute worker only (it reads every confirmed price; a person's action does not wait for it).
+    if (stats) await publishPrices(stats);
     return out;
   }
   // The unit prices of confirmed invoices compared per 1 LB / 1 L / 1 piece (10/30 の依頼 ②): the row the app reads is written
