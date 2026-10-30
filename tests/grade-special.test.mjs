@@ -403,6 +403,7 @@ test('nothing else changes: no evaluation is confirmed or invented, the bonus ke
   for (const f of ['ghSpecialRec', 'ghSpecialReview', 'ghSpecialReviewHtml', 'ghSpecialBlockHtml', 'ghSetChangeMode', 'ghSpecialReason', 'ghSpecialTrackHtml', 'ghSpecialApplyHtml', 'ghSpReason', 'ghSpecialSegTrack', 'ghModeHtml', 'ghCsStateTxt'])
     assert.doesNotMatch(fnSrc(f), /ghEvalConfirm\(|setLssScores|lsSet\(|bonus_q|csFreeze/, f);
   assert.match(fnSrc('ghEvalRecord'), /if\(!p \|\| !p\.ev \|\| p\.mode==='special'\) return undefined;/);
-  assert.match(source, /const APP_VERSION = '1115';/);
-  assert.match(SW, /const SW_BUILD = '1115';/);
+  const ver = (source.match(/const APP_VERSION = '(\d+)';/) || [])[1];   // 1115 or later; the page and the service worker agree
+  assert.ok(Number(ver) >= 1115, ver);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + ver + "';"));
 });
