@@ -4,12 +4,17 @@
 -- read or written any more (every request for the demo is 'gone').
 --  1) No email step: the settings (GM / CEO) are open to the PIN sign-in as well (mr_need_email does nothing).
 --     The role still comes from mr_members (CEO / GM still need manager_auth, as before).
+--  1b) A CEO / GM row counts only while its manager_auth account names that employee and they are in service.
 --  2) A PIN sign-in without a row in mr_members gets one made from the logins the app already has:
 --     CEO / GM: the manager_auth account linked to the employee (its user id); AM: an AM in the employee master.
 --     A row stopped by SQL is not made again. Head Chef / Corporate Chef and input people are still chosen in the settings.
 --     In-service AMs get their row now, so a GM can choose them in 店舗の管轄.
---  3) The switches: the review is on (private) and the input person can write (live_input). Store publication and notices stay off.
+--  3) The switches (first run only): the review is on (private) and the input person can write (live_input). Store publication and notices stay off.
 --  4) The demo: list / get / save / submit / post / settings for env 'demo' and the demo reset are 'gone'.
+
+-- Is this the first run? (a re-run must not turn the review back on after a GM / CEO turned it off)
+select set_config('mr_v1122.first', case when exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname = 'public' and p.proname = 'mr_demo_reset' and position('v1122' in p.prosrc) > 0) then 'no' else 'yes' end, false);
 
 do $chk$
 begin
@@ -29,11 +34,38 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- 2) the role comes from the logins the app already has
+-- A CEO / GM row counts only while its manager_auth account still names this employee and the employee is in service
+-- (v1122: with the PIN as the only way in, a wrong link must not keep working after manager_auth is put right, and a resigned
+-- CEO / GM must not keep the review through a mark that has not expired). Rows without an employee (from an email sign-in) are
+-- checked as before. AM / Head Chef / staff are as before.
+create or replace function public.mr_member_role(m public.mr_members) returns text
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+declare v_ma text;
+begin
+ if m.user_id is null or m.enabled is not true then return null; end if;
+ if m.role in ('ceo','gm') then
+  -- v1122: the account must still name this employee
+  select case when bool_or(a.role = 'gm') then 'gm' when bool_or(a.role = 'ceo') then 'ceo' end into v_ma
+   from public.manager_auth a where a.user_id = m.user_id and a.role in ('ceo','gm')
+    and (coalesce(m.emp_id, '') = '' or a.emp_id::text = m.emp_id);
+  if v_ma is null then return null; end if;
+  if coalesce(m.emp_id, '') <> '' and not public.mr_in_service(m.emp_id) then return null; end if;
+  return case when m.role = 'gm' or v_ma = 'gm' then 'gm' else 'ceo' end;
+ elsif m.role = 'am' then return case when public.mr_am_hr_ok(m.emp_id) then 'am' end;
+ elsif m.role = 'chef' then return case when public.mr_chef_hr_ok(m.emp_id) then 'chef' end;
+ elsif m.role = 'staff' then return case when public.mr_staff_hr_ok(m.emp_id) then 'staff' end;
+ end if;
+ return null;
+end $$;
+
 -- A PIN sign-in → the employee's enabled row here. Without one, a row is made from the masters (never wider than them):
---   CEO / GM: the manager_auth account linked to this employee (its user id; mr_member_role checks manager_auth again on every call);
---   AM: an AM in the employee master. Head Chef / Corporate Chef and input people are still chosen by a GM / CEO in the settings.
--- A row stopped by SQL (CEO / GM / AM) is not made again. A row the settings made as staff for someone who is now an AM becomes am;
--- for someone who is CEO / GM it is turned off and the CEO / GM row is used (the input person is by employee, so nothing else moves).
+--   CEO / GM: the manager_auth account linked to this employee (its user id); AM: an AM in the employee master.
+--   Head Chef / Corporate Chef and input people are still chosen by a GM / CEO in the settings.
+-- Someone who moved: a staff row of someone who is now an AM becomes am; the row of someone who is now CEO / GM (staff, chef, am,
+-- or a CEO / GM row that no longer counts) gives way to the account's row; a CEO / GM row of someone who is now only an AM gives way
+-- to an am row. A row that gives way is turned off with updated_by 'v1122 switch' and is turned on again if they move back.
+-- The account's row follows manager_auth: when manager_auth now names this employee, the row is moved to them.
+-- A row stopped by SQL is not made again (an AM stop does not block someone manager_auth has made CEO / GM).
 create or replace function public.mr_pin_actor(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path=public,pg_temp as $$
 declare v_emp text := nullif(p->>'emp_id', ''); v_name text := p->>'name'; v_n integer; x public.mr_members; y public.mr_members;
@@ -54,29 +86,45 @@ begin
    if x.role = 'staff' and v_new = 'am' then
     update public.mr_members set role = 'am', updated_at = now(), updated_by = 'v1122 pin' where user_id = x.user_id;
     perform public.mr_event(null, 'live', x.user_id::text, 'member_auto', jsonb_build_object('emp_id', v_emp, 'role', 'am', 'from', 'staff'));
-   elsif x.role in ('staff','chef') and v_new in ('ceo','gm') and x.user_id <> v_ma and not exists(select 1 from public.mr_members m where m.user_id = v_ma) then
-    update public.mr_members set enabled = false, updated_at = now(), updated_by = 'v1122 pin' where user_id = x.user_id;
-    insert into public.mr_members(user_id, emp_id, name, role, enabled, updated_by) values(v_ma, v_emp, public.mr_emp_name(v_emp), v_new, true, 'v1122 pin');
-    perform public.mr_event(null, 'live', v_ma::text, 'member_auto', jsonb_build_object('emp_id', v_emp, 'role', v_new, 'from', x.role));
-    return jsonb_build_object('user_id', v_ma);
+    return jsonb_build_object('user_id', x.user_id);
+   elsif (v_new in ('ceo','gm') and x.user_id is distinct from v_ma and (x.role in ('staff','chef','am') or public.mr_member_role(x) is null))
+      or (v_new = 'am' and x.role in ('ceo','gm') and public.mr_member_role(x) is null) then
+    -- they moved: this row gives way (turned on again if they move back)
+    update public.mr_members set enabled = false, updated_at = now(), updated_by = 'v1122 switch' where user_id = x.user_id;
+    perform public.mr_event(null, 'live', x.user_id::text, 'member_switch', jsonb_build_object('emp_id', v_emp, 'from', x.role, 'to', v_new));
+   else
+    return jsonb_build_object('user_id', x.user_id);
    end if;
-   return jsonb_build_object('user_id', x.user_id);
   end if;
   if v_new is null then raise exception 'forbidden'; end if;
-  -- Someone stopped by SQL stays stopped.
-  if exists(select 1 from public.mr_members m where m.emp_id = v_emp and not m.enabled and m.role in ('ceo','gm','am')) then raise exception 'forbidden'; end if;
+  -- Someone stopped by SQL stays stopped (not the rows turned off above when someone moved).
+  if exists(select 1 from public.mr_members m where m.emp_id = v_emp and not m.enabled and m.updated_by is distinct from 'v1122 switch'
+    and m.role = any(case when v_new = 'am' then array['ceo','gm','am'] else array['ceo','gm'] end)) then raise exception 'forbidden'; end if;
   if v_new in ('ceo','gm') then
    select * into y from public.mr_members m where m.user_id = v_ma;
    if y.user_id is not null then
-    -- the same account's row from an email sign-in, without the employee: link it (anything else on that account is left alone)
-    if not (y.enabled and coalesce(y.emp_id, '') = '' and y.role in ('ceo','gm')) then raise exception 'forbidden'; end if;
-    update public.mr_members set emp_id = v_emp, name = coalesce(name, public.mr_emp_name(v_emp)), updated_at = now(), updated_by = 'v1122 pin' where user_id = v_ma;
-    perform public.mr_event(null, 'live', v_ma::text, 'member_linked', jsonb_build_object('emp_id', v_emp, 'role', y.role));
+    -- The account's row: one stopped by SQL, or not a CEO / GM row, stays as it is.
+    if y.role not in ('ceo','gm') or (not y.enabled and y.updated_by is distinct from 'v1122 switch') then raise exception 'forbidden'; end if;
+    if coalesce(y.emp_id, '') <> v_emp or not y.enabled then
+     -- without the employee (email sign-in), on someone manager_auth no longer names, or turned off when they moved: move it here
+     update public.mr_members set emp_id = v_emp, enabled = true,
+      name = case when coalesce(y.emp_id, '') = '' then coalesce(y.name, public.mr_emp_name(v_emp)) else public.mr_emp_name(v_emp) end,
+      updated_at = now(), updated_by = 'v1122 pin' where user_id = v_ma;
+     perform public.mr_event(null, 'live', v_ma::text, 'member_linked', jsonb_build_object('emp_id', v_emp, 'role', y.role, 'from_emp', nullif(y.emp_id, '')));
+    end if;
     return jsonb_build_object('user_id', v_ma);
    end if;
    insert into public.mr_members(user_id, emp_id, name, role, enabled, updated_by) values(v_ma, v_emp, public.mr_emp_name(v_emp), v_new, true, 'v1122 pin');
    perform public.mr_event(null, 'live', v_ma::text, 'member_auto', jsonb_build_object('emp_id', v_emp, 'role', v_new));
    return jsonb_build_object('user_id', v_ma);
+  end if;
+  -- AM: the am row turned off when they moved up (its 店舗の管轄 stays), else a new one
+  select * into y from public.mr_members m where m.emp_id = v_emp and m.role = 'am' and not m.enabled and m.updated_by = 'v1122 switch'
+   order by m.updated_at desc limit 1;
+  if y.user_id is not null then
+   update public.mr_members set enabled = true, updated_at = now(), updated_by = 'v1122 pin' where user_id = y.user_id;
+   perform public.mr_event(null, 'live', y.user_id::text, 'member_auto', jsonb_build_object('emp_id', v_emp, 'role', 'am', 'again', true));
+   return jsonb_build_object('user_id', y.user_id);
   end if;
   insert into public.mr_members(user_id, emp_id, name, role, enabled, updated_by) values(gen_random_uuid(), v_emp, public.mr_emp_name(v_emp), 'am', true, 'v1122 pin') returning * into y;
   perform public.mr_event(null, 'live', y.user_id::text, 'member_auto', jsonb_build_object('emp_id', v_emp, 'role', 'am'));
@@ -101,15 +149,17 @@ select gen_random_uuid(), e.id::text, e.name, 'am', true, 'v1122'
 on conflict do nothing;
 
 -- ---------------------------------------------------------------- 3) the switches: on, input on (store publication and notices stay off)
+-- Only on the first run: running this again keeps what a GM / CEO chose since.
 update public.mr_settings set value = value || jsonb_build_object('private', true, 'live_input', true, 'store_publish', false, 'notify', false), updated_at = now(), updated_by = 'v1122'
- where key = 'flags' and (coalesce((value->>'private')::boolean, false) is not true or coalesce((value->>'live_input')::boolean, false) is not true);
+ where key = 'flags' and current_setting('mr_v1122.first', true) = 'yes'
+  and (coalesce((value->>'private')::boolean, false) is not true or coalesce((value->>'live_input')::boolean, false) is not true);
 insert into public.mr_settings(key, value, updated_by) values ('flags', jsonb_build_object('private', true, 'store_publish', false, 'notify', false, 'live_input', true), 'v1122')
  on conflict (key) do nothing;
 
 -- ---------------------------------------------------------------- 4) the settings need no email; the demo is gone
 create or replace function public.mr_can(m public.mr_members, st public.mr_stores, p_ym text, p_via text) returns jsonb
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
-declare v_role text := public.mr_member_role(m); v_rin text; v_inp text; v_from text; v_demo boolean := st.env = 'demo';
+declare v_role text := public.mr_member_role(m); v_rin text; v_inp text; v_from text; v_demo boolean := st.env = 'demo';   -- v1122: settings without email
  v_live_in boolean := coalesce((public.mr_setting('flags')->>'live_input')::boolean, false) is true;
  v_is_inp boolean; v_am boolean; v_viewer boolean; v_view boolean; v_input boolean; v_reply boolean; why text[] := array[]::text[];
 begin
@@ -150,6 +200,7 @@ begin
  return jsonb_build_object('role', m.role, 'via', v_via, 'emp_id', m.emp_id, 'name', public.mr_actor_name(m),
   'flags', public.mr_setting('flags'), 'flags_version', coalesce((select x.version from public.mr_settings x where x.key = 'flags'), 0),
   'ym', v_ym, 'today', public.mr_today('live'),
+  -- v1122: no email step, no demo key
   'perms', jsonb_build_object('settings', m.role in ('gm','ceo'), 'deadline', m.role in ('gm','ceo'),
     'confirm', m.role in ('am','gm','ceo'), 'unconfirm', m.role in ('gm','ceo'), 'reply', m.role in ('chef','am','gm','ceo'),
     'all_live', m.role in ('ceo','gm','chef')),
@@ -190,7 +241,7 @@ begin
 end $$;
 
 do $grant$ declare f text; begin
- foreach f in array array['mr_need_email(jsonb)','mr_pin_actor(jsonb)','mr_can(public.mr_members,public.mr_stores,text,text)','mr_whoami(jsonb)','mr_store(jsonb)','mr_list(jsonb)','mr_demo_reset(jsonb)'] loop
+ foreach f in array array['mr_need_email(jsonb)','mr_member_role(public.mr_members)','mr_pin_actor(jsonb)','mr_can(public.mr_members,public.mr_stores,text,text)','mr_whoami(jsonb)','mr_store(jsonb)','mr_list(jsonb)','mr_demo_reset(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;
