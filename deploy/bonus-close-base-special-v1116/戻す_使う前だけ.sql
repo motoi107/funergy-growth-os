@@ -163,11 +163,33 @@ begin
  return jsonb_build_object('ok', true, 'rev', r.rev);
 end $$;
 
+create or replace function public.bc_confirm(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare a jsonb := public.bc_writer(p); q text := public.bc_q(p); er integer := public.bc_rev(p); r public.bc_quarters; lv public.bc_versions; ver integer; s jsonb;
+begin
+ if jsonb_typeof(p->'ver') <> 'number' or (p->>'ver') !~ '^[0-9]{1,6}$' then raise exception 'bad_value'; end if;
+ r := public.bc_lock(q, er);
+ if r.fixing is not null then raise exception 'not_editable'; end if;
+ if exists(select 1 from public.bc_versions v where v.quarter = q and v.kind = 'final') then raise exception 'not_editable'; end if;
+ select * into lv from public.bc_versions bv where bv.quarter = q order by bv.ver desc limit 1;
+ if lv.ver is null or lv.kind <> 'provisional' or lv.ver <> (p->>'ver')::integer then raise exception 'not_editable'; end if;
+ if lv.has_prov and btrim(coalesce(p->>'why', '')) = '' then raise exception 'why_required'; end if;
+ if length(coalesce(p->>'why', '')) > 500 then raise exception 'bad_value'; end if;
+ ver := lv.ver + 1;
+ s := lv.snap || jsonb_build_object('lid', 'BC-' || q || '-v' || ver, 'vid', ver, 'kind', 'final', 'from', lv.ver, 'lt', floor(extract(epoch from clock_timestamp()) * 1000)::bigint);
+ insert into public.bc_versions(quarter, ver, kind, status, snap, n, total_raw, cap, k, paid_total, has_prov, base_ver, from_ver, why, made_by, made_uid, made_role)
+ values (q, ver, 'final', 'effective', s, lv.n, lv.total_raw, lv.cap, lv.k, lv.paid_total, lv.has_prov, lv.ver, lv.ver, coalesce(p->>'why', ''), a->>'name', (a->>'uid')::uuid, a->>'role');
+ update public.bc_quarters set rev = rev + 1, updated_at = now() where quarter = q returning * into r;
+ perform public.bc_event(q, a, 'confirm', jsonb_build_object('ver', ver, 'from', lv.ver, 'prov', lv.has_prov));
+ return jsonb_build_object('ok', true, 'rev', r.rev, 'ver', ver, 'lid', s->>'lid', 'lt', s->'lt');
+end $$;
+
 drop function if exists public.bc_pay_mode(jsonb), public.bc_sp_save(jsonb), public.bc_pay_match(jsonb,jsonb), public.bc_pay_from_snap(jsonb),
   public.bc_emp(jsonb), public.bc_amt(jsonb,boolean), public.bc_now_txt(), public.bc_not_self(jsonb,text), public.bc_base_ok(text,jsonb,numeric);
 alter table public.bc_quarters drop column if exists pay;
+alter table public.bc_versions drop column if exists pay;
 do $$ declare f text; begin
- foreach f in array array['bc_snap_check(text,jsonb)','bc_get(jsonb)','bc_save(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop
+ foreach f in array array['bc_snap_check(text,jsonb)','bc_get(jsonb)','bc_save(jsonb)','bc_confirm(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

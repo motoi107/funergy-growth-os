@@ -1,13 +1,20 @@
 -- v1116 ボーナスの締め：無条件で基準額・特別報酬。入れたあとの確認（読むだけ・何も変えません）。最後の 2 行以外すべて OK なら次へ。
+-- 「GM・CEO accounts with an employee link」が NG のときも次へ進めます（その人だけ、無条件で基準額・特別報酬を変えられません）。
 select 'pay column on bc_quarters' as check_item,
   case when (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'bc_quarters' and column_name = 'pay' and is_nullable = 'NO') = 1 then 'OK' else 'NG' end as result
 union all
-select 'functions (30)',
-  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'bc\_%') = 30 then 'OK' else 'NG' end
+select 'pay column on bc_versions (the server copy kept with each version)',
+  case when (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'bc_versions' and column_name = 'pay') = 1 then 'OK' else 'NG' end
 union all
-select 'new functions (bc_pay_mode, bc_sp_save, bc_pay_match, bc_pay_from_snap, bc_emp, bc_amt, bc_now_txt, bc_not_self, bc_base_ok)',
+select 'functions (29)',
+  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'bc\_%') = 29 then 'OK' else 'NG' end
+union all
+select 'new functions (bc_pay_mode, bc_sp_save, bc_pay_match, bc_emp, bc_amt, bc_now_txt, bc_not_self, bc_base_ok)',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public'
-    and p.proname in ('bc_pay_mode','bc_sp_save','bc_pay_match','bc_pay_from_snap','bc_emp','bc_amt','bc_now_txt','bc_not_self','bc_base_ok')) = 9 then 'OK' else 'NG' end
+    and p.proname in ('bc_pay_mode','bc_sp_save','bc_pay_match','bc_emp','bc_amt','bc_now_txt','bc_not_self','bc_base_ok')) = 8 then 'OK' else 'NG' end
+union all
+select 'the earlier draft function is gone (bc_pay_from_snap)',
+  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname = 'bc_pay_from_snap') = 0 then 'OK' else 'NG' end
 union all
 select 'browsers cannot run the functions',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'bc\_%'
@@ -26,6 +33,11 @@ select 'browsers cannot read or write the tables',
 union all
 select 'the new check: base $1,000 + special $200 + evaluated (made-up numbers, nothing saved)',
   case when public.bc_snap_check('2026-Q3', '{"q":"2026-Q3","unsel":0,"prov":0,"choices":{},"order":["a","b","c"],"people":{"a":{"raw":1000,"mode":"base","sp":200,"segs":[{"g":"G2","from":"2026-07-01","to":"2026-09-30","days":92,"gb":1000,"amount":1000}]},"b":{"raw":1000},"c":{"raw":2000}},"finals":{"a":1200,"b":667,"c":1333},"S":4000,"paid":3200,"cap":3000,"k":0.6666666666666666}'::jsonb) = 0 then 'OK' else 'NG' end
+union all
+select 'GM・CEO accounts with an employee link (emp_id)',
+  case when (select count(*) from public.manager_auth m where m.role in ('ceo','gm') and coalesce(btrim(m.emp_id::text), '') = '') = 0 then 'OK'
+    else 'NG: ' || (select count(*) from public.manager_auth m where m.role in ('ceo','gm') and coalesce(btrim(m.emp_id::text), '') = '')::text
+      || '（この人は無条件で基準額・特別報酬を変えられません。db/invoice-signin-emp-check.sql で確かめて emp_id を入れる）' end
 union all
 select 'versions saved so far', (select count(*)::text from public.bc_versions)
 union all

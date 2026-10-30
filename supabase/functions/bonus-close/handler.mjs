@@ -21,7 +21,7 @@ export function postgrestDb({ fetch, url, key }) {
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer)[^\s]*/gi, '$1:***').slice(0, 200);
 // The codes the SQL raises (anything else is 'error').
 export const CODES = ['unauthorized', 'forbidden', 'bad_value', 'conflict', 'not_editable', 'not_found', 'bad_snapshot', 'bad_amounts', 'unselected',
-  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing', 'pay_mismatch', 'own_pay'];
+  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing', 'pay_mismatch', 'own_pay', 'no_emp'];
 const bad = () => { const e = new Error('bad_value'); e.code = 'bad_value'; return e; };
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 const Q = v => (typeof v === 'string' && /^\d{4}-Q[1-4]$/.test(v) ? v : (() => { throw bad(); })());

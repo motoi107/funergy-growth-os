@@ -18,10 +18,13 @@
 --     person the floor of raw × R / S_eval or one dollar more). Special rewards are paid on top and never reduce anyone else; they count in
 --     the total (which may then be more than the cap — the shortfall the screen shows). With no base mode and no special reward this is
 --     exactly the v1109 check.
---   ・修正を開始 / 修正をやめる put back the base modes and special rewards of the version the correction starts from.
+--   ・修正を開始 / 修正をやめる put back the base modes and special rewards of the version the correction starts from — from the server's own
+--     copy kept with the version (bc_versions.pay, Codex P2 on PR #106), never from the snapshot the app sent; and a version must carry the
+--     same who / when (bAt, bBy, spAt, spBy) as the server's record, so a saved version cannot show made-up ones either.
 --   ・a base-mode person's regular amount must be the prorated base of the grade periods the snapshot lists (bc_base_ok), so the total
 --     cannot be any number (the grade base itself is in the app's settings).
---   ・nobody changes their own base mode or special reward (the same rule as the bonus edit screens: another CEO / GM does it).
+--   ・nobody changes their own base mode or special reward (the same rule as the bonus edit screens: another CEO / GM does it). An account
+--     whose manager_auth row has no emp_id cannot change them at all (no_emp: the server could not tell whether it is their own; Codex P2).
 --   ・the chosen values of a person on base mode are kept in the version (keep) and come back to the draft, so 「通常の評価計算に戻す」 after
 --     a version gives the same result as before.
 -- Pay and special rewards can be changed only while the draft can be changed (no version yet, or while correcting) — the same rule as the
@@ -35,6 +38,11 @@ do $$ begin
 end $$;
 
 alter table public.bc_quarters add column if not exists pay jsonb not null default '{}'::jsonb;
+-- The server's base modes and special rewards at the time a version was saved (bc_quarters.pay, after bc_pay_match). 修正を開始 / 修正をやめる
+-- put these back. Null for versions saved before v1116 (they have none).
+alter table public.bc_versions add column if not exists pay jsonb;
+-- An earlier draft of this file restored them from the snapshot the app sent (bc_pay_from_snap); not used any more.
+drop function if exists public.bc_pay_from_snap(jsonb);
 
 -- ---------------------------------------------------------------- small checks
 create or replace function public.bc_emp(p jsonb) returns text
@@ -62,10 +70,15 @@ language sql stable security invoker set search_path=public,pg_temp as $$
 $$;
 
 -- Nobody changes their own base mode or special reward (the bonus edit screens never let anyone edit themselves either).
+-- Fail closed (Codex P2 on PR #106): an account without an employee link (manager_auth.emp_id empty) cannot change them at all — the
+-- server could not tell whether the person is their own.
 create or replace function public.bc_not_self(a jsonb, id text) returns void
 language plpgsql stable security invoker set search_path=public,pg_temp as $$
 begin
- if exists(select 1 from public.manager_auth m where m.user_id = (a->>'uid')::uuid and m.emp_id is not null and m.emp_id::text = id) then
+ if not exists(select 1 from public.manager_auth m where m.user_id = (a->>'uid')::uuid and coalesce(btrim(m.emp_id::text), '') <> '') then
+  raise exception 'no_emp';
+ end if;
+ if exists(select 1 from public.manager_auth m where m.user_id = (a->>'uid')::uuid and btrim(m.emp_id::text) = id) then
   raise exception 'own_pay';
  end if;
 end $$;
@@ -95,26 +108,8 @@ begin
  if tot <> raw then raise exception 'bad_amounts'; end if;
 end $$;
 
--- The base modes and special rewards a version carries: { <employee id>: {b, bAt, bBy, sp, why, at, by, nm} } (only people with either).
-create or replace function public.bc_pay_from_snap(s jsonb) returns jsonb
-language sql immutable security invoker set search_path=public,pg_temp as $$
- select coalesce(jsonb_object_agg(x.id, x.v), '{}'::jsonb) from (
-  select o.id, jsonb_strip_nulls(jsonb_build_object(
-    'b', case when coalesce(pe->>'mode', '') = 'base' then true end,
-    'bAt', case when coalesce(pe->>'mode', '') = 'base' then pe->'bAt' end,
-    'bBy', case when coalesce(pe->>'mode', '') = 'base' then pe->'bBy' end,
-    'sp', case when jsonb_typeof(pe->'sp') = 'number' and (pe->>'sp')::numeric > 0 then pe->'sp' end,
-    'why', case when jsonb_typeof(pe->'sp') = 'number' and (pe->>'sp')::numeric > 0 then pe->'spWhy' end,
-    'at', case when jsonb_typeof(pe->'sp') = 'number' and (pe->>'sp')::numeric > 0 then pe->'spAt' end,
-    'by', case when jsonb_typeof(pe->'sp') = 'number' and (pe->>'sp')::numeric > 0 then pe->'spBy' end,
-    'nm', pe->'name')) as v
-  from jsonb_array_elements_text(case when jsonb_typeof(s->'order') = 'array' then s->'order' else '[]'::jsonb end) as o(id)
-  cross join lateral (select s->'people'->o.id as pe) p
-  where coalesce(pe->>'mode', '') = 'base' or (jsonb_typeof(pe->'sp') = 'number' and (pe->>'sp')::numeric > 0)
- ) x;
-$$;
-
--- A version must carry exactly the base modes and special rewards of the quarter (the reason too). Someone with a base mode or a special
+-- A version must carry exactly the base modes and special rewards of the quarter (the reason, and who set them and when, too: the app copies
+-- them from the server's record, so a version cannot carry made-up ones — Codex P2 on PR #106). Someone with a base mode or a special
 -- reward who is not in the version (left the list) stops the save as well: nothing is dropped silently.
 create or replace function public.bc_pay_match(s jsonb, pay jsonb) returns void
 language plpgsql immutable security invoker set search_path=public,pg_temp as $$
@@ -124,10 +119,14 @@ begin
  for id in select jsonb_array_elements_text(s->'order') loop
   pe := coalesce(s->'people'->id, '{}'::jsonb); pm := coalesce(pay->id, '{}'::jsonb);
   if (coalesce(pe->>'mode', '') = 'base') <> (coalesce(pm->>'b', '') = 'true') then raise exception 'pay_mismatch'; end if;
+  if coalesce(pe->>'mode', '') = 'base' and (coalesce(pe->>'bAt', '') <> left(coalesce(pm->>'bAt', ''), 40) or coalesce(pe->>'bBy', '') <> left(coalesce(pm->>'bBy', ''), 80)) then
+   raise exception 'pay_mismatch';
+  end if;
   ssp := case when jsonb_typeof(pe->'sp') = 'number' then (pe->>'sp')::numeric else 0 end;
   psp := case when jsonb_typeof(pm->'sp') = 'number' then (pm->>'sp')::numeric else 0 end;
   if ssp <> psp then raise exception 'pay_mismatch'; end if;
-  if ssp > 0 and coalesce(pe->>'spWhy', '') <> coalesce(pm->>'why', '') then raise exception 'pay_mismatch'; end if;
+  if ssp > 0 and (coalesce(pe->>'spWhy', '') <> coalesce(pm->>'why', '') or coalesce(pe->>'spAt', '') <> left(coalesce(pm->>'at', ''), 40)
+     or coalesce(pe->>'spBy', '') <> left(coalesce(pm->>'by', ''), 80)) then raise exception 'pay_mismatch'; end if;
  end loop;
  for k in select jsonb_object_keys(pay) loop
   if not (s->'order' ? k) and (coalesce(pay->k->>'b', '') = 'true' or (jsonb_typeof(pay->k->'sp') = 'number' and (pay->k->>'sp')::numeric > 0)) then
@@ -325,9 +324,9 @@ begin
  if kind = 'final' then
   update public.bc_versions bv set status = 'replaced', replaced_at = now(), replaced_by = a->>'name' where bv.quarter = q and bv.ver = ef.ver;
  end if;
- insert into public.bc_versions(quarter, ver, kind, status, snap, n, total_raw, cap, k, paid_total, has_prov, base_ver, why, made_by, made_uid, made_role)
+ insert into public.bc_versions(quarter, ver, kind, status, snap, n, total_raw, cap, k, paid_total, has_prov, base_ver, why, made_by, made_uid, made_role, pay)
  values (q, ver, kind, case when kind = 'final' then 'effective' else 'kept' end, s, jsonb_array_length(s->'order'), (s->>'S')::bigint, (s->>'cap')::numeric,
-  (s->>'k')::double precision, (s->>'paid')::bigint, prov > 0, r.fixing, why, a->>'name', (a->>'uid')::uuid, a->>'role') returning * into nv;
+  (s->>'k')::double precision, (s->>'paid')::bigint, prov > 0, r.fixing, why, a->>'name', (a->>'uid')::uuid, a->>'role', coalesce(r.pay, '{}'::jsonb)) returning * into nv;   -- v1116: the server's pay
  -- Paid already: the differences become adjustment records against the previous effective final (paid amounts stay).
  select * into paid from public.bc_versions where quarter = q and paid_at is not null;
  if kind = 'final' and paid.ver is not null then
@@ -351,7 +350,30 @@ begin
  return jsonb_build_object('ok', true, 'rev', r.rev, 'ver', ver, 'lid', s->>'lid', 'lt', s->'lt');
 end $$;
 
--- 修正を開始 / 確定版から修正: as v1109, and the base modes and special rewards start from that version.
+-- 支給額を確定: as v1109; the final keeps the provisional's copy of the base modes and special rewards (bc_versions.pay).
+create or replace function public.bc_confirm(p jsonb) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare a jsonb := public.bc_writer(p); q text := public.bc_q(p); er integer := public.bc_rev(p); r public.bc_quarters; lv public.bc_versions; ver integer; s jsonb;
+begin
+ if jsonb_typeof(p->'ver') <> 'number' or (p->>'ver') !~ '^[0-9]{1,6}$' then raise exception 'bad_value'; end if;
+ r := public.bc_lock(q, er);
+ if r.fixing is not null then raise exception 'not_editable'; end if;
+ if exists(select 1 from public.bc_versions v where v.quarter = q and v.kind = 'final') then raise exception 'not_editable'; end if;
+ select * into lv from public.bc_versions bv where bv.quarter = q order by bv.ver desc limit 1;
+ if lv.ver is null or lv.kind <> 'provisional' or lv.ver <> (p->>'ver')::integer then raise exception 'not_editable'; end if;
+ if lv.has_prov and btrim(coalesce(p->>'why', '')) = '' then raise exception 'why_required'; end if;
+ if length(coalesce(p->>'why', '')) > 500 then raise exception 'bad_value'; end if;
+ ver := lv.ver + 1;
+ s := lv.snap || jsonb_build_object('lid', 'BC-' || q || '-v' || ver, 'vid', ver, 'kind', 'final', 'from', lv.ver, 'lt', floor(extract(epoch from clock_timestamp()) * 1000)::bigint);
+ insert into public.bc_versions(quarter, ver, kind, status, snap, n, total_raw, cap, k, paid_total, has_prov, base_ver, from_ver, why, made_by, made_uid, made_role, pay)
+ values (q, ver, 'final', 'effective', s, lv.n, lv.total_raw, lv.cap, lv.k, lv.paid_total, lv.has_prov, lv.ver, lv.ver, coalesce(p->>'why', ''), a->>'name', (a->>'uid')::uuid, a->>'role',
+  coalesce(lv.pay, '{}'::jsonb));   -- v1116: the provisional's copy (pay cannot change between a provisional and its confirm)
+ update public.bc_quarters set rev = rev + 1, updated_at = now() where quarter = q returning * into r;
+ perform public.bc_event(q, a, 'confirm', jsonb_build_object('ver', ver, 'from', lv.ver, 'prov', lv.has_prov));
+ return jsonb_build_object('ok', true, 'rev', r.rev, 'ver', ver, 'lid', s->>'lid', 'lt', s->'lt');
+end $$;
+
+-- 修正を開始 / 確定版から修正: as v1109, and the base modes and special rewards start from that version (the server's copy, bc_versions.pay).
 create or replace function public.bc_fix_start(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare a jsonb := public.bc_writer(p); q text := public.bc_q(p); er integer := public.bc_rev(p); r public.bc_quarters; b public.bc_versions; np jsonb; op jsonb;
@@ -363,7 +385,7 @@ begin
   select * into b from public.bc_versions where quarter = q order by ver desc limit 1;
   if b.ver is null then raise exception 'not_editable'; end if;
  end if;
- op := coalesce(r.pay, '{}'::jsonb); np := public.bc_pay_from_snap(b.snap);
+ op := coalesce(r.pay, '{}'::jsonb); np := coalesce(b.pay, '{}'::jsonb);
  update public.bc_quarters set fixing = b.ver, fix_at = now(), fix_by = a->>'name',
   draft = jsonb_strip_nulls(jsonb_build_object('choices', case when jsonb_typeof(b.snap->'keep') = 'object' then coalesce(b.snap->'choices', '{}'::jsonb) || (b.snap->'keep') else b.snap->'choices' end,
    'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
@@ -374,7 +396,7 @@ begin
  return jsonb_build_object('ok', true, 'rev', r.rev, 'fixing', b.ver);
 end $$;
 
--- 修正をやめる: back to the version the correction started from (its chosen values, base modes and special rewards).
+-- 修正をやめる: back to the version the correction started from (its chosen values; base modes and special rewards from bc_versions.pay).
 create or replace function public.bc_fix_cancel(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare a jsonb := public.bc_writer(p); q text := public.bc_q(p); er integer := public.bc_rev(p); r public.bc_quarters; b public.bc_versions; np jsonb; op jsonb;
@@ -382,7 +404,7 @@ begin
  r := public.bc_lock(q, er);
  if r.fixing is null then raise exception 'not_editable'; end if;
  select * into b from public.bc_versions where quarter = q and ver = r.fixing;
- op := coalesce(r.pay, '{}'::jsonb); np := public.bc_pay_from_snap(b.snap);
+ op := coalesce(r.pay, '{}'::jsonb); np := coalesce(b.pay, '{}'::jsonb);
  update public.bc_quarters set fixing = null, fix_at = null, fix_by = null,
   draft = jsonb_strip_nulls(jsonb_build_object('choices', case when jsonb_typeof(b.snap->'keep') = 'object' then coalesce(b.snap->'choices', '{}'::jsonb) || (b.snap->'keep') else b.snap->'choices' end,
    'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
@@ -394,8 +416,8 @@ begin
 end $$;
 
 do $$ declare f text; begin
- foreach f in array array['bc_emp(jsonb)','bc_amt(jsonb,boolean)','bc_now_txt()','bc_not_self(jsonb,text)','bc_base_ok(text,jsonb,numeric)','bc_pay_from_snap(jsonb)','bc_pay_match(jsonb,jsonb)','bc_snap_check(text,jsonb)',
-  'bc_get(jsonb)','bc_pay_mode(jsonb)','bc_sp_save(jsonb)','bc_save(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop
+ foreach f in array array['bc_emp(jsonb)','bc_amt(jsonb,boolean)','bc_now_txt()','bc_not_self(jsonb,text)','bc_base_ok(text,jsonb,numeric)','bc_pay_match(jsonb,jsonb)','bc_snap_check(text,jsonb)',
+  'bc_get(jsonb)','bc_pay_mode(jsonb)','bc_sp_save(jsonb)','bc_save(jsonb)','bc_confirm(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

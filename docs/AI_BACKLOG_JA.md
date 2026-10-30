@@ -3,7 +3,8 @@
 ## 2026-10-29 ボーナスの基準額支給と個人別の特別報酬
 
 1. 済（Claude・ブランチ `claude/bonus-base-special`・#105 の上）：v1116（SQL `20261030090000`・関数 `bonus-close`・アプリ・`docs/BONUS_BASE_SPECIAL_V1116_JA.md`）・試験 12・わざと壊す・Chromium 24/24・独立レビュー（P2 5・P3 は直した）。
-2. 済：PR #106。次：Codex → Moto さんが #105 → #106 の順にマージ（`deploy/bonus-close-base-special-v1116/手順.md`：最初に確認 → SQL → 確認 → 関数 → マージ）→ GM・CEO の端末をすべて 1116 に → 実機（iPhone）。
+2. 済：PR #106。済：#105 はマージ済み（10/29 19:22 HST・`a1ffe7e`＝見えない文字の直しの前）。済（Claude）：Codex（`7a8ae7d`・blocked）の P2 2 と、v1115 の「グレード履歴にもう同じ変更があると保存できない」の直しを #106 に入れた。次：Codex の再レビュー → Moto さんが `deploy/bonus-close-base-special-v1116/手順.md` の順（最初に確認 → SQL → 確認 → 関数 → #106 をマージ）→ GM・CEO の端末をすべて 1116 に → 実機（iPhone）。
+2b. Moto さん：確認の SQL で「GM・CEO accounts with an employee link」が NG なら、`db/invoice-signin-emp-check.sql` で確かめて emp_id を入れる（入れるまでその人は無条件で基準額・特別報酬を変えられない）。
 3. Moto さんの判断（任意）：特別報酬の理由を本人に見せるか（今は見せない）・「無条件で基準額」を区間の一部だけにできるようにするか（今は四半期全体）。
 
 ## 2026-10-29 特例でのグレード変更（キャリアスコア評価なし）

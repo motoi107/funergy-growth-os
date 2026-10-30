@@ -520,7 +520,8 @@ test('the server: tables and functions stay closed to browsers; deploy files are
   assert.equal((await p1.query(`select count(*)::int n from pg_proc where proname like 'bc\\_%'`)).rows[0].n, 0, 'nothing made without v1109');
   await p1.exec(MIG);
   const pre = (await p1.query(read(new URL('0_最初に確認_読むだけ.sql', D)))).rows;
-  assert.deepEqual(pre.map(r => r.result), ['OK', '21', '0', '0']);
+  assert.deepEqual(pre.map(r => r.result), ['OK', '21', '0', 'OK', '0']);
+  await p1.exec(`create function public.bc_pay_from_snap(s jsonb) returns jsonb language sql as $$ select '{}'::jsonb $$`);   // an earlier draft of the SQL
   await p1.exec(MIG2); await p1.exec(MIG2);
   const post = (await p1.query(read(new URL('2_確認のSQL_読むだけ.sql', D)))).rows;
   assert.deepEqual(post.slice(0, -2).filter(r => r.result !== 'OK').map(r => r.check_item), []);
@@ -528,7 +529,8 @@ test('the server: tables and functions stay closed to browsers; deploy files are
   // rollback before use: back to v1109 (21 functions, no pay column)
   await p1.exec(read(new URL('戻す_使う前だけ.sql', D)));
   assert.equal((await p1.query(`select count(*)::int n from pg_proc where proname like 'bc\\_%'`)).rows[0].n, 21);
-  assert.equal((await p1.query(`select count(*)::int n from information_schema.columns where table_name = 'bc_quarters' and column_name = 'pay'`)).rows[0].n, 0);
+  assert.equal((await p1.query(`select count(*)::int n from information_schema.columns where table_name in ('bc_quarters', 'bc_versions') and column_name = 'pay'`)).rows[0].n, 0);
+  assert.doesNotMatch((await p1.query(`select pg_get_functiondef('public.bc_confirm(jsonb)'::regprocedure) d`)).rows[0].d, /pay/, 'the v1109 confirm is back (no pay column)');
   const v1109fn = (await p1.query(`select pg_get_functiondef('public.bc_snap_check(text,jsonb)'::regprocedure) d`)).rows[0].d;
   assert.match(v1109fn, /fin > raw/, 'the v1109 check is back');
   // used → the rollback stops and changes nothing
@@ -721,4 +723,87 @@ test('independent review of v1116: kept chosen values, reading before showing th
   assert.match(lastToast(x), /^Aki&lt;img src=x onerror=alert\(1\)&gt;：基準額支給にしました/);
   await special(x, 'aki', 10, '');
   assert.match(lastToast(x), /^Aki&lt;img/);
+});
+
+test('Codex P2 (PR #106): a version cannot carry made-up who / when, and a correction puts back the server copy; an account without emp_id cannot set pay', async () => {
+  // P2-1: who set the base mode / special reward and when must be the server's (pay_mismatch otherwise); nothing is saved
+  const srv = await server();
+  const c = co(srv);
+  await load(c);
+  await payMode(c, 'ken', 'base');
+  await special(c, 'mia', 300, '特別な業務');
+  const pay = run(c, '_bc.data.pay');
+  assert.ok(pay.ken.bAt && pay.ken.bBy && pay.mia.at && pay.mia.by);
+  const B = run(c, `bcBuild('${Q}', kbCfg(), {}, [], false).sn`);
+  assert.deepEqual([B.people.ken.bAt, B.people.ken.bBy, B.people.mia.spAt, B.people.mia.spBy], [pay.ken.bAt, pay.ken.bBy, pay.mia.at, pay.mia.by], 'the app copies them from the server');
+  const r0 = await srv.rev();
+  const fake = {
+    'base: who': s => { s.people.ken.bBy = '偽の担当者'; },
+    'base: when': s => { s.people.ken.bAt = '2099-01-01T00:00:00Z'; },
+    'base: who missing': s => { delete s.people.ken.bBy; },
+    'special: who': s => { s.people.mia.spBy = '偽の担当者'; },
+    'special: when': s => { s.people.mia.spAt = '2099-01-01T00:00:00Z'; },
+    'special: when missing': s => { delete s.people.mia.spAt; },
+  };
+  for (const [name, f] of Object.entries(fake)) {
+    const s = J(B); f(s);
+    assert.equal((await srv.direct('gm', { action: 'save', quarter: Q, expect_rev: r0, kind: 'provisional', snap: s, why: '' })).body.error, 'pay_mismatch', name);
+  }
+  assert.equal(await srv.rev(), r0, 'nothing written');
+  assert.equal((await srv.pg.query('select count(*)::int n from public.bc_versions')).rows[0].n, 0);
+  // the honest version saves, and the server keeps its own copy of pay with it (not taken from the snapshot)
+  await provisional(c);
+  const v = (await srv.pg.query('select ver, pay from public.bc_versions order by ver')).rows;
+  assert.equal(v.length, 1);
+  assert.deepEqual(v[0].pay, pay);
+  await confirmFinal(c);
+  const v2 = (await srv.pg.query('select ver, kind, pay from public.bc_versions order by ver')).rows;
+  assert.deepEqual(v2.map(x => [x.kind, JSON.stringify(x.pay)]), [['provisional', JSON.stringify(pay)], ['final', JSON.stringify(pay)]], 'the final keeps the copy');
+  // even if a stored snapshot said otherwise (an earlier draft of this SQL restored from it), 修正を開始 / やめる put back the server copy
+  await srv.pg.query(`update public.bc_versions set snap = jsonb_set(jsonb_set(snap, '{people,ken,bBy}', '"偽の担当者"'), '{people,mia,spBy}', '"偽の担当者"')`);
+  await srv.pg.query(`update public.bc_quarters set pay = '{}'::jsonb where quarter = $1`, [Q]);
+  assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+  assert.deepEqual(run(c, '_bc.data.pay'), pay);
+  await srv.pg.query(`update public.bc_quarters set pay = '{}'::jsonb where quarter = $1`, [Q]);
+  assert.equal(await runP(c, `bcFixCancel('${Q}')`), true, lastToast(c));
+  assert.deepEqual(run(c, '_bc.data.pay'), pay);
+  assert.equal(JSON.stringify(run(c, '_bc.data.pay')).includes('偽の'), false);
+  // a version saved before v1116 (no copy) puts back nothing
+  await srv.pg.query(`update public.bc_versions set pay = null`);
+  assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+  assert.deepEqual(run(c, '_bc.data.pay'), {});
+  assert.equal(await runP(c, `bcFixCancel('${Q}')`), true, lastToast(c));
+
+  // P2-2: fail closed — a GM / CEO account without an employee link (emp_id null, empty or spaces) cannot set pay for anyone
+  const s2 = await server();
+  await s2.pg.exec('reset role');
+  const r1 = await s2.rev();
+  for (const e of [null, '', '  ']) {
+    await s2.pg.query('update public.manager_auth set emp_id = $1 where role = $2', [e, 'gm']);
+    await s2.pg.exec('set role service_role');
+    const sp = await s2.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r1, emp_id: 'aki', emp_name: 'Aki Sample', amount: 500, why: '' });
+    const pm = await s2.direct('gm', { action: 'pay_mode', quarter: Q, expect_rev: r1, emp_id: 'aki', mode: 'base' });
+    const self = await s2.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r1, emp_id: 'E1', amount: 500, why: '' });
+    assert.deepEqual([sp.body.error, pm.body.error, self.body.error], ['no_emp', 'no_emp', 'no_emp'], JSON.stringify(e));
+    await s2.pg.exec('reset role');
+  }
+  assert.ok(CODES.includes('no_emp'));
+  assert.deepEqual((await s2.pg.query('select pay from public.bc_quarters')).rows.map(x => x.pay).filter(x => x && Object.keys(x).length), [], 'nothing written');
+  // linked again: own → own_pay, someone else → saved
+  await s2.pg.query('update public.manager_auth set emp_id = $1 where role = $2', ['E1', 'gm']);
+  await s2.pg.exec('set role service_role');
+  assert.equal((await s2.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r1, emp_id: 'E1', amount: 500, why: '' })).body.error, 'own_pay');
+  await s2.pg.exec('reset role'); await s2.pg.query('update public.manager_auth set emp_id = $1 where role = $2', [' E1 ', 'gm']); await s2.pg.exec('set role service_role');
+  assert.equal((await s2.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r1, emp_id: 'E1', amount: 500, why: '' })).body.error, 'own_pay', 'spaces around the emp_id do not hide oneself');
+  assert.equal((await s2.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r1, emp_id: 'aki', amount: 500, why: '' })).body.ok, true);
+  // the screen explains it
+  assert.match(run(c, `bcErrText('no_emp')`), /社員と紐づいていない/);
+  // the checks before and after installing show GM / CEO accounts without the link
+  const D = new URL('../deploy/bonus-close-base-special-v1116/', import.meta.url);
+  await s2.pg.exec('reset role');
+  await s2.pg.query('update public.manager_auth set emp_id = null where role = $1', ['ceo']);
+  const post = (await s2.pg.query(read(new URL('2_確認のSQL_読むだけ.sql', D)))).rows;
+  assert.match(post.find(x => /employee link/.test(x.check_item)).result, /^NG: 1（/);
+  const pre = (await s2.pg.query(read(new URL('0_最初に確認_読むだけ.sql', D)))).rows;
+  assert.match(pre.find(x => /employee link/.test(x.check_item)).result, /^NG: 1（/);
 });
