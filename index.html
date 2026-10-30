@@ -40879,7 +40879,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1118';
+const APP_VERSION = '1119';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -51053,12 +51053,13 @@ function shortBenefitLabel(type){
   return map[type]||type;
 }
 function openVacationModal() {
-  var g = (typeof myGradeNum==='function') ? myGradeNum() : 1;
   var yr = new Date().getFullYear();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  /* v1119：福利厚生の種別は、従業員マスターのグレードで今日 G3〜G6 の人だけ（権限の役割では決めない） */
+  var _el = benefitElig((typeof _curEmp==='function') ? _curEmp() : null, ghToday());
   // 内訳カテゴリ: G3以上はPaid Off各種（残日数表示）、全員に公休・無給
   var cats = [];
-  if (g>=2) {
+  if (_el.ok) {
     BENEFITS.forEach(function(b){
       var rem = (b.days + benefitAdjust(yr, me, b.key)) - benefitUsed(me, yr, b.type, '承認') - benefitManualUsed(yr, me, b.key);
       cats.push({ type:b.type, label:b.label.replace('Paid Off（有給）','有給休暇'), hint:'残'+rem+'日' });
@@ -51081,7 +51082,7 @@ function openVacationModal() {
       <div style="background:var(--surface2);border-radius:8px;padding:8px">${rowsHtml}
         <div id="v-bd-preview" style="font-size:11px;color:var(--muted);margin-top:6px;text-align:right"></div>
       </div>
-      ${g<2?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・誕生日・忌引き・結婚・出産）はG2以上が対象。G1は公休/無給のみ。</div>`:''}
+      ${!_el.ok?`<div style="font-size:11px;color:var(--muted);margin-top:4px">※ Paid Off（有給・Sick・誕生日・忌引き・結婚・出産・祝日）は、従業員マスターのグレードが G3〜G6 の人が対象です（あなた：${escapeHtml(_el.why)}）。公休・無給休暇は申請できます。</div>`:''}
     </div>
     <div class="form-group"><label class="form-label">理由</label><textarea class="form-textarea" id="v-reason" placeholder="休暇理由"></textarea></div>
     <div class="btn-row">
@@ -51131,6 +51132,9 @@ function submitVacation() {
     if (conflict) { alert('有給と祝日休暇は連続して取得できません。既存の申請と日程が連続/重複しています。'); return; }
   }
   var meEmp = getEmployees().find(e=>e.name===me);
+  /* v1119：福利厚生の種別は、開始日に G3〜G6 の人だけ（その日のグレード。前の画面を開いたままの人・グレードが変わった人も止める） */
+  var _bTypes = Object.keys(breakdown).filter(function(k){ return !!benefitByType(k); });
+  if (_bTypes.length) { var _el = benefitElig(meEmp||null, start); if (!_el.ok) { alert('有給などの福利厚生は G3〜G6 の人が対象です（'+start+' の時点：'+_el.why+'）。公休・無給休暇で申請してください。'); return; } }
   var storeId = (meEmp && meEmp.store) || (curStore!=='ALL'?curStore:STORES[0].id);
   var summary = Object.keys(breakdown).map(function(k){ return shortBenefitLabel(k)+breakdown[k]; }).join('・');
   var vac = {id:'v'+Date.now(), employee:me, storeId:storeId, type:summary, breakdown:breakdown, startDate:start, endDate:end, reason:reason||'', status:'申請中', date:todayJP()};
@@ -51150,15 +51154,41 @@ function submitVacation() {
 ============================================================ */
 /* すべてのPaid OffはG3以上が対象（G2以下は無給のバケーション申請のみ） */
 const BENEFITS = [
-  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:2},
-  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:2, note:'有給消化としても使用可'},
-  {key:'bereavement', label:'忌引き',            days:3, type:'忌引き',     minGrade:2},
-  {key:'maternity',   label:'出産',              days:3, type:'出産',       minGrade:2},
-  {key:'marriage',    label:'結婚',              days:2, type:'結婚',       minGrade:2},
-  {key:'holiday',     label:'祝日休暇',          days:5, type:'祝日休暇',   minGrade:2, note:'有給と連続申請不可'},
-  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:2},
+  {key:'paid',        label:'Paid Off（有給）', days:5, type:'有給休暇', minGrade:3},
+  {key:'sick',        label:'Sick Leave',       days:3, type:'傷病休暇', minGrade:3, note:'有給消化としても使用可'},
+  {key:'bereavement', label:'忌引き',            days:3, type:'忌引き',     minGrade:3},
+  {key:'maternity',   label:'出産',              days:3, type:'出産',       minGrade:3},
+  {key:'marriage',    label:'結婚',              days:2, type:'結婚',       minGrade:3},
+  {key:'holiday',     label:'祝日休暇',          days:5, type:'祝日休暇',   minGrade:3, note:'有給と連続申請不可'},
+  {key:'birthday',    label:'バースデー',        days:1, type:'バースデー', minGrade:3},
 ];
 function benefitByType(type){ return BENEFITS.find(function(b){return b.type===type;}); }
+/* v1119（Moto さん 10/30 の依頼 ⑤「HR 福利厚生の対象は G3〜G6」・回答「今日から」）
+   ・対象は従業員マスターのグレードで G3〜G6。その日のグレードは、グレードの履歴があれば適用日から（昇格・降格の日から変わる）、無ければ今の役職のグレード。
+     専門職も役職名ではなくグレードで決める（役職名からは gradeOf でグレードを読むだけ）。権限の役割（curRole）では決めない。
+   ・G1・G2 は対象外。G2 は 2026-10-30 から対象外（それより前の日は前の決まり＝G2 以上。前の申請・消化・調整の記録は書き換えない）。
+   ・グレードが無い人は対象外で「設定が必要」と出す。
+   ・見られる人・直せる人（renderHR の役割）は変えない。付与日数・決まりも変えない。 */
+var BENEFIT_G3_FROM = '2026-10-30';
+function benefitMinGradeOn(d){ return (String(d||'') >= BENEFIT_G3_FROM) ? 3 : 2; }
+function benefitGradeOn(e, d){
+  if(!e) return { g:'', src:'', master:'' };
+  var master = ghNormG(empGrade(e));
+  try{
+    var seg = ghSegments(e, d, d);
+    if(seg && seg.length && seg[0].g && !seg[0].noHist) return { g:seg[0].g, src:'hist', master:master };
+  }catch(err){}
+  return { g:master, src:'master', master:master };
+}
+function benefitElig(e, d){
+  d = d || ghToday();
+  if(!e) return { ok:false, g:'', missing:true, why:'従業員マスターに見つかりません' };
+  var r = benefitGradeOn(e, d), n = gradeNum(r.g), min = benefitMinGradeOn(d);
+  if(!r.g) return { ok:false, g:'', missing:true, why:'グレード未設定（従業員マスターで設定が必要）' };
+  var note = (r.src==='hist' && r.master && r.master!==r.g) ? '・グレードの履歴（今の役職は '+r.master+'）' : (r.src==='hist' ? '・グレードの履歴' : '');
+  if(n>=min && n<=6) return { ok:true, g:r.g, src:r.src, why:r.g+'（G'+min+' 以上）'+note };
+  return { ok:false, g:r.g, src:r.src, why:r.g+'（G'+min+' 未満）'+note };
+}
 /* 申請日数（開始〜終了の暦日・両端含む） */
 function vacationDays(v){
   if(!v||!v.startDate||!v.endDate) return 0;
@@ -51200,7 +51230,7 @@ function setBenefitManual(year, name, key, days, memo){
 }
 function openBenefitManualModal(){
   var year=_hrYear;
-  var emps=getEmployees().filter(function(e){return (e.status==='在籍'||!e.status) && gradeNum(empGrade(e))>=2;}).slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});
+  var emps=getEmployees().filter(function(e){return (e.status==='在籍'||!e.status) && benefitElig(e, ghToday()).ok;}).slice().sort(function(a,b){return String(a.name).localeCompare(String(b.name));});   /* v1119：今日 G3〜G6 の人 */
   var m=getBenefitManual()[year]||{};
   var rows=Object.keys(m).map(function(nm){
     return Object.keys(m[nm]).map(function(k){
@@ -51243,8 +51273,17 @@ function renderHR(){
     var vis=getVisibleStores().map(function(s){return s.id;});
     emps=emps.filter(function(e){ return !e.store||e.store==='ALL'||vis.indexOf(e.store)>=0; });
   }
-  var targets=emps.filter(function(e){ return gradeNum(empGrade(e))>=paid.minGrade; })
-    .sort(function(a,b){ return gradeNum(empGrade(b))-gradeNum(empGrade(a)); });
+  /* v1119：対象は今日のグレード（従業員マスター・グレードの履歴）で G3〜G6。理由も出す。
+     グレードが無い人は「設定が必要」、今は対象外でもこの年の記録（消化・申請中・調整・手動消化）がある人は別の表に残す（記録は消さない） */
+  var _today=ghToday(), _el={};
+  emps.forEach(function(e){ _el[e.id||e.name]=benefitElig(e, _today); });
+  var elOf=function(e){ return _el[e.id||e.name]; };
+  var targets=emps.filter(function(e){ return elOf(e).ok; })
+    .sort(function(a,b){ return gradeNum(elOf(b).g)-gradeNum(elOf(a).g) || String(a.name).localeCompare(String(b.name)); });
+  var noGrade=emps.filter(function(e){ return elOf(e).missing; });
+  var _hasRec=function(e){ return BENEFITS.some(function(b){ return benefitUsed(e.name,year,b.type)>0 || benefitManualUsed(year,e.name,b.key)>0 || benefitAdjust(year,e.name,b.key)!==0; }); };
+  var formerly=emps.filter(function(e){ var x=elOf(e); return !x.ok && !x.missing && _hasRec(e); });
+  var _stName=function(id){ var st=(typeof STORES!=='undefined'?STORES:[]).find(function(x){ return x.id===id; }); return st?st.name:(id||'—'); };
 
   var html=`<div class="section-header"><div><div class="section-title">HR・福利厚生</div><div class="section-sub">ベネフィット消化状況（暦年）</div></div>
     <button class="btn btn-secondary btn-sm" onclick="openBenefitManualModal()"><i class="ti ti-pencil-plus"></i> 手動消化の入力</button>
@@ -51255,7 +51294,7 @@ function renderHR(){
   // ベネフィット規定（参考）
   html+=`<div class="card"><div class="card-title"><i class="ti ti-gift" style="color:var(--accent)"></i>ベネフィット規定（${year}年）</div>
     <div style="overflow-x:auto"><table class="inv-table" style="min-width:360px"><thead><tr><th>種別</th><th style="text-align:right">付与</th><th>対象・備考</th></tr></thead><tbody>
-    ${BENEFITS.map(function(b){return `<tr><td>${b.label}</td><td style="text-align:right;font-weight:600">${b.days}日</td><td style="font-size:11px;color:var(--muted)">${b.minGrade>=3?'G3以上':'全員'}${b.note?' · '+b.note:''}</td></tr>`;}).join('')}
+    ${BENEFITS.map(function(b){return `<tr><td>${b.label}</td><td style="text-align:right;font-weight:600">${b.days}日</td><td style="font-size:11px;color:var(--muted)">G3〜G6（2026/10/30 から。前は G2 以上）${b.note?' · '+b.note:''}</td></tr>`;}).join('')}
     </tbody></table></div></div>`;
 
   // 全ベネフィット 消化状況マトリクス（G3以上）
@@ -51264,10 +51303,10 @@ function renderHR(){
     html+=`<div style="font-size:12px;color:var(--muted);padding:6px 0">対象（G3以上）の従業員がいません。</div>`;
   } else {
     html+=`<div style="overflow-x:auto"><table class="inv-table" style="min-width:${260+BENEFITS.length*64}px"><thead><tr>
-      <th>従業員</th><th>等級</th>${BENEFITS.map(function(b){return `<th style="text-align:center;font-size:10px">${b.label.replace('Paid Off（有給）','有給')}</th>`;}).join('')}<th></th></tr></thead><tbody>`;
+      <th>従業員</th><th>店舗</th><th>役職</th><th>等級</th><th>対象の理由</th>${BENEFITS.map(function(b){return `<th style="text-align:center;font-size:10px">${b.label.replace('Paid Off（有給）','有給')}</th>`;}).join('')}<th></th></tr></thead><tbody>`;
     targets.forEach(function(e){
       var nm=e.name.replace(/'/g,"\\'");
-      html+=`<tr><td style="font-size:12px">${e.name}</td><td><span class="tag tag-gray" style="font-size:9px">${empGrade(e)}</span></td>`;
+      html+=`<tr><td style="font-size:12px">${escapeHtml(e.name)}</td><td style="font-size:11px">${escapeHtml(_stName(e.store))}</td><td style="font-size:11px">${escapeHtml(e.title||e.role||'')}</td><td><span class="tag tag-gray" style="font-size:9px">${escapeHtml(elOf(e).g)}</span></td><td style="font-size:10.5px;color:var(--muted)">${escapeHtml(elOf(e).why)}</td>`;
       BENEFITS.forEach(function(b){
         var grant=b.days+benefitAdjust(year,e.name,b.key);
         var used=benefitUsed(e.name,year,b.type,'承認') + benefitManualUsed(year,e.name,b.key);
@@ -51280,6 +51319,27 @@ function renderHR(){
     });
     html+=`</tbody></table></div>
     <div style="font-size:11px;color:var(--muted);margin-top:6px">各セル＝消化/付与（暦年・承認済み）。<span style="color:var(--accent2)">+n</span>＝申請中。消化は休暇申請の<b>内訳</b>から自動集計。残が赤＝超過。「調整」で繰越・特別付与を加減できます。申請・承認は「休暇申請」画面から。</div></div>`;
+  }
+  /* v1119：グレードが無い人（対象外・設定が必要） */
+  if(noGrade.length){
+    html+=`<div class="card"><div class="card-title"><i class="ti ti-alert-triangle" style="color:var(--yellow)"></i>グレードが未設定（対象外・設定が必要）${noGrade.length}名</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">従業員マスターでグレード（役職）を決めると、G3〜G6 の人は対象になります。</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${noGrade.map(function(e){ return '<span class="tag tag-gray" style="font-size:11px">'+escapeHtml(e.name)+' · '+escapeHtml(_stName(e.store))+(e.title?' · '+escapeHtml(e.title):'')+'</span>'; }).join('')}</div></div>`;
+  }
+  /* v1119：今は対象外だが、この年の記録がある人（記録はそのまま。新しい福利厚生の申請はできない） */
+  if(formerly.length){
+    html+=`<div class="card"><div class="card-title"><i class="ti ti-history" style="color:var(--muted)"></i>今は対象外・${year}年の記録あり ${formerly.length}名</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px">前の決まり（2026/10/29 までは G2 以上）や、グレードが変わる前に取った分です。記録は消しません。</div>
+      <div style="overflow-x:auto"><table class="inv-table" style="min-width:${260+BENEFITS.length*64}px"><thead><tr><th>従業員</th><th>店舗</th><th>等級</th><th>理由</th>${BENEFITS.map(function(b){return `<th style="text-align:center;font-size:10px">${b.label.replace('Paid Off（有給）','有給')}</th>`;}).join('')}</tr></thead><tbody>`;
+    formerly.forEach(function(e){
+      html+=`<tr><td style="font-size:12px">${escapeHtml(e.name)}</td><td style="font-size:11px">${escapeHtml(_stName(e.store))}</td><td><span class="tag tag-gray" style="font-size:9px">${escapeHtml(elOf(e).g)}</span></td><td style="font-size:10.5px;color:var(--muted)">${escapeHtml(elOf(e).why)}</td>`;
+      BENEFITS.forEach(function(b){
+        var used=benefitUsed(e.name,year,b.type,'承認') + benefitManualUsed(year,e.name,b.key), pending=benefitUsed(e.name,year,b.type,'申請中');
+        html+=`<td style="text-align:center;color:var(--muted)">${used||'—'}${pending?`<span style="font-size:9px;color:var(--accent2)"> +${pending}</span>`:''}</td>`;
+      });
+      html+=`</tr>`;
+    });
+    html+=`</tbody></table></div></div>`;
   }
   return html;
 }
