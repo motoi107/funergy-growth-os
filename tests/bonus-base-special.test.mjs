@@ -9,7 +9,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import { createHash } from 'node:crypto';
-import { createHandler, CODES } from '../supabase/functions/bonus-close/handler.mjs';
 
 const index = process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url).pathname;
 let fixture = fs.readFileSync(new URL('./karte-eval.test.mjs', import.meta.url), 'utf8').split("test('the fictional company")[0];
@@ -18,7 +17,8 @@ const { company, Q } = await import('data:text/javascript;base64,' + Buffer.from
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const read = u => fs.readFileSync(u, 'utf8');
 const MIG = read(new URL('../supabase/migrations/20261028090000_bonus_close.sql', import.meta.url));
-const MIG2 = read(new URL('../supabase/migrations/20261030090000_bonus_base_special.sql', import.meta.url));
+const MIG2 = read(process.env.BC_MIG2 ? new URL('file://' + process.env.BC_MIG2) : new URL('../supabase/migrations/20261030090000_bonus_base_special.sql', import.meta.url));
+const { createHandler, CODES } = await import(process.env.BC_HANDLER ? 'file://' + process.env.BC_HANDLER : '../supabase/functions/bonus-close/handler.mjs');
 const SRC = read(index).replace(/\r\n/g, '\n');
 const BC = (() => { const i = SRC.indexOf('/* FUNERGY_BONUS_CLOSE_BEGIN */'), j = SRC.indexOf('/* FUNERGY_BONUS_CLOSE_END */'); assert.ok(i > 0 && j > i); return SRC.slice(i, j); })();
 const LSS_GROUPS_SRC = (() => { const i = SRC.indexOf('\nconst LSS_GROUPS = {'), j = SRC.indexOf('\n};', i); return 'var' + SRC.slice(i + 6, j + 3); })();
@@ -130,6 +130,14 @@ test('「無条件で基準額」 for a person never evaluated: the base becomes
   assert.deepEqual([ken.payMode, ken.blocked, ken.amount, ken.parts], ['base', null, 3000, null], 'G3 base $3,000 for the whole quarter, no evaluation needed');
   // nothing invented: no Career Score, no 4-item evaluation, no completion mark
   assert.equal(run(c, '_kevEvBefore === JSON.stringify(STORE.bonus_eval) && _scBefore === JSON.stringify(SCORES)'), true);
+  const list2 = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); var V=bcView(cfg, kevTotals(cfg, kv), kv); return kevListTableHtml(cfg, V.tot, V); })()`);
+  assert.match(list2, /基準額支給<\/span><div[^>]*>評価の計算なし（評価の記録はそのまま）/);
+  assert.match(list2, /bcPayModeAsk\(&quot;ken&quot;,'normal'\)">通常の評価計算に戻す</);
+  // the person page (management): the breakdown and the explanation
+  const pg = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); var tot=kevTotals(cfg, kv); var e=EMPS.find(function(x){ return x.id==='ken'; }); var b=kevBonusForEmp(e, cfg, kv); return [kevBreakdownHtml(e, b, kv, tot, false), kevExplainList(e, b, kv, tot).join('|')]; })()`);
+  assert.match(pg[0], /基準額支給<\/b>/);
+  assert.match(pg[0], /＝ 通常賞与額.*\$3,000/s);
+  assert.match(pg[1], /無条件で基準額：評価の計算をせず、基準額（Grade <b>G3<\/b>）<b>\$3,000<\/b> をそのまま通常賞与/);
   assert.equal(c.SCORES['Ken Sample'], undefined);
   assert.equal(run(c, `kevPersonState(EMPS.find(function(e){ return e.id==='ken'; }), ${JSON.stringify(ken)}, kevApplies(kbCfg())).t`), '未着手', 'the evaluation status stays as it is');
   // Neo still needs a value; the quarter closes once that is chosen — Ken never blocks it
@@ -210,6 +218,10 @@ test('特別報酬: CEO and GM add, change and delete it; accounting cannot (the
   assert.equal(run(c, 'bcSpCan()'), false);
   c.SESSION = { access_token: 'tok-gm', refresh_token: 'r' }; c.curRole = 'gm';
   await load(c);
+  // a wider write permission later never opens the special reward on the screen (CEO / GM by role)
+  vm.runInContext(`_bc.data.me = Object.assign({}, _bc.data.me, { role: 'office', write: true })`, c);
+  assert.deepEqual([run(c, 'bcPayCan()'), run(c, 'bcSpCan()')], [true, false]);
+  await load(c);
   // a stale screen (old rev) is refused; nothing changes
   const stale = await srv.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: r0 - 1, emp_id: 'aki', amount: 1, why: '' });
   assert.deepEqual([stale.status, stale.body.error], [409, 'conflict']);
@@ -222,6 +234,11 @@ test('特別報酬: CEO and GM add, change and delete it; accounting cannot (the
   const log = run(c, '_bc.data.paylog').filter(x => x.action === 'sp');
   assert.deepEqual(log.map(x => [x.detail.from, x.detail.to, x.by]), [[250, 0, 'GM Sample'], [200, 250, 'CEO Sample'], [0, 200, 'GM Sample']]);
   assert.deepEqual([log[1].detail.why0, log[1].detail.why1], ['新店立ち上げへの貢献', '']);
+  const logHtml = run(c, 'bcPayLogHtml(_bc.data.paylog, null)');
+  assert.match(logHtml, /特別報酬：\$0 → \$200/);
+  assert.match(logHtml, /特別報酬：\$200 → \$250.*新店立ち上げへの貢献 → （なし）/s);
+  // a non-whole amount that somehow got in is never paid (the server only stores whole dollars)
+  assert.equal(run(c, `kevPayOf({ pay: { x: { sp: 12.5 } } }, 'x').sp`), 0);
   // an empty reason confirms
   await special(c, 'aki', 200, '');
   await provisional(c);
@@ -313,10 +330,14 @@ test('nothing is lost or doubled: recalculation, switching the mode, reloading o
   await confirmFinal(c);
   const v2 = run(c, `bqGet('${Q}').evSnap`);
   assert.equal(v2.finals.neo, 3400);
+  assert.equal(run(c, 'bcPayCan()'), false, 'no buttons once a version is saved (until 修正を開始)');
   // pay cannot change once a version is saved (not correcting)
   assert.equal((await srv.direct('gm', { action: 'sp_save', quarter: Q, expect_rev: await srv.rev(), emp_id: 'neo', amount: 1, why: '' })).body.error, 'not_editable');
   // correct from the final: raise the special reward, cancel → back to the confirmed values
+  // the column changed outside the screens (SQL): starting a correction puts back the version's base modes and special rewards
+  await srv.pg.query(`update public.bc_quarters set pay = '{}'::jsonb where quarter = $1`, [Q]);
   assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+  assert.deepEqual([run(c, '_bc.data.pay.neo.sp'), run(c, '_bc.data.pay.neo.b'), run(c, 'bcPayCan()')], [400, true, true]);
   await special(c, 'neo', 900, 'やっぱり増やす');
   assert.equal(run(c, '_bc.data.pay.neo.sp'), 900);
   assert.equal(await runP(c, `bcFixCancel('${Q}')`), true, lastToast(c));
@@ -398,9 +419,23 @@ test('an older app (or a stale snapshot) cannot drop the base modes or the speci
   assert.match(lastToast(c), /一覧にいない人に「無条件で基準額」・特別報酬が入っています（Gus Sample）/);
   const panel = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); return bcPanelHtml(cfg, bcView(cfg, kevTotals(cfg, kv), kv)); })()`);
   assert.match(panel, /Gus Sample：特別報酬 \$100.*外す/);
+  // the server refuses it too (an app that does not check): the snapshot without Gus
+  const noGus = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); var t=kevTotals(cfg, bcLiveKv(cfg, {}, false)); return t.rows.map(function(r){ return r.e.id; }); })()`);
+  assert.ok(!noGus.includes('gus'));
+  const B3 = run(c, `(function(){ var p=_bc.data.pay; _bc.data.pay=JSON.parse(JSON.stringify(p)); delete _bc.data.pay.gus; var r=bcBuild('${Q}', kbCfg(), {}, [], false).sn; _bc.data.pay=p; return r; })()`);
+  assert.equal((await srv.direct('gm', { action: 'save', quarter: Q, expect_rev: await srv.rev(), kind: 'provisional', snap: B3, why: '' })).body.error, 'pay_mismatch', 'a special reward of someone not in the version stops the save (server)');
   assert.equal(await runP(c, `bcPayOrphanClear('gus')`), true, lastToast(c));
   assert.equal(run(c, '_bc.data.pay.gus'), undefined);
+  // 「無条件で基準額」 alone counts as well
+  vm.runInContext(`EMPS.find(function(e){ return e.id==='gus'; }).out = false`, c);
+  await payMode(c, 'ray', 'base');
+  vm.runInContext(`EMPS.find(function(e){ return e.id==='ray'; }).out = true`, c);
+  assert.equal(await runP(c, `bcSaveVersion('${Q}','provisional')`), false);
+  assert.match(lastToast(c), /一覧にいない人に「無条件で基準額」・特別報酬が入っています（Ray Sample）/);
+  assert.equal(await runP(c, `bcPayOrphanClear('ray')`), true, lastToast(c));
   await provisional(c);
+  // after a version is saved, the mode cannot change either (until 修正を開始)
+  assert.equal((await srv.direct('gm', { action: 'pay_mode', quarter: Q, expect_rev: await srv.rev(), emp_id: 'neo', mode: 'base' })).body.error, 'not_editable');
 });
 
 test('「基準額未設定」: no base for the grade → shown and the close is stopped (no $0, no other value)', async () => {
@@ -416,6 +451,8 @@ test('「基準額未設定」: no base for the grade → shown and the close is
   assert.match(aki.missing[0], /基準額未設定/);
   assert.equal(t.nNoBase, 1);
   assert.equal(t.paid, null, '算定未完了: no totals');
+  assert.deepEqual([t.reg, t.regPaid], [null, null], 'no regular amounts either');
+  assert.equal(run(c, `kevPersonState(EMPS.find(function(e){ return e.id==='aki'; }), ${JSON.stringify(aki)}, kevApplies(kbCfg())).t`), '基準額未設定');
   const html = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); var V=bcView(cfg, kevTotals(cfg, kv), kv); return bcPanelHtml(cfg, V)+kevListTableHtml(cfg, V.tot, V); })()`);
   assert.match(html, /基準額未設定の人が 1 名います（Aki Sample）/);
   assert.match(html, /基準額未設定/);
@@ -495,4 +532,47 @@ test('the server: tables and functions stay closed to browsers; deploy files are
   assert.equal((await p1.query(`select pay->'aki'->>'sp' v from public.bc_quarters`)).rows[0].v, '5');
   for (const f of ['手順.md']) assert.ok(fs.existsSync(new URL(f, D)), f);
   assert.equal(createHash('sha256').update(MIG2).digest('hex').length, 64);
+});
+
+test('the server check: a snapshot with base modes and special rewards must add up (tampered ones are refused)', async () => {
+  const srv = await server();
+  const c = co(srv);
+  await load(c);
+  await payMode(c, 'ken', 'base');
+  await special(c, 'mia', 300, '');
+  const B = run(c, `bcBuild('${Q}', kbCfg(), {}, [], false).sn`);
+  const chk = async s => { try { return String((await srv.pg.query('select public.bc_snap_check($1,$2::jsonb) v', [Q, JSON.stringify(s)])).rows[0].v); } catch (e) { return e.message; } };
+  assert.equal(await chk(B), '0');
+  const T = f => { const s = J(B); f(s); return s; };
+  const evs = B.order.filter(id => id !== 'ken' && id !== 'mia' && B.finals[id] > 10), ev = evs[0], ev2 = evs[1];
+  assert.ok(ev2 && B.people.mia.reg > 300);
+  const cases = {
+    'base reduced (moved to someone evaluated)': s => { s.finals.ken -= 1; s.people.ken.final -= 1; s.people.ken.reg -= 1; s.finals[ev] += 1; s.people[ev].final += 1; s.people[ev].reg += 1; },
+    'special not added to the final': s => { s.finals.mia -= 300; s.people.mia.final -= 300; s.people.mia.reg = s.finals.mia - 300; s.paid -= 300; },
+    'special changed in people only': s => { s.people.mia.sp = 301; },
+    'F wrong': s => { s.F += 1; },
+    'SP wrong': s => { s.SP -= 1; },
+    'reg inconsistent': s => { s.people.mia.reg += 1; },
+    'the evaluated share more than what is left after the base': s => { s.finals[ev] += 1; s.people[ev].final += 1; s.people[ev].reg += 1; s.paid += 1; },
+    'k as if the special reduced the pool': s => { s.k = Math.min(1, (s.cap - s.F - s.SP) / s.Se); },
+    'a negative special': s => { s.people.mia.sp = -300; s.finals.mia += 600; s.people.mia.final += 600; },
+    'mode other than base': s => { s.people.ken.mode = 'free'; },
+    // each of these is caught by one check only
+    'base reduced alone (the total drops with it)': s => { s.finals.ken -= 1; s.people.ken.final -= 1; s.people.ken.reg -= 1; s.paid -= 1; },
+    'two evaluated people swap $5 (the sum stays)': s => { for (const [id, d] of [[ev, -5], [ev2, 5]]) { s.finals[id] += d; s.people[id].final += d; s.people[id].reg += d; } },
+    'a negative special that otherwise adds up': s => { s.people.mia.sp = -300; s.finals.mia = s.people.mia.final = s.people.mia.reg - 300; s.paid -= 600; s.SP = -300; },
+    'an unknown mode on someone evaluated': s => { s.people[ev].mode = 'free'; },
+  };
+  for (const [name, f] of Object.entries(cases)) assert.match(await chk(T(f)), /bad_amounts|bad_snapshot/, name);
+  // the version must carry the base modes exactly (an app without the pay data, or with one too many): refused, nothing saved
+  const r0 = await srv.rev();
+  const without = run(c, `(function(){ var p=_bc.data.pay; _bc.data.pay=JSON.parse(JSON.stringify(p)); delete _bc.data.pay.ken; var r=bcBuild('${Q}', kbCfg(), {}, [], false); _bc.data.pay=p; return r.sn || r.err; })()`);
+  assert.equal(typeof without, 'object', String(without));
+  assert.equal(without.people.ken.mode, undefined);
+  assert.equal(await chk(without), '0', 'the numbers add up by themselves');
+  assert.equal((await srv.direct('gm', { action: 'save', quarter: Q, expect_rev: r0, kind: 'provisional', snap: without, why: '' })).body.error, 'pay_mismatch');
+  const extra = run(c, `(function(){ var p=_bc.data.pay; _bc.data.pay=JSON.parse(JSON.stringify(p)); _bc.data.pay.aki={ b: true }; var r=bcBuild('${Q}', kbCfg(), {}, [], false); _bc.data.pay=p; return r.sn || r.err; })()`);
+  assert.equal(extra.people.aki.mode, 'base');
+  assert.equal((await srv.direct('gm', { action: 'save', quarter: Q, expect_rev: r0, kind: 'provisional', snap: extra, why: '' })).body.error, 'pay_mismatch');
+  assert.equal(await srv.rev(), r0, 'nothing written');
 });
