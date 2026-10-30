@@ -30,11 +30,16 @@
   - オフィス用 Career Score の 4 区分にアイコン（`OCS_GROUPS` の `ic`・`ocsGrpIcon`）。
     - O-A は ti-user-check、O-F は ti-bulb、O-G は ti-school（オフィスの強み OF-A・OF-F・OF-G と同じ）。O-B〜O-E（専門実務）は ti-briefcase。どれも UI案63 のとおり。
     - 出る所：オフィス タブの各人の画面の区分のタイル・担当設定の配点の札・「項目と配点」の表の見出し。
+    - オフィスの画面は、ほとんど Office の保存の守りのモジュール（`web-office-cas.<sha256>.js`・Codex が作ったもの）が、モジュールの中の前のコードの写しで描く。
+      - 2 回目の独立レビュー（`3dbff55`）の P2：index.html だけを直したので、本番ではアイコンが「項目と配点」の表と、最初に開いたときのタイルにしか出ない。
+      - 直し：モジュールの中の写し（`OCS_GROUPS` 6 つ・区分のタイル 6 つ・配点の札 1 つ）に、同じ `ic` と同じアイコンの HTML を足した。表示の文字だけで、保存・計算・ダイジェストの所は触っていない。
+      - 中身の sha256 の名前に付け直した：`web-office-cas.f7f5f2d2….js`（index.html はこれを読む）。前の `a0f6a02e….js` は残した（古い index.html が読みに来ても 404 にしない。v1110 と同じ）。
+      - モジュールの元のソースはこのリポジトリに無い。Codex がモジュールを作り直すときは、同じ変更（`OCS_GROUPS` の `ic` と区分のアイコン）を元のソースにも入れる必要がある。入れないと、アイコンがまた消える。
     - 区分・配点・計算（`ocsCalc` は `g.k` だけを読む）は変えていない。
   - 一覧のカードにはオフィス用の人の内訳は出ていない（前から。オフィス用の点はオフィス タブで見る）。出すかは Moto さんに聞く（画面の案から）。
 - 試験（合成データ）：
-  - 新しい `tests/cs-card-icons.test.mjs` 8（タイルとオフィスの区分の 2 つを足した）。関連のファイルはすべて通る：cs-strengths 14・cs-grade-view 14・cs-grade-rollback 15・specialist-career 24・karte-cs-points 20・karte-eval 22・karte-eval-sync 26・karte-bonus-ceo 20・karte-settings 10・career-criteria 23・dashboard-ui41 9・mid-review-ui 44・bonus-close-ui 13・acct-review-unify 11。
-  - わざと壊す 35 通りすべてで落ちる（タイル・オフィスの区分の 9 通りを足した）。
+  - 新しい `tests/cs-card-icons.test.mjs` 8（タイルとオフィスの区分の 2 つを足した。モジュールの中の写しも確かめる）。web-office-open-failure 24（モジュールの名前＝中身の sha256）。関連のファイルはすべて通る：cs-strengths 14・cs-grade-view 14・cs-grade-rollback 15・specialist-career 24・karte-cs-points 20・karte-eval 22・karte-eval-sync 26・karte-bonus-ceo 20・karte-settings 10・career-criteria 23・dashboard-ui41 9・mid-review-ui 44・bonus-close-ui 13・acct-review-unify 11。
+  - わざと壊す 40 通りすべてで落ちる（タイル・オフィスの区分の 14 通りを足した。モジュールの写しの 3 通りも）。
   - static release pass/1113。
   - 成長カルテのタイル（本物のアプリ・模擬サーバー・1280px／390px・日英）：強み 15 の人と 1 の人。pageerror 0・横スクロールなし。
   - 全体（重い 2 つ以外・4 並列）：落ちたファイルは main（`1bbf314`）と同じ。違ったのは重いときだけ落ちるもので、単独では通る（employee-field-log・approvals など）。
@@ -48,7 +53,8 @@
   - タイルの「ほか N」は Moto さんに確かめる。
   - 強みが 15 あるとスマホでカードが長い（頼まれたとおり）。
   - アイコンの名前の試験は書き写した一覧で、Tabler の CSS と直接は比べていない。
-  - 直したあとの独立レビューは無し。Codex のレビューはまだ。
+  - 2 回目の独立レビュー（Claude の別エージェント・追加の分 `3dbff55`）：P1 なし・**P2 1**（上のモジュールの写し）→ 直した。P3：タイルの 2 と 3 の境目・エスケープの試験が無い → 境目の試験を足した（エスケープは固定の文字だけなので残した）。390px より狭い画面（360px）で英語の長い名前がタイルの余白に 4px はみ出る（横スクロールにはならない）。
+  - 直したあとの独立レビューは無し。Codex のレビューはまだ。オフィスの画面は、模擬サーバーにモジュールの読み書きが無いので、本物のアプリでは見ていない（本番は Office の 400 が直るまで開けないかもしれない・v1110 の節）。
 - 次：Codex（PR #103）→ Moto さんがマージ（アプリだけ）→ 端末を 1113 に → 実機（iPhone）で一覧を見る。
 
 ## 2026-10-29 Career Score の一覧のカード・専門職のカテゴリーのアイコン：調べたことと UI案63（Claude・ブランチ `claude/cs-card-icons`・コードの変更なし）

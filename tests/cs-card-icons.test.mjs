@@ -237,6 +237,13 @@ test('5. the growth-chart tile: every strength by name — no "ほか N" / "+N" 
   }
   c.curLang = 'ja';
   assert.equal(tile('one', 'cssTileValHtml'), tile('one', 'cssTileVal'), 'one or two names stay in the big letters');
+  // the cut is between 2 and 3 names
+  S.person(c, 'two', S.storeRec({ B0: 3, B1: 3, B2: 3, A1: 3, A2: 3, A3: 3 }));
+  S.person(c, 'three', S.storeRec({ B0: 3, B1: 3, B2: 3, A1: 3, A2: 3, A3: 3, G0: 3, G1: 3, G2: 3 }));
+  assert.deepEqual([S.evalOf(c, 'two').list.length, S.evalOf(c, 'three').list.length], [2, 3]);
+  assert.equal(tile('two', 'cssTileValHtml'), tile('two', 'cssTileVal'));
+  assert.match(tile('two', 'cssTileVal'), /^[^、]+、[^、]+$/);
+  assert.match(tile('three', 'cssTileValHtml'), /^<span style="display:block;font-size:13px;line-height:1\.45">(<span style="white-space:nowrap">[^<]+<\/span>(<wbr>)?){3}<\/span>$/);
   assert.equal(tile('flat', 'cssTileVal'), '確認中');
   assert.equal(tile('nobody', 'cssTileVal'), '未評価');
   assert.doesNotMatch(fnSrc('cssTileVal').replace(/\/\*[\s\S]*?\*\//g, ''), /ほか|slice\(0, 2\)/);
@@ -261,4 +268,17 @@ test('6. office Career Score groups get the icons of UI案63 (O-A / O-F / O-G = 
   assert.match(fnSrc('ocsDetailHtml'), /<span style="display:flex;align-items:center;gap:4px;min-width:0">'\+ocsGrpIcon\(g, 14\)\+'<span>'\+escapeHtml\(ocsTx\(g\)\)/);
   assert.match(fnSrc('ocsAsgEditorHtml'), /font-size:10\.5px">'\+ocsGrpIcon\(g, 12\)\+' '\+escapeHtml\(ocsTx\(g\)\)/);
   assert.match(fnSrc('ocsOpenItemsModal'), /border-bottom:1px solid var\(--border\)">'\+ocsGrpIcon\(g, 12\)\+' '\+escapeHtml\(ocsTx\(g\)\)/);
+  // the Office screens are drawn by the Office save-guard module (web-office-cas.<sha256>.js) from its own copies of this code:
+  // every copy of the groups carries the same icons, and every group tile / plan tag there draws them (the same HTML as ocsGrpIcon)
+  const ref = (SRC.match(/<script type="module" src="\.\/(web-office-cas\.[0-9a-f]{64}\.js)"><\/script>/) || [])[1];
+  assert.ok(ref, 'module');
+  const MOD = fs.readFileSync(process.env.FUNERGY_OFFICE_MODULE || new URL('../' + ref, import.meta.url), 'utf8');
+  const copies = [...MOD.matchAll(/\n  var OCS_GROUPS = (\[[\s\S]*?\n  \]);/g)].map(m => vm.runInNewContext('(' + m[1] + ')'));
+  assert.equal(copies.length, 6);
+  for (const cp of copies) assert.deepEqual(J(cp), G);
+  const tileNew = `<span style="display:flex;align-items:center;gap:4px;min-width:0"><i class="ti ' + escapeHtml(g && g.ic || "ti-point") + '" aria-hidden="true" style="color:var(--accent);font-size:14px"></i><span>' + escapeHtml(ocsTx(g)) + '</span></span>`;
+  assert.equal(MOD.split(tileNew).length - 1, 6, 'all six group-tile copies');
+  assert.equal(MOD.split(`font-weight:700"><span>' + escapeHtml(ocsTx(g)) + '</span>`).length - 1, 0, 'no copy without the icon');
+  assert.equal(MOD.split(`font-size:10.5px">' + '<i class="ti ' + escapeHtml(g && g.ic || "ti-point") + '" aria-hidden="true" style="color:var(--accent);font-size:12px"></i> ' + escapeHtml(ocsTx(g)) + " <b>"`).length - 1, 1, 'plan tags');
+  assert.equal(MOD.split(`font-size:10.5px">' + escapeHtml(ocsTx(g)) + " <b>"`).length - 1, 0);
 });
