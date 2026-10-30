@@ -11,20 +11,23 @@
 - ① 仕様・試験・限界：`docs/CASH_TIP_AUTO_ZERO_V1118_JA.md`。入れる一式：`deploy/cash-tip-auto-zero-v1118/`（手順.md）。
   - 未登録は 0 として計算し（前から `getCashTip` は 0）、エラー・通知・未対応の数に入れない。
   - 不正な値（数でない・マイナス）だけをエラーにする（エラーセンター `tipinv|店|日`・Tip の期間・朝の LINE）。
-  - サーバーの `cash_tip_autofill` が、終わった営業日（toast_sales か daily_actuals に売上・クレジットチップのある日）の未登録の側に「自動の0」（`<側>Auto`・時刻なし）を書く。
-  - 入っている値・0・不正な値・前の形の entered は変えない。取得失敗の日（行なし）と今日は書かない。
-  - 2 回流しても同じ。`cash_tip_autofill_undo` で戻せる。service_role だけ（anon・authenticated の既定の EXECUTE も外した）。毎日 2 回（HST 4:17・8:47・直近 62 日）。
-  - 合流は側ごとに、人が入れた値 ＞ 自動の0 ＞ 未入力。v1117 の合流でも人の値が勝つ（自動の0 に時刻が無い・試験）。
+  - サーバーの `cash_tip_autofill` が、終わった営業日（toast_sales か daily_actuals に売上・クレジットチップのある日）の未登録の側に「自動の0」を書く。
+    - 形は `<側>:0・<側>Auto:true`。入力済みの印（Entered）と時刻は付けない（v1117 の端末は「まだ入っていない」と読む）。
+  - 書くのは、印が無く値が無い・空・0 の側だけ。人の値（0 も）・印の無い 0 でない金額・不正な値・前の形の entered は変えない。取得失敗の日（行なし）・今日・読めない日付は書かない。
+  - 2 回流しても同じ。`cash_tip_autofill_undo` で戻す（戻した側に `<側>Auto:false` を残し、また書かない）。service_role だけ（anon・authenticated の既定の EXECUTE も外した）。毎日 2 回（HST 4:17・8:47・直近 62 日）。
+  - 合流は側ごとに、人が入れた値 ＞ 戻した印 ＞ 自動の0 ＞ 未入力。v1117 の合流でも人の値が勝つ（試験）。
   - 前の「未登録」の過去ログ・通知は消さずに数えない。
-  - ops-bot は朝のキャッシュチップの知らせを不正な値だけに（`4_関数_ops-bot_index.ts`。戻すのは v1105 の 1 ファイル）。v1105 の一式の試験は v1105 のときのソース（96a2c7e）と比べるようにした。
+  - ops-bot は朝のキャッシュチップの知らせを不正な値だけに（`3_関数_ops-bot_index.ts`。戻すのは v1105 の 1 ファイル）。v1105 の一式の試験は v1105 のときのソース（96a2c7e）と比べるようにした。
 - 読むだけの SQL（Moto さんに送った・結果待ち）：`db/purchase-price-check.sql`（②）・`db/vendor-duplicates-check.sql`（③）・`db/unregistered-punch-check.sql`（④・特定の名前では探さない）・`db/menu-sync-status-check.sql`（⑦）と前からの `db/menu-data-check-all.sql`。試験 `tests/requests-1030-sql.test.mjs`。
 - ⑦ UI案65（Design・Moto さんの非公開の canvas・数字はサンプル・PC 3 枚／スマホ 2 枚）。
   - コードで確かめたこと：前日まで方式ではない（月ごとの入れ物を端末が読んで書く）。
   - 「Toast 同期」の処理（`syncMenuFromToast`）は日別の行を足さずに上書きする（ログインの `loadMenuMixFromDB` は足す）。
   - レシピに結ばれない商品は落ちる。ログインのたびに全店の出数を書き直して送る。
-- 試験（合成データ）：cash-tip-auto-zero 18・requests-1030-sql 5・bot-cash-tip-report 3・error-center-v1088 20（見本を不正な値に置き換え）・tip-weight-rate 17・ops-bot-deploy-v1105 5。わざと壊す 22/22（1 回目 19 → 試験を足した）。static release pass/1118。
-- 次：独立レビュー → PR → Codex → Moto さんが手順.md の順。
-  - SQL → 確認の結果を Claude に → 全期間を埋める（run_id を控える）→ ops-bot → 毎日の予定 → マージ。
+- 独立レビュー（Claude の別エージェント・作業を見ていない・`fadbb69`）：**P1 2**（自動の0 に Entered を付けていたので、v1117 の古い写しで人の値が負ける／v1117 で 0 に直した値が残った Auto で前の値に戻る）・**P2 2**（印の無い 0 でない金額を 0 で上書き／戻しても端末の 0 で元に戻る）・P3（読めない日付で全体が止まる・書かなかった店を数える・埋めるあいだの待ち・数の文字がつながる・直す画面のエスケープ）→ すべて直した（仕様の 6b）。あわせて、入力済みの欄の無い記録で確かめが null になる不具合も直した。直したあとの独立レビューは無し。
+- 試験（合成データ・直したあと）：cash-tip-auto-zero 18（レビューの再現を入れた）・requests-1030-sql 5・bot-cash-tip-report 3・error-center-v1088 20（見本を不正な値に置き換え）・tip-weight-rate 17・ops-bot-deploy-v1105 5＝68/68。bot-report-routes 10（現金の見本を不正な値に置き換え）。static release pass/1118。わざと壊す 22/22 は直す前のコード（`fadbb69`）。
+  - 全体（重い 2 つ以外）：失敗は main（v1117）と同じ名前（bot-report-routes の 1 つは v1118 の仕様に合わせて直した。v1085 の 1 つは重いときだけ）。
+- 次：PR → Codex → Moto さんが手順.md の順。
+  - SQL → 確認の結果を Claude に → ops-bot → アプリをマージ（端末を 1118 に）→ 全期間を埋める（営業時間外・run_id を控える）→ 毎日の予定。
 
 ## 2026-10-30 v1117：特例変更の記録を、通常の変更で書き換えない（Codex・PR #106 `e9e8bc4` の P2・Claude・ブランチ `claude/grade-special-keep`・アプリだけ・本番未反映）
 

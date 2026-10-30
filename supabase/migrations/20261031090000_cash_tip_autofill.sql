@@ -6,15 +6,17 @@
 --   ・売上・クレジットチップのある日＝toast_sales の行（lunch_credit_tip・dinner_credit_tip のどちらかがある・net_sales > 0）か、
 --     daily_actuals_<店> の日（actual > 0・lunchCreditTip・dinnerCreditTip のどちらかがある）。アプリの v1117 までの判定と同じ。
 --     売上の取り込みに失敗した日（行が無い日）には書かない（＝取得失敗を未登録とみなさない）。
---   ・入っている側（0 も・人が入れた値）は変えない。不正な値（数でない・マイナス）も変えない（アプリがエラーに出す）。
---   ・書く印：<側>:0・<側>Entered:true・<側>Auto:true・autoBy:'system'・autoAt（ハワイ時間）。記録の時刻 at・editedAt は付けない
---     （前の版のアプリの合流は時刻の新しいほうを採るので、人が入れた値＝時刻あり がいつも勝つ）。
+--   ・書くのは「入力済み」の印が無く、値が無い・空・0 の側だけ。人が入れた値（0 も）・印の無い 0 でない金額・不正な値は変えない。
+--   ・書く印：<側>:0・<側>Auto:true・autoBy:'system'・autoAt（ハワイ時間）。<側>Entered と entered・記録の時刻 at・editedAt は付けない。
+--     ＝ 前の版（v1117）のアプリは自動の0 を「まだ入っていない」と読み、人が入れた値（Entered あり）をどの合流でも優先する
+--     （独立レビュー fadbb69 の P1：Entered を付けると、前の版の合流で人が入れた値が自動の0 に負けることがあった）。
+--   ・戻した側には <側>Auto:false を残し、次の回でまた書かない（戻した印）。
 --   ・キャッシュチップの対象外の店（F03＝FSP・F03-G＝Waikiki Garlic Shack。アプリの NO_CASHTIP_STORES）は書かない。
 --   ・締めた期間も書く（支給額・配分は変わらない：未登録は前から 0 として計算している。Tip の確定・締めの記録は触らない）。
 --   ・2 回流しても同じ（入っていない側が無ければ何も書かない＝重ねて足さない）。
 --   ・書いた日と書く前の記録は cash_tip_autofill_log に残す。cash_tip_autofill_undo(run_id) で、まだ自動の0 のままの側だけ戻せる。
 --
--- 足すもの：表 1 つ・関数 4 つ（読むだけの見込みは cash_tip_autofill(…, false)）。ほかの表・行・権限の決まり（RLS）は変えない。
+-- 足すもの：表 1 つ・関数 6 つ（読むだけの見込みは cash_tip_autofill(…, false)）。ほかの表・行・権限の決まり（RLS）は変えない。
 -- 毎日動かすのは deploy/cash-tip-auto-zero-v1118/ の 3（pg_cron に 2 つ）。この SQL だけでは何も書かない。
 -- 戻すとき：deploy/cash-tip-auto-zero-v1118/止める.sql（予定を止める）→ 必要なら cash_tip_autofill_undo(run_id)。
 
@@ -38,20 +40,40 @@ grant usage, select on sequence public.cash_tip_autofill_log_id_seq to service_r
 -- その側が「入っている」か（アプリの cashTipSideEntered と同じ：<側>Entered が true。欄が無いときは entered が true）
 create or replace function public.cash_tip_side_entered(r jsonb, s text)
 returns boolean language sql immutable set search_path = public, pg_temp as $$
-  select case
+  select coalesce(case
     when r is null or jsonb_typeof(r) <> 'object' then false
     when r ? (s || 'Entered') then (r -> (s || 'Entered')) = 'true'::jsonb
     else (r -> 'entered') = 'true'::jsonb
-  end
+  end, false)   -- 欄が無いときも false（null にしない：not と組み合わせても決まる）
 $$;
 
--- その側が「自動の0」か（アプリの cashTipSideAuto と同じ：<側>Auto が true・入っている・値が 0）
+-- その側が「自動の0」か（アプリの cashTipSideAuto と同じ：<側>Auto が true・入力済みの印が無い・値が 0）
 create or replace function public.cash_tip_side_auto(r jsonb, s text)
 returns boolean language sql immutable set search_path = public, pg_temp as $$
   select coalesce(
-    public.cash_tip_side_entered(r, s)
+    not public.cash_tip_side_entered(r, s)
     and (r -> (s || 'Auto')) = 'true'::jsonb
-    and jsonb_typeof(r -> s) = 'number' and (r ->> s)::numeric = 0, false)
+    and case when jsonb_typeof(r -> s) = 'number' then (r ->> s)::numeric = 0 else false end, false)
+$$;
+
+-- 'YYYY-MM-DD' の文字を日付に（2026-02-30 のような読めない日付は null。1 つの悪い日付で全体を止めない）
+create or replace function public.cash_tip_try_date(t text)
+returns date language plpgsql immutable set search_path = public, pg_temp as $$
+begin
+  if t is null or t !~ '^\d{4}-\d{2}-\d{2}$' then return null; end if;
+  return t::date;
+exception when others then return null;
+end
+$$;
+
+-- その側に自動の0 を書いてよいか：入力済みの印が無い・Auto の印が無い（自動の0 でも戻した印でもない）・値が無い／null／空の文字／0
+create or replace function public.cash_tip_side_fillable(r jsonb, s text)
+returns boolean language sql immutable set search_path = public, pg_temp as $$
+  select not public.cash_tip_side_entered(r, s)
+     and coalesce(jsonb_typeof(r -> (s || 'Auto')), 'null') = 'null'   -- まだ自動の0 も戻した印も無い（2 回流しても同じ）
+     and (r is null or jsonb_typeof(r) <> 'object' or not (r ? s) or jsonb_typeof(r -> s) = 'null'
+          or (jsonb_typeof(r -> s) = 'string' and btrim(r ->> s) = '')
+          or (case when jsonb_typeof(r -> s) = 'number' then (r ->> s)::numeric = 0 else false end))
 $$;
 
 create or replace function public.cash_tip_autofill(p_from date default null, p_to date default null, p_apply boolean default false)
@@ -70,7 +92,7 @@ declare
   st record;
   v_key text; v_has boolean; v_val jsonb; v_cur jsonb; v_new jsonb; v_rec jsonb; v_nrec jsonb; v_da jsonb;
   v_days date[]; d date; v_sides text[]; v_side text;
-  v_n_days int := 0; v_n_sides int := 0; v_s_days int; v_s_sides int;
+  v_n_days int := 0; v_n_sides int := 0; v_s_days int; v_s_sides int; v_s_first date; v_s_last date; v_ok boolean;
   v_first date; v_last date; v_by jsonb := '{}'::jsonb; v_skip jsonb := '[]'::jsonb;
 begin
   if v_from > v_to then
@@ -102,13 +124,13 @@ begin
          where st.guid is not null and t.restaurant_guid = st.guid
            and (t.lunch_credit_tip is not null or t.dinner_credit_tip is not null or coalesce(t.net_sales, 0) > 0)
         union all
-        select e.key::date from jsonb_each(v_da) e
-         where e.key ~ '^\d{4}-\d{2}-\d{2}$' and jsonb_typeof(e.value) = 'object'
-           and ((jsonb_typeof(e.value -> 'actual') = 'number' and (e.value ->> 'actual')::numeric > 0)
+        select public.cash_tip_try_date(e.key) from jsonb_each(v_da) e
+         where public.cash_tip_try_date(e.key) is not null and jsonb_typeof(e.value) = 'object'
+           and ((case when jsonb_typeof(e.value -> 'actual') = 'number' then (e.value ->> 'actual')::numeric > 0 else false end)
              or coalesce(jsonb_typeof(e.value -> 'lunchCreditTip'), 'null') <> 'null'
              or coalesce(jsonb_typeof(e.value -> 'dinnerCreditTip'), 'null') <> 'null')
       ) q
-      where q.dd between v_from and v_to
+      where q.dd is not null and q.dd between v_from and v_to
       order by 1);
     if coalesce(array_length(v_days, 1), 0) = 0 then continue; end if;
 
@@ -124,7 +146,7 @@ begin
       continue;
     end if;
     v_cur := coalesce(v_val, '{}'::jsonb);
-    v_new := v_cur; v_s_days := 0; v_s_sides := 0;
+    v_new := v_cur; v_s_days := 0; v_s_sides := 0; v_s_first := null; v_s_last := null;
 
     foreach d in array v_days loop
       v_rec := v_cur -> d::text;
@@ -133,18 +155,16 @@ begin
         continue;
       end if;
       if v_rec is not null and jsonb_typeof(v_rec) = 'null' then v_rec := null; end if;
-      v_sides := array(select s from unnest(array['lunch', 'dinner']) s where not public.cash_tip_side_entered(v_rec, s));
+      v_sides := array(select s from unnest(array['lunch', 'dinner']) s where public.cash_tip_side_fillable(v_rec, s));
       if coalesce(array_length(v_sides, 1), 0) = 0 then continue; end if;
       v_nrec := coalesce(v_rec, '{}'::jsonb);
       foreach v_side in array v_sides loop
-        v_nrec := v_nrec || jsonb_build_object(v_side, 0, v_side || 'Entered', true, v_side || 'Auto', true);
+        v_nrec := v_nrec || jsonb_build_object(v_side, 0, v_side || 'Auto', true);
       end loop;
-      v_nrec := v_nrec || jsonb_build_object(
-        'entered', public.cash_tip_side_entered(v_nrec, 'lunch') and public.cash_tip_side_entered(v_nrec, 'dinner'),
-        'autoBy', 'system', 'autoAt', v_stamp);
+      v_nrec := v_nrec || jsonb_build_object('autoBy', 'system', 'autoAt', v_stamp);
       v_new := jsonb_set(v_new, array[d::text], v_nrec, true);
       v_s_days := v_s_days + 1; v_s_sides := v_s_sides + array_length(v_sides, 1);
-      v_first := least(v_first, d); v_last := greatest(v_last, d);
+      v_s_first := least(v_s_first, d); v_s_last := greatest(v_s_last, d);
       if p_apply then
         insert into public.cash_tip_autofill_log(run_id, store_id, business_date, sides, before)
         values (v_run, st.store_id, d, v_sides, v_rec);
@@ -152,19 +172,24 @@ begin
     end loop;
 
     if v_s_days > 0 then
-      v_n_days := v_n_days + v_s_days; v_n_sides := v_n_sides + v_s_sides;
-      v_by := v_by || jsonb_build_object(st.store_id, jsonb_build_object('days', v_s_days, 'sides', v_s_sides));
+      v_ok := true;
       if p_apply then
         if v_has then
           update public.app_state set value = v_new, updated_at = now() where key = v_key;
         else
           insert into public.app_state(key, value, updated_at) values (v_key, v_new, now()) on conflict (key) do nothing;
           if not found then
-            -- 同じときにアプリが行を作った：今回は書かない（次に流したときに書く）。記録も消す
+            -- 同じときにアプリが行を作った：今回は書かない（次に流したときに書く）。記録も消し、数にも入れない
             delete from public.cash_tip_autofill_log where run_id = v_run and store_id = st.store_id;
             v_skip := v_skip || jsonb_build_array(jsonb_build_object('store', st.store_id, 'why', 'row_created_meanwhile'));
+            v_ok := false;
           end if;
         end if;
+      end if;
+      if v_ok then
+        v_n_days := v_n_days + v_s_days; v_n_sides := v_n_sides + v_s_sides;
+        v_by := v_by || jsonb_build_object(st.store_id, jsonb_build_object('days', v_s_days, 'sides', v_s_sides));
+        v_first := least(v_first, v_s_first); v_last := greatest(v_last, v_s_last);
       end if;
     end if;
   end loop;
@@ -175,7 +200,9 @@ begin
 end
 $$;
 
--- 戻す：その回で書いた側のうち、まだ自動の0 のままの側だけを書く前に戻す（人があとで入れた値は変えない）
+-- 戻す：その回で書いた側のうち、まだ自動の0 のままの側だけを書く前の値に戻し、<側>Auto:false（戻した印）を残す。
+--   人があとで入れた値は変えない。戻した印のある側は、毎日の回でもまた書かない（cash_tip_side_fillable）。
+--   アプリ v1118 の合流は「戻した印」を自動の0 より優先する（ほかの端末が持っている自動の0 で戻らない）。
 create or replace function public.cash_tip_autofill_undo(p_run uuid)
 returns jsonb
 language plpgsql
@@ -193,9 +220,9 @@ begin
     v_before := coalesce(l.before, '{}'::jsonb);
     foreach v_side in array l.sides loop
       if public.cash_tip_side_auto(v_rec, v_side) then
-        v_rec := v_rec - v_side - (v_side || 'Entered') - (v_side || 'Auto');
+        v_rec := v_rec - v_side;
         if v_before ? v_side then v_rec := v_rec || jsonb_build_object(v_side, v_before -> v_side); end if;
-        if v_before ? (v_side || 'Entered') then v_rec := v_rec || jsonb_build_object(v_side || 'Entered', v_before -> (v_side || 'Entered')); end if;
+        v_rec := v_rec || jsonb_build_object(v_side || 'Auto', false);
         v_n := v_n + 1;
       else
         v_kept := v_kept + 1;
@@ -204,17 +231,7 @@ begin
     if not (public.cash_tip_side_auto(v_rec, 'lunch') or public.cash_tip_side_auto(v_rec, 'dinner')) then
       v_rec := v_rec - 'autoBy' - 'autoAt';
     end if;
-    -- entered：書く前の値に戻す（無かったら消す）。その後に人が両側を入れていれば true
-    v_rec := v_rec - 'entered';
-    if v_before ? 'entered' then v_rec := v_rec || jsonb_build_object('entered', v_before -> 'entered'); end if;
-    if (v_rec -> 'lunchEntered') = 'true'::jsonb and (v_rec -> 'dinnerEntered') = 'true'::jsonb then
-      v_rec := v_rec || jsonb_build_object('entered', true);
-    end if;
-    if l.before is null and (v_rec = '{}'::jsonb) then
-      v_val := v_val - l.business_date::text;
-    else
-      v_val := jsonb_set(v_val, array[l.business_date::text], v_rec, true);
-    end if;
+    v_val := jsonb_set(v_val, array[l.business_date::text], v_rec, true);
     update public.app_state set value = v_val, updated_at = now() where key = 'cash_tips_' || l.store_id;
     update public.cash_tip_autofill_log set undone_at = now() where id = l.id;
   end loop;
@@ -224,10 +241,14 @@ $$;
 
 -- Supabase は public に新しく作った関数を anon・authenticated にも実行できるようにする（既定の権限）。ここで外す
 revoke all on function public.cash_tip_side_entered(jsonb, text) from public, anon, authenticated;
+revoke all on function public.cash_tip_side_fillable(jsonb, text) from public, anon, authenticated;
+revoke all on function public.cash_tip_try_date(text) from public, anon, authenticated;
 revoke all on function public.cash_tip_side_auto(jsonb, text) from public, anon, authenticated;
 revoke all on function public.cash_tip_autofill(date, date, boolean) from public, anon, authenticated;
 revoke all on function public.cash_tip_autofill_undo(uuid) from public, anon, authenticated;
 grant execute on function public.cash_tip_side_entered(jsonb, text) to service_role;
+grant execute on function public.cash_tip_side_fillable(jsonb, text) to service_role;
+grant execute on function public.cash_tip_try_date(text) to service_role;
 grant execute on function public.cash_tip_side_auto(jsonb, text) to service_role;
 grant execute on function public.cash_tip_autofill(date, date, boolean) to service_role;
 grant execute on function public.cash_tip_autofill_undo(uuid) to service_role;

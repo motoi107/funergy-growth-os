@@ -18,7 +18,8 @@ test('isolated report routes, immutable retries, read-only preview and private S
   await saveConfig();
   const day=(await q("select (now() at time zone 'Pacific/Honolulu')::date::text d"))[0].d;
   const yesterday=new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
-  let cash={},failLabor=true,changeRoute=false;
+  // v1118: the cash report only carries invalid values (an unregistered day is 0 and is not reported), so start with a negative amount.
+  let cash={[yesterday]:{lunch:-5,lunchEntered:true,dinner:0,dinnerEntered:true}},failLabor=true,changeRoute=false;
   const snapshot={day,snapshot_at:new Date().toISOString(),from:yesterday,to:yesterday,expected:1,ok:1,finance_ok:1,failed:0,active_stores:1,finance_enabled:true,detail_total:2,counts:{labor:1,void:0,unpaid:1},details:[{code:'#1',kind:'labor',store_id:'TEST',store_name:'Synthetic',business_date:yesterday,employee_name:'Synthetic worker',kinds:['short'],shifts:[],status:'review'},{code:'#2',kind:'unpaid',store_id:'TEST',store_name:'Synthetic',business_date:yesterday,subject:'Unpaid / #22',amount:5,status:'review'}]};
   const pushes=[],writes=[];
   const rpc=async(fn,b)=>{const keys=Object.keys(b);return(await q('select public.'+fn+'('+keys.map((k,i)=>k+'=> $'+(i+1)).join(',')+') v',keys.map(k=>b[k]!==null&&typeof b[k]==='object'?JSON.stringify(b[k]):b[k])))[0].v;};

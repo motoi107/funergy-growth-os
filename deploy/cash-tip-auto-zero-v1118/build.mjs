@@ -1,6 +1,6 @@
 // v1118：ops-bot を 1 ファイルにまとめる（Supabase の画面の Edge Functions → ops-bot に貼る用）。
 // node deploy/cash-tip-auto-zero-v1118/build.mjs [esbuild のパス]
-//   4_関数_ops-bot_index.ts … 今のソース（キャッシュチップの朝の知らせは不正な値だけ）
+//   3_関数_ops-bot_index.ts … 今のソース（キャッシュチップの朝の知らせは不正な値だけ）
 //   戻すときは deploy/ops-bot-job-check-v1105/1_関数_ops-bot_index.ts（v1105 の ops-bot）を貼る
 //   source.json … まとめた元のファイルと、まとめたものの sha256（tests/cash-tip-auto-zero.test.mjs が見張る）
 import { execFileSync } from 'node:child_process';
@@ -13,7 +13,7 @@ const here = path.join(root, 'deploy/cash-tip-auto-zero-v1118');
 const esbuild = process.argv[2] || '/opt/npm-tools/node_modules/.bin/esbuild';
 export const SOURCES = ['supabase/functions/ops-bot/index.ts', 'supabase/functions/ops-bot/handler.mjs', 'bot/case-replies.mjs', 'bot/clock-detector.mjs',
   'bot/cash-tip-report.mjs', 'bot/payment-details.mjs', 'bot/job-check.mjs'];
-export const BUNDLE_NAME = '4_関数_ops-bot_index.ts';
+export const BUNDLE_NAME = '3_関数_ops-bot_index.ts';
 export const ROLLBACK_FILE = 'deploy/ops-bot-job-check-v1105/1_関数_ops-bot_index.ts';
 const ARGS = ['--bundle', '--format=esm', '--platform=neutral', '--target=es2022', '--log-level=warning'];
 const sha = b => createHash('sha256').update(b).digest('hex');

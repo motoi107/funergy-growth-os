@@ -3,8 +3,8 @@
 ## 2026-10-30 修正・改善依頼（全7項目）
 
 1. 済（Claude・ブランチ `claude/cash-tip-auto-zero`）：① v1118（アプリ・SQL `20261031090000`・ops-bot）。②③④⑦ の読むだけの SQL と ⑦ の UI案65。
-2. 次：独立レビュー → PR → Codex → Moto さんが `deploy/cash-tip-auto-zero-v1118/手順.md` の順（確認の SQL の結果と埋めた run_id を Claude に）。
-3. Moto さん：読むだけの SQL 5 つの結果を Claude に。
+2. 済：独立レビュー（P1 2・P2 2・P3 は直した）。次：PR → Codex → Moto さんが `deploy/cash-tip-auto-zero-v1118/手順.md` の順（確認の SQL の結果と埋めた run_id を Claude に）。
+3. 済（Moto さん 10/30 08:26 HST）：読むだけの SQL 5 つの結果。次：Claude が読み解いて報告。
    - ② 単価の前後の例
    - ③ 重複の候補
    - ④ 打刻の名前のつながり
