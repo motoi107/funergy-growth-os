@@ -113,3 +113,23 @@ test('② prices: the latest and the previous confirmed price for the same item,
   assert.equal(rows[0].ingredient_code, '1002', 'the biggest change first');
   await pg.close();
 });
+
+test('② prices (Codex on 42fe938): the 80 rows are chosen by the change they show — a case at the same $60 holding half as much is +100 % per base unit', async () => {
+  const pg = await db();
+  await pg.exec(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase, price_per_base, base_unit) values
+      ('F01','v','2001','10LB','CS','2026-10-01','invoice','100',60,0.013228,'g'),
+      ('F01','v','2001','10LB','CS','2026-10-08','invoice','101',60,0.026455,'g'),
+      ('F01','v','2002','','CS','2026-10-01','invoice','100',50,0.01,'g'),
+      ('F01','v','2002','','CS','2026-10-08','invoice','101',55,0.011,'g');`);
+  for (let i = 0; i < 90; i++)   // more than 80 rows: the smaller changes must not push the big one out
+    await pg.query(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase) values
+      ('F02','w',$1,'CS','2026-10-01','invoice','100',100),('F02','w',$1,'CS','2026-10-08','invoice','101',$2)`, ['3' + String(i).padStart(3, '0'), 100 + 1 + (i % 40)]);
+  const rows = (await pg.query(sql('purchase-price-check.sql'))).rows;
+  assert.equal(rows.length, 80);
+  const i1 = rows.findIndex(r => r.ingredient_code === '2001');
+  assert.ok(i1 >= 0, 'the +100 % per base unit is kept in the 80 rows');
+  assert.equal(Number(rows[i1].chg_pct), 100);
+  assert.equal(i1, 0, 'and comes first');
+  for (let i = 1; i < rows.length; i++) assert.ok(Math.abs(Number(rows[i - 1].chg_pct)) >= Math.abs(Number(rows[i].chg_pct)), 'ordered by the shown change');
+  await pg.close();
+});

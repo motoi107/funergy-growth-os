@@ -56,7 +56,10 @@ with t as (
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_demo_reset' and position('v1122' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_store' and position('v1122' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_list' and position('v1122' in p.prosrc) > 0)
-   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_pin_actor' and position('member_auto' in p.prosrc) > 0) as ok
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_pin_actor' and position('member_switch' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_member_role' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_whoami' and position('v1122' in p.prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -119,9 +122,20 @@ union all select 'members without employee id', (select count(*)::text from m wh
 union all select 'ceo / gm accounts without an employee id', (select count(*)::text from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = ''),
   case when (select count(*) from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = '') = 0 then 'OK'
    else '注意：この CEO・GM は中間レビューに入れない（manager_auth に社員 ID が無い。db/invoice-signin-emp-check.sql で確かめて入れる）' end
+-- v1122: a CEO / GM row counts only while its account names that employee (in service); a corrected manager_auth moves the row at the next PIN sign-in.
+union all select 'ceo / gm rows whose account names another employee', (select count(*)::text from public.mr_members x where x.enabled and x.role in ('ceo','gm') and coalesce(x.emp_id, '') <> ''
+   and not exists(select 1 from public.manager_auth a where a.user_id = x.user_id and a.role in ('ceo','gm') and a.emp_id::text = x.emp_id)),
+  case when (select count(*) from public.mr_members x where x.enabled and x.role in ('ceo','gm') and coalesce(x.emp_id, '') <> ''
+   and not exists(select 1 from public.manager_auth a where a.user_id = x.user_id and a.role in ('ceo','gm') and a.emp_id::text = x.emp_id)) = 0 then 'OK'
+   else '注意：この行では入れない（manager_auth の社員 ID が別の人）。manager_auth が正しければ、その人が PIN で入ったときに行が移る' end
+union all select 'ceo / gm accounts linked to someone resigned or not ceo / gm', (select count(*)::text from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') <> ''
+   and not exists(select 1 from public.employees e where e.id::text = a.emp_id::text and coalesce(e.status, '') <> '退職' and e.role in ('ceo','gm'))),
+  case when (select count(*) from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') <> ''
+   and not exists(select 1 from public.employees e where e.id::text = a.emp_id::text and coalesce(e.status, '') <> '退職' and e.role in ('ceo','gm'))) = 0 then 'OK'
+   else '注意：manager_auth の CEO・GM のアカウントが、退職した人・社員の表で CEO／GM でない人に結ばれている（社員 ID を確かめる。退職なら中間レビューには入れない）' end
 union all select 'am not an am in the employee master', (select count(*)::text from m where m.role = 'am' and m.role_now is null),
   case when (select count(*) from m where m.role = 'am' and m.role_now is null) = 0 then 'OK'
-   else '注意：この AM は入れない（社員の表に無い・AM ではない・退職）。止めるなら mid-review-disable-member.sql' end
+   else '注意：この AM は入れない（社員の表に無い・AM ではない・退職）。止めるなら mid-review-disable-member-by-employee.sql' end
 union all select 'chef no longer Head Chef / Corporate Chef', (select count(*)::text from m where m.role = 'chef' and m.role_now is null),
   case when (select count(*) from m where m.role = 'chef' and m.role_now is null) = 0 then 'OK'
    else '注意：この人は入れない（退職・肩書きが変わった）。担当・閲覧設定で外す' end

@@ -452,7 +452,7 @@ function screenOn(E, tok = 'tok-office', mem = { m_vendors: [{ id: 'v1', name: '
     openModal: h => { c.modals.push(h); if (/id="ivd-modal"/.test(h)) dom['ivd-modal'] = { innerHTML: '' }; else delete dom['ivd-modal']; }, closeModalDirect: () => { delete dom['ivd-modal']; },
     renderPage: () => {}, acSetSub: x => { c._acSub = x; }, go: () => {}, myName: () => 'Akane', nowJP: () => '2026/10/16 18:00',
     ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), lsSet: (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); return true; },
-    _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null), getVendors: () => c.ls('m_vendors', []), getIngV2: () => [], pullOpKey: async () => true,
+    _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null), getVendors: () => c.ls('m_vendors', []), vendorsWithDeleted: a => a, getIngV2: () => [], pullOpKey: async () => true,
     SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon', _botSession: { access_token: tok }, botResetShared: () => {}, botTime: v => String(v || ''),
     window: {}, setTimeout: () => {}, clearTimeout: () => {}, document: { getElementById: k => dom[k] || null, querySelectorAll: () => [], activeElement: null },
     fetch: async (url, init) => { const body = JSON.parse(init.body); c.sent.push(body.action);
