@@ -384,14 +384,14 @@ test('display only: judging and drawing write nothing (no shared data, no bonus,
 test('wiring: My page, the Career Score list and screen, the growth chart and its talk points use the strengths; the shared key and the release', () => {
   // My page: the profile instead of the total / base headline; the categories only inside the breakdown
   assert.match(SRC, /\$\{cssProfileHtml\(meEmpL, \{self:true, V:lV, bdExtra:lExtra\}\)\}/);
-  // the folded category breakdown (now on every list card) is a 44px target (review P3-1)
+  // the folded category breakdown (My page and the growth chart) is a 44px target (review P3-1); the list cards use the always-open one (v1113)
   assert.match(fn('csvCatsHtml'), /<summary style="[^"]*min-height:44px/);
   assert.doesNotMatch(SRC, /csvMainHtml\(lV, \{size:60, extra:lExtra, noCats:true\}\)/);
-  // the list cards: no points ring; strengths strip, a small points line and the folded categories
+  // the list cards: no points ring; v1113 (UI案63 B): every strength as an icon card, the points line and the always-open categories
   const list = fn('renderLeadership');
   assert.doesNotMatch(list, /csvRingHtml\(cV/);
   assert.match(list, /var cR = cssEvaluate\(e\);/);
-  assert.match(list, /html \+= cssStripHtml\(e, cR\) \+ cssPtsLineHtml\(cV\) \+ csvCatsHtml\(cV, false\);/);
+  assert.match(list, /html \+= cssStripHtml\(e, cR\) \+ csvListPtsHtml\(cV, cR\) \+ csvCatsListHtml\(cV\);/);
   assert.match(list, /html \+= \(typeof cssRuleBarHtml==='function'\) \? cssRuleBarHtml\(\) : '';/);
   assert.doesNotMatch(list, /onclick="openCssRuleModal\(\)"/, 'not another header button (the header is already full at 1280px)');
   // the scoring screen: strengths from the official record; the live draft in the breakdown (open for people who score)
