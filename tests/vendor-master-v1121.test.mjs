@@ -27,7 +27,10 @@ const NAMES = ['getVendors', 'vendorCatOf', 'vendorCatLabel', 'vendorStateOf', '
   'vendorFetchRows', 'vendorMergePulled', 'vendorPushDirty', '_vendorPushDirty', 'vendorRefs', 'vendorSetState', 'vendorSetCats', 'vendorSeedId', 'vendorConstructionSeeds',
   'vendorSeedConstruction', 'setVmView', 'renderVendorMaster', 'openVendorModal', 'saveVendor', 'deleteVendor', 'vendorDeleteRender', 'vendorDoState', 'vendorsSorted', 'ingVendorOptions',
   'vendorCanon', 'normVendor', 'vmgAll', 'vmgHas', 'vmgRec', 'vmgResolve', 'vmgHiddenIds', 'vmgCardHidden', 'getIngV2', 'vmgKey', 'getVendorsVisible', 'vmgPool', 'escapeHtml', 't'];
-const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', '_vendorSeedBusy', 'VMG_KEY', '_vmgC', '_vendorPushedAt', '_vendorTouched'];
+// the names the Codex fixes on acba177 added (and the ones they replaced): taken when present, so the file also runs on acba177 (VENDOR_INDEX_PATH) to show the new tests fail there
+const has = n => new RegExp('\\n(async )?function ' + n + '\\(|\\nvar ' + n + ' = ').test(source);
+const OPT_NAMES = ['vendorTouchedAll', '_vendorTouchedPut', 'vendorTouchedClear', '_vendorOverlayTouched', 'vendorsWithDeleted'].filter(has);
+const VARS = ['VENDOR_BASE_KEY', 'VENDOR_STATE_F', 'VENDOR_CAT_F', '_vendorPushQ', '_vendorSeedBusy', 'VMG_KEY', '_vmgC', '_vendorPushedAt'].concat(['_vendorTouched', 'VENDOR_TOUCHED_KEY', '_vendorTouchedMem'].filter(has));
 
 async function cloud() {
   const pg = new PGlite();
@@ -72,7 +75,7 @@ function device(S, role = 'office') {
       { cat: 'Electric', icon: 'ti-bolt', vendors: [{ name: 'Volt <Sample>', person: 'Sam Person', email: 'volt@example.test' }] }] };
   c.fetch = S.fetch;
   vm.createContext(c);
-  vm.runInContext(VARS.map(v => varLine(source, v)).join('\n') + '\n' + NAMES.map(n => pick(source, n)).join('\n') + `
+  vm.runInContext(VARS.map(v => varLine(source, v)).join('\n') + '\n' + NAMES.concat(OPT_NAMES).map(n => pick(source, n)).join('\n') + `
     var _lsPushP = {}, _opLastPushErr = {}, _vmg = { usage:null, usageErr:'' };
     var SUPA_MASTER_MAP = { m_vendors: { type:'rows', table:'vendors', pk:'id', map:function(o){ return { id:o.id, name:o.name, contact:o.contact||null, phone:o.phone||null, email:o.email||null, method:o.method||null, data:o }; } } };
     function supaHeaders(x){ return Object.assign({ apikey:'k' }, x||{}); }
@@ -392,13 +395,16 @@ test('deleting needs the intake counts even when called directly; a newer state 
   A.FORM['vd-why'] = ''; A.FORM['vd-msg'] = '';
   await run(A, `vendorDoState('v1', 'deleted')`);
   assert.equal((await S.row('v1')).vst, undefined, 'not signed in: refused');
-  // another device deactivated v2 with a stamp later than this device's clock; this device has not pulled
-  await S.pg.query(`update public.vendors set data = data || '{"vst":"inactive","vstAt":"2099-01-01T00:00:00.000Z","vstBy":"other"}' where id = 'v2'`);
-  const r = plain(await run(A, `vendorSetState('v2', 'deleted', 'x')`));
+  // Codex (PR #111・acba177): calling vendorSetState directly is checked the same way (no intake counts → no delete)
+  const d = plain(await run(A, `vendorSetState('v1', 'deleted', 'x')`));
+  assert.equal(d.ok, false); assert.match(d.why, /確かめられない/); assert.equal((await S.row('v1')).vst, undefined);
+  // another device deleted v2 with a stamp later than this device's clock; this device has not pulled
+  await S.pg.query(`update public.vendors set data = data || '{"vst":"deleted","vstAt":"2099-01-01T00:00:00.000Z","vstBy":"other"}' where id = 'v2'`);
+  const r = plain(await run(A, `vendorSetState('v2', 'inactive', 'x')`));
   assert.equal(r.ok, false);
   assert.match(r.why, /ほかの端末/);
-  assert.equal((await S.row('v2')).vst, 'inactive');
-  assert.equal(plain(run(A, `ls('m_vendors', [])`)).find(v => v.id === 'v2').vst, 'inactive', 'this device shows what is in the cloud');
+  assert.equal((await S.row('v2')).vst, 'deleted');
+  assert.equal(plain(run(A, `ls('m_vendors', [])`)).find(v => v.id === 'v2').vst, 'deleted', 'this device shows what is in the cloud');
 });
 
 test('the deploy set: the SQL to paste is the migration, the check is read-only and says ok, stopping removes only the guard', async () => {
@@ -594,4 +600,57 @@ test('usage: Invoice intake documents filed under the card\'s id count too (a re
   const r = plain(await run(A, `vendorSetState('q"1', 'inactive', 'x')`));
   assert.equal(r.ok, true, JSON.stringify(r));
   assert.equal((await S.row('q"1')).vst, 'inactive');
+});
+
+test('Codex (PR #111・acba177) P2: vendorSetState checks the role itself — a role outside accounting / office crew / GM / CEO cannot change a state even by calling it directly', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods')]);
+  for (const role of ['sl', 'am', 'staff']) {
+    const X = device(S, role); await pull(S, X);
+    const r = plain(await run(X, `vendorSetState('v1', 'inactive', 'x')`));
+    assert.equal(r.ok, false, role); assert.match(r.why, /経理・事務Crew・GM・CEO/);
+  }
+  assert.equal((await S.row('v1')).vst, undefined, 'nothing reached the cloud');
+  const O = device(S, 'office_crew'); await pull(S, O);
+  assert.equal(plain(await run(O, `vendorSetState('v1', 'inactive', 'x')`)).ok, true);
+  assert.equal(plain(await run(O, `vendorSetState('v1', 'bogus', 'x')`)).ok, false, 'only known states');
+});
+
+test('Codex (PR #111・acba177) P2: a change made before the first pull and not sent survives a reload — the next pull keeps it and the next send delivers it', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods', { memo: 'cloud memo' }), V('v2', 'Beta Supply')]);
+  const A = device(S);
+  A.STORE.m_vendors = plain(await S.rows());          // this device has the vendors but has never pulled (no read copy)
+  S.fail = (m) => m === 'POST';                       // the send fails
+  run(A, `(function(){ var a = ls('m_vendors', []); a[0].phone = '808-555-0100'; vendorTouch('v1', ['phone']); lsSet('m_vendors', a); })()`);
+  assert.equal(await pushed(A), false);
+  assert.notEqual((await S.row('v1')).phone, '808-555-0100', 'not sent');
+  // another device changes another field meanwhile
+  await S.pg.query(`update public.vendors set data = data || '{"memo":"newer memo"}' where id = 'v1'`);
+  // reload: a fresh device on the same storage (memory is gone, the device storage stays)
+  const B = device(S); B.STORE = A.STORE;
+  S.fail = null;
+  await pull(S, B);
+  let v1 = plain(run(B, `ls('m_vendors', [])`)).find(v => v.id === 'v1');
+  assert.equal(v1.phone, '808-555-0100', 'the pull keeps the unsent phone'); assert.equal(v1.memo, 'newer memo', 'and takes the other device\'s memo');
+  run(B, `lsSet('m_vendors', ls('m_vendors', []))`);
+  assert.equal(await pushed(B), true);
+  assert.equal((await S.row('v1')).phone, '808-555-0100', 'delivered'); assert.equal((await S.row('v1')).memo, 'newer memo');
+  assert.deepEqual(plain(run(B, `vendorTouchedAll()`)), {}, 'the mark is cleared once the cloud has it');
+});
+
+test('Codex (PR #111・acba177) P3: saving another vendor keeps the deleted vendors\' marks on this device', async () => {
+  const S = await cloud();
+  await seedCloud(S, [V('v1', 'Alpha Foods'), V('v2', 'Beta Supply', { vst: 'deleted', vstAt: '2026-10-30T00:00:00.000Z', vstBy: 'x' })]);
+  const A = device(S); await pull(S, A);
+  assert.deepEqual(ids(A), ['v1']);
+  Object.assign(A.FORM, { 'vm-name': 'Alpha Foods', 'vm-phone': '808-555-0101' });
+  run(A, `(function(){ var vs = getVendors(); vs[0].phone = '808-555-0101'; lsSet('m_vendors', vendorsWithDeleted(vs)); })()`);
+  await pushed(A);
+  const raw = plain(run(A, `ls('m_vendors', [])`));
+  assert.ok(raw.some(v => v.id === 'v2' && v.vst === 'deleted'), 'the deleted mark stays on this device');
+  assert.equal((await S.row('v2')).vst, 'deleted');
+  // every place that saves the list from getVendors() keeps the marks
+  const saves = source.split('\n').filter(l => /lsSet\('m_vendors', (vendors|vs)\)/.test(l));
+  assert.deepEqual(saves, [], 'no save writes getVendors() back without the deleted marks');
 });
