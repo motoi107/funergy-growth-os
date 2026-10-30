@@ -79,6 +79,7 @@ test('UI案64 Aiko: no strength, all at 2 or above in 12 of 15 areas → Balance
   const s = strip(c, 'aiko');
   assert.match(s, /^<div style="margin-top:10px;[^"]*"><div[^>]*><span style="[^"]*color:#b4501a">良いところ<\/span><span role="list" aria-label="タイプ"[^>]*><span role="listitem" style="[^"]*background:#b4501a;color:#fff[^"]*">[\s\S]*?ti-chart-radar[\s\S]*?>バランサー<\/span><span[^>]*>幅広い分野で安定（12 \/ 15 分野）<\/span>/);
   assert.match(s, /<div role="list" aria-label="良いところ"/);
+  assert.match(s, /<span style="font-size:13px;font-weight:800;white-space:nowrap;flex:0 0 auto">バランサー<\/span>/, 'the type name never breaks on a phone (only its explanation wraps)');
   assert.equal((s.match(/>もう少しで強み・あと 1</g) || []).length, 2);
   assert.match(s, />品質・衛生管理<\/span><span[^>]*>もう少しで強み・あと 2</);
   assert.doesNotMatch(s, /得意分野を確認中|ほか/);
@@ -164,6 +165,24 @@ test('UI案64 Mei: nothing at 2 everywhere → "この人の中で高い" (the t
   for (const id of ALL(c)) { even[G[id][0]] = 3; even[G[id][1]] = 1; }
   S.person(c, 'even', S.storeRec(even));
   assert.deepEqual(good(c, 'even').good.list, []);
+  // complete, nothing stands out, but 伸び盛り → the banner and the "complete" wording (not "as the evaluation progresses"; review P3-5)
+  hist(c, 'even Sample', { ts: 7, score: 210, prevScore: 200, max: 420, prevMax: 420, un: 0, prevUn: 0 });
+  const he = html(c, 'even');
+  assert.match(he, />伸び盛り</);
+  assert.match(he, /評価はそろっています。分野ごとに出せる良いところは、まだありません（ほかの分野より平均が高い分野がありません）。/);
+  assert.doesNotMatch(he, /評価が進むと出ます/);
+  // ties are not broken by the table order (review P3-3): three areas share the top average → none; one on top and two tied for second → only the top
+  const tie = rec(c, { S2: [3, 1, 2, 1], S3: [3, 1, 2, 1], S10: [3, 1, 2, 1] }, ALL(c).filter(x => !['S2', 'S3', 'S10'].includes(x)).map(x => x));
+  for (const id of ALL(c).filter(x => !['S2', 'S3', 'S10'].includes(x))) for (const it of G[id]) tie.scores[it] = (it === G[id][0]) ? 2 : 1;
+  S.person(c, 'tie', tie);
+  assert.deepEqual(good(c, 'tie').good.list, []);
+  tie.scores[G.S10[3]] = 2;   // S10 now 2.0, S2 and S3 still 1.75 together
+  c.SCORES['tie Sample'] = tie;
+  assert.deepEqual(good(c, 'tie').good.list, [['S10', 'rel', 1]]);
+  // the person's own tile says あなた (review P3-4)
+  c.ID = 'mei'; assert.match(run(c, `cssTileValHtml(cssEvaluate(EMPS.find(function(e){ return e.id===ID; })), true)`), />あなたの中で高い ・ /);
+  assert.match(fnSrc('renderKarteSelfView'), /_kTile\('Career Score', cssTileValHtml\(R, true\)/);
+  assert.match(fnSrc('kdTilesHtml'), /_kTile\('Career Score', cssTileValHtml\(R\), /);
 });
 
 test('people with a strength are unchanged: no good points, no type, the strength profile as before', () => {
@@ -222,6 +241,9 @@ test('伸び盛り: the latest history entry only; same maximum; both evaluation
   set({ score: 200 }); assert.deepEqual(types(), [], 'not up');
   set({ score: 190 }); assert.deepEqual(types(), []);
   set({ prevScore: null }); assert.deepEqual(types(), [], 'the first evaluation');
+  // a save that changes no points (a comment fix) is not "the previous evaluation" (review P3-1)
+  c.STORE.lss_history = [{ name: 'g Sample', ts: 1, score: 220, prevScore: 200, max: 420, prevMax: 420, un: 0, prevUn: 0 }, { name: 'g Sample', ts: 2, score: 220, prevScore: 220, max: 420, prevMax: 420, un: 0, prevUn: 0 }];
+  assert.deepEqual(types().map(x => x.d), [20]);
   // the latest entry (by time) decides, wherever it is in the list
   c.STORE.lss_history = [{ name: 'g Sample', ts: 9, score: 200, prevScore: 210, max: 420, prevMax: 420, un: 0, prevUn: 0 }, { name: 'g Sample', ts: 3, score: 250, prevScore: 200, max: 420, prevMax: 420, un: 0, prevUn: 0 }, { name: 'other Sample', ts: 10, score: 300, prevScore: 100, max: 420, prevMax: 420, un: 0, prevUn: 0 }];
   assert.deepEqual(types(), []);
@@ -314,6 +336,7 @@ test('the unscored count for the history (v1114): both writers record un and pre
     assert.match(f, /var _un0 = [^;]*cssUnOf\(/, name);
     assert.match(f, /entry\.un = _un1; if \(_un0 != null\) entry\.prevUn = _un0;/, name);
     assert.ok(f.indexOf('var _un0') < f.indexOf('setLssScores('), name + ': the previous count is taken before the save');
+    assert.match(f, /var _un0 = [^;]*\._set \|\| 'general'\) === lssItemSetOf\(/, name + ': no previous count when the previous record is on another sheet (review P3-2)');
   }
 });
 

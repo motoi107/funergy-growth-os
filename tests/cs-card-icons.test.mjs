@@ -254,7 +254,7 @@ test('5. the growth-chart tile: every strength by name — no "ほか N" / "+N" 
   assert.equal(tile('nobody', 'cssTileVal'), '未評価');
   assert.doesNotMatch(fnSrc('cssTileVal').replace(/\/\*[\s\S]*?\*\//g, ''), /ほか|slice\(0, 2\)/);
   // both tiles (the person view and the manager view of the growth chart) use it
-  assert.equal((SRC.match(/_kTile\('Career Score', cssTileValHtml\(R\), /g) || []).length, 2);
+  assert.equal((SRC.match(/_kTile\('Career Score', cssTileValHtml\(R(, true)?\), /g) || []).length, 2);   // v1114: the person's own view passes self (あなたの中で高い)
 });
 
 test('6. office Career Score groups get the icons of UI案63 (O-A / O-F / O-G = the office strengths; O-B〜O-E = briefcase): detail tiles, plan tags, weights table', () => {

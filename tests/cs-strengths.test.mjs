@@ -406,7 +406,7 @@ test('wiring: My page, the Career Score list and screen, the growth chart and it
   assert.match(fn('renderLssSummary'), /cssProfileHtml\(e, \{self:lssIsSelf\(name\), V:V, bdKey:'lss\|'\+name, bdOpen:_cs, draftNote:_cs\}\)/);
   assert.match(fn('renderLssSummary'), /var V=csvView\(e, \{scores:window\._lssDraft\|\|\{\}\}\);/);
   // growth chart: the tiles, the strengths card (manager page and the person's view), the old "Career Score の内訳" card is not repeated
-  assert.equal((SRC.match(/return _kTile\('Career Score', cssTileValHtml\(R\)/g) || []).length, 2);
+  assert.equal((SRC.match(/return _kTile\('Career Score', cssTileValHtml\(R(, true)?\)/g) || []).length, 2);
   assert.match(fn('renderKarteDetailPage'), /h\+='<div class="card">'\+cssProfileHtml\(e, \{V:csvView\(e\)\}\)\+'<\/div>';/);
   assert.match(fn('renderKarteSelfView'), /cssProfileHtml\(e, \{self:true, V:csvView\(e\)\}\)/);
   // talk points: strengths also for people who have no store-sheet record (office sheet; review P3-9)
