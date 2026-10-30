@@ -13,11 +13,16 @@ const meta = JSON.parse(fs.readFileSync(path.join(dir, 'source.json'), 'utf8'));
 const sha = b => createHash('sha256').update(b).digest('hex');
 const BUNDLE = path.join(dir, '1_関数_ops-bot_index.ts'), ROLLBACK = path.join(dir, '戻す_関数_ops-bot_index.ts');
 
-test('the bundle was built from the current ops-bot sources', () => {
-  for (const [file, hash] of Object.entries(meta.sources)) assert.equal(sha(fs.readFileSync(path.join(root, file))), hash, file + ' changed: rebuild with node deploy/ops-bot-job-check-v1105/build.mjs');
+// v1118 から ops-bot の今のソースは deploy/cash-tip-auto-zero-v1118 がまとめる。この一式は v1105 のとき（FROZEN）のソースのまま残す
+// （v1118 の「戻す」はこの 1_関数）。だから元のファイルは FROZEN のコミットの中身と比べる。
+const FROZEN = '96a2c7e';
+const hasFrozen = (() => { try { execFileSync('git', ['-C', root, 'cat-file', '-e', FROZEN + '^{commit}'], { stdio: 'ignore' }); return true; } catch { return false; } })();
+const frozenFile = f => execFileSync('git', ['-C', root, 'show', FROZEN + ':' + f]);
+test('the bundle was built from the ops-bot sources of v1105 (commit ' + FROZEN + ')', { skip: !hasFrozen && 'commit ' + FROZEN + ' is not in this clone' }, () => {
+  for (const [file, hash] of Object.entries(meta.sources)) assert.equal(sha(frozenFile(file)), hash, file + ' at ' + FROZEN);
   // every module the function imports is listed
   const listed = new Set(Object.keys(meta.sources));
-  for (const f of listed) for (const m of fs.readFileSync(path.join(root, f), 'utf8').matchAll(/from\s+'(\.[^']+)'/g)) assert.ok(listed.has(path.relative(root, path.resolve(path.dirname(path.join(root, f)), m[1]))), f + ' imports ' + m[1]);
+  for (const f of listed) for (const m of frozenFile(f).toString('utf8').matchAll(/from\s+'(\.[^']+)'/g)) assert.ok(listed.has(path.relative(root, path.resolve(path.dirname(path.join(root, f)), m[1]))), f + ' imports ' + m[1]);
   assert.equal(sha(fs.readFileSync(BUNDLE)), meta.bundle_sha256);
   assert.equal(sha(fs.readFileSync(ROLLBACK)), meta.rollback_sha256);
   for (const f of [BUNDLE, ROLLBACK]) assert.doesNotMatch(fs.readFileSync(f, 'utf8'), /^\s*import\s|\bimport\(/m, 'one file without imports');
@@ -25,10 +30,11 @@ test('the bundle was built from the current ops-bot sources', () => {
 
 const ESBUILD = '/opt/npm-tools/node_modules/.bin/esbuild';
 const { bundle, rollbackSources } = await import('../deploy/ops-bot-job-check-v1105/build.mjs');
-test('rebuilding gives the same bytes, from any folder (when esbuild is available)', { skip: !fs.existsSync(ESBUILD) && 'esbuild not installed here' }, () => {
-  const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'opsbot-')), 'b.ts');
+test('rebuilding the v1105 sources gives the same bytes, from any folder (when esbuild is available)', { skip: (!fs.existsSync(ESBUILD) && 'esbuild not installed here') || (!hasFrozen && 'commit ' + FROZEN + ' is not in this clone') }, () => {
+  const src = fs.mkdtempSync(path.join(os.tmpdir(), 'opsbot-v1105-')), out = path.join(src, 'b.ts'), tree = path.join(src, 'tree');
+  for (const f of Object.keys(meta.sources)) { fs.mkdirSync(path.join(tree, path.dirname(f)), { recursive: true }); fs.writeFileSync(path.join(tree, f), frozenFile(f)); }
   const was = process.cwd();
-  try { process.chdir(os.tmpdir()); bundle(root, out, ESBUILD); } finally { process.chdir(was); }
+  try { process.chdir(os.tmpdir()); bundle(tree, out, ESBUILD); } finally { process.chdir(was); }
   assert.equal(sha(fs.readFileSync(out)), meta.bundle_sha256);
 });
 const hasRollbackCommit = (() => { try { execFileSync('git', ['-C', root, 'cat-file', '-e', meta.rollback_commit + '^{commit}'], { stdio: 'ignore' }); return true; } catch { return false; } })();

@@ -69,7 +69,8 @@ function app() {
     function setTipConfirm(s, info, data){ CONFIRMS[s + '|' + info.from] = JSON.parse(JSON.stringify(data)); }
     function nowJP(){ return '2026/10/31 22:00'; }
     function showToast(m){ TOASTS.push(m); } function renderPage(p){ RENDERS.push(p); }
-    function cashTipMissing(){ return false; }`, c);
+    function cashTipMissing(){ return false; }
+    function cashTipInvalid(){ return []; } function cashTipNoteHtml(){ return ''; }`, c);
   return c;
 }
 const EMP = (o) => Object.assign({ store: 'F01', role: 'crew', status: '在籍', title: 'Crew', coef: 1 }, o);
