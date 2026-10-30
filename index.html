@@ -40817,7 +40817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1112';
+const APP_VERSION = '1113';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -59917,10 +59917,24 @@ function lssItemSetOf(name){
     return d||'general';
   }catch(err){ return 'general'; }
 }
+/* v1113（Motoさん 10/29・UI案63「専門職キャリアのアイコン良いですね、これで進めてください」）：専門職の 8 軸のアイコン（Tabler 2.44 の線のアイコン）と英語名。
+   前は 8 軸すべて ti-star・英語名は日本語のままだった。経理・調理は強み（CS_STRENGTHS）と同じアイコン、サービス・マーケは UI案63 で選んだもの。
+   表示だけ（軸・項目・配点・採点・保存は変えない）。 */
+var SPECIALIST_AXIS_META = {
+  '経理': {A:['ti-list-check','Accuracy'], B:['ti-clock-check','Deadlines'], C:['ti-file-analytics','Financial analysis'], D:['ti-scale','Tax & compliance'],
+    E:['ti-shield-check','Internal control'], F:['ti-bulb','Systems & improvement'], G:['ti-school','Developing the team'], H:['ti-heart-handshake','Philosophy (integrity)']},
+  '調理': {A:['ti-shield-check','Hygiene & safety'], B:['ti-clipboard-check','Quality & standards'], C:['ti-chef-hat','Menu development'], D:['ti-calculator','Costing & recipes'],
+    E:['ti-tools-kitchen-2','Kitchen operations'], F:['ti-chart-bar','Numbers (food cost)'], G:['ti-school','Developing cooks'], H:['ti-heart','Food culture & philosophy']},
+  'サービス': {A:['ti-book-2','Service standards'], B:['ti-mood-smile','Guest experience'], C:['ti-thumb-up','Repeat visits & reviews'], D:['ti-messages','Voice of the customer'],
+    E:['ti-adjustments','Service operations'], F:['ti-chart-bar','Numbers (CS metrics)'], G:['ti-school','Developing service staff'], H:['ti-heart-handshake','Hospitality & philosophy']},
+  'マーケ': {A:['ti-speakerphone','Promotion'], B:['ti-device-mobile','Digital channels'], C:['ti-target-arrow','Measurement & ROI'], D:['ti-palette','Brand & world'],
+    E:['ti-confetti','Planning & experiences'], F:['ti-chart-bar','Numbers (metrics)'], G:['ti-school','Team & development'], H:['ti-heart-handshake','Philosophy & brand consistency']}
+};
+function specialistAxisMeta(dept, k){ var m=(typeof SPECIALIST_AXIS_META!=='undefined' && SPECIALIST_AXIS_META[dept]) ? SPECIALIST_AXIS_META[dept][k] : null; return {icon:(m && m[0]) || 'ti-point', en:(m && m[1]) || ''}; }
 function specialistCats(dept){
   var d=SPECIALIST_DEPTS[dept]; if(!d) return null;
-  var its=SPECIALIST_AXIS_ITEMS[dept]||{};
-  return d.axes.map(function(a){ var arr=(its[a.k]&&its[a.k].length)?its[a.k]:[a.n]; return {key:a.k, name:a.n, en:a.n, icon:'ti-star', items:arr}; });
+  var its=SPECIALIST_AXIS_ITEMS[dept]||{}, M=(typeof SPECIALIST_AXIS_META!=='undefined' && SPECIALIST_AXIS_META[dept]) || {};
+  return d.axes.map(function(a){ var arr=(its[a.k]&&its[a.k].length)?its[a.k]:[a.n], mt=M[a.k]; return {key:a.k, name:a.n, en:(mt && mt[1]) || a.n, icon:(mt && mt[0]) || 'ti-point', items:arr}; });
 }
 
 /* ===== Grade × Career Score 担当軸マップ（◎所有＝担当。○以下は参考） =====
@@ -64978,7 +64992,7 @@ function kdMeetings(k){ return (k.meetings||[]).filter(function(m){ return m; })
 function kdTilesHtml(e, k, b, cfg, sum, pct, lv, gcol, cur){
   var mt=kdMeetings(k)[0], goals=(k.goals||[]).filter(function(x){ return x && x.text; }), done=goals.filter(function(x){ return x.done; }).length;
   return '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
-    +(function(){ var V=csvView(e), R=cssEvaluate(e); return _kTile('Career Score', escapeHtml(cssTileVal(R)), escapeHtml((V.g||'—')+'・'+cssPtsTxt(V)), 'var(--accent)'); })()   /* v1108（UI案61）：大きな字は強み、小さな字は点（総合点 ／ 基準点）。v1100 は総合点 ／ 基準点 */
+    +(function(){ var V=csvView(e), R=cssEvaluate(e); return _kTile('Career Score', cssTileValHtml(R), escapeHtml((V.g||'—')+'・'+cssPtsTxt(V)), 'var(--accent)'); })()   /* v1108（UI案61）：大きな字は強み、小さな字は点（総合点 ／ 基準点）。v1100 は総合点 ／ 基準点 */
     +_kTile('今期ボーナス', b.blocked?'計算しない':_money(b.amount), escapeHtml(cfg.quarter||'')+(b.blocked?_kdNw('・'+(b.blocked==='track'?'職種の設定が必要':(b.blocked==='eval'?'評価・データの不足':'係数が未設定'))):'')+(b.prorated?_kdSegs(b):'')
       +((cur&&cur.out)?_kdNw('・対象外（査定一覧に入っていません）'):'')+((cur&&cur.adj)?_kdNw('・原資の調整後 '+_money(cur.amt)):'')
       +((cur&&cur.recorded)?_kdNw('・記録済み'+(Math.round(cur.amt)!==Math.round(b.amount)?' '+_money(cur.amt):'')):''), gcol)
@@ -65036,7 +65050,7 @@ function renderKarteSelfView(e, x){
   h+=kdJourneyHtml(e, false);
   var goals=(k.goals||[]).filter(function(z){ return z && z.text; }), done=goals.filter(function(z){ return z.done; }).length;
   h+='<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:10px">'
-    +(function(){ var V=csvView(e), R=cssEvaluate(e); return _kTile('Career Score', escapeHtml(cssTileVal(R)), escapeHtml((V.g||'—')+'・'+cssPtsTxt(V)), 'var(--accent)'); })()   /* v1108（UI案61）：大きな字は強み、小さな字は点（総合点 ／ 基準点）。v1100 は総合点 ／ 基準点 */
+    +(function(){ var V=csvView(e), R=cssEvaluate(e); return _kTile('Career Score', cssTileValHtml(R), escapeHtml((V.g||'—')+'・'+cssPtsTxt(V)), 'var(--accent)'); })()   /* v1108（UI案61）：大きな字は強み、小さな字は点（総合点 ／ 基準点）。v1100 は総合点 ／ 基準点 */
     +_kTile('今期のボーナス', cur.out?'対象外':(cur.pending?'査定中':(cur.blocked?'評価中':_money(cur.amt))), escapeHtml(cfg.quarter||'')+((b.prorated && !cur.out)?_kdSegs(b):'')+(cur.out?'':_kdNw(cur.recorded?'・記録済み':(cur.pending?'・会社全体の支給額が決まってから':(cur.eff?'・支給額確定':(cur.blocked?'・金額は評価のあと':'・査定中'))))), gcol)
     +_kTile('次期の目標', goals.length?(done+' / '+goals.length):'—', goals.length?'達成・進行中':'これから決めます', 'var(--green)')+'</div>';
   h+='<div class="card">'+cssProfileHtml(e, {self:true, V:csvView(e)})+'</div>';   /* v1108（UI案61）：本人に見せる表示も強みが主（点は「評価の内訳を見る」） */
@@ -73458,6 +73472,42 @@ function csvLineHtml(V){
   return '<div style="margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">'+(V.g ? ghBadge(V.g) : '')+csvTag(V)
     +'<span style="font-size:11.5px">'+csvPtsHtml(V, false)+'</span></div>';
 }
+/* ===== v1113（Motoさん 10/29・UI案63 の B 案「一覧型」）：Career Score の一覧のカード =====
+   ・点の行：総合点 ／ 基準点・基準達成／基準未達／評価途中（前は小さな字の 1 行）。
+   ・カテゴリー別の内訳：たたまず、いつも見える（Motoさん 12:17「畳まずに常に見えてる形で良い」）。アイコンの丸・名前・棒・点・未評価の数。
+     並びは評価表の順（点の順・不足の一覧にしない）。PC は 2 列、スマホは 1 列（幅で自動）。
+   ・まだ評価が無い人（none）・オフィス用の人（office）は内訳を出さない（0 点の行を並べない・オフィス用は別のタブ）。
+   ・表示だけ。点・基準点・判定・保存は変えない。My ページ・成長カルテの「評価の内訳」は今までどおり（csvCatsHtml・たたむ）。 */
+function csvListPtsHtml(V, R){
+  if(!V || V.state==='none' || V.state==='office') return '';
+  var sub=(V.state==='partial') ? t('採点していない項目 ','')+V.un+t('',V.un===1 ? ' item not scored yet' : ' items not scored yet')+(V.bp==null ? '・'+csvWhyTxt(V.base) : '') : csvSubTxt(V);
+  /* 見出しの行（強みの状態 R）がもう「評価途中」を出しているときは、ここは数だけ（同じ札を 2 つ並べない）。
+     見出しが別の状態（例：項目が変わって「確認中」）なら、ここで「評価途中」を出す */
+  var hdrPartial=!!(R && (R.state==='partial' || (R.state==='few' && R.un>0)));
+  return '<div style="margin-top:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12.5px;line-height:1.5">'+csvPtsHtml(V, false)+((V.state==='partial' && hdrPartial) ? '' : csvTag(V))
+    +(sub ? '<span style="font-size:11.5px;color:var(--muted)">'+escapeHtml(sub)+'</span>' : '')+'</div>';
+}
+function csvCatsListHtml(V){
+  if(!V || !V.cats || !V.cats.length || V.state==='none' || V.state==='office') return '';
+  var en=(curLang==='en');
+  var rows=V.cats.map(function(c){
+    var p=c.max ? Math.max(0, Math.min(100, c.score/c.max*100)) : 0, nm=en ? (c.en||c.name||c.key) : (c.name||c.key);
+    return '<div role="listitem" style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border);min-width:0">'
+      +'<span aria-hidden="true" style="flex:0 0 auto;width:30px;height:30px;border-radius:15px;background:var(--accent-soft,#fdeee4);color:var(--accent,#b4501a);display:flex;align-items:center;justify-content:center"><i class="ti '+escapeHtml(c.icon||'ti-point')+'" style="font-size:16px"></i></span>'
+      +'<span style="flex:1 1 0;min-width:0;font-size:12.5px;font-weight:600;line-height:1.3;overflow-wrap:anywhere">'+escapeHtml(nm)
+        +(c.un>0 ? '<span style="display:block;font-size:10.5px;font-weight:700;color:var(--yellow)">'+escapeHtml(t('未評価 ','')+c.un+t('',' not scored'))+'</span>' : '')+'</span>'
+      +'<span aria-hidden="true" style="flex:0 0 clamp(56px,22%,120px);height:6px;border-radius:3px;background:var(--surface2);overflow:hidden"><span style="display:block;width:'+p.toFixed(1)+'%;height:6px;background:var(--accent)"></span></span>'
+      +'<span style="flex:0 0 auto;min-width:58px;text-align:right;font-size:13px;font-weight:800;white-space:nowrap">'+cscN(c.score)+' / '+cscN(c.max)+'</span></div>';
+  }).join('');
+  return '<section aria-label="'+escapeHtml(t('カテゴリー別の内訳','Breakdown by category'))+'" style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px">'
+    +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px"><i class="ti ti-chart-donut" aria-hidden="true" style="color:var(--accent)"></i><span style="font-size:13px;font-weight:800">'+t('カテゴリー別の内訳','Breakdown by category')+'</span>'
+      +'<span style="font-size:11px;color:var(--muted)">'+V.cats.length+t(' カテゴリー・評価表の満点 ',' categories · sheet max ')+cscN(V.max)+t(' 点',' pt')+'</span></div>'
+    +'<div role="list" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));column-gap:24px">'+rows+'</div></section>';
+}
+/* 一覧の下に 1 回だけ（カードごとにくり返さない） */
+function csvListNoteHtml(){
+  return '<div style="font-size:11px;color:var(--muted);line-height:1.6;margin:2px 4px 10px">'+t('基準点は今のグレードに求められる総合点です。得意なカテゴリーで補えます。次のグレード（昇格）の条件は別に見ます。','The base is the total score expected for the current grade; strong categories can make up for weaker ones. The next grade (promotion) is judged separately.')+'</div>';
+}
 /* FUNERGY_CS_GRADE_VIEW_END */
 /* FUNERGY_CS_STRENGTH_BEGIN */
 /* ===== v1108（Motoさん 10/28「キャリアスコアの強み表示」・UI案61 の回答 10/28：1・2・9 は任せる、3「伸ばしている事がある人とない人がいます」、4 A） =====
@@ -73781,13 +73831,13 @@ function cssMore(btn){
 }
 /* 内訳の開き具合を覚える（採点の画面は点を入れるたびに描き直すので） */
 function cssBdKeep(el){ try{ var k=el.getAttribute('data-k'); if(!k) return; window._cssBdOpen=window._cssBdOpen||{}; window._cssBdOpen[k]=!!el.open; }catch(err){} }
-/* 一覧のカード：小さなアイコンと名前（上から 3 つ）＋状態。押せない（「詳細」から開く） */
+/* 一覧のカード（v1113・UI案63 の B 案）：当たった強みをすべて、アイコンと名前のカードで出す（判定の順）。
+   前は上から 3 つと「ほか N」だった（Motoさん 10/29「ほか１という表記をやめたい」）。押せない（「詳細」から開く） */
 function cssStripHtml(e, R){
   R=R||cssEvaluate(e);
-  var chip=function(x){ return '<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 3px;border-radius:20px;background:var(--surface2,#f7f3ee);border:1px solid var(--border)">'+cssIconHtml(x.d, 30)+'<span style="font-size:12px;font-weight:700">'+escapeHtml(cssDefName(x.d))+'</span></span>'; };
-  if(R.list.length) return '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:8px">'+R.list.slice(0, 3).map(chip).join('')
-    +(R.list.length>3 ? '<span style="font-size:11.5px;color:var(--muted)">'+t('ほか '+(R.list.length-3), '+'+(R.list.length-3)+' more')+'</span>' : '')
-    +(R.state==='partial' ? '<span style="font-size:11.5px;color:var(--muted)">'+t('現時点で確認できた強み','Confirmed so far')+'</span>' : '')+'</div>';
+  var card=function(x){ return '<span role="listitem" style="display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 5px;border-radius:12px;background:var(--surface,#fff);border:1px solid var(--border);min-height:46px;box-sizing:border-box;max-width:100%">'+cssIconHtml(x.d, 36)+'<span style="font-size:12.5px;font-weight:800;line-height:1.3;min-width:0">'+escapeHtml(cssDefName(x.d))+'</span></span>'; };
+  if(R.list.length) return '<div style="margin-top:10px"><div role="list" aria-label="'+escapeHtml(t('強み','Strengths'))+'" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+R.list.map(card).join('')+'</div>'
+    +(R.state==='partial' ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">'+t('現時点で確認できた強み','Confirmed so far')+'</div>' : '')+'</div>';
   var msg=(R.state==='none') ? t('まだ評価がありません','Not evaluated yet') : t('得意分野を確認中','Strengths being confirmed');
   if(R.state==='set') msg+=t('（評価項目が入れ替わっています）',' (the items have changed)');
   else if(R.state==='partial') msg+=t('（採点していない項目 '+R.un+'）',' ('+R.un+' items not scored)');
@@ -73797,8 +73847,16 @@ function cssStripHtml(e, R){
 }
 /* 成長カルテのタイル用：大きな字は強みの短い言い方（2 つまで）、小さな字は点（内訳） */
 function cssTileVal(R){
-  if(R.list.length) return R.list.slice(0, 2).map(function(x){ return cssDefShort(x.d); }).join(curLang==='en' ? ' · ' : '・')+(R.list.length>2 ? (curLang==='en' ? ' +'+(R.list.length-2) : ' ほか'+(R.list.length-2)) : '');
+  /* v1113（Moto さん 10/29「やめます」）：「ほか N」をやめて、当たった強みを全部出す（成長カルテのタイル）。
+     短い名前に「・」を含むもの（在庫・原価 など）があるので、日本語の区切りは「、」 */
+  if(R.list.length) return R.list.map(function(x){ return cssDefShort(x.d); }).join(curLang==='en' ? ' · ' : '、');
   return (R.state==='none') ? t('未評価','Not evaluated') : t('確認中','Checking');
+}
+/* タイルの大きな字。3 つ以上は小さな字にして、名前の途中では折り返さない（タイルが大きくなりすぎないように） */
+function cssTileValHtml(R){
+  if(R.list.length<=2) return escapeHtml(cssTileVal(R));
+  var sep=(curLang==='en') ? ' · ' : '、';
+  return '<span style="display:block;font-size:13px;line-height:1.45">'+R.list.map(function(x, i){ return '<span style="white-space:nowrap">'+escapeHtml(cssDefShort(x.d))+(i<R.list.length-1 ? sep : '')+'</span>'; }).join('<wbr>')+'</span>';
 }
 /* ===== 強みの決まり（GM・CEO）。表示のための決まりだけ（点・賞与・昇格は変わらない） ===== */
 function cssCanEditRule(){ return !curStoreLogin && ['gm','ceo'].indexOf(curRole)>=0; }
@@ -73874,7 +73932,6 @@ function cssPtsTxt(V){
   var st=({met:t('基準達成','Base met'), notmet:t('基準未達','Below base'), partial:t('評価途中','In progress'), nobase:t('基準未設定','No base set')})[V.state] || '';
   return t('総合点 ','Total ')+cscN(V.score)+(V.bp!=null ? ' / '+t('基準点 ','base ')+cscN(V.bp) : '')+t(' 点',' pt')+(st ? ' ・ '+st : '');
 }
-function cssPtsLineHtml(V){ if(!V || V.state==='none' || V.state==='office') return ''; return '<div style="font-size:11.5px;color:var(--muted);margin-top:6px">'+escapeHtml(t('評価の内訳：','Breakdown: ')+cssPtsTxt(V))+'</div>'; }
 /* 一覧の上の 1 行（GM・CEO）：今の強みの決まりと「変える」 */
 function cssRuleBarHtml(){
   if(!cssCanEditRule()) return '';
@@ -74995,7 +75052,7 @@ function renderScoreMgmtGeneral(){
     var dep=SPECIALIST_DEPTS[d];
     h+=`<div style="border:1px solid var(--border);border-radius:10px;padding:9px 11px;margin-bottom:8px">`;
     h+=`<div style="font-weight:700;font-size:13px;margin-bottom:6px"><i class="ti ti-point-filled" style="color:var(--accent)"></i>${escapeHtml(dep.label)}</div>`;
-    h+=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:5px">`+dep.axes.map(function(a){ return `<div style="font-size:11px;display:flex;gap:5px"><b style="color:var(--accent);flex-shrink:0">${a.k}</b><span>${escapeHtml(a.n)}</span></div>`; }).join('')+`</div>`;
+    h+=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:5px">`+dep.axes.map(function(a){ return `<div style="font-size:11px;display:flex;gap:5px;align-items:center"><b style="color:var(--accent);flex-shrink:0">${a.k}</b><i class="ti ${escapeHtml(specialistAxisMeta(d, a.k).icon)}" aria-hidden="true" style="color:var(--accent);font-size:13px;flex-shrink:0"></i><span>${escapeHtml(a.n)}</span></div>`; }).join('')+`</div>`   /* v1113：軸のアイコン */;
     h+=`</div>`;
   });
   h+=`<div style="font-size:10px;color:var(--muted);margin-top:2px">各軸はCareer Scoreの評価項目（0〜3点）として採点します。詳細項目は評価シートで確認できます。</div>`;
@@ -75410,12 +75467,15 @@ var OCS_WEIGHTS = {
   G1:{A:20, P:60, F:20, G:0}, G2:{A:20, P:60, F:20, G:0},
   G3:{A:20, P:50, F:20, G:10}, G4:{A:20, P:35, F:20, G:25}, G5:{A:20, P:30, F:20, G:30}
 };
+/* v1113（Moto さん 10/29「つけてください」・UI案63）：区分ごとの線のアイコン（表示だけ）。O-A・O-F・O-G はオフィスの強み（OF-A・OF-F・OF-G）と同じ。
+   O-B〜O-E（専門実務）は 4 つの分野をまとめた区分なので ti-briefcase */
 var OCS_GROUPS = [
-  {k:'A', ja:'O-A 基本姿勢', en:'O-A Basics'},
-  {k:'P', ja:'O-B〜O-E 専門実務', en:'O-B–O-E Specialist work'},
-  {k:'F', ja:'O-F 改善・標準化', en:'O-F Improvement'},
-  {k:'G', ja:'O-G 運営・育成', en:'O-G Operations & development'}
+  {k:'A', ja:'O-A 基本姿勢', en:'O-A Basics', ic:'ti-user-check'},
+  {k:'P', ja:'O-B〜O-E 専門実務', en:'O-B–O-E Specialist work', ic:'ti-briefcase'},
+  {k:'F', ja:'O-F 改善・標準化', en:'O-F Improvement', ic:'ti-bulb'},
+  {k:'G', ja:'O-G 運営・育成', en:'O-G Operations & development', ic:'ti-school'}
 ];
+function ocsGrpIcon(g, px){ return '<i class="ti '+escapeHtml((g && g.ic) || 'ti-point')+'" aria-hidden="true" style="color:var(--accent);font-size:'+(px||13)+'px"></i>'; }
 var OCS_CATS = [
   {k:'A', ja:'基本姿勢・Funergyの行動基準', en:'Basic conduct & Funergy standards',
     note:{ja:'全Grade共通の必須カテゴリ。性格の明るさ、上司との親しさ、社交性ではなく、実際の対応を評価する。', en:'Required for every grade. Evaluate actual conduct — not personality, closeness to managers, or sociability.'}},
@@ -76118,7 +76178,7 @@ function ocsOpenItemsModal(){
   var h='<div class="modal-title">'+OCS_TPL+' · '+t('項目と配点','Items & weights')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
   h+='<div style="font-size:11.5px;font-weight:700;margin-bottom:4px">'+t('配点（区分ごと）','Weights by group')+'</div>'
     +'<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:11px;margin-bottom:10px"><tr><th style="text-align:left;padding:3px 4px;border-bottom:1px solid var(--border)">Grade</th>'
-    +OCS_GROUPS.map(function(g){ return '<th style="text-align:right;padding:3px 4px;border-bottom:1px solid var(--border)">'+escapeHtml(ocsTx(g))+'</th>'; }).join('')+'</tr>'
+    +OCS_GROUPS.map(function(g){ return '<th style="text-align:right;padding:3px 4px;border-bottom:1px solid var(--border)">'+ocsGrpIcon(g, 12)+' '+escapeHtml(ocsTx(g))+'</th>'; }).join('')+'</tr>'
     +OCS_GRADES.map(function(g){ var w=OCS_WEIGHTS[g]; return '<tr><td style="padding:3px 4px;font-weight:700">'+g+'</td>'+OCS_GROUPS.map(function(x){ return '<td style="text-align:right;padding:3px 4px">'+w[x.k]+'%'+(w[x.k]===0?'<div style="font-size:9px;color:var(--muted)">'+t('育成記録','record only')+'</div>':'')+'</td>'; }).join('')+'</tr>'; }).join('')
     +'</table></div>';
   h+='<div style="font-size:11.5px;font-weight:700;margin:6px 0 4px">'+t('点数','Scores')+'</div>'
@@ -76349,7 +76409,7 @@ function ocsAsgEditorHtml(e){
     +'<div><label class="form-label">'+t('評価で使う Grade','Grade used for evaluation')+'</label><select class="form-select" style="width:96px" onchange="ocsAsgSetGrade(this.value)">'
     +OCS_GRADES.map(function(g){ return '<option value="'+g+'"'+(a.grade===g?' selected':'')+'>'+g+'</option>'; }).join('')+'</select></div>'
     +'<div style="flex:1;min-width:200px">'+ocsGradeChips(e, a)+'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+escapeHtml(ocsTx(OCS_GRADE_EXPECT[a.grade]))+'</div></div></div>'
-    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+OCS_GROUPS.map(function(g){ return '<span class="tag" style="background:var(--surface2);color:var(--tm);font-size:10.5px">'+escapeHtml(ocsTx(g))+' <b>'+(W[g.k]||0)+'%</b>'+((W[g.k]||0)===0?' '+t('（育成記録）','(record only)'):'')+'</span>'; }).join('')+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'+OCS_GROUPS.map(function(g){ return '<span class="tag" style="background:var(--surface2);color:var(--tm);font-size:10.5px">'+ocsGrpIcon(g, 12)+' '+escapeHtml(ocsTx(g))+' <b>'+(W[g.k]||0)+'%</b>'+((W[g.k]||0)===0?' '+t('（育成記録）','(record only)'):'')+'</span>'; }).join('')+'</div>'
     +ocsAsgPeopleHtml(e, a)
     +'<div style="font-size:10px;color:var(--muted);margin-top:4px">'+t('★区分の配点は Grade で決まります。専門実務の中の重み（初期値はすべて1＝等配点）を変えるときは期首に。評価が始まった期の計算は、その期の作成時の設定のまま変わりません。','★Group weights come from the grade. Change item weights inside specialist work only at the start of a period; an evaluation already started keeps its own settings.')+'</div>'
     +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="ocsAsgUseAllHints()"><i class="ti ti-wand"></i> '+t('空欄に案を入れる','Fill empty scopes from plan')+'</button></div>'
@@ -76508,7 +76568,7 @@ function ocsDetailHtml(e){
       +OCS_GROUPS.map(function(g){ var x=calc.groups[g.k];
         var pct=(x.rate==null)?null:Math.round(x.rate*1000)/10;
         return '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 8px">'
-          +'<div style="display:flex;justify-content:space-between;font-size:10.5px;font-weight:700"><span>'+escapeHtml(ocsTx(g))+'</span><span style="color:var(--muted)">'+x.w+'%</span></div>'
+          +'<div style="display:flex;justify-content:space-between;gap:4px;font-size:10.5px;font-weight:700"><span style="display:flex;align-items:center;gap:4px;min-width:0">'+ocsGrpIcon(g, 14)+'<span>'+escapeHtml(ocsTx(g))+'</span></span><span style="color:var(--muted)">'+x.w+'%</span></div>'
           +(x.w>0 ? ('<div style="font-size:15px;font-weight:800;color:'+(pct==null?'var(--muted)':'var(--tm)')+'">'+(pct==null?'—':cscN(Math.round(x.rate*x.w*10)/10)+' / '+cscN(x.w)+t(' 点',' pt'))+'</div>'   /* v1099：100 点満点のうちの点（% ではなく） */
             +'<div style="font-size:9.5px;color:var(--muted)">'+t('確認済み','confirmed')+' '+x.num+'/'+x.targets+(x.targets===0?' · <span style="color:var(--yellow)">'+t('採点対象なし','no targets')+'</span>':'')+'</div>')
             : '<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('配点0％：育成記録として表示','0%: shown as growth record')+'</div>')
@@ -77061,8 +77121,9 @@ function renderLeadership() {
     leaders = (meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe)).concat(_cgSee);
   }
 
-  var html = `<div class="section-header">
-    <div><div class="section-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i> Funergy Career Score</div>
+  /* v1113：英語のスマホ（390px）で右のボタンがはみ出て横にずれていた（前から）→ 折り返す（折り返したボタンは右に寄せる） */
+  var html = `<div class="section-header" style="flex-wrap:wrap;gap:6px;justify-content:flex-end">
+    <div style="margin-right:auto"><div class="section-title"><i class="ti ti-trending-up" style="color:var(--accent)"></i> Funergy Career Score</div>
     <div class="section-sub">${t('リーダー以上のキャリア・スキルの見える化 · 0〜3点 ×','Career & skills visibility for leaders+ · 0–3 pts ×')} ${lssAllItems().length}${t('項目',' items')}</div></div>
     ${['ceo','gm','am'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openLssRulesModal()"><i class="ti ti-adjustments"></i> ${t('申請条件','Requirements')}</button>`:''}
     ${['ceo','gm','am'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openCscModal('G2')"><i class="ti ti-target-arrow"></i> ${t('スコア基準','Score criteria')}</button>`:''}
@@ -77126,10 +77187,11 @@ function renderLeadership() {
         </div>
         <button class="btn btn-${sum.hasData?'secondary':'primary'} btn-sm" onclick="openLssDetail('${e.name.replace(/'/g,"\\'")}')">${(sum.hasData||!canScoreLss(e.name))?t('詳細','Details'):(lssIsSelf(e.name)?t('自己評価','Self-review'):t('評価する','Evaluate'))}</button>
       </div>`;
-    /* v1108：強み（上から 3 つ）・点の小さな行・カテゴリー別の内訳（たたむ）。カテゴリーの得点の棒は内訳へ */
-    html += cssStripHtml(e, cR) + cssPtsLineHtml(cV) + csvCatsHtml(cV, false);
+    /* v1113（UI案63 の B 案）：強み（当たったものすべて・アイコンのカード）・点の行・カテゴリー別の内訳（たたまない） */
+    html += cssStripHtml(e, cR) + csvListPtsHtml(cV, cR) + csvCatsListHtml(cV);
     html += `</div>`;
   });
+  html += csvListNoteHtml();   /* v1113：基準点の説明は一覧の下に 1 回 */
 
   // 履歴（スコア＋申請承認）
   var lssHist = ls('lss_history', []).filter(function(h){ return lssG4SeesName(h && h.name); });   /* v1051: G4 は G4 以下だけ */
@@ -95468,6 +95530,6 @@ var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.r
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
 </script>
-<script type="module" src="./web-office-cas.a0f6a02e26a4b6f0f885d35e5a3c42a56da9aa13b7a6081b23f5f9e5dbf27afb.js"></script>
+<script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>
 </html>

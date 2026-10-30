@@ -217,10 +217,10 @@ test('the screens use the new view: My page, the Career Score list, the growth c
   assert.doesNotMatch(my, /focusCats|llv\.label|lssLevel\(/);
   const list = SRC.slice(SRC.indexOf('// リーダー一覧（スコアカード）'), SRC.indexOf('// 履歴（スコア＋申請承認）'));
   assert.match(list, /var cV = csvView\(e\);/);
-  assert.match(list, /cssPtsLineHtml\(cV\) \+ csvCatsHtml\(cV, false\)/);
+  assert.match(list, /csvListPtsHtml\(cV, cR\) \+ csvCatsListHtml\(cV\)/);   // v1113 (UI案63 B): the categories stay open on the list cards
   assert.match(list, /cssListLineHtml\(cV, cR\)/);
   assert.doesNotMatch(list, /lv\.label|lssRingPts/);
-  assert.equal((SRC.match(/_kTile\('Career Score', escapeHtml\(cssTileVal\(R\)\), escapeHtml\(\(V\.g\|\|'—'\)\+'・'\+cssPtsTxt\(V\)\)/g) || []).length, 2, 'the person view and the manager view of the growth chart');
+  assert.equal((SRC.match(/_kTile\('Career Score', cssTileValHtml\(R\), escapeHtml\(\(V\.g\|\|'—'\)\+'・'\+cssPtsTxt\(V\)\)/g) || []).length, 2, 'the person view and the manager view of the growth chart');
   assert.doesNotMatch(SRC, /G2 は 理念・基本業務・サービス・キッチン\/プレップ の 4 カテゴリーで数えます/);
   assert.doesNotMatch(SRC, /cats=\(ghNormG\(x\[0\]\)==='G2'\) \? '4 カテゴリー'/);
   assert.ok(Number((SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1100);
