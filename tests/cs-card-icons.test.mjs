@@ -1,5 +1,6 @@
 // v1113 (Moto 10/29 · UI案63): "B案で作りこみます" / "強みのところの、ほか１という表記をやめたいです" /
-// "専門職キャリアのアイコン良いですね、これで進めてください".
+// "専門職キャリアのアイコン良いですね、これで進めてください"; then (14:36) the growth-chart tile drops "ほか N" too ("やめます"),
+// My page / the growth chart keep the folded breakdown ("そのままで良い"), and the office groups get icons ("つけてください").
 //  1. the specialist sheets (経理・調理・サービス・マーケ) get one line icon and an English name per axis (before: ti-star on all 8, English = Japanese);
 //     経理・調理 use the same icons as their strengths; axes, items, points and saving do not change;
 //  2. the Career Score list card (B "一覧型"): every strength as an icon card (no "ほか N"), the points line, and the category breakdown
@@ -47,7 +48,7 @@ const listOf = (c, id, R = null) => { c.ID = id; c.HR = R; return run(c, `(funct
 // Tabler webfont 2.44.0 (the version index.html loads): each name below was checked against its tabler-icons.min.css when this was written
 const TABLER_2_44 = ['list-check', 'clock-check', 'file-analytics', 'scale', 'shield-check', 'bulb', 'school', 'heart-handshake', 'clipboard-check', 'chef-hat',
   'calculator', 'tools-kitchen-2', 'chart-bar', 'heart', 'book-2', 'mood-smile', 'thumb-up', 'messages', 'adjustments', 'speakerphone', 'device-mobile',
-  'target-arrow', 'palette', 'confetti', 'chart-donut'];
+  'target-arrow', 'palette', 'confetti', 'chart-donut', 'user-check', 'briefcase'];
 
 test('1. specialist axes: one icon and an English name each (no ☆); 経理・調理 match their strengths; axes, items and names are unchanged', () => {
   const c = {}; vm.createContext(c);
@@ -212,4 +213,52 @@ test('4. wiring: the list uses the B card; the base note once under the list; My
   for (const f of ['csvListPtsHtml', 'csvCatsListHtml', 'csvListNoteHtml', 'cssStripHtml', 'specialistCats', 'specialistAxisMeta']) assert.doesNotMatch(fnSrc(f), /lsSet|opMergePush|localStorage|fetch\(/, f);
   const app = (SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1], sw = (SW.match(/const SW_BUILD = '(\d+)';/) || [])[1];
   assert.ok(Number(app) >= 1113 && app === sw, 'APP_VERSION ' + app + ' / SW_BUILD ' + sw);
+});
+
+test('5. the growth-chart tile: every strength by name — no "ほか N" / "+N" (Moto 10/29 14:36 "やめます"); 3 or more in a smaller wrapping line', () => {
+  const c = S.app();
+  const all = {}; for (const [k, n] of Object.entries({ H: 18, A: 18, B: 18, C: 21, D: 17, E: 24, F: 12, G: 12 })) for (let i = 0; i < n; i++) all[k + i] = 3;
+  S.person(c, 'top', S.storeRec(all));
+  S.person(c, 'one', S.storeRec({ B0: 3, B1: 3, B2: 3, B3: 2, B4: 2 }));
+  S.person(c, 'flat', S.storeRec());
+  S.person(c, 'nobody');
+  const tile = (id, f) => { c.ID = id; return run(c, f + `(cssEvaluate(EMPS.find(function(e){ return e.id===ID; })))`); };
+  for (const lang of ['ja', 'en']) {
+    c.curLang = lang;
+    const names = run(c, `cssEvaluate(EMPS.find(function(e){ return e.id==='top'; })).list.map(function(x){ return cssDefShort(x.d); })`);
+    assert.equal(names.length, 15);
+    const sep = lang === 'en' ? ' · ' : '、';   // some short names contain 「・」 (在庫・原価), so Japanese uses 「、」 between names
+    const v = tile('top', 'cssTileVal');
+    assert.equal(v, names.join(sep), 'all 15 names');
+    assert.doesNotMatch(v, /ほか|\+\d/);
+    // each name stays on one line (no break in the middle of a name); the line can break between names
+    assert.equal(tile('top', 'cssTileValHtml'), '<span style="display:block;font-size:13px;line-height:1.45">'
+      + names.map((n, i) => '<span style="white-space:nowrap">' + n.replaceAll('&', '&amp;') + (i < names.length - 1 ? sep : '') + '</span>').join('<wbr>') + '</span>');
+  }
+  c.curLang = 'ja';
+  assert.equal(tile('one', 'cssTileValHtml'), tile('one', 'cssTileVal'), 'one or two names stay in the big letters');
+  assert.equal(tile('flat', 'cssTileVal'), '確認中');
+  assert.equal(tile('nobody', 'cssTileVal'), '未評価');
+  assert.doesNotMatch(fnSrc('cssTileVal').replace(/\/\*[\s\S]*?\*\//g, ''), /ほか|slice\(0, 2\)/);
+  // both tiles (the person view and the manager view of the growth chart) use it
+  assert.equal((SRC.match(/_kTile\('Career Score', cssTileValHtml\(R\), /g) || []).length, 2);
+});
+
+test('6. office Career Score groups get the icons of UI案63 (O-A / O-F / O-G = the office strengths; O-B〜O-E = briefcase): detail tiles, plan tags, weights table', () => {
+  const c = {}; vm.createContext(c);
+  vm.runInContext(varBlock('OCS_GROUPS', '\n];') + '\n' + fnSrc('ocsGrpIcon') + '\n' + varBlock('CS_STRENGTHS', '\n];') + `
+    function escapeHtml(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }`, c);
+  const G = run(c, 'OCS_GROUPS'), str = run(c, 'CS_STRENGTHS');
+  assert.deepEqual(G.map(g => [g.k, g.ic]), [['A', 'ti-user-check'], ['P', 'ti-briefcase'], ['F', 'ti-bulb'], ['G', 'ti-school']]);
+  for (const k of ['A', 'F', 'G']) assert.equal(G.find(g => g.k === k).ic, str.find(d => d.id === 'OF-' + k).ic, k);
+  for (const g of G) assert.ok(TABLER_2_44.includes(g.ic.slice(3)), g.ic);
+  // groups, names and weights are what they were (the icon is the only new field; ocsCalc reads g.k only)
+  assert.deepEqual(G.map(g => [g.k, g.ja, g.en]), [['A', 'O-A 基本姿勢', 'O-A Basics'], ['P', 'O-B〜O-E 専門実務', 'O-B–O-E Specialist work'], ['F', 'O-F 改善・標準化', 'O-F Improvement'], ['G', 'O-G 運営・育成', 'O-G Operations & development']]);
+  assert.equal(run(c, `ocsGrpIcon(OCS_GROUPS[1], 14)`), '<i class="ti ti-briefcase" aria-hidden="true" style="color:var(--accent);font-size:14px"></i>');
+  assert.equal(run(c, `ocsGrpIcon({}, 12)`), '<i class="ti ti-point" aria-hidden="true" style="color:var(--accent);font-size:12px"></i>');
+  assert.doesNotMatch(fnSrc('ocsCalc'), /\.ic\b/);
+  // where the four groups are drawn
+  assert.match(fnSrc('ocsDetailHtml'), /<span style="display:flex;align-items:center;gap:4px;min-width:0">'\+ocsGrpIcon\(g, 14\)\+'<span>'\+escapeHtml\(ocsTx\(g\)\)/);
+  assert.match(fnSrc('ocsAsgEditorHtml'), /font-size:10\.5px">'\+ocsGrpIcon\(g, 12\)\+' '\+escapeHtml\(ocsTx\(g\)\)/);
+  assert.match(fnSrc('ocsOpenItemsModal'), /border-bottom:1px solid var\(--border\)">'\+ocsGrpIcon\(g, 12\)\+' '\+escapeHtml\(ocsTx\(g\)\)/);
 });

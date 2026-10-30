@@ -1,6 +1,6 @@
 # Claude / Codex 共通記録
 
-## 2026-10-29 v1113：Career Score の一覧を B 案に・強みの「ほか N」をやめる・専門職の分野のアイコン（Claude・ブランチ `claude/cs-card-icons`・PR #103（コードは `965e5f6`）・アプリだけ・本番未反映）
+## 2026-10-29 v1113：Career Score の一覧を B 案に・強みの「ほか N」をやめる・専門職の分野のアイコン（Claude・ブランチ `claude/cs-card-icons`・PR #103・アプリだけ・本番未反映）
 
 - 依頼：Moto さん 10/29 13:32 HST（UI案63 を見て）
   - 「B案で作りこみます」
@@ -22,13 +22,21 @@
   - 前からの小さな直し：一覧の上のボタンが、英語のスマホ（390px）ではみ出て横にずれていた（main でも 486px）。折り返して右に寄せた。
   - 版 1113（APP_VERSION・SW_BUILD）。
 - 変えていないもの：
-  - My ページ・成長カルテの「評価の内訳」はたたむ形のまま（`csvCatsHtml`）。
-  - 成長カルテのタイルの「数値管理・在庫 ほか13」（`cssTileVal`）。ここもやめるかは Moto さんに聞く。
-  - オフィス用の内訳（4 グループ）にアイコンは付けていない。
+  - My ページ・成長カルテの「評価の内訳」はたたむ形のまま（`csvCatsHtml`）。Moto さん 10/29 14:36「そのままで良い」。
+- 追加（Moto さん 10/29 14:36 HST の回答「１ やめます ２ そのままで良いです ３ つけてください」）：
+  - 成長カルテのタイルも「ほか N」をやめた（`cssTileVal`・新しい `cssTileValHtml`）。当てはまる強みを全部、名前で出す。
+    - 日本語の区切りは「、」（短い名前に「在庫・原価」のように「・」を含むものがあるため）。
+    - 3 つ以上は 13px の字にし、名前の途中では折り返さない。
+  - オフィス用 Career Score の 4 区分にアイコン（`OCS_GROUPS` の `ic`・`ocsGrpIcon`）。
+    - O-A は ti-user-check、O-F は ti-bulb、O-G は ti-school（オフィスの強み OF-A・OF-F・OF-G と同じ）。O-B〜O-E（専門実務）は ti-briefcase。どれも UI案63 のとおり。
+    - 出る所：オフィス タブの各人の画面の区分のタイル・担当設定の配点の札・「項目と配点」の表の見出し。
+    - 区分・配点・計算（`ocsCalc` は `g.k` だけを読む）は変えていない。
+  - 一覧のカードにはオフィス用の人の内訳は出ていない（前から。オフィス用の点はオフィス タブで見る）。出すかは Moto さんに聞く（画面の案から）。
 - 試験（合成データ）：
-  - 新しい `tests/cs-card-icons.test.mjs` 6。関連のファイルはすべて通る：cs-strengths 14・cs-grade-view 14・cs-grade-rollback 15・specialist-career 24・karte-cs-points 20・karte-eval 22・karte-eval-sync 26・karte-bonus-ceo 20・karte-settings 10・career-criteria 23・dashboard-ui41 9・mid-review-ui 44・bonus-close-ui 13・acct-review-unify 11。
-  - わざと壊す 26 通りすべてで落ちる。
+  - 新しい `tests/cs-card-icons.test.mjs` 8（タイルとオフィスの区分の 2 つを足した）。関連のファイルはすべて通る：cs-strengths 14・cs-grade-view 14・cs-grade-rollback 15・specialist-career 24・karte-cs-points 20・karte-eval 22・karte-eval-sync 26・karte-bonus-ceo 20・karte-settings 10・career-criteria 23・dashboard-ui41 9・mid-review-ui 44・bonus-close-ui 13・acct-review-unify 11。
+  - わざと壊す 35 通りすべてで落ちる（タイル・オフィスの区分の 9 通りを足した）。
   - static release pass/1113。
+  - 成長カルテのタイル（本物のアプリ・模擬サーバー・1280px／390px・日英）：強み 15 の人と 1 の人。pageerror 0・横スクロールなし。
   - 全体（重い 2 つ以外・4 並列）：落ちたファイルは main（`1bbf314`）と同じ。違ったのは重いときだけ落ちるもので、単独では通る（employee-field-log・approvals など）。
   - 本物のアプリ（模擬サーバー・合成データ・GM）を Chromium で：1280px・390px、日英。18 項目すべて OK・pageerror 0・横スクロールなし。PC 2 列・スマホ 1 列、☆ なし、調理の採点タブに分野のアイコン。
 - 独立レビュー（Claude の別エージェント・作業を見ていない・コミット前の作業ツリー）：P1・P2 なし。P3 を直した：
