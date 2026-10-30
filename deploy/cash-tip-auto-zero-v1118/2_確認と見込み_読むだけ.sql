@@ -12,9 +12,10 @@ select
 
 -- ② 今の「未登録」の形（店ごと・側ごとの数。終わった営業日だけ）
 --   entered_number / entered_zero …… 入っている（人が入れた値。0 も正しい値）
---   auto_zero ……………………………… 自動の0（v1118 で書いたもの）
---   no_record ……………………………… その日の記録が無い（売上かクレジットチップのある日だけ数える）
---   flag_off_or_missing …………… 記録はあるが、その側の「入力済み」の印が無い（値が空・null・0 でも）
+--   auto_zero ……………………………… 自動の0（v1118 で書いたもの）。undone … 戻した側（もう書かない）
+--   no_record ……………………………… その日の記録が無い（売上かクレジットチップのある日だけ数える）→ 0 を書く
+--   flag_off_or_missing …………… 記録はあるが、その側の「入力済み」の印が無く、値が空・null・0 → 0 を書く
+--   flag_off_nonzero ……………… 「入力済み」の印は無いが 0 でない金額がある → 書かない（その金額のまま計算される）
 --   value_null / value_blank … 「入力済み」なのに値が null・空の文字（0 として計算される）
 --   invalid …………………………………… 数でない値・マイナス（エラーのまま。自動では直さない）
 with today as (select (now() at time zone 'Pacific/Honolulu')::date as d),
@@ -33,9 +34,9 @@ days as (
   select distinct s.store_id, t.business_date::date as d from stores s join public.toast_sales t on t.restaurant_guid = s.guid
    where (t.lunch_credit_tip is not null or t.dinner_credit_tip is not null or coalesce(t.net_sales, 0) > 0)
   union
-  select da.store_id, e.key::date from da, jsonb_each(case when jsonb_typeof(da.v) = 'object' then da.v else '{}'::jsonb end) e
-   where e.key ~ '^\d{4}-\d{2}-\d{2}$' and jsonb_typeof(e.value) = 'object'
-     and ((jsonb_typeof(e.value -> 'actual') = 'number' and (e.value ->> 'actual')::numeric > 0)
+  select da.store_id, public.cash_tip_try_date(e.key) from da, jsonb_each(case when jsonb_typeof(da.v) = 'object' then da.v else '{}'::jsonb end) e
+   where public.cash_tip_try_date(e.key) is not null and jsonb_typeof(e.value) = 'object'
+     and ((case when jsonb_typeof(e.value -> 'actual') = 'number' then (e.value ->> 'actual')::numeric > 0 else false end)
        or coalesce(jsonb_typeof(e.value -> 'lunchCreditTip'), 'null') <> 'null'
        or coalesce(jsonb_typeof(e.value -> 'dinnerCreditTip'), 'null') <> 'null')
 ),
@@ -61,17 +62,21 @@ c as (
     case
       when r is null then 'no_record'
       when jsonb_typeof(r) <> 'object' then 'invalid'
-      when val is not null and not (
-             (jsonb_typeof(val) = 'number' and (val #>> '{}')::numeric >= 0)
-          or (jsonb_typeof(val) = 'string' and btrim(val #>> '{}') ~ '^([0-9]+\.?[0-9]*|\.[0-9]+)$')
-          or (jsonb_typeof(val) = 'string' and btrim(val #>> '{}') = '')
-          or jsonb_typeof(val) = 'null') then 'invalid'
-      when not coalesce(entered, false) then 'flag_off_or_missing'
-      when val is null or jsonb_typeof(val) = 'null' then 'value_null'
-      when jsonb_typeof(val) = 'string' and btrim(val #>> '{}') = '' then 'value_blank'
-      when (r -> (side || 'Auto')) = 'true'::jsonb and jsonb_typeof(val) = 'number' and (val #>> '{}')::numeric = 0 then 'auto_zero'
-      when (val #>> '{}')::numeric = 0 then 'entered_zero'
-      else 'entered_number' end as kind
+      when coalesce(entered, false) then
+        case when val is null or jsonb_typeof(val) = 'null' then 'value_null'
+             when jsonb_typeof(val) = 'string' and btrim(val #>> '{}') = '' then 'value_blank'
+             when jsonb_typeof(val) = 'number' then case when (val #>> '{}')::numeric < 0 then 'invalid' when (val #>> '{}')::numeric = 0 then 'entered_zero' else 'entered_number' end
+             when jsonb_typeof(val) = 'string' and btrim(val #>> '{}') ~ '^([0-9]+\.?[0-9]*|\.[0-9]+)$' then 'entered_number'
+             else 'invalid' end
+      when (r -> (side || 'Auto')) = 'false'::jsonb then 'undone'
+      when val is null or jsonb_typeof(val) = 'null' then case when (r -> (side || 'Auto')) = 'true'::jsonb then 'auto_zero' else 'flag_off_or_missing' end
+      when jsonb_typeof(val) = 'string' and btrim(val #>> '{}') = '' then 'flag_off_or_missing'
+      when jsonb_typeof(val) = 'number' then
+        case when (val #>> '{}')::numeric = 0 then case when (r -> (side || 'Auto')) = 'true'::jsonb then 'auto_zero' else 'flag_off_or_missing' end
+             when (val #>> '{}')::numeric > 0 then 'flag_off_nonzero'
+             else 'invalid' end
+      when jsonb_typeof(val) = 'string' and btrim(val #>> '{}') ~ '^([0-9]+\.?[0-9]*|\.[0-9]+)$' then 'flag_off_nonzero'
+      else 'invalid' end as kind
     from k
 )
 select store_id, kind, count(*) as sides, count(distinct d) as days, min(d) as first_day, max(d) as last_day

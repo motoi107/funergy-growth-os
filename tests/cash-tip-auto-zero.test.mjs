@@ -66,14 +66,14 @@ function app({ st = {}, today = '2026-10-30', role = 'gm', actuals = {} } = {}) 
     escapeHtml: s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;'),
   };
   vm.createContext(c);
-  vm.runInContext(['var NO_CASHTIP_STORES = ["F03","F03-G"];', "var EC_MIN_DATE = '2026-07-01';"].concat(FNS.map(fnSrc)).join('\n'), c);
+  vm.runInContext(['var NO_CASHTIP_STORES = ["F03","F03-G"];', "var EC_MIN_DATE = '2026-07-01';", "var _CT_RANK = { real:3, off:2, auto:1, '':0 };"].concat(FNS.map(fnSrc)).join('\n'), c);
   return c;
 }
 const run = (c, e) => vm.runInContext(e, c);
 const J = v => JSON.parse(JSON.stringify(v));
 
-// The record the server writes (cash_tip_autofill): no at / editedAt
-const AUTO_BOTH = { lunch: 0, lunchEntered: true, lunchAuto: true, dinner: 0, dinnerEntered: true, dinnerAuto: true, entered: true, autoBy: 'system', autoAt: '2026-10-21 04:17' };
+// The record the server writes (cash_tip_autofill): no Entered marks, no at / editedAt (independent review fadbb69 P1)
+const AUTO_BOTH = { lunch: 0, lunchAuto: true, dinner: 0, dinnerAuto: true, autoBy: 'system', autoAt: '2026-10-21 04:17' };
 const REAL_LUNCH = { lunch: 12.5, lunchEntered: true, entered: false, by: 'Crew A', at: '2026/10/20 21:00' };
 
 test('merge: a value a person entered (0 too) always beats the automatic 0, side by side, in either order', () => {
@@ -83,7 +83,7 @@ test('merge: a value a person entered (0 too) always beats the automatic 0, side
     const r = m(cloud, local).d;
     assert.equal(r.lunch, 12.5); assert.equal(r.lunchEntered, true); assert.equal(r.lunchAuto, undefined, 'the person\'s side is not automatic');
     assert.equal(r.dinner, 0); assert.equal(r.dinnerAuto, true, 'the other side stays the automatic 0');
-    assert.equal(r.entered, true);
+    assert.equal(r.dinnerEntered, undefined, 'the automatic 0 is never marked as entered'); assert.equal(r.entered, false);
   }
   // A 0 a person entered stays a person's 0
   const real0 = { dinner: 0, dinnerEntered: true, by: 'Crew B', at: '2026/10/20 22:00' };
@@ -94,15 +94,23 @@ test('merge: a value a person entered (0 too) always beats the automatic 0, side
   // Both automatic: automatic
   assert.equal(m({ d: AUTO_BOTH }, { d: Object.assign({}, AUTO_BOTH, { autoAt: 'x' }) }).d.lunchAuto, true);
   // The automatic side sits in the newer record (another person entered the other side later); the older record has a person's value
-  const filledLater = { lunch: 0, lunchEntered: true, lunchAuto: true, dinner: 3, dinnerEntered: true, entered: true, by: 'Crew Y', at: '2026/10/20 23:00', autoBy: 'system' };
+  const filledLater = { lunch: 0, lunchAuto: true, dinner: 3, dinnerEntered: true, entered: false, by: 'Crew Y', at: '2026/10/20 23:00', autoBy: 'system' };
   const olderReal = { lunch: 12.5, lunchEntered: true, by: 'Crew X', at: '2026/10/20 21:00' };
   for (const [a, b] of [[{ d: filledLater }, { d: olderReal }], [{ d: olderReal }, { d: filledLater }]]) {
     const r = m(a, b).d;
     assert.equal(r.lunch, 12.5, 'the older person\'s lunch beats the newer automatic 0'); assert.equal(r.lunchAuto, undefined);
     assert.equal(r.dinner, 3);
   }
-  // A stale automatic flag next to a person's non-zero value is not automatic (value must be 0)
+  // A stale automatic flag next to a person's value is not automatic: Entered wins, a non-zero value wins
   assert.equal(run(c, 'cashTipSideAuto(' + JSON.stringify({ lunch: 7, lunchEntered: true, lunchAuto: true }) + ',"lunch")'), false);
+  assert.equal(run(c, '_ctSideState(' + JSON.stringify({ lunch: 0, lunchEntered: true, lunchAuto: true }) + ',"lunch")'), 'real', 'a person\'s 0 saved on v1117 (Auto kept) is a person\'s 0');
+  // An amount stored without the entered mark (older records) counts as a value: it is what the tip used
+  assert.equal(run(c, '_ctSideState(' + JSON.stringify({ lunch: 40, entered: false }) + ',"lunch")'), 'real');
+  // Undone on the server (Auto:false) beats a device's automatic 0
+  for (const [a, b] of [[{ d: { lunchAuto: false, dinnerAuto: false } }, { d: AUTO_BOTH }], [{ d: AUTO_BOTH }, { d: { lunchAuto: false, dinnerAuto: false } }]]) {
+    const r = m(a, b).d;
+    assert.equal(r.lunchAuto, false); assert.equal(r.lunch, undefined); assert.equal(r.dinnerAuto, false);
+  }
 });
 
 test('merge on a v1117 device (no Auto rule): the person\'s value still wins, the automatic side is carried over', { skip: (() => { try { execFileSync('git', ['-C', root, 'cat-file', '-e', '7c5aa13^{commit}'], { stdio: 'ignore' }); return false; } catch { return 'commit 7c5aa13 (v1117) is not in this clone'; } })() }, () => {
@@ -112,10 +120,22 @@ test('merge on a v1117 device (no Auto rule): the person\'s value still wins, th
   for (const [cloud, local] of [[{ d: AUTO_BOTH }, { d: REAL_LUNCH }], [{ d: REAL_LUNCH }, { d: AUTO_BOTH }]]) {
     const r = J(run(c, 'mergeCashTips(' + JSON.stringify(cloud) + ',' + JSON.stringify(local) + ')')).d;
     assert.equal(r.lunch, 12.5, 'the person\'s lunch');
-    assert.equal(r.dinner, 0); assert.equal(r.dinnerEntered, true); assert.equal(r.dinnerAuto, true, 'the automatic dinner stays marked');
+    assert.equal(r.dinner, 0); assert.equal(r.dinnerEntered, undefined, 'v1117 still reads the automatic dinner as not entered'); assert.equal(r.dinnerAuto, true, 'the automatic dinner stays marked');
   }
-  // The v1118 reading of what the old merge produced: lunch is the person's value (12.5 ≠ 0 → not automatic)
+  // Review fadbb69 P1-1: a v1117 device holding the copy with the automatic dinner edits lunch later; a person's dinner made meanwhile survives
+  const T1 = { lunch: 50, lunchEntered: true, entered: false, by: 'Crew A', at: '2026/10/20 21:00', dinner: 0, dinnerAuto: true, autoBy: 'system' };
+  const cloudAfterD2 = { d: Object.assign({}, T1, { dinner: 30, dinnerEntered: true, entered: true, editedBy: 'GM', editedAt: '2026/10/21 09:00' }) };
+  const d1 = { d: Object.assign({}, T1, { lunch: 55, editedBy: 'SL', editedAt: '2026/10/21 10:00' }) };
+  for (const [a, b] of [[cloudAfterD2, d1], [d1, cloudAfterD2]]) {
+    const r = J(run(c, 'mergeCashTips(' + JSON.stringify(a) + ',' + JSON.stringify(b) + ')')).d;
+    assert.equal(r.dinner, 30, 'the manager\'s dinner is kept by the v1117 merge'); assert.equal(r.lunch, 55);
+  }
+  // Review fadbb69 P1-2: a v1117 tablet enters 25 by mistake then corrects to 0 (Auto kept by v1117); v1118 keeps the correction
   const v = app();
+  const at25 = { d: { lunch: 25, lunchEntered: true, lunchAuto: true, dinner: 0, dinnerAuto: true, by: 'Crew T', at: '2026/10/21 20:00' } };
+  const at0 = { d: Object.assign({}, at25.d, { lunch: 0, editedBy: 'Crew T', editedAt: '2026/10/21 21:00' }) };
+  for (const [a, b] of [[at25, at0], [at0, at25]]) assert.equal(J(run(v, 'mergeCashTips(' + JSON.stringify(a) + ',' + JSON.stringify(b) + ')')).d.lunch, 0);
+  // The v1118 reading of what the old merge produced: lunch is the person's value (12.5 ≠ 0 → not automatic)
   const r = J(run(c, 'mergeCashTips(' + JSON.stringify({ d: AUTO_BOTH }) + ',' + JSON.stringify({ d: REAL_LUNCH }) + ')')).d;
   assert.equal(run(v, '_ctSideState(' + JSON.stringify(r) + ',"lunch")'), 'real');
   assert.equal(run(v, '_ctSideState(' + JSON.stringify(r) + ',"dinner")'), 'auto');
@@ -127,6 +147,7 @@ test('covers: a person\'s value that the cloud still has as the automatic 0 is n
   const mine = { d: { lunch: 5, lunchEntered: true, dinner: 0, dinnerEntered: true, entered: true, by: 'A', at: '2026/10/20 21:00' } };
   assert.equal(cov({ d: AUTO_BOTH }, mine), false);
   assert.equal(cov({ d: Object.assign({}, AUTO_BOTH, mine.d, { lunchAuto: undefined, dinnerAuto: undefined }) }, mine), true);
+  assert.equal(cov({ d: AUTO_BOTH }, { d: { lunchAuto: false } }), false, 'an undo that the cloud still has as the automatic 0');
   assert.equal(cov({ d: AUTO_BOTH }, { d: AUTO_BOTH }), true);
   // each side on its own
   assert.equal(cov({ d: AUTO_BOTH }, { d: { lunch: 5, lunchEntered: true, by: 'A', at: '2026/10/20 21:00' } }), false, 'lunch');
@@ -218,7 +239,8 @@ test('screens: invalid values are an error with a fix button; missing / automati
   assert.doesNotMatch(agg, /cashTipMissing\(/);
   for (const f of ['renderTipDaily', 'openTipDayDetail', 'renderStoreCmdTip']) assert.doesNotMatch(bodyOf(f), /cashTipMissing\(/, f);
   // The computed amount was 0 for a missing side before v1118 too (getCashTip), so totals do not move
-  assert.match(bodyOf('tipForDay'), /\(cash\.lunch\|\|0\)/);
+  assert.match(bodyOf('tipForDay'), /\(Number\(cash\.lunch\)\|\|0\)/, 'numbers, not text joined (\'25\')');
+  assert.match(SRC, /^var _CT_RANK = \{ real:3, off:2, auto:1, '':0 \};$/m);
 });
 
 test('release markers are 1118 or later, the page and the service worker the same', () => {
@@ -244,7 +266,7 @@ async function db() {
     grant select on public.store_config, public.toast_sales to service_role;
     insert into public.store_config values ('F01','One',true,'g1'),('F02','Two',true,'g2'),('F03','FSP',true,'g3'),('F04','Four',false,'g4');`);
   const ts = (g, d, net, l, dn) => pg.query('insert into public.toast_sales values ($1,$2,$3,$4,$5)', [g, d, net, l, dn]);
-  for (const n of [1, 2, 3, 4]) await ts('g1', D(n), 900, 20, 30);
+  for (const n of [1, 2, 3, 4, 7]) await ts('g1', D(n), 900, 20, 30);
   await ts('g1', D(5), 0, null, null);     // no sales, no credit tips: not a business day with data
   await ts('g1', D(0), 900, 20, 30);       // today: never filled
   await ts('g2', D(1), 0, 15, null);       // credit tip only
@@ -255,9 +277,11 @@ async function db() {
     [D(1)]: { lunch: 20, lunchEntered: true, entered: false, by: 'Crew A', at: '2026/10/20 21:00' },
     [D(2)]: { lunch: 0, dinner: 0, entered: true, by: 'Crew B', at: '2026/10/19 21:00' },   // legacy record (no side flags)
     [D(3)]: { lunch: 'abc', lunchEntered: true, entered: false, by: 'Crew C', at: '2026/10/18 21:00' },
+    [D(7)]: { lunch: 40, dinner: 25, entered: false, by: 'Crew E', at: '2026/10/15 21:00' },   // amounts without the entered mark: used as they are, never replaced
   });
   await put('cash_tips_F04', { __st: 1, v: {} });                     // wrapped shape: left alone
-  await put('daily_actuals_F05', { [D(2)]: { actual: 500 }, [D(3)]: { actual: 0 }, [D(6)]: { lunchCreditTip: 0 } });   // store only in app_state
+  await put('cash_tips_F05', { [D(2)]: { lunch: 5, lunchEntered: true, by: 'Crew F', at: '2026/10/27 14:00' } });   // no "entered" key at all
+  await put('daily_actuals_F05', { [D(2)]: { actual: 500 }, [D(3)]: { actual: 0 }, [D(6)]: { lunchCreditTip: 0 }, '2026-02-30': { actual: 100 }, x: 1 });   // store only in app_state; a date that does not exist is skipped
   await pg.exec(MIG);
   return pg;
 }
@@ -270,28 +294,30 @@ test('server: the dry run writes nothing; apply fills only missing sides of fini
   const before = J((await pg.query('select key, value from public.app_state order by key')).rows);
   const dry = (await q1(pg, 'select public.cash_tip_autofill(null, null, false) as r')).r;
   assert.equal(dry.apply, false); assert.equal(dry.run_id, null);
-  assert.equal(dry.filled_days, 6); assert.equal(dry.filled_sides, 10);
-  assert.deepEqual(dry.stores, { F01: { days: 3, sides: 4 }, F02: { days: 1, sides: 2 }, F05: { days: 2, sides: 4 } });
+  assert.equal(dry.filled_days, 6); assert.equal(dry.filled_sides, 9);
+  assert.deepEqual(dry.stores, { F01: { days: 3, sides: 4 }, F02: { days: 1, sides: 2 }, F05: { days: 2, sides: 3 } });
   assert.deepEqual(dry.skipped, [{ store: 'F04', why: 'unexpected_shape' }]);
   assert.deepEqual(J((await pg.query('select key, value from public.app_state order by key')).rows), before, 'nothing written');
   assert.equal((await q1(pg, 'select count(*)::int n from public.cash_tip_autofill_log')).n, 0);
 
   const done = (await q1(pg, 'select public.cash_tip_autofill(null, null, true) as r')).r;
-  assert.ok(done.run_id); assert.equal(done.filled_days, 6); assert.equal(done.filled_sides, 10);
+  assert.ok(done.run_id); assert.equal(done.filled_days, 6); assert.equal(done.filled_sides, 9);
   assert.equal(done.first, D(6)); assert.equal(done.last, D(1));
   const f1 = await cash(pg, 'F01');
-  // D1: the person's lunch stays; dinner becomes the automatic 0; the record's time and author stay
-  assert.deepEqual(f1[D(1)], { lunch: 20, lunchEntered: true, entered: true, by: 'Crew A', at: '2026/10/20 21:00', dinner: 0, dinnerEntered: true, dinnerAuto: true, autoBy: 'system', autoAt: f1[D(1)].autoAt });
+  // D1: the person's lunch stays; dinner becomes the automatic 0 (no Entered mark); the record's time, author and entered stay
+  assert.deepEqual(f1[D(1)], { lunch: 20, lunchEntered: true, entered: false, by: 'Crew A', at: '2026/10/20 21:00', dinner: 0, dinnerAuto: true, autoBy: 'system', autoAt: f1[D(1)].autoAt });
   assert.match(f1[D(1)].autoAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
   assert.deepEqual(f1[D(2)], { lunch: 0, dinner: 0, entered: true, by: 'Crew B', at: '2026/10/19 21:00' }, 'legacy entered record untouched');
   assert.equal(f1[D(3)].lunch, 'abc', 'an invalid value is left for a person to fix'); assert.equal(f1[D(3)].dinnerAuto, true);
-  assert.deepEqual(f1[D(4)], { lunch: 0, lunchEntered: true, lunchAuto: true, dinner: 0, dinnerEntered: true, dinnerAuto: true, entered: true, autoBy: 'system', autoAt: f1[D(4)].autoAt });
+  assert.deepEqual(f1[D(4)], { lunch: 0, lunchAuto: true, dinner: 0, dinnerAuto: true, autoBy: 'system', autoAt: f1[D(4)].autoAt });
+  assert.deepEqual(f1[D(7)], { lunch: 40, dinner: 25, entered: false, by: 'Crew E', at: '2026/10/15 21:00' }, 'amounts without the mark are not replaced (review fadbb69 P2-1)');
   assert.equal(f1[D(4)].at, undefined, 'no record time: a person\'s value always wins the merge');
   assert.equal(f1[D(5)], undefined, 'no sales and no credit tips: not filled');
   assert.equal(f1[D(0)], undefined, 'today is not filled');
   assert.deepEqual(Object.keys(await cash(pg, 'F02')), [D(1)], 'a missing row is created');
   const f5 = await cash(pg, 'F05');
   assert.deepEqual(Object.keys(f5).sort(), [D(2), D(6)].sort(), 'days from daily_actuals (sales > 0 or a credit tip field)');
+  assert.deepEqual(f5[D(2)], { lunch: 5, lunchEntered: true, by: 'Crew F', at: '2026/10/27 14:00', dinner: 0, dinnerAuto: true, autoBy: 'system', autoAt: f5[D(2)].autoAt }, 'a record without an "entered" key gets its other side');
   assert.equal(await cash(pg, 'F03'), undefined, 'excluded store');
   assert.deepEqual(await cash(pg, 'F04'), { __st: 1, v: {} });
   assert.equal((await q1(pg, 'select count(*)::int n from public.cash_tip_autofill_log where run_id = $1', [done.run_id])).n, 6);
@@ -305,7 +331,7 @@ test('server: the dry run writes nothing; apply fills only missing sides of fini
   const c = app();
   const local = { [D(4)]: { lunch: 0, lunchEntered: true, dinner: 15, dinnerEntered: true, entered: true, by: 'Crew D', at: '2026/10/30 08:00' } };
   const m = J(run(c, 'mergeCashTips(' + JSON.stringify(f1) + ',' + JSON.stringify(local) + ')'));
-  assert.equal(m[D(4)].dinner, 15); assert.equal(m[D(4)].dinnerAuto, undefined); assert.equal(m[D(4)].lunchAuto, undefined);
+  assert.equal(m[D(4)].dinner, 15); assert.equal(m[D(4)].dinnerAuto, undefined); assert.equal(m[D(4)].lunchAuto, undefined); assert.equal(m[D(4)].lunchEntered, true);
   assert.equal(m[D(1)].lunch, 20); assert.equal(m[D(1)].dinnerAuto, true);
   await pg.close();
 });
@@ -325,16 +351,20 @@ test('server: undo restores only the sides that are still the automatic 0; a per
   const before = { F01: await cash(pg, 'F01'), F05: await cash(pg, 'F05') };
   const run1 = (await q1(pg, 'select public.cash_tip_autofill(null, null, true) as r')).r.run_id;
   // A person enters 15 for the D4 dinner after the fill (the v1118 app removes the automatic mark)
-  await pg.query(`update public.app_state set value = jsonb_set(value, array[$1], (value -> $1) - 'dinnerAuto' || '{"dinner":15,"by":"Crew D","at":"2026/10/30 08:00"}'::jsonb) where key = 'cash_tips_F01'`, [D(4)]);
+  await pg.query(`update public.app_state set value = jsonb_set(value, array[$1], (value -> $1) - 'dinnerAuto' || '{"dinner":15,"dinnerEntered":true,"by":"Crew D","at":"2026/10/30 08:00"}'::jsonb) where key = 'cash_tips_F01'`, [D(4)]);
   const u = (await q1(pg, 'select public.cash_tip_autofill_undo($1) as r', [run1])).r;
-  assert.equal(u.undone_sides, 9); assert.equal(u.kept_sides_changed_by_people, 1);
+  assert.equal(u.undone_sides, 8); assert.equal(u.kept_sides_changed_by_people, 1);
   const f1 = await cash(pg, 'F01');
-  assert.deepEqual(f1[D(1)], before.F01[D(1)], 'D1 is back as it was');
-  assert.deepEqual(f1[D(3)], before.F01[D(3)]);
-  assert.deepEqual(f1[D(4)], { dinner: 15, dinnerEntered: true, by: 'Crew D', at: '2026/10/30 08:00' }, 'the person\'s dinner stays; the automatic lunch is gone');
-  assert.equal(before.F05, undefined);
-  assert.deepEqual(await cash(pg, 'F05'), {}, 'records that did not exist are removed again');
-  assert.deepEqual(await cash(pg, 'F02'), {});
+  // Back as it was, plus the undo mark (<side>Auto:false) so the side is not filled again and devices holding the 0 do not bring it back
+  assert.deepEqual(f1[D(1)], Object.assign({}, before.F01[D(1)], { dinnerAuto: false }), 'D1 is back as it was');
+  assert.deepEqual(f1[D(3)], Object.assign({}, before.F01[D(3)], { dinnerAuto: false }));
+  assert.deepEqual(f1[D(4)], { dinner: 15, dinnerEntered: true, by: 'Crew D', at: '2026/10/30 08:00', lunchAuto: false }, 'the person\'s dinner stays; the automatic lunch is undone');
+  assert.deepEqual(await cash(pg, 'F05'), { [D(2)]: Object.assign({}, before.F05[D(2)], { dinnerAuto: false }), [D(6)]: { lunchAuto: false, dinnerAuto: false } });
+  assert.equal((await q1(pg, 'select public.cash_tip_autofill(null, null, false) as r')).r.filled_days, 0, 'undone sides are not filled again');
+  // A device that still has the automatic 0 does not bring it back (v1118 merge)
+  const c = app();
+  const back = J(run(c, 'mergeCashTips(' + JSON.stringify(await cash(pg, 'F01')) + ',' + JSON.stringify({ [D(1)]: Object.assign({}, before.F01[D(1)], { dinner: 0, dinnerAuto: true }) }) + ')'));
+  assert.equal(back[D(1)].dinnerAuto, false); assert.equal(back[D(1)].dinner, undefined);
   const u2 = (await q1(pg, 'select public.cash_tip_autofill_undo($1) as r', [run1])).r;
   assert.equal(u2.undone_sides, 0, 'a second undo changes nothing');
   await pg.close();
@@ -361,7 +391,7 @@ test('deploy: the ops-bot file is built from the current sources; the rollback f
   for (const [file, hash] of Object.entries(meta.sources)) assert.equal(sha(fs.readFileSync(path.join(root, file))), hash, file + ' changed: rebuild with node deploy/cash-tip-auto-zero-v1118/build.mjs');
   const listed = new Set(Object.keys(meta.sources));
   for (const f of listed) for (const m of fs.readFileSync(path.join(root, f), 'utf8').matchAll(/from\s+'(\.[^']+)'/g)) assert.ok(listed.has(path.relative(root, path.resolve(path.dirname(path.join(root, f)), m[1]))), f + ' imports ' + m[1]);
-  const bundleFile = path.join(DEP, '4_関数_ops-bot_index.ts');
+  const bundleFile = path.join(DEP, '3_関数_ops-bot_index.ts');
   assert.equal(sha(fs.readFileSync(bundleFile)), meta.bundle_sha256);
   assert.equal(sha(fs.readFileSync(path.join(root, meta.rollback_file))), meta.rollback_sha256);
   assert.doesNotMatch(fs.readFileSync(bundleFile, 'utf8'), /^\s*import\s|\bimport\(/m, 'one file without imports');
@@ -400,11 +430,12 @@ test('deploy: the read-only check, the fill and the schedule run in order (synth
   assert.equal(kinds['F01:invalid'], 1, 'D3 lunch');
   assert.equal(kinds['F01:entered_zero'], 2, 'D2 legacy record (0 and 0)');
   assert.equal(kinds['F01:entered_number'], 1);
-  assert.equal(res[2].rows[0].preview.filled_sides, 10);
+  assert.equal(kinds['F01:flag_off_nonzero'], 2, 'D7: amounts without the mark (not filled)');
+  assert.equal(res[2].rows[0].preview.filled_sides, 9);
   const before = J((await pg.query('select key, value from public.app_state order by key')).rows);
   assert.ok(before.length);
-  const fill = await pg.exec(f('3_全期間を埋める.sql'));
-  assert.equal(fill[0].rows[0].result.filled_sides, 10);
+  const fill = await pg.exec(f('4_全期間を埋める.sql'));
+  assert.equal(fill[0].rows[0].result.filled_sides, 9);
   assert.equal(fill[1].rows[0].remaining.filled_days, 0);
   const after = await pg.exec(f('2_確認と見込み_読むだけ.sql'));
   const k2 = Object.fromEntries(after[1].rows.map(r => [r.store_id + ':' + r.kind, Number(r.sides)]));
