@@ -30,17 +30,23 @@ async function rows() {
       ['s' + n, f, store, vendor, vname, 'INV-' + (500 + n), date])).rows[0].id;
     let i = 0;
     for (const l of lines) {
-      const lid = (await pg.query(`insert into invoice_lines(doc_id, line_no, raw_name, raw, qty, amount_cents, ingredient_code, page) values($1,$2,'x','{}',$3,$4,$5,1) returning id`, [d, ++i, l.qty, Math.round(l.qty * l.ppp * 100), l.code])).rows[0].id;
+      const lid = (await pg.query(`insert into invoice_lines(doc_id, line_no, raw_name, raw, qty, amount_cents, ingredient_code, page, spec_key, purchase_unit, unit_price)
+        values($1,$2,'x','{}',$3,$4,$5,1,$6,$7,$8) returning id`, [d, ++i, l.qty, Math.round(l.qty * l.ppp * 100), l.code, l.spec || '', l.pu || 'CS', l.ppp])).rows[0].id;
+      if (l.rec === false) continue;   // a confirmed line without a price record (catch weight, unreadable quantity, ...)
       await pg.query(`insert into invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, doc_id, line_id, effective_date, effective_basis, invoice_date,
-        invoice_no_norm, price_per_purchase, price_per_count, count_unit, created_by) values($1,$2,$3,$4,$5,$6,$7,$8,'invoice',$8,$9,$10,$11,$12,'t')`,
-        [store, vendor, l.code, l.spec || '', l.pu || 'CS', d, lid, date, 'INV-' + (500 + n), l.ppp, l.pc ?? null, l.pc ? 'ea' : null]);
+        invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, created_by) values($1,$2,$3,$4,$5,$6,$7,$8,'invoice',$8,$9,$10,$11,$12,$13,$14,'t')`,
+        [store, vendor, l.code, l.spec || '', l.pu || 'CS', d, lid, date, 'INV-' + (500 + n), l.ppp, l.pc ?? null, l.pc ? 'ea' : null, l.pb ?? null, l.pb ? 'g' : null]);
     }
   };
   await inv({ date: day(30), lines: [{ code: '101', spec: '12EA', qty: 2, ppp: 60, pc: 5 }, { code: '102', qty: 1, ppp: 40 }] });
   await inv({ date: day(6), lines: [{ code: '101', spec: '12EA', qty: 4, ppp: 60, pc: 5 }, { code: '102', qty: 3, ppp: 44 }, { code: '103', spec: '10EA', qty: 1, ppp: 20, pc: 2 }] });
   await inv({ date: day(3), lines: [{ code: '103', spec: '10EA', qty: 1, ppp: 23, pc: 2.3 }] });
   await inv({ store: 'F02', vendor: 'v-b', vname: '<b>Evil</b> Foods', date: day(40), lines: [{ code: '104', spec: '6EA', qty: 1, ppp: 30, pc: 5 }] });
-  await inv({ store: 'F02', vendor: 'v-b', vname: '<b>Evil</b> Foods', date: day(2), lines: [{ code: '104', spec: '6EA', qty: 1, ppp: 48, pc: 8 }] });
+  await inv({ store: 'F02', vendor: 'v-b', vname: '<b>Evil</b> Foods', date: day(2), lines: [{ code: '104', spec: '6EA', qty: 1, ppp: 48, pc: 8 }, { code: '107', spec: '4EA', qty: 1, ppp: 12, pc: 3 }] });
+  // a newer purchase of the gyoza wrappers without a price record; a product bought only by catch weight; a bag priced per piece, then per gram
+  await inv({ date: day(1), lines: [{ code: '101', spec: '12EA', qty: 3, ppp: 61, rec: false }, { code: '105', pu: 'CS', qty: 2, ppp: 38.4, rec: false }] });
+  await inv({ date: day(20), lines: [{ code: '106', spec: 'BAG', pu: 'BAG', qty: 1, ppp: 10, pc: 2.5 }] });
+  await inv({ date: day(5), lines: [{ code: '106', spec: 'BAG', pu: 'BAG', qty: 1, ppp: 10, pb: 0.01 }] });
   await pg.query(`select public.invoice_price_compare_publish('{}'::jsonb)`);
   const r = Object.fromEntries((await pg.query(`select key, value::text v from app_state`)).rows.map(x => [x.key, x.v]));
   await pg.close();
@@ -53,8 +59,15 @@ function app({ role = 'gm', visible = ['F01', 'F02'], lang = 'ja', data = STORE 
     curLang: lang, curRole: role, html: '', modals: [], pulls: [], renders: 0, console,
     t: (ja, en) => (c.curLang === 'en' ? en : ja), escapeHtml: esc, bizToday: () => today,
     STORES: [{ id: 'F01', name: 'ToriTon' }, { id: 'F02', name: 'Tenkichi' }], getVisibleStores: () => visible.map(id => ({ id })),
-    getIngredients: () => [{ code: 101, name: 'Gyoza wrappers' }, { code: 102, name: 'Mixed greens' }, { code: 103, name: 'Eggs' }, { code: 104, name: '<i>Tofu</i>' }],
-    _lsStoreGet: k => data[k] || null, pullOpKey: async k => { c.pulls.push(k); return true; }, _lsRerenderSoon: () => { c.renders++; },
+    getIngredients: () => [{ code: 101, name: 'Gyoza wrappers' }, { code: 102, name: 'Mixed greens' }, { code: 103, name: 'Eggs' }, { code: 104, name: '<i>Tofu</i>' },
+      { code: 105, name: 'Salmon side' }, { code: 106, name: 'Rice bag' }, { code: 107, name: 'Lemons' }],
+    // this device's copy (local) and the server's rows (server): the tab reads the server row itself and keeps a copy
+    local: { ...data }, server: { ...data }, failPull: false,
+    _lsStoreGet: k => c.local[k] ?? null, _lsSetVerified: (k, v) => { c.local[k] = v; return true; }, _lsRawDel: k => { delete c.local[k]; return true; },
+    SUPABASE_URL: 'https://db.test', supaHeaders: () => ({}),
+    fetch: async url => { const k = decodeURIComponent(/key=eq\.([^&]+)/.exec(url)[1]); c.pulls.push(k); if (c.failPull) return { ok: false, status: 500 };
+      return { ok: true, json: async () => (k in c.server ? [{ value: JSON.parse(c.server[k]) }] : []) }; },
+    _lsRerenderSoon: () => { c.renders++; },
     invInOrig: (id, label) => '<a data-file="' + esc(id) + '">' + label + '</a>', renderPage: () => {}, openModal: h => c.modals.push(h), closeModalDirect: () => {},
     renderPurchaseAnalysisApp: () => '<div id="app-reference">app prices</div>',
   };
@@ -108,7 +121,7 @@ test('only the stores one can see; the filters; nothing yet / stopped are said p
   c.run("_pcx.flt = 'all'; _pcx.store = 'F02'"); h2 = c.run('pcxRender()'); assert.ok(h2.includes('Tofu') && !h2.includes('Eggs'));
   c.run("_pcx.store = ''; _pcx.q = 'egg'"); h2 = c.run('pcxRender()'); assert.ok(h2.includes('Eggs') && !h2.includes('Tofu'));
   const none = app({ data: {} }); assert.match(none.run('pcxRender()'), /読み込み中…/); await tick(); assert.match(none.run('pcxRender()'), /まだ集計がありません/);
-  const bad = app({ data: {} }); bad.pullOpKey = async () => false; bad.run('pcxRender()'); await tick(); assert.match(bad.run('pcxRender()'), /読み込めませんでした/);
+  const bad = app({ data: {} }); bad.failPull = true; bad.run('pcxRender()'); await tick(); await tick(); assert.match(bad.run('pcxRender()'), /読み込めませんでした/);
   const off = app({ data: { invoice_purchase_prices: '{"v":1,"off":true}' } }); assert.match(off.run('pcxRender()'), /止めています/);
 });
 
@@ -130,4 +143,31 @@ test('English', () => {
   const c = app({ lang: 'en' }); const h = text(c.run('renderPurchaseAnalysis()'));
   for (const s of ['Unit prices compared', 'per 1 LB, 1 L or 1 piece', 'Not comparable (no spec)', 'Check (over ±50%)', 'Reference: prices and totals from invoices entered in the app']) assert.ok(h.includes(s), s);
   assert.match(text(c.run('renderPriceAlertCard()')), /last 14 days · confirmed/);
+});
+
+test('review of e364f0c: a stale copy is said to be stale; a row taken back on the server is not shown any more', async () => {
+  const c = app(); c.failPull = true; c.run('pcxRender()'); await tick(); await tick();
+  const h = c.run('pcxRender()');
+  assert.match(h, /最新を読めませんでした。この端末に前に読んだ内容を出しています/); assert.ok(h.includes('Eggs'), 'the old copy is still shown, with the notice');
+  assert.match(h, /内容が変わった時刻 .*サーバーが 5 分ごとに確かめる/);
+  const gone = app(); gone.server = {}; gone.run('pcxRender()'); await tick(); await tick();
+  assert.equal(gone.local.invoice_purchase_prices, undefined, 'the copy on this device is removed');
+  assert.match(gone.run('pcxRender()'), /まだ集計がありません/);
+});
+
+test('review of e364f0c: 要確認 first on the same day; unit changed and no price record are 比較不可 with their reason; a later purchase without a record is said; the conversion basis is shown', async () => {
+  const c = app(); c.run("_pcx.store = 'F02'"); const h = c.run('pcxRender()');
+  assert.ok(h.indexOf('Tofu') < h.indexOf('Lemons'), '要確認 (rank 0) before はじめて on the same date');
+  const all = app().run('pcxRender()');
+  const rice = rowOf(all, 'Rice bag'); assert.match(rice, /比較不可（単位が変わった）/); assert.doesNotMatch(rice, /%/);
+  const salmon = rowOf(all, 'Salmon side'); assert.match(salmon, /比較不可（単価の記録なし）/); assert.match(salmon, /\$38\.40 \/ CS/);
+  const gyoza = rowOf(all, 'Gyoza wrappers'); assert.match(gyoza, /この日以降に単価の記録が無い仕入れ 1/); assert.match(gyoza, /規格（入数）から/);
+  const D = JSON.parse(STORE.invoice_purchase_prices);
+  assert.equal(D.stats.not_recorded, 1); assert.equal(D.stats.not_recorded_lines, 2); assert.equal(D.stats.unit_changed, 1);
+  const cc = app(); cc.run(`pcxOpen(${JSON.stringify(D.groups.find(g => g.c === '101').k)})`);
+  const m = text(cc.modals.pop()); assert.match(m, /単価の記録が無い仕入れが 1 件あります/); assert.match(m, /比較単価の求め方：規格（入数）から/);
+  cc.run(`pcxOpen(${JSON.stringify(D.groups.find(g => g.c === '105').k)})`); assert.match(text(cc.modals.pop()), /量り売り・数量や単価が読めない/);
+  cc.run(`pcxOpen(${JSON.stringify(D.groups.find(g => g.c === '106').k)})`); assert.match(text(cc.modals.pop()), /前回と比べる単位が違います/);
+  cc.run("_pcx.flt = 'nc'"); const nc = cc.run('pcxRender()');
+  assert.ok(nc.includes('Rice bag') && nc.includes('Salmon side') && nc.includes('Mixed greens') && !nc.includes('Eggs'));
 });

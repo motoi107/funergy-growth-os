@@ -10142,7 +10142,7 @@ function obPushSecret(ob){
    pl_actual: 実PLの確定値（opex / netop / 科目明細）。
      v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
      実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
-var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1', 'vendor_base_v1'];   /* v1121: vendor_base_v1＝業者をクラウドから読んだときの姿（この端末だけ） */   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
+var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1', 'vendor_base_v1', 'vendor_touched_v1'];   /* v1121: vendor_base_v1＝業者をクラウドから読んだときの姿（この端末だけ） */   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
 function isLocalOnlyKey(key){ var k=String(key||''); return LS_LOCAL_ONLY.indexOf(k) >= 0 || k.indexOf('financial_save_recovery_v2/')===0 || k.indexOf('financial_pre_guard_archive_v1/')===0; }   /* v1104: 退避の記録は 1 件ずつの名前（この端末だけ） */
 function isOpSyncKey(key){
   if (isLocalOnlyKey(key)) return false;   /* v919 */
@@ -21467,7 +21467,8 @@ function computeStorePower(s, days, allInact, allUnreg){
   var k = keyKpiStats([s], days);
   var staff = spStaffStats(s.id);
   staff.inact = (allInact||[]).filter(function(x){ return x.emp.store===s.id || (x.emp.support||[]).includes(s.id); }).length;
-  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0; }).length;
+  /* v1120：店舗総合力の減点は今までどおり、だれにも入っていない名前（kind none）だけ。退職の記録・名前の一部の行を減点に数えるかは Moto さんの判断待ち（Codex PR #110 の確認） */
+  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0 && (!x.kind || x.kind==='none'); }).length;
   // 予実達成
   var dAchieve = k.budget>0 ? Math.min(100, Math.round(k.achieve)) : null;
   // 収益力（原価率＋人件費率 = プライムコスト。60%以下で満点、上がるほど減点）
@@ -33512,7 +33513,7 @@ function invSetVendorKind(vendorName, kind){
     else vendors.push({ id:'v'+Date.now(), name:vendorName, kind:kind, kindBy:myName(), kindAt:nowJP(),
       contact:'', phone:'', sms:'', email:'', line:'', method:'', cutoff:'', leadtime:1, minOrder:0,
       delivery:'', terms:'', rating:3, webform:'', storeMethods:{} });
-    return lsSet('m_vendors', vendors);
+    return lsSet('m_vendors', vendorsWithDeleted(vendors));
   }catch(e){ console.warn('invSetVendorKind', e); return false; }
 }
 /* 同じ業者の過去Invoiceで選ばれた用途の多数決 */
@@ -48663,10 +48664,10 @@ function ivdMakeCard(key, nm, kind, cardId){
       leadtime:1, minOrder:0, delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, src:'invoice_intake' };
     if (del) card._recreate = true;
     vs.push(card);
-    var ok = lsSet('m_vendors', vs) !== false;
+    var ok = lsSet('m_vendors', vendorsWithDeleted(vs)) !== false;
     return { ok:ok, made:ok };
   }
-  if ((kind === 'food' || kind === 'nonfood') && cur.kind !== 'food' && cur.kind !== 'nonfood') { cur.kind = kind; cur.kindBy = me; cur.kindAt = when; if (typeof vendorTouch === 'function') vendorTouch(cur.id, ['kind','kindBy','kindAt']); return { ok:lsSet('m_vendors', vs) !== false, made:false }; }
+  if ((kind === 'food' || kind === 'nonfood') && cur.kind !== 'food' && cur.kind !== 'nonfood') { cur.kind = kind; cur.kindBy = me; cur.kindAt = when; if (typeof vendorTouch === 'function') vendorTouch(cur.id, ['kind','kindBy','kindAt']); return { ok:lsSet('m_vendors', vendorsWithDeleted(vs)) !== false, made:false }; }
   return { ok:true, made:false };
 }
 /* 開いたとき：この印字名をまとめた Invoice取込の統合（この画面から・答えが返らなかったもの）に、アプリの記録が無ければ書く
@@ -51081,6 +51082,10 @@ function benefitMinGradeOn(d){ return (String(d||'') >= BENEFIT_G3_FROM) ? 3 : 2
 function benefitGradeOn(e, d){
   if(!e) return { g:'', src:'', master:'' };
   var master = ghNormG(empGrade(e));
+  /* Codex（PR #109・9efea22）の P2：入社日より前・退職日より後は、今の役職のグレードに戻さずに対象外（働いていない日） */
+  var hire = ghHire(e), resign = ghResign(e);
+  if(d && hire && d < hire) return { g:'', src:'out', master:master, out:'before', at:hire };
+  if(d && resign && d > resign) return { g:'', src:'out', master:master, out:'after', at:resign };
   try{
     var seg = ghSegments(e, d, d);
     if(seg && seg.length && seg[0].g && !seg[0].noHist) return { g:seg[0].g, src:'hist', master:master };
@@ -51091,6 +51096,7 @@ function benefitElig(e, d){
   d = d || ghToday();
   if(!e) return { ok:false, g:'', missing:true, why:'従業員マスターに見つかりません' };
   var r = benefitGradeOn(e, d), n = gradeNum(r.g), min = benefitMinGradeOn(d);
+  if(r.out) return { ok:false, g:'', out:r.out, why:(r.out==='before' ? '入社日（'+r.at+'）より前' : '退職日（'+r.at+'）より後') };
   if(!r.g) return { ok:false, g:'', missing:true, why:'グレード未設定（従業員マスターで設定が必要）' };
   var note = (r.src==='hist' && r.master && r.master!==r.g) ? '・グレードの履歴（今の役職は '+r.master+'）' : (r.src==='hist' ? '・グレードの履歴' : '');
   if(n>=min && n<=6) return { ok:true, g:r.g, src:r.src, why:r.g+'（G'+min+' 以上）'+note };
@@ -53702,7 +53708,9 @@ function unregisteredClockIns(days){
   var _date=function(d){ return (typeof d==='string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : ''; };   /* 読めない退職日は無いのと同じ（独立レビュー P2-2） */
   /* その店で別名がちょうど 1 人に決まるときだけ「結んだ」とみなす（取り込みと同じ決め方。2 人に当たると、どちらにも入らないので一覧に残す・独立レビュー 7d234a4 P3-1）。
      actOnly：在籍の人の別名だけ（退職の記録に入っている打刻が、もう在籍の人に結んであるか） */
-  var _cov=function(key, sid, actOnly){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
+  /* date：その日の打刻か。別名の from より前の日は、取り込みも別名を使わないので「結んだ」とみなさない（Codex PR #110・b0af69a の P2。前の日は一覧に残し、あとから「前の期間も含める」で結べる）。
+     date なし（だれにも入っていない名前の行）は v1111 のまま（結んだ名前は前の日も出さない・決め方 3 の A） */
+  var _cov=function(key, sid, actOnly, date){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid) && !(date && a.from && date<a.from); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
     (actOnly ? act : (act.length ? act : ok)).forEach(function(a){ ids[a.emp.id]=1; }); return Object.keys(ids).length===1; };
   var _empInfo=function(x){ return { id:x.id, name:x.name, status:x.status||'在籍', store:x.store||'', support:(x.support||[]).slice(), resignDate:_date(x.resignDate), title:x.title||'' }; };
   var map={};
@@ -53739,7 +53747,7 @@ function unregisteredClockIns(days){
           emp=regs.filter(function(x){ var rd=_date(x.resignDate); return rd && date<=rd; })[0];
           if(!emp){
             var k1=_key(tn0), rr=regs.slice().sort(function(a,b){ return _date(b.resignDate).localeCompare(_date(a.resignDate)); })[0];
-            if(_cov(k1, storeId, true) || _cov(_key(name), storeId, true)) return;   /* 在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。別名の from より後の日は次の取り直しで移る。前の日はそのまま＝v1111 の決め方） */
+            if(_cov(k1, storeId, true, date) || _cov(_key(name), storeId, true, date)) return;   /* その日に効く在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。次の取り直しで移る）。別名の from より前の日は退職の記録に残るので出す */
             /* Toast の名前が退職の記録の名前と同じときだけ「退職の記録に入っている」。名前の一部で入ったものは part（独立レビュー P2-1） */
             var _same=k1===_key(rr.name);
             if(_same || toastAliasCovers(rr, k1, storeId)){ add('r|'+rr.id+'|'+k1, { kind:'resigned', name:tn0, toastName:tn0, emp:_empInfo(rr), viaAlias:!_same }, storeId, date, h); return; }   /* 退職の人の別名に結んである名前も同じ扱い */
@@ -53752,7 +53760,7 @@ function unregisteredClockIns(days){
           var kk=_key(tn);
           if(!tn || !kk || seen[kk]) return; seen[kk]=1;
           if(kk===ek || (emp.toastName && emp.toastName===tn)) return;   /* 同じ名前（大文字小文字・空白・ハイフンだけ違う）。前の欄 toastName に入れてあれば人が確かめた名前 */
-          if(_cov(kk, storeId, emp.status==='退職')) return;              /* 別名で結んである（退職の記録に入っているときは、在籍の人の別名だけ） */
+          if(_cov(kk, storeId, emp.status==='退職', date)) return;        /* その日に効く別名で結んである（退職の記録に入っているときは、在籍の人の別名だけ）。from より前の日は今の人に残るので出す */
           add('p|'+emp.id+'|'+kk, { kind:'part', name:tn, toastName:tn, emp:_empInfo(emp) }, storeId, date, h);
         });
       });
@@ -55713,7 +55721,7 @@ async function vmgDo(){
       prevKind:prevKind, renamed:renamed, hide:P.hide, off:false }]];
     names.forEach(function(n){ if (n === keep) return; list.push(['n:' + vmgKey(n), { to:keep, name:n, g:gid, off:false }]); });
     var ok = vmgSaveMany(list);
-    var okCards = !tgt || (!Object.keys(filled).length && !renamed && prevKind === null) || lsSet('m_vendors', vendors) !== false;
+    var okCards = !tgt || (!Object.keys(filled).length && !renamed && prevKind === null) || lsSet('m_vendors', vendorsWithDeleted(vendors)) !== false;
     if (!ok || !okCards) { showToast(vmgT('Invoice取込はまとめましたが、この端末に保存できませんでした（保存容量を確かめて、もう一度まとめてください）','The intake was merged, but this device could not save (check the storage and merge again)'), 'warning'); return; }
     closeModalDirect();
     _vmg.pick = {}; _vmg.usageAt = 0;
@@ -55781,7 +55789,7 @@ async function vmgUndo(id){
       if (g.renamed && v.name === g.renamed.to) { v.name = g.renamed.from; ch = true; }
       if (g.kind && v.kind === g.kind && g.prevKind !== null && g.prevKind !== undefined) { v.kind = g.prevKind || ''; ch = true; }
     }
-    if (ch) ok = (lsSet('m_vendors', vendors) !== false) && ok;
+    if (ch) ok = (lsSet('m_vendors', vendorsWithDeleted(vendors)) !== false) && ok;
     if (!ok) { showToast(vmgT('Invoice取込は外しましたが、この端末に保存できませんでした（保存容量を確かめて、もう一度外してください）','The intake was taken back, but this device could not save (check the storage and press again)'), 'warning'); return; }
     closeModalDirect(); _vmg.usageAt = 0;
     showToast(vmgT('統合を外しました（「'+escapeHtml(g.to)+'」）','Merge taken back (“'+escapeHtml(g.to)+'”)'), 'success');
@@ -56218,7 +56226,9 @@ function openIngV2Trend(id){
 var PCX_KEY = 'invoice_purchase_prices', PCX_ALERT_KEY = 'invoice_purchase_prices_alerts', PCX_TTL = 10 * 60 * 1000;
 var _pcx = { memo:{}, asked:{}, flt:'all', store:'', q:'' };
 var PCX_ST = { up:['値上がり','Up','var(--red)'], down:['値下がり','Down','var(--green)'], same:['変わらない','No change','var(--muted)'], first:['はじめて','First','var(--muted)'],
-  check_jump:['要確認（±50% 超）','Check (over ±50%)','#b45309'], check_link:['結びの確認','Check the link','#b45309'], no_spec:['比較不可（規格が不明）','Not comparable (no spec)','var(--muted)'] };
+  check_jump:['要確認（±50% 超）','Check (over ±50%)','#b45309'], check_link:['結びの確認','Check the link','#b45309'], no_spec:['比較不可（規格が不明）','Not comparable (no spec)','var(--muted)'],
+  unit_changed:['比較不可（単位が変わった）','Not comparable (unit changed)','var(--muted)'], not_recorded:['比較不可（単価の記録なし）','Not comparable (no price record)','var(--muted)'] };
+var PCX_BY = { base:['規格（重さ・量・個数）から','from the spec (weight, volume, pieces)'], count:['規格（入数）から','from the spec (pack count)'], unit:['仕入単位から','from the purchase unit'] };
 function pcxRaw(k){ try { return (typeof _lsStoreGet === 'function') ? _lsStoreGet(k) : null; } catch(e) { return null; } }
 function pcxGet(k){
   var raw = pcxRaw(k); if (!raw) return null;
@@ -56228,18 +56238,29 @@ function pcxGet(k){
   _pcx.memo[k] = { raw:raw, val:v };
   return v;
 }
-/* 開いたときに取る（10 分ごと・取れなかったら 1 分あけて）。まとめ取りには入れない（invoice_purchase_ の行） */
+/* 開いたときに取る（10 分ごと・取れなかったら 1 分あけて）。まとめ取りには入れない（invoice_purchase_ の行）。
+   サーバーに行が無ければ（戻した・まだ作っていない）、この端末の古い写しも消す（前の内容を出し続けない）。 */
+function pcxPull(k){
+  return fetch(SUPABASE_URL + '/rest/v1/app_state?key=eq.' + encodeURIComponent(k) + '&select=value', { headers: supaHeaders() })
+    .then(function(res){ if (!res.ok) throw new Error('http ' + res.status); return res.json(); })
+    .then(function(rows){
+      if (!Array.isArray(rows)) throw new Error('bad');
+      if (!rows.length) { if (pcxRaw(k) !== null) _lsRawDel(k); return true; }
+      if (!_lsSetVerified(k, JSON.stringify(rows[0].value))) throw new Error('save');
+      return true;
+    });
+}
 function pcxEnsure(k){
-  if (typeof pullOpKey !== 'function') return;
+  if (typeof fetch !== 'function' || typeof supaHeaders !== 'function') return;
   var a = _pcx.asked[k], now = Date.now();
   if (a && ((a.busy && now - a.busy < 120000) || (a.done && now - a.done < PCX_TTL) || (a.fail && now - a.fail < 60000))) return;
-  var mine = { busy:now }; _pcx.asked[k] = mine;
+  var mine = { busy:now, last:a && (a.done || a.last) || 0 }; _pcx.asked[k] = mine;
   var before = pcxRaw(k);
-  Promise.resolve().then(function(){ return pullOpKey(k); }).then(function(ok){
+  Promise.resolve().then(function(){ return pcxPull(k); }).then(function(){
     if (_pcx.asked[k] !== mine) return;
-    _pcx.asked[k] = ok ? { done:Date.now() } : { fail:Date.now() };
-    if (ok && pcxRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
-  }, function(){ if (_pcx.asked[k] === mine) _pcx.asked[k] = { fail:Date.now() }; });
+    _pcx.asked[k] = { done:Date.now() };
+    if (pcxRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
+  }, function(){ if (_pcx.asked[k] === mine) { _pcx.asked[k] = { fail:Date.now(), last:mine.last }; if (before !== null && typeof _lsRerenderSoon === 'function') _lsRerenderSoon(); } });
 }
 function pcxNum(v){ var n = Number(v); return (v === null || v === undefined || v === '' || !isFinite(n)) ? null : n; }
 function pcxMoney(v){ var n = pcxNum(v); if (n === null) return '—'; return '$' + n.toFixed(n >= 10 ? 2 : n >= 1 ? 3 : 4); }
@@ -56257,7 +56278,9 @@ function pcxRender(){
   pcxEnsure(PCX_KEY);
   var D = pcxGet(PCX_KEY), e = escapeHtml;
   var h = '<div class="card"><div class="card-title"><i class="ti ti-scale" style="color:var(--accent)"></i>' + t('仕入れ単価の比較（経理が確認した invoice）','Unit prices compared (invoices accounting confirmed)')
-    + (D && D.generated_at ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">' + t('集計 ','Updated ') + e(pcxGenAt(D)) + t('（ハワイ）',' (Hawaii)') + '</span>' : '') + '</div>';
+    + (D && D.generated_at ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">' + t('内容が変わった時刻 ','Last changed ') + e(pcxGenAt(D)) + t('（ハワイ・サーバーが 5 分ごとに確かめる）',' (Hawaii · the server checks every 5 minutes)') + '</span>' : '') + '</div>';
+  var A0 = _pcx.asked[PCX_KEY];
+  if (D && A0 && A0.fail) h += '<div class="alert" style="padding:6px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-wifi-off"></i> ' + t('最新を読めませんでした。この端末に前に読んだ内容を出しています（少しあとで開き直してください）。','Could not read the latest. Showing what this device read before (open it again in a moment).') + '</div>';
   h += '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">' + t('明細の単価（1 仕入単位あたり）を、規格（入数・量）で <b>1 LB・1 L・1 個</b>（または入数の単位）あたりに直して、同じ店・業者・食材・規格・仕入単位の前回の invoice と比べます。何ケース買ったか（数量）では変わりません。税・送料・invoice 全体の値引きは含みません。規格が分からないものは比べません（比較不可）。',
     'Each line’s unit price (per purchase unit) is converted with its spec (pack, content) to <b>per 1 LB, 1 L or 1 piece</b> (or the pack’s count unit) and compared with the previous invoice of the same store, vendor, product, spec and purchase unit. The quantity bought does not change it. Tax, shipping and invoice-level discounts are not included. Items without a known spec are not compared.') + '</div>';
   if (!D) {
@@ -56271,11 +56294,11 @@ function pcxRender(){
   var st = D.stats || {};
   h += '<div class="kpi-grid">' + kpi(t('値上がり','Up'), cnt('up') + t('件',''), t('前回の invoice より','vs the previous invoice'), 'var(--red)') + kpi(t('値下がり','Down'), cnt('down') + t('件',''), '', 'var(--green)')
     + kpi(t('要確認','Check'), (cnt('check_jump') + cnt('check_link')) + t('件',''), t('±50% 超 ','over ±50% ') + cnt('check_jump') + t(' · 結び ',' · link ') + cnt('check_link'), '#b45309')
-    + kpi(t('比較不可','Not comparable'), cnt('no_spec') + t('件',''), t('規格が分からない','no spec'), 'var(--muted)') + '</div>';
+    + kpi(t('比較不可','Not comparable'), (cnt('no_spec') + cnt('unit_changed') + cnt('not_recorded')) + t('件',''), t('規格・単位・単価の記録','spec, unit or no price record'), 'var(--muted)') + '</div>';
   if (pcxNum(st.waiting)) h += '<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-clock"></i> ' + t('経理の確認を待っている invoice の単価 ','Prices of invoices waiting for accounting ') + e(String(st.waiting)) + t(' 件は、確認されるまで比べません（全店の数）。',' are not compared until confirmed (all stores).') + '</div>';
   var stores = vis.filter(function(id){ return all.some(function(g){ return g.s === id; }); });
   h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:10px 0 6px">';
-  [['all',t('すべて','All')],['up',PCX_ST.up],['down',PCX_ST.down],['check',[t('要確認','Check'),t('要確認','Check')]],['no_spec',PCX_ST.no_spec],['first',PCX_ST.first]].forEach(function(x){
+  [['all',t('すべて','All')],['up',PCX_ST.up],['down',PCX_ST.down],['check',[t('要確認','Check'),t('要確認','Check')]],['nc',[t('比較不可','Not comparable'),t('比較不可','Not comparable')]],['first',PCX_ST.first]].forEach(function(x){
     var lab = Array.isArray(x[1]) ? t(x[1][0], x[1][1]) : x[1];
     h += '<button class="btn btn-sm ' + (_pcx.flt === x[0] ? 'btn-primary' : 'btn-secondary') + '" onclick="pcxSet(\'flt\',\'' + x[0] + '\')">' + e(lab) + '</button>';
   });
@@ -56285,12 +56308,15 @@ function pcxRender(){
   var q = String(_pcx.q || '').trim().toLowerCase();
   var rows = all.filter(function(g){
     if (_pcx.store && g.s !== _pcx.store) return false;
-    if (_pcx.flt === 'check' ? !(g.st === 'check_jump' || g.st === 'check_link') : (_pcx.flt !== 'all' && g.st !== _pcx.flt)) return false;
+    if (_pcx.flt === 'check' ? !(g.st === 'check_jump' || g.st === 'check_link')
+      : _pcx.flt === 'nc' ? !(g.st === 'no_spec' || g.st === 'unit_changed' || g.st === 'not_recorded')
+      : (_pcx.flt !== 'all' && g.st !== _pcx.flt)) return false;
     if (q && pcxName(g).toLowerCase().indexOf(q) < 0 && String(g.c).indexOf(q) < 0 && String(g.vn || '').toLowerCase().indexOf(q) < 0) return false;
     return true;
   });
-  var rank = { check_jump:0, check_link:1, up:2, down:3, no_spec:4, same:5, first:6 };
-  rows.sort(function(a, b){ return (String(b.d) > String(a.d) ? 1 : String(b.d) < String(a.d) ? -1 : 0) || ((rank[a.st] || 9) - (rank[b.st] || 9)); });
+  var rank = { check_jump:0, check_link:1, up:2, down:3, no_spec:4, unit_changed:4, not_recorded:4, same:5, first:6 };
+  var rk = function(st){ return Object.prototype.hasOwnProperty.call(rank, st) ? rank[st] : 9; };
+  rows.sort(function(a, b){ return (String(b.d) > String(a.d) ? 1 : String(b.d) < String(a.d) ? -1 : 0) || (rk(a.st) - rk(b.st)); });
   if (!rows.length) return h + '<div style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + t('当てはまる品目はありません。','Nothing matches.') + '</div></div>';
   h += '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:760px;font-size:11.5px"><thead><tr><th style="text-align:left">' + t('食材','Product') + '</th><th style="text-align:left">' + t('店舗・業者','Store · vendor') + '</th><th style="text-align:left">' + t('規格・仕入単位','Spec · unit') + '</th>'
     + '<th style="text-align:right">' + t('比較単価','Unit price') + '</th><th style="text-align:right">' + t('前回','Previous') + '</th><th style="text-align:right">' + t('増減','Change') + '</th><th>' + t('仕入日','Date') + '</th><th style="text-align:left">' + t('根拠','Source') + '</th><th>' + t('状態','State') + '</th></tr></thead><tbody>';
@@ -56298,13 +56324,13 @@ function pcxRender(){
     var o0 = (Array.isArray(g.obs) && g.obs[0]) || {};
     h += '<tr style="cursor:pointer" onclick="pcxOpen(' + escapeHtml(JSON.stringify(String(g.k))).replace(/'/g, '&#39;') + ')"><td style="text-align:left;font-weight:700">' + e(pcxName(g)) + '<div style="font-size:10px;color:var(--muted);font-weight:400">#' + e(String(g.c)) + '</div></td>'
       + '<td style="text-align:left">' + e(pcxStore(g.s)) + '<div style="font-size:10px;color:var(--muted)">' + e(g.vn || g.vk || '') + '</div></td>'
-      + '<td style="text-align:left">' + e(g.sp || '—') + '<div style="font-size:10px;color:var(--muted)">' + e(g.pu || '') + '</div></td>'
+      + '<td style="text-align:left">' + e(g.sp || '—') + '<div style="font-size:10px;color:var(--muted)">' + e(g.pu || '') + (PCX_BY[g.by] ? ' · ' + e(t(PCX_BY[g.by][0], PCX_BY[g.by][1])) : '') + '</div></td>'
       + '<td style="text-align:right;white-space:nowrap">' + (g.v != null ? pcxPer(g.v, g.u) : '<span style="color:var(--muted)">' + pcxMoney(o0.ppp) + ' / ' + e(g.pu || '') + '</span>') + '</td>'
       + '<td style="text-align:right;white-space:nowrap">' + (g.pv != null ? pcxPer(g.pv, g.u) : '—') + '</td>'
       + '<td style="text-align:right;white-space:nowrap">' + pcxPct(g) + '<div>' + pcxDiff(g) + '</div></td>'
       + '<td style="white-space:nowrap;color:var(--muted)">' + e(String(g.d || '').slice(5)) + (g.pd ? '<div style="font-size:10px">' + t('前回 ','prev ') + e(String(g.pd).slice(5)) + '</div>' : '') + '</td>'
       + '<td style="text-align:left;white-space:nowrap">' + e(o0.inv || '—') + (o0.f && typeof invInOrig === 'function' ? '<div>' + invInOrig(o0.f, t('原本','Original')) + '</div>' : '') + '</td>'
-      + '<td>' + pcxChip(g.st) + '</td></tr>';
+      + '<td>' + pcxChip(g.st) + (pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div style="font-size:10px;color:#b45309;margin-top:2px">' + t('この日以降に単価の記録が無い仕入れ ','Later purchases without a price record ') + e(String(g.nr)) + '</div>' : '') + '</td></tr>';
   });
   h += '</tbody></table></div>' + (rows.length > 200 ? '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + t('新しい順に 200 件まで。絞り込むとほかも出ます。','Up to 200, newest first. Filter to see the rest.') + '</div>' : '') + '</div>';
   return h;
@@ -56315,11 +56341,15 @@ function pcxOpen(k){
   var why = { check_link:t('同じ invoice に、この食材・規格で別の単価があります。対応表の結び（どの品目に結んだか）を確かめてください（比べません）。','The same invoice has another price for this product and spec. Check the mapping (not compared).'),
     check_jump:t('前回から ±50% を超えて変わりました。数量・単価・規格の読み違いがないか、原本で確かめてください。','Changed by more than ±50%. Check the quantity, unit price and spec on the original.'),
     no_spec:t('入数や量（規格）が分からず、仕入単位も重さ・量・個ではないため、1 LB・1 L・1 個あたりに直せません。対応表で規格を入れると比べられます。','The pack or content is unknown and the purchase unit is not a weight, volume or piece, so it cannot be converted. Add the spec in the mapping to compare it.'),
-    first:t('比べる前回の invoice がまだありません。','No previous invoice to compare with yet.') };
+    first:t('比べる前回の invoice がまだありません。','No previous invoice to compare with yet.'),
+    unit_changed:t('前回と比べる単位が違います（対応表の規格や仕入単位が変わった）。同じ単位になるまで比べません。','The previous price is in another unit (the spec or purchase unit in the mapping changed). Not compared until they match.'),
+    not_recorded:t('経理が確認した invoice ですが、単価の記録がありません（量り売り・数量や単価が読めない・数量 × 単価が合わない・結びの確認が要る など）。原本と対応表を確かめてください。','The invoice is confirmed but has no price record (catch weight, quantity or price unreadable, quantity × price does not match, the link needs checking, …). Check the original and the mapping.') };
   var h = '<div class="modal-title">' + e(pcxName(g)) + ' — ' + t('仕入れ単価','Unit prices') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     + '<div style="font-size:12px;margin-bottom:6px">' + e(pcxStore(g.s)) + ' · ' + e(g.vn || g.vk || '') + ' · ' + t('規格 ','spec ') + e(g.sp || '—') + ' · ' + t('仕入単位 ','unit ') + e(g.pu || '—') + ' ' + pcxChip(g.st) + '</div>'
     + (g.v != null ? '<div style="font-size:13px;margin-bottom:6px">' + t('比較単価 ','Unit price ') + '<b>' + pcxPer(g.v, g.u) + '</b>' + (g.pv != null ? '　' + t('前回 ','previous ') + pcxPer(g.pv, g.u) + '　' + pcxPct(g) + ' ' + pcxDiff(g) : '') + '</div>' : '')
     + (why[g.st] ? '<div class="alert" style="padding:7px 10px;font-size:11.5px;margin-bottom:8px">' + e(why[g.st]) + '</div>' : '')
+    + (pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div class="alert" style="padding:7px 10px;font-size:11.5px;margin-bottom:8px">' + e(t('この日以降（' + String(g.nrd || '') + ' まで）に、単価の記録が無い仕入れが ' + g.nr + ' 件あります（量り売り・数量や単価が読めない など）。上の比較単価がいちばん新しい仕入れとは限りません。', g.nr + ' later purchase(s) up to ' + String(g.nrd || '') + ' have no price record (catch weight, unreadable quantity or price, …). The price above may not be the newest purchase.')) + '</div>' : '')
+    + (PCX_BY[g.by] ? '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + e(t('比較単価の求め方：', 'How it is converted: ') + t(PCX_BY[g.by][0], PCX_BY[g.by][1])) + '</div>' : '')
     + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:560px;font-size:11.5px"><thead><tr><th>' + t('仕入日','Date') + '</th><th style="text-align:left">invoice</th><th style="text-align:right">' + t('数量','Qty') + '</th><th style="text-align:right">' + t('単価（1 仕入単位）','Unit price (per purchase unit)') + '</th><th style="text-align:right">' + t('明細金額','Line amount') + '</th><th style="text-align:right">' + t('比較単価','Compared') + '</th></tr></thead><tbody>'
     + (Array.isArray(g.obs) ? g.obs : []).map(function(o){
         return '<tr><td style="white-space:nowrap">' + e(String(o.d || '')) + '</td><td style="text-align:left">' + e(o.inv || '—') + (o.f && typeof invInOrig === 'function' ? ' ' + invInOrig(o.f, t('原本','Original') + (o.pg ? ' p.' + e(String(o.pg)) : '')) : '') + (o.two ? ' ' + pcxChip('check_link') : '') + '</td>'
@@ -59353,6 +59383,13 @@ var VENDOR_STATE_F = ['vst', 'vstAt', 'vstBy', 'vstWhy'];
 var VENDOR_CAT_F = ['vcat', 'vcatAt', 'vcatBy'];
 function vendorCatOf(v){ return (v && (v.vcat === 'purchase' || v.vcat === 'construction')) ? v.vcat : ''; }
 function vendorCatLabel(c){ return c === 'purchase' ? t('仕入れ業者','Purchase') : c === 'construction' ? t('工事関係業者','Construction') : t('未分類','Unclassified'); }
+/* 業者の一覧を端末に保存するときは、削除した業者の印（getVendors が出さないもの）を落とさない（Codex PR #111 P3。前はほかの保存で端末から消え、次の取り込みまで見えなかった） */
+function vendorsWithDeleted(list){
+  if (!Array.isArray(list)) return list;
+  var raw = (typeof ls === 'function') ? ls('m_vendors', null) : null, have = {};
+  list.forEach(function(v){ if (v && v.id != null) have[String(v.id)] = 1; });
+  return list.concat((Array.isArray(raw) ? raw : []).filter(function(v){ return v && v.id != null && v.vst === 'deleted' && !have[String(v.id)]; }));
+}
 function vendorStateOf(v){ return (v && (v.vst === 'inactive' || v.vst === 'deleted')) ? v.vst : ''; }
 /* 選ぶ候補（請求書・食材・小切手）：まとめた名前のカード・無効・削除を除く */
 function getVendorsPickable(){ return (getVendors() || []).filter(function(v){ return v && !(typeof vmgCardHidden === 'function' && vmgCardHidden(v)) && vendorStateOf(v) === ''; }); }
@@ -59415,7 +59452,7 @@ async function vendorFetchRows(ids){
    t0：取り込みが読み始めた時刻。そのあとにこの端末が送った業者は、読んだ姿もこの端末の行もそのまま（v1121 レビュー：古い読みで戻さない） */
 var _vendorPushedAt = {};
 function vendorMergePulled(cloud, t0){
-  var base = _vbBase(), local = ls('m_vendors', null), L = {}, out = [], seen = {}, nb = {};
+  var base = _vbBase(), local = ls('m_vendors', null), L = {}, out = [], seen = {}, nb = {}, TCH = vendorTouchedAll();
   (Array.isArray(local) ? local : []).forEach(function(v){ if (v && v.id != null) L[String(v.id)] = v; });
   (cloud || []).forEach(function(c){
     if (!c || c.id == null) return;
@@ -59423,7 +59460,9 @@ function vendorMergePulled(cloud, t0){
     seen[id] = 1;
     if (t0 && (_vendorPushedAt[id] || 0) >= t0 && b) { nb[id] = b; out.push(l || b); return; }
     nb[id] = c;
-    out.push((l && b && !_vbEq(l, b)) ? vendorMerge3(b, l, c) : c);   /* 読んだ姿の無い端末（v1121 の最初）はクラウドのまま（前の版と同じ） */
+    var tc0 = TCH[id];
+    if (l && !b && tc0 && Object.keys(tc0).length) { out.push(_vendorOverlayTouched(c, l, tc0)); return; }   /* 読んだ姿の無い端末でも、変えて送れていない欄はこの端末の値（Codex PR #111 P2） */
+    out.push((l && b && !_vbEq(l, b)) ? vendorMerge3(b, l, c) : c);   /* 読んだ姿の無い端末（v1121 の最初）で変えていない業者はクラウドのまま（前の版と同じ） */
   });
   Object.keys(L).forEach(function(id){
     if (seen[id]) return;
@@ -59433,9 +59472,25 @@ function vendorMergePulled(cloud, t0){
   lsSet(VENDOR_BASE_KEY, nb);
   return out;
 }
-/* この端末で変えた欄（読んだ姿が無い端末で、どの欄を送るかに使う。メモリだけ） */
-var _vendorTouched = {};
-function vendorTouch(id, fields){ var k = String(id), o = _vendorTouched[k] || (_vendorTouched[k] = {}); (fields || []).forEach(function(f){ o[f] = 1; }); }
+/* この端末で変えた欄（読んだ姿が無い端末で、どの欄を送るかに使う）。
+   Codex（PR #111・acba177）の P2：前はメモリだけで、読んだ姿の無い端末が送れずに読み込み直すと消え、クラウドの値に戻っていた →
+   この端末だけのキー vendor_touched_v1 に残し、送ってクラウドで確かめたものだけ消す（取り込みでも、この欄はこの端末の値を重ねる） */
+var VENDOR_TOUCHED_KEY = 'vendor_touched_v1';
+var _vendorTouchedMem = {};   /* 端末に書けなかったとき（容量）の控え。読むたびに端末の記録と合わせる（起動の途中は端末の記録がまだ読めないため、読み込み時には読まない） */
+function vendorTouchedAll(){
+  var x = null; try { x = ls(VENDOR_TOUCHED_KEY, null); } catch(e) {}
+  var out = (x && typeof x === 'object' && !Array.isArray(x)) ? JSON.parse(JSON.stringify(x)) : {};
+  Object.keys(_vendorTouchedMem).forEach(function(id){ var o = out[id] || (out[id] = {}); Object.keys(_vendorTouchedMem[id] || {}).forEach(function(f){ o[f] = 1; }); });
+  return out;
+}
+function _vendorTouchedPut(all){ _vendorTouchedMem = all; try { lsSet(VENDOR_TOUCHED_KEY, all); } catch(e) {} }
+function vendorTouch(id, fields){ var all = vendorTouchedAll(), k = String(id), o = all[k] || (all[k] = {}); (fields || []).forEach(function(f){ o[f] = 1; }); _vendorTouchedPut(all); }
+function vendorTouchedClear(ids){ var all = vendorTouchedAll(), n = 0; (ids || []).forEach(function(id){ if (all[String(id)]) { delete all[String(id)]; n++; } }); if (n) _vendorTouchedPut(all); }
+function _vendorOverlayTouched(c, l, tc){   /* クラウドの姿 c に、この端末で変えた欄 tc だけ l の値を重ねる（状態・区分は時刻の新しいほう・履歴は両方） */
+  var y = Object.assign({}, c);
+  Object.keys(tc || {}).forEach(function(f){ if (l[f] === undefined) delete y[f]; else y[f] = l[f]; });
+  return vendorMerge3(c, y, c);
+}
 /* 送る（syncMasterToSupabase の m_vendors）：読んだ姿と違う業者だけ、クラウドの最新に重ねて 1 行ずつ。書けたら読み直して確かめる */
 var _vendorPushQ = Promise.resolve();
 function vendorPushDirty(val){
@@ -59454,7 +59509,7 @@ async function _vendorPushDirty(val){
   var ids = dirty.map(function(v){ return String(v.id); });
   var cloud = await vendorFetchRows(ids);
   if (cloud === null) { if (typeof _opLastPushErr !== 'undefined' && _opLastPushErr) _opLastPushErr.m_vendors = t('業者をクラウドから読めませんでした','Could not read vendors from the cloud'); return false; }
-  var me = (typeof myName === 'function' ? myName() : '') || '', adopt = {};
+  var me = (typeof myName === 'function' ? myName() : '') || '', adopt = {}, TCH = vendorTouchedAll();
   var send = [];
   dirty.forEach(function(l){
     var id = String(l.id), b = base[id] || null, c = cloud[id] || null, x = Object.assign({}, l);
@@ -59463,12 +59518,11 @@ async function _vendorPushDirty(val){
     if (x._recreate && c && c.vst === 'deleted') { x.vst = ''; x.vstAt = vendorStampAfter(c.vstAt > (b && b.vstAt || '') ? c.vstAt : (b && b.vstAt)); x.vstBy = me; x.vstWhy = t('作り直し','Re-created');
       x.vstLog = _vbLog(c.vstLog, [{ st:'', at:x.vstAt, by:me, why:x.vstWhy }]); }
     if (!base0 && c) {
-      var tc = _vendorTouched[id];
+      var tc = TCH[id];
       if (!tc && !x._recreate) { adopt[id] = c; return; }   /* この端末で変えていない：クラウドのまま */
-      var y = Object.assign({}, c);
-      Object.keys(tc || {}).forEach(function(f){ if (x[f] === undefined) delete y[f]; else y[f] = x[f]; });
-      if (x._recreate) ['vst','vstAt','vstBy','vstWhy','vstLog'].forEach(function(f){ if (x[f] !== undefined) y[f] = x[f]; });
-      send.push(vendorMerge3(c, y, c));   /* 状態・区分は時刻の新しいほう・履歴は両方 */
+      var tcx = Object.assign({}, tc || {});
+      if (x._recreate) ['vst','vstAt','vstBy','vstWhy','vstLog'].forEach(function(f){ if (x[f] !== undefined) tcx[f] = 1; });
+      send.push(_vendorOverlayTouched(c, x, tcx));   /* 状態・区分は時刻の新しいほう・履歴は両方 */
       return;
     }
     send.push(vendorMerge3(b, x, c));
@@ -59484,7 +59538,9 @@ async function _vendorPushDirty(val){
   if (back === null) { if (typeof _opLastPushErr !== 'undefined' && _opLastPushErr) _opLastPushErr.m_vendors = t('書いたあとに読み直せませんでした','Could not re-read after writing'); return false; }
   Object.keys(adopt).forEach(function(id){ back[id] = adopt[id]; });
   var nb = Object.assign({}, _vbBase() || {}), cur = ls('m_vendors', null), changed = false, missing = 0;
-  sentIds.forEach(function(id){ if (back[id]) { nb[id] = back[id]; delete _vendorTouched[id]; } else missing++; });
+  var cleared = [];
+  sentIds.forEach(function(id){ if (back[id]) { nb[id] = back[id]; cleared.push(id); } else missing++; });
+  vendorTouchedClear(cleared);
   Object.keys(adopt).forEach(function(id){ nb[id] = adopt[id]; });
   if (!base0) Object.keys(cloud).forEach(function(id){ if (!nb[id]) nb[id] = cloud[id]; });
   lsSet(VENDOR_BASE_KEY, nb);
@@ -59517,9 +59573,14 @@ function vendorRefs(v){
 }
 /* ---- 状態を変える（無効・削除・使う） ---- */
 async function vendorSetState(id, st, why){
+  /* Codex（PR #111・acba177）の P2：画面の外から呼んでも、役割と使われているかをここで確かめる（画面の確かめと同じ）。
+     サーバーは役割を見ない（業者の表は公開の鍵で書ける・v1085 の節の限界）。人ごとの権限は (b) の作業で */
+  if (typeof vmgCan === 'function' && !vmgCan()) return { ok:false, why:t('削除・無効にできるのは経理・事務Crew・GM・CEO です','Only accounting, office crew, GM and CEO can delete or deactivate') };
+  if (st !== '' && st !== 'inactive' && st !== 'deleted') return { ok:false, why:t('状態が正しくありません','Bad state') };
   if (typeof SUPA_SYNC_ENABLED !== 'undefined' && !SUPA_SYNC_ENABLED) return { ok:false, why:t('クラウド同期が OFF です。','Cloud sync is off.') };
   var all = ls('m_vendors', null); if (!Array.isArray(all)) return { ok:false, why:t('業者が読めません','Vendors not loaded') };
   var v = all.find(function(x){ return x && String(x.id) === String(id); }); if (!v) return { ok:false, why:t('業者が見つかりません','Vendor not found') };
+  if (st === 'deleted') { var rf = vendorRefs(v); if (rf.total > 0 || rf.intake === null) return { ok:false, why:t('使われているか確かめられないので削除できません。','Cannot confirm it is unused.') }; }
   var prev = {}; VENDOR_STATE_F.concat(['vstLog']).forEach(function(f){ prev[f] = v[f]; });
   var at = vendorStampAfter(v.vstAt), me = (typeof myName === 'function' ? myName() : '') || '';
   v.vst = st; v.vstAt = at; v.vstBy = me; v.vstWhy = String(why || '').slice(0, 300);
@@ -59761,7 +59822,7 @@ async function saveVendor(vId) {
   }
   else { data.id = 'v' + Date.now(); data.storeMethods = storeMethods; vendors.push(data); }
   var btn = document.getElementById('v-save'); if (btn) { btn.disabled = true; btn.textContent = t('保存中…','Saving…'); }
-  if (lsSet('m_vendors', vendors) === false) { if (btn) { btn.disabled = false; btn.textContent = vId ? '保存' : '登録'; } alert(t('端末に保存できませんでした','Could not save on this device')); return; }
+  if (lsSet('m_vendors', vendorsWithDeleted(vendors)) === false) { if (btn) { btn.disabled = false; btn.textContent = vId ? '保存' : '登録'; } alert(t('端末に保存できませんでした','Could not save on this device')); return; }
   var r = (typeof SUPA_SYNC_ENABLED !== 'undefined' && SUPA_SYNC_ENABLED && typeof _lsPushP !== 'undefined' && _lsPushP && _lsPushP.m_vendors) ? await _lsPushP.m_vendors : undefined;
   closeModalDirect();
   var lostCat = false;

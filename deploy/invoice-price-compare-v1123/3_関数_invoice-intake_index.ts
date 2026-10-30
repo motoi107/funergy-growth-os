@@ -2574,7 +2574,7 @@ function createHandler(deps) {
       console.error("invoice-intake purchase summary", safeErr(e));
       out = { ok: false };
     }
-    if (!(only && only.outbox_id && Object.keys(only).length === 1)) await publishPrices(stats);
+    if (stats) await publishPrices(stats);
     return out;
   }
   async function publishPrices(stats) {

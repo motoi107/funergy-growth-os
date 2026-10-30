@@ -139,3 +139,22 @@ test('the rule table says G3〜G6; release markers are 1119 or later and match',
   const v = Number((/const APP_VERSION = '(\d+)';/.exec(SRC) || [])[1]);
   assert.ok(v >= 1119, String(v)); assert.ok(SW.includes("const SW_BUILD = '" + v + "';"));
 });
+
+test('Codex (PR #109・9efea22): before the hire day and after the resign day nobody is eligible — the current grade is not used for days not worked', () => {
+  const emps = [E('n', 'Nia', 'Server Leader', { hireDate: '2026-11-01' }), E('o', 'Oto', 'Store Manager', { resignDate: '2026-10-15', status: '退職' }),
+    E('g', 'Gus', 'Server Leader', { hireDate: '2026-11-01' })];
+  const gh = { g: { recs: [{ id: 'h1', d: '2026-11-01', g: 'G3', start: true }] } };
+  const c = app({ emps, gh, user: 'Nia', role: 'sl' });
+  const el = (id, d) => J(run(c, 'benefitElig(getEmployees().find(function(e){return e.id==="' + id + '";}), "' + d + '")'));
+  assert.equal(el('n', '2026-10-31').ok, false, 'no history: the day before hire is not covered by the current G3');
+  assert.match(el('n', '2026-10-31').why, /入社日（2026-11-01）より前/);
+  assert.equal(el('n', '2026-10-31').missing, undefined, 'not listed as "grade needs setting"');
+  assert.equal(el('n', '2026-11-01').ok, true, 'from the hire day');
+  assert.equal(el('g', '2026-10-31').ok, false, 'with history too'); assert.equal(el('g', '2026-11-01').ok, true);
+  assert.equal(el('o', '2026-10-15').ok, true, 'up to the resign day'); assert.equal(el('o', '2026-10-16').ok, false);
+  assert.match(el('o', '2026-10-16').why, /退職日（2026-10-15）より後/);
+  // An application dated before the hire day is stopped
+  Object.assign(c.inputs, { 'v-start': '2026-10-31', 'v-end': '2026-11-01', 'v-reason': '', 'v-bd-有給休暇': '1' });
+  run(c, 'submitVacation()');
+  assert.match(c.alerts[0], /入社日（2026-11-01）より前/); assert.equal(c.S.my_vacations.length, 0, 'nothing saved');
+});
