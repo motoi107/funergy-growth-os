@@ -53809,14 +53809,19 @@ function setEmpStatusQuick(empId, status){
 function unregisteredClockIns(days){
   var th=days||30;
   var cutoffStr=isoOf(new Date(Date.now()-th*86400000));
-  var emps=getEmployees(), _aIdx=toastAliasIndex(emps), _byNm={}, _byTn={};
-  emps.forEach(function(x){ if(!x) return; if(x.name) (_byNm[x.name]=_byNm[x.name]||[]).push(x); if(x.toastName) (_byTn[x.toastName]=_byTn[x.toastName]||[]).push(x); });
-  var _sys=function(n, sid){ return !!n && ((typeof toastSystemAccount==='function') ? toastSystemAccount(n, sid) : (typeof isOrderOnlyAccount==='function' && isOrderOnlyAccount(n))); };
+  var emps=getEmployees(), _aIdx=toastAliasIndex(emps), _byNm={};
+  /* 取り込み（v1111 から）もチップの配分も従業員の前の欄 toastName は読まない。勤怠の行の名前（取り込みが決めた人の名前）で探す（独立レビュー b0af69a P3-2） */
+  emps.forEach(function(x){ if(x && x.name) (_byNm[x.name]=_byNm[x.name]||[]).push(x); });
+  var _sysC={}, _keyC={};   /* ダッシュボードの描き直しのたびに走るので、名前ごとに 1 回だけ（独立レビュー P3-3） */
+  var _sys=function(n, sid){ if(!n) return false; var ck=sid+'|'+n; if(Object.prototype.hasOwnProperty.call(_sysC, ck)) return _sysC[ck];
+    return (_sysC[ck]=((typeof toastSystemAccount==='function') ? toastSystemAccount(n, sid) : (typeof isOrderOnlyAccount==='function' && isOrderOnlyAccount(n)))); };
+  var _key=function(n){ n=String(n==null?'':n); return Object.prototype.hasOwnProperty.call(_keyC, n) ? _keyC[n] : (_keyC[n]=toastNameKey(n)); };
+  var _date=function(d){ return (typeof d==='string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : ''; };   /* 読めない退職日は無いのと同じ（独立レビュー P2-2） */
   /* その店で別名がちょうど 1 人に決まるときだけ「結んだ」とみなす（取り込みと同じ決め方。2 人に当たると、どちらにも入らないので一覧に残す・独立レビュー 7d234a4 P3-1）。
      actOnly：在籍の人の別名だけ（退職の記録に入っている打刻が、もう在籍の人に結んであるか） */
   var _cov=function(key, sid, actOnly){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
     (actOnly ? act : (act.length ? act : ok)).forEach(function(a){ ids[a.emp.id]=1; }); return Object.keys(ids).length===1; };
-  var _empInfo=function(x){ return { id:x.id, name:x.name, status:x.status||'在籍', store:x.store||'', support:(x.support||[]).slice(), resignDate:x.resignDate||'', title:x.title||'' }; };
+  var _empInfo=function(x){ return { id:x.id, name:x.name, status:x.status||'在籍', store:x.store||'', support:(x.support||[]).slice(), resignDate:_date(x.resignDate), title:x.title||'' }; };
   var map={};
   var add=function(gk, init, storeId, date, h){
     var m=map[gk]; if(!m){ m=map[gk]=Object.assign({ stores:{}, dates:{}, hours:0, last:null, byDate:{}, per:{} }, init); }
@@ -53839,29 +53844,32 @@ function unregisteredClockIns(days){
       if(!data || typeof data!=='object') continue;
       Object.keys(data).forEach(function(name){
         var e=data[name]||{};
-        if(_sys(name, storeId) || _sys(e.toastName, storeId)) return;
         var h=_laborHrs(e), tn0=e.toastName||name;
-        var regs=(_byNm[name]||[]).concat(_byTn[name]||[], (e.toastName && e.toastName!==name) ? (_byTn[e.toastName]||[]) : []);
-        if(!regs.length){ add('n|'+name, { kind:'none', name:name, toastName:tn0 }, storeId, date, h); return; }
+        var regs=_byNm[name]||[];
+        if(!regs.length){
+          if(_sys(name, storeId) || _sys(e.toastName, storeId)) return;   /* だれにも入っていない仕組みのアカウントだけ外す（人に入っていれば下で part として出す・独立レビュー P3-1） */
+          add('n|'+name, { kind:'none', name:name, toastName:tn0 }, storeId, date, h); return;
+        }
         var emp=regs.filter(function(x){ return x.status!=='退職'; })[0];
         if(!emp){
           /* 退職の記録だけ：その日にまだ在籍だった記録（退職日がその日以降）があれば、その人の打刻 */
-          emp=regs.filter(function(x){ return x.resignDate && date<=x.resignDate; })[0];
+          emp=regs.filter(function(x){ var rd=_date(x.resignDate); return rd && date<=rd; })[0];
           if(!emp){
-            var k1=toastNameKey(tn0);
-            if(_cov(k1, storeId, true) || _cov(toastNameKey(name), storeId, true)) return;   /* 在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。次の取り直しで移る） */
-            var rr=regs.slice().sort(function(a,b){ return String(b.resignDate||'').localeCompare(String(a.resignDate||'')); })[0];
-            add('r|'+rr.id+'|'+k1, { kind:'resigned', name:tn0, toastName:tn0, emp:_empInfo(rr) }, storeId, date, h);
-            return;
+            var k1=_key(tn0), rr=regs.slice().sort(function(a,b){ return _date(b.resignDate).localeCompare(_date(a.resignDate)); })[0];
+            if(_cov(k1, storeId, true) || _cov(_key(name), storeId, true)) return;   /* 在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。別名の from より後の日は次の取り直しで移る。前の日はそのまま＝v1111 の決め方） */
+            /* Toast の名前が退職の記録の名前と同じときだけ「退職の記録に入っている」。名前の一部で入ったものは part（独立レビュー P2-1） */
+            var _same=k1===_key(rr.name);
+            if(_same || toastAliasCovers(rr, k1, storeId)){ add('r|'+rr.id+'|'+k1, { kind:'resigned', name:tn0, toastName:tn0, emp:_empInfo(rr), viaAlias:!_same }, storeId, date, h); return; }   /* 退職の人の別名に結んである名前も同じ扱い */
+            emp=rr;
           }
         }
         if(!e.toastName) return;   /* 前の記録（Toast の名前を残していない）は、どの名前で入ったか分からない */
-        var tns=(Array.isArray(e.toastNames) && e.toastNames.length) ? e.toastNames : [e.toastName], ek=toastNameKey(emp.name), seen={};
+        var tns=(Array.isArray(e.toastNames) && e.toastNames.length) ? e.toastNames : [e.toastName], ek=_key(emp.name), seen={};
         tns.forEach(function(tn){
-          var kk=toastNameKey(tn);
+          var kk=_key(tn);
           if(!tn || !kk || seen[kk]) return; seen[kk]=1;
-          if(kk===ek || (emp.toastName && emp.toastName===tn)) return;   /* 同じ名前（大文字小文字・空白・ハイフンだけ違う） */
-          if(_sys(tn, storeId) || _cov(kk, storeId, false)) return;      /* 別名で結んである */
+          if(kk===ek || (emp.toastName && emp.toastName===tn)) return;   /* 同じ名前（大文字小文字・空白・ハイフンだけ違う）。前の欄 toastName に入れてあれば人が確かめた名前 */
+          if(_cov(kk, storeId, emp.status==='退職')) return;              /* 別名で結んである（退職の記録に入っているときは、在籍の人の別名だけ） */
           add('p|'+emp.id+'|'+kk, { kind:'part', name:tn, toastName:tn, emp:_empInfo(emp) }, storeId, date, h);
         });
       });
@@ -53871,6 +53879,7 @@ function unregisteredClockIns(days){
   Object.keys(map).forEach(function(gk){
     var m=map[gk], days=Object.keys(m.dates).length, base={ kind:m.kind, name:m.name, toastName:m.toastName };
     if(m.emp) base.emp=m.emp;
+    if(m.viaAlias) base.viaAlias=true;
     if(m.kind!=='none'){ out.push(Object.assign(base, { stores:Object.keys(m.stores), last:m.last, days:days, hours:Math.round(m.hours*10)/10, byDate:m.byDate, per:m.per })); return; }
     /* v1111：別名に結んだ名前は「未登録」に出さない（結んだ日より前の打刻は数えない＝決め方 3 の A）。
        店ごとの別名なら、その店の打刻だけを外す（ほかの店の打刻は残す） */
@@ -53982,7 +53991,7 @@ function openToastLinkModal(i, pre){   /* pre：最初に選んでおく従業�
   var sc=toastAliasScope(), ps=toastLinkPeriodStart(), pe=toastLinkEarliest(x, sc), pa=_toastLinkPreview(x, ps, sc), pb=(pe && pe<ps) ? _toastLinkPreview(x, pe, sc) : null;
   var md=function(d){ return d.slice(5).replace('-','/'); };
   var outside=sc ? x.stores.filter(function(sid){ return sc.indexOf(sid)<0; }) : [], snm=function(sid){ return escapeHtml(toastLinkStoreName(sid)); };
-  window._toastLink={ i:i, item:x, ps:ps };
+  window._toastLink={ i:i, item:x, ps:ps, pre:pre||'' };
   openModal('<div class="modal-title">'+t('今の従業員に結ぶ','Link to an employee')+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +'<div style="font-size:13px;margin-bottom:10px;line-height:1.7">'+t('Toast での名前','Name in Toast')+'：<b>'+escapeHtml(tn)+'</b><div style="font-size:11px;color:var(--muted)">'+x.stores.map(function(s){ return escapeHtml(toastLinkStoreName(s)); }).join(' · ')+' · '+x.days+t('日','d')+' / '+x.hours+'h</div></div>'
     +'<div class="form-group"><label class="form-label">'+t('結ぶ従業員','Employee')+'</label>'
@@ -54011,7 +54020,7 @@ async function toastLinkSave(){
   var empId=(document.getElementById('tl-emp')||{}).value||'';
   var fromEl=document.querySelector('input[name="tl-from"]:checked'), from=fromEl?fromEl.value:'';
   /* 開いたあとにチップの期間が変わった（15 日から 16 日など）：選び直してもらう */
-  if(L.ps!==toastLinkPeriodStart()){ closeModalDirect(); openToastLinkModal(L.i); showToast(t('チップの期間が変わりました。もう一度確かめてください。','The tip period changed. Please check again.'),'warning'); return; }
+  if(L.ps!==toastLinkPeriodStart()){ closeModalDirect(); openToastLinkModal(L.i, L.pre); showToast(t('チップの期間が変わりました。もう一度確かめてください。','The tip period changed. Please check again.'),'warning'); return; }
   if(!/^\d{4}-\d{2}-\d{2}$/.test(from)){ if(msg) msg.textContent=t('いつから数えるかを選んでください。','Choose from when to count.'); return; }
   var emps=getEmployees(), target=emps.find(function(e){ return e && e.id===empId; });
   var alias=L.item.toastName||L.item.name, sc=toastAliasScope();
@@ -54138,19 +54147,25 @@ function renderUnregisteredCard(){
       var emDesc=escapeHtml(em.status||'在籍')+(em.store?' · '+escapeHtml(toastLinkStoreName(em.store)):'')+(em.title?' · '+escapeHtml(em.title):'');
       /* v1120：退職の記録に入っている打刻（Toast の名前が退職した人の記録と同じ） */
       if(x.kind==='resigned'){
-        var rd=em.resignDate ? em.resignDate.replace(/-/g,'/') : '', miss=x.stores.filter(function(s){ return emStores.indexOf(s)<0; });
-        var txt=t('Toast の名前が、退職した <b>'+escapeHtml(em.name)+'</b> さんの記録（'+emDesc+(rd?' · 退職日 '+rd:' · 退職日が入っていません')+'）と同じため、'+(rd?'退職日より後の':'')+'打刻がその記録に入っています。退職の人はチップの配分に入りません。',
+        var rd=em.resignDate ? escapeHtml(em.resignDate.replace(/-/g,'/')) : '', miss=x.stores.filter(function(s){ return emStores.indexOf(s)<0; });
+        /* 同じ名前（空白・ハイフンだけ違う）の在籍の人がいれば、その人に結ぶのが先（在籍に戻すと同じ人が 2 人になる・独立レビュー P2-1） */
+        var rc=toastNameCandidates(x.toastName||x.name).filter(function(c){ return c.emp.id!==em.id; }), rc0=rc[0], rsame=!!(rc0 && rc0.same);
+        var txt=t('Toast の名前が、退職した <b>'+escapeHtml(em.name)+'</b> さんの記録'+(x.viaAlias?'の別名':'')+'（'+emDesc+(rd?' · 退職日 '+rd:' · 退職日が入っていません')+'）と同じため、'+(rd?'退職日より後の':'')+'打刻がその記録に入っています。退職の人はチップの配分に入りません。',
                   'The Toast name matches the resigned record of <b>'+escapeHtml(em.name)+'</b> ('+emDesc+(rd?' · resigned '+rd:' · no resign date')+'). Punches'+(rd?' after the resign date':'')+' go to that record, and resigned people get no tips.')
           +(miss.length?'<div style="font-size:11px;color:var(--muted)">'+t('同じ人がもう一度入ったなら「在籍に戻す」を押し、所属か応援の店に '+miss.map(function(s){ return escapeHtml(toastLinkStoreName(s)); }).join('・')+' を入れてください（入っていないとチップの配分に入りません）。','If the same person came back, restore them and add '+miss.map(function(s){ return escapeHtml(toastLinkStoreName(s)); }).join(', ')+' to their store or support stores (otherwise no tips).')+'</div>':'')
-          +'<div style="font-size:11px;color:var(--muted)">'+t('別の記録（違う名前）で登録してあるなら「今の従業員に結ぶ」で結んでください。','If the person is registered under another record (another name), use "Link to an employee".')+'</div>';
-        var _rs='<button class="btn btn-primary btn-sm" onclick="restoreEmployee('+q(em.id)+')"><i class="ti ti-user-check"></i> '+t('在籍に戻す（同じ人がもう一度入った）','Restore (same person came back)')+'</button>';
+          +(rc0 ? '<div style="font-size:12px;margin-top:4px">'+t('在籍の似た名前の従業員：','Active employee with a similar name: ')+'<b>'+escapeHtml(rc0.emp.name)+'</b>（'+escapeHtml(rc0.emp.status||'在籍')+(rc0.emp.store?' · '+escapeHtml(toastLinkStoreName(rc0.emp.store)):'')+'）'
+              +(rsame?'<div style="font-size:11px;color:var(--muted)">'+t('名前のハイフンや空白の位置だけが違います。同じ人なら、在籍に戻さずにこの人に結んでください（在籍に戻すと同じ人が 2 人になります）。','Only hyphens / spaces differ. If it is the same person, link to this record instead of restoring (restoring makes two records for one person).')+'</div>':'')+'</div>'
+            : '<div style="font-size:11px;color:var(--muted)">'+t('別の記録（違う名前）で登録してあるなら「今の従業員に結ぶ」で結んでください。','If the person is registered under another record (another name), use "Link to an employee".')+'</div>');
+        var _rs='<button class="btn '+(rsame?'btn-secondary':'btn-primary')+' btn-sm" onclick="restoreEmployee('+q(em.id)+')"><i class="ti ti-user-check"></i> '+t('在籍に戻す（同じ人がもう一度入った）','Restore (same person came back)')+'</button>';
         var _op='<button class="btn btn-secondary btn-sm" onclick="openEmpModal('+q(em.id)+')"><i class="ti ti-eye"></i> '+t('記録を開く','Open record')+'</button>';
-        return row('<span class="tag tag-red" style="font-size:9px">'+t('退職の記録に入っている','On a resigned record')+'</span>', box(txt), (can?_rs+_link(false, t('今の従業員に結ぶ','Link to an employee')):'')+_op);
+        return row('<span class="tag tag-red" style="font-size:9px">'+t('退職の記録に入っている','On a resigned record')+'</span>', box(txt),
+          (can?(rsame?_link(true, t(escapeHtml(rc0.emp.name)+' さんに結ぶ','Link to '+escapeHtml(rc0.emp.name)), rc0.emp.id)+_rs:_rs+_link(false, t('今の従業員に結ぶ','Link to an employee'))):'')+_op);
       }
       /* v1120：名前の一部が同じ人に入っている打刻（取り込みの決め方。自動で同じ人とはみなさない） */
       if(x.kind==='part'){
         var txt2=t('Toast の名前「'+escapeHtml(x.toastName)+'」の打刻が、名前の一部が同じ <b>'+escapeHtml(em.name)+'</b> さん（'+emDesc+'）の勤怠に入っています。同じ人なら「'+escapeHtml(em.name)+' さんで合っている」で結んでください。違う人なら、正しい従業員に結ぶか、新しく登録してから結んでください。',
                    'Punches under "'+escapeHtml(x.toastName)+'" count for <b>'+escapeHtml(em.name)+'</b> ('+emDesc+') because part of the name matches. If it is the same person, confirm with the button. Otherwise link the right employee, or register first and then link.');
+        if(em.status==='退職') txt2+='<div style="font-size:11px;color:var(--muted)">'+t('今入っている人は退職しています。退職の人はチップの配分に入りません。','That person has resigned; resigned people get no tips.')+'</div>';
         var ok=can && em.status!=='退職';
         return row('<span class="tag tag-yellow" style="font-size:9px">'+t('名前の一部で入っている','Matched by part of the name')+'</span>', box(txt2),
           (ok?_link(true, t(escapeHtml(em.name)+' さんで合っている（結ぶ）','Same person as '+escapeHtml(em.name)+' (link)'), em.id):'')+(can?_link(false, t('ほかの従業員に結ぶ','Link to another employee')):'')+_new(false));

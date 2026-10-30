@@ -19,7 +19,7 @@ function pick(src, name) {
   }
   assert.fail('missing ' + name);
 }
-const NAMES = ['toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
+const NAMES = ['toastNameKey', 'toastAliasCovers', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
   'syncTipLaborFromDB', 'isOrderOnlyAccount', 'ceIsSystemAccount', 'unregisteredClockIns', '_toastNameTokens', 'toastNameCandidates', 'toastLinkCan', 'toastLinkItemOk',
   'toastLinkStoreName', 'renderUnregisteredCard', 'escapeHtml', 't', 'openToastLinkModal', 'empAliasCanEdit', 'toastAliasScope', 'toastLinkPeriodStart',
   'tipPeriodStartOf', 'toastLinkEarliest', '_toastLinkPreview', '_toastLinkByDate'];
@@ -107,7 +107,8 @@ test('an alias held by another resigned record does not clear the warning (only 
   c.EMPS[1][fld('Mia Sample')] = alias('Mia Sample');
   await importDay(c, 'F04-P', '2026-10-26', [punch('Mia Sample', 5)]);
   const l = list(c);
-  assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned');
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned'); assert.equal(l[0].emp.id, 'r3'); assert.equal(l[0].viaAlias, true);
+  assert.ok(run(c, 'renderUnregisteredCard()').includes('さんの記録の別名'));
 });
 
 test('a resigned record without a resign date: every punch in the period is listed (which punches are after resigning is unknown)', async () => {
@@ -229,4 +230,61 @@ test('"same person" opens the link screen with that person already chosen (the o
   assert.equal(c.SEL.value, c.SEL.options[0].value);
   run(c, `openToastLinkModal(${i})`);
   assert.equal(c.SEL.value, c.SEL.options[0].value);
+});
+
+test('review P2-1: a Toast name that went onto a resigned record by part of the name is a part match, not "the same name"', async () => {
+  const c = app();
+  c.EMPS = [{ id: 'r1', name: 'Kenji Sato', status: '退職', resignDate: '2026-09-10', store: 'F01' }, { id: 'a1', name: 'Ken', status: '在籍', store: 'F01' }];
+  assert.deepEqual(Object.keys(await importDay(c, 'F01', '2026-10-20', [punch('Ken', 4)])), ['Kenji Sato'], 'the import is unchanged (part match first in the list)');
+  const l = list(c);
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'part'); assert.equal(l[0].emp.id, 'r1'); assert.equal(l[0].name, 'Ken');
+  const html = run(c, 'renderUnregisteredCard()');
+  assert.ok(!html.includes('restoreEmployee('), 'no restore button for a part match');
+  assert.ok(html.includes('退職しています'));
+});
+
+test('review P2-1: a resigned record and an active record whose names differ only in spaces / hyphens: linking comes first, restoring second', async () => {
+  const c = app();
+  c.EMPS = [{ id: 'r1', name: 'Mia Sample', status: '退職', resignDate: '2026-09-10', store: 'F03' }, { id: 'a2', name: 'Mia-Sample', status: '在籍', store: 'F04-P' }];
+  await importDay(c, 'F04-P', '2026-10-26', [punch('Mia Sample', 5)]);
+  const l = list(c);
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned');
+  const html = run(c, 'renderUnregisteredCard()');
+  assert.ok(/class="btn btn-primary btn-sm" onclick="openToastLinkModal\(0,&quot;a2&quot;\)"/.test(html), 'link to the active record is the main button');
+  assert.ok(/class="btn btn-secondary btn-sm" onclick="restoreEmployee\(&quot;r1&quot;\)"/.test(html));
+  assert.ok(html.includes('同じ人が 2 人になります'));
+});
+
+test('review P2-2: the resign date is escaped, and a date that is not YYYY-MM-DD counts as no date', async () => {
+  const c = app();
+  c.EMPS = [{ id: 'r1', name: 'Mia Sample', status: '退職', resignDate: '1<img src=x onerror=alert(1)>', store: 'F03' }];
+  await importDay(c, 'F04-P', '2026-10-26', [punch('Mia Sample', 5)]);
+  const l = list(c);
+  assert.equal(l.length, 1); assert.equal(l[0].emp.resignDate, '');
+  const html = run(c, 'renderUnregisteredCard()');
+  assert.ok(!html.includes('<img'), 'not rendered as HTML');
+  assert.ok(html.includes('退職日が入っていません'));
+  c.EMPS[0].resignDate = '2026/12/31';   // not the date format: does not hide the punches
+  assert.equal(list(c).length, 1);
+});
+
+test('review P3-1 / P3-2: a Toast account that landed on a person is listed; the old toastName field does not hide punches', async () => {
+  const c = app();
+  c.EMPS = [{ id: 'a1', name: 'Gen', status: '在籍', store: 'F01' }];
+  assert.deepEqual(Object.keys(await importDay(c, 'F01', '2026-10-20', [punch('Toast Generic Login', 3)])), ['Gen']);
+  let l = list(c);
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'part'); assert.equal(l[0].name, 'Toast Generic Login');
+  const d = app();
+  d.EMPS = [{ id: 'r1', name: 'Mia Sample', status: '退職', resignDate: '2026-09-10' }, { id: 'a2', name: 'Mia S', status: '在籍', toastName: 'Mia Sample' }];
+  await importDay(d, 'F04-P', '2026-10-26', [punch('Mia Sample', 5)]);
+  l = list(d);
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned', 'the import does not read toastName, so the punches are on the resigned record');
+  d.STORE = { 'tip_labor_F01_2026-10-21': { 'Nobody Here': { rawDinner: 2, toastName: 'Nobody Here' } } };
+  d.EMPS = [{ id: 'a3', name: 'Some One', status: '在籍', toastName: 'Nobody Here' }];
+  assert.equal(list(d).length, 1, 'a name nobody has is listed even if an old toastName field holds it');
+});
+
+test('review P3-4: the link screen keeps the chosen person when it reopens for a new tip period', () => {
+  assert.ok(source.includes('openToastLinkModal(L.i, L.pre);'));
+  assert.ok(source.includes("window._toastLink={ i:i, item:x, ps:ps, pre:pre||'' };"));
 });
