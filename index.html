@@ -40817,7 +40817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1114';
+const APP_VERSION = '1115';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64243,7 +64243,8 @@ function ghColor(g){
 function ghBadge(g){ var n=ghNormG(g)||String(g||'—'); return '<span style="display:inline-block;background:'+ghColor(n)+';color:#fff;font-weight:800;border-radius:6px;padding:1px 7px;font-size:11px;line-height:1.5">'+escapeHtml(n)+'</span>'; }
 function ghSrcTag(r){
   var t=GH_SRC[r.src]||r.src||'', c=(r.src==='import')?'var(--muted)':((r.src==='manual')?'var(--accent2)':'var(--green)');
-  return t ? '<span style="font-size:10px;border:1px solid '+c+';color:'+c+';border-radius:5px;padding:0 5px;white-space:nowrap">'+escapeHtml(t)+'</span>' : '';
+  var sp=(r && r.mode==='special') ? ' <span style="font-size:10px;border:1px solid #b4501a;color:#b4501a;border-radius:5px;padding:0 5px;white-space:nowrap;font-weight:700">特例（評価なし）</span>' : '';   /* v1115：通常の変更と分ける */
+  return (t ? '<span style="font-size:10px;border:1px solid '+c+';color:'+c+';border-radius:5px;padding:0 5px;white-space:nowrap">'+escapeHtml(t)+'</span>' : '')+sp;
 }
 function ghElig(g, cfg){ cfg=cfg||kbCfg(); var n=ghNormG(g); return !!(n && cfg.gradeBase && cfg.gradeBase[n]!=null); }
 function ghEmp(empId){ return getEmployees().find(function(x){ return x.id===empId; }); }
@@ -64254,10 +64255,15 @@ function ghBeforeSaveEmp(empId, data){
   var old=ghEmp(empId); if(!old) return false;
   var g0=ghNormG(empGrade(old)), g1=ghNormG(empGrade(Object.assign({}, old, data)));
   var p=window._ghPend;
-  if(p && p.ok && (p.kind||'emp')==='emp' && p.empId===empId && p.g1===g1) return false;   /* v1058: 承認・Leader 昇格の確定は流用しない */   /* 確定日を聞いたあと → そのまま保存へ */
+  if(p && p.ok && (p.kind||'emp')==='emp' && p.empId===empId && p.g1===g1){
+    /* v1115：特例は保存の直前にも、権限・理由・確定日を確かめる（画面の表示だけに頼らない） */
+    var _sp=(p.mode==='special') ? ghEvalStop(p) : '';
+    if(_sp){ window._ghPend=null; showToast(_sp+'（保存していません）','warning'); return true; }
+    return false;
+  }   /* v1058: 承認・Leader 昇格の確定は流用しない */   /* 確定日を聞いたあと → そのまま保存へ */
   window._ghPend=null;
   if(!g0 || !g1 || g0===g1) return false;                        /* グレードが変わらない役職の変更では聞かない */
-  window._ghPend={ empId:empId, g0:g0, g1:g1, name:data.name||old.name||'', t0:old.title||'', t1:data.title||'', d:ghToday(), note:'', ok:false, kind:'emp', key:empId, ev:null, track:null };
+  window._ghPend={ empId:empId, g0:g0, g1:g1, name:data.name||old.name||'', t0:old.title||'', t1:data.title||'', d:ghToday(), note:'', ok:false, kind:'emp', key:empId, ev:null, track:null, mode:'normal', reason:'' };
   var body=document.getElementById('modal-body');
   if(body){ var fr=document.createDocumentFragment(); while(body.firstChild) fr.appendChild(body.firstChild); window._ghStash=fr; }   /* 編集中の画面は消さずに取っておく */
   openModal(ghConfirmHtml(window._ghPend));
@@ -64274,7 +64280,8 @@ function ghConfirmHtml(p){
   h+='<div class="form-group"><label class="form-label">確定日（グレードが決まった日）</label>'
     +'<input type="date" class="form-input" id="gh-cf-date" style="max-width:190px;font-weight:700" value="'+escapeHtml(p.d)+'" onchange="ghConfirmDate(this.value)" oninput="ghConfirmDate(this.value)">'
     +'<div id="gh-cf-info" style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">'+ghConfirmInfo(p)+'</div></div>';
-  h+=ghEvalBlockHtml(p);   /* v1058（UI案38）: 前のグレードの期間の評価を確定（日割り） */
+  h+=ghModeHtml(p);   /* v1115（Motoさん 10/29 の依頼）：通常のグレード変更／特例（キャリアスコア評価なし） */
+  h+=(p.mode==='special' && ghEvalNeeded(p)) ? ghSpecialBlockHtml(p) : ghEvalBlockHtml(p);   /* v1058（UI案38）: 前のグレードの期間の評価を確定（日割り） */
   h+='<div class="form-group"><label class="form-label">メモ（任意）</label><input class="form-input" id="gh-cf-note" placeholder="例：昇格面談で決定" value="'+escapeHtml(p.note||'')+'"></div>';
   h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6">昇格申請を承認したとき・下がったときも、同じようにグレード履歴に記録します。グレードが変わらない役職の変更（例：Server Leader → Kitchen Leader）では出ません。</div>';
   h+='<div class="btn-row"><button class="btn btn-secondary" onclick="ghConfirmCancel()">キャンセル</button>'+ghConfirmBtnHtml(p)+'</div>';   /* v1058: 評価を確定するまで押せない */
@@ -64304,6 +64311,7 @@ function ghConfirmSave(){
   if(!d){ showToast('確定日を入れてください','warning'); return; }
   var nt=document.getElementById('gh-cf-note'); p.note=String(nt?nt.value:(p.note||'')).trim(); p.d=d;
   var _stop=ghEvalStop(p); if(_stop){ showToast(_stop,'warning'); return; }   /* v1058（UI案38）: 前のグレードの期間の評価を確定しないと・確定日がグレード履歴と合わないと、グレードを変えない */
+  if(p.mode==='special' && ghEvalNeeded(p) && !p.reviewed){ ghSpecialReview(); return; }   /* v1115：特例は、対象者・前後のグレード・理由を確かめてから */
   p.period=ghEvalNeeded(p) ? ghEvalPeriod(p) : null; p.ok=true;   /* 期間は変える前のグレード履歴で */
   if(!_ghRestoreForm()){ window._ghPend=null; showToast('編集の画面が見つかりません。もう一度開いてください','danger'); closeModalDirect(); return; }
   saveEmp(p.empId);   /* 戻した入力のまま保存する（ghBeforeSaveEmp は通り、保存のあとで記録する） */
@@ -64311,7 +64319,7 @@ function ghConfirmSave(){
 function ghAfterSaveEmp(empId, data, emps){
   var p=window._ghPend; window._ghPend=null;
   if(empId){
-    if(p && p.ok && p.empId===empId) ghAddRecEval(empId, {d:p.d, g:p.g1, from:p.g0, start:false, src:'title', note:p.note||'', prevEval:ghEvalRecord(p)}, (data&&data.name)||p.name);
+    if(p && p.ok && p.empId===empId) ghAddRecEval(empId, Object.assign({d:p.d, g:p.g1, from:p.g0, start:false, src:'title', note:p.note||'', prevEval:ghEvalRecord(p)}, ghSpecialRec(p)||{}), (data&&data.name)||p.name);   /* v1115：特例の印と理由 */
     return;
   }
   /* 新しく登録した人：入社日があれば入社の記録（当日から） */
@@ -64398,7 +64406,7 @@ function ghChangeTableHtml(qr, canEdit){
       +'<td style="padding:8px;font-weight:700;white-space:nowrap">'+escapeHtml(x.e.name||'')+'<div style="font-size:10px;color:var(--muted);font-weight:400">'+escapeHtml(x.e.title||'')+'</div></td>'
       +'<td style="padding:8px;white-space:nowrap">'+ghChangeHtml(x.r, x.prev)+'</td>'
       +'<td style="padding:8px;white-space:nowrap">'+ghMD(x.from)+' から<div style="font-size:10px;color:var(--muted)">'+(x.r.start?'入社日の当日から':'確定日の翌日から')+'</div></td>'
-      +'<td style="padding:8px">'+ghSrcTag(x.r)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(x.r.by||'')+(x.r.note?'・'+escapeHtml(x.r.note):'')+'</div></td></tr>';
+      +'<td style="padding:8px">'+ghSrcTag(x.r)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(x.r.by||'')+(x.r.note?'・'+escapeHtml(x.r.note):'')+'</div>'+((typeof ghSpecialHtml==='function') ? ghSpecialHtml(x.r) : '')+'</td></tr>';
   });
   return h+'</tbody></table></div>';
 }
@@ -64483,7 +64491,7 @@ function ghEditHtml(){
       +'<span style="flex:1"></span><button class="btn btn-secondary btn-sm" style="padding:2px 7px;color:var(--red)" title="この記録を消す" onclick="ghEdDel('+i+')">×</button></div>'
       +'<div style="display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap"><span style="font-size:10.5px;color:var(--muted);white-space:nowrap;margin-left:46px">'
       +(ghDate(r.d)&&r.g?((r.start?ghMD(r.d):ghMD(ghAdd(r.d,1)))+' から '+r.g+'（'+(r.start?'入社日の当日から':'確定日の翌日から')+'）'):'日付とグレードを入れてください')+'</span>'
-      +ghSrcTag(r)+'<input class="form-input" style="flex:1;min-width:120px;padding:4px 7px;font-size:11.5px" placeholder="メモ（任意）" value="'+escapeHtml(r.note||'')+'" onchange="ghEdSet('+i+',\'note\',this.value)"></div></div>';
+      +ghSrcTag(r)+'<input class="form-input" style="flex:1;min-width:120px;padding:4px 7px;font-size:11.5px" placeholder="メモ（任意）" value="'+escapeHtml(r.note||'')+'" onchange="ghEdSet('+i+',\'note\',this.value)"></div>'+((typeof ghSpecialHtml==='function') ? ghSpecialHtml(r) : '')+'</div>';
   });
   h+='<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="ghEdAdd()"><i class="ti ti-plus"></i> 記録を追加（昇格・降格）</button>'
     +(recs.some(function(r){ return r.start; })?'':'<button class="btn btn-secondary btn-sm" onclick="ghEdAddStart()"><i class="ti ti-user-plus"></i> 入社の記録</button>')+'</div>';
@@ -65026,7 +65034,7 @@ function kdGradeCardHtml(e, cfg){
       if(!t.rec) return;
       h+='<tr style="border-top:1px solid var(--border)"><td style="padding:7px 8px;font-weight:700;white-space:nowrap">'+ghYMD(t.rec.d)+'</td><td style="padding:7px 8px;white-space:nowrap">'+ghChangeHtml(t.rec, t.prev)+'</td>'
         +'<td style="padding:7px 8px;white-space:nowrap">'+ghYMD(t.from)+'<div style="font-size:10px;color:var(--muted)">'+(t.rec.start?'入社日の当日から':'確定日の翌日から')+'</div></td>'
-        +'<td style="padding:7px 8px">'+ghSrcTag(t.rec)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(t.rec.by||'')+(t.rec.note?'・'+escapeHtml(t.rec.note):'')+'</div>'+ghPrevEvalHtml(t.rec)+'</td></tr>';   /* v1058: 前のグレードの期間の評価 */
+        +'<td style="padding:7px 8px">'+ghSrcTag(t.rec)+'<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(t.rec.by||'')+(t.rec.note?'・'+escapeHtml(t.rec.note):'')+'</div>'+ghPrevEvalHtml(t.rec)+((typeof ghSpecialHtml==='function') ? ghSpecialHtml(t.rec) : '')+'</td></tr>';   /* v1058: 前のグレードの期間の評価 */
     });
     h+='</tbody></table></div>';
   }
@@ -67440,6 +67448,12 @@ function ghEvalTrack(p){
 /* 保存・承認・昇格を止める理由（無ければ ''） */
 function ghEvalStop(p){
   if(!ghEvalNeeded(p)) return '';
+  if(p.mode==='special'){   /* v1115：特例は Career Score の条件だけを省く。権限（GM・CEO）・確定日とグレード履歴の確かめは今までどおり */
+    if(!ghEvalCan()) return '特例でのグレード変更は GM・CEO だけができます';
+    if(!String(p.reason||'').trim()) return '特例変更の理由を入れてください';
+    var _pr=ghEvalPeriod(p); if(!_pr) return '確定日を入れてください';
+    return _pr.err || '';
+  }
   if(!p.ev) return p.g0+' の期間の評価を確定してください（GM・CEO）';
   var pr=ghEvalPeriod(p); if(!pr) return '確定日を入れてください';
   return pr.err || '';
@@ -67474,14 +67488,15 @@ function ghEvalBlockHtml(p){
   h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">・'+escapeHtml(p.g1)+' の期間は、四半期の終わりに '+escapeHtml(p.g1)+' の評価で日割りして計算します。<br>・予算達成率・店舗利益・係数・原資の調整は、今までどおり四半期の終わりにほかの人と一緒に計算します。<br>・金額はここには出しません（成長カルテで見られます）。</div>';
   if(!ev){
     if(!can) h+='<div class="alert alert-warning" style="margin:8px 0 0;padding:6px 10px"><i class="ti ti-lock"></i> 前のグレードの期間の評価は GM・CEO が確定します。GM・CEO に頼んでください。</div>';
-    else if(noCs) h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="ghEvalOpenCs()"><i class="ti ti-trending-up"></i> Career Score を開く</button></div>';
+    else if(noCs) h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="ghEvalOpenCs()"><i class="ti ti-trending-up"></i> Career Score を開く</button></div>'
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:4px">評価をせずに変えるときは、上の「特例でグレードを変更する」を選べます（理由が必要）。</div>';   /* v1115 */
     else h+='<div class="btn-row" style="margin-top:8px"><button class="btn btn-primary btn-sm"'+((p.g0==='G3' && !T.t)?' disabled style="opacity:.45"':'')+' onclick="ghEvalConfirm()"><i class="ti ti-lock-check"></i> この評価で確定する</button></div>';
   }
   return h+'</div>';
 }
 function ghEvalMissing(p){ return ghEvalNeeded(p) && !p.ev; }
 function ghEvalSetTrack(tr){ var p=window._ghPend; if(!p) return; p.track=CSC_TRACK_NAME[tr] ? tr : null; ghEvalKeep(p); openModal(ghConfirmHtml(p)); }
-function ghEvalKeep(p){ var d=document.getElementById('gh-cf-date'), n=document.getElementById('gh-cf-note'); if(d && d.value) p.d=d.value; if(n) p.note=n.value; }
+function ghEvalKeep(p){ var d=document.getElementById('gh-cf-date'), n=document.getElementById('gh-cf-note'), r=document.getElementById('gh-sp-reason'); if(d && d.value) p.d=d.value; if(n) p.note=n.value; if(r) p.reason=r.value; }
 function ghEvalConfirm(){
   var p=window._ghPend; if(!p || !ghEvalNeeded(p)) return;
   if(!ghEvalCan()){ showToast('前のグレードの期間の評価は GM・CEO が確定します','warning'); return; }
@@ -67506,7 +67521,7 @@ function ghEvalOpenCs(){
 }
 /* 記録に残す形（期間は、グレードを変える前に確かめた確定日の期間） */
 function ghEvalRecord(p){
-  if(!p || !p.ev) return undefined;
+  if(!p || !p.ev || p.mode==='special') return undefined;   /* v1115：特例は評価を残さない（確定した評価があっても使わない） */
   var pr=(p.period && !p.period.err) ? p.period : (ghEvalPeriod(p)||{});
   return Object.assign({}, p.ev, {from:pr.from||null, to:pr.to||null, days:pr.days||null});
 }
@@ -67516,6 +67531,7 @@ function ghAddRecEval(empId, rec, name){
   var recs=ghRecs(empId), d=ghDate(rec.d), g=ghNormG(rec.g), hit=recs.find(function(r){ return r.d===d && r.g===g && !r.start; });
   var ok=false;
   if(hit && rec.prevEval){ hit.prevEval=rec.prevEval; if(!hit.from && rec.from) hit.from=ghNormG(rec.from); hit.edBy=_ghWho(); hit.edAt=_ghNow(); ok=(ghSave(empId, recs, name)!==false); }
+  else if(hit && rec.mode==='special' && !hit.prevEval){ hit.mode='special'; hit.reason=rec.reason; if(!hit.from && rec.from) hit.from=ghNormG(rec.from); hit.edBy=_ghWho(); hit.edAt=_ghNow(); ok=(ghSave(empId, recs, name)!==false); }   /* v1115：同じ日・同じグレードの記録が先にあれば、そこに特例の印と理由 */
   else if(hit) ok=true;
   if(!ok && window._ghTx) window._ghTx.err=new Error('grade_hist not recorded');   /* まとめて保存の中なら、全部戻す（黙って役職だけ変えない） */
   if(!ok && !window._ghTx) showToast('グレード履歴に記録できませんでした'+(rec.prevEval?'（前のグレードの期間の評価も残っていません）':'')+'。成長カルテのグレード履歴を確かめてください','danger');
@@ -67524,6 +67540,11 @@ function ghAddRecEval(empId, rec, name){
 function ghConfirmTitle(p){ return p.kind==='approve' ? '昇格申請を承認します' : (p.kind==='stage' ? 'Leader に昇格します' : 'グレードが変わります'); }
 function ghConfirmBtnHtml(p){
   var lbl=p.kind==='approve' ? '承認してグレード履歴に記録' : (p.kind==='stage' ? '昇格してグレード履歴に記録' : 'グレード履歴に記録して保存'), act=(p.kind==='approve'?'承認':(p.kind==='stage'?'昇格':'保存'));
+  if(p.mode==='special' && ghEvalNeeded(p)){   /* v1115：特例は、理由などがそろったら確認の画面へ */
+    var _s=ghEvalStop(p);
+    if(_s) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-alert-triangle"></i> '+escapeHtml(_s)+'</button>';
+    return '<button id="gh-cf-go" class="btn btn-primary" onclick="ghSpecialReview()"><i class="ti ti-eye-check"></i> 内容を確認する</button>';
+  }
   if(ghEvalMissing(p)) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-lock"></i> '+escapeHtml(p.g0)+' の期間の評価を確定してから'+act+'</button>';
   if(ghEvalStop(p)) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-alert-triangle"></i> 確定日を直してから'+act+'</button>';
   return '<button id="gh-cf-go" class="btn btn-primary" onclick="ghConfirmGo()"><i class="ti ti-device-floppy"></i> '+lbl+'</button>';
@@ -67534,6 +67555,7 @@ function ghConfirmGo(){
   ghEvalKeep(p);
   var stop=ghEvalStop(p); if(stop){ showToast(stop,'warning'); return; }
   var d=ghDate(p.d); if(!d){ showToast('確定日を入れてください','warning'); return; }
+  if(p.mode==='special' && ghEvalNeeded(p) && !p.reviewed){ ghSpecialReview(); return; }   /* v1115 */
   p.d=d; p.period=ghEvalNeeded(p) ? ghEvalPeriod(p) : null; p.ok=true; try{ closeModalDirect(); }catch(err){}
   try{
     if(p.kind==='approve') approveLssRequest(p.key, '承認');
@@ -67553,10 +67575,14 @@ function ghGate(kind, key, emp, t1, args){
   if(!emp) return false;
   var g0=ghNormG(empGrade(emp)), g1=ghNormG(empGrade(Object.assign({}, emp, {title:t1, role:((typeof jobTitle==='function' && jobTitle(t1))||{}).permRole||emp.role})));
   var p=window._ghPend;
-  if(p && p.ok && p.kind===kind && p.key===key && p.g1===g1) return false;
+  if(p && p.ok && p.kind===kind && p.key===key && p.g1===g1){
+    var _sp=(p.mode==='special') ? ghEvalStop(p) : '';   /* v1115：特例は承認・昇格の直前にも、権限・理由・確定日を確かめる */
+    if(_sp){ window._ghPend=null; showToast(_sp+'（変えていません）','warning'); return true; }
+    return false;
+  }
   if(!ghEvalNeeded({g0:g0, g1:g1})) return false;
   window._ghStash=null;   /* 役職の編集の画面ではない（キャンセルで前の編集の画面を出さない） */
-  window._ghPend={ kind:kind, key:key, empId:emp.id, g0:g0, g1:g1, name:emp.name||'', t0:emp.title||'', t1:t1||'', d:ghToday(), note:'', ok:false, ev:null, track:null, args:args||null };
+  window._ghPend={ kind:kind, key:key, empId:emp.id, g0:g0, g1:g1, name:emp.name||'', t0:emp.title||'', t1:t1||'', d:ghToday(), note:'', ok:false, ev:null, track:null, args:args||null, mode:'normal', reason:'' };
   openModal(ghConfirmHtml(window._ghPend));
   return true;
 }
@@ -67567,7 +67593,7 @@ function ghRecordChange(e, g0, src, note){
     window._ghPend=null;
     var g1=ghNormG(empGrade(e)); g0=ghNormG(g0);
     if(!g0 || !g1 || g0===g1) return false;
-    return ghAddRecEval(e.id, {d:p.d, g:g1, from:g0, start:false, src:src, note:p.note||note||'', prevEval:ghEvalRecord(p)}, e.name);
+    return ghAddRecEval(e.id, Object.assign({d:p.d, g:g1, from:g0, start:false, src:src, note:p.note||note||'', prevEval:ghEvalRecord(p)}, ghSpecialRec(p)||{}), e.name);   /* v1115：特例の印と理由 */
   }
   return ghAutoRec(e, g0, src, note);
 }
@@ -67591,6 +67617,91 @@ function bonusSegCs(e, seg, d){
   }
   var ev=bonusSegEval(e, seg);
   return (ev && ev.csPct!=null && isFinite(Number(ev.csPct))) ? {pct:Number(ev.csPct), src:'grade', at:ev.at||'', by:ev.by||''} : null;
+}
+/* ===== v1115（Motoさん 10/29 の依頼「評価なしでの特例グレード変更」）：特例でのグレード変更（キャリアスコア評価なし） =====
+   ・グレードを変える前の評価の確定（UI案38）が要るとき（G2 以上から変わるとき）に、「通常のグレード変更」（初期）と「特例」を選べる。
+   ・特例で省くのは Career Score の条件（前のグレードの期間の評価の確定）だけ。使えるのは今その確定ができる GM・CEO だけ。
+     確定日とグレード履歴の確かめ・役職（専門職の組み合わせ）・保存のまとめ方（役職とグレード履歴を一緒に）は今までどおり。
+   ・理由は必須。保存の前に、対象者・前後のグレード・確定日（適用日）・理由を確かめる画面を出す。
+   ・グレード履歴の記録に mode:'special'・reason（操作者・日時は記録の by・at）。評価（prevEval）は残さない。
+   ・Career Score（点・未評価・評価途中）は触らない（0 点や評価済みにしない・自動で確定しない）。
+     前のグレードの期間のボーナスは、今までどおり四半期の評価で計算する（無ければ「未評価」）。確定済みの給与・ボーナス・評価の記録は書き換えない。 */
+function ghSpecialRec(p){ return (p && p.mode==='special' && ghEvalNeeded(p)) ? {mode:'special', reason:String(p.reason||'').trim().slice(0, 500)} : null; }
+/* グレードの変え方（評価の確定が要るときだけ出す） */
+function ghModeHtml(p){
+  if(!ghEvalNeeded(p)) return '';
+  var sp=(p.mode==='special'), can=ghEvalCan();
+  var opt=function(v, on, title, sub, dis){
+    return '<label style="display:flex;gap:10px;align-items:flex-start;min-height:44px;box-sizing:border-box;padding:8px 10px;border:1.5px solid '+(on?'var(--accent)':'var(--border)')+';border-radius:10px;cursor:'+(dis?'not-allowed':'pointer')+(dis?';opacity:.6':'')+'">'
+      +'<input type="radio" name="gh-mode" value="'+v+'"'+(on?' checked':'')+(dis?' disabled':'')+' onchange="ghSetMode(this.value)" style="width:20px;height:20px;margin:2px 0 0;accent-color:var(--accent);flex:0 0 auto">'
+      +'<span style="min-width:0"><b style="font-size:13px">'+escapeHtml(title)+'</b><span style="display:block;font-size:11px;color:var(--muted);line-height:1.5">'+escapeHtml(sub)+'</span></span></label>';
+  };
+  return '<div role="radiogroup" aria-label="グレードの変え方" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"><div style="font-size:12px;font-weight:700">グレードの変え方</div>'
+    +opt('normal', !sp, '通常のグレード変更', 'Career Score の評価で、'+p.g0+' の期間の評価を確定してから変えます（今までどおり）', false)
+    +opt('special', sp, '特例でグレードを変更する（キャリアスコア評価なし）', can ? '評価が無い・評価途中・未確定でも、理由を残して変えます（GM・CEO）' : '特例は GM・CEO だけが使えます', !can)
+    +'</div>';
+}
+/* 今の Career Score の状態（特例の画面に出すだけ。変えない） */
+function ghCsStateTxt(p){
+  var nm=ghEvalName(p), sum=(typeof lssSummary==='function') ? lssSummary(nm) : null;
+  if(!(sum && sum.hasData)) return 'まだ評価がありません（未評価のまま残ります）';
+  var rec=(typeof getLssScores==='function') ? getLssScores(nm) : null, un=(typeof cssUnOf==='function' && rec) ? cssUnOf(nm, rec.scores) : null;
+  return (un>0 ? '評価途中（採点していない項目 '+un+'）' : '評価あり')+'・今の点 '+cscPts(sum.totalScore, sum.totalMax)+'（そのまま残ります）';
+}
+function ghSpecialBlockHtml(p){
+  var d=ghDate(p.d), row=function(k, v){ return '<tr><td style="color:var(--muted);white-space:nowrap;vertical-align:top">'+k+'</td><td>'+v+'</td></tr>'; };
+  var h='<div style="border:1.5px solid var(--accent);border-radius:12px;padding:10px 12px;margin-bottom:10px">';
+  h+='<div style="font-size:13px;font-weight:800;margin-bottom:4px"><i class="ti ti-alert-octagon" style="color:var(--accent)"></i> 特例でのグレード変更</div>';
+  h+='<div style="font-size:12px;line-height:1.6;margin-bottom:8px">キャリアスコアの評価を伴わずにグレードを変更します。変更理由と操作履歴が記録されます。</div>';
+  h+='<table class="inv-table" style="width:100%;font-size:12px"><tbody>'
+    +row('対象従業員', '<b>'+escapeHtml(p.name||'')+'</b><div style="font-size:10.5px;color:var(--muted)">'+escapeHtml(p.t0||'（未設定）')+' → '+escapeHtml(p.t1||'（未設定）')+'</div>')
+    +row('現在のグレード', ghBadge(p.g0))+row('変更後のグレード', ghBadge(p.g1))
+    +row('適用日', d ? ('<b>'+ghYMD(ghAdd(d, 1))+'</b> から（確定日 '+ghYMD(d)+' の翌日）') : '<span style="color:var(--red)">確定日を入れてください</span>')
+    +row('Career Score', escapeHtml(ghCsStateTxt(p)))+'</tbody></table>';
+  h+='<div class="form-group" style="margin:8px 0 0"><label class="form-label" for="gh-sp-reason">特例変更の理由（必須）</label>'
+    +'<textarea class="form-textarea" id="gh-sp-reason" rows="3" maxlength="500" style="width:100%" placeholder="例：店舗の立ち上げで役割が変わったため（評価は次の四半期に行う）" oninput="ghSpecialReason(this.value)">'+escapeHtml(p.reason||'')+'</textarea></div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);line-height:1.6;margin-top:6px">・Career Score の点と評価の状態（未評価・評価途中）はそのまま残します（0 点・評価済みにしません。自動で確定もしません）。<br>'
+    +'・'+escapeHtml(p.g0)+' の期間のボーナスは、四半期の Career Score で計算します（評価が無ければ「未評価」）。確定済みの給与・ボーナス・評価の記録は書き換えません。</div>';
+  return h+'</div>';
+}
+function ghSetMode(m){
+  var p=window._ghPend; if(!p) return;
+  ghEvalKeep(p);
+  p.mode=(m==='special' && ghEvalCan() && ghEvalNeeded(p)) ? 'special' : 'normal'; p.reviewed=false;
+  openModal(ghConfirmHtml(p));
+}
+/* 理由を打つあいだは描き直さない（入力中の文字を消さない）。ボタンだけ入れ替える */
+function ghSpecialReason(v){ var p=window._ghPend; if(!p) return; p.reason=String(v||''); p.reviewed=false; var gb=document.getElementById('gh-cf-go'); if(gb) gb.outerHTML=ghConfirmBtnHtml(p); }
+function ghSpecialReview(){
+  var p=window._ghPend; if(!p || p.mode!=='special') return;
+  ghEvalKeep(p); var d=ghDate(p.d); if(d) p.d=d;
+  var stop=ghEvalStop(p); if(stop){ showToast(stop,'warning'); p.reviewed=false; openModal(ghConfirmHtml(p)); return; }
+  p.reviewed=true;
+  openModal(ghSpecialReviewHtml(p));
+}
+function ghSpecialBack(){ var p=window._ghPend; if(!p) return; p.reviewed=false; openModal(ghConfirmHtml(p)); }
+function ghSpecialReviewHtml(p){
+  var lbl=p.kind==='approve' ? '特例で承認してグレード履歴に記録' : (p.kind==='stage' ? '特例で昇格してグレード履歴に記録' : '特例で変更して保存');
+  var row=function(k, v){ return '<tr><td style="color:var(--muted);white-space:nowrap;vertical-align:top">'+k+'</td><td>'+v+'</td></tr>'; };
+  return '<div class="modal-title"><i class="ti ti-alert-octagon" style="color:var(--accent)"></i> 特例でグレードを変更します（確認） <button class="modal-close" onclick="ghConfirmCancel()">×</button></div>'
+    +'<div style="font-size:12.5px;line-height:1.6;margin-bottom:8px">キャリアスコアの評価を伴わずにグレードを変更します。変更理由と操作履歴が記録されます。</div>'
+    +'<table class="inv-table" style="width:100%;font-size:12.5px"><tbody>'
+    +row('対象従業員', '<b>'+escapeHtml(p.name||'')+'</b>')
+    +row('役職', escapeHtml(p.t0||'（未設定）')+' → <b>'+escapeHtml(p.t1||'（未設定）')+'</b>')
+    +row('グレード', ghBadge(p.g0)+' <i class="ti ti-arrow-right" style="color:var(--muted)"></i> '+ghBadge(p.g1))
+    +row('確定日・適用日', ghYMD(p.d)+'（新しいグレードは '+ghYMD(ghAdd(p.d, 1))+' から）')
+    +row('変更種別', '<b>特例変更</b>（Career Score の評価なし）')
+    +row('理由', '<div style="white-space:pre-wrap;font-weight:700">'+escapeHtml(String(p.reason||'').trim())+'</div>')
+    +(String(p.note||'').trim() ? row('メモ', escapeHtml(String(p.note).trim())) : '')
+    +row('操作者', escapeHtml(_ghWho())+'<span style="font-size:10.5px;color:var(--muted)">（日時は保存したときに記録）</span>')
+    +row('Career Score', escapeHtml(ghCsStateTxt(p)))+'</tbody></table>'
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="ghSpecialBack()">戻る</button><button id="gh-cf-go" class="btn btn-primary" onclick="ghConfirmGo()"><i class="ti ti-device-floppy"></i> '+lbl+'</button></div>';
+}
+/* 履歴の 1 行：特例の印と理由（操作者・日時） */
+function ghSpecialHtml(r){
+  if(!r || r.mode!=='special') return '';
+  return '<div style="font-size:10.5px;margin-top:2px;line-height:1.5"><span style="color:#b4501a;font-weight:700"><i class="ti ti-alert-octagon"></i> 特例変更（Career Score の評価なし）</span> 理由：'+escapeHtml(r.reason||'')
+    +'<span style="color:var(--muted)"> '+escapeHtml(String(r.at||'').slice(0,16))+' '+escapeHtml(r.by||'')+'</span></div>';
 }
 function ghPrevEvalHtml(r){
   var ev=r && r.prevEval; if(!ev || typeof ev!=='object') return '';
