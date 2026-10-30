@@ -8,6 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import { createHandler } from '../supabase/functions/invoice-intake/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
@@ -806,8 +807,10 @@ test('deploy/invoice-purchase-posted: the copies are the repository files and th
   assert.deepEqual(fs.readdirSync(new URL('../' + D, import.meta.url)).sort(), ['0_前と後を比べる_読むだけ.sql', '1_追加のSQL_確認済みの決まり.sql', '2_確認のSQL_読むだけ.sql',
     '3_すぐに集計を作る.sql', '4_開始前の分_読むだけ.sql', '戻す.sql', '手順.md'].sort());
   for (const [copy, orig] of [['0_前と後を比べる_読むだけ.sql', 'db/invoice-purchase-posted-compare.sql'], ['1_追加のSQL_確認済みの決まり.sql', 'supabase/migrations/20261029100000_invoice_purchase_posted.sql'],
-    ['2_確認のSQL_読むだけ.sql', 'db/invoice-intake-postcheck.sql'], ['3_すぐに集計を作る.sql', 'db/invoice-purchase-publish-now.sql'],
+    ['3_すぐに集計を作る.sql', 'db/invoice-purchase-publish-now.sql'],
     ['4_開始前の分_読むだけ.sql', 'db/invoice-purchase-before-start-check.sql'], ['戻す.sql', 'db/invoice-purchase-posted-revert.sql']]) assert.ok(rd(D + copy).equals(rd(orig)), copy + ' is ' + orig);
+  // The check SQL stays as it was handed over (10/29); the postcheck moved on with 20261103090000 (deploy/invoice-price-compare-v1123/).
+  assert.equal(crypto.createHash('sha256').update(rd(D + '2_確認のSQL_読むだけ.sql')).digest('hex'), '8dbc8bc0abb28dd7f2ee622b58466797958c5d24ef620bccda0fda94b03d0c7d');
   // publishing now never turns a stopped summary back on (unlike db/invoice-purchase-start.sql)
   assert.ok(!/invoice_settings/.test(rd('db/invoice-purchase-publish-now.sql').toString().replace(/^--.*$/gm, '')));
   const steps = rd(D + '手順.md').toString();
