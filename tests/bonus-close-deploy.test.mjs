@@ -9,12 +9,15 @@ const read = (u) => fs.readFileSync(u, 'utf8');
 const MIG = read(new URL('../supabase/migrations/20261028090000_bonus_close.sql', import.meta.url));
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 
-test('the pasted SQL is the migration; the single-file function is the handler with the serve line', () => {
+test('the pasted SQL is the migration; the single-file function is the handler with the serve line', async () => {
   assert.equal(read(new URL('1_追加のSQL_ボーナスの締め.sql', D)), MIG);
   const one = read(new URL('3_関数_bonus-close_index.ts', D));
-  const h = read(new URL('../supabase/functions/bonus-close/handler.mjs', import.meta.url));
+  // v1116 changed the handler (pay_mode / sp_save): the v1109 one-file stays as it was handed over (deploy/bonus-close-base-special-v1116 has the new one)
+  const { createHash } = await import('node:crypto');
+  assert.equal(createHash('sha256').update(fs.readFileSync(new URL('3_関数_bonus-close_index.ts', D))).digest('hex'), 'e40e808a282e3d0e1892ec91f5dd5c72103ff07c7aa395ca03da5e3d1e279967');
+  const h = one.slice(0, one.lastIndexOf('Deno.serve'));
   const ix = read(new URL('../supabase/functions/bonus-close/index.ts', import.meta.url));
-  assert.ok(one.includes(h.trimEnd()), 'the handler, unchanged');
+  assert.match(h, /export function createHandler/, 'the handler');
   const serve = ix.split('\n').find(l => l.includes('Deno.serve'));
   assert.ok(serve && one.trimEnd().endsWith(serve.trim()));
   assert.doesNotMatch(one, /^import /m, 'no imports (one file)');

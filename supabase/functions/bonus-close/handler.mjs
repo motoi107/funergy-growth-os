@@ -1,4 +1,5 @@
 // bonus-close: ボーナスの仮締め・支給額確定・修正・支給済み・調整記録の API（v1109・UI案61 の ②）。Spec: docs/BONUS_CLOSE_V1109_JA.md.
+// v1116: 人ごとの「無条件で基準額」と特別報酬（docs/BONUS_BASE_SPECIAL_V1116_JA.md）。
 // One way in: a Supabase Auth sign-in (email). The database (manager_auth via bc_actor) decides the role: CEO / GM write,
 // accounting (office) reads. The browser's own idea of its role or name is never used. Nothing here pays, deducts,
 // sends to payroll or publishes an amount to the person; the bonus formula stays in the app.
@@ -20,7 +21,7 @@ export function postgrestDb({ fetch, url, key }) {
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer)[^\s]*/gi, '$1:***').slice(0, 200);
 // The codes the SQL raises (anything else is 'error').
 export const CODES = ['unauthorized', 'forbidden', 'bad_value', 'conflict', 'not_editable', 'not_found', 'bad_snapshot', 'bad_amounts', 'unselected',
-  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing'];
+  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing', 'pay_mismatch', 'own_pay', 'no_emp'];
 const bad = () => { const e = new Error('bad_value'); e.code = 'bad_value'; return e; };
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 const Q = v => (typeof v === 'string' && /^\d{4}-Q[1-4]$/.test(v) ? v : (() => { throw bad(); })());
@@ -29,6 +30,27 @@ const VER = v => (Number.isInteger(v) && v >= 1 && v <= 999999 ? v : (() => { th
 const TXT = (v, n) => { if (v == null) return ''; if (typeof v !== 'string' || v.length > n) throw bad(); return v.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, ''); };
 const DATE = v => (typeof v === 'string' && /^20\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v) ? v : (() => { throw bad(); })());
 const SIZE = (v, n) => { const o = obj(v); if (!o) throw bad(); if (JSON.stringify(o).length > n) throw bad(); return o; };
+// v1116: an employee id (the same form as the snapshot's order) and a whole-dollar amount 0 … 100,000,000 ($1 units, as the bonus).
+const EMP = v => (typeof v === 'string' && /^[A-Za-z0-9_.:@-]{1,64}$/.test(v) ? v : (() => { throw bad(); })());
+const AMT = v => (Number.isInteger(v) && v >= 0 && v <= 100000000 ? v : (() => { throw bad(); })());
+const AMT0 = v => (v == null ? null : AMT(v));
+// v1116: the reason of a special reward (people[id].spWhy in a saved version) and the kept chosen values (keep) go only to the v1116 app
+// (it sends pv: 1). An older app copies the confirmed version into the shared data as it is; it gets the version without them (the
+// amounts are the same).
+const hideWhy = (o, depth = 0) => {
+  if (!o || typeof o !== 'object' || depth > 6) return o;
+  if (Array.isArray(o)) return o.map(x => hideWhy(x, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (k === 'snap' && obj(v) && obj(v.people)) {
+      const people = {};
+      for (const [id, pe] of Object.entries(v.people)) { if (obj(pe) && 'spWhy' in pe) { const { spWhy, ...rest } = pe; people[id] = rest; } else people[id] = pe; }
+      const { keep, ...snap } = v;   // keep: the chosen values (with their reasons) of the people on base mode — the v1116 app only
+      out[k] = { ...snap, people };
+    } else out[k] = hideWhy(v, depth + 1);
+  }
+  return out;
+};
 
 export function createHandler(deps) {
   const env = deps.env;
@@ -61,6 +83,15 @@ export function createHandler(deps) {
     fix_start: (a, b) => rpc('bc_fix_start', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev) }),
     fix_cancel: (a, b) => rpc('bc_fix_cancel', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev) }),
     mark_paid: (a, b) => rpc('bc_mark_paid', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev), ver: VER(b.ver), paid_on: DATE(b.paid_on) }),
+    // v1116: 「無条件で基準額」／「通常の評価計算に戻す」 (CEO / GM, like every write here) and 特別報酬 (CEO / GM — the SQL checks the role
+    // itself). Both only while the draft can be changed; a saved version must carry them exactly (bc_save).
+    pay_mode: (a, b) => {
+      if (b.mode !== 'base' && b.mode !== 'normal') throw bad();
+      return rpc('bc_pay_mode', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev), emp_id: EMP(b.emp_id), emp_name: TXT(b.emp_name, 80), mode: b.mode,
+        why: TXT(b.why, 300), amt0: AMT0(b.amt0), amt1: AMT0(b.amt1) });
+    },
+    sp_save: (a, b) => rpc('bc_sp_save', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev), emp_id: EMP(b.emp_id), emp_name: TXT(b.emp_name, 80),
+      amount: AMT(b.amount), why: TXT(b.why, 300) }),
     adjust_done: (a, b) => {
       if (!(Number.isInteger(b.id) && b.id >= 1 && b.id <= 999999999999)) throw bad();
       return rpc('bc_adjust_done', a, { quarter: Q(b.quarter), expect_rev: REV(b.expect_rev), id: b.id, memo: TXT(b.memo, 500) });
@@ -84,7 +115,8 @@ export function createHandler(deps) {
     try { actor = await actorOf(req); } catch { actor = null; }
     if (!actor) return json({ error: 'unauthorized' }, 401);
     try {
-      return json(await fn(actor, body) ?? {});
+      const r = await fn(actor, body) ?? {};
+      return json(body.pv === 1 ? r : hideWhy(r));
     } catch (e) {
       // Our own refusals carry .code; the SQL's come back as the message (raise exception 'conflict' …).
       const code = [e && e.code, e && e.message].map(v => String(v || '')).find(v => CODES.includes(v)) || '';

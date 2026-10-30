@@ -102,6 +102,26 @@ test('special with no Career Score at all: the reason is required (not empty, no
   run(c, `ghSpecialReview()`);
   assert.doesNotMatch(lastModal(c), /（確認）/, 'invisible characters only: no review either');
   assert.equal(run(c, `window._ghPend.reviewed`), false);
+  // Codex P2 (PR #105): every invisible character of Unicode (Default_Ignorable_Code_Point, controls, format characters) is not a reason —
+  // the bidi isolates U+2066–2069, the combining grapheme joiner U+034F, the variation selectors U+FE00–FE0F / U+E0100–E01EF, tags, …
+  const INVIS = ['\u2066', '\u2067', '\u2068', '\u2069', '\u034f', '\ufe0f', '\ufe00', '\u061c', '\u180b', '\u17b4', '\u206a', '\u206f', '\u115f', '\u1160', '\uffa0',
+    '\u{e0001}', '\u{e0020}', '\u{e0100}', '\u{1bca0}', '\u{1d173}', '\ufff0', '\u0007', '\u0085', '\u2028', '\u3000', '\u00a0', '\u2800', '\u0301', '\u20dd', '\ue000', '\ud800'];
+  for (const ch of INVIS) {
+    assert.equal(run(c, `ghSpReason({reason:${JSON.stringify(ch)}})`), '', 'U+' + ch.codePointAt(0).toString(16));
+    assert.equal(run(c, `ghSpReason({reason:${JSON.stringify(' ' + ch + ch + '\n')}})`), '', 'U+' + ch.codePointAt(0).toString(16) + ' with spaces');
+  }
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify(INVIS.join(''))}})`), '', 'all of them together');
+  run(c, `ghSpecialReason(${JSON.stringify('\u2066\u2067\u2068\u2069\u034f\ufe0f')})`);
+  run(c, `ghSpecialReview()`);
+  assert.doesNotMatch(lastModal(c), /（確認）/, 'Codex\'s characters only: no review');
+  assert.equal(run(c, `ghEvalStop(window._ghPend)`), '特例変更の理由を入れてください');
+  // visible text keeps its letters (the invisible ones around it are removed); a symbol or an emoji alone is a reason
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify('\u2066本人の希望\u2069\u034f')}})`), '本人の希望');
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify('👍\ufe0f')}})`), '👍');
+  assert.equal(run(c, `ghSpReason({reason:'A'})`), 'A');
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify('é')}})`), 'é', 'a letter with a combining accent stays');
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify('あ'.repeat(600))}})`).length, 500, 'cut at 500 after the invisible characters are removed');
+  assert.equal(run(c, `ghSpReason({reason:${JSON.stringify('\u2066'.repeat(600) + 'い')}})`), 'い', 'invisible characters do not use up the 500');
   // with a reason: the button goes to the review (not straight to the save)
   run(c, `ghSpecialReason(${JSON.stringify(REASON)})`);
   run(c, `ghConfirmSave()`);
@@ -403,6 +423,7 @@ test('nothing else changes: no evaluation is confirmed or invented, the bonus ke
   for (const f of ['ghSpecialRec', 'ghSpecialReview', 'ghSpecialReviewHtml', 'ghSpecialBlockHtml', 'ghSetChangeMode', 'ghSpecialReason', 'ghSpecialTrackHtml', 'ghSpecialApplyHtml', 'ghSpReason', 'ghSpecialSegTrack', 'ghModeHtml', 'ghCsStateTxt'])
     assert.doesNotMatch(fnSrc(f), /ghEvalConfirm\(|setLssScores|lsSet\(|bonus_q|csFreeze/, f);
   assert.match(fnSrc('ghEvalRecord'), /if\(!p \|\| !p\.ev \|\| p\.mode==='special'\) return undefined;/);
-  assert.match(source, /const APP_VERSION = '1115';/);
-  assert.match(SW, /const SW_BUILD = '1115';/);
+  const ver = (source.match(/const APP_VERSION = '(\d+)';/) || [])[1];   // 1115 or later; the page and the service worker agree
+  assert.ok(Number(ver) >= 1115, ver);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + ver + "';"));
 });
