@@ -51192,6 +51192,10 @@ function benefitMinGradeOn(d){ return (String(d||'') >= BENEFIT_G3_FROM) ? 3 : 2
 function benefitGradeOn(e, d){
   if(!e) return { g:'', src:'', master:'' };
   var master = ghNormG(empGrade(e));
+  /* Codex（PR #109・9efea22）の P2：入社日より前・退職日より後は、今の役職のグレードに戻さずに対象外（働いていない日） */
+  var hire = ghHire(e), resign = ghResign(e);
+  if(d && hire && d < hire) return { g:'', src:'out', master:master, out:'before', at:hire };
+  if(d && resign && d > resign) return { g:'', src:'out', master:master, out:'after', at:resign };
   try{
     var seg = ghSegments(e, d, d);
     if(seg && seg.length && seg[0].g && !seg[0].noHist) return { g:seg[0].g, src:'hist', master:master };
@@ -51202,6 +51206,7 @@ function benefitElig(e, d){
   d = d || ghToday();
   if(!e) return { ok:false, g:'', missing:true, why:'従業員マスターに見つかりません' };
   var r = benefitGradeOn(e, d), n = gradeNum(r.g), min = benefitMinGradeOn(d);
+  if(r.out) return { ok:false, g:'', out:r.out, why:(r.out==='before' ? '入社日（'+r.at+'）より前' : '退職日（'+r.at+'）より後') };
   if(!r.g) return { ok:false, g:'', missing:true, why:'グレード未設定（従業員マスターで設定が必要）' };
   var note = (r.src==='hist' && r.master && r.master!==r.g) ? '・グレードの履歴（今の役職は '+r.master+'）' : (r.src==='hist' ? '・グレードの履歴' : '');
   if(n>=min && n<=6) return { ok:true, g:r.g, src:r.src, why:r.g+'（G'+min+' 以上）'+note };
