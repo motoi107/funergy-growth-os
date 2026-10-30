@@ -64296,7 +64296,14 @@ function ghConfirmInfo(p){
     var el=segs.filter(function(x){ return ghElig(x.g,cfg); }).map(function(x){ return x.g+' '+ghMD(x.a)+'〜'+ghMD(x.b); });
     s+=qr.q+' のボーナスは'+(el.length>1?' '+el.join('・')+' の2行になります。':(el.length?' '+el[0]+' の日割りです。':'対象外です（G1）。'));
   }
-  return s;
+  return s+ghSameRecInfo(p, d);
+}
+/* v1116：グレード履歴にもう同じ変更（同じ確定日・同じ新しいグレード）があるとき：新しい記録を足さず、その記録に合わせて役職を変える */
+function ghSameRecInfo(p, d){
+  var e=ghEmp(p.empId), sc=e ? ghLastSameChange(p, ghRecs(e.id)) : null;
+  if(!sc || sc.d!==d) return '';
+  var sp=(sc.mode==='special') ? '（この記録はもう特例変更です。理由は前に入れたもののまま）' : (sc.prevEval ? '（この記録の評価はそのまま）' : '');
+  return '<div style="margin-top:4px;color:var(--accent);font-weight:700"><i class="ti ti-info-circle"></i> グレード履歴にはもう '+ghYMD(sc.d)+' に '+escapeHtml(sc.g)+' になった記録があります（役職はまだ '+escapeHtml(ghNormG(p.g0))+'）。新しい記録は足さず、その記録に合わせて役職を変えます'+sp+'。</div>';
 }
 function ghConfirmDate(v){ var p=window._ghPend; if(!p) return; p.d=v; var el=document.getElementById('gh-cf-info'); if(el) el.innerHTML=ghConfirmInfo(p); var sa=document.getElementById('gh-sp-apply'); if(sa && typeof ghSpecialApplyHtml==='function') sa.innerHTML=ghSpecialApplyHtml(p); var st=document.getElementById('gh-sp-track'); if(st && typeof ghSpecialTrackHtml==='function') st.innerHTML=ghSpecialTrackHtml(p); var ep=document.getElementById('gh-ev-period'); if(ep) ep.innerHTML=ghEvalPeriodHtml(p); var gb=document.getElementById('gh-cf-go'); if(gb) gb.outerHTML=ghConfirmBtnHtml(p); }   /* v1058: 前のグレードの期間・保存のボタンも */
 function _ghRestoreForm(){
@@ -67424,14 +67431,28 @@ function bonusLegacyNoteHtml(tot){
    Career Score が無い人は先に評価する（未評価のまま確定できない）。 */
 function ghEvalNeeded(p){ return !!(p && p.g0 && p.g1 && p.g0!==p.g1 && ghElig(p.g0)); }
 function ghEvalCan(){ return ['gm','ceo'].indexOf(curRole)>=0; }
+/* v1116：グレード履歴の最後の記録が、もうこの変更（新しいグレードになった記録・前のグレードが空か今のグレード）か。
+   例：先にグレード履歴のタブで記録を足した・役職だけが前のまま。そうでなければ null */
+function ghLastSameChange(p, recs){
+  var lr=(recs && recs.length) ? recs[recs.length-1] : null, g0=ghNormG(p && p.g0), g1=ghNormG(p && p.g1);
+  return (lr && !lr.start && g0 && g1 && g0!==g1 && lr.g===g1 && (!lr.from || lr.from===g0)) ? lr : null;
+}
 /* 前のグレードの期間：確定日の四半期の初め（またはそのグレードになった日）〜確定日。
    確定日の時点のグレード（グレード履歴）が前のグレードでないとき・最後の記録より前の日のときは err（推測で期間を作らない） */
 function ghEvalPeriod(p){
   var d=ghDate(p.d); if(!d) return null;
   var qr=ghQRange(ghQOf(d)); if(!qr) return null;
-  var e=ghEmp(p.empId), recs=e ? ghRecs(e.id) : [], segs=e ? ghSegments(e, qr.qs, d, recs) : [], last=segs.length ? segs[segs.length-1] : null, lr=recs.length ? recs[recs.length-1] : null;
+  var e=ghEmp(p.empId), recs=e ? ghRecs(e.id) : [];
   var base={to:d, q:qr.q, next:ghAdd(d, 1)};
   var rs=e ? ghResign(e) : null; if(rs && rs<d) return Object.assign(base, {err:'確定日が退職日（'+ghYMD(rs)+'）より後です。退職日までの日にしてください'});
+  /* v1116（Motoさん 10/29「変更できません」）：グレード履歴の最後の記録が、もうこの変更になっている（役職だけがまだ前のまま）。
+     同じ確定日なら、その記録の前の履歴で期間を確かめ、保存ではその記録に合わせる（ghAddRecEval。新しい記録は足さない）。
+     違う日なら、その日を案内する（前は「より後の日に」と出て、どの日にしても保存できなかった） */
+  var sc=e ? ghLastSameChange(p, recs) : null;
+  if(sc && sc.d!==d) return Object.assign(base, {err:'グレード履歴では、もう '+ghYMD(sc.d)+' に '+sc.g+' に変わっています（役職はまだ '+ghNormG(p.g0)+'）。確定日を '+ghYMD(sc.d)+' にすると、その記録に合わせて役職を変えます（違う日にするときは、先に成長カルテのグレード履歴を直してください）', same:sc});
+  if(sc) recs=recs.slice(0, -1);
+  var segs=e ? ghSegments(e, qr.qs, d, recs) : [], last=segs.length ? segs[segs.length-1] : null, lr=recs.length ? recs[recs.length-1] : null;
+  if(sc) base.same=sc;
   if(lr && (lr.start ? lr.d>d : lr.d>=d)) return Object.assign(base, {err:'グレード履歴の最後の記録（'+ghYMD(lr.d)+' '+lr.g+'）より後の日にしてください（'+ghMD(lr.start?lr.d:ghAdd(lr.d,1))+' 以降）'});
   if(!last || last.g!==p.g0 || last.to!==d) return Object.assign(base, {err:'確定日 '+ghMD(d)+' の時点のグレードが、グレード履歴では '+p.g0+' になっていません（'+(last?last.g:'在籍前')+'）。成長カルテのグレード履歴を直してから変えてください'});
   return Object.assign(base, {from:last.from, days:ghDays(last.from, d)});
@@ -67742,6 +67763,7 @@ function ghSpecialReviewHtml(p){
     +row('グレード', ghBadge(p.g0)+' <i class="ti ti-arrow-right" style="color:var(--muted)"></i> '+ghBadge(p.g1))
     +row('確定日・適用日', ghYMD(p.d)+'（新しいグレードは '+ghYMD(ghAdd(p.d, 1))+' から）')
     +row('変更種別', '<b>特例変更</b>（Career Score の評価なし）')
+    +(ghSameRecInfo(p, ghDate(p.d)) ? row('グレード履歴', ghSameRecInfo(p, ghDate(p.d))) : '')   /* v1116：もうある記録に合わせる */
     +(p.g0==='G3' ? row('職種（G3 の期間）', ghEvalTrack(p).t ? 'G3 '+escapeHtml(cscTrackName(ghEvalTrack(p).t)) : '使いません（専門職・オフィス用）') : '')
     +row('理由', '<div style="white-space:pre-wrap;font-weight:700">'+escapeHtml(ghSpReason(p))+'</div>')
     +(String(p.note||'').trim() ? row('メモ', escapeHtml(String(p.note).trim())) : '')
