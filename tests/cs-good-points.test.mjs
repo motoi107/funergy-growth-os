@@ -179,6 +179,12 @@ test('UI案64 Mei: nothing at 2 everywhere → "この人の中で高い" (the t
   tie.scores[G.S10[3]] = 2;   // S10 now 2.0, S2 and S3 still 1.75 together
   c.SCORES['tie Sample'] = tie;
   assert.deepEqual(good(c, 'tie').good.list, [['S10', 'rel', 1]]);
+  // only two areas judged so far, at the same average → neither is "higher than the others"
+  const two = {}; for (const id of ALL(c)) for (const it of G[id]) two[it] = null;
+  for (const id of ['S1', 'S2']) G[id].forEach((it, i) => { two[it] = i === 0 ? 3 : (i === 1 ? 1 : 2); });
+  two[G.S1[4]] = 2;   // S1: 3,1,2,2,2 (2.0) / S2: 3,1,2,2 (2.0)
+  S.person(c, 'two', S.storeRec(two));
+  assert.deepEqual([good(c, 'two').state, good(c, 'two').good.judged, good(c, 'two').good.list], ['partial', 2, []]);
   // the person's own tile says あなた (review P3-4)
   c.ID = 'mei'; assert.match(run(c, `cssTileValHtml(cssEvaluate(EMPS.find(function(e){ return e.id===ID; })), true)`), />あなたの中で高い ・ /);
   assert.match(fnSrc('renderKarteSelfView'), /_kTile\('Career Score', cssTileValHtml\(R, true\)/);
