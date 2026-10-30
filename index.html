@@ -16738,16 +16738,15 @@ function skeletonMain(){
 /* ===== v1066 中間レビュー（非公開版）— v2（段階 4-2・UI案44 B案・v1072）：店舗の 1 ページ＝カード 1 列（結果 → 担当者評価 → コメント・対策 → 返信）・担当・閲覧設定 =====
    仕様は docs/MID_REVIEW_V2_JA.md。
    ・本文・返信・設定はサーバー（Edge Function mid-review と非公開の表 mr_*）にだけ置く。共通データ（app_state）・端末の保存には書かない。
-   ・入り方は 2 つ。PIN のログインの印（window._hwSession を本文の pin_session で送る）か、メールの認証（_botSession・Invoice取込と業務Bot と同じ）。
-     どちらで入ったか（via）と、だれか（actor）はサーバーが決める。この画面は via・actor を送らない。
-     メールの認証が要るのは、担当・閲覧設定の変更（GM・CEO）だけ。
+   ・v1122（10/30 の依頼 ⑥）：本番だけ（デモをやめた）。中間レビューだけのメールの認証もやめた。
+     入り方は PIN のログインの印だけ（window._hwSession を本文の pin_session で送る）。だれか（actor）・役割はサーバーが決める
+     （CEO・GM は manager_auth、AM は社員の表、Head Chef と入力担当は担当・閲覧設定）。この画面は via・actor を送らない。
    ・見られる店・できること（入力・返信・補足・実行完了・確認完了・期限・設定）はサーバーの perms（mr_can）で出し分ける。
      この画面の役職（curRealRole）は入口を出すかどうかだけ（データはサーバーが許したときだけ出る）。
    ・数字は会議タブと同じ関数で読むだけ（keyKpiStats → _meetApplyPl → meetingBudgetKpi → _meetKpiRows、判定は _meetStatus と会社の閾値、
      前月の確定は _meetConfirmState、Qコミットは getQBudget と qcFocusRows）。提出のときの数字（snapshot v2）を提出版に残す。
-     デモの店はサーバーの架空の数字（demoSnapshot と同じ作り方）。
    ・提出に要るもの（mrMissingV2）はサーバーの missingV2・mr_missing_v2 と同じ決まり・同じ順。
-   ・本番の Qコミット（q_budgets）には書かない。デモの店だけ、会議タブの重点カードの形で反映を見せる（メモリの中だけ）。
+   ・本番の Qコミット（q_budgets）には書かない（店舗公開のときに決める）。
    ・店舗公開・通知は OFF のまま。 */
 var MR_FN = '/functions/v1/mid-review';
 var MR_PREV = ['sales','guests','ppa','repeat','labor','fc'];
@@ -16765,8 +16764,8 @@ var MR_QK = { newcust:['新規客数','New guests'], repeat:['リピート率','
   takeout:['テイクアウト売上','Takeout sales'], foodcost:['原価率','Food cost'], labor:['人件費率','Labor cost'] };
 /* 入口を出す人（データはサーバーが許したときだけ）：CEO・GM・AM・Corporate Chef（chef）・G4（店長・Head Chef）・G3（sl）。G2 は出さない */
 var MR_SEE_ROLES = ['ceo','gm','am','chef','g4','sl'];
-function mrFresh(){ return { who:null, authKey:'', pinOnly:false, env:'demo', envSet:false, ym:null, view:null, list:null, listKey:'', load:{}, err:'', errCode:'',
-  restoreTried:null, kpi:{}, kpiX:{}, busy:'', rec:null, recKey:'', ed:null, op:'', flt:'all', subNo:0, cmp:{}, dlOpen:false, srvMiss:null,
+function mrFresh(){ return { who:null, authKey:'', env:'live', ym:null, view:null, list:null, listKey:'', load:{}, err:'', errCode:'',
+  kpi:{}, kpiX:{}, busy:'', rec:null, recKey:'', ed:null, op:'', flt:'all', subNo:0, cmp:{}, dlOpen:false, srvMiss:null,
   acc:null, accYm:'', accStore:'', accDraft:null, accConf:null, flagsConf:null, amDraft:null, amConf:null, amPrev:null, loadQ:{}, amOpen:false, members:null, liveL:null }; }
 var _mr = mrFresh();
 /* 読み込みの世代：ログアウト・別の人の認証・更新で上げる。古い読み込みの結果は書かない */
@@ -16775,24 +16774,16 @@ function mrCanSee(){ return !(typeof curStoreLogin!=='undefined' && curStoreLogi
 function mrReset(){ _mrGen++; if (_mr && _mr.ed && _mr.ed.timer) clearTimeout(_mr.ed.timer); _mr = mrFresh(); }
 function mrRerender(){ if (typeof curPage!=='undefined' && curPage==='mid_review') renderPage('mid_review'); }
 /* 前の人（または前の入り方）の読み込みをすべて捨てる */
-function mrDropAll(){ _mrGen++; mrEdStop(); var keep = { restoreTried:_mr.restoreTried, pinOnly:_mr.pinOnly }; _mr = mrFresh(); _mr.restoreTried = keep.restoreTried; _mr.pinOnly = keep.pinOnly; }
+function mrDropAll(){ _mrGen++; mrEdStop(); _mr = mrFresh(); }
 /* ---- 入り方（サーバーが確かめる。画面は via・actor を送らない） ---- */
-function mrSession(){ return (typeof _botSession !== 'undefined' && _botSession) || null; }
-function mrSigned(){ var s = mrSession(); return !!(s && s.access_token); }
-/* ログインの人（アクセスキーの中の利用者 ID。画面を残すかどうかだけに使う。権限はサーバーが毎回確かめる） */
-function mrSessUser(s){
-  try { var p = String((s && s.access_token) || '').split('.')[1]; if (!p) return null; p = p.replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '=';
-    var j = JSON.parse(atob(p)); return (j && typeof j.sub === 'string' && j.sub) || null; } catch(e) { return null; }
-}
+/* ---- 入り方（PIN のログインの印だけ。サーバーが確かめる。画面は via・actor を送らない） ---- */
 function mrPinTok(){ var w = (typeof window !== 'undefined' && window) ? window._hwSession : null; return (typeof w === 'string' && w) ? w : null; }
 function mrPinExpired(){
   var tk = mrPinTok(); if (!tk) return false;
   try { var p = String(tk).split('.')[1].replace(/-/g, '+').replace(/_/g, '/'); while (p.length % 4) p += '='; var j = JSON.parse(atob(p)); return !!(j && j.exp && Number(j.exp) * 1000 < Date.now()); } catch(e) { return false; }
 }
-/* いまの入り方：メールの認証があればメール（設定に要る）、無ければ PIN の印。key は「同じ人か」を見るため（同じ人の鍵の取り替えでは画面を残す） */
+/* いまの入り方：PIN の印。key は「同じ人か」を見るため（同じ人の印の取り替えでは画面を残す） */
 function mrAuthNow(){
-  var s = mrSession();
-  if (s && s.access_token && !_mr.pinOnly) { var u = mrSessUser(s); return { via:'email', key:'e:' + (u || ('?' + s.access_token + '|' + (s.refresh_token || ''))), s:s }; }   /* 読めない鍵は、鍵ごとに別の人として扱う */
   var p = mrPinTok(), lp = (typeof invInLoginPerson === 'function') ? invInLoginPerson() : null;
   if (p) return { via:'pin', key:'p:' + (lp ? String(lp.id) : ('?' + p)), tok:p };
   return null;
@@ -16801,10 +16792,10 @@ function mrAuthKey(){ var a = mrAuthNow(); return a ? a.via + '|' + a.key : ''; 
 /* 別の人・別の入り方に変わったら、前の読み込み・入力・返信の書きかけを残さない */
 function mrCheckAuth(){ var k = mrAuthKey(); if (k !== _mr.authKey) { if (_mr.authKey) mrDropAll(); _mr.authKey = k; } }
 var MR_ERR = {
-  signin:['中間レビューに入るためのログインがありません。','There is no sign-in for the mid-month review.'],
+  signin:['中間レビューに入るための PIN のログインがありません。ログアウトしてログインし直してください。','There is no PIN login for the mid-month review. Log out and log in again.'],
   forbidden:['中間レビューを開けません（利用者に登録されていない、または役職・在籍が変わった）。','You cannot open the mid-month review (not a member, or your role or employment changed).'],
   disabled:['中間レビュー（非公開確認）は OFF です','The mid-month review (private check) is off'],
-  email_required:['担当・閲覧設定の変更はメールの認証が要ります（PIN のログインではできません）','Changing the access settings needs an email sign-in (not the PIN login)'],
+  email_required:['サーバーがまだ v1122 になっていません（SQL 20261102090000）。Moto さんに知らせてください','The server is not on v1122 yet (SQL 20261102090000). Tell Moto'],
   not_found:['この店・この月は見られません','You cannot see this store and month'],
   bad_value:['入力の値を確かめてください','Check the values you entered'], bad_key:['入力の値を確かめてください','Check the values you entered'],
   bad_candidate:['選べない人です（社員の表で役職・肩書き・在籍を確かめてください）','This person cannot be chosen (check the role, title and status in the employee master)'],
@@ -16822,31 +16813,20 @@ var MR_ERR = {
   network:['中間レビューのサーバー（mid-review）につながりません。まだ配備されていないか、通信できません。','Cannot reach the mid-month review server (mid-review). It is not deployed yet, or the network is down.']
 };
 function mrErrText(code, status, via){
-  if (code === 'unauthorized' || code === 'actor_required') return via === 'pin'
-    ? t('PIN のログインで入れませんでした（サーバーがまだ PIN のログインを受け付けていないか、ログインの期限が切れています）。ログアウトしてログインし直すか、メールで認証してください','Could not get in with the PIN login (the server does not accept PIN logins yet, or the login expired). Log out and log in again, or sign in with email')
-    : t('メールの認証が切れました。もう一度認証してください','Your email sign-in has expired. Please sign in again');
+  if (code === 'unauthorized' || code === 'actor_required') return t('PIN のログインで入れませんでした（ログインの期限が切れたか、確かめられません）。ログアウトしてログインし直してください','Could not get in with the PIN login (it expired or could not be checked). Log out and log in again');
   if (Object.prototype.hasOwnProperty.call(MR_ERR, code)) return t(MR_ERR[code][0], MR_ERR[code][1]);
   /* 知らない文字列は出さない（トーストは HTML として描くため） */
   var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
   return t('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (/^\d{3}$/.test(String(status || '')) ? '（HTTP ' + status + '）' : ''));
 }
 function mrE(code, status, via){ var e = new Error(mrErrText(code, status, via)); e.code = code; e.status = status || 0; return e; }
-async function mrAPI(payload, retried){
+async function mrAPI(payload){
   var a = mrAuthNow();
   if (!a) throw mrE('signin');
-  var body = Object.assign({}, payload), headers = { apikey:SUPABASE_ANON, 'Content-Type':'application/json' };
-  if (a.via === 'email') headers.Authorization = 'Bearer ' + a.s.access_token;
-  else { headers.Authorization = 'Bearer ' + SUPABASE_ANON; body.pin_session = a.tok; }
+  var body = Object.assign({}, payload, { pin_session:a.tok }), headers = { apikey:SUPABASE_ANON, 'Content-Type':'application/json', Authorization:'Bearer ' + SUPABASE_ANON };
   var r;
   try { r = await fetch(SUPABASE_URL + MR_FN, { method:'POST', headers:headers, body:JSON.stringify(body) }); }
   catch(e) { throw mrE('network', 0, a.via); }
-  if (r.status === 401 && !retried && a.via === 'email' && a.s.refresh_token && typeof invInSessionRefresh === 'function') {
-    var ns = await invInSessionRefresh(a.s);
-    if (ns && mrSession() === ns) {   /* 同じログインの取り替え（この画面が取り替えた鍵なので、同じ人として画面を残す） */
-      if (_mr.authKey === 'email|' + a.key) _mr.authKey = mrAuthKey();
-      return mrAPI(payload, true);
-    }
-  }
   var j = null; try { j = await r.json(); } catch(e) { j = null; }
   if (!r.ok) { var err = mrE((j && typeof j.error === 'string') ? j.error : '', r.status, a.via); if (j && Array.isArray(j.missing)) err.missing = j.missing.filter(function(x){ return typeof x === 'string'; }); throw err; }
   return j;
@@ -16871,58 +16851,10 @@ function mrLoad(key, fn){
   }, 0);
 }
 function mrRefresh(){ _mrGen++; _mr.load = {}; _mr.loadQ = {}; _mr.err = ''; _mr.errCode = ''; _mr.who = null; _mr.flagsConf = null; _mr.accConf = null; _mr.amConf = null; _mr.amPrev = null; _mr.list = null; _mr.listKey = ''; _mr.kpi = {}; _mr.kpiX = {}; _mr.acc = null; _mr.members = null; _mr.liveL = null; mrRerender(); }
-/* ---- メール認証（Invoice取込と同じ流れ。覚えるのは、サーバーの利用者の社員 ID が PIN の人と同じときだけ） ---- */
-function mrLoginModal(){
-  var lp = (typeof invInLoginPerson === 'function') ? invInLoginPerson() : null, e = escapeHtml, keep = '';
-  if (lp && invInDefaultPin()) keep = '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin:0 0 10px">'+t('PIN が初期のままなので、この端末では覚えません（毎回メール認証）。','Your PIN is still the initial one, so this device will not remember the sign-in.')+'</div>';
-  else if (lp) keep = '<label style="display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.6;margin:0 0 10px;cursor:pointer"><input id="mr-keep" type="checkbox" checked style="margin-top:3px">'
-    +'<span>'+t('この端末で覚える：次からは '+e(lp.name||'')+' さんの PIN ログインだけで、メールの認証も済んだ状態になります（中間レビュー・Invoice取込・業務Bot）','Remember on this device: next time '+e(lp.name||'')+'’s PIN login also brings back the email sign-in (mid-month review, Invoice intake, Ops Bot)')
-    +'<br><span style="color:var(--muted);font-size:11px">'+t('ご本人のメールのときだけ。共有のパソコンでは外してください。','Only with your own email. Untick on a shared computer.')+'</span></span></label>';
-  openModal('<div class="modal-title"><span><i class="ti ti-mail"></i> '+t('中間レビューのメール認証','Sign in to the mid-month review with email')+'</span><button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    +'<div style="font-size:12px;color:var(--muted);margin-bottom:12px;line-height:1.7">'+t('見る・入力・返信は PIN のログインでできます。メールの認証が要るのは、担当・閲覧設定を変えるとき（GM・CEO）だけです。','Viewing, writing and replying work with the PIN login. An email sign-in is only needed to change the access settings (GM, CEO).')+'</div>'
-    +'<div class="form-group"><label class="form-label" for="mr-email">'+t('メールアドレス','Email')+'</label><input id="mr-email" class="form-input" type="email" autocomplete="username"></div>'
-    +'<div class="form-group"><label class="form-label" for="mr-password">'+t('パスワード','Password')+'</label><input id="mr-password" class="form-input" type="password" autocomplete="current-password"></div>'
-    +keep
-    +'<div id="mr-login-error" style="font-size:12px;color:var(--red);min-height:16px;margin-bottom:6px"></div>'
-    +'<button id="mr-login-button" class="btn btn-primary" style="width:100%;min-height:44px" onclick="mrLogin()"><i class="ti ti-login"></i> '+t('認証','Sign in')+'</button>');
-}
-async function mrLogin(){
-  var email = document.getElementById('mr-email'), pass = document.getElementById('mr-password'), btn = document.getElementById('mr-login-button'), errEl = document.getElementById('mr-login-error');
-  if (!email || !pass || !btn) return; btn.disabled = true;
-  try {
-    var who0 = invInKeepWho(), lp = invInLoginPerson();
-    var r = await invInAuthFetch('/auth/v1/token?grant_type=password', { body:{ email:email.value.trim(), password:pass.value } });
-    pass.value = '';
-    if (!r.ok) throw new Error(t('メール・パスワードを確認してください','Check your email and password'));
-    var j = await r.json();
-    if (invInKeepWho() !== who0) return;                       /* 待っているあいだにログアウト・別の人：使わない */
-    var view = _mr.view && _mr.view.settings ? _mr.view : null;   /* 設定から来たときは設定に戻る */
-    if (typeof botResetShared === 'function') botResetShared();
-    _botSession = { access_token:j.access_token, refresh_token:j.refresh_token };
-    var mySession = _botSession;
-    _mr.pinOnly = false; mrDropAll(); _mr.authKey = mrAuthKey(); _mr.view = view;
-    var g = _mrGen, w = null, werr = null;
-    try { w = await mrAPI({ action:'whoami' }); } catch(e) { werr = e; }
-    if (g !== _mrGen || invInKeepWho() !== who0) return;       /* 待っているあいだにログアウト・別の人：書かない */
-    if (werr) { if (errEl) errEl.textContent = werr.message; return; }   /* 確かめられないときは、覚えた鍵に触らない */
-    var keep = document.getElementById('mr-keep');
-    if (who0 && keep && keep.checked) {
-      var mine = !!(w.emp_id && lp && String(w.emp_id) === String(lp.id));
-      if (mine && invInKeepSet(mySession.refresh_token, who0)) _invIn.keptSession = mySession;
-      else { invInKeepSet(null, who0); if (!w.emp_id) showToast(t('このアカウントには社員の登録（emp_id）が無いため、この端末では覚えませんでした（今回だけ使えます）。登録は Moto さんへ','This account has no employee link, so it was not remembered (it works this time only). Ask Moto to add it.'), 'warning'); }
-    } else if (who0) invInKeepSet(null, who0);
-    _mr.who = w; _mr.load.who = Date.now();
-    closeModalDirect(); mrRerender();
-  } catch(e) { if (errEl) errEl.textContent = e.message; }
-  finally { btn.disabled = false; }
-}
-/* ---- 日付（ハワイ時間）。デモは決まった時点（設定 demo.now）で見る ---- */
+/* ---- 日付（ハワイ時間） ---- */
 function mrPad(n){ return String(n).padStart(2,'0'); }
 function mrTodayLive(){ var d = bizNow(); return d.getFullYear()+'-'+mrPad(d.getMonth()+1)+'-'+mrPad(d.getDate()); }
-function mrToday(){
-  if (_mr.env === 'demo' && _mr.who && _mr.who.demo && _mr.who.demo.now) { var u = new Date(Date.parse(_mr.who.demo.now) - 10*3600*1000); return u.getUTCFullYear()+'-'+mrPad(u.getUTCMonth()+1)+'-'+mrPad(u.getUTCDate()); }
-  return mrTodayLive();
-}
+function mrToday(){ return mrTodayLive(); }
 function mrMD(iso){ if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(String(iso))) return ''; return Number(String(iso).slice(5,7)) + '/' + Number(String(iso).slice(8,10)); }
 function mrHst(iso){ var ms = Date.parse(iso || ''); if (!isFinite(ms)) return ''; var u = new Date(ms - 10*3600*1000); return (u.getUTCMonth()+1) + '/' + u.getUTCDate() + ' ' + mrPad(u.getUTCHours()) + ':' + mrPad(u.getUTCMinutes()); }
 function mrPrevYm(ym){ var y = +ym.slice(0,4), m = +ym.slice(5,7); return m === 1 ? (y-1) + '-12' : y + '-' + mrPad(m-1); }
@@ -16930,7 +16862,7 @@ function mrNextYm(ym){ var y = +ym.slice(0,4), m = +ym.slice(5,7); return m === 
 function mrYmLabel(ym){ return curLang === 'en' ? ym : (Number(ym.slice(0,4)) + ' 年 ' + Number(ym.slice(5,7)) + ' 月'); }
 function mrMonL(ym){ return curLang === 'en' ? ym : (Number(ym.slice(5,7)) + ' 月'); }
 function mrYmLive(){ return _mr.ym || (typeof bizYm === 'function' ? bizYm() : mrTodayLive().slice(0,7)); }
-function mrYm(){ if (_mr.env === 'demo') return (_mr.who && _mr.who.demo && _mr.who.demo.ym) || '2026-10'; return mrYmLive(); }
+function mrYm(){ return mrYmLive(); }
 function mrDateOk(v){ var m = /^(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.exec(String(v || '')); if (!m) return false; var d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])); return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3]; }
 /* ---- 決まり（サーバーの handler.mjs と同じ） ---- */
 function mrBlank(v){ return v == null || !String(v).trim(); }
@@ -16992,23 +16924,7 @@ function mrCounts(b, sn, replies, no){
   var open = items.filter(function(it){ return !mrArr(replies).some(function(y){ return y && y.kind === 'reply' && y.sub_no === no && y.target === it; }); });
   return { miss_cur:miss, eval_low:low, measures:meas, consult:iss, consult_high:high, needs_reply:items.length, unanswered:open.length, holds:m.holds, missing:m.missing.length, focus:f, items:items, open:open };
 }
-/* ---- 数字（snapshot v2）：デモはサーバーの架空の数字（demoSnapshot と同じ）、本番は会議タブと同じ関数 ---- */
-var MR_DEMO_TH = { sales:{ green:100, yellow:95 }, guests:{ green:100, yellow:95 }, ppa:{ green:100, yellow:95 }, repeat:{ green:100, yellow:90 }, labor:{ green:100, yellow:108 }, fc:{ green:100, yellow:108 } };
-function mrDemoJudge(key, act, tgt){
-  if (!(typeof tgt === 'number' && tgt > 0)) return 'unset';
-  if (!(typeof act === 'number' && act > 0)) return 'missing';
-  var r = act / tgt * 100, y = MR_DEMO_TH[key] ? MR_DEMO_TH[key].yellow : 95;
-  return MR_LOWER[key] ? (r <= 100 ? 'ok' : r <= y ? 'warn' : 'miss') : (r >= 100 ? 'ok' : r >= y ? 'warn' : 'miss');
-}
-function mrDemoSnap(ym, demo){
-  demo = mrObj(demo);
-  var judged = function(rows){ var o = {}; Object.keys(mrObj(rows)).forEach(function(k){ var v = rows[k]; o[k] = Object.assign({}, v, { judge:mrDemoJudge(k, v.act, v.tgt) }); }); return o; };
-  var p = mrObj(demo.prev), c = mrObj(demo.cur), f = mrObj(demo.focus);
-  return { v:2, period:{ from:ym + '-01', to:ym + '-17' }, updated:demo.updated,
-    prev:{ ym:p.ym, state:p.state, at:p.at || '', rows:judged(p.rows) },
-    cur:{ rows:judged(c.rows), fc_ref:c.fc_ref ? Object.assign({}, c.fc_ref, { judge:mrDemoJudge('fc', c.fc_ref.act, c.fc_ref.tgt) }) : null },
-    focus:{ y:f.y, q:f.q, keys:f.keys, rows:f.rows }, thresholds:MR_DEMO_TH };
-}
+/* ---- 数字（snapshot v2）：会議タブと同じ関数 ---- */
 /* 判定：会議タブの _meetStatus と会社の閾値。目標が無い＝未設定（unset）、実績が無い＝未取得（missing）。0・達成・未達に数えない */
 function mrJudgeOf(key, act, tgt){
   if (!(typeof tgt === 'number' && tgt > 0)) return 'unset';
@@ -17064,7 +16980,7 @@ function mrLiveSnap(sid, ym){
   _mr.kpi[ck] = out; _mr.kpiX[ck] = x;
   return out;
 }
-function mrSnapNow(R){ return R.env === 'demo' ? mrDemoSnap(R.ym, (R.store && R.store.demo) || {}) : mrLiveSnap(R.store.store_id, R.ym); }
+function mrSnapNow(R){ return mrLiveSnap(R.store.store_id, R.ym); }
 /* ---- 表示の部品 ---- */
 function mrCard(inner){ return '<div class="card">' + inner + '</div>'; }
 function mrKpiLabel(k){ var l = MR_KPI_L[k]; return l ? t(l[0], l[1]) : k; }
@@ -17120,10 +17036,10 @@ function mrInputL(inp){
 function mrBanner(){
   var a = mrAuthNow(), w = _mr.who || {}, e = escapeHtml;
   var who = (w.name ? t('：',': ') + e(w.name) : '') + (w.role ? t('（',' (') + e(mrRoleL(w.role)) + t('）',')') : '');
-  return '<div class="mr-chips"><span class="mr-chip mr-c-none">'+mrPcSp(t('非公開プレビュー','Private preview'), t('非公開','Private'))+'</span>'
-    + '<span class="mr-chip mr-c-none">'+(_mr.env === 'demo' ? mrPcSp(t('デモデータ（架空の店・人）','Demo data (fictional stores and people)'), t('デモ','Demo')) : mrPcSp(t('本番の数字（会議タブと同じ・読むだけ）','Live numbers (same as the meeting tab, read only)'), t('本番の数字','Live numbers')))+'</span>'
+  return '<div class="mr-chips">'
+    + '<span class="mr-chip mr-c-none">'+mrPcSp(t('本番の数字（会議タブと同じ・読むだけ）','Live numbers (same as the meeting tab, read only)'), t('本番の数字','Live numbers'))+'</span>'
     + '<span class="mr-chip mr-c-none">'+mrPcSp(t('店舗公開 OFF・通知 OFF','Store publication off, notices off'), t('公開・通知 OFF','Publication, notices off'))+'</span>'
-    + (a ? '<span class="mr-chip mr-c-info">'+mrPcSp((a.via === 'pin' ? t('PIN でログイン中','PIN login') : t('メールで認証中','Email sign-in')) + who, (a.via === 'pin' ? 'PIN' : t('メール','Email')) + who)+'</span>' : '')
+    + (a ? '<span class="mr-chip mr-c-info">'+mrPcSp(t('PIN でログイン中','PIN login') + who, 'PIN' + who)+'</span>' : '')
     + '</div>';
 }
 /* PC の言葉とスマホの短い言葉（中身はどちらも escape 済みで渡す） */
@@ -17132,38 +17048,25 @@ function mrPcSp(pc, sp){ return '<span class="mr-l-pc">'+pc+'</span><span class=
 function renderMidReview(){
   var e = escapeHtml, head = '<div class="mr-title">'+t('中間レビュー','Mid-month review')+'</div>';
   if (!mrCanSee()) return head + mrCard('<div class="mr-m">'+t('このページは CEO・GM・AM・Head Chef・Corporate Chef と、入力担当（G3・G4）が開けます。','This page is for the CEO, GM, AMs, Head Chef / Corporate Chef and input people (G3, G4).')+'</div>');
-  /* 1) この端末で覚えたメールの認証があれば、先に 1 回だけ戻す（無くても PIN で入れる） */
-  if (!mrSigned() && typeof invInKept === 'function' && invInKept()) {
-    var kw = invInKeepWho();
-    if (_mr.restoreTried !== kw) {
-      _mr.restoreTried = kw;
-      setTimeout(function(){ Promise.resolve(invInRestore(false, true)).then(function(){ mrRerender(); }, function(){ mrRerender(); }); }, 0);
-      return head + mrCard('<div class="mr-m">'+t('この端末で覚えた認証を確かめています…','Checking the sign-in remembered on this device…')+'</div>');
-    }
-  }
-  /* 2) 入り方（同じ人の鍵の取り替えなら画面はそのまま。別の人なら前の内容を捨てる） */
+  /* 1) 入り方（同じ人の印の取り替えなら画面はそのまま。別の人なら前の内容を捨てる） */
   mrCheckAuth();
   var a = mrAuthNow();
   if (!a) {
     var dp = typeof invInDefaultPin === 'function' && invInDefaultPin();
     return head + mrBanner() + mrCard('<div class="mr-col"><div style="font-size:14px;font-weight:700">'+(dp ? t('PIN が初期のままなので、中間レビューに入れません','You cannot open the mid-month review with the initial PIN') : t('PIN のログインの印がありません','There is no PIN login mark'))+'</div>'
-      + '<div class="mr-m">'+(dp ? t('マイページで PIN を自分の番号に変えてから、ログアウトしてログインし直してください。','Change your PIN on My page, then log out and log in again.') : t('ログインの期限が切れたか、PIN を確かめられていません。ログアウトしてログインし直してください。GM・CEO はメールの認証でも入れます。','The login expired or the PIN was not checked. Log out and log in again. The GM and CEO can also sign in with email.'))+'</div>'
-      + '<button class="btn btn-secondary btn-sm" onclick="mrLoginModal()"><i class="ti ti-mail"></i> '+t('メールで認証','Sign in with email')+'</button></div>');
+      + '<div class="mr-m">'+(dp ? t('マイページで PIN を自分の番号に変えてから、ログアウトしてログインし直してください。','Change your PIN on My page, then log out and log in again.') : t('ログインの期限が切れたか、PIN を確かめられていません。ログアウトしてログインし直してください。','The login expired or the PIN was not checked. Log out and log in again.'))+'</div></div>');
   }
-  if (a.via === 'pin' && mrPinExpired()) return head + mrBanner() + mrCard('<div class="mr-col"><div style="font-size:14px;font-weight:700">'+t('ログインの期限が切れました','Your login has expired')+'</div><div class="mr-m">'+t('ログアウトしてログインし直してください（PIN のログインの印は 14 日で切れます）。','Log out and log in again (the PIN login mark lasts 14 days).')+'</div><button class="btn btn-secondary btn-sm" onclick="mrLoginModal()"><i class="ti ti-mail"></i> '+t('メールで認証','Sign in with email')+'</button></div>');
+  if (a.via === 'pin' && mrPinExpired()) return head + mrBanner() + mrCard('<div class="mr-col"><div style="font-size:14px;font-weight:700">'+t('ログインの期限が切れました','Your login has expired')+'</div><div class="mr-m">'+t('ログアウトしてログインし直してください（PIN のログインの印は 14 日で切れます）。','Log out and log in again (the PIN login mark lasts 14 days).')+'</div></div>');
   /* 3) だれか・何ができるか（サーバーが決める） */
   if (!_mr.who) {
     if (_mr.load.who === 'err') {
-      var b = '<div class="mr-btns"><button class="btn btn-secondary btn-sm" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button>';
-      if (a.via === 'email' && mrPinTok()) b += '<button class="btn btn-secondary btn-sm" onclick="mrUsePin()">'+t('PIN のログインで開く','Open with the PIN login')+'</button>';
-      b += '<button class="btn btn-secondary btn-sm" onclick="mrLoginModal()">'+(a.via === 'email' ? t('別のメールで認証','Sign in with another email') : t('メールで認証','Sign in with email'))+'</button></div>';
+      var b = '<div class="mr-btns"><button class="btn btn-secondary btn-sm" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button></div>';
       return head + mrBanner() + mrCard('<div class="mr-col"><div class="mr-err">'+e(_mr.err)+'</div>'+b+'</div>');
     }
     mrLoad('who', function(g){ var k0 = _mr.authKey; return mrAPI({ action:'whoami' }).then(function(w){
       if (g !== _mrGen) return;
       if (mrAuthKey() !== k0) { _mrGen++; _mr.load = {}; setTimeout(mrRerender, 0); return; }   /* 待っているあいだに別の人・別の入り方に変わった */
       _mr.who = w;
-      if (!_mr.envSet) _mr.env = (w.flags && w.flags.live_input && mrArr(w.live_stores).length) ? 'live' : 'demo';
     }); });
     return head + mrBanner() + mrCard('<div class="mr-m">'+t('読み込み中…','Loading…')+'</div>');
   }
@@ -17173,27 +17076,21 @@ function renderMidReview(){
   if (_mr.view && _mr.view.id) return mrBanner() + mrStoreHtml();
   return head + mrBanner() + mrListHtml();
 }
-function mrUsePin(){ _mr.pinOnly = true; mrDropAll(); _mr.authKey = mrAuthKey(); mrRerender(); }
 function mrIsAdmin(){ return !!(_mr.who && (_mr.who.role === 'gm' || _mr.who.role === 'ceo')); }
 function mrOffHtml(){
   var w = _mr.who, h = '<div class="mr-col"><div style="font-size:14px;font-weight:700">'+t('中間レビュー（非公開確認）は OFF です','The mid-month review (private check) is off')+'</div>';
-  if (mrIsAdmin() && w.via === 'email') h += mrFlagsConfHtml() + '<div class="mr-m">'+t('ON にすると、利用者（CEO・GM・AM・Head Chef・入力担当）が開けるようになります（店舗公開・通知は OFF のまま）。','When on, the members (CEO, GM, AMs, Head Chef, input people) can open it (store publication and notices stay off).')+'</div><button class="btn btn-primary btn-sm" '+(_mr.busy ? 'disabled' : '')+' onclick="mrSetFlags({ private:true })">'+t('非公開確認を ON にする','Turn the private check on')+'</button>';
-  else if (mrIsAdmin()) h += '<div class="mr-m">'+t('ON にするにはメールの認証が要ります（PIN のログインでは変えられません）。','Turning it on needs an email sign-in (not the PIN login).')+'</div><button class="btn btn-secondary btn-sm" onclick="mrLoginModal()"><i class="ti ti-mail"></i> '+t('メールで認証','Sign in with email')+'</button>';
+  if (mrIsAdmin()) h += mrFlagsConfHtml() + '<div class="mr-m">'+t('ON にすると、利用者（CEO・GM・AM・Head Chef・入力担当）が開けるようになります（店舗公開・通知は OFF のまま）。','When on, the members (CEO, GM, AMs, Head Chef, input people) can open it (store publication and notices stay off).')+'</div><button class="btn btn-primary btn-sm" '+(_mr.busy ? 'disabled' : '')+' onclick="mrSetFlags({ private:true })">'+t('非公開確認を ON にする','Turn the private check on')+'</button>';
   else h += '<div class="mr-m">'+t('GM・CEO が ON にするまでお待ちください。','Please wait until the GM or CEO turns it on.')+'</div>';
   return mrCard(h + '</div>');
 }
 /* ---- 全店一覧 ---- */
 function mrEnvBar(){
-  var opts = '', e = escapeHtml;
-  if (_mr.env === 'live') { var ym = (typeof bizYm === 'function' ? bizYm() : mrTodayLive().slice(0,7)); for (var i = 0; i < 6; i++) { opts += '<option value="'+ym+'"'+(ym === mrYm() ? ' selected' : '')+'>'+e(mrYmLabel(ym))+'</option>'; ym = mrPrevYm(ym); } }
-  return '<div class="mr-envbar"><div class="mr-seg" role="group" aria-label="'+t('データ','Data')+'">'
-    +'<button class="'+(_mr.env === 'demo' ? 'on' : '')+'" aria-pressed="'+(_mr.env === 'demo')+'" onclick="mrSetEnv(\'demo\')">'+t('デモ','Demo')+'</button>'
-    +'<button class="'+(_mr.env === 'live' ? 'on' : '')+'" aria-pressed="'+(_mr.env === 'live')+'" onclick="mrSetEnv(\'live\')">'+t('本番','Live')+'</button></div>'
-    +(_mr.env === 'live' ? '<label class="mr-lbl">'+t('対象月','Month')+'<select class="mr-sel" onchange="mrSetYm(this.value)">'+opts+'</select></label>' : '<span class="mr-m">'+t('デモは ','The demo is ')+e(mrYmLabel(mrYm()))+t(' の決まった時点で見ます',' at a fixed point in time')+'</span>')
+  var opts = '', e = escapeHtml, ym = (typeof bizYm === 'function' ? bizYm() : mrTodayLive().slice(0,7));
+  for (var i = 0; i < 6; i++) { opts += '<option value="'+ym+'"'+(ym === mrYm() ? ' selected' : '')+'>'+e(mrYmLabel(ym))+'</option>'; ym = mrPrevYm(ym); }
+  return '<div class="mr-envbar"><label class="mr-lbl">'+t('対象月','Month')+'<select class="mr-sel" onchange="mrSetYm(this.value)">'+opts+'</select></label>'
     +'<span class="mr-envr">'+(mrIsAdmin() ? '<button class="btn btn-secondary btn-sm" onclick="mrOpenSettings()"><i class="ti ti-settings"></i> '+t('担当・閲覧設定','Access settings')+'</button>' : '')
     +'<button class="btn btn-secondary btn-sm" onclick="mrRefresh()"><i class="ti ti-refresh"></i> '+t('更新','Refresh')+'</button></span></div>';
 }
-function mrSetEnv(env){ if (env !== 'demo' && env !== 'live') return; if (!mrLeaveOk()) return; mrEdStop(); _mr.view = null; mrClearRec(); _mr.env = env; _mr.envSet = true; mrRerender(); }
 function mrSetYm(ym){ if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(ym || ''))) return; _mr.ym = ym; mrRerender(); }
 function mrCountChips(c){
   if (!c) return '';
@@ -17210,18 +17107,16 @@ function mrDlCell(rv){
 }
 function mrListHtml(){
   var e = escapeHtml, ym = mrYm(), key = 'list|' + _mr.env + '|' + ym, admin = mrIsAdmin();
-  if (_mr.listKey !== key) { _mr.list = null; _mr.listKey = key; if (typeof _mr.load[key] === 'number') delete _mr.load[key]; }   /* v1073: 前に読んだ月・デモ／本番に戻ったら読み直す */
+  if (_mr.listKey !== key) { _mr.list = null; _mr.listKey = key; if (typeof _mr.load[key] === 'number') delete _mr.load[key]; }   /* v1073: 前に読んだ月に戻ったら読み直す */
   var h = mrEnvBar();
   if (!_mr.list) {
     if (_mr.load[key] === 'err') return h + mrCard('<div class="mr-err">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="mrRefresh()">'+t('もう一度','Retry')+'</button>');
     mrLoad(key, function(g){ var k0 = key, env0 = _mr.env; return mrAPI({ action:'list', env:env0, ym:ym }).then(function(L){ if (g === _mrGen && _mr.listKey === k0) _mr.list = L; }); });
     return h + mrCard('<div class="mr-m">'+t('読み込み中…','Loading…')+'</div>');
   }
-  var rows = mrArr(_mr.list.stores), today = _mr.env === 'demo' ? mrToday() : mrTodayLive();
+  var rows = mrArr(_mr.list.stores), today = mrTodayLive();
   h += '<div class="mr-m" style="margin:-4px 0 10px">' + e(mrYmLabel(ym)) + '・' + t('今日 ','today ') + e(mrMD(today)) + '（' + t('ハワイ時間','Hawaii time') + '）・' + t('数はそれぞれ別のもの（未達の数・評価の数・返信待ちの数・Qコミットの進み具合を混ぜない）','Each number is separate (misses, ratings, replies and Q-commit progress are never added together)') + '</div>';
-  if (!rows.length) return h + mrCard('<div class="mr-m">' + (_mr.env === 'demo'
-    ? (admin ? t('デモがまだありません。担当・閲覧設定の「デモを作り直す」で作れます。','No demo yet. Make it with “Remake the demo” in the access settings.') : t('デモがまだありません。GM・CEO が作るまでお待ちください。','No demo yet. Please wait until the GM or CEO makes it.'))
-    : (admin ? t('本番の店舗がまだ保存されていません。担当・閲覧設定の「本番の店舗と AM の担当」で保存してください。','The live stores are not saved yet. Save them under “Live stores and AMs” in the access settings.') : t('見られる店がありません（担当・閲覧の設定は GM・CEO がします）。','There are no stores you can see (the GM or CEO sets this up).'))) + '</div>');
+  if (!rows.length) return h + mrCard('<div class="mr-m">' + (admin ? t('本番の店舗がまだ保存されていません。担当・閲覧設定の「店舗の管轄」で保存してください。','The live stores are not saved yet. Save them under “Store oversight” in the access settings.') : t('見られる店がありません（担当・閲覧の設定は GM・CEO がします）。','There are no stores you can see (the GM or CEO sets this up).')) + '</div>');
   h += '<div class="card mr-tw" style="padding:0"><table class="mr-table"><thead><tr><th>'+t('店舗','Store')+'</th><th>'+t('状態','Status')+'</th><th>'+t('入力担当','Input person')+'</th><th>'+t('確認すること（数は別々）','To check (separate numbers)')+'</th><th>'+t('期限','Due dates')+'</th></tr></thead><tbody>';
   rows.forEach(function(s){
     var rv = s.review || {};
@@ -17447,8 +17342,7 @@ function mrStrip(ctx){
   return h + '</div></div>';
 }
 function mrMeetLink(ctx, big){
-  var R = ctx.R; if (R.env !== 'live') return big ? '<span class="mr-m mr-lnk">'+t('会議タブ：デモの店は本番の会議タブにありません','Meeting tab: demo stores are not on the live meeting tab')+'</span>' : '';
-  var e = escapeHtml;
+  var R = ctx.R, e = escapeHtml;
   return '<button class="mr-lnk" onclick="mrOpenMeeting(\''+e(R.store.store_id)+'\',\''+e(R.ym)+'\')">'+(big ? t('会議タブで見る','Open on the meeting tab') : t('会議タブ','Meeting tab'))+'</button>';
 }
 /* 会議タブ（予実 › 会議）をその店・その月で開く。会議タブの動きはそのまま（店と月を選んで開くだけ）。v1084: 会議は独立したページ */
@@ -17492,7 +17386,7 @@ function mrSec2(ctx){
   var e = escapeHtml, sn = ctx.sn, R = ctx.R;
   var cards = mrCurOrder(sn).map(function(k){ return mrKpiCard(ctx, 'cur', k); }).join('') + (mrVis(ctx, 'ref:fc') ? mrFcRefCard(ctx) : '');
   if (!cards) return '';
-  var upd = R.env === 'demo' && sn.updated ? 'Toast ' + mrHst(sn.updated) + '・' : '';
+  var upd = '';
   return '<section class="mr-sec" id="mr-sec-2"><div class="mr-sech"><span class="mr-num">2</span>'+e(t('今月の進捗（' + mrPeriodL(sn.period) + '）', 'This month so far (' + mrPeriodL(sn.period) + ')'))
     + '<span class="mr-m">'+e(upd)+t('同じ期間の進捗予算と比べる（月全体の目標とは比べない）・未達は担当者評価と対策が必須、注意・達成・判定不可は任意','Compared with the budget for the same days (not the whole month). A miss needs a rating and an action; watch, met and no judgement are optional')+'</span></div><div class="mr-grid">'+cards+'</div></section>';
 }
@@ -17623,23 +17517,9 @@ function mrFocusCard(ctx, k){
   h += mrThread(ctx, tg, { done:true });
   return h + '</div>';
 }
-/* 会議タブの重点カード（デモ）：提出版の重点の内容を、会議タブの重点の記録に 1 件足した形で見せる（メモリの中だけ。q_budgets には書かない） */
+/* 会議タブへの反映：店舗公開のときに決める（いまは本番の Qコミットに書かない） */
 function mrQcPreview(ctx){
-  var e = escapeHtml, R = ctx.R;
-  if (R.env !== 'demo') return '<div class="mr-m">'+t('本番の会議タブへの反映：店舗公開のときに ON（非公開のあいだは、本番の Qコミットに書きません）。','Reflection on the live meeting tab: turned on with store publication (nothing is written to the live Q-commit while private).')+'</div>';
-  var last = ctx.last;
-  if (!last) return '<div class="mr-m">'+t('提出すると、ここに「会議タブの重点カード（デモ）」で反映のされ方を出します（デモの中だけ）。','Once submitted, the “meeting tab focus card (demo)” shows here how it is reflected (demo only).')+'</div>';
-  var sn = mrObj(last.snapshot), f = mrObj(sn.focus), keys = mrArr(f.keys), b = mrObj(last.body);
-  if (!keys.length) return '';
-  var h = '<div class="card mr-qc" id="mr-qc"><div class="card-title" style="font-size:13px"><i class="ti ti-flag" style="color:var(--accent2)"></i> '+e(f.y + ' Q' + f.q + t(' の重点項目',' focus items'))+' <span class="mr-chip mr-c-info">'+t('会議タブの重点カード（デモ）','Meeting tab focus card (demo)')+'</span></div>';
-  keys.forEach(function(k, i){
-    var row = mrObj(mrObj(f.rows)[k]), x = mrObj(mrObj(b.focus)[k]), fs = mrFst(x.status);
-    var note = t('【中間レビュー 提出版 ' + last.no + '】', '[Mid-month review v' + last.no + '] ') + t('進捗：','Status: ') + (fs ? t(fs[1], fs[2]) : '—') + '／' + t('実施：','Done: ') + (x.done || '—') + '／' + t('残り：','Left: ') + (x.remaining || '—') + '／' + t('次：','Next: ') + (x.next || '—') + '／' + t('担当：','Owner: ') + (x.owner || '—');
-    h += '<div class="mr-qcr"'+(i ? ' style="border-top:1px solid var(--border)"' : '')+'><div class="mr-rowh"><span style="flex:1;font-size:12px;font-weight:700">'+e(row.label || k)+'</span>'
-      + (row.mode === 'auto' ? mrFocusProg(ctx, k, row) : '<span class="mr-chip mr-c-none">'+t('手入力','Manual')+'</span>') + '</div>'
-      + '<div style="font-size:11.5px;margin-top:3px;line-height:1.6">'+e(note)+'</div><div class="mr-m">'+e((last.by || '') + ' ' + mrHst(last.at))+t('（会議タブの記録に 1 件足す形）',' (added as one record on the meeting tab)')+'</div></div>';
-  });
-  return h + '<div class="mr-m" style="margin-top:6px">'+t('本番の会議タブへの反映：店舗公開のときに ON。いまはデモの中だけで、本番の Qコミット・会議タブには書きません。','Reflection on the live meeting tab: turned on with store publication. For now it is in the demo only; nothing is written to the live Q-commit or meeting tab.')+'</div></div>';
+  return '<div class="mr-m">'+t('会議タブ（Qコミット）への反映：店舗公開のときに ON（それまでは本番の Qコミットに書きません）。','Reflection on the meeting tab (Q-commit): turned on with store publication (nothing is written to the live Q-commit until then).')+'</div>';
 }
 /* ---- ④ 相談・支援依頼 ---- */
 function mrSec4(ctx){
@@ -17716,7 +17596,7 @@ function mrSubmitSec(ctx){
   if (g.length) h += '<div class="mr-need-list" id="mr-misslist"><b>'+e(t('提出の前に（' + g.length + ' 件）', 'Before submitting (' + g.length + ')'))+'</b>' + g.map(function(x){ return '<button class="mr-ml" data-codes="'+e(x.codes.join(' '))+'" onclick="mrGo(\''+e(mrMissTarget(x))+'\')">'+e(x.label)+'</button>'; }).join('') + '</div>';
   else h += '<div class="mr-ok-list">✓ '+t('必須の欄はそろっています。','All required fields are filled in.')+'</div>';
   if (_mr.srvMiss && _mr.srvMiss.length) h += '<div class="mr-need-list"><b>'+t('サーバーの確認で足りなかったもの','Missing in the server check')+'</b>' + mrMissGroups(_mr.srvMiss, ctx.body).map(function(x){ return '<button class="mr-ml" data-srv="'+e(x.codes.join(' '))+'" onclick="mrGo(\''+e(mrMissTarget(x))+'\')">'+e(x.label)+'</button>'; }).join('') + '</div>';
-  h += '<div class="mr-m">'+e(t('提出のときの数字と判定（前月 ' + mrMonL(p.ym || mrPrevYm(R.ym)) + ' の' + (p.state === 'final' ? '確定' : p.state === 'prov' ? '速報' : '数字なし') + '・今月 ' + mrPeriodL(sn.period) + (R.env === 'demo' && sn.updated ? '・Toast ' + mrHst(sn.updated) : '') + '・会議タブの閾値）をこの提出版に残します。任意の欄と期限は空欄のままで提出できます。',
+  h += '<div class="mr-m">'+e(t('提出のときの数字と判定（前月 ' + mrMonL(p.ym || mrPrevYm(R.ym)) + ' の' + (p.state === 'final' ? '確定' : p.state === 'prov' ? '速報' : '数字なし') + '・今月 ' + mrPeriodL(sn.period) + '・会議タブの閾値）をこの提出版に残します。任意の欄と期限は空欄のままで提出できます。',
     'The numbers and judgements at submission (last month ' + (p.state || '') + ', this month ' + mrPeriodL(sn.period) + ', the meeting tab thresholds) are kept with this version. Optional fields and dates can stay empty.'))+'</div>';
   if (same) h += '<div class="mr-m">'+e(t('提出版 ' + r.submitted_no + ' から変わっていません。直したところがあれば出し直せます。', 'Unchanged since version ' + r.submitted_no + '. Change something to submit again.'))+'</div>';
   h += '<div class="mr-btns"><button class="btn btn-primary mr-btn-l" '+(g.length || _mr.busy || same ? 'disabled' : '')+' onclick="mrSubmit()">'+(_mr.busy === 'submit' ? t('提出中…','Submitting…') : r && r.submitted_no ? e(t('出し直す（提出版 ' + (r.submitted_no + 1) + '）', 'Submit again (version ' + (r.submitted_no + 1) + ')')) : t('提出する','Submit'))+'</button>'
@@ -18092,10 +17972,10 @@ async function mrSubmit(){
     showToast(escapeHtml((here ? '' : t('（' + sname + ' の提出）','(Submitting ' + sname + ') ')) + (e.message || String(e))), e && e.code === 'unchanged' ? 'warning' : 'error');
   } finally { if (_mr.busy === 'submit') { _mr.busy = ''; mrRerender(); } }
 }
-/* ---- 担当・閲覧設定（GM・CEO・メールの認証） ---- */
-var MR_WHY = { demo:['デモの店','demo store'], all_stores:['CEO・GM・Head Chef（全店）','CEO, GM, Head Chef (all stores)'], am_store:['担当の AM（設定と店舗マスターの両方）','AM in charge (settings and store master)'],
+/* ---- 担当・閲覧設定（GM・CEO） ---- */
+var MR_WHY = { all_stores:['CEO・GM・Head Chef（全店）','CEO, GM, Head Chef (all stores)'], am_store:['担当の AM（設定と店舗マスターの両方）','AM in charge (settings and store master)'],
   viewer:['個人で足した閲覧者','added as a viewer'], input:['この月の入力担当','this month’s input person'], live_input_off:['本番の入力は OFF','live input is off'], input_unset:['入力担当が未設定','no input person'],
-  email_required:['設定の変更はメールの認証','settings need an email sign-in'], no_view:['この店は見られない','cannot see this store'], no_member:['利用者でない（入れない）','not a member (cannot sign in)'],
+  no_view:['この店は見られない','cannot see this store'], no_member:['利用者でない（入れない）','not a member (cannot sign in)'],
   revoked:['役職・在籍が外れた','role or employment changed'], inactive:['使っていない店','store not in use'] };
 function mrWhyL(list){ return mrArr(list).map(function(w){ var x = MR_WHY[w]; return x ? t(x[0], x[1]) : w; }).join('・'); }
 function mrOpenSettings(){ if (!mrLeaveOk()) return; mrEdStop(); mrClearRec(); _mr.view = { settings:true }; mrAccDrop(); mrRerender(); try { window.scrollTo(0,0); } catch(e) {} }
@@ -18124,12 +18004,9 @@ function mrCandL(c){ c = mrObj(c); var k = { g3:'G3', g4:'G4', am:'AM', gm:'GM',
 function mrSettingsHtml(){
   var e = escapeHtml, w = _mr.who;
   var hd = '<div class="card mr-hd"><div class="mr-hd-l"><div class="mr-m"><button class="mr-linkb mr-back" onclick="mrBack()">← '+t('全店一覧','All stores')+'</button>　'+t('予実 › 中間レビュー › 担当・閲覧設定','Budget › Mid-month review › Access settings')+'</div><div class="mr-hd-t">'+t('担当・閲覧設定','Access settings')+'</div>'
-    + '<div class="mr-m">'+t('GM・CEO だけが変えられます（メールの認証）。サーバーでも同じ制限。ここでの設定は中間レビューの中だけで、PL など他の画面の権限は変わりません。','Only the GM and CEO can change these (email sign-in); the server checks the same. They apply to the mid-month review only; other screens (PL etc.) are not affected.')+'</div></div>'
+    + '<div class="mr-m">'+t('GM・CEO だけが変えられます（サーバーでも同じ制限）。ここでの設定は中間レビューの中だけで、PL など他の画面の権限は変わりません。','Only the GM and CEO can change these (the server checks the same). They apply to the mid-month review only; other screens (PL etc.) are not affected.')+'</div></div>'
     + '<div class="mr-hd-r"><span class="mr-chip mr-c-none">'+t('店舗公開 OFF','Store publication off')+'</span><span class="mr-chip mr-c-none">'+t('通知 OFF','Notices off')+'</span></div></div>';
   if (!mrIsAdmin()) return hd + mrCard('<div class="mr-m">'+t('GM・CEO だけが開けます。','Only the GM and CEO can open this.')+'</div>');
-  if (w.via !== 'email') return hd + mrCard('<div class="mr-col"><div style="font-size:14px;font-weight:700">'+t('担当・閲覧設定の変更はメールの認証が要ります','Changing the access settings needs an email sign-in')+'</div>'
-    + '<div class="mr-m">'+t('いまは PIN のログインで入っています。見る・入力・返信・確認完了・期限の変更は PIN のままでできます。設定だけは、ご本人のメールで認証してください。','You are in with the PIN login. Viewing, writing, replying, confirming and changing dates work with the PIN. For the settings, sign in with your own email.')+'</div>'
-    + '<button class="btn btn-primary btn-sm" onclick="mrLoginModal()"><i class="ti ti-mail"></i> '+t('メールで認証','Sign in with email')+'</button></div>');
   var ym = _mr.accYm || mrYmLive(), ak = 'acc|' + ym;
   if (!_mr.acc || _mr.acc.ym !== ym) {
     if (_mr.load[ak] === 'err') return hd + mrCard('<div class="mr-err">'+e(_mr.err)+'</div><button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="mrAccReload()">'+t('もう一度','Retry')+'</button>');
@@ -18186,7 +18063,7 @@ function mrSettingsHtml(){
     var yn = function(v){ return v ? '<span class="mr-y">○</span>' : '<span class="mr-n">×</span>'; };
     h += '<div class="card mr-col"><b>'+e(t('一人ひとりの実効の権限（' + s.name + '・' + mrYmLabel(ym) + '）', 'What each person can do (' + s.name + ', ' + ym + ')'))+'</b><div class="mr-tw2"><table class="mr-table mr-table-p"><thead><tr><th>'+t('人','Person')+'</th><th>'+t('閲覧','View')+'</th><th>'+t('入力・提出','Write / submit')+'</th><th>'+t('管理側の返信','Management reply')+'</th><th>'+t('設定の変更','Settings')+'</th><th>'+t('理由','Why')+'</th></tr></thead><tbody>'
       + (pp.length ? pp.map(function(x){ return '<tr><td><b>'+e(x.name || x.emp_id || '—')+'</b> <span class="mr-m">'+e(mrRoleL(x.role))+'</span></td><td>'+yn(x.view)+'</td><td>'+yn(x.input)+'</td><td>'+(x.reply ? yn(true) : x.note ? '<span class="mr-n">×</span><span class="mr-m">'+t('（補足は○）',' (notes ○)')+'</span>' : yn(false))+'</td><td>'+yn(x.settings)+'</td><td class="mr-m">'+e(mrWhyL(x.why))+'</td></tr>'; }).join('') : '<tr><td colspan="6" class="mr-m">'+t('この店を見られる人はいません','Nobody can see this store')+'</td></tr>')
-      + '</tbody></table></div><div class="mr-m">'+t('サーバーが計算した表です（画面の役職では決めていません）。設定の変更はメールの認証の GM・CEO だけ。','Calculated by the server (not by the screen). Only the GM and CEO with an email sign-in can change settings.')+'</div></div>';
+      + '</tbody></table></div><div class="mr-m">'+t('サーバーが計算した表です（画面の役職では決めていません）。設定の変更は GM・CEO だけ。','Calculated by the server (not by the screen). Only the GM and CEO can change settings.')+'</div></div>';
     h += '</div></div>';
   }
   /* Head Chef・Corporate Chef（全店） */
@@ -18196,7 +18073,6 @@ function mrSettingsHtml(){
     + '</div><div class="mr-rowh"><select class="mr-sel" id="mr-acc-chef">'+cOpts+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrChefAdd()">'+t('＋ 足す','+ Add')+'</button></div>'
     + '<div class="mr-m">'+t('候補は社員の表で役職 chef か肩書き Head Chef・Corporate Chef の在籍者。退職・肩書きが変わると、サーバーが自動で外します。','Candidates: people in service whose role is chef or whose title is Head Chef / Corporate Chef. The server removes them when they leave or their title changes.')+'</div></div>';
   h += mrScopeHtml();
-  h += '<div class="card mr-col"><b>'+t('デモ','Demo')+'</b><div class="mr-m">'+t('架空の 6 店を作り直します。デモだけを消して作るので、本番の記録には触れません。','Recreates the six fictional stores. Only the demo is replaced; live records are not touched.')+'</div><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrDemoReset()">'+t('デモを作り直す','Remake the demo')+'</button></div>';
   return h;
 }
 /* v1073: 下書きは読んだときの設定（base：入力担当・閲覧者・版）を持つ。ほかの人（または別のタブ）が先に保存して版が進んだら：
@@ -18305,10 +18181,6 @@ function mrChefDel(v){
   v = String(v || ''); if (!v) return;
   if (!confirm(t('この人を Head Chef・Corporate Chef から外しますか？（どこかの入力担当なら、その店だけ入れる形に戻ります）','Remove this person from Head Chef / Corporate Chef? (if they are an input person somewhere, they keep only that)'))) return;
   return mrSetRun('chef', function(){ return mrAPI({ action:'chef_save', emp_id:v, on:false }); });
-}
-function mrDemoReset(){
-  if (!confirm(t('デモを作り直しますか？（デモの記録だけを消して作り直します）','Remake the demo? (only demo records are replaced)'))) return;
-  return mrSetRun('demo', function(){ return mrAPI({ action:'demo_reset' }); });
 }
 /* v1073 店舗の管轄（どの AM の店か）：Moto さん 10/13「AM の設定というよりは、誰の管轄か」。決まりは前の「本番の店舗と AM の担当」と同じ
    （有効な AM だけ・入力担当と閲覧者はそのまま・まだ入っていない店は店舗マスターの AM 欄と名前が完全に同じ AM が 1 人だけのとき案を出す）。
@@ -40904,7 +40776,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1121';
+const APP_VERSION = '1122';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。

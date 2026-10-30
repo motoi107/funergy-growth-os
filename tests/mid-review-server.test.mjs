@@ -231,7 +231,8 @@ test('the v2 SQL on a database that already holds the first edition’s rows: ro
   assert.match(await row('mid-review scope GM (20261018090000)'), /^NG/);
   assert.match(await row('mid-review stores_save fix (20261017090000)'), /^OK/);   // only the list row went back
   await pg.exec(V5);
-  for (const r of (await pg.query(post)).rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
+  // (the v1122 row stays NG here: this suite runs the SQL up to v1076 — mid-review-live-v1122.test.mjs checks it after v1122)
+  for (const r of (await pg.query(post)).rows) assert.match(r.result, r.check_name === 'mid-review live (20261102090000)' ? /^NG/ : /^(OK|参考)/, r.check_name + ': ' + r.result);
   // The first edition's review is read as before (legacy), its reply is not part of the v2 thread, and it cannot be written in v2.
   await pg.exec('set role service_role');
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service', SUPABASE_ANON_KEY: 'anon-key' })[k];
@@ -448,7 +449,8 @@ test('v1076 store oversight: a GM can oversee a store; the list says whose role 
   assert.ok(!am.F01, 'F01 is no longer Yuki\'s'); assert.ok(am.F02);
   assert.equal((await E.api('am1', { action: 'get', ...at('F01') })).status, 404);
   // The check after installing: a store overseen by a GM is not a warning (only an AM must match the store master's AM column).
-  for (const r of await E.q(dbFile('mid-review-postcheck.sql'))) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
+  // (this suite runs the SQL up to v1076; the v1122 row says it is not in yet — mid-review-live-v1122.test.mjs checks it after v1122)
+  for (const r of await E.q(dbFile('mid-review-postcheck.sql'))) assert.match(r.result, r.check_name === 'mid-review live (20261102090000)' ? /^NG/ : /^(OK|参考)/, r.check_name + ': ' + r.result);
   // An AM whose store the store master gives to someone else is still pointed at.
   await E.q(`update stores set am='AM Two' where id='F02'`);
   const w = (await E.q(dbFile('mid-review-postcheck.sql'))).find(r => r.check_name === 'live stores the saved AM cannot see');
@@ -1373,8 +1375,9 @@ test('the check after installing: every row OK on a fresh install; it points at 
   const E = await setup(); await live(E);
   const post = dbFile('mid-review-postcheck.sql');
   let rows = await E.q(post);
-  assert.equal(rows.length, 27);   // v1076: + scope GM (20261018090000)
-  for (const r of rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
+  assert.equal(rows.length, 29);   // v1076: + scope GM (20261018090000); v1122: + live (20261102090000), CEO / GM accounts without an employee id
+  // (this suite runs the SQL up to v1076; the v1122 row says it is not in yet — mid-review-live-v1122.test.mjs checks it after v1122)
+  for (const r of rows) assert.match(r.result, r.check_name === 'mid-review live (20261102090000)' ? /^NG/ : /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match(rows.find(r => r.check_name === 'live stores without an input person').result, /^参考/);
   await E.api('gm', { action: 'chef_save', emp_id: 'E10', on: true });
   await E.q(`update employees set title='Cook', role='g3' where id='E10'`); await E.q(`update employees set status='退職' where id='E12'`);

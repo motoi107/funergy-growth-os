@@ -50,6 +50,13 @@ with t as (
   -- the store oversight may be a GM too (20261018090000): the save takes a GM, and the list row says whose role it is
   select exists(select 1 from src where proname = 'mr_stores_save' and position('public.mr_member_role(x) in (''am'',''gm'')' in prosrc) > 0)
    and exists(select 1 from src where proname = 'mr_row_v2' and position('''am_role''' in prosrc) > 0) as ok
+), v6 as (
+  -- v1122 (20261102090000): no email step, no demo, a PIN sign-in gets its row from the masters (CEO / GM: manager_auth; AM: the employee master)
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_need_email' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_demo_reset' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_store' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_list' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_pin_actor' and position('member_auto' in p.prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -79,6 +86,8 @@ union all select 'mid-review stores_save fix (20261017090000)', (select ok::text
   case when (select ok from v4) then 'OK' else 'NG：20261017090000_mid_review_stores_save_fix.sql がまだ（20261016090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'mid-review scope GM (20261018090000)', (select ok::text from v5),
   case when (select ok from v5) then 'OK' else 'NG：20261018090000_mid_review_scope_gm.sql がまだ（20261015090000・20261016090000・20261017090000 を流し直したときも、そのあとで続けてもう一度流す）' end
+union all select 'mid-review live (20261102090000)', (select ok::text from v6),
+  case when (select ok from v6) then 'OK' else 'NG：20261102090000_mid_review_live.sql がまだ（その前の中間レビューの SQL を流し直したときも、そのあとで続けてもう一度流す）' end
 union all select 'flags', (select value::text from public.mr_settings where key = 'flags'),
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'live input', (select coalesce(value->>'live_input', 'null') from public.mr_settings where key = 'flags'),
@@ -104,7 +113,12 @@ union all select 'gm here but ceo in manager_auth', (select count(*)::text from 
 union all select 'role narrowing (v1068)', (select bool_or(position('bool_or' in prosrc) > 0)::text from src where proname in ('mr_auth','mr_member_role')),
   case when (select bool_or(position('bool_or' in prosrc) > 0) from src where proname in ('mr_auth','mr_member_role')) then 'OK' else 'NG：20261013090000 か 20261015090000 がまだ' end
 union all select 'members without employee id', (select count(*)::text from m where coalesce(emp_id, '') = ''),
-  case when (select count(*) from m where coalesce(emp_id, '') = '') = 0 then 'OK' else '注意：この人は PIN では入れない（メールだけ）。AM は入れない' end
+  case when (select count(*) from m where coalesce(emp_id, '') = '') = 0 then 'OK'
+   else '注意：社員の表と結ばれていない利用者がいる（v1122 から入り方は PIN だけ。CEO・GM は manager_auth に社員 ID があれば、PIN で入ったときに結ぶ。AM・ほかの人は入れない）' end
+-- v1122: CEO / GM sign in with the PIN only; without the employee id on their manager_auth account the review cannot tell who they are.
+union all select 'ceo / gm accounts without an employee id', (select count(*)::text from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = ''),
+  case when (select count(*) from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = '') = 0 then 'OK'
+   else '注意：この CEO・GM は中間レビューに入れない（manager_auth に社員 ID が無い。db/invoice-signin-emp-check.sql で確かめて入れる）' end
 union all select 'am not an am in the employee master', (select count(*)::text from m where m.role = 'am' and m.role_now is null),
   case when (select count(*) from m where m.role = 'am' and m.role_now is null) = 0 then 'OK'
    else '注意：この AM は入れない（社員の表に無い・AM ではない・退職）。止めるなら mid-review-disable-member.sql' end
