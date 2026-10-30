@@ -77,7 +77,7 @@ test('special with no Career Score at all: the reason is required (not empty, no
   assert.match(m, /現在のグレード<\/td><td[^>]*><span[^>]*>G3<\/span>/);
   assert.match(m, /変更後のグレード<\/td><td[^>]*><span[^>]*>G4<\/span>/);
   assert.match(m, /適用日<\/td><td[^>]*><span id="gh-sp-apply"><b>2026\/8\/21<\/b> から（確定日 2026\/8\/20 の翌日）<\/span>/);
-  assert.match(m, /職種（G3 の期間）<\/td><td[^>]*><b>G3 [^<]+<\/b><div[^>]*>役職名 Kitchen Leader から<\/div>/);
+  assert.match(m, /職種（G3 の期間）<\/td><td[^>]*><span id="gh-sp-track"><b>G3 [^<]+<\/b><div[^>]*>役職名 Kitchen Leader から<\/div>/);
   // the apply date follows the date field
   c.FORM['gh-sp-apply'] = { innerHTML: '' };
   run(c, `ghConfirmDate('2026-08-18')`);
@@ -98,7 +98,7 @@ test('special with no Career Score at all: the reason is required (not empty, no
   assert.match(c.TOASTS.at(-1), /特例変更の理由を入れてください/);
   run(c, `ghSpecialReview()`);
   assert.doesNotMatch(lastModal(c), /（確認）/, 'spaces only: no review either');
-  run(c, `ghSpecialReason('\u200b\u2060\ufeff')`);
+  run(c, `ghSpecialReason('\u200b\u2060\ufeff\u200e\u200f\u00ad\u3164')`);
   run(c, `ghSpecialReview()`);
   assert.doesNotMatch(lastModal(c), /（確認）/, 'invisible characters only: no review either');
   assert.equal(run(c, `window._ghPend.reviewed`), false);
@@ -290,9 +290,14 @@ test('review P2: the grade-history tab toggle (ghSetMode) still works, and no tw
   run(c, `saveEmp('ken')`); const n = c.MODAL.length;
   run(c, `ghSetMode('all')`);
   assert.equal(c.MODAL.length, n);
-  const names = [...source.matchAll(/\nfunction ([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]);
+  // top-level declarations (function, async function, function*, var/let/const at the start of a line)
+  const names = [...source.matchAll(/\n(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)\s*\(/g)].map(m => m[1]);
+  assert.ok(names.length > 5000, names.length);
   const dup = names.filter((x, i) => names.indexOf(x) !== i);
-  assert.deepEqual([...new Set(dup)], [], 'a later declaration silently replaces an earlier one');
+  assert.deepEqual([...new Set(dup)], [], 'a later function declaration silently replaces an earlier one');
+  const vars = [...source.matchAll(/\n(?:var|let|const)\s+([A-Za-z_$][\w$]*)\s*=/g)].map(m => m[1]);
+  const both = [...new Set(vars.filter(x => names.includes(x)))];
+  assert.deepEqual(both, [], 'a top-level variable with the name of a top-level function');
 });
 
 test('G3 track (not an evaluation): kept on the special record and used by the bonus; chosen when the title does not tell it', () => {
@@ -324,9 +329,42 @@ test('G3 track (not an evaluation): kept on the special record and used by the b
   assert.equal(empOf(d, 'tom').title, '');
   run(d, `ghEvalSetTrack('sv')`);
   assert.ok(lastModal(d).includes('>理由</textarea>'), 'the reason is kept when the track is chosen');
+  // the track cell follows the date (a quarter pick of another quarter)
+  d.STORE.bonus_track = { '2026-Q2|tom': { t: 'kt', at: 'x', by: 'GM', _at: 1 } };
+  run(d, `window._ghPend.track = null`);
+  d.FORM['gh-sp-track'] = { innerHTML: '' };
+  run(d, `ghConfirmDate('2026-06-20')`);
+  assert.match(d.FORM['gh-sp-track'].innerHTML, /<b>G3 キッチンリーダー<\/b><div[^>]*>この四半期に GM・CEO が選んだ職種<\/div>/);
+  run(d, `ghConfirmDate('2026-08-20')`);
+  assert.match(d.FORM['gh-sp-track'].innerHTML, /aria-label="G3 の職種"/);
+  run(d, `ghEvalSetTrack('sv')`);
   run(d, `ghSpecialReview(); ghConfirmGo();`);
   const r = d.STORE.grade_hist.tom.recs[0];
   assert.deepEqual([empOf(d, 'tom').title, r.mode, r.track], ['Store Manager', 'special', 'sv']);
+});
+
+test('specialist / office G3 (from 2026 Q3): no track is asked for or recorded (their bonus base does not depend on it)', () => {
+  const c = app({ 'e-name': { value: 'Ann Sample' }, 'e-title': { value: 'Accountant' }, 'e-role': { value: 'office' } });
+  c.EMPS.push({ id: 'ann', name: 'Ann Sample', title: 'Accounting Leader', role: 'office' });
+  c.STORE.m_employees = JSON.parse(JSON.stringify(c.EMPS));
+  vm.runInContext(`cgOf = function(e){ return (e && empSpecialistDept(e)) ? { sheet:'spec', dept:empSpecialistDept(e) } : null; };
+    kevGen3 = function(q){ return String(q) >= '2026-Q3'; };`, c);
+  run(c, `saveEmp('ann'); ghSetChangeMode('special'); ghSpecialReason('経理の体制の変更');`);
+  assert.deepEqual([run(c, `window._ghPend.g0`), run(c, `window._ghPend.g1`)], ['G3', 'G4']);
+  assert.match(lastModal(c), /職種（G3 の期間）<\/td><td[^>]*><span id="gh-sp-track"><span[^>]*>使いません（専門職・オフィス用の評価表の人は、職種で基準点が変わりません）/);
+  assert.doesNotMatch(run(c, `ghConfirmBtnHtml(window._ghPend)`), /disabled/);
+  run(c, `ghSpecialReview()`);
+  assert.match(lastModal(c), /職種（G3 の期間）<\/td><td>使いません（専門職・オフィス用）/);
+  run(c, `ghConfirmGo()`);
+  const r = c.STORE.grade_hist.ann.recs[0];
+  assert.deepEqual([empOf(c, 'ann').title, r.mode, r.track], ['Accountant', 'special', undefined]);
+  // before 2026 Q3 (the earlier bonus rules use the track): asked for, as in the normal change
+  const d = app({ 'e-name': { value: 'Ann Sample' }, 'e-title': { value: 'Accountant' }, 'e-role': { value: 'office' } });
+  d.EMPS.push({ id: 'ann', name: 'Ann Sample', title: 'Accounting Leader', role: 'office' });
+  d.STORE.m_employees = JSON.parse(JSON.stringify(d.EMPS));
+  vm.runInContext(`cgOf = function(e){ return (e && empSpecialistDept(e)) ? { sheet:'spec' } : null; }; kevGen3 = function(q){ return String(q) >= '2026-Q3'; };`, d);
+  run(d, `saveEmp('ann'); window._ghPend.d='2026-06-20'; ghSetChangeMode('special'); ghSpecialReason('x');`);
+  assert.match(run(d, `ghConfirmBtnHtml(window._ghPend)`), /G3 の職種を選んでください/);
 });
 
 test('review P3: a confirmation left over from another change is not stamped on an approval; an earlier special mark is not overwritten', () => {
@@ -351,6 +389,10 @@ test('review P3: a confirmation left over from another change is not stamped on 
   assert.equal(run(c, `ghAddRecEval('neo', { d:'2026-08-20', g:'G4', from:'G3', start:false, src:'title', mode:'special', reason:'second', spBy:'GM', spAt:'2026/08/20 09:00' }, 'Neo Sample')`), true);
   const h = c.STORE.grade_hist.neo.recs[0];
   assert.deepEqual([h.reason, h.spBy, h.spAt], ['first', 'CEO', '2026/08/20 08:00']);
+  // an evaluation confirmed for the same day and grade later: the record is no longer a special change
+  assert.equal(run(c, `ghAddRecEval('neo', { d:'2026-08-20', g:'G4', from:'G3', start:false, src:'title', prevEval:{ g:'G3', csPct:70 } }, 'Neo Sample')`), true);
+  const h2 = c.STORE.grade_hist.neo.recs[0];
+  assert.deepEqual([h2.mode, h2.reason, h2.spBy, h2.prevEval.csPct], [undefined, undefined, undefined, 70]);
   // the history line shows who made the special change, and when
   c.R = { mode: 'special', reason: 'x', by: 'Someone', at: '2026/08/01 10:00', spBy: 'GM', spAt: '2026/08/20 09:00' };
   assert.match(run(c, `ghSpecialHtml(R)`), /2026\/08\/20 09:00 GM<\/span>/);
