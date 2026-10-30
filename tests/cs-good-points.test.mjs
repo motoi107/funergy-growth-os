@@ -360,6 +360,7 @@ test('display only: judging and drawing write nothing; the bonus, promotion and 
   assert.doesNotMatch(CSS, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u);
   // the icons are Tabler 2.44 line icons
   assert.match(CSS, /CSS_TYPE_IC = \{bal:'ti-chart-radar', grow:'ti-trending-up'\}/);
-  assert.match(SRC, /const APP_VERSION = '1114';/);
-  assert.match(SW, /const SW_BUILD = '1114';/);
+  const ver = (SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1];   // 1114 or later; the page and the service worker agree
+  assert.ok(+ver >= 1114, ver);
+  assert.match(SW, new RegExp("const SW_BUILD = '" + ver + "';"));
 });
