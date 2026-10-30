@@ -1,5 +1,31 @@
 # Claude / Codex 共通記録
 
+## 2026-10-30 v1118：キャッシュチップの未登録を自動で 0 にする（Moto さん 10/30 の依頼「修正・改善依頼（全7項目）」の ①・Claude・ブランチ `claude/cash-tip-auto-zero`・SQL `20261031090000`・ops-bot・アプリ・本番未反映）
+
+- 依頼：7 項目（① キャッシュチップ ② 仕入れの単価比較 ③ 業者マスター ④ 未登録の打刻検知 ⑤ HR 福利厚生 ⑥ 中間レビュー ⑦ メニュータブ）。この節は ① と、②③④⑦ の読むだけの SQL・⑦ の UI 案。ほかは次の PR。
+- Moto さんの回答（10/30・選択肢）：
+  - ②：アプリで入れた単価の履歴は比較から外して参考で残す
+  - ④：「検知に出して後からでも結べる様にして」
+  - ⑤：G2 の対象外は今日から（前の記録は残す）
+  - ③：工事の業者 35 件は業者マスターに移す（工事関係業者）
+- ① 仕様・試験・限界：`docs/CASH_TIP_AUTO_ZERO_V1118_JA.md`。入れる一式：`deploy/cash-tip-auto-zero-v1118/`（手順.md）。
+  - 未登録は 0 として計算し（前から `getCashTip` は 0）、エラー・通知・未対応の数に入れない。
+  - 不正な値（数でない・マイナス）だけをエラーにする（エラーセンター `tipinv|店|日`・Tip の期間・朝の LINE）。
+  - サーバーの `cash_tip_autofill` が、終わった営業日（toast_sales か daily_actuals に売上・クレジットチップのある日）の未登録の側に「自動の0」（`<側>Auto`・時刻なし）を書く。
+  - 入っている値・0・不正な値・前の形の entered は変えない。取得失敗の日（行なし）と今日は書かない。
+  - 2 回流しても同じ。`cash_tip_autofill_undo` で戻せる。service_role だけ（anon・authenticated の既定の EXECUTE も外した）。毎日 2 回（HST 4:17・8:47・直近 62 日）。
+  - 合流は側ごとに、人が入れた値 ＞ 自動の0 ＞ 未入力。v1117 の合流でも人の値が勝つ（自動の0 に時刻が無い・試験）。
+  - 前の「未登録」の過去ログ・通知は消さずに数えない。
+  - ops-bot は朝のキャッシュチップの知らせを不正な値だけに（`4_関数_ops-bot_index.ts`。戻すのは v1105 の 1 ファイル）。v1105 の一式の試験は v1105 のときのソース（96a2c7e）と比べるようにした。
+- 読むだけの SQL（Moto さんに送った・結果待ち）：`db/purchase-price-check.sql`（②）・`db/vendor-duplicates-check.sql`（③）・`db/unregistered-punch-check.sql`（④・特定の名前では探さない）・`db/menu-sync-status-check.sql`（⑦）と前からの `db/menu-data-check-all.sql`。試験 `tests/requests-1030-sql.test.mjs`。
+- ⑦ UI案65（Design・Moto さんの非公開の canvas・数字はサンプル・PC 3 枚／スマホ 2 枚）。
+  - コードで確かめたこと：前日まで方式ではない（月ごとの入れ物を端末が読んで書く）。
+  - 「Toast 同期」の処理（`syncMenuFromToast`）は日別の行を足さずに上書きする（ログインの `loadMenuMixFromDB` は足す）。
+  - レシピに結ばれない商品は落ちる。ログインのたびに全店の出数を書き直して送る。
+- 試験（合成データ）：cash-tip-auto-zero 18・requests-1030-sql 5・bot-cash-tip-report 3・error-center-v1088 20（見本を不正な値に置き換え）・tip-weight-rate 17・ops-bot-deploy-v1105 5。わざと壊す 22/22（1 回目 19 → 試験を足した）。static release pass/1118。
+- 次：独立レビュー → PR → Codex → Moto さんが手順.md の順。
+  - SQL → 確認の結果を Claude に → 全期間を埋める（run_id を控える）→ ops-bot → 毎日の予定 → マージ。
+
 ## 2026-10-30 v1117：特例変更の記録を、通常の変更で書き換えない（Codex・PR #106 `e9e8bc4` の P2・Claude・ブランチ `claude/grade-special-keep`・アプリだけ・本番未反映）
 
 - 経緯：**PR #106 は 10/29 22:04 HST に `e9e8bc4` でマージ（main `5d01eaa`・本番 v1116）**。その 5 分前の Codex の再レビュー（6517896236・blocked／manual）は、前回の P2 2 つ（版の設定者・日時・`bc_versions.pay`／`no_emp`）は直っていると確認し、新しく **P2 1**：グレード履歴の最後の記録がもう特例変更で役職だけ古いとき、「通常の変更」で評価を確定して保存すると、`ghAddRecEval` が特例の `mode`・`reason`・`spBy`・`spAt`・`track` を消す（画面は「理由は前のまま」と出す）。v1116 の同じ記録の直し（`be2cf69`）で通るようになった道。この P2 は本番に入っている。Claude のルーティン（6517792354・6517797292）はこの道を見ていなかった。
