@@ -288,3 +288,36 @@ test('review P3-4: the link screen keeps the chosen person when it reopens for a
   assert.ok(source.includes('openToastLinkModal(L.i, L.pre);'));
   assert.ok(source.includes("window._toastLink={ i:i, item:x, ps:ps, pre:pre||'' };"));
 });
+
+test('Codex (PR #110・b0af69a): an alias starting 10/16 does not hide the punches before 10/16 — the import leaves them where they were, so they stay listed and can be linked later', async () => {
+  // part match: 10/10 and 10/20 under "Ann" went to Ann Example; the name is then linked to Anna Other from 10/16
+  const c = app();
+  c.EMPS = [{ id: 'a1', name: 'Ann Example', status: '在籍', store: 'F01' }, { id: 'a2', name: 'Anna Other', status: '在籍', store: 'F01' }];
+  await importDay(c, 'F01', '2026-10-10', [punch('Ann', 4)]);
+  await importDay(c, 'F01', '2026-10-20', [punch('Ann', 3)]);
+  assert.equal(list(c).length, 1);
+  c.EMPS[1][fld('Ann')] = alias('Ann');   // from 10/16
+  let l = list(c);
+  assert.equal(l.length, 1, 'still listed (was 1 → 0)');
+  assert.equal(l[0].kind, 'part'); assert.equal(l[0].emp.id, 'a1');
+  assert.deepEqual(l[0].byDate, { '2026-10-10': 4 }, 'only the day before the alias starts'); assert.equal(l[0].hours, 4); assert.equal(l[0].days, 1);
+  assert.deepEqual(Object.keys(await importDay(c, 'F01', '2026-10-10', [punch('Ann', 4)])), ['Ann Example'], 'the import does not move the day before the alias');
+  assert.deepEqual(Object.keys(await importDay(c, 'F01', '2026-10-20', [punch('Ann', 3)])), ['Anna Other'], 'the day after does move');
+  assert.deepEqual(list(c).map(x => x.byDate), [{ '2026-10-10': 4 }]);
+  // linking from an earlier day ("include the earlier period") clears it
+  c.EMPS[1][fld('Ann')] = alias('Ann', { from: '2026-10-01' });
+  assert.deepEqual(list(c), []);
+  // resigned record: punches before the alias stay on the resigned record and are listed; after the alias they are not
+  const d = app();
+  d.EMPS = [{ id: 'r1', name: 'Mia Sample', status: '退職', resignDate: '2026-09-10' }, { id: 'a3', name: 'Mia Sample-Lee', status: '在籍', store: 'F04-P' }];
+  await importDay(d, 'F04-P', '2026-10-10', [punch('Mia Sample', 5)]);
+  d.STORE['tip_labor_F04-P_2026-10-20'] = { 'Mia Sample': { rawDinner: 6, toastName: 'Mia Sample' } };   // this device has not re-read 10/20 yet
+  d.EMPS[1][fld('Mia Sample')] = alias('Mia Sample');
+  l = list(d);
+  assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned'); assert.deepEqual(l[0].byDate, { '2026-10-10': 5 });
+});
+
+test('Codex (PR #110): the store score still deducts only names in nobody\'s record (the resigned / part rows are listed but not scored until Moto decides)', () => {
+  const line = source.split('\n').find(x => x.includes('staff.unreg =')) || '';
+  assert.match(line, /kind==='none'/);
+});

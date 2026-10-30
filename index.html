@@ -21594,7 +21594,8 @@ function computeStorePower(s, days, allInact, allUnreg){
   var k = keyKpiStats([s], days);
   var staff = spStaffStats(s.id);
   staff.inact = (allInact||[]).filter(function(x){ return x.emp.store===s.id || (x.emp.support||[]).includes(s.id); }).length;
-  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0; }).length;
+  /* v1120：店舗総合力の減点は今までどおり、だれにも入っていない名前（kind none）だけ。退職の記録・名前の一部の行を減点に数えるかは Moto さんの判断待ち（Codex PR #110 の確認） */
+  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0 && (!x.kind || x.kind==='none'); }).length;
   // 予実達成
   var dAchieve = k.budget>0 ? Math.min(100, Math.round(k.achieve)) : null;
   // 収益力（原価率＋人件費率 = プライムコスト。60%以下で満点、上がるほど減点）
@@ -53818,7 +53819,9 @@ function unregisteredClockIns(days){
   var _date=function(d){ return (typeof d==='string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) ? d : ''; };   /* 読めない退職日は無いのと同じ（独立レビュー P2-2） */
   /* その店で別名がちょうど 1 人に決まるときだけ「結んだ」とみなす（取り込みと同じ決め方。2 人に当たると、どちらにも入らないので一覧に残す・独立レビュー 7d234a4 P3-1）。
      actOnly：在籍の人の別名だけ（退職の記録に入っている打刻が、もう在籍の人に結んであるか） */
-  var _cov=function(key, sid, actOnly){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
+  /* date：その日の打刻か。別名の from より前の日は、取り込みも別名を使わないので「結んだ」とみなさない（Codex PR #110・b0af69a の P2。前の日は一覧に残し、あとから「前の期間も含める」で結べる）。
+     date なし（だれにも入っていない名前の行）は v1111 のまま（結んだ名前は前の日も出さない・決め方 3 の A） */
+  var _cov=function(key, sid, actOnly, date){ var ok=(_aIdx[key]||[]).filter(function(a){ return a.emp && (!a.store || a.store===sid) && !(date && a.from && date<a.from); }), act=ok.filter(function(a){ return a.emp.status!=='退職'; }), ids={};
     (actOnly ? act : (act.length ? act : ok)).forEach(function(a){ ids[a.emp.id]=1; }); return Object.keys(ids).length===1; };
   var _empInfo=function(x){ return { id:x.id, name:x.name, status:x.status||'在籍', store:x.store||'', support:(x.support||[]).slice(), resignDate:_date(x.resignDate), title:x.title||'' }; };
   var map={};
@@ -53855,7 +53858,7 @@ function unregisteredClockIns(days){
           emp=regs.filter(function(x){ var rd=_date(x.resignDate); return rd && date<=rd; })[0];
           if(!emp){
             var k1=_key(tn0), rr=regs.slice().sort(function(a,b){ return _date(b.resignDate).localeCompare(_date(a.resignDate)); })[0];
-            if(_cov(k1, storeId, true) || _cov(_key(name), storeId, true)) return;   /* 在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。別名の from より後の日は次の取り直しで移る。前の日はそのまま＝v1111 の決め方） */
+            if(_cov(k1, storeId, true, date) || _cov(_key(name), storeId, true, date)) return;   /* その日に効く在籍の人の別名で結んである（この端末の勤怠の写しが古いだけ。次の取り直しで移る）。別名の from より前の日は退職の記録に残るので出す */
             /* Toast の名前が退職の記録の名前と同じときだけ「退職の記録に入っている」。名前の一部で入ったものは part（独立レビュー P2-1） */
             var _same=k1===_key(rr.name);
             if(_same || toastAliasCovers(rr, k1, storeId)){ add('r|'+rr.id+'|'+k1, { kind:'resigned', name:tn0, toastName:tn0, emp:_empInfo(rr), viaAlias:!_same }, storeId, date, h); return; }   /* 退職の人の別名に結んである名前も同じ扱い */
@@ -53868,7 +53871,7 @@ function unregisteredClockIns(days){
           var kk=_key(tn);
           if(!tn || !kk || seen[kk]) return; seen[kk]=1;
           if(kk===ek || (emp.toastName && emp.toastName===tn)) return;   /* 同じ名前（大文字小文字・空白・ハイフンだけ違う）。前の欄 toastName に入れてあれば人が確かめた名前 */
-          if(_cov(kk, storeId, emp.status==='退職')) return;              /* 別名で結んである（退職の記録に入っているときは、在籍の人の別名だけ） */
+          if(_cov(kk, storeId, emp.status==='退職', date)) return;        /* その日に効く別名で結んである（退職の記録に入っているときは、在籍の人の別名だけ）。from より前の日は今の人に残るので出す */
           add('p|'+emp.id+'|'+kk, { kind:'part', name:tn, toastName:tn, emp:_empInfo(emp) }, storeId, date, h);
         });
       });
