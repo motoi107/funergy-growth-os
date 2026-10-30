@@ -121,9 +121,12 @@ test('2. strengths on the list card: every strength as an icon card — never "�
   // partial: the strengths found so far, said so under the cards
   assert.deepEqual(S.evalOf(c, 'mid').list.length, 3);
   assert.match(strip('mid'), /<\/div><div style="font-size:11\.5px;color:var\(--muted\);margin-top:4px">現時点で確認できた強み<\/div><\/div>$/);
-  // no strength → the message box as before (no empty list)
+  // no strength → v1114 (UI案64): the good points (Balancer + areas); with them turned off → the message box as before (no empty list)
+  assert.match(strip('flat'), /<span[^>]*>良いところ<\/span>[\s\S]*>バランサー</);
+  c.STORE.cs_strength_rule = { rule: { minItems: 3, top: 'half', good: false, _at: 5 } };
   assert.match(strip('flat'), /得意分野を確認中（決まりに当たる分野がまだありません）/);
   assert.doesNotMatch(strip('flat'), /role="list"/);
+  delete c.STORE.cs_strength_rule;
   // the old "top 3 + ほか N" is gone from this function
   assert.doesNotMatch(fnSrc('cssStripHtml'), /slice\(0, 3\)|'ほか '|more'\)/);
 });
@@ -244,7 +247,10 @@ test('5. the growth-chart tile: every strength by name — no "ほか N" / "+N" 
   assert.equal(tile('two', 'cssTileValHtml'), tile('two', 'cssTileVal'));
   assert.match(tile('two', 'cssTileVal'), /^[^、]+、[^、]+$/);
   assert.match(tile('three', 'cssTileValHtml'), /^<span style="display:block;font-size:13px;line-height:1\.45">(<span style="white-space:nowrap">[^<]+<\/span>(<wbr>)?){3}<\/span>$/);
+  assert.equal(tile('flat', 'cssTileVal'), 'バランサー');   // v1114: good points (the strength rule is unchanged)
+  c.STORE.cs_strength_rule = { rule: { minItems: 3, top: 'half', good: false, _at: 5 } };
   assert.equal(tile('flat', 'cssTileVal'), '確認中');
+  delete c.STORE.cs_strength_rule;
   assert.equal(tile('nobody', 'cssTileVal'), '未評価');
   assert.doesNotMatch(fnSrc('cssTileVal').replace(/\/\*[\s\S]*?\*\//g, ''), /ほか|slice\(0, 2\)/);
   // both tiles (the person view and the manager view of the growth chart) use it

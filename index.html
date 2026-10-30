@@ -40817,7 +40817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1113';
+const APP_VERSION = '1114';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -73522,6 +73522,9 @@ function csvListNoteHtml(){
    ・伸ばしていること：成長カルテの「次期の目標」（面談の合意事項）のうち、終わっていない・期限のいちばん近いもの 1 つ。無い人には出さない（作らない）。 */
 var CSS_RULE_DEFAULT = {minItems:3, top:'half'};
 var CSS_TOPS = ['half', 'one', 'all'];
+/* v1114（UI案64・Motoさん 10/29 の回答）：強みが無い人の「良いところ」の決まり（表示だけ）。good＝出す／bal＝バランサーの割合（off は出さない）／grow＝伸び盛りを出す */
+var CSS_GOOD_DEFAULT = {good:true, bal:'twothirds', grow:true};
+var CSS_BALS = ['off', 'half', 'twothirds', 'eighty', 'all'];
 /* 強みの対応表（1 つ。全部の画面がこれを使う）。id・名前・アイコン・短い言い方（一文用）・できること・根拠の項目 */
 var CS_STRENGTHS = [
   {id:'S1',  sh:'store', ic:'ti-message-circle', n:'お客様対応', en:'Guest service', s:'接客', se:'guest service', can:'お客様に合わせた接客を、一人で安定して行える', cen:'Serves each guest in a way that fits them, steadily and on their own', it:['B0','B1','B2','B3','B4']},
@@ -73578,10 +73581,14 @@ function cssRule(){
   var m=null; try{ m=ls('cs_strength_rule', null); }catch(err){ m=null; }
   var raw=(m && typeof m==='object' && m.rule && typeof m.rule==='object') ? m.rule : null;
   var r=(raw && !raw._deleted && !raw.reset) ? raw : null;   /* reset＝初期値に戻した記録（_deleted は合流で時刻より先に勝つので使わない） */
-  var mi=r ? parseInt(r.minItems, 10) : NaN, tp=r ? String(r.top||'') : '';
+  var mi=r ? parseInt(r.minItems, 10) : NaN, tp=r ? String(r.top||'') : '', bl=r ? String(r.bal||'') : '';
   M.rule={
     minItems:(isFinite(mi) && mi>=3 && mi<=6) ? mi : CSS_RULE_DEFAULT.minItems,
     top:(CSS_TOPS.indexOf(tp)>=0) ? tp : CSS_RULE_DEFAULT.top,
+    /* v1114：前の版（v1113 まで）が保存した決まりには無い欄。無ければ初期値（出す・3 分の 2 以上・伸び盛りを出す） */
+    good:r ? (r.good!==false) : CSS_GOOD_DEFAULT.good,
+    bal:(CSS_BALS.indexOf(bl)>=0) ? bl : CSS_GOOD_DEFAULT.bal,
+    grow:r ? (r.grow!==false) : CSS_GOOD_DEFAULT.grow,
     set:!!r, at:r ? String(r.at||'') : '', by:r ? String(r.by||'') : '', _at:r ? (Number(r._at)||0) : 0,
     rawAt:raw ? (Number(raw._at)||0) : 0   /* 保存の確かめに使う時刻（初期値に戻した記録・読めない記録でも、いまの記録の時刻。独立レビュー P2） */
   };
@@ -73632,7 +73639,7 @@ function cssRank(list){
 /* 判定：{state, kind, list:[{d, ev, threes, n, i}], un, pending, date, by, q, rule}
    state：none（記録なし）・set（評価項目が入れ替わっている）・few（評価表の項目が少なく判定できない）・partial（未採点あり）・done（すべて採点済み） */
 function cssEvaluate(e){
-  var R={kind:'store', state:'none', list:[], un:0, pending:false, date:'', by:'', q:'', rule:cssRule()};
+  var R={kind:'store', state:'none', list:[], groups:[], good:null, un:0, pending:false, date:'', by:'', q:'', rule:cssRule()};
   if(!e || !e.name) return R;
   var S=cssSheetOf(e); R.kind=S.kind; R.dept=S.dept || null;
   if(S.kind==='office') return cssEvalOffice(e, R);
@@ -73647,21 +73654,19 @@ function cssEvaluate(e){
   var L=cssLssItems(S), un=0;
   Object.keys(L.label).forEach(function(id){ if(cssScore(sc[id])==null) un++; });
   R.un=un; R.state=un>0 ? 'partial' : 'done';
-  var defs=cssDefsFor(S), cand=[];
+  var defs=cssDefsFor(S), cand=[], groups=[];
   defs.forEach(function(d, i){
     var ids=d.it ? d.it.filter(function(id){ return L.label[id]!=null; }) : (L.axis[d.ax] || []);
     if(ids.length<R.rule.minItems) return;
     var ev=ids.map(function(id){ return {id:id, label:L.label[id], v:cssScore(sc[id])}; });
     if(ev.some(function(x){ return x.v==null; })) return;          /* 未採点を含む強みは判定しない（評価途中は根拠がそろった強みだけ） */
-    if(ev.some(function(x){ return x.v<2; })) return;              /* すべて 2（期待レベル）以上 */
-    var th=ev.filter(function(x){ return x.v===3; }).length;
-    if(!cssTopOk(R.rule.top, th, ev.length)) return;
-    cand.push({d:d, ev:ev, threes:th, n:ev.length, i:i});
+    var g=cssGroup(d, ev, i, R.rule); groups.push(g);              /* v1114：判定した分野（良いところにも使う） */
+    if(g.strong) cand.push(g);                                     /* すべて 2（期待レベル）以上・3 の数が決まりに当たる */
   });
   var nMax=defs.reduce(function(a, d){ var n=d.it ? d.it.filter(function(id){ return L.label[id]!=null; }).length : (L.axis[d.ax] || []).length; return Math.max(a, n); }, 0);
   if(nMax<R.rule.minItems){ R.state='few'; R.fewRule=(nMax>=CSS_RULE_DEFAULT.minItems); R.list=[]; return R; }   /* fewRule：決まり（根拠の数）を上げたため（評価表そのものは判定できる） */
-  R.list=cssRank(cand);
-  return R;
+  R.list=cssRank(cand); R.groups=groups;
+  return cssGoodFill(R, e);
 }
 /* オフィス用：いちばん新しい確定した評価（自己評価・上長の評価の途中は使わない） */
 function cssEvalOffice(e, R){
@@ -73679,20 +73684,132 @@ function cssEvalOffice(e, R){
     (byCat[d.cat]=byCat[d.cat]||[]).push({id:d.c, label:(curLang==='en' ? (d.en||d.ja) : d.ja), desc:(curLang==='en' ? (d.den||d.dja) : d.dja), v:v});
   });
   R.un=un; R.state=un>0 ? 'partial' : 'done';
-  var defs=CS_STRENGTHS.filter(function(d){ return d.sh==='office'; }), cand=[], any=false, nMax=0;
+  var defs=CS_STRENGTHS.filter(function(d){ return d.sh==='office'; }), cand=[], groups=[], any=false, nMax=0;
   defs.forEach(function(d, i){
     var ev2=byCat[d.ax] || [];
     nMax=Math.max(nMax, ev2.length);
     if(ev2.length<R.rule.minItems) return;
     any=true;
-    if(ev2.some(function(x){ return x.v==null; }) || ev2.some(function(x){ return x.v<2; })) return;
-    var th=ev2.filter(function(x){ return x.v===3; }).length;
-    if(!cssTopOk(R.rule.top, th, ev2.length)) return;
-    cand.push({d:d, ev:ev2, threes:th, n:ev2.length, i:i});
+    if(ev2.some(function(x){ return x.v==null; })) return;
+    var g=cssGroup(d, ev2, i, R.rule); groups.push(g);   /* v1114：判定した区分（良いところにも使う） */
+    if(g.strong) cand.push(g);
   });
   if(!any){ R.state='few'; R.fewRule=(nMax>=CSS_RULE_DEFAULT.minItems); return R; }
-  R.list=cssRank(cand);
+  R.list=cssRank(cand); R.groups=groups;
+  return cssGoodFill(R, e);
+}
+/* ===== v1114（Motoさん 10/29 16:00 HST「強みがない人が数人います」「突出した良いところでなければ、バランサーなど、その人の良いところがクローズアップされる評価に見えるように」。
+   UI案64 の回答：バランサーは 3 分の 2 以上・「この人の中で高い」も出す・伸び盛りは強みが無い人だけ・色は強みと同じオレンジ）：強みが無い人の「良いところ」 =====
+   ・強みに当たる分野が 1 つも無い人だけに出す（強みがある人は今のまま）。表示だけ。点・基準点・昇格の判定・賞与は変えない。
+   ・分野は強みと同じ（同じ対応表・同じ根拠の項目・同じアイコン）。使う分野は、強みと同じく根拠の項目が決まりの数以上あり、すべて採点済みのものだけ（採点していない項目を 0 点や推測で埋めない）。
+   ・分野ごとの言い方（強みと分けるのは色ではなく言葉）：
+       もう少しで強み＝すべて 2 以上・3（模範）が 1 つ以上（決まりには届いていない）。「あと N」＝強みまでに足りない 3 の数
+       安定してできる＝すべて 2 以上・3 は無い
+       この人の中で高い＝上の 2 つが 1 つも無いときだけ。2 以上の項目がある分野のうち、平均がほかの分野より高いものを高い順に 2 つまで（判定した分野が 2 つ以上のとき）。
+                         「あと N 項目で安定」＝2 に届いていない項目の数
+     出すのは 3 つまで（もう少しで強み → 安定してできる → この人の中で高い の順）。
+   ・タイプ：バランサー＝すべての項目が 2 以上の分野が、判定した分野の 3 分の 2 以上（初期値・GM・CEO が変えられる）で、3 分野以上。
+             伸び盛り＝Career Score の履歴のいちばん新しい記録で、前回の評価より総合点が上がった（同じ満点どうし）。前回も今回も採点していない項目が 0 の記録どうしだけ
+             （v1114 から履歴に採点していない項目の数を残す。前の記録は比べない＝評価途中から評価が終わっただけの増え方と見分けられないため）。オフィス用には出さない（履歴が別）。 */
+/* 判定した分野 1 つ（強み・良いところで共通）。strong＝強み（すべて 2 以上・3 の数が決まりに当たる） */
+function cssGroup(d, ev, i, rule){
+  var n=ev.length, th=0, low=0, sum=0;
+  ev.forEach(function(x){ sum+=x.v; if(x.v===3) th++; if(x.v<2) low++; });
+  return {d:d, ev:ev, threes:th, n:n, i:i, low:low, avg:n ? sum/n : 0, ok:(low===0), strong:(low===0) && cssTopOk(rule.top, th, n)};
+}
+/* 強みまでに足りない 3（模範）の数 */
+function cssNeed3(top, threes, n){
+  if(top==='all') return Math.max(1, n-threes);
+  if(top==='one') return Math.max(1, 1-threes);
+  return Math.max(1, Math.ceil(n/2)-threes);
+}
+/* バランサー：すべての項目が 2 以上の分野（ok）が、判定した分野（judged）の決まりの割合以上・3 分野以上 */
+function cssBalOk(bal, ok, judged){
+  if(!(judged>=3) || !(ok>=3)) return false;
+  if(bal==='half') return ok*2>=judged;
+  if(bal==='twothirds') return ok*3>=judged*2;
+  if(bal==='eighty') return ok*5>=judged*4;
+  if(bal==='all') return ok===judged;
+  return false;
+}
+/* Career Score の履歴（lss_history）の人ごとのいちばん新しい記録。一覧はカードごとに読むので、同じ配列のあいだは前に作った表を使う */
+function cssHistLatest(){
+  var arr=null;
+  try{ arr=(typeof lsSplitRO==='function') ? lsSplitRO('lss_history') : ls('lss_history', []); }catch(err){ arr=[]; }
+  if(arr && _cssMemo.histArr===arr && _cssMemo.hist) return _cssMemo.hist;
+  var m={};
+  (Array.isArray(arr) ? arr : []).forEach(function(h){ if(!h || !h.name) return; var c=m[h.name]; if(!c || (Number(h.ts)||0)>=(Number(c.ts)||0)) m[h.name]=h; });
+  _cssMemo.histArr=arr; _cssMemo.hist=m; return m;
+}
+/* 伸び盛り：{d（上がった点）, date, score, prev, max} か null */
+function cssGrowthOf(name){
+  var h=name ? cssHistLatest()[name] : null; if(!h) return null;
+  var num=function(x){ return (x===null || x===undefined || x==='') ? NaN : Number(x); };
+  var s=num(h.score), p=num(h.prevScore), m=num(h.max), pm=num(h.prevMax);
+  if(!isFinite(s) || !isFinite(p) || !isFinite(m) || !isFinite(pm) || !(m>0) || m!==pm) return null;   /* 同じ満点どうし */
+  if(h.un!==0 || h.prevUn!==0) return null;   /* 前回も今回も、採点していない項目が 0（v1114 からの記録だけ） */
+  if(!(s>p)) return null;
+  return {d:Math.round((s-p)*10)/10, date:String(h.date||''), score:s, prev:p, max:m};
+}
+/* 採点していない項目の数（履歴に残す。その人の評価表の項目のうち、点の無いもの） */
+function cssUnOf(name, scores){
+  var sc=(scores && typeof scores==='object') ? scores : {}, un=0;
+  try{ (lssCatsForName(name) || []).forEach(function(c){ (c && c.items || []).forEach(function(_, i){ if(cssScore(sc[lssItemId(c.key, i)])==null) un++; }); }); }catch(err){ return null; }
+  return un;
+}
+/* 強みが無い人の良いところ（R.good）。強みがある人・決まりで出さない・評価が無い人は null */
+function cssGoodFill(R, e){
+  R.good=null;
+  if(R.list.length || !R.rule.good) return R;
+  if(R.state!=='partial' && R.state!=='done') return R;
+  var G=R.groups || [], near=[], steady=[], list;
+  G.forEach(function(g){ if(g.strong || !g.ok) return; var x=Object.assign({}, g, {kind:(g.threes>0) ? 'near' : 'steady', need:cssNeed3(R.rule.top, g.threes, g.n)}); (x.kind==='near' ? near : steady).push(x); });
+  near.sort(function(a, b){ return (a.need-b.need) || (b.threes/b.n - a.threes/a.n) || (b.n-a.n) || (a.i-b.i); });
+  steady.sort(function(a, b){ return (b.n-a.n) || (a.i-b.i); });
+  list=near.concat(steady);
+  if(!list.length && G.length>=2){
+    var minAvg=Math.min.apply(null, G.map(function(g){ return g.avg; }));
+    list=G.filter(function(g){ return !g.strong && g.avg>minAvg && g.ev.some(function(x){ return x.v>=2; }); })
+      .sort(function(a, b){ return (b.avg-a.avg) || ((b.n-b.low)/b.n - (a.n-a.low)/a.n) || (b.n-a.n) || (a.i-b.i); })
+      .slice(0, 2).map(function(g){ return Object.assign({}, g, {kind:'rel', need:g.low}); });
+  }
+  var ok=near.length+steady.length, types=[];
+  if(R.rule.bal!=='off' && cssBalOk(R.rule.bal, ok, G.length)) types.push({k:'bal', ok:ok, judged:G.length, part:(R.state==='partial')});   /* part：評価途中（採点が終わった分野のうち） */
+  if(R.rule.grow && R.kind!=='office' && e && e.name){ var gr=cssGrowthOf(e.name); if(gr) types.push(Object.assign({k:'grow'}, gr)); }
+  R.good={list:list.slice(0, 3), types:types, ok:ok, judged:G.length};
   return R;
+}
+function cssHasGood(R){ return !!(R && R.good && (R.good.list.length || R.good.types.length)); }
+function cssGoodKind(x, self){
+  if(x.kind==='near') return t('もう少しで強み','Almost a strength');
+  if(x.kind==='steady') return t('安定してできる','Steady');
+  return self ? t('あなたの中で高い','Your best area') : t('この人の中で高い','Their best area');
+}
+function cssGoodSub(x, self){
+  var k=cssGoodKind(x, self);
+  if(x.kind==='near') return k+t('・あと '+x.need, ' · '+x.need+' more at 3');
+  if(x.kind==='rel') return k+t('・あと '+x.need+' 項目で安定', ' · '+x.need+(x.need===1 ? ' item' : ' items')+' to steady');
+  return k;
+}
+var CSS_TYPE_IC = {bal:'ti-chart-radar', grow:'ti-trending-up'};
+function cssTypeName(ty){ return ty.k==='bal' ? t('バランサー','Balancer') : t('伸び盛り','On the rise'); }
+function cssTypeSub(ty){
+  if(ty.k==='bal') return t('幅広い分野で安定（'+ty.ok+' / '+ty.judged+' 分野'+(ty.part ? '・採点が終わった分野のうち' : '')+'）', 'Steady across many areas ('+ty.ok+' of '+ty.judged+(ty.part ? ' scored so far' : '')+')');
+  return t('前回の評価から ＋'+cscN(ty.d)+' 点', '+'+cscN(ty.d)+' pt since the last evaluation');
+}
+/* 一文（決まった文の組み合わせ）：いちばん上の言い方の分野を 2 つまで */
+function cssGoodSentence(R, self){
+  var L=(R.good && R.good.list) || []; if(!L.length) return '';
+  var k=L[0].kind, a=L.filter(function(x){ return x.kind===k; }).slice(0, 2).map(function(x){ return cssDefShort(x.d); });
+  var part=(R.state==='partial');
+  if(curLang==='en'){
+    var j=a.join(' and '), s=(k==='near') ? 'almost a strength in '+j : ((k==='steady') ? 'steady in '+j : 'strongest in '+j);
+    return part ? 'So far, '+s : s.charAt(0).toUpperCase()+s.slice(1);
+  }
+  var J=a.join('と'), pre=part ? '現時点では、' : '';
+  if(k==='near') return pre+J+'が、もう少しで強みになる人';
+  if(k==='steady') return pre+J+'を安定してこなせる人';
+  return pre+J+'が、'+(self ? 'あなた' : 'この人')+'の中でいちばん得意なところ';
 }
 /* 一文：上から 2 つの短い言い方をつなぐ（決まった文の組み合わせ・推測で書き足さない） */
 function cssSentence(R){
@@ -73735,26 +73852,56 @@ function cssIconHtml(d, size){
   return '<span aria-hidden="true" style="flex:0 0 auto;width:'+size+'px;height:'+size+'px;border-radius:'+(size/2)+'px;background:var(--accent-soft,#fdeee4);color:var(--accent,#b4501a);display:flex;align-items:center;justify-content:center"><i class="ti '+escapeHtml(d.ic)+'" style="font-size:'+Math.round(size*0.5)+'px"></i></span>';
 }
 /* 根拠（押した強み）：できること・項目と評価・評価日・評価者・決まり */
-function cssEvHtml(R, x){
+function cssEvHtml(R, x, self){
   var rows=x.ev.map(function(it){
     var top=(it.v===3);
-    return '<li style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-top:1px solid var(--border);font-size:12px;line-height:1.45">'
-      +'<span style="flex:1 1 auto;min-width:0"><span style="color:var(--muted);font-size:11px">'+escapeHtml(it.id)+'</span> '+escapeHtml(it.label)+(it.desc ? '<span style="display:block;font-size:11px;color:var(--muted)">'+escapeHtml(it.desc)+'</span>' : '')+'</span>'
-      +'<span style="flex:0 0 auto;font-weight:700;color:'+(top ? 'var(--accent,#b4501a)' : 'var(--muted)')+';white-space:nowrap">'+escapeHtml(cssLvTxt(it.v))+'</span></li>';
+    /* v1114：狭い画面（Career Score の画面の中・390px）では、評価の言葉を次の行へ（項目名が 1 文字ずつに縮んで重ならないように） */
+    return '<li style="display:flex;flex-wrap:wrap;column-gap:8px;align-items:baseline;padding:4px 0;border-top:1px solid var(--border);font-size:12px;line-height:1.45">'
+      +'<span style="flex:1 1 150px;min-width:0"><span style="color:var(--muted);font-size:11px">'+escapeHtml(it.id)+'</span> '+escapeHtml(it.label)+(it.desc ? '<span style="display:block;font-size:11px;color:var(--muted)">'+escapeHtml(it.desc)+'</span>' : '')+'</span>'
+      +'<span style="flex:0 0 auto;margin-left:auto;font-weight:700;color:'+(top ? 'var(--accent,#b4501a)' : 'var(--muted)')+';white-space:nowrap">'+escapeHtml(cssLvTxt(it.v))+'</span></li>';
   }).join('');
-  var meta=[R.date ? t('評価日 ','Evaluated ')+escapeHtml(R.date) : '', R.by ? t('評価者 ','by ')+escapeHtml(R.by) : '', escapeHtml(t(x.n+' 項目すべて 2 以上・3 が '+x.threes+' つ', 'All '+x.n+' items at 2 or above · '+x.threes+' at 3'))].filter(Boolean).join(' ・ ');
-  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:14px">'+escapeHtml(cssDefName(x.d))+'</b><span style="font-size:11px;color:var(--muted)">'+t('選択中','Selected')+'</span></div>'
+  var th3=x.threes ? t('・3 が '+x.threes+' つ', ' · '+x.threes+' at 3') : '';   /* v1114：3 が無いとき（安定してできる など）は書かない */
+  var cnt=(x.kind==='rel') ? t(x.n+' 項目のうち 2 以上が '+(x.n-x.low)+' つ', (x.n-x.low)+' of '+x.n+' items at 2 or above')+th3 : t(x.n+' 項目すべて 2 以上', 'All '+x.n+' items at 2 or above')+th3;
+  var meta=[R.date ? t('評価日 ','Evaluated ')+escapeHtml(R.date) : '', R.by ? t('評価者 ','by ')+escapeHtml(R.by) : '', escapeHtml(cnt)].filter(Boolean).join(' ・ ');
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:14px">'+escapeHtml(cssDefName(x.d))+'</b>'+(x.kind ? '<span style="font-size:11px;font-weight:700;color:#b4501a">'+escapeHtml(cssGoodKind(x, self))+'</span>' : '')+'<span style="font-size:11px;color:var(--muted)">'+t('選択中','Selected')+'</span></div>'
     +'<div style="font-size:13px;line-height:1.55;margin-top:4px">'+escapeHtml(cssDefCan(x.d))+'</div>'
     +'<div style="font-size:11.5px;font-weight:700;color:var(--muted);margin-top:8px">'+t('根拠になった評価','The evaluation behind it')+'</div>'
     +'<ul style="list-style:none;margin:2px 0 0;padding:0">'+rows+'</ul>'
+    +(x.kind ? cssGoodHintHtml(x) : '')   /* v1114：良いところは、強みまで（安定まで）に何が足りないか */
     +'<div style="font-size:11px;color:var(--muted);line-height:1.55;margin-top:6px">'+meta+'</div>'
     +'<div style="font-size:10.5px;color:var(--muted);line-height:1.55;margin-top:3px">'+escapeHtml(t('2＝','2 = ')+cssLvDesc(2))+'<br>'+escapeHtml(t('3＝','3 = ')+cssLvDesc(3))+'</div>';
 }
+/* v1114：良いところの根拠の下の 1 行（何があれば強み・安定になるか） */
+function cssGoodHintHtml(x){
+  var nm=cssDefName(x.d), txt;
+  if(x.kind==='near') txt=t('3（模範）があと '+x.need+' つで、「'+nm+'」が強みになります', x.need+' more at 3 (role model) and "'+nm+'" becomes a strength');
+  else if(x.kind==='steady') txt=t('3（模範）が '+x.need+' つになると、「'+nm+'」が強みになります', 'With '+x.need+' at 3 (role model), "'+nm+'" becomes a strength');
+  else txt=t('2（継続してできる）に届いていない項目があと '+x.need+' つ。すべて 2 以上になると「安定してできる」になります', x.need+(x.need===1 ? ' item is' : ' items are')+' below 2 (consistently). Once all are at 2 or above, this area becomes "Steady"');
+  return '<div style="background:var(--accent-soft,#fceee4);border-radius:10px;padding:9px 10px;margin-top:8px;display:flex;gap:8px;align-items:flex-start"><i class="ti ti-trending-up" aria-hidden="true" style="font-size:18px;color:#b4501a;flex:0 0 auto;margin-top:1px"></i><span style="font-size:12.5px;font-weight:700;line-height:1.5;color:var(--tm)">'+escapeHtml(txt)+'</span></div>';
+}
 var _cssSeq=0;
-function cssBadgeHtml(u, x, on){
+function cssBadgeHtml(u, x, on, self){
   return '<button type="button" data-u="'+u+'" data-s="'+escapeHtml(x.d.id)+'" aria-pressed="'+(on ? 'true' : 'false')+'" aria-controls="'+u+'-ev" onclick="cssSel(this)"'
-    +' style="font-family:inherit;background:var(--surface,#fff);border:'+(on ? '2px solid var(--tm,#211b15)' : '1px solid var(--border,#ece6dd)')+';border-radius:14px;padding:10px 4px 8px;min-height:104px;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;color:var(--tm,#211b15)">'
-    +cssIconHtml(x.d, 56)+'<span style="font-size:12.5px;font-weight:800;line-height:1.3;text-align:center">'+escapeHtml(cssDefName(x.d))+'</span></button>';
+    +' style="font-family:inherit;background:var(--surface,#fff);border:'+(on ? '2px solid var(--tm,#211b15)' : '1px solid var(--border,#ece6dd)')+';border-radius:14px;padding:10px 4px 8px;min-height:'+(x.kind ? 118 : 104)+'px;min-width:0;display:flex;flex-direction:column;align-items:center;gap:6px;cursor:pointer;color:var(--tm,#211b15)">'
+    +cssIconHtml(x.d, 56)+'<span style="font-size:12.5px;font-weight:800;line-height:1.3;text-align:center">'+escapeHtml(cssDefName(x.d))+'</span>'
+    +(x.kind ? '<span style="font-size:10.5px;font-weight:700;line-height:1.3;text-align:center;color:#b4501a">'+escapeHtml(cssGoodKind(x, self))+'</span>' : '')+'</button>';   /* v1114：良いところは言い方（もう少しで強み など）を下に */
+}
+/* v1114：タイプ（バランサー・伸び盛り）の帯。いちばん上のタイプを大きく、2 つ目は小さな札で */
+function cssTypeBannerHtml(R, self){
+  var T=(R.good && R.good.types) || []; if(!T.length) return '';
+  var P=T[0], part=(R.state==='partial');
+  var sent=(P.k==='bal') ? t('幅広い分野を安定してこなせる、チームの土台になる人','Steady across a wide range of areas — a foundation for the team')
+    : t('前回の評価から、総合点が ＋'+cscN(P.d)+' 点上がっている人', 'Total score up +'+cscN(P.d)+' pt since the last evaluation');
+  var sub=(P.k==='bal') ? t(P.judged+' 分野のうち '+P.ok+' 分野で、すべての項目が 2（継続してできる）以上'+(part ? '（採点が終わった分野のうち）' : ''), 'All items at 2 (consistently) or above in '+P.ok+' of '+P.judged+' areas'+(part ? ' (of the areas fully scored)' : ''))
+    : t('Career Score の履歴で前回の評価と比べています（'+cscN(P.prev)+' → '+cscN(P.score)+' 点'+(P.date ? '・'+P.date : '')+'）', 'Compared with the previous evaluation in the Career Score history ('+cscN(P.prev)+' → '+cscN(P.score)+' pt'+(P.date ? ', '+P.date : '')+')');
+  /* 2 つ目のタイプは帯の下に 1 行（狭い画面でも折り返しで崩れないように、札ではなく行） */
+  var more=T.slice(1).map(function(ty){ return '<div style="display:flex;align-items:center;gap:10px;border-top:1px solid rgba(180,80,26,.22);padding-top:10px"><span aria-hidden="true" style="flex:0 0 auto;width:30px;height:30px;border-radius:15px;background:#b4501a;color:#fff;display:flex;align-items:center;justify-content:center"><i class="ti '+CSS_TYPE_IC[ty.k]+'" style="font-size:17px"></i></span><span style="min-width:0;font-size:13px;line-height:1.45"><b>'+escapeHtml(cssTypeName(ty))+'</b> '+escapeHtml(cssTypeSub(ty))+'</span></div>'; }).join('');
+  return '<div style="background:var(--accent-soft,#fceee4);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px"><div style="display:flex;gap:12px;align-items:flex-start">'
+    +'<span aria-hidden="true" style="flex:0 0 auto;width:52px;height:52px;border-radius:26px;background:#b4501a;color:#fff;display:flex;align-items:center;justify-content:center"><i class="ti '+CSS_TYPE_IC[P.k]+'" style="font-size:28px"></i></span>'
+    +'<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px"><div style="font-size:12px;font-weight:700;color:#b4501a">'+(self ? t('あなたのタイプ','Your type') : t('タイプ','Type'))+'</div>'
+    +'<div style="font-size:20px;font-weight:800;line-height:1.2">'+escapeHtml(cssTypeName(P))+'</div>'
+    +'<p style="margin:0;font-size:14.5px;font-weight:800;line-height:1.5">'+escapeHtml(sent)+'</p>'
+    +'<div style="font-size:12px;color:var(--muted);line-height:1.55">'+escapeHtml(sub)+'</div></div></div>'+more+'</div>';
 }
 /* 強みのプロフィール（本人の My ページ・Career Score の画面・成長カルテ）。
    opt.self：本人向けの言い方／opt.V：評価の内訳（csvView の結果。採点の画面では入力中の点）／opt.bdKey：内訳の開き具合を覚える名前
@@ -73762,10 +73909,12 @@ function cssBadgeHtml(u, x, on){
 function cssProfileHtml(e, opt){
   opt=opt||{};
   var R=cssEvaluate(e), u='cssp'+(++_cssSeq), V=opt.V || null, K=opt.bdKey || '', mem=(K && window._cssSelMem && window._cssSelMem[K]) || {};
+  var good=(!R.list.length && cssHasGood(R)), self=!!opt.self;   /* v1114（UI案64）：強みが無い人は「良いところ」 */
+  var ttl=good ? (self ? t('あなたの良いところ','Your good points') : t('良いところ','Good points')) : (self ? t('あなたの強み','Your strengths') : t('強み','Strengths'));
   var grade=(V && typeof csvGradeHtml==='function') ? csvGradeHtml(V) : '';
   var meta=[R.q ? escapeHtml(t(R.q+' の評価', R.q+' evaluation')) : '', R.date ? escapeHtml(t('更新 ', 'Updated ')+R.date) : ''].filter(Boolean).join(' ・ ');
-  var h='<section id="'+u+'"'+(K ? ' data-k="'+escapeHtml(K)+'"' : '')+' aria-label="'+escapeHtml(opt.self ? t('あなたの強み','Your strengths') : t('強み','Strengths'))+'" style="display:flex;flex-direction:column;gap:10px">'
-    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:15px;font-weight:800">'+(opt.self ? t('あなたの強み','Your strengths') : t('強み','Strengths'))+'</span><span style="margin-left:auto;display:inline-flex;gap:4px;flex-wrap:wrap">'+cssTagHtml(R)+'</span></div>'
+  var h='<section id="'+u+'"'+(K ? ' data-k="'+escapeHtml(K)+'"' : '')+' aria-label="'+escapeHtml(ttl)+'" style="display:flex;flex-direction:column;gap:10px">'
+    +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:15px;font-weight:800">'+escapeHtml(ttl)+'</span><span style="margin-left:auto;display:inline-flex;gap:4px;flex-wrap:wrap">'+cssTagHtml(R)+'</span></div>'
     +((grade || meta) ? '<div style="font-size:11.5px;color:var(--muted);line-height:1.5;display:flex;align-items:center;gap:6px;flex-wrap:wrap">'+grade+(grade && meta ? '<span>・</span>' : '')+'<span>'+meta+'</span></div>' : '');
   if(R.state==='none'){
     h+='<div style="font-size:13px;line-height:1.55">'+(R.kind==='office' ? t('オフィス用 Career Score の確定した評価がまだありません。確定すると、確認できた強みがここに出ます。','There is no confirmed office Career Score yet. Once it is confirmed, the strengths it shows appear here.') : t('まだ評価がありません。評価が入ると、確認できた強みがここに出ます。','Not evaluated yet. Once there is an evaluation, the strengths it shows appear here.'))+'</div>';
@@ -73774,6 +73923,22 @@ function cssProfileHtml(e, opt){
   } else if(R.state==='few'){
     h+=cssCheckingHtml(R.fewRule ? t('強みの決まり（根拠の項目が '+R.rule.minItems+' つ以上）に届く分野が、この評価表にはありません。決まりは GM・CEO が変えられます。','No area on this sheet has as many evidence items as the strength rule asks ('+R.rule.minItems+' or more). GM or CEO can change the rule.')
       : t('この評価表は分野ごとの項目が少ないため、強みを判定していません。','This evaluation sheet has too few items per area to judge strengths.'));
+  } else if(good){
+    /* v1114（UI案64）：タイプ（バランサー・伸び盛り）→ とくに光っているところ（押すと根拠と、強みまでに足りないもの）→ 一文 */
+    var GL=R.good.list, gsel=GL.filter(function(x){ return x.d.id===mem.s; })[0] || GL[0];
+    h+=cssTypeBannerHtml(R, self);
+    if(GL.length){
+      h+='<div style="font-size:13px;font-weight:800">'+(R.state==='partial' ? t('現時点で確認できている良いところ', self ? 'Where you shine so far' : 'Where they shine so far') : t('とくに光っているところ', self ? 'Where you shine' : 'Where they shine'))+'</div>';
+      h+='<div role="group" aria-label="'+escapeHtml(t('良いところ（押すと根拠が出ます）','Good points (press to see why)'))+'" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;max-width:480px">'+GL.map(function(x){ return cssBadgeHtml(u, x, x===gsel, self); }).join('')+'</div>';
+      if(!R.good.types.some(function(ty){ return ty.k==='bal'; })) h+='<p style="margin:0;font-size:15px;font-weight:800;line-height:1.5">'+escapeHtml(cssGoodSentence(R, self))+'</p>';
+    }
+    if(R.state==='partial') h+='<div style="font-size:11.5px;color:var(--muted);line-height:1.55">'+escapeHtml(t('採点していない項目が '+R.un+' あります。評価が終わると、ほかの分野も判定します（採点していない項目を 0 点や推測で埋めません）。', R.un+' items are not scored yet. Other areas are judged once the evaluation is complete (unscored items are never filled with 0 or a guess).'))+'</div>';
+    else if(!GL.length) h+='<div style="font-size:11.5px;color:var(--muted);line-height:1.55">'+escapeHtml(t('分野ごとの良いところは、評価が進むと出ます。','Good points by area appear as the evaluation progresses.'))+'</div>';
+    if(GL.length){
+      h+='<div id="'+u+'-ev" aria-live="polite" style="background:var(--surface2,#f7f3ee);border-radius:12px;padding:12px">'+cssEvHtml(R, gsel, self)+'</div>';
+      h+=GL.map(function(x){ return '<template id="'+u+'-t-'+escapeHtml(x.d.id)+'">'+cssEvHtml(R, x, self)+'</template>'; }).join('');
+    }
+    h+='<div style="font-size:11px;color:var(--muted);line-height:1.55">'+escapeHtml(t('強みの決まりに届く分野がまだ無いので、良いところを出しています。表示だけで、点・基準点・賞与・昇格は変わりません。','No area meets the strength rule yet, so good points are shown instead. Display only — points, the base, bonuses and promotion do not change.'))+'</div>';
   } else if(!R.list.length){
     h+=cssCheckingHtml(R.state==='partial'
       ? t('採点していない項目が '+R.un+' あります。評価が終わると、ほかの分野も判定します（採点していない項目を 0 点や推測で埋めません）。', R.un+' items are not scored yet. Other areas are judged once the evaluation is complete (unscored items are never filled with 0 or a guess).')
@@ -73838,6 +74003,7 @@ function cssStripHtml(e, R){
   var card=function(x){ return '<span role="listitem" style="display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 5px;border-radius:12px;background:var(--surface,#fff);border:1px solid var(--border);min-height:46px;box-sizing:border-box;max-width:100%">'+cssIconHtml(x.d, 36)+'<span style="font-size:12.5px;font-weight:800;line-height:1.3;min-width:0">'+escapeHtml(cssDefName(x.d))+'</span></span>'; };
   if(R.list.length) return '<div style="margin-top:10px"><div role="list" aria-label="'+escapeHtml(t('強み','Strengths'))+'" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+R.list.map(card).join('')+'</div>'
     +(R.state==='partial' ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">'+t('現時点で確認できた強み','Confirmed so far')+'</div>' : '')+'</div>';
+  if(cssHasGood(R)) return cssGoodStripHtml(R);   /* v1114（UI案64）：強みが無い人は「良いところ」 */
   var msg=(R.state==='none') ? t('まだ評価がありません','Not evaluated yet') : t('得意分野を確認中','Strengths being confirmed');
   if(R.state==='set') msg+=t('（評価項目が入れ替わっています）',' (the items have changed)');
   else if(R.state==='partial') msg+=t('（採点していない項目 '+R.un+'）',' ('+R.un+' items not scored)');
@@ -73845,15 +74011,43 @@ function cssStripHtml(e, R){
   else if(R.state==='few') msg+=R.fewRule ? t('（決まりの根拠の数に届く分野がありません）',' (no area has as many items as the rule asks)') : t('（評価表の項目が少ないため判定していません）',' (too few items to judge)');
   return '<div style="font-size:12.5px;color:var(--tm);background:var(--surface2,#f7f3ee);border-radius:10px;padding:8px 10px;margin-top:8px">'+escapeHtml(msg)+'</div>';
 }
+/* v1114（UI案64）：一覧のカードの「良いところ」。タイプの札（バランサー・伸び盛り）と、分野のカード（言い方つき）。押せない（「詳細」から開く） */
+function cssGoodStripHtml(R){
+  var G=R.good;
+  var pill=function(ty){ return '<span role="listitem" style="display:inline-flex;align-items:center;gap:8px;padding:5px 14px 5px 5px;border-radius:20px;background:#b4501a;color:#fff;min-height:38px;box-sizing:border-box;max-width:100%"><span aria-hidden="true" style="width:28px;height:28px;border-radius:14px;background:#fff;color:#b4501a;display:flex;align-items:center;justify-content:center;flex:0 0 auto"><i class="ti '+CSS_TYPE_IC[ty.k]+'" style="font-size:17px"></i></span><span style="font-size:13px;font-weight:800;white-space:nowrap;flex:0 0 auto">'+escapeHtml(cssTypeName(ty))+'</span><span style="font-size:12px;font-weight:600;min-width:0;line-height:1.35">'+escapeHtml(cssTypeSub(ty))+'</span></span>'; };   /* 狭い画面でもタイプ名は折り返さない（説明だけ折り返す） */
+  var card=function(x){ return '<span role="listitem" style="display:inline-flex;align-items:center;gap:8px;padding:5px 12px 5px 5px;border-radius:12px;background:var(--surface,#fff);border:1px solid var(--border);min-height:52px;box-sizing:border-box;max-width:100%">'+cssIconHtml(x.d, 36)+'<span style="display:flex;flex-direction:column;gap:1px;min-width:0"><span style="font-size:12.5px;font-weight:800;line-height:1.3">'+escapeHtml(cssDefName(x.d))+'</span><span style="font-size:11px;font-weight:700;line-height:1.3;color:#b4501a">'+escapeHtml(cssGoodSub(x))+'</span></span></span>'; };
+  return '<div style="margin-top:10px;display:flex;flex-direction:column;gap:6px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span style="font-size:12.5px;font-weight:800;color:#b4501a">'+t('良いところ','Good points')+'</span>'
+    +(G.types.length ? '<span role="list" aria-label="'+escapeHtml(t('タイプ','Type'))+'" style="display:inline-flex;gap:6px;flex-wrap:wrap;max-width:100%">'+G.types.map(pill).join('')+'</span>' : '')+'</div>'
+    +(G.list.length ? '<div role="list" aria-label="'+escapeHtml(t('良いところ','Good points'))+'" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+G.list.map(card).join('')+'</div>' : '')
+    +(R.state==='partial' ? '<div style="font-size:11.5px;color:var(--muted)">'+escapeHtml(t('現時点で確認できた良いところ（採点していない項目 '+R.un+'）','Confirmed so far ('+R.un+' items not scored)'))+'</div>' : '')+'</div>';
+}
 /* 成長カルテのタイル用：大きな字は強みの短い言い方（2 つまで）、小さな字は点（内訳） */
 function cssTileVal(R){
   /* v1113（Moto さん 10/29「やめます」）：「ほか N」をやめて、当たった強みを全部出す（成長カルテのタイル）。
      短い名前に「・」を含むもの（在庫・原価 など）があるので、日本語の区切りは「、」 */
   if(R.list.length) return R.list.map(function(x){ return cssDefShort(x.d); }).join(curLang==='en' ? ' · ' : '、');
+  if(cssHasGood(R)) return cssGoodTile(R).val;   /* v1114（UI案64）：強みが無い人は良いところ */
   return (R.state==='none') ? t('未評価','Not evaluated') : t('確認中','Checking');
+}
+/* v1114：タイルの良いところ。大きな字＝バランサーならタイプ名、そうでなければ一番上の言い方の分野（2 つまで）。小さな字＝言い方と伸び盛り */
+function cssGoodTile(R){
+  var G=R.good, sep=(curLang==='en') ? ' · ' : '、', L=G.list, k=L.length ? L[0].kind : '', same=L.filter(function(x){ return x.kind===k; }).slice(0, 2);
+  var names=same.map(function(x){ return cssDefShort(x.d); }).join(sep), bal=G.types.filter(function(ty){ return ty.k==='bal'; })[0], gr=G.types.filter(function(ty){ return ty.k==='grow'; })[0];
+  var val, arr=null, note=[], keep=-1;
+  if(bal){ val=cssTypeName(bal); if(names) note.push(cssGoodKind(L[0])+t('：',': ')+names); }
+  else if(names){ val=names; arr=same.map(function(x){ return cssDefShort(x.d); }); note.push(cssGoodKind(L[0])); }
+  else val=gr ? cssTypeName(gr) : t('確認中','Checking');
+  if(gr){ if(bal || names){ keep=note.length; note.push(cssTypeName(gr)+' '+t('＋'+cscN(gr.d)+' 点','+'+cscN(gr.d)+' pt')); } else note.push(cssTypeSub(gr)); }
+  return {val:val, arr:arr, parts:note, keep:keep, note:note.join(' ・ ')};
 }
 /* タイルの大きな字。3 つ以上は小さな字にして、名前の途中では折り返さない（タイルが大きくなりすぎないように） */
 function cssTileValHtml(R){
+  if(!R.list.length && cssHasGood(R)){   /* v1114：分野の名前・「伸び盛り ＋N 点」は途中で折り返さない */
+    var T=cssGoodTile(R), sp=(curLang==='en') ? ' · ' : '、';
+    var big=T.arr ? T.arr.map(function(n, i){ return '<span style="white-space:nowrap">'+escapeHtml(n)+(i<T.arr.length-1 ? sp : '')+'</span>'; }).join('<wbr>') : escapeHtml(T.val);
+    var small=T.parts.map(function(x, i){ return (i===T.keep) ? '<span style="white-space:nowrap">'+escapeHtml(x)+'</span>' : escapeHtml(x); }).join(' ・ ');
+    return big+(small ? '<span style="display:block;font-size:11px;font-weight:700;line-height:1.45;margin-top:3px;color:#b4501a">'+small+'</span>' : '');
+  }
   if(R.list.length<=2) return escapeHtml(cssTileVal(R));
   var sep=(curLang==='en') ? ' · ' : '、';
   return '<span style="display:block;font-size:13px;line-height:1.45">'+R.list.map(function(x, i){ return '<span style="white-space:nowrap">'+escapeHtml(cssDefShort(x.d))+(i<R.list.length-1 ? sep : '')+'</span>'; }).join('<wbr>')+'</span>';
@@ -73877,6 +74071,7 @@ function openCssRuleModal(){
       +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px">'+t('3（模範）の数','Items at 3 (role model)')+'<select id="css-r-top" class="form-input" style="min-height:44px">'+opt('half', R.top, t('半分以上（初期値）','Half or more (default)'))+opt('one', R.top, t('1 つ以上（出やすい）','At least one (shows more)'))+opt('all', R.top, t('すべて（出にくい）','All (shows fewer)'))+'</select></label>'
     +'</div>'
     +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:6px">'+t('根拠の項目を 5 つ以上にすると、経理・調理（1 軸 4 項目）では強みが出ません。6 つにすると、オフィス用（1 カテゴリー 5 項目）でも出ません。','With 5 or more evidence items, accounting and culinary sheets (4 items per axis) show no strengths; with 6, the office sheet (5 items per category) shows none either.')+'</div>'
+    +cssGoodRuleHtml(R, opt)   /* v1114（UI案64）：強みが無い人の「良いところ」 */
     +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px;margin-top:8px">'+t('理由（任意）','Reason (optional)')+'<input id="css-r-why" class="form-input" style="min-height:44px" maxlength="200"></label>'
     +'<div style="font-size:11.5px;color:var(--muted);margin-top:6px">'+(R.set ? escapeHtml(t('今の決まり：'+cssRuleTxt(R)+'（'+R.at+' '+R.by+'）', 'Current: '+cssRuleTxt(R)+' ('+R.at+' '+R.by+')')) : escapeHtml(t('今の決まり：初期値（設定案）＝'+cssRuleTxt(R), 'Current: the default (proposed) = '+cssRuleTxt(R))))+'</div>'
     +'<details style="margin-top:10px"><summary style="min-height:44px;display:flex;align-items:center;font-size:12.5px;font-weight:700;cursor:pointer">'+t('強みの対応表（'+CS_STRENGTHS.length+'）','The strength table ('+CS_STRENGTHS.length+')')+'</summary><div style="max-height:46vh;overflow-y:auto">'+map+'</div></details>'
@@ -73884,14 +74079,34 @@ function openCssRuleModal(){
     +(R.set ? '<button class="btn btn-secondary" onclick="cssSaveRule(true)">'+t('初期値に戻す','Back to the default')+'</button>' : '')
     +'<button class="btn btn-primary" onclick="cssSaveRule(false)"><i class="ti ti-device-floppy"></i> '+t('保存','Save')+'</button></div>');
 }
+/* v1114（UI案64）：「強みの決まり」の中の、良いところの決まり（出す・バランサーの割合・伸び盛り） */
+function cssGoodRuleHtml(R, opt){
+  var row=function(n, rule){ return '<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--border)"><span style="flex:0 0 132px;font-size:12px;font-weight:800;color:#b4501a">'+escapeHtml(n)+'</span><span style="flex:1;min-width:0;font-size:12px;line-height:1.55">'+escapeHtml(rule)+'</span></div>'; };
+  var chk=function(id, on, label){ return '<label style="display:flex;align-items:center;gap:10px;min-height:44px;font-size:13px;font-weight:700;cursor:pointer"><input type="checkbox" id="'+id+'"'+(on ? ' checked' : '')+' style="width:20px;height:20px;accent-color:#b4501a;margin:0;flex:0 0 auto">'+escapeHtml(label)+'</label>'; };
+  return '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px">'
+    +'<div style="font-size:14px;font-weight:800">'+t('強みが無い人の「良いところ」','Good points for people with no strength yet')+'</div>'
+    +chk('css-r-good', R.good, t('強みに当たる分野が無い人に「良いところ」を出す','Show good points for people with no area that meets the strength rule'))
+    +'<div style="font-size:11.5px;font-weight:700;color:var(--muted);margin-top:2px">'+t('分野ごとの言い方（強みと同じ分野・同じアイコン）','How each area is described (same areas and icons as strengths)')+'</div>'
+    +row(t('もう少しで強み','Almost a strength'), t('根拠の項目がすべて 2 以上で、3（模範）が 1 つ以上。強みまでに足りない 3 の数を「あと N」で出す','All evidence items at 2 or above, with at least one at 3. Shows how many more at 3 are needed ("N more at 3")'))
+    +row(t('安定してできる','Steady'), t('根拠の項目がすべて 2（継続してできる・期待レベル）以上','All evidence items at 2 (consistently, the expected level) or above'))
+    +row(t('この人の中で高い','Their best area'), t('上の 2 つが 1 つも無いとき、平均がほかの分野より高いものを 2 つまで。2 に届いていない項目の数を「あと N 項目で安定」で出す','Only when neither of the above exists: up to 2 areas whose average is above the others. Shows how many items are below 2 ("N items to steady")'))
+    +'<div style="font-size:11px;color:var(--muted);line-height:1.6;margin-top:4px">'+t('出すのは 3 つまで（上の順）。採点していない項目がある分野は使いません（0 点や推測で埋めません）。経理・調理は 8 つの軸、オフィス用は 7 つの区分で、同じ決まりで判定します。','Up to 3 are shown, in the order above. Areas with unscored items are not used (never filled with 0 or a guess). Accounting and culinary use their 8 axes and the office sheet its 7 categories, with the same rule.')+'</div>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:8px">'
+      +'<label class="form-label" style="display:flex;flex-direction:column;gap:4px">'+t('バランサー：すべての項目が 2 以上の分野が','Balancer: areas with every item at 2 or above')+'<select id="css-r-bal" class="form-input" style="min-height:44px">'
+        +opt('half', R.bal, t('半分以上','Half or more'))+opt('twothirds', R.bal, t('3 分の 2 以上（初期値）','Two thirds or more (default)'))+opt('eighty', R.bal, t('8 割以上','80% or more'))+opt('all', R.bal, t('すべて','All'))+opt('off', R.bal, t('バランサーを出さない','Do not show Balancer'))+'</select>'
+        +'<span style="font-weight:400;font-size:11px;color:var(--muted);line-height:1.5">'+t('判定した分野が 3 つ以上のときだけ。一文：「幅広い分野を安定してこなせる、チームの土台になる人」','Only when 3 or more areas are judged. Sentence: "Steady across a wide range of areas — a foundation for the team"')+'</span></label>'
+      +'<div style="display:flex;flex-direction:column;gap:2px">'+chk('css-r-grow', R.grow, t('伸び盛り：前回の評価より総合点が上がった人に出す','On the rise: show when the total is up from the previous evaluation'))
+        +'<span style="font-size:11px;color:var(--muted);line-height:1.5">'+t('Career Score の履歴で、前回も今回も採点していない項目が 0 の記録どうし（同じ満点）を比べます（v1114 から記録）。オフィス用には出しません。','Compares Career Score history entries where neither evaluation had unscored items (same maximum; recorded from v1114). Not shown for the office sheet.')+'</span></div>'
+    +'</div></div>';
+}
 function cssSaveRuleRec(vals, why, at0, reset){
   var all=ls('cs_strength_rule', null); all=(all && typeof all==='object' && !Array.isArray(all)) ? JSON.parse(JSON.stringify(all)) : {};
   var prev=all.rule, ok=(prev && typeof prev==='object'), curAt=(ok && Number(prev._at)) || 0, had=(ok && !prev.reset && !prev._deleted);
   if((Number(at0)||0)!==curAt) return {ok:false, conflict:true};
   var now=(typeof kevNow==='function') ? kevNow() : new Date().toISOString(), me=(typeof kevMe==='function') ? kevMe() : (curUserName||'');
   var hist=(ok && Array.isArray(prev.hist)) ? prev.hist.slice(-19) : [];
-  hist.push({before:had ? {minItems:prev.minItems, top:prev.top} : null, why:String(why||'').slice(0, 200), at:now, by:me, reset:!!reset});
-  var rec=reset ? {reset:true} : {minItems:vals.minItems, top:vals.top};
+  hist.push({before:had ? {minItems:prev.minItems, top:prev.top, good:prev.good, bal:prev.bal, grow:prev.grow} : null, why:String(why||'').slice(0, 200), at:now, by:me, reset:!!reset});
+  var rec=reset ? {reset:true} : {minItems:vals.minItems, top:vals.top, good:vals.good!==false, bal:(CSS_BALS.indexOf(vals.bal)>=0) ? vals.bal : CSS_GOOD_DEFAULT.bal, grow:vals.grow!==false};   /* v1114：良いところの欄 */
   rec.hist=hist; rec.at=now; rec.by=me; rec._at=Math.max(Date.now(), curAt+1);
   all.rule=rec;
   if(lsSet('cs_strength_rule', all)===false) return {ok:false};
@@ -73901,10 +74116,12 @@ function cssSaveRuleRec(vals, why, at0, reset){
 function cssSaveRule(reset){
   if(!cssCanEditRule()){ showToast(t('変えられるのは GM・CEO です','Only GM or CEO can change this'),'warning'); return false; }
   var mi=parseInt((document.getElementById('css-r-min')||{}).value, 10), tp=String((document.getElementById('css-r-top')||{}).value||'');
-  if(!reset && (!(mi>=3 && mi<=6) || CSS_TOPS.indexOf(tp)<0)){ showToast(t('選び直してください','Please choose again'),'warning'); return false; }
+  var gEl=document.getElementById('css-r-good'), wEl=document.getElementById('css-r-grow'), bl=String((document.getElementById('css-r-bal')||{}).value||CSS_GOOD_DEFAULT.bal);   /* v1114 */
+  var gd=gEl ? !!gEl.checked : CSS_GOOD_DEFAULT.good, gw=wEl ? !!wEl.checked : CSS_GOOD_DEFAULT.grow;
+  if(!reset && (!(mi>=3 && mi<=6) || CSS_TOPS.indexOf(tp)<0 || CSS_BALS.indexOf(bl)<0)){ showToast(t('選び直してください','Please choose again'),'warning'); return false; }
   var why=String((document.getElementById('css-r-why')||{}).value||'').trim(), at0=window._cssRuleAt0;
   var go=function(){
-    var r=cssSaveRuleRec({minItems:mi, top:tp}, why, at0, reset);
+    var r=cssSaveRuleRec({minItems:mi, top:tp, good:gd, bal:bl, grow:gw}, why, at0, reset);
     if(r.conflict){ showToast(t('ほかの端末で決まりが変わっていました。開き直してから変えてください','The rule was changed on another device. Open it again before changing it'),'warning'); closeModalDirect(); return false; }
     if(!r.ok){ showToast(t('保存できませんでした','Could not save'),'danger'); return false; }
     showToast(reset ? t('初期値に戻しました','Back to the default') : t('保存しました（表示だけが変わります）','Saved (only the display changes)'),'success');
@@ -73936,7 +74153,7 @@ function cssPtsTxt(V){
 function cssRuleBarHtml(){
   if(!cssCanEditRule()) return '';
   var R=cssRule();
-  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:0 2px 10px"><i class="ti ti-sparkles" aria-hidden="true" style="color:var(--accent)"></i><span>'+escapeHtml(t('強みの決まり（表示だけ）：','Strength rule (display only): ')+cssRuleTxt(R)+(R.set ? '' : t('（初期値・設定案）',' (default, proposed)')))+'</span><button class="btn btn-secondary btn-sm" style="min-height:44px" onclick="openCssRuleModal()">'+t('変える','Change')+'</button></div>';
+  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin:0 2px 10px"><i class="ti ti-sparkles" aria-hidden="true" style="color:var(--accent)"></i><span>'+escapeHtml(t('強みの決まり（表示だけ）：','Strength rule (display only): ')+cssRuleTxt(R)+(R.set ? '' : t('（初期値・設定案）',' (default, proposed)'))+t(' ・ 強みが無い人の良いところ：',' · Good points for people with no strength: ')+(R.good ? t('出す','shown') : t('出さない','hidden')))+'</span><button class="btn btn-secondary btn-sm" style="min-height:44px" onclick="openCssRuleModal()">'+t('変える','Change')+'</button></div>';
 }
 /* FUNERGY_CS_STRENGTH_END */
 /* FUNERGY_SPECIALIST_CAREER_BEGIN */
@@ -74764,6 +74981,7 @@ function approveLssScoreRequest(id){
   if (lssScoreSetNg(r)) { showToast(t('評価項目が入れ替わっています。申請しなおしてください','The item set changed — ask for a new request'),'warning'); return; }
   var rec = getLssScores(r.name) || {};
   var _ps0 = lssSummary(r.name), prevPct = _ps0.totalPct;
+  var _un0 = (typeof cssUnOf==='function' && rec.scores) ? cssUnOf(r.name, rec.scores) : null;   /* v1114：採点していない項目の数（伸び盛りの比べ方。前に記録が無ければ null） */
   /* ★いま入っている点に、差分だけを当てる。
      差分に入っていない項目は触らない＝申請中に別の人が変えた分が残る。 */
   var scores = Object.assign({}, rec.scores||{});
@@ -74778,6 +74996,7 @@ function approveLssScoreRequest(id){
   var entry = { name:r.name, pct:newPct, prevPct:prevPct, score:_ps1.totalScore, max:_ps1.totalMax, prevScore:_ps0.totalScore, prevMax:_ps0.totalMax, by:(r.by||''), approver:me,   /* v1099：点も残す（pct は前の版の端末のため） */
     date: todayJP(), ts: Date.now(), comment:(r.comment||''), items:((r.diff||[]).length) };
   if (r.changeReason) entry.changeReason = r.changeReason;
+  if (typeof cssUnOf==='function') { var _un1 = cssUnOf(r.name, scores); if (_un1 != null) entry.un = _un1; if (_un0 != null) entry.prevUn = _un0; }   /* v1114 */
   hist.push(entry);
   lsSet('lss_history', hist);
   r.status = '承認'; r.approver = me; r.approvedDate = todayJP(); r.decidedAt = Date.now();
@@ -77499,6 +77718,7 @@ function saveLssScores(name) {
   var by = (ROLE_CONFIG[curRole]||{}).name||curUserName;
   var prev = getLssScores(name);
   var _ps0 = prev ? lssSummary(name) : null, prevPct = _ps0 ? _ps0.totalPct : null;
+  var _un0 = (prev && typeof cssUnOf==='function') ? cssUnOf(name, prev.scores) : null;   /* v1114：採点していない項目の数（伸び盛りの比べ方） */
   var changeReason = ((document.getElementById('lss-changereason')||{}).value||'').trim();
   var data = {evaluator:by, date:todayJP(), scores:Object.assign({}, window._lssDraft||{}), comment:(document.getElementById('lss-comment')||{}).value||'', status:'確定'};
   setLssScores(name, data);
@@ -77508,6 +77728,7 @@ function saveLssScores(name) {
   var entry = {name:name, pct:newPct, prevPct:prevPct, score:_ps1.totalScore, max:_ps1.totalMax, by:by, date:data.date, ts:Date.now(), comment:data.comment};   /* v1099：点も残す（pct は前の版の端末のため） */
   if (_ps0) { entry.prevScore = _ps0.totalScore; entry.prevMax = _ps0.totalMax; }
   if (changeReason) entry.changeReason = changeReason;
+  if (typeof cssUnOf==='function') { var _un1 = cssUnOf(name, data.scores); if (_un1 != null) entry.un = _un1; if (_un0 != null) entry.prevUn = _un0; }   /* v1114 */
   h.push(entry);
   lsSet('lss_history', h);
   closeModalDirect();
