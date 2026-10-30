@@ -10,7 +10,10 @@ with h as (
 pair as (
   select a.store_id, a.vendor_key, a.ingredient_code, a.spec_key, a.purchase_unit,
          a.effective_date as d, a.invoice_no_norm as inv, a.price_per_purchase as pp, a.price_per_count as pc, a.count_unit as cu, a.price_per_base as pb, a.base_unit as bu, a.line_id,
-         b.effective_date as prev_d, b.invoice_no_norm as prev_inv, b.price_per_purchase as prev_pp, b.price_per_count as prev_pc, b.price_per_base as prev_pb, b.base_unit as prev_bu
+         b.effective_date as prev_d, b.invoice_no_norm as prev_inv, b.price_per_purchase as prev_pp, b.price_per_count as prev_pc, b.price_per_base as prev_pb, b.base_unit as prev_bu,
+         -- the change shown (chg_pct) and the order of the 80 rows use the same price: per base unit when both have the same base unit
+         100 * (coalesce(case when a.base_unit = b.base_unit then a.price_per_base end, a.price_per_purchase)
+                / nullif(coalesce(case when a.base_unit = b.base_unit then b.price_per_base end, b.price_per_purchase), 0) - 1) as chg
     from h a left join h b on b.store_id = a.store_id and b.vendor_key = a.vendor_key and b.ingredient_code = a.ingredient_code
                           and b.spec_key = a.spec_key and b.purchase_unit = a.purchase_unit and b.rn = 2
    where a.rn = 1
@@ -18,9 +21,9 @@ pair as (
 select pair.store_id, pair.vendor_key, pair.ingredient_code, coalesce(nullif(pair.spec_key, ''), '-') as spec, coalesce(nullif(pair.purchase_unit, ''), '-') as unit,
        pair.prev_d, pair.prev_inv, round(pair.prev_pp, 4) as prev_per_purchase, round(pair.prev_pb, 6) as prev_per_base,
        pair.d, pair.inv, round(pair.pp, 4) as per_purchase, round(pair.pc, 6) as per_count, pair.cu as count_unit, round(pair.pb, 6) as per_base, pair.bu as base_unit,
-       round(100 * (coalesce(case when pair.bu = pair.prev_bu then pair.pb end, pair.pp) / nullif(coalesce(case when pair.bu = pair.prev_bu then pair.prev_pb end, pair.prev_pp), 0) - 1), 1) as chg_pct,
+       round(pair.chg, 1) as chg_pct,
        l.qty, round(l.unit_price, 4) as unit_price, l.amount_cents,
        round(abs(coalesce(l.qty, 0) * coalesce(l.unit_price, 0) * 100 - coalesce(l.amount_cents, 0) - coalesce(l.line_discount_cents, 0)) / 100, 2) as line_check
   from pair left join public.invoice_lines l on l.id = pair.line_id
- order by abs(coalesce(100 * (pair.pp / nullif(pair.prev_pp, 0) - 1), 0)) desc nulls last
+ order by abs(coalesce(pair.chg, 0)) desc nulls last
  limit 80;
