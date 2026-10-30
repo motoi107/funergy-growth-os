@@ -2760,22 +2760,16 @@ async function syncMenuFromToast(storeId, guid, period) {
   setRecipes(recipes);
   // 3) 出数を menu_mix に反映（この店舗の GUID→recipeId のみ）
   var sales = await fetchToastItemSales(guid, period);
-  var mixUpdated = 0;
+  var mixUpdated = 0, mixLastDay = null, mixTodayRows = 0;
   if (sales && sales.length) {
-    var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-    var byGuid = {}; getRecipes().forEach(r=>{ if(r.toastGuid && r.storeId===storeId) byGuid[r.toastGuid]=r.id; });
-    var totalSales = 0;
-    sales.forEach(s => {
-      var g = s.item_guid || s.guid;
-      var rid = byGuid[g];
-      if (rid && s.qty!=null) { mix.items[rid] = Number(s.qty); mixUpdated++; }
-    });
-    var storeRecipes = getRecipes().filter(r=>recipeInStore(r, storeId));
-    storeRecipes.forEach(r=>{ var q=parseFloat(mix.items[r.id])||0; totalSales += q*(r.price||0); });
-    mix.sales = totalSales; mix.savedAt = nowJP(); mix.toastSrc = true;
-    setMenuMix(storeId, period, mix);
+    /* v1124：ログインの読み込みと同じ決まり（日別の行は足す・ハワイ時間の昨日まで・共通レシピも）。前は日別の行を 1 行ずつ代入していた */
+    var _mx = menuMixFromSales(storeId, sales, (typeof bizToday==='function' ? bizToday() : ''));
+    mixUpdated = Object.keys(_mx.acc).length;
+    menuMixApply(storeId, period, _mx.acc);
+    mixLastDay = _mx.hasDaily && _mx.days.length ? _mx.days[_mx.days.length-1] : null;
+    mixTodayRows = _mx.todayRows;
   }
-  return { added, updated, gone:goneCount, items:items.length, mixUpdated };
+  return { added, updated, gone:goneCount, items:items.length, mixUpdated, mixLastDay, mixTodayRows };
 }
 async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   if (!guid) return { error: 'GUID未設定' };
@@ -30466,47 +30460,59 @@ async function openMenuMixDiag(storeId, period){
     +'・<b>取り込み直す</b>＝クラウドに入っている分をこの端末へ読み直します（Toastには接続しません）。<br>'
     +'・<b>31日分を再取り込み</b>＝Toastから取得してクラウドへ入れ直します。<b>実データの範囲が短いときはこちら</b>を実行してください。</div>');
 }
+/* v1124（10/30 の依頼 ⑦ の 1 段目）：Toast の出数の行 → レシピごとの出数。Toast 同期（syncMenuFromToast）とログイン・月の読み込み（loadMenuMixFromDB）で同じ決まり。
+   ・日別の行（business_date あり）が 1 件でもあれば日別だけ（月次の集計行と足さない・v739）。同じ商品の行は足す（v698）。
+     前は Toast 同期だけ「代入」で、日別の行の最後の 1 日の数しか残らなかった（出数が少なく出る・ログインで直り、同期でまた崩れる）。
+   ・日別のときは、ハワイ時間の昨日まで（今日の途中の数を月の出数に混ぜない）。月次の集計行だけのときはそのまま。
+   ・店舗専用のレシピを優先し、共通のレシピ（Totoya 共通・全店共通）は同じ GUID が無いときだけ（v737）。 */
+function menuMixFromSales(storeId, sales, today){
+  var byGuid={}, ownGuid={};
+  getRecipes().forEach(function(r){ if(r && r.toastGuid && r.storeId===storeId){ byGuid[r.toastGuid]=r.id; ownGuid[r.toastGuid]=1; } });
+  getRecipes().forEach(function(r){ if(!r || !r.toastGuid || ownGuid[r.toastGuid]) return; if(recipeInStore(r, storeId)) byGuid[r.toastGuid]=r.id; });
+  var all = Array.isArray(sales) ? sales.filter(function(x){ return !!x; }) : [];
+  var hasDaily = all.some(function(x){ return x.business_date||x.date; });
+  var cut = String(today||'');
+  var rows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return d && (!cut || d < cut); }) : all;
+  var acc={}, unmatched={}, days={};
+  rows.forEach(function(x){
+    var g=x.item_guid||x.guid, rid=byGuid[g];
+    if(rid && x.qty!=null && isFinite(Number(x.qty))) acc[rid]=(acc[rid]||0)+Number(x.qty);
+    if(g && !rid) unmatched[g]=(x.item_name||g);
+    var d=x.business_date||x.date; if(d) days[String(d).slice(0,10)]=1;
+  });
+  var todayRows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return cut && d >= cut; }).length : 0;
+  return { acc:acc, rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows,
+    skippedMonthly:(hasDaily ? all.filter(function(x){ return !(x.business_date||x.date); }).length : 0) };
+}
+function menuMixDayLabel(d){ var p=String(d||'').split('-'); return p.length===3 ? (parseInt(p[1],10)+'/'+parseInt(p[2],10)) : String(d||''); }
+/* 「10/29まで（ハワイ時間の昨日まで）」。今月なら今日の分を入れないことも書く（過去の月は日付だけ） */
+function menuMixUpTo(d){ var cur=(typeof bizToday==='function') ? String(bizToday()).slice(0,7) : ''; return menuMixDayLabel(d)+'まで'+(cur && String(d||'').slice(0,7)===cur ? '（ハワイ時間の昨日まで）' : ''); }
+/* 出数を入れ物に書く。中身（出数・売上）が変わらなければ書かない（ログインのたびに全店の出数を書き直して送っていた）。
+   結べた出数が 1 つも無いとき（月の 1 日・紐づく商品なし）も書かない。 */
+function menuMixApply(storeId, period, acc){
+  if (!acc || !Object.keys(acc).length) return false;
+  var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
+  var before = JSON.stringify(mix.items), salesBefore = Number(mix.sales)||0;
+  Object.keys(acc).forEach(function(rid){ mix.items[rid]=acc[rid]; });
+  var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
+  if (JSON.stringify(mix.items) === before && Math.abs(total - salesBefore) < 0.005 && mix.toastSrc) return false;
+  mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
+  setMenuMix(storeId, period, mix);
+  return true;
+}
 async function loadMenuMixFromDB(storeId, guid, ym, opt){
   if (!guid) return { ok:false, reason:'この店舗のToast GUIDが未設定です' };
   var p=ym.split('-'); var period=p[0]+'.'+String(parseInt(p[1],10));
   var sales = await fetchToastItemSales(guid, period);
   if (!sales || !sales.length) return { ok:false, reason:'クラウドにこの月の出数がありません（夜間同期または店舗別のToast同期が必要）', rows:0 };
-  /* v737【出数が反映されない原因】以前は r.storeId===storeId の完全一致だけを見ていたため、
-     Totoya共通(storeId='TOTOYA')や全店共通(storeId=null)のレシピに出数が付かなかった。
-     すぐ下の売上合計は recipeInStore() を使っており、判定が食い違っていた。
-     店舗専用を優先し、共通レシピは同じGUIDが未使用のときだけ拾う。 */
-  var byGuid={}, ownGuid={};
-  getRecipes().forEach(function(r){
-    if(!r || !r.toastGuid) return;
-    if(r.storeId===storeId){ byGuid[r.toastGuid]=r.id; ownGuid[r.toastGuid]=1; }
-  });
-  getRecipes().forEach(function(r){
-    if(!r || !r.toastGuid || ownGuid[r.toastGuid]) return;
-    if(recipeInStore(r, storeId)) byGuid[r.toastGuid]=r.id;
-  });
-  var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-  /* v739【二重計上の防止】同じ月に「日別行(business_date あり)」と「月次集計行(なし)」が
-     混在することがある（日別移行の途中や、再取り込みで日別を足した直後）。
-     両方を足すと出数が倍になるため、日別行が1件でもあれば日別だけを使う。 */
-  var _hasDaily = sales.some(function(x){ return x && (x.business_date||x.date); });
-  var _rows = _hasDaily ? sales.filter(function(x){ return x && (x.business_date||x.date); }) : sales;
-  /* v698: 同一商品が複数行（日別など）で返る場合、代入だと最後の1行しか残らず出数が少なく出ていた。合計する。 */
-  var _acc={};
-  _rows.forEach(function(s){ var g=s.item_guid||s.guid; var rid=byGuid[g]; if(rid && s.qty!=null) _acc[rid]=(_acc[rid]||0)+Number(s.qty); });
-  Object.keys(_acc).forEach(function(rid){ mix.items[rid]=_acc[rid]; });
-  var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
-  mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
-  setMenuMix(storeId, period, mix);
+  var r = menuMixFromSales(storeId, sales, (typeof bizToday==='function' ? bizToday() : ''));
+  var wrote = menuMixApply(storeId, period, r.acc);
   /* v737: どれだけ反映できたかを返す（黙って何も起きない状態をなくす） */
-  var matched=Object.keys(_acc).length;
-  var unmatched={};
-  _rows.forEach(function(x){ var g=x.item_guid||x.guid; if(g && !byGuid[g]) unmatched[g]=(x.item_name||g); });
-  var _days={}; _rows.forEach(function(x){ var d=x&&(x.business_date||x.date); if(d) _days[String(d).slice(0,10)]=1; });
-  return { ok:true, rows:_rows.length, allRows:sales.length, matched:matched,
-    mode:(_hasDaily?'daily':'monthly'), days:Object.keys(_days).length,
-    skippedMonthly:(_hasDaily?(sales.length-_rows.length):0),
-    unmatchedCount:Object.keys(unmatched).length,
-    unmatchedNames:Object.keys(unmatched).map(function(g){ return unmatched[g]; }).slice(0,5) };
+  return { ok:true, rows:r.rows.length, allRows:r.allRows, matched:Object.keys(r.acc).length,
+    mode:(r.hasDaily?'daily':'monthly'), days:r.days.length, lastDay:(r.days.length ? r.days[r.days.length-1] : null), todayRows:r.todayRows,
+    skippedMonthly:r.skippedMonthly, written:wrote,
+    unmatchedCount:Object.keys(r.unmatched).length,
+    unmatchedNames:Object.keys(r.unmatched).map(function(g){ return r.unmatched[g]; }).slice(0,5) };
 }
 /* Labor(tip_labor)の夜間cron保存は売上(toast_sales)より遅れることがある。
    直近3日（今日・昨日・一昨日）がローカルに無ければToastからライブ取得して補完し、
@@ -40776,7 +40782,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1123';
+const APP_VERSION = '1124';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -82579,7 +82585,8 @@ async function ensureMenuMixLoaded(storeId, period, opt){
   var s = STORES.find(x=>x.id===storeId); if(!s || !s.toastGuid) return;
   var pp = String(period).split('.'); var ym = pp[0]+'-'+String(parseInt(pp[1],10)).padStart(2,'0');
   var fkey = 'menumixloaded_'+storeId+'_'+period;
-  if (isFrozenMonth(ym) && ls(fkey, false)) return;     // 凍結済みは取り直さない
+  /* v1124：「出数を同期」を押したとき（notify）は、凍結した過去の月も読み直す（前は何も出さずに終わっていた） */
+  if (isFrozenMonth(ym) && ls(fkey, false) && !(opt && opt.notify)) return;     // 凍結済みは取り直さない
   try {
     var _r = await loadMenuMixFromDB(storeId, s.toastGuid, ym);
     if (isFrozenMonth(ym)) lsSet(fkey, true);            // 過去月のみ凍結
@@ -82588,7 +82595,7 @@ async function ensureMenuMixLoaded(storeId, period, opt){
       if (!_r || !_r.ok) showToast((_r&&_r.reason)||'出数を取得できませんでした','warning');
       else if (!_r.matched) showToast('クラウドに'+_r.rows+'件ありましたが、メニューと紐づく商品がありませんでした（メニュー同期をお試しください）','warning');
       else showToast(_r.matched+'商品の出数を反映しました'
-        +(_r.mode==='daily'?('（日別 '+_r.days+'日分'+(_r.skippedMonthly?'／月次集計行 '+_r.skippedMonthly+'件は二重計上を避けるため除外':'')+'）'):'（月次集計）')
+        +(_r.mode==='daily'?('（日別 '+_r.days+'日分'+(_r.lastDay?'・'+menuMixUpTo(_r.lastDay):'')+(_r.todayRows?'／今日の分は明日から入ります':'')+(_r.skippedMonthly?'／月次集計行 '+_r.skippedMonthly+'件は二重計上を避けるため除外':'')+'）'):'（月次集計）')
         +(_r.unmatchedCount?('／未紐づけ '+_r.unmatchedCount+'件'):''),'success');
     }
   } catch(e){ console.warn('ensureMenuMixLoaded', e); if(opt&&opt.notify&&typeof showToast==='function') showToast('出数の取得に失敗しました','warning'); }
@@ -82640,7 +82647,8 @@ async function doMenuSync(storeId, period) {
     var r = await syncMenuFromToast(storeId, s.toastGuid, period);
     if (r.error) { showToast('同期エラー: '+r.error,'danger'); return; }
     var msg = `同期完了：商品${r.items}件（新規${r.added}・更新${r.updated}）`;
-    if (r.mixUpdated) msg += ` / 出数${r.mixUpdated}件`;
+    if (r.mixUpdated) msg += ` / 出数${r.mixUpdated}件` + (r.mixLastDay ? `（${menuMixUpTo(r.mixLastDay)}）` : '');
+    else if (r.mixTodayRows) msg += ' / 出数は今日の分だけでした（明日から入ります）';
     if (r.gone) msg += ` / Toast非掲載${r.gone}件`;
     showToast(msg,'success');
     renderPage('menu');
