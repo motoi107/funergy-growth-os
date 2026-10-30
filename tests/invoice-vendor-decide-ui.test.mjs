@@ -40,7 +40,7 @@ function app({ role = 'office', cards = [CARD('v1', 'Sakura Produce', { kind: 'f
     escapeHtml: esc, t: (ja, en) => (c.curLang === 'en' ? en : ja), myName: () => 'Akane', nowJP: () => '2026/10/16 18:00',
     ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), lsSet: (k, v) => { if (c.full) return false; mem[k] = JSON.parse(JSON.stringify(v)); return true; },
     _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null),
-    getVendors: () => c.ls('m_vendors', []), getIngV2: () => [], _setIngV2: () => true,
+    getVendors: () => c.ls('m_vendors', []), vendorsWithDeleted: a => a, getIngV2: () => [], _setIngV2: () => true,
     showToast: (m, k) => c.toasts.push([m, k]),
     openModal: h => { c.modals.push(h); if (/id="ivd-modal"/.test(h)) dom['ivd-modal'] = { innerHTML: '' }; else delete dom['ivd-modal']; },
     closeModalDirect: () => { delete dom['ivd-modal']; },

@@ -28,6 +28,7 @@
   - 足したもの：`supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql`（`invoice_vendor_seed` 1 つ・`db/invoice-intake.sql` も同じ中身に）・入れる一式に `1b_追加のSQL_Invoice取込の候補.sql`。
   - 試験：vendor-master-v1121 23（足した 9 件）・invoice-intake 95・invoice-migrations 6。わざと壊す：直しの 27 通りのうち 25（残り 2 は同じ動き・二重の守り）。直したあとの独立レビューは無し。
 - 次：Codex → #108 → #109 → #110 → この PR。SQL 2 つ（`deploy/vendor-master-v1121/手順.md`）。
+- Codex（PR #111・`acba177`・blocked／manual）：**P2 2**（`vendorSetState` が役割・使用中を確かめない／読んだ姿の無い端末の変えた欄の印がメモリだけで、読み込み直すとクラウドの値に戻る）・**P3 1**（ほかの保存で削除の印が端末から落ちる）→ すべて直した（仕様の 4c・試験 26・足した試験は `acba177` で落ちる）。#108〜#110 の P2 は直して取り込んだ。
 
 ## 2026-10-30 v1120：未登録の打刻検知の漏れ（10/30 の依頼 ④・Claude・ブランチ `claude/punch-detect`・v1119 の上・アプリだけ・本番未反映）
 
