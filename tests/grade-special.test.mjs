@@ -409,10 +409,11 @@ test('review P3: a confirmation left over from another change is not stamped on 
   assert.equal(run(c, `ghAddRecEval('neo', { d:'2026-08-20', g:'G4', from:'G3', start:false, src:'title', mode:'special', reason:'second', spBy:'GM', spAt:'2026/08/20 09:00' }, 'Neo Sample')`), true);
   const h = c.STORE.grade_hist.neo.recs[0];
   assert.deepEqual([h.reason, h.spBy, h.spAt], ['first', 'CEO', '2026/08/20 08:00']);
-  // an evaluation confirmed for the same day and grade later: the record is no longer a special change
-  assert.equal(run(c, `ghAddRecEval('neo', { d:'2026-08-20', g:'G4', from:'G3', start:false, src:'title', prevEval:{ g:'G3', csPct:70 } }, 'Neo Sample')`), true);
+  // an evaluation confirmed for the same day and grade later: the special change stays as it was (v1117, Codex #106 e9e8bc4 P2 —
+  // v1115 turned it into a normal change and dropped the reason, who and when); nothing is written and the save is refused
+  assert.equal(run(c, `ghAddRecEval('neo', { d:'2026-08-20', g:'G4', from:'G3', start:false, src:'title', prevEval:{ g:'G3', csPct:70 } }, 'Neo Sample')`), false);
   const h2 = c.STORE.grade_hist.neo.recs[0];
-  assert.deepEqual([h2.mode, h2.reason, h2.spBy, h2.prevEval.csPct], [undefined, undefined, undefined, 70]);
+  assert.deepEqual([h2.mode, h2.reason, h2.spBy, h2.spAt, h2.prevEval, h2.edBy], ['special', 'first', 'CEO', '2026/08/20 08:00', undefined, undefined]);
   // the history line shows who made the special change, and when
   c.R = { mode: 'special', reason: 'x', by: 'Someone', at: '2026/08/01 10:00', spBy: 'GM', spAt: '2026/08/20 09:00' };
   assert.match(run(c, `ghSpecialHtml(R)`), /2026\/08\/20 09:00 GM<\/span>/);

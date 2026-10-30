@@ -99,6 +99,63 @@ test('a record that is already a special change keeps its first reason; the scre
   assert.deepEqual([r.length, r[0].reason, r[0].spBy, r[0].spAt], [1, 'first', 'CEO', '2026/08/19 10:00']);
 });
 
+test('Codex #106 e9e8bc4 P2 (v1117): a record that is already a special change is not turned into a normal one — the normal change stops before the evaluation, the special change keeps the first reason, who and when', () => {
+  const c = app();   // Ken: Server Leader (G3, Career Score 72) → Store Manager (G4)
+  const SP = { id: 'k1', d: '2026-08-15', g: 'G4', from: 'G3', start: false, src: 'title', by: 'CEO', at: '2026/08/19 10:00', note: '',
+               mode: 'special', reason: 'original', spBy: 'CEO', spAt: '2026/08/19 10:00', track: 'sv' };
+  c.STORE.grade_hist = { ken: { recs: [Object.assign({}, SP)], _at: 1 } };
+  const keep = () => { const r = c.STORE.grade_hist.ken.recs; assert.equal(r.length, 1); return [r[0].mode, r[0].reason, r[0].spBy, r[0].spAt, r[0].track, r[0].prevEval, r[0].edBy]; };
+  const KEPT = ['special', 'original', 'CEO', '2026/08/19 10:00', 'sv', undefined, undefined];
+  run(c, `saveEmp('ken'); window._ghPend.d='2026-08-15';`);
+  assert.notEqual(run(c, `window._ghPend.mode`), 'special', 'the normal change is the default');
+  // the normal change: stopped first (not "confirm the evaluation" — confirming it could never be saved)
+  const stop = run(c, `ghEvalStop(window._ghPend)`);
+  assert.match(stop, /^グレード履歴の 2026\/8\/15 G4 の記録は、もう特例変更（評価なし）です。上の「特例でグレードを変更する」を選ぶと、その記録のまま役職を変えます（理由は前に入れたもののまま）。評価で数える通常の変更にするときは、先に成長カルテのグレード履歴でこの記録を消してください$/);
+  assert.match(run(c, `ghConfirmBtnHtml(window._ghPend)`), /disabled[\s\S]*特例変更の記録です。「特例」を選んでから保存/);
+  assert.match(run(c, `ghEvalPeriodHtml(window._ghPend)`), /もう特例変更（評価なし）です/);
+  const info = run(c, `ghConfirmInfo(window._ghPend)`);
+  assert.match(info, /2026\/8\/15 に G4 になった記録があります（特例変更・評価なし。役職はまだ G3）。「特例でグレードを変更する」を選ぶと、新しい記録は足さず、その記録のまま役職を変えます（理由は前に入れたもののまま）。/);
+  assert.doesNotMatch(info, /その記録に合わせて役職を変えます（この記録はもう特例変更です/, 'no longer says the normal change keeps the reason');
+  run(c, `ghEvalConfirm()`);
+  assert.equal(run(c, `window._ghPend.ev`), null, 'the evaluation is not confirmed');
+  assert.equal(c.TOASTS[c.TOASTS.length - 1], stop);
+  run(c, `ghConfirmSave()`);
+  assert.equal(empOf(c, 'ken').title, 'Server Leader', 'not saved as a normal change');
+  assert.deepEqual(keep(), KEPT);
+  // the special change on the same record: saved, the first reason, who and when stay (the new reason is not used)
+  run(c, `ghSetChangeMode('special'); ghSpecialReason('second');`);
+  assert.equal(run(c, `ghEvalStop(window._ghPend)`), '');
+  run(c, `ghSpecialReview(); ghConfirmGo();`);
+  assert.equal(empOf(c, 'ken').title, 'Store Manager');
+  assert.deepEqual(keep(), KEPT);
+});
+
+test('Codex #106 e9e8bc4 P2 (v1117): if the record became a special change on another device after the screen checked it, the save writes nothing and keeps the special change', () => {
+  const c = app();
+  c.STORE.grade_hist = { ken: { recs: [{ id: 'k1', d: '2026-08-15', g: 'G4', from: 'G3', start: false, src: 'manual' }], _at: 1 } };
+  run(c, `saveEmp('ken'); window._ghPend.d='2026-08-15'; ghEvalConfirm();`);
+  assert.ok(run(c, `window._ghPend.ev`), 'confirmed on a plain record');
+  // another device: the record becomes a special change
+  c.STORE.grade_hist = { ken: { recs: [{ id: 'k1', d: '2026-08-15', g: 'G4', from: 'G3', start: false, src: 'manual', mode: 'special', reason: 'other device', spBy: 'CEO', spAt: '2026/08/20 08:30' }], _at: 2 } };
+  // the screen checks again when saving
+  run(c, `ghConfirmSave()`);
+  assert.equal(empOf(c, 'ken').title, 'Server Leader');
+  assert.match(c.TOASTS[c.TOASTS.length - 1], /もう特例変更（評価なし）です/);
+  // and the record itself is never overwritten, even if the screen check is passed (between the check and the write): all or nothing
+  c.TOASTS.length = 0;
+  run(c, `var __es=ghEvalStop; ghEvalStop=function(){ return ''; }; try{ ghConfirmSave(); } finally { ghEvalStop=__es; }`);
+  assert.equal(empOf(c, 'ken').title, 'Server Leader', 'the title is rolled back with the history');
+  const r = c.STORE.grade_hist.ken.recs;
+  assert.deepEqual([r.length, r[0].mode, r[0].reason, r[0].spBy, r[0].spAt, r[0].prevEval, r[0].edBy], [1, 'special', 'other device', 'CEO', '2026/08/20 08:30', undefined, undefined]);
+  assert.ok(c.TOASTS.some(t => /^保存できませんでした。/.test(t)), c.TOASTS.join(' / '));
+  assert.ok(c.TOASTS.some(t => /2026\/8\/15 G4 の記録は特例変更（評価なし）になっています。評価は記録せず、役職も変えていません/.test(t)), c.TOASTS.join(' / '));
+  // outside the save, too
+  c.TOASTS.length = 0;
+  assert.equal(run(c, `ghAddRecEval('ken', { d:'2026-08-15', g:'G4', from:'G3', start:false, src:'title', prevEval:{ g:'G3', csPct:72 } }, 'Ken Sample')`), false);
+  assert.equal(c.STORE.grade_hist.ken.recs[0].reason, 'other device');
+  assert.match(c.TOASTS.join(' / '), /特例変更（評価なし）になっています/);
+});
+
 test('not the same change: the checks stay as before (another grade, another "from", history that disagrees before the record, start records)', () => {
   const c = app(NEO);
   const stopFor = (recs, d) => {
