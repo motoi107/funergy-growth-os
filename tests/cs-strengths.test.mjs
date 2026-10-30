@@ -95,7 +95,7 @@ test('rule A (the default, a proposal): all evidence scored, all at 2 or above, 
   const R = evalOf(c, 'aoi');
   assert.equal(R.state, 'done');
   assert.deepEqual(R.list, [['S1', 3, 5]], 'お客様対応 is a strength (3 of 5 at 3); 提案 is not (1 of 4)');
-  assert.deepEqual(run(c, 'cssRule()'), { minItems: 3, top: 'half', set: false, at: '', by: '', _at: 0, rawAt: 0 });
+  assert.deepEqual(run(c, 'cssRule()'), { minItems: 3, top: 'half', good: true, bal: 'twothirds', grow: true, set: false, at: '', by: '', _at: 0, rawAt: 0 });   // v1114: + the good-point rule (defaults)
   assert.equal(run(c, 'cssRuleTxt()'), '根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上');
 });
 
@@ -112,9 +112,15 @@ test('not chosen by total or category share: item evidence decides; a single 1 s
   // a few high scores are not enough: 3·3 and the rest at 2 in a 7-item strength → 2 of 7 < half
   person(c, 'pk', storeRec({ E0: 3, E2: 3 }));
   assert.deepEqual(evalOf(c, 'pk').list, []);
-  // everything at 2 (expected level everywhere, no role-model items): no strength → 得意分野を確認中
+  // everything at 2 (expected level everywhere, no role-model items): no strength.
+  // v1114 (UI案64): good points instead (Balancer, Steady); with the good points turned off → 得意分野を確認中 as before
   person(c, 'flat', storeRec());
   assert.deepEqual([evalOf(c, 'flat').state, evalOf(c, 'flat').list], ['done', []]);
+  const g = html(c, 'flat');
+  assert.match(g, /aria-label="良いところ"/);
+  assert.match(g, />バランサー</);
+  assert.doesNotMatch(g, /得意分野を確認中/);
+  c.STORE.cs_strength_rule = { rule: { minItems: 3, top: 'half', good: false, _at: 5 } };
   const h = html(c, 'flat');
   assert.match(h, /得意分野を確認中/);
   assert.match(h, /評価はそろっています。強みとして出す決まり（根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上）に当たる分野は、まだありません。/);
@@ -135,8 +141,10 @@ test('unscored items are never 0: a strength with an unscored evidence item is n
   // once E9 is scored at 3, 新人サポート・育成 appears (it was "not judged", not "failed")
   c.SCORES['mid Sample'].scores.E9 = 3;
   assert.deepEqual(evalOf(c, 'mid').list.map(x => x[0]), ['S4', 'S1']);
-  // nothing scored for the evidence and nothing else qualifies → 得意分野を確認中 with the unscored count
+  // no strength while unscored: v1114 → the good points found so far (with the unscored count); turned off → 得意分野を確認中
   person(c, 'mid2', storeRec({ B0: null, A1: null }));
+  assert.match(html(c, 'mid2'), /現時点で確認できている良いところ[\s\S]*採点していない項目が 2 あります/);
+  c.STORE.cs_strength_rule = { rule: { minItems: 3, top: 'half', good: false, _at: 5 } };
   assert.match(html(c, 'mid2'), /得意分野を確認中[\s\S]*採点していない項目が 2 あります/);
 });
 
@@ -291,7 +299,7 @@ test('the strength rule (GM/CEO, display only): stored values change the judgeme
   assert.match(c.MODALS.at(-1), /根拠の項目を 5 つ以上にすると、経理・調理（1 軸 4 項目）では強みが出ません/);
   // GM/CEO see the current rule above the list (with the default marked as a proposal); others do not
   c.STORE.cs_strength_rule = { rule: { reset: true, _at: 99 } };
-  assert.match(run(c, 'cssRuleBarHtml()'), /強みの決まり（表示だけ）：根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上（初期値・設定案）<\/span><button[^>]*min-height:44px[^>]*onclick="openCssRuleModal\(\)">変える</);
+  assert.match(run(c, 'cssRuleBarHtml()'), /強みの決まり（表示だけ）：根拠の項目が 3 つ以上・すべて 2 以上・3（模範）が半分以上（初期値・設定案） ・ 強みが無い人の良いところ：出す<\/span><button[^>]*min-height:44px[^>]*onclick="openCssRuleModal\(\)">変える</);
   c.curStoreLogin = true; assert.equal(run(c, 'cssRuleBarHtml()'), ''); c.curStoreLogin = false;
   // only GM/CEO (and not a store login) can open or save it
   c.curRole = 'am';
@@ -398,7 +406,7 @@ test('wiring: My page, the Career Score list and screen, the growth chart and it
   assert.match(fn('renderLssSummary'), /cssProfileHtml\(e, \{self:lssIsSelf\(name\), V:V, bdKey:'lss\|'\+name, bdOpen:_cs, draftNote:_cs\}\)/);
   assert.match(fn('renderLssSummary'), /var V=csvView\(e, \{scores:window\._lssDraft\|\|\{\}\}\);/);
   // growth chart: the tiles, the strengths card (manager page and the person's view), the old "Career Score の内訳" card is not repeated
-  assert.equal((SRC.match(/return _kTile\('Career Score', cssTileValHtml\(R\)/g) || []).length, 2);
+  assert.equal((SRC.match(/return _kTile\('Career Score', cssTileValHtml\(R(, true)?\)/g) || []).length, 2);
   assert.match(fn('renderKarteDetailPage'), /h\+='<div class="card">'\+cssProfileHtml\(e, \{V:csvView\(e\)\}\)\+'<\/div>';/);
   assert.match(fn('renderKarteSelfView'), /cssProfileHtml\(e, \{self:true, V:csvView\(e\)\}\)/);
   // talk points: strengths also for people who have no store-sheet record (office sheet; review P3-9)
