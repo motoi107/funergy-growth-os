@@ -2,7 +2,7 @@
 select 'v1109 bonus close is installed (bc_quarters, bc_versions)' as check_item,
   case when to_regclass('public.bc_quarters') is not null and to_regclass('public.bc_versions') is not null then 'OK' else 'STOP: 先に v1109 の SQL' end as result
 union all
-select 'bc_ functions (21 = v1109 / 28 = v1116 already)',
+select 'bc_ functions (21 = v1109 / 30 = v1116 already)',
   (select count(*)::text from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'bc\_%')
 union all
 select 'pay column (0 = not yet)',

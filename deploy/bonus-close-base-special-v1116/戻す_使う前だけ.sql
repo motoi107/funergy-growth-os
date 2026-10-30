@@ -164,7 +164,7 @@ begin
 end $$;
 
 drop function if exists public.bc_pay_mode(jsonb), public.bc_sp_save(jsonb), public.bc_pay_match(jsonb,jsonb), public.bc_pay_from_snap(jsonb),
-  public.bc_emp(jsonb), public.bc_amt(jsonb,boolean), public.bc_now_txt();
+  public.bc_emp(jsonb), public.bc_amt(jsonb,boolean), public.bc_now_txt(), public.bc_not_self(jsonb,text), public.bc_base_ok(text,jsonb,numeric);
 alter table public.bc_quarters drop column if exists pay;
 do $$ declare f text; begin
  foreach f in array array['bc_snap_check(text,jsonb)','bc_get(jsonb)','bc_save(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop

@@ -294,6 +294,8 @@ test('totals agree everywhere: the row, the totals, the snapshot, the confirmed 
   assert.deepEqual([pay.snap.sp, pay.snap.reg], [300, t.reg.mia]);
   const payKen = run(c, `getKarte('ken').payLog`).find(p => p.src === 'auto' && p.quarter === Q);
   assert.deepEqual([Number(payKen.amount), payKen.snap.payMode, payKen.snap.sp], [3150, 'base', 150]);
+  assert.match(run(c, `kevSnapLineHtml(${JSON.stringify(payKen.snap)})`), /無条件で基準額（評価の計算なし・原資の調整なし）：G3 92日 \$3,000 ・通常賞与 \$3,000 ・特別報酬 \$150/);
+  assert.match(run(c, `kevSnapLineHtml(${JSON.stringify(pay.snap)})`), /・特別報酬 \$300<\/div>$/);
   // the person's own view: the amount, and how it was decided (no reason text)
   const selfMia = run(c, `(function(){ var e=EMPS.find(function(x){ return x.id==='mia'; }); return bcSelfCur(e, bonusForEmp(e, kbCfg()), kbCfg()); })()`);
   assert.equal(selfMia.amt, t.finals.mia);
@@ -343,6 +345,7 @@ test('nothing is lost or doubled: recalculation, switching the mode, reloading o
   assert.equal(await runP(c, `bcFixCancel('${Q}')`), true, lastToast(c));
   assert.deepEqual([run(c, '_bc.data.pay.neo.sp'), run(c, '_bc.data.pay.neo.why'), run(c, '_bc.data.pay.neo.b')], [400, '特別な業務への貢献', true]);
   assert.ok(run(c, '_bc.data.paylog').some(x => x.action === 'pay_reset' && x.detail.why === 'fix_cancel'));
+  assert.match(run(c, 'bcPayLogHtml(_bc.data.paylog, null)'), /修正をやめた）<div[^>]*>Neo Sample：特別報酬 \$900 → \$400/, 'who was put back, with before and after');
   // paid, then correct again and re-confirm: the confirmed copy changes, the paid history stays, the difference is an adjustment
   vm.runInContext(`bcPaidOpen('${Q}')`, c); c.DOM['bc-paid-on'] = { value: '2026-11-13' };
   assert.equal(await runP(c, `bcPaidApply('${Q}')`), true, lastToast(c));
@@ -380,6 +383,9 @@ test('over the pool: the specified amounts are not reduced, the evaluated share 
   const panel = run(c, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); return bcPanelHtml(cfg, bcView(cfg, kevTotals(cfg, kv), kv)); })()`);
   assert.match(panel, /合計が、利用可能な原資を .* 超えています。指定した額は減らしません。不足額/);
   assert.match(panel, /不足分を補う（＋/);
+  const card = run(c, 'kevPxCardHtml(kbCfg())');
+  assert.match(card, /支給予定総額 \$34,750 ＋ 特別報酬 \$9,000 − 支給上限 \$20,000\.00/, 'the figures add up');
+  assert.match(card, /（（\$20,000\.00 − 基準額支給 \$12,000）÷ \$22,750）/);
   // the server accepts this version (the amounts add up)
   await provisional(c);
   assert.equal(run(c, '_bc.data.latest.snap.paid'), t.paid);
@@ -562,8 +568,16 @@ test('the server check: a snapshot with base modes and special rewards must add 
     'two evaluated people swap $5 (the sum stays)': s => { for (const [id, d] of [[ev, -5], [ev2, 5]]) { s.finals[id] += d; s.people[id].final += d; s.people[id].reg += d; } },
     'a negative special that otherwise adds up': s => { s.people.mia.sp = -300; s.finals.mia = s.people.mia.final = s.people.mia.reg - 300; s.paid -= 600; s.SP = -300; },
     'an unknown mode on someone evaluated': s => { s.people[ev].mode = 'free'; },
+    // a base-mode amount is the prorated base of its grade periods, not any number (独立レビュー P2-5)
+    'base raised with everything else made to add up': s => { s.people.ken.raw += 89997000; s.finals.ken += 89997000; s.people.ken.final += 89997000; s.people.ken.reg += 89997000; s.S += 89997000; s.paid += 89997000; s.F += 89997000; },
+    'base raised together with its period amount': s => { const d = 1000; s.people.ken.segs[0].amount += d; s.people.ken.raw += d; s.finals.ken += d; s.people.ken.final += d; s.people.ken.reg += d; s.S += d; s.paid += d; s.F += d; },
+    'more days than the period': s => { s.people.ken.segs[0].days = 200; },
+    'a period outside the quarter': s => { s.people.ken.segs[0].to = '2026-12-31'; },
+    'the same period twice': s => { const x = s.people.ken.segs[0]; s.people.ken.segs.push({ ...x }); const d = x.amount; s.people.ken.raw += d; s.finals.ken += d; s.people.ken.final += d; s.people.ken.reg += d; s.S += d; s.paid += d; s.F += d; },
+    'no periods': s => { s.people.ken.segs = []; },
   };
   for (const [name, f] of Object.entries(cases)) assert.match(await chk(T(f)), /bad_amounts|bad_snapshot/, name);
+  assert.deepEqual(B.people.ken.segs.map(x => [x.from, x.to, x.days, x.gb, x.amount]), [['2026-07-01', '2026-09-30', 92, 3000, 3000]]);
   // the version must carry the base modes exactly (an app without the pay data, or with one too many): refused, nothing saved
   const r0 = await srv.rev();
   const without = run(c, `(function(){ var p=_bc.data.pay; _bc.data.pay=JSON.parse(JSON.stringify(p)); delete _bc.data.pay.ken; var r=bcBuild('${Q}', kbCfg(), {}, [], false); _bc.data.pay=p; return r.sn || r.err; })()`);
@@ -575,4 +589,136 @@ test('the server check: a snapshot with base modes and special rewards must add 
   assert.equal(extra.people.aki.mode, 'base');
   assert.equal((await srv.direct('gm', { action: 'save', quarter: Q, expect_rev: r0, kind: 'provisional', snap: extra, why: '' })).body.error, 'pay_mismatch');
   assert.equal(await srv.rev(), r0, 'nothing written');
+});
+
+test('independent review of v1116: kept chosen values, reading before showing the shortfall, nobody pays themselves, names escaped, reasons only to the v1116 app', async () => {
+  // P2-1: a person on base mode keeps their chosen values through a saved version; back to normal gives the same amount
+  const srv = await server();
+  const c = co(srv);
+  c.STORE.bonus_eval[`${Q}|neo|G3`].st = 'draft';
+  delete c.SCORES['Neo Sample'].scores.D3;
+  await load(c);
+  vm.runInContext(`_bc.draft.choices = { neo: { c: { m: 'set', v: 1.05, why: '面談で確認' }, d: { m: 'input' } } }; _bc.dirty = true;`, c);
+  assert.equal(await runP(c, `bcDraftSave('${Q}')`), true, lastToast(c));
+  const before = row(view(c).tot, 'neo').b;
+  assert.equal(before.blocked, null);
+  await payMode(c, 'neo', 'base');
+  await provisional(c);
+  const sn = run(c, '_bc.data.latest.snap');
+  assert.equal(sn.choices.neo, undefined, 'not used in this version');
+  assert.deepEqual([sn.keep.neo.c.m, sn.keep.neo.c.v, sn.keep.neo.c.why, sn.keep.neo.d.m], ['set', 1.05, '面談で確認', 'input']);
+  assert.deepEqual([run(c, 'bcChoices().neo.c.v'), run(c, 'bcChoices().neo.d.m')], [1.05, 'input'], 'the draft keeps them');
+  assert.equal(await runP(c, `bcFixStart('${Q}')`), true, lastToast(c));
+  assert.equal(run(c, 'bcChoices().neo.c.why'), '面談で確認');
+  await payMode(c, 'neo', 'normal');
+  const after = row(view(c).tot, 'neo').b;
+  assert.deepEqual([after.blocked, after.amount, after.segs[0].coefs], [null, before.amount, before.segs[0].coefs], 'exactly the same as before');
+  await payMode(c, 'neo', 'base');
+  await provisional(c);
+  await confirmFinal(c);
+  assert.equal(state(c).k, 'final', lastToast(c));
+  assert.equal(run(c, `bqGet('${Q}').evSnap.keep`), undefined, 'the shared copy has no kept values (their reasons stay in the server version)');
+  // a kept value for someone not on base mode, or one that is also used, is refused by the server
+  const chk = async s => { try { return String((await srv.pg.query('select public.bc_snap_check($1,$2::jsonb) v', [Q, JSON.stringify(s)])).rows[0].v); } catch (e) { return e.message; } };
+  const s2 = J(sn); s2.keep.aki = { c: { m: 'tmp' } };
+  assert.equal(await chk(s2), 'bad_snapshot');
+  const s3 = J(sn); s3.keep.neo.c = { m: 'set', v: 1.07, why: 'x' };
+  assert.equal(await chk(s3), 'bad_snapshot');
+
+  // P3: an older app (no pv: 1) gets the versions without the special reasons and the kept values; the v1116 app gets them
+  const r0 = await srv.rev();
+  const old = await srv.direct('gm', { action: 'version', quarter: Q, ver: 2 });
+  const neu = await srv.direct('gm', { action: 'version', quarter: Q, ver: 2, pv: 1 });
+  assert.equal(old.status, 200);
+  assert.equal(old.body.snap.keep, undefined);
+  assert.ok(neu.body.snap.keep && neu.body.snap.keep.neo);
+  const oldGet = await srv.direct('gm', { action: 'get', quarter: Q });
+  assert.ok(!JSON.stringify(oldGet.body).includes('"keep"'), 'no kept values in the versions for an older app (the draft has the chosen values, as in v1109)');
+  assert.ok(JSON.stringify((await srv.direct('gm', { action: 'get', quarter: Q, pv: 1 })).body).includes('"keep"'));
+  assert.equal(await srv.rev(), r0);
+
+  // P2-2: a device that has not read the server's version does not show (or fill) a shortfall without the base modes and special rewards
+  const srv2 = await server(), g = co(srv2);
+  g.POOL = 20000;
+  await load(g);
+  await payMode(g, 'gus', 'base');
+  await special(g, 'sam', 9000, '');
+  const loaded = run(g, '(function(){ var cfg=kbCfg(); var t=kevTotals(cfg, kevApplies(cfg)); return [t.short, kevApplies(cfg).payUnk]; })()');
+  const other = co(srv2);   // another device: the close panel is not open (nothing read yet)
+  other.POOL = 20000;
+  const kv0 = run(other, 'kevApplies(kbCfg())');
+  assert.equal(kv0.payUnk, true);
+  const card0 = run(other, 'kevPxCardHtml(kbCfg())');
+  assert.match(card0, /まだ読めていません/);
+  assert.match(card0, /不足分を補う（読み込みの前）/);
+  assert.doesNotMatch(card0, /onclick="kevPxFill/);
+  assert.equal(await runP(other, `kevPxFill('${Q}', 2892, 0)`), false);
+  assert.match(lastToast(other), /まだ読めていない/);
+  assert.equal(run(other, `kevPxGet('${Q}').v`), 0, 'nothing added to the special pool');
+  await load(other);
+  assert.deepEqual(run(other, '(function(){ var cfg=kbCfg(); var t=kevTotals(cfg, kevApplies(cfg)); return [t.short, kevApplies(cfg).payUnk]; })()'), loaded);
+  assert.equal(loaded[1], false);
+  assert.doesNotMatch(run(other, 'kevPxCardHtml(kbCfg())'), /まだ読めていません/);
+
+  // P2-3: nobody changes their own base mode or special reward (screen and server)
+  g.curUserName = 'Gus Sample';
+  assert.equal(run(g, `bcPayModeAsk('gus', 'normal')`), false);
+  assert.match(lastToast(g), /自分の「無条件で基準額」・特別報酬は変えられません/);
+  assert.equal(run(g, `bcSpOpen('gus')`), false);
+  const listG = run(g, `(function(){ var cfg=kbCfg(); var kv=kevApplies(cfg); var V=bcView(cfg, kevTotals(cfg, kv), kv); return kevListTableHtml(cfg, V.tot, V); })()`);
+  assert.match(listG, /自分は変えられません/);
+  assert.doesNotMatch(listG, /bcPayModeAsk\(&quot;gus&quot;/);
+  g.curUserName = 'CEO Sample';
+  const rv = await srv2.rev();
+  for (const body of [{ action: 'sp_save', emp_id: 'E1', amount: 99999999, why: '' }, { action: 'pay_mode', emp_id: 'E1', mode: 'base' }]) {
+    const r = await srv2.direct('gm', { quarter: Q, expect_rev: rv, ...body });
+    assert.deepEqual([r.status, r.body.error], [400, 'own_pay'], body.action);
+  }
+  assert.equal(await srv2.rev(), rv, 'nothing written');
+  assert.equal((await srv2.direct('ceo', { action: 'sp_save', quarter: Q, expect_rev: rv, emp_id: 'E1', amount: 5, why: '' })).status, 200, 'another CEO / GM can');
+
+  // the shortfall is re-checked after reading again: if the server's version is no longer read then, nothing is added
+  const h = co(srv2);
+  h.POOL = 20000;
+  await load(h);
+  const short = run(h, 'kevTotals(kbCfg(), kevApplies(kbCfg())).short');
+  vm.runInContext(`var pullOpKey = function(){ return Promise.resolve(true); }; kevLockPull = function(){ bcReset('2026-Q2'); return Promise.resolve(true); };`, h);
+  assert.equal(await runP(h, `kevPxFill('${Q}', ${short}, 0)`), false);
+  assert.match(lastToast(h), /まだ読めていないため、足していません/);
+  assert.equal(run(h, `kevPxGet('${Q}').v`), 0);
+
+  // P2-5: each check on the base amount, alone (a large pool, so the evaluated people's shares do not change)
+  const srv4 = await server(), b4 = co(srv4);
+  b4.POOL = 1000000;
+  await load(b4);
+  await payMode(b4, 'ken', 'base');
+  // a chosen value that the server would not accept is not kept (the version still saves)
+  vm.runInContext(`_bc.draft.choices = { ken: { c: { m: 'set', v: 1.07, why: '' }, s: { m: 'tmp' } } }; _bc.dirty = true;`, b4);
+  const S4 = run(b4, `bcBuild('${Q}', kbCfg(), bcChoices(), [], false).sn`);
+  assert.deepEqual(S4.keep, { ken: { s: { m: 'tmp' } } });
+  const chk4 = async s => { try { return String((await srv4.pg.query('select public.bc_snap_check($1,$2::jsonb) v', [Q, JSON.stringify(s)])).rows[0].v); } catch (e) { return e.message; } };
+  assert.equal(await chk4(S4), '0');
+  assert.equal(S4.k, 1);
+  const move = (s, d) => { s.people.ken.raw += d; s.finals.ken += d; s.people.ken.final += d; s.people.ken.reg += d; s.S += d; s.paid += d; s.F += d; };
+  const T4 = f => { const s = J(S4); f(s); return s; };
+  const one = {
+    'the total is not the sum of the periods': s => move(s, 1000),
+    'a period amount is not its prorated base': s => { s.people.ken.segs[0].amount += 1000; move(s, 1000); },
+    'the days do not match the dates': s => { Object.assign(s.people.ken.segs[0], { days: 46, amount: 1500 }); move(s, -1500); },
+    'a period outside the quarter (the days and amount match)': s => { Object.assign(s.people.ken.segs[0], { from: '2026-10-01', to: '2026-12-31' }); },
+    'two periods over the same days': s => { s.people.ken.segs = [{ g: 'G3', from: '2026-07-01', to: '2026-08-15', days: 46, gb: 3000, amount: 1500 }, { g: 'G3', from: '2026-07-01', to: '2026-08-15', days: 46, gb: 3000, amount: 1500 }]; },
+    'no periods at all': s => { s.people.ken.segs = []; move(s, -3000); },
+  };
+  for (const [name, f] of Object.entries(one)) assert.equal(await chk4(T4(f)), 'bad_amounts', name);
+  await provisional(b4);
+  assert.deepEqual(run(b4, '_bc.data.latest.snap.keep'), { ken: { s: { m: 'tmp' } } });
+
+  // P2-4: names in the messages are escaped
+  const x = co(await server());
+  await load(x);
+  vm.runInContext(`EMPS.find(function(e){ return e.id==='aki'; }).name = 'Aki<img src=x onerror=alert(1)>';`, x);
+  await payMode(x, 'aki', 'base');
+  assert.match(lastToast(x), /^Aki&lt;img src=x onerror=alert\(1\)&gt;：基準額支給にしました/);
+  await special(x, 'aki', 10, '');
+  assert.match(lastToast(x), /^Aki&lt;img/);
 });

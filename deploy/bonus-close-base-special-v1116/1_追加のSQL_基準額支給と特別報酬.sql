@@ -19,6 +19,11 @@
 --     the total (which may then be more than the cap — the shortfall the screen shows). With no base mode and no special reward this is
 --     exactly the v1109 check.
 --   ・修正を開始 / 修正をやめる put back the base modes and special rewards of the version the correction starts from.
+--   ・a base-mode person's regular amount must be the prorated base of the grade periods the snapshot lists (bc_base_ok), so the total
+--     cannot be any number (the grade base itself is in the app's settings).
+--   ・nobody changes their own base mode or special reward (the same rule as the bonus edit screens: another CEO / GM does it).
+--   ・the chosen values of a person on base mode are kept in the version (keep) and come back to the draft, so 「通常の評価計算に戻す」 after
+--     a version gives the same result as before.
 -- Pay and special rewards can be changed only while the draft can be changed (no version yet, or while correcting) — the same rule as the
 -- chosen values. Confirmed versions are never rewritten (a re-confirm after paid makes adjustment records, as before).
 -- What this never does: pay, deduct or send anything to payroll; change evaluations, Career Score, settings or the bonus formula.
@@ -55,6 +60,40 @@ create or replace function public.bc_now_txt() returns text
 language sql stable security invoker set search_path=public,pg_temp as $$
  select to_char(now() at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"');
 $$;
+
+-- Nobody changes their own base mode or special reward (the bonus edit screens never let anyone edit themselves either).
+create or replace function public.bc_not_self(a jsonb, id text) returns void
+language plpgsql stable security invoker set search_path=public,pg_temp as $$
+begin
+ if exists(select 1 from public.manager_auth m where m.user_id = (a->>'uid')::uuid and m.emp_id is not null and m.emp_id::text = id) then
+  raise exception 'own_pay';
+ end if;
+end $$;
+
+-- A base-mode person's regular amount is the prorated base of the grade periods the snapshot lists, not any number:
+-- segs: [{from, to, days, gb, amount}] inside the quarter, not overlapping, days = to − from + 1, amount = gb × days ÷ the days of the
+-- quarter rounded to whole dollars (a small margin for the app's floating point), raw = Σ amount. (The grade base gb itself is in the
+-- app's settings; the server cannot check that number.)
+create or replace function public.bc_base_ok(q text, pe jsonb, raw numeric) returns void
+language plpgsql immutable security invoker set search_path=public,pg_temp as $$
+declare qs date; qe date; qn integer; x jsonb; f date; t date; d integer; gb numeric; amt numeric; tot numeric := 0; last date := null;
+begin
+ qs := make_date(left(q, 4)::integer, (right(q, 1)::integer - 1) * 3 + 1, 1);
+ qe := (qs + interval '3 months')::date - 1; qn := qe - qs + 1;
+ if jsonb_typeof(pe->'segs') is distinct from 'array' or jsonb_array_length(pe->'segs') < 1 or jsonb_array_length(pe->'segs') > 12 then raise exception 'bad_amounts'; end if;
+ for x in select value from jsonb_array_elements(pe->'segs') order by value->>'from' loop
+  if jsonb_typeof(x) <> 'object' or coalesce(x->>'from', '') !~ '^\d{4}-\d{2}-\d{2}$' or coalesce(x->>'to', '') !~ '^\d{4}-\d{2}-\d{2}$'
+     or jsonb_typeof(x->'days') <> 'number' or (x->>'days') !~ '^[0-9]{1,3}$' or jsonb_typeof(x->'gb') <> 'number' or jsonb_typeof(x->'amount') <> 'number' then
+   raise exception 'bad_amounts';
+  end if;
+  begin f := (x->>'from')::date; t := (x->>'to')::date; exception when others then raise exception 'bad_amounts'; end;
+  d := (x->>'days')::integer; gb := (x->>'gb')::numeric; amt := (x->>'amount')::numeric;
+  if f < qs or t > qe or f > t or d <> t - f + 1 or (last is not null and f <= last) then raise exception 'bad_amounts'; end if;
+  if gb < 0 or gb > 100000000 or amt <> trunc(amt) or abs(amt - gb * d / qn) > 0.500001 then raise exception 'bad_amounts'; end if;
+  tot := tot + amt; last := t;
+ end loop;
+ if tot <> raw then raise exception 'bad_amounts'; end if;
+end $$;
 
 -- The base modes and special rewards a version carries: { <employee id>: {b, bAt, bBy, sp, why, at, by, nm} } (only people with either).
 create or replace function public.bc_pay_from_snap(s jsonb) returns jsonb
@@ -135,11 +174,19 @@ begin
   reg := fin - sp;
   if reg < 0 or reg > raw then raise exception 'bad_amounts'; end if;
   if isb and reg <> raw then raise exception 'bad_amounts'; end if;
+  if isb then perform public.bc_base_ok(q, pe, raw); end if;
   if jsonb_typeof(pe->'final') = 'number' and (pe->>'final')::numeric <> fin then raise exception 'bad_amounts'; end if;
   if pe ? 'reg' and (jsonb_typeof(pe->'reg') <> 'number' or (pe->>'reg')::numeric <> reg) then raise exception 'bad_amounts'; end if;
   sraw := sraw + raw; spaid := spaid + fin; spt := spt + sp;
   if isb then f := f + raw; else se := se + raw; sreg := sreg + reg; end if;
  end loop;
+ -- keep: the chosen values of the people on base mode (not used in this version; they come back to the draft)
+ if s ? 'keep' and jsonb_typeof(s->'keep') <> 'null' then
+  if not public.bc_choices_ok(s->'keep', null) then raise exception 'bad_snapshot'; end if;
+  for id in select jsonb_object_keys(s->'keep') loop
+   if not (id = any(ids)) or coalesce(s->'people'->id->>'mode', '') <> 'base' or coalesce(s->'choices', '{}'::jsonb) ? id then raise exception 'bad_snapshot'; end if;
+  end loop;
+ end if;
  if jsonb_typeof(s->'S') <> 'number' or (s->>'S')::numeric <> sraw then raise exception 'bad_amounts'; end if;
  if jsonb_typeof(s->'paid') <> 'number' or (s->>'paid')::numeric <> spaid then raise exception 'bad_amounts'; end if;
  if s ? 'F' and (jsonb_typeof(s->'F') <> 'number' or (s->>'F')::numeric <> f) then raise exception 'bad_amounts'; end if;
@@ -204,6 +251,7 @@ begin
  if md is null or md not in ('base','normal') then raise exception 'bad_value'; end if;
  if not (public.bc_txt_ok(p->'why', 300, false) and public.bc_txt_ok(p->'emp_name', 80, false)) then raise exception 'bad_value'; end if;
  a0 := public.bc_amt(p->'amt0', true); a1 := public.bc_amt(p->'amt1', true);
+ perform public.bc_not_self(a, id);
  nm := left(coalesce(p->>'emp_name', ''), 80);
  r := public.bc_lock(q, er);
  if r.fixing is null and exists(select 1 from public.bc_versions v where v.quarter = q) then raise exception 'not_editable'; end if;
@@ -230,6 +278,7 @@ declare a jsonb := public.bc_actor(p); q text := public.bc_q(p); er integer := p
 begin
  if coalesce(a->>'role', '') not in ('ceo','gm') then raise exception 'forbidden'; end if;
  amt := public.bc_amt(p->'amount', false);
+ perform public.bc_not_self(a, id);
  if not (public.bc_txt_ok(p->'why', 300, false) and public.bc_txt_ok(p->'emp_name', 80, false)) then raise exception 'bad_value'; end if;
  w1 := case when amt = 0 then '' else coalesce(p->>'why', '') end;
  nm := left(coalesce(p->>'emp_name', ''), 80);
@@ -294,7 +343,8 @@ begin
   end loop;
  end if;
  update public.bc_quarters set fixing = null, fix_at = null, fix_by = null,
-  draft = jsonb_strip_nulls(jsonb_build_object('choices', s->'choices', 'bulk', s->'bulk')), draft_at = now(), draft_by = a->>'name', rev = rev + 1, updated_at = now()
+  draft = jsonb_strip_nulls(jsonb_build_object('choices', case when jsonb_typeof(s->'keep') = 'object' then coalesce(s->'choices', '{}'::jsonb) || (s->'keep') else s->'choices' end,
+   'bulk', s->'bulk')), draft_at = now(), draft_by = a->>'name', rev = rev + 1, updated_at = now()
  where quarter = q returning * into r;
  perform public.bc_event(q, a, 'save', jsonb_build_object('ver', ver, 'kind', kind, 'n', nv.n, 'S', nv.total_raw, 'paid', nv.paid_total, 'prov', prov, 'replaced', ef.ver,
    'F', s->'F', 'SP', s->'SP'));
@@ -315,11 +365,12 @@ begin
  end if;
  op := coalesce(r.pay, '{}'::jsonb); np := public.bc_pay_from_snap(b.snap);
  update public.bc_quarters set fixing = b.ver, fix_at = now(), fix_by = a->>'name',
-  draft = jsonb_strip_nulls(jsonb_build_object('choices', b.snap->'choices', 'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
+  draft = jsonb_strip_nulls(jsonb_build_object('choices', case when jsonb_typeof(b.snap->'keep') = 'object' then coalesce(b.snap->'choices', '{}'::jsonb) || (b.snap->'keep') else b.snap->'choices' end,
+   'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
   pay = np, rev = rev + 1, updated_at = now()
  where quarter = q returning * into r;
  perform public.bc_event(q, a, 'fix_start', jsonb_build_object('base', b.ver));
- if op is distinct from np then perform public.bc_event(q, a, 'pay_reset', jsonb_build_object('base', b.ver, 'why', 'fix_start')); end if;
+ if op is distinct from np then perform public.bc_event(q, a, 'pay_reset', jsonb_build_object('base', b.ver, 'why', 'fix_start', 'from', op, 'to', np)); end if;
  return jsonb_build_object('ok', true, 'rev', r.rev, 'fixing', b.ver);
 end $$;
 
@@ -333,16 +384,17 @@ begin
  select * into b from public.bc_versions where quarter = q and ver = r.fixing;
  op := coalesce(r.pay, '{}'::jsonb); np := public.bc_pay_from_snap(b.snap);
  update public.bc_quarters set fixing = null, fix_at = null, fix_by = null,
-  draft = jsonb_strip_nulls(jsonb_build_object('choices', b.snap->'choices', 'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
+  draft = jsonb_strip_nulls(jsonb_build_object('choices', case when jsonb_typeof(b.snap->'keep') = 'object' then coalesce(b.snap->'choices', '{}'::jsonb) || (b.snap->'keep') else b.snap->'choices' end,
+   'bulk', b.snap->'bulk')), draft_at = now(), draft_by = a->>'name',
   pay = np, rev = rev + 1, updated_at = now()
  where quarter = q returning * into r;
  perform public.bc_event(q, a, 'fix_cancel', jsonb_build_object('base', b.ver));
- if op is distinct from np then perform public.bc_event(q, a, 'pay_reset', jsonb_build_object('base', b.ver, 'why', 'fix_cancel')); end if;
+ if op is distinct from np then perform public.bc_event(q, a, 'pay_reset', jsonb_build_object('base', b.ver, 'why', 'fix_cancel', 'from', op, 'to', np)); end if;
  return jsonb_build_object('ok', true, 'rev', r.rev);
 end $$;
 
 do $$ declare f text; begin
- foreach f in array array['bc_emp(jsonb)','bc_amt(jsonb,boolean)','bc_now_txt()','bc_pay_from_snap(jsonb)','bc_pay_match(jsonb,jsonb)','bc_snap_check(text,jsonb)',
+ foreach f in array array['bc_emp(jsonb)','bc_amt(jsonb,boolean)','bc_now_txt()','bc_not_self(jsonb,text)','bc_base_ok(text,jsonb,numeric)','bc_pay_from_snap(jsonb)','bc_pay_match(jsonb,jsonb)','bc_snap_check(text,jsonb)',
   'bc_get(jsonb)','bc_pay_mode(jsonb)','bc_sp_save(jsonb)','bc_save(jsonb)','bc_fix_start(jsonb)','bc_fix_cancel(jsonb)'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);

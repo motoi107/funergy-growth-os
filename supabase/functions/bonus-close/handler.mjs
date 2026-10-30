@@ -21,7 +21,7 @@ export function postgrestDb({ fetch, url, key }) {
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer)[^\s]*/gi, '$1:***').slice(0, 200);
 // The codes the SQL raises (anything else is 'error').
 export const CODES = ['unauthorized', 'forbidden', 'bad_value', 'conflict', 'not_editable', 'not_found', 'bad_snapshot', 'bad_amounts', 'unselected',
-  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing', 'pay_mismatch'];
+  'no_pool', 'why_required', 'memo_required', 'already_paid', 'fixing', 'pay_mismatch', 'own_pay'];
 const bad = () => { const e = new Error('bad_value'); e.code = 'bad_value'; return e; };
 const obj = v => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
 const Q = v => (typeof v === 'string' && /^\d{4}-Q[1-4]$/.test(v) ? v : (() => { throw bad(); })());
@@ -34,6 +34,23 @@ const SIZE = (v, n) => { const o = obj(v); if (!o) throw bad(); if (JSON.stringi
 const EMP = v => (typeof v === 'string' && /^[A-Za-z0-9_.:@-]{1,64}$/.test(v) ? v : (() => { throw bad(); })());
 const AMT = v => (Number.isInteger(v) && v >= 0 && v <= 100000000 ? v : (() => { throw bad(); })());
 const AMT0 = v => (v == null ? null : AMT(v));
+// v1116: the reason of a special reward (people[id].spWhy in a saved version) and the kept chosen values (keep) go only to the v1116 app
+// (it sends pv: 1). An older app copies the confirmed version into the shared data as it is; it gets the version without them (the
+// amounts are the same).
+const hideWhy = (o, depth = 0) => {
+  if (!o || typeof o !== 'object' || depth > 6) return o;
+  if (Array.isArray(o)) return o.map(x => hideWhy(x, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(o)) {
+    if (k === 'snap' && obj(v) && obj(v.people)) {
+      const people = {};
+      for (const [id, pe] of Object.entries(v.people)) { if (obj(pe) && 'spWhy' in pe) { const { spWhy, ...rest } = pe; people[id] = rest; } else people[id] = pe; }
+      const { keep, ...snap } = v;   // keep: the chosen values (with their reasons) of the people on base mode — the v1116 app only
+      out[k] = { ...snap, people };
+    } else out[k] = hideWhy(v, depth + 1);
+  }
+  return out;
+};
 
 export function createHandler(deps) {
   const env = deps.env;
@@ -98,7 +115,8 @@ export function createHandler(deps) {
     try { actor = await actorOf(req); } catch { actor = null; }
     if (!actor) return json({ error: 'unauthorized' }, 401);
     try {
-      return json(await fn(actor, body) ?? {});
+      const r = await fn(actor, body) ?? {};
+      return json(body.pv === 1 ? r : hideWhy(r));
     } catch (e) {
       // Our own refusals carry .code; the SQL's come back as the message (raise exception 'conflict' …).
       const code = [e && e.code, e && e.message].map(v => String(v || '')).find(v => CODES.includes(v)) || '';
