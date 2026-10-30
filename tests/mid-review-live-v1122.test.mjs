@@ -108,6 +108,10 @@ test('no email step: a GM signs in with the PIN only — a row from manager_auth
   const v = Object.fromEntries(A.stores.map(x => [x.store_id, x.version]));
   const r = await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [], expect_version: v.F01 }] });
   assert.equal(r.saved, 1);
+  // what the server says the GM may do, signed in with the PIN: the settings too (no email needed for them any more)
+  assert.equal((await S.ok('E2', { action: 'whoami' })).perms.settings, true);
+  const row = (await S.ok('E2', { action: 'list', env: 'live', ym: YM })).stores.find(x => x.store_id === 'F01');
+  assert.equal(row.perms.settings, true); assert.ok(!(row.perms.why || []).some(x => /email|demo/.test(x)), JSON.stringify(row.perms.why));
   assert.ok((await S.ok('E2', { action: 'members_list' })).some(x => x.emp_id === 'E5' && x.role_now === 'am'), 'an AM can be chosen for 店舗の管轄');
   await S.ok('E2', { action: 'chef_save', emp_id: 'E11', on: true });
   // the CEO too
@@ -189,6 +193,13 @@ test('rows from before: a CEO row made by SQL without the employee is linked to 
   assert.deepEqual((await S.q(`select role, enabled from mr_members where emp_id = 'E2' order by enabled`)).map(x => [x.role, x.enabled]), [['staff', false], ['gm', true]]);
   // events say what was made
   assert.ok((await S.q(`select count(*)::int n from mr_events where kind in ('member_auto','member_linked')`))[0].n >= 3);
+  // At install, before anyone signs in: a staff row (made by the settings) of someone who is an AM now is already am, so a GM can choose
+  // them in 店舗の管轄 at once; no second row is made for them.
+  const T = await setup({ before: async pg => {
+    await pg.query(`update employees set role = 'am' where id = 'E14'`);
+    await pg.query(`insert into mr_members(emp_id, name, role) values('E14', 'New AM', 'staff')`);
+  } });
+  assert.deepEqual((await T.q(`select role, enabled from mr_members where emp_id = 'E14'`)).map(x => [x.role, x.enabled]), [['am', true]]);
 });
 
 test('a CEO / GM row turned off by SQL is not made again; an AM who is no longer an AM in the employee master is refused', async () => {
@@ -198,4 +209,19 @@ test('a CEO / GM row turned off by SQL is not made again; an AM who is no longer
   assert.equal((await S.call('E2', { action: 'whoami' })).status, 403);
   await S.q(`update employees set role = 'g4' where id = 'E6'`);
   assert.equal((await S.call('E6', { action: 'whoami' })).status, 403, 'the row is there but the role is gone');
+  // A CEO whose employee record is resigned (the manager_auth account still says ceo) gets no row from a PIN sign-in.
+  const R = await setup({ before: async pg => { await pg.query(`delete from mr_members where user_id = $1`, [U.ceo]); await pg.query(`update employees set status = '退職' where id = 'E1'`); } });
+  assert.equal((await R.call('E1', { action: 'whoami' })).status, 403);
+  assert.equal((await R.q(`select count(*)::int n from mr_members where emp_id = 'E1' or user_id = $1`, [U.ceo]))[0].n, 0, 'no row is made');
+  // Someone in service who is neither CEO / GM nor an AM (nor chosen in the settings) gets no row either.
+  assert.equal((await R.call('E17', { action: 'whoami' })).status, 403);
+  assert.equal((await R.q(`select count(*)::int n from mr_members where emp_id = 'E17'`))[0].n, 0);
+  // The CEO account's own row is stopped by SQL without an employee, or belongs to another employee: the PIN sign-in neither links
+  // nor takes it over (the row stays as it was).
+  for (const before of [`update mr_members set enabled = false, emp_id = null where user_id = '${U.ceo}'`, `update mr_members set emp_id = 'E11' where user_id = '${U.ceo}'`]) {
+    const T = await setup({ before: async pg => { await pg.exec(before); } });
+    const was = (await T.q(`select user_id, emp_id, enabled, role from mr_members where user_id = $1`, [U.ceo]))[0];
+    assert.equal((await T.call('E1', { action: 'whoami' })).status, 403, before);
+    assert.deepEqual((await T.q(`select user_id, emp_id, enabled, role from mr_members where user_id = $1`, [U.ceo]))[0], was, before);
+  }
 });
