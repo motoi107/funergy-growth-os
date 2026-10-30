@@ -40817,7 +40817,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1116';
+const APP_VERSION = '1117';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64302,6 +64302,7 @@ function ghConfirmInfo(p){
 function ghSameRecInfo(p, d){
   var e=ghEmp(p.empId), sc=e ? ghLastSameChange(p, ghRecs(e.id)) : null;
   if(!sc || sc.d!==d) return '';
+  if(ghSameSpecialStop(p, sc)) return '<div style="margin-top:4px;color:var(--accent);font-weight:700"><i class="ti ti-info-circle"></i> グレード履歴にはもう '+ghYMD(sc.d)+' に '+escapeHtml(sc.g)+' になった記録があります（特例変更・評価なし。役職はまだ '+escapeHtml(ghNormG(p.g0))+'）。「特例でグレードを変更する」を選ぶと、新しい記録は足さず、その記録のまま役職を変えます（理由は前に入れたもののまま）。</div>';   /* v1117 */
   var sp=(sc.mode==='special') ? '（この記録はもう特例変更です。理由は前に入れたもののまま）' : (sc.prevEval ? '（この記録の評価はそのまま）' : '');
   return '<div style="margin-top:4px;color:var(--accent);font-weight:700"><i class="ti ti-info-circle"></i> グレード履歴にはもう '+ghYMD(sc.d)+' に '+escapeHtml(sc.g)+' になった記録があります（役職はまだ '+escapeHtml(ghNormG(p.g0))+'）。新しい記録は足さず、その記録に合わせて役職を変えます'+sp+'。</div>';
 }
@@ -67437,6 +67438,12 @@ function ghLastSameChange(p, recs){
   var lr=(recs && recs.length) ? recs[recs.length-1] : null, g0=ghNormG(p && p.g0), g1=ghNormG(p && p.g1);
   return (lr && !lr.start && g0 && g1 && g0!==g1 && lr.g===g1 && (!lr.from || lr.from===g0)) ? lr : null;
 }
+/* v1117（Codex #106 e9e8bc4 の P2）：その記録がもう特例変更（評価なし）なら、通常の変更（評価を確定）では合わせない。
+   合わせると特例の理由・した人・日時が消える（監査の記録）。特例を選べば、その記録のまま役職を変える（理由は前のまま） */
+function ghSameSpecialStop(p, sc){
+  if(!sc || sc.mode!=='special' || (p && p.mode==='special')) return '';
+  return 'グレード履歴の '+ghYMD(sc.d)+' '+sc.g+' の記録は、もう特例変更（評価なし）です。上の「特例でグレードを変更する」を選ぶと、その記録のまま役職を変えます（理由は前に入れたもののまま）。評価で数える通常の変更にするときは、先に成長カルテのグレード履歴でこの記録を消してください';
+}
 /* 前のグレードの期間：確定日の四半期の初め（またはそのグレードになった日）〜確定日。
    確定日の時点のグレード（グレード履歴）が前のグレードでないとき・最後の記録より前の日のときは err（推測で期間を作らない） */
 function ghEvalPeriod(p){
@@ -67450,6 +67457,7 @@ function ghEvalPeriod(p){
      違う日なら、その日を案内する（前は「より後の日に」と出て、どの日にしても保存できなかった） */
   var sc=e ? ghLastSameChange(p, recs) : null;
   if(sc && sc.d!==d) return Object.assign(base, {err:'グレード履歴では、もう '+ghYMD(sc.d)+' に '+sc.g+' に変わっています（役職はまだ '+ghNormG(p.g0)+'）。確定日を '+ghYMD(sc.d)+' にすると、その記録に合わせて役職を変えます（違う日にするときは、先に成長カルテのグレード履歴を直してください）', same:sc});
+  var sps=ghSameSpecialStop(p, sc); if(sps) return Object.assign(base, {err:sps, same:sc});
   if(sc) recs=recs.slice(0, -1);
   var segs=e ? ghSegments(e, qr.qs, d, recs) : [], last=segs.length ? segs[segs.length-1] : null, lr=recs.length ? recs[recs.length-1] : null;
   if(sc) base.same=sc;
@@ -67482,6 +67490,7 @@ function ghEvalStop(p){
     var _pr=ghEvalPeriod(p); if(!_pr) return '確定日を入れてください';
     return _pr.err || '';
   }
+  var _pr0=ghEvalPeriod(p); if(_pr0 && _pr0.same && ghSameSpecialStop(p, _pr0.same)) return _pr0.err;   /* v1117：評価より先に（評価を確定しても保存できないため） */
   if(!p.ev) return p.g0+' の期間の評価を確定してください（GM・CEO）';
   var pr=ghEvalPeriod(p); if(!pr) return '確定日を入れてください';
   return pr.err || '';
@@ -67558,12 +67567,16 @@ function ghAddRecEval(empId, rec, name){
   if(ghAddRec(empId, rec, name)) return true;
   var recs=ghRecs(empId), d=ghDate(rec.d), g=ghNormG(rec.g), hit=recs.find(function(r){ return r.d===d && r.g===g && !r.start; });
   var ok=false;
-  if(hit && rec.prevEval){ hit.prevEval=rec.prevEval; ['mode','reason','spBy','spAt','track'].forEach(function(k){ delete hit[k]; });   /* v1115：評価を確定した変更は特例ではない */
+  var spKept=false;
+  if(hit && rec.prevEval && hit.mode==='special') spKept=true;   /* v1117（Codex #106 e9e8bc4 の P2）：特例変更の記録は、通常の変更（評価）で書き換えない（理由・した人・日時を消さない）。画面で止めるが、ほかの端末で特例になったときのため */
+  else if(hit && rec.prevEval){ hit.prevEval=rec.prevEval;
     if(!hit.from && rec.from) hit.from=ghNormG(rec.from); hit.edBy=_ghWho(); hit.edAt=_ghNow(); ok=(ghSave(empId, recs, name)!==false); }
   else if(hit && rec.mode==='special' && !hit.prevEval && hit.mode!=='special'){ hit.mode='special'; hit.reason=rec.reason; hit.spBy=rec.spBy||_ghWho(); hit.spAt=rec.spAt||_ghNow(); if(rec.track) hit.track=rec.track; if(!hit.from && rec.from) hit.from=ghNormG(rec.from); hit.edBy=_ghWho(); hit.edAt=_ghNow(); ok=(ghSave(empId, recs, name)!==false); }   /* v1115：同じ日・同じグレードの記録が先にあれば、そこに特例の印と理由 */
   else if(hit) ok=true;
-  if(!ok && window._ghTx) window._ghTx.err=new Error('grade_hist not recorded');   /* まとめて保存の中なら、全部戻す（黙って役職だけ変えない） */
-  if(!ok && !window._ghTx) showToast('グレード履歴に記録できませんでした'+(rec.prevEval?'（前のグレードの期間の評価も残っていません）':'')+'。成長カルテのグレード履歴を確かめてください','danger');
+  if(!ok && window._ghTx) window._ghTx.err=new Error(spKept ? 'grade_hist special record kept' : 'grade_hist not recorded');   /* まとめて保存の中なら、全部戻す（黙って役職だけ変えない） */
+  if(!ok && spKept){ var _spMsg=function(){ showToast('グレード履歴の '+ghYMD(d)+' '+g+' の記録は特例変更（評価なし）になっています。評価は記録せず、役職も変えていません。もう一度開いて「特例」を選んでください','warning'); };
+    if(window._ghTx && typeof setTimeout==='function') setTimeout(_spMsg, 0); else _spMsg(); }   /* まとめて保存の中では「保存できませんでした」のあとに出す */
+  else if(!ok && !window._ghTx) showToast('グレード履歴に記録できませんでした'+(rec.prevEval?'（前のグレードの期間の評価も残っていません）':'')+'。成長カルテのグレード履歴を確かめてください','danger');
   return ok;
 }
 function ghConfirmTitle(p){ return p.kind==='approve' ? '昇格申請を承認します' : (p.kind==='stage' ? 'Leader に昇格します' : 'グレードが変わります'); }
@@ -67574,6 +67587,8 @@ function ghConfirmBtnHtml(p){
     if(_s) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-alert-triangle"></i> '+escapeHtml(_s)+'</button>';
     return '<button id="gh-cf-go" class="btn btn-primary" onclick="ghSpecialReview()"><i class="ti ti-eye-check"></i> 内容を確認する</button>';
   }
+  var _pr1=ghEvalNeeded(p) ? ghEvalPeriod(p) : null;
+  if(_pr1 && _pr1.same && ghSameSpecialStop(p, _pr1.same)) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-alert-triangle"></i> 特例変更の記録です。「特例」を選んでから'+act+'</button>';   /* v1117 */
   if(ghEvalMissing(p)) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-lock"></i> '+escapeHtml(p.g0)+' の期間の評価を確定してから'+act+'</button>';
   if(ghEvalStop(p)) return '<button id="gh-cf-go" class="btn btn-primary" disabled style="opacity:.45;cursor:not-allowed"><i class="ti ti-alert-triangle"></i> 確定日を直してから'+act+'</button>';
   return '<button id="gh-cf-go" class="btn btn-primary" onclick="ghConfirmGo()"><i class="ti ti-device-floppy"></i> '+lbl+'</button>';

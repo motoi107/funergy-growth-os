@@ -1,5 +1,12 @@
 # 改修・自動化の作業記録
 
+## 2026-10-30 特例変更の記録を通常の変更で書き換えない（Codex #106 `e9e8bc4` の P2）
+
+1. 済（Moto さん 10/29 22:04 HST）：PR #106 をマージ（本番 v1116）。この P2 は本番に入っている。
+2. 済（Claude・ブランチ `claude/grade-special-keep`）：v1117（アプリだけ）・試験・わざと壊す 9/9。
+3. 次：PR → Codex → Moto さんがマージ → GM・CEO の端末を 1117 に。
+4. Moto さん：v1116 の SQL・関数（`deploy/bonus-close-base-special-v1116/手順.md` の 0〜3）を入れたか。入れたら 0 と 2 の結果を Claude に（任意）。
+
 ## 2026-10-29 ボーナスの基準額支給と個人別の特別報酬
 
 1. 済（Claude・ブランチ `claude/bonus-base-special`・#105 の上）：v1116（SQL `20261030090000`・関数 `bonus-close`・アプリ・`docs/BONUS_BASE_SPECIAL_V1116_JA.md`）・試験 12・わざと壊す・Chromium 24/24・独立レビュー（P2 5・P3 は直した）。
