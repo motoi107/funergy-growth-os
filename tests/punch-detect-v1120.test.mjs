@@ -317,7 +317,8 @@ test('Codex (PR #110・b0af69a): an alias starting 10/16 does not hide the punch
   assert.equal(l.length, 1); assert.equal(l[0].kind, 'resigned'); assert.deepEqual(l[0].byDate, { '2026-10-10': 5 });
 });
 
-test('Codex (PR #110): the store score still deducts only names in nobody\'s record (the resigned / part rows are listed but not scored until Moto decides)', () => {
+test('Moto (10/30): the store score deducts every listed row of the store (the resigned / part rows too)', () => {
   const line = source.split('\n').find(x => x.includes('staff.unreg =')) || '';
-  assert.match(line, /kind==='none'/);
+  assert.match(line, /x\.stores\.indexOf\(s\.id\)>=0; \}\)\.length/, 'counts every row listed for the store');
+  assert.doesNotMatch(line.split('//')[0], /kind/, 'no filter on the kind of row');
 });
