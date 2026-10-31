@@ -699,14 +699,29 @@ export function createHandler(deps) {
   // what they are made of changed. It never changes an invoice, the ledger or Drive, and a failure here never stops anything else.
   // `only` names what a person's action touched (doc_ids, file_id, outbox_id, months): only those months are written then.
   async function publishSummary(stats, only) {
+    let out;
     try {
       const r = await db.rpc('invoice_purchase_publish', only || {});
       if (stats) stats.purchase_published = (r && r.changed ? r.changed.length : 0);
-      return { ok: true, changed: r && r.changed ? r.changed : [] };
+      out = { ok: true, changed: r && r.changed ? r.changed : [] };
     } catch (e) {
       if (stats) stats.purchase_errors = (stats.purchase_errors || 0) + 1;
       console.error('invoice-intake purchase summary', safeErr(e));
-      return { ok: false };
+      out = { ok: false };
+    }
+    // The price comparison is written by the 5-minute worker only (it reads every confirmed price; a person's action does not wait for it).
+    if (stats) await publishPrices(stats);
+    return out;
+  }
+  // The unit prices of confirmed invoices compared per 1 LB / 1 L / 1 piece (10/30 の依頼 ②): the row the app reads is written
+  // again when what it shows changed. Read only on the invoices; a failure (or the SQL not in yet) never stops anything else.
+  async function publishPrices(stats) {
+    try {
+      const r = await db.rpc('invoice_price_compare_publish', {});
+      if (stats && r && r.changed) stats.prices_published = 1;
+    } catch (e) {
+      if (stats) stats.price_errors = (stats.price_errors || 0) + 1;
+      console.error('invoice-intake price compare', safeErr(e));
     }
   }
 

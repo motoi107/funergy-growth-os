@@ -16,7 +16,9 @@ const FILES = ['invoice', 'db/invoice-intake.sql', 'db/invoice-intake-precheck.s
   'supabase/migrations/20261024090000_invoice_vendor_register.sql', 'tests/invoice-vendor-register.test.mjs', 'tests/invoice-vendor-decide-ui.test.mjs', 'sw.js',
   'supabase/migrations/20261025090000_invoice_item_link.sql', 'tests/invoice-item-link.test.mjs', 'tests/invoice-item-link-ui.test.mjs', 'db/invoice-link-add-member.sql',
   'supabase/migrations/20261026090000_invoice_qb_gmail.sql', 'tests/invoice-qb-gmail.test.mjs', 'tests/invoice-qb-gmail-ui.test.mjs', 'db/invoice-qb-sender.sql',
-  'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'db/invoice-purchase-posted-revert.sql', 'db/invoice-purchase-posted-compare.sql'];
+  'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'db/invoice-purchase-posted-revert.sql', 'db/invoice-purchase-posted-compare.sql',
+  'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql',
+  'supabase/migrations/20261103090000_invoice_price_compare.sql', 'tests/invoice-price-compare.test.mjs', 'tests/purchase-price-ui.test.mjs'];
 
 function run(mutations, testFile) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'inv-mut-'));
@@ -44,6 +46,7 @@ const VM = 'tests/invoice-vendor-merge.test.mjs', VU = 'tests/invoice-vendor-mer
 const VR = 'tests/invoice-vendor-register.test.mjs', VD = 'tests/invoice-vendor-decide-ui.test.mjs';   // 新しい業者を決める（Moto 2026-10-16・UI案52 ③）
 const LK = 'tests/invoice-item-link.test.mjs', LU = 'tests/invoice-item-link-ui.test.mjs';   // 紐づけ 段階 1（Moto 2026-10-18・UI案55）
 const QG = 'tests/invoice-qb-gmail.test.mjs', QU = 'tests/invoice-qb-gmail-ui.test.mjs';   // QuickBooks からすぐ（Moto 2026-10-18・UI案56）
+const PC = 'tests/invoice-price-compare.test.mjs', PP = 'tests/purchase-price-ui.test.mjs';   // 仕入れの単価を比べる（10/30 の依頼 ②）
 const CASES = [
   ['price jump check removed', UNIT, [['invoice/rules.mjs', "if (changedAtLeast(oldR, newR, st.price_jump_pct ?? 15)) r.push('price_jump');", '']]],
   ['total check removed', UNIT, [['invoice/rules.mjs', 'if (Math.abs(calc - h.total_cents) > tol)', 'if (false)']]],
@@ -720,6 +723,41 @@ const CASES = [
   ["即時: twenty stopped rows already told hide the next ones", QG, [["db/invoice-intake.sql", "  where o.state='error' and o.attempts >= 5 and o.updated_at >= rs and not exists(select 1 from public.invoice_qb_alerts a where a.key = 'error_final:' || o.id)\n", "  where o.state='error' and o.attempts >= 5 and o.updated_at >= rs\n"]]],
   ["即時 app: what needs a person is not shown apart", QU, [["index.html", "    + open.map(rowHtml).join('')", "    + ''"]]],
   ["即時 app: the single invoice has no actions for an unknown send", QU, [["index.html", "          + (invInCanEdit() ? '<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-top:4px\"><button class=\"btn btn-primary btn-sm\" style=\"min-height:36px\" onclick=\"invInQbLookup(", "          + (false ? '<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-top:4px\"><button class=\"btn btn-primary btn-sm\" style=\"min-height:36px\" onclick=\"invInQbLookup("]]],
+  ["単価: auto-posted prices are compared before reconciling", PC, [["db/invoice-intake.sql", "   and (d.recon_status='reconciled' or (d.posted_mode='manual'\n", "   and (d.recon_status='reconciled' or (d.posted_mode in ('manual','auto')\n"]]],
+  ["単価: a possible app duplicate is compared", PC, [["db/invoice-intake.sql", "        and not exists(select 1 from jsonb_array_elements(d.reasons) r where r->>'code'='app_duplicate_candidate')))\n", "        ))\n"]]],
+  ["単価: a difference found in reconciling is compared", PC, [["db/invoice-intake.sql", " where d.status='posted' and d.doc_type='invoice' and d.recon_status<>'discrepancy'\n", " where d.status='posted' and d.doc_type='invoice'\n"]]],
+  ["単価: the case price is compared when there is no spec", PC, [["db/invoice-intake.sql", " then return jsonb_build_object('v', round(p_ppp, 6), 'u', 'EA', 'by', 'unit'); end if;\n return null;\nend $$;", " then return jsonb_build_object('v', round(p_ppp, 6), 'u', 'EA', 'by', 'unit'); end if;\n return jsonb_build_object('v', round(p_ppp, 6), 'u', upper(u), 'by', 'unit');\nend $$;"]]],
+  ["単価: grams are compared per gram, not per LB", PC, [["db/invoice-intake.sql", "  if p_bu = 'g' then return jsonb_build_object('v', round(p_pb * 453.59237, 6), 'u', 'LB', 'by', 'base'); end if;", "  if p_bu = 'g' then return jsonb_build_object('v', round(p_pb, 6), 'u', 'LB', 'by', 'base'); end if;"]]],
+  ["単価: KG is not converted to LB", PC, [["db/invoice-intake.sql", "jsonb_build_object('v', round(p_ppp * 0.45359237, 6), 'u', 'LB', 'by', 'unit')", "jsonb_build_object('v', round(p_ppp, 6), 'u', 'LB', 'by', 'unit')"]]],
+  ["単価: another spec is compared too", PC, [["db/invoice-intake.sql", "   h.store_id || '|' || h.vendor_key || '|' || h.ingredient_code || '|' || h.spec_key || '|' || h.purchase_unit k\n", "   h.store_id || '|' || h.vendor_key || '|' || h.ingredient_code || '|' || h.purchase_unit k\n"]]],
+  ["単価: CT is one piece", PC, [["db/invoice-intake.sql", "'ea','each','pc','pcs','piece','count','個','本'", "'ea','each','pc','pcs','piece','ct','count','個','本'"]]],
+  ["単価: two prices on one invoice are not told", PC, [["db/invoice-intake.sql", "    when g.a_two or g.b_two then 'check_link'\n", ""]]],
+  ["単価: no ±50 % check", PC, [["db/invoice-intake.sql", "    when abs((g.ac->>'v')::numeric / nullif((g.bc->>'v')::numeric, 0) - 1) > 0.5 then 'check_jump'\n", ""]]],
+  ["単価: the previous price may be on the same invoice", PC, [["db/invoice-intake.sql", "  select r.*, row_number() over (partition by r.k, r.kind, r.doc_id <> r.last_doc order by r.rn) prn from r", "  select r.*, row_number() over (partition by r.k, r.kind order by r.rn) - 1 prn from r"],
+    ["db/invoice-intake.sql", "(array_agg(r2.id) filter (where r2.kind='p' and r2.doc_id<>r2.last_doc and r2.prn=1))[1] b_id", "(array_agg(r2.id) filter (where r2.kind='p' and r2.prn=1))[1] b_id"],
+    ["db/invoice-intake.sql", "(array_agg(r2.effective_date) filter (where r2.kind='p' and r2.doc_id<>r2.last_doc and r2.prn=1))[1] b_d", "(array_agg(r2.effective_date) filter (where r2.kind='p' and r2.prn=1))[1] b_d"],
+    ["db/invoice-intake.sql", "(array_agg(r2.cmp) filter (where r2.kind='p' and r2.doc_id<>r2.last_doc and r2.prn=1))[1] bc", "(array_agg(r2.cmp) filter (where r2.kind='p' and r2.prn=1))[1] bc"]]],
+  ["単価: another unit is compared", PC, [["db/invoice-intake.sql", "    when g.bc->>'u' is distinct from g.ac->>'u' then 'unit_changed'\n", ""]]],
+  ["単価: voided prices are compared", PC, [["db/invoice-intake.sql", "  where h.status='active'\n  union all", "  where true\n  union all"]]],
+  ["単価: lines without a price record are hidden", PC, [["db/invoice-intake.sql", "  where coalesce(l.ingredient_code, '') <> '' and coalesce(l.amount_cents, 0) > 0 and c.effective_date is not null and c.vendor_key is not null\n", "  where false and coalesce(l.ingredient_code, '') <> '' and coalesce(l.amount_cents, 0) > 0 and c.effective_date is not null and c.vendor_key is not null\n"]]],
+  ["単価: a line with a price record is also counted as without", PC, [["db/invoice-intake.sql", "   and not exists(select 1 from public.invoice_price_history h where h.line_id=l.id and h.status='active')\n", "\n"]]],
+  ["単価: a later purchase without a record is not said", PC, [["db/invoice-intake.sql", "   count(*) filter (where r2.kind='u' and r2.effective_date >= r2.last_p) nr_n,", "   0::bigint nr_n,"]]],
+  ["単価: written again with nothing new", PC, [["db/invoice-intake.sql", " if v_old is not distinct from v_h and not coalesce((p->>'force')::boolean, false)\n", " if false\n"]]],
+  ["単価: the small row keeps old changes", PC, [["db/invoice-intake.sql", "    where g->>'st' in ('up','down','check_jump') and (g->>'d')::date >= (v_now at time zone 'Pacific/Honolulu')::date - 30), '[]'::jsonb));", "    where g->>'st' in ('up','down','check_jump')), '[]'::jsonb));"]]],
+  ["単価: not stopped with the purchase summary", PC, [["db/invoice-intake.sql", " if coalesce((public.invoice_setting('purchase')->>'off')::boolean, false) then\n  v_j := jsonb_build_object('v', 1, 'off', true); v_a := v_j;", " if false then\n  v_j := jsonb_build_object('v', 1, 'off', true); v_a := v_j;"]]],
+  ["単価: the browser can run it", PC, [["db/invoice-intake.sql", "revoke all on function public.invoice_price_compare_publish(jsonb) from public, anon, authenticated;\n", ""]]],
+  ["単価 app: other stores are shown", PP, [["index.html", "  var vis = pcxVisible(), all = (Array.isArray(D.groups) ? D.groups : []).filter(function(g){ return g && vis.indexOf(g.s) >= 0; });", "  var vis = pcxVisible(), all = (Array.isArray(D.groups) ? D.groups : []).filter(function(g){ return !!g; });"]]],
+  ["単価 app: another store opens by its key", PP, [["index.html", "  if (!g || pcxVisible().indexOf(g.s) < 0) return;", "  if (!g) return;"]]],
+  ["単価 app: the alert shows other stores", PP, [["index.html", "  var list = A.groups.filter(function(g){ return g && vis.indexOf(g.s) >= 0 && String(g.d || '') >= cut; });", "  var list = A.groups.filter(function(g){ return g && String(g.d || '') >= cut; });"]]],
+  ["単価 app: the alert reads the full row", PP, [["index.html", "  pcxEnsure(PCX_ALERT_KEY);\n  var A = pcxGet(PCX_ALERT_KEY);", "  pcxEnsure(PCX_KEY);\n  var A = pcxGet(PCX_KEY);"]]],
+  ["単価 app: the alert still uses the app’s prices", PP, [["index.html", "  try { return pcxAlertCard(); } catch(e) { return ''; }\n}", "  try { return pcxAlertCard() + (typeof priceChangesRecent === 'function' ? '' : ''); } catch(e) { return ''; }\n}"]]],
+  ["単価 app: a vendor name is not escaped", PP, [["index.html", "'<div style=\"font-size:10px;color:var(--muted)\">' + e(g.vn || g.vk || '') + '</div></td>'", "'<div style=\"font-size:10px;color:var(--muted)\">' + (g.vn || g.vk || '') + '</div></td>'"]]],
+  ["単価 app: the app’s prices are not folded away", PP, [["index.html", "  return pcxRender() + '<details class=\"card\" style=\"padding:10px 12px\"><summary", "  return pcxRender() + '<div class=\"card\" style=\"padding:10px 12px\"><summary"]]],
+  ["単価 app: a stopped comparison is shown", PP, [["index.html", "  if (D.off) return h + '<div", "  if (false) return h + '<div"]]],
+  ["単価 app: 要確認 sorts last on the same day", PP, [["index.html", "  var rk = function(st){ return Object.prototype.hasOwnProperty.call(rank, st) ? rank[st] : 9; };", "  var rk = function(st){ return rank[st] || 9; };"]]],
+  ["単価 app: a row taken back stays on the device", PP, [["index.html", "      if (!rows.length) { if (pcxRaw(k) !== null) _lsRawDel(k); return true; }", "      if (!rows.length) return true;"]]],
+  ["単価 app: a stale copy is not said", PP, [["index.html", "  if (D && A0 && A0.fail) h +=", "  if (false) h +="]]],
+  ["単価 app: a later purchase without a record is not shown", PP, [["index.html", "(pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div style=\"font-size:10px;color:#b45309;margin-top:2px\">'", "(false ? '<div style=\"font-size:10px;color:#b45309;margin-top:2px\">'"]]],
 ];
 
 test('every protection is covered by a failing test when removed', async (t) => {
@@ -743,6 +781,10 @@ test('every protection is covered by a failing test when removed', async (t) => 
   if (!only || only.test('紐づけ')) {
     assert.equal(run([], LK), 0, 'the unmodified linking test must pass (without the deploy-folder check)');
     assert.equal(run([], LU), 0, 'the unmodified linking screen test must pass');
+  }
+  if (!only || only.test('単価')) {
+    assert.equal(run([], PC), 0, 'the unmodified price comparison test must pass (without the deploy-folder check)');
+    assert.equal(run([], PP), 0, 'the unmodified price comparison app test must pass');
   }
   if (!only || only.test('即時')) {
     assert.equal(run([], QG), 0, 'the unmodified QuickBooks Gmail test must pass (without the deploy-folder check)');

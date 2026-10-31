@@ -1067,7 +1067,7 @@ test('the sender SQL: the template stops as it is; an address is kept in lower c
 
 // The folder Moto runs: the SQL is the repository's migration, the check SQL the repository's postcheck, the function the bundle of
 // today's sources; the steps name the files and the order (SQL → check → function → sender → app → connect → switch).
-test('deploy folder v1094: the copies are the repository files; the one-file function is today’s sources; the steps in order',
+test('deploy folder v1094: the copies are the repository files; the one-file function is as handed over (10/19); the steps in order',
   { skip: process.env.INVOICE_MUTATION_RUN ? 'a mutation run checks behaviour only' : false }, () => {
   const rd = f => fs.readFileSync(new URL('../' + f, import.meta.url));
   const sha = b => crypto.createHash('sha256').update(b).digest('hex');
@@ -1080,7 +1080,8 @@ test('deploy folder v1094: the copies are the repository files; the one-file fun
   const want = ['supabase/functions/invoice-intake/index.ts', 'supabase/functions/invoice-intake/handler.mjs',
     ...fs.readdirSync(new URL('../invoice/', import.meta.url)).filter(f => f.endsWith('.mjs')).sort().map(f => 'invoice/' + f)];
   assert.deepEqual(Object.keys(src.sources).sort(), want.sort());
-  for (const f of want) assert.equal(src.sources[f], sha(rd(f)), f + ' changed after the bundle was built (build it again)');
+  // The function moved on with 20261103090000 (仕入れの単価・deploy/invoice-price-compare-v1123/ is today's sources); this bundle stays as handed over.
+  assert.equal(src.bundle_sha256, 'f6e3a76924b71820af42f566e396d45b0d0004ce346b19fbd8d7e1a8f6ecde8a');
   const bundle = rd(D + '3_関数_invoice-intake_index.ts').toString();
   assert.ok(!/^\s*import\s/m.test(bundle) && /Deno\.serve\(createHandler/.test(bundle) && /waitUntil/.test(bundle));
   for (const k of ['invoice_qb_send_context', 'invoice_qb_send_check', 'gmail_connect', 'qb_external_monitor', 'FPQB-ATTEMPT-', 'invoice_link_apply']) assert.ok(bundle.includes(k), k);

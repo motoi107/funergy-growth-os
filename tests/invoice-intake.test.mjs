@@ -1150,7 +1150,7 @@ test('deploy checks and the guarded rollback', async () => {
   assert.deepEqual({ ...post, tables: Number(post.tables), functions: Number(post.functions), browser_can_read: Number(post.browser_can_read), browser_can_run: Number(post.browser_can_run) },
     { tables: 25, functions: new Set(created).size, worker_enabled: 'false', intake_on: 'false', auto_post_on: 'false', app_copy_on: 'false', qb_on: 'false', qb_external_on: 'false',
       rename_on: 'false', rls_on: true, browser_can_read: 0, browser_can_run: 0, review_fixes: true, accounting_checks: true, store_folder_intake: true,
-      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true, qb_gmail: true, purchase_posted: true });
+      office_crew_accounting: true, rename_after_post: true, purchase_summary: true, reconciled_folder: true, multi_file: true, vendor_merge: true, vendor_register: true, item_link: true, qb_gmail: true, purchase_posted: true, price_compare: true });
   assert.ok(!/key/.test(Object.keys(post).join()) && !JSON.stringify(post).match(/[0-9a-f]{32}/), 'the postcheck shows no key');
   await assert.rejects(pg.exec(SQL), /already exists/, 'running the migration twice stops at the first statement');
   // the rollback names exactly the objects the migration creates

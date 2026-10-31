@@ -538,6 +538,15 @@ test('each migration changes only what it says', async () => {
   const vm4 = [...read('supabase/migrations/20261022090000_invoice_vendor_merge.sql').matchAll(fn)].find(m => m[1] === 'invoice_vendor_seed')[0];
   const sd1 = [...sd.matchAll(fn)][0][0];
   assert.equal(sd1.replace(" and coalesce(v.data->>'vst','') <> 'deleted'", '').replace(/^ -- A card deleted in the vendor master[^\n]*\n/m, ''), vm4, 'the same function besides skipping deleted vendors');
+  // 仕入れの単価を比べる (20261103090000, 10/30 の依頼 ②): three new functions for the service role only, and the stop when
+  // 20261029100000 is not there; nothing is changed in the invoices, lines, price history or settings.
+  const pc = read('supabase/migrations/20261103090000_invoice_price_compare.sql');
+  assert.deepEqual([...pc.matchAll(fn)].map(m => m[1]), ['invoice_price_cmp', 'invoice_price_compare_data', 'invoice_price_compare_publish']);
+  assert.ok([...pc.matchAll(fn)].every(m => m[0].startsWith('create or replace function')), 'running it twice changes nothing');
+  const pcRest = pc.replace(fn, '').replace(/^--.*\n/gm, '').replace(/\n+/g, '\n').trim();
+  assert.ok(!/^(create table|alter |drop |insert |update |delete )/im.test(pcRest), 'no table, row or setting is changed');
+  assert.equal(pcRest.split('\n').filter(l => /^(revoke|grant) /.test(l)).length, 6, 'service role only');
+  assert.match(pcRest, /^do \$\$ begin\n if to_regprocedure\('public\.invoice_purchase_month\(text,jsonb\)'\) is null/);
   // the revert puts back the 段階 3 version of the function, and nothing else
   const rv = read('db/invoice-purchase-posted-revert.sql'), mf3 = read('supabase/migrations/20261021090000_invoice_multi_file.sql');
   const pm3 = [...mf3.matchAll(fn)].find(m => m[1] === 'invoice_purchase_month')[0];
@@ -554,7 +563,8 @@ test('each migration changes only what it says', async () => {
     'supabase/migrations/20261020090000_invoice_reconciled_folder.sql', 'supabase/migrations/20261021090000_invoice_multi_file.sql',
     'supabase/migrations/20261022090000_invoice_vendor_merge.sql', 'supabase/migrations/20261024090000_invoice_vendor_register.sql',
     'supabase/migrations/20261025090000_invoice_item_link.sql', 'supabase/migrations/20261026090000_invoice_qb_gmail.sql',
-    'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql'])
+    'supabase/migrations/20261029100000_invoice_purchase_posted.sql', 'supabase/migrations/20261101100000_invoice_vendor_seed_skip_deleted.sql',
+    'supabase/migrations/20261103090000_invoice_price_compare.sql'])
     for (const m of read(f).matchAll(fn)) latest[m[1]] = m[0].replace('create or replace function', 'create function');
   assert.deepEqual(Object.keys(inFull).sort(), Object.keys(latest).sort());
   for (const k of Object.keys(latest)) assert.equal(inFull[k], latest[k], k);

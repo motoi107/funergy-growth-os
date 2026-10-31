@@ -40834,7 +40834,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1122';
+const APP_VERSION = '1123';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -56040,33 +56040,8 @@ function openTrendAny(ref){
 function setIngTab(t){ window._ingTab=t; renderPage('ingredient_master'); }
 /* G3以上のダッシュボード: 価格変動アラート（直近14日・可視店舗で使用中の食材のみ） */
 function renderPriceAlertCard(){
-  try{
-    if (['sl','sm','am','gm','ceo'].indexOf(curRole)<0) return '';
-    var visIds = getVisibleStores().map(function(s){return s.id;});
-    var raw = priceChangesRecent(14);
-    var seen={}, chgs=[];
-    raw.forEach(function(c){
-      if (seen[c.code]) return;
-      var used = c.stores ? c.stores : storesUsingIngredient(c.code); // V2は登録店舗、旧はマスター逆引き
-      var hit = (used&&used.length) ? used.some(function(id){return visIds.indexOf(id)>=0;}) : (visIds.indexOf(c.storeId)>=0);
-      if (!hit) return;
-      seen[c.code]=1; chgs.push(c);
-    });
-    if (!chgs.length) return '';
-    var ups=chgs.filter(function(c){return c.to>c.from;}).length, downs=chgs.length-ups;
-    var h = `<div class="card" style="border-left:4px solid var(--yellow)"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--yellow)"></i>価格変動アラート <span style="font-size:11px;color:var(--muted);font-weight:400">直近14日 · <span style="color:var(--red)">値上げ${ups}</span> / <span style="color:var(--green)">値下げ${downs}</span></span>
-      <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="goPurchaseAnalysis()"><i class="ti ti-chart-line"></i> 仕入分析</button></div>`;
-    chgs.slice(0,6).forEach(function(c){
-      var up=c.to>c.from;
-      h += `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px">
-        <i class="ti ${up?'ti-arrow-up-right':'ti-arrow-down-right'}" style="color:${up?'var(--red)':'var(--green)'}"></i>
-        <div style="flex:1;min-width:0"><b>${escapeHtml(c.name)}</b> <span style="font-size:10px;color:var(--muted)">${escapeHtml(c.vendor)} · ${escapeHtml(String(c.date).slice(5))}</span></div>
-        <div style="white-space:nowrap">$${c.from.toFixed(2)} → <b style="color:${up?'var(--red)':'var(--green)'}">$${c.to.toFixed(2)}</b> <span style="font-size:10px;color:${up?'var(--red)':'var(--green)'}">${c.pct!=null?((up?'+':'')+c.pct+'%'):''}</span></div>
-      </div>`;
-    });
-    if (chgs.length>6) h += `<div style="font-size:11px;color:var(--muted);margin-top:6px">他 ${chgs.length-6} 件は仕入分析タブで確認できます</div>`;
-    return h+'</div>';
-  }catch(e){ return ''; }
+  /* v1123：経理が確認した invoice の単位あたりの単価で出す（アプリで入れた invoice の価格では出さない） */
+  try { return pcxAlertCard(); } catch(e) { return ''; }
 }
 /* ===== 新マスター（移行中）タブ — 店舗別（店舗内で業者別）管理 ===== */
 function v2StorePriceRange(it){
@@ -56292,8 +56267,183 @@ function openIngV2Trend(id){
     <table class="inv-table" style="width:100%;font-size:11px;margin-top:8px"><thead><tr><th style="text-align:left">日付</th><th style="text-align:left">業者</th><th style="text-align:right">価格</th></tr></thead><tbody>${rows}</tbody></table>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button></div>`);
 }
+/* FUNERGY_PRICE_COMPARE_BEGIN */
+/* ===================================================================== v1123：仕入れの単価を比べる（10/30 の依頼 ②）
+   経理が確認した invoice（人が反映・または照合済み。自動で反映したものは照合済みになってから）の明細の単価を、
+   同じ店・業者・食材・規格・仕入単位で、1 LB・1 L・1 個（または入数の単位）あたりに直して前回と比べる（Moto さん 10/30：単位あたりで比べる案）。
+   サーバー（invoice-intake）が app_state 'invoice_purchase_prices'（全部）と 'invoice_purchase_prices_alerts'（30 日の変動だけ）に書く。アプリは読むだけ。
+   比べられないもの（規格が分からない）・同じ invoice に 2 つの単価（結びの確認）・±50 % を超える変化（要確認）は、そう出す（0 や推測では比べない）。
+   アプリで入れた invoice の価格（新マスターの価格・旧 invoice の newPrice）は比べ方が違うので比較に入れず、参考として下にたたんで残す。 */
+var PCX_KEY = 'invoice_purchase_prices', PCX_ALERT_KEY = 'invoice_purchase_prices_alerts', PCX_TTL = 10 * 60 * 1000;
+var _pcx = { memo:{}, asked:{}, flt:'all', store:'', q:'' };
+var PCX_ST = { up:['値上がり','Up','var(--red)'], down:['値下がり','Down','var(--green)'], same:['変わらない','No change','var(--muted)'], first:['はじめて','First','var(--muted)'],
+  check_jump:['要確認（±50% 超）','Check (over ±50%)','#b45309'], check_link:['結びの確認','Check the link','#b45309'], no_spec:['比較不可（規格が不明）','Not comparable (no spec)','var(--muted)'],
+  unit_changed:['比較不可（単位が変わった）','Not comparable (unit changed)','var(--muted)'], not_recorded:['比較不可（単価の記録なし）','Not comparable (no price record)','var(--muted)'] };
+var PCX_BY = { base:['規格（重さ・量・個数）から','from the spec (weight, volume, pieces)'], count:['規格（入数）から','from the spec (pack count)'], unit:['仕入単位から','from the purchase unit'] };
+function pcxRaw(k){ try { return (typeof _lsStoreGet === 'function') ? _lsStoreGet(k) : null; } catch(e) { return null; } }
+function pcxGet(k){
+  var raw = pcxRaw(k); if (!raw) return null;
+  var m = _pcx.memo[k]; if (m && m.raw === raw) return m.val;
+  var v = null; try { v = JSON.parse(raw); } catch(e) { v = null; }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) v = null;
+  _pcx.memo[k] = { raw:raw, val:v };
+  return v;
+}
+/* 開いたときに取る（10 分ごと・取れなかったら 1 分あけて）。まとめ取りには入れない（invoice_purchase_ の行）。
+   サーバーに行が無ければ（戻した・まだ作っていない）、この端末の古い写しも消す（前の内容を出し続けない）。 */
+function pcxPull(k){
+  return fetch(SUPABASE_URL + '/rest/v1/app_state?key=eq.' + encodeURIComponent(k) + '&select=value', { headers: supaHeaders() })
+    .then(function(res){ if (!res.ok) throw new Error('http ' + res.status); return res.json(); })
+    .then(function(rows){
+      if (!Array.isArray(rows)) throw new Error('bad');
+      if (!rows.length) { if (pcxRaw(k) !== null) _lsRawDel(k); return true; }
+      if (!_lsSetVerified(k, JSON.stringify(rows[0].value))) throw new Error('save');
+      return true;
+    });
+}
+function pcxEnsure(k){
+  if (typeof fetch !== 'function' || typeof supaHeaders !== 'function') return;
+  var a = _pcx.asked[k], now = Date.now();
+  if (a && ((a.busy && now - a.busy < 120000) || (a.done && now - a.done < PCX_TTL) || (a.fail && now - a.fail < 60000))) return;
+  var mine = { busy:now, last:a && (a.done || a.last) || 0 }; _pcx.asked[k] = mine;
+  var before = pcxRaw(k);
+  Promise.resolve().then(function(){ return pcxPull(k); }).then(function(){
+    if (_pcx.asked[k] !== mine) return;
+    _pcx.asked[k] = { done:Date.now() };
+    if (pcxRaw(k) !== before && typeof _lsRerenderSoon === 'function') _lsRerenderSoon();
+  }, function(){ if (_pcx.asked[k] === mine) { _pcx.asked[k] = { fail:Date.now(), last:mine.last }; if (before !== null && typeof _lsRerenderSoon === 'function') _lsRerenderSoon(); } });
+}
+function pcxNum(v){ var n = Number(v); return (v === null || v === undefined || v === '' || !isFinite(n)) ? null : n; }
+function pcxMoney(v){ var n = pcxNum(v); if (n === null) return '—'; return '$' + n.toFixed(n >= 10 ? 2 : n >= 1 ? 3 : 4); }
+function pcxPer(v, u){ var n = pcxNum(v); return n === null ? '—' : pcxMoney(n) + '<span style="color:var(--muted);font-size:10.5px"> / ' + escapeHtml(String(u || '')) + '</span>'; }
+function pcxIng(code){ try { return getIngredients().find(function(x){ return String(x.code) === String(code); }) || null; } catch(e) { return null; } }
+function pcxName(g){ var ing = pcxIng(g.c); return ing ? ing.name : ('#' + g.c); }
+function pcxStore(id){ var s = (typeof STORES !== 'undefined' ? STORES : []).find(function(x){ return x.id === id; }); return s ? s.name : id; }
+function pcxChip(st){ var x = PCX_ST[st] || [st, st, 'var(--muted)']; return '<span style="display:inline-block;border:1px solid ' + x[2] + ';color:' + x[2] + ';border-radius:10px;padding:1px 7px;font-size:10.5px;font-weight:700;white-space:nowrap">' + escapeHtml(t(x[0], x[1])) + '</span>'; }
+function pcxPct(g){ var p = pcxNum(g.pct); if (p === null) return '—'; var c = p > 0 ? 'var(--red)' : p < 0 ? 'var(--green)' : 'var(--muted)'; return '<b style="color:' + c + '">' + (p > 0 ? '+' : '') + p.toFixed(1) + '%</b>'; }
+function pcxDiff(g){ var d = pcxNum(g.dv); if (d === null) return ''; return '<span style="font-size:10.5px;color:var(--muted)">' + (d > 0 ? '+' : d < 0 ? '−' : '±') + pcxMoney(Math.abs(d)) + '</span>'; }
+function pcxVisible(){ try { return getVisibleStores().map(function(s){ return s.id; }); } catch(e) { return []; } }
+function pcxGenAt(d){ var ms = Date.parse(d && d.generated_at || ''); if (!isFinite(ms)) return ''; var x = new Date(ms - 10 * 3600 * 1000); return (x.getUTCMonth()+1) + '/' + x.getUTCDate() + ' ' + String(x.getUTCHours()).padStart(2,'0') + ':' + String(x.getUTCMinutes()).padStart(2,'0'); }
+function pcxSet(k, v){ _pcx[k] = v; renderPage('ingredient_master'); }
+function pcxRender(){
+  pcxEnsure(PCX_KEY);
+  var D = pcxGet(PCX_KEY), e = escapeHtml;
+  var h = '<div class="card"><div class="card-title"><i class="ti ti-scale" style="color:var(--accent)"></i>' + t('仕入れ単価の比較（経理が確認した invoice）','Unit prices compared (invoices accounting confirmed)')
+    + (D && D.generated_at ? ' <span style="font-size:11px;color:var(--muted);font-weight:400">' + t('内容が変わった時刻 ','Last changed ') + e(pcxGenAt(D)) + t('（ハワイ・サーバーが 5 分ごとに確かめる）',' (Hawaii · the server checks every 5 minutes)') + '</span>' : '') + '</div>';
+  var A0 = _pcx.asked[PCX_KEY];
+  if (D && A0 && A0.fail) h += '<div class="alert" style="padding:6px 10px;font-size:11.5px;margin-bottom:8px"><i class="ti ti-wifi-off"></i> ' + t('最新を読めませんでした。この端末に前に読んだ内容を出しています（少しあとで開き直してください）。','Could not read the latest. Showing what this device read before (open it again in a moment).') + '</div>';
+  h += '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-bottom:8px">' + t('明細の単価（1 仕入単位あたり）を、規格（入数・量）で <b>1 LB・1 L・1 個</b>（または入数の単位）あたりに直して、同じ店・業者・食材・規格・仕入単位の前回の invoice と比べます。何ケース買ったか（数量）では変わりません。税・送料・invoice 全体の値引きは含みません。規格が分からないものは比べません（比較不可）。',
+    'Each line’s unit price (per purchase unit) is converted with its spec (pack, content) to <b>per 1 LB, 1 L or 1 piece</b> (or the pack’s count unit) and compared with the previous invoice of the same store, vendor, product, spec and purchase unit. The quantity bought does not change it. Tax, shipping and invoice-level discounts are not included. Items without a known spec are not compared.') + '</div>';
+  if (!D) {
+    var a = _pcx.asked[PCX_KEY];
+    h += '<div style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + (a && a.busy ? t('読み込み中…','Loading…') : a && a.fail ? t('読み込めませんでした。少しあとで開き直してください。','Could not load. Open it again in a moment.') : t('まだ集計がありません（Invoice取込のサーバーが 5 分ごとに作ります）。','No comparison yet (the invoice intake server makes it every 5 minutes).')) + '</div></div>';
+    return h;
+  }
+  if (D.off) return h + '<div style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + t('止めています（確認済みの仕入れ集計と一緒に止めています）。','Stopped (with the confirmed purchase summary).') + '</div></div>';
+  var vis = pcxVisible(), all = (Array.isArray(D.groups) ? D.groups : []).filter(function(g){ return g && vis.indexOf(g.s) >= 0; });
+  var cnt = function(st){ return all.filter(function(g){ return g.st === st; }).length; };
+  var st = D.stats || {};
+  h += '<div class="kpi-grid">' + kpi(t('値上がり','Up'), cnt('up') + t('件',''), t('前回の invoice より','vs the previous invoice'), 'var(--red)') + kpi(t('値下がり','Down'), cnt('down') + t('件',''), '', 'var(--green)')
+    + kpi(t('要確認','Check'), (cnt('check_jump') + cnt('check_link')) + t('件',''), t('±50% 超 ','over ±50% ') + cnt('check_jump') + t(' · 結び ',' · link ') + cnt('check_link'), '#b45309')
+    + kpi(t('比較不可','Not comparable'), (cnt('no_spec') + cnt('unit_changed') + cnt('not_recorded')) + t('件',''), t('規格・単位・単価の記録','spec, unit or no price record'), 'var(--muted)') + '</div>';
+  if (pcxNum(st.waiting)) h += '<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-clock"></i> ' + t('経理の確認を待っている invoice の単価 ','Prices of invoices waiting for accounting ') + e(String(st.waiting)) + t(' 件は、確認されるまで比べません（全店の数）。',' are not compared until confirmed (all stores).') + '</div>';
+  var stores = vis.filter(function(id){ return all.some(function(g){ return g.s === id; }); });
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:10px 0 6px">';
+  [['all',t('すべて','All')],['up',PCX_ST.up],['down',PCX_ST.down],['check',[t('要確認','Check'),t('要確認','Check')]],['nc',[t('比較不可','Not comparable'),t('比較不可','Not comparable')]],['first',PCX_ST.first]].forEach(function(x){
+    var lab = Array.isArray(x[1]) ? t(x[1][0], x[1][1]) : x[1];
+    h += '<button class="btn btn-sm ' + (_pcx.flt === x[0] ? 'btn-primary' : 'btn-secondary') + '" onclick="pcxSet(\'flt\',\'' + x[0] + '\')">' + e(lab) + '</button>';
+  });
+  h += '<select class="form-input" style="width:auto;min-height:36px;font-size:12px" onchange="pcxSet(\'store\', this.value)"><option value="">' + t('全店','All stores') + '</option>'
+    + stores.map(function(id){ return '<option value="' + e(id) + '"' + (_pcx.store === id ? ' selected' : '') + '>' + e(pcxStore(id)) + '</option>'; }).join('') + '</select>'
+    + '<input class="form-input" style="width:160px;min-height:36px;font-size:12px" placeholder="' + t('食材を探す','Find a product') + '" value="' + e(_pcx.q) + '" onchange="pcxSet(\'q\', this.value)"></div>';
+  var q = String(_pcx.q || '').trim().toLowerCase();
+  var rows = all.filter(function(g){
+    if (_pcx.store && g.s !== _pcx.store) return false;
+    if (_pcx.flt === 'check' ? !(g.st === 'check_jump' || g.st === 'check_link')
+      : _pcx.flt === 'nc' ? !(g.st === 'no_spec' || g.st === 'unit_changed' || g.st === 'not_recorded')
+      : (_pcx.flt !== 'all' && g.st !== _pcx.flt)) return false;
+    if (q && pcxName(g).toLowerCase().indexOf(q) < 0 && String(g.c).indexOf(q) < 0 && String(g.vn || '').toLowerCase().indexOf(q) < 0) return false;
+    return true;
+  });
+  var rank = { check_jump:0, check_link:1, up:2, down:3, no_spec:4, unit_changed:4, not_recorded:4, same:5, first:6 };
+  var rk = function(st){ return Object.prototype.hasOwnProperty.call(rank, st) ? rank[st] : 9; };
+  rows.sort(function(a, b){ return (String(b.d) > String(a.d) ? 1 : String(b.d) < String(a.d) ? -1 : 0) || (rk(a.st) - rk(b.st)); });
+  if (!rows.length) return h + '<div style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + t('当てはまる品目はありません。','Nothing matches.') + '</div></div>';
+  h += '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:760px;font-size:11.5px"><thead><tr><th style="text-align:left">' + t('食材','Product') + '</th><th style="text-align:left">' + t('店舗・業者','Store · vendor') + '</th><th style="text-align:left">' + t('規格・仕入単位','Spec · unit') + '</th>'
+    + '<th style="text-align:right">' + t('比較単価','Unit price') + '</th><th style="text-align:right">' + t('前回','Previous') + '</th><th style="text-align:right">' + t('増減','Change') + '</th><th>' + t('仕入日','Date') + '</th><th style="text-align:left">' + t('根拠','Source') + '</th><th>' + t('状態','State') + '</th></tr></thead><tbody>';
+  rows.slice(0, 200).forEach(function(g){
+    var o0 = (Array.isArray(g.obs) && g.obs[0]) || {};
+    h += '<tr style="cursor:pointer" onclick="pcxOpen(' + escapeHtml(JSON.stringify(String(g.k))).replace(/'/g, '&#39;') + ')"><td style="text-align:left;font-weight:700">' + e(pcxName(g)) + '<div style="font-size:10px;color:var(--muted);font-weight:400">#' + e(String(g.c)) + '</div></td>'
+      + '<td style="text-align:left">' + e(pcxStore(g.s)) + '<div style="font-size:10px;color:var(--muted)">' + e(g.vn || g.vk || '') + '</div></td>'
+      + '<td style="text-align:left">' + e(g.sp || '—') + '<div style="font-size:10px;color:var(--muted)">' + e(g.pu || '') + (PCX_BY[g.by] ? ' · ' + e(t(PCX_BY[g.by][0], PCX_BY[g.by][1])) : '') + '</div></td>'
+      + '<td style="text-align:right;white-space:nowrap">' + (g.v != null ? pcxPer(g.v, g.u) : '<span style="color:var(--muted)">' + pcxMoney(o0.ppp) + ' / ' + e(g.pu || '') + '</span>') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">' + (g.pv != null ? pcxPer(g.pv, g.u) : '—') + '</td>'
+      + '<td style="text-align:right;white-space:nowrap">' + pcxPct(g) + '<div>' + pcxDiff(g) + '</div></td>'
+      + '<td style="white-space:nowrap;color:var(--muted)">' + e(String(g.d || '').slice(5)) + (g.pd ? '<div style="font-size:10px">' + t('前回 ','prev ') + e(String(g.pd).slice(5)) + '</div>' : '') + '</td>'
+      + '<td style="text-align:left;white-space:nowrap">' + e(o0.inv || '—') + (o0.f && typeof invInOrig === 'function' ? '<div>' + invInOrig(o0.f, t('原本','Original')) + '</div>' : '') + '</td>'
+      + '<td>' + pcxChip(g.st) + (pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div style="font-size:10px;color:#b45309;margin-top:2px">' + t('この日以降に単価の記録が無い仕入れ ','Later purchases without a price record ') + e(String(g.nr)) + '</div>' : '') + '</td></tr>';
+  });
+  h += '</tbody></table></div>' + (rows.length > 200 ? '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + t('新しい順に 200 件まで。絞り込むとほかも出ます。','Up to 200, newest first. Filter to see the rest.') + '</div>' : '') + '</div>';
+  return h;
+}
+function pcxOpen(k){
+  var D = pcxGet(PCX_KEY), g = D && Array.isArray(D.groups) ? D.groups.find(function(x){ return x && String(x.k) === String(k); }) : null, e = escapeHtml;
+  if (!g || pcxVisible().indexOf(g.s) < 0) return;
+  var why = { check_link:t('同じ invoice に、この食材・規格で別の単価があります。対応表の結び（どの品目に結んだか）を確かめてください（比べません）。','The same invoice has another price for this product and spec. Check the mapping (not compared).'),
+    check_jump:t('前回から ±50% を超えて変わりました。数量・単価・規格の読み違いがないか、原本で確かめてください。','Changed by more than ±50%. Check the quantity, unit price and spec on the original.'),
+    no_spec:t('入数や量（規格）が分からず、仕入単位も重さ・量・個ではないため、1 LB・1 L・1 個あたりに直せません。対応表で規格を入れると比べられます。','The pack or content is unknown and the purchase unit is not a weight, volume or piece, so it cannot be converted. Add the spec in the mapping to compare it.'),
+    first:t('比べる前回の invoice がまだありません。','No previous invoice to compare with yet.'),
+    unit_changed:t('前回と比べる単位が違います（対応表の規格や仕入単位が変わった）。同じ単位になるまで比べません。','The previous price is in another unit (the spec or purchase unit in the mapping changed). Not compared until they match.'),
+    not_recorded:t('経理が確認した invoice ですが、単価の記録がありません（量り売り・数量や単価が読めない・数量 × 単価が合わない・結びの確認が要る など）。原本と対応表を確かめてください。','The invoice is confirmed but has no price record (catch weight, quantity or price unreadable, quantity × price does not match, the link needs checking, …). Check the original and the mapping.') };
+  var h = '<div class="modal-title">' + e(pcxName(g)) + ' — ' + t('仕入れ単価','Unit prices') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12px;margin-bottom:6px">' + e(pcxStore(g.s)) + ' · ' + e(g.vn || g.vk || '') + ' · ' + t('規格 ','spec ') + e(g.sp || '—') + ' · ' + t('仕入単位 ','unit ') + e(g.pu || '—') + ' ' + pcxChip(g.st) + '</div>'
+    + (g.v != null ? '<div style="font-size:13px;margin-bottom:6px">' + t('比較単価 ','Unit price ') + '<b>' + pcxPer(g.v, g.u) + '</b>' + (g.pv != null ? '　' + t('前回 ','previous ') + pcxPer(g.pv, g.u) + '　' + pcxPct(g) + ' ' + pcxDiff(g) : '') + '</div>' : '')
+    + (why[g.st] ? '<div class="alert" style="padding:7px 10px;font-size:11.5px;margin-bottom:8px">' + e(why[g.st]) + '</div>' : '')
+    + (pcxNum(g.nr) && g.st !== 'not_recorded' ? '<div class="alert" style="padding:7px 10px;font-size:11.5px;margin-bottom:8px">' + e(t('この日以降（' + String(g.nrd || '') + ' まで）に、単価の記録が無い仕入れが ' + g.nr + ' 件あります（量り売り・数量や単価が読めない など）。上の比較単価がいちばん新しい仕入れとは限りません。', g.nr + ' later purchase(s) up to ' + String(g.nrd || '') + ' have no price record (catch weight, unreadable quantity or price, …). The price above may not be the newest purchase.')) + '</div>' : '')
+    + (PCX_BY[g.by] ? '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + e(t('比較単価の求め方：', 'How it is converted: ') + t(PCX_BY[g.by][0], PCX_BY[g.by][1])) + '</div>' : '')
+    + '<div style="overflow-x:auto"><table class="inv-table" style="width:100%;min-width:560px;font-size:11.5px"><thead><tr><th>' + t('仕入日','Date') + '</th><th style="text-align:left">invoice</th><th style="text-align:right">' + t('数量','Qty') + '</th><th style="text-align:right">' + t('単価（1 仕入単位）','Unit price (per purchase unit)') + '</th><th style="text-align:right">' + t('明細金額','Line amount') + '</th><th style="text-align:right">' + t('比較単価','Compared') + '</th></tr></thead><tbody>'
+    + (Array.isArray(g.obs) ? g.obs : []).map(function(o){
+        return '<tr><td style="white-space:nowrap">' + e(String(o.d || '')) + '</td><td style="text-align:left">' + e(o.inv || '—') + (o.f && typeof invInOrig === 'function' ? ' ' + invInOrig(o.f, t('原本','Original') + (o.pg ? ' p.' + e(String(o.pg)) : '')) : '') + (o.two ? ' ' + pcxChip('check_link') : '') + '</td>'
+          + '<td style="text-align:right">' + (pcxNum(o.q) === null ? '—' : e(String(pcxNum(o.q)))) + ' ' + e(g.pu || '') + '</td><td style="text-align:right">' + pcxMoney(o.ppp) + '</td>'
+          + '<td style="text-align:right">' + (pcxNum(o.amt) === null ? '—' : '$' + (pcxNum(o.amt) / 100).toFixed(2)) + '</td><td style="text-align:right">' + (o.v != null ? pcxPer(o.v, o.u) : '—') + '</td></tr>';
+      }).join('') + '</tbody></table></div>'
+    + '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">' + t('新しい順に 6 件まで（経理が確認した invoice だけ）。比較単価＝単価 ÷ 入数・量（規格）。明細金額は数量 × 単価で、何ケース買ったかによって変わりますが、比較単価は変わりません。元の invoice・確認の状態・会計の記録は変えていません。',
+      'Up to 6, newest first (invoices accounting confirmed only). Compared = unit price ÷ pack or content. The line amount depends on how many were bought; the compared price does not. The invoices, their confirmation and the accounting records are not changed.') + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('閉じる','Close') + '</button></div>';
+  openModal(h);
+}
+/* ダッシュボードの価格変動アラート：経理が確認した invoice の、直近 14 日の値上がり・値下がり・要確認（見られる店だけ） */
+function pcxAlertCard(){
+  if (['sl','sm','am','gm','ceo'].indexOf(curRole) < 0) return '';
+  pcxEnsure(PCX_ALERT_KEY);
+  var A = pcxGet(PCX_ALERT_KEY); if (!A || A.off || !Array.isArray(A.groups)) return '';
+  var vis = pcxVisible(), today = (typeof bizToday === 'function' ? bizToday() : new Date().toISOString().slice(0,10));
+  var cut = new Date(today + 'T00:00:00Z'); cut.setUTCDate(cut.getUTCDate() - 14); cut = cut.toISOString().slice(0, 10);
+  var list = A.groups.filter(function(g){ return g && vis.indexOf(g.s) >= 0 && String(g.d || '') >= cut; });
+  if (!list.length) return '';
+  var ups = list.filter(function(g){ return g.st === 'up'; }).length, downs = list.filter(function(g){ return g.st === 'down'; }).length, chk = list.filter(function(g){ return g.st === 'check_jump'; }).length, e = escapeHtml;
+  var h = '<div class="card" style="border-left:4px solid var(--yellow)"><div class="card-title"><i class="ti ti-trending-up" style="color:var(--yellow)"></i>' + t('価格変動アラート','Price change alert') + ' <span style="font-size:11px;color:var(--muted);font-weight:400">' + t('直近14日・経理確認済み · ','last 14 days · confirmed · ')
+    + '<span style="color:var(--red)">' + t('値上げ','up ') + ups + '</span> / <span style="color:var(--green)">' + t('値下げ','down ') + downs + '</span>' + (chk ? ' / <span style="color:#b45309">' + t('要確認','check ') + chk + '</span>' : '') + '</span>'
+    + '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="goPurchaseAnalysis()"><i class="ti ti-chart-line"></i> ' + t('仕入分析','Purchase analysis') + '</button></div>';
+  list.slice(0, 6).forEach(function(g){
+    var up = pcxNum(g.pct) > 0;
+    h += '<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12px"><i class="ti ' + (up ? 'ti-arrow-up-right' : 'ti-arrow-down-right') + '" style="color:' + (up ? 'var(--red)' : 'var(--green)') + '"></i>'
+      + '<div style="flex:1;min-width:0"><b>' + e(pcxName(g)) + '</b> <span style="font-size:10px;color:var(--muted)">' + e(g.vn || '') + ' · ' + e(pcxStore(g.s)) + ' · ' + e(String(g.d || '').slice(5)) + '</span>' + (g.st === 'check_jump' ? ' ' + pcxChip('check_jump') : '') + '</div>'
+      + '<div style="white-space:nowrap">' + pcxPer(g.pv, g.u) + ' → <b>' + pcxPer(g.v, g.u) + '</b> ' + pcxPct(g) + '</div></div>';
+  });
+  if (list.length > 6) h += '<div style="font-size:11px;color:var(--muted);margin-top:6px">' + t('他 ' + (list.length - 6) + ' 件は仕入分析タブで確認できます', (list.length - 6) + ' more on the purchase analysis tab') + '</div>';
+  return h + '</div>';
+}
+/* FUNERGY_PRICE_COMPARE_END */
 /* ===== 仕入分析タブ本体 ===== */
 function renderPurchaseAnalysis(){
+  /* v1123：比較は経理が確認した invoice の単位あたりの単価だけ。アプリで入れた invoice の価格は参考（たたむ・比べない） */
+  return pcxRender() + '<details class="card" style="padding:10px 12px"><summary style="cursor:pointer;font-size:12.5px;font-weight:700"><i class="ti ti-archive"></i> '
+    + t('参考：アプリで入れた invoice の価格と仕入額（比べ方が違うため、上の比較には入れていません）','Reference: prices and totals from invoices entered in the app (compared differently; not in the comparison above)')
+    + '</summary><div style="font-size:11px;color:var(--muted);margin:6px 0">' + t('ここの価格は、アプリで読み取った 1 回の価格（ケースなどの仕入単位あたりや明細の合計のこともあります）で、数量や入数をそろえていません。値上がりの判断には使わないでください。',
+      'These prices are as read in the app (per case or sometimes the line total) without matching quantity or pack. Do not use them to judge a price rise.') + '</div>' + renderPurchaseAnalysisApp() + '</details>';
+}
+function renderPurchaseAnalysisApp(){
   var h='';
   var now=Date.now();
   var chgs90 = priceChangesRecent(90);
