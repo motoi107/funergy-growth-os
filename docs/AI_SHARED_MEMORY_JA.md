@@ -58,6 +58,10 @@
 - 試験（合成データ・直したあと）：cash-tip-auto-zero 18（レビューの再現を入れた）・requests-1030-sql 5・bot-cash-tip-report 3・error-center-v1088 20（見本を不正な値に置き換え）・tip-weight-rate 17・ops-bot-deploy-v1105 5＝68/68。bot-report-routes 10（現金の見本を不正な値に置き換え）。static release pass/1118。わざと壊す 22/22 は直す前のコード（`fadbb69`）。
   - 全体（重い 2 つ以外）：失敗は main（v1117）と同じ名前（bot-report-routes の 1 つは v1118 の仕様に合わせて直した。v1085 の 1 つは重いときだけ）。
 - Codex（PR #108・`42fe938`・6530919676・blocked／manual）：キャッシュチップの自動の0 は新しい P1・P2 なし。**P2 1**：読むだけの `db/purchase-price-check.sql` が、表に出す変化率（同じ基本単位なら 1 単位あたり）と違う式（ケースの値段）で 80 件を選ぶ → 直した（選ぶ・並べる式を表の変化率と同じに。ケースの値段は同じで中身が半分の品の試験を足した・前の SQL では落ちる）。Claude のレビュー（6530665087）は PGlite が無く SQL を流していない。requests-1030-sql 6/6。
+- Codex（#112〜#114 の再レビュー・ファイル `bcca16c`）：**P2**：読むだけの `db/purchase-price-check.sql` は、片方だけ基本の単位の単価が無いとケースの値段で割る（+599900% のような数）・1 個（袋など）の単価の変化を見ない → 直した（#108 で直して #109〜#114 へ取り込み）：
+  - 比べる単価は仕入分析（v1123 の `invoice_price_cmp`）と同じ順で 1 つ選ぶ（基本の単位 → 数の単位 → 仕入単位が量のとき）。両方が同じ単位のときだけ変化率を出し、そうでなければ note（no_spec・unit_changed・check_link・first）。
+  - 確認済みの invoice だけ（仕入れ集計と同じ決まり）。前の単価は別の invoice。
+  - 試験 requests-1030-sql 7（足した 1 件は前の SQL で落ちる）・わざと壊す 11/11。本番では流していない。
 - 次：PR → Codex → Moto さんが手順.md の順。
   - SQL → 確認の結果を Claude に → ops-bot → アプリをマージ（端末を 1118 に）→ 全期間を埋める（営業時間外・run_id を控える）→ 毎日の予定。
 
