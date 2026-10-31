@@ -1,6 +1,6 @@
 // mid-review: the 中間レビュー API, v2 (段階 4・UI案44 B案). Spec: docs/MID_REVIEW_V2_JA.md.
-// Two ways in, decided here and nowhere else: a Supabase Auth sign-in (via 'email') or the PIN sign-in's mark checked by
-// deps.verifyPin (via 'pin'). The database (mr_members, mr_can) decides the role, the stores and every permission.
+// Two ways in, decided here and nowhere else: the PIN sign-in's mark checked by deps.verifyPin (via 'pin', the only way
+// the app uses since v1122) or a Supabase Auth sign-in (via 'email'). The database (mr_members, mr_can) decides the role, the stores and every permission.
 // The browser's own idea of its role, its sign-in or its actor is never used. Store publication and notices stay off.
 
 const ROLES = ['ceo', 'gm', 'am', 'chef', 'staff'];
@@ -299,27 +299,35 @@ export function createHandler(deps) {
   const origins = ['https://funergy-plus.com', ...String(env('MR_ALLOWED_ORIGINS') || '').split(',').map(s => s.trim()).filter(Boolean)];
   const timeout = () => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(8000) : undefined);
 
-  // Who is calling and how they signed in. An Auth bearer (not the anon key) is the email sign-in; otherwise the body's
-  // pin_session is the PIN sign-in. Never the body's own via / actor.
+  // Who is calling and how they signed in. The body's pin_session is the PIN sign-in; without one, an Auth bearer (not the
+  // anon key) is the email sign-in. Never the body's own via / actor.
+  // v1122 (10/30): the app signs in by PIN only and always sends its anon key as the bearer. A PIN mark in the body
+  // decides the way in whatever the Authorization header holds (the anon key the app has and this function's setting
+  // need not be the same string). A function without the PIN check says so ('pin_check_missing': the deploy, not the person).
+  // A refusal returns { deny } with a reason code for the log (no token, key or name).
   async function actorOf(req, body) {
+    const tok = body.pin_session;
+    if (tok !== undefined && tok !== null) {
+      if (!verifyPin) { const e = new Error('pin_check_missing'); e.code = 'pin_check_missing'; throw e; }
+      if (typeof tok !== 'string' || !tok || tok.length > 4000) return { deny: 'pin_shape' };
+      let who = null;
+      try { who = await verifyPin(tok); } catch { return { deny: 'pin_check_error' }; }
+      if (!who || typeof who !== 'object') return { deny: 'pin_mark' };
+      const emp_id = typeof who.emp_id === 'string' && who.emp_id && who.emp_id.length <= 64 ? who.emp_id : null;
+      const name = typeof who.name === 'string' && who.name.trim() && who.name.length <= 80 ? who.name : null;
+      if (!emp_id && !name) return { deny: 'pin_who' };
+      const r = await db.rpc('mr_pin_actor', { emp_id, name });
+      return r && typeof r.user_id === 'string' ? { actor: r.user_id, via: 'pin' } : { deny: 'pin_actor' };
+    }
     const auth = req.headers.get('authorization') || '';
     if (auth.startsWith('Bearer ') && auth !== 'Bearer ' + anon) {
-      if (auth.length > 4000) return null;
+      if (auth.length > 4000) return { deny: 'email_shape' };
       const r = await fetch(url + '/auth/v1/user', { headers: { apikey: anon, authorization: auth }, signal: timeout() });
-      if (!r.ok) return null;
+      if (!r.ok) return { deny: 'email_user' };
       const u = await r.json();
-      return u && typeof u.id === 'string' ? { actor: u.id, via: 'email' } : null;
+      return u && typeof u.id === 'string' ? { actor: u.id, via: 'email' } : { deny: 'email_user' };
     }
-    const tok = body.pin_session;
-    if (typeof tok !== 'string' || !tok || tok.length > 4000 || !verifyPin) return null;
-    let who = null;
-    try { who = await verifyPin(tok); } catch { return null; }
-    if (!who || typeof who !== 'object') return null;
-    const emp_id = typeof who.emp_id === 'string' && who.emp_id && who.emp_id.length <= 64 ? who.emp_id : null;
-    const name = typeof who.name === 'string' && who.name.trim() && who.name.length <= 80 ? who.name : null;
-    if (!emp_id && !name) return null;
-    const r = await db.rpc('mr_pin_actor', { emp_id, name });
-    return r && typeof r.user_id === 'string' ? { actor: r.user_id, via: 'pin' } : null;
+    return { deny: 'none' };
   }
 
   const str = (v, n) => (v === null || v === undefined ? null : String(v).slice(0, n));
@@ -381,7 +389,7 @@ export function createHandler(deps) {
   };
   // The first edition's reply / completion steps (v1066–v1068) are not part of v2.
   const GONE = ['reply_save', 'reply_delete', 'reply_send', 'complete', 'result_save'];
-  const ERR = { forbidden: 403, disabled: 403, email_required: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400,
+  const ERR = { forbidden: 403, disabled: 403, email_required: 403, actor_required: 401, pin_check_missing: 503, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400,
     bad_candidate: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, new_version: 409, legacy: 409, not_submitted: 409,
     not_confirmed: 409, role_exists: 409, member_stopped: 409, gone: 410, update_app: 409 };
 
@@ -400,7 +408,10 @@ export function createHandler(deps) {
     if (!fn) return json({ error: 'unknown_action' }, 400);
     try {
       const who = await actorOf(req, body);
-      if (!who) return json({ error: 'unauthorized' }, 401);
+      if (!who || who.deny || !who.actor) {
+        console.warn('mid-review unauthorized', body.action, (who && who.deny) || 'none');
+        return json({ error: 'unauthorized' }, 401);
+      }
       return json(await fn(who, body));
     } catch (e) {
       const msg = String(e.message || 'error'), code = msg.split(/[\s:]/)[0];
