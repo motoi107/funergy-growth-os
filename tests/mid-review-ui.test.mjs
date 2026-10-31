@@ -1,6 +1,8 @@
-// 中間レビュー v2（段階 4-2・UI案44 B案・v1072）: the real screen module from index.html in a VM, talking to the real
-// mid-review handler and the real SQL (all three migrations, PGlite) with the v2 demo. Synthetic data only; no network,
-// no storage. Email sign-in is a stand-in for Supabase Auth; the PIN sign-in's mark is checked by a stand-in verifier.
+// 中間レビュー v2（段階 4-2・UI案44 B案・v1072）→ v1122（10/30 の依頼 ⑥：本番だけ・PIN だけ）: the real screen module from index.html
+// in a VM, talking to the real mid-review handler and the real SQL (every mid-review migration, PGlite). Synthetic data only;
+// no network, no storage. The PIN sign-in's mark is checked by a stand-in verifier. v1122 has no demo: the fictional stores the
+// demo used (D1–D6, the handler's demoData) are put in as live stores here (test data only), with the numbers the meeting tab's
+// stand-in gives, so the screens are tested on live stores.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,6 +13,7 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const INDEX = process.env.FUNERGY_INDEX ? new URL(process.env.FUNERGY_INDEX, 'file://' + process.cwd() + '/') : new URL('../index.html', import.meta.url);
 const html = fs.readFileSync(INDEX, 'utf8').replace(/\r\n/g, '\n');
 const SQL = ['20261012090000_mid_review.sql', '20261013090000_mid_review_fixes.sql', '20261015090000_mid_review_v2.sql', '20261016090000_mid_review_v2_versions.sql', '20261017090000_mid_review_stores_save_fix.sql', '20261018090000_mid_review_scope_gm.sql'].map(f => fs.readFileSync(new URL('../supabase/migrations/' + f, import.meta.url), 'utf8')).join('\n');
+const LIVE_SQL = fs.readFileSync(process.env.MR_LIVE_SQL || new URL('../supabase/migrations/20261102090000_mid_review_live.sql', import.meta.url), 'utf8');
 const B = '/* ===== v1066 中間レビュー（非公開版', E = '/* ===== v1066 中間レビュー ここまで ===== */';
 const MOD = html.includes(B) ? html.slice(html.indexOf(B), html.indexOf(E)) : '';
 const MEET = html.slice(html.indexOf('var MEET_KPI_DEF=['), html.indexOf('function _meetDiffStr('));
@@ -21,6 +24,9 @@ const EMPLOYEES = [['E1', 'CEO Test', 'ceo', 'CEO'], ['E2', 'GM Test', 'gm', 'Ge
   ['E6', 'AM Two', 'am', 'Area Manager'], ['E10', 'Chef Oka', 'g4', 'Head Chef'], ['E11', 'Corp Chef', 'chef', 'Corporate Chef'], ['E12', 'Server Lead', 'g3', 'Server Leader'],
   ['E13', 'Store Mgr', 'g4', 'Store Manager'], ['E14', 'Op Lead', 'g3', 'Operation Leader'], ['E17', 'Crew Kid', 'crew', 'Server']];
 
+// The fictional stores (test data only; the review itself has no demo since v1122).
+const FIX_YM = '2026-10', FIX = demoData(FIX_YM);
+const EMP_OF = { ceo: 'E1', gm: 'E2', office: 'E3', am1: 'E5', am2: 'E6' };
 async function server({ on = true, demo = true, verifier = true } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
@@ -29,10 +35,24 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
     create table public.stores(id text primary key, name text, am text, active boolean, data jsonb);
     grant select on public.manager_auth, public.employees, public.stores to service_role;
     insert into public.stores(id, name, am, active) values ('F01','ToriTon','Yuki',true),('F02','Tenkichi','Yuki',true),('F05','Marujuu','AM Two',true),('F06','LaLa',null,true);`);
+  for (const st of FIX.stores) await pg.query(`insert into public.stores(id, name, am, active) values($1,$2,'Yuki',true)`, [st.store_id, st.name]);
   for (const [id, name, role, title] of EMPLOYEES) await pg.query(`insert into employees(id, name, role, title, status) values($1,$2,$3,$4,'在籍')`, [id, name, role, title]);
   for (const [k, r, e] of [['ceo', 'ceo', 'E1'], ['gm', 'gm', 'E2'], ['office', 'office', 'E3']]) await pg.query('insert into manager_auth values($1,$2,$3)', [U[k], r, e]);
   await pg.exec(SQL);
   await pg.query(`insert into mr_members(user_id, emp_id, name, role) values($1,'E5','Yuki','am'),($2,'E6','AM Two','am')`, [U.am1, U.am2]);
+  if (demo) {
+    // The fictional stores with their reports, versions and threads, put in as live stores: Yuki leads the ones the fixture
+    // gives a lead; the GM writes their reports (their input person), so one person can both write and reply.
+    await pg.query(`update mr_settings set value = value || '{"private":true}' where key = 'flags'`);
+    await pg.query('select public.mr_demo_reset($1::jsonb)', [JSON.stringify({ actor: U.gm, via: 'email', ...FIX })]);
+    await pg.exec(`insert into mr_stores(env, store_id, name, am_user, sort, active, input_emp, viewer_emps, updated_by)
+        select 'live', store_id, name, case when am_name is null then null else '${U.am1}'::uuid end, sort, active, 'E2', '[]'::jsonb, 'test' from mr_stores where env = 'demo';
+      update mr_reviews set env = 'live', input_emp = null where env = 'demo';
+      update mr_events set env = 'live' where env = 'demo';
+      delete from mr_stores where env = 'demo';`);
+  }
+  await pg.exec(LIVE_SQL);
+  if (!on) await pg.query(`update mr_settings set value = value || '{"private":false}' where key = 'flags'`);
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const fetch = async (url, init) => { const id = U[(init.headers.authorization || '').replace('Bearer tok-', '')]; return id ? Response.json({ id }) : new Response('{}', { status: 401 }); };
@@ -41,7 +61,7 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
   const verifyPin = async tok => { const m = /^pin-(E\d+)(-\w+)?$/.exec(tok); return m ? { emp_id: m[1] } : null; };   // 'pin-E2-2': a newer mark of E2
   const h = createHandler({ env, fetch, db, ...(verifier ? { verifyPin } : {}) });
   const call = async (headers, body) => (await h(new Request('https://fn.test', { method: 'POST', headers, body: JSON.stringify(body) }))).json();
-  const api = (who, body) => call({ authorization: 'Bearer tok-' + who }, body);
+  const api = (who, body) => call({ authorization: 'Bearer anon-key' }, { ...body, pin_session: 'pin-' + (EMP_OF[who] || who) });
   const pin = (tok, body) => call({ authorization: 'Bearer anon-key' }, { ...body, pin_session: tok });
   const q = async (sql, p = []) => { await pg.exec('reset role'); try { return (await pg.query(sql, p)).rows; } finally { await pg.exec('set role service_role'); } };
   // v1073: saves carry the version read (the switches' version from whoami, each store's from access_get).
@@ -54,9 +74,7 @@ async function server({ on = true, demo = true, verifier = true } = {}) {
     const v = Object.fromEntries((await api(who, { action: 'access_get', ym: '2026-10' })).stores.map(x => [x.store_id, x.am_version]));
     return api(who, { action: 'stores_save', stores: stores.map(x => ({ expect_version: v[x.store_id] ?? 0, ...x })) });
   };
-  if (on) await flagsSave({ private: true });
-  if (on && demo) await api('gm', { action: 'demo_reset' });
-  return { h, pg, api, pin, q, flagsSave, accessSave, storesSave };
+  return { h, pg, api, pin, q, flagsSave, accessSave, storesSave, demo };
 }
 // Live: F01 (ToriTon, AM Yuki) reported by E12 (Server Lead, PIN), F02 (Tenkichi) by Yuki herself, F05 (Marujuu, AM Two) by E14 with Yuki as an extra viewer.
 async function live(S, { input = true } = {}) {
@@ -78,24 +96,36 @@ const QB = { 'F01_2026Q4': { focusItems: ['repeat', 'menu'] } };
 const QROWS = { F01: [{ key: 'repeat', label: 'リピート強化', mode: 'auto', kpiLabel: 'リピート率', unit: '%', lower: false, now: 29, prev: 27.5, has: true, prevLabel: 'Q3' },
   { key: 'menu', label: 'メニュー・商品力', mode: 'manual', notes: [], last: null }] };
 const STORES = [{ id: 'F01', name: 'ToriTon', am: 'Yuki', active: true }, { id: 'F02', name: 'Tenkichi', am: 'Yuki', active: true }, { id: 'F05', name: 'Marujuu', am: 'AM Two', active: true }, { id: 'F06', name: 'LaLa', am: '', active: true }];
+// The fictional stores' numbers as the meeting tab's stand-in gives them (the same act / target the demo had).
+for (const st of FIX.stores) {
+  const d = st.demo, row = rows => Object.fromEntries(Object.entries(rows || {}).map(([k, v]) => [k, [v.act, v.tgt]]));
+  KPI[st.store_id] = { [FIX_YM]: { ...row(d.cur.rows), ...(d.cur.fc_ref ? { fc: [d.cur.fc_ref.act, d.cur.fc_ref.tgt] } : {}) },
+    [d.prev.ym]: { ...(d.prev.state === 'final' ? { state: 'final' } : {}), ...row(d.prev.rows) } };
+  QB[st.store_id + '_' + d.focus.y + 'Q' + d.focus.q] = { focusItems: d.focus.keys };
+  QROWS[st.store_id] = d.focus.keys.map(k => { const r = d.focus.rows[k]; return { key: k, label: r.label, mode: r.mode, unit: r.unit, lower: r.lower, now: r.now, prev: r.prev, has: true, notes: [], last: null }; });
+  STORES.push({ id: st.store_id, name: st.name, am: 'Yuki', active: true });
+}
 
 // The app around the module: only what the module calls. The browser's fetch goes to the real handler.
-function app(S, { who = 'gm', role = 'gm', signed = true, pin = null, kept = null, lp = { id: 'E2', name: 'GM Test' }, defaultPin = false, lang = 'ja', net = true, kpi = KPI, qb = QB } = {}) {
+const LP_OF = { ceo: { id: 'E1', name: 'CEO Test' }, gm: { id: 'E2', name: 'GM Test' }, office: { id: 'E3', name: 'Office Test' }, am1: { id: 'E5', name: 'Yuki' }, am2: { id: 'E6', name: 'AM Two' } };
+// the app's store master: the fictional stores only when the server has them
+const storesOf = S => (S && S.demo === false ? STORES.filter(x => !/^D\d$/.test(x.id)) : STORES);
+// v1122 (Moto 10/30「指名、複数選択可に」): the input people are a list (chips + an add select). Set the draft through the screen's buttons.
+const setInputs = (c, ...ids) => { c.run("_mr.accDraft.inputs.slice().forEach(function(x){ mrAccDelInput(x); })"); for (const id of ids) { c.dom = { 'mr-acc-iadd': { value: id } }; c.run('mrAccAddInput()'); } };
+const chips = (h, id) => (h.match(new RegExp('id="' + id + '">[\\s\\S]*?</div>')) || [''])[0];
+
+function app(S, { who = 'gm', role = 'gm', pin, lp, defaultPin = false, lang = 'ja', net = true, kpi = KPI, qb = QB } = {}) {
+  if (pin === undefined) pin = 'pin-' + (EMP_OF[who] || who);     // v1122: the PIN login only
+  if (lp === undefined) lp = pin && /^pin-(E\d+)/.test(pin) ? (LP_OF[Object.keys(EMP_OF).find(k => EMP_OF[k] === pin.slice(4))] || { id: pin.slice(4), name: '' }) : LP_OF[who] || null;
   const timers = [];
   const row = (sid, ym) => (kpi[sid] && kpi[sid][ym]) || {};
   const c = {
     curLang: lang, curRealRole: role, curStoreLogin: false, curPage: 'mid_review', html: '', toasts: [], modals: [], calls: [], keep: [], writes: [], went: [],
     t: (ja, en) => (c.curLang === 'en' ? en : ja), escapeHtml: esc, ls: () => ({}), lsSet: (...a) => { c.writes.push(a); return true; },
-    SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON: 'anon-key', _botSession: signed ? { access_token: 'tok-' + who, refresh_token: 'r-' + who } : null,
-    _hwSession: pin, _invIn: { keptSession: null }, botResetShared: () => { c._botSession = null; },
-    invInSession: () => c._botSession, invInSigned: () => !!(c._botSession && c._botSession.access_token), invInKept: () => kept, invInKeepWho: () => (lp && !defaultPin ? 'e:' + lp.id : ''),
-    invInLoginPerson: () => lp, invInDefaultPin: () => defaultPin, invInKeepSet: (rt, w) => { c.keep.push([rt, w]); return true; }, invInSessionRefresh: async () => null,
-    invInRestore: async () => { c.restored = true; return false; }, invInAuthFetch: async (path, opt) => {
-      if (path.includes('grant_type=password')) return opt.body.password === 'pw' ? { ok: true, json: async () => ({ access_token: 'tok-' + opt.body.email.split('@')[0], refresh_token: 'rt-new' }) } : { ok: false, json: async () => ({}) };
-      throw new Error('unexpected ' + path);
-    },
+    SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON: 'anon-key',
+    _hwSession: pin, invInLoginPerson: () => lp, invInDefaultPin: () => defaultPin,
     bizNow: () => new Date(2026, 9, 18, 9, 30), bizYm: () => '2026-10', daysOfYm: ym => Array.from({ length: ym.endsWith('-09') ? 30 : 31 }, (_, i) => ({ date: ym + '-' + String(i + 1).padStart(2, '0') })),
-    getStoresAll: () => STORES, activeStores: () => STORES, getEmployees: () => EMPLOYEES.map(([id, name, r]) => ({ id, name, role: r })),
+    getStoresAll: () => storesOf(S), activeStores: () => storesOf(S), getEmployees: () => EMPLOYEES.map(([id, name, r]) => ({ id, name, role: r })),
     keyKpiStats: ([s], days) => { const ym = days[0].date.slice(0, 7), d = row(s.id, ym); return { sid: s.id, ym, sales: d.sales ? d.sales[0] : 0 }; },
     _meetApplyPl: k => k, meetingBudgetKpi: (k, cur) => ({ ...k, cur, budget: (row(k.sid, k.ym).sales || [0, 0])[1] }),
     _meetKpiRows: p => ['sales', 'guests', 'ppa', 'repeat', 'fc', 'labor'].filter(key => row(p.sid, p.ym)[key] || key !== 'repeat')
@@ -138,7 +168,7 @@ const fillAll = c => {
   }
   return miss;
 };
-const get = async (S, store, who = 'gm', env = 'demo', ym = '2026-10') => S.api(who, { action: 'get', env, ym, store_id: store });
+const get = async (S, store, who = 'gm', env = 'live', ym = '2026-10') => S.api(who, { action: 'get', env, ym, store_id: store });
 const cardOf = (h, id) => { const i = h.indexOf('id="mr-k-' + id + '"'); assert.ok(i >= 0, 'card ' + id); const j = h.indexOf('<div class="mr-k ', i + 10); return h.slice(h.lastIndexOf('<div', i), j < 0 ? h.length : j); };
 const dataCodes = h => [...h.matchAll(/data-codes="([^"]*)"/g)].flatMap(m => m[1].split(' '));
 
@@ -177,86 +207,53 @@ test('menu: CEO, GM, AM, Corporate Chef, G4 and G3 get the entry (the server dec
   assert.equal(vm.runInContext('mrCanSee()', st), false);
 });
 
-test('sign-in: the PIN login works without any email step; via and actor are never sent; no mark or an expired one says so', async () => {
+test('sign-in (v1122): the PIN login only — no email step anywhere; via and actor are never sent; no mark or an expired one says so', async () => {
   const S = await server();
-  const c = app(S, { signed: false, pin: 'pin-E2' });
-  await S.q(`update mr_members set emp_id='E2' where user_id=$1`, [U.gm]);
+  const c = app(S);
   const h = await c.show();
   assert.match(h, /PIN でログイン中：GM Test（GM）/); assert.match(h, /港町（デモ）/);
+  assert.doesNotMatch(h, /メール|mrLoginModal|デモデータ|非公開プレビュー|mrSetEnv/);
   assert.ok(c.calls.length > 1);
-  for (const b of c.calls) { assert.equal(b.pin_session, 'pin-E2'); assert.equal(b._auth, 'Bearer anon-key'); assert.ok(!('via' in b) && !('actor' in b), JSON.stringify(b)); }
+  for (const b of c.calls) { assert.equal(b.pin_session, 'pin-E2'); assert.equal(b._auth, 'Bearer anon-key'); assert.ok(!('via' in b) && !('actor' in b), JSON.stringify(b)); assert.notEqual(b.env, 'demo'); }
   assert.equal(c.M().who.via, 'pin');
-  // An email sign-in sends the access key and no PIN mark.
-  const e = app(S); await e.show();
-  for (const b of e.calls) { assert.equal(b._auth, 'Bearer tok-gm'); assert.ok(!('pin_session' in b) && !('via' in b) && !('actor' in b)); }
-  assert.equal(e.M().who.via, 'email');
-  // No mark (initial PIN, or no login): no request, and a plain message.
-  const n = app(S, { signed: false, pin: null });
-  assert.match(await n.show(), /PIN のログインの印がありません/); assert.equal(n.calls.length, 0);
-  const d = app(S, { signed: false, pin: null, defaultPin: true });
+  // An AM, the CEO and an input person (staff) also come in with the PIN only.
+  assert.match(await app(S, { who: 'am1', role: 'am' }).show(), /PIN でログイン中：Yuki（AM）/);
+  assert.match(await app(S, { who: 'ceo', role: 'ceo' }).show(), /PIN でログイン中：CEO Test（CEO）/);
+  // No mark (initial PIN, or no login): no request, and a plain message (no email button).
+  const n = app(S, { pin: null });
+  const hn = await n.show(); assert.match(hn, /PIN のログインの印がありません/); assert.equal(n.calls.length, 0); assert.doesNotMatch(hn, /メール/);
+  const d = app(S, { pin: null, defaultPin: true });
   assert.match(await d.show(), /PIN が初期のまま/);
   // An expired mark: log out and in again.
   const exp = 'h.' + Buffer.from(JSON.stringify({ exp: 1000 })).toString('base64url') + '.s';
-  const x = app(S, { signed: false, pin: exp });
-  assert.match(await x.show(), /ログインの期限が切れました/); assert.equal(x.calls.length, 0);
-  // The server does not accept PIN yet (no verifier): its answer in plain words, with the email sign-in offered.
+  const x = app(S, { pin: exp });
+  const hx = await x.show(); assert.match(hx, /ログインの期限が切れました/); assert.equal(x.calls.length, 0); assert.doesNotMatch(hx, /メール/);
+  // The server cannot check the mark: its answer in plain words.
   const S0 = await server({ verifier: false });
-  const p = app(S0, { signed: false, pin: 'pin-E2' });
-  const hp = await p.show();
-  assert.match(hp, /PIN のログインで入れませんでした（サーバーがまだ PIN のログインを受け付けていないか/); assert.match(hp, /mrLoginModal\(\)/);
-  // A remembered email sign-in is tried first (once).
-  const k = app(S, { signed: false, pin: 'pin-E2', kept: { rt: 'x' } });
-  assert.match(k.run('renderMidReview()'), /覚えた認証を確かめています/);
-  await k.flush(); assert.equal(k.restored, true); k.renderPage(); await k.flush();
-  assert.equal(k.M().who.via, 'pin');
+  const hp = await app(S0).show();
+  assert.match(hp, /PIN のログインで入れませんでした（ログインの期限が切れたか、確かめられません）/); assert.doesNotMatch(hp, /メール/);
 });
 
-test('sign-in: a person who is not a member is told plainly; an email account that cannot open it can fall back to the PIN login', async () => {
+test('sign-in: a person who is not a member is told plainly; the server cannot be reached is said so', async () => {
   const S = await server();
-  const s = app(S, { signed: false, pin: 'pin-E17', role: 'sl' });
+  const s = app(S, { pin: 'pin-E17', role: 'sl' });
   assert.match(await s.show(), /中間レビューを開けません/);
-  const o = app(S, { who: 'office', pin: 'pin-E5', lp: { id: 'E5', name: 'Yuki' }, role: 'am' });
-  const h = await o.show(); assert.match(h, /PIN のログインで開く/);
-  o.run('mrUsePin()'); const h2 = await o.show();
-  assert.match(h2, /PIN でログイン中：Yuki（AM）/); assert.equal(o.M().who.role, 'am');
   const n = app(S, { net: false }); assert.match(await n.show(), /mid-review）につながりません/);
 });
 
-test('email sign-in from the dialog: remembered only when the server says it is this PIN person; it brings back the settings', async () => {
-  const S = await server();
-  const c = app(S, { signed: false, pin: 'pin-E2' });
-  await S.q(`update mr_members set emp_id='E2' where user_id=$1`, [U.gm]);
-  await c.show(); c.run('mrOpenSettings()'); const h = await c.show();
-  assert.match(h, /担当・閲覧設定の変更はメールの認証が要ります/); assert.equal(c.calls.filter(b => b.action === 'access_get').length, 0);
-  c.run('mrLoginModal()'); assert.match(c.modals[0], /id="mr-keep"/); assert.match(c.modals[0], /担当・閲覧設定を変えるとき/);
-  c.dom = { 'mr-email': { value: 'gm@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
-  await c.run('mrLogin()');
-  assert.deepEqual(c.keep, [['rt-new', 'e:E2']]); assert.equal(c.M().who.via, 'email'); assert.ok(c.M().view.settings);
-  const hs = await c.show(); assert.match(hs, /入力・提出の担当（基本）|本番の店舗がまだ保存されていません/);
-  // Someone else's account: not remembered.
-  const o = app(S, { signed: false, pin: 'pin-E2' });
-  o.dom = { 'mr-email': { value: 'am1@x' }, 'mr-password': { value: 'pw' }, 'mr-login-button': { disabled: false }, 'mr-keep': { checked: true }, 'mr-login-error': { textContent: '' } };
-  await o.run('mrLogin()'); assert.deepEqual(o.keep, [[null, 'e:E2']]); assert.equal(o.M().who.role, 'am');
-  const w = app(S, { signed: false, pin: 'pin-E2' });
-  w.dom = { 'mr-email': { value: 'gm@x' }, 'mr-password': { value: 'bad' }, 'mr-login-button': { disabled: false }, 'mr-login-error': { textContent: '' } };
-  await w.run('mrLogin()'); assert.match(w.dom['mr-login-error'].textContent, /メール・パスワードを確認/);
-});
-
-test('off: nobody can list; an email GM turns it on; a PIN GM is told to sign in by email; others wait', async () => {
+test('off: nobody can list; a GM turns it on with the PIN login; others wait', async () => {
   const S = await server({ on: false });
   const a = app(S, { who: 'am1', role: 'am' }); assert.match(await a.show(), /GM・CEO が ON にするまでお待ちください/);
-  await S.q(`update mr_members set emp_id='E2' where user_id=$1`, [U.gm]);
-  const p = app(S, { signed: false, pin: 'pin-E2' }); assert.match(await p.show(), /ON にするにはメールの認証が要ります/);
-  const g = app(S); assert.match(await g.show(), /非公開確認を ON にする/);
+  const g = app(S); const h = await g.show(); assert.match(h, /非公開確認を ON にする/); assert.doesNotMatch(h, /メール/);
   await g.run('mrSetFlags({ private:true })'); await g.show();
-  assert.match(g.html, /デモがまだありません/);
-  assert.deepEqual(g.calls.filter(b => b.action === 'settings_save').map(b => b.value), [{ private: true, live_input: false }]);
+  assert.match(g.html, /港町（デモ）/);
+  assert.deepEqual(g.calls.filter(b => b.action === 'settings_save').map(b => b.value), [{ private: true, live_input: true }]);
 });
 
-test('全店 (demo): status, input person, separate counts equal to the server, deadlines and overdue only when a date is set', async () => {
+test('全店 (the fictional stores, live): status, input person, separate counts equal to the server, deadlines and overdue only when a date is set', async () => {
   const S = await server();
   const c = app(S); const h = await c.show(), s = strip(h);
-  const L = await S.api('gm', { action: 'list', env: 'demo', ym: '2026-10' });
+  const L = await S.api('gm', { action: 'list', env: 'live', ym: '2026-10' });
   for (const st of L.stores) {
     const row = (h.match(new RegExp('<tr onclick="mrOpenStore\\(\'' + st.store_id + '\'\\)">[\\s\\S]*?</tr>')) || [''])[0];
     assert.ok(row, st.store_id);
@@ -269,9 +266,9 @@ test('全店 (demo): status, input person, separate counts equal to the server, 
     assert.ok(row.includes(esc(st.input.name)), st.store_id);
     assert.equal((row.match(/期限超過/g) || []).length, (st.review.overdue.submit ? 1 : 0) + (st.review.overdue.reply ? 1 : 0), st.store_id);
   }
-  assert.match(s, /港町（デモ） 担当：AM 佐藤（デモ） 提出済み（提出版 1）/);
+  assert.match(s, /港町（デモ） 担当：Yuki（AM） 提出済み（提出版 1）/);
   assert.match(s, /丘の上（デモ） .* ✓ 確認完了（提出版 1）/);
-  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： 店長 Nguyen（デモ） まだ提出されていない 提出 10\/15 期限超過 返信 未設定/);
+  assert.match(s, /川沿い（デモ） 管轄 未設定 下書き（未提出） 入力担当： GM Test まだ提出されていない 提出 10\/15 期限超過 返信 未設定/);
   assert.match(s, /海岸（デモ） .* 提出 未設定 返信 未設定/);
   assert.match(s, /公園通り（デモ） .* 提出 未設定 返信 10\/17 期限超過/);
   assert.match(h, /担当・閲覧設定/);
@@ -282,15 +279,15 @@ test('全店 (demo): status, input person, separate counts equal to the server, 
 });
 
 test('live: who sees which store — CEO / GM / chef all, an AM their own and where added as a viewer, a staff input person only theirs; 入力担当：未設定', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   await S.api('gm', { action: 'chef_save', emp_id: 'E11', on: true });
-  const names = async c => { c.run("mrSetEnv('live')"); const h = await c.show(); return [...h.matchAll(/<tr onclick="mrOpenStore\('([^']+)'\)">/g)].map(m => m[1]); };
+  const names = async c => { const h = await c.show(); return [...h.matchAll(/<tr onclick="mrOpenStore\('([^']+)'\)">/g)].map(m => m[1]); };
   assert.deepEqual(await names(app(S)), ['F01', 'F02', 'F05', 'F06']);
   assert.deepEqual(await names(app(S, { signed: false, pin: 'pin-E11', role: 'chef', lp: { id: 'E11', name: 'Corp Chef' } })), ['F01', 'F02', 'F05', 'F06']);
   assert.deepEqual(await names(app(S, { who: 'am1', role: 'am' })), ['F01', 'F02', 'F05']);   // F05 as an extra viewer
   assert.deepEqual(await names(app(S, { who: 'am2', role: 'am' })), ['F05']);
   assert.deepEqual(await names(app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } })), ['F01']);
-  const g = app(S); g.run("mrSetEnv('live')"); const h = strip(await g.show());
+  const g = app(S); const h = strip(await g.show());
   assert.match(h, /LaLa 管轄 未設定 未作成 入力担当：未設定/);   // v1076
   assert.match(h, /ToriTon 担当：Yuki（AM） 未作成 入力担当： Server Lead/);
 });
@@ -299,7 +296,7 @@ test('store page (write): every item is a full card — result, rating, comment 
   const S = await server();
   const c = app(S); await openStore(c, 'D6');
   assert.equal(c.run('mrOpNow(_mr.rec)'), 'write');
-  const h = c.html, d = demoData('2026-10').stores.find(x => x.store_id === 'D6').demo, sn = demoSnapshot('2026-10', d);
+  const h = c.html, sn = JSON.parse(c.run('JSON.stringify(mrSnapNow(_mr.rec))'));   // the meeting tab's numbers (live)
   for (const k of KPI_PREV) {
     const card = cardOf(h, 'prev-' + k), j = sn.prev.rows[k].judge;
     assert.match(card, new RegExp('class="mr-k mr-k-' + j + '"'), k);
@@ -334,8 +331,9 @@ test('store page (write): every item is a full card — result, rating, comment 
   assert.deepEqual(['sales', 'guests', 'ppa', 'repeat', 'labor'].map(k => sn.cur.rows[k].judge), ['ok', 'ok', 'warn', 'miss', 'ok']);
   // A phone shows short words with the same meaning (CSS picks one): the steps, the banner, the sign-in chip, the title without the year.
   assert.match(h, /<span class="mr-l-pc">前月の振り返り<\/span><span class="mr-l-sp">1 前月<\/span>/);
-  assert.match(h, /<span class="mr-l-pc">非公開プレビュー<\/span><span class="mr-l-sp">非公開<\/span>/);
-  assert.match(h, /<span class="mr-l-pc">(PIN でログイン中|メールで認証中)：GM Test（GM）<\/span><span class="mr-l-sp">(PIN|メール)：GM Test（GM）<\/span>/);
+  assert.match(h, /<span class="mr-l-pc">本番の数字（会議タブと同じ・読むだけ）<\/span><span class="mr-l-sp">本番の数字<\/span>/);
+  assert.doesNotMatch(h, /非公開プレビュー|デモデータ|メールで認証/);
+  assert.match(h, /<span class="mr-l-pc">PIN でログイン中：GM Test（GM）<\/span><span class="mr-l-sp">PIN：GM Test（GM）<\/span>/);
   assert.match(h, /<div class="mr-hd-t">川沿い（デモ）　<span class="mr-l-pc">2026 年 <\/span>10 月 の中間レビュー<\/div>/);
 });
 
@@ -352,13 +350,9 @@ test('judgements that cannot be made: last month not final → all six on hold (
   assert.match(d5.html, /<button class="mr-mt mr-mt-na" onclick="mrGo\('k-cur-sales'\)"><span class="mr-mtl">売上<\/span><b>— 判定不可<\/b>/);
 });
 
-test('the screen’s rules equal the server’s: missing items, counts and the demo numbers', () => {
+test('the screen’s rules equal the server’s: missing items and holds (v1122: there are no demo numbers on the screen any more)', () => {
   const c = app({ h: null });
-  const DD = demoData('2026-10');
-  for (const st of DD.stores) {
-    const mine = JSON.parse(c.run(`JSON.stringify(mrDemoSnap('2026-10', ${JSON.stringify(st.demo)}))`));
-    assert.deepEqual(mine, JSON.parse(JSON.stringify(demoSnapshot('2026-10', st.demo))), st.store_id);
-  }
+  assert.equal(c.run("typeof mrDemoSnap + typeof mrDemoJudge + typeof mrDemoReset + typeof mrSetEnv + typeof mrLoginModal"), 'undefinedundefinedundefinedundefinedundefined');
   // Random bodies and numbers: the screen's missing list and holds equal the server's (same codes, same order).
   let seed = 7; const rnd = n => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return Math.floor(seed / 4294967296 * n); };   // exact 32-bit steps, high bits (the float version lost the low bits)
   const pick = a => a[rnd(a.length)];
@@ -386,7 +380,7 @@ test('the screen’s rules equal the server’s: missing items, counts and the d
 
 test('counts on the screen (rail, chips) equal the server’s counts for every demo store; the rail filters show only those items', async () => {
   const S = await server();
-  const L = await S.api('gm', { action: 'list', env: 'demo', ym: '2026-10' });
+  const L = await S.api('gm', { action: 'list', env: 'live', ym: '2026-10' });
   for (const st of L.stores.filter(x => x.review.counts)) {
     const R = await get(S, st.store_id); const last = R.submissions.at(-1);
     const c = app(S);
@@ -430,13 +424,13 @@ test('⑤ lists the concrete missing items as links; the codes equal what the se
     c.run(`_mr.ed.body = ${JSON.stringify(b)}; mrDirty();`); await c.flush(); c.renderPage(); h = c.html;
     const shown = dataCodes(h.slice(h.indexOf('id="mr-sec-5"')));
     const snap = JSON.parse(c.run('JSON.stringify(mrSnapNow(_mr.rec))'));
-    const got = await S.api('gm', { action: 'submit', env: 'demo', ym: '2026-10', store_id: 'D6', expect_version: c.M().ed.version, snapshot: snap });
+    const got = await S.api('gm', { action: 'submit', env: 'live', ym: '2026-10', store_id: 'D6', expect_version: c.M().ed.version, snapshot: snap });
     if (got.error === 'incomplete') assert.deepEqual(shown, got.missing, JSON.stringify(b));
     else { assert.deepEqual(shown, [], JSON.stringify(got)); await S.api('gm', { action: 'demo_reset' }); c.run('mrEdStop(); mrReloadRec()'); await c.flush(); c.renderPage(); }
   }
 });
 
-test('submit: fill in, autosave with versions, submit makes version 1 with the demo numbers; resubmit makes version 2 and keeps version 1', async () => {
+test('submit: fill in, autosave with versions, submit makes version 1 with the meeting tab’s numbers; resubmit makes version 2 and keeps version 1', async () => {
   const S = await server();
   const c = app(S); await openStore(c, 'D6');
   c.run("mrSetVal('prev.guests.comment', '少し届かなかった')"); assert.equal(c.M().ed.state, 'dirty');
@@ -444,10 +438,13 @@ test('submit: fill in, autosave with versions, submit makes version 1 with the d
   const v1 = c.M().ed.version; assert.equal(v1, 2);
   fillAll(c); await c.flush(); c.renderPage();
   assert.match(c.html, /✓ 必須の欄はそろっています/); assert.match(c.html, /<div class="mr-subbar" id="mr-subbar">.*提出できます/);
+  const shown = JSON.parse(c.run('JSON.stringify(mrSnapNow(_mr.rec))'));
   await c.run('mrSubmit()'); await c.flush(); c.renderPage();
   const R = await get(S, 'D6');
   assert.equal(R.review.submitted_no, 1); assert.equal(R.review.status, 'submitted');
-  assert.deepEqual(R.submissions[0].snapshot, normSnap(demoSnapshot('2026-10', R.store.demo)));
+  const noTime = x => { const y = JSON.parse(JSON.stringify(x)); delete y.updated; return y; };
+  assert.deepEqual(noTime(R.submissions[0].snapshot), noTime(normSnap(shown)), 'the numbers shown (the meeting tab’s) are kept with the version');
+  assert.equal(R.submissions[0].by, 'GM Test');
   assert.ok(c.toasts.some(([m, k]) => k === 'success' && /提出しました（川沿い（デモ）・提出版 1）/.test(m)), JSON.stringify(c.toasts));
   // Back on the same store: a new editor on the submitted copy; nothing changed → cannot submit again.
   assert.equal(c.M().ed.version, R.review.version); assert.match(c.html, /提出版 1 から変わっていません/);
@@ -498,7 +495,7 @@ test('R1 (v2): a submit answered after moving to another store leaves that store
 test('autosave: someone saved first → no overwrite, the input stays, then an explicit choice; a failed save keeps the input; locked after 確認完了', async () => {
   const S = await server();
   const a = app(S); await openStore(a, 'D6');
-  const b = app(S, { who: 'am1', role: 'am' }); await openStore(b, 'D6');
+  const b = app(S); await openStore(b, 'D6');   // the same input person on another device (or another tab)
   b.run("mrSetVal('prev.sales.comment', 'B が先')"); await b.flush();
   a.run("mrSetVal('prev.sales.comment', 'A の入力')"); await a.flush(); a.renderPage();
   assert.equal(a.M().ed.state, 'conflict'); assert.match(a.html, /ほかの人が先に保存しました/);
@@ -596,10 +593,10 @@ test('one person with both roles (demo): 報告を書く and 確認して返信�
 });
 
 test('live: the staff input person (PIN) writes, submits with the meeting tab’s numbers, adds a note; cannot reply; a chef replies but cannot confirm', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   await S.api('gm', { action: 'chef_save', emp_id: 'E11', on: true });
   const s = app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } });
-  s.run("mrSetEnv('live')"); await s.show(); s.run("mrOpenStore('F01')"); s.renderPage(); await s.flush(); s.renderPage();
+  await s.show(); s.run("mrOpenStore('F01')"); s.renderPage(); await s.flush(); s.renderPage();
   assert.equal(s.run('mrOpNow(_mr.rec)'), 'write'); assert.doesNotMatch(s.html, /この店では両方できます/);
   const sn = JSON.parse(s.run('JSON.stringify(mrSnapNow(_mr.rec))'));
   assert.deepEqual(sn.period, { from: '2026-10-01', to: '2026-10-17' });
@@ -610,7 +607,7 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   assert.deepEqual(sn.focus, { y: 2026, q: 4, keys: ['repeat', 'menu'], rows: { repeat: { label: 'リピート強化', mode: 'auto', now: 29, prev: 27.5, unit: '%', lower: false }, menu: { label: 'メニュー・商品力', mode: 'manual', now: null, prev: null, unit: '', lower: false } } });
   assert.deepEqual(sn.thresholds.repeat, { green: 100, yellow: 90 });
   assert.match(cardOf(s.html, 'focus-repeat'), /<b>リピート率 29\.0%<\/b>　前四半期 27\.5% から \+1\.5pt <span class="mr-m">（良化）/);
-  assert.match(s.html, /本番の会議タブへの反映：店舗公開のときに ON/);
+  assert.match(s.html, /会議タブ（Qコミット）への反映：店舗公開のときに ON/);
   fillAll(s); await s.flush(); await s.run('mrSubmit()'); await s.flush(); s.renderPage();
   assert.doesNotMatch(s.html, /id="mr-qc"/);   // no meeting-tab preview on live stores (reflection is off while private)
   const R = await get(S, 'F01', 'gm', 'live');
@@ -626,7 +623,7 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   const R2 = await get(S, 'F01', 'gm', 'live');
   assert.deepEqual(R2.replies.map(x => [x.kind, x.target, x.author_role]), [['note', 'cur:labor', 'staff'], ['done', 'cur:labor', 'staff']]);
   // The chef (PIN) replies; no confirm button.
-  const ch = app(S, { signed: false, pin: 'pin-E11', role: 'chef', lp: { id: 'E11', name: 'Corp Chef' } }); ch.run("mrSetEnv('live')"); await ch.show();
+  const ch = app(S, { signed: false, pin: 'pin-E11', role: 'chef', lp: { id: 'E11', name: 'Corp Chef' } }); await ch.show();
   ch.run("mrOpenStore('F01')"); ch.renderPage(); await ch.flush(); ch.renderPage();
   assert.equal(ch.run('mrOpNow(_mr.rec)'), 'review'); assert.doesNotMatch(ch.html, /mrConfirm\(\)/); assert.match(ch.html, /返信する（Corp Chef・Head Chef・Corporate Chef として）/);
   ch.run("mrCIn({ getAttribute:function(){ return 'reply|cur:labor'; }, value:'キッチン側も手伝います' })"); await ch.run("mrPost('reply|cur:labor')");
@@ -638,20 +635,20 @@ test('live: the staff input person (PIN) writes, submits with the meeting tab’
   assert.match(ch.html, /onclick="mrOpenMeeting\('F01','2026-10'\)">会議タブで見る/);
   // Live input off: the input person is told, nothing to write.
   await S.flagsSave({ private: true, live_input: false });
-  const off = app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } }); off.run("mrSetEnv('live')"); await off.show();
+  const off = app(S, { signed: false, pin: 'pin-E12', role: 'sl', lp: { id: 'E12', name: 'Server Lead' } }); await off.show();
   off.run("mrOpenStore('F01')"); off.renderPage(); await off.flush(); off.renderPage();
   assert.match(off.html, /本番の店の入力はまだ OFF です/); assert.doesNotMatch(off.html, /data-p="/);
 });
 
 test('live numbers: a combined PL month is not “final” (same as the meeting tab); no repeat row = no target; a store missing from the app has no numbers', async () => {
-  const S = await server(); await live(S);
-  const c = app(S, { who: 'am1', role: 'am', lp: { id: 'E5', name: 'Yuki' } }); c.run("mrSetEnv('live')"); await c.show();
+  const S = await server({ demo: false }); await live(S);
+  const c = app(S, { who: 'am1', role: 'am', lp: { id: 'E5', name: 'Yuki' } }); await c.show();
   c.run("mrOpenStore('F02')"); c.renderPage(); await c.flush(); c.renderPage();
   const sn = JSON.parse(c.run('JSON.stringify(mrSnapNow(_mr.rec))'));
   assert.equal(sn.prev.state, 'prov'); assert.equal(sn.cur.rows.repeat.judge, 'unset'); assert.equal(sn.cur.rows.sales.judge, 'unset');
   assert.match(cardOf(c.html, 'cur-repeat'), /判定不可（目標未設定）/);
   for (const k of KPI_PREV) assert.match(cardOf(c.html, 'prev-' + k), /評価保留（前月が未確定）/);
-  const f6 = app(S); f6.run("mrSetEnv('live')"); await f6.show(); f6.run("mrOpenStore('F06')"); f6.renderPage(); await f6.flush(); f6.renderPage();
+  const f6 = app(S); await f6.show(); f6.run("mrOpenStore('F06')"); f6.renderPage(); await f6.flush(); f6.renderPage();
   assert.match(f6.html, /入力担当が未設定なので、だれも入力できません/);
 });
 
@@ -679,29 +676,23 @@ test('確認完了 and its undo: AM confirms the version shown; a newer version 
   assert.equal(g.calls.length, before); assert.ok(g.toasts.some(([m]) => /返信期限は提出期限より前にできません/.test(m)));
 });
 
-test('demo Qコミット: after submission the meeting tab’s focus card (demo) shows the submitted progress as one new record per item; nothing is written to app data', async () => {
+test('Qコミット: no preview card (the demo had one); the note says reflection waits for store publication; nothing is written to app data', async () => {
   const S = await server();
   const c = app(S); await openStore(c, 'D1');
-  const qc = c.html.slice(c.html.indexOf('id="mr-qc"'), c.html.indexOf('</section>', c.html.indexOf('id="mr-qc"')));
-  assert.match(qc, /2026 Q4 の重点項目 <span class="mr-chip mr-c-info">会議タブの重点カード（デモ）/);
-  assert.match(qc, /【中間レビュー 提出版 1】進捗：順調／実施：スタンプカードを全員に渡している。／残り：2 回目の来店の案内。／次：レシートに次回の案内を入れる（10\/20）／担当：田中/);
-  assert.match(qc, /店長 田中（デモ） 10\/14 21:12（会議タブの記録に 1 件足す形）/);
-  assert.match(qc, /接客・CS向上<\/span><span class="mr-chip mr-c-none">手入力/);
-  assert.match(qc, /本番の会議タブへの反映：店舗公開のときに ON/);
+  assert.doesNotMatch(c.html, /id="mr-qc"|会議タブの重点カード（デモ）/);
+  assert.match(c.html, /会議タブ（Qコミット）への反映：店舗公開のときに ON（それまでは本番の Qコミットに書きません）/);
   assert.equal(c.writes.length, 0);
-  // Before submission there is no card, only the note.
-  const d = app(S); await openStore(d, 'D6'); assert.doesNotMatch(d.html, /id="mr-qc"/); assert.match(d.html, /提出すると、ここに「会議タブの重点カード（デモ）」/);
 });
 
 test('settings (GM / CEO by email): input person, viewers, month override, Head Chef list, the effective table from the server, live input switch', async () => {
-  const S = await server(); await live(S, { input: false });
+  const S = await server({ demo: false }); await live(S, { input: false });
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   let h = c.html;
   assert.match(h, /担当・閲覧設定/); assert.match(h, /本番の店の入力（入力担当が書ける）：<b>OFF/);
   const sel = id => (h.match(new RegExp('id="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
-  assert.match(sel('mr-acc-input'), /<option value="E12" selected>Server Lead（Server Leader・G3）<\/option>/);
-  for (const e of ['E13', 'E14', 'E10', 'E5', 'E2']) assert.match(sel('mr-acc-input'), new RegExp('value="' + e + '"'), e);
-  assert.doesNotMatch(sel('mr-acc-input'), /value="E17"|value="E3"/);
+  assert.match(chips(h, 'mr-acc-inputs'), /<span class="mr-pp"><b>Server Lead<\/b>/);
+  for (const e of ['E13', 'E14', 'E10', 'E5', 'E2']) assert.match(sel('mr-acc-iadd'), new RegExp('value="' + e + '"'), e);
+  assert.doesNotMatch(sel('mr-acc-iadd'), /value="E17"|value="E3"|value="E12"/, 'not the people already chosen');
   assert.match(sel('mr-acc-vadd'), /value="E5"/); assert.match(sel('mr-acc-vadd'), /value="E11"/); assert.doesNotMatch(sel('mr-acc-vadd'), /value="E12"/);
   assert.match(sel('mr-acc-chef'), /value="E10"[\s\S]*value="E11"/);
   // The effective table for ToriTon: the input person cannot write while live input is off; the GM can change settings.
@@ -709,27 +700,31 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   assert.match(table, /<b>Server Lead<\/b> <span class="mr-m">入力担当<\/span><\/td><td><span class="mr-y">○<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td class="mr-m">この月の入力担当・本番の入力は OFF/);
   assert.match(table, /<b>GM Test<\/b> <span class="mr-m">GM<\/span>.*<span class="mr-y">○<\/span><\/td><td class="mr-m">CEO・GM・Head Chef（全店）/);
   // Change ToriTon: input E13, add viewer E6 (keeps the list whole).
-  c.run("mrAccSet('input','E13')"); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
+  setInputs(c, 'E13'); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
   c.renderPage(); assert.match(c.html, /保存していない変更あり/);
-  // v1073: what is not saved yet is marked (the new viewers, the input person with the saved one named).
+  // v1073: what is not saved yet is marked (the new viewers and input people; the removed input person is named).
   assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b><span class="mr-m">（未保存）<\/span>/); assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>Corp Chef<\/b>/);
-  assert.match(c.html, /あなたの変更（未保存）。保存するまでは Server Lead のまま/);
+  assert.match(chips(c.html, 'mr-acc-inputs'), /<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b><span class="mr-m">（未保存）<\/span>/);
+  assert.match(c.html, /外した人（未保存）：Server Lead。保存するまでは入力できます/);
   await c.run('mrAccSave()'); await c.flush(); await c.show(); h = c.html;
-  assert.doesNotMatch(h, /mr-pp-mine|あなたの変更（未保存）/);
-  assert.deepEqual((await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', viewer_emps: ['E6', 'E11'] });
-  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6', 'E11'], expect_version: 1 }]);
+  assert.doesNotMatch(h, /mr-pp-mine|外した人（未保存）/);
+  assert.deepEqual((await S.q(`select input_emp, input_emps, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', input_emps: ['E13'], viewer_emps: ['E6', 'E11'] });
+  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emps: ['E13'], input_emp: 'E13', viewer_emps: ['E6', 'E11'], expect_version: 1 }]);
   // Remove one viewer: the rest of the list is sent (not only the change); then the last one: the empty list.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, ['E11']);
   c.run("mrAccDelViewer('E11')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, []);
   // This month only: E14.
-  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
-  assert.equal((await S.q(`select input_emp from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emp, 'E14');
-  assert.match(c.html, /いまのこの月の担当：Op Lead/);
+  assert.match(chips(c.html, 'mr-acc-month'), /基本どおり（Store Mgr）/);
+  c.dom = { 'mr-acc-madd': { value: 'E14' } }; c.run('mrAccMonthAdd()'); c.renderPage();
+  assert.match(chips(c.html, 'mr-acc-month'), /<span class="mr-pp mr-pp-mine"><b>Op Lead<\/b><span class="mr-m">（未保存）/); assert.equal(c.run('mrSetUnsaved()'), true);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0], { input_emp: 'E14', input_emps: ['E14'] });
+  assert.match(c.html, /いまのこの月の担当：Op Lead/); assert.equal(c.run('mrSetUnsaved()'), false);
   // v1073: pressing it again without a change sends nothing (an older screen does not write back what it read).
   const nm = c.calls.filter(b => b.action === 'month_input_save').length;
-  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()');
+  await c.run('mrAccMonthSave()');
   assert.equal(c.calls.filter(b => b.action === 'month_input_save').length, nm); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /変えていません/.test(m)));
   // Head Chef: add E10 (a G4 Head Chef), then remove.
   c.dom = { 'mr-acc-chef': { value: 'E10' } }; await c.run('mrChefAdd()'); await c.flush(); await c.show();
@@ -743,26 +738,27 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   assert.deepEqual(c.calls.filter(b => b.action === 'settings_save').at(-1).value, { private: true, live_input: true });
   assert.equal(c.calls.filter(b => b.action === 'settings_save').at(-1).expect_version, (await S.q(`select version from mr_settings where key='flags'`))[0].version - 1);
   // A bad candidate is refused with plain words.
-  c.run("mrAccSet('input','E17')"); await c.run('mrAccSave()');
+  setInputs(c, 'E17'); await c.run('mrAccSave()');
   assert.ok(c.toasts.some(([m, k]) => k === 'error' && /選べない人です/.test(m)));
 });
 
-test('settings: a PIN GM sees why email is needed (no settings call); an AM cannot open it; the server refuses settings by PIN too', async () => {
-  const S = await server(); await live(S);
-  await S.q(`update mr_members set emp_id='E2' where user_id=$1`, [U.gm]);
-  const p = app(S, { signed: false, pin: 'pin-E2' }); await p.show(); assert.match(p.html, /mrOpenSettings/);
+test('settings: a GM opens and changes them with the PIN login (v1122: no email step); an AM cannot open them; the server takes the PIN GM', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const p = app(S); await p.show(); assert.match(p.html, /mrOpenSettings/);
   p.run('mrOpenSettings()'); const h = await p.show();
-  assert.match(h, /担当・閲覧設定の変更はメールの認証が要ります/); assert.match(h, /mrLoginModal\(\)/);
-  assert.equal(p.calls.filter(b => ['access_get', 'members_list', 'access_save'].includes(b.action)).length, 0);
-  assert.equal((await S.pin('pin-E2', { action: 'access_get', ym: '2026-10' })).error, 'email_required');
+  assert.doesNotMatch(h, /メールの認証|mrLoginModal/); assert.match(h, /入力・提出の担当（基本・何人でも）/);
+  assert.ok(p.calls.some(b => b.action === 'access_get' && b.pin_session === 'pin-E2' && b._auth === 'Bearer anon-key'));
+  assert.ok((await S.pin('pin-E2', { action: 'access_get', ym: '2026-10' })).stores);
   const a = app(S, { who: 'am1', role: 'am' }); await a.show(); a.run('mrOpenSettings()'); assert.match(await a.show(), /GM・CEO だけが開けます/);
-  // The PIN GM can still change dates and confirm (no email needed).
-  p.run("mrSetEnv('demo')"); await openStore(p, 'D1'); assert.match(p.html, /mr-dlb" onclick="_mr\.dlOpen=true;mrRerender\(\)">期限を変える<\/button>/); assert.match(p.html, /確認完了にする（提出版 1）/);
+  assert.equal((await S.pin('pin-E5', { action: 'access_get', ym: '2026-10' })).error, 'forbidden', 'the server refuses an AM too');
+  // the switches by PIN
+  await p.run('mrSetFlags({ live_input:false })'); await p.flush();
+  assert.equal((await S.q(`select value from mr_settings where key = 'flags'`))[0].value.live_input, false);
 });
 
 // v1073: 「本番の店舗と AM の担当」→「店舗の管轄（どの AM の店か）」（Moto さん 10/13）。決まりは同じで、保存するのは変えた店だけ。
 test('settings: 店舗の管轄 — the saved AM per store, GM direct, proposals for stores not saved yet; only changed stores are saved, with the version read', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show(); const nList = c.calls.filter(b => b.action === 'list').length; c.run('mrOpenSettings()'); await c.show();
   let h = c.html;
   const card = () => c.html.slice(c.html.indexOf('id="mr-scope"'), c.html.indexOf('</table>', c.html.indexOf('id="mr-scope"')));
@@ -817,12 +813,12 @@ test('settings: 店舗の管轄 — the saved AM per store, GM direct, proposals
 // v1073: Codex の P2（685f49e）。GM と CEO が同じ店を開いて別の所を直す → 古い画面の保存は先の変更を戻さない。
 // B（Moto さん 10/13）：自分が変えた所だけをいまの設定に入れ直して、未保存で出す。
 test('v1073 B: two screens on the same store — the older save does not undo the first; only my change is put on the latest, unsaved, with a band', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   const db = async () => (await S.q(`select input_emp, viewer_emps, access_version from mr_stores where env='live' and store_id='F01'`))[0];
   // GM changes the input person; the CEO (opened before) adds a viewer.
-  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  setInputs(g, 'E13'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: [], access_version: 2 });
   c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
   await c.run('mrAccSave()'); await c.flush(); await c.show();
@@ -830,25 +826,27 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
   let h = c.html;
   assert.match(h, /<div class="mr-conf" role="status">.*ほかの人（または別のタブ）が先にこの店の設定を保存しました/s);
-  assert.match(h, /ほかの人の変更：入力担当 Server Lead → Store Mgr/); assert.match(h, /あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<\/span>|あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<b>/);
+  assert.match(h, /ほかの人の変更：入力担当に Store Mgr を足す・入力担当から Server Lead を外す/); assert.match(h, /あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<\/span>|あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<b>/);
   assert.match(h, /まだ保存していません。/);
-  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E13" selected/, 'their input person is shown');
+  assert.match(chips(h, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Store Mgr<\/b>/, 'their input person is shown');
   assert.match(h, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b>/); assert.match(h, /保存していない変更あり/);
   assert.deepEqual(c.run('JSON.stringify(_mr.accDraft.viewers)'), '["E6"]'); assert.equal(c.run('_mr.accDraft.base.version'), 2);
   // Saving now keeps both.
   await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: ['E6'], access_version: 3 }); assert.doesNotMatch(c.html, /mr-conf/);
-  // Both changed the input person: the draft has mine, the band names both; 「やめる」 goes back to theirs and writes nothing.
-  c.run("mrAccSet('input','E14')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
-  g.run("mrAccSet('input','E10')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  // Both changed the input people (v1122: a list, one by one as the viewers): what they put in stays, what I put in is added,
+  // what I took out is out; 「やめる」 goes back to theirs and writes nothing.
+  setInputs(c, 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  setInputs(g, 'E10'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
   h = g.html;
-  assert.match(h, /ほかの人の変更：入力担当 Store Mgr → Op Lead・閲覧者に AM Two を足す/);
-  assert.match(h, /入力担当は 2 人とも変えていました：ほかの人は Op Lead、あなたは Chef Oka。いまの下書きは あなたの Chef Oka です（保存するまでは Op Lead のまま）。/);
-  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E10" selected/); assert.match(h, /<span class="mr-pp"><b>AM Two<\/b>/, 'their viewer is kept (not mine)');
+  assert.match(h, /ほかの人の変更：入力担当に Op Lead を足す・入力担当から Store Mgr を外す・閲覧者に AM Two を足す/);
+  assert.match(h, /あなたの変更（入力担当に Chef Oka を足す・入力担当から Store Mgr を外す）を、いまの設定に入れ直しました。/);
+  assert.equal(g.run('JSON.stringify(_mr.accDraft.inputs)'), '["E14","E10"]');
+  assert.match(chips(h, 'mr-acc-inputs'), /<span class="mr-pp"><b>Op Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Chef Oka<\/b>/s); assert.match(h, /<span class="mr-pp"><b>AM Two<\/b>/, 'their viewer is kept (not mine)');
   assert.match(h, /やめる（いまの設定に戻す）/);
   g.run('mrAccCancel()'); g.renderPage();
-  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E14" selected/); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
+  assert.match(chips(g.html, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Op Lead<\/b><button/); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
   assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
   // The same change made on both: already in, nothing to save.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
@@ -861,7 +859,7 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }]);
   await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.match(g.html, /ほかの人（または別のタブ）が先にこの店の設定を保存しました.*いまの設定を出しています。/s);
-  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E12" selected/);
+  assert.match(chips(g.html, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Server Lead<\/b><button/);
   assert.equal((await db()).input_emp, 'E12');
   // Moving to another store drops the band.
   g.run("mrAccPick('F02')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/);
@@ -869,7 +867,7 @@ test('v1073 B: two screens on the same store — the older save does not undo th
 });
 
 test('v1073: the switches on two screens — the older press is not saved; the band shows the switches now (settings and the off screen)', async () => {
-  const S = await server(); await live(S, { input: false });
+  const S = await server({ demo: false }); await live(S, { input: false });
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   const flags = async () => { const r = (await S.q(`select value, version from mr_settings where key='flags'`))[0]; return { value: { private: r.value.private, live_input: r.value.live_input }, version: r.version }; };
@@ -915,7 +913,7 @@ test('v1073: the switches on two screens — the older press is not saved; the b
 
 // v1076（Motoさん 10/14「店舗管轄の選択を GM・AM のどちらか選べる様に」）：未設定・GM の名前・AM の名前。権限は今のまま。
 test('v1076 店舗の管轄: 未設定 / GM by name / AM by name; a GM is saved and shown as the lead (list, chip, rail); a GM no longer a GM asks to choose again', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   const card = () => c.html.slice(c.html.indexOf('id="mr-scope"'), c.html.indexOf('</table>', c.html.indexOf('id="mr-scope"')));
   const row = id => (card().match(new RegExp('<tr[^>]*><td><b>[^<]*</b>(?:(?!</tr>).)*data-store="' + id + '"(?:(?!</tr>).)*</tr>', 's')) || [''])[0];
@@ -932,10 +930,10 @@ test('v1076 店舗の管轄: 未設定 / GM by name / AM by name; a GM is saved 
   assert.match(c.html, /<b>ToriTon<\/b><br><span class="mr-m">管轄 GM Test・/);
   c.run("mrAccPick('F01')"); c.renderPage();
   assert.match(c.html, /<span class="mr-chip mr-c-ok">管轄：GM Test（GM）<\/span>/);
-  c.run('mrBack()'); c.run("mrSetEnv('live')"); const h = strip(await c.show());
+  c.run('mrBack()'); const h = strip(await c.show());
   assert.match(h, /ToriTon 担当：GM Test（GM） /); assert.match(h, /Tenkichi 担当：Yuki（AM） /); assert.match(h, /LaLa 管轄 未設定 /);
   // The AM who had ToriTon no longer sees it; the GM and CEO still see every store.
-  const names = async x => { x.run("mrSetEnv('live')"); const hh = await x.show(); return [...hh.matchAll(/<tr onclick="mrOpenStore\('([^']+)'\)">/g)].map(m => m[1]); };
+  const names = async x => { const hh = await x.show(); return [...hh.matchAll(/<tr onclick="mrOpenStore\('([^']+)'\)">/g)].map(m => m[1]); };
   assert.deepEqual(await names(app(S, { who: 'am1', role: 'am' })), ['F02', 'F05']);
   assert.deepEqual(await names(app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } })), ['F01', 'F02', 'F05', 'F06']);
   // The GM taken off manager_auth: shown as no longer a GM or AM, and a save keeping them is stopped until another choice.
@@ -955,7 +953,7 @@ test('v1076 店舗の管轄: 未設定 / GM by name / AM by name; a GM is saved 
 });
 
 test('v1073 B: 店舗の管轄 on two screens — only changed stores are sent, so another store’s change stays; the same store changed first → nothing written, mine kept (unsaved) on the latest', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   const db = async () => Object.fromEntries((await S.q(`select store_id, am_user, am_version from mr_stores where env='live' order by store_id`)).map(x => [x.store_id, [x.am_user, x.am_version]]));
@@ -990,7 +988,7 @@ test('v1073 B: 店舗の管轄 on two screens — only changed stores are sent, 
 });
 
 test('v1073 B (more): viewers one by one — what I removed stays removed, what they added stays; a screen that changed nothing shows the latest after reading again', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   await S.accessSave([{ store_id: 'F05', input_emp: 'E14', viewer_emps: ['E5', 'E11'] }]);
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); x.run("mrAccPick('F05')"); x.renderPage(); }
@@ -1010,11 +1008,11 @@ test('v1073 B (more): viewers one by one — what I removed stays removed, what 
 });
 
 test('v1073: leaving the settings with unsaved changes asks (access and the oversight); the oversight waits for the server update (20261016090000)', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   let asked = 0; c.confirm = () => { asked++; return false; };
-  c.run("mrAccSet('input','E13')"); c.run('mrBack()'); c.renderPage();
-  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('_mr.accDraft.input_emp'), 'E13');
+  setInputs(c, 'E13'); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('JSON.stringify(_mr.accDraft.inputs)'), '["E13"]');
   c.run('mrAccCancel()'); c.run(`mrScopeSet('F06', '${U.am2}')`); c.run('mrBack()'); c.renderPage();
   assert.equal(asked, 2); assert.match(c.html, /mr-tr-mine/);
   c.run('mrScopeCancel()'); c.run('mrBack()'); c.renderPage(); assert.equal(asked, 2, 'nothing unsaved: no question'); assert.doesNotMatch(c.html, /id="mr-scope"/);
@@ -1027,7 +1025,7 @@ test('v1073: leaving the settings with unsaved changes asks (access and the over
 });
 
 test('v1073: a read that keeps coming back empty stops after a few tries and says so (no endless reading)', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show();
   const real = c.fetch, n = () => c.calls.filter(b => b.action === 'access_get').length;
   c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_get') { c.calls.push(b); return { ok: true, status: 200, json: async () => null }; } return real(url, init); };
@@ -1042,14 +1040,16 @@ test('v1073: a read that keeps coming back empty stops after a few tries and say
 });
 
 test('v1073: inputs wait while a save is on the way; a drafted store that left the list is dropped; more than 20 viewers after putting mine on theirs is stopped', async () => {
-  const S = await server(); await live(S);
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   // While a save waits for its answer, the settings' inputs are disabled and changes are not taken (the answer drops the draft).
   c.run("_mr.busy = 'access'"); c.renderPage();
-  assert.match(c.html, /id="mr-acc-input" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
-  c.run("mrAccSet('input','E13')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
-  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null);
-  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-input" disabled/);
+  assert.match(c.html, /id="mr-acc-iadd" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
+  assert.match(c.html, /id="mr-acc-madd" disabled/);
+  c.dom = { 'mr-acc-iadd': { value: 'E13' } }; c.run('mrAccAddInput()'); c.run("mrAccDelInput('E12')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null); assert.equal(c.run('JSON.stringify(_mr.accDraft.inputs)'), '["E12"]');
+  c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()'); assert.equal(c.run('JSON.stringify(_mr.accMonth.inputs)'), '[]');
+  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-iadd" disabled/);
   // A store only in the store master gets a draft, then leaves the store master: the draft goes with it (no stuck “unsaved”).
   c.activeStores = () => [...STORES, { id: 'F07', name: 'Kapolei', am: '', active: true }]; c.renderPage();
   c.run(`mrScopeSet('F07', '${U.am1}')`); assert.match(c.html, /<tr class="mr-tr-mine"><td><b>Kapolei<\/b>/);
@@ -1058,8 +1058,8 @@ test('v1073: inputs wait while a save is on the way; a drafted store that left t
   // Mine put on theirs comes to more than 20 viewers: the band says so and the save is stopped on the screen.
   const ids = n => Array.from({ length: n }, (_, i) => 'X' + i);
   c.run(`(function(){ var s = _mr.acc.stores.filter(function(x){ return x.store_id === 'F01'; })[0];
-    var d = { store_id:'F01', input_emp:s.input_emp, viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ input_emp:s.input_emp, viewers:[], version:s.version - 1, names:{} } };
-    _mr.accDraft = d; mrAccRebase(s, d, { input_emp:s.input_emp, viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
+    var d = { store_id:'F01', inputs:mrAccInputs(s), viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ inputs:mrAccInputs(s), viewers:[], version:s.version - 1, names:{} } };
+    _mr.accDraft = d; mrAccRebase(s, d, { inputs:mrAccInputs(s), viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
   c.renderPage();
   assert.equal(c.run('_mr.accDraft.viewers.length'), 22); assert.match(c.html, /閲覧者が 22 人になりました（20 人まで）。保存の前に減らしてください。/);
   const n = c.calls.filter(b => b.action === 'access_save').length; await c.run('mrAccSave()');
@@ -1067,13 +1067,13 @@ test('v1073: inputs wait while a save is on the way; a drafted store that left t
 });
 
 test('v1073 English: the bands (store settings, switches, oversight)', async () => {
-  const S = await server(); await live(S, { input: false });
+  const S = await server({ demo: false }); await live(S, { input: false });
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' }, lang: 'en' });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   // Each conflict on the CEO's screen reads it again, so the GM changes the next thing only after that.
-  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  setInputs(g, 'E13'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); await c.run('mrAccSave()'); await c.flush(); await c.show();
-  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: input person Server Lead → Store Mgr/);
+  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: add input person Store Mgr; remove input person Server Lead/);
   assert.match(c.html, /Your change \(add viewer AM Two\) was put on the settings now\. <b>Not saved yet\.<\/b>/); assert.match(c.html, /<span class="mr-m"> \(not saved\)<\/span>/);
   assert.match(c.html, /Store oversight \(which GM or AM looks after each store\)/); assert.match(c.html, /Lead: Yuki \(AM\)/);
   await g.run('mrSetFlags({ live_input:true })'); await g.flush(); await g.show();
@@ -1085,59 +1085,40 @@ test('v1073 English: the bands (store settings, switches, oversight)', async () 
   assert.doesNotMatch(c.html, /ほかの人|あなたの|管轄/, 'no Japanese left in the bands and the oversight');
 });
 
-test('R3 (v2): a new key for the same person keeps the screen and the input (email and PIN); another person resets it', async () => {
+test('R3 (v2, v1122): a new PIN mark for the same person keeps the screen and the input; another person resets it', async () => {
   const S = await server();
-  const jwt = (sub, n) => 'h.' + Buffer.from(JSON.stringify({ sub, n })).toString('base64url') + '.s';
-  const c = app(S);
-  const f0 = c.fetch;
-  c.fetch = async (u, i) => {   // the stand-in server knows people by tok-…; map the keys of this test to them
-    const tok = (i.headers.Authorization || '').replace('Bearer ', ''); let who = null;
-    try { const sub = JSON.parse(Buffer.from(tok.split('.')[1], 'base64url')).sub; who = Object.keys(U).find(k => U[k] === sub); } catch (e) {}
-    return f0(u, who ? { ...i, headers: { ...i.headers, Authorization: 'Bearer tok-' + who } } : i);
-  };
-  c._botSession = { access_token: jwt(U.gm, 1), refresh_token: 'r1' };
-  await openStore(c, 'D6'); c.run("mrSetVal('prev.sales.comment','鍵が変わる前')");
-  const ed = c.M().ed;
-  c._botSession = { access_token: jwt(U.gm, 2), refresh_token: 'r2' }; c.renderPage();
-  assert.equal(c.M().ed, ed); assert.equal(c.M().view.id, 'D6'); assert.match(c.html, /id="mr-sec-1"/);
-  await c.flush();
-  assert.equal((await get(S, 'D6')).review.body.prev.sales.comment, '鍵が変わる前');
-  c._botSession = { access_token: jwt(U.am1, 3), refresh_token: 'r3' }; c.renderPage();
-  assert.equal(c.M().ed, null); assert.equal(c.M().view, null); assert.equal(c.M().rec, null); assert.doesNotMatch(c.html, /id="mr-sec-1"/);
-  // PIN: a new mark for the same logged-in person keeps the editor; another person's login resets.
-  await S.q(`update mr_members set emp_id='E2' where user_id=$1`, [U.gm]);
-  const p = app(S, { signed: false, pin: 'pin-E2' }); await openStore(p, 'D6'); p.run("mrSetVal('prev.sales.comment','PIN の入力')"); const ped = p.M().ed;
-  p._hwSession = 'pin-E2-2'; p.renderPage(); assert.equal(p.M().ed, ped); await p.flush();
+  const p = app(S); await openStore(p, 'D6'); p.run("mrSetVal('prev.sales.comment','PIN の入力')"); const ped = p.M().ed;
+  // auth-pin gives the same person a new mark (e.g. after logging in again on the same device): the screen and the input stay
+  p._hwSession = 'pin-E2-2'; p.renderPage();
+  assert.equal(p.M().ed, ped); assert.equal(p.M().view.id, 'D6'); assert.match(p.html, /id="mr-sec-1"/);
+  await p.flush();
   assert.equal((await get(S, 'D6')).review.body.prev.sales.comment, 'PIN の入力');
-  p.invInLoginPerson = () => ({ id: 'E5', name: 'Yuki' }); p._hwSession = 'pin-E5'; p.renderPage();
-  assert.equal(p.M().ed, null); assert.equal(p.M().view, null);
-  // A key that cannot be read is treated as another person (reset).
-  const d = app(S); await openStore(d, 'D6'); const ed2 = d.M().ed;
-  d._botSession = { access_token: 'tok-gm', refresh_token: 'other' }; d.renderPage();
-  assert.notEqual(d.M().ed, ed2);
-  // …unless this page refreshed it itself after a 401 (the same sign-in): the screen and the input stay.
-  const r = app(S); await openStore(r, 'D6'); const red = r.M().ed;
-  let once = true; const f1 = r.fetch;
-  r.fetch = async (u, i) => { if (once) { once = false; r.calls.push({ ...JSON.parse(i.body), _auth: '401' }); return { ok: false, status: 401, json: async () => ({ error: 'unauthorized' }) }; } return f1(u, i); };
-  r.invInSessionRefresh = async s => { assert.equal(s, r._botSession); r._botSession = { access_token: 'tok-gm', refresh_token: 'r-gm-2' }; return r._botSession; };
-  r.run("mrSetVal('prev.sales.comment','取り替えの前に書いた')"); await r.flush(); r.renderPage();
-  assert.equal(r.M().ed, red); assert.equal(r.M().view.id, 'D6'); assert.equal(r.calls.filter(b => b._auth === '401').length, 1);
-  assert.equal((await get(S, 'D6')).review.body.prev.sales.comment, '取り替えの前に書いた');
+  assert.ok(p.calls.some(b => b.pin_session === 'pin-E2-2'), 'the new mark is sent');
+  // Another person logs in on the same device: nothing of the previous person stays.
+  p.invInLoginPerson = () => LP_OF.am1; p._hwSession = 'pin-E5'; p.renderPage();
+  assert.equal(p.M().ed, null); assert.equal(p.M().view, null); assert.equal(p.M().rec, null); assert.doesNotMatch(p.html, /id="mr-sec-1"/);
+  // A mark whose person cannot be told is treated as another person (reset).
+  const d = app(S); await openStore(d, 'D6'); const ed2 = d.M().ed; assert.ok(ed2);
+  d.invInLoginPerson = () => null; d._hwSession = 'pin-E2-3'; d.renderPage();
+  assert.notEqual(d.M().ed, ed2); assert.equal(d.M().view, null);
+  // No PIN login at all: the reason is shown and nothing is sent.
+  const n = app(S, { pin: null, lp: null }); await n.show();
+  assert.equal(n.calls.length, 0); assert.match(n.html, /PIN のログインの印がありません/);
 });
 
 test('every text from the server is escaped (store, input person, replies, author names, comments, settings names)', async () => {
   const S = await server(); await live(S);
   const X = '<img src=x onerror=alert(1)>';
   await S.q(`update mr_stores set name=$1 where store_id in ('D1','F01')`, [X]);
-  await S.q(`update mr_stores set demo = jsonb_set(demo, '{input_name}', to_jsonb($1::text)) where store_id='D1'`, [X]);
-  await S.q(`update employees set name=$1 where id='E12'`, [X]);
+  await S.q(`update employees set name=$1 where id in ('E12','E14')`, [X]);
   await S.q(`update mr_submissions set body = jsonb_set(body, '{prev,sales,comment}', to_jsonb($1::text)) where review_id=(select id from mr_reviews where store_id='D1')`, [X]);
   await S.q(`update mr_replies set author_name=$1, text=$1 where target='prev:fc'`, [X]);
-  for (const [who, f] of [['gm', c => c.run("mrSetEnv('demo'); mrOpenStore('D1')")], ['gm', c => c.run('mrOpenSettings()')], ['gm', c => c.run("mrSetEnv('live')")]]) {
-    const c = app(S, { who }); await c.show(); f(c); await c.show(); await c.flush(); c.renderPage();
+  assert.ok((await S.q(`select count(*)::int n from mr_replies where target='prev:fc'`))[0].n > 0, 'a reply to escape');
+  for (const f of [c => c.run("mrOpenStore('D1')"), c => c.run('mrOpenSettings()'), c => c.run("mrOpenStore('F01')"), () => {}]) {
+    const c = app(S); await c.show(); f(c); await c.show(); await c.flush(); c.renderPage();
     assert.ok(!c.html.includes('<img src=x') && c.html.includes('&lt;img src=x'), c.html.slice(0, 200));
   }
-  const t = app(S); await t.show(); t.run("mrSetEnv('demo')"); await openStore(t, 'D1'); t.run("mrCOpen('reply|cur:sales')"); t.run(`mrCIn({ getAttribute:function(){ return 'reply|cur:sales'; }, value:${JSON.stringify(X)} })`); t.renderPage();
+  const t = app(S); await openStore(t, 'D1'); t.run("mrCOpen('reply|cur:sales')"); t.run(`mrCIn({ getAttribute:function(){ return 'reply|cur:sales'; }, value:${JSON.stringify(X)} })`); t.renderPage();
   assert.ok(!t.html.includes('<img src=x') && t.html.includes('&lt;img src=x'));
   // Unknown server error words are not echoed.
   assert.equal(t.run(`mrErrText('<b>x</b>', 500)`), 'うまくいきませんでした（HTTP 500）');
@@ -1152,7 +1133,7 @@ test('English: the list, the store page (both tasks) and the settings', async ()
     assert.ok(c.html.includes(s), s);
   assert.match(c.html, /Last month · Guests: rating and comment missing/);
   c.run("mrOpenStore('D1')"); c.renderPage(); await c.flush(); c.renderPage();
-  assert.match(c.html, /Check and reply/); assert.match(c.html, /Reply \(as GM Test, GM\)/); assert.match(c.html, /Meeting tab focus card \(demo\)/);
+  assert.match(c.html, /Check and reply/); assert.match(c.html, /Reply \(as GM Test, GM\)/); assert.match(c.html, /Reflection on the meeting tab \(Q-commit\)/); assert.doesNotMatch(c.html, /\(demo\)|Demo data|Email/);
   c.run('mrOpenSettings()'); await c.show(); assert.match(c.html, /Access settings/); assert.match(c.html, /Live store input/);
 });
 
@@ -1161,8 +1142,9 @@ test('logout clears what the previous person loaded; another sign-in loads again
   const c = app(S); await c.show(); assert.ok(c.M().list && c.M().who);
   c.run('mrReset()'); assert.equal(c.M().list, null); assert.equal(c.M().who, null);
   const e = app(S); await e.show(); assert.equal(e.M().who.role, 'gm');
-  e._botSession = { access_token: 'tok-am1', refresh_token: 'r' }; await e.show();
+  e.invInLoginPerson = () => LP_OF.am1; e._hwSession = 'pin-E5'; await e.show();
   assert.equal(e.M().who.role, 'am'); assert.doesNotMatch(e.html, /mrOpenSettings/);
+  assert.equal(e.calls[e.calls.length - 1].pin_session, 'pin-E5');
 });
 
 test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px there, no fixed widths that overflow', () => {
@@ -1183,9 +1165,9 @@ test('phone and PC: the CSS keeps one column on a phone, buttons at least 44px t
 });
 
 // v1073: Moto さん 10/13「担当閲覧設定が読み込み中から進まない（できる時もある）」。一度読んだ画面に戻ると、読み込みの印は
-// 「済み」のまま中身だけ捨てていたので、二度目は読みに行かず「読み込み中…」のまま止まった（設定・月の切り替え・一覧のデモ／本番）。
-test('v1073: going back to a screen read before loads it again — settings reopened, the settings month back and forth, the list demo / live and months', async () => {
-  const S = await server(); await live(S);
+// 「済み」のまま中身だけ捨てていたので、二度目は読みに行かず「読み込み中…」のまま止まった（設定・月の切り替え・一覧の月）。
+test('v1073: going back to a screen read before loads it again — settings reopened, the settings month back and forth, the list months, a store page', async () => {
+  const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show();
   const loading = () => /読み込み中…/.test(c.html);
   const n = a => c.calls.filter(b => b.action === a).length;
@@ -1198,13 +1180,89 @@ test('v1073: going back to a screen read before loads it again — settings reop
   // The settings month: October → November → October.
   c.run("mrAccYm('2026-11')"); await c.show(); assert.equal(loading(), false); assert.match(c.html, /2026 年 11 月 だけの入力担当|2026年11月 だけの入力担当|11 月 だけの入力担当|11月 だけの入力担当/);
   c.run("mrAccYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October'); assert.match(c.html, /一人ひとりの実効の権限/);
-  // The list: demo → live → demo, and live months back and forth.
-  c.run('mrBack()'); c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false);
-  c.run("mrSetEnv('live')"); await c.show(); assert.equal(loading(), false);
-  c.run("mrSetEnv('demo')"); await c.show(); assert.equal(loading(), false, 'back to the demo list');
-  c.run("mrSetEnv('live')"); await c.show(); c.run("mrSetYm('2026-09')"); await c.show(); assert.equal(loading(), false);
+  // The list: months back and forth.
+  c.run('mrBack()'); await c.show(); assert.equal(loading(), false);
+  c.run("mrSetYm('2026-09')"); await c.show(); assert.equal(loading(), false);
   c.run("mrSetYm('2026-10')"); await c.show(); assert.equal(loading(), false, 'back to October in the list');
   // A store page opened twice still loads.
-  c.run("mrSetEnv('demo')"); await openStore(c, 'D1'); assert.equal(loading(), false);
-  c.run('mrBack()'); await openStore(c, 'D1'); assert.equal(loading(), false);
+  await openStore(c, 'F01'); assert.equal(loading(), false); assert.match(c.html, /id="mr-sec-1"/);
+  c.run('mrBack()'); await openStore(c, 'F01'); assert.equal(loading(), false); assert.match(c.html, /id="mr-sec-1"/);
+});
+
+// Moto (10/30)「指名、複数選択可に」: the base and the month take several people; the pages name them all; an older server is noticed.
+test('v1122 several input people: chosen with the add button, saved as a list, named on the rail and the store page; an older function or SQL is noticed', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  setInputs(c, 'E12', 'E13'); c.renderPage();
+  assert.match(chips(c.html, 'mr-acc-inputs'), /<b>Server Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b>/s);
+  assert.doesNotMatch((c.html.match(/id="mr-acc-iadd"[\s\S]*?<\/select>/) || [''])[0], /value="E12"|value="E13"/, 'the chosen people are not offered again');
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E12', input_emps: ['E12', 'E13'] });
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /保存しました/.test(m)));
+  assert.match(c.html, /入力担当 Server Lead・Store Mgr/, 'the rail names both');
+  // up to 10: the 11th is not taken
+  c.run(`_mr.accDraft.inputs = ${JSON.stringify(Array.from({ length: 10 }, (_, i) => 'X' + i))}; _mr.accDraft.dirty = true`);
+  c.dom = { 'mr-acc-iadd': { value: 'E14' } }; c.run('mrAccAddInput()'); assert.equal(c.run('_mr.accDraft.inputs.length'), 10);
+  c.run('mrAccCancel()'); c.renderPage();
+  // both can write; the store page names both
+  for (const e of ['E12', 'E13']) {
+    const s = app(S, { signed: false, pin: 'pin-' + e, role: 'sl', lp: { id: e, name: e } }); await openStore(s, 'F01');
+    assert.match(s.html, /入力担当：<b>Server Lead・Store Mgr<\/b>/, e); assert.equal(s.run('mrOpNow(_mr.rec)'), 'write', e);
+  }
+  // the month: two people, then back to the base
+  c.dom = { 'mr-acc-madd': { value: 'E14' } }; c.run('mrAccMonthAdd()'); c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()');
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emps, ['E14', 'E13']);
+  assert.match(c.html, /いまのこの月の担当：Op Lead・Store Mgr/);
+  c.run('mrAccMonthClear()'); c.renderPage(); assert.match(chips(c.html, 'mr-acc-month'), /基本どおり（Server Lead・Store Mgr）/);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.equal((await S.q(`select input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emps, null);
+  assert.match(c.html, /いまのこの月の担当：Server Lead・Store Mgr/);
+  // An older function (it drops input_emps and sends only input_emp): with two saved, the server stops it (update_app) …
+  const real = c.fetch;
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_save') { b.stores = b.stores.map(({ input_emps, ...x }) => x); init = { ...init, body: JSON.stringify(b) }; } return real(url, init); };
+  setInputs(c, 'E12', 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.some(([m, k]) => k === 'error' && /入力担当が 2 人以上います/.test(m)));
+  assert.deepEqual((await S.q(`select input_emps from mr_stores where env='live' and store_id='F01'`))[0].input_emps, ['E12', 'E13'], 'nothing written');
+  // … and with one saved, only the first is saved: the screen says so (not “saved”)
+  c.fetch = real; setInputs(c, 'E12'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_save') { b.stores = b.stores.map(({ input_emps, ...x }) => x); init = { ...init, body: JSON.stringify(b) }; } return real(url, init); };
+  const nOk = c.toasts.filter(([, k]) => k === 'success').length;
+  setInputs(c, 'E13', 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.some(([m, k]) => k === 'error' && /1 人だけ保存されたかもしれません/.test(m)));
+  assert.equal(c.toasts.filter(([, k]) => k === 'success').length, nOk, 'not shown as saved');
+  // an older SQL (the answer has no list): the same
+  c.fetch = async (url, init) => { const r = await real(url, init); const b = JSON.parse(init.body); if (b.action !== 'access_save' || r.status !== 200) return r; const j = await r.json(); (j.stores || []).forEach(x => delete x.input_emps); return Response.json(j); };
+  setInputs(c, 'E12', 'E13'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.filter(([m, k]) => k === 'error' && /1 人だけ保存されたかもしれません/.test(m)).length >= 2);
+  c.fetch = real;
+});
+
+// Codex (PR #114 fbc4bd8) P2: the month's own people are saved on the version read. Two screens on the same month: the older
+// save is refused, my change is put on theirs one person at a time (unsaved, with a band), then saved.
+test('v1122 the month\'s input people on two screens: the older save is not written; mine is put on theirs with a band; then both are kept', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  const db = async () => (await S.q(`select input_emps, input_version from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0] || null;
+  g.dom = { 'mr-acc-madd': { value: 'E14' } }; g.run('mrAccMonthAdd()'); await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emps: ['E14'], input_version: 1 });
+  assert.equal(g.calls.filter(b => b.action === 'month_input_save').at(-1).expect_version, 0);
+  // the CEO (opened before) adds Store Mgr
+  c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()'); await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emps: ['E14'], input_version: 1 }, 'nothing written by the older screen');
+  assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
+  const card = chips(c.html, 'mr-acc-month'), h = c.html.slice(c.html.indexOf('だけの入力担当'));
+  assert.match(h, /ほかの人（または別のタブ）が先にこの月の担当を保存しました.*ほかの人の変更：入力担当に Op Lead を足す.*あなたの変更（入力担当に Store Mgr を足す）を、いまの担当に入れ直しました。<b>まだ保存していません。/s);
+  assert.match(card, /<span class="mr-pp"><b>Op Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b>/s);
+  assert.equal(c.run('mrSetUnsaved()'), true);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emps: ['E14', 'E13'], input_version: 2 });
+  assert.doesNotMatch(c.html, /先にこの月の担当を保存しました/);
+  // the same change made on both: already in, nothing to save
+  g.dom = { 'mr-acc-madd': { value: 'E10' } }; g.run('mrAccMonthAdd()');
+  c.dom = { 'mr-acc-madd': { value: 'E10' } }; c.run('mrAccMonthAdd()'); await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
+  assert.match(g.html, /あなたの変更（入力担当に Chef Oka を足す）は、もう入っています（保存しなくて大丈夫）。/); assert.equal(g.run('mrSetUnsaved()'), false);
+  assert.deepEqual(await db(), { input_emps: ['E14', 'E13', 'E10'], input_version: 3 });
 });

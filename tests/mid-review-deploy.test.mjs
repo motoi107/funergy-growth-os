@@ -1,7 +1,8 @@
 // 中間レビューの配備用ファイルの確認（合成データ・本番に接続しない）。
 // 1) deploy/mid-review-v1069/ は本番に入れたときのまま（変えない）。中身を sha256 で固定して見張る。
 // 2) deploy/mid-review-v2/ は 10/13 に渡したときのまま（v1073 で確認の SQL が変わったので、中身を sha256 で固定して見張る）。
-//    deploy/mid-review-v1073/・deploy/mid-review-v1073-fix/ も渡したときのまま（sha256）。deploy/mid-review-v1076/ は SQL が元のファイルの写し。
+//    deploy/mid-review-v1073/・deploy/mid-review-v1073-fix/ も渡したときのまま（sha256）。deploy/mid-review-v1076/ は SQL が元のファイルの写し（確認の SQL と手順は sha256）。
+//    deploy/mid-review-v1122/ は SQL と確認の SQL が元のファイルの写し。
 //    どちらも関数の 1 ファイルは置かない（PIN のログインの確かめが入るので公開しない。Moto さんに直接渡す）。
 // 3) 戻す SQL（db/mid-review-fixes-revert.sql）が、v1069 の 3 つの関数を 20261012090000 のときの中身に戻すこと。
 // 4) 止める SQL（db/mid-review-stop.sql）が、記録・設定を消さずに「非公開確認」だけを OFF にすること。
@@ -114,7 +115,9 @@ test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関�
   const D = 'deploy/mid-review-v1076/';
   assert.deepEqual(list(D), ['1_追加のSQL_管轄にGM.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
   assert.equal(read(D + '1_追加のSQL_管轄にGM.sql'), read('supabase/migrations/20261018090000_mid_review_scope_gm.sql'));
-  assert.equal(read(D + '2_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  // v1122 で確認の SQL が変わったので、渡したときの中身を sha256 で固定して見張る。
+  assert.equal(sha(D + '2_確認のSQL_読むだけ.sql'), '6672fe477f0a2330e7fbbc4ff6e7dbbb1292c6d215943d7343af5cc14efe65a6');
+  assert.equal(sha(D + '手順.md'), 'd5d689663d9ce45b1fe3fcc64b1f7c5216dc0e89741171e356c35e64e689d96a');
   const howto = read(D + '手順.md');
   for (const s of ['1_追加のSQL_管轄にGM.sql', '2_確認のSQL_読むだけ.sql', 'mid-review scope GM (20261018090000)', 'mid-review stores_save fix (20261017090000)',
     '全文', '関数は変えません', 'v1076', '未設定（GM・CEO みんなで見る）'])
@@ -128,6 +131,29 @@ test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関�
   const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
   const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);
   for (const w of howto.match(/[A-Za-z0-9_:.-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
+});
+
+// v1122 の束：SQL 1 つ（デモをやめて本番に・メールの認証をやめる・入力担当を何人でも）＋確認の SQL。どちらも元のファイルの写し。
+// 関数は入力担当の名簿を渡すところだけ変えた（PIN の確かめが入る 1 ファイルは公開しない・Moto さんに直接）。
+test('v1122 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → 関数 → マージ → 端末を更新 → 担当・閲覧設定', () => {
+  const D = 'deploy/mid-review-v1122/';
+  assert.deepEqual(list(D), ['1_追加のSQL_本番にする.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
+  assert.equal(read(D + '1_追加のSQL_本番にする.sql'), read('supabase/migrations/20261102090000_mid_review_live.sql'));
+  assert.equal(read(D + '2_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
+  const howto = read(D + '手順.md');
+  for (const s of ['1_追加のSQL_本番にする.sql', '2_確認のSQL_読むだけ.sql', 'mid-review live (20261102090000)', 'ceo / gm accounts without an employee id',
+    'live stores without an input person', 'input_emp not the first of the list', '全文', '非公開の 1 ファイル', '何人でも', 'v1122', 'PIN が初期のまま', '前の記録', '店舗公開・通知は OFF', 'db/mid-review-stop.sql'])
+    assert.ok(howto.includes(s), s);
+  const at = s => howto.indexOf(s);
+  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 2b |') && at('| 2b |') < at('| 3 |') && at('| 3 |') < at('| 4 |') && at('| 4 |') < at('| 5 |'));
+  const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
+  assert.match(row(1), /1_追加のSQL_本番にする\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row('2b'), /関数 `mid-review`.*非公開/); assert.match(row(3), /マージ/); assert.match(row(4), /端末.*v1122/); assert.match(row(5), /担当・閲覧設定/);
+  assert.equal(howto.includes('| 6 |'), false);
+  assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false, '関数（PIN の確かめ入り）は公開しない');
+  const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
+  const FORBID = new Set(['1c3082c0c5e14780', 'b6b85248bf9e8053', '32fd6f051ca87f40']);
+  for (const w of howto.match(/[A-Za-z0-9_:.@-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
+  assert.doesNotMatch(howto, /@[a-z0-9.-]+\.[a-z]{2,}/i, 'メールアドレスを書かない');
 });
 
 test('戻す SQL は v1069 の 3 つの関数を 20261012090000 のときの中身に戻す', async t => {

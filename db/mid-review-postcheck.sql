@@ -50,6 +50,28 @@ with t as (
   -- the store oversight may be a GM too (20261018090000): the save takes a GM, and the list row says whose role it is
   select exists(select 1 from src where proname = 'mr_stores_save' and position('public.mr_member_role(x) in (''am'',''gm'')' in prosrc) > 0)
    and exists(select 1 from src where proname = 'mr_row_v2' and position('''am_role''' in prosrc) > 0) as ok
+), v6 as (
+  -- v1122 (20261102090000): no email step, no demo, a PIN sign-in gets its row from the masters (CEO / GM: manager_auth; AM: the employee master)
+  select exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_need_email' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_demo_reset' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_store' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_list' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_pin_actor' and position('member_switch' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_member_role' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('v1122' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_whoami' and position('v1122' in p.prosrc) > 0)
+   -- several input people (Moto 10/30): the lists and the functions that read them
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'input_emps')
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_reviews' and column_name = 'input_emps')
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('several input people' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_access_save' and position('mr_inputs_req' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_month_input_save' and position('mr_inputs_req' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_stores_bump' and position('input_emps' in p.prosrc) > 0)
+   -- the month's people on the version read; a stop by SQL kept for the person
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_reviews' and column_name = 'input_version')
+   and exists(select 1 from pg_trigger g where g.tgname = 'mr_reviews_input_bump' and g.tgrelid = 'public.mr_reviews'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_month_input_save' and position('input_version' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_ensure_member' and position('v1122' in p.prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -79,6 +101,8 @@ union all select 'mid-review stores_save fix (20261017090000)', (select ok::text
   case when (select ok from v4) then 'OK' else 'NG：20261017090000_mid_review_stores_save_fix.sql がまだ（20261016090000 を流し直したときも、続けてもう一度流す）' end
 union all select 'mid-review scope GM (20261018090000)', (select ok::text from v5),
   case when (select ok from v5) then 'OK' else 'NG：20261018090000_mid_review_scope_gm.sql がまだ（20261015090000・20261016090000・20261017090000 を流し直したときも、そのあとで続けてもう一度流す）' end
+union all select 'mid-review live (20261102090000)', (select ok::text from v6),
+  case when (select ok from v6) then 'OK' else 'NG：20261102090000_mid_review_live.sql がまだ（その前の中間レビューの SQL を流し直したときも、そのあとで続けてもう一度流す）' end
 union all select 'flags', (select value::text from public.mr_settings where key = 'flags'),
   case when (select (value->>'store_publish')::boolean = false and (value->>'notify')::boolean = false from public.mr_settings where key = 'flags') then 'OK（店舗公開・通知は OFF）' else 'NG' end
 union all select 'live input', (select coalesce(value->>'live_input', 'null') from public.mr_settings where key = 'flags'),
@@ -104,10 +128,26 @@ union all select 'gm here but ceo in manager_auth', (select count(*)::text from 
 union all select 'role narrowing (v1068)', (select bool_or(position('bool_or' in prosrc) > 0)::text from src where proname in ('mr_auth','mr_member_role')),
   case when (select bool_or(position('bool_or' in prosrc) > 0) from src where proname in ('mr_auth','mr_member_role')) then 'OK' else 'NG：20261013090000 か 20261015090000 がまだ' end
 union all select 'members without employee id', (select count(*)::text from m where coalesce(emp_id, '') = ''),
-  case when (select count(*) from m where coalesce(emp_id, '') = '') = 0 then 'OK' else '注意：この人は PIN では入れない（メールだけ）。AM は入れない' end
+  case when (select count(*) from m where coalesce(emp_id, '') = '') = 0 then 'OK'
+   else '注意：社員の表と結ばれていない利用者がいる（v1122 から入り方は PIN だけ。CEO・GM は manager_auth に社員 ID があれば、PIN で入ったときに結ぶ。AM・ほかの人は入れない）' end
+-- v1122: CEO / GM sign in with the PIN only; without the employee id on their manager_auth account the review cannot tell who they are.
+union all select 'ceo / gm accounts without an employee id', (select count(*)::text from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = ''),
+  case when (select count(*) from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') = '') = 0 then 'OK'
+   else '注意：この CEO・GM は中間レビューに入れない（manager_auth に社員 ID が無い。db/invoice-signin-emp-check.sql で確かめて入れる）' end
+-- v1122: a CEO / GM row counts only while its account names that employee (in service); a corrected manager_auth moves the row at the next PIN sign-in.
+union all select 'ceo / gm rows whose account names another employee', (select count(*)::text from public.mr_members x where x.enabled and x.role in ('ceo','gm') and coalesce(x.emp_id, '') <> ''
+   and not exists(select 1 from public.manager_auth a where a.user_id = x.user_id and a.role in ('ceo','gm') and a.emp_id::text = x.emp_id)),
+  case when (select count(*) from public.mr_members x where x.enabled and x.role in ('ceo','gm') and coalesce(x.emp_id, '') <> ''
+   and not exists(select 1 from public.manager_auth a where a.user_id = x.user_id and a.role in ('ceo','gm') and a.emp_id::text = x.emp_id)) = 0 then 'OK'
+   else '注意：この行では入れない（manager_auth の社員 ID が別の人）。manager_auth が正しければ、その人が PIN で入ったときに行が移る' end
+union all select 'ceo / gm accounts linked to someone resigned or not ceo / gm', (select count(*)::text from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') <> ''
+   and not exists(select 1 from public.employees e where e.id::text = a.emp_id::text and coalesce(e.status, '') <> '退職' and e.role in ('ceo','gm'))),
+  case when (select count(*) from public.manager_auth a where a.role in ('ceo','gm') and coalesce(a.emp_id::text, '') <> ''
+   and not exists(select 1 from public.employees e where e.id::text = a.emp_id::text and coalesce(e.status, '') <> '退職' and e.role in ('ceo','gm'))) = 0 then 'OK'
+   else '注意：manager_auth の CEO・GM のアカウントが、退職した人・社員の表で CEO／GM でない人に結ばれている（社員 ID を確かめる。退職なら中間レビューには入れない）' end
 union all select 'am not an am in the employee master', (select count(*)::text from m where m.role = 'am' and m.role_now is null),
   case when (select count(*) from m where m.role = 'am' and m.role_now is null) = 0 then 'OK'
-   else '注意：この AM は入れない（社員の表に無い・AM ではない・退職）。止めるなら mid-review-disable-member.sql' end
+   else '注意：この AM は入れない（社員の表に無い・AM ではない・退職）。止めるなら mid-review-disable-member-by-employee.sql' end
 union all select 'chef no longer Head Chef / Corporate Chef', (select count(*)::text from m where m.role = 'chef' and m.role_now is null),
   case when (select count(*) from m where m.role = 'chef' and m.role_now is null) = 0 then 'OK'
    else '注意：この人は入れない（退職・肩書きが変わった）。担当・閲覧設定で外す' end
@@ -119,6 +159,13 @@ union all select 'live stores the saved AM cannot see', (select count(*)::text f
   case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and s.am_user is not null
    and exists(select 1 from public.mr_members w where w.user_id = s.am_user and w.role = 'am') and not public.mr_am_master_ok(s.am_user, s.store_id)) = 0 then 'OK'
    else '注意：店舗マスターの AM 欄と違う店がある（アプリの設定で担当を確かめて保存）' end
-union all select 'live stores without an input person', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null),
-  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null) = 0 then 'OK'
+-- v1122: several input people. The list (input_emps) decides; input_emp keeps its first one. A hand-written SQL that changes only
+-- input_emp on a row with a list does nothing: shown here.
+union all select 'input_emp not the first of the list', (select count(*)::text from (select to_jsonb(s) j from public.mr_stores s union all select to_jsonb(r) from public.mr_reviews r) q
+   where jsonb_typeof(q.j->'input_emps') = 'array' and (q.j->'input_emps'->>0) is distinct from (q.j->>'input_emp')),
+  case when (select count(*) from (select to_jsonb(s) j from public.mr_stores s union all select to_jsonb(r) from public.mr_reviews r) q
+   where jsonb_typeof(q.j->'input_emps') = 'array' and (q.j->'input_emps'->>0) is distinct from (q.j->>'input_emp')) = 0 then 'OK'
+   else '注意：入力担当の欄（input_emp）だけが SQL で変えられた行がある（効くのは input_emps の名簿。担当・閲覧設定で選び直す）' end
+union all select 'live stores without an input person', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null and coalesce(jsonb_typeof(to_jsonb(s)->'input_emps'), '') <> 'array'),
+  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null and coalesce(jsonb_typeof(to_jsonb(s)->'input_emps'), '') <> 'array') = 0 then 'OK'
    else '参考：入力担当が未設定の店がある（担当・閲覧設定で選ぶ。未設定の店はだれも入力できない）' end;

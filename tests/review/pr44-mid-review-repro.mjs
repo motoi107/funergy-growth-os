@@ -3,6 +3,8 @@
 // Reuse only the setup preceding the PR's tests, with the real UI, handler and SQL.
 // Adjusted by Claude for v2 (段階 4-2, v1069): the fixture now loads all three migrations (v1066, v1068 fixes, v2);
 // R1 and R3 use the v2 fields; R2 and R4 are skipped because v2 removed those concepts (see each test).
+// Adjusted by Claude for v1122 (Moto さん 10/30: no demo, no email sign-in for the review): R1 reads the live record;
+// R3 checks the same idea with the PIN login (a new mark for the same person), since the email session is gone.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -47,7 +49,7 @@ test('R1: a response from a submitted store must not clear another store editor'
   const nextEditor = c.M().ed;
   assert.equal(nextEditor.state, 'dirty');
   release(); await submitting;
-  const stored = await S.api('gm', {action:'get',env:'demo',ym:'2026-10',store_id:'D1'});
+  const stored = await S.api('gm', {action:'get',env:'live',ym:'2026-10',store_id:'D1'});
   t.diagnostic(JSON.stringify({submittedStore:'D6', currentStore:c.M().view?.id,
     editorRetained:c.M().ed === nextEditor, op:c.M().op,
     newTextSaved:stored.review.body.cur.sales.comment === 'R1 new input in the other store'}));
@@ -75,34 +77,22 @@ test('R2: sending must check the draft set and versions shown on this tab', { sk
 test('R3: refreshing the same account must preserve the editor and pending input', async t => {
   const S = await server(); t.after(() => S.pg.close());
   const c = app(S); await openStore(c, 'D6'); c.run('mrStartInput()');
-  // Use the actual shared session refresh function. Only the token endpoint and
-  // remember-on-device persistence are mocked; all review traffic uses the real handler.
-  const start = html.indexOf('var _invInRefreshing = null;');
-  const end = html.indexOf('/* Supabase', start);
-  assert.ok(start >= 0 && end > start);
-  c.invInRtFor = s => s.refresh_token; c.invInKeepRefresh = () => {};
-  c.run(html.slice(start, end));
-  const originalFetch = c.fetch; let expired = true;
-  c.fetch = async (url, init) => {
-    if (url.includes('/auth/v1/token?grant_type=refresh_token'))
-      return {ok:true, status:200, json:async()=>({access_token:'tok-gm', refresh_token:'refreshed-gm'})};
-    if (expired && JSON.parse(init.body).action === 'save') {
-      expired = false; return {ok:false, status:401, json:async()=>({error:'unauthorized'})};
-    }
-    return originalFetch(url, init);
-  };
+  // Adjusted by Claude for v1122: the review has no email session any more; it uses the PIN login only. auth-pin gives
+  // the same person a new mark when they log in again. That is this test's "refresh": it must not act as another account.
   // Adjusted by Claude for v2: a v2 field (v1 had focus as a list with notes).
   c.run("mrSetVal('prev.sales.comment','R3 before refresh')");
   assert.equal(await c.run('mrSaveNow()'), true);
   const editor = c.M().ed;
-  // Adjusted by Claude for the v1068 fix: the original line asserted that the review kept the old session object
-  // (true on 1979f7f). The fix follows the rotation, so only check that the refresh actually happened.
-  assert.equal(c._botSession.refresh_token, 'refreshed-gm', 'the refresh happened');
+  c._hwSession = 'pin-E2-refreshed';
   // Choosing a radio option normally triggers a rerender immediately.
   c.run("mrIn({getAttribute:k=>k==='data-p'?'consult':'1',type:'radio',value:'yes'})");
   t.diagnostic(JSON.stringify({sameAccount:'gm', editorRetained:c.M().ed === editor,
     view:c.M().view, selectedValue:editor.body.consult}));
   assert.equal(c.M().ed === editor, true, 'same-user token rotation must not act as a different-account login');
+  await c.flush();
+  const stored = await S.api('gm', {action:'get',env:'live',ym:'2026-10',store_id:'D6'});
+  assert.equal(stored.review.body.prev.sales.comment, 'R3 before refresh');
+  assert.equal(stored.review.body.consult, 'yes', 'the input after the new mark is saved too');
 });
 
 // Skipped for v2: there are no CEO-only decisions or escalation waits any more — replies have an optional response
