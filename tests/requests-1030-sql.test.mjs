@@ -8,6 +8,8 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const sql = f => fs.readFileSync(new URL('../db/' + f, import.meta.url), 'utf8');
 const FILES = ['vendor-duplicates-check.sql', 'unregistered-punch-check.sql', 'menu-sync-status-check.sql', 'purchase-price-check.sql'];
 const hstToday = () => new Date(Date.now() - 10 * 3600e3).toISOString().slice(0, 10);
+// the synthetic posted invoices '100' and '101' (put in by a person, so confirmed under the purchase summary's rule)
+const DOC = no => `'00000000-0000-4000-9000-000000000${no}'::uuid`;
 const D = n => new Date(Date.parse(hstToday() + 'T00:00:00Z') - n * 86400e3).toISOString().slice(0, 10);
 
 async function db() {
@@ -18,7 +20,8 @@ async function db() {
     create table public.vendors(id text primary key, name text, data jsonb);
     create table public.ingredients(code text primary key, name text, vendor text, data jsonb);
     create table public.invoice_vendor_rules(vendor_key text primary key, display_name text, aliases text[] default '{}', merged_into text);
-    create table public.invoice_docs(id uuid primary key default gen_random_uuid(), vendor_name text, status text);
+    create table public.invoice_docs(id uuid primary key default gen_random_uuid(), vendor_name text, status text, doc_type text default 'invoice',
+      recon_status text default 'pending', posted_mode text default 'manual', reasons jsonb default '[]');
     create table public.employees(id text primary key, name text, status text, data jsonb);
     create table public.tip_labor(restaurant_guid text, business_date date, data jsonb);
     create table public.toast_item_sales(id serial primary key, restaurant_guid text, business_month text, business_date date, item_guid text, item_name text, qty numeric);
@@ -27,6 +30,7 @@ async function db() {
       purchase_unit text default '', doc_id uuid, line_id uuid, effective_date date, effective_basis text, invoice_date date, invoice_no_norm text,
       price_per_purchase numeric, price_per_count numeric, count_unit text, price_per_base numeric, base_unit text, status text default 'active');
     insert into public.stores values ('F01','One','g1','{}'),('F02','Two','g2','{}');`);
+  await pg.exec(`insert into public.invoice_docs(id, vendor_name, status) values (${DOC('100')}, 'v', 'posted'), (${DOC('101')}, 'v', 'posted');`);
   return pg;
 }
 async function snapshot(pg) {
@@ -98,11 +102,11 @@ test('⑦ menu: rows, days, gaps, double rows per store and month', async () => 
 test('② prices: the latest and the previous confirmed price for the same item, spec and unit', async () => {
   const pg = await db();
   await pg.exec(`insert into public.invoice_lines values ('00000000-0000-4000-8000-000000000001', 2, 60, 12000, null), ('00000000-0000-4000-8000-000000000002', 4, 60, 24000, null);
-    insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, line_id, effective_date, effective_basis, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit) values
-      ('F01','v','1001','CS','00000000-0000-4000-8000-000000000001','2026-10-01','invoice','100',60,5,'ea',5,'ea'),
-      ('F01','v','1001','CS','00000000-0000-4000-8000-000000000002','2026-10-08','invoice','101',60,5,'ea',5,'ea'),
-      ('F01','v','1002','LB',null,'2026-10-01','invoice','100',3.2,null,null,0.00705,'g'),
-      ('F01','v','1002','LB',null,'2026-10-08','invoice','101',3.52,null,null,0.00776,'g');`);
+    insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, line_id, effective_date, effective_basis, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, doc_id) values
+      ('F01','v','1001','CS','00000000-0000-4000-8000-000000000001','2026-10-01','invoice','100',60,5,'ea',5,'ea',${DOC('100')}),
+      ('F01','v','1001','CS','00000000-0000-4000-8000-000000000002','2026-10-08','invoice','101',60,5,'ea',5,'ea',${DOC('101')}),
+      ('F01','v','1002','LB',null,'2026-10-01','invoice','100',3.2,null,null,0.00705,'g',${DOC('100')}),
+      ('F01','v','1002','LB',null,'2026-10-08','invoice','101',3.52,null,null,0.00776,'g',${DOC('101')});`);
   const before = await snapshot(pg);
   const rows = (await pg.query(sql('purchase-price-check.sql'))).rows;
   assert.equal(await snapshot(pg), before);
@@ -116,14 +120,14 @@ test('② prices: the latest and the previous confirmed price for the same item,
 
 test('② prices (Codex on 42fe938): the 80 rows are chosen by the change they show — a case at the same $60 holding half as much is +100 % per base unit', async () => {
   const pg = await db();
-  await pg.exec(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase, price_per_base, base_unit) values
-      ('F01','v','2001','10LB','CS','2026-10-01','invoice','100',60,0.013228,'g'),
-      ('F01','v','2001','10LB','CS','2026-10-08','invoice','101',60,0.026455,'g'),
-      ('F01','v','2002','','CS','2026-10-01','invoice','100',50,0.01,'g'),
-      ('F01','v','2002','','CS','2026-10-08','invoice','101',55,0.011,'g');`);
+  await pg.exec(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, spec_key, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase, price_per_base, base_unit, doc_id) values
+      ('F01','v','2001','10LB','CS','2026-10-01','invoice','100',60,0.013228,'g',${DOC('100')}),
+      ('F01','v','2001','10LB','CS','2026-10-08','invoice','101',60,0.026455,'g',${DOC('101')}),
+      ('F01','v','2002','','CS','2026-10-01','invoice','100',50,0.01,'g',${DOC('100')}),
+      ('F01','v','2002','','CS','2026-10-08','invoice','101',55,0.011,'g',${DOC('101')});`);
   for (let i = 0; i < 90; i++)   // more than 80 rows: the smaller changes must not push the big one out
-    await pg.query(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase) values
-      ('F02','w',$1,'CS','2026-10-01','invoice','100',100),('F02','w',$1,'CS','2026-10-08','invoice','101',$2)`, ['3' + String(i).padStart(3, '0'), 100 + 1 + (i % 40)]);
+    await pg.query(`insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, effective_date, effective_basis, invoice_no_norm, price_per_purchase, doc_id) values
+      ('F02','w',$1,'LB','2026-10-01','invoice','100',100,${DOC('100')}),('F02','w',$1,'LB','2026-10-08','invoice','101',$2,${DOC('101')})`, ['3' + String(i).padStart(3, '0'), 100 + 1 + (i % 40)]);
   const rows = (await pg.query(sql('purchase-price-check.sql'))).rows;
   assert.equal(rows.length, 80);
   const i1 = rows.findIndex(r => r.ingredient_code === '2001');
@@ -131,5 +135,77 @@ test('② prices (Codex on 42fe938): the 80 rows are chosen by the change they s
   assert.equal(Number(rows[i1].chg_pct), 100);
   assert.equal(i1, 0, 'and comes first');
   for (let i = 1; i < rows.length; i++) assert.ok(Math.abs(Number(rows[i - 1].chg_pct)) >= Math.abs(Number(rows[i].chg_pct)), 'ordered by the shown change');
+  await pg.close();
+});
+
+// Codex on PR #112 / #113 / #114 (bcca16c): the two prices must be of the same kind. With only one side per base unit the old file
+// divided a case price by a gram price (+599900 %), and a change per count unit (a bag) at the same case price showed 0 %.
+// Now it picks the comparable price the price analysis (v1123 invoice_price_cmp) picks and compares only the same unit.
+test('② prices (Codex on bcca16c): the same kind of price on both sides; only confirmed invoices; the price before is another invoice', async () => {
+  const pg = await db();
+  await pg.exec(`insert into public.invoice_docs(id, vendor_name, status, recon_status, posted_mode, reasons) values
+      (${DOC('102')}, 'v', 'posted', 'pending', 'manual', '[]'),
+      (${DOC('103')}, 'v', 'review', 'pending', null, '[]'),
+      (${DOC('104')}, 'v', 'posted', 'discrepancy', 'manual', '[]'),
+      (${DOC('105')}, 'v', 'posted', 'pending', 'auto', '[]'),
+      (${DOC('106')}, 'v', 'posted', 'pending', 'manual', '[{"code":"app_duplicate_candidate"}]'),
+      (${DOC('107')}, 'v', 'posted', 'reconciled', 'auto', '[]');
+    insert into public.invoice_price_history(store_id, vendor_key, ingredient_code, purchase_unit, effective_date, invoice_no_norm, price_per_purchase, price_per_count, count_unit, price_per_base, base_unit, doc_id) values
+      -- one side per base unit only: not compared
+      ('F01','v','4001','CS','2026-10-01','100',60,null,null,0.01,'g',${DOC('100')}),
+      ('F01','v','4001','CS','2026-10-08','101',60,null,null,null,null,${DOC('101')}),
+      -- the same case price, a bag from $5 to $10: +100 % per bag
+      ('F01','v','4002','CS','2026-10-01','100',60,5,'bag',null,null,${DOC('100')}),
+      ('F01','v','4002','CS','2026-10-08','101',60,10,'bag',null,null,${DOC('101')}),
+      -- per base unit before, per bag now: a different unit
+      ('F01','v','4003','CS','2026-10-01','100',60,null,null,0.01,'g',${DOC('100')}),
+      ('F01','v','4003','CS','2026-10-08','101',60,5,'bag',null,null,${DOC('101')}),
+      -- a kilo price is a pound price: $11.02/kg → $5.00/LB, then $5.50/LB = +10 %
+      ('F01','v','4004','KG','2026-10-01','100',11.0231,null,null,null,null,${DOC('100')}),
+      ('F01','v','4004','KG','2026-10-08','101',12.1254,null,null,null,null,${DOC('101')}),
+      -- newer prices on invoices that are not confirmed are not used; reconciled counts even when put in automatically
+      ('F01','v','4005','LB','2026-10-01','100',3,null,null,null,null,${DOC('100')}),
+      ('F01','v','4005','LB','2026-10-02','107',3.3,null,null,null,null,${DOC('107')}),
+      ('F01','v','4005','LB','2026-10-09','103',9,null,null,null,null,${DOC('103')}),
+      ('F01','v','4005','LB','2026-10-10','104',9,null,null,null,null,${DOC('104')}),
+      ('F01','v','4005','LB','2026-10-11','105',9,null,null,null,null,${DOC('105')}),
+      ('F01','v','4005','LB','2026-10-12','106',9,null,null,null,null,${DOC('106')}),
+      -- two lines of the newest invoice: the price before is another invoice
+      ('F01','v','4006','LB','2026-10-01','100',2,null,null,null,null,${DOC('100')}),
+      ('F01','v','4006','LB','2026-10-08','101',2.2,null,null,null,null,${DOC('101')}),
+      ('F01','v','4006','LB','2026-10-08','101',2.2,null,null,null,null,${DOC('101')}),
+      -- the same product twice on one invoice at different prices
+      ('F01','v','4007','LB','2026-10-01','100',2,null,null,null,null,${DOC('100')}),
+      ('F01','v','4007','LB','2026-10-08','101',2.2,null,null,null,null,${DOC('101')}),
+      ('F01','v','4007','LB','2026-10-08','101',4,null,null,null,null,${DOC('101')}),
+      -- a case with no spec and no count unit: kept, with nothing to compare
+      ('F01','v','4008','CS','2026-10-01','100',40,null,null,null,null,${DOC('100')}),
+      ('F01','v','4008','CS','2026-10-08','102',42,null,null,null,null,${DOC('102')}),
+      -- a first purchase
+      ('F01','v','4009','LB','2026-10-08','101',7,null,null,null,null,${DOC('101')});`);
+  const before = await snapshot(pg);
+  const rows = (await pg.query(sql('purchase-price-check.sql'))).rows;
+  assert.equal(await snapshot(pg), before);
+  const by = Object.fromEntries(rows.map(r => [r.ingredient_code, r]));
+  assert.equal(by['4001'].chg_pct, null, 'a gram price is not divided by a case price');
+  assert.equal(by['4001'].note, 'no_spec');
+  assert.equal(Number(by['4002'].chg_pct), 100);
+  assert.equal(by['4002'].cmp_unit, 'BAG');
+  assert.equal(by['4003'].chg_pct, null);
+  assert.equal(by['4003'].note, 'unit_changed');
+  assert.equal(by['4003'].prev_cmp_unit, 'LB');
+  assert.equal(Number(by['4004'].chg_pct), 10);
+  assert.equal(by['4004'].cmp_unit, 'LB');
+  assert.ok(Math.abs(Number(by['4004'].cmp) - 5.5) < 0.001, 'per pound: the kilo price × 0.4536');
+  assert.equal(by['4005'].inv, '107', 'invoices in review, with a difference, put in automatically and not reconciled, or flagged as maybe the app\'s are not used');
+  assert.equal(Number(by['4005'].chg_pct), 10);
+  assert.equal(by['4006'].prev_inv, '100');
+  assert.equal(Number(by['4006'].chg_pct), 10);
+  assert.equal(by['4007'].note, 'check_link');
+  assert.equal(by['4007'].chg_pct, null);
+  assert.equal(by['4008'].note, 'no_spec');
+  assert.equal(by['4008'].per_purchase === null, false, 'the price still shows');
+  assert.equal(by['4009'].note, 'first');
+  assert.equal(rows[0].ingredient_code, '4002', 'the biggest comparable change first');
   await pg.close();
 });
