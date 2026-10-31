@@ -82,7 +82,7 @@ async function setup(sql = SQL) {   // sql: another schema to run on (e.g. the p
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz); grant select, insert, update on public.app_state to service_role;
     create table public.vendors(id text primary key, name text, data jsonb); grant select on public.vendors to service_role;
     create table public.ingredients(code text primary key, name text, unit text, vendor text, qty numeric, data jsonb); grant select on public.ingredients to service_role;
-    insert into public.vendors values ('v1','VendorA','{"kind":"food"}'),('v3','VendorC','{"kind":"nonfood"}'),('v4','VendorD','{}');
+    insert into public.vendors values ('v1','VendorA','{"kind":"food"}'),('v3','VendorC','{"kind":"nonfood"}'),('v4','VendorD','{}'),('v5','VendorGone','{"kind":"food","vst":"deleted"}'),('v6','VendorOff','{"vst":"inactive"}');
     insert into public.ingredients values
      ('L-1','Shiro miso','BAG','VendorA',12,'{"sku":"06263","extId":"lala-1","orderUnit":"CS","unit":"BAG","qty":12}'),
      ('L-2','Gloves','PK','VendorC',10,'{"sku":"00123","extId":"lala-2","orderUnit":"CS","unit":"PK","qty":10}'),
@@ -668,7 +668,10 @@ test('Drive invoice intake works end to end on synthetic data', async (t) => {
     let r = await E.api('tok-gm', { action: 'vendor_seed' });
     assert.equal(r.body.added, 0); assert.ok(r.body.vendors.some(v => v.vendor_key === 'v3' && v.food_kind === 'nonfood' && !v.exists));
     r = await E.api('tok-gm', { action: 'vendor_seed', apply: true });
-    assert.equal(r.body.added, 2);                                                  // v3 and v4; v1 already had a rule
+    assert.equal(r.body.added, 3);                                                  // v3, v4 and v6 (inactive still sends invoices); v1 already had a rule
+    // v1121 (業者マスター ③): a card deleted in the vendor master is not offered (it came back through the intake before)
+    assert.ok(!r.body.vendors.some(v => v.vendor_key === 'v5'));
+    assert.equal((await E.q(`select count(*)::int n from invoice_vendor_rules where vendor_key='v5'`))[0].n, 0);
     const [v3] = await E.q(`select * from invoice_vendor_rules where vendor_key='v3'`);
     assert.equal(v3.auto_post, false); assert.equal(v3.food_kind, 'nonfood');
     assert.equal((await E.q(`select food_kind from invoice_vendor_rules where vendor_key='v4'`))[0].food_kind, null);   // not guessed

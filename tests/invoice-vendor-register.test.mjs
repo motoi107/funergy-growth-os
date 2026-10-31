@@ -452,7 +452,7 @@ function screenOn(E, tok = 'tok-office', mem = { m_vendors: [{ id: 'v1', name: '
     openModal: h => { c.modals.push(h); if (/id="ivd-modal"/.test(h)) dom['ivd-modal'] = { innerHTML: '' }; else delete dom['ivd-modal']; }, closeModalDirect: () => { delete dom['ivd-modal']; },
     renderPage: () => {}, acSetSub: x => { c._acSub = x; }, go: () => {}, myName: () => 'Akane', nowJP: () => '2026/10/16 18:00',
     ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), lsSet: (k, v) => { mem[k] = JSON.parse(JSON.stringify(v)); return true; },
-    _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null), getVendors: () => c.ls('m_vendors', []), getIngV2: () => [], pullOpKey: async () => true,
+    _lsStoreGet: k => (k in mem ? JSON.stringify(mem[k]) : null), getVendors: () => c.ls('m_vendors', []), vendorsWithDeleted: a => a, getIngV2: () => [], pullOpKey: async () => true,
     SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon', _botSession: { access_token: tok }, botResetShared: () => {}, botTime: v => String(v || ''),
     window: {}, setTimeout: () => {}, clearTimeout: () => {}, document: { getElementById: k => dom[k] || null, querySelectorAll: () => [], activeElement: null },
     fetch: async (url, init) => { const body = JSON.parse(init.body); c.sent.push(body.action);
@@ -553,7 +553,7 @@ test('新しい業者を決める: the check SQL tells before from after', async
   const files = fs.readdirSync(dir).filter(f => /^\d{14}_invoice_.*\.sql$/.test(f)).sort();
   const S5 = '20261024090000_invoice_vendor_register.sql';
   // 紐づけ 段階 1 (20261025090000) came after it: the database here is the one 新しい業者を決める went on.
-  assert.deepEqual(files.slice(-4), [S5, '20261025090000_invoice_item_link.sql', '20261026090000_invoice_qb_gmail.sql', '20261029100000_invoice_purchase_posted.sql']);
+  assert.deepEqual(files.slice(-5), [S5, '20261025090000_invoice_item_link.sql', '20261026090000_invoice_qb_gmail.sql', '20261029100000_invoice_purchase_posted.sql', '20261101100000_invoice_vendor_seed_skip_deleted.sql']);
   const POST = fs.readFileSync(new URL('../db/invoice-intake-postcheck.sql', import.meta.url), 'utf8');
   const pg = new PGlite();
   try {
@@ -561,7 +561,7 @@ test('新しい業者を決める: the check SQL tells before from after', async
       alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
       alter default privileges in schema public grant all on functions to anon, authenticated, service_role;
       create table public.manager_auth(user_id uuid primary key, role text, emp_id text); create table public.app_state(key text primary key, value json, updated_at timestamptz);`);
-    for (const f of files.slice(0, -4)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+    for (const f of files.slice(0, -5)) await pg.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
     let post = (await pg.query(POST)).rows[0];
     assert.deepEqual([post.vendor_register, post.vendor_merge, Number(post.tables), Number(post.functions)], [false, true, 19, 81]);
     await pg.exec(fs.readFileSync(new URL(S5, dir), 'utf8'));
