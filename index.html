@@ -18051,7 +18051,7 @@ function mrSettingsHtml(){
     /* その月だけの担当（v1122：何人でも。だれもいなければ基本どおり） */
     var md = mrAccMonthOf(s, ym), mNames = {}; mrArr(s.month_inputs).forEach(function(v){ mNames[v.emp_id] = v; }); mrArr(C.input).forEach(function(c){ if (!mNames[c.emp_id]) mNames[c.emp_id] = c; });
     var mAdd = '<option value="">'+t('人を選ぶ','Choose a person')+'</option>' + mrArr(C.input).filter(function(c){ return md.inputs.indexOf(c.emp_id) < 0; }).map(function(c){ return '<option value="'+e(c.emp_id)+'">'+e(mrCandL(c))+'</option>'; }).join('');
-    h += '<div class="card mr-col"><b>'+e(t(mrYmLabel(ym) + ' だけの入力担当', 'Input people for ' + ym + ' only'))+'</b><div class="mr-chips" id="mr-acc-month">'
+    h += '<div class="card mr-col"><b>'+e(t(mrYmLabel(ym) + ' だけの入力担当', 'Input people for ' + ym + ' only'))+'</b>' + mrAccMonthConfHtml(md, s) + '<div class="mr-chips" id="mr-acc-month">'
       + (md.inputs.length ? md.inputs.map(function(id){ var v = mNames[id] || { name:mrAccNm(id, s) }, mine = md.base.indexOf(id) < 0; return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'"'+busy+' onclick="mrAccMonthDel(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('')
         : '<span class="mr-m">'+e(t('基本どおり（' + (mrAccInNames(s) || '未設定') + '）', 'As the base (' + (mrAccInNames(s) || 'not set') + ')'))+'</span>') + '</div>'
       + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-madd"'+busy+'>'+mAdd+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccMonthAdd()">'+t('＋ 足す','+ Add')+'</button>'
@@ -18145,11 +18145,31 @@ function mrAccDirty(){ return !!((_mr.accDraft && _mr.accDraft.dirty) || (_mr.ac
 function mrAccPick(id){ if (mrAccDirty() && String(id || '') !== _mr.accStore && !confirm(t('保存していない変更があります。別の店へ移りますか？（変更は消えます）','There are unsaved changes. Move to another store? (they will be lost)'))) return; _mr.accStore = String(id || ''); _mr.accDraft = null; _mr.accMonth = null; _mr.accConf = null; mrRerender(); }
 function mrAccAddInput(){ var d = _mr.accDraft, el = document.getElementById('mr-acc-iadd'), v = el ? String(el.value || '') : ''; if (!d || _mr.busy || !v || d.inputs.indexOf(v) >= 0 || d.inputs.length >= 10) return; d.inputs.push(v); d.dirty = true; mrRerender(); }
 function mrAccDelInput(v){ var d = _mr.accDraft; if (!d || _mr.busy) return; var i = d.inputs.indexOf(String(v)); if (i < 0) return; d.inputs.splice(i, 1); d.dirty = true; mrRerender(); }
-/* その月だけの担当の下書き（店・月ごと。読み直したら作り直す） */
+/* その月だけの担当の下書き（店・月ごと）。読んだときの名簿と版（month_input_version）を持つ。
+   ほかの人（または別のタブ）が先に保存して名簿・版が変わったら：変えていない下書きは作り直す。変えた下書きは店の設定と同じ B
+   ＝自分が足した人は足し、外した人は外して、いまの名簿に入れ直す（未保存で出して帯で知らせる）。Codex（PR #114）の P2 */
 function mrAccMonthOf(s, ym){
   var key = s.store_id + '|' + ym, base = Array.isArray(s.month_input_emps) ? s.month_input_emps.filter(function(x){ return !!x; }) : (s.month_input_emp ? [s.month_input_emp] : []), m = _mr.accMonth;
-  if (!m || m.key !== key || m.base.join('|') !== base.join('|')) m = _mr.accMonth = { key:key, store_id:s.store_id, ym:ym, base:base, inputs:base.slice() };
-  return m;
+  var ver = typeof s.month_input_version === 'number' ? s.month_input_version : 0, has = function(a, x){ return a.indexOf(x) >= 0; };
+  var fresh = function(conf){ return (_mr.accMonth = { key:key, store_id:s.store_id, ym:ym, base:base, inputs:base.slice(), version:ver, conf:conf || null }); };
+  if (!m || m.key !== key) return fresh();
+  if (m.version === ver && m.base.join('|') === base.join('|')) return m;
+  var o = m.base, myAdd = m.inputs.filter(function(v){ return !has(o, v); }), myDel = o.filter(function(v){ return !has(m.inputs, v); });
+  if (!myAdd.length && !myDel.length) return fresh();
+  var out = base.filter(function(v){ return !has(myDel, v); }); myAdd.forEach(function(v){ if (!has(out, v)) out.push(v); });
+  var conf = { theirs:{ inAdd:base.filter(function(v){ return !has(o, v); }), inDel:o.filter(function(v){ return !has(base, v); }), add:[], del:[] },
+    mine:{ inAdd:myAdd, inDel:myDel, add:[], del:[] }, same:out.join('|') === base.join('|') };
+  return (_mr.accMonth = { key:key, store_id:s.store_id, ym:ym, base:base, inputs:conf.same ? base.slice() : out, version:ver, conf:conf });
+}
+function mrAccMonthConfHtml(m, s){
+  var c = m && m.conf; if (!c) return '';
+  var e = escapeHtml, th = mrAccChg(c.theirs, s), mi = mrAccChg(c.mine, s), b = '';
+  if (th) b += '<span>'+e(t('ほかの人の変更：', 'Their change: ') + th)+'</span>';
+  if (c.same) b += '<span>'+e(t('あなたの変更（' + mi + '）は、もう入っています（保存しなくて大丈夫）。', 'Your change (' + mi + ') is already in (nothing to save).'))+'</span>';
+  else b += '<span>'+e(t('あなたの変更（' + mi + '）を、いまの担当に入れ直しました。', 'Your change (' + mi + ') was put on the people now. '))+'<b>'+t('まだ保存していません。','Not saved yet.')+'</b> '+t('確かめて「この月を保存」を押してください。','Check and press “Save this month”.')+'</span>';
+  if (m.inputs.length > 10) b += '<span><b>'+e(t('入力担当が ' + m.inputs.length + ' 人になりました（10 人まで）。保存の前に減らしてください。', 'There are ' + m.inputs.length + ' input people now (up to 10). Remove some before saving.'))+'</b></span>';
+  return '<div class="mr-conf" role="status"><i class="ti ti-alert-triangle" style="margin-top:3px"></i><div class="mr-conf-b"><b>'+t('ほかの人（または別のタブ）が先にこの月の担当を保存しました','Someone (or another tab) saved this month’s people first')+'</b>'+b+'</div>'
+    + '<button class="mr-x" aria-label="'+t('閉じる','Close')+'" onclick="_mr.accMonth.conf=null;mrRerender()">×</button></div>';
 }
 function mrAccMonthAdd(){ var m = _mr.accMonth, el = document.getElementById('mr-acc-madd'), v = el ? String(el.value || '') : ''; if (!m || _mr.busy || !v || m.inputs.indexOf(v) >= 0 || m.inputs.length >= 10) return; m.inputs.push(v); mrRerender(); }
 function mrAccMonthDel(v){ var m = _mr.accMonth; if (!m || _mr.busy) return; var i = m.inputs.indexOf(String(v)); if (i < 0) return; m.inputs.splice(i, 1); mrRerender(); }
@@ -18200,9 +18220,12 @@ function mrAccMonthSave(){
   if (!m || m.store_id !== _mr.accStore || m.ym !== ym) return;
   /* v1073: 変えていないのに押したときは送らない（古い画面から、読んだときの値をほかの人の変更の上に書き戻さない） */
   if (m.inputs.join('|') === m.base.join('|')) { showToast(t('変えていません（この月の担当はいまのまま）','Nothing changed (this month stays as it is)'), 'warning'); return; }
+  if (m.inputs.length > 10) { showToast(t('入力担当は 10 人までです。減らしてから保存してください','Up to 10 input people. Remove some, then save'), 'warning'); return; }
+  /* v1122: 読んだときの版で送る（違えばサーバーは何も書かない → 読み直して自分の変更を入れ直す・帯） */
   var sent = m.inputs.slice();
-  return mrSetRun('month', function(){ return mrAPI({ action:'month_input_save', store_id:_mr.accStore, ym:ym, input_emps:sent, input_emp:sent[0] || null }).then(function(r){
-    _mr.accMonth = null; mrAccInputsCheck(sent, r && r.input_emps); return r; }); });
+  return mrSetRun('month', function(){ return mrAPI({ action:'month_input_save', store_id:_mr.accStore, ym:ym, input_emps:sent, input_emp:sent[0] || null, expect_version:m.version || 0 }).then(function(r){
+    _mr.accMonth = null; mrAccInputsCheck(sent, r && r.input_emps); return r; }); }, null,
+    function(e){ return !!(e && e.code === 'conflict' && _mr.accMonth === m); });
 }
 function mrChefAdd(){ var el = document.getElementById('mr-acc-chef'), v = el ? String(el.value || '') : ''; if (!v) return; return mrSetRun('chef', function(){ return mrAPI({ action:'chef_save', emp_id:v, on:true }); }); }
 function mrChefDel(v){
