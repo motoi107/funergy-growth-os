@@ -2765,7 +2765,7 @@ async function syncMenuFromToast(storeId, guid, period) {
     /* v1124：ログインの読み込みと同じ決まり（日別の行は足す・ハワイ時間の昨日まで・共通レシピも）。前は日別の行を 1 行ずつ代入していた */
     var _mx = menuMixFromSales(storeId, sales, (typeof bizToday==='function' ? bizToday() : ''));
     mixUpdated = Object.keys(_mx.acc).length;
-    menuMixApply(storeId, period, _mx.acc);
+    menuMixApply(storeId, period, _mx.acc, _mx.linked);
     mixLastDay = _mx.hasDaily && _mx.days.length ? _mx.days[_mx.days.length-1] : null;
     mixTodayRows = _mx.todayRows;
   }
@@ -30516,21 +30516,37 @@ function menuMixFromSales(storeId, sales, today){
     var d=x.business_date||x.date; if(d) days[String(d).slice(0,10)]=1;
   });
   var todayRows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return cut && d >= cut; }).length : 0;
-  return { acc:acc, rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows,
+  var linked={}; Object.keys(byGuid).forEach(function(g){ linked[byGuid[g]]=1; });   /* この店で Toast と結ばれたレシピ（出数を Toast から入れるもの） */
+  return { acc:acc, linked:Object.keys(linked), rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows,
     skippedMonthly:(hasDaily ? all.filter(function(x){ return !(x.business_date||x.date); }).length : 0) };
 }
 function menuMixDayLabel(d){ var p=String(d||'').split('-'); return p.length===3 ? (parseInt(p[1],10)+'/'+parseInt(p[2],10)) : String(d||''); }
 /* 「10/29まで（ハワイ時間の昨日まで）」。今月なら今日の分を入れないことも書く（過去の月は日付だけ） */
 function menuMixUpTo(d){ var cur=(typeof bizToday==='function') ? String(bizToday()).slice(0,7) : ''; return menuMixDayLabel(d)+'まで'+(cur && String(d||'').slice(0,7)===cur ? '（ハワイ時間の昨日まで）' : ''); }
 /* 出数を入れ物に書く。中身（出数・売上）が変わらなければ書かない（ログインのたびに全店の出数を書き直して送っていた）。
-   結べた出数が 1 つも無いとき（月の 1 日・紐づく商品なし）も書かない。 */
-function menuMixApply(storeId, period, acc){
-  if (!acc || !Object.keys(acc).length) return false;
+   v1124（Codex・Claude の PR #114 のレビューの P2）：Toast から入れた出数がどれかを 1 品ごとに残す（_auto：レシピID → 入れた数）。
+   Toast と結ばれたレシピで、今回の集計（ハワイ時間の昨日まで）に無いものは、Toast から入れたまま（人が直していない）なら消す
+   （v1123 までに入れた「今日の途中の数」が残っていた）。人が入力・修正した数（_auto と違う・結ばれていないレシピ）は残す。
+   _auto が無い前の記録は、Toast から入れた月（toastSrc）の結ばれたレシピの数を Toast の数とみなす。
+   Toast と結ばれたレシピが無く、消すものも無いとき（月の 1 日・紐づく商品なし）は書かない。 */
+function menuMixApply(storeId, period, acc, linked){
+  acc = acc || {};
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-  var before = JSON.stringify(mix.items), salesBefore = Number(mix.sales)||0;
-  Object.keys(acc).forEach(function(rid){ mix.items[rid]=acc[rid]; });
+  var hadAuto = !!(mix._auto && typeof mix._auto === 'object'), auto = hadAuto ? Object.assign({}, mix._auto) : {};
+  var same = function(a, b){ return Math.abs((parseFloat(a)||0) - (parseFloat(b)||0)) < 1e-9; };
+  var clear = [];
+  (Array.isArray(linked) ? linked : []).forEach(function(rid){
+    if (acc.hasOwnProperty(rid) || mix.items[rid] === undefined) { if (!acc.hasOwnProperty(rid)) delete auto[rid]; return; }
+    if (hadAuto ? (auto[rid] !== undefined && same(mix.items[rid], auto[rid])) : !!mix.toastSrc) clear.push(rid);
+    delete auto[rid];   /* 人が直した数は、これからは手入力として残す */
+  });
+  if (!Object.keys(acc).length && !clear.length) return false;
+  var before = JSON.stringify(mix.items) + '|' + JSON.stringify(mix._auto || null), salesBefore = Number(mix.sales)||0;
+  clear.forEach(function(rid){ delete mix.items[rid]; });
+  Object.keys(acc).forEach(function(rid){ mix.items[rid]=acc[rid]; auto[rid]=acc[rid]; });
+  mix._auto = auto;
   var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
-  if (JSON.stringify(mix.items) === before && Math.abs(total - salesBefore) < 0.005 && mix.toastSrc) return false;
+  if (JSON.stringify(mix.items) + '|' + JSON.stringify(mix._auto) === before && Math.abs(total - salesBefore) < 0.005 && mix.toastSrc) return false;
   mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
   setMenuMix(storeId, period, mix);
   return true;
@@ -30541,7 +30557,7 @@ async function loadMenuMixFromDB(storeId, guid, ym, opt){
   var sales = await fetchToastItemSales(guid, period);
   if (!sales || !sales.length) return { ok:false, reason:'クラウドにこの月の出数がありません（夜間同期または店舗別のToast同期が必要）', rows:0 };
   var r = menuMixFromSales(storeId, sales, (typeof bizToday==='function' ? bizToday() : ''));
-  var wrote = menuMixApply(storeId, period, r.acc);
+  var wrote = menuMixApply(storeId, period, r.acc, r.linked);
   /* v737: どれだけ反映できたかを返す（黙って何も起きない状態をなくす） */
   return { ok:true, rows:r.rows.length, allRows:r.allRows, matched:Object.keys(r.acc).length,
     mode:(r.hasDaily?'daily':'monthly'), days:r.days.length, lastDay:(r.days.length ? r.days[r.days.length-1] : null), todayRows:r.todayRows,

@@ -9,7 +9,7 @@ import vm from 'node:vm';
 import { execFileSync } from 'node:child_process';
 
 const read = src => src.replace(/\r\n/g, '\n');
-const source = read(fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8'));
+const source = read(fs.readFileSync(process.env.MENU_INDEX_PATH || new URL('../index.html', import.meta.url), 'utf8'));
 function fnFrom(src, name) {
   let start = src.indexOf('\nfunction ' + name + '(');
   if (start < 0) start = src.indexOf('\nasync function ' + name + '(');
@@ -181,4 +181,53 @@ test('"出数を同期" also re-reads a past month that was already loaded once'
   await run(c, `ensureMenuMixLoaded('F04-K', '2026.9', { notify:true })`);
   assert.equal(c.STORE['menu_mix_F04-K_2026.9'].items['r-own'], 15, 'pressing the button re-reads it');
   assert.match(c.TOASTS.at(-1)[0], /日別 3日分・9\/30まで）/);
+});
+
+// Codex / Claude on PR #114 (fbc4bd8) P2: a count put in by Toast that is not in "up to yesterday" stayed (v1123 had saved
+// today's partial count). Which counts came from Toast is kept per item (_auto); those are taken out when they are not in the
+// new count and nobody changed them. Hand-entered counts stay.
+test('an old Toast count with no rows before today is taken out (v1123 saved today\'s partial); hand-entered and hand-corrected counts stay', async () => {
+  const c = app();
+  // v1123 saved today's partial count of ramen (5) and a hand-entered count of a recipe without Toast
+  c.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-manual': 7 }, sales: 145, toastSrc: true };
+  c.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', item_name: 'Ramen', qty: 5 }];   // only today's rows for the month so far
+  const l = await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(l.written, true);
+  assert.deepEqual({ ...mixOf(c).items }, { 'r-manual': 7 }, 'today\'s partial count is gone; the hand-entered one stays');
+  assert.equal(mixOf(c).sales, 70);
+  // the Toast sync button does the same
+  const s = app();
+  s.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-manual': 7 }, sales: 145, toastSrc: true };
+  s.SALES = c.SALES;
+  await run(s, `syncMenuFromToast('F04-K', 'guid-k', '2026.10')`);
+  assert.deepEqual({ ...s.STORE['menu_mix_F04-K_2026.10'].items }, { 'r-manual': 7 });
+  // a month never filled from Toast (all by hand) is not touched, even for recipes linked to Toast
+  const h = app();
+  h.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 9, 'r-manual': 7 }, sales: 205 };
+  h.SALES = c.SALES;
+  assert.equal((await run(h, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`)).written, false);
+  assert.deepEqual({ ...h.STORE['menu_mix_F04-K_2026.10'].items }, { 'r-own': 9, 'r-manual': 7 });
+});
+
+test('from v1124 each Toast count is remembered: a count that drops out is taken out, one corrected by hand afterwards stays (as hand-entered)', async () => {
+  const c = app();
+  c.SALES = daily;
+  await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.deepEqual({ ...mixOf(c)._auto }, { 'r-own': 22, 'r-common': 10, 'r-all': 2.5 });
+  // someone corrects tea by hand (2.5 → 4)
+  const m = mixOf(c); m.items['r-all'] = 4; c.STORE['menu_mix_F04-K_2026.10'] = m;
+  // the next read has no gyoza and no tea rows before today (e.g. rows put right in Toast)
+  c.SALES = daily.filter(x => x.item_guid !== 'g-gyoza' && x.item_guid !== 'g-tea');
+  const n = c.WRITES.length;
+  await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(c.WRITES.length, n + 1);
+  assert.deepEqual({ ...mixOf(c).items }, { 'r-own': 22, 'r-all': 4 }, 'gyoza (from Toast, unchanged) is out; tea (corrected by hand) stays');
+  assert.deepEqual({ ...mixOf(c)._auto }, { 'r-own': 22 }, 'tea is now a hand-entered count');
+  assert.equal(mixOf(c).sales, 22 * 15 + 4 * 3);
+  // nothing changes on the next read: not written again
+  await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(c.WRITES.length, n + 1);
+  // a recipe of another store with a count here is not touched (only this store's linked recipes are taken out)
+  const r = run(c, `menuMixFromSales('F04-K', SALES, '${TODAY}')`);
+  assert.equal([...r.linked].sort().join(','), 'r-all,r-common,r-own');
 });
