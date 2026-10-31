@@ -110,6 +110,10 @@ for (const st of FIX.stores) {
 const LP_OF = { ceo: { id: 'E1', name: 'CEO Test' }, gm: { id: 'E2', name: 'GM Test' }, office: { id: 'E3', name: 'Office Test' }, am1: { id: 'E5', name: 'Yuki' }, am2: { id: 'E6', name: 'AM Two' } };
 // the app's store master: the fictional stores only when the server has them
 const storesOf = S => (S && S.demo === false ? STORES.filter(x => !/^D\d$/.test(x.id)) : STORES);
+// v1122 (Moto 10/30「指名、複数選択可に」): the input people are a list (chips + an add select). Set the draft through the screen's buttons.
+const setInputs = (c, ...ids) => { c.run("_mr.accDraft.inputs.slice().forEach(function(x){ mrAccDelInput(x); })"); for (const id of ids) { c.dom = { 'mr-acc-iadd': { value: id } }; c.run('mrAccAddInput()'); } };
+const chips = (h, id) => (h.match(new RegExp('id="' + id + '">[\\s\\S]*?</div>')) || [''])[0];
+
 function app(S, { who = 'gm', role = 'gm', pin, lp, defaultPin = false, lang = 'ja', net = true, kpi = KPI, qb = QB } = {}) {
   if (pin === undefined) pin = 'pin-' + (EMP_OF[who] || who);     // v1122: the PIN login only
   if (lp === undefined) lp = pin && /^pin-(E\d+)/.test(pin) ? (LP_OF[Object.keys(EMP_OF).find(k => EMP_OF[k] === pin.slice(4))] || { id: pin.slice(4), name: '' }) : LP_OF[who] || null;
@@ -686,9 +690,9 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   let h = c.html;
   assert.match(h, /担当・閲覧設定/); assert.match(h, /本番の店の入力（入力担当が書ける）：<b>OFF/);
   const sel = id => (h.match(new RegExp('id="' + id + '"[\\s\\S]*?</select>')) || [''])[0];
-  assert.match(sel('mr-acc-input'), /<option value="E12" selected>Server Lead（Server Leader・G3）<\/option>/);
-  for (const e of ['E13', 'E14', 'E10', 'E5', 'E2']) assert.match(sel('mr-acc-input'), new RegExp('value="' + e + '"'), e);
-  assert.doesNotMatch(sel('mr-acc-input'), /value="E17"|value="E3"/);
+  assert.match(chips(h, 'mr-acc-inputs'), /<span class="mr-pp"><b>Server Lead<\/b>/);
+  for (const e of ['E13', 'E14', 'E10', 'E5', 'E2']) assert.match(sel('mr-acc-iadd'), new RegExp('value="' + e + '"'), e);
+  assert.doesNotMatch(sel('mr-acc-iadd'), /value="E17"|value="E3"|value="E12"/, 'not the people already chosen');
   assert.match(sel('mr-acc-vadd'), /value="E5"/); assert.match(sel('mr-acc-vadd'), /value="E11"/); assert.doesNotMatch(sel('mr-acc-vadd'), /value="E12"/);
   assert.match(sel('mr-acc-chef'), /value="E10"[\s\S]*value="E11"/);
   // The effective table for ToriTon: the input person cannot write while live input is off; the GM can change settings.
@@ -696,27 +700,31 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   assert.match(table, /<b>Server Lead<\/b> <span class="mr-m">入力担当<\/span><\/td><td><span class="mr-y">○<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td><span class="mr-n">×<\/span><\/td><td class="mr-m">この月の入力担当・本番の入力は OFF/);
   assert.match(table, /<b>GM Test<\/b> <span class="mr-m">GM<\/span>.*<span class="mr-y">○<\/span><\/td><td class="mr-m">CEO・GM・Head Chef（全店）/);
   // Change ToriTon: input E13, add viewer E6 (keeps the list whole).
-  c.run("mrAccSet('input','E13')"); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
+  setInputs(c, 'E13'); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); c.dom = { 'mr-acc-vadd': { value: 'E11' } }; c.run('mrAccAddViewer()');
   c.renderPage(); assert.match(c.html, /保存していない変更あり/);
-  // v1073: what is not saved yet is marked (the new viewers, the input person with the saved one named).
+  // v1073: what is not saved yet is marked (the new viewers and input people; the removed input person is named).
   assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b><span class="mr-m">（未保存）<\/span>/); assert.match(c.html, /<span class="mr-pp mr-pp-mine"><b>Corp Chef<\/b>/);
-  assert.match(c.html, /あなたの変更（未保存）。保存するまでは Server Lead のまま/);
+  assert.match(chips(c.html, 'mr-acc-inputs'), /<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b><span class="mr-m">（未保存）<\/span>/);
+  assert.match(c.html, /外した人（未保存）：Server Lead。保存するまでは入力できます/);
   await c.run('mrAccSave()'); await c.flush(); await c.show(); h = c.html;
-  assert.doesNotMatch(h, /mr-pp-mine|あなたの変更（未保存）/);
-  assert.deepEqual((await S.q(`select input_emp, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', viewer_emps: ['E6', 'E11'] });
-  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emp: 'E13', viewer_emps: ['E6', 'E11'], expect_version: 1 }]);
+  assert.doesNotMatch(h, /mr-pp-mine|外した人（未保存）/);
+  assert.deepEqual((await S.q(`select input_emp, input_emps, viewer_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', input_emps: ['E13'], viewer_emps: ['E6', 'E11'] });
+  const saved = c.calls.filter(b => b.action === 'access_save').at(-1); assert.deepEqual(saved.stores, [{ store_id: 'F01', input_emps: ['E13'], input_emp: 'E13', viewer_emps: ['E6', 'E11'], expect_version: 1 }]);
   // Remove one viewer: the rest of the list is sent (not only the change); then the last one: the empty list.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, ['E11']);
   c.run("mrAccDelViewer('E11')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual((await S.q(`select viewer_emps from mr_stores where env='live' and store_id='F01'`))[0].viewer_emps, []);
   // This month only: E14.
-  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
-  assert.equal((await S.q(`select input_emp from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emp, 'E14');
-  assert.match(c.html, /いまのこの月の担当：Op Lead/);
+  assert.match(chips(c.html, 'mr-acc-month'), /基本どおり（Store Mgr）/);
+  c.dom = { 'mr-acc-madd': { value: 'E14' } }; c.run('mrAccMonthAdd()'); c.renderPage();
+  assert.match(chips(c.html, 'mr-acc-month'), /<span class="mr-pp mr-pp-mine"><b>Op Lead<\/b><span class="mr-m">（未保存）/); assert.equal(c.run('mrSetUnsaved()'), true);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0], { input_emp: 'E14', input_emps: ['E14'] });
+  assert.match(c.html, /いまのこの月の担当：Op Lead/); assert.equal(c.run('mrSetUnsaved()'), false);
   // v1073: pressing it again without a change sends nothing (an older screen does not write back what it read).
   const nm = c.calls.filter(b => b.action === 'month_input_save').length;
-  c.dom = { 'mr-acc-month': { value: 'E14' } }; await c.run('mrAccMonthSave()');
+  await c.run('mrAccMonthSave()');
   assert.equal(c.calls.filter(b => b.action === 'month_input_save').length, nm); assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /変えていません/.test(m)));
   // Head Chef: add E10 (a G4 Head Chef), then remove.
   c.dom = { 'mr-acc-chef': { value: 'E10' } }; await c.run('mrChefAdd()'); await c.flush(); await c.show();
@@ -730,7 +738,7 @@ test('settings (GM / CEO by email): input person, viewers, month override, Head 
   assert.deepEqual(c.calls.filter(b => b.action === 'settings_save').at(-1).value, { private: true, live_input: true });
   assert.equal(c.calls.filter(b => b.action === 'settings_save').at(-1).expect_version, (await S.q(`select version from mr_settings where key='flags'`))[0].version - 1);
   // A bad candidate is refused with plain words.
-  c.run("mrAccSet('input','E17')"); await c.run('mrAccSave()');
+  setInputs(c, 'E17'); await c.run('mrAccSave()');
   assert.ok(c.toasts.some(([m, k]) => k === 'error' && /選べない人です/.test(m)));
 });
 
@@ -738,7 +746,7 @@ test('settings: a GM opens and changes them with the PIN login (v1122: no email 
   const S = await server({ demo: false }); await live(S);
   const p = app(S); await p.show(); assert.match(p.html, /mrOpenSettings/);
   p.run('mrOpenSettings()'); const h = await p.show();
-  assert.doesNotMatch(h, /メールの認証|mrLoginModal/); assert.match(h, /入力・提出の担当（基本）/);
+  assert.doesNotMatch(h, /メールの認証|mrLoginModal/); assert.match(h, /入力・提出の担当（基本・何人でも）/);
   assert.ok(p.calls.some(b => b.action === 'access_get' && b.pin_session === 'pin-E2' && b._auth === 'Bearer anon-key'));
   assert.ok((await S.pin('pin-E2', { action: 'access_get', ym: '2026-10' })).stores);
   const a = app(S, { who: 'am1', role: 'am' }); await a.show(); a.run('mrOpenSettings()'); assert.match(await a.show(), /GM・CEO だけが開けます/);
@@ -810,7 +818,7 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   const db = async () => (await S.q(`select input_emp, viewer_emps, access_version from mr_stores where env='live' and store_id='F01'`))[0];
   // GM changes the input person; the CEO (opened before) adds a viewer.
-  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  setInputs(g, 'E13'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: [], access_version: 2 });
   c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
   await c.run('mrAccSave()'); await c.flush(); await c.show();
@@ -818,25 +826,27 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
   let h = c.html;
   assert.match(h, /<div class="mr-conf" role="status">.*ほかの人（または別のタブ）が先にこの店の設定を保存しました/s);
-  assert.match(h, /ほかの人の変更：入力担当 Server Lead → Store Mgr/); assert.match(h, /あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<\/span>|あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<b>/);
+  assert.match(h, /ほかの人の変更：入力担当に Store Mgr を足す・入力担当から Server Lead を外す/); assert.match(h, /あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<\/span>|あなたの変更（閲覧者に AM Two を足す）を、いまの設定に入れ直しました。<b>/);
   assert.match(h, /まだ保存していません。/);
-  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E13" selected/, 'their input person is shown');
+  assert.match(chips(h, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Store Mgr<\/b>/, 'their input person is shown');
   assert.match(h, /<span class="mr-pp mr-pp-mine"><b>AM Two<\/b>/); assert.match(h, /保存していない変更あり/);
   assert.deepEqual(c.run('JSON.stringify(_mr.accDraft.viewers)'), '["E6"]'); assert.equal(c.run('_mr.accDraft.base.version'), 2);
   // Saving now keeps both.
   await c.run('mrAccSave()'); await c.flush(); await c.show();
   assert.deepEqual(await db(), { input_emp: 'E13', viewer_emps: ['E6'], access_version: 3 }); assert.doesNotMatch(c.html, /mr-conf/);
-  // Both changed the input person: the draft has mine, the band names both; 「やめる」 goes back to theirs and writes nothing.
-  c.run("mrAccSet('input','E14')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
-  g.run("mrAccSet('input','E10')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  // Both changed the input people (v1122: a list, one by one as the viewers): what they put in stays, what I put in is added,
+  // what I took out is out; 「やめる」 goes back to theirs and writes nothing.
+  setInputs(c, 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  setInputs(g, 'E10'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
   h = g.html;
-  assert.match(h, /ほかの人の変更：入力担当 Store Mgr → Op Lead・閲覧者に AM Two を足す/);
-  assert.match(h, /入力担当は 2 人とも変えていました：ほかの人は Op Lead、あなたは Chef Oka。いまの下書きは あなたの Chef Oka です（保存するまでは Op Lead のまま）。/);
-  assert.match((h.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E10" selected/); assert.match(h, /<span class="mr-pp"><b>AM Two<\/b>/, 'their viewer is kept (not mine)');
+  assert.match(h, /ほかの人の変更：入力担当に Op Lead を足す・入力担当から Store Mgr を外す・閲覧者に AM Two を足す/);
+  assert.match(h, /あなたの変更（入力担当に Chef Oka を足す・入力担当から Store Mgr を外す）を、いまの設定に入れ直しました。/);
+  assert.equal(g.run('JSON.stringify(_mr.accDraft.inputs)'), '["E14","E10"]');
+  assert.match(chips(h, 'mr-acc-inputs'), /<span class="mr-pp"><b>Op Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Chef Oka<\/b>/s); assert.match(h, /<span class="mr-pp"><b>AM Two<\/b>/, 'their viewer is kept (not mine)');
   assert.match(h, /やめる（いまの設定に戻す）/);
   g.run('mrAccCancel()'); g.renderPage();
-  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E14" selected/); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
+  assert.match(chips(g.html, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Op Lead<\/b><button/); assert.doesNotMatch(g.html, /mr-conf|保存していない変更あり/);
   assert.deepEqual(await db(), { input_emp: 'E14', viewer_emps: ['E6'], access_version: 4 });
   // The same change made on both: already in, nothing to save.
   c.run("mrAccDelViewer('E6')"); await c.run('mrAccSave()'); await c.flush(); await c.show();
@@ -849,7 +859,7 @@ test('v1073 B: two screens on the same store — the older save does not undo th
   await S.accessSave([{ store_id: 'F01', input_emp: 'E12', viewer_emps: [] }]);
   await g.run('mrAccSave()'); await g.flush(); await g.show();
   assert.match(g.html, /ほかの人（または別のタブ）が先にこの店の設定を保存しました.*いまの設定を出しています。/s);
-  assert.match((g.html.match(/id="mr-acc-input"[\s\S]*?<\/select>/) || [''])[0], /value="E12" selected/);
+  assert.match(chips(g.html, 'mr-acc-inputs'), /^id="mr-acc-inputs"><span class="mr-pp"><b>Server Lead<\/b><button/);
   assert.equal((await db()).input_emp, 'E12');
   // Moving to another store drops the band.
   g.run("mrAccPick('F02')"); g.renderPage(); assert.doesNotMatch(g.html, /mr-conf/);
@@ -1001,8 +1011,8 @@ test('v1073: leaving the settings with unsaved changes asks (access and the over
   const S = await server({ demo: false }); await live(S);
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   let asked = 0; c.confirm = () => { asked++; return false; };
-  c.run("mrAccSet('input','E13')"); c.run('mrBack()'); c.renderPage();
-  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('_mr.accDraft.input_emp'), 'E13');
+  setInputs(c, 'E13'); c.run('mrBack()'); c.renderPage();
+  assert.equal(asked, 1); assert.match(c.html, /担当・閲覧設定/, 'stays in the settings'); assert.equal(c.run('JSON.stringify(_mr.accDraft.inputs)'), '["E13"]');
   c.run('mrAccCancel()'); c.run(`mrScopeSet('F06', '${U.am2}')`); c.run('mrBack()'); c.renderPage();
   assert.equal(asked, 2); assert.match(c.html, /mr-tr-mine/);
   c.run('mrScopeCancel()'); c.run('mrBack()'); c.renderPage(); assert.equal(asked, 2, 'nothing unsaved: no question'); assert.doesNotMatch(c.html, /id="mr-scope"/);
@@ -1034,10 +1044,12 @@ test('v1073: inputs wait while a save is on the way; a drafted store that left t
   const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
   // While a save waits for its answer, the settings' inputs are disabled and changes are not taken (the answer drops the draft).
   c.run("_mr.busy = 'access'"); c.renderPage();
-  assert.match(c.html, /id="mr-acc-input" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
-  c.run("mrAccSet('input','E13')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
-  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null);
-  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-input" disabled/);
+  assert.match(c.html, /id="mr-acc-iadd" disabled/); assert.match(c.html, /id="mr-acc-vadd" disabled/); assert.match(c.html, /class="mr-sel mr-amsel" disabled/);
+  assert.match(c.html, /id="mr-acc-madd" disabled/);
+  c.dom = { 'mr-acc-iadd': { value: 'E13' } }; c.run('mrAccAddInput()'); c.run("mrAccDelInput('E12')"); c.run(`mrScopeSet('F06', '${U.am2}')`); c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()');
+  assert.equal(c.run('_mr.accDraft.dirty'), false); assert.equal(c.run('_mr.amDraft'), null); assert.equal(c.run('JSON.stringify(_mr.accDraft.inputs)'), '["E12"]');
+  c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()'); assert.equal(c.run('JSON.stringify(_mr.accMonth.inputs)'), '[]');
+  c.run("_mr.busy = ''"); c.renderPage(); assert.doesNotMatch(c.html, /id="mr-acc-iadd" disabled/);
   // A store only in the store master gets a draft, then leaves the store master: the draft goes with it (no stuck “unsaved”).
   c.activeStores = () => [...STORES, { id: 'F07', name: 'Kapolei', am: '', active: true }]; c.renderPage();
   c.run(`mrScopeSet('F07', '${U.am1}')`); assert.match(c.html, /<tr class="mr-tr-mine"><td><b>Kapolei<\/b>/);
@@ -1046,8 +1058,8 @@ test('v1073: inputs wait while a save is on the way; a drafted store that left t
   // Mine put on theirs comes to more than 20 viewers: the band says so and the save is stopped on the screen.
   const ids = n => Array.from({ length: n }, (_, i) => 'X' + i);
   c.run(`(function(){ var s = _mr.acc.stores.filter(function(x){ return x.store_id === 'F01'; })[0];
-    var d = { store_id:'F01', input_emp:s.input_emp, viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ input_emp:s.input_emp, viewers:[], version:s.version - 1, names:{} } };
-    _mr.accDraft = d; mrAccRebase(s, d, { input_emp:s.input_emp, viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
+    var d = { store_id:'F01', inputs:mrAccInputs(s), viewers:${JSON.stringify(ids(12))}, dirty:true, base:{ inputs:mrAccInputs(s), viewers:[], version:s.version - 1, names:{} } };
+    _mr.accDraft = d; mrAccRebase(s, d, { inputs:mrAccInputs(s), viewers:${JSON.stringify(ids(22).slice(12))}, version:s.version, names:{} }); })()`);   // theirs at the version the screen holds now
   c.renderPage();
   assert.equal(c.run('_mr.accDraft.viewers.length'), 22); assert.match(c.html, /閲覧者が 22 人になりました（20 人まで）。保存の前に減らしてください。/);
   const n = c.calls.filter(b => b.action === 'access_save').length; await c.run('mrAccSave()');
@@ -1059,9 +1071,9 @@ test('v1073 English: the bands (store settings, switches, oversight)', async () 
   const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' }, lang: 'en' });
   for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
   // Each conflict on the CEO's screen reads it again, so the GM changes the next thing only after that.
-  g.run("mrAccSet('input','E13')"); await g.run('mrAccSave()'); await g.flush(); await g.show();
+  setInputs(g, 'E13'); await g.run('mrAccSave()'); await g.flush(); await g.show();
   c.dom = { 'mr-acc-vadd': { value: 'E6' } }; c.run('mrAccAddViewer()'); await c.run('mrAccSave()'); await c.flush(); await c.show();
-  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: input person Server Lead → Store Mgr/);
+  assert.match(c.html, /Someone \(or another tab\) saved this store’s settings first/); assert.match(c.html, /Their change: add input person Store Mgr; remove input person Server Lead/);
   assert.match(c.html, /Your change \(add viewer AM Two\) was put on the settings now\. <b>Not saved yet\.<\/b>/); assert.match(c.html, /<span class="mr-m"> \(not saved\)<\/span>/);
   assert.match(c.html, /Store oversight \(which GM or AM looks after each store\)/); assert.match(c.html, /Lead: Yuki \(AM\)/);
   await g.run('mrSetFlags({ live_input:true })'); await g.flush(); await g.show();
@@ -1175,4 +1187,53 @@ test('v1073: going back to a screen read before loads it again — settings reop
   // A store page opened twice still loads.
   await openStore(c, 'F01'); assert.equal(loading(), false); assert.match(c.html, /id="mr-sec-1"/);
   c.run('mrBack()'); await openStore(c, 'F01'); assert.equal(loading(), false); assert.match(c.html, /id="mr-sec-1"/);
+});
+
+// Moto (10/30)「指名、複数選択可に」: the base and the month take several people; the pages name them all; an older server is noticed.
+test('v1122 several input people: chosen with the add button, saved as a list, named on the rail and the store page; an older function or SQL is noticed', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const c = app(S); await c.show(); c.run('mrOpenSettings()'); await c.show();
+  setInputs(c, 'E12', 'E13'); c.renderPage();
+  assert.match(chips(c.html, 'mr-acc-inputs'), /<b>Server Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b>/s);
+  assert.doesNotMatch((c.html.match(/id="mr-acc-iadd"[\s\S]*?<\/select>/) || [''])[0], /value="E12"|value="E13"/, 'the chosen people are not offered again');
+  await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E12', input_emps: ['E12', 'E13'] });
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /保存しました/.test(m)));
+  assert.match(c.html, /入力担当 Server Lead・Store Mgr/, 'the rail names both');
+  // up to 10: the 11th is not taken
+  c.run(`_mr.accDraft.inputs = ${JSON.stringify(Array.from({ length: 10 }, (_, i) => 'X' + i))}; _mr.accDraft.dirty = true`);
+  c.dom = { 'mr-acc-iadd': { value: 'E14' } }; c.run('mrAccAddInput()'); assert.equal(c.run('_mr.accDraft.inputs.length'), 10);
+  c.run('mrAccCancel()'); c.renderPage();
+  // both can write; the store page names both
+  for (const e of ['E12', 'E13']) {
+    const s = app(S, { signed: false, pin: 'pin-' + e, role: 'sl', lp: { id: e, name: e } }); await openStore(s, 'F01');
+    assert.match(s.html, /入力担当：<b>Server Lead・Store Mgr<\/b>/, e); assert.equal(s.run('mrOpNow(_mr.rec)'), 'write', e);
+  }
+  // the month: two people, then back to the base
+  c.dom = { 'mr-acc-madd': { value: 'E14' } }; c.run('mrAccMonthAdd()'); c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()');
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual((await S.q(`select input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emps, ['E14', 'E13']);
+  assert.match(c.html, /いまのこの月の担当：Op Lead・Store Mgr/);
+  c.run('mrAccMonthClear()'); c.renderPage(); assert.match(chips(c.html, 'mr-acc-month'), /基本どおり（Server Lead・Store Mgr）/);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.equal((await S.q(`select input_emps from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0].input_emps, null);
+  assert.match(c.html, /いまのこの月の担当：Server Lead・Store Mgr/);
+  // An older function (it drops input_emps and sends only input_emp): with two saved, the server stops it (update_app) …
+  const real = c.fetch;
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_save') { b.stores = b.stores.map(({ input_emps, ...x }) => x); init = { ...init, body: JSON.stringify(b) }; } return real(url, init); };
+  setInputs(c, 'E12', 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.some(([m, k]) => k === 'error' && /入力担当が 2 人以上います/.test(m)));
+  assert.deepEqual((await S.q(`select input_emps from mr_stores where env='live' and store_id='F01'`))[0].input_emps, ['E12', 'E13'], 'nothing written');
+  // … and with one saved, only the first is saved: the screen says so (not “saved”)
+  c.fetch = real; setInputs(c, 'E12'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  c.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.action === 'access_save') { b.stores = b.stores.map(({ input_emps, ...x }) => x); init = { ...init, body: JSON.stringify(b) }; } return real(url, init); };
+  const nOk = c.toasts.filter(([, k]) => k === 'success').length;
+  setInputs(c, 'E13', 'E14'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.some(([m, k]) => k === 'error' && /1 人だけ保存されたかもしれません/.test(m)));
+  assert.equal(c.toasts.filter(([, k]) => k === 'success').length, nOk, 'not shown as saved');
+  // an older SQL (the answer has no list): the same
+  c.fetch = async (url, init) => { const r = await real(url, init); const b = JSON.parse(init.body); if (b.action !== 'access_save' || r.status !== 200) return r; const j = await r.json(); (j.stores || []).forEach(x => delete x.input_emps); return Response.json(j); };
+  setInputs(c, 'E12', 'E13'); await c.run('mrAccSave()'); await c.flush(); await c.show();
+  assert.ok(c.toasts.filter(([m, k]) => k === 'error' && /1 人だけ保存されたかもしれません/.test(m)).length >= 2);
+  c.fetch = real;
 });

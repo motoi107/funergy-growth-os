@@ -335,6 +335,8 @@ export function createHandler(deps) {
   const where = b => ({ env: str(b.env, 8), ym: str(b.ym, 8), store_id: str(b.store_id, 30) });
   // An employee id from the settings screen (null: none). Anything that is not a short string is refused.
   const EMP = v => { if (v == null || v === '') return null; if (typeof v !== 'string' || v.length > 64 || /[\u0000-\u001f]/.test(v)) throw bad(); return v; };
+  // v1122: a list of input people (the screen from v1122 sends it; an older screen sends input_emp only and the key is left out)
+  const EMPS = v => { if (v === undefined) return undefined; if (v === null) return null; if (!Array.isArray(v)) throw bad(); return v.slice(0, 11).map(x => { const e = EMP(x); if (!e) throw bad(); return e; }); };
   const rpc = (name, who, p) => db.rpc(name, { actor: who.actor, via: who.via, ...p });
   const ACTIONS = {
     whoami: (w, b) => rpc('mr_whoami', w, { ym: str(b.ym, 8) }),
@@ -364,11 +366,11 @@ export function createHandler(deps) {
       return rpc('mr_access_save', w, { stores: b.stores.slice(0, 61).map(s => {
         s = obj(s);
         if (s.viewer_emps != null && !Array.isArray(s.viewer_emps)) throw bad();
-        return { store_id: str(s.store_id, 30), input_emp: EMP(s.input_emp), viewer_emps: (s.viewer_emps || []).slice(0, 21).map(v => { const e = EMP(v); if (!e) throw bad(); return e; }),
+        return { store_id: str(s.store_id, 30), input_emp: EMP(s.input_emp), input_emps: EMPS(s.input_emps), viewer_emps: (s.viewer_emps || []).slice(0, 21).map(v => { const e = EMP(v); if (!e) throw bad(); return e; }),
           expect_version: VER(s.expect_version) };
       }) });
     },
-    month_input_save: (w, b) => rpc('mr_month_input_save', w, { store_id: str(b.store_id, 30), ym: str(b.ym, 8), input_emp: EMP(b.input_emp) }),
+    month_input_save: (w, b) => rpc('mr_month_input_save', w, { store_id: str(b.store_id, 30), ym: str(b.ym, 8), input_emp: EMP(b.input_emp), input_emps: EMPS(b.input_emps) }),
     chef_save: (w, b) => rpc('mr_chef_save', w, { emp_id: EMP(b.emp_id), on: b.on === true }),
     demo_reset: async w => {
       const x = await rpc('mr_whoami', w, {});
@@ -380,7 +382,7 @@ export function createHandler(deps) {
   const GONE = ['reply_save', 'reply_delete', 'reply_send', 'complete', 'result_save'];
   const ERR = { forbidden: 403, disabled: 403, email_required: 403, actor_required: 401, conflict: 409, not_found: 404, bad_value: 400, bad_key: 400,
     bad_candidate: 400, not_available: 409, locked: 409, incomplete: 422, unchanged: 409, new_version: 409, legacy: 409, not_submitted: 409,
-    not_confirmed: 409, role_exists: 409, member_stopped: 409, gone: 410 };
+    not_confirmed: 409, role_exists: 409, member_stopped: 409, gone: 410, update_app: 409 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

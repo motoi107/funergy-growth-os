@@ -59,7 +59,14 @@ with t as (
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_pin_actor' and position('member_switch' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_member_role' and position('v1122' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('v1122' in p.prosrc) > 0)
-   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_whoami' and position('v1122' in p.prosrc) > 0) as ok
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_whoami' and position('v1122' in p.prosrc) > 0)
+   -- several input people (Moto 10/30): the lists and the functions that read them
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_stores' and column_name = 'input_emps')
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_reviews' and column_name = 'input_emps')
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('several input people' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_access_save' and position('mr_inputs_req' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_month_input_save' and position('mr_inputs_req' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_stores_bump' and position('input_emps' in p.prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case
@@ -147,6 +154,13 @@ union all select 'live stores the saved AM cannot see', (select count(*)::text f
   case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and s.am_user is not null
    and exists(select 1 from public.mr_members w where w.user_id = s.am_user and w.role = 'am') and not public.mr_am_master_ok(s.am_user, s.store_id)) = 0 then 'OK'
    else '注意：店舗マスターの AM 欄と違う店がある（アプリの設定で担当を確かめて保存）' end
-union all select 'live stores without an input person', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null),
-  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null) = 0 then 'OK'
+-- v1122: several input people. The list (input_emps) decides; input_emp keeps its first one. A hand-written SQL that changes only
+-- input_emp on a row with a list does nothing: shown here.
+union all select 'input_emp not the first of the list', (select count(*)::text from (select to_jsonb(s) j from public.mr_stores s union all select to_jsonb(r) from public.mr_reviews r) q
+   where jsonb_typeof(q.j->'input_emps') = 'array' and (q.j->'input_emps'->>0) is distinct from (q.j->>'input_emp')),
+  case when (select count(*) from (select to_jsonb(s) j from public.mr_stores s union all select to_jsonb(r) from public.mr_reviews r) q
+   where jsonb_typeof(q.j->'input_emps') = 'array' and (q.j->'input_emps'->>0) is distinct from (q.j->>'input_emp')) = 0 then 'OK'
+   else '注意：入力担当の欄（input_emp）だけが SQL で変えられた行がある（効くのは input_emps の名簿。担当・閲覧設定で選び直す）' end
+union all select 'live stores without an input person', (select count(*)::text from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null and coalesce(jsonb_typeof(to_jsonb(s)->'input_emps'), '') <> 'array'),
+  case when (select count(*) from public.mr_stores s where s.env = 'live' and s.active and to_jsonb(s)->>'input_emp' is null and coalesce(jsonb_typeof(to_jsonb(s)->'input_emps'), '') <> 'array') = 0 then 'OK'
    else '参考：入力担当が未設定の店がある（担当・閲覧設定で選ぶ。未設定の店はだれも入力できない）' end;

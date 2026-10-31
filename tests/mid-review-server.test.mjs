@@ -1375,7 +1375,7 @@ test('the check after installing: every row OK on a fresh install; it points at 
   const E = await setup(); await live(E);
   const post = dbFile('mid-review-postcheck.sql');
   let rows = await E.q(post);
-  assert.equal(rows.length, 31);   // v1076: + scope GM (20261018090000); v1122: + live (20261102090000), CEO / GM accounts without an employee id, the two account-link rows
+  assert.equal(rows.length, 32);   // v1076: + scope GM (20261018090000); v1122: + live (20261102090000), CEO / GM accounts without an employee id, the two account-link rows, input_emp not the first of the list
   // (this suite runs the SQL up to v1076; the v1122 row says it is not in yet — mid-review-live-v1122.test.mjs checks it after v1122)
   for (const r of rows) assert.match(r.result, r.check_name === 'mid-review live (20261102090000)' ? /^NG/ : /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match(rows.find(r => r.check_name === 'live stores without an input person').result, /^参考/);

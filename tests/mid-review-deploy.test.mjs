@@ -133,20 +133,21 @@ test('v1076 の束：SQL と確認の SQL は元のファイルと同じ・関�
   for (const w of howto.match(/[A-Za-z0-9_:.-]+/g) || []) for (const x of [w, w.replace(/[:.-]+$/, ''), w.replace(/^[:.-]+/, '')]) assert.equal(FORBID.has(H(x)), false, '書かない言葉がある');
 });
 
-// v1122 の束：SQL 1 つ（デモをやめて本番に・メールの認証をやめる）＋確認の SQL。どちらも元のファイルの写し。関数は変えない。
-test('v1122 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → マージ → 端末を更新 → 担当・閲覧設定', () => {
+// v1122 の束：SQL 1 つ（デモをやめて本番に・メールの認証をやめる・入力担当を何人でも）＋確認の SQL。どちらも元のファイルの写し。
+// 関数は入力担当の名簿を渡すところだけ変えた（PIN の確かめが入る 1 ファイルは公開しない・Moto さんに直接）。
+test('v1122 の束：SQL と確認の SQL は元のファイルと同じ・関数のファイルは置かない・手順は SQL → 確認 → 関数 → マージ → 端末を更新 → 担当・閲覧設定', () => {
   const D = 'deploy/mid-review-v1122/';
   assert.deepEqual(list(D), ['1_追加のSQL_本番にする.sql', '2_確認のSQL_読むだけ.sql', '手順.md'].sort());
   assert.equal(read(D + '1_追加のSQL_本番にする.sql'), read('supabase/migrations/20261102090000_mid_review_live.sql'));
   assert.equal(read(D + '2_確認のSQL_読むだけ.sql'), read('db/mid-review-postcheck.sql'));
   const howto = read(D + '手順.md');
   for (const s of ['1_追加のSQL_本番にする.sql', '2_確認のSQL_読むだけ.sql', 'mid-review live (20261102090000)', 'ceo / gm accounts without an employee id',
-    'live stores without an input person', '全文', '関数は変えません', 'v1122', 'PIN が初期のまま', '前の記録', '店舗公開・通知は OFF', 'db/mid-review-stop.sql'])
+    'live stores without an input person', 'input_emp not the first of the list', '全文', '非公開の 1 ファイル', '何人でも', 'v1122', 'PIN が初期のまま', '前の記録', '店舗公開・通知は OFF', 'db/mid-review-stop.sql'])
     assert.ok(howto.includes(s), s);
   const at = s => howto.indexOf(s);
-  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 3 |') && at('| 3 |') < at('| 4 |') && at('| 4 |') < at('| 5 |'));
+  assert.ok(at('| 1 |') > 0 && at('| 1 |') < at('| 2 |') && at('| 2 |') < at('| 2b |') && at('| 2b |') < at('| 3 |') && at('| 3 |') < at('| 4 |') && at('| 4 |') < at('| 5 |'));
   const row = n => howto.slice(at('| ' + n + ' |'), howto.indexOf('\n', at('| ' + n + ' |')));
-  assert.match(row(1), /1_追加のSQL_本番にする\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row(3), /マージ/); assert.match(row(4), /端末.*v1122/); assert.match(row(5), /担当・閲覧設定/);
+  assert.match(row(1), /1_追加のSQL_本番にする\.sql/); assert.match(row(2), /2_確認のSQL_読むだけ\.sql/); assert.match(row('2b'), /関数 `mid-review`.*非公開/); assert.match(row(3), /マージ/); assert.match(row(4), /端末.*v1122/); assert.match(row(5), /担当・閲覧設定/);
   assert.equal(howto.includes('| 6 |'), false);
   assert.equal(list(D).some(f => /\.(ts|js|mjs)$/.test(f)), false, '関数（PIN の確かめ入り）は公開しない');
   const H = s => crypto.createHash('sha256').update(s).digest('hex').slice(0, 16);
