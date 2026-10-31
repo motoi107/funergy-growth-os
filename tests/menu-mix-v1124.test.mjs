@@ -18,6 +18,14 @@ function fnFrom(src, name) {
   return src.slice(start + 1, end + 2);
 }
 const fn = name => fnFrom(source, name);
+// The real menu-count storage: per-item stamps (_im), setMenuMix and mergeMenuMix (v834).
+function storageFrom(src) {
+  const start = src.indexOf('\nfunction _mmItems(');
+  assert.ok(start >= 0, '_mmItems');
+  const set = src.indexOf('\nfunction setMenuMix(', start);
+  assert.ok(set > start, 'setMenuMix');
+  return src.slice(start + 1, src.indexOf('\n}', set + 1) + 2);
+}
 
 const TODAY = '2026-10-30';   // Hawaii
 const RECIPES = [
@@ -44,16 +52,19 @@ function app(src = source) {
   const c = { console, STORE: {}, SALES: [], WRITES: [], TOASTS: [], RECIPES: JSON.parse(JSON.stringify(RECIPES)) };
   vm.createContext(c);
   const own = ['menuMixFromSales', 'menuMixDayLabel', 'menuMixUpTo', 'menuMixApply'].filter(n => src.includes('\nfunction ' + n + '('));
-  vm.runInContext([...own, 'loadMenuMixFromDB', 'syncMenuFromToast', 'recipeInStore'].map(pick).join('\n') + `
+  vm.runInContext([...own, 'loadMenuMixFromDB', 'syncMenuFromToast', 'recipeInStore'].map(pick).join('\n') + '\n' + storageFrom(src) + `
+    var NOW_ = 1000, TODAY_ = '${TODAY}';
+    Date.now = function(){ return NOW_++; };   // the clock moves on every read (a real write never has one fixed time)
     function isTotoyaStore(id){ return /^F04-/.test(id); }
     function ls(k, d){ return Object.prototype.hasOwnProperty.call(STORE, k) ? JSON.parse(JSON.stringify(STORE[k])) : d; }
+    function lsSet(k, v){ WRITES.push(k); STORE[k] = JSON.parse(JSON.stringify(v)); return true; }
+    function myName(){ return 'tester'; }
     function getRecipes(){ return JSON.parse(JSON.stringify(RECIPES)); }
     function setRecipes(r){ RECIPES = JSON.parse(JSON.stringify(r)); }
     function theoMixKey(s, p){ return 'menu_mix_'+s+'_'+p; }
     function getMenuMix(s, p){ return ls(theoMixKey(s, p), {items:{}, sales:0}); }
-    function setMenuMix(s, p, d){ WRITES.push(theoMixKey(s, p)); STORE[theoMixKey(s, p)] = JSON.parse(JSON.stringify(d)); }
     function nowJP(){ return '2026/10/30 9:00'; }
-    function bizToday(){ return '${TODAY}'; }
+    function bizToday(){ return TODAY_; }
     async function fetchToastItemSales(){ return JSON.parse(JSON.stringify(SALES)); }
     async function syncToastMenuFetch(){}
     async function fetchToastMenuItems(){ return [{ guid:'g-ramen', name:'Ramen', category:'Noodle', price:15 }]; }
@@ -184,50 +195,107 @@ test('"出数を同期" also re-reads a past month that was already loaded once'
 });
 
 // Codex / Claude on PR #114 (fbc4bd8) P2: a count put in by Toast that is not in "up to yesterday" stayed (v1123 had saved
-// today's partial count). Which counts came from Toast is kept per item (_auto); those are taken out when they are not in the
-// new count and nobody changed them. Hand-entered counts stay.
-test('an old Toast count with no rows before today is taken out (v1123 saved today\'s partial); hand-entered and hand-corrected counts stay', async () => {
-  const c = app();
-  // v1123 saved today's partial count of ramen (5) and a hand-entered count of a recipe without Toast
-  c.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-manual': 7 }, sales: 145, toastSrc: true };
-  c.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', item_name: 'Ramen', qty: 5 }];   // only today's rows for the month so far
-  const l = await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
-  assert.equal(l.written, true);
-  assert.deepEqual({ ...mixOf(c).items }, { 'r-manual': 7 }, 'today\'s partial count is gone; the hand-entered one stays');
-  assert.equal(mixOf(c).sales, 70);
-  // the Toast sync button does the same
-  const s = app();
-  s.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-manual': 7 }, sales: 145, toastSrc: true };
-  s.SALES = c.SALES;
-  await run(s, `syncMenuFromToast('F04-K', 'guid-k', '2026.10')`);
-  assert.deepEqual({ ...s.STORE['menu_mix_F04-K_2026.10'].items }, { 'r-manual': 7 });
-  // a month never filled from Toast (all by hand) is not touched, even for recipes linked to Toast
+// today's partial count). From v1124 each count put in by Toast is remembered with the item's stamp (_auto: { n, t });
+// such a count is taken out when it is not in the new count and nobody has changed it since (same number, same stamp).
+// Codex on 65bdac0 P2: an old record (v1123, no _auto) cannot tell Toast counts from counts a person entered or corrected,
+// so nothing in it is taken out.
+const hand = (c, period, rid, n) => run(c, `NOW_ += 1000; (function(){ var m = getMenuMix('F04-K', '${period}'); if (${n} > 0) m.items['${rid}'] = ${n}; else delete m.items['${rid}']; setMenuMix('F04-K', '${period}', m); })()`);
+
+test('an old record (v1123, no _auto) keeps every count, also a Toast-linked count corrected by hand with no rows now (Codex 65bdac0)', async () => {
+  for (const how of ['load', 'sync']) {
+    const c = app();
+    // v1123: Toast filled the month (toastSrc), a person corrected tea to 6, ramen has today's partial count, a recipe without Toast
+    c.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-all': 6, 'r-manual': 7 }, sales: 163, toastSrc: true };
+    c.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', item_name: 'Ramen', qty: 5 }];   // only today's rows so far
+    const r = how === 'load' ? await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`) : await run(c, `syncMenuFromToast('F04-K', 'guid-k', '2026.10')`);
+    if (how === 'load') assert.equal(r.written, false);
+    assert.deepEqual({ ...mixOf(c).items }, { 'r-own': 5, 'r-all': 6, 'r-manual': 7 }, how + ': nothing is taken out of an old record');
+    // rows for gyoza and ramen before today, still none for tea: the corrected tea stays, ramen gets the count up to yesterday
+    c.SALES = daily.filter(x => x.item_guid !== 'g-tea');
+    await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+    assert.deepEqual({ ...mixOf(c).items }, { 'r-own': 22, 'r-common': 10, 'r-all': 6, 'r-manual': 7 }, how);
+    assert.deepEqual(Object.keys(mixOf(c)._auto).sort(), ['r-common', 'r-own'], how + ': only the counts put in now are marked as Toast counts');
+  }
+  // the next day the partial count of a day is replaced by the whole day
+  const n = app();
+  n.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5 }, sales: 75, toastSrc: true };
+  n.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', qty: 9 }];
+  n.TODAY_ = '2026-10-31';
+  await run(n, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(mixOf(n).items['r-own'], 9);
+  // a mark that is only a number (a build before this fix, never released) is not trusted either, and is dropped on the next write
+  const u = app();
+  u.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 5, 'r-all': 2.5, 'r-manual': 7 }, sales: 152.5, toastSrc: true, _auto: { 'r-own': 5, 'r-all': 2.5, 'r-manual': 7 } };
+  u.SALES = daily.filter(x => x.item_guid === 'g-gyoza');
+  await run(u, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.deepEqual({ ...mixOf(u).items }, { 'r-own': 5, 'r-all': 2.5, 'r-manual': 7, 'r-common': 10 });
+  assert.deepEqual(Object.keys(mixOf(u)._auto), ['r-common']);
+  // a month never filled from Toast (all by hand) is not touched either
   const h = app();
   h.STORE['menu_mix_F04-K_2026.10'] = { items: { 'r-own': 9, 'r-manual': 7 }, sales: 205 };
-  h.SALES = c.SALES;
+  h.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', qty: 5 }];
   assert.equal((await run(h, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`)).written, false);
   assert.deepEqual({ ...h.STORE['menu_mix_F04-K_2026.10'].items }, { 'r-own': 9, 'r-manual': 7 });
 });
 
-test('from v1124 each Toast count is remembered: a count that drops out is taken out, one corrected by hand afterwards stays (as hand-entered)', async () => {
+test('from v1124 a Toast count that drops out is taken out; one changed by hand afterwards stays, even back to the same number', async () => {
   const c = app();
   c.SALES = daily;
   await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
-  assert.deepEqual({ ...mixOf(c)._auto }, { 'r-own': 22, 'r-common': 10, 'r-all': 2.5 });
-  // someone corrects tea by hand (2.5 → 4)
-  const m = mixOf(c); m.items['r-all'] = 4; c.STORE['menu_mix_F04-K_2026.10'] = m;
+  const t0 = mixOf(c)._im['r-all'];
+  assert.deepEqual(JSON.parse(JSON.stringify(mixOf(c)._auto)), { 'r-own': { n: 22, t: t0 }, 'r-common': { n: 10, t: t0 }, 'r-all': { n: 2.5, t: t0 } }, 'the mark carries the item stamp');
+  hand(c, '2026.10', 'r-all', 4);   // someone corrects tea by hand (2.5 → 4) ...
+  hand(c, '2026.10', 'r-common', 3);
+  hand(c, '2026.10', 'r-common', 10);   // ... and puts gyoza back to the number Toast had: still a change made by a person
   // the next read has no gyoza and no tea rows before today (e.g. rows put right in Toast)
   c.SALES = daily.filter(x => x.item_guid !== 'g-gyoza' && x.item_guid !== 'g-tea');
   const n = c.WRITES.length;
   await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
-  assert.equal(c.WRITES.length, n + 1);
-  assert.deepEqual({ ...mixOf(c).items }, { 'r-own': 22, 'r-all': 4 }, 'gyoza (from Toast, unchanged) is out; tea (corrected by hand) stays');
-  assert.deepEqual({ ...mixOf(c)._auto }, { 'r-own': 22 }, 'tea is now a hand-entered count');
-  assert.equal(mixOf(c).sales, 22 * 15 + 4 * 3);
-  // nothing changes on the next read: not written again
+  assert.deepEqual({ ...mixOf(c).items }, { 'r-own': 22, 'r-common': 10, 'r-all': 4 }, 'counts changed by hand stay');
+  assert.deepEqual(Object.keys(mixOf(c)._auto), ['r-own'], 'counts changed by hand are no longer marked as Toast counts');
+  // an untouched Toast count that drops out goes
+  c.SALES = daily.filter(x => x.item_guid !== 'g-ramen');
   await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
-  assert.equal(c.WRITES.length, n + 1);
+  assert.equal(mixOf(c).items['r-own'], undefined, 'ramen (from Toast, unchanged) is out');
+  assert.equal(mixOf(c).items['r-common'], 10);
+  assert.equal(mixOf(c).sales, 10 * 8 + 2.5 * 3);
+  assert.equal(mixOf(c)._auto['r-own'], undefined, 'no Toast mark is left for a count taken out');
+  // nothing changes on the next read: not written again
+  const w = c.WRITES.length;
+  await run(c, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(c.WRITES.length, w);
+  assert.ok(w > n);
   // a recipe of another store with a count here is not touched (only this store's linked recipes are taken out)
   const r = run(c, `menuMixFromSales('F04-K', SALES, '${TODAY}')`);
   assert.equal([...r.linked].sort().join(','), 'r-all,r-common,r-own');
+  // the case from the review: Toast counts saved by v1124, then only today's rows (nothing before today): they are taken out
+  const t = app();
+  t.SALES = daily;
+  await run(t, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  t.SALES = [{ business_date: TODAY, item_guid: 'g-ramen', qty: 5 }];
+  assert.equal((await run(t, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`)).written, true);
+  assert.deepEqual({ ...mixOf(t).items }, {});
+});
+
+test('a count corrected on another device survives the merge: the Toast mark of the other device does not match its stamp', async () => {
+  const a = app();
+  a.SALES = daily;
+  await run(a, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  const cloud = JSON.parse(JSON.stringify(mixOf(a)));
+  // device B has the cloud copy and corrects tea 2.5 → 3 → 2.5 by hand (back to the Toast number)
+  const b = app();
+  b.STORE['menu_mix_F04-K_2026.10'] = cloud;
+  b.NOW_ = 5000; hand(b, '2026.10', 'r-all', 3); hand(b, '2026.10', 'r-all', 2.5);
+  // device A writes later (a new Toast count for ramen), then takes B's record in: A's record is the newer one, so its _auto is kept
+  a.NOW_ = 9000;
+  a.SALES = daily.concat([{ business_date: '2026-10-29', item_guid: 'g-ramen', qty: 1 }]);
+  await run(a, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  a.B_ = mixOf(b);
+  run(a, `STORE['menu_mix_F04-K_2026.10'] = mergeMenuMix(B_, getMenuMix('F04-K', '2026.10'))`);
+  assert.equal(mixOf(a).items['r-all'], 2.5);
+  assert.ok(mixOf(a)._im['r-all'] > mixOf(a)._auto['r-all'].t, 'the item stamp is from B\'s change');
+  // no tea rows now: the count B set by hand stays
+  a.SALES = daily.filter(x => x.item_guid !== 'g-tea');
+  await run(a, `loadMenuMixFromDB('F04-K', 'guid-k', '2026-10')`);
+  assert.equal(mixOf(a).items['r-all'], 2.5, 'the count set by hand on B stays');
 });

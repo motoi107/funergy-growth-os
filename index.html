@@ -8226,14 +8226,15 @@ function _coversMenuMix(check, want){
   }
   return _mmAt(check) >= _mmAt(want);
 }
-function setMenuMix(storeId, period, data) {
+function setMenuMix(storeId, period, data, at) {
   /* v834: メニュー1品ごとに「変わった時刻」を残す。0 にした操作も残す（無い＝0 のため）。
-     中身が変わっていなければ印を進めない（無駄な競合を作らない）。 */
+     中身が変わっていなければ印を進めない（無駄な競合を作らない）。
+     v1124：at を渡すとその時刻で印を付ける（Toast から入れた数の印 _auto をこの印と結ぶため）。 */
   var key = theoMixKey(storeId, period);
   var prev = ls(key, null) || {};
   var pi = _mmItems(prev), ni = _mmItems(data);
   var im = Object.assign({}, _mmStamps(prev));
-  var rids = {}, now = Date.now(), changed = false;
+  var rids = {}, now = (Number(at) > 0 ? Number(at) : Date.now()), changed = false;
   Object.keys(pi).forEach(function(k){ rids[k]=1; });
   Object.keys(ni).forEach(function(k){ rids[k]=1; });
   Object.keys(rids).forEach(function(rid){
@@ -30547,31 +30548,42 @@ function menuMixDayLabel(d){ var p=String(d||'').split('-'); return p.length===3
 /* 「10/29まで（ハワイ時間の昨日まで）」。今月なら今日の分を入れないことも書く（過去の月は日付だけ） */
 function menuMixUpTo(d){ var cur=(typeof bizToday==='function') ? String(bizToday()).slice(0,7) : ''; return menuMixDayLabel(d)+'まで'+(cur && String(d||'').slice(0,7)===cur ? '（ハワイ時間の昨日まで）' : ''); }
 /* 出数を入れ物に書く。中身（出数・売上）が変わらなければ書かない（ログインのたびに全店の出数を書き直して送っていた）。
-   v1124（Codex・Claude の PR #114 のレビューの P2）：Toast から入れた出数がどれかを 1 品ごとに残す（_auto：レシピID → 入れた数）。
-   Toast と結ばれたレシピで、今回の集計（ハワイ時間の昨日まで）に無いものは、Toast から入れたまま（人が直していない）なら消す
-   （v1123 までに入れた「今日の途中の数」が残っていた）。人が入力・修正した数（_auto と違う・結ばれていないレシピ）は残す。
-   _auto が無い前の記録は、Toast から入れた月（toastSrc）の結ばれたレシピの数を Toast の数とみなす。
+   v1124（Codex・Claude の PR #114 のレビューの P2）：Toast から入れた出数がどれかを 1 品ごとに残す
+   （_auto：レシピID → { n：入れた数, t：そのときの 1 品ごとの印 _im }）。
+   Toast と結ばれたレシピで、今回の集計（ハワイ時間の昨日まで）に無いものは、Toast から入れたまま
+   （数も印も _auto と同じ＝そのあと誰も直していない）なら消す（v1123 までに入れた「今日の途中の数」が残っていた）。
+   人が入力・修正した数は印が進むので残る（ほかの端末で直した数も、1 品ごとの合流で印が残る）。
+   _auto の無い前の記録（v1123 まで）は、Toast の数か人の数か分からないので消さない
+   （Codex の再レビュー `65bdac0` の P2。その月に今日だけ出た数は、次の日に昨日までの数に入れ替わる）。
    Toast と結ばれたレシピが無く、消すものも無いとき（月の 1 日・紐づく商品なし）は書かない。 */
+function menuMixAutoOk(e){ return !!(e && typeof e === 'object' && isFinite(Number(e.n)) && isFinite(Number(e.t))); }
 function menuMixApply(storeId, period, acc, linked){
   acc = acc || {};
   var mix = getMenuMix(storeId, period); if(!mix.items) mix.items={};
-  var hadAuto = !!(mix._auto && typeof mix._auto === 'object'), auto = hadAuto ? Object.assign({}, mix._auto) : {};
+  var stamps = _mmStamps(mix), at = Date.now();
+  var auto = (mix._auto && typeof mix._auto === 'object') ? Object.assign({}, mix._auto) : {};
   var same = function(a, b){ return Math.abs((parseFloat(a)||0) - (parseFloat(b)||0)) < 1e-9; };
   var clear = [];
   (Array.isArray(linked) ? linked : []).forEach(function(rid){
-    if (acc.hasOwnProperty(rid) || mix.items[rid] === undefined) { if (!acc.hasOwnProperty(rid)) delete auto[rid]; return; }
-    if (hadAuto ? (auto[rid] !== undefined && same(mix.items[rid], auto[rid])) : !!mix.toastSrc) clear.push(rid);
-    delete auto[rid];   /* 人が直した数は、これからは手入力として残す */
+    if (acc.hasOwnProperty(rid)) return;
+    var e = auto[rid];
+    if (mix.items[rid] !== undefined && menuMixAutoOk(e) && same(mix.items[rid], e.n) && (Number(stamps[rid])||0) === Number(e.t)) clear.push(rid);
+    delete auto[rid];   /* 消した・人が直した数は、Toast の数の印から外す */
   });
+  Object.keys(auto).forEach(function(rid){ if (!menuMixAutoOk(auto[rid])) delete auto[rid]; });
   if (!Object.keys(acc).length && !clear.length) return false;
   var before = JSON.stringify(mix.items) + '|' + JSON.stringify(mix._auto || null), salesBefore = Number(mix.sales)||0;
   clear.forEach(function(rid){ delete mix.items[rid]; });
-  Object.keys(acc).forEach(function(rid){ mix.items[rid]=acc[rid]; auto[rid]=acc[rid]; });
+  Object.keys(acc).forEach(function(rid){
+    /* setMenuMix は数が変わった品だけ印を at に進める。変わらない品は今の印のまま */
+    var t = ((parseFloat(mix.items[rid])||0) === (parseFloat(acc[rid])||0)) ? (Number(stamps[rid])||0) : at;   /* setMenuMix と同じ比べ方 */
+    mix.items[rid]=acc[rid]; auto[rid]={ n:acc[rid], t:t };
+  });
   mix._auto = auto;
   var total=0; getRecipes().filter(function(r){return recipeInStore(r, storeId);}).forEach(function(r){ total += (parseFloat(mix.items[r.id])||0)*(r.price||0); });
   if (JSON.stringify(mix.items) + '|' + JSON.stringify(mix._auto) === before && Math.abs(total - salesBefore) < 0.005 && mix.toastSrc) return false;
   mix.sales=total; mix.savedAt=nowJP(); mix.toastSrc=true;
-  setMenuMix(storeId, period, mix);
+  setMenuMix(storeId, period, mix, at);
   return true;
 }
 async function loadMenuMixFromDB(storeId, guid, ym, opt){
