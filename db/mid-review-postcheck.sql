@@ -66,7 +66,12 @@ with t as (
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_can' and position('several input people' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_access_save' and position('mr_inputs_req' in p.prosrc) > 0)
    and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_month_input_save' and position('mr_inputs_req' in p.prosrc) > 0)
-   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_stores_bump' and position('input_emps' in p.prosrc) > 0) as ok
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_stores_bump' and position('input_emps' in p.prosrc) > 0)
+   -- the month's people on the version read; a stop by SQL kept for the person
+   and exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'mr_reviews' and column_name = 'input_version')
+   and exists(select 1 from pg_trigger g where g.tgname = 'mr_reviews_input_bump' and g.tgrelid = 'public.mr_reviews'::regclass and not g.tgisinternal and g.tgenabled <> 'D')
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_month_input_save' and position('input_version' in p.prosrc) > 0)
+   and exists(select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'mr_ensure_member' and position('v1122' in p.prosrc) > 0) as ok
 ), m as (
   -- the role each enabled person has now (the same rule as mr_member_role; written out so this check also runs before v2)
   select x.*, case

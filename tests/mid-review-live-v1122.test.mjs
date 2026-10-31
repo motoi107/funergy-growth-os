@@ -389,16 +389,17 @@ test('several input people: chosen by name, each can write and submit, one never
   const seen = await S.ok('E2', { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
   assert.equal(seen.submissions[0].by, 'Store Mgr'); assert.equal(seen.review.body.prev.sales.comment, 'by Server Lead, then Store Mgr');
   // this month only: New AM (E14). The base people neither see nor write this month; New AM does.
-  const m = await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'], input_emp: 'E14' });
-  assert.deepEqual(m.input_emps, ['E14']);
+  const mver = async () => (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').month_input_version;
+  const m = await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'], input_emp: 'E14', expect_version: await mver() });
+  assert.deepEqual(m.input_emps, ['E14']); assert.equal(m.version, await mver());
   assert.equal((await S.call('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).status, 404);
   assert.equal((await S.ok('E14', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true);
   A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
   assert.deepEqual([A.month_input_emps, A.effective_input_emps, A.effective_input_name], [['E14'], ['E14'], 'New AM']);
   // two for the month, then back to the base (nobody chosen)
-  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'] });
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'], expect_version: await mver() });
   assert.equal((await S.ok('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true);
-  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: [] });
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: [], expect_version: await mver() });
   A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
   assert.deepEqual([A.month_input_emps, A.effective_input_emps], [[], ['E13', 'E12']]);
   assert.deepEqual((await S.q(`select input_emp, input_emps from mr_reviews where env='live' and store_id='F01' and ym=$1`, [YM]))[0], { input_emp: null, input_emps: null });
@@ -407,8 +408,9 @@ test('several input people: chosen by name, each can write and submit, one never
   const old = await S.call('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [], expect_version: v0 }] });
   assert.deepEqual([old.status, old.body.error], [409, 'update_app']);
   assert.deepEqual((await S.q(`select input_emps from mr_stores where env='live' and store_id='F01'`))[0].input_emps, ['E13', 'E12']); assert.equal(await ver(), v0);
-  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'] });
-  assert.equal((await S.call('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emp: 'E14' })).body.error, 'update_app');
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'], expect_version: await mver() });
+  assert.equal((await S.call('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emp: 'E14' })).body.error, 'update_app', 'an older screen sends no version');
+  assert.equal((await S.call('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emp: 'E14', expect_version: await mver() })).body.error, 'update_app', 'one person while there are two');
   // with one person, the older screen still works as before
   await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E12'], viewer_emps: [], expect_version: v0 }] });
   await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E13', viewer_emps: [], expect_version: await ver() }] });
@@ -472,4 +474,73 @@ test('several input people: rows from before keep their one person (the list is 
   assert.equal((await S.ok('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true, 'the list decides');
   assert.equal((await S.call('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).status, 404);
   assert.match((await S.q(post)).find(r => r.check_name === 'input_emp not the first of the list').result, /^注意/);
+});
+
+// Codex (PR #114 fbc4bd8) P2: the month's own people were saved without a version — two GM / CEO screens on the same month silently
+// undid each other. Now they carry their own version (a report save does not move it).
+test('the month\'s input people are saved on the version read: the older screen is refused (nothing written); a report save does not move the version', async () => {
+  const S = await setup();
+  await S.ok('E2', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1, expect_version: 0 }] });
+  const v0 = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').version;
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E12'], viewer_emps: [], expect_version: v0 }] });
+  const mv = async () => (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').month_input_version;
+  assert.equal(await mv(), 0, 'nothing saved yet');
+  const read = await mv();   // two screens (the GM and the CEO) read the same month
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E13'], expect_version: read });
+  const late = await S.call('E1', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'], expect_version: read });
+  assert.deepEqual([late.status, late.body.error], [409, 'conflict']);
+  assert.deepEqual((await S.q(`select input_emps, input_version from mr_reviews where store_id='F01' and ym=$1`, [YM]))[0], { input_emps: ['E13'], input_version: 1 }, 'the first save stays');
+  // a version that is not a whole number is refused before the database
+  assert.equal((await S.call('E1', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'], expect_version: '1' })).status, 400);
+  // a screen that sends no version (before v1122) is refused even for one person; nothing written
+  const nov = await S.call('E1', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'] });
+  assert.deepEqual([nov.status, nov.body.error], [409, 'update_app']);
+  assert.equal((await S.call('E1', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emp: 'E14' })).body.error, 'update_app');
+  assert.deepEqual((await S.q(`select input_emps from mr_reviews where store_id='F01' and ym=$1`, [YM]))[0].input_emps, ['E13']);
+  // a report save does not move the month's version; saving the same people again does not either
+  const g = await S.ok('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
+  await S.ok('E13', { action: 'save', env: 'live', ym: YM, store_id: 'F01', expect_version: g.review.version, body: normBody({ v: 2, consult: 'none' }) });
+  assert.equal(await mv(), 1);
+  await S.x(`update mr_reviews set input_version = 7, updated_at = now() where store_id = 'F01' and ym = '${YM}'`);
+  assert.equal(await mv(), 1, 'a write that sets the version itself is ignored');
+  await S.ok('E1', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E13', 'E14'], expect_version: 1 });
+  assert.equal(await mv(), 2);
+});
+
+// Codex (PR #114 fbc4bd8) P2: a staff / chef stopped by employee id (db/mid-review-disable-member-by-employee.sql) who later
+// becomes an AM was made again as an AM (the stop only looked at CEO / GM / AM rows). The stop by SQL now stays with the person.
+test('a staff / chef stopped by SQL stays stopped after becoming an AM (sign-in, installing the SQL again, the settings)', async () => {
+  const stopSql = fs.readFileSync(new URL('../db/mid-review-disable-member-by-employee.sql', import.meta.url), 'utf8');
+  const S = await setup();
+  await S.ok('E2', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: null, sort: 1, expect_version: 0 }] });
+  const v0 = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').version;
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E12', 'E13'], viewer_emps: [], expect_version: v0 }] });
+  // E12 (staff) is stopped by employee id; E13 (staff) is taken off the list by the settings only (not a stop)
+  await S.x(stopSql.replaceAll('<社員ID>', 'E12'));
+  assert.deepEqual(await S.q(`select role, enabled, updated_by from mr_members where emp_id = 'E12'`), [{ role: 'staff', enabled: false, updated_by: 'sql' }]);
+  assert.equal((await S.call('E12', { action: 'whoami' })).status, 403);
+  // both become AMs in the employee master
+  await S.x(`update employees set role = 'am', title = 'Area Manager' where id in ('E12','E13')`);
+  assert.equal((await S.call('E12', { action: 'whoami' })).status, 403, 'still stopped at sign-in');
+  await S.x(LIVE);   // installing the SQL again does not make an AM row for them either
+  assert.deepEqual(await S.q(`select role, enabled from mr_members where emp_id = 'E12' order by role`), [{ role: 'staff', enabled: false }]);
+  // the settings cannot let them back in
+  const v1 = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').version;
+  const r = await S.call('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E13', 'E12'], viewer_emps: [], expect_version: v1 }] });
+  assert.deepEqual([r.status, r.body.error], [409, 'member_stopped']);
+  // the other one (not stopped) signs in as an AM
+  assert.equal((await S.ok('E13', { action: 'whoami' })).role, 'am');
+  // a chef stopped by SQL who becomes an AM stays out too
+  await S.x(`insert into employees(id, name, role, title, status) values ('E16', 'Chef Two', 'chef', 'Head Chef', '在籍')`);
+  await S.ok('E2', { action: 'chef_save', emp_id: 'E16', on: true });
+  await S.x(stopSql.replaceAll('<社員ID>', 'E16'));
+  await S.x(`update employees set role = 'am', title = 'Area Manager' where id = 'E16'`);
+  assert.equal((await S.call('E16', { action: 'whoami' })).status, 403);
+  assert.equal((await S.call('E2', { action: 'chef_save', emp_id: 'E16', on: true })).body.error, 'bad_candidate');
+  // a chef taken off the Head Chef list in the settings (not a stop) who becomes an AM signs in as an AM
+  await S.x(`insert into employees(id, name, role, title, status) values ('E18', 'Chef Three', 'chef', 'Head Chef', '在籍')`);
+  await S.ok('E2', { action: 'chef_save', emp_id: 'E18', on: true });
+  await S.ok('E2', { action: 'chef_save', emp_id: 'E18', on: false });
+  await S.x(`update employees set role = 'am', title = 'Area Manager' where id = 'E18'`);
+  assert.equal((await S.ok('E18', { action: 'whoami' })).role, 'am');
 });

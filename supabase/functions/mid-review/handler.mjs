@@ -370,7 +370,8 @@ export function createHandler(deps) {
           expect_version: VER(s.expect_version) };
       }) });
     },
-    month_input_save: (w, b) => rpc('mr_month_input_save', w, { store_id: str(b.store_id, 30), ym: str(b.ym, 8), input_emp: EMP(b.input_emp), input_emps: EMPS(b.input_emps) }),
+    month_input_save: (w, b) => rpc('mr_month_input_save', w, { store_id: str(b.store_id, 30), ym: str(b.ym, 8), input_emp: EMP(b.input_emp), input_emps: EMPS(b.input_emps),
+      expect_version: b.expect_version === undefined ? undefined : VER(b.expect_version) }),   // v1122: the month's people on the version read (Codex on PR #114); none: the SQL says update_app
     chef_save: (w, b) => rpc('mr_chef_save', w, { emp_id: EMP(b.emp_id), on: b.on === true }),
     demo_reset: async w => {
       const x = await rpc('mr_whoami', w, {});
