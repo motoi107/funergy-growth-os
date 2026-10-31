@@ -76,7 +76,7 @@ test('the check after installing (db/mid-review-postcheck.sql): the v1122 row is
   assert.match((await row(pre, 'mid-review live (20261102090000)')).result, /^NG/);
   const S = await setup();
   const rows = await S.q(post);
-  assert.equal(rows.length, 31);
+  assert.equal(rows.length, 32);
   for (const r of rows) assert.match(r.result, /^(OK|参考)/, r.check_name + ': ' + r.result);
   assert.match((await row(S, 'live input')).result, /^OK（本番の店の入力は ON）/);
   await S.q(`insert into manager_auth(user_id, role, emp_id) values('00000000-0000-4000-8000-0000000000d7','gm',null)`);
@@ -355,4 +355,121 @@ test('a CEO / GM row whose account now names someone else gives way when the per
   // E13 signs in: U.gm's row (turned off when E2 moved over) follows manager_auth to E13
   assert.equal((await S.ok('E13', { action: 'whoami' })).role, 'gm');
   assert.deepEqual((await S.q(`select emp_id, enabled from mr_members where user_id = $1`, [U.gm]))[0], { emp_id: 'E13', enabled: true });
+});
+
+// Moto (10/30)「指名、複数選択可に」: a store's input people (and a month's own) are chosen by name, more than one.
+test('several input people: chosen by name, each can write and submit, one never silently writes over the other; the month\'s people take over; an older screen cannot drop them', async () => {
+  const S = await setup();
+  const am = (await S.q(`select user_id::text u from mr_members where emp_id = 'E5' and enabled`))[0].u;
+  await S.ok('E2', { action: 'stores_save', stores: [{ store_id: 'F01', name: 'ToriTon', am_user: am, sort: 1, expect_version: 0 }] });
+  const ver = async () => (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01').version;
+  // two people, in the order chosen; a repeat is one
+  const r = await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E13', 'E12', 'E13'], input_emp: 'E13', viewer_emps: [], expect_version: await ver() }] });
+  assert.deepEqual(r.stores[0].input_emps, ['E13', 'E12']);
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', input_emps: ['E13', 'E12'] });
+  assert.deepEqual((await S.q(`select emp_id, role from mr_members where emp_id in ('E12','E13') and enabled order by emp_id`)), [{ emp_id: 'E12', role: 'staff' }, { emp_id: 'E13', role: 'staff' }], 'both can sign in with the PIN');
+  let A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
+  assert.deepEqual(A.input_emps, ['E13', 'E12']); assert.equal(A.input_name, 'Store Mgr・Server Lead'); assert.equal(A.input_ok, true);
+  assert.deepEqual(A.inputs.map(x => [x.emp_id, x.name, x.member]), [['E13', 'Store Mgr', true], ['E12', 'Server Lead', true]]);
+  // each sees the store and can write; the page names both
+  for (const e of ['E12', 'E13']) {
+    const g = await S.ok(e, { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
+    assert.equal(g.perms.input, true, e); assert.equal(g.store.input.name, 'Store Mgr・Server Lead'); assert.deepEqual(g.store.input.emp_ids, ['E13', 'E12']);
+    assert.deepEqual((await S.ok(e, { action: 'list', env: 'live', ym: YM })).stores.map(s => [s.store_id, s.input.name]), [['F01', 'Store Mgr・Server Lead']]);
+  }
+  // one saves; the other, on the version it read, is refused (not written over); after reading again it writes on top
+  await S.ok('E12', { action: 'save', env: 'live', ym: YM, store_id: 'F01', expect_version: 0, body: normBody({ v: 2, prev: { sales: { eval: 3, comment: 'by Server Lead' } }, consult: 'none' }) });
+  assert.equal((await S.call('E13', { action: 'save', env: 'live', ym: YM, store_id: 'F01', expect_version: 0, body: normBody({ v: 2, consult: 'none' }) })).status, 409);
+  let g = await S.ok('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
+  assert.equal(g.review.body.prev.sales.comment, 'by Server Lead');
+  await S.ok('E13', { action: 'save', env: 'live', ym: YM, store_id: 'F01', expect_version: g.review.version, body: normBody({ v: 2, prev: { sales: { eval: 3, comment: 'by Server Lead, then Store Mgr' } }, consult: 'none' }) });
+  g = await S.ok('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
+  const sub = await S.ok('E13', { action: 'submit', env: 'live', ym: YM, store_id: 'F01', expect_version: g.review.version, snapshot: snap() });
+  assert.equal(sub.no || sub.submitted_no, 1);
+  const seen = await S.ok('E2', { action: 'get', env: 'live', ym: YM, store_id: 'F01' });
+  assert.equal(seen.submissions[0].by, 'Store Mgr'); assert.equal(seen.review.body.prev.sales.comment, 'by Server Lead, then Store Mgr');
+  // this month only: New AM (E14). The base people neither see nor write this month; New AM does.
+  const m = await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14'], input_emp: 'E14' });
+  assert.deepEqual(m.input_emps, ['E14']);
+  assert.equal((await S.call('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).status, 404);
+  assert.equal((await S.ok('E14', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true);
+  A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
+  assert.deepEqual([A.month_input_emps, A.effective_input_emps, A.effective_input_name], [['E14'], ['E14'], 'New AM']);
+  // two for the month, then back to the base (nobody chosen)
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'] });
+  assert.equal((await S.ok('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true);
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: [] });
+  A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
+  assert.deepEqual([A.month_input_emps, A.effective_input_emps], [[], ['E13', 'E12']]);
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_reviews where env='live' and store_id='F01' and ym=$1`, [YM]))[0], { input_emp: null, input_emps: null });
+  // an older screen (one person only) cannot drop the others: refused, nothing written; the same for a month with two
+  const v0 = await ver();
+  const old = await S.call('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E12', viewer_emps: [], expect_version: v0 }] });
+  assert.deepEqual([old.status, old.body.error], [409, 'update_app']);
+  assert.deepEqual((await S.q(`select input_emps from mr_stores where env='live' and store_id='F01'`))[0].input_emps, ['E13', 'E12']); assert.equal(await ver(), v0);
+  await S.ok('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emps: ['E14', 'E12'] });
+  assert.equal((await S.call('E2', { action: 'month_input_save', store_id: 'F01', ym: YM, input_emp: 'E14' })).body.error, 'update_app');
+  // with one person, the older screen still works as before
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E12'], viewer_emps: [], expect_version: v0 }] });
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emp: 'E13', viewer_emps: [], expect_version: await ver() }] });
+  assert.deepEqual((await S.q(`select input_emp, input_emps from mr_stores where env='live' and store_id='F01'`))[0], { input_emp: 'E13', input_emps: ['E13'] });
+  // the list moves the version (a screen holding the older one is refused)
+  const v1 = await ver();
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E13', 'E12'], viewer_emps: [], expect_version: v1 }] });
+  assert.equal(await ver(), v1 + 1);
+  assert.equal((await S.call('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E12'], viewer_emps: [], expect_version: v1 }] })).body.error, 'conflict');
+  // limits and checks: 11 people, a crew member, not a list, a number in the list
+  const vv = await ver(), bad = async st => (await S.call('E2', { action: 'access_save', stores: [{ store_id: 'F01', viewer_emps: [], expect_version: vv, ...st }] })).body.error;
+  assert.equal(await bad({ input_emps: Array.from({ length: 11 }, (_, i) => 'E' + (100 + i)) }), 'bad_value');
+  assert.equal(await bad({ input_emps: ['E13', 'E17'] }), 'bad_candidate');
+  assert.equal(await bad({ input_emps: 'E13' }), 'bad_value');
+  assert.equal(await bad({ input_emps: ['E13', 7] }), 'bad_value');
+  // the server's own checks, called without the function (a number, an empty name, 11 people): the list itself is refused
+  const rpcErr = async st => { try { await S.q(`select public.mr_access_save($1::jsonb)`, [JSON.stringify({ actor: (await S.q(`select user_id::text u from mr_members where emp_id='E2' and enabled`))[0].u, stores: [{ store_id: 'F01', viewer_emps: [], expect_version: vv, ...st }] })]); return 'ok'; } catch (e) { return e.message; } };
+  assert.equal(await rpcErr({ input_emps: ['E13', 7] }), 'bad_value');
+  assert.equal(await rpcErr({ input_emps: ['E13', ''] }), 'bad_value');
+  // a Head Chef on the list (second) who is taken off the Head Chef list keeps the PIN sign-in for the store (staff)
+  await S.x(`insert into employees(id, name, role, title, status) values ('E15', 'Head Chef One', 'chef', 'Head Chef', '在籍')`);
+  await S.ok('E2', { action: 'chef_save', emp_id: 'E15', on: true });
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E13', 'E15'], viewer_emps: [], expect_version: vv }] });
+  await S.ok('E2', { action: 'chef_save', emp_id: 'E15', on: false });
+  assert.deepEqual((await S.q(`select role, enabled from mr_members where emp_id = 'E15'`)), [{ role: 'staff', enabled: true }]);
+  await S.ok('E2', { action: 'access_save', stores: [{ store_id: 'F01', input_emps: ['E13', 'E12'], viewer_emps: [], expect_version: await ver() }] });
+  assert.deepEqual((await S.q(`select input_emps from mr_stores where env='live' and store_id='F01'`))[0].input_emps, ['E13', 'E12'], 'nothing written');
+  // someone on the list leaves: the list says so (input_ok), and they can no longer sign in
+  await S.x(`update employees set status = '退職' where id = 'E12'`);
+  A = (await S.ok('E2', { action: 'access_get', ym: YM })).stores.find(x => x.store_id === 'F01');
+  assert.equal(A.input_ok, false); assert.equal(A.inputs.find(x => x.emp_id === 'E12').ok, false);
+  assert.equal((await S.call('E12', { action: 'whoami' })).status, 403);
+  // the table cannot hold a bad list (a hand-written SQL)
+  await assert.rejects(S.x(`update mr_stores set input_emps = '["E13","E13"]' where store_id = 'F01'`), /input_emps_check/);
+  await assert.rejects(S.x(`update mr_stores set input_emps = '[]' where store_id = 'F01'`), /input_emps_check/);
+});
+
+test('several input people: rows from before keep their one person (the list is made, no version moves); a person set by hand on the old column still counts', async () => {
+  const S = await setup({ before: async pg => {
+    await pg.exec(`insert into mr_stores(env, store_id, name, sort, active, input_emp, viewer_emps, updated_by) values ('live','F01','ToriTon',1,true,'E12','[]','test'), ('live','F02','Tenkichi',2,true,null,'[]','test');
+      insert into mr_reviews(env, store_id, ym, status, body, deadlines, version, input_emp) values ('live','F02','${YM}','draft','{"v":2}','{}',0,'E13');
+      insert into mr_members(emp_id, name, role, enabled) values ('E12','Server Lead','staff',true), ('E13','Store Mgr','staff',true);`);
+  } });
+  const st = await S.q(`select store_id, input_emp, input_emps, access_version from mr_stores where env='live' order by store_id`);
+  assert.deepEqual(st.map(x => [x.store_id, x.input_emps, x.access_version]), [['F01', ['E12'], 0], ['F02', null, 0]], 'made from the one person; the version did not move');
+  assert.deepEqual((await S.q(`select input_emps from mr_reviews where store_id='F02'`))[0].input_emps, ['E13']);
+  assert.equal((await S.ok('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true);
+  assert.equal((await S.ok('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F02' })).perms.input, true, 'the month\'s one person');
+  // a hand-written SQL that sets only the old column on a row without a list
+  await S.x(`update mr_stores set input_emp = 'E13' where store_id = 'F02'`);
+  assert.equal((await S.ok('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F02' })).store.input.name, 'Store Mgr');
+  const base = (await S.ok('E2', { action: 'access_get', ym: '2026-11' })).stores.find(x => x.store_id === 'F02');
+  assert.deepEqual([base.input_emps, base.input_name, base.effective_input_emps], [['E13'], 'Store Mgr', ['E13']], 'the store\'s one person, in a month without its own list');
+  // running the SQL again changes nothing
+  await S.x(fs.readFileSync(new URL('../supabase/migrations/20261102090000_mid_review_live.sql', import.meta.url), 'utf8'));
+  assert.deepEqual((await S.q(`select store_id, input_emps, access_version from mr_stores where env='live' order by store_id`)).map(x => [x.store_id, x.input_emps, x.access_version]), [['F01', ['E12'], 0], ['F02', ['E13'], 1]], 'the list is made from the one person; the version does not move for the same people');
+  // a hand-written SQL that changes only the old column on a row with a list does nothing, and the check after installing says so
+  const post = fs.readFileSync(new URL('../db/mid-review-postcheck.sql', import.meta.url), 'utf8');
+  assert.equal((await S.q(post)).find(r => r.check_name === 'input_emp not the first of the list').result, 'OK');
+  await S.x(`update mr_stores set input_emp = 'E13' where store_id = 'F01'`);
+  assert.equal((await S.ok('E12', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).perms.input, true, 'the list decides');
+  assert.equal((await S.call('E13', { action: 'get', env: 'live', ym: YM, store_id: 'F01' })).status, 404);
+  assert.match((await S.q(post)).find(r => r.check_name === 'input_emp not the first of the list').result, /^注意/);
 });
