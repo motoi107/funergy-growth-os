@@ -98,9 +98,11 @@ begin
    end if;
   end if;
   if v_new is null then raise exception 'forbidden'; end if;
-  -- Someone stopped by SQL stays stopped (not the rows turned off above when someone moved).
+  -- Someone stopped by SQL stays stopped (not the rows turned off above when someone moved). A stop by SQL (updated_by 'sql')
+  -- is kept for the person, whatever the row was (a staff / chef stopped by SQL who later becomes an AM stays out); CEO / GM
+  -- come from manager_auth (taking them out there is the way).
   if exists(select 1 from public.mr_members m where m.emp_id = v_emp and not m.enabled and m.updated_by is distinct from 'v1122 switch'
-    and m.role = any(case when v_new = 'am' then array['ceo','gm','am'] else array['ceo','gm'] end)) then raise exception 'forbidden'; end if;
+    and (m.role = any(case when v_new = 'am' then array['ceo','gm','am'] else array['ceo','gm'] end) or (v_new = 'am' and m.updated_by = 'sql'))) then raise exception 'forbidden'; end if;
   if v_new in ('ceo','gm') then
    select * into y from public.mr_members m where m.user_id = v_ma;
    if y.user_id is not null then
@@ -146,7 +148,7 @@ insert into public.mr_members(user_id, emp_id, name, role, enabled, updated_by)
 select gen_random_uuid(), e.id::text, e.name, 'am', true, 'v1122'
  from public.employees e
  where e.role = 'am' and coalesce(e.status, '') <> '退職' and coalesce(e.id::text, '') <> ''
-  and not exists(select 1 from public.mr_members y where y.emp_id = e.id::text and (y.enabled or y.role in ('ceo','gm','am')))
+  and not exists(select 1 from public.mr_members y where y.emp_id = e.id::text and (y.enabled or y.role in ('ceo','gm','am') or y.updated_by = 'sql'))
 on conflict do nothing;
 
 -- ---------------------------------------------------------------- 3) the switches: on, input on (store publication and notices stay off)
@@ -231,6 +233,36 @@ alter table public.mr_stores add constraint mr_stores_input_emps_check check (pu
 alter table public.mr_reviews drop constraint if exists mr_reviews_input_emps_check;
 alter table public.mr_reviews add constraint mr_reviews_input_emps_check check (public.mr_emp_list_ok(input_emps));
 
+-- A person chosen in the settings is let in (staff / chef) unless stopped by SQL: a CEO / GM / AM row turned off (as before), or
+-- any row turned off by SQL (updated_by 'sql'; v1122: a staff / chef stopped by SQL is not let back from the settings either).
+create or replace function public.mr_ensure_member(p_emp text, p_role text, p_by text) returns jsonb
+language plpgsql security invoker set search_path=public,pg_temp as $$
+declare x public.mr_members; v_name text := public.mr_emp_name(p_emp);   -- v1122: a stop by SQL is kept for the person
+begin
+ if p_role not in ('staff','chef') or coalesce(p_emp, '') = '' then raise exception 'bad_value'; end if;
+ select * into x from public.mr_members y where y.emp_id = p_emp and y.enabled for update;
+ if x.user_id is not null then
+  if p_role = 'staff' or x.role = p_role then return jsonb_build_object('user_id', x.user_id, 'emp_id', p_emp, 'role', x.role, 'action', 'kept'); end if;
+  if x.role = 'staff' then
+   update public.mr_members set role = 'chef', updated_at = now(), updated_by = p_by where user_id = x.user_id;
+   return jsonb_build_object('user_id', x.user_id, 'emp_id', p_emp, 'role', 'chef', 'action', 'chef');
+  end if;
+  raise exception 'role_exists';
+ end if;
+ if exists(select 1 from public.mr_members y where y.emp_id = p_emp and not y.enabled and y.updated_by is distinct from 'v1122 switch'
+   and (y.role in ('ceo','gm','am') or y.updated_by = 'sql')) then raise exception 'member_stopped'; end if;
+ select * into x from public.mr_members y where y.emp_id = p_emp and not y.enabled and y.role in ('staff','chef') order by y.updated_at desc limit 1 for update;
+ if x.user_id is not null then
+  update public.mr_members set enabled = true, role = p_role, name = coalesce(v_name, name), updated_at = now(), updated_by = p_by where user_id = x.user_id;
+  return jsonb_build_object('user_id', x.user_id, 'emp_id', p_emp, 'role', p_role, 'action', 'enabled');
+ end if;
+ begin
+  insert into public.mr_members(emp_id, name, role, enabled, updated_by) values(p_emp, v_name, p_role, true, p_by) returning * into x;
+ exception when unique_violation then raise exception 'conflict';
+ end;
+ return jsonb_build_object('user_id', x.user_id, 'emp_id', p_emp, 'role', p_role, 'action', 'created');
+end $$;
+
 -- The people of a row: the list, or the one person of a row written without a list.
 create or replace function public.mr_inputs(p_list jsonb, p_one text) returns text[]
 language sql immutable security invoker set search_path=public,pg_temp as $$
@@ -238,6 +270,21 @@ language sql immutable security invoker set search_path=public,pg_temp as $$
    then array(select e from jsonb_array_elements_text(p_list) with ordinality q(e, n) order by n)
   when nullif(p_one, '') is not null then array[p_one] else array[]::text[] end;
 $$;
+
+-- A month's own input people carry their own version (Codex on PR #114: two GM / CEO screens saving the same month must not
+-- silently undo each other). It moves only when the people change (a report save does not move it); a write that sets it is ignored.
+alter table public.mr_reviews add column if not exists input_version integer not null default 0;
+alter table public.mr_reviews drop constraint if exists mr_reviews_input_version_check;
+alter table public.mr_reviews add constraint mr_reviews_input_version_check check (input_version >= 0);
+create or replace function public.mr_reviews_input_bump() returns trigger
+language plpgsql security invoker set search_path=public,pg_temp as $$
+begin
+ new.input_version := case when public.mr_inputs(new.input_emps, new.input_emp) is distinct from public.mr_inputs(old.input_emps, old.input_emp)
+  then old.input_version + 1 else old.input_version end;
+ return new;
+end $$;
+drop trigger if exists mr_reviews_input_bump on public.mr_reviews;
+create trigger mr_reviews_input_bump before update on public.mr_reviews for each row execute function public.mr_reviews_input_bump();
 
 -- The input people with their names (for the settings screen).
 create or replace function public.mr_inputs_json(p_ids text[]) returns jsonb
@@ -383,7 +430,7 @@ begin
      'viewers', (select coalesce(jsonb_agg(jsonb_build_object('emp_id', v.e, 'name', public.mr_emp_name(v.e), 'ok', public.mr_viewer_hr_ok(v.e),
         'member', exists(select 1 from public.mr_members w where w.emp_id = v.e and w.enabled)) order by v.n), '[]'::jsonb)
        from jsonb_array_elements_text(y.viewer_emps) with ordinality v(e, n)),
-     'month_input_emps', to_jsonb(q.ri), 'month_inputs', public.mr_inputs_json(q.ri),
+     'month_input_emps', to_jsonb(q.ri), 'month_inputs', public.mr_inputs_json(q.ri), 'month_input_version', coalesce(r.input_version, 0),
      'month_input_emp', q.ri[1], 'month_input_name', public.mr_inputs_names(q.ri),
      'month_input_ok', not exists(select 1 from unnest(q.ri) u(e) where public.mr_input_kind(u.e) is null),
      'effective_input_emps', to_jsonb(case when cardinality(q.ri) > 0 then q.ri else q.si end),
@@ -446,32 +493,36 @@ begin
  return jsonb_build_object('saved', n, 'members', v_added, 'stores', v_out);
 end $$;
 
--- One month's own input people for a live store (none: the store's). The records of who reported and replied stay.
+-- One month's own input people for a live store (none: the store's), on the version the screen read (expect_version, required:
+-- 0 for a month not saved yet). Another version now: nothing is written (conflict). The records of who reported and replied stay.
 create or replace function public.mr_month_input_save(p jsonb) returns jsonb
 language plpgsql security invoker set search_path=public,pg_temp as $$
 declare m public.mr_members := public.mr_auth(nullif(p->>'actor','')::uuid, array['ceo','gm'], true);   -- v1122: several input people
- v_ym text := p->>'ym'; v_inps text[]; v_old text[]; r public.mr_reviews; v_r jsonb; v_rs jsonb := '[]'::jsonb; v_name text := public.mr_actor_name(m); e text;
+ v_ym text := p->>'ym'; v_inps text[]; v_old text[]; r public.mr_reviews; v_r jsonb; v_rs jsonb := '[]'::jsonb; v_name text := public.mr_actor_name(m); e text; v_ver integer;
 begin
  perform public.mr_need_email(p);
  if coalesce(p->>'store_id', '') !~ '^[A-Za-z0-9-]{1,24}$' or v_ym is null or v_ym !~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' then raise exception 'bad_value'; end if;
  if not exists(select 1 from public.mr_stores y where y.env = 'live' and y.store_id = p->>'store_id') then raise exception 'not_found'; end if;
- r := public.mr_review_row('live', p->>'store_id', v_ym);
+ if public.mr_ver(p->'expect_version') is null then raise exception 'update_app'; end if;   -- a screen before this sends no version
+ r := public.mr_review_row('live', p->>'store_id', v_ym);   -- the row is locked until the end
  if public.mr_legacy(r) then raise exception 'legacy'; end if;
+ if r.input_version <> public.mr_ver(p->'expect_version') then raise exception 'conflict'; end if;
  v_old := public.mr_inputs(r.input_emps, r.input_emp);
  v_inps := public.mr_inputs_req(p, v_old);
- update public.mr_reviews set input_emps = case when cardinality(v_inps) > 0 then to_jsonb(v_inps) end, input_emp = v_inps[1], updated_at = now(), updated_by = v_name where id = r.id;
+ update public.mr_reviews set input_emps = case when cardinality(v_inps) > 0 then to_jsonb(v_inps) end, input_emp = v_inps[1], updated_at = now(), updated_by = v_name where id = r.id
+  returning input_version into v_ver;
  foreach e in array v_inps loop
   v_r := public.mr_ensure_member(e, 'staff', v_name);
   v_rs := v_rs || jsonb_build_array(v_r);
  end loop;
  perform public.mr_event(r.id, 'live', m.user_id::text, 'month_input', jsonb_build_object('by', v_name, 'old', to_jsonb(v_old), 'new', to_jsonb(v_inps)));
- return jsonb_build_object('store_id', p->>'store_id', 'ym', v_ym, 'input_emps', to_jsonb(v_inps), 'input_emp', v_inps[1], 'member', v_rs->0, 'members', v_rs);
+ return jsonb_build_object('store_id', p->>'store_id', 'ym', v_ym, 'input_emps', to_jsonb(v_inps), 'input_emp', v_inps[1], 'version', v_ver, 'member', v_rs->0, 'members', v_rs);
 end $$;
 
 do $grant$ declare f text; begin
  foreach f in array array['mr_need_email(jsonb)','mr_member_role(public.mr_members)','mr_pin_actor(jsonb)','mr_can(public.mr_members,public.mr_stores,text,text)','mr_whoami(jsonb)','mr_store(jsonb)','mr_list(jsonb)','mr_demo_reset(jsonb)',
   'mr_emp_list_ok(jsonb)','mr_inputs(jsonb,text)','mr_inputs_json(text[])','mr_inputs_names(text[])','mr_stores_bump()','mr_input_info(public.mr_stores,text,text)',
-  'mr_is_input_somewhere(text)','mr_inputs_req(jsonb,text[])','mr_access_get(jsonb)','mr_access_save(jsonb)','mr_month_input_save(jsonb)'] loop
+  'mr_is_input_somewhere(text)','mr_inputs_req(jsonb,text[])','mr_access_get(jsonb)','mr_access_save(jsonb)','mr_month_input_save(jsonb)','mr_ensure_member(text,text,text)','mr_reviews_input_bump()'] loop
   execute format('revoke all on function public.%s from public, anon, authenticated', f);
   execute format('grant execute on function public.%s to service_role', f);
  end loop;

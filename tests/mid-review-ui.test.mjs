@@ -1237,3 +1237,32 @@ test('v1122 several input people: chosen with the add button, saved as a list, n
   assert.ok(c.toasts.filter(([m, k]) => k === 'error' && /1 人だけ保存されたかもしれません/.test(m)).length >= 2);
   c.fetch = real;
 });
+
+// Codex (PR #114 fbc4bd8) P2: the month's own people are saved on the version read. Two screens on the same month: the older
+// save is refused, my change is put on theirs one person at a time (unsaved, with a band), then saved.
+test('v1122 the month\'s input people on two screens: the older save is not written; mine is put on theirs with a band; then both are kept', async () => {
+  const S = await server({ demo: false }); await live(S);
+  const g = app(S); const c = app(S, { who: 'ceo', role: 'ceo', lp: { id: 'E1', name: 'CEO Test' } });
+  for (const x of [g, c]) { await x.show(); x.run('mrOpenSettings()'); await x.show(); }
+  const db = async () => (await S.q(`select input_emps, input_version from mr_reviews where env='live' and store_id='F01' and ym='2026-10'`))[0] || null;
+  g.dom = { 'mr-acc-madd': { value: 'E14' } }; g.run('mrAccMonthAdd()'); await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
+  assert.deepEqual(await db(), { input_emps: ['E14'], input_version: 1 });
+  assert.equal(g.calls.filter(b => b.action === 'month_input_save').at(-1).expect_version, 0);
+  // the CEO (opened before) adds Store Mgr
+  c.dom = { 'mr-acc-madd': { value: 'E13' } }; c.run('mrAccMonthAdd()'); await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emps: ['E14'], input_version: 1 }, 'nothing written by the older screen');
+  assert.equal(c.toasts.filter(([, k]) => k === 'error').length, 0, 'told by the band, not an error');
+  const card = chips(c.html, 'mr-acc-month'), h = c.html.slice(c.html.indexOf('だけの入力担当'));
+  assert.match(h, /ほかの人（または別のタブ）が先にこの月の担当を保存しました.*ほかの人の変更：入力担当に Op Lead を足す.*あなたの変更（入力担当に Store Mgr を足す）を、いまの担当に入れ直しました。<b>まだ保存していません。/s);
+  assert.match(card, /<span class="mr-pp"><b>Op Lead<\/b>.*<span class="mr-pp mr-pp-mine"><b>Store Mgr<\/b>/s);
+  assert.equal(c.run('mrSetUnsaved()'), true);
+  await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  assert.deepEqual(await db(), { input_emps: ['E14', 'E13'], input_version: 2 });
+  assert.doesNotMatch(c.html, /先にこの月の担当を保存しました/);
+  // the same change made on both: already in, nothing to save
+  g.dom = { 'mr-acc-madd': { value: 'E10' } }; g.run('mrAccMonthAdd()');
+  c.dom = { 'mr-acc-madd': { value: 'E10' } }; c.run('mrAccMonthAdd()'); await c.run('mrAccMonthSave()'); await c.flush(); await c.show();
+  await g.run('mrAccMonthSave()'); await g.flush(); await g.show();
+  assert.match(g.html, /あなたの変更（入力担当に Chef Oka を足す）は、もう入っています（保存しなくて大丈夫）。/); assert.equal(g.run('mrSetUnsaved()'), false);
+  assert.deepEqual(await db(), { input_emps: ['E14', 'E13', 'E10'], input_version: 3 });
+});
