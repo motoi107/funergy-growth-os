@@ -44,9 +44,10 @@ function btn(text, onclick, opts) {
     hasAttribute: k => !!(opts.attrs && opts.attrs[k]), closest: sel => (opts.inside && sel.indexOf(opts.inside) >= 0 ? {} : null) };
 }
 
-test('版：アプリと Service Worker が 1127 でそろう', () => {
-  assert.match(html, /const APP_VERSION = '1127';/);
-  assert.match(sw, /const SW_BUILD = '1127';/);
+test('版：アプリと Service Worker が 1127 以上でそろう', () => {
+  const a = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], b = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1];
+  assert.ok(Number(a) >= 1127, a);
+  assert.equal(a, b);
 });
 
 test('共通の決まりは本体の最後（ほかの関数をすべて定義したあと）に 1 つだけ', () => {
