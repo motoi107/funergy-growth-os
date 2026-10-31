@@ -662,6 +662,8 @@ body.shift-wide .main { max-width:1900px; }
 .mn-pt { position:absolute; width:24px; height:24px; margin:0; padding:0; border:0; background:none; transform:translate(-50%,-50%); cursor:pointer; display:flex; align-items:center; justify-content:center; }
 .mn-pt > span { width:10px; height:10px; border-radius:50%; box-shadow:0 0 0 2px #fff; }
 .mn-pt.on > span { width:14px; height:14px; box-shadow:0 0 0 2px #fff, 0 0 0 4px #211b15; }
+.mn-scard { overflow:hidden; }
+.mn-month > .section-header:first-child { display:none; }
 .mn-ptl { position:absolute; transform:translate(10px,-50%); font-size:11px; font-weight:600; color:var(--tm); white-space:nowrap; pointer-events:none; text-shadow:0 0 3px #fff, 0 0 3px #fff; }
 .mn-sel { display:flex; flex-wrap:wrap; align-items:center; gap:6px 14px; margin-top:12px; padding:10px 12px; background:var(--surface2); border-radius:10px; font-size:13px; }
 .mn-lh { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin:4px 0 10px; font-size:13px; }
@@ -724,6 +726,7 @@ body.shift-wide .main { max-width:1900px; }
   .mn-cc[aria-pressed=true] { padding:9px; }
   .mn-ccv { font-size:18px; }
   .mn-q { display:none; }
+  .mn-ptl { display:none; }
   .mn-dl-n { visibility:hidden; }
   .mn-days { height:190px; }
   .mn-scw { grid-template-columns:36px minmax(0,1fr); }
@@ -82630,10 +82633,12 @@ function financialBlocked() {
 ============================================================ */
 var MN_COLORS = ['#eb6834', '#1baf7a', '#eda100', '#256abf', '#e87ba4', '#008300', '#6250d6', '#e34948'];   /* dataviz の検査済み（8 色・明るい面） */
 var MN_OTHER = '#c9c1b6', MN_UNC = '#9b938a', MN_UNC_NAME = '未分類';
-var MN_MONEY_COLS = ['net_sales', 'net_amount', 'sales_amount', 'amount', 'sales', 'gross_sales'];
+var MN_MONEY_COLS = ['net_sales', 'net_amount', 'sales_amount', 'gross_sales'];   /* 金額とはっきり分かる名前だけ（amount・sales は数量のこともあるので使わない） */
+var MN_FETCH_MS = 30000, MN_CACHE_MAX = 40;
 var MN_MAX_DAYS = 93, MN_RESYNC_ROLES = ['ceo', 'gm', 'office'], MN_ROWS = 200;
 var MN_FOOD = '#c2410c', MN_DRINK = '#1d4ed8', MN_FOOD_P = '#e7c3ad', MN_DRINK_P = '#b9c8ee';
-var _mnCache = {}, _mnPending = {}, _mnSearchT = null, _mnReg = { items: [], cats: [] };
+var _mnCache = {}, _mnPending = {}, _mnSearchT = null, _mnReg = { items: [], cats: [] }, _mnResyncBusy = false;
+function mnObj() { return Object.create(null); }   /* カテゴリー名・商品名をキーにする入れ物（__proto__ などの名前でも壊れない） */
 
 function mnPad(n) { return String(n).padStart(2, '0'); }
 function mnYmd(d) { return d.getFullYear() + '-' + mnPad(d.getMonth() + 1) + '-' + mnPad(d.getDate()); }
@@ -82667,7 +82672,8 @@ function mnPrevRange(per, r) {
   if (per === 'month') {
     var d = mnDate(r.from), p = new Date(d.getFullYear(), d.getMonth() - 1, 1);
     var day = Math.min(mnDate(r.to).getDate(), new Date(p.getFullYear(), p.getMonth() + 1, 0).getDate());
-    pr = { from: mnYmd(p), to: mnYmd(new Date(p.getFullYear(), p.getMonth(), day)), label: t('先月の同じ日数より', 'vs same days last month') };
+    pr = { from: mnYmd(p), to: mnYmd(new Date(p.getFullYear(), p.getMonth(), day)) };
+    pr.label = mnDays(pr.from, pr.to) < r.n ? t('先月（' + mnMd(pr.from) + '〜' + mnMd(pr.to) + '）より', 'vs last month (' + mnMd(pr.from) + '–' + mnMd(pr.to) + ')') : t('先月の同じ日数より', 'vs same days last month');
   } else if (per === 'prev') {
     var d2 = mnDate(r.from), p2 = new Date(d2.getFullYear(), d2.getMonth() - 1, 1);
     pr = { from: mnYmd(p2), to: mnYmd(new Date(p2.getFullYear(), p2.getMonth() + 1, 0)), label: t('その前の月より', 'vs the month before') };
@@ -82716,11 +82722,13 @@ function mnState() {
     var mine = (typeof curStore !== 'undefined' && curStore && curStore !== 'ALL') ? vis.filter(function (x) { return x.id === curStore; })[0] : null;
     s.store = mine ? mine.id : (vis.length > 1 ? 'ALL' : (vis[0] ? vis[0].id : 'ALL'));
   }
+  if (s._ls !== undefined && s._ls !== s.store) { s.cat = ''; s.sel = ''; s.pick = ''; s.showAll = false; }   /* 店が変わったら（上の店の切り替えでも）前の店のカテゴリー・選んだメニューを外す */
+  s._ls = s.store;
   return s;
 }
 function mnTargetStores(s) { var vis = mnStoresVisible(); return s.store === 'ALL' ? vis : vis.filter(function (x) { return x.id === s.store; }); }
 function mnRecipeMap(storeId) {
-  var by = {}, own = {}, all = (typeof getRecipes === 'function' ? getRecipes() : []) || [];
+  var by = mnObj(), own = mnObj(), all = (typeof getRecipes === 'function' ? getRecipes() : []) || [];
   all.forEach(function (r) { if (r && r.toastGuid && r.storeId === storeId && (!by[r.toastGuid] || (by[r.toastGuid].archived && !r.archived))) { by[r.toastGuid] = r; own[r.toastGuid] = 1; } });
   all.forEach(function (r) { if (!r || !r.toastGuid || own[r.toastGuid]) return; if (recipeInStore(r, storeId) && (!by[r.toastGuid] || (by[r.toastGuid].archived && !r.archived))) by[r.toastGuid] = r; });
   return by;
@@ -82728,14 +82736,14 @@ function mnRecipeMap(storeId) {
 /* カテゴリーの色：選んだ店のレシピのカテゴリーを、レシピの数の多い順（同じなら名前の順）に 8 色まで。
    期間・区分・カテゴリーの絞り込みでは塗り直さない（色はカテゴリーについて回る）。9 つ目からは「その他」の色。 */
 function mnCatColors(storeIds) {
-  var cnt = {}, all = (typeof getRecipes === 'function' ? getRecipes() : []) || [];
+  var cnt = mnObj(), all = (typeof getRecipes === 'function' ? getRecipes() : []) || [];
   all.forEach(function (r) {
     if (!r || r.archived) return;
     if (!storeIds.some(function (id) { return recipeInStore(r, id); })) return;
     var c = String(r.category || '').trim(); if (!c || c === MN_UNC_NAME) return; cnt[c] = (cnt[c] || 0) + 1;
   });
   var names = Object.keys(cnt).sort(function (a, b) { return (cnt[b] - cnt[a]) || (a < b ? -1 : a > b ? 1 : 0); });
-  var map = {}; names.forEach(function (n, i) { map[n] = i < MN_COLORS.length ? MN_COLORS[i] : MN_OTHER; });
+  var map = mnObj(); names.forEach(function (n, i) { map[n] = i < MN_COLORS.length ? MN_COLORS[i] : MN_OTHER; });
   map[MN_UNC_NAME] = MN_UNC;
   return { map: map, order: names.concat([MN_UNC_NAME]) };
 }
@@ -82744,9 +82752,17 @@ function mnCatColors(storeIds) {
 async function mnFetchRows(path) {
   var out = [];
   for (var off = 0; off < 400000; off += 1000) {
-    var res = await fetch(SUPABASE_URL + '/rest/v1/' + path + '&limit=1000&offset=' + off, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    var rows = await res.json();
+    /* 1 ページ 30 秒で打ち切る（答えの来ない要求で「読み込んでいます」のまま止まらない。打ち切ったら読めなかった店として出す） */
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null, tm = null;
+    var lim = new Promise(function (_, rej) { tm = setTimeout(function () { try { if (ctl) ctl.abort(); } catch (e) { } rej(new Error('timeout')); }, MN_FETCH_MS); });
+    var rows;
+    try {
+      rows = await Promise.race([lim, (async function () {
+        var res = await fetch(SUPABASE_URL + '/rest/v1/' + path + '&limit=1000&offset=' + off, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON }, signal: ctl ? ctl.signal : undefined });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.json();
+      })()]);
+    } finally { clearTimeout(tm); }
     if (!Array.isArray(rows)) throw new Error('bad response');
     for (var i = 0; i < rows.length; i++) out.push(rows[i]);
     if (rows.length < 1000) break;
@@ -82757,11 +82773,13 @@ function mnItemsPath(guid, f, e) { return 'toast_item_sales?restaurant_guid=eq.'
 function mnSalesPath(guid, f, e) { return 'toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_date=gte.' + f + '&business_date=lte.' + e + '&select=business_date,net_sales,guest_count&order=business_date.asc'; }
 function mnJobs(s) {
   var today = bizToday(), r = mnRange(s.per, s.from, s.to, today), pr = mnPrevRange(s.per, r), jobs = [];
-  var stores = r.empty ? [] : mnTargetStores(s).filter(function (x) { return !!x.toastGuid; });
+  var seen = mnObj();   /* 同じ Toast の店が 2 つの店に設定されていても 1 回だけ数える */
+  var stores = r.empty ? [] : mnTargetStores(s).filter(function (x) { if (!x.toastGuid || seen[x.toastGuid]) return false; seen[x.toastGuid] = 1; return true; });
   stores.forEach(function (x) {
     jobs.push({ k: 'items|' + x.toastGuid + '|' + r.from + '|' + r.to, path: mnItemsPath(x.toastGuid, r.from, r.to) });
     jobs.push({ k: 'items|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnItemsPath(x.toastGuid, pr.from, pr.to) });
     jobs.push({ k: 'sales|' + x.toastGuid + '|' + r.from + '|' + r.to, path: mnSalesPath(x.toastGuid, r.from, r.to) });
+    jobs.push({ k: 'sales|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnSalesPath(x.toastGuid, pr.from, pr.to) });   /* 比べる期間の出数の入っていない日を見つける */
   });
   return { r: r, pr: pr, jobs: jobs, stores: stores, today: today };
 }
@@ -82789,7 +82807,7 @@ async function mnRun(jobs) {
 function mnTrim() {
   var keep = {}; mnJobs(mnState()).jobs.forEach(function (j) { keep[j.k] = 1; });
   var ks = Object.keys(_mnCache).filter(function (k) { return !keep[k]; }).sort(function (a, b) { return _mnCache[a].at - _mnCache[b].at; });
-  while (ks.length > 60) delete _mnCache[ks.shift()];
+  while (ks.length > MN_CACHE_MAX) delete _mnCache[ks.shift()];
 }
 function mnReload() {
   mnJobs(mnState()).jobs.forEach(function (j) { if (!_mnPending[j.k]) delete _mnCache[j.k]; });
@@ -82808,49 +82826,71 @@ function mnRedraw() {
 /* ---------- 集計（画面を描かない・試験で使う） ----------
    inp：{ stores:[{ id, name, rows, prevRows, sales, err, prevErr, salesErr, recipes:{guid→レシピ}, drinkCats:[] }],
           r, pr, kind, cat, q, chip, sort, allStores, colors:{ map, order } } */
+/* 金額の列：読んだ行のすべてに数が入っているときだけ使う（1 行でも空なら 出数 × 売価。空の行を $0 と数えない） */
 function mnMoneyCol(lists) {
+  var any = false;
   for (var c = 0; c < MN_MONEY_COLS.length; c++) {
-    var col = MN_MONEY_COLS[c];
-    for (var a = 0; a < lists.length; a++) {
+    var col = MN_MONEY_COLS[c], ok = true;
+    for (var a = 0; a < lists.length && ok; a++) {
       var rs = lists[a] || [];
-      for (var i = 0; i < rs.length && i < 200; i++) if (rs[i] && rs[i][col] != null && rs[i][col] !== '' && isFinite(Number(rs[i][col]))) return col;
+      for (var i = 0; i < rs.length; i++) { if (!rs[i] || !rs[i].business_date) continue; any = true; var v = rs[i][col]; if (v == null || v === '' || !isFinite(Number(v))) { ok = false; break; } }
     }
+    if (ok && any) return col;
   }
   return '';
 }
 function mnModel(inp) {
-  var stores = inp.stores || [], r = inp.r, pr = inp.pr, colors = inp.colors || { map: {}, order: [] };
-  var money = mnMoneyCol(stores.map(function (S) { return S.rows; }).concat(stores.map(function (S) { return S.prevRows; })));
-  var items = {}, order = [], failed = [], missing = [], prevOk = true;
+  var stores = inp.stores || [], r = inp.r, pr = inp.pr, colors = inp.colors || { map: mnObj(), order: [] };
+  var money = mnMoneyCol(stores.filter(function (S) { return !S.err; }).map(function (S) { return S.rows; }).concat(stores.filter(function (S) { return !S.err && !S.prevErr; }).map(function (S) { return S.prevRows; })));
+  var items = mnObj(), order = [], failed = [], missing = [], prevMissing = [], unchecked = [], notYet = [], prevOk = true, newOk = true, exAll = mnObj(), dataDays = mnObj();
   var catColor = function (c) { return colors.map[c] || (c === MN_UNC_NAME ? MN_UNC : MN_OTHER); };
+  var curIdx = function (d) { return mnDays(r.from, d) - 1; }, prevIdx = function (d) { return mnDays(pr.from, d) - 1; };
+  var salesDays = function (list, f, e) { var o = mnObj(), any = mnObj(); (list || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (!d || d < f || d > e) return; any[d] = 1; if (Number(x.net_sales) > 0) o[d] = 1; }); return { pos: o, any: any }; };
   stores.forEach(function (S) {
     if (S.err) { failed.push(S); return; }
     if (S.prevErr) prevOk = false;
-    var latest = {}, names = {}, recs = S.recipes || {}, dc = S.drinkCats || [];
-    [S.rows || [], S.prevErr ? [] : (S.prevRows || [])].forEach(function (rs) {
+    var latest = mnObj(), names = mnObj(), recs = S.recipes || {}, dc = (S.drinkCats || []).map(function (v) { return String(v).trim().toLowerCase(); });
+    var curRows = S.rows || [], prevRows = S.prevErr ? [] : (S.prevRows || []);
+    [curRows, prevRows].forEach(function (rs) {
       rs.forEach(function (x) {
         if (!x || !x.business_date) return;
         var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), nm = String(x.item_name || '').trim() || g, d = String(x.business_date).slice(0, 10), id = Number(x.id) || 0;
         if (!latest[g] || d > latest[g].d || (d === latest[g].d && id > latest[g].id)) latest[g] = { d: d, name: nm, id: id };
-        (names[g] = names[g] || {})[nm] = 1;
+        (names[g] = names[g] || mnObj())[nm] = 1;
       });
     });
-    var cache = {};
+    /* 出数の行のある日（今・比べる期間） */
+    var itemDays = mnObj(), prevItemDays = mnObj();
+    curRows.forEach(function (x) { if (x && x.business_date) { var d = String(x.business_date).slice(0, 10); itemDays[d] = 1; dataDays[d] = 1; } });
+    prevRows.forEach(function (x) { if (x && x.business_date) prevItemDays[String(x.business_date).slice(0, 10)] = 1; });
+    /* 売上はあるのに出数の行が無い日（今の期間は帯に出す・比べる期間はその日と今の期間の同じ日を比べるときに除く） */
+    var ex = mnObj();   /* 比べるときに両方から除く日（期間の何日目か） */
+    if (S.salesErr) { unchecked.push(S); prevOk = false; }
+    else {
+      var sd = salesDays(S.sales, r.from, r.to);
+      Object.keys(sd.pos).forEach(function (d) { if (!itemDays[d]) { missing.push({ store: S.id, name: S.name || S.id, date: d }); ex[curIdx(d)] = 1; } });
+      if (!sd.any[r.to] && !itemDays[r.to]) notYet.push(S);
+    }
+    if (!S.prevErr) {
+      if (S.prevSalesErr) { prevOk = false; newOk = false; }
+      else { var ps = salesDays(S.prevSales, pr.from, pr.to); Object.keys(ps.pos).forEach(function (d) { if (!prevItemDays[d]) { prevMissing.push({ store: S.id, name: S.name || S.id, date: d }); ex[prevIdx(d)] = 1; newOk = false; } }); }
+    }
+    Object.keys(ex).forEach(function (k) { exAll[k] = 1; });
+    var cache = mnObj();
     var itemOf = function (g) {
       if (cache[g]) return cache[g];
-      var nm = (latest[g] || {}).name || g, rec = g.indexOf('n:') === 0 ? null : (recs[g] || null);
+      var nm = (latest[g] || {}).name || g, rec = g.indexOf('n:') === 0 ? null : (Object.prototype.hasOwnProperty.call(recs, g) ? recs[g] : null);
       var cat = (rec && String(rec.category || '').trim()) || MN_UNC_NAME;
       var key = inp.allStores ? 'n:' + mnNorm(nm) : g;
       var it = items[key];
-      if (!it) { it = items[key] = { key: key, name: nm, oldNames: {}, cat: cat, drink: false, qty: 0, sales: 0, prevQty: 0, prevSales: 0, priceMissing: false, archived: false, active: false, archivedAt: '', stores: {}, day: {}, dayS: {}, prevDay: {}, prevDayS: {} }; order.push(key); }
+      if (!it) { it = items[key] = { key: key, name: nm, oldNames: mnObj(), cat: cat, drink: false, qty: 0, sales: 0, cmpQty: 0, cmpSales: 0, prevQty: 0, prevSales: 0, prevAll: 0, priceMissing: false, archived: false, active: false, archivedAt: '', stores: mnObj(), day: mnObj(), dayS: mnObj(), prevDay: mnObj(), prevDayS: mnObj() }; order.push(key); }
       if (it.cat === MN_UNC_NAME && cat !== MN_UNC_NAME) it.cat = cat;
       Object.keys(names[g] || {}).forEach(function (n) { if (n !== nm) it.oldNames[n] = 1; });
-      if (rec) { if (rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; } else it.active = true; if (dc.indexOf(cat) >= 0) it.drink = true; }
+      if (rec) { if (rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; } else it.active = true; if (dc.indexOf(cat.toLowerCase()) >= 0) it.drink = true; }
       it.stores[S.id] = 1;
       return (cache[g] = { it: it, rec: rec });
     };
-    var itemDays = {};
-    [[S.rows || [], 0], [S.prevErr ? [] : (S.prevRows || []), 1]].forEach(function (pair) {
+    [[curRows, 0], [prevRows, 1]].forEach(function (pair) {
       pair[0].forEach(function (x) {
         if (!x || !x.business_date) return;
         var q = Number(x.qty); if (!isFinite(q)) return;
@@ -82858,16 +82898,23 @@ function mnModel(inp) {
         var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), o = itemOf(g), it = o.it, amt;
         if (money) amt = Number(x[money]) || 0;
         else { var p = o.rec && isFinite(Number(o.rec.price)) ? Number(o.rec.price) : 0; if (!(p > 0) && q) it.priceMissing = true; amt = q * p; }
-        if (pair[1] === 0) { it.qty += q; it.sales += amt; it.day[d] = (it.day[d] || 0) + q; it.dayS[d] = (it.dayS[d] || 0) + amt; itemDays[d] = 1; }
-        else { it.prevQty += q; it.prevSales += amt; it.prevDay[d] = (it.prevDay[d] || 0) + q; it.prevDayS[d] = (it.prevDayS[d] || 0) + amt; }
+        if (pair[1] === 0) {
+          it.qty += q; it.sales += amt; it.day[d] = (it.day[d] || 0) + q; it.dayS[d] = (it.dayS[d] || 0) + amt;
+          var ci = curIdx(d); if (!ex[ci] && ci < pr.n) { it.cmpQty += q; it.cmpSales += amt; }   /* 比べる期間に同じ日があり、どちらも出数のある日だけ */
+        } else {
+          it.prevAll += q;
+          var pi = prevIdx(d); if (!ex[pi] && pi < r.n) { it.prevQty += q; it.prevSales += amt; it.prevDay[d] = (it.prevDay[d] || 0) + q; it.prevDayS[d] = (it.prevDayS[d] || 0) + amt; }
+        }
       });
     });
     S._itemDays = itemDays;
-    if (!S.salesErr) (S.sales || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (d && d >= r.from && d <= r.to && Number(x.net_sales) > 0 && !itemDays[d]) missing.push({ store: S.id, name: S.name || S.id, date: d }); });
   });
-  missing.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.name < b.name ? -1 : 1); });
+  if (!prevOk) newOk = false;
+  var bySd = function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.name < b.name ? -1 : 1); };
+  missing.sort(bySd); prevMissing.sort(bySd);
   var guests = 0, guestsOk = true;
   stores.forEach(function (S) { if (S.err) return; if (S.salesErr) { guestsOk = false; return; } (S.sales || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (S._itemDays && S._itemDays[d]) guests += Number(x.guest_count) || 0; }); });
+  var nData = Object.keys(dataDays).filter(function (d) { return d >= r.from && d <= r.to; }).length || r.n;
 
   var all = order.map(function (k) { return items[k]; });
   var kindOk = function (it) { return inp.kind === 'food' ? !it.drink : inp.kind === 'drink' ? it.drink : true; };
@@ -82878,20 +82925,20 @@ function mnModel(inp) {
     it.renamed = Object.keys(it.oldNames).length > 0;
     it.ended = it.archived && !it.active;
     it.unc = it.cat === MN_UNC_NAME;
-    it.isNew = prevOk && it.qty !== 0 && it.prevQty === 0;
+    it.isNew = newOk && it.qty !== 0 && it.prevAll === 0;
     it.avg = it.qty ? it.sales / it.qty : 0;
-    it.chg = (prevOk && it.prevQty > 0) ? (it.qty / it.prevQty - 1) : null;
+    it.chg = (prevOk && it.prevQty > 0) ? (it.cmpQty / it.prevQty - 1) : null;
     it.color = catColor(it.cat);
-    it.perDay = r.n ? it.qty / r.n : 0;
+    it.perDay = nData ? it.qty / nData : 0;
   });
   var cur = all.filter(function (it) { return it.qty !== 0; });
   var A = cur.filter(kindOk), B = A.filter(catOk);
   var sum = function (list, f) { return list.reduce(function (a, it) { return a + (Number(it[f]) || 0); }, 0); };
   var tqA = sum(A, 'qty'), tsA = sum(A, 'sales');
   /* カテゴリー（区分で絞ったもの。カテゴリーの絞り込みでは減らさない） */
-  var cats = {};
+  var cats = mnObj();
   A.forEach(function (it) { var c = cats[it.cat] || (cats[it.cat] = { name: it.cat, qty: 0, sales: 0, n: 0, color: it.color, items: [] }); c.qty += it.qty; c.sales += it.sales; c.n++; c.items.push(it); });
-  var rank = {}; (colors.order || []).forEach(function (n, i) { rank[n] = i; });
+  var rank = mnObj(); (colors.order || []).forEach(function (n, i) { rank[n] = i; });
   var catList = Object.keys(cats).map(function (k) { return cats[k]; }).sort(function (a, b) {
     var ra = a.name === MN_UNC_NAME ? 1e9 : (rank[a.name] == null || a.color === MN_OTHER ? 1e6 : rank[a.name]), rb = b.name === MN_UNC_NAME ? 1e9 : (rank[b.name] == null || b.color === MN_OTHER ? 1e6 : rank[b.name]);
     return (ra - rb) || (b.qty - a.qty) || (a.name < b.name ? -1 : 1);
@@ -82906,7 +82953,7 @@ function mnModel(inp) {
   };
   /* 前の期間の合計（今の期間に出なかったメニューも入れる） */
   var prevAll = all.filter(function (it) { return kindOk(it) && catOk(it); });
-  var tq = sum(B, 'qty'), ts = sum(B, 'sales'), pq = sum(prevAll, 'prevQty'), ps = sum(prevAll, 'prevSales');
+  var tq = sum(B, 'qty'), ts = sum(B, 'sales'), pq = sum(prevAll, 'prevQty'), ps = sum(prevAll, 'prevSales'), cq = sum(prevAll, 'cmpQty'), cs = sum(prevAll, 'cmpSales');
   var curC = cur.filter(catOk), dS = sum(curC.filter(function (it) { return it.drink; }), 'sales'), dQ = sum(curC.filter(function (it) { return it.drink; }), 'qty');
   var cS = sum(curC, 'sales'), cQ = sum(curC, 'qty');
   var BQ = B.filter(qOk);
@@ -82918,7 +82965,7 @@ function mnModel(inp) {
   };
   var rows = BQ.filter(chipOk).sort(function (a, b) { return (sorters[inp.sort] || sorters.qty)(a, b) || (b.qty - a.qty) || (a.name < b.name ? -1 : 1); });
   /* 日ごと（推移） */
-  var days = [], missDay = {};
+  var days = [], missDay = mnObj();
   missing.forEach(function (m) { missDay[m.date] = (missDay[m.date] || 0) + 1; });
   if (!r.empty) for (var d = r.from, guard = 0; d <= r.to && guard < 400; d = mnAdd(d, 1), guard++) {
     var f = 0, k = 0; B.forEach(function (it) { var v = it.day[d] || 0; if (it.drink) k += v; else f += v; });
@@ -82928,19 +82975,20 @@ function mnModel(inp) {
   var wk = chunks(r), pwk = chunks(pr);
   var inChunk = function (map, c) { var v = 0; Object.keys(map).forEach(function (dd) { if (dd >= c.from && dd <= c.to) v += map[dd]; }); return v; };
   var weekMix = wk.map(function (c) {
-    var per = {}, tq2 = 0, ts2 = 0;
+    var per = mnObj(), tq2 = 0, ts2 = 0;
     A.forEach(function (it) { var qv = inChunk(it.day, c), sv = inChunk(it.dayS, c); per[it.cat] = per[it.cat] || { q: 0, s: 0 }; per[it.cat].q += qv; per[it.cat].s += sv; tq2 += qv; ts2 += sv; });
     return { from: c.from, to: c.to, n: c.n, per: per, tq: tq2, ts: ts2 };
   });
   var top = BQ.slice().sort(function (a, b) { return (b.qty - a.qty) || (a.name < b.name ? -1 : 1); });
   return {
-    money: money, failed: failed, missing: missing, prevOk: prevOk, guests: guestsOk ? guests : null,
+    money: money, failed: failed, missing: missing, prevOk: prevOk, guests: guestsOk ? guests : null, cq: cq, cs: cs,
     all: all, cur: cur, A: A, B: B, rows: rows, top: top, catList: catList,
     stackQty: stackOf(function (c) { return c.qty; }), stackSales: stackOf(function (c) { return c.sales; }),
     tq: tq, ts: ts, pq: pq, ps: ps, tqA: tqA, tsA: tsA,
-    qChg: (prevOk && pq > 0) ? tq / pq - 1 : null, sChg: (prevOk && ps > 0) ? ts / ps - 1 : null,
+    qChg: (prevOk && pq > 0) ? cq / pq - 1 : null, sChg: (prevOk && ps > 0) ? cs / ps - 1 : null,
     drinkSales: cS ? dS / cS : null, drinkQty: cQ ? dQ / cQ : null,
-    newCount: prevOk ? B.filter(function (it) { return it.isNew; }).length : null,
+    newCount: newOk ? B.filter(function (it) { return it.isNew; }).length : null, newOk: newOk,
+    prevMissing: prevMissing, unchecked: unchecked, notYet: notYet, exCount: Object.keys(exAll).length, exIdx: exAll, nData: nData,
     uncCount: A.filter(function (it) { return it.unc; }).length,
     noPrice: money ? 0 : B.filter(function (it) { return it.priceMissing; }).length,
     days: days, weeks: wk, prevWeeks: pwk, weekMix: weekMix, inChunk: inChunk
@@ -82950,9 +82998,9 @@ function mnInput(s, J) {
   var colors = mnCatColors(J.stores.map(function (x) { return x.id; }));
   return {
     stores: J.stores.map(function (x) {
-      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {};
+      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, d = _mnCache['sales|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {};
       var dc = []; try { dc = (getKpiConfigFor(x.id).drinkCats || []).map(function (v) { return String(v).trim(); }); } catch (e) { }
-      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, at: Math.max(a.at || 0, b.at || 0, c.at || 0) };
+      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', prevSales: d.rows || [], prevSalesErr: d.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, at: Math.max(a.at || 0, b.at || 0, c.at || 0, d.at || 0) };
     }),
     r: J.r, pr: J.pr, kind: s.kind, cat: s.cat, q: s.q, chip: s.chip, sort: s.sort, allStores: s.store === 'ALL', colors: colors
   };
@@ -82972,7 +83020,7 @@ function renderMenu() {
   h += '<div class="mn-tabs" role="tablist">' + [['overview', t('概要', 'Overview')], ['items', t('メニュー別', 'By item')], ['trend', t('推移', 'Trend')], ['month', t('月の出数・原価', 'Monthly qty & cost')]].map(function (x) {
     return '<button type="button" role="tab" aria-selected="' + (s.tab === x[0] ? 'true' : 'false') + '" onclick="mnSet(\'tab\',\'' + x[0] + '\')">' + x[1] + '</button>';
   }).join('') + '</div>';
-  if (s.tab === 'month') return h + renderMenuMonth() + '</div>';
+  if (s.tab === 'month') return h + '<div class="mn-month">' + renderMenuMonth() + '</div></div>';
   h += '<div id="mn-body">' + mnBodyHtml(s) + '</div></div>';
   setTimeout(mnKick, 0);
   return h;
@@ -82980,10 +83028,11 @@ function renderMenu() {
 function mnHeadHtml(s) {
   var h = '<div class="mn-head"><div><div class="section-title">' + t('メニュー（出数）', 'Menu (items sold)') + '</div>';
   if (s.tab === 'month') return h + '<div class="section-sub">' + t('前の画面：月ごとの出数・理論原価・ABC・レシピ', 'Previous screen: monthly qty, theoretical cost, ABC, recipes') + '</div></div></div>';
-  var J = mnJobs(s), at = 0;
-  J.jobs.forEach(function (j) { var c = _mnCache[j.k]; if (c && c.at > at) at = c.at; });
+  var J = mnJobs(s), at = 0, okN = 0, doneN = 0;
+  J.jobs.forEach(function (j) { var c = _mnCache[j.k]; if (c) { doneN++; if (!c.err) { okN++; if (c.at > at) at = c.at; } } });
   h += '</div><div class="mn-head-r">';
-  if (!J.r.empty) h += '<span class="mn-pill"><i class="ti ti-check" style="color:#15803d"></i><b>' + t(mnMd(J.r.to) + '（' + mnDow(J.r.to) + '）までの数字', 'Through ' + mnMd(J.r.to) + ' (' + mnDow(J.r.to) + ')') + '</b>' + (at ? '<span style="color:var(--muted)">' + t('・読み込み ', ' · loaded ') + mnAt(at) + t('（ハワイ時間）', ' HST') + '</span>' : '') + '</span>';
+  if (!J.r.empty && J.jobs.length && doneN === J.jobs.length && !okN) h += '<span class="mn-pill" style="color:#7f1d1d"><i class="ti ti-alert-triangle"></i><b>' + t('読み込めませんでした', 'Could not load') + '</b></span>';
+  else if (!J.r.empty) h += '<span class="mn-pill"><i class="ti ti-check" style="color:#15803d"></i><b>' + t(mnMd(J.r.to) + '（' + mnDow(J.r.to) + '）までの数字', 'Through ' + mnMd(J.r.to) + ' (' + mnDow(J.r.to) + ')') + '</b>' + (at ? '<span style="color:var(--muted)">' + t('・読み込み ', ' · loaded ') + mnAt(at) + t('（ハワイ時間）', ' HST') + '</span>' : '') + '</span>';
   h += '<button type="button" class="btn btn-secondary btn-sm" onclick="mnReload()"><i class="ti ti-refresh"></i> ' + t('最新を読む', 'Reload') + '</button>';
   if (MN_RESYNC_ROLES.indexOf(curRole) >= 0) h += '<button type="button" class="btn btn-secondary btn-sm" onclick="openItemSalesOverview(getPeriod())"><i class="ti ti-cloud-search"></i> ' + t('取り込みの状況', 'Import status') + '</button>';
   return h + '</div></div>';
@@ -83009,7 +83058,6 @@ function mnFilterHtml(s) {
 }
 function mnSet(k, v) {
   var s = mnState();
-  if (k === 'store' && s.store !== v) { s.cat = ''; s.sel = ''; s.pick = ''; }
   if (k === 'per' && v === 'custom' && !s.from) { var y = mnAdd(bizToday(), -1); s.from = mnAdd(y, -6); s.to = y; }
   if (k === 'per' || k === 'from' || k === 'to' || k === 'kind') { s.sel = ''; s.pick = ''; s.showAll = false; }
   if (k === 'chip' || k === 'sort') s.showAll = false;
@@ -83045,7 +83093,12 @@ function mnBodyHtml(s) {
   var h = note;
   if (J.r.cut) h += '<div class="mn-note">' + t('任意の期間は ' + MN_MAX_DAYS + ' 日までです（' + mnRangeLabel(J.r) + ' にしました）。', 'Custom periods are up to ' + MN_MAX_DAYS + ' days (showing ' + mnRangeLabel(J.r) + ').') + '</div>';
   if (M.failed.length) h += '<div class="mn-banner mn-bad"><i class="ti ti-alert-triangle"></i><span><b>' + t('読み込めなかった店があります', 'Some stores could not be loaded') + '</b>' + t('（', ' (') + M.failed.map(function (x) { return escapeHtml(x.name); }).join(t('、', ', ')) + t('）。', '). ') + t('この店を除いた数字です。', 'Numbers exclude these stores.') + '</span><button type="button" class="btn btn-secondary btn-sm" onclick="mnReload()">' + t('もう一度読む', 'Try again') + '</button></div>';
-  if (!M.prevOk) h += '<div class="mn-note">' + t('比べる期間の出数を読めなかった店があるので、増減・新しいメニューは出していません。', 'The comparison period could not be loaded, so changes and new items are not shown.') + '</div>';
+  var nm = function (list) { var o = mnObj(), out = []; list.forEach(function (x) { var n = x.name || x.id; if (!o[n]) { o[n] = 1; out.push(escapeHtml(n)); } }); return out.join(t('、', ', ')); };
+  if (M.unchecked.length) h += '<div class="mn-note">' + t('売上の行を読めなかった店（' + nm(M.unchecked) + '）は、出数の入っていない日を確かめられていません。増減も出していません。', 'Sales rows could not be loaded for ' + nm(M.unchecked) + ', so missing days were not checked and changes are not shown.') + '</div>';
+  if (!M.prevOk && !M.unchecked.length) h += '<div class="mn-note">' + t('比べる期間の出数を読めなかった店があるので、増減・新しいメニューは出していません。', 'The comparison period could not be loaded, so changes and new items are not shown.') + '</div>';
+  if (M.prevMissing.length) h += '<div class="mn-note">' + t('比べる期間（' + mnRangeLabel(J.pr) + '）にも出数の入っていない日があります（' + M.prevMissing.slice(0, 3).map(function (m) { return escapeHtml(m.name) + '・' + mnMd(m.date); }).join('、') + (M.prevMissing.length > 3 ? ' ほか' : '') + '）。「新しい」は出さず、増減はその日と今の期間の同じ日を両方から除いて比べています。', 'The comparison period (' + mnRangeLabel(J.pr) + ') also has days without items (' + M.prevMissing.slice(0, 3).map(function (m) { return escapeHtml(m.name) + ' ' + mnMd(m.date); }).join(', ') + '). "New" is not shown, and changes leave out those days on both sides.') + '</div>';
+  else if (M.exCount && M.prevOk) h += '<div class="mn-note">' + t('増減は、出数の入っていない日と比べる期間の同じ日を両方から除いて比べています。', 'Changes leave out the days without items, and the same days of the comparison period.') + '</div>';
+  if (M.notYet.length) h += '<div class="mn-note">' + t(mnMd(J.r.to) + ' の売上・出数の行がまだ無い店：' + nm(M.notYet) + '（定休日なら問題ありません。取り込みのあとで「最新を読む」）', 'No sales or item rows yet for ' + mnMd(J.r.to) + ': ' + nm(M.notYet) + ' (fine if closed; use Reload after the import).') + '</div>';
   if (M.missing.length) {
     var ns = {}; M.missing.forEach(function (m) { ns[m.store] = 1; });
     var ex = M.missing.slice(0, 3).map(function (m) { return escapeHtml(m.name) + '・' + mnMd(m.date); }).join(t('、', ', ')) + (M.missing.length > 3 ? t(' ほか', ' and more') : '');
@@ -83164,7 +83217,7 @@ function mnItemsHtml(M, s, J) {
       lab[x.key] = 1; placed.push([px, py]);
     });
     var cl = {}; pts.forEach(function (x) { cl[x.cat] = x.color; });
-    h += '<section class="mn-card" style="margin-bottom:12px"><div class="mn-sh"><h2 class="mn-h2">' + t('出数 vs 売価（メニューごと）', 'Qty vs price (per item)') + '</h2><span class="mn-legend">' + M.catList.filter(function (c) { return cl[c.name]; }).map(function (c) { return '<span><span class="mn-dot" style="background:' + c.color + '"></span>' + escapeHtml(mnCatName(c.name)) + '</span>'; }).join('') + '</span></div>';
+    h += '<section class="mn-card mn-scard" style="margin-bottom:12px"><div class="mn-sh"><h2 class="mn-h2">' + t('出数 vs 売価（メニューごと）', 'Qty vs price (per item)') + '</h2><span class="mn-legend">' + M.catList.filter(function (c) { return cl[c.name]; }).map(function (c) { return '<span><span class="mn-dot" style="background:' + c.color + '"></span>' + escapeHtml(mnCatName(c.name)) + '</span>'; }).join('') + '</span></div>';
     h += '<div class="mn-note" style="margin:0 0 6px">' + t('横＝平均売価・縦＝出数・点 1 つがメニュー 1 つ（' + pts.length + ' 品）。点を押すと下に出ます。', 'Horizontal = avg price, vertical = qty, one dot per item (' + pts.length + '). Tap a dot for details.') + '</div>';
     h += '<div class="mn-scw"><div class="mn-sy">' + ys.ticks.slice().reverse().map(function (v) { return '<span>' + mnQty(v) + '</span>'; }).join('') + '</div><div class="mn-sc">';
     var mxp = medX / xs.top * 100, myp = 100 - medY / ys.top * 100;
@@ -83174,7 +83227,7 @@ function mnItemsHtml(M, s, J) {
       var ix = mnRegItem(it.key), x = it.avg / xs.top * 100, y = 100 - it.qty / ys.top * 100, on = sel && sel.key === it.key;
       var tip = it.name + '：' + t('出数 ', 'qty ') + mnQty(it.qty) + '・' + t('平均売価 ', 'avg ') + mnUsd2(it.avg) + '・' + t('売上 ', 'sales ') + mnUsd(it.sales);
       h += '<button type="button" class="mn-pt' + (on ? ' on' : '') + '" style="left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%" title="' + escapeHtml(tip) + '" aria-label="' + escapeHtml(tip) + '" aria-pressed="' + (on ? 'true' : 'false') + '" onclick="mnPick(' + ix + ')"><span style="background:' + it.color + '"></span></button>';
-      if (lab[it.key]) h += '<span class="mn-ptl" style="left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%' + (x > 70 ? ';transform:translate(calc(-100% - 10px),-50%)' : '') + '">' + escapeHtml(it.name) + '</span>';
+      if (lab[it.key]) h += '<span class="mn-ptl" style="left:' + x.toFixed(2) + '%;top:' + y.toFixed(2) + '%' + (x > 55 ? ';transform:translate(calc(-100% - 10px),-50%)' : '') + '">' + escapeHtml(it.name) + '</span>';
     });
     h += '</div></div><div class="mn-sx">' + xs.ticks.map(function (v) { return '<span style="left:' + (v / xs.top * 100).toFixed(2) + '%">$' + mnQty(v) + '</span>'; }).join('') + '</div>';
     var d = sel || pts[0];
@@ -83207,7 +83260,7 @@ function mnItemsHtml(M, s, J) {
     h += '</div>';
     if (!s.showAll && all.length > list.length) h += '<div style="text-align:center;margin:10px 0"><button type="button" class="btn btn-secondary btn-sm" onclick="mnSet(\'showAll\',true)">' + t('すべて表示（' + all.length + ' 品）', 'Show all (' + all.length + ')') + '</button></div>';
   }
-  h += '<div class="mn-note">' + t('全体の割合＝そのメニューの出数 ÷ 全部の出数（区分で絞ったもの）。カテゴリーの中の割合＝そのメニューの出数 ÷ 同じカテゴリーの出数。1 日あたり＝出数 ÷ 期間の日数（' + J.r.n + ' 日）。「販売終了」はレシピで「メニューをやめる」にしたもの（この期間に出た分は数えます）。', 'Share of all = item qty ÷ total qty. Share in category = item qty ÷ category qty. Per day = qty ÷ days in the period (' + J.r.n + '). "Ended" = recipe archived (sales in the period are still counted).') + '</div>';
+  h += '<div class="mn-note">' + t('全体の割合＝そのメニューの出数 ÷ 全部の出数（区分で絞ったもの）。カテゴリーの中の割合＝そのメニューの出数 ÷ 同じカテゴリーの出数。1 日あたり＝出数 ÷ 出数のある日数（' + M.nData + ' 日）。「販売終了」はレシピで「メニューをやめる」にしたもの（この期間に出た分は数えます）。', 'Share of all = item qty ÷ total qty. Share in category = item qty ÷ category qty. Per day = qty ÷ days with items (' + M.nData + '). "Ended" = recipe archived (sales in the period are still counted).') + '</div>';
   return h;
 }
 function mnTrendHtml(M, s, J) {
@@ -83246,13 +83299,15 @@ function mnTrendHtml(M, s, J) {
   if (cur && picks.indexOf(cur) < 0) picks.push(cur);
   if (cur) {
     h += '<section class="mn-card"><div class="mn-sh"><h2 class="mn-h2">' + t('メニューごとの推移', 'Per-item trend') + '</h2><span class="mn-note" style="margin:0">' + t('週ごと・' + escapeHtml(J.pr.label.replace(/より$/, '')) + 'と比べる', 'Weekly, ' + escapeHtml(J.pr.label)) + '</span></div><div class="mn-chips">' + picks.map(function (it) { var ix = mnRegItem(it.key); return '<button type="button" class="mn-chip" aria-pressed="' + (it === cur ? 'true' : 'false') + '" onclick="mnTrendPick(' + ix + ')">' + escapeHtml(it.name) + '</button>'; }).join('') + '</div>';
-    var rowsW = M.weeks.map(function (w, i) { var pw = M.prevWeeks[i]; return { w: w, now: M.inChunk(cur.day, w), prev: (pw && M.prevOk) ? M.inChunk(cur.prevDay, pw) : null }; });
+    /* 出数の入っていない日（どちらかの期間）を含む 7 日は増減を出さない */
+    var exIn = function (w) { var a = mnDays(J.r.from, w.from) - 1, b = mnDays(J.r.from, w.to) - 1; for (var k = a; k <= b; k++) if (M.exIdx[k]) return true; return false; };
+    var rowsW = M.weeks.map(function (w, i) { var pw = M.prevWeeks[i]; return { w: w, now: M.inChunk(cur.day, w), prev: (pw && M.prevOk) ? M.inChunk(cur.prevDay, pw) : null, gap: exIn(w) }; });
     var mxw = 1; rowsW.forEach(function (x) { mxw = Math.max(mxw, x.now, x.prev || 0); });
     h += '<div class="mn-wks">' + rowsW.map(function (x) {
-      var c = (x.prev != null && x.prev > 0) ? x.now / x.prev - 1 : null;
+      var c = (!x.gap && x.prev != null && x.prev > 0) ? x.now / x.prev - 1 : null;
       return '<div class="mn-card mn-wkc"><div class="mn-note" style="margin:0">' + mnRangeLabel(x.w) + (x.w.n < 7 ? t('（' + x.w.n + ' 日）', ' (' + x.w.n + 'd)') : '') + '</div><div><b style="font-size:20px">' + mnQty(x.now) + '</b> <span class="mn-note" style="margin:0">' + t('前 ', 'prev ') + (x.prev == null ? '—' : mnQty(x.prev)) + '</span></div>' +
         '<div class="mn-wkb"><span>' + t('今', 'Now') + '</span><span class="mn-bar"><span style="width:' + (x.now / mxw * 100).toFixed(1) + '%;background:' + cur.color + '"></span></span></div><div class="mn-wkb"><span>' + t('前', 'Prev') + '</span><span class="mn-bar"><span style="width:' + ((x.prev || 0) / mxw * 100).toFixed(1) + '%;background:' + MN_OTHER + '"></span></span></div>' +
-        '<div style="font-size:12px;font-weight:600;color:' + mnChgColor(c) + '">' + mnChg(c) + '</div></div>';
+        '<div style="font-size:12px;font-weight:600;color:' + mnChgColor(c) + '">' + mnChg(c) + (x.gap ? '<span class="mn-note" style="margin:0;font-weight:400">' + t('（出数の入っていない日あり）', ' (missing days)') + '</span>' : '') + '</div></div>';
     }).join('') + '</div><div class="mn-note">' + t('「前」は ' + escapeHtml(mnRangeLabel(J.pr)) + ' を同じように 7 日ずつ分けたもの。', '"Prev" is ' + escapeHtml(mnRangeLabel(J.pr)) + ', split into 7-day blocks the same way.') + '</div></section>';
   }
   return h;
@@ -83262,17 +83317,24 @@ async function mnResync() {
   if (MN_RESYNC_ROLES.indexOf(curRole) < 0) { showToast(t('この操作はGM・経理・CEOのみです', 'GM, accounting or CEO only'), 'warning'); return; }
   var s = mnState(), J = mnJobs(s), M = mnModel(mnInput(s, J)), today = bizToday();
   if (!M.missing.length) { showToast(t('取り直す日はありません', 'Nothing to re-import'), 'info'); return; }
-  var by = {}; M.missing.forEach(function (m) { var back = mnDays(m.date, today) - 1; by[m.store] = Math.max(by[m.store] || 0, back); });
-  var old = Object.keys(by).filter(function (k) { return by[k] > 35; });
+  if (_mnResyncBusy) { showToast(t('取り直しの途中です', 'Already re-importing'), 'info'); return; }
+  /* 今日から何日前まで取り直すか（Toast の取り直しが今日を含むか分からないので 1 日足す。35 日まで＝v1031 と同じ） */
+  var by = mnObj(), old = 0;
+  M.missing.forEach(function (m) { var need = mnDays(m.date, today); if (need > 35) { old++; return; } by[m.store] = Math.max(by[m.store] || 0, need); });
   var ids = Object.keys(by), okD = 0, ngD = 0, err = '';
+  if (!ids.length) { showToast(t('35 日より前の日は「期間一括の取り込み」で取り直してください', 'Days older than 35 days need the bulk import'), 'warning'); return; }
+  if (typeof confirm === 'function' && !confirm(t('Toast から ' + ids.length + ' 店の出数を取り直します（数分かかることがあります）。よろしいですか？', 'Re-import items sold from Toast for ' + ids.length + ' store(s)? This can take a few minutes.'))) return;
+  _mnResyncBusy = true;
+  try {
   for (var i = 0; i < ids.length; i++) {
     var st = J.stores.filter(function (x) { return x.id === ids[i]; })[0]; if (!st) continue;
-    var total = Math.min(35, Math.ceil(Math.max(1, by[ids[i]]) / 7) * 7);
+    var total = Math.min(35, Math.ceil(by[ids[i]] / 7) * 7);
     showToast(t('Toastから取得中… ', 'Importing from Toast… ') + (st.name || st.id) + '（' + (i + 1) + '/' + ids.length + '）', 'info');
     try { var rr = await fvResyncItemSalesChunked(st.toastGuid, { chunk: 7, total: total }); okD += rr.okDays; ngD += rr.failDays; if (rr.lastErr && !err) err = rr.lastErr; }
     catch (e) { ngD++; if (!err) err = String(e).slice(0, 120); }
   }
-  showToast(t(okD + ' 日分を取り込みました', 'Imported ' + okD + ' day(s)') + (ngD ? t('・失敗 ' + ngD + ' 日', ', failed ' + ngD) : '') + (err ? '（' + err + '）' : '') + (old.length ? t('。35 日より前の日は「期間一括の取り込み」で', '. Days older than 35 days need the bulk import') : ''), ngD ? 'warning' : 'success');
+  } finally { _mnResyncBusy = false; }
+  showToast(t(okD + ' 日分を取り込みました', 'Imported ' + okD + ' day(s)') + (ngD ? t('・失敗 ' + ngD + ' 日', ', failed ' + ngD) : '') + (err ? '（' + err + '）' : '') + (old ? t('。35 日より前の日は「期間一括の取り込み」で', '. Days older than 35 days need the bulk import') : ''), ngD ? 'warning' : 'success');
   mnReload();
 }
 /* v1126：前の画面（月の出数・理論原価・ABC・レシピ）。「月の出数・原価」のタブで出す（中身は v1125 と同じ） */

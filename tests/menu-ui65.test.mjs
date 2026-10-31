@@ -58,6 +58,7 @@ const prevB = () => [R('2026-09-04', 'salmon-B', 'Salmon bowl', 5)];
 const salesA = () => [{ business_date: '2026-10-01', net_sales: 900, guest_count: 50 }, { business_date: '2026-10-12', net_sales: 800, guest_count: 40 },   // 10/12: sales but no item rows
   { business_date: '2026-10-13', net_sales: 0, guest_count: 0 }];
 const salesB = () => [{ business_date: '2026-10-04', net_sales: 300, guest_count: 20 }];
+const prevSalesA = () => [{ business_date: '2026-09-01', net_sales: 500, guest_count: 30 }, { business_date: '2026-09-05', net_sales: 400, guest_count: 30 }, { business_date: '2026-09-06', net_sales: 300, guest_count: 30 }];
 
 function app(opts = {}) {
   const c = {
@@ -65,7 +66,8 @@ function app(opts = {}) {
     FETCHES: [], RENDERS: [], TOASTS: [], ROWS: opts.rows || {}, FAIL: opts.fail || {},
     curRole: opts.role || 'gm', curStore: opts.curStore || 'ALL', curLang: opts.lang || 'ja', curPage: 'menu',
     SUPABASE_URL: 'https://example.invalid', SUPABASE_ANON: 'anon',
-    DRINK: { F01: ['Drink'], F02: ['Drink'] },
+    DRINK: opts.drink || { F01: ['Drink'], F02: ['Drink'] },
+    REAL_TIMERS: opts.realTimers ? { set: setTimeout, clear: clearTimeout } : null, AbortController,
   };
   vm.createContext(c);
   vm.runInContext(fnFrom(source, 'recipeInStore') + '\n' + `
@@ -84,7 +86,7 @@ function app(opts = {}) {
     async function fvResyncItemSalesChunked(guid, o){ FETCHES.push({ resync: guid, o: o }); return { okDays: 7, failDays: 0, lastErr: '' }; }
     var document = { activeElement: null, getElementById: function(){ return null; }, body: { classList: { toggle: function(){} } } };
     var window = {};
-    function setTimeout(f){ return 0; } function clearTimeout(){}
+    var setTimeout = REAL_TIMERS ? REAL_TIMERS.set : function(f){ return 0; }, clearTimeout = REAL_TIMERS ? REAL_TIMERS.clear : function(){};
     async function fetch(url, init){
       FETCHES.push({ url: url, method: (init && init.method) || 'GET' });
       var u = String(url);
@@ -103,6 +105,8 @@ const rowsFor = (c) => ({
   'toast_item_sales?restaurant_guid=eq.gB&business_date=gte.2026-09-01&business_date=lte.2026-09-29': prevB(),
   'toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01&business_date=lte.2026-10-29': salesA(),
   'toast_sales?restaurant_guid=eq.gB&business_date=gte.2026-10-01&business_date=lte.2026-10-29': salesB(),
+  'toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01&business_date=lte.2026-09-29': prevSalesA(),
+  'toast_sales?restaurant_guid=eq.gB&business_date=gte.2026-09-01&business_date=lte.2026-09-29': [{ business_date: '2026-09-04', net_sales: 200, guest_count: 10 }],
 });
 async function loaded(opts = {}) {
   const c = app(Object.assign({ rows: rowsFor() }, opts));
@@ -177,12 +181,22 @@ test('totals, category shares, average price and the comparison come from the sa
 
 test('an amount column, when the table has one, is used for sales instead of qty × price', async () => {
   const rows = rowsFor();
-  const k = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01&business_date=lte.2026-10-29';
+  const k = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01&business_date=lte.2026-10-29', kp = k.replace('gte.2026-10-01&business_date=lte.2026-10-29', 'gte.2026-09-01&business_date=lte.2026-09-29');
   rows[k] = rows[k].map(r => Object.assign({}, r, { net_sales: r.qty * 1.5 }));
-  const c = await loaded({ rows, state: { store: 'F01' } });
-  const { M } = model(c);
+  rows[kp] = rows[kp].map(r => Object.assign({}, r, { net_sales: r.qty * 1.5 }));
+  let c = await loaded({ rows, state: { store: 'F01' } });
+  let M = model(c).M;
   assert.equal(M.money, 'net_sales');
   assert.equal(M.ts, 57 * 1.5); assert.equal(M.noPrice, 0);
+  // one row without an amount: the column is not used (an empty amount is never counted as $0)
+  rows[k] = rows[k].map((r, i) => i === 3 ? Object.assign({}, r, { net_sales: null }) : r);
+  c = await loaded({ rows, state: { store: 'F01' } });
+  M = model(c).M;
+  assert.equal(M.money, ''); assert.equal(M.ts, 20 * 20 + 20 * 4 + 6 * 8 + 2 * 18 + 3 * 3);
+  // names that may be a quantity are not taken as money
+  const rows2 = rowsFor(); rows2[k] = rows2[k].map(r => Object.assign({}, r, { amount: r.qty, sales: r.qty })); rows2[kp] = rows2[kp].map(r => Object.assign({}, r, { amount: r.qty, sales: r.qty }));
+  c = await loaded({ rows: rows2, state: { store: 'F01' } });
+  assert.equal(model(c).M.money, '');
 });
 
 test('all stores join the same menu by name; one store keeps each Toast item apart', async () => {
@@ -286,4 +300,101 @@ test('the previous monthly screen is unchanged and both page renderers widen the
   assert.equal((source.match(/document\.body\.classList\.toggle\('mn-wide', page === 'menu'/g) || []).length, 2);
   const av = /const APP_VERSION = '(\d+)'/.exec(source)[1], sv = /const SW_BUILD = '(\d+)'/.exec(sw)[1];
   assert.equal(av, sv); assert.ok(Number(av) >= 1126);
+});
+
+test('days without item rows in either period are left out of the comparison on both sides; "new" is not shown when the comparison period has gaps', async () => {
+  // current period: 10/12 has sales but no items (Store A). Comparison: 9/12 then must not count either.
+  const rows = rowsFor();
+  const kp = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01&business_date=lte.2026-09-29';
+  rows[kp] = rows[kp].concat([R('2026-09-12', 'salmon-A', 'Salmon bowl', 100), R('2026-09-12', 'tea-all', 'Tea', 4)]);
+  let c = await loaded({ rows, state: { store: 'F01' } });
+  let M = model(c).M;
+  const salmon = M.cur.find(it => it.key === 'salmon-A');
+  assert.equal(salmon.prevQty, 16, '9/12 (the same day as the missing 10/12) is left out of the comparison');
+  assert.equal(M.pq, 47);
+  assert.equal(M.exCount, 1); assert.equal(M.newOk, true);
+  assert.equal(M.cur.find(it => it.name === 'Tea').isNew, false, 'Tea was sold last month (on the left-out day), so it is not new');
+  assert.equal(M.cur.find(it => it.name === 'Tea').chg, null, 'and there is nothing left to compare it with');
+  // comparison period: 9/20 had sales but no item rows → 10/20 is left out on the current side, "new" is not shown
+  const ps = 'toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01&business_date=lte.2026-09-29';
+  rows[ps] = prevSalesA().concat([{ business_date: '2026-09-20', net_sales: 999, guest_count: 9 }]);
+  c = await loaded({ rows, state: { store: 'F01' } });
+  M = model(c).M;
+  const s2 = M.cur.find(it => it.key === 'salmon-A');
+  assert.equal(s2.qty, 20, 'the current total keeps every day');
+  assert.equal(s2.cmpQty, 15, '10/20 (5) is left out of the comparison');
+  assert.ok(Math.abs(s2.chg - (15 / 16 - 1)) < 1e-9);
+  assert.deepEqual(M.prevMissing.map(m => m.date), ['2026-09-20']);
+  assert.equal(M.newOk, false); assert.equal(M.newCount, null); assert.ok(M.cur.every(it => !it.isNew));
+  assert.ok(Math.abs(M.qChg - (M.cq / M.pq - 1)) < 1e-9); assert.equal(M.cq, 57 - 5);
+  const h = vm.runInContext('mnBodyHtml(mnState())', c);
+  assert.match(h, /比べる期間（9\/1〜9\/29）にも出数の入っていない日があります/);
+  // a comparison period whose sales could not be read: no changes, no "new"
+  c = await loaded({ state: { store: 'F01' }, fail: { 'toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01': 1 } });
+  M = model(c).M;
+  assert.equal(M.prevOk, false); assert.equal(M.qChg, null); assert.equal(M.newCount, null);
+  // current sales could not be read: missing days are not checked, so changes are not shown and the screen says so
+  c = await loaded({ state: { store: 'F01' }, fail: { 'toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01': 1 } });
+  M = model(c).M;
+  assert.deepEqual(M.unchecked.map(x => x.id), ['F01']); assert.equal(M.qChg, null); assert.equal(M.missing.length, 0);
+  assert.match(vm.runInContext('mnBodyHtml(mnState())', c), /出数の入っていない日を確かめられていません/);
+});
+
+test('this month against a shorter last month says which days it compares and drops the days last month does not have', async () => {
+  const c = app();
+  const lab = JSON.parse(vm.runInContext(`JSON.stringify(mnPrevRange('month', mnRange('month', '', '', '2026-03-31')))`, c));
+  assert.equal(lab.label, '先月（2/1〜2/28）より');
+  assert.equal(JSON.parse(vm.runInContext(`JSON.stringify(mnPrevRange('month', mnRange('month', '', '', '2026-10-30')))`, c)).label, '先月の同じ日数より');
+  const M = JSON.parse(vm.runInContext(`JSON.stringify(mnModel({ stores: [{ id: 'F01', name: 'A', rows: [{ business_date: '2026-03-30', item_guid: 'x', item_name: 'X', qty: 9 }, { business_date: '2026-03-02', item_guid: 'x', item_name: 'X', qty: 1 }], prevRows: [{ business_date: '2026-02-02', item_guid: 'x', item_name: 'X', qty: 2 }], sales: [], prevSales: [], recipes: {}, drinkCats: [] }],
+    r: mnRange('month', '', '', '2026-03-31'), pr: mnPrevRange('month', mnRange('month', '', '', '2026-03-31')), kind: 'all', cat: '', q: '', chip: 'all', sort: 'qty', allStores: false, colors: mnCatColors(['F01']) }))`, c));
+  const x = M.cur[0];
+  assert.equal(x.qty, 10); assert.equal(x.cmpQty, 1, '3/30 has no day in February'); assert.ok(Math.abs(x.chg - (1 / 2 - 1)) < 1e-9);
+});
+
+test('a request that never answers ends after the time limit and the store is shown as not loaded (the screen does not stay "loading")', async () => {
+  const c = app({ rows: rowsFor(), realTimers: true });
+  vm.runInContext(`MN_FETCH_MS = 30; window._mn = { store: 'F01' }; mnState();
+    var _f = fetch; fetch = function(url, init){ if (String(url).indexOf('toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01') >= 0) return new Promise(function(){}); return _f(url, init); };`, c);
+  await vm.runInContext('mnRun(mnJobs(mnState()).jobs)', c);
+  const st = JSON.parse(vm.runInContext(`JSON.stringify(mnJobs(mnState()).jobs.map(function(j){ return [j.k, !!_mnCache[j.k], (_mnCache[j.k] || {}).err || ''] }))`, c));
+  assert.ok(st.every(x => x[1]), 'every job finished');
+  assert.ok(st.some(x => x[2] === 'timeout'));
+  assert.doesNotMatch(vm.runInContext('mnBodyHtml(mnState())', c), /読み込んでいます/);
+});
+
+test('two stores with the same Toast restaurant are read and counted once; drink categories match without case; odd category names do not break', async () => {
+  let c = await loaded({ stores: [{ id: 'F01', name: 'Store A', toastGuid: 'gA' }, { id: 'F01X', name: 'Store A copy', toastGuid: 'gA' }], state: { store: 'ALL' } });
+  assert.deepEqual([...vm.runInContext('mnJobs(mnState()).stores.map(function(x){ return x.id; })', c)], ['F01']);
+  assert.equal(model(c).M.tq, 57);
+  c = await loaded({ state: { store: 'F01' }, drink: { F01: ['drink'] } });
+  assert.equal(model(c).M.cur.find(it => it.name === 'Beer').drink, true);
+  const rec = JSON.parse(JSON.stringify(RECIPES)); rec[0].category = '__proto__'; rec[1].category = 'constructor';
+  c = await loaded({ state: { store: 'F01' }, recipes: rec });
+  const M = model(c).M;
+  assert.ok(M.catList.some(x => x.name === '__proto__' && x.qty === 20)); assert.ok(M.catList.some(x => x.name === 'constructor' && x.qty === 20));
+  assert.equal(M.catList.reduce((a, x) => a + x.qty, 0), M.tqA);
+  assert.equal(vm.runInContext('({}).polluted', c), undefined);
+});
+
+test('changing the store (also from the top bar) drops the category and the picked menu of the previous store', async () => {
+  const c = await loaded({ state: { store: 'F01' } });
+  vm.runInContext(`window._mn.cat = 'Bowl'; window._mn.sel = 'salmon-A'; window._mn.pick = 'salmon-A'; mnState();`, c);
+  c.STORES.splice(0, 1);   // the top bar switched to another store: Store A is no longer visible
+  vm.runInContext('mnState()', c);
+  const s = JSON.parse(vm.runInContext('JSON.stringify(window._mn)', c));
+  assert.notEqual(s.store, 'F01'); assert.equal(s.cat, ''); assert.equal(s.sel, ''); assert.equal(s.pick, '');
+});
+
+test('re-import runs once at a time and does not call Toast for days older than 35 days', async () => {
+  let c = await loaded({ state: { store: 'F01' } });
+  vm.runInContext('_mnResyncBusy = true', c);
+  await vm.runInContext('mnResync()', c);
+  assert.equal(c.FETCHES.filter(f => f.resync).length, 0);
+  assert.match(c.TOASTS.map(x => x[0]).join(' '), /取り直しの途中です/);
+  const rows = rowsFor(); rows['toast_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01&business_date=lte.2026-09-30'] = [];
+  c = await loaded({ rows, state: { store: 'F01', per: 'custom', from: '2026-09-01', to: '2026-09-20' } });
+  vm.runInContext(`_mnCache['sales|gA|2026-09-01|2026-09-20'] = { rows: [{ business_date: '2026-09-10', net_sales: 100, guest_count: 1 }], at: 1 }; _mnCache['items|gA|2026-09-01|2026-09-20'] = { rows: [], at: 1 };`, c);
+  await vm.runInContext('mnResync()', c);
+  assert.equal(c.FETCHES.filter(f => f.resync).length, 0, '9/10 is 50 days back');
+  assert.match(c.TOASTS.map(x => x[0]).join(' '), /期間一括の取り込み/);
 });
