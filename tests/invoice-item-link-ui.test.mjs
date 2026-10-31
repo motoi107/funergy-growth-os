@@ -46,7 +46,7 @@ function app({ role = 'chef', signed = true, data = null, api = null, lang = 'ja
   const c = {
     calls: [], toasts: [], modals: [], renders: 0, curLang: lang, curRole: role, curPage: 'ingredient_master', window: { _ingTab: 'link' },
     escapeHtml: esc, t: (ja, en) => (c.curLang === 'en' ? en : ja),
-    ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), getIngredients: () => MASTER(),
+    ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), getIngredients: () => { c.ingReads = (c.ingReads || 0) + 1; return MASTER(); },
     storesUsingIngredient: code => Object.keys(mem.store_ingredients).filter(k => mem.store_ingredients[k].includes(Number(code))),
     showToast: (m, k) => c.toasts.push([m, k]),
     openModal: h => { c.modals.push(h); }, closeModalDirect: () => {},
@@ -306,7 +306,8 @@ test('まとめて (v1128): grouped by vendor, a suggestion per row, other vendo
   const tare = 'vo|a:unagi kabayaki tare 1.8l|';
   assert.equal(c.fn(`ilkState(ilkItem('${tare}'))`), 'none');
   assert.equal(c.fn(`ilkChosen(ilkItem('${tare}'))`), '600133');
-  assert.match(h, /<span class="ilk-tag">ほかの仕入先<\/span>/);
+  assert.match(h, /<span class="ilk-tag">ほかの仕入先の品目<\/span>/);
+  assert.equal(c.fn(`ilkClean(ilkItem('${tare}'))`), false, "another vendor's item is a mark: not among the unmarked (review P2-4)");
   assert.match(h, /ほかの仕入先・名前が近い/);
   assert.equal(c.fn(`ilkChosen(ilkItem('vo|a:mystery box|'))`), '');
   const tie = 'vo|a:sour cream avocado oil|';
@@ -404,6 +405,76 @@ test('まとめて (v1128): a tick does not redraw the page; marks go in hundred
   assert.match(h, /<b>3 items chosen<\/b>/);
   assert.match(h, /Mark as new items/);
   assert.match(h, /Select all 3 items in this list/);
+});
+
+
+test('まとめて (v1128): review fixes — the master read once per draw, codes not in the master, shared name mappings, weak other-vendor matches, the stock-list view, one vendor per call', async () => {
+  const shared = { id: 'm-9', version: 2, ingredient_code: '10003', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '', by_name: true };
+  const items = [
+    ...ITEMS(),
+    // a mapping candidate whose code is no longer in the master: not chosen, not linkable (review P2-2)
+    item('vz|a:old code|', 'vz', { alias_key: 'old code', names: [['QQ OLD THING', 1]], link: { id: 'm-3', version: 1, ingredient_code: '999001', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'old code', spec_key: '' }, links: 1 }),
+    // one name mapping used by two items (review P2-3)
+    item('va|a:avocado, 48s usa|', 'va', { alias_key: 'avocado, 48s usa', names: [['Avocado, 48s USA', 9]], n: 9, link: shared, links: 1 }),
+    item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 2]], link: shared, links: 1 }),
+    // a weak match of another vendor's one-word item (review P2-4): offered, not chosen
+    item('vo|a:avocado smash pack|', 'vo', { alias_key: 'avocado smash pack', names: [['AVOCADO SMASH PACK', 1]] }),
+  ];
+  let c = app({ data: { role: 'office', items, vendors: vendorsPlus(), people: {} } });
+  await loaded(c);
+  // P2-1: drawing reads the master once; ticking does not read it
+  c.ingReads = 0; c.fn(`ilkSet('filter','check')`); c.page();
+  assert.ok(c.ingReads <= 1, 'reads per draw: ' + c.ingReads);
+  c.ingReads = 0; c.fn(`ilkTick('va|c:777', true)`); c.fn(`ilkTick('va|c:777', false)`); c.fn('ilkBarState()');
+  assert.equal(c.ingReads, 0);
+  // P2-2
+  assert.equal(c.fn(`ilkChosen(ilkItem('vz|a:old code|'))`), '');
+  assert.ok(!c.fn(`ilkCandsFor(ilkItem('vz|a:old code|'))`).some(x => x.c.code === '999001'));
+  let h = c.page();
+  assert.match(h, /対応表の候補のコード 999001 は今のマスターに無い/);
+  c.fn(`ilkTick('vz|a:old code|', true)`);
+  assert.equal(c.fn('ilkBulkRows()').length, 0);
+  c.fn('ilkSelClear()');
+  // P2-3: choosing one item of a shared name mapping tells the other; it is not "unmarked"
+  assert.equal(c.fn(`ilkClean(ilkItem('va|c:777'))`), false);
+  assert.match(h, /名前の対応：ほかに 1 品目も一緒に変わる/);
+  c.fn(`ilkTick('va|c:777', true)`); c.fn('ilkBulkAsk()');
+  assert.match(c.modals.at(-1), /選んでいない品目も一緒に変わります：<span class="ilk-mono" style="font-size:11.5px">Avocado, 48s USA<\/span>（9 回）/);
+  // P2-4
+  c.fn(`ilkSet('filter','none')`);
+  const weak = c.fn(`ilkCandsFor(ilkItem('vo|a:avocado smash pack|'))`);
+  assert.deepEqual(JSON.parse(JSON.stringify(weak.map(x => [x.c.code, x.other]))), [['10003', true]]);
+  assert.equal(c.fn(`ilkChosen(ilkItem('vo|a:avocado smash pack|'))`), '', 'a one-word item matched by a part of the name is not chosen first');
+  // P3-3: the compare dialog keeps "do not link" from the row
+  c.fn(`ilkChoose('vo|a:avocado smash pack|', '')`); c.fn(`ilkOpen('vo|a:avocado smash pack|')`);
+  assert.equal(c.fn('_ilk.pick.code'), '');
+  assert.match(c.modals.at(-1), /ほかの仕入先の品目（名前が近い/);
+  c.fn(`ilkChoose('vc|c:12345', '')`); c.fn(`ilkOpen('vc|c:12345')`);
+  assert.equal(c.fn('_ilk.pick.code'), '', 'even with a close suggestion of its own vendor');
+  c.fn(`ilkChoose('vc|c:12345', '600133')`); c.fn(`ilkOpen('vc|c:12345')`);
+  assert.equal(c.fn('_ilk.pick.code'), '600133', 'the row’s choice, not the closest');
+  // P3-1: the stock-list check view has the bar
+  c.fn(`ilkShowCode('600126')`); h = c.page();
+  assert.match(h, /id="ilk-act"/);
+  c.fn(`ilkSelectAll('all')`);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.fn('ilkSelRows()').map(x => x.id))), ['vc|c:12345']);
+  // P3-7: links of two vendors go in two calls, one vendor each
+  c = app({ data: { role: 'office', items: ITEMS(), vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSelectAll('clean')`);
+  const vks = c.fn('ilkBulkRows()').map(x => x.vendor_key);
+  assert.ok(new Set(vks).size >= 2, vks.join());
+  c.fn('ilkBulkAsk()'); await c.fn('ilkBulkGo()'); await c.run();
+  const saves = c.calls.filter(x => x.action === 'link_save');
+  assert.equal(saves.length, new Set(vks).size);
+  assert.ok(saves.every(x => new Set(x.links.map(l => l.vendor_key)).size === 1));
+  // P3-4: one chosen item beyond "show more" is marked after the dialog
+  const many = Array.from({ length: 60 }, (_, i) => item(`vo|a:yy${i}|`, 'vo', { alias_key: 'yy' + i, names: [['QQYY ' + i, 1]] }));
+  c = app({ data: { role: 'chef', items: many, vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','none')`);
+  const last = c.fn('ilkFiltered()').at(-1).id;
+  c.fn(`ilkTick(${JSON.stringify(last)}, true)`);
+  const m0 = c.modals.length; c.fn(`ilkMarkAsk('later')`);
+  assert.equal(c.modals.length, m0 + 1);
 });
 
 // ---------------------------------------------------------------- end to end: the screen against the real handler and SQL
