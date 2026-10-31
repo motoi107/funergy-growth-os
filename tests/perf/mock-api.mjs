@@ -162,7 +162,7 @@ export function createMock(data) {
   function fn(name, body) {
     let p = {}; try { p = JSON.parse(body || '{}'); } catch (e) { }
     switch (name) {
-      case 'auth-pin': return p.action === 'verify' ? json(200, { ok: true, token: 'perf-session' }) : json(200, { ok: true });
+      case 'auth-pin': return p.action === 'verify' ? (String(p.pin) === '9999' ? json(200, { ok: false }) : json(200, { ok: true, token: 'perf-session' })) : json(200, { ok: true });   // v1127：9999 は「違う PIN」
       case 'emp-private': return json(200, { ok: true, private: {} });
       case 'hyper-worker': { const until = Date.now() + opts.toastDelay; return Object.assign(json(200, { ok: true, saved: 0, rows: [] }), { waitUntil: until, kind: 'toast' }); }
       default: return json(200, { ok: false, error: 'not_configured' });

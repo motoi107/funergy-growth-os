@@ -21,6 +21,7 @@ let RTT = Number(process.env.RTT_MS || 0);        // 応答ごとの往復の遅
 let BPS = Number(process.env.BPS || 0);           // 回線の帯域（バイト/秒）。0 は無制限
 let mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8')));
 let delays = {};   // 要求の道ごとの遅れ（e2e-check.mjs）
+let wfail = {};    // v1127：書き込みをわざと失敗させる（ux-check.mjs）
 let log = [], t0 = Date.now();
 // 返している途中の要求（終わってから log に入るので、大きな応答の途中を「止まった」と見ないため）
 const inflight = new Map(); let inflightId = 0;
@@ -86,7 +87,7 @@ const appServer = http.createServer(async (req, res) => {
     RTT = Number(u.searchParams.get('rtt') ?? RTT); BPS = Number(u.searchParams.get('bps') ?? BPS);
     res.writeHead(200); res.end(JSON.stringify({ RTT, BPS })); return;
   }
-  if (u.pathname === '/__reset') { mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); delays = {}; res.writeHead(200); res.end('ok'); return; }
+  if (u.pathname === '/__reset') { mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); delays = {}; wfail = {}; res.writeHead(200); res.end('ok'); return; }
   // 別の端末が保存したつもりで、クラウドの行を変える（e2e-check.mjs）
   if (u.pathname === '/__mutate') {
     const T = mock.T.app_state, at = new Date().toISOString(), changed = [];
@@ -115,6 +116,8 @@ const appServer = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r ? { key, updated_at: r.updated_at, day: day && r.value && !Array.isArray(r.value) ? r.value[day] || null : undefined, note: Array.isArray(r.value) ? r.value[0].note || null : undefined } : null)); return;
   }
   if (u.pathname === '/__index') { process.env.HAS_INDEX = u.searchParams.get('on') === '0' ? '0' : '1'; mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); res.writeHead(200); res.end(process.env.HAS_INDEX); return; }   // SQL の関数がある／無い
+  // v1127：書き込みをわざと失敗させる（path の POST・PATCH を n 回、status で返す）。保存の知らせ・送信待ちの確かめ用
+  if (u.pathname === '/__wfail') { wfail[u.searchParams.get('path') || '/rest/v1/app_state'] = { n: Number(u.searchParams.get('n') || 1), status: Number(u.searchParams.get('status') || 503) }; res.writeHead(200); res.end(JSON.stringify(wfail)); return; }
   if (u.pathname === '/__delay') { delays[u.searchParams.get('path')] = Number(u.searchParams.get('ms') || 0); res.writeHead(200); res.end('ok'); return; }
   let p = decodeURIComponent(u.pathname); if (p.endsWith('/')) p += 'index.html';
   const file = path.join(APP_DIR, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
@@ -142,6 +145,8 @@ const ext = https.createServer({ key: fs.readFileSync(path.join(CERT, 'key.pem')
     const chunks = []; for await (const c of req) chunks.push(c);
     const body = Buffer.concat(chunks).toString('utf8');
     if (delays[u.pathname]) await new Promise(r => setTimeout(r, delays[u.pathname]));
+    const wf = wfail[u.pathname];
+    if (wf && wf.n > 0 && (req.method === 'POST' || req.method === 'PATCH')) { wf.n--; await reply(req, res, wf.status, { 'content-type': 'application/json' }, Buffer.from('{"message":"injected failure"}'), 'api'); return; }
     let wkeys = null;   // 書いた行のキーだけ（中身は記録しない）
     if (req.method === 'POST' && u.pathname === '/rest/v1/app_state') { try { const j = JSON.parse(body); wkeys = (Array.isArray(j) ? j : [j]).map(x => x.key); } catch (e) { } }
     let r;
