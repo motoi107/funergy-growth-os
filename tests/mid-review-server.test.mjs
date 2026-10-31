@@ -282,7 +282,7 @@ test('email sign-in: no sign-in 401, anon key 401, office / office_crew / turned
   assert.match(a.ym, /^20\d{2}-\d{2}$/);
 });
 
-test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguous, turned off, revoked → refused; no verifier → 401; the body’s via / actor are ignored', async () => {
+test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguous, turned off, revoked → refused; no verifier → 503 pin_check_missing; the body’s via / actor are ignored', async () => {
   const E = await setup(); await live(E);
   const w = await E.pin('pin-E12', { action: 'whoami', via: 'email', actor: U.ceo });
   assert.equal(w.status, 200); assert.equal(w.body.role, 'staff'); assert.equal(w.body.via, 'pin'); assert.equal(w.body.emp_id, 'E12');
@@ -297,9 +297,10 @@ test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguou
   for (const tok of ['pin-throw', 'pin-junk', 'nobody', ''])
     assert.equal((await E.pin(tok, { action: 'whoami' })).status, 401, tok);
   assert.equal((await E.call({ action: 'whoami', pin_session: 'pin-E12'.repeat(700) }, {})).status, 401);
-  // An email sign-in wins over a PIN mark in the same request.
-  assert.equal((await E.call({ action: 'whoami', pin_session: 'pin-E12' }, { authorization: 'Bearer tok-gm' })).body.via, 'email');
-  assert.equal((await E.call({ action: 'whoami', pin_session: 'pin-E12' }, { authorization: 'Bearer tok-nobody' })).status, 401);   // a bad email sign-in does not fall back
+  // v1122: a PIN mark in the body decides the way in, whatever the Authorization header holds (the app sends only its anon key).
+  assert.equal((await E.call({ action: 'whoami', pin_session: 'pin-E12' }, { authorization: 'Bearer tok-gm' })).body.via, 'pin');
+  assert.equal((await E.call({ action: 'whoami', pin_session: 'pin-junk' }, { authorization: 'Bearer tok-gm' })).status, 401);   // a bad mark does not fall back to the email sign-in
+  assert.equal((await E.call({ action: 'whoami' }, { authorization: 'Bearer tok-gm' })).body.via, 'email');   // no mark: the email sign-in as before
   // A staff member who leaves (退職) is refused at once; a chef whose title changes is refused at once.
   await E.q(`update employees set status='退職' where id='E12'`);
   assert.equal((await E.pin('pin-E12', { action: 'whoami' })).status, 403);
@@ -311,9 +312,10 @@ test('PIN sign-in: the verifier’s employee finds the member; unknown, ambiguou
   assert.equal((await E.pin('pin-E10', { action: 'whoami' })).status, 200);                         // role chef also counts
   await E.q(`update employees set status='退職' where id='E10'`);
   assert.equal((await E.pin('pin-E10', { action: 'whoami' })).status, 403);
-  // Without a verifier every PIN sign-in is refused; email still works.
+  // Without a verifier every PIN sign-in is refused and says why (v1122: 503 pin_check_missing, the deploy); email still works.
   const N = await setup({ verifier: false });
-  assert.equal((await N.pin('pin-E2', { action: 'whoami' })).status, 401);
+  const nv = await N.pin('pin-E2', { action: 'whoami' });
+  assert.equal(nv.status, 503); assert.equal(nv.body.error, 'pin_check_missing');
   assert.equal((await N.api('gm', { action: 'whoami' })).status, 200);
 });
 

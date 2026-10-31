@@ -228,10 +228,13 @@ test('sign-in (v1122): the PIN login only — no email step anywhere; via and ac
   const exp = 'h.' + Buffer.from(JSON.stringify({ exp: 1000 })).toString('base64url') + '.s';
   const x = app(S, { pin: exp });
   const hx = await x.show(); assert.match(hx, /ログインの期限が切れました/); assert.equal(x.calls.length, 0); assert.doesNotMatch(hx, /メール/);
-  // The server cannot check the mark: its answer in plain words.
+  // The server does not take the mark: its answer in plain words.
+  const hb = await app(S, { pin: 'junk-mark' }).show();
+  assert.match(hb, /PIN のログインで入れませんでした（ログインの期限が切れたか、確かめられません）/); assert.doesNotMatch(hb, /メール/);
+  // The server function has no PIN check (the deploy, not the person): says so (v1125).
   const S0 = await server({ verifier: false });
   const hp = await app(S0).show();
-  assert.match(hp, /PIN のログインで入れませんでした（ログインの期限が切れたか、確かめられません）/); assert.doesNotMatch(hp, /メール/);
+  assert.match(hp, /mid-review）が PIN のログインに対応していません/); assert.doesNotMatch(hp, /メール|うまくいきませんでした/);
 });
 
 test('sign-in: a person who is not a member is told plainly; the server cannot be reached is said so', async () => {
