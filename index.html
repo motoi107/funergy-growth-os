@@ -6929,8 +6929,8 @@ function saveCashTipSides(storeId, date, lunchVal, dinnerVal) {
   var rec = Object.assign({}, prev);
   if (prev.entered && rec.lunchEntered===undefined) { rec.lunchEntered=true; rec.dinnerEntered=true; }
   var changed=false;
-  if (lunchVal!==null && lunchVal!==undefined) { rec.lunch=lunchVal; rec.lunchEntered=true; changed=true; }
-  if (dinnerVal!==null && dinnerVal!==undefined) { rec.dinner=dinnerVal; rec.dinnerEntered=true; changed=true; }
+  if (lunchVal!==null && lunchVal!==undefined) { rec.lunch=lunchVal; rec.lunchEntered=true; delete rec.lunchAuto; changed=true; }   /* v1118：人が入れたら自動の0 ではない */
+  if (dinnerVal!==null && dinnerVal!==undefined) { rec.dinner=dinnerVal; rec.dinnerEntered=true; delete rec.dinnerAuto; changed=true; }
   if (!changed) return;
   rec.entered = !!(rec.lunchEntered && rec.dinnerEntered);
   if (prev.by) { rec.editedBy = myName(); rec.editedAt = nowJP(); }
@@ -6967,23 +6967,75 @@ function cashTipCanEnter(storeId){
   if (isNoCashTipStore(storeId)) return false;
   return true;
 }
-/* キャッシュチップが未入力か（クレジットはあるのにキャッシュ未確定＝要入力） */
-function cashTipMissing(storeId, date) {
-  if (isNoCashTipStore(storeId)) return false; // 対象外店舗は常に未入力扱いしない
+/* v1118（Moto さん 10/30「キャッシュチップ：未登録を自動で0にする」）
+   ・未登録（記録が無い・片方だけ・空欄）は 0 として計算し（前から getCashTip は 0）、エラー・警告・通知・未対応の数に入れない。
+   ・保存値：サーバーの cash_tip_autofill（毎日 2 回）が、終わった営業日のうち売上・クレジットチップのある日の
+     まだ入っていない側に「自動の0」を書く（全店・全期間。締めた期間も。入っている値・0 は変えない）。
+   ・自動の0 ＝ <側>Auto:true・<側>:0 で、<側>Entered（入力済みの印）は付けない。記録に時刻（at・editedAt）も付けない
+     ＝ 前の版（v1117）は自動の0 を「まだ入っていない」と読み、人が入れた値（Entered あり）をどの合流でも優先する
+     （独立レビュー fadbb69 の P1：Entered を付けると、前の版の合流で人が入れた値が負けることがあった）。
+   ・人が入れた値（0 も・Entered あり）は自動の0 にいつも勝つ（mergeCashTips）。人がその側を保存すると Auto の印は消える（saveCashTipSides）。
+   ・印の無い 0 でない金額（前からある記録）は、その金額で計算されているので「入っている」とみなす（サーバーも書かない）。
+   ・サーバーで戻した側は <側>Auto:false（戻した印）。合流では自動の0 より優先する。
+   ・不正な値（数でない・マイナス・無限）は引き続きエラー（cashTipInvalid・エラーセンター・Tip の日別）。 */
+function cashTipSideEntered(rec, side){
+  if (!rec || typeof rec!=='object') return false;
+  var f = rec[side+'Entered'];
+  return f===true || (f===undefined && rec.entered===true);
+}
+function cashTipSideAuto(rec, side){
+  return !!(rec && typeof rec==='object' && rec[side+'Auto']===true && !cashTipSideEntered(rec, side) && Number(rec[side]||0)===0);
+}
+/* 合流で使う側の状態：'real'（人が入れた・印の無い 0 でない金額）・'off'（サーバーで戻した）・'auto'（自動の0）・''（入っていない） */
+var _CT_RANK = { real:3, off:2, auto:1, '':0 };
+function _ctSideState(rec, side){
+  if (!rec || typeof rec!=='object') return '';
+  if (cashTipSideEntered(rec, side)) return 'real';
+  if (cashTipSideAuto(rec, side)) return 'auto';
+  if (rec[side+'Auto']===false) return 'off';
+  var v=rec[side];
+  if (v!==undefined && v!==null && String(v).trim()!=='' && Number(v)!==0) return 'real';
+  return '';
+}
+/* 値として正しいか（空・無しは 0 として正しい。数・数の文字で 0 以上の有限の値だけ） */
+function cashTipValueOk(v){
+  if (v===undefined || v===null || v==='') return true;
+  if (typeof v==='number') return isFinite(v) && v>=0;
+  if (typeof v==='string'){ var s=v.trim(); if (s==='') return true; var n=Number(s); return isFinite(n) && n>=0; }
+  return false;
+}
+/* 不正な値の側（['lunch','dinner'] のうち）。未登録はここに入らない */
+function cashTipInvalid(storeId, date){
+  if (isNoCashTipStore(storeId)) return [];
+  var rec = getCashTips(storeId)[date];
+  if (!rec || typeof rec!=='object') return [];
+  return ['lunch','dinner'].filter(function(s){ return !cashTipValueOk(rec[s]); });
+}
+/* 0 として計算している側（入っていない・自動の0）。表示の注記だけに使う（エラーではない） */
+function cashTipZeroSides(storeId, date){
+  if (isNoCashTipStore(storeId)) return [];
+  var rec = getCashTips(storeId)[date];
+  var need = cashTipNeededSides(storeId, date);
+  return need.filter(function(s){ return _ctSideState(rec, s)!=='real'; });
+}
+/* v1118：未登録はエラーにしない（0 として計算する）。前の版から呼ぶ所のために残す（いつも false） */
+function cashTipMissing(storeId, date) { return false; }
+/* 入力が要る側（クレジットか売上のある営業日・営業していない区分は除く）。v1117 までの cashTipMissing の判定 */
+function cashTipNeededSides(storeId, date) {
+  if (isNoCashTipStore(storeId)) return []; // 対象外店舗は常に未入力扱いしない
   // 店舗マスターの営業設定（定休/ランチ休/ディナー休）を尊重：営業していない区分は入力不要
   var _dow; try{ _dow = ['日','月','火','水','木','金','土'][new Date(date+'T00:00:00').getDay()]; }catch(e){ _dow=null; }
   var _cm = (typeof dayClosureMode==='function') ? dayClosureMode(storeId, date, _dow) : null;
-  if (_cm === 'closed') return false; // 終日定休 → 入力不要
+  if (_cm === 'closed') return []; // 終日定休 → 入力不要
   var _lunchOff  = (_cm === 'lclose') || (typeof tipDayLunchOff==='function' && tipDayLunchOff(storeId, date));
   var _dinnerOff = (_cm === 'dclose');
   var av = getDailyActuals(storeId)[date] || {};
   var hasCredit = (av.lunchCreditTip!=null) || (av.dinnerCreditTip!=null) || (av.actual>0);
-  if (!hasCredit) return false;
-  var cash = getCashTips(storeId)[date];
-  if (cash && cash.entered) return false; // 単一確定でOK
-  var lunchOK  = _lunchOff  || (cash && cash.lunchEntered);
-  var dinnerOK = _dinnerOff || (cash && cash.dinnerEntered);
-  return !(lunchOK && dinnerOK);
+  if (!hasCredit) return [];
+  var out = [];
+  if (!_lunchOff) out.push('lunch');
+  if (!_dinnerOff) out.push('dinner');
+  return out;
 }
 /* ===== クレジットTip 調整額（L/D別・理由/by/at）v635 =====
    直接編集でなく調整額(±)。表示 = Toast取込値 + 調整額（生値は不変・再取込で消えない）。
@@ -7084,20 +7136,20 @@ function tipForDay(storeId, date) {
   var lCreditRaw = av.lunchCreditTip||0, dCreditRaw = av.dinnerCreditTip||0;
   var lCredit = lCreditRaw + lAdj, dCredit = dCreditRaw + dAdj;
   var _wkk = (storeId==='F03' || storeId==='F03-G'); // Waikikiはクレジットチップのみシェア（現金は対象外）
-  var lTotal = lCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.lunch||0));
-  var dTotal = dCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (cash.dinner||0));
+  var lTotal = lCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (Number(cash.lunch)||0));    /* v1118：数の文字（'25'）を足し算にする（前は文字としてつながっていた） */
+  var dTotal = dCredit*(1-TIP_CC_FEE) + (_wkk ? 0 : (Number(cash.dinner)||0));
   // その日ランチOFF（曜日別設定でLオフ＝ディナーのみ営業）の店は、ランチTipを全てディナーに合算しランチ項目を消す。
   // 例: ToriTonのランチ時間帯に打った事前注文のTipがランチに計上されても、ディナーのシェア対象になる。
   if (tipDayLunchOff(storeId, date)) {
     dTotal += lTotal; dCredit += lCredit; dCreditRaw += lCreditRaw; dAdj += lAdj;
-    var _lc = cash.lunch||0; cash = { dinner:(cash.dinner||0)+_lc, lunch:0 };
+    var _lc = Number(cash.lunch)||0; cash = { dinner:(Number(cash.dinner)||0)+_lc, lunch:0 };
     lTotal = 0; lCredit = 0; lCreditRaw = 0; lAdj = 0;
   }
   return {
     lunchCredit:lCredit, dinnerCredit:dCredit,
     lunchCreditRaw:lCreditRaw, dinnerCreditRaw:dCreditRaw,
     lunchCreditAdj:lAdj, dinnerCreditAdj:dAdj,
-    lunchCash:cash.lunch||0, dinnerCash:cash.dinner||0,
+    lunchCash:Number(cash.lunch)||0, dinnerCash:Number(cash.dinner)||0,
     lunchTotal:lTotal, dinnerTotal:dTotal, total:lTotal+dTotal,
     lunchOff: tipDayLunchOff(storeId, date),
   };
@@ -11848,8 +11900,16 @@ function mergeCashTips(cloudMap, localMap){
     if(ct||lt){ if(lt>ct){winner=l;loser=c;} else if(ct>lt){winner=c;loser=l;} else {winner=l;loser=c;} }
     else { winner=l; loser=c; }
     var m=Object.assign({}, loser, winner);
-    if(!winner.lunchEntered && loser.lunchEntered){ m.lunch=loser.lunch; m.lunchEntered=true; }
-    if(!winner.dinnerEntered && loser.dinnerEntered){ m.dinner=loser.dinner; m.dinnerEntered=true; }
+    /* v1118：側ごとに、人が入れた値（real）＞戻した印（off）＞自動の0（auto）＞入っていない。同じ強さなら時刻の新しいほう（winner）。
+       自動の0 は Entered も時刻も持たないので、人が入れた値は前の版でも v1118 でも消えない */
+    ['lunch','dinner'].forEach(function(s){
+      var ws=_ctSideState(winner,s), ls_=_ctSideState(loser,s);
+      var useW=_CT_RANK[ws]>=_CT_RANK[ls_], src=useW?winner:loser, st=useW?ws:ls_;
+      if(!st) return;
+      if(src[s]===undefined) delete m[s]; else m[s]=src[s];
+      if(st==='real'){ if(cashTipSideEntered(src,s)) m[s+'Entered']=true; else delete m[s+'Entered']; delete m[s+'Auto']; }
+      else { if(src[s+'Entered']===undefined) delete m[s+'Entered']; else m[s+'Entered']=src[s+'Entered']; m[s+'Auto']=(st==='auto'); }
+    });
     m.entered = !!(m.lunchEntered && m.dinnerEntered);
     out[date]=m;
   });
@@ -11862,6 +11922,9 @@ function _coversCashTips(check, want){
     var h=check[date]; if(!h||typeof h!=='object') return false;
     if(w.lunchEntered && !h.lunchEntered) return false;
     if(w.dinnerEntered && !h.dinnerEntered) return false;
+    /* v1118：人が入れた側・戻した印が、クラウドでそれより弱い状態（自動の0 など）なら届いていない */
+    if(_CT_RANK[_ctSideState(w,'lunch')]>=2 && _CT_RANK[_ctSideState(h,'lunch')]<_CT_RANK[_ctSideState(w,'lunch')]) return false;
+    if(_CT_RANK[_ctSideState(w,'dinner')]>=2 && _CT_RANK[_ctSideState(h,'dinner')]<_CT_RANK[_ctSideState(w,'dinner')]) return false;
     var wt=_cashTs(w), ht=_cashTs(h); if(wt && ht && ht<wt) return false;
   }
   return true;
@@ -19791,6 +19854,26 @@ function completeDailyOps(storeId) {
   renderPage('store_cmd');
 }
 
+/* v1118：キャッシュチップの注記。不正な値はエラー、未入力・自動の0 は 0 として計算している旨（エラーではない） */
+function cashTipNoteHtml(storeId, date, opt){
+  opt=opt||{};
+  var bad=cashTipInvalid(storeId, date), html='';
+  var lab=function(a){ return a.map(function(x){ return x==='lunch'?t('ランチ','Lunch'):t('ディナー','Dinner'); }).join('・'); };
+  var btn=opt.noBtn?'':' <button class="btn btn-secondary btn-sm" style="padding:1px 7px;font-size:10px;margin-left:4px" onclick="'+(opt.closeFirst?'closeModalDirect();':'')+'openCashTipModal(\''+storeId+'\',\''+date+'\')">'+t('直す','Fix')+'</button>';
+  if(bad.length){
+    html+='<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px"><b>'+t('キャッシュチップの値が正しくありません','Cash tip value is invalid')+'</b>（'+lab(bad)+'）'
+      +'<div style="font-size:11px;margin-top:2px">'+t('数でない値・マイナスの値が入っています。正しい金額を入れ直してください。','It contains a non-number or negative value. Re-enter the correct amount.')+btn+'</div></div></div>';
+    return html;
+  }
+  var z=cashTipZeroSides(storeId, date);
+  if(z.length && !opt.noZero){
+    var rec=getCashTips(storeId)[date], auto=z.filter(function(x){ return cashTipSideAuto(rec,x); });
+    html+='<div style="font-size:11px;color:var(--muted);margin-bottom:6px"><i class="ti ti-info-circle"></i> '+t('キャッシュチップ','Cash tips')+'（'+lab(z)+'）'
+      +(auto.length===z.length ? t('：未入力のため自動で 0 を保存しています。',': not entered, saved as 0 automatically.') : t('：未入力のため 0 として計算しています（翌日に自動で 0 を保存）。',': not entered, counted as 0 (saved as 0 automatically the next day).'))
+      +t('現金チップがあった場合は金額を入れてください。',' Enter the amount if there were cash tips.')+btn+'</div>';
+  }
+  return html;
+}
 /* Store CMD チップ管理セクション */
 function renderStoreCmdTip(storeId, store, canEdit) {
   /* v626: キャッシュチップの入力だけは canEdit ではなく専用判定を使う（G1に解放）。
@@ -19806,13 +19889,8 @@ function renderStoreCmdTip(storeId, store, canEdit) {
   var _cash = getCashTips(storeId)[sel];
   var _isFuture = sel > today, _isToday = sel === today;
 
-  // キャッシュチップ未入力アラート
-  if (cashTipMissing(storeId, sel)) {
-    html += `<div class="alert alert-danger" style="margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div>
-      <p style="font-size:12px;font-weight:600">${t('キャッシュチップ未入力','Cash tips not entered')}</p>
-      <div style="font-size:11px;margin-top:2px">${t('現金チップが無い日も「0」を入力して確定してください。',"Enter '0' and confirm even on days with no cash tips.")}</div>
-    </div></div>`;
-  }
+  // v1118：キャッシュチップは不正な値だけエラー。未入力は 0 として計算（注記だけ）
+  if (!isNoCashTipStore(storeId) && sel <= today) html += cashTipNoteHtml(storeId, sel, {noBtn:!canCash});
 
   // クレジットチップ（Toast自動）
   var _loff = tip.lunchOff;  // その日ランチOFF＝ディナーのみ表示
@@ -19851,14 +19929,14 @@ function openCashTipModal(storeId, date) {
   if (date > today) { showToast(t('未来日のキャッシュチップは入力できません','Cannot enter cash tips for future dates'), 'warning'); return; }
   var cash = getCashTip(storeId, date);
   var isPast = date < today;
-  var isEdit = !!cash.entered;
+  var isEdit = _ctSideState(cash,'lunch')==='real' || _ctSideState(cash,'dinner')==='real';   /* v1118：自動の0 だけなら「入力」 */
   openModal(`<div class="modal-title">${t('キャッシュチップ','Cash Tips')}${isEdit?t('修正','Edit'):isPast?t('入力（過去分）','Enter (past)'):t('入力','Enter')} — ${date} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     ${isPast?`<div class="alert alert-warning" style="padding:7px 10px;font-size:11px"><i class="ti ti-history"></i> ${t('過去日の','This is a past-date ')}${isEdit?t('修正','edit'):t('入力','entry')}${t('です。','.')}${isEdit&&cash.by?`${t('元の記録: ','Original record: ')}${escapeHtml(cash.by)} ${escapeHtml(cash.at||'')}${t('。','.')}`:''}${t('修正者・日時が記録に残ります。','Editor and timestamp will be recorded.')}</div>`:''}
     <div class="form-row">
-      <div class="form-group"><label class="form-label">Lunch ${t('キャッシュチップ','Cash Tips')} ($) ${(cash.lunchEntered||cash.entered)?'<span class="tag tag-green" style="font-size:8px">'+t('入力済','Entered')+'</span>':''}</label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${(cash.lunchEntered||cash.entered)?cash.lunch:''}" placeholder="${t('0の場合も「0」と入力','Enter 0 even if zero')}"></div>
-      <div class="form-group"><label class="form-label">Dinner ${t('キャッシュチップ','Cash Tips')} ($) ${(cash.dinnerEntered||cash.entered)?'<span class="tag tag-green" style="font-size:8px">'+t('入力済','Entered')+'</span>':''}</label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${(cash.dinnerEntered||cash.entered)?cash.dinner:''}" placeholder="${t('0の場合も「0」と入力','Enter 0 even if zero')}"></div>
+      <div class="form-group"><label class="form-label">Lunch ${t('キャッシュチップ','Cash Tips')} ($) ${_ctSideState(cash,'lunch')==='real'?'<span class="tag tag-green" style="font-size:8px">'+t('入力済','Entered')+'</span>':'<span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">'+(_ctSideState(cash,'lunch')==='auto'?t('自動で0','Auto 0'):t('未入力＝0','Not entered = 0'))+'</span>'}</label><input class="form-input" id="ct-lunch" type="number" inputmode="decimal" step="0.01" value="${_ctSideState(cash,'lunch')==='real'?escapeHtml(String(cash.lunch)):''}" placeholder="${t('0（現金があれば金額）','0 (enter the amount if any)')}"></div>
+      <div class="form-group"><label class="form-label">Dinner ${t('キャッシュチップ','Cash Tips')} ($) ${_ctSideState(cash,'dinner')==='real'?'<span class="tag tag-green" style="font-size:8px">'+t('入力済','Entered')+'</span>':'<span class="tag" style="font-size:8px;background:var(--surface2);color:var(--muted)">'+(_ctSideState(cash,'dinner')==='auto'?t('自動で0','Auto 0'):t('未入力＝0','Not entered = 0'))+'</span>'}</label><input class="form-input" id="ct-dinner" type="number" inputmode="decimal" step="0.01" value="${_ctSideState(cash,'dinner')==='real'?escapeHtml(String(cash.dinner)):''}" placeholder="${t('0（現金があれば金額）','0 (enter the amount if any)')}"></div>
     </div>
-    <div style="font-size:11px;color:var(--muted)">${t('Lunch終了時にLunch分だけ先に保存できます（片方ずつOK）。現金チップが無い場合も「0」を入力。両方入力で確定です。','You can save the Lunch amount first when Lunch ends (one side at a time). Enter 0 if there are no cash tips. Both entered = confirmed.')}</div>
+    <div style="font-size:11px;color:var(--muted)">${t('Lunch終了時にLunch分だけ先に保存できます（片方ずつOK）。入れていない側は 0 として計算し、翌日に自動で 0 を保存します。現金チップがあった日は金額を入れてください（あとから直せます）。','You can save the Lunch amount first when Lunch ends (one side at a time). A side left blank counts as 0 and is saved as 0 automatically the next day. Enter the amount on days with cash tips (you can correct it later).')}</div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
     <button class="btn btn-primary" onclick="saveCashTipModal('${storeId}','${date}')">${t('保存','Save')}</button></div>`);
 }
@@ -37542,12 +37620,13 @@ function tipPeriodAggregate(storeId, info) {
     var hasData = dist.hasLabor || tip.total>0;
     if (hasData) daysWithData++;
     var distDiff = Math.abs(dist.distSum - tip.total);
-    var dayErr = (tip.total>0 && !dist.hasLabor) || cashTipMissing(storeId,date) || (dist.hasLabor && distDiff>=0.5);
+    var _ctBad = cashTipInvalid(storeId,date).length>0;   /* v1118：未入力はエラーにしない（0 として計算）。不正な値だけ */
+    var dayErr = (tip.total>0 && !dist.hasLabor) || _ctBad || (dist.hasLabor && distDiff>=0.5);
     if (dayErr) anyError=true;
     totalTip+=tip.total; totalHours+=dayHours; tipHours+=dayTipHours;
     daily.push({date, sales:(getDailyActuals(storeId)[date]||{}).actual||0, tip:tip.total,
       ppl:dayPpl, hours:dayHours, tipHours:dayTipHours, error:dayErr,
-      cashMissing:cashTipMissing(storeId,date), noLabor:(tip.total>0&&!dist.hasLabor)});
+      cashMissing:false, cashBad:_ctBad, noLabor:(tip.total>0&&!dist.hasLabor)});
   });
   return {totalTip, totalHours, tipHours, daysWithData, anyError, staffCount:Object.keys(staffSet).length, daily};
 }
@@ -37596,7 +37675,7 @@ function renderTipPeriodSummary(storeId, store, info) {
     var errDays = agg.daily.filter(d=>d.error);
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
       <p style="font-size:12px;font-weight:600">${t('エラーのある日','Days with errors')}: ${errDays.length}${t('日','')}</p>
-      <div style="font-size:11px;margin-top:2px">${errDays.map(d=>d.date.slice(5)+(d.cashMissing?t('(現金未入力)','(no cash)'):d.noLabor?t('(勤怠なし)','(no labor)'):t('(差額)','(diff)'))).join(', ')}</div>
+      <div style="font-size:11px;margin-top:2px">${errDays.map(d=>d.date.slice(5)+(d.cashBad?t('(現金の値が不正)','(invalid cash)'):d.noLabor?t('(勤怠なし)','(no labor)'):t('(差額)','(diff)'))).join(', ')}</div>
       <div style="font-size:11px;margin-top:4px">${t('日別タブで各日を修正してください。エラーがあるとTip確定できません。','Fix each day in the Daily tab. Tips cannot be finalized while errors remain.')}</div>
     </div></div>`;
   }
@@ -37788,17 +37867,18 @@ function _tipCashCanEdit(storeId){
 /* 1セル分の入力欄（L or D）。未入力は空欄＝「0」と区別する */
 function tipCashCellHtml(storeId, date, side, bl){
   var rec=(typeof getCashTip==='function')?getCashTip(storeId,date):{};
-  var entered = side==='l' ? (rec.lunchEntered||rec.entered) : (rec.dinnerEntered||rec.entered);
+  /* v1118：人が入れた値だけ「入力済み」。未入力・自動の0 は 0 として計算（薄い 0 で出す） */
+  var entered = _ctSideState(rec, side==='l'?'lunch':'dinner')==='real';
   var val = side==='l' ? rec.lunch : rec.dinner;
   var future = date > todayISO();
   var style='text-align:right;'+(bl||'');
   if(!_tipCashCanEdit(storeId) || future){
-    var shown = entered ? (Number(val)||0).toFixed(2) : '—';
+    var shown = entered ? (Number(val)||0).toFixed(2) : (future ? '—' : '<span style="opacity:.55">0.00</span>');
     return '<td style="'+style+';color:var(--accent2)">'+shown+'</td>';
   }
   var v = entered ? (Number(val)||0) : '';
   return '<td style="'+style+';padding:1px 2px">'
-    +'<input type="number" inputmode="decimal" step="0.01" min="0" value="'+v+'" placeholder="—" '
+    +'<input type="number" inputmode="decimal" step="0.01" min="0" value="'+v+'" placeholder="0" '
     +'onchange="saveTipCashCell(\''+storeId+'\',\''+date+'\',\''+side+'\',this.value)" '
     +'style="width:100%;min-width:44px;border:1px solid '+(entered?'transparent':'var(--border)')+';border-radius:5px;background:'+(entered?'rgba(139,92,246,.10)':'transparent')+';color:var(--accent2);font-size:10.5px;font-weight:700;text-align:right;padding:2px 3px">'
     +'</td>';
@@ -37821,7 +37901,7 @@ function _tipCreditCellClick(storeId, date){
 function renderTipPeriodMatrix(storeId, store, info){
   var M = tipPeriodMatrix(storeId, info);
   var md = function(d){ return d.slice(5).replace('-','/'); };
-  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（0の場合も「0」）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (enter 0 if zero).'):''}</div>`;
+  var html = `<div class="card"><div class="card-title"><i class="ti ti-table"></i>${t('配分表（日次 L/D）','Distribution (daily L/D)')}<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${info.rangeLabel}</span></div><div style="font-size:10.5px;color:var(--muted);margin:-2px 0 6px"><i class="ti ti-hand-finger"></i> ${t('各スタッフのセルをタップすると、そのシフトをTip対象外にできます（除外分は他スタッフへ自動再配分）。','Tap a staff cell to exclude that shift from tips (the excluded amount is auto-redistributed to others).')}${_tipCashCanEdit(storeId)?t('　<b>「③ キャッシュ」の欄は直接入力できます</b>（空欄は 0 として計算し、翌日に自動で 0 を保存）。','　<b>You can type cash tips directly in the “③ Cash” row</b> (a blank counts as 0 and is saved as 0 the next day).'):''}</div>`;
   if (!M.names.length){
     html += `<div style="text-align:center;color:var(--muted);padding:18px">${t('この期間の配分データがありません。「日別」で各日のTip・勤怠を確認してください。','No distribution data for this period. Check each day\'s tips/labor in the Daily tab.')}</div></div>`;
     return html;
@@ -38023,10 +38103,7 @@ function openTipDayDetail(storeId, date) {
 
   var html = `<div class="modal-title">${date} チップ振り分け <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="max-height:70vh;overflow-y:auto">`;
-  if (cashTipMissing(storeId,date)) {
-    html += `<div class="alert alert-danger" style="padding:7px 10px;margin-bottom:8px"><i class="ti ti-alert-triangle"></i><div style="font-size:12px">キャッシュチップ未入力
-      <button class="btn btn-danger btn-sm" style="margin-top:4px" onclick="closeModalDirect();openCashTipModal('${storeId}','${date}')">入力する</button></div></div>`;
-  }
+  html += cashTipNoteHtml(storeId, date, {closeFirst:true});   /* v1118：不正な値だけエラー。未入力は 0 として計算（注記） */
   // ===== ランチ | ディナー サマリー（Excelと同じ並び）=====
   function money(v){ return (v<0?'-$':'$')+Math.abs(v).toFixed(2); }
   function sumRow(label, lv, dv, opt){
@@ -38834,14 +38911,8 @@ function renderTipDaily(storeId, store, date) {
   var hasGuid = !!store.toastGuid;
   var html = '';
 
-  // キャッシュチップ未入力エラー
-  if (cashTipMissing(storeId, date)) {
-    html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
-      <p style="font-size:12px;font-weight:600">キャッシュチップが未入力です</p>
-      <div style="font-size:11px;margin-top:2px">この日のチップ総額・配分が正しく計算できません。現金チップが無い場合も「0」を入力して確定してください。</div>
-      <button class="btn btn-danger btn-sm" style="margin-top:6px" onclick="openCashTipModal('${storeId}','${date}')"><i class="ti ti-edit"></i> キャッシュチップを入力</button>
-    </div></div>`;
-  }
+  // v1118：キャッシュチップは不正な値だけエラー。未入力は 0 として計算（注記）
+  html += cashTipNoteHtml(storeId, date);
 
   // チップ総額サマリー
   html += `<div class="card"><div class="card-title"><i class="ti ti-coin" style="color:var(--green)"></i>${date} チップ総額</div>
@@ -40817,7 +40888,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1117';
+const APP_VERSION = '1118';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -56776,12 +56847,19 @@ function ecDetEmpMaster(){
   return issues;
 }
 
-/* — キャッシュチップ未登録（直近14日×全店） — */
+/* — キャッシュチップ：不正な値（v1118。未登録は 0 として計算し、エラーにしない＝Moto さん 10/30）。
+   今日より前の記録のある日すべて（EC_MIN_DATE から）。fp＝不正な値（直すと消え、別の不正な値ならまた出る） — */
 function ecDetCashTip(){
-  var issues=[], dates=_ecClosedDates(14);   /* v854: 当日は出さない */
+  var issues=[], today=todayISO(), min=(typeof EC_MIN_DATE!=='undefined'?EC_MIN_DATE:'');
   (typeof STORES!=='undefined'?STORES:[]).forEach(function(st){
-    dates.forEach(function(dt){
-      try{ if(cashTipMissing(st.id, dt)){ issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップ未登録',detail:'クレジットチップの記録はありますが現金チップが未入力です。現金が無い場合も「0」で確定が必要です。',fix:{label:'入力',action:"openCashTipModal('"+st.id+"','"+dt+"')"},key:'tip|'+st.id+'|'+dt,fp:'',store:st.id,date:dt}); } }catch(e){}
+    var map; try{ map=getCashTips(st.id)||{}; }catch(e){ return; }
+    Object.keys(map).forEach(function(dt){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(dt) || dt>=today || (min && dt<min)) return;
+      try{
+        var bad=cashTipInvalid(st.id, dt); if(!bad.length) return;
+        var rec=map[dt]||{}, fp=bad.map(function(x){ var v=rec[x]; return x+'='+(typeof v==='string'?v:JSON.stringify(v)); }).join(';').slice(0,120);
+        issues.push({sev:'high',cat:'チップ',title:st.name+'：'+dt+' キャッシュチップの値が不正',detail:'キャッシュチップに数でない値・マイナスの値が入っています（'+bad.map(function(x){return x==='lunch'?'ランチ':'ディナー';}).join('・')+'）。正しい金額を入れ直してください。',fix:{label:'直す',action:"openCashTipModal('"+st.id+"','"+dt+"')"},key:'tipinv|'+st.id+'|'+dt,fp:fp,store:st.id,date:dt});
+      }catch(e){}
     });
   });
   return issues;
@@ -57255,23 +57333,31 @@ function _ecFalseSet(resA){
 }
 function ecLogCounted(r, fs){ return !!ecLogSev(r, fs); }
 /* 数える中身のいちばん重いもの（数えないなら ''）。key の無い前の記録は種類と題名で見る */
+/* v1118：過去の「キャッシュチップ未登録」は、未登録を 0 として補完したので数えない（key 'tip|'・前の記録は題名） */
+function ecLogCashTipUnset(r){
+  if(!r) return false;
+  if(r.key) return String(r.key).indexOf('tip|')===0;
+  return String(r.cat||'')==='チップ' && String(r.title||'').indexOf('キャッシュチップ未登録')>=0;
+}
 function ecLogSev(r, fs){
   if(!r) return '';
   fs=fs||_ecFalseSet();
   var rk={high:3, mid:2, low:1}, best='';
   var take=function(v){ v=String(v||'low'); if(!rk[v]) v='low'; if(!best || rk[v]>rk[best]) best=v; };
-  if(!r.key && !fs['t:'+String(r.cat||'')+'|'+String(r.title||'')]) take(r.sev);
-  _ecLogParts(r).forEach(function(x){ if(!fs['k:'+x.key+'|'+x.fp]) take(x.sev || (x.key===r.key ? r.sev : '')); });
+  if(!r.key && !ecLogCashTipUnset(r) && !fs['t:'+String(r.cat||'')+'|'+String(r.title||'')]) take(r.sev);
+  _ecLogParts(r).forEach(function(x){ if(String(x.key||'').indexOf('tip|')===0) return; if(!fs['k:'+x.key+'|'+x.fp]) take(x.sev || (x.key===r.key ? r.sev : '')); });
   return best;
 }
 function ecRenderLogView(){
   var all=ecLogInRange(), fs=_ecFalseSet();
-  var rows=all.map(function(r){ var v=ecLogSev(r, fs); return v ? Object.assign({}, r, { sev:v }) : null; }).filter(Boolean), excl=all.length-rows.length;   /* v1088: 数える中身の重さで */
+  var ctN=all.filter(function(r){ return ecLogCashTipUnset(r) && !ecLogSev(r, fs); }).length;   /* v1118：キャッシュチップ未登録（0 で補完）は別に数える */
+  var rows=all.map(function(r){ var v=ecLogSev(r, fs); return v ? Object.assign({}, r, { sev:v }) : null; }).filter(Boolean), excl=all.length-rows.length-ctN;   /* v1088: 数える中身の重さで */
   var html='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">';
   [['30','30日'],['90','90日'],['180','180日'],['0','全期間']].forEach(function(o){ html+='<button class="btn '+(String(ecRangeDays)===o[0]?'btn-primary':'btn-secondary')+' btn-sm" style="font-size:11px" onclick="setEcRange('+o[0]+')">'+o[1]+'</button>'; });
   html+='<button class="btn btn-secondary btn-sm" style="font-size:11px;margin-left:auto" onclick="ecSnapshotNow()"><i class="ti ti-camera"></i> 今すぐ記録</button></div>';
   html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 1日1回、検知された不備を自動記録。査定の参考として店舗別・人別の検知件数を集計します（●赤=要対応 ●黄=確認 ●灰=情報）。解除したものは、その日から記録しません。</div>';
   if(excl>0) html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-filter-off"></i> 「問題ではない（誤検知）」で解除した '+excl+' 件は数えていません。</div>';
+  if(ctN>0) html+='<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-filter-off"></i> 「キャッシュチップ未登録」'+ctN+' 件は、未登録を 0 として補完したので数えていません（v1118）。</div>';
   if(!rows.length) return html+'<div class="card" style="text-align:center;padding:24px;color:var(--muted)">記録された過去ログはまだありません</div>';
   var byStore={}, byEmp={};
   rows.forEach(function(r){
@@ -82610,6 +82696,7 @@ function addNotif(n){
 }
 /* この通知が今のユーザー宛か（自分の操作は自分に出さない） */
 function notifForMe(n){
+  if(typeof notifRetired==='function' && notifRetired(n)) return false;   /* v1118：キャッシュチップ未入力の前の通知は出さない（0 で補完した） */
   if(n.by && curUserName && n.by===curUserName) return false;
   if(n.toUser) return !!(curUserName && n.toUser===curUserName);
   if(n.toStore){
@@ -88329,24 +88416,10 @@ function renderWorkCenter(){
   }
   return h;
 }
-/* v1088: 前日のキャッシュチップ未入力を、店舗のG3以上へ知らせる（UI案52 5A：タスクは作らない。未入力はエラーセンターにも出る）。
-   同じ店・同じ日は 1 回だけ：同じ refId の通知か、前の版が作ったタスクがあれば、もう知らせてある。 */
-function checkCashTipNotify(){
-  try{
-    var y = isoOf(new Date(Date.now()-86400000));
-    if (window._ctipChk === y) return; window._ctipChk = y;
-    var tasks = getTasks();
-    activeStores().forEach(function(st){
-      if (typeof cashTipMissing!=='function' || !cashTipMissing(st.id, y)) return;
-      var refId = 'ctip_'+st.id+'_'+y;
-      if (notifHasRef(refId)) return;
-      if (Array.isArray(tasks) && tasks.some(function(t){ return t && t.refId===refId; })) return;
-      addNotif({ type:'warning', title:'キャッシュチップ未入力: '+st.name,
-        text:y.slice(5).replace('-','/')+' のキャッシュチップが未入力です。0の場合も「0」と入力して確定してください。',
-        toStore:st.id, toRoles:['sl','sm','am','gm','ceo'], page:'store_cmd', refId:refId });
-    });
-  }catch(e){ console.warn('ctip check', e); }
-}
+/* v1088 の「前日のキャッシュチップ未入力」の通知は v1118 でやめた（未登録は 0 として補完・Moto さん 10/30）。
+   前に出した通知（refId 'ctip_…'）は消さずに、一覧と未読の数から外す（notifRetired）。呼ぶ所のために関数は残す */
+function checkCashTipNotify(){ return; }
+function notifRetired(n){ return !!(n && typeof n.refId==='string' && n.refId.indexOf('ctip_')===0); }
 
 
 

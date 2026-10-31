@@ -47,7 +47,7 @@ function varSrc(name) { const m = new RegExp('^var ' + name + '\\b[^\\n]*$', 'm'
 function bodyOf(name) { const i = SRC.search(new RegExp('^(async )?function ' + name + '\\(', 'm')); if (i < 0) throw new Error('not found: ' + name); return SRC.slice(i, SRC.indexOf('\n}', i) + 2); }
 const has = name => new RegExp('^(async )?function ' + name + '\\(', 'm').test(SRC);
 
-const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetEmpMaster', 'ecDetCashTip', 'ecDetClock', 'ecDetOnboard', 'ecDetClose',
+const EC = ['cashTipValueOk', 'cashTipInvalid', 'ecLogCashTipUnset', '_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetEmpMaster', 'ecDetCashTip', 'ecDetClock', 'ecDetOnboard', 'ecDetClose',
   'ecDetInventory', 'ecDetOverwork', '_ecNorm', 'ecCollect', 'ecWhyLabel', 'ecCanView', 'ecCanResolve', 'ecResAll', '_ecResLive', 'ecResOf', 'ecOpenIssues',
   '_ecResSave', 'ecPullLatest', '_ecOnPage', '_ecRerender', 'ecAutoPull', 'ecSetSort', 'ecSetStore', 'ecSetCat', '_ecStoreName', '_ecStoresOf',
   '_ecDateLabel', '_ecAtLabel', '_ecMeta', '_ecStoreRank', 'ecSortIssues', 'ecFilterIssues', '_ecBarHtml', '_ecHeadRow', '_ecSevBadge', '_ecCells',
@@ -57,6 +57,8 @@ const EC = ['_ecYmd', '_ecRecentDates', '_ecClosedDates', '_ecEmpAlive', 'ecDetE
   'ecCloseResolve', '_ecNaOk'];
 const VARS = ['EC_MIN_DATE', 'EC_RES_KEY', 'EC_WHY', '_ecPullAt', 'EC_SEV_ORDER', 'EC_CAT_ORDER', 'ecSort', '_ecShown', 'ecView', 'EC_DETECTORS', 'EC_RES_OFF_KEEP_MS', 'EC_NA_CATS'];
 const RID = (key, fp = '') => key + '\u241e' + fp;
+// v1118: the cash tip issue is an invalid value (missing counts as 0); its fingerprint is the value
+const TK = 'tipinv|F01|2026-10-15', TFP = 'lunch=-5';
 
 const STORES = [{ id: 'F01', name: 'Store One' }, { id: 'F02', name: 'Store Two' }, { id: 'F03', name: 'Store Three' }];
 const EMPLOYEES = [
@@ -79,7 +81,9 @@ function app({ role = 'office', user = 'Marcia', st = {}, cloud = null, missingT
     showToast: (m, k) => c.toasts.push([m, k]), renderPage: p => c.rendered.push(p), escapeHtml: s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'),
     openModal: h => c.modals.push(h), closeModalDirect: () => { c.closed++; }, myName: () => c.curUserName,
     getEmployees: () => EMPLOYEES, isTipExcludedTitle: () => false,
-    cashTipMissing: (sid, dt) => missingTip.some(([s, d]) => s === sid && d === dt), openCashTipModal: () => {},
+    // v1118: missing cash tips count as 0 and are no error; the cash tip issue in these checks is an invalid value
+    getCashTips: sid => Object.fromEntries(missingTip.filter(([s]) => s === sid).map(([, d]) => [d, { lunch: -5, lunchEntered: true }])),
+    isNoCashTipStore: sid => sid === 'F03' || sid === 'F03-G', openCashTipModal: () => {},
     getTipLabor: (sid, dt) => labor[sid + '|' + dt] || null,
     getOfficeClose: () => ({ a: true }), OFFICE_CLOSE_ITEMS: [{ id: 'a' }, { id: 'b' }], ymLabelJP: ym => ym,
     parseJaDate: () => null,
@@ -113,9 +117,9 @@ test('every detector gives each issue a key, a fingerprint, its store and date',
   });
   const all = plain(run(c, 'ecCollect()'));
   const by = k => all.find(x => x.key === k);
-  const tip = by('tip|F01|2026-10-15');
+  const tip = by(TK);
   assert.ok(tip, 'cash tip issue has a key');
-  assert.equal(tip.store, 'F01'); assert.equal(tip.date, '2026-10-15'); assert.equal(tip.fp, '');
+  assert.equal(tip.store, 'F01'); assert.equal(tip.date, '2026-10-15'); assert.equal(tip.fp, TFP);
   const clock = by('clock|F02|2026-10-14|Crew B');
   assert.ok(clock); assert.equal(clock.fp, '2026-10-14T17:02'); assert.equal(clock.store, 'F02'); assert.equal(clock.who, 'Crew B');
   const ow = by('ow|Crew A|2026-10-11');
@@ -147,7 +151,7 @@ test('a cleared issue stays cleared while its fingerprint is the same, and shows
   const c = app({ st: { ec_resolutions: { [RID('clock|F02|2026-10-14|Crew B', '2026-10-14T17:02')]: rec } }, labor: { 'F02|2026-10-14': { 'Crew B': { shifts: [{ inDate: '2026-10-14T17:02' }] } } } });
   const open = () => plain(run(c, 'ecOpenIssues()')).map(x => x.key);
   assert.ok(!open().includes('clock|F02|2026-10-14|Crew B'));
-  assert.ok(open().includes('tip|F01|2026-10-15'));
+  assert.ok(open().includes(TK));
   // The clock-in time is corrected in Toast: a different fingerprint, so it shows again.
   c.getTipLabor = () => ({ 'Crew B': { shifts: [{ inDate: '2026-10-14T17:30' }] } });
   assert.ok(open().includes('clock|F02|2026-10-14|Crew B'));
@@ -159,16 +163,16 @@ test('a cleared issue stays cleared while its fingerprint is the same, and shows
 
 test('two devices clearing different issues keep both; the newer record wins (ties decided the same on every device); undo is not overwritten; old undone / handled records expire', () => {
   const c = app();
-  const A = { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 100 } };
+  const A = { [RID(TK, TFP)]: { key: TK, fp: TFP, why: 'done', _at: NOW - 100 } };
   const B = { [RID('emp|email|e1')]: { key: 'emp|email|e1', fp: '', why: 'false', _at: NOW - 80 } };
   const mg = (a, b) => plain(run(c, 'mergeEcRes(' + JSON.stringify(a) + ',' + JSON.stringify(b) + ')'));
-  assert.deepEqual(Object.keys(mg(A, B)).sort(), [RID('emp|email|e1'), RID('tip|F01|2026-10-15')]);
+  assert.deepEqual(Object.keys(mg(A, B)).sort(), [RID('emp|email|e1'), RID(TK, TFP)]);
   assert.equal(run(c, '_coversEcRes(' + JSON.stringify(A) + ',' + JSON.stringify(B) + ')'), false);
-  const newer = { [RID('tip|F01|2026-10-15')]: Object.assign({}, A[RID('tip|F01|2026-10-15')], { _at: NOW - 10, off: true }) };
+  const newer = { [RID(TK, TFP)]: Object.assign({}, A[RID(TK, TFP)], { _at: NOW - 10, off: true }) };
   assert.equal(run(c, '_coversEcRes(' + JSON.stringify(A) + ',' + JSON.stringify(newer) + ')'), false, 'an older cloud record does not cover a newer one');
   assert.equal(run(c, '_coversEcRes(' + JSON.stringify(newer) + ',' + JSON.stringify(A) + ')'), true);
-  const undo = { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 50, off: true } };
-  for (const [cl, lo] of [[A, undo], [undo, A]]) assert.equal(mg(cl, lo)[RID('tip|F01|2026-10-15')].off, true);
+  const undo = { [RID(TK, TFP)]: { key: TK, fp: TFP, why: 'done', _at: NOW - 50, off: true } };
+  for (const [cl, lo] of [[A, undo], [undo, A]]) assert.equal(mg(cl, lo)[RID(TK, TFP)].off, true);
   // Same time on two devices (a skewed clock): both devices keep the same record.
   const X = { [RID('k')]: { key: 'k', fp: '', why: 'done', memo: 'a', _at: NOW - 5 } }, Y = { [RID('k')]: { key: 'k', fp: '', why: 'false', memo: 'b', _at: NOW - 5 } };
   assert.deepEqual(mg(X, Y), mg(Y, X));
@@ -209,7 +213,7 @@ test('clearing: the reason, note, who and when are saved after reading the cloud
   const html = run(c, 'renderErrorCenter(true)');
   assert.match(html, /ecOpenResolve\(/, 'office crew gets 解除 buttons (6A)');
   const shown = plain(run(c, '_ecShown'));
-  const i = shown.findIndex(x => x.key === 'tip|F01|2026-10-15');
+  const i = shown.findIndex(x => x.key === TK);
   assert.ok(i >= 0);
   run(c, 'ecOpenResolve(' + i + ')');
   assert.equal(c.modals.length, 1);
@@ -217,27 +221,27 @@ test('clearing: the reason, note, who and when are saved after reading the cloud
   c._why = 'na'; c._memo = '  現金の扱いが無い店  ';
   await run(c, 'ecResolveGo()'); await tick();
   assert.ok(c.pulls >= 1, 'reads the cloud before saving');
-  const r = c.S.ec_resolutions[RID('tip|F01|2026-10-15')];
+  const r = c.S.ec_resolutions[RID(TK, TFP)];
   assert.equal(r.why, 'na'); assert.equal(r.memo, '現金の扱いが無い店'); assert.equal(r.by, 'Akane'); assert.equal(r.role, 'office_crew');
-  assert.equal(r.fp, ''); assert.equal(r.store, 'F01'); assert.equal(r.off, false); assert.ok(r._at >= NOW);
+  assert.equal(r.fp, TFP); assert.equal(r.store, 'F01'); assert.equal(r.off, false); assert.ok(r._at >= NOW);
   assert.ok(c.S.ec_resolutions[RID('emp|email|e1')], 'the other device\'s record was merged in, not dropped');
-  assert.equal(r.key, 'tip|F01|2026-10-15');
+  assert.equal(r.key, TK);
   assert.equal(c.closed, 1);
-  assert.ok(!plain(run(c, 'ecOpenIssues()')).some(x => x.key === 'tip|F01|2026-10-15'));
+  assert.ok(!plain(run(c, 'ecOpenIssues()')).some(x => x.key === TK));
   run(c, 'renderErrorCenter(true)');
-  assert.ok(!plain(run(c, '_ecShown')).some(x => x.key === 'tip|F01|2026-10-15'), 'the list leaves it out');
+  assert.ok(!plain(run(c, '_ecShown')).some(x => x.key === TK), 'the list leaves it out');
   // The cleared tab lists it with an undo button.
   run(c, 'ecView="res"');
   const resHtml = run(c, 'renderErrorCenter(true)');
   assert.match(resHtml, /この店は対象外/); assert.match(resHtml, /現金の扱いが無い店/); assert.match(resHtml, /ecUndoResolve\(/);
   const rs = plain(run(c, '_ecResShown'));
-  const j = rs.findIndex(x => x.key === 'tip|F01|2026-10-15');
+  const j = rs.findIndex(x => x.key === TK);
   assert.equal(rs[j]._now, 'same');
   await run(c, 'ecUndoResolve(' + j + ')'); await tick();
-  assert.equal(c.S.ec_resolutions[RID('tip|F01|2026-10-15')].off, true);
-  assert.equal(c.S.ec_resolutions[RID('tip|F01|2026-10-15')].offBy, 'Akane');
-  assert.ok(c.S.ec_resolutions[RID('tip|F01|2026-10-15')]._at > r._at);
-  assert.ok(plain(run(c, 'ecOpenIssues()')).some(x => x.key === 'tip|F01|2026-10-15'));
+  assert.equal(c.S.ec_resolutions[RID(TK, TFP)].off, true);
+  assert.equal(c.S.ec_resolutions[RID(TK, TFP)].offBy, 'Akane');
+  assert.ok(c.S.ec_resolutions[RID(TK, TFP)]._at > r._at);
+  assert.ok(plain(run(c, 'ecOpenIssues()')).some(x => x.key === TK));
 });
 
 test('clearing: only CEO / GM / accounting / office crew; no "not applicable" for an issue without a store; a reason is required', async () => {
@@ -247,7 +251,7 @@ test('clearing: only CEO / GM / accounting / office crew; no "not applicable" fo
     assert.equal(run(c, 'ecCanResolve() || ecCanView()'), false, role);
     const h = run(c, 'renderErrorCenter(true)');
     assert.doesNotMatch(h, /ecOpenResolve/); assert.match(h, /CEO・GM・経理・事務Crew/);
-    c._why = 'done'; run(c, '_ecModal={key:"tip|F01|2026-10-15",fp:"",stores:["F01"]}');
+    c._why = 'done'; run(c, '_ecModal={key:"tipinv|F01|2026-10-15",fp:"lunch=-5",stores:["F01"]}');
     await run(c, 'ecResolveGo()');
     assert.equal(c.S.ec_resolutions, undefined, role + ' cannot save');
   }
@@ -294,7 +298,7 @@ test('sorting and filtering', () => {
   run(c, 'ecSetStore("F01"); ecSetCat("チップ")');
   const h = run(c, 'renderErrorCenter(true)');
   const keys = plain(run(c, '_ecShown')).map(x => x.key);
-  assert.deepEqual(keys, ['tip|F01|2026-10-15']);
+  assert.deepEqual(keys, [TK]);
   assert.match(h, /<option value="F01" selected>/);
 });
 
@@ -323,7 +327,7 @@ test('the past log does not count issues cleared as "not a problem" (7A); other 
   assert.ok(!today.some(r => r.key === 'emp|email|e1' || r.key === 'emp|dob|e2'), 'cleared issues are not logged');
   assert.ok(today.every(r => typeof r.key === 'string' && 'fp' in r));
   // Attribution for the review counts is unchanged (title based, as before v1088).
-  const tip = today.find(r => r.key === 'tip|F01|2026-10-15');
+  const tip = today.find(r => r.key === TK);
   assert.equal(tip.store, 'F01'); assert.equal(tip.emp, '');
 });
 
@@ -351,16 +355,16 @@ test('7A: clearing a later occurrence of the same issue keeps the earlier judgem
 test('the cleared tab shows whether each record is still detected, changed or gone', () => {
   const R = (key, fp, o) => ({ [RID(key, fp)]: Object.assign({ key, fp }, o) });
   const st = { ec_resolutions: Object.assign({},
-    R('tip|F01|2026-10-15', '', { why: 'done', title: 't1', _at: NOW - 3 }),
+    R(TK, TFP, { why: 'done', title: 't1', _at: NOW - 3 }),
     R('emp|email|e1', 'other', { why: 'done', title: 't2', _at: NOW - 4 }),
     R('tip|F02|2026-10-01', '', { why: 'false', title: 't3', _at: NOW - 5 }),
     R('tip|F03|2026-10-02', '', { why: 'done', title: 't4', _at: NOW - 1, off: true })) };
   const c = app({ st });
   const rows = plain(run(c, '_ecResRows()'));
-  assert.deepEqual(rows.map(r => r.key + ':' + r._now), ['tip|F01|2026-10-15:same', 'emp|email|e1:changed', 'tip|F02|2026-10-01:gone']);
+  assert.deepEqual(rows.map(r => r.key + ':' + r._now), [TK + ':same', 'emp|email|e1:changed', 'tip|F02|2026-10-01:gone']);
   const open = plain(run(c, 'ecOpenIssues()')).map(x => x.key);
   assert.ok(open.includes('emp|email|e1'), 'changed details show under current again');
-  assert.ok(!open.includes('tip|F01|2026-10-15'));
+  assert.ok(!open.includes(TK));
 });
 
 test('overwork that grows from 確認 to 要対応 shows again after it was cleared', () => {
@@ -450,7 +454,7 @@ test('clears pushed through a jsonb cloud row (keys come back reordered) are con
     supaUpsert: async (_t, rows) => { ups++; for (const r of rows) await db.query('insert into app_state values($1,$2) on conflict(key) do update set value=excluded.value', [r.key, JSON.stringify(r.value)]); return true; },
     _fetchOpValue: async k => { const r = await db.query('select value::text as v from app_state where key=$1', [k]); return r.rows.length ? JSON.parse(r.rows[0].v) : null; },
   });
-  const rec = { key: 'tip|F01|2026-10-15', fp: '', why: 'false', memo: 'x', by: 'Marcia', role: 'office', at: '2026-10-16T19:30:00.000Z', off: false, cat: 'チップ', title: 't', store: 'F01', stores: ['F01'], date: '2026-10-15', dateLabel: '', sev: 'high', _at: NOW };
+  const rec = { key: TK, fp: TFP, why: 'false', memo: 'x', by: 'Marcia', role: 'office', at: '2026-10-16T19:30:00.000Z', off: false, cat: 'チップ', title: 't', store: 'F01', stores: ['F01'], date: '2026-10-15', dateLabel: '', sev: 'high', _at: NOW };
   const local = { [RID(rec.key)]: rec };
   assert.equal(await run(c, 'opMergePush')('ec_resolutions', local), true);
   assert.equal(ups, 1, 'confirmed on the first try');
@@ -476,7 +480,7 @@ test('the dialog: cancelling while the save waits for the cloud saves nothing; a
   run(c, '_ecPullAt=Date.now()');   // no automatic read when the screen opens
   run(c, 'renderErrorCenter(true)');
   const shown = plain(run(c, '_ecShown'));
-  const tip = shown.findIndex(x => x.key === 'tip|F01|2026-10-15');
+  const tip = shown.findIndex(x => x.key === TK);
   run(c, 'ecOpenResolve(' + tip + ')'); c._why = 'done';
   const p = run(c, 'ecResolveGo()');
   run(c, 'ecOpenResolve(' + tip + ')');
@@ -497,11 +501,11 @@ test('the dialog: cancelling while the save waits for the cloud saves nothing; a
   c.document = { querySelector: () => ({ value: 'done' }), getElementById: id => (id === 'ec-res-go' ? btn : id === 'modal-overlay' ? { classList: { contains: () => true } } : null) };
   run(c, 'ecOpenResolve(' + tip + ')');
   const p3 = run(c, 'ecResolveGo()'); release(); await p3;
-  assert.equal(c.S.ec_resolutions[RID('tip|F01|2026-10-15')].why, 'done', 'a normal clear still saves');
+  assert.equal(c.S.ec_resolutions[RID(TK, TFP)].why, 'done', 'a normal clear still saves');
   // "この店は対象外" is offered for tips, attendance and inventory, not for employee / onboarding / monthly close items.
   assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"", key:"k" })'), false, 'not without a store');
   assert.equal(run(c, '_ecNaOk({ cat:"勤怠", store:"F01", key:"k" })'), true);
-  for (const [key, na] of [['tip|F01|2026-10-15', true], ['ow|Crew A|2026-10-11', true], ['emp|email|e1', false], ['close|2026-09', false]]) {
+  for (const [key, na] of [[TK, true], ['ow|Crew A|2026-10-11', true], ['emp|email|e1', false], ['close|2026-09', false]]) {
     const i = shown.findIndex(x => x.key === key);
     c.modals.length = 0; run(c, 'ecOpenResolve(' + i + ')');
     assert.equal(/value="na"/.test(c.modals[0]), na, key);
@@ -510,7 +514,7 @@ test('the dialog: cancelling while the save waits for the cloud saves nothing; a
 });
 
 test('the daily log snapshot waits for the cloud read, so an issue cleared on another device is not logged today', async () => {
-  const cloud = { ec_resolutions: { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 9 } } };
+  const cloud = { ec_resolutions: { [RID(TK, TFP)]: { key: TK, fp: TFP, why: 'done', _at: NOW - 9 } } };
   const c = app({ cloud });
   run(c, 'renderErrorCenter(true)');
   run(c, 'ecSetSort("store"); renderErrorCenter(true)');   // drawn again while the read is still in flight
@@ -518,7 +522,7 @@ test('the daily log snapshot waits for the cloud read, so an issue cleared on an
   await tick();
   const today = (c.S.ec_log || []).filter(r => r.date === '2026-10-16').map(r => r.key);
   assert.ok(today.length > 0);
-  assert.ok(!today.includes('tip|F01|2026-10-15'));
+  assert.ok(!today.includes(TK));
 });
 
 test('the past-log view opened first thing in the day is drawn again once today\'s rows are written', async () => {
@@ -532,7 +536,7 @@ test('the past-log view opened first thing in the day is drawn again once today\
 });
 
 test('opening the error center reads the cloud at most once a minute and redraws only while it is still open', async () => {
-  const cloud = { ec_resolutions: { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 7 } } };
+  const cloud = { ec_resolutions: { [RID(TK, TFP)]: { key: TK, fp: TFP, why: 'done', _at: NOW - 7 } } };
   const c = app({ cloud });
   run(c, 'renderErrorCenter(true)'); await tick();
   assert.equal(c.pulls, 1);
@@ -595,28 +599,29 @@ test('tasks are retired: no task screens or entry points; the data and its merge
   assert.match(SRC, /tasks:\s+\{ label:'ワークセンター', toast:false, pull: async function\(\)\{ try\{ await apPullLatest\(\); \}catch\(e\)\{\} try\{ await ecPullLatest\(\); \}catch\(e\)\{\} \} \}/);
 });
 
-test('cash tip: yesterday\'s missing cash tip still notifies the store once (no task is created)', () => {
-  const S = { tasks_all: [{ id: 'old', refId: 'ctip_F02_2026-10-15', auto: 'cashtip', status: '進行中' }], notifications: [] };
+test('cash tip (v1118): missing cash tips are no longer notified; earlier notices are hidden, not deleted; no task is created', () => {
+  const S = { tasks_all: [{ id: 'old', refId: 'ctip_F02_2026-10-15', auto: 'cashtip', status: '進行中' }],
+    notifications: [{ id: 'n1', refId: 'ctip_F01_2026-10-14', toStore: 'F01', title: 'キャッシュチップ未入力: Store One' }, { id: 'n2', refId: 'other_1', toStore: 'F01', title: 'x' }] };
   const c = {
     Date: class extends Date { constructor(...a) { super(...(a.length ? a : [NOW])); } static now() { return NOW; } },
-    window: {}, S, notifs: [],
+    window: {}, S, notifs: [], curUserName: 'SL', curRole: 'sl', curStore: 'F01',
     isoOf: d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10),
     getTasks: () => S.tasks_all, getNotifs: () => S.notifications, addNotif: n => { S.notifications.push(n); c.notifs.push(n); },
-    activeStores: () => STORES, cashTipMissing: (sid, dt) => dt === '2026-10-15' && sid !== 'F03', console,
+    activeStores: () => STORES, cashTipMissing: () => true, console,
   };
   vm.createContext(c);
-  vm.runInContext(fnSrc('notifHasRef') + '\n' + fnSrc('checkCashTipNotify'), c);
+  vm.runInContext(fnSrc('notifHasRef') + '\n' + fnSrc('checkCashTipNotify') + '\n' + fnSrc('notifRetired'), c);
   vm.runInContext('checkCashTipNotify()', c);
-  assert.deepEqual(c.notifs.map(n => n.refId), ['ctip_F01_2026-10-15'], 'F02 was already notified by the old task; F03 is entered');
-  assert.equal(c.notifs[0].toStore, 'F01');
+  assert.equal(c.notifs.length, 0, 'no new notice even if something still reports a missing cash tip');
   assert.deepEqual(S.tasks_all.map(t => t.id), ['old'], 'no task is created and the old one is not changed');
-  c.window._ctipChk = null;
-  vm.runInContext('checkCashTipNotify()', c);
-  assert.equal(c.notifs.length, 1, 'the same store and day is not notified twice');
+  assert.equal(S.notifications.length, 2, 'earlier notices are kept (not deleted)');
+  assert.equal(vm.runInContext('notifRetired(S.notifications[0])', c), true);
+  assert.equal(vm.runInContext('notifRetired(S.notifications[1])', c), false);
+  assert.match(bodyOf('notifForMe'), /notifRetired\(n\)\) return false;/, 'the list and unread count leave out the earlier cash tip notices');
 });
 
 test('the dashboard rail and work center count only open issues', () => {
-  const c = app({ st: { ec_resolutions: { [RID('tip|F01|2026-10-15')]: { key: 'tip|F01|2026-10-15', fp: '', why: 'done', _at: NOW - 1 } } }, fns: ['mdErrors'] });
+  const c = app({ st: { ec_resolutions: { [RID(TK, TFP)]: { key: TK, fp: TFP, why: 'done', _at: NOW - 1 } } }, fns: ['mdErrors'] });
   const n = plain(run(c, 'mdErrors()')).length;
   assert.equal(n, plain(run(c, 'ecCollect()')).length - 1);
 });
