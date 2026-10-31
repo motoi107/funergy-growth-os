@@ -16799,6 +16799,7 @@ var MR_ERR = {
   unchanged:['前の提出版と同じ内容です（新しい提出版は作りません）','Same as the last submitted version (no new version made)'],
   new_version:['新しい提出版が届きました。読み込み直して確かめてください','A new version came in. Load it and check'],
   legacy:['前の形の記録（v1）なので、読むだけです','This is a record in the earlier format (v1); read only'],
+  update_app:['この店（月）には入力担当が 2 人以上います。前の版のアプリ・サーバーの関数では 1 人しか送れず、ほかの人が外れてしまうため止めました（アプリと関数を v1122 にしてから変えてください）','This store (month) has two or more input people. An older app or server function sends only one and would drop the others, so it was stopped (update the app and the function to v1122 first).'],
   not_submitted:['まだ提出されていません','Not submitted yet'], not_confirmed:['確認完了になっていません','Not confirmed'],
   not_available:['本番の店の入力はまだ OFF です（GM・CEO が担当・閲覧設定で ON にします）','Input for live stores is still off (the GM or CEO turns it on in the access settings)'],
   role_exists:['この人は CEO・GM・AM として登録されています（ここでは変えません）','This person is registered as CEO, GM or AM (not changed here)'],
@@ -17143,7 +17144,7 @@ function mrClearRec(){ _mr.cmp = {}; _mr.dlOpen = false; _mr.srvMiss = null; _mr
 function mrCmpUnsent(){ var c = (_mr && _mr.cmp) || {}; return Object.keys(c).some(function(k){ return c[k] && (c[k].busy || !mrBlank(c[k].text)); }); }
 function mrUnsaved(){ var ed = _mr && _mr.ed; return !!(ed && (ed.state === 'dirty' || ed.state === 'error' || ed.state === 'conflict' || ed.state === 'saving' || ed.pending)) || mrCmpUnsent() || mrSetUnsaved(); }
 /* v1073: 担当・閲覧設定・店舗の管轄の保存していない変更 */
-function mrSetUnsaved(){ return !!(_mr && ((_mr.accDraft && _mr.accDraft.dirty) || (_mr.amDraft && Object.keys(_mr.amDraft).length))); }
+function mrSetUnsaved(){ return !!(_mr && ((_mr.accDraft && _mr.accDraft.dirty) || (_mr.accMonth && _mr.accMonth.inputs.join('|') !== _mr.accMonth.base.join('|')) || (_mr.amDraft && Object.keys(_mr.amDraft).length))); }
 function mrLeaveOk(){ return !mrUnsaved() || confirm(t('保存されていない入力・送っていない返信があります。移りますか？（消えます）','There is unsaved input or an unsent reply. Leave anyway? (it will be lost)')); }
 try { window.addEventListener('beforeunload', function(ev){ if (mrUnsaved()) { ev.preventDefault(); ev.returnValue = ''; return ''; } }); } catch(e) {}
 function mrBack(){
@@ -17975,7 +17976,7 @@ function mrWhyL(list){ return mrArr(list).map(function(w){ var x = MR_WHY[w]; re
 function mrOpenSettings(){ if (!mrLeaveOk()) return; mrEdStop(); mrClearRec(); _mr.view = { settings:true }; mrAccDrop(); mrRerender(); try { window.scrollTo(0,0); } catch(e) {} }
 /* v1073: 設定の読んだ中身と、その読み込みの印をいっしょに捨てる（印だけ残ると二度目に読みに行かず「読み込み中…」のまま止まった） */
 function mrAccDrop(){
-  _mr.acc = null; _mr.accDraft = null; _mr.accConf = null; _mr.amDraft = null; _mr.amConf = null; _mr.amPrev = null; _mr.flagsConf = null; _mr.members = null;
+  _mr.acc = null; _mr.accDraft = null; _mr.accMonth = null; _mr.accConf = null; _mr.amDraft = null; _mr.amConf = null; _mr.amPrev = null; _mr.flagsConf = null; _mr.members = null;
   Object.keys(_mr.load || {}).forEach(function(k){ if (k.indexOf('acc|') === 0 || k === 'members') delete _mr.load[k]; });
 }
 /* v1073: ON・OFF の版（whoami と access_get が返す）。保存はこの版で送り、違えばサーバーは何も書かない（conflict）。新しいほうだけ取る */
@@ -18026,32 +18027,37 @@ function mrSettingsHtml(){
     if (_mr.accStore !== s.store_id) { _mr.accStore = s.store_id; _mr.accDraft = null; }
     var d = mrAccDraftOf(s), C = mrObj(A.candidates);
     h += '<div class="mr-pg"><nav class="mr-rail mr-rail-w"><div class="mr-m mr-railt">'+t('店舗（基本の設定）','Stores (base settings)')+'</div>' + stores.map(function(x){ var on = x.store_id === s.store_id;
-      return '<button class="mr-railb mr-store'+(on ? ' on' : '')+'" aria-pressed="'+on+'" data-store="'+e(x.store_id)+'" onclick="mrAccPick(this.getAttribute(\'data-store\'))"><span class="mr-rl"><b>'+e(x.name)+'</b>'+(x.active === false ? t('（使っていない）',' (not in use)') : '')+'<br><span class="mr-m">'+(scopeOk ? e(mrScopeL(x)) + '・' : '')+(x.input_emp ? e(t('入力担当 ' + (x.input_name || x.input_emp), 'Input ' + (x.input_name || x.input_emp))) : '<b class="mr-bad">'+t('入力担当 未設定','Input person not set')+'</b>')+'</span></span></button>'; }).join('') + '</nav><div class="mr-main">';
-    /* 店ごとの基本 */
-    var inOpts = '<option value="">'+t('未設定（だれも入力できない）','Not set (nobody can write)')+'</option>', seen = false;
-    mrArr(C.input).forEach(function(c){ var on = c.emp_id === d.input_emp; if (on) seen = true; inOpts += '<option value="'+e(c.emp_id)+'"'+(on ? ' selected' : '')+'>'+e(mrCandL(c))+'</option>'; });
-    if (d.input_emp && !seen) inOpts += '<option value="'+e(d.input_emp)+'" selected>'+e((s.input_name || d.input_emp) + t('（選べない人：在籍・肩書きを確かめる）',' (cannot be chosen: check status and title)'))+'</option>';
+      return '<button class="mr-railb mr-store'+(on ? ' on' : '')+'" aria-pressed="'+on+'" data-store="'+e(x.store_id)+'" onclick="mrAccPick(this.getAttribute(\'data-store\'))"><span class="mr-rl"><b>'+e(x.name)+'</b>'+(x.active === false ? t('（使っていない）',' (not in use)') : '')+'<br><span class="mr-m">'+(scopeOk ? e(mrScopeL(x)) + '・' : '')+(mrAccInputs(x).length ? e(t('入力担当 ' + mrAccInNames(x), 'Input ' + mrAccInNames(x))) : '<b class="mr-bad">'+t('入力担当 未設定','Input person not set')+'</b>')+'</span></span></button>'; }).join('') + '</nav><div class="mr-main">';
+    /* 店ごとの基本（v1122：入力担当は名前で選ぶ・何人でも（10 人まで）。Moto さん 10/30「指名、複数選択可に」） */
+    var inNames = {}; mrArr(s.inputs).forEach(function(v){ inNames[v.emp_id] = v; }); mrArr(C.input).forEach(function(c){ if (!inNames[c.emp_id]) inNames[c.emp_id] = c; });
+    var bi = d.base ? d.base.inputs : [];
+    var inAdd = '<option value="">'+t('人を選ぶ','Choose a person')+'</option>' + mrArr(C.input).filter(function(c){ return d.inputs.indexOf(c.emp_id) < 0; }).map(function(c){ return '<option value="'+e(c.emp_id)+'">'+e(mrCandL(c))+'</option>'; }).join('');
     var vNames = {}; mrArr(s.viewers).forEach(function(v){ vNames[v.emp_id] = v; }); mrArr(C.viewer).forEach(function(c){ if (!vNames[c.emp_id]) vNames[c.emp_id] = c; });
-    var bv = d.base ? d.base.viewers : [], myIn = !!(d.base && d.input_emp !== d.base.input_emp);
+    var bv = d.base ? d.base.viewers : [];
     var vAdd = '<option value="">'+t('人を選ぶ','Choose a person')+'</option>' + mrArr(C.viewer).filter(function(c){ return d.viewers.indexOf(c.emp_id) < 0; }).map(function(c){ return '<option value="'+e(c.emp_id)+'">'+e(mrCandL(c))+'</option>'; }).join('');
     h += mrAccConfHtml(s);
     h += '<div class="card mr-col"><div class="mr-rowh"><span class="mr-hd-t" style="font-size:18px">'+e(s.name)+'</span>'
       + (scopeOk ? '<span class="mr-chip '+(s.am_user ? 'mr-c-ok' : 'mr-c-none')+'">'+e(s.am_user ? t('管轄：' + (s.am_name || '?'), 'Lead: ' + (s.am_name || '?')) + mrScopeRoleL(mrScopeRoleOf(s.am_user)) : t('管轄：未設定', 'Lead: not set'))+'</span><button class="mr-linkb mr-blue" onclick="mrGo(\'scope\')">'+t('管轄を変える ↓','Change ↓')+'</button>' : '')
       + (d.dirty ? '<span class="mr-chip mr-c-warn">'+t('保存していない変更あり','Unsaved changes')+'</span>' : '')+'</div><div class="mr-grid">'
-      + '<div class="mr-blk"><b>'+t('入力・提出の担当（基本）','Input person (base)')+'</b><select class="mr-sel" id="mr-acc-input"'+busy+' onchange="mrAccSet(\'input\', this.value)">'+inOpts+'</select>'
-      + (myIn ? '<div class="mr-m mr-mine-t">'+e(t('あなたの変更（未保存）。保存するまでは ' + mrAccNm(d.base.input_emp, s) + ' のまま', 'Your change (not saved). Until saved: ' + mrAccNm(d.base.input_emp, s, true)))+'</div>' : '')
-      + '<div class="mr-m">'+t('選べる人：在籍している G3（Server・Kitchen・Operation・Store Leader）・G4（Store Manager・Head Chef）・AM・GM。選んだ人は、この店・その月のレビューを見る・書く・提出することだけができます（PIN で入れるように利用者に足します）。','You can choose G3 leaders, G4 Store Managers / Head Chefs, AMs and GMs who are in service. That person can only view, write and submit this store’s review for the month (they are added as a member so the PIN login works).')+'</div>'
-      + (s.input_ok === false ? '<div class="mr-m mr-bad">'+t('いまの担当は選べない人になっています（在籍・肩書きを確かめて選び直してください）。','The current input person can no longer be chosen (check and choose again).')+'</div>' : '') + '</div>'
+      + '<div class="mr-blk"><b>'+t('入力・提出の担当（基本・何人でも）','Input people (base, one or more)')+'</b><div class="mr-chips" id="mr-acc-inputs">' + (d.inputs.length ? d.inputs.map(function(id){ var v = inNames[id] || { name:mrAccNm(id, s) }, mine = !!(d.base && bi.indexOf(id) < 0); return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'"'+busy+' onclick="mrAccDelInput(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('') : '<b class="mr-bad">'+t('未設定（だれも入力できない）','Not set (nobody can write)')+'</b>') + '</div>'
+      + (d.base && bi.some(function(id){ return d.inputs.indexOf(id) < 0; }) ? '<div class="mr-m mr-mine-t">'+e(t('外した人（未保存）：' + bi.filter(function(id){ return d.inputs.indexOf(id) < 0; }).map(function(id){ return mrAccNm(id, s); }).join('・') + '。保存するまでは入力できます', 'Removed (not saved): ' + bi.filter(function(id){ return d.inputs.indexOf(id) < 0; }).map(function(id){ return mrAccNm(id, s); }).join(', ') + '. They can write until you save'))+'</div>' : '')
+      + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-iadd"'+busy+'>'+inAdd+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccAddInput()">'+t('＋ 足す','+ Add')+'</button></div>'
+      + '<div class="mr-m">'+t('選べる人：在籍している G3（Server・Kitchen・Operation・Store Leader）・G4（Store Manager・Head Chef）・AM・GM。10 人まで。選んだ人はだれでも、この店・その月のレビューを見る・書く・提出することだけができます（PIN で入れるように利用者に足します）。2 人が同時に書いたときは、あとから保存した人に「先に保存されました」と出ます（黙って上書きしません）。','You can choose G3 leaders, G4 Store Managers / Head Chefs, AMs and GMs who are in service, up to 10. Each of them can only view, write and submit this store’s review for the month (they are added as members so the PIN login works). If two write at the same time, the later save is told someone saved first (nothing is silently overwritten).')+'</div>'
+      + (s.input_ok === false ? '<div class="mr-m mr-bad">'+t('いまの担当に選べない人がいます（在籍・肩書きを確かめて外すか選び直してください）。','Someone on the input list can no longer be chosen (check, then remove or choose again).')+'</div>' : '') + '</div>'
       + '<div class="mr-blk"><b>'+t('個人で足す閲覧者（AM・Head Chef・Corporate Chef）','Extra viewers (AM, Head Chef, Corporate Chef)')+'</b><div class="mr-chips">' + (d.viewers.length ? d.viewers.map(function(id){ var v = vNames[id] || { name:id }, mine = !!(d.base && bv.indexOf(id) < 0); return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : v.member === false ? '<span class="mr-m">'+t('（利用者でない）',' (not a member)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'"'+busy+' onclick="mrAccDelViewer(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('') : '<span class="mr-m">'+t('なし','none')+'</span>') + '</div>'
       + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-vadd"'+busy+'>'+vAdd+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccAddViewer()">'+t('＋ 足す','+ Add')+'</button></div>'
       + '<div class="mr-m">'+t('CEO・GM・Head Chef・Corporate Chef は全店、担当の AM は自分の店を、ここで足さなくても見られます。閲覧者は利用者に足しません（入れない人は表に「利用者でない」と出ます）。','The CEO, GM and Head Chef / Corporate Chef see all stores and the AM in charge sees their stores without being added here. Viewers are not made members (people who cannot sign in show as “not a member”).')+'</div></div>'
-      + '</div><div class="mr-btns"><button class="btn btn-primary mr-btn-l"'+busy+' onclick="mrAccSave()">'+t('この店の担当と閲覧者を保存','Save this store’s input person and viewers')+'</button>'+(d.dirty ? '<button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccCancel()">'+t('やめる（いまの設定に戻す）','Cancel (back to the saved settings)')+'</button>' : '')+'</div></div>';
-    /* その月だけの担当 */
-    var mOpts = '<option value="">'+e(t('基本どおり（' + (s.input_name || t('未設定','not set')) + '）', 'As the base (' + (s.input_name || 'not set') + ')'))+'</option>', mSeen = !s.month_input_emp;
-    mrArr(C.input).forEach(function(c){ var on = c.emp_id === s.month_input_emp; if (on) mSeen = true; mOpts += '<option value="'+e(c.emp_id)+'"'+(on ? ' selected' : '')+'>'+e(mrCandL(c))+'</option>'; });
-    if (!mSeen) mOpts += '<option value="'+e(s.month_input_emp)+'" selected>'+e((s.month_input_name || s.month_input_emp) + t('（選べない人）',' (cannot be chosen)'))+'</option>';
-    h += '<div class="card mr-col"><b>'+e(t(mrYmLabel(ym) + ' だけの入力担当', 'Input person for ' + ym + ' only'))+'</b><div class="mr-rowh"><select class="mr-sel" id="mr-acc-month">'+mOpts+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccMonthSave()">'+t('この月を保存','Save this month')+'</button></div>'
-      + '<div class="mr-m">'+e(t('いまのこの月の担当：' + (s.effective_input_name || s.effective_input_emp || '未設定') + '。担当を変えても、前の月の報告者・返信者の記録は書き換えません。', 'This month now: ' + (s.effective_input_name || s.effective_input_emp || 'not set') + '. Changing it never rewrites who reported or replied before.'))+'</div></div>';
+      + '</div><div class="mr-btns"><button class="btn btn-primary mr-btn-l"'+busy+' onclick="mrAccSave()">'+t('この店の担当と閲覧者を保存','Save this store’s input people and viewers')+'</button>'+(d.dirty ? '<button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccCancel()">'+t('やめる（いまの設定に戻す）','Cancel (back to the saved settings)')+'</button>' : '')+'</div></div>';
+    /* その月だけの担当（v1122：何人でも。だれもいなければ基本どおり） */
+    var md = mrAccMonthOf(s, ym), mNames = {}; mrArr(s.month_inputs).forEach(function(v){ mNames[v.emp_id] = v; }); mrArr(C.input).forEach(function(c){ if (!mNames[c.emp_id]) mNames[c.emp_id] = c; });
+    var mAdd = '<option value="">'+t('人を選ぶ','Choose a person')+'</option>' + mrArr(C.input).filter(function(c){ return md.inputs.indexOf(c.emp_id) < 0; }).map(function(c){ return '<option value="'+e(c.emp_id)+'">'+e(mrCandL(c))+'</option>'; }).join('');
+    h += '<div class="card mr-col"><b>'+e(t(mrYmLabel(ym) + ' だけの入力担当', 'Input people for ' + ym + ' only'))+'</b><div class="mr-chips" id="mr-acc-month">'
+      + (md.inputs.length ? md.inputs.map(function(id){ var v = mNames[id] || { name:mrAccNm(id, s) }, mine = md.base.indexOf(id) < 0; return '<span class="mr-pp'+(mine ? ' mr-pp-mine' : '')+'"><b>'+e(v.name || id)+'</b>'+(mine ? '<span class="mr-m">'+t('（未保存）',' (not saved)')+'</span>' : '')+(v.ok === false ? '<span class="mr-m mr-bad">'+t('（もう選べない）',' (no longer valid)')+'</span>' : '')+'<button class="mr-x" aria-label="'+t('外す','Remove')+'" data-emp="'+e(id)+'"'+busy+' onclick="mrAccMonthDel(this.getAttribute(\'data-emp\'))">×</button></span>'; }).join('')
+        : '<span class="mr-m">'+e(t('基本どおり（' + (mrAccInNames(s) || '未設定') + '）', 'As the base (' + (mrAccInNames(s) || 'not set') + ')'))+'</span>') + '</div>'
+      + '<div class="mr-rowh"><select class="mr-sel" id="mr-acc-madd"'+busy+'>'+mAdd+'</select><button class="btn btn-secondary btn-sm"'+busy+' onclick="mrAccMonthAdd()">'+t('＋ 足す','+ Add')+'</button>'
+      + (md.inputs.length ? '<button class="mr-linkb"'+busy+' onclick="mrAccMonthClear()">'+t('基本どおりに戻す','Back to the base')+'</button>' : '')
+      + '<button class="btn btn-secondary btn-sm mr-ml-auto"'+busy+' onclick="mrAccMonthSave()">'+t('この月を保存','Save this month')+'</button></div>'
+      + '<div class="mr-m">'+e(t('いまのこの月の担当：' + (s.effective_input_name || '未設定') + '。だれも選ばなければ基本の担当です。担当を変えても、前の月の報告者・返信者の記録は書き換えません。', 'This month now: ' + (s.effective_input_name || 'not set') + '. With nobody chosen, the base people write. Changing it never rewrites who reported or replied before.'))+'</div></div>';
     /* 実効の権限 */
     var pp = mrArr((mrArr(A.perms).filter(function(x){ return x.store_id === s.store_id; })[0] || {}).people);
     var yn = function(v){ return v ? '<span class="mr-y">○</span>' : '<span class="mr-n">×</span>'; };
@@ -18072,11 +18078,16 @@ function mrSettingsHtml(){
 /* v1073: 下書きは読んだときの設定（base：入力担当・閲覧者・版）を持つ。ほかの人（または別のタブ）が先に保存して版が進んだら：
    変えていない下書きはいまの設定で作り直す。変えた下書きは B（Moto さん 10/13）＝自分が変えた所だけをいまの設定に入れ直し、
    変えていない所はいまの設定のまま（閲覧者は 1 人ずつ：自分が足した人は足し、外した人は外す。ほかの人が足した人は残す）。未保存で出して帯で知らせる */
+/* v1122：入力担当は何人でも（input_emps）。前の版のサーバーが返す 1 人（input_emp）も読む */
+function mrAccInputs(s){ return s && Array.isArray(s.input_emps) ? s.input_emps.filter(function(x){ return !!x; }) : (s && s.input_emp ? [s.input_emp] : []); }
+function mrAccInNames(s){ var nm = {}; mrArr(s && s.inputs).forEach(function(v){ nm[v.emp_id] = v.name; }); var l = mrAccInputs(s);
+  return l.length === 1 && !nm[l[0]] && s.input_name ? s.input_name : l.map(function(id){ return nm[id] || id; }).join('・'); }
 function mrAccBase(s){
-  var nm = {}; if (s.input_emp) nm[s.input_emp] = s.input_name || s.input_emp; mrArr(s.viewers).forEach(function(v){ nm[v.emp_id] = v.name || v.emp_id; });
-  return { input_emp:s.input_emp || '', viewers:mrArr(s.viewers).map(function(v){ return v.emp_id; }), version:typeof s.version === 'number' ? s.version : 0, names:nm };
+  var nm = {}; mrArr(s.inputs).forEach(function(v){ nm[v.emp_id] = v.name || v.emp_id; }); if (s.input_emp && !nm[s.input_emp] && !Array.isArray(s.inputs)) nm[s.input_emp] = s.input_name || s.input_emp;
+  mrArr(s.viewers).forEach(function(v){ nm[v.emp_id] = v.name || v.emp_id; });
+  return { inputs:mrAccInputs(s), viewers:mrArr(s.viewers).map(function(v){ return v.emp_id; }), version:typeof s.version === 'number' ? s.version : 0, names:nm };
 }
-function mrAccFresh(s){ var b = mrAccBase(s); return (_mr.accDraft = { store_id:s.store_id, input_emp:b.input_emp, viewers:b.viewers.slice(), dirty:false, base:b }); }
+function mrAccFresh(s){ var b = mrAccBase(s); return (_mr.accDraft = { store_id:s.store_id, inputs:b.inputs.slice(), viewers:b.viewers.slice(), dirty:false, base:b }); }
 function mrAccDraftOf(s){
   var d = _mr.accDraft;
   if (!d || d.store_id !== s.store_id || !d.base) return mrAccFresh(s);
@@ -18087,16 +18098,15 @@ function mrAccDraftOf(s){
 }
 function mrAccRebase(s, d, nb){
   var ob = d.base, has = function(a, x){ return a.indexOf(x) >= 0; };
-  var myIn = d.input_emp !== ob.input_emp, thIn = nb.input_emp !== ob.input_emp;
-  var myAdd = d.viewers.filter(function(v){ return !has(ob.viewers, v); }), myDel = ob.viewers.filter(function(v){ return !has(d.viewers, v); });
-  var thAdd = nb.viewers.filter(function(v){ return !has(ob.viewers, v); }), thDel = ob.viewers.filter(function(v){ return !has(nb.viewers, v); });
-  var input = myIn ? d.input_emp : nb.input_emp, viewers = nb.viewers.filter(function(v){ return !has(myDel, v); });
-  myAdd.forEach(function(v){ if (!has(viewers, v)) viewers.push(v); });
-  var dirty = input !== nb.input_emp || viewers.join('|') !== nb.viewers.join('|'), nm = {};
+  /* 入力担当も閲覧者と同じく 1 人ずつ：自分が足した人は足し、外した人は外す。ほかの人が足した人・外した人はそのまま（v1122） */
+  var mrg = function(k){ var mine = d[k], o = ob[k], n = nb[k], myAdd = mine.filter(function(v){ return !has(o, v); }), myDel = o.filter(function(v){ return !has(mine, v); });
+    var out = n.filter(function(v){ return !has(myDel, v); }); myAdd.forEach(function(v){ if (!has(out, v)) out.push(v); });
+    return { out:out, myAdd:myAdd, myDel:myDel, thAdd:n.filter(function(v){ return !has(o, v); }), thDel:o.filter(function(v){ return !has(n, v); }) }; };
+  var I = mrg('inputs'), V = mrg('viewers');
+  var dirty = I.out.join('|') !== nb.inputs.join('|') || V.out.join('|') !== nb.viewers.join('|'), nm = {};
   [ob.names, nb.names].forEach(function(m){ Object.keys(m || {}).forEach(function(k){ nm[k] = m[k]; }); });
-  _mr.accConf = { store_id:s.store_id, theirs:{ input:thIn ? [ob.input_emp, nb.input_emp] : null, add:thAdd, del:thDel }, mine:{ input:myIn ? [ob.input_emp, d.input_emp] : null, add:myAdd, del:myDel },
-    both:myIn && thIn && d.input_emp !== nb.input_emp, same:!dirty, names:nm };
-  _mr.accDraft = { store_id:s.store_id, input_emp:input, viewers:viewers, dirty:dirty, base:nb };
+  _mr.accConf = { store_id:s.store_id, theirs:{ inAdd:I.thAdd, inDel:I.thDel, add:V.thAdd, del:V.thDel }, mine:{ inAdd:I.myAdd, inDel:I.myDel, add:V.myAdd, del:V.myDel }, same:!dirty, names:nm };
+  _mr.accDraft = { store_id:s.store_id, inputs:I.out, viewers:V.out, dirty:dirty, base:nb };
   return _mr.accDraft;
 }
 /* 人の名前（設定の表・候補・前に読んだ名前から）。空は「未設定」 */
@@ -18104,13 +18114,15 @@ function mrAccNm(id, s, en){
   if (!id) return en ? 'not set' : t('未設定','not set');
   var c = _mr.accConf && _mr.accConf.names, A = mrObj(_mr.acc && _mr.acc.candidates), hit = '';
   if (c && c[id]) return c[id];
-  if (s && s.input_emp === id && s.input_name) return s.input_name;
+  mrArr(s && s.inputs).concat(mrArr(s && s.month_inputs)).forEach(function(v){ if (!hit && v && v.emp_id === id && v.name) hit = v.name; });
+  if (!hit && s && !Array.isArray(s.inputs) && s.input_emp === id && s.input_name) return s.input_name;
   mrArr(s && s.viewers).concat(mrArr(A.input), mrArr(A.viewer)).forEach(function(v){ if (!hit && v && v.emp_id === id && v.name) hit = v.name; });
   return hit || id;
 }
 function mrAccChg(x, s){
   var p = [], nm = function(id){ return mrAccNm(id, s); };
-  if (x.input) p.push(t('入力担当 ', 'input person ') + nm(x.input[0]) + ' → ' + nm(x.input[1]));
+  if (mrArr(x.inAdd).length) p.push(t('入力担当に ' + x.inAdd.map(nm).join('・') + ' を足す', 'add input person ' + x.inAdd.map(nm).join(', ')));
+  if (mrArr(x.inDel).length) p.push(t('入力担当から ' + x.inDel.map(nm).join('・') + ' を外す', 'remove input person ' + x.inDel.map(nm).join(', ')));
   if (x.add.length) p.push(t('閲覧者に ' + x.add.map(nm).join('・') + ' を足す', 'add viewer ' + x.add.map(nm).join(', ')));
   if (x.del.length) p.push(t('閲覧者から ' + x.del.map(nm).join('・') + ' を外す', 'remove viewer ' + x.del.map(nm).join(', ')));
   return p.join(t('・', '; '));
@@ -18122,21 +18134,38 @@ function mrAccConfHtml(s){
   if (c.plain) b += '<span>'+t('いまの設定を出しています。','The settings now are shown.')+'</span>';
   else if (c.same) b += '<span>'+e(t('あなたの変更（' + mi + '）は、もう入っています（保存しなくて大丈夫）。', 'Your change (' + mi + ') is already in (nothing to save).'))+'</span>';
   else {
-    if (c.both) b += '<span>'+e(t('入力担当は 2 人とも変えていました：ほかの人は ' + mrAccNm(c.theirs.input[1], s) + '、あなたは ' + mrAccNm(d.input_emp, s) + '。いまの下書きは あなたの ' + mrAccNm(d.input_emp, s) + ' です（保存するまでは ' + mrAccNm(c.theirs.input[1], s) + ' のまま）。',
-      'Both of you changed the input person: theirs is ' + mrAccNm(c.theirs.input[1], s) + ', yours is ' + mrAccNm(d.input_emp, s) + '. The draft now has yours (until saved it stays ' + mrAccNm(c.theirs.input[1], s) + ').'))+'</span>';
     if (mi) b += '<span>'+e(t('あなたの変更（' + mi + '）を、いまの設定に入れ直しました。', 'Your change (' + mi + ') was put on the settings now. '))+'<b>'+t('まだ保存していません。','Not saved yet.')+'</b> '+t('確かめて「保存」を押してください。','Check and press Save.')+'</span>';
   }
+  if (mrArr(d.inputs).length > 10) b += '<span><b>'+e(t('入力担当が ' + d.inputs.length + ' 人になりました（10 人まで）。保存の前に減らしてください。', 'There are ' + d.inputs.length + ' input people now (up to 10). Remove some before saving.'))+'</b></span>';
   if (mrArr(d.viewers).length > 20) b += '<span><b>'+e(t('閲覧者が ' + d.viewers.length + ' 人になりました（20 人まで）。保存の前に減らしてください。', 'There are ' + d.viewers.length + ' viewers now (up to 20). Remove some before saving.'))+'</b></span>';
   return '<div class="mr-conf" role="status"><i class="ti ti-alert-triangle" style="margin-top:3px"></i><div class="mr-conf-b"><b>'+t('ほかの人（または別のタブ）が先にこの店の設定を保存しました','Someone (or another tab) saved this store’s settings first')+'</b>'+b+'</div>'
     + '<button class="mr-x" aria-label="'+t('閉じる','Close')+'" onclick="_mr.accConf=null;mrRerender()">×</button></div>';
 }
-function mrAccPick(id){ if (_mr.accDraft && _mr.accDraft.dirty && _mr.accDraft.store_id !== id && !confirm(t('保存していない変更があります。別の店へ移りますか？（変更は消えます）','There are unsaved changes. Move to another store? (they will be lost)'))) return; _mr.accStore = String(id || ''); _mr.accDraft = null; _mr.accConf = null; mrRerender(); }
-function mrAccSet(k, v){ var d = _mr.accDraft; if (!d || _mr.busy) return; if (k === 'input') { d.input_emp = String(v || ''); d.dirty = true; } mrRerender(); }
+function mrAccDirty(){ return !!((_mr.accDraft && _mr.accDraft.dirty) || (_mr.accMonth && _mr.accMonth.inputs.join('|') !== _mr.accMonth.base.join('|'))); }
+function mrAccPick(id){ if (mrAccDirty() && String(id || '') !== _mr.accStore && !confirm(t('保存していない変更があります。別の店へ移りますか？（変更は消えます）','There are unsaved changes. Move to another store? (they will be lost)'))) return; _mr.accStore = String(id || ''); _mr.accDraft = null; _mr.accMonth = null; _mr.accConf = null; mrRerender(); }
+function mrAccAddInput(){ var d = _mr.accDraft, el = document.getElementById('mr-acc-iadd'), v = el ? String(el.value || '') : ''; if (!d || _mr.busy || !v || d.inputs.indexOf(v) >= 0 || d.inputs.length >= 10) return; d.inputs.push(v); d.dirty = true; mrRerender(); }
+function mrAccDelInput(v){ var d = _mr.accDraft; if (!d || _mr.busy) return; var i = d.inputs.indexOf(String(v)); if (i < 0) return; d.inputs.splice(i, 1); d.dirty = true; mrRerender(); }
+/* その月だけの担当の下書き（店・月ごと。読み直したら作り直す） */
+function mrAccMonthOf(s, ym){
+  var key = s.store_id + '|' + ym, base = Array.isArray(s.month_input_emps) ? s.month_input_emps.filter(function(x){ return !!x; }) : (s.month_input_emp ? [s.month_input_emp] : []), m = _mr.accMonth;
+  if (!m || m.key !== key || m.base.join('|') !== base.join('|')) m = _mr.accMonth = { key:key, store_id:s.store_id, ym:ym, base:base, inputs:base.slice() };
+  return m;
+}
+function mrAccMonthAdd(){ var m = _mr.accMonth, el = document.getElementById('mr-acc-madd'), v = el ? String(el.value || '') : ''; if (!m || _mr.busy || !v || m.inputs.indexOf(v) >= 0 || m.inputs.length >= 10) return; m.inputs.push(v); mrRerender(); }
+function mrAccMonthDel(v){ var m = _mr.accMonth; if (!m || _mr.busy) return; var i = m.inputs.indexOf(String(v)); if (i < 0) return; m.inputs.splice(i, 1); mrRerender(); }
+function mrAccMonthClear(){ var m = _mr.accMonth; if (!m || _mr.busy) return; m.inputs = []; mrRerender(); }
+/* 保存したあとの担当が、送った担当と違う（サーバーの関数か SQL がまだ古く、1 人だけ保存された） */
+function mrAccInputsCheck(sent, got){
+  if (!Array.isArray(got)) got = null;
+  if (got && got.join('|') === sent.join('|')) return;
+  if (!got && sent.length <= 1) return;
+  throw new Error(t('サーバーがまだ v1122 になっていないため、入力担当は 1 人だけ保存されたかもしれません。関数と SQL を v1122 にしてから、もう一度保存してください。','The server is not on v1122 yet, so only one input person may have been saved. Update the function and the SQL to v1122, then save again.'));
+}
 function mrAccAddViewer(){ var d = _mr.accDraft, el = document.getElementById('mr-acc-vadd'), v = el ? String(el.value || '') : ''; if (!d || _mr.busy || !v || d.viewers.indexOf(v) >= 0 || d.viewers.length >= 20) return; d.viewers.push(v); d.dirty = true; mrRerender(); }
 function mrAccDelViewer(v){ var d = _mr.accDraft; if (!d || _mr.busy) return; var i = d.viewers.indexOf(String(v)); if (i < 0) return; d.viewers.splice(i, 1); d.dirty = true; mrRerender(); }
 function mrAccCancel(){ if (_mr.busy) return; _mr.accDraft = null; _mr.accConf = null; mrRerender(); }
-function mrAccYm(v){ if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(v || ''))) return; if (_mr.accDraft && _mr.accDraft.dirty && !confirm(t('保存していない変更があります。月を変えますか？（変更は消えます）','There are unsaved changes. Change the month? (they will be lost)'))) { mrRerender(); return; }
-  _mr.accYm = v; _mr.acc = null; _mr.accDraft = null; _mr.accConf = null; Object.keys(_mr.load).forEach(function(k){ if (k.indexOf('acc|') === 0) delete _mr.load[k]; }); mrRerender(); }   /* v1073: 印も消す（月を戻したとき読み直す） */
+function mrAccYm(v){ if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(String(v || ''))) return; if (mrAccDirty() && !confirm(t('保存していない変更があります。月を変えますか？（変更は消えます）','There are unsaved changes. Change the month? (they will be lost)'))) { mrRerender(); return; }
+  _mr.accYm = v; _mr.acc = null; _mr.accDraft = null; _mr.accMonth = null; _mr.accConf = null; Object.keys(_mr.load).forEach(function(k){ if (k.indexOf('acc|') === 0) delete _mr.load[k]; }); mrRerender(); }   /* v1073: 印も消す（月を戻したとき読み直す） */
 function mrAccReload(){ _mr.acc = null; _mr.members = null; _mr.liveL = null; Object.keys(_mr.load).forEach(function(k){ if (k.indexOf('acc|') === 0 || k === 'members' || k.indexOf('liveL|') === 0) delete _mr.load[k]; }); mrRerender(); }
 async function mrSetRun(label, fn, ok, onErr){
   if (_mr.busy) return;
@@ -18156,19 +18185,24 @@ function mrSetFlags(v){
 function mrAccSave(){
   var d = _mr.accDraft; if (!d) return;
   if (d.viewers.length > 20) { showToast(t('閲覧者は 20 人までです。減らしてから保存してください','Up to 20 viewers. Remove some, then save'), 'warning'); return; }
-  /* サーバーは入力担当と閲覧者をまとめて上書きする：閲覧者は全部送る。v1073: 読んだときの版も送る（違えば何も書かない） */
-  var payload = { store_id:d.store_id, input_emp:d.input_emp || null, viewer_emps:d.viewers.slice(), expect_version:d.base ? d.base.version : 0 };
-  return mrSetRun('access', function(){ return mrAPI({ action:'access_save', stores:[payload] }).then(function(r){ _mr.accDraft = null; _mr.accConf = null; return r; }); }, null,
+  if (d.inputs.length > 10) { showToast(t('入力担当は 10 人までです。減らしてから保存してください','Up to 10 input people. Remove some, then save'), 'warning'); return; }
+  /* サーバーは入力担当と閲覧者をまとめて上書きする：どちらも全部送る。v1073: 読んだときの版も送る（違えば何も書かない）。
+     v1122: 入力担当は input_emps（何人でも）。input_emp（先頭の 1 人）は前の版のサーバー用 */
+  var sent = d.inputs.slice(), payload = { store_id:d.store_id, input_emps:sent, input_emp:sent[0] || null, viewer_emps:d.viewers.slice(), expect_version:d.base ? d.base.version : 0 };
+  return mrSetRun('access', function(){ return mrAPI({ action:'access_save', stores:[payload] }).then(function(r){ _mr.accDraft = null; _mr.accConf = null;
+    mrAccInputsCheck(sent, (mrArr(r && r.stores)[0] || {}).input_emps); return r; }); }, null,
     function(e){ if (!(e && e.code === 'conflict') || _mr.accDraft !== d) return false;
       if (!d.dirty) { _mr.accDraft = null; _mr.accConf = { store_id:d.store_id, plain:true }; }   /* 変えた所が無い：いまの設定を出すだけ。変えていれば読み直したあと入れ直す（mrAccDraftOf） */
       return true; });
 }
 function mrAccMonthSave(){
-  var el = document.getElementById('mr-acc-month'), v = el ? String(el.value || '') : '', ym = _mr.accYm || mrYmLive();
+  var m = _mr.accMonth, ym = _mr.accYm || mrYmLive();
+  if (!m || m.store_id !== _mr.accStore || m.ym !== ym) return;
   /* v1073: 変えていないのに押したときは送らない（古い画面から、読んだときの値をほかの人の変更の上に書き戻さない） */
-  var s0 = mrArr(_mr.acc && _mr.acc.stores).filter(function(x){ return x.store_id === _mr.accStore; })[0];
-  if (s0 && v === (s0.month_input_emp || '')) { showToast(t('変えていません（この月の担当はいまのまま）','Nothing changed (this month stays as it is)'), 'warning'); return; }
-  return mrSetRun('month', function(){ return mrAPI({ action:'month_input_save', store_id:_mr.accStore, ym:ym, input_emp:v || null }); });
+  if (m.inputs.join('|') === m.base.join('|')) { showToast(t('変えていません（この月の担当はいまのまま）','Nothing changed (this month stays as it is)'), 'warning'); return; }
+  var sent = m.inputs.slice();
+  return mrSetRun('month', function(){ return mrAPI({ action:'month_input_save', store_id:_mr.accStore, ym:ym, input_emps:sent, input_emp:sent[0] || null }).then(function(r){
+    _mr.accMonth = null; mrAccInputsCheck(sent, r && r.input_emps); return r; }); });
 }
 function mrChefAdd(){ var el = document.getElementById('mr-acc-chef'), v = el ? String(el.value || '') : ''; if (!v) return; return mrSetRun('chef', function(){ return mrAPI({ action:'chef_save', emp_id:v, on:true }); }); }
 function mrChefDel(v){
@@ -21468,7 +21502,7 @@ function computeStorePower(s, days, allInact, allUnreg){
   var staff = spStaffStats(s.id);
   staff.inact = (allInact||[]).filter(function(x){ return x.emp.store===s.id || (x.emp.support||[]).includes(s.id); }).length;
   /* v1120：店舗総合力の減点は今までどおり、だれにも入っていない名前（kind none）だけ。退職の記録・名前の一部の行を減点に数えるかは Moto さんの判断待ち（Codex PR #110 の確認） */
-  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0 && (!x.kind || x.kind==='none'); }).length;
+  staff.unreg = (allUnreg||[]).filter(function(x){ return x.stores.indexOf(s.id)>=0; }).length;   // v1120：退職の記録・名前の一部の行も減点に数える（Moto さん 10/30）
   // 予実達成
   var dAchieve = k.budget>0 ? Math.min(100, Math.round(k.achieve)) : null;
   // 収益力（原価率＋人件費率 = プライムコスト。60%以下で満点、上がるほど減点）
@@ -59367,7 +59401,7 @@ function deleteCat(code) {
 /* ============================================================
    ④ 業者マスター
 ============================================================ */
-var CONSTRUCTION_VENDORS = [{"cat": "配管・水道","icon": "ti-droplet","vendors": [{"name": "A-1 Budget Plumbing, Inc.","note": "配管・水道","w9": "不要","addr": "131 Hekili St, Ste 213, Kailua HI 96734"},{"name": "HYUNDAE PLUMBING, INC.","note": "配管・水道","phone": "(808) 221-5665","email": "hyndaeplumbing@yahoo.com","w9": "不要","addr": "515-C Kuwili St, Honolulu HI 96817"},{"name": "INNOVATIVE PLUMBING LLC（Roger）","note": "水道の設置・修理（ガスも可）","person": "Roger Ganitoen","phone": "(808) 450-9865","w9": "不要","addr": "94-1035 Halepili St, Waipahu HI 96797"},{"name": "Pearl Flo Plumbing LLC","note": "配管・水道","phone": "(808) 495-3785","email": "Pearlfloplumbing@gmail.com","w9": "不要","addr": "3218 Mokihana St, Honolulu HI 96816"},{"name": "PUKAHEAD PLUMBING LLC","note": "配管・水道","w9": "不要","addr": "91-833 Kehue St, Ewa Beach HI 96706"}]},{"cat": "電気","icon": "ti-bolt","vendors": [{"name": "Nomer DeGuzman","note": "電気工事。早くて丁寧・価格妥当","person": "Nomer DeGuzman","phone": "(808) 306-7300","w9": "不要","addr": "91-1119 Kiwi St, Ewa Beach HI 96706"},{"name": "Wai Yin Tam","note": "電気工事。早く対応・価格妥当","person": "Wai Yin Tam","phone": "(808) 319-5770","w9": "不要","addr": "1630 Mahina Loop, Honolulu HI 96819"}]},{"cat": "エアコン・空調","icon": "ti-air-conditioning","vendors": [{"name": "Mark","note": "エアコン。丁寧・価格妥当","phone": "808-351-9133","line": true,"w9": "不要"},{"name": "Zhao","note": "エアコン手配。相場より約20%安いが取付が雑な場合あり（監視要）","phone": "808-258-2068","line": true,"w9": "不要"},{"name": "Gary M Rafael","note": "エアコン手配・修理・清掃。早い・丁寧・価格妥当","person": "Gary M Rafael","phone": "(808) 368-5625 / 808-368-5658","w9": "不要","addr": "94-1096 Lumipolu St, Waipahu HI 96797"},{"name": "Eddie","note": "エアコン清掃・製氷機メンテ清掃・冷蔵庫修理。いつでも来てくれる（冷蔵も対応）","phone": "808-845-3318","line": true,"w9": "不要"}]},{"cat": "冷蔵・製氷機器","icon": "ti-snowflake","vendors": [{"name": "Joe","note": "冷蔵機器・アイスマシーンの修理","phone": "808-847-4871","line": true,"w9": "不要"},{"name": "HW APPLIANCE REPAIR & SERVICE INC（Henry）","note": "冷蔵機器・アイスマシーンの修理。迅速・価格妥当","phone": "(808) 721-6600","w9": "不要","addr": "625-D Kunawai Ln, Honolulu HI 96817"}]},{"cat": "換気ダクト","icon": "ti-wind","vendors": [{"name": "Clyte","note": "換気ダクトの設置・追加。信頼できる・妥当な価格","phone": "808-216-5764","line": true,"w9": "不要"}]},{"cat": "内装・改装／ゼネコン","icon": "ti-tools","vendors": [{"name": "ASPIRE HOME RENOVATION","note": "改装・追加工事","person": "Lawrence Yan","phone": "(808) 960-0566","email": "aspirehomerenovation@gmail.com","w9": "不要","addr": "921A Emmeluth Ln, Honolulu HI 96817"},{"name": "Dream Life Inc（Nobu）","note": "ゼネコン。丁寧だが割高（ローカル相場+20〜30%）","person": "Nobuyuki Seto","phone": "808-321-5208","email": "Yorozuya808@gmail.com","w9": "不要","addr": "643 12th Ave, Honolulu HI 96816"},{"name": "JH Construction, Inc","note": "改装・追加・壁工事","person": "David Ann","phone": "(808) 306-7710 / Fax (808) 537-2645","w9": "不要","addr": "1717 Mott Smith Dr #2714, Honolulu HI 96822"}]},{"cat": "清掃","icon": "ti-spray","vendors": [{"name": "LB COMMERCIAL CLEANING HAWAII","note": "レストラン清掃","phone": "(808) 679-8780","email": "HAWAIICLEANINGLB@GMAIL.COM","w9": "不要","addr": "1515 Liona St Apt 3018, Honolulu HI 96814"},{"name": "Rory Cucciniello","note": "清掃","person": "Rory Cucciniello","email": "rory.cucc@icloud.com","w9": "不要","addr": "2464 Prince Edward St, Honolulu HI 96815"}]},{"cat": "グリストラップ","icon": "ti-filter","vendors": [{"name": "Green Dragon（Carlton）","note": "グリストラップの設置・定期清掃","person": "Carlton Young","phone": "(808) 778-1132","email": "emeraldragon8@gmail.com","w9": "不要","addr": "P.O.BOX 1307, Pearl City HI 96782"}]},{"cat": "害虫駆除","icon": "ti-bug","vendors": [{"name": "Orkin","note": "害虫駆除","phone": "(808) 487-2080","email": "Earl.Cachola@orkin.com","w9": "不要"}]},{"cat": "消防設備","icon": "ti-flame","vendors": [{"name": "Pono Fire Protection LLC","note": "消防設備","email": "ethank@ponofirehi.com","w9": "不要"}]},{"cat": "看板","icon": "ti-signature","vendors": [{"name": "E-Signs","note": "看板","person": "Erick N Hataye","phone": "(808) 256-6681","email": "esignshawaii@yahoo.com","w9": "不要","addr": "944 Ahua St Unit 5, Honolulu HI 96819"}]},{"cat": "食洗機","icon": "ti-wash","vendors": [{"name": "Bargreen Ellingson（Shige）","note": "食洗機の販売・レンタル・設置","phone": "(808) 226-4087","email": "mcoronado@bargreen.com","w9": "不要","addr": "P.O.Box 94328, Seattle WA 98124"}]},{"cat": "飲料設備（ビールサーバー）","icon": "ti-beer","vendors": [{"name": "DESERT ISLE INC.","note": "飲料設備（Draft Beer System）の設置・サービス","phone": "(808) 682-4209","email": "dibmacap@gmail.com","w9": "不要","addr": "PO BOX 700699, Kapolei HI 96709"}]},{"cat": "厨房機器・部品","icon": "ti-tools-kitchen-2","vendors": [{"name": "Food Equip Parts & Services Co","note": "厨房機器の部品・サービス","w9": "不要"},{"name": "Libo Equipment Service LLC","note": "厨房機器サービス","person": "Mr Libo","phone": "(808) 365-9889","w9": "不要","addr": "1736 Fern St, Honolulu HI 96826"}]},{"cat": "便利屋（なんでも）","icon": "ti-tool","vendors": [{"name": "Anthony Tan","note": "なんでも対応。少し時間にルーズ","person": "Anthony Tan","phone": "(808) 781-6888","w9": "不要","addr": "91-1017 Anaunau St #C, Ewa Beach HI 96706"}]},{"cat": "その他・分類なし（要確認）","icon": "ti-help","vendors": [{"name": "Benson Kim","note": "分類未設定・要確認","w9": "不要","addr": "3045 Ala Napuaa Pl #718, Honolulu HI 96818"},{"name": "Clyde Watanabe","note": "分類未設定・要確認","w9": "不要","addr": "1274 Puu Kipa St, Pearl City HI 96818"},{"name": "Wesley Yoneda","note": "分類未設定・要確認","phone": "(808) 291-4046","w9": "不要","addr": "95-231 Kahele Pl, Mililani HI 96789"},{"name": "Dominic Wah Yick","note": "分類未設定・要確認","w9": "必要","w9note": "W9必要。貰えない場合は依頼しないでください"},{"name": "James K Foster","note": "分類未設定・要確認","phone": "(808) 479-4738","w9": "必要","w9note": "W9必要。貰えない場合は依頼しないでください"},{"name": "Stuart Ito","note": "分類未設定・要確認","w9": "必要","w9note": "W9必要。Wesly経由の依頼。今年$500支払済のため、次回は必ずW9を取得すること"},{"name": "Gerald Black","note": "分類未設定・要確認","phone": "(808) 349-0144","w9": "必要","w9note": "もう依頼しない方針"}]}];
+/* v1121：工事関係業者の一覧（個人の連絡先を含む）は公開のコードから外した（Moto さん 10/30）。業者マスターのカードは、Moto さんに直接渡した SQL で入れる。 */
 
 /* ============================================================
    v1121（10/30 の依頼 ③）：業者マスターの区分・無効化・削除と、クラウドとの合わせ方
@@ -59620,47 +59654,6 @@ async function vendorSetCats(ids, cat){
   Object.keys(stamp).forEach(function(id){ if (bs[id] && bs[id].vcatAt === stamp[id]) won++; });
   return { ok:won === n, n:won, lost:n - won, local:true };
 }
-/* ---- 工事関係業者（v1121：前は画面の中の一覧。業者マスターのカードにする） ---- */
-function vendorSeedId(name){ var s = String(name || '').normalize('NFKC').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48); return 'vc-' + (s || 'x'); }
-function vendorConstructionSeeds(){
-  var out = [], used = {};
-  (typeof CONSTRUCTION_VENDORS !== 'undefined' ? CONSTRUCTION_VENDORS : []).forEach(function(g){
-    (g.vendors || []).forEach(function(v){
-      var id = vendorSeedId(v.name), n = 2; while (used[id]) id = vendorSeedId(v.name) + '-' + (n++); used[id] = 1;
-      out.push({ id:id, name:v.name, contact:v.person && v.person !== v.name ? v.person : '', phone:v.phone || '', sms:'', email:v.email || '', line:typeof v.line === 'string' ? v.line : '', method:'', cutoff:'', leadtime:1, minOrder:0,
-        delivery:'', terms:'', rating:3, webform:'', storeMethods:{}, memo:(v.note || '') + (v.line === true ? t('（LINE で連絡）',' (contact by LINE)') : ''), addr:v.addr || '', w9:v.w9 || '', w9note:v.w9note || '', cgroup:g.cat || '', cicon:g.icon || '',
-        vcat:'construction', vcatAt:'2026-10-30T00:00:00.000Z', vcatBy:'v1121', src:'construction_list' });
-    });
-  });
-  return out;
-}
-/* 足りないものだけクラウドに入れる（ある行は上書きしない＝人が直した連絡先・削除の印を戻さない）。何度呼んでも同じ */
-var _vendorSeedBusy = false;
-async function vendorSeedConstruction(){
-  if (_vendorSeedBusy || typeof SUPA_SYNC_ENABLED === 'undefined' || !SUPA_SYNC_ENABLED) return false;
-  if (typeof _supaBooting !== 'undefined' && _supaBooting) return false;
-  if (!_vbBase()) return false;   /* まだクラウドから読んでいない */
-  var seeds = vendorConstructionSeeds(), have = {}, names = {}, nk = function(n){ return String(n || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim(); };
-  (ls('m_vendors', []) || []).forEach(function(v){ if (v && v.id != null) { have[String(v.id)] = 1; if (v.src !== 'construction_list') names[nk(v.name)] = 1; } });
-  Object.keys(_vbBase()).forEach(function(id){ have[id] = 1; var b = _vbBase()[id]; if (b && b.src !== 'construction_list') names[nk(b.name)] = 1; });
-  /* 同じ名前のカード（どの状態でも）がもうある業者は入れない（重複を作らない・削除した業者を戻さない） */
-  var miss = seeds.filter(function(s){ return !have[s.id] && !names[nk(s.name)]; });
-  if (!miss.length) return true;
-  _vendorSeedBusy = true;
-  try {
-    var def = SUPA_MASTER_MAP.m_vendors;
-    var res = await fetch(SUPABASE_URL + '/rest/v1/' + def.table + '?on_conflict=id', { method:'POST', headers:supaHeaders({ Prefer:'resolution=ignore-duplicates,return=minimal' }), body:JSON.stringify(miss.map(def.map)) });
-    if (!res.ok) return false;
-    var back = await vendorFetchRows(miss.map(function(s){ return s.id; }));
-    if (!back) return false;
-    var nb = Object.assign({}, _vbBase() || {}), cur = ls('m_vendors', []) || [], ids = {};
-    cur.forEach(function(v){ if (v && v.id != null) ids[String(v.id)] = 1; });
-    Object.keys(back).forEach(function(id){ nb[id] = back[id]; if (!ids[id]) cur.push(back[id]); });
-    lsSet(VENDOR_BASE_KEY, nb);
-    _lsWriteVerified('m_vendors', JSON.stringify(cur));
-    return 'added';
-  } catch(e) { return false; } finally { _vendorSeedBusy = false; }
-}
 
 /* ============================================================
    備品・消耗品 発注依頼フロー（Amazon等）
@@ -59684,8 +59677,6 @@ function empGradeNum(e){ return (e && typeof gradeNum==='function' && typeof emp
 var vmView='all';
 function setVmView(v){ vmView=v; renderPage('vendor_master'); }
 function renderVendorMaster() {
-  /* v1121：工事関係業者を業者マスターのカードに（足りないものだけ・一度入ったら何もしない） */
-  try { setTimeout(function(){ vendorSeedConstruction().then(function(r){ if (r === 'added' && curPage === 'vendor_master' && !(document.getElementById('modal-overlay')||{classList:{contains:function(){return false;}}}).classList.contains('open')) renderPage('vendor_master'); }); }, 0); } catch(e) {}
   var e = escapeHtml, q = function(v){ return e(JSON.stringify(String(v == null ? '' : v))); };
   var vendors = getVendorsVisible();   /* v1083：まとめた名前のカードはしまう（消さない。業者の統合の「外す」で戻る）。v1121：削除した業者も出さない */
   var cnt = { all:0, purchase:0, construction:0, none:0, inactive:0 };
