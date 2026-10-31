@@ -592,6 +592,8 @@ body.shift-wide .main { max-width:1900px; }
 @media (min-width:1180px) { body.mr-wide .main { max-width:1500px; } }
 /* v1126（UI案65）：メニュー（出数）の画面。PC は 1500px まで広げる（1179px 以下は今までどおり 900px） */
 @media (min-width:1180px) { body.mn-wide .main { max-width:1500px; } }
+/* v1128（UI案66）：食材マスターの紐づけタブ。PC は 1500px まで広げる（行ごとの候補とチェックの列） */
+@media (min-width:1180px) { body.ilk-wide .main { max-width:1500px; } }
 .mn-head { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:10px; margin-bottom:12px; }
 .mn-head-r { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .mn-pill { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:7px 14px; font-size:13px; }
@@ -18638,6 +18640,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
+  try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
   try { if (typeof kevFlushText === 'function') kevFlushText(); } catch (e) { }
   /* v1065: 成長カルテの「個別評価」タブ（PC は一覧・入力・計算の内訳を横に並べる） */
@@ -18772,6 +18775,7 @@ case 'acct_center':
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
+  try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
   try { if (typeof kevFlushText === 'function') kevFlushText(); } catch (e) { }
   /* v1065: 成長カルテの「個別評価」タブ（PC は一覧・入力・計算の内訳を横に並べる） */
@@ -41131,7 +41135,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1127';
+const APP_VERSION = '1128';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50421,13 +50425,18 @@ function invInGuardOld(inv){
    決まったこと（Moto さん 10/18）：1 A 今のマスター・棚卸表は変えない／3 A まとめて確定は「確かさ高」で印の無いものだけ・仕入先ごと・確かめの画面のあと／
    4 規格が違えば別の品目／5 経理・事務Crew・GM・CEO に Head Chef・AM を足す（メールのアカウント）／6 消耗品・備品・レシートは外す（あとから足せる）／
    7 名前の一部が同じだけでは結ばない（語ごとに比べる・数字が違えば印）／8 Drive 取込から（アプリの invoice＝新マスターは段階 3）。
-   結ぶ・戻す・印はサーバー（invoice-intake の link_*）。候補はこの端末で今のマスターと比べて出すだけ（決めるのは人）。 */
+   結ぶ・戻す・印はサーバー（invoice-intake の link_*）。候補はこの端末で今のマスターと比べて出すだけ（決めるのは人）。
+   v1128（Moto 10/31・UI案66：1〜4 すべて A）：3 A を変えた。確かさ高・要確認・候補なしのどれでも、一覧の行にチェック → 画面の下の帯で
+   「選んだ候補で結ぶ／新しい品目／対象外／あとで」をまとめて（確かめの画面のあと）。1 最初は何も選ばない（「すべて選ぶ」「印の無い品目だけ選ぶ」）／
+   2 印（数字が違う・規格が複数・ほかの対応のまま）の品目も選べる（確かめの画面で黄色）。対応表に同じ品目が複数ある品目は今どおり選べない／
+   3 候補なしは印をまとめて付ける＋同じ仕入先に候補が無ければ、ほかの仕入先の品目から近いものを候補に出す（今のマスターは今どおり変えない）／
+   4 仕入先が「すべて」のままでもよい（一覧は仕入先ごとに区切る）。行ごとに候補を選び直せる（いちばん近いものが最初）。サーバーは変えていない。 */
 var ILK_ROLES = ['ceo','gm','office','office_crew','am','chef'];
-var _ilk = { data:null, loaded:'', error:'', view:'items', vendor:'', filter:'high', q:'', code:'', limit:50, store:'', busy:false, prep:null, prepKey:'' };
+var _ilk = { data:null, loaded:'', error:'', view:'items', vendor:'', filter:'high', q:'', code:'', limit:50, store:'', busy:false, prep:null, prepKey:'', sel:{}, choice:{}, other:{} };
 function ilkCan(){ return ILK_ROLES.indexOf(curRole) >= 0; }
 function ilkOnPage(){ return typeof curPage!=='undefined' && curPage==='ingredient_master' && window._ingTab==='link'; }
 function ilkRerender(){ if (ilkOnPage()) renderPage('ingredient_master'); }
-function ilkReset(){ _ilk.data = null; _ilk.loaded = ''; _ilk.error = ''; _ilk.prep = null; _ilk.prepKey = ''; _ilk.busy = false; }
+function ilkReset(){ _ilk.data = null; _ilk.loaded = ''; _ilk.error = ''; _ilk.prep = null; _ilk.prepKey = ''; _ilk.busy = false; _ilk.sel = {}; _ilk.choice = {}; _ilk.other = {}; }
 var ILK_CSS = '<style>.ilk-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:2px 0 10px}.ilk-title{font-size:18px;font-weight:800}.ilk-sub{font-size:12px;color:var(--muted)}'
   +'.ilk-src{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}.ilk-srcb{font:inherit;color:var(--text);text-align:left;padding:7px 12px;border-radius:12px;border:1px solid var(--border);background:var(--surface);min-height:44px;cursor:pointer}'
   +'.ilk-srcb.on{border:2px solid var(--accent)}.ilk-srcb[disabled]{opacity:.55;cursor:not-allowed}.ilk-srcb small{display:block;font-size:11px;color:var(--muted);font-weight:400}'
@@ -50438,12 +50447,25 @@ var ILK_CSS = '<style>.ilk-head{display:flex;align-items:baseline;gap:10px;flex-
   +'.ilk-note{border-radius:12px;padding:9px 12px;margin-bottom:10px;font-size:12.5px;line-height:1.7;display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}'
   +'.ilk-list{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}'
   +'.ilk-row{display:grid;grid-template-columns:2.2fr .9fr 16px 2.2fr 1.5fr 1.7fr;gap:10px;padding:10px 12px;border-top:1px solid var(--border);align-items:center}'
+  /* v1128（UI案66）：invoice の品目の行は、左にチェックの列。候補は行ごとに選び直す。選んだら画面の下の帯でまとめて */
+  +'.ilk-row.ilk-r{grid-template-columns:30px minmax(0,2.1fr) minmax(0,.9fr) 16px minmax(0,2.5fr) minmax(0,1.4fr) minmax(0,1fr)}'
+  +'.ilk-cbl{display:flex;align-items:center;justify-content:center;min-width:30px;min-height:44px;cursor:pointer}.ilk-cb{width:20px;height:20px;margin:0;accent-color:var(--accent);cursor:pointer}.ilk-cb:disabled{cursor:not-allowed}'
+  +'.ilk-choose{width:100%;min-height:44px;margin:0;font-size:12.5px}'
+  +'.ilk-grp{display:flex;align-items:center;gap:10px;padding:4px 12px;background:var(--surface2);border-top:1px solid var(--border);font-size:13px;font-weight:700;min-height:44px}.ilk-grp .ilk-s{font-weight:400}'
+  +'.ilk-tag{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;color:#1D4ED8;background:#E0EAFD;margin:2px 4px 0 0}'
+  +'.ilk-act{position:sticky;bottom:0;z-index:20;margin-top:10px;background:#111827;color:#fff;border-radius:12px;padding:10px 12px calc(10px + env(safe-area-inset-bottom, 0px));display:flex;flex-wrap:wrap;gap:8px;align-items:center;box-shadow:0 -4px 16px rgba(0,0,0,.18)}.ilk-act[hidden]{display:none}'
+  +'.ilk-act-t{margin-right:auto;display:flex;flex-direction:column;gap:2px;min-width:0}.ilk-act-t b{font-size:15px}.ilk-act-t small{font-size:12px;color:#D1D5DB}'
+  +'.ilk-act button{font:inherit;font-size:13px;min-height:44px;border-radius:10px;border:0;padding:0 14px;cursor:pointer;background:#374151;color:#fff}.ilk-act button.pri{background:#2563EB;font-weight:700;font-size:14px}'
+  +'.ilk-act button.ghost{background:transparent;border:1px solid #4B5563;color:#D1D5DB}.ilk-act button:disabled{opacity:.45;cursor:not-allowed}'
+  +'.ilk-bl{display:grid;grid-template-columns:30px minmax(0,1fr) 16px minmax(0,1.2fr);gap:10px;align-items:center;padding:6px 10px;border-top:1px solid var(--border)}'
   +'.ilk-row.hd{font-size:11px;color:var(--muted);font-weight:700;background:var(--surface2);border-top:0}.ilk-row:first-child{border-top:0}'
   +'.ilk-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:700;word-break:break-word}'
   +'.ilk-en{font-size:14px;font-weight:700;word-break:break-word}.ilk-ja{font-size:11.5px;color:var(--muted)}.ilk-s{font-size:11.5px;color:var(--muted)}'
   +'.ilk-flag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;margin:1px 2px 1px 0}.ilk-acts{display:flex;gap:6px;flex-wrap:wrap}.ilk-acts .btn{min-height:36px}'
   +'.ilk-cand{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:12px;padding:10px;margin-bottom:8px;cursor:pointer}.ilk-cand input{width:20px;height:20px;margin-top:2px}'
-  +'@media (max-width:820px){.ilk-row{grid-template-columns:1fr;gap:6px}.ilk-row.hd{display:none}.ilk-arrow{display:none}}</style>';
+  +'@media (max-width:820px){.ilk-row{grid-template-columns:1fr;gap:6px}.ilk-row.hd{display:none}.ilk-arrow{display:none}'
+  +'.ilk-row.ilk-r{grid-template-columns:30px minmax(0,1fr);column-gap:8px}.ilk-row.ilk-r>*{grid-column:2}.ilk-row.ilk-r>.ilk-cbc{grid-column:1;grid-row:1 / span 6;align-self:start}'
+  +'.ilk-bl{grid-template-columns:30px minmax(0,1fr)}.ilk-bl>*{grid-column:2}.ilk-bl>.ilk-cbc{grid-column:1;grid-row:1 / span 3;align-self:start}.ilk-act button{flex:1 1 auto}}</style>';
 
 /* ---- 候補（この端末で今のマスターと比べる。語ごと・日本語は文字の並び。名前の一部が同じだけでは「確かさ高」にしない） ---- */
 var ILK_STOP_V = {the:1,co:1,ltd:1,inc:1,usa:1,corp:1,llc:1,company:1,of:1,hi:1,foods:1,food:1,asian:1};
@@ -50507,7 +50529,10 @@ function ilkNumDiff(a, b){
   Object.keys(A).forEach(function(u){ if (hit || !B[u]) return; if (!Object.keys(A[u]).some(function(v){ return B[u][v]; })) hit = Object.keys(A[u])[0] + ' ' + u + t(' と ', ' vs ') + Object.keys(B[u])[0] + ' ' + u; });
   return hit;
 }
+/* v1128（独立レビュー P2-1）：今のマスターを読み直すのは画面を描くたびに 1 回だけ（getIngredients は保存した文字を解くので、品目ごとに呼ぶと重い） */
 function ilkMaster(){
+  if (_ilk.master && !_ilk.masterChk) return _ilk.master;
+  _ilk.masterChk = false;
   var ings = []; try { ings = getIngredients(); } catch(e) { ings = []; }
   var key = ings.length + ':' + (ings[0] ? ings[0].code : '') + ':' + (ings.length ? ings[ings.length - 1].code : '');
   if (_ilk.master && _ilk.master.key === key) return _ilk.master;
@@ -50553,7 +50578,7 @@ function ilkPrepare(){
     if ((it.specs || []).length > 1) flags.push({ k:'spec', t:t('規格が複数', 'Several packs') });
     if (ilkMany(it)) flags.push({ k:'many', t:t('対応表に同じ品目が複数（経理で整理）', 'Several mappings (accounting tidies them)') });
     if (it.other_lines) flags.push({ k:'other', t:t('明細 ', '') + it.other_lines + t(' 行はほかの対応のまま（店だけ・人が選んだ）', ' lines keep another mapping (a store’s own or one a person chose)') });
-    out[it.id] = { cls:cls, best:(cls==='A' || cls==='B') ? best : null, cands:cands.slice(0, 6).filter(function(x){ return x.s >= 0.3; }), flags:flags, pool:pool.length, vendor:v };
+    out[it.id] = { cls:cls, best:(cls==='A' || cls==='B') ? best : null, cands:cands.slice(0, 6).filter(function(x){ return x.s >= 0.3; }), flags:flags, pool:pool.length, vendor:v, vk:vk };
   });
   _ilk.prep = out; _ilk.prepKey = key;
   return out;
@@ -50582,8 +50607,9 @@ var ILK_STATES = [['high','確かさ高','High confidence','自動の候補','Su
 function ilkVendorName(k){ var v = ((_ilk.data && _ilk.data.vendors) || []).find(function(x){ return x.vendor_key===k; }); return v ? v.display_name : k; }
 function ilkPerson(id){ var p = (_ilk.data && _ilk.data.people) || {}; return id ? (p[id] || t('（登録された人）', '(a registered person)')) : ''; }
 /* 今のマスターの品目：英語を大きく、日本語を小さく（決めてほしいこと f） */
+function ilkOwners(code){ var C = _ilk.ownC = _ilk.ownC || {}, k = String(code); if (!C[k]) { var o = []; try { o = storesUsingIngredient(code); } catch(err) {} C[k] = o; } return C[k]; }
 function ilkIngHtml(c, extra){
-  var e = escapeHtml, owners = []; try { owners = storesUsingIngredient(c.code); } catch(err) {}
+  var e = escapeHtml, owners = ilkOwners(c.code);
   return '<div class="ilk-en">' + e(c.en || c.ja || c.code) + '</div><div class="ilk-ja">' + (c.en ? e(c.ja) + ' · ' : '') + e(c.code) + (c.vendor ? ' · ' + e(c.vendor) : '')
     + (owners.length ? ' · ' + t('棚卸表 ', 'Stock list ') + owners.map(function(s){ return e(invInStore(s).name); }).join(' ') : '') + '</div>' + (extra || '');
 }
@@ -50607,6 +50633,7 @@ function ilkReload(){ _ilk.loaded = ''; _ilk.error = ''; _ilk.master = null; ilk
 /* ---- 画面 ---- */
 function renderIngLink(){
   var e = escapeHtml, h = INVIN_CSS + ILK_CSS;
+  _ilk.masterChk = true; _ilk.ownC = {};
   h += '<div class="ilk-head"><div class="ilk-title">' + t('紐づけ（invoice の品目 → 今のマスター）', 'Linking (invoice items → current master)') + '</div>'
     + '<div class="ilk-sub">' + t('今のマスター・棚卸表は変えません。invoice の品目に今のコードを付けるだけです。', 'The current master and stock lists do not change; invoice items get a current code.') + '</div></div>';
   if (!ilkCan()) return h + '<div class="card" style="font-size:12.5px;color:var(--muted)">' + t('経理・事務Crew・GM・CEO・Head Chef・AM 向けの画面です。', 'For accounting, office crew, GM, CEO, Head Chef and AM.') + '</div>';
@@ -50635,7 +50662,7 @@ function renderIngLink(){
     + '<div class="phase-tab' + (_ilk.view==='stores' ? ' active' : '') + '" onclick="ilkSet(\'view\',\'stores\')">' + t('棚卸表の品目から', 'From stock-list items') + '</div></div>';
   return h + (_ilk.view === 'stores' ? ilkStoresHtml() : ilkItemsHtml());
 }
-function ilkSet(k, v){ _ilk[k] = v; if (k !== 'limit') _ilk.limit = 50; if (k === 'filter' || k === 'vendor' || k === 'view') _ilk.code = ''; ilkRerender(); }
+function ilkSet(k, v){ _ilk[k] = v; if (k !== 'limit') _ilk.limit = 50; if (k === 'filter' || k === 'vendor' || k === 'view') { _ilk.code = ''; _ilk.sel = {}; } if (k === 'code') _ilk.sel = {}; ilkRerender(); }
 function ilkSearch(v){ _ilk.q = String(v || ''); _ilk.limit = 50; clearTimeout(_ilk.qt); _ilk.qt = setTimeout(function(){ ilkRerender(); var el = document.getElementById('ilk-q'); if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch(err) {} } }, 250); }
 function ilkStockCodes(){ var all = {}; try { all = ls('store_ingredients', {}) || {}; } catch(e) { all = {}; } var s = {}; Object.keys(all).forEach(function(k){ (all[k] || []).forEach(function(c){ s[String(c)] = 1; }); }); return s; }
 function ilkCoverage(){
@@ -50664,20 +50691,43 @@ function ilkItemsHtml(){
   if (_ilk.code) h += '<div class="ilk-note" style="background:var(--surface2)"><span>' + t('今のマスターの品目 ', 'Current item ') + '<b>' + e(ilkIngOf(_ilk.code).en || ilkIngOf(_ilk.code).ja) + '（' + e(_ilk.code) + '）</b>' + t(' に結んだ・候補の invoice の品目', ': invoice items linked or suggested') + '</span><button class="btn btn-secondary btn-sm" onclick="ilkSet(\'code\',\'\')">' + t('戻る', 'Back') + '</button></div>';
   var wait = items.reduce(function(a, it){ return a + (it.waiting || 0); }, 0);
   if (wait) h += '<div class="ilk-note" style="background:#fff7e6;border:1px solid #f0d49a"><span>' + t('今の結びとそろっていない明細が ', 'Lines not in step with the links: ') + '<b>' + wait + '</b>' + t(' 行（結ぶ前に取り込んだ・途中で止まった・あとで直された）', ' (taken in before the link, stopped halfway, or corrected meanwhile)') + '</span><button class="btn btn-secondary btn-sm" onclick="ilkSyncAll()"' + (_ilk.busy ? ' disabled' : '') + '><i class="ti ti-arrows-exchange"></i> ' + t('そろえる', 'Bring them in') + '</button></div>';
-  if (_ilk.filter === 'high' && !_ilk.code) {
-    var bulk = ilkBulkRows();
-    h += '<div class="ilk-note" style="background:#eef4fe;border:1px solid #c9dbf7"><span>' + (_ilk.vendor ? e(ilkVendorName(_ilk.vendor)) + t(' の「確かさ高」', ': high confidence ') + rows.length + t(' 品目。印の付いた品目はまとめて確定に入りません。', ' items. Items with a mark are not confirmed together.')
-      : t('仕入先を選ぶと、その仕入先の「確かさ高」をまとめて確定できます（確かめの画面のあと）。', 'Choose a vendor to confirm its high-confidence items together (after a check screen).')) + '</span>'
-      + (_ilk.vendor ? '<button class="btn btn-primary" onclick="ilkBulkAsk()"' + (!bulk.length || _ilk.busy ? ' disabled' : '') + '>' + t('印の無い ', 'Check and confirm the ') + bulk.length + t(' 品目を確かめて確定…', ' unmarked items…') + '</button>' : '') + '</div>';
-  }
   if (!rows.length) return h + '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + t('この条件の品目はありません。', 'No items here.') + '</div>';
-  h += '<div class="ilk-list"><div class="ilk-row hd"><div>' + t('invoice の品目', 'Invoice item') + '</div><div>' + t('店・回数', 'Stores · times') + '</div><div class="ilk-arrow"></div><div>' + t('今のマスターの品目（英語 ／ 日本語）', 'Current master item (English / Japanese)') + '</div><div>' + t('当たり方・印', 'Match · marks') + '</div><div>' + t('操作', 'Actions') + '</div></div>';
-  rows.slice(0, _ilk.limit).forEach(function(it){ h += ilkRowHtml(it, P[it.id] || {}); });
+  /* v1128（UI案66）：チェックで選んで、画面の下の帯でまとめて結ぶ・印を付ける。最初は何も選ばない（決まったこと 1） */
+  var bulk = true, can = rows.filter(ilkSelOk), S = _ilk.sel || {};   /* 「確かめる」（棚卸表の品目から）の一覧でも同じ（レビュー P3-1） */
+  if (bulk && can.length) {
+    var nOn = can.filter(function(it){ return S[it.id]; }).length;
+    var clean = _ilk.filter === 'none' && !_ilk.q ? null : can.filter(ilkClean).length;
+    h += '<div class="ilk-note" style="background:#eef4fe;border:1px solid #c9dbf7"><label class="ilk-cbl" style="justify-content:flex-start;gap:10px;font-weight:700"><input id="ilk-all" type="checkbox" class="ilk-cb"' + (nOn && nOn === can.length ? ' checked' : '') + (_ilk.busy ? ' disabled' : '')
+      + ' onchange="ilkSelectAll(this.checked?\'all\':\'none\')"> ' + t('この一覧の ', 'Select all ') + can.length + t(' 品目をすべて選ぶ', ' items in this list') + '</label>'
+      + (clean != null ? '<button class="btn btn-secondary btn-sm" style="min-height:40px" onclick="ilkSelectAll(\'clean\')"' + (clean && !_ilk.busy ? '' : ' disabled') + '>' + t('印の無い品目だけ選ぶ（', 'Select only the unmarked (') + clean + t('）', ')') + '</button>' : '')
+      + '<span class="ilk-s" style="flex:1 1 320px">' + (_ilk.filter === 'none' && !_ilk.q
+        ? t('同じ仕入先の品目に候補がありません。ほかの仕入先の品目に近いものがあれば「ほかの仕入先」と出します。選んだら、画面の下の帯でまとめて印を付けるか結びます。', 'No suggestion among the vendor’s own items. A close item of another vendor is shown marked “other vendor”. After choosing, mark or link them together in the bar below.')
+        : t('候補はいちばん近いものを最初に入れてあります。違えば行の候補を選び直してください。選んだら、画面の下の帯でまとめて結ぶか印を付けます。', 'Each row starts with its closest suggestion; choose another in the row if it is wrong. After choosing, link or mark them together in the bar below.')) + '</span></div>';
+  }
+  h += '<div class="ilk-list"><div class="ilk-row ilk-r hd"><div class="ilk-cbc"></div><div>' + t('invoice の品目', 'Invoice item') + '</div><div>' + t('店・回数', 'Stores · times') + '</div><div class="ilk-arrow"></div><div>' + t('今のマスターの品目（英語 ／ 日本語）', 'Current master item (English / Japanese)') + '</div><div>' + t('当たり方・印', 'Match · marks') + '</div><div>' + t('操作', 'Actions') + '</div></div>';
+  /* 仕入先が「すべて」なら仕入先ごとに区切る（決まったこと 4）。区切りのチェックでその仕入先の品目（まだ出していない分も）を選ぶ */
+  var grp = !_ilk.vendor && !_ilk.code, lastV = null;
+  _ilk.grpIds = [];
+  rows.slice(0, _ilk.limit).forEach(function(it){
+    if (grp && it.vendor_key !== lastV) { lastV = it.vendor_key; h += ilkGrpHtml(it.vendor_key, rows, _ilk.grpIds.length); }
+    h += ilkRowHtml(it, P[it.id] || {});
+  });
   h += '</div>';
   if (rows.length > _ilk.limit) h += '<div style="text-align:center;margin:10px"><button class="btn btn-secondary" onclick="ilkSet(\'limit\',' + (_ilk.limit + 100) + ')">' + t('もっと見る（あと ', 'Show more (') + (rows.length - _ilk.limit) + t(' 品目）', ' more)') + '</button></div>';
-  h += '<div class="ivx-note">' + t('確定すると、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表・過去の棚卸しと原価の記録は変わりません。確定した人と日時が残り、「戻す」で戻せます。ほかの端末には「更新」で出ます。', 'Confirming gives the item’s lines the current code (posted invoices also record the price). The current master, stock lists, past counts and costs do not change. Who and when is kept; Undo takes it back. Other devices see it after Refresh.') + '</div>';
+  h += '<div class="ivx-note">' + t('結ぶと、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表・過去の棚卸しと原価の記録は変わりません。結んだ人と日時が残り、「戻す」で戻せます。印（新しい品目・対象外・あとで）は「紐づけの対象に戻す」で外せます。ほかの端末には「更新」で出ます。', 'Linking gives the item’s lines the current code (posted invoices also record the price). The current master, stock lists, past counts and costs do not change. Who and when is kept; Undo takes it back. Marks (new item, left out, later) come off with “Back to linking”. Other devices see it after Refresh.') + '</div>';
+  if (bulk && can.length) { var bs = ilkBarState(); h += '<div id="ilk-act" class="ilk-act" role="region" aria-label="' + t('選んだ品目をまとめて', 'Act on the chosen items') + '"' + (bs.n ? '' : ' hidden') + '>' + ilkBarInner(bs) + '</div>'; }
   return h;
 }
+/* 仕入先の区切り：名前・この一覧の数・選んだ数・その仕入先をまとめて選ぶチェック */
+function ilkGrpHtml(vk, rows, gi){
+  var e = escapeHtml, all = rows.filter(function(it){ return it.vendor_key === vk; }), can = all.filter(ilkSelOk), S = _ilk.sel || {};
+  var on = can.filter(function(it){ return S[it.id]; }).length;
+  _ilk.grpIds.push({ vk:vk, gi:gi });
+  return '<div class="ilk-grp">' + (can.length ? '<label class="ilk-cbl"><input id="ilk-gcb-' + gi + '" type="checkbox" class="ilk-cb" aria-label="' + e(ilkVendorName(vk)) + t(' の品目をすべて選ぶ', ': select all its items') + '"' + (on && on === can.length ? ' checked' : '') + (_ilk.busy ? ' disabled' : '')
+    + ' onchange="ilkSelectVendor(' + invInJs(vk) + ',this.checked)"></label>' : '<span class="ilk-cbl"></span>')
+    + '<span>' + e(ilkVendorName(vk)) + '</span><span id="ilk-gc-' + gi + '" class="ilk-s">' + ilkGrpCount(all.length, on) + '</span></div>';
+}
+function ilkGrpCount(n, on){ return n + t(' 品目', ' items') + (on ? t(' · 選んだ ', ' · chosen ') + on : ''); }
 function ilkMatchQ(it, q){
   if (!q) return true;
   var P = (_ilk.prep || {})[it.id] || {}, s = [it.vendor_item_code || '', ilkVendorName(it.vendor_key)].concat((it.names || []).map(function(x){ return x[0]; }));
@@ -50687,15 +50737,146 @@ function ilkMatchQ(it, q){
 }
 function ilkFiltered(){
   var D = _ilk.data, P = _ilk.prep || {}, q = ilkN(_ilk.q).toLowerCase().trim();
-  return (D.items || []).filter(function(it){
+  var list = (D.items || []).filter(function(it){
     if (_ilk.vendor && it.vendor_key !== _ilk.vendor) return false;
     if (_ilk.code) { var p = P[it.id] || {}; return (it.link && String(it.link.ingredient_code) === _ilk.code) || (!it.link && p.best && p.best.c.code === _ilk.code); }
     if (ilkState(it) !== _ilk.filter && !q) return false;
     return ilkMatchQ(it, q);
-  }).sort(function(a, b){ return b.n - a.n || (a.id < b.id ? -1 : 1); });
+  });
+  /* v1128：仕入先が「すべて」なら仕入先ごとにまとめる（この一覧で品目の多い仕入先から）。仕入先の中は今までどおり回数の多い順 */
+  var vc = {}, vn = {};
+  if (!_ilk.vendor && !_ilk.code) list.forEach(function(it){ vc[it.vendor_key] = (vc[it.vendor_key] || 0) + 1; if (!(it.vendor_key in vn)) vn[it.vendor_key] = String(ilkVendorName(it.vendor_key) || '').toLowerCase(); });
+  return list.sort(function(a, b){
+    if (a.vendor_key !== b.vendor_key && (a.vendor_key in vc)) return (vc[b.vendor_key] - vc[a.vendor_key]) || (vn[a.vendor_key] < vn[b.vendor_key] ? -1 : vn[a.vendor_key] > vn[b.vendor_key] ? 1 : (a.vendor_key < b.vendor_key ? -1 : 1));
+    return b.n - a.n || (a.id < b.id ? -1 : 1);
+  });
 }
-function ilkBulkRows(){ var P = _ilk.prep || {}; return ilkFiltered().filter(function(it){ var p = P[it.id] || {}; return _ilk.vendor && ilkState(it) === 'high' && p.best && !p.flags.length && !it.link; }); }
-function ilkFlagHtml(f){ var col = f.k === 'many' ? INVIN_COL.red : INVIN_COL.yel; return '<span class="ilk-flag" style="color:' + col + ';background:' + col + '1f">' + escapeHtml(f.t) + '</span>'; }
+
+/* ---- まとめて（v1128・UI案66）：選ぶ・行ごとの候補・印 ---- */
+/* 選べる品目：確かさ高・要確認・候補なし。対応表に同じ品目が複数ある品目（経理が整理）と、変えられない対応は選べない */
+function ilkSelOk(it){ var st = ilkState(it); return (st === 'high' || st === 'check' || st === 'none') && !ilkMany(it) && ilkCanChange(it); }
+function ilkSelRows(){ var S = _ilk.sel || {}; return ilkFiltered().filter(function(it){ return S[it.id] && ilkSelOk(it); }); }
+/* 選んだ品目のうち、結ぶ候補が決まっているもの（まとめて結ぶ） */
+function ilkBulkRows(){ return ilkSelRows().filter(function(it){ return !!ilkChosen(it); }); }
+/* ほかの仕入先の品目（同じ仕入先に候補が無い品目だけ）：名前が近いもの（0.6 以上）を 5 つまで。品番は仕入先ごとなので使わない */
+var ILK_OTHER_MIN = 0.6;
+function ilkOtherCands(it){
+  _ilk.other = _ilk.other || {};
+  var hit = _ilk.other[it.id]; if (hit && hit.k === _ilk.prepKey) return hit.v;
+  var M = ilkMaster(), p = (_ilk.prep || ilkPrepare() || {})[it.id] || {}, vk = p.vk || '', anyJ = false;
+  var N = (it.names || []).slice(0, 3).map(function(x){ var n = x[0], u = {}, k = 0; ilkToks(n).forEach(function(w){ if (!u[w]) { u[w] = 1; k++; } }); return { u:u, k:k, j:ilkJ(n) }; });
+  N.forEach(function(x){ if (x.j.length >= 2) anyJ = true; });
+  /* 語の索引（今のマスターを読み直すまで使う）：同じ語のある品目だけを比べる。日本語の名前があれば日本語の品目も（重さ：レビュー P2-1） */
+  if (!M.inv) { M.inv = {}; M.jl = []; M.list.forEach(function(c){ var u = {}, k = 0; c.toks.forEach(function(w){ if (!u[w]) { u[w] = 1; k++; (M.inv[w] = M.inv[w] || []).push(c); } }); c.tu = u; c.tk = k; if (c.j.length >= 2) M.jl.push(c); }); }
+  var pool = [], seen = {};
+  N.forEach(function(x){ Object.keys(x.u).forEach(function(w){ (M.inv[w] || []).forEach(function(c){ if (!seen[c.code]) { seen[c.code] = 1; pool.push(c); } }); }); });
+  if (anyJ) M.jl.forEach(function(c){ if (!seen[c.code]) { seen[c.code] = 1; pool.push(c); } });
+  var tok = function(x, c){ if (!x.k || !c.tk) return 0; var inter = 0; for (var w in x.u) if (c.tu[w]) inter++; return inter / Math.min(x.k, c.tk) * (0.5 + 0.5 * inter / Math.max(x.k, c.tk)); };   /* ilkTokScore と同じ式 */
+  var out = [];
+  pool.forEach(function(c){
+    if (vk && ilkSameVendor(vk, c.vk)) return;
+    var s = 0;
+    N.forEach(function(x){ var v = Math.max(tok(x, c), ilkSeq(x.j, c.j)); if (v > s) s = v; });
+    if (s >= ILK_OTHER_MIN) out.push({ c:c, s:s });
+  });
+  out.sort(function(a, b){ return b.s - a.s || (a.c.code < b.c.code ? -1 : 1); });
+  out = out.slice(0, 5);
+  _ilk.other[it.id] = { k:_ilk.prepKey, v:out };
+  return out;
+}
+/* 行の候補：対応表の候補（未確認）→ 同じ仕入先の候補 → （同じ仕入先に無ければ）ほかの仕入先の候補。選び直した品目も */
+function ilkCandsFor(it){
+  var ch0 = (_ilk.choice || {})[it.id], ck = (_ilk.prepKey || '') + '|' + (ch0 === undefined ? '\u0001' : ch0), memo = _ilk.cc = _ilk.cc || {};
+  if (memo[it.id] && memo[it.id].k === ck && memo[it.id].L) return memo[it.id].L;
+  var L = ilkCandsCalc(it); memo[it.id] = { k:ck, L:L }; return L;
+}
+function ilkCandsCalc(it){
+  var p = (_ilk.prep || ilkPrepare() || {})[it.id] || {}, out = [], seen = {}, M0 = ilkMaster();
+  var add = function(c, s, other){ if (!c || seen[c.code]) return; seen[c.code] = 1; out.push({ c:c, s:s, other:!!other }); };
+  if (it.link && !it.link.verified && M0.by[String(it.link.ingredient_code)]) add(M0.by[String(it.link.ingredient_code)], 1, false);   /* 今のマスターに無いコードは出さない（レビュー P2-2） */
+  (p.cands || []).forEach(function(x){ add(x.c, x.s, false); });
+  if (p.cls === 'C' || p.cls === 'D') ilkOtherCands(it).forEach(function(x){ add(x.c, x.s, true); });
+  var ch = (_ilk.choice || {})[it.id], M = ilkMaster();
+  if (ch && !seen[ch] && M.by[ch]) add(M.by[ch], 0, !(p.vk && ilkSameVendor(p.vk, M.by[ch].vk)));
+  return out;
+}
+/* 行で選んでいる候補のコード（無ければ ''）。最初は：対応表の候補 → いちばん近い候補 → ほかの仕入先でとびぬけて近いもの */
+/* 返すのは今のマスターにあるコードだけ（レビュー P2-2）。ほかの仕入先の品目を最初に選ぶのは、0.75 以上で 2 番目より 0.15 以上近いときだけ
+   （「Oil」のような 1 語の品目に名前の一部で当たったものは選ばない：決まったこと 7・レビュー P2-4） */
+var ILK_OTHER_PICK = 0.75;
+function ilkChosen(it){
+  var ch = (_ilk.choice || {})[it.id];
+  if (ch === '') return '';
+  var L = ilkCandsFor(it), has = function(code){ return L.some(function(x){ return x.c.code === code; }); };
+  if (ch && has(ch)) return ch;
+  if (it.link && !it.link.verified && has(String(it.link.ingredient_code))) return String(it.link.ingredient_code);
+  var p = (_ilk.prep || ilkPrepare() || {})[it.id] || {};
+  if (p.best && has(p.best.c.code)) return p.best.c.code;
+  var o = L.filter(function(x){ return x.other; });
+  return o.length && o[0].s >= ILK_OTHER_PICK && (o.length < 2 || o[0].s - o[1].s >= 0.15) ? o[0].c.code : '';
+}
+function ilkChose(it, code){ return ilkCandsFor(it).filter(function(x){ return x.c.code === code; })[0] || null; }
+/* 選んだ候補での印：数字が違う（その候補と）・規格が複数・対応表に同じ品目が複数・ほかの対応のまま */
+function ilkFlagsFor(it, code){
+  var f = [], n0 = ((it.names || [])[0] || [''])[0] || '';
+  if (code) { var c = ilkIngOf(code), nd = ilkNumDiff(n0, (c.en || '') + ' ' + (c.ja || '')); if (nd) f.push({ k:'num', t:t('数字が違う：', 'Numbers differ: ') + nd }); }
+  if (code) { var x = ilkChose(it, code); if (x && x.other) f.push({ k:'ov', t:t('ほかの仕入先の品目', 'Another vendor’s item') }); }   /* レビュー P2-4：印の無い品目には数えない */
+  var sh = ilkSharers(it); if (sh.length) f.push({ k:'shared', t:t('名前の対応：ほかに ', 'Name mapping: ') + sh.length + t(' 品目も一緒に変わる', ' more items change with it') });   /* レビュー P2-3 */
+  if ((it.specs || []).length > 1) f.push({ k:'spec', t:t('規格が複数', 'Several packs') });
+  if (ilkMany(it)) f.push({ k:'many', t:t('対応表に同じ品目が複数（経理で整理）', 'Several mappings (accounting tidies them)') });
+  if (it.other_lines) f.push({ k:'other', t:t('明細 ', '') + it.other_lines + t(' 行はほかの対応のまま（店だけ・人が選んだ）', ' lines keep another mapping (a store’s own or one a person chose)') });
+  return f;
+}
+/* 「印の無い品目だけ選ぶ」：候補があり、印が無い */
+function ilkClean(it){ var ch = ilkChosen(it); return !!ch && !ilkFlagsFor(it, ch).length; }
+function ilkCandLabel(c, other){ return (c.en || c.ja || c.code) + (c.en && c.ja ? ' ／ ' + c.ja : '') + ' · ' + c.code + (other ? t(' · ほかの仕入先：', ' · other vendor: ') + (c.vendor || '—') : ''); }
+function ilkChoose(id, code){ _ilk.choice = _ilk.choice || {}; _ilk.choice[id] = String(code == null ? '' : code); ilkRerender(); }
+function ilkTick(id, on){ _ilk.sel = _ilk.sel || {}; if (on) _ilk.sel[id] = 1; else delete _ilk.sel[id]; ilkSelSync(); }
+function ilkSelectAll(mode){
+  var rows = ilkFiltered().filter(ilkSelOk), S = _ilk.sel = _ilk.sel || {};
+  rows.forEach(function(it){ delete S[it.id]; });
+  if (mode === 'all') rows.forEach(function(it){ S[it.id] = 1; });
+  else if (mode === 'clean') rows.filter(ilkClean).forEach(function(it){ S[it.id] = 1; });
+  ilkRerender();
+}
+function ilkSelectVendor(vk, on){ var S = _ilk.sel = _ilk.sel || {}; ilkFiltered().filter(function(it){ return it.vendor_key === vk && ilkSelOk(it); }).forEach(function(it){ if (on) S[it.id] = 1; else delete S[it.id]; }); ilkRerender(); }
+function ilkSelClear(){ _ilk.sel = {}; ilkRerender(); }
+/* 下の帯：選んだ数（仕入先ごと）と、まとめての操作。チェック 1 つでは画面を描き直さない（帯・「すべて選ぶ」・区切りの数だけ） */
+function ilkBarState(){
+  var rows = ilkSelRows(), k = 0, by = {}, order = [];
+  rows.forEach(function(it){ if (ilkChosen(it)) k++; if (!by[it.vendor_key]) { by[it.vendor_key] = 0; order.push(it.vendor_key); } by[it.vendor_key]++; });
+  return { n:rows.length, k:k, by:by, order:order };
+}
+function ilkBarInner(x){
+  var e = escapeHtml, busy = _ilk.busy ? ' disabled' : '', vs = x.order.slice(0, 3).map(function(v){ return e(ilkVendorName(v)) + ' ' + x.by[v]; }).join(' · ') + (x.order.length > 3 ? t(' · ほか ', ' · +') + (x.order.length - 3) + t(' 社', '') : '');
+  return '<div class="ilk-act-t"><b>' + x.n + t(' 品目を選択中', ' items chosen') + '</b><small>' + vs + '</small>'
+    + (x.n > x.k ? '<small>' + t('候補の無い ', 'No suggestion for ') + (x.n - x.k) + t(' 品目は結べません（印だけ付けられます）', ' items: they can only be marked') + '</small>' : '') + '</div>'
+    + '<button type="button" class="pri" onclick="ilkBulkAsk()"' + (x.k && !_ilk.busy ? '' : ' disabled') + '>' + t('選んだ候補で結ぶ（', 'Link to the chosen items (') + x.k + t('）…', ')…') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'new_item\')"' + busy + '>' + t('新しい品目にする', 'Mark as new items') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'excluded\')"' + busy + '>' + t('対象外にする', 'Leave out') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'later\')"' + busy + '>' + t('あとで', 'Later') + '</button>'
+    + '<button type="button" class="ghost" onclick="ilkSelClear()"' + busy + '>' + t('選択を外す', 'Clear the choice') + '</button>';
+}
+function ilkSelSync(){
+  var x = ilkBarState(), b = document.getElementById('ilk-act');
+  if (b) { b.hidden = !x.n; b.innerHTML = ilkBarInner(x); }
+  var F = ilkFiltered(), S = _ilk.sel || {}, rows = F.filter(ilkSelOk), on = rows.filter(function(it){ return S[it.id]; }).length, a = document.getElementById('ilk-all');
+  if (a) { a.checked = !!on && on === rows.length; a.indeterminate = on > 0 && on < rows.length; }
+  (_ilk.grpIds || []).forEach(function(g){
+    var all = F.filter(function(it){ return it.vendor_key === g.vk; }), can = all.filter(ilkSelOk), n = can.filter(function(it){ return S[it.id]; }).length;
+    var c = document.getElementById('ilk-gc-' + g.gi), cb = document.getElementById('ilk-gcb-' + g.gi);
+    if (c) c.textContent = ilkGrpCount(all.length, n);
+    if (cb) { cb.checked = !!n && n === can.length; cb.indeterminate = n > 0 && n < can.length; }
+  });
+}
+function ilkFlagHtml(f){ if (f.k === 'ov') return '<span class="ilk-tag">' + escapeHtml(f.t) + '</span>'; var col = f.k === 'many' ? INVIN_COL.red : INVIN_COL.yel; return '<span class="ilk-flag" style="color:' + col + ';background:' + col + '1f">' + escapeHtml(f.t) + '</span>'; }
+/* 同じ対応（名前の対応）を使うほかの品目：その対応を変えると一緒に変わる */
+function ilkSharers(it){
+  if (!it.link) return [];
+  var D = _ilk.data || {}, B = _ilk.byLink;
+  if (!B || B.k !== _ilk.loaded) { B = _ilk.byLink = { k:_ilk.loaded, m:{} }; (D.items || []).forEach(function(x){ if (x.link && x.link.id) (B.m[x.link.id] = B.m[x.link.id] || []).push(x); }); }
+  return (B.m[it.link.id] || []).filter(function(x){ return x.id !== it.id; });
+}
 function ilkRowHtml(it, p){
   var e = escapeHtml, st = ilkState(it), id = invInJs(it.id), nm = (it.names || [])[0] || ['', 0];
   var left = '<div><div class="ilk-mono">' + e(nm[0]) + '</div><div class="ilk-s">' + e(ilkVendorName(it.vendor_key)) + (it.vendor_item_code ? ' · ' + t('品番 ', '#') + e(it.vendor_item_code) : '')
@@ -50715,17 +50896,37 @@ function ilkRowHtml(it, p){
     acts = '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'' + (st === 'out' && !(it.mark && it.mark.state === 'excluded') ? 'included' : 'none') + '\')">' + t('紐づけの対象に戻す', 'Back to linking') + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + t('探して結ぶ', 'Find and link') + '</button>';
   } else {
-    var c = it.link ? ilkIngOf(it.link.ingredient_code) : (p.best ? p.best.c : null);
-    right = c ? ilkIngHtml(c, it.link && !it.link.verified ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('対応表の候補（まだ確かめていない）', 'Mapping candidate (not checked yet)') + '</div>' : '')
-      : '<div class="ilk-s">' + (p.pool ? t('候補なし', 'No suggestion') : t('今のマスターに、この仕入先の品目が無い', 'No item of this vendor in the master')) + '</div>';
-    why = '<div class="ilk-s" style="color:' + (st === 'high' ? INVIN_COL.green : 'var(--muted)') + '">' + e(it.link && !it.link.verified ? t('対応表にある（未確認）', 'In the mapping table (unchecked)') : ilkWhy(it, p)) + '</div>' + (p.flags || []).map(ilkFlagHtml).join('');
-    var canOne = c && st !== 'none' && !(p.flags || []).some(function(f){ return f.k === 'many'; }) && ilkCanChange(it);
-    acts = (canOne && st === 'high' && !(p.flags || []).length ? '<button class="btn btn-primary btn-sm" onclick="ilkConfirmOne(' + id + ')"' + (_ilk.busy ? ' disabled' : '') + '>' + t('確定', 'Confirm') + '</button>' : '')
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + (c ? t('比べる', 'Compare') : t('探す', 'Find')) + '</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'new_item\')">' + t('新しい品目', 'New item') + '</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button>';
+    /* v1128：候補は行ごとに選べる（いちばん近いものが最初）。結ぶ・印は、チェックで選んで画面の下の帯から（1 品目でも） */
+    var code = ilkChosen(it), L = ilkCandsFor(it), ch = code ? ilkChose(it, code) : null, sel = ilkSelOk(it);
+    var flags = ilkFlagsFor(it, code), other = ch && ch.other;
+    if (sel && L.length) {
+      right = '<select class="form-select ilk-choose" aria-label="' + t('結ぶ候補', 'Item to link to') + '" onchange="ilkChoose(' + id + ',this.value)"' + (_ilk.busy ? ' disabled' : '') + '>'
+        + (code ? '' : '<option value="" selected>' + t('— 候補を選ぶ —', '— choose a suggestion —') + '</option>')
+        + L.map(function(x){ return '<option value="' + e(x.c.code) + '"' + (x.c.code === code ? ' selected' : '') + '>' + e(ilkCandLabel(x.c, x.other)) + '</option>'; }).join('')
+        + (code ? '<option value="">' + t('— 結ばない（印だけ付ける）—', '— do not link (mark only) —') + '</option>' : '') + '</select>';
+      right += code ? '<div class="ilk-ja" style="margin-top:3px">' + ilkIngNote(ilkIngOf(code)) + '</div>' : '';
+    } else {
+      var c = code ? ilkIngOf(code) : null;
+      right = c ? ilkIngHtml(c) : '<div class="ilk-s">' + (p.pool ? t('候補なし', 'No suggestion') : t('今のマスターに、この仕入先の品目が無い', 'No item of this vendor in the master')) + '</div>';
+    }
+    if (it.link && !it.link.verified) right += '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + (ilkMaster().by[String(it.link.ingredient_code)] ? t('対応表の候補（まだ確かめていない）', 'Mapping candidate (not checked yet)')
+      : t('対応表の候補のコード ', 'The mapping’s code ') + escapeHtml(String(it.link.ingredient_code)) + t(' は今のマスターに無い（選び直す）', ' is not in the current master (choose another)')) + '</div>';
+    var whyT = !code ? (L.length ? t('候補を選んでいません', 'No suggestion chosen') : '')
+      : it.link && !it.link.verified && code === String(it.link.ingredient_code) ? t('対応表にある（未確認）', 'In the mapping table (unchecked)')
+      : other ? t('ほかの仕入先・名前が近い', 'Other vendor, name is close')
+      : p.best && code === p.best.c.code ? ilkWhy(it, p) : t('選び直した候補', 'Chosen by hand');
+    why = (whyT ? '<div class="ilk-s" style="color:' + (st === 'high' && p.best && code === p.best.c.code && !flags.length ? INVIN_COL.green : 'var(--muted)') + '">' + e(whyT) + '</div>' : '') + flags.map(ilkFlagHtml).join('');
+    acts = '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + (code ? t('比べる', 'Compare') : t('探す', 'Find')) + '</button>';
+    var cb = sel ? '<label class="ilk-cbl"><input type="checkbox" class="ilk-cb" aria-label="' + t('選ぶ', 'Choose') + '"' + ((_ilk.sel || {})[it.id] ? ' checked' : '') + (_ilk.busy ? ' disabled' : '') + ' onchange="ilkTick(' + id + ',this.checked)"></label>'
+      : '<label class="ilk-cbl" title="' + e(ilkMany(it) ? t('対応表に同じ品目が複数あります（経理で 1 つにしてから）', 'Several mappings: accounting makes them one first') : t('経理が確かめた対応です', 'Checked by accounting')) + '"><input type="checkbox" class="ilk-cb" disabled aria-label="' + t('選べません', 'Cannot choose') + '"></label>';
+    return '<div class="ilk-row ilk-r"' + (flags.length ? ' style="background:#fffaf3"' : '') + '><div class="ilk-cbc">' + cb + '</div>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
   }
-  return '<div class="ilk-row"' + (st === 'check' && (p.flags || []).length ? ' style="background:#fffaf3"' : '') + '>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
+  return '<div class="ilk-row ilk-r"><div class="ilk-cbc"></div>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
+}
+/* 候補を選ぶ欄の下：日本語・コード・仕入先・棚卸表（ilkIngHtml の 2 行目と同じ） */
+function ilkIngNote(c){
+  var e = escapeHtml, owners = ilkOwners(c.code);
+  return (c.en ? e(c.ja) + ' · ' : '') + e(c.code) + (c.vendor ? ' · ' + e(c.vendor) : '') + (owners.length ? ' · ' + t('棚卸表 ', 'Stock list ') + owners.map(function(x){ return e(invInStore(x).name); }).join(' ') : '');
 }
 function ilkItem(id){ return ((_ilk.data && _ilk.data.items) || []).find(function(x){ return x.id === id; }) || null; }
 function ilkPayload(it, code){
@@ -50737,49 +50938,124 @@ function ilkPayload(it, code){
 /* 結ぶ（100 件ずつ。1 回ごとに 1 つの取引：だめなら、その回は何も変わらない） */
 async function ilkSave(list, okMsg){
   if (_ilk.busy || !list.length) return false; _ilk.busy = true; ilkRerender();
-  var done = 0, lines = 0, prices = 0, err = null;
+  var done = 0, lines = 0, prices = 0, err = null, sent = 0;
+  /* v1128：1 回は 1 つの仕入先の 100 品目まで（まとめての前と同じ大きさ：1 回で直す明細が増えすぎないように・レビュー P3-7） */
+  var chunks = [], byV = {}, order = [];
+  list.forEach(function(x){ if (!byV[x.vendor_key]) { byV[x.vendor_key] = []; order.push(x.vendor_key); } byV[x.vendor_key].push(x); });
+  order.forEach(function(v){ for (var j = 0; j < byV[v].length; j += 100) chunks.push(byV[v].slice(j, j + 100)); });
   try {
-    for (var i = 0; i < list.length; i += 100) {
-      var r = await invInAPI({ action:'link_save', links:list.slice(i, i + 100) });
-      done += (r.maps || []).length; if (r.sync) { lines += r.sync.lines || 0; prices += r.sync.prices || 0; }
+    for (var i = 0; i < chunks.length; i++) {
+      var r = await invInAPI({ action:'link_save', links:chunks[i] });
+      sent += chunks[i].length; done += (r.maps || []).length; if (r.sync) { lines += r.sync.lines || 0; prices += r.sync.prices || 0; }
     }
   } catch(e) { err = e; }
   _ilk.busy = false;
-  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に変えていました。読み直したので、もう一度確かめてください。', 'Someone changed it first. Reloaded: please check again.') : err.code === 'unknown_ingredient' ? t('今のマスターに無いコードです（新しく足した品目なら、同期を待ってもう一度）。', 'That code is not in the current master (for an item just added, wait for the sync and try again).') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 件は結びました）', ' were linked)') : ''), 'warning');
+  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に変えていました。読み直したので、もう一度確かめてください。', 'Someone changed it first. Reloaded: please check again.') : err.code === 'unknown_ingredient' ? t('今のマスターに無いコードです（新しく足した品目なら、同期を待ってもう一度）。', 'That code is not in the current master (for an item just added, wait for the sync and try again).') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 件は結びました）', ' were linked)') : '')
+    + (list.length - sent > 0 ? t('（残り ', ' (') + (list.length - sent) + t(' 件は送っていません。選んだまま残しています）', ' not sent; still chosen)') : ''), 'warning');
   else showToast((okMsg || t('結びました', 'Linked')) + '：' + done + t(' 品目（明細 ', ' items (lines ') + lines + t(' 行・単価の記録 ', ', prices ') + prices + t(' 件）', ')'), 'success');
   ilkReload();
   return !err;
 }
-function ilkConfirmOne(id){ var it = ilkItem(id), p = (_ilk.prep || {})[id]; if (!it || !p || !p.best) return; ilkSave([ilkPayload(it, p.best.c.code)]); }
+function ilkConfirmOne(id){ var it = ilkItem(id), code = it ? ilkChosen(it) : ''; if (!it || !code || !ilkSelOk(it)) return; ilkSave([ilkPayload(it, code)]); }
+/* まとめて結ぶ（v1128）：送るのは、この確かめの画面に出したコードと対応の版（開いているあいだに変わっても、見ていない内容は送らない。
+   ほかの人が先に変えていればサーバーが conflict で断る）。名前の対応を 2 つの品目が使っていれば 1 回だけ送る（違う候補なら送らない） */
 function ilkBulkAsk(){
-  var e = escapeHtml, rows = ilkBulkRows(), P = _ilk.prep || {};
-  /* 送るのは、この確かめの画面に出したコード（開いているあいだに今のマスターが変わっても、見ていないコードは送らない） */
-  _ilk.bulk = {}; _ilk.bulkCodes = {}; rows.forEach(function(it){ _ilk.bulk[it.id] = 1; _ilk.bulkCodes[it.id] = P[it.id].best.c.code; });
-  openModal('<div class="modal-title">' + t('まとめて確定（', 'Confirm together (') + e(ilkVendorName(_ilk.vendor)) + t('）', ')') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    + '<div style="font-size:12px;margin-bottom:8px;line-height:1.7">' + t('「確かさ高」で印の無い品目です。違うものはチェックを外してください（外したものは一覧に残ります）。', 'High-confidence items without marks. Untick any that are wrong (they stay in the list).') + '</div>'
-    + '<div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + rows.map(function(it){
-      var c = P[it.id].best.c;
-      return '<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-top:1px solid var(--border);cursor:pointer"><input type="checkbox" checked style="width:20px;height:20px;margin-top:2px" onchange="ilkBulkTick(' + invInJs(it.id) + ',this.checked)">'
-        + '<div style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px"><div class="ilk-mono">' + e((it.names[0] || [''])[0]) + '<div class="ilk-s" style="font-family:inherit;font-weight:400">' + it.n + t(' 回', ' times') + '</div></div><div>' + ilkIngHtml(c) + '</div></div></label>';
-    }).join('') + '</div>'
-    + '<div class="ivx-note">' + t('確定すると、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表は変わりません。あとから 1 件ずつ「戻す」で戻せます。', 'The items’ lines get the current code (posted invoices also record the price). The master and stock lists do not change. Each can be undone later.') + '</div>'
-    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button id="ilk-bulk-go" class="btn btn-primary" onclick="ilkBulkGo()">' + rows.length + t(' 品目を確定', ' items: confirm') + '</button></div>');
+  var e = escapeHtml, rows = ilkBulkRows(); if (!rows.length || _ilk.busy) return;
+  var pay = {}, grp = {}, keyOf = function(it){ return it.link ? 'm:' + it.link.id : 'i:' + it.id; };
+  rows.forEach(function(it){ var c = ilkChosen(it); pay[it.id] = ilkPayload(it, c); (grp[keyOf(it)] = grp[keyOf(it)] || []).push(it); });
+  var bad = {}, joined = {};
+  Object.keys(grp).forEach(function(k){ var g = grp[k]; if (g.length < 2) return;
+    var codes = {}; g.forEach(function(it){ codes[pay[it.id].ingredient_code] = 1; });
+    if (Object.keys(codes).length > 1) g.forEach(function(it){ bad[it.id] = 1; }); else g.slice(1).forEach(function(it){ joined[it.id] = g[0].id; }); });
+  _ilk.bulk = {}; _ilk.bulkPay = {}; var idx = {}, ni = 0;
+  rows.forEach(function(it){ if (!bad[it.id] && !joined[it.id]) { _ilk.bulk[it.id] = 1; _ilk.bulkPay[it.id] = pay[it.id]; idx[it.id] = ni++; } });
+  _ilk.bulkIdx = idx;
+  var selId = {}; rows.forEach(function(it){ selId[it.id] = 1; });
+  var n = Object.keys(_ilk.bulk).length, nf = 0, no = 0;
+  rows.forEach(function(it){ if (bad[it.id]) return; var c = pay[it.id].ingredient_code, ch = ilkChose(it, c); if (ilkFlagsFor(it, c).length) nf++; if (ch && ch.other) no++; });
+  var vs = [], by = {}; rows.forEach(function(it){ if (!by[it.vendor_key]) { by[it.vendor_key] = []; vs.push(it.vendor_key); } by[it.vendor_key].push(it); });
+  var chip = function(txt, col){ return '<span class="ilk-flag" style="font-size:12px;padding:3px 9px;color:' + col + ';background:' + col + '1f">' + txt + '</span>'; };
+  openModal('<div class="modal-title">' + t('選んだ候補で結ぶ', 'Link to the chosen items') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">' + chip(t('結ぶ ', 'Link ') + n, INVIN_COL.green) + (nf ? chip(t('うち印の付いた品目 ', 'Marked: ') + nf, INVIN_COL.yel) : '') + (no ? chip(t('ほかの仕入先の品目 ', 'Other vendor: ') + no, '#1D4ED8') : '') + '</div>'
+    + '<div style="font-size:12px;margin-bottom:8px;line-height:1.7">' + t('違うものはチェックを外してください（外したものは一覧に残ります）。黄色の品目は、数字・規格を確かめてから。', 'Untick any that are wrong (they stay in the list). Check numbers and packs on the yellow ones.') + '</div>'
+    + '<div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + vs.map(function(v){
+      return '<div class="ilk-grp" style="min-height:34px;font-size:12.5px">' + e(ilkVendorName(v)) + ' <span class="ilk-s">' + by[v].length + t(' 品目', ' items') + '</span></div>' + by[v].map(function(it){
+        var x = pay[it.id], ch = ilkChose(it, x.ingredient_code), fl = ilkFlagsFor(it, x.ingredient_code), off = bad[it.id] || joined[it.id];
+        var cb = off ? '<input type="checkbox" class="ilk-cb" disabled' + (joined[it.id] ? ' checked data-ilk-join="' + idx[joined[it.id]] + '"' : '') + '>' : '<input type="checkbox" class="ilk-cb" checked onchange="ilkBulkTick(' + invInJs(it.id) + ',this.checked)">';
+        var others = bad[it.id] ? [] : ilkSharers(it).filter(function(x){ return !selId[x.id]; });
+        return '<label class="ilk-bl"' + (fl.length || bad[it.id] ? ' style="background:#fffaf3"' : '') + '><span class="ilk-cbc ilk-cbl">' + cb + '</span>'
+          + '<div><div class="ilk-mono">' + e(((it.names || [])[0] || [''])[0]) + '</div><div class="ilk-s">' + it.n + t(' 回', ' times') + (it.vendor_item_code ? ' · ' + t('品番 ', '#') + e(it.vendor_item_code) : '') + '</div></div>'
+          + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + ilkIngHtml(ilkIngOf(x.ingredient_code), fl.map(ilkFlagHtml).join('')
+            + (others.length ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('名前の対応で結んでいるので、選んでいない品目も一緒に変わります：', 'Linked through the printed name, so items you did not choose change too: ')
+              + others.map(function(o){ return '<span class="ilk-mono" style="font-size:11.5px">' + e(((o.names || [])[0] || [''])[0]) + '</span>（' + o.n + t(' 回', ' times') + '）'; }).join('、') + '</div>' : '')
+            + (joined[it.id] ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('上の品目と同じ名前の対応なので、一緒に結ばれます', 'Shares a name mapping with the item above: linked with it') + '</div>' : '')
+            + (bad[it.id] ? '<div class="ilk-s" style="color:' + INVIN_COL.red + '">' + t('同じ名前の対応を使う品目で、違う候補を選んでいます。結びません（「比べる」で 1 つずつ）', 'Shares a name mapping with another chosen item but a different item is chosen: not linked (use Compare one by one)') + '</div>' : '')) + '</div></label>';
+      }).join(''); }).join('') + '</div>'
+    + '<div class="ivx-note">' + t('結ぶと、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表は変わりません。ほかの仕入先の品目に結んでも、今のマスターの仕入先は変わりません。あとから 1 件ずつ「戻す」で戻せます。', 'The items’ lines get the current code (posted invoices also record the price). The master and stock lists do not change; linking to another vendor’s item does not change that item’s vendor. Each can be undone later.') + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button id="ilk-bulk-go" class="btn btn-primary" onclick="ilkBulkGo()"' + (n ? '' : ' disabled') + '>' + n + t(' 品目を結ぶ', ' items: link') + '</button></div>');
 }
-function ilkBulkTick(id, on){ if (!_ilk.bulk) return; if (on) _ilk.bulk[id] = 1; else delete _ilk.bulk[id]; var b = document.getElementById('ilk-bulk-go'); if (b) { var n = Object.keys(_ilk.bulk).length; b.textContent = n + t(' 品目を確定', ' items: confirm'); b.disabled = !n; } }
+function ilkBulkTick(id, on){ if (!_ilk.bulk || !(_ilk.bulkPay || {})[id]) return; if (on) _ilk.bulk[id] = 1; else delete _ilk.bulk[id];
+  /* 同じ名前の対応で一緒に結ばれる品目のチェックも合わせる（レビュー P3-2） */
+  try { var j = (_ilk.bulkIdx || {})[id]; if (j != null && document.querySelectorAll) document.querySelectorAll('[data-ilk-join="' + j + '"]').forEach(function(x){ x.checked = !!on; }); } catch(err) {}
+  var b = document.getElementById('ilk-bulk-go'); if (b) { var n = Object.keys(_ilk.bulk).length; b.textContent = n + t(' 品目を結ぶ', ' items: link'); b.disabled = !n; } }
 async function ilkBulkGo(){
-  var C = _ilk.bulkCodes || {}, ids = Object.keys(_ilk.bulk || {});
-  var list = ids.map(function(id){ var it = ilkItem(id); return it && C[id] && !it.link ? ilkPayload(it, C[id]) : null; }).filter(Boolean);
-  if (!list.length) return;
-  closeModalDirect(); _ilk.bulk = null;
-  await ilkSave(list, t('まとめて確定しました', 'Confirmed together'));
+  var Pm = _ilk.bulkPay || {}, ids = Object.keys(_ilk.bulk || {}).filter(function(id){ return Pm[id] && ilkItem(id); });
+  if (!ids.length || _ilk.busy) return;
+  var list = ids.map(function(id){ return Pm[id]; });
+  closeModalDirect(); _ilk.bulk = null; _ilk.bulkPay = null;
+  var ok = await ilkSave(list, t('まとめて結びました', 'Linked together'));
+  if (ok && _ilk.sel) ids.forEach(function(id){ delete _ilk.sel[id]; });
+}
+/* 印（v1128 でまとめて付けられるように）：品目のキーと、今の印の版 */
+function ilkMarkPayload(it, state){
+  var x = { vendor_key:it.vendor_key, state:state, version:it.mark ? it.mark.version : null };
+  if (it.vendor_item_code) x.vendor_item_code = it.vendor_item_code; else { x.alias_key = it.alias_key; x.spec_key = it.spec_key || ''; }
+  return x;
+}
+var ILK_MARK_T = { new_item:['新しい品目にする', 'Mark as new items', '今のマスターに無い品目として印を付けます（結びません）。', 'Marked as items not in the current master (not linked).'],
+  excluded:['対象外にする', 'Leave out', '紐づけの対象から外します（消耗品・備品など）。', 'Taken out of linking (supplies, equipment etc.).'],
+  later:['あとで', 'Later', 'あとで見る品目にします。', 'Kept to look at later.'] };
+/* 選んだ品目にまとめて印。1 品目ならそのまま、2 品目からは確かめの画面のあと */
+function ilkMarkAsk(state){
+  var e = escapeHtml, rows = ilkSelRows(), T = ILK_MARK_T[state]; if (!rows.length || !T || _ilk.busy) return;
+  _ilk.markIds = rows.map(function(it){ return it.id; }); _ilk.markPay = rows.map(function(it){ return ilkMarkPayload(it, state); });
+  var shown = {}; ilkFiltered().slice(0, _ilk.limit).forEach(function(it){ shown[it.id] = 1; });
+  if (rows.length === 1 && shown[rows[0].id]) { ilkMarkGo(); return; }   /* 見えていない 1 品目（「もっと見る」の先）は確かめてから（レビュー P3-4） */
+  var vs = [], by = {}; rows.forEach(function(it){ if (!by[it.vendor_key]) { by[it.vendor_key] = []; vs.push(it.vendor_key); } by[it.vendor_key].push(it); });
+  var linked = rows.filter(function(it){ return it.link; }).length;
+  openModal('<div class="modal-title">' + e(t(T[0], T[1])) + t('（', ' (') + rows.length + t(' 品目）', ' items)') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;margin-bottom:8px;line-height:1.7">' + e(t(T[2], T[3])) + '</div>'
+    + '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + vs.map(function(v){
+      return '<div class="ilk-grp" style="min-height:34px;font-size:12.5px">' + e(ilkVendorName(v)) + ' <span class="ilk-s">' + by[v].length + t(' 品目', ' items') + '</span></div>'
+        + by[v].map(function(it){ return '<div style="padding:6px 12px;border-top:1px solid var(--border)"><span class="ilk-mono">' + e(((it.names || [])[0] || [''])[0]) + '</span> <span class="ilk-s">' + it.n + t(' 回', ' times') + '</span></div>'; }).join(''); }).join('') + '</div>'
+    + '<div class="ivx-note">' + t('印は「紐づけの対象に戻す」で外せます。今のマスター・invoice は変わりません。', 'A mark comes off with “Back to linking”. The master and invoices do not change.')
+      + (linked ? t('対応表の候補（まだ確かめていない）がある ', ' ') + linked + t(' 品目は、候補はそのまま残ります。', ' items keep their mapping candidate.') : '') + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button class="btn btn-primary" onclick="ilkMarkGo()">' + rows.length + t(' 品目に印を付ける', ' items: mark') + '</button></div>');
+}
+async function ilkMarkGo(){
+  var list = _ilk.markPay || [], ids = _ilk.markIds || []; if (!list.length || _ilk.busy) return;
+  _ilk.markPay = null; _ilk.markIds = null; closeModalDirect(); _ilk.busy = true; ilkRerender();
+  var done = 0, err = null;
+  try { for (var i = 0; i < list.length; i += 100) { var r = await invInAPI({ action:'link_mark', marks:list.slice(i, i + 100) }); done += ((r && r.marks) || []).length; } }
+  catch(e) { err = e; }
+  _ilk.busy = false;
+  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に印を変えていました。読み直したので、もう一度確かめてください。', 'Someone changed a mark first. Reloaded: please check again.') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 品目は印を付けました）', ' were marked)') : ''), 'warning');
+  else { showToast(t('印を付けました：', 'Marked: ') + done + t(' 品目', ' items'), 'success'); if (_ilk.sel) ids.forEach(function(id){ delete _ilk.sel[id]; }); }
+  ilkReload();
 }
 /* ② 1 件の確かめ：候補を比べる・探す */
 function ilkOpen(id){
   var it = ilkItem(id); if (!it) return;
-  var e = escapeHtml, p = (_ilk.prep || {})[id] || {}, M = ilkMaster(), cur = it.link ? String(it.link.ingredient_code) : '';
+  var e = escapeHtml, p = (_ilk.prep || ilkPrepare() || {})[id] || {}, M = ilkMaster(), cur = it.link ? String(it.link.ingredient_code) : '';
   var cands = (p.cands || []).map(function(x){ return x.c; });
+  /* v1128：同じ仕入先に候補が無い品目は、ほかの仕入先の品目で名前が近いものも出す。一覧の行で選んでいた候補を最初に選ぶ */
+  var oth = (p.cls === 'C' || p.cls === 'D') ? ilkOtherCands(it).map(function(x){ return x.c; }).filter(function(c){ return !cands.some(function(y){ return y.code === c.code; }); }) : [];
+  var pre = ilkSelOk(it) ? ilkChosen(it) : '', verified = !!(it.link && it.link.verified), ch0 = (_ilk.choice || {})[id];
   if (cur && !cands.some(function(c){ return c.code === cur; })) cands.unshift(ilkIngOf(cur));
-  _ilk.pick = { id:id, code:cur || (p.best ? p.best.c.code : '') };
+  if (pre && !cands.concat(oth).some(function(c){ return c.code === pre; })) { var px = ilkChose(it, pre); if (px && px.other) oth.unshift(px.c); else cands.push(ilkIngOf(pre)); }
+  /* 確定済みは今の紐づけ。それ以外は一覧の行で選んでいる候補（「結ばない」を選んでいれば何も選ばない）（レビュー P3-3） */
+  _ilk.pick = { id:id, code:verified ? cur : (ch0 === '' ? '' : (pre || cur || (p.best ? p.best.c.code : ''))) };
+  var fl0 = ilkFlagsFor(it, _ilk.pick.code);   /* v1128：印は最初に選んでいる候補で（一覧の行と同じ） */
   var left = '<div style="flex:1 1 300px;min-width:0"><div class="ilk-s">' + t('invoice の品目（Drive 取込）', 'Invoice item (Drive intake)') + '</div>'
     + '<div class="ilk-mono" style="font-size:15px;margin:2px 0 8px">' + e((it.names[0] || [''])[0]) + '</div>'
     + '<div class="ilk-s" style="line-height:1.8">' + t('仕入先 ', 'Vendor ') + '<b style="color:var(--text)">' + e(ilkVendorName(it.vendor_key)) + '</b>' + (it.vendor_item_code ? ' · ' + t('品番 ', 'Item # ') + e(it.vendor_item_code) : '')
@@ -50787,11 +51063,12 @@ function ilkOpen(id){
     + (it.min_price ? '<br>' + t('単価 ', 'Unit price ') + invInPrice(it.min_price) + (it.max_price !== it.min_price ? '〜' + invInPrice(it.max_price) : '') + (it.units[0] ? ' / ' + e(it.units.map(function(u){ return u[0]; }).join('・')) : '') : '')
     + ((it.specs || []).length ? '<br>' + t('規格（AI が読んだ）', 'Pack (as read)') + '：' + it.specs.map(function(s){ return e(s[0]); }).join('・') : '')
     + ((it.names || []).length > 1 ? '<br>' + t('ほかの名前：', 'Other names: ') + it.names.slice(1).map(function(n){ return '<span class="ilk-mono" style="font-size:11.5px">' + e(n[0]) + '</span>'; }).join('、') : '') + '</div>'
-    + ((p.flags || []).length ? '<div style="margin-top:6px">' + p.flags.map(ilkFlagHtml).join('') + '</div>' : '')
+    + (fl0.length ? '<div style="margin-top:6px">' + fl0.map(ilkFlagHtml).join('') + '</div>' : '')
     + (it.link && it.link.by_name ? '<div class="ilk-s" style="margin-top:6px;color:' + INVIN_COL.yel + '">' + t('名前の対応で結んでいます。同じ名前・規格で品番の無い明細も同じ対応なので、選び直す・戻すと両方に効きます。', 'Linked through its printed name: lines with the same name and pack but no item code share it, so choosing again or undoing changes both.') + '</div>' : '')
     + (it.retired && it.retired.length ? '<div class="ilk-s" style="margin-top:6px">' + t('前に結んで戻したコード：', 'Linked before and undone: ') + it.retired.map(function(r){ return e(r.ingredient_code); }).join('、') + '</div>' : '') + '</div>';
   var right = '<div style="flex:1 1 360px;min-width:0"><div class="ilk-s" style="margin-bottom:6px">' + t('今のマスターの候補（同じ仕入先）', 'Candidates in the current master (same vendor)') + '</div>'
-    + (cands.length ? cands.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '<div class="ilk-s" style="margin-bottom:8px">' + t('候補はありません。下で探してください。', 'No candidates. Search below.') + '</div>')
+    + (cands.length ? cands.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '<div class="ilk-s" style="margin-bottom:8px">' + (oth.length ? t('同じ仕入先の品目に候補はありません。', 'No candidates among the vendor’s own items.') : t('候補はありません。下で探してください。', 'No candidates. Search below.')) + '</div>')
+    + (oth.length ? '<div class="ilk-s" style="margin:4px 0 6px">' + t('ほかの仕入先の品目（名前が近い・今のマスターの仕入先は変わりません）', 'Items of other vendors (close names; the master’s vendor does not change)') + '</div>' + oth.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '')
     + '<div style="display:flex;gap:6px;align-items:center;margin:4px 0 6px"><input id="ilk-find" class="form-input" style="margin:0" placeholder="' + t('今のマスターを探す（英語・日本語・コード・仕入先）', 'Search the current master (English, Japanese, code, vendor)') + '" oninput="ilkFind(this.value)"></div>'
     + '<div id="ilk-find-res"></div></div>';
   var can = ilkCanChange(it) && !ilkMany(it);
@@ -50802,7 +51079,7 @@ function ilkOpen(id){
       : t('経理が確かめた対応です。変えるのは経理・事務Crew・GM・CEO です。', 'Checked by accounting: accounting, office crew, GM or CEO change it.')) + '</div>')
     + '<div class="btn-row" style="flex-wrap:wrap">' + (can ? '<button id="ilk-pick-go" class="btn btn-primary" onclick="ilkPickGo()"' + (_ilk.pick.code ? '' : ' disabled') + '>' + ilkPickLabel() + '</button>' : '')
     + (it.link && it.link.verified && can ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkUndoAsk(' + invInJs(id) + ')">' + t('戻す', 'Undo') + '</button>' : '')
-    + (!it.link ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'new_item\')">' + t('新しい品目（結ばない）', 'New item (no link)') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'later\')">' + t('あとで', 'Later') + '</button>' : '')
+    + (!verified ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'new_item\')">' + t('新しい品目（結ばない）', 'New item (no link)') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'later\')">' + t('あとで', 'Later') + '</button>' : '')
     + '<button class="btn btn-secondary" onclick="closeModalDirect()">' + t('閉じる', 'Close') + '</button></div>');
 }
 function ilkCandHtml(c, cur){
@@ -50843,10 +51120,9 @@ async function ilkUndo(id){
 /* 印：対象外・新しい品目・あとで・紐づけの対象に戻す（included：食材以外の業者の品目を入れる／none：印を外す） */
 async function ilkMark(id, state){
   var it = ilkItem(id); if (!it || _ilk.busy) return;
-  var x = { vendor_key:it.vendor_key, state:state, version:it.mark ? it.mark.version : null };
-  if (it.vendor_item_code) x.vendor_item_code = it.vendor_item_code; else { x.alias_key = it.alias_key; x.spec_key = it.spec_key || ''; }
+  var x = ilkMarkPayload(it, state);
   _ilk.busy = true;
-  try { await invInAPI({ action:'link_mark', marks:[x] }); }
+  try { await invInAPI({ action:'link_mark', marks:[x] }); if (_ilk.sel) delete _ilk.sel[id]; }
   catch(e) { showToast(e.code === 'conflict' ? t('ほかの人が先に印を変えていました。読み直しました。', 'Someone changed the mark first. Reloaded.') : String(e.message || e), 'warning'); }
   _ilk.busy = false; ilkReload();
 }
@@ -50884,8 +51160,8 @@ function ilkStoresHtml(){
   });
   return h + '</div><div class="ivx-note">' + t('棚卸表の品目は変わりません。「invoice を探す」は invoice の品目の一覧を、この品目の名前で探します。', 'Stock lists do not change. “Find in invoices” searches the invoice items by this item’s name.') + '</div>';
 }
-function ilkShowCode(code){ _ilk.view = 'items'; _ilk.vendor = ''; _ilk.q = ''; _ilk.code = String(code); _ilk.limit = 50; ilkRerender(); }
-function ilkFindFor(code){ var c = ilkIngOf(code); _ilk.view = 'items'; _ilk.vendor = ''; _ilk.code = ''; _ilk.filter = 'none'; _ilk.q = ilkN(c.en || c.ja).toLowerCase().split(/\s+/)[0] || ''; _ilk.limit = 50; ilkRerender(); }
+function ilkShowCode(code){ _ilk.view = 'items'; _ilk.vendor = ''; _ilk.q = ''; _ilk.code = String(code); _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
+function ilkFindFor(code){ var c = ilkIngOf(code); _ilk.view = 'items'; _ilk.vendor = ''; _ilk.code = ''; _ilk.filter = 'none'; _ilk.q = ilkN(c.en || c.ja).toLowerCase().split(/\s+/)[0] || ''; _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
 /* FUNERGY_ITEM_LINK_END */
 var AC_TABS = [
   { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[

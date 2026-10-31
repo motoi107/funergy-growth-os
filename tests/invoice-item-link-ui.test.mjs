@@ -46,7 +46,7 @@ function app({ role = 'chef', signed = true, data = null, api = null, lang = 'ja
   const c = {
     calls: [], toasts: [], modals: [], renders: 0, curLang: lang, curRole: role, curPage: 'ingredient_master', window: { _ingTab: 'link' },
     escapeHtml: esc, t: (ja, en) => (c.curLang === 'en' ? en : ja),
-    ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), getIngredients: () => MASTER(),
+    ls: (k, d) => (k in mem ? JSON.parse(JSON.stringify(mem[k])) : d), getIngredients: () => { c.ingReads = (c.ingReads || 0) + 1; return MASTER(); },
     storesUsingIngredient: code => Object.keys(mem.store_ingredients).filter(k => mem.store_ingredients[k].includes(Number(code))),
     showToast: (m, k) => c.toasts.push([m, k]),
     openModal: h => { c.modals.push(h); }, closeModalDirect: () => {},
@@ -59,6 +59,7 @@ function app({ role = 'chef', signed = true, data = null, api = null, lang = 'ja
       if (api) { const r = await api(body, c); if (r && r.__error) { const e = new Error(r.__error); e.code = r.code || ''; throw e; } return r; }
       if (body.action === 'link_data') return data || { role, items: ITEMS(), vendors: VENDORS(), people: {}, lines: 0 };
       if (body.action === 'link_save') return { maps: body.links.map((x, i) => ({ id: 'm' + i, vendor_key: x.vendor_key })), sync: { lines: body.links.length, prices: 1 } };
+      if (body.action === 'link_mark') return { marks: body.marks.map((x, i) => ({ id: 'k' + i, ...x })) };
       return { sync: { lines: 0 } };
     },
     document: { getElementById: k => dom[k] || null }, Promise,
@@ -106,16 +107,24 @@ test('紐づけの画面: suggestions by words, not by a part of a name; marks k
   assert.notEqual(P['vz|a:cream, heavy 36%|'].cls, 'A');
   // a non-food vendor's item is left out at first (decision 6)
   assert.equal(st('vs|c:1897217'), 'out');
-  // the bulk confirm: a vendor must be chosen; marked items are not in it
+  // the bulk link (v1128, UI案66): nothing is chosen at first; "only the unmarked" leaves a marked item out, "all" takes it (decisions 1, 2)
   let h = c.page();
-  assert.match(h, /仕入先を選ぶと、その仕入先の「確かさ高」をまとめて確定できます/);
+  assert.match(h, /この一覧の 4 品目をすべて選ぶ/);
+  assert.equal(c.fn('ilkSelRows()').length, 0);
+  assert.match(h, /id="ilk-act" class="ilk-act"[^>]* hidden>/);
   c.fn(`ilkSet('vendor','vr')`); h = c.page();
-  assert.match(h, /印の無い 0 品目を確かめて確定…/);
+  assert.match(h, /印の無い品目だけ選ぶ（0）/);
+  c.fn(`ilkSelectAll('clean')`);
+  assert.equal(c.fn('ilkBulkRows()').length, 0);
+  c.fn(`ilkSelectAll('all')`);
+  assert.deepEqual(c.fn('ilkBulkRows()').map(x => x.id), ['vr|a:#1464 rrr pork body sliced 7mm|']);
   c.fn(`ilkSet('vendor','vc')`);
+  assert.equal(c.fn('ilkSelRows()').length, 0, 'a new vendor starts with nothing chosen');
+  c.fn(`ilkSelectAll('clean')`);
   const bulk = c.fn('ilkBulkRows()').map(x => x.id);
   assert.deepEqual(bulk.sort(), ['vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ', 'vc|c:12345'].sort());
   c.fn('ilkBulkAsk()');
-  assert.match(c.modals.at(-1), /2 品目を確定/);
+  assert.match(c.modals.at(-1), /2 品目を結ぶ/);
   c.fn(`ilkBulkTick(${JSON.stringify('vc|c:12345')}, false)`);
   // the master changes while the dialog is open (a sync): the codes shown in the dialog are sent, not new ones (review P3)
   c.fn(`_ilk.prep[${JSON.stringify('vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ')}].best = { s: 1, c: { code: '999999' } }`);
@@ -123,7 +132,8 @@ test('紐づけの画面: suggestions by words, not by a part of a name; marks k
   await c.fn('ilkBulkGo()'); await c.run();
   const save = c.calls.find(x => x.action === 'link_save');
   assert.deepEqual(save.links, [{ vendor_key: 'vc', ingredient_code: '600133', alias_key: 'unagi kabayaki tare suzukatsu 6/60floz(1.8l)', spec_key: '6/60FLOZ' }]);
-  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /まとめて確定しました：1 品目/.test(m)));
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /まとめて結びました：1 品目/.test(m)));
+  assert.deepEqual(Object.keys(c.fn('_ilk.sel')).sort(), ['vc|c:12345'], 'what was linked comes off the choice; the untouched one stays');
   assert.ok(c.calls.filter(x => x.action === 'link_data').length >= 2, 'read again after saving');
 });
 
@@ -173,6 +183,8 @@ test('紐づけの画面: a linked item (who and when), choose again / undo; acc
   c = app({ data: data([item('va|a:z|', 'va', { alias_key: 'z', names: [['Avocado', 1]], links: 2 })]) });
   await loaded(c); c.fn(`ilkSet('filter','check')`); h = c.page();
   assert.ok(!/ilkConfirmOne/.test(h));
+  assert.equal(c.fn(`ilkSelOk(ilkItem('va|a:z|'))`), false, 'several mappings: cannot be chosen (decision 2)');
+  assert.match(h, /<input type="checkbox" class="ilk-cb" disabled aria-label="選べません">/);
   c.fn(`ilkOpen('va|a:z|')`);
   assert.match(c.modals.at(-1), /対応表にこの品目の対応が複数あります/);
   assert.ok(!/ilk-pick-go/.test(c.modals.at(-1)));
@@ -183,6 +195,7 @@ test('紐づけの画面: a linked item (who and when), choose again / undo; acc
   assert.ok(/明細 2 行はほかの対応のまま/.test(h) && !/ilkConfirmOne/.test(h) && !/対応表に同じ品目が複数/.test(h));
   c.fn(`ilkOpen('va|a:avocado, 48s usa|')`);
   assert.ok(/ilk-pick-go/.test(c.modals.at(-1)));
+  assert.match(c.modals.at(-1), /明細 2 行はほかの対応のまま/, 'the dialog tells it too');
   // a code item whose lines are linked by their printed name: choosing again changes that link, sent with its own key (review P3)
   const byName = item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 3]],
     link: { id: 'm-5', version: 2, ingredient_code: '10003', verified: true, source: 'review', verified_by: 'u-1', verified_at: 't', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '', by_name: true }, links: 1 });
@@ -252,6 +265,218 @@ test('紐づけ: the sign-in is kept on the device only for the employee the Hea
   assert.match(bodyOf('invInReset'), /ilkReset\(\)/);
 });
 
+// ---------------------------------------------------------------- v1128（Moto 10/31・UI案66）: everything at once — 要確認 and 候補なし too
+const vendorsPlus = () => [...VENDORS(), { vendor_key: 'vo', display_name: 'Ocean Fresh', food_kind: 'food' }];
+test('まとめて (v1128): grouped by vendor, a suggestion per row, other vendors for 候補なし, mapping candidates keep their version', async () => {
+  const items = [
+    ...ITEMS(),
+    // 要確認: a mapping candidate (not checked yet) — the row starts on that code and sends the mapping's id and version
+    item('va|a:avocado hass|', 'va', { alias_key: 'avocado hass', names: [['AVOCADO HASS', 4]], n: 4,
+      link: { id: 'm-7', version: 3, ingredient_code: '10003', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'avocado hass', spec_key: '' }, links: 1 }),
+    // 要確認 that cannot be chosen: several mappings
+    item('va|a:many|', 'va', { alias_key: 'many', names: [['Avocado many', 1]], links: 2 }),
+    // 候補なし: nothing close at its own vendor; Cherry has the tare (another vendor) → suggested, marked "other vendor"
+    item('vo|a:unagi kabayaki tare 1.8l|', 'vo', { alias_key: 'unagi kabayaki tare 1.8l', names: [['UNAGI KABAYAKI TARE 1.8L', 2]], n: 2 }),
+    // 候補なし with nothing close anywhere
+    item('vo|a:mystery box|', 'vo', { alias_key: 'mystery box', names: [['MYSTERY BOX ZZQ', 1]] }),
+    // 候補なし with two other vendors' items just as close: offered, none chosen first
+    item('vo|a:sour cream avocado oil|', 'vo', { alias_key: 'sour cream avocado oil', names: [['SOUR CREAM AVOCADO OIL', 1]] }),
+  ];
+  const c = app({ data: { role: 'office', items, vendors: vendorsPlus(), people: {} } });
+  let h = await loaded(c);
+  // high, all vendors: grouped by vendor (the vendor with more items first), each group can be chosen at once (decision 4)
+  const groups = [...h.matchAll(/<div class="ilk-grp">.*?<span>([^<]+)<\/span><span id="ilk-gc-\d+" class="ilk-s">(\d+) 品目/g)].map(m => [m[1], m[2]]);
+  assert.deepEqual(groups, [['CHERRY COMPANY, LTD.', '2'], ['Ala Moana Produce', '1'], ["Redondo&#39;s".replace('&#39;', "'"), '1']].map(([a, b]) => [esc(a), b]));
+  c.fn(`ilkSelectVendor('vc', true)`);
+  assert.deepEqual(c.fn('ilkSelRows()').map(x => x.id).sort(), ['vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ', 'vc|c:12345'].sort());
+  // 要確認
+  c.fn(`ilkSet('filter','check')`);
+  assert.equal(c.fn('ilkSelRows()').length, 0, 'switching the list clears the choice');
+  h = c.page();
+  assert.match(h, /この一覧の \d+ 品目をすべて選ぶ/);
+  assert.equal(c.fn(`ilkChosen(ilkItem('va|a:avocado hass|'))`), '10003');
+  assert.equal(c.fn(`ilkSelOk(ilkItem('va|a:many|'))`), false);
+  c.fn(`ilkSelectAll('all')`);
+  assert.ok(!c.fn('ilkSelRows()').some(x => x.id === 'va|a:many|'), '"all" leaves out what cannot be chosen');
+  assert.ok(!('va|a:many|' in c.fn('_ilk.sel')), '…and does not even tick it');
+  // 候補なし: the other vendor's item is the suggestion; nothing for the mystery box
+  c.fn(`ilkSet('filter','none')`); h = c.page();
+  assert.match(h, /同じ仕入先の品目に候補がありません/);
+  assert.ok(!/印の無い品目だけ選ぶ/.test(h), 'no "only the unmarked" button on 候補なし');
+  const tare = 'vo|a:unagi kabayaki tare 1.8l|';
+  assert.equal(c.fn(`ilkState(ilkItem('${tare}'))`), 'none');
+  assert.equal(c.fn(`ilkChosen(ilkItem('${tare}'))`), '600133');
+  assert.match(h, /<span class="ilk-tag">ほかの仕入先の品目<\/span>/);
+  assert.equal(c.fn(`ilkClean(ilkItem('${tare}'))`), false, "another vendor's item is a mark: not among the unmarked (review P2-4)");
+  assert.match(h, /ほかの仕入先・名前が近い/);
+  assert.equal(c.fn(`ilkChosen(ilkItem('vo|a:mystery box|'))`), '');
+  const tie = 'vo|a:sour cream avocado oil|';
+  assert.ok(c.fn(`ilkCandsFor(ilkItem('${tie}'))`).filter(x => x.other).length >= 2);
+  assert.equal(c.fn(`ilkChosen(ilkItem('${tie}'))`), '', 'two as close: none chosen first');
+  assert.match(h, /— 候補を選ぶ —/);
+  assert.match(h, /今のマスターに、この仕入先の品目が無い/);
+  // choose another / choose none in a row
+  c.fn(`ilkChoose('${tare}', '')`);
+  assert.equal(c.fn(`ilkChosen(ilkItem('${tare}'))`), '');
+  c.fn(`ilkChoose('${tare}', '600133')`);
+  // select all three: one can be linked, the others only marked
+  c.fn(`ilkSelectAll('all')`);
+  assert.equal(c.fn('ilkSelRows()').length, 3);
+  assert.equal(c.fn('ilkBulkRows()').length, 1);
+  h = c.page();
+  assert.match(h, /<b>3 品目を選択中<\/b>/);
+  assert.match(h, /候補の無い 2 品目は結べません/);
+  assert.match(h, /選んだ候補で結ぶ（1）…/);
+  c.fn('ilkBulkAsk()');
+  assert.match(c.modals.at(-1), /ほかの仕入先の品目 1/);
+  await c.fn('ilkBulkGo()'); await c.run();
+  assert.deepEqual(c.calls.filter(x => x.action === 'link_save').at(-1).links, [{ vendor_key: 'vo', ingredient_code: '600133', alias_key: 'unagi kabayaki tare 1.8l', spec_key: '' }]);
+  // 要確認 with a mapping candidate: the id and version go with it
+  c.fn(`ilkSet('filter','check')`); c.fn(`ilkTick('va|a:avocado hass|', true)`); c.fn('ilkBulkAsk()');
+  await c.fn('ilkBulkGo()'); await c.run();
+  assert.deepEqual(c.calls.filter(x => x.action === 'link_save').at(-1).links, [{ vendor_key: 'va', ingredient_code: '10003', alias_key: 'avocado hass', spec_key: '', map_id: 'm-7', version: 3 }]);
+  // the compare dialog shows other vendors for 候補なし and starts on the row's choice
+  c.fn(`ilkOpen('${tare}')`);
+  assert.match(c.modals.at(-1), /ほかの仕入先の品目（名前が近い/);
+  assert.equal(c.fn('_ilk.pick.code'), '600133');
+});
+
+test('まとめて (v1128): a tick does not redraw the page; marks go in hundreds with their versions; one name mapping is sent once', async () => {
+  // 250 候補なし items of one vendor (one already marked "later" with a version)
+  const many = Array.from({ length: 250 }, (_, i) => item(`vo|a:zz${i}|`, 'vo', { alias_key: 'zz' + i, names: [['QQZZ ITEM ' + i, 1]],
+    ...(i === 7 ? { mark: { state: 'none', version: 5, by_actor: 'u', at: 't' } } : {}) }));
+  let c = app({ data: { role: 'chef', items: many, vendors: vendorsPlus(), people: {} } });
+  c.dom['ilk-act'] = { hidden: true, innerHTML: '' }; c.dom['ilk-all'] = { checked: false, indeterminate: false };
+  await loaded(c);
+  c.fn(`ilkSet('filter','none')`); c.page();
+  const before = c.renders;
+  c.fn(`ilkTick('vo|a:zz1|', true)`);
+  assert.equal(c.renders, before, 'a tick does not redraw the page');
+  assert.equal(c.dom['ilk-act'].hidden, false);
+  assert.match(c.dom['ilk-act'].innerHTML, /1 品目を選択中/);
+  assert.equal(c.dom['ilk-all'].indeterminate, true);
+  // all of the list, beyond the 50 shown
+  c.fn(`ilkSelectAll('all')`);
+  assert.equal(c.fn('ilkSelRows()').length, 250);
+  c.fn(`ilkMarkAsk('new_item')`);
+  assert.match(c.modals.at(-1), /250 品目に印を付ける/);
+  await c.fn('ilkMarkGo()'); await c.run();
+  const sent = c.calls.filter(x => x.action === 'link_mark');
+  assert.deepEqual(sent.map(x => x.marks.length), [100, 100, 50]);
+  const all = sent.flatMap(x => x.marks), by = k => all.filter(x => x.alias_key === k);
+  assert.equal(new Set(all.map(x => x.alias_key)).size, 250, 'each item once');
+  assert.deepEqual(by('zz7'), [{ vendor_key: 'vo', state: 'new_item', version: 5, alias_key: 'zz7', spec_key: '' }]);
+  assert.deepEqual(by('zz0'), [{ vendor_key: 'vo', state: 'new_item', version: null, alias_key: 'zz0', spec_key: '' }]);
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /印を付けました：250 品目/.test(m)), JSON.stringify(c.toasts));
+  assert.equal(c.fn('ilkSelRows()').length, 0, 'the marked items come off the choice');
+  // the second hundred is refused (someone was first): told with what was marked; the choice stays for another try
+  c = app({ data: { role: 'chef', items: many, vendors: vendorsPlus(), people: {} }, api: async (b, cc) => {
+    if (b.action === 'link_data') return { role: 'chef', items: many, vendors: vendorsPlus(), people: {} };
+    if (b.action === 'link_mark') return cc.calls.filter(x => x.action === 'link_mark').length === 2 ? { __error: 'x', code: 'conflict' } : { marks: b.marks };
+    return {}; } });
+  await loaded(c); c.fn(`ilkSet('filter','none')`); c.fn(`ilkSelectAll('all')`); c.fn(`ilkMarkAsk('later')`);
+  await c.fn('ilkMarkGo()'); await c.run();
+  assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /ほかの人が先に印を変えていました.*100 品目は印を付けました/.test(m)), JSON.stringify(c.toasts));
+  assert.equal(c.fn('ilkSelRows()').length, 250);
+  // one item: no dialog
+  c = app({ data: { role: 'chef', items: many.slice(0, 3), vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','none')`); c.fn(`ilkTick('vo|a:zz2|', true)`);
+  const m0 = c.modals.length; await c.fn(`ilkMarkAsk('excluded')`); await c.run();
+  assert.equal(c.modals.length, m0);
+  assert.deepEqual(c.calls.filter(x => x.action === 'link_mark').at(-1).marks, [{ vendor_key: 'vo', state: 'excluded', version: null, alias_key: 'zz2', spec_key: '' }]);
+  // two items on one name mapping (an item-code item linked through its printed name): sent once; different choices: not sent
+  const shared = { id: 'm-9', version: 2, ingredient_code: '10003', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '', by_name: true };
+  const two = [item('va|a:avocado, 48s usa|', 'va', { alias_key: 'avocado, 48s usa', names: [['Avocado, 48s USA', 3]], link: shared, links: 1 }),
+    item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 2]], link: shared, links: 1 })];
+  c = app({ data: { role: 'office', items: two, vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','check')`); c.fn(`ilkSelectAll('all')`); c.fn('ilkBulkAsk()');
+  assert.match(c.modals.at(-1), /一緒に結ばれます/);
+  assert.match(c.modals.at(-1), /1 品目を結ぶ/);
+  await c.fn('ilkBulkGo()'); await c.run();
+  assert.deepEqual(c.calls.filter(x => x.action === 'link_save').at(-1).links, [{ vendor_key: 'va', ingredient_code: '10003', alias_key: 'avocado, 48s usa', spec_key: '', map_id: 'm-9', version: 2 }]);
+  c = app({ data: { role: 'office', items: two, vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','check')`); c.fn(`ilkSelectAll('all')`); c.fn(`ilkChoose('va|c:777', '50101')`); c.fn('ilkBulkAsk()');
+  assert.match(c.modals.at(-1), /違う候補を選んでいます。結びません/);
+  assert.match(c.modals.at(-1), /id="ilk-bulk-go" class="btn btn-primary" onclick="ilkBulkGo\(\)" disabled>0 品目を結ぶ/);
+  // English
+  c = app({ lang: 'en', data: { role: 'chef', items: many.slice(0, 3), vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','none')`); c.fn(`ilkSelectAll('all')`);
+  const h = c.page();
+  assert.match(h, /<b>3 items chosen<\/b>/);
+  assert.match(h, /Mark as new items/);
+  assert.match(h, /Select all 3 items in this list/);
+});
+
+
+test('まとめて (v1128): review fixes — the master read once per draw, codes not in the master, shared name mappings, weak other-vendor matches, the stock-list view, one vendor per call', async () => {
+  const shared = { id: 'm-9', version: 2, ingredient_code: '10003', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'avocado, 48s usa', spec_key: '', by_name: true };
+  const items = [
+    ...ITEMS(),
+    // a mapping candidate whose code is no longer in the master: not chosen, not linkable (review P2-2)
+    item('vz|a:old code|', 'vz', { alias_key: 'old code', names: [['QQ OLD THING', 1]], link: { id: 'm-3', version: 1, ingredient_code: '999001', verified: false, source: 'seed', vendor_item_code: null, alias_key: 'old code', spec_key: '' }, links: 1 }),
+    // one name mapping used by two items (review P2-3)
+    item('va|a:avocado, 48s usa|', 'va', { alias_key: 'avocado, 48s usa', names: [['Avocado, 48s USA', 9]], n: 9, link: shared, links: 1 }),
+    item('va|c:777', 'va', { vendor_item_code: '777', names: [['Avocado, 48s USA', 2]], link: shared, links: 1 }),
+    // a weak match of another vendor's one-word item (review P2-4): offered, not chosen
+    item('vo|a:avocado smash pack|', 'vo', { alias_key: 'avocado smash pack', names: [['AVOCADO SMASH PACK', 1]] }),
+  ];
+  let c = app({ data: { role: 'office', items, vendors: vendorsPlus(), people: {} } });
+  await loaded(c);
+  // P2-1: drawing reads the master once; ticking does not read it
+  c.ingReads = 0; c.fn(`ilkSet('filter','check')`); c.page();
+  assert.ok(c.ingReads <= 1, 'reads per draw: ' + c.ingReads);
+  c.ingReads = 0; c.fn(`ilkTick('va|c:777', true)`); c.fn(`ilkTick('va|c:777', false)`); c.fn('ilkBarState()');
+  assert.equal(c.ingReads, 0);
+  // P2-2
+  assert.equal(c.fn(`ilkChosen(ilkItem('vz|a:old code|'))`), '');
+  assert.ok(!c.fn(`ilkCandsFor(ilkItem('vz|a:old code|'))`).some(x => x.c.code === '999001'));
+  let h = c.page();
+  assert.match(h, /対応表の候補のコード 999001 は今のマスターに無い/);
+  c.fn(`ilkTick('vz|a:old code|', true)`);
+  assert.equal(c.fn('ilkBulkRows()').length, 0);
+  c.fn('ilkSelClear()');
+  // P2-3: choosing one item of a shared name mapping tells the other; it is not "unmarked"
+  assert.equal(c.fn(`ilkClean(ilkItem('va|c:777'))`), false);
+  assert.match(h, /名前の対応：ほかに 1 品目も一緒に変わる/);
+  c.fn(`ilkTick('va|c:777', true)`); c.fn('ilkBulkAsk()');
+  assert.match(c.modals.at(-1), /選んでいない品目も一緒に変わります：<span class="ilk-mono" style="font-size:11.5px">Avocado, 48s USA<\/span>（9 回）/);
+  // P2-4
+  c.fn(`ilkSet('filter','none')`);
+  const weak = c.fn(`ilkCandsFor(ilkItem('vo|a:avocado smash pack|'))`);
+  assert.deepEqual(JSON.parse(JSON.stringify(weak.map(x => [x.c.code, x.other]))), [['10003', true]]);
+  assert.equal(c.fn(`ilkChosen(ilkItem('vo|a:avocado smash pack|'))`), '', 'a one-word item matched by a part of the name is not chosen first');
+  // P3-3: the compare dialog keeps "do not link" from the row
+  c.fn(`ilkChoose('vo|a:avocado smash pack|', '')`); c.fn(`ilkOpen('vo|a:avocado smash pack|')`);
+  assert.equal(c.fn('_ilk.pick.code'), '');
+  assert.match(c.modals.at(-1), /ほかの仕入先の品目（名前が近い/);
+  c.fn(`ilkChoose('vc|c:12345', '')`); c.fn(`ilkOpen('vc|c:12345')`);
+  assert.equal(c.fn('_ilk.pick.code'), '', 'even with a close suggestion of its own vendor');
+  c.fn(`ilkChoose('vc|c:12345', '600133')`); c.fn(`ilkOpen('vc|c:12345')`);
+  assert.equal(c.fn('_ilk.pick.code'), '600133', 'the row’s choice, not the closest');
+  // P3-1: the stock-list check view has the bar
+  c.fn(`ilkShowCode('600126')`); h = c.page();
+  assert.match(h, /id="ilk-act"/);
+  c.fn(`ilkSelectAll('all')`);
+  assert.deepEqual(JSON.parse(JSON.stringify(c.fn('ilkSelRows()').map(x => x.id))), ['vc|c:12345']);
+  // P3-7: links of two vendors go in two calls, one vendor each
+  c = app({ data: { role: 'office', items: ITEMS(), vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSelectAll('clean')`);
+  const vks = c.fn('ilkBulkRows()').map(x => x.vendor_key);
+  assert.ok(new Set(vks).size >= 2, vks.join());
+  c.fn('ilkBulkAsk()'); await c.fn('ilkBulkGo()'); await c.run();
+  const saves = c.calls.filter(x => x.action === 'link_save');
+  assert.equal(saves.length, new Set(vks).size);
+  assert.ok(saves.every(x => new Set(x.links.map(l => l.vendor_key)).size === 1));
+  // P3-4: one chosen item beyond "show more" is marked after the dialog
+  const many = Array.from({ length: 60 }, (_, i) => item(`vo|a:yy${i}|`, 'vo', { alias_key: 'yy' + i, names: [['QQYY ' + i, 1]] }));
+  c = app({ data: { role: 'chef', items: many, vendors: vendorsPlus(), people: {} } });
+  await loaded(c); c.fn(`ilkSet('filter','none')`);
+  const last = c.fn('ilkFiltered()').at(-1).id;
+  c.fn(`ilkTick(${JSON.stringify(last)}, true)`);
+  const m0 = c.modals.length; c.fn(`ilkMarkAsk('later')`);
+  assert.equal(c.modals.length, m0 + 1);
+});
+
 // ---------------------------------------------------------------- end to end: the screen against the real handler and SQL
 const SQL = fs.readFileSync(new URL('../db/invoice-intake.sql', import.meta.url), 'utf8');
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
@@ -292,7 +517,7 @@ test('紐づけ: the screen against the real intake (a Head Chef links Cherry\'s
   const c = app({ role: 'chef', api: async b => { const r = await call(b, { authorization: 'Bearer tok-chef' }); return r.status === 200 ? r.body : { __error: r.body.error, code: r.body.error }; } });
   await loaded(c);
   assert.deepEqual(c.fn('_ilk.data.items').map(i => i.id).sort(), ['vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ', 'vc|c:12345']);
-  c.fn(`ilkSet('vendor','vc')`);
+  c.fn(`ilkSet('vendor','vc')`); c.fn(`ilkSelectAll('clean')`);
   assert.equal(c.fn('ilkBulkRows()').length, 2);
   c.fn('ilkBulkAsk()');
   await c.fn('ilkBulkGo()'); await c.run(); await loaded(c);
@@ -307,5 +532,25 @@ test('紐づけ: the screen against the real intake (a Head Chef links Cherry\'s
   await c.fn(`ilkMark('vc|c:12345','later')`); await c.run(); await loaded(c);
   assert.equal(c.fn(`ilkState(ilkItem('vc|c:12345'))`), 'later');
   assert.ok(!c.toasts.some(([, k]) => k === 'warning'), JSON.stringify(c.toasts));
+  // v1128: marks together against the real SQL — each with the version the screen saw; a stale one refuses the whole call
+  const unagi = 'vc|a:unagi kabayaki tare suzukatsu 6/60floz(1.8l)|6/60FLOZ';
+  await c.fn(`ilkMark('vc|c:12345','none')`); await c.run(); await loaded(c);
+  await c.fn(`ilkUndo(${JSON.stringify(unagi)})`); await c.run(); await loaded(c);
+  c.fn(`ilkSet('filter','high')`); c.fn(`ilkSelectAll('all')`);
+  assert.equal(c.fn('ilkSelRows()').length, 2);
+  c.fn(`ilkMarkAsk('later')`); await c.fn('ilkMarkGo()'); await c.run(); await loaded(c);
+  const marks = async () => (await pg.query(`select coalesce(vendor_item_code, alias_key) k, state, version from invoice_link_marks order by 1`)).rows.map(r => [r.k, r.state, r.version]);
+  assert.deepEqual(await marks(), [['12345', 'later', 3], ['unagi kabayaki tare suzukatsu 6/60floz(1.8l)', 'later', 1]]);
+  assert.ok(c.toasts.some(([m, k]) => k === 'success' && /印を付けました：2 品目/.test(m)), JSON.stringify(c.toasts));
+  // marked items are not chosen together (each row has "back to linking"); take both back, then someone else's mark in between refuses the call
+  c.fn(`ilkSet('filter','later')`); c.fn(`ilkSelectAll('all')`);
+  assert.equal(c.fn('ilkSelRows()').length, 0);
+  await c.fn(`ilkMark('vc|c:12345','none')`); await c.run(); await loaded(c);
+  await c.fn(`ilkMark(${JSON.stringify(unagi)},'none')`); await c.run(); await loaded(c);
+  c.fn(`ilkSet('filter','high')`); c.fn(`ilkSelectAll('all')`); c.fn(`ilkMarkAsk('excluded')`);
+  await pg.exec('reset role'); await pg.exec(`update invoice_link_marks set state = 'later', version = version + 1 where vendor_item_code = '12345'`); await pg.exec('set role service_role');
+  await c.fn('ilkMarkGo()'); await c.run(); await loaded(c);
+  assert.ok(c.toasts.some(([m, k]) => k === 'warning' && /ほかの人が先に印を変えていました/.test(m)), JSON.stringify(c.toasts));
+  assert.deepEqual(await marks(), [['12345', 'later', 5], ['unagi kabayaki tare suzukatsu 6/60floz(1.8l)', 'none', 2]], 'nothing changed: one call, one transaction');
   await pg.close();
 });
