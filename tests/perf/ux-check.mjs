@@ -38,8 +38,8 @@ async function login(page) {
 /* 保存の確かめに使うキー（クラウドの app_state にそのまま書くもの・売上・予算ではないもの） */
 async function testKey(page) {
   return page.evaluate(() => {
-    const cands = ['ec_note_ux_test', 'shift_opt_cfg_UXTEST', 'announcements', 'kpi_manual_UXTEST', 'store_ops_cfg_UXTEST'];
-    const all = (typeof OP_SYNC_KEYS !== 'undefined' ? OP_SYNC_KEYS : []).concat(cands);
+    /* どの画面も読まないキー（運用データの頭に、ない店の印 UXTEST を付けたもの）。アプリの設定・Office のキーは使わない */
+    const all = (typeof OP_SYNC_PREFIX !== 'undefined' ? OP_SYNC_PREFIX : []).filter(p => !/office|ocs|mr_|bonus|karte|^spl_|^daily_actuals|budget/i.test(p)).map(p => p + 'UXTEST');
     for (const k of all) { try { if (isOpSyncKey(k) && !_opMergeDef(k) && !/^(daily_actuals_|spl_budgets_v2_|budgets_v2)/.test(k) && !(typeof _SPLIT_KEYS !== 'undefined' && _SPLIT_KEYS[k]) && !(typeof SUPA_MASTER_MAP !== 'undefined' && SUPA_MASTER_MAP[k])) return k; } catch (e) { } }
     return null;
   });
@@ -47,7 +47,7 @@ async function testKey(page) {
 /* 本文に置いた試験用のボタン（押すと端末に保存してクラウドへ送り、「保存しました」を出す。実際の画面の保存と同じ道） */
 async function addSaveButton(page, key) {
   await page.evaluate((k) => {
-    const m = document.getElementById('main-content');
+    const m = document.body;   // 本文の外に置く（裏の描き直しで消えないように）
     const d = document.createElement('div'); d.id = 'uxt-wrap'; d.style.cssText = 'position:fixed;left:10px;top:200px;z-index:120';
     d.innerHTML = '<button class="btn btn-primary" id="uxt-save" onclick="window.__saves=(window.__saves||0)+1; lsSet(\'' + k + '\', {n: window.__saves, at: Date.now()}); showToast(\'保存しました\',\'success\')">保存する</button>';
     m.appendChild(d);
@@ -126,38 +126,90 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   await page.keyboard.type('abc', { delay: 60 });
   const b1 = await page.evaluate((s) => { const a = document.activeElement; return { focused: !!(a && a.matches && a.matches(s)), v: (document.querySelector(s) || {}).value, caret: a && a.selectionStart }; }, sel);
   ok('B1 打つたびに描き直す欄でも、入力欄とカーソルを保つ', b1.focused && b1.v === 'abc' && b1.caret === 3, b1);
-  // B2 打っているときに裏の処理が描き直そうとしたら、描き直さずに「表示を更新」
+  // 画面を描いた回数（#main-content の中身が入れ替わった回数）
+  await page.evaluate(() => { window.__mc = 0; new MutationObserver(() => { window.__mc++; }).observe(document.getElementById('main-content'), { childList: true }); });
+  // B2 打つたびに値を覚える欄（検索）で打っているときも、裏の描き直し（検索の待ち・通信の答え）はそのまま描き、欄とカーソルを保つ
   const b2 = await page.evaluate(async (s) => {
-    window.__rp = 0; const o = window.renderPage;
-    setTimeout(() => { renderPage('ingredient_master'); }, 0); await new Promise(r => setTimeout(r, 120));
-    const p = document.getElementById('ux-fresh'); const a = document.activeElement;
-    return { pill: !!(p && p.classList.contains('on')), focused: !!(a && a.matches && a.matches(s)), v: (document.querySelector(s) || {}).value };
+    const c0 = window.__mc; setTimeout(() => { renderPage('ingredient_master'); }, 0); await new Promise(r => setTimeout(r, 150));
+    const p = document.getElementById('ux-fresh'), a = document.activeElement;
+    return { rendered: window.__mc > c0, pill: !!(p && p.classList.contains('on')), focused: !!(a && a.matches && a.matches(s)), v: (document.querySelector(s) || {}).value, caret: a && a.selectionStart };
   }, sel);
-  ok('B2 入力中は裏の描き直しを止めて「表示を更新」を出す（入力は消えない）', b2.pill && b2.focused && b2.v === 'abc', b2);
-  if (b2.pill) { await page.click('#ux-fresh button'); await sleep(200); }
-  const b2b = await page.evaluate(() => { const p = document.getElementById('ux-fresh'); return !(p && p.classList.contains('on')); });
-  ok('B2b 「表示を更新」を押すと描き直して消える', b2b);
-  // B3 日本語の変換中は、その欄の入力の処理（描き直し）を待つ。確定したら 1 回
-  await page.click(sel); await page.fill(sel, ''); await page.evaluate(() => { window._v2q = ''; renderPage('ingredient_master'); });
-  await page.click(sel);
+  ok('B2 検索欄で打っているときも、裏の描き直しで検索の結果を出し、欄とカーソルを保つ', b2.rendered && !b2.pill && b2.focused && b2.v === 'abc' && b2.caret === 3, b2);
+  // 試験用の画面（店舗オペレーション設定の描き方を差し替える。値を覚えない欄・id のある欄と無い欄）
+  await page.evaluate(() => {
+    window.__hn = 0;
+    window.renderStoreOpsSettings = () => '<div id="uxt-n">' + (++window.__hn) + '</div><input id="uxt-a" class="form-input" value=""><input class="form-input uxt-b" value="">'
+      + '<input id="uxt-ime" class="form-input" oninput="window.__draft=this.value"><button id="uxt-btn" class="btn btn-secondary" onclick="window.__clicked=window.__draft">次へ</button>';
+    go('store_ops_settings');
+  });
+  await page.waitForSelector('#uxt-a');
+  // B2b id のある欄で打っているとき：裏の描き直しのあと、打った文字・欄・カーソルを戻す
+  await page.click('#uxt-a'); await page.keyboard.type('xyz', { delay: 30 });
+  const b2b = await page.evaluate(async () => {
+    const n0 = document.getElementById('uxt-n').textContent; setTimeout(() => renderPage(curPage), 0); await new Promise(r => setTimeout(r, 150));
+    const a = document.activeElement;
+    return { rendered: document.getElementById('uxt-n').textContent !== n0, v: document.getElementById('uxt-a').value, focused: !!a && a.id === 'uxt-a', caret: a && a.selectionStart };
+  });
+  ok('B2b 値を覚えない欄（id あり）：裏の描き直しのあと、打った文字・欄・カーソルを戻す', b2b.rendered && b2b.v === 'xyz' && b2b.focused && b2b.caret === 3, b2b);
+  // B2c id の無い欄で打っているとき：描き直さずに「表示を更新」。押すと描き直す
+  await page.click('.uxt-b'); await page.keyboard.type('q');
+  const b2c = await page.evaluate(async () => {
+    const n0 = document.getElementById('uxt-n').textContent; setTimeout(() => renderPage(curPage), 0); await new Promise(r => setTimeout(r, 150));
+    const p = document.getElementById('ux-fresh');
+    return { rendered: document.getElementById('uxt-n').textContent !== n0, pill: !!(p && p.classList.contains('on')), v: document.querySelector('.uxt-b').value };
+  });
+  ok('B2c 戻す先が決められない欄では描き直さずに「表示を更新」（打った文字は消えない）', !b2c.rendered && b2c.pill && b2c.v === 'q', b2c);
+  if (b2c.pill) { await page.click('#ux-fresh button'); await sleep(200); }
+  const b2d = await page.evaluate(() => { const p = document.getElementById('ux-fresh'); return { hidden: !(p && p.classList.contains('on')), n: document.getElementById('uxt-n').textContent }; });
+  ok('B2d 「表示を更新」を押すと描き直して消える', b2d.hidden, b2d);
+  // B2e ほかを押したあと（iPhone では欄から外れない）：裏の描き直しはそのまま描く。打った文字（id あり）は戻す
+  await page.click('#uxt-a'); await page.keyboard.type('k'); await page.click('#uxt-n');
+  const b2e = await page.evaluate(async () => {
+    const n0 = document.getElementById('uxt-n').textContent; setTimeout(() => renderPage(curPage), 0); await new Promise(r => setTimeout(r, 150));
+    const p = document.getElementById('ux-fresh');
+    return { rendered: document.getElementById('uxt-n').textContent !== n0, pill: !!(p && p.classList.contains('on')), v: document.getElementById('uxt-a').value };
+  });
+  ok('B2e ほかを押したあとは止めずに描き直し、まだ保存していない文字は残す', b2e.rendered && !b2e.pill && b2e.v === 'k', b2e);
+  // B3 日本語の変換中は描き直さない（変換が切れない）。確定したら 1 回描き直す
   const cdp = await ctx.newCDPSession(page);
-  await page.evaluate(() => { window.__renders = 0; const o = window.renderPage; window.renderPage = function () { window.__renders++; return o.apply(this, arguments); }; window.__orp = o; });
+  await page.evaluate(() => { window._ingTab = 'v2'; window._v2q = ''; go('ingredient_master'); });
+  await page.waitForSelector(sel); await page.click(sel);
+  const c0 = await page.evaluate(() => window.__mc);
   await cdp.send('Input.imeSetComposition', { text: 'し', selectionStart: 1, selectionEnd: 1 });
   await cdp.send('Input.imeSetComposition', { text: 'しお', selectionStart: 2, selectionEnd: 2 });
-  const during = await page.evaluate(() => window.__renders);
+  await sleep(100);
+  const during = await page.evaluate((c) => window.__mc - c, c0);
   await cdp.send('Input.insertText', { text: '塩' });
-  await sleep(150);
-  const b3 = await page.evaluate((s) => { const a = document.activeElement; const r = { after: window.__renders, v: (document.querySelector(s) || {}).value, q: window._v2q, focused: !!(a && a.matches && a.matches(s)) }; window.renderPage = window.__orp; return r; }, sel);
-  ok('B3 変換中は描き直さず、確定したら描き直す（変換が途中で切れない）', during === 0 && b3.after >= 1 && b3.v === '塩' && b3.q === '塩' && b3.focused, { during, ...b3 });
-  // B4 変換を確定する Enter では、欄の Enter の処理を動かさない
+  await sleep(200);
+  const b3 = await page.evaluate((s) => { const a = document.activeElement; return { renders: window.__mc, v: (document.querySelector(s) || {}).value, q: window._v2q, focused: !!(a && a.matches && a.matches(s)) }; }, sel);
+  ok('B3 変換中は描き直さず、確定したら描き直す（変換が途中で切れない）', during === 0 && b3.renders > c0 && b3.v === '塩' && b3.q === '塩' && b3.focused, { during, ...b3 });
+  // B3b 変換中にボタンを押しても（押すと変換が確定する）、押した処理は打った文字をすべて読む
+  await page.evaluate(() => go('store_ops_settings')); await page.waitForSelector('#uxt-ime');
+  await page.click('#uxt-ime');
+  await cdp.send('Input.imeSetComposition', { text: 'すし', selectionStart: 2, selectionEnd: 2 });
+  await page.click('#uxt-btn'); await sleep(150);
+  const b3b = await page.evaluate(() => ({ clicked: window.__clicked, v: (document.getElementById('uxt-ime') || {}).value }));
+  ok('B3b 変換中にボタンを押しても、押した処理は打った文字をすべて読む（独立レビュー P2）', b3b.clicked === 'すし', b3b);
+  // B3c 変換中の欄が消えても（描き直し）、変換中のまま残らない（ほかの描き直しを止めない）
+  await page.click('#uxt-ime'); await cdp.send('Input.imeSetComposition', { text: 'か', selectionStart: 1, selectionEnd: 1 });
+  const b3c = await page.evaluate(async () => {
+    document.getElementById('uxt-ime').remove();
+    const n0 = document.getElementById('uxt-n').textContent; setTimeout(() => renderPage(curPage), 0); await new Promise(r => setTimeout(r, 150));
+    return { rendered: document.getElementById('uxt-n').textContent !== n0, composing: !!(window.FUNERGY_UX && FUNERGY_UX.composing) };
+  });
+  ok('B3c 変換中の欄が消えたら変換中を解き、描き直しを止めない（独立レビュー P2）', b3c.rendered && !b3c.composing, b3c);
+  // B4 日本語の変換を確定する Enter では動かさない。英字の予測変換の Enter・ふつうの Enter は動く
   const b4 = await page.evaluate(() => {
     const i = document.createElement('input'); i.id = 'uxt-enter'; i.setAttribute('onkeydown', "if(event.key==='Enter')window.__ent=(window.__ent||0)+1"); document.getElementById('main-content').appendChild(i);
-    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }));
-    const during = window.__ent || 0;
-    i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    i.remove(); return { during, normal: (window.__ent || 0) - during };
+    const enter = (comp) => i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: comp, bubbles: true, cancelable: true }));
+    i.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); i.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'しお', bubbles: true }));
+    enter(true); const ja = window.__ent || 0; i.dispatchEvent(new CompositionEvent('compositionend', { data: '塩', bubbles: true }));
+    i.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })); i.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'hello', bubbles: true }));
+    enter(true); const en = (window.__ent || 0) - ja; i.dispatchEvent(new CompositionEvent('compositionend', { data: 'hello', bubbles: true }));
+    enter(false); const normal = (window.__ent || 0) - ja - en;
+    i.remove(); return { ja, en, normal };
   });
-  ok('B4 変換確定の Enter では動かさず、ふつうの Enter では動く', b4.during === 0 && b4.normal === 1, b4);
+  ok('B4 日本語の変換確定の Enter では動かさず、英字の予測変換・ふつうの Enter では動く', b4.ja === 0 && b4.en === 1 && b4.normal === 1, b4);
   // B5 同じ画面を開き直しても（保存のあと・取り直しのあとなど）スクロール位置を変えない（中身をあとから描く画面でも）
   await page.evaluate(() => go('staff_master')); await page.waitForSelector('#emp-search'); await sleep(500);
   const b5 = await page.evaluate(async () => { window.scrollTo(0, 900); await new Promise(r => setTimeout(r, 50)); const y0 = window.scrollY; go(curPage); await new Promise(r => setTimeout(r, 1200)); return { y0, y1: window.scrollY }; });
@@ -167,6 +219,11 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   await page.locator('#subnav-bar .subnav-chip.active').first().click(); await sleep(800);
   const b6y = await page.evaluate(() => window.scrollY);
   ok('B6 ナビでいまの画面を押したときは上へ（今までどおり）', b6 && b6y < 4, b6y);
+  // B6b 画面の中のボタンで同じ画面のタブを切り替えたときも、今までどおり上へ（独立レビュー P3）
+  await page.evaluate(() => { const b = document.createElement('button'); b.id = 'uxt-tab'; b.className = 'btn btn-secondary'; b.textContent = 'タブ'; b.setAttribute('onclick', 'go(curPage)'); b.style.cssText = 'position:fixed;left:10px;top:300px;z-index:120'; document.body.appendChild(b); window.scrollTo(0, 900); });
+  await sleep(60); await page.click('#uxt-tab'); await sleep(400);
+  const b6b = await page.evaluate(() => { document.getElementById('uxt-tab').remove(); return window.scrollY; });
+  ok('B6b 押して同じ画面を開き直したときは、今までどおり上へ', b6b < 4, b6b);
   // B7 描くたびに同じ要素へ処理を足さない
   const b7 = await page.evaluate(() => {
     const d = document.createElement('div'); d.setAttribute('data-phase', 'uxt'); document.getElementById('main-content').appendChild(d);
@@ -203,6 +260,12 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   const end = await page.evaluate(() => { const b = document.getElementById('ux-save'); return b && !b.hidden ? b.getAttribute('aria-label') : null; });
   ok('C1 押したらすぐ「保存中…」、クラウドに届いてから「保存しました」', /保存中/.test(firstToast) && tDone != null && tDone >= 1400, { firstToast, feedback_ms: tFirst, saved_ms: tDone });
   ok('C2 右上：保存中… → 保存済み（時刻）', /保存中/.test(mid || '') && /保存済み/.test(end || ''), { mid, end });
+  // C2b 「保存しました」が出ているあいだに、もう一度保存（遅い）：同じ知らせを「保存中…」に戻し、届いてから「保存しました」（独立レビュー P2）
+  await sleep(1300);
+  await page.click('#uxt-save');
+  const c2b0 = (await toastTexts(page)).join('|');
+  let c2bDone = null; for (let i = 0; i < 40; i++) { await sleep(100); const tt = await toastTexts(page); if (tt.some(x => /保存しました/.test(x))) { c2bDone = (i + 1) * 100; break; } }
+  ok('C2b 同じ知らせの 2 回目の保存も、届いてから「保存しました」', /保存中/.test(c2b0) && !/保存しました/.test(c2b0) && c2bDone >= 1300, { first: c2b0, saved_ms: c2bDone });
   await ctl('/__delay?path=/rest/v1/app_state&ms=0');
   await sleep(2500);
   // C3 送れないとき：知らせは「この端末に保存（送信待ち）」。右上は「送信待ち N 件」。つながったら「今すぐ送る」で送れる
@@ -263,11 +326,12 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   await page.evaluate(() => {
     const b = document.createElement('button'); b.id = 'uxt-open'; b.className = 'btn btn-secondary'; b.textContent = 'モーダルを開く';
     b.onclick = () => openModal('<div class="modal-title">試験</div><input class="form-input" id="uxm1"><textarea class="form-textarea" id="uxm2"></textarea><div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button></div>');
-    b.style.cssText = 'position:fixed;left:10px;top:200px;z-index:120'; document.getElementById('main-content').appendChild(b);
+    b.style.cssText = 'position:fixed;left:10px;top:200px;z-index:120'; document.body.appendChild(b);
   });
   await page.click('#uxt-open'); await sleep(250);
-  const d1 = await page.evaluate(() => document.activeElement && document.activeElement.id);
-  ok('D1 開いたら最初の欄に（PC）', d1 === 'uxm1', d1);
+  const d1x = await page.evaluate(() => { const a = document.activeElement; return { id: a && a.id, tag: a && a.tagName, cls: a && String(a.className).slice(0, 40), open: document.getElementById('modal-overlay').classList.contains('open') }; });
+  const d1 = d1x.id;
+  ok('D1 開いたら最初の欄に（PC）', d1 === 'uxm1', d1x);
   await page.keyboard.type('memo');
   page.__dialogAccept = false;
   await page.keyboard.press('Escape'); await sleep(200);
@@ -292,7 +356,7 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   ok('D5 入力の途中で外側を押しても、確かめずに閉じない', d5 && dialogs.length === nd + 1, { open: d5 });
   page.__dialogAccept = true; await page.evaluate(() => closeModalDirect());
   // D6 キーボードで選んでいる場所が見える・押せないボタンの見た目
-  await page.evaluate(() => { const b = document.createElement('button'); b.className = 'btn btn-primary'; b.id = 'uxt-dis'; b.disabled = true; b.textContent = 'x'; document.getElementById('main-content').appendChild(b); });
+  await page.evaluate(() => { const b = document.createElement('button'); b.className = 'btn btn-primary'; b.id = 'uxt-dis'; b.disabled = true; b.textContent = 'x'; document.body.appendChild(b); });
   await page.focus('#uxt-open'); await page.keyboard.press('Shift+Tab'); await page.keyboard.press('Tab');
   const d6 = await page.evaluate(() => { const a = document.activeElement; const cs = getComputedStyle(a); return { id: a.id, outline: cs.outlineStyle, dis: getComputedStyle(document.getElementById('uxt-dis')).opacity }; });
   ok('D6 キーボードで選んだボタンに枠が出る・押せないボタンは薄い', d6.outline !== 'none' && Number(d6.dis) < 0.6, d6);

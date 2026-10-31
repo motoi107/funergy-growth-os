@@ -193,11 +193,11 @@ test('業務の決まり・保存の道は変えない（保存の関数・承�
 });
 
 /* 同じキーの送信の順（_pushWithOutbox）：本物の関数を VM で。クラウドへの送信は代わりの関数（答えを試験で決める） */
-function pushEnv() {
+function pushEnv(clock) {
   const a = html.indexOf('\nfunction _outboxGet(){'), b = html.indexOf('\n/* 未送信キューを再送');
   assert.ok(a > 0 && b > a, 'push block');
   const store = new Map(), calls = [];
-  const ctx = { console, Promise, Date, JSON, Object, Array, String, setTimeout,
+  const ctx = { console, Promise, Date: clock ? clock.Date : Date, JSON, Object, Array, String, setTimeout: clock ? clock.setTimeout : setTimeout, clearTimeout: clock ? clock.clearTimeout : clearTimeout,
     localStorage: { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
     _supaBooting: false, _lsPushBlocked: () => false,
     syncMasterToSupabase: (key, val) => { let res; const p = new Promise(r => { res = r; }); calls.push({ key, val, res }); return p; } };
@@ -257,4 +257,52 @@ test('新しい送信が先に失敗し、古い送信があとで届いても�
   if (E.calls.length === 2) { E.calls[1].res(false); await tick(); await tick(); E.calls[0].res(true); await tick(); await tick(); }   // 並べて送る作り：新しいほうが先に答える
   else { E.calls[0].res(true); await tick(); await tick(); E.calls[1].res(false); await tick(); await tick(); }
   assert.deepEqual(E.outbox(), ['k4']);
+});
+
+/* 試験の時計（30 秒の待ちを進める） */
+function fakeClock() {
+  const c = { t: 1000000, timers: [] };
+  c.Date = { now: () => c.t };
+  c.setTimeout = (f, ms) => { c.timers.push({ f, at: c.t + (ms || 0), on: true }); return c.timers.length; };
+  c.clearTimeout = id => { if (c.timers[id - 1]) c.timers[id - 1].on = false; };
+  c.advance = ms => { c.t += ms; c.timers.filter(x => x.on && x.at <= c.t).forEach(x => { x.on = false; x.f(); }); };
+  return c;
+}
+test('答えない送信のあいだの保存：待っている値は 30 秒で、いちばん新しい値だけ送る。待っているあいだも送信待ちに入っている（独立レビュー P1）', async () => {
+  const C = fakeClock(), E = pushEnv(C);
+  E.ctx._pushWithOutbox('k5', 'A'); await tick();                    // A：答えない
+  C.advance(5000); E.ctx._pushWithOutbox('k5', 'B'); const pB = E.ctx._lsPushP.k5;
+  assert.deepEqual(E.outbox(), ['k5'], '待っている値は送信待ちにも入れる（閉じられても次に送る）');
+  C.advance(10000); E.ctx._pushWithOutbox('k5', 'C'); const pC = E.ctx._lsPushP.k5;
+  assert.equal(pB, pC);
+  await tick(); assert.equal(E.calls.length, 1, '30 秒までは待つ');
+  C.advance(16000); await tick(); await tick();
+  assert.deepEqual(E.calls.map(c => c.val), ['A', 'C'], 'B は送らない（古い値をあとから送らない）');
+  E.calls[1].res(true); assert.equal(await pC, true);
+  assert.deepEqual(E.outbox(), [], 'いちばん新しい値が届いたら送信待ちから外す');
+  E.calls[0].res(true); await tick(); await tick();
+  assert.deepEqual(E.outbox(), [], '古い送信があとで答えても何も変えない');
+});
+test('答えない送信から 30 秒たって保存したら、待っていた値をその送信にまとめる（あとで古い値を送らない）', async () => {
+  const C = fakeClock(), E = pushEnv(C);
+  E.ctx._pushWithOutbox('k6', 'A'); await tick();
+  C.advance(5000); E.ctx._pushWithOutbox('k6', 'B'); const pB = E.ctx._lsPushP.k6;
+  C.timers.forEach(x => { x.on = false; });                          // 待ちの時計が動く前に
+  C.t += 30000; E.ctx._pushWithOutbox('k6', 'C'); const pC = E.ctx._lsPushP.k6;
+  await tick(); await tick();
+  assert.deepEqual(E.calls.map(c => c.val), ['A', 'C']);
+  E.calls[1].res(true);
+  assert.equal(await pC, true); assert.equal(await pB, true, '待っていた保存も、まとめた送信の結果で終わる');
+  E.calls[0].res(true); await tick(); await tick();
+  assert.deepEqual(E.calls.map(c => c.val), ['A', 'C'], 'B をあとから送らない');
+  assert.deepEqual(E.outbox(), []);
+});
+test('待っているあいだに送信待ちに入れた印は、クラウドに送らないキー（undefined）でも外す', async () => {
+  const E = pushEnv();
+  E.ctx._pushWithOutbox('local_like', 1); await tick();
+  E.ctx._pushWithOutbox('local_like', 2); const p = E.ctx._lsPushP.local_like;
+  assert.deepEqual(E.outbox(), ['local_like']);
+  E.calls[0].res(undefined); await tick(); await tick();
+  E.calls[1].res(undefined); assert.equal(await p, undefined);
+  assert.deepEqual(E.outbox(), []);
 });

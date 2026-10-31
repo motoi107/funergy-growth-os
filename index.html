@@ -1499,7 +1499,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
     <div id="login-step-location">
       <div class="role-section">
         <div class="role-section-label" id="sec-store-label">所属を選択</div>
-        <div class="store-grid" id="login-store-grid" aria-busy="true"><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div></div>
+        <div class="store-grid" id="login-store-grid"><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div></div>
       </div>
     </div>
 
@@ -10427,7 +10427,8 @@ function _pushWithOutbox(key, val){
   }catch(e){}
   /* v1127：同じキーを送っている途中に、また保存されたら：終わってから、そのときの最新の値で 1 回だけ送る（途中の値は飛ばす）。
      送る順を守り（古い値があとから届いて新しい値を上書きしない）、古い送信の成功で、まだ送れていない新しい変更を「送れた」にしない。
-     30 秒たっても前の送信が終わらないときは、待たずに送る。送った結果（true・false・undefined）は今までどおり */
+     30 秒たっても前の送信が終わらないときは、待っている最新の値を送る（それより前の値は送らない）。待っているあいだは送信待ちにも入れておく
+     （閉じられても次に送る）。送った結果（true・false・undefined）は今までどおり */
   var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : (_pushWithOutbox.__q || (_pushWithOutbox.__q={}));
   var q=Q[key]||(Q[key]={seq:0, busy:0, busySeq:0, next:null});
   function run(v){
@@ -10437,19 +10438,27 @@ function _pushWithOutbox(key, val){
       .then(function(o){
         if(q.busySeq===my) q.busy=0;
         var nx=q.next;
-        if(nx && !q.busy){ q.next=null; run(nx.val).then(nx.res); }   /* 待っていた新しい値を送る（その結果で送信待ちを決める） */
+        if(nx && !q.busy){ q.next=null; if(nx.t) clearTimeout(nx.t); run(nx.val).then(nx.res); }   /* 待っていた新しい値を送る（その結果で送信待ちを決める） */
         if(o.r===false) _outboxAdd(key, o.e ? ((o.e&&o.e.message)||o.e) : 'push failed');
-        else if(o.r===true && my===q.seq) _outboxRemove(key);   /* 一番新しい送信が届いたときだけ、送信待ちから外す。undefined＝対象外→何もしない */
+        else if(my===q.seq && (o.r===true || q.marked)) _outboxRemove(key);   /* 一番新しい送信が届いたときだけ、送信待ちから外す。undefined＝対象外（待ちのあいだに入れた印だけ外す） */
+        if(my===q.seq && !q.next) q.marked=false;
         return o.r;
       });
   }
   if(q.busy && (Date.now()-q.busy)<30000){
-    if(!q.next){ var _res; q.next={ val:val, p:new Promise(function(r){ _res=r; }) }; q.next.res=_res; }
+    if(!q.next){
+      var _res; q.next={ val:val, p:new Promise(function(r){ _res=r; }) }; q.next.res=_res;
+      try{ _outboxAdd(key, 'queued'); q.marked=true; }catch(e){}
+      q.next.t=setTimeout(function(){ var nx=q.next; if(!nx) return; q.next=null; run(nx.val).then(nx.res); }, Math.max(0, 30000-(Date.now()-q.busy)));
+    }
     else q.next.val=val;
     _pp[key]=q.next.p;
     return;
   }
-  _pp[key]=run(val);
+  /* 送る。待っている値があれば、この送信（いちばん新しい値）にまとめる */
+  var w=q.next; if(w){ q.next=null; if(w.t) clearTimeout(w.t); }
+  var pr=run(val); if(w) pr.then(w.res);
+  _pp[key]=pr;
 }
 var _pushQ = {};   /* v1127：キーごとの送信の順（_pushWithOutbox） */
 
@@ -97092,14 +97101,16 @@ function showToast(msg, type) {
      「保存しました」などは、その操作で送ったものがクラウドに届いてから出す（届かなければ「この端末に保存」）。文は文字として出す */
   var box = document.getElementById('ux-toasts');
   if (!box) { box = document.createElement('div'); box.id = 'ux-toasts'; box.setAttribute('aria-live', 'polite'); box.setAttribute('role', 'status'); document.body.appendChild(box); }
+  var waitP = (type === 'success' && window.FUNERGY_UX && typeof FUNERGY_UX.saveWait === 'function') ? FUNERGY_UX.saveWait(clean) : null;
   for (var i = 0; i < box.children.length; i++) {
     var c = box.children[i];
-    if (c._uxMsg === clean && !c._uxGone) {   /* 同じ文：出ているものを出し直す（種類が変われば新しいほうの見た目に） */
-      if (c._uxType !== type && c._uxShown !== 'pending') { c._uxType = type; _toastPaint(c, type, clean); }
-      _toastArm(c); return c;
+    if (c._uxMsg === clean && !c._uxGone) {   /* 同じ文：出ているものを出し直す（種類が変われば新しいほうの見た目に。保存なら今回の送信も待つ） */
+      c._uxType = type;
+      if (waitP) _toastAwait(c, clean, waitP);
+      else if (c._uxShown !== 'pending') { if (c._uxShown !== type) _toastPaint(c, type, clean); _toastArm(c); }
+      return c;
     }
   }
-  var waitP = (type === 'success' && window.FUNERGY_UX && typeof FUNERGY_UX.saveWait === 'function') ? FUNERGY_UX.saveWait(clean) : null;
   var el = document.createElement('div');
   el.className = 'ux-toast'; el._uxMsg = clean; el._uxType = type;
   if (type === 'danger') el.setAttribute('role', 'alert');
@@ -97107,22 +97118,27 @@ function showToast(msg, type) {
   box.appendChild(el);
   var live = [].filter.call(box.children, function(x){ return !x._uxGone; });
   while (live.length > 3) _toastGone(live.shift(), true);
-  if (waitP) {
-    _toastPaint(el, 'pending', t('保存中…', 'Saving…'));
-    waitP.then(function(r){
-      if (el._uxGone) return;
-      if (r === 'ok') { _toastPaint(el, 'success', clean); try{ haptic('success'); }catch(e){} }
-      else if (r === 'queued') { _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへはまだ送れていません（つながると自動で送ります）', 'Saved on this device. Not sent to the cloud yet (it will be sent when connected)')); try{ haptic('warning'); }catch(e){} }
-      else _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへの送信に時間がかかっています', 'Saved on this device. Sending to the cloud is taking a while'));
-      _toastArm(el);
-    });
-  } else {
+  if (waitP) _toastAwait(el, clean, waitP);
+  else {
     try{ if(type==='success') haptic('success'); else if(type==='danger') haptic('error'); else if(type==='warning') haptic('warning'); }catch(e){}
     _toastPaint(el, type, clean);
     _toastArm(el);
   }
   requestAnimationFrame(function(){ el.classList.add('on'); });
   return el;
+}
+/* 保存の知らせ：送ったものが届くまで「保存中…」。届いたら元の文、届かなければ「この端末に保存」。いちばん新しく待ち始めたものの結果で出す */
+function _toastAwait(el, clean, waitP){
+  var my = (el._uxWaitSeq = (el._uxWaitSeq || 0) + 1);
+  if (el._uxT) clearTimeout(el._uxT);
+  _toastPaint(el, 'pending', t('保存中…', 'Saving…'));
+  waitP.then(function(r){
+    if (el._uxGone || el._uxWaitSeq !== my) return;
+    if (r === 'ok') { _toastPaint(el, 'success', clean); try{ haptic('success'); }catch(e){} }
+    else if (r === 'queued') { _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへはまだ送れていません（つながると自動で送ります）', 'Saved on this device. Not sent to the cloud yet (it will be sent when connected)')); try{ haptic('warning'); }catch(e){} }
+    else _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへの送信に時間がかかっています', 'Saved on this device. Sending to the cloud is taking a while'));
+    _toastArm(el);
+  });
 }
 function _toastPaint(el, type, text){
   var conf = {
@@ -97969,10 +97985,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
    v1127：操作感の共通の決まり（FUNERGY_UX）
    アプリ全体で同じ動きにする。業務の決まり（承認・確定・計算）は変えない。
    ・描き直し：同じ画面を描き直すときは、入力中の欄・カーソル・中のスクロール・人が開いた折りたたみを保つ。
-     人が入力している欄があるときに、裏の処理（通信の答え・タイマー）が同じ画面を描き直そうとしたら、描き直さずに
-     「新しい情報があります［表示を更新］」を出す（入力を消さない・古い表示のまま新しいと見せない）。
-     日本語の変換中は、その欄の入力の処理（oninput）を変換が終わるまで待つ。変換を確定する Enter で操作しない。
-   ・画面の行き来：同じ画面を開き直したとき（保存のあと・取り直しのあと）は、スクロールの位置を変えない（前は上へ戻っていた）。
+     裏の処理（通信の答え・タイマー）が同じ画面を描き直しても、人の入力は消さない。
+     裏の処理が描き直すときは、人が打ってまだ保存していない欄（id のある欄）の値を描き直したあと戻す。
+     打つたびに値を覚えない id の無い欄で打っているときだけ、描き直さずに「表示を更新」を出す。
+     日本語の変換中は、描き直しを変換が終わるまで待つ（終わったら 1 回）。日本語などの変換を確定する Enter で操作しない。
+   ・画面の行き来：裏の処理（保存の答え・取り直し）が同じ画面を開き直したときは、スクロールの位置を変えない（前は上へ戻っていた）。
+     押して開き直したとき（画面の中のタブなど）は今までどおり上へ。
      中身をあとから描く画面は、高さが足りるまで少し待って戻す。
    ・保存：右上に 保存中…／保存済み（時刻）／送信待ち N 件（この端末だけに保存）／確認待ち を出す（クラウドに届いたかで決める）。
      「保存しました」の知らせは、その操作で送ったものがクラウドに届いてから出す。届かなければ「この端末に保存（送信待ち）」。
@@ -98035,8 +98053,14 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var s = e.target && e.target.closest ? e.target.closest('summary') : null;
     if(s && s.parentNode && s.parentNode.tagName === 'DETAILS'){ var m = mainEl(); if(m && m.contains(s)) toggled.add(s.parentNode); }
   }, true);
+  var lastFieldInput = 0, lastElsewhere = 0, edited = new Set();
+  D.addEventListener('input', function(e){ var el = e.target; if(e.isTrusted && el && el.id && (isField(el) || el.tagName === 'SELECT')){ var m = mainEl(); if(m && m.contains(el)) edited.add(el.id); } }, true);
   ['keydown', 'input', 'pointerdown', 'compositionstart', 'paste'].forEach(function(tp){
-    D.addEventListener(tp, function(e){ if(e.isTrusted && isField(e.target)) touched = e.target; }, true);
+    D.addEventListener(tp, function(e){
+      if(!e.isTrusted) return;
+      if(isField(e.target)){ touched = e.target; lastFieldInput = now(); }
+      else if(tp === 'pointerdown') lastElsewhere = now();   /* ボタンなどを押した（iPhone では欄から外れなくても、打つのは終わった） */
+    }, true);
   });
 
   function snapshot(m){
@@ -98057,6 +98081,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }
   function restore(m, s){
     if(!m || !s) return;
+    if(s.keep){ Object.keys(s.keep).forEach(function(id){ var kf = D.getElementById(id); if(kf && m.contains(kf) && (isField(kf) || kf.tagName === 'SELECT') && kf.value !== s.keep[id]){ kf.value = s.keep[id]; edited.add(id); } }); }   /* 打っていた文字を戻す（まだ保存していない入力） */
     scrolled = new Set(); toggled = new Set();
     s.dt.forEach(function(d){ var el = findKey(d[0], m); if(el && el.tagName === 'DETAILS'){ if(el.open !== d[1]) el.open = d[1]; toggled.add(el); } });
     s.sc.forEach(function(d){ var el = findKey(d[0], m); if(el){ el.scrollTop = d[1]; el.scrollLeft = d[2]; scrolled.add(el); } });
@@ -98079,17 +98104,21 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* ---------- 描き直し（renderPage） ---------- */
   var rendered = null, lastBusy = 0;
   function userEvent(){
-    if(UX._redispatch) return true;
     var ev = W.event;
     return !!(ev && ev.isTrusted && /^(click|dblclick|input|change|keydown|keyup|keypress|submit|pointerup|pointerdown|mouseup|mousedown|touchstart|touchend|focusout|blur|compositionend|paste|cut|drop)$/.test(ev.type));
   }
-  function typingIn(m){
-    if(UX.composing) return true;
+  /* いま人が打っている欄（打ったあと、ほかを押していない）。無ければ null */
+  function typingField(m){
     var a = D.activeElement;
-    return !!(a && m && a === touched && m.contains(a) && isField(a) && !a.readOnly && !a.disabled);
+    if(!(a && m && a === touched && m.contains(a) && isField(a) && !a.readOnly && !a.disabled)) return null;
+    if(lastElsewhere > lastFieldInput) return null;
+    return a;
   }
+  function typingIn(m){ return composingNow() || !!typingField(m); }
   function resolvePage(p){ try{ return (typeof navResolvePage === 'function') ? navResolvePage(p) : p; }catch(e){ return p; } }
   UX._typing = function(){ return typingIn(mainEl()); };
+  /* 打つたびに値を覚える欄（oninput など）は、描き直しても値が残る。覚えない欄は、描き直すと打った文字が消える */
+  function keepsValue(f){ return !!(f.getAttribute('oninput') || f.getAttribute('onkeyup') || String(f.getAttribute('type') || '').toLowerCase() === 'search'); }
 
   function showFresh(){
     var p = D.getElementById('ux-fresh');
@@ -98111,6 +98140,22 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
      ほかの取り込みがまだなら少し待ち（4 秒まで）、操作（押す・打つ・スクロール）が 1.2 秒止まってから（指の下で画面が変わらないように・10 秒まで）。
      仮の枠（読み込み中の灰色の帯）を出しているときは待たない。入力中なら描き直さずに「表示を更新」（下の renderPage） */
   ['pointerdown', 'keydown', 'wheel', 'touchmove'].forEach(function(tp){ D.addEventListener(tp, function(e){ if(e.isTrusted) lastBusy = now(); }, { capture: true, passive: true }); });
+  /* 端末のデータが前の描画から変わったか（変わっていなければ描き直さない：同じ画面を描き直すだけの時間を使わない）。
+     書き込みは _idbQueue（端末の保存の一番下）で見る。比べられないとき（IndexedDB が使えない端末など）は「変わった」とみなす */
+  var lastDataChange = 0, lastFullRender = 0;
+  if(typeof _idbQueue === 'function'){
+    var origIdbQueue = _idbQueue;
+    _idbQueue = function(key, json){
+      try{
+        if(!(typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key))){
+          var prev = (typeof _IDB_MEM !== 'undefined' && _IDB_MEM instanceof Map && typeof _idbState !== 'undefined' && _idbState === 'ready') ? _IDB_MEM.get(key) : undefined;
+          if(prev === undefined || prev !== json) lastDataChange = now();
+        }
+      }catch(e){ lastDataChange = now(); }
+      return origIdbQueue.apply(this, arguments);
+    };
+  } else { lastDataChange = 1e15; }
+  UX._dataChangedSince = function(t){ return lastDataChange > t; };
   var bgWant = 0, bgT = null;
   UX.bgRefresh = function(){
     if(!bgWant) bgWant = now();
@@ -98124,6 +98169,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       if(!skel && (W._uxOpsBusy || W._heavyPending) && waited < 4000){ bgT = setTimeout(tick, 250); return; }
       if(!skel && now() - lastBusy < 1200 && waited < 10000){ bgT = setTimeout(tick, 250); return; }
       bgWant = 0;
+      if(lastFullRender && lastDataChange < lastFullRender && !skel) return;   /* 前に描いたあと、端末のデータは変わっていない */
       try{ renderPage((typeof curPage !== 'undefined' && curPage) || rendered); }catch(e){}
     })();
   };
@@ -98134,12 +98180,21 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     renderPage = function(page){
       var m = mainEl(), p = resolvePage(page);
       var samePage = !!(m && rendered && p === rendered && appShown());
-      if(samePage && !userEvent() && typingIn(m)){ showFresh(); return; }
+      if(samePage && composingNow()){ deferUntilComposed(p); return; }   /* 変換が切れないように、変換が終わってから 1 回 */
+      var byUser = userEvent(), keep = null;
+      if(samePage && !byUser){
+        var f = typingField(m);
+        if(f && !keepsValue(f) && !f.id){ showFresh(); return; }   /* 打った文字を戻す先が決められない：描き直さずに知らせる */
+        keep = {};   /* 人が打った（まだ保存していない）欄の値は、描き直したあと戻す（id のある欄） */
+        edited.forEach(function(id){ var el = D.getElementById(id); if(el && m.contains(el) && (isField(el) || el.tagName === 'SELECT') && el.value !== el.defaultValue) keep[id] = el.value; });
+      }
       var snap = null;
-      if(samePage){ try{ snap = snapshot(m); }catch(e){ snap = null; } }
+      if(samePage){ try{ snap = snapshot(m); }catch(e){ snap = null; } if(snap) snap.keep = keep; }
+      if(!samePage || byUser) edited = new Set();
       else { scrolled = new Set(); toggled = new Set(); }
       var r = origRender.apply(this, arguments);
-      var done = function(){ try{ rendered = p; hideFresh(); if(snap) restore(mainEl(), snap); }catch(e){} };
+      var t0 = now();
+      var done = function(){ try{ rendered = p; lastFullRender = t0; hideFresh(); if(snap) restore(mainEl(), snap); }catch(e){} };
       if(r && typeof r.then === 'function') r.then(done, done); else done();
       return r;
     };
@@ -98162,12 +98217,13 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     go = function(page){
       var from = (typeof curPage !== 'undefined') ? curPage : null, y = W.scrollY, ev = W.event;
       var nav = !!(ev && ev.isTrusted && ev.type === 'click' && ev.target && ev.target.closest && ev.target.closest('.nav-btn, .subnav-chip'));
+      var clicked = userEvent();
       var r = origGo.apply(this, arguments);
       var after = function(){
         try{
           var to = (typeof curPage !== 'undefined') ? curPage : null;
-          /* 同じ画面を開き直したとき（保存のあと・取り直しのあと）は位置を変えない。ナビでいまの画面を押したときは今までどおり上へ */
-          if(to && to === from && !nav && y > 0) scrollBack(y);
+          /* 裏の処理（取り直し・保存の答え）が同じ画面を開き直したときは位置を変えない。押して開いたとき（画面の中のタブ・ナビ）は今までどおり上へ */
+          if(to && to === from && !nav && !clicked && y > 0) scrollBack(y);
         }catch(e){}
       };
       if(r && typeof r.then === 'function') r.then(after, after); else after();
@@ -98177,26 +98233,27 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
 
   /* ---------- 日本語の変換中は、その欄の入力の処理を待つ ---------- */
   UX.composing = false;
-  var sawInput = false;
-  D.addEventListener('compositionstart', function(){ UX.composing = true; }, true);
+  var compTarget = null, compData = '', compDataT = null, composedWant = null;
+  /* 変換中か（変換している欄が今も画面にあって選ばれているときだけ。欄が消えたら終わったとみなす） */
+  function composingNow(){
+    if(!UX.composing) return false;
+    if(!compTarget || !compTarget.isConnected || D.activeElement !== compTarget){ UX.composing = false; compTarget = null; return false; }
+    return true;
+  }
+  function deferUntilComposed(p){ composedWant = p; }
+  D.addEventListener('compositionstart', function(e){ UX.composing = true; compTarget = e.target; if(compDataT){ clearTimeout(compDataT); compDataT = null; } }, true);
+  D.addEventListener('compositionupdate', function(e){ compData = String(e.data || ''); }, true);
   D.addEventListener('compositionend', function(e){
-    UX.composing = false; sawInput = false;
-    var tg = e.target;
-    setTimeout(function(){
-      if(sawInput || !tg || !tg.isConnected || !tg.getAttribute || !tg.getAttribute('oninput')) return;
-      UX._redispatch = true;
-      try{ tg.dispatchEvent(new Event('input', { bubbles: true })); }catch(err){}
-      UX._redispatch = false;
-    }, 0);
+    UX.composing = false; compTarget = null;
+    if(compDataT) clearTimeout(compDataT);
+    compDataT = setTimeout(function(){ compData = ''; compDataT = null; }, 150);
+    var want = composedWant; composedWant = null;
+    if(want){ setTimeout(function(){ try{ if(rendered === want) renderPage(want); }catch(err){} }, 0); }
   }, true);
-  D.addEventListener('input', function(e){
-    var tg = e.target;
-    if((e.isComposing || UX.composing) && tg && tg.getAttribute && tg.getAttribute('oninput')){ e.stopImmediatePropagation(); return; }
-    if(!UX._redispatch) sawInput = true;
-  }, true);
-  /* 変換を確定する Enter では、検索・送信などを動かさない */
+  D.addEventListener('focusout', function(e){ if(e.target === compTarget){ UX.composing = false; compTarget = null; } }, true);
+  /* 日本語などの変換を確定する Enter では、検索・送信などを動かさない（英字の予測変換の Enter はふつうに動く） */
   D.addEventListener('keydown', function(e){
-    if(e.key === 'Enter' && (e.isComposing || e.keyCode === 229)){ e.stopImmediatePropagation(); }
+    if(e.key === 'Enter' && (e.isComposing || e.keyCode === 229) && /[^\x00-\x7F]/.test(compData)){ e.stopImmediatePropagation(); }
   }, true);
 
   /* ---------- 保存（lsSet → クラウド）の状態 ---------- */
@@ -98223,7 +98280,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     });
     S.recs.push(rec);
     if(S.recs.length > 300) S.recs.splice(0, S.recs.length - 300);
-    paintSoon(260);
+    setTimeout(paint, 260);   /* 0.25 秒を超えて送っているときだけ「保存中…」（ほかの描き直しの予定に消されないように別に） */
     return rec;
   }
   UX._track = track;
@@ -98252,12 +98309,14 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       Promise.all(pend.map(function(r){ return r.p; })).then(function(){ clearTimeout(tm); res(bad() ? 'queued' : 'ok'); });
     });
   };
-  UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done; }); };
+  UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done && now() - r.t < 60000; }); };
   function guardState(){ try{ return (W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function') ? String(FUNERGY_FINANCIAL_SAVE.getState().status || '') : ''; }catch(e){ return ''; } }
   function outboxN(){ try{ return (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ return 0; } }
   function saveState(){
     var g = guardState();
-    if(S.recs.some(function(r){ return r.user && !r.done && now() - r.t > 250; }) || g === 'saving' || g === 'checking') return { k: 'saving' };
+    var pend = S.recs.filter(function(r){ return r.user && !r.done && now() - r.t > 250; });
+    if(pend.length && pend.every(function(r){ return now() - r.t > 20000; })) return { k: 'slow' };
+    if(pend.length || g === 'saving' || g === 'checking') return { k: 'saving' };
     if(g === 'unknown' || g === 'conflict') return { k: 'check' };
     var n = outboxN();
     if(n > 0) return { k: 'queued', n: n, off: (typeof navigator !== 'undefined' && navigator.onLine === false) };
@@ -98271,6 +98330,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }
   function saveLabel(s){
     if(s.k === 'saving') return T('保存中…', 'Saving…');
+    if(s.k === 'slow') return T('送信に時間がかかっています', 'Sending is taking a while');
     if(s.k === 'check') return T('保存の確認待ち', 'Save needs checking');
     if(s.k === 'queued') return (s.off ? T('オフライン・', 'Offline · ') : '') + T('送信待ち ' + s.n + '件', s.n + ' waiting to send');
     if(s.k === 'saved') return T('保存済み ', 'Saved ') + clockOf(s.t);
@@ -98290,6 +98350,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       : s.k === 'queued' ? '<i class="ti ti-cloud-off" aria-hidden="true"></i><b class="ux-save-n">' + s.n + '</b>'
       : '<i class="ti ti-alert-triangle" aria-hidden="true"></i>';
     b.className = 'topbar-icon-btn ux-save ' + (s.k === 'saved' ? 'is-ok' : s.k === 'saving' ? 'is-saving' : 'is-warn');
+    if(s.k === 'slow') icon = '<span class="ux-spin" aria-hidden="true"></span>';
     b.innerHTML = icon + '<span class="ux-save-t">' + esc(label) + '</span>';
     b.title = label; b.setAttribute('aria-label', label);
     b.hidden = false;
@@ -98301,6 +98362,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function fillPop(pop){
     var s = saveState(), h = '';
     if(s.k === 'saving') h = T('クラウドへ送っています。画面を閉じずにお待ちください。', 'Sending to the cloud. Please keep this screen open.');
+    else if(s.k === 'slow') h = T('この端末には保存されています。クラウドへの送信に時間がかかっています（通信が遅いか、つながっていません）。送れなかったときは送信待ちに入り、つながると自動で送ります。', 'Saved on this device. Sending to the cloud is taking a while (slow or no connection). If it fails it will wait and be sent automatically when connected.');
     else if(s.k === 'check') h = T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.');
     else if(s.k === 'queued') h = T('この端末には保存されています（' + s.n + '件）。クラウドへはまだ送れていません。' + (s.off ? 'オフラインです。' : '') + 'つながると自動で送ります。', 'Saved on this device (' + s.n + '). Not sent to the cloud yet.' + (s.off ? ' You are offline.' : '') + ' It will be sent automatically when connected.');
     else if(s.k === 'saved') h = T('クラウドに保存しました（' + clockOf(s.t) + '）。', 'Saved to the cloud (' + clockOf(s.t) + ').');
@@ -98351,7 +98413,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   var NOT_TXT = /(開く|見る|戻る|閉じる|キャンセル|やめる|一覧|詳細|選ぶ|Cancel|Close|Back|Open|View|Details)/i;
   var SAVE_FN = /(?:^|[^A-Za-z0-9_.$])(save|submit|send|approve|reject|commit|post|register|delete|remove|confirm|finalize|record|settle)[A-Za-z0-9_]*\s*\(/i;
   function saveLike(b){
-    if(!b || !b.closest || b.closest('#login-screen, #manager-login-screen, .nav-bar, .subnav-bar, .topbar, #ux-toasts, #ux-fresh, #ux-save-pop')) return false;
+    if(!b || !b.closest || b.closest('#login-screen, #manager-login-screen, .nav-bar, .subnav-bar, .topbar, #ux-toasts, #ux-fresh, #ux-save-pop, .phase-tab, .seg-btn, .tab, [role="tab"]')) return false;
     if(b.hasAttribute('data-ux-repeat')) return false;
     var txt = String(b.textContent || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
     if(txt && SAVE_TXT.test(txt)) return true;
@@ -98375,13 +98437,17 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var b = e.target && e.target.closest ? e.target.closest('button, .btn, [role="button"]') : null;
     if(!b || b.disabled || !saveLike(b)) return;
     var t0 = now(), last = clickedAt.get(b) || 0;
-    var near = Math.abs((e.clientX || 0) - lastSave.x) < 30 && Math.abs((e.clientY || 0) - lastSave.y) < 30;
+    var near = e.detail !== 0 && Math.abs((e.clientX || 0) - lastSave.x) < 30 && Math.abs((e.clientY || 0) - lastSave.y) < 30;   /* キーボードで押したとき（detail 0）は位置で比べない */
     if((t0 - last) < 1200 || ((t0 - lastSave.t) < 500 && near)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
     clickedAt.set(b, t0);
     lastSave = { t: t0, x: e.clientX || 0, y: e.clientY || 0 };
-    var mb = D.getElementById('modal-body'); if(mb && mb.contains(b)) UX.modalDirty = false;
-    /* 押した処理が終わってから見た目を変える（処理がボタンを写し直しても、写しに「処理中」が残らないように） */
-    setTimeout(function(){ if(b.isConnected) markBusy(b, t0); }, 0);
+    var mb = D.getElementById('modal-body'), inModal = !!(mb && mb.contains(b));
+    /* 押した処理が終わってから見た目を変える（処理がボタンを写し直しても、写しに「処理中」が残らないように）。
+       モーダルの中で保存した（送り始めた）ときだけ「入力の途中」を消す（入力の確かめで止まったときは消さない） */
+    setTimeout(function(){
+      if(inModal && S.recs.some(function(r){ return r.user && r.t >= t0; })) UX.modalDirty = false;
+      if(b.isConnected) markBusy(b, t0);
+    }, 0);
   }, true);
 
   /* ---------- モーダル ---------- */
@@ -98408,11 +98474,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       } else if(!open && wasOpen){
         UX.modalDirty = false;
         var r = back; back = null;
-        if(r && r !== D.body && r.isConnected && typeof r.focus === 'function'){ try{ r.focus({ preventScroll: true }); }catch(e){} }
+        if(r && r !== D.body && r.isConnected && typeof r.focus === 'function' && (fine() || !(isField(r) || r.tagName === 'SELECT'))){ try{ r.focus({ preventScroll: true }); }catch(e){} }
       }
       wasOpen = open;
     }).observe(ov, { attributes: true, attributeFilter: ['class'] });
-    ['input', 'change'].forEach(function(tp){ mb.addEventListener(tp, function(e){ if((e.isTrusted || UX._redispatch) && e.target && e.target.type !== 'search') UX.modalDirty = true; }, true); });
+    ['input', 'change'].forEach(function(tp){ mb.addEventListener(tp, function(e){ if(e.isTrusted && e.target && e.target.type !== 'search') UX.modalDirty = true; }, true); });
   }
   if(typeof closeModal === 'function'){
     var origCloseModal = closeModal;
@@ -98444,7 +98510,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try{ var np = D.getElementById('notif-panel'); if(np) np.style.display = 'none'; }catch(e){}
     try{ var tb = D.getElementById('ux-toasts'); if(tb) tb.innerHTML = ''; }catch(e){}
     hideFresh(); popClose();
-    rendered = null; scrolled = new Set(); toggled = new Set(); touched = null;
+    rendered = null; edited = new Set(); scrolled = new Set(); toggled = new Set(); touched = null;
     S.lastOk = 0; S.lastFail = 0; UX.modalDirty = false;
     W._uxLoginBusy = false;
     try{ if(typeof _uxOpsSeq !== 'undefined') _uxOpsSeq++; W._uxOpsBusy = false; if(typeof uxOpsPaint === 'function') uxOpsPaint(); }catch(e){}
