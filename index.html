@@ -529,7 +529,8 @@ body.shift-wide .main { max-width:1900px; }
   border: none;
   transition: opacity .15s;
 }
-.btn:hover { opacity: .85; }
+/* v1127：触れる端末では押したあとに「マウスが乗った」見た目が残らないように、乗せられる端末だけ */
+@media (hover: hover) { .btn:hover { opacity: .85; } }
 .btn:active { opacity: .6; }
 /* ===== v650: 手応えは「色・不透明度」のみで表現。タップ位置がズレる transform/リップルは廃止（確実にタップできる） ===== */
 .phase-tab, .subnav-chip, .nav-btn, .seg-btn, .card, .btn { transition: background .16s ease, color .16s ease, border-color .16s ease, box-shadow .16s ease, opacity .12s ease; }
@@ -1436,6 +1437,48 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
 .bot-legacy hr{border:none;border-top:1px solid var(--border);margin:12px 0}
 .bot-legacy .card{box-shadow:none;background:var(--surface2);padding:12px}
 </style>
+<style>
+/* v1127：操作感の共通の決まり（FUNERGY_UX）。ボタン・入力・知らせ・保存の状態・読み込みの見た目をアプリ全体でそろえる */
+@keyframes uxSpin { to { transform: rotate(360deg); } }
+@keyframes uxPulse { 50% { opacity: .5; } }
+.ux-spin { display:inline-block; width:14px; height:14px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:uxSpin .7s linear infinite; vertical-align:-2px; flex-shrink:0; box-sizing:border-box; }
+/* 押せないボタン・処理中のボタン */
+.btn:disabled, .btn[disabled], .btn[aria-disabled="true"] { opacity:.45; cursor:not-allowed; }
+.btn.ux-busy, button.ux-busy { pointer-events:none; cursor:progress; opacity:.72; }
+.btn.ux-busy::after { content:""; display:inline-block; width:.85em; height:.85em; margin-left:.45em; vertical-align:-.1em; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:uxSpin .7s linear infinite; box-sizing:border-box; }
+/* キーボードで選んでいる場所（PC） */
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.form-input:focus-visible, .form-select:focus-visible, .form-textarea:focus-visible { outline-offset:0; }
+#modal-body:focus { outline:none; }
+/* 読み込み中の印は回す（動きを減らす設定では止まる） */
+i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear infinite; }
+.topbar-icon-btn.ux-syncing i.ti-refresh { display:inline-block; animation:uxSpin 1s linear infinite; color:var(--accent); }
+/* ログインの所属の並び：読み込むあいだも同じ大きさ */
+.ux-ph-cell { background:var(--surface2); border-radius:8px; min-height:40px; animation:uxPulse 1.2s ease-in-out infinite; }
+/* 知らせ（下に縦に並べる） */
+#ux-toasts { position:fixed; left:50%; bottom:calc(22px + env(safe-area-inset-bottom, 0px)); transform:translateX(-50%); z-index:9999; display:flex; flex-direction:column; align-items:center; gap:8px; pointer-events:none; width:max-content; max-width:92vw; }
+#ux-toasts > .ux-toast { pointer-events:auto; cursor:pointer; display:flex; align-items:center; gap:11px; padding:12px 16px; border-radius:12px; background:var(--surface); border:1px solid var(--border); box-shadow:0 4px 14px rgba(33,27,21,.10),0 12px 32px rgba(33,27,21,.10); opacity:0; transform:translateY(8px); transition:opacity .22s ease, transform .22s ease; max-width:92vw; box-sizing:border-box; }
+#ux-toasts > .ux-toast.on { opacity:1; transform:translateY(0); }
+.ux-toast-i { width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.ux-toast-t { font-size:13px; font-weight:600; color:var(--tm); line-height:1.4; white-space:pre-line; }
+/* 入力中に届いた新しい情報（描き直さずに知らせる） */
+.ux-fresh { position:fixed; left:50%; top:calc(60px + env(safe-area-inset-top, 0px)); transform:translate(-50%,-8px); opacity:0; pointer-events:none; z-index:150; display:flex; align-items:center; gap:8px; padding:5px 5px 5px 12px; border-radius:999px; background:var(--surface); border:1px solid var(--border); box-shadow:0 4px 14px rgba(33,27,21,.14); font-size:12px; font-weight:600; color:var(--tm); transition:opacity .2s ease, transform .2s ease; max-width:92vw; white-space:nowrap; }
+.ux-fresh.on { opacity:1; transform:translate(-50%,0); pointer-events:auto; }
+.ux-fresh > i { color:var(--accent); font-size:15px; }
+.ux-fresh .btn { min-height:30px; padding:5px 12px; border-radius:999px; }
+/* 保存の状態（右上） */
+.ux-save[hidden] { display:none !important; }
+.ux-save { width:auto !important; min-width:34px; gap:5px; padding:0 9px !important; font-size:16px; }
+.ux-save .ux-save-t { font-size:11px; font-weight:700; white-space:nowrap; }
+.ux-save .ux-save-n { font-size:10.5px; font-weight:800; }
+.ux-save.is-ok { color:var(--green); }
+.ux-save.is-saving { color:var(--muted); }
+.ux-save.is-warn { color:var(--amber); border-color:var(--amber); }
+@media (max-width: 640px) { .ux-save { min-width:30px; padding:0 7px !important; } .ux-save .ux-save-t { display:none; } }
+.ux-save-pop { position:fixed; top:calc(58px + env(safe-area-inset-top, 0px)); right:8px; width:300px; max-width:calc(100vw - 16px); z-index:160; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 8px 28px rgba(33,27,21,.18); padding:12px 14px; font-size:12.5px; line-height:1.6; color:var(--tm); display:none; box-sizing:border-box; }
+.ux-save-pop.on { display:block; }
+.ux-save-pop-h { font-weight:800; margin-bottom:4px; }
+</style>
 </head>
 <body>
 
@@ -1456,7 +1499,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     <div id="login-step-location">
       <div class="role-section">
         <div class="role-section-label" id="sec-store-label">所属を選択</div>
-        <div class="store-grid" id="login-store-grid"></div>
+        <div class="store-grid" id="login-store-grid"><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div><div class="ux-ph-cell" aria-hidden="true"></div></div>
       </div>
     </div>
 
@@ -1526,6 +1569,7 @@ body.mr-wide .btn:disabled { opacity:.45; cursor:not-allowed; }
     <div class="topbar-right">
       <button id="topbar-fav" class="topbar-icon-btn" onclick="toggleFavCurrent()" title="このタブをお気に入りに追加"><i class="ti ti-star"></i></button>
       <button id="topbar-notif" class="topbar-icon-btn" onclick="toggleNotifPanel(event)" title="通知"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:15px;height:15px;line-height:15px;text-align:center;padding:0 2px"></span></button>
+      <button id="ux-save" type="button" class="topbar-icon-btn ux-save" hidden onclick="FUNERGY_UX.saveInfo()"></button>
       <button id="topbar-sync" class="topbar-icon-btn" onclick="refreshNow()" title="最新に更新"><i class="ti ti-refresh"></i></button>
       <div class="topbar-role-badge" id="topbar-role"></div>
       <button class="topbar-icon-btn" onclick="doLogout()" title="ログアウト"><i class="ti ti-logout"></i></button>
@@ -10381,10 +10425,42 @@ function _pushWithOutbox(key, val){
       return;
     }
   }catch(e){}
-  _pp[key]=Promise.resolve().then(function(){ return syncMasterToSupabase(key, val); })
-    .then(function(r){ if(r===false) _outboxAdd(key,'push failed'); else if(r===true) _outboxRemove(key); /* undefined=対象外→何もしない */ return r; })
-    .catch(function(e){ _outboxAdd(key, (e&&e.message)||e); return false; });
+  /* v1127：同じキーを送っている途中に、また保存されたら：終わってから、そのときの最新の値で 1 回だけ送る（途中の値は飛ばす）。
+     送る順を守り（古い値があとから届いて新しい値を上書きしない）、古い送信の成功で、まだ送れていない新しい変更を「送れた」にしない。
+     30 秒たっても前の送信が終わらないときは、待っている最新の値を送る（それより前の値は送らない）。待っているあいだは送信待ちにも入れておく
+     （閉じられても次に送る）。送った結果（true・false・undefined）は今までどおり */
+  var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : (_pushWithOutbox.__q || (_pushWithOutbox.__q={}));
+  var q=Q[key]||(Q[key]={seq:0, busy:0, busySeq:0, next:null});
+  function run(v){
+    var my=++q.seq; q.busy=Date.now(); q.busySeq=my;
+    return Promise.resolve().then(function(){ return syncMasterToSupabase(key, v); })
+      .then(function(r){ return { r:r }; }, function(e){ return { r:false, e:e }; })
+      .then(function(o){
+        if(q.busySeq===my) q.busy=0;
+        var nx=q.next;
+        if(nx && !q.busy){ q.next=null; if(nx.t) clearTimeout(nx.t); run(nx.val).then(nx.res); }   /* 待っていた新しい値を送る（その結果で送信待ちを決める） */
+        if(o.r===false) _outboxAdd(key, o.e ? ((o.e&&o.e.message)||o.e) : 'push failed');
+        else if(my===q.seq && (o.r===true || q.marked)) _outboxRemove(key);   /* 一番新しい送信が届いたときだけ、送信待ちから外す。undefined＝対象外（待ちのあいだに入れた印だけ外す） */
+        if(my===q.seq && !q.next) q.marked=false;
+        return o.r;
+      });
+  }
+  if(q.busy && (Date.now()-q.busy)<30000){
+    if(!q.next){
+      var _res; q.next={ val:val, p:new Promise(function(r){ _res=r; }) }; q.next.res=_res;
+      try{ _outboxAdd(key, 'queued'); q.marked=true; }catch(e){}
+      q.next.t=setTimeout(function(){ var nx=q.next; if(!nx) return; q.next=null; run(nx.val).then(nx.res); }, Math.max(0, 30000-(Date.now()-q.busy)));
+    }
+    else q.next.val=val;
+    _pp[key]=q.next.p;
+    return;
+  }
+  /* 送る。待っている値があれば、この送信（いちばん新しい値）にまとめる */
+  var w=q.next; if(w){ q.next=null; if(w.t) clearTimeout(w.t); }
+  var pr=run(val); if(w) pr.then(w.res);
+  _pp[key]=pr;
 }
+var _pushQ = {};   /* v1127：キーごとの送信の順（_pushWithOutbox） */
 
 /* 未送信キューを再送。値は都度ローカルから読み直す（stale上書き防止）。 */
 var _outboxFlushing=false;
@@ -11451,7 +11527,7 @@ async function supaPullAllMasters(opt){
     /* v1098: アプリの枠がまだ出ていない（ログインの同期の画面のあいだ）なら描かない。このあと initApp が取り込んだデータで描く。
        差分の取り込みは同期の画面のあいだに終わるので、見えない画面を 1 回描き（GM のダッシュボードで約 1.3 秒）、今日の売上を Toast に 1 回多く聞いていた */
     try{ var _ap=document.getElementById('app-shell'); if(_ap && getComputedStyle(_ap).display==='none') return; }catch(e){}
-    try{ if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function') renderPage(curPage); }catch(e){}
+    try{ if(typeof curPage!=='undefined' && curPage && typeof renderPage==='function'){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); } }catch(e){}   /* v1127：ほかの裏の取り込みと 1 回にまとめる */
   };
   var _heavyTimer = setTimeout(_heavyDone, 8000);
   var _deferredP = Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
@@ -16221,33 +16297,42 @@ async function authPinCheck(scope, key, pin, emp){
   return { ok:false, server:!!server };
 }
 function doStaffLogin() {
+  /* v1127：Enter とボタンで二度送らない（確かめているあいだ・アプリを出すまで）。前のエラーは消してから確かめる */
+  if (window._uxLoginBusy) return;
+  window._uxLoginBusy = true;
   var errEl = document.getElementById('login-pin-err');
   var btn = document.getElementById('login-pin-btn');
+  if (errEl) errEl.style.display = 'none';
   /* v1037: サーバーにつながらないときは、そう伝える（「PINが違います」と出すと、正しい PIN を疑ってしまう） */
   function fail(res){
     var locked = (res && typeof res === 'object') ? res.locked : 0, server = res === true || !!(res && typeof res === 'object' && res.server);
     var inactive = !!(res && typeof res === 'object' && res.inactive);   /* v1085 */
     if(errEl){ errEl.textContent = inactive ? t('このアカウントは使えません（退職・停止中）。','This account is stopped (resigned).') : locked ? _loginLockedMsg(locked) : (server ? _loginServerDownMsg() : t('PINが違います','Incorrect PIN')); errEl.style.display='block'; }
     if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; }
+    window._uxLoginBusy = false;
+    /* v1127：PIN が違うときは消して打ち直せるように（サーバーにつながらないときは残す） */
+    try{ var _pi=document.getElementById('login-pin-input'); if(_pi && !server && !locked && !inactive){ _pi.value=''; _pi.focus(); } }catch(e){}
   }
-  if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.textContent = '確認中…'; }
-  (async function(){
+  if (btn) { btn.disabled = true; btn.dataset._t = btn.textContent; btn.innerHTML = '<span class="ux-spin" aria-hidden="true"></span> ' + escapeHtml(t('確認中…','Checking…')); }
+  (async function(){ try {
     if (loginStoreMode) {
       var pin = (document.getElementById('login-pin-input').value||'').trim();
       var rS = await authPinCheck('store', loginLocation, pin);
       if (!rS.ok) { fail(rS); return; }
       var s = STORES.find(x=>x.id===loginLocation) || {name:loginLocation};
       curRole='sl'; curStoreLogin=true; curUserName=s.name; curStore=loginLocation;
+      try{ document.getElementById('login-pin-input').value=''; }catch(e){}   /* v1127：入れた PIN を画面に残さない */
       enterAppWithSync(); return;
     }
-    if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } return; }
+    if (!loginPerson) { if(btn){ btn.disabled=false; if(btn.dataset._t) btn.textContent=btn.dataset._t; } window._uxLoginBusy = false; return; }
     var pin2 = (document.getElementById('login-pin-input').value||'').trim();
     if (typeof empBlocked === 'function' && empBlocked(loginPerson)) { fail({ inactive:true }); return; }   /* v1085: 名簿で退職・停止 */
     var rP = await authPinCheck('staff', loginPerson.name, pin2, loginPerson.id);
     if (!rP.ok) { fail(rP); return; }
     window._sessionPin = pin2;
+    try{ document.getElementById('login-pin-input').value=''; }catch(e){}   /* v1127：入れた PIN を画面に残さない */
     finishStaffLogin();
-  })();
+  } catch(e){ console.error('doStaffLogin', e); fail({ server:true }); } })();
 }
 function finishStaffLogin() {
   var emp = loginPerson;
@@ -16281,12 +16366,15 @@ function showSyncSplash(msg){
       +'<div id="sync-splash-msg" style="font-size:14px;color:var(--tm);font-weight:600;max-width:280px;line-height:1.5"></div>'
       +'<div style="width:30px;height:30px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:splSpin 0.8s linear infinite"></div>';
     document.body.appendChild(ov);
-    requestAnimationFrame(function(){ try{ ov.style.opacity='1'; }catch(e){} });
   }
-  ov.style.display='flex';
+  /* v1127：消している途中（0.32 秒）にまた出したとき、前の「消す」を止める。2 回目以降も見えるようにする（透明のまま残ると押せなくなっていた） */
+  if (_splashHideT) { clearTimeout(_splashHideT); _splashHideT = null; }
+  ov.style.display='flex'; ov.style.pointerEvents='auto';
+  requestAnimationFrame(function(){ try{ ov.style.opacity='1'; }catch(e){} });
   var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg||'同期中…';
 }
-function hideSyncSplash(){ var ov=document.getElementById('sync-splash'); if(!ov) return; try{ ov.style.opacity='0'; setTimeout(function(){ try{ ov.style.display='none'; }catch(e){} }, 320); }catch(e){ ov.style.display='none'; } }
+var _splashHideT = null;
+function hideSyncSplash(){ var ov=document.getElementById('sync-splash'); if(!ov) return; try{ ov.style.opacity='0'; ov.style.pointerEvents='none'; if(_splashHideT) clearTimeout(_splashHideT); _splashHideT=setTimeout(function(){ _splashHideT=null; try{ ov.style.display='none'; }catch(e){} }, 320); }catch(e){ ov.style.display='none'; } }
 function setSyncSplash(msg){ var m=document.getElementById('sync-splash-msg'); if(m) m.textContent=msg; }
 
 /* 運用データ（売上・客数・勤怠/Labor）をクラウドから取得：可視店舗の当月分。
@@ -16334,18 +16422,21 @@ async function loginSyncOps(){
 
 /* クラウド(Supabase)から最新マスター/設定＋当月の勤怠を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
 async function loginSync(){
+  window._uxMastersP = null;
   if (ls('login_autosync', true)===false) return; // 設定でOFFならスキップ
   try {
     setSyncSplash('最新データに同期中…');
+    /* v1127：ログインで待つのは、最初の画面に要るマスター・設定だけ。
+       当月の売上・客数・勤怠・出数（店ごとの Toast の写し：ログインの待ち時間の大半）は、
+       アプリを出してから裏で取り込む（uxLoginOpsStart。取り込み中は「取得の状態」に出し、終わったら描き直す） */
     var work = (async function(){
       await supaPullAllMasters();          // マスター/設定
       try { refreshStores(); } catch(e){}
-      await loginSyncOps();                // 当月の勤怠/Labor
     })();
+    window._uxMastersP = work;
     var timeout = new Promise(function(res){ setTimeout(function(){ res('__timeout__'); }, 15000); });
     var r = await Promise.race([ work, timeout ]);
-    setSyncSplash(r==='__timeout__' ? '同期に時間がかかっています。続行します…' : '最新データに同期しました');
-    await new Promise(function(res){ setTimeout(res, 350); }); // 完了表示を一瞬見せる
+    if (r==='__timeout__') setSyncSplash('同期に時間がかかっています。続行します…');
   } catch(e){
     console.warn('loginSync failed', e);
     setSyncSplash('同期できませんでした。キャッシュで続行します');
@@ -16353,6 +16444,25 @@ async function loginSync(){
   }
 }
 
+/* v1127：当月の売上・客数・勤怠・出数を、アプリを出してから裏で取り込む（マスターを読み終えてから・ログインした人の見える店）。
+   取り込み中は「取得の状態」に「取得中…」、右上の更新ボタンが回る。終わったら今の画面を描き直す（入力中なら「表示を更新」を出す）。
+   ログアウトしたら、終わっても描き直さない */
+var _uxOpsSeq = 0;
+function uxOpsPaint(){ try{ var b=document.getElementById('topbar-sync'); if(b) b.classList.toggle('ux-syncing', !!window._uxOpsBusy); }catch(e){} }
+function uxLoginOpsStart(after){
+  var seq = ++_uxOpsSeq;
+  window._uxOpsBusy = true; uxOpsPaint();
+  try{ _fstBusy.sales = true; _fstBusy.labor = true; fstPaint(); }catch(e){}
+  return Promise.resolve(after).catch(function(){}).then(function(){
+    if (seq !== _uxOpsSeq || !curRole) return;
+    return loginSyncOps();
+  }).catch(function(e){ console.warn('loginSyncOps (background)', e); }).then(function(){
+    if (seq !== _uxOpsSeq) return;
+    window._uxOpsBusy = false; uxOpsPaint();
+    try{ _fstBusy.sales = false; _fstBusy.labor = false; fstPaint(); }catch(e){}
+    try{ if (curRole && typeof curPage !== 'undefined' && curPage) { if (window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); } }catch(e){}
+  });
+}
 /* ログイン確定 → 同期 → アプリ表示 */
 async function enterAppWithSync(){
   var doSync = ls('login_autosync', true)!==false;
@@ -16365,15 +16475,18 @@ async function enterAppWithSync(){
     if (!curStoreLogin && typeof empBlocked === 'function' && loginPerson) {
       var _me = getEmployees().find(function(e){ return String(e.id) === String(loginPerson.id); });
       var _mq = _me ? _empDirtyGet()[String(_me.id)] : null;
-      if (_me && empBlocked(_me) && !(_mq && _empHasSt(_mq))) { hideSyncSplash(); empForceLogout(_me); return; }
+      if (_me && empBlocked(_me) && !(_mq && _empHasSt(_mq))) { hideSyncSplash(); window._uxLoginBusy = false; empForceLogout(_me); return; }
     }
   } catch(e){}
+  try { if (window._uxMastersP) uxLoginOpsStart(window._uxMastersP); } catch(e){}   /* v1127 */
   try { await fetchEmpPrivate(); } catch(e){}
   hideSyncSplash();
   try { var _fm = document.getElementById('login-forced-msg'); if (_fm) _fm.style.display = 'none'; } catch(e){}
   var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
   var ap=document.getElementById('app-shell'); if(ap) ap.style.display='block';
   try { initApp(); } catch(e){ console.error('initApp', e); }
+  window._uxLoginBusy = false;   /* v1127 */
+  try{ if (window.FUNERGY_UX && FUNERGY_UX.afterEnter) FUNERGY_UX.afterEnter(); }catch(e){}
   try{ notifRealtimeStart(); }catch(e){}
   try{ tipLiveStart(); }catch(e){}   /* v1091: Tip Rate をほかの端末からすぐ受け取る */
   try{ checkShiftReminders(); }catch(e){}
@@ -16407,7 +16520,7 @@ async function loginToastAutoSync(){
   try{
     if (ok>0) showToast('全店の売上を同期しました（'+ok+'店'+(ng?' / 失敗'+ng:'')+'）', ng?'warning':'success');
     // 予実・ダッシュボードを開いていれば最新値で再描画
-    if (typeof curPage!=='undefined' && ['dashboard','budget','meeting','monthly'].indexOf(curPage)>=0) renderPage(curPage);   /* v1084: 会議 */
+    if (typeof curPage!=='undefined' && ['dashboard','budget','meeting','monthly'].indexOf(curPage)>=0){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); }   /* v1127 */   /* v1084: 会議 */
   }catch(e){}
 }
 function toggleLoginToastSync(){
@@ -18640,7 +18753,7 @@ case 'acct_center':
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
-  try{ var _psc=pageSyncScope(page); if(_psc){ el.innerHTML = pageSyncStrip(_psc) + el.innerHTML; } }catch(e){}
+  try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
   attachPageEvents();
   try{ renderNotifBell(); }catch(e){}
   try{ updateFavStar(); }catch(e){}
@@ -18774,7 +18887,7 @@ case 'acct_center':
     case 'settings':     el.innerHTML = renderSettings(); break;
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
-  try{ var _psc=pageSyncScope(page); if(_psc){ el.innerHTML = pageSyncStrip(_psc) + el.innerHTML; } }catch(e){}
+  try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
   attachPageEvents();
   try{ renderNotifBell(); }catch(e){}
   try{ updateFavStar(); }catch(e){}
@@ -18782,12 +18895,15 @@ case 'acct_center':
 }
 
 function attachPageEvents() {
+  /* v1127：描くたびに文書全体の同じ要素へ処理を足していた（モーダルの中などで 2 回・3 回動く）。1 つの要素に 1 回だけ */
   // task checkboxes
   document.querySelectorAll('[data-task]').forEach(el => {
+    if (el.dataset.uxEv) return; el.dataset.uxEv = '1';
     el.addEventListener('click', function() { toggleTask(this.dataset.task, this.dataset.store); });
   });
   // phase tabs
   document.querySelectorAll('[data-phase]').forEach(el => {
+    if (el.dataset.uxEv) return; el.dataset.uxEv = '1';
     el.addEventListener('click', function() { filterPhase(this.dataset.phase); });
   });
 }
@@ -41015,7 +41131,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1126';
+const APP_VERSION = '1127';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -54388,7 +54504,7 @@ function renderStaffMaster() {
   ${renderResignRepairCard()}
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
-      <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${empSearchQ}" oninput="empSearch(this.value)">
+      <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${escapeHtml(empSearchQ)}" oninput="empSearch(this.value)">
     </div>
     ${bStoreChips(empStoreFilter,'setEmpStore',{stores:STORES,allVal:'all'})}
   </div>
@@ -96978,14 +97094,59 @@ function showUpdateBanner(worker){
 
 function showToast(msg, type) {
   type = type || 'info';
-  try{ if(type==='success') haptic('success'); else if(type==='danger') haptic('error'); else if(type==='warning') haptic('warning'); }catch(e){}
   // 絵文字を自動除去（落ち着いたトーンに）
-  var clean = String(msg).replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2190}-\u{21FF}\u{2300}-\u{23FF}]/gu,'').replace(/\s+$/,'').trim();
+  var clean = String(msg == null ? '' : msg).replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{2190}-\u{21FF}\u{2300}-\u{23FF}]/gu,'').replace(/\s+$/,'').trim();
+  if (!clean) return null;
+  /* v1127：知らせは下に縦に並べる（最大 3 つ・重ねない）。同じ知らせは 1 つにまとめる。押すと消える。
+     「保存しました」などは、その操作で送ったものがクラウドに届いてから出す（届かなければ「この端末に保存」）。文は文字として出す */
+  var box = document.getElementById('ux-toasts');
+  if (!box) { box = document.createElement('div'); box.id = 'ux-toasts'; box.setAttribute('aria-live', 'polite'); box.setAttribute('role', 'status'); document.body.appendChild(box); }
+  var waitP = (type === 'success' && window.FUNERGY_UX && typeof FUNERGY_UX.saveWait === 'function') ? FUNERGY_UX.saveWait(clean) : null;
+  for (var i = 0; i < box.children.length; i++) {
+    var c = box.children[i];
+    if (c._uxMsg === clean && !c._uxGone) {   /* 同じ文：出ているものを出し直す（種類が変われば新しいほうの見た目に。保存なら今回の送信も待つ） */
+      c._uxType = type;
+      if (waitP) _toastAwait(c, clean, waitP);
+      else if (c._uxShown !== 'pending') { if (c._uxShown !== type) _toastPaint(c, type, clean); _toastArm(c); }
+      return c;
+    }
+  }
+  var el = document.createElement('div');
+  el.className = 'ux-toast'; el._uxMsg = clean; el._uxType = type;
+  if (type === 'danger') el.setAttribute('role', 'alert');
+  el.addEventListener('click', function(){ _toastGone(el); });
+  box.appendChild(el);
+  var live = [].filter.call(box.children, function(x){ return !x._uxGone; });
+  while (live.length > 3) _toastGone(live.shift(), true);
+  if (waitP) _toastAwait(el, clean, waitP);
+  else {
+    try{ if(type==='success') haptic('success'); else if(type==='danger') haptic('error'); else if(type==='warning') haptic('warning'); }catch(e){}
+    _toastPaint(el, type, clean);
+    _toastArm(el);
+  }
+  requestAnimationFrame(function(){ el.classList.add('on'); });
+  return el;
+}
+/* 保存の知らせ：送ったものが届くまで「保存中…」。届いたら元の文、届かなければ「この端末に保存」。いちばん新しく待ち始めたものの結果で出す */
+function _toastAwait(el, clean, waitP){
+  var my = (el._uxWaitSeq = (el._uxWaitSeq || 0) + 1);
+  if (el._uxT) clearTimeout(el._uxT);
+  _toastPaint(el, 'pending', t('保存中…', 'Saving…'));
+  waitP.then(function(r){
+    if (el._uxGone || el._uxWaitSeq !== my) return;
+    if (r === 'ok') { _toastPaint(el, 'success', clean); try{ haptic('success'); }catch(e){} }
+    else if (r === 'queued') { _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへはまだ送れていません（つながると自動で送ります）', 'Saved on this device. Not sent to the cloud yet (it will be sent when connected)')); try{ haptic('warning'); }catch(e){} }
+    else _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへの送信に時間がかかっています', 'Saved on this device. Sending to the cloud is taking a while'));
+    _toastArm(el);
+  });
+}
+function _toastPaint(el, type, text){
   var conf = {
     success: { color:'var(--green)',  bg:'#eaf5ef', icon:'ti-circle-check' },
     danger:  { color:'var(--red)',    bg:'#fcebe9', icon:'ti-alert-circle' },
     info:    { color:'var(--accent2)',bg:'#e9f0fd', icon:'ti-info-circle' },
     warning: { color:'var(--amber)',  bg:'#fbf1de', icon:'ti-alert-triangle' },
+    pending: { color:'var(--muted)',  bg:'var(--surface2)', icon:'' },
   }[type] || { color:'var(--accent2)', bg:'#e9f0fd', icon:'ti-info-circle' };
   // success は円→チェックを線で描くSVG（アイコン枠30x30は不変・動くのは線の描画のみ）。他はフォントアイコン。
   var iconInner = (type==='success')
@@ -96993,19 +97154,24 @@ function showToast(msg, type) {
       + '<circle cx="12" cy="12" r="9" style="stroke-dasharray:57;stroke-dashoffset:0;animation:toastRingDraw .38s ease both"></circle>'
       + '<path d="M7.6 12.4l3 3L16.4 9" style="stroke-dasharray:16;stroke-dashoffset:0;animation:toastCheckDraw .3s ease .18s both"></path>'
       + '</svg>'
-    : '<i class="ti '+conf.icon+'" style="font-size:17px"></i>';
-  var el = document.createElement('div');
-  el.style.cssText = 'position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(8px);opacity:0;'
-    + 'display:flex;align-items:center;gap:11px;padding:12px 16px;border-radius:12px;z-index:9999;'
-    + 'background:var(--surface);border:1px solid var(--border);'
-    + 'box-shadow:0 4px 14px rgba(33,27,21,.10),0 12px 32px rgba(33,27,21,.10);'
-    + 'transition:opacity .25s ease, transform .25s ease;max-width:90vw';
-  el.innerHTML = '<span style="width:30px;height:30px;border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0;'
-    + 'background:'+conf.bg+';color:'+conf.color+'">'+iconInner+'</span>'
-    + '<span style="font-size:13px;font-weight:600;color:var(--tm);line-height:1.4">'+clean+'</span>';
-  document.body.appendChild(el);
-  requestAnimationFrame(()=>{ el.style.opacity='1'; el.style.transform='translateX(-50%) translateY(0)'; });
-  setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateX(-50%) translateY(8px)'; setTimeout(()=>el.remove(),300); }, 2400);
+    : (type==='pending' ? '<span class="ux-spin" aria-hidden="true"></span>' : '<i class="ti '+conf.icon+'" style="font-size:17px" aria-hidden="true"></i>');
+  el._uxShown = type;
+  el.innerHTML = '<span class="ux-toast-i" style="background:'+conf.bg+';color:'+conf.color+'">'+iconInner+'</span><span class="ux-toast-t"></span>';
+  el.querySelector('.ux-toast-t').textContent = text;
+}
+function _toastArm(el){
+  if (el._uxT) clearTimeout(el._uxT);
+  if (el._uxShown === 'pending') return;   /* 保存の結果が出るまで消さない */
+  var len = (el.textContent || '').length, warn = (el._uxShown === 'warning' || el._uxShown === 'danger');
+  var ms = warn ? Math.min(9000, Math.max(4500, len * 80)) : Math.min(6000, Math.max(2400, len * 60));
+  el._uxT = setTimeout(function(){ _toastGone(el); }, ms);
+}
+function _toastGone(el, now){
+  if (!el || (el._uxGone && !now)) return;
+  el._uxGone = true; if (el._uxT) clearTimeout(el._uxT);
+  el.classList.remove('on');
+  if (now) { try{ el.remove(); }catch(e){} return; }
+  setTimeout(function(){ try{ el.remove(); }catch(e){} }, 260);
 }
 
 /* ログイン画面を初期化 */
@@ -97815,6 +97981,579 @@ var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.r
   else { try { await loginBootstrapPull(); } catch(_){} bootLogin(); }
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
 setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
+/* ============================================================
+   v1127：操作感の共通の決まり（FUNERGY_UX）
+   アプリ全体で同じ動きにする。業務の決まり（承認・確定・計算）は変えない。
+   ・描き直し：同じ画面を描き直すときは、入力中の欄・カーソル・中のスクロール・人が開いた折りたたみを保つ。
+     裏の処理（通信の答え・タイマー）が同じ画面を描き直しても、人の入力は消さない。
+     裏の処理が描き直すときは、人が打ってまだ保存していない欄（id のある欄）の値を描き直したあと戻す。
+     打つたびに値を覚えない id の無い欄で打っているときだけ、描き直さずに「表示を更新」を出す。
+     日本語の変換中は、描き直しを変換が終わるまで待つ（終わったら 1 回）。日本語などの変換を確定する Enter で操作しない。
+   ・画面の行き来：裏の処理（保存の答え・取り直し）が同じ画面を開き直したときは、スクロールの位置を変えない（前は上へ戻っていた）。
+     押して開き直したとき（画面の中のタブなど）は今までどおり上へ。
+     中身をあとから描く画面は、高さが足りるまで少し待って戻す。
+   ・保存：右上に 保存中…／保存済み（時刻）／送信待ち N 件（この端末だけに保存）／確認待ち を出す（クラウドに届いたかで決める）。
+     「保存しました」の知らせは、その操作で送ったものがクラウドに届いてから出す。届かなければ「この端末に保存（送信待ち）」。
+     送っている途中で閉じられたものは、次に開いたとき送信待ちに入れて送り直す。
+   ・二度押し：保存・送信・承認などのボタンは、押したらすぐ「処理中」の見た目にし、続けて押しても 1 回だけ
+     （同じボタン 1.2 秒・描き直しで同じ場所に来たボタン 0.5 秒）。
+   ・知らせ：下に縦に並べる（最大 3 つ）。同じ知らせは 1 つ。押すと消える。警告・エラーは長めに出す。
+   ・モーダル：Esc で閉じる。入力の途中なら、外側・Esc で閉じる前に確かめる。開いたら最初の欄（PC）、閉じたら元の場所へ。
+     スマホでモーダルの中の欄がキーボードに隠れたら、見える所まで動かす。
+   ・ログアウト：前の人の画面・モーダル・知らせ・選んだもの・成長カルテの解錠を残さない。
+============================================================ */
+(function(){
+  var W = window, D = document;
+  var UX = W.FUNERGY_UX = W.FUNERGY_UX || {};
+  function T(ja, en){ try{ return (typeof t === 'function') ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function now(){ return Date.now(); }
+  function esc(s){ s = String(s == null ? '' : s); try{ if(typeof escapeHtml === 'function') return escapeHtml(s); }catch(e){} return s.replace(/[&<>"']/g, function(c){ return '&#' + c.charCodeAt(0) + ';'; }); }
+  function mainEl(){ return D.getElementById('main-content'); }
+  function appShown(){
+    try{
+      if(typeof curRole === 'undefined' || !curRole) return false;
+      var a = D.getElementById('app-shell'); return !!a && getComputedStyle(a).display !== 'none';
+    }catch(e){ return false; }
+  }
+
+  /* ---------- 入力欄と、描き直しの前後で同じ要素を見つける印 ---------- */
+  var TEXT_TYPES = /^(text|search|email|tel|url|number|password|date|datetime-local|month|time|week)$/;
+  function isField(a){
+    if(!a || a.nodeType !== 1) return false;
+    var tg = a.tagName;
+    if(tg === 'TEXTAREA') return true;
+    if(tg === 'INPUT') return TEXT_TYPES.test(String(a.getAttribute('type') || 'text').toLowerCase());
+    return !!a.isContentEditable;
+  }
+  function attrs(el){ return [el.tagName, el.getAttribute('class') || '', el.getAttribute('name') || '', el.getAttribute('placeholder') || '', el.getAttribute('type') || '']; }
+  function sameAttrs(a, b){ for(var i = 0; i < a.length; i++){ if(a[i] !== b[i]) return false; } return true; }
+  function keyOf(el, root){
+    if(!el || !root || !root.contains(el)) return null;
+    if(el.id) return { id: el.id };
+    var a = attrs(el), list = root.getElementsByTagName(a[0]), n = 0;
+    for(var i = 0; i < list.length; i++){ var x = list[i]; if(x === el) return { a: a, n: n }; if(sameAttrs(attrs(x), a)) n++; }
+    return null;
+  }
+  function findKey(k, root){
+    if(!k || !root) return null;
+    if(k.id){ var e = D.getElementById(k.id); return (e && root.contains(e)) ? e : null; }
+    var list = root.getElementsByTagName(k.a[0]), n = 0;
+    for(var i = 0; i < list.length; i++){ var x = list[i]; if(sameAttrs(attrs(x), k.a)){ if(n === k.n) return x; n++; } }
+    return null;
+  }
+  UX._keyOf = keyOf; UX._findKey = findKey; UX._isField = isField;
+
+  /* ---------- 人が動かした中のスクロール・開いた折りたたみ・打っている欄 ---------- */
+  var scrolled = new Set(), toggled = new Set(), touched = null;
+  D.addEventListener('scroll', function(e){
+    var el = e.target; if(!el || el.nodeType !== 1) return;
+    var m = mainEl(); if(m && m.contains(el)) scrolled.add(el);
+  }, true);
+  D.addEventListener('click', function(e){
+    var s = e.target && e.target.closest ? e.target.closest('summary') : null;
+    if(s && s.parentNode && s.parentNode.tagName === 'DETAILS'){ var m = mainEl(); if(m && m.contains(s)) toggled.add(s.parentNode); }
+  }, true);
+  var lastFieldInput = 0, lastElsewhere = 0, edited = new Set();
+  D.addEventListener('input', function(e){ var el = e.target; if(e.isTrusted && el && el.id && (isField(el) || el.tagName === 'SELECT')){ var m = mainEl(); if(m && m.contains(el)) edited.add(el.id); } }, true);
+  ['keydown', 'input', 'pointerdown', 'compositionstart', 'paste'].forEach(function(tp){
+    D.addEventListener(tp, function(e){
+      if(!e.isTrusted) return;
+      if(isField(e.target)){ touched = e.target; lastFieldInput = now(); }
+      else if(tp === 'pointerdown') lastElsewhere = now();   /* ボタンなどを押した（iPhone では欄から外れなくても、打つのは終わった） */
+    }, true);
+  });
+
+  function snapshot(m){
+    var s = { x: W.scrollX, y: W.scrollY, f: null, ft: false, sc: [], dt: [] };
+    var a = D.activeElement;
+    var ev = W.event;
+    /* ボタンなどを押して描き直すときは、入力欄に戻さない（iPhone でキーボードがまた開くため）。その欄での入力・選択による描き直しは戻す */
+    var byOther = !!(ev && /^(click|dblclick|pointer|mouse|touch)/.test(String(ev.type || '')) && ev.target && a && ev.target !== a && !(a.contains && a.contains(ev.target)));
+    if(a && a !== D.body && m.contains(a) && (isField(a) || a.tagName === 'SELECT') && !byOther){
+      s.f = keyOf(a, m); s.ft = (a === touched);
+      try{ if(typeof a.selectionStart === 'number'){ s.ss = a.selectionStart; s.se = a.selectionEnd; s.sd = a.selectionDirection; } }catch(e){}
+    }
+    scrolled.forEach(function(el){
+      if(el.isConnected && m.contains(el) && (el.scrollTop || el.scrollLeft)){ var k = keyOf(el, m); if(k) s.sc.push([k, el.scrollTop, el.scrollLeft]); }
+    });
+    toggled.forEach(function(el){ if(el.isConnected && m.contains(el)){ var k = keyOf(el, m); if(k) s.dt.push([k, !!el.open]); } });
+    return s;
+  }
+  function restore(m, s){
+    if(!m || !s) return;
+    if(s.keep){ Object.keys(s.keep).forEach(function(id){ var kf = D.getElementById(id); if(kf && m.contains(kf) && (isField(kf) || kf.tagName === 'SELECT') && kf.value !== s.keep[id]){ kf.value = s.keep[id]; edited.add(id); } }); }   /* 打っていた文字を戻す（まだ保存していない入力） */
+    scrolled = new Set(); toggled = new Set();
+    s.dt.forEach(function(d){ var el = findKey(d[0], m); if(el && el.tagName === 'DETAILS'){ if(el.open !== d[1]) el.open = d[1]; toggled.add(el); } });
+    s.sc.forEach(function(d){ var el = findKey(d[0], m); if(el){ el.scrollTop = d[1]; el.scrollLeft = d[2]; scrolled.add(el); } });
+    if(s.f){
+      var a = D.activeElement;
+      if(!a || a === D.body || !a.isConnected){
+        var el = findKey(s.f, m);
+        if(el && !el.disabled && (isField(el) || el.tagName === 'SELECT')){
+          try{ el.focus({ preventScroll: true }); }catch(e){ try{ el.focus(); }catch(_){ } }
+          if(s.ft) touched = el;
+          if(s.ss != null && typeof el.setSelectionRange === 'function'){
+            try{ var L = String(el.value || '').length; el.setSelectionRange(Math.min(s.ss, L), Math.min(s.se, L), s.sd || 'none'); }catch(e){}
+          }
+        }
+      }
+    }
+    if(Math.abs(W.scrollY - s.y) > 1 || Math.abs(W.scrollX - s.x) > 1){ try{ W.scrollTo(s.x, s.y); }catch(e){} }
+  }
+
+  /* ---------- 描き直し（renderPage） ---------- */
+  var rendered = null, lastBusy = 0;
+  function userEvent(){
+    var ev = W.event;
+    return !!(ev && ev.isTrusted && /^(click|dblclick|input|change|keydown|keyup|keypress|submit|pointerup|pointerdown|mouseup|mousedown|touchstart|touchend|focusout|blur|compositionend|paste|cut|drop)$/.test(ev.type));
+  }
+  /* いま人が打っている欄（打ったあと、ほかを押していない）。無ければ null */
+  function typingField(m){
+    var a = D.activeElement;
+    if(!(a && m && a === touched && m.contains(a) && isField(a) && !a.readOnly && !a.disabled)) return null;
+    if(lastElsewhere > lastFieldInput) return null;
+    return a;
+  }
+  function typingIn(m){ return composingNow() || !!typingField(m); }
+  function resolvePage(p){ try{ return (typeof navResolvePage === 'function') ? navResolvePage(p) : p; }catch(e){ return p; } }
+  UX._typing = function(){ return typingIn(mainEl()); };
+  /* 打つたびに値を覚える欄（oninput など）は、描き直しても値が残る。覚えない欄は、描き直すと打った文字が消える */
+  function keepsValue(f){ return !!(f.getAttribute('oninput') || f.getAttribute('onkeyup') || String(f.getAttribute('type') || '').toLowerCase() === 'search'); }
+
+  function showFresh(){
+    var p = D.getElementById('ux-fresh');
+    if(!p){
+      p = D.createElement('div'); p.id = 'ux-fresh'; p.className = 'ux-fresh'; p.setAttribute('role', 'status');
+      p.innerHTML = '<i class="ti ti-refresh" aria-hidden="true"></i><span class="ux-fresh-t"></span><button type="button" class="btn btn-primary btn-sm"></button>';
+      p.querySelector('button').addEventListener('click', applyFresh);
+      D.body.appendChild(p);
+    }
+    p.querySelector('.ux-fresh-t').textContent = T('新しい情報があります', 'New data available');
+    p.querySelector('button').textContent = T('表示を更新', 'Refresh view');
+    p.classList.add('on');
+    UX.freshPending = true;
+  }
+  function hideFresh(){ UX.freshPending = false; var p = D.getElementById('ux-fresh'); if(p) p.classList.remove('on'); }
+  function applyFresh(){ hideFresh(); try{ renderPage((typeof curPage !== 'undefined' && curPage) || rendered); }catch(e){} }
+  UX.applyFresh = applyFresh;
+  /* 裏の取り込み（ログインのあとの売上・勤怠の写し・運用データ・その日の Toast の同期）が終わったあとの描き直しは 1 回にまとめる。
+     ほかの取り込みがまだなら少し待ち（4 秒まで）、操作（押す・打つ・スクロール）が 1.2 秒止まってから（指の下で画面が変わらないように・10 秒まで）。
+     仮の枠（読み込み中の灰色の帯）を出しているときは待たない。入力中なら描き直さずに「表示を更新」（下の renderPage） */
+  ['pointerdown', 'keydown', 'wheel', 'touchmove'].forEach(function(tp){ D.addEventListener(tp, function(e){ if(e.isTrusted) lastBusy = now(); }, { capture: true, passive: true }); });
+  /* 端末のデータが前の描画から変わったか（変わっていなければ描き直さない：同じ画面を描き直すだけの時間を使わない）。
+     書き込みは _idbQueue（端末の保存の一番下）で見る。比べられないとき（IndexedDB が使えない端末など）は「変わった」とみなす */
+  var lastDataChange = 0, lastFullRender = 0;
+  if(typeof _idbQueue === 'function'){
+    var origIdbQueue = _idbQueue;
+    _idbQueue = function(key, json){
+      try{
+        if(!(typeof lsIsDeviceLocal === 'function' && lsIsDeviceLocal(key))){
+          var prev = (typeof _IDB_MEM !== 'undefined' && _IDB_MEM instanceof Map && typeof _idbState !== 'undefined' && _idbState === 'ready') ? _IDB_MEM.get(key) : undefined;
+          if(prev === undefined || prev !== json) lastDataChange = now();
+        }
+      }catch(e){ lastDataChange = now(); }
+      return origIdbQueue.apply(this, arguments);
+    };
+  } else { lastDataChange = 1e15; }
+  UX._dataChangedSince = function(t){ return lastDataChange > t; };
+  var bgWant = 0, bgT = null;
+  UX.bgRefresh = function(){
+    if(!bgWant) bgWant = now();
+    if(bgT) return;
+    (function tick(){
+      bgT = null;
+      if(!bgWant) return;
+      if(!appShown()){ bgWant = 0; return; }
+      var m = mainEl(), skel = !!(m && m.querySelector('.skel'));
+      var waited = now() - bgWant;
+      if(!skel && (W._uxOpsBusy || W._heavyPending) && waited < 4000){ bgT = setTimeout(tick, 250); return; }
+      if(!skel && now() - lastBusy < 1200 && waited < 10000){ bgT = setTimeout(tick, 250); return; }
+      bgWant = 0;
+      if(lastFullRender && lastDataChange < lastFullRender && !skel) return;   /* 前に描いたあと、端末のデータは変わっていない */
+      try{ renderPage((typeof curPage !== 'undefined' && curPage) || rendered); }catch(e){}
+    })();
+  };
+  UX.refreshWhenIdle = UX.bgRefresh;
+
+  if(typeof renderPage === 'function'){
+    var origRender = renderPage;
+    renderPage = function(page){
+      var m = mainEl(), p = resolvePage(page);
+      var samePage = !!(m && rendered && p === rendered && appShown());
+      if(samePage && composingNow()){ deferUntilComposed(p); return; }   /* 変換が切れないように、変換が終わってから 1 回 */
+      var byUser = userEvent(), keep = null;
+      if(samePage && !byUser){
+        var f = typingField(m);
+        if(f && !keepsValue(f) && !f.id){ showFresh(); return; }   /* 打った文字を戻す先が決められない：描き直さずに知らせる */
+        keep = {};   /* 人が打った（まだ保存していない）欄の値は、描き直したあと戻す（id のある欄） */
+        edited.forEach(function(id){ var el = D.getElementById(id); if(el && m.contains(el) && (isField(el) || el.tagName === 'SELECT') && el.value !== el.defaultValue) keep[id] = el.value; });
+      }
+      var snap = null;
+      if(samePage){ try{ snap = snapshot(m); }catch(e){ snap = null; } if(snap) snap.keep = keep; }
+      if(!samePage || byUser) edited = new Set();
+      else { scrolled = new Set(); toggled = new Set(); }
+      var r = origRender.apply(this, arguments);
+      var t0 = now();
+      var done = function(){ try{ rendered = p; lastFullRender = t0; hideFresh(); if(snap) restore(mainEl(), snap); }catch(e){} };
+      if(r && typeof r.then === 'function') r.then(done, done); else done();
+      return r;
+    };
+  }
+
+  /* ---------- 画面の行き来（go） ---------- */
+  /* 前の位置に戻す。中身をあとから描く画面（読み込みの途中）は、高さが足りるまで少し待つ（1.5 秒まで・人がスクロールしたらやめる） */
+  function scrollBack(y){
+    var t0 = now(), busy0 = lastBusy;
+    (function tryIt(){
+      if(lastBusy !== busy0) return;
+      var max = Math.max(0, (D.documentElement.scrollHeight || 0) - (W.innerHeight || 0));
+      if(max >= y - 1){ W.scrollTo(0, y); return; }
+      W.scrollTo(0, max);
+      if(now() - t0 < 1500) setTimeout(tryIt, 100);
+    })();
+  }
+  if(typeof go === 'function'){
+    var origGo = go;
+    go = function(page){
+      var from = (typeof curPage !== 'undefined') ? curPage : null, y = W.scrollY, ev = W.event;
+      var nav = !!(ev && ev.isTrusted && ev.type === 'click' && ev.target && ev.target.closest && ev.target.closest('.nav-btn, .subnav-chip'));
+      var clicked = userEvent();
+      var r = origGo.apply(this, arguments);
+      var after = function(){
+        try{
+          var to = (typeof curPage !== 'undefined') ? curPage : null;
+          /* 裏の処理（取り直し・保存の答え）が同じ画面を開き直したときは位置を変えない。押して開いたとき（画面の中のタブ・ナビ）は今までどおり上へ */
+          if(to && to === from && !nav && !clicked && y > 0) scrollBack(y);
+        }catch(e){}
+      };
+      if(r && typeof r.then === 'function') r.then(after, after); else after();
+      return r;
+    };
+  }
+
+  /* ---------- 日本語の変換中は、その欄の入力の処理を待つ ---------- */
+  UX.composing = false;
+  var compTarget = null, compData = '', compDataT = null, composedWant = null;
+  /* 変換中か（変換している欄が今も画面にあって選ばれているときだけ。欄が消えたら終わったとみなす） */
+  function composingNow(){
+    if(!UX.composing) return false;
+    if(!compTarget || !compTarget.isConnected || D.activeElement !== compTarget){ UX.composing = false; compTarget = null; return false; }
+    return true;
+  }
+  function deferUntilComposed(p){ composedWant = p; }
+  D.addEventListener('compositionstart', function(e){ UX.composing = true; compTarget = e.target; if(compDataT){ clearTimeout(compDataT); compDataT = null; } }, true);
+  D.addEventListener('compositionupdate', function(e){ compData = String(e.data || ''); }, true);
+  D.addEventListener('compositionend', function(e){
+    UX.composing = false; compTarget = null;
+    if(compDataT) clearTimeout(compDataT);
+    compDataT = setTimeout(function(){ compData = ''; compDataT = null; }, 150);
+    var want = composedWant; composedWant = null;
+    if(want){ setTimeout(function(){ try{ if(rendered === want) renderPage(want); }catch(err){} }, 0); }
+  }, true);
+  D.addEventListener('focusout', function(e){ if(e.target === compTarget){ UX.composing = false; compTarget = null; } }, true);
+  /* 日本語などの変換を確定する Enter では、検索・送信などを動かさない（英字の予測変換の Enter はふつうに動く） */
+  D.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && (e.isComposing || e.keyCode === 229) && /[^\x00-\x7F]/.test(compData)){ e.stopImmediatePropagation(); }
+  }, true);
+
+  /* ---------- 保存（lsSet → クラウド）の状態 ---------- */
+  var S = UX.save = { recs: [], lastOk: 0, lastFail: 0 };
+  var lastAct = 0;
+  ['pointerdown', 'keydown', 'input', 'change'].forEach(function(tp){
+    D.addEventListener(tp, function(e){ if(e.isTrusted) lastAct = now(); }, true);
+  });
+  var INF = '_ux_inflight';   /* 送っている途中のキー（この端末だけ。閉じられたら次に開いたとき送り直す） */
+  function infGet(){ try{ var o = JSON.parse(localStorage.getItem(INF) || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+  function infSet(o){ try{ if(Object.keys(o).length) localStorage.setItem(INF, JSON.stringify(o)); else localStorage.removeItem(INF); }catch(e){} }
+  function finKey(k){ return k === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(k)); }
+  function guardOn(){ try{ return typeof fstGuardOn === 'function' && fstGuardOn(); }catch(e){ return false; } }
+  function track(key, p){
+    var rec = { key: key, t: now(), user: (now() - lastAct) < 2500, done: false, res: undefined };
+    if(rec.user){ var o = infGet(); o[key] = rec.t; infSet(o); }
+    rec.p = Promise.resolve(p).then(function(r){ return r; }, function(){ return false; }).then(function(r){
+      rec.done = true; rec.res = r;
+      if(rec.user && r === true) S.lastOk = now();
+      if(r === false || r === 'deferred') S.lastFail = now();
+      if(rec.user && !S.recs.some(function(x){ return x !== rec && x.key === key && x.user && !x.done; })){ var o2 = infGet(); if(o2[key] != null){ delete o2[key]; infSet(o2); } }
+      paintSoon(0);
+      return r;
+    });
+    S.recs.push(rec);
+    if(S.recs.length > 300) S.recs.splice(0, S.recs.length - 300);
+    setTimeout(paint, 260);   /* 0.25 秒を超えて送っているときだけ「保存中…」（ほかの描き直しの予定に消されないように別に） */
+    return rec;
+  }
+  UX._track = track;
+  if(typeof _pushWithOutbox === 'function'){
+    var origPush = _pushWithOutbox;
+    _pushWithOutbox = function(key, val){
+      var r = origPush.apply(this, arguments);
+      try{
+        var pp = (typeof _lsPushP !== 'undefined' && _lsPushP) ? _lsPushP[key] : null;
+        if(pp && typeof pp.then === 'function' && String(key).charAt(0) !== '_' && !(finKey(key) && guardOn())) track(key, pp);
+      }catch(e){}
+      return r;
+    };
+  }
+  /* 「保存しました」を、その操作で送ったものが届いてから出す。待つものが無ければ null */
+  var SAVE_MSG = /(保存しました|保存済み|登録しました|更新しました|反映しました|記録しました|提出しました|承認しました|変更しました|追加しました|削除しました|Saved|saved|Updated|updated)/;
+  UX.saveWait = function(msg){
+    if(!SAVE_MSG.test(String(msg || ''))) return null;
+    var t0 = now(), recs = S.recs.filter(function(r){ return r.user && t0 - r.t < 1500; });
+    if(!recs.length) return null;
+    var pend = recs.filter(function(r){ return !r.done; });
+    var bad = function(){ return recs.some(function(r){ return r.res === false || r.res === 'deferred'; }); };
+    if(!pend.length) return bad() ? Promise.resolve('queued') : null;
+    return new Promise(function(res){
+      var tm = setTimeout(function(){ res('slow'); }, 15000);
+      Promise.all(pend.map(function(r){ return r.p; })).then(function(){ clearTimeout(tm); res(bad() ? 'queued' : 'ok'); });
+    });
+  };
+  UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done && now() - r.t < 60000; }); };
+  function guardState(){ try{ return (W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function') ? String(FUNERGY_FINANCIAL_SAVE.getState().status || '') : ''; }catch(e){ return ''; } }
+  function outboxN(){ try{ return (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ return 0; } }
+  function saveState(){
+    var g = guardState();
+    var pend = S.recs.filter(function(r){ return r.user && !r.done && now() - r.t > 250; });
+    if(pend.length && pend.every(function(r){ return now() - r.t > 20000; })) return { k: 'slow' };
+    if(pend.length || g === 'saving' || g === 'checking') return { k: 'saving' };
+    if(g === 'unknown' || g === 'conflict') return { k: 'check' };
+    var n = outboxN();
+    if(n > 0) return { k: 'queued', n: n, off: (typeof navigator !== 'undefined' && navigator.onLine === false) };
+    if(S.lastOk) return { k: 'saved', t: S.lastOk };
+    return { k: '' };
+  }
+  UX.saveState = saveState;
+  function clockOf(ms){
+    try{ if(typeof fstClock === 'function') return fstClock(new Date(ms).toISOString()); }catch(e){}
+    try{ return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }catch(e){ return ''; }
+  }
+  function saveLabel(s){
+    if(s.k === 'saving') return T('保存中…', 'Saving…');
+    if(s.k === 'slow') return T('送信に時間がかかっています', 'Sending is taking a while');
+    if(s.k === 'check') return T('保存の確認待ち', 'Save needs checking');
+    if(s.k === 'queued') return (s.off ? T('オフライン・', 'Offline · ') : '') + T('送信待ち ' + s.n + '件', s.n + ' waiting to send');
+    if(s.k === 'saved') return T('保存済み ', 'Saved ') + clockOf(s.t);
+    return '';
+  }
+  var paintSig = '', paintT = null;
+  function paint(){
+    paintT = null;
+    var b = D.getElementById('ux-save'); if(!b) return;
+    var s = appShown() ? saveState() : { k: '' };
+    var label = saveLabel(s), sig = s.k + '|' + label;
+    if(sig === paintSig) return;
+    paintSig = sig;
+    if(!s.k){ b.hidden = true; b.innerHTML = ''; return; }
+    var icon = s.k === 'saving' ? '<span class="ux-spin" aria-hidden="true"></span>'
+      : s.k === 'saved' ? '<i class="ti ti-cloud-check" aria-hidden="true"></i>'
+      : s.k === 'queued' ? '<i class="ti ti-cloud-off" aria-hidden="true"></i><b class="ux-save-n">' + s.n + '</b>'
+      : '<i class="ti ti-alert-triangle" aria-hidden="true"></i>';
+    b.className = 'topbar-icon-btn ux-save ' + (s.k === 'saved' ? 'is-ok' : s.k === 'saving' ? 'is-saving' : 'is-warn');
+    if(s.k === 'slow') icon = '<span class="ux-spin" aria-hidden="true"></span>';
+    b.innerHTML = icon + '<span class="ux-save-t">' + esc(label) + '</span>';
+    b.title = label; b.setAttribute('aria-label', label);
+    b.hidden = false;
+    var pop = D.getElementById('ux-save-pop'); if(pop && pop.classList.contains('on')) fillPop(pop);
+  }
+  function paintSoon(ms){ if(paintT) clearTimeout(paintT); paintT = setTimeout(paint, ms || 0); }
+  UX.paintSave = function(){ paintSig = ''; paint(); };
+
+  function fillPop(pop){
+    var s = saveState(), h = '';
+    if(s.k === 'saving') h = T('クラウドへ送っています。画面を閉じずにお待ちください。', 'Sending to the cloud. Please keep this screen open.');
+    else if(s.k === 'slow') h = T('この端末には保存されています。クラウドへの送信に時間がかかっています（通信が遅いか、つながっていません）。送れなかったときは送信待ちに入り、つながると自動で送ります。', 'Saved on this device. Sending to the cloud is taking a while (slow or no connection). If it fails it will wait and be sent automatically when connected.');
+    else if(s.k === 'check') h = T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.');
+    else if(s.k === 'queued') h = T('この端末には保存されています（' + s.n + '件）。クラウドへはまだ送れていません。' + (s.off ? 'オフラインです。' : '') + 'つながると自動で送ります。', 'Saved on this device (' + s.n + '). Not sent to the cloud yet.' + (s.off ? ' You are offline.' : '') + ' It will be sent automatically when connected.');
+    else if(s.k === 'saved') h = T('クラウドに保存しました（' + clockOf(s.t) + '）。', 'Saved to the cloud (' + clockOf(s.t) + ').');
+    else h = T('保存待ちのものはありません。', 'Nothing waiting to be saved.');
+    pop.innerHTML = '<div class="ux-save-pop-h">' + esc(saveLabel(s) || T('保存の状態', 'Save status')) + '</div><div>' + esc(h) + '</div>'
+      + (s.k === 'queued' ? '<div style="margin-top:10px;text-align:right"><button type="button" class="btn btn-primary btn-sm" data-ux-repeat="1" id="ux-save-send">' + esc(T('今すぐ送る', 'Send now')) + '</button></div>' : '');
+    var sb = pop.querySelector('#ux-save-send');
+    if(sb) sb.addEventListener('click', function(){
+      sb.disabled = true; sb.innerHTML = '<span class="ux-spin" aria-hidden="true"></span> ' + esc(T('送信中…', 'Sending…'));
+      Promise.resolve().then(function(){ return (typeof flushOutbox === 'function') ? flushOutbox() : null; }).catch(function(){}).then(function(){ paintSig = ''; paint(); fillPop(pop); });
+    });
+  }
+  function popClose(){ var pop = D.getElementById('ux-save-pop'); if(pop) pop.classList.remove('on'); }
+  UX.saveInfo = function(){
+    var pop = D.getElementById('ux-save-pop');
+    if(!pop){ pop = D.createElement('div'); pop.id = 'ux-save-pop'; pop.className = 'ux-save-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', T('保存の状態', 'Save status')); D.body.appendChild(pop); }
+    if(pop.classList.contains('on')){ popClose(); return; }
+    fillPop(pop); pop.classList.add('on');
+  };
+  D.addEventListener('click', function(e){
+    var pop = D.getElementById('ux-save-pop');
+    if(pop && pop.classList.contains('on') && !pop.contains(e.target) && !(e.target.closest && e.target.closest('#ux-save'))) popClose();
+  }, true);
+  W.addEventListener('online', function(){ paintSoon(300); });
+  W.addEventListener('offline', function(){ paintSoon(0); });
+  setInterval(function(){ if(appShown()) paint(); }, 10000);
+  if(typeof fstOnGuardState === 'function'){
+    var origGuardState = fstOnGuardState;
+    fstOnGuardState = function(){ var r = origGuardState.apply(this, arguments); paintSoon(0); return r; };
+  }
+  W.addEventListener('beforeunload', function(e){
+    if(UX.savePending()){ e.preventDefault(); e.returnValue = ''; return ''; }
+  });
+  /* 前に送っている途中で閉じられたキーは、送信待ちに入れて送り直す（端末の今の値を送る） */
+  UX.recoverInflight = function(){
+    var o = infGet(), ks = Object.keys(o); if(!ks.length) return 0;
+    var old = ks.filter(function(k){ return now() - (+o[k] || 0) > 20000; });
+    if(!old.length) return 0;
+    old.forEach(function(k){ try{ if(typeof _outboxAdd === 'function') _outboxAdd(k, 'interrupted'); }catch(e){} delete o[k]; });
+    infSet(o);
+    try{ if(typeof flushOutbox === 'function') Promise.resolve(flushOutbox()).catch(function(){}).then(function(){ paintSoon(0); }); }catch(e){}
+    paintSoon(0);
+    return old.length;
+  };
+
+  /* ---------- 二度押しを防ぐ・押したらすぐ「処理中」 ---------- */
+  var SAVE_TXT = /(保存|送信|提出|承認|却下|差し戻|確定|登録|削除|反映|取り消す|取消|記録する|支払|精算|申請|Save|Submit|Send|Approve|Reject|Confirm|Delete|Register|Post|Record|Remove|Apply)/i;
+  var NOT_TXT = /(開く|見る|戻る|閉じる|キャンセル|やめる|一覧|詳細|選ぶ|Cancel|Close|Back|Open|View|Details)/i;
+  var SAVE_FN = /(?:^|[^A-Za-z0-9_.$])(save|submit|send|approve|reject|commit|post|register|delete|remove|confirm|finalize|record|settle)[A-Za-z0-9_]*\s*\(/i;
+  function saveLike(b){
+    if(!b || !b.closest || b.closest('#login-screen, #manager-login-screen, .nav-bar, .subnav-bar, .topbar, #ux-toasts, #ux-fresh, #ux-save-pop, .phase-tab, .seg-btn, .tab, [role="tab"]')) return false;
+    if(b.hasAttribute('data-ux-repeat')) return false;
+    var txt = String(b.textContent || b.value || b.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    if(txt && SAVE_TXT.test(txt)) return true;
+    if(txt && NOT_TXT.test(txt)) return false;
+    return SAVE_FN.test(b.getAttribute('onclick') || '');
+  }
+  UX._saveLike = saveLike;
+  var lastSave = { t: 0, x: -999, y: -999 }, clickedAt = new WeakMap();
+  function markBusy(b, t0){
+    b.classList.add('ux-busy'); b.setAttribute('aria-busy', 'true');
+    (function check(){
+      if(!b.isConnected) return;
+      var el = now() - t0;
+      var pend = S.recs.some(function(r){ return r.user && !r.done && r.t >= t0; });
+      if(el >= 12000 || (el >= 450 && !pend)){ b.classList.remove('ux-busy'); b.removeAttribute('aria-busy'); return; }
+      setTimeout(check, 150);
+    })();
+  }
+  D.addEventListener('click', function(e){
+    if(!e.isTrusted) return;
+    var b = e.target && e.target.closest ? e.target.closest('button, .btn, [role="button"]') : null;
+    if(!b || b.disabled || !saveLike(b)) return;
+    var t0 = now(), last = clickedAt.get(b) || 0;
+    var near = e.detail !== 0 && Math.abs((e.clientX || 0) - lastSave.x) < 30 && Math.abs((e.clientY || 0) - lastSave.y) < 30;   /* キーボードで押したとき（detail 0）は位置で比べない */
+    if((t0 - last) < 1200 || ((t0 - lastSave.t) < 500 && near)){ e.preventDefault(); e.stopImmediatePropagation(); return; }
+    clickedAt.set(b, t0);
+    lastSave = { t: t0, x: e.clientX || 0, y: e.clientY || 0 };
+    var mb = D.getElementById('modal-body'), inModal = !!(mb && mb.contains(b));
+    /* 押した処理が終わってから見た目を変える（処理がボタンを写し直しても、写しに「処理中」が残らないように）。
+       モーダルの中で保存した（送り始めた）ときだけ「入力の途中」を消す（入力の確かめで止まったときは消さない） */
+    setTimeout(function(){
+      if(inModal && S.recs.some(function(r){ return r.user && r.t >= t0; })) UX.modalDirty = false;
+      if(b.isConnected) markBusy(b, t0);
+    }, 0);
+  }, true);
+
+  /* ---------- モーダル ---------- */
+  UX.modalDirty = false;
+  var DIRTY_MSG = function(){ return T('入力した内容はまだ保存されていません。閉じますか？（入力は消えます）', 'Your input has not been saved. Close anyway? (it will be lost)'); };
+  function setupModal(){
+    var ov = D.getElementById('modal-overlay'), mb = D.getElementById('modal-body');
+    if(!ov || !mb || ov._ux) return;
+    ov._ux = true;
+    mb.setAttribute('role', 'dialog'); mb.setAttribute('aria-modal', 'true'); mb.setAttribute('tabindex', '-1');
+    var wasOpen = ov.classList.contains('open'), back = null;
+    var fine = function(){ try{ return W.matchMedia('(hover: hover) and (pointer: fine)').matches; }catch(e){ return false; } };
+    new MutationObserver(function(){
+      var open = ov.classList.contains('open');
+      if(open && !wasOpen){
+        back = D.activeElement; UX.modalDirty = false;
+        requestAnimationFrame(function(){
+          if(!ov.classList.contains('open')) return;
+          var a = D.activeElement; if(a && mb.contains(a)) return;
+          var f = fine() ? mb.querySelector('input:not([type=hidden]):not([disabled]):not([readonly]), textarea:not([disabled]):not([readonly]), select:not([disabled])') : null;
+          if(f && f.offsetParent !== null && f.type !== 'date'){ try{ f.focus({ preventScroll: true }); }catch(e){} }
+          else { try{ mb.focus({ preventScroll: true }); }catch(e){} }
+        });
+      } else if(!open && wasOpen){
+        UX.modalDirty = false;
+        var r = back; back = null;
+        if(r && r !== D.body && r.isConnected && typeof r.focus === 'function' && (fine() || !(isField(r) || r.tagName === 'SELECT'))){ try{ r.focus({ preventScroll: true }); }catch(e){} }
+      }
+      wasOpen = open;
+    }).observe(ov, { attributes: true, attributeFilter: ['class'] });
+    ['input', 'change'].forEach(function(tp){ mb.addEventListener(tp, function(e){ if(e.isTrusted && e.target && e.target.type !== 'search') UX.modalDirty = true; }, true); });
+  }
+  if(typeof closeModal === 'function'){
+    var origCloseModal = closeModal;
+    closeModal = function(e){
+      try{
+        var ov = D.getElementById('modal-overlay');
+        if(e && e.target === ov && UX.modalDirty && !confirm(DIRTY_MSG())) return;
+      }catch(err){}
+      return origCloseModal.apply(this, arguments);
+    };
+  }
+  D.addEventListener('keydown', function(e){
+    if(e.key !== 'Escape' || e.isComposing) return;
+    var pop = D.getElementById('ux-save-pop'); if(pop && pop.classList.contains('on')){ popClose(); return; }
+    var ov = D.getElementById('modal-overlay');
+    if(!ov || !ov.classList.contains('open')) return;
+    /* 上に別の層（伝票の範囲確認・同期の画面）が出ているときは閉じない */
+    var top = D.querySelector('.crop-overlay[style*="flex"], .crop-overlay.open');
+    var spl = D.getElementById('sync-splash');
+    if(top || (spl && spl.style.display !== 'none' && spl.style.opacity !== '0')) return;
+    e.preventDefault();
+    try{ ov.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); }catch(err){}
+  });
+
+  /* ---------- ログアウト：前の人のものを残さない ---------- */
+  UX.reset = function(){
+    try{ var ov = D.getElementById('modal-overlay'); if(ov) ov.classList.remove('open'); var mb = D.getElementById('modal-body'); if(mb) mb.innerHTML = ''; }catch(e){}
+    ['main-content', 'nav-bar', 'subnav-bar'].forEach(function(id){ try{ var el = D.getElementById(id); if(el) el.innerHTML = ''; }catch(e){} });
+    try{ var np = D.getElementById('notif-panel'); if(np) np.style.display = 'none'; }catch(e){}
+    try{ var tb = D.getElementById('ux-toasts'); if(tb) tb.innerHTML = ''; }catch(e){}
+    hideFresh(); popClose();
+    rendered = null; edited = new Set(); scrolled = new Set(); toggled = new Set(); touched = null;
+    S.lastOk = 0; S.lastFail = 0; UX.modalDirty = false;
+    W._uxLoginBusy = false;
+    try{ if(typeof _uxOpsSeq !== 'undefined') _uxOpsSeq++; W._uxOpsBusy = false; if(typeof uxOpsPaint === 'function') uxOpsPaint(); }catch(e){}
+    try{ if(typeof _fstBusy === 'object' && _fstBusy){ _fstBusy.sales = false; _fstBusy.labor = false; } }catch(e){}
+    try{ W._karteUnlocked = false; W._karteSelf = false; W._karteViewEmp = null; }catch(e){}
+    try{ W._mn = null; if(typeof _mnCache === 'object' && _mnCache) Object.keys(_mnCache).forEach(function(k){ delete _mnCache[k]; }); }catch(e){}
+    try{ var pi = D.getElementById('login-pin-input'); if(pi) pi.value = ''; }catch(e){}
+    paintSig = ''; paint();
+  };
+  if(typeof doLogout === 'function'){
+    var origLogout = doLogout;
+    doLogout = function(){
+      var r = origLogout.apply(this, arguments);
+      var after = function(){ try{ if(typeof curRole === 'undefined' || !curRole) UX.reset(); }catch(e){} };
+      if(r && typeof r.then === 'function') r.then(after, after); else after();
+      return r;
+    };
+  }
+  /* ログインしてアプリを出したあと（enterAppWithSync から） */
+  UX.afterEnter = function(){
+    paintSig = ''; paint();
+    setTimeout(function(){ try{ UX.recoverInflight(); }catch(e){} }, 4000);
+  };
+
+  /* スマホ：モーダルの中の欄を選んでキーボードが出たとき、欄がキーボードに隠れていれば見える所まで動かす */
+  D.addEventListener('focusin', function(e){
+    var f = e.target;
+    if(!isField(f) && !(f && f.tagName === 'SELECT')) return;
+    var mb = D.getElementById('modal-body'); if(!mb || !mb.contains(f)) return;
+    var coarse = false; try{ coarse = W.matchMedia('(pointer: coarse)').matches; }catch(err){}
+    if(!coarse) return;
+    setTimeout(function(){
+      try{
+        if(D.activeElement !== f) return;
+        var vv = W.visualViewport, h = vv ? vv.height : W.innerHeight, r = f.getBoundingClientRect();
+        if(r.bottom > h - 8 || r.top < 0) f.scrollIntoView({ block: 'center', behavior: 'auto' });
+      }catch(err){}
+    }, 350);
+  }, true);
+  /* iOS で :active（押した瞬間の見た目）を効かせる */
+  try{ D.addEventListener('touchstart', function(){}, { passive: true }); }catch(e){}
+  if(D.readyState === 'loading') D.addEventListener('DOMContentLoaded', setupModal); else setupModal();
+})();
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>
