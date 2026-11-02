@@ -784,30 +784,14 @@ test('every protection is covered by a failing test when removed', async (t) => 
   assert.equal(run([], E2E), 0, 'the unmodified end-to-end test must pass');
   assert.equal(run([], UNIT), 0, 'the unmodified unit test must pass');
   assert.equal(run([], AD), 0, 'the unmodified adapter test must pass');
-  if (!only || only.test('purchases') || only.test('app:')) {
-    assert.equal(run([], PS), 0, 'the unmodified purchase summary test must pass (without the deploy-folder check)');
-    assert.equal(run([], PU), 0, 'the unmodified purchase app test must pass');
-  }
-  if (!only || only.test('段階3')) assert.equal(run([], MU), 0, 'the unmodified multi-file screen test must pass');
-  if (!only || only.test('業者の統合')) {
-    assert.equal(run([], VM), 0, 'the unmodified vendor merge test must pass (without the deploy-folder check)');
-    assert.equal(run([], VU), 0, 'the unmodified vendor merge screen test must pass');
-  }
-  if (!only || only.test('新しい業者')) {
-    assert.equal(run([], VR), 0, 'the unmodified vendor register test must pass (without the deploy-folder check)');
-    assert.equal(run([], VD), 0, 'the unmodified vendor decide screen test must pass');
-  }
-  if (!only || only.test('紐づけ')) {
-    assert.equal(run([], LK), 0, 'the unmodified linking test must pass (without the deploy-folder check)');
-    assert.equal(run([], LU), 0, 'the unmodified linking screen test must pass');
-  }
-  if (!only || only.test('単価')) {
-    assert.equal(run([], PC), 0, 'the unmodified price comparison test must pass (without the deploy-folder check)');
-    assert.equal(run([], PP), 0, 'the unmodified price comparison app test must pass');
-  }
-  if (!only || only.test('即時')) {
-    assert.equal(run([], QG), 0, 'the unmodified QuickBooks Gmail test must pass (without the deploy-folder check)');
-    assert.equal(run([], QU), 0, 'the unmodified QuickBooks Gmail screen test must pass');
+  // v1128（独立レビュー P3）：選んだ場合が使う試験のファイルは、どれも先に、手を加えないままで通ることを確かめる
+  // （前は場合の名前の一部で決めていたので、INVOICE_MUTATION_ONLY='紐づけ app' のとき紐づけの試験そのものの確かめが飛んでいた）
+  const base = new Set([E2E, UNIT, AD]);
+  for (const [name, file] of CASES) {
+    if (only && !only.test(name)) continue;
+    if (base.has(file)) continue;
+    base.add(file);
+    assert.equal(run([], file), 0, 'the unmodified test must pass before its protections are removed: ' + file);
   }
   // INVOICE_MUTATION_ONLY=<regex>: run only the matching cases (for checking one protection quickly).
   for (const [name, file, muts] of CASES) {

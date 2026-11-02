@@ -151,6 +151,8 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
   const parts = [x.varBlock('SUPA_MASTER_MAP', '\n};'), 'var TEST_STAFF_PREFIX = "tst_";', 'var LOGIN_PIN_TIMEOUT = 30000, LOGIN_PING_TIMEOUT = 8000;',
     x.line('var LS_DEVICE_LOCAL = '), 'var _SPLIT_KEYS = {\n' + x.line('  offboardings:     {type:') + '\n};'];
   for (const n of FNS) parts.push(x.fn(n));
+  // v1128：同じキーの送信の順（_pushWithOutbox・flushOutbox が使う）。前の版の index.html には無い
+  for (const n of ['_pushQOf', '_pushBusy', '_pushRun']) if (x.has('\nfunction ' + n + '(')) parts.push(x.fn(n));
   if (v1085) {
     for (const n of FNS_1085) parts.push(x.fn(n));
     // v1087: the undo of an approval reads the approval list from the cloud first and moves the item to a new generation.

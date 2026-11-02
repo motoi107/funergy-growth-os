@@ -38,6 +38,8 @@ function fakeEnv(extra) {
   vm.createContext(ctx);
   return { ctx, listeners, store, fire(tp, ev) { (listeners[tp] || []).forEach(fn => fn(Object.assign({ isTrusted: true, target: {} }, ev))); } };
 }
+/* だれの保存か（_saveWho）を同じ文脈に入れ、ログインした人を決める */
+function asUser(env, js) { vm.runInContext(fnFrom('_saveWho') + '\nvar curRole = "crew", curStoreLogin = false, loginPerson = null;' + (js || ''), env.ctx); }
 function btn(text, onclick, opts) {
   opts = opts || {};
   return { textContent: text, value: '', getAttribute: k => (k === 'onclick' ? (onclick || null) : (k === 'aria-label' ? null : null)),
@@ -107,12 +109,13 @@ test('裏の書き込み（人の操作の 2.5 秒より後）は「保存中」
 
 test('送っている途中で閉じられたキーは、同じ人が次に開いたとき送信待ちに入れて送り直す', () => {
   const added = []; let flushed = 0;
-  const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => { flushed++; return Promise.resolve(); }, loginPerson: { id: 'A' } });
-  env.store.set('_ux_inflight', JSON.stringify({ old_key: { 'e:A': Date.now() - 60000 }, fresh_key: { 'e:A': Date.now() } }));
+  const env = fakeEnv({ _outboxAdd: (k, why, w) => added.push([k, why, w]), flushOutbox: () => { flushed++; return Promise.resolve(); } });
+  asUser(env, 'loginPerson = { id: "A" };');
+  env.store.set('_ux_inflight', JSON.stringify({ old_key: { 'p:A': Date.now() - 60000 }, fresh_key: { 'p:A': Date.now() } }));
   vm.runInContext(uxBlock(), env.ctx);
   const n = env.ctx.window.FUNERGY_UX.recoverInflight();
   assert.equal(n, 1);
-  assert.deepEqual(added, [['old_key', 'interrupted']]);
+  assert.deepEqual(added, [['old_key', 'interrupted', 'p:A']], 'その人の送信待ちに入れる');
   assert.equal(flushed, 1);
   assert.deepEqual(Object.keys(JSON.parse(env.store.get('_ux_inflight'))), ['fresh_key'], '20 秒以内のもの（ほかのタブが送っている途中）は残す');
 });
@@ -120,20 +123,20 @@ test('送っている途中で閉じられたキーは、同じ人が次に開�
 test('共有の端末：A の送信の途中でログアウトし B が入っても、A の保存を B のあいだに送り直さない（Codex の PR #118 のレビュー P1）', async () => {
   const added = []; let flushed = 0;
   const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => { flushed++; return Promise.resolve(); } });
-  vm.runInContext('var loginPerson = { id: "A" };', env.ctx);
+  asUser(env, 'loginPerson = { id: "A" };');
   vm.runInContext(uxBlock(), env.ctx);
   const UX = env.ctx.window.FUNERGY_UX;
   env.fire('pointerdown', {});
   UX._track('shift_opt_cfg_F01', new Promise(() => {}));            /* A の送信：答えないまま閉じられた */
   const mark = JSON.parse(env.store.get('_ux_inflight'));
-  assert.deepEqual(Object.keys(mark.shift_opt_cfg_F01), ['e:A'], 'だれの保存かを覚える');
-  mark.shift_opt_cfg_F01['e:A'] -= 60000; env.store.set('_ux_inflight', JSON.stringify(mark));
+  assert.deepEqual(Object.keys(mark.shift_opt_cfg_F01), ['p:A'], 'だれの保存かを覚える');
+  mark.shift_opt_cfg_F01['p:A'] -= 60000; env.store.set('_ux_inflight', JSON.stringify(mark));
   vm.runInContext('loginPerson = { id: "B" };', env.ctx);            /* ログアウトして B が入る */
   assert.equal(UX.recoverInflight(), 0);
   assert.deepEqual(added, [], 'B のあいだには送らない');
   assert.equal(flushed, 0);
-  assert.ok(JSON.parse(env.store.get('_ux_inflight')).shift_opt_cfg_F01['e:A'], 'A の印は残す');
-  vm.runInContext('loginPerson = null; var curStoreLogin = true; var curStore = "F01";', env.ctx);   /* 店舗のログインでも送らない */
+  assert.ok(JSON.parse(env.store.get('_ux_inflight')).shift_opt_cfg_F01['p:A'], 'A の印は残す');
+  vm.runInContext('loginPerson = null; curStoreLogin = true; var curStore = "F01";', env.ctx);   /* 店舗のログインでも送らない */
   assert.equal(UX.recoverInflight(), 0);
   vm.runInContext('curStoreLogin = false; loginPerson = { id: "A" };', env.ctx);   /* A がまた入る */
   assert.equal(UX.recoverInflight(), 1);
@@ -144,14 +147,14 @@ test('共有の端末：A の送信の途中でログアウトし B が入って
 test('だれの保存か分からない前の印（v1127）は送らず、7 日で捨てる。キーが（だれのでも）クラウドに届いたら印を消す', async () => {
   const added = [];
   const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => Promise.resolve() });
-  vm.runInContext('var loginPerson = { id: "A" };', env.ctx);
-  env.store.set('_ux_inflight', JSON.stringify({ legacy_key: Date.now() - 60000, gone_key: Date.now() - 8 * 86400000, shared_key: { 'e:B': Date.now() - 60000 } }));
+  asUser(env, 'loginPerson = { id: "A" };');
+  env.store.set('_ux_inflight', JSON.stringify({ legacy_key: Date.now() - 60000, gone_key: Date.now() - 8 * 86400000, future_key: { 'p:A': Date.now() + 3 * 86400000 }, shared_key: { 'p:B': Date.now() - 60000 } }));
   vm.runInContext(uxBlock(), env.ctx);
   const UX = env.ctx.window.FUNERGY_UX;
   assert.equal(UX.recoverInflight(), 0);
   assert.deepEqual(added, []);
   const left = JSON.parse(env.store.get('_ux_inflight'));
-  assert.deepEqual(Object.keys(left).sort(), ['legacy_key', 'shared_key'], '7 日を過ぎた印は捨てる');
+  assert.deepEqual(Object.keys(left).sort(), ['legacy_key', 'shared_key'], '7 日を過ぎた印・1 日より先の時刻の印（時計が戻った）は捨てる');
   UX._track('shared_key', Promise.resolve(true)); await tick(); await tick();   /* A の（裏の）送信が届いた：端末の今の値がクラウドにある */
   assert.deepEqual(Object.keys(JSON.parse(env.store.get('_ux_inflight'))), ['legacy_key'], 'B の印も要らない');
 });
@@ -369,4 +372,164 @@ test('待っているあいだに送信待ちに入れた印は、クラウド�
   E.calls[0].res(undefined); await tick(); await tick();
   E.calls[1].res(undefined); assert.equal(await p, undefined);
   assert.deepEqual(E.outbox(), []);
+});
+
+/* ---------- v1128（独立レビュー 6f2b5ab）：だれの保存か・送信待ちの持ち主・答えない送信・onboardings の機密 ---------- */
+test('だれの保存か：ログインしていない（名前を選んだだけ）は空・PIN と管理者ページの同じ人は同じ印・店舗はその店', () => {
+  const env = fakeEnv();
+  vm.runInContext(fnFrom('_saveWho') + '\nvar curRole = null, curStoreLogin = false, loginPerson = { id: "A" }, loginLocation = null, curStore = null, curUserName = "";', env.ctx);
+  const w = () => vm.runInContext('_saveWho()', env.ctx);
+  assert.equal(w(), '', '名前を選んだだけ（PIN の前）はだれでもない');
+  vm.runInContext('curRole = "crew";', env.ctx); assert.equal(w(), 'p:A');
+  vm.runInContext('window._authSession = { emp_id: "M1", email: "x@y" }; window._secureMode = true;', env.ctx);
+  assert.equal(w(), 'p:M1', '管理者ページではメールで確かめた人（選んだ名前ではなく）');
+  vm.runInContext('window._authSession = { email: "Boss@Ex.com" };', env.ctx); assert.equal(w(), 'a:boss@ex.com');
+  vm.runInContext('window._secureMode = false; window._authSession = null; loginPerson = null; curStoreLogin = true; loginLocation = "F01";', env.ctx);
+  assert.equal(w(), 's:F01');
+});
+
+test('送信待ちは保存した人のもの：A の送れなかった保存は、B のログインのあいだに送らず、A がまた入ると送る（だれのか分からない前の送信待ちは今までどおり送る）', async () => {
+  const E = pushEnv();
+  E.ctx.curRole = 'crew'; E.ctx.curStoreLogin = false; E.ctx.loginPerson = { id: 'A' };
+  E.ctx._pushWithOutbox('kA', 'a1'); await tick();
+  E.ctx.loginPerson = { id: 'B' };                                   /* 送っている途中にログアウトして B が入る */
+  E.calls[0].res(false); await tick(); await tick();
+  const ob = () => JSON.parse(E.ctx.localStorage.getItem('op_outbox') || '[]');
+  assert.deepEqual(ob().map(x => [x.key, x.who]), [['kA', 'p:A']], '送れなかった保存は、保存した A の送信待ち（今の B ではない）');
+  E.ctx.localStorage.setItem('op_outbox', JSON.stringify(ob().concat([{ key: 'kOld', attempts: 1, ts: 1 }])));   /* v1127 までの送信待ち（だれのか分からない） */
+  E.ctx.__vals = { kA: 'a1', kOld: 'o1' };
+  assert.equal(E.ctx.outboxCount(), 1, 'B に見える（送れる）のは前の送信待ちだけ');
+  assert.equal(E.ctx._outboxOthers(), 1);
+  const f = E.ctx.flushOutbox(); await tick();
+  assert.deepEqual(E.calls.slice(1).map(c => c.key), ['kOld'], 'B のあいだは A の保存を送らない');
+  E.calls.at(-1).res(true); await f; await tick();
+  assert.deepEqual(ob().map(x => x.key), ['kA']);
+  E.ctx.loginPerson = { id: 'A' };                                   /* A がまた入る */
+  const f2 = E.ctx.flushOutbox(); await tick();
+  assert.equal(E.calls.at(-1).key, 'kA'); E.calls.at(-1).res(true); await f2; await tick();
+  assert.deepEqual(ob(), []);
+});
+
+test('この 1 件を送る：ほかの人の送信待ちは送らない。送っている途中に新しい保存があれば、送信待ちから外さない（2 回数えない）', async () => {
+  const E = pushEnv();
+  const toasts = [];
+  Object.assign(E.ctx, { showToast: (m, k) => toasts.push(m), openDiag: undefined, _opLastPushErr: {}, curRole: 'crew', curStoreLogin: false, loginPerson: { id: 'B' } });
+  E.ctx.localStorage.setItem('op_outbox', JSON.stringify([{ key: 'kA', attempts: 1, ts: 1, who: 'p:A' }]));
+  E.ctx.__vals = { kA: 'a', kB: 'b1' };
+  const r0 = E.ctx.outboxRetryOne('kA'); await tick(); await tick();
+  const sentA = E.calls.length; if (sentA) E.calls[0].res(true); await r0;
+  assert.equal(sentA, 0, 'A の保存は B から送らない');
+  assert.match(toasts.at(-1), /ほかの人の送信待ち/);
+  E.ctx._outboxAdd('kB', 'x');
+  const r = E.ctx.outboxRetryOne('kB'); await tick();
+  E.ctx._pushWithOutbox('kB', 'b2');                                 /* 再送のあいだにまた保存 */
+  E.calls[0].res(true); await tick(); await tick(); await r;
+  assert.deepEqual(E.calls.map(c => c.val), ['b1', 'b2'], 'b2 を続けて送る');
+  assert.ok(JSON.parse(E.ctx.localStorage.getItem('op_outbox')).some(x => x.key === 'kB'), 'b2 を送っているあいだは送信待ちに残す');
+  E.calls[1].res(false); await tick(); await tick();
+  assert.equal(JSON.parse(E.ctx.localStorage.getItem('op_outbox')).find(x => x.key === 'kB').attempts, 3, '送れなかったのは 1 回だけ数える（x・待ち・失敗）');
+});
+
+/* 送る道（supaUpsert・opMergePush・pushOpKeyNow）を、本物の関数で。通信は代わり（答えを試験で決める）・時計も代わり */
+function netEnv() {
+  const timers = [], reqs = [], local = {}, back = [];
+  const ctx = { console, Promise, JSON, Object, Array, String, Math, Date, Number, Error,
+    setTimeout: (f, ms) => { timers.push({ f, ms }); return timers.length; }, clearTimeout: id => { if (timers[id - 1]) timers[id - 1].f = null; },
+    AbortController: class { constructor() { const s = { aborted: false, on: [] }; this.signal = s; this.abort = () => { s.aborted = true; s.on.forEach(f => f()); }; } },
+    SUPABASE_URL: 'https://x', supaHeaders: () => ({}), _opLastPushErr: {}, _opLastPushWhy: {}, _opMergeChain: {}, _lastSupaError: null,
+    ls: (k, d) => (k in local ? JSON.parse(JSON.stringify(local[k])) : d),
+    _opWriteBack: (k, d, v) => back.push(JSON.parse(JSON.stringify(v))),
+    _opMergeDef: k => ((k === 'onboardings' || /^spl_onboardings_/.test(k)) ? { merge: (c, l) => { const m = {}; (c || []).forEach(x => { m[x.id] = x; }); (l || []).forEach(x => { m[x.id] = x; }); return Object.values(m); }, covers: () => true } : null),
+    fetch: (url, opt) => new Promise((res, rej) => { const r = { url, opt, res, rej }; reqs.push(r); if (opt && opt.signal) opt.signal.on.push(() => rej(new Error('AbortError'))); }) };
+  vm.createContext(ctx);
+  const v = n => html.match(new RegExp('\\nvar ' + n + ' = [^\\n]*'))[0];
+  vm.runInContext([v('_OP_READ_TMO'), v('_OB_SENSITIVE'), fnFrom('stripObPII'), fnFrom('_opCloudVal'), fnFrom('_opUpsertRow'), fnFrom('_supaWriteMs'), fnFrom('supaUpsert'),
+    fnFrom('_fetchOpValue'), fnFrom('opMergePush'), fnFrom('pushOpKeyNow')].join('\n'), ctx);
+  const ok = body => ({ ok: true, status: 200, json: async () => body, text: async () => '' });
+  return { ctx, reqs, local, back, ok, fireTimers: () => { timers.splice(0).forEach(t => t.f && t.f()); } };
+}
+
+test('答えない書き込みは打ち切って「送れなかった」にする（同じキーの送信が止まり続けない）', async () => {
+  const N = netEnv();
+  const p = N.ctx.supaUpsert('app_state', [{ key: 'k', value: 1 }]); await tick();
+  assert.equal(N.reqs.length, 1); assert.ok(N.reqs[0].opt.signal, '打ち切れる書き込み');
+  N.fireTimers(); assert.equal(await p, false);
+  assert.match(N.ctx._lastSupaError.body, /timeout/);
+  assert.equal(N.ctx._supaWriteMs(0), 45000); assert.equal(N.ctx._supaWriteMs(2000000), 145000); assert.equal(N.ctx._supaWriteMs(1e9), 300000);
+});
+
+test('合流して送るキー：送る前の読み込みが答えなければ書かない（端末の値で丸ごと書かない）', async () => {
+  const N = netEnv();
+  const p = N.ctx.opMergePush('onboardings', [{ id: 1 }]); await tick(); await tick();
+  assert.equal(N.reqs.length, 1, '読み込みだけ');
+  N.fireTimers(); assert.equal(await p, false);
+  assert.equal(N.reqs.length, 1, '書いていない');
+  assert.match(N.ctx._opLastPushErr.onboardings, /答えませんでした/);
+});
+
+test('新しく入った人（onboardings）の機密は、合流の道でもクラウドに書かない（端末の値はそのまま）', async () => {
+  const N = netEnv();
+  const ob = { id: 1, name: 'X', personal: { ssn: '123', address: 'a', dob: 'd', phone: 'p', email: 'e', visa: 'v', visaDetail: 'vd', pos: 'keep' }, docs: [{ name: 'Passport', image: 'data:image/png;base64,AA', uploadedAt: 't' }] };
+  const p = N.ctx.opMergePush('onboardings', [ob]); await tick(); await tick();
+  N.reqs[0].res(N.ok([{ value: [{ id: 2, name: 'Y' }] }])); await tick(); await tick(); await tick();
+  const w = JSON.parse(N.reqs[1].opt.body)[0].value;
+  assert.deepEqual(w.map(x => x.id).sort(), [1, 2], 'ほかの端末の行も残す');
+  const mine = w.find(x => x.id === 1);
+  assert.deepEqual(mine.personal, { pos: 'keep' }, '住所・電話・メール・生年月日・SSN・ビザは書かない');
+  assert.deepEqual(mine.docs, [{ name: 'Passport', uploadedAt: 't' }], '書類の画像は書かない');
+  N.reqs[1].res(N.ok(null)); await tick(); await tick();
+  N.reqs[2].res(N.ok([{ value: w }])); assert.equal(await p, true);
+  assert.equal(N.back[0].find(x => x.id === 1).personal.ssn, '123', '端末の値は変えない');
+  /* 人ごとに分けた行（spl_onboardings_<名前>。lsSet('onboardings') が実際に送る行）も同じ */
+  const p2 = N.ctx.opMergePush('spl_onboardings_X', [ob]); await tick(); await tick();
+  N.reqs[3].res(N.ok([])); await tick(); await tick(); await tick();
+  const w2 = JSON.parse(N.reqs[4].opt.body)[0].value[0];
+  assert.equal(w2.personal.ssn, undefined); assert.equal(w2.docs[0].image, undefined);
+  N.reqs[4].res(N.ok(null)); await tick(); await tick(); N.reqs[5].res(N.ok([{ value: [w2] }])); assert.equal(await p2, true);
+  assert.equal(N.ctx._opCloudVal('spl_onboardings_X', [ob])[0].personal.ssn, undefined);
+  assert.equal(N.ctx._opCloudVal('spl_offboardings_X', [ob])[0].personal.ssn, '123', 'ほかのキーは変えない');
+});
+
+test('招待をすぐ送る（pushOpKeyNow）：同じキーの合流の送信のあとに並び、クラウドの最新に重ねて書く・機密を外す・端末は書き換えない・失敗は false', async () => {
+  const N = netEnv();
+  N.local.onboardings = [{ id: 1, name: 'X', personal: { ssn: '9' } }];
+  const first = N.ctx.opMergePush('onboardings', N.local.onboardings); await tick(); await tick();
+  const p = N.ctx.pushOpKeyNow('onboardings'); await tick(); await tick();
+  assert.equal(N.reqs.length, 1, 'ふだんの送信が終わるまで待つ');
+  N.reqs[0].res(N.ok([])); await tick(); await tick(); await tick();
+  N.reqs[1].res(N.ok(null)); await tick(); await tick();
+  N.reqs[2].res(N.ok([{ value: [{ id: 1 }] }])); await first; await tick(); await tick();
+  N.reqs[3].res(N.ok([{ value: [{ id: 1, name: 'X' }, { id: 7, name: 'Other' }] }])); await tick(); await tick(); await tick();
+  const w = JSON.parse(N.reqs[4].opt.body)[0].value;
+  assert.deepEqual(w.map(x => x.id).sort(), [1, 7], 'ほかの端末の行を消さない');
+  assert.equal(w.find(x => x.id === 1).personal.ssn, undefined);
+  N.reqs[4].res({ ok: false, status: 500, text: async () => 'x' });
+  assert.equal(await p, false, '書けなければ false（前はいつも true）');
+  assert.equal(N.back.length, 1, 'pushOpKeyNow は端末を書き換えない');
+});
+
+test('ログアウト：自分の送れていない保存があれば、送ってみてから知らせる（キャンセルでログアウトしない）。止めるためのログアウトでは聞かない', () => {
+  let out = 0, flushed = 0; const asked = [];
+  const env = fakeEnv({ doLogout: () => { out++; }, flushOutbox: () => { flushed++; return Promise.resolve(); }, t: (ja) => ja });
+  asUser(env, 'loginPerson = { id: "A" };');
+  vm.runInContext('function _outboxMine(){ return [{ key: "k", who: "p:A" }, { key: "old" }]; }', env.ctx);
+  env.ctx.confirm = m => { asked.push(m); return false; };
+  vm.runInContext(uxBlock(), env.ctx);
+  vm.runInContext('doLogout()', env.ctx);
+  assert.equal(out, 0); assert.equal(flushed, 1); assert.match(asked[0], /送れていない保存が 1 件/);
+  env.ctx.window._forceLogout = true; vm.runInContext('doLogout()', env.ctx);
+  assert.equal(out, 1); assert.equal(asked.length, 1);
+});
+
+test('直接送っていた所（店舗マスターの移し替え・LaLa・Totoya のスキル・この 1 件を送る）は、同じキーの送信の順に並ぶ（_pushAwait）', () => {
+  assert.equal((html.match(/_pushAwait\('m_stores', stores\)/g) || []).length, 2, '店舗マスターの移し替え 2 か所');
+  assert.match(fnFrom('outboxRetryOne'), /await _pushAwait\(key, cur\)/);
+  assert.ok(!/syncMasterToSupabase\(/.test(fnFrom('outboxRetryOne')), 'この 1 件を送るは直接送らない');
+  assert.match(html, /await _pushAwait\(pushKeys\[k\]\[0\], pushKeys\[k\]\[1\]\)/, 'Totoya のスキルの一括');
+  assert.match(html, /await _pushAwait\('skill_lv_desc'/);
+  assert.match(html, /await _pushAwait\('lala_tasks'/);
+});
+
+test('合流の決まりの無い送り方（syncMasterToSupabase）も、人ごとに分けた行の機密を外す', () => {
+  assert.match(fnFrom('syncMasterToSupabase'), /_opCloudVal\(key, val\)/);
 });

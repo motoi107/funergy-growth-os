@@ -83,7 +83,7 @@ const EMP = [{ name: 'Crew A', store: 'F01', role: 'crew', firstWork: daysAgo(27
              { name: 'Crew B', store: 'F01', role: 'crew', firstWork: daysAgo(22), status: '在籍' },
              { name: 'Crew C', store: 'F01', role: 'crew', firstWork: daysAgo(400), status: '在籍' }];   // past 3 months: 100% automatically
 const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsRaw', '_lsStoreGet', '_lsWriteVerified', '_lsSetVerified', '_lsSplitOnDemandPrefix',
-  '_pushWithOutbox', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
+  '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
   '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_srPending', 'mergeSkillReq', '_coversSkillReq',
   'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
 const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveGetJson', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
