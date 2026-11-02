@@ -2236,12 +2236,25 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
         requestId: pending?.request.requestId || null, hasRecovery: recoveryEntries().length > 0,
         why: pending?.why || null, notFound: Boolean(pending?.notFound), oddReceipt: Boolean(pending?.oddReceipt), auto: Boolean(pending?.auto), released: lastRelease });
     }
+    // v1129（11/01 の依頼 ④）：送っている・確かめているあいだ（答えを待つだけ）は、画面の下に帯を出さない。
+    // 前はログインの裏の取り込み（Toast の売上など・店ごと）のたびに「保存結果を確認しています」の帯が出ては消えていた。
+    // 自動の保存は、片づかないとき放す（下の release）ので帯は要らない。人の保存も 1.5 秒より長くかかったときだけ出す。
+    // 答えが確かめられない・重なった（人が押して直すもの）は、今までどおりすぐ出す。帯がもう出ていれば、確かめ直しのあいだも出したまま
+    let busyShowT = null;
     function showStatus() {
       if (typeof options.onState === 'function') { try { options.onState(status()); } catch (_) {} }
       const doc = win.document;
       if (!doc?.createElement || !doc.body) return;
       let panel = doc.getElementById('financial-save-status');
+      if (!pending || !pending.busy) { if (busyShowT) { clearTimeout(busyShowT); busyShowT = null; } }
       if (!pending) { panel?.remove(); return; }
+      if (pending.busy && !panel) {
+        if (!pending.auto && !busyShowT) {
+          const entry = pending;
+          busyShowT = setTimeout(() => { busyShowT = null; if (pending === entry && entry.busy) { entry.slow = true; showStatus(); } }, 1500);
+        }
+        if (pending.auto || !pending.slow) return;
+      }
       if (!panel) {
         panel = doc.createElement('aside'); panel.id = 'financial-save-status'; panel.setAttribute('role', 'status');
         panel.style.cssText = 'position:fixed;left:12px;right:12px;bottom:20px;z-index:2147483646;padding:14px;background:#fff5d8;color:#4d3700;border:1px solid #c69b35;border-radius:12px;font:14px system-ui;box-shadow:0 3px 16px #0003';
@@ -16631,7 +16644,8 @@ async function loginToastAutoSync(){
     catch(e){ ng++; }
   }
   try{
-    if (ok>0) showToast('全店の売上を同期しました（'+ok+'店'+(ng?' / 失敗'+ng:'')+'）', ng?'warning':'success');
+    /* v1129（11/01 の依頼 ④）：裏の同期がうまくいったときは知らせない（画面の下に出さない・「取得の状態」と右上の更新ボタンで分かる）。失敗した店があるときだけ */
+    if (ng>0) showToast('売上の同期で取り込めなかった店があります（'+ng+'店'+(ok?' / 取り込めた店 '+ok:'')+'）。同期センターで確かめてください', 'warning');
     // 予実・ダッシュボードを開いていれば最新値で再描画
     if (typeof curPage!=='undefined' && ['dashboard','budget','meeting','monthly'].indexOf(curPage)>=0){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); }   /* v1127 */   /* v1084: 会議 */
   }catch(e){}
@@ -98895,7 +98909,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     });
   };
   UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done && now() - r.t < 60000; }); };
-  function guardState(){ try{ return (W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function') ? String(FUNERGY_FINANCIAL_SAVE.getState().status || '') : ''; }catch(e){ return ''; } }
+  /* v1129（11/01 の依頼 ④）：裏の自動の保存（Toast の取り込みなど）を送っているあいだは「保存中…」にしない（ログインのあと店ごとに点滅していた）。
+     自動の保存でも、答えが確かめられない・重なったときは今までどおり「保存の確認待ち」 */
+  function guardState(){ try{ if(!(W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function')) return ''; var st = FUNERGY_FINANCIAL_SAVE.getState() || {}, g = String(st.status || ''); return (st.auto && (g === 'saving' || g === 'checking')) ? '' : g; }catch(e){ return ''; } }
   function outboxN(){ try{ return (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ return 0; } }
   function saveState(){
     var g = guardState();
@@ -98903,8 +98919,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(pend.length && pend.every(function(r){ return now() - r.t > 20000; })) return { k: 'slow' };
     if(pend.length || g === 'saving' || g === 'checking') return { k: 'saving' };
     if(g === 'unknown' || g === 'conflict') return { k: 'check' };
-    var n = outboxN();
-    if(n > 0) return { k: 'queued', n: n, off: (typeof navigator !== 'undefined' && navigator.onLine === false) };
+    var n = outboxN(), off = (typeof navigator !== 'undefined' && navigator.onLine === false);
+    if(n > 0) return { k: 'queued', n: n, off: off };
+    if(off) return { k: 'offline' };   /* v1129 ④：通信が切れているときは、送るものが無くても右上に出す（画面の下には出さない） */
     if(S.lastOk) return { k: 'saved', t: S.lastOk };
     return { k: '' };
   }
@@ -98918,6 +98935,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(s.k === 'slow') return T('送信に時間がかかっています', 'Sending is taking a while');
     if(s.k === 'check') return T('保存の確認待ち', 'Save needs checking');
     if(s.k === 'queued') return (s.off ? T('オフライン・', 'Offline · ') : '') + T('送信待ち ' + s.n + '件', s.n + ' waiting to send');
+    if(s.k === 'offline') return T('オフライン（つながると最新を取りに行きます）', 'Offline (will update when back online)');
     if(s.k === 'saved') return T('保存済み ', 'Saved ') + clockOf(s.t);
     return '';
   }
@@ -98933,6 +98951,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var icon = s.k === 'saving' ? '<span class="ux-spin" aria-hidden="true"></span>'
       : s.k === 'saved' ? '<i class="ti ti-cloud-check" aria-hidden="true"></i>'
       : s.k === 'queued' ? '<i class="ti ti-cloud-off" aria-hidden="true"></i><b class="ux-save-n">' + s.n + '</b>'
+      : s.k === 'offline' ? '<i class="ti ti-wifi-off" aria-hidden="true"></i>'
       : '<i class="ti ti-alert-triangle" aria-hidden="true"></i>';
     b.className = 'topbar-icon-btn ux-save ' + (s.k === 'saved' ? 'is-ok' : s.k === 'saving' ? 'is-saving' : 'is-warn');
     if(s.k === 'slow') icon = '<span class="ux-spin" aria-hidden="true"></span>';
@@ -98950,6 +98969,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     else if(s.k === 'slow') h = T('この端末には保存されています。クラウドへの送信に時間がかかっています（通信が遅いか、つながっていません）。送れなかったときは送信待ちに入り、つながると自動で送ります。', 'Saved on this device. Sending to the cloud is taking a while (slow or no connection). If it fails it will wait and be sent automatically when connected.');
     else if(s.k === 'check') h = T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.');
     else if(s.k === 'queued') h = T('この端末には保存されています（' + s.n + '件）。クラウドへはまだ送れていません。' + (s.off ? 'オフラインです。' : '') + 'つながると自動で送ります。', 'Saved on this device (' + s.n + '). Not sent to the cloud yet.' + (s.off ? ' You are offline.' : '') + ' It will be sent automatically when connected.');
+    else if(s.k === 'offline') h = T('通信が切れています。この間の保存はこの端末に残し、つながると自動で送ります。画面の数字は、つながったときに最新を取りに行きます。', 'You are offline. Saves stay on this device and are sent automatically when you are back online. Numbers update when you reconnect.');
     else if(s.k === 'saved') h = T('クラウドに保存しました（' + clockOf(s.t) + '）。', 'Saved to the cloud (' + clockOf(s.t) + ').');
     else h = T('保存待ちのものはありません。', 'Nothing waiting to be saved.');
     pop.innerHTML = '<div class="ux-save-pop-h">' + esc(saveLabel(s) || T('保存の状態', 'Save status')) + '</div><div>' + esc(h) + '</div>'

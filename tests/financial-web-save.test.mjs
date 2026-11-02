@@ -1301,3 +1301,55 @@ test('v1107: typed memo and budget records without a source are never taken for 
   const b = fixture({ storage: bud.storage, database: bud.database, deferStartup: true });
   await assert.rejects(b.api.refresh([BUDGET]), /financial_unresolved_save/); assert.equal(b.api.getState().auto, false);
 });
+
+/* v1129（11/01 の依頼 ④）：送っている・確かめているあいだ（答えを待つだけ）は、画面の下の帯を出さない。
+   前はログインの裏の取り込み（店ごと）のたびに「保存結果を確認しています」の帯が出ては消えていた。
+   自動の保存はいつも出さない・人の保存は 1.5 秒より長くかかったときだけ・答えが確かめられないなど（人が押して直すもの）はすぐ出す */
+function panelDom(f) {
+  const nodes = new Map();
+  const el = tag => {
+    const e = { tagName: tag, id: '', style: {}, children: [], textContent: '', attrs: {}, disabled: false,
+      setAttribute(k, v) { this.attrs[k] = v; if (k === 'id') this.id = v; }, appendChild(c) { this.children.push(c); return c; },
+      replaceChildren() { this.children = []; }, addEventListener() {}, remove() { nodes.delete(this.id); } };
+    return e;
+  };
+  const body = { appendChild(c) { if (c.id) nodes.set(c.id, c); return c; } };
+  const old = f.context.document;
+  f.context.document = { createElement: el, body, getElementById: id => nodes.get(id) || old.getElementById(id), querySelectorAll: (...a) => old.querySelectorAll(...a) };
+  const text = () => { const p = nodes.get('financial-save-status'); if (!p) return null; return p.children.map(c => c.textContent || '').join(' '); };
+  return { text };
+}
+
+test('v1129 ④: an automatic save (Toast import at sign-in) never shows the bottom bar while it is being sent or checked', async () => {
+  const gate = deferred(); const f = fixture({ timeoutMs: 5000, commit: (request, answer) => gate.promise.then(() => answer(request)) });
+  const dom = panelDom(f);
+  const writing = f.context.syncStoreActualsFromToast('F01', 'guid', [{ date: '2026-10-01' }]); await settle();
+  assert.equal(f.api.getState().status, 'saving'); assert.equal(f.api.getState().auto, true);
+  assert.equal(dom.text(), null, 'no bar while the automatic save is in flight');
+  await new Promise(r => setTimeout(r, 1700));
+  assert.equal(f.api.getState().status, 'saving', 'still in flight');
+  assert.equal(dom.text(), null, 'not even when it takes longer than 1.5 s');
+  gate.resolve(); await writing; await settle();
+  assert.equal(dom.text(), null);
+  assert.equal(f.database.get(DAILY).value['2026-10-01'].actual, 321, 'the save itself is unchanged');
+});
+
+test('v1129 ④: a person’s save shows the bar only when it takes longer than 1.5 s; a save that cannot be confirmed shows it at once', async () => {
+  let gate = deferred(); const f = fixture({ timeoutMs: 5000, commit: (request, answer) => gate.promise.then(() => answer(request)) });
+  const dom = panelDom(f);
+  await f.context.openDailyActualModal('F01', '2026-10-01', '木'); f.set('da-actual', '345');
+  const saving = f.context.saveDailyActual('F01', '2026-10-01'); await settle();
+  assert.equal(f.api.getState().status, 'saving'); assert.equal(dom.text(), null, 'a quick save shows nothing at the bottom');
+  await new Promise(r => setTimeout(r, 1700));
+  assert.equal(f.api.getState().status, 'saving', 'still in flight');
+  assert.match(dom.text() || '', /保存結果を確認しています/, 'slow: the bar appears');
+  gate.resolve(); await saving; await settle();
+  assert.equal(dom.text(), null, 'gone when it is saved');
+  // a save whose answer cannot be confirmed (the person must act): shown at once
+  const g = fixture({ commit: async () => { throw Object.assign(new Error('net'), { name: 'TypeError' }); }, receipt: async ({ requestId }) => ({ status: 'not-found', requestId }) });
+  const dom2 = panelDom(g);
+  await g.context.openDailyActualModal('F01', '2026-10-01', '木'); g.set('da-actual', '345');
+  await g.context.saveDailyActual('F01', '2026-10-01'); await settle();
+  assert.equal(g.api.getState().status, 'unknown');
+  assert.match(dom2.text() || '', /保存/, 'the bar is shown without waiting');
+});
