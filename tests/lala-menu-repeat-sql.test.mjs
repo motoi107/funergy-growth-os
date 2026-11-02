@@ -31,12 +31,12 @@ test('LaLa の出数・来店区分の確かめ：1 つの表で、欠けた日�
   const pick = p => rows.filter(x => x.part === p);
   assert.equal(pick('cols').length, 4);
   assert.equal(pick('store').length, 3);
-  const lalaM = pick('sales_m').find(x => x.store === 'F06');
-  assert.match(lalaM.b, /days_sales 3/);
-  assert.match(lalaM.c, /FT 0 \/ RP 0 \/ SR 0/);
-  assert.match(lalaM.e, /sales_no_vt 3/);
-  const toriM = pick('sales_m').find(x => x.store === 'F01');
-  assert.match(toriM.c, /FT 30 \/ RP 18 \/ SR 6/);
+  // 店・月ごとの行。3 日が月をまたぐ日（月の 1〜2 日）もあるので、月の行を足して比べる（11/02 の CI で 1 か月分だけ見て落ちた）
+  const sumOf = (store, col, re) => pick('sales_m').filter(x => x.store === store).reduce((t, x) => t + Number((re.exec(String(x[col])) || [0, 0])[1]), 0);
+  assert.equal(sumOf('F06', 'b', /days_sales (\d+)/), 3);
+  assert.equal(sumOf('F06', 'c', /FT (\d+)/) + sumOf('F06', 'c', /RP (\d+)/) + sumOf('F06', 'c', /SR (\d+)/), 0);
+  assert.equal(sumOf('F06', 'e', /sales_no_vt (\d+)/), 3);
+  assert.equal(sumOf('F01', 'c', /FT (\d+)/), 30); assert.equal(sumOf('F01', 'c', /RP (\d+)/), 18); assert.equal(sumOf('F01', 'c', /SR (\d+)/), 6);
   const gaps = pick('items_d').filter(x => x.store === 'F06');
   assert.equal(gaps.length, 3);
   assert.equal(gaps.filter(x => /欠け/.test(x.e)).length, 2, '売上はあるのに出数の行が無い日');
