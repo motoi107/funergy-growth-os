@@ -4,7 +4,8 @@
 
 1. 済（Claude）：原因（hyper-worker のグループ名が Customers ちょうど・LaLa は Customer Property）・hyper-worker v1130（非公開）・アプリ v1130（`docs/LALA_VISIT_V1130_JA.md`）。
 2. 済（Moto さん 11/02 11:18 HST）：`db/lala-visit-diag-2.sql` の結果＝LaLa は 9/26〜10/21 の一部の注文だけ押し、10/22 から押していない。
-2b. Moto さん：hyper-worker を差し替え → 来店区分の診断（LaLa・10/21）の写真 → 期間一括取り込み（LaLa・9/19〜11/01）→ `db/lala-visit-after-check.sql` の結果。
+2b. 済（Moto さん 11/02 13:07 HST）：取り込み直しと `db/lala-visit-after-check.sql` の結果（10 月は一致・9/22〜9/25 は商品の行に来店区分なし・11/01 は対象データなし）。
+2d. Moto さん（任意）：来店区分の診断（LaLa・9/23）の「モディファイア由来」で 9/22〜9/25 を確かめる（確かめるまで取り込み直さない）。
 2c. Moto さんの判断：LaLa でも注文ごとに FT・RP・SR を押す運用にするか（押さないと 10/22 からは「対象データなし」のまま）。
 3. Claude：照合の結果と画面の数を比べて報告（完了の条件 1〜7）。
 4. 次：PR → 独立レビュー・Codex → マージ → 端末を 1130 に。
