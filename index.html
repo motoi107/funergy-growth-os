@@ -17065,6 +17065,7 @@ function openStoreSwitcher() {
 
 function switchStore(id) {
   curStore = id;
+  try{ if(typeof pageStoresFollow==='function') pageStoresFollow(id); }catch(e){}   /* v1129 ③：画面の中の店を左上に合わせる */
   var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(s=>s.id===id)||{name:id}).name);
   var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
   document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
@@ -19906,7 +19907,7 @@ async function loadRealtimeSales() {
 ============================================================ */
 var activePhase = 'All';
 function renderStoreCmd() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('store_cmd');   /* v1129 ③：前は全店のとき STORES[0] */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var ops = getDailyOps(storeId);
   var opsDone = ops.filter(t=>t.done).length;
@@ -19917,7 +19918,7 @@ function renderStoreCmd() {
   var dailyComplete = ops.length>0 && opsDone===ops.length;
   var cfg = getStoreOpsConfig();
 
-  var html = '';
+  var html = soloStoreBar('store_cmd');   /* v1129 ③：左上が全店のときは、どの店かを選ぶ（左上は変えない） */
 
   // 会社メッセージ（あれば最上部）
   html += renderCompanyMessageCard();
@@ -20109,7 +20110,7 @@ function renderStoreOpsSettings() {
   var visStores = getVisibleStores();
   var storeId = window._opsTemplateStore && visStores.find(s=>s.id===window._opsTemplateStore)
     ? window._opsTemplateStore
-    : (curStore === 'ALL' ? (visStores[0]?visStores[0].id:STORES[0].id) : curStore);
+    : (curStore === 'ALL' ? soloStoreId('store_ops_settings') : curStore);   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var tmpl = getDailyOpsTemplate(storeId);
   html += `<div class="section-header" style="margin-top:18px">
@@ -22939,13 +22940,68 @@ function accessibleStoresForUser(){
   }
   return act;
 }
-/* AM以上向け：ページ内 店舗選択タブ（switchStoreで全体店舗を切替・上部表示も同期） */
+/* v1129（11/01 の依頼 ③）：左上の店（curStore）と、画面の中の店。
+   ・全店を出せる画面は左上に従う。左上を変えたら、画面の中の店の絞り込みも左上に合わせ直す（switchStore → pageStoresFollow）。
+   ・1 店ずつしか出せない画面（soloStoreId）：左上が店ならその店。左上が全店なら、その画面で選んだ店 → 見られる店の最初。
+     この画面の中で店を選んでも左上は全店のまま（pageStorePick）。画面の上に「1 店ずつ」と店の選び方を出す（soloStoreBar）。
+   ・見られる店（accessibleStoresForUser）の外の店は出さない（前は STORES[0] で、AM の管轄外の店が出ることがあった）。 */
+var _soloSel = {};
+function soloStores(){
+  try{ var l=(typeof accessibleStoresForUser==='function') ? accessibleStoresForUser() : getVisibleStores(); l=(l||[]).filter(function(x){ return x && x.id && x.id!=='ALL' && x.id!=='OFFICE'; });
+    return (typeof sortByLoginOrder==='function') ? sortByLoginOrder(l) : l; }catch(e){ return []; }
+}
+function soloStoreId(page){
+  var list=soloStores(), ids=list.map(function(x){ return x.id; });
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE' && (ids.indexOf(curStore)>=0 || !ids.length)) return curStore;
+  var p=_soloSel[page||curPage]; if(p && ids.indexOf(p)>=0) return p;
+  if(ids.length) return ids[0];
+  return (curStore && curStore!=='ALL' && curStore!=='OFFICE') ? curStore : ((STORES[0]||{}).id||'');
+}
+function soloStoreBar(page){
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE') return '';
+  var list=soloStores(); if(list.length<2) return '';
+  var cur=soloStoreId(page);
+  return '<div class="solo-bar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 11px;margin-bottom:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);font-size:12px">'
+    +'<i class="ti ti-building-store" style="color:var(--accent)"></i><span>'+t('この画面は 1 店ずつです（左上は全店のまま）。表示する店：','This screen shows one store at a time (the top-left stays on All stores). Store:')+'</span>'
+    +'<select class="form-select" style="width:auto;padding:4px 8px;font-size:12px" onchange="soloStoreSet(\''+String(page||curPage).replace(/[^a-z_0-9]/g,'')+'\',this.value)">'
+    +list.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===cur?' selected':'')+'>'+escapeHtml(x.name||x.id)+'</option>'; }).join('')+'</select></div>';
+}
+function soloStoreHint(){
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE') return '';
+  if(soloStores().length<2) return '';
+  return '<div style="font-size:11px;color:var(--muted);margin:-2px 2px 6px"><i class="ti ti-building-store"></i> '+t('この画面は 1 店ずつです（左上は全店のまま）。下で店を選んでください。','One store at a time (the top-left stays on All stores). Choose the store below.')+'</div>';
+}
+function soloStoreSet(page, id){ _soloSel[page]=id; renderPage(curPage); }
+/* 画面の中の店のタブ・チップを押したとき：左上が全店なら、この画面の店だけを変える（左上は全店のまま）。左上が店なら、左上ごと変える（画面と左上を同じに） */
+function pageStorePick(id){
+  if(!curStore || curStore==='ALL' || curStore==='OFFICE'){ _soloSel[curPage]=id; renderPage(curPage); return; }
+  switchStore(id);
+}
+/* 左上を変えたとき：画面の中の店の選び方を左上に合わせ直す（前は画面ごとに最初に決めた店のままで、左上と違う店が出ていた） */
+function pageStoresFollow(id){
+  var one = (id && id!=='ALL' && id!=='OFFICE') ? id : null;
+  try{ dailyStoreScope='current'; }catch(e){}
+  try{ _budgetStore = one || 'ALL'; }catch(e){}
+  try{ _qbStore = one || 'ALL'; }catch(e){}
+  try{ _laborStore = one || 'ALL'; if(!one) laborTab='overview'; }catch(e){}
+  try{ _pdStore = one || 'ALL'; }catch(e){}
+  try{ _ipsScope = one || null; _ipsVendor = null; }catch(e){}
+  try{ if(window._mn) window._mn.store = one || ''; }catch(e){}
+  if(one){
+    _soloSel = {};
+    try{ window._menuStore=one; window._kpiStore=one; window._skillMatrixStore=one; window._opsTemplateStore=one; window._invoiceStore=one; }catch(e){}
+    try{ _ojtGateStore=one; }catch(e){}
+  }
+}
+/* AM以上向け：ページ内 店舗選択タブ。全店を含むタブ（includeAll）は左上ごと切り替える。
+   v1129：全店を含まない（1 店ずつの画面）タブは pageStorePick（左上が全店なら左上は変えない） */
 function pageStoreTabs(activeId, includeAll){
   var stores = accessibleStoresForUser();
   if(stores.length<=1 && !includeAll) return '';
-  var tabs='';
+  var tabs='', fn = includeAll ? 'switchStore' : 'pageStorePick';
   if(includeAll){ tabs += '<div class="phase-tab'+((!activeId||activeId==='ALL')?' active':'')+'" onclick="switchStore(\'ALL\')">全社</div>'; }
-  tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="switchStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
+  if(!includeAll && (!curStore || curStore==='ALL' || curStore==='OFFICE')) tabs += '<div style="flex-basis:100%;font-size:11px;color:var(--muted);margin:0 0 2px">'+t('この画面は 1 店ずつです（左上は全店のまま）','One store at a time (the top-left stays on All stores)')+'</div>';
+  tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="'+fn+'(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
   return '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">'+tabs+'</div>';
 }
 function storeSelectBar(current, onchangeFn, label){ return bStoreChips(current, onchangeFn); }
@@ -23395,9 +23451,13 @@ function renderBudget() {
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
-  if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
-  html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: budgetTab!=='setup'});
-  if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
+  /* v1129 ③：予算設定は 1 店ずつ。前は _budgetStore（会議・年間計画と同じ）を最初の店に書き換えていたので、会議に移っても 1 店のままだった */
+  if (budgetTab==='setup') {
+    var _bss = (_budgetStore && _budgetStore!=='ALL') ? _budgetStore : soloStoreId('budget_setup');
+    html += bStoreChips(_bss, 'setBudgetStore', {showAll:false});
+    return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup(_bss));
+  }
+  html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: true});
   /* v1084: 上の寄せで budgetTab は daily/quarter/annual/setup/initiative に限られ、すべて先に return している。
      経営分析（analysis → renderMonthlySummary）は廃止。ここへは来ないが、来たら日次を出す。 */
   return html + renderBudgetDaily();
@@ -29250,10 +29310,10 @@ function budgetSegShown(b, ym){
   });
   return out;
 }
-function renderBudgetSetup() {
+function renderBudgetSetup(onlySid) {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">'+t('予算の閲覧権限がありません','No permission to view budgets')+'</div>';
   var budgets = getBudgets();
-  var stores = budgetScopeStores();
+  var stores = onlySid ? getVisibleStores().filter(function(x){ return x.id===onlySid; }) : budgetScopeStores();   /* v1129 ③ */
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
 
   var html = '';
@@ -31454,7 +31514,7 @@ function dailyScopeStores() {
   // 管轄店舗（getVisibleStores）に応じて対象店舗を返す
   var vis = getVisibleStores();
   if (dailyStoreScope==='ALL') return vis;
-  if (dailyStoreScope==='current') return [vis[0]];
+  if (dailyStoreScope==='current') return (vis.length>1 && (!curStore || curStore==='ALL' || curStore==='OFFICE')) ? vis : [vis[0]];   /* v1129 ③：左上が全店なら全店（前は最初の店） */
   var s = vis.find(x=>x.id===dailyStoreScope);
   return s ? [s] : [vis[0]];
 }
@@ -31827,13 +31887,13 @@ function renderBudgetDaily() {
   var html = '';
   // 店舗スコープ切替（管轄が複数店ある場合）
   if (multiStore) {
-    var _dCur = dailyStoreScope==='current' ? (vis[0]?vis[0].id:'ALL') : dailyStoreScope;
+    var _dCur = dailyStoreScope==='current' ? ((!curStore || curStore==='ALL' || curStore==='OFFICE') ? 'ALL' : (vis[0]?vis[0].id:'ALL')) : dailyStoreScope;   /* v1129 ③ */
     html += bStoreChips(_dCur, 'setDailyScope');
   } else {
     dailyStoreScope = 'current';
   }
 
-  var isAgg = dailyStoreScope==='ALL' && multiStore;
+  var isAgg = (dailyStoreScope==='ALL' || (dailyStoreScope==='current' && (!curStore || curStore==='ALL' || curStore==='OFFICE'))) && multiStore;   /* v1129 ③ */
   var title = isAgg ? `${t('全','All ')}${vis.length}${t('店集計',' stores')}` : (scopeStores[0]||{name:'—'}).name;
   if (isAgg) {
     html += '<div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:8px">'
@@ -36475,7 +36535,7 @@ function invConfirmMonthText(ym){
   return y+'年'+m+'月分（'+rel.label+'）';
 }
 function renderInventory(){
-  var storeId = (curStore==='ALL' || curStore==='OFFICE' || !STORES.find(function(s){return s.id===curStore;})) ? STORES[0].id : curStore;
+  var storeId = (curStore && curStore!=='ALL' && curStore!=='OFFICE' && !STORES.find(function(s){return s.id===curStore;})) ? ((STORES[0]||{}).id) : soloStoreId('inventory');   /* v1129 ③ */
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
   _invMigrateToJune(storeId);
   var _ym = invYm();
@@ -37711,7 +37771,7 @@ function renderTipHqSite(storeId, info){
 }
 /* ---- 画面 ---- */
 function renderTipShiftLeader(){
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId('tip');   /* v1129 ③ */
   var cfg=slCfg();
   var h='';
   if(!slStoreEnabled(storeId)){
@@ -37916,16 +37976,16 @@ function saveSlConfig(){
   if(slSaveCfg({amount:amt, stores:st, jobs:jb})===false){ showToast('保存できませんでした','danger'); return; }
   closeModalDirect(); showToast('設定を保存しました','success'); renderPage('tip');
 }
-function renderTipMgmt() {
+function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（前は STORES[0]）。チップの店のチップは左上を変えない（pageStorePick） */
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   maybePullAllCashTips();
   try{ if(typeof tipLivePullSoon==='function') tipLivePullSoon(); }catch(e){}   /* v1091: ほかの端末で変えた Tip Rate */
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId(curPage==='attendance'||curPage==='labor' ? 'labor' : 'tip');
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
   try{ var _tym=info.y+'-'+String(info.m+1).padStart(2,'0'); if(isFrozenMonth(_tym)) _acctAutoRefresh(_tym); }catch(e){}   /* v1040: 過去の月は開いたときに全店ぶん取り直す */
 
-  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
+  var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       ${syncFreshBadge()}
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> ${t('Tip診断','Tip diagnostics')}</button>
@@ -38800,7 +38860,7 @@ function shiftAttMonth(delta){
 
 function renderAttendance() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId(curPage==='attendance'||curPage==='labor' ? 'labor' : 'tip');
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var html = `<div class="section-header"><div><div class="section-title">勤怠データ</div><div class="section-sub">${store.name} · Toast打刻の日毎一覧</div></div></div>`;
   return html + renderAttendanceBody(storeId, store);
@@ -39816,15 +39876,15 @@ function renderLabor() {
   ensureLaborLoaded(); // 開いた時に全店の当月勤怠をクラウドから取得→完了後に再描画（端末間で同一表示に）
   var _canLaborDetail = ['gm','ceo'].indexOf(curRole)>=0; // 勤怠明細（個人賃金・固定給）はGM以上のみ
   var perStoreTabs = _canLaborDetail ? ['hours','detail','attendance'] : ['hours','attendance'];
-  // 勤怠データ等(店舗別)をナビから開いた時に全店なら、最初の可視店舗へ
-  if (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) {
-    var v0=getVisibleStores()[0]; if(v0) _laborStore=v0.id;
-  }
-  var allStore = _laborStore==='ALL';
-  var store = allStore ? null : (STORES.find(function(s){return s.id===_laborStore;})||STORES[0]);
+  /* 勤怠データ等(店舗別)をナビから開いた時に全店なら、1 店ずつの店（soloStoreId）で出す。
+     v1129 ③：前は _laborStore を最初の店に書き換えていたので、人件費・勤怠に戻っても全店に戻らなかった（左上は全店のまま） */
+  var _lSolo = (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) ? soloStoreId('labor') : null;
+  var allStore = _laborStore==='ALL' && !_lSolo;
+  var store = allStore ? null : (STORES.find(function(s){return s.id===(_lSolo||_laborStore);})||STORES[0]);
   var storeId = allStore ? null : store.id;
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
+  if (_lSolo) html += soloStoreBar('labor');
   if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button><button class="btn btn-primary btn-sm" onclick="openLaborRootCause()"><i class="ti ti-alert-circle"></i> 原因診断</button></div>';
   if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
@@ -41931,11 +41991,11 @@ function staffForStore(storeId) {
 var shiftAdminTab = 'status';
 var shiftView = 'grid';
 function renderShiftAdmin() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('shift_admin');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var week = getWeekStr();
 
-  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header">
+  var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
     ${pageSyncBar({onRefresh:"refreshAvailNow('"+storeId+"','"+week+"')", onDiag:"availDiag('"+storeId+"','"+week+"')", freshScope:'shift'})}
   </div>
@@ -83902,7 +83962,7 @@ async function mnResync() {
 function renderMenuMonth() {
   var canEdit = ROLE_CONFIG[curRole].canCreate || ROLE_CONFIG[curRole].financial;
   var visStores = getVisibleStores();
-  if (!window._menuStore || !visStores.find(s=>s.id===window._menuStore)) window._menuStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
+  if (!window._menuStore || !visStores.find(s=>s.id===window._menuStore)) window._menuStore = (curStore!=='ALL'?curStore:soloStoreId('menu'));   /* v1129 ③：左上を変えたら pageStoresFollow が合わせる */
   if (!window._menuPeriod) window._menuPeriod = getPeriod();
   var storeId = window._menuStore, period = window._menuPeriod;
   var storeObj = STORES.find(s=>s.id===storeId)||{};
@@ -89974,14 +90034,14 @@ function setDailyOps(storeId, items) {
 
 var dailyPhase = 'Opening';
 function renderDailyOps() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('dailyops');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var items = getDailyOps(storeId);
   var phaseItems = items.filter(t=>t.phase===dailyPhase);
   var done = items.filter(t=>t.done).length;
   var reqIncomplete = items.filter(t=>t.required && !t.done);
 
-  var html = `<div class="section-header">
+  var html = soloStoreBar('dailyops') + `<div class="section-header">
     <div><div class="section-title">${store.name} · Daily Ops</div><div class="section-sub">${todayJP()} · ${done}/${items.length}完了</div></div>
   </div>`;
 
@@ -90429,7 +90489,7 @@ function notifRetired(n){ return !!(n && typeof n.refId==='string' && n.refId.in
    ⑯ Required管理 (必須設定/未完了検知/注意ログ/警告カウント)
 ============================================================ */
 function renderRequired() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('required');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var items = getDailyOps(storeId);
   var required = items.filter(t=>t.required);
@@ -92615,7 +92675,7 @@ function _ccStatusChip(st){
 }
 
 function renderGoals() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('goals');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var allGoals = ls('goals_v2', []);
   var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
@@ -95836,7 +95896,7 @@ function renderSkillManager() {
   // ===== ビュー別の本体 =====
   var visStores = getVisibleStores();
   if (!window._skillMatrixStore || (!visStores.find(s=>s.id===window._skillMatrixStore) && window._skillMatrixStore!=='OFFICE')) {
-    window._skillMatrixStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
+    window._skillMatrixStore = (curStore!=='ALL'?curStore:soloStoreId('skill'));   /* v1129 ③ */
   }
   var mgrStoreId = window._skillMatrixStore;
   var storeObj = STORES.find(s=>s.id===mgrStoreId)||(mgrStoreId==='OFFICE'?{name:'Office',color:'#6b7280'}:{});
@@ -96411,7 +96471,7 @@ function renderKpiMaster() {
   // 店舗別タブ
   var stores = kpiSettableStores();
   if (!stores.length) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">設定対象の店舗がありません</div>`;
-  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0] ? stores[0].id : null;
+  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = (curStore && curStore!=='ALL' && stores.find(s=>s.id===curStore)) ? curStore : (stores[0] ? stores[0].id : null);   /* v1129 ③：左上が店ならその店から */
   var sid = window._kpiStore;
   var store = getStoresAll().find(s=>s.id===sid);
   if (!store) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">稼働中の店舗がありません</div>`;
