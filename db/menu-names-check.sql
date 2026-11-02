@@ -4,7 +4,7 @@
 --
 -- アプリと同じ決まり：
 --   ・商品名・カテゴリーは Toast のメニューの表（同じ店の GUID の行）。無い商品はアプリではレシピの名前（この SQL ではレシピを見ないので「表に無い」と数える）。
---   ・来店区分（FT・RP・SR など）＝メニューのカテゴリーが「Customers」（大文字小文字・前後の空白は無視・完全一致）。出数に入れない。
+--   ・来店区分（FT・RP・SR など）＝メニューのカテゴリーが「customer」で始まる（Customers・Customer Property など。大文字小文字・前後の空白は無視・v1130）。出数に入れない。
 --
 -- 見方（part の列）：
 --   month ……… 店・月ごと：出数の行・出数の合計・来店区分の出数・メニューの表に名前がある出数・表に無い出数（商品の数）・カテゴリーのある出数
@@ -36,7 +36,7 @@ mi1 as (   -- 同じ GUID の行が 2 つ以上あっても 1 つに（名前の
 ),
 j as (
   select t.store, t.d, left(t.d, 7) ym, t.item, t.q, m.nm, m.cat, (m.item is not null) in_menu,
-    (m.item is not null and lower(btrim(m.cat)) = 'customers') visit
+    (m.item is not null and lower(btrim(m.cat)) ~ '^customer') visit
   from tin t left join mi1 m on m.store = t.store and m.item = t.item
   where t.d is not null
 ),
@@ -58,7 +58,7 @@ out_menu as (
     'rows ' || count(m.item) b,
     'categories ' || count(distinct nullif(btrim(m.cat), '')) c,
     'inactive ' || count(m.item) filter (where m.act = 'false') d,
-    'customers ' || count(m.item) filter (where lower(btrim(m.cat)) = 'customers') e,
+    'customers ' || count(m.item) filter (where lower(btrim(m.cat)) ~ '^customer') e,
     null f, null g, 2 o
   from st left join mi1 m on m.store = st.id group by st.id
 ),

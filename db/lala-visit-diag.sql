@@ -46,7 +46,7 @@ rc as (
   from public.recipes t cross join lateral (select to_jsonb(t) j) x
 ),
 cust as (   -- Customers のグループの商品（大文字小文字・前後の空白は見ない・完全一致）。アプリと hyper-worker の決まり
-  select distinct on (store, item) store, item, nm from mi where item <> '' and lower(btrim(cat)) = 'customers' order by store, item, (nm = ''), nm
+  select distinct on (store, item) store, item, nm from mi where item <> '' and lower(btrim(cat)) ~ '^customer' order by store, item, (nm = ''), nm
 ),
 d30 as (select (hst.today - 30)::text since, (hst.today - 1)::text until from hst)
 select part, store, a, b, c, d, e, f, g from (
@@ -56,7 +56,7 @@ select part, store, a, b, c, d, e, f, g from (
    where c.table_schema = 'public' and c.table_name in ('toast_sales', 'toast_menu_items', 'recipes')
    group by c.table_name
   union all
-  select 2, 'menu_n', s.id, s.name, 'rows ' || count(m.item), 'customers ' || count(m.item) filter (where lower(btrim(m.cat)) = 'customers'),
+  select 2, 'menu_n', s.id, s.name, 'rows ' || count(m.item), 'customers ' || count(m.item) filter (where lower(btrim(m.cat)) ~ '^customer'),
          'categories ' || count(distinct nullif(btrim(m.cat), '')), 'last ' || coalesce(max(m.upd), '-'), null, null
     from public.stores s left join mi m on m.store = s.id
    where coalesce(s.toast_guid, '') <> '' group by s.id, s.name

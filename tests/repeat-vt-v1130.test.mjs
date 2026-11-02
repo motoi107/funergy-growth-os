@@ -171,3 +171,29 @@ test('画面のつなぎ：KPI のタイル・会議の枠・取り込みの時�
   assert.match(HTML, /onclick="FUNERGY_VT\.storeCompare\(0\)"/);
   assert.match(HTML, /lastBy: lastBy/);
 });
+
+test('ブラウザの確かめの直し：未取込の日は先頭 3 日と「ほか N 日」・英語のコロン・会議の行は目標が無くても出す', () => {
+  const da = {}; OCT.slice(0, 20).forEach(d => { da[d.date] = { actual: 900, firstTimeBowls: 5, repeatBowls: 5 }; });
+  const c = make({ F02: da });
+  const p = c.FUNERGY_VT.parts(c.FUNERGY_VT.stats(['F02'], OCT), null);
+  assert.match(p.sub, /10\/21・10\/22・10\/23 ほか 7 日 がまだ/);
+  // 会議の行（_meetKpiRows）：対象データなし・目標なしでも repeat の行を出す
+  const ctx = { t: ja => ja }; vm.createContext(ctx); vm.runInContext(fnSrc('_meetKpiRows'), ctx);
+  const base = { sales: 1, budget: 1, guests: 1, ppa: 1, unit: '名', repeatHas: false, repeatTgt: null, fcRate: 0, laborRate: 0 };
+  const has = st => JSON.stringify(vm.runInContext('_meetKpiRows(' + JSON.stringify(Object.assign({}, base, { vtState: st })) + ')', ctx)).includes('"repeat"');
+  assert.equal(has('nodata'), true); assert.equal(has('missing'), true); assert.equal(has('empty'), false); assert.equal(has(null), false);
+  assert.match(MOD, /\(zl \? T\('：', ': '\)/);
+});
+
+test('同期センターの店の比べ：Customer Property のグループも来店区分として数える（hyper-worker v1130 と同じ決まり）', async () => {
+  const mk = n => Array.from({ length: n }, (_, i) => ({ business_date: '2026-10-' + String(i + 1).padStart(2, '0'), net_sales: 1000, first_time_count: 3, repeat_count: 4, super_regular_count: 1, fetched_at: '2026-10-31T17:00:00Z' }));
+  const rest = path => path.startsWith('toast_menu_items') ? [{ category: 'Customer Property' }, { category: 'Customer Property' }, { category: 'Beer' }] : Array.from({ length: 5 }, (_, i) => ({ business_date: '2026-10-0' + (i + 1) }));
+  const c = make({}, { server: { g6: mk(5) }, rest });
+  c.getStoresAll = () => [{ id: 'F06', name: 'LaLa', toastGuid: 'g6' }]; c.getVisibleStores = c.getStoresAll;
+  c.isVisitTypeCategory = v => /^customer/.test(String(v || '').trim().toLowerCase());
+  c.FUNERGY_VT.storeCompare(0);
+  await c.FUNERGY_VT.loadCompare('2026-10', ['2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'], c.FUNERGY_VT._cmpSeq);
+  const h = c._els['vt-cmp'].innerHTML;
+  assert.match(h, /Customers の商品 <span style="color:var\(--muted\)">\(2\/3\)/);
+  assert.match(h, />57\.1%</);
+});
