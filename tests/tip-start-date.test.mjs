@@ -47,10 +47,11 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
   'tipPeriodRates', 'tipPeriodRateLabel', 'tipRateLabel', 'tipPeriodRateFrom', '_tipUsedRate', 'tipPeriodMatrix', 'isoOf', '_tipHstDay',
   'tipFromRange', 'tipFromCheck', 'tipPeriodStartOf', 'tipFromGuard', 'tipFromSet', '_tipNotFuture', '_tipLiveRateSig', 'tipDayLabel', 'tipChangePreview', 'tipPreviewText', 'tipReplacedBy', 'renderTipRate',
   'approveTip', 'applyTipRaise', 'tipRaisePreview', 'openTipRaiseModal', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'tipDecClockAhead', 'tipDecClockMsg',
-  '_tipDecided', '_tipReqT', '_tipDecSeen', 'todayJP', 'fmtJP'];
+  '_tipDecided', '_tipReqT', '_tipDecSeen', 'todayJP', 'fmtJP',
+  'tipPrevPeriodStart', 'tipBackInfo', 'tipBackConfirm', 'tipBackPull', 'tipBackRecheck', '_tipBackdated', 'tipConfirmKey', 'getTipConfirm'];   // v1129
 
 function app(now) {
-  const c = { console, STORE: {}, EMPS: [], LABOR: {}, TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: [], NOTIFS: [], answer: true, EL: {} };
+  const c = { console, STORE: {}, EMPS: [], LABOR: {}, TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: [], NOTIFS: [], answer: true, EL: {}, CLOUD: {}, CLOUD_READS: [], cloudDown: false };
   vm.createContext(c);
   vm.runInContext(FNS.map(fnSrc).join('\n') + `
     Date.now = function(){ return ${now}; };
@@ -80,6 +81,8 @@ function app(now) {
     function myName(){ return curUserName; } function checkLevelUpEligibility(){ return null; } function skillScoreStore(){ return { total: 0, lv3: 0 }; }
     function addNotif(n){ NOTIFS.push(n); } function closeModalDirect(){} var MODAL = ''; function openModal(h){ MODAL = h; }
     function alert(){}
+    /* クラウドの app_state の行（ほかの端末が書いたもの）。読めないときは undefined（本物の _fetchOpValue と同じ） */
+    function _fetchOpValue(k, table, strict){ CLOUD_READS.push(k); return Promise.resolve(cloudDown ? undefined : (Object.prototype.hasOwnProperty.call(CLOUD, k) ? JSON.parse(JSON.stringify(CLOUD[k])) : null)); }
     var document = { getElementById: function(id){ return Object.prototype.hasOwnProperty.call(EL, id) ? EL[id] : null; } };`, c);
   return c;
 }
@@ -161,13 +164,14 @@ test('dates allowed: from the first day of the current pay period (Hawaii date, 
   assert.equal(run(c, 'tipFromRange()').today, '2026-10-15');
   const d = app(HST(2026, 10, 16, 0, 5));
   assert.equal(run(d, 'tipFromRange()').min, '2026-10-16');
-  assert.match(run(d, "tipFromCheck('2026-10-15')"), /10\/16（いまの期間の初日）から選べます/);
+  assert.match(run(d, "tipFromCheck('2026-10-15')"), /10\/16（1 つ前の期間の初日）から選べます/);   // v1129：1 つ前の期間から（10/16 より前は選べない）
   assert.equal(run(d, "tipFromCheck('2026-10-16')"), '');
   assert.equal(run(d, "tipFromCheck('2026-11-30')"), '');
   assert.match(run(d, "tipFromCheck('2027-12-01')"), /先すぎます/);
   assert.match(run(d, "tipFromCheck('2026-10-99')"), /選んでください/);
   const e = app(HST(2026, 10, 31, 23)); assert.equal(run(e, 'tipFromRange()').min, '2026-10-16');
-  const f = app(HST(2026, 11, 1, 0, 1)); assert.equal(run(f, 'tipFromRange()').min, '2026-11-01');
+  const f = app(HST(2026, 11, 1, 0, 1)); assert.equal(run(f, 'tipFromRange()').min, '2026-10-16', 'v1129: the previous period (10/16) can be chosen on 11/1');
+  const g = app(HST(2026, 11, 16, 0, 1)); assert.equal(run(g, 'tipFromRange()').min, '2026-11-01');
 });
 
 test('approving: the start date from the row (today by default), the change and the estimate are shown first; cancel or a date before the period saves nothing', async () => {
@@ -181,7 +185,7 @@ test('approving: the start date from the row (today by default), the change and 
   c.EL['tipfrom-p'] = { value: '2026-10-15' };
   await run(c, "approveTip('p', '承認')");
   assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中', 'before the period: not approved');
-  assert.ok(c.TOASTS.some(([m]) => /いまの期間の初日/.test(m)));
+  assert.ok(c.TOASTS.some(([m]) => /1 つ前の期間の初日/.test(m)));
   c.EL['tipfrom-p'] = { value: '2026-10-18' }; c.answer = false;
   await run(c, "approveTip('p', '承認')");
   assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中', 'cancelled');
@@ -328,4 +332,222 @@ test('review f1d567a P3-5: screens that show the current rate leave out a change
   assert.equal(run(c, "_tipLiveRateSig('X')"), 'a|90');
   assert.match(SRC, /_tipLatestApproved\(e\.name, null, \(typeof _tipNotFuture==='function'\)\?_tipNotFuture:null\)/);
   assert.match(SRC, /_tipLatestApproved\(empName, null, \(typeof _tipNotFuture==='function'\)\?_tipNotFuture:null\)/);
+});
+
+/* ---------- v1129（Moto さん 11/01「10/16 開始の期間も選べるように」）：1 つ前の期間 ---------- */
+test('v1129: on 11/1 (Hawaii) the previous period 10/16–10/31 can be chosen; the raise saves, applies to that period, survives a reload, and keeps the later 11/1 setting', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' }), EMP({ name: 'Y', firstWork: '2026-09-01' })];
+  // an existing setting decided on 10/30 that counts from 11/1 (the current period)
+  c.STORE.tip_requests = [{ id: 'n1', name: 'X', rate: 100, status: '承認', fromDay: '2026-11-01', decAt: HST(2026, 10, 30), decDay: '2026-10-30', decHst: '2026-10-30' }];
+  work(c, days('2026-10-16', '2026-11-02'));
+  run(c, 'openTipRaiseModal()');
+  assert.match(run(c, 'MODAL'), /id="tipraise-from" value="2026-11-02" min="2026-10-16"/, 'the date field allows 10/16');
+  assert.match(run(c, 'MODAL'), /1 つ前の期間の初日（10\/16）/);
+  assert.equal(run(c, "tipFromCheck('2026-10-16')"), '');
+  assert.match(run(c, "tipFromCheck('2026-10-15')"), /10\/16（1 つ前の期間の初日）から/, 'before 10/16 is refused');
+  assert.deepEqual(totals(c, '2026-10-20'), { X: 90, Y: 90 }, 'before: both 80%');
+  c.EL['tipraise-name'] = { value: 'X' }; c.EL['tipraise-rate'] = { value: '90' }; c.EL['tipraise-from'] = { value: '2026-10-16' }; c.EL['tipraise-preview'] = { textContent: '' };
+  c.answer = false; await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 1, 'cancelled at the previous-period question: nothing saved');
+  assert.match(c.CONFIRMS.at(-1), /前の期間（2026\/10\/16〜2026\/10\/31）から効かせます[\s\S]*あとから効く設定[\s\S]*そのまま残ります/);
+  c.answer = true; await run(c, 'applyTipRaise()');
+  const r = plain(c.STORE.tip_requests).find(x => x.id !== 'n1');
+  assert.equal(r.fromDay, '2026-10-16'); assert.equal(r.decDay, '2026-11-02'); assert.equal(r.rate, 90); assert.equal(r.prevRate, 80);
+  assert.equal(plain(c.STORE.tip_history).at(-1).fromDay, '2026-10-16', 'the history shows the start date');
+  const check = x => {
+    assert.equal(run(x, "tipRateOn('X', '2026-10-15')"), 80, 'the day before keeps the old rate');
+    assert.equal(run(x, "tipRateOn('X', '2026-10-16')"), 90);
+    assert.equal(run(x, "tipRateOn('X', '2026-10-31')"), 90);
+    assert.equal(run(x, "tipRateOn('X', '2026-11-01')"), 100, 'the 11/1 setting is not overwritten by the later decision');
+    assert.equal(run(x, "tipRateOn('X', '2026-11-02')"), 100);
+    assert.equal(run(x, "effectiveTipRate('X')"), 100, 'the rate now stays 100%');
+    assert.deepEqual(totals(x, '2026-10-20'), { X: 95.29, Y: 84.71 }, 'the 10/16–10/31 split uses 90% for X (Y 80%): 180 × 90/170');
+    assert.deepEqual(totals(x, '2026-11-02'), { X: 100, Y: 80 });
+  };
+  check(c);
+  // a reload / a new login reads the saved records again (same storage, new app)
+  const d = app(HST(2026, 11, 3, 8)); d.EMPS = c.EMPS; d.STORE = JSON.parse(JSON.stringify(c.STORE)); d.LABOR = c.LABOR; d.TIPS = c.TIPS;
+  check(d);
+});
+
+test('v1129: without a later setting the previous-period setting goes on; a later decision with a later start still wins from its day; settings inside the period are not hidden before their day', () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [
+    { id: 'a', name: 'X', rate: 100, status: '承認', fromDay: '2026-10-25', decAt: HST(2026, 10, 25), decDay: '2026-10-25', decHst: '2026-10-25' },   // decided inside the old period
+    { id: 'b', name: 'X', rate: 90, status: '承認', fromDay: '2026-10-16', decAt: HST(2026, 11, 2), decDay: '2026-11-02', decHst: '2026-11-02' },    // backdated, decided later
+  ];
+  assert.equal(run(c, "tipRateOn('X', '2026-10-20')"), 90, 'the backdated setting before the 10/25 one');
+  assert.equal(run(c, "tipRateOn('X', '2026-10-25')"), 100, 'the 10/25 setting from its day');
+  assert.equal(run(c, "tipRateOn('X', '2026-11-05')"), 100);
+  c.STORE.tip_requests = [c.STORE.tip_requests[1]];
+  assert.equal(run(c, "tipRateOn('X', '2026-11-20')"), 90, 'alone it goes on after the period');
+  c.STORE.tip_requests.push({ id: 'c', name: 'X', rate: 100, status: '承認', fromDay: '2026-11-03', decAt: HST(2026, 11, 3), decDay: '2026-11-03', decHst: '2026-11-03' });
+  assert.equal(run(c, "tipRateOn('X', '2026-11-02')"), 90); assert.equal(run(c, "tipRateOn('X', '2026-11-03')"), 100);
+  // a setting chosen inside the current period still replaces older ones from its start (v1095 Q4 A, unchanged)
+  c.STORE.tip_requests = [
+    { id: 'p', name: 'X', rate: 100, status: '承認', fromDay: '2026-11-05', decAt: HST(2026, 11, 2), decDay: '2026-11-02', decHst: '2026-11-02' },
+    { id: 'q', name: 'X', rate: 90, status: '承認', fromDay: '2026-11-01', decAt: HST(2026, 11, 3), decDay: '2026-11-03', decHst: '2026-11-03' },
+  ];
+  assert.equal(run(c, "tipRateOn('X', '2026-11-06')"), 90, 'not backdated: the newer decision wins as before');
+});
+
+test('v1129: a period finalized on this device for the person’s store (or support store) cannot be chosen; the finalized record is not changed', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01', support: ['F02'] }), EMP({ name: 'Y', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [];
+  const fin = { status: '確定済み', from: '2026-10-16', to: '2026-10-31', rows: [{ name: 'X', final: 123 }], totalFinal: 123 };
+  c.STORE['tip_confirm_F02_2026-10-16'] = fin;
+  c.EL['tipraise-name'] = { value: 'X' }; c.EL['tipraise-rate'] = { value: '90' }; c.EL['tipraise-from'] = { value: '2026-10-16' }; c.EL['tipraise-preview'] = { textContent: '' };
+  await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 0, 'refused');
+  assert.match(c.TOASTS.at(-1)[0], /Store Two で確定済みです[\s\S]*確定を解除してから/);
+  assert.deepEqual(plain(c.STORE['tip_confirm_F02_2026-10-16']), fin, 'the finalized record stays');
+  // the current period is not affected by the lock of the previous one
+  c.EL['tipraise-from'] = { value: '2026-11-02' }; await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 1);
+  // approving a request with a previous-period start: the same lock
+  c.STORE.tip_requests.push({ id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/01', store: 'F01' });
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中');
+});
+
+test('v1129: records decided before v1129 are never treated as backdated (same results as v1128 for any mix of them)', () => {
+  const old = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');   // reference: the v1128 selection, rebuilt from its rule
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  const oldPick = (list, day) => {   // v1128 _tipLatestApproved + tipRateOn: the newest decision among those in force
+    let best = null, bestT = -Infinity, floor = 0;
+    for (const r of list) { const t = Number(r.decAt) > 0 ? Number(r.decAt) : 0, eff = t > 0 ? t : floor; if (t > floor) floor = t;
+      if (r.status !== '承認') continue; const dd = r.fromDay || r.decDay || ''; if (dd && dd > day) continue; if (eff >= bestT) { best = r; bestT = eff; } }
+    return best ? best.rate : 80;
+  };
+  let seed = 7; const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+  const day0 = Date.UTC(2026, 9, 16);
+  for (let k = 0; k < 300; k++) {
+    const list = [];
+    for (let i = 0; i < 1 + rnd(4); i++) {
+      const dec = day0 + rnd(30) * 86400000, decDay = new Date(dec).toISOString().slice(0, 10);
+      const ps = decDay.slice(0, 8) + (Number(decDay.slice(8)) <= 15 ? '01' : '16');
+      const from = new Date(Date.parse(ps + 'T00:00:00Z') + rnd(25) * 86400000).toISOString().slice(0, 10);   // on or after the period start (v1128 rule)
+      list.push({ id: 'r' + i, name: 'X', rate: [80, 90, 100][rnd(3)], status: rnd(5) ? '承認' : '却下', fromDay: rnd(4) ? from : undefined, decAt: dec + rnd(3600000), decDay, decHst: decDay });
+    }
+    c.STORE.tip_requests = list;
+    for (const d of ['2026-10-16', '2026-10-20', '2026-10-31', '2026-11-01', '2026-11-10', '2026-11-20']) assert.equal(run(c, `tipRateOn('X', '${d}')`), oldPick(list, d), JSON.stringify(list) + ' ' + d);
+  }
+  assert.ok(old.length > 0);
+});
+
+test('v1129: approving a request with a start date in the previous period asks first, then saves; the later setting stays', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' }), EMP({ name: 'Y', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [
+    { id: 'n1', name: 'X', rate: 100, status: '承認', fromDay: '2026-11-01', decAt: HST(2026, 10, 30), decDay: '2026-10-30', decHst: '2026-10-30' },
+    { id: 'p', name: 'X', rate: 90, status: '申請中', date: '2026/10/29', store: 'F01' }];
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  c.answer = false; await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中', 'cancelled: nothing saved');
+  assert.ok(c.CONFIRMS.some(m => /前の期間（2026\/10\/16〜2026\/10\/31）/.test(m)), c.CONFIRMS.join('\n'));
+  c.answer = true; await run(c, "approveTip('p', '承認')");
+  const r = plain(c.STORE.tip_requests).find(x => x.id === 'p');
+  assert.equal(r.status, '承認'); assert.equal(r.fromDay, '2026-10-20');
+  assert.equal(run(c, "tipRateOn('X', '2026-10-19')"), 80);
+  assert.equal(run(c, "tipRateOn('X', '2026-10-20')"), 90);
+  assert.equal(run(c, "tipRateOn('X', '2026-11-01')"), 100, 'the 11/1 setting stays');
+  assert.equal(run(c, "effectiveTipRate('X')"), 100);
+  // a start before the previous period is still refused
+  c.STORE.tip_requests.push({ id: 'q', name: 'X', rate: 90, status: '申請中', date: '2026/10/29', store: 'F01' });
+  c.EL['tipfrom-q'] = { value: '2026-10-15' };
+  await run(c, "approveTip('q', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'q').status, '申請中');
+  assert.ok(c.TOASTS.some(([m]) => /2026\/10\/16（1 つ前の期間の初日）から/.test(m)));
+});
+
+test('v1129（Codex PR #120 の 1）：ほかの端末で確定した前の期間は、この端末にまだ届いていなくても選べない（クラウドを読み直す）・読めなければ止める', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01', support: ['F02'] }), EMP({ name: 'Y', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [];
+  const fin = { status: '確定済み', from: '2026-10-16', to: '2026-10-31', rows: [{ name: 'X', final: 123 }], totalFinal: 123 };
+  c.CLOUD['tip_confirm_F02_2026-10-16'] = fin;   // 端末 A が確定した。この端末（B）の写しには無い
+  assert.equal(c.STORE['tip_confirm_F02_2026-10-16'], undefined);
+  c.EL['tipraise-name'] = { value: 'X' }; c.EL['tipraise-rate'] = { value: '90' }; c.EL['tipraise-from'] = { value: '2026-10-16' }; c.EL['tipraise-preview'] = { textContent: '' };
+  await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 0, 'refused');
+  assert.match(c.TOASTS.at(-1)[0], /Store Two で確定済みです/);
+  assert.equal(c.CONFIRMS.length, 0, 'no question before refusing');
+  assert.deepEqual(plain(c.CLOUD_READS).sort(), ['tip_confirm_F01_2026-10-16', 'tip_confirm_F02_2026-10-16'], 'the person’s store and support store');
+  // 承認でも同じ
+  c.STORE.tip_requests.push({ id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/01', store: 'F01' });
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /確定済みです/);
+  // クラウドを読めない：止める（何も変えない）
+  c.CLOUD = {}; c.cloudDown = true; c.TOASTS.length = 0;
+  await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 1);
+  assert.match(c.TOASTS.at(-1)[0], /読めませんでした[\s\S]*何も変えていません/);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中');
+  // 確定を解除した（クラウドは null）：確かめて保存する
+  c.cloudDown = false; c.CLOUD['tip_confirm_F02_2026-10-16'] = null;
+  await run(c, 'applyTipRaise()');
+  assert.equal(plain(c.STORE.tip_requests).length, 2);
+  assert.match(c.CONFIRMS.at(-1), /前の期間（2026\/10\/16〜2026\/10\/31）から効かせます/);
+  // いまの期間を選んだときはクラウドを読まない（前と同じ）
+  const n = c.CLOUD_READS.length;
+  c.EL['tipraise-from'] = { value: '2026-11-02' };
+  await run(c, 'applyTipRaise()');
+  assert.equal(c.CLOUD_READS.length, n);
+  assert.equal(plain(c.STORE.tip_requests).length, 3);
+});
+
+test('v1129（Codex PR #120 の 1）：クラウドを読み直しているあいだにほかの端末で決まった申請は、決め直さない', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [{ id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/01', store: 'F01' }];
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  run(c, `var _orig = _fetchOpValue; _fetchOpValue = function(k, a, b){ STORE.tip_requests = [{ id: 'p', name: 'X', rate: 100, status: '却下', date: '2026/11/01', store: 'F01', decAt: 5 }]; return _orig(k, a, b); };`);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests)[0].status, '却下', 'the other device’s decision stays');
+  assert.match(c.TOASTS.at(-1)[0], /ほかの端末でもう決まっていました/);
+});
+
+test('v1129（Codex PR #120 の再レビュー）：確かめの画面を開いているあいだにほかの端末で確定されたら、OK のあとで止める', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [];
+  c.EL['tipraise-name'] = { value: 'X' }; c.EL['tipraise-rate'] = { value: '90' }; c.EL['tipraise-from'] = { value: '2026-10-16' }; c.EL['tipraise-preview'] = { textContent: '' };
+  const fin = { status: '確定済み', from: '2026-10-16', to: '2026-10-31', rows: [], totalFinal: 0 };
+  // 画面を開いているあいだに端末 A が確定する
+  run(c, `confirm = function(m){ CONFIRMS.push(m); if (/前の期間/.test(m)) CLOUD['tip_confirm_F01_2026-10-16'] = ${JSON.stringify(fin)}; return answer; };`);
+  await run(c, 'applyTipRaise()');
+  assert.ok(c.CONFIRMS.some(m => /前の期間/.test(m)), 'the question was shown');
+  assert.equal(plain(c.STORE.tip_requests).length, 0, 'nothing saved');
+  assert.match(c.TOASTS.at(-1)[0], /確定済みです/);
+  // 承認も同じ
+  c.CLOUD = {}; c.STORE.tip_requests = [{ id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/01', store: 'F01' }];
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /確定済みです/);
+  // 2 回目に読めない：止める
+  c.CLOUD = {}; let reads = 0;
+  run(c, `var _o2 = _fetchOpValue; _fetchOpValue = function(k, a, b){ return (++__n > 1) ? Promise.resolve(undefined) : _o2(k, a, b); }; var __n = 0; confirm = function(m){ CONFIRMS.push(m); return true; };`);
+  await run(c, "__n = 0; approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /読めませんでした/);
+  // 読み直しのあいだにこの端末の記録が変わった（ほかの端末の決定が届いた）：古い写しで書かない
+  run(c, `_fetchOpValue = function(k){ STORE.tip_requests = STORE.tip_requests.concat([{ id: 'q', name: 'X', rate: 80, status: '承認', date: '2026/11/02', decAt: 9 }]); return Promise.resolve(null); };`);
+  run(c, `var __m = 0; var _o3 = _fetchOpValue; _fetchOpValue = function(k){ if (++__m > 1) return _o3(k); return Promise.resolve(null); };`);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /ほかの端末で変わりました/);
+  assert.ok(plain(c.STORE.tip_requests).some(x => x.id === 'q'), 'the other device’s record stays');
+  // 何も起きなければ保存する
+  run(c, `_fetchOpValue = function(){ return Promise.resolve(null); };`);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '承認');
 });

@@ -2236,12 +2236,25 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
         requestId: pending?.request.requestId || null, hasRecovery: recoveryEntries().length > 0,
         why: pending?.why || null, notFound: Boolean(pending?.notFound), oddReceipt: Boolean(pending?.oddReceipt), auto: Boolean(pending?.auto), released: lastRelease });
     }
+    // v1129（11/01 の依頼 ④）：送っている・確かめているあいだ（答えを待つだけ）は、画面の下に帯を出さない。
+    // 前はログインの裏の取り込み（Toast の売上など・店ごと）のたびに「保存結果を確認しています」の帯が出ては消えていた。
+    // 自動の保存は、片づかないとき放す（下の release）ので帯は要らない。人の保存も 1.5 秒より長くかかったときだけ出す。
+    // 答えが確かめられない・重なった（人が押して直すもの）は、今までどおりすぐ出す。帯がもう出ていれば、確かめ直しのあいだも出したまま
+    let busyShowT = null;
     function showStatus() {
       if (typeof options.onState === 'function') { try { options.onState(status()); } catch (_) {} }
       const doc = win.document;
       if (!doc?.createElement || !doc.body) return;
       let panel = doc.getElementById('financial-save-status');
+      if (!pending || !pending.busy) { if (busyShowT) { clearTimeout(busyShowT); busyShowT = null; } }
       if (!pending) { panel?.remove(); return; }
+      if (pending.busy && !panel) {
+        if (!pending.auto && !busyShowT) {
+          const entry = pending;
+          busyShowT = setTimeout(() => { busyShowT = null; if (pending === entry && entry.busy) { entry.slow = true; showStatus(); } }, 1500);
+        }
+        if (pending.auto || !pending.slow) return;
+      }
       if (!panel) {
         panel = doc.createElement('aside'); panel.id = 'financial-save-status'; panel.setAttribute('role', 'status');
         panel.style.cssText = 'position:fixed;left:12px;right:12px;bottom:20px;z-index:2147483646;padding:14px;background:#fff5d8;color:#4d3700;border:1px solid #c69b35;border-radius:12px;font:14px system-ui;box-shadow:0 3px 16px #0003';
@@ -8349,7 +8362,28 @@ function recipeCostRate(recipe) {
    差異 = 実質 − 理論
 ============================================================ */
 function theoMixKey(storeId, period) { return 'menu_mix_'+storeId+'_'+(period||getPeriod()); }
-function getMenuMix(storeId, period) { return ls(theoMixKey(storeId, period), {items:{}, sales:0}); }
+/* v1129（11/01 の依頼 ②）：来店区分（FT・RP・SR など）を表す Toast の商品は、メニューの出数・ランキング・構成比に入れない。
+   決め方は hyper-worker の来店区分の数え方と同じ：Toast のメニューのグループ（toast_menu_items.category・レシピに写したカテゴリー）が
+   「Customers」（大文字小文字・前後の空白は無視・完全一致）。名前の一部や価格 0 では決めない。
+   元の注文の行（toast_item_sales）と来店区分の数（toast_sales の FT・RP・SR・リピート率）は変えない。 */
+var VISIT_TYPE_GROUPS = ['customers'];
+function isVisitTypeCategory(c) { return VISIT_TYPE_GROUPS.indexOf(String(c == null ? '' : c).trim().toLowerCase()) >= 0; }
+function isVisitTypeRecipe(r) { return !!(r && r.toastGuid && isVisitTypeCategory(r.category)); }
+var _vtRecipeIds = { src: null, ids: null };
+function visitTypeRecipeIds() {
+  var all = getRecipes() || [];
+  if (_vtRecipeIds.src !== all || !_vtRecipeIds.ids) { var o = {}; all.forEach(function (r) { if (isVisitTypeRecipe(r)) o[r.id] = 1; }); _vtRecipeIds = { src: all, ids: o }; }
+  return _vtRecipeIds.ids;
+}
+/* 月の出数：来店区分のレシピの数は読むときに外す（前に入った数が残っていても、どの画面にも出さない・合計に入れない。
+   次にこの月を書くとき（Toast から入れる・手で保存する）に、入れ物からも消える） */
+function getMenuMix(storeId, period) {
+  var m = ls(theoMixKey(storeId, period), {items:{}, sales:0});
+  var vt = (typeof visitTypeRecipeIds === 'function') ? visitTypeRecipeIds() : {}, it = (m && m.items && typeof m.items === 'object') ? m.items : null;
+  if (!it || !Object.keys(vt).length || !Object.keys(it).some(function (k) { return vt[k]; })) return m;
+  var items = {}; Object.keys(it).forEach(function (k) { if (!vt[k]) items[k] = it[k]; });
+  return Object.assign({}, m, { items: items });
+}
 /* ===== v834: 出数（menu_mix_<店>_<期>）=====
    記録は1か月ぶんの単一オブジェクト { items:{レシピID:出数}, sales, savedAt, toastSrc }。
    書き込み口は3つあり、どれも同じ月の同じ入れ物を触る。
@@ -16610,7 +16644,8 @@ async function loginToastAutoSync(){
     catch(e){ ng++; }
   }
   try{
-    if (ok>0) showToast('全店の売上を同期しました（'+ok+'店'+(ng?' / 失敗'+ng:'')+'）', ng?'warning':'success');
+    /* v1129（11/01 の依頼 ④）：裏の同期がうまくいったときは知らせない（画面の下に出さない・「取得の状態」と右上の更新ボタンで分かる）。失敗した店があるときだけ */
+    if (ng>0) showToast('売上の同期で取り込めなかった店があります（'+ng+'店'+(ok?' / 取り込めた店 '+ok:'')+'）。同期センターで確かめてください', 'warning');
     // 予実・ダッシュボードを開いていれば最新値で再描画
     if (typeof curPage!=='undefined' && ['dashboard','budget','meeting','monthly'].indexOf(curPage)>=0){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); }   /* v1127 */   /* v1084: 会議 */
   }catch(e){}
@@ -17044,6 +17079,7 @@ function openStoreSwitcher() {
 
 function switchStore(id) {
   curStore = id;
+  try{ if(typeof pageStoresFollow==='function') pageStoresFollow(id); }catch(e){}   /* v1129 ③：画面の中の店を左上に合わせる */
   var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(s=>s.id===id)||{name:id}).name);
   var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
   document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
@@ -17274,7 +17310,8 @@ function mrCounts(b, sn, replies, no){
 /* 判定：会議タブの _meetStatus と会社の閾値。目標が無い＝未設定（unset）、実績が無い＝未取得（missing）。0・達成・未達に数えない */
 function mrJudgeOf(key, act, tgt){
   if (!(typeof tgt === 'number' && tgt > 0)) return 'unset';
-  if (!(typeof act === 'number' && act > 0)) return 'missing';
+  /* v1129（LaLa の依頼 10/31）：リピート率の 0 は本当の 0%（初回だけでリピート 0）。データが無いときは null で来る（keyKpiStats） */
+  if (!(typeof act === 'number' && (act > 0 || (act === 0 && key === 'repeat')))) return 'missing';
   var s = _meetStatus(key, act, tgt, !!MR_LOWER[key]);
   return (s === 'ok' || s === 'warn' || s === 'miss') ? s : 'missing';
 }
@@ -19884,7 +19921,7 @@ async function loadRealtimeSales() {
 ============================================================ */
 var activePhase = 'All';
 function renderStoreCmd() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('store_cmd');   /* v1129 ③：前は全店のとき STORES[0] */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var ops = getDailyOps(storeId);
   var opsDone = ops.filter(t=>t.done).length;
@@ -19895,7 +19932,7 @@ function renderStoreCmd() {
   var dailyComplete = ops.length>0 && opsDone===ops.length;
   var cfg = getStoreOpsConfig();
 
-  var html = '';
+  var html = soloStoreBar('store_cmd');   /* v1129 ③：左上が全店のときは、どの店かを選ぶ（左上は変えない） */
 
   // 会社メッセージ（あれば最上部）
   html += renderCompanyMessageCard();
@@ -20087,7 +20124,7 @@ function renderStoreOpsSettings() {
   var visStores = getVisibleStores();
   var storeId = window._opsTemplateStore && visStores.find(s=>s.id===window._opsTemplateStore)
     ? window._opsTemplateStore
-    : (curStore === 'ALL' ? (visStores[0]?visStores[0].id:STORES[0].id) : curStore);
+    : (curStore === 'ALL' ? soloStoreId('store_ops_settings') : curStore);   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var tmpl = getDailyOpsTemplate(storeId);
   html += `<div class="section-header" style="margin-top:18px">
@@ -22669,9 +22706,10 @@ function repeatStatsLD(scopeStores, days){
 }
 /* ランチ/ディナー別 リピート率カード（データがあれば表示・無ければ案内） */
 /* L/D別 リピート率チャート（日次は点数が多いので横スクロール・1:1表示） */
+/* v1129（LaLa の依頼 10/31）：null＝その日・その月はデータなし（点も線も描かない）。0 は本当の 0%（初回だけでリピート 0）として描く */
 function _msLDLine(labels, series){
-  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ all.push(v||0); }); });
-  if(!labels.length || all.every(function(v){return !v;})) return _msEmpty();
+  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ if(v!=null) all.push(v); }); });
+  if(!labels.length || !all.length) return _msEmpty();
   var n=labels.length;
   var slotW=(n>14)?30:48;                       // 日次は詰めて表示
   var W=Math.max(300, n*slotW+44);
@@ -22682,8 +22720,13 @@ function _msLDLine(labels, series){
   var step=(n>20)?5:(n>14?2:1);                 // ラベル間引き（潰れ防止）
   labels.forEach(function(lb,i){ if(n>14 && i%step!==0 && i!==n-1) return; var x=ax.x0+i*ax.slot+ax.slot/2; g+='<text x="'+x.toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(lb))+'</text>'; });
   series.forEach(function(s){
-    var pts=[]; (s.values||[]).forEach(function(v,i){ var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round(((v||0)/yMax)*(ax.y1-ax.top)); pts.push([x,y]); });
-    if(pts.length>1) g+='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"></polyline>';
+    var segs=[], cur=[], pts=[];
+    (s.values||[]).forEach(function(v,i){
+      if(v==null){ if(cur.length) segs.push(cur); cur=[]; return; }   /* データの無い点で線を切る */
+      var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round((v/yMax)*(ax.y1-ax.top)); cur.push([x,y]); pts.push([x,y]);
+    });
+    if(cur.length) segs.push(cur);
+    segs.forEach(function(sg){ if(sg.length>1) g+='<polyline points="'+sg.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"></polyline>'; });
     g+=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="'+((n>20)?1.8:2.2)+'" fill="'+s.color+'"></circle>';}).join('');
   });
   // 日次は横スクロールで1:1表示（縮小して文字が潰れないように）
@@ -22712,8 +22755,9 @@ function _msRepeatLD(){
   var html='<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--accent)"></i>ランチ／ディナー別 リピート率<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+' ・ '+unitLabel+'</span></div>';
   if(anyLD){
     var labels=withData.map(function(p){return p.label;});
-    var lRate=withData.map(function(p){ var t=p.ld.lunch.total; return t>0?Math.round(p.ld.lunch.repeat/t*1000)/10:0; });
-    var dRate=withData.map(function(p){ var t=p.ld.dinner.total; return t>0?Math.round(p.ld.dinner.repeat/t*1000)/10:0; });
+    /* v1129：片方（ランチかディナー）のデータが無い点は 0% ではなく描かない（ディナーだけの店でランチが 0% に見えないように） */
+    var lRate=withData.map(function(p){ var t=p.ld.lunch.total; return t>0?Math.round(p.ld.lunch.repeat/t*1000)/10:null; });
+    var dRate=withData.map(function(p){ var t=p.ld.dinner.total; return t>0?Math.round(p.ld.dinner.repeat/t*1000)/10:null; });
     html+=_msLDLine(labels, [{label:'ランチ',color:'var(--yellow)',values:lRate},{label:'ディナー',color:'var(--accent)',values:dRate}]);
     html+=msLegend([{color:'var(--yellow)',label:'ランチ リピート率'},{color:'var(--accent)',label:'ディナー リピート率'}]);
     if(isDaily) html+='<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(pm.label)+'の各営業日（横スクロールできます）。データのない日は表示しません。</div>';
@@ -22910,13 +22954,76 @@ function accessibleStoresForUser(){
   }
   return act;
 }
-/* AM以上向け：ページ内 店舗選択タブ（switchStoreで全体店舗を切替・上部表示も同期） */
+/* v1129（11/01 の依頼 ③）：左上の店（curStore）と、画面の中の店。
+   ・全店を出せる画面は左上に従う。左上を変えたら、画面の中の店の絞り込みも左上に合わせ直す（switchStore → pageStoresFollow）。
+   ・1 店ずつしか出せない画面（soloStoreId）：左上が店ならその店。左上が全店なら、その画面で選んだ店 → 見られる店の最初。
+     この画面の中で店を選んでも左上は全店のまま（pageStorePick）。画面の上に「1 店ずつ」と店の選び方を出す（soloStoreBar）。
+   ・見られる店（accessibleStoresForUser）の外の店は出さない（前は STORES[0] で、AM の管轄外の店が出ることがあった）。 */
+var _soloSel = {};
+function soloStores(){
+  try{ var l=(typeof accessibleStoresForUser==='function') ? accessibleStoresForUser() : getVisibleStores(); l=(l||[]).filter(function(x){ return x && x.id && x.id!=='ALL' && x.id!=='OFFICE'; });
+    return (typeof sortByLoginOrder==='function') ? sortByLoginOrder(l) : l; }catch(e){ return []; }
+}
+function soloStoreId(page){
+  var list=soloStores(), ids=list.map(function(x){ return x.id; });
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE' && (ids.indexOf(curStore)>=0 || !ids.length)) return curStore;
+  var p=_soloSel[page||curPage]; if(p && ids.indexOf(p)>=0) return p;
+  if(ids.length) return ids[0];
+  return (curStore && curStore!=='ALL' && curStore!=='OFFICE') ? curStore : ((STORES[0]||{}).id||'');
+}
+function soloStoreBar(page){
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE') return '';
+  var list=soloStores(); if(list.length<2) return '';
+  var cur=soloStoreId(page);
+  return '<div class="solo-bar" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 11px;margin-bottom:10px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);font-size:12px">'
+    +'<i class="ti ti-building-store" style="color:var(--accent)"></i><span>'+t('この画面は 1 店ずつです（左上は全店のまま）。表示する店：','This screen shows one store at a time (the top-left stays on All stores). Store:')+'</span>'
+    +'<select class="form-select" style="width:auto;padding:4px 8px;font-size:12px" onchange="soloStoreSet(\''+String(page||curPage).replace(/[^a-z_0-9]/g,'')+'\',this.value)">'
+    +list.map(function(x){ return '<option value="'+escapeHtml(x.id)+'"'+(x.id===cur?' selected':'')+'>'+escapeHtml(x.name||x.id)+'</option>'; }).join('')+'</select></div>';
+}
+function soloStoreHint(){
+  if(curStore && curStore!=='ALL' && curStore!=='OFFICE') return '';
+  if(soloStores().length<2) return '';
+  return '<div style="font-size:11px;color:var(--muted);margin:-2px 2px 6px"><i class="ti ti-building-store"></i> '+t('この画面は 1 店ずつです（左上は全店のまま）。下で店を選んでください。','One store at a time (the top-left stays on All stores). Choose the store below.')+'</div>';
+}
+function soloStoreSet(page, id){ _soloSel[page]=id; renderPage(curPage); }
+/* 画面の中の店のタブ・チップを押したとき：左上が全店なら、この画面の店だけを変える（左上は全店のまま）。左上が店なら、左上ごと変える（画面と左上を同じに） */
+function pageStorePick(id){
+  if(!curStore || curStore==='ALL' || curStore==='OFFICE'){ _soloSel[curPage]=id; renderPage(curPage); return; }
+  switchStore(id);
+}
+/* 左上を変えたとき：画面の中の店の選び方を左上に合わせ直す（前は画面ごとに最初に決めた店のままで、左上と違う店が出ていた） */
+function pageStoresFollow(id){
+  var one = (id && id!=='ALL' && id!=='OFFICE') ? id : null;
+  try{ dailyStoreScope='current'; }catch(e){}
+  try{ _budgetStore = one || 'ALL'; }catch(e){}
+  try{ _qbStore = one || 'ALL'; }catch(e){}
+  try{ _laborStore = one || 'ALL'; if(!one) laborTab='overview'; }catch(e){}
+  try{ _pdStore = one || 'ALL'; }catch(e){}
+  try{ _ipsScope = one || null; _ipsVendor = null; }catch(e){}
+  try{ if(window._mn) window._mn.store = one || ''; }catch(e){}
+  /* 全店も出せる画面の中の店の絞り込み（月次サマリー・本部の数字・PL の推移・成長管理・OJT・本部の内訳・リスト・スキルの人）も左上に合わせる。
+     前は左上を店にしても全店のまま（または前に選んだ店のまま）で、左上と画面の数字が合わなかった */
+  try{ msScope = one || 'ALL'; }catch(e){}
+  try{ _hqScope = one || 'ALL'; }catch(e){}
+  try{ _plTrendScope = one || 'ALL'; }catch(e){}
+  try{ if(growthStore !== (one || 'ALL')){ growthStore = one || 'ALL'; growthMgrSel = null; } }catch(e){}
+  try{ _ojtTipStore = one || 'ALL'; if(_ojtcStore !== (one || 'ALL')){ _ojtcStore = one || 'ALL'; _ojtcSel = null; } }catch(e){}
+  try{ window._cmScope = one || 'ALL'; window._arStore = one || 'ALL'; window._skillStaffStore = one || 'ALL'; }catch(e){}
+  if(one){
+    _soloSel = {};
+    try{ window._menuStore=one; window._kpiStore=one; window._skillMatrixStore=one; window._opsTemplateStore=one; window._invoiceStore=one; window._prepMatrixStore=one; }catch(e){}
+    try{ _ojtGateStore=one; }catch(e){}
+  }
+}
+/* AM以上向け：ページ内 店舗選択タブ。全店を含むタブ（includeAll）は左上ごと切り替える。
+   v1129：全店を含まない（1 店ずつの画面）タブは pageStorePick（左上が全店なら左上は変えない） */
 function pageStoreTabs(activeId, includeAll){
   var stores = accessibleStoresForUser();
   if(stores.length<=1 && !includeAll) return '';
-  var tabs='';
+  var tabs='', fn = includeAll ? 'switchStore' : 'pageStorePick';
   if(includeAll){ tabs += '<div class="phase-tab'+((!activeId||activeId==='ALL')?' active':'')+'" onclick="switchStore(\'ALL\')">全社</div>'; }
-  tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="switchStore(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
+  if(!includeAll && (!curStore || curStore==='ALL' || curStore==='OFFICE')) tabs += '<div style="flex-basis:100%;font-size:11px;color:var(--muted);margin:0 0 2px">'+t('この画面は 1 店ずつです（左上は全店のまま）','One store at a time (the top-left stays on All stores)')+'</div>';
+  tabs += stores.map(function(s){ var on=(s.id===activeId); return '<div class="phase-tab'+(on?' active':'')+'" style="'+(on?('background:'+s.color+';border-color:'+s.color):'')+'" onclick="'+fn+'(\''+s.id+'\')">'+escapeHtml(s.name)+'</div>'; }).join('');
   return '<div class="phase-tabs" style="flex-wrap:wrap;margin-bottom:10px">'+tabs+'</div>';
 }
 function storeSelectBar(current, onchangeFn, label){ return bStoreChips(current, onchangeFn); }
@@ -23366,9 +23473,13 @@ function renderBudget() {
   if (budgetTab==='daily') return html + renderBudgetDaily();   // 日次は独自の店舗スコープあり
   if (budgetTab==='quarter') return html + renderQuarterBudget(); // 四半期は独自の店舗スコープあり
   if (budgetTab==='annual') return html + renderAnnualPlan(); // 年間計画は独自の店舗スコープあり
-  if (budgetTab==='setup' && (_budgetStore==='ALL' || !_budgetStore)) { var _vsb=getVisibleStores(); if(_vsb.length) _budgetStore=_vsb[0].id; }
-  html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: budgetTab!=='setup'});
-  if (budgetTab==='setup') return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup());
+  /* v1129 ③：予算設定は 1 店ずつ。前は _budgetStore（会議・年間計画と同じ）を最初の店に書き換えていたので、会議に移っても 1 店のままだった */
+  if (budgetTab==='setup') {
+    var _bss = (_budgetStore && _budgetStore!=='ALL') ? _budgetStore : soloStoreId('budget_setup');
+    html += bStoreChips(_bss, 'setBudgetStore', {showAll:false});
+    return html + (_bbStore ? renderBudgetBuilder(_bbStore) : renderBudgetSetup(_bss));
+  }
+  html += bStoreChips(_budgetStore, 'setBudgetStore', {showAll: true});
   /* v1084: 上の寄せで budgetTab は daily/quarter/annual/setup/initiative に限られ、すべて先に return している。
      経営分析（analysis → renderMonthlySummary）は廃止。ここへは来ないが、来たら日次を出す。 */
   return html + renderBudgetDaily();
@@ -25627,7 +25738,7 @@ function _meetKpiRows(k){
 function _meetJudge(it, landing){
   if(it.isSales){ if(!(it.tgt>0)) return null; var base=(landing!=null?landing:it.act); if(!(base>0)) return null; return base>=it.tgt*0.995; }
   if(it.tgt==null || !(it.tgt>0)) return null;
-  if(!(it.act>0)) return null;
+  if(!(it.act>0 || (it.act===0 && it.key==='repeat'))) return null;   /* v1129：リピート率の 0 は本当の 0%（データなしは null） */
   if(it.lower) return it.act<=it.tgt;
   return it.act>=it.tgt*0.995;
 }
@@ -25705,7 +25816,7 @@ function _meetKpiDef(key){ return MEET_KPI_DEF.find(function(x){return x.key===k
 function getMeetThreshold(key){ var all=ls('meeting_kpi_thresholds',{})||{}; var d=_meetKpiDef(key); var o=all[key]||{}; return {green:(o.green!=null?o.green:d.defG), yellow:(o.yellow!=null?o.yellow:d.defY)}; }
 function setMeetThreshold(key, green, yellow){ var all=ls('meeting_kpi_thresholds',{})||{}; all[key]={green:Number(green), yellow:Number(yellow)}; lsSet('meeting_kpi_thresholds', all); }
 function _meetStatus(key, act, tgt, lower){
-  if(!(tgt>0) || !(act>0)) return 'none';
+  if(!(tgt>0) || !(act>0 || (act===0 && key==='repeat'))) return 'none';   /* v1129：リピート率の 0 は本当の 0%（データなしは null） */
   var th=getMeetThreshold(key); var r=act/tgt*100;
   if(lower){ if(r<=th.green) return 'ok'; if(r<=th.yellow) return 'warn'; return 'miss'; }
   if(r>=th.green) return 'ok'; if(r>=th.yellow) return 'warn'; return 'miss';
@@ -25714,7 +25825,7 @@ function _meetStatColor(st){ return st==='ok'?'var(--green)':st==='warn'?'var(--
 function _meetStatTint(st){ return st==='ok'?'rgba(93,181,84,.10)':st==='warn'?'rgba(217,167,59,.13)':st==='miss'?'rgba(224,80,80,.11)':'var(--surface2)'; }
 function _meetStatLabel(st){ return st==='ok'?t('達成','MET'):st==='warn'?t('注意','WATCH'):st==='miss'?t('未達','MISS'):'—'; }
 function _meetDiffStr(key, act, tgt, lower, unit, money){
-  if(!(tgt>0)||!(act>0)) return '';
+  if(!(tgt>0)||!(act>0 || (act===0 && key==='repeat'))) return '';   /* v1129：リピート率の 0 は本当の 0% */
   var raw=act-tgt, sign=(raw>=0?'+':'−'), mag=Math.abs(raw), s;
   if(money){ s=(key==='ppa')?('$'+(Math.round(mag*100)/100)):fmtK(mag); }
   else if(unit==='%'){ s=(Math.round(mag*10)/10)+'pt'; }
@@ -26985,7 +27096,7 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
     +'<div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div></div>'
     +'<div style="display:flex;gap:8px">'
     +box(t('目標','Target'), fmtT(tgt), 'var(--muted)', 'var(--surface)', '')
-    +box(t('実績','Actual'), (act>0?fmtV(act):'—'), (act>0?col:'var(--muted)'), (st==='none'?'var(--surface)':tint), mark)
+    +box(t('実績','Actual'), ((act>0 || (act===0 && key==='repeat'))?fmtV(act):'—'), ((act>0 || (act===0 && key==='repeat'))?col:'var(--muted)'), (st==='none'?'var(--surface)':tint), mark)   /* v1129：リピート率の 0 は 0%、データなし（null）は — */
     +'</div>'
     +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px">'
       +(diff?'<span style="font-size:12px;font-weight:800;color:'+col+';white-space:nowrap">'+diff+'</span>':'')
@@ -27198,7 +27309,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
     else if(it.key==='repeat'){ ex=_meetSegExtra(k,'repeat',store.id,ym,1,''); }   /* v902 */
     else if(it.key==='labor'){ ex=_meetSegExtra(k,'labor',store.id,ym,1,''); }     /* v902 */
     else if(it.key==='drink'){ ex=_meetSegExtra(k,'drink',store.id,ym,1,''); }
-    h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
+    h+=_meetKpiTile(store.id, ym, it.key, (it.key==='repeat' && it.act==null) ? null : (it.act||0), it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   h+='</div>';   /* v927: meet-kpi-grid を閉じる */
   h+='</div>';   /* v928: meet-card-2col を閉じる */
   return h;
@@ -29221,10 +29332,10 @@ function budgetSegShown(b, ym){
   });
   return out;
 }
-function renderBudgetSetup() {
+function renderBudgetSetup(onlySid) {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">'+t('予算の閲覧権限がありません','No permission to view budgets')+'</div>';
   var budgets = getBudgets();
-  var stores = budgetScopeStores();
+  var stores = onlySid ? getVisibleStores().filter(function(x){ return x.id===onlySid; }) : budgetScopeStores();   /* v1129 ③ */
   var visible = budgets.filter(b => stores.find(s=>s.id===b.storeId));
 
   var html = '';
@@ -30890,16 +31001,17 @@ function menuMixFromSales(storeId, sales, today){
   var hasDaily = all.some(function(x){ return x.business_date||x.date; });
   var cut = String(today||'');
   var rows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return d && (!cut || d < cut); }) : all;
-  var acc={}, unmatched={}, days={};
+  var acc={}, unmatched={}, days={}, vt=(typeof visitTypeRecipeIds==='function') ? visitTypeRecipeIds() : {}, visit=0;
   rows.forEach(function(x){
     var g=x.item_guid||x.guid, rid=byGuid[g];
+    if(rid && vt[rid]){ if(x.qty!=null && isFinite(Number(x.qty))) visit+=Number(x.qty); var d0=x.business_date||x.date; if(d0) days[String(d0).slice(0,10)]=1; return; }   /* v1129：来店区分（FT・RP・SR）は出数に入れない */
     if(rid && x.qty!=null && isFinite(Number(x.qty))) acc[rid]=(acc[rid]||0)+Number(x.qty);
     if(g && !rid) unmatched[g]=(x.item_name||g);
     var d=x.business_date||x.date; if(d) days[String(d).slice(0,10)]=1;
   });
   var todayRows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return cut && d >= cut; }).length : 0;
   var linked={}; Object.keys(byGuid).forEach(function(g){ linked[byGuid[g]]=1; });   /* この店で Toast と結ばれたレシピ（出数を Toast から入れるもの） */
-  return { acc:acc, linked:Object.keys(linked), rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows,
+  return { acc:acc, linked:Object.keys(linked), rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows, visitQty:visit,
     skippedMonthly:(hasDaily ? all.filter(function(x){ return !(x.business_date||x.date); }).length : 0) };
 }
 function menuMixDayLabel(d){ var p=String(d||'').split('-'); return p.length===3 ? (parseInt(p[1],10)+'/'+parseInt(p[2],10)) : String(d||''); }
@@ -31424,7 +31536,7 @@ function dailyScopeStores() {
   // 管轄店舗（getVisibleStores）に応じて対象店舗を返す
   var vis = getVisibleStores();
   if (dailyStoreScope==='ALL') return vis;
-  if (dailyStoreScope==='current') return [vis[0]];
+  if (dailyStoreScope==='current') return (vis.length>1 && (!curStore || curStore==='ALL' || curStore==='OFFICE')) ? vis : [vis[0]];   /* v1129 ③：左上が全店なら全店（前は最初の店） */
   var s = vis.find(x=>x.id===dailyStoreScope);
   return s ? [s] : [vis[0]];
 }
@@ -31797,13 +31909,13 @@ function renderBudgetDaily() {
   var html = '';
   // 店舗スコープ切替（管轄が複数店ある場合）
   if (multiStore) {
-    var _dCur = dailyStoreScope==='current' ? (vis[0]?vis[0].id:'ALL') : dailyStoreScope;
+    var _dCur = dailyStoreScope==='current' ? ((!curStore || curStore==='ALL' || curStore==='OFFICE') ? 'ALL' : (vis[0]?vis[0].id:'ALL')) : dailyStoreScope;   /* v1129 ③ */
     html += bStoreChips(_dCur, 'setDailyScope');
   } else {
     dailyStoreScope = 'current';
   }
 
-  var isAgg = dailyStoreScope==='ALL' && multiStore;
+  var isAgg = (dailyStoreScope==='ALL' || (dailyStoreScope==='current' && (!curStore || curStore==='ALL' || curStore==='OFFICE'))) && multiStore;   /* v1129 ③ */
   var title = isAgg ? `${t('全','All ')}${vis.length}${t('店集計',' stores')}` : (scopeStores[0]||{name:'—'}).name;
   if (isAgg) {
     html += '<div style="display:flex;align-items:center;gap:8px;justify-content:center;margin-bottom:8px">'
@@ -36445,7 +36557,7 @@ function invConfirmMonthText(ym){
   return y+'年'+m+'月分（'+rel.label+'）';
 }
 function renderInventory(){
-  var storeId = (curStore==='ALL' || curStore==='OFFICE' || !STORES.find(function(s){return s.id===curStore;})) ? STORES[0].id : curStore;
+  var storeId = (curStore && curStore!=='ALL' && curStore!=='OFFICE' && !STORES.find(function(s){return s.id===curStore;})) ? ((STORES[0]||{}).id) : soloStoreId('inventory');   /* v1129 ③ */
   var store = STORES.find(function(s){return s.id===storeId;})||STORES[0];
   _invMigrateToJune(storeId);
   var _ym = invYm();
@@ -37681,7 +37793,7 @@ function renderTipHqSite(storeId, info){
 }
 /* ---- 画面 ---- */
 function renderTipShiftLeader(){
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId('tip');   /* v1129 ③ */
   var cfg=slCfg();
   var h='';
   if(!slStoreEnabled(storeId)){
@@ -37886,16 +37998,16 @@ function saveSlConfig(){
   if(slSaveCfg({amount:amt, stores:st, jobs:jb})===false){ showToast('保存できませんでした','danger'); return; }
   closeModalDirect(); showToast('設定を保存しました','success'); renderPage('tip');
 }
-function renderTipMgmt() {
+function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（前は STORES[0]）。チップの店のチップは左上を変えない（pageStorePick） */
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl' && curRole!=='office_crew') return financialBlocked();
   maybePullAllCashTips();
   try{ if(typeof tipLivePullSoon==='function') tipLivePullSoon(); }catch(e){}   /* v1091: ほかの端末で変えた Tip Rate */
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId(curPage==='attendance'||curPage==='labor' ? 'labor' : 'tip');
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var info = tipPeriodInfo();
   try{ var _tym=info.y+'-'+String(info.m+1).padStart(2,'0'); if(isFrozenMonth(_tym)) _acctAutoRefresh(_tym); }catch(e){}   /* v1040: 過去の月は開いたときに全店ぶん取り直す */
 
-  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
+  var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       ${syncFreshBadge()}
       <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> ${t('Tip診断','Tip diagnostics')}</button>
@@ -38770,7 +38882,7 @@ function shiftAttMonth(delta){
 
 function renderAttendance() {
   if (!ROLE_CONFIG[curRole].financial && curRole!=='sl') return financialBlocked();
-  var storeId = curStore==='ALL'?STORES[0].id:curStore;
+  var storeId = soloStoreId(curPage==='attendance'||curPage==='labor' ? 'labor' : 'tip');
   var store = STORES.find(s=>s.id===storeId)||STORES[0];
   var html = `<div class="section-header"><div><div class="section-title">勤怠データ</div><div class="section-sub">${store.name} · Toast打刻の日毎一覧</div></div></div>`;
   return html + renderAttendanceBody(storeId, store);
@@ -39786,15 +39898,15 @@ function renderLabor() {
   ensureLaborLoaded(); // 開いた時に全店の当月勤怠をクラウドから取得→完了後に再描画（端末間で同一表示に）
   var _canLaborDetail = ['gm','ceo'].indexOf(curRole)>=0; // 勤怠明細（個人賃金・固定給）はGM以上のみ
   var perStoreTabs = _canLaborDetail ? ['hours','detail','attendance'] : ['hours','attendance'];
-  // 勤怠データ等(店舗別)をナビから開いた時に全店なら、最初の可視店舗へ
-  if (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) {
-    var v0=getVisibleStores()[0]; if(v0) _laborStore=v0.id;
-  }
-  var allStore = _laborStore==='ALL';
-  var store = allStore ? null : (STORES.find(function(s){return s.id===_laborStore;})||STORES[0]);
+  /* 勤怠データ等(店舗別)をナビから開いた時に全店なら、1 店ずつの店（soloStoreId）で出す。
+     v1129 ③：前は _laborStore を最初の店に書き換えていたので、人件費・勤怠に戻っても全店に戻らなかった（左上は全店のまま） */
+  var _lSolo = (_laborStore==='ALL' && perStoreTabs.indexOf(laborTab)>=0) ? soloStoreId('labor') : null;
+  var allStore = _laborStore==='ALL' && !_lSolo;
+  var store = allStore ? null : (STORES.find(function(s){return s.id===(_lSolo||_laborStore);})||STORES[0]);
   var storeId = allStore ? null : store.id;
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
+  if (_lSolo) html += soloStoreBar('labor');
   if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button><button class="btn btn-primary btn-sm" onclick="openLaborRootCause()"><i class="ti ti-alert-circle"></i> 原因診断</button></div>';
   if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
@@ -41226,7 +41338,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1128';
+const APP_VERSION = '1129';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41901,11 +42013,11 @@ function staffForStore(storeId) {
 var shiftAdminTab = 'status';
 var shiftView = 'grid';
 function renderShiftAdmin() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('shift_admin');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var week = getWeekStr();
 
-  var html = bStoreChips(storeId, 'switchStore', {showAll:false}) + `<div class="section-header">
+  var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
     ${pageSyncBar({onRefresh:"refreshAvailNow('"+storeId+"','"+week+"')", onDiag:"availDiag('"+storeId+"','"+week+"')", freshScope:'shift'})}
   </div>
@@ -83253,6 +83365,8 @@ async function mnFetchRows(path) {
   return out;
 }
 function mnItemsPath(guid, f, e) { return 'toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_date=gte.' + f + '&business_date=lte.' + e + '&order=id.asc'; }
+/* v1129（11/01 の依頼 ②）：商品名・カテゴリー・売価・販売中かは Toast のメニューの表（toast_menu_items）から。出数の行（toast_item_sales）には商品名が無い（列が無い：11/01 の SQL で確かめた） */
+function mnMenuPath(guid) { return 'toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&select=guid,name,category,price,active&order=id.asc'; }
 function mnSalesPath(guid, f, e) { return 'toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_date=gte.' + f + '&business_date=lte.' + e + '&select=business_date,net_sales,guest_count&order=business_date.asc'; }
 function mnJobs(s) {
   var today = bizToday(), r = mnRange(s.per, s.from, s.to, today), pr = mnPrevRange(s.per, r), jobs = [];
@@ -83263,6 +83377,7 @@ function mnJobs(s) {
     jobs.push({ k: 'items|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnItemsPath(x.toastGuid, pr.from, pr.to) });
     jobs.push({ k: 'sales|' + x.toastGuid + '|' + r.from + '|' + r.to, path: mnSalesPath(x.toastGuid, r.from, r.to) });
     jobs.push({ k: 'sales|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnSalesPath(x.toastGuid, pr.from, pr.to) });   /* 比べる期間の出数の入っていない日を見つける */
+    jobs.push({ k: 'menu|' + x.toastGuid, path: mnMenuPath(x.toastGuid) });   /* v1129：商品名・カテゴリー（期間によらない・「最新を読む」で読み直す） */
   });
   return { r: r, pr: pr, jobs: jobs, stores: stores, today: today };
 }
@@ -83329,15 +83444,27 @@ function mnModel(inp) {
   var catColor = function (c) { return colors.map[c] || (c === MN_UNC_NAME ? MN_UNC : MN_OTHER); };
   var curIdx = function (d) { return mnDays(r.from, d) - 1; }, prevIdx = function (d) { return mnDays(pr.from, d) - 1; };
   var salesDays = function (list, f, e) { var o = mnObj(), any = mnObj(); (list || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (!d || d < f || d > e) return; any[d] = 1; if (Number(x.net_sales) > 0) o[d] = 1; }); return { pos: o, any: any }; };
+  var visitQty = 0, visitStores = [], menuFailed = [], menuEmpty = [];
+  var vtCat = function (c) { return typeof isVisitTypeCategory === 'function' ? isVisitTypeCategory(c) : false; };
+  var vtRec = function (r) { return typeof isVisitTypeRecipe === 'function' ? isVisitTypeRecipe(r) : false; };
   stores.forEach(function (S) {
     if (S.err) { failed.push(S); return; }
     if (S.prevErr) prevOk = false;
     var latest = mnObj(), names = mnObj(), recs = S.recipes || {}, dc = (S.drinkCats || []).map(function (v) { return String(v).trim().toLowerCase(); });
     var curRows = S.rows || [], prevRows = S.prevErr ? [] : (S.prevRows || []);
+    /* v1129：Toast のメニューの表（商品名・カテゴリー）。読めなかった・まだ無い店はレシピの名前・カテゴリーだけで出す */
+    var menu = mnObj(), menuRows = S.menuErr ? [] : (S.menu || []);
+    if (S.menuErr) menuFailed.push(S); else if (S.menu && !menuRows.length) menuEmpty.push(S);
+    menuRows.forEach(function (m) { if (m && m.guid != null && String(m.guid)) menu[String(m.guid)] = m; });
+    var recOf = function (g) { return g.indexOf('n:') === 0 ? null : (Object.prototype.hasOwnProperty.call(recs, g) ? recs[g] : null); };
+    /* 来店区分（FT・RP・SR など）：Toast のメニューのグループ（カテゴリー）で決める（hyper-worker と同じ決まり）。メニューの表に無い商品はレシピのカテゴリー（Toast から写したもの） */
+    var isVisit = function (g) { if (g.indexOf('n:') === 0) return false; var m = menu[g]; if (m) return vtCat(m.category); var rc = recOf(g); return !!(rc && vtRec(rc)); };
+    var sv = 0;
     [curRows, prevRows].forEach(function (rs) {
       rs.forEach(function (x) {
         if (!x || !x.business_date) return;
-        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), nm = String(x.item_name || '').trim() || g, d = String(x.business_date).slice(0, 10), id = Number(x.id) || 0;
+        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), nm = String(x.item_name || '').trim(), d = String(x.business_date).slice(0, 10), id = Number(x.id) || 0;
+        if (!nm || isVisit(g)) return;   /* 注文の行の商品名（列があるときだけ・そのときの名前） */
         if (!latest[g] || d > latest[g].d || (d === latest[g].d && id > latest[g].id)) latest[g] = { d: d, name: nm, id: id };
         (names[g] = names[g] || mnObj())[nm] = 1;
       });
@@ -83360,27 +83487,42 @@ function mnModel(inp) {
     }
     Object.keys(ex).forEach(function (k) { exAll[k] = 1; });
     var cache = mnObj();
+    /* v1129：名前は Toast のメニューの表 → 注文の行の名前（そのとき）→ Toast と結んだレシピの名前（同期したときの名前・販売終了でメニューから消えた商品も）の順。
+       どれにも無ければ「名称未取得」（ID の末尾だけ出す・名前を作らない）。カテゴリーも Toast のメニューの表 → レシピ。無ければ「カテゴリー未取得」 */
     var itemOf = function (g) {
       if (cache[g]) return cache[g];
-      var nm = (latest[g] || {}).name || g, rec = g.indexOf('n:') === 0 ? null : (Object.prototype.hasOwnProperty.call(recs, g) ? recs[g] : null);
-      var cat = (rec && String(rec.category || '').trim()) || MN_UNC_NAME;
-      var key = inp.allStores ? 'n:' + mnNorm(nm) : g;
+      var rec = recOf(g), mr = (g.indexOf('n:') === 0) ? null : (menu[g] || null);
+      var tn = mr ? String(mr.name || '').trim() : '', on = (latest[g] || {}).name || '', rn = rec ? String(rec.name || '').trim() : '';
+      if (rn === '(無名)') rn = '';
+      var nm = tn || on || rn, noName = !nm;
+      var tc = mr ? String(mr.category || '').trim() : '', rc = rec ? String(rec.category || '').trim() : '';
+      if (rc === MN_UNC_NAME) rc = '';
+      var cat = tc || rc || MN_UNC_NAME;
+      var key = noName ? (inp.allStores ? 'g:' + S.id + ':' + g : g) : (inp.allStores ? 'n:' + mnNorm(nm) : g);
       var it = items[key];
-      if (!it) { it = items[key] = { key: key, name: nm, oldNames: mnObj(), cat: cat, drink: false, qty: 0, sales: 0, cmpQty: 0, cmpSales: 0, prevQty: 0, prevSales: 0, prevAll: 0, priceMissing: false, archived: false, active: false, archivedAt: '', stores: mnObj(), day: mnObj(), dayS: mnObj(), prevDay: mnObj(), prevDayS: mnObj() }; order.push(key); }
+      if (!it) { it = items[key] = { key: key, name: noName ? mnNoName(g) : nm, noName: noName, gid: noName ? g : '', oldNames: mnObj(), cat: cat, drink: false, qty: 0, sales: 0, cmpQty: 0, cmpSales: 0, prevQty: 0, prevSales: 0, prevAll: 0, priceMissing: false, archived: false, live: false, endedSeen: false, archivedAt: '', stores: mnObj(), day: mnObj(), dayS: mnObj(), prevDay: mnObj(), prevDayS: mnObj() }; order.push(key); }
       if (it.cat === MN_UNC_NAME && cat !== MN_UNC_NAME) it.cat = cat;
-      Object.keys(names[g] || {}).forEach(function (n) { if (n !== nm) it.oldNames[n] = 1; });
-      if (rec) { if (rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; } else it.active = true; if (dc.indexOf(cat.toLowerCase()) >= 0) it.drink = true; }
+      var alias = mnObj(); Object.keys(names[g] || {}).forEach(function (n) { alias[n] = 1; }); if (tn) alias[tn] = 1; if (rn) alias[rn] = 1;
+      Object.keys(alias).forEach(function (n) { if (n && n !== it.name) it.oldNames[n] = 1; });
+      /* 販売終了：Toast のメニューの表で販売中でない／表に無くレシピがアーカイブ・Toast 非掲載。どちらにも無い商品は分からないので付けない */
+      if (mr) { if (mr.active === false) it.endedSeen = true; else it.live = true; }
+      else if (rec) { if (rec.archived || rec.toastActive === false) it.endedSeen = true; else it.live = true; }
+      if (rec && rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; }
+      if (dc.indexOf(cat.toLowerCase()) >= 0) it.drink = true;
       it.stores[S.id] = 1;
-      return (cache[g] = { it: it, rec: rec });
+      var pr0 = (rec && isFinite(Number(rec.price)) && Number(rec.price) > 0) ? Number(rec.price) : ((mr && isFinite(Number(mr.price)) && Number(mr.price) > 0) ? Number(mr.price) : 0);
+      return (cache[g] = { it: it, rec: rec, price: pr0 });
     };
     [[curRows, 0], [prevRows, 1]].forEach(function (pair) {
       pair[0].forEach(function (x) {
         if (!x || !x.business_date) return;
         var q = Number(x.qty); if (!isFinite(q)) return;
         var d = String(x.business_date).slice(0, 10);
-        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), o = itemOf(g), it = o.it, amt;
+        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name);
+        if (isVisit(g)) { if (pair[1] === 0) sv += q; return; }   /* v1129：来店区分は出数・売上・ランキング・割合に入れない（元の行は変えない） */
+        var o = itemOf(g), it = o.it, amt;
         if (money) amt = Number(x[money]) || 0;
-        else { var p = o.rec && isFinite(Number(o.rec.price)) ? Number(o.rec.price) : 0; if (!(p > 0) && q) it.priceMissing = true; amt = q * p; }
+        else { var p = o.price; if (!(p > 0) && q) it.priceMissing = true; amt = q * p; }
         if (pair[1] === 0) {
           it.qty += q; it.sales += amt; it.day[d] = (it.day[d] || 0) + q; it.dayS[d] = (it.dayS[d] || 0) + amt;
           var ci = curIdx(d); if (!ex[ci] && ci < pr.n) { it.cmpQty += q; it.cmpSales += amt; }   /* 比べる期間に同じ日があり、どちらも出数のある日だけ */
@@ -83391,6 +83533,7 @@ function mnModel(inp) {
       });
     });
     S._itemDays = itemDays;
+    if (sv) { visitQty += sv; visitStores.push(S); }
   });
   if (!prevOk) newOk = false;
   var bySd = function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.name < b.name ? -1 : 1); };
@@ -83400,13 +83543,19 @@ function mnModel(inp) {
   var nData = Object.keys(dataDays).filter(function (d) { return d >= r.from && d <= r.to; }).length || r.n;
 
   var all = order.map(function (k) { return items[k]; });
+  /* v1129：色はこの期間・この店の出数の多いカテゴリーから 8 色（区分・カテゴリーの絞り込みでは変えない）。前はレシピの数の多い順で、
+     よく出るカテゴリーでもレシピの少ないものは「その他」の色にまとまっていた */
+  var cq0 = mnObj(); all.forEach(function (it) { if (it.qty > 0 && it.cat !== MN_UNC_NAME) cq0[it.cat] = (cq0[it.cat] || 0) + it.qty; });
+  var cn0 = Object.keys(cq0).sort(function (a, b) { return (cq0[b] - cq0[a]) || (a < b ? -1 : a > b ? 1 : 0); });
+  var cm0 = mnObj(); cn0.forEach(function (n, i) { cm0[n] = i < MN_COLORS.length ? MN_COLORS[i] : MN_OTHER; }); cm0[MN_UNC_NAME] = MN_UNC;
+  colors = { map: cm0, order: cn0.concat([MN_UNC_NAME]) };
   var kindOk = function (it) { return inp.kind === 'food' ? !it.drink : inp.kind === 'drink' ? it.drink : true; };
   var catOk = function (it) { return !inp.cat || it.cat === inp.cat; };
   var q = mnNorm(inp.q || '');
   var qOk = function (it) { if (!q) return true; if (mnNorm(it.name).indexOf(q) >= 0) return true; return Object.keys(it.oldNames).some(function (n) { return mnNorm(n).indexOf(q) >= 0; }); };
   all.forEach(function (it) {
     it.renamed = Object.keys(it.oldNames).length > 0;
-    it.ended = it.archived && !it.active;
+    it.ended = it.endedSeen && !it.live;
     it.unc = it.cat === MN_UNC_NAME;
     it.isNew = newOk && it.qty !== 0 && it.prevAll === 0;
     it.avg = it.qty ? it.sales / it.qty : 0;
@@ -83430,7 +83579,8 @@ function mnModel(inp) {
   /* 帯：色のあるカテゴリーはそのまま・その他の色のものは 1 つにまとめる */
   var stackOf = function (getQ) {
     var segs = [], other = null;
-    catList.forEach(function (c) { var v = getQ(c); if (c.color === MN_OTHER) { if (!other) other = { name: t('その他', 'Other'), v: 0, color: MN_OTHER }; other.v += v; } else segs.push({ name: c.name, v: v, color: c.color }); });
+    var nOther = catList.filter(function (c) { return c.color === MN_OTHER; }).length;
+    catList.forEach(function (c) { var v = getQ(c); if (c.color === MN_OTHER) { if (!other) other = { name: mnOtherLabel(nOther), v: 0, color: MN_OTHER, group: true }; other.v += v; } else segs.push({ name: c.name, v: v, color: c.color }); });
     if (other) { var u = segs.length && segs[segs.length - 1].name === MN_UNC_NAME ? segs.pop() : null; segs.push(other); if (u) segs.push(u); }
     return segs;
   };
@@ -83472,18 +83622,19 @@ function mnModel(inp) {
     drinkSales: cS ? dS / cS : null, drinkQty: cQ ? dQ / cQ : null,
     newCount: newOk ? B.filter(function (it) { return it.isNew; }).length : null, newOk: newOk,
     prevMissing: prevMissing, unchecked: unchecked, notYet: notYet, exCount: Object.keys(exAll).length, exIdx: exAll, nData: nData,
-    uncCount: A.filter(function (it) { return it.unc; }).length,
+    uncCount: A.filter(function (it) { return it.unc; }).length, noNameCount: A.filter(function (it) { return it.noName; }).length,
+    visitQty: visitQty, visitStores: visitStores, menuFailed: menuFailed, menuEmpty: menuEmpty,
     noPrice: money ? 0 : B.filter(function (it) { return it.priceMissing; }).length,
     days: days, weeks: wk, prevWeeks: pwk, weekMix: weekMix, inChunk: inChunk
   };
 }
 function mnInput(s, J) {
-  var colors = mnCatColors(J.stores.map(function (x) { return x.id; }));
+  var colors = { map: mnObj(), order: [] };   /* v1129：色は mnModel が出数から決める */
   return {
     stores: J.stores.map(function (x) {
-      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, d = _mnCache['sales|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {};
+      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, d = _mnCache['sales|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, mm = _mnCache['menu|' + x.toastGuid] || {};
       var dc = []; try { dc = (getKpiConfigFor(x.id).drinkCats || []).map(function (v) { return String(v).trim(); }); } catch (e) { }
-      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', prevSales: d.rows || [], prevSalesErr: d.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, at: Math.max(a.at || 0, b.at || 0, c.at || 0, d.at || 0) };
+      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', prevSales: d.rows || [], prevSalesErr: d.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, menu: mm.rows || [], menuErr: mm.err || '', at: Math.max(a.at || 0, b.at || 0, c.at || 0, d.at || 0) };
     }),
     r: J.r, pr: J.pr, kind: s.kind, cat: s.cat, q: s.q, chip: s.chip, sort: s.sort, allStores: s.store === 'ALL', colors: colors
   };
@@ -83559,7 +83710,10 @@ function mnSearch(v) {
 }
 function mnRegItem(k) { _mnReg.items.push(k); return _mnReg.items.length - 1; }
 function mnRegCat(c) { var i = _mnReg.cats.indexOf(c); if (i < 0) { _mnReg.cats.push(c); i = _mnReg.cats.length - 1; } return i; }
-function mnCatName(c) { return c === MN_UNC_NAME ? t('未分類', 'Uncategorized') : c; }
+function mnCatName(c) { return c === MN_UNC_NAME ? t('カテゴリー未取得', 'Category not found') : c; }
+/* v1129：名前の取れない商品（Toast のメニューの表にも注文の行にもレシピにも無い）。名前を作らず、ID の末尾だけ */
+function mnNoName(g) { var x = String(g || ''); return t('名称未取得', 'Name not found') + '（…' + x.slice(-6) + '）'; }
+function mnOtherLabel(n) { return t('ほか ' + n + ' カテゴリー', n + ' more categories'); }
 function mnBodyHtml(s) {
   _mnReg.items = [];
   var J = mnJobs(s);
@@ -83588,6 +83742,9 @@ function mnBodyHtml(s) {
     h += '<div class="mn-banner"><i class="ti ti-alert-triangle"></i><span>' + t('<b>' + Object.keys(ns).length + ' 店・' + M.missing.length + ' 日の出数がまだ入っていません</b>（' + ex + '。売上はあります）。この日を除いた数字です。', '<b>Items sold are missing for ' + M.missing.length + ' store-day(s)</b> (' + ex + '; sales exist). Numbers exclude these days.') + '</span>' +
       (MN_RESYNC_ROLES.indexOf(curRole) >= 0 ? '<button type="button" class="btn btn-secondary btn-sm" onclick="mnResync()">' + t('その日を取り直す', 'Re-import those days') + '</button>' : '<span class="mn-note" style="margin:0">' + t('GM・経理に伝えてください', 'Please tell the GM or accounting') + '</span>') + '</div>';
   }
+  if (M.visitQty) h += '<div class="mn-note">' + t('来店区分（FT・RP・SR など・Toast のメニューの「Customers」のグループ）の ' + mnQty(M.visitQty) + ' 件は、商品ではないので出数に入れていません（リピート率には使っています）。', 'Visit types (FT, RP, SR… the Toast menu group "Customers"), ' + mnQty(M.visitQty) + ' in total, are not counted as items (they are used for the repeat rate).') + '</div>';
+  if (M.menuFailed.length) h += '<div class="mn-note">' + t('Toast のメニュー（商品名・カテゴリー）を読めなかった店：' + nm(M.menuFailed) + '。レシピの名前・カテゴリーで出しています。来店区分はレシピで分かるものだけ除いています。「最新を読む」でもう一度読みます。', 'The Toast menu (names, categories) could not be loaded for ' + nm(M.menuFailed) + '; recipe names and categories are used, and only visit types known from recipes are left out. Use Reload to try again.') + '</div>';
+  if (M.menuEmpty.length) h += '<div class="mn-note">' + t('Toast のメニューがまだ取り込まれていない店：' + nm(M.menuEmpty) + '（同期センターの「メニュー・出数を同期」）。レシピに無い商品は「名称未取得」です。', 'The Toast menu has not been imported yet for ' + nm(M.menuEmpty) + ' (Sync center → menu sync). Items without a recipe show "Name not found".') + '</div>';
   if (!M.money && M.cur.length) h += '<div class="mn-note">' + t('取り込んだ商品別の行に金額が無いので、売上は「出数 × レシピの売価」で出しています（割引・取り消しは入りません）。', 'The imported item rows have no amounts, so sales = qty × recipe price (discounts and voids are not reflected).') + (M.noPrice ? t('売価の無いメニュー ' + M.noPrice + ' 品は $0 です。', ' ' + M.noPrice + ' item(s) without a price count as $0.') : '') + '</div>';
   if (!M.cur.length) return h + '<div class="mn-card mn-empty">' + t('この期間の出数はまだありません。', 'No items sold in this period yet.') + '</div>';
   if (s.tab === 'items') return h + mnItemsHtml(M, s, J);
@@ -83610,7 +83767,7 @@ function mnOverviewHtml(M, s, J) {
     [t('客数あたりの出数', 'Items per guest'), (M.guests ? (M.tq / M.guests).toFixed(2) + t(' 品', '') : '—'), M.guests == null ? t('客数を読めませんでした', 'Guest count unavailable') : t('客数 ' + M.guests.toLocaleString('en-US') + ' 人', M.guests.toLocaleString('en-US') + ' guests'), 'var(--muted)'],
     [t('ドリンク比率（売上）', 'Drink share (sales)'), M.drinkSales == null ? '—' : mnPct(M.drinkSales, 1), M.drinkQty == null ? '' : t('出数では ', 'By qty ') + mnPct(M.drinkQty, 1), 'var(--muted)'],
     [t('新しいメニュー', 'New items'), M.newCount == null ? '—' : M.newCount + t(' 品', ''), t('比べる期間には出ていない', 'Not sold in the comparison period'), 'var(--muted)'],
-    [t('未分類', 'Uncategorized'), M.uncCount + t(' 品', ''), t('合計に入っています', 'Included in totals'), M.uncCount ? '#9a3412' : 'var(--muted)']
+    [t('カテゴリー未取得', 'Category not found'), M.uncCount + t(' 品', ''), (M.noNameCount ? t('名称未取得 ' + M.noNameCount + ' 品・', 'Name not found: ' + M.noNameCount + ' · ') : '') + t('合計に入っています', 'Included in totals'), (M.uncCount || M.noNameCount) ? '#9a3412' : 'var(--muted)']
   ];
   var h = '<div class="mn-kpis">' + k.map(function (x) { return '<div class="mn-card mn-kpi"><div class="l">' + x[0] + '</div><div class="v">' + x[1] + '</div><div class="s" style="color:' + x[3] + '">' + (x[2] || '&nbsp;') + '</div></div>'; }).join('') + '</div>';
   /* よく出たメニュー */
@@ -83660,9 +83817,11 @@ function mnOverviewHtml(M, s, J) {
 function mnHowHtml(M) {
   var li = [
     t('出数＝Toast から取り込んだ商品別の数量（日ごとの行）の合計。いつもハワイ時間の昨日まで。', 'Qty = the sum of item quantities imported from Toast (daily rows), always through yesterday (Hawaii time).'),
-    M.money ? t('売上＝商品別の行の金額の合計。', 'Sales = the sum of the item rows\' amounts.') : t('売上＝出数 × レシピの売価（商品別の行に金額が無いため。割引・取り消しは入りません）。売価の無いメニューは $0。', 'Sales = qty × recipe price (the item rows have no amounts; discounts and voids are not reflected). Items without a price count as $0.'),
+    M.money ? t('売上＝商品別の行の金額の合計。', 'Sales = the sum of the item rows\' amounts.') : t('売上＝出数 × 売価（レシピの売価、無ければ Toast のメニューの今の売価。商品別の行に金額が無いため。割引・取り消しは入りません）。売価の無いメニューは $0。', 'Sales = qty × price (recipe price, else the current Toast menu price; the item rows have no amounts; discounts and voids are not reflected). Items without a price count as $0.'),
     t('平均売価＝売上 ÷ 出数。「出数 vs 売上」の pt＝売上の割合 − 出数の割合（プラスは 1 品あたりが全体より高いカテゴリー）。', 'Avg price = sales ÷ qty. The pt in "Qty vs sales" = sales share − qty share.'),
-    t('カテゴリーはレシピ（Toast の商品と結んだもの）のカテゴリー。結んでいない商品は「未分類」。ドリンクは KPI の設定のドリンクのカテゴリー、それ以外（未分類を含む）はフード。', 'Category comes from the recipe linked to the Toast item; unlinked items are "Uncategorized". Drinks are the drink categories in the KPI settings; everything else (including uncategorized) is food.'),
+    t('商品名・カテゴリーは Toast のメニュー（toast_menu_items）から。メニューに無い商品（販売終了で消えたものなど）は Toast と結んだレシピの名前・カテゴリー。どれにも無いものは「名称未取得」「カテゴリー未取得」（名前・分類を作りません）。ドリンクは KPI の設定のドリンクのカテゴリー、それ以外（カテゴリー未取得を含む）はフード。', 'Names and categories come from the Toast menu (toast_menu_items); items no longer on the menu use the linked recipe. Items found nowhere show "Name not found" / "Category not found" (nothing is made up). Drinks are the drink categories in the KPI settings; everything else is food.'),
+    t('来店区分（FT・RP・SR など。Toast のメニューの「Customers」のグループの商品）は出数・売上・ランキング・割合に入れません（リピート率には使います）。決め方はグループで、名前の一部や価格 0 では決めません。', 'Visit types (FT, RP, SR… the items in the Toast menu group "Customers") are not counted as items (they are used for the repeat rate). Decided by the menu group, never by part of a name or a $0 price.'),
+    t('カテゴリーの色は、この期間・この店の出数の多い 8 つ。9 つ目からは帯で「ほか N カテゴリー」にまとめます（表には全部出ます）。', 'Colors go to the 8 categories with the most items in this period; the rest are grouped as "N more categories" in the bar (the table lists all).'),
     t('割合は小数 1 桁に四捨五入するので、足して 100.0% にならないことがあります。0.05% より小さいものは「0.1% 未満」。', 'Shares are rounded to one decimal, so they may not add up to exactly 100.0%.'),
     t('同じ Toast の商品は名前が変わっても 1 つにまとめます（全店のときは同じ名前の商品を 1 つに）。「新しい」＝比べる期間には出ていないもの。', 'The same Toast item is one row even if renamed (all stores: same name = one row). "New" = not sold in the comparison period.'),
     t('売上はあるのに出数の行が無い日は、その日を除いた数字です（上の帯に出します）。', 'Days with sales but no item rows are excluded (shown in the banner).')
@@ -83674,7 +83833,8 @@ function mnTags(it) {
   if (it.isNew) tg.push(['mn-tag-new', t('新しい', 'New')]);
   if (it.renamed) tg.push(['mn-tag-ren', t('名前が変わった', 'Renamed')]);
   if (it.ended) tg.push(['mn-tag-end', t('販売終了', 'Ended') + (it.archivedAt ? ' ' + escapeHtml(mnMd(String(it.archivedAt).slice(0, 10).replace(/\//g, '-'))) : '')]);
-  if (it.unc) tg.push(['mn-tag-unc', t('未分類', 'Uncategorized')]);
+  if (it.noName) tg.push(['mn-tag-unc', t('名称未取得', 'Name not found')]);
+  if (it.unc) tg.push(['mn-tag-unc', t('カテゴリー未取得', 'Category not found')]);
   if (it.priceMissing) tg.push(['mn-tag-end', t('売価なし', 'No price')]);
   return tg.map(function (x) { return '<span class="mn-tag ' + x[0] + '">' + x[1] + '</span>'; }).join('');
 }
@@ -83721,7 +83881,7 @@ function mnItemsHtml(M, s, J) {
   /* 一覧 */
   var all = M.rows, list = s.showAll ? all : all.slice(0, MN_ROWS);
   var sl = [['qty', t('出数の多い順', 'Most sold')], ['sales', t('売上の多い順', 'Highest sales')], ['avg', t('平均売価の高い順', 'Highest avg price')], ['up', t('伸びた順', 'Biggest increase')], ['down', t('減った順', 'Biggest decrease')], ['name', t('名前の順', 'Name')]];
-  var chips = [['all', t('すべて', 'All')], ['new', t('新しい', 'New')], ['renamed', t('名前が変わった', 'Renamed')], ['ended', t('販売終了', 'Ended')], ['unc', t('未分類', 'Uncategorized')]];
+  var chips = [['all', t('すべて', 'All')], ['new', t('新しい', 'New')], ['renamed', t('名前が変わった', 'Renamed')], ['ended', t('販売終了', 'Ended')], ['unc', t('カテゴリー未取得', 'Category not found')]];
   var stLabel = s.store === 'ALL' ? t('全店', 'All stores') : escapeHtml(((J.stores[0] || {}).name) || '');
   h += '<div class="mn-lh"><div>' + mnRangeLabel(J.r) + '・' + stLabel + '・<b>' + all.length + t(' 品', ' items') + '</b>' + (s.cat ? '・' + escapeHtml(mnCatName(s.cat)) : '') + '</div><div class="mn-lh-r"><label for="mn-sort" class="mn-lab">' + t('並べ替え', 'Sort') + '</label><select id="mn-sort" class="mn-in" onchange="mnSet(\'sort\',this.value)">' + sl.map(function (x) { return '<option value="' + x[0] + '"' + (s.sort === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
     chips.map(function (x) { return '<button type="button" class="mn-chip" aria-pressed="' + (s.chip === x[0] ? 'true' : 'false') + '" onclick="mnSet(\'chip\',\'' + x[0] + '\')">' + x[1] + '</button>'; }).join('') + '</div></div>';
@@ -83769,7 +83929,7 @@ function mnTrendHtml(M, s, J) {
     var tot = isQ ? w.tq : w.ts;
     var segs = []; var other = 0;
     M.catList.forEach(function (c) { var v = (w.per[c.name] || { q: 0, s: 0 })[isQ ? 'q' : 's']; if (c.color === MN_OTHER) other += v; else if (c.name !== MN_UNC_NAME) segs.push({ name: c.name, v: v, color: c.color }); });
-    if (other) segs.push({ name: t('その他', 'Other'), v: other, color: MN_OTHER });
+    if (other) segs.push({ name: mnOtherLabel(M.catList.filter(function (c) { return c.color === MN_OTHER; }).length), v: other, color: MN_OTHER });
     var u = (w.per[MN_UNC_NAME] || { q: 0, s: 0 })[isQ ? 'q' : 's']; if (u) segs.push({ name: MN_UNC_NAME, v: u, color: MN_UNC });
     var bv = big ? (w.per[big.name] || { q: 0, s: 0 })[isQ ? 'q' : 's'] : 0, sh = tot ? bv / tot * 100 : null, note = '';
     if (big && sh != null) { if (prevShare == null) note = mnCatName(big.name) + ' ' + sh.toFixed(1) + '%'; else { var dd = Math.round((sh - prevShare) * 10) / 10; note = mnCatName(big.name) + ' ' + (dd > 0 ? '+' : dd < 0 ? '−' : '±') + Math.abs(dd).toFixed(1) + t(' ポイント', ' pt'); } prevShare = sh; }
@@ -83824,12 +83984,12 @@ async function mnResync() {
 function renderMenuMonth() {
   var canEdit = ROLE_CONFIG[curRole].canCreate || ROLE_CONFIG[curRole].financial;
   var visStores = getVisibleStores();
-  if (!window._menuStore || !visStores.find(s=>s.id===window._menuStore)) window._menuStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
+  if (!window._menuStore || !visStores.find(s=>s.id===window._menuStore)) window._menuStore = (curStore!=='ALL'?curStore:soloStoreId('menu'));   /* v1129 ③：左上を変えたら pageStoresFollow が合わせる */
   if (!window._menuPeriod) window._menuPeriod = getPeriod();
   var storeId = window._menuStore, period = window._menuPeriod;
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   // 店舗ごとのメニュー: その店のレシピ + 店舗未指定（旧データ/手動）を表示
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
 
   // カテゴリ別にまとめる
@@ -83965,7 +84125,7 @@ function menuPeriodList(startP, endP){
 }
 function menuRangeMatrix(storeId){
   var periods = menuPeriodList(window._menuRangeStart, window._menuRangeEnd);
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId));
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)));
   var mixes = periods.map(function(p){ return getMenuMix(storeId, p); });
   var rows = recipes.map(function(r){
     var qtys = mixes.map(function(mx){ return parseFloat((mx.items||{})[r.id])||0; });
@@ -84050,7 +84210,7 @@ async function ensureMenuMixLoaded(storeId, period, opt){
   if (curPage==='menu') renderPage('menu');
 }
 function openMenuMixModal(storeId, period) {
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   var rows = recipes.map(r=>{
@@ -84067,7 +84227,7 @@ function openMenuMixModal(storeId, period) {
     <button class="btn btn-primary" onclick="saveMenuMix('${storeId}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveMenuMix(storeId, period) {
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
   if (!mix.items) mix.items = {};
   var sales = 0;
@@ -89896,14 +90056,14 @@ function setDailyOps(storeId, items) {
 
 var dailyPhase = 'Opening';
 function renderDailyOps() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('dailyops');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var items = getDailyOps(storeId);
   var phaseItems = items.filter(t=>t.phase===dailyPhase);
   var done = items.filter(t=>t.done).length;
   var reqIncomplete = items.filter(t=>t.required && !t.done);
 
-  var html = `<div class="section-header">
+  var html = soloStoreBar('dailyops') + `<div class="section-header">
     <div><div class="section-title">${store.name} · Daily Ops</div><div class="section-sub">${todayJP()} · ${done}/${items.length}完了</div></div>
   </div>`;
 
@@ -90351,7 +90511,7 @@ function notifRetired(n){ return !!(n && typeof n.refId==='string' && n.refId.in
    ⑯ Required管理 (必須設定/未完了検知/注意ログ/警告カウント)
 ============================================================ */
 function renderRequired() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('required');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var items = getDailyOps(storeId);
   var required = items.filter(t=>t.required);
@@ -92537,7 +92697,7 @@ function _ccStatusChip(st){
 }
 
 function renderGoals() {
-  var storeId = curStore === 'ALL' ? STORES[0].id : curStore;
+  var storeId = soloStoreId('goals');   /* v1129 ③ */
   var store = STORES.find(s=>s.id===storeId) || STORES[0];
   var allGoals = ls('goals_v2', []);
   var storeGoals = allGoals.filter(g=>g.scope==='store' && (g.storeId===storeId || g.storeId==='ALL'));
@@ -92722,18 +92882,104 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
 /* ===== v1095：適用開始日（UI案57） =====
    選べるのは、いまの期間（1〜15 日・16 日〜末日）の初日（ハワイの今日）から 366 日先まで（Q2 A：前の期間は選べない）。初めは今日（Q3 A） */
 function tipFromRange() {
-  var d = _tipHstDay(Date.now());
-  return { min: d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16'), max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+  var d = _tipHstDay(Date.now()), cur = d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16');
+  /* v1129（Moto さん 11/01「10/16 開始の期間も選べるように」）：1 つ前の期間の初日から選べる（10/16 より前は選べない＝Tip Rate で配分する初日）。
+     前の期間を選ぶと、その期間の配分が変わる（決める前に確かめる・この端末で確定した期間は確定を解除するまで選べない）。
+     前の期間から効かせた設定は、それよりあとから効く設定（11/1 から、など）を上書きしない（_tipLatestApproved） */
+  var min = (typeof tipPrevPeriodStart === 'function') ? tipPrevPeriodStart(cur) : cur;
+  if (typeof TIP_RATE_WEIGHT_START !== 'undefined' && min < TIP_RATE_WEIGHT_START) min = (cur < TIP_RATE_WEIGHT_START) ? cur : TIP_RATE_WEIGHT_START;
+  return { min: min, cur: cur, max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+}
+/* 期間の初日 s（YYYY-MM-01 か YYYY-MM-16）の 1 つ前の期間の初日 */
+function tipPrevPeriodStart(s) {
+  s = String(s || ''); if (!/^\d{4}-\d{2}-(01|16)$/.test(s)) return s;
+  if (s.slice(8) === '16') return s.slice(0, 8) + '01';
+  var y = Number(s.slice(0, 4)), m = Number(s.slice(5, 7)) - 1; if (m < 1) { m = 12; y--; }
+  return y + '-' + ('0' + m).slice(-2) + '-16';
+}
+/* v1129：前の期間（いまの期間の初日より前）を選んだときの確かめ。この端末で、その人の店（所属・応援）のその期間を確定していれば選べない（確定した額を変えない）。
+   {back:false} か {back:true, from, to, locked:[店の名前…]} */
+function tipBackInfo(name, fd, more) {
+  var g = tipFromRange(); fd = String(fd || '');
+  if (!fd || fd >= g.cur) return { back: false };
+  var from = tipPeriodStartOf(fd), to = (from.slice(8) === '01') ? from.slice(0, 8) + '15' : (function () { var y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7)); var last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return from.slice(0, 8) + ('0' + last).slice(-2); })();
+  var emp = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
+  var ids = emp ? [emp.store].concat(emp.support || []).filter(Boolean) : [], locked = [];
+  ids.forEach(function (sid) {
+    var c = (typeof getTipConfirm === 'function') ? getTipConfirm(sid, { from: from }) : null;
+    if (c && c.status === '確定済み') { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === sid; }) : null; locked.push((st && st.name) || sid); }
+  });
+  (more || []).forEach(function (x) { if (x && locked.indexOf(x) < 0) locked.push(x); });   /* v1129：クラウドで確定済み（tipBackPull） */
+  return { back: true, from: from, to: to, locked: locked };
+}
+/* 前の期間を選んだとき：確定していれば止める（文を返す）・していなければ確かめる（false＝やめた）。前の期間でなければ true */
+function tipBackConfirm(name, fd, more) {
+  var b = tipBackInfo(name, fd, more), f = function (x) { return String(x).replace(/-/g, '/'); };
+  if (!b.back) return true;
+  if (b.locked.length) {
+    showToast(t(f(b.from) + '〜' + f(b.to) + ' は ' + b.locked.join('・') + ' で確定済みです。前の期間に設定するには、Tip の期間の画面で確定を解除してから（確定した額は変えません）',
+                f(b.from) + '–' + f(b.to) + ' is finalized for ' + b.locked.join(', ') + '. Unlock it on the tip period screen first (finalized amounts are not changed)'), 'warning');
+    return false;
+  }
+  if (typeof confirm !== 'function') return true;
+  return confirm(t('前の期間（' + f(b.from) + '〜' + f(b.to) + '）から効かせます。その期間のチップの配分が計算し直されます（この端末で確定した記録はありません。書き出した CSV・経理まとめ・支給済みの額は自動では変わりません）。\n'
+      + 'あとから効く設定（いまの期間からの設定など）はそのまま残ります。\n続けますか？',
+    'This takes effect from the previous period (' + f(b.from) + '–' + f(b.to) + '). The tip split of that period is recalculated (no finalized record on this device; exported CSVs, the accounting book and paid amounts do not change by themselves).\n'
+      + 'Settings that take effect later (from this period, for example) stay as they are.\nContinue?'));
+}
+/* v1129（Codex PR #120 の 1）：確定はほかの端末でもされる。前の期間を選んだときは、本人の店（所属・応援）のその期間の確定を
+   クラウドから読み直してから確かめる（前はこの端末の写しだけを見ていたので、ほかの端末で確定した直後の古い端末から、確定した期間の配分を変えられた）。
+   読めなければ止める（null・確定しているか分からないまま変えない）。返すのはクラウドで確定済みの店の名前（確かめの画面 tipBackConfirm に渡す）。
+   いまの期間を選んだときは何も読まない（前と同じ） */
+async function tipBackPull(name, fd) {
+  var b = tipBackInfo(name, fd);
+  if (!b.back) return [];
+  var more = [];
+  if (typeof _fetchOpValue === 'function' && typeof tipConfirmKey === 'function') {
+    var emp = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
+    var ids = emp ? [emp.store].concat(emp.support || []).filter(Boolean) : [];
+    var vals = await Promise.all(ids.map(function (sid) { return _fetchOpValue(tipConfirmKey(sid, { from: b.from }), 'app_state', true); }));
+    for (var i = 0; i < ids.length; i++) {
+      var v = vals[i];
+      if (v === undefined) {
+        showToast(t('クラウドの Tip の期間の確定を読めませんでした。前の期間に設定するには、つながっているときにもう一度押してください（何も変えていません）',
+                    'Could not read the tip period finalization from the cloud. To set the previous period, try again while online (nothing was changed)'), 'warning');
+        return null;
+      }
+      if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { } }
+      if (v && v.status === '確定済み') { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === ids[i]; }) : null; more.push((st && st.name) || ids[i]); }
+    }
+  }
+  return more;
+}
+/* v1129（Codex PR #120 の再レビュー）：確かめの画面を開いているあいだに、ほかの端末でその期間を確定することがある。
+   画面で「OK」を押したあと、保存する直前にもう一度クラウドの確定を読む。確定していた・読めなかったら止める。
+   読み直しのあいだにこの端末の Tip Rate の記録が変わったら（ほかの端末の決定が届いた）、古い写しで書かないように止める */
+async function tipBackRecheck(name, fd) {
+  var before = JSON.stringify(ls('tip_requests', []));
+  var m = await tipBackPull(name, fd);
+  if (m === null) return false;
+  if (m.length) { tipBackConfirm(name, fd, m); return false; }   /* 確定済みの知らせを出して false（確かめの画面は出さない） */
+  if (JSON.stringify(ls('tip_requests', [])) !== before) {
+    showToast(t('Tip Rate の記録がほかの端末で変わりました。もう一度押してください（何も変えていません）', 'Tip Rate records changed on another device. Please try again (nothing was changed)'), 'warning');
+    return false;
+  }
+  return true;
 }
 /* 期間の初日（1〜15 日なら 1 日・16 日〜なら 16 日） */
 function tipPeriodStartOf(d) { d = String(d || ''); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16') : ''; }
 /* v1095（独立レビュー f1d567a P2-1）：選べる日はこの端末の時計で決めるので、時計の遅れた端末だと前の期間（締めた期間かもしれない）を選べた。
    決めた日（tipDecDayStamp：ほかの決定の日付で守った日）の期間の初日より前は、決める直前にも断る */
 function tipFromGuard(fd, decDay) {
-  var m = tipPeriodStartOf(decDay), f = function (x) { return String(x).replace(/-/g, '/'); };
+  /* v1129：1 つ前の期間から選べる。ただし、この端末の日付の期間がほかの決定の日付の期間より前（時計の遅れ）なら、前と同じく決めた日の期間から
+     （時計の遅れた端末が、知らないうちに前の期間へ入れないように：f1d567a P2-1 のまま。端末の日付を直せば前の期間も選べる） */
+  var ps = tipPeriodStartOf(decDay), cur = tipPeriodStartOf((typeof _tipHstDay === 'function') ? _tipHstDay(Date.now()) : ''), f = function (x) { return String(x).replace(/-/g, '/'); };
+  var lag = !!(ps && cur && cur < ps), m = (!lag && ps && typeof tipPrevPeriodStart === 'function') ? tipPrevPeriodStart(ps) : ps;
   if (!m || !fd || String(fd) >= m) return '';
-  return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、いまの期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
+  if (lag) return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、いまの期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
            'The start date can be from ' + f(m) + ' (other decisions show the current period starts then; check this device’s date)');
+  return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、1 つ前の期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
+           'The start date can be from ' + f(m) + ' (other decisions show the previous period starts then; check this device’s date)');
 }
 /* 承認待ちの行で選んだ適用開始日（描き直しても今日に戻さない：独立レビュー f1d567a P2-2） */
 var _tipFromSel = {};
@@ -92749,7 +92995,7 @@ function _tipNotFuture(r) {
 function tipFromCheck(fd) {
   var g = tipFromRange(), f = function (x) { return String(x).replace(/-/g, '/'); };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fd || '')) || !_tipDayOk(fd)) return t('適用開始日を選んでください', 'Choose the start date');
-  if (fd < g.min) return t('適用開始日は ' + f(g.min) + '（いまの期間の初日）から選べます。前の期間を直すときは Claude に', 'The start date can be from ' + f(g.min) + ' (the first day of this period)');
+  if (fd < g.min) return t('適用開始日は ' + f(g.min) + '（1 つ前の期間の初日）から選べます', 'The start date can be from ' + f(g.min) + ' (the first day of the previous period)');
   if (fd > g.max) return t('適用開始日が先すぎます（' + f(g.max) + ' まで）', 'The start date is too far ahead (until ' + f(g.max) + ')');
   return '';
 }
@@ -92765,7 +93011,7 @@ function tipDayLabel(d) {
 function tipChangePreview(name, rate, fromDay) {
   var emp = getEmployees().find(function (e) { return e.name === name; });
   var reqs = ls('tip_requests', []) || [];
-  var sim = reqs.concat([{ id: 'tip_preview', name: name, rate: Number(rate), status: '承認', fromDay: fromDay, decAt: tipDecStamp(reqs, name) }]);
+  var sim = reqs.concat([{ id: 'tip_preview', name: name, rate: Number(rate), status: '承認', fromDay: fromDay, decAt: tipDecStamp(reqs, name), decDay: tipDecDayStamp(reqs, name) }]);   /* v1129：決めた日も（前の期間からの設定か分かるように） */
   var out = { before: null, after: null, periods: [], coefDays: String(fromDay) < TIP_RATE_WEIGHT_START, future: false };
   if (!emp) return out;
   out.before = tipRateOn(emp, fromDay, reqs); out.after = tipRateOn(emp, fromDay, sim);
@@ -92843,16 +93089,28 @@ var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false
 /* 時刻の無い記録（v1090 以前の端末で決めたもの）は、並びでその前にある決定のいちばん新しい時刻とみなす（並びのあと＝新しい、のまま）。
    独立レビュー 10/17（ae5c541）の P1：v1091 の端末で 90% に上げたあと v1090 の端末で 100% に上げると、v1091 の端末は 90% のままだった。 */
 function _tipLatestApproved(name, list, ok){   /* ok：候補にする承認（v1092：その日までに決めたもの）。並びの時刻はすべての記録で数える */
-  var best=null, bestT=-Infinity, floor=0;
+  var best=null, bestT=-Infinity, floor=0, cand=[], last='';
   (Array.isArray(list) ? list : (ls('tip_requests',[])||[])).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r), eff=t>0 ? t : floor;
     if(t>floor) floor=t;
     if(r.status!=='承認') return;
     if(typeof ok==='function' && !ok(r)) return;
-    if(eff>=bestT){ best=r; bestT=eff; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
+    cand.push({ r:r, t:eff });
+    var dy=(typeof _tipDecDay==='function') ? (_tipDecDay(r)||'') : ''; if(dy>last) last=dy;
+  });
+  cand.forEach(function(c){
+    /* v1129：前の期間から効かせた設定は、それよりあとから効く設定（候補の中）があれば、その日からは使わない（あとで決めても上書きしない） */
+    if(typeof _tipBackdated==='function' && _tipBackdated(c.r) && String(_tipDecDay(c.r)||'') < last) return;
+    if(c.t>=bestT){ best=c.r; bestT=c.t; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
   });
   return best;
+}
+/* v1129：前の期間から効かせた設定か（適用開始日が、決めた日の期間の初日より前）。v1128 までの記録はどれも違う（前の期間は選べなかった） */
+function _tipBackdated(r){
+  if(typeof _tipFromOk!=='function' || !_tipFromOk(r) || typeof _tipDecDayRaw!=='function') return false;
+  var dd=_tipDecDayRaw(r); if(!dd) return false;
+  return String(r.fromDay) < dd.slice(0,8)+(Number(dd.slice(8))<=15 ? '01' : '16');
 }
 /* 前からある申請を承認するとき：時刻の無い前の決定（v1090 以前）に、並びのとおりの時刻を付ける（並びのあと＝新しい、と同じ意味）。
    独立レビュー（6f75b67）P2-1：付けないと、承認した申請（並びの前のほう）が、そのあとに並ぶ時刻の無い引き上げに負け、承認しても率が変わらなかった。
@@ -93785,6 +94043,19 @@ async function approveTip(id, status) {
       var _fx = tipFromCheck(_from); if (_fx) { showToast(_fx,'warning'); return; }
       if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
     }
+    /* v1129（Codex PR #120 の 1）：前の期間を選んだときは、その期間の確定をクラウドから読み直す（印を付ける前。確かめの画面は前と同じ所）。
+       読み直しのあいだにほかの端末の決定が届くことがあるので、終わったら申請を読み直す */
+    var _backMore = [];
+    if (status==='承認' && _from && typeof tipBackPull==='function') {
+      var _who2 = curUserName, _role2 = curRole;
+      approveTip._busy = true;
+      try { _backMore = await tipBackPull(r.name, _from); } finally { approveTip._busy = false; }
+      if (!_backMore) return;
+      if (curUserName !== _who2 || curRole !== _role2) return;
+      requests = ls('tip_requests', []); r = requests.find(function(x){ return x.id===id; });
+      if (!r || (r.status && r.status!=='申請中')) { showToast(t('この申請はほかの端末でもう決まっていました（変えていません）','This request was already decided on another device (nothing changed)'),'warning'); if (curPage===_pg) renderPage(curPage); return; }
+      if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
+    }
     /* 却下でも付ける（独立レビュー v1092 e59f3f9 の P1：前からある申請を却下すると、その申請に新しい時刻が付き、並びでそのあとにある時刻の無い前の承認が
        その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
@@ -93797,14 +94068,21 @@ async function approveTip(id, status) {
       var _ah = tipDecClockAhead(requests, r);
       if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _from || _day))) return;   /* v1095: 効く日は適用開始日 */
     }
+    if (status==='承認' && _from && typeof tipBackConfirm==='function' && !tipBackConfirm(r.name, _from, _backMore)) return;   /* v1129：前の期間を選んだとき */
     if (status==='承認' && _pv) {
       _after = _pv.after;
       if (typeof confirm==='function' && !confirm(tipPreviewText(r.name, r.rate, _from, _pv)+'\n\n'+t('承認しますか？','Approve?'))) return;
     } else if (status==='承認' && _before!=null) {   /* 試算が使えないとき（今までどおり、下がるときだけ確かめる） */
-      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec, fromDay:_from||undefined }) : x; }));
+      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec, decDay:_day, fromDay:_from||undefined }) : x; }));
       if (_after < _before && typeof confirm==='function'
         && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_rl(_before)+' です。承認すると '+_rl(_after)+' に下がります。承認しますか？',
                       r.name+'\'s Tip Rate is '+_rl(_before)+' now. Approving lowers it to '+_rl(_after)+'. Approve?'))) return;
+    }
+    if (status==='承認' && _from && typeof tipBackRecheck==='function' && typeof tipBackInfo==='function' && tipBackInfo(r.name, _from).back) {   /* v1129：保存の直前にもう一度 */
+      var _who3 = curUserName, _role3 = curRole, _okR = false;
+      approveTip._busy = true;
+      try { _okR = await tipBackRecheck(r.name, _from); } finally { approveTip._busy = false; }
+      if (!_okR || curUserName !== _who3 || curRole !== _role3) return;
     }
     r.status = status;
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
@@ -93842,7 +94120,7 @@ function openTipRaiseModal(){
     +'<div class="form-group"><label class="form-label">'+t('新しい Tip Rate','New Tip Rate')+'</label><select class="form-select" id="tipraise-rate" onchange="tipRaisePreview()"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option></select></div>'
     +(function(){ var g=tipFromRange(); return '<div class="form-group"><label class="form-label" for="tipraise-from">'+t('適用開始日（この日の勤務から・ハワイの日付）','Start date (from this day\'s shifts, Hawaii date)')+'</label>'
       +'<input type="date" class="form-input" id="tipraise-from" value="'+g.today+'" min="'+g.min+'" max="'+g.max+'" onchange="tipRaisePreview()">'
-      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('選べるのは、いまの期間の初日（'+g.min.slice(5).replace('-','/')+'）から先の日','From the first day of this period ('+g.min.slice(5).replace('-','/')+')')+'</div></div>'; })()
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('選べるのは、1 つ前の期間の初日（'+g.min.slice(5).replace('-','/')+'）から先の日。前の期間を選ぶと、その期間の配分が計算し直されます（あとから効く設定はそのまま）','From the first day of the previous period ('+g.min.slice(5).replace('-','/')+'). Choosing the previous period recalculates its tip split (later settings stay)')+'</div></div>'; })()
     +'<div id="tipraise-preview" style="white-space:pre-line;font-size:12px;line-height:1.7;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:var(--surface2)"></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
     +'<button class="btn btn-primary" onclick="applyTipRaise()"><i class="ti ti-arrow-up"></i> '+t('適用開始日から変える','Change from the start date')+'</button></div>');
@@ -93880,6 +94158,14 @@ async function applyTipRaise(){
     if(_ne.value!==name || parseInt(_re.value,10)!==rate || (_fe2 && String(_fe2.value)!==fromDay)){ showToast(t('選び直したので、もう一度押してください','You changed the selection; press the button again'),'info'); return; }
     if(_fr===false) showToast(t('クラウドの最新を読めませんでした。この端末の内容で引き上げます','Could not read the latest from the cloud; raising with this device’s copy'),'warning');
   }
+  /* v1129（Codex PR #120 の 1）：前の期間を選んだときは、その期間の確定をクラウドから読み直す（申請を読む前。確かめの画面は前と同じ所） */
+  var _backMore=[];
+  if(fromDay && typeof tipBackPull==='function'){
+    applyTipRaise._busy=true;
+    try{ _backMore=await tipBackPull(name, fromDay); }finally{ applyTipRaise._busy=false; }
+    if(!_backMore) return;
+    if(curUserName!==_who || curRole!==_role) return;
+  }
   var emp=getEmployees().find(function(e){return e.name===name;});
   var storeId=emp?emp.store:'';
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
@@ -93889,7 +94175,13 @@ async function applyTipRaise(){
   if(fromDay && typeof tipFromGuard==='function'){ var _fg0=tipFromGuard(fromDay, _dd); if(_fg0){ showToast(_fg0,'warning'); return; } }   /* v1095（独立レビュー f1d567a P2-1） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, fromDay || _dd, true))) return;   /* v1095: 効く日は適用開始日 */
+  if(fromDay && typeof tipBackConfirm==='function' && !tipBackConfirm(name, fromDay, _backMore)) return;   /* v1129：前の期間を選んだとき */
   var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
+  if(fromDay && typeof tipBackRecheck==='function' && typeof tipBackInfo==='function' && tipBackInfo(name, fromDay).back){   /* v1129：保存の直前にもう一度 */
+    applyTipRaise._busy=true; var _okR=false;
+    try{ _okR=await tipBackRecheck(name, fromDay); }finally{ applyTipRaise._busy=false; }
+    if(!_okR || curUserName!==_who || curRole!==_role) return;
+  }
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual', fromDay:fromDay, prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), at:_dec}); lsSet('tip_history',h);
@@ -95698,7 +95990,7 @@ function renderSkillManager() {
   // ===== ビュー別の本体 =====
   var visStores = getVisibleStores();
   if (!window._skillMatrixStore || (!visStores.find(s=>s.id===window._skillMatrixStore) && window._skillMatrixStore!=='OFFICE')) {
-    window._skillMatrixStore = (curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));
+    window._skillMatrixStore = (curStore!=='ALL'?curStore:soloStoreId('skill'));   /* v1129 ③ */
   }
   var mgrStoreId = window._skillMatrixStore;
   var storeObj = STORES.find(s=>s.id===mgrStoreId)||(mgrStoreId==='OFFICE'?{name:'Office',color:'#6b7280'}:{});
@@ -96273,7 +96565,7 @@ function renderKpiMaster() {
   // 店舗別タブ
   var stores = kpiSettableStores();
   if (!stores.length) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">設定対象の店舗がありません</div>`;
-  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = stores[0] ? stores[0].id : null;
+  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = (curStore && curStore!=='ALL' && stores.find(s=>s.id===curStore)) ? curStore : (stores[0] ? stores[0].id : null);   /* v1129 ③：左上が店ならその店から */
   var sid = window._kpiStore;
   var store = getStoresAll().find(s=>s.id===sid);
   if (!store) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">稼働中の店舗がありません</div>`;
@@ -98697,7 +98989,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     });
   };
   UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done && now() - r.t < 60000; }); };
-  function guardState(){ try{ return (W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function') ? String(FUNERGY_FINANCIAL_SAVE.getState().status || '') : ''; }catch(e){ return ''; } }
+  /* v1129（11/01 の依頼 ④）：裏の自動の保存（Toast の取り込みなど）を送っているあいだは「保存中…」にしない（ログインのあと店ごとに点滅していた）。
+     自動の保存でも、答えが確かめられない・重なったときは今までどおり「保存の確認待ち」 */
+  function guardState(){ try{ if(!(W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function')) return ''; var st = FUNERGY_FINANCIAL_SAVE.getState() || {}, g = String(st.status || ''); return (st.auto && (g === 'saving' || g === 'checking')) ? '' : g; }catch(e){ return ''; } }
   function outboxN(){ try{ return (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ return 0; } }
   function saveState(){
     var g = guardState();
@@ -98705,8 +98999,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(pend.length && pend.every(function(r){ return now() - r.t > 20000; })) return { k: 'slow' };
     if(pend.length || g === 'saving' || g === 'checking') return { k: 'saving' };
     if(g === 'unknown' || g === 'conflict') return { k: 'check' };
-    var n = outboxN();
-    if(n > 0) return { k: 'queued', n: n, off: (typeof navigator !== 'undefined' && navigator.onLine === false) };
+    var n = outboxN(), off = (typeof navigator !== 'undefined' && navigator.onLine === false);
+    if(n > 0) return { k: 'queued', n: n, off: off };
+    if(off) return { k: 'offline' };   /* v1129 ④：通信が切れているときは、送るものが無くても右上に出す（画面の下には出さない） */
     if(S.lastOk) return { k: 'saved', t: S.lastOk };
     return { k: '' };
   }
@@ -98720,6 +99015,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(s.k === 'slow') return T('送信に時間がかかっています', 'Sending is taking a while');
     if(s.k === 'check') return T('保存の確認待ち', 'Save needs checking');
     if(s.k === 'queued') return (s.off ? T('オフライン・', 'Offline · ') : '') + T('送信待ち ' + s.n + '件', s.n + ' waiting to send');
+    if(s.k === 'offline') return T('オフライン（つながると最新を取りに行きます）', 'Offline (will update when back online)');
     if(s.k === 'saved') return T('保存済み ', 'Saved ') + clockOf(s.t);
     return '';
   }
@@ -98735,6 +99031,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var icon = s.k === 'saving' ? '<span class="ux-spin" aria-hidden="true"></span>'
       : s.k === 'saved' ? '<i class="ti ti-cloud-check" aria-hidden="true"></i>'
       : s.k === 'queued' ? '<i class="ti ti-cloud-off" aria-hidden="true"></i><b class="ux-save-n">' + s.n + '</b>'
+      : s.k === 'offline' ? '<i class="ti ti-wifi-off" aria-hidden="true"></i>'
       : '<i class="ti ti-alert-triangle" aria-hidden="true"></i>';
     b.className = 'topbar-icon-btn ux-save ' + (s.k === 'saved' ? 'is-ok' : s.k === 'saving' ? 'is-saving' : 'is-warn');
     if(s.k === 'slow') icon = '<span class="ux-spin" aria-hidden="true"></span>';
@@ -98752,6 +99049,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     else if(s.k === 'slow') h = T('この端末には保存されています。クラウドへの送信に時間がかかっています（通信が遅いか、つながっていません）。送れなかったときは送信待ちに入り、つながると自動で送ります。', 'Saved on this device. Sending to the cloud is taking a while (slow or no connection). If it fails it will wait and be sent automatically when connected.');
     else if(s.k === 'check') h = T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.');
     else if(s.k === 'queued') h = T('この端末には保存されています（' + s.n + '件）。クラウドへはまだ送れていません。' + (s.off ? 'オフラインです。' : '') + 'つながると自動で送ります。', 'Saved on this device (' + s.n + '). Not sent to the cloud yet.' + (s.off ? ' You are offline.' : '') + ' It will be sent automatically when connected.');
+    else if(s.k === 'offline') h = T('通信が切れています。この間の保存はこの端末に残し、つながると自動で送ります。画面の数字は、つながったときに最新を取りに行きます。', 'You are offline. Saves stay on this device and are sent automatically when you are back online. Numbers update when you reconnect.');
     else if(s.k === 'saved') h = T('クラウドに保存しました（' + clockOf(s.t) + '）。', 'Saved to the cloud (' + clockOf(s.t) + ').');
     else h = T('保存待ちのものはありません。', 'Nothing waiting to be saved.');
     pop.innerHTML = '<div class="ux-save-pop-h">' + esc(saveLabel(s) || T('保存の状態', 'Save status')) + '</div><div>' + esc(h) + '</div>'

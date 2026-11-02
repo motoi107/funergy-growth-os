@@ -533,3 +533,43 @@ test('直接送っていた所（店舗マスターの移し替え・LaLa・Toto
 test('合流の決まりの無い送り方（syncMasterToSupabase）も、人ごとに分けた行の機密を外す', () => {
   assert.match(fnFrom('syncMasterToSupabase'), /_opCloudVal\(key, val\)/);
 });
+
+/* v1129（11/01 の依頼 ④）：ログインのあとの裏の取り込みで、右上が「保存中…」と点滅しない。通信が切れたら右上に出す */
+test('v1129 ④：裏の自動の保存（売上・予算）を送っているあいだは「保存中…」にしない・確かめが要るときは出す', () => {
+  const st = { status: 'idle', auto: false };
+  const guard = { getState: () => Object.freeze(Object.assign({ enabled: true }, st)) };
+  const nav = { onLine: true };
+  const env = fakeEnv({ FUNERGY_FINANCIAL_SAVE: guard, navigator: nav, outboxCount: () => 0 });
+  env.ctx.window.FUNERGY_FINANCIAL_SAVE = guard;
+  vm.runInContext(uxBlock(), env.ctx);
+  const UX = env.ctx.window.FUNERGY_UX;
+  const k = () => UX.saveState().k;
+  assert.equal(k(), '');
+  st.status = 'saving'; st.auto = true;
+  assert.equal(k(), '', '自動の保存を送っているあいだ');
+  st.status = 'checking';
+  assert.equal(k(), '', '自動の保存の答えを確かめているあいだ');
+  st.status = 'unknown';
+  assert.equal(k(), 'check', '自動の保存でも答えが確かめられなければ出す');
+  st.status = 'conflict';
+  assert.equal(k(), 'check', '重なったときも出す');
+  st.status = 'saving'; st.auto = false;
+  assert.equal(k(), 'saving', '人が押した保存は今までどおり「保存中…」');
+  st.status = 'checking';
+  assert.equal(k(), 'saving');
+});
+
+test('v1129 ④：通信が切れたら、送るものが無くても右上に「オフライン」。送信待ちがあれば件数', () => {
+  const nav = { onLine: false };
+  let n = 0;
+  const env = fakeEnv({ navigator: nav, outboxCount: () => n });
+  vm.runInContext(uxBlock(), env.ctx);
+  const UX = env.ctx.window.FUNERGY_UX;
+  assert.equal(UX.saveState().k, 'offline');
+  n = 2;
+  const s = UX.saveState();
+  assert.equal(s.k, 'queued'); assert.equal(s.n, 2); assert.equal(s.off, true);
+  n = 0; nav.onLine = true;
+  assert.equal(UX.saveState().k, '', 'つながれば消える');
+  assert.ok(uxBlock().includes("if(s.k === 'offline') return T('オフライン（つながると最新を取りに行きます）'"), '右上の言葉');
+});
