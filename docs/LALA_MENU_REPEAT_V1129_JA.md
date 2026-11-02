@@ -43,12 +43,30 @@
   - 行があって FT・RP・SR が 0 の日は 0 が入る。合計が 0 なら率を出さない（「対象データなし」）。
 - **出数**：`toast_item_sales`（数量）→ `menuMixFromSales`（ハワイの前日まで）→ `menu_mix_<店>_<年.月>`。レシピに結べない商品は落ちる。
 
-## 3. 本番の状態（前の読むだけの SQL の結果・10/17 ほか）
+## 3. 本番の状態（`db/lala-menu-repeat-check.sql` の結果・11/01 20:00 HST・読むだけ）
 
-- LaLa の `toast_sales` は、売上はあるのに FT・RP・SR がどの日も 0。ToriTon は毎日ある。
-- LaLa は、売上のある日に商品の出数の行（`toast_item_sales`）が無い日もある。
-- 見立て：取り込みの段で LaLa の来店区分が見つかっていない（Toast の LaLa のメニューに Customers のグループが無い・名前が違う、か、hyper-worker の見つけ方）。出数の欠けも取り込みの段。
-- 細かいことは `db/lala-menu-repeat-check.sql`（読むだけ・Moto さんに送った）の結果で確かめる。
+数はリポジトリに書かない（Moto さんに直接）。
+
+- **リピート率（LaLa）**：
+  - `toast_sales` は売上のある日がすべてあるのに、FT・RP・SR が 9 月・10 月のどの日も 0（null ではなく 0）。ToriTon・Tenkichi は毎日ある。
+  - → 4 つの状態のうち「未取得」（取り込みの段で来店区分が見つかっていない）。保存・集計・画面の不具合ではない。
+  - アプリは FT＋RP＋SR＝0 を「対象データなし」として率を出さない（0% にしない）。これは正しい。
+- **Toast のメニュー（LaLa）**：
+  - `toast_menu_items` に LaLa の行が 1 つも無い。ToriTon には 31 のカテゴリーがあり、その中に Customers（FT・RP・SR）がある。
+  - hyper-worker は FT・RP・SR をメニューの Customers のグループで見つける。考えられる理由は 2 つ：
+    - LaLa の Toast に Customers のグループが無い。
+    - LaLa のメニューを Toast から読めていない。
+  - 同期センターの「来店区分の診断」で LaLa を選ぶと、どちらかが分かる（「トップ階層グループ名」が空なら読めていない）。
+- **メニューの出数（LaLa）**：
+  - 商品の出数の行（`toast_item_sales`）は、10 月は売上のある日のうち 10/31 だけ無い。9 月は売上のある日の半分に無い。11/01（今日）はどの店もまだ無い（ふつう）。→ その日は「未取得」。
+  - メニューの行が無いので、出数の行の商品 GUID を名前・カテゴリー・レシピに結べない。→ 「保存済みだが集計されない」（メニュータブはレシピに結べた商品だけを数える）。
+- **ランチ・ディナー別（全店）**：
+  - `toast_sales` にランチ・ディナー別の来店区分の列（`lunch_first_time_count` など 6 つ）が無い。hyper-worker は列が無いと、それを外して保存する。→ どの店もランチ・ディナー別のリピート率は保存されていない。
+- **最後に取り込めた時刻**：`toast_sales.fetched_at` がある（UI案67 の「最後に取り込めた時刻」に使える）。
+- **式の確かめ（ToriTon・Tenkichi）**：
+  - `repeat_count` は RP＋SR（SR は中に入る。8 月の hyper-worker の版で確かめた）。
+  - なので、アプリの率 `repeat_count ÷（first_time_count＋repeat_count）` は（RP＋SR）÷（FT＋RP＋SR）と同じ。
+  - 期間で数を足してから割っている。
 
 ## 4. アプリ側の直し（このブランチ・本番未反映）
 
@@ -69,9 +87,10 @@
 ## 6. まだ
 
 - Moto さん：
-  - `db/lala-menu-repeat-check.sql` の結果。
+  - 同期センター › 店舗別 詳細オプションで LaLa › 「来店区分の診断」（営業日の日付）の結果。
+  - LaLa の Toast で来店区分（FT・RP・SR）を記録する運用か（Customers のボタンを置くか）＝業務の決めごと。
+  - ランチ・ディナー別の列を足すか（SQL は Claude が用意する）。
   - 今の hyper-worker のソース（非公開のまま直して直接渡す）。
-  - LaLa の Toast で来店区分をどう記録しているか（同期センターの「来店区分の診断」で LaLa を選ぶと、Customers のグループとモディファイヤーの名前が出る）。
   - UI案67 の決めごと。
 - Claude：
   - hyper-worker の LaLa の見つけ方と出数の欠けを直す。
