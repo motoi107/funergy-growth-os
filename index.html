@@ -592,6 +592,8 @@ body.shift-wide .main { max-width:1900px; }
 @media (min-width:1180px) { body.mr-wide .main { max-width:1500px; } }
 /* v1126（UI案65）：メニュー（出数）の画面。PC は 1500px まで広げる（1179px 以下は今までどおり 900px） */
 @media (min-width:1180px) { body.mn-wide .main { max-width:1500px; } }
+/* v1128（UI案66）：食材マスターの紐づけタブ。PC は 1500px まで広げる（行ごとの候補とチェックの列） */
+@media (min-width:1180px) { body.ilk-wide .main { max-width:1500px; } }
 .mn-head { display:flex; flex-wrap:wrap; align-items:flex-end; justify-content:space-between; gap:10px; margin-bottom:12px; }
 .mn-head-r { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .mn-pill { display:inline-flex; flex-wrap:wrap; align-items:center; gap:6px; background:#fff; border:1px solid var(--border); border-radius:999px; padding:7px 14px; font-size:13px; }
@@ -3447,7 +3449,7 @@ function migrateActivateStores() {
         lsSet('m_stores', stores);
         if (typeof refreshStores==='function') refreshStores();
         // クラウド(Supabase)にも反映（自動同期OFFでも実行・失敗は無視）
-        try { if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}
+        try { if (typeof _pushAwait==='function') _pushAwait('m_stores', stores); else if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}   /* v1128：同じキーは 1 つずつ */
       }
     }
     lsSet('_activateStores_v1', true);
@@ -3480,7 +3482,7 @@ function migrateStoreGuids() {
       if (changed) {
         lsSet('m_stores', stores);
         if (typeof refreshStores==='function') refreshStores();
-        try { if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}
+        try { if (typeof _pushAwait==='function') _pushAwait('m_stores', stores); else if (typeof syncMasterToSupabase==='function') syncMasterToSupabase('m_stores', stores); } catch(e){}   /* v1128：同じキーは 1 つずつ */
       }
     }
     lsSet('_storeGuids_v1', true);
@@ -10354,15 +10356,37 @@ function supaHeaders(extra){
    （＝last-write-wins。古い値で新しい値を上書きしない）。outbox自体は端末ローカル（同期しない）。 */
 function _outboxGet(){ try{ var a=JSON.parse(localStorage.getItem('op_outbox')||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
 function _outboxSet(a){ try{ localStorage.setItem('op_outbox', JSON.stringify(a||[])); }catch(e){} }
-function _outboxAdd(key, err){
+/* v1128（独立レビュー 6f2b5ab P1）：だれの保存か。送信待ち（op_outbox）と、送っている途中で閉じられた印（_ux_inflight）の両方で使う。
+   送り直すのは同じ人がログインしているあいだだけ（共有の端末で、A の送れなかった保存を B のログインのあいだに送らない）。
+   ログインしていないとき（名前を選んだだけ・ログアウトのあと）は ''。人は社員の ID（PIN でも管理者ページのメールでも同じ 'p:'）、
+   店舗のログインは 's:店'。管理者ページでは、メールで確かめた人（選んだ名前ではなく） */
+function _saveWho(){
+  try{
+    if(typeof curRole==='undefined' || !curRole) return '';
+    if(typeof curStoreLogin!=='undefined' && curStoreLogin) return 's:'+String((typeof loginLocation!=='undefined' && loginLocation) || (typeof curStore!=='undefined' && curStore) || '');
+    var a=(typeof window!=='undefined') ? window._authSession : null;
+    var aw=(a && a.emp_id!=null && a.emp_id!=='') ? ('p:'+String(a.emp_id)) : ((a && a.email) ? ('a:'+String(a.email).toLowerCase()) : '');
+    if(typeof window!=='undefined' && window._secureMode && aw) return aw;
+    if(typeof loginPerson!=='undefined' && loginPerson && loginPerson.id!=null && loginPerson.id!=='') return 'p:'+String(loginPerson.id);
+    if(aw) return aw;
+    return 'r:'+String(curRole)+':'+String((typeof curUserName!=='undefined' && curUserName) || '');
+  }catch(e){ return ''; }
+}
+/* 送信待ちに入れる。w＝だれの保存か（省略すると今ログインしている人）。同じキーがもう入っていれば、いちばん新しく保存した人にする
+   （端末のそのキーの値は 1 つで、新しい保存は前の保存の上に重なっている） */
+function _outboxAdd(key, err, w){
   if(!key || key==='op_outbox') return;
+  if(typeof w==='undefined') w=(typeof _saveWho==='function'?_saveWho():'');
   var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0];
-  if(e){ e.attempts=(e.attempts||0)+1; e.lastErr=String(err||''); e.ts=Date.now(); }
-  else { a.push({key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}); }
+  if(e){ e.attempts=(e.attempts||0)+1; e.lastErr=String(err||''); e.ts=Date.now(); if(w) e.who=w; }
+  else { var n={key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}; if(w) n.who=w; a.push(n); }
   _outboxSet(a);
 }
 function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); }
-function outboxCount(){ return _outboxGet().length; }
+/* 今ログインしている人が送れる送信待ち（その人の保存と、だれのか分からない v1127 までのもの）。ほかの人の保存は、その人がまたログインしたときに送る */
+function _outboxMine(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && (!x.who || x.who===me); }); }
+function _outboxOthers(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && x.who && x.who!==me; }).length; }
+function outboxCount(){ return _outboxMine().length; }
 /* v741: 未送信キーを人が読める名前にする（何が送れていないか分かるように） */
 /* v744: 未送信を1件だけ送って結果をその場に出す（原因が分からないまま残るのを防ぐ） */
 async function outboxRetryOne(key){
@@ -10371,6 +10395,13 @@ async function outboxRetryOne(key){
       showToast('まだクラウドから取得していないため送れません（'+key+'）。同期を実行してからお試しください。','warning');
       return;
     }
+    /* v1128：ほかの人の送信待ちは送らない（その人がこの端末でまたログインしたときに送る） */
+    var _ent=_outboxGet().filter(function(x){ return x && x.key===key; })[0], _me=(typeof _saveWho==='function'?_saveWho():'');
+    if(_ent && _ent.who && _ent.who!==_me){
+      showToast('ほかの人の送信待ちです。その人がこの端末でログインしたときに送ります（'+key+'）','warning');
+      return;
+    }
+    if(typeof _supaBooting!=='undefined' && _supaBooting){ showToast('起動・取り込みの途中です。少し待ってからお試しください（'+key+'）','warning'); return; }
     var cur=ls(key, null);
     if(cur===null || typeof cur==='undefined'){
       showToast('端末にデータがありません。キューから外します（'+key+'）','info');
@@ -10378,13 +10409,14 @@ async function outboxRetryOne(key){
       return;
     }
     showToast('送信中…','info');
-    var r=await syncMasterToSupabase(key, cur);
+    /* v1128：同じキーを送っている途中なら、その送信のあとに（並べて送らない） */
+    var r=await _pushAwait(key, cur);
     if(r===false){
       var why=(_opLastPushErr&&_opLastPushErr[key])||'クラウドへの書き込みに失敗しました';
-      _outboxAdd(key, why);
-      showToast('送れませんでした：'+why,'warning');
+      showToast('送れませんでした：'+why,'warning');   /* 送信待ちには、送った所（_pushRun）が数えて入れている（ここで 2 回数えない） */
     } else {
-      _outboxRemove(key);
+      /* v1128（独立レビュー P2）：この送信のあいだに、また保存されて新しい値を送っている途中なら、送信待ちから外さない（閉じられても次に送る） */
+      if(!(typeof _pushBusy==='function' && _pushBusy(key))) _outboxRemove(key);
       showToast('送信しました','success');
     }
   }catch(e){
@@ -10427,40 +10459,50 @@ function _pushWithOutbox(key, val){
   }catch(e){}
   /* v1127：同じキーを送っている途中に、また保存されたら：終わってから、そのときの最新の値で 1 回だけ送る（途中の値は飛ばす）。
      送る順を守り（古い値があとから届いて新しい値を上書きしない）、古い送信の成功で、まだ送れていない新しい変更を「送れた」にしない。
-     30 秒たっても前の送信が終わらないときは、待っている最新の値を送る（それより前の値は送らない）。待っているあいだは送信待ちにも入れておく
-     （閉じられても次に送る）。送った結果（true・false・undefined）は今までどおり */
-  var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : (_pushWithOutbox.__q || (_pushWithOutbox.__q={}));
-  var q=Q[key]||(Q[key]={seq:0, busy:0, busySeq:0, next:null});
-  function run(v){
-    var my=++q.seq; q.busy=Date.now(); q.busySeq=my;
-    return Promise.resolve().then(function(){ return syncMasterToSupabase(key, v); })
-      .then(function(r){ return { r:r }; }, function(e){ return { r:false, e:e }; })
-      .then(function(o){
-        if(q.busySeq===my) q.busy=0;
-        var nx=q.next;
-        if(nx && !q.busy){ q.next=null; if(nx.t) clearTimeout(nx.t); run(nx.val).then(nx.res); }   /* 待っていた新しい値を送る（その結果で送信待ちを決める） */
-        if(o.r===false) _outboxAdd(key, o.e ? ((o.e&&o.e.message)||o.e) : 'push failed');
-        else if(my===q.seq && (o.r===true || q.marked)) _outboxRemove(key);   /* 一番新しい送信が届いたときだけ、送信待ちから外す。undefined＝対象外（待ちのあいだに入れた印だけ外す） */
-        if(my===q.seq && !q.next) q.marked=false;
-        return o.r;
-      });
-  }
-  if(q.busy && (Date.now()-q.busy)<30000){
+     待っているあいだは送信待ちにも入れておく（閉じられても次に送る）。送った結果（true・false・undefined）は今までどおり。
+     v1128（Codex の PR #118 のレビュー P1）：前は 30 秒たっても前の送信が終わらないと、待っている値を並べて送っていた。2 つの送信が
+     同時に生きると、サーバーに届く順が逆になり、古い値が新しい値を上書きしうる。いまは同じキーをいつも 1 つずつ送る（前の送信が答えるまで待つ。
+     そのあいだは送信待ちに入り、右上に「送信に時間がかかっています」）。未送信キューの再送（flushOutbox）も同じ順に並ぶ */
+  var q=_pushQOf(key), w=(typeof _saveWho==='function'?_saveWho():'');
+  if(q.busy){
     if(!q.next){
-      var _res; q.next={ val:val, p:new Promise(function(r){ _res=r; }) }; q.next.res=_res;
-      try{ _outboxAdd(key, 'queued'); q.marked=true; }catch(e){}
-      q.next.t=setTimeout(function(){ var nx=q.next; if(!nx) return; q.next=null; run(nx.val).then(nx.res); }, Math.max(0, 30000-(Date.now()-q.busy)));
+      var _res; q.next={ val:val, who:w, p:new Promise(function(r){ _res=r; }) }; q.next.res=_res;
+      try{ _outboxAdd(key, 'queued', w); q.marked=true; }catch(e){}
     }
-    else q.next.val=val;
+    else { q.next.val=val; q.next.who=w; }
     _pp[key]=q.next.p;
     return;
   }
-  /* 送る。待っている値があれば、この送信（いちばん新しい値）にまとめる */
-  var w=q.next; if(w){ q.next=null; if(w.t) clearTimeout(w.t); }
-  var pr=run(val); if(w) pr.then(w.res);
-  _pp[key]=pr;
+  _pp[key]=_pushRun(key, val, w);
+}
+function _pushQOf(key){ var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : (_pushWithOutbox.__q || (_pushWithOutbox.__q={})); return Q[key]||(Q[key]={seq:0, busy:0, busySeq:0, next:null}); }
+/* 送っている途中か（同じキーを並べて送らないため。flushOutbox が見る） */
+function _pushBusy(key){ var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : (_pushWithOutbox.__q || {}); var q=Q[key]; return !!(q && (q.busy || q.next)); }
+/* 1 つ送る。終わったら、待っていた最新の値を続けて送る（その結果で送信待ちを決める） */
+function _pushRun(key, v, w){
+  var q=_pushQOf(key);
+  if(typeof w==='undefined') w=(typeof _saveWho==='function'?_saveWho():'');
+  var my=++q.seq; q.busy=Date.now(); q.busySeq=my;
+  return Promise.resolve().then(function(){ return syncMasterToSupabase(key, v); })
+    .then(function(r){ return { r:r }; }, function(e){ return { r:false, e:e }; })
+    .then(function(o){
+      if(q.busySeq===my) q.busy=0;
+      var nx=q.next;
+      if(nx && !q.busy){ q.next=null; _pushRun(key, nx.val, nx.who).then(nx.res); }
+      if(o.r===false) _outboxAdd(key, o.e ? ((o.e&&o.e.message)||o.e) : ((typeof _opLastPushErr!=='undefined' && _opLastPushErr && _opLastPushErr[key]) || 'push failed'), w);   /* 送れなかった：その保存をした人の送信待ちに */
+      else if(my===q.seq && (o.r===true || q.marked)) _outboxRemove(key);   /* 一番新しい送信が届いたときだけ、送信待ちから外す。undefined＝対象外（待ちのあいだに入れた印だけ外す） */
+      if(my===q.seq && !q.next) q.marked=false;
+      return o.r;
+    });
 }
 var _pushQ = {};   /* v1127：キーごとの送信の順（_pushWithOutbox） */
+/* v1128：直接送る所（未送信の 1 件を送る・店舗マスター・まとめて送る など）も、同じキーの送信の順に並べて結果を待つ。
+   まだ取得していないキーは送らない（送信待ちへ）。起動・取り込みの途中は送らない。結果は syncMasterToSupabase と同じ（true・false・undefined） */
+function _pushAwait(key, val){
+  _pushWithOutbox(key, val);
+  var p=(typeof _lsPushP!=='undefined' && _lsPushP) ? _lsPushP[key] : null;
+  return Promise.resolve(p).then(function(r){ return (r==='booting' || r==='deferred') ? undefined : r; });
+}
 
 /* 未送信キューを再送。値は都度ローカルから読み直す（stale上書き防止）。 */
 var _outboxFlushing=false;
@@ -10471,9 +10513,11 @@ async function flushOutbox(){
   _outboxFlushing=true;
   try{
     try{ if(typeof empDirtyCount==='function' && empDirtyCount()) await empPushDirty(); }catch(e){}   /* v1085: 従業員の送れていない変更 */
-    var q=_outboxGet();
+    var q=_outboxGet(), me=(typeof _saveWho==='function'?_saveWho():'');
     for(var i=0;i<q.length;i++){
       var key=q[i].key;
+      /* v1128（独立レビュー 6f2b5ab P1）：ほかの人の保存は、その人がこの端末でまたログインしたときに送る（だれのか分からない v1127 までのものは今までどおり送る） */
+      if(q[i].who && q[i].who!==me) continue;
       try{
         var cur=ls(key, null);
         /* v721: まだ取得していない必要時キーは送らない（部分データでクラウドを上書きしない）。
@@ -10485,9 +10529,12 @@ async function flushOutbox(){
           if(_LS_SAVE_FAIL && _LS_SAVE_FAIL[key]) continue;   // 保存失敗中 → 次回に持ち越す
           _outboxRemove(key); continue;                        // 本当に存在しない → 送るものが無い
         }
-        var r=await syncMasterToSupabase(key, cur);
-        if(r!==false){ _outboxRemove(key); if(r===true && key.indexOf('spl_tip_requests_')===0 && typeof tipLiveBeacon==='function') tipLiveBeacon([key]); }   // 成功 or 対象外 → 除去（v1091: Tip Rate はあとから届いたことをほかの端末へ）
-        else { var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0]; if(e){ e.attempts=(e.attempts||0)+1; e.ts=Date.now(); _outboxSet(a); } }
+        /* v1128（Codex の PR #118 のレビュー P1）：同じキーを送っている途中なら送らない（並べて送ると、古い値があとから届いて新しい値を上書きしうる）。
+           その送信が終わると、待っている最新の値が続けて送られる。送るときも同じ順（_pushRun）に並ぶ */
+        if(typeof _pushBusy==='function' && _pushBusy(key)) continue;
+        var r=(typeof _pushRun==='function') ? await _pushRun(key, cur, q[i].who||me) : await syncMasterToSupabase(key, cur);
+        if(r!==false){ if(!(typeof _pushBusy==='function' && _pushBusy(key))) _outboxRemove(key); if(r===true && key.indexOf('spl_tip_requests_')===0 && typeof tipLiveBeacon==='function') tipLiveBeacon([key]); }   // 成功 or 対象外 → 除去（v1091: Tip Rate はあとから届いたことをほかの端末へ）。そのあいだに新しい保存が待っていれば残す
+        else if(typeof _pushRun!=='function'){ var a=_outboxGet(); var e=a.filter(function(x){return x.key===key;})[0]; if(e){ e.attempts=(e.attempts||0)+1; e.ts=Date.now(); _outboxSet(a); } }   /* _pushRun は失敗を送信待ちに数える */
       }catch(e){ /* 次回へ持ち越し */ }
     }
   } finally { _outboxFlushing=false; }
@@ -10495,7 +10542,7 @@ async function flushOutbox(){
 
 /* 書き戻し診断：保存したデータがクラウドに入ったか（未送信の有無）を確認 */
 function openOutboxDiag(){
-  var q=_outboxGet();
+  var q=_outboxMine(), _oth=_outboxOthers();
   var ageMin=function(ts){ var m=Math.max(0, Math.round((Date.now()-(ts||0))/60000)); return m<1?'たった今':(m+'分前'); };
   var body;
   if(!q.length){
@@ -10513,6 +10560,7 @@ function openOutboxDiag(){
       +'<p style="font-size:12px;margin-top:2px">下記は保存済みだがクラウドへの書き込みが未完了です。オンライン時に「今すぐ再送」してください。ローカルには保存されているのでデータは失われません。</p></div></div>'
       +'<div class="card" style="margin:0">'+listRows+'</div>';
   }
+  if(_oth) body+='<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-user"></i> '+t('ほかの人の送信待ち '+_oth+' 件（その人がこの端末でログインしたときに送ります）','Unsent saves of other people: '+_oth+' (sent when that person signs in on this device)')+'</div>';
   openModal('<div class="modal-title"><i class="ti ti-cloud-check"></i> 書き戻し確認（未送信データ） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +body
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
@@ -10784,9 +10832,10 @@ async function _empFetchByIds(ids){
   try{
     if(!ids || !ids.length) return {};
     var q=ids.map(function(id){ return '"'+String(id).replace(/\\/g,'\\\\').replace(/"/g,'\\"')+'"'; }).join(',');
-    var r=await fetch(SUPABASE_URL+'/rest/v1/employees?select=id,data&id=in.('+encodeURIComponent(q)+')', { headers:supaHeaders() });
-    if(!r.ok) return null;
-    var rows=await r.json(); if(!Array.isArray(rows)) return null;
+    var ac=null, tm=null; try{ ac=new AbortController(); tm=setTimeout(function(){ try{ ac.abort(); }catch(e){} }, 45000); }catch(e){ ac=null; }   /* v1128：答えが無ければ打ち切る */
+    var r=await fetch(SUPABASE_URL+'/rest/v1/employees?select=id,data&id=in.('+encodeURIComponent(q)+')', ac ? { headers:supaHeaders(), signal:ac.signal } : { headers:supaHeaders() });
+    if(!r.ok){ if(tm) clearTimeout(tm); return null; }
+    var rows=await r.json(); if(tm) clearTimeout(tm); if(!Array.isArray(rows)) return null;
     var out={}; rows.forEach(function(x){ if(x && x.id!=null && x.data && typeof x.data==='object'){ var dd=x.data; if(dd.id==null) dd.id=x.id; out[String(x.id)]=dd; } });
     return out;
   }catch(e){ return null; }
@@ -11107,7 +11156,7 @@ async function syncMasterToSupabase(key, val){
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
-    var _outVal = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
+    var _outVal = (typeof _opCloudVal==='function') ? _opCloudVal(key, val) : ((key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val);   /* v1128：人ごとに分けた行も */
     return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
   }
 }
@@ -11157,20 +11206,31 @@ function supaErrorText(){
   var raw = String(e.body || '').replace(/\s+/g, ' ').slice(0, 120);
   return (hint ? hint + ' ' : '') + '[' + (e.status || '?') + (raw ? ' ' + raw : '') + ']';
 }
+/* v1128（独立レビュー 6f2b5ab P2）：書き込みが答えないまま残ると、同じキーの送信（1 つずつ）がそこで止まり続ける。
+   答えが来なければ打ち切って「送れなかった」にする（送信待ちに残り、待っていた新しい値が続けて送られる）。
+   時間は 45 秒＋大きさ（1 秒あたり 20KB の回線でも送り終えられるだけ。5 分まで）。データベースの 1 文の上限は数秒なので、
+   45 秒たって答えが無い書き込みは、ふつうはサーバーに届いていない */
+function _supaWriteMs(n){ n=+n||0; return Math.min(300000, 45000 + Math.floor(n/20)); }
 async function supaUpsert(table, rows){
+  var ctl=null, tm=null, body=JSON.stringify(rows), timedOut=false;
+  try { ctl=new AbortController(); tm=setTimeout(function(){ timedOut=true; try{ ctl.abort(); }catch(e){} }, _supaWriteMs(body.length)); } catch(e){ ctl=null; }
   try {
-    var res = await fetch(SUPABASE_URL+'/rest/v1/'+table, {
+    var opt = {
       method:'POST',
       headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
-      body: JSON.stringify(rows),
-    });
-    if (!res.ok) { var txt=await res.text();
+      body: body,
+    };
+    if (ctl) opt.signal = ctl.signal;
+    var res = await fetch(SUPABASE_URL+'/rest/v1/'+table, opt);
+    if (!res.ok) { var txt=await res.text(); if (tm) clearTimeout(tm);
       _lastSupaError = { table: table, status: res.status, body: txt, at: new Date().toISOString() };
       console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
+    if (tm) clearTimeout(tm);
     _lastSupaError = null;
     return true;
   } catch(e){
-    _lastSupaError = { table: table, status: 0, body: String(e && e.message || e), at: new Date().toISOString() };
+    if (tm) clearTimeout(tm);
+    _lastSupaError = { table: table, status: 0, body: timedOut ? 'timeout: クラウドが答えませんでした（時間切れ）' : String(e && e.message || e), at: new Date().toISOString() };
     console.warn('supaUpsert error', table, e); return false; }
 }
 /* 手動: 現在のlocalStorageマスターを一括Supabaseへ投入（設定画面から実行） */
@@ -11565,8 +11625,20 @@ async function pushOpKeyNow(key){
   try{
     var val = ls(key, null); if(val==null) return false;
     var out = (key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val;
-    await supaUpsert('app_state', [{ key:key, value:out, updated_at:new Date().toISOString() }]);
-    return true;
+    var def = (typeof _opMergeDef==='function') ? _opMergeDef(key) : null;
+    if(!def) return (await supaUpsert('app_state', [{ key:key, value:out, updated_at:new Date().toISOString() }])) !== false;
+    /* v1128（独立レビュー 6f2b5ab P2）：合流の決まりのあるキー（onboardings）は、端末の値で丸ごと書かない（ほかの端末の行を消す）。
+       同じキーの合流の送信のあとに並び（opMergePush と同じ順）、クラウドの最新に重ねて書く。送るのは今までどおり機密を外した値で、
+       端末の値は書き換えない。クラウドを読めなければ書かない（前は失敗しても true を返していた）。起動の途中でも送る（招待をすぐ開けるように） */
+    var run = function(){ return (async function(){
+      var cloud = await _fetchOpValue(key, 'app_state', !!def.strict, 45000);
+      if(cloud===undefined || (typeof _OP_READ_TMO!=='undefined' && cloud===_OP_READ_TMO)) return false;
+      return (await supaUpsert('app_state', [{ key:key, value:_opCloudVal(key, def.merge(cloud, out)), updated_at:new Date().toISOString() }])) !== false;
+    })(); };
+    var prev = _opMergeChain[key] || Promise.resolve();
+    var next = prev.then(run, run);
+    _opMergeChain[key] = next;
+    return await next;
   }catch(e){ console.warn('pushOpKeyNow failed', key, e); return false; }
 }
 /* ============================================================
@@ -12525,8 +12597,23 @@ function _coversApprovals(check, want){
 }
 var _opMergeChain = {}; // キー別に直列化（自クライアント内の連続書き込みが互いを潰さないように）
 
-function _fetchOpValue(key, table, strict){
+var _OP_READ_TMO = { tmo: 1 };   /* v1128：読み込みが答えなかった（時間切れ）。opMergePush が「読めなかった」として送らない */
+function _fetchOpValue(key, table, strict, tmo){
   table = table || 'app_state';
+  if(tmo && !strict && typeof _OP_READ_TMO!=='undefined' && typeof setTimeout==='function'){
+    /* v1128（独立レビュー P2）：送る前の読み込みが答えないと、同じキーの送信が止まり続ける。打ち切って _OP_READ_TMO を返す
+       （「行が無い」や「読めなかったので素通し」にはしない） */
+    var ctl2=null, tm2=null, out2=false;
+    try{ ctl2=new AbortController(); }catch(e){ ctl2=null; }
+    return new Promise(function(resolve){
+      tm2=setTimeout(function(){ if(out2) return; out2=true; try{ if(ctl2) ctl2.abort(); }catch(e){} resolve(_OP_READ_TMO); }, tmo);
+      var o2={ headers: supaHeaders() }; if(ctl2) o2.signal=ctl2.signal;
+      fetch(SUPABASE_URL+'/rest/v1/'+table+'?key=eq.'+encodeURIComponent(key)+'&select=value', o2)
+        .then(function(r){ return r.ok ? r.json() : null; })
+        .then(function(rows){ if(out2) return; out2=true; clearTimeout(tm2); resolve((rows && rows.length) ? rows[0].value : null); })
+        .catch(function(){ if(out2) return; out2=true; clearTimeout(tm2); resolve(undefined); });
+    });
+  }
   /* v1095: strict（合流の決まりの strict の付いたキー）は、HTTP のエラーも「読めなかった」（undefined）にし、15 秒で打ち切る。
      前は HTTP のエラーを「行が無い」（null）と同じに読んでいた。strict でないキーは今までどおり */
   var ctl=null, tm=null;
@@ -12605,6 +12692,9 @@ function _opCasWrite(key, value, row){
     });
   }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
 }
+/* v1128：クラウドへ書く値。新しく入った人（onboardings）の機密（住所・電話・メール・生年月日・SSN・ビザ・書類の画像）は、
+   合流の道でもクラウドに書かない（保護領域 ob-private にだけ置く。合流の決まりの無かったころの送り方と同じ）。端末の値は変えない */
+function _opCloudVal(key, v){ var k=String(key||''); return ((k==='onboardings' || k.indexOf('spl_onboardings_')===0) && Array.isArray(v) && typeof stripObPII==='function') ? v.map(stripObPII) : v; }   /* 人ごとに分けた行（spl_onboardings_<名前>）も */
 function _opUpsertRow(key, value, table){
   return (table==='app_settings')
     ? { key:key, value:value, category:(typeof supaSettingCategory==='function'?supaSettingCategory(key):null) }
@@ -13069,10 +13159,11 @@ function opMergePush(key, localVal, table){
         return _ok;
       }
       for(var attempt=0; attempt<3; attempt++){
-        var cloud = await _fetchOpValue(key, table, !!def.strict);
+        var cloud = await _fetchOpValue(key, table, !!def.strict, 45000);
+        if(typeof _OP_READ_TMO!=='undefined' && cloud===_OP_READ_TMO){ _ok=false; _err='クラウドの読み込みが答えませんでした（時間切れ。未送信に残し、あとで送り直します）'; break; }   /* v1128 */
         if(cloud===undefined && def.strict){ _ok=false; _err='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }   /* v1095: 端末の写しで丸ごと書かない */
         if(cloud===undefined){ // 取得失敗→マージせず素通し
-          var _u0 = await supaUpsert(table, [_opUpsertRow(key, desired, table)]);
+          var _u0 = await supaUpsert(table, [_opUpsertRow(key, (typeof _opCloudVal==='function' ? _opCloudVal(key, desired) : desired), table)]);
           _opWriteBack(key, def, desired);                         /* v763 → v1034: 手元の新しい保存を残す */
           _ok = (_u0!==false);
           if(!_ok) _err='クラウドへの書き込みに失敗しました';
@@ -13080,9 +13171,10 @@ function opMergePush(key, localVal, table){
         }
         var merged = def.merge(cloud, desired);
         _opWriteBack(key, def, merged);                           /* v763 → v1034: 手元の新しい保存を残す */
-        var _u1 = await supaUpsert(table, [_opUpsertRow(key, merged, table)]);
+        var _u1 = await supaUpsert(table, [_opUpsertRow(key, (typeof _opCloudVal==='function' ? _opCloudVal(key, merged) : merged), table)]);
         if(_u1===false){ _ok=false; _err='クラウドへの書き込みに失敗しました'; break; }
-        var check = await _fetchOpValue(key, table);
+        var check = await _fetchOpValue(key, table, false, 45000);
+        if(typeof _OP_READ_TMO!=='undefined' && check===_OP_READ_TMO) check=undefined;   /* 確かめの読み込みが答えない：書けたので、今までの「読めなかった」と同じに */
         if(check===undefined || def.covers(check, merged)){ desired=merged; _ok=true; break; }
         desired = def.merge(check, merged); // 誰かに上書きされた→取り込んで再試行
         _err='他の端末の更新と競合し、3回試しても確認できませんでした';
@@ -18638,6 +18730,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
+  try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
   try { if (typeof kevFlushText === 'function') kevFlushText(); } catch (e) { }
   /* v1065: 成長カルテの「個別評価」タブ（PC は一覧・入力・計算の内訳を横に並べる） */
@@ -18772,6 +18865,7 @@ case 'acct_center':
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
+  try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
   try { if (typeof kevFlushText === 'function') kevFlushText(); } catch (e) { }
   /* v1065: 成長カルテの「個別評価」タブ（PC は一覧・入力・計算の内訳を横に並べる） */
@@ -23205,7 +23299,7 @@ function openDiag(scope){
     +(ob>0?' <button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="flushOutbox().then(function(){openDiag(\''+scope+'\');})">今すぐ再送</button>':'')+'</div>'
     /* v741: 件数だけでは何が送れていないのか分からなかった。中身と最後のエラーを出す。 */
     +(ob>0?('<div style="font-size:10.5px;margin-top:4px;max-height:26vh;overflow:auto">'
-      +(_outboxGet()||[]).map(function(x){
+      +(_outboxMine()||[]).map(function(x){
         return '<div style="padding:4px 0;border-bottom:1px solid var(--border)">'
           +'<div><b>'+escapeHtml(outboxLabel(x.key))+'</b> <span style="color:var(--muted)">'+escapeHtml(x.key)+'</span></div>'
           +'<div style="color:var(--muted)">試行 '+(x.attempts||1)+'回'+(x.ts?(' / '+escapeHtml((typeof notifAgo==='function')?notifAgo(new Date(x.ts).toISOString()):'')):'')+'</div>'
@@ -23213,6 +23307,7 @@ function openDiag(scope){
           +'<button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="outboxRetryOne(\''+escapeHtml(x.key)+'\')">この1件を送る</button>'
           +'</div>';
       }).join('')+'</div>'):'')
+    +((typeof _outboxOthers==='function' && _outboxOthers())?('<div style="font-size:11px;color:var(--muted);margin-top:2px"><i class="ti ti-user"></i> '+t('ほかの人の送信待ち '+_outboxOthers()+' 件（その人がこの端末でログインしたときに送ります）','Unsent saves of other people: '+_outboxOthers()+' (sent when that person signs in on this device)')+'</div>'):'')
     +'<div style="font-size:12px;margin-top:2px">最終同期：'+(cIso?cAgo:'—')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:2px">'+(ob>0?'保存はローカルに残っています（データは失われません）。オンライン時に再送で反映。':'保存したデータはクラウドに反映済みです。')+'</div></div>';
   var toastCard = m.toast
@@ -41131,7 +41226,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1127';
+const APP_VERSION = '1128';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -50421,13 +50516,18 @@ function invInGuardOld(inv){
    決まったこと（Moto さん 10/18）：1 A 今のマスター・棚卸表は変えない／3 A まとめて確定は「確かさ高」で印の無いものだけ・仕入先ごと・確かめの画面のあと／
    4 規格が違えば別の品目／5 経理・事務Crew・GM・CEO に Head Chef・AM を足す（メールのアカウント）／6 消耗品・備品・レシートは外す（あとから足せる）／
    7 名前の一部が同じだけでは結ばない（語ごとに比べる・数字が違えば印）／8 Drive 取込から（アプリの invoice＝新マスターは段階 3）。
-   結ぶ・戻す・印はサーバー（invoice-intake の link_*）。候補はこの端末で今のマスターと比べて出すだけ（決めるのは人）。 */
+   結ぶ・戻す・印はサーバー（invoice-intake の link_*）。候補はこの端末で今のマスターと比べて出すだけ（決めるのは人）。
+   v1128（Moto 10/31・UI案66：1〜4 すべて A）：3 A を変えた。確かさ高・要確認・候補なしのどれでも、一覧の行にチェック → 画面の下の帯で
+   「選んだ候補で結ぶ／新しい品目／対象外／あとで」をまとめて（確かめの画面のあと）。1 最初は何も選ばない（「すべて選ぶ」「印の無い品目だけ選ぶ」）／
+   2 印（数字が違う・規格が複数・ほかの対応のまま）の品目も選べる（確かめの画面で黄色）。対応表に同じ品目が複数ある品目は今どおり選べない／
+   3 候補なしは印をまとめて付ける＋同じ仕入先に候補が無ければ、ほかの仕入先の品目から近いものを候補に出す（今のマスターは今どおり変えない）／
+   4 仕入先が「すべて」のままでもよい（一覧は仕入先ごとに区切る）。行ごとに候補を選び直せる（いちばん近いものが最初）。サーバーは変えていない。 */
 var ILK_ROLES = ['ceo','gm','office','office_crew','am','chef'];
-var _ilk = { data:null, loaded:'', error:'', view:'items', vendor:'', filter:'high', q:'', code:'', limit:50, store:'', busy:false, prep:null, prepKey:'' };
+var _ilk = { data:null, loaded:'', error:'', view:'items', vendor:'', filter:'high', q:'', code:'', limit:50, store:'', busy:false, prep:null, prepKey:'', sel:{}, choice:{}, other:{} };
 function ilkCan(){ return ILK_ROLES.indexOf(curRole) >= 0; }
 function ilkOnPage(){ return typeof curPage!=='undefined' && curPage==='ingredient_master' && window._ingTab==='link'; }
 function ilkRerender(){ if (ilkOnPage()) renderPage('ingredient_master'); }
-function ilkReset(){ _ilk.data = null; _ilk.loaded = ''; _ilk.error = ''; _ilk.prep = null; _ilk.prepKey = ''; _ilk.busy = false; }
+function ilkReset(){ _ilk.data = null; _ilk.loaded = ''; _ilk.error = ''; _ilk.prep = null; _ilk.prepKey = ''; _ilk.busy = false; _ilk.sel = {}; _ilk.choice = {}; _ilk.other = {}; }
 var ILK_CSS = '<style>.ilk-head{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin:2px 0 10px}.ilk-title{font-size:18px;font-weight:800}.ilk-sub{font-size:12px;color:var(--muted)}'
   +'.ilk-src{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}.ilk-srcb{font:inherit;color:var(--text);text-align:left;padding:7px 12px;border-radius:12px;border:1px solid var(--border);background:var(--surface);min-height:44px;cursor:pointer}'
   +'.ilk-srcb.on{border:2px solid var(--accent)}.ilk-srcb[disabled]{opacity:.55;cursor:not-allowed}.ilk-srcb small{display:block;font-size:11px;color:var(--muted);font-weight:400}'
@@ -50438,12 +50538,25 @@ var ILK_CSS = '<style>.ilk-head{display:flex;align-items:baseline;gap:10px;flex-
   +'.ilk-note{border-radius:12px;padding:9px 12px;margin-bottom:10px;font-size:12.5px;line-height:1.7;display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}'
   +'.ilk-list{border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}'
   +'.ilk-row{display:grid;grid-template-columns:2.2fr .9fr 16px 2.2fr 1.5fr 1.7fr;gap:10px;padding:10px 12px;border-top:1px solid var(--border);align-items:center}'
+  /* v1128（UI案66）：invoice の品目の行は、左にチェックの列。候補は行ごとに選び直す。選んだら画面の下の帯でまとめて */
+  +'.ilk-row.ilk-r{grid-template-columns:30px minmax(0,2.1fr) minmax(0,.9fr) 16px minmax(0,2.5fr) minmax(0,1.4fr) minmax(0,1fr)}'
+  +'.ilk-cbl{display:flex;align-items:center;justify-content:center;min-width:30px;min-height:44px;cursor:pointer}.ilk-cb{width:20px;height:20px;margin:0;accent-color:var(--accent);cursor:pointer}.ilk-cb:disabled{cursor:not-allowed}'
+  +'.ilk-choose{width:100%;min-height:44px;margin:0;font-size:12.5px}'
+  +'.ilk-grp{display:flex;align-items:center;gap:10px;padding:4px 12px;background:var(--surface2);border-top:1px solid var(--border);font-size:13px;font-weight:700;min-height:44px}.ilk-grp .ilk-s{font-weight:400}'
+  +'.ilk-tag{display:inline-block;font-size:11px;font-weight:700;border-radius:999px;padding:1px 8px;color:#1D4ED8;background:#E0EAFD;margin:2px 4px 0 0}'
+  +'.ilk-act{position:sticky;bottom:0;z-index:20;margin-top:10px;background:#111827;color:#fff;border-radius:12px;padding:10px 12px calc(10px + env(safe-area-inset-bottom, 0px));display:flex;flex-wrap:wrap;gap:8px;align-items:center;box-shadow:0 -4px 16px rgba(0,0,0,.18)}.ilk-act[hidden]{display:none}'
+  +'.ilk-act-t{margin-right:auto;display:flex;flex-direction:column;gap:2px;min-width:0}.ilk-act-t b{font-size:15px}.ilk-act-t small{font-size:12px;color:#D1D5DB}'
+  +'.ilk-act button{font:inherit;font-size:13px;min-height:44px;border-radius:10px;border:0;padding:0 14px;cursor:pointer;background:#374151;color:#fff}.ilk-act button.pri{background:#2563EB;font-weight:700;font-size:14px}'
+  +'.ilk-act button.ghost{background:transparent;border:1px solid #4B5563;color:#D1D5DB}.ilk-act button:disabled{opacity:.45;cursor:not-allowed}'
+  +'.ilk-bl{display:grid;grid-template-columns:30px minmax(0,1fr) 16px minmax(0,1.2fr);gap:10px;align-items:center;padding:6px 10px;border-top:1px solid var(--border)}'
   +'.ilk-row.hd{font-size:11px;color:var(--muted);font-weight:700;background:var(--surface2);border-top:0}.ilk-row:first-child{border-top:0}'
   +'.ilk-mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:700;word-break:break-word}'
   +'.ilk-en{font-size:14px;font-weight:700;word-break:break-word}.ilk-ja{font-size:11.5px;color:var(--muted)}.ilk-s{font-size:11.5px;color:var(--muted)}'
   +'.ilk-flag{display:inline-block;font-size:11px;font-weight:700;border-radius:6px;padding:2px 7px;margin:1px 2px 1px 0}.ilk-acts{display:flex;gap:6px;flex-wrap:wrap}.ilk-acts .btn{min-height:36px}'
   +'.ilk-cand{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--border);border-radius:12px;padding:10px;margin-bottom:8px;cursor:pointer}.ilk-cand input{width:20px;height:20px;margin-top:2px}'
-  +'@media (max-width:820px){.ilk-row{grid-template-columns:1fr;gap:6px}.ilk-row.hd{display:none}.ilk-arrow{display:none}}</style>';
+  +'@media (max-width:820px){.ilk-row{grid-template-columns:1fr;gap:6px}.ilk-row.hd{display:none}.ilk-arrow{display:none}'
+  +'.ilk-row.ilk-r{grid-template-columns:30px minmax(0,1fr);column-gap:8px}.ilk-row.ilk-r>*{grid-column:2}.ilk-row.ilk-r>.ilk-cbc{grid-column:1;grid-row:1 / span 6;align-self:start}'
+  +'.ilk-bl{grid-template-columns:30px minmax(0,1fr)}.ilk-bl>*{grid-column:2}.ilk-bl>.ilk-cbc{grid-column:1;grid-row:1 / span 3;align-self:start}.ilk-act button{flex:1 1 auto}}</style>';
 
 /* ---- 候補（この端末で今のマスターと比べる。語ごと・日本語は文字の並び。名前の一部が同じだけでは「確かさ高」にしない） ---- */
 var ILK_STOP_V = {the:1,co:1,ltd:1,inc:1,usa:1,corp:1,llc:1,company:1,of:1,hi:1,foods:1,food:1,asian:1};
@@ -50507,7 +50620,10 @@ function ilkNumDiff(a, b){
   Object.keys(A).forEach(function(u){ if (hit || !B[u]) return; if (!Object.keys(A[u]).some(function(v){ return B[u][v]; })) hit = Object.keys(A[u])[0] + ' ' + u + t(' と ', ' vs ') + Object.keys(B[u])[0] + ' ' + u; });
   return hit;
 }
+/* v1128（独立レビュー P2-1）：今のマスターを読み直すのは画面を描くたびに 1 回だけ（getIngredients は保存した文字を解くので、品目ごとに呼ぶと重い） */
 function ilkMaster(){
+  if (_ilk.master && !_ilk.masterChk) return _ilk.master;
+  _ilk.masterChk = false;
   var ings = []; try { ings = getIngredients(); } catch(e) { ings = []; }
   var key = ings.length + ':' + (ings[0] ? ings[0].code : '') + ':' + (ings.length ? ings[ings.length - 1].code : '');
   if (_ilk.master && _ilk.master.key === key) return _ilk.master;
@@ -50553,7 +50669,7 @@ function ilkPrepare(){
     if ((it.specs || []).length > 1) flags.push({ k:'spec', t:t('規格が複数', 'Several packs') });
     if (ilkMany(it)) flags.push({ k:'many', t:t('対応表に同じ品目が複数（経理で整理）', 'Several mappings (accounting tidies them)') });
     if (it.other_lines) flags.push({ k:'other', t:t('明細 ', '') + it.other_lines + t(' 行はほかの対応のまま（店だけ・人が選んだ）', ' lines keep another mapping (a store’s own or one a person chose)') });
-    out[it.id] = { cls:cls, best:(cls==='A' || cls==='B') ? best : null, cands:cands.slice(0, 6).filter(function(x){ return x.s >= 0.3; }), flags:flags, pool:pool.length, vendor:v };
+    out[it.id] = { cls:cls, best:(cls==='A' || cls==='B') ? best : null, cands:cands.slice(0, 6).filter(function(x){ return x.s >= 0.3; }), flags:flags, pool:pool.length, vendor:v, vk:vk };
   });
   _ilk.prep = out; _ilk.prepKey = key;
   return out;
@@ -50582,8 +50698,9 @@ var ILK_STATES = [['high','確かさ高','High confidence','自動の候補','Su
 function ilkVendorName(k){ var v = ((_ilk.data && _ilk.data.vendors) || []).find(function(x){ return x.vendor_key===k; }); return v ? v.display_name : k; }
 function ilkPerson(id){ var p = (_ilk.data && _ilk.data.people) || {}; return id ? (p[id] || t('（登録された人）', '(a registered person)')) : ''; }
 /* 今のマスターの品目：英語を大きく、日本語を小さく（決めてほしいこと f） */
+function ilkOwners(code){ var C = _ilk.ownC = _ilk.ownC || {}, k = String(code); if (!C[k]) { var o = []; try { o = storesUsingIngredient(code); } catch(err) {} C[k] = o; } return C[k]; }
 function ilkIngHtml(c, extra){
-  var e = escapeHtml, owners = []; try { owners = storesUsingIngredient(c.code); } catch(err) {}
+  var e = escapeHtml, owners = ilkOwners(c.code);
   return '<div class="ilk-en">' + e(c.en || c.ja || c.code) + '</div><div class="ilk-ja">' + (c.en ? e(c.ja) + ' · ' : '') + e(c.code) + (c.vendor ? ' · ' + e(c.vendor) : '')
     + (owners.length ? ' · ' + t('棚卸表 ', 'Stock list ') + owners.map(function(s){ return e(invInStore(s).name); }).join(' ') : '') + '</div>' + (extra || '');
 }
@@ -50607,6 +50724,7 @@ function ilkReload(){ _ilk.loaded = ''; _ilk.error = ''; _ilk.master = null; ilk
 /* ---- 画面 ---- */
 function renderIngLink(){
   var e = escapeHtml, h = INVIN_CSS + ILK_CSS;
+  _ilk.masterChk = true; _ilk.ownC = {};
   h += '<div class="ilk-head"><div class="ilk-title">' + t('紐づけ（invoice の品目 → 今のマスター）', 'Linking (invoice items → current master)') + '</div>'
     + '<div class="ilk-sub">' + t('今のマスター・棚卸表は変えません。invoice の品目に今のコードを付けるだけです。', 'The current master and stock lists do not change; invoice items get a current code.') + '</div></div>';
   if (!ilkCan()) return h + '<div class="card" style="font-size:12.5px;color:var(--muted)">' + t('経理・事務Crew・GM・CEO・Head Chef・AM 向けの画面です。', 'For accounting, office crew, GM, CEO, Head Chef and AM.') + '</div>';
@@ -50635,7 +50753,7 @@ function renderIngLink(){
     + '<div class="phase-tab' + (_ilk.view==='stores' ? ' active' : '') + '" onclick="ilkSet(\'view\',\'stores\')">' + t('棚卸表の品目から', 'From stock-list items') + '</div></div>';
   return h + (_ilk.view === 'stores' ? ilkStoresHtml() : ilkItemsHtml());
 }
-function ilkSet(k, v){ _ilk[k] = v; if (k !== 'limit') _ilk.limit = 50; if (k === 'filter' || k === 'vendor' || k === 'view') _ilk.code = ''; ilkRerender(); }
+function ilkSet(k, v){ _ilk[k] = v; if (k !== 'limit') _ilk.limit = 50; if (k === 'filter' || k === 'vendor' || k === 'view') { _ilk.code = ''; _ilk.sel = {}; } if (k === 'code') _ilk.sel = {}; ilkRerender(); }
 function ilkSearch(v){ _ilk.q = String(v || ''); _ilk.limit = 50; clearTimeout(_ilk.qt); _ilk.qt = setTimeout(function(){ ilkRerender(); var el = document.getElementById('ilk-q'); if (el) { el.focus(); try { el.setSelectionRange(el.value.length, el.value.length); } catch(err) {} } }, 250); }
 function ilkStockCodes(){ var all = {}; try { all = ls('store_ingredients', {}) || {}; } catch(e) { all = {}; } var s = {}; Object.keys(all).forEach(function(k){ (all[k] || []).forEach(function(c){ s[String(c)] = 1; }); }); return s; }
 function ilkCoverage(){
@@ -50664,20 +50782,43 @@ function ilkItemsHtml(){
   if (_ilk.code) h += '<div class="ilk-note" style="background:var(--surface2)"><span>' + t('今のマスターの品目 ', 'Current item ') + '<b>' + e(ilkIngOf(_ilk.code).en || ilkIngOf(_ilk.code).ja) + '（' + e(_ilk.code) + '）</b>' + t(' に結んだ・候補の invoice の品目', ': invoice items linked or suggested') + '</span><button class="btn btn-secondary btn-sm" onclick="ilkSet(\'code\',\'\')">' + t('戻る', 'Back') + '</button></div>';
   var wait = items.reduce(function(a, it){ return a + (it.waiting || 0); }, 0);
   if (wait) h += '<div class="ilk-note" style="background:#fff7e6;border:1px solid #f0d49a"><span>' + t('今の結びとそろっていない明細が ', 'Lines not in step with the links: ') + '<b>' + wait + '</b>' + t(' 行（結ぶ前に取り込んだ・途中で止まった・あとで直された）', ' (taken in before the link, stopped halfway, or corrected meanwhile)') + '</span><button class="btn btn-secondary btn-sm" onclick="ilkSyncAll()"' + (_ilk.busy ? ' disabled' : '') + '><i class="ti ti-arrows-exchange"></i> ' + t('そろえる', 'Bring them in') + '</button></div>';
-  if (_ilk.filter === 'high' && !_ilk.code) {
-    var bulk = ilkBulkRows();
-    h += '<div class="ilk-note" style="background:#eef4fe;border:1px solid #c9dbf7"><span>' + (_ilk.vendor ? e(ilkVendorName(_ilk.vendor)) + t(' の「確かさ高」', ': high confidence ') + rows.length + t(' 品目。印の付いた品目はまとめて確定に入りません。', ' items. Items with a mark are not confirmed together.')
-      : t('仕入先を選ぶと、その仕入先の「確かさ高」をまとめて確定できます（確かめの画面のあと）。', 'Choose a vendor to confirm its high-confidence items together (after a check screen).')) + '</span>'
-      + (_ilk.vendor ? '<button class="btn btn-primary" onclick="ilkBulkAsk()"' + (!bulk.length || _ilk.busy ? ' disabled' : '') + '>' + t('印の無い ', 'Check and confirm the ') + bulk.length + t(' 品目を確かめて確定…', ' unmarked items…') + '</button>' : '') + '</div>';
-  }
   if (!rows.length) return h + '<div class="card" style="text-align:center;color:var(--muted);padding:18px;font-size:12px">' + t('この条件の品目はありません。', 'No items here.') + '</div>';
-  h += '<div class="ilk-list"><div class="ilk-row hd"><div>' + t('invoice の品目', 'Invoice item') + '</div><div>' + t('店・回数', 'Stores · times') + '</div><div class="ilk-arrow"></div><div>' + t('今のマスターの品目（英語 ／ 日本語）', 'Current master item (English / Japanese)') + '</div><div>' + t('当たり方・印', 'Match · marks') + '</div><div>' + t('操作', 'Actions') + '</div></div>';
-  rows.slice(0, _ilk.limit).forEach(function(it){ h += ilkRowHtml(it, P[it.id] || {}); });
+  /* v1128（UI案66）：チェックで選んで、画面の下の帯でまとめて結ぶ・印を付ける。最初は何も選ばない（決まったこと 1） */
+  var bulk = true, can = rows.filter(ilkSelOk), S = _ilk.sel || {};   /* 「確かめる」（棚卸表の品目から）の一覧でも同じ（レビュー P3-1） */
+  if (bulk && can.length) {
+    var nOn = can.filter(function(it){ return S[it.id]; }).length;
+    var clean = _ilk.filter === 'none' && !_ilk.q ? null : can.filter(ilkClean).length;
+    h += '<div class="ilk-note" style="background:#eef4fe;border:1px solid #c9dbf7"><label class="ilk-cbl" style="justify-content:flex-start;gap:10px;font-weight:700"><input id="ilk-all" type="checkbox" class="ilk-cb"' + (nOn && nOn === can.length ? ' checked' : '') + (_ilk.busy ? ' disabled' : '')
+      + ' onchange="ilkSelectAll(this.checked?\'all\':\'none\')"> ' + t('この一覧の ', 'Select all ') + can.length + t(' 品目をすべて選ぶ', ' items in this list') + '</label>'
+      + (clean != null ? '<button class="btn btn-secondary btn-sm" style="min-height:40px" onclick="ilkSelectAll(\'clean\')"' + (clean && !_ilk.busy ? '' : ' disabled') + '>' + t('印の無い品目だけ選ぶ（', 'Select only the unmarked (') + clean + t('）', ')') + '</button>' : '')
+      + '<span class="ilk-s" style="flex:1 1 320px">' + (_ilk.filter === 'none' && !_ilk.q
+        ? t('同じ仕入先の品目に候補がありません。ほかの仕入先の品目に近いものがあれば「ほかの仕入先」と出します。選んだら、画面の下の帯でまとめて印を付けるか結びます。', 'No suggestion among the vendor’s own items. A close item of another vendor is shown marked “other vendor”. After choosing, mark or link them together in the bar below.')
+        : t('候補はいちばん近いものを最初に入れてあります。違えば行の候補を選び直してください。選んだら、画面の下の帯でまとめて結ぶか印を付けます。', 'Each row starts with its closest suggestion; choose another in the row if it is wrong. After choosing, link or mark them together in the bar below.')) + '</span></div>';
+  }
+  h += '<div class="ilk-list"><div class="ilk-row ilk-r hd"><div class="ilk-cbc"></div><div>' + t('invoice の品目', 'Invoice item') + '</div><div>' + t('店・回数', 'Stores · times') + '</div><div class="ilk-arrow"></div><div>' + t('今のマスターの品目（英語 ／ 日本語）', 'Current master item (English / Japanese)') + '</div><div>' + t('当たり方・印', 'Match · marks') + '</div><div>' + t('操作', 'Actions') + '</div></div>';
+  /* 仕入先が「すべて」なら仕入先ごとに区切る（決まったこと 4）。区切りのチェックでその仕入先の品目（まだ出していない分も）を選ぶ */
+  var grp = !_ilk.vendor && !_ilk.code, lastV = null;
+  _ilk.grpIds = [];
+  rows.slice(0, _ilk.limit).forEach(function(it){
+    if (grp && it.vendor_key !== lastV) { lastV = it.vendor_key; h += ilkGrpHtml(it.vendor_key, rows, _ilk.grpIds.length); }
+    h += ilkRowHtml(it, P[it.id] || {});
+  });
   h += '</div>';
   if (rows.length > _ilk.limit) h += '<div style="text-align:center;margin:10px"><button class="btn btn-secondary" onclick="ilkSet(\'limit\',' + (_ilk.limit + 100) + ')">' + t('もっと見る（あと ', 'Show more (') + (rows.length - _ilk.limit) + t(' 品目）', ' more)') + '</button></div>';
-  h += '<div class="ivx-note">' + t('確定すると、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表・過去の棚卸しと原価の記録は変わりません。確定した人と日時が残り、「戻す」で戻せます。ほかの端末には「更新」で出ます。', 'Confirming gives the item’s lines the current code (posted invoices also record the price). The current master, stock lists, past counts and costs do not change. Who and when is kept; Undo takes it back. Other devices see it after Refresh.') + '</div>';
+  h += '<div class="ivx-note">' + t('結ぶと、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表・過去の棚卸しと原価の記録は変わりません。結んだ人と日時が残り、「戻す」で戻せます。印（新しい品目・対象外・あとで）は「紐づけの対象に戻す」で外せます。ほかの端末には「更新」で出ます。', 'Linking gives the item’s lines the current code (posted invoices also record the price). The current master, stock lists, past counts and costs do not change. Who and when is kept; Undo takes it back. Marks (new item, left out, later) come off with “Back to linking”. Other devices see it after Refresh.') + '</div>';
+  if (bulk && can.length) { var bs = ilkBarState(); h += '<div id="ilk-act" class="ilk-act" role="region" aria-label="' + t('選んだ品目をまとめて', 'Act on the chosen items') + '"' + (bs.n ? '' : ' hidden') + '>' + ilkBarInner(bs) + '</div>'; }
   return h;
 }
+/* 仕入先の区切り：名前・この一覧の数・選んだ数・その仕入先をまとめて選ぶチェック */
+function ilkGrpHtml(vk, rows, gi){
+  var e = escapeHtml, all = rows.filter(function(it){ return it.vendor_key === vk; }), can = all.filter(ilkSelOk), S = _ilk.sel || {};
+  var on = can.filter(function(it){ return S[it.id]; }).length;
+  _ilk.grpIds.push({ vk:vk, gi:gi });
+  return '<div class="ilk-grp">' + (can.length ? '<label class="ilk-cbl"><input id="ilk-gcb-' + gi + '" type="checkbox" class="ilk-cb" aria-label="' + e(ilkVendorName(vk)) + t(' の品目をすべて選ぶ', ': select all its items') + '"' + (on && on === can.length ? ' checked' : '') + (_ilk.busy ? ' disabled' : '')
+    + ' onchange="ilkSelectVendor(' + invInJs(vk) + ',this.checked)"></label>' : '<span class="ilk-cbl"></span>')
+    + '<span>' + e(ilkVendorName(vk)) + '</span><span id="ilk-gc-' + gi + '" class="ilk-s">' + ilkGrpCount(all.length, on) + '</span></div>';
+}
+function ilkGrpCount(n, on){ return n + t(' 品目', ' items') + (on ? t(' · 選んだ ', ' · chosen ') + on : ''); }
 function ilkMatchQ(it, q){
   if (!q) return true;
   var P = (_ilk.prep || {})[it.id] || {}, s = [it.vendor_item_code || '', ilkVendorName(it.vendor_key)].concat((it.names || []).map(function(x){ return x[0]; }));
@@ -50687,15 +50828,146 @@ function ilkMatchQ(it, q){
 }
 function ilkFiltered(){
   var D = _ilk.data, P = _ilk.prep || {}, q = ilkN(_ilk.q).toLowerCase().trim();
-  return (D.items || []).filter(function(it){
+  var list = (D.items || []).filter(function(it){
     if (_ilk.vendor && it.vendor_key !== _ilk.vendor) return false;
     if (_ilk.code) { var p = P[it.id] || {}; return (it.link && String(it.link.ingredient_code) === _ilk.code) || (!it.link && p.best && p.best.c.code === _ilk.code); }
     if (ilkState(it) !== _ilk.filter && !q) return false;
     return ilkMatchQ(it, q);
-  }).sort(function(a, b){ return b.n - a.n || (a.id < b.id ? -1 : 1); });
+  });
+  /* v1128：仕入先が「すべて」なら仕入先ごとにまとめる（この一覧で品目の多い仕入先から）。仕入先の中は今までどおり回数の多い順 */
+  var vc = {}, vn = {};
+  if (!_ilk.vendor && !_ilk.code) list.forEach(function(it){ vc[it.vendor_key] = (vc[it.vendor_key] || 0) + 1; if (!(it.vendor_key in vn)) vn[it.vendor_key] = String(ilkVendorName(it.vendor_key) || '').toLowerCase(); });
+  return list.sort(function(a, b){
+    if (a.vendor_key !== b.vendor_key && (a.vendor_key in vc)) return (vc[b.vendor_key] - vc[a.vendor_key]) || (vn[a.vendor_key] < vn[b.vendor_key] ? -1 : vn[a.vendor_key] > vn[b.vendor_key] ? 1 : (a.vendor_key < b.vendor_key ? -1 : 1));
+    return b.n - a.n || (a.id < b.id ? -1 : 1);
+  });
 }
-function ilkBulkRows(){ var P = _ilk.prep || {}; return ilkFiltered().filter(function(it){ var p = P[it.id] || {}; return _ilk.vendor && ilkState(it) === 'high' && p.best && !p.flags.length && !it.link; }); }
-function ilkFlagHtml(f){ var col = f.k === 'many' ? INVIN_COL.red : INVIN_COL.yel; return '<span class="ilk-flag" style="color:' + col + ';background:' + col + '1f">' + escapeHtml(f.t) + '</span>'; }
+
+/* ---- まとめて（v1128・UI案66）：選ぶ・行ごとの候補・印 ---- */
+/* 選べる品目：確かさ高・要確認・候補なし。対応表に同じ品目が複数ある品目（経理が整理）と、変えられない対応は選べない */
+function ilkSelOk(it){ var st = ilkState(it); return (st === 'high' || st === 'check' || st === 'none') && !ilkMany(it) && ilkCanChange(it); }
+function ilkSelRows(){ var S = _ilk.sel || {}; return ilkFiltered().filter(function(it){ return S[it.id] && ilkSelOk(it); }); }
+/* 選んだ品目のうち、結ぶ候補が決まっているもの（まとめて結ぶ） */
+function ilkBulkRows(){ return ilkSelRows().filter(function(it){ return !!ilkChosen(it); }); }
+/* ほかの仕入先の品目（同じ仕入先に候補が無い品目だけ）：名前が近いもの（0.6 以上）を 5 つまで。品番は仕入先ごとなので使わない */
+var ILK_OTHER_MIN = 0.6;
+function ilkOtherCands(it){
+  _ilk.other = _ilk.other || {};
+  var hit = _ilk.other[it.id]; if (hit && hit.k === _ilk.prepKey) return hit.v;
+  var M = ilkMaster(), p = (_ilk.prep || ilkPrepare() || {})[it.id] || {}, vk = p.vk || '', anyJ = false;
+  var N = (it.names || []).slice(0, 3).map(function(x){ var n = x[0], u = {}, k = 0; ilkToks(n).forEach(function(w){ if (!u[w]) { u[w] = 1; k++; } }); return { u:u, k:k, j:ilkJ(n) }; });
+  N.forEach(function(x){ if (x.j.length >= 2) anyJ = true; });
+  /* 語の索引（今のマスターを読み直すまで使う）：同じ語のある品目だけを比べる。日本語の名前があれば日本語の品目も（重さ：レビュー P2-1） */
+  if (!M.inv) { M.inv = {}; M.jl = []; M.list.forEach(function(c){ var u = {}, k = 0; c.toks.forEach(function(w){ if (!u[w]) { u[w] = 1; k++; (M.inv[w] = M.inv[w] || []).push(c); } }); c.tu = u; c.tk = k; if (c.j.length >= 2) M.jl.push(c); }); }
+  var pool = [], seen = {};
+  N.forEach(function(x){ Object.keys(x.u).forEach(function(w){ (M.inv[w] || []).forEach(function(c){ if (!seen[c.code]) { seen[c.code] = 1; pool.push(c); } }); }); });
+  if (anyJ) M.jl.forEach(function(c){ if (!seen[c.code]) { seen[c.code] = 1; pool.push(c); } });
+  var tok = function(x, c){ if (!x.k || !c.tk) return 0; var inter = 0; for (var w in x.u) if (c.tu[w]) inter++; return inter / Math.min(x.k, c.tk) * (0.5 + 0.5 * inter / Math.max(x.k, c.tk)); };   /* ilkTokScore と同じ式 */
+  var out = [];
+  pool.forEach(function(c){
+    if (vk && ilkSameVendor(vk, c.vk)) return;
+    var s = 0;
+    N.forEach(function(x){ var v = Math.max(tok(x, c), ilkSeq(x.j, c.j)); if (v > s) s = v; });
+    if (s >= ILK_OTHER_MIN) out.push({ c:c, s:s });
+  });
+  out.sort(function(a, b){ return b.s - a.s || (a.c.code < b.c.code ? -1 : 1); });
+  out = out.slice(0, 5);
+  _ilk.other[it.id] = { k:_ilk.prepKey, v:out };
+  return out;
+}
+/* 行の候補：対応表の候補（未確認）→ 同じ仕入先の候補 → （同じ仕入先に無ければ）ほかの仕入先の候補。選び直した品目も */
+function ilkCandsFor(it){
+  var ch0 = (_ilk.choice || {})[it.id], ck = (_ilk.prepKey || '') + '|' + (ch0 === undefined ? '\u0001' : ch0), memo = _ilk.cc = _ilk.cc || {};
+  if (memo[it.id] && memo[it.id].k === ck && memo[it.id].L) return memo[it.id].L;
+  var L = ilkCandsCalc(it); memo[it.id] = { k:ck, L:L }; return L;
+}
+function ilkCandsCalc(it){
+  var p = (_ilk.prep || ilkPrepare() || {})[it.id] || {}, out = [], seen = {}, M0 = ilkMaster();
+  var add = function(c, s, other){ if (!c || seen[c.code]) return; seen[c.code] = 1; out.push({ c:c, s:s, other:!!other }); };
+  if (it.link && !it.link.verified && M0.by[String(it.link.ingredient_code)]) add(M0.by[String(it.link.ingredient_code)], 1, false);   /* 今のマスターに無いコードは出さない（レビュー P2-2） */
+  (p.cands || []).forEach(function(x){ add(x.c, x.s, false); });
+  if (p.cls === 'C' || p.cls === 'D') ilkOtherCands(it).forEach(function(x){ add(x.c, x.s, true); });
+  var ch = (_ilk.choice || {})[it.id], M = ilkMaster();
+  if (ch && !seen[ch] && M.by[ch]) add(M.by[ch], 0, !(p.vk && ilkSameVendor(p.vk, M.by[ch].vk)));
+  return out;
+}
+/* 行で選んでいる候補のコード（無ければ ''）。最初は：対応表の候補 → いちばん近い候補 → ほかの仕入先でとびぬけて近いもの */
+/* 返すのは今のマスターにあるコードだけ（レビュー P2-2）。ほかの仕入先の品目を最初に選ぶのは、0.75 以上で 2 番目より 0.15 以上近いときだけ
+   （「Oil」のような 1 語の品目に名前の一部で当たったものは選ばない：決まったこと 7・レビュー P2-4） */
+var ILK_OTHER_PICK = 0.75;
+function ilkChosen(it){
+  var ch = (_ilk.choice || {})[it.id];
+  if (ch === '') return '';
+  var L = ilkCandsFor(it), has = function(code){ return L.some(function(x){ return x.c.code === code; }); };
+  if (ch && has(ch)) return ch;
+  if (it.link && !it.link.verified && has(String(it.link.ingredient_code))) return String(it.link.ingredient_code);
+  var p = (_ilk.prep || ilkPrepare() || {})[it.id] || {};
+  if (p.best && has(p.best.c.code)) return p.best.c.code;
+  var o = L.filter(function(x){ return x.other; });
+  return o.length && o[0].s >= ILK_OTHER_PICK && (o.length < 2 || o[0].s - o[1].s >= 0.15) ? o[0].c.code : '';
+}
+function ilkChose(it, code){ return ilkCandsFor(it).filter(function(x){ return x.c.code === code; })[0] || null; }
+/* 選んだ候補での印：数字が違う（その候補と）・規格が複数・対応表に同じ品目が複数・ほかの対応のまま */
+function ilkFlagsFor(it, code){
+  var f = [], n0 = ((it.names || [])[0] || [''])[0] || '';
+  if (code) { var c = ilkIngOf(code), nd = ilkNumDiff(n0, (c.en || '') + ' ' + (c.ja || '')); if (nd) f.push({ k:'num', t:t('数字が違う：', 'Numbers differ: ') + nd }); }
+  if (code) { var x = ilkChose(it, code); if (x && x.other) f.push({ k:'ov', t:t('ほかの仕入先の品目', 'Another vendor’s item') }); }   /* レビュー P2-4：印の無い品目には数えない */
+  var sh = ilkSharers(it); if (sh.length) f.push({ k:'shared', t:t('名前の対応：ほかに ', 'Name mapping: ') + sh.length + t(' 品目も一緒に変わる', ' more items change with it') });   /* レビュー P2-3 */
+  if ((it.specs || []).length > 1) f.push({ k:'spec', t:t('規格が複数', 'Several packs') });
+  if (ilkMany(it)) f.push({ k:'many', t:t('対応表に同じ品目が複数（経理で整理）', 'Several mappings (accounting tidies them)') });
+  if (it.other_lines) f.push({ k:'other', t:t('明細 ', '') + it.other_lines + t(' 行はほかの対応のまま（店だけ・人が選んだ）', ' lines keep another mapping (a store’s own or one a person chose)') });
+  return f;
+}
+/* 「印の無い品目だけ選ぶ」：候補があり、印が無い */
+function ilkClean(it){ var ch = ilkChosen(it); return !!ch && !ilkFlagsFor(it, ch).length; }
+function ilkCandLabel(c, other){ return (c.en || c.ja || c.code) + (c.en && c.ja ? ' ／ ' + c.ja : '') + ' · ' + c.code + (other ? t(' · ほかの仕入先：', ' · other vendor: ') + (c.vendor || '—') : ''); }
+function ilkChoose(id, code){ _ilk.choice = _ilk.choice || {}; _ilk.choice[id] = String(code == null ? '' : code); ilkRerender(); }
+function ilkTick(id, on){ _ilk.sel = _ilk.sel || {}; if (on) _ilk.sel[id] = 1; else delete _ilk.sel[id]; ilkSelSync(); }
+function ilkSelectAll(mode){
+  var rows = ilkFiltered().filter(ilkSelOk), S = _ilk.sel = _ilk.sel || {};
+  rows.forEach(function(it){ delete S[it.id]; });
+  if (mode === 'all') rows.forEach(function(it){ S[it.id] = 1; });
+  else if (mode === 'clean') rows.filter(ilkClean).forEach(function(it){ S[it.id] = 1; });
+  ilkRerender();
+}
+function ilkSelectVendor(vk, on){ var S = _ilk.sel = _ilk.sel || {}; ilkFiltered().filter(function(it){ return it.vendor_key === vk && ilkSelOk(it); }).forEach(function(it){ if (on) S[it.id] = 1; else delete S[it.id]; }); ilkRerender(); }
+function ilkSelClear(){ _ilk.sel = {}; ilkRerender(); }
+/* 下の帯：選んだ数（仕入先ごと）と、まとめての操作。チェック 1 つでは画面を描き直さない（帯・「すべて選ぶ」・区切りの数だけ） */
+function ilkBarState(){
+  var rows = ilkSelRows(), k = 0, by = {}, order = [];
+  rows.forEach(function(it){ if (ilkChosen(it)) k++; if (!by[it.vendor_key]) { by[it.vendor_key] = 0; order.push(it.vendor_key); } by[it.vendor_key]++; });
+  return { n:rows.length, k:k, by:by, order:order };
+}
+function ilkBarInner(x){
+  var e = escapeHtml, busy = _ilk.busy ? ' disabled' : '', vs = x.order.slice(0, 3).map(function(v){ return e(ilkVendorName(v)) + ' ' + x.by[v]; }).join(' · ') + (x.order.length > 3 ? t(' · ほか ', ' · +') + (x.order.length - 3) + t(' 社', '') : '');
+  return '<div class="ilk-act-t"><b>' + x.n + t(' 品目を選択中', ' items chosen') + '</b><small>' + vs + '</small>'
+    + (x.n > x.k ? '<small>' + t('候補の無い ', 'No suggestion for ') + (x.n - x.k) + t(' 品目は結べません（印だけ付けられます）', ' items: they can only be marked') + '</small>' : '') + '</div>'
+    + '<button type="button" class="pri" onclick="ilkBulkAsk()"' + (x.k && !_ilk.busy ? '' : ' disabled') + '>' + t('選んだ候補で結ぶ（', 'Link to the chosen items (') + x.k + t('）…', ')…') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'new_item\')"' + busy + '>' + t('新しい品目にする', 'Mark as new items') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'excluded\')"' + busy + '>' + t('対象外にする', 'Leave out') + '</button>'
+    + '<button type="button" onclick="ilkMarkAsk(\'later\')"' + busy + '>' + t('あとで', 'Later') + '</button>'
+    + '<button type="button" class="ghost" onclick="ilkSelClear()"' + busy + '>' + t('選択を外す', 'Clear the choice') + '</button>';
+}
+function ilkSelSync(){
+  var x = ilkBarState(), b = document.getElementById('ilk-act');
+  if (b) { b.hidden = !x.n; b.innerHTML = ilkBarInner(x); }
+  var F = ilkFiltered(), S = _ilk.sel || {}, rows = F.filter(ilkSelOk), on = rows.filter(function(it){ return S[it.id]; }).length, a = document.getElementById('ilk-all');
+  if (a) { a.checked = !!on && on === rows.length; a.indeterminate = on > 0 && on < rows.length; }
+  (_ilk.grpIds || []).forEach(function(g){
+    var all = F.filter(function(it){ return it.vendor_key === g.vk; }), can = all.filter(ilkSelOk), n = can.filter(function(it){ return S[it.id]; }).length;
+    var c = document.getElementById('ilk-gc-' + g.gi), cb = document.getElementById('ilk-gcb-' + g.gi);
+    if (c) c.textContent = ilkGrpCount(all.length, n);
+    if (cb) { cb.checked = !!n && n === can.length; cb.indeterminate = n > 0 && n < can.length; }
+  });
+}
+function ilkFlagHtml(f){ if (f.k === 'ov') return '<span class="ilk-tag">' + escapeHtml(f.t) + '</span>'; var col = f.k === 'many' ? INVIN_COL.red : INVIN_COL.yel; return '<span class="ilk-flag" style="color:' + col + ';background:' + col + '1f">' + escapeHtml(f.t) + '</span>'; }
+/* 同じ対応（名前の対応）を使うほかの品目：その対応を変えると一緒に変わる */
+function ilkSharers(it){
+  if (!it.link) return [];
+  var D = _ilk.data || {}, B = _ilk.byLink;
+  if (!B || B.k !== _ilk.loaded) { B = _ilk.byLink = { k:_ilk.loaded, m:{} }; (D.items || []).forEach(function(x){ if (x.link && x.link.id) (B.m[x.link.id] = B.m[x.link.id] || []).push(x); }); }
+  return (B.m[it.link.id] || []).filter(function(x){ return x.id !== it.id; });
+}
 function ilkRowHtml(it, p){
   var e = escapeHtml, st = ilkState(it), id = invInJs(it.id), nm = (it.names || [])[0] || ['', 0];
   var left = '<div><div class="ilk-mono">' + e(nm[0]) + '</div><div class="ilk-s">' + e(ilkVendorName(it.vendor_key)) + (it.vendor_item_code ? ' · ' + t('品番 ', '#') + e(it.vendor_item_code) : '')
@@ -50715,17 +50987,37 @@ function ilkRowHtml(it, p){
     acts = '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'' + (st === 'out' && !(it.mark && it.mark.state === 'excluded') ? 'included' : 'none') + '\')">' + t('紐づけの対象に戻す', 'Back to linking') + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + t('探して結ぶ', 'Find and link') + '</button>';
   } else {
-    var c = it.link ? ilkIngOf(it.link.ingredient_code) : (p.best ? p.best.c : null);
-    right = c ? ilkIngHtml(c, it.link && !it.link.verified ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('対応表の候補（まだ確かめていない）', 'Mapping candidate (not checked yet)') + '</div>' : '')
-      : '<div class="ilk-s">' + (p.pool ? t('候補なし', 'No suggestion') : t('今のマスターに、この仕入先の品目が無い', 'No item of this vendor in the master')) + '</div>';
-    why = '<div class="ilk-s" style="color:' + (st === 'high' ? INVIN_COL.green : 'var(--muted)') + '">' + e(it.link && !it.link.verified ? t('対応表にある（未確認）', 'In the mapping table (unchecked)') : ilkWhy(it, p)) + '</div>' + (p.flags || []).map(ilkFlagHtml).join('');
-    var canOne = c && st !== 'none' && !(p.flags || []).some(function(f){ return f.k === 'many'; }) && ilkCanChange(it);
-    acts = (canOne && st === 'high' && !(p.flags || []).length ? '<button class="btn btn-primary btn-sm" onclick="ilkConfirmOne(' + id + ')"' + (_ilk.busy ? ' disabled' : '') + '>' + t('確定', 'Confirm') + '</button>' : '')
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + (c ? t('比べる', 'Compare') : t('探す', 'Find')) + '</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'new_item\')">' + t('新しい品目', 'New item') + '</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="ilkMark(' + id + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button>';
+    /* v1128：候補は行ごとに選べる（いちばん近いものが最初）。結ぶ・印は、チェックで選んで画面の下の帯から（1 品目でも） */
+    var code = ilkChosen(it), L = ilkCandsFor(it), ch = code ? ilkChose(it, code) : null, sel = ilkSelOk(it);
+    var flags = ilkFlagsFor(it, code), other = ch && ch.other;
+    if (sel && L.length) {
+      right = '<select class="form-select ilk-choose" aria-label="' + t('結ぶ候補', 'Item to link to') + '" onchange="ilkChoose(' + id + ',this.value)"' + (_ilk.busy ? ' disabled' : '') + '>'
+        + (code ? '' : '<option value="" selected>' + t('— 候補を選ぶ —', '— choose a suggestion —') + '</option>')
+        + L.map(function(x){ return '<option value="' + e(x.c.code) + '"' + (x.c.code === code ? ' selected' : '') + '>' + e(ilkCandLabel(x.c, x.other)) + '</option>'; }).join('')
+        + (code ? '<option value="">' + t('— 結ばない（印だけ付ける）—', '— do not link (mark only) —') + '</option>' : '') + '</select>';
+      right += code ? '<div class="ilk-ja" style="margin-top:3px">' + ilkIngNote(ilkIngOf(code)) + '</div>' : '';
+    } else {
+      var c = code ? ilkIngOf(code) : null;
+      right = c ? ilkIngHtml(c) : '<div class="ilk-s">' + (p.pool ? t('候補なし', 'No suggestion') : t('今のマスターに、この仕入先の品目が無い', 'No item of this vendor in the master')) + '</div>';
+    }
+    if (it.link && !it.link.verified) right += '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + (ilkMaster().by[String(it.link.ingredient_code)] ? t('対応表の候補（まだ確かめていない）', 'Mapping candidate (not checked yet)')
+      : t('対応表の候補のコード ', 'The mapping’s code ') + escapeHtml(String(it.link.ingredient_code)) + t(' は今のマスターに無い（選び直す）', ' is not in the current master (choose another)')) + '</div>';
+    var whyT = !code ? (L.length ? t('候補を選んでいません', 'No suggestion chosen') : '')
+      : it.link && !it.link.verified && code === String(it.link.ingredient_code) ? t('対応表にある（未確認）', 'In the mapping table (unchecked)')
+      : other ? t('ほかの仕入先・名前が近い', 'Other vendor, name is close')
+      : p.best && code === p.best.c.code ? ilkWhy(it, p) : t('選び直した候補', 'Chosen by hand');
+    why = (whyT ? '<div class="ilk-s" style="color:' + (st === 'high' && p.best && code === p.best.c.code && !flags.length ? INVIN_COL.green : 'var(--muted)') + '">' + e(whyT) + '</div>' : '') + flags.map(ilkFlagHtml).join('');
+    acts = '<button class="btn btn-secondary btn-sm" onclick="ilkOpen(' + id + ')">' + (code ? t('比べる', 'Compare') : t('探す', 'Find')) + '</button>';
+    var cb = sel ? '<label class="ilk-cbl"><input type="checkbox" class="ilk-cb" aria-label="' + t('選ぶ', 'Choose') + '"' + ((_ilk.sel || {})[it.id] ? ' checked' : '') + (_ilk.busy ? ' disabled' : '') + ' onchange="ilkTick(' + id + ',this.checked)"></label>'
+      : '<label class="ilk-cbl" title="' + e(ilkMany(it) ? t('対応表に同じ品目が複数あります（経理で 1 つにしてから）', 'Several mappings: accounting makes them one first') : t('経理が確かめた対応です', 'Checked by accounting')) + '"><input type="checkbox" class="ilk-cb" disabled aria-label="' + t('選べません', 'Cannot choose') + '"></label>';
+    return '<div class="ilk-row ilk-r"' + (flags.length ? ' style="background:#fffaf3"' : '') + '><div class="ilk-cbc">' + cb + '</div>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
   }
-  return '<div class="ilk-row"' + (st === 'check' && (p.flags || []).length ? ' style="background:#fffaf3"' : '') + '>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
+  return '<div class="ilk-row ilk-r"><div class="ilk-cbc"></div>' + left + mid + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + right + '</div><div>' + why + '</div><div class="ilk-acts">' + acts + '</div></div>';
+}
+/* 候補を選ぶ欄の下：日本語・コード・仕入先・棚卸表（ilkIngHtml の 2 行目と同じ） */
+function ilkIngNote(c){
+  var e = escapeHtml, owners = ilkOwners(c.code);
+  return (c.en ? e(c.ja) + ' · ' : '') + e(c.code) + (c.vendor ? ' · ' + e(c.vendor) : '') + (owners.length ? ' · ' + t('棚卸表 ', 'Stock list ') + owners.map(function(x){ return e(invInStore(x).name); }).join(' ') : '');
 }
 function ilkItem(id){ return ((_ilk.data && _ilk.data.items) || []).find(function(x){ return x.id === id; }) || null; }
 function ilkPayload(it, code){
@@ -50737,49 +51029,124 @@ function ilkPayload(it, code){
 /* 結ぶ（100 件ずつ。1 回ごとに 1 つの取引：だめなら、その回は何も変わらない） */
 async function ilkSave(list, okMsg){
   if (_ilk.busy || !list.length) return false; _ilk.busy = true; ilkRerender();
-  var done = 0, lines = 0, prices = 0, err = null;
+  var done = 0, lines = 0, prices = 0, err = null, sent = 0;
+  /* v1128：1 回は 1 つの仕入先の 100 品目まで（まとめての前と同じ大きさ：1 回で直す明細が増えすぎないように・レビュー P3-7） */
+  var chunks = [], byV = {}, order = [];
+  list.forEach(function(x){ if (!byV[x.vendor_key]) { byV[x.vendor_key] = []; order.push(x.vendor_key); } byV[x.vendor_key].push(x); });
+  order.forEach(function(v){ for (var j = 0; j < byV[v].length; j += 100) chunks.push(byV[v].slice(j, j + 100)); });
   try {
-    for (var i = 0; i < list.length; i += 100) {
-      var r = await invInAPI({ action:'link_save', links:list.slice(i, i + 100) });
-      done += (r.maps || []).length; if (r.sync) { lines += r.sync.lines || 0; prices += r.sync.prices || 0; }
+    for (var i = 0; i < chunks.length; i++) {
+      var r = await invInAPI({ action:'link_save', links:chunks[i] });
+      sent += chunks[i].length; done += (r.maps || []).length; if (r.sync) { lines += r.sync.lines || 0; prices += r.sync.prices || 0; }
     }
   } catch(e) { err = e; }
   _ilk.busy = false;
-  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に変えていました。読み直したので、もう一度確かめてください。', 'Someone changed it first. Reloaded: please check again.') : err.code === 'unknown_ingredient' ? t('今のマスターに無いコードです（新しく足した品目なら、同期を待ってもう一度）。', 'That code is not in the current master (for an item just added, wait for the sync and try again).') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 件は結びました）', ' were linked)') : ''), 'warning');
+  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に変えていました。読み直したので、もう一度確かめてください。', 'Someone changed it first. Reloaded: please check again.') : err.code === 'unknown_ingredient' ? t('今のマスターに無いコードです（新しく足した品目なら、同期を待ってもう一度）。', 'That code is not in the current master (for an item just added, wait for the sync and try again).') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 件は結びました）', ' were linked)') : '')
+    + (list.length - sent > 0 ? t('（残り ', ' (') + (list.length - sent) + t(' 件は送っていません。選んだまま残しています）', ' not sent; still chosen)') : ''), 'warning');
   else showToast((okMsg || t('結びました', 'Linked')) + '：' + done + t(' 品目（明細 ', ' items (lines ') + lines + t(' 行・単価の記録 ', ', prices ') + prices + t(' 件）', ')'), 'success');
   ilkReload();
   return !err;
 }
-function ilkConfirmOne(id){ var it = ilkItem(id), p = (_ilk.prep || {})[id]; if (!it || !p || !p.best) return; ilkSave([ilkPayload(it, p.best.c.code)]); }
+function ilkConfirmOne(id){ var it = ilkItem(id), code = it ? ilkChosen(it) : ''; if (!it || !code || !ilkSelOk(it)) return; ilkSave([ilkPayload(it, code)]); }
+/* まとめて結ぶ（v1128）：送るのは、この確かめの画面に出したコードと対応の版（開いているあいだに変わっても、見ていない内容は送らない。
+   ほかの人が先に変えていればサーバーが conflict で断る）。名前の対応を 2 つの品目が使っていれば 1 回だけ送る（違う候補なら送らない） */
 function ilkBulkAsk(){
-  var e = escapeHtml, rows = ilkBulkRows(), P = _ilk.prep || {};
-  /* 送るのは、この確かめの画面に出したコード（開いているあいだに今のマスターが変わっても、見ていないコードは送らない） */
-  _ilk.bulk = {}; _ilk.bulkCodes = {}; rows.forEach(function(it){ _ilk.bulk[it.id] = 1; _ilk.bulkCodes[it.id] = P[it.id].best.c.code; });
-  openModal('<div class="modal-title">' + t('まとめて確定（', 'Confirm together (') + e(ilkVendorName(_ilk.vendor)) + t('）', ')') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-    + '<div style="font-size:12px;margin-bottom:8px;line-height:1.7">' + t('「確かさ高」で印の無い品目です。違うものはチェックを外してください（外したものは一覧に残ります）。', 'High-confidence items without marks. Untick any that are wrong (they stay in the list).') + '</div>'
-    + '<div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + rows.map(function(it){
-      var c = P[it.id].best.c;
-      return '<label style="display:flex;gap:10px;align-items:flex-start;padding:8px 10px;border-top:1px solid var(--border);cursor:pointer"><input type="checkbox" checked style="width:20px;height:20px;margin-top:2px" onchange="ilkBulkTick(' + invInJs(it.id) + ',this.checked)">'
-        + '<div style="flex:1;min-width:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:4px 12px"><div class="ilk-mono">' + e((it.names[0] || [''])[0]) + '<div class="ilk-s" style="font-family:inherit;font-weight:400">' + it.n + t(' 回', ' times') + '</div></div><div>' + ilkIngHtml(c) + '</div></div></label>';
-    }).join('') + '</div>'
-    + '<div class="ivx-note">' + t('確定すると、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表は変わりません。あとから 1 件ずつ「戻す」で戻せます。', 'The items’ lines get the current code (posted invoices also record the price). The master and stock lists do not change. Each can be undone later.') + '</div>'
-    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button id="ilk-bulk-go" class="btn btn-primary" onclick="ilkBulkGo()">' + rows.length + t(' 品目を確定', ' items: confirm') + '</button></div>');
+  var e = escapeHtml, rows = ilkBulkRows(); if (!rows.length || _ilk.busy) return;
+  var pay = {}, grp = {}, keyOf = function(it){ return it.link ? 'm:' + it.link.id : 'i:' + it.id; };
+  rows.forEach(function(it){ var c = ilkChosen(it); pay[it.id] = ilkPayload(it, c); (grp[keyOf(it)] = grp[keyOf(it)] || []).push(it); });
+  var bad = {}, joined = {};
+  Object.keys(grp).forEach(function(k){ var g = grp[k]; if (g.length < 2) return;
+    var codes = {}; g.forEach(function(it){ codes[pay[it.id].ingredient_code] = 1; });
+    if (Object.keys(codes).length > 1) g.forEach(function(it){ bad[it.id] = 1; }); else g.slice(1).forEach(function(it){ joined[it.id] = g[0].id; }); });
+  _ilk.bulk = {}; _ilk.bulkPay = {}; var idx = {}, ni = 0;
+  rows.forEach(function(it){ if (!bad[it.id] && !joined[it.id]) { _ilk.bulk[it.id] = 1; _ilk.bulkPay[it.id] = pay[it.id]; idx[it.id] = ni++; } });
+  _ilk.bulkIdx = idx;
+  var selId = {}; rows.forEach(function(it){ selId[it.id] = 1; });
+  var n = Object.keys(_ilk.bulk).length, nf = 0, no = 0;
+  rows.forEach(function(it){ if (bad[it.id]) return; var c = pay[it.id].ingredient_code, ch = ilkChose(it, c); if (ilkFlagsFor(it, c).length) nf++; if (ch && ch.other) no++; });
+  var vs = [], by = {}; rows.forEach(function(it){ if (!by[it.vendor_key]) { by[it.vendor_key] = []; vs.push(it.vendor_key); } by[it.vendor_key].push(it); });
+  var chip = function(txt, col){ return '<span class="ilk-flag" style="font-size:12px;padding:3px 9px;color:' + col + ';background:' + col + '1f">' + txt + '</span>'; };
+  openModal('<div class="modal-title">' + t('選んだ候補で結ぶ', 'Link to the chosen items') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">' + chip(t('結ぶ ', 'Link ') + n, INVIN_COL.green) + (nf ? chip(t('うち印の付いた品目 ', 'Marked: ') + nf, INVIN_COL.yel) : '') + (no ? chip(t('ほかの仕入先の品目 ', 'Other vendor: ') + no, '#1D4ED8') : '') + '</div>'
+    + '<div style="font-size:12px;margin-bottom:8px;line-height:1.7">' + t('違うものはチェックを外してください（外したものは一覧に残ります）。黄色の品目は、数字・規格を確かめてから。', 'Untick any that are wrong (they stay in the list). Check numbers and packs on the yellow ones.') + '</div>'
+    + '<div style="max-height:52vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + vs.map(function(v){
+      return '<div class="ilk-grp" style="min-height:34px;font-size:12.5px">' + e(ilkVendorName(v)) + ' <span class="ilk-s">' + by[v].length + t(' 品目', ' items') + '</span></div>' + by[v].map(function(it){
+        var x = pay[it.id], ch = ilkChose(it, x.ingredient_code), fl = ilkFlagsFor(it, x.ingredient_code), off = bad[it.id] || joined[it.id];
+        var cb = off ? '<input type="checkbox" class="ilk-cb" disabled' + (joined[it.id] ? ' checked data-ilk-join="' + idx[joined[it.id]] + '"' : '') + '>' : '<input type="checkbox" class="ilk-cb" checked onchange="ilkBulkTick(' + invInJs(it.id) + ',this.checked)">';
+        var others = bad[it.id] ? [] : ilkSharers(it).filter(function(x){ return !selId[x.id]; });
+        return '<label class="ilk-bl"' + (fl.length || bad[it.id] ? ' style="background:#fffaf3"' : '') + '><span class="ilk-cbc ilk-cbl">' + cb + '</span>'
+          + '<div><div class="ilk-mono">' + e(((it.names || [])[0] || [''])[0]) + '</div><div class="ilk-s">' + it.n + t(' 回', ' times') + (it.vendor_item_code ? ' · ' + t('品番 ', '#') + e(it.vendor_item_code) : '') + '</div></div>'
+          + '<div class="ilk-arrow" style="color:var(--muted)">→</div><div>' + ilkIngHtml(ilkIngOf(x.ingredient_code), fl.map(ilkFlagHtml).join('')
+            + (others.length ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('名前の対応で結んでいるので、選んでいない品目も一緒に変わります：', 'Linked through the printed name, so items you did not choose change too: ')
+              + others.map(function(o){ return '<span class="ilk-mono" style="font-size:11.5px">' + e(((o.names || [])[0] || [''])[0]) + '</span>（' + o.n + t(' 回', ' times') + '）'; }).join('、') + '</div>' : '')
+            + (joined[it.id] ? '<div class="ilk-s" style="color:' + INVIN_COL.yel + '">' + t('上の品目と同じ名前の対応なので、一緒に結ばれます', 'Shares a name mapping with the item above: linked with it') + '</div>' : '')
+            + (bad[it.id] ? '<div class="ilk-s" style="color:' + INVIN_COL.red + '">' + t('同じ名前の対応を使う品目で、違う候補を選んでいます。結びません（「比べる」で 1 つずつ）', 'Shares a name mapping with another chosen item but a different item is chosen: not linked (use Compare one by one)') + '</div>' : '')) + '</div></label>';
+      }).join(''); }).join('') + '</div>'
+    + '<div class="ivx-note">' + t('結ぶと、その品目の明細に今のコードが付きます（反映済みの invoice は単価の記録も）。今のマスター・棚卸表は変わりません。ほかの仕入先の品目に結んでも、今のマスターの仕入先は変わりません。あとから 1 件ずつ「戻す」で戻せます。', 'The items’ lines get the current code (posted invoices also record the price). The master and stock lists do not change; linking to another vendor’s item does not change that item’s vendor. Each can be undone later.') + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button id="ilk-bulk-go" class="btn btn-primary" onclick="ilkBulkGo()"' + (n ? '' : ' disabled') + '>' + n + t(' 品目を結ぶ', ' items: link') + '</button></div>');
 }
-function ilkBulkTick(id, on){ if (!_ilk.bulk) return; if (on) _ilk.bulk[id] = 1; else delete _ilk.bulk[id]; var b = document.getElementById('ilk-bulk-go'); if (b) { var n = Object.keys(_ilk.bulk).length; b.textContent = n + t(' 品目を確定', ' items: confirm'); b.disabled = !n; } }
+function ilkBulkTick(id, on){ if (!_ilk.bulk || !(_ilk.bulkPay || {})[id]) return; if (on) _ilk.bulk[id] = 1; else delete _ilk.bulk[id];
+  /* 同じ名前の対応で一緒に結ばれる品目のチェックも合わせる（レビュー P3-2） */
+  try { var j = (_ilk.bulkIdx || {})[id]; if (j != null && document.querySelectorAll) document.querySelectorAll('[data-ilk-join="' + j + '"]').forEach(function(x){ x.checked = !!on; }); } catch(err) {}
+  var b = document.getElementById('ilk-bulk-go'); if (b) { var n = Object.keys(_ilk.bulk).length; b.textContent = n + t(' 品目を結ぶ', ' items: link'); b.disabled = !n; } }
 async function ilkBulkGo(){
-  var C = _ilk.bulkCodes || {}, ids = Object.keys(_ilk.bulk || {});
-  var list = ids.map(function(id){ var it = ilkItem(id); return it && C[id] && !it.link ? ilkPayload(it, C[id]) : null; }).filter(Boolean);
-  if (!list.length) return;
-  closeModalDirect(); _ilk.bulk = null;
-  await ilkSave(list, t('まとめて確定しました', 'Confirmed together'));
+  var Pm = _ilk.bulkPay || {}, ids = Object.keys(_ilk.bulk || {}).filter(function(id){ return Pm[id] && ilkItem(id); });
+  if (!ids.length || _ilk.busy) return;
+  var list = ids.map(function(id){ return Pm[id]; });
+  closeModalDirect(); _ilk.bulk = null; _ilk.bulkPay = null;
+  var ok = await ilkSave(list, t('まとめて結びました', 'Linked together'));
+  if (ok && _ilk.sel) ids.forEach(function(id){ delete _ilk.sel[id]; });
+}
+/* 印（v1128 でまとめて付けられるように）：品目のキーと、今の印の版 */
+function ilkMarkPayload(it, state){
+  var x = { vendor_key:it.vendor_key, state:state, version:it.mark ? it.mark.version : null };
+  if (it.vendor_item_code) x.vendor_item_code = it.vendor_item_code; else { x.alias_key = it.alias_key; x.spec_key = it.spec_key || ''; }
+  return x;
+}
+var ILK_MARK_T = { new_item:['新しい品目にする', 'Mark as new items', '今のマスターに無い品目として印を付けます（結びません）。', 'Marked as items not in the current master (not linked).'],
+  excluded:['対象外にする', 'Leave out', '紐づけの対象から外します（消耗品・備品など）。', 'Taken out of linking (supplies, equipment etc.).'],
+  later:['あとで', 'Later', 'あとで見る品目にします。', 'Kept to look at later.'] };
+/* 選んだ品目にまとめて印。1 品目ならそのまま、2 品目からは確かめの画面のあと */
+function ilkMarkAsk(state){
+  var e = escapeHtml, rows = ilkSelRows(), T = ILK_MARK_T[state]; if (!rows.length || !T || _ilk.busy) return;
+  _ilk.markIds = rows.map(function(it){ return it.id; }); _ilk.markPay = rows.map(function(it){ return ilkMarkPayload(it, state); });
+  var shown = {}; ilkFiltered().slice(0, _ilk.limit).forEach(function(it){ shown[it.id] = 1; });
+  if (rows.length === 1 && shown[rows[0].id]) { ilkMarkGo(); return; }   /* 見えていない 1 品目（「もっと見る」の先）は確かめてから（レビュー P3-4） */
+  var vs = [], by = {}; rows.forEach(function(it){ if (!by[it.vendor_key]) { by[it.vendor_key] = []; vs.push(it.vendor_key); } by[it.vendor_key].push(it); });
+  var linked = rows.filter(function(it){ return it.link; }).length;
+  openModal('<div class="modal-title">' + e(t(T[0], T[1])) + t('（', ' (') + rows.length + t(' 品目）', ' items)') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    + '<div style="font-size:12.5px;margin-bottom:8px;line-height:1.7">' + e(t(T[2], T[3])) + '</div>'
+    + '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:10px">' + vs.map(function(v){
+      return '<div class="ilk-grp" style="min-height:34px;font-size:12.5px">' + e(ilkVendorName(v)) + ' <span class="ilk-s">' + by[v].length + t(' 品目', ' items') + '</span></div>'
+        + by[v].map(function(it){ return '<div style="padding:6px 12px;border-top:1px solid var(--border)"><span class="ilk-mono">' + e(((it.names || [])[0] || [''])[0]) + '</span> <span class="ilk-s">' + it.n + t(' 回', ' times') + '</span></div>'; }).join(''); }).join('') + '</div>'
+    + '<div class="ivx-note">' + t('印は「紐づけの対象に戻す」で外せます。今のマスター・invoice は変わりません。', 'A mark comes off with “Back to linking”. The master and invoices do not change.')
+      + (linked ? t('対応表の候補（まだ確かめていない）がある ', ' ') + linked + t(' 品目は、候補はそのまま残ります。', ' items keep their mapping candidate.') : '') + '</div>'
+    + '<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">' + t('キャンセル', 'Cancel') + '</button><button class="btn btn-primary" onclick="ilkMarkGo()">' + rows.length + t(' 品目に印を付ける', ' items: mark') + '</button></div>');
+}
+async function ilkMarkGo(){
+  var list = _ilk.markPay || [], ids = _ilk.markIds || []; if (!list.length || _ilk.busy) return;
+  _ilk.markPay = null; _ilk.markIds = null; closeModalDirect(); _ilk.busy = true; ilkRerender();
+  var done = 0, err = null;
+  try { for (var i = 0; i < list.length; i += 100) { var r = await invInAPI({ action:'link_mark', marks:list.slice(i, i + 100) }); done += ((r && r.marks) || []).length; } }
+  catch(e) { err = e; }
+  _ilk.busy = false;
+  if (err) showToast((err.code === 'conflict' ? t('ほかの人が先に印を変えていました。読み直したので、もう一度確かめてください。', 'Someone changed a mark first. Reloaded: please check again.') : String(err.message || err)) + (done ? t('（', ' (') + done + t(' 品目は印を付けました）', ' were marked)') : ''), 'warning');
+  else { showToast(t('印を付けました：', 'Marked: ') + done + t(' 品目', ' items'), 'success'); if (_ilk.sel) ids.forEach(function(id){ delete _ilk.sel[id]; }); }
+  ilkReload();
 }
 /* ② 1 件の確かめ：候補を比べる・探す */
 function ilkOpen(id){
   var it = ilkItem(id); if (!it) return;
-  var e = escapeHtml, p = (_ilk.prep || {})[id] || {}, M = ilkMaster(), cur = it.link ? String(it.link.ingredient_code) : '';
+  var e = escapeHtml, p = (_ilk.prep || ilkPrepare() || {})[id] || {}, M = ilkMaster(), cur = it.link ? String(it.link.ingredient_code) : '';
   var cands = (p.cands || []).map(function(x){ return x.c; });
+  /* v1128：同じ仕入先に候補が無い品目は、ほかの仕入先の品目で名前が近いものも出す。一覧の行で選んでいた候補を最初に選ぶ */
+  var oth = (p.cls === 'C' || p.cls === 'D') ? ilkOtherCands(it).map(function(x){ return x.c; }).filter(function(c){ return !cands.some(function(y){ return y.code === c.code; }); }) : [];
+  var pre = ilkSelOk(it) ? ilkChosen(it) : '', verified = !!(it.link && it.link.verified), ch0 = (_ilk.choice || {})[id];
   if (cur && !cands.some(function(c){ return c.code === cur; })) cands.unshift(ilkIngOf(cur));
-  _ilk.pick = { id:id, code:cur || (p.best ? p.best.c.code : '') };
+  if (pre && !cands.concat(oth).some(function(c){ return c.code === pre; })) { var px = ilkChose(it, pre); if (px && px.other) oth.unshift(px.c); else cands.push(ilkIngOf(pre)); }
+  /* 確定済みは今の紐づけ。それ以外は一覧の行で選んでいる候補（「結ばない」を選んでいれば何も選ばない）（レビュー P3-3） */
+  _ilk.pick = { id:id, code:verified ? cur : (ch0 === '' ? '' : (pre || cur || (p.best ? p.best.c.code : ''))) };
+  var fl0 = ilkFlagsFor(it, _ilk.pick.code);   /* v1128：印は最初に選んでいる候補で（一覧の行と同じ） */
   var left = '<div style="flex:1 1 300px;min-width:0"><div class="ilk-s">' + t('invoice の品目（Drive 取込）', 'Invoice item (Drive intake)') + '</div>'
     + '<div class="ilk-mono" style="font-size:15px;margin:2px 0 8px">' + e((it.names[0] || [''])[0]) + '</div>'
     + '<div class="ilk-s" style="line-height:1.8">' + t('仕入先 ', 'Vendor ') + '<b style="color:var(--text)">' + e(ilkVendorName(it.vendor_key)) + '</b>' + (it.vendor_item_code ? ' · ' + t('品番 ', 'Item # ') + e(it.vendor_item_code) : '')
@@ -50787,11 +51154,12 @@ function ilkOpen(id){
     + (it.min_price ? '<br>' + t('単価 ', 'Unit price ') + invInPrice(it.min_price) + (it.max_price !== it.min_price ? '〜' + invInPrice(it.max_price) : '') + (it.units[0] ? ' / ' + e(it.units.map(function(u){ return u[0]; }).join('・')) : '') : '')
     + ((it.specs || []).length ? '<br>' + t('規格（AI が読んだ）', 'Pack (as read)') + '：' + it.specs.map(function(s){ return e(s[0]); }).join('・') : '')
     + ((it.names || []).length > 1 ? '<br>' + t('ほかの名前：', 'Other names: ') + it.names.slice(1).map(function(n){ return '<span class="ilk-mono" style="font-size:11.5px">' + e(n[0]) + '</span>'; }).join('、') : '') + '</div>'
-    + ((p.flags || []).length ? '<div style="margin-top:6px">' + p.flags.map(ilkFlagHtml).join('') + '</div>' : '')
+    + (fl0.length ? '<div style="margin-top:6px">' + fl0.map(ilkFlagHtml).join('') + '</div>' : '')
     + (it.link && it.link.by_name ? '<div class="ilk-s" style="margin-top:6px;color:' + INVIN_COL.yel + '">' + t('名前の対応で結んでいます。同じ名前・規格で品番の無い明細も同じ対応なので、選び直す・戻すと両方に効きます。', 'Linked through its printed name: lines with the same name and pack but no item code share it, so choosing again or undoing changes both.') + '</div>' : '')
     + (it.retired && it.retired.length ? '<div class="ilk-s" style="margin-top:6px">' + t('前に結んで戻したコード：', 'Linked before and undone: ') + it.retired.map(function(r){ return e(r.ingredient_code); }).join('、') + '</div>' : '') + '</div>';
   var right = '<div style="flex:1 1 360px;min-width:0"><div class="ilk-s" style="margin-bottom:6px">' + t('今のマスターの候補（同じ仕入先）', 'Candidates in the current master (same vendor)') + '</div>'
-    + (cands.length ? cands.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '<div class="ilk-s" style="margin-bottom:8px">' + t('候補はありません。下で探してください。', 'No candidates. Search below.') + '</div>')
+    + (cands.length ? cands.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '<div class="ilk-s" style="margin-bottom:8px">' + (oth.length ? t('同じ仕入先の品目に候補はありません。', 'No candidates among the vendor’s own items.') : t('候補はありません。下で探してください。', 'No candidates. Search below.')) + '</div>')
+    + (oth.length ? '<div class="ilk-s" style="margin:4px 0 6px">' + t('ほかの仕入先の品目（名前が近い・今のマスターの仕入先は変わりません）', 'Items of other vendors (close names; the master’s vendor does not change)') + '</div>' + oth.map(function(c){ return ilkCandHtml(c, cur); }).join('') : '')
     + '<div style="display:flex;gap:6px;align-items:center;margin:4px 0 6px"><input id="ilk-find" class="form-input" style="margin:0" placeholder="' + t('今のマスターを探す（英語・日本語・コード・仕入先）', 'Search the current master (English, Japanese, code, vendor)') + '" oninput="ilkFind(this.value)"></div>'
     + '<div id="ilk-find-res"></div></div>';
   var can = ilkCanChange(it) && !ilkMany(it);
@@ -50802,7 +51170,7 @@ function ilkOpen(id){
       : t('経理が確かめた対応です。変えるのは経理・事務Crew・GM・CEO です。', 'Checked by accounting: accounting, office crew, GM or CEO change it.')) + '</div>')
     + '<div class="btn-row" style="flex-wrap:wrap">' + (can ? '<button id="ilk-pick-go" class="btn btn-primary" onclick="ilkPickGo()"' + (_ilk.pick.code ? '' : ' disabled') + '>' + ilkPickLabel() + '</button>' : '')
     + (it.link && it.link.verified && can ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkUndoAsk(' + invInJs(id) + ')">' + t('戻す', 'Undo') + '</button>' : '')
-    + (!it.link ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'new_item\')">' + t('新しい品目（結ばない）', 'New item (no link)') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'later\')">' + t('あとで', 'Later') + '</button>' : '')
+    + (!verified ? '<button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'new_item\')">' + t('新しい品目（結ばない）', 'New item (no link)') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'excluded\')">' + t('対象外', 'Leave out') + '</button><button class="btn btn-secondary" onclick="closeModalDirect();ilkMark(' + invInJs(id) + ',\'later\')">' + t('あとで', 'Later') + '</button>' : '')
     + '<button class="btn btn-secondary" onclick="closeModalDirect()">' + t('閉じる', 'Close') + '</button></div>');
 }
 function ilkCandHtml(c, cur){
@@ -50843,10 +51211,9 @@ async function ilkUndo(id){
 /* 印：対象外・新しい品目・あとで・紐づけの対象に戻す（included：食材以外の業者の品目を入れる／none：印を外す） */
 async function ilkMark(id, state){
   var it = ilkItem(id); if (!it || _ilk.busy) return;
-  var x = { vendor_key:it.vendor_key, state:state, version:it.mark ? it.mark.version : null };
-  if (it.vendor_item_code) x.vendor_item_code = it.vendor_item_code; else { x.alias_key = it.alias_key; x.spec_key = it.spec_key || ''; }
+  var x = ilkMarkPayload(it, state);
   _ilk.busy = true;
-  try { await invInAPI({ action:'link_mark', marks:[x] }); }
+  try { await invInAPI({ action:'link_mark', marks:[x] }); if (_ilk.sel) delete _ilk.sel[id]; }
   catch(e) { showToast(e.code === 'conflict' ? t('ほかの人が先に印を変えていました。読み直しました。', 'Someone changed the mark first. Reloaded.') : String(e.message || e), 'warning'); }
   _ilk.busy = false; ilkReload();
 }
@@ -50884,8 +51251,8 @@ function ilkStoresHtml(){
   });
   return h + '</div><div class="ivx-note">' + t('棚卸表の品目は変わりません。「invoice を探す」は invoice の品目の一覧を、この品目の名前で探します。', 'Stock lists do not change. “Find in invoices” searches the invoice items by this item’s name.') + '</div>';
 }
-function ilkShowCode(code){ _ilk.view = 'items'; _ilk.vendor = ''; _ilk.q = ''; _ilk.code = String(code); _ilk.limit = 50; ilkRerender(); }
-function ilkFindFor(code){ var c = ilkIngOf(code); _ilk.view = 'items'; _ilk.vendor = ''; _ilk.code = ''; _ilk.filter = 'none'; _ilk.q = ilkN(c.en || c.ja).toLowerCase().split(/\s+/)[0] || ''; _ilk.limit = 50; ilkRerender(); }
+function ilkShowCode(code){ _ilk.view = 'items'; _ilk.vendor = ''; _ilk.q = ''; _ilk.code = String(code); _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
+function ilkFindFor(code){ var c = ilkIngOf(code); _ilk.view = 'items'; _ilk.vendor = ''; _ilk.code = ''; _ilk.filter = 'none'; _ilk.q = ilkN(c.en || c.ja).toLowerCase().split(/\s+/)[0] || ''; _ilk.limit = 50; _ilk.sel = {}; ilkRerender(); }
 /* FUNERGY_ITEM_LINK_END */
 var AC_TABS = [
   { id:'dash', label:'経理ダッシュボード', icon:'ti-layout-dashboard', subs:[
@@ -60381,7 +60748,7 @@ async function runTotoyaSkillV2(){
   if(v2) pushKeys.push(['skills_v2', ls('skills_v2',{})]);
   var pushOk=0, pushNg=[];
   for(var k=0;k<pushKeys.length;k++){
-    try{ await syncMasterToSupabase(pushKeys[k][0], pushKeys[k][1]); pushOk++; }
+    try{ await _pushAwait(pushKeys[k][0], pushKeys[k][1]); pushOk++; }   /* v1128：同じキーは 1 つずつ（送っている途中なら、その後に） */
     catch(e){ pushNg.push(pushKeys[k][0]); }
   }
   _tv2Log('　反映 '+pushOk+'件'+(pushNg.length?('／失敗 '+pushNg.join(',')):''));
@@ -60469,7 +60836,7 @@ async function runTotoyaCritRefresh(){
   _tv2Log('　更新時刻 '+atBefore+' → '+atAfter+(atAfter>atBefore?'（進みました）':'（⚠ 進んでいません）'));
   _tv2Log('③ クラウドへ反映中…');
   var pushNg='';
-  try{ await syncMasterToSupabase('skill_lv_desc', ls('skill_lv_desc',{})); }catch(e){ pushNg=String((e&&e.message)||e); }
+  try{ await _pushAwait('skill_lv_desc', ls('skill_lv_desc',{})); }catch(e){ pushNg=String((e&&e.message)||e); }   /* v1128：同じキーは 1 つずつ */
   _tv2Log(pushNg?('　失敗：'+pushNg):'　反映しました');
   var left=_tv2CritDiff();
   var others=Object.keys(getSkillLvDesc()).filter(function(k){ return k!=='_at' && TOTOYA_V2_STORES.indexOf(k)<0; });
@@ -91412,7 +91779,7 @@ async function lalaPullNow(){
   }catch(e){}
 }
 async function lalaPushNow(){
-  try{ if(typeof syncMasterToSupabase==='function') await syncMasterToSupabase('lala_tasks', ls('lala_tasks',{})); }
+  try{ if(typeof _pushAwait==='function') await _pushAwait('lala_tasks', ls('lala_tasks',{})); }   /* v1128：同じキーは 1 つずつ */
   catch(e){
     var el=document.getElementById('lala-sync');
     if(el) el.innerHTML='<span style="color:var(--yellow)"><i class="ti ti-cloud-off"></i> 同期できていません（送信箱に残しています。通信が戻ると自動で送られます）</span>';
@@ -98263,18 +98630,38 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     D.addEventListener(tp, function(e){ if(e.isTrusted) lastAct = now(); }, true);
   });
   var INF = '_ux_inflight';   /* 送っている途中のキー（この端末だけ。閉じられたら次に開いたとき送り直す） */
-  function infGet(){ try{ var o = JSON.parse(localStorage.getItem(INF) || '{}'); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+  /* v1128（Codex の PR #118 のレビュー P1）：だれの保存かも覚える（{ キー: { だれ: 時刻 } }）。送り直すのは、同じ人がまたログインしたときだけ
+     （共有の端末で A の送信の途中に B が入っても、A の保存を B のログインのあいだに送らない）。だれか分からない前の印（v1127）は送らない。
+     そのキーがあとで（だれのでも）クラウドに届いたら印は消す（端末の今の値が届いたので）。7 日を過ぎた印は捨てる */
+  var INF_TTL = 7 * 86400000;
+  function who(){ try{ return (typeof _saveWho === 'function') ? _saveWho() : ''; }catch(e){ return ''; } }   /* 送信待ちと同じ決め方（v1128：PIN でも管理者ページでも同じ人は 'p:社員 ID'） */
+  UX._who = who;
+  function infGet(){
+    try{
+      var o = JSON.parse(localStorage.getItem(INF) || '{}'); if(!o || typeof o !== 'object' || Array.isArray(o)) return {};
+      Object.keys(o).forEach(function(k){ var v = o[k]; if(typeof v === 'number') o[k] = { '': v }; else if(!v || typeof v !== 'object' || Array.isArray(v)) delete o[k]; });   /* v1127 の形（時刻だけ）＝だれか分からない */
+      return o;
+    }catch(e){ return {}; }
+  }
   function infSet(o){ try{ if(Object.keys(o).length) localStorage.setItem(INF, JSON.stringify(o)); else localStorage.removeItem(INF); }catch(e){} }
   function finKey(k){ return k === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(k)); }
   function guardOn(){ try{ return typeof fstGuardOn === 'function' && fstGuardOn(); }catch(e){ return false; } }
   function track(key, p){
-    var rec = { key: key, t: now(), user: (now() - lastAct) < 2500, done: false, res: undefined };
-    if(rec.user){ var o = infGet(); o[key] = rec.t; infSet(o); }
+    var rec = { key: key, t: now(), user: (now() - lastAct) < 2500, done: false, res: undefined, who: who() };
+    if(rec.user){ var o = infGet(); (o[key] = o[key] || {})[rec.who] = rec.t; infSet(o); }
     rec.p = Promise.resolve(p).then(function(r){ return r; }, function(){ return false; }).then(function(r){
       rec.done = true; rec.res = r;
       if(rec.user && r === true) S.lastOk = now();
       if(r === false || r === 'deferred') S.lastFail = now();
-      if(rec.user && !S.recs.some(function(x){ return x !== rec && x.key === key && x.user && !x.done; })){ var o2 = infGet(); if(o2[key] != null){ delete o2[key]; infSet(o2); } }
+      var busyK = S.recs.some(function(x){ return x !== rec && x.key === key && !x.done; });
+      if(!busyK){
+        var o2 = infGet();
+        if(o2[key]){
+          if(r === true) delete o2[key];   /* 端末の今の値がクラウドに届いた：だれの印も要らない */
+          else if(rec.user && o2[key][rec.who] != null){ delete o2[key][rec.who]; if(!Object.keys(o2[key]).length) delete o2[key]; }   /* 送れなかったものは送信待ちに入っている */
+          infSet(o2);
+        }
+      }
       paintSoon(0);
       return r;
     });
@@ -98399,10 +98786,19 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* 前に送っている途中で閉じられたキーは、送信待ちに入れて送り直す（端末の今の値を送る） */
   UX.recoverInflight = function(){
     var o = infGet(), ks = Object.keys(o); if(!ks.length) return 0;
-    var old = ks.filter(function(k){ return now() - (+o[k] || 0) > 20000; });
+    var me = who(), tNow = now(), old = [], dirty = false;
+    ks.forEach(function(k){
+      var m = o[k];
+      Object.keys(m).forEach(function(w){
+        var age = tNow - (+m[w] || 0);
+        if(age > INF_TTL || age < -86400000){ delete m[w]; dirty = true; return; }   /* 7 日を過ぎた・1 日より先の時刻（時計が戻った）の印は捨てる */
+        if(me && w === me && age > 20000){ old.push(k); delete m[w]; dirty = true; }   /* 同じ人のものだけ。20 秒以内は、ほかのタブが送っている途中 */
+      });
+      if(!Object.keys(m).length){ delete o[k]; dirty = true; }
+    });
+    if(dirty) infSet(o);
     if(!old.length) return 0;
-    old.forEach(function(k){ try{ if(typeof _outboxAdd === 'function') _outboxAdd(k, 'interrupted'); }catch(e){} delete o[k]; });
-    infSet(o);
+    old.forEach(function(k){ try{ if(typeof _outboxAdd === 'function') _outboxAdd(k, 'interrupted', me); }catch(e){} });
     try{ if(typeof flushOutbox === 'function') Promise.resolve(flushOutbox()).catch(function(){}).then(function(){ paintSoon(0); }); }catch(e){}
     paintSoon(0);
     return old.length;
@@ -98523,6 +98919,17 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   if(typeof doLogout === 'function'){
     var origLogout = doLogout;
     doLogout = function(){
+      /* v1128（独立レビュー 6f2b5ab P1）：この人の送れていない保存は、ほかの人のログインのあいだには送らない。ログアウトの前に送ってみて、残るなら知らせる */
+      try{
+        if(!W._forceLogout && typeof _outboxMine === 'function' && typeof _saveWho === 'function' && _saveWho()){
+          var mine = _outboxMine().filter(function(x){ return x && x.who; }).length;
+          if(mine){
+            try{ if(typeof flushOutbox === 'function') Promise.resolve(flushOutbox()).catch(function(){}); }catch(e){}
+            if(typeof confirm === 'function' && !confirm(t('この端末から送れていない保存が ' + mine + ' 件あります（端末には残っています）。ログアウトすると、次にあなたがこの端末でログインするまで送りません。ログアウトしますか？',
+                'This device has ' + mine + ' unsent save(s) of yours (kept on this device). After you log out they are sent only when you sign in on this device again. Log out?'))) return;
+          }
+        }
+      }catch(e){}
       var r = origLogout.apply(this, arguments);
       var after = function(){ try{ if(typeof curRole === 'undefined' || !curRole) UX.reset(); }catch(e){} };
       if(r && typeof r.then === 'function') r.then(after, after); else after();

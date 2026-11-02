@@ -50,7 +50,7 @@ const ROUNDS = Number(process.env.HB_ROUNDS) || 0;   // fewer rounds of the rand
 const tick = async (n = 8) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 
 const FNS = ['mergeHbReads', '_hbReadCmp', '_coversHbReads', '_hbChCmp', 'mergeHbChapters', '_coversHbChapters', '_hbJs', '_logSig', '_canonForSig',
-  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_tsMicro', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
+  'mergeAppendLog', '_coversLog', 'opMergePush', 'pullOpKey', '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_tsMicro', '_opWriteBack', '_hbPullKey', '_hbEditBtns', 'hbMarkRead', 'hbAfterReadSave', 'hbPullLatest', '_hbUnsent', 'hbSendNow',
   '_hbChRaw', 'getHbChapters', 'ensureHbSeed', 'hbSyncSeedVersion', 'hbChaptersSorted', 'hbStatus', 'renderHandbook', 'hbRenderReader', 'hbRenderAdmin',
   '_hbLogT', 'hbRenderLog', 'openHbEdit', 'hbSaveChapter', 'hbDeleteChapter', 'hbOpen', 'hbBack', 'hbSetTab', 'hbCheckScroll'];
 const VARS = ['_hbView', '_hbPull', '_lsPushP', '_hbEditBusy', '_hbOpenV', '_opLastPushWhy'];

@@ -28,7 +28,16 @@ function extractor(src) {
     assert.ok(i >= 0, 'function ' + name);
     const line = src.slice(i + 1, src.indexOf('\n', i + 1));
     if (/\}\s*(\/\*.*\*\/)?\s*$/.test(line) && (line.match(/\{/g) || []).length === (line.match(/\}/g) || []).length) return line;
-    return src.slice(i + 1, src.indexOf('\n}', i + 1) + 2);
+    // 10/29（c3eeb3a）から、lsSet・getEmployees などは本体を (function(){ … }).apply(this,arguments) で包んでいて、
+    // 中に「行の頭の }」がある。最初の「\n}」で切ると途中で切れる（SyntaxError で 33 件が動いていなかった）。
+    // 行の頭の } のうち、そこまでで 1 つの関数として読めるところで切る。
+    let j = src.indexOf('\n}', i + 1);
+    while (j >= 0) {
+      const end = src.indexOf('\n', j + 1);
+      const s = src.slice(i + 1, end < 0 ? src.length : end);
+      try { new vm.Script(s); return s; } catch (e) { j = src.indexOf('\n}', j + 1); }
+    }
+    assert.fail('function ' + name + ' could not be read as one function');
   };
   const block = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i); assert.ok(i >= 0 && j > i, a); return src.slice(i, j + b.length); };
   const varBlock = (name, close) => block('\nvar ' + name + ' = ', close);
@@ -151,6 +160,8 @@ function device(S, src, { user = 'Gus Sample', role = 'gm', me = null, idb = tru
   const parts = [x.varBlock('SUPA_MASTER_MAP', '\n};'), 'var TEST_STAFF_PREFIX = "tst_";', 'var LOGIN_PIN_TIMEOUT = 30000, LOGIN_PING_TIMEOUT = 8000;',
     x.line('var LS_DEVICE_LOCAL = '), 'var _SPLIT_KEYS = {\n' + x.line('  offboardings:     {type:') + '\n};'];
   for (const n of FNS) parts.push(x.fn(n));
+  // v1128：同じキーの送信の順（_pushWithOutbox・flushOutbox が使う）。前の版の index.html には無い
+  for (const n of ['_pushQOf', '_pushBusy', '_pushRun']) if (x.has('\nfunction ' + n + '(')) parts.push(x.fn(n));
   if (v1085) {
     for (const n of FNS_1085) parts.push(x.fn(n));
     // v1087: the undo of an approval reads the approval list from the cloud first and moves the item to a new generation.
