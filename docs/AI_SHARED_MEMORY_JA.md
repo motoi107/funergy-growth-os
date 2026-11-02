@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-02 v1130：LaLa のメニュー出数・リピート率の復旧（11/02 の依頼の 0・Claude・ブランチ `claude/lala-visit-fix`・アプリと hyper-worker・本番未反映）
+
+- 依頼：Moto さん 11/02 10:41 HST の添付（0：LaLa の出数・リピート率を最優先で復旧 → 確かめたら ①〜⑩ のワークセンター・経費申請・スキルマトリクス・評価変更申請）。仕様・原因・試験・手順：`docs/LALA_VISIT_V1130_JA.md`。
+- 原因（本番を読むだけの SQL `db/lala-visit-diag.sql`・11/02）：hyper-worker はメニューのグループ名がちょうど「Customers」のときだけ FT・RP・SR を数える。LaLa のグループ名は「Customer Property」→ 毎日 0。ToriTon・Tenkichi は商品の数と toast_sales が一致（repeat_count＝RP＋SR を確かめた）。
+- 直し：
+  - hyper-worker v1130（非公開の 1 ファイル・sha256 先頭 `e76ab5e3f490`・Moto さんに直接）：customer で始まるグループ（`isCustGroupName`）・日本語の名前。ほかは v1085 のまま。
+  - アプリ v1130：`FUNERGY_VT`（状態と内訳・UI案67）・KPI のタイル・会議・同期センターの店の比べ・メニューの最後の日・`isVisitTypeCategory` を customer で始まるグループに。
+- 試験：repeat-vt-v1130 12・SQL 2・関連（前からの落ちは main と同じ）・static release pass/1130・Chromium 42/44 → 落ちた会議の行を直した（直したあとは流していない）。独立レビュー・Codex はまだ。
+- まだ：Moto さんが hyper-worker を差し替え → 来店区分の診断（LaLa）→ `db/lala-visit-diag-2.sql`（注文で FT・RP・SR が押されているか）→ 期間一括取り込み（9/19〜昨日）→ v1130 をマージ → 本番の照合。そのあと ①〜⑩。
+
 ## 2026-11-02 引き継ぎ：#119（v1128）・#120（v1129）はマージ済み・本番は v1129（Claude）
 
 - Moto さんが 11/02 09:25 HST に PR #119（head `442e000`・main `a07e24c`）、09:26 HST に PR #120（head `955fb61`・main `0b7200d`）をマージ。
