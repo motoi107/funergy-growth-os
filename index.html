@@ -92730,18 +92730,64 @@ function effectiveTipRate(name, list) {   /* list：決める前に結果を確�
 /* ===== v1095：適用開始日（UI案57） =====
    選べるのは、いまの期間（1〜15 日・16 日〜末日）の初日（ハワイの今日）から 366 日先まで（Q2 A：前の期間は選べない）。初めは今日（Q3 A） */
 function tipFromRange() {
-  var d = _tipHstDay(Date.now());
-  return { min: d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16'), max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+  var d = _tipHstDay(Date.now()), cur = d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16');
+  /* v1129（Moto さん 11/01「10/16 開始の期間も選べるように」）：1 つ前の期間の初日から選べる（10/16 より前は選べない＝Tip Rate で配分する初日）。
+     前の期間を選ぶと、その期間の配分が変わる（決める前に確かめる・この端末で確定した期間は確定を解除するまで選べない）。
+     前の期間から効かせた設定は、それよりあとから効く設定（11/1 から、など）を上書きしない（_tipLatestApproved） */
+  var min = (typeof tipPrevPeriodStart === 'function') ? tipPrevPeriodStart(cur) : cur;
+  if (typeof TIP_RATE_WEIGHT_START !== 'undefined' && min < TIP_RATE_WEIGHT_START) min = (cur < TIP_RATE_WEIGHT_START) ? cur : TIP_RATE_WEIGHT_START;
+  return { min: min, cur: cur, max: _tipHstDay(Date.now() + 366 * 86400000), today: d };
+}
+/* 期間の初日 s（YYYY-MM-01 か YYYY-MM-16）の 1 つ前の期間の初日 */
+function tipPrevPeriodStart(s) {
+  s = String(s || ''); if (!/^\d{4}-\d{2}-(01|16)$/.test(s)) return s;
+  if (s.slice(8) === '16') return s.slice(0, 8) + '01';
+  var y = Number(s.slice(0, 4)), m = Number(s.slice(5, 7)) - 1; if (m < 1) { m = 12; y--; }
+  return y + '-' + ('0' + m).slice(-2) + '-16';
+}
+/* v1129：前の期間（いまの期間の初日より前）を選んだときの確かめ。この端末で、その人の店（所属・応援）のその期間を確定していれば選べない（確定した額を変えない）。
+   {back:false} か {back:true, from, to, locked:[店の名前…]} */
+function tipBackInfo(name, fd) {
+  var g = tipFromRange(); fd = String(fd || '');
+  if (!fd || fd >= g.cur) return { back: false };
+  var from = tipPeriodStartOf(fd), to = (from.slice(8) === '01') ? from.slice(0, 8) + '15' : (function () { var y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7)); var last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return from.slice(0, 8) + ('0' + last).slice(-2); })();
+  var emp = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
+  var ids = emp ? [emp.store].concat(emp.support || []).filter(Boolean) : [], locked = [];
+  ids.forEach(function (sid) {
+    var c = (typeof getTipConfirm === 'function') ? getTipConfirm(sid, { from: from }) : null;
+    if (c && c.status === '確定済み') { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === sid; }) : null; locked.push((st && st.name) || sid); }
+  });
+  return { back: true, from: from, to: to, locked: locked };
+}
+/* 前の期間を選んだとき：確定していれば止める（文を返す）・していなければ確かめる（false＝やめた）。前の期間でなければ true */
+function tipBackConfirm(name, fd) {
+  var b = tipBackInfo(name, fd), f = function (x) { return String(x).replace(/-/g, '/'); };
+  if (!b.back) return true;
+  if (b.locked.length) {
+    showToast(t(f(b.from) + '〜' + f(b.to) + ' は ' + b.locked.join('・') + ' で確定済みです。前の期間に設定するには、Tip の期間の画面で確定を解除してから（確定した額は変えません）',
+                f(b.from) + '–' + f(b.to) + ' is finalized for ' + b.locked.join(', ') + '. Unlock it on the tip period screen first (finalized amounts are not changed)'), 'warning');
+    return false;
+  }
+  if (typeof confirm !== 'function') return true;
+  return confirm(t('前の期間（' + f(b.from) + '〜' + f(b.to) + '）から効かせます。その期間のチップの配分が計算し直されます（この端末で確定した記録はありません。書き出した CSV・経理まとめ・支給済みの額は自動では変わりません）。\n'
+      + 'あとから効く設定（いまの期間からの設定など）はそのまま残ります。\n続けますか？',
+    'This takes effect from the previous period (' + f(b.from) + '–' + f(b.to) + '). The tip split of that period is recalculated (no finalized record on this device; exported CSVs, the accounting book and paid amounts do not change by themselves).\n'
+      + 'Settings that take effect later (from this period, for example) stay as they are.\nContinue?'));
 }
 /* 期間の初日（1〜15 日なら 1 日・16 日〜なら 16 日） */
 function tipPeriodStartOf(d) { d = String(d || ''); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16') : ''; }
 /* v1095（独立レビュー f1d567a P2-1）：選べる日はこの端末の時計で決めるので、時計の遅れた端末だと前の期間（締めた期間かもしれない）を選べた。
    決めた日（tipDecDayStamp：ほかの決定の日付で守った日）の期間の初日より前は、決める直前にも断る */
 function tipFromGuard(fd, decDay) {
-  var m = tipPeriodStartOf(decDay), f = function (x) { return String(x).replace(/-/g, '/'); };
+  /* v1129：1 つ前の期間から選べる。ただし、この端末の日付の期間がほかの決定の日付の期間より前（時計の遅れ）なら、前と同じく決めた日の期間から
+     （時計の遅れた端末が、知らないうちに前の期間へ入れないように：f1d567a P2-1 のまま。端末の日付を直せば前の期間も選べる） */
+  var ps = tipPeriodStartOf(decDay), cur = tipPeriodStartOf((typeof _tipHstDay === 'function') ? _tipHstDay(Date.now()) : ''), f = function (x) { return String(x).replace(/-/g, '/'); };
+  var lag = !!(ps && cur && cur < ps), m = (!lag && ps && typeof tipPrevPeriodStart === 'function') ? tipPrevPeriodStart(ps) : ps;
   if (!m || !fd || String(fd) >= m) return '';
-  return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、いまの期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
+  if (lag) return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、いまの期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
            'The start date can be from ' + f(m) + ' (other decisions show the current period starts then; check this device’s date)');
+  return t('適用開始日は ' + f(m) + ' から選べます。ほかの決定の日付から見ると、1 つ前の期間は ' + f(m) + ' からです（この端末の日付が遅れていないか確かめてください）',
+           'The start date can be from ' + f(m) + ' (other decisions show the previous period starts then; check this device’s date)');
 }
 /* 承認待ちの行で選んだ適用開始日（描き直しても今日に戻さない：独立レビュー f1d567a P2-2） */
 var _tipFromSel = {};
@@ -92757,7 +92803,7 @@ function _tipNotFuture(r) {
 function tipFromCheck(fd) {
   var g = tipFromRange(), f = function (x) { return String(x).replace(/-/g, '/'); };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(fd || '')) || !_tipDayOk(fd)) return t('適用開始日を選んでください', 'Choose the start date');
-  if (fd < g.min) return t('適用開始日は ' + f(g.min) + '（いまの期間の初日）から選べます。前の期間を直すときは Claude に', 'The start date can be from ' + f(g.min) + ' (the first day of this period)');
+  if (fd < g.min) return t('適用開始日は ' + f(g.min) + '（1 つ前の期間の初日）から選べます', 'The start date can be from ' + f(g.min) + ' (the first day of the previous period)');
   if (fd > g.max) return t('適用開始日が先すぎます（' + f(g.max) + ' まで）', 'The start date is too far ahead (until ' + f(g.max) + ')');
   return '';
 }
@@ -92773,7 +92819,7 @@ function tipDayLabel(d) {
 function tipChangePreview(name, rate, fromDay) {
   var emp = getEmployees().find(function (e) { return e.name === name; });
   var reqs = ls('tip_requests', []) || [];
-  var sim = reqs.concat([{ id: 'tip_preview', name: name, rate: Number(rate), status: '承認', fromDay: fromDay, decAt: tipDecStamp(reqs, name) }]);
+  var sim = reqs.concat([{ id: 'tip_preview', name: name, rate: Number(rate), status: '承認', fromDay: fromDay, decAt: tipDecStamp(reqs, name), decDay: tipDecDayStamp(reqs, name) }]);   /* v1129：決めた日も（前の期間からの設定か分かるように） */
   var out = { before: null, after: null, periods: [], coefDays: String(fromDay) < TIP_RATE_WEIGHT_START, future: false };
   if (!emp) return out;
   out.before = tipRateOn(emp, fromDay, reqs); out.after = tipRateOn(emp, fromDay, sim);
@@ -92851,16 +92897,28 @@ var _tipLive={ ch:null, timer:null, onVis:null, since:0, busy:false, again:false
 /* 時刻の無い記録（v1090 以前の端末で決めたもの）は、並びでその前にある決定のいちばん新しい時刻とみなす（並びのあと＝新しい、のまま）。
    独立レビュー 10/17（ae5c541）の P1：v1091 の端末で 90% に上げたあと v1090 の端末で 100% に上げると、v1091 の端末は 90% のままだった。 */
 function _tipLatestApproved(name, list, ok){   /* ok：候補にする承認（v1092：その日までに決めたもの）。並びの時刻はすべての記録で数える */
-  var best=null, bestT=-Infinity, floor=0;
+  var best=null, bestT=-Infinity, floor=0, cand=[], last='';
   (Array.isArray(list) ? list : (ls('tip_requests',[])||[])).forEach(function(r){
     if(!r || r.name!==name) return;
     var t=_tipDecT(r), eff=t>0 ? t : floor;
     if(t>floor) floor=t;
     if(r.status!=='承認') return;
     if(typeof ok==='function' && !ok(r)) return;
-    if(eff>=bestT){ best=r; bestT=eff; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
+    cand.push({ r:r, t:eff });
+    var dy=(typeof _tipDecDay==='function') ? (_tipDecDay(r)||'') : ''; if(dy>last) last=dy;
+  });
+  cand.forEach(function(c){
+    /* v1129：前の期間から効かせた設定は、それよりあとから効く設定（候補の中）があれば、その日からは使わない（あとで決めても上書きしない） */
+    if(typeof _tipBackdated==='function' && _tipBackdated(c.r) && String(_tipDecDay(c.r)||'') < last) return;
+    if(c.t>=bestT){ best=c.r; bestT=c.t; }   /* 同じ時刻（時刻なしどうしも）は並びのあと＝今までどおり */
   });
   return best;
+}
+/* v1129：前の期間から効かせた設定か（適用開始日が、決めた日の期間の初日より前）。v1128 までの記録はどれも違う（前の期間は選べなかった） */
+function _tipBackdated(r){
+  if(typeof _tipFromOk!=='function' || !_tipFromOk(r) || typeof _tipDecDayRaw!=='function') return false;
+  var dd=_tipDecDayRaw(r); if(!dd) return false;
+  return String(r.fromDay) < dd.slice(0,8)+(Number(dd.slice(8))<=15 ? '01' : '16');
 }
 /* 前からある申請を承認するとき：時刻の無い前の決定（v1090 以前）に、並びのとおりの時刻を付ける（並びのあと＝新しい、と同じ意味）。
    独立レビュー（6f75b67）P2-1：付けないと、承認した申請（並びの前のほう）が、そのあとに並ぶ時刻の無い引き上げに負け、承認しても率が変わらなかった。
@@ -93805,11 +93863,12 @@ async function approveTip(id, status) {
       var _ah = tipDecClockAhead(requests, r);
       if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _from || _day))) return;   /* v1095: 効く日は適用開始日 */
     }
+    if (status==='承認' && _from && typeof tipBackConfirm==='function' && !tipBackConfirm(r.name, _from)) return;   /* v1129：前の期間を選んだとき */
     if (status==='承認' && _pv) {
       _after = _pv.after;
       if (typeof confirm==='function' && !confirm(tipPreviewText(r.name, r.rate, _from, _pv)+'\n\n'+t('承認しますか？','Approve?'))) return;
     } else if (status==='承認' && _before!=null) {   /* 試算が使えないとき（今までどおり、下がるときだけ確かめる） */
-      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec, fromDay:_from||undefined }) : x; }));
+      _after = effectiveTipRate(r.name, requests.map(function(x){ return x===r ? Object.assign({}, x, { status:'承認', decAt:_dec, decDay:_day, fromDay:_from||undefined }) : x; }));
       if (_after < _before && typeof confirm==='function'
         && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_rl(_before)+' です。承認すると '+_rl(_after)+' に下がります。承認しますか？',
                       r.name+'\'s Tip Rate is '+_rl(_before)+' now. Approving lowers it to '+_rl(_after)+'. Approve?'))) return;
@@ -93850,7 +93909,7 @@ function openTipRaiseModal(){
     +'<div class="form-group"><label class="form-label">'+t('新しい Tip Rate','New Tip Rate')+'</label><select class="form-select" id="tipraise-rate" onchange="tipRaisePreview()"><option value="80">80%</option><option value="90">90%</option><option value="100">100%</option></select></div>'
     +(function(){ var g=tipFromRange(); return '<div class="form-group"><label class="form-label" for="tipraise-from">'+t('適用開始日（この日の勤務から・ハワイの日付）','Start date (from this day\'s shifts, Hawaii date)')+'</label>'
       +'<input type="date" class="form-input" id="tipraise-from" value="'+g.today+'" min="'+g.min+'" max="'+g.max+'" onchange="tipRaisePreview()">'
-      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('選べるのは、いまの期間の初日（'+g.min.slice(5).replace('-','/')+'）から先の日','From the first day of this period ('+g.min.slice(5).replace('-','/')+')')+'</div></div>'; })()
+      +'<div style="font-size:10.5px;color:var(--muted);margin-top:3px">'+t('選べるのは、1 つ前の期間の初日（'+g.min.slice(5).replace('-','/')+'）から先の日。前の期間を選ぶと、その期間の配分が計算し直されます（あとから効く設定はそのまま）','From the first day of the previous period ('+g.min.slice(5).replace('-','/')+'). Choosing the previous period recalculates its tip split (later settings stay)')+'</div></div>'; })()
     +'<div id="tipraise-preview" style="white-space:pre-line;font-size:12px;line-height:1.7;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:10px;background:var(--surface2)"></div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+t('キャンセル','Cancel')+'</button>'
     +'<button class="btn btn-primary" onclick="applyTipRaise()"><i class="ti ti-arrow-up"></i> '+t('適用開始日から変える','Change from the start date')+'</button></div>');
@@ -93897,6 +93956,7 @@ async function applyTipRaise(){
   if(fromDay && typeof tipFromGuard==='function'){ var _fg0=tipFromGuard(fromDay, _dd); if(_fg0){ showToast(_fg0,'warning'); return; } }   /* v1095（独立レビュー f1d567a P2-1） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, fromDay || _dd, true))) return;   /* v1095: 効く日は適用開始日 */
+  if(fromDay && typeof tipBackConfirm==='function' && !tipBackConfirm(name, fromDay)) return;   /* v1129：前の期間を選んだとき */
   var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
