@@ -26,6 +26,7 @@ function app(role, store, am) {
   const c = {
     STORES, curRole: role, curStore: store, curPage: 'dashboard', curLang: 'ja', RENDERS: [], TOPBAR: { innerHTML: '' }, AM: am || [],
     dailyStoreScope: 'current', _budgetStore: 'ALL', _qbStore: 'ALL', _laborStore: 'ALL', laborTab: 'overview', _pdStore: 'ALL', _ipsScope: null, _ipsVendor: null, _ojtGateStore: null,
+    msScope: 'ALL', _hqScope: 'ALL', _plTrendScope: 'ALL', growthStore: 'ALL', growthMgrSel: null, _ojtTipStore: 'ALL', _ojtcStore: 'ALL', _ojtcSel: null,
     window: {},
   };
   vm.createContext(c);
@@ -108,4 +109,18 @@ test('the screens that used STORES[0] with "All stores" now use soloStoreId; one
   // labor: the per-store tabs do not write _laborStore any more
   const lb = fnFrom('renderLabor');
   assert.doesNotMatch(lb, /_laborStore *= *v0/);
+});
+
+test('全店も出せる画面の中の絞り込み（月次サマリー・本部・PL の推移・成長管理・OJT・リストなど）も左上に合わせる', () => {
+  const gm = app('gm', 'ALL');
+  run(gm, "msScope='F01'; _hqScope='F01'; _plTrendScope='F01'; growthStore='F01'; growthMgrSel='e9'; _ojtTipStore='F01'; _ojtcStore='F01'; _ojtcSel='e9'; window._cmScope='F01'; window._arStore='F01'; window._skillStaffStore='F01'; window._prepMatrixStore='F01'");
+  run(gm, "switchStore('F05')");
+  for (const v of ['msScope', '_hqScope', '_plTrendScope', 'growthStore', '_ojtTipStore', '_ojtcStore', 'window._cmScope', 'window._arStore', 'window._skillStaffStore', 'window._prepMatrixStore']) assert.equal(run(gm, v), 'F05', v);
+  assert.equal(run(gm, 'growthMgrSel'), null, '店が変わったら選んでいた人を外す');
+  assert.equal(run(gm, '_ojtcSel'), null);
+  run(gm, "growthMgrSel='e5'; switchStore('F05')");
+  assert.equal(run(gm, 'growthMgrSel'), 'e5', '同じ店のままなら外さない');
+  run(gm, "switchStore('ALL')");
+  for (const v of ['msScope', '_hqScope', '_plTrendScope', 'growthStore', '_ojtTipStore', '_ojtcStore', 'window._cmScope', 'window._arStore', 'window._skillStaffStore']) assert.equal(run(gm, v), 'ALL', v);
+  assert.equal(run(gm, 'window._prepMatrixStore'), 'F05', '1 店ずつの画面は全店に戻しても前の店のまま');
 });
