@@ -92952,6 +92952,20 @@ async function tipBackPull(name, fd) {
   }
   return more;
 }
+/* v1129（Codex PR #120 の再レビュー）：確かめの画面を開いているあいだに、ほかの端末でその期間を確定することがある。
+   画面で「OK」を押したあと、保存する直前にもう一度クラウドの確定を読む。確定していた・読めなかったら止める。
+   読み直しのあいだにこの端末の Tip Rate の記録が変わったら（ほかの端末の決定が届いた）、古い写しで書かないように止める */
+async function tipBackRecheck(name, fd) {
+  var before = JSON.stringify(ls('tip_requests', []));
+  var m = await tipBackPull(name, fd);
+  if (m === null) return false;
+  if (m.length) { tipBackConfirm(name, fd, m); return false; }   /* 確定済みの知らせを出して false（確かめの画面は出さない） */
+  if (JSON.stringify(ls('tip_requests', [])) !== before) {
+    showToast(t('Tip Rate の記録がほかの端末で変わりました。もう一度押してください（何も変えていません）', 'Tip Rate records changed on another device. Please try again (nothing was changed)'), 'warning');
+    return false;
+  }
+  return true;
+}
 /* 期間の初日（1〜15 日なら 1 日・16 日〜なら 16 日） */
 function tipPeriodStartOf(d) { d = String(d || ''); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16') : ''; }
 /* v1095（独立レビュー f1d567a P2-1）：選べる日はこの端末の時計で決めるので、時計の遅れた端末だと前の期間（締めた期間かもしれない）を選べた。
@@ -94064,6 +94078,12 @@ async function approveTip(id, status) {
         && !confirm(t('いまの '+r.name+' さんの Tip Rate は '+_rl(_before)+' です。承認すると '+_rl(_after)+' に下がります。承認しますか？',
                       r.name+'\'s Tip Rate is '+_rl(_before)+' now. Approving lowers it to '+_rl(_after)+'. Approve?'))) return;
     }
+    if (status==='承認' && _from && typeof tipBackRecheck==='function' && typeof tipBackInfo==='function' && tipBackInfo(r.name, _from).back) {   /* v1129：保存の直前にもう一度 */
+      var _who3 = curUserName, _role3 = curRole, _okR = false;
+      approveTip._busy = true;
+      try { _okR = await tipBackRecheck(r.name, _from); } finally { approveTip._busy = false; }
+      if (!_okR || curUserName !== _who3 || curRole !== _role3) return;
+    }
     r.status = status;
     r.approver = (ROLE_CONFIG[_role]||{}).name||_who;
     r.approvedDate = todayJP();
@@ -94157,6 +94177,11 @@ async function applyTipRaise(){
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, fromDay || _dd, true))) return;   /* v1095: 効く日は適用開始日 */
   if(fromDay && typeof tipBackConfirm==='function' && !tipBackConfirm(name, fromDay, _backMore)) return;   /* v1129：前の期間を選んだとき */
   var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
+  if(fromDay && typeof tipBackRecheck==='function' && typeof tipBackInfo==='function' && tipBackInfo(name, fromDay).back){   /* v1129：保存の直前にもう一度 */
+    applyTipRaise._busy=true; var _okR=false;
+    try{ _okR=await tipBackRecheck(name, fromDay); }finally{ applyTipRaise._busy=false; }
+    if(!_okR || curUserName!==_who || curRole!==_role) return;
+  }
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual', fromDay:fromDay, prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), at:_dec}); lsSet('tip_history',h);

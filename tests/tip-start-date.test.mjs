@@ -48,7 +48,7 @@ const FNS = ['calcTipDistribution', 'tipWeightByRate', '_tipDecDay', '_tipDecDay
   'tipFromRange', 'tipFromCheck', 'tipPeriodStartOf', 'tipFromGuard', 'tipFromSet', '_tipNotFuture', '_tipLiveRateSig', 'tipDayLabel', 'tipChangePreview', 'tipPreviewText', 'tipReplacedBy', 'renderTipRate',
   'approveTip', 'applyTipRaise', 'tipRaisePreview', 'openTipRaiseModal', 'tipStampLegacy', 'tipDecStamp', 'tipDecDayStamp', 'tipDecClockAhead', 'tipDecClockMsg',
   '_tipDecided', '_tipReqT', '_tipDecSeen', 'todayJP', 'fmtJP',
-  'tipPrevPeriodStart', 'tipBackInfo', 'tipBackConfirm', 'tipBackPull', '_tipBackdated', 'tipConfirmKey', 'getTipConfirm'];   // v1129
+  'tipPrevPeriodStart', 'tipBackInfo', 'tipBackConfirm', 'tipBackPull', 'tipBackRecheck', '_tipBackdated', 'tipConfirmKey', 'getTipConfirm'];   // v1129
 
 function app(now) {
   const c = { console, STORE: {}, EMPS: [], LABOR: {}, TIPS: {}, TOASTS: [], RENDERS: [], CONFIRMS: [], NOTIFS: [], answer: true, EL: {}, CLOUD: {}, CLOUD_READS: [], cloudDown: false };
@@ -513,4 +513,41 @@ test('v1129（Codex PR #120 の 1）：クラウドを読み直しているあ�
   await run(c, "approveTip('p', '承認')");
   assert.equal(plain(c.STORE.tip_requests)[0].status, '却下', 'the other device’s decision stays');
   assert.match(c.TOASTS.at(-1)[0], /ほかの端末でもう決まっていました/);
+});
+
+test('v1129（Codex PR #120 の再レビュー）：確かめの画面を開いているあいだにほかの端末で確定されたら、OK のあとで止める', async () => {
+  const c = app(HST(2026, 11, 2, 10));
+  c.EMPS = [EMP({ name: 'X', firstWork: '2026-09-01' })];
+  c.STORE.tip_requests = [];
+  c.EL['tipraise-name'] = { value: 'X' }; c.EL['tipraise-rate'] = { value: '90' }; c.EL['tipraise-from'] = { value: '2026-10-16' }; c.EL['tipraise-preview'] = { textContent: '' };
+  const fin = { status: '確定済み', from: '2026-10-16', to: '2026-10-31', rows: [], totalFinal: 0 };
+  // 画面を開いているあいだに端末 A が確定する
+  run(c, `confirm = function(m){ CONFIRMS.push(m); if (/前の期間/.test(m)) CLOUD['tip_confirm_F01_2026-10-16'] = ${JSON.stringify(fin)}; return answer; };`);
+  await run(c, 'applyTipRaise()');
+  assert.ok(c.CONFIRMS.some(m => /前の期間/.test(m)), 'the question was shown');
+  assert.equal(plain(c.STORE.tip_requests).length, 0, 'nothing saved');
+  assert.match(c.TOASTS.at(-1)[0], /確定済みです/);
+  // 承認も同じ
+  c.CLOUD = {}; c.STORE.tip_requests = [{ id: 'p', name: 'X', rate: 100, status: '申請中', date: '2026/11/01', store: 'F01' }];
+  c.EL['tipfrom-p'] = { value: '2026-10-20' };
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /確定済みです/);
+  // 2 回目に読めない：止める
+  c.CLOUD = {}; let reads = 0;
+  run(c, `var _o2 = _fetchOpValue; _fetchOpValue = function(k, a, b){ return (++__n > 1) ? Promise.resolve(undefined) : _o2(k, a, b); }; var __n = 0; confirm = function(m){ CONFIRMS.push(m); return true; };`);
+  await run(c, "__n = 0; approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests)[0].status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /読めませんでした/);
+  // 読み直しのあいだにこの端末の記録が変わった（ほかの端末の決定が届いた）：古い写しで書かない
+  run(c, `_fetchOpValue = function(k){ STORE.tip_requests = STORE.tip_requests.concat([{ id: 'q', name: 'X', rate: 80, status: '承認', date: '2026/11/02', decAt: 9 }]); return Promise.resolve(null); };`);
+  run(c, `var __m = 0; var _o3 = _fetchOpValue; _fetchOpValue = function(k){ if (++__m > 1) return _o3(k); return Promise.resolve(null); };`);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '申請中');
+  assert.match(c.TOASTS.at(-1)[0], /ほかの端末で変わりました/);
+  assert.ok(plain(c.STORE.tip_requests).some(x => x.id === 'q'), 'the other device’s record stays');
+  // 何も起きなければ保存する
+  run(c, `_fetchOpValue = function(){ return Promise.resolve(null); };`);
+  await run(c, "approveTip('p', '承認')");
+  assert.equal(plain(c.STORE.tip_requests).find(x => x.id === 'p').status, '承認');
 });
