@@ -92899,7 +92899,7 @@ function tipPrevPeriodStart(s) {
 }
 /* v1129：前の期間（いまの期間の初日より前）を選んだときの確かめ。この端末で、その人の店（所属・応援）のその期間を確定していれば選べない（確定した額を変えない）。
    {back:false} か {back:true, from, to, locked:[店の名前…]} */
-function tipBackInfo(name, fd) {
+function tipBackInfo(name, fd, more) {
   var g = tipFromRange(); fd = String(fd || '');
   if (!fd || fd >= g.cur) return { back: false };
   var from = tipPeriodStartOf(fd), to = (from.slice(8) === '01') ? from.slice(0, 8) + '15' : (function () { var y = Number(from.slice(0, 4)), m = Number(from.slice(5, 7)); var last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return from.slice(0, 8) + ('0' + last).slice(-2); })();
@@ -92909,11 +92909,12 @@ function tipBackInfo(name, fd) {
     var c = (typeof getTipConfirm === 'function') ? getTipConfirm(sid, { from: from }) : null;
     if (c && c.status === '確定済み') { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === sid; }) : null; locked.push((st && st.name) || sid); }
   });
+  (more || []).forEach(function (x) { if (x && locked.indexOf(x) < 0) locked.push(x); });   /* v1129：クラウドで確定済み（tipBackPull） */
   return { back: true, from: from, to: to, locked: locked };
 }
 /* 前の期間を選んだとき：確定していれば止める（文を返す）・していなければ確かめる（false＝やめた）。前の期間でなければ true */
-function tipBackConfirm(name, fd) {
-  var b = tipBackInfo(name, fd), f = function (x) { return String(x).replace(/-/g, '/'); };
+function tipBackConfirm(name, fd, more) {
+  var b = tipBackInfo(name, fd, more), f = function (x) { return String(x).replace(/-/g, '/'); };
   if (!b.back) return true;
   if (b.locked.length) {
     showToast(t(f(b.from) + '〜' + f(b.to) + ' は ' + b.locked.join('・') + ' で確定済みです。前の期間に設定するには、Tip の期間の画面で確定を解除してから（確定した額は変えません）',
@@ -92925,6 +92926,31 @@ function tipBackConfirm(name, fd) {
       + 'あとから効く設定（いまの期間からの設定など）はそのまま残ります。\n続けますか？',
     'This takes effect from the previous period (' + f(b.from) + '–' + f(b.to) + '). The tip split of that period is recalculated (no finalized record on this device; exported CSVs, the accounting book and paid amounts do not change by themselves).\n'
       + 'Settings that take effect later (from this period, for example) stay as they are.\nContinue?'));
+}
+/* v1129（Codex PR #120 の 1）：確定はほかの端末でもされる。前の期間を選んだときは、本人の店（所属・応援）のその期間の確定を
+   クラウドから読み直してから確かめる（前はこの端末の写しだけを見ていたので、ほかの端末で確定した直後の古い端末から、確定した期間の配分を変えられた）。
+   読めなければ止める（null・確定しているか分からないまま変えない）。返すのはクラウドで確定済みの店の名前（確かめの画面 tipBackConfirm に渡す）。
+   いまの期間を選んだときは何も読まない（前と同じ） */
+async function tipBackPull(name, fd) {
+  var b = tipBackInfo(name, fd);
+  if (!b.back) return [];
+  var more = [];
+  if (typeof _fetchOpValue === 'function' && typeof tipConfirmKey === 'function') {
+    var emp = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
+    var ids = emp ? [emp.store].concat(emp.support || []).filter(Boolean) : [];
+    var vals = await Promise.all(ids.map(function (sid) { return _fetchOpValue(tipConfirmKey(sid, { from: b.from }), 'app_state', true); }));
+    for (var i = 0; i < ids.length; i++) {
+      var v = vals[i];
+      if (v === undefined) {
+        showToast(t('クラウドの Tip の期間の確定を読めませんでした。前の期間に設定するには、つながっているときにもう一度押してください（何も変えていません）',
+                    'Could not read the tip period finalization from the cloud. To set the previous period, try again while online (nothing was changed)'), 'warning');
+        return null;
+      }
+      if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { } }
+      if (v && v.status === '確定済み') { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === ids[i]; }) : null; more.push((st && st.name) || ids[i]); }
+    }
+  }
+  return more;
 }
 /* 期間の初日（1〜15 日なら 1 日・16 日〜なら 16 日） */
 function tipPeriodStartOf(d) { d = String(d || ''); return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d.slice(0, 8) + (Number(d.slice(8)) <= 15 ? '01' : '16') : ''; }
@@ -94003,6 +94029,19 @@ async function approveTip(id, status) {
       var _fx = tipFromCheck(_from); if (_fx) { showToast(_fx,'warning'); return; }
       if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
     }
+    /* v1129（Codex PR #120 の 1）：前の期間を選んだときは、その期間の確定をクラウドから読み直す（印を付ける前。確かめの画面は前と同じ所）。
+       読み直しのあいだにほかの端末の決定が届くことがあるので、終わったら申請を読み直す */
+    var _backMore = [];
+    if (status==='承認' && _from && typeof tipBackPull==='function') {
+      var _who2 = curUserName, _role2 = curRole;
+      approveTip._busy = true;
+      try { _backMore = await tipBackPull(r.name, _from); } finally { approveTip._busy = false; }
+      if (!_backMore) return;
+      if (curUserName !== _who2 || curRole !== _role2) return;
+      requests = ls('tip_requests', []); r = requests.find(function(x){ return x.id===id; });
+      if (!r || (r.status && r.status!=='申請中')) { showToast(t('この申請はほかの端末でもう決まっていました（変えていません）','This request was already decided on another device (nothing changed)'),'warning'); if (curPage===_pg) renderPage(curPage); return; }
+      if (typeof tipChangePreview==='function') _pv = tipChangePreview(r.name, Number(r.rate), _from);
+    }
     /* 却下でも付ける（独立レビュー v1092 e59f3f9 の P1：前からある申請を却下すると、その申請に新しい時刻が付き、並びでそのあとにある時刻の無い前の承認が
        その時刻とみなされて、あとの引き上げより新しくなった＝いまの率が 100% → 80% に下がった） */
     if (typeof tipStampLegacy==='function') tipStampLegacy(requests, r.name);
@@ -94015,7 +94054,7 @@ async function approveTip(id, status) {
       var _ah = tipDecClockAhead(requests, r);
       if (_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, _from || _day))) return;   /* v1095: 効く日は適用開始日 */
     }
-    if (status==='承認' && _from && typeof tipBackConfirm==='function' && !tipBackConfirm(r.name, _from)) return;   /* v1129：前の期間を選んだとき */
+    if (status==='承認' && _from && typeof tipBackConfirm==='function' && !tipBackConfirm(r.name, _from, _backMore)) return;   /* v1129：前の期間を選んだとき */
     if (status==='承認' && _pv) {
       _after = _pv.after;
       if (typeof confirm==='function' && !confirm(tipPreviewText(r.name, r.rate, _from, _pv)+'\n\n'+t('承認しますか？','Approve?'))) return;
@@ -94099,6 +94138,14 @@ async function applyTipRaise(){
     if(_ne.value!==name || parseInt(_re.value,10)!==rate || (_fe2 && String(_fe2.value)!==fromDay)){ showToast(t('選び直したので、もう一度押してください','You changed the selection; press the button again'),'info'); return; }
     if(_fr===false) showToast(t('クラウドの最新を読めませんでした。この端末の内容で引き上げます','Could not read the latest from the cloud; raising with this device’s copy'),'warning');
   }
+  /* v1129（Codex PR #120 の 1）：前の期間を選んだときは、その期間の確定をクラウドから読み直す（申請を読む前。確かめの画面は前と同じ所） */
+  var _backMore=[];
+  if(fromDay && typeof tipBackPull==='function'){
+    applyTipRaise._busy=true;
+    try{ _backMore=await tipBackPull(name, fromDay); }finally{ applyTipRaise._busy=false; }
+    if(!_backMore) return;
+    if(curUserName!==_who || curRole!==_role) return;
+  }
   var emp=getEmployees().find(function(e){return e.name===name;});
   var storeId=emp?emp.store:'';
   var by=(ROLE_CONFIG[_role]||{}).name||_who;
@@ -94108,7 +94155,7 @@ async function applyTipRaise(){
   if(fromDay && typeof tipFromGuard==='function'){ var _fg0=tipFromGuard(fromDay, _dd); if(_fg0){ showToast(_fg0,'warning'); return; } }   /* v1095（独立レビュー f1d567a P2-1） */
   var _ah=(typeof tipDecClockAhead==='function') ? tipDecClockAhead(requests, null, name) : '';   /* 明日より先の日付の決定があれば確かめる */
   if(_ah && typeof confirm==='function' && !confirm(tipDecClockMsg(_ah, fromDay || _dd, true))) return;   /* v1095: 効く日は適用開始日 */
-  if(fromDay && typeof tipBackConfirm==='function' && !tipBackConfirm(name, fromDay)) return;   /* v1129：前の期間を選んだとき */
+  if(fromDay && typeof tipBackConfirm==='function' && !tipBackConfirm(name, fromDay, _backMore)) return;   /* v1129：前の期間を選んだとき */
   var _pv=(typeof tipChangePreview==='function') ? tipChangePreview(name, rate, fromDay) : null;   /* v1095: 変える前の率（履歴に残す） */
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
