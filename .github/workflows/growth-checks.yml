@@ -25,6 +25,8 @@ jobs:
           persist-credentials: false
       - name: Check syntax and release consistency
         run: python3 scripts/check-static-release.py
+      - name: Fetch the older versions some tests compare with (v1084 dc5e78b, v1125 6bcf6cd; without them those checks are skipped)
+        run: git fetch --no-tags --depth=1 origin dc5e78b3a04a9290de278e7c155354ab63fff8e9 6bcf6cd0b68dacb6b53055cf054c2fdd11ec81fc
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -36,8 +38,11 @@ jobs:
         run: node --test tests/ux-core.test.mjs
       - name: Check the item linking screen against the real intake handler and SQL (PGlite, synthetic data)
         run: node --test tests/invoice-item-link-ui.test.mjs
-      - name: Check the resignation sync and the send queue (two devices, PGlite, synthetic staff)
-        run: node --test tests/employee-resign-sync.test.mjs
+      - name: Check the resignation sync and the send queue (two devices, PGlite, synthetic staff; no skipped test)
+        run: |
+          set -o pipefail
+          node --test tests/employee-resign-sync.test.mjs | tee /tmp/resign.txt
+          grep -q '^# skipped 0$' /tmp/resign.txt
 
   item-link-guards:
     name: Item linking screen guards (each protection removed must fail a test)
