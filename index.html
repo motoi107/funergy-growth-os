@@ -17274,7 +17274,8 @@ function mrCounts(b, sn, replies, no){
 /* 判定：会議タブの _meetStatus と会社の閾値。目標が無い＝未設定（unset）、実績が無い＝未取得（missing）。0・達成・未達に数えない */
 function mrJudgeOf(key, act, tgt){
   if (!(typeof tgt === 'number' && tgt > 0)) return 'unset';
-  if (!(typeof act === 'number' && act > 0)) return 'missing';
+  /* v1129（LaLa の依頼 10/31）：リピート率の 0 は本当の 0%（初回だけでリピート 0）。データが無いときは null で来る（keyKpiStats） */
+  if (!(typeof act === 'number' && (act > 0 || (act === 0 && key === 'repeat')))) return 'missing';
   var s = _meetStatus(key, act, tgt, !!MR_LOWER[key]);
   return (s === 'ok' || s === 'warn' || s === 'miss') ? s : 'missing';
 }
@@ -22669,9 +22670,10 @@ function repeatStatsLD(scopeStores, days){
 }
 /* ランチ/ディナー別 リピート率カード（データがあれば表示・無ければ案内） */
 /* L/D別 リピート率チャート（日次は点数が多いので横スクロール・1:1表示） */
+/* v1129（LaLa の依頼 10/31）：null＝その日・その月はデータなし（点も線も描かない）。0 は本当の 0%（初回だけでリピート 0）として描く */
 function _msLDLine(labels, series){
-  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ all.push(v||0); }); });
-  if(!labels.length || all.every(function(v){return !v;})) return _msEmpty();
+  var all=[]; series.forEach(function(s){ (s.values||[]).forEach(function(v){ if(v!=null) all.push(v); }); });
+  if(!labels.length || !all.length) return _msEmpty();
   var n=labels.length;
   var slotW=(n>14)?30:48;                       // 日次は詰めて表示
   var W=Math.max(300, n*slotW+44);
@@ -22682,8 +22684,13 @@ function _msLDLine(labels, series){
   var step=(n>20)?5:(n>14?2:1);                 // ラベル間引き（潰れ防止）
   labels.forEach(function(lb,i){ if(n>14 && i%step!==0 && i!==n-1) return; var x=ax.x0+i*ax.slot+ax.slot/2; g+='<text x="'+x.toFixed(1)+'" y="'+(ax.y1+12)+'" text-anchor="middle" font-size="9" fill="var(--tm)">'+escapeHtml(String(lb))+'</text>'; });
   series.forEach(function(s){
-    var pts=[]; (s.values||[]).forEach(function(v,i){ var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round(((v||0)/yMax)*(ax.y1-ax.top)); pts.push([x,y]); });
-    if(pts.length>1) g+='<polyline points="'+pts.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"></polyline>';
+    var segs=[], cur=[], pts=[];
+    (s.values||[]).forEach(function(v,i){
+      if(v==null){ if(cur.length) segs.push(cur); cur=[]; return; }   /* データの無い点で線を切る */
+      var x=ax.x0+i*ax.slot+ax.slot/2; var y=ax.y1-Math.round((v/yMax)*(ax.y1-ax.top)); cur.push([x,y]); pts.push([x,y]);
+    });
+    if(cur.length) segs.push(cur);
+    segs.forEach(function(sg){ if(sg.length>1) g+='<polyline points="'+sg.map(function(p){return p[0].toFixed(1)+','+p[1].toFixed(1);}).join(' ')+'" fill="none" stroke="'+s.color+'" stroke-width="1.8"></polyline>'; });
     g+=pts.map(function(p){return '<circle cx="'+p[0].toFixed(1)+'" cy="'+p[1].toFixed(1)+'" r="'+((n>20)?1.8:2.2)+'" fill="'+s.color+'"></circle>';}).join('');
   });
   // 日次は横スクロールで1:1表示（縮小して文字が潰れないように）
@@ -22712,8 +22719,9 @@ function _msRepeatLD(){
   var html='<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--accent)"></i>ランチ／ディナー別 リピート率<span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+escapeHtml(pm.label)+' ・ '+unitLabel+'</span></div>';
   if(anyLD){
     var labels=withData.map(function(p){return p.label;});
-    var lRate=withData.map(function(p){ var t=p.ld.lunch.total; return t>0?Math.round(p.ld.lunch.repeat/t*1000)/10:0; });
-    var dRate=withData.map(function(p){ var t=p.ld.dinner.total; return t>0?Math.round(p.ld.dinner.repeat/t*1000)/10:0; });
+    /* v1129：片方（ランチかディナー）のデータが無い点は 0% ではなく描かない（ディナーだけの店でランチが 0% に見えないように） */
+    var lRate=withData.map(function(p){ var t=p.ld.lunch.total; return t>0?Math.round(p.ld.lunch.repeat/t*1000)/10:null; });
+    var dRate=withData.map(function(p){ var t=p.ld.dinner.total; return t>0?Math.round(p.ld.dinner.repeat/t*1000)/10:null; });
     html+=_msLDLine(labels, [{label:'ランチ',color:'var(--yellow)',values:lRate},{label:'ディナー',color:'var(--accent)',values:dRate}]);
     html+=msLegend([{color:'var(--yellow)',label:'ランチ リピート率'},{color:'var(--accent)',label:'ディナー リピート率'}]);
     if(isDaily) html+='<div style="font-size:10px;color:var(--muted);margin-top:2px">'+escapeHtml(pm.label)+'の各営業日（横スクロールできます）。データのない日は表示しません。</div>';
@@ -25627,7 +25635,7 @@ function _meetKpiRows(k){
 function _meetJudge(it, landing){
   if(it.isSales){ if(!(it.tgt>0)) return null; var base=(landing!=null?landing:it.act); if(!(base>0)) return null; return base>=it.tgt*0.995; }
   if(it.tgt==null || !(it.tgt>0)) return null;
-  if(!(it.act>0)) return null;
+  if(!(it.act>0 || (it.act===0 && it.key==='repeat'))) return null;   /* v1129：リピート率の 0 は本当の 0%（データなしは null） */
   if(it.lower) return it.act<=it.tgt;
   return it.act>=it.tgt*0.995;
 }
@@ -25705,7 +25713,7 @@ function _meetKpiDef(key){ return MEET_KPI_DEF.find(function(x){return x.key===k
 function getMeetThreshold(key){ var all=ls('meeting_kpi_thresholds',{})||{}; var d=_meetKpiDef(key); var o=all[key]||{}; return {green:(o.green!=null?o.green:d.defG), yellow:(o.yellow!=null?o.yellow:d.defY)}; }
 function setMeetThreshold(key, green, yellow){ var all=ls('meeting_kpi_thresholds',{})||{}; all[key]={green:Number(green), yellow:Number(yellow)}; lsSet('meeting_kpi_thresholds', all); }
 function _meetStatus(key, act, tgt, lower){
-  if(!(tgt>0) || !(act>0)) return 'none';
+  if(!(tgt>0) || !(act>0 || (act===0 && key==='repeat'))) return 'none';   /* v1129：リピート率の 0 は本当の 0%（データなしは null） */
   var th=getMeetThreshold(key); var r=act/tgt*100;
   if(lower){ if(r<=th.green) return 'ok'; if(r<=th.yellow) return 'warn'; return 'miss'; }
   if(r>=th.green) return 'ok'; if(r>=th.yellow) return 'warn'; return 'miss';
@@ -25714,7 +25722,7 @@ function _meetStatColor(st){ return st==='ok'?'var(--green)':st==='warn'?'var(--
 function _meetStatTint(st){ return st==='ok'?'rgba(93,181,84,.10)':st==='warn'?'rgba(217,167,59,.13)':st==='miss'?'rgba(224,80,80,.11)':'var(--surface2)'; }
 function _meetStatLabel(st){ return st==='ok'?t('達成','MET'):st==='warn'?t('注意','WATCH'):st==='miss'?t('未達','MISS'):'—'; }
 function _meetDiffStr(key, act, tgt, lower, unit, money){
-  if(!(tgt>0)||!(act>0)) return '';
+  if(!(tgt>0)||!(act>0 || (act===0 && key==='repeat'))) return '';   /* v1129：リピート率の 0 は本当の 0% */
   var raw=act-tgt, sign=(raw>=0?'+':'−'), mag=Math.abs(raw), s;
   if(money){ s=(key==='ppa')?('$'+(Math.round(mag*100)/100)):fmtK(mag); }
   else if(unit==='%'){ s=(Math.round(mag*10)/10)+'pt'; }
@@ -26985,7 +26993,7 @@ function _meetKpiTile(storeId, ym, key, act, tgt, opts){
     +'<div style="font-size:13px;font-weight:800;color:var(--tm)">'+label+'</div></div>'
     +'<div style="display:flex;gap:8px">'
     +box(t('目標','Target'), fmtT(tgt), 'var(--muted)', 'var(--surface)', '')
-    +box(t('実績','Actual'), (act>0?fmtV(act):'—'), (act>0?col:'var(--muted)'), (st==='none'?'var(--surface)':tint), mark)
+    +box(t('実績','Actual'), ((act>0 || (act===0 && key==='repeat'))?fmtV(act):'—'), ((act>0 || (act===0 && key==='repeat'))?col:'var(--muted)'), (st==='none'?'var(--surface)':tint), mark)   /* v1129：リピート率の 0 は 0%、データなし（null）は — */
     +'</div>'
     +'<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-top:6px">'
       +(diff?'<span style="font-size:12px;font-weight:800;color:'+col+';white-space:nowrap">'+diff+'</span>':'')
@@ -27198,7 +27206,7 @@ function _meetStoreCard(store, k, ym, isCurrent){
     else if(it.key==='repeat'){ ex=_meetSegExtra(k,'repeat',store.id,ym,1,''); }   /* v902 */
     else if(it.key==='labor'){ ex=_meetSegExtra(k,'labor',store.id,ym,1,''); }     /* v902 */
     else if(it.key==='drink'){ ex=_meetSegExtra(k,'drink',store.id,ym,1,''); }
-    h+=_meetKpiTile(store.id, ym, it.key, it.act||0, it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
+    h+=_meetKpiTile(store.id, ym, it.key, (it.key==='repeat' && it.act==null) ? null : (it.act||0), it.tgt||0, {unit:it.unit||'', money:it.money, lower:it.lower, extra:ex, label:it.label+(it._paced?t('（前日まで）',' (to date)'):'')}); });
   h+='</div>';   /* v927: meet-kpi-grid を閉じる */
   h+='</div>';   /* v928: meet-card-2col を閉じる */
   return h;
@@ -41226,7 +41234,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1128';
+const APP_VERSION = '1129';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
