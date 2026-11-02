@@ -8349,7 +8349,28 @@ function recipeCostRate(recipe) {
    差異 = 実質 − 理論
 ============================================================ */
 function theoMixKey(storeId, period) { return 'menu_mix_'+storeId+'_'+(period||getPeriod()); }
-function getMenuMix(storeId, period) { return ls(theoMixKey(storeId, period), {items:{}, sales:0}); }
+/* v1129（11/01 の依頼 ②）：来店区分（FT・RP・SR など）を表す Toast の商品は、メニューの出数・ランキング・構成比に入れない。
+   決め方は hyper-worker の来店区分の数え方と同じ：Toast のメニューのグループ（toast_menu_items.category・レシピに写したカテゴリー）が
+   「Customers」（大文字小文字・前後の空白は無視・完全一致）。名前の一部や価格 0 では決めない。
+   元の注文の行（toast_item_sales）と来店区分の数（toast_sales の FT・RP・SR・リピート率）は変えない。 */
+var VISIT_TYPE_GROUPS = ['customers'];
+function isVisitTypeCategory(c) { return VISIT_TYPE_GROUPS.indexOf(String(c == null ? '' : c).trim().toLowerCase()) >= 0; }
+function isVisitTypeRecipe(r) { return !!(r && r.toastGuid && isVisitTypeCategory(r.category)); }
+var _vtRecipeIds = { src: null, ids: null };
+function visitTypeRecipeIds() {
+  var all = getRecipes() || [];
+  if (_vtRecipeIds.src !== all || !_vtRecipeIds.ids) { var o = {}; all.forEach(function (r) { if (isVisitTypeRecipe(r)) o[r.id] = 1; }); _vtRecipeIds = { src: all, ids: o }; }
+  return _vtRecipeIds.ids;
+}
+/* 月の出数：来店区分のレシピの数は読むときに外す（前に入った数が残っていても、どの画面にも出さない・合計に入れない。
+   次にこの月を書くとき（Toast から入れる・手で保存する）に、入れ物からも消える） */
+function getMenuMix(storeId, period) {
+  var m = ls(theoMixKey(storeId, period), {items:{}, sales:0});
+  var vt = (typeof visitTypeRecipeIds === 'function') ? visitTypeRecipeIds() : {}, it = (m && m.items && typeof m.items === 'object') ? m.items : null;
+  if (!it || !Object.keys(vt).length || !Object.keys(it).some(function (k) { return vt[k]; })) return m;
+  var items = {}; Object.keys(it).forEach(function (k) { if (!vt[k]) items[k] = it[k]; });
+  return Object.assign({}, m, { items: items });
+}
 /* ===== v834: 出数（menu_mix_<店>_<期>）=====
    記録は1か月ぶんの単一オブジェクト { items:{レシピID:出数}, sales, savedAt, toastSrc }。
    書き込み口は3つあり、どれも同じ月の同じ入れ物を触る。
@@ -30898,16 +30919,17 @@ function menuMixFromSales(storeId, sales, today){
   var hasDaily = all.some(function(x){ return x.business_date||x.date; });
   var cut = String(today||'');
   var rows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return d && (!cut || d < cut); }) : all;
-  var acc={}, unmatched={}, days={};
+  var acc={}, unmatched={}, days={}, vt=(typeof visitTypeRecipeIds==='function') ? visitTypeRecipeIds() : {}, visit=0;
   rows.forEach(function(x){
     var g=x.item_guid||x.guid, rid=byGuid[g];
+    if(rid && vt[rid]){ if(x.qty!=null && isFinite(Number(x.qty))) visit+=Number(x.qty); var d0=x.business_date||x.date; if(d0) days[String(d0).slice(0,10)]=1; return; }   /* v1129：来店区分（FT・RP・SR）は出数に入れない */
     if(rid && x.qty!=null && isFinite(Number(x.qty))) acc[rid]=(acc[rid]||0)+Number(x.qty);
     if(g && !rid) unmatched[g]=(x.item_name||g);
     var d=x.business_date||x.date; if(d) days[String(d).slice(0,10)]=1;
   });
   var todayRows = hasDaily ? all.filter(function(x){ var d=String(x.business_date||x.date||'').slice(0,10); return cut && d >= cut; }).length : 0;
   var linked={}; Object.keys(byGuid).forEach(function(g){ linked[byGuid[g]]=1; });   /* この店で Toast と結ばれたレシピ（出数を Toast から入れるもの） */
-  return { acc:acc, linked:Object.keys(linked), rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows,
+  return { acc:acc, linked:Object.keys(linked), rows:rows, allRows:all.length, hasDaily:hasDaily, unmatched:unmatched, days:Object.keys(days).sort(), todayRows:todayRows, visitQty:visit,
     skippedMonthly:(hasDaily ? all.filter(function(x){ return !(x.business_date||x.date); }).length : 0) };
 }
 function menuMixDayLabel(d){ var p=String(d||'').split('-'); return p.length===3 ? (parseInt(p[1],10)+'/'+parseInt(p[2],10)) : String(d||''); }
@@ -83261,6 +83283,8 @@ async function mnFetchRows(path) {
   return out;
 }
 function mnItemsPath(guid, f, e) { return 'toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_date=gte.' + f + '&business_date=lte.' + e + '&order=id.asc'; }
+/* v1129（11/01 の依頼 ②）：商品名・カテゴリー・売価・販売中かは Toast のメニューの表（toast_menu_items）から。出数の行（toast_item_sales）には商品名が無い（列が無い：11/01 の SQL で確かめた） */
+function mnMenuPath(guid) { return 'toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(guid) + '&select=guid,name,category,price,active&order=id.asc'; }
 function mnSalesPath(guid, f, e) { return 'toast_sales?restaurant_guid=eq.' + encodeURIComponent(guid) + '&business_date=gte.' + f + '&business_date=lte.' + e + '&select=business_date,net_sales,guest_count&order=business_date.asc'; }
 function mnJobs(s) {
   var today = bizToday(), r = mnRange(s.per, s.from, s.to, today), pr = mnPrevRange(s.per, r), jobs = [];
@@ -83271,6 +83295,7 @@ function mnJobs(s) {
     jobs.push({ k: 'items|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnItemsPath(x.toastGuid, pr.from, pr.to) });
     jobs.push({ k: 'sales|' + x.toastGuid + '|' + r.from + '|' + r.to, path: mnSalesPath(x.toastGuid, r.from, r.to) });
     jobs.push({ k: 'sales|' + x.toastGuid + '|' + pr.from + '|' + pr.to, path: mnSalesPath(x.toastGuid, pr.from, pr.to) });   /* 比べる期間の出数の入っていない日を見つける */
+    jobs.push({ k: 'menu|' + x.toastGuid, path: mnMenuPath(x.toastGuid) });   /* v1129：商品名・カテゴリー（期間によらない・「最新を読む」で読み直す） */
   });
   return { r: r, pr: pr, jobs: jobs, stores: stores, today: today };
 }
@@ -83337,15 +83362,27 @@ function mnModel(inp) {
   var catColor = function (c) { return colors.map[c] || (c === MN_UNC_NAME ? MN_UNC : MN_OTHER); };
   var curIdx = function (d) { return mnDays(r.from, d) - 1; }, prevIdx = function (d) { return mnDays(pr.from, d) - 1; };
   var salesDays = function (list, f, e) { var o = mnObj(), any = mnObj(); (list || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (!d || d < f || d > e) return; any[d] = 1; if (Number(x.net_sales) > 0) o[d] = 1; }); return { pos: o, any: any }; };
+  var visitQty = 0, visitStores = [], menuFailed = [], menuEmpty = [];
+  var vtCat = function (c) { return typeof isVisitTypeCategory === 'function' ? isVisitTypeCategory(c) : false; };
+  var vtRec = function (r) { return typeof isVisitTypeRecipe === 'function' ? isVisitTypeRecipe(r) : false; };
   stores.forEach(function (S) {
     if (S.err) { failed.push(S); return; }
     if (S.prevErr) prevOk = false;
     var latest = mnObj(), names = mnObj(), recs = S.recipes || {}, dc = (S.drinkCats || []).map(function (v) { return String(v).trim().toLowerCase(); });
     var curRows = S.rows || [], prevRows = S.prevErr ? [] : (S.prevRows || []);
+    /* v1129：Toast のメニューの表（商品名・カテゴリー）。読めなかった・まだ無い店はレシピの名前・カテゴリーだけで出す */
+    var menu = mnObj(), menuRows = S.menuErr ? [] : (S.menu || []);
+    if (S.menuErr) menuFailed.push(S); else if (S.menu && !menuRows.length) menuEmpty.push(S);
+    menuRows.forEach(function (m) { if (m && m.guid != null && String(m.guid)) menu[String(m.guid)] = m; });
+    var recOf = function (g) { return g.indexOf('n:') === 0 ? null : (Object.prototype.hasOwnProperty.call(recs, g) ? recs[g] : null); };
+    /* 来店区分（FT・RP・SR など）：Toast のメニューのグループ（カテゴリー）で決める（hyper-worker と同じ決まり）。メニューの表に無い商品はレシピのカテゴリー（Toast から写したもの） */
+    var isVisit = function (g) { if (g.indexOf('n:') === 0) return false; var m = menu[g]; if (m) return vtCat(m.category); var rc = recOf(g); return !!(rc && vtRec(rc)); };
+    var sv = 0;
     [curRows, prevRows].forEach(function (rs) {
       rs.forEach(function (x) {
         if (!x || !x.business_date) return;
-        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), nm = String(x.item_name || '').trim() || g, d = String(x.business_date).slice(0, 10), id = Number(x.id) || 0;
+        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), nm = String(x.item_name || '').trim(), d = String(x.business_date).slice(0, 10), id = Number(x.id) || 0;
+        if (!nm || isVisit(g)) return;   /* 注文の行の商品名（列があるときだけ・そのときの名前） */
         if (!latest[g] || d > latest[g].d || (d === latest[g].d && id > latest[g].id)) latest[g] = { d: d, name: nm, id: id };
         (names[g] = names[g] || mnObj())[nm] = 1;
       });
@@ -83368,27 +83405,42 @@ function mnModel(inp) {
     }
     Object.keys(ex).forEach(function (k) { exAll[k] = 1; });
     var cache = mnObj();
+    /* v1129：名前は Toast のメニューの表 → 注文の行の名前（そのとき）→ Toast と結んだレシピの名前（同期したときの名前・販売終了でメニューから消えた商品も）の順。
+       どれにも無ければ「名称未取得」（ID の末尾だけ出す・名前を作らない）。カテゴリーも Toast のメニューの表 → レシピ。無ければ「カテゴリー未取得」 */
     var itemOf = function (g) {
       if (cache[g]) return cache[g];
-      var nm = (latest[g] || {}).name || g, rec = g.indexOf('n:') === 0 ? null : (Object.prototype.hasOwnProperty.call(recs, g) ? recs[g] : null);
-      var cat = (rec && String(rec.category || '').trim()) || MN_UNC_NAME;
-      var key = inp.allStores ? 'n:' + mnNorm(nm) : g;
+      var rec = recOf(g), mr = (g.indexOf('n:') === 0) ? null : (menu[g] || null);
+      var tn = mr ? String(mr.name || '').trim() : '', on = (latest[g] || {}).name || '', rn = rec ? String(rec.name || '').trim() : '';
+      if (rn === '(無名)') rn = '';
+      var nm = tn || on || rn, noName = !nm;
+      var tc = mr ? String(mr.category || '').trim() : '', rc = rec ? String(rec.category || '').trim() : '';
+      if (rc === MN_UNC_NAME) rc = '';
+      var cat = tc || rc || MN_UNC_NAME;
+      var key = noName ? (inp.allStores ? 'g:' + S.id + ':' + g : g) : (inp.allStores ? 'n:' + mnNorm(nm) : g);
       var it = items[key];
-      if (!it) { it = items[key] = { key: key, name: nm, oldNames: mnObj(), cat: cat, drink: false, qty: 0, sales: 0, cmpQty: 0, cmpSales: 0, prevQty: 0, prevSales: 0, prevAll: 0, priceMissing: false, archived: false, active: false, archivedAt: '', stores: mnObj(), day: mnObj(), dayS: mnObj(), prevDay: mnObj(), prevDayS: mnObj() }; order.push(key); }
+      if (!it) { it = items[key] = { key: key, name: noName ? mnNoName(g) : nm, noName: noName, gid: noName ? g : '', oldNames: mnObj(), cat: cat, drink: false, qty: 0, sales: 0, cmpQty: 0, cmpSales: 0, prevQty: 0, prevSales: 0, prevAll: 0, priceMissing: false, archived: false, live: false, endedSeen: false, archivedAt: '', stores: mnObj(), day: mnObj(), dayS: mnObj(), prevDay: mnObj(), prevDayS: mnObj() }; order.push(key); }
       if (it.cat === MN_UNC_NAME && cat !== MN_UNC_NAME) it.cat = cat;
-      Object.keys(names[g] || {}).forEach(function (n) { if (n !== nm) it.oldNames[n] = 1; });
-      if (rec) { if (rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; } else it.active = true; if (dc.indexOf(cat.toLowerCase()) >= 0) it.drink = true; }
+      var alias = mnObj(); Object.keys(names[g] || {}).forEach(function (n) { alias[n] = 1; }); if (tn) alias[tn] = 1; if (rn) alias[rn] = 1;
+      Object.keys(alias).forEach(function (n) { if (n && n !== it.name) it.oldNames[n] = 1; });
+      /* 販売終了：Toast のメニューの表で販売中でない／表に無くレシピがアーカイブ・Toast 非掲載。どちらにも無い商品は分からないので付けない */
+      if (mr) { if (mr.active === false) it.endedSeen = true; else it.live = true; }
+      else if (rec) { if (rec.archived || rec.toastActive === false) it.endedSeen = true; else it.live = true; }
+      if (rec && rec.archived) { it.archived = true; var at = String(rec.archivedAt || ''); if (at > it.archivedAt) it.archivedAt = at; }
+      if (dc.indexOf(cat.toLowerCase()) >= 0) it.drink = true;
       it.stores[S.id] = 1;
-      return (cache[g] = { it: it, rec: rec });
+      var pr0 = (rec && isFinite(Number(rec.price)) && Number(rec.price) > 0) ? Number(rec.price) : ((mr && isFinite(Number(mr.price)) && Number(mr.price) > 0) ? Number(mr.price) : 0);
+      return (cache[g] = { it: it, rec: rec, price: pr0 });
     };
     [[curRows, 0], [prevRows, 1]].forEach(function (pair) {
       pair[0].forEach(function (x) {
         if (!x || !x.business_date) return;
         var q = Number(x.qty); if (!isFinite(q)) return;
         var d = String(x.business_date).slice(0, 10);
-        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name), o = itemOf(g), it = o.it, amt;
+        var g = x.item_guid ? String(x.item_guid) : 'n:' + mnNorm(x.item_name);
+        if (isVisit(g)) { if (pair[1] === 0) sv += q; return; }   /* v1129：来店区分は出数・売上・ランキング・割合に入れない（元の行は変えない） */
+        var o = itemOf(g), it = o.it, amt;
         if (money) amt = Number(x[money]) || 0;
-        else { var p = o.rec && isFinite(Number(o.rec.price)) ? Number(o.rec.price) : 0; if (!(p > 0) && q) it.priceMissing = true; amt = q * p; }
+        else { var p = o.price; if (!(p > 0) && q) it.priceMissing = true; amt = q * p; }
         if (pair[1] === 0) {
           it.qty += q; it.sales += amt; it.day[d] = (it.day[d] || 0) + q; it.dayS[d] = (it.dayS[d] || 0) + amt;
           var ci = curIdx(d); if (!ex[ci] && ci < pr.n) { it.cmpQty += q; it.cmpSales += amt; }   /* 比べる期間に同じ日があり、どちらも出数のある日だけ */
@@ -83399,6 +83451,7 @@ function mnModel(inp) {
       });
     });
     S._itemDays = itemDays;
+    if (sv) { visitQty += sv; visitStores.push(S); }
   });
   if (!prevOk) newOk = false;
   var bySd = function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : (a.name < b.name ? -1 : 1); };
@@ -83408,13 +83461,19 @@ function mnModel(inp) {
   var nData = Object.keys(dataDays).filter(function (d) { return d >= r.from && d <= r.to; }).length || r.n;
 
   var all = order.map(function (k) { return items[k]; });
+  /* v1129：色はこの期間・この店の出数の多いカテゴリーから 8 色（区分・カテゴリーの絞り込みでは変えない）。前はレシピの数の多い順で、
+     よく出るカテゴリーでもレシピの少ないものは「その他」の色にまとまっていた */
+  var cq0 = mnObj(); all.forEach(function (it) { if (it.qty > 0 && it.cat !== MN_UNC_NAME) cq0[it.cat] = (cq0[it.cat] || 0) + it.qty; });
+  var cn0 = Object.keys(cq0).sort(function (a, b) { return (cq0[b] - cq0[a]) || (a < b ? -1 : a > b ? 1 : 0); });
+  var cm0 = mnObj(); cn0.forEach(function (n, i) { cm0[n] = i < MN_COLORS.length ? MN_COLORS[i] : MN_OTHER; }); cm0[MN_UNC_NAME] = MN_UNC;
+  colors = { map: cm0, order: cn0.concat([MN_UNC_NAME]) };
   var kindOk = function (it) { return inp.kind === 'food' ? !it.drink : inp.kind === 'drink' ? it.drink : true; };
   var catOk = function (it) { return !inp.cat || it.cat === inp.cat; };
   var q = mnNorm(inp.q || '');
   var qOk = function (it) { if (!q) return true; if (mnNorm(it.name).indexOf(q) >= 0) return true; return Object.keys(it.oldNames).some(function (n) { return mnNorm(n).indexOf(q) >= 0; }); };
   all.forEach(function (it) {
     it.renamed = Object.keys(it.oldNames).length > 0;
-    it.ended = it.archived && !it.active;
+    it.ended = it.endedSeen && !it.live;
     it.unc = it.cat === MN_UNC_NAME;
     it.isNew = newOk && it.qty !== 0 && it.prevAll === 0;
     it.avg = it.qty ? it.sales / it.qty : 0;
@@ -83438,7 +83497,8 @@ function mnModel(inp) {
   /* 帯：色のあるカテゴリーはそのまま・その他の色のものは 1 つにまとめる */
   var stackOf = function (getQ) {
     var segs = [], other = null;
-    catList.forEach(function (c) { var v = getQ(c); if (c.color === MN_OTHER) { if (!other) other = { name: t('その他', 'Other'), v: 0, color: MN_OTHER }; other.v += v; } else segs.push({ name: c.name, v: v, color: c.color }); });
+    var nOther = catList.filter(function (c) { return c.color === MN_OTHER; }).length;
+    catList.forEach(function (c) { var v = getQ(c); if (c.color === MN_OTHER) { if (!other) other = { name: mnOtherLabel(nOther), v: 0, color: MN_OTHER, group: true }; other.v += v; } else segs.push({ name: c.name, v: v, color: c.color }); });
     if (other) { var u = segs.length && segs[segs.length - 1].name === MN_UNC_NAME ? segs.pop() : null; segs.push(other); if (u) segs.push(u); }
     return segs;
   };
@@ -83480,18 +83540,19 @@ function mnModel(inp) {
     drinkSales: cS ? dS / cS : null, drinkQty: cQ ? dQ / cQ : null,
     newCount: newOk ? B.filter(function (it) { return it.isNew; }).length : null, newOk: newOk,
     prevMissing: prevMissing, unchecked: unchecked, notYet: notYet, exCount: Object.keys(exAll).length, exIdx: exAll, nData: nData,
-    uncCount: A.filter(function (it) { return it.unc; }).length,
+    uncCount: A.filter(function (it) { return it.unc; }).length, noNameCount: A.filter(function (it) { return it.noName; }).length,
+    visitQty: visitQty, visitStores: visitStores, menuFailed: menuFailed, menuEmpty: menuEmpty,
     noPrice: money ? 0 : B.filter(function (it) { return it.priceMissing; }).length,
     days: days, weeks: wk, prevWeeks: pwk, weekMix: weekMix, inChunk: inChunk
   };
 }
 function mnInput(s, J) {
-  var colors = mnCatColors(J.stores.map(function (x) { return x.id; }));
+  var colors = { map: mnObj(), order: [] };   /* v1129：色は mnModel が出数から決める */
   return {
     stores: J.stores.map(function (x) {
-      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, d = _mnCache['sales|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {};
+      var a = _mnCache['items|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, b = _mnCache['items|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, c = _mnCache['sales|' + x.toastGuid + '|' + J.r.from + '|' + J.r.to] || {}, d = _mnCache['sales|' + x.toastGuid + '|' + J.pr.from + '|' + J.pr.to] || {}, mm = _mnCache['menu|' + x.toastGuid] || {};
       var dc = []; try { dc = (getKpiConfigFor(x.id).drinkCats || []).map(function (v) { return String(v).trim(); }); } catch (e) { }
-      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', prevSales: d.rows || [], prevSalesErr: d.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, at: Math.max(a.at || 0, b.at || 0, c.at || 0, d.at || 0) };
+      return { id: x.id, name: x.name || x.id, rows: a.rows || [], err: a.err || '', prevRows: b.rows || [], prevErr: b.err || '', sales: c.rows || [], salesErr: c.err || '', prevSales: d.rows || [], prevSalesErr: d.err || '', recipes: mnRecipeMap(x.id), drinkCats: dc, menu: mm.rows || [], menuErr: mm.err || '', at: Math.max(a.at || 0, b.at || 0, c.at || 0, d.at || 0) };
     }),
     r: J.r, pr: J.pr, kind: s.kind, cat: s.cat, q: s.q, chip: s.chip, sort: s.sort, allStores: s.store === 'ALL', colors: colors
   };
@@ -83567,7 +83628,10 @@ function mnSearch(v) {
 }
 function mnRegItem(k) { _mnReg.items.push(k); return _mnReg.items.length - 1; }
 function mnRegCat(c) { var i = _mnReg.cats.indexOf(c); if (i < 0) { _mnReg.cats.push(c); i = _mnReg.cats.length - 1; } return i; }
-function mnCatName(c) { return c === MN_UNC_NAME ? t('未分類', 'Uncategorized') : c; }
+function mnCatName(c) { return c === MN_UNC_NAME ? t('カテゴリー未取得', 'Category not found') : c; }
+/* v1129：名前の取れない商品（Toast のメニューの表にも注文の行にもレシピにも無い）。名前を作らず、ID の末尾だけ */
+function mnNoName(g) { var x = String(g || ''); return t('名称未取得', 'Name not found') + '（…' + x.slice(-6) + '）'; }
+function mnOtherLabel(n) { return t('ほか ' + n + ' カテゴリー', n + ' more categories'); }
 function mnBodyHtml(s) {
   _mnReg.items = [];
   var J = mnJobs(s);
@@ -83596,6 +83660,9 @@ function mnBodyHtml(s) {
     h += '<div class="mn-banner"><i class="ti ti-alert-triangle"></i><span>' + t('<b>' + Object.keys(ns).length + ' 店・' + M.missing.length + ' 日の出数がまだ入っていません</b>（' + ex + '。売上はあります）。この日を除いた数字です。', '<b>Items sold are missing for ' + M.missing.length + ' store-day(s)</b> (' + ex + '; sales exist). Numbers exclude these days.') + '</span>' +
       (MN_RESYNC_ROLES.indexOf(curRole) >= 0 ? '<button type="button" class="btn btn-secondary btn-sm" onclick="mnResync()">' + t('その日を取り直す', 'Re-import those days') + '</button>' : '<span class="mn-note" style="margin:0">' + t('GM・経理に伝えてください', 'Please tell the GM or accounting') + '</span>') + '</div>';
   }
+  if (M.visitQty) h += '<div class="mn-note">' + t('来店区分（FT・RP・SR など・Toast のメニューの「Customers」のグループ）の ' + mnQty(M.visitQty) + ' 件は、商品ではないので出数に入れていません（リピート率には使っています）。', 'Visit types (FT, RP, SR… the Toast menu group "Customers"), ' + mnQty(M.visitQty) + ' in total, are not counted as items (they are used for the repeat rate).') + '</div>';
+  if (M.menuFailed.length) h += '<div class="mn-note">' + t('Toast のメニュー（商品名・カテゴリー）を読めなかった店：' + nm(M.menuFailed) + '。レシピの名前・カテゴリーで出しています。来店区分はレシピで分かるものだけ除いています。「最新を読む」でもう一度読みます。', 'The Toast menu (names, categories) could not be loaded for ' + nm(M.menuFailed) + '; recipe names and categories are used, and only visit types known from recipes are left out. Use Reload to try again.') + '</div>';
+  if (M.menuEmpty.length) h += '<div class="mn-note">' + t('Toast のメニューがまだ取り込まれていない店：' + nm(M.menuEmpty) + '（同期センターの「メニュー・出数を同期」）。レシピに無い商品は「名称未取得」です。', 'The Toast menu has not been imported yet for ' + nm(M.menuEmpty) + ' (Sync center → menu sync). Items without a recipe show "Name not found".') + '</div>';
   if (!M.money && M.cur.length) h += '<div class="mn-note">' + t('取り込んだ商品別の行に金額が無いので、売上は「出数 × レシピの売価」で出しています（割引・取り消しは入りません）。', 'The imported item rows have no amounts, so sales = qty × recipe price (discounts and voids are not reflected).') + (M.noPrice ? t('売価の無いメニュー ' + M.noPrice + ' 品は $0 です。', ' ' + M.noPrice + ' item(s) without a price count as $0.') : '') + '</div>';
   if (!M.cur.length) return h + '<div class="mn-card mn-empty">' + t('この期間の出数はまだありません。', 'No items sold in this period yet.') + '</div>';
   if (s.tab === 'items') return h + mnItemsHtml(M, s, J);
@@ -83618,7 +83685,7 @@ function mnOverviewHtml(M, s, J) {
     [t('客数あたりの出数', 'Items per guest'), (M.guests ? (M.tq / M.guests).toFixed(2) + t(' 品', '') : '—'), M.guests == null ? t('客数を読めませんでした', 'Guest count unavailable') : t('客数 ' + M.guests.toLocaleString('en-US') + ' 人', M.guests.toLocaleString('en-US') + ' guests'), 'var(--muted)'],
     [t('ドリンク比率（売上）', 'Drink share (sales)'), M.drinkSales == null ? '—' : mnPct(M.drinkSales, 1), M.drinkQty == null ? '' : t('出数では ', 'By qty ') + mnPct(M.drinkQty, 1), 'var(--muted)'],
     [t('新しいメニュー', 'New items'), M.newCount == null ? '—' : M.newCount + t(' 品', ''), t('比べる期間には出ていない', 'Not sold in the comparison period'), 'var(--muted)'],
-    [t('未分類', 'Uncategorized'), M.uncCount + t(' 品', ''), t('合計に入っています', 'Included in totals'), M.uncCount ? '#9a3412' : 'var(--muted)']
+    [t('カテゴリー未取得', 'Category not found'), M.uncCount + t(' 品', ''), (M.noNameCount ? t('名称未取得 ' + M.noNameCount + ' 品・', 'Name not found: ' + M.noNameCount + ' · ') : '') + t('合計に入っています', 'Included in totals'), (M.uncCount || M.noNameCount) ? '#9a3412' : 'var(--muted)']
   ];
   var h = '<div class="mn-kpis">' + k.map(function (x) { return '<div class="mn-card mn-kpi"><div class="l">' + x[0] + '</div><div class="v">' + x[1] + '</div><div class="s" style="color:' + x[3] + '">' + (x[2] || '&nbsp;') + '</div></div>'; }).join('') + '</div>';
   /* よく出たメニュー */
@@ -83668,9 +83735,11 @@ function mnOverviewHtml(M, s, J) {
 function mnHowHtml(M) {
   var li = [
     t('出数＝Toast から取り込んだ商品別の数量（日ごとの行）の合計。いつもハワイ時間の昨日まで。', 'Qty = the sum of item quantities imported from Toast (daily rows), always through yesterday (Hawaii time).'),
-    M.money ? t('売上＝商品別の行の金額の合計。', 'Sales = the sum of the item rows\' amounts.') : t('売上＝出数 × レシピの売価（商品別の行に金額が無いため。割引・取り消しは入りません）。売価の無いメニューは $0。', 'Sales = qty × recipe price (the item rows have no amounts; discounts and voids are not reflected). Items without a price count as $0.'),
+    M.money ? t('売上＝商品別の行の金額の合計。', 'Sales = the sum of the item rows\' amounts.') : t('売上＝出数 × 売価（レシピの売価、無ければ Toast のメニューの今の売価。商品別の行に金額が無いため。割引・取り消しは入りません）。売価の無いメニューは $0。', 'Sales = qty × price (recipe price, else the current Toast menu price; the item rows have no amounts; discounts and voids are not reflected). Items without a price count as $0.'),
     t('平均売価＝売上 ÷ 出数。「出数 vs 売上」の pt＝売上の割合 − 出数の割合（プラスは 1 品あたりが全体より高いカテゴリー）。', 'Avg price = sales ÷ qty. The pt in "Qty vs sales" = sales share − qty share.'),
-    t('カテゴリーはレシピ（Toast の商品と結んだもの）のカテゴリー。結んでいない商品は「未分類」。ドリンクは KPI の設定のドリンクのカテゴリー、それ以外（未分類を含む）はフード。', 'Category comes from the recipe linked to the Toast item; unlinked items are "Uncategorized". Drinks are the drink categories in the KPI settings; everything else (including uncategorized) is food.'),
+    t('商品名・カテゴリーは Toast のメニュー（toast_menu_items）から。メニューに無い商品（販売終了で消えたものなど）は Toast と結んだレシピの名前・カテゴリー。どれにも無いものは「名称未取得」「カテゴリー未取得」（名前・分類を作りません）。ドリンクは KPI の設定のドリンクのカテゴリー、それ以外（カテゴリー未取得を含む）はフード。', 'Names and categories come from the Toast menu (toast_menu_items); items no longer on the menu use the linked recipe. Items found nowhere show "Name not found" / "Category not found" (nothing is made up). Drinks are the drink categories in the KPI settings; everything else is food.'),
+    t('来店区分（FT・RP・SR など。Toast のメニューの「Customers」のグループの商品）は出数・売上・ランキング・割合に入れません（リピート率には使います）。決め方はグループで、名前の一部や価格 0 では決めません。', 'Visit types (FT, RP, SR… the items in the Toast menu group "Customers") are not counted as items (they are used for the repeat rate). Decided by the menu group, never by part of a name or a $0 price.'),
+    t('カテゴリーの色は、この期間・この店の出数の多い 8 つ。9 つ目からは帯で「ほか N カテゴリー」にまとめます（表には全部出ます）。', 'Colors go to the 8 categories with the most items in this period; the rest are grouped as "N more categories" in the bar (the table lists all).'),
     t('割合は小数 1 桁に四捨五入するので、足して 100.0% にならないことがあります。0.05% より小さいものは「0.1% 未満」。', 'Shares are rounded to one decimal, so they may not add up to exactly 100.0%.'),
     t('同じ Toast の商品は名前が変わっても 1 つにまとめます（全店のときは同じ名前の商品を 1 つに）。「新しい」＝比べる期間には出ていないもの。', 'The same Toast item is one row even if renamed (all stores: same name = one row). "New" = not sold in the comparison period.'),
     t('売上はあるのに出数の行が無い日は、その日を除いた数字です（上の帯に出します）。', 'Days with sales but no item rows are excluded (shown in the banner).')
@@ -83682,7 +83751,8 @@ function mnTags(it) {
   if (it.isNew) tg.push(['mn-tag-new', t('新しい', 'New')]);
   if (it.renamed) tg.push(['mn-tag-ren', t('名前が変わった', 'Renamed')]);
   if (it.ended) tg.push(['mn-tag-end', t('販売終了', 'Ended') + (it.archivedAt ? ' ' + escapeHtml(mnMd(String(it.archivedAt).slice(0, 10).replace(/\//g, '-'))) : '')]);
-  if (it.unc) tg.push(['mn-tag-unc', t('未分類', 'Uncategorized')]);
+  if (it.noName) tg.push(['mn-tag-unc', t('名称未取得', 'Name not found')]);
+  if (it.unc) tg.push(['mn-tag-unc', t('カテゴリー未取得', 'Category not found')]);
   if (it.priceMissing) tg.push(['mn-tag-end', t('売価なし', 'No price')]);
   return tg.map(function (x) { return '<span class="mn-tag ' + x[0] + '">' + x[1] + '</span>'; }).join('');
 }
@@ -83729,7 +83799,7 @@ function mnItemsHtml(M, s, J) {
   /* 一覧 */
   var all = M.rows, list = s.showAll ? all : all.slice(0, MN_ROWS);
   var sl = [['qty', t('出数の多い順', 'Most sold')], ['sales', t('売上の多い順', 'Highest sales')], ['avg', t('平均売価の高い順', 'Highest avg price')], ['up', t('伸びた順', 'Biggest increase')], ['down', t('減った順', 'Biggest decrease')], ['name', t('名前の順', 'Name')]];
-  var chips = [['all', t('すべて', 'All')], ['new', t('新しい', 'New')], ['renamed', t('名前が変わった', 'Renamed')], ['ended', t('販売終了', 'Ended')], ['unc', t('未分類', 'Uncategorized')]];
+  var chips = [['all', t('すべて', 'All')], ['new', t('新しい', 'New')], ['renamed', t('名前が変わった', 'Renamed')], ['ended', t('販売終了', 'Ended')], ['unc', t('カテゴリー未取得', 'Category not found')]];
   var stLabel = s.store === 'ALL' ? t('全店', 'All stores') : escapeHtml(((J.stores[0] || {}).name) || '');
   h += '<div class="mn-lh"><div>' + mnRangeLabel(J.r) + '・' + stLabel + '・<b>' + all.length + t(' 品', ' items') + '</b>' + (s.cat ? '・' + escapeHtml(mnCatName(s.cat)) : '') + '</div><div class="mn-lh-r"><label for="mn-sort" class="mn-lab">' + t('並べ替え', 'Sort') + '</label><select id="mn-sort" class="mn-in" onchange="mnSet(\'sort\',this.value)">' + sl.map(function (x) { return '<option value="' + x[0] + '"' + (s.sort === x[0] ? ' selected' : '') + '>' + x[1] + '</option>'; }).join('') + '</select>' +
     chips.map(function (x) { return '<button type="button" class="mn-chip" aria-pressed="' + (s.chip === x[0] ? 'true' : 'false') + '" onclick="mnSet(\'chip\',\'' + x[0] + '\')">' + x[1] + '</button>'; }).join('') + '</div></div>';
@@ -83777,7 +83847,7 @@ function mnTrendHtml(M, s, J) {
     var tot = isQ ? w.tq : w.ts;
     var segs = []; var other = 0;
     M.catList.forEach(function (c) { var v = (w.per[c.name] || { q: 0, s: 0 })[isQ ? 'q' : 's']; if (c.color === MN_OTHER) other += v; else if (c.name !== MN_UNC_NAME) segs.push({ name: c.name, v: v, color: c.color }); });
-    if (other) segs.push({ name: t('その他', 'Other'), v: other, color: MN_OTHER });
+    if (other) segs.push({ name: mnOtherLabel(M.catList.filter(function (c) { return c.color === MN_OTHER; }).length), v: other, color: MN_OTHER });
     var u = (w.per[MN_UNC_NAME] || { q: 0, s: 0 })[isQ ? 'q' : 's']; if (u) segs.push({ name: MN_UNC_NAME, v: u, color: MN_UNC });
     var bv = big ? (w.per[big.name] || { q: 0, s: 0 })[isQ ? 'q' : 's'] : 0, sh = tot ? bv / tot * 100 : null, note = '';
     if (big && sh != null) { if (prevShare == null) note = mnCatName(big.name) + ' ' + sh.toFixed(1) + '%'; else { var dd = Math.round((sh - prevShare) * 10) / 10; note = mnCatName(big.name) + ' ' + (dd > 0 ? '+' : dd < 0 ? '−' : '±') + Math.abs(dd).toFixed(1) + t(' ポイント', ' pt'); } prevShare = sh; }
@@ -83837,7 +83907,7 @@ function renderMenuMonth() {
   var storeId = window._menuStore, period = window._menuPeriod;
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   // 店舗ごとのメニュー: その店のレシピ + 店舗未指定（旧データ/手動）を表示
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
 
   // カテゴリ別にまとめる
@@ -83973,7 +84043,7 @@ function menuPeriodList(startP, endP){
 }
 function menuRangeMatrix(storeId){
   var periods = menuPeriodList(window._menuRangeStart, window._menuRangeEnd);
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId));
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)));
   var mixes = periods.map(function(p){ return getMenuMix(storeId, p); });
   var rows = recipes.map(function(r){
     var qtys = mixes.map(function(mx){ return parseFloat((mx.items||{})[r.id])||0; });
@@ -84058,7 +84128,7 @@ async function ensureMenuMixLoaded(storeId, period, opt){
   if (curPage==='menu') renderPage('menu');
 }
 function openMenuMixModal(storeId, period) {
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
   var storeObj = STORES.find(s=>s.id===storeId)||{};
   var rows = recipes.map(r=>{
@@ -84075,7 +84145,7 @@ function openMenuMixModal(storeId, period) {
     <button class="btn btn-primary" onclick="saveMenuMix('${storeId}','${period}')"><i class="ti ti-device-floppy"></i> 保存</button></div>`);
 }
 function saveMenuMix(storeId, period) {
-  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) );
+  var recipes = activeRecipes().filter(r=> recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) );
   var mix = getMenuMix(storeId, period);
   if (!mix.items) mix.items = {};
   var sales = 0;

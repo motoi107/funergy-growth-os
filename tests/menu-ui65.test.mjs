@@ -17,6 +17,13 @@ function block(src) {
   assert.ok(a > 0 && b > a, 'menu block');
   return src.slice(a + 1, b + 1);
 }
+// v1129: the visit-type rule (FT/RP/SR = Toast menu group "Customers") lives outside the menu block
+function visitBlock(src) {
+  const a = src.indexOf('\nvar VISIT_TYPE_GROUPS = ');
+  const b = src.indexOf('\n/* 月の出数：来店区分のレシピの数は読むときに外す');
+  assert.ok(a > 0 && b > a, 'visit-type block');
+  return src.slice(a + 1, b + 1);
+}
 function fnFrom(src, name) {
   const start = src.indexOf('\nfunction ' + name + '(');
   assert.ok(start >= 0, name);
@@ -70,7 +77,7 @@ function app(opts = {}) {
     REAL_TIMERS: opts.realTimers ? { set: setTimeout, clear: clearTimeout } : null, AbortController,
   };
   vm.createContext(c);
-  vm.runInContext(fnFrom(source, 'recipeInStore') + '\n' + `
+  vm.runInContext(fnFrom(source, 'recipeInStore') + '\n' + visitBlock(source) + '\n' + `
     function isTotoyaStore(id){ return /^F04-/.test(id); }
     function t(ja, en){ return curLang === 'en' ? en : ja; }
     function escapeHtml(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
@@ -293,7 +300,11 @@ test('the screen only reads: no saving, no sending, no menu counts written', () 
 });
 
 test('the previous monthly screen is unchanged and both page renderers widen the page for the new tabs', () => {
-  const now = fnFrom(source, 'renderMenuMonth').replace('function renderMenuMonth()', 'function renderMenu()');
+  // v1129: the only change is that visit-type recipes (FT/RP/SR, Toast group "Customers") are not listed
+  const now = fnFrom(source, 'renderMenuMonth').replace('function renderMenuMonth()', 'function renderMenu()')
+    .replace("recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) )", 'recipeInStore(r, storeId) )')
+    // v1129 ③: with "All stores" the first store this person may see (soloStoreId), not visStores[0]/'F01'
+    .replace("(curStore!=='ALL'?curStore:soloStoreId('menu'));   /* v1129 ③：左上を変えたら pageStoresFollow が合わせる */", "(curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));");
   let before = '';
   try { before = read(execFileSync('git', ['show', '6bcf6cd:index.html'], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', maxBuffer: 64 << 20 })); } catch (e) { }
   if (before) assert.equal(now, fnFrom(before, 'renderMenu'), 'v1125 renderMenu body');
@@ -397,4 +408,123 @@ test('re-import runs once at a time and does not call Toast for days older than 
   await vm.runInContext('mnResync()', c);
   assert.equal(c.FETCHES.filter(f => f.resync).length, 0, '9/10 is 50 days back');
   assert.match(c.TOASTS.map(x => x[0]).join(' '), /期間一括の取り込み/);
+});
+
+/* ---------- v1129（11/01 の依頼 ②）：商品名・カテゴリーは Toast のメニューの表から・来店区分は数えない ---------- */
+// production shape (11/01 SQL): toast_item_sales has no item_name; names and categories are in toast_menu_items
+const P = (d, g, q) => ({ business_date: d, item_guid: g, qty: q });
+const MENU_A = [
+  { guid: 'salmon-A', name: 'Salmon Bowl (Toast)', category: 'Bowl', price: 21, active: true },
+  { guid: 'miso-A', name: 'Miso Soup', category: 'Soup', price: 4, active: true },
+  { guid: 'gyoza-A', name: 'Gyoza', category: 'Appetizers', price: 9, active: true },            // no recipe: name/category from Toast
+  { guid: 'ft-A', name: 'FT', category: 'Customers', price: 0, active: true },
+  { guid: 'rp-A', name: 'RP', category: 'Customers', price: 0, active: true },
+  { guid: 'sr-A', name: 'SR', category: ' customers ', price: 0, active: true },                // same group, other spelling
+  { guid: 'ftsp-A', name: 'FT Special', category: 'Appetizers', price: 12, active: true },       // a real dish whose name starts with FT
+  { guid: 'free-A2', name: 'Free Edamame', category: 'Other', price: 0, active: true },           // a real $0 item
+  { guid: 'beer-A', name: 'Beer', category: 'Drink', price: 8, active: false },                    // off the menu now
+];
+function prodRows() {
+  const k = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01&business_date=lte.2026-10-29';
+  const kp = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-09-01&business_date=lte.2026-09-29';
+  const rows = rowsFor();
+  rows[k] = [P('2026-10-01', 'salmon-A', 10), P('2026-10-02', 'miso-A', 20), P('2026-10-02', 'gyoza-A', 7), P('2026-10-03', 'beer-A', 6),
+    P('2026-10-01', 'ft-A', 30), P('2026-10-01', 'rp-A', 25), P('2026-10-02', 'sr-A', 5), P('2026-10-03', 'ftsp-A', 2), P('2026-10-03', 'free-A2', 3),
+    P('2026-10-04', 'old-A', 2), P('2026-10-05', 'zzz-unknown-guid-123456', 4)];
+  rows[kp] = [P('2026-09-01', 'salmon-A', 16), P('2026-09-01', 'ft-A', 40)];
+  rows['toast_menu_items?restaurant_guid=eq.gA&'] = MENU_A;
+  rows['toast_menu_items?restaurant_guid=eq.gB&'] = [{ guid: 'salmon-B', name: 'Salmon Bowl (Toast)', category: 'Bowl', price: 21, active: true }, { guid: 'ft-B', name: 'FT', category: 'Customers', price: 0, active: true }];
+  rows['toast_item_sales?restaurant_guid=eq.gB&business_date=gte.2026-10-01&business_date=lte.2026-10-29'] = [P('2026-10-04', 'salmon-B', 7), P('2026-10-04', 'ft-B', 9), P('2026-10-04', 'zzz-unknown-guid-123456', 1)];
+  return rows;
+}
+
+test('v1129: names and categories come from the Toast menu table (the item rows have no name); visit types are not items', async () => {
+  const c = await loaded({ rows: prodRows(), state: { store: 'F01' } });
+  const urls = c.FETCHES.map(f => f.url);
+  assert.ok(urls.some(u => u.includes('toast_menu_items?restaurant_guid=eq.gA&select=guid,name,category,price,active&order=id.asc')), 'reads the Toast menu table (GET only)');
+  assert.ok(c.FETCHES.every(f => f.method === 'GET'));
+  const { M } = model(c);
+  const names = M.cur.map(it => it.name);
+  assert.ok(!names.some(n => /salmon-A|miso-A|gyoza-A/.test(n)), 'no item is shown by its ID: ' + names.join(' / '));
+  const s = M.cur.find(it => it.key === 'salmon-A');
+  assert.equal(s.name, 'Salmon Bowl (Toast)', 'the Toast name (current)');
+  assert.deepEqual(Object.keys(s.oldNames), ['Salmon bowl'], 'the recipe name stays searchable');
+  assert.equal(s.renamed, true);
+  const gy = M.cur.find(it => it.key === 'gyoza-A');
+  assert.equal(gy.name, 'Gyoza'); assert.equal(gy.cat, 'Appetizers', 'a Toast category without a recipe is not "uncategorized"'); assert.equal(gy.sales, 63, 'Toast price when there is no recipe');
+  assert.equal(M.cur.find(it => it.key === 'miso-A').cat, 'Soup');
+  // visit types: by the Toast group, not by name or price
+  assert.ok(!M.cur.some(it => ['ft-A', 'rp-A', 'sr-A'].includes(it.key)), 'FT / RP / SR are not items');
+  assert.equal(M.visitQty, 60, 'FT 30 + RP 25 + SR 5 (current period)');
+  assert.ok(M.cur.some(it => it.key === 'ftsp-A' && it.name === 'FT Special'), 'a dish named "FT …" in another group stays');
+  assert.ok(M.cur.some(it => it.key === 'free-A2' && it.qty === 3), 'a $0 dish stays');
+  assert.equal(M.tq, 10 + 20 + 7 + 6 + 2 + 3 + 2 + 4, 'visit types are not in the total');
+  assert.ok(!M.catList.some(cx => /customers/i.test(cx.name)), 'no "Customers" category in shares');
+  assert.ok(!M.top.some(it => /^(FT|RP|SR)$/.test(it.name)), 'not in the ranking');
+  assert.equal(M.cur.find(it => it.key === 'salmon-A').prevQty, 16); assert.equal(M.pq, 16, 'the comparison period leaves them out too');
+  // ended / unknown
+  const beer = M.cur.find(it => it.key === 'beer-A'); assert.equal(beer.name, 'Beer'); assert.equal(beer.ended, true, 'off the Toast menu now');
+  const old = M.cur.find(it => it.key === 'old-A'); assert.equal(old.name, 'Old bowl', 'not on the Toast menu: the recipe name (synced when it was sold)'); assert.equal(old.ended, true); assert.equal(old.cat, 'Bowl');
+  const un = M.cur.find(it => it.key === 'zzz-unknown-guid-123456');
+  assert.equal(un.noName, true); assert.equal(un.name, '名称未取得（…123456）', 'no name is made up; only the end of the ID'); assert.equal(un.cat, '未分類'); assert.equal(un.ended, false, 'unknown is not "ended"');
+  assert.equal(M.noNameCount, 1); assert.equal(M.uncCount, 1);
+  const h = vm.runInContext('mnBodyHtml(mnState())', c);
+  assert.match(h, /来店区分（FT・RP・SR など・Toast のメニューの「Customers」のグループ）の 60 件は/);
+  assert.match(h, /カテゴリー未取得/); assert.match(h, /名称未取得 1 品/);
+  assert.doesNotMatch(h, />未分類</, 'the old label is gone');
+  vm.runInContext("window._mn.tab = 'items'", c);
+  const hi = vm.runInContext('mnBodyHtml(mnState())', c);
+  assert.match(hi, /名称未取得（…123456）/); assert.match(hi, /mn-tag-unc">名称未取得</);
+  vm.runInContext("window._mn.q = 'salmon bowl'", c);
+  assert.ok(model(c).M.rows.some(it => it.key === 'salmon-A'), 'found by the old (recipe) name');
+});
+
+test('v1129: when the Toast menu table cannot be read, recipe names and categories are used and visit types known from recipes are still left out', async () => {
+  const rows = prodRows(); delete rows['toast_menu_items?restaurant_guid=eq.gA&'];
+  const recipes = RECIPES.concat([{ id: 'rft', toastGuid: 'ft-A', storeId: 'F01', name: 'FT', category: 'Customers', price: 0 }]);
+  let c = await loaded({ rows, recipes, fail: { 'toast_menu_items?restaurant_guid=eq.gA': 1 }, state: { store: 'F01' } });
+  let M = model(c).M;
+  assert.deepEqual(M.menuFailed.map(x => x.id), ['F01']);
+  assert.ok(!M.cur.some(it => it.key === 'ft-A'), 'FT (recipe group Customers) is left out');
+  assert.ok(M.cur.some(it => it.key === 'rp-A' && it.noName), 'RP with no menu and no recipe cannot be identified: shown as name not found (not guessed)');
+  assert.equal(M.cur.find(it => it.key === 'salmon-A').name, 'Salmon bowl');
+  assert.equal(M.cur.find(it => it.key === 'gyoza-A').cat, '未分類');
+  assert.match(vm.runInContext('mnBodyHtml(mnState())', c), /Toast のメニュー（商品名・カテゴリー）を読めなかった店：Store A/);
+  // read OK but empty (a store whose menu was never imported)
+  rows['toast_menu_items?restaurant_guid=eq.gA&'] = [];
+  c = await loaded({ rows, state: { store: 'F01' } });
+  M = model(c).M;
+  assert.deepEqual(M.menuEmpty.map(x => x.id), ['F01']);
+  assert.match(vm.runInContext('mnBodyHtml(mnState())', c), /Toast のメニューがまだ取り込まれていない店：Store A/);
+  // "Reload" reads the menu table again
+  const n = c.FETCHES.filter(f => f.url.includes('toast_menu_items')).length;
+  vm.runInContext('mnReload()', c); vm.runInContext('mnKick()', c); await flush(); await flush();
+  assert.ok(c.FETCHES.filter(f => f.url.includes('toast_menu_items')).length > n);
+});
+
+test('v1129: all stores — same Toast name is one row, unknown names are never merged; visit types of every store are left out', async () => {
+  const c = await loaded({ rows: prodRows(), state: { store: 'ALL' } });
+  const { M } = model(c);
+  const salmon = M.cur.filter(it => it.name === 'Salmon Bowl (Toast)'); assert.equal(salmon.length, 1); assert.equal(salmon[0].qty, 17);
+  const un = M.cur.filter(it => it.noName); assert.equal(un.length, 2, 'the same unknown ID in two stores is two rows'); assert.ok(un.every(it => it.name === '名称未取得（…123456）'));
+  assert.equal(M.visitQty, 69); assert.deepEqual(M.visitStores.map(x => x.id).sort(), ['F01', 'F02']);
+});
+
+test('v1129: colors go to the 8 categories with the most items in the period; the rest are "N more categories" in the bar, all listed in the table', async () => {
+  const rows = rowsFor();
+  const k = 'toast_item_sales?restaurant_guid=eq.gA&business_date=gte.2026-10-01&business_date=lte.2026-10-29';
+  const menu = [], r = [];
+  for (let i = 1; i <= 11; i++) { menu.push({ guid: 'c' + i, name: 'Dish ' + i, category: 'Cat' + String(i).padStart(2, '0'), price: 5, active: true }); r.push(P('2026-10-02', 'c' + i, 100 - i)); }
+  rows[k] = r; rows['toast_menu_items?restaurant_guid=eq.gA&'] = menu;
+  // many recipes in a small category: no longer decides the colors
+  const recipes = RECIPES.concat(Array.from({ length: 12 }, (_, i) => ({ id: 'x' + i, storeId: 'F01', name: 'R' + i, category: 'Cat11', price: 1 })));
+  const c = await loaded({ rows, recipes, state: { store: 'F01' } });
+  const { M } = model(c);
+  const col = Object.fromEntries(M.catList.map(x => [x.name, x.color]));
+  assert.equal(col.Cat01, '#eb6834'); assert.equal(col.Cat08, '#e34948'); assert.equal(col.Cat09, '#c9c1b6'); assert.equal(col.Cat11, '#c9c1b6', 'recipe count does not decide');
+  assert.equal(M.catList.length, 11, 'every category is listed in the table');
+  const g = M.stackQty.find(x => x.color === '#c9c1b6'); assert.equal(g.name, 'ほか 3 カテゴリー'); assert.equal(g.v, 91 + 90 + 89);
+  assert.ok(!M.stackQty.some(x => x.name === 'その他'), 'our grouping is not called "Other"');
+  vm.runInContext("window._mn.tab = 'trend'", c);
+  assert.match(vm.runInContext('mnBodyHtml(mnState())', c), /ほか 3 カテゴリー/);
 });
