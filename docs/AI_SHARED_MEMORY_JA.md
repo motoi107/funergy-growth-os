@@ -1,5 +1,39 @@
 # Claude / Codex 共通記録
 
+## 2026-11-02 引き継ぎ：#119（v1128）・#120（v1129）はマージ済み・本番は v1129（Claude）
+
+- Moto さんが 11/02 09:25 HST に PR #119（head `442e000`・main `a07e24c`）、09:26 HST に PR #120（head `955fb61`・main `0b7200d`）をマージ。
+  - main の APP_VERSION・SW_BUILD は 1129。main `0b7200d` の Growth OS checks と Pages の公開は成功（公開中のサイトはこの環境からは読めない）。
+  - アプリだけ（SQL・関数なし。読むだけの SQL `db/menu-names-check.sql`・`db/lala-menu-repeat-check.sql`・`db/onboarding-secrets-check.sql`）。
+- レビュー（最後の head）：
+  - #119 `442e000`：Codex blocked／manual。コードの指摘なし。残りは「だれのか分からない v1127 までの送信待ち」だけで、Moto さんが 11/02 に「今のまま」と決定。
+  - #120 `a61408e`：Codex blocked／manual（確かめの画面のあいだの確定）→ `955fb61` で直した。
+    - `955fb61` は Claude のルーティンのレビュー（新しい P1・P2 なし）だけ。**Codex の再レビューはマージの前に無かった。**
+  - CI はどちらも成功（退職の同期 36・skipped 0）。
+- 中身：`docs/REQUESTS_1101_V1129_JA.md`（11/01 の依頼 4 つ）・`docs/LALA_MENU_REPEAT_V1129_JA.md`・`docs/ITEM_LINK_BULK_V1128_JA.md`・`docs/UX_UNIFY_V1127_JA.md` の 10c。
+- まだのこと（次のチャットで聞く・自分から持ち出さない）：
+  1. 端末をすべて 1129 に（Tip Rate を決める人・紐づけを使う人・店の切り替えを使う人）→ 実機（iPhone）。
+     - Tip：11/1〜15 に 10/16 から選べる・確定済みの期間は止まる。
+     - 店の切り替え：全店 → 各画面・個店。
+     - ログインのあとの下の表示が点滅しない。
+  2. Moto さん：`db/menu-names-check.sql`（読むだけ）の結果 → メニュー出数分析の本番の照合。
+  3. Moto さん（#119）：`db/onboarding-secrets-check.sql`（読むだけ）の結果 → 残っていれば GM・CEO が「機密情報の移行」（詳しいことは Moto さんに直接）。
+  4. LaLa（`docs/LALA_MENU_REPEAT_V1129_JA.md` の 6）：
+     - 同期センターの「来店区分の診断」の結果。
+     - Toast で来店区分を記録する運用か。
+     - ランチ・ディナー別の列。
+     - hyper-worker のソース（非公開）。
+     - UI案67 の決めごと。
+     - Toast のメニューの表に LaLa の行が無い（名前は「名称未取得」かレシピの名前・来店区分は見分けられない）。
+  5. Moto さんの決めごと（v1129）：
+     - 人の保存の結果をボタンの近くに短く出すか（UI 案から）。
+     - 全店を出せる画面の中で店を選んだとき左上も変えるか（今は変えない）。
+     - 11/16 を過ぎても 10/16〜を直せるようにするか（今は 1 つ前の期間だけ）。
+  6. 残る隙間（記録だけ）：
+     - Tip の前の期間：保存の直前の読み直しから保存がクラウドに届くまでのあいだの確定は止められない（完全にはサーバー側の仕組みが要る）。
+     - 試験の関数の取り出しが c3eeb3a の包みで切れているもの（next-v1090・perf-v1098 などの 1 件ずつ）は前からのまま。employee-resign-sync は直した。
+- 次のチャット：Moto さんの次の依頼から。
+
 ## 2026-11-01 v1129：11/01 の依頼 4 つ（Tip Rate の期間・メニュー出数分析・左上の店・同期の表示）と LaLa のリピート率の表示（Claude・ブランチ `claude/lala-menu-repeat`・PR #119（v1128）の上・アプリだけ・本番未反映）
 
 - 依頼：Moto さん 11/01 21:09 HST の添付（4 項目）。10/31 の LaLa の依頼の続き（`docs/LALA_MENU_REPEAT_V1129_JA.md`）と同じ版。
