@@ -105,16 +105,55 @@ test('裏の書き込み（人の操作の 2.5 秒より後）は「保存中」
   res(true);
 });
 
-test('送っている途中で閉じられたキーは、次に開いたとき送信待ちに入れて送り直す', () => {
+test('送っている途中で閉じられたキーは、同じ人が次に開いたとき送信待ちに入れて送り直す', () => {
   const added = []; let flushed = 0;
-  const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => { flushed++; return Promise.resolve(); } });
-  env.store.set('_ux_inflight', JSON.stringify({ old_key: Date.now() - 60000, fresh_key: Date.now() }));
+  const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => { flushed++; return Promise.resolve(); }, loginPerson: { id: 'A' } });
+  env.store.set('_ux_inflight', JSON.stringify({ old_key: { 'e:A': Date.now() - 60000 }, fresh_key: { 'e:A': Date.now() } }));
   vm.runInContext(uxBlock(), env.ctx);
   const n = env.ctx.window.FUNERGY_UX.recoverInflight();
   assert.equal(n, 1);
   assert.deepEqual(added, [['old_key', 'interrupted']]);
   assert.equal(flushed, 1);
   assert.deepEqual(Object.keys(JSON.parse(env.store.get('_ux_inflight'))), ['fresh_key'], '20 秒以内のもの（ほかのタブが送っている途中）は残す');
+});
+
+test('共有の端末：A の送信の途中でログアウトし B が入っても、A の保存を B のあいだに送り直さない（Codex の PR #118 のレビュー P1）', async () => {
+  const added = []; let flushed = 0;
+  const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => { flushed++; return Promise.resolve(); } });
+  vm.runInContext('var loginPerson = { id: "A" };', env.ctx);
+  vm.runInContext(uxBlock(), env.ctx);
+  const UX = env.ctx.window.FUNERGY_UX;
+  env.fire('pointerdown', {});
+  UX._track('shift_opt_cfg_F01', new Promise(() => {}));            /* A の送信：答えないまま閉じられた */
+  const mark = JSON.parse(env.store.get('_ux_inflight'));
+  assert.deepEqual(Object.keys(mark.shift_opt_cfg_F01), ['e:A'], 'だれの保存かを覚える');
+  mark.shift_opt_cfg_F01['e:A'] -= 60000; env.store.set('_ux_inflight', JSON.stringify(mark));
+  vm.runInContext('loginPerson = { id: "B" };', env.ctx);            /* ログアウトして B が入る */
+  assert.equal(UX.recoverInflight(), 0);
+  assert.deepEqual(added, [], 'B のあいだには送らない');
+  assert.equal(flushed, 0);
+  assert.ok(JSON.parse(env.store.get('_ux_inflight')).shift_opt_cfg_F01['e:A'], 'A の印は残す');
+  vm.runInContext('loginPerson = null; var curStoreLogin = true; var curStore = "F01";', env.ctx);   /* 店舗のログインでも送らない */
+  assert.equal(UX.recoverInflight(), 0);
+  vm.runInContext('curStoreLogin = false; loginPerson = { id: "A" };', env.ctx);   /* A がまた入る */
+  assert.equal(UX.recoverInflight(), 1);
+  assert.deepEqual(added, [['shift_opt_cfg_F01', 'interrupted']]);
+  assert.equal(env.store.has('_ux_inflight'), false);
+});
+
+test('だれの保存か分からない前の印（v1127）は送らず、7 日で捨てる。キーが（だれのでも）クラウドに届いたら印を消す', async () => {
+  const added = [];
+  const env = fakeEnv({ _outboxAdd: (k, why) => added.push([k, why]), flushOutbox: () => Promise.resolve() });
+  vm.runInContext('var loginPerson = { id: "A" };', env.ctx);
+  env.store.set('_ux_inflight', JSON.stringify({ legacy_key: Date.now() - 60000, gone_key: Date.now() - 8 * 86400000, shared_key: { 'e:B': Date.now() - 60000 } }));
+  vm.runInContext(uxBlock(), env.ctx);
+  const UX = env.ctx.window.FUNERGY_UX;
+  assert.equal(UX.recoverInflight(), 0);
+  assert.deepEqual(added, []);
+  const left = JSON.parse(env.store.get('_ux_inflight'));
+  assert.deepEqual(Object.keys(left).sort(), ['legacy_key', 'shared_key'], '7 日を過ぎた印は捨てる');
+  UX._track('shared_key', Promise.resolve(true)); await tick(); await tick();   /* A の（裏の）送信が届いた：端末の今の値がクラウドにある */
+  assert.deepEqual(Object.keys(JSON.parse(env.store.get('_ux_inflight'))), ['legacy_key'], 'B の印も要らない');
 });
 
 test('描き直し：同期の帯は前に足すだけ（画面全体を 2 回読み直さない）', () => {
@@ -195,12 +234,13 @@ test('業務の決まり・保存の道は変えない（保存の関数・承�
 
 /* 同じキーの送信の順（_pushWithOutbox）：本物の関数を VM で。クラウドへの送信は代わりの関数（答えを試験で決める） */
 function pushEnv(clock) {
-  const a = html.indexOf('\nfunction _outboxGet(){'), b = html.indexOf('\n/* 未送信キューを再送');
+  const a = html.indexOf('\nfunction _outboxGet(){'), b = html.indexOf('\n/* 書き戻し診断');
   assert.ok(a > 0 && b > a, 'push block');
   const store = new Map(), calls = [];
   const ctx = { console, Promise, Date: clock ? clock.Date : Date, JSON, Object, Array, String, setTimeout: clock ? clock.setTimeout : setTimeout, clearTimeout: clock ? clock.clearTimeout : clearTimeout,
     localStorage: { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) },
-    _supaBooting: false, _lsPushBlocked: () => false,
+    _supaBooting: false, _lsPushBlocked: () => false, SUPA_SYNC_ENABLED: true, __vals: {}, _LS_SAVE_FAIL: {},
+    ls: (k, d) => (k in ctx.__vals ? ctx.__vals[k] : d),
     syncMasterToSupabase: (key, val) => { let res; const p = new Promise(r => { res = r; }); calls.push({ key, val, res }); return p; } };
   vm.createContext(ctx);
   vm.runInContext(html.slice(a + 1, b + 1), ctx);
@@ -269,33 +309,56 @@ function fakeClock() {
   c.advance = ms => { c.t += ms; c.timers.filter(x => x.on && x.at <= c.t).forEach(x => { x.on = false; x.f(); }); };
   return c;
 }
-test('答えない送信のあいだの保存：待っている値は 30 秒で、いちばん新しい値だけ送る。待っているあいだも送信待ちに入っている（独立レビュー P1）', async () => {
+test('答えない送信のあいだの保存：30 秒を過ぎても並べて送らない。前の送信が答えてから、いちばん新しい値だけ送る（Codex の PR #118 のレビュー P1）', async () => {
   const C = fakeClock(), E = pushEnv(C);
   E.ctx._pushWithOutbox('k5', 'A'); await tick();                    // A：答えない
   C.advance(5000); E.ctx._pushWithOutbox('k5', 'B'); const pB = E.ctx._lsPushP.k5;
   assert.deepEqual(E.outbox(), ['k5'], '待っている値は送信待ちにも入れる（閉じられても次に送る）');
   C.advance(10000); E.ctx._pushWithOutbox('k5', 'C'); const pC = E.ctx._lsPushP.k5;
   assert.equal(pB, pC);
-  await tick(); assert.equal(E.calls.length, 1, '30 秒までは待つ');
-  C.advance(16000); await tick(); await tick();
+  C.advance(120000); await tick(); await tick();
+  assert.equal(E.calls.length, 1, '2 分たっても、前の送信が答えるまで送らない（2 つを同時に送らない）');
+  E.calls[0].res(true); await tick(); await tick();
   assert.deepEqual(E.calls.map(c => c.val), ['A', 'C'], 'B は送らない（古い値をあとから送らない）');
   E.calls[1].res(true); assert.equal(await pC, true);
   assert.deepEqual(E.outbox(), [], 'いちばん新しい値が届いたら送信待ちから外す');
-  E.calls[0].res(true); await tick(); await tick();
-  assert.deepEqual(E.outbox(), [], '古い送信があとで答えても何も変えない');
 });
-test('答えない送信から 30 秒たって保存したら、待っていた値をその送信にまとめる（あとで古い値を送らない）', async () => {
+test('サーバーに届く順：同じキーの送信はいつも 1 つずつなので、遅い古い送信があとから適用されて新しい値を上書きすることがない', async () => {
   const C = fakeClock(), E = pushEnv(C);
-  E.ctx._pushWithOutbox('k6', 'A'); await tick();
-  C.advance(5000); E.ctx._pushWithOutbox('k6', 'B'); const pB = E.ctx._lsPushP.k6;
-  C.timers.forEach(x => { x.on = false; });                          // 待ちの時計が動く前に
-  C.t += 30000; E.ctx._pushWithOutbox('k6', 'C'); const pC = E.ctx._lsPushP.k6;
-  await tick(); await tick();
-  assert.deepEqual(E.calls.map(c => c.val), ['A', 'C']);
-  E.calls[1].res(true);
-  assert.equal(await pC, true); assert.equal(await pB, true, '待っていた保存も、まとめた送信の結果で終わる');
+  let cloud = null; const applied = [];
+  const answer = (i, r) => { applied.push(E.calls[i].val); cloud = E.calls[i].val; E.calls[i].res(r); };   /* 答えた時にサーバーで適用されたとみなす */
+  E.ctx._pushWithOutbox('k6', 'old'); await tick();
+  C.advance(31000); E.ctx._pushWithOutbox('k6', 'new'); await tick(); await tick();
+  assert.equal(E.calls.length, 1, '30 秒を過ぎても新しい値は前の送信のあと');
+  answer(0, true); await tick(); await tick();                        /* 古い送信が遅れて適用 */
+  assert.equal(E.calls.length, 2);
+  answer(1, true); await tick(); await tick();
+  assert.deepEqual(applied, ['old', 'new']);
+  assert.equal(cloud, 'new', '最後は新しい値');
+  assert.deepEqual(E.outbox(), []);
+});
+test('未送信キューの再送も、同じキーを送っている途中なら送らず、その送信のあとに並ぶ（並べて送らない）', async () => {
+  const C = fakeClock(), E = pushEnv(C);
+  E.ctx._pushWithOutbox('k7', 'A'); await tick();                    // A：送っている途中
+  E.ctx._pushWithOutbox('k7', 'B');                                   // 待っている（送信待ちにも入る）
+  E.ctx.__vals = { k7: 'B' };
+  await E.ctx.flushOutbox();
+  assert.equal(E.calls.length, 1, '再送は送っている途中のキーを送らない');
+  assert.deepEqual(E.outbox(), ['k7']);
   E.calls[0].res(true); await tick(); await tick();
-  assert.deepEqual(E.calls.map(c => c.val), ['A', 'C'], 'B をあとから送らない');
+  assert.deepEqual(E.calls.map(c => c.val), ['A', 'B']);
+  E.calls[1].res(true); await tick(); await tick();
+  assert.deepEqual(E.outbox(), []);
+  /* 送っていないキーは今までどおり再送し、そのあいだの保存はそのあとに並ぶ */
+  E.ctx._outboxAdd('k8', 'x'); E.ctx.__vals.k8 = 'X';
+  const f = E.ctx.flushOutbox(); await tick();
+  assert.equal(E.calls.at(-1).val, 'X');
+  E.ctx._pushWithOutbox('k8', 'Y'); await tick();
+  assert.equal(E.calls.filter(c => c.key === 'k8').length, 1, '再送の答えを待つ');
+  E.calls.at(-1).res(true); await f; await tick(); await tick();
+  assert.deepEqual(E.calls.filter(c => c.key === 'k8').map(c => c.val), ['X', 'Y']);
+  assert.deepEqual(E.outbox(), ['k8'], 'Y を送っているあいだは送信待ちに残す');
+  E.calls.at(-1).res(true); await tick(); await tick();
   assert.deepEqual(E.outbox(), []);
 });
 test('待っているあいだに送信待ちに入れた印は、クラウドに送らないキー（undefined）でも外す', async () => {

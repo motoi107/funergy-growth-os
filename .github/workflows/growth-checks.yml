@@ -18,7 +18,7 @@ jobs:
   static-release:
     name: Static release validation
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -32,3 +32,25 @@ jobs:
         run: npm ci --prefix tests/runtime --ignore-scripts --no-audit --no-fund
       - name: Check guarded financial saves with synthetic data
         run: node --test tests/financial-web-*.test.mjs
+      - name: Check the save order and the common screen rules (FUNERGY_UX) with synthetic data
+        run: node --test tests/ux-core.test.mjs
+      - name: Check the item linking screen against the real intake handler and SQL (PGlite, synthetic data)
+        run: node --test tests/invoice-item-link-ui.test.mjs
+
+  item-link-guards:
+    name: Item linking screen guards (each protection removed must fail a test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+      - name: Install the test runtime (PGlite, locked versions)
+        run: npm ci --prefix tests/runtime --ignore-scripts --no-audit --no-fund
+      - name: Remove each guard of the linking screen one at a time
+        env:
+          INVOICE_MUTATION_ONLY: '紐づけ app'
+        run: node --test tests/invoice-mutations.test.mjs
