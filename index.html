@@ -41373,7 +41373,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1134';
+const APP_VERSION = '1135';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -61967,6 +61967,21 @@ function _lssG4CanEdit(target){
   if (target.store === mine) return true;
   return (target.support||[]).indexOf(mine) >= 0;
 }
+/* v1135（UI案68 の 6 ＋「G3 以上に申請権限」・Moto さん 11/03）：G3（使い始めたあと）は自分の店（所属・応援）の G2 の Career Score を
+   「GM に変更を申請」できる（決めるのは GM。申請しただけでは変わらない）。見られるのもその人だけ（G1・同じ G3 以上は対象外） */
+function _lssG3CanEdit(target){
+  if (!target || !target.name || !(typeof wrIsG3Live==='function' && wrIsG3Live())) return false;
+  var g = (typeof empGrade==='function') ? empGrade(target) : '';
+  if (g !== 'G2' || target.status === '退職' || target.role === 'ceo') return false;
+  var meName = curUserName || '';
+  if (!meName || target.name === meName) return false;
+  var meEmp = (typeof getEmployees==='function') ? getEmployees().find(function(x){ return x.name === meName && x.status !== '退職'; }) : null;
+  var mine = [];
+  if (meEmp && meEmp.store && meEmp.store !== 'ALL' && meEmp.store !== 'OFFICE') mine.push(meEmp.store);
+  ((meEmp && meEmp.support) || []).forEach(function(x){ if (x && x !== 'ALL' && x !== 'OFFICE') mine.push(x); });
+  if (!mine.length) return false;
+  return mine.indexOf(target.store) >= 0 || (target.support || []).some(function(x){ return mine.indexOf(x) >= 0; });
+}
 /* LSSスコアの採点・変更の可否：
    - 評価者はAM以上（ceo/gm/am）
    - 本人による自己編集は不可
@@ -61991,6 +62006,7 @@ function canEditLss(name) {
     if (lssRoleRank(curRole) > 0 && lssRoleRank(target.role) > lssRoleRank(curRole)) return false;
     return true;
   }
+  if (typeof wrIsG3Live==='function' && wrIsG3Live()) return _lssG3CanEdit(target);   /* v1135：G3 は申請だけ（lssNeedsApproval が true） */
   if (!['ceo','gm','am'].includes(curRole)) return false;
   if (curRealRole === 'g4') return _lssG4CanEdit(target);
   if (lssRoleRank(target.role) > lssRoleRank(curRole)) return false;
@@ -76302,6 +76318,7 @@ function canViewLssOfEmp(e){
   var P=cgPermList(e, 'csView'), rr=cgMyRole();
   if(cgCsGranted(e, ['csEdit','csApprove'])) return rr!=='g4' || lssG4Sees(e);   /* 付ける・承認する人に入れた役職は見られる（独立レビュー P3-7） */
   if(P){ if(rr==='ceo' || rr==='gm') return true; if(P.indexOf(rr)<0) return false; return rr!=='g4' || lssG4Sees(e); }
+  if(typeof _lssG3CanEdit==='function' && _lssG3CanEdit(e)) return true;   /* v1135：G3 は申請できる G2 だけ見られる */
   return canViewOthersLss() && lssG4Sees(e);
 }
 /* その人の権限で、ログイン中の役職を入れているか（fs：見る・付ける・承認する のどれか） */
@@ -76828,7 +76845,7 @@ function submitLssScoreRequest(name){
     changeReason: ((document.getElementById('lss-changereason')||{}).value||'').trim()
   });
   lsSet('lss_requests', reqs);
-  try{ if(typeof wrIsG4Live==='function' && wrIsG4Live() && typeof wrCsAsk==='function' && !lssIsSelf(name)) wrCsAsk(reqs[reqs.length-1], name); }catch(e){}   /* v1132：G4 の採点はワークセンターの申請（CS）にもなる */
+  try{ if(typeof wrCanAskLive==='function' && wrCanAskLive() && typeof wrCsAsk==='function' && !lssIsSelf(name)) wrCsAsk(reqs[reqs.length-1], name); }catch(e){}   /* v1132：G4 の採点はワークセンターの申請（CS）にもなる。v1135：G3 も */
   closeModalDirect();
   /* ★v999: 宛先は GM だけ。_notifAudience は role 完全一致で配るので、
      role が 'ceo' の Tacさんには届かない。★try/catch は addApproval と同じ書き方。 */
@@ -79328,7 +79345,9 @@ function renderLeadership() {
     var meEmp = getEmployees().find(e=>e.name===realMe);
     /* v1103：専門職 × グレードで「見る人」に入れた役職は、その人たちも */
     var _cgSee = (typeof cgCsGranted==='function') ? getEmployees().filter(function(e){ return e && e.name!==realMe && e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2 && cgCsGranted(e) && canViewLssOfEmp(e); }) : [];
-    leaders = (meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe)).concat(_cgSee);
+    /* v1135：G3（使い始めたあと）は自分の店の G2 も（GM に変更を申請するため） */
+    var _g3See = (typeof _lssG3CanEdit==='function' && typeof wrIsG3Live==='function' && wrIsG3Live()) ? getEmployees().filter(function(e){ return e && e.name!==realMe && _lssG3CanEdit(e) && !_cgSee.some(function(x){ return x.name===e.name; }); }) : [];
+    leaders = (meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe)).concat(_cgSee).concat(_g3See);
   }
 
   /* v1113：英語のスマホ（390px）で右のボタンがはみ出て横にずれていた（前から）→ 折り返す（折り返したボタンは右に寄せる） */
@@ -93935,6 +93954,13 @@ function renderTipRate() {
     html += `</tbody></table></div>${canApprove?`<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="openTipRaiseModal()"><i class="ti ti-arrow-up"></i> ${(typeof wrIsG4Live==='function' && wrIsG4Live()) ? t('Tip Rate の変更を GM に申請','Ask the GM to change a Tip Rate') : t('スタッフのTip Rateを引き上げる','Raise a staff Tip Rate')}</button>`:''}</div>`;
   }
 
+  /* v1135（UI案68 の 6 ＋「G3 以上に申請権限」）：G3（使い始めたあと）は自分の店の下のグレードの人の Tip Rate の変更を GM に申請できる */
+  if (!canApprove && !canEditPolicy && typeof wrCanAskLive==='function' && wrCanAskLive()) {
+    html += `<div class="card"><div class="card-title"><i class="ti ti-send"></i>${t('Tip Rate の変更を GM に申請','Ask the GM to change a Tip Rate')}</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">${t('自分の店の、自分より下のグレードの人の Tip Rate の変更を GM に申請できます。GM の承認のあとに変わります（申請しただけでは変わりません）。','You can ask the GM to change the Tip Rate of people below your grade at your store. It changes after the GM approves (asking alone does not change it).')}</div>
+      <button class="btn btn-primary btn-sm" onclick="wrTipAsk()"><i class="ti ti-send"></i> ${t('Tip Rate の変更を GM に申請','Ask the GM to change a Tip Rate')}</button></div>`;
+  }
+
   if (curRole === 'crew' || curRole === 'sl') {
     var me = myName();
     var emp = getEmployees().find(e=>e.name===me);
@@ -99767,7 +99793,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
    ・入り方は PIN のログインの印（window._hwSession）だけ。役割・店・できることはサーバーが決めて返す（この画面の役職では決めない）。
    ・同じ操作は 1 回だけ：操作ごとに鍵（client_key）を作り、答えが来なかったときは同じ鍵で送り直す。読んだ版（rev）が違えば止める。
    ・使い始めたら（サーバーの live）、前の画面（ガソリン代・事前経費・レシート管理の建て替え・承認センターのその 3 種）の申請・承認・支払は止め、ここへ案内する。
-     前の画面の一覧は読むだけで残る。前からの申請はサーバーが写す（記録の無い承認者・日時は「記録なし」）。 */
+     前の画面の一覧は読むだけで残る。前からの申請はサーバーが写す（記録の無い承認者・日時は「記録なし」）。
+   v1135（UI案68 の答え・Moto さん 11/03）：4B ガソリン代は GM の承認（SQL）・6 G3 も評価の変更を GM に申請（G3 のスキルの直接変更は今のまま）・
+     9B 表示対象は店で 1 つ（GM・CEO が決める）・10B ログインの直後は今のまま・OJT の合格の反映は GM の承認を通す。仕様：docs/WORK_REQUESTS_V1135_JA.md */
 (function(){
   'use strict';
   var W = window;
@@ -99847,6 +99875,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     old_fn:['申請のサーバー（work-requests）が前の版です。評価の変更・表示設定・反映は、関数を v1133 の 1 ファイルにしてから使えます（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version. Evaluation changes, the view settings and applying need the v1133 single file (tell Moto)'],
     unknown_action:['申請のサーバー（work-requests）が前の版です（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version (tell Moto)'],
     old_sql:['申請のデータベースが前の段のままです。評価の変更・表示設定・反映は、SQL（deploy/work-requests-v1131-v1133 の手順）を入れてから使えます（Moto さんに知らせてください）','The requests database is an earlier stage. Evaluation changes, view settings and applying need the SQL (deploy/work-requests-v1131-v1133) (tell Moto)'],
+    old_sql4:['申請のデータベースが前の段のままです。G3・AM の評価の変更の申請と、店の表示対象（GM が決める）は、v1135 の SQL（deploy/work-requests-v1135 の手順）を入れてから使えます（Moto さんに知らせてください）','The requests database is an earlier stage. Requests by G3 or AM and the store view (set by the GM) need the v1135 SQL (deploy/work-requests-v1135) (tell Moto)'],
     network:['申請のサーバー（work-requests）につながりません。まだ入っていないか、通信できません','Cannot reach the requests server (work-requests). It is not deployed yet, or the network is down'],
     too_large:['添付・入力が大きすぎます','Too large']
   };
@@ -99877,6 +99906,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       /* v1132：評価の変更・表示設定を前の版（v1131）の関数に送ると bad_value／unknown_action。関数の版を whoami（fn）で確かめて分かる言葉に。
          v1133：反映の押さえ（apply_start など）は関数 3・SQL 3 が要る（前の SQL は forbidden を返す） */
       var claimOp = payload && payload.action === 'act' && !!CLAIM_OPS[payload.op];
+      /* v1135：G3・AM の評価の変更の申請は SQL 4（v1135）が要る（前の SQL は forbidden） */
+      if (code === 'forbidden' && evalCall(payload) && !claimOp && (payload.action === 'submit' || payload.op === 'resubmit' || payload.op === 'edit') && !isG4()) {
+        var old4 = ''; try { var w4 = await api({ action:'whoami' }); old4 = (w4 && !(w4.sql >= 4)) ? 'old_sql4' : ''; } catch(e4) { old4 = ''; }
+        if (old4) throw mkErr(old4, r.status);
+      }
       if (((code === 'bad_value' || code === 'unknown_action' || code === 'error') && evalCall(payload)) || (code === 'forbidden' && claimOp)) {
         var need = claimOp ? 3 : 2, old = ''; try { var w = await api({ action:'whoami' }); old = !(w && w.fn >= need) ? 'old_fn' : !(w.sql >= need) ? 'old_sql' : ''; } catch(e2) { old = ''; }
         if (old) throw mkErr(old, r.status);
@@ -99931,13 +99965,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* ログインの直後に 1 回だけ「使い始めたか」を見る（前の画面の案内とログインの直後の行き先に使う） */
   W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at); }, function(){}); };
   W.wrLiveSeen = liveSeen;
-  /* 10A：GM・経理・事務Crew・G4 はログインの直後にワークセンターの「要対応」（使い始めたあと・この端末で見たとき） */
-  W.wrLandHere = function(){
-    if (!liveSeen()) return false;
-    var r = typeof curRole !== 'undefined' ? curRole : '', rr = typeof curRealRole !== 'undefined' ? curRealRole : '';
-    if (!(r === 'gm' || r === 'office' || r === 'office_crew' || rr === 'g4')) return false;
-    try{ return groupsForRole().some(function(g){ return (g.children || []).indexOf('tasks') >= 0; }); }catch(e){ return false; }
-  };
+  /* v1135（UI案68 の 10B・Moto さん 11/03）：ログインの直後は全員今のまま（ダッシュボードなど）。ワークセンターへは行かない。
+     前（10A）：GM・経理・事務Crew・G4 はログインの直後にワークセンターの「要対応」 */
+  W.wrLandHere = function(){ return false; };
   W.wrApplyNotifFocus = function(n){
     if (!n || !n.wrTab) return;
     checkAuth();
@@ -100550,6 +100580,20 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     } catch(e) { return false; }
   }
   W.wrIsG4Live = function(){ return isG4() && liveSeen(); };
+  /* v1135（UI案68 の 6 ＋「G3 以上に申請権限」・Moto さん 11/03）：G3 も評価の変更を GM に申請できる（G3 がスキル Lv を直接変えられるのは今のまま）。
+     G3＝肩書き・役割のグレードが 3（役割 sl は 3 以上・肩書きで G4 の人は G4）。サーバーも同じ（wr_grade：肩書きと役割の大きいほう） */
+  function isG3(){
+    try {
+      var rr = (typeof curRealRole !== 'undefined' && curRealRole) ? curRealRole : ((typeof curRole !== 'undefined') ? curRole : '');
+      if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return false;
+      if (isG4() || ['ceo','gm','am','office','office_crew','g4','chef'].indexOf(rr) >= 0) return false;
+      var g = myTitleGrade(); if (rr === 'sl') g = Math.max(g, 3);
+      return g === 3;
+    } catch(e) { return false; }
+  }
+  W.wrIsG3Live = function(){ return isG3() && liveSeen(); };
+  /* GM に変更を申請できる人（G3・G4。使い始めたあと） */
+  W.wrCanAskLive = function(){ return (isG4() || isG3()) && liveSeen(); };
   function evalName(r){ var p = r.payload || {}; return r.target_name || p.target_name || ''; }
   function evalPlain(r){
     var p = r.payload || {};
@@ -100596,8 +100640,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     return h;
   }
   /* 出す：同じ人・同じ種類の申請があればそれを直す（自分の申請で承認待ち・差し戻し中のとき） */
-  async function evalSend(kind, store, payload){
-    var k0 = authKey();
+  /* opts.ojt（v1135・OJT の合格の反映）：スキルは前の申請の値を残して足りないポジションだけ足す（聞かない）・Career Score は前の申請を置き換えない（止めて返す） */
+  async function evalSend(kind, store, payload, opts){
+    var k0 = authKey(), ojt = !!(opts && opts.ojt);
     try {
       var j = await api({ action:'submit', kind:kind, store_id:store, client_key:newKey(), payload:payload }, k0);
       if (j && j.open_same) {
@@ -100605,25 +100650,33 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
            別の店の申請・見られない申請なら止める。スキルは前の申請の項目に足す（同じポジションは新しい値）。Tip Rate・Career Score は新しい内容にする（聞いてから） */
         var o = null;
         try { o = await api({ action:'get', code:j.open_same }, k0); } catch(e1) { o = null; }
-        if (!o || o.store_id !== store) { showToast(T('同じ人の決まっていない申請 ','An open request ') + j.open_same + T(' がほかの店にあります。それが決まってから出してください',' for this person is at another store. Ask again after it is decided'), 'warning'); return null; }
+        if (!o || o.store_id !== store) { if (ojt) return { blocked:j.open_same }; showToast(T('同じ人の決まっていない申請 ','An open request ') + j.open_same + T(' がほかの店にあります。それが決まってから出してください',' for this person is at another store. Ask again after it is decided'), 'warning'); return null; }
         var op = (o.can || []).indexOf('resubmit') >= 0 ? 'resubmit' : (o.can || []).indexOf('edit') >= 0 ? 'edit' : '';
-        if (!op) { showToast(T('同じ人の申請 ','The request ') + o.code + T(' が GM の対応待ちです。決まってから出してください',' for this person is with the GM. Ask again after it is decided'), 'warning'); return null; }
+        if (ojt && kind !== 'skill') return { blocked:o.code };
+        if (!op) { if (ojt) return { blocked:o.code }; showToast(T('同じ人の申請 ','The request ') + o.code + T(' が GM の対応待ちです。決まってから出してください',' for this person is with the GM. Ask again after it is decided'), 'warning'); return null; }
         if (kind === 'skill') {
           var seen = {}, merged = [];
-          (payload.items || []).forEach(function(it){ seen[it.pos] = 1; });
-          ((o.payload || {}).items || []).forEach(function(it){ if (!seen[it.pos]) merged.push(it); });
-          payload = Object.assign({}, payload, { items:merged.concat(payload.items || []).slice(0, 30) });
+          if (ojt) {   /* OJT：前の申請の値を残し、無いポジションだけ足す */
+            var old = ((o.payload || {}).items || []); old.forEach(function(it){ seen[it.pos] = 1; });
+            merged = old.concat((payload.items || []).filter(function(it){ return !seen[it.pos]; }));
+            if (merged.length === old.length) return { code:o.code, same:true };
+            payload = Object.assign({}, payload, { items:merged.slice(0, 30), reason:String(((o.payload || {}).reason || '') + ' / ' + (payload.reason || '')).slice(0, 600) });
+          } else {
+            (payload.items || []).forEach(function(it){ seen[it.pos] = 1; });
+            ((o.payload || {}).items || []).forEach(function(it){ if (!seen[it.pos]) merged.push(it); });
+            payload = Object.assign({}, payload, { items:merged.concat(payload.items || []).slice(0, 30) });
+          }
         }
         var msg = kind === 'skill' ? T('この人の決まっていない申請 ','This person already has an open request ') + o.code + T(' に、今回のポジションを足します（同じポジションは今回の値）。よいですか？','. Add these positions to it (the same position takes the new value)?')
           : T('この人の決まっていない申請 ','This person already has an open request ') + o.code + T(' を今回の内容に直します。よいですか？','. Replace it with this one?');
-        if (kind !== 'cs' && typeof confirm === 'function' && !confirm(msg)) return null;
+        if (!ojt && kind !== 'cs' && typeof confirm === 'function' && !confirm(msg)) return null;
         j = await api({ action:'act', id:o.id, op:op, kind:kind, expect_rev:o.rev, client_key:newKey(), payload:payload }, k0);
         notifyAfter(op, j);
       } else notifyAfter('submit', j);
-      showToast(T('GM に申請しました：','Sent to the GM: ') + j.code + T('（承認のあとに変わります）',' (changes after approval)'), 'success');
+      if (!ojt) showToast(T('GM に申請しました：','Sent to the GM: ') + j.code + T('（承認のあとに変わります）',' (changes after approval)'), 'success');
       S.rows = null; if (onWrTab()) reloadList();
       return j;
-    } catch(e) { showToast(String(e.message || e), 'error'); return null; }
+    } catch(e) { if (ojt) return { err:String(e.message || e) }; showToast(String(e.message || e), 'error'); return null; }
   }
   W.wrEvalSend = evalSend;
   function empByName(n){ try{ return (getEmployees() || []).find(function(e){ return e && e.name === n && e.status !== '退職'; }) || null; }catch(e){ return null; } }
@@ -100910,30 +100963,40 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function tipHit(ctx, seen){
     try { return (ls('tip_requests', []) || []).some(function(x){ return x && !(x.id && seen[x.id]) && x.name === ctx.name && x.status === '承認' && Number(x.rate) === Number(ctx.rate) && String(x.fromDay || '') === String(ctx.from || ''); }); } catch(e) { return false; }
   }
-  /* ---- スキルマトリクスの表示対象（自分の表示設定・人 × 店・どの端末でも同じ） */
+  /* ---- スキルマトリクスの表示対象。v1135（UI案68 の 9B・Moto さん 11/03「GM が誰を表示するか設定できる様に」）：
+     店で 1 つ（店の全員の表示が変わる）。決めるのは GM・CEO（サーバーが can_edit を返し、保存も GM・CEO だけ）。前（9A）は人 × 店の自分の表示設定。
+     SQL が前の段（store_view の印が無い答え）なら、表示対象は使わない（全員を出す・ボタンも出さない） */
   function viewOf(store){ checkAuth(); S.views = S.views || {}; return S.views[store]; }
   function viewLoad(store){
     if (!pinTok() || !store || store === 'OFFICE') return;
     S.views = S.views || {}; if (S.views[store] && S.views[store].load) return;
     var g = S.gen; S.views[store] = { load:'loading', hidden:[], rev:0 };
-    api({ action:'view_get', store:store }).then(function(j){ if (g !== S.gen) return; S.views[store] = { load:'done', hidden:j.hidden || [], rev:j.rev || 0 }; try { if (typeof curPage !== 'undefined' && curPage === 'skill') renderPage('skill'); } catch(e) {} },
+    api({ action:'view_get', store:store }).then(function(j){ if (g !== S.gen) return;
+        S.views[store] = (j && j.store_view) ? { load:'done', hidden:j.hidden || [], rev:j.rev || 0, can:!!j.can_edit, by:j.updated_by || '', at:j.updated_at || '' } : { load:'old', hidden:[], rev:0 };
+        try { if (typeof curPage !== 'undefined' && curPage === 'skill') renderPage('skill'); } catch(e) {} },
       function(e){ if (g !== S.gen) return; S.views[store] = { load:'err', hidden:[], rev:0, err:String(e.message || e) }; });
   }
+  function viewWho(v){ return v && v.by ? T('最後に変えた人 ','Last changed by ') + esc(v.by) + (v.at ? ' · ' + esc(hstTime(v.at)) : '') : ''; }
   W.wrMatrixView = function(store, staff){
     if (!pinTok() || !store || store === 'OFFICE' || !liveSeen() || (typeof curStoreLogin !== 'undefined' && curStoreLogin)) return null;
     var v = viewOf(store); if (!v) { viewLoad(store); v = viewOf(store); }
+    if (v.load === 'old') return null;
     var hid = {}; (v.hidden || []).forEach(function(x){ hid[x] = 1; });
     var shown = (staff || []).filter(function(e){ return !hid[String(e.id)]; }), n = (staff || []).length - shown.length;
-    var bar = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-bottom:6px"><span>' + T('表示中 ','Showing ') + shown.length + T(' 人',' ') + (n ? T(' · 非表示 ',' · hidden ') + n + T(' 人','') : '') + '</span>'
-      + '<button class="btn btn-secondary btn-sm" data-a="' + esc(store) + '" onclick="wrViewEdit(this.dataset.a)"><i class="ti ti-filter"></i> ' + T('表示対象','Who to show') + '</button>'
+    var bar = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--muted);margin-bottom:6px"><span>' + T('表示中 ','Showing ') + shown.length + T(' 人',' ') + (n ? T(' · 非表示 ',' · hidden ') + n + T(' 人（GM が決めた店の表示）','（set by the GM for this store）') : '') + '</span>'
+      + (v.can ? '<button class="btn btn-secondary btn-sm" data-a="' + esc(store) + '" onclick="wrViewEdit(this.dataset.a)"><i class="ti ti-filter"></i> ' + T('表示対象（店の設定）','Who to show (store setting)') + '</button>' : '')
       + (v.load === 'err' ? '<span style="color:var(--red)">' + esc(v.err || '') + '</span>' : '') + '</div>';
     return { shown:shown, bar:bar };
   };
   W.wrViewEdit = function(store){
-    var v = viewOf(store) || { hidden:[], rev:0 };
+    var v = viewOf(store);
+    /* まだ読んでいない・読めなかった店：読んでから（読めるまで、決められる人かどうかも分からない） */
+    if (v && v.load === 'old') { showToast(errText('old_sql4'), 'warning'); return; }
+    if (!v || v.load !== 'done') { if (!v || v.load === 'err') { S.views[store] = null; viewLoad(store); } showToast(T('表示対象を読み込んでいます。少し待ってからもう一度押してください','Loading who to show. Try again in a moment'), 'info'); return; }
+    if (!v.can) { showToast(T('表示対象は GM・CEO が決めます','The GM or CEO sets who to show'), 'info'); return; }
     var staff = [];
     try { staff = visibleStaffForManager().filter(function(e){ return isStoreStaff(e) && !e.prep && empWorksAt(e, store); }); } catch(e) {}
-    S.vw = { store:store, rev:v.rev || 0, hid:{}, staff:staff, grade:'' };
+    S.vw = { store:store, rev:v.rev || 0, hid:{}, staff:staff, grade:'', by:v.by || '', at:v.at || '' };
     (v.hidden || []).forEach(function(x){ S.vw.hid[x] = 1; });
     openModal('<div id="wr-view" style="width:100%"></div>'); drawView();
   };
@@ -100943,12 +101006,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var w = S.vw, list = w.staff.filter(function(e){ return !w.grade || wrGradeOf(e) === w.grade; });
     var grades = []; w.staff.forEach(function(e){ var g = wrGradeOf(e); if (g && grades.indexOf(g) < 0) grades.push(g); });
     el.innerHTML = '<div class="modal-title">' + T('表示対象 · ','Who to show · ') + esc(storeName(w.store)) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('この設定はあなたの画面だけ（どの端末でも同じ）。ほかの人の表示は変わりません。非表示にしても評価・Tip・給与・申請の対象は変わりません。','Only your screen (same on every device). Others are not affected. Hidden people are still evaluated, tipped, paid and can be asked about.') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('この店でスキルマトリクスを見る全員の表示が変わります（GM・CEO が決める）。非表示にしても評価・Tip・給与・申請の対象は変わりません。','Changes the matrix for everyone who views this store (set by the GM or CEO). Hidden people are still evaluated, tipped, paid and can be asked about.') + (w.by ? '<br>' + viewWho(w) : '') + '</div>'
       + '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;font-size:11.5px"><select onchange="wrViewGrade(this.value)"><option value="">' + T('グレード：すべて','Grade: all') + '</option>' + grades.map(function(g){ return '<option' + (w.grade === g ? ' selected' : '') + '>' + esc(g) + '</option>'; }).join('') + '</select>'
       + '<button class="btn btn-secondary btn-sm" onclick="wrViewAll(1)">' + T('絞り込み中をすべて表示','Show all listed') + '</button><button class="btn btn-secondary btn-sm" onclick="wrViewAll(0)">' + T('絞り込み中をすべて非表示','Hide all listed') + '</button></div>'
       + '<div style="max-height:46vh;overflow-y:auto;margin-top:8px">' + list.map(function(e){ var on = !w.hid[String(e.id)];
           return '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:12.5px"><input type="checkbox" data-a="' + esc(String(e.id)) + '"' + (on ? ' checked' : '') + ' onchange="wrViewPick(this.dataset.a,this.checked)"><span style="flex:1">' + esc(e.name) + ' <span style="color:var(--muted);font-size:10.5px">' + esc(wrGradeOf(e)) + (e.store !== w.store ? T(' · 応援',' · support') : '') + '</span></span><span style="font-size:10.5px">' + (on ? T('表示','shown') : T('非表示','hidden')) + '</span></label>'; }).join('') + '</div>'
-      + '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="wrViewReset()">' + T('表示設定をリセット','Reset') + '</button><button class="btn btn-primary" ' + (w.busy ? 'disabled' : '') + ' onclick="wrViewSave()">' + T('保存','Save') + '</button></div>';
+      + '<div class="btn-row" style="margin-top:10px"><button class="btn btn-secondary" onclick="wrViewReset()">' + T('全員を表示に戻す','Show everyone') + '</button><button class="btn btn-primary" ' + (w.busy ? 'disabled' : '') + ' onclick="wrViewSave()">' + T('店の表示を保存','Save for this store') + '</button></div>';
   }
   W.wrViewGrade = function(g){ if (S.vw) { S.vw.grade = g || ''; drawView(); } };
   W.wrViewPick = function(id, on){ if (!S.vw) return; if (on) delete S.vw.hid[id]; else S.vw.hid[id] = 1; drawView(); };
@@ -100959,11 +101022,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     /* 今の店の人のうち非表示の人だけ（退職・異動で外れた人は残さない） */
     var ids = w.staff.map(function(e){ return String(e.id); }).filter(function(id){ return w.hid[id] && /^[A-Za-z0-9_.:-]{1,64}$/.test(id); });
     api({ action:'view_save', store:w.store, hidden:ids, expect_rev:w.rev }, k0).then(function(j){
-      S.views[w.store] = { load:'done', hidden:j.hidden || [], rev:j.rev }; S.vw = null; closeModalDirect(); showToast(T('表示対象を保存しました','Saved'), 'success');
+      S.views[w.store] = { load:'done', hidden:j.hidden || [], rev:j.rev, can:true, by:j.updated_by || '', at:j.updated_at || '' }; S.vw = null; closeModalDirect(); showToast(T('この店の表示対象を保存しました（店の全員に効きます）','Saved for this store (applies to everyone)'), 'success');
       try { renderPage('skill'); } catch(e) {}
     }, function(e){
-      w.busy = false; showToast(String(e.message || e), 'error');
-      if (e.code === 'conflict') { S.views[w.store] = null; viewLoad(w.store); closeModalDirect(); } else drawView();
+      w.busy = false;
+      if (e.code === 'conflict') { showToast(T('ほかの人（GM・CEO）が先にこの店の表示を変えました。最新を読み直しました。もう一度選んでください','Another GM or CEO changed this store’s view first. The latest is loaded; choose again'), 'warning'); S.views[w.store] = null; viewLoad(w.store); closeModalDirect(); return; }
+      showToast(e.code === 'forbidden' ? T('表示対象は GM・CEO だけが変えられます','Only the GM or CEO can change who to show') : String(e.message || e), 'error'); drawView();
     });
   };
 
@@ -100981,12 +101045,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function g4Stop(msg){ showToast(msg, 'info'); return false; }
   (function(){
     var oT = W.approveTip;
-    if (typeof oT === 'function') W.approveTip = function(){ if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を決めません。GM が決めます（変えたいときは「GM に変更を申請」）','G4 does not decide Tip Rates; the GM does (use “Ask the GM”)')); return oT.apply(this, arguments); };
+    if (typeof oT === 'function') W.approveTip = function(){ if (W.wrCanAskLive()) return g4Stop(T('G3・G4 は Tip Rate を決めません。GM が決めます（変えたいときは「GM に変更を申請」）','G3 and G4 do not decide Tip Rates; the GM does (use “Ask the GM”)')); return oT.apply(this, arguments); };
     var oO = W.openTipRaiseModal;
-    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrIsG4Live() && !W._wrTipOpen) return W.wrTipAsk(); if (!W._wrTipOpen) S.tipApply = null; /* 直接開いた画面はワークセンターの申請の反映ではない（独立レビュー R5） */ return oO.apply(this, arguments); };
+    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrCanAskLive() && !W._wrTipOpen) return W.wrTipAsk();   /* v1135：G3 も */ if (!W._wrTipOpen) S.tipApply = null; /* 直接開いた画面はワークセンターの申請の反映ではない（独立レビュー R5） */ return oO.apply(this, arguments); };
     var oA = W.applyTipRaise;
     if (typeof oA === 'function') W.applyTipRaise = async function(){
-      if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を直接変えません（「GM に変更を申請」）','G4 does not change Tip Rates directly (use “Ask the GM”)'));
+      if (W.wrCanAskLive()) return g4Stop(T('G3・G4 は Tip Rate を直接変えません（「GM に変更を申請」）','G3 and G4 do not change Tip Rates directly (use “Ask the GM”)'));
       var ctx = S.tipApply, self = this, args = arguments;
       /* ワークセンターの申請の反映でない（ほかの率・日・人・別のログイン・Tip Rate の画面から直接開いた）ときは今までどおり。開いてからの時間では決めない（押さえが守る・独立レビュー P2-B） */
       if (!ctx || ctx.k0 !== authKey() || !tipFormIs(ctx)) return oA.apply(self, args);
@@ -101032,6 +101096,98 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       return o.apply(this, arguments); }; };
     if (typeof W.approveLssScoreRequest === 'function') W.approveLssScoreRequest = csGuard(W.approveLssScoreRequest);
     if (typeof W.rejectLssScoreRequest === 'function') W.rejectLssScoreRequest = csGuard(W.rejectLssScoreRequest);
+  })();
+  /* ---------------------------------------------------------------- v1135（Moto さん 11/03「OJTはGMの承認を通す」）
+     OJT のモジュールの合格で上がる分（スキル Lv2・Career Score の分野の下限）は、使い始めたあと GM・CEO 以外（G3・G4・Head Chef・AM）が
+     サイン・合格にしたときは正式な値を直接変えず、ワークセンターに「GM に変更を申請」（スキル・Career Score）を出す。GM の承認のあとに反映する。
+     GM・CEO がサインしたとき・使い始める前は今までどおり（g2AutoReflect が直接上げる）。
+     申請できなかったとき（同じ人の申請が決まっていない・権限・通信）は GM に知らせる。Career Score は Career Score の承認待ち（前からの画面）に残る */
+  function ojtByGm(){ var rr = (typeof curRealRole !== 'undefined' && curRealRole) ? curRealRole : (typeof curRole !== 'undefined' ? curRole : ''); return rr === 'gm' || rr === 'ceo'; }
+  function ojtAskMode(){ try { return liveSeen() && !!pinTok() && !ojtByGm() && !(typeof curStoreLogin !== 'undefined' && curStoreLogin); } catch(e) { return false; } }
+  function ojtStore(name){
+    var emp = empByName(name);
+    return emp ? ((emp.store && emp.store !== 'ALL') ? emp.store : ((typeof STORES !== 'undefined' && STORES[0]) ? STORES[0].id : null)) : null;
+  }
+  function ojtLv(name, store, pos){ try { if (typeof _g2SkillLv === 'function') return _g2SkillLv(name, store, pos); var s = (getEmpSkillsStore(name, store) || {})[pos]; return s ? (s.level != null ? s.level : 0) : 0; } catch(e) { return 0; } }
+  /* g2AutoReflect と同じ決め方（上げるポジション・項目）。from は申請の「申請したときの値」 */
+  function ojtSkillItems(name, store, mod){
+    var rf = mod.reflect || {}, pos = [];
+    if (!rf.skill || !store) return [];
+    try {
+      if (rf.skill === 'multi') pos = Object.keys(getEmpSkillsStore(name, store) || {});
+      else if (rf.skill === 'kitchen') pos = ((typeof getStorePositions === 'function' ? getStorePositions(store) : []) || []).filter(function(p){ return /Kitchen|Prep|Tempura|Sushi|Cold|Yakitori|Miso|キッチン|プレップ|仕込/i.test(p); });
+    } catch(e) { pos = []; }
+    var cur = {}; try { cur = getEmpSkillsStore(name, store) || {}; } catch(e) {}
+    return pos.filter(function(p){ return ojtLv(name, store, p) < 2; }).slice(0, 30).map(function(p){ var s = cur[p] || {}; return { pos:p, from:s.status === '承認' ? (s.level || 0) : 0, to:2 }; });
+  }
+  function ojtCsDiff(name, mod){
+    var rf = mod.reflect || {}, floor = rf.axisFloor; if (!floor || !mod.axis) return null;
+    var rec = null, cats = []; try { rec = getLssScores(name) || { scores:{} }; cats = lssCatsForName(name) || []; } catch(e) { return null; }
+    var cat = cats.find(function(c){ return c.key === mod.axis; }); if (!cat) return null;
+    var sc = rec.scores || {}, diff = [];
+    (cat.items || []).forEach(function(label, i){
+      var id = lssItemId(cat.key, i), raw = sc[id], cur = parseInt(raw, 10) || 0;
+      if (cur < floor) diff.push({ id:id, cat:cat.key, catName:cat.name || cat.key, label:(typeof lssItemLabelFor === 'function' ? lssItemLabelFor(name, id).label : String(label || id)), from:(raw == null || raw === '') ? null : parseInt(raw, 10), to:floor });
+    });
+    return diff.length ? diff : null;
+  }
+  /* Career Score の申請の店：サインした人が出せる店（所属・応援・AM の担当）のうち、対象の人がいる店（所属が先） */
+  function ojtAskStore(emp){
+    var me = S.me || {}, ok = (me.stores || []).concat(me.am_stores || []), cand = [emp.store].concat(emp.support || []);
+    for (var i = 0; i < cand.length; i++) if (cand[i] && ok.indexOf(cand[i]) >= 0) return cand[i];
+    return (emp.store && emp.store !== 'ALL') ? emp.store : '';
+  }
+  function ojtTell(name, mod, why){
+    try { addNotif({ type:'approval', title:T('OJT の合格の反映を GM に申請できませんでした','Could not ask the GM to apply an OJT pass'), text:name + ' · ' + (mod.no ? 'M' + mod.no + ' ' : '') + (mod.title || '') + ' · ' + why, toRoles:['gm'], page:'tasks' }); } catch(e) {}
+  }
+  async function ojtAsk(name, mod){
+    var store = ojtStore(name), emp = empByName(name), by = (typeof curUserName !== 'undefined' && curUserName) || '', codes = [], fails = [];
+    if (!emp || !emp.id || !store) { ojtTell(name, mod, T('社員 ID・店が分かりません','no employee ID or store')); showToast(T('OJT の合格の反映を申請できませんでした（社員 ID・店が分かりません）。GM に知らせました','Could not ask for the OJT pass (no employee ID or store). The GM was told'), 'warning'); return; }
+    var reason = T('OJT 合格の自動反映：','OJT pass: ') + (mod.no ? 'M' + mod.no + ' ' : '') + (mod.title || '') + T('（サイン：',' (signed by ') + by + T('）',')');
+    if (!S.me) { try { var w0 = await api({ action:'whoami' }); if (!S.me) { S.me = w0.me; S.live = !!w0.live; } } catch(e) {} }
+    try { if (typeof pullOpKey === 'function') { await pullOpKey((typeof SKILL_STORE_PREFIX !== 'undefined' ? SKILL_STORE_PREFIX : 'skills_st_') + store); await pullOpKey((typeof LSS_EMP_PREFIX !== 'undefined' ? LSS_EMP_PREFIX : 'lss_emp_') + name); } } catch(e) {}
+    var k0 = authKey();
+    var sk = ojtSkillItems(name, store, mod);
+    if (sk.length) {
+      var j = await evalSend('skill', store, { target_emp:String(emp.id), target_name:name, items:sk, reason:reason.slice(0, 600) }, { ojt:true });
+      if (j && j.code) codes.push(j.code);
+      else { var why = j && j.blocked ? T('同じ人のスキルの申請 ','an open skill request ') + j.blocked + T(' が決まっていない',' is pending') : (j && j.err) || T('申請できない','refused'); fails.push(why); ojtTell(name, mod, T('スキル：','Skill: ') + why); }
+    }
+    if (authKey() !== k0) return;
+    var diff = ojtCsDiff(name, mod);
+    if (diff) {
+      var q = null;
+      try {
+        var reqs = getLssRequests();
+        q = { id:(typeof _lssqId === 'function' ? _lssqId() : 'lssq' + Date.now()), kind:'score', name:name, status:'申請中', by:by, byRole:((typeof curRealRole !== 'undefined' && curRealRole) || curRole),
+          store:emp.store || '', date:(typeof todayJP === 'function' ? todayJP() : hstToday()), ts:Date.now(), _set:(typeof lssItemSetOf === 'function' ? lssItemSetOf(name) : 'general'),
+          self:false, diff:diff, comment:reason, changeReason:reason, ojt:{ axis:mod.axis, floor:(mod.reflect || {}).axisFloor } };
+        try {   /* 承認の画面に出す総合点（前 → 後） */
+          var sm = lssSummary(name), up = diff.reduce(function(a, d){ return a + (d.to - (d.from || 0)); }, 0);
+          q.baseScore = sm.totalScore; q.baseMax = sm.totalMax; q.basePct = sm.totalPct;
+          q.wantScore = sm.totalScore + up; q.wantMax = sm.totalMax; q.wantPct = sm.totalMax ? Math.round((sm.totalScore + up) / sm.totalMax * 100) : 0;
+        } catch(e) {}
+        reqs.push(q); lsSet('lss_requests', reqs);
+      } catch(e) { q = null; }
+      if (q) {
+        var items = diff.map(function(d){ return { key:String(d.id).slice(0, 40), label:String(((d.catName || '') + ' ' + (d.label || '')).trim()).slice(0, 120), from:d.from, to:d.to }; });
+        var j2 = await evalSend('cs', ojtAskStore(emp), { target_emp:String(emp.id), target_name:name, lss_req:q.id, items:items, reason:reason.slice(0, 600),
+          total_from:q.baseScore == null ? null : q.baseScore, total_to:q.wantScore == null ? null : q.wantScore }, { ojt:true });
+        if (j2 && j2.code) { codes.push(j2.code); try { var r2 = getLssRequests(), qq = r2.find(function(x){ return x && x.id === q.id; }); if (qq) { qq.wr = j2.code; lsSet('lss_requests', r2); } } catch(e) {} }
+        else { var why2 = j2 && j2.blocked ? T('同じ人の Career Score の申請 ','an open Career Score request ') + j2.blocked + T(' が決まっていない',' is pending') : (j2 && j2.err) || T('申請できない','refused'); fails.push(why2); ojtTell(name, mod, T('Career Score：','Career Score: ') + why2 + T('（Career Score の承認待ちに残っています）',' (it stays in the Career Score approvals)')); }
+      }
+    }
+    if (codes.length) showToast(T('OJT の合格で上がる分を GM に申請しました：','Asked the GM to apply the OJT pass: ') + codes.join('・') + T('（GM の承認のあとに変わります）',' (changes after the GM approves)'), 'success');
+    if (fails.length) showToast(T('OJT の合格の反映の一部を申請できませんでした（','Part of the OJT pass could not be asked (') + fails.join(' / ') + T('）。GM に知らせました','). The GM was told'), 'warning');
+  }
+  W.wrOjtAsk = ojtAsk;
+  (function(){
+    var oR = W.g2AutoReflect;
+    if (typeof oR !== 'function') return;
+    W.g2AutoReflect = function(name, mod){
+      if (!mod || !mod.reflect || !ojtAskMode()) return oR.apply(this, arguments);
+      ojtAsk(name, mod);
+    };
   })();
   /* ---------------------------------------------------------------- 前の画面：使い始めたら申請・承認・支払はここへ案内（一覧は読むだけ） */
   function blocked(kind){
