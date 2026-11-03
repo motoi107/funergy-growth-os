@@ -8,7 +8,7 @@
 - 試験（合成データ）：ui68-server 9・ui68-app 4（新）・eval-ui 21・ui 16・eval-deploy 9・apply-claim 28・eval-server 11・server 23・deploy 2・本物の PostgreSQL の 2 セッション（pr124・pr123）・ux-core 35・static release pass/1135。わざと壊す：1 回目 51 通りのうち 41 → 試験を足して 48（残り 3 は二重の守り）、レビューの直しの 17 通りは下の記録。ブラウザ（模擬サーバー・Chromium・本物の handler と SQL）43/43。
 - 独立レビュー（Claude の別エージェント・作業を見ていない・`229d6c7`）：P1 なし・**P2 2**（申請できない端末の OJT が直接書く／G3 の権限が公開の鍵で書ける社員の表だけで決まる）・P3 8 → すべて直した（仕様の 5b）。直したあとの独立レビューは無し。Codex のレビューはまだ。
 - 入れたあと（Moto さん）：GM・CEO が「承認・閲覧の権限の確かめ」で G3 を確かめる（確かめるまで G3 は申請できない）・店ごとの表示対象を決める。
-- 次：PR → Codex → #126 → この PR の順にマージ → `deploy/work-requests-v1135/手順.md`。
+- PR #127（head `5f1fe72` のあと記録だけ）。次：Codex → #126 → #127 の順にマージ → `deploy/work-requests-v1135/手順.md`。
 
 ## 2026-11-03 v1134：押さえが 30 分で切れたあとの古い書き込みを止める（#125 の Codex のレビュー P2-2・Claude・ブランチ `claude/work-requests-claim-age`・main `8f17be4` の上・アプリだけ・本番未反映）
 
