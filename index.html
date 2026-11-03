@@ -76994,7 +76994,9 @@ function approveLssScoreRequest(id){
      差分に入っていない項目は触らない＝申請中に別の人が変えた分が残る。 */
   var scores = Object.assign({}, rec.scores||{});
   (r.diff||[]).forEach(function(d){
-    if (d.to == null) delete scores[d.id]; else scores[d.id] = d.to;
+    if (d.to == null) delete scores[d.id];
+    else if (r.ojt && (parseInt(scores[d.id],10)||0) >= d.to) return;   /* v1135：OJT の合格の下限。申請のあとにもっと上がっていれば下げない */
+    else scores[d.id] = d.to;
   });
   setLssScores(r.name, { evaluator: (r.by||''), date: todayJP(), scores: scores,
     comment: (r.comment||''), status: '確定' });
@@ -79346,7 +79348,7 @@ function renderLeadership() {
     /* v1103：専門職 × グレードで「見る人」に入れた役職は、その人たちも */
     var _cgSee = (typeof cgCsGranted==='function') ? getEmployees().filter(function(e){ return e && e.name!==realMe && e.status!=='退職' && e.role!=='ceo' && gradeNum(empGrade(e))>=2 && cgCsGranted(e) && canViewLssOfEmp(e); }) : [];
     /* v1135：G3（使い始めたあと）は自分の店の G2 も（GM に変更を申請するため） */
-    var _g3See = (typeof _lssG3CanEdit==='function' && typeof wrIsG3Live==='function' && wrIsG3Live()) ? getEmployees().filter(function(e){ return e && e.name!==realMe && _lssG3CanEdit(e) && !_cgSee.some(function(x){ return x.name===e.name; }); }) : [];
+    var _g3See = (typeof _lssG3CanEdit==='function' && typeof wrIsG3Live==='function' && wrIsG3Live()) ? getEmployees().filter(function(e){ return e && e.name!==realMe && _lssG3CanEdit(e) && canViewLssOfEmp(e) && !_cgSee.some(function(x){ return x.name===e.name; }); }) : [];
     leaders = (meEmp ? [meEmp] : leaders.filter(e=>e.name===realMe)).concat(_cgSee).concat(_g3See);
   }
 
@@ -99876,6 +99878,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     unknown_action:['申請のサーバー（work-requests）が前の版です（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version (tell Moto)'],
     old_sql:['申請のデータベースが前の段のままです。評価の変更・表示設定・反映は、SQL（deploy/work-requests-v1131-v1133 の手順）を入れてから使えます（Moto さんに知らせてください）','The requests database is an earlier stage. Evaluation changes, view settings and applying need the SQL (deploy/work-requests-v1131-v1133) (tell Moto)'],
     old_sql4:['申請のデータベースが前の段のままです。G3・AM の評価の変更の申請と、店の表示対象（GM が決める）は、v1135 の SQL（deploy/work-requests-v1135 の手順）を入れてから使えます（Moto さんに知らせてください）','The requests database is an earlier stage. Requests by G3 or AM and the store view (set by the GM) need the v1135 SQL (deploy/work-requests-v1135) (tell Moto)'],
+    wait_check:['あなたの G3 以上の権限は、GM・CEO の確かめ待ちです（社員の表の変更は、GM・CEO がワークセンターの「承認・閲覧の権限の確かめ」で確かめるまで効きません）。それまで GM への変更の申請はできません','Your G3+ rights wait for the GM or CEO to check them (Work Center, “Check approval / view rights”). Until then you cannot ask the GM for changes'],
     network:['申請のサーバー（work-requests）につながりません。まだ入っていないか、通信できません','Cannot reach the requests server (work-requests). It is not deployed yet, or the network is down'],
     too_large:['添付・入力が大きすぎます','Too large']
   };
@@ -99906,9 +99909,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       /* v1132：評価の変更・表示設定を前の版（v1131）の関数に送ると bad_value／unknown_action。関数の版を whoami（fn）で確かめて分かる言葉に。
          v1133：反映の押さえ（apply_start など）は関数 3・SQL 3 が要る（前の SQL は forbidden を返す） */
       var claimOp = payload && payload.action === 'act' && !!CLAIM_OPS[payload.op];
-      /* v1135：G3・AM の評価の変更の申請は SQL 4（v1135）が要る（前の SQL は forbidden） */
-      if (code === 'forbidden' && evalCall(payload) && !claimOp && (payload.action === 'submit' || payload.op === 'resubmit' || payload.op === 'edit') && !isG4()) {
-        var old4 = ''; try { var w4 = await api({ action:'whoami' }); old4 = (w4 && !(w4.sql >= 4)) ? 'old_sql4' : ''; } catch(e4) { old4 = ''; }
+      /* v1135：G3・AM の評価の変更の申請は SQL 4（v1135）が要る（前の SQL は forbidden）。G3 以上の権限が GM の確かめ待ちなら、そう言う（独立レビュー 229d6c7 の P2-2・P3-8） */
+      if (code === 'forbidden' && evalCall(payload) && !claimOp && (payload.action === 'submit' || payload.op === 'resubmit' || payload.op === 'edit')) {
+        var old4 = ''; try { var w4 = await api({ action:'whoami' }); old4 = !w4 ? '' : (!(w4.sql >= 4) && !isG4()) ? 'old_sql4' : (w4.me && w4.me.pending && w4.me.role !== 'gm' && w4.me.role !== 'ceo') ? 'wait_check' : ''; } catch(e4) { old4 = ''; }
         if (old4) throw mkErr(old4, r.status);
       }
       if (((code === 'bad_value' || code === 'unknown_action' || code === 'error') && evalCall(payload)) || (code === 'forbidden' && claimOp)) {
@@ -100089,10 +100092,10 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if ((me.role === 'ceo' || me.role === 'gm') && S.people && S.people.changes > 0) {
       return '<div class="card" style="margin-bottom:10px;border-left:3px solid ' + (S.people.up ? 'var(--yellow)' : 'var(--border)') + '"><div style="font-size:12.5px;font-weight:700"><i class="ti ti-user-check"></i> ' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
         + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + T('社員の表と、GM・CEO が確かめた権限の写しが違う人：','People whose employee record differs from the confirmed copy: ') + S.people.changes + T(' 人',' ') + (S.people.up ? ' · <b style="color:#7a4a00">' + T('権限が増える人 ','rights would increase: ') + S.people.up + T(' 人','') + '</b>' : '')
-        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G4 以上になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。','The employee table can be edited by anyone, so becoming an AM / G4+ or gaining stores only takes effect after a check here (decreases already apply).') + '</span></div>'
+        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G3 以上になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。','The employee table can be edited by anyone, so becoming an AM / G3+ or gaining stores only takes effect after a check here (decreases already apply). G3 can ask the GM for changes; G4+ see and approve store requests.') + '</span></div>'
         + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrPeople()">' + T('確かめる','Check') + '</button></div>';
     }
-    if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('あなたの AM・G4 以上の権限（店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G4+ rights (seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.') + '</div>';
+    if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('あなたの AM・G3 以上の権限（GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G3+ rights (asking the GM, seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.') + '</div>';
     return '';
   }
   function pDesc(x){
@@ -100115,7 +100118,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var d = pp.d; if (!d) return;
     var items = d.items || [], picked = items.filter(function(x){ return pp.pick[x.emp]; });
     var h = '<div style="font-size:15px;font-weight:700">' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
-      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G4 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G4+ and their stores. ') : '')
+      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G3 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G3+ and their stores. ') : '')
       + T('見覚えのない変更（だれかが社員の表を書き換えたかもしれないもの）は選ばないでください。選ばない人は今の写しのままです。','Do not pick changes you do not recognise (someone may have edited the employee table). People you leave out keep their current copy.') + '</div>';
     if (!items.length) h += '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('違う人はいません','No differences') + '</div>';
     else {
@@ -100652,8 +100655,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         try { o = await api({ action:'get', code:j.open_same }, k0); } catch(e1) { o = null; }
         if (!o || o.store_id !== store) { if (ojt) return { blocked:j.open_same }; showToast(T('同じ人の決まっていない申請 ','An open request ') + j.open_same + T(' がほかの店にあります。それが決まってから出してください',' for this person is at another store. Ask again after it is decided'), 'warning'); return null; }
         var op = (o.can || []).indexOf('resubmit') >= 0 ? 'resubmit' : (o.can || []).indexOf('edit') >= 0 ? 'edit' : '';
-        if (ojt && kind !== 'skill') return { blocked:o.code };
-        if (!op) { if (ojt) return { blocked:o.code }; showToast(T('同じ人の申請 ','The request ') + o.code + T(' が GM の対応待ちです。決まってから出してください',' for this person is with the GM. Ask again after it is decided'), 'warning'); return null; }
+        /* OJT：足せるのは自分のスキルの申請で、まだ GM の承認待ち（直せる）のときだけ。差し戻し中は GM の差し戻しの理由を飛ばさない（独立レビュー 229d6c7 の P3-2） */
+        if (ojt && (kind !== 'skill' || op !== 'edit')) return { blocked:o.code };
+        if (!op) { showToast(T('同じ人の申請 ','The request ') + o.code + T(' が GM の対応待ちです。決まってから出してください',' for this person is with the GM. Ask again after it is decided'), 'warning'); return null; }
         if (kind === 'skill') {
           var seen = {}, merged = [];
           if (ojt) {   /* OJT：前の申請の値を残し、無いポジションだけ足す */
@@ -100790,6 +100794,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var cur = getEmpSkillsStore(name, st) || {}, by = (S.me && S.me.name) || ((typeof curUserName !== 'undefined' && curUserName) || ''), today = (typeof todayJP === 'function') ? todayJP() : hstToday(), done = [];
     (p.items || []).forEach(function(it){
       var prev = cur[it.pos] || {}, pl = prev.status === '承認' ? (prev.level || 0) : 0;
+      /* v1135：上げる申請（from → to が上がる）は、申請のあとにもう to 以上になっていれば下げない（OJT の合格の下限も・独立レビュー 229d6c7 の P3-1） */
+      if (typeof it.from === 'number' && typeof it.to === 'number' && it.to > it.from && pl >= it.to) { done.push(it.pos + ' ' + pl + T('（そのまま）',' (kept)')); return; }
       if (it.to === 0) { if (prev.status === '承認') setEmpSkillStore(name, st, it.pos, { level:0, status:'未取得', date:today, evaluator:by }); }
       else setEmpSkillStore(name, st, it.pos, { level:it.to, status:'承認', date:today, evaluator:by, mgrComment:prev.mgrComment || '' });
       if (pl !== it.to) { try { addSkillHistory(name, st, it.pos, pl, it.to, by, r.code); } catch(e) {} }
@@ -100967,19 +100973,25 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
      店で 1 つ（店の全員の表示が変わる）。決めるのは GM・CEO（サーバーが can_edit を返し、保存も GM・CEO だけ）。前（9A）は人 × 店の自分の表示設定。
      SQL が前の段（store_view の印が無い答え）なら、表示対象は使わない（全員を出す・ボタンも出さない） */
   function viewOf(store){ checkAuth(); S.views = S.views || {}; return S.views[store]; }
-  function viewLoad(store){
+  /* force：読み直す（読めなかった店は 30 秒、読めた店は 5 分たったら、描くときにもう一度読む＝GM が変えた表示がほかの人にも届く・独立レビュー 229d6c7 の P3-7）。
+     読み直しのあいだは前の表示のまま。中身が変わったときだけ描き直す */
+  function viewLoad(store, force){
     if (!pinTok() || !store || store === 'OFFICE') return;
-    S.views = S.views || {}; if (S.views[store] && S.views[store].load) return;
-    var g = S.gen; S.views[store] = { load:'loading', hidden:[], rev:0 };
+    S.views = S.views || {}; var old = S.views[store];
+    if (old && old.load && (!force || old.load === 'loading')) return;
+    var g = S.gen; S.views[store] = Object.assign({ hidden:[], rev:0 }, old || {}, { load:'loading' });
+    var sig = function(v){ return v ? JSON.stringify([v.load === 'old', v.hidden, v.rev, v.can, v.err || '']) : ''; };
     api({ action:'view_get', store:store }).then(function(j){ if (g !== S.gen) return;
-        S.views[store] = (j && j.store_view) ? { load:'done', hidden:j.hidden || [], rev:j.rev || 0, can:!!j.can_edit, by:j.updated_by || '', at:j.updated_at || '' } : { load:'old', hidden:[], rev:0 };
-        try { if (typeof curPage !== 'undefined' && curPage === 'skill') renderPage('skill'); } catch(e) {} },
-      function(e){ if (g !== S.gen) return; S.views[store] = { load:'err', hidden:[], rev:0, err:String(e.message || e) }; });
+        var nv = (j && j.store_view) ? { load:'done', hidden:j.hidden || [], rev:j.rev || 0, can:!!j.can_edit, by:j.updated_by || '', at:j.updated_at || '', t:Date.now() } : { load:'old', hidden:[], rev:0, t:Date.now() };
+        S.views[store] = nv;
+        if (sig(nv) !== sig(old)) { try { if (typeof curPage !== 'undefined' && curPage === 'skill') renderPage('skill'); } catch(e) {} } },
+      function(e){ if (g !== S.gen) return; S.views[store] = { load:'err', hidden:(old && old.hidden) || [], rev:(old && old.rev) || 0, err:String(e.message || e), t:Date.now() }; });
   }
   function viewWho(v){ return v && v.by ? T('最後に変えた人 ','Last changed by ') + esc(v.by) + (v.at ? ' · ' + esc(hstTime(v.at)) : '') : ''; }
   W.wrMatrixView = function(store, staff){
     if (!pinTok() || !store || store === 'OFFICE' || !liveSeen() || (typeof curStoreLogin !== 'undefined' && curStoreLogin)) return null;
-    var v = viewOf(store); if (!v) { viewLoad(store); v = viewOf(store); }
+    var v = viewOf(store), now = Date.now();
+    if (!v || (v.load === 'err' && now - (v.t || 0) > 30000) || ((v.load === 'done' || v.load === 'old') && now - (v.t || 0) > 300000)) { viewLoad(store, true); v = viewOf(store); }
     if (v.load === 'old') return null;
     var hid = {}; (v.hidden || []).forEach(function(x){ hid[x] = 1; });
     var shown = (staff || []).filter(function(e){ return !hid[String(e.id)]; }), n = (staff || []).length - shown.length;
@@ -100992,7 +101004,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var v = viewOf(store);
     /* まだ読んでいない・読めなかった店：読んでから（読めるまで、決められる人かどうかも分からない） */
     if (v && v.load === 'old') { showToast(errText('old_sql4'), 'warning'); return; }
-    if (!v || v.load !== 'done') { if (!v || v.load === 'err') { S.views[store] = null; viewLoad(store); } showToast(T('表示対象を読み込んでいます。少し待ってからもう一度押してください','Loading who to show. Try again in a moment'), 'info'); return; }
+    if (!v || v.load !== 'done') { if (!v || v.load === 'err') viewLoad(store, true); showToast(T('表示対象を読み込んでいます。少し待ってからもう一度押してください','Loading who to show. Try again in a moment'), 'info'); return; }
     if (!v.can) { showToast(T('表示対象は GM・CEO が決めます','The GM or CEO sets who to show'), 'info'); return; }
     var staff = [];
     try { staff = visibleStaffForManager().filter(function(e){ return isStoreStaff(e) && !e.prep && empWorksAt(e, store); }); } catch(e) {}
@@ -101141,42 +101153,51 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try { addNotif({ type:'approval', title:T('OJT の合格の反映を GM に申請できませんでした','Could not ask the GM to apply an OJT pass'), text:name + ' · ' + (mod.no ? 'M' + mod.no + ' ' : '') + (mod.title || '') + ' · ' + why, toRoles:['gm'], page:'tasks' }); } catch(e) {}
   }
   async function ojtAsk(name, mod){
+    var k0 = authKey();   /* 始めたときのログイン（途中で別の人に変わったら、その人として出さない・独立レビュー 229d6c7 の P3-4） */
     var store = ojtStore(name), emp = empByName(name), by = (typeof curUserName !== 'undefined' && curUserName) || '', codes = [], fails = [];
+    var moved = function(){ if (authKey() === k0) return false; ojtTell(name, mod, T('サインした人のログインが途中で変わったので申請していません。正式な値も変えていません','The sign-in changed partway, so nothing was asked or changed')); return true; };
     if (!emp || !emp.id || !store) { ojtTell(name, mod, T('社員 ID・店が分かりません','no employee ID or store')); showToast(T('OJT の合格の反映を申請できませんでした（社員 ID・店が分かりません）。GM に知らせました','Could not ask for the OJT pass (no employee ID or store). The GM was told'), 'warning'); return; }
     var reason = T('OJT 合格の自動反映：','OJT pass: ') + (mod.no ? 'M' + mod.no + ' ' : '') + (mod.title || '') + T('（サイン：',' (signed by ') + by + T('）',')');
-    if (!S.me) { try { var w0 = await api({ action:'whoami' }); if (!S.me) { S.me = w0.me; S.live = !!w0.live; } } catch(e) {} }
-    try { if (typeof pullOpKey === 'function') { await pullOpKey((typeof SKILL_STORE_PREFIX !== 'undefined' ? SKILL_STORE_PREFIX : 'skills_st_') + store); await pullOpKey((typeof LSS_EMP_PREFIX !== 'undefined' ? LSS_EMP_PREFIX : 'lss_emp_') + name); } } catch(e) {}
-    var k0 = authKey();
+    if (!S.me) { try { var w0 = await api({ action:'whoami' }, k0); if (!S.me) { S.me = w0.me; S.live = !!w0.live; } } catch(e) {} }
+    try { if (typeof pullOpKey === 'function') { await pullOpKey((typeof SKILL_STORE_PREFIX !== 'undefined' ? SKILL_STORE_PREFIX : 'skills_st_') + store); await pullOpKey((typeof LSS_EMP_PREFIX !== 'undefined' ? LSS_EMP_PREFIX : 'lss_emp_') + name); await pullOpKey('lss_requests'); } } catch(e) {}
+    if (moved()) return;
+    /* GM が承認したとき、そのあいだにもっと上がっていれば下げない（上げる申請の決まり：skillApply・独立レビュー P3-1） */
     var sk = ojtSkillItems(name, store, mod);
     if (sk.length) {
       var j = await evalSend('skill', store, { target_emp:String(emp.id), target_name:name, items:sk, reason:reason.slice(0, 600) }, { ojt:true });
       if (j && j.code) codes.push(j.code);
-      else { var why = j && j.blocked ? T('同じ人のスキルの申請 ','an open skill request ') + j.blocked + T(' が決まっていない',' is pending') : (j && j.err) || T('申請できない','refused'); fails.push(why); ojtTell(name, mod, T('スキル：','Skill: ') + why); }
+      else { var why = j && j.blocked ? T('同じ人のスキルの申請 ','an open skill request ') + j.blocked + T(' が決まっていない（差し戻し中・ほかの人の申請を含む）',' is open (returned, or someone else’s)') : (j && j.err) || T('申請できない','refused'); fails.push(why); ojtTell(name, mod, T('スキル：','Skill: ') + why); }
     }
-    if (authKey() !== k0) return;
+    if (moved()) return;
     var diff = ojtCsDiff(name, mod);
     if (diff) {
-      var q = null;
+      var q = null, had = null;
       try {
         var reqs = getLssRequests();
-        q = { id:(typeof _lssqId === 'function' ? _lssqId() : 'lssq' + Date.now()), kind:'score', name:name, status:'申請中', by:by, byRole:((typeof curRealRole !== 'undefined' && curRealRole) || curRole),
-          store:emp.store || '', date:(typeof todayJP === 'function' ? todayJP() : hstToday()), ts:Date.now(), _set:(typeof lssItemSetOf === 'function' ? lssItemSetOf(name) : 'general'),
-          self:false, diff:diff, comment:reason, changeReason:reason, ojt:{ axis:mod.axis, floor:(mod.reflect || {}).axisFloor } };
-        try {   /* 承認の画面に出す総合点（前 → 後） */
-          var sm = lssSummary(name), up = diff.reduce(function(a, d){ return a + (d.to - (d.from || 0)); }, 0);
-          q.baseScore = sm.totalScore; q.baseMax = sm.totalMax; q.basePct = sm.totalPct;
-          q.wantScore = sm.totalScore + up; q.wantMax = sm.totalMax; q.wantPct = sm.totalMax ? Math.round((sm.totalScore + up) / sm.totalMax * 100) : 0;
-        } catch(e) {}
-        reqs.push(q); lsSet('lss_requests', reqs);
+        /* 同じ人・同じ分野の OJT の Career Score の申請が承認待ちなら、もう 1 つ作らない（チェックの付け外し・独立レビュー P3-3） */
+        had = reqs.find(function(x){ return x && x.kind === 'score' && x.name === name && x.status === '申請中' && x.ojt && x.ojt.axis === mod.axis; }) || null;
+        if (!had) {
+          q = { id:(typeof _lssqId === 'function' ? _lssqId() : 'lssq' + Date.now()), kind:'score', name:name, status:'申請中', by:by, byRole:((typeof curRealRole !== 'undefined' && curRealRole) || curRole),
+            store:emp.store || '', date:(typeof todayJP === 'function' ? todayJP() : hstToday()), ts:Date.now(), _set:(typeof lssItemSetOf === 'function' ? lssItemSetOf(name) : 'general'),
+            self:false, diff:diff, comment:reason, changeReason:reason, ojt:{ axis:mod.axis, floor:(mod.reflect || {}).axisFloor } };
+          try {   /* 承認の画面に出す総合点（前 → 後） */
+            var sm = lssSummary(name), up = diff.reduce(function(a, d){ return a + (d.to - (d.from || 0)); }, 0);
+            q.baseScore = sm.totalScore; q.baseMax = sm.totalMax; q.basePct = sm.totalPct;
+            q.wantScore = sm.totalScore + up; q.wantMax = sm.totalMax; q.wantPct = sm.totalMax ? Math.round((sm.totalScore + up) / sm.totalMax * 100) : 0;
+          } catch(e) {}
+          reqs.push(q); lsSet('lss_requests', reqs);
+        }
       } catch(e) { q = null; }
-      if (q) {
+      if (had) { if (had.wr) codes.push(had.wr); }
+      else if (q) {
         var items = diff.map(function(d){ return { key:String(d.id).slice(0, 40), label:String(((d.catName || '') + ' ' + (d.label || '')).trim()).slice(0, 120), from:d.from, to:d.to }; });
-        var j2 = await evalSend('cs', ojtAskStore(emp), { target_emp:String(emp.id), target_name:name, lss_req:q.id, items:items, reason:reason.slice(0, 600),
+        var j2 = moved() ? null : await evalSend('cs', ojtAskStore(emp), { target_emp:String(emp.id), target_name:name, lss_req:q.id, items:items, reason:reason.slice(0, 600),
           total_from:q.baseScore == null ? null : q.baseScore, total_to:q.wantScore == null ? null : q.wantScore }, { ojt:true });
         if (j2 && j2.code) { codes.push(j2.code); try { var r2 = getLssRequests(), qq = r2.find(function(x){ return x && x.id === q.id; }); if (qq) { qq.wr = j2.code; lsSet('lss_requests', r2); } } catch(e) {} }
-        else { var why2 = j2 && j2.blocked ? T('同じ人の Career Score の申請 ','an open Career Score request ') + j2.blocked + T(' が決まっていない',' is pending') : (j2 && j2.err) || T('申請できない','refused'); fails.push(why2); ojtTell(name, mod, T('Career Score：','Career Score: ') + why2 + T('（Career Score の承認待ちに残っています）',' (it stays in the Career Score approvals)')); }
+        else if (authKey() === k0) { var why2 = j2 && j2.blocked ? T('同じ人の Career Score の申請 ','an open Career Score request ') + j2.blocked + T(' が決まっていない',' is pending') : (j2 && j2.err) || T('申請できない','refused'); fails.push(why2); ojtTell(name, mod, T('Career Score：','Career Score: ') + why2 + T('（Career Score の承認待ちに残っています）',' (it stays in the Career Score approvals)')); }
       }
     }
+    if (authKey() !== k0) return;
     if (codes.length) showToast(T('OJT の合格で上がる分を GM に申請しました：','Asked the GM to apply the OJT pass: ') + codes.join('・') + T('（GM の承認のあとに変わります）',' (changes after the GM approves)'), 'success');
     if (fails.length) showToast(T('OJT の合格の反映の一部を申請できませんでした（','Part of the OJT pass could not be asked (') + fails.join(' / ') + T('）。GM に知らせました','). The GM was told'), 'warning');
   }
@@ -101185,7 +101206,15 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var oR = W.g2AutoReflect;
     if (typeof oR !== 'function') return;
     W.g2AutoReflect = function(name, mod){
-      if (!mod || !mod.reflect || !ojtAskMode()) return oR.apply(this, arguments);
+      /* 使い始める前・GM・CEO のサインは今までどおり直接。使い始めたあと、それ以外の人のサインは直接変えない（独立レビュー 229d6c7 の P2-1：
+         申請できない端末＝PIN が初期のまま（印が無い）・店舗のログインでも、直接は書かずに GM に知らせる） */
+      var live = false; try { live = liveSeen(); } catch(e) { live = false; }
+      if (!mod || !mod.reflect || !live || ojtByGm()) return oR.apply(this, arguments);
+      if (!ojtAskMode()) {
+        ojtTell(name, mod, T('サインした端末からは申請できません（PIN が初期のまま・店舗のログイン など）。正式な値は変えていません。GM が確かめて反映してください','This device cannot ask (initial PIN, store login, etc.). Nothing was changed; the GM checks and applies it'));
+        showToast(T('OJT の合格は記録しました。上がる分（スキル・Career Score）はこの端末からは申請できないので、GM に知らせました（正式な値は変えていません）','The OJT pass is recorded. This device cannot ask for the raise, so the GM was told (nothing changed)'), 'warning');
+        return;
+      }
       ojtAsk(name, mod);
     };
   })();

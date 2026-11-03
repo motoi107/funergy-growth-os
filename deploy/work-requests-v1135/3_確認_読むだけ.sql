@@ -27,10 +27,13 @@ union all select '7. UI案68 の答え（v1135）が入っている：ガソリ�
     and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_can_submit_eval(jsonb,text)')) like '%am_stores%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_view_save(jsonb)')) like '%wr_store_views%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_stage(jsonb)')) like '%4)%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 3%'
     then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '8. 関数の数（56 なら OK）',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%') = 56 then 'OK'
     else 'NG（' || (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%') || '）' end
 union all select '（参考）使い始めたか：アプリで使い始めるまで false', (select live::text from public.wr_settings where id = 1)
 union all select '（参考）申請の数', (select count(*)::text from public.wr_requests)
-union all select '（参考）承認待ちのガソリン代（これからは GM・CEO が承認）', (select count(*)::text from public.wr_requests where kind = 'mileage' and status = 'pending');
+union all select '（参考）承認待ちのガソリン代（これからは GM・CEO が承認）', (select count(*)::text from public.wr_requests where kind = 'mileage' and status = 'pending')
+union all select '（参考）GM・CEO の確かめ待ちの人（G3 を含む。ワークセンターの「承認・閲覧の権限の確かめ」で確かめる）',
+  (select count(*)::text from jsonb_array_elements(public.wr_people_items()) x where x->'up' = 'true'::jsonb);

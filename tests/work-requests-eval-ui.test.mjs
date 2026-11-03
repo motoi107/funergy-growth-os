@@ -518,3 +518,104 @@ test('OJT (Moto 11/03): the AM signing asks for a person of a store they lead; a
   assert.ok(g4.notifs.some(n => /社員 ID・店が分かりません/.test(n.text || '')), 'the GM is told');
   assert.equal(g4.calls.filter(c => c[0] === 'direct').length, 0);
 });
+
+test('OJT (review 229d6c7): a device that cannot ask (no PIN mark, store login) changes nothing and tells the GM; a second pass on the same area makes no second Career Score request', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm5', no: 5, axis: 'A', title: 'マルチタスク', reflect: { skill: 'multi', axisFloor: 2 } };
+  for (const set of [ctx => { ctx._hwSession = null; }, ctx => { ctx.curStoreLogin = true; }]) {
+    const x = await app(srv, 'E7', { role: 'sl', cloud }); set(x.ctx);
+    x.ctx.g2AutoReflect('Cam Crew', mod); await x.settle();
+    assert.equal(x.calls.filter(c => c[0] === 'direct').length, 0, 'not written directly');
+    assert.ok(x.notifs.some(n => /この端末からは申請できません|サインした端末からは申請できません/.test(n.text || '') && [...n.toRoles].includes('gm')), JSON.stringify(x.notifs.map(n => n.text)));
+    assert.ok(x.toasts.some(t => t[0] === 'warning' && /GM に知らせました/.test(t[1])));
+  }
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests`)).rows[0].n, 0);
+  assert.equal(cloud.lss.length, 0);
+  // the same area twice (a check unticked and ticked again): one Career Score request, the open one is named
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm1', no: 1, axis: 'A', title: '開店準備', reflect: { axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm1', no: 1, axis: 'A', title: '開店準備', reflect: { axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  assert.equal(cloud.lss.filter(q => q.ojt && q.ojt.axis === 'A' && q.status === '申請中').length, 1, 'no second score request');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests where kind = 'cs'`)).rows[0].n, 1);
+  const code = (await srv.pg.query(`select code from public.wr_requests where kind = 'cs'`)).rows[0].code;
+  assert.ok(g3.toasts.filter(t => t[0] === 'success' && t[1].includes(code)).length === 2, 'both passes point at the one request');
+});
+
+test('OJT (review 229d6c7): a returned request is not resubmitted by a pass; a level raised meanwhile is not lowered when the GM applies', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm5', no: 5, axis: 'Z', title: 'マルチタスク', reflect: { skill: 'multi' } };
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.g2AutoReflect('Cam Crew', mod); await g3.settle(); await g3.settle();
+  let sk = (await srv.pg.query(`select id, status, rev from public.wr_requests where kind = 'skill'`)).rows[0];
+  assert.equal(sk.status, 'pending');
+  // the GM returns it with a reason; another pass must not slip it back to the GM
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(sk.id); await gm.settle();
+  gm.ctx.wrAsk('return'); gm.dom.els['wr-note'] = { value: 'Floor も見てから' }; gm.ctx.wrAskGo(); await gm.settle(); await gm.settle();
+  const ret = (await srv.pg.query(`select status, rev from public.wr_requests where id = $1`, [sk.id])).rows[0];
+  assert.equal(ret.status, 'returned');
+  cloud.skills.S1['Cam Crew'].Floor = { level: 1, status: '承認' };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm6', no: 6, axis: 'Z', title: '接客', reflect: { skill: 'multi' } }); await g3.settle(); await g3.settle();
+  const after = (await srv.pg.query(`select status, rev from public.wr_requests where id = $1`, [sk.id])).rows[0];
+  assert.deepEqual(after, ret, 'still returned to the requester; nothing resubmitted');
+  assert.ok(g3.notifs.some(n => /差し戻し中/.test(n.text || '')), 'the GM is told');
+  delete cloud.skills.S1['Cam Crew'].Floor;
+  // a fresh request, and the level goes up to 3 before the GM applies the floor of 2
+  await srv.pg.query(`update public.wr_requests set status = 'withdrawn' where kind = 'skill'`);
+  cloud.skills.S1['Cam Crew'].Grill = { level: 1, status: '承認' };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm7', no: 7, axis: 'Z', title: 'x', reflect: { skill: 'multi' } }); await g3.settle(); await g3.settle();
+  sk = (await srv.pg.query(`select id, payload from public.wr_requests where kind = 'skill' and status = 'pending'`)).rows[0];
+  assert.deepEqual(sk.payload.items.map(i => [i.pos, i.from, i.to]), [['Grill', 1, 2]]);
+  cloud.skills.S1['Cam Crew'].Grill = { level: 3, status: '承認' };
+  gm.ctx.wrOpen(sk.id); await gm.settle();
+  gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(gm.S().d.status, 'applied');
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 3, 'not lowered to the floor');
+  assert.match((await srv.pg.query(`select close_reason from public.wr_requests where id = $1`, [sk.id])).rows[0].close_reason, /Grill 3（そのまま）/);
+  // a request that lowers a level still lowers it (only raising requests keep a higher level)
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.dom.els['ssk-p_Grill'] = { value: '1' }; g4.dom.els['ssk-p_Floor'] = { value: '0' }; g4.dom.els['ssk-reason'] = { value: '包丁の扱いをやり直す' };
+  await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
+  const low = (await srv.pg.query(`select id, payload from public.wr_requests where kind = 'skill' and status = 'pending'`)).rows[0];
+  assert.deepEqual(low.payload.items.map(i => [i.pos, i.from, i.to]), [['Grill', 3, 1]]);
+  gm.ctx.wrOpen(low.id); await gm.settle();
+  gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 1, 'lowered as asked');
+});
+
+test('6 (review 229d6c7): a G3 whose rights wait for the GM is told so; the store view is read again after five minutes', async () => {
+  const srv = await server({ pre: '' }), cloud = shared();
+  await srv.pg.exec(`reset role; update public.employees set role = 'sl' where id = 'E8'; set role service_role`);
+  const x = await app(srv, 'E8', { role: 'sl', cloud });
+  x.ctx.openTipRaiseModal(); await x.settle();
+  x.dom.els['wrt-name'] && (x.dom.els['wrt-name'].value = 'Cam Crew');
+  const opts = (x.dom.els['wrt-name'] && x.dom.els['wrt-name'].options) || [];
+  assert.ok(x.ctx._wrState().me && x.ctx._wrState().me.pending, 'the server says: waiting for the GM');
+  if (!opts.length) x.dom.els['wrt-name'] = { value: 'Lee Leader', options: [] };
+  x.dom.els['wrt-rate'].value = '90'; x.dom.els['wrt-reason'].value = 'r';
+  await x.ctx.wrTipAskGo(); await x.settle();
+  assert.ok(x.toasts.some(t => /GM・CEO の確かめ待ち/.test(t[1])), JSON.stringify(x.toasts));
+  // the GM changes the store view; a G4 screen that read it earlier picks it up after five minutes
+  const staff = EMPS.filter(e => e.store === 'S1');
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.wrMatrixView('S1', staff); await g4.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.length, staff.length);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrMatrixView('S1', staff); await gm.settle();
+  gm.ctx.wrViewEdit('S1'); gm.ctx.wrViewPick('E8', false); gm.ctx.wrViewSave(); await gm.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.length, staff.length, 'within five minutes the earlier view stays');
+  g4.ctx._wrState().views.S1.t = Date.now() - 6 * 60000;
+  g4.ctx.wrMatrixView('S1', staff); await g4.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.some(e => e.id === 'E8'), false, 'read again: the GM view');
+});
+
+test('OJT (review 229d6c7 P3-4): the sign-in changes while the pass is being asked → nothing is sent as the next person; the GM is told', async () => {
+  const srv = await server(), cloud = shared();
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.pullOpKey = async () => { g3.ctx.mrAuthKey = () => 'p|E99'; return true; };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm5', no: 5, axis: 'A', title: 'マルチタスク', reflect: { skill: 'multi', axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests`)).rows[0].n, 0, 'nothing sent');
+  assert.equal(cloud.lss.length, 0);
+  assert.equal(g3.calls.filter(c => c[0] === 'direct').length, 0);
+  assert.ok(g3.notifs.some(n => /ログインが途中で変わった/.test(n.text || '')));
+});

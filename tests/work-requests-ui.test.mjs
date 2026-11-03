@@ -108,7 +108,7 @@ test('before it is live: the screen says so; the GM turns it on (old requests co
   // 使い始める：先に権限の確かめ（増える人は最初は選ばない。GM が選ぶ）→ 選んで使い始める
   gm.ctx.wrGoLive(true); await gm.settle();
   const pm = gm.dom.els['wr-people'].innerHTML;
-  assert.match(pm, /使い始める前に、AM・G4 以上の人と担当の店を確かめてください/);
+  assert.match(pm, /使い始める前に、AM・G3 以上の人と担当の店を確かめてください/);
   assert.match(pm, /Ami Area/); assert.match(pm, /Sam Store/); assert.match(pm, /権限が増える/);
   assert.doesNotMatch(pm, /type="checkbox" checked/, 'raises are not picked for the GM');
   assert.match(pm, /このまま使い始める/);

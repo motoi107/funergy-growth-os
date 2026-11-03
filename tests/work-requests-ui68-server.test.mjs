@@ -144,20 +144,43 @@ test('6: the AM asks for people of the stores they lead (OJT passes); not elsewh
   assert.equal((await ask('E6', 'skill', 'E11')).status, 200, 'a confirmed G4 as before');
 });
 
-test('6: a G4 that the GM has not confirmed asks like a G3 (only for people below G3)', async () => {
-  const { ask, pg } = await setup();
+test('6 (review 229d6c7 P2-2): the employee table alone gives no right to ask; the GM confirms G3s like G4s', async () => {
+  const { ask, call, db, pg } = await setup();
+  // a G1 writes a G3 title and extra stores into the (publicly writable) employee table
+  await pg.exec(`reset role; update public.employees set role = 'sl', support = '["S1","S2","S3"]' where id = 'E8'; set role service_role`);
+  const me = (await call('E8', { action: 'whoami' })).body.me;
+  assert.deepEqual([me.grade, me.confirmed, me.pending], [3, false, true], 'grade 3 by the table, but not confirmed');
+  assert.equal((await ask('E8', 'skill', 'E13', 'S2')).status, 403, 'cannot ask at a store it wrote in');
+  assert.equal((await ask('E8', 'tiprate', 'E12', 'S3')).status, 403);
+  assert.equal((await ask('E8', 'skill', 'E10')).status, 403, 'not even at its own store');
+  // the confirmed G4 still has the open slot for the person
+  assert.equal((await ask('E6', 'skill', 'E10')).status, 200);
+  // a confirmed G3 adds a support store in the table: not in effect until the GM confirms
+  await pg.exec(`reset role; update public.employees set support = '["S3","S2"]' where id = 'E7'; set role service_role`);
+  assert.equal((await ask('E7', 'skill', 'E13', 'S2')).status, 403, 'S2 waits for the GM');
+  assert.equal((await ask('E7', 'skill', 'E12', 'S3')).status, 200, 'S3 was confirmed');
+  const gm = { emp_id: 'E2', name: NAME.E2 };
+  const d = await db.rpc('wr_people_diff', gm);
+  const up = d.items.filter(x => x.up).map(x => x.emp).sort();
+  assert.deepEqual(up, ['E7', 'E8'], 'both wait for the GM in the rights check');
+  await db.rpc('wr_people_sync', { ...gm, digest: d.digest, emps: ['E7'] });   // the GM confirms only what they recognise
+  assert.equal((await ask('E7', 'skill', 'E13', 'S2')).status, 200, 'after the GM confirms');
+  assert.equal((await ask('E8', 'skill', 'E11')).status, 403, 'E8 left unconfirmed stays without the right');
+});
+
+test('6: a G4 that the GM has not confirmed cannot ask until confirmed; then asks as a G4', async () => {
+  const { ask, pg, db } = await setup();
   await pg.exec(`reset role; insert into public.employees values ('E14','Nia New','sl','Store Manager','S1','[]','在籍','{"name":"Nia New"}'); set role service_role`);
-  // E14 has no checked copy (wr_people): grade is capped at 3
-  const NAME2 = 'Nia New';
-  const h = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k],
-    db: { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } },
-    verifyPin: async () => ({ emp_id: 'E14', name: NAME2 }) });
+  const h = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k], db, verifyPin: async () => ({ emp_id: 'E14', name: 'Nia New' }) });
+  let n = 0;
   const send = async target => { const r = await h(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pin_session: 'x', action: 'submit', kind: 'skill', store_id: 'S1', client_key: 'k-new-g4-' + target + '-0001',
+    body: JSON.stringify({ pin_session: 'x', action: 'submit', kind: 'skill', store_id: 'S1', client_key: 'k-new-g4-' + target + '-000' + (++n),
       payload: { target_emp: target, items: [{ pos: 'Grill', from: 0, to: 1 }], reason: 'r' } }) })); return r.status; };
+  assert.equal(await send('E10'), 403, 'waits for the GM');
+  const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest });
   assert.equal(await send('E10'), 200, 'a G2');
-  assert.equal(await send('E11'), 403, 'not a G3 until the GM confirms the G4');
-  assert.equal((await ask('E7', 'skill', 'E10')).body.open_same !== undefined, true, 'one open request per person and kind (the one above)');
+  assert.equal(await send('E11'), 200, 'a G3, as a confirmed G4');
+  assert.equal((await ask('E7', 'skill', 'E10')).body.open_same !== undefined, true, 'one open request per person and kind');
 });
 
 test('9B: the store view is one per store; only the GM or CEO saves it; everyone reads the same', async () => {

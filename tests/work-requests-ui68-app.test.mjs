@@ -89,6 +89,7 @@ test('the screens: the Career Score list adds the G2 people for a G3; the Tip Ra
   const lead = fnSrc('renderLeadership');
   assert.match(lead, /_g3See = \(typeof _lssG3CanEdit==='function' && typeof wrIsG3Live==='function' && wrIsG3Live\(\)\)/);
   assert.match(lead, /\.concat\(_cgSee\)\.concat\(_g3See\)/);
+  assert.match(lead, /_lssG3CanEdit\(e\) && canViewLssOfEmp\(e\)/, 'the Score管理 view setting still applies (review 229d6c7 P3-6)');
   const tip = fnSrc('renderTipRate');
   assert.match(tip, /if \(!canApprove && !canEditPolicy && typeof wrCanAskLive==='function' && wrCanAskLive\(\)\) \{[\s\S]*?onclick="wrTipAsk\(\)"/);
   const sub = fnSrc('submitLssScoreRequest');
@@ -97,4 +98,22 @@ test('the screens: the Career Score list adds the G2 people for a G3; the Tip Ra
   const ed = fnSrc('saveStaffSkillEdit');
   assert.match(ed, /wrIsG4Live\(\)\) \{ if \(typeof wrSkillAsk==='function'\) wrSkillAsk/);
   assert.doesNotMatch(ed, /wrCanAskLive|wrIsG3Live/);
+});
+
+test('OJT Career Score: approving keeps a score that went higher meanwhile (only for OJT requests); other requests set the value', () => {
+  const run = (req, now) => {
+    const store = { lss: [req], scores: { 'Cam Crew': { scores: now } }, hist: [] };
+    const ctx = {
+      getLssRequests: () => store.lss, _srPending: r => r.status === '申請中', lssCanApproveScoreFor: () => true, lssReqByMe: () => false,
+      showToast: () => {}, t: ja => ja, lssScoreSetNg: () => false, getLssScores: n => store.scores[n], lssSummary: () => ({ totalPct: 50, totalScore: 5, totalMax: 9 }),
+      cssUnOf: () => null, lssItemSetOf: () => 'general', setLssScores: (n, d) => { store.scores[n] = d; }, todayJP: () => '2026/11/03', lssApproverName: () => 'Gabe GM',
+      ls: () => store.hist, lsSet: () => true, addNotif: () => {}, renderPage: () => {}, ROLE_CONFIG: { gm: { name: 'Gabe GM' } }, curRole: 'gm', curUserName: 'Gabe GM', window: {},
+    };
+    vm.createContext(ctx); vm.runInContext(fnSrc('approveLssScoreRequest'), ctx);
+    ctx.approveLssScoreRequest(req.id);
+    return { ...store.scores['Cam Crew'].scores };
+  };
+  const diff = [{ id: 'A0', from: 1, to: 2 }, { id: 'A1', from: null, to: 2 }];
+  assert.deepEqual(run({ id: 'q1', kind: 'score', name: 'Cam Crew', status: '申請中', diff, ojt: { axis: 'A', floor: 2 } }, { A0: 3, A1: 1 }), { A0: 3, A1: 2 }, 'OJT: A0 stays 3');
+  assert.deepEqual(run({ id: 'q2', kind: 'score', name: 'Cam Crew', status: '申請中', diff }, { A0: 3, A1: 1 }), { A0: 2, A1: 2 }, 'a normal request sets the value (as before)');
 });
