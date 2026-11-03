@@ -24,7 +24,7 @@ async function server({ live = false, legacy = {} } = {}) {
     create table public.employees(id text primary key, name text, role text, title text, store text, support jsonb, status text, data jsonb);
     create table public.stores(id text primary key, name text, am text, active boolean);
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz default now());
-    grant select on public.manager_auth, public.employees, public.stores, public.app_state to service_role;
+    grant select on public.manager_auth, public.employees, public.stores to service_role; grant select, insert, update on public.app_state to service_role;
     insert into public.stores values ('S1','Store One','Ami Area',true),('S2','Store Two',null,true);
     insert into public.app_state(key, value) values ('mileage_config', '{"ratePerMile":0.7}');`);
   for (const [id, name, role, title, store, ma] of PEOPLE) {
@@ -58,7 +58,7 @@ function fakeDom() {
   return { els, parse };
 }
 
-async function app(srv, emp, { role = 'gm', realRole = '', storage = new Map(), fail = null } = {}) {
+async function app(srv, emp, { role = 'gm', realRole = '', storage = new Map(), fail = null, shared = new Map() } = {}) {
   const dom = fakeDom(), toasts = [], notifs = [], pages = [], calls = [];
   let modal = '';
   const ctx = {
@@ -66,10 +66,10 @@ async function app(srv, emp, { role = 'gm', realRole = '', storage = new Map(), 
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: emp ? 'pin-' + emp : null,
     curPage: 'tasks', workTab: 'wr', curRole: role, curRealRole: realRole, STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
     t: (ja) => ja, bizNow: () => new Date('2026-11-02T10:00:00'), kpi: (l, v) => `[${l}:${v}]`, mrAuthKey: () => 'p|' + emp,
-    renderPage: p => pages.push(p), go: p => pages.push('go:' + p), showToast: (m, k) => toasts.push([k, m]), addNotif: n => notifs.push(JSON.parse(JSON.stringify(n))),
+    renderPage: p => pages.push(p), go: p => pages.push('go:' + p), showToast: (m, k) => toasts.push([k, m]), addNotif: n => notifs.push(JSON.parse(JSON.stringify(n))), getNotifs: () => notifs,
     openModal: h => { modal = h; dom.parse(h); }, closeModalDirect: () => { modal = ''; },
     confirm: () => true, prompt: (_m, d) => d, groupsForRole: () => [{ children: ['dashboard', 'tasks'] }],
-    ls: (k, d) => (k === 'approvals' ? [{ id: 'ap1', type: 'ガソリン代' }, { id: 'ap2', type: '休暇' }] : d),
+    ls: (k, d) => (k === 'approvals' ? [{ id: 'ap1', type: 'ガソリン代' }, { id: 'ap2', type: '休暇' }] : k === 'wr_live' && shared.has('wr_live') ? shared.get('wr_live') : d),
     localStorage: { getItem: k => (storage.has(k) ? storage.get(k) : null), setItem: (k, v) => storage.set(k, String(v)), removeItem: k => storage.delete(k) },
     fetch: async (url, init) => {
       const r = await srv.handler(new Request(url, init));
@@ -100,7 +100,7 @@ test('before it is live: the screen says so; the GM turns it on (old requests co
   const gm = await app(srv, 'E2', { storage: store });
   assert.match(await gm.render(), /使い始める（前からの申請を写す）/);
   gm.ctx.wrGoLive(true); await gm.settle();
-  assert.equal(store.get('_wr_live_v1'), '1');
+  assert.equal(JSON.parse(store.get('_wr_live_v1')).live, true);
   assert.ok(gm.toasts.some(([k, m]) => k === 'success' && /前からの申請 1 件を写しました/.test(m)));
   const after = await gm.render();
   assert.match(after, /要対応/); assert.match(after, /自分の申請/); assert.match(after, /チーム／全件/);
@@ -121,14 +121,15 @@ test('a G3 asks for mileage; an answer that never came still makes one request; 
   await g3.ctx.wrSend(); await g3.settle();   // pressed again: the same key
   assert.ok(g3.toasts.some(([k, m]) => k === 'success' && /申請しました：GS-\d{4}-0001/.test(m)));
   const n = await srv.pg.query('select count(*)::int n from public.wr_requests'); assert.equal(n.rows[0].n, 1);
-  assert.equal(g3.notifs.length, 0, 'a replay does not send the notice again (the lost first answer is the one that would have)');
-  // a second, fresh request notifies the store's AM by name (not the role am, which also holds G4s)
+  assert.equal(g3.notifs.length, 1, 'the first answer was lost, so the notice goes with the replay (its id is fixed: once)');
+  assert.match(g3.notifs[0].id, /^ntf_wr_GS-\d{4}-0001_1$/);
+  // the store's AM is told by name (not the role am, which also holds G4s)
+  assert.deepEqual([g3.notifs[0].toUser, g3.notifs[0].toRoles, g3.notifs[0].page, g3.notifs[0].wrTab], ['Ami Area', undefined, 'tasks', 'todo']);
   g3.ctx.wrNew('mileage');
   fill(g3.dom, { date: '2026-10-29', miles: 3 });
   await g3.ctx.wrSend(); await g3.settle();
-  assert.equal(g3.notifs.length, 1);
-  assert.deepEqual([g3.notifs[0].toUser, g3.notifs[0].toRoles, g3.notifs[0].page, g3.notifs[0].wrTab], ['Ami Area', undefined, 'tasks', 'todo']);
-  assert.match(g3.notifs[0].id, /^ntf_wr_GS-\d{4}-0002_1$/);
+  assert.equal(g3.notifs.length, 2);
+  assert.match(g3.notifs[1].id, /^ntf_wr_GS-\d{4}-0002_1$/);
 });
 
 test('approve → return with a reason → fixed and resubmitted under the same number → approved again', async () => {
@@ -149,6 +150,12 @@ test('approve → return with a reason → fixed and resubmitted under the same 
   assert.ok(am.notifs.some(n => n.toUser === 'Lee Leader' && /承認されました/.test(n.title)));
   const acct = await app(srv, 'E3', { role: 'office' });
   await acct.render();
+  // the same approve again with the same key (as when an answer was lost): one decision, the notices are not doubled
+  const before = am.notifs.length;
+  am.S().d = Object.assign({}, am.S().d, { rev: 1, status: 'pending', can: ['approve'] });
+  am.ctx.wrAsk('approve'); await am.settle();
+  assert.equal(am.notifs.length, before, 'replayed: the notices with the same ids are already on this device');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where action = 'approve'`)).rows[0].n, 1);
   acct.ctx.wrOpen(id); await acct.settle();
   acct.ctx.wrAsk('return'); await acct.settle();
   assert.match(acct.dom.els['wr-detail'].innerHTML, /理由（必ず）/);
@@ -226,4 +233,32 @@ test('who lands on the Work Center after sign-in (10A) and a server that is not 
   const h = await z.render();
   assert.match(h, /work-requests）につながりません/);
   assert.match(h, /今までの画面で申請してください/);
+});
+
+test('the shared mark (wr_live, written by the server) stops the old screens on a device that never opened the tab', async () => {
+  const srv = await server();
+  const gm = await app(srv, 'E2');
+  await gm.render();
+  gm.ctx.wrGoLive(true); await gm.settle();
+  const row = (await srv.pg.query(`select value from public.app_state where key = 'wr_live'`)).rows[0].value;
+  assert.equal(row.live, true);
+  // a shared-login device: never signs in to work-requests, only gets the app_state row
+  const shop = await app(srv, null, { role: 'sl', shared: new Map([['wr_live', row]]) });
+  assert.equal(shop.ctx.wrLiveSeen(), true);
+  assert.equal(shop.ctx.approveMileage('mi1'), false);
+  // turned off later: the newer shared mark wins over this device's older answer
+  const store = new Map([['_wr_live_v1', JSON.stringify({ live: true, at: '2026-11-01T00:00:00Z' })]]);
+  const dev = await app(srv, 'E2', { storage: store, shared: new Map([['wr_live', { live: false, at: '2026-11-02T00:00:00Z' }]]) });
+  assert.equal(dev.ctx.wrLiveSeen(), false);
+  assert.equal(dev.ctx.approveMileage('mi1'), 'orig');
+});
+
+test('amounts are read as text (no floating point); the detail does not show an older answer after a newer tap', async () => {
+  const srv = await server({ live: true });
+  const x = await app(srv, 'E7', { role: 'sl' });
+  await x.render();
+  x.ctx.wrNew('reimburse'); fill(x.dom, { date: '2026-11-01', vendor: 'V', amount: '1.005' }); await x.ctx.wrSend(); await x.settle();
+  x.ctx.wrNew('reimburse'); fill(x.dom, { date: '2026-11-01', vendor: 'W', amount: '0.29' }); await x.ctx.wrSend(); await x.settle();
+  const c = (await srv.pg.query('select amount_cents from public.wr_requests order by code')).rows.map(r => Number(r.amount_cents));
+  assert.deepEqual(c, [101, 29]);
 });

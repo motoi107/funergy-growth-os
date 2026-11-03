@@ -99722,6 +99722,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   };
 })();
 /* ==== FUNERGY_VT end ==== */
+</script>
+<script>
 /* ==== FUNERGY_WR（v1131）：ワークセンターの申請（11/02 の依頼の ①〜⑥⑧⑩・UI案68 の決めてほしいこと 1〜10 はおすすめ A）====
    仕様：docs/WORK_REQUESTS_V1131_JA.md。1 段目＝経費 3 種（ガソリン代・建て替え経費・事前経費）。評価の変更 3 種・スキルマトリクスの表示は 2 段目。
    ・申請・承認・経理の確認・支払はサーバー（Edge Function work-requests・表 wr_*）にだけ置く。共通データ（app_state）には書かない（通知だけ今までどおり）。
@@ -99766,8 +99768,16 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try{ (W.crypto || {}).getRandomValues(a); }catch(e){ for (var i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); }
     return 'wr-' + Date.now().toString(36) + '-' + Array.prototype.map.call(a, function(b){ return b.toString(16).padStart(2, '0'); }).join('');
   }
-  function liveSeen(){ try{ return localStorage.getItem(LIVE_KEY) === '1'; }catch(e){ return false; } }
-  function setLiveSeen(v){ try{ if (v) localStorage.setItem(LIVE_KEY, '1'); else localStorage.removeItem(LIVE_KEY); }catch(e){} }
+  /* 「使い始めた」：この端末がサーバーから最後に聞いた答え（LIVE_KEY）と、共通データの wr_live（サーバーが書く・ログインのたびに届く）の新しいほう */
+  function liveSeen(){
+    var loc = null, srv = null;
+    try{ var x = localStorage.getItem(LIVE_KEY); loc = x === '1' ? { live:true, at:'' } : x ? JSON.parse(x) : null; }catch(e){ loc = null; }
+    try{ srv = (typeof ls === 'function') ? ls('wr_live', null) : null; if (srv && srv.__st === 1) srv = srv.v; }catch(e){ srv = null; }
+    var tl = loc && loc.at ? Date.parse(loc.at) || 0 : 0, ts = srv && srv.at ? Date.parse(srv.at) || 0 : 0;
+    if (srv && typeof srv.live === 'boolean' && (!loc || ts >= tl)) return srv.live;
+    return !!(loc && loc.live);
+  }
+  function setLiveSeen(v, at){ try{ localStorage.setItem(LIVE_KEY, JSON.stringify({ live:!!v, at:at || new Date().toISOString() })); }catch(e){} }
 
   function fresh(){ return { authKey:'', me:null, live:null, rate:null, settingsRev:1, view:'todo', rows:null, counts:null, load:'', err:'', errCode:'',
     flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'' }; }
@@ -99797,7 +99807,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function mkErr(code, status){ var e = new Error(errText(code, status)); e.code = code; e.status = status || 0; return e; }
   function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
   function authKey(){ try{ if (typeof mrAuthKey === 'function') return mrAuthKey(); }catch(e){} var p = pinTok(); return p ? 'p:' + p.slice(-16) : ''; }
-  function checkAuth(){ var k = authKey(); if (k !== S.authKey) { var v = S.view; S = fresh(); S.view = v; S.authKey = k; } }
+  /* 別の人のログインに変わったら前の人の読み込み・数・書きかけを残さない。世代（gen）は数え続ける（前の人の遅れた答えを捨てる） */
+  function checkAuth(){ var k = authKey(); if (k !== S.authKey) { var v = S.view, oc = S.openCode, g = S.gen; S = fresh(); S.view = v; S.openCode = oc; S.gen = g + 1; S.authKey = k; } }
 
   async function api(payload){
     var tok = pinTok();
@@ -99827,7 +99838,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       var me = await api({ action:'whoami' });
       if (g !== S.gen) return;
       S.me = me.me; S.live = !!me.live; S.rate = me.rate; S.settingsRev = me.settings_rev || 1;
-      setLiveSeen(S.live);
+      setLiveSeen(S.live, me.settings_at);
       if (S.live) await loadList(g);
     })().then(function(){ if (g === S.gen) S.load = 'done'; }, function(e){
       if (g !== S.gen) return;
@@ -99853,7 +99864,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; reloadList(); rerender(); };
   W.wrSetFilter = function(k, v){ if (k !== 'kind' && k !== 'store') return; S.flt[k] = v || ''; S.rows = null; reloadList(); rerender(); };
   /* ログインの直後に 1 回だけ「使い始めたか」を見る（前の画面の案内とログインの直後の行き先に使う） */
-  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live)); }, function(){}); };
+  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at); }, function(){}); };
   W.wrLiveSeen = liveSeen;
   /* 10A：GM・経理・事務Crew・G4 はログインの直後にワークセンターの「要対応」（使い始めたあと・この端末で見たとき） */
   W.wrLandHere = function(){
@@ -99864,13 +99875,15 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   };
   W.wrApplyNotifFocus = function(n){
     if (!n || !n.wrTab) return;
+    checkAuth();
     try{ workTab = 'wr'; }catch(e){}
     S.view = ['todo','mine','team','history'].indexOf(n.wrTab) >= 0 ? n.wrTab : 'todo';
     S.openCode = typeof n.refId === 'string' ? n.refId : '';
     S.rows = null; S.load = '';
   };
-  W.wrTabBadge = function(){ var c = S.counts && S.counts.todo; return c ? ' <span class="tag tag-red" style="font-size:8px">' + c + '</span>' : ''; };
+  W.wrTabBadge = function(){ checkAuth(); var c = S.counts && S.counts.todo; return c ? ' <span class="tag tag-red" style="font-size:8px">' + c + '</span>' : ''; };
   W.wrTodayTile = function(){
+    checkAuth();
     if (!liveSeen()) return '';
     var c = S.counts ? (S.counts.todo || 0) : null;
     return '<div style="cursor:pointer" onclick="setWorkTab(\'wr\')">' + kpi(T('申請の対応待ち','Requests to handle'), c == null ? '—' : c + T('件',''), c ? T('タップで処理へ','Tap to handle') : T('申請のタブ','Requests tab'), c ? 'var(--red)' : 'var(--green)') + '</div>';
@@ -99968,6 +99981,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       });
       h2 += '</tbody></table></div>';
     }
+    if ((me.role === 'ceo' || me.role === 'gm') && S.view === 'team') h2 += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" ' + (S.busy ? 'disabled' : '') + ' onclick="wrReimport()">' + T('前の画面に残っている申請をもう一度写す','Copy requests left on the earlier screens again') + '</button> <span style="font-size:10.5px;color:var(--muted)">' + T('（まだ写していないものだけ。写したものは変えない）','(only ones not copied yet; copied ones are not changed)') + '</span></div>';
     h2 += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">' + T('休暇・シフト変更・採用・退職・予算・月間行動計画・プレップ認定・スキル・Tip Rate は、今までどおり「承認」タブで処理します（段階 2 で移します）。','Leave, shift changes, hiring, offboarding, budgets, monthly plans, prep certification, skills and Tip Rate stay in the Approvals tab for now (moved in step 2).') + ' <a href="#" onclick="setWorkTab(\'approval\');return false">' + T('承認タブ','Approvals tab') + '</a></div>';
     return h2;
   };
@@ -99982,18 +99996,25 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if (!confirm(msg)) return;
     S.busy = 'live'; rerender();
     api({ action:'settings_save', live:!!on, expect_rev:S.settingsRev }).then(function(j){
-      S.busy = ''; S.live = !!j.live; S.settingsRev = j.settings_rev; setLiveSeen(S.live);
+      S.busy = ''; S.live = !!j.live; S.settingsRev = j.settings_rev; setLiveSeen(S.live, j.settings_at);
       var im = j.imported; showToast(on ? T('使い始めました','Turned on') + (im ? T('（前からの申請 ','(copied ') + im.inserted + T(' 件を写しました）',')') : '') : T('止めました','Turned off'), 'success');
       W.wrRefresh();
     }, function(e){ S.busy = ''; showToast(String(e.message || e), 'error'); if (e.code === 'conflict') W.wrRefresh(); else rerender(); });
   };
 
+  W.wrReimport = function(){
+    if (S.busy) return;
+    S.busy = 'import'; rerender();
+    api({ action:'legacy_import' }).then(function(j){ S.busy = ''; showToast(T('写しました：','Copied: ') + (j.inserted || 0) + T(' 件',''), 'success'); reloadList(); },
+      function(e){ S.busy = ''; showToast(String(e.message || e), 'error'); rerender(); });
+  };
   /* ---------------------------------------------------------------- 1 件 */
   W.wrOpen = function(id){
+    checkAuth();
     S.d = null; S.dErr = ''; S.ask = null;
     openModal('<div id="wr-detail" style="min-width:min(640px,92vw)">' + T('読み込み中…','Loading…') + '</div>');
-    var g = S.gen;
-    api({ action:'get', id:id }).then(function(j){ S.d = j; drawDetail(); }, function(e){ S.dErr = String(e.message || e); drawDetail(); });
+    var tok = S.openTok = (S.openTok || 0) + 1, g = S.gen;   /* 続けて押したとき、前の答えを後から出さない */
+    api({ action:'get', id:id }).then(function(j){ if (tok !== S.openTok || g !== S.gen) return; S.d = j; drawDetail(); }, function(e){ if (tok !== S.openTok || g !== S.gen) return; S.dErr = String(e.message || e); drawDetail(); });
   };
   function drawDetail(){
     var el = document.getElementById('wr-detail'); if (!el) return;
@@ -100004,7 +100025,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       + '<div style="font-size:18px;font-weight:700;margin-top:2px">' + useL(r) + ' ' + money(r.amount_cents) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + ' · ' + T('利用日 ','Date ') + esc(mdOf(r.use_date)) + ' · ' + T('申請 ','Submitted ') + esc(hstTime(r.submitted_at)) + T('（ハワイ）',' (HST)') + '</div></div>'
       + '<div>' + tag(r.status) + '</div></div>';
-    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”.') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '') + '</div>';
+    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”.') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
+      + (lg.archivedWhilePending ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で、申請中のまま月末処理（精算）で締められていました。もう一度精算しないよう「精算済み」で写しています。','It was closed by month-end (settled) while still waiting for approval on the earlier screen. Copied as paid so it is not paid twice.') + '</div>' : '') + '</div>';
     if (r.status === 'returned' && r.returned) h += '<div class="alert alert-warning" style="margin-top:8px;font-size:12px">' + T('差し戻し：','Returned: ') + esc(r.returned.reason || '') + ' — ' + esc(r.returned.by || '') + '（' + esc(hstTime(r.returned.at)) + '）</div>';
     if (r.closed && (r.status === 'rejected' || r.status === 'withdrawn')) h += '<div class="alert ' + (r.status === 'rejected' ? 'alert-danger' : '') + '" style="margin-top:8px;font-size:12px">' + esc(ST_L[r.status] ? T(ST_L[r.status][0], ST_L[r.status][1]) : r.status) + '：' + esc(r.closed.reason || '') + ' — ' + esc(r.closed.by || T('記録なし','no record')) + (r.closed.at ? '（' + esc(hstTime(r.closed.at)) + '）' : '') + '</div>';
     /* 中身 */
@@ -100040,8 +100062,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var add = function(l, v){ if (v != null && v !== '') o.push([l, esc(v)]); };
     if (r.legacy) {
       if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('マイル','Miles'), p.miles); add(T('単価','Rate'), p.rate); add(T('メモ','Memo'), p.memo); }
-      else if (r.kind === 'reimburse') { add(T('支払った人','Paid by'), p.payer); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose); add(T('用途のメモ','Note'), p.purposeMemo); }
-      else { add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); }
+      else if (r.kind === 'reimburse') {
+        add(T('支払った人','Paid by'), p.payer); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose); add(T('用途のメモ','Note'), p.purposeMemo); add(T('支払のメモ','Payment note'), p.payMethodNote);
+        var ip = typeof p.imagePath === 'string' && /^[A-Za-z0-9_\-./]+$/.test(p.imagePath) ? p.imagePath : '', du = typeof p.driveUrl === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(p.driveUrl) ? p.driveUrl : '';
+        o.push([T('領収書','Receipt'), ip ? '<a href="#" onclick="wrReceipt(\'' + esc(ip) + '\');return false">' + T('開く','Open') + '</a>' : du ? '<a href="' + esc(du) + '" target="_blank" rel="noopener">' + T('開く（Drive）','Open (Drive)') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+      }
+      else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('実施日','Event dates'), p.eventDates); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); add(T('メモ','Memo'), p.memo); }
       return o;
     }
     if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('片道マイル','One-way miles'), p.one_way_miles); add(T('往復','Round trip'), p.round_trip ? T('はい','yes') : T('いいえ','no')); add(T('合計マイル × 単価','Miles × rate'), p.miles + ' × $' + p.rate); add(T('メモ','Memo'), p.memo); }
@@ -100115,7 +100141,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var body = Object.assign({ action:'act', id:r.id, op:op, expect_rev:r.rev, client_key:keyFor(r, op) }, extra);
     api(body).then(function(row){
       S.busy = ''; S.ask = null;
-      if (!row.replay) notifyAfter(op, row);
+      notifyAfter(op, row);
       showToast(T(ACT_L[op] ? ACT_L[op][0] : op, ACT_L[op] ? ACT_L[op][1] : op) + ' · ' + row.code, 'success');
       return api({ action:'get', id:r.id }).then(function(j){ S.d = j; drawDetail(); });
     }, function(e){
@@ -100134,7 +100160,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var ok = 0, ng = 0;
     list.reduce(function(pr, r){ return pr.then(function(){
       return api({ action:'act', id:r.id, op:'pay', expect_rev:r.rev, client_key:keyFor(r, 'pay'), pay_date:d, pay_method:'Payroll', note:T('まとめて精算','batch payment') })
-        .then(function(x){ ok++; if (!x.replay) notifyAfter('pay', x); }, function(){ ng++; });
+        .then(function(x){ ok++; notifyAfter('pay', x); }, function(){ ng++; });
     }); }, Promise.resolve()).then(function(){
       S.busy = ''; showToast(T('精算を記録：','Recorded: ') + ok + (ng ? T(' 件・できなかった ',' · failed ') + ng : T(' 件','')), ng ? 'error' : 'success'); reloadList();
     });
@@ -100147,25 +100173,29 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* ---------------------------------------------------------------- 知らせ（今までの通知・id で 1 回だけ） */
   function notifyAfter(op, r){
     if (typeof addNotif !== 'function') return;
+    /* id は番号と版で決まる：押し直し（答えが届かなかった 1 回目）でも送り、もう端末にあれば送らない */
+    var have = {}; try{ (getNotifs() || []).forEach(function(n){ if (n && n.id) have[n.id] = 1; }); }catch(e){}
+    var addNotifOnce = function(n){ if (!have[n.id]) { have[n.id] = 1; addNotif(n); } };
     var base = { id:'ntf_wr_' + r.code + '_' + r.rev, page:'tasks', wrTab:'todo', refId:r.code, type:'wr' };
     var name = kindL(r.kind) + ' ' + r.code;
     try {
       if (op === 'submit' || op === 'resubmit') {
         /* AM の店のガソリン代はその AM に（役割 am には G4 も入るので名前で）。ほかは GM */
         var to = (r.next && r.next.who === 'am' && r.next.name) ? { toUser:r.next.name } : { toRoles:['gm'] };
-        addNotif(Object.assign(base, to, { title:T('承認待ち：','Waiting for approval: ') + name, text:r.requester_name + ' · ' + money(r.amount_cents) }));
+        addNotifOnce(Object.assign(base, to, { title:T('承認待ち：','Waiting for approval: ') + name, text:r.requester_name + ' · ' + money(r.amount_cents) }));
       } else if (op === 'approve') {
-        addNotif(Object.assign(base, { toRoles:['office','office_crew'], title:T('経理の確認待ち：','Waiting for accounting: ') + name, text:r.requester_name + ' · ' + money(r.amount_cents) }));
-        addNotif(Object.assign({}, base, { id:base.id + '_u', toUser:r.requester_name, wrTab:'mine', title:T('承認されました：','Approved: ') + name }));
+        addNotifOnce(Object.assign(base, { toRoles:['office','office_crew'], title:T('経理の確認待ち：','Waiting for accounting: ') + name, text:r.requester_name + ' · ' + money(r.amount_cents) }));
+        addNotifOnce(Object.assign({}, base, { id:base.id + '_u', toUser:r.requester_name, wrTab:'mine', title:T('承認されました：','Approved: ') + name }));
       } else if (op === 'return' || op === 'reject' || op === 'pay') {
         var tl = op === 'return' ? T('差し戻し：','Returned: ') : op === 'reject' ? T('却下：','Rejected: ') : T('支払・精算しました：','Paid: ');
-        addNotif(Object.assign(base, { toUser:r.requester_name, wrTab:'mine', title:tl + name, text:(r.returned && op === 'return' ? r.returned.reason : r.closed && op === 'reject' ? r.closed.reason : '') || '' }));
+        addNotifOnce(Object.assign(base, { toUser:r.requester_name, wrTab:'mine', title:tl + name, text:(r.returned && op === 'return' ? r.returned.reason : r.closed && op === 'reject' ? r.closed.reason : '') || '' }));
       }
     } catch(e) {}
   }
 
   /* ---------------------------------------------------------------- 新しい申請・直す */
   W.wrNew = function(kind, from){
+    checkAuth();
     /* まだ読んでいない（前の画面から来た）：読んでから開く。使い始めているかはサーバーが決める */
     if (!S.me) {
       S.pendingNew = { kind:kind, from:from || null };
@@ -100232,7 +100262,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     el.innerHTML = T('合計 ','Total ') + miles + ' mi × $' + S.rate + ' = <b>' + money(Math.round(miles * S.rate * 100)) + '</b> <span style="color:var(--muted)">' + T('（サーバーが今の単価で決めます）','(the server uses the current rate)') + '</span>';
   };
   function val(id){ var e = document.getElementById('wrf-' + id); return e ? e.value : undefined; }
-  function toCents(v){ var x = parseFloat(v); return x > 0 ? Math.round(x * 100) : null; }
+  /* 「12.34」→ 1234（文字のまま。小数の誤差を通さない）。小数 3 桁目からは四捨五入 */
+  function toCents(v){
+    var m = /^\s*(\d{1,9})(?:\.(\d*))?\s*$/.exec(String(v == null ? '' : v)); if (!m) return null;
+    var f = (m[2] || '') + '000', c = Number(m[1]) * 100 + Number(f.slice(0, 2)) + (Number(f[2]) >= 5 ? 1 : 0);
+    return c > 0 ? c : null;
+  }
   function readForm(){
     var f = S.form; if (!f || !f.kind) return;
     var p = f.p;
@@ -100271,11 +100306,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         var op = f.from.status === 'returned' ? 'resubmit' : 'edit';
         j = await api({ action:'act', id:f.from.id, op:op, kind:f.kind, expect_rev:f.from.rev, client_key:f.key, payload:payload, note:(f.note || '').trim() || null, dup_reason:f.dup ? f.dupReason.trim() : null });
         if (j && j.duplicate) { f.dup = j.duplicate; f.busy = false; drawForm(); return; }
-        if (!j.replay) notifyAfter(op, j);
+        notifyAfter(op, j);
       } else {
         j = await api({ action:'submit', kind:f.kind, store_id:f.store, client_key:f.key, payload:payload, dup_reason:f.dup ? f.dupReason.trim() : null });
         if (j && j.duplicate) { f.dup = j.duplicate; f.busy = false; drawForm(); return; }
-        if (!j.replay) notifyAfter('submit', j);
+        notifyAfter('submit', j);
       }
       S.form = null; closeModalDirect();
       showToast(T('申請しました：','Submitted: ') + j.code, 'success');

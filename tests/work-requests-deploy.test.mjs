@@ -32,10 +32,11 @@ test('pre-check, post-check and stop on a synthetic database', async () => {
   const post = (await pg.query(read('3_確認のSQL_読むだけ.sql'))).rows;
   const by = n => post.find(r => r.check_name.startsWith(n)).result;
   assert.equal(by('wr_ tables'), 'OK'); assert.equal(by('row level'), 'OK'); assert.equal(by('browser roles cannot read'), 'OK');
-  assert.equal(by('browser roles cannot run'), 'OK'); assert.equal(by('functions'), '31'); assert.equal(by('live'), 'false'); assert.equal(by('requests'), '0');
+  assert.equal(by('browser roles cannot run'), 'OK'); assert.equal(by('functions'), '33'); assert.equal(by('live'), 'false'); assert.equal(by('requests'), '0');
   await pg.exec('update public.wr_settings set live = true');
   await pg.exec(read('止める.sql'));
   assert.equal((await pg.query('select live, rev from public.wr_settings')).rows[0].live, false);
   await pg.exec(read('止める.sql'));
   assert.equal((await pg.query('select rev from public.wr_settings')).rows[0].rev, 2, 'twice: the same');
+  assert.equal((await pg.query(`select value->>'live' v from public.app_state where key = 'wr_live'`)).rows[0].v, 'false', 'the shared mark is off too');
 });

@@ -34,7 +34,7 @@ async function setup({ live = true, legacy = null, rate = 0.7, verify = true } =
     create table public.employees(id text primary key, name text, role text, title text, store text, support jsonb, status text, data jsonb);
     create table public.stores(id text primary key, name text, am text, active boolean);
     create table public.app_state(key text primary key, value jsonb, updated_at timestamptz default now());
-    grant select on public.manager_auth, public.employees, public.stores, public.app_state to service_role;
+    grant select on public.manager_auth, public.employees, public.stores to service_role; grant select, insert, update on public.app_state to service_role;
     insert into public.stores values ('S1','Store One','Ami Area',true),('S2','Store Two',null,true),('S3','Store Three','',true);`);
   for (const [id, name, role, title, store, support, status, ma] of PEOPLE) {
     await pg.query('insert into employees values($1,$2,$3,$4,$5,$6,$7,$8)', [id, name, role, title, store, JSON.stringify(support), status, JSON.stringify({ name, status })]);
@@ -347,4 +347,75 @@ test('no one decides their own request; an AM decides only the stores they lead'
   assert.equal((await act('E5', s2, 'approve')).status, 404, 'an AM does not even see a store they do not lead');
   assert.equal((await act('E5', s2, 'reject', { body: { note: 'x' } })).status, 404, 'nor reject it');
   assert.equal((await act('E2', s2, 'approve')).body.status, 'approved');
+});
+
+test('review fixes: the next approver is an AM who can approve; keys are not reused across actions; numbers past 9999', async () => {
+  const { call, act, key, mileage, pg } = await setup();
+  // an AM's own mileage goes to the GM (not back to themselves)
+  await pg.exec(`reset role; update employees set store = 'S1' where id = 'E5'; set role service_role;`);
+  const own = (await mileage('E5', 'S1')).body;
+  assert.deepEqual(own.next, { step: 'approve', who: 'gm' });
+  assert.equal((await act('E5', own, 'approve')).status, 403);
+  // stores.am names someone who is not an AM (or with spaces): the GM approves, the named person is not told
+  await pg.exec(`reset role; update stores set am = ' Sam Store ' where id = 'S1'; set role service_role;`);
+  const r = (await mileage('E7', 'S1', { payload: { date: '2026-10-11' } })).body;
+  assert.deepEqual(r.next, { step: 'approve', who: 'gm' });
+  await pg.exec(`reset role; update stores set am = ' Ami Area ' where id = 'S1'; set role service_role;`);
+  const r2 = (await call('E7', { action: 'get', id: r.id })).body;
+  assert.deepEqual(r2.next, { step: 'approve', who: 'am', name: 'Ami Area' }, 'trimmed on both sides');
+  assert.equal((await act('E5', r2, 'approve')).body.status, 'approved');
+  // a key used for one thing is not a replay of another
+  const k = 'shared-key-0001';
+  const a = (await mileage('E7', 'S1', { client_key: k, payload: { date: '2026-10-12' } })).body;
+  const b = (await mileage('E11', 'S1', { payload: { date: '2026-10-13' } })).body;
+  assert.equal((await act('E2', b, 'reject', { client_key: k, body: { note: 'x' } })).status, 409, 'a submit key used for a reject');
+  assert.equal((await call('E2', { action: 'get', id: b.id })).body.status, 'pending', 'nothing happened to the other request');
+  const k2 = 'approve-key-001';
+  await act('E2', a, 'approve', { client_key: k2 });
+  assert.equal((await act('E2', b, 'approve', { client_key: k2 })).status, 409, 'an approve key reused on another request');
+  assert.equal((await act('E2', (await call('E2', { action: 'get', id: a.id })).body, 'undo', { client_key: k2, body: { note: 'x' } })).status, 409, 'and for another action');
+  // numbers
+  await pg.exec(`reset role; update wr_counters set n = 9999 where prefix = 'GS'; set role service_role;`);
+  const big = (await mileage('E7', 'S1', { payload: { date: '2026-10-14' } })).body;
+  assert.match(big.code, /^GS-\d{4}-10000$/);
+  assert.match((await mileage('E7', 'S1', { payload: { date: '2026-10-15' } })).body.code, /^GS-\d{4}-10001$/);
+});
+
+test('review fixes: old records — the split row wins, deleted stays deleted, an undone check is no check, month-end closes count as paid, a name alone cannot withdraw', async () => {
+  const legacy = {
+    mileage_requests: [
+      { id: 'mi1761000000000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-01', amount: 7, status: '申請中' },
+      { id: 'mi1761000001000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-02', amount: 3, status: '申請中' },
+      { id: 'mi1761000009000', employee: 'Gone Person', storeId: 'S1', date: '2026-10-09', amount: 5, status: '申請中' },
+    ],
+    'spl_mileage_requests_Lee Leader': [
+      { id: 'mi1761000000000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-01', amount: 7, status: '承認', approvedBy: 'Ami Area', archived: true },
+      { id: 'mi1761000001000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-02', amount: 3, status: '申請中', _deleted: true },
+      { id: 'mi1761000002000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-03', amount: 2, status: '申請中', archived: true },
+      { id: 'mi1761000003000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-04', amount: 'oops', status: '承認', archived: 'yes' },
+      { id: 'mi1761000004000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-05', amount: 1e12, status: '申請中' },
+    ],
+    approvals: [{ ref: 'mi1761000004000', acct: { by: 'Ann Acct', at: 'a', t: 1 } }],
+    spl_expense_requests_x: [{ id: 'ex1761000006000', employee: 'Sam Store', storeId: 'S1', date: '2026-10-08', purpose: 'Lunch', total: 120, status: '承認' }],
+    spl_approvals_y: [{ ref: 'ex1761000006000', acct: { by: 'Ann Acct', at: 'a', t: 1 } }, { ref: 'ex1761000006000', acct: { by: 'Ann Acct', at: 'b', t: 2, off: true } }],
+  };
+  const { call, pg, act } = await setup({ legacy });
+  const im = (await call('E2', { action: 'legacy_import' })).body;
+  assert.equal(im.inserted, 6);
+  const rows = (await call('E2', { action: 'list', scope: 'team', state: 'all' })).body.rows;
+  const by = id => rows.find(r => r.legacy_info.id === id);
+  assert.equal(by('mi1761000000000').status, 'paid', 'the split row (approved, closed) wins over the old combined row (pending)');
+  assert.equal(by('mi1761000001000'), undefined, 'deleted in the split row: not brought back from the combined row');
+  assert.equal(by('mi1761000002000').status, 'paid', 'closed by month-end while pending: paid, never paid again');
+  assert.equal(by('mi1761000002000').legacy_info.archivedWhilePending, true);
+  assert.equal(by('mi1761000003000').amount_cents, null, 'a bad amount does not stop the copy');
+  assert.equal(by('mi1761000004000').amount_cents, null, 'nor a huge one');
+  assert.equal(by('ex1761000006000').status, 'approved', 'the newest accounting record is an undo: no check');
+  const gone = by('mi1761000009000');
+  assert.equal(gone.requester_emp, null);
+  // someone renamed to that name sees it but cannot act as the requester
+  await pg.exec(`reset role; update employees set name = 'Gone Person' where id = 'E11'; set role service_role;`);
+  const g = (await call('E11', { action: 'get', id: gone.id })).body;
+  assert.deepEqual(g.can, []);
+  assert.equal((await act('E11', g, 'withdraw')).status, 403);
 });
