@@ -1,5 +1,15 @@
 # 改修・自動化の作業記録
 
+## 2026-11-02 ワークセンターの申請（v1131・1 段目＝経費 3 種）
+
+1. 済（Claude・ブランチ `claude/work-requests`）：サーバー（SQL `20261104090000`・関数 work-requests）・アプリ v1131・試験・ブラウザ・非公開の 1 ファイル（`docs/WORK_REQUESTS_V1131_JA.md`）。
+2. 済：PR #123・Claude／Codex のレビュー（blocked）の P1・P2 と、独立レビュー（`272b159`）の P1・P2・P3 を直した（仕様の 3c）。次：Codex の再レビュー（#123 の最新の head）。
+2b. Moto さん：使い始めるときに GM・CEO が「承認・閲覧の権限の確かめ」で AM・G4 以上を確定する（手順.md の 7）。非公開の 1 ファイルは作り直したもの（`0c41b7dc2df9`）を使う。
+3. Moto さん：UI案68 の決めてほしいこと 10 の答え（今はすべて A で作った。違う番号があれば Claude に）。
+4. Moto さん：`deploy/work-requests-v1131/手順.md` の順（最初に確認 → SQL → 確認 → 関数（Verify JWT OFF）→ #122 → この PR → 端末を 1131 に → GM・CEO が「使い始める」）。
+5. 次（Claude）：2 段目（評価の変更 3 種＝スキル Lv・Career Score・Tip Rate の G4 → GM・適用日・1 回だけ反映／スキルマトリクスの表示＝人 × 店／G4 の直接の変更を止める）。
+6. あとで：休暇・シフト変更・採用・退職・予算・月間行動計画・プレップ認定を移す（段階 2）。
+
 ## 2026-11-02 LaLa の出数・リピート率の復旧（v1130・依頼の 0）とワークセンター（①〜⑩）
 
 1. 済（Claude）：原因（hyper-worker のグループ名が Customers ちょうど・LaLa は Customer Property）・hyper-worker v1130（非公開）・アプリ v1130（`docs/LALA_VISIT_V1130_JA.md`）。
