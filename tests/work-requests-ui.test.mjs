@@ -389,6 +389,11 @@ test('#123: English labels for purposes; an old request paid on the earlier scre
   en.ctx.wrNew('mileage');
   assert.match(en.dom.els['wr-form'].innerHTML, /<option value="銀行・郵便">Bank \/ post<\/option>/);
   assert.match(en.dom.els['wr-form'].innerHTML, /<option value="店舗間移動">Between stores<\/option>/);
+  fill(en.dom, { date: '2026-10-30', miles: 2 }); await en.ctx.wrSend(); await en.settle();
+  const mid = (await srv.pg.query(`select id from public.wr_requests where kind = 'mileage'`)).rows[0].id;
+  en.ctx.wrOpen(mid); await en.settle();
+  assert.match(en.dom.els['wr-detail'].innerHTML, /Purpose<\/[a-z]+>.*?Shopping/s, 'the detail shows the purpose in English too');
+  assert.doesNotMatch(en.dom.els['wr-detail'].innerHTML, /買い出し/);
   const gm = await app(srv, 'E2'); await gm.render(); gm.ctx.wrReimport(); await gm.settle();
   await srv.pg.exec(`reset role; update public.app_state set value = jsonb_set(value, '{0,payStatus}', '"支払済"') where key = 'reimbursements'; set role service_role;`);
   const id = (await srv.pg.query(`select id from public.wr_requests where legacy`)).rows[0].id;
