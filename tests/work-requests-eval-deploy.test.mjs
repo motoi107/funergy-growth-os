@@ -49,12 +49,12 @@ test('pre-check, post-check, twice, and re-running stage 1 is caught', async () 
   await pg.exec(M2);
   let by = await post();
   for (const n of ['wr_views', 'row level', 'browser roles cannot read', 'browser roles cannot run', '1 段目の関数', '振り分け']) assert.equal(by(n), 'OK', n);
-  assert.equal(by('functions'), '54');
+  assert.equal(by('functions'), '55');
   await pg.exec(M2);
-  by = await post(); assert.equal(by('functions'), '54', 'twice: the same'); assert.equal(by('振り分け'), 'OK');
+  by = await post(); assert.equal(by('functions'), '55', 'twice: the same'); assert.equal(by('振り分け'), 'OK');
   await pg.exec(M1);
   by = await post(); assert.match(by('振り分け'), /^NG/, 'stage 1 again puts its own wr_submit back');
   await pg.exec(M2);
-  by = await post(); assert.equal(by('振り分け'), 'OK'); assert.equal(by('functions'), '54');
+  by = await post(); assert.equal(by('振り分け'), 'OK'); assert.equal(by('functions'), '55');
   assert.equal(by('browser roles cannot run'), 'OK');
 });

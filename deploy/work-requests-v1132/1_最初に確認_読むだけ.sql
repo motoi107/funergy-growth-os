@@ -6,7 +6,7 @@ union all select '1 段目の関数 wr_submit',
   case when to_regprocedure('public.wr_submit(jsonb)') is not null then 'OK' else 'STOP（先に deploy/work-requests-v1131 の手順）' end
 union all select '2 段目がもう入っている（0 = 初めて）',
   case when to_regclass('public.wr_views') is null then '0' else '1（流し直しても同じ）' end
-union all select 'wr_ functions now (44 = 1 段目だけ・54 = 2 段目も)',
+union all select 'wr_ functions now (44 = 1 段目だけ・55 = 2 段目も)',
   (select count(*)::text from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%')
 union all select 'live（参考：使い始めたか）',
   case when to_regclass('public.wr_settings') is null then '—'

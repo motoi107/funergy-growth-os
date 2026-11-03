@@ -135,7 +135,8 @@ begin
  if v_own and r.status = 'returned' then o := o || 'resubmit'::text; end if;
  if v_own and r.status in ('pending','returned') then o := o || 'withdraw'::text; end if;
  if r.status = 'pending' and v_gm and not v_mine then o := o || array['approve','return','reject']; end if;
- if r.status in ('approved','apply_error') and v_gm then o := o || array['apply','apply_fail']; end if;
+ -- 承認のあと反映しない（反映できない・別の値にした など）ときは、理由を書いて閉じる（reject）。閉じないと同じ人・同じ種類を新しく出せない（独立レビュー P2-1）
+ if r.status in ('approved','apply_error') and v_gm then o := o || array['apply','apply_fail','reject']; end if;
  return o;
 end $$;
 
@@ -276,6 +277,10 @@ begin
   from public.wr_requests r where public.wr_visible(a, r) and r.status in ('pending','returned','approved','checked','apply_error');
  return jsonb_build_object('rows', v_rows, 'counts', v_counts, 'me', a, 'live', public.wr_live());
 end $$;
+
+-- 2 段目の SQL が入っているか（関数 work-requests の whoami が見る。1 段目だけなら呼べない＝前の版と分かる）
+create or replace function public.wr_stage(p jsonb) returns jsonb
+language sql stable security invoker set search_path = public, pg_temp as $$ select jsonb_build_object('stage', 2) $$;
 
 -- ---------------------------------------------------------------- スキルマトリクスの「自分の表示設定」（人 × 店）
 create or replace function public.wr_view_get(p jsonb) returns jsonb

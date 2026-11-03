@@ -18,7 +18,7 @@ const PEOPLE = [['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 const EMPS = PEOPLE.map(([id, name, role, title, store]) => ({ id, name, role, title, store, support: [], status: '在籍' }));
 
-async function server() {
+async function server({ pre = '' } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
@@ -32,6 +32,7 @@ async function server() {
     await pg.query(`insert into employees values($1,$2,$3,$4,$5,'[]','在籍',$6)`, [id, name, role, title, store, JSON.stringify({ name })]);
     if (ma) await pg.query('insert into manager_auth(role, emp_id) values($1,$2)', [ma, id]);
   }
+  if (pre) await pg.exec(pre);
   await pg.exec(MIG);
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
@@ -63,13 +64,14 @@ function shared() {
   return { skills: { S1: { 'Cam Crew': { Grill: { level: 1, status: '承認' } } } }, lss: [], scores: { 'Cam Crew': { scores: { 'B-2': 3 } } }, tips: [], history: [] };
 }
 
-async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = shared() } = {}) {
+async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = shared(), user = '' } = {}) {
   const dom = fakeDom(), toasts = [], notifs = [], calls = [];
   const storage = new Map(); if (live) storage.set('_wr_live_v1', '1');
   const ctx = {
     console, Promise, Date, Math, JSON, Object, Array, String, Number, Uint8Array, setTimeout: f => { f(); return 0; }, encodeURI,
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: 'pin-' + emp,
-    curPage: 'tasks', workTab: 'wr', curRole: role, curRealRole: realRole, STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
+    curPage: 'tasks', workTab: 'wr', curRole: role, curRealRole: realRole, curUserName: user || NAME[emp], curStoreLogin: false,
+    empGradeNum: e => { const g = ({ 'Store Manager': 'G4', 'Server Leader': 'G3', 'Kitchen Leader': 'G3', Crew: 'G1', 'Area Manager': 'G5', 'General Manager': 'G6' })[e.title] || ''; return g ? +g.slice(1) : 0; }, STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
     t: ja => ja, bizNow: () => new Date('2026-11-02T10:00:00'), kpi: (l, v) => `[${l}:${v}]`, mrAuthKey: () => 'p|' + emp,
     renderPage: () => {}, go: p => calls.push(['go', p]), showToast: (m, k) => toasts.push([k, m]), addNotif: n => notifs.push(n), getNotifs: () => notifs,
     openModal: h => dom.parse(h), closeModalDirect: () => {}, confirm: () => true, prompt: (_m, d) => d, groupsForRole: () => [{ children: ['tasks'] }],
@@ -243,4 +245,126 @@ test('Tip Rate: saving a different rate or day on the raise screen is not record
   await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
   assert.equal(gm.toasts.slice(before).filter(t => t[0] === 'error').length, 0, 'already applied on another device: no error, no second record');
   assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply'`, [id])).rows[0].n, 1);
+});
+
+test('a second ask for the same person adds to the open request (skills); another store’s open request stops it', async () => {
+  const srv = await server({ pre: `update public.employees set support = '["S2"]' where id in ('E6','E8');` }), cloud = shared();
+  cloud.skills.S2 = { 'Cam Crew': {} };
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  const ask = async (store, sel) => { g4.dom.els = Object.assign(g4.dom.els, { 'ssk-p_Grill': { value: '1' }, 'ssk-p_Floor': { value: '0' }, 'ssk-reason': { value: 'r' } }, sel); await g4.ctx.wrSkillAsk('Cam Crew', store); await g4.settle(); };
+  await ask('S1', { 'ssk-p_Grill': { value: '2' } });
+  await ask('S1', { 'ssk-p_Floor': { value: '1' } });
+  let row = (await srv.pg.query(`select code, store_id, version, payload from public.wr_requests where kind = 'skill'`)).rows;
+  assert.equal(row.length, 1); assert.equal(row[0].version, 2);
+  assert.deepEqual(row[0].payload.items.map(i => i.pos + i.to).sort(), ['Floor1', 'Grill2'], 'the earlier position is kept');
+  const before = g4.toasts.length;
+  await ask('S2', { 'ssk-p_Floor': { value: '3' } });
+  row = (await srv.pg.query(`select store_id, version, payload from public.wr_requests where kind = 'skill'`)).rows;
+  assert.equal(row.length, 1); assert.equal(row[0].store_id, 'S1'); assert.equal(row[0].version, 2, 'not replaced by another store');
+  assert.ok(g4.toasts.slice(before).some(t => /ほかの店/.test(t[1])), JSON.stringify(g4.toasts.slice(before)));
+});
+
+test('apply checks the request again first; a Career Score request must point at the same person and values; close without applying', async () => {
+  const srv = await server(), cloud = shared();
+  cloud.lss.push({ id: 'lssq_self', kind: 'score', name: 'Sam Store', self: true, status: '申請中', by: 'Sam Store', diff: [{ id: 'B-2', from: 1, to: 3 }] });
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  // a crafted call: a request for Cam Crew that names the G4's own self-review
+  const j = await g4.ctx.wrAPI({ action: 'submit', kind: 'cs', store_id: 'S1', client_key: 'k-crafted-000001', payload: { target_emp: 'E8', target_name: 'Cam Crew', reason: 'r', lss_req: 'lssq_self', items: [{ key: 'B-2', from: 1, to: 3 }] } });
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(j.id); await gm.settle(); gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(gm.S().d.status, 'apply_error'); assert.equal(cloud.lss[0].status, '申請中', 'the self-review is not approved');
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /反映しないで閉じる/);
+  gm.ctx.wrAsk('reject'); gm.dom.els['wr-note'] = { value: '中身が違う' }; gm.ctx.wrAskGo(); await gm.settle(); await gm.settle();
+  assert.equal((await srv.pg.query(`select status from public.wr_requests where id = $1`, [j.id])).rows[0].status, 'rejected');
+  // stale screen: another device applied first → this device writes nothing
+  g4.dom.els['ssk-p_Grill'] = { value: '2' }; g4.dom.els['ssk-reason'] = { value: 'r' };
+  await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
+  const sk = (await srv.pg.query(`select id, rev from public.wr_requests where kind = 'skill'`)).rows[0];
+  const h = (body) => srv.handler(new Request('https://db.test/functions/v1/work-requests', { method: 'POST', body: JSON.stringify({ pin_session: 'pin-E2', ...body }) })).then(r => r.json());
+  const ap = await h({ action: 'act', id: sk.id, op: 'approve', expect_rev: sk.rev, client_key: 'k-other-000001' });
+  gm.ctx.wrOpen(sk.id); await gm.settle();
+  await h({ action: 'act', id: sk.id, op: 'apply', expect_rev: ap.rev, client_key: 'k-other-000002', note: 'other device' });
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'nothing written from the stale screen');
+  assert.ok(gm.toasts.some(t => /先に進めました/.test(t[1])));
+});
+
+test('G4 by title (a Store Manager whose role is sl) is stopped too; a G3, the AM and before go-live are not; the matrix bar waits for go-live', async () => {
+  const srv = await server(), cloud = shared();
+  const sm = await app(srv, 'E6', { role: 'sl', realRole: 'sl', cloud });
+  assert.equal(sm.ctx.wrIsG4Live(), true);
+  sm.ctx.approveTip('x'); assert.equal(sm.calls.filter(c => c[0] === 'approveTip').length, 0);
+  const g3 = await app(srv, 'E7', { role: 'sl', realRole: 'sl', cloud });
+  assert.equal(g3.ctx.wrIsG4Live(), false);
+  const am = await app(srv, 'E5', { role: 'am', realRole: 'am', cloud });
+  assert.equal(am.ctx.wrIsG4Live(), false);
+  const pre = await app(srv, 'E6', { role: 'sl', realRole: 'sl', cloud, live: false });
+  assert.equal(pre.ctx.wrIsG4Live(), false);
+  assert.equal(pre.ctx.wrMatrixView('S1', EMPS), null, 'no view bar before go-live');
+});
+
+test('Tip Rate: an older decision with the same rate (even one dated ahead) is not taken as this save', async () => {
+  const srv = await server(), cloud = shared();
+  cloud.tips.push({ id: 'tip-old', name: 'Cam Crew', rate: 90, status: '承認', fromDay: '2026-11-16', decAt: Date.now() + 3600e3 });
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  cloud.tips = []; // the G4 sees 80 now; the old decision comes back on the GM's device
+  g4.ctx.openTipRaiseModal(); await g4.settle();
+  g4.dom.els['wrt-name'].value = 'Cam Crew'; g4.dom.els['wrt-rate'].value = '90'; g4.dom.els['wrt-reason'].value = 'r';
+  await g4.ctx.wrTipAskGo(); await g4.settle();
+  cloud.tips.push({ id: 'tip-old', name: 'Cam Crew', rate: 90, status: '承認', fromDay: '2026-11-16', decAt: Date.now() + 3600e3 });
+  const id = (await srv.pg.query(`select id from public.wr_requests where kind = 'tiprate'`)).rows[0].id;
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  gm.dom.els['tipraise-rate'].value = '100';
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal((await srv.pg.query(`select status from public.wr_requests where id = $1`, [id])).rows[0].status, 'approved');
+});
+
+test('the real Career Score approval lets the CEO apply a Work Center request (the server checked the approval), and still refuses otherwise', () => {
+  const src = html.slice(html.indexOf('function approveLssScoreRequest(id){'), html.indexOf('/* ★v999: 却下。'));
+  const mk = (wrApplying, reqWr) => {
+    const reqs = [{ id: 'q1', kind: 'score', name: 'Cam Crew', status: '申請中', by: 'Sam Store', wr: reqWr, diff: [{ id: 'B-2', to: 2 }] }];
+    const toasts = [], saved = [];
+    const c = { window: {}, getLssRequests: () => reqs, _srPending: r => r.status === '申請中', lssCanApproveScoreFor: () => false, lssReqByMe: () => false, lssScoreSetNg: () => false,
+      getLssScores: () => ({ scores: { 'B-2': 3 } }), lssSummary: () => ({ totalPct: 50, totalScore: 10, totalMax: 20 }), setLssScores: (n, v) => saved.push(v), ls: (k, d) => d, lsSet: () => true,
+      addNotif: () => {}, showToast: (m) => toasts.push(m), renderPage: () => {}, todayJP: () => '2026/11/02', lssApproverName: () => 'Cora CEO', t: a => a, ROLE_CONFIG: {}, curRole: 'ceo', curUserName: 'Cora CEO', lssItemSetOf: () => 'general' };
+    c.window._wrApplying = wrApplying; vm.createContext(c); vm.runInContext(src, c); c.approveLssScoreRequest('q1');
+    return { status: reqs[0].status, saved: saved.length, toasts };
+  };
+  assert.deepEqual(mk('CS-2611-0001', 'CS-2611-0001').status, '承認', 'applying the Work Center request it belongs to');
+  assert.equal(mk(null, 'CS-2611-0001').status, '申請中', 'not applying: the usual check (only the GM)');
+  assert.equal(mk('CS-2611-0002', 'CS-2611-0001').status, '申請中', 'another request’s code does not open it');
+});
+
+test('Career Score apply refuses each mismatch on its own: another person, a self-review, other values', async () => {
+  const srv = await server(), cloud = shared();
+  cloud.lss.push({ id: 'q-other', kind: 'score', name: 'Lee Leader', status: '申請中', by: 'Sam Store', diff: [{ id: 'B-2', from: 1, to: 3 }] },
+    { id: 'q-self', kind: 'score', name: 'Cam Crew', self: true, status: '申請中', by: 'Cam Crew', diff: [{ id: 'B-2', from: 1, to: 3 }] },
+    { id: 'q-vals', kind: 'score', name: 'Cam Crew', status: '申請中', by: 'Sam Store', diff: [{ id: 'B-2', from: 1, to: 2 }] });
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  let n = 0;
+  for (const lss of ['q-other', 'q-self', 'q-vals']) {
+    const j = await g4.ctx.wrAPI({ action: 'submit', kind: 'cs', store_id: 'S1', client_key: 'k-crafted-00000' + (++n), payload: { target_emp: 'E8', target_name: 'Cam Crew', reason: 'r', lss_req: lss, items: [{ key: 'B-2', from: 1, to: 3 }] } });
+    gm.ctx.wrOpen(j.id); await gm.settle(); gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+    assert.equal(gm.S().d.status, 'apply_error', lss);
+    gm.ctx.wrAsk('reject'); gm.dom.els['wr-note'] = { value: 'x' }; gm.ctx.wrAskGo(); await gm.settle(); await gm.settle();
+  }
+  assert.deepEqual(cloud.lss.map(q => q.status), ['申請中', '申請中', '申請中']);
+  assert.equal(gm.calls.filter(c => c[0] === 'lssApprove').length, 0);
+});
+
+test('a v1132 function on the stage-1 SQL says so (not “check the values”)', async () => {
+  const srv = await server(), cloud = shared();
+  const stage1 = { handler: async req => {
+    const body = JSON.parse(await req.clone().text());
+    if (body.action === 'submit' && ['skill', 'cs', 'tiprate'].includes(body.kind)) return new Response(JSON.stringify({ error: 'bad_value' }), { status: 400 });
+    const res = await srv.handler(req); const j = await res.json();
+    if (body.action === 'whoami') j.sql = 1;
+    return new Response(JSON.stringify(j), { status: res.status });
+  } };
+  const g4 = await app(stage1, 'E6', { role: 'am', realRole: 'g4', cloud });
+  g4.dom.els['ssk-p_Grill'] = { value: '2' }; g4.dom.els['ssk-reason'] = { value: 'r' };
+  await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
+  assert.ok(g4.toasts.some(t => /1 段目（v1131）のまま/.test(t[1])), JSON.stringify(g4.toasts));
 });

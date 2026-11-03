@@ -16,4 +16,4 @@ union all select '振り分け（wr_submit・wr_act・wr_actions が 2 段目の
     and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_act(jsonb)')) like '%wr_act_eval%'
     and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_actions(jsonb,public.wr_requests)')) like '%wr_actions_eval%'
     then 'OK' else 'NG（1 段目の SQL を流し直したなら、2_追加のSQL.sql をもう一度）' end
-union all select 'functions (54)', (select count(*)::text from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%');
+union all select 'functions (55)', (select count(*)::text from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%');

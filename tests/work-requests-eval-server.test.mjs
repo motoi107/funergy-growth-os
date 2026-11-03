@@ -59,7 +59,7 @@ test('a confirmed G4 asks the GM to change a skill level; the GM approves; the c
   const todo = (await call('E2', { action: 'list', scope: 'todo' })).body;
   assert.ok(todo.rows.some(x => x.id === r.id));
   const a = (await act('E2', r, 'approve')).body;
-  assert.equal(a.status, 'approved'); assert.deepEqual(a.next, { step: 'apply', who: 'gm' }); assert.deepEqual(a.can, ['apply', 'apply_fail']);
+  assert.equal(a.status, 'approved'); assert.deepEqual(a.next, { step: 'apply', who: 'gm' }); assert.deepEqual(a.can, ['apply', 'apply_fail', 'reject']);
   assert.ok((await call('E2', { action: 'list', scope: 'todo' })).body.rows.some(x => x.id === r.id), 'still to do for the GM until applied');
   const k = 'k-apply-000001';
   const ap = (await act('E2', a, 'apply', { key: k, note: 'Grill 1 → 2' })).body;
@@ -152,9 +152,25 @@ test('apply can fail with a reason and be tried again; Tip Rate and Career Score
   const a = (await act('E2', cs, 'approve')).body;
   assert.equal((await act('E2', a, 'apply_fail')).status, 400, 'reason required');
   const f = (await act('E2', a, 'apply_fail', { note: 'Career Score の記録を読めなかった' })).body;
-  assert.equal(f.status, 'apply_error'); assert.deepEqual(f.can, ['apply', 'apply_fail']);
+  assert.equal(f.status, 'apply_error'); assert.deepEqual(f.can, ['apply', 'apply_fail', 'reject']);
   assert.equal((await act('E6', f, 'apply')).status, 403, 'only a GM or the CEO applies');
   assert.equal((await act('E1', f, 'apply', { note: 'B-2 3 → 2' })).body.status, 'applied');
+  // 承認のあと反映しないときは、GM・CEO が理由を書いて閉じる。閉じたら同じ人・同じ種類をまた出せる（独立レビュー P2-1）
+  const tr = (await t('tiprate', { rate_to: 90, from_day: '2026-11-16' })).body;
+  const ta = (await act('E2', tr, 'approve')).body;
+  assert.equal((await act('E6', ta, 'reject', { note: 'x' })).status, 403, 'the G4 cannot close it');
+  assert.equal((await act('E2', ta, 'reject')).status, 400, 'reason required');
+  const closed = (await act('E2', ta, 'reject', { note: '別の率にした' })).body;
+  assert.equal(closed.status, 'rejected'); assert.deepEqual(closed.can, []);
+  const again = (await t('tiprate', { rate_to: 100, from_day: '2026-11-16' })).body;
+  assert.match(again.code, /^TR-/); assert.notEqual(again.code, tr.code);
+  const who = (await call('E2', { action: 'whoami' })).body;
+  assert.equal(who.fn, 2); assert.equal(who.sql, 2, 'the function says the stage-2 SQL is there');
+  const h1 = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k],
+    db: { rpc: (n, p) => (n === 'wr_stage' ? Promise.reject(new Error('function not found')) : db.rpc(n, p)) },
+    verifyPin: async () => ({ emp_id: 'E2', name: NAME.E2 }) });
+  const w1 = await (await h1(new Request('https://fn.test/work-requests', { method: 'POST', body: JSON.stringify({ action: 'whoami', pin_session: 'x' }) }))).json();
+  assert.equal(w1.sql, 1, 'without the stage-2 SQL the function says stage 1');
   // Career Score は「未採点に戻す」（to が null）もある。スキルは数だけ（サーバーの SQL でも）
   const t7 = (k, payload) => call('E6', { action: 'submit', kind: k, store_id: 'S1', client_key: key(), payload: { target_emp: 'E7', reason: 'r', ...payload } });
   const nul = (await t7('cs', { lss_req: 'lssq_def', items: [{ key: 'C-1', from: 2, to: null }] })).body;
