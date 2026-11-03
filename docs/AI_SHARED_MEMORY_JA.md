@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-03 v1135：UI案68 の答え（ガソリン代は GM・G3 も申請・OJT は GM の承認・店の表示対象は GM・ログインの直後は今のまま）（Claude・ブランチ `claude/work-requests-ui68`・#126（v1134）の上・SQL `20261107090000`・アプリ・本番未反映）
+
+- 依頼：Moto さん 11/03 01:07〜01:18 HST の答え（下の v1134 の節）。仕様・試験・レビュー・限界：`docs/WORK_REQUESTS_V1135_JA.md`。入れる一式：`deploy/work-requests-v1135/`（1 段目・2 段目・v1133・v1135 を 1 つの SQL に。関数は v1133 のまま＝変えない）。
+- SQL：`wr_approver_am` を空（4B：ガソリン代は GM・CEO）・`wr_can_submit_eval` に G3（GM・CEO が確かめた写しの G3）と AM（担当の店）・`wr_elevated` を G3 以上（G3 も「承認・閲覧の権限の確かめ」に入る）・`wr_actor` の G3 の店も写しと今の重なり・表 `wr_store_views`（9B・保存は GM・CEO だけ・版）・`wr_stage` 4。表 9・関数 56。
+- アプリ v1135：G3 の Tip Rate の申請のボタン・Career Score は自分の店の G2 を採点して申請（G3 のスキルの直接変更は今のまま）・OJT の合格は使い始めたあと GM・CEO 以外のサインなら直接書かずにスキル・Career Score の申請（申請できない端末・人なら GM に知らせる）・上げる申請はもう上がっていれば下げない・店の表示対象（GM・CEO だけ・5 分で読み直す）・10B（`wrLandHere` はいつも false）・「SQL が前の段」「GM・CEO の確かめ待ち」の言葉。
+- 試験（合成データ）：ui68-server 9・ui68-app 4（新）・eval-ui 21・ui 16・eval-deploy 9・apply-claim 28・eval-server 11・server 23・deploy 2・本物の PostgreSQL の 2 セッション（pr124・pr123）・ux-core 35・static release pass/1135。わざと壊す：1 回目 51 通りのうち 41 → 試験を足して 48（残り 3 は二重の守り）、レビューの直しの 17 通りは下の記録。ブラウザ（模擬サーバー・Chromium・本物の handler と SQL）43/43。
+- 独立レビュー（Claude の別エージェント・作業を見ていない・`229d6c7`）：P1 なし・**P2 2**（申請できない端末の OJT が直接書く／G3 の権限が公開の鍵で書ける社員の表だけで決まる）・P3 8 → すべて直した（仕様の 5b）。直したあとの独立レビューは無し。Codex のレビューはまだ。
+- 入れたあと（Moto さん）：GM・CEO が「承認・閲覧の権限の確かめ」で G3 を確かめる（確かめるまで G3 は申請できない）・店ごとの表示対象を決める。
+- PR #127（head `5f1fe72` のあと記録だけ）。次：Codex → #126 → #127 の順にマージ → `deploy/work-requests-v1135/手順.md`。
+
 ## 2026-11-03 v1134：押さえが 30 分で切れたあとの古い書き込みを止める（#125 の Codex のレビュー P2-2・Claude・ブランチ `claude/work-requests-claim-age`・main `8f17be4` の上・アプリだけ・本番未反映）
 
 - 経緯：Moto さんが 11/03 01:01 HST に #125 を `ea1bce2` でマージ（main `8f17be4`）。01:05 HST「マージまで終わりました」（入れる一式の SQL・関数を入れたかは書いていない＝未確認）。

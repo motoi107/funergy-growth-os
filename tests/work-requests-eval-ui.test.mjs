@@ -13,13 +13,18 @@ const MOD = html.slice(html.indexOf('/* ==== FUNERGY_WR（v1131'), html.indexOf(
 const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8') + '\n'
   + fs.readFileSync(new URL('../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), 'utf8') + '\n'
   + fs.readFileSync(new URL('../supabase/migrations/20261106090000_work_requests_apply_claim.sql', import.meta.url), 'utf8');
+// v1135：UI案68 の答えの SQL も重ねる（server({ mig4:false }) で前の段）
+const MIG4 = fs.readFileSync(new URL('../supabase/migrations/20261107090000_work_requests_ui68.sql', import.meta.url), 'utf8');
 const PEOPLE = [['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3', 'Ann Acct', 'office', 'Accountant', 'OFFICE', 'office'],
   ['E5', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E6', 'Sam Store', 'sl', 'Store Manager', 'S1', null], ['E7', 'Lee Leader', 'sl', 'Server Leader', 'S1', null],
   ['E8', 'Cam Crew', 'crew', 'Crew', 'S1', null], ['E9', 'Kai Kitchen', 'sl', 'Kitchen Leader', 'S2', null]];
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 const EMPS = PEOPLE.map(([id, name, role, title, store]) => ({ id, name, role, title, store, support: [], status: '在籍' }));
+// v1135：アプリの名簿だけにいる人（サーバーには入れない）：S2 の G2・肩書きが G3 の経理
+EMPS.push({ id: 'E20', name: 'Gus Crewlead', role: 'g2', title: 'Crew Leader', store: 'S2', support: [], status: '在籍' },
+  { id: 'E21', name: 'Ana Lead', role: 'office', title: 'Accounting Leader', store: 'OFFICE', support: [], status: '在籍' });
 
-async function server({ pre = '' } = {}) {
+async function server({ pre = '', mig4 = true } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
@@ -35,6 +40,7 @@ async function server({ pre = '' } = {}) {
   }
   if (pre) await pg.exec(pre);
   await pg.exec(MIG);
+  if (mig4) await pg.exec(MIG4);
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest });
@@ -72,7 +78,7 @@ async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = 
     console, Promise, Date, Math, JSON, Object, Array, String, Number, Uint8Array, setTimeout: f => { f(); return 0; }, encodeURI,
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: 'pin-' + emp,
     curPage: 'tasks', workTab: 'wr', curRole: role, curRealRole: realRole, curUserName: user || NAME[emp], curStoreLogin: false,
-    empGradeNum: e => { const g = ({ 'Store Manager': 'G4', 'Server Leader': 'G3', 'Kitchen Leader': 'G3', Crew: 'G1', 'Area Manager': 'G5', 'General Manager': 'G6' })[e.title] || ''; return g ? +g.slice(1) : 0; }, STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
+    empGradeNum: e => { const g = ({ 'Store Manager': 'G4', 'Server Leader': 'G3', 'Kitchen Leader': 'G3', 'Crew Leader': 'G2', 'Accounting Leader': 'G3', Crew: 'G1', 'Area Manager': 'G5', 'General Manager': 'G6' })[e.title] || ''; return g ? +g.slice(1) : 0; }, STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
     t: ja => ja, bizNow: () => new Date('2026-11-02T10:00:00'), kpi: (l, v) => `[${l}:${v}]`, mrAuthKey: () => 'p|' + emp,
     renderPage: () => {}, go: p => calls.push(['go', p]), showToast: (m, k) => toasts.push([k, m]), addNotif: n => notifs.push(n), getNotifs: () => notifs,
     openModal: h => dom.parse(h), closeModalDirect: () => {}, confirm: () => true, prompt: (_m, d) => d, groupsForRole: () => [{ children: ['tasks'] }],
@@ -95,6 +101,11 @@ async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = 
     submitSkillReview: (...a) => calls.push(['skillReview', ...a]),
     openTipRaiseModal: () => { calls.push(['raiseModal']); dom.parse('<select id="tipraise-name"><option value="Cam Crew">Cam</option></select><select id="tipraise-rate"><option value="80"></option><option value="90"></option><option value="100"></option></select><input id="tipraise-from" value=""><div id="tipraise-preview"></div>'); },
     tipRaisePreview: () => {},
+    // v1135：OJT の合格の自動反映（今までの関数の代わり：直接変えたら記録）と Career Score の評価表の代わり
+    g2AutoReflect: (n, m) => calls.push(['direct', n, m && m.id]),
+    lssCatsForName: () => [{ key: 'A', name: '営業準備', items: ['a1', 'a2', 'a3'] }, { key: 'B', name: '接客', items: ['b1', 'b2'] }],
+    lssItemId: (k, i) => k + i, lssItemLabelFor: (_n, id) => ({ label: 'item ' + id }), lssItemSetOf: () => 'general',
+    lssSummary: () => ({ totalScore: 10, totalMax: 15, totalPct: 67 }), _lssqId: () => 'lssq_ojt_' + (cloud.lss.length + 1),
     applyTipRaise: async () => { if (cloud.raiseWait) await cloud.raiseWait; if (cloud.raiseSkip) return; const n = dom.els['tipraise-name'].value, r = +dom.els['tipraise-rate'].value, f = dom.els['tipraise-from'].value;
       calls.push(['raise', n, r, f]); cloud.tips.push({ id: 'tip' + Date.now() + '_' + cloud.tips.length, name: n, rate: r, status: '承認', fromDay: f, decAt: Date.now() }); },
   };
@@ -181,25 +192,52 @@ test('Career Score: the G4’s score request becomes a CS request; only Work Cen
   assert.deepEqual(gm.calls.filter(c => c[0] === 'lssApprove'), [['lssApprove', 'lssq_1'], ['lssApprove', 'lssq_1']]);
 });
 
-test('before go-live nothing changes for a G4; the matrix view keeps my hidden people per store', async () => {
+test('before go-live nothing changes for a G4; 9B: the matrix view is one per store, set by the GM, seen by everyone', async () => {
   const srv = await server(), cloud = shared();
   const old = await app(srv, 'E6', { role: 'am', realRole: 'g4', live: false, cloud });
   assert.equal(old.ctx.wrIsG4Live(), false);
   old.ctx.approveTip('x'); old.ctx.submitSkillReview('y'); old.ctx.openTipRaiseModal();
   assert.deepEqual(old.calls.map(c => c[0]), ['approveTip', 'skillReview', 'raiseModal']);
-  const gm = await app(srv, 'E2', { cloud }); await gm.render();
   const staff = EMPS.filter(e => e.store === 'S1');
-  let v = gm.ctx.wrMatrixView('S1', staff); await gm.settle();
+  // a G4 reads the store view but has no button (the GM decides)
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.wrMatrixView('S1', staff); await g4.settle();
+  let v = g4.ctx.wrMatrixView('S1', staff);
+  assert.equal(v.shown.length, staff.length); assert.doesNotMatch(v.bar, /wrViewEdit/, 'no button for a G4');
+  g4.ctx.wrViewEdit('S1');
+  assert.ok(g4.toasts.some(t => /GM・CEO が決めます/.test(t[1])) && !g4.dom.els['wr-view'], 'the editor does not open');
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrMatrixView('S1', staff); await gm.settle();
   v = gm.ctx.wrMatrixView('S1', staff);
-  assert.equal(v.shown.length, staff.length); assert.match(v.bar, /表示対象/);
+  assert.equal(v.shown.length, staff.length); assert.match(v.bar, /表示対象（店の設定）/);
   gm.ctx.wrViewEdit('S1');
-  assert.match(gm.dom.els['wr-view'].innerHTML, /data-a="E8"/);
+  assert.match(gm.dom.els['wr-view'].innerHTML, /data-a="E8"/); assert.match(gm.dom.els['wr-view'].innerHTML, /全員の表示が変わります/);
   gm.ctx.wrViewPick('E8', false); gm.ctx.wrViewSave(); await gm.settle();
+  assert.ok(gm.toasts.some(t => /店の全員に効きます/.test(t[1])));
   v = gm.ctx.wrMatrixView('S1', staff);
-  assert.deepEqual(v.shown.map(e => e.id).includes('E8'), false); assert.match(v.bar, /非表示 1/);
-  const other = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await other.render();
-  other.ctx.wrMatrixView('S1', staff); await other.settle();
-  assert.equal(other.ctx.wrMatrixView('S1', staff).shown.length, staff.length, 'someone else’s view is not changed');
+  assert.deepEqual(v.shown.map(e => e.id).includes('E8'), false); assert.match(v.bar, /非表示 1 人（GM が決めた店の表示）/);
+  // everyone at the store sees the same (a G3, a G4 that opens it again, the CEO's screen)
+  for (const [emp, role, real] of [['E7', 'sl', ''], ['E6', 'am', 'g4'], ['E5', 'am', 'am']]) {
+    const x = await app(srv, emp, { role, realRole: real, cloud }); await x.render();
+    x.ctx.wrMatrixView('S1', staff); await x.settle();
+    assert.deepEqual(x.ctx.wrMatrixView('S1', staff).shown.map(e => e.id).includes('E8'), false, emp + ' sees the store view');
+  }
+  // another GM screen that read the view earlier: its save is stopped and the latest is read again
+  const gm2 = await app(srv, 'E2', { cloud }); await gm2.render();
+  gm2.ctx._wrState().views = { S1: { load:'done', hidden:[], rev:0, can:true } };
+  gm2.ctx.wrViewEdit('S1'); gm2.ctx.wrViewPick('E7', false); gm2.ctx.wrViewSave(); await gm2.settle();
+  assert.ok(gm2.toasts.some(t => /先にこの店の表示を変えました/.test(t[1])), JSON.stringify(gm2.toasts));
+  const row = (await srv.pg.query(`select hidden, rev from public.wr_store_views where store_id = 'S1'`)).rows[0];
+  assert.deepEqual(row, { hidden: ['E8'], rev: 1 }, 'the older screen did not overwrite');
+});
+
+test('9B before the v1135 SQL: the view is not used (everyone shown, no button)', async () => {
+  const srv = await server({ mig4: false }), cloud = shared();
+  const staff = EMPS.filter(e => e.store === 'S1');
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  assert.equal(gm.ctx.wrMatrixView('S1', staff) && gm.ctx.wrMatrixView('S1', staff).shown.length, staff.length);
+  await gm.settle();
+  assert.equal(gm.ctx.wrMatrixView('S1', staff), null, 'no store mark → the view is off');
 });
 
 test('the v1131 function (no fn in whoami) is reported as the earlier version, not as a bad value', async () => {
@@ -374,4 +412,210 @@ test('a v1132 function on the stage-1 SQL says so (not “check the values”)',
   g4.dom.els['ssk-p_Grill'] = { value: '2' }; g4.dom.els['ssk-reason'] = { value: 'r' };
   await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
   assert.ok(g4.toasts.some(t => /前の段のまま/.test(t[1])), JSON.stringify(g4.toasts));
+});
+
+test('6 (v1135): a G3 asks the GM for a Tip Rate and a Career Score change; a G3 cannot raise or decide; others are not G3', async () => {
+  const srv = await server(), cloud = shared();
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  assert.deepEqual([g3.ctx.wrIsG3Live(), g3.ctx.wrIsG4Live(), g3.ctx.wrCanAskLive()], [true, false, true]);
+  g3.ctx.openTipRaiseModal(); await g3.settle();
+  assert.equal(g3.calls.filter(c => c[0] === 'raiseModal').length, 0, 'the G3 gets the request form, not the raise screen');
+  assert.deepEqual(g3.dom.els['wrt-name'].options.map(o => o.value), ['Cam Crew'], 'only people below G3 at their store');
+  g3.dom.els['wrt-name'].value = 'Cam Crew'; g3.dom.els['wrt-rate'].value = '90'; g3.dom.els['wrt-reason'].value = 'ドリンクの説明が定着';
+  await g3.ctx.wrTipAskGo(); await g3.settle();
+  const tr = (await srv.pg.query(`select requester_emp, status, payload from public.wr_requests where kind = 'tiprate'`)).rows[0];
+  assert.deepEqual([tr.requester_emp, tr.status, tr.payload.rate_to], ['E7', 'pending', 90]);
+  g3.ctx.approveTip('x'); await g3.ctx.applyTipRaise();
+  assert.equal(g3.calls.filter(c => c[0] === 'approveTip' || c[0] === 'raise').length, 0, 'a G3 does not decide or raise a Tip Rate');
+  cloud.lss.push({ id: 'lssq_g3', kind: 'score', name: 'Cam Crew', status: '申請中', by: 'Lee Leader', diff: [{ id: 'A0', catName: '営業準備', label: 'a1', from: 1, to: 2 }], changeReason: 'OJT' });
+  g3.ctx.wrCsAsk(cloud.lss[0], 'Cam Crew'); await g3.settle();
+  const cs = (await srv.pg.query(`select code, requester_emp from public.wr_requests where kind = 'cs'`)).rows[0];
+  assert.equal(cs.requester_emp, 'E7'); assert.equal(cloud.lss[0].wr, cs.code);
+  g3.ctx.submitSkillReview('sr1', 'approve');
+  assert.equal(g3.calls.filter(c => c[0] === 'skillReview').length, 1, 'skill reviews stay as before for a G3 (only the G4 is stopped)');
+  for (const [emp, role, real, user] of [['E6', 'am', 'g4'], ['E5', 'am', 'am'], ['E2', 'gm', 'gm'], ['E8', 'crew', ''], ['E20', 'g2', '', 'Gus Crewlead'], ['E21', 'office', 'office', 'Ana Lead']]) {
+    const x = await app(srv, emp, { role, realRole: real, cloud, user });
+    assert.equal(x.ctx.wrIsG3Live(), false, emp + ' is not a G3 (a G2; accounting with a G3 title)');
+  }
+  const pre = await app(srv, 'E7', { role: 'sl', live: false, cloud });
+  assert.equal(pre.ctx.wrCanAskLive(), false, 'not before go-live'); assert.equal(pre.ctx.wrIsG3Live(), false);
+  pre.ctx.openTipRaiseModal();
+  assert.equal(pre.calls.filter(c => c[0] === 'raiseModal').length, 1, 'before go-live the screens are as before');
+});
+
+test('6 (v1135): a G3 asking before the v1135 SQL is told the database is older', async () => {
+  const srv = await server({ mig4: false }), cloud = shared();
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud });
+  g3.ctx.openTipRaiseModal(); await g3.settle();
+  g3.dom.els['wrt-name'].value = 'Cam Crew'; g3.dom.els['wrt-rate'].value = '90'; g3.dom.els['wrt-reason'].value = 'r';
+  await g3.ctx.wrTipAskGo(); await g3.settle();
+  assert.ok(g3.toasts.some(t => /v1135 の SQL/.test(t[1])), JSON.stringify(g3.toasts));
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud });
+  g4.dom.els['ssk-p_Grill'] = { value: '3' }; g4.dom.els['ssk-reason'] = { value: '理由' };
+  await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
+  assert.ok(!g4.toasts.some(t => /v1135 の SQL/.test(t[1])), 'a G4 asks as before on the v1133 SQL');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests where kind = 'skill'`)).rows[0].n, 1);
+});
+
+test('OJT (Moto 11/03): a pass signed by a G3, a G4 or an AM asks the GM; the GM or CEO signing and before go-live change directly', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm5', no: 5, axis: 'A', title: 'マルチタスク', reflect: { skill: 'multi', axisFloor: 2 } };
+  cloud.skills.S1['Cam Crew'].Floor = { level: 3, status: '承認' };   /* もう 2 以上：上げない */
+  cloud.scores['Cam Crew'].scores.A1 = 3;                            /* もう下限以上：申請しない */
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.g2AutoReflect('Cam Crew', mod); await g3.settle(); await g3.settle();
+  assert.equal(g3.calls.filter(c => c[0] === 'direct').length, 0, 'nothing is changed directly');
+  assert.equal(g3.calls.filter(c => c[0] === 'skill').length, 0);
+  const rows = (await srv.pg.query(`select kind, code, status, requester_emp, payload, rev from public.wr_requests order by kind`)).rows;
+  assert.deepEqual(rows.map(r => [r.kind, r.status, r.requester_emp]), [['cs', 'pending', 'E7'], ['skill', 'pending', 'E7']]);
+  const sk = rows.find(r => r.kind === 'skill'), cs = rows.find(r => r.kind === 'cs');
+  assert.deepEqual(sk.payload.items, [{ pos: 'Grill', from: 1, to: 2 }]); assert.match(sk.payload.reason, /OJT 合格の自動反映：M5 マルチタスク（サイン：Lee Leader）/);
+  assert.deepEqual(cs.payload.items.map(i => [i.key, i.from, i.to]), [['A0', null, 2], ['A2', null, 2]]);
+  const q = cloud.lss.find(x => x.id === cs.payload.lss_req);
+  assert.equal(q.status, '申請中'); assert.equal(q.wr, cs.code); assert.deepEqual(JSON.parse(JSON.stringify(q.ojt)), { axis: 'A', floor: 2 });
+  assert.deepEqual([q.baseScore, q.wantScore, q.wantMax], [10, 14, 15], 'the totals for the GM screen');
+  assert.ok(g3.toasts.some(t => t[0] === 'success' && /OJT の合格で上がる分を GM に申請しました/.test(t[1])));
+  // another pass while both are open: the skill request already has the position (nothing new); Career Score is not replaced → the GM is told; the score request stays for the GM
+  const mod2 = { id: 'm6', no: 6, axis: 'B', title: '接客', reflect: { skill: 'multi', axisFloor: 2 } };
+  g3.ctx.g2AutoReflect('Cam Crew', mod2); await g3.settle(); await g3.settle();
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests`)).rows[0].n, 2, 'no second request');
+  const sk2 = (await srv.pg.query(`select rev, payload from public.wr_requests where kind = 'skill'`)).rows[0];
+  assert.equal(sk2.rev, sk.rev); assert.doesNotMatch(sk2.payload.reason, /M6/, 'nothing new for the skill request: it is not edited');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_versions v join public.wr_requests r on r.id = v.request_id where r.kind = 'skill'`)).rows[0].n, 1);
+  const told = g3.notifs.filter(n => /OJT の合格の反映を GM に申請できませんでした/.test(n.title || ''));
+  assert.equal(told.length, 1); assert.deepEqual([...told[0].toRoles], ['gm']); assert.match(told[0].text, /Career Score：同じ人の Career Score の申請 CS-/);
+  const q2 = cloud.lss.find(x => x.ojt && x.ojt.axis === 'B');
+  assert.equal(q2.status, '申請中'); assert.equal(q2.wr, undefined, 'left for the GM in the Career Score approvals');
+  // the GM approves the skill request and applies it: now it changes
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  const skr = (await srv.pg.query(`select id from public.wr_requests where kind = 'skill'`)).rows[0];
+  gm.ctx.wrOpen(skr.id); await gm.settle();
+  gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(gm.S().d.status, 'applied');
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 2, 'applied after the GM approves');
+  // the GM signing (and the CEO): direct, as before
+  gm.ctx.g2AutoReflect('Cam Crew', mod);
+  assert.equal(gm.calls.filter(c => c[0] === 'direct').length, 1);
+  // before go-live: direct
+  const pre = await app(srv, 'E7', { role: 'sl', live: false, cloud });
+  pre.ctx.g2AutoReflect('Cam Crew', mod);
+  assert.equal(pre.calls.filter(c => c[0] === 'direct').length, 1);
+  // a pass with nothing to raise (no reflect): direct path (nothing changes there either)
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm9', no: 9, title: 'x' });
+  assert.equal(g3.calls.filter(c => c[0] === 'direct').length, 1);
+});
+
+test('OJT (Moto 11/03): the AM signing asks for a person of a store they lead; a G4 too; without an employee ID the GM is told', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm3', no: 3, axis: 'A', title: 'キッチン', reflect: { axisFloor: 2 } };
+  const am = await app(srv, 'E5', { role: 'am', realRole: 'am', cloud }); await am.render();
+  am.ctx.g2AutoReflect('Cam Crew', mod); await am.settle(); await am.settle();
+  const r = (await srv.pg.query(`select kind, requester_emp, store_id from public.wr_requests`)).rows;
+  assert.deepEqual(r, [{ kind: 'cs', requester_emp: 'E5', store_id: 'S1' }]);
+  assert.equal(am.calls.filter(c => c[0] === 'direct').length, 0);
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.g2AutoReflect('Nobody Here', mod); await g4.settle();
+  assert.ok(g4.notifs.some(n => /社員 ID・店が分かりません/.test(n.text || '')), 'the GM is told');
+  assert.equal(g4.calls.filter(c => c[0] === 'direct').length, 0);
+});
+
+test('OJT (review 229d6c7): a device that cannot ask (no PIN mark, store login) changes nothing and tells the GM; a second pass on the same area makes no second Career Score request', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm5', no: 5, axis: 'A', title: 'マルチタスク', reflect: { skill: 'multi', axisFloor: 2 } };
+  for (const set of [ctx => { ctx._hwSession = null; }, ctx => { ctx.curStoreLogin = true; }]) {
+    const x = await app(srv, 'E7', { role: 'sl', cloud }); set(x.ctx);
+    x.ctx.g2AutoReflect('Cam Crew', mod); await x.settle();
+    assert.equal(x.calls.filter(c => c[0] === 'direct').length, 0, 'not written directly');
+    assert.ok(x.notifs.some(n => /この端末からは申請できません|サインした端末からは申請できません/.test(n.text || '') && [...n.toRoles].includes('gm')), JSON.stringify(x.notifs.map(n => n.text)));
+    assert.ok(x.toasts.some(t => t[0] === 'warning' && /GM に知らせました/.test(t[1])));
+  }
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests`)).rows[0].n, 0);
+  assert.equal(cloud.lss.length, 0);
+  // the same area twice (a check unticked and ticked again): one Career Score request, the open one is named
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm1', no: 1, axis: 'A', title: '開店準備', reflect: { axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm1', no: 1, axis: 'A', title: '開店準備', reflect: { axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  assert.equal(cloud.lss.filter(q => q.ojt && q.ojt.axis === 'A' && q.status === '申請中').length, 1, 'no second score request');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests where kind = 'cs'`)).rows[0].n, 1);
+  const code = (await srv.pg.query(`select code from public.wr_requests where kind = 'cs'`)).rows[0].code;
+  assert.ok(g3.toasts.filter(t => t[0] === 'success' && t[1].includes(code)).length === 2, 'both passes point at the one request');
+});
+
+test('OJT (review 229d6c7): a returned request is not resubmitted by a pass; a level raised meanwhile is not lowered when the GM applies', async () => {
+  const srv = await server(), cloud = shared();
+  const mod = { id: 'm5', no: 5, axis: 'Z', title: 'マルチタスク', reflect: { skill: 'multi' } };
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.g2AutoReflect('Cam Crew', mod); await g3.settle(); await g3.settle();
+  let sk = (await srv.pg.query(`select id, status, rev from public.wr_requests where kind = 'skill'`)).rows[0];
+  assert.equal(sk.status, 'pending');
+  // the GM returns it with a reason; another pass must not slip it back to the GM
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(sk.id); await gm.settle();
+  gm.ctx.wrAsk('return'); gm.dom.els['wr-note'] = { value: 'Floor も見てから' }; gm.ctx.wrAskGo(); await gm.settle(); await gm.settle();
+  const ret = (await srv.pg.query(`select status, rev from public.wr_requests where id = $1`, [sk.id])).rows[0];
+  assert.equal(ret.status, 'returned');
+  cloud.skills.S1['Cam Crew'].Floor = { level: 1, status: '承認' };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm6', no: 6, axis: 'Z', title: '接客', reflect: { skill: 'multi' } }); await g3.settle(); await g3.settle();
+  const after = (await srv.pg.query(`select status, rev from public.wr_requests where id = $1`, [sk.id])).rows[0];
+  assert.deepEqual(after, ret, 'still returned to the requester; nothing resubmitted');
+  assert.ok(g3.notifs.some(n => /差し戻し中/.test(n.text || '')), 'the GM is told');
+  delete cloud.skills.S1['Cam Crew'].Floor;
+  // a fresh request, and the level goes up to 3 before the GM applies the floor of 2
+  await srv.pg.query(`update public.wr_requests set status = 'withdrawn' where kind = 'skill'`);
+  cloud.skills.S1['Cam Crew'].Grill = { level: 1, status: '承認' };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm7', no: 7, axis: 'Z', title: 'x', reflect: { skill: 'multi' } }); await g3.settle(); await g3.settle();
+  sk = (await srv.pg.query(`select id, payload from public.wr_requests where kind = 'skill' and status = 'pending'`)).rows[0];
+  assert.deepEqual(sk.payload.items.map(i => [i.pos, i.from, i.to]), [['Grill', 1, 2]]);
+  cloud.skills.S1['Cam Crew'].Grill = { level: 3, status: '承認' };
+  gm.ctx.wrOpen(sk.id); await gm.settle();
+  gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(gm.S().d.status, 'applied');
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 3, 'not lowered to the floor');
+  assert.match((await srv.pg.query(`select close_reason from public.wr_requests where id = $1`, [sk.id])).rows[0].close_reason, /Grill 3（そのまま）/);
+  // a request that lowers a level still lowers it (only raising requests keep a higher level)
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.dom.els['ssk-p_Grill'] = { value: '1' }; g4.dom.els['ssk-p_Floor'] = { value: '0' }; g4.dom.els['ssk-reason'] = { value: '包丁の扱いをやり直す' };
+  await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
+  const low = (await srv.pg.query(`select id, payload from public.wr_requests where kind = 'skill' and status = 'pending'`)).rows[0];
+  assert.deepEqual(low.payload.items.map(i => [i.pos, i.from, i.to]), [['Grill', 3, 1]]);
+  gm.ctx.wrOpen(low.id); await gm.settle();
+  gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 1, 'lowered as asked');
+});
+
+test('6 (review 229d6c7): a G3 whose rights wait for the GM is told so; the store view is read again after five minutes', async () => {
+  const srv = await server({ pre: '' }), cloud = shared();
+  await srv.pg.exec(`reset role; update public.employees set role = 'sl' where id = 'E8'; set role service_role`);
+  const x = await app(srv, 'E8', { role: 'sl', cloud });
+  x.ctx.openTipRaiseModal(); await x.settle();
+  x.dom.els['wrt-name'] && (x.dom.els['wrt-name'].value = 'Cam Crew');
+  const opts = (x.dom.els['wrt-name'] && x.dom.els['wrt-name'].options) || [];
+  assert.ok(x.ctx._wrState().me && x.ctx._wrState().me.pending, 'the server says: waiting for the GM');
+  if (!opts.length) x.dom.els['wrt-name'] = { value: 'Lee Leader', options: [] };
+  x.dom.els['wrt-rate'].value = '90'; x.dom.els['wrt-reason'].value = 'r';
+  await x.ctx.wrTipAskGo(); await x.settle();
+  assert.ok(x.toasts.some(t => /GM・CEO の確かめ待ち/.test(t[1])), JSON.stringify(x.toasts));
+  // the GM changes the store view; a G4 screen that read it earlier picks it up after five minutes
+  const staff = EMPS.filter(e => e.store === 'S1');
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.wrMatrixView('S1', staff); await g4.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.length, staff.length);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrMatrixView('S1', staff); await gm.settle();
+  gm.ctx.wrViewEdit('S1'); gm.ctx.wrViewPick('E8', false); gm.ctx.wrViewSave(); await gm.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.length, staff.length, 'within five minutes the earlier view stays');
+  g4.ctx._wrState().views.S1.t = Date.now() - 6 * 60000;
+  g4.ctx.wrMatrixView('S1', staff); await g4.settle();
+  assert.equal(g4.ctx.wrMatrixView('S1', staff).shown.some(e => e.id === 'E8'), false, 'read again: the GM view');
+});
+
+test('OJT (review 229d6c7 P3-4): the sign-in changes while the pass is being asked → nothing is sent as the next person; the GM is told', async () => {
+  const srv = await server(), cloud = shared();
+  const g3 = await app(srv, 'E7', { role: 'sl', cloud }); await g3.render();
+  g3.ctx.pullOpKey = async () => { g3.ctx.mrAuthKey = () => 'p|E99'; return true; };
+  g3.ctx.g2AutoReflect('Cam Crew', { id: 'm5', no: 5, axis: 'A', title: 'マルチタスク', reflect: { skill: 'multi', axisFloor: 2 } }); await g3.settle(); await g3.settle();
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests`)).rows[0].n, 0, 'nothing sent');
+  assert.equal(cloud.lss.length, 0);
+  assert.equal(g3.calls.filter(c => c[0] === 'direct').length, 0);
+  assert.ok(g3.notifs.some(n => /ログインが途中で変わった/.test(n.text || '')));
 });

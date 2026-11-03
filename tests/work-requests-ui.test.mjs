@@ -108,7 +108,7 @@ test('before it is live: the screen says so; the GM turns it on (old requests co
   // 使い始める：先に権限の確かめ（増える人は最初は選ばない。GM が選ぶ）→ 選んで使い始める
   gm.ctx.wrGoLive(true); await gm.settle();
   const pm = gm.dom.els['wr-people'].innerHTML;
-  assert.match(pm, /使い始める前に、AM・G4 以上の人と担当の店を確かめてください/);
+  assert.match(pm, /使い始める前に、AM・G3 以上の人と担当の店を確かめてください/);
   assert.match(pm, /Ami Area/); assert.match(pm, /Sam Store/); assert.match(pm, /権限が増える/);
   assert.doesNotMatch(pm, /type="checkbox" checked/, 'raises are not picked for the GM');
   assert.match(pm, /このまま使い始める/);
@@ -232,14 +232,14 @@ test('after it is live, the earlier screens point here; other approval types sti
   assert.equal(y.ctx.renderMileage(), '<div>old list</div>');
 });
 
-test('who lands on the Work Center after sign-in (10A) and a server that is not there yet', async () => {
+test('10B (v1135): nobody lands on the Work Center after sign-in; a server that is not there yet', async () => {
   const srv = await server({ live: true });
   const store = new Map([['_wr_live_v1', '1']]);
   const land = async (role, realRole) => (await app(srv, 'E2', { role, realRole, storage: store })).ctx.wrLandHere();
-  assert.equal(await land('gm', 'gm'), true);
-  assert.equal(await land('office', 'office'), true);
-  assert.equal(await land('office_crew', 'office_crew'), true);
-  assert.equal(await land('am', 'g4'), true);
+  assert.equal(await land('gm', 'gm'), false, 'v1131–v1134 (10A) took the GM to the Work Center');
+  assert.equal(await land('office', 'office'), false);
+  assert.equal(await land('office_crew', 'office_crew'), false);
+  assert.equal(await land('am', 'g4'), false);
   assert.equal(await land('am', 'am'), false);
   assert.equal(await land('ceo', 'ceo'), false);
   assert.equal(await land('sl', 'sl'), false);
