@@ -383,6 +383,25 @@ test('independent review of 272b159 (D): a batch payment stops when the sign-in 
   assert.ok(acct.toasts.some(t => /別の人のログインに変わった/.test(t[1])), JSON.stringify(acct.toasts));
 });
 
+test('#123 Codex (8290eaa): a batch payment that finds a new possible duplicate does not say paid and sends no payment notice', async () => {
+  const srv = await server({ live: true });
+  const as = async (emp, body) => { const r = await srv.handler(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin_session: 'pin-' + emp, ...body }) })); return r.json(); };
+  const pl = { date: '2026-10-23', purpose: '銀行・郵便', origin: 'a', destination: 'b', one_way_miles: 3, round_trip: false, memo: '' };
+  let r = await as('E7', { action: 'submit', kind: 'mileage', store_id: 'S1', client_key: 'k-bd-000001', payload: pl });
+  r = await as('E5', { action: 'act', id: r.id, op: 'approve', expect_rev: r.rev, client_key: 'k-bd-000002' });
+  r = await as('E4', { action: 'act', id: r.id, op: 'check', expect_rev: r.rev, client_key: 'k-bd-000003' });
+  const b = await as('E7', { action: 'submit', kind: 'mileage', store_id: 'S1', client_key: 'k-bd-000004', payload: pl, dup_reason: '別の用事' });
+  assert.ok(b.code);
+  const acct = await app(srv, 'E3', { role: 'office' }); await acct.render();
+  acct.S().view = 'team'; acct.ctx.wrRefresh(); await acct.settle();
+  acct.ctx.wrBatchPay(); await acct.settle(); await acct.settle();
+  const a = (await srv.pg.query(`select status, paid_at from public.wr_requests where id = $1`, [r.id])).rows[0];
+  assert.equal(a.status, 'checked'); assert.equal(a.paid_at, null);
+  assert.ok(!acct.toasts.some(t => t[0] === 'success'), JSON.stringify(acct.toasts));
+  assert.ok(acct.toasts.some(t => t[0] === 'error' && /重複の候補が見つかったので精算していない 1 件/.test(t[1]) && t[1].includes(r.code)), JSON.stringify(acct.toasts));
+  assert.ok(!acct.notifs.some(n => /支払・精算しました/.test(n.title || '')), JSON.stringify(acct.notifs.map(n => n.title)));
+});
+
 test('#123: English labels for purposes; an old request paid on the earlier screen asks before recording (no second payment)', async () => {
   const legacy = { reimbursements: [{ id: 'rb1761400000000', payer: 'Sam Store', byUser: 'Sam Store', storeId: 'S1', amount: 30, vendor: 'Shop', date: '2026-10-12', status: '承認', payStatus: '未払い', approvedBy: 'Gabe GM' }],
     approvals: [{ id: 'ap9', type: '建替経費', ref: 'rb1761400000000', acct: { by: 'Ann Acct', at: '2026/10/13', t: 1 } }] };

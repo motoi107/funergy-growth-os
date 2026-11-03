@@ -2843,14 +2843,15 @@ async function supaFetchAllRows(path, opt){
   var page = opt.page || 1000, max = opt.max || 100000;
   var out = [], err = '', cut = false;
   /* v1130（#122 のレビュー）：読めなかった・途中で切れた・上限で止めた、を空の結果と分ける。配列はそのまま返し、印を付ける
-     （_err＝読めなかった理由・_partial＝2 ページ目より後で読めなかった・_cut＝上限まで読んで止めた）。今までの使い方は配列のまま。 */
+     （_err＝読めなかった理由・_partial＝2 ページ目より後で読めなかった・_cut＝上限まで読んで止めた）。今までの使い方は配列のまま。
+     読めない JSON は印にせず、今までどおり例外。 */
   for (var off = 0; off < max; off += page) {
     var url = SUPABASE_URL + '/rest/v1/' + path
       + (path.indexOf('?') >= 0 ? '&' : '?') + 'limit=' + page + '&offset=' + off;
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
     if (!res.ok) { err = 'http_' + res.status; break; }
     var rows;
-    try { rows = await res.json(); } catch (e) { err = 'bad_json'; break; }
+    rows = await res.json();   /* 読めない JSON は今までどおり例外（呼び出し元は止まる・前の写しを残す。#122 の Codex の再レビュー：印にすると出数の写しを空・途中で上書きしていた） */
     if (!Array.isArray(rows)) { err = 'bad_json'; break; }
     if (!rows.length) break;
     out = out.concat(rows);
@@ -31390,6 +31391,8 @@ async function initMixFetch(sid, ym){
     rows = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
       +'&business_month=eq.'+ym+'&order=id.asc');
   }catch(e){ console.warn('initMixFetch', e); return null; }
+  /* 読めなかった・途中・上限で止めた結果で、前の写しを上書きしない（#122 の Codex の再レビュー） */
+  if(rows && (rows._err || rows._cut)){ console.warn('initMixFetch', rows._err || 'cut'); return null; }
   var byDate={};
   (rows||[]).forEach(function(r){
     var d=r&&(r.business_date||r.date); if(!d) return;   /* 月次集計行(business_date=NULL)は捨てる */
@@ -31421,6 +31424,7 @@ async function initModFetch(sid, ym){
     rows = await supaFetchAllRows('toast_item_modifier_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
       +'&business_date=gte.'+ym+'-01&business_date=lte.'+ym+'-31&order=business_date.asc');
   }catch(e){ console.warn('initModFetch', e); return null; }
+  if(rows && (rows._err || rows._cut)){ console.warn('initModFetch', rows._err || 'cut'); return null; }
   var byDate={};
   (rows||[]).forEach(function(r){
     var d=r&&r.business_date; if(!d) return;
@@ -100313,13 +100317,19 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var d = prompt(T('まとめて精算します（' + list.length + ' 件）。支払日（YYYY-MM-DD）','Pay ' + list.length + ' at once. Paid on (YYYY-MM-DD)'), hstToday());
     if (!d) return;
     S.busy = 'batch'; rerender();
-    var ok = 0, ng = 0, k0 = authKey(), stopped = false;
+    var ok = 0, ng = 0, dup = [], k0 = authKey(), stopped = false;
     list.reduce(function(pr, r){ return pr.then(function(){
       if (stopped) { ng++; return; }
       return api({ action:'act', id:r.id, op:'pay', expect_rev:r.rev, client_key:keyFor(r, 'pay'), pay_date:d, pay_method:'Payroll', note:T('まとめて精算','batch payment') }, k0)
-        .then(function(x){ ok++; notifyAfter('pay', x); }, function(e){ ng++; if (e && e.code === 'signin_changed') stopped = true; });
+        .then(function(x){
+          /* 精算の直前に重複の候補が見つかった申請は精算していない（サーバーは checked のまま dup_found を返す）。成功・支払の知らせにしない（#123 の Codex の再レビュー） */
+          if (x && (x.dup_found || x.status !== 'paid')) { dup.push(x.code || r.code); return; }
+          ok++; notifyAfter('pay', x);
+        }, function(e){ ng++; if (e && e.code === 'signin_changed') stopped = true; });
     }); }, Promise.resolve()).then(function(){
-      S.busy = ''; showToast(stopped ? errText('signin_changed') + T('（記録できたもの ',' (recorded ') + ok + T(' 件）',')') : T('精算を記録：','Recorded: ') + ok + (ng ? T(' 件・できなかった ',' · failed ') + ng : T(' 件','')), ng ? 'error' : 'success'); reloadList();
+      S.busy = '';
+      var dupT = dup.length ? T('・重複の候補が見つかったので精算していない ',' · not paid (possible duplicate found) ') + dup.length + T(' 件（',' (') + dup.join(', ') + T('）。確かめてから精算してください',') — confirm them first') : '';
+      showToast(stopped ? errText('signin_changed') + T('（記録できたもの ',' (recorded ') + ok + T(' 件）',')') + dupT : T('精算を記録：','Recorded: ') + ok + T(' 件','') + (ng ? T('・できなかった ',' · failed ') + ng + T(' 件','') : '') + dupT, (ng || dup.length) ? 'error' : 'success'); reloadList();
     });
   };
   W.wrReceipt = function(path){
