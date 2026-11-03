@@ -99809,6 +99809,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
 
   var ERR = {
     signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
+    signin_changed:['途中で別の人のログインに変わったので止めました（送っていません）。その人でもう一度操作してください','Stopped because the sign-in changed partway (nothing more was sent). Do it again as that person'],
     unauthorized:['PIN のログインを確かめられませんでした（期限切れなど）。ログアウトしてログインし直してください','The PIN login could not be checked (it may have expired). Log out and log in again'],
     forbidden:['この操作はできません（権限・段階・在籍をサーバーで確かめました）','You cannot do this (the server checked your role, the step and your status)'],
     not_live:['申請はまだ使い始めていません（GM・CEO がワークセンターで使い始めます）','Requests are not live yet (the GM or CEO turns them on in the Work Center)'],
@@ -99834,9 +99835,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* 別の人のログインに変わったら前の人の読み込み・数・書きかけを残さない。世代（gen）は数え続ける（前の人の遅れた答えを捨てる） */
   function checkAuth(){ var k = authKey(); if (k !== S.authKey) { var v = S.view, oc = S.openCode, g = S.gen; S = fresh(); S.view = v; S.openCode = oc; S.gen = g + 1; S.authKey = k; } }
 
-  async function api(payload){
+  /* k0：操作を始めたときのログイン（authKey）。途中で別の人に変わったら送らない（独立レビュー 272b159 の D） */
+  async function api(payload, k0){
     var tok = pinTok();
     if (!tok) throw mkErr('signin');
+    if (k0 != null && k0 !== authKey()) throw mkErr('signin_changed');
     var body = Object.assign({}, payload, { pin_session:tok });
     var r;
     try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify(body) }); }
@@ -99987,7 +99990,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       /* スマホ：1 件 1 枚（UI案68 のスマホの要対応） */
       rows.forEach(function(r){
         var dup = (r.dup_codes || []).length && !r.dup_ok, open = ['paid','done','rejected','withdrawn'].indexOf(r.status) < 0;
-        h2 += '<div class="card" style="cursor:pointer;padding:10px 12px;margin-bottom:8px" onclick="wrOpen(\'' + esc(r.id) + '\')">'
+        h2 += '<div class="card" style="cursor:pointer;padding:10px 12px;margin-bottom:8px" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
           + '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)"><span>' + esc(kindL(r.kind)) + ' · ' + esc(r.code) + (r.version > 1 ? ' · ' + T('版','v') + r.version : '') + '</span>' + (r.legacy ? '<span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '<span style="margin-left:auto">' + tag(r.status) + '</span></div>'
           + '<div style="display:flex;align-items:baseline;gap:8px;margin-top:4px"><div style="flex:1;min-width:0;font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + useL(r) + '</div><div style="font-size:14px;font-weight:700">' + money(r.amount_cents) + '</div></div>'
           + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + (dup ? ' · <span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + '</span>' : '') + '</div>'
@@ -99999,7 +100002,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         + ['種別','番号','申請した人','用途','店舗','金額','状態','次の対応','待ち'].map(function(x, i){ return '<th' + (i === 5 ? ' style="text-align:right"' : '') + '>' + esc(T(x, ['Kind','No.','Requester','Use','Store','Amount','Status','Next','Waiting'][i])) + '</th>'; }).join('') + '</tr></thead><tbody>';
       rows.forEach(function(r){
         var dup = (r.dup_codes || []).length && !r.dup_ok;
-        h2 += '<tr style="cursor:pointer" onclick="wrOpen(\'' + esc(r.id) + '\')"><td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
+        h2 += '<tr style="cursor:pointer" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)"><td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
           + '<td style="white-space:nowrap">' + esc(r.code) + (r.version > 1 ? ' <span style="color:var(--muted)">' + T('版','v') + r.version + '</span>' : '') + (dup ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + ' ' + r.dup_codes.length + '</span></div>' : '') + '</td>'
           + '<td>' + esc(r.requester_name) + '</td><td>' + useL(r) + '</td><td>' + esc(storeName(r.store_id)) + '</td><td style="text-align:right;white-space:nowrap">' + money(r.amount_cents) + '</td>'
           + '<td>' + tag(r.status) + '</td><td>' + nextL(r) + '</td><td style="white-space:nowrap">' + (['paid','done','rejected','withdrawn'].indexOf(r.status) >= 0 ? '' : daysSince(r.updated_at) + T(' 日',' d')) + '</td></tr>';
@@ -100049,7 +100052,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     else {
       h += '<div style="overflow-x:auto;margin-top:8px"><table class="tbl" style="width:100%;font-size:11.5px"><thead><tr><th></th><th>' + T('人','Person') + '</th><th>' + T('今の写し','Confirmed now') + '</th><th>' + T('社員の表','Employee table') + '</th></tr></thead><tbody>'
         + items.map(function(x){ var who = (x.after || x.before || {}).name || x.emp;
-          return '<tr><td><input type="checkbox"' + (pp.pick[x.emp] ? ' checked' : '') + ' onchange="wrPeoplePick(\'' + esc(x.emp) + '\',this.checked)"></td><td><b>' + esc(who) + '</b>' + (x.up ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('権限が増える','increase') + '</span></div>' : '<div><span class="tag" style="font-size:8px">' + T('減る・変わる（もう効いている）','decrease (already in effect)') + '</span></div>') + '</td><td>' + pDesc(x.before) + '</td><td>' + pDesc(x.after) + '</td></tr>'; }).join('')
+          return '<tr><td><input type="checkbox"' + (pp.pick[x.emp] ? ' checked' : '') + ' data-a="' + esc(x.emp) + '" onchange="wrPeoplePick(this.dataset.a,this.checked)"></td><td><b>' + esc(who) + '</b>' + (x.up ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('権限が増える','increase') + '</span></div>' : '<div><span class="tag" style="font-size:8px">' + T('減る・変わる（もう効いている）','decrease (already in effect)') + '</span></div>') + '</td><td>' + pDesc(x.before) + '</td><td>' + pDesc(x.after) + '</td></tr>'; }).join('')
         + '</tbody></table></div>';
       if (items.some(function(x){ return x.up && !pp.pick[x.emp]; })) h += '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrPeopleAllUp()">' + T('権限が増える人もすべて選ぶ','Pick all increases too') + '</button>';
     }
@@ -100117,7 +100120,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       + '<div style="font-size:18px;font-weight:700;margin-top:2px">' + useL(r) + ' ' + money(r.amount_cents) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + ' · ' + T('利用日 ','Date ') + esc(mdOf(r.use_date)) + ' · ' + T('申請 ','Submitted ') + esc(hstTime(r.submitted_at)) + T('（ハワイ）',' (HST)') + '</div></div>'
       + '<div>' + tag(r.status) + '</div></div>';
-    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”.') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
+    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。申請した人は、前の画面の名前から決めました（社員 ID の記録はありません）。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”. The requester was matched by the name on the earlier screen (no employee ID was recorded).') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
       + (lg.archivedWhilePending ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で、申請中のまま月末処理（精算）で締められていました。もう一度精算しないよう「精算済み」で写しています。','It was closed by month-end (settled) while still waiting for approval on the earlier screen. Copied as paid so it is not paid twice.') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.paid && r.status !== 'paid' ? '<div style="color:var(--red);margin-top:4px;font-weight:700">' + T('写したあとに、前の画面で精算済みになっています。二重に払わないでください（精算は「前の画面で精算済み」として記録します）。','It was paid on the earlier screen after the copy. Do not pay it twice (payment is recorded as “paid on the earlier screen”).') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.found && (r.legacy_now.deleted || (r.legacy_now.status && lg.status && r.legacy_now.status !== lg.status)) ? '<div style="color:#7a4a00;margin-top:4px">' + T('写したあとに前の画面で変わりました（今：','Changed on the earlier screen after the copy (now: ') + esc(r.legacy_now.deleted ? T('削除','deleted') : r.legacy_now.status) + '）</div>' : '') + '</div>';
@@ -100149,17 +100152,19 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var parts = [];
     if (a.amount_cents !== b.amount_cents) parts.push(T('金額 ','Amount ') + money(a.amount_cents) + ' → ' + money(b.amount_cents));
     if (a.use_date !== b.use_date) parts.push(T('日付 ','Date ') + mdOf(a.use_date) + ' → ' + mdOf(b.use_date));
+    var pa = ((a.payload || {}).payer || ''), pb = ((b.payload || {}).payer || '');
+    if (r.kind === 'reimburse' && pa !== pb) parts.push(T('支払った人 ','Paid by ') + (pa || '—') + ' → ' + (pb || '—'));
     return ' <span style="font-weight:400;font-size:11px;color:var(--muted)">（' + T('版 ','v') + a.version + ' → ' + b.version + (parts.length ? '：' + esc(parts.join(' · ')) : T('：金額・日付は同じ',': same amount and date')) + '）</span>';
   }
   function fields(r){
     var p = r.payload || {}, o = [];
     var add = function(l, v){ if (v != null && v !== '') o.push([l, esc(v)]); };
-    if (r.legacy) {
+    if (rawLegacy(r)) {
       if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('マイル','Miles'), p.miles); add(T('単価','Rate'), p.rate); add(T('メモ','Memo'), p.memo); }
       else if (r.kind === 'reimburse') {
         add(T('支払った人','Paid by'), p.payer); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose); add(T('用途のメモ','Note'), p.purposeMemo); add(T('支払のメモ','Payment note'), p.payMethodNote);
         var ip = typeof p.imagePath === 'string' && /^[A-Za-z0-9_\-./]+$/.test(p.imagePath) ? p.imagePath : '', du = typeof p.driveUrl === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(p.driveUrl) ? p.driveUrl : '';
-        o.push([T('領収書','Receipt'), ip ? '<a href="#" onclick="wrReceipt(\'' + esc(ip) + '\');return false">' + T('開く','Open') + '</a>' : du ? '<a href="' + esc(du) + '" target="_blank" rel="noopener">' + T('開く（Drive）','Open (Drive)') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+        o.push([T('領収書','Receipt'), ip ? '<a href="#" data-a="' + esc(ip) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : du ? '<a href="' + esc(du) + '" target="_blank" rel="noopener">' + T('開く（Drive）','Open (Drive)') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       }
       else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('実施日','Event dates'), p.eventDates); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); add(T('メモ','Memo'), p.memo); }
       return o;
@@ -100167,7 +100172,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('片道マイル','One-way miles'), p.one_way_miles); add(T('往復','Round trip'), p.round_trip ? T('はい','yes') : T('いいえ','no')); add(T('合計マイル × 単価','Miles × rate'), p.miles + ' × $' + p.rate); add(T('メモ','Memo'), p.memo); }
     else if (r.kind === 'reimburse') {
       add(T('支払った人','Paid by'), p.payer + (p.payer_is_employee ? T('（従業員）',' (employee)') : '')); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose); add(T('用途のメモ','Note'), p.purpose_memo); add(T('メモ','Memo'), p.memo);
-      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path ? '<a href="#" onclick="wrReceipt(\'' + esc(p.receipt.path) + '\');return false">' + T('開く','Open') + '</a>' : '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener">' + T('開く','Open') + '</a>']);
+      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       else o.push([T('領収書','Receipt'), '<span style="color:var(--muted)">' + T('なし','none') + '</span>']);
     } else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); if (p.per_person_cents) o.push([T('1 人あたり','Per person'), money(p.per_person_cents)]); add(T('メモ','Memo'), p.memo); }
     return o;
@@ -100259,15 +100264,17 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var d = prompt(T('まとめて精算します（' + list.length + ' 件）。支払日（YYYY-MM-DD）','Pay ' + list.length + ' at once. Paid on (YYYY-MM-DD)'), hstToday());
     if (!d) return;
     S.busy = 'batch'; rerender();
-    var ok = 0, ng = 0;
+    var ok = 0, ng = 0, k0 = authKey(), stopped = false;
     list.reduce(function(pr, r){ return pr.then(function(){
-      return api({ action:'act', id:r.id, op:'pay', expect_rev:r.rev, client_key:keyFor(r, 'pay'), pay_date:d, pay_method:'Payroll', note:T('まとめて精算','batch payment') })
-        .then(function(x){ ok++; notifyAfter('pay', x); }, function(){ ng++; });
+      if (stopped) { ng++; return; }
+      return api({ action:'act', id:r.id, op:'pay', expect_rev:r.rev, client_key:keyFor(r, 'pay'), pay_date:d, pay_method:'Payroll', note:T('まとめて精算','batch payment') }, k0)
+        .then(function(x){ ok++; notifyAfter('pay', x); }, function(e){ ng++; if (e && e.code === 'signin_changed') stopped = true; });
     }); }, Promise.resolve()).then(function(){
-      S.busy = ''; showToast(T('精算を記録：','Recorded: ') + ok + (ng ? T(' 件・できなかった ',' · failed ') + ng : T(' 件','')), ng ? 'error' : 'success'); reloadList();
+      S.busy = ''; showToast(stopped ? errText('signin_changed') + T('（記録できたもの ',' (recorded ') + ok + T(' 件）',')') : T('精算を記録：','Recorded: ') + ok + (ng ? T(' 件・できなかった ',' · failed ') + ng : T(' 件','')), ng ? 'error' : 'success'); reloadList();
     });
   };
   W.wrReceipt = function(path){
+    if (typeof path !== 'string' || !/^[A-Za-z0-9_\-./]+$/.test(path)) return;
     try{ if (typeof viewInvoiceImage === 'function') return viewInvoiceImage(path); }catch(e){}
     window.open(SUPABASE_URL + '/storage/v1/object/public/invoices/' + encodeURI(path), '_blank', 'noopener');
   };
@@ -100306,12 +100313,14 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       return;
     }
     if (!S.live && !from) { showToast(errText('not_live'), 'error'); return; }
-    var p = from ? (from.legacy ? legacyForm(from.kind, from.payload || {}) : Object.assign({}, from.payload)) : {};
+    var p = from ? (rawLegacy(from) ? legacyForm(from.kind, from.payload || {}) : Object.assign({}, from.payload)) : {};
     S.form = { kind:KINDS.indexOf(kind) >= 0 ? kind : '', from:from || null, key:newKey(), dup:null, busy:false, p:p, store:from ? from.store_id : (storeOpts()[0] || ''), file:null };
     openModal('<div id="wr-form" style="min-width:min(560px,92vw)"></div>');
     drawForm();
   };
   /* 前からの申請を直す・出し直すとき：前の画面の記録の形を、新しい申請の形に写す（#123 のレビュー P2） */
+  /* 前の画面の記録の形のままなのは写した最初の版だけ（直す・出し直すと新しい形になる：独立レビュー 272b159 の C） */
+  function rawLegacy(r){ return !!(r && r.legacy && (r.version || 1) === 1); }
   function legacyForm(kind, x){
     var c = function(v){ return typeof v === 'number' && isFinite(v) && v > 0 ? Math.round(v * 100) : null; };
     if (kind === 'mileage') {
@@ -100408,6 +100417,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   W.wrSend = async function(){
     var f = S.form; if (!f || f.busy || !f.kind) return;
     readForm();
+    var k0 = authKey();
     if (f.dup && !(f.dupReason || '').trim()) { showToast(T('別の経費である理由を書いてください','Write why it is different'), 'error'); return; }
     f.busy = true; drawForm();
     try {
@@ -100422,11 +100432,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       var payload = cleanPayload(f.kind, f.p), j;
       if (f.from) {
         var op = f.from.status === 'returned' ? 'resubmit' : 'edit';
-        j = await api({ action:'act', id:f.from.id, op:op, kind:f.kind, expect_rev:f.from.rev, client_key:f.key, payload:payload, note:(f.note || '').trim() || null, dup_reason:f.dup ? f.dupReason.trim() : null });
+        j = await api({ action:'act', id:f.from.id, op:op, kind:f.kind, expect_rev:f.from.rev, client_key:f.key, payload:payload, note:(f.note || '').trim() || null, dup_reason:f.dup ? f.dupReason.trim() : null }, k0);
         if (j && j.duplicate) { f.dup = j.duplicate; f.busy = false; drawForm(); return; }
         notifyAfter(op, j);
       } else {
-        j = await api({ action:'submit', kind:f.kind, store_id:f.store, client_key:f.key, payload:payload, dup_reason:f.dup ? f.dupReason.trim() : null });
+        j = await api({ action:'submit', kind:f.kind, store_id:f.store, client_key:f.key, payload:payload, dup_reason:f.dup ? f.dupReason.trim() : null }, k0);
         if (j && j.duplicate) { f.dup = j.duplicate; f.busy = false; drawForm(); return; }
         notifyAfter('submit', j);
       }
@@ -100437,7 +100447,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       f.busy = false;
       var msg = e.code === 'receipt' ? T('領収書を上げられませんでした（通信）。もう一度押すか、領収書なしで出してください（あとで直せます）','The receipt could not be uploaded. Press again, or send without it (you can edit later)') : String(e.message || e);
       if (e.code === 'receipt') { var fe2 = document.getElementById('wrf-file'); if (fe2) fe2.value = ''; f.file = null; }
-      showToast(msg, 'error'); drawForm();
+      showToast(msg, 'error');
+      if (e.code === 'signin_changed') { closeModalDirect(); return; }
+      drawForm();
       if (e.code === 'conflict') { closeModalDirect(); W.wrRefresh(); }
     }
   };

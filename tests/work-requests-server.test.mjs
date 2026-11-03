@@ -48,7 +48,8 @@ async function setup({ live = true, legacy = null, rate = 0.7, verify = true, co
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   // 使い始めるときと同じく、GM が承認・閲覧の権限（AM・G4 以上）の写しを確かめる（#123 のレビュー P1）
   if (confirm) { const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest }); }
-  const verifyPin = verify ? async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m ? { emp_id: m[1], name: NAME[m[1]] } : null; } : null;
+  // 'pin-name:<名前>' は社員 ID の無い前の印（auth-pin v1085 より前）の代わり
+  const verifyPin = verify ? async tok => { const n = /^pin-name:(.+)$/.exec(tok); if (n) return { emp_id: null, name: n[1] }; const m = /^pin-(E\d+)$/.exec(tok); return m ? { emp_id: m[1], name: NAME[m[1]] } : null; } : null;
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k];
   const handler = createHandler({ env, db, verifyPin, fetch: async () => { throw new Error('no network'); } });
   let seq = 0;
@@ -63,7 +64,7 @@ async function setup({ live = true, legacy = null, rate = 0.7, verify = true, co
     payload: { date: '2026-10-28', purpose: '銀行・郵便', origin: 'Store', destination: 'Bank', one_way_miles: 12.4, round_trip: true, memo: '', ...(extra.payload || {}) },
     ...(extra.dup_reason ? { dup_reason: extra.dup_reason } : {}) });
   const act = (who, r, op, extra = {}) => call(who, { action: 'act', id: r.id, op, expect_rev: extra.rev ?? r.rev, client_key: extra.client_key || key(), ...extra.body });
-  return { pg, call, key, mileage, act };
+  return { pg, db, call, key, mileage, act };
 }
 
 test('tables and functions are closed to browsers; only the service role reaches them', async () => {
@@ -322,10 +323,12 @@ test('old requests are copied once, as they were; missing approvers stay missing
   assert.deepEqual([by('rb1761000005000').status, by('rb1761000005000').closed.reason, by('rb1761000005000').approved], ['rejected', '二重', null]);
   assert.equal(by('ex1761000006000').status, 'approved', 'an undone accounting check does not count');
   const n = await pg.query(`select count(*)::int n from public.wr_events where action = 'legacy_import'`); assert.equal(n.rows[0].n, 6);
-  // the old pending one: the requester (known by employee ID) can fix it here as a new version of the same number (#123 review P2)
+  // the old pending one: the requester was matched by name (the old screen kept no employee ID), so they cannot change it while it waits;
+  // they can withdraw it, and fix it once an approver returns it (#123 review P2 / independent review of 272b159, E)
   const p = by('mi1761000002000');
   const mine = (await call('E7', { action: 'get', id: p.id })).body;
-  assert.deepEqual(mine.can, ['edit', 'withdraw']);
+  assert.deepEqual(mine.can, ['withdraw']);
+  assert.equal((await act('E7', p, 'edit', { body: { kind: 'mileage', payload: { date: '2026-10-20', purpose: '銀行・郵便', origin: 'a', destination: 'b', one_way_miles: 1, round_trip: false, memo: '' } } })).status, 403);
   assert.equal((await act('E5', p, 'approve')).body.status, 'approved');
   // app_state is only read
   const st = await pg.query(`select count(*)::int n from public.app_state`); assert.equal(st.rows[0].n, 5);
@@ -519,6 +522,28 @@ test('#123 P1: a confirmed G4 cannot widen with the public key — becoming an A
   const s = (await call('E2', { action: 'people_sync', digest: d.digest, emps: ['E6'] })).body;
   assert.equal(s.applied, 1);
   assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 200, 'after the GM confirms');
+});
+
+test('independent review of 272b159 (B): a sign-in mark without an employee ID is refused; names are not looked up in the employee table', async () => {
+  const { call, db, pg } = await setup();
+  // Codex-style: as anon, rename the GM's row and make it look like a crew member's name
+  await pg.exec(`reset role; set role anon; update public.employees set name = 'Cam Crew' where id = 'E2'; update public.employees set name = 'Cam Crew X' where id = 'E8'; reset role; set role service_role;`);
+  const r = await call(null, { pin_session: 'pin-name:Cam Crew', action: 'whoami' });
+  assert.equal(r.status, 401, 'a name-only mark does not sign in');
+  await assert.rejects(db.rpc('wr_whoami', { emp_id: null, name: 'Cam Crew' }), /forbidden/, 'the SQL refuses it too');
+  assert.equal((await call('E8', { action: 'whoami' })).body.me.role, 'staff');
+});
+
+test('independent review of 272b159 (A): an employee ID that is not plain letters and digits never reaches the rights check', async () => {
+  const { call, pg } = await setup();
+  const bad = "X');globalThis.PWNED=document;('";
+  await pg.query(`reset role`); await pg.query(`set role anon`);
+  await pg.query(`insert into public.employees values ($1, 'Ami Area', 'am', 'Area Manager', 'S1', '[]', '在籍', '{}')`, [bad]);
+  await pg.query(`insert into public.employees values ('E77', 'Ami Two', 'am', 'Area Manager', 'S2', '[]', '在籍', '{}')`);
+  await pg.query(`reset role`); await pg.query(`set role service_role`);
+  const d = (await call('E2', { action: 'people_diff' })).body;
+  assert.equal(d.items.some(x => x.emp === bad), false);
+  assert.ok(d.items.some(x => x.emp === 'E77' && x.up), 'a plain new ID is listed for the GM to check');
 });
 
 // #123 review (Codex P2): an old request that was returned could not be resubmitted.

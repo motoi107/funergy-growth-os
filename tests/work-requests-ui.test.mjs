@@ -343,6 +343,42 @@ test('#123 P2: an old request is fixed and resubmitted from the old record; the 
   const r = (await srv.pg.query('select version, status, use_date::text d, legacy, payload from public.wr_requests where id = $1', [id])).rows[0];
   assert.deepEqual([r.version, r.status, r.d, r.legacy], [2, 'pending', '2026-10-19', true]);
   assert.deepEqual(r.payload.receipt, { path: 'S1/2026-10/inv_1.jpg', drive_url: '' }, 'the old receipt is kept');
+  // independent review of 272b159 (C): from version 2 the payload has the new shape — the detail and a second round read it as such
+  gm.ctx.wrOpen(id); await gm.settle();
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /data-a="S1\/2026-10\/inv_1\.jpg"/, 'version 2 shows the receipt');
+  gm.ctx.wrAsk('return'); gm.dom.els['wr-note'].value = 'もう一度'; gm.ctx.wrAskGo(); await gm.settle();
+  sam.ctx.wrOpen(id); await sam.settle(); sam.ctx.wrAsk('resubmit'); await sam.settle();
+  assert.equal(sam.dom.els['wrf-amount'].value, '42.50', 'the amount is still there on the second round');
+  fill(sam.dom, { note: '2 回目', payer: 'Pat Payer' }); await sam.ctx.wrSend(); await sam.settle();
+  gm.ctx.wrOpen(id); await gm.settle();
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /支払った人 Sam Store → Pat Payer/, 'the approver sees who would be paid changed (review of 272b159, E)');
+  const r3 = (await srv.pg.query('select version, amount_cents, payload from public.wr_requests where id = $1', [id])).rows[0];
+  assert.equal(r3.version, 3); assert.equal(Number(r3.amount_cents), 4250);
+  assert.deepEqual(r3.payload.receipt, { path: 'S1/2026-10/inv_1.jpg', drive_url: '' }, 'the receipt survives a second round');
+});
+
+test('independent review of 272b159 (D): a batch payment stops when the sign-in changes partway; nothing is sent as the next person', async () => {
+  const srv = await server({ live: true });
+  const as = async (emp, body) => { const r = await srv.handler(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin_session: 'pin-' + emp, ...body }) })); return r.json(); };
+  let k = 0;
+  for (const miles of [3, 4]) {
+    let r = await as('E7', { action: 'submit', kind: 'mileage', store_id: 'S1', client_key: 'k-d-' + (++k).toString().padStart(6, '0'), payload: { date: '2026-10-2' + miles, purpose: '銀行・郵便', origin: 'a', destination: 'b', one_way_miles: miles, round_trip: false, memo: '' } });
+    r = await as('E5', { action: 'act', id: r.id, op: 'approve', expect_rev: r.rev, client_key: 'k-d-' + (++k).toString().padStart(6, '0') });
+    r = await as('E4', { action: 'act', id: r.id, op: 'check', expect_rev: r.rev, client_key: 'k-d-' + (++k).toString().padStart(6, '0') });
+    assert.equal(r.status, 'checked');
+  }
+  const acct = await app(srv, 'E3', { role: 'office' }); await acct.render();
+  acct.S().view = 'team'; acct.ctx.wrRefresh(); await acct.settle();
+  assert.equal(acct.S().rows.filter(r => (r.can || []).includes('pay')).length, 2);
+  let who = 'E3', n = 0;
+  const real = acct.ctx.fetch;
+  acct.ctx.mrAuthKey = () => 'p|' + who;
+  acct.ctx.fetch = async (url, init) => { const r = await real(url, init); if (JSON.parse(init.body).op === 'pay' && ++n === 1) { who = 'E4'; acct.ctx._hwSession = 'pin-E4'; } return r; };
+  acct.ctx.wrBatchPay(); await acct.settle(); await acct.settle();
+  const rows = (await srv.pg.query(`select status, paid_by from public.wr_requests order by use_date`)).rows;
+  assert.deepEqual(rows.map(r => r.status).sort(), ['checked', 'paid'], 'one paid as E3, the other not sent');
+  assert.deepEqual(rows.filter(r => r.paid_by).map(r => r.paid_by), ['Ann Acct']);
+  assert.ok(acct.toasts.some(t => /別の人のログインに変わった/.test(t[1])), JSON.stringify(acct.toasts));
 });
 
 test('#123: English labels for purposes; an old request paid on the earlier screen asks before recording (no second payment)', async () => {
@@ -364,4 +400,20 @@ test('#123: English labels for purposes; an old request paid on the earlier scre
   assert.equal(asked.length, 1); assert.match(asked[0], /二重に払わないでください/);
   const r = (await srv.pg.query('select status, pay_method from public.wr_requests where id = $1', [id])).rows[0];
   assert.deepEqual([r.status, r.pay_method], ['paid', '前の画面で精算済み']);
+});
+
+test('independent review of 272b159 (A): no value is written into a quoted JS string inside an HTML handler; values go through data-a', () => {
+  // esc() turns ' into &#39;, which the browser decodes back before compiling an onclick / onchange handler
+  assert.equal(/on[a-z]+="[^"]*\(\\'' \+ esc\(/.test(MOD), false, 'a handler built by putting esc(x) inside a quoted string');
+  for (const fn of ['wrPeoplePick', 'wrOpen', 'wrReceipt']) assert.match(MOD, new RegExp(fn + '\\(this\\.dataset\\.a'), fn);
+});
+
+test('independent review of 272b159 (A): the receipt opener takes only a storage path of plain characters', async () => {
+  const srv = await server({ live: true });
+  const a = await app(srv, 'E2');
+  const opened = []; a.ctx.viewInvoiceImage = p => opened.push(p);
+  a.ctx.wrReceipt("x');alert(1);//"); a.ctx.wrReceipt('../../x y'); a.ctx.wrReceipt(null);
+  assert.deepEqual(opened, []);
+  a.ctx.wrReceipt('S1/2026-10/inv_1.jpg');
+  assert.deepEqual(opened, ['S1/2026-10/inv_1.jpg']);
 });

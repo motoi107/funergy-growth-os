@@ -218,7 +218,7 @@ language sql immutable security invoker set search_path = public, pg_temp as $$
   or (a->>'name') is distinct from (b->>'name'));
 $$;
 
--- 呼んだ人。p：{ emp_id, name }（Edge Function が PIN のログインの印から入れる。名前だけのときは在籍の同じ名前が 1 人のときだけ）。
+-- 呼んだ人。p：{ emp_id, name }（Edge Function が PIN のログインの印から入れる）。社員 ID の無いものは断る（名前は社員の表＝公開の鍵で書ける表で引くことになるため。独立レビュー 272b159 の B）。
 -- 返す：{ emp, name, role(ceo|gm|office|office_crew|am|staff), grade, stores[], am_stores[], confirmed, pending }。退職・OS の無効は forbidden。
 -- AM・G4 以上と担当の店は、GM・CEO が確かめた写し（wr_people）と今の社員の表の狭いほう（#123 のレビュー P1）：
 --   ・role am：写しも今も am のとき。am_stores：写しと今の重なり。grade：小さいほう。G4 以上の stores：写しと今の重なり。
@@ -226,15 +226,10 @@ $$;
 --   ・名前：写しの名前、無ければ PIN の印の名前（印は auth-pin が署名したもの）、無ければ社員の表。
 create or replace function public.wr_actor(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare v_emp text := nullif(p->>'emp_id', ''); v_name text := p->>'name'; v_n integer; e public.employees; v_mgr text;
+declare v_emp text := nullif(p->>'emp_id', ''); e public.employees; v_mgr text;
  live jsonb; conf jsonb; v_role text; v_grade integer; v_stores text[]; v_am text[]; v_nm text;
 begin
- if v_emp is null then
-  if v_name is null or btrim(v_name) = '' or length(v_name) > 80 then raise exception 'forbidden'; end if;
-  select count(*), min(x.id::text) into v_n, v_emp from public.employees x where x.name = v_name and coalesce(x.status, '') <> '退職';
-  if v_n <> 1 then raise exception 'forbidden'; end if;
- elsif length(v_emp) > 64 then raise exception 'forbidden';
- end if;
+ if v_emp is null or length(v_emp) > 64 then raise exception 'forbidden'; end if;
  select * into e from public.employees x where x.id::text = v_emp;
  if not found or public.wr_emp_out(e) then raise exception 'forbidden'; end if;
  v_nm := coalesce(nullif(btrim(coalesce(p->>'name', '')), ''), btrim(coalesce(e.name, '')));
@@ -336,8 +331,9 @@ declare o text[] := '{}'; v_mine boolean := public.wr_is_mine(a, r); v_own boole
  v_dup boolean := cardinality(r.dup_codes) > 0 and r.dup_ok_at is null;
 begin
  if r.kind not in ('mileage','reimburse','expense_pre') then return o; end if;
- -- 前からの申請も、社員 ID の分かるものは本人が直す・出し直す（同じ番号・版が上がる）。分からないものは差し戻せない（#123 のレビュー P2）。
- if v_own and r.status = 'pending' then o := o || 'edit'::text; end if;
+ -- 前からの申請も、社員 ID の分かるものは差し戻されたら本人が直して出し直す（同じ番号・版が上がる）。分からないものは差し戻せない（#123 のレビュー P2）。
+ -- 前からの申請の本人は前の画面の名前から決めた（社員の表は公開の鍵で書ける）ので、承認する人が差し戻したときだけ直せる。承認待ちのまま直すのは不可（独立レビュー 272b159 の E）。
+ if v_own and r.status = 'pending' and not r.legacy then o := o || 'edit'::text; end if;
  if v_own and r.status = 'returned' then o := o || 'resubmit'::text; end if;
  if v_own and r.status in ('pending','returned') then o := o || 'withdraw'::text; end if;
  if r.status = 'pending' and public.wr_can_approve(a, r) then
@@ -562,9 +558,11 @@ end $$;
 -- 写し（before）と今の社員の表・店の表（after。AM・G4 以上でなければ null＝写しから外す）の違い。up＝権限が増える（確かめるまで効かない）。
 create or replace function public.wr_people_items() returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$
- -- CEO・GM・経理・事務Crew は manager_auth（サーバーだけの表）で決まるので、写しには入れない
+ -- CEO・GM・経理・事務Crew は manager_auth（サーバーだけの表）で決まるので、写しには入れない。
+ -- 社員 ID は英数字と _ . : - だけ（社員の表は公開の鍵で書けるので、画面に出す前に形を決める：独立レビュー 272b159 の A）
  with live as (select x.id::text emp, public.wr_person_live(x.id::text) j from public.employees x
-   where not exists (select 1 from public.manager_auth m where m.emp_id::text = x.id::text and m.role in ('ceo','gm','office','office_crew'))),
+   where x.id::text ~ '^[A-Za-z0-9_.:-]{1,64}$'
+    and not exists (select 1 from public.manager_auth m where m.emp_id::text = x.id::text and m.role in ('ceo','gm','office','office_crew'))),
  keys as (select emp from live where public.wr_elevated(j) union select emp_id from public.wr_people)
  select coalesce(jsonb_agg(jsonb_build_object('emp', k.emp, 'before', z.b, 'after', z.af, 'up', public.wr_up(z.b, z.af)) order by k.emp), '[]'::jsonb)
   from keys k left join live l on l.emp = k.emp

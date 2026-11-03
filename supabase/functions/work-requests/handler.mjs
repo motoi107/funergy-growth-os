@@ -93,7 +93,9 @@ export function createHandler(deps) {
     if (!who || typeof who !== 'object') return { deny: 'pin_mark' };
     const emp_id = typeof who.emp_id === 'string' && who.emp_id && who.emp_id.length <= 64 ? who.emp_id : null;
     const name = typeof who.name === 'string' && who.name.trim() && who.name.length <= 80 ? who.name : null;
-    if (!emp_id && !name) return { deny: 'pin_who' };
+    // 社員 ID の無い印（auth-pin v1085 より前の名前だけの印）は断る。名前は社員の表（公開の鍵で書ける）で引くことになるため（独立レビュー 272b159 の B）。
+    // v1085 からの印には社員 ID が入る。前の印は期限（14 日）を過ぎている。
+    if (!emp_id) return { deny: 'pin_no_emp' };
     return { emp_id, name };
   }
 
