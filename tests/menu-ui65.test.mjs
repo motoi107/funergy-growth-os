@@ -469,7 +469,7 @@ test('v1129: names and categories come from the Toast menu table (the item rows 
   assert.equal(un.noName, true); assert.equal(un.name, '名称未取得（…123456）', 'no name is made up; only the end of the ID'); assert.equal(un.cat, '未分類'); assert.equal(un.ended, false, 'unknown is not "ended"');
   assert.equal(M.noNameCount, 1); assert.equal(M.uncCount, 1);
   const h = vm.runInContext('mnBodyHtml(mnState())', c);
-  assert.match(h, /来店区分（FT・RP・SR など・Toast のメニューの「Customers」のグループ）の 60 件は/);
+  assert.match(h, /来店区分（FT・RP・SR など・Toast のメニューの「Customers」「Customer Property」など customer で始まるグループ）の 60 件は/);
   assert.match(h, /カテゴリー未取得/); assert.match(h, /名称未取得 1 品/);
   assert.doesNotMatch(h, />未分類</, 'the old label is gone');
   vm.runInContext("window._mn.tab = 'items'", c);

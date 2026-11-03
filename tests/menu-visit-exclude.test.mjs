@@ -60,7 +60,11 @@ test('a month without visit types is returned as it is (same object); unknown ca
   const saved = { items: { r1: 1 }, sales: 20 };
   const c = app(R, { 'menu_mix_F01_2026.10': saved });
   assert.equal(vm.runInContext("getMenuMix('F01', '2026.10')", c), saved);
-  assert.equal(vm.runInContext("isVisitTypeCategory('Customer Type')", c), false);
+  /* v1130（11/02 の依頼 0）：hyper-worker v1130 と同じく「customer」で始まるグループ（LaLa の Customer Property）も来店区分。前は Customers ちょうどだけ */
+  assert.equal(vm.runInContext("isVisitTypeCategory('Customer Type')", c), true);
+  assert.equal(vm.runInContext("isVisitTypeCategory(' Customer Property ')", c), true);
+  assert.equal(vm.runInContext("isVisitTypeCategory('Our Customers')", c), false);
+  assert.equal(vm.runInContext("isVisitTypeCategory('Small-Plates-1')", c), false);
   assert.equal(vm.runInContext("isVisitTypeCategory('Customers')", c), true);
   assert.equal(vm.runInContext("isVisitTypeCategory(null)", c), false);
   assert.equal(vm.runInContext("isVisitTypeRecipe({ category: 'Customers' })", c), false, 'only Toast-linked recipes');

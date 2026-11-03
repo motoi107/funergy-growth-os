@@ -2836,17 +2836,27 @@ async function fetchToastMenuItems(guid) {
 async function supaFetchAllRows(path, opt){
   opt = opt || {};
   var page = opt.page || 1000, max = opt.max || 100000;
-  var out = [];
+  var out = [], err = '', cut = false;
+  /* v1130（#122 のレビュー）：読めなかった・途中で切れた・上限で止めた、を空の結果と分ける。配列はそのまま返し、印を付ける
+     （_err＝読めなかった理由・_partial＝2 ページ目より後で読めなかった・_cut＝上限まで読んで止めた）。今までの使い方は配列のまま。
+     読めない JSON は印にせず、今までどおり例外。 */
   for (var off = 0; off < max; off += page) {
     var url = SUPABASE_URL + '/rest/v1/' + path
       + (path.indexOf('?') >= 0 ? '&' : '?') + 'limit=' + page + '&offset=' + off;
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) break;
-    var rows = await res.json();
-    if (!Array.isArray(rows) || !rows.length) break;
+    if (!res.ok) { err = 'http_' + res.status; break; }
+    var rows;
+    rows = await res.json();   /* 読めない JSON は今までどおり例外（呼び出し元は止まる・前の写しを残す。#122 の Codex の再レビュー：印にすると出数の写しを空・途中で上書きしていた） */
+    if (!Array.isArray(rows)) { err = 'bad_json'; break; }
+    if (!rows.length) break;
     out = out.concat(rows);
     if (rows.length < page) break;      /* 最後のページ */
+    if (off + page >= max) cut = true;  /* 上限まで読んだ（続きがあるかもしれない） */
   }
+  try {
+    if (err) { Object.defineProperty(out, '_err', { value: err }); if (out.length) Object.defineProperty(out, '_partial', { value: true }); }
+    if (cut) Object.defineProperty(out, '_cut', { value: true });
+  } catch (e) { }
   return out;
 }
 /* DBから商品別出数を読む（月別） period 例 '2026.6' → business_month '2026-06' */
@@ -2984,6 +2994,7 @@ async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   /* v1105（UI案60 ①）：Toast の売上を読めなかったら何も書かない（前の値のまま）。帯に「取れませんでした」 */
   if (rows && rows._err) { try { if (typeof fstNote === 'function') fstNote('sales', storeId, false, 'toast_sales'); } catch (e) { } return { error: 'Toast の売上を読めませんでした', updated: 0, fetched: 0, fetchErr: true }; }
   try { if (typeof fstNote === 'function') fstNote('sales', storeId, true); } catch (e) { }
+  try { if (window.FUNERGY_VT) FUNERGY_VT.noteFetched(storeId, rows); } catch (e) { }   /* v1130：サーバーの行の時刻と、この端末で読んだ時刻（リピート率の内訳） */
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -8367,7 +8378,8 @@ function theoMixKey(storeId, period) { return 'menu_mix_'+storeId+'_'+(period||g
    「Customers」（大文字小文字・前後の空白は無視・完全一致）。名前の一部や価格 0 では決めない。
    元の注文の行（toast_item_sales）と来店区分の数（toast_sales の FT・RP・SR・リピート率）は変えない。 */
 var VISIT_TYPE_GROUPS = ['customers'];
-function isVisitTypeCategory(c) { return VISIT_TYPE_GROUPS.indexOf(String(c == null ? '' : c).trim().toLowerCase()) >= 0; }
+/* v1130（11/02 の依頼 0）：hyper-worker v1130 と同じ決まり。グループの名前が「customer」で始まる（Customers・LaLa の Customer Property・Customer Type など） */
+function isVisitTypeCategory(c) { var n = String(c == null ? '' : c).trim().toLowerCase(); return VISIT_TYPE_GROUPS.indexOf(n) >= 0 || /^customer/.test(n); }
 function isVisitTypeRecipe(r) { return !!(r && r.toastGuid && isVisitTypeCategory(r.category)); }
 var _vtRecipeIds = { src: null, ids: null };
 function visitTypeRecipeIds() {
@@ -25726,7 +25738,8 @@ function _meetKpiRows(k){
   rows.push({key:'sales', label:t('売上','Sales'), act:k.sales, tgt:k.budget, money:true, lower:false, isSales:true});
   rows.push({key:'guests', label:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), act:k.guests, tgt:k.guestBudget, unit:(k.unit==='丼'?t('丼','B'):t('名','')), lower:false});
   rows.push({key:'ppa', label:t('客単価','Avg check'), act:k.ppa, tgt:k.ppaBudget, money:true, lower:false});
-  if(k.repeatHas || k.repeatTgt!=null) rows.push({key:'repeat', label:t('リピート率','Repeat'), act:k.repeatRate, tgt:k.repeatTgt, unit:'%', lower:false});
+  /* v1130：対象データなし・未取込でも行を出す（理由と内訳は _meetSegExtra）。目標が無くても隠さない */
+  if(k.repeatHas || k.repeatTgt!=null || (k.vtState && k.vtState!=='empty')) rows.push({key:'repeat', label:t('リピート率','Repeat'), act:k.repeatRate, tgt:k.repeatTgt, unit:'%', lower:false});
   rows.push({key:'fc', label:t('原価率','Food cost'), act:k.fcRate, tgt:k.fcBudgetRate, unit:'%', lower:true});
   rows.push({key:'labor', label:t('人件費率','Labor'), act:k.laborRate, tgt:k.laborBudgetRate, unit:'%', lower:true});
   if(k.totoyaScope && k.misoRate!=null) rows.push({key:'miso', label:t('味噌汁UP率','Miso upsell'), act:k.misoRate, tgt:k.misoTgt, unit:'%', lower:false});
@@ -27190,6 +27203,8 @@ function _meetSegExtra(k, key, storeId, ym, paceFrac, unit){
   /* v902: リピート率のL/D。日次実績の firstTimeBowls・repeatBowls の L/D 別項目から出す（既存関数）。
      目標はL/D別に持っていないため、店舗のリピート率目標を両方に当てる。 */
   if(key==='repeat'){
+    /* v1130（11/02 の依頼 0・UI案67）：率が出ないときは理由（対象データなし・未取込）と内訳への入口。0% にしない */
+    if(k.repeatRate==null){ try{ if(window.FUNERGY_VT){ var _vtN=FUNERGY_VT.note([{id:storeId}], daysOfYm(ym), ym, {tgt:k.repeatTgt}); if(_vtN) return _vtN; } }catch(e){} }
     var rl=null; try{ rl=repeatStatsLD([{id:storeId}], daysOfYm(ym)); }catch(e){}
     if(!rl || !rl.has) return '<div style="font-size:9.5px;color:var(--muted);margin-top:3px">'+t('ランチ/ディナー別は日次実績の入力後に表示','L/D split shows after daily actuals are entered')+'</div>';
     var lrt=(rl.lunch.total>0)?Math.round(rl.lunch.repeat/rl.lunch.total*1000)/10:null;
@@ -30678,7 +30693,9 @@ function budKpiCard(stores, days, agg, isCur, wow){
   html += `<div class="card"><div class="card-title"><i class="ti ti-chart-radar" style="color:var(--accent)"></i>${t('KPI 目標との差・前週比','KPI vs Target · WoW')} <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">${t('目標＝KPI管理／承認予算','Target = KPI mgmt / approved budget')}</span></div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px">`;
   html += kpiTile('ti-trending-up',t('売上進捗','Sales progress'), _sp!=null?_sp.toFixed(1)+'%':'—', '100%', _spCol, (wow.sales!=null?wowBadge(wow.sales,true,false,''):''), t('実績','Act')+' '+fmtK(_spAct)+' / '+t('予算','Bud')+' '+fmtK(_spBud)+(isCur?t('（前日まで）',' (through yesterday)'):''), {title:t('売上進捗','Sales progress'), body:_kpiDetailWrap(t('平日（月〜木）と週末（金土日）の1日あたり平均売上と、曜日ごとの平均。','Avg daily sales: weekday vs weekend, and by weekday.'), salesSplitSub(stores,days)+salesDowSub(stores,days))});
-  if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
+  /* v1130（11/02 の依頼 0・UI案67）：リピート率は FUNERGY_VT の状態つきのタイル（対象データなし・未取込も出す・押すと内訳）。数は repeatStats と同じ */
+  if (window.FUNERGY_VT) { try { html += FUNERGY_VT.kpiTile(stores, days, k.repeatTgt, function(){ return repeatTrendSub(stores,days); }); } catch(e) { } }
+  else if (k.repeatHas) html += kpiTile('ti-repeat',t('リピート率','Repeat rate'), k.repeatRate.toFixed(1)+'%', (k.repeatTgt!=null?k.repeatTgt+'%':''), rCol, '', t('リピート','Repeat')+' '+(k.repeat||0).toLocaleString()+' / '+t('対象','of')+' '+(k.rTotal||0).toLocaleString(), {title:t('リピート率','Repeat rate'), body:_kpiDetailWrap(t('前々月・前月・当月のリピート率と、初回／リピートの実数の推移。','Repeat rate and first/repeat counts: 2 mo ago / last mo / this mo.'), repeatTrendSub(stores,days))});
   html += kpiTile('ti-friends', k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests'), k.guests>0?Math.round(k.guests).toLocaleString():'—', k.guestBudget!=null?Math.round(k.guestBudget).toLocaleString():'', gCol, wowBadge(wow.guests,true,false,''), null, {title:(k.unit==='丼'?t('丼数','Bowls'):t('客数','Guests')), body:_kpiDetailWrap(t('区分別（ランチ／ディナー／テイクアウト）の1日あたり実績／予算、曜日ごとの平均、前々月からの推移。','Per-day by segment (L/D/TO), by weekday, and the 3-month trend.'), (guestAvgSub(k)||'')+guestDowTriSub(stores,days,k.unit==='丼'?t('丼','bowls'):t('人','guests')))});
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。あわせて業者別の仕入を前々月・前月と比較。','COGS breakdown, plus purchases by vendor vs the prior two months.'), (fcBreakdownSub(stores,days)||'')+fcVendorTriSub(stores,days))});
@@ -31366,6 +31383,8 @@ async function initMixFetch(sid, ym){
     rows = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
       +'&business_month=eq.'+ym+'&order=id.asc');
   }catch(e){ console.warn('initMixFetch', e); return null; }
+  /* 読めなかった・途中・上限で止めた結果で、前の写しを上書きしない（#122 の Codex の再レビュー） */
+  if(rows && (rows._err || rows._cut)){ console.warn('initMixFetch', rows._err || 'cut'); return null; }
   var byDate={};
   (rows||[]).forEach(function(r){
     var d=r&&(r.business_date||r.date); if(!d) return;   /* 月次集計行(business_date=NULL)は捨てる */
@@ -31397,6 +31416,7 @@ async function initModFetch(sid, ym){
     rows = await supaFetchAllRows('toast_item_modifier_sales?restaurant_guid=eq.'+encodeURIComponent(st.toastGuid)
       +'&business_date=gte.'+ym+'-01&business_date=lte.'+ym+'-31&order=business_date.asc');
   }catch(e){ console.warn('initModFetch', e); return null; }
+  if(rows && (rows._err || rows._cut)){ console.warn('initModFetch', rows._err || 'cut'); return null; }
   var byDate={};
   (rows||[]).forEach(function(r){
     var d=r&&r.business_date; if(!d) return;
@@ -32415,6 +32435,7 @@ function openSyncCenter() {
     ${(isGM||scG3)?secHead('var(--tm)','点検・診断／バックアップ','データが正しく取り込まれ・クラウド保存されているかの点検と、バックアップ／復元。'):''}
     ${(isGM||scG3)?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openOutboxDiag()"><i class="ti ti-cloud-check"></i> 未送信データ（クラウド書き戻し）を確認${outboxCount()>0?' <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 6px;font-size:10px">'+outboxCount()+'</span>':''}</button>`:''}
     ${isGM?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="runCustDebug()"><i class="ti ti-stethoscope"></i> 来店区分（FT/RP/SR）診断（上の「店舗別 詳細オプション」で選んだ店）</button>`:''}
+    ${(window.FUNERGY_VT&&FUNERGY_VT.canCompare())?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="FUNERGY_VT.storeCompare(0)"><i class="ti ti-repeat"></i> ${t('店ごとの来店区分（FT/RP/SR）と出数の取り込み','Visit types (FT/RP/SR) and item rows by store')}</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="repairApprovedSkills(true)"><i class="ti ti-shield-check"></i> 承認済みスキルの未反映をチェック／修復</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagInvSync()"><i class="ti ti-clipboard-check"></i> 棚卸データの同期診断／クラウド保存</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="diagBudgets()"><i class="ti ti-report-money"></i> 予算の同期診断／クラウド反映</button>`:''}
@@ -32875,11 +32896,16 @@ function repeatStats(scopeStores, days){
 }
 function repeatRateCard(scopeStores, days){
   var st=repeatStats(scopeStores,days);
-  if(!st.has || st.total<=0) return '';
+  var label=(typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
+  /* v1130（11/02 の依頼 0・UI案67）：FT＋RP＋SR が 0 の期間（対象データなし）・売上の行が無い期間（未取込）も出す（前は何も出さなかった）。0% にはしない */
+  if(!st.has || st.total<=0){
+    try{ if(window.FUNERGY_VT){ var _vt=FUNERGY_VT.tile(scopeStores, days, label); if(_vt) return '<div class="card"><div class="card-title"><i class="ti ti-repeat" style="color:var(--accent2)"></i>'+t('リピート率','Repeat rate')+'・'+escapeHtml(label)+'</div>'+_vt+'</div>'; } }catch(e){}
+    return '';
+  }
   var rate=Math.round(st.repeat/st.total*1000)/10;   // (Repeat)/(First+Repeat)
   var rc=rate>=50?'var(--green)':rate>=30?'var(--yellow)':'var(--red)';
   var srLine = st.sr>0 ? `<span style="color:var(--muted)">（うちSuper Regular ${st.sr.toLocaleString()}）</span>` : '';
-  var label=(typeof dailyMonthLabel==='function')?dailyMonthLabel():'';
+  var _vtNote=''; try{ if(window.FUNERGY_VT) _vtNote=FUNERGY_VT.note(scopeStores, days, label); }catch(e){}   /* v1130：取り込みの日数・未取込・押すと内訳 */
   return `<div class="card"><div class="card-title"><i class="ti ti-repeat" style="color:var(--accent2)"></i>リピート率・${label}</div>
     <div style="display:flex;align-items:center;gap:8px"><span style="font-size:12px;color:var(--muted)">Repeat ÷ 全体</span>
       <span style="margin-left:auto;font-size:26px;font-weight:800;color:${rc}">${rate}%</span></div>
@@ -32888,7 +32914,7 @@ function repeatRateCard(scopeStores, days){
       <div><span style="color:var(--muted)">初回</span> <b>${st.first.toLocaleString()}</b></div>
       <div><span style="color:var(--muted)">対象計</span> <b>${st.total.toLocaleString()}</b></div>
     </div>
-    <div style="font-size:10px;color:var(--muted);margin-top:6px">リピート率＝リピート(RP+SR)÷(初回FT＋リピート)。</div></div>`;
+    <div style="font-size:10px;color:var(--muted);margin-top:6px">リピート率＝リピート(RP+SR)÷(初回FT＋リピート)。</div>${_vtNote}</div>`;
 }
 
 /* 客数（集客）予算 月合計：ランチ＋ディナー。dow方式が無ければセグメントguestsで代替 */
@@ -33141,6 +33167,7 @@ function keyKpiStats(scopeStores, days){
   });
   var rs=repeatStats(scopeStores,days);
   var rsPrev=repeatStats(scopeStores, prevMonthDaysList(ym));
+  var _vtSt=null; try{ if(window.FUNERGY_VT) _vtSt=FUNERGY_VT.stats(scopeStores, days).state; }catch(e){}   /* v1130：リピート率の取り込みの状態（会議の行を出すか） */
   // Totoya専用KPI（スコープが全てTotoyaのときのみ）
   var totoyaScope = (scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){ return (typeof isTotoyaStore==='function') && isTotoyaStore(s.id); });
   var tperiod = ym ? (ym.split('-')[0]+'.'+parseInt(ym.split('-')[1],10)) : '';
@@ -33194,7 +33221,7 @@ function keyKpiStats(scopeStores, days){
     fcRate: sales?Math.round(food/sales*1000)/10:0,
     laborRate: laborSalesCore?Math.round(labor/laborSalesCore*1000)/10:(sales?Math.round(labor/sales*1000)/10:0),
     repeatRate: (rs.has&&rs.total>0)?Math.round(rs.repeat/rs.total*1000)/10:null,
-    repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total,
+    repeatHas: rs.has&&rs.total>0, repeat:rs.repeat, first:rs.first, sr:rs.sr, rTotal:rs.total, vtState:_vtSt,
     guestBudget: hasGuestBud&&guestBud>0?guestBud:null,
     ppaBudget: spendBasis.guests>0 ? Math.round(spendBasis.sales/spendBasis.guests*100)/100
       : ((hasGuestBud&&guestBud>0)?Math.round((salesBud||budget)/guestBud*100)/100:null),
@@ -41338,7 +41365,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1129';
+const APP_VERSION = '1130';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -83444,7 +83471,7 @@ function mnModel(inp) {
   var catColor = function (c) { return colors.map[c] || (c === MN_UNC_NAME ? MN_UNC : MN_OTHER); };
   var curIdx = function (d) { return mnDays(r.from, d) - 1; }, prevIdx = function (d) { return mnDays(pr.from, d) - 1; };
   var salesDays = function (list, f, e) { var o = mnObj(), any = mnObj(); (list || []).forEach(function (x) { var d = String((x && x.business_date) || '').slice(0, 10); if (!d || d < f || d > e) return; any[d] = 1; if (Number(x.net_sales) > 0) o[d] = 1; }); return { pos: o, any: any }; };
-  var visitQty = 0, visitStores = [], menuFailed = [], menuEmpty = [];
+  var visitQty = 0, visitStores = [], menuFailed = [], menuEmpty = [], lastBy = [];   /* lastBy：v1130 店ごとの出数の最後の日と取り込んだ時刻 */
   var vtCat = function (c) { return typeof isVisitTypeCategory === 'function' ? isVisitTypeCategory(c) : false; };
   var vtRec = function (r) { return typeof isVisitTypeRecipe === 'function' ? isVisitTypeRecipe(r) : false; };
   stores.forEach(function (S) {
@@ -83472,6 +83499,7 @@ function mnModel(inp) {
     /* 出数の行のある日（今・比べる期間） */
     var itemDays = mnObj(), prevItemDays = mnObj();
     curRows.forEach(function (x) { if (x && x.business_date) { var d = String(x.business_date).slice(0, 10); itemDays[d] = 1; dataDays[d] = 1; } });
+    (function () { var ld = '', la = ''; curRows.forEach(function (x) { if (!x) return; var d = String(x.business_date || '').slice(0, 10); if (d > ld) ld = d; var a = String(x.synced_at || ''); if (a > la) la = a; }); lastBy.push({ id: S.id, name: S.name || S.id, d: ld, at: la }); })();
     prevRows.forEach(function (x) { if (x && x.business_date) prevItemDays[String(x.business_date).slice(0, 10)] = 1; });
     /* 売上はあるのに出数の行が無い日（今の期間は帯に出す・比べる期間はその日と今の期間の同じ日を比べるときに除く） */
     var ex = mnObj();   /* 比べるときに両方から除く日（期間の何日目か） */
@@ -83621,7 +83649,7 @@ function mnModel(inp) {
     qChg: (prevOk && pq > 0) ? cq / pq - 1 : null, sChg: (prevOk && ps > 0) ? cs / ps - 1 : null,
     drinkSales: cS ? dS / cS : null, drinkQty: cQ ? dQ / cQ : null,
     newCount: newOk ? B.filter(function (it) { return it.isNew; }).length : null, newOk: newOk,
-    prevMissing: prevMissing, unchecked: unchecked, notYet: notYet, exCount: Object.keys(exAll).length, exIdx: exAll, nData: nData,
+    prevMissing: prevMissing, unchecked: unchecked, notYet: notYet, exCount: Object.keys(exAll).length, exIdx: exAll, nData: nData, lastBy: lastBy,
     uncCount: A.filter(function (it) { return it.unc; }).length, noNameCount: A.filter(function (it) { return it.noName; }).length,
     visitQty: visitQty, visitStores: visitStores, menuFailed: menuFailed, menuEmpty: menuEmpty,
     noPrice: money ? 0 : B.filter(function (it) { return it.priceMissing; }).length,
@@ -83742,7 +83770,8 @@ function mnBodyHtml(s) {
     h += '<div class="mn-banner"><i class="ti ti-alert-triangle"></i><span>' + t('<b>' + Object.keys(ns).length + ' 店・' + M.missing.length + ' 日の出数がまだ入っていません</b>（' + ex + '。売上はあります）。この日を除いた数字です。', '<b>Items sold are missing for ' + M.missing.length + ' store-day(s)</b> (' + ex + '; sales exist). Numbers exclude these days.') + '</span>' +
       (MN_RESYNC_ROLES.indexOf(curRole) >= 0 ? '<button type="button" class="btn btn-secondary btn-sm" onclick="mnResync()">' + t('その日を取り直す', 'Re-import those days') + '</button>' : '<span class="mn-note" style="margin:0">' + t('GM・経理に伝えてください', 'Please tell the GM or accounting') + '</span>') + '</div>';
   }
-  if (M.visitQty) h += '<div class="mn-note">' + t('来店区分（FT・RP・SR など・Toast のメニューの「Customers」のグループ）の ' + mnQty(M.visitQty) + ' 件は、商品ではないので出数に入れていません（リピート率には使っています）。', 'Visit types (FT, RP, SR… the Toast menu group "Customers"), ' + mnQty(M.visitQty) + ' in total, are not counted as items (they are used for the repeat rate).') + '</div>';
+  if (M.visitQty) h += '<div class="mn-note">' + t('来店区分（FT・RP・SR など・Toast のメニューの「Customers」「Customer Property」など customer で始まるグループ）の ' + mnQty(M.visitQty) + ' 件は、商品ではないので出数に入れていません（リピート率には使っています）。', 'Visit types (FT, RP, SR… Toast menu groups starting with "Customer", e.g. Customers, Customer Property), ' + mnQty(M.visitQty) + ' in total, are not counted as items (they are used for the repeat rate).') + '</div>';
+  if (M.lastBy && M.lastBy.length) h += '<div class="mn-note">' + t('出数の最後の日：', 'Latest item day: ') + M.lastBy.map(function (x) { return escapeHtml(x.name) + ' ' + (x.d ? mnMd(x.d) : t('なし', 'none')) + (x.at && window.FUNERGY_VT ? t('（取り込み ', ' (imported ') + FUNERGY_VT.hst(x.at) + t('）', ')') : ''); }).join(t('・', ', ')) + t('（ハワイ時間・前日まで）', ' (Hawaii time, through yesterday)') + '</div>';   /* v1130（11/02 の依頼 0） */
   if (M.menuFailed.length) h += '<div class="mn-note">' + t('Toast のメニュー（商品名・カテゴリー）を読めなかった店：' + nm(M.menuFailed) + '。レシピの名前・カテゴリーで出しています。来店区分はレシピで分かるものだけ除いています。「最新を読む」でもう一度読みます。', 'The Toast menu (names, categories) could not be loaded for ' + nm(M.menuFailed) + '; recipe names and categories are used, and only visit types known from recipes are left out. Use Reload to try again.') + '</div>';
   if (M.menuEmpty.length) h += '<div class="mn-note">' + t('Toast のメニューがまだ取り込まれていない店：' + nm(M.menuEmpty) + '（同期センターの「メニュー・出数を同期」）。レシピに無い商品は「名称未取得」です。', 'The Toast menu has not been imported yet for ' + nm(M.menuEmpty) + ' (Sync center → menu sync). Items without a recipe show "Name not found".') + '</div>';
   if (!M.money && M.cur.length) h += '<div class="mn-note">' + t('取り込んだ商品別の行に金額が無いので、売上は「出数 × レシピの売価」で出しています（割引・取り消しは入りません）。', 'The imported item rows have no amounts, so sales = qty × recipe price (discounts and voids are not reflected).') + (M.noPrice ? t('売価の無いメニュー ' + M.noPrice + ' 品は $0 です。', ' ' + M.noPrice + ' item(s) without a price count as $0.') : '') + '</div>';
@@ -83820,7 +83849,7 @@ function mnHowHtml(M) {
     M.money ? t('売上＝商品別の行の金額の合計。', 'Sales = the sum of the item rows\' amounts.') : t('売上＝出数 × 売価（レシピの売価、無ければ Toast のメニューの今の売価。商品別の行に金額が無いため。割引・取り消しは入りません）。売価の無いメニューは $0。', 'Sales = qty × price (recipe price, else the current Toast menu price; the item rows have no amounts; discounts and voids are not reflected). Items without a price count as $0.'),
     t('平均売価＝売上 ÷ 出数。「出数 vs 売上」の pt＝売上の割合 − 出数の割合（プラスは 1 品あたりが全体より高いカテゴリー）。', 'Avg price = sales ÷ qty. The pt in "Qty vs sales" = sales share − qty share.'),
     t('商品名・カテゴリーは Toast のメニュー（toast_menu_items）から。メニューに無い商品（販売終了で消えたものなど）は Toast と結んだレシピの名前・カテゴリー。どれにも無いものは「名称未取得」「カテゴリー未取得」（名前・分類を作りません）。ドリンクは KPI の設定のドリンクのカテゴリー、それ以外（カテゴリー未取得を含む）はフード。', 'Names and categories come from the Toast menu (toast_menu_items); items no longer on the menu use the linked recipe. Items found nowhere show "Name not found" / "Category not found" (nothing is made up). Drinks are the drink categories in the KPI settings; everything else is food.'),
-    t('来店区分（FT・RP・SR など。Toast のメニューの「Customers」のグループの商品）は出数・売上・ランキング・割合に入れません（リピート率には使います）。決め方はグループで、名前の一部や価格 0 では決めません。', 'Visit types (FT, RP, SR… the items in the Toast menu group "Customers") are not counted as items (they are used for the repeat rate). Decided by the menu group, never by part of a name or a $0 price.'),
+    t('来店区分（FT・RP・SR など。Toast のメニューの「Customers」「Customer Property」など customer で始まるグループの商品）は出数・売上・ランキング・割合に入れません（リピート率には使います）。決め方はグループで、名前の一部や価格 0 では決めません。', 'Visit types (FT, RP, SR… items in Toast menu groups starting with "Customer") are not counted as items (they are used for the repeat rate). Decided by the menu group, never by part of a name or a $0 price.'),
     t('カテゴリーの色は、この期間・この店の出数の多い 8 つ。9 つ目からは帯で「ほか N カテゴリー」にまとめます（表には全部出ます）。', 'Colors go to the 8 categories with the most items in this period; the rest are grouped as "N more categories" in the bar (the table lists all).'),
     t('割合は小数 1 桁に四捨五入するので、足して 100.0% にならないことがあります。0.05% より小さいものは「0.1% 未満」。', 'Shares are rounded to one decimal, so they may not add up to exactly 100.0%.'),
     t('同じ Toast の商品は名前が変わっても 1 つにまとめます（全店のときは同じ名前の商品を 1 つに）。「新しい」＝比べる期間には出ていないもの。', 'The same Toast item is one row even if renamed (all stores: same name = one row). "New" = not sold in the comparison period.'),
@@ -99259,6 +99288,455 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   try{ D.addEventListener('touchstart', function(){}, { passive: true }); }catch(e){}
   if(D.readyState === 'loading') D.addEventListener('DOMContentLoaded', setupModal); else setupModal();
 })();
+/* ==== FUNERGY_VT start（v1130・11/02 の依頼 0・UI案67）====
+   リピート率（FT・RP・SR）の数と「取り込みの状態」を、どの画面でも同じ決まりで出す。
+   ・数は日次実績（toast_sales を写したもの）の firstTimeBowls（FT）・repeatBowls（RP＋SR）・superRegular（SR）。
+     率＝repeatBowls ÷（firstTimeBowls＋repeatBowls）＝（RP＋SR）÷（FT＋RP＋SR）。期間・店の数を足してから割る（repeatStats と同じ数）。
+   ・日ごとの状態：vt＝来店区分あり／zero＝売上はあるのに FT・RP・SR が 0（来店区分が取れていない）／closed＝店休・売上 0／missing＝売上の行が無い（未取込）。
+     今日と先の日は状態に数えない（前日まで）。zero・missing の日は 0% として数えない（分母にも分子にも 0 が入るだけ）。
+   ・全体の状態：ok／partial（未取込の日がある・途中の数字）／nodata（取り込めたのに FT＋RP＋SR＝0＝対象データなし）／missing（売上の行が 1 日も無い）／empty（営業日なし）。
+   ・FSP（F03）・WGS（F03-G）は前から手入力なので数えない。
+   ・何も書かない（日次実績・toast_sales は読むだけ。「この期間を読み直す」は今までの syncStoreActualsFromToast を呼ぶだけ）。 */
+(function(){
+  'use strict';
+  var W = window;
+  var VT = W.FUNERGY_VT = W.FUNERGY_VT || {};
+  var EXCL = { 'F03': 1, 'F03-G': 1 };
+  var FKEY = '_vt_fetched_v1';
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function ds(d){ return typeof d === 'string' ? d : (d && d.date) || ''; }
+  function dow(s){ var p = s.split('-'); return new Date(+p[0], +p[1] - 1, +p[2]).getDay(); }
+  function num(v){ return v == null || v === '' || !isFinite(Number(v)) ? null : Number(v); }
+  function today(){ try{ return bizToday(); }catch(e){ return new Date().toISOString().slice(0, 10); } }
+  function md(s){ return s ? (+s.slice(5, 7)) + '/' + (+s.slice(8, 10)) : ''; }
+  function fmt(n){ return Number(n || 0).toLocaleString(); }
+  function storeObj(sid){ try{ return (getStoresAll() || []).find(function(x){ return x.id === sid; }) || { id: sid, name: sid }; }catch(e){ return { id: sid, name: sid }; } }
+  function closedOn(sid, s){ try{ return typeof dayClosureMode === 'function' && dayClosureMode(sid, s, dow(s)) === 'closed'; }catch(e){ return false; } }
+  /* ハワイ時間の時刻（端末がどこにあっても） */
+  function hst(iso){
+    if(!iso) return '';
+    try{
+      var d = new Date(iso); if(isNaN(d.getTime())) return String(iso).slice(0, 16);
+      var h = new Date(d.getTime() - 10 * 3600 * 1000);
+      return (h.getUTCMonth() + 1) + '/' + h.getUTCDate() + ' ' + String(h.getUTCHours()).padStart(2, '0') + ':' + String(h.getUTCMinutes()).padStart(2, '0');
+    }catch(e){ return ''; }
+  }
+  VT.hst = hst;
+  VT.excluded = function(sid){ return !!EXCL[sid]; };
+
+  /* ---------- 1 日の状態 ---------- */
+  VT.day = function(sid, s, ov){
+    ov = ov || {};
+    var f = num(ov.firstTimeBowls), r = num(ov.repeatBowls);
+    if((f || 0) + (r || 0) > 0) return 'vt';
+    var sales = num(ov.actual);
+    if(sales != null && sales > 0) return 'zero';
+    if(closedOn(sid, s)) return 'closed';
+    if(sales != null) return 'closed';        /* 取り込めたが売上 0（休業） */
+    return 'missing';
+  };
+  function blank(){ return { first: 0, repeat: 0, sr: 0, srHas: false, has: false, n: { vt: 0, zero: 0, closed: 0, missing: 0 }, zeroDays: [], missDays: [], lastVt: '', days: [] }; }
+  VT.finish = function(o){
+    o.total = o.first + o.repeat;
+    o.rate = o.total > 0 ? Math.round(o.repeat / o.total * 1000) / 10 : null;
+    o.rp = o.srHas ? Math.max(0, o.repeat - o.sr) : o.repeat;   /* 画面の RP は SR を除いた数（repeatBowls は RP＋SR） */
+    o.got = o.n.vt + o.n.zero;
+    o.biz = o.n.vt + o.n.zero + o.n.missing;
+    o.state = o.total > 0 ? (o.n.missing > 0 ? 'partial' : 'ok') : (o.got > 0 ? 'nodata' : (o.n.missing > 0 ? 'missing' : 'empty'));
+    return o;
+  };
+  /* scopeStores：[{id}] か ['F01']。days：[{date}] か ['YYYY-MM-DD'] */
+  VT.stats = function(scopeStores, days){
+    var td = today(), o = blank(); o.stores = []; o.per = {};
+    (scopeStores || []).forEach(function(st){
+      var sid = st && (st.id || st); if(!sid || typeof sid !== 'string' || EXCL[sid] || o.per[sid]) return;
+      o.stores.push(sid);
+      var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+      var ps = o.per[sid] = blank();
+      (days || []).forEach(function(d){
+        var s = ds(d); if(!s) return;
+        var ov = da[s] || {};
+        var f = num(ov.firstTimeBowls), r = num(ov.repeatBowls), x = num(ov.superRegular);
+        [o, ps].forEach(function(a){
+          if(f != null){ a.first += f; a.has = true; }
+          if(r != null){ a.repeat += r; a.has = true; }
+          if(x != null){ a.sr += x; a.srHas = true; }
+        });
+        if(s >= td) return;
+        var k = VT.day(sid, s, ov);
+        o.n[k]++; ps.n[k]++;
+        ps.days.push({ d: s, k: k, f: f, r: r, x: x, sales: num(ov.actual) });
+        if(k === 'zero'){ o.zeroDays.push({ sid: sid, d: s }); ps.zeroDays.push({ sid: sid, d: s }); }
+        if(k === 'missing'){ o.missDays.push({ sid: sid, d: s }); ps.missDays.push({ sid: sid, d: s }); }
+        if(k === 'vt'){ if(s > o.lastVt) o.lastVt = s; if(s > ps.lastVt) ps.lastVt = s; }
+      });
+      VT.finish(ps);
+    });
+    return VT.finish(o);
+  };
+
+  /* ---------- サーバーの行の時刻（Toast → サーバーの取り込み。この端末が読んだときに覚える・端末だけ）
+     at＝サーバーの行の fetched_at（なければ updated_at・synced_at）。hyper-worker は取り込み直しで fetched_at を変えないので、
+       「新しい日の行ができた時刻」で、取り込み直した時刻ではない（#122 のレビュー）。read＝この端末が読んだ時刻。画面では分けて出す。 ---------- */
+  function fLoad(){ if(W._vtFetched) return W._vtFetched; try{ W._vtFetched = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}; }catch(e){ W._vtFetched = {}; } return W._vtFetched; }
+  VT.noteFetched = function(sid, rows){
+    try{
+      if(!sid || !Array.isArray(rows) || rows._err) return;
+      var at = '', last = '';
+      rows.forEach(function(r){ if(!r) return; var fa = String(r.fetched_at || r.updated_at || r.synced_at || ''); if(fa > at) at = fa; if(r.business_date && String(r.business_date) > last) last = String(r.business_date).slice(0, 10); });
+      var m = fLoad(), p = m[sid] || {};
+      m[sid] = { at: at > (p.at || '') ? at : (p.at || ''), last: last > (p.last || '') ? last : (p.last || ''), read: new Date().toISOString() };
+      try{ localStorage.setItem(FKEY, JSON.stringify(m)); }catch(e){}
+    }catch(e){}
+  };
+  VT.fetched = function(sid){ return fLoad()[sid] || null; };
+  /* この端末の最後の売上の読み込みが失敗しているか（v1105 の取得の状態） */
+  VT.failAt = function(sid){
+    try{ var st = fstState(), r = st && st.sales && st.sales.by && st.sales.by[sid]; return (r && fstFailing(r)) ? (r.fail || '') : ''; }catch(e){ return ''; }
+  };
+  function latestFetch(stores){
+    var at = '', read = '', fail = '', anyFail = false;
+    (stores || []).forEach(function(sid){ var f = VT.fetched(sid); if(f && f.at && (!at || f.at < at)) at = f.at; if(f && f.read && (!read || f.read < read)) read = f.read; var fa = VT.failAt(sid); if(fa){ anyFail = true; if(fa > fail) fail = fa; } });
+    return { at: at, read: read, fail: fail, anyFail: anyFail };
+  }
+
+  /* ---------- タイルの中身（5 つの状態） ---------- */
+  VT.parts = function(o, tgt){
+    var lf = latestFetch(o.stores), p = { judge: false, state: o.state, fail: lf.fail };
+    var line = 'FT ' + fmt(o.first) + ' · RP ' + fmt(o.rp) + (o.srHas ? ' · SR ' + fmt(o.sr) : '');
+    var cover = o.biz ? T('取り込み ', 'Imported ') + o.got + '/' + o.biz + T(' 日', ' days') : '';
+    var when = lf.at ? T('最新の行 ', 'Newest row ') + hst(lf.at) : '';
+    p.line = line; p.sub = [cover, when].filter(Boolean).join(' · ');
+    if(o.state === 'ok' || o.state === 'partial'){
+      p.val = o.rate.toFixed(1) + '%'; p.judge = true;
+      p.col = tgt != null ? (o.rate >= tgt ? 'var(--green)' : o.rate >= tgt * 0.9 ? 'var(--yellow)' : 'var(--red)') : (o.rate >= 50 ? 'var(--green)' : o.rate >= 30 ? 'var(--yellow)' : 'var(--red)');
+      if(o.state === 'partial'){ p.tag = T('未取込 ', 'Missing ') + o.n.missing + T(' 日 · 途中の数字', ' d · partial'); p.tagBg = '#fff4e0'; p.tagFg = '#7a4a00'; }
+      else if(o.n.zero){ p.tag = T('来店区分 0 の日 ', 'No visit types: ') + o.n.zero + T(' 日', ' d'); p.tagBg = '#fff4e0'; p.tagFg = '#7a4a00'; }
+      else if(tgt != null){ var ok = o.rate >= tgt; p.tag = T('目標 ', 'Target ') + tgt + '% · ' + (ok ? T('達成', 'met') : T('未達', 'below')); p.tagBg = ok ? '#e7f3ec' : '#fdecea'; p.tagFg = ok ? '#1e5a3a' : '#8a1c13'; }
+      if(o.state === 'partial'){ var mm = o.missDays.slice(0, 3).map(function(x){ return md(x.d); }).join('・') + (o.missDays.length > 3 ? T(' ほか ', ' + ') + (o.missDays.length - 3) + T(' 日', ' d') : ''); p.sub = cover + (mm ? ' · ' + mm + T(' がまだ', ' not yet') : ''); }
+    } else if(o.state === 'nodata'){
+      p.val = T('対象データなし', 'No data'); p.col = 'var(--muted)'; p.small = true;
+      p.tag = T('判定しません', 'Not judged'); p.tagBg = '#fff4e0'; p.tagFg = '#7a4a00';
+    } else if(o.state === 'missing'){
+      p.val = T('未取込', 'Not imported'); p.col = 'var(--red)'; p.small = true;
+      p.line = T('売上の行が ', 'Sales rows: ') + '0/' + o.biz + T(' 日', ' days');
+      p.tag = lf.anyFail ? T('最後の取り込みが失敗 ', 'Last import failed ') + hst(lf.fail) : T('まだ取り込んでいません', 'Not imported yet'); p.tagBg = '#fdecea'; p.tagFg = '#8a1c13';
+    } else {
+      p.val = '—'; p.col = 'var(--muted)'; p.line = T('この期間に営業日がありません', 'No business days in this period');
+    }
+    if(lf.anyFail && o.state !== 'missing'){ p.sub = (p.sub ? p.sub + ' · ' : '') + T('最後の取り込みが失敗 ', 'last import failed ') + hst(lf.fail); }
+    return p;
+  };
+  function tagHtml(p){ return p.tag ? '<span style="display:inline-block;font-size:10.5px;line-height:1.5;padding:1px 8px;border-radius:999px;background:' + p.tagBg + ';color:' + p.tagFg + '">' + esc(p.tag) + '</span>' : ''; }
+
+  /* ---------- 内訳を開く文脈 ---------- */
+  var CTX = W._vtCtx = W._vtCtx || {}, seq = 0;
+  VT.ctx = function(scopeStores, days, label, opt){
+    var id = 'vt' + (++seq);
+    var ids = []; (scopeStores || []).forEach(function(s){ var sid = s && (s.id || s); if(sid && typeof sid === 'string' && ids.indexOf(sid) < 0 && !EXCL[sid]) ids.push(sid); });
+    CTX[id] = { stores: ids, days: (days || []).map(ds).filter(Boolean), label: label || '', tgt: opt && opt.tgt != null ? opt.tgt : null, extra: opt && opt.extra };
+    var ks = Object.keys(CTX); while(ks.length > 60) delete CTX[ks.shift()];
+    return id;
+  };
+  /* 押せるタイル（日次進捗・会議の小さな枠など） */
+  VT.tile = function(scopeStores, days, label, opt){
+    opt = opt || {};
+    var o = VT.stats(scopeStores, days); if(!o.stores.length || o.state === 'empty') return '';
+    var p = VT.parts(o, opt.tgt), id = VT.ctx(scopeStores, days, label, opt);
+    return '<button type="button" class="vt-tile" onclick="FUNERGY_VT.open(\'' + id + '\')" style="display:flex;flex-direction:column;gap:4px;width:100%;text-align:left;font:inherit;color:var(--text,inherit);background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer">'
+      + '<span style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ti-repeat"></i>' + esc(opt.title || T('リピート率', 'Repeat rate')) + (opt.tgt != null ? '<span style="margin-left:auto">' + T('目標 ', 'Target ') + opt.tgt + '%</span>' : '') + '</span>'
+      + '<span style="font-size:' + (p.small ? '17' : '22') + 'px;font-weight:800;color:' + p.col + '">' + esc(p.val) + '</span>'
+      + tagHtml(p)
+      + '<span style="font-size:11px;color:var(--tm);font-variant-numeric:tabular-nums">' + esc(p.line) + '</span>'
+      + (p.sub ? '<span style="font-size:10.5px;color:var(--muted)">' + esc(p.sub) + '</span>' : '')
+      + '<span style="font-size:9.5px;color:var(--accent2);font-weight:600"><i class="ti ti-hand-finger"></i> ' + T('押すと内訳', 'Tap for breakdown') + '</span>'
+      + '</button>';
+  };
+  /* ダッシュボード・予実の「KPI 目標との差」のタイルと同じ見た目（budKpiCard） */
+  VT.kpiTile = function(scopeStores, days, tgt, extra){
+    var o = VT.stats(scopeStores, days); if(!o.stores.length || o.state === 'empty') return '';
+    var p = VT.parts(o, tgt), id = VT.ctx(scopeStores, days, '', { tgt: tgt, extra: extra });
+    return '<div onclick="FUNERGY_VT.open(\'' + id + '\')" style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:10px 12px;cursor:pointer">'
+      + '<div style="font-size:10.5px;color:var(--muted);display:flex;align-items:center;gap:4px"><i class="ti ti-repeat"></i><span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + T('リピート率', 'Repeat rate') + '</span>' + (tgt != null ? '<span style="margin-left:auto;white-space:nowrap">' + T('目標', 'Target') + ' ' + tgt + '%</span>' : '') + '</div>'
+      + '<div style="display:flex;align-items:baseline;gap:6px;margin-top:4px;flex-wrap:wrap"><span style="font-size:' + (p.small ? '15' : '19') + 'px;font-weight:800;color:' + p.col + '">' + esc(p.val) + '</span>' + tagHtml(p) + '</div>'
+      + '<div style="font-size:10px;color:var(--muted);margin-top:3px">' + esc(p.line) + (p.sub ? '<br>' + esc(p.sub) : '') + '</div>'
+      + '<div style="font-size:9px;color:var(--accent2);margin-top:5px;display:flex;align-items:center;gap:3px;font-weight:600"><i class="ti ti-hand-finger"></i>' + T('タップで内訳', 'Tap for details') + '</div></div>';
+  };
+  /* 一行だけ（会議の枠の下など） */
+  VT.note = function(scopeStores, days, label, opt){
+    var o = VT.stats(scopeStores, days); if(!o.stores.length || o.state === 'empty') return '';
+    var p = VT.parts(o, opt && opt.tgt), id = VT.ctx(scopeStores, days, label, opt);
+    var head = (o.state === 'ok' || o.state === 'partial') ? '' : '<b style="color:' + p.col + '">' + esc(p.val) + '</b> · ';
+    return '<div style="font-size:9.5px;color:var(--muted);margin-top:3px;cursor:pointer" onclick="FUNERGY_VT.open(\'' + id + '\')">' + head + esc(p.line) + (p.sub ? ' · ' + esc(p.sub) : '') + (p.tag && o.state !== 'ok' ? ' · ' + esc(p.tag) : '') + ' <span style="color:var(--accent2)">' + T('内訳', 'Details') + '</span></div>';
+  };
+
+  /* ---------- 内訳（UI案67 ①） ---------- */
+  var COL = { vt: '#2f7d55', zero: '#f0b86b', closed: '#d7dbe2', missing: '#ffffff' };
+  function strip(ps){
+    return '<div style="display:grid;grid-template-columns:repeat(' + Math.max(1, ps.days.length) + ',minmax(0,1fr));gap:2px;margin-top:4px" aria-hidden="true">'
+      + ps.days.map(function(x){ return '<span title="' + esc(md(x.d)) + '" style="height:18px;border-radius:3px;background:' + COL[x.k] + (x.k === 'missing' ? ';box-shadow:inset 0 0 0 2px #b42318' : '') + '"></span>'; }).join('') + '</div>';
+  }
+  function pct(a, b){ return b > 0 ? (Math.round(a / b * 1000) / 10).toFixed(1) + '%' : '—'; }
+  function kbox(label, val, sub, hi){
+    return '<div style="flex:1 1 120px;min-width:0;border:' + (hi ? '2px solid var(--accent)' : '1px solid var(--border)') + ';border-radius:10px;padding:8px 10px;background:var(--surface)">'
+      + '<div style="font-size:11px;color:' + (hi ? 'var(--accent)' : 'var(--muted)') + ';font-weight:' + (hi ? '700' : '400') + '">' + label + '</div>'
+      + '<div style="font-size:' + (hi ? '24' : '18') + 'px;font-weight:800;font-variant-numeric:tabular-nums">' + val + '</div>'
+      + (sub ? '<div style="font-size:10.5px;color:var(--muted)">' + sub + '</div>' : '') + '</div>';
+  }
+  VT.html = function(id){
+    var c = CTX[id]; if(!c) return '';
+    var o = VT.stats(c.stores, c.days), p = VT.parts(o, c.tgt), lf = latestFetch(o.stores);
+    var dd = c.days.filter(function(s){ return s < today(); });
+    var range = dd.length ? (dd[0].replace(/-/g, '/') + '〜' + md(dd[dd.length - 1])) : '';
+    var names = o.stores.map(function(s){ return storeObj(s).name; }).join('・');
+    var h = '<div class="modal-title"><i class="ti ti-repeat"></i> ' + T('リピート率の内訳', 'Repeat rate breakdown') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    h += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(names) + (c.label ? ' · ' + esc(c.label) : '') + (range ? ' · ' + esc(range) + T('（前日まで・ハワイの営業日）', ' (through yesterday, Hawaii business days)') : '') + '</div>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'
+      + (lf.at ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:#e7f3ec;color:#1e5a3a">' + T('サーバーに新しい日の行ができた時刻 ', 'Newest server row created ') + esc(hst(lf.at)) + T('（ハワイ）', ' (HST)') + '</span>' : '')
+      + (lf.read ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:var(--surface2);color:var(--muted)">' + T('この端末で読んだ時刻 ', 'Read on this device ') + esc(hst(lf.read)) + '</span>' : '')
+      + (lf.anyFail ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:#fdecea;color:#8a1c13">' + T('この端末の最後の読み込みが失敗 ', 'Last read on this device failed ') + esc(hst(lf.fail)) + '</span>' : '')
+      + '</div>';
+    var rateV = o.rate != null ? o.rate.toFixed(1) + '%' : esc(p.val);
+    h += '<div style="display:flex;flex-wrap:wrap;gap:8px">'
+      + kbox(T('リピート率', 'Repeat rate'), rateV, o.total > 0 ? T('（RP＋SR）÷（FT＋RP＋SR）＝ ', '(RP+SR) ÷ (FT+RP+SR) = ') + fmt(o.repeat) + ' ÷ ' + fmt(o.total) : T('FT＋RP＋SR が 0 なので計算しません（0% にしません）', 'FT+RP+SR is 0, so no rate (not 0%)'), true)
+      + kbox(T('初回 FT', 'First FT'), fmt(o.first), pct(o.first, o.total))
+      + kbox(T('リピート RP', 'Repeat RP'), fmt(o.rp), pct(o.rp, o.total))
+      + (o.srHas ? kbox('Super Regular SR', fmt(o.sr), pct(o.sr, o.total)) : '')
+      + kbox(T('分類の合計 FT＋RP＋SR', 'Total FT+RP+SR'), fmt(o.total), T('数えたのは商品の数量', 'item quantities'))
+      + '</div>';
+    if(!o.srHas) h += '<div style="font-size:10.5px;color:var(--muted);margin-top:4px">' + T('SR の内訳が無い日は、RP に SR が入っています。', 'Where SR is not split out, RP includes SR.') + '</div>';
+    /* 営業日ごとの取り込みの状態 */
+    h += '<div style="font-size:13px;font-weight:700;margin-top:12px">' + T('取り込みの状態（営業日ごと）', 'Import status by business day') + '</div>';
+    o.stores.forEach(function(sid){
+      var ps = o.per[sid]; if(!ps) return;
+      h += '<div style="margin-top:6px"><div style="font-size:11.5px;display:flex;gap:8px;flex-wrap:wrap"><b>' + esc(storeObj(sid).name) + '</b><span style="color:var(--muted)">' + (ps.rate != null ? ps.rate.toFixed(1) + '%' : (ps.state === 'nodata' ? T('対象データなし', 'No data') : ps.state === 'missing' ? T('未取込', 'Not imported') : '—')) + ' · FT ' + fmt(ps.first) + ' · RP ' + fmt(ps.rp) + (ps.srHas ? ' · SR ' + fmt(ps.sr) : '') + '</span></div>' + strip(ps) + '</div>';
+    });
+    var zl = o.zeroDays.slice(0, 6).map(function(x){ return (o.stores.length > 1 ? storeObj(x.sid).name + ' ' : '') + md(x.d); }).join('・') + (o.zeroDays.length > 6 ? T(' ほか', ' and more') : '');
+    var ml = o.missDays.slice(0, 6).map(function(x){ return (o.stores.length > 1 ? storeObj(x.sid).name + ' ' : '') + md(x.d); }).join('・') + (o.missDays.length > 6 ? T(' ほか', ' and more') : '');
+    function lg(col, txt, extra){ return '<span><span style="display:inline-block;width:11px;height:11px;border-radius:3px;background:' + col + (extra || '') + ';vertical-align:-1px"></span> ' + txt + '</span>'; }
+    h += '<div style="display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;margin-top:6px">'
+      + lg(COL.vt, T('来店区分あり ', 'With visit types ') + o.n.vt + T(' 日', ' d'))
+      + lg(COL.zero, T('取り込めたが来店区分 0（FT・RP・SR が 0）', 'Imported but no visit types (FT/RP/SR 0)') + ' ' + o.n.zero + T(' 日', ' d') + (zl ? T('：', ': ') + esc(zl) : ''))
+      + lg(COL.closed, T('店休・売上 0 ', 'Closed / no sales ') + o.n.closed + T(' 日', ' d'))
+      + lg('#fff', T('売上の行なし（未取込・休業の登録なし）', 'No sales row (not imported / closure not registered)') + ' ' + o.n.missing + T(' 日', ' d') + (ml ? T('：', ': ') + esc(ml) : ''), ';box-shadow:inset 0 0 0 2px #b42318')
+      + '</div>';
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.6">' + T('来店区分 0 の日・未取込の日は 0% として数えません（分母にも分子にも入りません）。期間の FT・RP・SR を足してから割ります（日ごと・店ごとの率の平均ではありません）。', 'Days without visit types or not imported are not counted as 0%. FT/RP/SR are summed over the period, then divided (not an average of daily or per-store rates).') + '</div>';
+    /* ランチ・ディナー */
+    try{
+      var ld = typeof repeatStatsLD === 'function' ? repeatStatsLD(o.stores.map(function(s){ return { id: s }; }), c.days.map(function(s){ return { date: s }; })) : null;
+      h += '<div style="font-size:13px;font-weight:700;margin-top:12px">' + T('ランチ・ディナー', 'Lunch / Dinner') + '</div>';
+      if(ld && ld.has){
+        var row = function(lb, a){ return '<tr><td>' + lb + '</td><td style="text-align:right">' + fmt(a.first) + '</td><td style="text-align:right">' + fmt(a.repeat) + '</td><td style="text-align:right">' + fmt(a.total) + '</td><td style="text-align:right;font-weight:700">' + pct(a.repeat, a.total) + '</td></tr>'; };
+        h += '<table class="tbl" style="width:100%;font-size:12px"><thead><tr><th></th><th style="text-align:right">FT</th><th style="text-align:right">RP+SR</th><th style="text-align:right">' + T('合計', 'Total') + '</th><th style="text-align:right">' + T('率', 'Rate') + '</th></tr></thead><tbody>'
+          + row(T('ランチ', 'Lunch'), ld.lunch) + row(T('ディナー', 'Dinner'), ld.dinner) + '</tbody></table>';
+      } else {
+        h += '<div style="font-size:11.5px;color:var(--muted)">' + T('ランチ・ディナー別の来店区分はまだ取り込まれていません（取り込みの表に列がありません）。合計の数だけで計算しています。', 'Lunch/dinner visit types are not imported yet (no columns in the import table); only totals are used.') + '</div>';
+      }
+    }catch(e){}
+    /* サーバーの取り込み（toast_sales）との照合 */
+    h += '<div style="font-size:13px;font-weight:700;margin-top:12px">' + T('Toast の取り込み（サーバー）と照合', 'Check against the Toast import (server)') + '</div>';
+    h += '<div id="vt-src-' + id + '" style="font-size:11.5px;color:var(--muted)"><i class="ti ti-loader"></i> ' + T('読んでいます…', 'Reading…') + '</div>';
+    h += '<div id="vt-days-' + id + '" style="display:none;margin-top:8px"></div>';
+    if(c.extra){ try{ var ex = typeof c.extra === 'function' ? c.extra() : c.extra; if(ex) h += '<div style="font-size:13px;font-weight:700;margin-top:12px">' + T('推移', 'Trend') + '</div>' + ex; }catch(e){} }
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:10px;line-height:1.6">' + T('Toast のメニューの customer で始まるグループ（Customers・Customer Property など）の FT・RP・SR の商品（または丼のモディファイヤー）の数量を数えます（取込は hyper-worker）。取り消した注文・伝票・商品は数えません。客の ID や電話番号から推し量ることはしません。', 'Counts the quantities of the FT/RP/SR items in Toast menu groups starting with "Customer" (Customers, Customer Property…) (or bowl modifiers), imported by hyper-worker. Voided orders/checks/items are not counted. Nothing is inferred from customer IDs or phone numbers.') + '</div>';
+    var canRange = ['ceo', 'gm', 'office'].indexOf(typeof curRole !== 'undefined' ? curRole : '') >= 0;
+    h += '<div class="btn-row" style="flex-wrap:wrap">'
+      + '<button class="btn btn-secondary" onclick="FUNERGY_VT.toggleDays(\'' + id + '\')">' + T('日ごとの表', 'Daily table') + '</button>'
+      + '<button class="btn btn-secondary" id="vt-reread-' + id + '" onclick="FUNERGY_VT.reread(\'' + id + '\')">' + T('この期間を読み直す', 'Re-read this period') + '</button>'
+      + (canRange && o.stores.length === 1 ? '<button class="btn btn-secondary" onclick="FUNERGY_VT.range(\'' + id + '\')">' + T('Toast から取り込み直す', 'Re-import from Toast') + '</button>' : '')
+      + '<button class="btn btn-primary" onclick="closeModalDirect()">' + T('閉じる', 'Close') + '</button></div>';
+    return h;
+  };
+  VT.open = function(id){
+    if(!CTX[id]) return;
+    try{ if(typeof haptic === 'function') haptic('tap'); }catch(e){}
+    openModal(VT.html(id));
+    VT.loadSrc(id);
+  };
+  /* サーバーの行を読み、端末の数（日次実績）と日ごとに比べる（読むだけ） */
+  var SRC = {};
+  VT.loadSrc = async function(id){
+    var c = CTX[id]; if(!c) return;
+    var dd = c.days.filter(function(s){ return s < today(); }); if(!dd.length){ paintSrc(id, { rows: {}, err: [] }); return; }
+    var out = { rows: {}, err: [], at: '' };
+    for(var i = 0; i < c.stores.length; i++){
+      var sid = c.stores[i], st = storeObj(sid);
+      if(!st.toastGuid){ out.err.push(st.name + T('（GUID 未設定）', ' (no GUID)')); continue; }
+      try{
+        var rows = await fetchToastSales(st.toastGuid, dd[0], dd[dd.length - 1]);
+        if(!rows || rows._err){ out.err.push(st.name); continue; }
+        VT.noteFetched(sid, rows);
+        out.rows[sid] = {}; rows.forEach(function(r){ if(r && r.business_date) out.rows[sid][String(r.business_date).slice(0, 10)] = r; });
+      }catch(e){ out.err.push(st.name); }
+    }
+    SRC[id] = out; paintSrc(id, out);
+  };
+  function srcCmp(c, out){
+    var diff = [], n = 0, ft = 0, rp = 0, sr = 0, srHas = false;
+    c.stores.forEach(function(sid){
+      var rows = out.rows[sid]; if(!rows) return;
+      var da = {}; try{ da = _daRO(sid) || {}; }catch(e){}
+      c.days.filter(function(s){ return s < today(); }).forEach(function(s){
+        var r = rows[s], ov = da[s] || {};
+        var a = r ? [num(r.first_time_count), num(r.repeat_count), num(r.super_regular_count)] : [null, null, null];
+        var b = [num(ov.firstTimeBowls), num(ov.repeatBowls), num(ov.superRegular)];
+        if(r){ n++; ft += a[0] || 0; rp += a[1] || 0; if(a[2] != null){ sr += a[2]; srHas = true; } }
+        if(r && (a[0] !== b[0] || a[1] !== b[1])) diff.push({ sid: sid, d: s, a: a, b: b });
+        else if(!r && (b[0] != null || b[1] != null)) diff.push({ sid: sid, d: s, a: a, b: b, gone: true });
+      });
+    });
+    return { diff: diff, n: n, ft: ft, rp: rp, sr: sr, srHas: srHas };
+  }
+  function paintSrc(id, out){
+    var el = document.getElementById('vt-src-' + id); if(!el) return;
+    var c = CTX[id]; if(!c) return;
+    var r = srcCmp(c, out), h = '';
+    if(out.err.length) h += '<div style="color:var(--red)">' + T('読めなかった店：', 'Could not read: ') + esc(out.err.join('、')) + T('（この店は照合していません）', ' (not checked)') + '</div>';
+    if(r.n){
+      var tot = r.ft + r.rp;
+      h += '<div>' + T('サーバーの行 ', 'Server rows ') + r.n + T(' 日：FT ', ' d: FT ') + fmt(r.ft) + ' · RP+SR ' + fmt(r.rp) + (r.srHas ? T('（うち SR ', ' (SR ') + fmt(r.sr) + T('）', ')') : '') + ' → ' + (tot > 0 ? pct(r.rp, tot) : T('対象データなし', 'no data')) + '</div>';
+      h += r.diff.length
+        ? '<div style="color:#8a1c13">' + T('端末の数と違う日 ', 'Days that differ from this device: ') + r.diff.length + T(' 日（', ' (') + esc(r.diff.slice(0, 5).map(function(x){ return (c.stores.length > 1 ? storeObj(x.sid).name + ' ' : '') + md(x.d); }).join('・')) + (r.diff.length > 5 ? T(' ほか', ' …') : '') + T('）。「この期間を読み直す」で合わせます。', '). Use "Re-read this period".') + '</div>'
+        : '<div style="color:var(--green)"><i class="ti ti-check"></i> ' + T('端末の数とサーバーの行が同じです（FT・RP＋SR）。', 'This device matches the server rows (FT, RP+SR).') + '</div>';
+    } else if(!out.err.length){
+      h += '<div>' + T('この期間のサーバーの行はありません。', 'No server rows for this period.') + '</div>';
+    }
+    var lf = latestFetch(c.stores);
+    if(lf.at) h += '<div>' + T('サーバーに新しい日の行ができた時刻 ', 'Newest server row created ') + esc(hst(lf.at)) + T('（ハワイ・取り込み直しでは変わりません）', ' (HST; re-imports do not change it)') + '</div>';
+    if(lf.read) h += '<div>' + T('この端末で読んだ時刻 ', 'Read on this device ') + esc(hst(lf.read)) + T('（ハワイ）', ' (HST)') + '</div>';
+    el.innerHTML = h || '—';
+    var box = document.getElementById('vt-days-' + id); if(box && box.style.display !== 'none') box.innerHTML = daysTable(id);
+  }
+  function daysTable(id){
+    var c = CTX[id]; if(!c) return '';
+    var o = VT.stats(c.stores, c.days), out = SRC[id] || { rows: {} };
+    var lb = { vt: T('区分あり', 'visit types'), zero: T('区分 0', 'none'), closed: T('店休', 'closed'), missing: T('未取込', 'missing') };
+    var h = '<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;white-space:nowrap"><thead><tr><th>' + T('日', 'Day') + '</th>' + (c.stores.length > 1 ? '<th>' + T('店', 'Store') + '</th>' : '') + '<th>' + T('状態', 'Status') + '</th><th style="text-align:right">' + T('売上', 'Sales') + '</th><th style="text-align:right">FT</th><th style="text-align:right">RP+SR</th><th style="text-align:right">SR</th><th style="text-align:right">' + T('率', 'Rate') + '</th><th>' + T('サーバー', 'Server') + '</th></tr></thead><tbody>';
+    o.stores.forEach(function(sid){
+      (o.per[sid].days || []).forEach(function(x){
+        var r = out.rows[sid] && out.rows[sid][x.d];
+        var srv = !out.rows[sid] ? '' : (r ? ((num(r.first_time_count) === x.f && num(r.repeat_count) === x.r) ? '✓ ' + esc(hst(r.fetched_at || r.updated_at || '')) : T('違う', 'differs') + '（FT ' + (num(r.first_time_count) == null ? '-' : num(r.first_time_count)) + '・RP+SR ' + (num(r.repeat_count) == null ? '-' : num(r.repeat_count)) + '）') : (x.k === 'missing' || x.k === 'closed' ? T('行なし', 'no row') : T('行なし（端末だけ）', 'no row (device only)')));
+        var tt = (x.f || 0) + (x.r || 0);
+        h += '<tr><td>' + md(x.d) + '</td>' + (c.stores.length > 1 ? '<td>' + esc(storeObj(sid).name) + '</td>' : '') + '<td><span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:' + COL[x.k] + (x.k === 'missing' ? ';box-shadow:inset 0 0 0 2px #b42318' : '') + '"></span> ' + lb[x.k] + '</td><td style="text-align:right">' + (x.sales != null ? '$' + Math.round(x.sales).toLocaleString() : '—') + '</td><td style="text-align:right">' + (x.f == null ? '—' : x.f) + '</td><td style="text-align:right">' + (x.r == null ? '—' : x.r) + '</td><td style="text-align:right">' + (x.x == null ? '—' : x.x) + '</td><td style="text-align:right">' + (tt > 0 ? pct(x.r || 0, tt) : '—') + '</td><td>' + srv + '</td></tr>';
+      });
+    });
+    return h + '</tbody></table></div>';
+  }
+  VT.toggleDays = function(id){
+    var box = document.getElementById('vt-days-' + id); if(!box) return;
+    if(box.style.display === 'none'){ box.innerHTML = daysTable(id); box.style.display = ''; } else box.style.display = 'none';
+  };
+  /* この期間を読み直す：サーバーの行（toast_sales）を日次実績に写し直す（今までの取り込みと同じ処理。前日まで） */
+  VT.reread = async function(id){
+    var c = CTX[id]; if(!c || VT._busy) return;
+    var dd = c.days.filter(function(s){ return s < today(); }).map(function(s){ return { date: s }; }); if(!dd.length) return;
+    var btn = document.getElementById('vt-reread-' + id); if(btn){ btn.disabled = true; btn.innerHTML = '<i class="ti ti-loader"></i> ' + T('読み直しています…', 'Re-reading…'); }
+    VT._busy = true; var bad = [];
+    try{
+      for(var i = 0; i < c.stores.length; i++){
+        var st = storeObj(c.stores[i]); if(!st.toastGuid) continue;
+        try{ var r = await syncStoreActualsFromToast(st.id, st.toastGuid, dd); if(r && r.error) bad.push(st.name); }catch(e){ bad.push(st.name); }
+      }
+    } finally { VT._busy = false; }
+    try{ if(typeof showToast === 'function') showToast(bad.length ? T('読み直せなかった店：', 'Could not re-read: ') + bad.join('、') : T('この期間を読み直しました', 'Re-read this period'), bad.length ? 'warning' : 'success'); }catch(e){}
+    var mb = document.getElementById('modal-body');
+    if(mb && document.getElementById('vt-src-' + id)){ mb.innerHTML = VT.html(id); VT.loadSrc(id); }
+  };
+  VT.range = function(id){
+    var c = CTX[id]; if(!c || c.stores.length !== 1) return;
+    var st = storeObj(c.stores[0]); if(!st.toastGuid){ try{ showToast(st.name + T(' は GUID 未設定です', ' has no GUID'), 'warning'); }catch(e){} return; }
+    try{ closeModalDirect(); }catch(e){}
+    try{ openRangeModal(st.id, st.toastGuid); }catch(e){}
+  };
+
+  /* ---------- 同期センター：店ごとの来店区分と出数の取り込み（UI案67 ④・GM・CEO・経理） ---------- */
+  VT.canCompare = function(){ return ['ceo', 'gm', 'office'].indexOf(typeof curRole !== 'undefined' ? curRole : '') >= 0; };
+  function monthDaysTo(ym, td){
+    var p = ym.split('-'), y = +p[0], m = +p[1], nd = new Date(y, m, 0).getDate(), out = [];
+    for(var d = 1; d <= nd; d++){ var s = ym + '-' + String(d).padStart(2, '0'); if(s < td) out.push(s); }
+    return out;
+  }
+  VT.storeCompare = function(off){
+    if(!VT.canCompare()) return;
+    off = Number(off) || 0;
+    var td = today(), b = new Date(+td.slice(0, 4), +td.slice(5, 7) - 1 + off, 1);
+    var ym = b.getFullYear() + '-' + String(b.getMonth() + 1).padStart(2, '0');
+    var opts = [0, -1, -2].map(function(o){ var x = new Date(+td.slice(0, 4), +td.slice(5, 7) - 1 + o, 1); var y2 = x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0'); return '<option value="' + o + '"' + (o === off ? ' selected' : '') + '>' + T(y2.replace('-', ' 年 ') + ' 月', y2) + (o === 0 ? T('（前日まで）', ' (to yesterday)') : '') + '</option>'; }).join('');
+    openModal('<div class="modal-title"><i class="ti ti-repeat"></i> ' + T('店ごとの来店区分と出数の取り込み', 'Visit types and item rows by store') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">' + T('どの店も同じ式で計算します。Toast の取り込み（サーバーの行）を読むだけで、何も変えません。', 'Same formula for every store. Reads the Toast import (server rows) only; nothing is changed.') + '</div>'
+      + '<label style="font-size:12px">' + T('期間 ', 'Period ') + '<select class="form-select" style="width:auto;display:inline-block;padding:4px 8px;font-size:12px" onchange="FUNERGY_VT.storeCompare(this.value)">' + opts + '</select></label>'
+      + '<div id="vt-cmp" style="margin-top:8px;font-size:12px"><i class="ti ti-loader"></i> ' + T('読んでいます…', 'Reading…') + '</div>'
+      + '<div class="btn-row"><button class="btn btn-secondary" onclick="openSyncCenter()">' + T('同期センターへ戻る', 'Back to Sync Center') + '</button><button class="btn btn-primary" onclick="closeModalDirect()">' + T('閉じる', 'Close') + '</button></div>');
+    VT._cmpSeq = (VT._cmpSeq || 0) + 1;
+    VT.loadCompare(ym, monthDaysTo(ym, td), VT._cmpSeq);
+  };
+  VT.loadCompare = async function(ym, days, mySeq){
+    var stores = []; try{ stores = (getVisibleStores() || []).filter(function(s){ return s && s.toastGuid && !EXCL[s.id]; }); }catch(e){}
+    var rows = [];
+    for(var i = 0; i < stores.length; i++){
+      var s = stores[i], r = { s: s, err: '' };
+      if(!days.length){ rows.push(r); continue; }
+      try{
+        var sales = await fetchToastSales(s.toastGuid, days[0], days[days.length - 1]);
+        if(!sales || sales._err) throw new Error('toast_sales');
+        VT.noteFetched(s.id, sales);
+        var items = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(s.toastGuid) + '&business_date=gte.' + days[0] + '&business_date=lte.' + days[days.length - 1] + '&select=business_date&order=id.asc', { max: 200000 });
+        var menu = await supaFetchAllRows('toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(s.toastGuid) + '&select=category&order=id.asc', { max: 20000 });
+        /* 読めなかった・途中で切れた・上限で止めた店は、欠落や 0 件と見せずに「読めませんでした」にして合計に入れない（#122 のレビュー） */
+        var badRead = function(a, nm){ if(!a) return nm + T('：読めない', ': unreadable'); if(a._err) return nm + '：' + a._err + (a._partial ? T('（途中まで）', ' (partial)') : ''); if(a._cut) return nm + T('：上限で止めた', ': stopped at the limit'); return ''; };
+        var why = badRead(items, T('出数の行', 'item rows')) || badRead(menu, T('メニューの表', 'menu table'));
+        if(why) throw new Error(why);
+        r.menuN = (menu || []).length;
+        r.cust = (menu || []).filter(function(m){ return m && (typeof isVisitTypeCategory === 'function' ? isVisitTypeCategory(m.category) : /^customer/.test(String(m.category || '').trim().toLowerCase())); }).length;
+        var idays = {}; (items || []).forEach(function(x){ if(x && x.business_date) idays[String(x.business_date).slice(0, 10)] = 1; });
+        r.ft = 0; r.rpsr = 0; r.sr = 0; r.srHas = false; r.salesDays = 0; r.vtDays = 0; r.itemDays = 0; r.at = '';
+        (sales || []).forEach(function(x){
+          var d = String(x.business_date || '').slice(0, 10); if(days.indexOf(d) < 0) return;
+          var f = num(x.first_time_count) || 0, p2 = num(x.repeat_count) || 0, q = num(x.super_regular_count);
+          r.ft += f; r.rpsr += p2; if(q != null){ r.sr += q; r.srHas = true; }
+          if((num(x.net_sales) || 0) > 0){ r.salesDays++; if(idays[d]) r.itemDays++; }
+          if(f + p2 > 0) r.vtDays++;
+          var fa = String(x.fetched_at || x.updated_at || ''); if(fa > r.at) r.at = fa;
+        });
+        r.biz = days.filter(function(d){ return !closedOn(s.id, d); }).length;
+        r.rows = (sales || []).filter(function(x){ return days.indexOf(String(x.business_date || '').slice(0, 10)) >= 0; }).length;
+      }catch(e){ r.err = String((e && e.message) || e).slice(0, 60); }
+      rows.push(r);
+      if(mySeq !== VT._cmpSeq) return;
+    }
+    if(mySeq !== VT._cmpSeq) return;
+    var el = document.getElementById('vt-cmp'); if(!el) return;
+    var tot = { ft: 0, rpsr: 0, sr: 0, rows: 0, biz: 0, vt: 0, items: 0, sd: 0 };
+    function thR(v){ return '<th style="text-align:right">' + v + '</th>'; }
+    function tdR(v, extra){ return '<td style="text-align:right' + (extra ? ';' + extra : '') + '">' + v + '</td>'; }
+    var RED = 'color:#b42318;font-weight:700';
+    var h = '<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;white-space:nowrap"><thead><tr><th>' + T('店', 'Store') + '</th><th>' + T('数え方', 'Method') + '</th>' + thR('FT') + thR('RP') + thR('SR') + thR(T('合計', 'Total')) + thR(T('リピート率', 'Repeat')) + thR(T('売上の行', 'Sales rows')) + thR(T('区分のある日', 'Days w/ types')) + thR(T('出数の行のある日', 'Days w/ items')) + '<th>' + T('新しい日の行ができた時刻', 'Newest row created') + '</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      if(r.err){ h += '<tr><td><b>' + esc(r.s.name) + '</b></td><td colspan="10" style="color:var(--red)">' + T('読めませんでした', 'Could not read') + '（' + esc(r.err) + '）</td></tr>'; return; }
+      if(r.ft == null){ h += '<tr><td><b>' + esc(r.s.name) + '</b></td><td colspan="10" style="color:var(--muted)">—</td></tr>'; return; }
+      var total = r.ft + r.rpsr, rp = r.srHas ? Math.max(0, r.rpsr - r.sr) : r.rpsr;
+      tot.ft += r.ft; tot.rpsr += r.rpsr; tot.sr += r.sr; tot.rows += r.rows; tot.biz += r.biz; tot.vt += r.vtDays; tot.items += r.itemDays; tot.sd += r.salesDays;
+      var bad = total === 0 && r.salesDays > 0;
+      var how = r.cust > 0 ? T('Customers の商品', 'Customers items') : (total > 0 ? T('来店区分あり（メニューの表にグループなし）', 'Has visit types (no group in the menu table)') : (r.menuN ? T('Customers が見つからない', 'No Customers group') : T('メニューの表が空', 'Menu table empty')));
+      h += '<tr' + (bad ? ' style="background:#fff8ef"' : '') + '><td><b>' + esc(r.s.name) + '</b></td><td' + (r.cust > 0 ? '' : ' style="color:#7a4a00"') + '>' + how + (r.menuN ? ' <span style="color:var(--muted)">(' + r.cust + '/' + r.menuN + ')</span>' : '') + '</td>'
+        + tdR(fmt(r.ft)) + tdR(fmt(rp)) + tdR(r.srHas ? fmt(r.sr) : '—') + tdR(fmt(total))
+        + tdR(total > 0 ? pct(r.rpsr, total) : '<span style="color:#7a4a00">' + T('対象データなし', 'No data') + '</span>', 'font-weight:700')
+        + tdR(r.rows + '/' + r.biz) + tdR(r.vtDays, bad ? RED : '') + tdR(r.itemDays + '/' + r.salesDays, r.itemDays < r.salesDays ? RED : '')
+        + '<td>' + esc(hst(r.at)) + '</td></tr>';
+    });
+    var tt = tot.ft + tot.rpsr;
+    h += '<tr style="background:var(--surface2)"><td><b>' + T('合計', 'Total') + '</b></td><td style="color:var(--muted)">' + T('数を足してから割る', 'sum, then divide') + '</td>'
+      + tdR(fmt(tot.ft)) + tdR(fmt(Math.max(0, tot.rpsr - tot.sr))) + tdR(fmt(tot.sr)) + tdR(fmt(tt)) + tdR(tt > 0 ? pct(tot.rpsr, tt) : '—', 'font-weight:700')
+      + tdR(tot.rows + '/' + tot.biz) + tdR(tot.vt) + tdR(tot.items + '/' + tot.sd) + '<td></td></tr>';
+    h += '</tbody></table></div>';
+    if(rows.some(function(r){ return r.err; })) h += '<div style="margin-top:6px;font-size:11.5px;color:#b42318">' + T('読めなかった店は合計に入れていません。もう一度開いてください。', 'Stores that could not be read are left out of the total. Open this again.') + '</div>';
+    h += '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('RP は SR を除いた数（取り込みの repeat_count は RP＋SR）。売上の行＝その期間に行のある日／休みの登録のない日。区分のある日＝FT＋RP＋SR が 1 以上の日。出数の行のある日＝売上のある日のうち商品の出数の行がある日。', 'RP excludes SR (repeat_count = RP+SR). Sales rows = days with a row / days without a registered closure. Days w/ types = FT+RP+SR ≥ 1. Days w/ items = sales days that have item rows.') + '</div>';
+    if(rows.some(function(r){ return !r.err && r.ft != null && r.ft + r.rpsr === 0 && r.salesDays > 0; })) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;color:#7a4a00">' + T('売上はあるのに FT・RP・SR が 0 の店があります。Toast の取り込みで来店区分が見つかっていません。「来店区分（FT/RP/SR）診断」で、その店の営業日を診断してください。', 'Some stores have sales but FT/RP/SR are 0: visit types are not found by the Toast import. Run the visit type diagnosis for a business day.') + '</div>';
+    el.innerHTML = h;
+  };
+})();
+/* ==== FUNERGY_VT end ==== */
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>
