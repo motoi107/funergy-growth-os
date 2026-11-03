@@ -84,7 +84,7 @@ async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = 
     setEmpSkillStore: (n, s, p, d) => { calls.push(['skill', n, s, p, d]); ((cloud.skills[s] = cloud.skills[s] || {})[n] = cloud.skills[s][n] || {})[p] = d; },
     addSkillHistory: (...a) => cloud.history.push(a),
     getLssRequests: () => cloud.lss, getLssScores: n => cloud.scores[n] || null, LSS_EMP_PREFIX: 'lss_emp_',
-    approveLssScoreRequest: id => { calls.push(['lssApprove', id]); const q = cloud.lss.find(x => x.id === id); if (q) q.status = '承認'; },
+    approveLssScoreRequest: id => { calls.push(['lssApprove', id]); if (cloud.refuse) return; const q = cloud.lss.find(x => x.id === id); if (q) q.status = '承認'; },
     rejectLssScoreRequest: id => calls.push(['lssReject', id]),
     effectiveTipRate: n => { const d = cloud.tips.filter(x => x.name === n && x.status === '承認').pop(); return d ? d.rate : 80; },
     tipFromRange: () => ({ cur: '2026-11-01', min: '2026-10-16', max: '2027-11-02', today: '2026-11-02' }),
@@ -138,8 +138,8 @@ test('Tip Rate: a G4 asks from the Tip Rate screen; the GM approves, checks on t
   await g4.ctx.wrTipAskGo(); await g4.settle();
   const tr = (await srv.pg.query(`select id, code, payload, effective_date::text e from public.wr_requests where kind = 'tiprate'`)).rows[0];
   assert.equal(tr.payload.rate_from, 80); assert.equal(tr.payload.rate_to, 90); assert.equal(tr.e, '2026-11-16');
-  g4.ctx.approveTip('x'); await g4.ctx.applyTipRaise();
-  assert.equal(g4.calls.filter(c => c[0] === 'approveTip' || c[0] === 'raise').length, 0, 'a G4 cannot approve or raise directly');
+  g4.ctx.approveTip('x'); await g4.ctx.applyTipRaise(); g4.ctx.submitSkillReview('sr1', 'approve');
+  assert.equal(g4.calls.filter(c => c[0] === 'approveTip' || c[0] === 'raise' || c[0] === 'skillReview').length, 0, 'a G4 cannot approve, raise or decide a skill request directly');
   const gm = await app(srv, 'E2', { cloud }); await gm.render();
   gm.ctx.wrOpen(tr.id); await gm.settle();
   gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
@@ -169,10 +169,13 @@ test('Career Score: the G4’s score request becomes a CS request; only Work Cen
   gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
   assert.equal(gm.S().d.status, 'apply_error');
   assert.match(gm.dom.els['wr-detail'].innerHTML, /反映エラー/);
-  cloud.lss = keep;
+  cloud.lss = keep; cloud.refuse = true;
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(gm.S().d.status, 'apply_error', 'the score request was not approved: recorded as an error, not as applied');
+  cloud.refuse = false;
   gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
   assert.equal(gm.S().d.status, 'applied'); assert.equal(cloud.lss[0].status, '承認');
-  assert.deepEqual(gm.calls.filter(c => c[0] === 'lssApprove'), [['lssApprove', 'lssq_1']]);
+  assert.deepEqual(gm.calls.filter(c => c[0] === 'lssApprove'), [['lssApprove', 'lssq_1'], ['lssApprove', 'lssq_1']]);
 });
 
 test('before go-live nothing changes for a G4; the matrix view keeps my hidden people per store', async () => {
@@ -213,4 +216,31 @@ test('the v1131 function (no fn in whoami) is reported as the earlier version, n
   now.dom.els['ssk-p_Grill'] = { value: '9' }; now.dom.els['ssk-reason'] = { value: '理由' };
   await now.ctx.wrSkillAsk('Cam Crew', 'S1'); await now.settle();
   assert.ok(now.toasts.some(t => /入力の値/.test(t[1])) && !now.toasts.some(t => /前の版/.test(t[1])), 'a real bad value stays a bad value');
+});
+
+test('Tip Rate: saving a different rate or day on the raise screen is not recorded as this request; another GM applying first is no error', async () => {
+  const srv = await server(), cloud = shared();
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.openTipRaiseModal(); await g4.settle();
+  g4.dom.els['wrt-name'].value = 'Cam Crew'; g4.dom.els['wrt-rate'].value = '90'; g4.dom.els['wrt-reason'].value = 'r';
+  await g4.ctx.wrTipAskGo(); await g4.settle();
+  const id = (await srv.pg.query(`select id from public.wr_requests where kind = 'tiprate'`)).rows[0].id;
+  const st = async () => (await srv.pg.query(`select status from public.wr_requests where id = $1`, [id])).rows[0].status;
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('approve'); await gm.settle(); await gm.settle();
+  gm.dom.els['tipraise-rate'].value = '100';
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(await st(), 'approved', 'a different rate is not this request');
+  gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('apply'); await gm.settle();
+  gm.dom.els['tipraise-from'].value = '2026-12-01';
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(await st(), 'approved', 'a different day is not this request');
+  gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('apply'); await gm.settle();
+  const ceo = (await srv.pg.query(`select rev from public.wr_requests where id = $1`, [id])).rows[0];
+  const r = await srv.handler(new Request('https://db.test/functions/v1/work-requests', { method: 'POST', body: JSON.stringify({ pin_session: 'pin-E2', action: 'act', id, op: 'apply', expect_rev: ceo.rev, client_key: 'k-other-device-1', note: 'other device' }) }));
+  assert.equal(r.status, 200);
+  const before = gm.toasts.length;
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(gm.toasts.slice(before).filter(t => t[0] === 'error').length, 0, 'already applied on another device: no error, no second record');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply'`, [id])).rows[0].n, 1);
 });

@@ -490,6 +490,11 @@ body.shift-wide .main { max-width:1900px; }
   overflow-y: auto;
 }
 .modal-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+/* v1132：ワークセンターの申請の画面は箱を広げる（中身の最小幅で箱からはみ出して横にずれていた・v1131 から） */
+#modal-body:has(> #wr-detail), #modal-body:has(> #wr-form), #modal-body:has(> #wr-people) { max-width: min(680px, 96vw); }
+#modal-body:has(> #wr-tip), #modal-body:has(> #wr-view) { max-width: min(540px, 96vw); }
+#wr-detail table, #wr-form table, #wr-people table { max-width: 100%; }
+#wr-tip select, #wr-tip textarea, #wr-tip input { width: 100%; box-sizing: border-box; }
 .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
 #fypass-overlay{ position:fixed; inset:0; z-index:300; background:linear-gradient(160deg,#f0661f 0%,#f0902b 55%,#e85d15 100%); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:28px 22px; overflow:hidden; -webkit-tap-highlight-color:transparent; }
 #fypass-overlay .fypass-shine{ position:absolute; top:0; left:0; height:100%; width:32%; background:linear-gradient(100deg,transparent,rgba(255,255,255,.22),transparent); animation:fypassShine 3.4s linear infinite; pointer-events:none; }
@@ -99803,12 +99808,15 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function liveSeen(){
     var loc = null, srv = null;
     try{ var x = localStorage.getItem(LIVE_KEY); loc = x === '1' ? { live:true, at:'' } : x ? JSON.parse(x) : null; }catch(e){ loc = null; }
+    /* v1132：端末の保存がいっぱいで書けなかったときも、このタブで聞いた答えを使う（G4 の直接の変更を止める判定にも使うため） */
+    if (liveMem && (!loc || (Date.parse(liveMem.at) || 0) >= (loc.at ? Date.parse(loc.at) || 0 : 0))) loc = liveMem;
     try{ srv = (typeof ls === 'function') ? ls('wr_live', null) : null; if (srv && srv.__st === 1) srv = srv.v; }catch(e){ srv = null; }
     var tl = loc && loc.at ? Date.parse(loc.at) || 0 : 0, ts = srv && srv.at ? Date.parse(srv.at) || 0 : 0;
     if (srv && typeof srv.live === 'boolean' && (!loc || ts >= tl)) return srv.live;
     return !!(loc && loc.live);
   }
-  function setLiveSeen(v, at){ try{ localStorage.setItem(LIVE_KEY, JSON.stringify({ live:!!v, at:at || new Date().toISOString() })); }catch(e){} }
+  var liveMem = null;
+  function setLiveSeen(v, at){ liveMem = { live:!!v, at:at || new Date().toISOString() }; try{ localStorage.setItem(LIVE_KEY, JSON.stringify(liveMem)); }catch(e){} }
 
   function fresh(){ return { authKey:'', me:null, live:null, rate:null, settingsRev:1, view:'todo', rows:null, counts:null, load:'', err:'', errCode:'',
     flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null }; }
@@ -100053,7 +100061,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }
   W.wrPeople = function(goLive){
     S.pp = { goLive:!!goLive, d:null, err:'', pick:{}, busy:false };
-    openModal('<div id="wr-people" style="min-width:min(680px,94vw)">' + T('読み込み中…','Loading…') + '</div>');
+    openModal('<div id="wr-people" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
     var g = S.gen;
     api({ action:'people_diff' }).then(function(d){ if (g !== S.gen || !S.pp) return; S.pp.d = d; (d.items || []).forEach(function(x){ S.pp.pick[x.emp] = !x.up; }); drawPeople(); },
       function(e){ if (g !== S.gen || !S.pp) return; S.pp.err = String(e.message || e); drawPeople(); });
@@ -100127,7 +100135,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   W.wrOpen = function(id){
     checkAuth();
     S.d = null; S.dErr = ''; S.ask = null;
-    openModal('<div id="wr-detail" style="min-width:min(640px,92vw)">' + T('読み込み中…','Loading…') + '</div>');
+    openModal('<div id="wr-detail" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
     var tok = S.openTok = (S.openTok || 0) + 1, g = S.gen;   /* 続けて押したとき、前の答えを後から出さない */
     api({ action:'get', id:id }).then(function(j){ if (tok !== S.openTok || g !== S.gen) return; S.d = j; drawDetail(); }, function(e){ if (tok !== S.openTok || g !== S.gen) return; S.dErr = String(e.message || e); drawDetail(); });
   };
@@ -100352,14 +100360,14 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     /* まだ読んでいない（前の画面から来た）：読んでから開く。使い始めているかはサーバーが決める */
     if (!S.me) {
       S.pendingNew = { kind:kind, from:from || null };
-      openModal('<div id="wr-form" style="min-width:min(560px,92vw)">' + T('読み込み中…','Loading…') + '</div>');
+      openModal('<div id="wr-form" style="width:100%">' + T('読み込み中…','Loading…') + '</div>');
       if (S.load !== 'loading') { S.load = ''; load(); }
       return;
     }
     if (!S.live && !from) { showToast(errText('not_live'), 'error'); return; }
     var p = from ? (rawLegacy(from) ? legacyForm(from.kind, from.payload || {}) : Object.assign({}, from.payload)) : {};
     S.form = { kind:KINDS.indexOf(kind) >= 0 ? kind : '', from:from || null, key:newKey(), dup:null, busy:false, p:p, store:from ? from.store_id : (storeOpts()[0] || ''), file:null };
-    openModal('<div id="wr-form" style="min-width:min(560px,92vw)"></div>');
+    openModal('<div id="wr-form" style="width:100%"></div>');
     drawForm();
   };
   /* 前からの申請を直す・出し直すとき：前の画面の記録の形を、新しい申請の形に写す（#123 のレビュー P2） */
@@ -100540,7 +100548,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       });
       if (r.kind === 'cs' && (p.total_from != null || p.total_to != null)) rows += '<tr><td>' + T('総合点（申請したとき）','Total (when asked)') + '</td><td>' + lvTxt(p.total_from) + '</td><td>' + lvTxt(p.total_to) + '</td><td style="color:var(--muted)">' + T('反映のとき項目の点から計算し直す','recalculated from the items') + '</td></tr>';
     }
-    var warn = moved && ['pending','approved','apply_error'].indexOf(r.status) >= 0 ? '<div class="alert alert-warning" style="margin-top:6px;font-size:11.5px">' + T('申請のあとに正式な値が変わった項目があります（「今」の列）。古い前提のまま上書きしません。差を見てから決めてください。','Some official values changed after the request (the “now” column). Nothing is overwritten on the old basis: check the difference first.') + '</div>' : '';
+    var warn = moved && ['pending','approved','apply_error'].indexOf(r.status) >= 0 ? '<div class="alert alert-warning" style="margin-top:6px;font-size:11.5px">' + T('申請のあとに正式な値が変わった項目があります（「今」の列）。承認して反映すると、その項目は申請の値になります。差を見てから決めてください。','Some official values changed after the request (the “now” column). Approving and applying sets those items to the asked value. Check the difference first.') + '</div>' : '';
     return '<table class="tbl" style="width:100%;font-size:11.5px;margin-top:4px"><tr style="color:var(--muted)"><td>' + T('項目','Item') + '</td><td>' + T('申請したときの値','When asked') + '</td><td>' + T('申請','Asked') + '</td><td>' + T('今（この端末の写し）','Now (this device)') + '</td></tr>' + rows + '</table>' + warn;
   }
   function evalSteps(r){
@@ -100594,7 +100602,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try {
       if (!lssReq || !lssReq.id) return;
       var emp = empByName(name); if (!emp || !emp.id) return;
-      var items = (lssReq.diff || []).filter(function(d){ return d && d.id; }).slice(0, 200).map(function(d){ return { key:String(d.id).slice(0, 40), label:String(((d.catName || '') + ' ' + (d.label || '')).trim()).slice(0, 120), from:d.from == null ? null : d.from, to:d.to == null ? 0 : d.to }; });
+      var items = (lssReq.diff || []).filter(function(d){ return d && d.id; }).slice(0, 200).map(function(d){ return { key:String(d.id).slice(0, 40), label:String(((d.catName || '') + ' ' + (d.label || '')).trim()).slice(0, 120), from:d.from == null ? null : d.from, to:d.to == null ? null : d.to }; });
       if (!items.length) return;
       var reason = String(lssReq.changeReason || lssReq.comment || T('Career Score の採点','Career Score scoring')).slice(0, 600);
       evalSend('cs', g4StoreFor(emp), { target_emp:String(emp.id), target_name:name, lss_req:lssReq.id, quarter:String(lssReq.q || '').slice(0, 20),
@@ -100619,7 +100627,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var staff = tipStaff(store);
     var opts = staff.map(function(e){ var rt = ''; try { rt = effectiveTipRate(e.name) + '%'; } catch(x) {} return '<option value="' + esc(e.name) + '"' + (p.target_name === e.name ? ' selected' : '') + '>' + esc(e.name) + (rt ? '（' + esc(rt) + '）' : '') + '</option>'; }).join('');
     S.tipForm = { from:from || null, store:store };
-    openModal('<div id="wr-tip" style="min-width:min(480px,92vw)"><div class="modal-title">' + T('Tip Rate の変更を GM に申請','Ask the GM to change a Tip Rate') + (from ? ' · ' + esc(from.code) : '') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    openModal('<div id="wr-tip" style="width:100%"><div class="modal-title">' + T('Tip Rate の変更を GM に申請','Ask the GM to change a Tip Rate') + (from ? ' · ' + esc(from.code) : '') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
       + '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('申請しただけでは率は変わりません。GM の承認と適用の開始日のあとに変わります。','Nothing changes when asked. It changes after the GM approves, from the start date.') + '</div>'
       + '<label style="display:block;font-size:11.5px">' + T('対象のスタッフ','Staff') + '<select id="wrt-name" style="width:100%"' + (from ? ' disabled' : '') + '>' + opts + '</select></label>'
       + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('申請する率','New rate') + '<select id="wrt-rate" style="width:100%">' + [80, 90, 100].map(function(v){ return '<option value="' + v + '"' + (p.rate_to === v ? ' selected' : '') + '>' + v + '%</option>'; }).join('') + '</select></label>'
@@ -100737,7 +100745,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try { staff = visibleStaffForManager().filter(function(e){ return isStoreStaff(e) && !e.prep && empWorksAt(e, store); }); } catch(e) {}
     S.vw = { store:store, rev:v.rev || 0, hid:{}, staff:staff, grade:'' };
     (v.hidden || []).forEach(function(x){ S.vw.hid[x] = 1; });
-    openModal('<div id="wr-view" style="min-width:min(520px,92vw)"></div>'); drawView();
+    openModal('<div id="wr-view" style="width:100%"></div>'); drawView();
   };
   function wrGradeOf(e){ try { return typeof empGrade === 'function' ? empGrade(e) : (e.title || e.role || ''); } catch(x) { return ''; } }
   function drawView(){

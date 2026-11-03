@@ -60,7 +60,10 @@ begin
   if n < 1 or n > (case when p_kind = 'skill' then 30 else 200 end) then raise exception 'bad_value'; end if;
   v_top := case when p_kind = 'skill' then 5 else 3 end;
   for x in select value from jsonb_array_elements(o->'items') loop
-   if jsonb_typeof(x) <> 'object' or jsonb_typeof(x->'to') <> 'number' or (x->>'to')::numeric not between 0 and v_top or (x->>'to')::numeric <> trunc((x->>'to')::numeric) then raise exception 'bad_value'; end if;
+   if jsonb_typeof(x) <> 'object' then raise exception 'bad_value'; end if;
+   -- Career Score は「未採点に戻す」（to が null）もある。数ならその範囲の整数
+   if not (jsonb_typeof(x->'to') = 'number' or (p_kind = 'cs' and jsonb_typeof(x->'to') = 'null')) then raise exception 'bad_value'; end if;
+   if jsonb_typeof(x->'to') = 'number' and ((x->>'to')::numeric not between 0 and v_top or (x->>'to')::numeric <> trunc((x->>'to')::numeric)) then raise exception 'bad_value'; end if;
    if btrim(coalesce(x->>(case when p_kind = 'skill' then 'pos' else 'key' end), '')) = '' then raise exception 'bad_value'; end if;
   end loop;
   if p_kind = 'cs' and btrim(coalesce(o->>'lss_req', '')) = '' then raise exception 'bad_value'; end if;

@@ -93,7 +93,7 @@ export function normPayload(kind, p) {
       const k = kind === 'skill' ? TS(x.pos, 60) : TS(x.key, 40);
       if (!k || seen.has(k)) throw bad();
       seen.add(k);
-      const from = LV(x.from, top, true), to = LV(x.to, top);
+      const from = LV(x.from, top, true), to = LV(x.to, top, kind === 'cs');   // Career Score は「未採点に戻す」（null）もある
       return kind === 'skill' ? { pos: k, from, to } : { key: k, label: TS(x.label, 120), from, to };
     });
     if (kind === 'skill') return { ...base, items };

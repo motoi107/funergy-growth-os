@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHandler } from '../supabase/functions/work-requests/handler.mjs';
+import { createHandler, normPayload } from '../supabase/functions/work-requests/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const MIG1 = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8');
@@ -13,6 +13,7 @@ const PEOPLE = [
   ['E1', 'Cora CEO', 'ceo', 'CEO', 'OFFICE', 'ceo'], ['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3', 'Ann Acct', 'office', 'Accountant', 'OFFICE', 'office'],
   ['E5', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E6', 'Sam Store', 'sl', 'Store Manager', 'S1', null], ['E7', 'Lee Leader', 'sl', 'Server Leader', 'S1', null],
   ['E8', 'Cam Crew', 'crew', 'Crew', 'S1', null], ['E9', 'Kai Kitchen', 'sl', 'Kitchen Leader', 'S2', null], ['E12', 'Hal Head', 'sl', 'Store Manager', 'S2', null],
+  ['E13', 'Ora Office', 'crew', 'Crew', 'S1', 'office_crew'],
 ];
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 
@@ -88,6 +89,34 @@ test('who may ask and for whom', async () => {
   assert.equal((await skill('E6', 'E8', 'S1', { payload: { items: [{ pos: 'Grill', from: 1, to: 9 }] } })).status, 400, 'level out of range');
   assert.equal((await skill('E6', 'E8', 'S1', { payload: { reason: '' } })).status, 400, 'a reason is needed');
   assert.equal((await skill('E6', 'E8', 'S1', { payload: { target_emp: "X');(" } })).status, 400);
+  assert.equal((await skill('E6', 'E13')).status, 403, 'not for accounting / office crew, even when they work at the store');
+});
+
+test('a confirmed G4 who is now G3 in the employee table cannot ask (the narrower one wins)', async () => {
+  const { skill, pg, call, key } = await setup();
+  assert.equal((await skill('E6', 'E8')).status, 200);
+  await pg.exec(`reset role; set role anon; update public.employees set title = 'Server Leader' where id = 'E6'; reset role; set role service_role;`);
+  assert.equal((await skill('E6', 'E7')).status, 403, 'confirmed, but G3 now');
+  const tip = await call('E6', { action: 'submit', kind: 'tiprate', store_id: 'S1', client_key: key(), payload: { target_emp: 'E8', reason: 'r', rate_to: 90, from_day: '2026-11-16' } });
+  assert.equal(tip.status, 403, 'not even for someone below G3');
+});
+
+test('the SQL checks the fields itself (not only the function); the function checks them too', async () => {
+  const { db, key } = await setup();
+  const sub = (kind, payload) => db.rpc('wr_submit', { emp_id: 'E6', name: NAME.E6, kind, store_id: 'S1', client_key: key(),
+    payload: { target_emp: 'E8', target_name: 'Cam Crew', reason: 'r', ...payload } }).then(v => v.code ? 'ok' : JSON.stringify(v), e => String(e.message).split(/[\s:]/)[0]);
+  assert.equal(await sub('skill', { items: [{ pos: 'Grill', from: 1, to: 2 }], reason: '' }), 'bad_value', 'reason');
+  assert.equal(await sub('skill', { items: [{ pos: 'Grill', from: 1, to: 6 }] }), 'bad_value', 'skill level 0–5');
+  assert.equal(await sub('cs', { items: [{ key: 'B-2', from: 3, to: 4 }], lss_req: 'q1' }), 'bad_value', 'Career Score 0–3');
+  assert.equal(await sub('cs', { items: [{ key: 'B-2', from: 3, to: 2 }] }), 'bad_value', 'the score request it came from');
+  assert.equal(await sub('tiprate', { rate_to: 85, from_day: '2026-11-16' }), 'bad_value', 'Tip Rate 80 / 90 / 100');
+  assert.equal(await sub('tiprate', { rate_to: 90, from_day: '2026-11-16' }), 'ok', 'control');
+  const P = { target_emp: 'E8', reason: 'r' };
+  assert.throws(() => normPayload('skill', { ...P, reason: '  ', items: [{ pos: 'Grill', to: 2 }] }), /bad_value/);
+  assert.throws(() => normPayload('tiprate', { ...P, rate_to: 85, from_day: '2026-11-16' }), /bad_value/);
+  assert.throws(() => normPayload('skill', { ...P, items: [{ pos: 'Grill', to: 6 }] }), /bad_value/);
+  assert.throws(() => normPayload('cs', { ...P, items: [{ key: 'B-2', to: 2 }] }), /bad_value/);
+  assert.equal(normPayload('tiprate', { ...P, rate_to: 90, from_day: '2026-11-16' }).rate_to, 90);
 });
 
 test('one open request per person and kind; return needs a reason and keeps the number; withdraw', async () => {
@@ -113,7 +142,7 @@ test('one open request per person and kind; return needs a reason and keeps the 
 });
 
 test('apply can fail with a reason and be tried again; Tip Rate and Career Score check their own fields', async () => {
-  const { call, act, key } = await setup();
+  const { pg, db, call, act, key } = await setup();
   const t = (k, payload) => call('E6', { action: 'submit', kind: k, store_id: 'S1', client_key: key(), payload: { target_emp: 'E8', reason: 'r', ...payload } });
   assert.equal((await t('tiprate', { rate_to: 85, from_day: '2026-11-16' })).status, 400);
   assert.equal((await t('tiprate', { rate_to: 90, from_day: '2099-01-01' })).status, 400);
@@ -126,6 +155,17 @@ test('apply can fail with a reason and be tried again; Tip Rate and Career Score
   assert.equal(f.status, 'apply_error'); assert.deepEqual(f.can, ['apply', 'apply_fail']);
   assert.equal((await act('E6', f, 'apply')).status, 403, 'only a GM or the CEO applies');
   assert.equal((await act('E1', f, 'apply', { note: 'B-2 3 → 2' })).body.status, 'applied');
+  // Career Score は「未採点に戻す」（to が null）もある。スキルは数だけ（サーバーの SQL でも）
+  const t7 = (k, payload) => call('E6', { action: 'submit', kind: k, store_id: 'S1', client_key: key(), payload: { target_emp: 'E7', reason: 'r', ...payload } });
+  const nul = (await t7('cs', { lss_req: 'lssq_def', items: [{ key: 'C-1', from: 2, to: null }] })).body;
+  assert.match(nul.code, /^CS-/); assert.equal(nul.payload.items[0].to, null);
+  assert.equal((await t7('skill', { items: [{ pos: 'Grill', from: 1, to: null }] })).status, 400);
+  const sqlTwo = await pg.query(`select public.wr_norm_eval(jsonb_build_object('emp','E6','grade',4), 'skill', 'S1', $1::jsonb)`,
+    [JSON.stringify({ target_emp: 'E7', reason: 'r', items: [{ pos: 'Grill', from: 1, to: 2 }] })]).then(() => 'ok', e => String(e.message));
+  assert.equal(sqlTwo, 'ok', 'control: the same call with a number passes');
+  const sqlNull = await pg.query(`select public.wr_norm_eval(jsonb_build_object('emp','E6','grade',4), 'skill', 'S1', $1::jsonb)`,
+    [JSON.stringify({ target_emp: 'E7', reason: 'r', items: [{ pos: 'Grill', from: 1, to: null }] })]).then(() => 'ok', e => String(e.message));
+  assert.match(sqlNull, /bad_value/, 'the SQL refuses a skill level that is not a number');
 });
 
 test('expense requests still go through the first stage (dispatch); the SQL runs twice; browsers cannot reach the new functions', async () => {
@@ -151,6 +191,9 @@ test('the matrix view: each person keeps their own hidden list per store, with v
   assert.equal((await call('E6', { action: 'view_save', store: 'S1', hidden: [], expect_rev: 0 })).status, 409, 'another device saved first');
   assert.deepEqual((await call('E6', { action: 'view_get', store: 'S1' })).body.hidden, ['E7', 'E8']);
   assert.deepEqual((await call('E5', { action: 'view_get', store: 'S1' })).body.hidden, [], 'someone else’s view is untouched');
+  const e5 = await call('E5', { action: 'view_save', store: 'S1', hidden: ['E8'], expect_rev: 0 });
+  assert.equal(e5.status, 200, 'someone else starts their own view at version 0'); assert.deepEqual(e5.body.hidden, ['E8']);
+  assert.deepEqual((await call('E6', { action: 'view_get', store: 'S1' })).body.hidden, ['E7', 'E8']);
   assert.deepEqual((await call('E6', { action: 'view_get', store: 'S2' })).body.hidden, [], 'per store');
   assert.equal((await call('E6', { action: 'view_save', store: 'S1', hidden: ["x');"], expect_rev: 1 })).status, 400);
   assert.equal((await call('E6', { action: 'view_save', store: 'S1', hidden: [], expect_rev: 1 })).body.rev, 2);
