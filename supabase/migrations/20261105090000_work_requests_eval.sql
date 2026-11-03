@@ -11,6 +11,12 @@
 --   ・1 段目の wr_submit・wr_act・wr_actions は名前を _exp に変えて残し、種類で振り分ける（1 段目の中身は変えない）。
 --     1 段目の SQL をあとで流し直したら、この SQL も流し直す（振り分けが 1 段目の関数で上書きされるため）。
 
+do $$ begin
+ if to_regclass('public.wr_requests') is null or (to_regprocedure('public.wr_submit(jsonb)') is null and to_regprocedure('public.wr_submit_exp(jsonb)') is null) then
+  raise exception 'STOP: 先に 20261104090000_work_requests.sql（1 段目）を流してください（何も変えていません）';
+ end if;
+end $$;
+
 create table if not exists public.wr_views (
   emp_id text not null,
   store_id text not null,

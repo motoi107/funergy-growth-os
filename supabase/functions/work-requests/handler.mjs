@@ -133,7 +133,8 @@ export function createHandler(deps) {
 
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
-    whoami: w => db.rpc('wr_whoami', w),
+    // fn：関数の版（v1132 から 2。アプリは評価の変更が断られたとき、これで前の版の関数かを見分ける）
+    whoami: async w => ({ ...(await db.rpc('wr_whoami', w)), fn: 2 }),
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
       const state = ['open', 'closed', 'all'].includes(b.state) ? b.state : 'open';
