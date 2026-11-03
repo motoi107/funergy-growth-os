@@ -99825,7 +99825,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function setLiveSeen(v, at){ liveMem = { live:!!v, at:at || new Date().toISOString() }; try{ localStorage.setItem(LIVE_KEY, JSON.stringify(liveMem)); }catch(e){} }
 
   function fresh(){ return { authKey:'', me:null, live:null, rate:null, settingsRev:1, view:'todo', rows:null, counts:null, load:'', err:'', errCode:'',
-    flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, tipDone:{} }; }
+    flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, pend:{}, tipDone:{} }; }
   var S = fresh();
   W._wrState = function(){ return S; };
 
@@ -99958,7 +99958,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function nextL(r){
     var n = r.next; if (!n) return '<span style="color:var(--muted)">—</span>';
     var me = S.me || {};
-    var mine = (r.can || []).some(function(x){ return ['approve','check','pay','resubmit','dup_ok','apply_start','apply_done'].indexOf(x) >= 0; });
+    var mine = (r.can || []).some(function(x){ return ['approve','check','pay','resubmit','dup_ok','apply_start'].indexOf(x) >= 0; }) || (EVAL_K[r.kind] && (claimHeld(r) || claimPending(r)));
     var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? (n.name || T('申請した人','Requester')) : '';
     var step = n.step === 'approve' ? T('承認','approve') : n.step === 'check' ? T('確認','check') : n.step === 'pay' ? T('精算','pay') : n.step === 'fix' ? T('修正','fix') : n.step === 'apply' ? T('反映','apply') : '';
     return (mine ? '<b style="color:var(--accent)">' + T('あなた','You') + '</b>' : esc(who)) + ' <span style="color:var(--muted);font-size:10px">' + esc(step) + '</span>';
@@ -100245,7 +100245,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var can = (r.can || []).slice();
     /* v1133：評価の変更の反映は 1 つのボタン（押さえる → 書く → 記録）。押さえたあとの操作はこの端末が鍵を持つときだけ */
     if (EVAL_K[r.kind]) {
-      var canApply = can.indexOf('apply_start') >= 0 || claimHeld(r);
+      var canApply = can.indexOf('apply_start') >= 0 || claimHeld(r) || claimPending(r);
       can = can.filter(function(a){ return !CLAIM_OPS[a]; }); if (canApply) can.push('apply');
     }
     if (!can.length || S.ask) return '';
@@ -100749,8 +100749,10 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     q = find();
     return q && q.status === '承認' ? { ok:true, msg:(p.items || []).length + T(' 項目',' item(s)') } : { ok:false, msg:T('Career Score に反映できませんでした（評価項目が変わった・承認できる人でない など）','Could not apply the Career Score (items changed, or not allowed to approve)') };
   }
-  /* この端末が押さえている（鍵がある）か */
-  function claimHeld(r){ return !!(r && S.claims[r.id] && (r.can || []).indexOf('apply_done') >= 0); }
+  /* この端末が押さえている（鍵がある）か。押さえたときの版のままなら、この端末の押さえ（同じ GM のほかの端末が押さえ直すと版が進む・独立レビュー R4） */
+  function claimHeld(r){ var c = r && S.claims[r.id]; return !!(c && c.rev === r.rev && (r.can || []).indexOf('apply_done') >= 0); }
+  /* 押さえの答えが届かなかった（通信）：同じ鍵でもう一度押せる */
+  function claimPending(r){ return !!(r && S.pend[r.id] && (r.can || []).indexOf('apply_done') >= 0); }
   function movedFirst(cur){
     showToast(T('この申請はほかの人（または別の端末・タブ）が先に進めました（反映中・反映済み・閉じた など）。最新を読み込みました（何も書いていません）','Someone (or another device or tab) moved this request first (applying, applied or closed). The latest is loaded (nothing written)'), 'warning');
     if (cur && S.d && S.d.id === cur.id) { S.d = cur; drawDetail(); }
@@ -100759,7 +100761,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   async function evalRead(r, k0){
     var cur = null;
     try { cur = await api({ action:'get', id:r.id }, k0); } catch(e) { showToast(String(e.message || e), 'error'); return null; }
-    var ok = cur.rev === r.rev && ((cur.can || []).indexOf('apply_start') >= 0 || claimHeld(cur));
+    var ok = cur.rev === r.rev && ((cur.can || []).indexOf('apply_start') >= 0 || claimHeld(cur) || claimPending(cur));
     if (!ok) { movedFirst(cur); return null; }
     return cur;
   }
@@ -100768,12 +100770,18 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try {
       if (claimHeld(r)) {
         var cur = await api({ action:'get', id:r.id }, k0);
-        if (cur.rev === r.rev && claimHeld(cur)) return { row:cur, key:S.claims[r.id] };
-        delete S.claims[r.id]; movedFirst(cur); return null;
+        if (!claimHeld(cur)) { delete S.claims[r.id]; movedFirst(cur); return null; }
+        /* 30 分たった押さえは使わずに押さえ直す（そのあいだにほかの人が閉じられるため・独立レビュー P2-A） */
+        if ((cur.can || []).indexOf('apply_start') < 0) return { row:cur, key:S.claims[r.id].key };
+        delete S.claims[r.id]; r = cur;
       }
-      var key = keyFor(r, 'apply_start');
-      var row = await api({ action:'act', id:r.id, op:'apply_start', expect_rev:r.rev, client_key:key }, k0);
-      S.claims[r.id] = key;
+      /* 前の押さえの答えが届かなかったときは同じ鍵・同じ版で（サーバーは、その鍵がまだ押さえているときだけ答える） */
+      var pend = S.pend[r.id], key = pend ? pend.key : keyFor(r, 'apply_start'), rev = pend ? pend.rev : r.rev, row;
+      try { row = await api({ action:'act', id:r.id, op:'apply_start', expect_rev:rev, client_key:key }, k0); }
+      catch(e1) { if (e1.code === 'network') S.pend[r.id] = { key:key, rev:rev }; else delete S.pend[r.id]; throw e1; }
+      delete S.pend[r.id];
+      if ((row.can || []).indexOf('apply_done') < 0 || (row.status !== 'approved' && row.status !== 'apply_error')) { movedFirst(row); return null; }
+      S.claims[r.id] = { key:key, rev:row.rev };
       return { row:row, key:key };
     } catch(e) {
       if (e.code === 'conflict' || e.code === 'forbidden') { try { movedFirst(await api({ action:'get', id:r.id }, k0)); } catch(e2) { movedFirst(null); } return null; }
@@ -100812,7 +100820,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       /* Tip Rate：ここでは押さえない（確かめの画面を閉じたら、ほかの端末を待たせない）。保存を押したときに押さえる */
       var cur = await evalRead(r, k0); S.busy = '';
       if (!cur || authKey() !== k0) { drawDetail(); return; }
-      if (S.tipDone[cur.id] && claimHeld(cur)) { await evalFinish(cur, S.claims[cur.id], 'apply_done', S.tipDone[cur.id], k0); return; }   /* この端末で決めたが記録できなかった：記録だけ */
+      if (S.tipDone[cur.id] && claimHeld(cur)) { await evalFinish(cur, S.claims[cur.id].key, 'apply_done', S.tipDone[cur.id], k0); return; }   /* この端末で決めたが記録できなかった：記録だけ */
       tipApply(cur, k0); drawDetail(); return;
     }
     var c = await evalClaim(r, k0);
@@ -100832,7 +100840,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     (r.events || []).forEach(function(e){ if (e.action === 'apply_start') c = e; else if (['apply_cancel','apply_done','apply_fail','reject','approve','return','edit','resubmit','withdraw'].indexOf(e.action) >= 0) c = null; });
     if (!c) return '';
     var who = esc(c.by || '') + T('（' + esc(hstTime(c.at)) + ' から）', ' (since ' + esc(hstTime(c.at)) + ')');
-    var msg = claimHeld(r) ? T('この端末で反映しています。終わらなかったときは「正式な値に反映する」をもう一度押してください。','This device is applying it. If it did not finish, press “Apply” again.')
+    var msg = (claimHeld(r) || claimPending(r)) ? T('この端末で反映しています。終わらなかったときは「正式な値に反映する」をもう一度押してください。','This device is applying it. If it did not finish, press “Apply to the official value” again.')
       : (r.can || []).indexOf('apply_start') >= 0 ? T('前の反映 ','An earlier apply ') + who + T(' が途中で止まりました（30 分たちました）。正式な値がもう変わっていないか確かめてから、反映し直すか閉じてください。',' stopped halfway (30 minutes passed). Check whether the official value already changed, then apply again or close it.')
       : who + T(' が反映しています。終わるまで、ほかの端末からは反映も閉じることもできません（30 分たっても終わらなければできます）。',' is applying it. Until it ends, other devices can neither apply nor close it (they can after 30 minutes).');
     return '<div class="alert alert-info" style="margin-top:8px;font-size:12px">' + msg + '</div>';
@@ -100932,18 +100940,18 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var oT = W.approveTip;
     if (typeof oT === 'function') W.approveTip = function(){ if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を決めません。GM が決めます（変えたいときは「GM に変更を申請」）','G4 does not decide Tip Rates; the GM does (use “Ask the GM”)')); return oT.apply(this, arguments); };
     var oO = W.openTipRaiseModal;
-    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrIsG4Live() && !W._wrTipOpen) return W.wrTipAsk(); return oO.apply(this, arguments); };
+    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrIsG4Live() && !W._wrTipOpen) return W.wrTipAsk(); if (!W._wrTipOpen) S.tipApply = null; /* 直接開いた画面はワークセンターの申請の反映ではない（独立レビュー R5） */ return oO.apply(this, arguments); };
     var oA = W.applyTipRaise;
     if (typeof oA === 'function') W.applyTipRaise = async function(){
       if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を直接変えません（「GM に変更を申請」）','G4 does not change Tip Rates directly (use “Ask the GM”)'));
       var ctx = S.tipApply, self = this, args = arguments;
-      /* ワークセンターの申請の反映でない（ほかの率・日・人・30 分すぎ・別のログイン）ときは今までどおり */
-      if (!ctx || ctx.k0 !== authKey() || Date.now() - ctx.t0 > 30 * 60000 || !tipFormIs(ctx)) return oA.apply(self, args);
+      /* ワークセンターの申請の反映でない（ほかの率・日・人・別のログイン・Tip Rate の画面から直接開いた）ときは今までどおり。開いてからの時間では決めない（押さえが守る・独立レビュー P2-B） */
+      if (!ctx || ctx.k0 !== authKey() || !tipFormIs(ctx)) return oA.apply(self, args);
       if (ctx.busy) return false;
       ctx.busy = true;
       try {
         /* 書く前に押さえる（v1133・#124 の Codex のレビュー P2-1：確かめの画面を開いているあいだにほかの端末が閉じた申請からは書かない） */
-        var c = await evalClaim({ id:ctx.id, rev:ctx.rev, can:S.claims[ctx.id] ? ['apply_done'] : ['apply_start'] }, ctx.k0);
+        var c = await evalClaim({ id:ctx.id, rev:ctx.rev, can:(S.claims[ctx.id] || S.pend[ctx.id]) ? ['apply_done'] : ['apply_start'] }, ctx.k0);
         if (!c) { S.tipApply = null; try { closeModalDirect(); } catch(e) {} return false; }
         ctx.rev = c.row.rev;
         if (authKey() !== ctx.k0) return false;

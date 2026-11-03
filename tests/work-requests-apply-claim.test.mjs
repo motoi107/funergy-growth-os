@@ -293,3 +293,114 @@ test('Tip Rate: an older decision with the same rate and day does not count as t
   const ev = (await H(srv)('E2', { action: 'get', id })).body.events.map(e => e.action);
   assert.deepEqual(ev.slice(-2), ['apply_start', 'apply_cancel']);
 });
+
+/* ---------------------------------------------------------------- 独立レビュー（2f59713）の P2-A・P2-B・R4・R5 */
+const dropAfter = (dev, op) => { const real = dev.ctx.fetch; let drop = true; dev.ctx.fetch = async (url, init) => { const b = JSON.parse(init.body); const res = await real(url, init); if (drop && b.op === op) { drop = false; throw new Error('offline after the server answered'); } return res; }; };
+
+test('P2-A: the “apply” answer is lost, 30 minutes pass and another device closes it → pressing again writes nothing', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  dropAfter(gm, 'apply_start');
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'first press: the answer was lost, nothing written');
+  await srv.pg.exec(`reset role; update public.wr_requests set apply_at = now() - interval '31 minutes' where id = '${r.id}'; set role service_role;`);
+  const cur = (await H(srv)('E2', { action: 'get', id: r.id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id: r.id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-pa-0001', note: '別の値にした' })).status, 200);
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, r.id), 'rejected');
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'nothing written for the closed request');
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 1);
+});
+
+test('P2-A: the “apply” answer is lost; pressing again within 30 minutes (same key) carries on and applies once', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  dropAfter(gm, 'apply_start');
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /この端末で反映しています/, 'refreshed: this device may carry on');
+  assert.match(gm.dom.els['wr-detail'].innerHTML, /wrAsk\('apply'\)/);
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, r.id), 'applied');
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 1);
+});
+
+test('P2-A (server): a replayed apply_start answers only while that key still holds the request', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const k = 'k-replay-000001', h = H(srv);
+  const first = await h('E2', { action: 'act', id: r.id, op: 'apply_start', expect_rev: r.rev, client_key: k });
+  assert.equal(first.status, 200);
+  assert.equal((await h('E2', { action: 'act', id: r.id, op: 'apply_start', expect_rev: r.rev, client_key: k })).status, 200, 'still held: the same answer');
+  await srv.pg.exec(`reset role; update public.wr_requests set apply_at = now() - interval '31 minutes' where id = '${r.id}'; set role service_role;`);
+  assert.equal((await h('E2', { action: 'act', id: r.id, op: 'apply_start', expect_rev: r.rev, client_key: k })).status, 409, 'stale: no longer an answer to rely on');
+});
+
+test('P2-B: the raise screen stays open more than 30 minutes; the save still holds the request first and records it once', async () => {
+  const srv = await server(), cloud = shared();
+  const { id, gm } = await tipApprovedOpen(srv, cloud);
+  gm.S().tipApply.t0 -= 31 * 60000;
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, id), 'applied', 'recorded (not a plain raise)');
+  assert.equal(cloud.tips.length, 1);
+  const ev = (await H(srv)('E2', { action: 'get', id })).body.events.map(e => e.action);
+  assert.deepEqual(ev.slice(-2), ['apply_start', 'apply_done']);
+});
+
+test('R4: the same GM on another device took over a stale hold → this device sees it is no longer its hold and writes nothing', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const a = await app(srv, 'E2', { cloud }); await a.render();
+  a.ctx.wrOpen(r.id); await a.settle();
+  const realA = a.ctx.fetch; let drop = true;
+  a.ctx.fetch = async (url, init) => { const b = JSON.parse(init.body); if (drop && b.op === 'apply_done') { drop = false; throw new Error('offline'); } return realA(url, init); };
+  a.ctx.wrAsk('apply'); await a.settle(); await a.settle();
+  assert.equal(await status(srv, r.id), 'approved');
+  await srv.pg.exec(`reset role; update public.wr_requests set apply_at = now() - interval '31 minutes' where id = '${r.id}'; set role service_role;`);
+  const b = await app(srv, 'E2', { cloud }); await b.render();
+  b.ctx.wrOpen(r.id); await b.settle();
+  const gB = gate(); b.ctx.pullOpKey = () => gB.p;
+  b.ctx.wrAsk('apply'); await b.settle();
+  a.ctx.wrOpen(r.id); await a.settle();
+  assert.doesNotMatch(a.dom.els['wr-detail'].innerHTML, /この端末で反映しています/, 'not “this device”');
+  const before = a.calls.filter(c => c[0] === 'skill').length;
+  a.ctx.wrAsk('apply'); await a.settle(); await a.settle();
+  assert.equal(a.calls.filter(c => c[0] === 'skill').length, before, 'A writes nothing while B holds it');
+  gB.open(true); await b.settle(); await b.settle();
+  assert.equal(await status(srv, r.id), 'applied');
+});
+
+test('R5: a raise screen opened directly from the Tip Rate page is not taken as the Work Center request', async () => {
+  const srv = await server(), cloud = shared();
+  const { id, gm } = await tipApprovedOpen(srv, cloud);
+  const from = gm.dom.els['tipraise-from'].value;
+  const cur = (await H(srv)('E2', { action: 'get', id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-r5-0001', note: 'x' })).status, 200);
+  gm.ctx.openTipRaiseModal(); await gm.settle();
+  gm.dom.els['tipraise-name'].value = 'Cam Crew'; gm.dom.els['tipraise-rate'].value = '90'; gm.dom.els['tipraise-from'].value = from;
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(cloud.tips.length, 1, 'the direct raise goes through as before');
+  assert.equal(await status(srv, id), 'rejected');
+});
+
+test('P2-A: this device still holds a hold older than 30 minutes → pressing again holds it anew, so a close during the read is refused', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const a = await app(srv, 'E2', { cloud }); await a.render();
+  a.ctx.wrOpen(r.id); await a.settle();
+  const realA = a.ctx.fetch; let drop = true;
+  a.ctx.fetch = async (url, init) => { const b = JSON.parse(init.body); if (drop && b.op === 'apply_done') { drop = false; throw new Error('offline'); } return realA(url, init); };
+  a.ctx.wrAsk('apply'); await a.settle(); await a.settle();
+  await srv.pg.exec(`reset role; update public.wr_requests set apply_at = now() - interval '31 minutes' where id = '${r.id}'; set role service_role;`);
+  a.ctx.wrOpen(r.id); await a.settle();
+  const g = gate(); a.ctx.pullOpKey = () => g.p;
+  a.ctx.wrAsk('apply'); await a.settle();
+  const cur = (await H(srv)('E2', { action: 'get', id: r.id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id: r.id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-sr-0001', note: '閉じる' })).status, 403, 'held anew: no close during the read');
+  g.open(true); await a.settle(); await a.settle();
+  assert.equal(await status(srv, r.id), 'applied');
+});

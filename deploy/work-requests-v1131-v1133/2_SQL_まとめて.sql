@@ -1306,6 +1306,8 @@ begin
   select * into r from public.wr_requests x where x.id = v_rid;
   if not public.wr_visible(a, r) or v_ract is distinct from v_act
      or not (coalesce(p->>'id', '') = r.id::text or coalesce(p->>'code', '') = r.code) then raise exception 'conflict'; end if;
+  -- 押さえの押し直し（答えが届かなかった 1 回目）は、その鍵がまだ押さえている（30 分以内・承認済みのまま）ときだけ（独立レビュー P2-A：閉じた申請に書かない）
+  if v_act = 'apply_start' and (r.apply_key is distinct from v_key or r.status not in ('approved','apply_error') or not public.wr_apply_fresh(r)) then raise exception 'conflict'; end if;
   return public.wr_row(a, r) || jsonb_build_object('replay', true);
  end if;
  r := public.wr_find(a, p);
