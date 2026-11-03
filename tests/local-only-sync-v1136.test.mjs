@@ -47,7 +47,7 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
 const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsTie',
-  '_fsRecWin', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
+  '_fsRecWin', '_fsSameEntry', '_fsFill', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
   '_pullPendingMap', '_pendEditAtAll', '_pendEditAtMark', '_pendEditAtDrop', '_pullKeepLocal'];
 const GETSET = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'attFixKey', 'getAttOverride', 'setAttOverride',
   'tipConfirmKey', 'getTipConfirm', 'setTipConfirm', '_devStartRaw', 'getDevStart', 'setDevStart', '_devDataRaw', 'getDevData', 'setDevData'];
@@ -434,10 +434,114 @@ test('⑤ the edit time is recorded only for synced keys without a merge rule, a
   assert.deepEqual(Object.keys(JSON.parse(c.LOCAL.get('_pend_edit_at'))), ['evaluations']);
   run(c, `_pendEditAtDrop('evaluations')`);
   assert.deepEqual(JSON.parse(c.LOCAL.get('_pend_edit_at')), {});
-  assert.match(fnSrc('_pushWithOutbox'), /_pendEditAtMark\(key\)/);
+  assert.doesNotMatch(fnSrc('_pushWithOutbox'), /_pendEditAtMark/, 'not on every push attempt (retries, bulk pushes)');
+  assert.match(fnSrc('lsSet'), /_prevTxt!==_json && typeof _pendEditAtMark==='function'\) _pendEditAtMark\(key\)/);
   assert.match(fnSrc('_outboxRemove'), /_pendEditAtDrop\(key\)/);
   assert.match(fnSrc('_kvFetchKeys'), /select=key,value,updated_at/);
   assert.match(fnSrc('_kvPullRows'), /supaFetchAll\('app_state', 'key,value,updated_at', f\)/);
+});
+
+/* 本物の lsSet（端末の保存の部分は代わり）：直した時刻は中身が変わった保存のときだけ */
+function lsSetApp() {
+  const c = device();
+  vm.runInContext(fnSrc('lsSet').replace('function lsSet(', 'function realLsSet(') + `
+    var _SPLIT_KEYS = {}, _lsEscalatedAt = 0, window = {}, PUSHED = [];
+    function _lsWriteVerified(k, js){ STORE.set(k, js); return true; }
+    function _lsClearSaveFailure(){} function _lsNoteSaveFailure(){} function _lsFreeOldLaborKeys(){}
+    function _pushWithOutbox(k){ PUSHED.push(k); }`, c);
+  return c;
+}
+test('⑤（2 回目の独立レビュー P2-1）the edit time moves only when a save really changes the stored value — not on retries, same-value saves or while starting up', () => {
+  const c = lsSetApp(), at = () => JSON.parse(c.LOCAL.get('_pend_edit_at') || '{}');
+  c.NOW = 1000; run(c, `realLsSet('evaluations', { a: 1 })`);
+  assert.equal(at().evaluations, 1000, 'first save');
+  c.NOW = 2000; run(c, `realLsSet('evaluations', { a: 1 })`);
+  assert.equal(at().evaluations, 1000, 'same value saved again (e.g. a re-render that saves): the time does not move');
+  assert.deepEqual(plain(run(c, 'PUSHED')), ['evaluations', 'evaluations'], 'it is still sent as before');
+  c.NOW = 3000; run(c, `realLsSet('evaluations', { a: 2 })`);
+  assert.equal(at().evaluations, 3000, 'changed value');
+  c.NOW = 4000; run(c, `_pushWithOutbox('evaluations', { a: 2 })`);   // 送信待ちの送り直し・まとめて送る（lsSet を通らない）
+  assert.equal(at().evaluations, 3000, 'a retry does not move the time');
+  c._supaBooting = true; c.NOW = 5000; run(c, `realLsSet('evaluations', { a: 3 })`);
+  assert.equal(at().evaluations, 3000, 'not while starting up');
+  c._supaBooting = false; c.SUPA_SYNC_ENABLED = false; run(c, `realLsSet('evaluations', { a: 4 })`);
+  assert.equal(at().evaluations, 3000, 'not with sync off');
+  c.SUPA_SYNC_ENABLED = true; c.NOW = 6000; run(c, `realLsSet('att_fix_F01_2026-11', { x: 1 }); realLsSet('local_flag', 1)`);
+  assert.deepEqual(Object.keys(at()), ['evaluations'], 'keys with a merge rule and device-only keys are not recorded');
+});
+test('⑤ a grade change that is rolled back also rolls back the edit time it recorded', () => {
+  const c = lsSetApp();
+  vm.runInContext(fnSrc('ghTxnBegin') + fnSrc('ghTxnEnd') + `
+    lsSet = realLsSet;
+    function _lsRawStr(k){ return _lsStoreGet(k); } function _lsRawDel(k){ STORE.delete(k); return true; }`, c);
+  c.NOW = 1000; run(c, `realLsSet('evaluations', { a: 1 })`);
+  c.NOW = 2000; run(c, `var tx = ghTxnBegin(); lsSet('evaluations', { a: 2 }); lsSet('applicants', ['x']); tx.fail.push('grade_hist'); var OK = ghTxnEnd(tx);`);
+  assert.equal(run(c, 'OK'), false);
+  assert.deepEqual(JSON.parse(c.LOCAL.get('_pend_edit_at')), { evaluations: 1000 }, 'back to before the change');
+  assert.equal(c.STORE.get('evaluations'), '{"a":1}');
+  c.NOW = 3000; run(c, `var tx2 = ghTxnBegin(); lsSet('evaluations', { a: 3 }); var OK2 = ghTxnEnd(tx2);`);
+  assert.equal(run(c, 'OK2'), true); assert.equal(JSON.parse(c.LOCAL.get('_pend_edit_at')).evaluations, 3000, 'kept when it is saved');
+});
+test('⑤ the cloud row time is read to the microsecond (PostgREST): an edit in the same millisecond as a later cloud write does not win', () => {
+  const c = device();
+  vm.runInContext(fnSrc('_tsMicro'), c);
+  const T = Date.UTC(2026, 10, 3, 20, 0, 0, 500);
+  c.STORE.set('evaluations', '{"a":1}'); c.OUTBOX.push({ key: 'evaluations', who: 'p:1' });
+  c.LOCAL.set('_pend_edit_at', JSON.stringify({ evaluations: T }));
+  const iso = (ms, us) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, '.' + String(ms % 1000).padStart(3, '0') + us + '+00:00');
+  assert.equal(run(c, `_pullKeepLocal('evaluations', null, '${iso(T - 1, '999')}')`), true, 'cloud written just before my edit');
+  assert.equal(run(c, `_pullKeepLocal('evaluations', null, '${iso(T, '001')}')`), false, 'cloud written later in the same millisecond');
+  assert.equal(run(c, `_pullKeepLocal('evaluations', null, '${iso(T, '000')}')`), false, 'same time: the cloud value');
+  assert.equal(run(c, `_pullKeepLocal('evaluations', null, 'not a time')`), false, 'unknown time: the cloud value');
+  assert.equal(run(c, `_pullKeepLocal('evaluations', null, '${new Date(T - 5).toISOString()}')`), true, 'the plain form (Z) too');
+});
+
+/* ------------------------------------------------------------------ ③ ロールアウトのあいだ（2 回目の独立レビュー P2-2） */
+test('③（2 回目の独立レビュー P2-2）a field another device already changed does not drop what only the not-yet-updated device had (skills, tests, retraining, stage history)', () => {
+  // A（前の版・Ken の記録あり）と B（v1136・Ken の記録なし）。A が更新する前に、B がスキルを 1 つ・テストを 1 つ入れ、志望を登録
+  const A = device(), B = device(); B.NOW += 60000;
+  A.STORE.set('dev_data', JSON.stringify({ Ken: { stage: 3, skillLevels: { Grill: 3, Fry: 2 }, curriculum: { Knife: true },
+    tests: [{ course: 'Grill', score: 90, pass: true, date: '2026/10/01' }], retrain: [{ item: 'Fry', reason: 'low', done: false, date: '2026/10/01' }],
+    stageHistory: [{ stage: 3, enteredAt: '2026/09/20', by: 'GM' }] } }));
+  run(B, `var d=getDevData('Ken'); d.skillLevels.Fry = 1; setDevData('Ken', d);`);
+  B.NOW += 1000; run(B, `var d=getDevData('Ken'); d.tests.push({ course: 'Fry', score: 70, pass: true, date: '2026/11/03' }); setDevData('Ken', d);`);
+  B.NOW += 1000; run(B, `var d=getDevData('Ken'); if(!d.stageHistory) d.stageHistory=[]; d.stageHistory.push({ stage: 4, enteredAt: '2026/11/03', by: 'AM' }); setDevData('Ken', d);`);
+  A.STORE.set('dev_pipe', B.STORE.get('dev_pipe'));   // A が更新して B の記録を受け取ってから移し替える
+  run(A, 'v1136MoveLocalOnly()');
+  const k = plain(run(A, `getDevData('Ken')`));
+  assert.deepEqual(k.skillLevels, { Fry: 1, Grill: 3 }, 'B’s Fry=1 wins; A’s Grill stays');
+  assert.deepEqual(k.tests.map(t => t.course), ['Fry', 'Grill'], 'both tests');
+  assert.deepEqual(k.stageHistory.map(h => h.stage), [4, 3], 'both history entries');
+  assert.deepEqual(k.retrain, [{ item: 'Fry', reason: 'low', done: false, date: '2026/10/01' }]);
+  assert.deepEqual(k.curriculum, { Knife: true });
+  // 合流の順によらない・何度合流しても同じ・B が受け取っても同じ
+  const a = A.STORE.get('dev_pipe'), b = B.STORE.get('dev_pipe');
+  const ab = run(A, `_cjson(mergeFieldStampMap(${a}, ${b}))`), ba = run(A, `_cjson(mergeFieldStampMap(${b}, ${a}))`);
+  assert.equal(ab, ba); assert.equal(ab, run(A, `_cjson(mergeFieldStampMap(${ab}, ${ab}))`));
+  assert.equal(run(A, `_coversFieldStampMap(${ab}, ${a})`), true, 'what A sent is covered after the merge');
+});
+test('③（P2-2）on the same device, the old record moved again at each login does not bring back the not-done copy of a finished retraining or an old skill value', () => {
+  const c = device();
+  c.STORE.set('dev_data', JSON.stringify({ Ken: { skillLevels: { Grill: 2 }, retrain: [{ item: 'Fry', reason: 'low', done: false, date: '2026/10/01' }],
+    tests: [{ course: 'Grill', score: 60, pass: false, retrain: true, date: '2026/10/01' }] } }));
+  run(c, 'v1136MoveLocalOnly()');
+  c.NOW += 1000; run(c, `var d=getDevData('Ken'); d.retrain[0].done = true; d.skillLevels.Grill = 3; d.tests.push({ course: 'Grill', score: 95, pass: true, retrain: false, date: '2026/11/03' }); setDevData('Ken', d);`);
+  const before = c.STORE.get('dev_pipe'); c.PUSHES.length = 0;
+  assert.equal(run(c, 'v1136MoveLocalOnly()'), 0, 'the next login writes nothing');
+  assert.equal(c.STORE.get('dev_pipe'), before); assert.deepEqual([...c.PUSHES], []);
+  const k = plain(run(c, `getDevData('Ken')`));
+  assert.deepEqual(k.retrain.map(r => r.done), [true], 'no second, not-done copy');
+  assert.equal(k.skillLevels.Grill, 3); assert.equal(k.tests.length, 2);
+  // 「同じ要素」は真偽の欄だけが違うもの。ほかの欄が違えば別の要素として足す
+  assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry', done:true })`), true);
+  assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry', done:'yes' })`), false);
+  assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry' })`), false, 'other fields');
+  assert.equal(run(c, `_fsSameEntry({ c:'A', s:60 }, { c:'A', s:61 })`), false);
+  // 時刻のある欄どうし（新しい版の 2 台）は今までどおり新しいほうで置き換える（足さない）
+  const m = plain(run(c, `mergeFieldStampRec({ tests:[{c:'A'}], _ft:{ tests: 10 } }, { tests:[{c:'B'}], _ft:{ tests: 20 } })`));
+  assert.deepEqual(m.tests, [{ c: 'B' }]);
+  // 値（ステージなど）は今までどおり新しいほう
+  assert.equal(run(c, `mergeFieldStampRec({ stage: 4 }, { stage: 2, _ft:{ stage: 5 } }).stage`), 2);
 });
 
 test('⑤ the same keep-local rule is used for app_settings and master tables in the full pull', () => {

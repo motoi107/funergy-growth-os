@@ -240,7 +240,7 @@ test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept 
 // The real grade-history, approval and Leader-promotion code with the module, a stubbed modal and synthetic staff.
 function app38() {
   const names = [...new Set([...source.matchAll(/\nfunction (_?gh\w*)\(/g)].map(m => m[1]))].concat(['gradeOf', 'empGrade', 'gradeNum', 'csCoef', 'lssCatsOrdered', 'lssItemId', 'getLssScores',
-    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'saveEmp', 'mergeMapByTime', '_recAt', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', '_devDataRaw', '_fsStamp', '_lrObj', '_lrAt', '_cjson', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
+    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'saveEmp', 'mergeMapByTime', '_recAt', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', '_devDataRaw', '_fsStamp', '_lrObj', '_lrOwn', '_lrAt', '_cjson', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
   const c = { console, STORE: {}, EMPS: [], BQ: {}, SUMS: {}, MODAL: [], TOASTS: [], CONFIRMS: 0, curRole: 'gm', curLang: 'ja', curUserName: 'GM' };
   vm.createContext(c);
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'), varBlock('JOB_TITLES', '\n];'),

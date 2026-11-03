@@ -9334,6 +9334,42 @@ function _fsRecWin(a, b){
   if(ja.length!==jb.length) return ja.length>jb.length ? a : b;
   return ja>=jb ? a : b;
 }
+/* 前の版の記録（欄の時刻なし）と、新しい版で直した欄（時刻あり）が出会ったとき（2 回目の独立レビュー P2-2）。
+   前は新しいほうで丸ごと置き換え、まだ更新していない端末にしか無かったスキル・テストなどが、ほかの端末で同じ欄を直したあと黙って消えた。
+   いま：入れ物は欄ごとに足す（新しいほうが勝ち、前の版にしか無い欄を足す）、配列は前の版にしか無い要素を後ろに足す。
+   同じ要素は「中身が同じ」か「真偽の欄（done など）だけ違う」で見分ける（再教育を済みにした要素を、前の版の済みでない写しで二重にしない）。
+   中身を消す作り（入れ物の欄・配列の要素を消す）は育成の記録に無い。ほかの値（ステージ・目標など）は今までどおり新しいほう */
+function _fsSameEntry(x, y){
+  var xo=(x && typeof x==='object' && !Array.isArray(x)), yo=(y && typeof y==='object' && !Array.isArray(y));
+  if(!xo || !yo) return false;
+  var kx=Object.keys(x).sort(), ky=Object.keys(y).sort();
+  if(kx.join('\u0001')!==ky.join('\u0001')) return false;
+  for(var i=0;i<kx.length;i++){
+    var k=kx[i];
+    if(typeof x[k]==='boolean' && typeof y[k]==='boolean') continue;
+    if(_cjson(x[k])!==_cjson(y[k])) return false;
+  }
+  return true;
+}
+function _fsFill(nv, ov){
+  if(Array.isArray(nv) && Array.isArray(ov)){
+    var seen={}, out=nv.slice();
+    nv.forEach(function(v){ seen[_cjson(v)]=1; });
+    ov.forEach(function(v){
+      var j=_cjson(v); if(seen[j]) return;
+      for(var i=0;i<nv.length;i++){ if(_fsSameEntry(nv[i], v)) return; }
+      seen[j]=1; out.push(v);
+    });
+    return out;
+  }
+  var no=(nv && typeof nv==='object' && !Array.isArray(nv)), oo=(ov && typeof ov==='object' && !Array.isArray(ov));
+  if(no && oo){
+    var r=Object.assign({}, nv);
+    Object.keys(ov).forEach(function(k){ if(!_lrOwn(r, k) || r[k]===undefined) r[k]=ov[k]; });
+    return r;
+  }
+  return nv;
+}
 function mergeFieldStampRec(a, b){
   var ao=(a && typeof a==='object' && !Array.isArray(a)), bo=(b && typeof b==='object' && !Array.isArray(b));
   if(!ao && !bo) return ((_cjson(a)||'') >= (_cjson(b)||'')) ? a : b;
@@ -9343,7 +9379,13 @@ function mergeFieldStampRec(a, b){
   _fsFields(a).concat(_fsFields(b)).forEach(function(f){
     if(seen[f]) return; seen[f]=1;
     var ta=_fsT(a, f), tb=_fsT(b, f), ha=_fsHas(a, f), hb=_fsHas(b, f), t=Math.max(ta, tb);
-    if(ta!==tb){ var w=(ta>tb) ? a : b; if(_fsHas(w, f)) out[f]=w[f]; }   /* 新しいほう（消した欄は消したまま） */
+    if(ta!==tb){
+      var w=(ta>tb) ? a : b, o=(w===a) ? b : a;
+      if(_fsHas(w, f)){
+        out[f]=w[f];   /* 新しいほう（消した欄は消したまま） */
+        if(!Math.min(ta, tb) && _fsHas(o, f)) out[f]=_fsFill(w[f], o[f]);   /* 片方が前の版の記録：前の版にしか無い中身を足す */
+      }
+    }
     else if(ha && hb){
       if(_cjson(a[f])===_cjson(b[f])) out[f]=a[f];
       else if(a[f] && b[f] && typeof a[f]==='object' && typeof b[f]==='object') out[f]=_fsTie(a[f], b[f]);   /* 配列・入れ物は和集合 */
@@ -9503,9 +9545,11 @@ function _pullKeepLocal(key, pend, cloudAt){
     if(_lsStoreGet(key)==null) return false;
     if(typeof _pushBusy==='function' && _pushBusy(key)) return true;
     if(!(pend || _pullPendingMap())[key]) return false;
-    var ed=Number(_pendEditAtAll()[key])||0, ca=Date.parse(String(cloudAt||''));
-    if(!ed || !isFinite(ca)) return false;
-    return ed > ca;   /* 手元を直したのが、クラウドの行が最後に書かれたよりあと */
+    var ed=Number(_pendEditAtAll()[key])||0;
+    var ca=(typeof _tsMicro==='function') ? _tsMicro(cloudAt) : null;   /* マイクロ秒（PostgREST の 6 桁の小数） */
+    if(ca==null){ var _d=Date.parse(String(cloudAt||'')); ca=isFinite(_d) ? _d*1000 : null; }
+    if(!ed || ca==null) return false;
+    return ed*1000 > ca;   /* 手元を直したのが、クラウドの行が最後に書かれたよりあと（どちらも端末の時計：updated_at はアプリが書く） */
   }catch(e){ return false; }
 }
 /* ===== v917: 棚卸（inv_count_ / inv_top_ / inv_templates）の合流ルール =====
@@ -10556,6 +10600,9 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   var _json;
   try{ _json=JSON.stringify(val); }
   catch(e){ console.warn('lsSet stringify failed', key, e); return false; }
+  /* v1136（2 回目の独立レビュー P2-1）：直した時刻は、中身が本当に変わった保存のときだけ覚える（送り直し・まとめて送る・同じ中身の保存では進めない）。
+     取り込みは _lsWriteVerified で書くので、ここは通らない */
+  var _prevTxt=null; try{ _prevTxt=_lsStoreGet(key); }catch(e){}
 
   var _ok=_lsWriteVerified(key, _json);
   if(!_ok){
@@ -10578,6 +10625,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
 
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
+  try{ if(SUPA_SYNC_ENABLED && !(typeof _supaBooting!=='undefined' && _supaBooting) && _prevTxt!==_json && typeof _pendEditAtMark==='function') _pendEditAtMark(key); }catch(e){}   /* v1136 */
   try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
   return _ok;
 }).apply(this,arguments);
@@ -10804,7 +10852,6 @@ var _lsPushP = {};
 function _pushWithOutbox(key, val){
   var _pp=(typeof _lsPushP!=='undefined' && _lsPushP)?_lsPushP:{};   /* 結果の置き場（無いときは覚えないだけ） */
   if(typeof _supaBooting!=='undefined' && _supaBooting){ _pp[key]=Promise.resolve('booting'); return; } // 起動/プル中は押し上げも記録もしない
-  try{ if(typeof _pendEditAtMark==='function') _pendEditAtMark(key); }catch(e){}   /* v1136：合流の決まりの無いキーを直した時刻（取り込みで新しいほうを残す） */
   /* v721【クラウド保護】まだ取得していない「必要時取得」キーは押し上げない。
      syncMasterToSupabase はマージ定義の無いキーを丸ごと上書きするため、
      部分データを送るとクラウド側の履歴・ログが消える。未送信キューに積み、
@@ -69604,6 +69651,7 @@ function bonusSegCsShort(b){
 function ghTxnBegin(){
   var tx={ snap:[], seen:{}, fail:[], pushes:[], err:null, set:lsSet, push:(typeof _pushWithOutbox==='function') ? _pushWithOutbox : null,
     empQ:(typeof _empDirtySnapshot==='function') ? _empDirtySnapshot() : null };   /* v1085: 従業員の送る分も戻す */
+  try{ tx.pendAt=localStorage.getItem('_pend_edit_at'); }catch(e){}   /* v1136：戻したら、直した時刻（lsSet が覚える）も戻す */
   lsSet=function(key, val){
     var split=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS && _SPLIT_KEYS[key]);   /* 分けて保存するキーは、中の 1 つずつ（ここを通る）を覚える */
     if(!split && !tx.seen[key]){ tx.seen[key]=1; tx.snap.push([key, _lsRawStr(key)]); }
@@ -69624,6 +69672,7 @@ function ghTxnEnd(tx){
   var bad=false;
   tx.snap.slice().reverse().forEach(function(x){ try{ if(x[1]==null) _lsRawDel(x[0]); else if(!_lsWriteVerified(x[0], x[1])) bad=true; }catch(e){ bad=true; } });   /* 端末だけ（同期に送らない） */
   try{ if(tx.empQ && typeof _empDirtyRestore==='function') _empDirtyRestore(tx.empQ); }catch(e){ bad=true; }   /* v1085: 戻した変更を、あとで送らない */
+  try{ if(tx.pendAt==null) localStorage.removeItem('_pend_edit_at'); else localStorage.setItem('_pend_edit_at', tx.pendAt); }catch(e){}   /* v1136 */
   tx.rollbackFailed=bad;
   if(!bad && typeof _lsClearSaveFailure==='function') tx.fail.forEach(function(k){ try{ _lsClearSaveFailure(k); }catch(e){} });   /* 戻せたら「保存できていない項目」の印を消す（端末とクラウドは前の値でそろっている） */
   if(tx.err) console.warn('ghTxn', tx.err);
