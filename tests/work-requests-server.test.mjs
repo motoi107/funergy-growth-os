@@ -24,7 +24,7 @@ const PEOPLE = [
 ];
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 
-async function setup({ live = true, legacy = null, rate = 0.7, verify = true } = {}) {
+async function setup({ live = true, legacy = null, rate = 0.7, verify = true, confirm = true } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     alter default privileges in schema public grant all on tables to anon, authenticated;
@@ -46,6 +46,8 @@ async function setup({ live = true, legacy = null, rate = 0.7, verify = true } =
   if (live) await pg.exec('update public.wr_settings set live = true');
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+  // 使い始めるときと同じく、GM が承認・閲覧の権限（AM・G4 以上）の写しを確かめる（#123 のレビュー P1）
+  if (confirm) { const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest }); }
   const verifyPin = verify ? async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m ? { emp_id: m[1], name: NAME[m[1]] } : null; } : null;
   const env = k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k];
   const handler = createHandler({ env, db, verifyPin, fetch: async () => { throw new Error('no network'); } });
@@ -320,10 +322,10 @@ test('old requests are copied once, as they were; missing approvers stay missing
   assert.deepEqual([by('rb1761000005000').status, by('rb1761000005000').closed.reason, by('rb1761000005000').approved], ['rejected', '二重', null]);
   assert.equal(by('ex1761000006000').status, 'approved', 'an undone accounting check does not count');
   const n = await pg.query(`select count(*)::int n from public.wr_events where action = 'legacy_import'`); assert.equal(n.rows[0].n, 6);
-  // the old pending one can be approved here; its content cannot be edited here
+  // the old pending one: the requester (known by employee ID) can fix it here as a new version of the same number (#123 review P2)
   const p = by('mi1761000002000');
   const mine = (await call('E7', { action: 'get', id: p.id })).body;
-  assert.deepEqual(mine.can, ['withdraw']);
+  assert.deepEqual(mine.can, ['edit', 'withdraw']);
   assert.equal((await act('E5', p, 'approve')).body.status, 'approved');
   // app_state is only read
   const st = await pg.query(`select count(*)::int n from public.app_state`); assert.equal(st.rows[0].n, 5);
@@ -413,9 +415,173 @@ test('review fixes: old records — the split row wins, deleted stays deleted, a
   assert.equal(by('ex1761000006000').status, 'approved', 'the newest accounting record is an undo: no check');
   const gone = by('mi1761000009000');
   assert.equal(gone.requester_emp, null);
-  // someone renamed to that name sees it but cannot act as the requester
+  // someone renamed to that name in the employee table (writable with the public key) neither sees it nor acts as the requester:
+  // the name comes from the signed PIN mark, not from the employee table (#123 review P1)
   await pg.exec(`reset role; update employees set name = 'Gone Person' where id = 'E11'; set role service_role;`);
-  const g = (await call('E11', { action: 'get', id: gone.id })).body;
-  assert.deepEqual(g.can, []);
-  assert.equal((await act('E11', g, 'withdraw')).status, 403);
+  assert.equal((await call('E11', { action: 'get', id: gone.id })).status, 404);
+  assert.equal((await act('E11', gone, 'withdraw')).status, 404);
+});
+
+// #123 review (Codex P1): the employee and store tables can be written with the public key. Writing them must not make anyone an
+// approver or widen what they see. Only the copy a GM/CEO confirmed (wr_people) can grant it; narrowing works at once.
+test('#123 P1: writing the employee/store tables with the public key does not make an approver; a GM confirms raises; narrowing is immediate', async () => {
+  const { call, act, mileage, pg } = await setup();
+  const r = (await mileage('E7', 'S1')).body;
+  assert.equal((await act('E8', r, 'approve')).status, 404, 'a crew member cannot see it');
+  // Codex's repro: as anon, make E8 look like the AM of S1 (role, title, name) and point the store at them
+  await pg.exec(`reset role; set role anon;
+    update public.employees set role = 'am', title = 'Area Manager', name = 'Ami Area' where id = 'E8';
+    update public.stores set am = 'Cam Crew' where id = 'S2';
+    reset role; set role service_role;`);
+  assert.equal((await act('E8', r, 'approve')).status, 404, 'still cannot see or approve after the public-key write');
+  const team = (await call('E8', { action: 'list', scope: 'team', state: 'all' })).body;
+  assert.equal(team.rows.filter(x => x.requester_emp !== 'E8').length, 0, 'sees no one else');
+  assert.equal(team.me.role, 'staff');
+  assert.equal(team.me.pending, true, 'the raise waits for a GM');
+  // the real AM of S1 still approves; the GM sees E8 as a raise to check, with what would change
+  const d = (await call('E2', { action: 'people_diff' })).body;
+  const e8 = d.items.find(x => x.emp === 'E8');
+  assert.equal(e8.up, true); assert.equal(e8.before, null); assert.equal(e8.after.role, 'am');
+  assert.ok(d.up >= 1);
+  assert.equal((await call('E5', { action: 'people_diff' })).status, 403, 'only a GM or the CEO');
+  assert.equal((await call('E2', { action: 'people_sync', digest: '0'.repeat(32) })).status, 409, 'a list the GM did not see is not applied');
+  assert.equal((await act('E5', r, 'approve')).body.status, 'approved');
+  // narrowing is immediate: E5 is no longer an AM in the employee table → cannot approve; the next one goes to the GM
+  await pg.exec(`reset role; set role anon; update public.employees set role = 'sl' where id = 'E5'; reset role; set role service_role;`);
+  const r2 = (await mileage('E7', 'S1', { payload: { one_way_miles: 3 } })).body;
+  assert.equal(r2.next.who, 'gm');
+  assert.equal((await act('E5', r2, 'approve')).status, 403, 'still a G5 by title (sees the store) but no longer an AM: cannot approve');
+  // a G4 confirmed earlier who is lowered in the table loses the store view at once
+  assert.ok((await call('E6', { action: 'get', id: r2.id })).status === 200, 'a confirmed G4 sees the store');
+  await pg.exec(`reset role; set role anon; update public.employees set title = 'Crew', role = 'crew' where id = 'E6'; reset role; set role service_role;`);
+  assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 404);
+  // a new G4 is not a G4 here until the GM confirms
+  await pg.exec(`reset role; update public.employees set title = 'Store Manager' where id = 'E9'; set role service_role;`);
+  const r3 = (await call('E11', { action: 'submit', kind: 'reimburse', store_id: 'S2', client_key: 'k-p1-s2-0001',
+    payload: { date: '2026-11-01', payer: 'Ned Leader', vendor: 'Shop', purpose: '消耗品', amount_cents: 777 } }));
+  // E11 is S1 only → S2 refused; submit for S2 as E9 instead
+  assert.equal(r3.status, 403);
+  const r4 = (await call('E9', { action: 'submit', kind: 'reimburse', store_id: 'S2', client_key: 'k-p1-s2-0002',
+    payload: { date: '2026-11-01', payer: 'Kai Kitchen', vendor: 'Shop', purpose: '消耗品', amount_cents: 778 } })).body;
+  assert.equal((await call('E9', { action: 'list', scope: 'team', state: 'all' })).body.me.grade, 3, 'capped at G3 until confirmed');
+  const d2 = (await call('E2', { action: 'people_diff' })).body;
+  assert.ok(d2.items.find(x => x.emp === 'E9' && x.up));
+  // the GM picks only the change they recognise (E9); E8 (the public-key write) stays unconfirmed
+  const s2 = (await call('E2', { action: 'people_sync', digest: d2.digest, emps: ['E9'] })).body;
+  assert.equal(s2.applied, 1);
+  assert.equal((await call('E9', { action: 'list', scope: 'team', state: 'all' })).body.me.grade, 4, 'a G4 after the GM confirmed');
+  assert.ok(r4.code);
+  assert.equal((await act('E8', r, 'approve')).status, 404, 'E8 still not an approver');
+  assert.ok((await call('E2', { action: 'people_diff' })).body.items.find(x => x.emp === 'E8' && x.up), 'E8 is still waiting for the GM');
+  assert.equal((await call('E2', { action: 'people_sync', digest: d2.digest, emps: 'E9' })).status, 400);
+  const log = await pg.query(`select count(*)::int n from public.wr_people_log where emp_id = 'E9'`); assert.equal(log.rows[0].n, 1, 'E9 was a G3 at the first confirmation: only this one');
+  const log8 = await pg.query(`select count(*)::int n from public.wr_people_log where emp_id = 'E8'`); assert.equal(log8.rows[0].n, 0);
+});
+
+test('#123 P1: an AM whose store is pointed elsewhere in the store table loses the approval (it goes to the GM); the store table cannot add one', async () => {
+  const { call, act, mileage, pg } = await setup();
+  await pg.exec(`reset role; set role anon; update public.stores set am = 'Ami Area' where id = 'S2'; reset role; set role service_role;`);
+  const s2 = (await call('E9', { action: 'submit', kind: 'mileage', store_id: 'S2', client_key: 'k-p1-am-0001',
+    payload: { date: '2026-10-28', purpose: '買い出し', origin: 'a', destination: 'b', one_way_miles: 5, round_trip: false, memo: '' } })).body;
+  assert.equal(s2.next.who, 'gm', 'S2 was not in the confirmed copy for E5: the GM decides');
+  assert.equal((await act('E5', s2, 'approve')).status, 404);
+  await pg.exec(`reset role; set role anon; update public.stores set am = 'Someone Else' where id = 'S1'; reset role; set role service_role;`);
+  const s1 = (await mileage('E7', 'S1', { payload: { one_way_miles: 7 } })).body;
+  assert.equal(s1.next.who, 'gm');
+  assert.equal((await act('E5', s1, 'approve')).status, 404);
+});
+
+test('#123 P1: a confirmed G4 cannot widen with the public key — becoming an AM or moving to another store adds nothing', async () => {
+  const { call, act, mileage, pg } = await setup();
+  const r1 = (await mileage('E7', 'S1')).body;
+  const r2 = (await call('E9', { action: 'submit', kind: 'mileage', store_id: 'S2', client_key: 'k-p1-g4-0001',
+    payload: { date: '2026-10-28', purpose: '買い出し', origin: 'a', destination: 'b', one_way_miles: 5, round_trip: false, memo: '' } })).body;
+  const me = async () => (await call('E6', { action: 'list', scope: 'team', state: 'all' })).body.me;
+  assert.equal((await me()).grade, 4, 'E6 is a confirmed G4 of S1');
+  assert.equal((await call('E6', { action: 'get', id: r1.id })).status, 200);
+  assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 404);
+  // as anon: make E6 an AM in the employee table and point S2 at them
+  await pg.exec(`reset role; set role anon; update public.employees set role = 'am' where id = 'E6'; update public.stores set am = 'Sam Store' where id = 'S2'; reset role; set role service_role;`);
+  const m1 = await me();
+  assert.equal(m1.role, 'staff', 'the confirmed copy says G4, not AM: not an AM until a GM confirms');
+  assert.equal(m1.pending, true);
+  assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 404, 'no S2 view');
+  assert.equal((await act('E6', r1, 'approve')).status, 403, 'sees S1 as a G4 but cannot approve');
+  // back to the store manager, then move them to S2 in the employee table
+  await pg.exec(`reset role; update public.employees set role = 'sl' where id = 'E6'; update public.stores set am = null where id = 'S2'; set role service_role;`);
+  await pg.exec(`reset role; set role anon; update public.employees set store = 'S2' where id = 'E6'; reset role; set role service_role;`);
+  const m2 = await me();
+  assert.deepEqual(m2.stores, [], 'the confirmed store (S1) and the table store (S2) do not meet');
+  assert.equal(m2.pending, true, 'S2 waits for a GM');
+  assert.equal((await call('E6', { action: 'get', id: r1.id })).status, 404, 'moving away narrows at once');
+  assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 404, 'the new store waits for the GM');
+  const d = (await call('E2', { action: 'people_diff' })).body;
+  const s = (await call('E2', { action: 'people_sync', digest: d.digest, emps: ['E6'] })).body;
+  assert.equal(s.applied, 1);
+  assert.equal((await call('E6', { action: 'get', id: r2.id })).status, 200, 'after the GM confirms');
+});
+
+// #123 review (Codex P2): an old request that was returned could not be resubmitted.
+test('#123 P2: an old request with a known requester is returned and resubmitted as the same number; one without an employee ID cannot be returned', async () => {
+  const legacy = { mileage_requests: [
+    { id: 'mi1761100000000', employee: 'Lee Leader', storeId: 'S1', date: '2026-10-10', purpose: '買い出し', origin: 'Store', destination: 'Market', oneWayMiles: 5, roundTrip: true, miles: 10, rate: 0.7, amount: 7, status: '申請中' },
+    { id: 'mi1761100001000', employee: 'Nobody Known', storeId: 'S1', date: '2026-10-11', miles: 4, amount: 2.8, status: '申請中' },
+  ] };
+  const { call, act } = await setup({ legacy });
+  await call('E2', { action: 'legacy_import' });
+  const rows = (await call('E2', { action: 'list', scope: 'team', state: 'all' })).body.rows;
+  const known = rows.find(r => r.legacy_info.id === 'mi1761100000000'), unknown = rows.find(r => r.legacy_info.id === 'mi1761100001000');
+  assert.equal(known.requester_emp, 'E7'); assert.equal(unknown.requester_emp, null);
+  const k5 = (await call('E5', { action: 'get', id: known.id })).body;
+  assert.deepEqual(k5.can, ['approve', 'return', 'reject']);
+  const ret = (await act('E5', k5, 'return', { body: { note: '目的地を書いてください' } })).body;
+  assert.equal(ret.status, 'returned');
+  const mine = (await call('E7', { action: 'get', id: known.id })).body;
+  assert.deepEqual(mine.can, ['resubmit', 'withdraw']);
+  const re = (await act('E7', mine, 'resubmit', { body: { kind: 'mileage', payload: { date: '2026-10-10', purpose: '買い出し', origin: 'Store', destination: 'Market St', one_way_miles: 5, round_trip: true, memo: '' } } })).body;
+  assert.deepEqual([re.code, re.status, re.version, re.legacy], [known.code, 'pending', 2, true]);
+  assert.equal(re.amount_cents, 700);
+  const u5 = (await call('E5', { action: 'get', id: unknown.id })).body;
+  assert.deepEqual(u5.can, ['approve', 'reject'], 'no return: no one could fix it');
+  assert.equal((await act('E5', u5, 'return', { body: { note: 'x' } })).status, 403);
+});
+
+// #123 review (Codex P2): two sends with different client keys at the same time could both miss each other. The duplicate check now
+// waits on a lock for the same kind, date and amount (the real-PostgreSQL test is tests/review/pr123-wr-dup-race.test.mjs), and
+// payment looks again: a candidate that appeared later stops the payment until someone confirms it.
+test('#123 P2: payment looks for duplicates again; a later candidate stops it until confirmed', async () => {
+  const { call, act, mileage, pg } = await setup();
+  const a = (await mileage('E7', 'S1')).body;
+  // a second one that slipped past the check (as two sends at once could, before the lock): same person, day and amount, no mark
+  await pg.exec(`reset role;
+    insert into public.wr_requests(code, kind, status, store_id, requester_emp, requester_name, payload, amount_cents, use_date)
+     select 'GS-2611-9999', kind, 'checked', store_id, requester_emp, requester_name, payload, amount_cents, use_date from public.wr_requests where id = '${a.id}';
+    set role service_role;`);
+  const b = (await call('E3', { action: 'get', code: 'GS-2611-9999' })).body;
+  assert.ok(b.can.includes('pay'), 'looks payable from the row alone');
+  const paid = (await act('E3', b, 'pay', { body: { pay_date: '2026-11-02', pay_method: 'Payroll' } })).body;
+  assert.equal(paid.status, 'checked', 'not paid');
+  assert.deepEqual(paid.dup_found, [a.code]);
+  assert.deepEqual(paid.dup_codes, [a.code]);
+  assert.ok(!paid.can.includes('pay') && paid.can.includes('dup_ok'));
+  const ok = (await act('E3', paid, 'dup_ok', { body: { note: '別の日の往復' } })).body;
+  assert.equal((await act('E3', ok, 'pay', { body: { pay_date: '2026-11-02', pay_method: 'Payroll' } })).body.status, 'paid');
+});
+
+test('#123: an old request paid in the old screen after the copy is not paid again without confirming', async () => {
+  const legacy = { reimbursements: [
+    { id: 'rb1761200000000', payer: 'Sam Store', byUser: 'Sam Store', storeId: 'S1', amount: 30, vendor: 'Shop', date: '2026-10-12', status: '承認', payStatus: '未払い', approvedBy: 'Gabe GM' },
+  ], approvals: [{ id: 'ap9', type: '建替経費', ref: 'rb1761200000000', acct: { by: 'Ann Acct', at: '2026/10/13', t: 1 } }] };
+  const { call, act, pg } = await setup({ legacy });
+  await call('E2', { action: 'legacy_import' });
+  const r = (await call('E2', { action: 'list', scope: 'team', state: 'all' })).body.rows.find(x => x.legacy_info.id === 'rb1761200000000');
+  assert.equal(r.status, 'checked');
+  // an old (1130) device pays it in the old screen
+  await pg.exec(`reset role; update public.app_state set value = jsonb_set(value, '{0,payStatus}', '"支払済"') where key = 'reimbursements'; set role service_role;`);
+  const g = (await call('E3', { action: 'get', id: r.id })).body;
+  assert.equal(g.legacy_now.paid, true);
+  const p1 = await act('E3', g, 'pay', { body: { pay_date: '2026-11-02', pay_method: 'Cash' } });
+  assert.deepEqual([p1.status, p1.body.error], [409, 'legacy_paid']);
+  const p2 = (await act('E3', g, 'pay', { body: { pay_date: '2026-11-02', pay_method: '前の画面で精算済み', legacy_ack: true } })).body;
+  assert.equal(p2.status, 'paid');
 });

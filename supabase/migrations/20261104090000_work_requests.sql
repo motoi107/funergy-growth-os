@@ -4,7 +4,10 @@
 -- 守ること
 --   ・表と関数はサーバーの鍵（service_role）だけ。アプリの鍵（anon）・ログイン（authenticated）では読めない・書けない・呼べない。
 --   ・入り方は Edge Function work-requests だけ。PIN のログインの印をそこで確かめ、社員 ID をこの関数に渡す（アプリが送る役割・名前は使わない）。
---   ・役割は、CEO・GM・経理・事務Crew＝manager_auth（サーバーだけの表）の社員とつながったアカウント。AM＝社員の表の役割 am。ほか＝社員の表の肩書き・役割からのグレード。
+--   ・役割は、CEO・GM・経理・事務Crew＝manager_auth（サーバーだけの表）の社員とつながったアカウント。
+--     AM・G4 以上と担当の店（承認・店の申請を見ることに関わる権限）は、GM・CEO が確かめた写し wr_people（サーバーだけの表）と、今の社員の表の狭いほう。
+--     社員の表は公開の鍵で書けるので、社員の表で権限が増えても GM・CEO が確かめる（wr_people_sync）まで効かない。減るほうはすぐ効く（#123 のレビュー P1）。
+--     写しの無い人は G3 まで（自分の申請を出すだけ・店の申請は見られない）。
 --   ・同じ送信は 1 回だけ（client_key・wr_events の一意の索引）。同時の変更は rev（読んだ版）で止める（違えば conflict・何も書かない）。
 --   ・段階：① 承認（ガソリン代＝その店の AM・AM のいない店は GM。建て替え・事前経費＝GM。CEO・GM はいつも）→ ② 経理の確認（経理・事務Crew）→ ③ 支払・精算（経理・事務Crew・GM・CEO。事前経費は ② で完了）。
 --   ・自分の申請は承認・確認・支払・却下できない（取り下げだけ）。却下はその段階を決められる人だけ。経理は差し戻しだけ。
@@ -12,6 +15,9 @@
 --   ・重複の候補は自動で消さない・まとめない。申請した人の理由と、承認か経理が「別の経費と確かめた」記録が無いと ③ に進めない。
 --   ・前からの申請（app_state の mileage_requests・reimbursements・expense_requests）は wr_legacy_import で写す（2 回流しても同じ・写したあとは新しい表が正）。
 --     承認した人・日時・精算の記録が無いものは作り足さない（画面は「記録なし」）。通知・承認の依頼は出し直さない。
+--   ・重複の確かめは、同じ種類・日付・金額の送信を 1 本ずつ（advisory lock）にしてから探す。精算の前にもう一度探す（#123 のレビュー P2）。
+--   ・前からの申請で社員 ID の分かるものは、差し戻し → 本人が直して出し直す（同じ番号・版が上がる）。分からないものは差し戻せない（承認か却下）。
+--     前の画面で精算済みになったものを精算するときは止めて確かめる（legacy_paid）。
 --   ・app_state・社員の表・店の表は読むだけ。書くのは app_state の wr_live（使い始めた／止めたの印）1 行だけ。
 -- 2 回流しても同じ。止める：update public.wr_settings set live = false;（申請の記録は残る・アプリは前の画面に戻る）
 
@@ -100,15 +106,38 @@ create table if not exists public.wr_events (
 
 create index if not exists wr_events_request_idx on public.wr_events(request_id, id);
 
+-- 承認・閲覧の権限の写し（GM・CEO が確かめたもの）。AM か・グレード・所属と応援の店・AM の担当の店。
+-- 社員の表（公開の鍵で書ける）で権限が増えても、ここを GM・CEO が更新するまで効かない（#123 のレビュー P1）。
+create table if not exists public.wr_people (
+  emp_id text primary key,
+  name text not null,
+  role text not null check (role in ('am','staff')),
+  grade integer not null,
+  stores text[] not null default '{}'::text[],
+  am_stores text[] not null default '{}'::text[],
+  confirmed_by text, confirmed_emp text,
+  confirmed_at timestamptz not null default now()
+);
+create table if not exists public.wr_people_log (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  emp_id text not null,
+  before jsonb,
+  after jsonb,
+  by_emp text, by_name text
+);
+
 alter table public.wr_settings enable row level security;
 alter table public.wr_counters enable row level security;
 alter table public.wr_requests enable row level security;
 alter table public.wr_versions enable row level security;
 alter table public.wr_events enable row level security;
-revoke all on public.wr_settings, public.wr_counters, public.wr_requests, public.wr_versions, public.wr_events from public, anon, authenticated;
-grant select, insert, update, delete on public.wr_settings, public.wr_counters, public.wr_requests, public.wr_versions, public.wr_events to service_role;
-revoke all on sequence public.wr_events_id_seq from public, anon, authenticated;
-grant usage, select on sequence public.wr_events_id_seq to service_role;
+alter table public.wr_people enable row level security;
+alter table public.wr_people_log enable row level security;
+revoke all on public.wr_settings, public.wr_counters, public.wr_requests, public.wr_versions, public.wr_events, public.wr_people, public.wr_people_log from public, anon, authenticated;
+grant select, insert, update, delete on public.wr_settings, public.wr_counters, public.wr_requests, public.wr_versions, public.wr_events, public.wr_people, public.wr_people_log to service_role;
+revoke all on sequence public.wr_events_id_seq, public.wr_people_log_id_seq from public, anon, authenticated;
+grant usage, select on sequence public.wr_events_id_seq, public.wr_people_log_id_seq to service_role;
 
 -- ---------------------------------------------------------------- 人
 -- 肩書きと役割からのグレード（アプリの GRADE_TITLES・empGrade・myGradeNum と同じ。大きいほう）
@@ -126,12 +155,79 @@ language sql immutable security invoker set search_path = public, pg_temp as $$
   case coalesce(p_role, '') when 'ceo' then 7 when 'gm' then 6 when 'am' then 5 when 'g4' then 4 when 'chef' then 4 when 'sl' then 3 when 'g2' then 2 else 1 end);
 $$;
 
+-- 退職・OS の無効
+create or replace function public.wr_emp_out(e public.employees) returns boolean
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select coalesce(e.status, '') = '退職' or coalesce(e.data->>'status', '') = '退職' or coalesce(e.data->>'osDisabled', '') = 'true';
+$$;
+
+create or replace function public.wr_arr(j jsonb) returns text[]
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select coalesce(array(select jsonb_array_elements_text(case when jsonb_typeof(j) = 'array' then j else '[]'::jsonb end)), '{}'::text[]);
+$$;
+
+-- 2 つの店の並びの重なり（並べて返す）
+create or replace function public.wr_meet(a text[], b text[]) returns text[]
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select coalesce(array(select x from unnest(coalesce(a, '{}'::text[])) x where x = any(coalesce(b, '{}'::text[])) group by x order by x), '{}'::text[]);
+$$;
+
+-- 今の社員の表と店の表から見た人（公開の鍵で書ける表なので、権限を増やすことには使わない）。
+-- 返す：{ emp, name, role(am|staff), grade, stores[], am_stores[] }。いない・退職・OS の無効は null。
+create or replace function public.wr_person_live(p_emp text) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare e public.employees; v_stores text[]; v_am text[];
+begin
+ select * into e from public.employees x where x.id::text = p_emp;
+ if not found or public.wr_emp_out(e) then return null; end if;
+ select coalesce(array_agg(distinct s order by s), '{}'::text[]) into v_stores from (
+  select nullif(btrim(e.store), '') as s
+  union all
+  select nullif(btrim(x), '') from jsonb_array_elements_text(case when jsonb_typeof(to_jsonb(e.support)) = 'array' then to_jsonb(e.support) else '[]'::jsonb end) x
+ ) q where s is not null;
+ if e.role = 'am' then
+  select coalesce(array_agg(st.id::text order by st.id::text), '{}'::text[]) into v_am from public.stores st
+   where btrim(coalesce(st.am, '')) <> '' and btrim(st.am) = btrim(e.name) and coalesce(st.active, true);
+ else v_am := '{}'::text[];
+ end if;
+ return jsonb_build_object('emp', p_emp, 'name', btrim(coalesce(e.name, '')), 'role', case when e.role = 'am' then 'am' else 'staff' end,
+  'grade', public.wr_grade(e.title, e.role), 'stores', to_jsonb(v_stores), 'am_stores', to_jsonb(v_am));
+end $$;
+
+-- 承認・店の申請を見ることに関わる権限があるか（AM か G4 以上）
+create or replace function public.wr_elevated(x jsonb) returns boolean
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select x is not null and jsonb_typeof(x) = 'object' and ((x->>'role') = 'am' or coalesce((x->>'grade')::int, 0) >= 4);
+$$;
+
+-- GM・CEO が確かめた写し（同じ形）。無ければ null。
+create or replace function public.wr_person_conf(p_emp text) returns jsonb
+language sql stable security invoker set search_path = public, pg_temp as $$
+ select jsonb_build_object('emp', c.emp_id, 'name', c.name, 'role', c.role, 'grade', c.grade, 'stores', to_jsonb(c.stores), 'am_stores', to_jsonb(c.am_stores))
+  from public.wr_people c where c.emp_id = p_emp;
+$$;
+
+-- 写し（before）より今（after）のほうが権限が増えるか（AM になる・グレードが上がる・店が増える・名前が変わる）
+create or replace function public.wr_up(b jsonb, a jsonb) returns boolean
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select public.wr_elevated(a) and (b is null
+  or ((a->>'role') = 'am' and (b->>'role') <> 'am')
+  or (a->>'grade')::int > (b->>'grade')::int
+  or not (public.wr_arr(a->'stores') <@ public.wr_arr(b->'stores'))
+  or not (public.wr_arr(a->'am_stores') <@ public.wr_arr(b->'am_stores'))
+  or (a->>'name') is distinct from (b->>'name'));
+$$;
+
 -- 呼んだ人。p：{ emp_id, name }（Edge Function が PIN のログインの印から入れる。名前だけのときは在籍の同じ名前が 1 人のときだけ）。
--- 返す：{ emp, name, role(ceo|gm|office|office_crew|am|staff), grade, stores[], am_stores[] }。退職・OS の無効は forbidden。
+-- 返す：{ emp, name, role(ceo|gm|office|office_crew|am|staff), grade, stores[], am_stores[], confirmed, pending }。退職・OS の無効は forbidden。
+-- AM・G4 以上と担当の店は、GM・CEO が確かめた写し（wr_people）と今の社員の表の狭いほう（#123 のレビュー P1）：
+--   ・role am：写しも今も am のとき。am_stores：写しと今の重なり。grade：小さいほう。G4 以上の stores：写しと今の重なり。
+--   ・写しの無い人：staff・grade は 3 まで・stores は今の社員の表（自分の申請を出すだけ。店の申請は見られない）。
+--   ・名前：写しの名前、無ければ PIN の印の名前（印は auth-pin が署名したもの）、無ければ社員の表。
 create or replace function public.wr_actor(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare v_emp text := nullif(p->>'emp_id', ''); v_name text := p->>'name'; v_n integer; e public.employees; v_mgr text; v_role text;
- v_stores text[]; v_am text[];
+declare v_emp text := nullif(p->>'emp_id', ''); v_name text := p->>'name'; v_n integer; e public.employees; v_mgr text;
+ live jsonb; conf jsonb; v_role text; v_grade integer; v_stores text[]; v_am text[]; v_nm text;
 begin
  if v_emp is null then
   if v_name is null or btrim(v_name) = '' or length(v_name) > 80 then raise exception 'forbidden'; end if;
@@ -140,46 +236,46 @@ begin
  elsif length(v_emp) > 64 then raise exception 'forbidden';
  end if;
  select * into e from public.employees x where x.id::text = v_emp;
- if not found or coalesce(e.status, '') = '退職' or coalesce(e.data->>'status', '') = '退職' or coalesce(e.data->>'osDisabled', '') = 'true' then
-  raise exception 'forbidden';
- end if;
+ if not found or public.wr_emp_out(e) then raise exception 'forbidden'; end if;
+ v_nm := coalesce(nullif(btrim(coalesce(p->>'name', '')), ''), btrim(coalesce(e.name, '')));
  select a.role into v_mgr from public.manager_auth a where a.emp_id::text = v_emp and a.role in ('ceo','gm','office','office_crew')
   order by case a.role when 'gm' then 1 when 'ceo' then 2 when 'office' then 3 else 4 end limit 1;
- v_role := coalesce(v_mgr, case when e.role = 'am' then 'am' else 'staff' end);
- select coalesce(array_agg(distinct s), '{}'::text[]) into v_stores from (
-  select nullif(btrim(e.store), '') as s
-  union all
-  select nullif(btrim(x), '') from jsonb_array_elements_text(case when jsonb_typeof(to_jsonb(e.support)) = 'array' then to_jsonb(e.support) else '[]'::jsonb end) x
- ) q where s is not null;
- if v_role = 'am' then
-  select coalesce(array_agg(st.id::text order by st.id::text), '{}'::text[]) into v_am from public.stores st
-   where btrim(coalesce(st.am, '')) <> '' and btrim(st.am) = btrim(e.name) and coalesce(st.active, true);
- else v_am := '{}'::text[];
+ if v_mgr is not null then
+  return jsonb_build_object('emp', v_emp, 'name', v_nm, 'role', v_mgr, 'grade', public.wr_grade(e.title, v_mgr),
+   'stores', '[]'::jsonb, 'am_stores', '[]'::jsonb, 'confirmed', true, 'pending', false);
  end if;
- return jsonb_build_object('emp', v_emp, 'name', e.name, 'role', v_role, 'grade', public.wr_grade(e.title, e.role),
-  'stores', to_jsonb(v_stores), 'am_stores', to_jsonb(v_am));
+ live := public.wr_person_live(v_emp);
+ conf := public.wr_person_conf(v_emp);
+ if conf is not null then
+  v_role := case when (conf->>'role') = 'am' and (live->>'role') = 'am' then 'am' else 'staff' end;
+  v_grade := least((conf->>'grade')::int, (live->>'grade')::int);
+  v_am := case when v_role = 'am' then public.wr_meet(public.wr_arr(conf->'am_stores'), public.wr_arr(live->'am_stores')) else '{}'::text[] end;
+  v_stores := case when v_role = 'am' or v_grade >= 4 then public.wr_meet(public.wr_arr(conf->'stores'), public.wr_arr(live->'stores')) else public.wr_arr(live->'stores') end;
+  v_nm := conf->>'name';
+ else
+  v_role := 'staff'; v_grade := least((live->>'grade')::int, 3); v_stores := public.wr_arr(live->'stores'); v_am := '{}'::text[];
+ end if;
+ return jsonb_build_object('emp', v_emp, 'name', v_nm, 'role', v_role, 'grade', v_grade, 'stores', to_jsonb(v_stores), 'am_stores', to_jsonb(v_am),
+  'confirmed', conf is not null, 'pending', public.wr_up(conf, live));
 end $$;
 
-create or replace function public.wr_arr(j jsonb) returns text[]
-language sql immutable security invoker set search_path = public, pg_temp as $$
- select coalesce(array(select jsonb_array_elements_text(case when jsonb_typeof(j) = 'array' then j else '[]'::jsonb end)), '{}'::text[]);
-$$;
 
--- その店の AM の名前（店の表の am 欄・止めた店は無し）。空：AM のいない店（ガソリン代は GM が承認）。
-create or replace function public.wr_store_am(p_store text) returns text
-language sql stable security invoker set search_path = public, pg_temp as $$
- select nullif(btrim(st.am), '') from public.stores st where st.id::text = p_store and coalesce(st.active, true) limit 1;
-$$;
+-- 前の版（19227fd まで）の関数の形が違うので作り直す（返す形が text → jsonb）。wr_store_am はもう使わない。
+drop function if exists public.wr_approver_am(public.wr_requests);
+drop function if exists public.wr_store_am(text);
 
--- ガソリン代の ① を決める AM：店の AM 欄の人が、在籍の AM（社員の表の役割 am）で、申請した本人でないとき。ほかは GM（null）。
--- 画面の「次の対応」・知らせ・承認できるかを同じ決まりで決める（独立レビュー P2-2）。
-create or replace function public.wr_approver_am(r public.wr_requests) returns text
+-- ガソリン代の ① を決める AM：GM・CEO が確かめた写しで AM・その店の担当で、今も在籍の AM（社員の表の役割 am）で、
+-- 今も店の表の AM 欄がその人で、申請した本人でない人が 1 人だけのとき。ほかは GM（null）。返す：{ emp, name }。
+-- 画面の「次の対応」・知らせ・承認できるかを同じ決まりで決める（独立レビュー P2-2・#123 のレビュー P1：社員の表・店の表は狭めることにだけ使う）。
+create or replace function public.wr_approver_am(r public.wr_requests) returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$
- select v.am from (select public.wr_store_am(r.store_id) as am) v
-  where v.am is not null and v.am <> btrim(coalesce(r.requester_name, ''))
-   and (r.requester_emp is null or not exists (select 1 from public.employees e where e.id::text = r.requester_emp and btrim(e.name) = v.am))
-   and exists (select 1 from public.employees e where btrim(e.name) = v.am and e.role = 'am' and coalesce(e.status, '') <> '退職'
-     and coalesce(e.data->>'status', '') <> '退職' and coalesce(e.data->>'osDisabled', '') <> 'true');
+ select case when count(*) = 1 then jsonb_build_object('emp', min(c.emp_id), 'name', min(c.name)) end
+  from public.wr_people c join public.employees e on e.id::text = c.emp_id
+  where c.role = 'am' and r.store_id = any(c.am_stores)
+   and e.role = 'am' and not public.wr_emp_out(e)
+   and exists (select 1 from public.stores st where st.id::text = r.store_id and coalesce(st.active, true) and btrim(coalesce(st.am, '')) = btrim(coalesce(e.name, '')))
+   and c.emp_id is distinct from r.requester_emp
+   and btrim(c.name) <> btrim(coalesce(r.requester_name, ''));
 $$;
 
 -- 見られるか：申請した人・CEO・GM・経理・事務Crew（全部）・AM（担当の店）・G4（自分の店）。
@@ -206,13 +302,13 @@ $$;
 -- ① の承認ができる人か（自分の申請は不可）
 create or replace function public.wr_can_approve(a jsonb, r public.wr_requests) returns boolean
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare v_am text;
+declare v_am jsonb;
 begin
  if public.wr_is_mine(a, r) then return false; end if;
  if (a->>'role') in ('ceo','gm') then return true; end if;
  if r.kind = 'mileage' and (a->>'role') = 'am' then
   v_am := public.wr_approver_am(r);
-  return v_am is not null and v_am = btrim(a->>'name') and r.store_id = any(public.wr_arr(a->'am_stores'));
+  return v_am is not null and (v_am->>'emp') = (a->>'emp') and r.store_id = any(public.wr_arr(a->'am_stores'));
  end if;
  return false;
 end $$;
@@ -225,7 +321,7 @@ create or replace function public.wr_next(r public.wr_requests) returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$
  select case
   when r.status = 'pending' and r.kind = 'mileage' and public.wr_approver_am(r) is not null
-   then jsonb_build_object('step', 'approve', 'who', 'am', 'name', public.wr_approver_am(r))
+   then jsonb_build_object('step', 'approve', 'who', 'am', 'name', public.wr_approver_am(r)->>'name')
   when r.status = 'pending' then jsonb_build_object('step', 'approve', 'who', 'gm')
   when r.status = 'returned' then jsonb_build_object('step', 'fix', 'who', 'requester', 'name', r.requester_name)
   when r.status = 'approved' and r.kind in ('mileage','reimburse','expense_pre') then jsonb_build_object('step', 'check', 'who', 'acct')
@@ -240,11 +336,19 @@ declare o text[] := '{}'; v_mine boolean := public.wr_is_mine(a, r); v_own boole
  v_dup boolean := cardinality(r.dup_codes) > 0 and r.dup_ok_at is null;
 begin
  if r.kind not in ('mileage','reimburse','expense_pre') then return o; end if;
- if v_own and r.status = 'pending' and not r.legacy then o := o || 'edit'::text; end if;
- if v_own and r.status = 'returned' and not r.legacy then o := o || 'resubmit'::text; end if;
+ -- 前からの申請も、社員 ID の分かるものは本人が直す・出し直す（同じ番号・版が上がる）。分からないものは差し戻せない（#123 のレビュー P2）。
+ if v_own and r.status = 'pending' then o := o || 'edit'::text; end if;
+ if v_own and r.status = 'returned' then o := o || 'resubmit'::text; end if;
  if v_own and r.status in ('pending','returned') then o := o || 'withdraw'::text; end if;
- if r.status = 'pending' and public.wr_can_approve(a, r) then o := o || array['approve','return','reject']; end if;
- if r.status = 'approved' and public.wr_is_acct(a) and not v_mine then o := o || array['check','return']; end if;
+ if r.status = 'pending' and public.wr_can_approve(a, r) then
+  o := o || 'approve'::text;
+  if not r.legacy or r.requester_emp is not null then o := o || 'return'::text; end if;
+  o := o || 'reject'::text;
+ end if;
+ if r.status = 'approved' and public.wr_is_acct(a) and not v_mine then
+  o := o || 'check'::text;
+  if not r.legacy or r.requester_emp is not null then o := o || 'return'::text; end if;
+ end if;
  if r.status = 'checked' and r.kind in ('mileage','reimburse') and ((a->>'role') in ('ceo','gm') or public.wr_is_acct(a)) and not v_mine and not v_dup then
   o := o || 'pay'::text;
  end if;
@@ -303,6 +407,13 @@ language sql stable security invoker set search_path = public, pg_temp as $$
    and p_date is not null and p_cents is not null and r.use_date = p_date and r.amount_cents = p_cents
    and case when p_kind = 'reimburse' then r.store_id = p_store
             else (p_emp is not null and r.requester_emp = p_emp) or (r.requester_emp is null and r.requester_name = p_name) end;
+$$;
+
+-- 重複を探す前に、同じ種類・日付・金額の送信を 1 本ずつにする（別の client_key の 2 本が同時に来ても、2 本目は 1 本目を見てから探す・#123 のレビュー P2）。
+-- READ COMMITTED なので、鍵を取ったあとの問い合わせは 1 本目がコミットした行を見る。鍵はトランザクションの終わりまで。
+create or replace function public.wr_dup_lock(p_kind text, p_date date, p_cents bigint) returns void
+language sql volatile security invoker set search_path = public, pg_temp as $$
+ select pg_advisory_xact_lock(hashtext('wr_dup:' || coalesce(p_kind, '') || ':' || coalesce(p_date::text, '') || ':' || coalesce(p_cents::text, '')));
 $$;
 
 -- ---------------------------------------------------------------- 中身（Edge Function が形を整え、ここでもう一度確かめる）
@@ -373,7 +484,10 @@ declare a jsonb := public.wr_actor(p); s public.wr_settings;
 begin
  select * into s from public.wr_settings where id = 1;
  return jsonb_build_object('me', a, 'live', coalesce(s.live, false), 'settings_rev', coalesce(s.rev, 1), 'live_at', s.live_at, 'settings_at', s.updated_at,
-  'rate', public.wr_mileage_rate());
+  'rate', public.wr_mileage_rate(),
+  -- GM・CEO だけ：権限の写しと社員の表の違い（増える人・違う人の数）
+  'people', case when (a->>'role') in ('ceo','gm') then (select jsonb_build_object('up', count(*) filter (where x->'up' = 'true'::jsonb), 'changes', count(*),
+     'confirmed', (select count(*) from public.wr_people)) from jsonb_array_elements(public.wr_people_items()) x) end);
 end $$;
 
 -- p.scope：todo（今わたしが動くもの）・mine（自分の申請）・team（見られる範囲の全部）。p.state：open・closed・all。p.kind・p.store・p.from・p.to（申請日）。
@@ -437,7 +551,67 @@ begin
   -- 重複の候補（見られるものだけ中身を出す）
   'dups', (select coalesce(jsonb_agg(case when public.wr_visible(a, d) then jsonb_build_object('code', d.code, 'status', d.status, 'requester_name', d.requester_name,
      'amount_cents', d.amount_cents, 'use_date', d.use_date, 'store_id', d.store_id) else jsonb_build_object('code', d.code) end order by d.code), '[]'::jsonb)
-   from public.wr_requests d where d.code = any(r.dup_codes)));
+   from public.wr_requests d where d.code = any(r.dup_codes)),
+  -- 前からの申請：前の画面の今の状態（写したあとに前の画面で変わったか）
+  'legacy_now', case when r.legacy then (select case when v is null then jsonb_build_object('found', false)
+     else jsonb_build_object('found', true, 'status', v->>'status', 'payStatus', v->>'payStatus', 'archived', coalesce(v->'archived' = 'true'::jsonb, false),
+      'deleted', coalesce(v->'_deleted' = 'true'::jsonb, false), 'paid', public.wr_legacy_paid(r)) end from (select public.wr_legacy_src(r) v) z) end);
+end $$;
+
+-- ---------------------------------------------------------------- 承認・閲覧の権限の写し（GM・CEO が確かめる・#123 のレビュー P1）
+-- 写し（before）と今の社員の表・店の表（after。AM・G4 以上でなければ null＝写しから外す）の違い。up＝権限が増える（確かめるまで効かない）。
+create or replace function public.wr_people_items() returns jsonb
+language sql stable security invoker set search_path = public, pg_temp as $$
+ -- CEO・GM・経理・事務Crew は manager_auth（サーバーだけの表）で決まるので、写しには入れない
+ with live as (select x.id::text emp, public.wr_person_live(x.id::text) j from public.employees x
+   where not exists (select 1 from public.manager_auth m where m.emp_id::text = x.id::text and m.role in ('ceo','gm','office','office_crew'))),
+ keys as (select emp from live where public.wr_elevated(j) union select emp_id from public.wr_people)
+ select coalesce(jsonb_agg(jsonb_build_object('emp', k.emp, 'before', z.b, 'after', z.af, 'up', public.wr_up(z.b, z.af)) order by k.emp), '[]'::jsonb)
+  from keys k left join live l on l.emp = k.emp
+   cross join lateral (select public.wr_person_conf(k.emp) b, case when public.wr_elevated(l.j) then l.j end af) z
+  where z.b is distinct from z.af;
+$$;
+
+-- GM・CEO：違いの一覧と、その中身の印（digest）。同じ印で wr_people_sync を呼ぶと、その中身だけを写しに入れる。
+create or replace function public.wr_people_diff(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.wr_actor(p); v jsonb;
+begin
+ if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
+ v := public.wr_people_items();
+ return jsonb_build_object('items', v, 'digest', md5(v::text),
+  'up', (select count(*) from jsonb_array_elements(v) x where x->'up' = 'true'::jsonb),
+  'confirmed', (select count(*) from public.wr_people));
+end $$;
+
+-- GM・CEO：見た一覧（digest）のとおりに写しを更新する。一覧を見たあとに社員の表・店の表が変わっていたら conflict（何も書かない）。
+-- p.emps（任意）：合わせる人だけ（見覚えのない変更は選ばない＝写しのまま）。無ければ一覧の全部。
+create or replace function public.wr_people_sync(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.wr_actor(p); v jsonb; x jsonb; n integer := 0; af jsonb; v_pick text[];
+begin
+ if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
+ if coalesce(p->>'digest', '') !~ '^[0-9a-f]{32}$' then raise exception 'bad_value'; end if;
+ if p ? 'emps' and jsonb_typeof(p->'emps') <> 'array' then raise exception 'bad_value'; end if;
+ v_pick := case when jsonb_typeof(p->'emps') = 'array' then public.wr_arr(p->'emps') end;
+ perform pg_advisory_xact_lock(hashtext('wr_people'));
+ v := public.wr_people_items();
+ if md5(v::text) <> p->>'digest' then raise exception 'conflict'; end if;
+ for x in select * from jsonb_array_elements(v) where v_pick is null or value->>'emp' = any(v_pick) loop
+  af := x->'after';
+  if jsonb_typeof(af) = 'object' then
+   insert into public.wr_people(emp_id, name, role, grade, stores, am_stores, confirmed_by, confirmed_emp, confirmed_at)
+    values (x->>'emp', af->>'name', af->>'role', (af->>'grade')::int, public.wr_arr(af->'stores'), public.wr_arr(af->'am_stores'), a->>'name', a->>'emp', now())
+    on conflict (emp_id) do update set name = excluded.name, role = excluded.role, grade = excluded.grade, stores = excluded.stores,
+     am_stores = excluded.am_stores, confirmed_by = excluded.confirmed_by, confirmed_emp = excluded.confirmed_emp, confirmed_at = excluded.confirmed_at;
+  else
+   delete from public.wr_people where emp_id = x->>'emp';
+  end if;
+  insert into public.wr_people_log(emp_id, before, after, by_emp, by_name)
+   values (x->>'emp', case when jsonb_typeof(x->'before') = 'object' then x->'before' end, case when jsonb_typeof(af) = 'object' then af end, a->>'emp', a->>'name');
+  n := n + 1;
+ end loop;
+ return jsonb_build_object('applied', n, 'confirmed', (select count(*) from public.wr_people));
 end $$;
 
 -- ---------------------------------------------------------------- 出す
@@ -461,6 +635,7 @@ begin
  if not public.wr_can_submit(a, v_kind, v_store) then raise exception 'forbidden'; end if;
  if v_reason is not null and length(v_reason) > 400 then raise exception 'bad_value'; end if;
  n := public.wr_norm(v_kind, p->'payload');
+ perform public.wr_dup_lock(v_kind, (n->>'use_date')::date, (n->>'amount_cents')::bigint);
  v_dups := public.wr_dups(v_kind, v_store, a->>'emp', a->>'name', (n->>'use_date')::date, (n->>'amount_cents')::bigint, null);
  if cardinality(v_dups) > 0 and v_reason is null then
   return jsonb_build_object('duplicate', (select coalesce(jsonb_agg(case when public.wr_visible(a, d) then jsonb_build_object('code', d.code, 'status', d.status,
@@ -515,6 +690,7 @@ begin
   n := public.wr_norm(r.kind, p->'payload');
   v_reason := nullif(btrim(coalesce(p->>'dup_reason', '')), '');
   if v_reason is not null and length(v_reason) > 400 then raise exception 'bad_value'; end if;
+  perform public.wr_dup_lock(r.kind, (n->>'use_date')::date, (n->>'amount_cents')::bigint);
   v_dups := public.wr_dups(r.kind, r.store_id, r.requester_emp, r.requester_name, (n->>'use_date')::date, (n->>'amount_cents')::bigint, r.id);
   if cardinality(v_dups) > 0 and v_reason is null and not (r.dup_reason is not null and r.dup_codes @> v_dups) then
    return jsonb_build_object('duplicate', (select coalesce(jsonb_agg(case when public.wr_visible(a, d) then jsonb_build_object('code', d.code, 'status', d.status,
@@ -552,6 +728,19 @@ begin
   begin v_pd := (p->>'pay_date')::date; exception when others then raise exception 'bad_value'; end;
   v_pm := nullif(btrim(coalesce(p->>'pay_method', '')), '');
   if v_pd is null or v_pd < date '2020-01-01' or v_pd > (timezone('Pacific/Honolulu', v_now))::date + 31 or v_pm is null or length(v_pm) > 60 then raise exception 'bad_value'; end if;
+  -- 精算の前にもう一度重複を探す（出したあとに出た候補・同時の送信で見えなかった候補）。新しい候補があれば精算せず、印を付けて止める（#123 のレビュー P2）。
+  perform public.wr_dup_lock(r.kind, r.use_date, r.amount_cents);
+  v_dups := array(select x from unnest(public.wr_dups(r.kind, r.store_id, r.requester_emp, r.requester_name, r.use_date, r.amount_cents, r.id)) x
+   where not (x = any(r.dup_codes)) order by x);
+  if cardinality(v_dups) > 0 then
+   update public.wr_requests set dup_codes = array(select y from unnest(r.dup_codes || v_dups) y group by y order by y),
+     dup_ok_by = null, dup_ok_emp = null, dup_ok_at = null, dup_ok_note = null, rev = r.rev + 1, updated_at = v_now where id = r.id returning * into r;
+   insert into public.wr_events(request_id, at, action, from_status, to_status, version, rev, by_emp, by_name, by_role, note)
+    values (r.id, v_now, 'dup_found', r.status, r.status, r.version, r.rev, a->>'emp', a->>'name', a->>'role', '精算の前に重複の候補が見つかった：' || array_to_string(v_dups, ', '));
+   return public.wr_row(a, r) || jsonb_build_object('dup_found', to_jsonb(v_dups));
+  end if;
+  -- 前の画面で精算済み（建て替えの支払済・ガソリン代の月末処理）になった前からの申請は、確かめてからでないと記録しない（二重に払わない）
+  if r.legacy and public.wr_legacy_paid(r) and not coalesce(p->'legacy_ack' = 'true'::jsonb, false) then raise exception 'legacy_paid'; end if;
   update public.wr_requests set status = 'paid', paid_by = a->>'name', paid_emp = a->>'emp', paid_at = v_now, pay_date = v_pd, pay_method = v_pm where id = r.id;
   v_to := 'paid';
  elsif v_act = 'dup_ok' then
@@ -595,6 +784,27 @@ language sql stable security invoker set search_path = public, pg_temp as $$
    order by w.x->>'ref', w.prio, case when jsonb_typeof(w.x->'acct'->'t') = 'number' then (w.x->'acct'->>'t')::numeric end desc nulls last
  ) q where not coalesce(q.off, false);
 $$;
+
+-- 前からの申請の元の記録（今の app_state）。写すときと同じ選び方（分割の行を先に・新しい印）。無ければ null。
+create or replace function public.wr_legacy_src(r public.wr_requests) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare v_base text := r.legacy_info->>'src'; v jsonb;
+begin
+ if not r.legacy or v_base is null or v_base not in ('mileage_requests','reimbursements','expense_requests') then return null; end if;
+ select w.x into v from public.wr_state_rows(v_base) w where jsonb_typeof(w.x) = 'object' and w.x->>'id' = r.legacy_info->>'id'
+  order by w.prio, coalesce(case when jsonb_typeof(w.x->'_stT') = 'number' then (w.x->>'_stT')::numeric end, case when jsonb_typeof(w.x->'_mut') = 'number' then (w.x->>'_mut')::numeric end, 0) desc
+  limit 1;
+ return v;
+end $$;
+
+-- 写したあとに前の画面で精算済み（建て替えの支払済・ガソリン代の月末処理）になったか。精算の前に確かめる（二重に払わない）。
+create or replace function public.wr_legacy_paid(r public.wr_requests) returns boolean
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare v jsonb := public.wr_legacy_src(r);
+begin
+ if v is null or coalesce(v->'_deleted' = 'true'::jsonb, false) then return false; end if;
+ return (r.kind = 'reimburse' and v->>'payStatus' = '支払済') or (r.kind = 'mileage' and coalesce(v->'archived' = 'true'::jsonb, false));
+end $$;
 
 create or replace function public.wr_ms_time(p_id text) returns timestamptz
 language sql immutable security invoker set search_path = public, pg_temp as $$

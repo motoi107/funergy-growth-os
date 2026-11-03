@@ -17,7 +17,7 @@ const PEOPLE = [['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3
   ['E6', 'Sam Store', 'sl', 'Store Manager', 'S1', null], ['E7', 'Lee Leader', 'sl', 'Server Leader', 'S1', null], ['E11', 'Ned Leader', 'sl', 'Operation Leader', 'S1', null]];
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 
-async function server({ live = false, legacy = {} } = {}) {
+async function server({ live = false, legacy = {}, confirm = live } = {}) {
   const pg = new PGlite();
   await pg.exec(`create role anon; create role authenticated; create role service_role bypassrls;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
@@ -36,6 +36,8 @@ async function server({ live = false, legacy = {} } = {}) {
   if (live) await pg.exec('update public.wr_settings set live = true');
   await pg.exec('set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
+  // live のときは、使い始めたときと同じく GM が承認・閲覧の権限（AM・G4 以上）の写しを確かめた状態（#123 のレビュー P1）
+  if (confirm) { const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest }); }
   const handler = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k], db,
     verifyPin: async tok => { const m = /^pin-(E\d+)$/.exec(tok); return m ? { emp_id: m[1], name: NAME[m[1]] } : null; } });
   return { pg, handler };
@@ -98,8 +100,20 @@ test('before it is live: the screen says so; the GM turns it on (old requests co
   assert.doesNotMatch(h, /使い始める（前からの申請を写す）/);
   const store = new Map();
   const gm = await app(srv, 'E2', { storage: store });
-  assert.match(await gm.render(), /使い始める（前からの申請を写す）/);
+  const before = await gm.render();
+  assert.match(before, /使い始める（前からの申請を写す）/);
+  assert.match(before, /承認・閲覧の権限の確かめ/, 'the GM is told that AM / G4 rights need a check');
+  // 使い始める：先に権限の確かめ（増える人は最初は選ばない。GM が選ぶ）→ 選んで使い始める
   gm.ctx.wrGoLive(true); await gm.settle();
+  const pm = gm.dom.els['wr-people'].innerHTML;
+  assert.match(pm, /使い始める前に、AM・G4 以上の人と担当の店を確かめてください/);
+  assert.match(pm, /Ami Area/); assert.match(pm, /Sam Store/); assert.match(pm, /権限が増える/);
+  assert.doesNotMatch(pm, /type="checkbox" checked/, 'raises are not picked for the GM');
+  assert.match(pm, /このまま使い始める/);
+  gm.ctx.wrPeopleAllUp();
+  assert.match(gm.dom.els['wr-people'].innerHTML, /選んだ 2 人を確かめて使い始める/);
+  gm.ctx.wrPeopleGo(); await gm.settle();
+  assert.ok(gm.toasts.some(([k, m]) => k === 'success' && /権限の写しに入れました：2 人/.test(m)));
   assert.equal(JSON.parse(store.get('_wr_live_v1')).live, true);
   assert.ok(gm.toasts.some(([k, m]) => k === 'success' && /前からの申請 1 件を写しました/.test(m)));
   const after = await gm.render();
@@ -240,6 +254,7 @@ test('the shared mark (wr_live, written by the server) stops the old screens on 
   const gm = await app(srv, 'E2');
   await gm.render();
   gm.ctx.wrGoLive(true); await gm.settle();
+  gm.ctx.wrPeopleGo(); await gm.settle();   /* 権限の確かめ：選ばずに「このまま使い始める」 */
   const row = (await srv.pg.query(`select value from public.app_state where key = 'wr_live'`)).rows[0].value;
   assert.equal(row.live, true);
   // a shared-login device: never signs in to work-requests, only gets the app_state row
@@ -261,4 +276,92 @@ test('amounts are read as text (no floating point); the detail does not show an 
   x.ctx.wrNew('reimburse'); fill(x.dom, { date: '2026-11-01', vendor: 'W', amount: '0.29' }); await x.ctx.wrSend(); await x.settle();
   const c = (await srv.pg.query('select amount_cents from public.wr_requests order by code')).rows.map(r => Number(r.amount_cents));
   assert.deepEqual(c, [101, 29]);
+});
+
+// #123 review (Codex P1-2): after a sign-in switch, a late answer for the previous person must not come back on the screen.
+test('#123: a late list or detail answer for the previous person is dropped after the sign-in switches', async () => {
+  const srv = await server({ live: true });
+  const gmApp = await app(srv, 'E2');
+  // E7 has one request; the GM sees it, E7 sees only their own
+  const g3 = await app(srv, 'E7', { role: 'sl' }); await g3.render();
+  g3.ctx.wrNew('mileage'); fill(g3.dom, { date: '2026-10-29', miles: 3 }); await g3.ctx.wrSend(); await g3.settle();
+  const other = (await srv.pg.query(`select id from public.wr_requests`)).rows[0].id;
+  // the GM's list answer is held, then the device signs in as E11
+  let release; const held = new Promise(r => { release = r; });
+  const real = gmApp.ctx.fetch;
+  let who = 'E2';
+  gmApp.ctx.fetch = async (url, init) => { const b = JSON.parse(init.body); if (b.pin_session === 'pin-E2' && (b.action === 'list' || b.action === 'get')) await held; return real(url, init); };
+  gmApp.ctx.mrAuthKey = () => 'p|' + who;
+  gmApp.ctx.renderWrTab(); await gmApp.settle();   // whoami for the GM, list held
+  gmApp.ctx.wrOpen(other);                        // detail held too
+  who = 'E11'; gmApp.ctx._hwSession = 'pin-E11';
+  await gmApp.render();                            // E11's own whoami and list
+  gmApp.ctx.wrOpen(other); await gmApp.settle();   // E11 opens a detail too (refused): the GM's held detail has the same tap number
+  release(); await gmApp.settle(); await gmApp.settle();
+  const S = gmApp.S();
+  assert.equal(S.me.emp, 'E11', 'still E11');
+  assert.equal((S.rows || []).length, 0, 'none of the GM’s list');
+  assert.equal(S.d, null, 'the GM’s detail is not shown');
+});
+
+test('#123 P1: the GM is told about rights waiting for a check and confirms only the picked ones; a waiting G4 is told', async () => {
+  const srv = await server({ live: true });
+  // after the go-live check, someone makes E11 a Store Manager in the employee table (could be a public-key write)
+  await srv.pg.exec(`reset role; update public.employees set title = 'Store Manager' where id = 'E11'; set role service_role;`);
+  const ned = await app(srv, 'E11', { role: 'sl' });
+  assert.match(await ned.render(), /GM の確かめ待ちです/);
+  const gm = await app(srv, 'E2');
+  const h = await gm.render();
+  assert.match(h, /承認・閲覧の権限の確かめ/); assert.match(h, /権限が増える人 1 人/);
+  gm.ctx.wrPeople(); await gm.settle();
+  const pm = gm.dom.els['wr-people'].innerHTML;
+  assert.match(pm, /Ned Leader/); assert.match(pm, /なし（権限なし）/); assert.match(pm, /G4 · Ned Leader/);
+  assert.match(pm, /disabled\s+onclick="wrPeopleGo\(\)">選んだ 0 人を写しに入れる/, 'nothing picked: the button waits');
+  gm.ctx.wrPeoplePick('E11', true); gm.ctx.wrPeopleGo(); await gm.settle();
+  assert.ok(gm.toasts.some(([k, m]) => k === 'success' && /1 人/.test(m)));
+  assert.doesNotMatch(await ned.render().then(() => { ned.ctx.wrRefresh(); return ned.settle(); }).then(() => ned.ctx.renderWrTab()), /GM の確かめ待ちです/);
+});
+
+test('#123 P2: an old request is fixed and resubmitted from the old record; the form is filled from it', async () => {
+  const legacy = { reimbursements: [{ id: 'rb1761300000000', payer: 'Sam Store', byUser: 'Sam Store', isEmployee: true, storeId: 'S1', amount: 42.5, vendor: 'Costco',
+    purpose: '消耗品', purposeMemo: 'ナプキン', date: '2026-10-20', imagePath: 'S1/2026-10/inv_1.jpg', status: '申請中', payStatus: '未払い' }] };
+  const srv = await server({ live: true, legacy });
+  const gm = await app(srv, 'E2'); await gm.render();
+  gm.ctx.wrReimport(); await gm.settle();
+  const id = (await srv.pg.query(`select id from public.wr_requests where legacy`)).rows[0].id;
+  gm.ctx.wrOpen(id); await gm.settle();
+  gm.ctx.wrAsk('return'); gm.dom.els['wr-note'].value = '領収書の日付を確かめてください'; gm.ctx.wrAskGo(); await gm.settle();
+  assert.equal(gm.S().d.status, 'returned');
+  const sam = await app(srv, 'E6', { role: 'sl' }); await sam.render();
+  sam.ctx.wrOpen(id); await sam.settle();
+  assert.match(sam.dom.els['wr-detail'].innerHTML, /直して出し直す/);
+  sam.ctx.wrAsk('resubmit'); await sam.settle();
+  assert.equal(sam.dom.els['wrf-amount'].value, '42.50'); assert.equal(sam.dom.els['wrf-vendor'].value, 'Costco');
+  assert.equal(sam.dom.els['wrf-payer'].value, 'Sam Store'); assert.equal(sam.dom.els['wrf-date'].value, '2026-10-20');
+  fill(sam.dom, { date: '2026-10-19', note: '日付を直した' });
+  await sam.ctx.wrSend(); await sam.settle();
+  const r = (await srv.pg.query('select version, status, use_date::text d, legacy, payload from public.wr_requests where id = $1', [id])).rows[0];
+  assert.deepEqual([r.version, r.status, r.d, r.legacy], [2, 'pending', '2026-10-19', true]);
+  assert.deepEqual(r.payload.receipt, { path: 'S1/2026-10/inv_1.jpg', drive_url: '' }, 'the old receipt is kept');
+});
+
+test('#123: English labels for purposes; an old request paid on the earlier screen asks before recording (no second payment)', async () => {
+  const legacy = { reimbursements: [{ id: 'rb1761400000000', payer: 'Sam Store', byUser: 'Sam Store', storeId: 'S1', amount: 30, vendor: 'Shop', date: '2026-10-12', status: '承認', payStatus: '未払い', approvedBy: 'Gabe GM' }],
+    approvals: [{ id: 'ap9', type: '建替経費', ref: 'rb1761400000000', acct: { by: 'Ann Acct', at: '2026/10/13', t: 1 } }] };
+  const srv = await server({ live: true, legacy });
+  const en = await app(srv, 'E7', { role: 'sl' }); en.ctx.t = (ja, e) => e; await en.render();
+  en.ctx.wrNew('mileage');
+  assert.match(en.dom.els['wr-form'].innerHTML, /<option value="銀行・郵便">Bank \/ post<\/option>/);
+  assert.match(en.dom.els['wr-form'].innerHTML, /<option value="店舗間移動">Between stores<\/option>/);
+  const gm = await app(srv, 'E2'); await gm.render(); gm.ctx.wrReimport(); await gm.settle();
+  await srv.pg.exec(`reset role; update public.app_state set value = jsonb_set(value, '{0,payStatus}', '"支払済"') where key = 'reimbursements'; set role service_role;`);
+  const id = (await srv.pg.query(`select id from public.wr_requests where legacy`)).rows[0].id;
+  const acct = await app(srv, 'E3', { role: 'office' }); await acct.render();
+  const asked = []; acct.ctx.confirm = m => { asked.push(m); return true; };
+  acct.ctx.wrOpen(id); await acct.settle();
+  assert.match(acct.dom.els['wr-detail'].innerHTML, /写したあとに、前の画面で精算済みになっています/);
+  acct.ctx.wrAsk('pay'); acct.ctx.wrAskGo(); await acct.settle();
+  assert.equal(asked.length, 1); assert.match(asked[0], /二重に払わないでください/);
+  const r = (await srv.pg.query('select status, pay_method from public.wr_requests where id = $1', [id])).rows[0];
+  assert.deepEqual([r.status, r.pay_method], ['paid', '前の画面で精算済み']);
 });

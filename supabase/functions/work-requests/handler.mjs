@@ -123,7 +123,7 @@ export function createHandler(deps) {
         p.payload = normPayload(b.kind, b.payload);
         p.dup_reason = TS(b.dup_reason, LIMITS.note) || null;
       }
-      if (b.op === 'pay') { p.pay_date = DT(b.pay_date); p.pay_method = TS(b.pay_method, LIMITS.method); if (!p.pay_method) throw bad(); }
+      if (b.op === 'pay') { p.pay_date = DT(b.pay_date); p.pay_method = TS(b.pay_method, LIMITS.method); if (!p.pay_method) throw bad(); p.legacy_ack = b.legacy_ack === true; }
       return db.rpc('wr_act', p);
     },
     settings_save: (w, b) => {
@@ -131,9 +131,20 @@ export function createHandler(deps) {
       return db.rpc('wr_settings_save', { ...w, live: b.live, expect_rev: REV(b.expect_rev) });
     },
     legacy_import: w => db.rpc('wr_legacy_import', w),
+    // 承認・閲覧の権限の写し（GM・CEO）：違いを見る・見た一覧（digest）のとおりに合わせる
+    people_diff: w => db.rpc('wr_people_diff', w),
+    people_sync: (w, b) => {
+      if (typeof b.digest !== 'string' || !/^[0-9a-f]{32}$/.test(b.digest)) throw bad();
+      const q = { ...w, digest: b.digest };
+      if (b.emps != null) {
+        if (!Array.isArray(b.emps) || b.emps.length > 500 || !b.emps.every(x => typeof x === 'string' && x && x.length <= 64)) throw bad();
+        q.emps = b.emps;
+      }
+      return db.rpc('wr_people_sync', q);
+    },
   };
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,
-    dup_unresolved: 409, pin_check_missing: 503 };
+    dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');

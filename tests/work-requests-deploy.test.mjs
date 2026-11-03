@@ -32,7 +32,8 @@ test('pre-check, post-check and stop on a synthetic database', async () => {
   const post = (await pg.query(read('3_確認のSQL_読むだけ.sql'))).rows;
   const by = n => post.find(r => r.check_name.startsWith(n)).result;
   assert.equal(by('wr_ tables'), 'OK'); assert.equal(by('row level'), 'OK'); assert.equal(by('browser roles cannot read'), 'OK');
-  assert.equal(by('browser roles cannot run'), 'OK'); assert.equal(by('functions'), '33'); assert.equal(by('live'), 'false'); assert.equal(by('requests'), '0');
+  assert.equal(by('browser roles cannot run'), 'OK'); assert.equal(by('functions'), '44'); assert.equal(by('live'), 'false'); assert.equal(by('requests'), '0');
+  assert.equal(by('confirmed rights'), '0', 'the rights copy is empty until a GM confirms it in the app');
   await pg.exec('update public.wr_settings set live = true');
   await pg.exec(read('止める.sql'));
   assert.equal((await pg.query('select live, rev from public.wr_settings')).rows[0].live, false);
