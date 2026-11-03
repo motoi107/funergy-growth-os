@@ -15,6 +15,7 @@
   - 試験（合成データ）：server 23・ui 15・deploy 2・本物の PostgreSQL の 2 セッション 1（CI にも・skipped 0）・ux-core 35・static release pass/1131。わざと壊す 45 通りのうち 44（残り 1 は同じ結果の二重の守り）。全体（重い 2 つ以外・4 並列）の失敗は前からのファイルだけ（bot-center・bot-database・cooking-sake・ingredient-transfers・meeting-budget・next-v1090・perf-v1098、浅い clone で git の履歴が要る cs-grade-rollback・toast-alias）。
   - 非公開の 1 ファイルを作り直した（sha256 先頭 `0c41b7dc2df9`・名前だけの PIN の印は 401）。Moto さんに直接。前に渡した `a5503fc4fc27` は使わない。
   - Codex の再レビューはまだ。UI案68 の答えが無いまま A で作った（とくに建て替え経費の承認が「経理＋GM＋AM の全員」から「GM → 経理の確認 → 支払」に変わる）ことは、Moto さんに確かめる（Codex の指摘）。
+  - **Codex の再レビュー（`8290eaa`・blocked／manual）**：P2 まとめて精算が重複で止めた申請も成功・支払の知らせにしていた → 直した（`paid` だけを数える・止めたものは番号つきで「精算していない」）・P2 #122 の読めない JSON の写し → #122 `c0b8537` を取り込んだ。仕様の 3d。直したあとの Codex の再レビューはまだ。
 - 次：2 段目（評価の変更 3 種・スキルマトリクスの表示・G4 の直接の変更を止める）。Moto さんが入れる：手順.md の順（#122 が先）。
 
 ## 2026-11-02 v1130：LaLa のメニュー出数・リピート率の復旧（11/02 の依頼の 0・Claude・ブランチ `claude/lala-visit-fix`・アプリと hyper-worker・本番未反映）
