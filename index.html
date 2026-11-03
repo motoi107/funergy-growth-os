@@ -7632,7 +7632,7 @@ function tipHoursWindowFor(storeId, date){
 function attFixKey(storeId, date){ return 'att_fix_'+storeId+'_'+String(date||'').slice(0, 7); }
 function getAttOverride(storeId, date) {
   var m=_lrRead(attFixKey(storeId, date)), r=(m && typeof m==='object' && !Array.isArray(m)) ? m[date] : null;
-  if(r && typeof r==='object') return r._deleted ? null : r;
+  if(r && typeof r==='object') return r._deleted ? null : JSON.parse(JSON.stringify(r));   /* 写しを返す（読んだ入れ物を書き換えさせない） */
   if(!v1136Moved()) return ls('att_override_'+storeId+'_'+date, null);   /* この端末の前の名前の記録（移し替えが済むまで） */
   return null;
 }
@@ -9327,17 +9327,28 @@ function _fsTie(a, b){
   }
   return ((_cjson(a)||'') >= (_cjson(b)||'')) ? a : b;
 }
+/* 同じ時刻（前の版の記録どうし）で値（配列・入れ物でないもの）が違うとき、どちらの記録の値を採るか：記録を丸ごと比べて決める
+   （ステージと OJT の状態が別々の記録から来て食い違わないように）。中身の多いほう、同じなら文字の大きいほう（どちらの順でも同じ） */
+function _fsRecWin(a, b){
+  var ja=_cjson(a)||'', jb=_cjson(b)||'';
+  if(ja.length!==jb.length) return ja.length>jb.length ? a : b;
+  return ja>=jb ? a : b;
+}
 function mergeFieldStampRec(a, b){
   var ao=(a && typeof a==='object' && !Array.isArray(a)), bo=(b && typeof b==='object' && !Array.isArray(b));
   if(!ao && !bo) return ((_cjson(a)||'') >= (_cjson(b)||'')) ? a : b;
   if(!ao) return b;
   if(!bo) return a;
-  var out={}, ft={}, mx=0, seen={};
+  var out={}, ft={}, mx=0, seen={}, rw=null;
   _fsFields(a).concat(_fsFields(b)).forEach(function(f){
     if(seen[f]) return; seen[f]=1;
     var ta=_fsT(a, f), tb=_fsT(b, f), ha=_fsHas(a, f), hb=_fsHas(b, f), t=Math.max(ta, tb);
     if(ta!==tb){ var w=(ta>tb) ? a : b; if(_fsHas(w, f)) out[f]=w[f]; }   /* 新しいほう（消した欄は消したまま） */
-    else if(ha && hb){ out[f]=(_cjson(a[f])===_cjson(b[f])) ? a[f] : _fsTie(a[f], b[f]); }
+    else if(ha && hb){
+      if(_cjson(a[f])===_cjson(b[f])) out[f]=a[f];
+      else if(a[f] && b[f] && typeof a[f]==='object' && typeof b[f]==='object') out[f]=_fsTie(a[f], b[f]);   /* 配列・入れ物は和集合 */
+      else { if(!rw) rw=_fsRecWin(a, b); out[f]=rw[f]; }   /* 値は記録を丸ごと比べて決めた側 */
+    }
     else if(ha){ out[f]=a[f]; }
     else if(hb){ out[f]=b[f]; }
     if(t){ ft[f]=t; if(t>mx) mx=t; }
@@ -9376,6 +9387,9 @@ function _fsStamp(prev, next){
   var ts=Math.max(Date.now(), pm+1), changed=false, seen={};
   Object.keys(p).concat(Object.keys(n)).forEach(function(f){
     if(f==='_ft' || f==='_at' || seen[f]) return; seen[f]=1;
+    /* 無かった欄に空の配列・空の入れ物（画面が初めから渡す形）は「直した」にしない（独立レビュー 9fe3a66 P1：
+       ほかの端末が入れたテスト・スキルを、この端末の空の初期値が時刻つきで消していた） */
+    if(!_lrOwn(p, f) && n[f] && typeof n[f]==='object' && !Object.keys(n[f]).length) return;
     if(_cjson(p[f])!==_cjson(n[f])){ ft[f]=ts; changed=true; }
   });
   if(Object.keys(ft).length) n._ft=ft;
@@ -9407,6 +9421,7 @@ function v1136Moved(){ try{ return localStorage.getItem(V1136_MOVED_KEY)==='1'; 
 function v1136MoveLocalOnly(){
   if(typeof _supaBooting!=='undefined' && _supaBooting) return false;
   if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return false;
+  if(typeof _idbState!=='undefined' && _idbState==='init') return false;   /* 端末の保存（IndexedDB）を読み終えるまでしない（一部しか見えないまま「済み」にしない） */
   var ok=true, wrote=0;
   var fold=function(nk, add, merge){
     try{
@@ -9454,24 +9469,43 @@ function v1136MoveLocalOnly(){
    ------------------------------------------------------------
    【前】合流の決まりの無いキー（議事録の振り返り・評価・応募者・食材の新マスターなど）は、取り込みでクラウドの値に丸ごと置き換わった。
      送信待ち（op_outbox）に入っていた手元の変更は、置き換わったあと送り直しが端末の値（＝クラウドの値）を送るので、黙って消えていた。
-   【いま】合流の決まりの無いキーで、この人の送信待ちか送っている途中のものがあれば、取り込みでは手元の値を残す
-     （送れたら次の取り込みでクラウドの値を受け取る。送ると今までどおりクラウドを手元の値で置き換える）。
-     合流の決まりのあるキーは今までどおり合流する（手元の変更は合流で残る）。
-     まだ取得していない必要時のキー（履歴など）は今までどおり取り込む（手元は部分の値なので）。
+   【いま】合流の決まりの無いキーは、取り込みでも「新しく書いたほう」を残す（キー全体で新しいほう）。
+     ・送っている途中（_pushBusy）：手元を残す（送り終えれば、クラウドはこの値になる）。
+     ・この人の送信待ちがあり、手元を直した時刻（_pendEditAt）がクラウドの行の更新時刻（app_state の updated_at）よりあと：手元を残す（あとで送る）。
+     ・クラウドの行のほうが新しい（ほかの人があとで書いた）・時刻が分からない：今までどおりクラウドの値（ほかの人の新しい変更を古い写しで消さない。
+       独立レビュー 9fe3a66 P2：前の作りでは、ずっと送れない変更があるとそのキーが端末で止まり、読み込み直したあとの古い写しがほかの人の変更を消した）。
+     ・設定（app_settings）とマスターは更新時刻を読まないので、送っている途中のときだけ手元を残す。
+     合流の決まりのあるキーは今までどおり合流する。まだ取得していない必要時のキー（履歴など）は今までどおり取り込む（手元は部分の値なので）。
      ほかの人の送信待ち（共有の端末）は今までどおり（その人の保存は、その人がまたログインしたときに送る仕組みのまま）。
+     残した行は「取り込めた行」に数えない（v1098 の差分の取り込みで次も取る）。
    ============================================================ */
 function _pullPendingMap(){
   var me=(typeof _saveWho==='function') ? _saveWho() : '', o={};
   try{ _outboxGet().forEach(function(x){ if(x && x.key && (!x.who || x.who===me)) o[x.key]=1; }); }catch(e){}
   return o;
 }
-function _pullKeepLocal(key, pend){
+/* 合流の決まりの無いキーを、この端末で最後に直した時刻（送信待ちのあいだの取り込みで「どちらが新しいか」を決める。この端末だけ） */
+var PEND_EDIT_KEY = '_pend_edit_at';
+function _pendEditAtAll(){ try{ var o=JSON.parse(localStorage.getItem(PEND_EDIT_KEY)||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function _pendEditAtMark(key){
+  try{
+    if(!key || typeof isOpSyncKey!=='function' || !isOpSyncKey(key)) return;   /* 時刻で比べるのは app_state の行だけ（端末だけのキーは覚えない） */
+    if(typeof _opMergeDef==='function' && _opMergeDef(key)) return;   /* 合流の決まりのあるキーは要らない */
+    var o=_pendEditAtAll(); o[key]=Date.now(); localStorage.setItem(PEND_EDIT_KEY, JSON.stringify(o));
+  }catch(e){}
+}
+function _pendEditAtDrop(key){ try{ var o=_pendEditAtAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; localStorage.setItem(PEND_EDIT_KEY, JSON.stringify(o)); } }catch(e){} }
+/* cloudAt：クラウドの行の更新時刻（app_state の updated_at）。渡さない所（設定・マスター）は送っている途中のときだけ手元を残す */
+function _pullKeepLocal(key, pend, cloudAt){
   try{
     if(typeof _opMergeDef==='function' && _opMergeDef(key)) return false;
     if(typeof _lsPushBlocked==='function' && _lsPushBlocked(key)) return false;
     if(_lsStoreGet(key)==null) return false;
     if(typeof _pushBusy==='function' && _pushBusy(key)) return true;
-    return !!(pend || _pullPendingMap())[key];
+    if(!(pend || _pullPendingMap())[key]) return false;
+    var ed=Number(_pendEditAtAll()[key])||0, ca=Date.parse(String(cloudAt||''));
+    if(!ed || !isFinite(ca)) return false;
+    return ed > ca;   /* 手元を直したのが、クラウドの行が最後に書かれたよりあと */
   }catch(e){ return false; }
 }
 /* ===== v917: 棚卸（inv_count_ / inv_top_ / inv_templates）の合流ルール =====
@@ -10602,7 +10636,7 @@ var OP_SYNC_KEYS = ['initiatives','handbook_tests','ojt_enroll',
   'skills','skills_v2','skill_requests','skill_history','skill_snapshots','lss_requests','lss_history','lss_scores',
   'ec_log','ec_resolutions',
   'my_vacations','mileage_requests','mileage_config','expense_requests','lost_receipts','tasks_all','crew_education','career_history','career_track','menu_log','reject_log','inv_templates','store_ingredients','train_master','grade_ojt','benefit_adjust',
-  'dev_pipe','dev_pipe_start',   /* v1136：育成の記録（前は dev_data・dev_start でこの端末だけ） */
+  'dev_pipe','dev_pipe_start',
   'offboardings','offboard_template','store_fixed_costs','m_ingredients_v2','ing_v2_seq','ing_migration_mode','ing_v2_backfill_done','ing_v2_storeprice_fix','dev_nominations','order_catalog','supply_orders','order_config','prep_history','trainees','trainee_checklists','prep_positions','prep_level_method','prep_cfg','prep_tables','prep_certs','ojt_gate_criteria','growth_karte','karte_bonus_config','bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval','bonus_store_q','bonus_pool_extra','cs_strength_rule','cs_guide','career_cfg','reimbursements','checks','office_reports','ojt_def_g2','pl_config','pl_overrides','benefit_manual','hq_budget','hq_actions','tip_hours_config','resp_matrix','totoya_g2_matrix','handbook_chapters','handbook_reads','handbook_log','shift_trainee_pos','shift_sections','shift_headcount','shift_postime','shift_secrole','shift_ld_head','p4_fixavail','store_closures','meeting_minutes','ingredient_transfers','vendor_merges','meeting_reviews','meeting_kpi_thresholds','meeting_kgi_edits','q_budgets','fv_config','lunch_challenge'];
 /* v836: labor_hours_ を同期対象から外した。
    このキーは「死んでいる」＝書かれるだけで誰も読んでいない。
@@ -10618,7 +10652,7 @@ var OP_SYNC_PREFIX = ['sl_manual_','spl_','budget_approved_','skills_st_','lss_e
   'fc_monthly_','dailyops_','orders_','purchases_','inv_','tip_exclude_','warnings_','reminded_','shiftopt_','office_attend_',
   'daily_actuals_','menu_mix_','fav_','ocs_asg_','ocs_ev_',
   'fv_count_','fv_moves_','fv_review_',
-  'att_fix_','tip_cf_','kpi_man_'];   /* v1136：勤怠の手動修正・Tip の期間の確定・手入力 KPI（前は端末だけ） */   /* fav_<user>: お気に入り（個人別・クラウド保存）／ v722: 日次食材差異(手入力)。fv_sales_ は端末ローカルのみ＝同期しない */
+  'att_fix_','tip_cf_','kpi_man_'];   /* v1136：勤怠の手動修正・Tip の期間の確定・手入力 KPI（前は端末だけ）。OP_SYNC_KEYS の dev_pipe・dev_pipe_start は育成の記録（前は dev_data・dev_start でこの端末だけ） */   /* fav_<user>: お気に入り（個人別・クラウド保存）／ v722: 日次食材差異(手入力)。fv_sales_ は端末ローカルのみ＝同期しない */
 /* === オンボ機密情報（SSN・身分証等）はEdge Function経由でサーバー保管。匿名同期からは除外 === */
 function authObPriv(payload){
   return fetch(SUPABASE_URL+'/functions/v1/ob-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify(payload) }).then(function(r){ return r.json(); });
@@ -10705,7 +10739,7 @@ function _outboxAdd(key, err, w){
   else { var n={key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}; if(w) n.who=w; a.push(n); }
   _outboxSet(a);
 }
-function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); }
+function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); try{ if(typeof _pendEditAtDrop==='function') _pendEditAtDrop(key); }catch(e){} }   /* v1136：送れたら直した時刻も忘れる */
 /* 今ログインしている人が送れる送信待ち（その人の保存と、だれのか分からない v1127 までのもの）。ほかの人の保存は、その人がまたログインしたときに送る */
 function _outboxMine(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && (!x.who || x.who===me); }); }
 function _outboxOthers(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && x.who && x.who!==me; }).length; }
@@ -10770,6 +10804,7 @@ var _lsPushP = {};
 function _pushWithOutbox(key, val){
   var _pp=(typeof _lsPushP!=='undefined' && _lsPushP)?_lsPushP:{};   /* 結果の置き場（無いときは覚えないだけ） */
   if(typeof _supaBooting!=='undefined' && _supaBooting){ _pp[key]=Promise.resolve('booting'); return; } // 起動/プル中は押し上げも記録もしない
+  try{ if(typeof _pendEditAtMark==='function') _pendEditAtMark(key); }catch(e){}   /* v1136：合流の決まりの無いキーを直した時刻（取り込みで新しいほうを残す） */
   /* v721【クラウド保護】まだ取得していない「必要時取得」キーは押し上げない。
      syncMasterToSupabase はマージ定義の無いキーを丸ごと上書きするため、
      部分データを送るとクラウド側の履歴・ログが消える。未送信キューに積み、
@@ -11661,7 +11696,7 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
       if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(row.key)) return;
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       /* v1136：合流の決まりの無いキーで、この人の送信待ち・送っている途中があれば手元を残す（取り込めた行に数えない＝次も取る） */
-      if(!_def && typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _pend)) return;
+      if(!_def && typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _pend, row.updated_at)) return;
       var _val=row.value;
       if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
@@ -11762,7 +11797,7 @@ async function _kvFetchKeys(keys){
     if(!batch.length) return true;
     var q=encodeURIComponent('('+batch.join(',')+')');
     var r=null;
-    try{ r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=in.'+q, { headers:supaHeaders() }); }catch(e){ return false; }
+    try{ r=await fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value,updated_at&key=in.'+q, { headers:supaHeaders() }); }catch(e){ return false; }   /* v1136：updated_at も（_pullKeepLocal） */
     if(!r.ok) return false;
     var rows=null; try{ rows=await r.json(); }catch(e){ return false; }
     if(!Array.isArray(rows)) return false;
@@ -11822,7 +11857,7 @@ async function _kvPullRows(force){
     var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
     try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
-    rows=await supaFetchAll('app_state', 'key,value', f); how='all';
+    rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
@@ -13591,7 +13626,7 @@ function _lsSetVerified(key, json){
 async function pullOpKey(key){
   if(window.FUNERGY_FINANCIAL_SAVE && FunergyFinancialSave.financialKey(key)){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return false;}}
   try{
-    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value', { headers: supaHeaders() });
+    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value,updated_at', { headers: supaHeaders() });   /* v1136：更新時刻も（送れていない手元の変更とどちらが新しいか） */
     if(!res.ok) return false;
     var rows=await res.json();
     /* v748: 行が無い＝まだ誰もクラウドへ保存していない（端末側が正しい）。
@@ -13600,7 +13635,7 @@ async function pullOpKey(key){
     if(rows && rows.length){ var _cloud=rows[0].value;
       /* v720: 分割保存へ移行済みのキーは統合行を端末に置かない（_applyKvRows と同じ扱い） */
       if(_handleLegacySplitRow(key, _cloud)) return true;
-      if(typeof _pullKeepLocal==='function' && _pullKeepLocal(key)) return true;   /* v1136：合流の決まりの無いキーで、まだ送れていない手元の変更があれば手元を残す（取得済みのキーだけ） */
+      if(typeof _pullKeepLocal==='function' && _pullKeepLocal(key, null, rows[0].updated_at)) return true;   /* v1136：合流の決まりの無いキーで、まだ送れていない手元の変更のほうが新しければ手元を残す（取得済みのキーだけ） */
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=_lsRaw(key, null); _out=_def.merge(_cloud, _loc); }   /* v763 */catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
       /* v703: 従来は setItem を try/catch で握り潰し、保存できなくても true を返していた。
          そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
@@ -93293,9 +93328,9 @@ function tipBackConfirm(name, fd, more) {
     return false;
   }
   if (typeof confirm !== 'function') return true;
-  return confirm(t('前の期間（' + f(b.from) + '〜' + f(b.to) + '）から効かせます。その期間のチップの配分が計算し直されます（その期間を確定した記録はありません。書き出した CSV・経理まとめ・支給済みの額は自動では変わりません）。\n'
+  return confirm(t('前の期間（' + f(b.from) + '〜' + f(b.to) + '）から効かせます。その期間のチップの配分が計算し直されます（その期間を確定した記録は見つかりませんでした。書き出した CSV・経理まとめ・支給済みの額は自動では変わりません）。\n'
       + 'あとから効く設定（いまの期間からの設定など）はそのまま残ります。\n続けますか？',
-    'This takes effect from the previous period (' + f(b.from) + '–' + f(b.to) + '). The tip split of that period is recalculated (the period is not finalized; exported CSVs, the accounting book and paid amounts do not change by themselves).\n'
+    'This takes effect from the previous period (' + f(b.from) + '–' + f(b.to) + '). The tip split of that period is recalculated (no finalization record was found; exported CSVs, the accounting book and paid amounts do not change by themselves).\n'
       + 'Settings that take effect later (from this period, for example) stay as they are.\nContinue?'));
 }
 /* v1129（Codex PR #120 の 1）：確定はほかの端末でもされる。前の期間を選んだときは、本人の店（所属・応援）のその期間の確定を
@@ -95636,7 +95671,7 @@ function getDevData(name){
 }
 function setDevData(name, d){
   var all=ls('dev_pipe', {}); all=(all && typeof all==='object' && !Array.isArray(all)) ? all : {};
-  all[name]=_fsStamp(_devDataRaw(name), d);
+  all[name]=_fsStamp(_devDataRaw(name) || {skillLevels:{},curriculum:{},tests:[],retrain:[]}, d);   /* 記録の無い人は getDevData の初期値と比べる（触っていない空の欄に時刻を付けない） */
   return lsSet('dev_pipe', all);
 }
 /* ===== キャリアジャーニー（6ステージ） =====

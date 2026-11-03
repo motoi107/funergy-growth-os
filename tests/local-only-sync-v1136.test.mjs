@@ -47,8 +47,8 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
 const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsTie',
-  'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
-  '_pullPendingMap', '_pullKeepLocal'];
+  '_fsRecWin', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
+  '_pullPendingMap', '_pendEditAtAll', '_pendEditAtMark', '_pendEditAtDrop', '_pullKeepLocal'];
 const GETSET = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'attFixKey', 'getAttOverride', 'setAttOverride',
   'tipConfirmKey', 'getTipConfirm', 'setTipConfirm', '_devStartRaw', 'getDevStart', 'setDevStart', '_devDataRaw', 'getDevData', 'setDevData'];
 
@@ -57,7 +57,7 @@ function device(now = Date.UTC(2026, 10, 3, 20)) {
   const c = { console: { log() {}, warn() {}, error() {} }, STORE: new Map(), LOCAL: new Map(), PUSHES: [], NOW: now, OUTBOX: [], BUSY: new Set(), WHO: 'p:1',
     SUPA_SYNC_ENABLED: true, _supaBooting: false, FAILSET: new Set() };
   vm.createContext(c);
-  vm.runInContext([varLine('V1136_MOVED_KEY'), varLine('_LR_RO'), ...MERGE.map(fnSrc), ...GETSET.map(fnSrc)].join('\n') + `
+  vm.runInContext([varLine('V1136_MOVED_KEY'), varLine('_LR_RO'), varLine('PEND_EDIT_KEY'), ...MERGE.map(fnSrc), ...GETSET.map(fnSrc)].join('\n') + `
     Date.now = function(){ return NOW; };
     var localStorage = { getItem: function(k){ return LOCAL.has(k) ? LOCAL.get(k) : null; }, setItem: function(k, v){ LOCAL.set(k, String(v)); } };
     function _lsStoreGet(k){ return STORE.has(k) ? STORE.get(k) : null; }
@@ -68,6 +68,8 @@ function device(now = Date.UTC(2026, 10, 3, 20)) {
     var ROLE_CONFIG = { gm:{ name:'GM' } }, curRole = 'gm';
     function _outboxGet(){ return OUTBOX; } function _saveWho(){ return WHO; } function _pushBusy(k){ return BUSY.has(k); }
     function _lsPushBlocked(k){ return k.indexOf('blocked_')===0; }
+    var _idbState = 'ready';
+    function isOpSyncKey(k){ return k.indexOf('local_')!==0; }
     var DEFS = { 'att_fix_': [mergeLocalRecMap, _coversLocalRecMap], 'tip_cf_': [mergeLocalRecMap, _coversLocalRecMap], 'kpi_man_': [mergeFieldStampMap, _coversFieldStampMap] };
     function _opMergeDef(k){
       if (k==='dev_pipe' || k==='dev_pipe_start') return { merge: mergeFieldStampMap, covers: _coversFieldStampMap, strict: true, keepLocal: true };
@@ -192,10 +194,40 @@ test('③ a device with a stale copy changes one field: the fields another devic
   const c2 = JSON.parse(C.STORE.get('dev_pipe'));
   assert.ok(c2.Ken._ft.stage > merged.Ken._ft.stage, 'later than what it read');
   assert.equal(plain(run(C, `mergeFieldStampMap(${JSON.stringify(merged)}, ${JSON.stringify(c2)})`)).Ken.stage, 4);
+  // 無かった欄に空の配列・入れ物（画面の初期値）は「直した」にしない
+  assert.equal(run(C, `JSON.stringify(_fsStamp(null, { tests: [], skillLevels: {}, stage: 1 })._ft)`), JSON.stringify({ stage: C.NOW }));
   // 何も変えずに保存しても時刻は進めない
   const before = C.STORE.get('dev_pipe'); run(C, `setDevData('Ken', getDevData('Ken'))`);
   assert.equal(C.STORE.get('dev_pipe'), before);
   assert.deepEqual(Object.keys(plain(run(C, `getDevData('Ken')`))).filter(k => k.startsWith('_')), [], 'the screen does not see the stamps');
+});
+
+test('③（独立レビュー 9fe3a66 P1）a device with no record does not wipe other devices’ tests and skills with the empty defaults', () => {
+  // ロールアウト中：B（v1136・Ken の記録なし）が志望を入れる → A（前の版の記録あり）があとで移し替える
+  const A = device(), B = device();
+  A.STORE.set('dev_data', JSON.stringify({ Ken: { stage: 3, tests: [{ course: 'Grill', score: 90 }], skillLevels: { Grill: 3 }, curriculum: { Knife: true }, retrain: [{ item: 'Fry' }], ojtStatus: 'OJT Started' } }));
+  run(B, `var d=getDevData('Ken'); d.aspiration = true; setDevData('Ken', d);`);
+  const bRec = JSON.parse(B.STORE.get('dev_pipe')).Ken;
+  assert.deepEqual(Object.keys(bRec._ft), ['aspiration'], 'only the edited field is stamped');
+  A.STORE.set('dev_pipe', B.STORE.get('dev_pipe'));   // A が B の記録を受け取ってから移し替える
+  run(A, 'v1136MoveLocalOnly()');
+  const k = plain(run(A, `getDevData('Ken')`));
+  assert.equal(k.aspiration, true);
+  assert.deepEqual(k.tests, [{ course: 'Grill', score: 90 }]); assert.deepEqual(k.skillLevels, { Grill: 3 });
+  assert.deepEqual(k.curriculum, { Knife: true }); assert.deepEqual(k.retrain, [{ item: 'Fry' }]); assert.equal(k.ojtStatus, 'OJT Started');
+  // v1136 の 2 台がまだ同期していない新しい人：B がスキル、C が 1 分あとにテスト → 両方残る
+  const B2 = device(), C2 = device(); C2.NOW += 60000;
+  run(B2, `var d=getDevData('Amy'); d.skillLevels.Grill = 3; setDevData('Amy', d);`);
+  run(C2, `var d=getDevData('Amy'); d.tests.push({ course: 'Fry', score: 85 }); setDevData('Amy', d);`);
+  const m = plain(run(B2, `mergeFieldStampMap(${B2.STORE.get('dev_pipe')}, ${C2.STORE.get('dev_pipe')})`)).Amy;
+  assert.deepEqual([m.skillLevels, m.tests], [{ Grill: 3 }, [{ course: 'Fry', score: 85 }]]);
+  // 時刻の無い記録どうし：値（ステージと OJT の状態）は同じ記録から（食い違わない）。テストは和集合
+  const L1 = { Ken: { stage: 4, ojtStatus: 'OJT Completed', tests: [{ c: 'A' }] } }, L2 = { Ken: { stage: 2, ojtStatus: 'Skill Level In Progress', tests: [{ c: 'B' }] } };
+  for (const r of [plain(run(A, `mergeFieldStampMap(${JSON.stringify(L1)}, ${JSON.stringify(L2)})`)).Ken, plain(run(A, `mergeFieldStampMap(${JSON.stringify(L2)}, ${JSON.stringify(L1)})`)).Ken]) {
+    assert.ok((r.stage === 4 && r.ojtStatus === 'OJT Completed') || (r.stage === 2 && r.ojtStatus === 'Skill Level In Progress'), JSON.stringify(r));
+    assert.deepEqual(r.tests.map(x => x.c).sort(), ['A', 'B']);
+  }
+  assert.deepEqual(plain(run(A, `mergeFieldStampMap(${JSON.stringify(L1)}, ${JSON.stringify(L2)})`)), plain(run(A, `mergeFieldStampMap(${JSON.stringify(L2)}, ${JSON.stringify(L1)})`)));
 });
 
 test('③ KPI: the repeat rate and the Totoya counts entered on two devices both stay; clearing a value goes to the other device', () => {
@@ -216,6 +248,8 @@ test('③ attendance fix and tip finalization: one record per day / period start
   run(A, `setAttOverride('F01', '2026-11-02', { data: { X: { lunch: 4, dinner: 0 } }, by: 'Moto', at: '2026/11/03 10:00' })`);
   assert.deepEqual(Object.keys(JSON.parse(A.STORE.get('att_fix_F01_2026-11'))), ['2026-11-02'], 'month box');
   assert.equal(plain(run(A, `getAttOverride('F01', '2026-11-02')`)).data.X.lunch, 4);
+  run(A, `getAttOverride('F01', '2026-11-02').data.X.lunch = 99`);
+  assert.equal(run(A, `getAttOverride('F01', '2026-11-02').data.X.lunch`), 4, 'a caller cannot change the cached box');
   B.STORE.set('att_fix_F01_2026-11', A.STORE.get('att_fix_F01_2026-11'));
   assert.equal(plain(run(B, `getAttOverride('F01', '2026-11-02')`)).by, 'Moto', 'the other device sees it');
   B.NOW += 1000; run(B, `setAttOverride('F01', '2026-11-02', null)`);
@@ -305,18 +339,22 @@ test('④ an old record never beats a record already saved under the new name on
 test('④ not while starting up or with sync off (nothing is marked done); a failed save keeps the flag unset', () => {
   const c = device(); legacy(c);
   c._supaBooting = true; assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.LOCAL.get('_v1136_moved'), undefined);
-  c._supaBooting = false; c.SUPA_SYNC_ENABLED = false; assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.STORE.get('dev_pipe'), undefined);
+  c._supaBooting = false; run(c, `_idbState = 'init'`); assert.equal(run(c, 'v1136MoveLocalOnly()'), false, 'not before the device storage was read');
+  run(c, `_idbState = 'ready'`);
+  c.SUPA_SYNC_ENABLED = false; assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.STORE.get('dev_pipe'), undefined);
   c.SUPA_SYNC_ENABLED = true; c.FAILSET.add('dev_pipe');
   assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.LOCAL.get('_v1136_moved'), undefined, 'retried at the next login');
   assert.equal(run(c, `getDevData('Ken').stage`), 3, 'still reads the old record');
   c.FAILSET.clear(); assert.ok(run(c, 'v1136MoveLocalOnly()') > 0); assert.equal(c.LOCAL.get('_v1136_moved'), '1');
+  const u = device(); legacy(u); run(u, `_idbState = 'unavailable'`);   // IndexedDB を使えない端末（localStorage だけ）
+  assert.ok(run(u, 'v1136MoveLocalOnly()') > 0);
 });
 
 /* ------------------------------------------------------------------ ⑤ 取り込みが手元の送れていない変更を消さない */
 function pullApp() {
   const c = device();
   vm.runInContext([varLine('LS_LOCAL_ONLY'), fnSrc('isLocalOnlyKey'), fnSrc('_applyKvRows'), fnSrc('pullOpKey'), fnSrc('pullSettingKey')].join('\n') + `
-    var _SPLIT_KEYS = {}, window = {}, SUPABASE_URL = 'https://x.supabase.co', CLOUD = {}, FETCHED = [];
+    var _SPLIT_KEYS = {}, window = {}, SUPABASE_URL = 'https://x.supabase.co', CLOUD = {}, CLOUD_AT = {}, FETCHED = [], LAST_URL = '';
     function _handleLegacySplitRow(){ return false; }
     function _lsOnDemand(k){ return k.indexOf('blocked_')===0; }
     function _lsRaw(k, d){ var s=_lsStoreGet(k); return s==null ? d : JSON.parse(s); }
@@ -324,56 +362,86 @@ function pullApp() {
     function _lsSetVerified(k, js){ return _lsWriteVerified(k, js); }
     function _lsMarkFetched(k){ FETCHED.push(k); } function _lsClearSaveFailure(){} function _lsNoteSaveFailure(){} function _lsFreeOldLaborKeys(){}
     function supaHeaders(){ return {}; }
-    function fetch(u){ var k=decodeURIComponent(String(u).split('key=eq.')[1].split('&')[0]); var has=Object.prototype.hasOwnProperty.call(CLOUD, k);
-      return Promise.resolve({ ok:true, json:function(){ return Promise.resolve(has ? [{ value: CLOUD[k] }] : []); } }); }`, c);
+    function fetch(u){ LAST_URL=String(u); var k=decodeURIComponent(String(u).split('key=eq.')[1].split('&')[0]); var has=Object.prototype.hasOwnProperty.call(CLOUD, k);
+      return Promise.resolve({ ok:true, json:function(){ return Promise.resolve(has ? [{ value: CLOUD[k], updated_at: CLOUD_AT[k] }] : []); } }); }`, c);
   return c;
 }
-test('⑤ a pull keeps my unsent change to a key without a merge rule; it takes the cloud value when nothing is pending or the change is someone else’s', async () => {
+test('⑤ a pull keeps my unsent change only when it is newer than the cloud row; a newer cloud row, someone else’s change or an unknown time take the cloud value', async () => {
   const c = pullApp();
+  const T = c.NOW, old = new Date(T - 3600000).toISOString(), newer = new Date(T + 60000).toISOString();
   c.STORE.set('evaluations', JSON.stringify({ mine: 'typed offline' }));
   c.STORE.set('meeting_reviews', JSON.stringify({ old: 1 }));
   c.STORE.set('applicants', JSON.stringify(['local']));
+  c.STORE.set('growthhub', JSON.stringify({ local: 1 }));
+  c.STORE.set('ing_v2_seq', JSON.stringify(5));
   c.STORE.set('merged_key', JSON.stringify({ a: 1 }));
-  c.OUTBOX.push({ key: 'evaluations', who: 'p:1' }, { key: 'applicants', who: 'p:2' }, { key: 'merged_key', who: 'p:1' });
+  c.OUTBOX.push({ key: 'evaluations', who: 'p:1' }, { key: 'applicants', who: 'p:2' }, { key: 'growthhub', who: 'p:1' }, { key: 'ing_v2_seq' }, { key: 'merged_key', who: 'p:1' });
+  run(c, `['evaluations','applicants','growthhub','merged_key'].forEach(_pendEditAtMark)`);   // 直した時刻＝T（ing_v2_seq は v1135 までの送信待ち＝時刻なし）
   c.OKOUT = [];
   run(c, `_applyKvRows(${JSON.stringify([
-    { key: 'evaluations', value: { cloud: 'older' } }, { key: 'meeting_reviews', value: { cloud: 2 } },
-    { key: 'applicants', value: ['cloud'] }, { key: 'merged_key', value: { b: 2 } }])}, OKOUT)`);
-  const ok = plain(c.OKOUT);
-  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { mine: 'typed offline' }, 'my unsent change stays');
+    { key: 'evaluations', value: { cloud: 'older' }, updated_at: old },
+    { key: 'meeting_reviews', value: { cloud: 2 }, updated_at: old },
+    { key: 'applicants', value: ['cloud'], updated_at: old },
+    { key: 'growthhub', value: { cloud: 'written after my edit' }, updated_at: newer },
+    { key: 'ing_v2_seq', value: 9, updated_at: old },
+    { key: 'merged_key', value: { b: 2 }, updated_at: newer }])}, OKOUT)`);
+  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { mine: 'typed offline' }, 'my unsent change is newer: kept');
   assert.deepEqual(JSON.parse(c.STORE.get('meeting_reviews')), { cloud: 2 }, 'nothing pending: cloud value');
   assert.deepEqual(JSON.parse(c.STORE.get('applicants')), ['cloud'], 'someone else’s pending change on a shared device: as before');
+  assert.deepEqual(JSON.parse(c.STORE.get('growthhub')), { cloud: 'written after my edit' }, 'someone wrote after my edit: the newer cloud value (no stale overwrite)');
+  assert.equal(JSON.parse(c.STORE.get('ing_v2_seq')), 9, 'no edit time (pending from before v1136): as before');
   assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { b: 2, a: 1 }, 'a key with a merge rule is merged as before');
-  assert.deepEqual([...ok].sort(), ['applicants', 'meeting_reviews', 'merged_key'], 'the kept row is fetched again next time');
-  // 送っている途中も同じ
+  assert.deepEqual(plain(c.OKOUT).sort(), ['applicants', 'growthhub', 'ing_v2_seq', 'meeting_reviews', 'merged_key'], 'the kept row is fetched again next time');
+  // 送っている途中は、時刻によらず手元
   c.BUSY.add('meeting_reviews'); c.STORE.set('meeting_reviews', JSON.stringify({ sending: 1 }));
-  run(c, `_applyKvRows([{ key: 'meeting_reviews', value: { cloud: 3 } }])`);
+  run(c, `_applyKvRows([{ key: 'meeting_reviews', value: { cloud: 3 }, updated_at: '${newer}' }])`);
   assert.deepEqual(JSON.parse(c.STORE.get('meeting_reviews')), { sending: 1 });
   // まだ取得していない必要時のキーは今までどおり取り込む（手元は部分の値）
-  c.STORE.set('blocked_log', JSON.stringify(['part'])); c.OUTBOX.push({ key: 'blocked_log', who: 'p:1' });
-  run(c, `CLOUD['blocked_log'] = ['full', 'part']`);
+  c.STORE.set('blocked_log', JSON.stringify(['part'])); c.OUTBOX.push({ key: 'blocked_log', who: 'p:1' }); run(c, `_pendEditAtMark('blocked_log')`);
+  run(c, `CLOUD['blocked_log'] = ['full', 'part']; CLOUD_AT['blocked_log'] = '${old}'`);
   assert.equal(await run(c, `pullOpKey('blocked_log')`), true);
   assert.deepEqual(JSON.parse(c.STORE.get('blocked_log')), ['full', 'part']);
-  // pullOpKey：送信待ちがあれば手元のまま・送れたら受け取る
-  run(c, `CLOUD['evaluations'] = { cloud: 'newer' }`);
+  // pullOpKey：クラウドの行の時刻で比べる
+  run(c, `CLOUD['evaluations'] = { cloud: 'still older' }; CLOUD_AT['evaluations'] = '${old}'`);
   assert.equal(await run(c, `pullOpKey('evaluations')`), true);
   assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { mine: 'typed offline' });
-  c.OUTBOX.splice(0, c.OUTBOX.length);
+  run(c, `CLOUD['evaluations'] = { cloud: 'newer' }; CLOUD_AT['evaluations'] = '${newer}'`);
   assert.equal(await run(c, `pullOpKey('evaluations')`), true);
-  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { cloud: 'newer' });
+  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { cloud: 'newer' }, 'a newer cloud row wins');
+  assert.match(run(c, 'LAST_URL'), /select=value,updated_at/);
   // 合流の決まりのあるキーは、送信待ちがあっても合流する（pullOpKey）
-  c.STORE.set('merged_key', JSON.stringify({ a: 1 })); c.OUTBOX.push({ key: 'merged_key', who: 'p:1' }); run(c, `CLOUD['merged_key'] = { c: 3 }`);
+  c.STORE.set('merged_key', JSON.stringify({ a: 1 })); run(c, `CLOUD['merged_key'] = { c: 3 }; CLOUD_AT['merged_key'] = '${old}'`);
   assert.equal(await run(c, `pullOpKey('merged_key')`), true);
   assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { c: 3, a: 1 });
-  // 設定（app_settings）も同じ
-  c.STORE.set('tip_policy', JSON.stringify('mine')); c.OUTBOX.push({ key: 'tip_policy' });
-  run(c, `CLOUD['tip_policy'] = 'cloud'`);
+  c.BUSY.add('merged_key'); c.STORE.set('merged_key', JSON.stringify({ d: 4 }));   // 送っている途中でも合流（手元の値だけにしない）
+  run(c, `_applyKvRows([{ key: 'merged_key', value: { e: 5 }, updated_at: '${newer}' }])`);
+  assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { e: 5, d: 4 });
+  run(c, `CLOUD['merged_key'] = { f: 6 }`);
+  assert.equal(await run(c, `pullOpKey('merged_key')`), true);
+  assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { f: 6, e: 5, d: 4 }, 'pullOpKey too');
+  // 設定（app_settings）は送っている途中だけ手元
+  c.STORE.set('tip_policy', JSON.stringify('mine')); c.OUTBOX.push({ key: 'tip_policy' }); run(c, `CLOUD['tip_policy'] = 'cloud'`);
   assert.equal(await run(c, `pullSettingKey('tip_policy')`), true);
-  assert.equal(JSON.parse(c.STORE.get('tip_policy')), 'mine', 'unknown owner (v1127 and before) counts as mine');
+  assert.equal(JSON.parse(c.STORE.get('tip_policy')), 'cloud', 'pending only: as before');
+  c.STORE.set('tip_policy', JSON.stringify('mine')); c.BUSY.add('tip_policy');
+  assert.equal(await run(c, `pullSettingKey('tip_policy')`), true);
+  assert.equal(JSON.parse(c.STORE.get('tip_policy')), 'mine', 'sending: kept');
+});
+
+test('⑤ the edit time is recorded only for synced keys without a merge rule, and forgotten once the key is sent', () => {
+  const c = device();
+  run(c, `_pendEditAtMark('evaluations'); _pendEditAtMark('att_fix_F01_2026-11'); _pendEditAtMark('local_flag')`);
+  assert.deepEqual(Object.keys(JSON.parse(c.LOCAL.get('_pend_edit_at'))), ['evaluations']);
+  run(c, `_pendEditAtDrop('evaluations')`);
+  assert.deepEqual(JSON.parse(c.LOCAL.get('_pend_edit_at')), {});
+  assert.match(fnSrc('_pushWithOutbox'), /_pendEditAtMark\(key\)/);
+  assert.match(fnSrc('_outboxRemove'), /_pendEditAtDrop\(key\)/);
+  assert.match(fnSrc('_kvFetchKeys'), /select=key,value,updated_at/);
+  assert.match(fnSrc('_kvPullRows'), /supaFetchAll\('app_state', 'key,value,updated_at', f\)/);
 });
 
 test('⑤ the same keep-local rule is used for app_settings and master tables in the full pull', () => {
-  assert.match(SRC, /if \(typeof _pullKeepLocal==='function' && _pullKeepLocal\(row\.key, _spend\)\) return;/);
+  assert.match(SRC, /if \(typeof _pullKeepLocal==='function' && _pullKeepLocal\(row\.key, _spend\)\) return;/);   // 設定：時刻を渡さない＝送っている途中だけ
   assert.match(SRC, /if \(key !== 'm_employees' && key !== 'm_vendors' && typeof _pullKeepLocal==='function' && _pullKeepLocal\(key\)\) \{ results\.push/);
 });
 

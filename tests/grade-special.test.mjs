@@ -246,12 +246,12 @@ test('promotion approval and Leader promotion can use the special change; still 
     }
   }
   const c = app();
-  c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Operation Leader', stageHistory: [] } };
+  c.STORE.dev_pipe = { 'Cal Sample': { stage: 5, targetCareer: 'Operation Leader', stageHistory: [] } };   // v1136：育成の記録は dev_pipe（前は dev_data でこの端末だけ）
   run(c, `approveAdvance('Cal Sample'); ghSetChangeMode('special'); ghSpecialReason('Leader 昇格の特例'); ghSpecialReview();`);
   assert.match(lastModal(c), /特例で昇格してグレード履歴に記録/);
   run(c, `ghConfirmGo()`);
   const r = c.STORE.grade_hist.cal.recs[0];
-  assert.deepEqual([c.STORE.dev_data['Cal Sample'].stage, empOf(c, 'cal').title, r.src, r.mode, r.reason], [6, 'Operation Leader', 'stage', 'special', 'Leader 昇格の特例']);
+  assert.deepEqual([c.STORE.dev_pipe['Cal Sample'].stage, empOf(c, 'cal').title, r.src, r.mode, r.reason], [6, 'Operation Leader', 'stage', 'special', 'Leader 昇格の特例']);
 });
 
 test('specialist career (Head Chef → Corporate Chef, 調理) and the normal career: title, grade history and the specialist field stay consistent', () => {
