@@ -58,3 +58,33 @@ test('pre-check, post-check, twice, and re-running stage 1 is caught', async () 
   by = await post(); assert.equal(by('振り分け'), 'OK'); assert.equal(by('functions'), '55');
   assert.equal(by('browser roles cannot run'), 'OK');
 });
+
+// 1 段目と 2 段目をまとめて入れる一式（deploy/work-requests-v1131-v1132）
+const DA = new URL('../deploy/work-requests-v1131-v1132/', import.meta.url);
+const readA = f => fs.readFileSync(new URL(f, DA), 'utf8');
+
+test('the combined set: the SQL is stage 1 then stage 2, letter for letter; the steps say the order', () => {
+  assert.equal(readA('2_SQL_1段目と2段目.sql'), M1 + '\n' + M2);
+  assert.equal(readA('1_最初に確認_読むだけ.sql'), fs.readFileSync(new URL('../deploy/work-requests-v1131/1_最初に確認_読むだけ.sql', import.meta.url), 'utf8'));
+  const h = readA('手順.md');
+  assert.match(h, /Verify JWT は OFF/); assert.match(h, /#122 → #123 → #124/); assert.match(h, /work-requests_v1132_index\.ts/);
+});
+
+test('the combined set on a fresh database: pre-check, the SQL (twice), the check has no NG', async () => {
+  const pg = await base();
+  await pg.exec(`insert into public.app_state(key, value) values ('mileage_config', '{"ratePerMile":0.7}')`);
+  const pre = (await pg.query(readA('1_最初に確認_読むだけ.sql'))).rows;
+  assert.ok(pre.every(r => !/^STOP/.test(r.result)), JSON.stringify(pre));
+  const check = async () => (await pg.query(readA('3_確認_読むだけ.sql'))).rows;
+  await pg.exec(readA('2_SQL_1段目と2段目.sql'));
+  let rows = await check();
+  assert.ok(rows.filter(r => /^\d\./.test(r.check_name)).every(r => r.result === 'OK'), JSON.stringify(rows));
+  assert.equal(rows.find(r => /使い始めたか/.test(r.check_name)).result, 'false');
+  await pg.exec(readA('2_SQL_1段目と2段目.sql'));
+  rows = await check();
+  assert.ok(rows.filter(r => /^\d\./.test(r.check_name)).every(r => r.result === 'OK'), 'twice: the same ' + JSON.stringify(rows));
+  // 2 段目が抜けていれば NG が出る
+  const pg2 = await base(); await pg2.exec(M1);
+  const ng = (await pg2.query(readA('3_確認_読むだけ.sql'))).rows;
+  assert.ok(ng.some(r => /^NG/.test(r.result)), 'stage 1 only shows NG');
+});

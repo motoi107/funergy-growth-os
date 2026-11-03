@@ -51,6 +51,10 @@
 - ブラウザ（模擬サーバー・Chromium・work-requests は本物の handler と SQL）：G4（390px 日本語）のスキル申請・Tip Rate の申請・自分の申請 → GM（1280px 英語）の承認・反映・引き上げの画面・表示対象 23/23・pageerror 0・横スクロールなし・申請の画面が箱からはみ出さない。1 段目の確かめ 17/17。
 - 全体（重い 2 つ以外・4 並列）：落ちるのは 1 段目（`8290eaa`）と同じファイル（bot-center・bot-database・cooking-sake・ingredient-transfers・meeting-budget・meeting-sales・next-v1090・perf-v1098、git の履歴が要る cs-grade-rollback・toast-alias）。
 
+## 4b. 入れ方
+
+まだ何も入れていないので、1 段目と 2 段目をまとめて入れる：`deploy/work-requests-v1131-v1132/手順.md`（SQL を 3 つ・関数を 1 つ・PR を 3 つ・アプリ）。2 の SQL は 1 段目と 2 段目の migration をつないだもの（試験で 1 文字も違わないことを確かめる）。
+
 ## 5. 限界・気をつけること
 
 - スキル・Career Score・Tip Rate の正式な記録は今までどおり共通データ（app_state）で、アプリの公開の鍵で書ける（10/29 の (b) の段階）。G4 の直接の変更を止めるのは画面。前の版（1131 以前）の端末の G4 は、更新するまで今までどおり直接変えられる → G4 の端末を 1132 に。
