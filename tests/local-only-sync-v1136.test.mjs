@@ -1,0 +1,385 @@
+// v1136（Moto さん 11/03「全体アップデート指示」・決めてほしいこと 1A〜13A）：端末にしか残っていなかった手入力をクラウドへ。
+//   ① 勤怠の手動修正・Tip の期間の確定・手入力 KPI・育成の記録は新しい名前で同期の一覧に入り、合流の決まり（strict）を持つ
+//   ② 合流：記録は 1 件ずつ新しいほう（取り消しの印）、KPI・育成は欄ごとに新しいほう。どの順に合流しても同じ答え（キーの順にもよらない）
+//   ③ 古い写しの端末が別の欄を直しても、ほかの端末で入れた欄は消えない
+//   ④ 前の名前の記録の移し替え：新しい名前で保存した記録には負ける・2 回目は何も書かない・起動中と同期 OFF ではしない
+//   ⑤ 取り込みが、まだ送れていない手元の変更（合流の決まりの無いキー）を消さない
+// 本物の関数（index.html）を VM で動かす。合成データだけ。本番にはつながない。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const SRC = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const SW = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
+
+function fnSrc(name) {
+  const m = new RegExp('^(async )?function ' + name.replace(/\$/g, '\\$') + '\\(', 'm').exec(SRC);
+  if (!m) throw new Error('function not found: ' + name);
+  let i = SRC.indexOf('{', m.index), depth = 0, q = null, tpl = [];
+  for (; i < SRC.length; i++) {
+    const ch = SRC[i], nx = SRC[i + 1];
+    if (q) {
+      if (ch === '\\') { i++; continue; }
+      if (q === '`' && ch === '$' && nx === '{') { tpl.push(depth); depth++; q = null; i++; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === '/' && nx === '/') { i = SRC.indexOf('\n', i); continue; }
+    if (ch === '/' && nx === '*') { i = SRC.indexOf('*/', i) + 1; continue; }
+    if (ch === "'" || ch === '"' || ch === '`') { q = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (tpl.length && depth === tpl[tpl.length - 1]) { tpl.pop(); q = '`'; continue; }
+      if (depth === 0) return SRC.slice(m.index, i + 1);
+    }
+  }
+  throw new Error('unterminated: ' + name);
+}
+const varLine = name => { const m = new RegExp('^var ' + name + ' = [^\\n]+', 'm').exec(SRC); assert.ok(m, name); return m[0]; };
+function varBlock(name, end) {
+  const i = SRC.indexOf('\nvar ' + name + ' ='); assert.ok(i >= 0, name);
+  const j = SRC.indexOf(end, i); assert.ok(j > i, name);
+  return SRC.slice(i + 1, j + end.length);
+}
+const plain = v => JSON.parse(JSON.stringify(v));
+const run = (c, code) => vm.runInContext(code, c);
+
+const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsTie',
+  'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
+  '_pullPendingMap', '_pullKeepLocal'];
+const GETSET = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'attFixKey', 'getAttOverride', 'setAttOverride',
+  'tipConfirmKey', 'getTipConfirm', 'setTipConfirm', '_devStartRaw', 'getDevStart', 'setDevStart', '_devDataRaw', 'getDevData', 'setDevData'];
+
+/* 端末 1 台：STORE（端末の保存）・LOCAL（localStorage の印）・送ったキー（PUSHES） */
+function device(now = Date.UTC(2026, 10, 3, 20)) {
+  const c = { console: { log() {}, warn() {}, error() {} }, STORE: new Map(), LOCAL: new Map(), PUSHES: [], NOW: now, OUTBOX: [], BUSY: new Set(), WHO: 'p:1',
+    SUPA_SYNC_ENABLED: true, _supaBooting: false, FAILSET: new Set() };
+  vm.createContext(c);
+  vm.runInContext([varLine('V1136_MOVED_KEY'), varLine('_LR_RO'), ...MERGE.map(fnSrc), ...GETSET.map(fnSrc)].join('\n') + `
+    Date.now = function(){ return NOW; };
+    var localStorage = { getItem: function(k){ return LOCAL.has(k) ? LOCAL.get(k) : null; }, setItem: function(k, v){ LOCAL.set(k, String(v)); } };
+    function _lsStoreGet(k){ return STORE.has(k) ? STORE.get(k) : null; }
+    function ls(k, d){ var s=_lsStoreGet(k); if(s==null) return d; var v=JSON.parse(s); return v==null ? d : v; }
+    function lsSet(k, v){ if (FAILSET.has(k)) { PUSHES.push(k); return false; } STORE.set(k, JSON.stringify(v)); if (SUPA_SYNC_ENABLED && !_supaBooting) PUSHES.push(k); return true; }
+    function lsKeys(p){ return Array.from(STORE.keys()).filter(function(k){ return k.indexOf(p)===0; }).sort(); }
+    function myName(){ return 'Moto'; } function nowJP(){ return '2026/11/03 10:00'; }
+    var ROLE_CONFIG = { gm:{ name:'GM' } }, curRole = 'gm';
+    function _outboxGet(){ return OUTBOX; } function _saveWho(){ return WHO; } function _pushBusy(k){ return BUSY.has(k); }
+    function _lsPushBlocked(k){ return k.indexOf('blocked_')===0; }
+    var DEFS = { 'att_fix_': [mergeLocalRecMap, _coversLocalRecMap], 'tip_cf_': [mergeLocalRecMap, _coversLocalRecMap], 'kpi_man_': [mergeFieldStampMap, _coversFieldStampMap] };
+    function _opMergeDef(k){
+      if (k==='dev_pipe' || k==='dev_pipe_start') return { merge: mergeFieldStampMap, covers: _coversFieldStampMap, strict: true, keepLocal: true };
+      for (var p in DEFS) if (k.indexOf(p)===0) return { merge: DEFS[p][0], covers: DEFS[p][1], strict: true, keepLocal: true };
+      if (k==='merged_key') return { merge: function(c, l){ return Object.assign({}, c||{}, l||{}); }, covers: function(){ return true; } };
+      return null;
+    }`, c);
+  return c;
+}
+
+/* ------------------------------------------------------------------ ① 同期の一覧と合流の決まり（本物の宣言） */
+test('① the new keys are in the sync lists with strict merge rules; the old names stay device-only; both are kept by the storage clean-up', () => {
+  const keys = varBlock('OP_SYNC_KEYS', '];'), pre = varBlock('OP_SYNC_PREFIX', '];');
+  assert.match(keys, /'dev_pipe','dev_pipe_start'/);
+  for (const p of ['att_fix_', 'tip_cf_', 'kpi_man_']) assert.ok(pre.includes(`'${p}'`), p);
+  for (const old of ['att_override_', 'tip_confirm_', 'kpi_manual_', "'dev_data'", "'dev_start'"]) { assert.ok(!keys.includes(old) && !pre.includes(old), old); }
+  const c = { console };
+  vm.createContext(c);
+  vm.runInContext([varBlock('OP_SYNC_KEYS', '];'), varBlock('OP_SYNC_PREFIX', '];'), varLine('LS_LOCAL_ONLY'), varLine('SUPA_SETTING_PREFIX'),
+    "var SUPA_SETTING_KEYS = ['pl_public'];", fnSrc('isLocalOnlyKey'), fnSrc('isOpSyncKey'), varBlock('LS_NEVER_FREE', "'lala_tasks'];"), fnSrc('_lsProtectedKey')].join('\n'), c);
+  for (const k of ['att_fix_F01_2026-11', 'tip_cf_F04-K_2026', 'kpi_man_2026.11', 'dev_pipe', 'dev_pipe_start']) {
+    assert.equal(run(c, `isOpSyncKey(${JSON.stringify(k)})`), true, k);
+    assert.equal(run(c, `_lsProtectedKey(${JSON.stringify(k)})`), true, 'never freed: ' + k);
+  }
+  for (const k of ['att_override_F01_2026-11-01', 'tip_confirm_F01_2026-10-16', 'kpi_manual_2026.11', 'dev_data', 'dev_start']) {
+    assert.equal(run(c, `isOpSyncKey(${JSON.stringify(k)})`), false, 'old name stays on the device: ' + k);
+    assert.equal(run(c, `_lsProtectedKey(${JSON.stringify(k)})`), true, 'old name kept: ' + k);
+  }
+  const mp = varBlock('OP_MERGE_PREFIX', '} };');
+  assert.match(mp, /'att_fix_': \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true \}/);
+  assert.match(mp, /'tip_cf_':  \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true \}/);
+  assert.match(mp, /'kpi_man_': \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \}/);
+  assert.match(SRC, /\n  dev_pipe:       \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \},/);
+  assert.match(SRC, /\n  dev_pipe_start: \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \},/);
+  // ログインのあとに移し替える（PIN のログインと管理者ページの両方）
+  assert.equal((SRC.match(/v1136MoveLocalOnly\(\); \}catch\(e\)\{/g) || []).length, 2);
+});
+
+/* ------------------------------------------------------------------ ② 合流 */
+let seed = 11; const rnd = n => {   // mulberry32（下の桁も偏らない）
+  seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return (((t ^ (t >>> 14)) >>> 0) / 4294967296 * n) | 0; };
+const shuffleKeys = o => { if (!o || typeof o !== 'object') return o; if (Array.isArray(o)) return o.map(shuffleKeys);
+  const ks = Object.keys(o).sort(() => rnd(3) - 1); const r = {}; for (const k of ks) r[k] = shuffleKeys(o[k]); return r; };
+
+test('② record maps: newest record wins, an undo mark wins over an older record, ties do not depend on order or key order (jsonb)', () => {
+  const c = device();
+  const m = (a, b) => plain(run(c, `mergeLocalRecMap(${JSON.stringify(a)}, ${JSON.stringify(b)})`));
+  const A = { '2026-11-01': { data: { X: { lunch: 5 } }, by: 'A', _at: 10 } }, B = { '2026-11-01': { _deleted: true, by: 'B', _at: 20 }, '2026-11-02': { data: { Y: {} }, _at: 5 } };
+  assert.deepEqual(m(A, B), { '2026-11-01': { _deleted: true, by: 'B', _at: 20 }, '2026-11-02': { data: { Y: {} }, _at: 5 } });
+  assert.deepEqual(m(B, A), m(A, B));
+  for (let k = 0; k < 300; k++) {
+    const rec = () => rnd(4) ? { data: { ['S' + rnd(3)]: { lunch: rnd(9), dinner: rnd(9) } }, by: 'U' + rnd(3), _at: rnd(3) } : { _deleted: true, _at: rnd(3) };
+    const x = {}, y = {}, z = {};
+    for (const o of [x, y, z]) for (let i = 0; i < 3; i++) if (rnd(2)) o['2026-11-0' + (1 + rnd(3))] = rec();
+    const xy_z = m(m(x, y), z), z_yx = m(z, m(y, x)), y_xz = m(m(y, shuffleKeys(z)), shuffleKeys(x));
+    assert.deepEqual(run(c, `_cjson(${JSON.stringify(xy_z)})`), run(c, `_cjson(${JSON.stringify(z_yx)})`), 'any order: ' + JSON.stringify([x, y, z]));
+    assert.deepEqual(run(c, `_cjson(${JSON.stringify(xy_z)})`), run(c, `_cjson(${JSON.stringify(y_xz)})`), 'any key order');
+    assert.deepEqual(m(xy_z, xy_z), xy_z, 'idempotent');
+    assert.equal(run(c, `_coversLocalRecMap(${JSON.stringify(shuffleKeys(xy_z))}, ${JSON.stringify(xy_z)})`), true, 'covers itself with another key order');
+    assert.deepEqual(m(xy_z, x), xy_z, 'merging an input again changes nothing');
+  }
+  // 足りない・古い記録は covers しない
+  assert.equal(run(c, `_coversLocalRecMap({}, ${JSON.stringify(A)})`), false);
+  assert.equal(run(c, `_coversLocalRecMap({ '2026-11-01': { _at: 9 } }, ${JSON.stringify(A)})`), false);
+  assert.equal(run(c, `_coversLocalRecMap({ '2026-11-01': { data: { X: { lunch: 6 } }, by: 'A', _at: 10 } }, ${JSON.stringify(A)})`), false, 'same time, other content');
+});
+
+test('② field-stamped maps: per field the newest wins (a cleared field stays cleared); ties merge the same way in any order', () => {
+  const c = device();
+  const m = (a, b) => plain(run(c, `mergeFieldStampMap(${JSON.stringify(a)}, ${JSON.stringify(b)})`));
+  const A = { F01: { repeatRate: 31, _ft: { repeatRate: 100 }, _at: 100 } }, B = { F01: { tMisoAll: 12, _ft: { tMisoAll: 200, repeatRate: 150 }, _at: 200 } };
+  assert.deepEqual(m(A, B), { F01: { tMisoAll: 12, _ft: { repeatRate: 150, tMisoAll: 200 }, _at: 200 } }, 'B cleared repeatRate later: it stays cleared');
+  const A2 = { F01: { repeatRate: 31, _ft: { repeatRate: 300 } } };
+  assert.deepEqual(m(A2, B).F01.repeatRate, 31, 'set again after the clear: the newer set wins');
+  assert.deepEqual(m(A2, B).F01.tMisoAll, 12, 'the other device’s field stays');
+  for (let k = 0; k < 300; k++) {
+    const rec = () => { const r = {}, ft = {}; for (const f of ['a', 'b', 'tests', 'skills']) { if (!rnd(3)) continue; const t = rnd(3);
+      if (rnd(4)) r[f] = f === 'tests' ? Array.from({ length: rnd(3) }, () => ({ d: rnd(5) })) : f === 'skills' ? { ['s' + rnd(3)]: rnd(4) } : rnd(5); if (t) ft[f] = t; }
+      if (Object.keys(ft).length) r._ft = ft; return r; };
+    const x = { P: rec() }, y = { P: rec() }, z = { P: rec() };
+    const xy_z = m(m(x, y), z), z_yx = m(z, m(y, x));
+    assert.equal(run(c, `_cjson(${JSON.stringify(xy_z)})`), run(c, `_cjson(${JSON.stringify(z_yx)})`), 'any order: ' + JSON.stringify([x, y, z]));
+    assert.equal(run(c, `_cjson(mergeFieldStampMap(${JSON.stringify(xy_z)}, ${JSON.stringify(xy_z)}))`), run(c, `_cjson(${JSON.stringify(xy_z)})`), 'idempotent');
+    assert.equal(run(c, `_coversFieldStampMap(${JSON.stringify(shuffleKeys(xy_z))}, ${JSON.stringify(xy_z)})`), true, 'covers itself with another key order');
+    // 時刻のある欄は、いちばん新しい時刻の側の値になる
+    for (const f of ['a', 'b']) {
+      const ts = [x, y, z].map(o => (o.P._ft || {})[f] || 0), top = Math.max(...ts);
+      if (top > 0 && ts.filter(t => t === top).length === 1) {
+        const w = [x, y, z][ts.indexOf(top)].P;
+        assert.deepEqual(xy_z.P[f], w[f], 'newest wins for ' + f + ': ' + JSON.stringify([x, y, z]));
+      }
+    }
+  }
+  // covers：古い・足りない・同じ時刻で違う中身は covers しない
+  const W = { P: { a: 1, b: 2, _ft: { a: 10, b: 20 } } };
+  assert.equal(run(c, `_coversFieldStampMap({}, ${JSON.stringify(W)})`), false, 'missing record');
+  assert.equal(run(c, `_coversFieldStampMap({ P: { a: 1, b: 2, _ft: { a: 10, b: 19 } } }, ${JSON.stringify(W)})`), false, 'older field');
+  assert.equal(run(c, `_coversFieldStampMap({ P: { a: 1, b: 3, _ft: { a: 10, b: 20 } } }, ${JSON.stringify(W)})`), false, 'same time, other value');
+  assert.equal(run(c, `_coversFieldStampMap({ P: { a: 1, _ft: { a: 10, b: 20 } } }, ${JSON.stringify(W)})`), false, 'cleared on one side only');
+  assert.equal(run(c, `_coversFieldStampMap({ P: { a: 1, b: 9, _ft: { a: 10, b: 30 } } }, ${JSON.stringify(W)})`), true, 'newer field');
+  // 時刻 0（前の版の記録どうし）：テストの記録は和集合
+  const L1 = { P: { tests: [{ c: 'A' }], stage: 3 } }, L2 = { P: { tests: [{ c: 'B' }], stage: 3 } };
+  assert.deepEqual(m(L1, L2).P.tests.map(x => x.c).sort(), ['A', 'B']);
+  assert.deepEqual(m(L2, L1).P.tests, m(L1, L2).P.tests);
+});
+
+/* ------------------------------------------------------------------ ③ 古い写しの端末 */
+test('③ a device with a stale copy changes one field: the fields another device saved are not lost; it saves later than what it read', () => {
+  const A = device(Date.UTC(2026, 10, 3, 20)), B = device(Date.UTC(2026, 10, 3, 20));
+  // どちらの端末も同じ記録を持っている
+  run(A, `setDevData('Ken', { stage: 2, tests: [], skillLevels: {} })`);
+  B.STORE.set('dev_pipe', A.STORE.get('dev_pipe'));
+  // A がテストを足す（クラウドへ）・B は受け取る前にステージを進める
+  A.NOW += 60000; run(A, `var d=getDevData('Ken'); d.tests.push({ course:'Grill', score:90 }); setDevData('Ken', d);`);
+  B.NOW += 120000; run(B, `var d=getDevData('Ken'); d.stage = 3; setDevData('Ken', d);`);
+  const merged = plain(run(B, `mergeFieldStampMap(${A.STORE.get('dev_pipe')}, ${B.STORE.get('dev_pipe')})`));
+  assert.equal(merged.Ken.stage, 3); assert.deepEqual(merged.Ken.tests, [{ course: 'Grill', score: 90 }], 'A’s test stays');
+  // 時計の遅れた端末でも、読んだ記録より後の時刻で保存する（見てから直した欄が勝つ）
+  const C = device(Date.UTC(2026, 9, 1)); C.STORE.set('dev_pipe', JSON.stringify(merged));
+  run(C, `var d=getDevData('Ken'); d.stage = 4; setDevData('Ken', d);`);
+  const c2 = JSON.parse(C.STORE.get('dev_pipe'));
+  assert.ok(c2.Ken._ft.stage > merged.Ken._ft.stage, 'later than what it read');
+  assert.equal(plain(run(C, `mergeFieldStampMap(${JSON.stringify(merged)}, ${JSON.stringify(c2)})`)).Ken.stage, 4);
+  // 何も変えずに保存しても時刻は進めない
+  const before = C.STORE.get('dev_pipe'); run(C, `setDevData('Ken', getDevData('Ken'))`);
+  assert.equal(C.STORE.get('dev_pipe'), before);
+  assert.deepEqual(Object.keys(plain(run(C, `getDevData('Ken')`))).filter(k => k.startsWith('_')), [], 'the screen does not see the stamps');
+});
+
+test('③ KPI: the repeat rate and the Totoya counts entered on two devices both stay; clearing a value goes to the other device', () => {
+  const A = device(), B = device();
+  run(A, `setKpiManual('F04-K', '2026.11', { repeatRate: 33 })`);
+  B.NOW += 1000; run(B, `setKpiManual('F04-K', '2026.11', { tMisoAll: 40, tIkura: 7 })`);
+  const box = plain(run(A, `mergeFieldStampMap(${A.STORE.get('kpi_man_2026.11')}, ${B.STORE.get('kpi_man_2026.11')})`));
+  A.STORE.set('kpi_man_2026.11', JSON.stringify(box));
+  assert.deepEqual(plain(run(A, `getKpiManual('F04-K', '2026.11')`)), { repeatRate: 33, tMisoAll: 40, tIkura: 7 });
+  A.NOW += 5000; run(A, `var v=getKpiManual('F04-K','2026.11'); v.tIkura = undefined; setKpiManual('F04-K','2026.11', v);`);
+  const after = plain(run(B, `mergeFieldStampMap(${B.STORE.get('kpi_man_2026.11')}, ${A.STORE.get('kpi_man_2026.11')})`));
+  assert.equal(after['F04-K'].tIkura, undefined, 'cleared on A → cleared on B');
+  assert.equal(after['F04-K'].tMisoAll, 40);
+});
+
+test('③ attendance fix and tip finalization: one record per day / period start, the undo reaches other devices', () => {
+  const A = device(), B = device();
+  run(A, `setAttOverride('F01', '2026-11-02', { data: { X: { lunch: 4, dinner: 0 } }, by: 'Moto', at: '2026/11/03 10:00' })`);
+  assert.deepEqual(Object.keys(JSON.parse(A.STORE.get('att_fix_F01_2026-11'))), ['2026-11-02'], 'month box');
+  assert.equal(plain(run(A, `getAttOverride('F01', '2026-11-02')`)).data.X.lunch, 4);
+  B.STORE.set('att_fix_F01_2026-11', A.STORE.get('att_fix_F01_2026-11'));
+  assert.equal(plain(run(B, `getAttOverride('F01', '2026-11-02')`)).by, 'Moto', 'the other device sees it');
+  B.NOW += 1000; run(B, `setAttOverride('F01', '2026-11-02', null)`);
+  assert.equal(run(B, `getAttOverride('F01', '2026-11-02')`), null);
+  const m = plain(run(A, `mergeLocalRecMap(${A.STORE.get('att_fix_F01_2026-11')}, ${B.STORE.get('att_fix_F01_2026-11')})`));
+  A.STORE.set('att_fix_F01_2026-11', JSON.stringify(m));
+  assert.equal(run(A, `getAttOverride('F01', '2026-11-02')`), null, 'undo reached A');
+  assert.equal(run(A, `getAttOverride('F01', '2026-11-03')`), null);
+  // Tip
+  run(A, `setTipConfirm('F01', { from: '2026-10-16' }, { status: '確定済み', from: '2026-10-16', at: '2026/11/01 09:00' })`);
+  assert.deepEqual(Object.keys(JSON.parse(A.STORE.get('tip_cf_F01_2026'))), ['2026-10-16']);
+  assert.equal(run(A, `getTipConfirm('F01', { from: '2026-10-16' }).status`), '確定済み');
+});
+
+/* ------------------------------------------------------------------ ④ 移し替え */
+function legacy(c) {
+  c.STORE.set('att_override_F01_2026-10-28', JSON.stringify({ data: { X: { lunch: 3 } }, by: 'Old', at: '2026/10/28 15:00' }));
+  c.STORE.set('att_override_F04-K_2026-11-01', JSON.stringify({ data: { Y: { dinner: 6 } }, by: 'Old', at: '2026/11/01 21:00' }));
+  c.STORE.set('att_override_F01_2026-10-29', 'null');   // 前の版で取り消した
+  c.STORE.set('tip_confirm_F01_2026-10-16', JSON.stringify({ status: '確定済み', from: '2026-10-16', at: '2026/11/01 09:00', rows: [] }));
+  c.STORE.set('tip_confirm_F02_2026-10-16', 'null');
+  c.STORE.set('kpi_manual_2026.10', JSON.stringify({ F01: { repeatRate: 28, reviewScore: 4.4 } }));
+  c.STORE.set('dev_data', JSON.stringify({ Ken: { stage: 3, tests: [{ course: 'Old' }] } }));
+  c.STORE.set('dev_start', JSON.stringify({ Ken: '2026-09-01' }));
+}
+test('④ moving the old names: every record goes to the new names; a second run writes nothing; the flag is set; old records are kept', () => {
+  const c = device(); legacy(c);
+  // 移す前でも、この端末の前の記録が見える
+  assert.equal(plain(run(c, `getAttOverride('F01', '2026-10-28')`)).by, 'Old');
+  assert.equal(run(c, `getTipConfirm('F01', { from: '2026-10-16' }).status`), '確定済み');
+  assert.equal(plain(run(c, `getKpiManual('F01', '2026.10')`)).repeatRate, 28);
+  assert.equal(run(c, `getDevData('Ken').stage`), 3); assert.equal(run(c, `getDevStart({ name: 'Ken' })`), '2026-09-01');
+  const n = run(c, 'v1136MoveLocalOnly()');
+  assert.ok(n > 0);
+  assert.equal(c.LOCAL.get('_v1136_moved'), '1');
+  assert.deepEqual([...c.PUSHES].sort(), ['att_fix_F01_2026-10', 'att_fix_F04-K_2026-11', 'dev_pipe', 'dev_pipe_start', 'kpi_man_2026.10', 'tip_cf_F01_2026']);
+  const a = JSON.parse(c.STORE.get('att_fix_F01_2026-10'));
+  assert.deepEqual(Object.keys(a), ['2026-10-28'], 'the undone day is not moved');
+  assert.equal(a['2026-10-28']._at, Math.floor(new Date('2026/10/28 15:00').getTime() / 60000), 'old-version band (minutes)');
+  assert.ok(a['2026-10-28']._at < 1e9);
+  assert.equal(JSON.parse(c.STORE.get('tip_cf_F01_2026'))['2026-10-16'].status, '確定済み');
+  assert.equal(c.STORE.get('tip_cf_F02_2026'), undefined);
+  // 移したあとも同じに見える
+  assert.equal(plain(run(c, `getAttOverride('F04-K', '2026-11-01')`)).data.Y.dinner, 6);
+  assert.equal(plain(run(c, `getKpiManual('F01', '2026.10')`)).reviewScore, 4.4);
+  assert.deepEqual(plain(run(c, `getDevData('Ken').tests`)), [{ course: 'Old' }]);
+  assert.equal(run(c, `getDevStart({ name: 'Ken' })`), '2026-09-01');
+  assert.ok(c.STORE.has('dev_data') && c.STORE.has('att_override_F01_2026-10-28'), 'old records are kept');
+  // 2 回目は何も書かない
+  c.PUSHES.length = 0;
+  assert.equal(run(c, 'v1136MoveLocalOnly()'), 0); assert.deepEqual([...c.PUSHES], []);
+  // 移したあとは前の名前を見ない（新しい名前で消えた・まだ無いものを前の記録で出さない）
+  c.STORE.set('att_override_F01_2026-10-30', JSON.stringify({ data: { Z: {} }, by: 'Old', at: '2026/10/30 10:00' }));
+  c.STORE.set('kpi_manual_2026.09', JSON.stringify({ F01: { repeatRate: 1 } }));
+  assert.equal(run(c, `getAttOverride('F01', '2026-10-30')`), null);
+  assert.deepEqual(plain(run(c, `getKpiManual('F01', '2026.09')`)), {});
+});
+
+test('④ before the move, editing one field of an old record stamps only that field (the untouched old fields do not beat other devices)', () => {
+  const c = device(); legacy(c);
+  run(c, `var v=getKpiManual('F01','2026.10'); v.reviewScore = 4.6; setKpiManual('F01','2026.10', v);`);
+  const r = JSON.parse(c.STORE.get('kpi_man_2026.10')).F01;
+  assert.deepEqual(Object.keys(r._ft), ['reviewScore']);
+  assert.equal(r.repeatRate, 28, 'the old field is carried');
+  run(c, `var d=getDevData('Ken'); d.stage = 4; setDevData('Ken', d);`);
+  assert.deepEqual(Object.keys(JSON.parse(c.STORE.get('dev_pipe')).Ken._ft), ['stage']);
+  run(c, `setDevStart('Ken', '2026-09-01')`);
+  assert.equal(JSON.parse(c.STORE.get('dev_pipe_start')).Ken._ft, undefined, 'same date as the old record: nothing stamped');
+});
+
+test('④ an old record never beats a record already saved under the new name on another device; old records among themselves go by time', () => {
+  const c = device(); legacy(c);
+  // ほかの端末が新しい名前で取り消し・別の値を保存した（クラウドから受け取った）
+  c.STORE.set('att_fix_F01_2026-10', JSON.stringify({ '2026-10-28': { _deleted: true, by: 'GM', _at: Date.UTC(2026, 9, 29) } }));
+  c.STORE.set('kpi_man_2026.10', JSON.stringify({ F01: { repeatRate: 35, _ft: { repeatRate: Date.UTC(2026, 10, 1) } } }));
+  c.STORE.set('dev_pipe', JSON.stringify({ Ken: { stage: 4, _ft: { stage: Date.UTC(2026, 10, 1) } } }));
+  run(c, 'v1136MoveLocalOnly()');
+  assert.equal(run(c, `getAttOverride('F01', '2026-10-28')`), null, 'the undo on the new name stays');
+  assert.deepEqual(plain(run(c, `getKpiManual('F01', '2026.10')`)), { repeatRate: 35, reviewScore: 4.4 }, 'new value stays, the old-only field fills the gap');
+  assert.equal(run(c, `getDevData('Ken').stage`), 4); assert.deepEqual(plain(run(c, `getDevData('Ken').tests`)), [{ course: 'Old' }]);
+  // 前の版の記録どうし：新しいほう
+  const d = device(); d.STORE.set('att_fix_F01_2026-10', JSON.stringify({ '2026-10-28': { data: { X: { lunch: 9 } }, by: 'Other', at: '2026/10/28 18:00', _at: Math.floor(new Date('2026/10/28 18:00').getTime() / 60000), _from: 'v1135' } }));
+  legacy(d); run(d, 'v1136MoveLocalOnly()');
+  assert.equal(plain(run(d, `getAttOverride('F01', '2026-10-28')`)).by, 'Other', 'the later old record (18:00) beats the earlier one (15:00)');
+});
+
+test('④ not while starting up or with sync off (nothing is marked done); a failed save keeps the flag unset', () => {
+  const c = device(); legacy(c);
+  c._supaBooting = true; assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.LOCAL.get('_v1136_moved'), undefined);
+  c._supaBooting = false; c.SUPA_SYNC_ENABLED = false; assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.STORE.get('dev_pipe'), undefined);
+  c.SUPA_SYNC_ENABLED = true; c.FAILSET.add('dev_pipe');
+  assert.equal(run(c, 'v1136MoveLocalOnly()'), false); assert.equal(c.LOCAL.get('_v1136_moved'), undefined, 'retried at the next login');
+  assert.equal(run(c, `getDevData('Ken').stage`), 3, 'still reads the old record');
+  c.FAILSET.clear(); assert.ok(run(c, 'v1136MoveLocalOnly()') > 0); assert.equal(c.LOCAL.get('_v1136_moved'), '1');
+});
+
+/* ------------------------------------------------------------------ ⑤ 取り込みが手元の送れていない変更を消さない */
+function pullApp() {
+  const c = device();
+  vm.runInContext([varLine('LS_LOCAL_ONLY'), fnSrc('isLocalOnlyKey'), fnSrc('_applyKvRows'), fnSrc('pullOpKey'), fnSrc('pullSettingKey')].join('\n') + `
+    var _SPLIT_KEYS = {}, window = {}, SUPABASE_URL = 'https://x.supabase.co', CLOUD = {}, FETCHED = [];
+    function _handleLegacySplitRow(){ return false; }
+    function _lsOnDemand(k){ return k.indexOf('blocked_')===0; }
+    function _lsRaw(k, d){ var s=_lsStoreGet(k); return s==null ? d : JSON.parse(s); }
+    function _lsWriteVerified(k, js){ STORE.set(k, js); return true; }
+    function _lsSetVerified(k, js){ return _lsWriteVerified(k, js); }
+    function _lsMarkFetched(k){ FETCHED.push(k); } function _lsClearSaveFailure(){} function _lsNoteSaveFailure(){} function _lsFreeOldLaborKeys(){}
+    function supaHeaders(){ return {}; }
+    function fetch(u){ var k=decodeURIComponent(String(u).split('key=eq.')[1].split('&')[0]); var has=Object.prototype.hasOwnProperty.call(CLOUD, k);
+      return Promise.resolve({ ok:true, json:function(){ return Promise.resolve(has ? [{ value: CLOUD[k] }] : []); } }); }`, c);
+  return c;
+}
+test('⑤ a pull keeps my unsent change to a key without a merge rule; it takes the cloud value when nothing is pending or the change is someone else’s', async () => {
+  const c = pullApp();
+  c.STORE.set('evaluations', JSON.stringify({ mine: 'typed offline' }));
+  c.STORE.set('meeting_reviews', JSON.stringify({ old: 1 }));
+  c.STORE.set('applicants', JSON.stringify(['local']));
+  c.STORE.set('merged_key', JSON.stringify({ a: 1 }));
+  c.OUTBOX.push({ key: 'evaluations', who: 'p:1' }, { key: 'applicants', who: 'p:2' }, { key: 'merged_key', who: 'p:1' });
+  c.OKOUT = [];
+  run(c, `_applyKvRows(${JSON.stringify([
+    { key: 'evaluations', value: { cloud: 'older' } }, { key: 'meeting_reviews', value: { cloud: 2 } },
+    { key: 'applicants', value: ['cloud'] }, { key: 'merged_key', value: { b: 2 } }])}, OKOUT)`);
+  const ok = plain(c.OKOUT);
+  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { mine: 'typed offline' }, 'my unsent change stays');
+  assert.deepEqual(JSON.parse(c.STORE.get('meeting_reviews')), { cloud: 2 }, 'nothing pending: cloud value');
+  assert.deepEqual(JSON.parse(c.STORE.get('applicants')), ['cloud'], 'someone else’s pending change on a shared device: as before');
+  assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { b: 2, a: 1 }, 'a key with a merge rule is merged as before');
+  assert.deepEqual([...ok].sort(), ['applicants', 'meeting_reviews', 'merged_key'], 'the kept row is fetched again next time');
+  // 送っている途中も同じ
+  c.BUSY.add('meeting_reviews'); c.STORE.set('meeting_reviews', JSON.stringify({ sending: 1 }));
+  run(c, `_applyKvRows([{ key: 'meeting_reviews', value: { cloud: 3 } }])`);
+  assert.deepEqual(JSON.parse(c.STORE.get('meeting_reviews')), { sending: 1 });
+  // まだ取得していない必要時のキーは今までどおり取り込む（手元は部分の値）
+  c.STORE.set('blocked_log', JSON.stringify(['part'])); c.OUTBOX.push({ key: 'blocked_log', who: 'p:1' });
+  run(c, `CLOUD['blocked_log'] = ['full', 'part']`);
+  assert.equal(await run(c, `pullOpKey('blocked_log')`), true);
+  assert.deepEqual(JSON.parse(c.STORE.get('blocked_log')), ['full', 'part']);
+  // pullOpKey：送信待ちがあれば手元のまま・送れたら受け取る
+  run(c, `CLOUD['evaluations'] = { cloud: 'newer' }`);
+  assert.equal(await run(c, `pullOpKey('evaluations')`), true);
+  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { mine: 'typed offline' });
+  c.OUTBOX.splice(0, c.OUTBOX.length);
+  assert.equal(await run(c, `pullOpKey('evaluations')`), true);
+  assert.deepEqual(JSON.parse(c.STORE.get('evaluations')), { cloud: 'newer' });
+  // 合流の決まりのあるキーは、送信待ちがあっても合流する（pullOpKey）
+  c.STORE.set('merged_key', JSON.stringify({ a: 1 })); c.OUTBOX.push({ key: 'merged_key', who: 'p:1' }); run(c, `CLOUD['merged_key'] = { c: 3 }`);
+  assert.equal(await run(c, `pullOpKey('merged_key')`), true);
+  assert.deepEqual(JSON.parse(c.STORE.get('merged_key')), { c: 3, a: 1 });
+  // 設定（app_settings）も同じ
+  c.STORE.set('tip_policy', JSON.stringify('mine')); c.OUTBOX.push({ key: 'tip_policy' });
+  run(c, `CLOUD['tip_policy'] = 'cloud'`);
+  assert.equal(await run(c, `pullSettingKey('tip_policy')`), true);
+  assert.equal(JSON.parse(c.STORE.get('tip_policy')), 'mine', 'unknown owner (v1127 and before) counts as mine');
+});
+
+test('⑤ the same keep-local rule is used for app_settings and master tables in the full pull', () => {
+  assert.match(SRC, /if \(typeof _pullKeepLocal==='function' && _pullKeepLocal\(row\.key, _spend\)\) return;/);
+  assert.match(SRC, /if \(key !== 'm_employees' && key !== 'm_vendors' && typeof _pullKeepLocal==='function' && _pullKeepLocal\(key\)\) \{ results\.push/);
+});
+
+/* ------------------------------------------------------------------ 版 */
+test('version 1136 in the page and the service worker; the tip question no longer says “on this device”', () => {
+  assert.match(SRC, /const APP_VERSION = '1136';/);
+  assert.match(SW, /const SW_BUILD = '1136';/);
+  assert.ok(!SRC.includes('この端末で確定した記録はありません'));
+});

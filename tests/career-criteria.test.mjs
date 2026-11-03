@@ -240,12 +240,13 @@ test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept 
 // The real grade-history, approval and Leader-promotion code with the module, a stubbed modal and synthetic staff.
 function app38() {
   const names = [...new Set([...source.matchAll(/\nfunction (_?gh\w*)\(/g)].map(m => m[1]))].concat(['gradeOf', 'empGrade', 'gradeNum', 'csCoef', 'lssCatsOrdered', 'lssItemId', 'getLssScores',
-    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'saveEmp', 'mergeMapByTime', '_recAt', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
+    'empSpecialistDept', 'bonusProrate', 'bonusSegs', 'saveEmp', 'mergeMapByTime', '_recAt', 'approveLssRequest', 'approveAdvance', 'advanceStage', 'jobTitle', 'getDevData', 'setDevData', '_devDataRaw', '_fsStamp', '_lrObj', '_lrAt', '_cjson', 'getStage', 'getLssRequests', 'stageLabel', 'getCareerTrack']);
   const c = { console, STORE: {}, EMPS: [], BQ: {}, SUMS: {}, MODAL: [], TOASTS: [], CONFIRMS: 0, curRole: 'gm', curLang: 'ja', curUserName: 'GM' };
   vm.createContext(c);
   vm.runInContext([varBlock('LSS_CATEGORIES', '\n];'), varBlock('GRADE_TITLES', '\n};'), varBlock('SPECIALIST_TITLE_DEPT', '\n};'), varBlock('LSS_EMP_PREFIX', ';'), varBlock('JOB_TITLES', '\n];'),
     varBlock('CAREER_CONFIG', '\n};'), varBlock('CAREER_TRACKS', ';'), varBlock('LSS_TITLES', ';'), source.match(/\nObject\.defineProperty\(CAREER_CONFIG, 'Store Leader'[^\n]*/)[0],
     ...names.map(fn), MODULE].join('\n') + `
+    var MOVED = true; function v1136Moved(){ return MOVED; }   /* v1136：育成の記録は dev_pipe（前は dev_data でこの端末だけ） */
     var window = this, curPage = 'x', FORM = {}, document = { getElementById: function(id){ return FORM[id] || null; }, querySelectorAll: function(){ return []; } };
     function canEditWages(){ return false; } function permFromRole(r){ return r; } function getWorkCondition(){ return {}; } function setWorkCondition(){} function saveEmpPrivate(){} function alert(){}
     var CAREER_STAGES = [{ n:5, label:'Leader' }, { n:6, label:'Career Score' }];
@@ -349,7 +350,8 @@ test('UI案38: promotion approval and Leader promotion wait for the evaluation; 
   assert.equal(run(c, `window._ghPend`), null, 'the confirmation is used once');
   const n = c.MODAL.length; run(c, `approveLssRequest('r2','承認')`);
   assert.equal(c.STORE.lss_requests[1].status, '承認'); assert.equal(c.MODAL.length, n, 'G1 → G2 approves as before');
-  c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Store Leader', stageHistory: [] } };
+  c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Store Leader', stageHistory: [] } };   // v1136：この端末の前の名前の記録（移し替えの前）
+  run(c, `MOVED = false`);
   run(c, `approveAdvance('Cal Sample')`);
   assert.equal(run(c, `getDevData('Cal Sample').stage`), 5); assert.equal(c.CONFIRMS, 0);
   assert.equal(run(c, `window._ghPend.t1`), 'Operation Leader', 'the abolished Store Leader target becomes Operation Leader');
@@ -456,18 +458,19 @@ test('Codex P1: promotion approval and Leader promotion are all-or-nothing (requ
       assert.ok(['lss_requests', 'm_employees', 'grade_hist'].every(k => c.PUSHES.includes(k)));
     }
   }
-  for (const fail of ['grade_hist', 'm_employees', 'dev_data', 'career_history', null]) {
+  for (const fail of ['grade_hist', 'm_employees', 'dev_pipe', 'career_history', null]) {
     const c = storeBacked(app38());
-    c.STORE.dev_data = { 'Cal Sample': { stage: 5, targetCareer: 'Operation Leader', stageHistory: [] } };
+    c.STORE.dev_pipe = { 'Cal Sample': { stage: 5, targetCareer: 'Operation Leader', stageHistory: [] } };   // v1136：クラウドへ送る名前
     run(c, `approveAdvance('Cal Sample'); ghEvalConfirm();`);
     c.PUSHES.length = 0; c.TOASTS.length = 0; if (fail) c.FAIL_SET = fail;
     run(c, `ghConfirmGo()`); delete c.FAIL_SET;
     if (fail) {
-      assert.deepEqual([c.STORE.dev_data['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist, c.STORE.career_history, [...c.PUSHES]], [5, 'Crew Leader', undefined, undefined, []], fail);
+      assert.deepEqual([c.STORE.dev_pipe['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist, c.STORE.career_history, [...c.PUSHES]], [5, 'Crew Leader', undefined, undefined, []], fail);
       assert.match(c.TOASTS.join(), /ステージ・役職・グレード履歴は元のまま/);
     } else {
-      assert.deepEqual([c.STORE.dev_data['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist.cal.recs[0].prevEval.csPct], [6, 'Operation Leader', 77]);
-      assert.ok(['dev_data', 'm_employees', 'grade_hist', 'career_history'].every(k => c.PUSHES.includes(k)));
+      assert.deepEqual([c.STORE.dev_pipe['Cal Sample'].stage, empOf(c, 'cal').title, c.STORE.grade_hist.cal.recs[0].prevEval.csPct], [6, 'Operation Leader', 77]);
+      assert.ok(['dev_pipe', 'm_employees', 'grade_hist', 'career_history'].every(k => c.PUSHES.includes(k)));
+      assert.ok(c.STORE.dev_pipe['Cal Sample']._ft.stage > 0, 'v1136: the changed fields carry their save time');
     }
   }
   const c = storeBacked(app38());
