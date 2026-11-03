@@ -227,6 +227,7 @@ test('supaFetchAllRows：1 ページ目の失敗・2 ページ目の失敗・上
     if (path.startsWith('b')) return off === 0 ? okJson(Array(lim).fill({ x: 1 })) : httpErr(500);
     if (path.startsWith('c')) return okJson(Array(lim).fill({ x: 1 }));
     if (path.startsWith('d')) return { ok: true, status: 200, json: async () => { throw new Error('bad'); } };
+    if (path.startsWith('n')) return okJson({ message: 'not a list' });
     return off === 0 ? okJson([{ x: 1 }, { x: 2 }]) : okJson([]);
   });
   const a = await c.supaFetchAllRows('a?x=1', { page: 2 });
@@ -235,8 +236,10 @@ test('supaFetchAllRows：1 ページ目の失敗・2 ページ目の失敗・上
   assert.equal(b.length, 2); assert.equal(b._err, 'http_500'); assert.equal(b._partial, true);
   const cc = await c.supaFetchAllRows('c?x=1', { page: 2, max: 4 });
   assert.equal(cc.length, 4); assert.equal(cc._cut, true); assert.equal(cc._err, undefined);
-  const d = await c.supaFetchAllRows('d?x=1', { page: 2 });
-  assert.equal(d._err, 'bad_json');
+  // 読めない JSON は今までどおり例外（呼び出し元が止まり、前の写しを残す。#122 の Codex の再レビュー）
+  await assert.rejects(c.supaFetchAllRows('d?x=1', { page: 2 }), /bad/);
+  const dn = await c.supaFetchAllRows('n?x=1', { page: 2 });
+  assert.equal(dn._err, 'bad_json', 'an answer that is not a list is marked');
   const e = await c.supaFetchAllRows('e?x=1', { page: 2 });
   assert.equal(e.length, 2); assert.equal(e._err, undefined); assert.equal(e._cut, undefined); assert.equal(e._partial, undefined);
   assert.equal(JSON.stringify(e), '[{"x":1},{"x":2}]', '印は配列の中身に出ない（今までの使い方は配列のまま）');
@@ -279,4 +282,34 @@ test('店の比べ：出数の行・メニューの表が読めなかった／�
   c2.FUNERGY_VT.storeCompare(0);
   await c2.FUNERGY_VT.loadCompare('2026-10', ds, c2.FUNERGY_VT._cmpSeq);
   assert.match(c2._els['vt-cmp'].innerHTML, /出数の行：上限で止めた/);
+});
+
+// #122 の Codex の再レビュー（527be6a）：JSON が読めない・途中で読めない・上限で止めた結果で、出数・モディファイヤーの写しを上書きしない（前の写しを残す）
+test('initMixFetch・initModFetch：読めない・途中・上限で止めた結果では写しを書かない（前の写しのまま）。ふつうは書く', async () => {
+  for (const fn of ['initMixFetch', 'initModFetch']) {
+    for (const mode of ['json1', 'json2', 'http2', 'cut', 'ok']) {
+      const store = {}, writes = [];
+      const c = vm.createContext({ console: { warn() {}, error() {} }, Date, Math, JSON, Number, String, Object, Array, URL,
+        STORES: [{ id: 'F06', toastGuid: 'g6' }], bizToday: () => '2026-10-31',
+        ls: (k, d) => (k in store ? store[k] : d), lsSet: (k, v) => { writes.push(k); store[k] = v; return true; } });
+      const key = fn === 'initMixFetch' ? 'init_mix_F06_2026-10' : 'init_mod_F06_2026-10';
+      store[key] = { at: 1, day: '2026-10-30', d: { '2026-10-01': { old: 1 } } };
+      realRest(c, (path, off, lim) => {
+        const row = { business_date: '2026-10-02', item_guid: 'i1', qty: 1, modifier_name: 'm', item_qty: 1 };
+        if (mode === 'json1') return { ok: true, status: 200, json: async () => { throw new Error('bad json'); } };
+        if (mode === 'json2' && off > 0) return { ok: true, status: 200, json: async () => { throw new Error('bad json'); } };
+        if (mode === 'http2' && off > 0) return httpErr(500);
+        if (mode === 'cut') return okJson(Array(lim).fill(row));
+        if (mode === 'ok') return off === 0 ? okJson([row]) : okJson([]);
+        return okJson(Array(lim).fill(row));
+      });
+      const real = c.supaFetchAllRows; c.supaFetchAllRows = (p, o) => real(p, Object.assign({}, o, { page: 2, max: mode === 'cut' ? 4 : 100 }));
+      vm.runInContext(fnSrc('initMixKey') + fnSrc('initModKey') + 'async ' + fnSrc(fn), c);
+      const out = await vm.runInContext(fn, c)('F06', '2026-10');
+      if (mode === 'ok') { assert.ok(out && out['2026-10-02'], fn + ' ok'); assert.deepEqual(writes, [key], fn + ' ok writes'); continue; }
+      assert.equal(out, null, fn + ' ' + mode);
+      assert.deepEqual(writes, [], fn + ' ' + mode + ': no write');
+      assert.deepEqual(store[key].d, { '2026-10-01': { old: 1 } }, fn + ' ' + mode + ': the earlier copy stays');
+    }
+  }
 });
