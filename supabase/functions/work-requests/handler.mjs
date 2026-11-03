@@ -1,4 +1,4 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定）。仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ）。仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -104,7 +104,9 @@ export function normPayload(kind, p) {
   throw bad();
 }
 
-export const ACTS = ['edit', 'resubmit', 'withdraw', 'approve', 'return', 'reject', 'check', 'pay', 'dup_ok', 'undo', 'apply', 'apply_fail'];
+// v1133：評価の変更の反映は apply_start（押さえる）→ 書く → apply_done／apply_fail／apply_cancel（押さえたときの鍵 claim が要る）。前の版の apply は SQL が断る
+export const ACTS = ['edit', 'resubmit', 'withdraw', 'approve', 'return', 'reject', 'check', 'pay', 'dup_ok', 'undo', 'apply_start', 'apply_done', 'apply_fail', 'apply_cancel'];
+const CLAIMED = ['apply_done', 'apply_fail', 'apply_cancel'];
 
 export function createHandler(deps) {
   const env = deps.env;
@@ -133,10 +135,10 @@ export function createHandler(deps) {
 
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
-    // fn：関数の版（v1132 から 2）・sql：SQL の段（2 段目の SQL が無ければ 1）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
+    // fn：関数の版（v1132 は 2・v1133 から 3）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
     whoami: async w => {
       const [me, st] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null)]);
-      return { ...me, fn: 2, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
+      return { ...me, fn: 3, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -162,6 +164,7 @@ export function createHandler(deps) {
         p.dup_reason = TS(b.dup_reason, LIMITS.note) || null;
       }
       if (b.op === 'pay') { p.pay_date = DT(b.pay_date); p.pay_method = TS(b.pay_method, LIMITS.method); if (!p.pay_method) throw bad(); p.legacy_ack = b.legacy_ack === true; }
+      if (CLAIMED.includes(b.op)) p.claim = KEY(b.claim);
       return db.rpc('wr_act', p);
     },
     settings_save: (w, b) => {

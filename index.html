@@ -41373,7 +41373,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1132';
+const APP_VERSION = '1133';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -76967,7 +76967,7 @@ function approveLssScoreRequest(id){
   var reqs = getLssRequests();
   var r = reqs.find(function(x){ return x.id===id; });
   if (!r || r.kind!=='score' || !_srPending(r)) { showToast(t('この申請は処理済みです','Already handled'),'info'); return; }
-  var _wrOk = !!(r.wr && typeof window !== 'undefined' && window._wrApplying && window._wrApplying === r.wr);   /* v1132：ワークセンターで GM・CEO が承認した申請の反映（サーバーが承認した人を確かめた） */
+  var _wrOk = !!(r.wr && typeof window !== 'undefined' && window._wrApplying && window._wrApplying === r.wr && (curRole === 'gm' || curRole === 'ceo'));   /* v1132：ワークセンターで GM・CEO が承認した申請の反映（サーバーが承認した人を確かめた）。v1133：今のログインも GM・CEO のときだけ */
   if (!_wrOk && (!((typeof lssCanApproveScoreFor==='function') ? lssCanApproveScoreFor(r.name) : lssCanApproveScore()) || (typeof lssReqByMe==='function' && lssReqByMe(r)))) { showToast(t('承認できるのはGM（と Score管理 で決めた役職）です。自分の申請は承認できません','Only the GM (and roles set in Score admin) can approve; not your own request'),'warning'); return; }   /* v1103 */
   if (lssScoreSetNg(r)) { showToast(t('評価項目が入れ替わっています。申請しなおしてください','The item set changed — ask for a new request'),'warning'); return; }
   var rec = getLssScores(r.name) || {};
@@ -99783,7 +99783,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   var ACT_L = { submit:['申請','submitted'], edit:['直した','edited'], resubmit:['直して出し直した','resubmitted'], withdraw:['取り下げた','withdrew'],
     approve:['承認した','approved'], 'return':['差し戻した','returned'], reject:['却下した','rejected'], check:['経理の確認をした','checked'],
     pay:['支払・精算を記録した','recorded the payment'], dup_ok:['別の経費と確かめた','confirmed not a duplicate'], undo:['1 つ前に戻した','undid the last step'],
-    legacy_import:['前の画面の記録を写した','copied from the earlier screen'], apply:['正式な値に反映した','applied'], apply_fail:['反映できなかった','could not apply'] };
+    legacy_import:['前の画面の記録を写した','copied from the earlier screen'], apply:['正式な値に反映した','applied'], apply_fail:['反映できなかった','could not apply'],
+    apply_start:['反映を始めた（ほかの端末を止めた）','started applying (others wait)'], apply_done:['正式な値に反映した','applied'], apply_cancel:['反映をやめた（何も変えていない）','stopped applying (nothing changed)'] };
   var MILEAGE_PURPOSES = ['買い出し','ミーティング','銀行・郵便','店舗間移動','その他'];
   var RB_PURPOSES = ['仕入れ','消耗品','修理','交通','その他'];
   /* 用途は日本語の値のまま保存し（サーバーが確かめる）、英語の画面では英語で出す（#123 のレビュー） */
@@ -99824,7 +99825,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function setLiveSeen(v, at){ liveMem = { live:!!v, at:at || new Date().toISOString() }; try{ localStorage.setItem(LIVE_KEY, JSON.stringify(liveMem)); }catch(e){} }
 
   function fresh(){ return { authKey:'', me:null, live:null, rate:null, settingsRev:1, view:'todo', rows:null, counts:null, load:'', err:'', errCode:'',
-    flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null }; }
+    flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, pend:{}, tipDone:{} }; }
   var S = fresh();
   W._wrState = function(){ return S; };
 
@@ -99841,10 +99842,10 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     reason_required:['理由を書いてください','Write a reason'],
     dup_unresolved:['重複の候補を確かめるまで精算できません（「別の経費と確かめた」）','Confirm the possible duplicate before payment'],
     legacy_paid:['前の画面で精算済みになっています（写したあと）。二重に払わないでください','It was paid on the earlier screen after the copy. Do not pay it twice'],
-    pin_check_missing:['申請のサーバー（work-requests）が PIN のログインに対応していません。関数を v1132 の 1 ファイルにしてください（Moto さんに知らせてください）','The requests server (work-requests) does not accept the PIN login. Deploy the v1132 single file (tell Moto)'],
-    old_fn:['申請のサーバー（work-requests）が前の版（v1131）です。評価の変更・表示設定は、関数を v1132 の 1 ファイルにしてから使えます（Moto さんに知らせてください）','The requests server (work-requests) is the earlier version (v1131). Evaluation changes and the view settings need the v1132 single file (tell Moto)'],
+    pin_check_missing:['申請のサーバー（work-requests）が PIN のログインに対応していません。関数を v1133 の 1 ファイルにしてください（Moto さんに知らせてください）','The requests server (work-requests) does not accept the PIN login. Deploy the v1133 single file (tell Moto)'],
+    old_fn:['申請のサーバー（work-requests）が前の版です。評価の変更・表示設定・反映は、関数を v1133 の 1 ファイルにしてから使えます（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version. Evaluation changes, the view settings and applying need the v1133 single file (tell Moto)'],
     unknown_action:['申請のサーバー（work-requests）が前の版です（Moto さんに知らせてください）','The requests server (work-requests) is an earlier version (tell Moto)'],
-    old_sql:['申請のデータベースが 1 段目（v1131）のままです。評価の変更・表示設定は、2 段目の SQL（deploy/work-requests-v1132）を入れてから使えます（Moto さんに知らせてください）','The requests database is still stage 1 (v1131). Evaluation changes and view settings need the stage 2 SQL (deploy/work-requests-v1132) (tell Moto)'],
+    old_sql:['申請のデータベースが前の段のままです。評価の変更・表示設定・反映は、SQL（deploy/work-requests-v1131-v1133 の手順）を入れてから使えます（Moto さんに知らせてください）','The requests database is an earlier stage. Evaluation changes, view settings and applying need the SQL (deploy/work-requests-v1131-v1133) (tell Moto)'],
     network:['申請のサーバー（work-requests）につながりません。まだ入っていないか、通信できません','Cannot reach the requests server (work-requests). It is not deployed yet, or the network is down'],
     too_large:['添付・入力が大きすぎます','Too large']
   };
@@ -99872,16 +99873,19 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if (r.status === 404 && !(j && j.error)) throw mkErr('network', 404);
     if (!r.ok) {
       var code = (j && typeof j.error === 'string') ? j.error : '';
-      /* v1132：評価の変更・表示設定を前の版（v1131）の関数に送ると bad_value／unknown_action。関数の版を whoami（fn）で確かめて分かる言葉に */
-      if ((code === 'bad_value' || code === 'unknown_action' || code === 'error') && evalCall(payload)) {
-        var old = ''; try { var w = await api({ action:'whoami' }); old = !(w && w.fn >= 2) ? 'old_fn' : !(w.sql >= 2) ? 'old_sql' : ''; } catch(e2) { old = ''; }
+      /* v1132：評価の変更・表示設定を前の版（v1131）の関数に送ると bad_value／unknown_action。関数の版を whoami（fn）で確かめて分かる言葉に。
+         v1133：反映の押さえ（apply_start など）は関数 3・SQL 3 が要る（前の SQL は forbidden を返す） */
+      var claimOp = payload && payload.action === 'act' && !!CLAIM_OPS[payload.op];
+      if (((code === 'bad_value' || code === 'unknown_action' || code === 'error') && evalCall(payload)) || (code === 'forbidden' && claimOp)) {
+        var need = claimOp ? 3 : 2, old = ''; try { var w = await api({ action:'whoami' }); old = !(w && w.fn >= need) ? 'old_fn' : !(w.sql >= need) ? 'old_sql' : ''; } catch(e2) { old = ''; }
         if (old) throw mkErr(old, r.status);
       }
       throw mkErr(code, r.status);
     }
     return j;
   }
-  function evalCall(p){ p = p || {}; return (p.action === 'submit' && !!EVAL_K[p.kind]) || (p.action === 'act' && (p.op === 'apply' || p.op === 'apply_fail' || !!EVAL_K[p.kind])) || p.action === 'view_get' || p.action === 'view_save'; }
+  var CLAIM_OPS = { apply_start:1, apply_done:1, apply_fail:1, apply_cancel:1 };
+  function evalCall(p){ p = p || {}; return (p.action === 'submit' && !!EVAL_K[p.kind]) || (p.action === 'act' && (!!CLAIM_OPS[p.op] || !!EVAL_K[p.kind])) || p.action === 'view_get' || p.action === 'view_save'; }
   W.wrAPI = api;
 
   function onWrTab(){ return typeof curPage !== 'undefined' && curPage === 'tasks' && typeof workTab !== 'undefined' && workTab === 'wr'; }
@@ -99954,7 +99958,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function nextL(r){
     var n = r.next; if (!n) return '<span style="color:var(--muted)">—</span>';
     var me = S.me || {};
-    var mine = (r.can || []).some(function(x){ return ['approve','check','pay','resubmit','dup_ok','apply'].indexOf(x) >= 0; });
+    var mine = (r.can || []).some(function(x){ return ['approve','check','pay','resubmit','dup_ok','apply_start'].indexOf(x) >= 0; }) || (EVAL_K[r.kind] && (claimHeld(r) || claimPending(r)));
     var who = n.who === 'am' ? (n.name || 'AM') : n.who === 'gm' ? 'GM' : n.who === 'acct' ? T('経理','Accounting') : n.who === 'requester' ? (n.name || T('申請した人','Requester')) : '';
     var step = n.step === 'approve' ? T('承認','approve') : n.step === 'check' ? T('確認','check') : n.step === 'pay' ? T('精算','pay') : n.step === 'fix' ? T('修正','fix') : n.step === 'apply' ? T('反映','apply') : '';
     return (mine ? '<b style="color:var(--accent)">' + T('あなた','You') + '</b>' : esc(who)) + ' <span style="color:var(--muted);font-size:10px">' + esc(step) + '</span>';
@@ -100176,6 +100180,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     /* 段階 */
     h += '<div style="margin-top:10px"><div style="font-size:12px;font-weight:700;margin-bottom:4px">' + T('段階と担当','Steps') + '</div>' + (EVAL_K[r.kind] ? evalSteps(r) : steps(r)) + '</div>';
     if (r.status === 'apply_error') h += '<div class="alert alert-danger" style="margin-top:8px;font-size:12px">' + T('反映エラー：','Apply error: ') + esc(((r.events || []).filter(function(e){ return e.action === 'apply_fail'; }).pop() || {}).note || '') + '</div>';
+    if (EVAL_K[r.kind]) h += applyingNote(r);
     if (r.status === 'applied' && r.closed && r.closed.reason) h += '<div style="margin-top:6px;font-size:11.5px;color:var(--muted)">' + T('反映した中身：','Applied: ') + esc(r.closed.reason) + '</div>';
     /* 履歴 */
     h += '<details style="margin-top:10px"' + ((r.events || []).length <= 6 ? ' open' : '') + '><summary style="font-size:12px;font-weight:700;cursor:pointer">' + T('履歴','History') + '（' + (r.events || []).length + '）</summary><div style="font-size:11px;line-height:1.7;margin-top:4px">'
@@ -100237,8 +100242,14 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     undo:['1 つ前に戻す（理由）','Undo last step (reason)','btn-secondary'], edit:['直す（新しい版）','Edit (new version)','btn-secondary'], resubmit:['直して出し直す','Fix and resubmit','btn-primary'],
     withdraw:['取り下げ','Withdraw','btn-secondary'], apply:['正式な値に反映する','Apply to the official value','btn-primary'], apply_fail:['反映できなかった（理由）','Could not apply (reason)','btn-secondary'] };
   function buttons(r){
-    var can = r.can || []; if (!can.length || S.ask) return '';
-    var order = ['approve','apply','check','pay','resubmit','dup_ok','return','reject','undo','apply_fail','edit','withdraw'];
+    var can = (r.can || []).slice();
+    /* v1133：評価の変更の反映は 1 つのボタン（押さえる → 書く → 記録）。押さえたあとの操作はこの端末が鍵を持つときだけ */
+    if (EVAL_K[r.kind]) {
+      var canApply = can.indexOf('apply_start') >= 0 || claimHeld(r) || claimPending(r);
+      can = can.filter(function(a){ return !CLAIM_OPS[a]; }); if (canApply) can.push('apply');
+    }
+    if (!can.length || S.ask) return '';
+    var order = ['approve','apply','check','pay','resubmit','dup_ok','return','reject','undo','edit','withdraw'];
     return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">' + order.filter(function(a){ return can.indexOf(a) >= 0; }).map(function(a){
       var b = btnOf(r, a); return '<button class="btn ' + b[2] + ' btn-sm" ' + (S.busy ? 'disabled' : '') + ' onclick="wrAsk(\'' + a + '\')">' + esc(T(b[0], b[1])) + (a === 'approve' && r.version > 1 ? '（' + T('版 ','v') + r.version + '）' : '') + '</button>'; }).join('') + '</div>';
   }
@@ -100296,7 +100307,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       showToast(T(ACT_L[op] ? ACT_L[op][0] : op, ACT_L[op] ? ACT_L[op][1] : op) + ' · ' + row.code, 'success');
       return api({ action:'get', id:r.id }).then(function(j){ S.d = j; drawDetail();
         /* v1132：評価の変更を承認したら、この端末でそのまま正式な値に反映する（Tip Rate は確かめの画面を開く） */
-        if (op === 'approve' && EVAL_K[j.kind] && (j.can || []).indexOf('apply') >= 0) evalApply(j);
+        if (op === 'approve' && EVAL_K[j.kind] && (j.can || []).indexOf('apply_start') >= 0) evalApply(j);
       });
     }, function(e){
       S.busy = '';
@@ -100350,7 +100361,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       if (EVAL_K[r.kind]) {
         var tx = evalPlain(r);
         if (op === 'submit' || op === 'resubmit' || op === 'edit') addNotifOnce(Object.assign(base, { toRoles:['gm'], title:T('承認待ち：','Waiting for approval: ') + name, text:r.requester_name + ' · ' + tx }));
-        else if (op === 'apply') addNotifOnce(Object.assign(base, { toUser:r.requester_name, wrTab:'mine', title:T('反映しました：','Applied: ') + name, text:tx }));
+        else if (op === 'apply' || op === 'apply_done') addNotifOnce(Object.assign(base, { toUser:r.requester_name, wrTab:'mine', title:T('反映しました：','Applied: ') + name, text:tx }));
         else if (op === 'return' || op === 'reject') addNotifOnce(Object.assign(base, { toUser:r.requester_name, wrTab:'mine', title:(op === 'return' ? T('差し戻し：','Returned: ') : T('却下：','Rejected: ')) + name, text:(op === 'return' ? (r.returned || {}).reason : (r.closed || {}).reason) || '' }));
         return;
       }
@@ -100693,7 +100704,10 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       if (j) { S.tipForm = null; closeModalDirect(); }
     } finally { S.tipBusy = false; }
   };
-  /* 反映（GM・CEO の端末）。スキル・Career Score はその場で、Tip Rate は確かめの画面を開いて */
+  /* 反映（GM・CEO の端末）。スキル・Career Score はその場で、Tip Rate は確かめの画面で保存するとき。
+     v1133（#124 の Codex のレビュー P2）：書く前にサーバーで押さえる（apply_start）。押さえた端末だけが正式な値を書き、押さえたときの鍵（claim）で
+     反映した（apply_done）・反映できなかった（apply_fail）・やめた（apply_cancel）を記録する。押さえているあいだ（30 分）、ほかの端末は閉じられない・反映できない。
+     書く直前に、ログインが反映を始めたときと同じかを確かめる（違えば書かない） */
   async function skillApply(r, k0){
     var p = r.payload || {}, name = evalName(r), st = r.store_id;
     if (!name || typeof setEmpSkillStore !== 'function') return { ok:false, msg:T('スキルの記録を書けません','cannot write skills') };
@@ -100718,25 +100732,123 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     Object.keys(want).concat(Object.keys(got)).forEach(function(k){ if (!(k in want) || !(k in got) || want[k] !== got[k]) same = false; });
     return same;
   }
-  async function csApply(r){
+  async function csApply(r, k0){
     var p = r.payload || {}, name = evalName(r), id = p.lss_req;
     try { if (typeof pullOpKey === 'function') { await pullOpKey('lss_requests'); await pullOpKey((typeof LSS_EMP_PREFIX !== 'undefined' ? LSS_EMP_PREFIX : 'lss_emp_') + name); } } catch(e) {}
+    /* 読み込みのあいだにログインが変わったら書かない（#124 の Codex のレビュー P2-2：前は次の人の名前で承認していた） */
+    if (k0 != null && authKey() !== k0) return { skip:true };
     var find = function(){ try { return (getLssRequests() || []).find(function(x){ return x && x.id === id; }) || null; } catch(e) { return null; } };
     var q = find();
     if (!q) return { ok:false, msg:T('Career Score の申請（' + id + '）がこの端末にありません','The score request ' + id + ' is not on this device') };
     if (!csMatch(r, q)) return { ok:false, msg:T('Career Score の申請（' + id + '）の人・中身がこの申請と違います','The score request ' + id + ' is for another person or has other values') };
     if (q.status === '承認') return { ok:true, msg:T('Career Score の申請は承認済み','score request already approved') };
     if (q.status !== '申請中') return { ok:false, msg:T('Career Score の申請が「' + q.status + '」です','The score request is ' + q.status) };
+    /* ここから承認まで待たない（同じログインのまま書く） */
     var rp = W.renderPage; W._wrApplying = r.code; W.renderPage = function(){};
     try { approveLssScoreRequest(id); } catch(e) {} finally { W._wrApplying = null; W.renderPage = rp; }
     q = find();
     return q && q.status === '承認' ? { ok:true, msg:(p.items || []).length + T(' 項目',' item(s)') } : { ok:false, msg:T('Career Score に反映できませんでした（評価項目が変わった・承認できる人でない など）','Could not apply the Career Score (items changed, or not allowed to approve)') };
   }
-  function tipApply(r){
+  /* この端末が押さえている（鍵がある）か。押さえたときの版のままなら、この端末の押さえ（同じ GM のほかの端末が押さえ直すと版が進む・独立レビュー R4） */
+  function claimHeld(r){ var c = r && S.claims[r.id]; return !!(c && c.rev === r.rev && (r.can || []).indexOf('apply_done') >= 0); }
+  /* 押さえの答えが届かなかった（通信）：同じ鍵でもう一度押せる */
+  function claimPending(r){ return !!(r && S.pend[r.id] && (r.can || []).indexOf('apply_done') >= 0); }
+  function movedFirst(cur){
+    showToast(T('この申請はほかの人（または別の端末・タブ）が先に進めました（反映中・反映済み・閉じた など）。最新を読み込みました（何も書いていません）','Someone (or another device or tab) moved this request first (applying, applied or closed). The latest is loaded (nothing written)'), 'warning');
+    if (cur && S.d && S.d.id === cur.id) { S.d = cur; drawDetail(); }
+  }
+  /* 今も反映できるか読み直す（書かない・押さえない）。Tip Rate の確かめの画面を開く前 */
+  async function evalRead(r, k0){
+    var cur = null;
+    try { cur = await api({ action:'get', id:r.id }, k0); } catch(e) { showToast(String(e.message || e), 'error'); return null; }
+    var ok = cur.rev === r.rev && ((cur.can || []).indexOf('apply_start') >= 0 || claimHeld(cur) || claimPending(cur));
+    if (!ok) { movedFirst(cur); return null; }
+    return cur;
+  }
+  /* 押さえる（この端末がもう押さえていれば、そのまま使う）。返す：{ row, key } か null（ほかが先に進めた・通信できない） */
+  async function evalClaim(r, k0){
+    try {
+      if (claimHeld(r)) {
+        var cur = await api({ action:'get', id:r.id }, k0);
+        if (!claimHeld(cur)) { delete S.claims[r.id]; movedFirst(cur); return null; }
+        /* 30 分たった押さえは使わずに押さえ直す（そのあいだにほかの人が閉じられるため・独立レビュー P2-A） */
+        if ((cur.can || []).indexOf('apply_start') < 0) return { row:cur, key:S.claims[r.id].key };
+        delete S.claims[r.id]; r = cur;
+      }
+      /* 前の押さえの答えが届かなかったときは同じ鍵・同じ版で（サーバーは、その鍵がまだ押さえているときだけ答える） */
+      var pend = S.pend[r.id], key = pend ? pend.key : keyFor(r, 'apply_start'), rev = pend ? pend.rev : r.rev, row;
+      try { row = await api({ action:'act', id:r.id, op:'apply_start', expect_rev:rev, client_key:key }, k0); }
+      catch(e1) { if (e1.code === 'network') S.pend[r.id] = { key:key, rev:rev }; else delete S.pend[r.id]; throw e1; }
+      delete S.pend[r.id];
+      if ((row.can || []).indexOf('apply_done') < 0 || (row.status !== 'approved' && row.status !== 'apply_error')) { movedFirst(row); return null; }
+      S.claims[r.id] = { key:key, rev:row.rev };
+      return { row:row, key:key };
+    } catch(e) {
+      if (e.code === 'conflict' || e.code === 'forbidden') { try { movedFirst(await api({ action:'get', id:r.id }, k0)); } catch(e2) { movedFirst(null); } return null; }
+      showToast(String(e.message || e), 'error'); return null;
+    }
+  }
+  /* 押さえた鍵で記録する（apply_done・apply_fail・apply_cancel）。同じ版・同じ操作は同じ鍵（答えが来なかったときに押し直しても 1 回） */
+  async function claimEnd(id, rev, key, op, note, k0){
+    try {
+      var j = await api({ action:'act', id:id, op:op, expect_rev:rev, client_key:keyFor({ id:id, rev:rev }, op), claim:key, note:String(note || '').slice(0, 380) }, k0);
+      delete S.claims[id];
+      if (op !== 'apply_cancel') notifyAfter(op, j);
+      return j;
+    } catch(e) {
+      if (op === 'apply_done' && (e.code === 'conflict' || e.code === 'forbidden')) {
+        delete S.claims[id];
+        showToast(T('正式な値は書きましたが、反映の記録ができませんでした（30 分たったあとに、ほかの端末がこの申請を閉じたか、引き継ぎました）。正式な値を確かめてください','The official value was written, but the apply could not be recorded (after 30 minutes another device closed or took over this request). Check the official value'), 'error');
+      } else showToast(String(e.message || e), 'error');
+      return null;
+    }
+  }
+  async function evalFinish(r, key, op, note, k0){
+    S.busy = op; drawDetail();
+    var j = await claimEnd(r.id, r.rev, key, op, note, k0);
+    S.busy = '';
+    if (j) { if (op === 'apply_done') delete S.tipDone[r.id]; showToast(T(ACT_L[op][0], ACT_L[op][1]) + ' · ' + j.code + (op === 'apply_fail' && note ? '（' + note + '）' : ''), op === 'apply_done' ? 'success' : 'warning'); }
+    if (authKey() !== k0) return;
+    try { if (S.d && S.d.id === r.id) { S.d = await api({ action:'get', id:r.id }, k0); drawDetail(); } } catch(e) { drawDetail(); }
+    S.rows = null; reloadList();
+  }
+  async function evalApply(r){
+    if (!r || S.busy) return;
+    var k0 = authKey();
+    S.busy = 'apply'; drawDetail();
+    if (r.kind === 'tiprate') {
+      /* Tip Rate：ここでは押さえない（確かめの画面を閉じたら、ほかの端末を待たせない）。保存を押したときに押さえる */
+      var cur = await evalRead(r, k0); S.busy = '';
+      if (!cur || authKey() !== k0) { drawDetail(); return; }
+      if (S.tipDone[cur.id] && claimHeld(cur)) { await evalFinish(cur, S.claims[cur.id].key, 'apply_done', S.tipDone[cur.id], k0); return; }   /* この端末で決めたが記録できなかった：記録だけ */
+      tipApply(cur, k0); drawDetail(); return;
+    }
+    var c = await evalClaim(r, k0);
+    if (!c || authKey() !== k0) { S.busy = ''; drawDetail(); return; }
+    r = c.row;
+    var res;
+    try { res = r.kind === 'skill' ? await skillApply(r, k0) : await csApply(r, k0); } catch(e) { res = { ok:false, msg:String(e && e.message || e) }; }
+    S.busy = '';
+    if (res && res.skip) { drawDetail(); return; }   /* ログインが変わった：書いていない（押さえは 30 分で切れる） */
+    await evalFinish(r, c.key, res.ok ? 'apply_done' : 'apply_fail', String(res.msg || '').slice(0, 380) || (res.ok ? '' : T('反映できなかった','not applied')), k0);
+  }
+  W.wrEvalApply = function(){ evalApply(S.d); };
+  /* 反映中の知らせ（履歴の最後の押さえ） */
+  function applyingNote(r){
+    if (r.status !== 'approved' && r.status !== 'apply_error') return '';
+    var c = null;
+    (r.events || []).forEach(function(e){ if (e.action === 'apply_start') c = e; else if (['apply_cancel','apply_done','apply_fail','reject','approve','return','edit','resubmit','withdraw'].indexOf(e.action) >= 0) c = null; });
+    if (!c) return '';
+    var who = esc(c.by || '') + T('（' + esc(hstTime(c.at)) + ' から）', ' (since ' + esc(hstTime(c.at)) + ')');
+    var msg = (claimHeld(r) || claimPending(r)) ? T('この端末で反映しています。終わらなかったときは「正式な値に反映する」をもう一度押してください。','This device is applying it. If it did not finish, press “Apply to the official value” again.')
+      : (r.can || []).indexOf('apply_start') >= 0 ? T('前の反映 ','An earlier apply ') + who + T(' が途中で止まりました（30 分たちました）。正式な値がもう変わっていないか確かめてから、反映し直すか閉じてください。',' stopped halfway (30 minutes passed). Check whether the official value already changed, then apply again or close it.')
+      : who + T(' が反映しています。終わるまで、ほかの端末からは反映も閉じることもできません（30 分たっても終わらなければできます）。',' is applying it. Until it ends, other devices can neither apply nor close it (they can after 30 minutes).');
+    return '<div class="alert alert-info" style="margin-top:8px;font-size:12px">' + msg + '</div>';
+  }
+  function tipApply(r, k0){
     var p = r.payload || {}, name = evalName(r);
     if (typeof openTipRaiseModal !== 'function') { showToast(T('Tip Rate の画面がありません','No Tip Rate screen'), 'error'); return; }
-    var seenT = {}; try { (ls('tip_requests', []) || []).forEach(function(x){ if (x && x.id) seenT[x.id] = 1; }); } catch(e) {}
-    S.tipApply = { id:r.id, code:r.code, name:name, rate:p.rate_to, from:p.from_day, t0:Date.now(), k0:authKey(), seen:seenT };
+    S.tipApply = { id:r.id, code:r.code, name:name, rate:p.rate_to, from:p.from_day, t0:Date.now(), k0:k0, rev:r.rev };
     W._wrTipOpen = true;
     try { openTipRaiseModal(); } finally { W._wrTipOpen = false; }
     var ne = document.getElementById('tipraise-name'), re = document.getElementById('tipraise-rate'), fe = document.getElementById('tipraise-from');
@@ -100745,49 +100857,15 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try { var bx = document.getElementById('tipraise-preview'); if (bx && bx.insertAdjacentHTML) bx.insertAdjacentHTML('beforebegin', '<div class="alert alert-info" style="font-size:11.5px;margin-bottom:8px">' + T('ワークセンターの申請 ','Work Center request ') + esc(r.code) + T(' を反映します（' + esc(name) + ' → ' + p.rate_to + '%）。下の確かめのあと押してください。',' — applying ' + esc(name) + ' → ' + p.rate_to + '%. Press after checking below.') + '</div>'); } catch(e) {}
     try { if (typeof tipRaisePreview === 'function') tipRaisePreview(); } catch(e) {}
   }
-  /* 書く直前にサーバーで申請を読み直し、今も反映できる（同じ版）ときだけ（独立レビュー P2-4：古い画面で書き戻さない） */
-  async function evalFresh(r, k0){
-    var cur = null;
-    try { cur = await api({ action:'get', id:r.id }, k0); } catch(e) { showToast(String(e.message || e), 'error'); return null; }
-    if ((cur.can || []).indexOf('apply') < 0 || cur.rev !== r.rev) {
-      showToast(T('この申請はほかの人（または別のタブ）が先に進めました。最新を読み込みました（反映していません）','Someone (or another tab) moved this request first. The latest is loaded (nothing applied)'), 'warning');
-      if (S.d && S.d.id === r.id) { S.d = cur; drawDetail(); }
-      return null;
-    }
-    return cur;
+  /* 確かめの画面の選び方がこの申請と同じか（違う率・日・人なら、この申請の反映ではない） */
+  function tipFormIs(ctx){
+    var ne = document.getElementById('tipraise-name'), re = document.getElementById('tipraise-rate'), fe = document.getElementById('tipraise-from');
+    return !!(ne && re && ne.value === ctx.name && Number(re.value) === Number(ctx.rate) && String((fe && fe.value) || '') === String(ctx.from || ''));
   }
-  async function evalApply(r){
-    if (!r || S.busy) return;
-    var k0 = authKey();
-    if (r.kind === 'tiprate') { S.busy = 'apply'; var c0 = await evalFresh(r, k0); S.busy = ''; if (c0 && authKey() === k0) tipApply(c0); else drawDetail(); return; }
-    S.busy = 'apply'; drawDetail();
-    var res, fresh = await evalFresh(r, k0);
-    if (!fresh || authKey() !== k0) { S.busy = ''; drawDetail(); return; }
-    r = fresh;
-    try { res = r.kind === 'skill' ? await skillApply(r, k0) : await csApply(r); } catch(e) { res = { ok:false, msg:String(e && e.message || e) }; }
-    if (res && res.skip) { S.busy = ''; drawDetail(); return; }
-    S.busy = '';
-    if (authKey() !== k0 || !S.d || S.d.id !== r.id) return;
-    doAct(res.ok ? 'apply' : 'apply_fail', { note:String(res.msg || '').slice(0, 380) || (res.ok ? '' : T('反映できなかった','not applied')) });
-  }
-  W.wrEvalApply = function(){ evalApply(S.d); };
-  /* Tip Rate の確かめの画面で反映できたら、ワークセンターに反映の記録を 1 回だけ残す */
-  async function tipApplied(ctx){
-    try {
-      var reqs = ls('tip_requests', []) || [];
-      if (Date.now() - ctx.t0 > 30 * 60000) { S.tipApply = null; return; }
-      /* この画面で新しくできた決定だけ（前からある決定・時計の進んだ端末の決定と取り違えない） */
-      var hit = reqs.some(function(x){ return x && !(x.id && ctx.seen && ctx.seen[x.id]) && x.name === ctx.name && x.status === '承認' && Number(x.rate) === Number(ctx.rate) && String(x.fromDay || '') === String(ctx.from || '') && Number(x.decAt || 0) >= ctx.t0 - 2000; });
-      if (!hit) return;
-      S.tipApply = null;
-      var cur = await api({ action:'get', id:ctx.id }, ctx.k0);
-      if ((cur.can || []).indexOf('apply') >= 0) {
-        var j = await api({ action:'act', id:ctx.id, op:'apply', expect_rev:cur.rev, client_key:newKey(), note:ctx.name + ' ' + ctx.rate + '%（' + ctx.from + T(' から）',' on)') }, ctx.k0);
-        notifyAfter('apply', j); showToast(T('反映を記録しました：','Applied: ') + j.code, 'success');
-      }
-      if (S.d && S.d.id === ctx.id) { S.d = await api({ action:'get', id:ctx.id }, ctx.k0); drawDetail(); }
-      S.rows = null; if (onWrTab()) reloadList();
-    } catch(e) { showToast(String(e.message || e), 'error'); }
+  function tipSeenNow(){ var seen = {}; try { (ls('tip_requests', []) || []).forEach(function(x){ if (x && x.id) seen[x.id] = 1; }); } catch(e) {} return seen; }
+  /* この保存で新しくできた決定か（前からある決定・ほかの端末の決定と取り違えない） */
+  function tipHit(ctx, seen){
+    try { return (ls('tip_requests', []) || []).some(function(x){ return x && !(x.id && seen[x.id]) && x.name === ctx.name && x.status === '承認' && Number(x.rate) === Number(ctx.rate) && String(x.fromDay || '') === String(ctx.from || ''); }); } catch(e) { return false; }
   }
   /* ---- スキルマトリクスの表示対象（自分の表示設定・人 × 店・どの端末でも同じ） */
   function viewOf(store){ checkAuth(); S.views = S.views || {}; return S.views[store]; }
@@ -100862,13 +100940,37 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var oT = W.approveTip;
     if (typeof oT === 'function') W.approveTip = function(){ if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を決めません。GM が決めます（変えたいときは「GM に変更を申請」）','G4 does not decide Tip Rates; the GM does (use “Ask the GM”)')); return oT.apply(this, arguments); };
     var oO = W.openTipRaiseModal;
-    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrIsG4Live() && !W._wrTipOpen) return W.wrTipAsk(); return oO.apply(this, arguments); };
+    if (typeof oO === 'function') W.openTipRaiseModal = function(){ if (W.wrIsG4Live() && !W._wrTipOpen) return W.wrTipAsk(); if (!W._wrTipOpen) S.tipApply = null; /* 直接開いた画面はワークセンターの申請の反映ではない（独立レビュー R5） */ return oO.apply(this, arguments); };
     var oA = W.applyTipRaise;
     if (typeof oA === 'function') W.applyTipRaise = async function(){
       if (W.wrIsG4Live()) return g4Stop(T('G4 は Tip Rate を直接変えません（「GM に変更を申請」）','G4 does not change Tip Rates directly (use “Ask the GM”)'));
-      var ctx = S.tipApply, res = await oA.apply(this, arguments);
-      if (ctx && ctx.k0 === authKey()) await tipApplied(ctx);
-      return res;
+      var ctx = S.tipApply, self = this, args = arguments;
+      /* ワークセンターの申請の反映でない（ほかの率・日・人・別のログイン・Tip Rate の画面から直接開いた）ときは今までどおり。開いてからの時間では決めない（押さえが守る・独立レビュー P2-B） */
+      if (!ctx || ctx.k0 !== authKey() || !tipFormIs(ctx)) return oA.apply(self, args);
+      if (ctx.busy) return false;
+      ctx.busy = true;
+      try {
+        /* 書く前に押さえる（v1133・#124 の Codex のレビュー P2-1：確かめの画面を開いているあいだにほかの端末が閉じた申請からは書かない） */
+        var c = await evalClaim({ id:ctx.id, rev:ctx.rev, can:(S.claims[ctx.id] || S.pend[ctx.id]) ? ['apply_done'] : ['apply_start'] }, ctx.k0);
+        if (!c) { S.tipApply = null; try { closeModalDirect(); } catch(e) {} return false; }
+        ctx.rev = c.row.rev;
+        if (authKey() !== ctx.k0) return false;
+        var seen = tipSeenNow(), res = await oA.apply(self, args), hit = tipHit(ctx, seen);
+        if (authKey() !== ctx.k0) return res;   /* 別のログインでは記録しない（押さえは 30 分で切れる） */
+        var note = ctx.name + ' ' + ctx.rate + '%（' + ctx.from + T(' から）',' on)');
+        if (hit) {
+          S.tipApply = null; S.tipDone[ctx.id] = note;
+          var j = await claimEnd(ctx.id, ctx.rev, c.key, 'apply_done', note, ctx.k0);
+          if (j) { delete S.tipDone[ctx.id]; showToast(T('反映を記録しました：','Applied: ') + j.code, 'success'); }
+        } else {
+          /* 保存しなかった（画面を閉じた・選び直した・確かめでやめた）：押さえをやめる。何も変えていない */
+          var j2 = await claimEnd(ctx.id, ctx.rev, c.key, 'apply_cancel', '', ctx.k0);
+          if (j2) ctx.rev = j2.rev;
+        }
+        try { if (S.d && S.d.id === ctx.id) { S.d = await api({ action:'get', id:ctx.id }, ctx.k0); drawDetail(); } } catch(e) {}
+        S.rows = null; if (onWrTab()) reloadList();
+        return res;
+      } finally { ctx.busy = false; }
     };
     var oR = W.submitSkillReview;
     if (typeof oR === 'function') W.submitSkillReview = function(){ if (W.wrIsG4Live()) return g4Stop(T('スキルの申請は承認センターで決めます（G4 → GM）。ここでは直接承認しません','Skill requests are decided in the Approval Center (G4 → GM), not here')); return oR.apply(this, arguments); };
