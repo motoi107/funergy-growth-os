@@ -435,7 +435,7 @@ test('⑤ the edit time is recorded only for synced keys without a merge rule, a
   run(c, `_pendEditAtDrop('evaluations')`);
   assert.deepEqual(JSON.parse(c.LOCAL.get('_pend_edit_at')), {});
   assert.doesNotMatch(fnSrc('_pushWithOutbox'), /_pendEditAtMark/, 'not on every push attempt (retries, bulk pushes)');
-  assert.match(fnSrc('lsSet'), /_prevTxt!==_json && typeof _pendEditAtMark==='function'\) _pendEditAtMark\(key\)/);
+  assert.match(fnSrc('lsSet'), /_prevTxt!==_json && typeof _pendEditAtMark==='function'\) _pendEditAtMark\(key, _prevTxt, _json\)/);
   assert.match(fnSrc('_outboxRemove'), /_pendEditAtDrop\(key\)/);
   assert.match(fnSrc('_kvFetchKeys'), /select=key,value,updated_at/);
   assert.match(fnSrc('_kvPullRows'), /supaFetchAll\('app_state', 'key,value,updated_at', f\)/);
@@ -458,6 +458,8 @@ test('⑤（2 回目の独立レビュー P2-1）the edit time moves only when a
   c.NOW = 2000; run(c, `realLsSet('evaluations', { a: 1 })`);
   assert.equal(at().evaluations, 1000, 'same value saved again (e.g. a re-render that saves): the time does not move');
   assert.deepEqual(plain(run(c, 'PUSHED')), ['evaluations', 'evaluations'], 'it is still sent as before');
+  c.STORE.set('evaluations', '{"b":2,"a":1}'); c.NOW = 2500; run(c, `realLsSet('evaluations', { a: 1, b: 2 })`);
+  assert.equal(at().evaluations, 1000, 'same content with the keys in another order: the time does not move');
   c.NOW = 3000; run(c, `realLsSet('evaluations', { a: 2 })`);
   assert.equal(at().evaluations, 3000, 'changed value');
   c.NOW = 4000; run(c, `_pushWithOutbox('evaluations', { a: 2 })`);   // 送信待ちの送り直し・まとめて送る（lsSet を通らない）
@@ -510,10 +512,13 @@ test('③（2 回目の独立レビュー P2-2）a field another device already 
   run(A, 'v1136MoveLocalOnly()');
   const k = plain(run(A, `getDevData('Ken')`));
   assert.deepEqual(k.skillLevels, { Fry: 1, Grill: 3 }, 'B’s Fry=1 wins; A’s Grill stays');
-  assert.deepEqual(k.tests.map(t => t.course), ['Fry', 'Grill'], 'both tests');
-  assert.deepEqual(k.stageHistory.map(h => h.stage), [4, 3], 'both history entries');
+  assert.deepEqual(k.tests.map(t => t.course), ['Grill', 'Fry'], 'both tests; the old-only one goes first (the screens read the last one as the latest)');
+  assert.deepEqual(k.stageHistory.map(h => h.stage), [3, 4], 'both history entries, old first');
   assert.deepEqual(k.retrain, [{ item: 'Fry', reason: 'low', done: false, date: '2026/10/01' }]);
   assert.deepEqual(k.curriculum, { Knife: true });
+  // 3 回目の独立レビュー P3-1：前の版の古いテストが「最新の結果」にならない（画面は配列の最後を最新と読む）
+  const g = plain(run(A, `mergeFieldStampRec({ tests:[{ course:'Grill', score:60, pass:false, date:'2026/10/01' }] }, { tests:[{ course:'Grill', score:95, pass:true, date:'2026/11/03' }], _ft:{ tests: 5 } })`));
+  assert.deepEqual(g.tests.map(t => t.score), [60, 95]);
   // 合流の順によらない・何度合流しても同じ・B が受け取っても同じ
   const a = A.STORE.get('dev_pipe'), b = B.STORE.get('dev_pipe');
   const ab = run(A, `_cjson(mergeFieldStampMap(${a}, ${b}))`), ba = run(A, `_cjson(mergeFieldStampMap(${b}, ${a}))`);
@@ -532,11 +537,14 @@ test('③（P2-2）on the same device, the old record moved again at each login 
   const k = plain(run(c, `getDevData('Ken')`));
   assert.deepEqual(k.retrain.map(r => r.done), [true], 'no second, not-done copy');
   assert.equal(k.skillLevels.Grill, 3); assert.equal(k.tests.length, 2);
+  assert.equal(k.tests.slice(-1)[0].score, 95, 'the latest test is still the last one');
   // 「同じ要素」は真偽の欄だけが違うもの。ほかの欄が違えば別の要素として足す
   assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry', done:true })`), true);
   assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry', done:'yes' })`), false);
   assert.equal(run(c, `_fsSameEntry({ item:'Fry', done:false }, { item:'Fry' })`), false, 'other fields');
   assert.equal(run(c, `_fsSameEntry({ c:'A', s:60 }, { c:'A', s:61 })`), false);
+  assert.deepEqual(plain(run(c, `_fsFill(['a', 1], ['a', 'b', 'b', 1, 2])`)), ['b', 2, 'a', 1], 'plain values: added once, already-present ones not again');
+  assert.deepEqual(plain(run(c, `_fsFill({ x: 1 }, { x: 2, y: 3 })`)), { x: 1, y: 3 });
   // 時刻のある欄どうし（新しい版の 2 台）は今までどおり新しいほうで置き換える（足さない）
   const m = plain(run(c, `mergeFieldStampRec({ tests:[{c:'A'}], _ft:{ tests: 10 } }, { tests:[{c:'B'}], _ft:{ tests: 20 } })`));
   assert.deepEqual(m.tests, [{ c: 'B' }]);

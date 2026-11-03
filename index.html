@@ -9336,9 +9336,13 @@ function _fsRecWin(a, b){
 }
 /* 前の版の記録（欄の時刻なし）と、新しい版で直した欄（時刻あり）が出会ったとき（2 回目の独立レビュー P2-2）。
    前は新しいほうで丸ごと置き換え、まだ更新していない端末にしか無かったスキル・テストなどが、ほかの端末で同じ欄を直したあと黙って消えた。
-   いま：入れ物は欄ごとに足す（新しいほうが勝ち、前の版にしか無い欄を足す）、配列は前の版にしか無い要素を後ろに足す。
+   いま：入れ物は欄ごとに足す（新しいほうが勝ち、前の版にしか無い欄を足す）、配列は前の版にしか無い要素を前に足す（前の版の要素は古いので、
+   画面が「配列の最後＝いちばん新しい」と読む所（テストの結果・カリキュラムの最新のテスト）で、新しい結果が最新のまま）。
    同じ要素は「中身が同じ」か「真偽の欄（done など）だけ違う」で見分ける（再教育を済みにした要素を、前の版の済みでない写しで二重にしない）。
-   中身を消す作り（入れ物の欄・配列の要素を消す）は育成の記録に無い。ほかの値（ステージ・目標など）は今までどおり新しいほう */
+   ほかの値（ステージ・目標など）は今までどおり新しいほう。
+   【気をつけること（3 回目の独立レビュー P3）】前の名前の記録（dev_data）は消さず、ログインのたびに移し替える（v1136MoveLocalOnly）ので、
+   そのたびにここで前の版の中身が足される。いま安全なのは、育成の記録に「入れ物の欄・配列の要素を消す」「要素の真偽でない値を直す」作りが無いから。
+   消す・直す作りを足すときは、前の名前の記録の移し替えを 1 回だけにするか、ここで足さない形にすること（足さないと消したものが戻る・二重になる） */
 function _fsSameEntry(x, y){
   var xo=(x && typeof x==='object' && !Array.isArray(x)), yo=(y && typeof y==='object' && !Array.isArray(y));
   if(!xo || !yo) return false;
@@ -9353,14 +9357,14 @@ function _fsSameEntry(x, y){
 }
 function _fsFill(nv, ov){
   if(Array.isArray(nv) && Array.isArray(ov)){
-    var seen={}, out=nv.slice();
+    var seen={}, add=[];
     nv.forEach(function(v){ seen[_cjson(v)]=1; });
     ov.forEach(function(v){
       var j=_cjson(v); if(seen[j]) return;
       for(var i=0;i<nv.length;i++){ if(_fsSameEntry(nv[i], v)) return; }
-      seen[j]=1; out.push(v);
+      seen[j]=1; add.push(v);
     });
-    return out;
+    return add.length ? add.concat(nv) : nv.slice();
   }
   var no=(nv && typeof nv==='object' && !Array.isArray(nv)), oo=(ov && typeof ov==='object' && !Array.isArray(ov));
   if(no && oo){
@@ -9529,10 +9533,12 @@ function _pullPendingMap(){
 /* 合流の決まりの無いキーを、この端末で最後に直した時刻（送信待ちのあいだの取り込みで「どちらが新しいか」を決める。この端末だけ） */
 var PEND_EDIT_KEY = '_pend_edit_at';
 function _pendEditAtAll(){ try{ var o=JSON.parse(localStorage.getItem(PEND_EDIT_KEY)||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
-function _pendEditAtMark(key){
+function _pendEditAtMark(key, prevTxt, nextTxt){
   try{
     if(!key || typeof isOpSyncKey!=='function' || !isOpSyncKey(key)) return;   /* 時刻で比べるのは app_state の行だけ（端末だけのキーは覚えない） */
     if(typeof _opMergeDef==='function' && _opMergeDef(key)) return;   /* 合流の決まりのあるキーは要らない */
+    /* lsSet から：中身が同じで、欄の順だけ違う保存は「直した」にしない（3 回目の独立レビュー P3） */
+    if(prevTxt!=null && nextTxt!=null && typeof _cjson==='function'){ try{ if(_cjson(JSON.parse(prevTxt))===_cjson(JSON.parse(nextTxt))) return; }catch(e){} }
     var o=_pendEditAtAll(); o[key]=Date.now(); localStorage.setItem(PEND_EDIT_KEY, JSON.stringify(o));
   }catch(e){}
 }
@@ -10625,7 +10631,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
 
   // 本番移行フェーズ1: マスターはSupabaseにも書き込む（両方書き込み・安全策）
   // 端末に保存できなかった場合でも push は行う。ここで送っておかないと入力内容がどこにも残らない。
-  try{ if(SUPA_SYNC_ENABLED && !(typeof _supaBooting!=='undefined' && _supaBooting) && _prevTxt!==_json && typeof _pendEditAtMark==='function') _pendEditAtMark(key); }catch(e){}   /* v1136 */
+  try{ if(SUPA_SYNC_ENABLED && !(typeof _supaBooting!=='undefined' && _supaBooting) && _prevTxt!==_json && typeof _pendEditAtMark==='function') _pendEditAtMark(key, _prevTxt, _json); }catch(e){}   /* v1136 */
   try { if (SUPA_SYNC_ENABLED) _pushWithOutbox(key, val); } catch(e){ console.warn('supa sync skip', e); }
   return _ok;
 }).apply(this,arguments);
