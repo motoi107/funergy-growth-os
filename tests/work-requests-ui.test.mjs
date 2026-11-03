@@ -11,7 +11,9 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const B = '/* ==== FUNERGY_WR（v1131', E = '/* ==== FUNERGY_WR end ==== */';
 const MOD = html.slice(html.indexOf(B), html.indexOf(E));
-const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8');
+// v1132：2 段目の SQL（種類で振り分ける）を重ねても 1 段目の動きは同じ
+const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8')
+  + '\n' + fs.readFileSync(new URL('../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), 'utf8');
 const PEOPLE = [['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3', 'Ann Acct', 'office', 'Accountant', 'OFFICE', 'office'],
   ['E4', 'Oli Crew', 'office_crew', 'Office Crew', 'OFFICE', 'office_crew'], ['E5', 'Ami Area', 'am', 'Area Manager', 'S1', null],
   ['E6', 'Sam Store', 'sl', 'Store Manager', 'S1', null], ['E7', 'Lee Leader', 'sl', 'Server Leader', 'S1', null], ['E11', 'Ned Leader', 'sl', 'Operation Leader', 'S1', null]];

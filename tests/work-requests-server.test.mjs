@@ -6,7 +6,9 @@ import fs from 'node:fs';
 import { createHandler, normPayload } from '../supabase/functions/work-requests/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8');
+// v1132：2 段目の SQL（種類で振り分ける）を重ねても 1 段目の動きは同じ
+const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8')
+  + '\n' + fs.readFileSync(new URL('../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), 'utf8');
 
 const PEOPLE = [
   // id, name, role, title, store, support, status, manager_auth role

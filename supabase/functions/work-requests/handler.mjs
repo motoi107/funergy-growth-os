@@ -1,4 +1,4 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種）。仕様：docs/WORK_REQUESTS_V1131_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定）。仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -36,6 +36,13 @@ const ID = v => (typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 const CODE = v => (typeof v === 'string' && /^[A-Z]{2}-\d{4}-\d{4,6}$/.test(v) ? v : null);
 
 export const KINDS = ['mileage', 'reimburse', 'expense_pre'];
+// v1132：評価の変更（G4 → GM）。スキル Lv・Career Score・Tip Rate
+export const EVAL_KINDS = ['skill', 'cs', 'tiprate'];
+export const ALL_KINDS = [...KINDS, ...EVAL_KINDS];
+export const TIP_RATES = [80, 90, 100];
+const EMP = v => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(v)) throw bad(); return v; };
+const LV = (v, max, nullable) => { if (v == null && nullable) return null; if (!Number.isInteger(v) || v < 0 || v > max) throw bad(); return v; };
+const NUMN = (v, max) => { if (v == null) return null; if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > max) throw bad(); return Math.round(v * 100) / 100; };
 export const MILEAGE_PURPOSES = ['買い出し', 'ミーティング', '銀行・郵便', '店舗間移動', 'その他'];
 export const LIMITS = { text: 200, long: 600, note: 400, method: 60, name: 80 };
 
@@ -69,10 +76,35 @@ export function normPayload(kind, p) {
     return { date: DT(p.date), dept: TS(p.dept, 60), project: TS(p.project, L.text), purpose, description: TS(p.description, L.long), location: TS(p.location, L.text),
       participants: n, per_person_cents: pp, total_cents: CENTS(p.total_cents), memo: TS(p.memo, L.long) };
   }
+  // v1132：評価の変更。対象の人・今の値 → 申請する値・理由（必ず）。対象・店・グレードはサーバー（wr_norm_eval）がもう一度確かめる。
+  if (EVAL_KINDS.includes(kind)) {
+    const reason = TS(p.reason, L.long);
+    if (!reason) throw bad();
+    const base = { target_emp: EMP(p.target_emp), target_name: TS(p.target_name, L.name), reason };
+    if (kind === 'tiprate') {
+      if (!TIP_RATES.includes(p.rate_to)) throw bad();
+      return { ...base, rate_from: LV(p.rate_from, 100, true), rate_to: p.rate_to, from_day: DT(p.from_day) };
+    }
+    const max = kind === 'skill' ? 30 : 200, top = kind === 'skill' ? 5 : 3;
+    if (!Array.isArray(p.items) || p.items.length < 1 || p.items.length > max) throw bad();
+    const seen = new Set();
+    const items = p.items.map(x => {
+      x = obj(x);
+      const k = kind === 'skill' ? TS(x.pos, 60) : TS(x.key, 40);
+      if (!k || seen.has(k)) throw bad();
+      seen.add(k);
+      const from = LV(x.from, top, true), to = LV(x.to, top, kind === 'cs');   // Career Score は「未採点に戻す」（null）もある
+      return kind === 'skill' ? { pos: k, from, to } : { key: k, label: TS(x.label, 120), from, to };
+    });
+    if (kind === 'skill') return { ...base, items };
+    const lss = TS(p.lss_req, 80);
+    if (!lss || !/^[A-Za-z0-9_.:-]+$/.test(lss)) throw bad();
+    return { ...base, items, lss_req: lss, quarter: TS(p.quarter, 20), total_from: NUMN(p.total_from, 10000), total_to: NUMN(p.total_to, 10000) };
+  }
   throw bad();
 }
 
-export const ACTS = ['edit', 'resubmit', 'withdraw', 'approve', 'return', 'reject', 'check', 'pay', 'dup_ok', 'undo'];
+export const ACTS = ['edit', 'resubmit', 'withdraw', 'approve', 'return', 'reject', 'check', 'pay', 'dup_ok', 'undo', 'apply', 'apply_fail'];
 
 export function createHandler(deps) {
   const env = deps.env;
@@ -101,18 +133,22 @@ export function createHandler(deps) {
 
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
-    whoami: w => db.rpc('wr_whoami', w),
+    // fn：関数の版（v1132 から 2）・sql：SQL の段（2 段目の SQL が無ければ 1）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
+    whoami: async w => {
+      const [me, st] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null)]);
+      return { ...me, fn: 2, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
+    },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
       const state = ['open', 'closed', 'all'].includes(b.state) ? b.state : 'open';
-      const kind = b.kind == null || b.kind === '' ? null : (KINDS.includes(b.kind) ? b.kind : (() => { throw bad(); })());
+      const kind = b.kind == null || b.kind === '' ? null : (ALL_KINDS.includes(b.kind) ? b.kind : (() => { throw bad(); })());
       const store = b.store == null || b.store === '' ? null : STORE(b.store);
       const limit = Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 1000 ? b.limit : 300;
       return db.rpc('wr_list', { ...w, scope, state, kind, store, from: DTO(b.from), to: DTO(b.to), limit });
     },
     get: (w, b) => db.rpc('wr_get', { ...w, ...ref(b) }),
     submit: (w, b) => {
-      if (!KINDS.includes(b.kind)) throw bad();
+      if (!ALL_KINDS.includes(b.kind)) throw bad();
       return db.rpc('wr_submit', { ...w, kind: b.kind, store_id: STORE(b.store_id), payload: normPayload(b.kind, b.payload), client_key: KEY(b.client_key),
         dup_reason: TS(b.dup_reason, LIMITS.note) || null });
     },
@@ -121,7 +157,7 @@ export function createHandler(deps) {
       if (!ACTS.includes(b.op)) throw bad();
       const p = { ...w, ...ref(b), action: b.op, expect_rev: REV(b.expect_rev), client_key: KEY(b.client_key), note: TS(b.note, LIMITS.note) || null };
       if (b.op === 'edit' || b.op === 'resubmit') {
-        if (!KINDS.includes(b.kind)) throw bad();
+        if (!ALL_KINDS.includes(b.kind)) throw bad();
         p.payload = normPayload(b.kind, b.payload);
         p.dup_reason = TS(b.dup_reason, LIMITS.note) || null;
       }
@@ -143,6 +179,14 @@ export function createHandler(deps) {
         q.emps = b.emps;
       }
       return db.rpc('wr_people_sync', q);
+    },
+    // v1132：スキルマトリクスの「自分の表示設定」（人 × 店・非表示の人の社員 ID）
+    view_get: (w, b) => db.rpc('wr_view_get', { ...w, store: STORE(b.store) }),
+    view_save: (w, b) => {
+      if (!Array.isArray(b.hidden) || b.hidden.length > 500) throw bad();
+      const hidden = [...new Set(b.hidden.map(EMP))];
+      if (!Number.isInteger(b.expect_rev) || b.expect_rev < 0 || b.expect_rev > 1e9) throw bad();
+      return db.rpc('wr_view_save', { ...w, store: STORE(b.store), hidden, expect_rev: b.expect_rev });
     },
   };
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,

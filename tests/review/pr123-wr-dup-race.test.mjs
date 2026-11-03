@@ -105,8 +105,10 @@ async function fixture(C) {
     insert into public.app_state(key, value) values ('mileage_config', '{"ratePerMile":0.7}');`;
   fs.writeFileSync(path.join(C.dir, 'boot.sql'), boot);
   fs.copyFileSync(new URL('../../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), path.join(C.dir, 'wr.sql'));
+  // v1132：2 段目（種類で振り分ける wr_submit）も重ねて、振り分けたあとも同じく 1 本ずつになることを確かめる
+  fs.copyFileSync(new URL('../../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), path.join(C.dir, 'wr2.sql'));
   const file = f => run('psql', ['-h', C.dir, '-p', C.port, '-U', 'postgres', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q', '-f', path.join(C.dir, f)]);
-  await file('boot.sql'); await file('wr.sql');
+  await file('boot.sql'); await file('wr.sql'); await file('wr2.sql');
   await C.one('update public.wr_settings set live = true');
 }
 
