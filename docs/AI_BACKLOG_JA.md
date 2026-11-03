@@ -14,6 +14,7 @@
 1. 済（Claude）：原因（hyper-worker のグループ名が Customers ちょうど・LaLa は Customer Property）・hyper-worker v1130（非公開）・アプリ v1130（`docs/LALA_VISIT_V1130_JA.md`）。
 2. 済（Moto さん 11/02 11:18 HST）：`db/lala-visit-diag-2.sql` の結果＝LaLa は 9/26〜10/21 の一部の注文だけ押し、10/22 から押していない。
 2b. 済（Moto さん 11/02 13:07 HST）：取り込み直しと `db/lala-visit-after-check.sql` の結果（10 月は一致・9/22〜9/25 は商品の行に来店区分なし・11/01 は対象データなし）。
+2e. 済（Claude 11/02）：#122 のレビューの P2 2 つ（取得の失敗を欠落と見せる・照合の SQL の NULL）と時刻の説明・記録の訂正。次：Codex の再レビュー。Moto さん（任意・読むだけ）：直した `db/lala-visit-after-check.sql` を流し直して「未確認」の日が無いか。
 2d. Moto さん（任意）：来店区分の診断（LaLa・9/23）の「モディファイア由来」で 9/22〜9/25 を確かめる（確かめるまで取り込み直さない）。
 2c. Moto さんの判断：LaLa でも注文ごとに FT・RP・SR を押す運用にするか（押さないと 10/22 からは「対象データなし」のまま）。
 3. Claude：照合の結果と画面の数を比べて報告（完了の条件 1〜7）。
@@ -22,7 +23,7 @@
 
 ## 2026-11-02 引き継ぎ（#119・#120 マージ済み・本番 v1129）
 
-1. 済（Moto さん 11/02 09:25・09:26 HST）：#119（v1128）・#120（v1129）をマージ。`955fb61` の Codex の再レビューはマージの前に無かった。
+1. 済（Moto さん 11/02 09:25・09:26 HST）：#119（v1128）・#120（v1129）をマージ。`955fb61` の Codex の再レビューは Codex 側で済んでいた（blocked／manual・その回は GitHub に投稿しない指定）。GitHub に判定のコメントは無く、承認ではない（11/02 の Codex の指摘で訂正）。
 2. Moto さん：端末を 1129 に → 実機（Tip の前の期間・店の切り替え・ログインのあとの表示）。
 3. Moto さん：`db/menu-names-check.sql`・`db/onboarding-secrets-check.sql`（どちらも読むだけ）の結果を Claude に。
 4. LaLa：診断の結果・運用の決めごと・hyper-worker のソース・UI案67（`docs/LALA_MENU_REPEAT_V1129_JA.md` の 6）。

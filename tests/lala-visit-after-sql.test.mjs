@@ -58,3 +58,43 @@ test('一致・違う・保存の行なし・来店区分なし・休み・月�
   assert.match(r2.find(r => r.part === 'total').c, /→ 対象データなし/);
   await pg.close();
 });
+
+// 11/02 のレビュー（Codex P2）：保存の値が空（NULL）・読めない日を 0 とみなして「一致」「来店区分なし」にしない。月と全期間の保存の数・率に入れない。
+test('保存の値が空（NULL）・読めない日は「未確認」：一致・来店区分なしにしない・保存の合計と率から外す', async () => {
+  const pg = new PGlite();
+  await pg.exec(`create table public.stores(id text primary key, toast_guid text);
+    create table public.toast_menu_items(id serial, restaurant_guid text, guid text, category text, name text, price numeric, active boolean);
+    create table public.toast_item_sales(id serial, restaurant_guid text, item_guid text, business_month text, qty numeric, business_date date);
+    create table public.toast_sales(id serial, restaurant_guid text, business_date date, net_sales numeric, guest_count int, order_count int,
+      first_time_count text, repeat_count text, super_regular_count text, fetched_at timestamptz);
+    insert into stores values ('F06','g6');
+    insert into toast_menu_items(restaurant_guid,guid,category,name) values ('g6','x1','Customer Property','FT'),('g6','x2','Customer Property','RP'),('g6','x3','Customer Property','SR');
+    -- 9/26：商品 FT 3・RP 0・SR 0、保存 FT 3・RP+SR 空・SR 空（前は「一致」になっていた）
+    insert into toast_item_sales(restaurant_guid,item_guid,qty,business_date) values ('g6','x1',3,'2026-09-26');
+    insert into toast_sales(restaurant_guid,business_date,net_sales,guest_count,order_count,first_time_count,repeat_count,super_regular_count)
+      values ('g6','2026-09-26',2000,40,15,'3',null,null);
+    -- 9/27：3 つとも空・売上あり・商品の行なし（前は「来店区分なし」になっていた）
+    insert into toast_sales(restaurant_guid,business_date,net_sales,guest_count,order_count,first_time_count,repeat_count,super_regular_count)
+      values ('g6','2026-09-27',1500,30,12,null,null,null);
+    -- 9/28：読めない値（数でない）
+    insert into toast_sales(restaurant_guid,business_date,net_sales,guest_count,order_count,first_time_count,repeat_count,super_regular_count)
+      values ('g6','2026-09-28',1500,30,12,'2','x','0');
+    -- 9/29：そろった値で一致（FT 1・RP+SR 1・SR 0）
+    insert into toast_item_sales(restaurant_guid,item_guid,qty,business_date) values ('g6','x1',1,'2026-09-29'),('g6','x2',1,'2026-09-29');
+    insert into toast_sales(restaurant_guid,business_date,net_sales,guest_count,order_count,first_time_count,repeat_count,super_regular_count)
+      values ('g6','2026-09-29',900,20,8,'1','1','0');`);
+  const rows = (await pg.query(SQL)).rows;
+  const day = d => rows.find(r => r.part === 'day' && r.a === d);
+  assert.equal(day('2026-09-26').e, '未確認（保存の値が空）');
+  assert.equal(day('2026-09-26').d, '保存 FT 3 · RP+SR 空 · SR 空');
+  assert.equal(day('2026-09-27').e, '未確認（保存の値が空）');
+  assert.equal(day('2026-09-28').e, '未確認（保存の値が空）');
+  assert.equal(day('2026-09-29').e, '一致');
+  assert.equal(day('2026-09-30').d, '保存 -');
+  const sep = rows.find(r => r.part === 'month' && r.a.startsWith('2026-09'));
+  // 保存の数は 9/29 だけ：FT 1・RP+SR 1 → 50.0%（9/26 の FT 3 を入れない）
+  assert.match(sep.d, /保存 FT 1 · RP\+SR 1 · SR 0 → 50\.0%/);
+  assert.match(sep.e, /未確認 3/);
+  assert.match(sep.b, /来店区分のある日 1 \//);
+  await pg.close();
+});
