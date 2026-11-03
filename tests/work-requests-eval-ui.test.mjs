@@ -1,4 +1,4 @@
-// v1132 work-requests 2 段目の画面：本物の画面のコード（index.html の FUNERGY_WR）を VM で、本物の handler と SQL（1 段目＋2 段目・PGlite）へ。
+// v1132 work-requests 2 段目の画面：本物の画面のコード（index.html の FUNERGY_WR）を VM で、本物の handler と SQL（1 段目＋2 段目＋v1133 の反映の押さえ・PGlite）へ。
 // スキル・Career Score・Tip Rate の正式な値の書き込みは、アプリの関数の代わり（合成データ）で記録する。
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,7 +11,8 @@ const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node
 const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const MOD = html.slice(html.indexOf('/* ==== FUNERGY_WR（v1131'), html.indexOf('/* ==== FUNERGY_WR end ==== */'));
 const MIG = fs.readFileSync(new URL('../supabase/migrations/20261104090000_work_requests.sql', import.meta.url), 'utf8') + '\n'
-  + fs.readFileSync(new URL('../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), 'utf8');
+  + fs.readFileSync(new URL('../supabase/migrations/20261105090000_work_requests_eval.sql', import.meta.url), 'utf8') + '\n'
+  + fs.readFileSync(new URL('../supabase/migrations/20261106090000_work_requests_apply_claim.sql', import.meta.url), 'utf8');
 const PEOPLE = [['E2', 'Gabe GM', 'gm', 'General Manager', 'OFFICE', 'gm'], ['E3', 'Ann Acct', 'office', 'Accountant', 'OFFICE', 'office'],
   ['E5', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E6', 'Sam Store', 'sl', 'Store Manager', 'S1', null], ['E7', 'Lee Leader', 'sl', 'Server Leader', 'S1', null],
   ['E8', 'Cam Crew', 'crew', 'Crew', 'S1', null], ['E9', 'Kai Kitchen', 'sl', 'Kitchen Leader', 'S2', null]];
@@ -94,8 +95,8 @@ async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = 
     submitSkillReview: (...a) => calls.push(['skillReview', ...a]),
     openTipRaiseModal: () => { calls.push(['raiseModal']); dom.parse('<select id="tipraise-name"><option value="Cam Crew">Cam</option></select><select id="tipraise-rate"><option value="80"></option><option value="90"></option><option value="100"></option></select><input id="tipraise-from" value=""><div id="tipraise-preview"></div>'); },
     tipRaisePreview: () => {},
-    applyTipRaise: async () => { const n = dom.els['tipraise-name'].value, r = +dom.els['tipraise-rate'].value, f = dom.els['tipraise-from'].value;
-      calls.push(['raise', n, r, f]); cloud.tips.push({ id: 'tip' + Date.now(), name: n, rate: r, status: '承認', fromDay: f, decAt: Date.now() }); },
+    applyTipRaise: async () => { if (cloud.raiseWait) await cloud.raiseWait; if (cloud.raiseSkip) return; const n = dom.els['tipraise-name'].value, r = +dom.els['tipraise-rate'].value, f = dom.els['tipraise-from'].value;
+      calls.push(['raise', n, r, f]); cloud.tips.push({ id: 'tip' + Date.now() + '_' + cloud.tips.length, name: n, rate: r, status: '承認', fromDay: f, decAt: Date.now() }); },
   };
   ctx.window = ctx;
   vm.createContext(ctx);
@@ -152,7 +153,7 @@ test('Tip Rate: a G4 asks from the Tip Rate screen; the GM approves, checks on t
   const st = (await srv.pg.query(`select status, close_reason from public.wr_requests where id = $1`, [tr.id])).rows[0];
   assert.equal(st.status, 'applied'); assert.match(st.close_reason, /Cam Crew 90%/);
   await gm.ctx.applyTipRaise(); await gm.settle();
-  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply'`, [tr.id])).rows[0].n, 1, 'recorded once');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply_done'`, [tr.id])).rows[0].n, 1, 'recorded once');
 });
 
 test('Career Score: the G4’s score request becomes a CS request; only Work Center decides it; apply errors are recorded and retried', async () => {
@@ -213,7 +214,7 @@ test('the v1131 function (no fn in whoami) is reported as the earlier version, n
   const g4 = await app(old, 'E6', { role: 'am', realRole: 'g4', cloud });
   g4.dom.els['ssk-p_Grill'] = { value: '2' }; g4.dom.els['ssk-reason'] = { value: '理由' };
   await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
-  assert.ok(g4.toasts.some(t => /前の版（v1131）/.test(t[1])), JSON.stringify(g4.toasts));
+  assert.ok(g4.toasts.some(t => /前の版です/.test(t[1])), JSON.stringify(g4.toasts));
   const now = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud });
   now.dom.els['ssk-p_Grill'] = { value: '9' }; now.dom.els['ssk-reason'] = { value: '理由' };
   await now.ctx.wrSkillAsk('Cam Crew', 'S1'); await now.settle();
@@ -233,18 +234,22 @@ test('Tip Rate: saving a different rate or day on the raise screen is not record
   gm.dom.els['tipraise-rate'].value = '100';
   await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
   assert.equal(await st(), 'approved', 'a different rate is not this request');
+  assert.ok(!(await srv.pg.query(`select action from public.wr_events where request_id = $1`, [id])).rows.some(x => x.action === 'apply_start'), 'v1133: and it does not hold the request');
   gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('apply'); await gm.settle();
   gm.dom.els['tipraise-from'].value = '2026-12-01';
   await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
   assert.equal(await st(), 'approved', 'a different day is not this request');
   gm.ctx.wrOpen(id); await gm.settle(); gm.ctx.wrAsk('apply'); await gm.settle();
   const ceo = (await srv.pg.query(`select rev from public.wr_requests where id = $1`, [id])).rows[0];
-  const r = await srv.handler(new Request('https://db.test/functions/v1/work-requests', { method: 'POST', body: JSON.stringify({ pin_session: 'pin-E2', action: 'act', id, op: 'apply', expect_rev: ceo.rev, client_key: 'k-other-device-1', note: 'other device' }) }));
+  const h = body => srv.handler(new Request('https://db.test/functions/v1/work-requests', { method: 'POST', body: JSON.stringify({ pin_session: 'pin-E2', ...body }) }));
+  const st1 = await (await h({ action: 'act', id, op: 'apply_start', expect_rev: ceo.rev, client_key: 'k-other-device-0' })).json();
+  const r = await h({ action: 'act', id, op: 'apply_done', expect_rev: st1.rev, client_key: 'k-other-device-1', claim: 'k-other-device-0', note: 'other device' });
   assert.equal(r.status, 200);
-  const before = gm.toasts.length;
+  const before = gm.toasts.length, raised = gm.calls.filter(c => c[0] === 'raise').length;
   await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
   assert.equal(gm.toasts.slice(before).filter(t => t[0] === 'error').length, 0, 'already applied on another device: no error, no second record');
-  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply'`, [id])).rows[0].n, 1);
+  assert.equal(gm.calls.filter(c => c[0] === 'raise').length, raised, 'v1133: and no second Tip Rate decision either');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply_done'`, [id])).rows[0].n, 1);
 });
 
 test('a second ask for the same person adds to the open request (skills); another store’s open request stops it', async () => {
@@ -283,7 +288,8 @@ test('apply checks the request again first; a Career Score request must point at
   const h = (body) => srv.handler(new Request('https://db.test/functions/v1/work-requests', { method: 'POST', body: JSON.stringify({ pin_session: 'pin-E2', ...body }) })).then(r => r.json());
   const ap = await h({ action: 'act', id: sk.id, op: 'approve', expect_rev: sk.rev, client_key: 'k-other-000001' });
   gm.ctx.wrOpen(sk.id); await gm.settle();
-  await h({ action: 'act', id: sk.id, op: 'apply', expect_rev: ap.rev, client_key: 'k-other-000002', note: 'other device' });
+  const st2 = await h({ action: 'act', id: sk.id, op: 'apply_start', expect_rev: ap.rev, client_key: 'k-other-000003' });
+  await h({ action: 'act', id: sk.id, op: 'apply_done', expect_rev: st2.rev, client_key: 'k-other-000002', claim: 'k-other-000003', note: 'other device' });
   gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
   assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'nothing written from the stale screen');
   assert.ok(gm.toasts.some(t => /先に進めました/.test(t[1])));
@@ -322,18 +328,19 @@ test('Tip Rate: an older decision with the same rate (even one dated ahead) is n
 
 test('the real Career Score approval lets the CEO apply a Work Center request (the server checked the approval), and still refuses otherwise', () => {
   const src = html.slice(html.indexOf('function approveLssScoreRequest(id){'), html.indexOf('/* ★v999: 却下。'));
-  const mk = (wrApplying, reqWr) => {
+  const mk = (wrApplying, reqWr, role = 'ceo') => {
     const reqs = [{ id: 'q1', kind: 'score', name: 'Cam Crew', status: '申請中', by: 'Sam Store', wr: reqWr, diff: [{ id: 'B-2', to: 2 }] }];
     const toasts = [], saved = [];
     const c = { window: {}, getLssRequests: () => reqs, _srPending: r => r.status === '申請中', lssCanApproveScoreFor: () => false, lssReqByMe: () => false, lssScoreSetNg: () => false,
       getLssScores: () => ({ scores: { 'B-2': 3 } }), lssSummary: () => ({ totalPct: 50, totalScore: 10, totalMax: 20 }), setLssScores: (n, v) => saved.push(v), ls: (k, d) => d, lsSet: () => true,
-      addNotif: () => {}, showToast: (m) => toasts.push(m), renderPage: () => {}, todayJP: () => '2026/11/02', lssApproverName: () => 'Cora CEO', t: a => a, ROLE_CONFIG: {}, curRole: 'ceo', curUserName: 'Cora CEO', lssItemSetOf: () => 'general' };
+      addNotif: () => {}, showToast: (m) => toasts.push(m), renderPage: () => {}, todayJP: () => '2026/11/02', lssApproverName: () => 'Cora CEO', t: a => a, ROLE_CONFIG: {}, curRole: role, curUserName: 'Cora CEO', lssItemSetOf: () => 'general' };
     c.window._wrApplying = wrApplying; vm.createContext(c); vm.runInContext(src, c); c.approveLssScoreRequest('q1');
     return { status: reqs[0].status, saved: saved.length, toasts };
   };
   assert.deepEqual(mk('CS-2611-0001', 'CS-2611-0001').status, '承認', 'applying the Work Center request it belongs to');
   assert.equal(mk(null, 'CS-2611-0001').status, '申請中', 'not applying: the usual check (only the GM)');
   assert.equal(mk('CS-2611-0002', 'CS-2611-0001').status, '申請中', 'another request’s code does not open it');
+  assert.equal(mk('CS-2611-0001', 'CS-2611-0001', 'crew').status, '申請中', 'v1133: the code alone does not open it when the sign-in is not a GM or the CEO');
 });
 
 test('Career Score apply refuses each mismatch on its own: another person, a self-review, other values', async () => {
@@ -366,5 +373,5 @@ test('a v1132 function on the stage-1 SQL says so (not “check the values”)',
   const g4 = await app(stage1, 'E6', { role: 'am', realRole: 'g4', cloud });
   g4.dom.els['ssk-p_Grill'] = { value: '2' }; g4.dom.els['ssk-reason'] = { value: 'r' };
   await g4.ctx.wrSkillAsk('Cam Crew', 'S1'); await g4.settle();
-  assert.ok(g4.toasts.some(t => /1 段目（v1131）のまま/.test(t[1])), JSON.stringify(g4.toasts));
+  assert.ok(g4.toasts.some(t => /前の段のまま/.test(t[1])), JSON.stringify(g4.toasts));
 });
