@@ -2836,17 +2836,26 @@ async function fetchToastMenuItems(guid) {
 async function supaFetchAllRows(path, opt){
   opt = opt || {};
   var page = opt.page || 1000, max = opt.max || 100000;
-  var out = [];
+  var out = [], err = '', cut = false;
+  /* v1130（#122 のレビュー）：読めなかった・途中で切れた・上限で止めた、を空の結果と分ける。配列はそのまま返し、印を付ける
+     （_err＝読めなかった理由・_partial＝2 ページ目より後で読めなかった・_cut＝上限まで読んで止めた）。今までの使い方は配列のまま。 */
   for (var off = 0; off < max; off += page) {
     var url = SUPABASE_URL + '/rest/v1/' + path
       + (path.indexOf('?') >= 0 ? '&' : '?') + 'limit=' + page + '&offset=' + off;
     var res = await fetch(url, { headers: { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON } });
-    if (!res.ok) break;
-    var rows = await res.json();
-    if (!Array.isArray(rows) || !rows.length) break;
+    if (!res.ok) { err = 'http_' + res.status; break; }
+    var rows;
+    try { rows = await res.json(); } catch (e) { err = 'bad_json'; break; }
+    if (!Array.isArray(rows)) { err = 'bad_json'; break; }
+    if (!rows.length) break;
     out = out.concat(rows);
     if (rows.length < page) break;      /* 最後のページ */
+    if (off + page >= max) cut = true;  /* 上限まで読んだ（続きがあるかもしれない） */
   }
+  try {
+    if (err) { Object.defineProperty(out, '_err', { value: err }); if (out.length) Object.defineProperty(out, '_partial', { value: true }); }
+    if (cut) Object.defineProperty(out, '_cut', { value: true });
+  } catch (e) { }
   return out;
 }
 /* DBから商品別出数を読む（月別） period 例 '2026.6' → business_month '2026-06' */
@@ -2984,7 +2993,7 @@ async function syncStoreActualsFromToast(storeId, guid, days, prefetchedRows) {
   /* v1105（UI案60 ①）：Toast の売上を読めなかったら何も書かない（前の値のまま）。帯に「取れませんでした」 */
   if (rows && rows._err) { try { if (typeof fstNote === 'function') fstNote('sales', storeId, false, 'toast_sales'); } catch (e) { } return { error: 'Toast の売上を読めませんでした', updated: 0, fetched: 0, fetchErr: true }; }
   try { if (typeof fstNote === 'function') fstNote('sales', storeId, true); } catch (e) { }
-  try { if (window.FUNERGY_VT) FUNERGY_VT.noteFetched(storeId, rows); } catch (e) { }   /* v1130：最後に取り込めた時刻（リピート率の内訳） */
+  try { if (window.FUNERGY_VT) FUNERGY_VT.noteFetched(storeId, rows); } catch (e) { }   /* v1130：サーバーの行の時刻と、この端末で読んだ時刻（リピート率の内訳） */
   var byDate = {}; rows.forEach(r=>{ byDate[r.business_date] = r; });
   var actuals = getDailyActuals(storeId);
   var updated = 0;
@@ -99363,7 +99372,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     return VT.finish(o);
   };
 
-  /* ---------- 最後に取り込めた時刻（Toast → サーバーの取り込み。この端末が読んだときに覚える・端末だけ） ---------- */
+  /* ---------- サーバーの行の時刻（Toast → サーバーの取り込み。この端末が読んだときに覚える・端末だけ）
+     at＝サーバーの行の fetched_at（なければ updated_at・synced_at）。hyper-worker は取り込み直しで fetched_at を変えないので、
+       「新しい日の行ができた時刻」で、取り込み直した時刻ではない（#122 のレビュー）。read＝この端末が読んだ時刻。画面では分けて出す。 ---------- */
   function fLoad(){ if(W._vtFetched) return W._vtFetched; try{ W._vtFetched = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}; }catch(e){ W._vtFetched = {}; } return W._vtFetched; }
   VT.noteFetched = function(sid, rows){
     try{
@@ -99381,9 +99392,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try{ var st = fstState(), r = st && st.sales && st.sales.by && st.sales.by[sid]; return (r && fstFailing(r)) ? (r.fail || '') : ''; }catch(e){ return ''; }
   };
   function latestFetch(stores){
-    var at = '', fail = '', anyFail = false;
-    (stores || []).forEach(function(sid){ var f = VT.fetched(sid); if(f && f.at && (!at || f.at < at)) at = f.at; var fa = VT.failAt(sid); if(fa){ anyFail = true; if(fa > fail) fail = fa; } });
-    return { at: at, fail: fail, anyFail: anyFail };
+    var at = '', read = '', fail = '', anyFail = false;
+    (stores || []).forEach(function(sid){ var f = VT.fetched(sid); if(f && f.at && (!at || f.at < at)) at = f.at; if(f && f.read && (!read || f.read < read)) read = f.read; var fa = VT.failAt(sid); if(fa){ anyFail = true; if(fa > fail) fail = fa; } });
+    return { at: at, read: read, fail: fail, anyFail: anyFail };
   }
 
   /* ---------- タイルの中身（5 つの状態） ---------- */
@@ -99391,7 +99402,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var lf = latestFetch(o.stores), p = { judge: false, state: o.state, fail: lf.fail };
     var line = 'FT ' + fmt(o.first) + ' · RP ' + fmt(o.rp) + (o.srHas ? ' · SR ' + fmt(o.sr) : '');
     var cover = o.biz ? T('取り込み ', 'Imported ') + o.got + '/' + o.biz + T(' 日', ' days') : '';
-    var when = lf.at ? hst(lf.at) : '';
+    var when = lf.at ? T('最新の行 ', 'Newest row ') + hst(lf.at) : '';
     p.line = line; p.sub = [cover, when].filter(Boolean).join(' · ');
     if(o.state === 'ok' || o.state === 'partial'){
       p.val = o.rate.toFixed(1) + '%'; p.judge = true;
@@ -99478,7 +99489,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var h = '<div class="modal-title"><i class="ti ti-repeat"></i> ' + T('リピート率の内訳', 'Repeat rate breakdown') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
     h += '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' + esc(names) + (c.label ? ' · ' + esc(c.label) : '') + (range ? ' · ' + esc(range) + T('（前日まで・ハワイの営業日）', ' (through yesterday, Hawaii business days)') : '') + '</div>';
     h += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">'
-      + (lf.at ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:#e7f3ec;color:#1e5a3a">' + T('最後に取り込めた時刻 ', 'Last imported ') + esc(hst(lf.at)) + T('（ハワイ）', ' (HST)') + '</span>' : '')
+      + (lf.at ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:#e7f3ec;color:#1e5a3a">' + T('サーバーに新しい日の行ができた時刻 ', 'Newest server row created ') + esc(hst(lf.at)) + T('（ハワイ）', ' (HST)') + '</span>' : '')
+      + (lf.read ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:var(--surface2);color:var(--muted)">' + T('この端末で読んだ時刻 ', 'Read on this device ') + esc(hst(lf.read)) + '</span>' : '')
       + (lf.anyFail ? '<span style="font-size:11px;padding:2px 10px;border-radius:999px;background:#fdecea;color:#8a1c13">' + T('この端末の最後の読み込みが失敗 ', 'Last read on this device failed ') + esc(hst(lf.fail)) + '</span>' : '')
       + '</div>';
     var rateV = o.rate != null ? o.rate.toFixed(1) + '%' : esc(p.val);
@@ -99586,7 +99598,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     } else if(!out.err.length){
       h += '<div>' + T('この期間のサーバーの行はありません。', 'No server rows for this period.') + '</div>';
     }
-    var lf = latestFetch(c.stores); if(lf.at) h += '<div>' + T('最後に取り込めた時刻 ', 'Last imported ') + esc(hst(lf.at)) + T('（ハワイ）', ' (HST)') + '</div>';
+    var lf = latestFetch(c.stores);
+    if(lf.at) h += '<div>' + T('サーバーに新しい日の行ができた時刻 ', 'Newest server row created ') + esc(hst(lf.at)) + T('（ハワイ・取り込み直しでは変わりません）', ' (HST; re-imports do not change it)') + '</div>';
+    if(lf.read) h += '<div>' + T('この端末で読んだ時刻 ', 'Read on this device ') + esc(hst(lf.read)) + T('（ハワイ）', ' (HST)') + '</div>';
     el.innerHTML = h || '—';
     var box = document.getElementById('vt-days-' + id); if(box && box.style.display !== 'none') box.innerHTML = daysTable(id);
   }
@@ -99665,6 +99679,10 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         VT.noteFetched(s.id, sales);
         var items = await supaFetchAllRows('toast_item_sales?restaurant_guid=eq.' + encodeURIComponent(s.toastGuid) + '&business_date=gte.' + days[0] + '&business_date=lte.' + days[days.length - 1] + '&select=business_date&order=id.asc', { max: 200000 });
         var menu = await supaFetchAllRows('toast_menu_items?restaurant_guid=eq.' + encodeURIComponent(s.toastGuid) + '&select=category&order=id.asc', { max: 20000 });
+        /* 読めなかった・途中で切れた・上限で止めた店は、欠落や 0 件と見せずに「読めませんでした」にして合計に入れない（#122 のレビュー） */
+        var badRead = function(a, nm){ if(!a) return nm + T('：読めない', ': unreadable'); if(a._err) return nm + '：' + a._err + (a._partial ? T('（途中まで）', ' (partial)') : ''); if(a._cut) return nm + T('：上限で止めた', ': stopped at the limit'); return ''; };
+        var why = badRead(items, T('出数の行', 'item rows')) || badRead(menu, T('メニューの表', 'menu table'));
+        if(why) throw new Error(why);
         r.menuN = (menu || []).length;
         r.cust = (menu || []).filter(function(m){ return m && (typeof isVisitTypeCategory === 'function' ? isVisitTypeCategory(m.category) : /^customer/.test(String(m.category || '').trim().toLowerCase())); }).length;
         var idays = {}; (items || []).forEach(function(x){ if(x && x.business_date) idays[String(x.business_date).slice(0, 10)] = 1; });
@@ -99689,7 +99707,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     function thR(v){ return '<th style="text-align:right">' + v + '</th>'; }
     function tdR(v, extra){ return '<td style="text-align:right' + (extra ? ';' + extra : '') + '">' + v + '</td>'; }
     var RED = 'color:#b42318;font-weight:700';
-    var h = '<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;white-space:nowrap"><thead><tr><th>' + T('店', 'Store') + '</th><th>' + T('数え方', 'Method') + '</th>' + thR('FT') + thR('RP') + thR('SR') + thR(T('合計', 'Total')) + thR(T('リピート率', 'Repeat')) + thR(T('売上の行', 'Sales rows')) + thR(T('区分のある日', 'Days w/ types')) + thR(T('出数の行のある日', 'Days w/ items')) + '<th>' + T('最後の取り込み', 'Last import') + '</th></tr></thead><tbody>';
+    var h = '<div style="overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;white-space:nowrap"><thead><tr><th>' + T('店', 'Store') + '</th><th>' + T('数え方', 'Method') + '</th>' + thR('FT') + thR('RP') + thR('SR') + thR(T('合計', 'Total')) + thR(T('リピート率', 'Repeat')) + thR(T('売上の行', 'Sales rows')) + thR(T('区分のある日', 'Days w/ types')) + thR(T('出数の行のある日', 'Days w/ items')) + '<th>' + T('新しい日の行ができた時刻', 'Newest row created') + '</th></tr></thead><tbody>';
     rows.forEach(function(r){
       if(r.err){ h += '<tr><td><b>' + esc(r.s.name) + '</b></td><td colspan="10" style="color:var(--red)">' + T('読めませんでした', 'Could not read') + '（' + esc(r.err) + '）</td></tr>'; return; }
       if(r.ft == null){ h += '<tr><td><b>' + esc(r.s.name) + '</b></td><td colspan="10" style="color:var(--muted)">—</td></tr>'; return; }
@@ -99708,6 +99726,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       + tdR(fmt(tot.ft)) + tdR(fmt(Math.max(0, tot.rpsr - tot.sr))) + tdR(fmt(tot.sr)) + tdR(fmt(tt)) + tdR(tt > 0 ? pct(tot.rpsr, tt) : '—', 'font-weight:700')
       + tdR(tot.rows + '/' + tot.biz) + tdR(tot.vt) + tdR(tot.items + '/' + tot.sd) + '<td></td></tr>';
     h += '</tbody></table></div>';
+    if(rows.some(function(r){ return r.err; })) h += '<div style="margin-top:6px;font-size:11.5px;color:#b42318">' + T('読めなかった店は合計に入れていません。もう一度開いてください。', 'Stores that could not be read are left out of the total. Open this again.') + '</div>';
     h += '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6">' + T('RP は SR を除いた数（取り込みの repeat_count は RP＋SR）。売上の行＝その期間に行のある日／休みの登録のない日。区分のある日＝FT＋RP＋SR が 1 以上の日。出数の行のある日＝売上のある日のうち商品の出数の行がある日。', 'RP excludes SR (repeat_count = RP+SR). Sales rows = days with a row / days without a registered closure. Days w/ types = FT+RP+SR ≥ 1. Days w/ items = sales days that have item rows.') + '</div>';
     if(rows.some(function(r){ return !r.err && r.ft != null && r.ft + r.rpsr === 0 && r.salesDays > 0; })) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff8ef;font-size:11.5px;color:#7a4a00">' + T('売上はあるのに FT・RP・SR が 0 の店があります。Toast の取り込みで来店区分が見つかっていません。「来店区分（FT/RP/SR）診断」で、その店の営業日を診断してください。', 'Some stores have sales but FT/RP/SR are 0: visit types are not found by the Toast import. Run the visit type diagnosis for a business day.') + '</div>';
     el.innerHTML = h;

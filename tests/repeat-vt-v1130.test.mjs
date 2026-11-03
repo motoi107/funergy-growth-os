@@ -113,7 +113,7 @@ test('複数店：数を足してから割る（店ごとの率の平均では�
   assert.notEqual(o.rate, (10 + 90) / 2);
 });
 
-test('内訳：サーバーの行（toast_sales）と端末の数を日ごとに照合し、違う日を出す。最後に取り込めた時刻はハワイ時間', async () => {
+test('内訳：サーバーの行（toast_sales）と端末の数を日ごとに照合し、違う日を出す。行の時刻と端末で読んだ時刻を分けて出す（ハワイ時間）', async () => {
   const da = { '2026-10-01': { actual: 100, firstTimeBowls: 3, repeatBowls: 4, superRegular: 1 }, '2026-10-02': { actual: 100, firstTimeBowls: 0, repeatBowls: 0 } };
   const server = { g6: [
     { business_date: '2026-10-01', first_time_count: 3, repeat_count: 4, super_regular_count: 1, fetched_at: '2026-10-02T17:05:00Z' },
@@ -127,7 +127,13 @@ test('内訳：サーバーの行（toast_sales）と端末の数を日ごとに
   await c.FUNERGY_VT.loadSrc(id);
   const src = c._els['vt-src-' + id].innerHTML;
   assert.match(src, /端末の数と違う日 1 日（10\/2）/);
-  assert.match(src, /最後に取り込めた時刻 10\/3 07:06/);
+  // サーバーの行の fetched_at は「新しい日の行ができた時刻」（取り込み直しでは変わらない）。端末で読んだ時刻とは分ける（#122 のレビュー）
+  assert.match(src, /サーバーに新しい日の行ができた時刻 10\/3 07:06（ハワイ・取り込み直しでは変わりません）/);
+  assert.match(src, /この端末で読んだ時刻 /);
+  assert.doesNotMatch(src, /最後に取り込めた時刻/);
+  const f = c.FUNERGY_VT.fetched('F06');
+  assert.equal(f.at, '2026-10-03T17:06:00Z', 'at はサーバーの行の時刻のまま');
+  assert.ok(f.read > '2026-10-04', 'read はこの端末で読んだ時刻（今）');
   c.FUNERGY_VT.toggleDays(id);
   assert.match(c._els['vt-days-' + id].innerHTML, /違う（FT 5・RP\+SR 6）/);
 });
@@ -196,4 +202,81 @@ test('同期センターの店の比べ：Customer Property のグループも�
   const h = c._els['vt-cmp'].innerHTML;
   assert.match(h, /Customers の商品 <span style="color:var\(--muted\)">\(2\/3\)/);
   assert.match(h, />57\.1%</);
+});
+
+// #122 のレビュー（Codex・Claude の P2）：読めなかった・途中で切れた・上限で止めた出数の行を、欠落や 0 件と見せない。
+// 本物の supaFetchAllRows を偽の通信で動かす（1 ページ目の失敗・2 ページ目の失敗・上限）。
+function realRest(make2, plan) {
+  const c = make2;
+  c.SUPABASE_URL = 'https://x.test'; c.SUPABASE_ANON = 'k';
+  c.fetch = async (url) => {
+    const u = new URL(url), path = u.pathname.replace('/rest/v1/', '') + '?' + u.search.slice(1);
+    const off = +u.searchParams.get('offset'), lim = +u.searchParams.get('limit');
+    return plan(path, off, lim);
+  };
+  vm.runInContext('async ' + fnSrc('supaFetchAllRows'), c);
+  c.supaFetchAllRows = vm.runInContext('supaFetchAllRows', c);
+  return c;
+}
+const okJson = rows => ({ ok: true, status: 200, json: async () => rows });
+const httpErr = st => ({ ok: false, status: st, json: async () => ({}) });
+
+test('supaFetchAllRows：1 ページ目の失敗・2 ページ目の失敗・上限は印を付ける（空と分ける）。ふつうは印なし', async () => {
+  const c = realRest(make({}), (path, off, lim) => {
+    if (path.startsWith('a')) return httpErr(503);
+    if (path.startsWith('b')) return off === 0 ? okJson(Array(lim).fill({ x: 1 })) : httpErr(500);
+    if (path.startsWith('c')) return okJson(Array(lim).fill({ x: 1 }));
+    if (path.startsWith('d')) return { ok: true, status: 200, json: async () => { throw new Error('bad'); } };
+    return off === 0 ? okJson([{ x: 1 }, { x: 2 }]) : okJson([]);
+  });
+  const a = await c.supaFetchAllRows('a?x=1', { page: 2 });
+  assert.equal(a.length, 0); assert.equal(a._err, 'http_503'); assert.equal(a._partial, undefined);
+  const b = await c.supaFetchAllRows('b?x=1', { page: 2 });
+  assert.equal(b.length, 2); assert.equal(b._err, 'http_500'); assert.equal(b._partial, true);
+  const cc = await c.supaFetchAllRows('c?x=1', { page: 2, max: 4 });
+  assert.equal(cc.length, 4); assert.equal(cc._cut, true); assert.equal(cc._err, undefined);
+  const d = await c.supaFetchAllRows('d?x=1', { page: 2 });
+  assert.equal(d._err, 'bad_json');
+  const e = await c.supaFetchAllRows('e?x=1', { page: 2 });
+  assert.equal(e.length, 2); assert.equal(e._err, undefined); assert.equal(e._cut, undefined); assert.equal(e._partial, undefined);
+  assert.equal(JSON.stringify(e), '[{"x":1},{"x":2}]', '印は配列の中身に出ない（今までの使い方は配列のまま）');
+});
+
+test('店の比べ：出数の行・メニューの表が読めなかった／途中で切れた／上限で止めた店は「読めませんでした」・合計に入れない', async () => {
+  const mk = (n, ft, rp, sr) => Array.from({ length: n }, (_, i) => ({ business_date: '2026-10-' + String(i + 1).padStart(2, '0'), net_sales: 1000, first_time_count: ft, repeat_count: rp, super_regular_count: sr, fetched_at: '2026-10-31T17:00:00Z' }));
+  const server = { g1: mk(30, 10, 8, 2), g2: mk(30, 5, 5, 1), g6: mk(30, 4, 4, 0) };
+  const ds = Array.from({ length: 30 }, (_, i) => '2026-10-' + String(i + 1).padStart(2, '0'));
+  for (const mode of ['first', 'second', 'menu']) {
+    const c = realRest(make({}, { server }), (path, off, lim) => {
+      const g = /restaurant_guid=eq\.([^&]+)/.exec(path)[1];
+      if (path.startsWith('toast_menu_items')) {
+        if (mode === 'menu' && g === 'g2') return httpErr(401);
+        return off === 0 ? okJson([{ category: 'Customers' }]) : okJson([]);
+      }
+      if (g === 'g2' && mode === 'first') return httpErr(503);
+      if (g === 'g2' && mode === 'second' && off > 0) return httpErr(500);
+      const all = Array.from({ length: 30 }, (_, i) => ({ business_date: '2026-10-' + String(i + 1).padStart(2, '0') }));
+      return okJson(all.slice(off, off + lim));
+    });
+    // 2 ページ目を読ませるため 1 ページを小さく
+    const real = c.supaFetchAllRows; c.supaFetchAllRows = (p, o) => real(p, Object.assign({}, o, { page: 10 }));
+    c.FUNERGY_VT.storeCompare(0);
+    await c.FUNERGY_VT.loadCompare('2026-10', ds, c.FUNERGY_VT._cmpSeq);
+    const h = c._els['vt-cmp'].innerHTML;
+    assert.match(h, /Tenkichi<\/b><\/td><td colspan="10" style="color:var\(--red\)">読めませんでした/, mode);
+    assert.match(h, mode === 'first' ? /出数の行：http_503/ : mode === 'second' ? /出数の行：http_500（途中まで）/ : /メニューの表：http_401/, mode);
+    assert.match(h, /読めなかった店は合計に入れていません/, mode);
+    // 合計は ToriTon と LaLa だけ：FT (10+4)*30、RP+SR (8+4)*30
+    const tot = (10 + 4) * 30 + (8 + 4) * 30, rr = (8 + 4) * 30;
+    assert.match(h, new RegExp('>' + (Math.round(rr / tot * 1000) / 10).toFixed(1) + '%<'), mode);
+  }
+  // 上限まで読んだ（続きがあるかもしれない）店も入れない
+  const c2 = realRest(make({}, { server }), (path, off, lim) => {
+    if (path.startsWith('toast_menu_items')) return off === 0 ? okJson([{ category: 'Customers' }]) : okJson([]);
+    return okJson(Array(lim).fill({ business_date: '2026-10-01' }));
+  });
+  const real2 = c2.supaFetchAllRows; c2.supaFetchAllRows = (p, o) => real2(p, Object.assign({}, o, { page: 10, max: o && o.max > 20000 ? 30 : (o && o.max) }));
+  c2.FUNERGY_VT.storeCompare(0);
+  await c2.FUNERGY_VT.loadCompare('2026-10', ds, c2.FUNERGY_VT._cmpSeq);
+  assert.match(c2._els['vt-cmp'].innerHTML, /出数の行：上限で止めた/);
 });

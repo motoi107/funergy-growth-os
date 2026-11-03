@@ -11,6 +11,7 @@
 --   2 month … 月ごと：同じ数の合計と、リピート率（保存から・商品から）、来店区分のある日・売上のある日
 --   3 total … 全期間：同じ
 -- 「合っているか」：一致／違う（hyper-worker がまだ前の版・取り込み直しがまだ、のとき）／保存の行なし（取り込みがまだ）／来店区分なし（その日は押されていない）／休み（売上 0）
+--   ／未確認（保存の FT・RP＋SR・SR のどれかが空・読めない。0 とみなして「一致」にしない。月と全期間の「保存」の数・率にも入れない）
 with st as (select id, toast_guid from public.stores where id = 'F06' and coalesce(toast_guid, '') <> ''),
 hst as (select (now() at time zone 'Pacific/Honolulu')::date today),
 days as (
@@ -50,13 +51,16 @@ ts as (
 dd as (
   select days.d, ts.d is not null has_row, ts.sales, ts.guests, ts.orders, ts.fetched,
     coalesce(it.ft, 0) i_ft, coalesce(it.rp, 0) i_rp, coalesce(it.sr, 0) i_sr,
-    coalesce(ts.ft, 0) s_ft, coalesce(ts.rp, 0) s_rp, coalesce(ts.sr, 0) s_sr
+    ts.ft s_ft, ts.rp s_rp, ts.sr s_sr,
+    -- 保存の値が空・読めない日（11/02 のレビュー：NULL を 0 とみなして「一致」にしない）
+    (ts.d is not null and (ts.ft is null or ts.rp is null or ts.sr is null)) s_unk
   from days left join ts on ts.d = days.d left join it on it.d = days.d
 ),
 judged as (
   select dd.*,
     case
       when not has_row then '保存の行なし'
+      when s_unk then '未確認（保存の値が空）'
       when i_ft = s_ft and i_rp + i_sr = s_rp and i_sr = s_sr then
         case when s_ft + s_rp = 0 then (case when coalesce(sales, 0) > 0 then '来店区分なし' else '休み' end) else '一致' end
       else '違う'
@@ -65,11 +69,15 @@ judged as (
 ),
 agg as (
   select grp, min(d) d0, max(d) d1,
-    sum(i_ft) i_ft, sum(i_rp) i_rp, sum(i_sr) i_sr, sum(s_ft) s_ft, sum(s_rp) s_rp, sum(s_sr) s_sr,
-    count(*) filter (where has_row and s_ft + s_rp > 0) vt_days,
+    sum(i_ft) i_ft, sum(i_rp) i_rp, sum(i_sr) i_sr,
+    -- 保存の数は値のそろった日だけ（未確認の日は入れない）
+    coalesce(sum(s_ft) filter (where has_row and not s_unk), 0) s_ft, coalesce(sum(s_rp) filter (where has_row and not s_unk), 0) s_rp,
+    coalesce(sum(s_sr) filter (where has_row and not s_unk), 0) s_sr,
+    count(*) filter (where has_row and not s_unk and s_ft + s_rp > 0) vt_days,
     count(*) filter (where coalesce(sales, 0) > 0) sales_days,
     count(*) filter (where judge = '違う') diff_days,
     count(*) filter (where judge = '保存の行なし') no_row_days,
+    count(*) filter (where s_unk) unk_days,
     sum(coalesce(guests, 0)) guests
   from (select 'month' p, to_char(d, 'YYYY-MM') grp, * from judged union all select 'total', 'total', * from judged) z
   group by p, grp
@@ -84,7 +92,7 @@ select part, a, b, c, d, e, f from (
   select 1 o, d::text k, 'day' part, d::text a,
     'guests ' || coalesce(guests::text, '-') || ' / orders ' || coalesce(orders::text, '-') || ' / sales ' || coalesce(round(sales, 2)::text, '-') b,
     '商品 FT ' || i_ft || ' · RP ' || i_rp || ' · SR ' || i_sr c,
-    '保存 FT ' || s_ft || ' · RP+SR ' || s_rp || ' · SR ' || s_sr d,
+    case when not has_row then '保存 -' else '保存 FT ' || coalesce(s_ft::text, '空') || ' · RP+SR ' || coalesce(s_rp::text, '空') || ' · SR ' || coalesce(s_sr::text, '空') end d,
     judge e,
     coalesce(to_char((fetched::timestamptz) at time zone 'Pacific/Honolulu', 'MM/DD HH24:MI') || ' HST', '-') f
   from judged
@@ -93,7 +101,7 @@ select part, a, b, c, d, e, f from (
     'guests ' || guests || ' / 来店区分のある日 ' || vt_days || ' / 売上のある日 ' || sales_days,
     '商品 FT ' || i_ft || ' · RP ' || i_rp || ' · SR ' || i_sr || ' → ' || r_items,
     '保存 FT ' || s_ft || ' · RP+SR ' || s_rp || ' · SR ' || s_sr || ' → ' || r_saved,
-    '違う日 ' || diff_days || ' / 保存の行なし ' || no_row_days,
+    '違う日 ' || diff_days || ' / 保存の行なし ' || no_row_days || ' / 未確認 ' || unk_days,
     null
   from rate
 ) z
