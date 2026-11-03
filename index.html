@@ -41373,7 +41373,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1133';
+const APP_VERSION = '1134';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -94226,6 +94226,7 @@ async function applyTipRaise(){
     try{ _okR=await tipBackRecheck(name, fromDay); }finally{ applyTipRaise._busy=false; }
     if(!_okR || curUserName!==_who || curRole!==_role) return;
   }
+  if(typeof window!=='undefined' && typeof window.wrTipWriteOk==='function' && window.wrTipWriteOk()===false) return;   /* v1134：ワークセンターの申請の反映で押さえてから 25 分を過ぎた（ここから書くまで待たない） */
   requests.push({id:'tip'+Date.now(), name:name, rate:rate, store:storeId, reason:t('管理者による直接引き上げ','Direct raise by manager'), basis:'manual', status:'承認', date:todayJP(), approver:by, approvedDate:todayJP(), decAt:_dec, decDay:_dd, fromDay:(fromDay||undefined), prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), decHst:((typeof _tipHstDay==='function') ? _tipHstDay(Date.now()) : undefined)});
   var _saved=lsSet('tip_requests',requests);
   var h=ls('tip_history',[]); h.push({name:name, rate:rate, store:storeId||'', status:'承認', by:by, date:todayJP(), basis:'manual', fromDay:fromDay, prevRate:(_pv&&_pv.before!=null?_pv.before:undefined), at:_dec}); lsSet('tip_history',h);
@@ -100708,11 +100709,31 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
      v1133（#124 の Codex のレビュー P2）：書く前にサーバーで押さえる（apply_start）。押さえた端末だけが正式な値を書き、押さえたときの鍵（claim）で
      反映した（apply_done）・反映できなかった（apply_fail）・やめた（apply_cancel）を記録する。押さえているあいだ（30 分）、ほかの端末は閉じられない・反映できない。
      書く直前に、ログインが反映を始めたときと同じかを確かめる（違えば書かない） */
+  /* v1134（#125 の Codex のレビュー P2-2）：押さえは 30 分でほかの端末に開く。書く直前に、押さえてからの時間がこの端末で 25 分未満のときだけ書く。
+     数え始めは押さえを頼む前（サーバーの押さえた時刻より前）・端末の時計と経過時間（performance.now）の大きいほう
+     ＝時計を戻しても、スリープで経過時間が止まっても短く数えない。25 分を過ぎたら書かずに押さえをやめ、もう一度押してもらう */
+  var CLAIM_SAFE = 25 * 60000;
+  function perfNow(){ try { return (typeof performance !== 'undefined' && performance && typeof performance.now === 'function') ? performance.now() : null; } catch(e) { return null; } }
+  function clockNow(){ return { t:Date.now(), p:perfNow() }; }
+  function claimAge(c){
+    if (!c || typeof c.t !== 'number') return Infinity;
+    var a = Date.now() - c.t, pn = perfNow();
+    if (c.p != null && pn != null) a = Math.max(a, pn - c.p);
+    return a;
+  }
+  function claimFresh(id){ return claimAge(S.claims[id]) < CLAIM_SAFE; }
+  var STALE_MSG = function(){ return T('反映を始めてから 25 分以上たったので、正式な値を書きませんでした（30 分たつと、ほかの端末がこの申請を閉じられるため）。最新を確かめて、もう一度「正式な値に反映する」を押してください','More than 25 minutes passed since the apply started, so the official value was not written (after 30 minutes other devices can close this request). Check the latest and press “Apply to the official value” again'); };
+  /* 押さえを静かにやめる（25 分を過ぎて書かなかったとき。ほかの端末が先に進めていたら何もしない） */
+  async function claimLetGo(id, rev, key, k0){
+    try { var j = await api({ action:'act', id:id, op:'apply_cancel', expect_rev:rev, client_key:keyFor({ id:id, rev:rev }, 'apply_cancel'), claim:key, note:'' }, k0); delete S.claims[id]; return j; }
+    catch(e) { if (e.code === 'conflict' || e.code === 'forbidden') delete S.claims[id]; return null; }
+  }
   async function skillApply(r, k0){
     var p = r.payload || {}, name = evalName(r), st = r.store_id;
     if (!name || typeof setEmpSkillStore !== 'function') return { ok:false, msg:T('スキルの記録を書けません','cannot write skills') };
     try { if (typeof pullOpKey === 'function' && typeof SKILL_STORE_PREFIX !== 'undefined') await pullOpKey(SKILL_STORE_PREFIX + st); } catch(e) {}
     if (k0 != null && authKey() !== k0) return { skip:true };
+    if (!claimFresh(r.id)) return { stale:true };   /* v1134：ここから書くまで待たない */
     var cur = getEmpSkillsStore(name, st) || {}, by = (S.me && S.me.name) || ((typeof curUserName !== 'undefined' && curUserName) || ''), today = (typeof todayJP === 'function') ? todayJP() : hstToday(), done = [];
     (p.items || []).forEach(function(it){
       var prev = cur[it.pos] || {}, pl = prev.status === '承認' ? (prev.level || 0) : 0;
@@ -100737,6 +100758,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try { if (typeof pullOpKey === 'function') { await pullOpKey('lss_requests'); await pullOpKey((typeof LSS_EMP_PREFIX !== 'undefined' ? LSS_EMP_PREFIX : 'lss_emp_') + name); } } catch(e) {}
     /* 読み込みのあいだにログインが変わったら書かない（#124 の Codex のレビュー P2-2：前は次の人の名前で承認していた） */
     if (k0 != null && authKey() !== k0) return { skip:true };
+    if (!claimFresh(r.id)) return { stale:true };   /* v1134 */
     var find = function(){ try { return (getLssRequests() || []).find(function(x){ return x && x.id === id; }) || null; } catch(e) { return null; } };
     var q = find();
     if (!q) return { ok:false, msg:T('Career Score の申請（' + id + '）がこの端末にありません','The score request ' + id + ' is not on this device') };
@@ -100772,19 +100794,26 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         var cur = await api({ action:'get', id:r.id }, k0);
         if (!claimHeld(cur)) { delete S.claims[r.id]; movedFirst(cur); return null; }
         /* 30 分たった押さえは使わずに押さえ直す（そのあいだにほかの人が閉じられるため・独立レビュー P2-A） */
-        if ((cur.can || []).indexOf('apply_start') < 0) return { row:cur, key:S.claims[r.id].key };
+        if ((cur.can || []).indexOf('apply_start') < 0) {
+          if (claimFresh(r.id)) return { row:cur, key:S.claims[r.id].key };
+          /* v1134：サーバーではまだ押さえているが、この端末で 25 分を過ぎた：やめてから押さえ直す（書く前に 30 分が切れないように） */
+          var c0 = S.claims[r.id];
+          cur = await api({ action:'act', id:r.id, op:'apply_cancel', expect_rev:cur.rev, client_key:keyFor(cur, 'apply_cancel'), claim:c0.key, note:'' }, k0);
+          if ((cur.can || []).indexOf('apply_start') < 0) { delete S.claims[r.id]; movedFirst(cur); return null; }
+        }
         delete S.claims[r.id]; r = cur;
       }
-      /* 前の押さえの答えが届かなかったときは同じ鍵・同じ版で（サーバーは、その鍵がまだ押さえているときだけ答える） */
-      var pend = S.pend[r.id], key = pend ? pend.key : keyFor(r, 'apply_start'), rev = pend ? pend.rev : r.rev, row;
+      /* 前の押さえの答えが届かなかったときは同じ鍵・同じ版で（サーバーは、その鍵がまだ押さえているときだけ答える）。
+         v1134：時間は最初に頼んだ前から数える（サーバーが最初の頼みで押さえていても長めに数える） */
+      var pend = S.pend[r.id], key = pend ? pend.key : keyFor(r, 'apply_start'), rev = pend ? pend.rev : r.rev, at = (pend && pend.at) || clockNow(), row;
       try { row = await api({ action:'act', id:r.id, op:'apply_start', expect_rev:rev, client_key:key }, k0); }
-      catch(e1) { if (e1.code === 'network') S.pend[r.id] = { key:key, rev:rev }; else delete S.pend[r.id]; throw e1; }
+      catch(e1) { if (e1.code === 'network') S.pend[r.id] = { key:key, rev:rev, at:at }; else delete S.pend[r.id]; throw e1; }
       delete S.pend[r.id];
       if ((row.can || []).indexOf('apply_done') < 0 || (row.status !== 'approved' && row.status !== 'apply_error')) { movedFirst(row); return null; }
-      S.claims[r.id] = { key:key, rev:row.rev };
+      S.claims[r.id] = { key:key, rev:row.rev, t:at.t, p:at.p };
       return { row:row, key:key };
     } catch(e) {
-      if (e.code === 'conflict' || e.code === 'forbidden') { try { movedFirst(await api({ action:'get', id:r.id }, k0)); } catch(e2) { movedFirst(null); } return null; }
+      if (e.code === 'conflict' || e.code === 'forbidden') { delete S.claims[r.id]; try { movedFirst(await api({ action:'get', id:r.id }, k0)); } catch(e2) { movedFirst(null); } return null; }
       showToast(String(e.message || e), 'error'); return null;
     }
   }
@@ -100830,6 +100859,13 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try { res = r.kind === 'skill' ? await skillApply(r, k0) : await csApply(r, k0); } catch(e) { res = { ok:false, msg:String(e && e.message || e) }; }
     S.busy = '';
     if (res && res.skip) { drawDetail(); return; }   /* ログインが変わった：書いていない（押さえは 30 分で切れる） */
+    if (res && res.stale) {   /* v1134：25 分を過ぎた：書いていない。押さえをやめて、もう一度押してもらう */
+      await claimLetGo(r.id, r.rev, c.key, k0);
+      showToast(STALE_MSG(), 'warning');
+      if (authKey() !== k0) return;
+      try { if (S.d && S.d.id === r.id) { S.d = await api({ action:'get', id:r.id }, k0); drawDetail(); } } catch(e) { drawDetail(); }
+      S.rows = null; reloadList(); return;
+    }
     await evalFinish(r, c.key, res.ok ? 'apply_done' : 'apply_fail', String(res.msg || '').slice(0, 380) || (res.ok ? '' : T('反映できなかった','not applied')), k0);
   }
   W.wrEvalApply = function(){ evalApply(S.d); };
@@ -100862,6 +100898,13 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var ne = document.getElementById('tipraise-name'), re = document.getElementById('tipraise-rate'), fe = document.getElementById('tipraise-from');
     return !!(ne && re && ne.value === ctx.name && Number(re.value) === Number(ctx.rate) && String((fe && fe.value) || '') === String(ctx.from || ''));
   }
+  /* v1134：引き上げ（applyTipRaise）が書く直前に呼ぶ。ワークセンターの申請の反映で、押さえてから 25 分を過ぎていたら書かせない */
+  W.wrTipWriteOk = function(){
+    var g = W._wrTipGate; if (!g) return true;
+    if (claimFresh(g.id)) return true;
+    g.stale = true; showToast(STALE_MSG(), 'warning');
+    return false;
+  };
   function tipSeenNow(){ var seen = {}; try { (ls('tip_requests', []) || []).forEach(function(x){ if (x && x.id) seen[x.id] = 1; }); } catch(e) {} return seen; }
   /* この保存で新しくできた決定か（前からある決定・ほかの端末の決定と取り違えない） */
   function tipHit(ctx, seen){
@@ -100955,10 +100998,19 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
         if (!c) { S.tipApply = null; try { closeModalDirect(); } catch(e) {} return false; }
         ctx.rev = c.row.rev;
         if (authKey() !== ctx.k0) return false;
-        var seen = tipSeenNow(), res = await oA.apply(self, args), hit = tipHit(ctx, seen);
+        /* v1134：引き上げの中の読み直し・確かめのあいだに 25 分を過ぎたら、書く直前（wrTipWriteOk）で止める */
+        var seen = tipSeenNow(), res;
+        ctx.stale = false; W._wrTipGate = ctx;
+        try { res = await oA.apply(self, args); } finally { if (W._wrTipGate === ctx) W._wrTipGate = null; }
+        var hit = tipHit(ctx, seen);
         if (authKey() !== ctx.k0) return res;   /* 別のログインでは記録しない（押さえは 30 分で切れる） */
         var note = ctx.name + ' ' + ctx.rate + '%（' + ctx.from + T(' から）',' on)');
-        if (hit) {
+        if (ctx.stale && !hit) {
+          /* 書いていない：押さえを静かにやめる（画面は開いたまま・もう一度保存を押すと押さえ直す） */
+          var j3 = await claimLetGo(ctx.id, ctx.rev, c.key, ctx.k0);
+          if (j3) ctx.rev = j3.rev;
+          ctx.stale = false;
+        } else if (hit) {
           S.tipApply = null; S.tipDone[ctx.id] = note;
           var j = await claimEnd(ctx.id, ctx.rev, c.key, 'apply_done', note, ctx.k0);
           if (j) { delete S.tipDone[ctx.id]; showToast(T('反映を記録しました：','Applied: ') + j.code, 'success'); }

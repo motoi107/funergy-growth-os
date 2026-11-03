@@ -95,7 +95,8 @@ async function app(srv, emp, { role = 'gm', realRole = '', live = true, cloud = 
     submitSkillReview: (...a) => calls.push(['skillReview', ...a]),
     openTipRaiseModal: () => { calls.push(['raiseModal']); dom.parse('<select id="tipraise-name"><option value="Cam Crew">Cam</option></select><select id="tipraise-rate"><option value="80"></option><option value="90"></option><option value="100"></option></select><input id="tipraise-from" value=""><div id="tipraise-preview"></div>'); },
     tipRaisePreview: () => {},
-    applyTipRaise: async () => { if (cloud.raiseWait) await cloud.raiseWait; if (cloud.raiseSkip) return; const n = dom.els['tipraise-name'].value, r = +dom.els['tipraise-rate'].value, f = dom.els['tipraise-from'].value;
+    // 本物の applyTipRaise と同じく、書く直前に wrTipWriteOk を呼ぶ（v1134。本物が呼ぶことは下の静的な試験で確かめる）
+    applyTipRaise: async () => { if (cloud.raiseWait) await cloud.raiseWait; if (cloud.raiseSkip) return; if (typeof ctx.wrTipWriteOk === 'function' && ctx.wrTipWriteOk() === false) return; const n = dom.els['tipraise-name'].value, r = +dom.els['tipraise-rate'].value, f = dom.els['tipraise-from'].value;
       calls.push(['raise', n, r, f]); cloud.tips.push({ id: 'tip' + Date.now() + '_' + cloud.tips.length, name: n, rate: r, status: '承認', fromDay: f, decAt: Date.now() }); },
   };
   ctx.window = ctx;
@@ -403,4 +404,188 @@ test('P2-A: this device still holds a hold older than 30 minutes → pressing ag
   assert.equal((await H(srv)('E2', { action: 'act', id: r.id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-sr-0001', note: '閉じる' })).status, 403, 'held anew: no close during the read');
   g.open(true); await a.settle(); await a.settle();
   assert.equal(await status(srv, r.id), 'applied');
+});
+
+/* ---------------------------------------------------------------- v1134（#125 の Codex のレビュー P2-2）：押さえてからの待ちが 30 分に届いたあとの古い書き込み */
+const age = async (srv, dev, id, min) => {   // この端末の押さえを min 分前にし、サーバーの押さえを 31 分前にする（30 分が切れた）
+  dev.S().claims[id].t -= min * 60000;
+  await srv.pg.exec(`reset role; update public.wr_requests set apply_at = now() - interval '31 minutes' where id = '${id}'; set role service_role;`);
+};
+
+test('v1134 (Codex P2-2): held, the read waits past 30 minutes, another device closes it, the read resumes → nothing written', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  const g = gate(); gm.ctx.pullOpKey = () => g.p;
+  gm.ctx.wrAsk('apply'); await gm.settle();
+  await age(srv, gm, r.id, 31);
+  const cur = (await H(srv)('E2', { action: 'get', id: r.id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id: r.id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-p22-001', note: '別の値にした' })).status, 200, 'after 30 minutes another device may close it');
+  g.open(true); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'the old read writes nothing');
+  assert.equal(cloud.skills.S1['Cam Crew'].Grill.level, 1);
+  assert.equal(await status(srv, r.id), 'rejected');
+  assert.ok(gm.toasts.some(t => /25 分以上たった/.test(t[1])), JSON.stringify(gm.toasts));
+});
+
+test('v1134 (Codex P2-2): the same, but another device takes it over → the old read writes nothing; the new holder writes once', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const a = await app(srv, 'E2', { cloud }); await a.render();
+  a.ctx.wrOpen(r.id); await a.settle();
+  const gA = gate(); a.ctx.pullOpKey = () => gA.p;
+  a.ctx.wrAsk('apply'); await a.settle();
+  await age(srv, a, r.id, 31);
+  const b = await app(srv, 'E2', { cloud }); await b.render();
+  b.ctx.wrOpen(r.id); await b.settle();
+  const gB = gate(); b.ctx.pullOpKey = () => gB.p;
+  b.ctx.wrAsk('apply'); await b.settle();
+  gA.open(true); await a.settle(); await a.settle();
+  assert.equal(a.calls.filter(c => c[0] === 'skill').length, 0, 'A writes nothing after B took over');
+  gB.open(true); await b.settle(); await b.settle();
+  assert.equal(b.calls.filter(c => c[0] === 'skill').length, 1);
+  assert.equal(await status(srv, r.id), 'applied');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_events where request_id = $1 and action = 'apply_done'`, [r.id])).rows[0].n, 1);
+});
+
+test('v1134: Career Score — the read waits past 25 minutes → no approval of the score request, and the hold is let go', async () => {
+  const srv = await server(), cloud = shared();
+  cloud.lss.push({ id: 'lssq_9', kind: 'score', name: 'Cam Crew', status: '申請中', by: 'Sam Store', diff: [{ id: 'B-2', from: 3, to: 2 }] });
+  const g4 = await app(srv, 'E6', { role: 'am', realRole: 'g4', cloud }); await g4.render();
+  g4.ctx.wrCsAsk(cloud.lss[0], 'Cam Crew'); await g4.settle();
+  const cs = (await srv.pg.query(`select id, rev from public.wr_requests where kind = 'cs'`)).rows[0];
+  assert.equal((await H(srv)('E2', { action: 'act', id: cs.id, op: 'approve', expect_rev: cs.rev, client_key: 'k-approve-p2203' })).status, 200);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(cs.id); await gm.settle();
+  const g = gate(); gm.ctx.pullOpKey = () => g.p;
+  gm.ctx.wrAsk('apply'); await gm.settle();
+  gm.S().claims[cs.id].t -= 26 * 60000;   // the server still holds it (26 < 30), but this device stops at 25
+  g.open(true); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'lssApprove').length, 0);
+  assert.equal(cloud.lss[0].status, '申請中');
+  const cur = (await H(srv)('E2', { action: 'get', id: cs.id })).body;
+  assert.equal(cur.status, 'approved');
+  assert.deepEqual(cur.can, ['apply_start', 'reject'], 'the hold was let go (nothing written)');
+  assert.equal(cur.events.at(-1).action, 'apply_cancel');
+  // press again: holds anew and applies
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, cs.id), 'applied');
+  assert.equal(cloud.lss[0].status, '承認');
+});
+
+test('v1134: Tip Rate — the save waits (slow check) past 30 minutes, another device closes it → no decision', async () => {
+  const srv = await server(), cloud = shared();
+  const { id, gm } = await tipApprovedOpen(srv, cloud);
+  const g = gate(); cloud.raiseWait = g.p;
+  const saving = gm.ctx.applyTipRaise(); await gm.settle();
+  await age(srv, gm, id, 31);
+  const cur = (await H(srv)('E2', { action: 'get', id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-p22-004', note: '別の率にする' })).status, 200);
+  g.open(true); await saving; await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'raise').length, 0, 'no Tip Rate decision');
+  assert.equal(cloud.tips.length, 0);
+  assert.equal(await status(srv, id), 'rejected');
+  assert.ok(gm.toasts.some(t => /25 分以上たった/.test(t[1])), JSON.stringify(gm.toasts));
+});
+
+test('v1134: Tip Rate — stopped at 25 minutes (not closed): the hold is let go, the screen stays, pressing save again applies once', async () => {
+  const srv = await server(), cloud = shared();
+  const { id, gm } = await tipApprovedOpen(srv, cloud);
+  const g = gate(); cloud.raiseWait = g.p;
+  const saving = gm.ctx.applyTipRaise(); await gm.settle();
+  gm.S().claims[id].t -= 26 * 60000;
+  g.open(true); await saving; await gm.settle(); await gm.settle();
+  assert.equal(cloud.tips.length, 0);
+  let cur = (await H(srv)('E2', { action: 'get', id })).body;
+  assert.deepEqual(cur.can, ['apply_start', 'reject'], 'let go');
+  assert.ok(gm.S().tipApply, 'the raise screen still belongs to the request');
+  cloud.raiseWait = null;
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(cloud.tips.length, 1);
+  assert.equal(await status(srv, id), 'applied');
+  cur = (await H(srv)('E2', { action: 'get', id })).body;
+  assert.deepEqual(cur.events.map(e => e.action).slice(-4), ['apply_start', 'apply_cancel', 'apply_start', 'apply_done']);
+});
+
+test('Codex P2-1 (re-review): the raise screen is open more than 31 minutes and another device closed the request → the save writes nothing', async () => {
+  const srv = await server(), cloud = shared();
+  const { id, gm } = await tipApprovedOpen(srv, cloud);
+  gm.S().tipApply.t0 -= 31 * 60000;
+  const cur = (await H(srv)('E2', { action: 'get', id })).body;
+  assert.equal((await H(srv)('E2', { action: 'act', id, op: 'reject', expect_rev: cur.rev, client_key: 'k-close-p21-031', note: '別の率にする' })).status, 200);
+  await gm.ctx.applyTipRaise(); await gm.settle(); await gm.settle();
+  assert.equal(cloud.tips.length, 0, 'not a plain raise after 31 minutes');
+  assert.equal(await status(srv, id), 'rejected');
+});
+
+test('v1134: this device holds it, the server still holds it, but more than 25 minutes passed here → pressing again lets go and holds anew, then applies once', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  const real = gm.ctx.fetch; let drop = true;
+  gm.ctx.fetch = async (url, init) => { const b = JSON.parse(init.body); if (drop && b.op === 'apply_done') { drop = false; throw new Error('offline'); } return real(url, init); };
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, r.id), 'approved', 'written but not recorded');
+  gm.S().claims[r.id].t -= 26 * 60000;
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(await status(srv, r.id), 'applied');
+  const ev = (await H(srv)('E2', { action: 'get', id: r.id })).body.events.map(e => e.action);
+  assert.deepEqual(ev.slice(-4), ['apply_start', 'apply_cancel', 'apply_start', 'apply_done']);
+});
+
+test('v1134: the age counts the larger of the clock and the elapsed time (a clock set back does not shorten it)', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  let pnow = 1000; gm.ctx.performance = { now: () => pnow };
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  const g = gate(); gm.ctx.pullOpKey = () => g.p;
+  gm.ctx.wrAsk('apply'); await gm.settle();
+  const c = gm.S().claims[r.id];
+  assert.equal(c.p, 1000, 'the elapsed-time mark is kept');
+  c.t += 60 * 60000;           // the device clock was set back an hour
+  pnow += 26 * 60000;          // but 26 minutes really passed
+  g.open(true); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c2 => c2[0] === 'skill').length, 0, 'not written');
+});
+
+test('v1134: the real applyTipRaise asks wrTipWriteOk right before it writes (no wait in between)', () => {
+  const start = html.indexOf('async function applyTipRaise(){');
+  const body = html.slice(start, html.indexOf('\n}\n', start));
+  const gateAt = body.indexOf('window.wrTipWriteOk()===false) return;');
+  const push = body.indexOf('requests.push(');
+  assert.ok(gateAt > 0 && push > gateAt, 'the gate comes before the decision is written');
+  assert.doesNotMatch(body.slice(gateAt, push), /await|confirm\(/, 'nothing waits between the gate and the write');
+  assert.ok(body.lastIndexOf('await', push) < gateAt, 'no wait after the gate');
+});
+
+test('v1134: the “apply” answer was lost; the time counts from the first press, not the retry (the server may have held it since then)', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  dropAfter(gm, 'apply_start');
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  const first = gm.S().pend[r.id];
+  assert.ok(first && typeof first.at.t === 'number', 'the first press time is kept with the pending key');
+  first.at.t -= 26 * 60000;   // the retry comes 26 minutes after the first press (the server still holds it from the first)
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  gm.ctx.wrAsk('apply'); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0, 'not written: only 4 minutes would be left on the server');
+  assert.ok(gm.toasts.some(t => /25 分以上たった/.test(t[1])), JSON.stringify(gm.toasts));
+});
+
+test('v1134: a hold without a start time is never taken as fresh (nothing written)', async () => {
+  const srv = await server(), cloud = shared();
+  const r = await skillApproved(srv, cloud);
+  const gm = await app(srv, 'E2', { cloud }); await gm.render();
+  gm.ctx.wrOpen(r.id); await gm.settle();
+  const g = gate(); gm.ctx.pullOpKey = () => g.p;
+  gm.ctx.wrAsk('apply'); await gm.settle();
+  delete gm.S().claims[r.id].t;
+  g.open(true); await gm.settle(); await gm.settle();
+  assert.equal(gm.calls.filter(c => c[0] === 'skill').length, 0);
 });
