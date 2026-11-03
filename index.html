@@ -1482,9 +1482,41 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 .ux-save.is-saving { color:var(--muted); }
 .ux-save.is-warn { color:var(--amber); border-color:var(--amber); }
 @media (max-width: 640px) { .ux-save { min-width:30px; padding:0 7px !important; } .ux-save .ux-save-t { display:none; } }
-.ux-save-pop { position:fixed; top:calc(58px + env(safe-area-inset-top, 0px)); right:8px; width:300px; max-width:calc(100vw - 16px); z-index:160; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 8px 28px rgba(33,27,21,.18); padding:12px 14px; font-size:12.5px; line-height:1.6; color:var(--tm); display:none; box-sizing:border-box; }
+.ux-save-pop { position:fixed; top:calc(58px + env(safe-area-inset-top, 0px)); right:8px; width:360px; max-height:calc(100vh - 80px); overflow:auto; max-width:calc(100vw - 16px); z-index:160; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 8px 28px rgba(33,27,21,.18); padding:12px 14px; font-size:12.5px; line-height:1.6; color:var(--tm); display:none; box-sizing:border-box; }
 .ux-save-pop.on { display:block; }
 .ux-save-pop-h { font-weight:800; margin-bottom:4px; }
+/* v1137（UI案69 ⑨）：右上の保存・同期・診断 */
+.ux-trio { gap:10px; padding:0 10px !important; }
+.ux-seg { display:inline-flex; align-items:center; gap:3px; font-size:11.5px; font-weight:700; white-space:nowrap; color:var(--tm); }
+.ux-seg .ux-seg-ic { display:none; }
+.ux-seg .ux-seg-m { font-size:14px; }
+.ux-seg.is-ok .ux-seg-m { color:var(--green); }
+.ux-seg.is-warn { color:var(--amber); }
+.ux-seg.is-warn .ux-seg-m { color:var(--amber); }
+.ux-seg.is-none { color:var(--muted); }
+.ux-seg.is-busy { color:var(--muted); }
+.ux-seg .ux-seg-x { font-size:10.5px; font-weight:800; max-width:7em; overflow:hidden; text-overflow:ellipsis; }
+.ux-trio.has-warn { border-color:var(--amber); }
+@media (max-width: 640px) {
+  .ux-trio { gap:5px; padding:0 6px !important; }
+  .ux-seg .ux-seg-l, .ux-seg .ux-seg-m { display:none; }
+  .ux-seg .ux-seg-ic { display:inline-block; font-size:15px; }
+  .ux-seg.is-ok .ux-seg-ic { color:var(--green); }
+  .ux-seg.is-warn .ux-seg-ic { color:var(--amber); }
+  .ux-seg.is-none .ux-seg-ic { color:var(--muted); }
+  .ux-seg.is-busy .ux-seg-ic { display:none; }
+  .ux-seg.is-busy .ux-seg-m { display:inline-block; }
+  .ux-seg .ux-seg-x { font-size:9.5px; max-width:3.2em; }
+  .ux-seg.is-warn[data-seg="sync"] .ux-seg-x { display:none; }
+}
+.ux-st-row { display:flex; gap:10px; padding:6px 0; border-top:1px solid var(--border); }
+.ux-st-row:first-of-type { border-top:none; }
+.ux-st-h { flex:0 0 2.6em; font-weight:800; }
+.ux-st-b { flex:1; min-width:0; }
+.ux-st-list { margin:2px 0 2px 1.1em; padding:0; }
+.ux-st-mut { color:var(--muted); font-size:11.5px; }
+.ux-st-btns { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; margin-top:10px; }
+.ux-st-page { font-size:12.5px; line-height:1.6; }
 </style>
 </head>
 <body>
@@ -1576,8 +1608,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
     <div class="topbar-right">
       <button id="topbar-fav" class="topbar-icon-btn" onclick="toggleFavCurrent()" title="このタブをお気に入りに追加"><i class="ti ti-star"></i></button>
       <button id="topbar-notif" class="topbar-icon-btn" onclick="toggleNotifPanel(event)" title="通知"><i class="ti ti-bell"></i><span id="notif-badge" style="display:none;position:absolute;top:-4px;right:-4px;background:var(--red);color:#fff;border-radius:9px;font-size:9px;font-weight:700;min-width:15px;height:15px;line-height:15px;text-align:center;padding:0 2px"></span></button>
-      <button id="ux-save" type="button" class="topbar-icon-btn ux-save" hidden onclick="FUNERGY_UX.saveInfo()"></button>
-      <button id="topbar-sync" class="topbar-icon-btn" onclick="refreshNow()" title="最新に更新"><i class="ti ti-refresh"></i></button>
+      <button id="ux-save" type="button" class="topbar-icon-btn ux-save ux-trio" hidden onclick="FUNERGY_UX.saveInfo()"></button><!-- v1137：保存・同期・診断（UI案69 ⑨）。「最新に更新」のボタンは外した（自動で最新になる） -->
       <div class="topbar-role-badge" id="topbar-role"></div>
       <button class="topbar-icon-btn" onclick="doLogout()" title="ログアウト"><i class="ti ti-logout"></i></button>
     </div>
@@ -4499,7 +4530,7 @@ var MD_FIX = {
      アプリ内のページではないので renderPage() では行けない。page は空にして道順を出す。 */
   no_hq_plan:   { label: '本部予算が未設定', page: '',           how: 'ログアウト → 自分を選んでPIN画面の「メールで管理者ログイン」→ 管理者セキュアページ → 本部予算タブ → 店舗を選び、月ヘッダの✎ で 客数・客単価 を入れる' },
   no_budget:    { label: '予算が未登録',       page: 'budget',     how: '予実管理でその月の予算を登録する' },
-  not_synced:   { label: '売上が未同期',       page: 'sync_center', how: '同期センターで対象月を取り込む' },
+  not_synced:   { label: '売上が未同期',       page: 'diag_center', how: '設定 › 診断と記録の「Toast の取り直し」で対象月を取り込む（GM・CEO・経理・事務Crew）' },   /* v1137：前の行き先 sync_center は画面が無かった */
   no_labor:     { label: '勤怠が未取込',       page: '',           how: '売上のある日に勤怠が無い日があります。この端末に読み込み中なら少し待つと出ます。DB にまだ無い日は、その店の勤怠が DB に入ると出ます（ダッシュボードを開いたときに、10 分あけて読み直します）' },   /* v1090 */
   no_actual:    { label: '実績が未入力',       page: 'budget',     how: '日次実績の入力・取り込みを確認する' },
   too_few_days: { label: 'データが足りない',   page: '',           how: '実績が3日ぶん貯まると判定を始めます' },
@@ -5653,6 +5684,8 @@ const NAV_ITEMS = [
     {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
   {id:'announce',     label:'アナウンス',   icon:'ti-broadcast',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office','office_crew','chef']},
+  /* v1137（決めてほしいこと 12A）：同期・診断のボタンを一般の画面から外して、ここに集める（GM・CEO・経理・事務Crew） */
+  {id:'diag_center', label:'診断と記録',   icon:'ti-stethoscope',      roles:['ceo','gm','office','office_crew']},
 ];
 
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
@@ -5683,7 +5716,7 @@ const MENU_GROUPS = [
   {id:'g_acct_review', label:'経理レビュー', icon:'ti-checklist', roles:['ceo','gm','office'],
     children:['acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','required','settings']},
+    children:['store_master','required','settings','diag_center']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew だけ。NAV_ITEMS の roles で絞る） */
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
@@ -5702,7 +5735,7 @@ const OFFICE_GROUPS = [
   {id:'go_meeting', label:'会議', icon:'ti-presentation', roles:['ceo','gm'],
     children:['meeting']},   /* v1084: 中間レビューの右隣（中間レビューと同じ階層） */
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
-    children:['settings','profile']},
+    children:['settings','diag_center','profile']},   /* v1137 */
 ]
 /* 経理(office)専用：キッチン側を含まない */
 const ACCT_GROUPS = [
@@ -5716,7 +5749,7 @@ const ACCT_GROUPS = [
     children:['approval','expense','mileage','vacation','office_export']},
   {id:'ga_hr', label:'人材', icon:'ti-users', children:['hr','growthhub','hiring','crew_handbook']},
   {id:'ga_my', label:'マイページ', icon:'ti-user', children:['mypage','discount']},   /* v844: 事務Crew専用メニューから引き継ぐ / v897: discount / v1084: 対応依頼は廃止 */
-  {id:'ga_set', label:'設定', icon:'ti-settings', children:['settings','profile']},
+  {id:'ga_set', label:'設定', icon:'ti-settings', children:['settings','diag_center','profile']},   /* v1137 */
 ];
 /* ===== v766: Corporate Chef（本部のキッチン側）専用メニュー =====
    本部は「経理側（office）」と「キッチン側（chef）」の2つに分かれる。
@@ -7077,14 +7110,27 @@ async function fetchEmpPrivate(){
   }catch(e){ console.warn('fetchEmpPrivate', e); }
 }
 /* 従業員編集時、機微情報を保護テーブル(employees_private)へ保存 */
+/* v1137（「保存しました」が実際と合わない所）：前は答えを見ず、送れなくても「従業員情報を更新しました」と出していた。
+   答えを返す（true＝保存できた／'failed'＝保存できなかった）。右上の「保存」に出し、もう一度送れるようにする
+   （送る値はこの画面のメモリだけに持つ。端末には残さない。ログアウトで消える）。
+   保存できたかは「HTTP が成功で、答えが ok:false や error でない」で決める（サーバーの関数の中身はリポジトリに無い） */
+function _empPrivOk(r, j){ return !!(r && r.ok) && !(j && (j.ok===false || j.error)); }
 function saveEmpPrivate(empId, wage, email, phone, monthlySalary){
   try{
-    if(!window._sessionPin || !curUserName) return;
-    if(['ceo','gm','office'].indexOf(curRole)<0) return;
-    fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary}) })
-      .then(function(){ if(!window._empPrivate) window._empPrivate={}; window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))}; })
-      .catch(function(){});
-  }catch(e){ console.warn('saveEmpPrivate', e); }
+    if(!window._sessionPin || !curUserName) return Promise.resolve(null);
+    if(['ceo','gm','office'].indexOf(curRole)<0) return Promise.resolve(null);
+    var args=arguments;
+    var p=fetch(SUPABASE_URL+'/functions/v1/emp-private', { method:'POST', headers:supaHeaders(), body:JSON.stringify({action:'save', name:curUserName, pin:window._sessionPin, empId:empId, wage:wage, email:email, phone:phone, monthlySalary:monthlySalary}) })
+      .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return _empPrivOk(r, j); }); })
+      .then(function(ok){
+        if(!ok) return 'failed';
+        if(!window._empPrivate) window._empPrivate={};
+        window._empPrivate[empId]={wage:Number(wage)||0,email:email||'',phone:phone||'',monthlySalary:(monthlySalary==null?null:Number(monthlySalary))};
+        return true;
+      }, function(){ return 'failed'; });
+    try{ if(window.FUNERGY_UX && FUNERGY_UX._track) FUNERGY_UX._track('emp_private_'+empId, p, { direct:true, label:t('給与・連絡先','Pay and contact'), retry:function(){ return saveEmpPrivate.apply(null, args); } }); }catch(e){}
+    return p;
+  }catch(e){ console.warn('saveEmpPrivate', e); return Promise.resolve('failed'); }
 }
 /* F-Crew廃止：既存F-CrewスタッフをCrew Leader（G2）へ統合 */
 function migrateMergeFCrew(){
@@ -9532,17 +9578,24 @@ function _pullPendingMap(){
 }
 /* 合流の決まりの無いキーを、この端末で最後に直した時刻（送信待ちのあいだの取り込みで「どちらが新しいか」を決める。この端末だけ） */
 var PEND_EDIT_KEY = '_pend_edit_at';
-function _pendEditAtAll(){ try{ var o=JSON.parse(localStorage.getItem(PEND_EDIT_KEY)||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+/* v1137：localStorage に書けなかったら、このタブのメモリに持つ（送信待ちと同じ理由。ふだんの動きは前と同じ） */
+var _pendEditMem = null;
+function _pendEditAtRaw(){ if(_pendEditMem!=null) return _pendEditMem; try{ return localStorage.getItem(PEND_EDIT_KEY); }catch(e){ return null; } }
+function _pendEditAtSetRaw(t){
+  try{ if(t==null) localStorage.removeItem(PEND_EDIT_KEY); else localStorage.setItem(PEND_EDIT_KEY, t); if(localStorage.getItem(PEND_EDIT_KEY)===(t==null?null:t)){ _pendEditMem=null; return true; } }catch(e){}
+  _pendEditMem=(t==null) ? '{}' : t; return false;
+}
+function _pendEditAtAll(){ try{ var o=JSON.parse(_pendEditAtRaw()||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
 function _pendEditAtMark(key, prevTxt, nextTxt){
   try{
     if(!key || typeof isOpSyncKey!=='function' || !isOpSyncKey(key)) return;   /* 時刻で比べるのは app_state の行だけ（端末だけのキーは覚えない） */
     if(typeof _opMergeDef==='function' && _opMergeDef(key)) return;   /* 合流の決まりのあるキーは要らない */
     /* lsSet から：中身が同じで、欄の順だけ違う保存は「直した」にしない（3 回目の独立レビュー P3） */
     if(prevTxt!=null && nextTxt!=null && typeof _cjson==='function'){ try{ if(_cjson(JSON.parse(prevTxt))===_cjson(JSON.parse(nextTxt))) return; }catch(e){} }
-    var o=_pendEditAtAll(); o[key]=Date.now(); localStorage.setItem(PEND_EDIT_KEY, JSON.stringify(o));
+    var o=_pendEditAtAll(); o[key]=Date.now(); _pendEditAtSetRaw(JSON.stringify(o));
   }catch(e){}
 }
-function _pendEditAtDrop(key){ try{ var o=_pendEditAtAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; localStorage.setItem(PEND_EDIT_KEY, JSON.stringify(o)); } }catch(e){} }
+function _pendEditAtDrop(key){ try{ var o=_pendEditAtAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; _pendEditAtSetRaw(JSON.stringify(o)); } }catch(e){} }
 /* cloudAt：クラウドの行の更新時刻（app_state の updated_at）。渡さない所（設定・マスター）は送っている途中のときだけ手元を残す */
 function _pullKeepLocal(key, pend, cloudAt){
   try{
@@ -10643,16 +10696,19 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
    - 個別マスター(stores/employees/...)は各テーブルへupsert
    - その他のマスター設定は app_settings へ key=value で保存
 ============================================================ */
-var SUPA_SYNC_ENABLED = (function(){ try{ return localStorage.getItem('supa_sync')!=='0'; }catch(e){ return true; } })();
+/* v1137（決めてほしいこと 12A）：「自動同期 OFF」は外した。どの端末もいつもクラウドへ送る（前に OFF にした端末も ON に戻す）。
+   OFF の端末は保存が端末だけに残り、送信待ちにも入らず、右上にも出なかった（総点検の 3） */
+var SUPA_SYNC_ENABLED = true;
 var _supaBooting = true; // 起動・シード・プル中はマスター押し上げを抑止（クラウドの正データを誤上書きしない）
-function setSupaSync(on){ SUPA_SYNC_ENABLED=on; try{ localStorage.setItem('supa_sync', on?'1':'0'); }catch(e){} }
-function migrateEnableMasterAutosync(){ // F1: 全端末でマスター自動同期を一度ONに移行
+function migrateEnableMasterAutosync(){ // F1: 全端末でマスター自動同期を一度ONに移行 → v1137：毎回 ON（前の OFF の印も消す）
   try{
-    if(localStorage.getItem('_f1_autosync')==='1') return;
-    localStorage.setItem('supa_sync','1'); SUPA_SYNC_ENABLED=true;
+    SUPA_SYNC_ENABLED=true;
+    if(localStorage.getItem('supa_sync')==='0') localStorage.setItem('supa_sync','1');
+    if(localStorage.getItem('login_autosync')==='false') localStorage.removeItem('login_autosync');   /* v1137：「ログイン時同期 OFF」も外した */
     localStorage.setItem('_f1_autosync','1');
   }catch(e){}
 }
+/* v1137：ログインのとき、いつもクラウドから取り込む（「ログイン時同期 OFF」は外した。前に OFF にした値は読まない） */
 
 /* localStorageキー → Supabaseテーブル定義。
    type:'rows' = 配列を行としてupsert（mapで各行の主要カラムを抽出、全体はdataへ）
@@ -10729,9 +10785,54 @@ function obSecretOf(ob){
   sec.docs = ((ob && ob.docs) || []).map(function(d){ return { name:d.name, image:d.image||'', uploadedAt:d.uploadedAt }; });
   return sec;
 }
+/* v1137（「保存しました」が実際と合わない所）：前は答えを見ず、送れなくても何も出さなかった（「提出完了」も出た）。
+   ・答えを返す（true＝保護領域に入った／'deferred'＝送れなかったので送信待ちに入れた）。右上の「保存」に出す。
+   ・送信待ちは記録の番号だけ（_ob_secret_pending）。中身は送るときに、この端末の記録から読む（機密を別の所に写さない）。
+   ・同じ人の送信は 1 つずつ（古い送信があとで届いて新しい入力を消さない）。つながったとき・自動の同期のときに送り直す */
+/* v1137：この端末だけの小さな記録（送信待ちの印など）。localStorage がいっぱいで書けなかったら、このタブのメモリに持つ
+   （黙って捨てない。ふだん＝書けるときの動きは前と同じ。読み込み直すと前の localStorage の値） */
+var _SMALL_MEM = {};
+function _smallGet(key){ if(Object.prototype.hasOwnProperty.call(_SMALL_MEM, key)) return _SMALL_MEM[key]; try{ return localStorage.getItem(key); }catch(e){ return null; } }
+function _smallSet(key, t){
+  try{ if(t==null) localStorage.removeItem(key); else localStorage.setItem(key, t); if(localStorage.getItem(key)===(t==null?null:t)){ delete _SMALL_MEM[key]; if(!Object.keys(_SMALL_MEM).length) try{ window._smallLsFail=0; }catch(e){} return true; } }catch(e){}
+  _SMALL_MEM[key]=(t==null) ? null : t; try{ window._smallLsFail=Date.now(); }catch(e){} return false;
+}
+var OB_SECRET_PENDING_KEY = '_ob_secret_pending', _obSecretChain = {};
+function obSecretPendingList(){ try{ var a=JSON.parse(_smallGet(OB_SECRET_PENDING_KEY)||'[]'); return Array.isArray(a)?a.filter(function(x){ return x && x.id; }):[]; }catch(e){ return []; } }
+function _obSecretPendingSet(l){ return _smallSet(OB_SECRET_PENDING_KEY, l.length ? JSON.stringify(l) : null); }
 function obPushSecret(ob){
-  if (!ob || !ob.id || !ob.inviteToken) return;
-  try { authObPriv({ action:'save', obId:ob.id, token:ob.inviteToken, secret:obSecretOf(ob) }).catch(function(){}); } catch(e){}
+  if (!ob || !ob.id || !ob.inviteToken) return Promise.resolve(null);
+  var id=ob.id, at=Date.now(), payload;
+  try { payload={ action:'save', obId:ob.id, token:ob.inviteToken, secret:obSecretOf(ob) }; } catch(e){ return Promise.resolve(null); }
+  var prev=_obSecretChain[id]||Promise.resolve();
+  var run=function(){
+    return Promise.resolve().then(function(){ return authObPriv(payload); }).then(function(j){ return !!(j && j.ok); }, function(){ return false; }).then(function(ok){
+      var l=obSecretPendingList();
+      if(ok){ _obSecretPendingSet(l.filter(function(x){ return !(x.id===id && (Number(x.at)||0)<=at); })); return true; }
+      var cur=l.find(function(x){ return x.id===id; }); if(cur) cur.at=Date.now(); else l.push({ id:id, at:Date.now() });
+      _obSecretPendingSet(l);
+      return 'deferred';
+    });
+  };
+  var p=prev.then(run, run);
+  _obSecretChain[id]=p;
+  try{ if(window.FUNERGY_UX && FUNERGY_UX._track) FUNERGY_UX._track('ob_secret_'+id, p, { direct:true, label:t('本人確認の情報','ID details') }); }catch(e){}
+  return p;
+}
+var _obSecretRetryBusy=null;
+function retryObSecretPending(){
+  if(_obSecretRetryBusy) return _obSecretRetryBusy;
+  var l=obSecretPendingList(); if(!l.length) return Promise.resolve(0);
+  _obSecretRetryBusy=(async function(){
+    var obs=ls('onboardings', [])||[], n=0;
+    for(var i=0;i<l.length;i++){
+      var ob=(Array.isArray(obs)?obs:[]).find(function(o){ return o && o.id===l[i].id; });
+      if(!ob || !ob.inviteToken){ _obSecretPendingSet(obSecretPendingList().filter(function(x){ return x.id!==l[i].id; })); continue; }   /* この端末にもう記録が無い：送れるものが無い */
+      if((await obPushSecret(ob))===true) n++;
+    }
+    return n;
+  })().catch(function(){ return 0; }).then(function(n){ _obSecretRetryBusy=null; return n; });
+  return _obSecretRetryBusy;
 }
 /* ===== v919: 端末ローカル専用キー =====
    クラウドへ push もせず、クラウドから pull しても適用しない。
@@ -10765,8 +10866,29 @@ function supaHeaders(extra){
    lsSet の write-through が失敗したキーを記録し、オンライン復帰・起動・手動で再送する。
    保存スナップショットではなく「キー」を保持し、再送時は最新のローカル値を押し上げる
    （＝last-write-wins。古い値で新しい値を上書きしない）。outbox自体は端末ローカル（同期しない）。 */
-function _outboxGet(){ try{ var a=JSON.parse(localStorage.getItem('op_outbox')||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
-function _outboxSet(a){ try{ localStorage.setItem('op_outbox', JSON.stringify(a||[])); }catch(e){} }
+/* v1137：端末の localStorage がいっぱいで送信待ちを書けないと、前は黙って捨てていた（送れなかった保存が右上にも出ず、あとで送り直されない）。
+   書けなかったときは、このタブのメモリ（_outboxMem）と IndexedDB の別の名前（op_outbox_overflow）に持つ。localStorage に書けたらメモリと別の名前は消す
+   （ふだん＝localStorage に書けるときの動きは前と同じ）。IndexedDB も使えない端末では、このタブのあいだだけ（読み込み直すと前の localStorage の値）。 */
+var _outboxMem = null, OUTBOX_OVERFLOW = 'op_outbox_overflow';
+function _outboxParse(t){ try{ var a=JSON.parse(t||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function _outboxGet(){
+  if(_outboxMem) return _outboxMem.slice();
+  try{ if(typeof _idbState!=='undefined' && _idbState==='ready' && _IDB_MEM && _IDB_MEM.has(OUTBOX_OVERFLOW)){ _outboxMem=_outboxParse(_IDB_MEM.get(OUTBOX_OVERFLOW)); return _outboxMem.slice(); } }catch(e){}
+  try{ return _outboxParse(localStorage.getItem('op_outbox')); }catch(e){ return []; }
+}
+function _outboxSet(a){
+  var j=JSON.stringify(a||[]), ok=false;
+  try{ localStorage.setItem('op_outbox', j); ok=(localStorage.getItem('op_outbox')===j); }catch(e){}
+  if(!ok){ try{ if(typeof _lsFreeOldLaborKeys==='function') _lsFreeOldLaborKeys(2); localStorage.setItem('op_outbox', j); ok=(localStorage.getItem('op_outbox')===j); }catch(e){} }   /* 古い月の勤怠の写しだけ空けてもう 1 回（lsSet と同じ） */
+  if(ok){
+    _outboxMem=null; window._outboxLsFail=0;
+    try{ if(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(OUTBOX_OVERFLOW)) _idbQueue(OUTBOX_OVERFLOW, null); }catch(e){}
+    return true;
+  }
+  _outboxMem=(a||[]).slice(); window._outboxLsFail=Date.now();
+  try{ if(typeof _idbQueue==='function') _idbQueue(OUTBOX_OVERFLOW, j); }catch(e){}
+  return false;
+}
 /* v1128（独立レビュー 6f2b5ab P1）：だれの保存か。送信待ち（op_outbox）と、送っている途中で閉じられた印（_ux_inflight）の両方で使う。
    送り直すのは同じ人がログインしているあいだだけ（共有の端末で、A の送れなかった保存を B のログインのあいだに送らない）。
    ログインしていないとき（名前を選んだだけ・ログアウトのあと）は ''。人は社員の ID（PIN でも管理者ページのメールでも同じ 'p:'）、
@@ -10845,7 +10967,11 @@ function outboxLabel(key){
     ['m_recipes','レシピ'],['inv_','棚卸'],['purchases_','買い出し'],['reimbursements','立替'],['spl_checks_','チェック'],['checks','チェック'],
     ['ec_resolutions','エラーの解除'],['ec_log','エラーセンター記録'],['menu_log','メニュー変更ログ'],['reject_log','不採用ログ'],
     ['handbook_log','ハンドブック更新ログ'],['prep_history','仕込みレベル履歴'],['meeting_minutes','議事録'],
-    ['att_fix_','勤怠の手動修正'],['tip_cf_','Tipの期間の確定'],['kpi_man_','手入力KPI'],['dev_pipe','育成の記録']];   /* v1136 */
+    ['att_fix_','勤怠の手動修正'],['tip_cf_','Tipの期間の確定'],['kpi_man_','手入力KPI'],['dev_pipe','育成の記録'],   /* v1136 */
+    ['menu_mix_','メニューの出数'],['shiftplan_','シフト'],['spl_tip_requests_','Tip Rate'],['tip_requests','Tip Rate'],['notifications','通知'],
+    ['lala_tasks','LaLa のタスク'],['m_employees','従業員'],['m_stores','店舗'],['growth_karte','成長カルテ'],['lss_','Career Score'],
+    ['q_budgets','Qコミット'],['fc_monthly_','原価（月）'],['daily_actuals_','売上・日報'],['ot_approvals_','残業の承認'],['onboardings','入社の手続き'],
+    ['vacations','休暇'],['handbook_reads','Handbook の読了'],['handbook_chapters','Handbook の章'],['shift_fixed_','シフトの固定'],['cash_tip','現金チップ']];   /* v1137：右上の「保存」の中身で読める名前 */
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return map[i][1]; }
   return k;
 }
@@ -11947,6 +12073,8 @@ function _kvSeenRecord(rows, okKeys){
 async function supaPullAllMasters(opt){
   if(window.FUNERGY_FINANCIAL_SAVE){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){/* financial local writes remain fenced; unrelated masters may load */}}
   var results = [];
+  var _fails = [];   /* v1137：読めなかった表（右上の「同期」に出す）。results._fails */
+  try{ Object.defineProperty(results, '_fails', { value:_fails, enumerable:false }); }catch(e){}
   /* v643: 全fetchを先に発火して並列化（直列awaitで約9秒かかっていたのを短縮）。処理ロジックは不変。 */
   var _vT0 = Date.now();   /* v1121: 読み始めた時刻（このあとに送った業者は、この読みで戻さない） */
   var _mp = {}; for (var _k in SUPA_MASTER_MAP){ _mp[_k] = supaFetchAll(SUPA_MASTER_MAP[_k].table, 'data'); }
@@ -11958,6 +12086,7 @@ async function supaPullAllMasters(opt){
     var def = SUPA_MASTER_MAP[key];
     if (def.table === 'ingredients') continue; // v646: ingredientsは後で裏取得
     var rows = await _mp[key];
+    if (rows === null && _fails.indexOf(def.table)<0) _fails.push(def.table);   /* v1137 */
     if (Array.isArray(rows) && rows.length){
       var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x!=null; });
       arr = _stripTestRows(key, arr);                             /* v850 */
@@ -11974,6 +12103,7 @@ async function supaPullAllMasters(opt){
   }
   // app_settings（key/value）→ 各設定キーへ復元
   var settings = await _settingsP;
+  if (settings === null) _fails.push('app_settings');   /* v1137 */
   if (Array.isArray(settings) && settings.length){
     var cnt=0, _spend=(typeof _pullPendingMap==='function') ? _pullPendingMap() : null;
     settings.forEach(function(row){
@@ -12008,12 +12138,14 @@ async function supaPullAllMasters(opt){
   };
   var _heavyTimer = setTimeout(_heavyDone, 8000);
   var _deferredP = Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
+    if (_dres[0] === null) _fails.push('ingredients');   /* v1137 */
+    if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
-  }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); try{ clearTimeout(_heavyTimer); }catch(_e){} _heavyDone(); });
+  }).catch(function(e){ console.warn('deferred pull(ingredients/app_state)', e); if (_fails.indexOf('app_state')<0) _fails.push('app_state'); try{ clearTimeout(_heavyTimer); }catch(_e){} _heavyDone(); });
   results.push('ingredients/app_state: 裏で取得中（完了後に再描画）');
   try{ Object.defineProperty(results, '_done', { value:_deferredP, enumerable:false }); }catch(e){}   /* v1098: 裏の取り込みの終わりを待てるように（設定の「クラウドから取り込む」） */
   return results;
@@ -16946,7 +17078,7 @@ async function loginSyncOps(){
 /* クラウド(Supabase)から最新マスター/設定＋当月の勤怠を取り込む。タイムアウト付き・失敗してもキャッシュで続行。 */
 async function loginSync(){
   window._uxMastersP = null;
-  if (ls('login_autosync', true)===false) return; // 設定でOFFならスキップ
+  /* v1137：「ログイン時同期 OFF」は外した（いつも取り込む） */
   try {
     setSyncSplash('最新データに同期中…');
     /* v1127：ログインで待つのは、最初の画面に要るマスター・設定だけ。
@@ -16971,7 +17103,7 @@ async function loginSync(){
    取り込み中は「取得の状態」に「取得中…」、右上の更新ボタンが回る。終わったら今の画面を描き直す（入力中なら「表示を更新」を出す）。
    ログアウトしたら、終わっても描き直さない */
 var _uxOpsSeq = 0;
-function uxOpsPaint(){ try{ var b=document.getElementById('topbar-sync'); if(b) b.classList.toggle('ux-syncing', !!window._uxOpsBusy); }catch(e){} }
+function uxOpsPaint(){ try{ var b=document.getElementById('topbar-sync'); if(b) b.classList.toggle('ux-syncing', !!window._uxOpsBusy); }catch(e){} try{ if(window.FUNERGY_STATUS && FUNERGY_STATUS.paintSoon) FUNERGY_STATUS.paintSoon(0); }catch(e){} }   /* v1137：右上の「同期中…」 */
 function uxLoginOpsStart(after){
   var seq = ++_uxOpsSeq;
   window._uxOpsBusy = true; uxOpsPaint();
@@ -16988,7 +17120,7 @@ function uxLoginOpsStart(after){
 }
 /* ログイン確定 → 同期 → アプリ表示 */
 async function enterAppWithSync(){
-  var doSync = ls('login_autosync', true)!==false;
+  var doSync = true;   /* v1137：「ログイン時同期 OFF」は外した */
   if (doSync) showSyncSplash('最新データに同期中…');
   try { await Promise.race([ loginSync(), new Promise(function(res){ setTimeout(res, 9000); }) ]); } catch(e){} // 携帯回線でハングしても9秒で先へ
   // クラウド同期後、ログイン者の役職・所属を最新マスターで再解決（シードの古い役職に固定されるのを防ぐ）
@@ -17042,7 +17174,7 @@ async function loginToastAutoSync(){
   }
   try{
     /* v1129（11/01 の依頼 ④）：裏の同期がうまくいったときは知らせない（画面の下に出さない・「取得の状態」と右上の更新ボタンで分かる）。失敗した店があるときだけ */
-    if (ng>0) showToast('売上の同期で取り込めなかった店があります（'+ng+'店'+(ok?' / 取り込めた店 '+ok:'')+'）。同期センターで確かめてください', 'warning');
+    if (ng>0) showToast('売上の同期で取り込めなかった店があります（'+ng+'店'+(ok?' / 取り込めた店 '+ok:'')+'）。'+((window.FUNERGY_STATUS && FUNERGY_STATUS.canDiag && FUNERGY_STATUS.canDiag()) ? '設定 › 診断と記録で確かめてください' : '右上の「同期」で状態を見られます'), 'warning');   /* v1137 */
     // 予実・ダッシュボードを開いていれば最新値で再描画
     if (typeof curPage!=='undefined' && ['dashboard','budget','meeting','monthly'].indexOf(curPage)>=0){ if(window.FUNERGY_UX && FUNERGY_UX.bgRefresh) FUNERGY_UX.bgRefresh(); else renderPage(curPage); }   /* v1127 */   /* v1084: 会議 */
   }catch(e){}
@@ -17093,7 +17225,7 @@ function _loginRosterRefreshed(tries){
   }catch(e){}
 }
 async function loginBootstrapPull(opt){
-  if (ls('login_autosync', true)===false) return;
+  /* v1137：「ログイン時同期 OFF」は外した（いつも取り込む） */
   var bg = !!(opt && opt.background);   /* v1098: true＝画面を止めずに裏で */
   var before = bg ? [_lsStoreGet('m_employees'), _lsStoreGet('m_stores')] : null;
   try {
@@ -17119,11 +17251,7 @@ async function loginBootstrapPull(opt){
   finally { if (!bg) hideSyncSplash(); }
   if (bg) { try { if (_lsStoreGet('m_employees')!==before[0] || _lsStoreGet('m_stores')!==before[1]) _loginRosterRefreshed(); } catch(e){} }
 }
-function toggleLoginAutosync(){
-  var cur = ls('login_autosync', true)!==false;
-  lsSet('login_autosync', !cur);
-  showToast(!cur?'ログイン時の自動同期をONにしました':'ログイン時の自動同期をOFFにしました','success');
-}
+/* v1137：「ログイン時同期 ON／OFF」（toggleLoginAutosync）は外した（決めてほしいこと 12A：自動同期を止める切り替えは置かない） */
 
 function doLogout() {
 /* FUNERGY_WEB_OFFICE_SOURCE_V1 doLogout */
@@ -17491,7 +17619,7 @@ function switchStore(id) {
   renderPage(curPage);
 }
 /* Officeモードで表示を許可するページ（それ以外はハブへ集約） */
-var OFFICE_OK_PAGES = ['lunch_challenge','crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','discount','labor','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
+var OFFICE_OK_PAGES = ['diag_center','lunch_challenge','crew_handbook','biz_guide','office_mgr','office_export','error_center','hr','growthhub','hiring','invoice','acct_review','acct_export','monthly','budget','tip','profile','settings','notifications','staff_dev','approval','vacation','mileage','mypage','discount','labor','kpi_master','tasks','menu','recipe','ingredient_master','vendor_master','inventory',
   /* v766: 食材管理メニューに出ているのに OFFICE から開けなかった2画面を追加。
      本部ログインだと Office管理へ弾かれていた（chef 以前からの不具合）。 */
   'ing_transfer','office_career',
@@ -19282,6 +19410,7 @@ case 'acct_center':
     case 'notifications': el.innerHTML = renderNotifications(); break;
     case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
+    case 'diag_center':  el.innerHTML = (window.FUNERGY_STATUS ? FUNERGY_STATUS.renderDiagCenter() : ''); break;   /* v1137 */
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
   try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
@@ -19417,6 +19546,7 @@ case 'acct_center':
     case 'notifications': el.innerHTML = renderNotifications(); break;
     case 'growth_karte': el.innerHTML = renderGrowthKarte(); break;
     case 'settings':     el.innerHTML = renderSettings(); break;
+    case 'diag_center':  el.innerHTML = (window.FUNERGY_STATUS ? FUNERGY_STATUS.renderDiagCenter() : ''); break;   /* v1137 */
     default:             el.innerHTML = '<div class="card"><p style="color:var(--muted)">準備中</p></div>';
   }
   try{ var _psc=pageSyncScope(page); if(_psc){ el.insertAdjacentHTML('afterbegin', pageSyncStrip(_psc)); } }catch(e){}   /* v1127：前は画面全体を文字に戻して読み直していた */
@@ -20629,7 +20759,7 @@ function renderStoreCmdTip(storeId, store, canEdit) {
 
   // クレジットチップ（Toast自動）
   var _loff = tip.lunchOff;  // その日ランチOFF＝ディナーのみ表示
-  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('クレジットチップ','Credit Tips')} ${hasCredit?'<i class="ti ti-plug-connected" style="color:var(--accent2)"></i> '+t('Toast自動','Toast auto'):t('（未取得：右上「最新に更新」で取得）','(not fetched — use Refresh, top right)')}${_loff?' <span style="font-size:10px;color:var(--accent)">· '+t('ディナーのみ営業（ランチTipはディナーに合算）','Dinner only (lunch tips merged into dinner)')+'</span>':''}</div>`;
+  html += `<div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('クレジットチップ','Credit Tips')} ${hasCredit?'<i class="ti ti-plug-connected" style="color:var(--accent2)"></i> '+t('Toast自動','Toast auto'):t('（未取得：自動で取りに行きます。取れないときは右上の「同期」）','(not fetched yet — fetched automatically; see “Sync” at the top right)')}${_loff?' <span style="font-size:10px;color:var(--accent)">· '+t('ディナーのみ営業（ランチTipはディナーに合算）','Dinner only (lunch tips merged into dinner)')+'</span>':''}</div>`;
   if (_loff) {
     // ディナーのみ: L列を出さず、Dinner=計 の2列
     html += `<table style="width:100%;font-size:12px;margin-bottom:10px"><tr style="color:var(--muted)"><td></td><td style="text-align:right">Dinner</td></tr>
@@ -23563,6 +23693,9 @@ function _syncMeta(scope){ return SYNC_SCOPE_META[scope] || {label:scope, toast:
 
 /* 同期本体：push-first → merge-pull（上書きしない） */
 async function pageSync(scope){
+  /* v1137：「最新に同期しました」は、クラウドの取り込みとこの画面の読み直しが両方できたときだけ（前は設定の帯は何も読まずに出していた）。
+     自動の同期と同じ道（送信待ち → 取り込み → 画面の読み直し）で行い、結果を正直に出す */
+  if(window.FUNERGY_STATUS && typeof FUNERGY_STATUS.syncNow==='function') return FUNERGY_STATUS.syncNow();
   var m=_syncMeta(scope);
   try{ showToast(t('同期中…','Syncing…'),'info'); }catch(e){}
   try{ await flushOutbox(); }catch(e){}          // ① 未送信を先に押し上げ（保存を確実にクラウド化）
@@ -23656,21 +23789,21 @@ function fstChip(kind){
   if(_fstBusy[kind]) return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-loader"></i> '+esc(L)+' '+t('取得中…','Fetching…')+'</span>';
   if(s.state==='ok') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-check" style="color:var(--green)"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+'</span>';
   if(s.state==='partial') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--muted)"><i class="ti ti-circle-dashed"></i> '+esc(L)+' '+esc(fstClock(s.ok))+' '+t('取得','fetched')+' · '+t('まだ：','not yet: ')+esc(fstNames(s.none))+'</span>';
-  if(s.state==='none') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+esc(L)+t('：まだ取れていません',': not fetched yet')+btn(t('もう一度','Try again'))+'</span>';
+  if(s.state==='none') return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--yellow)"><i class="ti ti-alert-triangle"></i> '+esc(L)+t('：まだ取れていません',': not fetched yet')+btn(t('取り直す','Re-fetch'))+'</span>';   /* v1137：手で押すのは「取り直す」に統一 */
   var who=s.bad.length?'（'+esc(fstNames(s.bad))+'）':'';
   var why=fstWhyOf(kind, s.bad);   /* v1107：理由 */
   return '<span class="fst-chip" data-fst="'+kind+'" style="color:var(--red)"><i class="ti ti-alert-circle"></i> '+esc(L)+t('：取れませんでした',': could not fetch')+who
     +(s.ok&&!s.prevMissing?t('。前回 '+esc(fstClock(s.ok))+' の情報を表示中','. Showing data from '+esc(fstClock(s.ok)))
       :(s.ok&&s.prevMissing<s.bad.length?t('。前の情報が無い店があります','. Some stores have no earlier data'):t('。前の情報もありません','. No earlier data')))
     +(why?'<span style="font-weight:500">'+t('。理由：','. Reason: ')+esc(why)+'</span>':'')
-    +btn(t(L+'をもう一度','Retry '+L.toLowerCase()))+'</span>';
+    +btn(t(L+'を取り直す','Re-fetch '+L.toLowerCase()))+'</span>';
 }
 function fstChipsHtml(){
   var h=FST_KINDS.map(fstChip).filter(Boolean).join('');
   if(_fstFresh) h+='<span class="fst-chip"><button class="btn btn-primary btn-sm" style="padding:2px 8px" onclick="fstShowFresh()"><i class="ti ti-refresh"></i> '+t('新しい情報を取りました：表示を更新','New data fetched: refresh view')+'</button></span>';
   return '<span id="fst-chips" style="display:inline-flex;align-items:center;gap:6px 12px;flex-wrap:wrap;font-size:11px;font-weight:600">'+h+'</span>';
 }
-function fstPaint(){ try{ var el=document.getElementById('fst-chips'); if(el) el.outerHTML=fstChipsHtml(); }catch(e){} }
+function fstPaint(){ try{ var el=document.getElementById('fst-chips'); if(el) el.outerHTML=fstChipsHtml(); }catch(e){} try{ if(window.FUNERGY_STATUS && FUNERGY_STATUS.paintSoon) FUNERGY_STATUS.paintSoon(0); }catch(e){} }   /* v1137：右上の「同期」も */
 function fstShowFresh(){ _fstFresh=false; try{ renderPage((typeof curPage!=='undefined')?curPage:'dashboard'); }catch(e){} }
 /* 入力中（入力の画面・予算の編集を開いている・保存の途中や確認待ち）は、自動のやり直しを待つ。
    自動のやり直しは売上の記録を保存することがあり、開いている入力の画面を止め、そのあとの保存が「ほかの画面で更新」になるため */
@@ -23770,27 +23903,17 @@ function fstWhyOf(kind, bad){
   return '';
 }
 
-/* ページ上部に出す共通ストリップ（鮮度＋同期＋診断） */
+/* ページ上部に出す共通ストリップ（鮮度＋同期＋診断）
+   v1137（決めてほしいこと 12A・UI案69 ⑨）：「最新情報を取得」「同期」「診断」のボタンと「未送信」「同期 ◯分前」は外した。
+   保存・同期・診断の状態はどの画面でも右上に出し、最新は自動で取る。同期と診断は「設定 › 診断と記録」（GM・CEO・経理・事務Crew）。
+   ダッシュボード・予実・会議などは、売上・予算・勤怠の「取得の状態」（v1105）だけを残す（取れなかったときの「取り直す」は Toast の取り直し） */
 function pageSyncStrip(scope){
-  var iso=(typeof getSyncedAt==='function')?getSyncedAt(scope):'';
-  var ago=iso?((typeof notifAgo==='function')?notifAgo(iso):''):'';
-  var ob=(typeof outboxCount==='function')?outboxCount():0;
-  /* v1105（UI案60 ① 1A）：ダッシュボード・予実・会議などは「何をいつ取れたか」を売上・予算・勤怠ごとに出す（前の「同期 ◯分前」の代わり） */
   if(scope==='dash'||scope==='budget'){
     return '<div class="fst-strip" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
       +fstChipsHtml()
-      +(ob>0?'<span style="font-size:10.5px;font-weight:600;color:var(--red);display:inline-flex;align-items:center;gap:4px"><i class="ti ti-cloud-upload"></i>'+t('未送信','Unsent')+ob+'</span>':'')
-      +'<button class="btn btn-secondary btn-sm" onclick="pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('最新情報を取得','Get latest')+'</button>'
-      +'<button class="btn btn-secondary btn-sm" onclick="openDiag(\''+scope+'\')"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>'
       +'</div>';
   }
-  var col = ob>0?'var(--red)':(iso?'var(--muted)':'var(--yellow)');
-  var txt = ob>0?('未送信'+ob):(iso?(t('同期','Synced')+' '+ago):t('未同期','—'));
-  return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin:0 0 8px">'
-    +'<span style="font-size:10.5px;font-weight:600;color:'+col+';display:inline-flex;align-items:center;gap:4px"><i class="ti ti-cloud"></i>'+txt+'</span>'
-    +'<button class="btn btn-secondary btn-sm" onclick="pageSync(\''+scope+'\')"><i class="ti ti-cloud-download"></i> '+t('同期','Sync')+'</button>'
-    +'<button class="btn btn-secondary btn-sm" onclick="openDiag(\''+scope+'\')"><i class="ti ti-stethoscope"></i> '+t('診断','Diagnose')+'</button>'
-    +'</div>';
+  return '';
 }
 
 /* 診断：Cloud（保存データが入っているか）＋Toast（外部取込）を明示 */
@@ -24888,7 +25011,7 @@ function initFetchBar(store, months, mix){
                   :' <span style="color:var(--green)">今日ぶんまで取得済み</span>')
     +'</div>'
     +'<button class="btn btn-secondary btn-sm" onclick="initLoadMix(\''+escapeHtml(store.id)+'\',\''+escapeHtml((months||[]).join(','))+'\')">'
-    +'<i class="ti ti-cloud-download"></i> 最新化</button></div></div>';
+    +'<i class="ti ti-cloud-download"></i> 取り直す</button></div></div>';   /* v1137：手で押すのは「取り直す」に統一 */
 }
 /* 1週目が揃うまでは判定を出さない。★理由を必ず書く（黙って空にしない）。 */
 function initWaitCard(it, w){
@@ -24972,7 +25095,7 @@ function initVerdict(R){
             ? ('<b>'+odd.join('・')+'曜が前後で食い違っています。定休日なら前後どちらにも同じだけ入るので、'
                +'これは定休日ではありません。</b>その日が臨時休業だったか、'
                +'Toastの取り込みが落ちているかのどちらかです。'
-               +'上の「最新化」で直らなければ 設定 → Toast同期で「31日取り込み」を実行してください。')
+               +'上の「取り直す」で直らなければ「設定 › 診断と記録」の「31 日を取り直す」を実行してください。')
             : '欠けている曜日は前後で同じですが、日数が違います。上の「最新化」を試してください。');
       })())};
   if(R.dGp<0) return {key:'stop', label:'見直す',
@@ -25110,7 +25233,7 @@ function initWeekChart(rows, key, kind, dayKey){
   var got=rows.map(function(r){ return r[key]; }).filter(function(v){ return v!=null; });
   if(!got.length) return '<div style="font-size:12px;color:var(--muted);line-height:1.8;padding:10px 0">'
     +'この指標はまだ出せません。営業日数が揃った週がありません。'
-    +'上の「最新化」で出数を取り直してください。</div>';
+    +'上の「取り直す」で出数を取り直してください。</div>';
   var mx=Math.max.apply(null,got), mn=Math.min.apply(null,got);
   var top=Math.max(mx,0), bot=Math.min(mn,0), rng=(top-bot)||1;
   var W=520, H=96, Y0=10, n=rows.length;
@@ -32758,7 +32881,18 @@ async function runCustDebug(){
     if(box) box.innerHTML=html;
   }catch(e){ if(box) box.innerHTML='<span style="color:var(--red)">診断エラー: '+escapeHtml(String(e))+'</span>'; }
 }
+/* v1137（決めてほしいこと 12A）：同期センターは「設定 › 診断と記録」の中へ（GM・CEO・経理・事務Crew）。
+   前はどの画面の「診断」からも開け、G3 以上は「自動同期 OFF」「ログイン時同期 OFF」を押せた（外した）。
+   中の取り込み・診断・バックアップの見える人は今までどおり（G3 以上・GM・CEO の決まりはそのまま）。
+   openSyncCenter() は「診断と記録」を開く（取り込みのあとの結果の欄 #sync-center-result はその画面にある） */
 function openSyncCenter() {
+  try{
+    if (typeof curPage!=='undefined' && curPage==='diag_center') { renderPage('diag_center'); return; }
+    if (window.FUNERGY_STATUS && FUNERGY_STATUS.canDiag()) { go('diag_center'); return; }
+  }catch(e){}
+  try{ showToast(t('同期と診断は「設定 › 診断と記録」にあります（GM・CEO・経理・事務Crew）','Sync and diagnostics are in Settings › Diagnostics & records (GM, CEO, accounting, office crew)'),'info'); }catch(e){}
+}
+function syncCenterBodyHtml() {
   var stores = getVisibleStores();
   var scopeLabel = curStore==='ALL' ? ('全店（'+stores.length+'店舗）') : ((getStoresAll().find(x=>x.id===curStore)||{}).name||'—');
   var isGM = curRole==='gm' || curRole==='ceo';
@@ -32786,20 +32920,17 @@ function openSyncCenter() {
       + (desc?'<div style="font-size:11px;color:var(--muted);margin-top:2px;line-height:1.4">'+desc+'</div>':'')
       + '</div>';
   };
-  openModal(`<div class="modal-title"><i class="ti ti-refresh"></i> 同期センター <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:4px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
+  return `<div style="font-size:12px;color:var(--muted);margin-bottom:4px">対象: <b>${escapeHtml(scopeLabel)}</b> <span style="font-size:11px">（上部の店舗切替で変更）</span></div>
     <div style="font-size:11px;color:var(--tm);background:var(--bg);border-radius:8px;padding:8px 10px;line-height:1.5">
       <b style="color:var(--accent)">① クラウド同期</b>＝アプリで入力・保存した自社データ（承認・通知・シフト・評価・予算など）を端末⇔クラウドで同期。通常は保存時に自動反映。<br>
       <b style="color:var(--accent2,#d97706)">② Toast取り込み</b>＝外部POS(Toast)から売上・客数などを取り込み。外部データのため即時ではなく、取り込み時か夜間バッチで更新。</div>
 
-    ${scG3?secHead('var(--accent)','① クラウド同期（自社データ・双方向）','アプリで保存したデータの端末⇔クラウド反映。通常は自動（即時）。手動で今すぐ反映したいときに使います。')
+    ${scG3?secHead('var(--accent)','① クラウド同期（自社データ・双方向）','保存はいつも自動でクラウドへ送ります（送れなかったものは送信待ちに残り、つながると自動で送ります）。開いているあいだも 10 分ごと・アプリに戻ったときに最新を取ります。')
       +`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px">
         <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> クラウドから取り込む</button>
-        <button class="btn btn-secondary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> この端末からアップロード</button>
-        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync();openSyncCenter()">${SUPA_SYNC_ENABLED?'<i class="ti ti-check"></i> 自動同期 ON':'自動同期 OFF'}</button>
-        <button class="btn ${ls('login_autosync',true)!==false?'btn-success':'btn-secondary'} btn-sm" onclick="toggleLoginAutosync();openSyncCenter()">${ls('login_autosync',true)!==false?'<i class="ti ti-check"></i> ログイン時同期 ON':'ログイン時同期 OFF'}</button>
+        <button class="btn btn-secondary btn-sm" onclick="runSupaPushAllConfirm()"><i class="ti ti-upload"></i> この端末からアップロード</button>
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-top:6px">「自動同期 ON」：保存のたびにクラウドへ即時反映。「ログイン時同期 ON」：ログインごとに最新マスター（店舗・従業員・予算・KPI等）を取り込み。端末でマスターを編集したら「アップロード」で反映してください。</div>`:''}
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">「この端末からアップロード」は、店舗・従業員・食材・レシピ・取引先などを<b>この端末の写しで全部書き直します</b>。ほかの端末の新しい変更が消えることがあるので、クラウドが壊れたときだけ使ってください。</div>`:''}
 
     ${secHead('var(--accent2,#d97706)','② Toast取り込み（外部POS・一方向）','Toastから売上・客数・Tip・Labor・出数・天気を取り込みます。即時ではありません（取り込み実行時／夜間バッチ）。')}
     <button class="btn btn-primary" style="width:100%;margin-top:8px" onclick="syncCenterRunAll()"><i class="ti ti-bolt"></i> すべて取り込み（売上・客数・Tip・Labor・天気）</button>
@@ -32832,8 +32963,7 @@ function openSyncCenter() {
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="restoreBudgetsFromFile()"><i class="ti ti-upload"></i> 予算をバックアップから復元</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="openApprovedBudgetModal()"><i class="ti ti-shield-check"></i> GM承認済み予算の復元</button>`:''}
     ${scG3?`<button class="btn btn-secondary btn-sm" style="width:100%;margin-top:8px" onclick="backupInvHistory()"><i class="ti ti-download"></i> 棚卸データをバックアップ書き出し</button>`:''}
-
-    <div style="font-size:11px;color:var(--muted);margin-top:14px"><i class="ti ti-info-circle"></i> 各ページの「最新情報を取得」ボタンでも同じ取得ができます。ここでは一括／個別のどちらも実行できます。</div>`);
+`;
 }
 async function syncAllData(storeId, guid) {
   var btn = document.getElementById('sync-all-btn');
@@ -37641,8 +37771,8 @@ function openCashTipPermCheck(){
   h += '<div class="btn-row"><button class="btn btn-primary" onclick="closeModalDirect()">閉じる</button></div>';
   openModal(h);
 }
-function openTipDateDebug(){
-  var sid = (curStore && curStore!=='ALL') ? curStore : (STORES[0]&&STORES[0].id);
+function openTipDateDebug(sidArg){
+  var sid = sidArg || ((curStore && curStore!=='ALL') ? curStore : (STORES[0]&&STORES[0].id));   /* v1137：「診断と記録」で選んだ店 */
   var st = STORES.find(function(s){return s.id===sid;})||{};
   var guid = st.toastGuid||'';
   var today = (typeof bizToday==='function')?bizToday():new Date().toISOString().slice(0,10);
@@ -37757,9 +37887,9 @@ async function tipRefreshPeriodFromToast(storeId, fromISO, toISO){
       catch(e){ fail++; }
     }
   }
-  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> '+t('この期間を最新化','Refresh this period'); }
-  setS(t('最新化しました','Refreshed')+(fail?(' / '+t('失敗','failed')+' '+fail):''));
-  showToast(t('Toastから最新化しました','Refreshed from Toast')+(fail?(' / '+t('一部失敗','some failed')+' '+fail):''), (fail?'warning':'success'));
+  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> '+t('この期間を Toast から取り直す','Re-fetch this period from Toast'); }
+  setS(t('取り直しました','Re-fetched')+(fail?(' / '+t('失敗','failed')+' '+fail):''));
+  showToast(t('Toast から取り直しました','Re-fetched from Toast')+(fail?(' / '+t('一部失敗','some failed')+' '+fail):''), (fail?'warning':'success'));
   markSynced('ops');
   renderPage((typeof curPage!=='undefined')?curPage:'tip');
 }
@@ -38436,8 +38566,7 @@ function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（
 
   var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header"><div><div class="section-title">${t('チップ管理','Tip Management')}</div><div class="section-sub">${store.name} · ${info.rangeLabel}</div></div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      ${syncFreshBadge()}
-      <button class="btn btn-secondary btn-sm" onclick="openTipDateDebug()"><i class="ti ti-stethoscope"></i> ${t('Tip診断','Tip diagnostics')}</button>
+      <!-- v1137：「最終同期」と「Tip診断」は外した（状態は右上・Tip 診断は「設定 › 診断と記録」） -->
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openCashTipPermCheck()"><i class="ti ti-lock-open"></i> ${t('入力権限','Entry rights')}</button>`:''}
       ${['gm','ceo','office','am'].indexOf(curRole)>=0?`<button class="btn btn-secondary btn-sm" onclick="openTipHoursModal()"><i class="ti ti-clock-cog"></i> ${t('対象時間設定','Hours settings')}</button>`:''}
     </div>
@@ -38471,7 +38600,7 @@ function renderTipMgmt() {/* v1129 ③：全店のときの店は soloStoreId（
     ${_hqSiteOn?`<div class="phase-tab${tipPeriodView==='hqsite'?' active':''}" onclick="setTipPeriodView('hqsite')"><i class="ti ti-briefcase" style="font-size:12px"></i> ${t('本部シフトイン','HQ shift-in')}</div>`:''}
   </div>`;
   // ペイロール期間（半月）の日次ランチ/ディナー配分内訳をCSV出力
-  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を最新化','Refresh this period')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
+  if (tipPeriodView!=='rate' && tipPeriodView!=='ratemgmt') html += `<div style="margin-bottom:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="tip-refresh-btn" onclick="tipRefreshPeriodFromToast('${storeId}','${info.from}','${info.to}')"><i class="ti ti-cloud-download"></i> ${t('この期間を Toast から取り直す','Re-fetch this period from Toast')}</button><button class="btn btn-secondary btn-sm" onclick="exportTipPeriodCsv()"><i class="ti ti-table-export"></i> ${t('期間の日次L/D配分をCSV出力','Export daily L/D distribution (CSV)')}</button><button class="btn btn-secondary btn-sm" onclick="exportAcctPayrollBook('${info.from}','${info.to}')"><i class="ti ti-file-spreadsheet"></i> ${t('経理まとめ（3タブ）','Accounting book (3 tabs)')}</button><span id="tip-refresh-status" style="font-size:10.5px;color:var(--muted)"></span></div>`;
 
   if (tipPeriodView==='hqsite')   return html + renderTipHqSite(storeId, info);   /* v951 */
   if (tipPeriodView==='sl')       return html + renderTipShiftLeader();   /* v801 */
@@ -39329,8 +39458,8 @@ function renderAttendanceBody(storeId, store) {
 
   // データ反映ボタン（実勤怠のみ。シフト連携なし）
   html += `<div class="card" style="padding:10px;margin-bottom:10px">
-    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> この月を最新化（売上＋勤怠）</button>
-    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'売上・勤怠をToastの最新にするには「この月を最新化（売上＋勤怠）」を押してください。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
+    <button class="btn btn-secondary" id="att-backfill-btn" style="width:100%" onclick="attBackfillMonth('${storeId}','${store.toastGuid||''}')"><i class="ti ti-cloud-download"></i> この月を Toast から取り直す（売上＋勤怠）</button>
+    <div id="att-status" style="font-size:11px;color:var(--muted);margin-top:6px">${hasGuid?'売上・勤怠をToastの最新にするには「この月を Toast から取り直す（売上＋勤怠）」を押してください。':'※この店舗はToast GUID未設定です。F02 Tenkichi / F04-A Aiea が接続済みです。'}</div></div>`;
 
   return html + renderAttMonthData(storeId, store);
 }
@@ -39376,9 +39505,9 @@ async function attBackfillMonth(storeId, guid) {
       else { ok++; if (r && r.count>0) withData++; }
     } catch(e){ fail++; }
   }
-  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> この月を最新化（売上＋勤怠）'; }
-  if (el) el.innerHTML=`<span style="color:${(fail||salesFail)?'var(--yellow)':'var(--green)'}">${(fail||salesFail)?'一部未完了':'最新化完了'}: 売上${salesOk}日 / 勤怠${ok}日（うち勤怠あり${withData}日）${(fail||salesFail)?' / 失敗 売上'+salesFail+'・勤怠'+fail+'日':''}</span>`;
-  showToast(`${(fail||salesFail)?'一部の最新化を完了できませんでした':'この月をToastから最新化しました'}（売上${salesOk}日 / 勤怠${withData}日）`, (fail||salesFail)?'warning':'success');
+  if (btn){ btn.disabled=false; btn.innerHTML='<i class="ti ti-cloud-download"></i> この月を Toast から取り直す（売上＋勤怠）'; }
+  if (el) el.innerHTML=`<span style="color:${(fail||salesFail)?'var(--yellow)':'var(--green)'}">${(fail||salesFail)?'一部未完了':'取り直し完了'}: 売上${salesOk}日 / 勤怠${ok}日（うち勤怠あり${withData}日）${(fail||salesFail)?' / 失敗 売上'+salesFail+'・勤怠'+fail+'日':''}</span>`;
+  showToast(`${(fail||salesFail)?'一部の取り直しを完了できませんでした':'この月を Toast から取り直しました'}（売上${salesOk}日 / 勤怠${withData}日）`, (fail||salesFail)?'warning':'success');
   renderPage((typeof curPage!=='undefined')?curPage:'attendance');
 }
 
@@ -40336,7 +40465,7 @@ function renderLabor() {
   var html = `<div class="section-header"><div><div class="section-title">人件費・勤怠</div><div class="section-sub">${allStore?'全店集計':store.name} · 勤怠×時給</div></div></div>`;
   html += laborStoreChips(_laborStore);
   if (_lSolo) html += soloStoreBar('labor');
-  if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取得（Toast補完込み）</button><button class="btn btn-secondary btn-sm" onclick="runLaborDiag()"><i class="ti ti-stethoscope"></i> 診断</button><button class="btn btn-primary btn-sm" onclick="openLaborRootCause()"><i class="ti ti-alert-circle"></i> 原因診断</button></div>';
+  if(['ceo','gm','office'].indexOf(curRole)>=0) html += '<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" id="labor-refresh-btn" onclick="refreshLaborFromCloud()"><i class="ti ti-refresh"></i> 取り直す（Toast補完込み）</button></div>';   /* v1137：「診断」「原因診断」は「設定 › 診断と記録」へ */
   if (_laborLoading()) html += '<div class="card" style="padding:8px 11px;margin-bottom:10px;font-size:12px;color:var(--muted)"><i class="ti ti-loader"></i> 勤怠データをクラウドから同期中…（全店・前日まで）。数値は同期完了後に確定します。</div>';
   if (allStore) return html + renderLaborOverview();
   if (perStoreTabs.indexOf(laborTab)<0) laborTab = 'hours';
@@ -41204,7 +41333,7 @@ function renderClockErrors(storeId, ce, periodLabel, dates){
     h += '</div>';
     h += '<div style="font-size:10.5px;color:var(--muted);margin-top:7px"><i class="ti ti-info-circle"></i> '
       + '修正は Toast 側で行ってください。直近31日は夜間同期で自動的に戻ってきます。'
-      + 'それより古い日は「勤怠データ」タブの「この月を最新化」を押してください。</div>';
+      + 'それより古い日は「勤怠データ」タブの「この月を Toast から取り直す」を押してください。</div>';
   }
 
   h += _ceHistHtml(ceOutHistogram(storeId, dates), cfg);
@@ -41767,7 +41896,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1136';
+const APP_VERSION = '1137';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -41995,29 +42124,97 @@ function getAvailability(storeId, week) { return ls('avail_'+storeId+'_'+week, [
 function getShiftPlan(storeId, week) { return ls('shiftplan_'+storeId+'_'+week, null); }
 function setShiftPlan(storeId, week, plan) { lsSet('shiftplan_'+storeId+'_'+week, plan); pushShiftPlan(storeId, week, plan); }
 
-/* === F2-a: シフト＆提出のクラウド同期（shift_plans / shift_availability） === */
-async function pushShiftPlan(storeId, week, plan, force){
-  if(_supaBooting && !force) return;
+/* === F2-a: シフト＆提出のクラウド同期（shift_plans / shift_availability） ===
+   v1137（「保存しました」が実際と合わない所）：前は送った答えを見ず、送れなくても何も出さなかった（公開も「公開しました」）。
+   ・答えを返す（true＝クラウドに入った／'deferred'＝送れなかったので送信待ちに入れた）。右上の「保存」にも出す。
+   ・送れなかったら、この端末の送信待ち（_shiftplan_pending・店と週だけ。中身は端末のシフトの記録のまま）に入れて、
+     つながったとき・自動の同期のときに、端末の今のシフトを送り直す。
+   ・送信待ちのある店・週は、クラウドから読んでも端末の値を上書きしない（送れていない変更を消さない）。
+   ・同じ店・週の送信は 1 つずつ（前の送信の答えを待ってから。古い送信があとで届いて新しい変更を消さない）。
+   ・読めなかった（通信・権限）と「クラウドに無い」を分ける（前は読めないときも端末の古い写しで書き直していた） */
+var SHIFTPLAN_PENDING_KEY = '_shiftplan_pending', _shiftPlanChain = {};
+function shiftPlanPendingList(){ try{ var a=JSON.parse(((typeof _smallGet==='function') ? _smallGet(SHIFTPLAN_PENDING_KEY) : localStorage.getItem(SHIFTPLAN_PENDING_KEY))||'[]'); return Array.isArray(a)?a.filter(function(x){ return x && x.s && x.w; }):[]; }catch(e){ return []; } }
+function _shiftPlanPendingSet(list){ var t=list.length ? JSON.stringify(list) : null; if(typeof _smallSet==='function') return _smallSet(SHIFTPLAN_PENDING_KEY, t); try{ if(t) localStorage.setItem(SHIFTPLAN_PENDING_KEY, t); else localStorage.removeItem(SHIFTPLAN_PENDING_KEY); }catch(e){} }
+function shiftPlanPendingOf(storeId, week){ return shiftPlanPendingList().find(function(x){ return x.s===storeId && x.w===week; }) || null; }
+function _shiftPlanPendingAdd(storeId, week, notify){
+  var l=shiftPlanPendingList(), cur=l.find(function(x){ return x.s===storeId && x.w===week; });
+  if(cur){ cur.at=Date.now(); if(notify) cur.notify=1; } else l.push({ s:storeId, w:week, at:Date.now(), notify:notify?1:0 });
+  _shiftPlanPendingSet(l);
+}
+function _shiftPlanPendingDone(storeId, week, sentAt){
+  var l=shiftPlanPendingList(), hit=null;
+  l=l.filter(function(x){ if(x.s===storeId && x.w===week && (Number(x.at)||0)<=sentAt){ hit=x; return false; } return true; });
+  _shiftPlanPendingSet(l);
+  return hit;
+}
+function shiftPlanLabel(storeId, week){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){ return x.id===storeId; }); return t('シフト','Shift')+'（'+((s&&s.name)||storeId)+' · '+week+'）'; }
+/* 1 回送る（答え：true／false）。送るのは渡したシフト（呼んだときの端末の値） */
+async function _shiftPlanPost(storeId, week, plan){
   try{
-    await fetch(SUPABASE_URL+'/rest/v1/shift_plans', {
+    var res=await fetch(SUPABASE_URL+'/rest/v1/shift_plans', {
       method:'POST',
       headers: supaHeaders({ Prefer:'resolution=merge-duplicates,return=minimal' }),
       body: JSON.stringify([{ store_id:storeId, week:week, status:(plan&&plan.status)||'下書き', cells:(plan&&plan.cells)||{}, updated_at:new Date().toISOString() }])
     });
-  }catch(e){ console.warn('pushShiftPlan', e); }
+    return !!(res && res.ok);
+  }catch(e){ console.warn('pushShiftPlan', e); return false; }
 }
+function pushShiftPlan(storeId, week, plan, force, opt){
+  if(_supaBooting && !force) return Promise.resolve(null);
+  opt=opt||{};
+  var k=storeId+'_'+week, at=Date.now();
+  var prev=_shiftPlanChain[k]||Promise.resolve();
+  var run=function(){ return _shiftPlanPost(storeId, week, plan).then(function(ok){
+    if(ok){
+      var done=_shiftPlanPendingDone(storeId, week, at);
+      if(done && done.notify && !opt.notify) shiftPlanNotifyPublished(storeId, week);   /* 前に送れなかった公開の知らせ（送れたので出す） */
+      return true;
+    }
+    _shiftPlanPendingAdd(storeId, week, !!opt.notify);
+    return 'deferred';
+  }); };
+  var p=prev.then(run, run);
+  _shiftPlanChain[k]=p;
+  try{ if(window.FUNERGY_UX && FUNERGY_UX._track) FUNERGY_UX._track('shiftplan_'+k, p, { direct:true, label:shiftPlanLabel(storeId, week) }); }catch(e){}
+  return p;
+}
+/* 送信待ちのシフトを、端末の今の値で送り直す（つながったとき・自動の同期のとき） */
+var _shiftRetryBusy=null;
+function retryShiftPlanPending(){
+  if(_shiftRetryBusy) return _shiftRetryBusy;
+  var list=shiftPlanPendingList(); if(!list.length) return Promise.resolve(0);
+  _shiftRetryBusy=(async function(){
+    var n=0;
+    for(var i=0;i<list.length;i++){
+      var x=list[i], plan=getShiftPlan(x.s, x.w);
+      if(!plan){ _shiftPlanPendingDone(x.s, x.w, Infinity); continue; }
+      var r=await pushShiftPlan(x.s, x.w, plan, true);
+      if(r===true) n++;
+    }
+    return n;
+  })().catch(function(){ return 0; }).then(function(n){ _shiftRetryBusy=null; return n; });
+  return _shiftRetryBusy;
+}
+function shiftPlanNotifyPublished(storeId, week){
+  try{ var _ps2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week }); }catch(e){}
+}
+/* 答え：true＝クラウドの値を端末に入れた／false＝クラウドに無い／null＝読めなかった／'pending'＝送れていない変更があるので端末のまま */
 async function pullShiftPlan(storeId, week){
+  if(shiftPlanPendingOf(storeId, week)){ try{ if(Date.now()-(window._shiftPullRetryAt||0) > 15000){ window._shiftPullRetryAt=Date.now(); retryShiftPlanPending(); } }catch(e){} return 'pending'; }   /* 画面を描くたびに送り直さない（15 秒あける） */
   try{
     var res=await fetch(SUPABASE_URL+'/rest/v1/shift_plans?store_id=eq.'+encodeURIComponent(storeId)+'&week=eq.'+encodeURIComponent(week)+'&select=status,cells', { headers: supaHeaders() });
-    if(!res.ok) return false;
+    if(!res.ok) return null;
     var rows=await res.json();
-    if(rows && rows.length){
+    if(!Array.isArray(rows)) return null;
+    if(rows.length){
+      if(shiftPlanPendingOf(storeId, week)) return 'pending';   /* 読んでいるあいだに保存して送れなかった */
       var p={ status:rows[0].status||'下書き', cells:rows[0].cells||{} };
       _lsWriteVerified('shiftplan_'+storeId+'_'+week, JSON.stringify(p));   /* v763: 押し上げを起こさない保存 */
       return true;
     }
+    return false;
   }catch(e){ console.warn('pullShiftPlan', e); }
-  return false;
+  return null;
 }
 async function pushAvailability(storeId, week, avail, force){
   if(_supaBooting && !force) return false;
@@ -42065,7 +42262,7 @@ function maybePullShift(storeId, week, force){
   _shiftPulled[k]=_pn;
   try{ retryAvailPending(); }catch(e){}
   Promise.all([
-    pullShiftPlan(storeId, week).then(function(ok){ if(!ok){ var l=getShiftPlan(storeId,week); if(l&&l.cells&&Object.keys(l.cells).length) pushShiftPlan(storeId,week,l); } }),
+    pullShiftPlan(storeId, week).then(function(ok){ if(ok===false){ var l=getShiftPlan(storeId,week); if(l&&l.cells&&Object.keys(l.cells).length) pushShiftPlan(storeId,week,l); } }),   /* v1137：クラウドに無いときだけ送る（読めなかったとき＝null は送らない） */
     pullAvailability(storeId, week).then(function(ok){ if(!ok){ var a=getAvailability(storeId,week); if(a&&a.length) pushAvailability(storeId,week,a); } })
   ]).then(function(){ try{ markSynced('shift'); }catch(e){} if(curPage==='shift_admin') renderPage('shift_admin'); });
 }
@@ -42448,8 +42645,7 @@ function renderShiftAdmin() {
 
   var html = soloStoreHint() + bStoreChips(storeId, 'pageStorePick', {showAll:false}) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Shift Builder</div><div class="section-sub">${shiftWeekRangeLabel()}</div></div>
-    ${pageSyncBar({onRefresh:"refreshAvailNow('"+storeId+"','"+week+"')", onDiag:"availDiag('"+storeId+"','"+week+"')", freshScope:'shift'})}
-  </div>
+  </div><!-- v1137：「最新に更新」「診断」は外した（自動で最新。提出の診断は「設定 › 診断と記録」） -->
   ${shiftWeekNavHtml()}
   <div class="phase-tabs" style="flex-wrap:wrap;gap:4px">
     <div class="phase-tab${shiftAdminTab==='status'?' active':''}" onclick="setShiftAdminTab('status')"><i class="ti ti-clipboard-check" style="font-size:12px"></i> 提出状況</div>
@@ -42634,7 +42830,7 @@ async function checkAvailSaveStatus(storeId, week){
     +(!onlyLocal.length&&!onlyCloud.length?'・ローカルとクラウドは一致しています。':'')
     +'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.7">クラウド件数が提出人数より少ない → 一部の提出がクラウドに届いていません（その端末で再提出 or ネットワーク）。<br>クラウドは多いのにこの端末が少ない → 「最新に更新」で取得できます。</div>'
-    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect();refreshAvailNow(\''+storeId+'\',\''+week+'\')">最新に更新して閉じる</button></div>';
+    +'<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="closeModalDirect();refreshAvailNow(\''+storeId+'\',\''+week+'\')">取り直して閉じる</button></div>';
   var body=document.getElementById('sav-body'); if(body) body.innerHTML=h;
 }
 function renderShiftStatus(storeId, week) {
@@ -42645,11 +42841,8 @@ function renderShiftStatus(storeId, week) {
   var rate = staff.length ? Math.round(submitted.length/staff.length*100) : 0;
   var reminded = getReminded(storeId, week);
 
-  var html = `<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-    <button class="btn btn-secondary btn-sm" onclick="refreshAvailNow('${storeId}','${week}')"><i class="ti ti-refresh"></i> 最新に更新</button>
-    <button class="btn btn-secondary btn-sm" onclick="checkAvailSaveStatus('${storeId}','${week}')"><i class="ti ti-cloud-check"></i> 保存状況チェック</button>
-  </div>
-  <div class="kpi-grid" style="margin-bottom:12px">
+  /* v1137：「最新に更新」は外した（自動で読み直す）。「保存状況チェック」は「設定 › 診断と記録」（シフトの提出の保存状況）へ */
+  var html = `<div class="kpi-grid" style="margin-bottom:12px">
     ${kpi('提出済', submitted.length, '名', 'var(--green)')}
     ${kpi('未提出', pending.length, '名', pending.length?'var(--red)':'var(--green)')}
     ${kpi('提出率', rate+'%', week+'週', rate>=80?'var(--green)':'var(--yellow)')}
@@ -45435,10 +45628,16 @@ function publishShiftPlan(storeId, week) {
   if (warnings.length && !confirm(`警告が${warnings.length}件あります。公開しますか？`)) return;
   plan.status = '公開済'; plan.publishedDate = todayJP();
   lsSet('shiftplan_'+storeId+'_'+week, plan);
-  pushShiftPlan(storeId, week, plan, true); // 公開は必ずクラウドへ（ブート中でも）
-  try{ var _ps2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week }); }catch(e){}
-  showToast('シフトを公開しました', 'success');
+  /* v1137：公開は必ずクラウドへ（ブート中でも）。クラウドに入ってから「公開しました」とスタッフへの知らせ。
+     送れなかったら送信待ちに入れ、送れたときに知らせる（前は送れなくても「公開しました」と出し、スタッフに知らせていた） */
+  var _pp = pushShiftPlan(storeId, week, plan, true, { notify:true });
   renderPage('shift_admin');
+  return Promise.resolve(_pp).then(function(r){
+    if(r === true){ shiftPlanNotifyPublished(storeId, week); showToast('シフトを公開しました', 'success'); }
+    else showToast(t('公開をこの端末に保存しました。クラウドへはまだ送れていません（つながると自動で送り、そのときスタッフに知らせます）','Published on this device. Not sent to the cloud yet (it will be sent when connected and staff will be notified then)'), 'warning');
+    try{ if(curPage==='shift_admin') renderPage('shift_admin'); }catch(e){}
+    return r;
+  });
 }
 
 /* Labor Cost Simulation */
@@ -52199,7 +52398,7 @@ function cancelApprovedVacation(id) {
   /* この端末に案件の写しが無いときは、読み直してから承認待ちに戻す（戻さないと、案件だけ承認のまま残る）。読めない・見つからないときは知らせる */
   var _has=function(){ return (ls('approvals',[])||[]).some(function(a){ return a && a.type==='休暇' && a.ref!=null && String(a.ref)===String(id); }); };
   if(!_n && !_has()){
-    var _warn=function(){ try{ showToast(t('承認センターの案件を読み直せませんでした。承認センターで「最新に更新」して、この休暇の案件を確かめてください','Could not re-read the approval center. Refresh it and check this leave request there.'), 'warn'); }catch(_e){} };
+    var _warn=function(){ try{ showToast(t('承認センターの案件を読み直せませんでした。承認センターを開き直して、この休暇の案件を確かめてください','Could not re-read the approval center. Refresh it and check this leave request there.'), 'warn'); }catch(_e){} };
     apPullLatest().then(function(ok){
       if(!ok){ _warn(); return; }
       if(!apReopenByRef('休暇', id, _rt, _g)){ if(!_has()) _warn(); return; }   /* 案件が無い：知らせる（取り消したあとの版の案件だけなら、そのまま） */
@@ -54453,10 +54652,25 @@ function obWizSubmit(){
   if (!ob) return;
   var err=obWizValidateAll(ob);
   if (err){ alert(err); return; }
+  /* v1137：本人確認の情報（SSN・身分証など）が保護領域に入ってから「提出完了」にする。
+     前は送れなくても提出完了になり、経理が開くと本人確認の情報が無かった */
+  if (ob.inviteToken){
+    if (_obWiz._submitting) return;
+    _obWiz._submitting = true;
+    return Promise.resolve(obPushSecret(ob)).then(function(r){
+      if (_obWiz) _obWiz._submitting = false;
+      if (r !== true){ alert(t('本人確認の情報を送れませんでした。入力はこの端末に残っています。通信を確かめて、もう一度「提出」を押してください。','Could not send your ID details. Your entries are kept on this device. Check the connection and press Submit again.')); return; }
+      obWizSubmitDone(ob.id);
+    });
+  }
+  obWizSubmitDone(ob.id);
+}
+function obWizSubmitDone(obId){
+  var obs=ls('onboardings', []); var ob=obs.find(function(o){ return o.id===obId; });
+  if (!ob || !_obWiz) return;
   ob.personal=Object.assign({}, ob.personal, { startDate:ob.plannedStart||'', wage:ob.wage||0, submittedAt:new Date().toISOString() });
   ob.obStatus='提出完了'; ob.rejectReason='';
   lsSet('onboardings', obs);
-  obPushSecret(ob);
   addApproval({ title: ob.name+' 採用書類 提出完了（経理確認待ち）', type:'採用', from:ob.name, store:ob.storeName||'' });
   _obWiz=null;
   closeModalDirect();
@@ -69657,7 +69871,7 @@ function bonusSegCsShort(b){
 function ghTxnBegin(){
   var tx={ snap:[], seen:{}, fail:[], pushes:[], err:null, set:lsSet, push:(typeof _pushWithOutbox==='function') ? _pushWithOutbox : null,
     empQ:(typeof _empDirtySnapshot==='function') ? _empDirtySnapshot() : null };   /* v1085: 従業員の送る分も戻す */
-  try{ tx.pendAt=localStorage.getItem('_pend_edit_at'); }catch(e){}   /* v1136：戻したら、直した時刻（lsSet が覚える）も戻す */
+  try{ tx.pendAt=(typeof _pendEditAtRaw==='function') ? _pendEditAtRaw() : localStorage.getItem('_pend_edit_at'); }catch(e){}   /* v1136：戻したら、直した時刻（lsSet が覚える）も戻す */
   lsSet=function(key, val){
     var split=(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS && _SPLIT_KEYS[key]);   /* 分けて保存するキーは、中の 1 つずつ（ここを通る）を覚える */
     if(!split && !tx.seen[key]){ tx.seen[key]=1; tx.snap.push([key, _lsRawStr(key)]); }
@@ -69678,7 +69892,7 @@ function ghTxnEnd(tx){
   var bad=false;
   tx.snap.slice().reverse().forEach(function(x){ try{ if(x[1]==null) _lsRawDel(x[0]); else if(!_lsWriteVerified(x[0], x[1])) bad=true; }catch(e){ bad=true; } });   /* 端末だけ（同期に送らない） */
   try{ if(tx.empQ && typeof _empDirtyRestore==='function') _empDirtyRestore(tx.empQ); }catch(e){ bad=true; }   /* v1085: 戻した変更を、あとで送らない */
-  try{ if(tx.pendAt==null) localStorage.removeItem('_pend_edit_at'); else localStorage.setItem('_pend_edit_at', tx.pendAt); }catch(e){}   /* v1136 */
+  try{ if(typeof _pendEditAtSetRaw==='function') _pendEditAtSetRaw(tx.pendAt); else if(tx.pendAt==null) localStorage.removeItem('_pend_edit_at'); else localStorage.setItem('_pend_edit_at', tx.pendAt); }catch(e){}   /* v1136・v1137 */
   tx.rollbackFailed=bad;
   if(!bad && typeof _lsClearSaveFailure==='function') tx.fail.forEach(function(k){ try{ _lsClearSaveFailure(k); }catch(e){} });   /* 戻せたら「保存できていない項目」の印を消す（端末とクラウドは前の値でそろっている） */
   if(tx.err) console.warn('ghTxn', tx.err);
@@ -70346,7 +70560,7 @@ function kevFlSide(R, ev, C, k){
   if(aw>0 && ap==null) miss.push(nm+' の行動：未評価');
   if(aw>0 && ap!=null && (lv>=4) && !(a && a.qc)) miss.push(nm+' の行動：品質・量・サービスへの影響の確認が未チェック');
   if(rw>0 && res==null) miss.push(nm+' の結果：'+(tgt==null ? '目標率が未設定' : (C.months ? ('実績が未取得'+(noA.length ? '（'+noA.join('／')+'）' : '')
-    +((k!=='f' && act==null && C.noLAtt) ? '。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください' : '')) : 'まだ実績のある月がありません')));
+    +((k!=='f' && act==null && C.noLAtt) ? '。勤怠データの画面でその月を選び、「この月を Toast から取り直す（売上＋勤怠）」を押して Toast から取得してください' : '')) : 'まだ実績のある月がありません')));
   var pts=miss.length ? null : ((ap||0)*aw/100+(res||0)*rw/100);
   return {aw:aw, rw:rw, act:{lv:(ap==null ? null : lv), pts:ap, what:(a&&a.what)||'', st:(a&&a.st)||'', ev:(a&&a.ev)||'', next:(a&&a.next)||'', qc:!!(a&&a.qc)},
     res:{pts:res, raw:raw, target:tgt, actual:act, check:check, capped:capped, okLow:!!(a&&a.okLow)}, pts:pts, miss:miss};
@@ -70538,7 +70752,7 @@ function kevFlItem2(R, ev, stores, kv, J){
   if(N.target==null) miss.push('FL の目標率が未設定（'+(N.unset.join('・') || '店舗')+'：設定 ④ の表か KPI マスター）');
   if(N.actual==null){
     if(!C.months) miss.push('FL：まだ実績のある月がありません');
-    else { if(C.noF.length) miss.push('Food Cost の実績が未取得（'+C.noF.join('／')+'）'); if(C.noL.length) miss.push('Labor の実績が未取得（'+C.noL.join('／')+'）'+(C.noLAtt ? '。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください' : '')); }
+    else { if(C.noF.length) miss.push('Food Cost の実績が未取得（'+C.noF.join('／')+'）'); if(C.noL.length) miss.push('Labor の実績が未取得（'+C.noL.join('／')+'）'+(C.noLAtt ? '。勤怠データの画面でその月を選び、「この月を Toast から取り直す（売上＋勤怠）」を押して Toast から取得してください' : '')); }
   }
   if(lv==null) miss.push('FL 改善行動：段階を選んでください');
   else if(Number(J['a'+lv])>0 && !fx.c_exec) miss.push('FL 改善行動：プラスの段階は「実行状況」のチェックが要ります（改善計画を作っただけではプラスにしない）');   /* 調整率がプラスなら（率は会社共通で変えられる） */
@@ -80932,7 +81146,7 @@ function renderApproval() {
   /* v1087: クラウドの最新をいつ読んだか・最新に更新 */
   html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin:-4px 0 8px">'
     +'<span><i class="ti ti-cloud"></i> '+(_apPullAt?(t('クラウドの最新','Cloud as of')+' '+_apShortTime(new Date(_apPullAt).toISOString())):t('クラウドの最新はまだ読んでいません','Not read from the cloud yet'))+'</span>'
-    +'<button class="btn btn-secondary btn-sm" style="padding:2px 10px" onclick="apRefreshNow()"><i class="ti ti-refresh"></i> '+t('最新に更新','Refresh')+'</button></div>';
+    +'</div>';   /* v1137：「最新に更新」は外した（自動で読み直す。状態は右上の「同期」） */
   html += '<div class="phase-tabs" style="margin-bottom:10px">'
     +'<div class="phase-tab'+(_apTab==='pending'?' active':'')+'" onclick="setApTab(\'pending\')">'+t('承認待ち','Pending')+(pending.length?' <span class="tag tag-yellow" style="font-size:9px">'+pending.length+'</span>':'')+'</div>'
     +(apSeesAcct()?'<div class="phase-tab'+(_apTab==='acct'?' active':'')+'" onclick="setApTab(\'acct\')">'+t('経理の確認','Accounting check')+(acctList.length?' <span class="tag tag-red" style="font-size:9px">'+acctList.length+'</span>':'')+'</div>':'')
@@ -81754,8 +81968,7 @@ function mySkillCardHtml(name, storeId){
     var dots = positions.map(function(_,i){ var c=pt(i, R*Math.max(0.04,vals[i]/maxLv)); return '<circle cx="'+Math.round(c[0])+'" cy="'+Math.round(c[1])+'" r="2.5" fill="var(--accent)"/>'; }).join('');
     var svg = '<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;max-width:340px;height:auto;display:block;margin:0 auto">'
       +rings+axes+'<polygon points="'+poly+'" fill="var(--accent)" fill-opacity="0.22" stroke="var(--accent)" stroke-width="2"/>'+dots+'</svg>';
-    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span>'
-      +'<button class="btn btn-secondary btn-sm" style="margin-left:6px;padding:2px 8px;font-size:10px" onclick="openMySkillDiag(&quot;'+name+'&quot;,&quot;'+storeId+'&quot;)">'+t('診断','Check')+'</button></div>'
+    return '<div class="card"><div class="card-title"><i class="ti ti-radar-2" style="color:var(--accent)"></i>'+titleLabel+' <span style="font-size:10px;color:var(--muted);font-weight:400;margin-left:auto">'+legendLabel+'</span></div>'   /* v1137：「診断」は「設定 › 診断と記録」（スキル表示の診断）へ */
       +svg
       +(_isPrep ? '' : (typeof skillLevelGaugeHtml==='function'?skillLevelGaugeHtml(name, storeId):''))
       +'<div style="font-size:10px;color:var(--muted);margin-top:6px"><i class="ti ti-info-circle"></i> '+t('軸をタップすると各レベルの内容を表示します。','Tap an axis to see level details.')+' '+(_isPrep?t('Prepポジション別のスキルレベルです。','Your prep skill levels by position.'):t('レベルは管理者承認後に反映されます。Lvが上がるとチップ配分・昇格に近づきます。','Levels reflect approved skills.'))+'</div></div>';
@@ -83463,14 +83676,7 @@ function renderTestStaffCard(forStore){
 }
 function renderSettings() {
   var html = `<div class="section-header"><div class="section-title">設定</div></div>
-  ${(['ceo','gm','office'].indexOf(curRole)>=0)?`<div class="card"><div class="card-title"><i class="ti ti-cloud-download" style="color:var(--accent)"></i> Toast同期（店舗別・31日）</div>
-    <div style="font-size:12px;color:var(--muted);margin-bottom:8px">選んだ店舗の直近31日の売上・勤怠をToastから取り込み、DBへ保存します（夜間バッチと同じ処理・30〜60秒）。夜間を待たず即反映したい時に。</div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <select id="toastsync-store" class="form-select" style="width:auto;min-width:160px">${_toastSyncStoreOptions()}</select>
-      <button id="toastsync-btn" class="btn btn-primary btn-sm" onclick="toastSyncStore()"><i class="ti ti-cloud-download"></i> 31日取り込み</button>
-      <span id="toastsync-status" style="font-size:11px;color:var(--muted)"></span>
-    </div>
-  </div>`:''}
+  ${(window.FUNERGY_STATUS&&FUNERGY_STATUS.canDiag())?`<div class="card"><div class="card-title"><i class="ti ti-stethoscope" style="color:var(--accent)"></i> ${t('診断と記録','Diagnostics & records')}</div><div style="font-size:12px;color:var(--muted);margin-bottom:8px">${t('Toast の取り直し・同期と診断・この端末の記録は「診断と記録」にまとめました。','Toast re-fetch, sync, diagnostics and this device’s records are in “Diagnostics & records”.')}</div><button class="btn btn-secondary btn-sm" onclick="go('diag_center')"><i class="ti ti-arrow-right"></i> ${t('診断と記録を開く','Open diagnostics & records')}</button></div>`:''}
   ${(curRole==='gm'||curRole==='ceo')?`<div class="card"><div class="card-title"><i class="ti ti-shield-lock" style="color:var(--accent)"></i> セキュリティ：オンボ機密情報</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">既存オンボのSSN・身分証・個人情報を、匿名キーから触れない保護領域へ移します（最初に1回だけ）。</div>
     <button class="btn btn-primary btn-sm" onclick="runObMigrate()"><i class="ti ti-database-export"></i> 保護領域へ移行する</button>
@@ -83501,10 +83707,7 @@ function renderSettings() {
       ${pwaInstallHintHtml()}
     </div>
   </div>
-  <div class="card"><div class="card-title"><i class="ti ti-database"></i>データ管理</div>
-    <p style="font-size:13px;color:var(--muted);margin-bottom:12px">すべてのデモデータはlocalStorageに保存されています。</p>
-    <button class="btn btn-danger btn-sm" onclick="clearAllData()"><i class="ti ti-trash"></i> 全データリセット</button>
-  </div>`;
+  `;   /* v1137（決めてほしいこと 12A）：「全データリセット」は外した（確認 1 回で送信待ちとこの端末だけのデータも消していた） */
 
   // Supabase同期（GM/CEOのみ）— 本番移行フェーズ1
   if (curRole==='gm' || curRole==='ceo') {
@@ -83532,31 +83735,7 @@ function renderSettings() {
         +'<input type="number" inputmode="decimal" min="0" class="form-input" style="width:88px;text-align:center" placeholder="'+noTipShifts(s.id)+'" value="'+(_ntc.byStore[s.id]!=null?_ntc.byStore[s.id]:'')+'" onchange="setNoTipStore(\''+s.id+'\',this.value)"></div>';
     });
     html += '<div style="font-size:11px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 各店舗の<b>適用中の値</b>はプレースホルダに表示。変更は即保存・全端末同期。</div></div>';
-    html += `<div class="card"><div class="card-title"><i class="ti ti-cloud-up" style="color:var(--accent)"></i>本番移行（Supabase同期）</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">マスターデータをクラウド（Supabase）にも保存します。ONにすると、以降のマスター変更が自動でSupabaseに同期されます。localStorageも維持されるので安全です。</p>
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-        <div><div style="font-weight:600;font-size:13px">マスター自動同期</div>
-          <div style="font-size:11px;color:var(--muted)">店舗・従業員・食材・レシピ・取引先・各種設定</div></div>
-        <button class="btn ${SUPA_SYNC_ENABLED?'btn-success':'btn-secondary'} btn-sm" onclick="toggleSupaSync()">${SUPA_SYNC_ENABLED?'<i class=\"ti ti-check\"></i> ON':'OFF'}</button>
-      </div>
-      <div style="margin-top:12px">
-        <button class="btn btn-primary btn-sm" onclick="runSupaPushAll()"><i class="ti ti-upload"></i> 今のマスターを一括アップロード</button>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px">現在この端末に入っているマスターを、まとめてSupabaseへ投入します。</div>
-      </div>
-      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px">
-        <button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> クラウドから取り込む（マスター読込）</button>
-        <div style="font-size:11px;color:var(--muted);margin-top:6px">Supabaseの最新マスターをこの端末に取り込みます。他の端末で追加した店舗などを反映できます。<b style="color:var(--accent2)">この端末のローカルはクラウドの内容で上書き</b>されます。</div>
-      </div>
-      <div id="supa-pull-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
-      <div id="supa-push-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>
-    </div>`;
-
-    // Toast接続診断（GM/CEOのみ）
-    html += `<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>Toast接続診断</div>
-      <p style="font-size:12px;color:var(--muted);margin-bottom:10px">Toast連携が「アクセスできる」レストラン一覧を取得し、店舗マスターのGUIDと照合します。新店舗のデータが来ない時の原因（未接続／GUID違い）を確認できます。</p>
-      <button class="btn btn-primary btn-sm" onclick="runToastDiag()"><i class="ti ti-stethoscope"></i> 診断する</button>
-      <div id="toast-diag-result" style="margin-top:12px"></div>
-    </div>`;
+    /* v1137：「本番移行（Supabase同期）」（マスター自動同期の ON／OFF・一括アップロード・取り込み）と「Toast接続診断」は「診断と記録」へ */
   }
 
   html += `<div class="card"><div class="card-title"><i class="ti ti-info-circle"></i>システム情報</div>
@@ -83628,10 +83807,11 @@ async function runToastDiag() {
       ※ 毎晩の自動同期はサーバの <b>store_config</b> テーブルを参照します（手動同期はこの一覧で接続済みなら動きます）。
     </div>`;
 }
-function toggleSupaSync(){
-  setSupaSync(!SUPA_SYNC_ENABLED);
-  showToast('マスター同期を'+(SUPA_SYNC_ENABLED?'ONにしました':'OFFにしました'), SUPA_SYNC_ENABLED?'success':'info');
-  renderPage('settings');
+/* v1137：toggleSupaSync（マスター自動同期の ON／OFF）は外した */
+/* 「この端末からアップロード」：この端末の写しで店舗・従業員・食材・レシピ・取引先などを全部書き直すので、確かめてから */
+function runSupaPushAllConfirm(){
+  if(!confirm(t('この端末の写しで、店舗・従業員・食材・レシピ・取引先などのクラウドを全部書き直します。ほかの端末で新しく変えたものが消えることがあります。クラウドが壊れたとき以外は使わないでください。続けますか？','This overwrites stores, employees, ingredients, recipes, vendors etc. in the cloud with this device’s copy. Newer changes from other devices may be lost. Use only when the cloud is broken. Continue?'))) return;
+  return runSupaPushAll();
 }
 async function runSupaPushAll(){
   var el=document.getElementById('supa-push-result');
@@ -83647,13 +83827,7 @@ async function runSupaPushAll(){
   }
 }
 
-function clearAllData() {
-  if (!confirm('全データをリセットしますか？この操作は取り消せません。')) return;
-  localStorage.clear();
-  try{ _idbClearAll(); }catch(e){}                              /* v764 */
-  showToast('データをリセットしました', 'success');
-  renderPage('settings');
-}
+/* v1137：clearAllData（全データリセット）は外した */
 
 /* ============================================================
    BLOCKED
@@ -84122,7 +84296,7 @@ function mnHeadHtml(s) {
   h += '</div><div class="mn-head-r">';
   if (!J.r.empty && J.jobs.length && doneN === J.jobs.length && !okN) h += '<span class="mn-pill" style="color:#7f1d1d"><i class="ti ti-alert-triangle"></i><b>' + t('読み込めませんでした', 'Could not load') + '</b></span>';
   else if (!J.r.empty) h += '<span class="mn-pill"><i class="ti ti-check" style="color:#15803d"></i><b>' + t(mnMd(J.r.to) + '（' + mnDow(J.r.to) + '）までの数字', 'Through ' + mnMd(J.r.to) + ' (' + mnDow(J.r.to) + ')') + '</b>' + (at ? '<span style="color:var(--muted)">' + t('・読み込み ', ' · loaded ') + mnAt(at) + t('（ハワイ時間）', ' HST') + '</span>' : '') + '</span>';
-  h += '<button type="button" class="btn btn-secondary btn-sm" onclick="mnReload()"><i class="ti ti-refresh"></i> ' + t('最新を読む', 'Reload') + '</button>';
+  /* v1137：「最新を読む」は外した（自動で読み直す。読めなかったときは下の「取り直す」） */
   if (MN_RESYNC_ROLES.indexOf(curRole) >= 0) h += '<button type="button" class="btn btn-secondary btn-sm" onclick="openItemSalesOverview(getPeriod())"><i class="ti ti-cloud-search"></i> ' + t('取り込みの状況', 'Import status') + '</button>';
   return h + '</div></div>';
 }
@@ -84184,7 +84358,7 @@ function mnBodyHtml(s) {
   var M = mnModel(mnInput(s, J));
   var h = note;
   if (J.r.cut) h += '<div class="mn-note">' + t('任意の期間は ' + MN_MAX_DAYS + ' 日までです（' + mnRangeLabel(J.r) + ' にしました）。', 'Custom periods are up to ' + MN_MAX_DAYS + ' days (showing ' + mnRangeLabel(J.r) + ').') + '</div>';
-  if (M.failed.length) h += '<div class="mn-banner mn-bad"><i class="ti ti-alert-triangle"></i><span><b>' + t('読み込めなかった店があります', 'Some stores could not be loaded') + '</b>' + t('（', ' (') + M.failed.map(function (x) { return escapeHtml(x.name); }).join(t('、', ', ')) + t('）。', '). ') + t('この店を除いた数字です。', 'Numbers exclude these stores.') + '</span><button type="button" class="btn btn-secondary btn-sm" onclick="mnReload()">' + t('もう一度読む', 'Try again') + '</button></div>';
+  if (M.failed.length) h += '<div class="mn-banner mn-bad"><i class="ti ti-alert-triangle"></i><span><b>' + t('読み込めなかった店があります', 'Some stores could not be loaded') + '</b>' + t('（', ' (') + M.failed.map(function (x) { return escapeHtml(x.name); }).join(t('、', ', ')) + t('）。', '). ') + t('この店を除いた数字です。', 'Numbers exclude these stores.') + '</span><button type="button" class="btn btn-secondary btn-sm" onclick="mnReload()">' + t('取り直す', 'Re-fetch') + '</button></div>';
   var nm = function (list) { var o = mnObj(), out = []; list.forEach(function (x) { var n = x.name || x.id; if (!o[n]) { o[n] = 1; out.push(escapeHtml(n)); } }); return out.join(t('、', ', ')); };
   if (M.unchecked.length) h += '<div class="mn-note">' + t('売上の行を読めなかった店（' + nm(M.unchecked) + '）は、出数の入っていない日を確かめられていません。増減も出していません。', 'Sales rows could not be loaded for ' + nm(M.unchecked) + ', so missing days were not checked and changes are not shown.') + '</div>';
   if (!M.prevOk && !M.unchecked.length) h += '<div class="mn-note">' + t('比べる期間の出数を読めなかった店があるので、増減・新しいメニューは出していません。', 'The comparison period could not be loaded, so changes and new items are not shown.') + '</div>';
@@ -84460,7 +84634,7 @@ function renderMenuMonth() {
   html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     ${visStores.length>1?`<select class="form-select" style="width:auto;padding:6px" onchange="onMenuStoreChange(this.value)">${visStores.map(s=>`<option value="${s.id}" ${storeId===s.id?'selected':''}>${s.name}</option>`).join('')}</select>`:`<b style="font-size:13px">${storeObj.name}</b>`}
     <select class="form-select" style="width:auto;padding:6px" onchange="onMenuPeriodChange(this.value)">${periodOptions(period)}</select>
-    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="ensureMenuMixLoaded('${storeId}','${period}',{notify:true})"><i class="ti ti-cloud-download"></i> ${t('出数を同期','Sync sales qty')}</button>${['ceo','gm','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openItemSalesOverview('${period}')"><i class="ti ti-cloud-search"></i> ${t('全店の状況','All stores')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
+    ${canEdit?`<button class="btn btn-secondary btn-sm" onclick="openMenuMixModal('${storeId}','${period}')"><i class="ti ti-edit"></i> ${t('出数を入力','Enter sales qty')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="ensureMenuMixLoaded('${storeId}','${period}',{notify:true})"><i class="ti ti-cloud-download"></i> ${t('出数を取り直す','Re-fetch sales qty')}</button>${['ceo','gm','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" onclick="openItemSalesOverview('${period}')"><i class="ti ti-cloud-search"></i> ${t('全店の状況','All stores')}</button>`:''}<button class="btn btn-secondary btn-sm" onclick="openMenuMixDiag('${storeId}','${period}')"><i class="ti ti-stethoscope"></i> ${t('出数の診断','Diagnose')}</button>
     <button class="btn btn-primary btn-sm" onclick="openMenuRangeModal('${storeId}')"><i class="ti ti-table-export"></i> ${t('期間集計・出力','Period summary / export')}</button>
     ${mix.toastSrc?`<span class="tag tag-green" style="font-size:9px">${t('Toast同期済','Toast synced')}</span>`:''}
   </div></div>`;
@@ -85670,18 +85844,33 @@ async function pullInvoicesAll(){
   return n;
 }
 /* 未反映（ローカルにしか無い）請求書をクラウドへ押し上げる＝欠落分の復旧 */
+/* v1137（「保存しました」が実際と合わない所）：前は送れなかった店も数えて、いつも「クラウドへ復旧しました」と出していた。
+   送れた件数と、送れなかった店を返す（呼んだ所が数で知らせる）。数だけ欲しい前の呼び方のため、件数の数としても使える */
 async function pushInvoicesAll(){
-  var pushed=0;
+  var pushed=0, failed=[];
   try{
     var all=ls('invoices',[])||[];
     var byStore={};
     all.forEach(function(v){ var sid=(v&&v.storeId)?String(v.storeId):'_'; (byStore[sid]=byStore[sid]||[]).push(v); });
     var ids=Object.keys(byStore);
     for(var i=0;i<ids.length;i++){
-      try{ await opMergePush('spl_invoices_'+ids[i], byStore[ids[i]]); pushed+=byStore[ids[i]].length; }catch(e){}
+      var ok=false;
+      try{ ok=(await opMergePush('spl_invoices_'+ids[i], byStore[ids[i]]))===true; }catch(e){ ok=false; }
+      if(ok) pushed+=byStore[ids[i]].length; else failed.push(ids[i]);
     }
-  }catch(e){}
-  return pushed;
+  }catch(e){ failed.push('?'); }
+  var r=new Number(pushed);
+  try{ Object.defineProperty(r, 'failed', { value:failed, enumerable:false }); }catch(e){}
+  return r;
+}
+function invRecoverAll(ym){
+  return pushInvoicesAll().then(function(n){
+    var f=(n&&n.failed)||[];
+    if(!f.length) showToast(t('クラウドへ復旧しました（'+Number(n)+'件）','Recovered to the cloud ('+Number(n)+')'),'success');
+    else showToast(t('送れなかった店があります（'+f.map(function(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){ return x.id===id; }); return (s&&s.name)||id; }).join('・')+'）。この端末に残っています。通信を確かめてもう一度押してください','Some stores could not be sent ('+f.join(', ')+'). They are kept on this device; check the connection and try again'),'warning');
+    try{ openInvoiceDiag(ym); }catch(e){}
+    return n;
+  });
 }
 /* 請求書の突合診断：店舗別に「この端末 / クラウド」の件数・合計を並べる */
 /* ===== v694: 請求書をクラウドから再構築（過去分の復元） =====
@@ -86061,7 +86250,7 @@ async function openInvoiceDiag(ym){
     +'<div style="font-size:11px;color:var(--muted);margin-bottom:8px">※ 各店の端末でこの診断を実行し「クラウドへ復旧」すると、過去に上書きで欠けた分も戻ります。</div>'
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
     +'<button class="btn btn-secondary" onclick="pullInvoicesAll().then(function(n){ showToast(\'クラウドから取得しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-download"></i> 取得</button>'
-    +'<button class="btn btn-primary" onclick="pushInvoicesAll().then(function(n){ showToast(\'クラウドへ復旧しました\',\'success\'); openInvoiceDiag(\''+ym+'\'); });"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>'
+    +'<button class="btn btn-primary" onclick="invRecoverAll(\''+ym+'\')"><i class="ti ti-cloud-upload"></i> クラウドへ復旧</button></div>'
     +'<button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="closeModalDirect();rebuildInvoicesFromCloud()"><i class="ti ti-refresh"></i> クラウドから過去分を復元（端末を再構築）</button>'
     +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openInvoiceInventory()"><i class="ti ti-list-search"></i> 端末内データの内訳を見る（表示されない原因）</button>'
     +'<button class="btn btn-secondary" style="width:100%;margin-top:6px" onclick="closeModalDirect();openStorageImages(\''+ym+'\')"><i class="ti ti-photo"></i> 保存済みの伝票画像から探す（記録が無くても見られます）</button>';
@@ -86290,7 +86479,7 @@ function renderInvoice() {
   /* Drive の提出フォルダをまだ出していない店舗（LaLa など）は、出すまで今までどおりアプリで業者の Invoice を登録できる */
   var _invOkStores = invoiceStoreCandidates().filter(s => s.id!=='OFFICE' && !invInUsesDrive(s.id));
   var html = `<div class="section-header"><div><div class="section-title">${t('レシート管理','Receipts')}</div><div class="section-sub">${t('会社カードのレシート・立替経費・チェック','Company-card receipts, reimbursements and checks')}</div></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${_canCard?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button><button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('伝票診断・復旧','Diagnose / recover')}</button>`:''}${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="invReceiptAdd()"><i class="ti ti-receipt"></i> ${t('レシート・立替を登録','Add receipt / reimbursement')}</button></div></div>`;
+    <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">${_canCard?`<button class="btn btn-secondary btn-sm" onclick="openDriveSetup()"><i class="ti ti-brand-google-drive"></i> ${t('Drive連携','Drive link')}</button>`:''}<!-- v1137：「伝票診断・復旧」は「設定 › 診断と記録」へ -->${(function(){var n=invUnclassified().length;return n?`<button class="btn btn-secondary btn-sm" style="border-color:var(--yellow);color:var(--yellow)" onclick="openInvClassify()"><i class="ti ti-tag"></i> ${t('未分類','Unclassified')} ${n}</button>`:'';})()}<button class="btn btn-secondary btn-sm" onclick="openInvoiceDiag()"><i class="ti ti-stethoscope"></i> ${t('突合診断','Reconcile')}</button><button class="btn btn-primary btn-sm" onclick="invReceiptAdd()"><i class="ti ti-receipt"></i> ${t('レシート・立替を登録','Add receipt / reimbursement')}</button></div></div>`;
   try{ html += invInStoreCardHtml(); }catch(e){}   /* v1052: 提出フォルダ（GM・CEO が「出す」にした店舗だけ） */
   try{ html += invInHqBarHtml(); }catch(e){}       /* v1055: 本部は Invoice取込へ */
   html += bulkBannerHtml();   /* v1035: まとめて取り込みの未保存 */
@@ -89958,11 +90147,11 @@ function arFreshHtml(){
     +t('クラウドから読み直しています…','Reading the latest from the cloud…')+'</div>';
   if(_arPull.ok===false) return '<div class="alert alert-warning" style="padding:8px 11px;margin-bottom:8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap"><i class="ti ti-alert-triangle"></i><div style="font-size:12.5px;flex:1;min-width:200px">'
     +t('クラウドから読み直せませんでした。この端末の写し'+(_arPull.at?'（'+hm(_arPull.at)+' に取得）':'')+'を出しています',
-       'Could not read the latest from the cloud; showing this device’s copy'+(_arPull.at?' (read at '+hm(_arPull.at)+')':''))+'</div>'+btn(t('もう一度読む','Try again'))+'</div>';
+       'Could not read the latest from the cloud; showing this device’s copy'+(_arPull.at?' (read at '+hm(_arPull.at)+')':''))+'</div>'+btn(t('取り直す','Re-fetch'))+'</div>';
   if(_arPull.ok && _arPull.at) return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin:0 2px 8px">'
-    +t('最終取得 ','Last read ')+hm(_arPull.at)+btn(t('最新を取得','Get latest'))+'</div>';
+    +t('最終取得 ','Last read ')+hm(_arPull.at)+'</div>';   /* v1137：「最新を取得」は外した（自動で読み直す） */
   return '<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--muted);margin:0 2px 8px">'
-    +t('まだクラウドから読み直していません（この端末の写し）','Not read from the cloud yet (this device’s copy)')+btn(t('最新を取得','Get latest'))+'</div>';
+    +t('まだクラウドから読み直していません（この端末の写し）','Not read from the cloud yet (this device’s copy)')+'</div>';
 }
 /* アップロード者メール特定：byEmail → byUser/by を従業員名照合 */
 function arUploaderEmail(inv){
@@ -98299,6 +98488,7 @@ function _toastAwait(el, clean, waitP){
     if (el._uxGone || el._uxWaitSeq !== my) return;
     if (r === 'ok') { _toastPaint(el, 'success', clean); try{ haptic('success'); }catch(e){} }
     else if (r === 'queued') { _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへはまだ送れていません（つながると自動で送ります）', 'Saved on this device. Not sent to the cloud yet (it will be sent when connected)')); try{ haptic('warning'); }catch(e){} }
+    else if (r === 'failed') { _toastPaint(el, 'danger', t('クラウドに保存できなかったものがあります。右上の「保存」を押すと、何かと「もう一度」が出ます', 'Some of it could not be saved to the cloud. Tap “Save” at the top right to see what and try again')); try{ haptic('error'); }catch(e){} }   /* v1137 */
     else _toastPaint(el, 'warning', t('この端末に保存しました。クラウドへの送信に時間がかかっています', 'Saved on this device. Sending to the cloud is taking a while'));
     _toastArm(el);
   });
@@ -99139,7 +99329,7 @@ var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.r
 (async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) {
   /* v1098: 名簿のある端末はログイン画面をすぐ出す（IndexedDB を読み終えてから。3 秒まで）。名簿は裏で取り直す */
   var _warm = false;
-  try { await Promise.race([ _idbBootP, new Promise(function(r){ setTimeout(r, 3000); }) ]); _warm = (ls('login_autosync', true)!==false) && _loginHasRoster(); } catch(_){}
+  try { await Promise.race([ _idbBootP, new Promise(function(r){ setTimeout(r, 3000); }) ]); _warm = _loginHasRoster();   /* v1137 */ } catch(_){}
   if (_warm) { bootLogin(); try { loginBootstrapPull({ background:true }); } catch(_){} }
   else { try { await loginBootstrapPull(); } catch(_){} bootLogin(); }
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
@@ -99420,10 +99610,18 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }, true);
 
   /* ---------- 保存（lsSet → クラウド）の状態 ---------- */
-  var S = UX.save = { recs: [], lastOk: 0, lastFail: 0 };
+  var S = UX.save = { recs: [], lastOk: 0, lastFail: 0, lastOkLabel: '', failed: {} };   /* v1137：failed＝送れなかった保存（送信待ちを通らないもの・人がもう一度押す） */
   var lastAct = 0;
   ['pointerdown', 'keydown', 'input', 'change'].forEach(function(tp){
     D.addEventListener(tp, function(e){ if(e.isTrusted) lastAct = now(); }, true);
+  });
+  /* v1137：確かめの画面（confirm・alert・prompt）で答えたあとの保存も、その人の操作として待つ
+     （前は答えるのに 2.5 秒より長くかかると「保存しました」をクラウドの答えを待たずに出していた：棚卸の確定など） */
+  ['confirm', 'alert', 'prompt'].forEach(function(nm){
+    var o = W[nm]; if(typeof o !== 'function' || o._uxWrapped) return;
+    var w = function(){ try{ return o.apply(W, arguments); } finally { lastAct = now(); } };
+    w._uxWrapped = true;
+    try{ W[nm] = w; }catch(e){}
   });
   var INF = '_ux_inflight';   /* 送っている途中のキー（この端末だけ。閉じられたら次に開いたとき送り直す） */
   /* v1128（Codex の PR #118 のレビュー P1）：だれの保存かも覚える（{ キー: { だれ: 時刻 } }）。送り直すのは、同じ人がまたログインしたときだけ
@@ -99442,13 +99640,28 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function infSet(o){ try{ if(Object.keys(o).length) localStorage.setItem(INF, JSON.stringify(o)); else localStorage.removeItem(INF); }catch(e){} }
   function finKey(k){ return k === 'budgets_v2' || /^(daily_actuals_|spl_budgets_v2_)/.test(String(k)); }
   function guardOn(){ try{ return typeof fstGuardOn === 'function' && fstGuardOn(); }catch(e){ return false; } }
-  function track(key, p){
-    var rec = { key: key, t: now(), user: (now() - lastAct) < 2500, done: false, res: undefined, who: who() };
-    if(rec.user){ var o = infGet(); (o[key] = o[key] || {})[rec.who] = rec.t; infSet(o); }
-    rec.p = Promise.resolve(p).then(function(r){ return r; }, function(){ return false; }).then(function(r){
+  /* v1137：opt.direct＝送信待ち（op_outbox）を通らない保存（シフトの表・給与と連絡先・本人確認の情報など）。
+     送っている途中の印（INF）は付けない（次に開いたとき送信待ちに入れ直すと、合流の送り方で別の所へ書いてしまうため）。
+     答えは true（届いた）／'deferred'（送れなかったので、その保存の送信待ちに入れた）／'failed'（送れなかった。送り直しは人が押す）。
+     opt.label＝右上の「保存」に出す名前。opt.retry＝「もう一度」で呼ぶもの（'failed' のとき） */
+  function recLabel(key, opt){ if(opt && opt.label) return String(opt.label); var l = String(key); try{ if(typeof outboxLabel === 'function') l = String(outboxLabel(key)); }catch(e){} return (!l || l === String(key)) ? '' : l; }   /* v1137：名前の無いキーは出さない */
+  function track(key, p, opt){
+    opt = opt || {};
+    var rec = { key: key, t: now(), user: (now() - lastAct) < 2500, done: false, res: undefined, who: who(), direct: !!opt.direct, label: recLabel(key, opt), retry: (typeof opt.retry === 'function') ? opt.retry : null };
+    if(rec.user && !rec.direct){ var o = infGet(); (o[key] = o[key] || {})[rec.who] = rec.t; infSet(o); }
+    rec.p = Promise.resolve(p).then(function(r){ return r; }, function(){ return rec.direct ? 'failed' : false; }).then(function(r){
       rec.done = true; rec.res = r;
-      if(rec.user && r === true) S.lastOk = now();
-      if(r === false || r === 'deferred') S.lastFail = now();
+      if(rec.user && r === true){ S.lastOk = now(); S.lastOkLabel = rec.label; }
+      if(r === false || r === 'deferred' || r === 'failed') S.lastFail = now();
+      if(rec.direct){
+        var later = S.recs.some(function(x){ return x !== rec && x.key === key && x.t > rec.t; });   /* あとの保存の結果を、前の保存の結果で上書きしない */
+        if(!later){
+          if(r === 'failed') S.failed[key] = { key: key, label: rec.label, at: now(), retry: rec.retry, who: rec.who };
+          else if(r === true || r === 'deferred') delete S.failed[key];
+        }
+        paintSoon(0);
+        return r;
+      }
       var busyK = S.recs.some(function(x){ return x !== rec && x.key === key && !x.done; });
       if(!busyK){
         var o2 = infGet();
@@ -99479,30 +99692,41 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     };
   }
   /* 「保存しました」を、その操作で送ったものが届いてから出す。待つものが無ければ null */
-  var SAVE_MSG = /(保存しました|保存済み|登録しました|更新しました|反映しました|記録しました|提出しました|承認しました|変更しました|追加しました|削除しました|Saved|saved|Updated|updated)/;
+  var SAVE_MSG = /(保存しました|保存済み|登録しました|更新しました|反映しました|記録しました|提出しました|承認しました|変更しました|追加しました|削除しました|確定しました|公開しました|Saved|saved|Updated|updated|Confirmed|confirmed|Published|published)/;   /* v1137：確定・公開も（棚卸の確定など） */
   UX.saveWait = function(msg){
     if(!SAVE_MSG.test(String(msg || ''))) return null;
     var t0 = now(), recs = S.recs.filter(function(r){ return r.user && t0 - r.t < 1500; });
     if(!recs.length) return null;
     var pend = recs.filter(function(r){ return !r.done; });
     var bad = function(){ return recs.some(function(r){ return r.res === false || r.res === 'deferred'; }); };
-    if(!pend.length) return bad() ? Promise.resolve('queued') : null;
+    var failed = function(){ return recs.some(function(r){ return r.res === 'failed'; }); };   /* v1137：送信待ちにも入らなかった（送り直しは人が押す） */
+    var res0 = function(){ return failed() ? 'failed' : bad() ? 'queued' : 'ok'; };
+    if(!pend.length){ var r0 = res0(); return r0 === 'ok' ? null : Promise.resolve(r0); }
     return new Promise(function(res){
       var tm = setTimeout(function(){ res('slow'); }, 15000);
-      Promise.all(pend.map(function(r){ return r.p; })).then(function(){ clearTimeout(tm); res(bad() ? 'queued' : 'ok'); });
+      Promise.all(pend.map(function(r){ return r.p; })).then(function(){ clearTimeout(tm); res(res0()); });
     });
   };
   UX.savePending = function(){ return S.recs.some(function(r){ return r.user && !r.done && now() - r.t < 60000; }); };
   /* v1129（11/01 の依頼 ④）：裏の自動の保存（Toast の取り込みなど）を送っているあいだは「保存中…」にしない（ログインのあと店ごとに点滅していた）。
      自動の保存でも、答えが確かめられない・重なったときは今までどおり「保存の確認待ち」 */
   function guardState(){ try{ if(!(W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function')) return ''; var st = FUNERGY_FINANCIAL_SAVE.getState() || {}, g = String(st.status || ''); return (st.auto && (g === 'saving' || g === 'checking')) ? '' : g; }catch(e){ return ''; } }
-  function outboxN(){ try{ return (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ return 0; } }
+  function outboxN(){
+    var n = 0;
+    try{ n = (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ n = 0; }
+    try{ if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.extraPending === 'function') n += FUNERGY_STATUS.extraPending().length; }catch(e){}   /* v1137：シフトの表・本人確認の情報の送信待ち */
+    return n;
+  }
+  function failedList(){ return Object.keys(S.failed).map(function(k){ return S.failed[k]; }).filter(function(x){ return x && (!x.who || x.who === who()); }); }
+  UX.failedList = failedList;
   function saveState(){
     var g = guardState();
     var pend = S.recs.filter(function(r){ return r.user && !r.done && now() - r.t > 250; });
     if(pend.length && pend.every(function(r){ return now() - r.t > 20000; })) return { k: 'slow' };
     if(pend.length || g === 'saving' || g === 'checking') return { k: 'saving' };
     if(g === 'unknown' || g === 'conflict') return { k: 'check' };
+    var nf = failedList().length;
+    if(nf) return { k: 'failed', n: nf };   /* v1137 */
     var n = outboxN(), off = (typeof navigator !== 'undefined' && navigator.onLine === false);
     if(n > 0) return { k: 'queued', n: n, off: off };
     if(off) return { k: 'offline' };   /* v1129 ④：通信が切れているときは、送るものが無くても右上に出す（画面の下には出さない） */
@@ -99519,6 +99743,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(s.k === 'slow') return T('送信に時間がかかっています', 'Sending is taking a while');
     if(s.k === 'check') return T('保存の確認待ち', 'Save needs checking');
     if(s.k === 'queued') return (s.off ? T('オフライン・', 'Offline · ') : '') + T('送信待ち ' + s.n + '件', s.n + ' waiting to send');
+    if(s.k === 'failed') return T('保存できなかったもの ' + s.n + '件', s.n + ' not saved');
     if(s.k === 'offline') return T('オフライン（つながると最新を取りに行きます）', 'Offline (will update when back online)');
     if(s.k === 'saved') return T('保存済み ', 'Saved ') + clockOf(s.t);
     return '';
@@ -99527,6 +99752,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function paint(){
     paintT = null;
     var b = D.getElementById('ux-save'); if(!b) return;
+    /* v1137（UI案69 ⑨）：保存・同期・診断の 3 つを、どの画面でも右上に出す（FUNERGY_STATUS が描く） */
+    if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.paint === 'function'){ try{ FUNERGY_STATUS.paint(b); }catch(e){} var pop0 = D.getElementById('ux-save-pop'); if(pop0 && pop0.classList.contains('on')) fillPop(pop0); return; }
     var s = appShown() ? saveState() : { k: '' };
     var label = saveLabel(s), sig = s.k + '|' + label;
     if(sig === paintSig) return;
@@ -99548,6 +99775,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   UX.paintSave = function(){ paintSig = ''; paint(); };
 
   function fillPop(pop){
+    if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.fillPop === 'function'){ try{ FUNERGY_STATUS.fillPop(pop); return; }catch(e){} }   /* v1137 */
     var s = saveState(), h = '';
     if(s.k === 'saving') h = T('クラウドへ送っています。画面を閉じずにお待ちください。', 'Sending to the cloud. Please keep this screen open.');
     else if(s.k === 'slow') h = T('この端末には保存されています。クラウドへの送信に時間がかかっています（通信が遅いか、つながっていません）。送れなかったときは送信待ちに入り、つながると自動で送ります。', 'Saved on this device. Sending to the cloud is taking a while (slow or no connection). If it fails it will wait and be sent automatically when connected.');
@@ -99565,6 +99793,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     });
   }
   function popClose(){ var pop = D.getElementById('ux-save-pop'); if(pop) pop.classList.remove('on'); }
+  UX._fillPop = function(pop){ fillPop(pop); };
   UX.saveInfo = function(){
     var pop = D.getElementById('ux-save-pop');
     if(!pop){ pop = D.createElement('div'); pop.id = 'ux-save-pop'; pop.className = 'ux-save-pop'; pop.setAttribute('role', 'dialog'); pop.setAttribute('aria-label', T('保存の状態', 'Save status')); D.body.appendChild(pop); }
@@ -99709,7 +99938,8 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     try{ var tb = D.getElementById('ux-toasts'); if(tb) tb.innerHTML = ''; }catch(e){}
     hideFresh(); popClose();
     rendered = null; edited = new Set(); scrolled = new Set(); toggled = new Set(); touched = null;
-    S.lastOk = 0; S.lastFail = 0; UX.modalDirty = false;
+    S.lastOk = 0; S.lastFail = 0; S.lastOkLabel = ''; S.failed = {}; UX.modalDirty = false;   /* v1137：送れなかった保存（もう一度送る値はメモリだけ）も前の人のものを残さない */
+    try{ if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.reset === 'function') FUNERGY_STATUS.reset(); }catch(e){}
     W._uxLoginBusy = false;
     try{ if(typeof _uxOpsSeq !== 'undefined') _uxOpsSeq++; W._uxOpsBusy = false; if(typeof uxOpsPaint === 'function') uxOpsPaint(); }catch(e){}
     try{ if(typeof _fstBusy === 'object' && _fstBusy){ _fstBusy.sales = false; _fstBusy.labor = false; } }catch(e){}
@@ -99740,6 +99970,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }
   /* ログインしてアプリを出したあと（enterAppWithSync から） */
   UX.afterEnter = function(){
+    try{ if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.afterEnter === 'function') FUNERGY_STATUS.afterEnter(); }catch(e){}   /* v1137 */
     paintSig = ''; paint();
     setTimeout(function(){ try{ UX.recoverInflight(); }catch(e){} }, 4000);
   };
@@ -100212,6 +100443,450 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   };
 })();
 /* ==== FUNERGY_VT end ==== */
+</script>
+<script>
+/* ==== FUNERGY_STATUS（v1137）：保存・同期・診断の状態と、自動の同期と、「設定 › 診断と記録」====
+   Moto さんの答え（11/03・決めてほしいこと 12）：同期・診断のボタンは一般の画面から外したうえで、
+   保存・同期・診断の状態はどの画面にいても右上に見える（今の「保存しました ✅」の形）。UI案69 ⑨。
+   ・右上：保存 ✅／保存中…／保存 ⚠ N（送信待ち・保存できなかった・確認待ち）
+           同期 ✅／同期中…／同期 ⚠ オフライン／同期 ⚠ 売上 など（取れなかったもの）
+           診断 ✅／診断 ⚠ N（端末に保存できない・何度送っても送れない・端末の保存領域が使えない・続けて取り込めない）
+     押すと中身（最後に保存・送れていないもの・最後に取得・診断の中身）。「今すぐ送る」「もう一度」。
+     「詳しく（設定 › 診断と記録）」は GM・CEO・経理・事務Crew だけ。ほかの人には状態だけ。
+   ・自動の同期（「最新情報を取得」「最新に更新」の代わり）：アプリに戻ったとき（3 分より空いたら）・つながったとき・
+     開いているあいだ 10 分ごとに、①送信待ちを送る ②送れなかったシフト・本人確認の情報を送り直す ③クラウドの変わった行を取り込む
+     （v1098 の差分の取り込み。送れていない変更は消さない：v1136）④今の画面のデータを読み直す。
+     入力中（打っている・変換中・モーダル・予算の編集・売上の保存の確認待ち）は待つ。描き直しは入力を消さない（FUNERGY_UX の描き直し）。
+     これは段階 2c（サーバーの「変わった」の合図）までのつなぎ。
+   ・「設定 › 診断と記録」（GM・CEO・経理・事務Crew）：この端末の状態・Toast の取り直し・同期センターの点検・
+     画面ごとの診断（店・月を選んで開く）・クラウドの取り込みと書き直し（GM・CEO）・この端末の記録。
+     中の項目の見える人は前と同じ決まり（G3 以上・GM・CEO・経理など）。
+   ・記録：この端末だけ（_sync_log_v1）。名前と時刻と結果だけ（中身・個人の情報は残さない） */
+(function(){
+  var W = window, D = document;
+  var ST = W.FUNERGY_STATUS = W.FUNERGY_STATUS || {};
+  function T(ja, en){ try{ return (typeof t === 'function') ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function now(){ return Date.now(); }
+  function esc(s){ s = String(s == null ? '' : s); try{ if(typeof escapeHtml === 'function') return escapeHtml(s); }catch(e){} return s.replace(/[&<>"']/g, function(c){ return '&#' + c.charCodeAt(0) + ';'; }); }
+  function UXo(){ return W.FUNERGY_UX || null; }
+  function role(){ try{ return (typeof curRole !== 'undefined' && curRole) ? String(curRole) : ''; }catch(e){ return ''; } }
+  function appShown(){
+    try{
+      if(!role()) return false;
+      var a = D.getElementById('app-shell'); return !!a && getComputedStyle(a).display !== 'none';
+    }catch(e){ return false; }
+  }
+  function online(){ try{ return !(typeof navigator !== 'undefined' && navigator.onLine === false); }catch(e){ return true; } }
+  function clock(ms){
+    if(!ms) return '';
+    try{ if(typeof fstClock === 'function') return fstClock(new Date(ms).toISOString()); }catch(e){}
+    try{ return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }catch(e){ return ''; }
+  }
+  var DIAG_ROLES = ['ceo', 'gm', 'office', 'office_crew'];
+  ST.DIAG_ROLES = DIAG_ROLES;
+  ST.canDiag = function(){ var r = role(); try{ if(typeof curStoreLogin !== 'undefined' && curStoreLogin) return false; }catch(e){} return DIAG_ROLES.indexOf(r) >= 0; };
+
+  /* ---------- 記録（この端末だけ・名前と時刻と結果だけ） ---------- */
+  var LOG_KEY = '_sync_log_v1', LOG_MAX = 80, logMem = null;
+  function logGet(){
+    if(logMem) return logMem;
+    try{ var a = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); logMem = Array.isArray(a) ? a.filter(function(x){ return x && x.t; }) : []; }catch(e){ logMem = []; }
+    return logMem;
+  }
+  ST.log = function(kind, text, ok){
+    var a = logGet();
+    a.push({ t: now(), k: String(kind || '').slice(0, 12), x: String(text || '').slice(0, 160), ok: ok === true ? 1 : (ok === false ? 0 : 2) });
+    if(a.length > LOG_MAX) a.splice(0, a.length - LOG_MAX);
+    try{ localStorage.setItem(LOG_KEY, JSON.stringify(a)); }catch(e){}
+  };
+  ST.logList = function(){ return logGet().slice().reverse(); };
+
+  /* ---------- 同期（クラウドからの取り込み）の状態 ---------- */
+  var SY = ST.syncInfo = { at: 0, busy: 0, fail: null, streak: 0 };
+  var TABLE_LABEL = { app_state: ['業務のデータ', 'work data'], app_settings: ['設定', 'settings'], employees: ['従業員', 'employees'], stores: ['店舗', 'stores'],
+    ingredients: ['食材', 'ingredients'], recipes: ['レシピ', 'recipes'], vendors: ['取引先', 'vendors'], categories: ['カテゴリー', 'categories'], page: ['この画面のデータ', 'this page'] };
+  function tableLabel(k){ var l = TABLE_LABEL[k]; return l ? T(l[0], l[1]) : T('データ', 'data'); }
+  /* supaPullAllMasters（ログイン・自動の同期・「クラウドから取り込む」）の結果を見る。読めなかった表は _fails */
+  ST.trackPull = function(p){
+    SY.busy++; ST.paintSoon();
+    return Promise.resolve(p).then(function(res){
+      var done = res && res._done;
+      return Promise.resolve(done).catch(function(){}).then(function(){ return res; });
+    }).then(function(res){
+      SY.busy = Math.max(0, SY.busy - 1);
+      var fails = (res && Array.isArray(res._fails)) ? res._fails.slice() : (res ? [] : ['app_state']);
+      if(fails.length){
+        SY.fail = { at: now(), what: fails }; SY.streak++;
+        ST.log('pull', T('取り込めなかった：', 'Could not fetch: ') + fails.map(tableLabel).join('・'), false);
+      } else { SY.at = now(); SY.fail = null; SY.streak = 0; }
+      ST.paintSoon(); return res;
+    }, function(e){
+      SY.busy = Math.max(0, SY.busy - 1); SY.fail = { at: now(), what: ['app_state'] }; SY.streak++;
+      ST.log('pull', T('取り込めなかった（通信）', 'Could not fetch (network)'), false);
+      ST.paintSoon(); throw e;
+    });
+  };
+  if(typeof supaPullAllMasters === 'function'){
+    var origPull = supaPullAllMasters;
+    supaPullAllMasters = function(){ var p = origPull.apply(this, arguments); try{ var tr = ST.trackPull(p); tr.catch(function(){}); ST._lastTrack = tr; }catch(e){} return p; };
+  }
+  function fstFails(){
+    try{
+      if(typeof fstStatus !== 'function' || typeof FST_KINDS === 'undefined') return [];
+      return FST_KINDS.filter(function(k){ return fstStatus(k).state === 'fail'; });
+    }catch(e){ return []; }
+  }
+  function fstBusyAny(){ try{ return (typeof _fstBusy === 'object' && _fstBusy) ? Object.keys(_fstBusy).some(function(k){ return !!_fstBusy[k]; }) : false; }catch(e){ return false; } }
+  ST.syncState = function(){
+    if(!online()) return { k: 'offline' };
+    if(SY.busy > 0 || AU.running || W._uxOpsBusy || fstBusyAny()) return { k: 'busy' };
+    if(SY.fail) return { k: 'fail', what: SY.fail.what.map(tableLabel), at: SY.at };
+    var ff = fstFails();
+    if(ff.length) return { k: 'fail', what: ff.map(function(k){ try{ return fstLabel(k); }catch(e){ return k; } }), fst: true, at: SY.at };
+    if(SY.at) return { k: 'ok', t: SY.at };
+    return { k: 'none' };
+  };
+
+  /* ---------- 診断（この端末の問題） ---------- */
+  function guardSt(){ try{ return (W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function') ? String((FUNERGY_FINANCIAL_SAVE.getState() || {}).status || '') : ''; }catch(e){ return ''; } }
+  ST.diagState = function(){
+    var items = [];
+    try{ var nf = (typeof lsSaveFailCount === 'function') ? lsSaveFailCount() : 0; if(nf) items.push({ k: 'device', n: nf, text: T('この端末に保存できない項目 ' + nf + ' 件（端末の空きが足りない可能性）', nf + ' item(s) could not be saved on this device (storage may be full)') }); }catch(e){}
+    try{ if(window._outboxLsFail || window._smallLsFail) items.push({ k: 'queue', text: T('端末の保存領域（localStorage）がいっぱいで、送れていない保存の記録を書けません。読み込み直すと消えることがあります。「容量を整理」で空きを作ってください', 'This device’s storage (localStorage) is full, so the unsent-save list cannot be written; it may be lost on reload. Use “Free space”') }); }catch(e){}
+    try{ if(typeof _idbState !== 'undefined' && _idbState === 'unavailable') items.push({ k: 'idb', text: T('この端末の保存領域（IndexedDB）が使えません。容量の小さい保存だけで動いています', 'This device’s storage (IndexedDB) is unavailable; running on the small storage only') }); }catch(e){}
+    try{
+      if(online() && typeof _outboxMine === 'function'){
+        var st = _outboxMine().filter(function(x){ return x && (Number(x.attempts) || 0) >= 3 && x.lastErr; }).length;
+        if(st) items.push({ k: 'stuck', n: st, text: T('何度送っても送れない保存 ' + st + ' 件', st + ' save(s) failed repeatedly') });
+      }
+    }catch(e){}
+    if(SY.streak >= 2) items.push({ k: 'pull', text: T('クラウドから続けて取り込めていません（' + SY.streak + ' 回）', 'Could not fetch from the cloud ' + SY.streak + ' times in a row') });
+    if(guardSt() === 'conflict') items.push({ k: 'conflict', text: T('売上・予算の保存がほかの端末の保存と重なっています（画面の下の黄色い帯）', 'A sales/budget save overlapped with another device (yellow bar below)') });
+    return { n: items.length, items: items };
+  };
+
+  /* ---------- 送信待ち（送信待ちの列を通らないもの） ---------- */
+  ST.extraPending = function(){
+    var out = [];
+    try{ if(typeof shiftPlanPendingList === 'function') shiftPlanPendingList().forEach(function(x){ out.push({ key: 'shiftplan_' + x.s + '_' + x.w, label: (typeof shiftPlanLabel === 'function') ? shiftPlanLabel(x.s, x.w) : T('シフト', 'Shift'), at: x.at, kind: 'shift' }); }); }catch(e){}
+    try{ if(typeof obSecretPendingList === 'function') obSecretPendingList().forEach(function(x){ out.push({ key: 'ob_secret_' + x.id, label: T('本人確認の情報', 'ID details'), at: x.at, kind: 'ob' }); }); }catch(e){}
+    return out;
+  };
+  ST.retryPending = function(){
+    var ps = [];
+    try{ if(typeof retryShiftPlanPending === 'function') ps.push(retryShiftPlanPending()); }catch(e){}
+    try{ if(typeof retryObSecretPending === 'function') ps.push(retryObSecretPending()); }catch(e){}
+    return Promise.all(ps.map(function(p){ return Promise.resolve(p).catch(function(){ return 0; }); }));
+  };
+  /* 今すぐ送る：送信待ちの列 → シフト・本人確認の情報 */
+  ST.sendNow = function(){
+    return Promise.resolve().then(function(){ return (typeof flushOutbox === 'function') ? flushOutbox() : null; }).catch(function(){})
+      .then(function(){ return ST.retryPending(); }).catch(function(){})
+      .then(function(){ ST.paintSoon(); });
+  };
+  /* もう一度（保存できなかったもの） */
+  ST.retryFailed = function(){
+    var ux = UXo(), list = (ux && ux.failedList) ? ux.failedList() : [];
+    return Promise.all(list.map(function(x){ try{ return x.retry ? Promise.resolve(x.retry()) : null; }catch(e){ return null; } })).catch(function(){}).then(function(){ ST.paintSoon(); });
+  };
+
+  /* ---------- 右上の 3 つ ---------- */
+  var SEG_ICON = { save: 'ti-cloud-check', sync: 'ti-refresh', diag: 'ti-stethoscope' };
+  function segHtml(name, label, st, text){
+    var mark = st === 'busy' ? '<span class="ux-spin ux-seg-m" aria-hidden="true"></span>'
+      : st === 'warn' ? '<i class="ti ti-alert-triangle ux-seg-m" aria-hidden="true"></i>'
+      : st === 'none' ? '<i class="ti ti-minus ux-seg-m" aria-hidden="true"></i>'
+      : '<i class="ti ti-circle-check ux-seg-m" aria-hidden="true"></i>';
+    return '<span class="ux-seg is-' + st + '" data-seg="' + name + '"><i class="ti ' + SEG_ICON[name] + ' ux-seg-ic" aria-hidden="true"></i>'
+      + '<span class="ux-seg-l">' + esc(label) + '</span>' + mark + (text ? '<span class="ux-seg-x">' + esc(text) + '</span>' : '') + '</span>';
+  }
+  function saveSeg(s){
+    if(s.k === 'saving' || s.k === 'slow') return { st: 'busy', label: T('保存中…', 'Saving…'), text: '', say: T('保存中', 'Saving') };
+    if(s.k === 'queued') return { st: 'warn', label: T('保存', 'Save'), text: String(s.n), say: T('送信待ち ' + s.n + ' 件', s.n + ' waiting to send') };
+    if(s.k === 'failed') return { st: 'warn', label: T('保存', 'Save'), text: String(s.n), say: T('保存できなかったもの ' + s.n + ' 件', s.n + ' not saved') };
+    if(s.k === 'check') return { st: 'warn', label: T('保存', 'Save'), text: T('確認', 'check'), say: T('保存の確認待ち', 'Save needs checking') };
+    return { st: 'ok', label: T('保存', 'Save'), text: '', say: s.k === 'saved' ? T('保存済み ', 'Saved ') + clock(s.t) : T('保存 問題なし', 'Save OK') };
+  }
+  function syncSeg(y){
+    if(y.k === 'busy') return { st: 'busy', label: T('同期中…', 'Syncing…'), text: '', say: T('同期中', 'Syncing') };
+    if(y.k === 'offline') return { st: 'warn', label: T('同期', 'Sync'), text: T('オフライン', 'offline'), say: T('オフライン', 'Offline') };
+    if(y.k === 'fail'){ var w = (y.what || [])[0] || T('取得', 'fetch'); var more = (y.what || []).length > 1 ? '+' + ((y.what || []).length - 1) : ''; return { st: 'warn', label: T('同期', 'Sync'), text: w + more, say: T('取れなかったもの：', 'Could not fetch: ') + (y.what || []).join('・') }; }
+    if(y.k === 'ok') return { st: 'ok', label: T('同期', 'Sync'), text: '', say: T('最後に取得 ', 'Last fetched ') + clock(y.t) };
+    return { st: 'none', label: T('同期', 'Sync'), text: '', say: T('まだ取得していません', 'Not fetched yet') };
+  }
+  function diagSeg(d){
+    if(d.n) return { st: 'warn', label: T('診断', 'Check'), text: String(d.n), say: T('診断で問題 ' + d.n + ' 件', d.n + ' issue(s) found') };
+    return { st: 'ok', label: T('診断', 'Check'), text: '', say: T('診断 問題なし', 'Check OK') };
+  }
+  var paintSig = '', paintTm = null;
+  ST.paint = function(b){
+    b = b || D.getElementById('ux-save'); if(!b) return;
+    if(!appShown()){ if(!b.hidden || paintSig){ b.hidden = true; b.innerHTML = ''; paintSig = ''; } return; }
+    var ux = UXo(), s = (ux && ux.saveState) ? ux.saveState() : { k: '' };
+    var a = saveSeg(s), y = syncSeg(ST.syncState()), d = diagSeg(ST.diagState());
+    var sig = [a.st, a.label, a.text, y.st, y.label, y.text, d.st, d.text, a.say, y.say].join('|');
+    if(sig === paintSig && !b.hidden) return;
+    paintSig = sig;
+    b.className = 'topbar-icon-btn ux-save ux-trio' + ((a.st === 'warn' || y.st === 'warn' || d.st === 'warn') ? ' has-warn' : '');
+    b.innerHTML = segHtml('save', a.label, a.st, a.text) + segHtml('sync', y.label, y.st, y.text) + segHtml('diag', d.label, d.st, d.text);
+    var say = a.say + ' / ' + y.say + ' / ' + d.say;
+    b.title = say; b.setAttribute('aria-label', T('保存・同期・診断の状態：', 'Save, sync and check status: ') + say);
+    b.hidden = false;
+  };
+  ST.paintSoon = function(ms){ if(paintTm) clearTimeout(paintTm); paintTm = setTimeout(function(){ paintTm = null; try{ var ux = UXo(); if(ux && ux.paintSave) ux.paintSave(); else ST.paint(); }catch(e){} }, ms || 0); };
+
+  /* ---------- 押したとき（中身） ---------- */
+  /* 名前の付いていないキーは中身の名前を出さない（キーそのものは「診断と記録」だけ） */
+  function niceLabel(lbl, key){ lbl = String(lbl == null ? '' : lbl); return (!lbl || lbl === String(key)) ? T('そのほかのデータ', 'Other data') : lbl; }
+  ST.niceLabel = niceLabel;
+  function rowHtml(title, body){ return '<div class="ux-st-row"><div class="ux-st-h">' + esc(title) + '</div><div class="ux-st-b">' + body + '</div></div>'; }
+  function listHtml(items){ return '<ul class="ux-st-list">' + items.map(function(x){ return '<li>' + x + '</li>'; }).join('') + '</ul>'; }
+  ST.fillPop = function(pop){
+    var ux = UXo(), s = (ux && ux.saveState) ? ux.saveState() : { k: '' }, S = (ux && ux.save) || {};
+    var h = '';
+    /* 保存 */
+    var sb = [];
+    if(S.lastOk) sb.push(esc(T('最後に保存 ', 'Last saved ') + clock(S.lastOk) + (S.lastOkLabel ? '（' + S.lastOkLabel + '）' : '')));
+    if(s.k === 'saving' || s.k === 'slow') sb.push(esc(s.k === 'slow' ? T('クラウドへの送信に時間がかかっています（この端末には保存されています）', 'Sending is taking a while (saved on this device)') : T('クラウドへ送っています…', 'Sending to the cloud…')));
+    if(s.k === 'check') sb.push(esc(T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.')));
+    var queued = [];
+    try{ if(typeof _outboxMine === 'function') _outboxMine().forEach(function(x){ queued.push({ label: niceLabel((typeof outboxLabel === 'function') ? outboxLabel(x.key) : x.key, x.key), at: x.ts }); }); }catch(e){}
+    ST.extraPending().forEach(function(x){ queued.push(x); });
+    if(queued.length){
+      sb.push(esc(T('送れていない ' + queued.length + ' 件（この端末には保存されています。つながると自動で送ります）：', queued.length + ' not sent yet (saved on this device; sent automatically when connected):')));
+      sb.push(listHtml(queued.slice(0, 6).map(function(x){ return esc(x.label) + (x.at ? ' <span class="ux-st-mut">' + esc(clock(x.at)) + '</span>' : ''); }).concat(queued.length > 6 ? [esc(T('ほか ' + (queued.length - 6) + ' 件', '+' + (queued.length - 6) + ' more'))] : [])));
+    }
+    var failed = (ux && ux.failedList) ? ux.failedList() : [];
+    if(failed.length){
+      sb.push(esc(T('保存できなかったもの（もう一度送れます）：', 'Not saved (you can try again):')));
+      sb.push(listHtml(failed.map(function(x){ return esc(niceLabel(x.label, x.key)) + ' <span class="ux-st-mut">' + esc(clock(x.at)) + '</span>'; })));
+    }
+    try{ var oth = (typeof _outboxOthers === 'function') ? _outboxOthers() : 0; if(oth) sb.push('<span class="ux-st-mut">' + esc(T('ほかの人の送信待ち ' + oth + ' 件（その人がこの端末でログインしたときに送ります）', oth + ' unsent save(s) of other people (sent when they sign in here)')) + '</span>'); }catch(e){}
+    if(!sb.length) sb.push(esc(T('送れていないものはありません。', 'Nothing waiting to be sent.')));
+    h += rowHtml(T('保存', 'Save'), sb.join('<br>'));
+    /* 同期 */
+    var y = ST.syncState(), yb = [];
+    if(y.k === 'offline') yb.push(esc(T('通信が切れています。つながったら自動で送り、自動で最新にします。', 'You are offline. Saves are sent and data updated automatically when back online.')));
+    else if(y.k === 'busy') yb.push(esc(T('クラウドから最新を取っています…', 'Fetching the latest from the cloud…')));
+    else if(y.k === 'fail'){
+      yb.push(esc(T('取れなかったもの：', 'Could not fetch: ') + (y.what || []).join('・')));
+      yb.push(esc(y.at ? T('前回 ' + clock(y.at) + ' の情報を表示中。自動でやり直します。', 'Showing data from ' + clock(y.at) + '. Retrying automatically.') : T('自動でやり直します。', 'Retrying automatically.')));
+    }
+    if(SY.at && y.k !== 'fail') yb.push(esc(T('最後に取得 ', 'Last fetched ') + clock(SY.at)));
+    yb.push('<span class="ux-st-mut">' + esc(T('自動で最新にします（アプリに戻ったとき・つながったとき・開いているあいだ 10 分ごと）。', 'Updated automatically (when you come back, when reconnected, and every 10 minutes while open).')) + '</span>');
+    h += rowHtml(T('同期', 'Sync'), yb.join('<br>'));
+    /* 診断 */
+    var d = ST.diagState(), db = [];
+    if(d.n) db.push(listHtml(d.items.map(function(x){ return esc(x.text); })));
+    else db.push(esc(T('問題なし', 'No issues')));
+    db.push('<span class="ux-st-mut">' + esc(T('確かめていること：送れていない保存・取り込めない・この端末に保存できない・端末の保存領域。', 'Checked: unsent saves, fetch failures, device save failures, device storage.')) + '</span>');
+    h += rowHtml(T('診断', 'Check'), db.join('<br>'));
+    /* ボタン */
+    var btns = [];
+    if(queued.length) btns.push('<button type="button" class="btn btn-primary btn-sm" data-ux-repeat="1" data-st-act="send">' + esc(T('今すぐ送る', 'Send now')) + '</button>');
+    if(failed.length) btns.push('<button type="button" class="btn btn-primary btn-sm" data-ux-repeat="1" data-st-act="retry">' + esc(T('もう一度', 'Try again')) + '</button>');
+    if(d.items.some(function(x){ return x.k === 'device' || x.k === 'queue'; }) && typeof openStorageManager === 'function') btns.push('<button type="button" class="btn btn-secondary btn-sm" data-ux-repeat="1" data-st-act="space">' + esc(T('容量を整理', 'Free space')) + '</button>');
+    if(ST.canDiag()) btns.push('<button type="button" class="btn btn-secondary btn-sm" data-ux-repeat="1" data-st-act="more">' + esc(T('詳しく（設定 › 診断と記録）', 'Details (Settings › Diagnostics)')) + '</button>');
+    if(btns.length) h += '<div class="ux-st-btns">' + btns.join('') + '</div>';
+    pop.innerHTML = '<div class="ux-save-pop-h">' + esc(T('保存・同期・診断', 'Save · Sync · Check')) + '</div>' + h;
+    Array.prototype.forEach.call(pop.querySelectorAll('[data-st-act]'), function(btn){
+      btn.addEventListener('click', function(){
+        var act = btn.getAttribute('data-st-act');
+        if(act === 'more'){ try{ pop.classList.remove('on'); }catch(e){} try{ go('diag_center'); }catch(e){} return; }
+        if(act === 'space'){ try{ pop.classList.remove('on'); }catch(e){} try{ openStorageManager(); }catch(e){} return; }
+        btn.disabled = true; btn.innerHTML = '<span class="ux-spin" aria-hidden="true"></span> ' + esc(T('送信中…', 'Sending…'));
+        (act === 'retry' ? ST.retryFailed() : ST.sendNow()).then(function(){ try{ if(pop.classList.contains('on')) ST.fillPop(pop); }catch(e){} });
+      });
+    });
+  };
+
+  /* ---------- 自動の同期 ---------- */
+  var AU = ST.auto = { last: 0, running: null, retryTm: null, n: 0 };
+  var VISIBLE_GAP = 3 * 60000, EVERY = 10 * 60000, BUSY_RETRY = 30000, STEP_MAX = 30000;
+  ST.EVERY = EVERY; ST.VISIBLE_GAP = VISIBLE_GAP;
+  function withTimeout(p, ms){ return Promise.race([Promise.resolve(p).catch(function(){ return null; }), new Promise(function(r){ setTimeout(function(){ r('__timeout__'); }, ms); })]); }
+  function modalOpen(){ try{ var ov = D.getElementById('modal-overlay'); return !!(ov && ov.classList && ov.classList.contains('open')); }catch(e){ return false; } }
+  ST.userBusy = function(){
+    if(W._uxLoginBusy || W._uxOpsBusy) return 'login';
+    try{ if(typeof fstUserBusy === 'function' && fstUserBusy()) return 'input'; }catch(e){}
+    if(modalOpen()) return 'modal';
+    try{ var ux = UXo(); if(ux && ((ux._typing && ux._typing()) || ux.composing)) return 'typing'; }catch(e){}
+    return '';
+  };
+  function whoNow(){ var ux = UXo(); try{ return role() + '|' + ((ux && ux._who) ? ux._who() : ''); }catch(e){ return role(); } }
+  function schedule(ms){ if(AU.retryTm) return; AU.retryTm = setTimeout(function(){ AU.retryTm = null; ST.autoSync('retry'); }, ms); }
+  /* 開いている画面のデータを読み直すもの（無ければ null）。前の各画面の「最新情報を取得」「最新に更新」と同じ読み直し */
+  ST.pageRefresher = function(page){
+    var P = {
+      shift_admin: function(){ if(typeof maybePullShift === 'function' && typeof soloStoreId === 'function' && typeof getWeekStr === 'function') maybePullShift(soloStoreId('shift_admin'), getWeekStr(), true); },
+      shift_staff: function(){ try{ _staffShiftPulled = {}; }catch(e){} if(!ST.userBusy()) renderPage(page); },
+      menu: function(){ if(typeof mnReload === 'function' && !ST.userBusy()) mnReload(); },
+      approval: function(){ return (typeof apPullLatest === 'function') ? apPullLatest() : null; },
+      diag_center: function(){ return null; }
+    };
+    if(Object.prototype.hasOwnProperty.call(P, page)) return P[page];
+    try{
+      var sc = (typeof pageSyncScope === 'function') ? pageSyncScope(page) : null;
+      if(sc && typeof _syncMeta === 'function'){ var m = _syncMeta(sc); if(m && typeof m.pull === 'function') return m.pull; }
+    }catch(e){}
+    return null;
+  };
+  /* 前の「最新に更新」と同じく、画面ごとの「読んだ」の印を戻す（次に開いたとき読み直す。重い当月の勤怠は除く） */
+  function resetPulledFlags(){
+    try{ _vacPulled = false; }catch(e){}
+    try{ _obPulled = false; }catch(e){}
+    try{ _shiftPulled = {}; }catch(e){}
+    try{ _staffShiftPulled = {}; }catch(e){}
+  }
+  ST.autoSync = function(reason, opt){
+    opt = opt || {};
+    if(AU.running) return AU.running;
+    if(!appShown()) return Promise.resolve('skip');
+    if(!online()) return Promise.resolve('offline');
+    if(!opt.manual){
+      if(D.hidden) return Promise.resolve('hidden');
+      var busy = ST.userBusy();
+      if(busy){ schedule(BUSY_RETRY); return Promise.resolve('busy'); }
+    }
+    var me = whoNow(), page = (typeof curPage !== 'undefined') ? curPage : '';
+    var same = function(){ return whoNow() === me && appShown(); };
+    var failBefore = SY.fail;
+    AU.n++;
+    AU.running = (async function(){
+      try{ await withTimeout(typeof flushOutbox === 'function' ? flushOutbox() : null, 20000); }catch(e){}
+      try{ await withTimeout(ST.retryPending(), 20000); }catch(e){}
+      if(!same()) return 'changed';
+      resetPulledFlags();
+      try{
+        ST._lastTrack = null;
+        var pp = (typeof supaPullAllMasters === 'function') ? supaPullAllMasters() : null;
+        var tr = ST._lastTrack || pp;   /* 取り込みの結果を右上に書き終えるまで（裏の取り込み＝_done も） */
+        await withTimeout(tr, STEP_MAX * 2);
+      }catch(e){}
+      if(!same()) return 'changed';
+      try{ if(typeof refreshStores === 'function') refreshStores(); }catch(e){}
+      var pr = null, fn = ((typeof curPage !== 'undefined' ? curPage : '') === page) ? ST.pageRefresher(page) : null;
+      if(fn && same()){
+        pr = await withTimeout(Promise.resolve().then(fn), STEP_MAX);
+        if(pr === false || pr === '__timeout__'){ SY.fail = { at: now(), what: ['page'] }; SY.streak++; ST.log('pull', T('この画面のデータを読み直せませんでした（', 'Could not re-read this page (') + page + '）', false); }
+      }
+      if(!same()) return 'changed';
+      try{ var ux = UXo(); if(ux && ux.bgRefresh) ux.bgRefresh(); }catch(e){}
+      return (SY.fail && SY.fail !== failBefore) ? 'fail' : 'ok';
+    })().catch(function(){ return 'fail'; }).then(function(r){
+      AU.running = null; AU.last = now();
+      if(opt.manual || r === 'fail') ST.log('sync', (opt.manual ? T('手で最新にした', 'Updated by hand') : T('自動の同期', 'Auto sync')) + '：' + (r === 'ok' ? T('最新', 'up to date') : r === 'fail' ? T('取れなかったものがある', 'some could not be fetched') : r), r === 'ok' ? true : (r === 'fail' ? false : null));
+      ST.paintSoon();
+      return r;
+    });
+    ST.paintSoon();
+    return AU.running;
+  };
+  ST.afterEnter = function(){ AU.last = now(); try{ ST.log('login', T('ログインして取り込んだ', 'Signed in and fetched'), SY.fail ? false : true); }catch(e){} ST.paintSoon(300); };
+  ST.reset = function(){ SY.fail = null; SY.streak = 0; SY.at = 0; AU.last = 0; if(AU.retryTm){ clearTimeout(AU.retryTm); AU.retryTm = null; } paintSig = ''; };
+  try{
+    D.addEventListener('visibilitychange', function(){ if(!D.hidden && now() - AU.last > VISIBLE_GAP) setTimeout(function(){ ST.autoSync('visible'); }, 800); ST.paintSoon(100); });
+    W.addEventListener('online', function(){ setTimeout(function(){ ST.autoSync('online'); }, 1500); ST.paintSoon(0); });
+    W.addEventListener('offline', function(){ ST.paintSoon(0); });
+    setInterval(function(){ if(!D.hidden && appShown() && now() - AU.last >= EVERY) ST.autoSync('timer'); }, 60000);
+    setInterval(function(){ if(appShown()) ST.paintSoon(0); }, 15000);
+  }catch(e){}
+
+  /* ---------- 「設定 › 診断と記録」 ---------- */
+  function card(icon, title, body, sub){
+    return '<div class="card"><div class="card-title"><i class="ti ' + icon + '" style="color:var(--accent)"></i> ' + esc(title) + '</div>'
+      + (sub ? '<div style="font-size:12px;color:var(--muted);margin:-4px 0 10px;line-height:1.6">' + sub + '</div>' : '') + body + '</div>';
+  }
+  function storeOpts(sel){ var list = []; try{ list = (typeof getVisibleStores === 'function') ? getVisibleStores() : []; }catch(e){} return list.map(function(s){ return '<option value="' + esc(s.id) + '"' + (s.id === sel ? ' selected' : '') + '>' + esc(s.name) + '</option>'; }).join(''); }
+  ST.dcStore = function(){ var el = D.getElementById('dc-store'); if(el && el.value) return el.value; try{ return (curStore && curStore !== 'ALL' && curStore !== 'OFFICE') ? curStore : ((getVisibleStores()[0] || {}).id || ''); }catch(e){ return ''; } };
+  ST.dcPerson = function(){ var el = D.getElementById('dc-person'); return el ? el.value : ''; };
+  ST.dcPeopleOpts = function(){
+    var sid = ST.dcStore(), list = [];
+    try{ list = (typeof staffForStore === 'function') ? staffForStore(sid) : []; }catch(e){}
+    return list.map(function(e){ return '<option value="' + esc(e.name) + '">' + esc(e.name) + '</option>'; }).join('');
+  };
+  ST.dcStoreChange = function(){ var el = D.getElementById('dc-person'); if(el) el.innerHTML = ST.dcPeopleOpts(); };
+  ST.renderDiagCenter = function(){
+    if(!ST.canDiag()) return '<div class="card"><p style="color:var(--muted);font-size:13px">' + esc(T('「診断と記録」は GM・CEO・経理・事務Crew が使います。保存・同期・診断の状態は右上で見られます。', 'Diagnostics & records are for GM, CEO, accounting and office crew. The status is shown at the top right.')) + '</p></div>';
+    var r = role(), mgr = ['ceo', 'gm', 'office'].indexOf(r) >= 0, gmceo = (r === 'gm' || r === 'ceo');
+    var h = '<div class="section-header"><div><div class="section-title">' + esc(T('診断と記録', 'Diagnostics & records')) + '</div><div class="section-sub">'
+      + esc(T('この端末の保存・同期・診断、Toast の取り直し、点検とこの端末の記録（GM・CEO・経理・事務Crew）', 'This device’s save/sync/check status, Toast re-fetch, checks and records (GM, CEO, accounting, office crew)')) + '</div></div></div>';
+    /* ① この端末の状態 */
+    var pop = D.createElement('div'); ST.fillPop(pop);
+    var stBody = pop.innerHTML.replace(/<div class="ux-save-pop-h">[\s\S]*?<\/div>/, '').replace(/<div class="ux-st-btns">[\s\S]*$/, '');
+    var unsent = [];
+    try{ if(typeof _outboxMine === 'function') unsent = _outboxMine(); }catch(e){}
+    var unsentHtml = unsent.length ? '<div style="font-size:11.5px;margin-top:8px;max-height:30vh;overflow:auto">' + unsent.map(function(x){
+      return '<div style="padding:5px 0;border-top:1px solid var(--border)"><b>' + esc((typeof outboxLabel === 'function') ? outboxLabel(x.key) : x.key) + '</b> <span style="color:var(--muted)">' + esc(x.key) + '</span>'
+        + '<div style="color:var(--muted)">' + esc(T('試行 ' + (x.attempts || 1) + ' 回', (x.attempts || 1) + ' tries')) + (x.lastErr ? ' · <span style="color:var(--red)">' + esc(String(x.lastErr).slice(0, 140)) + '</span>' : '') + '</div>'
+        + '<button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="outboxRetryOne(\'' + esc(String(x.key).replace(/'/g, '')) + '\')">' + esc(T('この 1 件を送る', 'Send this one')) + '</button></div>';
+    }).join('') + '</div>' : '';
+    var failKeys = []; try{ failKeys = (typeof lsSaveFailKeys === 'function') ? lsSaveFailKeys() : []; }catch(e){}
+    var failHtml = failKeys.length ? '<div style="font-size:11.5px;margin-top:8px;color:var(--red)">' + esc(T('この端末に保存できなかった項目：', 'Could not save on this device: ')) + failKeys.slice(0, 12).map(function(k){ return esc((typeof outboxLabel === 'function') ? outboxLabel(k) : k); }).join('・') + '</div>' : '';
+    h += card('ti-device-desktop-analytics', T('この端末の状態', 'This device'),
+      '<div class="ux-st-page">' + stBody + '</div>' + unsentHtml + failHtml
+      + '<div class="btn-row" style="justify-content:flex-start;margin-top:10px">'
+      + '<button class="btn btn-primary btn-sm" onclick="FUNERGY_STATUS.sendNow().then(function(){ renderPage(\'diag_center\'); })"><i class="ti ti-cloud-upload"></i> ' + esc(T('今すぐ送る', 'Send now')) + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_STATUS.syncNow()"><i class="ti ti-cloud-download"></i> ' + esc(T('今すぐ最新にする', 'Update now')) + '</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="openOutboxDiag()"><i class="ti ti-list-details"></i> ' + esc(T('送れていない保存の一覧', 'Unsent saves')) + '</button>'
+      + (typeof openStorageManager === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="openStorageManager()"><i class="ti ti-database"></i> ' + esc(T('容量を整理', 'Free space')) + '</button>' : '')
+      + '</div>');
+    /* ② Toast の取り直し・同期センターの点検（前の同期センター） */
+    var sc = ''; try{ sc = (typeof syncCenterBodyHtml === 'function') ? syncCenterBodyHtml() : ''; }catch(e){ sc = ''; }
+    var toast31 = mgr ? ('<div style="border-top:1px solid var(--border);margin-top:14px;padding-top:12px"><div style="font-size:14px;font-weight:800">' + esc(T('店舗別・直近 31 日を取り直す', 'Re-fetch 31 days for one store')) + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin:2px 0 8px;line-height:1.4">' + esc(T('選んだ店舗の直近 31 日の売上・勤怠を Toast から取り込み、DB へ保存します（夜間バッチと同じ処理・30〜60 秒）。', 'Imports 31 days of sales and labor for the store from Toast into the DB (same as the nightly batch, 30–60 s).')) + '</div>'
+      + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><select id="toastsync-store" class="form-select" style="width:auto;min-width:160px">' + ((typeof _toastSyncStoreOptions === 'function') ? _toastSyncStoreOptions() : '') + '</select>'
+      + '<button id="toastsync-btn" class="btn btn-primary btn-sm" onclick="toastSyncStore()"><i class="ti ti-cloud-download"></i> ' + esc(T('31 日を取り直す', 'Re-fetch 31 days')) + '</button><span id="toastsync-status" style="font-size:11px;color:var(--muted)"></span></div></div>') : '';
+    h += card('ti-cloud-download', T('Toast の取り直し・同期の点検', 'Toast re-fetch and sync checks'), sc + toast31);
+    /* ③ 画面ごとの診断（店・月を選んで開く） */
+    var sid = ST.dcStore();
+    var b = function(on, icon, label, show){ return show === false ? '' : '<button class="btn btn-secondary btn-sm" style="margin:0 6px 6px 0" onclick="' + on + '"><i class="ti ' + icon + '"></i> ' + esc(label) + '</button>'; };
+    var diagBody = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('店舗', 'Store')) + ' <select id="dc-store" class="form-select" style="width:auto;min-width:150px;padding:5px 8px;font-size:12px" onchange="FUNERGY_STATUS.dcStoreChange()">' + storeOpts(sid) + '</select></label>'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('スタッフ', 'Staff')) + ' <select id="dc-person" class="form-select" style="width:auto;min-width:140px;padding:5px 8px;font-size:12px">' + ST.dcPeopleOpts() + '</select></label></div>'
+      + '<div>'
+      + b("openTipDateDebug(FUNERGY_STATUS.dcStore())", 'ti-coin', T('Tip 診断（Toast と照合）', 'Tip diagnostics'))
+      + b("runLaborDiag()", 'ti-clock', T('勤怠の診断（今月）', 'Labor diagnostics'), mgr)
+      + b("openLaborRootCause()", 'ti-alert-circle', T('勤怠の原因診断', 'Labor root cause'), mgr)
+      + b("openMenuMixDiag(FUNERGY_STATUS.dcStore())", 'ti-tools-kitchen-2', T('出数の診断', 'Item sales diagnostics'))
+      + b("openItemSalesOverview()", 'ti-cloud-search', T('全店の出数の状況', 'Item sales, all stores'), mgr)
+      + b("openInvoiceDiag()", 'ti-receipt', T('請求書の突合診断・復旧', 'Invoice reconciliation'))
+      + b("availDiag(FUNERGY_STATUS.dcStore(), getWeekStr())", 'ti-calendar-event', T('シフトの提出の診断（今週）', 'Shift availability (this week)'))
+      + b("checkAvailSaveStatus(FUNERGY_STATUS.dcStore(), getWeekStr())", 'ti-cloud-check', T('シフトの提出の保存状況（今週）', 'Shift availability save status (this week)'))
+      + b("openMySkillDiag(FUNERGY_STATUS.dcPerson(), FUNERGY_STATUS.dcStore())", 'ti-stairs-up', T('スキル表示の診断（選んだスタッフ）', 'Skill display (selected staff)'))
+      + '</div>';
+    h += card('ti-stethoscope', T('画面ごとの診断', 'Diagnostics by screen'), diagBody, esc(T('前は各画面にあった診断です。店とスタッフを選んで開きます。どれもデータを変えるときは画面の中で確かめます。', 'These used to be on each screen. Pick a store and staff, then open. Anything that changes data asks first.')));
+    /* ④ クラウド（GM・CEO） */
+    if(gmceo){
+      h += card('ti-cloud-up', T('クラウドの取り込み・書き直し', 'Cloud fetch and overwrite'),
+        '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-secondary btn-sm" onclick="runSupaPullAll()"><i class="ti ti-download"></i> ' + esc(T('クラウドから取り込む（マスター）', 'Fetch from the cloud (masters)')) + '</button>'
+        + '<button class="btn btn-secondary btn-sm" onclick="runSupaPushAllConfirm()"><i class="ti ti-upload"></i> ' + esc(T('今のマスターを一括アップロード', 'Upload all masters')) + '</button></div>'
+        + '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">' + esc(T('一括アップロードは、この端末の写しでクラウドを全部書き直します（ほかの端末の新しい変更が消えることがあります）。クラウドが壊れたときだけ使います。', 'Upload overwrites the cloud with this device’s copy (newer changes from other devices may be lost). Use only when the cloud is broken.')) + '</div>'
+        + '<div id="supa-pull-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div><div id="supa-push-result" style="font-size:11px;color:var(--muted);margin-top:10px"></div>'
+        + '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">' + esc(T('Toast 接続診断', 'Toast connection check')) + '</div>'
+        + '<button class="btn btn-secondary btn-sm" onclick="runToastDiag()"><i class="ti ti-plug-connected"></i> ' + esc(T('診断する', 'Run')) + '</button><div id="toast-diag-result" style="margin-top:12px"></div></div>');
+    }
+    /* ⑤ この端末の記録 */
+    var lg = ST.logList();
+    var logHtml = lg.length ? '<div style="font-size:11.5px;max-height:40vh;overflow:auto">' + lg.slice(0, 60).map(function(x){
+      var col = x.ok === 1 ? 'var(--green)' : (x.ok === 0 ? 'var(--red)' : 'var(--muted)');
+      var ic = x.ok === 1 ? 'ti-circle-check' : (x.ok === 0 ? 'ti-alert-triangle' : 'ti-point');
+      return '<div style="display:flex;gap:8px;padding:4px 0;border-top:1px solid var(--border)"><span style="color:var(--muted);white-space:nowrap">' + esc(clock(x.t)) + '</span><i class="ti ' + ic + '" style="color:' + col + '"></i><span>' + esc(x.x) + '</span></div>';
+    }).join('') + '</div>' : '<div style="font-size:12px;color:var(--muted)">' + esc(T('まだ記録はありません。', 'No records yet.')) + '</div>';
+    h += card('ti-history', T('この端末の記録', 'This device’s records'), logHtml, esc(T('ログイン・手で最新にしたとき・取れなかったとき・送れなかったときを残します（この端末だけ・中身は残しません）。', 'Sign-ins, manual updates, fetch and send failures (this device only; no contents).')));
+    return h;
+  };
+  ST.syncNow = function(){
+    try{ if(typeof showToast === 'function') showToast(T('最新にしています…', 'Updating…'), 'info'); }catch(e){}
+    return ST.autoSync('manual', { manual: true }).then(function(r){
+      if(r === 'changed' || r === 'skip') return r;   /* 途中でログインが変わった・アプリを出ている：何も言わない */
+      try{ if(typeof showToast === 'function') showToast(r === 'ok' ? T('最新にしました', 'Up to date') : r === 'offline' ? T('オフラインです。つながったら自動で最新にします', 'Offline. Will update when back online') : T('取れなかったものがあります。右上の「同期」をご覧ください', 'Some data could not be fetched. See “Sync” at the top right'), r === 'ok' ? 'success' : 'warning'); }catch(e){}
+      try{ if(typeof curPage !== 'undefined' && curPage === 'diag_center') renderPage('diag_center'); }catch(e){}
+      return r;
+    });
+  };
+})();
+/* ==== FUNERGY_STATUS end ==== */
 </script>
 <script>
 /* ==== FUNERGY_WR（v1131）：ワークセンターの申請（11/02 の依頼の ①〜⑥⑧⑩・UI案68 の決めてほしいこと 1〜10 はおすすめ A）====

@@ -251,7 +251,7 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   await ctl('/__delay?path=/rest/v1/app_state&ms=1500');
   const t0 = Date.now();
   await page.click('#uxt-save');
-  const firstToast = (await toastTexts(page))[0] || '';
+  const firstToast = (await toastTexts(page)).filter(x => !/売上の同期で取り込めなかった/.test(x))[0] || '';   /* 裏の Toast の同期の知らせ（模擬サーバーには無い）は除く */
   const tFirst = Date.now() - t0;
   await sleep(500);
   const mid = await page.evaluate(() => { const b = document.getElementById('ux-save'); return b && !b.hidden ? b.getAttribute('aria-label') : null; });
@@ -278,8 +278,9 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   ok('C4 右上：送信待ち N 件', /送信待ち/.test(q.label || '') && q.n > 0, q);
   await ctl('/__wfail?path=/rest/v1/app_state&n=0');
   if (q.label) {
-    await page.click('#ux-save'); await page.waitForSelector('#ux-save-send', { timeout: 5000 }).catch(() => { });
-    await page.click('#ux-save-send').catch(() => { });
+    /* v1137：中身の「今すぐ送る」は data-st-act="send"（前は #ux-save-send） */
+    await page.click('#ux-save'); await page.waitForSelector('#ux-save-send, #ux-save-pop [data-st-act="send"]', { timeout: 5000 }).catch(() => { });
+    await page.click('#ux-save-send, #ux-save-pop [data-st-act="send"]').catch(() => { });
     await page.waitForFunction(() => typeof outboxCount === 'function' && outboxCount() === 0, null, { timeout: 30000 }).catch(() => { });
     await sleep(400);
   }

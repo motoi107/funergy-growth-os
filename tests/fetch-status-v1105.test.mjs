@@ -132,11 +132,12 @@ test('labor reads are noted per store; the strip on dashboard and budget pages, 
   const c = context({ fetch: async () => ({ ok: false, json: async () => ({}) }) });
   const rows = await c.fetchTipLaborFromDB('g1', '2026-10-01', '2026-10-02'); assert.equal(rows._err, true);
   assert.equal(c.fstStatus('labor').state, 'fail'); assert.match(c.fstChip('labor'), /勤怠：取れませんでした（ToriTon）/);
+  /* v1137（決めてほしいこと 12A）：帯の「最新情報を取得」「同期」「診断」は外した（状態は右上・同期と診断は「設定 › 診断と記録」）。取得の状態だけ残す */
   for (const scope of ['dash', 'budget']) {
     const h = c.pageSyncStrip(scope);
-    assert.match(h, /id="fst-chips"/); assert.match(h, /最新情報を取得/); assert.match(h, /診断/);
+    assert.match(h, /id="fst-chips"/); assert.doesNotMatch(h, /最新情報を取得/); assert.doesNotMatch(h, /openDiag|pageSync\(/);
   }
-  assert.doesNotMatch(c.pageSyncStrip('hr'), /fst-chips/);
+  assert.equal(c.pageSyncStrip('hr'), '');
 });
 
 test('times are shown in Hawaii time, with HST when the device is elsewhere', () => {

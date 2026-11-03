@@ -210,7 +210,8 @@ test('ログインの所属の並び：読み込むあいだの仮の枠は店�
 });
 
 test('右上の保存の状態・知らせの置き場・見た目の決まり', () => {
-  assert.match(html, /<button id="ux-save" type="button" class="topbar-icon-btn ux-save" hidden onclick="FUNERGY_UX\.saveInfo\(\)"><\/button>/);
+  assert.match(html, /<button id="ux-save" type="button" class="topbar-icon-btn ux-save ux-trio" hidden onclick="FUNERGY_UX\.saveInfo\(\)"><\/button>/);   /* v1137：保存・同期・診断の 3 つ */
+  assert.ok(!/id="topbar-sync"/.test(html), 'v1137：右上の「最新に更新」は外した');
   assert.match(html, /@media \(hover: hover\) \{ \.btn:hover \{ opacity: \.85; \} \}/);
   assert.ok(!/\n\.btn:hover \{ opacity: \.85; \}/.test(html), '触れる端末で押したあとの見た目が残らない');
   assert.match(html, /\.btn:disabled, \.btn\[disabled\], \.btn\[aria-disabled="true"\] \{ opacity:\.45; cursor:not-allowed; \}/);
