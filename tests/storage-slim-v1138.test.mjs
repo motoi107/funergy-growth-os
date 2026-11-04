@@ -27,7 +27,7 @@ const slimBlock = (() => {
 const CODE = [/^var IDB_NAME = .*$/m, /^var _idbDB = .*$/m, /^var _idbState = .*$/m, /^var _IDB_MEM = .*$/m, /^var _idbQ = .*$/m, /^var _idbTimer = .*$/m,
   /^var _idbStat = .*$/m, /^var _idbInflight = .*$/m, /^var _IDB_WATCH = .*$/m, /^var _idbGen = .*$/m, /^var _idbReopening = .*$/m, /^var LS_DEVICE_LOCAL = .*$/m].map(varLine)
   .concat(['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbWatched', '_idbTrack', '_idbWriteBatch', '_idbFlush', '_idbFlushP', '_idbReopen',
-    '_idbRequeue', '_idbQueue', '_idbBackfill', '_idbBoot', 'lsIsDeviceLocal', '_lsStoreGet', '_lsRawStr', '_lsRawDel', '_lsWriteVerified'].map(fn))
+    '_idbStale', '_idbRequeue', '_idbQueue', '_idbBackfill', '_idbBoot', 'lsIsDeviceLocal', '_lsStoreGet', '_lsRawStr', '_lsRawDel', '_lsWriteVerified'].map(fn))
   .concat([slimBlock,
     'function _lskBump(){} function _lsNoteSaveFailure(k){ (__fails||(__fails=[])).push(k); } var __fails=[];',
     'function lsKeys(p){ p=p||""; var s=new Set(); for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k&&k.indexOf(p)===0) s.add(k);} if(_idbState==="ready"&&_IDB_MEM) _IDB_MEM.forEach(function(v,k){ if(String(k).indexOf(p)===0) s.add(k); }); return Array.from(s); }',
@@ -97,20 +97,23 @@ test('(a)(k) 前の版の端末：IndexedDB にある控えは起動のあとに
   const c = tab(dev, x => { x.__outbox = [{ key: 'm_employees' }, { key: 'tip_labor_F01' }]; });
   assert.equal(await ready(c), 'ready');
   const out = await c._lsSlimSweep();
-  assert.ok(out && out.removed >= 3, JSON.stringify(out));
+  assert.ok(out && out.removed >= 2, JSON.stringify(out));
   assert.equal(dev.ls.has('daily_actuals_F01'), false);
   assert.equal(dev.ls.has('spl_budgets_v2_F01'), false);
-  assert.equal(dev.ls.has('tip_labor_F01'), false, '(k) 送信待ちでも中身が IndexedDB と違う控えは消す（アプリは IndexedDB の値を読み、送る）');
+  assert.equal(dev.ls.get('tip_labor_F01'), big(300, 'OLD'), '(k) 送信待ちのキーの写しは、中身が違っても届くまで消さない（独立レビュー P2-1）');
+  assert.equal(out.differ, 1);
   assert.equal(dev.ls.get('m_employees'), rows.m_employees, '送信待ちで同じ中身の控えは届くまで残す');
   assert.equal(dev.ls.get('funergy_lang'), 'ja'); assert.equal(dev.ls.get('_pend_edit_at'), '{"x":1}');
   assert.equal(dev.ls.get('op_outbox'), '[{"key":"m_employees"}]'); assert.equal(dev.ls.get('emp_dirty_q'), '[{"id":"E1"}]');
   assert.equal(c._lsStoreGet('daily_actuals_F01'), rows.daily_actuals_F01, '読むのは IndexedDB');
-  assert.equal(c._lsStoreGet('tip_labor_F01'), rows.tip_labor_F01);
+  assert.equal(c._lsStoreGet('tip_labor_F01'), rows.tip_labor_F01, '読むのは今までどおり IndexedDB');
   assert.ok(c.__logs.some(([k]) => k === 'store'), '「診断と記録」に空けたことを残す');
-  /* 送れたら控えを外す */
+  /* 送れたら控えを外す（違う中身の写しは次の片づけで） */
   c.__outbox = [];
   assert.equal(c._lsSlimTry('m_employees'), true);
   assert.equal(dev.ls.has('m_employees'), false);
+  await c._lsSlimSweep();
+  assert.equal(dev.ls.has('tip_labor_F01'), false);
   const d = await disk(dev.factory);
   for (const [k, v] of Object.entries(rows)) assert.equal(d.get(k), v, k + ' は IndexedDB に残る');
 });
@@ -184,21 +187,21 @@ test('(e) 消したあと入り終える前に閉じても、消したことを�
 });
 
 test('(f) IndexedDB を読む前の書き込み：新しい名前は使う・IndexedDB にある名前は IndexedDB を残す（空の値で上書きしない）', async () => {
-  const dev = device(); await seedDisk(dev.factory, { m_stores: big(30, 'real') });
+  const dev = device(); await seedDisk(dev.factory, { m_cfg: big(30, 'real') });
   const c = tab(dev);
   assert.equal(c._idbState, 'init');
-  assert.equal(c._lsWriteVerified('m_stores', '[]'), true, '（localStorage を空けた端末では、読む前は空に見える）');
+  assert.equal(c._lsWriteVerified('m_cfg', '[]'), true, '（localStorage を空けた端末では、読む前は空に見える）');
   assert.equal(c._lsWriteVerified('spl_new', big(5, 'n')), true);
-  assert.equal(c._lsRawDel('m_stores'), true);   // 読む前の削除は IndexedDB に届けない（前の版と同じ）
-  c._lsWriteVerified('m_stores', '[]');
+  assert.equal(c._lsRawDel('m_cfg'), true);   // 読む前の削除は IndexedDB に届けない（前の版と同じ）
+  c._lsWriteVerified('m_cfg', '[]');
   await ready(c);
-  assert.equal(c._lsStoreGet('m_stores'), big(30, 'real'));
+  assert.equal(c._lsStoreGet('m_cfg'), big(30, 'real'));
   assert.equal(c._lsStoreGet('spl_new'), big(5, 'n'));
   assert.equal(c._idbStat.journal.initKept, 1);
   await c._idbFlushP(); await wait(5);
   const d = await disk(dev.factory);
-  assert.equal(d.get('m_stores'), big(30, 'real')); assert.equal(d.get('spl_new'), big(5, 'n'));
-  assert.equal(dev.ls.has('m_stores'), false); assert.equal(dev.ls.has('spl_new'), false);
+  assert.equal(d.get('m_cfg'), big(30, 'real')); assert.equal(d.get('spl_new'), big(5, 'n'));
+  assert.equal(dev.ls.has('m_cfg'), false); assert.equal(dev.ls.has('spl_new'), false);
 });
 
 test('(g) IndexedDB が使えない端末は今までどおり（localStorage だけ・印を書かない）', async () => {
@@ -265,8 +268,9 @@ test('(n2) 書き出しが失敗したら控えを残す（次に開いたとき
 
 test('(h)(i) 起動のデータの移し替え・必要時の取り込みは IndexedDB を読み終えてから', () => {
   assert.match(fn('_lsRequestDeferredPrefix'), /JSON\.parse\(_lsStoreGet\(r\.key\)\|\|'null'\)/);
-  const boot = source.slice(source.indexOf('var _idbBootP = new Promise'), source.indexOf('setTimeout(function(){ try{ checkDriveOAuthReturn'));
-  assert.match(boot, /\(async function\(\)\{ try \{ await Promise\.resolve\(_idbBootP\); \} catch\(e\) \{ \} try \{ _bootMigrations\(\); \}/);
+  const boot = source.slice(source.indexOf('var _idbBootP = new Promise'), source.indexOf('checkDriveOAuthReturn(); }catch'));
+  assert.ok(boot.length > 100 && boot.length < 5000, String(boot.length));
+  assert.match(boot, /\(async function\(\)\{ try \{ await Promise\.resolve\(_idbBootP\); \} catch\(e\) \{ \} try \{ refreshStores\(\); \} catch\(e\) \{ \} try \{ _bootMigrations\(\); \}/);
   const mig = fn('_bootMigrations');
   for (const m of ['migrateWaikikiSplit', 'migrateActivateStores', 'migrateBudgetStatusYm', 'repairBudgetDupes', 'migrateStoreManagers', 'migrateMergeFCrew', '_v2VendorNormOnce'])
     assert.ok(mig.includes(m + '('), m);
@@ -275,8 +279,11 @@ test('(h)(i) 起動のデータの移し替え・必要時の取り込みは Ind
   assert.deepEqual(top.map(l => l.match(/^try \{ (\w+)/)[1]), ['migrateEnableMasterAutosync']);
 });
 
-test('起動の読み込みが返らない端末は 8 秒で使えないことにする（起動を止めない）', () => {
-  assert.match(fn('_idbBoot'), /Promise\.race\(\[_idbLoadAll\(\), new Promise\(function \(r\) \{ setTimeout\(function \(\) \{ r\(null\); \}, 8000\); \}\)\]\)/);
+test('起動の読み込みが返らない端末は 8 秒でつなぎ直して 20 秒まで待ち、それでもだめなら使えないことにする（起動を止めない）', () => {
+  const b = fn('_idbBoot');
+  assert.match(b, /Promise\.race\(\[_idbLoadAll\(\), new Promise\(function \(r\) \{ setTimeout\(function \(\) \{ r\(null\); \}, ms\); \}\)\]\)/);
+  assert.match(b, /var m = await _race\(8000\);/); assert.match(b, /m = _idbDB \? await _race\(20000\) : null;/);
+  assert.match(b, /端末のデータを読み込んでいます/);
 });
 
 test('前の版の端末の書き込み（印なし）は、次に開いたときに消える前に IndexedDB に写す', async () => {
@@ -351,4 +358,115 @@ test('アプリを通さずに localStorage に書かれた値（IndexedDB に�
   dev.ls.set('spl_direct', 'x');
   await c._lsSlimSweep();
   assert.equal(dev.ls.get('spl_direct'), 'x');
+});
+
+// ---- 独立レビュー（18247bd）の直し ----
+test('P1-1 起動の途中に読む店舗の表は localStorage にも残す・2 回目の起動でも LaLa（F06）・F07 の棚卸の履歴を月ごとに分ける', async () => {
+  assert.equal(tab(device({ idb: false }))._lsSlimKind('m_stores'), 'keep');
+  const reg = fn('_registerInvHistSplit');
+  assert.match(reg, /_lsRaw\('m_stores', null\)/);
+  assert.match(source, /\n_registerInvHistSplit\(\);/);
+  assert.match(fn('refreshStores'), /_registerInvHistSplit\(\)/);
+  assert.match(source, /await Promise\.resolve\(_idbBootP\); \} catch\(e\) \{ \} try \{ refreshStores\(\); \} catch\(e\) \{ \} try \{ _bootMigrations\(\); \}/);
+  // 2 回起動しても店舗の表が localStorage に残る（起動の途中の読み取りが空にならない）
+  const st = JSON.stringify([{ id: 'F01' }, { id: 'F06' }, { id: 'F07' }]);
+  const dev = device({ ls: { m_stores: st } }); await seedDisk(dev.factory, { m_stores: st });
+  const a = tab(dev); await ready(a); await a._lsSlimSweep(); a._lsWriteVerified('m_stores', st); await a._idbFlushP(); await wait(5);
+  const b = tab(dev); assert.equal(b._lsStoreGet('m_stores'), st, '起動の途中（IndexedDB を読む前）でも読める'); await ready(b); await b._lsSlimSweep();
+  assert.equal(dev.ls.get('m_stores'), st);
+});
+
+test('P2-2 アプリの保存の層を通らないキー（Office のモジュール・Supabase）は IndexedDB に写さず、localStorage から消さない', async () => {
+  const k1 = 'funergy_web_office_cas_legacy_attempts_v1', k2 = 'sb-tgbhgxzehzeouopklhje-auth-token';
+  const dev = device({ ls: { [k1]: '[1]', [k2]: '{"t":1}' } }); await seedDisk(dev.factory, { [k1]: '[0]' });   // 前の版の写しが IndexedDB に入っている端末も
+  const a = tab(dev); await ready(a); await a._lsSlimSweep();
+  dev.ls.set(k1, '[1,2]');   // モジュールがあとで足した
+  const b = tab(dev); await ready(b); await b._lsSlimSweep();
+  assert.equal(dev.ls.get(k1), '[1,2]'); assert.equal(dev.ls.get(k2), '{"t":1}');
+  assert.equal(b._IDB_MEM.has(k2), false, '写さない');
+});
+
+test('P2-1 IndexedDB を読めなかった起動の保存・削除は、次に読めた起動で取り戻す（IndexedDB の古い値で消さない・古い値を送らない）', async () => {
+  const dev = device(); await seedDisk(dev.factory, { spl_k: big(5, 'stale'), spl_gone: big(5, 'g') });
+  const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); });   // 読み込みが返らない（つなぎ直しても）
+  assert.equal(await ready(a), 'unavailable');
+  assert.equal(a._idbStat.loadRetry, true, 'つなぎ直してもう一度読んだ');
+  a.__outbox = [{ key: 'spl_k' }];
+  assert.equal(a._lsWriteVerified('spl_k', big(5, 'EDIT')), true);
+  assert.equal(dev.ls.get('_lsj:spl_k').charAt(0), 'u');
+  assert.equal(a._lsRawDel('spl_gone'), true);
+  const b = tab(dev, x => { x.__outbox = [{ key: 'spl_k' }]; }); await ready(b);
+  assert.equal(b._lsStoreGet('spl_k'), big(5, 'EDIT'), '送信待ちの編集が IndexedDB の古い値に負けない');
+  assert.equal(b._lsStoreGet('spl_gone'), null);
+  assert.equal(b._idbStat.journal.unavail, 1);
+  await b._idbFlushP(); await wait(5); await b._lsSlimSweep();
+  assert.equal((await disk(dev.factory)).get('spl_k'), big(5, 'EDIT'));
+  assert.equal(dev.ls.get('spl_k'), big(5, 'EDIT'), '送信待ちのあいだは控えも残す');
+  b.__outbox = []; b._lsSlimRetry();
+  assert.equal(dev.ls.has('spl_k'), false);
+});
+
+test('P2-1 IndexedDB を読めなかった起動：読む前の書き込みの印はこの起動の書き込み（u）に・IndexedDB の無い端末は印を消す', async () => {
+  const dev = device(); await seedDisk(dev.factory, { spl_i: big(5, 'old') });
+  const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); });
+  a._lsWriteVerified('spl_i', big(5, 'init'));   // 読む前
+  await ready(a);
+  assert.equal(dev.ls.get('_lsj:spl_i').charAt(0), 'u');
+  const b = tab(dev); await ready(b);
+  assert.equal(b._lsStoreGet('spl_i'), big(5, 'init'));
+  const d2 = device({ idb: false }); const c = tab(d2);
+  c._lsWriteVerified('spl_x', '1'); await ready(c);
+  assert.equal([...d2.ls.keys()].some(k => k.startsWith('_lsj:')), false);
+  assert.equal(d2.ls.get('spl_x'), '1');
+});
+
+test('P2-1 読み込みが 1 回返らなくても、つなぎ直して読めれば使う', async () => {
+  const dev = device(); await seedDisk(dev.factory, { spl_r: '1' });
+  let n = 0; const c = tab(dev, x => { const orig = x._idbLoadAll; x._idbLoadAll = () => (n++ === 0 ? Promise.resolve(null) : orig()); });
+  assert.equal(await ready(c), 'ready');
+  assert.equal(c._idbStat.loadRetry, true); assert.equal(c._lsStoreGet('spl_r'), '1');
+});
+
+test('P3 ほかのタブがあとで書いた写しと印は、このタブの片づけで消さない', async () => {
+  const dev = device(); const a = tab(dev); await ready(a); await wait(20);
+  a.__outbox = [{ key: 'spl_t' }];
+  a._lsWriteVerified('spl_t', big(5, '1')); await a._idbFlushP(); await wait(5);
+  assert.ok(a._lsJDone.spl_t, 'A は送信待ちのあいだ控えを残している');
+  const b = tab(dev); await ready(b); await wait(20);
+  b.__outbox = [{ key: 'spl_t' }];
+  b._idbTimer = null; b._lsWriteVerified('spl_t', big(5, '2')); clearTimeout(b._idbTimer);   // B が書いた（まだ書き出していない）
+  a.__outbox = []; assert.equal(a._lsSlimTry('spl_t'), false);
+  assert.equal(dev.ls.get('spl_t'), big(5, '2')); assert.ok(dev.ls.get('_lsj:spl_t'));
+  crash(b);
+  const c = tab(dev); await ready(c);
+  assert.equal(c._lsStoreGet('spl_t'), big(5, '2'));
+});
+
+test('P3 とても大きい値は写しを書かずにすぐ書き出す・同じ時の書き出しはまとめて 1 回', async () => {
+  const dev = device(); const c = tab(dev); await ready(c); await wait(20);
+  let tx = 0; const db = c._idbDB, orig = db.transaction.bind(db); db.transaction = (...a) => { if (a[1] === 'readwrite') tx++; return orig(...a); };
+  const huge = big(1600000, 'h');
+  assert.equal(c._lsWriteVerified('spl_huge', huge), true);
+  assert.equal(dev.ls.has('spl_huge'), false); assert.equal(dev.ls.has('_lsj:spl_huge'), false);
+  for (let i = 0; i < 30; i++) c._lsWriteVerified('spl_h' + i, big(1600000, String(i % 10)));
+  await wait(60);
+  assert.equal(tx, 1, '1 回の書き出し');
+  assert.equal((await disk(dev.factory)).get('spl_huge'), huge);
+});
+
+test('P3 書き出しが 2 回とも失敗しても、積み直すのは新しい値', async () => {
+  const dev = device(); const c = tab(dev); await ready(c); await wait(20);
+  const db = c._idbDB, orig = db.transaction.bind(db);
+  db.transaction = (...a) => { const tx = orig(...a); if (a[1] === 'readwrite') Promise.resolve().then(() => { try { tx.abort(); } catch (e) { } }); return tx; };
+  c._lsWriteVerified('spl_q', '"old"'); c._idbFlush();
+  c._lsWriteVerified('spl_q', '"new"'); c._idbFlush();
+  await wait(20);
+  assert.equal(c._idbQ.get('spl_q'), '"new"');
+  clearTimeout(c._idbTimer);
+});
+
+test('P3 Drive の連携の戻り・前の運用キーの送り直しは IndexedDB を読み終えてから・IndexedDB のキーも見る', () => {
+  assert.match(source, /setTimeout\(function\(\)\{ Promise\.resolve\(_idbBootP\)\.then\(function\(\)\{ try\{ checkDriveOAuthReturn\(\);/);
+  assert.match(fn('migrateUploadLocalOps'), /lsKeys\(\)\.forEach/);
+  assert.doesNotMatch(fn('migrateUploadLocalOps'), /localStorage\.key\(/);
 });

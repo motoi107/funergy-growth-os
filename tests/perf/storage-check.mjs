@@ -49,7 +49,7 @@ const lsInfo = page => page.evaluate(() => {
   let bytes = 0, n = 0, bulk = 0, marks = 0, old = 0; const writing = [];
   for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i), v = localStorage.getItem(k) || ''; bytes += (k.length + v.length) * 2; n++;
     if (k.indexOf('_lsj:') === 0) marks++;
-    else if (k.charAt(0) !== '_' && !['funergy_lang', 'supa_sync', 'heavy_ready', 'haptics_on', 'op_outbox', 'emp_dirty_q', 'vendor_touched_v1'].includes(k)) { bulk++; if (localStorage.getItem('_lsj:' + k) === null) old++; else writing.push(k.replace(/_[A-Z0-9-]+$/, '_*')); } }
+    else if (k.charAt(0) !== '_' && !/^(funergy_|sb-)/.test(k) && !['supa_sync', 'heavy_ready', 'haptics_on', 'op_outbox', 'emp_dirty_q', 'vendor_touched_v1', 'm_stores'].includes(k)) { bulk++; if (localStorage.getItem('_lsj:' + k) === null) old++; else writing.push(k.replace(/_[A-Z0-9-]+$/, '_*')); } }
   return { mb: +(bytes / 1048576).toFixed(2), keys: n, bulk, old, writing, marks, idb: (typeof _IDB_MEM !== 'undefined' && _IDB_MEM) ? _IDB_MEM.size : -1, state: typeof _idbState !== 'undefined' ? _idbState : '' };
 });
 const snapshot = page => page.evaluate(() => {
