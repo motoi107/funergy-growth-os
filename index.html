@@ -9378,7 +9378,7 @@ function _fsTie(a, b){
     var seen={}, out=base.slice();
     base.forEach(function(v){ seen[_cjson(v)]=1; });
     other.forEach(function(v){ var j=_cjson(v); if(!seen[j]){ seen[j]=1; out.push(v); } });
-    return out;
+    return _fsOrder(out);
   }
   var ao=(a && typeof a==='object' && !Array.isArray(a)), bo=(b && typeof b==='object' && !Array.isArray(b));
   if(ao && bo){
@@ -9412,7 +9412,9 @@ function _fsRecWin(a, b){
 function _fsSameEntry(x, y){
   var xo=(x && typeof x==='object' && !Array.isArray(x)), yo=(y && typeof y==='object' && !Array.isArray(y));
   if(!xo || !yo) return false;
-  var kx=Object.keys(x).sort(), ky=Object.keys(y).sort();
+  /* v1136（独立レビュー 1036dcd P3）：要素の時刻 _t は中身として比べない。両方にあって違えば別の要素（別々の端末で同じ中身を入れた 2 つ） */
+  if(_lrOwn(x, '_t') && _lrOwn(y, '_t') && Number(x._t)!==Number(y._t)) return false;
+  var kx=Object.keys(x).filter(function(k){ return k!=='_t'; }).sort(), ky=Object.keys(y).filter(function(k){ return k!=='_t'; }).sort();
   if(kx.join('\u0001')!==ky.join('\u0001')) return false;
   for(var i=0;i<kx.length;i++){
     var k=kx[i];
@@ -9420,6 +9422,13 @@ function _fsSameEntry(x, y){
     if(_cjson(x[k])!==_cjson(y[k])) return false;
   }
   return true;
+}
+/* 配列の要素を入れた時刻（_t）の順に（時刻の無い前の版の要素は前・同じ時刻は今の並び）。合流の順によらず「最後＝いちばんあとで入れた要素」になる
+   （独立レビュー 1036dcd P3-1：3 台が別々にテストを入れると、届いた順で並びが変わり、画面が最新と読む最後のテストが古い不合格になることがあった） */
+function _fsElemT(v){ return (v && typeof v==='object' && !Array.isArray(v)) ? (Number(v._t)||0) : 0; }
+function _fsOrder(arr){
+  return arr.map(function(v, i){ return { v:v, i:i, t:_fsElemT(v) }; })
+    .sort(function(a, b){ return (a.t-b.t) || (a.i-b.i); }).map(function(x){ return x.v; });
 }
 function _fsFill(nv, ov){
   if(Array.isArray(nv) && Array.isArray(ov)){
@@ -9432,13 +9441,14 @@ function _fsFill(nv, ov){
         if(_fsSameEntry(base[i], v)){
           /* 真偽の欄だけ違う同じ要素：どちらかで true なら true（再教育の「済み」は戻らない。育成の記録の真偽は false → true にしか変えない） */
           var x=null; Object.keys(v).forEach(function(k){ if(v[k]===true && base[i][k]===false){ if(!x) x=Object.assign({}, base[i]); x[k]=true; } });
+          if(_lrOwn(v, '_t') && !_lrOwn(base[i], '_t')){ if(!x) x=Object.assign({}, base[i]); x._t=v._t; }   /* 入れた時刻は分かっている側から */
           if(x) base[i]=x;
           return;
         }
       }
       seen[j]=1; add.push(v);
     });
-    return add.length ? add.concat(base) : base;
+    return _fsOrder(add.length ? add.concat(base) : base);
   }
   var no=(nv && typeof nv==='object' && !Array.isArray(nv)), oo=(ov && typeof ov==='object' && !Array.isArray(ov));
   if(no && oo){
@@ -9549,7 +9559,18 @@ function _fsStamp(prev, next){
         if(!fi[f] && pt) Object.keys(pv).forEach(function(s){ m[s]=pt; });
         _fsSubs(p, n, f).forEach(function(s){ if(_cjson(pv[s])!==_cjson(nv[s]) || _fsHas(pv, s)!==_fsHas(nv, s)) m[s]=ts; });
         fi[f]=m;
-      } else delete fi[f];
+      } else {
+        delete fi[f];
+        /* 配列：新しく入れた要素に入れた時刻 _t（前の要素と同じなら、その時刻を引き継ぐ。時刻の無い前の版の要素はそのまま） */
+        if(Array.isArray(n[f])){
+          var pa=Array.isArray(p[f]) ? p[f] : [];
+          n[f]=n[f].map(function(e){
+            if(!e || typeof e!=='object' || Array.isArray(e) || _lrOwn(e, '_t')) return e;
+            for(var i=0;i<pa.length;i++){ if(_fsSameEntry(pa[i], e)) return _lrOwn(pa[i], '_t') ? Object.assign({}, e, { _t:pa[i]._t }) : e; }
+            return Object.assign({}, e, { _t:ts });
+          });
+        }
+      }
     }
   });
   if(Object.keys(ft).length) n._ft=ft;
@@ -12276,7 +12297,7 @@ async function migrateUploadLocalOps(){
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
     var _casKeys=batch.filter(function(r){ var d=_opMergeDef(r.key); return !!(d && d.cas); });
     batch=batch.filter(function(r){ var d=_opMergeDef(r.key); return !(d && d.cas); });
-    for (var q=0;q<_casKeys.length;q++){ await opMergePush(_casKeys[q].key, _casKeys[q].value); }
+    for (var q=0;q<_casKeys.length;q++){ if((await opMergePush(_casKeys[q].key, _casKeys[q].value))===false){ try{ _outboxAdd(_casKeys[q].key, _opLastPushErr[_casKeys[q].key]||'migrate'); }catch(e){} } }   /* 送れなかったら送信待ちに（あとで送り直す。独立レビュー 1036dcd P3） */
     for (var c=0;c<batch.length;c+=50){ await supaUpsert('app_state', batch.slice(c,c+50)); }
     localStorage.setItem('_f2b_opsync2','1');
   }catch(e){ console.warn('migrateUploadLocalOps', e); }
