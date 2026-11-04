@@ -894,8 +894,8 @@ test('一般の画面の帯：ダッシュボード・予実は取得の状態�
   for (const sc of ['hr', 'tip', 'inv', 'menu']) assert.equal(c.pageSyncStrip(sc), '', sc);
 });
 
-test('版：アプリと Service Worker が 1137 でそろう', () => {
+test('版：アプリと Service Worker が 1137 以上でそろう', () => {
   const a = (html.match(/const APP_VERSION = '(\d+)';/) || [])[1], b = (sw.match(/const SW_BUILD = '(\d+)';/) || [])[1];
-  assert.equal(a, '1137');
+  assert.ok(Number(a) >= 1137, String(a));   // v1138 で版を上げても落ちないように
   assert.equal(a, b);
 });
