@@ -46,7 +46,7 @@ function varBlock(name, end) {
 const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
-const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsTie',
+const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsObj', '_fsFiOf', '_fsSubT', '_fsCont', '_fsSubs', '_fsTie',
   '_fsRecWin', '_fsSameEntry', '_fsFill', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
   '_pullPendingMap', '_pendEditAtAll', '_pendEditAtMark', '_pendEditAtDrop', '_pullKeepLocal'];
 const GETSET = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'attFixKey', 'getAttOverride', 'setAttOverride',
@@ -99,11 +99,11 @@ test('① the new keys are in the sync lists with strict merge rules; the old na
     assert.equal(run(c, `_lsProtectedKey(${JSON.stringify(k)})`), true, 'old name kept: ' + k);
   }
   const mp = varBlock('OP_MERGE_PREFIX', '} };');
-  assert.match(mp, /'att_fix_': \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true \}/);
-  assert.match(mp, /'tip_cf_':  \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true \}/);
-  assert.match(mp, /'kpi_man_': \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \}/);
-  assert.match(SRC, /\n  dev_pipe:       \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \},/);
-  assert.match(SRC, /\n  dev_pipe_start: \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true \},/);
+  assert.match(mp, /'att_fix_': \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true, cas: true \}/);
+  assert.match(mp, /'tip_cf_':  \{ merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true, cas: true \}/);
+  assert.match(mp, /'kpi_man_': \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true \}/);
+  assert.match(SRC, /\n  dev_pipe:       \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true \},/);
+  assert.match(SRC, /\n  dev_pipe_start: \{ merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true \},/);
   // ログインのあとに移し替える（PIN のログインと管理者ページの両方）
   assert.equal((SRC.match(/v1136MoveLocalOnly\(\); \}catch\(e\)\{/g) || []).length, 2);
 });
@@ -545,9 +545,13 @@ test('③（P2-2）on the same device, the old record moved again at each login 
   assert.equal(run(c, `_fsSameEntry({ c:'A', s:60 }, { c:'A', s:61 })`), false);
   assert.deepEqual(plain(run(c, `_fsFill(['a', 1], ['a', 'b', 'b', 1, 2])`)), ['b', 2, 'a', 1], 'plain values: added once, already-present ones not again');
   assert.deepEqual(plain(run(c, `_fsFill({ x: 1 }, { x: 2, y: 3 })`)), { x: 1, y: 3 });
-  // 時刻のある欄どうし（新しい版の 2 台）は今までどおり新しいほうで置き換える（足さない）
+  // 時刻のある欄どうし（新しい版の 2 台）の配列も足す（Codex の P2・6627627177：2 台が 1 つずつ入れたテストの片方が消えていた。画面は要素を消さない）。
+  // 新しいほうの要素が最後（画面は配列の最後を最新と読む）
   const m = plain(run(c, `mergeFieldStampRec({ tests:[{c:'A'}], _ft:{ tests: 10 } }, { tests:[{c:'B'}], _ft:{ tests: 20 } })`));
-  assert.deepEqual(m.tests, [{ c: 'B' }]);
+  assert.deepEqual(m.tests, [{ c: 'A' }, { c: 'B' }]);
+  // 真偽の欄だけ違う同じ要素は、どちらかで true なら true（再教育の「済み」が、あとから別の再教育を足した端末の写しで戻らない）
+  const r2 = plain(run(c, `mergeFieldStampRec({ retrain:[{item:'Fry', done:true}], _ft:{ retrain: 10 } }, { retrain:[{item:'Fry', done:false}, {item:'Knife', done:false}], _ft:{ retrain: 20 } })`));
+  assert.deepEqual(r2.retrain, [{ item: 'Fry', done: true }, { item: 'Knife', done: false }]);
   // 値（ステージなど）は今までどおり新しいほう
   assert.equal(run(c, `mergeFieldStampRec({ stage: 4 }, { stage: 2, _ft:{ stage: 5 } }).stage`), 2);
 });
