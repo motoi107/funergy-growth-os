@@ -48,7 +48,7 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const run = (c, code) => vm.runInContext(code, c);
 
 const FNS = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsObj', '_fsFiOf', '_fsSubT', '_fsCont', '_fsSubs',
-  '_fsTie', '_fsRecWin', '_fsSameEntry', '_fsFill', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', 'v1136Moved',
+  '_fsElemT', '_fsOrder', '_fsTie', '_fsRecWin', '_fsSameEntry', '_fsFill', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', 'v1136Moved',
   '_devDataRaw', 'getDevData', 'setDevData', 'opMergePush', '_fetchOpValue', '_fetchOpRow', '_opCasWrite', '_casTs', '_tsMicro', '_opWriteBack'];
 
 async function cloudDb() {
@@ -327,4 +327,41 @@ test('P2-2: item times in detail — fields stamped before item times, deleted f
   // 画面から来た記録に _fi があっても使わない（時刻は前の記録から）
   const s2 = plain(run(c, `_fsStamp({ a: 1, _ft: { a: 1 } }, { a: 2, _fi: { x: { y: 99 } } })`));
   assert.ok(!('_fi' in s2), JSON.stringify(s2));
+});
+
+test('独立レビュー（1036dcd）P3-1：tests entered on three devices end in the same order whatever order the cloud receives them; the latest test is last', () => {
+  const ctx = device(null, 1);
+  const M = (a, b) => plain(run(ctx, `mergeFieldStampMap(${JSON.stringify(a)}, ${JSON.stringify(b)})`));
+  const mk = (t, rec) => { const d = device(null, 500); run(d, `setDevData('Ken', ${JSON.stringify(base)})`); d.NOW = t; run(d, `var x=getDevData('Ken'); x.tests.push(${JSON.stringify(rec)}); setDevData('Ken', x);`); return d.S.dev_pipe; };
+  const A = mk(1000, { course: 'Fry', score: 50, pass: false }), B = mk(2000, { course: 'Fry', score: 90, pass: true }), C = mk(3000, { course: 'Knife', score: 85, pass: true });
+  const perms = [[A, B, C], [A, C, B], [B, A, C], [B, C, A], [C, A, B], [C, B, A]];
+  const outs = perms.map(p => p.reduce((cloud, x) => M(cloud, x), {}));
+  for (const o of outs) {
+    assert.deepEqual(o.Ken.tests.map(t => t.course + ':' + t.score), ['Fry:50', 'Fry:90', 'Knife:85']);
+    assert.equal(o.Ken.tests.filter(t => t.course === 'Fry').slice(-1)[0].score, 90, 'the curriculum badge reads the retake');
+  }
+  // P3-4：別々の端末で入れた同じ中身のテスト 2 つは 2 つのまま（入れた時刻が違う）
+  const D = mk(4000, { course: 'Grill', score: 80, pass: true }), E = mk(5000, { course: 'Grill', score: 80, pass: true });
+  assert.equal(M(D, E).Ken.tests.filter(t => t.course === 'Grill').length, 2);
+  // 再教育を済みにしても、入れた時刻は変わらず、2 つにならない
+  const F = device(null, 500); run(F, `setDevData('Ken', ${JSON.stringify({ ...base, retrain: [] })})`);
+  F.NOW = 600; run(F, `var x=getDevData('Ken'); x.retrain.push({ item:'Fry', done:false }); setDevData('Ken', x);`);
+  const before = plain(F.S.dev_pipe);
+  F.NOW = 700; run(F, `var x=getDevData('Ken'); x.retrain[0].done=true; setDevData('Ken', x);`);
+  const r = M(before, F.S.dev_pipe).Ken.retrain;
+  assert.equal(r.length, 1); assert.equal(r[0].done, true); assert.equal(r[0]._t, 600);
+});
+
+test('独立レビュー（1036dcd）P3：a cas key the one-time upload could not send goes to the send queue', async () => {
+  const db = await cloudDb();
+  const A = device(db);
+  A.S.dev_pipe = { Ken: { stage: 2, _ft: { stage: 100 }, _at: 100 } };
+  run(A, fnSrc('migrateUploadLocalOps'));
+  const keys = Object.keys(A.S), queued = [];
+  Object.assign(A, { _supaBooting: false, isOpSyncKey: () => true, lsKeys: () => keys.slice(), _outboxAdd: (k, e) => queued.push([k, e]),
+    localStorage: { length: keys.length, key: i => keys[i], getItem: () => null, setItem() {} }, supaFetchAll: async () => [] });
+  A.fetch = async (u, o) => { if (o && o.method) throw new Error('offline'); return { ok: true, status: 200, json: async () => [] }; };
+  await run(A, 'migrateUploadLocalOps()');
+  assert.deepEqual(queued.map(x => x[0]), ['dev_pipe']);
+  await db.close();
 });
