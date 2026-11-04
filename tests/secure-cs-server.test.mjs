@@ -469,6 +469,24 @@ test('renaming rows in the publicly writable employees table does not hand out s
   assert.ok((await S.pullCs('g3')).j.cs.names.includes('Kai One'));
 });
 
+test('the same person twice (a retired duplicate record with the same name): only CEO/GM get the name; adding （重複） to the retired record gives it back (db/employee-dup-rename.sql)', async () => {
+  const S = setup(); seed(S.W);
+  S.W.emps.push({ id: 'E-1x', name: 'Kai One', store: 'S1', role: 'crew', title: 'Crew', status: '', data: { name: 'Kai One', status: '退職', resignDate: '2026-07-03' } });
+  for (const who of ['g1', 'g3', 'g4', 'am']) {
+    assert.ok(!(await S.pullCs(who)).j.cs.names.includes('Kai One'), who + ' while two records hold the name');
+    assert.equal((await S.call({ action: 'get', key: 'lss_emp_Kai One', ...S.as(who) }, S.hdr(who))).status, 403, who + ' get');
+  }
+  assert.ok(emps((await S.pullCs('gm')).j).includes('Kai One'), 'CEO/GM still get it');
+  // what db/employee-dup-rename.sql writes: the column name and data.name of the retired record
+  const x = S.W.emps.find(e => e.id === 'E-1x'); x.name = 'Kai One（重複）'; x.data = { ...x.data, name: 'Kai One（重複）' };
+  for (const who of ['g1', 'g3', 'g4', 'am']) {
+    const r = await S.pullCs(who);
+    assert.ok(r.j.cs.names.includes('Kai One'), who + ' after the rename');
+    assert.ok(!r.j.cs.names.includes('Kai One（重複）'), who + ': a retired record is in nobody’s scope');
+  }
+  assert.ok(emps((await S.pullCs('g1')).j).includes('Kai One'), 'the person gets their own points again');
+});
+
 test('a server that returns fewer rows per page than asked (max-rows) still gives every Career Score row (read until an empty page)', async () => {
   const S = setup({ indexMissing: true, maxRows: 7 }); seed(S.W);
   const r = await S.pullCs('gm');
