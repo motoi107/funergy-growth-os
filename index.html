@@ -5686,7 +5686,7 @@ const NAV_ITEMS = [
   {id:'announce',     label:'アナウンス',   icon:'ti-broadcast',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office','office_crew','chef']},
   /* v1137（決めてほしいこと 12A）：同期・診断のボタンを一般の画面から外して、ここに集める（GM・CEO・経理・事務Crew） */
-  {id:'diag_center', label:'診断と記録',   icon:'ti-stethoscope',      roles:['ceo','gm','office','office_crew','am','sl']},   /* 独立レビュー P2-4：AM・SL は前の同期センターの復旧の道具（予算・棚卸の復元・取り込み）だけ */
+  {id:'diag_center', label:'診断と記録',   icon:'ti-stethoscope',      roles:['ceo','gm','office','office_crew','am','g4','sl']},   /* 独立レビュー P2-4：AM・G4・SL は前の同期センターの復旧の道具（予算・棚卸の復元・取り込み）だけ */
 ];
 
 /* ===== 6メインタブ構成（ダッシュボード/予実/食材管理/人材管理/設定/マイページ） ===== */
@@ -5717,7 +5717,7 @@ const MENU_GROUPS = [
   {id:'g_acct_review', label:'経理レビュー', icon:'ti-checklist', roles:['ceo','gm','office'],
     children:['acct_review']},
   {id:'g_settings', label:'設定', icon:'ti-settings', roles:['ceo','gm','office','am','sl'],
-    children:['store_master','required','settings','diag_center']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew。AM・SL は復旧の道具だけ。NAV_ITEMS の roles で絞る） */
+    children:['store_master','required','settings','diag_center']},   /* v1137: 診断と記録（GM・CEO・経理・事務Crew。AM・G4・SL は復旧の道具だけ。NAV_ITEMS の roles で絞る） */
 ];
 
 /* Office（本部）モード専用メニュー（curStore==='OFFICE'時） */
@@ -10816,8 +10816,8 @@ function obPushSecret(ob){
     return Promise.resolve().then(function(){ return authObPriv(payload); }).then(function(j){ return !!(j && j.ok); }, function(){ return false; }).then(function(ok){
       var l=obSecretPendingList();
       if(ok){ _obSecretPendingSet(l.filter(function(x){ return !(x.id===id && (Number(x.at)||0)<=at); })); return true; }
-      var w=_obSecretWho(), cur=l.find(function(x){ return x.id===id; });
-      if(cur){ cur.at=Date.now(); cur.fp=fp; if(w) cur.who=w; } else { var e={ id:id, at:Date.now(), fp:fp }; if(w) e.who=w; l.push(e); }
+      var w=_obSecretWho(), cur=l.find(function(x){ return x.id===id; });   /* at＝送れなかった送信を呼んだ時刻（あとから呼んで送れた送信で外れる） */
+      if(cur){ if(at>=(Number(cur.at)||0)){ cur.at=at; cur.fp=fp; } if(w) cur.who=w; } else { var e={ id:id, at:at, fp:fp }; if(w) e.who=w; l.push(e); }
       _obSecretPendingSet(l);
       return 'deferred';
     });
@@ -10837,13 +10837,17 @@ function retryObSecretPending(manual){
   if(!manual) return Promise.resolve(0);
   var l=obSecretPendingMine(); if(!l.length) return Promise.resolve(0);
   _obSecretRetryBusy=(async function(){
-    var obs=ls('onboardings', [])||[], n=0;
+    var n=0;
     for(var i=0;i<l.length;i++){
-      var ob=(Array.isArray(obs)?obs:[]).find(function(o){ return o && o.id===l[i].id; });
-      var drop=function(){ _obSecretPendingSet(obSecretPendingList().filter(function(x){ return x.id!==l[i].id; })); };
+      /* 2 回目の独立レビュー P3-7：1 件ずつ、送る直前に端末の記録と送信待ちを読み直す（送り直しのあいだに直して送れなかった新しい中身を、古い写しで送らない） */
+      var pe=obSecretPendingList().find(function(x){ return x.id===l[i].id; });
+      if(!pe || (pe.who && pe.who!==_obSecretWho())) continue;
+      var obs=ls('onboardings', [])||[];
+      var ob=(Array.isArray(obs)?obs:[]).find(function(o){ return o && o.id===pe.id; });
+      var drop=function(){ var at0=Number(pe.at)||0; _obSecretPendingSet(obSecretPendingList().filter(function(x){ return !(x.id===pe.id && (Number(x.at)||0)<=at0); })); };
       if(!ob || !ob.inviteToken){ drop(); continue; }   /* この端末にもう記録が無い：送れるものが無い */
       var fp=''; try{ fp=_obSecretFp(obSecretOf(ob)); }catch(e){}
-      if(l[i].fp && fp!==l[i].fp){ drop(); continue; }   /* 中身が変わった（送れなかった中身ではない）：送らない */
+      if(pe.fp && fp!==pe.fp){ drop(); continue; }   /* 中身が変わった（送れなかった中身ではない）：送らない */
       if((await obPushSecret(ob))===true) n++;
     }
     return n;
@@ -10908,6 +10912,8 @@ function _outboxSet(a){
   if(!ok){ try{ if(typeof _lsFreeOldLaborKeys==='function') _lsFreeOldLaborKeys(2); localStorage.setItem('op_outbox', j); ok=(localStorage.getItem('op_outbox')===j); }catch(e){} }   /* 古い月の勤怠の写しだけ空けてもう 1 回（lsSet と同じ） */
   if(ok){
     _outboxSet.mem=null; try{ window._outboxLsFail=0; }catch(e){}
+    /* IndexedDB を読む前（起動の直後）に書けたときも時刻を残す（2 回目の独立レビュー P3-4：読み終えたあと、前の別の名前を新しいとみなさない） */
+    try{ if(typeof _idbState==='undefined' || _idbState!=='ready') localStorage.setItem('_op_outbox_at', String(now)); }catch(e){}
     try{
       if(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has('op_outbox_overflow')){
         /* 別の名前は、localStorage に時刻（_op_outbox_at）を書けても書けなくても（ほぼ満杯）消す
@@ -42202,10 +42208,14 @@ function shiftPlanPendingList(){ try{ var a=JSON.parse(_shiftSmallGet(SHIFTPLAN_
 function shiftPlanPendingMine(){ var me=_shiftWho(); return shiftPlanPendingList().filter(function(x){ return !x.who || x.who===me; }); }
 function _shiftPlanPendingSet(list){ return _shiftSmallSet(SHIFTPLAN_PENDING_KEY, list.length ? JSON.stringify(list) : null); }
 function shiftPlanPendingOf(storeId, week){ return shiftPlanPendingList().find(function(x){ return x.s===storeId && x.w===week; }) || null; }
-function _shiftPlanPendingAdd(storeId, week, notify){
+/* at＝送れなかった送信を呼んだ時刻（2 回目の独立レビュー P3-2：前は送れなかった時刻で、あとから呼んで送れた送信でも外れなかった）。
+   base＝この端末が最後に見た（読んだ・送れた）クラウドの中身＝端末の値の土台。もう送信待ちがあれば、その base のまま
+   （2 回目の独立レビュー P1：送り直しがまた送れなかったときに、土台の印の写し（80 週・このタブだけのことがある）から読み直して空にしない） */
+function _shiftPlanPendingAdd(storeId, week, notify, at){
+  at=Number(at)||Date.now();
   var l=shiftPlanPendingList(), cur=l.find(function(x){ return x.s===storeId && x.w===week; }), w=_shiftWho();
-  if(cur){ cur.at=Date.now(); if(notify) cur.notify=1; if(w) cur.who=w; cur.base=_shiftBaseOf(storeId+'_'+week); }   /* base＝この端末が最後に見た（読んだ・送れた）クラウドの中身＝端末の値の土台 */
-  else { var e={ s:storeId, w:week, at:Date.now(), notify:notify?1:0, base:_shiftBaseOf(storeId+'_'+week) }; if(w) e.who=w; l.push(e); }
+  if(cur){ cur.at=Math.max(Number(cur.at)||0, at); if(notify) cur.notify=1; if(w) cur.who=w; if(typeof cur.base!=='string' || !cur.base) cur.base=_shiftBaseOf(storeId+'_'+week); }
+  else { var e={ s:storeId, w:week, at:at, notify:notify?1:0, base:_shiftBaseOf(storeId+'_'+week) }; if(w) e.who=w; l.push(e); }
   _shiftPlanPendingSet(l);
 }
 function _shiftPlanPendingDone(storeId, week, sentAt){
@@ -42253,12 +42263,11 @@ function pushShiftPlan(storeId, week, plan, force, opt){
     if(ok){
       _shiftPlanSentSeq[k]=(_shiftPlanSentSeq[k]||0)+1;
       _shiftBaseSet(k, _shiftFp(plan));   /* クラウドはいまこの中身 */
-      var done=_shiftPlanPendingDone(storeId, week, at);
-      try{ var rest=shiftPlanPendingList(), r0=rest.find(function(x){ return x.s===storeId && x.w===week; }); if(r0){ r0.base=_shiftFp(plan); _shiftPlanPendingSet(rest); } }catch(e){}   /* 送っているあいだのあとの保存が送れなかった：その土台はいま送れた中身 */
-      if(done && done.notify && !opt.notify && plan && plan.status==='公開済') shiftPlanNotifyPublished(storeId, week);   /* 前に送れなかった公開の知らせ（送れたので出す。公開のままのときだけ） */
+      var done=_shiftPlanPendingDone(storeId, week, at);   /* 同じ店・週の送信は順番なので、この送信より前に呼んだ保存の送信待ちはすべて外れる */
+      if(done && done.notify && !opt.notify && plan && plan.status==='公開済') shiftPlanNotifyPublished(storeId, week, plan);   /* 前に送れなかった公開の知らせ（送れたので出す。公開のままのときだけ） */
       return true;
     }
-    _shiftPlanPendingAdd(storeId, week, !!opt.notify);
+    _shiftPlanPendingAdd(storeId, week, !!opt.notify, at);
     return 'deferred';
   }); };
   var p=prev.then(run, run);
@@ -42279,18 +42288,24 @@ function retryShiftPlanPending(){
       if(_shiftPlanInflight[k]) continue;   /* 送っている途中（その送信の結果で決まる） */
       var plan=getShiftPlan(x.s, x.w);
       if(!plan){ _shiftPlanPendingDone(x.s, x.w, Infinity); continue; }
+      var seq0=_shiftPlanSentSeq[k]||0;
       var cur=await _shiftPlanGet(x.s, x.w);
       if(!cur.ok) continue;   /* 読めない：あとで */
-      if(_shiftPlanInflight[k]) continue;
+      /* 2 回目の独立レビュー P2：読んでいるあいだに送った・送信待ちが変わった（新しい保存）なら、この読みと前の送信待ちの写しは使わない（次に） */
+      if(_shiftPlanInflight[k] || (_shiftPlanSentSeq[k]||0)!==seq0) continue;
+      var x0=x; x=shiftPlanPendingOf(x.s, x.w);
+      if(!x || (Number(x.at)||0)!==(Number(x0.at)||0) || x.base!==x0.base || (x.who && x.who!==_shiftWho())) continue;
       plan=getShiftPlan(x.s, x.w) || plan;
       if(cur.row){
         var cf=_shiftFp(cur.row);
         if(cf===_shiftFp(plan)){   /* もうクラウドに同じ中身がある */
           _shiftBaseSet(k, cf); var d=_shiftPlanPendingDone(x.s, x.w, Infinity);
-          if(d && d.notify && plan.status==='公開済') shiftPlanNotifyPublished(x.s, x.w);
+          if(d && d.notify && plan.status==='公開済') shiftPlanNotifyPublished(x.s, x.w, plan);
           n++; continue;
         }
-        if(x.base!==cf){   /* ほかの端末で変わっていた：送らずにクラウドの内容に */
+        /* 土台が分からない（v1136 以前に入れた週・土台の印の写しが無くなった）ときは、ほかの端末で変わったとは決めず、この端末の変更を送る
+           （2 回目の独立レビュー P1：前は「ほかの端末で変わった」として、この端末の変更を捨てていた。送れる保存と同じく、あとに送ったほうが残る） */
+        if(typeof x.base==='string' && x.base && x.base!==cf){   /* ほかの端末で変わっていた：送らずにクラウドの内容に */
           _lsWriteVerified('shiftplan_'+x.s+'_'+x.w, JSON.stringify(cur.row)); _shiftBaseSet(k, cf);
           _shiftPlanPendingDone(x.s, x.w, Infinity); _shiftConflictNote(x.s, x.w, true);
           continue;
@@ -42303,8 +42318,17 @@ function retryShiftPlanPending(){
   })().catch(function(){ return 0; }).then(function(n){ _shiftRetryBusy=null; return n; });
   return _shiftRetryBusy;
 }
-function shiftPlanNotifyPublished(storeId, week){
-  try{ var _ps2=STORES.find(function(x){return x.id===storeId;}); addNotif({ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week }); }catch(e){}
+/* 知らせの id は店・週・中身で決める（2 回目の独立レビュー P3-1：同じ公開を 2 回知らせない。v1137 の端末どうしは同じ id で 1 つにまとまる） */
+function shiftPlanNotifyPublished(storeId, week, plan){
+  try{
+    var fp=''; try{ fp=_shiftFp(plan||getShiftPlan(storeId, week)||{}); }catch(e){}
+    var id='shiftpub_'+storeId+'_'+week+'_'+fp;
+    if(fp && (getNotifs()||[]).some(function(n){ return n && n.id===id; })) return;
+    var _ps2=STORES.find(function(x){return x.id===storeId;});
+    var n={ type:'shift', title:'シフトが公開されました', text:((_ps2?_ps2.name:storeId)+'：'+week).slice(0,140), toStore:storeId, toRoles:['crew','sl'], page:'shift_staff', refId:'shiftplan_'+storeId+'_'+week };
+    if(fp) n.id=id;
+    addNotif(n);
+  }catch(e){}
 }
 /* 答え：true＝クラウドの値を端末に入れた／false＝クラウドに無い／null＝読めなかった／'pending'＝送れていない変更・送っている途中なので端末のまま */
 async function pullShiftPlan(storeId, week){
@@ -42319,8 +42343,12 @@ async function pullShiftPlan(storeId, week){
   var cf=_shiftFp(cur.row);
   if(pend){
     var local=getShiftPlan(storeId, week);
-    if(local && _shiftFp(local)===cf){ _shiftBaseSet(k, cf); _shiftPlanPendingDone(storeId, week, Infinity); return true; }
-    if(pend.base===cf){ kick(); return 'pending'; }   /* クラウドは送れなかった変更の前のまま：端末の値を残す */
+    if(local && _shiftFp(local)===cf){
+      _shiftBaseSet(k, cf); var dn=_shiftPlanPendingDone(storeId, week, Infinity);
+      if(dn && dn.notify && mine && local.status==='公開済') shiftPlanNotifyPublished(storeId, week, local);   /* 2 回目の独立レビュー P3-1：送れなかった公開が実は届いていた（答えだけ届かなかった） */
+      return true;
+    }
+    if(pend.base===cf || typeof pend.base!=='string' || !pend.base){ kick(); return 'pending'; }   /* クラウドは送れなかった変更の前のまま・土台が分からない：端末の値を残して送り直す */
     _shiftPlanPendingDone(storeId, week, Infinity); _shiftConflictNote(storeId, week, mine);   /* ほかの端末で変わっていた：クラウドの内容に */
   }
   _lsWriteVerified('shiftplan_'+storeId+'_'+week, JSON.stringify(cur.row));   /* v763: 押し上げを起こさない保存 */
@@ -45744,7 +45772,7 @@ function publishShiftPlan(storeId, week) {
   var _pp = pushShiftPlan(storeId, week, plan, true, { notify:true });
   renderPage('shift_admin');
   return Promise.resolve(_pp).then(function(r){
-    if(r === true){ shiftPlanNotifyPublished(storeId, week); showToast('シフトを公開しました', 'success'); }
+    if(r === true){ shiftPlanNotifyPublished(storeId, week, plan); showToast('シフトを公開しました', 'success'); }
     else showToast(t('公開をこの端末に保存しました。クラウドへはまだ送れていません（つながると自動で送り、そのときスタッフに知らせます）','Published on this device. Not sent to the cloud yet (it will be sent when connected and staff will be notified then)'), 'warning');
     try{ if(curPage==='shift_admin') renderPage('shift_admin'); }catch(e){}
     return r;
@@ -99822,11 +99850,16 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   /* v1129（11/01 の依頼 ④）：裏の自動の保存（Toast の取り込みなど）を送っているあいだは「保存中…」にしない（ログインのあと店ごとに点滅していた）。
      自動の保存でも、答えが確かめられない・重なったときは今までどおり「保存の確認待ち」 */
   function guardState(){ try{ if(!(W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function')) return ''; var st = FUNERGY_FINANCIAL_SAVE.getState() || {}, g = String(st.status || ''); return (st.auto && (g === 'saving' || g === 'checking')) ? '' : g; }catch(e){ return ''; } }
+  /* 前の送信の答えを待って並んでいるだけのもの（lastErr 'queued' で、いま送っている途中）は数えない・出さない（ログインのあとの裏の保存で「保存 ⚠」が点滅しないように）。
+     答えが来て送れなかったら 'push failed' などになって数える。右上の数と押した中身の一覧は同じもの（2 回目の独立レビュー P3-5） */
+  function outboxWaiting(){
+    if(typeof _outboxMine !== 'function') return null;
+    return _outboxMine().filter(function(x){ return !(x && x.lastErr === 'queued' && typeof _pushBusy === 'function' && _pushBusy(x.key)); });
+  }
+  UX.outboxWaiting = function(){ try{ return outboxWaiting() || []; }catch(e){ return []; } };
   function outboxN(){
     var n = 0;
-    /* 前の送信の答えを待って並んでいるだけのもの（lastErr 'queued' で、いま送っている途中）は数えない（ログインのあとの裏の保存で「保存 ⚠」が点滅しないように）。
-       答えが来て送れなかったら 'push failed' などになって数える */
-    try{ n = (typeof _outboxMine === 'function') ? _outboxMine().filter(function(x){ return !(x && x.lastErr === 'queued' && typeof _pushBusy === 'function' && _pushBusy(x.key)); }).length : ((typeof outboxCount === 'function') ? outboxCount() : 0); }catch(e){ n = 0; }
+    try{ var ow = outboxWaiting(); n = ow ? ow.length : ((typeof outboxCount === 'function') ? outboxCount() : 0); }catch(e){ n = 0; }
     try{ if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.extraPending === 'function') n += FUNERGY_STATUS.extraPending().length; }catch(e){}   /* v1137：シフトの表・本人確認の情報の送信待ち */
     return n;
   }
@@ -100600,7 +100633,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   ST.canDiag = function(){ var r = role(); try{ if(typeof curStoreLogin !== 'undefined' && curStoreLogin) return false; }catch(e){} return DIAG_ROLES.indexOf(r) >= 0; };
   /* 独立レビュー P2-4：AM・SL は、前の同期センター（どの画面の「診断」からも開けた）の復旧の道具（予算・棚卸の復元とバックアップ・Toast の取り込み）を
      使っていた。画面ごとの診断・クラウドの書き直しは出さず、「この端末の状態」と前の同期センターの中身（中の決まりは前と同じ）だけ */
-  var REPAIR_ROLES = ['am', 'sl'];
+  var REPAIR_ROLES = ['am', 'g4', 'sl'];   /* 2 回目の独立レビュー P3-8：G4（Store Manager）も G3（SL）と同じく */
   ST.canRepair = function(){ var r = role(); try{ if(typeof curStoreLogin !== 'undefined' && curStoreLogin) return false; }catch(e){} return REPAIR_ROLES.indexOf(r) >= 0; };
   ST.canOpen = function(){ return ST.canDiag() || ST.canRepair(); };
 
@@ -100628,21 +100661,30 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   var PULL_MAX = 120000;   /* 独立レビュー P3-2：答えの来ない取り込みで「同期中…」のままにしない（2 分で取れなかったことにする） */
   ST.trackPull = function(p){
     SY.busy++; ST.paintSoon();
-    return Promise.race([
-      Promise.resolve(p).then(function(res){
-        var done = res && res._done;
-        return Promise.resolve(done).catch(function(){}).then(function(){ return res; });
-      }),
-      new Promise(function(r){ setTimeout(function(){ r(null); }, PULL_MAX); })
-    ]).then(function(res){
-      SY.busy = Math.max(0, SY.busy - 1);
+    var tm = null, timedOut = false;
+    var record = function(res){
       var fails = (res && Array.isArray(res._fails)) ? res._fails.slice() : (res ? [] : ['app_state']);
       if(fails.length){
         SY.fail = { at: now(), what: fails }; SY.streak++;
         ST.log('pull', T('取り込めなかった：', 'Could not fetch: ') + fails.map(tableLabel).join('・'), false);
       } else { SY.at = now(); SY.fail = null; SY.streak = 0; }
-      ST.paintSoon(); return res;
+      ST.paintSoon();
+    };
+    var real = Promise.resolve(p).then(function(res){
+      var done = res && res._done;
+      return Promise.resolve(done).catch(function(){}).then(function(){ return res; });
+    });
+    /* 2 分を過ぎてから取り込めたら、そのとき取れたことにする（2 回目の独立レビュー P3-9：遅かっただけの取り込みを取れなかったままにしない） */
+    real.then(function(res){ if(timedOut && res && !(Array.isArray(res._fails) && res._fails.length)) record(res); }, function(){});
+    return Promise.race([
+      real,
+      new Promise(function(r){ tm = setTimeout(function(){ timedOut = true; r(null); }, PULL_MAX); })
+    ]).then(function(res){
+      if(tm){ clearTimeout(tm); tm = null; }
+      SY.busy = Math.max(0, SY.busy - 1);
+      record(res); return res;
     }, function(e){
+      if(tm){ clearTimeout(tm); tm = null; }
       SY.busy = Math.max(0, SY.busy - 1); SY.fail = { at: now(), what: ['app_state'] }; SY.streak++;
       ST.log('pull', T('取り込めなかった（通信）', 'Could not fetch (network)'), false);
       ST.paintSoon(); throw e;
@@ -100772,7 +100814,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     if(s.k === 'saving' || s.k === 'slow') sb.push(esc(s.k === 'slow' ? T('クラウドへの送信に時間がかかっています（この端末には保存されています）', 'Sending is taking a while (saved on this device)') : T('クラウドへ送っています…', 'Sending to the cloud…')));
     if(s.k === 'check') sb.push(esc(T('売上・予算の保存を確かめる必要があります。画面の下の黄色い帯をご覧ください。', 'A sales or budget save needs checking. See the yellow bar at the bottom.')));
     var queued = [];
-    try{ if(typeof _outboxMine === 'function') _outboxMine().forEach(function(x){ queued.push({ label: niceLabel((typeof outboxLabel === 'function') ? outboxLabel(x.key) : x.key, x.key), at: x.ts }); }); }catch(e){}
+    try{ var ow = (ux && typeof ux.outboxWaiting === 'function') ? ux.outboxWaiting() : ((typeof _outboxMine === 'function') ? _outboxMine() : []); ow.forEach(function(x){ queued.push({ label: niceLabel((typeof outboxLabel === 'function') ? outboxLabel(x.key) : x.key, x.key), at: x.ts }); }); }catch(e){}
     ST.extraPending().forEach(function(x){ queued.push(x); });
     if(queued.length){
       sb.push(esc(T('送れていない ' + queued.length + ' 件（この端末には保存されています。つながると自動で送ります）：', queued.length + ' not sent yet (saved on this device; sent automatically when connected):')));
@@ -100873,7 +100915,11 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   }
   ST.autoSync = function(reason, opt){
     opt = opt || {};
-    if(AU.running) return AU.running;
+    if(AU.running){
+      /* 2 回目の独立レビュー P3-6：自動の同期の途中で「今すぐ最新にする」：終わってから手の同期をする（手のときだけの読み直し・送り直しを飛ばさない） */
+      if(opt.manual && !AU.manualRun){ var r0 = AU.running; return r0.catch(function(){}).then(function(){ return ST.autoSync(reason, opt); }); }
+      return AU.running;
+    }
     if(!appShown()) return Promise.resolve('skip');
     if(!online()) return Promise.resolve('offline');
     if(!opt.manual){
@@ -100884,7 +100930,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     var me = whoNow(), page = (typeof curPage !== 'undefined') ? curPage : '';
     var same = function(){ return whoNow() === me && appShown(); };
     var failBefore = SY.fail;
-    AU.n++;
+    AU.n++; AU.manualRun = !!opt.manual;
     AU.running = (async function(){
       try{ await withTimeout(typeof flushOutbox === 'function' ? flushOutbox() : null, 20000); }catch(e){}
       try{ await withTimeout(ST.retryPending(!!opt.manual), 20000); }catch(e){}
@@ -100909,7 +100955,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
       try{ var ux = UXo(); if(ux && ux.bgRefresh) ux.bgRefresh(); }catch(e){}
       return (SY.fail && SY.fail !== failBefore) ? 'fail' : 'ok';
     })().catch(function(){ return 'fail'; }).then(function(r){
-      AU.running = null; AU.last = now();
+      AU.running = null; AU.manualRun = false; AU.last = now();
       if(opt.manual || r === 'fail') ST.log('sync', (opt.manual ? T('手で最新にした', 'Updated by hand') : T('自動の同期', 'Auto sync')) + '：' + (r === 'ok' ? T('最新', 'up to date') : r === 'fail' ? T('取れなかったものがある', 'some could not be fetched') : r), r === 'ok' ? true : (r === 'fail' ? false : null));
       ST.paintSoon();
       return r;
@@ -100948,9 +100994,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   ST.dcStoreChange = function(){ var el = D.getElementById('dc-person'); if(el) el.innerHTML = ST.dcPeopleOpts(); };
   ST.renderDiagCenter = function(){
     if(!ST.canOpen()) return '<div class="card"><p style="color:var(--muted);font-size:13px">' + esc(T('「診断と記録」は GM・CEO・経理・事務Crew が使います。保存・同期・診断の状態は右上で見られます。', 'Diagnostics & records are for GM, CEO, accounting and office crew. The status is shown at the top right.')) + '</p></div>';
-    var r = role(), mgr = ['ceo', 'gm', 'office'].indexOf(r) >= 0, gmceo = (r === 'gm' || r === 'ceo'), full = ST.canDiag();   /* full でない＝AM・SL（復旧の道具だけ） */
+    var r = role(), mgr = ['ceo', 'gm', 'office'].indexOf(r) >= 0, gmceo = (r === 'gm' || r === 'ceo'), full = ST.canDiag();   /* full でない＝AM・G4・SL（復旧の道具だけ） */
     var h = '<div class="section-header"><div><div class="section-title">' + esc(T('診断と記録', 'Diagnostics & records')) + '</div><div class="section-sub">'
-      + esc(T('この端末の保存・同期・診断、Toast の取り直し、点検とこの端末の記録（GM・CEO・経理・事務Crew。AM・SL は前の同期センターの道具まで）', 'This device’s save/sync/check status, Toast re-fetch, checks and records (GM, CEO, accounting, office crew; AM and SL get the former sync center tools)')) + '</div></div></div>';
+      + esc(T('この端末の保存・同期・診断、Toast の取り直し、点検とこの端末の記録（GM・CEO・経理・事務Crew。AM・G4・SL は前の同期センターの道具まで）', 'This device’s save/sync/check status, Toast re-fetch, checks and records (GM, CEO, accounting, office crew; AM, G4 and SL get the former sync center tools)')) + '</div></div></div>';
     /* ① この端末の状態 */
     var pop = D.createElement('div'); ST.fillPop(pop);
     var stBody = pop.innerHTML.replace(/<div class="ux-save-pop-h">[\s\S]*?<\/div>/, '').replace(/<div class="ux-st-btns">[\s\S]*$/, '');
