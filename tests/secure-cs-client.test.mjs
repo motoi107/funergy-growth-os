@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { createHandler } from '../supabase/functions/secure-state/handler.mjs';
-import { makeWorld, URL0, ANON, SERVICE } from './lib/secure-state-world.mjs';
+import { makeWorld, URL0, ANON, SERVICE, SS } from './lib/secure-state-world.mjs';
 
 const source = readFileSync(process.env.UX_INDEX_PATH || new URL('../index.html', import.meta.url), 'utf8');
 function fn(name) {
@@ -122,7 +122,25 @@ function login(c, who) {
 }
 const local = (c, k) => { const v = c.MEM.get(k); return v == null ? undefined : JSON.parse(v); };
 const csKeys = c => [...c.MEM.keys()].filter(k => c.csIsKey(k)).sort();
-const pull = async (c, force) => { const rows = await c._kvPullRows(!!force); const ok = []; c._applyKvRows(rows, ok); c._kvSeenRecord(rows, ok); c.ssSeenRecord(rows, ok); c.csSeenRecord(rows, ok); return rows; };
+// 取り込みはアプリと同じ順（supaPullAllMasters の裏の取り込み：取り込む直前にログインを比べる ssStaleRows → _applyKvRows → 印）
+const apply = (c, rows0) => { const rows = c.ssStaleRows ? c.ssStaleRows(rows0) : rows0; const ok = []; c._applyKvRows(rows, ok); c._kvSeenRecord(rows, ok); c.ssSeenRecord(rows, ok); c.csSeenRecord(rows, ok); return rows; };
+const pull = async (c, force) => apply(c, await c._kvPullRows(!!force));
+// ログアウト（doLogout と同じ順：ssOnLogout のあとにログインの記録を消す）
+const logout = c => { c.ssOnLogout(); c._hwSession = null; vm.runInContext('curRole=null; curRealRole=null; curUserName=null; curStoreLogin=false;', c); };
+// 答えの配送だけを止める（関数・クラウドはもう答えを作った＝Codex の再現と同じ）。止めた順に 1 つずつ放せる
+function holder(c, W) {
+  const held = []; let pred = null;
+  c.fetch = async (u, o) => {
+    const res = await W.fetch(u, o);
+    if (pred && pred(String(u), o)) await new Promise(r => held.push(r));
+    return res;
+  };
+  const ticks = async () => { for (let i = 0; i < 30; i++) await new Promise(r => setTimeout(r, 0)); };
+  return { hold: p => { pred = p; }, n: () => held.length, releaseOne: async () => { held.shift()(); await ticks(); }, release: async () => { pred = null; held.splice(0).forEach(r => r()); await ticks(); } };
+}
+const body = o => { try { return JSON.parse((o && o.body) || '{}'); } catch { return {}; } };
+const ssAsk = (pin, action) => (u, o) => u === SS && body(o).pin_session === pin && (!action || body(o).action === action);
+const until = async f => { for (let i = 0; i < 500 && !f(); i++) await new Promise(r => setTimeout(r, 0)); assert.ok(f(), 'waited'); };
 const state = c => JSON.parse(c.localStorage.getItem('_cs_state') || 'null');
 
 test('GM: every Career Score row (not history) comes from the function, none through the public key; unchanged rows are not sent again', async () => {
@@ -403,4 +421,269 @@ test('the old combined request row folds into the per-person rows with the app�
   // 2 回目：前の統合行は届き直さない（同じ印）
   await pull(c);
   assert.ok(!W.ssLast.cs.rows.some(r => r.key === 'lss_requests'));
+});
+
+test('Codex P1 (#133 6641596764): a GM answer that arrives after the shared device switched to crew is thrown away (scope, rows, marks)', async () => {
+  const W = world({ rls: true, rlsCs: true });
+  const c = tab(W, 't1');
+  await pull(c);   // クルーが先に使った（共有の端末）：本人だけ
+  const before = csKeys(c);
+  assert.deepEqual(before, ['lss_emp_Kai One', 'lss_scores', 'spl_lss_requests_Kai One']);
+  assert.deepEqual(Object.keys(local(c, 'lss_scores')), ['Kai One'], 'the old combined row: only the crew’s part');
+  logout(c); login(c, 'tGM');
+  const h = holder(c, W); h.hold(ssAsk('tGM', 'pull'));
+  const gm = pull(c);
+  await until(() => h.n() === 1);
+  logout(c); login(c, 't1');
+  await pull(c);                     // クルーの取り込みが先に終わる
+  await h.release(); await gm;       // そのあと GM の答えが届く
+  assert.equal(state(c).level, 'scoped');
+  assert.equal(state(c).who, 'Kai One|crew|');
+  assert.deepEqual(state(c).names, ['Kai One']);
+  assert.deepEqual(csKeys(c), before, 'no other person’s Career Score on the device');
+  assert.deepEqual(Object.keys(local(c, 'lss_scores')), ['Kai One'], 'not the GM’s full combined row');
+  assert.equal(c.csSees('Ben S2'), false);
+  assert.equal(c.csLocalWriteOk('lss_emp_Ben S2'), false);
+  assert.deepEqual(Object.keys(c.csSeenGet()).sort(), before, 'marks only for the crew’s rows');
+  assert.equal(W.calls.anonCs, 0);
+  // 次の取り込みもクルーの範囲のまま
+  await pull(c);
+  assert.deepEqual(csKeys(c), before);
+});
+
+test('Codex P1: the GM answer after logout (nobody signed in), and answers in reverse order, change nothing', async () => {
+  const W = world({ rls: true, rlsCs: true });
+  // ログアウトのあとに届く
+  const c = tab(W, 't1');
+  await pull(c);
+  logout(c); login(c, 'tGM');
+  const h = holder(c, W); h.hold(ssAsk('tGM', 'pull'));
+  const gm = pull(c);
+  await until(() => h.n() === 1);
+  logout(c);
+  await h.release(); await gm;
+  assert.equal(state(c), null, 'no scope recorded for nobody');
+  assert.deepEqual(csKeys(c), [], 'no Career Score row (the crew’s copies were cleared at logout)');
+  assert.equal(c.ssState(), 'part');
+  assert.ok(!c.MEM.has('growth_karte') || !JSON.stringify(local(c, 'growth_karte')).includes('payLog'));
+  // 逆順：GM の答えを止めたままクルーも頼み、GM → クルーの順に届く
+  const d = tab(W, 't1');
+  await pull(d);
+  logout(d); login(d, 'tGM');
+  const h2 = holder(d, W); h2.hold((u, o) => u === SS && body(o).action === 'pull');
+  const gm2 = pull(d);
+  await until(() => h2.n() === 1);
+  logout(d); login(d, 't1');
+  const crew2 = pull(d);
+  await until(() => h2.n() === 2);
+  await h2.releaseOne(); await gm2;      // 先に GM
+  assert.ok(!d.MEM.has('lss_emp_Ben S2'), 'the GM answer is not used while the crew is signed in');
+  assert.notEqual(state(d) && state(d).level, 'full');
+  await h2.releaseOne(); await crew2;    // そのあとクルー
+  assert.equal(state(d).level, 'scoped');
+  assert.deepEqual(csKeys(d), ['lss_emp_Kai One', 'lss_scores', 'spl_lss_requests_Kai One']);
+  assert.deepEqual(Object.keys(local(d, 'lss_scores')), ['Kai One']);
+});
+
+test('Codex P1: a sign-in change while the public rows are loading, or before the pulled rows are put on the device, keeps the GM rows off', async () => {
+  const W = world({ rls: true, rlsCs: true });
+  // 取り込む直前（supaPullAllMasters の裏の取り込み）にログインが変わる
+  const c = tab(W, 't1');
+  await pull(c);
+  logout(c); login(c, 'tGM');
+  const rows = await c._kvPullRows(false);
+  assert.ok(rows.some(r => r.key === 'lss_emp_Ben S2'), 'the GM pull itself got everything');
+  logout(c); login(c, 't1');
+  const put = apply(c, rows);
+  assert.ok(!put.some(r => c.csIsKey(r.key) || c.ssIsKey(r.key)), 'stale rows lose the secure keys');
+  assert.equal(put.length, rows.filter(r => !c.csIsKey(r.key) && !c.ssIsKey(r.key)).length, 'public rows are still applied');
+  assert.ok(!c.MEM.has('lss_emp_Ben S2') && !c.MEM.has('lss_scores'));
+  assert.equal(state(c), null, 'the GM scope was cleared at logout and is not put back');
+  // 同じログインのままなら何も外さない
+  const g = tab(W, 'tGM');
+  const rg = await g._kvPullRows(false);
+  assert.equal(g.ssStaleRows(rg), rg);
+  // 公開の行（REST）を待つあいだにログインが変わる
+  const d = tab(W, 't1');
+  await pull(d);
+  logout(d); login(d, 'tGM');
+  const h = holder(d, W); h.hold(u => u.startsWith(URL0 + '/rest/v1/app_state?'));
+  const gm = d._kvPullRows(true);   // 「クラウドから取り込む」（公開の行も全部取る）
+  await until(() => h.n() === 1);
+  logout(d); login(d, 't1');
+  await h.release();
+  const rows2 = await gm;
+  assert.ok(!rows2.some(r => d.csIsKey(r.key) || d.ssIsKey(r.key)), 'no secure row comes out of a pull that went stale');
+  apply(d, rows2);
+  assert.ok(!d.MEM.has('lss_emp_Ben S2'));
+});
+
+test('Codex P1: a GM history pull and a single-key read that arrive after the switch are not kept', async () => {
+  const W = world({ rls: true, rlsCs: true });
+  const c = tab(W, 't1');
+  await pull(c);
+  logout(c); login(c, 'tGM');
+  await pull(c);
+  const h = holder(c, W);
+  // 履歴（開いたときだけ）
+  h.hold(ssAsk('tGM', 'hist'));
+  c._lsRequestDeferredPrefix('spl_lss_history_');
+  await until(() => h.n() === 1);
+  logout(c); login(c, 't1');
+  await h.release();
+  assert.equal(c.lsKeys('spl_lss_history_').length, 0, 'no history arrives on the crew device');
+  assert.equal(c._lsDeferReq['#spl_lss_history_'], undefined, 'the history can be asked again (for the crew)');
+  // 1 つのキー
+  logout(c); login(c, 'tGM');
+  await pull(c);
+  c.MEM.delete('lss_emp_Ben S2');
+  h.hold(ssAsk('tGM', 'get'));
+  const one = c.pullOpKey('lss_emp_Ben S2');
+  await until(() => h.n() === 1);
+  logout(c); login(c, 't1');
+  await h.release();
+  assert.equal(await one, false, 'read as "could not read"');
+  assert.ok(!c.MEM.has('lss_emp_Ben S2'));
+});
+
+
+// ---- 守りを 1 つずつ確かめる（わざと壊して落ちるように）----
+const ticks = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise(r => setTimeout(r, 0)); };
+// IndexedDB を読み終える前（ssIdbReady が待つ）に止めておき、そのあいだにログインを変える
+function idbGate(c) { let open; c._idbState = 'init'; c._idbBootP = new Promise(r => { open = r; }); return async () => { c._idbState = 'ready'; open(); await ticks(); }; }
+
+test('Codex P1: the sign-in token changes on each part (logout, name, store sign-in, PIN mark, email sign-in) and not otherwise', async () => {
+  const W = world();
+  const c = tab(W, 'tGM');
+  const tk = c.ssToken();
+  assert.equal(c.ssStale(tk), false, 'same sign-in');
+  assert.equal(c.ssStale(null), false);
+  c.ssOnLogout(); assert.equal(c.ssStale(tk), true, 'logout alone (same name and PIN mark) makes it stale');
+  const t2 = c.ssToken();
+  vm.runInContext('curUserName="Someone Else";', c); assert.equal(c.ssStale(t2), true, 'name'); vm.runInContext('curUserName="Gina M";', c);
+  vm.runInContext('curStoreLogin={ id:"S1" };', c); assert.equal(c.ssStale(t2), true, 'store sign-in'); vm.runInContext('curStoreLogin=null;', c);
+  c._hwSession = 't1'; assert.equal(c.ssStale(t2), true, 'PIN mark'); c._hwSession = 'tGM';
+  assert.equal(c.ssStale(t2), false, 'back to the same');
+  c._hwSession = null; c._authSession = { access_token: 'x', email: 'a@example.test' };
+  const t3 = c.ssToken();
+  c._authSession = { access_token: 'y', email: 'a@example.test' }; assert.equal(c.ssStale(t3), false, 'a refreshed email session of the same person');
+  c._authSession = { access_token: 'z', email: 'b@example.test' }; assert.equal(c.ssStale(t3), true, 'another email sign-in');
+});
+
+test('Codex P1: each step of the pull drops a stale answer by itself (after the answer, while IndexedDB loads, store 401, no session, old function)', async () => {
+  // 答えのあと（前の版の関数＝Career Score の無い答え）：GM の full で「前に受け取った形」を変えない
+  {
+    const W = world({ old: true });
+    W.set('bonus_eval', { 'E-1|2026-Q3': { ab: 3, _at: 1 } }, T0);
+    const c = tab(W, 't1');
+    await pull(c);
+    assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
+    logout(c); login(c, 'tGM');
+    const h = holder(c, W); h.hold(ssAsk('tGM', 'pull'));
+    const gm = c.ssPull(false);
+    await until(() => h.n() === 1);
+    logout(c); login(c, 't1');
+    await h.release();
+    assert.equal((await gm).stale, true);
+    assert.equal(c.localStorage.getItem('_ss_level'), 'proj', 'the GM level is not recorded');
+    assert.equal(local(c, 'bonus_eval'), undefined);
+  }
+  // Career Score を受け取る途中（IndexedDB を待つあいだ）にログインが変わる：範囲も「前に受け取った形」も変えない
+  {
+    const W = world({ rls: true, rlsCs: true });
+    const c = tab(W, 't1');
+    await pull(c);
+    logout(c); login(c, 'tGM');
+    const open = idbGate(c);
+    const n0 = W.calls.ss;
+    const gm = c.ssPull(false);
+    await until(() => W.calls.ss > n0); await ticks();
+    logout(c); login(c, 't1');
+    await open();
+    assert.equal((await gm).stale, true);
+    assert.equal(state(c), null, 'no GM scope recorded (the crew’s was cleared at logout)');
+    assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
+  }
+  // 店のログイン（401）の答えを待つあいだに GM へ：GM の全部の写しを消さない
+  {
+    const W = world({ rls: true, rlsCs: true });
+    W.set('bonus_eval', { 'E-1|2026-Q3': { ab: 3, _at: 1 } }, T0);
+    const c = tab(W, 'tGM');
+    await pull(c);
+    assert.ok(local(c, 'bonus_eval'));
+    logout(c); login(c, 'tStore');
+    const open = idbGate(c);
+    const n0 = W.calls.ss;
+    const st = c.ssPull(false);
+    await until(() => W.calls.ss > n0); await ticks();
+    logout(c); login(c, 'tGM');
+    await open();
+    assert.equal((await st).stale, true);
+    assert.ok(local(c, 'bonus_eval'), 'the GM copy is kept');
+    assert.equal(c.ssState(), 'full');
+  }
+  // ログインの印の無い人（初期の PIN）：IndexedDB を待つあいだに GM へ
+  {
+    const W = world({ rls: true, rlsCs: true });
+    W.set('bonus_eval', { 'E-1|2026-Q3': { ab: 3, _at: 1 } }, T0);
+    const c = tab(W, 'tGM');
+    await pull(c);
+    logout(c); login(c, 't1'); c._hwSession = null;
+    const open = idbGate(c);
+    const p = c.ssPull(false);
+    await ticks();
+    logout(c); login(c, 'tGM');
+    await open();
+    assert.equal((await p).stale, true);
+    assert.ok(local(c, 'bonus_eval'), 'the GM copy is kept');
+  }
+  // 前の版の関数で、クルーの見せる形を待つあいだに GM へ：GM の全部の写しを見せる形にしない
+  {
+    const W = world({ old: true });
+    W.set('bonus_eval', { 'E-1|2026-Q3': { ab: 3, _at: 1 } }, T0);
+    const c = tab(W, 'tGM');
+    await pull(c);
+    logout(c); login(c, 't1');
+    const open = idbGate(c);
+    const n0 = W.calls.ss;
+    const p = c.ssPull(false);
+    await until(() => W.calls.ss > n0); await ticks();
+    logout(c); login(c, 'tGM');
+    await open();
+    assert.equal((await p).stale, true);
+    assert.ok(local(c, 'bonus_eval'), 'the GM copy is kept');
+    assert.equal(c.ssState(), 'full');
+  }
+});
+
+test('Codex P1: a history answer that waits for IndexedDB, and public rows that bring secure keys (filters ignored), are dropped after the switch', async () => {
+  {
+    // G3（範囲の名前つきの答え＝端末の写しを片づける前に IndexedDB を待つ）の履歴の答えを、クルーに替わってから置かない
+    const W = world({ rls: true, rlsCs: true });
+    const c = tab(W, 't1');
+    await pull(c);
+    logout(c); login(c, 't3');
+    await pull(c);
+    const open = idbGate(c);
+    const n0 = W.calls.ss;
+    c._lsRequestDeferredPrefix('spl_lss_history_');
+    await until(() => W.calls.ss > n0); await ticks(200);
+    assert.equal(c.lsKeys('spl_lss_history_').length, 0, 'still waiting for IndexedDB');
+    logout(c); login(c, 't1');
+    await open();
+    assert.equal(c.lsKeys('spl_lss_history_').length, 0);
+  }
+  {
+    const W = world({ ignoreNot: true });   // 前の版の SQL（公開の鍵で読める）で、サーバーが「外す」条件を読まない
+    const d = tab(W, 't1');
+    await pull(d);
+    logout(d); login(d, 'tGM');
+    const h = holder(d, W); h.hold(u => u.startsWith(URL0 + '/rest/v1/app_state?'));
+    const gm = d._kvPullRows(true);
+    await until(() => h.n() === 1);
+    logout(d); login(d, 't1');
+    await h.release();
+    const rows = await gm;
+    assert.ok(rows.length > 0 && !rows.some(r => d.csIsKey(r.key) || d.ssIsKey(r.key)), 'the REST copies of the secure rows are dropped too');
+  }
 });

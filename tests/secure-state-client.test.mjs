@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { createHandler } from '../supabase/functions/secure-state/handler.mjs';
-import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
+import { makeWorld, URL0, ANON, SERVICE, JWT, SS } from './lib/secure-state-world.mjs';
 
 const source = readFileSync(process.env.UX_INDEX_PATH || new URL('../index.html', import.meta.url), 'utf8');
 function fn(name) {
@@ -87,7 +87,16 @@ function tab(W, setup = {}) {
   return c;
 }
 const local = (c, k) => { const v = c.MEM.get(k); return v == null ? undefined : JSON.parse(v); };
-const pull = async (c, force) => { const rows = await c._kvPullRows(!!force); const ok = []; c._applyKvRows(rows, ok); c._kvSeenRecord(rows, ok); c.ssSeenRecord(rows, ok); return rows; };
+// 取り込みはアプリと同じ順（取り込む直前にログインを比べる ssStaleRows → _applyKvRows → 印）
+const pull = async (c, force) => { const rows0 = await c._kvPullRows(!!force); const rows = c.ssStaleRows ? c.ssStaleRows(rows0) : rows0; const ok = []; c._applyKvRows(rows, ok); c._kvSeenRecord(rows, ok); c.ssSeenRecord(rows, ok); return rows; };
+// 答えの配送だけを止める（関数はもう答えを作った）
+function holder(c, W) {
+  const held = []; let pred = null;
+  c.fetch = async (u, o) => { const res = await W.fetch(u, o); if (pred && pred(String(u), o)) await new Promise(r => held.push(r)); return res; };
+  return { hold: p => { pred = p; }, n: () => held.length, release: async () => { pred = null; held.splice(0).forEach(r => r()); for (let i = 0; i < 30; i++) await new Promise(r => setTimeout(r, 0)); } };
+}
+const ssAsk = (pin, action) => (u, o) => { let b = {}; try { b = JSON.parse((o && o.body) || '{}'); } catch {} return u === SS && b.pin_session === pin && b.action === action; };
+const until = async f => { for (let i = 0; i < 500 && !f(); i++) await new Promise(r => setTimeout(r, 0)); assert.ok(f(), 'waited'); };
 
 test('GM with a PIN session: the karte and bonus rows come from the function (never REST), and merge as before', async () => {
   const W = world();
@@ -566,4 +575,53 @@ test('the app, the function and the SQL use the same key rule', async () => {
   const c = tab(world());
   const keys = ['growth_karte', 'karte_pin', 'bonus_q', 'spl_bonus_q_2026-Q3', 'spl_bonus_q_', 'spl_bonus_q_a&b', 'spl_bonus_q_a b', 'spl_bonus_q_' + 'x'.repeat(41), 'spl_bonus_q_四', 'bonus_eval_rule', 'tasks_all', 'Growth_karte'];
   for (const k of keys) assert.equal(c.ssIsKey(k), ssIsKey(k), k);
+});
+
+test('Codex P1 (#131 6635761741): a late GM answer on a shared device that switched to crew does not bring back other people\'s pay and bonus', async () => {
+  const W = world({ rls: true });
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  assert.equal(c.ssState(), 'part');
+  c.ssOnLogout(); c._hwSession = 'tGM'; c.curRole = 'gm';
+  const h = holder(c, W); h.hold(ssAsk('tGM', 'pull'));
+  const gm = pull(c);
+  await until(() => h.n() === 1);
+  c.ssOnLogout(); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  await h.release(); await gm;
+  assert.equal(c.ssState(), 'part');
+  assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
+  assert.deepEqual(Object.keys(local(c, 'growth_karte')['E-2'] || {}), ['hireDate'], 'only the projection (hire date) for another person');
+  assert.ok(!JSON.stringify(local(c, 'growth_karte')).includes('payLog'), 'no pay history');
+  assert.equal(local(c, 'bonus_eval'), undefined, 'no bonus evaluations');
+  assert.equal(W.calls.anonSecret, 0);
+  // GM の答えがログアウトのあとに届く（だれもログインしていない）
+  const d = tab(W); d._hwSession = 't1'; d.curRole = 'crew';
+  await pull(d);
+  d.ssOnLogout(); d._hwSession = 'tGM'; d.curRole = 'gm';
+  const h2 = holder(d, W); h2.hold(ssAsk('tGM', 'pull'));
+  const gm2 = pull(d);
+  await until(() => h2.n() === 1);
+  d.ssOnLogout(); d._hwSession = null; d.curRole = '';
+  await h2.release(); await gm2;
+  assert.equal(d.ssState(), 'part');
+  assert.equal(local(d, 'bonus_eval'), undefined);
+  assert.ok(!JSON.stringify(local(d, 'growth_karte') || {}).includes('payLog'));
+});
+
+test('Codex P1: a karte PIN check answered after the switch does not open the karte for the next person', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 'tGM'; c.curRole = 'gm';
+  const inp = { value: '4321', focus() {} }, er = { style: {}, textContent: '' };
+  c.__els.kartePinIn = inp; c.__els.kartePinErr = er;
+  const h = holder(c, W); h.hold(ssAsk('tGM', 'pin_check'));
+  const p = c.karteTryUnlock();
+  await until(() => h.n() === 1);
+  c.ssOnLogout(); c._hwSession = 't1'; c.curRole = 'crew';
+  await h.release(); await p;
+  assert.notEqual(c._karteUnlocked, true);
+  // 同じ人のままなら今までどおり開く
+  c.ssOnLogout(); c._hwSession = 'tGM'; c.curRole = 'gm';
+  await c.karteTryUnlock();
+  assert.equal(c._karteUnlocked, true);
 });
