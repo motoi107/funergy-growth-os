@@ -55,7 +55,7 @@ const uSetTimeout = (fn, ms) => { const h = setTimeout(fn, ms); if (h && h.unref
 const J = x => JSON.parse(JSON.stringify(x));   // VM の中の値を比べられる形に
 
 /* ---------------------------------------------------------------- 送信待ちの列（op_outbox） */
-const OUTBOX = () => [varLine('var _outboxMem = null'), fnFrom('_outboxParse'), fnFrom('_outboxGet'), fnFrom('_outboxSet')].join('\n');
+const OUTBOX = () => [fnFrom('_outboxGet'), fnFrom('_outboxSet')].join('\n');
 function outboxCtx(storage, idbMem) {
   const queued = [];
   const ctx = ctxOf({ localStorage: storage, _idbState: idbMem ? 'ready' : 'unavailable', _IDB_MEM: idbMem || null,
@@ -97,6 +97,20 @@ test('送信待ち：localStorage がいっぱいでも捨てない（前は黙�
   assert.deepEqual(J(outboxCtx(ls, idb)._outboxGet()), [], '次のタブも空');
 });
 
+test('送信待ち（独立レビュー P3-1）：IndexedDB の別の名前は、localStorage に最後に書けた時刻より新しいときだけ使う', () => {
+  const ls = fakeStorage(true), idb = new Map();
+  const c = outboxCtx(ls, idb);
+  c._outboxSet([{ key: 'old' }]);   // 書けない → 別の名前（時刻つき）
+  ls.full = false;
+  const c2 = outboxCtx(ls, idb);
+  c2._outboxSet([{ key: 'new' }]);   // 書けた → localStorage の時刻を進め、別の名前を消す
+  assert.ok(Number(ls.getItem('_op_outbox_at')) > 0);
+  idb.set('op_outbox_overflow', JSON.stringify({ at: 1, list: [{ key: 'old' }] }));   // 消す前に閉じられた・ほかのタブの古い写し
+  const c3 = outboxCtx(ls, idb);
+  assert.deepEqual(J(c3._outboxGet().map(x => x.key)), ['new'], '古い別の名前は使わない');
+  assert.equal(idb.has('op_outbox_overflow'), false, '古い別の名前は消す');
+});
+
 test('送信待ち：IndexedDB も使えない端末では、このタブのあいだだけ覚える', () => {
   const ls = fakeStorage(true);
   const c = outboxCtx(ls, null);
@@ -108,7 +122,7 @@ test('送信待ち：IndexedDB も使えない端末では、このタブのあ�
 test('小さな記録（シフト・本人確認の情報の送信待ちの印）：書けなくてもこのタブでは覚える・書けたら localStorage に戻る', () => {
   const ls = fakeStorage(true);
   const c = ctxOf({ localStorage: ls });
-  vm.runInContext([varLine('var _SMALL_MEM = {}'), fnFrom('_smallGet'), fnFrom('_smallSet')].join('\n'), c);
+  vm.runInContext([fnFrom('_smallGet'), fnFrom('_smallSet')].join('\n'), c);
   assert.equal(c._smallSet('_shiftplan_pending', '[1]'), false);
   assert.equal(c._smallGet('_shiftplan_pending'), '[1]');
   assert.ok(c.window._smallLsFail > 0);
@@ -121,14 +135,14 @@ test('小さな記録（シフト・本人確認の情報の送信待ちの印�
 test('直した時刻（v1136）：書けなくてもこのタブでは覚える（送信待ちのあいだの取り込みで手元を残せる）', () => {
   const ls = fakeStorage(true);
   const c = ctxOf({ localStorage: ls, isOpSyncKey: () => true, _opMergeDef: () => null, _cjson: x => JSON.stringify(x) });
-  vm.runInContext([varLine('var PEND_EDIT_KEY'), varLine('var _pendEditMem = null'), fnFrom('_pendEditAtRaw'), fnFrom('_pendEditAtSetRaw'), fnFrom('_pendEditAtAll'), fnFrom('_pendEditAtMark'), fnFrom('_pendEditAtDrop')].join('\n'), c);
+  vm.runInContext([varLine('var PEND_EDIT_KEY'), fnFrom('_pendEditAtRaw'), fnFrom('_pendEditAtSetRaw'), fnFrom('_pendEditAtAll'), fnFrom('_pendEditAtMark'), fnFrom('_pendEditAtDrop')].join('\n'), c);
   c._pendEditAtMark('evaluations', '{"a":1}', '{"a":2}');
   assert.ok(Number(c._pendEditAtAll().evaluations) > 0);
   c._pendEditAtDrop('evaluations');
   assert.deepEqual(J(c._pendEditAtAll()), {});
   // ふだん（書ける）は localStorage に
   const ls2 = fakeStorage(false), c2 = ctxOf({ localStorage: ls2, isOpSyncKey: () => true, _opMergeDef: () => null, _cjson: x => JSON.stringify(x) });
-  vm.runInContext([varLine('var PEND_EDIT_KEY'), varLine('var _pendEditMem = null'), fnFrom('_pendEditAtRaw'), fnFrom('_pendEditAtSetRaw'), fnFrom('_pendEditAtAll'), fnFrom('_pendEditAtMark')].join('\n'), c2);
+  vm.runInContext([varLine('var PEND_EDIT_KEY'), fnFrom('_pendEditAtRaw'), fnFrom('_pendEditAtSetRaw'), fnFrom('_pendEditAtAll'), fnFrom('_pendEditAtMark')].join('\n'), c2);
   c2._pendEditAtMark('evaluations', '{"a":1}', '{"a":2}');
   assert.ok(JSON.parse(ls2.getItem('_pend_edit_at')).evaluations > 0);
 });
@@ -140,57 +154,177 @@ test('グレードの一緒の保存（ghTxn）は直した時刻を _pendEditAt
 });
 
 /* ---------------------------------------------------------------- シフトの表（shift_plans） */
-function shiftCtx() {
-  const ls = fakeStorage(false), notifs = [], posts = [];
-  let postOk = false, postGate = null;
-  const c = ctxOf({ localStorage: ls, _supaBooting: false, STORES: [{ id: 'F01', name: '店A' }], t: (ja) => ja,
-    addNotif: n => notifs.push(n), getShiftPlan: () => ({ status: '下書き', cells: { mon_L_1: 'A' } }),
-    SUPABASE_URL: 'https://x.invalid', supaHeaders: () => ({}), _lsWriteVerified: () => true,
-    fetch: async () => { c.fetched = (c.fetched || 0) + 1; return { ok: true, json: async () => [] }; } });
-  vm.runInContext([varLine('var _SMALL_MEM = {}'), fnFrom('_smallGet'), fnFrom('_smallSet'), varLine('var SHIFTPLAN_PENDING_KEY'),
-    fnFrom('shiftPlanPendingList'), fnFrom('_shiftPlanPendingSet'), fnFrom('shiftPlanPendingOf'), fnFrom('_shiftPlanPendingAdd'), fnFrom('_shiftPlanPendingDone'),
-    fnFrom('shiftPlanLabel'), fnFrom('pushShiftPlan'), varLine('var _shiftRetryBusy'), fnFrom('retryShiftPlanPending'), fnFrom('shiftPlanNotifyPublished'), fnFrom('pullShiftPlan')].join('\n'), c);
-  c._shiftPlanPost = async (s, w, plan) => { posts.push([s, w, plan]); if (postGate) await postGate; return postOk; };
-  return { c, ls, notifs, posts, setOk: v => { postOk = v; }, gate: p => { postGate = p; } };
+/* クラウドの shift_plans の 1 行の代わり（GET・POST）。fail＝読めない／書けない */
+function shiftCtx(opts) {
+  opts = opts || {};
+  const ls = fakeStorage(false), notifs = [], posts = [], local = new Map(), cloud = new Map();
+  let postOk = false, postGate = null, getOk = true, getGate = null;
+  const c = ctxOf({ localStorage: ls, _supaBooting: false, STORES: [{ id: 'F01', name: '店A' }], t: (ja) => ja, showToast: () => {},
+    addNotif: n => notifs.push(n), getShiftPlan: (s, w) => (local.has(s + '_' + w) ? JSON.parse(local.get(s + '_' + w)) : null),
+    SUPABASE_URL: 'https://x.invalid', supaHeaders: () => ({}), _lsWriteVerified: (k, j) => { local.set(k.replace(/^shiftplan_/, ''), j); return true; },
+    _cjson: x => JSON.stringify(x), _saveWho: () => c.me,
+    fetch: async (u) => {
+      c.fetched = (c.fetched || 0) + 1;
+      if (getGate) await getGate;
+      if (!getOk) return { ok: false, json: async () => ({}) };
+      const m = /store_id=eq\.([^&]+)&week=eq\.([^&]+)/.exec(u); const k = decodeURIComponent(m[1]) + '_' + decodeURIComponent(m[2]);
+      return { ok: true, json: async () => (cloud.has(k) ? [JSON.parse(cloud.get(k))] : []) };
+    } });
+  c.me = opts.me || 'p:A';
+  vm.runInContext([fnFrom('_smallGet'), fnFrom('_smallSet'), varLine('var SHIFTPLAN_PENDING_KEY'), varLine('var SHIFTPLAN_BASE_KEY'),
+    fnFrom('_shiftFp'), fnFrom('_shiftSmallGet'), fnFrom('_shiftSmallSet'), fnFrom('_shiftBaseAll'), fnFrom('_shiftBaseOf'), fnFrom('_shiftBaseSet'), fnFrom('_shiftWho'),
+    fnFrom('shiftPlanPendingList'), fnFrom('shiftPlanPendingMine'), fnFrom('_shiftPlanPendingSet'), fnFrom('shiftPlanPendingOf'), fnFrom('_shiftPlanPendingAdd'), fnFrom('_shiftPlanPendingDone'),
+    fnFrom('shiftPlanLabel'), fnFrom('_shiftConflictNote'), fnFrom('_shiftPlanGet'), fnFrom('pushShiftPlan'), varLine('var _shiftRetryBusy'), fnFrom('retryShiftPlanPending'), fnFrom('shiftPlanNotifyPublished'), fnFrom('pullShiftPlan')].join('\n'), c);
+  c._shiftPlanPost = async (s, w, plan) => { posts.push([s, w, plan]); if (postGate) await postGate; if (postOk) cloud.set(s + '_' + w, JSON.stringify({ status: plan.status || '下書き', cells: plan.cells || {} })); return postOk; };
+  const save = (plan, notify) => { local.set('F01_11/1', JSON.stringify(plan)); return c.pushShiftPlan('F01', '11/1', plan, true, notify ? { notify: true } : undefined); };
+  return { c, ls, notifs, posts, local, cloud, save, setOk: v => { postOk = v; }, gate: p => { postGate = p; }, getOk: v => { getOk = v; }, getGate: p => { getGate = p; } };
 }
+const plan = (status, who) => ({ status, cells: { mon_L_1: who } });
 
-test('シフト：送れなかったら送信待ち（\'deferred\'）・読み込みでは端末の値を上書きしない・送れたら公開の知らせ（1 回）', async () => {
+test('シフト：送れなかったら送信待ち・クラウドがそのままなら読み込みでも端末の値を残す・送れたら公開の知らせ（1 回）', async () => {
   const S = shiftCtx();
+  S.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'Old')));
+  assert.equal(await S.c.pullShiftPlan('F01', '11/1'), true, '最初に読んだクラウドの中身を覚える');
   S.setOk(false);
-  assert.equal(await S.c.pushShiftPlan('F01', '11/1', { cells: {} }, true, { notify: true }), 'deferred');
-  assert.deepEqual(J(S.c.shiftPlanPendingList().map(x => [x.s, x.w, x.notify])), [['F01', '11/1', 1]]);
-  assert.equal(await S.c.pullShiftPlan('F01', '11/1'), 'pending', '送れていない変更があるあいだはクラウドの値で上書きしない');
-  assert.equal(S.c.fetched || 0, 0);
-  await tick(10);   // 読み込みのときの送り直し（まだつながらない）が終わるのを待つ
-  assert.equal(S.c.shiftPlanPendingList().length, 1);
+  assert.equal(await S.save(plan('公開済', 'Mine'), true), 'deferred');
+  assert.deepEqual(J(S.c.shiftPlanPendingList().map(x => [x.s, x.w, x.notify, x.who])), [['F01', '11/1', 1, 'p:A']]);
+  assert.equal(await S.c.pullShiftPlan('F01', '11/1'), 'pending', 'クラウドが送れなかった変更の前のままなら端末の値を残す');
+  assert.equal(JSON.parse(S.local.get('F01_11/1')).cells.mon_L_1, 'Mine');
+  await tick(10);
   S.setOk(true);
   assert.equal(await S.c.retryShiftPlanPending(), 1);
   assert.deepEqual(J(S.c.shiftPlanPendingList()), []);
+  assert.equal(JSON.parse(S.cloud.get('F01_11/1')).cells.mon_L_1, 'Mine');
   assert.equal(S.notifs.filter(n => n.title === 'シフトが公開されました').length, 1, '送れたときに 1 回知らせる');
   assert.equal(await S.c.retryShiftPlanPending(), 0);
   assert.equal(S.notifs.length, 1);
+});
+
+test('シフト（独立レビュー P1）：送れなかったあとにほかの端末で変わった（公開された）ら、送り直しで上書きしない・クラウドの内容にする', async () => {
+  const S = shiftCtx();
+  S.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'Old')));
+  await S.c.pullShiftPlan('F01', '11/1');
+  S.setOk(false);
+  await S.save(plan('下書き', 'A-offline'), false);
+  S.cloud.set('F01_11/1', JSON.stringify(plan('公開済', 'GM')));   // GM がほかの端末で直して公開
+  S.setOk(true);
+  const n0 = S.posts.length;
+  assert.equal(await S.c.retryShiftPlanPending(), 0);
+  assert.equal(S.posts.length, n0, '送らない');
+  assert.deepEqual(J(JSON.parse(S.cloud.get('F01_11/1'))), plan('公開済', 'GM'), 'クラウドの公開はそのまま');
+  assert.deepEqual(J(JSON.parse(S.local.get('F01_11/1'))), plan('公開済', 'GM'), '端末もクラウドの内容に');
+  assert.deepEqual(J(S.c.shiftPlanPendingList()), []);
+  // 読み込みでも同じ（送れなかったあと、ほかの端末で変わっていたらクラウドの内容に）
+  const S2 = shiftCtx();
+  S2.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'Old')));
+  await S2.c.pullShiftPlan('F01', '11/1');
+  S2.setOk(false); await S2.save(plan('下書き', 'A-offline'), false);
+  S2.cloud.set('F01_11/1', JSON.stringify(plan('公開済', 'GM')));
+  assert.equal(await S2.c.pullShiftPlan('F01', '11/1'), true);
+  assert.equal(JSON.parse(S2.local.get('F01_11/1')).cells.mon_L_1, 'GM');
+  assert.deepEqual(J(S2.c.shiftPlanPendingList()), []);
+});
+
+test('シフト（独立レビュー P1）：送信待ちは保存した人のもの。ほかの人のログインのあいだは送らず、数えない', async () => {
+  const S = shiftCtx({ me: 'p:A' });
+  S.setOk(false);
+  await S.save(plan('下書き', 'A'), false);
+  S.c.me = 'p:B'; S.setOk(true);
+  assert.equal(S.c.shiftPlanPendingMine().length, 0);
+  assert.equal(await S.c.retryShiftPlanPending(), 0);
+  assert.equal(S.cloud.has('F01_11/1'), false, 'B のあいだに A の保存は送らない');
+  S.c.me = 'p:A';
+  assert.equal(await S.c.retryShiftPlanPending(), 1, 'A がまた入ったら送る');
+});
+
+test('シフト（独立レビュー P2-1）：送っている途中・読み始めたあとに送り終えたときは、読み込みで端末の値を上書きしない', async () => {
+  const S = shiftCtx();
+  S.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'Old')));
+  await S.c.pullShiftPlan('F01', '11/1');
+  S.setOk(true);
+  let open; S.gate(new Promise(r => { open = r; }));
+  const p = S.save(plan('下書き', 'New'), false);   // 遅い送信
+  assert.equal(await S.c.pullShiftPlan('F01', '11/1'), 'pending', '送っている途中');
+  assert.equal(JSON.parse(S.local.get('F01_11/1')).cells.mon_L_1, 'New');
+  open(); await p; S.gate(null);
+  // 読み始めたあとに送り終えた
+  let openGet; S.getGate(new Promise(r => { openGet = r; }));
+  const pr = S.c.pullShiftPlan('F01', '11/1');
+  await tick(2);
+  await S.save(plan('下書き', 'Newer'), false);
+  S.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'Newer')));
+  openGet(); S.getGate(null);
+  assert.equal(await pr, 'pending');
+  assert.equal(JSON.parse(S.local.get('F01_11/1')).cells.mon_L_1, 'Newer');
+});
+
+test('シフト：もうクラウドに同じ中身がある（送れたのに答えが届かなかった）なら、送らずに送信待ちを外す', async () => {
+  const S = shiftCtx();
+  S.setOk(false);
+  await S.save(plan('下書き', 'x'), false);
+  S.cloud.set('F01_11/1', JSON.stringify(plan('下書き', 'x')));
+  S.setOk(true);
+  const n0 = S.posts.length;
+  assert.equal(await S.c.retryShiftPlanPending(), 1);
+  assert.equal(S.posts.length, n0);
+  assert.equal(S.c.shiftPlanPendingList().length, 0);
+});
+
+test('シフト：送れたら、その中身を土台として覚える（あとの保存が送れなかったときに、ほかの端末の変更と取り違えない）', async () => {
+  const S = shiftCtx();
+  S.setOk(true);
+  assert.equal(await S.save(plan('下書き', 'P1'), false), true);   // 読まずに最初の保存（新しい週）
+  S.setOk(false);
+  await S.save(plan('下書き', 'P2'), false);
+  S.setOk(true);
+  assert.equal(await S.c.retryShiftPlanPending(), 1);
+  assert.equal(JSON.parse(S.cloud.get('F01_11/1')).cells.mon_L_1, 'P2', '自分が送った P1 の上の変更なので送る');
+  // 送っているあいだのあとの保存が送れなかった：土台はいま送れた中身
+  const S2 = shiftCtx();
+  S2.setOk(true);
+  let open; S2.gate(new Promise(r => { open = r; }));
+  const p1 = S2.save(plan('下書き', 'Q1'), false);
+  await tick(2);
+  S2.c._shiftPlanPendingAdd('F01', '11/1', false); S2.local.set('F01_11/1', JSON.stringify(plan('下書き', 'Q2')));
+  open(); await p1; S2.gate(null);
+  assert.equal(await S2.c.retryShiftPlanPending(), 1);
+  assert.equal(JSON.parse(S2.cloud.get('F01_11/1')).cells.mon_L_1, 'Q2');
 });
 
 test('シフト：前に送り始めた送信が成功しても、そのあとの保存の送信待ちは消さない', async () => {
   const S = shiftCtx();
   let open; S.gate(new Promise(r => { open = r; }));
   S.setOk(true);
-  const p = S.c.pushShiftPlan('F01', '11/1', { cells: { a: 1 } }, true);
+  const p = S.save(plan('下書き', 'a'), false);
   await tick(5);
   S.c._shiftPlanPendingAdd('F01', '11/1', false);   // 送っているあいだに、別の保存が送れなかった
   open(); assert.equal(await p, true);
   assert.equal(S.c.shiftPlanPendingList().length, 1, 'あとの保存は送信待ちに残る');
 });
 
-test('シフト：画面を描くたびに送り直さない（15 秒あける）', async () => {
+test('シフト：画面を描くたびに送り直さない（15 秒あける）・読めないときは何もしない', async () => {
   const S = shiftCtx();
   S.setOk(false);
-  await S.c.pushShiftPlan('F01', '11/1', { cells: {} }, true);
+  await S.save(plan('下書き', 'x'), false);
   const n0 = S.posts.length;
   await S.c.pullShiftPlan('F01', '11/1'); await tick(5);
   await S.c.pullShiftPlan('F01', '11/1'); await tick(5);
   await S.c.pullShiftPlan('F01', '11/1'); await tick(5);
   assert.equal(S.posts.length - n0, 1);
+  S.getOk(false);
+  assert.equal(await S.c.pullShiftPlan('F01', '11/1'), null);
+  const n1 = S.posts.length;
+  assert.equal(await S.c.retryShiftPlanPending(), 0);
+  assert.equal(S.posts.length, n1, '読めないときは送らない');
+});
+
+test('シフト（P3-4）：前の公開の知らせは、送れたときにまだ公開のままのときだけ', async () => {
+  const S = shiftCtx();
+  S.setOk(false);
+  await S.save(plan('公開済', 'x'), true);
+  S.setOk(true);
+  await S.save(plan('下書き', 'y'), false);   // 代わりの人を入れて下書きに戻した
+  assert.equal(S.notifs.length, 0);
 });
 
 test('シフトの公開：届いてから「公開しました」と知らせ。届かなければ「まだ送れていません」・知らせない', () => {
@@ -223,21 +357,51 @@ test('給与と連絡先：答えを見る（前は送れなくても「従業�
 });
 
 /* ---------------------------------------------------------------- 本人確認の情報（ob-private） */
-test('本人確認の情報：送れなかったら送信待ちに入れ、送れたら外す。提出は送れるまで止める', async () => {
-  const ls = fakeStorage(false);
-  let ok = false;
-  const c = ctxOf({ localStorage: ls, t: ja => ja, obSecretOf: () => ({ ssn: 'x' }), authObPriv: async () => ({ ok }) });
-  vm.runInContext([varLine('var _SMALL_MEM = {}'), fnFrom('_smallGet'), fnFrom('_smallSet'), varLine('var OB_SECRET_PENDING_KEY'), fnFrom('obSecretPendingList'), fnFrom('_obSecretPendingSet'), fnFrom('obPushSecret')].join('\n'), c);
-  assert.equal(await c.obPushSecret({ id: 'o1', inviteToken: 't' }), 'deferred');
-  assert.deepEqual(J(c.obSecretPendingList().map(x => x.id)), ['o1']);
-  assert.ok(!/ssn/.test(ls.getItem('_ob_secret_pending') || ''), '送信待ちの印に中身は入れない');
-  ok = true;
-  assert.equal(await c.obPushSecret({ id: 'o1', inviteToken: 't' }), true);
-  assert.deepEqual(J(c.obSecretPendingList()), []);
+function obCtx() {
+  const ls = fakeStorage(false), sent = [];
+  let ok = false, sec = { ssn: 'x' };
+  const obs = [{ id: 'o1', inviteToken: 't' }];
+  const c = ctxOf({ localStorage: ls, t: ja => ja, obSecretOf: () => sec, authObPriv: async (p) => { sent.push(p); return { ok }; }, _cjson: x => JSON.stringify(x), _saveWho: () => c.me, ls: () => obs });
+  c.me = 'p:A';
+  vm.runInContext([fnFrom('_smallGet'), fnFrom('_smallSet'), varLine('var OB_SECRET_PENDING_KEY'), varLine('var OB_SECRET_TTL'), fnFrom('_obSecretFp'), fnFrom('_obSecretWho'),
+    fnFrom('obSecretPendingList'), fnFrom('obSecretPendingMine'), fnFrom('_obSecretPendingSet'), fnFrom('obPushSecret'), varLine('var _obSecretRetryBusy'), fnFrom('retryObSecretPending')].join('\n'), c);
+  return { c, ls, sent, setOk: v => { ok = v; }, setSec: v => { sec = v; } };
+}
+test('本人確認の情報：送れなかったら送信待ち（中身は入れない）・送れたら外す。提出は送れるまで止める', async () => {
+  const O = obCtx();
+  assert.equal(await O.c.obPushSecret({ id: 'o1', inviteToken: 't' }), 'deferred');
+  assert.deepEqual(J(O.c.obSecretPendingList().map(x => [x.id, x.who])), [['o1', 'p:A']]);
+  assert.ok(!/ssn/.test(O.ls.getItem('_ob_secret_pending') || ''), '送信待ちの印に中身は入れない');
+  O.setOk(true);
+  assert.equal(await O.c.obPushSecret({ id: 'o1', inviteToken: 't' }), true);
+  assert.deepEqual(J(O.c.obSecretPendingList()), []);
   const sub = fnFrom('obWizSubmit');
   assert.match(sub, /Promise\.resolve\(obPushSecret\(ob\)\)\.then/);
   assert.match(sub, /if \(r !== true\)\{ alert\(/, '送れなければ提出完了にしない');
   assert.match(sub, /本人確認の情報を送れませんでした/);
+});
+test('本人確認の情報（独立レビュー P2-2）：自動では送り直さない。「今すぐ送る」でも同じ人・中身がそのまま・24 時間以内だけ', async () => {
+  const O = obCtx();
+  await O.c.obPushSecret({ id: 'o1', inviteToken: 't' });
+  O.setOk(true);
+  const n0 = O.sent.length;
+  assert.equal(await O.c.retryObSecretPending(false), 0, '自動の同期では送らない');
+  assert.equal(O.sent.length, n0);
+  O.c.me = 'p:B';
+  assert.equal(await O.c.retryObSecretPending(true), 0, 'ほかの人は送らない');
+  assert.equal(O.c.obSecretPendingMine().length, 0);
+  O.c.me = 'p:A'; O.setSec({ ssn: 'changed' });
+  assert.equal(await O.c.retryObSecretPending(true), 0, '中身が変わったら送らない（送信待ちから外す）');
+  assert.equal(O.c.obSecretPendingList().length, 0);
+  O.setSec({ ssn: 'x' }); O.setOk(false);
+  await O.c.obPushSecret({ id: 'o1', inviteToken: 't' }); O.setOk(true);
+  assert.equal(await O.c.retryObSecretPending(true), 1, '同じ人・同じ中身なら送る');
+  // 24 時間を過ぎたものは外す
+  O.setOk(false); await O.c.obPushSecret({ id: 'o1', inviteToken: 't' });
+  const l = J(O.c.obSecretPendingList()); l[0].at = Date.now() - 25 * 3600000; O.c._obSecretPendingSet(l);
+  assert.equal(O.c.obSecretPendingMine().length, 0);
+  await O.c.retryObSecretPending(false);
+  assert.equal(O.c.obSecretPendingList().length, 0);
 });
 
 /* ---------------------------------------------------------------- 請求書の復旧 */
@@ -343,11 +507,20 @@ function stEnv(opts) {
   return { ctx, ST: ctx.window.FUNERGY_STATUS, listeners };
 }
 
-test('「診断と記録」に入れるのは GM・CEO・経理・事務Crew（店舗のログインは不可）', () => {
+test('「診断と記録」：画面ごとの診断は GM・CEO・経理・事務Crew。AM・SL は前の同期センターの道具だけ（独立レビュー P2-4）。店舗のログインは不可', () => {
   for (const r of ['ceo', 'gm', 'office', 'office_crew']) assert.equal(stEnv({ role: r }).ST.canDiag(), true, r);
   for (const r of ['am', 'sl', 'crew', 'chef', 'g3', 'g4']) assert.equal(stEnv({ role: r }).ST.canDiag(), false, r);
+  for (const r of ['am', 'sl']) assert.equal(stEnv({ role: r }).ST.canOpen(), true, r);
+  for (const r of ['crew', 'chef', 'g4']) assert.equal(stEnv({ role: r }).ST.canOpen(), false, r);
+  const sc = { syncCenterBodyHtml: () => '<div id="sc-body">前の同期センター</div>', fstClock: () => '00:00' };
+  const doc = (E) => { E.ctx.document.createElement = () => ({ innerHTML: '', classList: { contains: () => false }, querySelectorAll: () => [] }); return E; };
+  const am = doc(stEnv({ role: 'am', extra: sc })).ST.renderDiagCenter();
+  assert.match(am, /sc-body/, 'AM には前の同期センターの道具');
+  assert.doesNotMatch(am, /openTipDateDebug|runLaborDiag|runSupaPullAll/, 'AM には画面ごとの診断・クラウドの書き直しを出さない');
+  const gm = doc(stEnv({ role: 'gm', extra: Object.assign({ getVisibleStores: () => [], getEmployees: () => [], STORES: [] }, sc) })).ST.renderDiagCenter();
+  assert.match(gm, /openTipDateDebug/); assert.match(gm, /runSupaPullAll/);
   const E = stEnv({ role: 'gm' }); E.ctx.curStoreLogin = true;
-  assert.equal(E.ST.canDiag(), false);
+  assert.equal(E.ST.canOpen(), false);
   assert.match(E.ST.renderDiagCenter(), /GM・CEO・経理・事務Crew が使います/);
 });
 
@@ -404,6 +577,47 @@ test('自動の同期：送信待ちを送る → 送り直す → 取り込む 
   assert.deepEqual(order, ['flush', 'shift', 'ob', 'pull', 'stores', 'bg']);
 });
 
+test('自動の同期（独立レビュー P2-3）：読み直しの直前にもう一度、入力中か確かめる・売上を保存しうる読み直しは自動ではしない', async () => {
+  const order = [];
+  let typing = false;
+  const ux = { saveState: () => ({ k: '' }), save: {}, failedList: () => [], _typing: () => typing, bgRefresh: () => order.push('bg') };
+  const E = stEnv({ ux, extra: { pageSyncScope: p => ({ dashboard: 'dash', hr: 'hr' })[p] || null, _syncMeta: sc => ({ pull: () => { order.push('pull:' + sc); } }) } });
+  E.ctx.supaPullAllMasters = () => { typing = true; return Promise.resolve([]); };   // 取り込んでいるあいだに打ち始めた
+  E.ctx.curPage = 'hr';
+  await E.ST.autoSync('timer');
+  assert.ok(!order.includes('pull:hr'), '入力中になったら画面の読み直しはしない');
+  typing = false; order.length = 0;
+  E.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  E.ctx.curPage = 'dashboard';
+  E.ST.auto.running = null;
+  await E.ST.autoSync('timer');
+  assert.ok(!order.includes('pull:dash'), '自動ではダッシュボードの売上の取り直しをしない');
+  assert.ok(order.includes('bg'), '取り込んだデータで描き直す');
+  order.length = 0;
+  await E.ST.autoSync('manual', { manual: true });
+  assert.ok(order.includes('pull:dash'), '「今すぐ最新にする」ではする');
+  order.length = 0; E.ctx.mnReload = () => order.push('mn');
+  E.ST.pageRefresher('menu', false)();
+  assert.ok(!order.includes('mn'), '自動ではメニューの出数を全部取り直さない（P3-5）');
+  E.ST.pageRefresher('menu', true)();
+  assert.ok(order.includes('mn'));
+});
+
+test('本人確認の情報の送り直しは「今すぐ送る」のときだけ（自動の同期では送らない）', async () => {
+  const calls = [];
+  const E = stEnv({ extra: { retryObSecretPending: m => { calls.push(m); return Promise.resolve(0); }, flushOutbox: async () => {}, retryShiftPlanPending: async () => 0 } });
+  E.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  await E.ST.autoSync('timer');
+  await E.ST.sendNow();
+  assert.deepEqual(J(calls), [false, true]);
+});
+
+test('診断（独立レビュー P3-3）：送っている途中で待った・まだ取っていない・閉じられた送信待ちは「何度送っても送れない」に数えない', () => {
+  const E = stEnv({ extra: { _outboxMine: () => [{ key: 'a', attempts: 5, lastErr: 'queued' }, { key: 'b', attempts: 4, lastErr: 'deferred: not fetched yet' }, { key: 'c', attempts: 3, lastErr: 'interrupted' }, { key: 'd', attempts: 3, lastErr: 'HTTP 503' }] } });
+  const it = E.ST.diagState().items.find(x => x.k === 'stuck');
+  assert.equal(it && it.n, 1);
+});
+
 test('自動の同期：途中で別の人になったら、その先（描き直しなど）はしない', async () => {
   const order = [];
   const E = stEnv({ ux: { saveState: () => ({ k: '' }), save: {}, failedList: () => [], _who: () => E.who, bgRefresh: () => order.push('bg') } });
@@ -420,11 +634,11 @@ test('右上：3 つ（保存・同期・診断）の入れ物があり、前の
   assert.doesNotMatch(html, /id="topbar-sync"/);
 });
 
-test('「設定 › 診断と記録」：ナビは GM・CEO・経理・事務Crew だけ・2 つの renderPage に同じ case', () => {
+test('「設定 › 診断と記録」：ナビは GM・CEO・経理・事務Crew と AM・SL（復旧の道具だけ）・2 つの renderPage に同じ case', () => {
   const navLine = html.split('\n').find(l => /\{ *id: *'diag_center'/.test(l));
   assert.ok(navLine, 'NAV_ITEMS');
   const roles = (navLine.match(/roles: *\[([^\]]*)\]/) || [])[1] || '';
-  assert.deepEqual(roles.split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean).sort(), ['ceo', 'gm', 'office', 'office_crew']);
+  assert.deepEqual(roles.split(',').map(s => s.trim().replace(/'/g, '')).filter(Boolean).sort(), ['am', 'ceo', 'gm', 'office', 'office_crew', 'sl']);
   assert.equal(html.split("case 'diag_center':").length - 1, 2);
 });
 

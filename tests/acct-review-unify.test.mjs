@@ -247,14 +247,14 @@ test('reading the latest: a failed or hanging read is shown as this device’s c
   c.fetchImpl = () => Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve([{ key: 'spl_invoices_F01', value: [] }]) });
   assert.equal(await run(c, 'arPullLatest(true)'), false);
   let html = run(c, 'renderAcctReview()');
-  assert.match(html, /クラウドから読み直せませんでした。この端末の写しを出しています/); assert.match(html, /もう一度読む/); assert.ok(!/最終取得/.test(html));
+  assert.match(html, /クラウドから読み直せませんでした。この端末の写しを出しています/); assert.match(html, /取り直す/); assert.ok(!/最終取得/.test(html));   // v1137：「もう一度読む」→「取り直す」（手で押すものの名前をそろえた）
   // opening again within a minute does not read again (no loop on failure)
   const n = c.FETCHES.length; await run(c, 'arPullLatest(false)'); assert.equal(c.FETCHES.length, n);
   // a good read
   c.fetchImpl = () => Promise.resolve({ ok: true, json: () => Promise.resolve([{ key: 'spl_invoices_F02', value: [INV({ id: 'c1', storeId: 'F02', date: '2026/10/19', total: 50 })] }]) });
   assert.equal(await run(c, 'arPullLatest(true)'), true);
   html = run(c, 'renderAcctReview()');
-  assert.match(html, /最終取得 \d\d:\d\d/); assert.match(html, /最新を取得/); assert.match(html, /2 件 ・ 合計 \$150\.00/);
+  assert.match(html, /最終取得 \d\d:\d\d/); assert.ok(!/最新を取得/.test(html), 'v1137：読めたときは「最新を取得」を出さない（自動で読み直す）'); assert.match(html, /2 件 ・ 合計 \$150\.00/);
   // a read that never answers is stopped after 15 s and shown as not read
   c.fetchImpl = (u, o) => new Promise((res, rej) => { o.signal.addEventListener('abort', () => rej(new Error('aborted'))); });
   const p = run(c, 'arPullLatest(true)');

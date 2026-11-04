@@ -558,8 +558,8 @@ test('⑤ the same keep-local rule is used for app_settings and master tables in
 });
 
 /* ------------------------------------------------------------------ 版 */
-test('version 1136 in the page and the service worker; the tip question no longer says “on this device”', () => {
-  assert.match(SRC, /const APP_VERSION = '1136';/);
-  assert.match(SW, /const SW_BUILD = '1136';/);
+test('version 1136 or later in the page and the service worker (the same number); the tip question no longer says “on this device”', () => {
+  const a = Number((SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1]), b = Number((SW.match(/const SW_BUILD = '(\d+)';/) || [])[1]);
+  assert.ok(a >= 1136, String(a)); assert.equal(a, b);   // v1137 で版を上げても落ちないように
   assert.ok(!SRC.includes('この端末で確定した記録はありません'));
 });

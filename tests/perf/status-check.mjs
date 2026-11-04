@@ -194,8 +194,13 @@ await ctl('/__reset'); await ctl('/__net?rtt=0&bps=0');
   ok('H2 スマホで右上がはみ出さない（ログアウトのボタンまで見える・横スクロールなし）', lay.lo <= 390 && lay.right <= 390 && lay.sw <= 390, lay);
   await page.click('#ux-save'); await sleep(300);
   const pt = await popText(page);
-  ok('H3 G3 には「詳しく」が出ない（状態だけ）', /保存/.test(pt) && !/詳しく/.test(pt), pt.slice(0, 120));
-  ok('H4 G3 のナビに「診断と記録」が無い', await page.evaluate(() => !navPageAllowed('diag_center')));
+  /* 独立レビュー P2-4：店長（SL）・AM は前の同期センターの復旧の道具だけ（画面ごとの診断・クラウドの書き直しは無い） */
+  ok('H3 店長には「詳しく」があり、押すと「診断と記録」（復旧の道具だけ）', /保存/.test(pt) && /詳しく/.test(pt), pt.slice(0, 120));
+  await page.locator('#ux-save-pop [data-st-act="more"]').click(); await sleep(900);
+  const sl = await page.evaluate(() => ({ page: curPage, nav: navPageAllowed('diag_center'), text: document.getElementById('main-content').textContent, tip: !!document.querySelector('#main-content [onclick*="openTipDateDebug"]'), push: !!document.querySelector('#main-content [onclick*="runSupaPushAllConfirm"]') }));
+  ok('H4 店長の「診断と記録」：この端末の状態と前の同期センターの道具・画面ごとの診断とクラウドの書き直しは無い', sl.page === 'diag_center' && sl.nav && /この端末の状態/.test(sl.text) && /Toast の取り直し/.test(sl.text) && !sl.tip && !sl.push, { page: sl.page, nav: sl.nav, tip: sl.tip, push: sl.push });
+  const slw = await page.evaluate(() => document.documentElement.scrollWidth);
+  ok('H4b 店長の「診断と記録」：390px で横スクロールなし', slw <= 390, slw);
   await page.mouse.click(200, 600);
   await page.evaluate(() => go('shift_admin')); await sleep(800);
   ok('H5 シフト作成に「最新に更新」「診断」「保存状況チェック」が無い', await page.evaluate(() => !/最新に更新|保存状況チェック/.test(document.getElementById('main-content').textContent) && !document.querySelector('#main-content [onclick*="availDiag"]')));
