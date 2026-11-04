@@ -35,7 +35,7 @@
 
 - PIN のログインの印（本文の `pin_session`）があれば、それを work-requests の `whoami` に送って確かめてもらう（PIN を確かめるコードは公開しないので、この関数には入れない）。役割は `wr_actor`：CEO・GM・経理・事務Crew は manager_auth（社員 ID）、ほかは GM・CEO が確かめた写し（`wr_people`）。退職した人は断られる。同じ印は 60 秒覚える。
 - PIN の印が無く、メールのログイン（Authorization の Bearer）があれば、Auth の利用者 → manager_auth（役割と社員 ID）。退職・停止は断る。管理者ページ（成長カルテ）はこちら。
-- 両方あるときは PIN（その端末の前にいる人）。PIN の印が断られたら、メールには落ちない。断られた印は 30 秒覚える（同じ印で何度も work-requests を呼ばない）。
+- 両方あるときは PIN（その端末の前にいる人）。PIN の印が断られたときも、**PIN を確かめられないとき（work-requests の 404・503・通信の失敗・読めない答え）も**、メールには落ちない（503 `auth_unavailable`。11 の Codex の P1）。断られた印は 30 秒覚える（同じ印で何度も work-requests を呼ばない）。アプリも PIN の印があるときはメールのログインを一緒に送らない。
 - メールのログインかは、Bearer が JWT で role が `authenticated` かで決める（公開の鍵（role anon）や新しい形の鍵（JWT でない）はメールのログインでない。前は「関数の設定の公開の鍵と同じ文字か」で決めていたので、文字が違うと公開の鍵をメールのログインとして断っていた）。
 - 退職の確かめ（メール）は work-requests の `wr_emp_out` と同じ：表の status・data の status が退職、または OS を止めた人。
 - work-requests を呼べない（無い・PIN を確かめられない）・Auth が 5xx か 429：503 `auth_unavailable`（アプリは今までどおり REST）。
@@ -143,3 +143,18 @@ proj の中身は、今の画面が CEO・GM 以外に見せているものだ�
 - **P2-4**：今までどおり REST の道では、見せる形の写しを送れた → 端末の写しの様子で、道によらず止める。
 - P3（直した）：査定の四半期の読み方・目標を見せる範囲（店の書き換え）・メールの退職の確かめ・読み込みの URL の文字・確認の SQL・RLS が OFF で残っている決まり・見せる形のたびに成長カルテを読む・前の版の平文の PIN の写し・断られた印の覚え・試験（本物の成長カルテの合流で試す）。
 - P3（残した・8）：退職の印の覚え 60 秒・PIN の止めは起動ごと・Realtime の消した知らせのキーの名前。
+
+## 11. Codex のレビュー（#131 `01f33ac`・コメント 6627869364）の P1 と直し（11/04・Claude）
+
+- **P1**：`actorOf` は PIN の印があっても、PIN を確かめられない（work-requests の 404・503・通信の失敗・読めない答え＝`auth_unavailable`）とき、
+  Authorization にメールのログインがあればメールで決めていた。アプリ（`ssCall`）は PIN の印とメールのログインを同じ要求に載せるので、
+  共有の端末に GM のメールのログインが残っていると、Crew の PIN の要求が GM の権限（level full）になり、ほかの人の給与の履歴・面談が返った
+  （Codex が本物の handler と合成データで再現。Claude の 2 回のレビューは見落とした）。
+- 直し：PIN の印がある要求は PIN の結果だけで決める（確かめられなければ 503 `auth_unavailable`＝アプリは今までどおり REST。SQL のあとは対象のキーは来ない）。
+  アプリも PIN の印があるときはメールのログインを送らない（公開の鍵だけ）。メールだけのログイン（管理者ページ）は今までどおり。
+- 試験：`tests/secure-state-server.test.mjs` に work-requests の失敗 5 通り（404・503・通信の失敗・読めない答え・`me` の無い答え）× 5 つの操作
+  （pull・get 2・put・pin_check）で、Crew の PIN と GM のメールを同じ要求に載せても断られ、ほかの人の中身が出ないこと。`01f33ac` の handler では 4 通りが落ちる。
+  `tests/secure-state-client.test.mjs` に共有の端末の試験（PIN だけを送る・どの失敗でも Crew の端末に給与が来ない）。前の試験の
+  「work-requests が無いときメールで full」は、PIN の印のない要求に直した（PIN の印がある要求は 503）。
+- 入れる一式の関数（`deploy/secure-state-v1139/2_関数_secure-state_index.ts`）も作り直した（handler ＋ 起動の行。試験で同じことを確かめる）。
+
