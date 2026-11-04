@@ -12078,6 +12078,7 @@ async function syncMasterToSupabase(key, val){
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
+    if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
     var _outVal = (typeof _opCloudVal==='function') ? _opCloudVal(key, val) : ((key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val);   /* v1128：人ごとに分けた行も */
     return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
@@ -12134,7 +12135,21 @@ function supaErrorText(){
    時間は 45 秒＋大きさ（1 秒あたり 20KB の回線でも送り終えられるだけ。5 分まで）。データベースの 1 文の上限は数秒なので、
    45 秒たって答えが無い書き込みは、ふつうはサーバーに届いていない */
 function _supaWriteMs(n){ n=+n||0; return Math.min(300000, 45000 + Math.floor(n/20)); }
-async function supaUpsert(table, rows){
+async function supaUpsert(table, rows, _noSs){
+  /* v1139：成長カルテ・賞与のキーの行は関数 secure-state で書く（読んだ行によらず書く：今までの upsert と同じ）。ほかの行は今までどおり */
+  if(!_noSs && table==='app_state' && typeof ssRouted==='function'){
+    var _sl=Array.isArray(rows) ? rows : [rows], _sec=_sl.filter(function(r){ return r && ssRouted(r.key); });
+    if(_sec.length){
+      var _rst=_sl.filter(function(r){ return !(r && ssRouted(r.key)); }), _all=true;
+      for(var _si=0;_si<_sec.length;_si++){
+        var _sx=await ssPutRow(_sec[_si].key, _sec[_si].value);
+        if(_sx===SS_REST){ _rst.push(_sec[_si]); continue; }
+        if(!(_sx && _sx.ok)){ _all=false; _lastSupaError={ table:'secure-state', status:0, body:String(_sx), at:new Date().toISOString() }; }
+      }
+      if(_rst.length && (await supaUpsert(table, _rst, true))===false) _all=false;
+      return _all;
+    }
+  }
   var ctl=null, tm=null, body=JSON.stringify(rows), timedOut=false;
   try { ctl=new AbortController(); tm=setTimeout(function(){ timedOut=true; try{ ctl.abort(); }catch(e){} }, _supaWriteMs(body.length)); } catch(e){ ctl=null; }
   try {
@@ -12292,6 +12307,254 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
      この端末で直して送った・ほかの経路（Realtime・読み直し）で書き換わった・IndexedDB の古い値が戻った、などで
      端末の文字が変わっていれば、クラウドの印が同じでも取り直す（今までと同じ取り込み＝合流・上書きを通す）。
    ============================================================ */
+/* ============================================================
+   v1139（段階 2b の 1 つ目）：成長カルテ・賞与のキーは関数 secure-state を通して読み書きする（docs/SECURE_STATE_V1139_JA.md）
+   ------------------------------------------------------------
+   【前】どの端末もログインのたびに app_state を全部取っていた。成長カルテ（給与・ボーナスの履歴・面談の記録）・賞与の査定・
+     確定した支給額・成長カルテの PIN（平文）も、公開の鍵（アプリの中にある）で、だれでも読めて書けた。
+   【いま】対象のキー（SS_KEYS・spl_bonus_q_）は、REST（公開の鍵）で取らず・書かず、関数 secure-state に頼む。
+     関数が、だれか（PIN のログインの印・メールのログイン）と役割を確かめて、
+       CEO・GM：全部（full）／ほかの在籍の人：画面が使う形だけ（proj：入社日・見てよい人の「次期の目標」・査定の四半期）／
+       ログインの印の無い人・店舗のログイン：何もなし（none）
+     を返す。行は app_state のまま（移さない）。公開の鍵で読めなくするのは、全部の端末を 1139 にしたあとの SQL（20261108090000）。
+   【関数がまだ無いとき】（404・work-requests を呼べない）今までどおり REST（v1138 と同じ）。
+   【PIN のログインの印が無いとき】（初期 PIN のまま）CEO・GM は今までどおり REST。ほかの人は取らない（端末の写しも消す）。
+   【端末の写し】CEO・GM でなくなった端末（店舗の共有の端末など）は、対象のキーの写しを消す（送れていない変更があるキーは残す）。 */
+var SS_FN = '/functions/v1/secure-state';
+var SS_KEYS = ['growth_karte','karte_pin','karte_bonus_config','bonus_q','bonus_eval','bonus_store_q','bonus_rules','bonus_pool_extra'];
+var SS_PREFIX = ['spl_bonus_q_'];
+var SS_PROJ = ['growth_karte','karte_bonus_config'];
+var SS_LEVEL_KEY = '_ss_level';   /* この端末だけ：前に受け取った形（full・proj・none） */
+var SS_SEEN_KEY = '_ss_seen';     /* この端末だけ：{ key: 関数の印#端末の文字の印 } */
+var SS_REST = { rest:1 };         /* 関数が無い：今までどおり REST で */
+var _ss = { legacy:null };        /* legacy：{ id（そのときのログイン）, at }（関数が無い・PIN の印を確かめられない。10 分たったらまた試す） */
+var SS_PREFIX_RE = /^spl_bonus_q_[0-9A-Za-z_-]{1,40}$/;   /* spl_bonus_q_<四半期>（2026-Q3 など）。関数・SQL と同じ決まり */
+function ssIsKey(k){
+  if(typeof k!=='string' || !k || k.length>200) return false;
+  if(SS_KEYS.indexOf(k)>=0) return true;
+  return SS_PREFIX_RE.test(k);
+}
+/* 今のログイン：PIN の印（window._hwSession）とメールのログイン（invInSession）。無ければ null */
+function ssSess(){
+  var pin=null, em=null;
+  try{ if(typeof window!=='undefined' && typeof window._hwSession==='string' && window._hwSession) pin=window._hwSession; }catch(e){}
+  try{ var s=(typeof invInSession==='function') ? invInSession() : ((typeof window!=='undefined' && window._authSession) || null); if(s && s.access_token) em=s; }catch(e){}
+  if(!pin && !em) return null;
+  return { pin:pin, em:em, id:(pin ? 'p:'+pin.slice(-24) : '')+'|'+(em ? 'e:'+String(em.access_token).slice(-24) : '') };
+}
+function ssLegacyNow(S){ var L=_ss.legacy; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+/* このキーを関数に頼むか（ログインの印があり、関数が無いと分かっていない） */
+function ssRouted(key){ if(!ssIsKey(key)) return false; var S=ssSess(); return !!S && !ssLegacyNow(S); }
+function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
+function ssLevelSet(v){
+  var prev=ssLevelGet();
+  try{ localStorage.setItem(SS_LEVEL_KEY, v); }catch(e){}
+  /* 「設定 › 診断と記録」に残す（変わったときだけ。中身は出さない） */
+  if(prev!==v){ try{ if(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function'){
+    var L={ full:['全部','all'], proj:['本人の画面に使う分だけ','only what your screens use'], none:['受け取らない','none'] }[v] || [v, v];
+    FUNERGY_STATUS.log('store', (typeof t==='function') ? t('成長カルテ・賞与：サーバー（secure-state）から '+L[0]+'（この端末の写しも合わせました）', 'Growth chart / bonus: from the server (secure-state), '+L[1]+' (this device copy updated)') : ('成長カルテ・賞与：'+L[0]));
+  } }catch(e){} }
+}
+function ssSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(SS_SEEN_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function ssSeenSet(o){ try{ localStorage.setItem(SS_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
+/* 端末の写しの様子（人ではなく端末）：full＝本物の全部の値（v1138 から上げた端末の写しも）／part＝見せる形・消したあと・まだ受け取っていない。
+   独立レビュー（121da1c）P1-2：前は「前に受け取った形」（人によらない）で送るかを決めていたので、前の人が proj の端末で GM の直した分を
+   黙って捨てていた。いまは、だれが送ってよいかはサーバーが決め（403 なら送信待ちに残る）、端末は「写しが本物か」だけを見る */
+var SS_STATE_KEY = '_ss_state';
+var SS_MARK_KEY = '_ss_mark';     /* { keep:{key:1}（part のあいだも本物の値のまま残した送れていないキー）, unsafe:{key:時刻}（part のあいだに直した＝送らない）, shared:1（店舗のログイン・CEO・GM 以外の人も使った端末） } */
+var SS_UNSENT_KEY = '_ss_unsent'; /* 送らずに外した入力の控え（新しい 3 件まで） */
+function ssState(){
+  var v=''; try{ v=localStorage.getItem(SS_STATE_KEY)||''; }catch(e){}
+  if(v==='full' || v==='part') return v;
+  /* まだ決めていない（v1138 から上げた端末）：対象のキーの写しがあれば v1138 の本物の値。無ければまだ受け取っていない */
+  try{ var ks=(typeof lsKeys==='function') ? lsKeys() : []; for(var i=0;i<ks.length;i++){ if(ssIsKey(ks[i]) && ks[i]!=='karte_pin') return 'full'; } }catch(e){}
+  return 'part';
+}
+function ssStateSet(v){ try{ localStorage.setItem(SS_STATE_KEY, v); }catch(e){} }
+function ssMarkGet(){
+  var o=null; try{ o=JSON.parse(localStorage.getItem(SS_MARK_KEY)||'null'); }catch(e){ o=null; }
+  if(!(o && typeof o==='object' && !Array.isArray(o))) o={};
+  if(!(o.keep && typeof o.keep==='object')) o.keep={};
+  if(!(o.unsafe && typeof o.unsafe==='object')) o.unsafe={};
+  return o;
+}
+function ssMarkSet(m){ try{ localStorage.setItem(SS_MARK_KEY, JSON.stringify(m||{})); }catch(e){} }
+function ssPending(k){ try{ return (typeof _lsCloudPending==='function') ? !!_lsCloudPending(k) : false; }catch(e){ return true; } }
+/* IndexedDB を読み終えてから消す・置く（独立レビュー P2-3：読み終える前は IndexedDB の写しが一覧に出ず、あとで戻っていた） */
+async function ssIdbReady(){ try{ if(typeof _idbState!=='undefined' && _idbState==='init' && typeof _idbBootP!=='undefined' && _idbBootP) await _idbBootP; }catch(e){} }
+var _ssWarned = {};
+function ssWarnOnce(id, ja, en){
+  if(_ssWarned[id]) return; _ssWarned[id]=1;
+  try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){}
+  try{ if(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', (typeof t==='function') ? t(ja, en) : ja); }catch(e){}
+}
+/* 送ってよいか（端末の写しが本物か）。false＝送らない（送信待ちに残す）。本物でない写しの上で直した分は、全部の値を受け取ったときに控えに移して外す */
+function ssWriteGate(key){
+  if(!ssIsKey(key)) return true;
+  if(ssState()==='full') return true;
+  var m=ssMarkGet();
+  if(m.keep[key] && !m.unsafe[key]) return true;
+  if(!m.unsafe[key]){ m.unsafe[key]=Date.now(); ssMarkSet(m); }
+  ssWarnOnce('hold', 'この端末の成長カルテ・賞与は最新を受け取れていません。直した内容は送りません（「最新に更新」で受け取れたら、もう一度入力してください）',
+    'This device has not received the latest growth chart / bonus data. Your change is not sent (refresh, then enter it again).');
+  return false;
+}
+/* part にする：対象のキーの写しを消す（keep に入れたキーは呼ぶ側が置く）。送れていない変更のあるキーは残し、本物の値なら keep に */
+function ssToPart(except){
+  var m=ssMarkGet(), seen=ssSeenGet(), ch=false, ks=[];
+  try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
+  ks.forEach(function(k){
+    if(!ssIsKey(k) || (except && except.indexOf(k)>=0)) return;
+    if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; return; }
+    try{ _lsRawDel(k); }catch(e){}
+    if(seen[k]!=null){ delete seen[k]; ch=true; }
+  });
+  if(ch) ssSeenSet(seen);
+  m.shared=1; ssMarkSet(m); ssStateSet('part');
+}
+/* 全部の値を受け取って置く直前（REST の取り込みも読めたあと）：本物でない写しを消し、その上で直した分は控えに移して送信待ちから外す */
+function ssFreshCleanup(){
+  var m=ssMarkGet(), dropped=[];
+  Object.keys(m.unsafe).forEach(function(k){
+    var txt=null; try{ txt=_lsStoreGet(k); }catch(e){}
+    if(txt!=null) dropped.push({ key:k, at:Number(m.unsafe[k])||0, dropped:Date.now(), text:String(txt).slice(0, 200000) });
+    try{ _lsRawDel(k); }catch(e){}
+    try{ if(typeof _outboxRemove==='function') _outboxRemove(k); }catch(e){}
+  });
+  if(dropped.length){
+    var old=[]; try{ old=JSON.parse(localStorage.getItem(SS_UNSENT_KEY)||'[]'); }catch(e){ old=[]; }
+    try{ localStorage.setItem(SS_UNSENT_KEY, JSON.stringify((Array.isArray(old) ? old : []).concat(dropped).slice(-3))); }catch(e){}
+    ssWarnOnce('dropped', '成長カルテ・賞与の一部だけの写しの上で直した内容 '+dropped.length+' 件は送らずに外しました（この端末の「'+SS_UNSENT_KEY+'」に控え）。もう一度入力してください',
+      dropped.length+' change(s) made on a partial copy of the growth chart / bonus data were not sent (a copy is kept on this device). Please enter them again.');
+  }
+  var ks=[]; try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
+  ks.forEach(function(k){ if(ssIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });   /* 見せる形・前の写しを全部の値と合流させない */
+  ssSeenSet({}); ssMarkSet(m.shared ? { shared:1 } : {}); ssStateSet('full');
+}
+/* ログアウト：共有の端末（ほかの人も使った）では、CEO・GM の全部の値の写しを残さない（送れていない変更のあるキーは残す） */
+function ssOnLogout(){
+  try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
+}
+/* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
+async function ssCall(payload, retried){
+  var S=ssSess();
+  if(!S) return { none:true };
+  var body=Object.assign({}, payload); delete body.ms;
+  if(S.pin) body.pin_session=S.pin;
+  /* PIN の印があるときはメールのログインを一緒に送らない（PIN で決まる。Codex の P1：PIN の確かめ先が落ちたとき別の人の権限にしない） */
+  var hdr={ apikey:SUPABASE_ANON, Authorization:'Bearer '+((S.em && !S.pin) ? S.em.access_token : SUPABASE_ANON), 'Content-Type':'application/json' };
+  var ctl=null, tm=null, timed=false;
+  try{ ctl=new AbortController(); tm=setTimeout(function(){ timed=true; try{ ctl.abort(); }catch(e){} }, payload.ms || 45000); }catch(e){ ctl=null; }
+  var r;
+  try{ r=await fetch(SUPABASE_URL+SS_FN, { method:'POST', headers:hdr, body:JSON.stringify(body), signal:ctl ? ctl.signal : undefined }); }
+  catch(e){ if(tm) clearTimeout(tm); return { net:true, timeout:timed }; }
+  var j=null; try{ j=await r.json(); }catch(e){ j=null; }
+  if(tm) clearTimeout(tm);
+  if((r.status===404 && !(j && j.error)) || (r.status===503 && j && j.error==='auth_unavailable')){ _ss.legacy={ id:S.id, at:Date.now() }; return { legacy:true }; }
+  /* メールのログインの期限切れ：1 回だけ取り替えてやり直す（PIN の印のあるときは PIN で決まるので取り替えない） */
+  if(r.status===401 && !retried && !S.pin && S.em && S.em.refresh_token && typeof invInSessionRefresh==='function'){
+    var ns=null; try{ ns=await invInSessionRefresh(S.em); }catch(e){ ns=null; }
+    if(ns) return ssCall(payload, true);
+  }
+  /* この関数の答えでない（ゲートウェイ・Verify JWT が ON・別の物が答えた）：関数が無いのと同じに（独立レビュー P2-1。断りも含めて関数の答えには fn:1） */
+  if(!(j && j.fn===1)){
+    if(r.status>=500) return { status:r.status, error:'' };   /* 関数が落ちた（入っている）：失敗（REST に切り替えない） */
+    _ss.legacy={ id:S.id, at:Date.now() }; return { legacy:true };
+  }
+  if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
+  return { ok:true, j:j };
+}
+/* ログイン・「最新に更新」の取り込み（_kvPullRows から）。返す：
+   { rest:true }（今までどおり REST で取る）／{ rest:false, rows:[…], ver:{…} }（REST から外す。rows は合流して取り込む行＝full のとき。
+   fresh：端末の写しが part だった＝置く前に ssFreshCleanup） */
+async function ssPull(force){
+  var S=ssSess();
+  var gmHint=false; try{ gmHint=['gm','ceo'].indexOf(typeof curRole!=='undefined' ? curRole : '')>=0 && !(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){}
+  if(!S){
+    if(gmHint) return { rest:true };                     /* PIN の印の無い CEO・GM：今までどおり */
+    await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} };
+  }
+  if(ssLegacyNow(S)) return { rest:true };
+  var part=(ssState()==='part'), seen=ssSeenGet(), have={};
+  if(!force) Object.keys(seen).forEach(function(k){   /* 「クラウドから取り込む」は印によらず全部。part の端末は見せる形の印（p:）だけ（全部の値の印 h: とは同じにならないので、全部の値は全部届く） */
+    var s=String(seen[k]), c=s.indexOf('#');
+    if(c>0 && ssIsKey(k) && (!part || s.indexOf('p:')===0) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c);
+  });
+  var r=await ssCall({ action:'pull', have:have, ms:60000 });
+  if(r.legacy) return { rest:true };
+  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} }; }
+  if(r.status===401){
+    /* CEO・GM：端末の写しは消さない（PIN の確かめの一時的な失敗も 401 になる）。今までどおり REST（SQL のあとは対象のキーは来ない） */
+    if(gmHint) return { rest:true, fail:true };
+    await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} };   /* 店舗のログイン・期限切れ */
+  }
+  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま） */
+  var j=r.j, level=(j.level==='full' || j.level==='proj') ? j.level : 'none';
+  var rows=Array.isArray(j.rows) ? j.rows.filter(function(x){ return x && ssIsKey(x.key) && x.key!=='karte_pin' && typeof x.v==='string'; }) : [];
+  var ver={}; (Array.isArray(j.index) ? j.index : []).forEach(function(x){ if(x && ssIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
+  if(level==='full'){
+    ssLevelSet('full');
+    /* 置くのは REST の取り込みも読めたあと（_kvPullRows）。part の端末は、その直前に見せる形・前の写しを消す（ssFreshCleanup） */
+    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver };
+  }
+  /* proj・none：見せる形をそのまま置く（合流しない・送らない）。ほかの対象のキーの写しは消す。
+     送れていない変更のあるキー（共有の端末で GM が直して送れていない分）は、消さない・見せる形で上書きしない（独立レビュー P1-1） */
+  await ssIdbReady();
+  ssToPart(level==='proj' ? SS_PROJ : null);
+  var nseen={}, m=ssMarkGet();
+  if(level==='proj'){
+    var got={}; rows.forEach(function(x){ got[x.key]=x; });
+    SS_PROJ.forEach(function(k){
+      if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; return; }
+      if(got[k]){ var t=JSON.stringify(got[k].value==null ? {} : got[k].value); if(_lsWriteVerified(k, t)){ try{ _lsMarkFetched(k); }catch(e){} nseen[k]=got[k].v+'#'+_kvFp(_lsStoreGet(k)); } }
+      else if(ver[k] && seen[k]!=null && String(seen[k]).indexOf(ver[k]+'#')===0) nseen[k]=seen[k];   /* 変わっていない */
+      else if(!ver[k]){ try{ _lsRawDel(k); }catch(e){} }   /* クラウドに無い */
+    });
+    ssMarkSet(m);
+  }
+  ssSeenSet(nseen); ssLevelSet(level);
+  return { rest:false, rows:[], ver:{} };
+}
+/* full の行を取り込めたら印を残す（_kvSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
+function ssSeenRecord(rows, okKeys){
+  try{
+    var m=rows && rows._ss; if(!m || !m.ver) return;
+    try{ if(typeof _idbState!=='undefined' && _idbState==='init') return; }catch(e){}
+    var seen=ssSeenGet(), next={}, ok={}, got={};
+    (okKeys||[]).forEach(function(k){ ok[k]=1; });
+    (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
+    Object.keys(m.ver).forEach(function(k){
+      if(ok[k]) next[k]=m.ver[k]+'#'+_kvFp(_lsStoreGet(k));
+      else if(!got[k] && seen[k]!=null && String(seen[k]).indexOf(m.ver[k]+'#')===0) next[k]=seen[k];
+    });
+    ssSeenSet(next);
+  }catch(e){ console.warn('ss seen', e); }
+}
+/* 1 つのキーを読む（_fetchOpValue・_fetchOpRow・pullOpKey）。返す：{exists, value, updatedAt}／undefined（読めなかった）／SS_REST／_OP_READ_TMO */
+async function ssGetRow(key, tmo){
+  var r=await ssCall({ action:'get', key:key, ms:tmo || 15000 });
+  if(r.legacy) return SS_REST;
+  if(r.none) return SS_REST;
+  if(r.net && r.timeout && tmo && typeof _OP_READ_TMO!=='undefined') return _OP_READ_TMO;
+  if(!r.ok) return undefined;
+  return { exists:!!r.j.exists, value:r.j.exists ? r.j.value : null, updatedAt:(r.j.updated_at==null ? null : String(r.j.updated_at)) };
+}
+/* 書く。expect：undefined＝読んだ行によらず（今までの upsert と同じ）／{exists, updatedAt}。返す：{ok, updatedAt}／'conflict'／'badts'／'fail'／'forbidden'／SS_REST */
+async function ssPutRow(key, value, expect){
+  var p={ action:'put', key:key, value:value, ms:45000 };
+  if(expect) p.expect={ exists:!!expect.exists, updated_at:(expect.exists ? (expect.updatedAt==null ? null : expect.updatedAt) : null) };
+  var r=await ssCall(p);
+  if(r.legacy || r.none) return SS_REST;
+  if(r.ok) return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at) };
+  if(r.status===409) return 'conflict';
+  if(r.status===400) return 'badts';
+  if(r.status===403){
+    ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
+      'This account cannot save growth chart / bonus data (kept in the unsent list).');
+    return 'forbidden';
+  }
+  return 'fail';
+}
 var KV_SEEN_KEY = 'kv_seen_v1';                                   /* この端末だけ（クラウドへ送らない・クラウドから受け取らない） */
 /* 端末に置いた文字の印（同じ文字なら同じ印）。長さ＋64 ビット（2 本の 32 ビット）。暗号ではない（くらべるためだけ） */
 function _kvFp(s){
@@ -12383,16 +12646,21 @@ async function _kvFetchKeys(keys){
 async function _kvPullRows(force){
   var t0=Date.now();
   try{ if(typeof _idbBootP!=='undefined' && _idbBootP) await Promise.race([_idbBootP, new Promise(function(r){ setTimeout(r, 3000); })]); }catch(e){}   /* 端末に何があるかを IndexedDB から読み終えてから決める */
+  var _ssP=(typeof ssPull==='function') ? ssPull(force).catch(function(e){ console.warn('ss pull', e); return { rest:true, fail:true }; }) : null;   /* v1139：成長カルテ・賞与のキーは関数 secure-state から（行の一覧と並べて頼む） */
   var seen=_kvSeenGet();
   var _fa=Number(seen.fullAt)||0, _now=Date.now();
   if(!force && !(_fa>0 && _fa<=_now+60000 && _now-_fa<KV_FULL_EVERY_MS)) force='weekly';   /* 先の時刻の記録（時計の進んだ端末）も全部取り直す */
   var idx=null, exact=false;
   idx=await _kvIndexRpc(); if(idx) exact=true;
   if(!idx){ try{ idx=await _kvIndexKeys(); }catch(e){ idx=null; } }
+  var _ssr=_ssP ? await _ssP : { rest:true };
+  var _ssOut=!_ssr.rest;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
-      var k=r.key; ver[k]=r.v; n++;
+      var k=r.key;
+      if(_ssOut && ssIsKey(k)) return;
+      ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
         if(!force && seen.rows[k]===r.v){ skip[k]=1; legacySkip++; } else need.push(k);
         return;
@@ -12421,7 +12689,20 @@ async function _kvPullRows(force){
     var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
     try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
+    if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
+  }
+  if(Array.isArray(rows) && _ssOut && _ssr.full){
+    await ssIdbReady();
+    if(_ssr.fresh) ssFreshCleanup();   /* v1139（独立レビュー P1-2）：part の写しを消すのは、REST も読めて全部の値を置く直前 */
+    try{ if(!ssPending('karte_pin')) _lsRawDel('karte_pin'); }catch(e){}   /* 成長カルテの PIN はサーバーで確かめる（前の版の平文の写しを残さない） */
+  }
+  else if(Array.isArray(rows) && !_ssOut && typeof ssIsKey==='function' && rows.some(function(r){ return r && ssIsKey(r.key); }) && ssState()==='part'){
+    await ssIdbReady(); ssFreshCleanup();   /* 今までどおり REST で、対象のキーの行が届いた（SQL の前）：同じく、置く直前に part の写しを消す */
+  }
+  if(Array.isArray(rows) && _ssOut){
+    rows=rows.filter(function(r){ return !(r && ssIsKey(r.key)); }).concat(_ssr.rows || []);   /* v1139：REST の対象のキーの行は使わない・関数の行（full）を足す */
+    if(_ssr.full){ try{ Object.defineProperty(rows, '_ss', { value:{ ver:_ssr.ver || {} }, enumerable:false }); }catch(e){} }   /* 印は取り込めた行だけ（ssSeenRecord）。見せる形（proj）は ssPull が記録した */
   }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
@@ -12526,7 +12807,7 @@ async function supaPullAllMasters(opt){
     if (_dres[0] === null) _fails.push('ingredients');   /* v1137 */
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
-    try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
+    try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -12547,6 +12828,7 @@ async function migrateUploadLocalOps(){
     var batch=[];
     lsKeys().forEach(function(key){   /* v1138：localStorage には大きなデータが無いので、IndexedDB のキーも見る（前の版で localStorage にあった分と同じ） */
       if(!key||have[key]) return;
+      if (typeof ssIsKey==='function' && ssIsKey(key)) return;   /* v1139：成長カルテ・賞与のキーは一覧に出ない（公開の鍵では読めない）。端末の写しで書かない */
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
     });
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
@@ -13547,8 +13829,17 @@ function _coversApprovals(check, want){
 var _opMergeChain = {}; // キー別に直列化（自クライアント内の連続書き込みが互いを潰さないように）
 
 var _OP_READ_TMO = { tmo: 1 };   /* v1128：読み込みが答えなかった（時間切れ）。opMergePush が「読めなかった」として送らない */
-function _fetchOpValue(key, table, strict, tmo){
+function _fetchOpValue(key, table, strict, tmo, _noSs){
   table = table || 'app_state';
+  /* v1139：成長カルテ・賞与のキーは関数 secure-state から。読めなかったら、時間を区切った呼び出し（送る前の読み込み）には
+     「時間切れ」（送らずに未送信に残す）、ほかには undefined。端末の値で丸ごと書く道（REST の HTTP エラー＝null）にはしない */
+  if(!_noSs && table==='app_state' && typeof ssRouted==='function' && ssRouted(key)){
+    return ssGetRow(key, tmo || 15000).then(function(x){
+      if(x===SS_REST) return _fetchOpValue(key, table, strict, tmo, true);
+      if(x && typeof x==='object' && 'exists' in x) return x.exists ? x.value : null;
+      return (tmo && typeof _OP_READ_TMO!=='undefined') ? _OP_READ_TMO : undefined;
+    });
+  }
   if(tmo && !strict && typeof _OP_READ_TMO!=='undefined' && typeof setTimeout==='function'){
     /* v1128（独立レビュー P2）：送る前の読み込みが答えないと、同じキーの送信が止まり続ける。打ち切って _OP_READ_TMO を返す
        （「行が無い」や「読めなかったので素通し」にはしない） */
@@ -13574,7 +13865,13 @@ function _fetchOpValue(key, table, strict, tmo){
     .catch(function(){ if(tm) clearTimeout(tm); return undefined; }); // undefined=取得失敗（マージせず素通し）
 }
 /* v1096: cas のキーの行を、値と updated_at で読む。読めなければ undefined（15 秒で打ち切る）。行が無ければ { exists:false } */
-function _fetchOpRow(key){
+function _fetchOpRow(key, _noSs){
+  if(!_noSs && typeof ssRouted==='function' && ssRouted(key)){   /* v1139 */
+    return ssGetRow(key, 15000).then(function(x){
+      if(x===SS_REST) return _fetchOpRow(key, true);
+      return (x && typeof x==='object' && 'exists' in x) ? x : undefined;
+    });
+  }
   var ctl=null, tm=null;
   try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
   var opts={ headers: supaHeaders() }; if(ctl) opts.signal=ctl.signal;
@@ -13609,7 +13906,17 @@ function _casTs(readTs){
 }
 /* v1096: 読んだ行が変わっていないときだけ書く。'ok'／'conflict'（ほかの端末が先に書いた）／'fail'／
    'badts'（読んだ時刻の形を読めない：書かない）／'stale'（書けたが、書いた行の時刻が読んだ時刻より進んでいない） */
-function _opCasWrite(key, value, row){
+function _opCasWrite(key, value, row, _noSs){
+  if(!_noSs && typeof ssRouted==='function' && ssRouted(key)){   /* v1139：同じ照合（読んだ行の updated_at）を関数 secure-state で */
+    var _srt=(row && row.exists) ? row.updatedAt : null, _sb=(_srt==null) ? null : _tsMicro(_srt);
+    if(_srt!=null && _sb==null) return Promise.resolve('badts');
+    return ssPutRow(key, value, { exists:!!(row && row.exists), updatedAt:_srt }).then(function(x){
+      if(x===SS_REST) return _opCasWrite(key, value, row, true);
+      if(x==='conflict' || x==='badts') return x;
+      if(x && x.ok){ if(_sb!=null){ var _g=_tsMicro(x.updatedAt); if(_g==null || _g<=_sb) return 'stale'; } return 'ok'; }
+      return 'fail';
+    }, function(){ return 'fail'; });
+  }
   var h=Object.assign({}, supaHeaders(), { 'Content-Type':'application/json', 'Prefer':'return=representation' });
   var _rt=(row && row.exists) ? row.updatedAt : null;
   var _ts=_casTs(_rt);
@@ -14199,12 +14506,19 @@ function _lsSetVerified(key, json){
      （getItem(key)!=null が true になる）。書いた内容と一致するかまで確認する。 */
   return _lsWriteVerified(key, json);
 }
-async function pullOpKey(key){
+async function pullOpKey(key, _noSs){
   if(window.FUNERGY_FINANCIAL_SAVE && FunergyFinancialSave.financialKey(key)){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return false;}}
   try{
-    var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value,updated_at', { headers: supaHeaders() });   /* v1136：更新時刻も（送れていない手元の変更とどちらが新しいか） */
-    if(!res.ok) return false;
-    var rows=await res.json();
+    var rows=null, _viaSs=false;
+    if(!_noSs && typeof ssRouted==='function' && ssRouted(key)){   /* v1139：成長カルテ・賞与のキーは関数 secure-state から（読めた行を下と同じに取り込む） */
+      var _sr=await ssGetRow(key, 15000);
+      if(_sr!==SS_REST){ if(!(_sr && typeof _sr==='object' && 'exists' in _sr)) return false; rows=_sr.exists ? [{ value:_sr.value, updated_at:_sr.updatedAt }] : []; _viaSs=true; }
+    }
+    if(!_viaSs){
+      var res=await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.'+encodeURIComponent(key)+'&select=value,updated_at', { headers: supaHeaders() });   /* v1136：更新時刻も（送れていない手元の変更とどちらが新しいか） */
+      if(!res.ok) return false;
+      rows=await res.json();
+    }
     /* v748: 行が無い＝まだ誰もクラウドへ保存していない（端末側が正しい）。
        従来は false を返して永久に未取得扱いとなり、押し上げが止まったままだった。 */
     if(Array.isArray(rows) && !rows.length){ _lsMarkFetched(key); return true; }
@@ -17652,6 +17966,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
   try{ tipLiveStop(); }catch(e){}   /* v1091 */
+  try{ if(typeof ssOnLogout==='function') ssOnLogout(); }catch(e){}   /* v1139：共有の端末では CEO・GM の成長カルテ・賞与の写しを残さない */
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
@@ -17672,6 +17987,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
   try{ tipLiveStop(); }catch(e){}   /* v1091 */
+  try{ if(typeof ssOnLogout==='function') ssOnLogout(); }catch(e){}   /* v1139：共有の端末では CEO・GM の成長カルテ・賞与の写しを残さない */
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
   window._sessionPin = null; window._empPrivate = null; window._hwSession = null; if(typeof botResetShared==='function') botResetShared();   /* v1061: 印も消す */
@@ -42288,7 +42604,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1138';
+const APP_VERSION = '1139';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -65676,10 +65992,21 @@ function _karteStoreNm(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(f
 /* --- 成長カルテ 専用PINゲート（既定 1234・GM/CEOが変更可・app_state同期） --- */
 function getKartePin(){ var p=ls('karte_pin','1234'); return (p==null||p==='')?'1234':String(p); }
 function setKartePin(p){ lsSet('karte_pin', String(p)); }
-function karteTryUnlock(){
+/* v1139：成長カルテの PIN はサーバー（関数 secure-state）で確かめる（端末には置かない・PBKDF2 の印で保存・5 回まちがえると 10 分止める）。
+   関数がまだ無い・PIN のログインの印が無いときは、今までどおり端末で */
+async function karteTryUnlock(){
   var el=document.getElementById('kartePinIn'); var v=el?String(el.value||'').trim():'';
-  if(v===getKartePin()){ window._karteUnlocked=true; karteRerender(); }
-  else { var e=document.getElementById('kartePinErr'); if(e) e.style.display='block'; if(el){ el.value=''; el.focus(); } }
+  var ok=false, msg='';
+  if(typeof ssRouted==='function' && ssRouted('karte_pin')){
+    var r=await ssCall({ action:'pin_check', pin:v, ms:15000 });
+    if(r.ok) ok=!!(r.j && r.j.ok);
+    else if(r.legacy || r.none) ok=(v===getKartePin());
+    else if(r.status===429) msg='続けて間違えたため、10 分止めています';
+    else if(r.status===403 || r.status===401) msg='成長カルテは GM・CEO だけが開けます';
+    else msg='確かめられませんでした（通信）。もう一度押してください';
+  } else ok=(v===getKartePin());
+  if(ok){ window._karteUnlocked=true; karteRerender(); }
+  else { var e=document.getElementById('kartePinErr'); if(e){ e.textContent=msg || 'PINが違います'; e.style.display='block'; } if(el){ el.value=''; el.focus(); } }
 }
 function karteLock(){ window._karteUnlocked=false; karteRerender(); }
 /* 成長カルテの再描画：セキュアページ内なら専用コンテナへ、通常はrenderPage */
@@ -65688,9 +66015,23 @@ async function karteChangePin(){
   if(['gm','ceo'].indexOf(curRole)<0) return;
   var cur = await askInput({title:'成長カルテPINの変更', label:'現在のPIN', type:'password', required:true, okLabel:'次へ'});
   if(cur==null) return;
-  if(String(cur).trim()!==getKartePin()){ alert('現在のPINが違います'); return; }
+  var _srv=(typeof ssRouted==='function' && ssRouted('karte_pin'));   /* v1139：サーバーで確かめて変える */
+  if(_srv){
+    var r0=await ssCall({ action:'pin_check', pin:String(cur).trim(), ms:15000 });
+    if(r0.ok && !(r0.j && r0.j.ok)){ alert('現在のPINが違います'); return; }
+    if(!r0.ok && (r0.legacy || r0.none)) _srv=false;
+    else if(!r0.ok){ alert(r0.status===429 ? '続けて間違えたため、10 分止めています' : 'PIN を確かめられませんでした（'+(r0.error || r0.status || '通信')+'）'); return; }
+  }
+  if(!_srv && String(cur).trim()!==getKartePin()){ alert('現在のPINが違います'); return; }
   var np = await askInput({title:'成長カルテPINの変更', label:'新しいPIN（4桁の数字）', type:'password', required:true, pattern:/^\d{4}$/, patternMsg:'4桁の数字で入力してください', okLabel:'変更する'});
   if(np==null) return;
+  if(_srv){
+    var r=await ssCall({ action:'pin_set', cur:String(cur).trim(), pin:String(np).trim(), ms:15000 });
+    if(r.ok && r.j && r.j.ok){ showToast('成長カルテのPINを変更しました','success'); return; }
+    if(r.ok){ alert('現在のPINが違います'); return; }
+    if(!(r.legacy || r.none)){ alert(r.status===429 ? '続けて間違えたため、10 分止めています' : 'PIN を変更できませんでした（'+(r.error || r.status || '通信')+'）'); return; }
+    if(String(cur).trim()!==getKartePin()){ alert('現在のPINが違います'); return; }
+  }
   setKartePin(String(np).trim()); showToast('成長カルテのPINを変更しました','success');
 }
 function karteLockHtml(){
