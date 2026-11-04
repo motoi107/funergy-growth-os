@@ -1506,7 +1506,7 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
   .ux-seg.is-none .ux-seg-ic { color:var(--muted); }
   .ux-seg.is-busy .ux-seg-ic { display:none; }
   .ux-seg.is-busy .ux-seg-m { display:inline-block; }
-  .ux-seg .ux-seg-x { font-size:9.5px; max-width:3.2em; }
+  .ux-seg .ux-seg-x { display:none; }   /* スマホは色の印だけ（件数・何が取れないかは押した中身に。⚠ の件数で右上がはみ出さないように） */
   .ux-seg.is-warn[data-seg="sync"] .ux-seg-x { display:none; }
 }
 .ux-st-row { display:flex; gap:10px; padding:6px 0; border-top:1px solid var(--border); }
@@ -10908,11 +10908,19 @@ function _outboxSet(a){
   if(!ok){ try{ if(typeof _lsFreeOldLaborKeys==='function') _lsFreeOldLaborKeys(2); localStorage.setItem('op_outbox', j); ok=(localStorage.getItem('op_outbox')===j); }catch(e){} }   /* 古い月の勤怠の写しだけ空けてもう 1 回（lsSet と同じ） */
   if(ok){
     _outboxSet.mem=null; try{ window._outboxLsFail=0; }catch(e){}
-    try{ if(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has('op_outbox_overflow')){ localStorage.setItem('_op_outbox_at', String(now)); if(typeof _idbQueue==='function') _idbQueue('op_outbox_overflow', null); } }catch(e){}
+    try{
+      if(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has('op_outbox_overflow')){
+        /* 別の名前は、localStorage に時刻（_op_outbox_at）を書けても書けなくても（ほぼ満杯）消す
+           （前は時刻を書けないと消すのも飛ばし、古い別の名前が「新しい」まま残って、送れた保存が送信待ちに戻っていた） */
+        try{ localStorage.setItem('_op_outbox_at', String(now)); }catch(e){}
+        if(typeof _idbQueue==='function') _idbQueue('op_outbox_overflow', null);
+      }
+    }catch(e){}
     return true;
   }
-  _outboxSet.mem=(a||[]).slice(); try{ window._outboxLsFail=now; }catch(e){}
-  try{ if(typeof _idbQueue==='function') _idbQueue('op_outbox_overflow', JSON.stringify({ at:now, list:(a||[]) })); }catch(e){}
+  _outboxSet.mem=(a||[]).slice();
+  var idbOk=false; try{ if(typeof _idbQueue==='function') idbOk=(_idbQueue('op_outbox_overflow', JSON.stringify({ at:now, list:(a||[]) }))===true); }catch(e){}
+  try{ window._outboxLsFail=idbOk ? 0 : now; }catch(e){}   /* 診断に出すのは、IndexedDB にも残せなかったとき（読み込み直すと消える）だけ */
   return false;
 }
 /* v1128（独立レビュー 6f2b5ab P1）：だれの保存か。送信待ち（op_outbox）と、送っている途中で閉じられた印（_ux_inflight）の両方で使う。
@@ -42177,12 +42185,16 @@ function _shiftFp(plan){
 }
 function _shiftSmallGet(k){ return (typeof _smallGet==='function') ? _smallGet(k) : (function(){ try{ return localStorage.getItem(k); }catch(e){ return null; } })(); }
 function _shiftSmallSet(k, t){ if(typeof _smallSet==='function') return _smallSet(k, t); try{ if(t==null) localStorage.removeItem(k); else localStorage.setItem(k, t); }catch(e){} }
-function _shiftBaseAll(){ try{ var o=JSON.parse(_shiftSmallGet(SHIFTPLAN_BASE_KEY)||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+/* 土台の印はこの端末の写し（無くなっても「ほかの端末で変わった」とみなしてクラウドの内容にするだけ＝安全な側）。
+   localStorage に書けなければこのタブのメモリだけ（診断の「書けない」には数えない） */
+function _shiftBaseAll(){ var m=_shiftBaseSet.mem; if(m) return JSON.parse(JSON.stringify(m)); try{ var o=JSON.parse(localStorage.getItem(SHIFTPLAN_BASE_KEY)||'{}'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
 function _shiftBaseOf(k){ var o=_shiftBaseAll(); return (o[k] && o[k].f) ? o[k].f : null; }
 function _shiftBaseSet(k, fp){
   var o=_shiftBaseAll(); o[k]={ f:fp, t:Date.now() };
   var ks=Object.keys(o); if(ks.length>80) ks.sort(function(a,b){ return (o[a].t||0)-(o[b].t||0); }).slice(0, ks.length-80).forEach(function(x){ delete o[x]; });   /* 新しい 80 週ぶんだけ */
-  _shiftSmallSet(SHIFTPLAN_BASE_KEY, JSON.stringify(o));
+  var t=JSON.stringify(o), ok=false;
+  try{ localStorage.setItem(SHIFTPLAN_BASE_KEY, t); ok=(localStorage.getItem(SHIFTPLAN_BASE_KEY)===t); }catch(e){}
+  _shiftBaseSet.mem=ok ? null : o;
 }
 function _shiftWho(){ try{ return (typeof _saveWho==='function') ? _saveWho() : ''; }catch(e){ return ''; } }
 function shiftPlanPendingList(){ try{ var a=JSON.parse(_shiftSmallGet(SHIFTPLAN_PENDING_KEY)||'[]'); return Array.isArray(a)?a.filter(function(x){ return x && x.s && x.w; }):[]; }catch(e){ return []; } }
@@ -99812,7 +99824,9 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
   function guardState(){ try{ if(!(W.FUNERGY_FINANCIAL_SAVE && typeof FUNERGY_FINANCIAL_SAVE.getState === 'function')) return ''; var st = FUNERGY_FINANCIAL_SAVE.getState() || {}, g = String(st.status || ''); return (st.auto && (g === 'saving' || g === 'checking')) ? '' : g; }catch(e){ return ''; } }
   function outboxN(){
     var n = 0;
-    try{ n = (typeof outboxCount === 'function') ? outboxCount() : 0; }catch(e){ n = 0; }
+    /* 前の送信の答えを待って並んでいるだけのもの（lastErr 'queued' で、いま送っている途中）は数えない（ログインのあとの裏の保存で「保存 ⚠」が点滅しないように）。
+       答えが来て送れなかったら 'push failed' などになって数える */
+    try{ n = (typeof _outboxMine === 'function') ? _outboxMine().filter(function(x){ return !(x && x.lastErr === 'queued' && typeof _pushBusy === 'function' && _pushBusy(x.key)); }).length : ((typeof outboxCount === 'function') ? outboxCount() : 0); }catch(e){ n = 0; }
     try{ if(W.FUNERGY_STATUS && typeof FUNERGY_STATUS.extraPending === 'function') n += FUNERGY_STATUS.extraPending().length; }catch(e){}   /* v1137：シフトの表・本人確認の情報の送信待ち */
     return n;
   }
@@ -100903,7 +100917,12 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
     ST.paintSoon();
     return AU.running;
   };
-  ST.afterEnter = function(){ AU.last = now(); try{ ST.log('login', T('ログインして取り込んだ', 'Signed in and fetched'), SY.fail ? false : true); }catch(e){} ST.paintSoon(300); };
+  ST.afterEnter = function(){
+    AU.last = now(); try{ ST.log('login', T('ログインして取り込んだ', 'Signed in and fetched'), SY.fail ? false : true); }catch(e){}
+    /* 独立レビュー P2-5：前に「自動同期 OFF」だった端末は v1137 で ON に戻した。そのことを 1 回だけ記録に残す（だれの端末で戻ったかを「診断と記録」で見られる） */
+    try{ var off = localStorage.getItem('_sync_was_off'); if(off){ ST.log('sync', T('この端末は前に「自動同期 OFF」でした。v1137 から自動同期はいつも ON です', 'This device had auto sync turned off. From v1137 auto sync is always on'), null); localStorage.removeItem('_sync_was_off'); } }catch(e){}
+    ST.paintSoon(300);
+  };
   ST.reset = function(){ SY.fail = null; SY.streak = 0; SY.at = 0; AU.last = 0; if(AU.retryTm){ clearTimeout(AU.retryTm); AU.retryTm = null; } paintSig = ''; };
   try{
     D.addEventListener('visibilitychange', function(){ if(!D.hidden && now() - AU.last > VISIBLE_GAP) setTimeout(function(){ ST.autoSync('visible'); }, 800); ST.paintSoon(100); });

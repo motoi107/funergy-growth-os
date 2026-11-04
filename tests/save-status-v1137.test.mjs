@@ -83,8 +83,8 @@ test('送信待ち：localStorage がいっぱいでも捨てない（前は黙�
   assert.equal(c._outboxSet([{ key: 'inv_X', attempts: 1, who: 'p:e1' }]), false);
   assert.equal(c.freed, 1, '古い月の勤怠の写しを空けてもう 1 回試す（lsSet と同じ）');
   assert.deepEqual(J(c._outboxGet().map(x => x.key)), ['inv_X'], 'このタブでは覚えている');
-  assert.ok(c.window._outboxLsFail > 0, '診断に出す印');
   assert.ok(idb.has('op_outbox_overflow'), 'IndexedDB の別の名前に持つ');
+  assert.equal(c.window._outboxLsFail, 0, 'IndexedDB に残せたので診断には出さない（読み込み直しても消えない）');
   // 読み込み直した（新しいタブ）：localStorage は前の値（空）のまま。IndexedDB の別の名前を読む
   const c2 = outboxCtx(ls, idb);
   assert.deepEqual(J(c2._outboxGet().map(x => x.key)), ['inv_X']);
@@ -111,11 +111,25 @@ test('送信待ち（独立レビュー P3-1）：IndexedDB の別の名前は�
   assert.equal(idb.has('op_outbox_overflow'), false, '古い別の名前は消す');
 });
 
+test('送信待ち：送れて外したとき、localStorage に時刻だけ書けなくても（ほぼ満杯）、古い別の名前で送信待ちに戻さない', () => {
+  // 本物のブラウザ（合成データ・localStorage がほぼ満杯の端末）で見つけた：ログインの裏の保存が送れて外したのに「送信待ち 1 件」のまま
+  const ls = fakeStorage(true), idb = new Map();
+  const c = outboxCtx(ls, idb);
+  c._outboxSet([{ key: 'm_credit_tip_adj_F02', lastErr: 'queued' }]);   // 満杯 → 別の名前
+  ls.full = false;
+  const setItem = ls.setItem;
+  ls.setItem = (k, v) => { if (k === '_op_outbox_at') { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } setItem(k, v); };
+  assert.equal(c._outboxSet([]), true, 'op_outbox（短くなる）には書けた');
+  assert.deepEqual(J(c._outboxGet()), [], 'このタブで戻らない');
+  assert.deepEqual(J(outboxCtx(ls, idb)._outboxGet()), [], '読み込み直しても戻らない');
+});
+
 test('送信待ち：IndexedDB も使えない端末では、このタブのあいだだけ覚える', () => {
   const ls = fakeStorage(true);
   const c = outboxCtx(ls, null);
   c._outboxSet([{ key: 'k' }]);
   assert.deepEqual(J(c._outboxGet().map(x => x.key)), ['k']);
+  assert.ok(c.window._outboxLsFail > 0, '読み込み直すと消えるので、診断に出す印');
 });
 
 /* ---------------------------------------------------------------- この端末だけの小さな記録・直した時刻 */
@@ -482,6 +496,19 @@ test('確かめの画面（confirm）で答えるのに時間がかかっても�
   assert.equal(rec.user, true);
 });
 
+test('右上の「保存」：前の送信の答えを待って並んでいるだけのもの（いま送っている途中）は「送信待ち」に数えない', () => {
+  const E = uxEnv();
+  let busy = true;
+  E.ctx._outboxMine = () => [{ key: 'm_credit_tip_adj_F04-K', attempts: 1, lastErr: 'queued' }];
+  E.ctx._pushBusy = () => busy;
+  assert.equal(E.UX.saveState().k, '', 'ログインのあとの裏の保存で点滅しない');
+  busy = false;   // 送り終えたのに残っている＝届かなかった
+  assert.deepEqual(J(E.UX.saveState()), { k: 'queued', n: 1, off: false });
+  busy = true;
+  E.ctx._outboxMine = () => [{ key: 'k2', attempts: 2, lastErr: 'push failed' }];
+  assert.equal(E.UX.saveState().k, 'queued', '送れなかったものは送っている途中でも数える');
+});
+
 test('右上の「保存」の名前：名前の無いキーはキーそのものを出さない', () => {
   const ux = uxBlock();
   assert.match(ux, /return \(!l \|\| l === String\(key\)\) \? '' : l;/);
@@ -556,6 +583,17 @@ test('診断：続けて 2 回取り込めない・何度送っても送れな�
   assert.ok(E.ST.diagState().items.some(x => x.k === 'pull'));
   E.ctx.window._outboxLsFail = Date.now();
   assert.ok(E.ST.diagState().items.some(x => x.k === 'queue'));
+});
+
+test('前に「自動同期 OFF」だった端末（独立レビュー P2-5）：ログインのあと 1 回だけ記録に残す', () => {
+  const E = stEnv();
+  E.ctx.localStorage.setItem('_sync_was_off', '1');
+  E.ctx.ST = E.ST; E.ST.paintSoon = () => {};
+  E.ST.afterEnter();
+  assert.ok(E.ST.logList().some(x => /自動同期 OFF/.test(x.x)), '記録に残す');
+  assert.equal(E.ctx.localStorage.getItem('_sync_was_off'), null, '印は消す');
+  E.ST.afterEnter();
+  assert.equal(E.ST.logList().filter(x => /自動同期 OFF/.test(x.x)).length, 1, '2 回目は残さない');
 });
 
 test('自動の同期：入力中（モーダル・打っている・ログインの途中）は待つ・オフラインは動かない', async () => {
