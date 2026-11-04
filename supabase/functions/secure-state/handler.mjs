@@ -13,6 +13,8 @@
 //     karte_bonus_config → 査定の四半期（quarter）だけ（Career Score の基準点の四半期）
 //   ほかのキーは返さない。書けない。
 // ・PIN のログインの印が無い・確かめられない人：何も返さない（401）。
+// ・v1140（段階 2b の 2 つ目）：Career Score の点・申請・履歴も（下の「v1140」の節・docs/SECURE_CS_V1140_JA.md）。取り込みは cs_have を送った
+//   アプリ（v1140）にだけ cs の部分を付ける。答えにはいつも csfn:1（前の版の関数でないことの印）。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -25,6 +27,62 @@ export function ssIsKey(k) {
   if (SS_KEYS.includes(k)) return true;
   return SS_PREFIX_RE.test(k);
 }
+
+// ---- v1140（段階 2b の 2 つ目）：Career Score の点・申請・履歴（仕様：docs/SECURE_CS_V1140_JA.md）
+//   lss_emp_<名前>（点）・spl_lss_requests_<名前>（申請）・spl_lss_history_<名前>（履歴・開いたときだけ取る）と、前の統合行
+//   lss_scores・lss_requests・lss_history。名前はアプリの従業員の名前そのまま（空白・日本語もある）。
+//   CEO・GM：全部（full）。ほかの在籍の人：見られる人の行だけ（scoped・行は丸ごと）。前の統合行は見られる人の分だけ（見せる形・書けない）。
+//   見られる人（Moto さん 11/04 の回答）：AM＝担当の店（応援も）・G4＝自分の店の G4 以下・G3＝自分の店の G1・G2・Crew Leader（G2）＝自分の店の G1・
+//   Head Chef＝全店の G1（申請は全店）・経理・事務Crew＝本部の人（Office管理のメンバー）・それ以外＝自分だけ。Score管理（career_cfg）で
+//   見る・付ける・承認する役にした人も。店のログインなど＝なし。
+export const CS_PREFIX = ['lss_emp_', 'spl_lss_requests_', 'spl_lss_history_'];
+export const CS_LEGACY = ['lss_scores', 'lss_requests', 'lss_history'];
+export function csIsKey(k) {
+  if (typeof k !== 'string' || !k || k.length > 400) return false;
+  if (CS_LEGACY.includes(k)) return true;
+  return CS_PREFIX.some(p => k.length > p.length && k.startsWith(p));
+}
+// { kind: emp|req|hist|legacy, name }
+export function csParse(k) {
+  if (!csIsKey(k)) return null;
+  if (CS_LEGACY.includes(k)) return { kind: 'legacy', name: '' };
+  if (k.startsWith('lss_emp_')) return { kind: 'emp', name: k.slice(8) };
+  if (k.startsWith('spl_lss_requests_')) return { kind: 'req', name: k.slice(17) };
+  return { kind: 'hist', name: k.slice(16) };
+}
+// 公開の鍵から外すキー（SQL の ss_secret_key と同じ：成長カルテ・賞与＋Career Score）
+export const secretKey = k => ssIsKey(k) || csIsKey(k);
+// 肩書きと役割からのグレード（SQL の wr_grade と同じ。大きいほう）
+const TITLE_G = { 'General Manager': 6, 'Area Manager': 5, 'Corporate Chef': 5, 'Customer Service Manager': 5, 'Store Manager': 4, 'Head Chef': 4, 'Office Manager': 4, 'Accountant': 4,
+  'Server Leader': 3, 'Kitchen Leader': 3, 'Operation Leader': 3, 'Store Leader': 3, 'Accounting Leader': 3, 'Crew Leader': 2, 'Office Crew Leader': 2,
+  'Crew': 1, 'Office Crew': 1, 'Office Staff': 1, 'Prep': 1, 'Prep Specialist': 1 };
+const ROLE_G = { ceo: 7, gm: 6, am: 5, g4: 4, chef: 4, sl: 3, g2: 2 };
+export function wrGrade(title, role) {
+  const t = Object.prototype.hasOwnProperty.call(TITLE_G, String(title == null ? '' : title).trim()) ? TITLE_G[String(title).trim()] : 0;
+  const r = Object.prototype.hasOwnProperty.call(ROLE_G, String(role || '')) ? ROLE_G[role] : 1;
+  return Math.max(t, r);
+}
+// アプリの empGrade（肩書きが先・無ければ役割）と cgPermOf（専門職 × グレードの権限の行）
+const APP_TITLE_G = { G1: ['Crew', 'Office Crew', 'Office Staff', 'Prep', 'Prep Specialist'], G2: ['Crew Leader', 'Office Crew Leader'],
+  G3: ['Server Leader', 'Kitchen Leader', 'Operation Leader', 'Store Leader', 'Accounting Leader'], G4: ['Store Manager', 'Head Chef', 'Office Manager', 'Accountant'],
+  G5: ['Area Manager', 'Corporate Chef', 'Customer Service Manager'], G6: ['General Manager'] };
+const APP_ROLE_G = { gm: 'G6', am: 'G5', g4: 'G4', chef: 'G4', sl: 'G3', g2: 'G2', crew: 'G1', office_crew: 'G1' };
+export function appGrade(title, role) {
+  for (const g of Object.keys(APP_TITLE_G)) if (title && APP_TITLE_G[g].includes(title)) return g;
+  return APP_ROLE_G[role] || '';
+}
+const SPEC_DEPTS = ['経理', '調理', 'サービス', 'マーケ'];
+const TITLE_DEPT = { 'Accountant': '経理', 'Office Manager': '経理', 'Office Crew Leader': '経理', 'Accounting Leader': '経理', 'Head Chef': '調理', 'Corporate Chef': '調理', 'Customer Service Manager': 'サービス' };
+const CHEF_TITLES = ['Head Chef', 'Corporate Chef'];
+const HQ_ROLES = ['office', 'office_crew', 'chef'];   // 経理・事務Crew が見る本部の人（Office管理のメンバー）
+const OFFICE_ROLES = ['office', 'office_crew'];
+// キーの順によらない文字（クラウドの jsonb はキーを並べ替えて返す）
+function canon(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return '[' + v.map(canon).join(',') + ']';
+  return '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ':' + canon(v[k])).join(',') + '}';
+}
+const pendingSt = s => s == null || s === '申請中';
 
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer|pin)[^\s]*/gi, '$1:***').slice(0, 200);
 const err = (code, status) => { const e = new Error(code); e.code = code; e.status = status; return e; };
@@ -131,7 +189,7 @@ export function createHandler(deps) {
     const me = obj(j && j.me);
     if (!me || typeof me.emp !== 'string' || !me.emp || me.emp.length > 64) return { deny: 'pin' };
     const a = { via: 'pin', emp: me.emp, role: typeof me.role === 'string' ? me.role : '', grade: Number.isInteger(me.grade) ? me.grade : 0,
-      stores: arr(me.stores), am: arr(me.am_stores) };
+      stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '' };   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
     if (cache.size > 500) { for (const [k, v] of cache) if (!(v.exp > now())) cache.delete(k); if (cache.size > 500) cache.clear(); }
     cache.set(h, { a, exp: now() + 60000 });
     return a;
@@ -147,13 +205,15 @@ export function createHandler(deps) {
     const m = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
     if (!m || !MGR_ROLES.includes(m.role)) return { deny: 'email_role' };
     const emp = m.emp_id == null || m.emp_id === '' ? null : String(m.emp_id);
+    let name = '';
     if (emp) {
-      const es = await rest('employees?id=eq.' + encodeURIComponent(emp) + '&select=status,data');
+      const es = await rest('employees?id=eq.' + encodeURIComponent(emp) + '&select=status,data,name');
       const e0 = Array.isArray(es) ? es[0] : null, d = e0 && obj(e0.data) ? e0.data : {};
       // work-requests の wr_emp_out と同じ：表の status・data の status が退職、または OS を止めた人
       if (e0 && (String(e0.status || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true')) return { deny: 'email_out' };
+      if (e0 && typeof e0.name === 'string' && e0.name.length <= 120) name = e0.name;   // v1140：メールのログインの人の名前は社員の表（経理・事務Crew・GM・CEO）
     }
-    return { via: 'email', emp, role: m.role, grade: 0, stores: [], am: [] };
+    return { via: 'email', emp, role: m.role, grade: 0, stores: [], am: [], name };
   }
   async function actorOf(req, body) {
     const tok = body.pin_session;
@@ -200,23 +260,260 @@ export function createHandler(deps) {
     try {
       const out = [];
       for (let off = 0, page = 0; page < 100; page++) {
-        const rows = await rest('rpc/app_state_index?order=key.asc&limit=1000&offset=' + off, { method: 'POST', body: JSON.stringify({ p_skip_prefix: ['invoice_purchase_', 'lunch_photo_'] }) });
+        const rows = await rest('rpc/app_state_index?order=key.asc&limit=1000&offset=' + off, { method: 'POST', body: JSON.stringify({ p_skip_prefix: ['invoice_purchase_', 'lunch_photo_', 'spl_lss_history_'] }) });
         if (!Array.isArray(rows)) return null;
         if (!rows.length) break;
         off += rows.length;
-        for (const r of rows) if (r && ssIsKey(r.key) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
+        // v1140：Career Score のキーも（履歴は開いたときだけ取るので一覧に入れない）
+        for (const r of rows) if (r && (ssIsKey(r.key) || (csIsKey(r.key) && csParse(r.key).kind !== 'hist')) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
         if (page === 99) return null;   // 読み切れない：中身から作る
       }
       return out;
     } catch { return null; }
   }
 
+
+  // ================================================================ v1140：Career Score
+  // 行を読む（キーが多いときは URL が長くなりすぎないよう分ける）
+  async function readKeysAny(keys) {
+    const out = [];
+    let batch = [], len = 0;
+    const flush = async () => {
+      if (!batch.length) return;
+      const rows = await rest('app_state?select=key,value,updated_at&key=' + encodeURIComponent(IN(batch)) + '&limit=1000');
+      if (Array.isArray(rows)) out.push(...rows);
+      batch = []; len = 0;
+    };
+    for (const k of keys) {
+      const el = encodeURIComponent(k).length + 8;
+      if (len + el > 6000 && batch.length) await flush();
+      batch.push(k); len += el;
+    }
+    await flush();
+    return out.filter(r => r && csIsKey(r.key));
+  }
+  // Career Score の行を全部（履歴は hist のときだけ）。1000 行ずつ
+  async function readCsAll(hist) {
+    const q = hist ? 'key=like.spl_lss_history_*'
+      : 'or=' + encodeURIComponent('(key.' + IN(CS_LEGACY) + ',key.like.lss_emp_*,key.like.spl_lss_requests_*)');
+    const out = [];
+    for (let off = 0, page = 0; page < 50; page++) {
+      const rows = await rest('app_state?select=key,value,updated_at&' + q + '&order=key.asc&limit=1000&offset=' + off);
+      if (!Array.isArray(rows) || !rows.length) break;
+      out.push(...rows); off += rows.length;
+      if (rows.length < 1000) break;
+    }
+    return out.filter(r => r && csIsKey(r.key) && (hist ? csParse(r.key).kind === 'hist' : csParse(r.key).kind !== 'hist'));
+  }
+  // 人の表（社員の表・manager_auth・GM・CEO が確かめた写し・Score管理の権限）。社員の表の店・肩書き・役割は公開の鍵で書けるので、
+  // CEO・GM・経理・事務Crew（manager_auth）と AM（確かめた写し）の人は、店で決まる範囲には入れない（v1139 の目標と同じ）
+  async function csPeople() {
+    const [emps, mgr, wrp, cfgRows] = await Promise.all([
+      rest('employees?select=id,name,store,support,role,title,status,data&limit=5000'),
+      rest('manager_auth?select=emp_id,role&limit=1000'),
+      rest('wr_people?select=emp_id,role,grade&limit=2000'),
+      rest('app_state?select=value&key=eq.career_cfg'),
+    ]);
+    const mrole = new Map(), conf = new Map();
+    for (const m of (Array.isArray(mgr) ? mgr : [])) if (m && m.emp_id != null && MGR_ROLES.includes(m.role)) mrole.set(String(m.emp_id), m.role);
+    for (const c of (Array.isArray(wrp) ? wrp : [])) if (c && c.emp_id != null) conf.set(String(c.emp_id), { role: c.role, grade: Number.isInteger(c.grade) ? c.grade : 0 });
+    const cfg = obj(Array.isArray(cfgRows) && cfgRows[0] ? cfgRows[0].value : null) || {};
+    const list = [];
+    for (const e of (Array.isArray(emps) ? emps : [])) {
+      if (!e || e.id == null || typeof e.name !== 'string' || !e.name) continue;
+      const d = obj(e.data) || {}, id = String(e.id), c = conf.get(id) || null, mr = mrole.get(id) || '';
+      const role = String(e.role || d.role || ''), title = String(e.title || d.title || '');
+      const support = Array.isArray(e.support) ? e.support : (Array.isArray(d.support) ? d.support : []);
+      const out = String(e.status || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true';
+      const gL = wrGrade(title, role), gS = Math.max(gL, c ? c.grade : 0);
+      const dept = (typeof d.career === 'string' && d.career) || TITLE_DEPT[title] || '';
+      const ag = appGrade(title, role);
+      let cfgRoles = [];
+      if (SPEC_DEPTS.includes(dept) && ag) {
+        const x = obj(cfg[dept + '|' + (ag === 'G1-P' ? 'G1' : ag)]);
+        if (x && !x._deleted) for (const f of ['csView', 'csEdit', 'csApprove']) if (Array.isArray(x[f])) cfgRoles.push(...x[f].filter(r => typeof r === 'string'));
+      }
+      list.push({ id, name: e.name, store: String(e.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
+        top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgRoles });
+    }
+    return list;
+  }
+  // 見られる人（see）・申請を見られる人（req）・点（lss_emp_）を書ける人（emp）・履歴を書ける人（hist）。名前の Set
+  async function csScope(a) {
+    const P = await csPeople();
+    const me = P.find(p => p.id === String(a.emp || '')) || null;
+    const selfNames = new Set();
+    if (a.name) selfNames.add(a.name);
+    if (me && a.name && me.name.trim() === a.name.trim()) selfNames.add(me.name);   // 名前の前後の空白だけ違う
+    if (a.via === 'email' && me) selfNames.add(me.name);
+    const isChef = a.role === 'staff' && a.grade >= 4 && !!me && (me.role === 'chef' || CHEF_TITLES.includes(me.title));
+    // Score管理（career_cfg）の役職：アプリの役割と同じ名前
+    const R = ['office', 'office_crew', 'am'].includes(a.role) ? a.role
+      : a.role === 'staff' ? (isChef ? 'chef' : a.grade >= 4 ? 'g4' : a.grade === 3 ? 'sl' : '') : '';
+    const S = a.role === 'am' ? [...new Set([...a.am, ...a.stores])] : a.stores;
+    const inStores = p => S.length > 0 && (S.includes(p.store) || p.support.some(x => S.includes(x)));
+    const see = new Set(selfNames), req = new Set(selfNames), emp = new Set(), hist = new Set();
+    for (const p of P) {
+      if (p.out) continue;
+      const self = selfNames.has(p.name);
+      let vis = false;
+      if (a.role === 'am') vis = !p.top && inStores(p);
+      else if (a.role === 'staff') {
+        if (isChef) vis = !p.top && p.gS === 1 && !OFFICE_ROLES.includes(p.role);   // Head Chef：全店の G1（OJT の合格のサイン。本部の事務の人は入れない）
+        else if (a.grade >= 4) vis = !p.top && inStores(p) && p.gS <= 4;          // G4：自分の店の G4 以下
+        else if (a.grade === 3) vis = !p.top && inStores(p) && p.gS <= 2;         // G3：自分の店の G1・G2
+        else if (a.grade === 2) vis = !p.top && inStores(p) && p.gS === 1;        // Crew Leader：自分の店の G1
+      } else if (a.role === 'office' || a.role === 'office_crew') vis = HQ_ROLES.includes(p.role) && !p.boss && !p.confAm;   // 本部の人（Office管理のメンバー）
+      const grant = !!R && p.cfgRoles.includes(R) && (R !== 'g4' || p.gS <= 4) && !p.boss && !p.confAm;
+      if (vis || grant) { see.add(p.name); req.add(p.name); }
+      if (isChef && !p.top && !OFFICE_ROLES.includes(p.role)) req.add(p.name);    // Head Chef：申請は全店（今のまま。本部の事務の人は入れない）
+      if ((vis || grant) && !self) {
+        // 点を直接：AM・Score管理で決めた役・店の人の OJT の合格（分野の下限を上げる。サインする人より下のグレードの人。
+        // ワークセンターを使い始める前は直接書く＝今までどおり。使い始めたあとは申請）
+        if (a.role === 'am' || grant || (a.role === 'staff' && vis && (p.gS === 1 || p.gS < a.grade))) emp.add(p.name);
+        if (a.role === 'am' || grant) hist.add(p.name);
+      }
+    }
+    for (const n of selfNames) { emp.delete(n); hist.delete(n); }                 // 自分の点・履歴は書けない（自己評価は申請）
+    return { see, req, emp, hist, self: selfNames };
+  }
+  const csSig = sc => [...sc.see].sort().join('\u0001') + '\u0002' + [...sc.req].sort().join('\u0001');
+  function csProject(key, value, sc) {
+    if (key === 'lss_scores') { const m = obj(value) || {}; const o = {}; for (const [n, v] of Object.entries(m)) if (sc.see.has(n)) o[n] = v; return o; }
+    const list = Array.isArray(value) ? value : [];
+    const set = key === 'lss_requests' ? sc.req : sc.see;
+    return list.filter(r => obj(r) && typeof r.name === 'string' && set.has(r.name));
+  }
+  function csCanRead(p, sc) {
+    if (p.kind === 'legacy') return true;
+    return p.kind === 'req' ? sc.req.has(p.name) : sc.see.has(p.name);
+  }
+
+  async function csPull(a, b, idx) {
+    const level = levelOf(a);
+    if (level === 'none') return { level: 'none', names: [], req_names: [], index: [], rows: [] };
+    const have = obj(b.cs_have) || {};
+    if (level === 'full') {
+      if (idx) {
+        const need = idx.filter(x => have[x.key] !== x.v).map(x => x.key);
+        const ver = Object.fromEntries(idx.map(x => [x.key, x.v]));
+        const rows = need.length ? await readKeysAny(need) : [];
+        return { level, names: null, req_names: null, index: idx, rows: rows.filter(r => ver[r.key]).map(r => ({ key: r.key, value: r.value, updated_at: r.updated_at, v: ver[r.key] })) };
+      }
+      const rows = await readCsAll(false), out = [];
+      for (const r of rows) out.push({ key: r.key, value: r.value, updated_at: r.updated_at, v: 'x:' + await sha256(JSON.stringify(r.value)) });
+      return { level, names: null, req_names: null, index: out.map(r => ({ key: r.key, v: r.v })), rows: out.filter(r => have[r.key] !== r.v) };
+    }
+    const sc = await csScope(a), sig = await sha256(csSig(sc));
+    const names = [...sc.see].sort(), req_names = [...sc.req].sort();
+    let base;   // [{key, v（元の行の印）}]
+    if (idx) base = idx;
+    else {
+      const rows = await readCsAll(false);
+      base = [];
+      for (const r of rows) base.push({ key: r.key, v: 'x:' + await sha256(JSON.stringify(r.value)), row: r });
+    }
+    const sidx = [];
+    for (const x of base) {
+      const p = csParse(x.key);
+      if (!p || !csCanRead(p, sc)) continue;
+      sidx.push({ key: x.key, v: p.kind === 'legacy' ? 'p:' + await sha256(x.v + '|' + sig) : x.v, row: x.row });
+    }
+    const need = sidx.filter(x => have[x.key] !== x.v);
+    let rows = need.filter(x => x.row).map(x => x.row);
+    const toRead = need.filter(x => !x.row).map(x => x.key);
+    if (toRead.length) rows = rows.concat(await readKeysAny(toRead));
+    const ver = Object.fromEntries(sidx.map(x => [x.key, x.v]));
+    return { level: 'scoped', names, req_names, index: sidx.map(x => ({ key: x.key, v: x.v })),
+      rows: rows.filter(r => ver[r.key]).map(r => ({ key: r.key, value: csParse(r.key).kind === 'legacy' ? csProject(r.key, r.value, sc) : r.value, updated_at: r.updated_at, v: ver[r.key] })) };
+  }
+  // 履歴（開いたときだけ）：見られる人の spl_lss_history_
+  async function csHist(a) {
+    const level = levelOf(a);
+    if (level === 'none') throw err('forbidden', 403);
+    const rows = await readCsAll(true);
+    if (level === 'full') return { level, names: null, rows: rows.map(r => ({ key: r.key, value: r.value, updated_at: r.updated_at })) };
+    const sc = await csScope(a);
+    return { level: 'scoped', names: [...sc.see].sort(), rows: rows.filter(r => sc.see.has(csParse(r.key).name)).map(r => ({ key: r.key, value: r.value, updated_at: r.updated_at })) };
+  }
+  async function csGet(a, key) {
+    const level = levelOf(a);
+    if (level === 'none') throw err('forbidden', 403);
+    const p = csParse(key);
+    let sc = null;
+    if (level !== 'full') { sc = await csScope(a); if (!csCanRead(p, sc)) throw err('forbidden', 403); }
+    const rows = await readKeysAny([key]);
+    if (!rows.length) return { exists: false, value: null, updated_at: null };
+    const r = rows[0];
+    if (sc && p.kind === 'legacy') return { exists: true, value: csProject(key, r.value, sc), updated_at: r.updated_at, proj: true };
+    return { exists: true, value: r.value, updated_at: r.updated_at };
+  }
+  // 書く前の確かめ（CEO・GM 以外）。cur：今の行の値（無ければ null）。ダメなら forbidden（403）か bad_value（400）
+  function csCheck(p, value, cur, sc) {
+    if (p.kind === 'legacy') throw err('forbidden', 403);                          // 前の統合行は CEO・GM だけ（見せる形で書き戻さない）
+    const may = p.kind === 'req' ? sc.req.has(p.name) : p.kind === 'emp' ? sc.emp.has(p.name) : sc.hist.has(p.name);
+    if (!may) throw err('forbidden', 403);
+    if (JSON.stringify(value === undefined ? null : value).length > 2000000) throw bad();
+    if (p.kind === 'emp') { if (!obj(value)) throw bad(); return; }
+    if (!Array.isArray(value) || value.length > 5000) throw bad();
+    if (!value.every(r => obj(r) && r.name === p.name)) throw bad();              // 別の人の記録を混ぜない
+    const curList = Array.isArray(cur) ? cur.filter(r => obj(r)) : [];
+    if (p.kind === 'hist') {                                                       // 履歴は足すだけ（消さない・書き換えない）
+      const have = new Set(value.map(canon));
+      if (!curList.every(r => have.has(canon(r)))) throw err('forbidden', 403);
+      return;
+    }
+    // 申請：今ある申請を消さない
+    const byId = new Map(value.filter(r => r.id != null).map(r => [String(r.id), r]));
+    if (!curList.every(r => r.id == null || byId.has(String(r.id)))) throw err('forbidden', 403);
+    if (!sc.self.has(p.name)) return;
+    // 自分の申請の行：新しい申請（申請中）を足す・自分で取り下げる（取消）だけ。自分で承認・却下しない・ほかの人が出した申請を書き換えない
+    const curById = new Map(curList.filter(r => r.id != null).map(r => [String(r.id), r]));
+    const strip = o => { const x = { ...o }; delete x.status; delete x.supersededAt; delete x.wr; delete x._mut; return canon(x); };
+    for (const r of value) {
+      const c = r.id == null ? null : curById.get(String(r.id));
+      if (!c) { if (!pendingSt(r.status)) throw err('forbidden', 403); continue; }
+      if (canon(c) === canon(r)) continue;
+      if (strip(c) !== strip(r)) throw err('forbidden', 403);
+      if (r.status !== c.status && !(pendingSt(c.status) && r.status === '取消')) throw err('forbidden', 403);
+    }
+  }
+  async function csPut(a, b) {
+    const key = b.key, p = csParse(key);
+    if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
+    const e = b.expect;
+    if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
+    if (levelOf(a) === 'full') return writeRow(key, b.value, e);
+    if (levelOf(a) === 'none') throw err('forbidden', 403);
+    const sc = await csScope(a);
+    const rows = await readKeysAny([key]), cur = rows[0] || null;
+    csCheck(p, b.value, cur ? cur.value : null, sc);
+    // 確かめた行に書く（読んだあとに変わっていれば conflict）。expect があればそれとも合わせる
+    if (e) {
+      if (e.exists && e.updated_at != null && tsMicro(e.updated_at) == null) throw bad();
+      if (!!cur !== e.exists) throw err('conflict', 409);
+      if (cur && (e.updated_at == null ? cur.updated_at != null : tsMicro(cur.updated_at) !== tsMicro(e.updated_at))) throw err('conflict', 409);
+    }
+    return writeRow(key, b.value, cur ? { exists: true, updated_at: cur.updated_at } : { exists: false });
+  }
+
   async function pull(a, b) {
+    // v1140：Career Score（cs_have を送ってきたアプリ＝v1140 から。前の版のアプリには付けない）
+    const wantCs = obj(b.cs_have) !== null;
+    const idxAll = levelOf(a) === 'none' ? null : await index();
+    const out = await pullKb(a, b, idxAll && idxAll.filter(x => ssIsKey(x.key)));
+    if (wantCs) {
+      try { out.cs = await csPull(a, b, idxAll && idxAll.filter(x => csIsKey(x.key))); }
+      catch (e) { console.error('secure-state cs pull', safeErr(e)); out.cs = { error: 'scope' }; }   // 見られる人を決められなかった：端末の写しはそのまま
+    }
+    return out;
+  }
+  async function pullKb(a, b, idx0) {
     const level = levelOf(a);
     if (level === 'none') return { level, index: [], rows: [] };
     const have = obj(b.have) || {};
     if (level === 'full') {
-      const idx = await index();
+      const idx = idx0;
       if (idx) {
         const need = idx.filter(x => have[x.key] !== x.v).map(x => x.key);
         const rows = need.length ? await readRows(need) : [];
@@ -231,7 +528,7 @@ export function createHandler(deps) {
     // proj：見せる形にしてから印を付ける。印は元の行の印（md5）と見せる範囲から作り、変わっていなければ行を読まない
     //（成長カルテは大きく、CEO・GM 以外のログインと 10 分ごとの同期のたびに読んでいた：独立レビュー P3）
     const gate = await goalsGate(a);
-    const idx = await index();
+    const idx = idx0;
     if (idx) {
       const pidx = [];
       for (const x of idx) if (SS_PROJ.includes(x.key)) pidx.push({ key: x.key, v: 'p:' + await sha256(x.v + '|' + (x.key === 'growth_karte' ? a.emp + '|' + gate.sig : '')) });
@@ -251,6 +548,7 @@ export function createHandler(deps) {
 
   async function get(a, b) {
     const key = b.key;
+    if (csIsKey(key)) return csGet(a, key);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     const level = levelOf(a);
     if (level === 'none' || (level === 'proj' && !SS_PROJ.includes(key))) throw err('forbidden', 403);
@@ -264,10 +562,14 @@ export function createHandler(deps) {
   // 書く。expect が無い：今までの upsert と同じ（読んだ行によらず書く）。expect.exists=false：行が無いときだけ。expect.exists=true：updated_at が同じときだけ
   async function put(a, b) {
     const key = b.key;
+    if (csIsKey(key)) return csPut(a, b);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     if (levelOf(a) !== 'full') throw err('forbidden', 403);
     if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
-    const e = b.expect;
+    return writeRow(key, b.value, b.expect);
+  }
+  async function writeRow(key, value, e) {
+    const b = { value };
     const pref = { prefer: 'return=representation' };
     if (e === undefined || e === null) {
       const ts = new Date(now()).toISOString();
@@ -359,7 +661,7 @@ export function createHandler(deps) {
     return { ok: true };
   }
 
-  const ACTIONS = { pull, get, put, pin_check: pinCheck, pin_set: pinSet };
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429 };
 
   return async function handle(req) {
@@ -367,7 +669,9 @@ export function createHandler(deps) {
     if (origin && !origins.includes(origin)) return new Response(JSON.stringify({ error: 'origin', fn: 1 }), { status: 403 });
     const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, apikey, content-type', 'access-control-allow-methods': 'POST, OPTIONS', vary: 'origin' } : {};
     // 答えにはいつも fn:1（アプリは fn の無い答え（ゲートウェイの 401・関数が無い 404 など）を「関数が使えない」とみなす）
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // csfn:1＝Career Score も扱う関数（v1140）。アプリは csfn の無い答えを「前の版の関数」とみなし、Career Score を今までどおり REST で
+    //（取り込みの答えの Career Score の部分は cs。名前を分けている）
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

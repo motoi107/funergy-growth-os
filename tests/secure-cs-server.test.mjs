@@ -1,0 +1,366 @@
+// secure-state v1140（2b の 2 つ目）の関数：Career Score の点・申請・履歴を、見られる人の分だけ届ける・書き込みを確かめる。
+// 合成データだけ（架空の人と店）。PostgREST・Auth・work-requests は tests/lib/secure-state-world.mjs の偽物。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHandler, csIsKey, csParse, secretKey, ssIsKey, wrGrade, appGrade } from '../supabase/functions/secure-state/handler.mjs';
+import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
+
+// ---- 架空の会社：店 S1・S2・S3 と本部 HQ
+const EMPS = [
+  { id: 'E-GM', name: 'Gina M', store: 'HQ', role: 'gm', title: 'General Manager' },
+  { id: 'E-CEO', name: 'Cal E', store: 'HQ', role: 'ceo', title: '' },
+  { id: 'E-OF', name: 'Ofelia', store: 'HQ', role: 'office', title: 'Accountant' },
+  { id: 'E-OC', name: 'Oscar', store: 'HQ', role: 'office_crew', title: 'Office Crew', data: { career: '経理' } },
+  { id: 'E-HQ', name: 'Hana', store: 'HQ', role: 'office_crew', title: 'Office Crew' },
+  { id: 'E-AM', name: 'Amy Area', store: 'S1', role: 'am', title: 'Area Manager' },
+  { id: 'E-4', name: 'Leo Four', store: 'S1', role: 'g4', title: 'Store Manager' },
+  { id: 'E-4b', name: 'Lia Four', store: 'S2', role: 'g4', title: 'Store Manager' },
+  { id: 'E-3', name: 'Sam Three', store: 'S1', role: 'sl', title: 'Store Leader' },
+  { id: 'E-3b', name: 'Tom Three', store: 'S1', role: 'sl', title: 'Kitchen Leader' },
+  { id: 'E-2b', name: 'Gia Two', store: 'S1', role: 'g2', title: 'Crew Leader' },
+  { id: 'E-5', name: 'Cory Corp', store: 'S1', role: 'chef', title: 'Corporate Chef' },
+  { id: 'E-2', name: 'Cora Two', store: 'S1', role: 'g2', title: 'Crew Leader' },
+  { id: 'E-1', name: 'Kai One', store: 'S1', role: 'crew', title: 'Crew' },
+  { id: 'E-1s', name: 'Mei 応援', store: 'S2', role: 'crew', title: 'Crew', support: ['S1'] },
+  { id: 'E-1b', name: 'Ben S2', store: 'S2', role: 'crew', title: 'Crew' },
+  { id: 'E-1d', name: 'Dan S3', store: 'S3', role: 'crew', title: 'Crew' },
+  { id: 'E-P', name: 'Pia Prep', store: 'S3', role: 'crew', title: 'Prep' },
+  { id: 'E-CH', name: 'Chef Ken', store: 'S1', role: 'chef', title: 'Head Chef' },
+  { id: 'E-OUT', name: 'Gone Crew', store: 'S1', role: 'crew', title: 'Crew', status: '退職' },
+];
+const U = n => 'aaaaaaaa-0000-0000-0000-00000000000' + n;
+const MGR = { [U(1)]: { role: 'gm', emp_id: 'E-GM' }, [U(5)]: { role: 'ceo', emp_id: 'E-CEO' }, [U(2)]: { role: 'office', emp_id: 'E-OF' }, [U(3)]: { role: 'office_crew', emp_id: 'E-OC' }, [U(4)]: { role: 'office', emp_id: null } };
+const USERS = { gm: U(1), of: U(2), oc: U(3), noemp: U(4) };
+const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5 }, { emp_id: 'E-4', role: 'g4', grade: 4 }, { emp_id: 'E-4b', role: 'g4', grade: 4 }, { emp_id: 'E-CH', role: 'staff', grade: 4 }];
+const ME = {
+  gm: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'Gina M' },
+  am: { emp: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S2'], name: 'Amy Area' },
+  g4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Leo Four' },
+  g3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Three' },
+  g2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cora Two' },
+  g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
+  chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken' },
+};
+const NAMES = EMPS.map(e => e.name);
+const T0 = '2026-11-03T09:00:00.000000+00:00';
+
+function setup(o = {}) {
+  const W = makeWorld({ emps: EMPS.map(e => ({ ...e })), mgr: MGR, users: USERS, wrPeople: WRP, pins: Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), ...o });
+  let clock = Date.UTC(2026, 10, 4, 10, 0, 0);
+  const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
+  const handle = createHandler({ env, fetch: W.fetch, now: () => clock });
+  const call = async (body, hdr = {}) => {
+    const r = await handle(new Request('https://fn.test/secure-state', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + ANON, ...hdr }, body: JSON.stringify(body) }));
+    let j = null; try { j = await r.json(); } catch { j = null; }
+    return { status: r.status, j };
+  };
+  const as = who => (who in ME ? { pin_session: 't' + who } : {});
+  const hdr = who => (who in USERS ? { authorization: 'Bearer ' + JWT(who) } : {});
+  const pullCs = async (who, have = {}) => call({ action: 'pull', cs_have: have, ...as(who) }, hdr(who));
+  return { W, call, as, hdr, pullCs, tick: ms => { clock += ms; } };
+}
+const req = (id, name, status = '申請中', extra = {}) => ({ id, name, status, total: 50, ...extra });
+function seed(W) {
+  for (const n of NAMES) {
+    W.set('lss_emp_' + n, { s: { 'A-1': 2 }, _at: 1, _by: 'seed' }, T0);
+    W.set('spl_lss_requests_' + n, [req('r-' + n, n, '承認')], T0);
+    W.set('spl_lss_history_' + n, [{ name: n, at: '2026-10-01', total: 40 }], T0);
+  }
+  W.set('lss_scores', Object.fromEntries(NAMES.map(n => [n, { s: { 'A-1': 1 } }])), T0);
+  W.set('lss_requests', NAMES.map(n => req('old-' + n, n, '承認')), T0);
+  W.set('lss_history', NAMES.map(n => ({ name: n, total: 10 })), T0);
+  W.set('growth_karte', { 'E-1': { hireDate: '2024-01-05' } }, T0);
+  W.set('m_other', { x: 1 }, T0);
+}
+const emps = j => j.cs.rows.filter(r => csParse(r.key).kind === 'emp').map(r => csParse(r.key).name).sort();
+const sorted = a => [...a].sort();
+
+test('the Career Score keys, their parse, and the secret-key list (SQL ss_secret_key) agree', () => {
+  for (const k of ['lss_scores', 'lss_requests', 'lss_history', 'lss_emp_A', 'lss_emp_名前 空白', 'spl_lss_requests_A', 'spl_lss_history_A']) { assert.ok(csIsKey(k), k); assert.ok(secretKey(k), k); assert.ok(!ssIsKey(k), k); }
+  for (const k of ['lss_emp_', 'spl_lss_requests_', 'spl_lss_history_', 'lss_scores2', 'lss_emp', 'spl_lss_request_A', 'skills', 'cs_criteria', 'career_cfg', '', null, 'lss_emp_' + 'x'.repeat(400)]) assert.ok(!csIsKey(k), String(k));
+  assert.deepEqual(csParse('lss_emp_A B'), { kind: 'emp', name: 'A B' });
+  assert.deepEqual(csParse('spl_lss_requests_Kai'), { kind: 'req', name: 'Kai' });
+  assert.deepEqual(csParse('spl_lss_history_Kai'), { kind: 'hist', name: 'Kai' });
+  assert.deepEqual(csParse('lss_requests'), { kind: 'legacy', name: '' });
+  for (const k of ['growth_karte', 'spl_bonus_q_2026-Q3']) assert.ok(secretKey(k));
+  assert.ok(!secretKey('m_other'));
+  // グレード：SQL の wr_grade と同じ（肩書きと役割の大きいほう）。アプリの empGrade は肩書きが先
+  assert.equal(wrGrade('Crew', 'am'), 5); assert.equal(wrGrade('Head Chef', 'crew'), 4); assert.equal(wrGrade('', 'crew'), 1); assert.equal(wrGrade(' Store Leader ', null), 3);
+  assert.equal(appGrade('Crew', 'am'), 'G1'); assert.equal(appGrade('', 'sl'), 'G3'); assert.equal(appGrade('Office Crew Leader', 'office_crew'), 'G2');
+});
+
+test('a v1139 app (no cs_have) gets no Career Score section — the karte/bonus part is unchanged', async () => {
+  const S = setup(); seed(S.W);
+  const r = await S.call({ action: 'pull', ...S.as('gm') });
+  assert.equal(r.status, 200); assert.equal(r.j.csfn, 1, 'the answer says the function knows Career Score'); assert.ok(!('cs' in r.j), 'no Career Score part for a v1139 app'); assert.equal(r.j.fn, 1);
+  assert.ok(!r.j.index.some(x => csIsKey(x.key)), 'no Career Score key in the karte/bonus index');
+  assert.deepEqual(r.j.rows.map(x => x.key), ['growth_karte']);
+  const g = await S.call({ action: 'pull', ...S.as('g1') });
+  assert.equal(g.j.level, 'proj'); assert.ok(!('names' in g.j));
+});
+
+test('GM / CEO: every point and request row and the old combined rows (history only on demand); unchanged rows are skipped', async () => {
+  for (const indexMissing of [false, true]) {
+    const S = setup({ indexMissing }); seed(S.W);
+    const r = await S.pullCs('gm');
+    assert.equal(r.status, 200); assert.equal(r.j.cs.level, 'full'); assert.equal(r.j.cs.names, null);
+    const keys = r.j.cs.rows.map(x => x.key);
+    assert.equal(keys.length, NAMES.length * 2 + 3);
+    assert.ok(keys.includes('lss_scores') && keys.includes('lss_requests') && keys.includes('lss_history'));
+    assert.ok(!keys.some(k => k.startsWith('spl_lss_history_')), 'history only on demand');
+    assert.deepEqual(r.j.cs.rows.find(x => x.key === 'lss_scores').value, S.W.get('lss_scores'), 'the full old row, as it is');
+    assert.ok(r.j.cs.rows.every(x => (indexMissing ? /^x:[0-9a-f]{64}$/ : /^h:[0-9a-f]{32}$/).test(x.v)));
+    const have = Object.fromEntries(r.j.cs.index.map(x => [x.key, x.v]));
+    delete have['lss_emp_Kai One'];
+    const r2 = await S.pullCs('gm', have);
+    assert.deepEqual(r2.j.cs.rows.map(x => x.key), ['lss_emp_Kai One']);
+    assert.equal(r2.j.cs.index.length, r.j.cs.index.length);
+  }
+  const S = setup(); seed(S.W);
+  const ceo = await S.call({ action: 'pull', cs_have: {} }, { authorization: 'Bearer ' + JWT('gm') });
+  assert.equal(ceo.j.cs.level, 'full', 'GM by email too');
+});
+
+// 見られる人（Moto さん 11/04 の回答）
+const SCOPES = {
+  am: ['Amy Area', 'Leo Four', 'Lia Four', 'Sam Three', 'Tom Three', 'Cora Two', 'Gia Two', 'Kai One', 'Mei 応援', 'Ben S2', 'Chef Ken', 'Cory Corp'],   // 担当の店 S1・S2（応援も）。CEO・GM・本部・ほかの AM は入らない
+  g4: ['Leo Four', 'Sam Three', 'Tom Three', 'Cora Two', 'Gia Two', 'Kai One', 'Mei 応援', 'Chef Ken'],               // 自分の店 S1 の G4 以下（応援の人も。G5 は入らない）
+  g3: ['Sam Three', 'Cora Two', 'Gia Two', 'Kai One', 'Mei 応援'],                                               // 自分の店の G1・G2（ほかの G3 は入らない）
+  g2: ['Cora Two', 'Kai One', 'Mei 応援'],                                                                       // Crew Leader：自分の店の G1（ほかの G2 は入らない）
+  g1: ['Kai One'],                                                                                                // 自分だけ
+  chef: ['Chef Ken', 'Kai One', 'Mei 応援', 'Ben S2', 'Dan S3', 'Pia Prep'],                                       // Head Chef：全店の G1（本部の事務の G1 は入れない）
+  of: ['Ofelia', 'Oscar', 'Hana', 'Chef Ken', 'Cory Corp'],                                                       // 経理：本部の人（Office管理のメンバー＝役割 office・office_crew・chef）
+};
+test('who sees whom: AM, G4, G3, Crew Leader, crew, Head Chef and the office get only their people (whole rows)', async () => {
+  const S = setup(); seed(S.W);
+  for (const [who, want] of Object.entries(SCOPES)) {
+    const r = await S.pullCs(who);
+    assert.equal(r.status, 200, who); assert.equal(r.j.cs.level, 'scoped', who);
+    assert.deepEqual(r.j.cs.names, sorted(want), who);
+    assert.deepEqual(emps(r.j), sorted(want), who + ': the points of exactly those people');
+    for (const x of r.j.cs.rows) if (csParse(x.key).kind === 'emp') assert.deepEqual(x.value, S.W.get(x.key), 'whole rows');
+    assert.ok(!r.j.cs.rows.some(x => x.key.startsWith('spl_lss_history_')));
+    assert.ok(!r.j.cs.names.includes('Gone Crew'), 'retired people are not delivered');
+    // 申請：Head Chef は全店（今のまま）。ほかは見られる人と同じ
+    const reqNames = r.j.cs.rows.filter(x => csParse(x.key).kind === 'req').map(x => csParse(x.key).name).sort();
+    if (who === 'chef') assert.deepEqual(reqNames, sorted(NAMES.filter(n => !['Gina M', 'Cal E', 'Ofelia', 'Oscar', 'Hana', 'Amy Area', 'Gone Crew'].includes(n))), 'Head Chef: every store request (not CEO/GM/AM, not the HQ office people)');
+    else assert.deepEqual(reqNames, sorted(want), who);
+  }
+});
+
+test('the old combined rows reach scoped people only as the part about their people, and are versioned per scope', async () => {
+  const S = setup(); seed(S.W);
+  const r = await S.pullCs('g3');
+  const sc = r.j.cs.rows.find(x => x.key === 'lss_scores');
+  assert.deepEqual(Object.keys(sc.value).sort(), sorted(SCOPES.g3));
+  assert.deepEqual(r.j.cs.rows.find(x => x.key === 'lss_requests').value.map(x => x.name).sort(), sorted(SCOPES.g3));
+  assert.deepEqual(r.j.cs.rows.find(x => x.key === 'lss_history').value.map(x => x.name).sort(), sorted(SCOPES.g3));
+  assert.match(sc.v, /^p:[0-9a-f]{64}$/);
+  const r1 = await S.pullCs('g1');
+  assert.notEqual(r1.j.cs.rows.find(x => x.key === 'lss_scores').v, sc.v, 'another scope, another version');
+  // 同じ人・同じ行：同じ印で、送らない
+  const have = Object.fromEntries(r.j.cs.index.map(x => [x.key, x.v]));
+  const r2 = await S.pullCs('g3', have);
+  assert.equal(r2.j.cs.rows.length, 0);
+  // 見られる人が変わる（Kai さんが S2 へ）：前の統合行の印も変わり、届き直す
+  S.W.emps.find(e => e.id === 'E-1').store = 'S2';
+  const r3 = await S.pullCs('g3', have);
+  assert.ok(r3.j.cs.rows.some(x => x.key === 'lss_scores'));
+  assert.ok(!r3.j.cs.names.includes('Kai One'));
+  S.W.emps.find(e => e.id === 'E-1').store = 'S1';
+});
+
+test('store edits in the publicly writable employees table cannot pull a CEO/GM/office/AM into a store scope', async () => {
+  const S = setup(); seed(S.W);
+  for (const id of ['E-GM', 'E-CEO', 'E-OF', 'E-AM']) S.W.emps.find(e => e.id === id).store = 'S1';
+  S.W.emps.find(e => e.id === 'E-GM').title = 'Crew'; S.W.emps.find(e => e.id === 'E-GM').role = 'crew';
+  S.W.emps.find(e => e.id === 'E-CEO').role = 'office_crew';   // 本部の人に見せかける
+  S.W.emps.push({ id: 'E-AM2', name: 'Abe Area', store: 'S1', role: 'crew', title: 'Crew' });
+  S.W.wrPeople.push({ emp_id: 'E-AM2', role: 'am', grade: 5 });   // GM・CEO が確かめた AM（社員の表は crew と書き換えられている）
+  for (const who of ['am', 'g4', 'g3', 'g2', 'chef', 'of']) {
+    const r = await S.pullCs(who);
+    for (const n of ['Gina M', 'Cal E', 'Ofelia', 'Amy Area', 'Abe Area']) if (!(who === 'am' && n === 'Amy Area') && !(who === 'of' && n === 'Ofelia')) assert.ok(!r.j.cs.names.includes(n), who + ' must not see ' + n);
+  }
+  // 確かめた写し（wr_people）のグレードが社員の表より上なら、上を使う（G4 の店の人を G1 と書き換えても G3 の範囲に入らない）
+  S.W.emps.find(e => e.id === 'E-4').title = 'Crew'; S.W.emps.find(e => e.id === 'E-4').role = 'crew';
+  const r = await S.pullCs('g3');
+  assert.ok(!r.j.cs.names.includes('Leo Four'));
+});
+
+test('Score管理 (career_cfg) grants: a role given csView for a career row sees those people (not CEO/GM, not a confirmed AM)', async () => {
+  const S = setup(); seed(S.W);
+  S.W.set('career_cfg', { '経理|G1': { csView: ['g4'], csEdit: [], csApprove: [] }, '調理|G4': { csView: ['sl'] } });
+  const r = await S.pullCs('g4');
+  assert.ok(r.j.cs.names.includes('Oscar'), 'the office crew in 経理|G1 (a manager_auth person, but not CEO/GM)');
+  assert.ok(!r.j.cs.names.includes('Hana'), 'no career row for her');
+  const g3 = await S.pullCs('g3');
+  assert.ok(g3.j.cs.names.includes('Chef Ken'), 'G3 given 調理|G4 sees the Head Chef');
+  // G4 に選ばれても、G5 の人は見せない（G4 は G4 以下）
+  S.W.set('career_cfg', { '調理|G5': { csView: ['g4', 'sl'] } });
+  assert.ok(!(await S.pullCs('g4')).j.cs.names.includes('Cory Corp'), 'a grant to G4 stops at G4');
+  assert.ok((await S.pullCs('g3')).j.cs.names.includes('Cory Corp'), 'the same row granted to G3 (no such cap) does show');
+  S.W.set('career_cfg', { '経理|G1': { csView: ['g4'], _deleted: true } });
+  assert.ok(!(await S.pullCs('g4')).j.cs.names.includes('Oscar'), 'a deleted row grants nothing');
+});
+
+test('the office by email sees the HQ people; an office account without an employee link, a store login and a bad PIN get nothing', async () => {
+  const S = setup(); seed(S.W);
+  const of = await S.call({ action: 'pull', cs_have: {} }, { authorization: 'Bearer ' + JWT('of') });
+  assert.deepEqual(of.j.cs.names, sorted(SCOPES.of));
+  const ne = await S.call({ action: 'pull', cs_have: {} }, { authorization: 'Bearer ' + JWT('noemp') });
+  assert.equal(ne.j.cs.level, 'none'); assert.deepEqual(ne.j.cs.rows, []);
+  S.W.pins.tstore = 'deny';
+  const st = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tstore' });
+  assert.equal(st.status, 401);
+  assert.equal((await S.call({ action: 'hist', pin_session: 'tstore' })).status, 401);
+  assert.equal((await S.call({ action: 'hist' }, { authorization: 'Bearer ' + JWT('noemp') })).status, 403);
+});
+
+test('if the people tables cannot be read, the Career Score section says so (the device keeps its copy) and the rest still works', async () => {
+  const S = setup(); seed(S.W);
+  S.W.mgrDown = true;
+  const r = await S.pullCs('g3');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.j.cs, { error: 'scope' });
+  assert.ok(r.j.rows.some(x => x.key === 'growth_karte'), 'the karte projection still came');
+});
+
+test('get: inside the scope a whole row; outside 403; the old combined rows projected', async () => {
+  const S = setup(); seed(S.W);
+  const ok = await S.call({ action: 'get', key: 'lss_emp_Kai One', ...S.as('g2') });
+  assert.equal(ok.status, 200); assert.deepEqual(ok.j.value, S.W.get('lss_emp_Kai One'));
+  assert.equal((await S.call({ action: 'get', key: 'lss_emp_Sam Three', ...S.as('g2') })).status, 403);
+  assert.equal((await S.call({ action: 'get', key: 'lss_emp_Ben S2', ...S.as('g4') })).status, 403);
+  const lg = await S.call({ action: 'get', key: 'lss_scores', ...S.as('g1') });
+  assert.deepEqual(Object.keys(lg.j.value), ['Kai One']); assert.equal(lg.j.proj, true);
+  const none = await S.call({ action: 'get', key: 'lss_emp_No Body', ...S.as('gm') });
+  assert.deepEqual([none.j.exists, none.j.value], [false, null]);
+  // Head Chef：申請は全店、点は G1 だけ
+  assert.equal((await S.call({ action: 'get', key: 'spl_lss_requests_Lia Four', ...S.as('chef') })).status, 200);
+  assert.equal((await S.call({ action: 'get', key: 'lss_emp_Lia Four', ...S.as('chef') })).status, 403);
+});
+
+test('history on demand: only the people in the scope; the GM gets every history row', async () => {
+  const S = setup(); seed(S.W);
+  const g = await S.call({ action: 'hist', ...S.as('g3') });
+  assert.deepEqual(g.j.rows.map(x => csParse(x.key).name).sort(), sorted(SCOPES.g3));
+  assert.deepEqual(g.j.names, sorted(SCOPES.g3));
+  const gm = await S.call({ action: 'hist', ...S.as('gm') });
+  assert.equal(gm.j.rows.length, NAMES.length); assert.equal(gm.j.names, null);
+});
+
+const put = (S, who, key, value, expect) => S.call({ action: 'put', key, value, ...(expect ? { expect } : {}), ...S.as(who) }, S.hdr(who));
+test('points (lss_emp_): AM and the OJT signers (people below them in scope) may write; nobody writes their own or a peer; others are refused', async () => {
+  const S = setup(); seed(S.W);
+  const v = { s: { 'A-1': 3 }, _at: 9, _by: 'x' };
+  assert.equal((await put(S, 'am', 'lss_emp_Ben S2', v)).status, 200, 'AM: a person in the AM stores');
+  assert.equal((await put(S, 'am', 'lss_emp_Sam Three', v)).status, 200);
+  assert.equal((await put(S, 'g2', 'lss_emp_Kai One', v)).status, 200, 'Crew Leader: OJT pass for a G1 of the store');
+  assert.equal((await put(S, 'chef', 'lss_emp_Dan S3', v)).status, 200, 'Head Chef: OJT pass for a G1 anywhere');
+  assert.equal((await put(S, 'g4', 'lss_emp_Kai One', v)).status, 200);
+  assert.deepEqual(S.W.get('lss_emp_Kai One'), v);
+  // OJT の合格（G2→G3・G3→G4 の分野の下限）：サインする人より下のグレードの、見られる人
+  assert.equal((await put(S, 'g4', 'lss_emp_Sam Three', v)).status, 200, 'G4 → a G3 of the store');
+  assert.equal((await put(S, 'g3', 'lss_emp_Cora Two', v)).status, 200, 'G3 → a G2 of the store');
+  for (const [who, key] of [['g4', 'lss_emp_Chef Ken'], ['g4', 'lss_emp_Lia Four'], ['g2', 'lss_emp_Cora Two'], ['g1', 'lss_emp_Kai One'], ['am', 'lss_emp_Amy Area'],
+    ['am', 'lss_emp_Dan S3'], ['chef', 'lss_emp_Leo Four'], ['chef', 'lss_emp_Cora Two'], ['g3', 'lss_emp_Ben S2'], ['g3', 'lss_emp_Sam Three'], ['of', 'lss_emp_Oscar']]) {
+    const r = await put(S, who, key, v);
+    assert.equal(r.status, 403, who + ' → ' + key);
+  }
+  // Score管理で「付ける」役にした人
+  S.W.set('career_cfg', { '経理|G1': { csEdit: ['office'] }, '経理|G4': { csEdit: ['office'], csApprove: ['office'] } });
+  assert.equal((await put(S, 'of', 'lss_emp_Oscar', v)).status, 200);
+  assert.equal((await put(S, 'of', 'lss_emp_Ofelia', v)).status, 403, 'a role given to their own career row still cannot write their own points');
+  assert.equal((await put(S, 'of', 'spl_lss_history_Ofelia', [...S.W.get('spl_lss_history_Ofelia'), { name: 'Ofelia', total: 1 }])).status, 403, '… or their own history');
+  assert.equal((await put(S, 'am', 'lss_emp_Ben S2', [1])).status, 400, 'points are an object');
+  assert.equal((await put(S, 'gm', 'lss_emp_Ben S2', [1])).status, 200, 'CEO/GM write as before (no checks)');
+});
+
+test('requests: no request is dropped, every entry is that person’s, and a person only adds pending requests or cancels their own', async () => {
+  const S = setup(); seed(S.W);
+  const K = 'spl_lss_requests_Kai One';
+  const cur = S.W.get(K);
+  // 本人：新しい申請（申請中）を足す
+  assert.equal((await put(S, 'g1', K, [...cur, req('n1', 'Kai One')])).status, 200);
+  assert.equal((await put(S, 'g1', K, [...S.W.get(K), req('n2', 'Kai One', '承認')])).status, 403, 'not an approved one');
+  // 本人：自分の申請を取り下げる
+  const c2 = S.W.get(K).map(r => r.id === 'n1' ? { ...r, status: '取消', supersededAt: 5 } : r);
+  assert.equal((await put(S, 'g1', K, c2)).status, 200);
+  const c3 = S.W.get(K).map(r => r.id === 'r-Kai One' ? { ...r, status: '却下' } : r);
+  assert.equal((await put(S, 'g1', K, c3)).status, 403, 'not deciding an approved one');
+  const c4 = S.W.get(K).map(r => r.id === 'n1' ? { ...r, total: 99 } : r);
+  assert.equal((await put(S, 'g1', K, c4)).status, 403, 'not editing the content');
+  assert.equal((await put(S, 'g1', K, S.W.get(K).filter(r => r.id !== 'n1'))).status, 403, 'no request dropped');
+  assert.equal((await put(S, 'g1', K, [...S.W.get(K), req('x', 'Cora Two')])).status, 400, 'no other person’s entry');
+  // G2 の申請の行で自分で承認しない
+  assert.equal((await put(S, 'g2', 'spl_lss_requests_Cora Two', [...S.W.get('spl_lss_requests_Cora Two'), req('y', 'Cora Two', '承認')])).status, 403);
+  // 見られる人の申請を決める（G4：自分の店の G3 の申請を承認）
+  S.W.set('spl_lss_requests_Sam Three', [req('p1', 'Sam Three')]);
+  assert.equal((await put(S, 'g4', 'spl_lss_requests_Sam Three', [{ ...req('p1', 'Sam Three'), status: '承認', reviewedBy: 'Leo Four' }])).status, 200);
+  assert.equal((await put(S, 'g4', 'spl_lss_requests_Ben S2', [req('z', 'Ben S2')])).status, 403, 'outside the scope');
+  // Head Chef：全店の申請
+  assert.equal((await put(S, 'chef', 'spl_lss_requests_Lia Four', [...S.W.get('spl_lss_requests_Lia Four'), req('h', 'Lia Four')])).status, 200);
+  assert.equal((await put(S, 'g2', 'spl_lss_requests_Mei 応援', 'x')).status, 400);
+});
+
+test('history: append only, AM or a Score管理 role; the old combined rows are written by CEO/GM only', async () => {
+  const S = setup(); seed(S.W);
+  const K = 'spl_lss_history_Ben S2';
+  assert.equal((await put(S, 'am', K, [...S.W.get(K), { name: 'Ben S2', at: '2026-11-04', total: 55 }])).status, 200);
+  assert.equal((await put(S, 'am', K, [{ name: 'Ben S2', at: '2026-11-04', total: 55 }])).status, 403, 'not dropping old history');
+  assert.equal((await put(S, 'am', K, S.W.get(K).map(x => ({ ...x, total: 1 })))).status, 403, 'not rewriting');
+  assert.equal((await put(S, 'g4', 'spl_lss_history_Kai One', [...S.W.get('spl_lss_history_Kai One'), { name: 'Kai One', total: 3 }])).status, 403, 'G4 does not write history');
+  assert.equal((await put(S, 'am', 'spl_lss_history_Amy Area', [...S.W.get('spl_lss_history_Amy Area'), { name: 'Amy Area', total: 3 }])).status, 403, 'not their own');
+  // 並びとキーの順が違っても同じ記録（クラウドの jsonb はキーを並べ替える）
+  const re = S.W.get(K).map(x => Object.fromEntries(Object.entries(x).reverse())).reverse();
+  assert.equal((await put(S, 'am', K, [...re, { total: 60, name: 'Ben S2' }])).status, 200);
+  for (const who of ['am', 'g4', 'g1', 'chef']) for (const k of ['lss_scores', 'lss_requests', 'lss_history']) assert.equal((await put(S, who, k, {})).status, 403, who + ' ' + k);
+  assert.equal((await S.call({ action: 'put', key: 'lss_scores', value: {} }, { authorization: 'Bearer ' + JWT('of') })).status, 403);
+  assert.equal((await put(S, 'gm', 'lss_scores', { a: 1 })).status, 200);
+});
+
+test('scoped writes are compare-and-write: a stale read (or a row that appeared) is a conflict, and nothing is written', async () => {
+  const S = setup(); seed(S.W);
+  const K = 'lss_emp_Ben S2';
+  const g = await S.call({ action: 'get', key: K, ...S.as('am') });
+  S.W.set(K, { s: { 'A-1': 1 }, _at: 5 }, '2026-11-04T09:30:00.000000+00:00');
+  const r = await put(S, 'am', K, { s: { 'A-1': 3 }, _at: 9 }, { exists: true, updated_at: g.j.updated_at });
+  assert.equal(r.status, 409);
+  assert.deepEqual(S.W.get(K), { s: { 'A-1': 1 }, _at: 5 });
+  assert.equal((await put(S, 'am', 'lss_emp_New Hire', { s: {} }, { exists: false })).status, 403, 'a name nobody has is outside every scope');
+  S.W.emps.push({ id: 'E-NEW', name: 'New Hire', store: 'S2', role: 'crew', title: 'Crew' });
+  assert.equal((await put(S, 'am', 'lss_emp_New Hire', { s: {} }, { exists: false })).status, 200);
+  assert.equal((await put(S, 'am', 'lss_emp_New Hire', { s: { b: 1 } }, { exists: false })).status, 409, 'the row exists now');
+  const r2 = await put(S, 'am', 'lss_emp_New Hire', { s: { b: 2 } });
+  assert.equal(r2.status, 200, 'without expect: written against what was just read');
+  assert.equal((await put(S, 'am', K, { s: {} }, { exists: true, updated_at: 'not-a-time' })).status, 400);
+});
+
+test('a write is checked against the row it read: another device writing in between makes it a conflict', async () => {
+  const S = setup(); seed(S.W);
+  const K = 'spl_lss_requests_Ben S2';
+  const other = [...S.W.get(K), req('o1', 'Ben S2')];
+  S.W.afterGet = u => { if (!decodeURIComponent(u.search).includes('key=in.("' + K + '")')) return false; S.W.set(K, other, '2026-11-04T09:59:00.000000+00:00'); return true; };   // 関数がその行を読んだ直後に、ほかの端末が申請を足す
+  const r = await put(S, 'am', K, [...S.W.get(K), req('a1', 'Ben S2')]);
+  assert.equal(r.status, 409);
+  assert.deepEqual(S.W.get(K), other, 'the other device’s request is still there');
+});
+
+test('the name from the PIN mark is self even when the employees table has another name (renamed, not yet confirmed)', async () => {
+  const S = setup(); seed(S.W);
+  S.W.pins.tre = { ...ME.g1, name: 'Kai O.' };
+  S.W.set('lss_emp_Kai O.', { s: {}, _at: 1 });
+  const r = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tre' });
+  assert.ok(r.j.cs.names.includes('Kai O.'));
+  assert.ok(r.j.cs.rows.some(x => x.key === 'lss_emp_Kai O.'));
+  assert.equal((await S.call({ action: 'put', key: 'lss_emp_Kai O.', value: { s: {} }, pin_session: 'tre' })).status, 403, 'not their own points');
+});
+
+test('names with spaces and Japanese go through as they are; a PIN name that differs only by surrounding spaces is still self', async () => {
+  const S = setup(); seed(S.W);
+  S.W.pins.tsp = { ...ME.g1, name: ' Kai One ' };
+  const r = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tsp' });
+  assert.ok(r.j.cs.names.includes('Kai One'));
+  assert.equal((await S.call({ action: 'put', key: 'lss_emp_Kai One', value: { s: {} }, pin_session: 'tsp' })).status, 403, 'still not their own points');
+  assert.equal((await put(S, 'g2', 'lss_emp_Mei 応援', { s: { 'A-1': 2 } })).status, 200);
+});
