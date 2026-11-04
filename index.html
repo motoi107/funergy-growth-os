@@ -10677,8 +10677,11 @@ function _lsRequestDeferred(key){
 function _lsRequestDeferredPrefix(pre){
   try{
     if(_lsDeferReq['#'+pre]) return; _lsDeferReq['#'+pre]=1;
-    fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.'+encodeURIComponent(pre)+'*', { headers: supaHeaders() })
-      .then(function(res){ return res.ok ? res.json() : []; })
+    var _rest=function(){ return fetch(SUPABASE_URL+'/rest/v1/app_state?select=key,value&key=like.'+encodeURIComponent(pre)+'*', { headers: supaHeaders() })
+      .then(function(res){ return res.ok ? res.json() : []; }); };
+    /* v1140：Career Score の履歴は関数 secure-state から（見られる人の分だけ）。関数が無い・前の版なら今までどおり REST。読めなかったらあとでもう一度 */
+    var _viaCs=(pre==='spl_lss_history_' && typeof ssRouted==='function' && typeof csHistPull==='function' && ssRouted(pre+'x'));
+    (_viaCs ? csHistPull().then(function(rows){ if(rows===SS_REST) return _rest(); if(!Array.isArray(rows)){ delete _lsDeferReq['#'+pre]; return []; } return rows; }) : _rest())
       .then(function(rows){
         if(!Array.isArray(rows) || !rows.length) return;
         var n=0;
@@ -10996,6 +10999,8 @@ function lsSet(key, val) {
 /* FUNERGY_WEB_OFFICE_SOURCE_V1 lsSet */
 if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE_WRITE(key,val);else if(/^ocs_(?:asg|ev)_/.test(key))throw Error('web_office_not_ready');return (function lsSet(key, val) {
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
+  /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
+  if(typeof csLocalWriteOk==='function' && !csLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
   /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
      重ねられなかったときは書かない（古い写しの表をそのまま書くと、退職した人が戻る） */
   if(key==='m_employees' && typeof _empOnLocalSave==='function'){ try{ val=_empOnLocalSave(val); }catch(e){ console.warn('emp save', e); try{ _lsNoteSaveFailure(key); }catch(_){} return false; } }
@@ -12334,6 +12339,95 @@ function ssIsKey(k){
   if(SS_KEYS.indexOf(k)>=0) return true;
   return SS_PREFIX_RE.test(k);
 }
+/* ============================================================
+   v1140（段階 2b の 2 つ目）：Career Score の点・申請・履歴も関数 secure-state を通す（docs/SECURE_CS_V1140_JA.md）
+   ------------------------------------------------------------
+   【キー】lss_emp_<名前>（点）・spl_lss_requests_<名前>（申請）・spl_lss_history_<名前>（履歴・開いたときだけ）・前の統合行 lss_scores・lss_requests・lss_history。
+   【届く人】CEO・GM：全部（full）。ほかの在籍の人：見られる人の行だけ（scoped・行は丸ごと。前の統合行は見られる人の分だけ）。
+     見られる人（Moto さん 11/04）：AM＝担当の店・G4＝自分の店の G4 以下・G3＝自分の店の G1・G2・Crew Leader＝自分の店の G1・
+     Head Chef＝全店の G1（申請は全店）・経理・事務Crew＝本部の人・ほか＝自分だけ。Score管理で決めた役も。店のログインなど＝なし。決めるのはサーバー。
+   【端末の写し】行は丸ごと本物なので、v1139 の「一部だけの写し」（part）は要らない。見られなくなった人の行・前の統合行は、取り込みのたびに
+     端末から消す（送れていない変更のある行は残す）。見られない人の行は、この端末で作らない・直さない（csLocalWriteOk）。
+   【関数が前の版（v1139）】答えに csfn:1 が無ければ、Career Score は今までどおり REST（公開の鍵）で。 */
+var CS_PREFIX = ['lss_emp_','spl_lss_requests_','spl_lss_history_'];
+var CS_LEGACY = ['lss_scores','lss_requests','lss_history'];
+var CS_STATE_KEY = '_cs_state';   /* この端末だけ：{ level:full|scoped|none, names:[見られる人], req:[申請を見られる人], who:ログイン, at } */
+var CS_SEEN_KEY = '_cs_seen';     /* この端末だけ：{ key: 関数の印#端末の文字の印 } */
+function csIsKey(k){
+  if(typeof k!=='string' || !k || k.length>400) return false;
+  if(CS_LEGACY.indexOf(k)>=0) return true;
+  for(var i=0;i<CS_PREFIX.length;i++){ if(k.length>CS_PREFIX[i].length && k.indexOf(CS_PREFIX[i])===0) return true; }
+  return false;
+}
+function csParse(k){
+  if(!csIsKey(k)) return null;
+  if(CS_LEGACY.indexOf(k)>=0) return { kind:'legacy', name:'' };
+  if(k.indexOf('lss_emp_')===0) return { kind:'emp', name:k.slice(8) };
+  if(k.indexOf('spl_lss_requests_')===0) return { kind:'req', name:k.slice(17) };
+  return { kind:'hist', name:k.slice(16) };
+}
+/* だれのログインの範囲か（前の人の範囲を、次の人に使わない） */
+function csWho(){
+  var u='', r='', st='';
+  try{ u=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  try{ r=String((typeof curRealRole!=='undefined' && curRealRole) || (typeof curRole!=='undefined' && curRole) || ''); }catch(e){}
+  try{ st=(typeof curStoreLogin!=='undefined' && curStoreLogin) ? 'store' : ''; }catch(e){}
+  return u+'|'+r+'|'+st;
+}
+function csStateGet(){
+  try{ var o=JSON.parse(localStorage.getItem(CS_STATE_KEY)||'null');
+    if(o && typeof o==='object' && (o.level==='full' || o.level==='scoped' || o.level==='none')){
+      if(!Array.isArray(o.names)) o.names=[]; if(!Array.isArray(o.req)) o.req=[]; return o;
+    } }catch(e){}
+  return null;
+}
+function csStateSet(o){
+  var prev=csStateGet();
+  try{ if(o) localStorage.setItem(CS_STATE_KEY, JSON.stringify(o)); else localStorage.removeItem(CS_STATE_KEY); }catch(e){}
+  /* 「設定 › 診断と記録」に残す（形・人数が変わったときだけ。名前は出さない） */
+  try{
+    var pk=prev ? prev.level+'/'+prev.names.length : '', nk=o ? o.level+'/'+o.names.length : '';
+    if(o && pk!==nk && typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function'){
+      var L=o.level==='full' ? ['全部','all'] : o.level==='scoped' ? ['見られる人の分だけ（'+o.names.length+' 人）','only the people you can see ('+o.names.length+')'] : ['受け取らない','none'];
+      FUNERGY_STATUS.log('store', (typeof t==='function') ? t('Career Score：サーバー（secure-state）から '+L[0]+'（この端末の写しも合わせました）', 'Career Score: from the server (secure-state), '+L[1]+' (this device copy updated)') : ('Career Score：'+L[0]));
+    }
+  }catch(e){}
+}
+function csSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(CS_SEEN_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function csSeenSet(o){ try{ localStorage.setItem(CS_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
+/* その人の Career Score をこの端末で見せてよいか（画面の「—」）。範囲がまだ決まっていない（関数が前の版・v1139 以前から上げた直後）は今までどおり。
+   前の人の範囲が残っているときは、受け取り終えるまで本人だけ */
+function csSees(name){
+  var st=csStateGet();
+  if(!st) return true;
+  if(st.who && st.who!==csWho()){ try{ return !!name && name===curUserName; }catch(e){ return false; } }
+  if(st.level==='full') return true;
+  if(st.level==='none') return false;
+  return st.names.indexOf(name)>=0;
+}
+function csSeesReq(name){
+  var st=csStateGet();
+  if(!st || st.level!=='scoped' || (st.who && st.who!==csWho())) return csSees(name);
+  return st.req.indexOf(name)>=0 || st.names.indexOf(name)>=0;
+}
+/* この端末で Career Score の行を書いてよいか（lsSet）。見られない人の行を作る・直すと、一部だけの写しになる（あとで CEO・GM の端末から
+   送られると、ほかの点を消す）ので書かない。範囲がまだ決まっていないときは今までどおり。前の人の範囲が残っているときは、受け取り終えるまで待つ */
+var _csWarned = {};
+function csLocalWriteOk(key){
+  if(!csIsKey(key)) return true;
+  var st=csStateGet(); if(!st) return true;
+  var no=function(id, ja, en){
+    if(!_csWarned[id]){ _csWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} }
+    setTimeout(function(){ delete _csWarned[id]; }, 15000);
+    return false;
+  };
+  if(st.who && st.who!==csWho()) return no('who', 'Career Score を受け取っている途中です。少し待ってから、もう一度保存してください（保存していません）', 'Still receiving Career Score data. Please save again in a moment (not saved).');
+  if(st.level==='full') return true;
+  var p=csParse(key);
+  if(st.level==='none' || p.kind==='legacy') return no('none', 'このアカウントでは Career Score を保存できません（保存していません）', 'This account cannot save Career Score data (not saved).');
+  var ok=(p.kind==='req') ? csSeesReq(p.name) : (st.names.indexOf(p.name)>=0);
+  return ok ? true : no('out', 'この人の Career Score は、このアカウントで見られる範囲の外です（保存していません）', 'This person’s Career Score is outside what this account can see (not saved).');
+}
 /* 今のログイン：PIN の印（window._hwSession）とメールのログイン（invInSession）。無ければ null */
 function ssSess(){
   var pin=null, em=null;
@@ -12342,9 +12436,47 @@ function ssSess(){
   if(!pin && !em) return null;
   return { pin:pin, em:em, id:(pin ? 'p:'+pin.slice(-24) : '')+'|'+(em ? 'e:'+String(em.access_token).slice(-24) : '') };
 }
+/* Codex（#131 6635761741・#133 6641596764）P1：遅れて届いた前の人の答えを、次の人の端末に置かない。
+   頼んだときのログイン（世代・名前・店のログインか・PIN の印かメールのログイン）を覚え、答えが届いたあと・端末を変える直前・
+   取り込む直前に比べる。違えば答えを捨てる（端末も範囲の記録も変えない）。ログアウト（ssOnLogout）で世代を進める。
+   通信を止めるだけに頼らない（止められなかった答え・止める前に届いた答えも捨てる） */
+var _ssGen = 0;
+function ssToken(){
+  var u='', st='', id='';
+  try{ u=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  try{ st=(typeof curStoreLogin!=='undefined' && curStoreLogin) ? 's' : ''; }catch(e){}
+  try{
+    var pin=(typeof window!=='undefined' && typeof window._hwSession==='string') ? window._hwSession : '';
+    if(pin) id='p:'+pin;
+    else { var em=(typeof invInSession==='function') ? invInSession() : ((typeof window!=='undefined' && window._authSession) || null);
+      if(em && em.access_token) id='e:'+String(em.email || em.emp_id || (em.user && (em.user.id || em.user.email)) || ''); }
+  }catch(e){}
+  return { g:_ssGen, u:u, st:st, id:id };
+}
+function ssStale(tk){
+  if(!tk) return false;
+  var n=ssToken();
+  return n.g!==tk.g || n.u!==tk.u || n.st!==tk.st || n.id!==tk.id;
+}
+/* 取り込む直前（_applyKvRows の前）：頼んだあとにログインが変わっていたら、成長カルテ・賞与・Career Score の行を外し、印（_ss・_cs）も付けない */
+function ssStaleRows(rows){
+  if(!Array.isArray(rows) || !rows._tk || !ssStale(rows._tk)) return rows;
+  var out=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key))); });
+  try{ if(rows._kv) Object.defineProperty(out, '_kv', { value:rows._kv, enumerable:false }); }catch(e){}
+  try{ Object.defineProperty(out, '_stale', { value:true, enumerable:false }); }catch(e){}
+  return out;
+}
 function ssLegacyNow(S){ var L=_ss.legacy; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーを関数に頼むか（ログインの印があり、関数が無いと分かっていない） */
-function ssRouted(key){ if(!ssIsKey(key)) return false; var S=ssSess(); return !!S && !ssLegacyNow(S); }
+function ssRouted(key){
+  var cs=csIsKey(key);
+  if(!ssIsKey(key) && !cs) return false;
+  var S=ssSess(); if(!S || ssLegacyNow(S)) return false;
+  if(cs && csOldNow(S)) return false;   /* v1140：関数が前の版（Career Score を扱わない）：今までどおり REST */
+  return true;
+}
+/* v1140：関数が前の版（答えに csfn:1 が無い）と分かったあと 10 分は、Career Score を REST で */
+function csOldNow(S){ var L=_ss.csOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
 function ssLevelSet(v){
   var prev=ssLevelGet();
@@ -12433,7 +12565,9 @@ function ssFreshCleanup(){
 }
 /* ログアウト：共有の端末（ほかの人も使った）では、CEO・GM の全部の値の写しを残さない（送れていない変更のあるキーは残す） */
 function ssOnLogout(){
+  _ssGen++;   /* 頼んでいる途中の前の人の答えは、届いても置かない（ssStale） */
   try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
+  try{ if(typeof csOnLogout==='function') csOnLogout(); }catch(e){}   /* v1140：Career Score も */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -12461,18 +12595,24 @@ async function ssCall(payload, retried){
     if(r.status>=500) return { status:r.status, error:'' };   /* 関数が落ちた（入っている）：失敗（REST に切り替えない） */
     _ss.legacy={ id:S.id, at:Date.now() }; return { legacy:true };
   }
+  /* v1140：Career Score を扱う関数か（csfn:1）。前の版の関数なら、Career Score の読み書きは REST に戻す */
+  if(j.csfn===1) _ss.csOld=null;
+  else { _ss.csOld={ id:S.id, at:Date.now() }; if((payload.key && csIsKey(payload.key)) || payload.action==='hist') return { legacy:true }; }
   if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
   return { ok:true, j:j };
 }
 /* ログイン・「最新に更新」の取り込み（_kvPullRows から）。返す：
    { rest:true }（今までどおり REST で取る）／{ rest:false, rows:[…], ver:{…} }（REST から外す。rows は合流して取り込む行＝full のとき。
    fresh：端末の写しが part だった＝置く前に ssFreshCleanup） */
-async function ssPull(force){
+async function ssPull(force, tk){
+  if(!tk) tk=ssToken();
+  var STALE={ stale:true };   /* 頼んだあとにログインが変わった：何も変えない（_kvPullRows が成長カルテ・賞与・Career Score の行を外す） */
   var S=ssSess();
   var gmHint=false; try{ gmHint=['gm','ceo'].indexOf(typeof curRole!=='undefined' ? curRole : '')>=0 && !(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){}
   if(!S){
     if(gmHint) return { rest:true };                     /* PIN の印の無い CEO・GM：今までどおり */
-    await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} };
+    await ssIdbReady(); if(ssStale(tk)) return STALE;
+    ssToPart(null); ssLevelSet('none'); var c0=await csTake({ level:'none' }, tk); return c0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0 };   /* v1140：Career Score も受け取らない */
   }
   if(ssLegacyNow(S)) return { rest:true };
   var part=(ssState()==='part'), seen=ssSeenGet(), have={};
@@ -12480,26 +12620,33 @@ async function ssPull(force){
     var s=String(seen[k]), c=s.indexOf('#');
     if(c>0 && ssIsKey(k) && (!part || s.indexOf('p:')===0) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c);
   });
-  var r=await ssCall({ action:'pull', have:have, ms:60000 });
+  var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), ms:60000 });   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない） */
+  if(ssStale(tk)) return STALE;   /* Codex P1：前の人の答え（GM の full など）を、次の人の端末に置かない */
   if(r.legacy) return { rest:true };
-  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} }; }
+  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); var c1=await csTake({ level:'none' }, tk); return c1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1 }; }
   if(r.status===401){
     /* CEO・GM：端末の写しは消さない（PIN の確かめの一時的な失敗も 401 になる）。今までどおり REST（SQL のあとは対象のキーは来ない） */
     if(gmHint) return { rest:true, fail:true };
-    await ssIdbReady(); ssToPart(null); ssLevelSet('none'); return { rest:false, rows:[], ver:{} };   /* 店舗のログイン・期限切れ */
+    await ssIdbReady(); if(ssStale(tk)) return STALE;
+    ssToPart(null); ssLevelSet('none'); var c2=await csTake({ level:'none' }, tk); return c2.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c2 };   /* 店舗のログイン・期限切れ */
   }
-  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま） */
+  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true, cs:{ fail:true, rows:[], ver:{} } };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま） */
   var j=r.j, level=(j.level==='full' || j.level==='proj') ? j.level : 'none';
+  /* v1140：Career Score。関数が前の版（cs が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
+  var csr=null;
+  if(j.cs && typeof j.cs==='object'){ csr=await csTake(j.cs, tk); if(csr.stale) return STALE; }
+  else if(j.cs===undefined || j.cs===null){ csHistReset(csStateGet(), '', []); csStateSet(null); }
   var rows=Array.isArray(j.rows) ? j.rows.filter(function(x){ return x && ssIsKey(x.key) && x.key!=='karte_pin' && typeof x.v==='string'; }) : [];
   var ver={}; (Array.isArray(j.index) ? j.index : []).forEach(function(x){ if(x && ssIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
   if(level==='full'){
     ssLevelSet('full');
     /* 置くのは REST の取り込みも読めたあと（_kvPullRows）。part の端末は、その直前に見せる形・前の写しを消す（ssFreshCleanup） */
-    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver };
+    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, cs:csr };
   }
   /* proj・none：見せる形をそのまま置く（合流しない・送らない）。ほかの対象のキーの写しは消す。
      送れていない変更のあるキー（共有の端末で GM が直して送れていない分）は、消さない・見せる形で上書きしない（独立レビュー P1-1） */
   await ssIdbReady();
+  if(ssStale(tk)) return STALE;
   ssToPart(level==='proj' ? SS_PROJ : null);
   var nseen={}, m=ssMarkGet();
   if(level==='proj'){
@@ -12513,7 +12660,97 @@ async function ssPull(force){
     ssMarkSet(m);
   }
   ssSeenSet(nseen); ssLevelSet(level);
-  return { rest:false, rows:[], ver:{} };
+  return { rest:false, rows:[], ver:{}, cs:csr };
+}
+/* ---- v1140：Career Score の取り込み ---- */
+/* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
+function csHaveMap(force){
+  var have={}; if(force) return have;
+  var seen=csSeenGet();
+  Object.keys(seen).forEach(function(k){ var s=String(seen[k]), c=s.indexOf('#'); if(c>0 && csIsKey(k) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c); });
+  return have;
+}
+/* 関数の答え（cs）を受け取る：見られなくなった人の行・前の統合行の全部の写しを端末から消し（送れていない変更のある行は残す）、範囲を記録する。
+   返す行は _applyKvRows で今までどおり合流して取り込む（行は丸ごと本物なので、端末の写しと合流してよい） */
+async function csTake(c, tk){
+  await ssIdbReady();
+  if(tk && ssStale(tk)) return { stale:true, fail:true, rows:[], ver:{} };   /* Codex P1：頼んだあとにログインが変わった（範囲も写しも変えない） */
+  if(!c || c.error || c.fail) return { fail:true, rows:[], ver:{} };   /* 見られる人を決められなかった：端末の写しはそのまま・REST でも取らない */
+  var level=(c.level==='full' || c.level==='scoped') ? c.level : 'none';
+  var ver={}; (Array.isArray(c.index) ? c.index : []).forEach(function(x){ if(x && csIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
+  var str=function(a){ return Array.isArray(a) ? a.filter(function(n){ return typeof n==='string' && n; }) : []; };
+  var names=(level==='scoped') ? str(c.names) : [], req=(level==='scoped') ? str(c.req_names) : [];
+  if(level!=='full'){
+    var seen=csSeenGet(), ch=false, ks=[];
+    try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
+    ks.forEach(function(k){
+      if(!csIsKey(k) || ssPending(k)) return;
+      var p=csParse(k), keep=false;
+      if(level==='scoped'){
+        if(p.kind==='hist') keep=names.indexOf(p.name)>=0;
+        else if(p.kind==='legacy') keep=!!ver[k] && seen[k]!=null && String(seen[k])===ver[k]+'#'+_kvFp(_lsStoreGet(k));   /* この範囲の見せる形のまま */
+        else keep=!!ver[k];
+      }
+      if(!keep){ try{ _lsRawDel(k); }catch(e){} if(seen[k]!=null){ delete seen[k]; ch=true; } }
+    });
+    if(ch) csSeenSet(seen);
+  }
+  var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && csIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; })
+    .map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; });
+  csHistReset(csStateGet(), level, names);
+  csStateSet({ level:level, names:names, req:req, who:csWho(), at:Date.now() });
+  return { rows:rows, ver:ver, level:level };
+}
+/* 範囲（人・形・ログインした人）が変わったら、履歴（開いたときだけ取る）をもう一度取れるようにする。
+   前は一度取ると、次の人・広がった範囲でも取り直さなかった（独立レビュー P3） */
+function csHistReset(prev, level, names){
+  try{
+    var same=!!prev && prev.level===level && prev.who===csWho() && JSON.stringify((prev.names||[]).slice().sort())===JSON.stringify((names||[]).slice().sort());
+    if(!same && typeof _lsDeferReq!=='undefined') delete _lsDeferReq['#spl_lss_history_'];
+  }catch(e){}
+}
+/* 取り込めた行の印を残す（_kvSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
+function csSeenRecord(rows, okKeys){
+  try{
+    var m=rows && rows._cs; if(!m || !m.ver) return;
+    try{ if(typeof _idbState!=='undefined' && _idbState==='init') return; }catch(e){}
+    var seen=csSeenGet(), next={}, ok={}, got={};
+    (okKeys||[]).forEach(function(k){ ok[k]=1; });
+    (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
+    Object.keys(m.ver).forEach(function(k){
+      if(ok[k]) next[k]=m.ver[k]+'#'+_kvFp(_lsStoreGet(k));
+      else if(!got[k] && seen[k]!=null && String(seen[k]).indexOf(m.ver[k]+'#')===0) next[k]=seen[k];
+    });
+    csSeenSet(next);
+  }catch(e){ console.warn('cs seen', e); }
+}
+/* 履歴（spl_lss_history_・開いたときだけ）を関数から。返す：行の配列／SS_REST（関数が無い・前の版）／null（読めなかった）。
+   見られなくなった人の履歴は端末から消す */
+async function csHistPull(){
+  var tk=ssToken();
+  var r=await ssCall({ action:'hist', ms:45000 });
+  if(ssStale(tk)) return null;   /* Codex P1：前の人の履歴を次の人の端末に置かない（読めなかったのと同じ＝あとでもう一度） */
+  if(r.legacy || r.none) return SS_REST;
+  if(!r.ok) return null;
+  var rows=(Array.isArray(r.j.rows) ? r.j.rows : []).filter(function(x){ var p=x && csParse(x.key); return !!(p && p.kind==='hist'); });
+  if(Array.isArray(r.j.names)){
+    var nm=r.j.names, ks=[]; try{ ks=lsKeys('spl_lss_history_'); }catch(e){ ks=[]; }
+    await ssIdbReady();
+    if(ssStale(tk)) return null;
+    ks.forEach(function(k){ var p=csParse(k); if(p && p.kind==='hist' && nm.indexOf(p.name)<0 && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+  }
+  return rows;
+}
+/* ログアウト：共有の端末（ほかの人も使った）では、Career Score の写しを残さない（送れていない変更のある行は残す）。次にログインした人の範囲で受け取り直す */
+function csOnLogout(){
+  try{ if(typeof _lsDeferReq!=='undefined') delete _lsDeferReq['#spl_lss_history_']; }catch(e){}   /* 次にログインした人の範囲で履歴を取り直す（独立レビュー P3） */
+  try{
+    var m=ssMarkGet(), st=csStateGet();
+    if(!m.shared && !(st && st.level!=='full')) return;
+    var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
+    ks.forEach(function(k){ if(csIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+    csSeenSet({}); csStateSet(null);
+  }catch(e){}
 }
 /* full の行を取り込めたら印を残す（_kvSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
 function ssSeenRecord(rows, okKeys){
@@ -12532,7 +12769,9 @@ function ssSeenRecord(rows, okKeys){
 }
 /* 1 つのキーを読む（_fetchOpValue・_fetchOpRow・pullOpKey）。返す：{exists, value, updatedAt}／undefined（読めなかった）／SS_REST／_OP_READ_TMO */
 async function ssGetRow(key, tmo){
+  var tk=ssToken();
   var r=await ssCall({ action:'get', key:key, ms:tmo || 15000 });
+  if(ssStale(tk)) return undefined;   /* Codex P1：頼んだあとにログインが変わった：読めなかったのと同じ（前の人の値を置かない・前の人の値と比べて送らない） */
   if(r.legacy) return SS_REST;
   if(r.none) return SS_REST;
   if(r.net && r.timeout && tmo && typeof _OP_READ_TMO!=='undefined') return _OP_READ_TMO;
@@ -12549,7 +12788,9 @@ async function ssPutRow(key, value, expect){
   if(r.status===409) return 'conflict';
   if(r.status===400) return 'badts';
   if(r.status===403){
-    ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
+    if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
+      'This account cannot save this person’s Career Score (kept in the unsent list).');
+    else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
       'This account cannot save growth chart / bonus data (kept in the unsent list).');
     return 'forbidden';
   }
@@ -12645,8 +12886,9 @@ async function _kvFetchKeys(keys){
    行に印の一覧（_kv）を付けて返す。取り込んだあと _kvSeenRecord に渡す */
 async function _kvPullRows(force){
   var t0=Date.now();
+  var _tk=(typeof ssToken==='function') ? ssToken() : null;   /* Codex P1：頼んだときのログイン（遅れて届いた前の人の答えを、次の人の端末に置かない） */
   try{ if(typeof _idbBootP!=='undefined' && _idbBootP) await Promise.race([_idbBootP, new Promise(function(r){ setTimeout(r, 3000); })]); }catch(e){}   /* 端末に何があるかを IndexedDB から読み終えてから決める */
-  var _ssP=(typeof ssPull==='function') ? ssPull(force).catch(function(e){ console.warn('ss pull', e); return { rest:true, fail:true }; }) : null;   /* v1139：成長カルテ・賞与のキーは関数 secure-state から（行の一覧と並べて頼む） */
+  var _ssP=(typeof ssPull==='function') ? ssPull(force, _tk).catch(function(e){ console.warn('ss pull', e); return { rest:true, fail:true }; }) : null;   /* v1139：成長カルテ・賞与のキーは関数 secure-state から（行の一覧と並べて頼む） */
   var seen=_kvSeenGet();
   var _fa=Number(seen.fullAt)||0, _now=Date.now();
   if(!force && !(_fa>0 && _fa<=_now+60000 && _now-_fa<KV_FULL_EVERY_MS)) force='weekly';   /* 先の時刻の記録（時計の進んだ端末）も全部取り直す */
@@ -12654,12 +12896,17 @@ async function _kvPullRows(force){
   idx=await _kvIndexRpc(); if(idx) exact=true;
   if(!idx){ try{ idx=await _kvIndexKeys(); }catch(e){ idx=null; } }
   var _ssr=_ssP ? await _ssP : { rest:true };
-  var _ssOut=!_ssr.rest;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
+  var _stale=!!_ssr.stale || (typeof ssStale==='function' && ssStale(_tk));   /* 頼んだあとにログインが変わった：成長カルテ・賞与・Career Score は REST でも取らず、端末も変えない */
+  var _ssOut=!_ssr.rest || _stale;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
+  var _csOut=!!_ssr.cs || _stale;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
+  /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
+  if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
       var k=r.key;
       if(_ssOut && ssIsKey(k)) return;
+      if(_csOut && csIsKey(k)) return;
       ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
         if(!force && seen.rows[k]===r.v){ skip[k]=1; legacySkip++; } else need.push(k);
@@ -12690,9 +12937,15 @@ async function _kvPullRows(force){
     try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
     if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
+    if(_csOut){ f+='&key=not.in.'+encodeURIComponent('('+CS_LEGACY.map(_kvQuote).join(',')+')'); CS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1140 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
-  if(Array.isArray(rows) && _ssOut && _ssr.full){
+  if(!_stale && typeof ssStale==='function' && ssStale(_tk)) _stale=true;   /* REST を待つあいだにログインが変わった */
+  if(_stale){
+    /* 前の人の答え：成長カルテ・賞与・Career Score の行は外し、写しの片づけ（ssFreshCleanup）も印（_ss・_cs）もしない */
+    if(Array.isArray(rows)) rows=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key))); });
+  }
+  else if(Array.isArray(rows) && _ssOut && _ssr.full){
     await ssIdbReady();
     if(_ssr.fresh) ssFreshCleanup();   /* v1139（独立レビュー P1-2）：part の写しを消すのは、REST も読めて全部の値を置く直前 */
     try{ if(!ssPending('karte_pin')) _lsRawDel('karte_pin'); }catch(e){}   /* 成長カルテの PIN はサーバーで確かめる（前の版の平文の写しを残さない） */
@@ -12700,12 +12953,19 @@ async function _kvPullRows(force){
   else if(Array.isArray(rows) && !_ssOut && typeof ssIsKey==='function' && rows.some(function(r){ return r && ssIsKey(r.key); }) && ssState()==='part'){
     await ssIdbReady(); ssFreshCleanup();   /* 今までどおり REST で、対象のキーの行が届いた（SQL の前）：同じく、置く直前に part の写しを消す */
   }
-  if(Array.isArray(rows) && _ssOut){
+  if(Array.isArray(rows) && _ssOut && !_stale){
     rows=rows.filter(function(r){ return !(r && ssIsKey(r.key)); }).concat(_ssr.rows || []);   /* v1139：REST の対象のキーの行は使わない・関数の行（full）を足す */
     if(_ssr.full){ try{ Object.defineProperty(rows, '_ss', { value:{ ver:_ssr.ver || {} }, enumerable:false }); }catch(e){} }   /* 印は取り込めた行だけ（ssSeenRecord）。見せる形（proj）は ssPull が記録した */
   }
+  if(Array.isArray(rows) && _csOut && !_stale){
+    var _ssMark=rows._ss;   /* 新しい配列にするので、成長カルテ・賞与の印（_ss）を付け直す（付け直さないと毎回全部取り直す） */
+    rows=rows.filter(function(r){ return !(r && csIsKey(r.key)); }).concat(_ssr.cs.rows || []);   /* v1140：REST の Career Score の行は使わない・関数の行を足す（合流して取り込む） */
+    if(_ssMark){ try{ Object.defineProperty(rows, '_ss', { value:_ssMark, enumerable:false }); }catch(e){} }
+    if(!_ssr.cs.fail){ try{ Object.defineProperty(rows, '_cs', { value:{ ver:_ssr.cs.ver || {} }, enumerable:false }); }catch(e){} }
+  }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
+    if(_tk){ try{ Object.defineProperty(rows, '_tk', { value:_tk, enumerable:false }); }catch(e){} }   /* 取り込む直前にもう一度比べる（ssStaleRows） */
   }
   _kvLastKeys = Array.isArray(rows) ? rows.map(function(r){ return r && r.key; }) : null;
   _kvLast={ at:Date.now(), ms:Date.now()-t0, exact:exact, idx:!!idx, force:force||false, how:how, index:n, need:need.length, fetched:Array.isArray(rows)?rows.length:-1, legacySkip:legacySkip, sameSkip:sameSkip };
@@ -12807,7 +13067,8 @@ async function supaPullAllMasters(opt){
     if (_dres[0] === null) _fails.push('ingredients');   /* v1137 */
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
-    try { var _kvOk=[]; _applyKvRows(_dres[1], _kvOk); _kvSeenRecord(_dres[1], _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_dres[1], _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録 */
+    try { var _kvRows=(typeof ssStaleRows==='function') ? ssStaleRows(_dres[1]) : _dres[1];   /* Codex P1：取り込む直前にもログインを比べる（前の人の成長カルテ・賞与・Career Score を置かない） */
+      var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -12829,6 +13090,7 @@ async function migrateUploadLocalOps(){
     lsKeys().forEach(function(key){   /* v1138：localStorage には大きなデータが無いので、IndexedDB のキーも見る（前の版で localStorage にあった分と同じ） */
       if(!key||have[key]) return;
       if (typeof ssIsKey==='function' && ssIsKey(key)) return;   /* v1139：成長カルテ・賞与のキーは一覧に出ない（公開の鍵では読めない）。端末の写しで書かない */
+      if (typeof csIsKey==='function' && csIsKey(key)) return;   /* v1140：Career Score も */
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
     });
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
@@ -13326,7 +13588,7 @@ var OP_MERGE = {
   tip_history:    { merge: mergeAppendLog, covers: _coversLog },
   career_history: { merge: mergeAppendLog, covers: _coversLog },
   eval_history:   { merge: mergeAppendLog, covers: _coversLog },
-  lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
+  lss_requests:   { merge: mergeLssReq,    covers: _coversSkillReq },   /* v1140：取消と承認・却下がぶつかったら決定（mergeLssReq） */
   tip_requests:   { merge: mergeTipReq,    covers: _coversTipReq },   /* v1091: 2 台で決めたら、決めた時刻の新しいほう */
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
 /* v870: 申請者端末とGM端末が同じ行を書くので、上書きだと申請か承認のどちらかが消える。 */
@@ -14004,6 +14266,26 @@ function mergeSkillReq(cloudArr, localArr){
     if(!by[id]){ by[id]=item; order.push(id); return; }
     var cur=by[id], win;
     if(_srPending(cur)!==_srPending(item)) win = _srPending(cur)?item:cur; // レビュー済みを優先
+    else win = isLocal?item:cur;
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+/* v1140：Career Score の申請（lss_requests・spl_lss_requests_）の合流。skill_requests と同じ（id で和集合・決めたものが申請中に勝つ・どちらも決めてあれば手元）に加えて、
+   本人の取り下げ（取消）と承認する人の決定（承認・却下）がぶつかったら、決定のほう（どの端末で合流しても同じ。承認したときに点はもう書いてある）。
+   前は手元が勝つので、本人の端末が取消を送り続け、関数 secure-state が「決まった自分の申請の書き換え」を断るので、送信待ちに残り続けた（独立レビュー P3） */
+function mergeLssReq(cloudArr, localArr){
+  var by={}, order=[];
+  var dec=function(r){ return !_srPending(r) && r.status!=='取消'; };
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_srPending(cur)!==_srPending(item)) win = _srPending(cur)?item:cur;    // レビュー済みを優先
+    else if(dec(cur)!==dec(item) && !_srPending(cur)) win = dec(cur)?cur:item; // 取消と承認・却下：決定
     else win = isLocal?item:cur;
     by[id]=win;
   }
@@ -42604,7 +42886,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1139';
+const APP_VERSION = '1140';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60631,12 +60913,15 @@ function renderOfficeMember(){
     var oemp=officeEmpByName(sel);
     var odept=empSpecialistDept(oemp);
     var osum=lssSummary(sel);
+    var _ohide=(typeof csSees==='function' && !csSees(sel));   /* v1140：見られる範囲の外 */
     var olvl=lssLevel(osum.totalPct);
     var oax=empAxisEval(oemp);
     var odeptLabel=odept?(SPECIALIST_DEPTS[odept]?SPECIALIST_DEPTS[odept].label:odept):'一般評価軸';
     var ocanEval=canEditLss(sel);
     html+='<div class="card"><div class="card-title"><i class="ti ti-chart-arcs"></i>Career Score <span class="tag '+(odept?'tag-blue':'tag-gray')+'" style="margin-left:auto;font-size:9px">'+escapeHtml(odeptLabel)+'</span></div>';
-    if(osum.hasData){
+    if(_ohide){
+      html+='<p style="font-size:12px;color:var(--muted);line-height:1.6"><i class="ti ti-lock"></i> '+t('この人の Career Score は、このアカウントで見られる範囲の外です。','This person’s Career Score is outside what this account can see.')+'</p>';
+    } else if(osum.hasData){
       html+='<div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">'
         +'<div style="font-size:24px;font-weight:800;color:'+evalColor(osum.totalPct)+';line-height:1;white-space:nowrap">'+cscN(osum.totalScore)+'<span style="font-size:13px"> / '+cscN(osum.totalMax)+t(' 点',' pt')+'</span></div>'   /* v1099：% ではなく点 */
         +'<div><div style="font-size:13px;font-weight:600">'+olvl.label+'</div><div style="font-size:11px;color:var(--muted)">総合 Career Score</div></div></div>';
@@ -60649,7 +60934,7 @@ function renderOfficeMember(){
     } else {
       html+='<p style="font-size:12px;color:var(--muted);line-height:1.6">まだCareer Scoreの評価がありません。'+(ocanEval?'下のボタンから評価できます。':'GM/CEOが評価します。')+'</p>';
     }
-    html+='<button class="btn btn-'+(osum.hasData?'secondary':'primary')+' btn-sm" style="margin-top:8px" onclick="openLssDetail(\''+sel.replace(/'/g,"")+'\')"><i class="ti ti-'+(ocanEval?'edit':'eye')+'"></i> '+((osum.hasData||!ocanEval)?'評価シートを開く':'評価する')+'</button>';
+    if(!_ohide) html+='<button class="btn btn-'+(osum.hasData?'secondary':'primary')+' btn-sm" style="margin-top:8px" onclick="openLssDetail(\''+sel.replace(/'/g,"")+'\')"><i class="ti ti-'+(ocanEval?'edit':'eye')+'"></i> '+((osum.hasData||!ocanEval)?'評価シートを開く':'評価する')+'</button>';
     html+='</div>';
   }
   return html;
@@ -62700,6 +62985,9 @@ function empEvalInfo(e){
   var grade=empGrade(e), gnum=gradeNum(grade);
   var basis = gnum>=2 ? 'career' : 'skill';
   var pct=0, hasData=false, _sc=null, _mx=null;
+  if(basis==='career' && typeof csSees==='function' && !csSees(e.name)){
+    return {grade:grade, gnum:gnum, basis:basis, pct:0, score:null, max:null, hasData:false, hidden:true, level:null};   /* v1140：見られる範囲の外（L— と出す） */
+  }
   if(basis==='career'){
     var sum=(typeof lssSummary==='function')?lssSummary(e.name):null;
     pct=sum?sum.totalPct:0; hasData=!!(sum && sum.hasData);
@@ -65998,7 +66286,9 @@ async function karteTryUnlock(){
   var el=document.getElementById('kartePinIn'); var v=el?String(el.value||'').trim():'';
   var ok=false, msg='';
   if(typeof ssRouted==='function' && ssRouted('karte_pin')){
+    var _ktk=(typeof ssToken==='function') ? ssToken() : null;
     var r=await ssCall({ action:'pin_check', pin:v, ms:15000 });
+    if(_ktk && ssStale(_ktk)) return;   /* Codex P1：頼んだあとにログインが変わった（前の人の答えで、次の人の成長カルテを開かない） */
     if(r.ok) ok=!!(r.j && r.j.ok);
     else if(r.legacy || r.none) ok=(v===getKartePin());
     else if(r.status===429) msg='続けて間違えたため、10 分止めています';
@@ -77756,6 +78046,7 @@ function cgCsGrantForMe(){
 function canViewLssOfEmp(e){
   if(!e) return false;
   if(lssIsSelf(e.name)) return true;
+  if(typeof csSees==='function' && !csSees(e.name)) return false;   /* v1140：サーバーが届けない人（見られる範囲の外。AM・G4 の詳細・履歴も一覧と同じ範囲に） */
   var P=cgPermList(e, 'csView'), rr=cgMyRole();
   if(cgCsGranted(e, ['csEdit','csApprove'])) return rr!=='g4' || lssG4Sees(e);   /* 付ける・承認する人に入れた役職は見られる（独立レビュー P3-7） */
   if(P){ if(rr==='ceo' || rr==='gm') return true; if(P.indexOf(rr)<0) return false; return rr!=='g4' || lssG4Sees(e); }
@@ -77767,7 +78058,7 @@ function cgCsGranted(e, fs){ var rr=cgMyRole(); return (fs||['csView','csEdit','
 function canViewLssOf(name){
   var e=null; try{ e=getEmployees().find(function(x){ return x.name===name; }) || null; }catch(err){}
   if(e) return canViewLssOfEmp(e);
-  return lssIsSelf(name) || (canViewOthersLss() && lssG4SeesName(name));
+  return lssIsSelf(name) || (canViewOthersLss() && lssG4SeesName(name) && (typeof csSees!=='function' || csSees(name)));   /* v1140 */
 }
 /* その人の Career Score の変更を承認できるか：決めていれば GM と決めた役職（自分の点は承認しない）／決めていなければ GM（今の決まり） */
 function lssCanApproveScoreFor(name){
@@ -95255,7 +95546,9 @@ function renderOjtCareerBody(){
   var list = ojtCareerList();
   var selName = _ojtcSel || (list[0] && list[0].name);
   var selEmp = selName ? getEmployees().find(function(x){return x.name===selName;}) : null;
-  if(selEmp){
+  if(selEmp && typeof csSees==='function' && !csSees(selEmp.name)){   /* v1140：見られる範囲の外の人は、点から出す昇格ラダーを出さない */
+    html += '<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-lock"></i> '+escapeHtml(selEmp.name)+t(' の Career Score は、このアカウントで見られる範囲の外です（— と出ています）',' — this person’s Career Score is outside what this account can see (shown as —)')+'</div>';
+  } else if(selEmp){
     html += '<div class="section-sub" style="margin:6px 2px;font-weight:600">▼ '+escapeHtml(selEmp.name)+t(' の昇格ラダー',' — Promotion Ladder')+'</div>';
     html += ojtCareerLadderHtml(selEmp);
   }

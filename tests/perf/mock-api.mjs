@@ -3,6 +3,13 @@
 // 書き：POST（upsert：merge-duplicates）・PATCH（条件つき）・DELETE。app_state の updated_at は渡された値（無ければ今）
 // rpc/app_state_index：key・updated_at・md5(value::text)・バイト数（v1098 の差分の取り込みが使う。HAS_INDEX=0 なら 404）
 import crypto from 'node:crypto';
+import { createHandler as createSecureState, csIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+// v1140：SS_REAL=1 のとき、本物の関数 secure-state（handler）をこの模擬サーバーの REST につなぐ（サーバーの鍵は SS_SERVICE）。
+// PIN のログインの印は人ごと（perf-session:<社員 ID>）・work-requests の whoami はその人を返す（live は false＝画面は今までどおり）。
+// RLS_CS=1 のとき、公開の鍵（アプリ）からは Career Score のキーを読めない・書けない（SQL 20261109090000 のまね）。
+const SS_SERVICE = 'mock-service-key';
+const WR_ROLE = { ceo: 'ceo', gm: 'gm', am: 'am', office: 'office', office_crew: 'office_crew' };
+const WR_G = { gm: 6, am: 5, g4: 4, chef: 4, sl: 3, g2: 2 };
 
 const PK = { app_state: ['key'], app_settings: ['key'], employees: ['id'], stores: ['id'], ingredients: ['code'], recipes: ['id'], vendors: ['id'], categories: ['code'], tip_labor: ['restaurant_guid', 'business_date'], toast_sales: ['restaurant_guid', 'business_date'], shift_availability: ['store_id', 'week', 'name'], shift_plans: ['store_id', 'week'] };
 
@@ -73,7 +80,8 @@ function finTs() { const d = new Date(); return d.toISOString().replace(/\.(\d{3
 
 export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
-  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0' };
+  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0', ssReal: process.env.SS_REAL === '1', rlsCs: process.env.RLS_CS === '1' };
+  const ss = { calls: 0, anonCs: 0 };
   const receipts = new Map();
   const fin = { drop: 0, commits: 0, fail: {}, failed: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数／v1107：店ごとに保存をサーバーのエラー（3 秒の上限で取り消し）にする回数
   const keyOf = (t, r) => (PK[t] || ['id']).map(c => String(r[c])).join('|');
@@ -82,9 +90,15 @@ export function createMock(data) {
 
   function rest(method, table, u, headers, body) {
     if (!T[table]) T[table] = [];
-    const rows = T[table];
+    const anonCs = table === 'app_state' && headers['apikey'] !== SS_SERVICE;
+    if (opts.rlsCs && anonCs && method !== 'GET' && method !== 'HEAD') {
+      let arr = []; try { arr = JSON.parse(body || '[]'); } catch (e) { }
+      if ((Array.isArray(arr) ? arr : [arr]).some(r => r && csIsKey(r.key)) || filterRows(T[table], u).some(r => csIsKey(r.key) && method !== 'POST')) return json(401, { code: '42501', message: 'new row violates row-level security policy' });
+    }
+    const rows = (opts.rlsCs && anonCs) ? T[table].filter(r => !csIsKey(r.key)) : T[table];
     if (method === 'GET' || method === 'HEAD') {
       let out = filterRows(rows, u);
+      if (table === 'app_state' && headers['apikey'] !== SS_SERVICE) ss.anonCs += out.filter(r => csIsKey(r.key)).length;
       const order = u.searchParams.get('order');
       if (order) { const [c, dir] = order.split(',')[0].split('.'); out = out.slice().sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0) * (dir === 'desc' ? -1 : 1)); }
       let from = 0, to = out.length - 1;
@@ -122,7 +136,7 @@ export function createMock(data) {
     if (name === 'app_state_index') {   // supabase/migrations/20261027090000_app_state_index.sql と同じ答え（印は中身の md5）
       if (!opts.hasIndex) return json(404, { code: 'PGRST202', message: 'Could not find the function' });
       const p = JSON.parse(body || '{}'); const ex = Array.isArray(p.p_skip_prefix) ? p.p_skip_prefix : [];
-      let out = T.app_state.filter(r => !ex.some(x => x && String(r.key).startsWith(x))).map(r => { const s = JSON.stringify(r.value); return { key: r.key, updated_at: r.updated_at, h: crypto.createHash('md5').update(s).digest('hex'), n: Buffer.byteLength(s) }; });
+      let out = T.app_state.filter(r => !(opts.rlsCs && csIsKey(r.key) && u.__anon)).filter(r => !ex.some(x => x && String(r.key).startsWith(x))).map(r => { const s = JSON.stringify(r.value); return { key: r.key, updated_at: r.updated_at, h: crypto.createHash('md5').update(s).digest('hex'), n: Buffer.byteLength(s) }; });
       if (u.searchParams.get('order')) out.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
       const off = +(u.searchParams.get('offset') || 0), lim = u.searchParams.has('limit') ? +u.searchParams.get('limit') : out.length;
       return json(200, out.slice(off, off + lim));
@@ -159,22 +173,47 @@ export function createMock(data) {
     }
     return json(404, { code: 'PGRST202', message: 'Could not find the function' });
   }
+  function whoami(tok) {
+    const m = /^perf-session:(.+)$/.exec(String(tok || ''));
+    const e = m && T.employees.find(x => String(x.id) === m[1]);
+    if (!e) return null;
+    const d = e.data || {}, role = e.role || d.role || '', store = e.store || d.store || '';
+    const grade = role === 'ceo' ? 7 : (WR_G[role] || 1);
+    const am = role === 'am' ? (T.stores || []).filter(s => (s.am || (s.data && s.data.am)) === e.name).map(s => String(s.id)) : [];
+    return { emp: String(e.id), name: e.name, role: WR_ROLE[role] || 'staff', grade: Math.min(grade, 6), stores: [store, ...(d.support || [])].filter(Boolean), am_stores: am, confirmed: true };
+  }
+  let ssHandler = null;
+  function secureState(body) {
+    if (!ssHandler) ssHandler = createSecureState({ env: k => ({ SUPABASE_URL: 'https://mock.local', SUPABASE_SERVICE_ROLE_KEY: SS_SERVICE, SUPABASE_ANON_KEY: 'mock-anon' }[k]),
+      fetch: async (url, opt = {}) => {
+        const u = new URL(url), h = Object.fromEntries(Object.entries(opt.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+        let r;
+        if (u.pathname === '/functions/v1/work-requests') { const me = whoami(JSON.parse(opt.body || '{}').pin_session); r = me ? json(200, { me, live: false, fn: 3 }) : json(401, { error: 'unauthorized' }); }
+        else if (u.pathname === '/auth/v1/user') r = json(401, { msg: 'no email login in the mock' });
+        else r = handle((opt.method || 'GET').toUpperCase(), u, h, opt.body || '');
+        const st = r.status, nob = st === 204 || st === 205 || st === 304 || r.body === '' || r.body == null;
+        return new Response(nob ? null : r.body, { status: st === 204 && !nob ? 200 : st, headers: r.headers || {} });
+      } });
+    ss.calls++;
+    return ssHandler(new Request('https://mock.local/functions/v1/secure-state', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body || '{}' }))
+      .then(async res => ({ status: res.status, body: await res.text(), headers: { 'content-type': 'application/json' } }));
+  }
   function fn(name, body) {
     let p = {}; try { p = JSON.parse(body || '{}'); } catch (e) { }
+    if (opts.ssReal && name === 'secure-state') return secureState(body);
+    if (opts.ssReal && name === 'work-requests' && p.action === 'whoami') { const me = whoami(p.pin_session); return me ? json(200, { me, live: false, fn: 3 }) : json(401, { error: 'unauthorized' }); }
     switch (name) {
-      case 'auth-pin': return p.action === 'verify' ? (String(p.pin) === '9999' ? json(200, { ok: false }) : json(200, { ok: true, token: 'perf-session' })) : json(200, { ok: true });   // v1127：9999 は「違う PIN」
+      case 'auth-pin': return p.action === 'verify' ? (String(p.pin) === '9999' ? json(200, { ok: false }) : json(200, { ok: true, token: opts.ssReal && p.scope === 'staff' && p.emp ? 'perf-session:' + p.emp : 'perf-session' })) : json(200, { ok: true });   // v1127：9999 は「違う PIN」
       case 'emp-private': return json(200, { ok: true, private: {} });
       case 'hyper-worker': { const until = Date.now() + opts.toastDelay; return Object.assign(json(200, { ok: true, saved: 0, rows: [] }), { waitUntil: until, kind: 'toast' }); }
       default: return json(200, { ok: false, error: 'not_configured' });
     }
   }
-  return {
-    T, fin,
-    handle(method, u, headers, body) {
-      const m = u.pathname.match(/^\/rest\/v1\/rpc\/([\w-]+)$/); if (m) return rpc(m[1], body, u);
+  function handle(method, u, headers, body) {
+      const m = u.pathname.match(/^\/rest\/v1\/rpc\/([\w-]+)$/); if (m) { if (headers['apikey'] !== SS_SERVICE) u.__anon = true; return rpc(m[1], body, u); }
       const t = u.pathname.match(/^\/rest\/v1\/([\w-]+)$/); if (t) return rest(method, t[1], u, headers, body);
       const f = u.pathname.match(/^\/functions\/v1\/([\w-]+)$/); if (f) return fn(f[1], body);
       return json(404, { error: 'nf' });
-    }
-  };
+  }
+  return { T, fin, ss, handle };
 }

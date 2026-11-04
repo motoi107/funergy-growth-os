@@ -87,6 +87,7 @@ const appServer = http.createServer(async (req, res) => {
     RTT = Number(u.searchParams.get('rtt') ?? RTT); BPS = Number(u.searchParams.get('bps') ?? BPS);
     res.writeHead(200); res.end(JSON.stringify({ RTT, BPS })); return;
   }
+  if (u.pathname === '/__ss') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.ss || {})); return; }   // v1140：関数を呼んだ回数・公開の鍵で渡った Career Score の行
   if (u.pathname === '/__reset') { mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); delays = {}; wfail = {}; res.writeHead(200); res.end('ok'); return; }
   // 別の端末が保存したつもりで、クラウドの行を変える（e2e-check.mjs）
   if (u.pathname === '/__mutate') {
@@ -150,7 +151,7 @@ const ext = https.createServer({ key: fs.readFileSync(path.join(CERT, 'key.pem')
     let wkeys = null;   // 書いた行のキーだけ（中身は記録しない）
     if (req.method === 'POST' && u.pathname === '/rest/v1/app_state') { try { const j = JSON.parse(body); wkeys = (Array.isArray(j) ? j : [j]).map(x => x.key); } catch (e) { } }
     let r;
-    try { r = mock.handle(req.method, u, req.headers, body); }
+    try { r = await mock.handle(req.method, u, req.headers, body); }   // v1140：secure-state（SS_REAL=1）は非同期
     catch (e) { r = { status: 500, body: JSON.stringify({ error: String(e && e.message || e) }) }; }
     if (r.waitUntil) await new Promise(res => setTimeout(res, Math.max(0, r.waitUntil - Date.now())));
     const h = Object.assign({ 'content-type': 'application/json' }, r.headers || {});

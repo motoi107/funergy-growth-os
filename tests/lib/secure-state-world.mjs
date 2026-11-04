@@ -1,9 +1,10 @@
 // v1139（2b-1）の試験の土台：合成のクラウド（app_state の行・Auth・manager_auth・employees・work-requests の whoami）。
 // PostgREST は、アプリと関数 secure-state が使う問い合わせだけ答える偽物。rls を true にすると、公開の鍵（anon）は
-// 成長カルテ・賞与のキーの行を読めない・書けない（SQL 20261108090000 と同じ）。サーバーの鍵（service）は通る。
+// 成長カルテ・賞与のキーの行を読めない・書けない（SQL 20261108090000 と同じ）。rlsCs も true にすると Career Score のキーも（v1140 の SQL 20261109090000）。
+// サーバーの鍵（service）は通る。
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { ssIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { ssIsKey, csIsKey } from '../../supabase/functions/secure-state/handler.mjs';
 
 export const URL0 = 'https://db.example.test';
 export const WR = URL0 + '/functions/v1/work-requests';
@@ -17,8 +18,8 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, ssHandler: null, ssDown: !!o.ssDown,
-    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0 }, log: [], reads: [], maxRows: o.maxRows || 0,
+    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, ssHandler: null, ssDown: !!o.ssDown,
+    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
   W.get = key => { const r = W.rows.get(key); return r ? JSON.parse(r.value) : undefined; };
@@ -64,7 +65,8 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => W.rls && role !== 'service' && ssIsKey(key);
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)));
+    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; };
     W.calls.rest++;
     const q = url.searchParams;
     if (p === '/rest/v1/rpc/app_state_index') {
@@ -77,13 +79,21 @@ export function makeWorld(o = {}) {
       return J(out.slice(off, off + lim));
     }
     if (p === '/rest/v1/manager_auth') {
-      if (!q.get('user_id')) return J(Object.values(W.mgr).map(m => ({ emp_id: m.emp_id })));
+      if (W.mgrDown) return J({ message: 'down' }, 500);
+      if (!q.get('user_id')) return J(Object.values(W.mgr).map(m => ({ emp_id: m.emp_id, role: m.role })));
       const r = W.mgr[q.get('user_id').replace(/^eq\./, '')]; return J(r ? [r] : []);
     }
-    if (p === '/rest/v1/wr_people') return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => ({ emp_id: x.emp_id })));
+    if (p === '/rest/v1/wr_people') {
+      // 本物と同じく、頼まれた列だけ返す（name は NOT NULL：試験で名前を入れていない行は空）
+      const sel = (q.get('select') || 'emp_id,role,grade').split(',');
+      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade });
+      return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+    }
     if (p === '/rest/v1/employees') {
-      if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => ({ status: e.status || '', data: e.data || {} })));
-      return J(W.emps.map(e => ({ id: e.id, store: e.store })));
+      const sel = (q.get('select') || 'id,store').split(',');
+      const full = e => ({ id: e.id, name: e.name, store: e.store, support: e.support || [], role: e.role || null, title: e.title || null, status: e.status || '', data: e.data || {} });
+      if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]]))));
+      return J(W.emps.map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]]))));
     }
     if (p === '/rest/v1/app_state') {
       const keyF = q.getAll('key'), or = q.get('or');
@@ -103,13 +113,15 @@ export function makeWorld(o = {}) {
         for (const [key, r] of [...W.rows.entries()].sort(([a], [b]) => a < b ? -1 : 1)) {
           if (!match(key)) continue;
           if (hide(key)) continue;   // RLS：返さない（数えない＝公開の鍵で渡った行だけを数える）
-          if (role === 'anon' && ssIsKey(key)) W.calls.anonSecret++;
+          anonCount(key);
           out.push({ key, value: JSON.parse(r.value), updated_at: r.updated_at });
         }
-        const off = Number(q.get('offset') || 0), lim = q.get('limit') ? Number(q.get('limit')) : out.length;
+        const off = Number(q.get('offset') || 0), lim = Math.min(q.get('limit') ? Number(q.get('limit')) : out.length, W.maxRows || Infinity);   // PostgREST の max-rows
         out = out.slice(off, off + lim);
         const sel = (q.get('select') || 'key,value,updated_at').split(',');
-        return J(out.map(r => Object.fromEntries(sel.map(c => [c, r[c]]))));
+        const res = J(out.map(r => Object.fromEntries(sel.map(c => [c, r[c]]))));
+        if (W.afterGet && W.afterGet(url)) W.afterGet = null;   // 試験だけ：読んだ直後にほかの端末が書く（true を返したら 1 回で終わり）
+        return res;
       }
       if (m === 'POST') {
         W.calls.post++;
@@ -120,7 +132,7 @@ export function makeWorld(o = {}) {
         if (!merge && list.some(b => W.rows.has(b.key))) return J({ code: '23505', message: 'duplicate key' }, 409);
         const out = [];
         for (const b of list) {
-          if (role === 'anon' && ssIsKey(b.key)) W.calls.anonSecret++;
+          anonCount(b.key);
           const at = ts6(b.updated_at ? Date.parse(b.updated_at) : Date.now());
           W.rows.set(b.key, { value: JSON.stringify(b.value), updated_at: at });
           W.log.push(['write', role, b.key]);
@@ -136,7 +148,7 @@ export function makeWorld(o = {}) {
         if (!r || hide(key)) return J([]);
         const ok = cond === 'is.null' ? r.updated_at == null : r.updated_at === cond.replace(/^eq\./, '');
         if (!ok) return J([]);
-        if (role === 'anon' && ssIsKey(key)) W.calls.anonSecret++;
+        anonCount(key);
         const at = ts6(Date.parse(b.updated_at));
         W.rows.set(key, { value: JSON.stringify(b.value), updated_at: at });
         W.log.push(['write', role, key]);
