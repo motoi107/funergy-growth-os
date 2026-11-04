@@ -44,9 +44,11 @@ function varBlock(name, end) {
   return SRC.slice(i + 1, j + end.length);
 }
 const plain = v => JSON.parse(JSON.stringify(v));
+// 配列の要素の「入れた時刻」_t（独立レビュー 1036dcd P3-1 から）を外して中身を比べる
+const noT = arr => (arr || []).map(x => { if (!x || typeof x !== 'object') return x; const { _t, ...r } = x; return r; });
 const run = (c, code) => vm.runInContext(code, c);
 
-const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsObj', '_fsFiOf', '_fsSubT', '_fsCont', '_fsSubs', '_fsTie',
+const MERGE = ['_cjson', '_lrObj', '_lrOwn', '_lrAt', '_lrPick', 'mergeLocalRecMap', '_coversLocalRecMap', '_fsHas', '_fsT', '_fsFields', '_fsObj', '_fsFiOf', '_fsSubT', '_fsCont', '_fsSubs', '_fsElemT', '_fsOrder', '_fsTie',
   '_fsRecWin', '_fsSameEntry', '_fsFill', 'mergeFieldStampRec', 'mergeFieldStampMap', '_coversFieldStampMap', '_fsStamp', '_lrStamp', '_lrLegacyAt', '_lrRead', 'v1136Moved', 'v1136MoveLocalOnly',
   '_pullPendingMap', '_pendEditAtAll', '_pendEditAtMark', '_pendEditAtDrop', '_pullKeepLocal'];
 const GETSET = ['kpiManualKey', '_kpiManualRaw', 'getKpiManual', 'setKpiManual', 'attFixKey', 'getAttOverride', 'setAttOverride',
@@ -187,7 +189,8 @@ test('③ a device with a stale copy changes one field: the fields another devic
   A.NOW += 60000; run(A, `var d=getDevData('Ken'); d.tests.push({ course:'Grill', score:90 }); setDevData('Ken', d);`);
   B.NOW += 120000; run(B, `var d=getDevData('Ken'); d.stage = 3; setDevData('Ken', d);`);
   const merged = plain(run(B, `mergeFieldStampMap(${A.STORE.get('dev_pipe')}, ${B.STORE.get('dev_pipe')})`));
-  assert.equal(merged.Ken.stage, 3); assert.deepEqual(merged.Ken.tests, [{ course: 'Grill', score: 90 }], 'A’s test stays');
+  assert.equal(merged.Ken.stage, 3); assert.deepEqual(noT(merged.Ken.tests), [{ course: 'Grill', score: 90 }], 'A’s test stays');
+  assert.equal(merged.Ken.tests[0]._t, A.NOW, 'the new test carries the time it was entered');
   // 時計の遅れた端末でも、読んだ記録より後の時刻で保存する（見てから直した欄が勝つ）
   const C = device(Date.UTC(2026, 9, 1)); C.STORE.set('dev_pipe', JSON.stringify(merged));
   run(C, `var d=getDevData('Ken'); d.stage = 4; setDevData('Ken', d);`);
@@ -220,7 +223,7 @@ test('③（独立レビュー 9fe3a66 P1）a device with no record does not wip
   run(B2, `var d=getDevData('Amy'); d.skillLevels.Grill = 3; setDevData('Amy', d);`);
   run(C2, `var d=getDevData('Amy'); d.tests.push({ course: 'Fry', score: 85 }); setDevData('Amy', d);`);
   const m = plain(run(B2, `mergeFieldStampMap(${B2.STORE.get('dev_pipe')}, ${C2.STORE.get('dev_pipe')})`)).Amy;
-  assert.deepEqual([m.skillLevels, m.tests], [{ Grill: 3 }, [{ course: 'Fry', score: 85 }]]);
+  assert.deepEqual([m.skillLevels, noT(m.tests)], [{ Grill: 3 }, [{ course: 'Fry', score: 85 }]]);
   // 時刻の無い記録どうし：値（ステージと OJT の状態）は同じ記録から（食い違わない）。テストは和集合
   const L1 = { Ken: { stage: 4, ojtStatus: 'OJT Completed', tests: [{ c: 'A' }] } }, L2 = { Ken: { stage: 2, ojtStatus: 'Skill Level In Progress', tests: [{ c: 'B' }] } };
   for (const r of [plain(run(A, `mergeFieldStampMap(${JSON.stringify(L1)}, ${JSON.stringify(L2)})`)).Ken, plain(run(A, `mergeFieldStampMap(${JSON.stringify(L2)}, ${JSON.stringify(L1)})`)).Ken]) {
