@@ -3960,7 +3960,7 @@ function safeMonthStats(storeId, offset){
   } catch(e){ return null; }
 }
 var STORES = getStoresAll();
-function refreshStores() { STORES = getStoresAll(); try{ if(typeof registerInvMergeKeys==='function') registerInvMergeKeys(); }catch(e){} }
+function refreshStores() { STORES = getStoresAll(); try{ if(typeof registerInvMergeKeys==='function') registerInvMergeKeys(); }catch(e){} try{ if(typeof _registerInvHistSplit==='function') _registerInvHistSplit(); }catch(e){} }
 const AM_STORES = ['F03','F04-K','F04-P','F04-A','F05']; // 後方互換（旧Yuki管轄）。新ロジックはmyAmStores()
 /* ログイン中のAMが管轄する店舗ID配列（店舗マスターのam欄＝AMの名前で照合）。
    20店舗・複数AM対応：各店のam欄に担当AM名を入れれば自動で管轄が決まる。 */
@@ -8743,6 +8743,7 @@ function _lsRawDel(key){
   /* v764: 意図的な削除は IndexedDB にも伝える。
      自動prune（autoPruneIfCritical 等）は localStorage の容量対策なので伝播させない。
      IndexedDB を上位集合として保つことが、移行後にデータが戻る根拠になる。 */
+  try{ if(typeof _lsSlimKind==='function' && _lsSlimKind(key)==='bulk' && typeof _idbState!=='undefined' && _idbState==='ready') _lsJournalDel(key); }catch(e){}   /* 起動の途中・IndexedDB を読めなかった起動の削除は IndexedDB に届けない（前の版と同じ。空の土台からの削除で IndexedDB の値を消さない） */   /* v1138：入り終える前に閉じられても消したことを残す（起動の途中の削除は前の版と同じく IndexedDB に届けない） */
   try{ _idbQueue(key, null); }catch(e){}
   try{ localStorage.removeItem(key); return true; }catch(e){ return false; }
 }
@@ -8785,19 +8786,28 @@ function _idbAvailable() {
 }
 
 function _idbOpen() {
+  /* v1138（2 回目の独立レビュー P2-3）：答えは 1 回だけ。待ちの時間切れは、この呼び出しの答え（null）だけを決め、状態（_idbState）や
+     ほかのつなぎ（つなぎ直したあとの _idbDB）を変えない（前は 4 秒後に、つなぎ直しの途中だと使っている途中でも「使えない」にしていた）。
+     時間切れのあとに開けたつなぎは閉じる。使えないことにするのは起動（_idbBoot）だけ */
   return new Promise(function (res) {
     if (!_idbAvailable()) { _idbState = 'unavailable'; return res(null); }
-    var rq;
+    var rq, settled = false;
+    var done = function (db) { if (settled) return false; settled = true; res(db); return true; };
     try { rq = indexedDB.open(IDB_NAME, IDB_VER); }
-    catch (e) { _idbState = 'unavailable'; return res(null); }
+    catch (e) { return done(null); }
     rq.onupgradeneeded = function () {
       try { var db = rq.result; if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE); } catch (e) { }
     };
-    rq.onsuccess = function () { _idbDB = rq.result; try { _idbDB.onclose = function () { if (_idbDB === rq.result) _idbDB = null; }; } catch (e) { } res(_idbDB); };   /* v1104：接続が切れたら、次の書き出しでつなぎ直す */
-    rq.onerror = function () { _idbState = 'unavailable'; res(null); };
-    rq.onblocked = function () { _idbState = 'unavailable'; res(null); };
+    rq.onsuccess = function () {
+      var db = rq.result;
+      if (settled) { try { db.close(); } catch (e) { } return; }
+      _idbDB = db; try { db.onclose = function () { if (_idbDB === db) _idbDB = null; }; } catch (e) { }   /* v1104：接続が切れたら、次の書き出しでつなぎ直す */
+      done(db);
+    };
+    rq.onerror = function () { done(null); };
+    rq.onblocked = function () { done(null); };
     /* プライベートモード等で open が永久に返らない端末がある。待ち続けない */
-    setTimeout(function () { if (!_idbDB) { _idbState = 'unavailable'; res(null); } }, 4000);
+    setTimeout(function () { done(null); }, 4000);
   });
 }
 
@@ -8854,6 +8864,7 @@ function _idbWriteBatch(batch, txOpts) {
     tx.oncomplete = function () {
       _idbStat.wrote += n;
       _idbStat.at = (typeof nowJP === 'function' ? nowJP() : new Date().toISOString());
+      try { if (typeof _lsJournalCommitted === 'function') batch.forEach(function (v, k) { _lsJournalCommitted(k, v); }); } catch (e) { }   /* v1138：入り終えた写しは localStorage から外す */
     };
     tx.onerror = function () { _idbStat.failed += n; _idbRequeue(batch); };
     tx.onabort = function () { _idbStat.failed += n; _idbRequeue(batch); };
@@ -8865,7 +8876,9 @@ function _idbWriteBatch(batch, txOpts) {
   }
 }
 function _idbFlush() {
-  if (!_idbDB || !_idbQ.size) return;
+  if (!_idbQ.size) return;
+  /* v1138：つなぎが切れていたら（iOS）つなぎ直してから書く（localStorage に写しが積もらないように。2 回目の独立レビュー P3-6） */
+  if (!_idbDB) { try { if (_idbState === 'ready' && typeof _idbReopen === 'function') _idbReopen().then(function (ok) { if (ok && _idbDB) _idbFlush(); }); } catch (e) { } return; }
   var batch = _idbQ; _idbQ = new Map();
   _idbWriteBatch(batch);
 }
@@ -8958,12 +8971,20 @@ function financialRecoveryStore() {
    localStorage 側にも無いものは本当に端末のどこにも無いので、既存の
    「この端末に保存できていない項目」に載せる（黙って握り潰さない）。
    積み直しでは、その後に入った新しい値を古い値で潰さない。 */
+function _idbStale(k, v) {   /* 保護の記録（v1104・ほかのタブの値を読み直す）は今までどおり積み直す */
+  try { return !_idbWatched(k) && !!_IDB_MEM && (v === null ? _IDB_MEM.has(k) : _IDB_MEM.get(k) !== v); } catch (e) { return false; }
+}
 function _idbRequeue(batch) {
   try {
-    batch.forEach(function (v, k) { if (!_idbQ.has(k)) _idbQ.set(k, v); });
+    batch.forEach(function (v, k) {
+      if (_idbQ.has(k)) return;
+      /* v1138（独立レビュー P3）：あとで別の値を積んだ（このタブの写しが違う）なら、古い値を積み直さない */
+      if (typeof _idbStale === 'function' && _idbStale(k, v)) return;
+      _idbQ.set(k, v);
+    });
     batch.forEach(function (v, k) {
       try {
-        if (v === null) return;
+        if (v === null || (typeof _idbStale === 'function' && _idbStale(k, v))) return;
         if (localStorage.getItem(k) === v) return;
         if (typeof _lsNoteSaveFailure === 'function') _lsNoteSaveFailure(k);
       } catch (e) { }
@@ -9006,6 +9027,7 @@ function _idbBackfill() {
   try {
     lsKeys().forEach(function (k) {
       if (lsIsDeviceLocal(k)) return;
+      if (typeof _lsSlimKind === 'function' && _lsSlimKind(k) !== 'bulk') return;   /* v1138：送信待ちの記録など、localStorage が持ち主のものは写さない */
       /* v765: 既に IndexedDB にあるキーは上書きしない。
          localStorage が容量オーバーで古い値のまま残っている場合、上書きすると
          IndexedDB にだけ入っていた新しい値を、起動のたびに古い値で潰してしまう。 */
@@ -9023,19 +9045,33 @@ async function _idbBoot() {
   try {
     await _idbOpen();
     if (!_idbDB) { _idbState = 'unavailable'; return; }
-    var m = await _idbLoadAll();
-    if (m === null) { _idbState = 'unavailable'; _idbDB = null; return; }  /* 読めなければ使わない */
+    /* v1138：読み込みが返らない端末で起動を止めない。起動のデータの移し替えとログイン画面がこれを待つ。
+       8 秒で返らなければ、つなぎ直してもう一度（12 秒まで）。それでも返らなければ使えないことにする（localStorage だけで動く） */
+    var _slow = setTimeout(function () { try { var e = document.getElementById('login-step-sub'); if (e && _idbState === 'init') e.textContent = (typeof curLang !== 'undefined' && curLang === 'en') ? 'Loading this device\u2019s data…' : '端末のデータを読み込んでいます…'; } catch (x) { } }, 3000);
+    var _race = function (ms) { return Promise.race([_idbLoadAll(), new Promise(function (r) { setTimeout(function () { r(null); }, ms); })]); };
+    var m = await _race(8000);
+    if (m === null) {
+      _idbStat.loadRetry = true;
+      try { if (_idbDB) _idbDB.close(); } catch (e) { }
+      _idbDB = null; await _idbOpen();
+      m = _idbDB ? await _race(12000) : null;
+    }
+    clearTimeout(_slow);
+    if (m === null) { _idbState = 'unavailable'; _idbStat.loadTimeout = true; try { if (_idbDB) _idbDB.close(); } catch (e) { } _idbDB = null; return; }  /* 読めなければ使わない */
+    try { _idbStat.journal = (typeof _lsJournalReplay === 'function') ? _lsJournalReplay(m) : null; } catch (e) { }   /* v1138：入り終える前に閉じられた書き込みを取り戻す */
     _IDB_MEM = m; _idbStat.loaded = m.size; _lskBump();   /* v1049 */
     _idbState = 'ready';
     _idbFlush();                              /* 起動中に溜まった分を書く */
     _idbStat.backfilled = _idbBackfill();
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { }
+    try { if (typeof _lsSlimSweep === 'function') setTimeout(function () { _lsSlimSweep(); }, 0); } catch (e) { }   /* v1138：localStorage の控えを空ける（待たない） */
   } catch (e) { _idbState = 'unavailable'; _idbDB = null; }
   finally {
     /* v773: IndexedDB が使えないと確定した端末は localStorage しか無いので、
        initApp() の時点で見送った自動削除をここで1回だけ実行する。
        'unavailable' の確定は3経路（開けない／読めない／例外）あるため finally でまとめる。 */
     try { if (_idbState === 'unavailable' && typeof autoPruneIfCritical === 'function') autoPruneIfCritical(); } catch (e) { }
+    try { if (_idbState === 'unavailable' && typeof _lsJournalUnavailable === 'function') _lsJournalUnavailable(); } catch (e) { }   /* v1138 */
   }
 }
 
@@ -9603,7 +9639,7 @@ function v1136Moved(){ try{ return localStorage.getItem(V1136_MOVED_KEY)==='1'; 
 function v1136MoveLocalOnly(){
   if(typeof _supaBooting!=='undefined' && _supaBooting) return false;
   if(typeof SUPA_SYNC_ENABLED!=='undefined' && !SUPA_SYNC_ENABLED) return false;
-  if(typeof _idbState!=='undefined' && _idbState==='init') return false;   /* 端末の保存（IndexedDB）を読み終えるまでしない（一部しか見えないまま「済み」にしない） */
+  if(typeof _idbState!=='undefined' && (_idbState==='init' || (typeof _lsDegraded==='function' && _lsDegraded()))) return false;   /* v1138：IndexedDB を読めなかった起動もしない。端末の保存（IndexedDB）を読み終えるまでしない（一部しか見えないまま「済み」にしない） */
   var ok=true, wrote=0;
   var fold=function(nk, add, merge){
     try{
@@ -10270,7 +10306,7 @@ function _invHistYm(r){
   try{ var d=(typeof parseJaDate==='function')?parseJaDate(r.date):null; if(d) return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }catch(e){}
   return '_';
 }
-(function _registerInvHistSplit(){
+function _registerInvHistSplit(){   /* v1138：起動の途中（localStorage）と IndexedDB を読み終えたあと・店舗の表が変わったときにも */
   try{
     var ids={};
     if(typeof DEFAULT_STORES!=='undefined' && Array.isArray(DEFAULT_STORES)) DEFAULT_STORES.forEach(function(s){ if(s&&s.id) ids[s.id]=1; });
@@ -10279,7 +10315,8 @@ function _invHistYm(r){
       if(!_SPLIT_KEYS['inv_hist_'+id]) _SPLIT_KEYS['inv_hist_'+id]={type:'arr', by:_invHistYm};
     });
   }catch(e){}
-})();
+}
+_registerInvHistSplit();
 /* 既存の巨大な1行を、月ごとの行へ一度だけ移行（＋クラウドへ押し上げ） */
 function migrateInvHistSplit(){
   try{
@@ -10650,7 +10687,7 @@ function _lsRequestDeferredPrefix(pre){
           try{
             var _def=(typeof _opMergeDef==='function')?_opMergeDef(r.key):null;
             var _val=r.value;
-            if(_def){ try{ var _loc=JSON.parse(localStorage.getItem(r.key)||'null'); _val=_def.merge(r.value, _loc); }catch(e){ _val=r.value; } }
+            if(_def){ try{ var _loc=JSON.parse(_lsStoreGet(r.key)||'null'); _val=_def.merge(r.value, _loc); }catch(e){ _val=r.value; } }   /* v1138：手元は IndexedDB から（localStorage の古い控えと合わせない） */
             if(_lsWriteVerified(r.key, JSON.stringify(_val))){ _lsMarkFetched(r.key); _lsClearSaveFailure(r.key); n++; }
             else { _lsNoteSaveFailure(r.key); }
           }catch(e){}
@@ -10680,7 +10717,224 @@ function _lsSplitOnDemandPrefix(key){
 /* 書いた内容と一致するかまで確認する保存。
    注意: setItem が例外を投げた場合、そのキーには「古い値」が残る。
    getItem(key)!=null だけでは成功と誤判定するため、内容の一致まで見る。 */
+/* ===== v1138：端末の保存領域（localStorage）をいっぱいにしない =====
+   【原因】v764 から、端末のデータを localStorage（約 5MB）と IndexedDB の両方に書いていた。v765 から読むのは IndexedDB が先なので、
+     localStorage の写しは読まない控えになり、5MB まで埋まっていた。いっぱいになると、localStorage にしか置けない小さな印
+     （送信待ち・直した時刻・シフトや本人確認の送信待ちなど）が書けず、保存のしくみを変えるたびに逃げ道が要った。
+   【いま】IndexedDB が使える端末では、大きなデータを localStorage に残さない。
+     ・書くときは今までどおり localStorage にもすぐ書く（閉じられても、次に開いたときに取り戻せるように）。中身の指紋の印（_lsj:キー）も書く。
+     ・IndexedDB に入り終えて、クラウドへの送信待ち・送っている途中でもなければ、localStorage の写しと印を消す。
+     ・起動のとき、印の合う写し（入り終える前に閉じられた書き込み）は IndexedDB に入れ直す。印の無い写し（前の版の控え）は、
+       IndexedDB に入っていて送信待ちでなければ消す（アプリはもう IndexedDB の値を読んでいる。送信待ちで同じ中身なら残す）。
+     ・IndexedDB が使えない端末は今までどおり（localStorage だけ）。
+     ・送信待ちの記録（op_outbox）・従業員と業者の送れていない変更（emp_dirty_q・vendor_touched_v1）・端末だけの小さな印（_ で始まる・言語など）は今までどおり localStorage。
+     ・IndexedDB を読む前（起動の途中）の書き込みは、IndexedDB にその名前が無いときだけ使う（前の版と同じ）。消すのは読み終えてからだけ記録する。 */
+var LS_SLIM_KEEP = ['op_outbox', 'emp_dirty_q', 'vendor_touched_v1', 'm_stores'];   /* 送れていない変更の記録（小さい）・起動の途中（IndexedDB を読む前）に読む店舗の表（小さい） */
+var LS_SLIM_FOREIGN = ['funergy_', 'sb-'];   /* アプリの保存の層を通らずに localStorage だけを読み書きするもの（Office の保存のモジュール・Supabase のライブラリ）。写さない・消さない */
+var LSJ_PRE = '_lsj:';
+var _lsJDone = {};   /* IndexedDB に入り終えた（localStorage の写しと同じ中身）キー。送信待ちが済めば写しを消す */
+function _lsSlimKind(key){
+  if(!key) return 'dev';
+  try{ if(typeof lsIsDeviceLocal==='function' && lsIsDeviceLocal(key)) return 'dev'; }catch(e){}
+  if(LS_SLIM_KEEP.indexOf(String(key))>=0) return 'keep';
+  for(var i=0;i<LS_SLIM_FOREIGN.length;i++){ if(String(key).indexOf(LS_SLIM_FOREIGN[i])===0) return 'keep'; }
+  return 'bulk';
+}
+/* 中身の指紋（長さ＋FNV-1a）。印と写しが同じ書き込みのものかを確かめるだけ */
+function _lsFp(s){
+  s=String(s); var h=0x811c9dc5;
+  for(var i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); }
+  return s.length+'.'+(h>>>0).toString(36);
+}
+/* 写しと印を書く（印が先・写しが後。途中で閉じられても、印と合わない写しは取り戻さない）。
+   ready：書けなければ古い写しも消す（IndexedDB の新しい値と食い違う控えを残さない）。init：書けなければ印だけ外す（前と同じく古い写しは残す） */
+var LSJ_MAX = 1500000;   /* これより大きい値は写しを書かずに、すぐ IndexedDB へ書き出す（入らない写しを毎回書こうとしない） */
+function _lsJournalPut(key, json, ready, tag){
+  var mk=LSJ_PRE+key, ok=false;
+  try{ delete _lsJDone[key]; }catch(e){}
+  if(ready && json.length>LSJ_MAX){ try{ localStorage.removeItem(mk); localStorage.removeItem(key); }catch(e){} return false; }
+  if(!ready && !tag) _lsJInitKeys[key]=1;
+  try{ localStorage.setItem(mk, (tag || (ready?'':'i'))+_lsFp(json)); localStorage.setItem(key, json); ok=(localStorage.getItem(key)===json); }catch(e){ ok=false; }   /* i＝IndexedDB を読む前の書き込み・u＝IndexedDB を使えなかった起動の書き込み */
+  if(!ok){
+    try{ localStorage.removeItem(mk); }catch(e){}
+    if(ready){ try{ localStorage.removeItem(key); }catch(e){} }
+  }
+  return ok;
+}
+function _lsJournalDel(key){
+  try{ delete _lsJDone[key]; }catch(e){}
+  try{ localStorage.setItem(LSJ_PRE+key, 'd'); }catch(e){}
+}
+function _lsMarkFp(m){ m=String(m||''); var c=m.charAt(0); return (c==='i'||c==='u'||c==='c') ? m.slice(1) : m; }
+/* 印の種類：（なし）＝書いている途中（取り戻す）・i＝IndexedDB を読む前の書き込み・u＝IndexedDB を読めなかった起動の書き込み・
+   c＝入り終えたが送信待ちなので残している写し（IndexedDB と同じ中身）・d＝消した */
+var _lsJInitKeys = {};   /* このタブが IndexedDB を読む前に書いたキー（読めなかった起動で u にするのは、このタブの分だけ） */
+/* IndexedDB を読めなかった起動（その端末に IndexedDB はある）。localStorage には大きなデータが無いので、一度きりの移し替えなどはしない */
+function _lsDegraded(){ try{ return typeof _idbState!=='undefined' && _idbState==='unavailable' && typeof _idbAvailable==='function' && _idbAvailable(); }catch(e){ return false; } }
+/* IndexedDB の値が勝つ：送信待ちのキーなら写しを IndexedDB の値に書き直して残す（読めなかった起動の土台になる）。そうでなければ消す */
+function _lsKeepIdb(k, v){
+  try{
+    var mk=LSJ_PRE+k;
+    if(v!=null && _lsCloudPending(k)){
+      var fp=_lsFp(v);
+      try{ localStorage.setItem(mk, 'c'+fp); localStorage.setItem(k, v); if(localStorage.getItem(k)===v){ _lsJDone[k]=fp; return 'kept'; } }catch(e){}
+    }
+    localStorage.removeItem(k); localStorage.removeItem(mk); delete _lsJDone[k];
+    return 'removed';
+  }catch(e){ return 'error'; }
+}
+/* IndexedDB に書き出しが入り終えたとき（_idbWriteBatch の oncomplete） */
+function _lsJournalCommitted(k, v){
+  try{
+    var mk=LSJ_PRE+k, m=localStorage.getItem(mk);
+    if(m===null) return;
+    if(v===null){ if(m==='d' && localStorage.getItem(k)===null) localStorage.removeItem(mk); return; }
+    if(localStorage.getItem(k)!==v) return;   /* あとで別の中身を書いた（その書き出しを待つ） */
+    var fp=_lsFp(v);
+    _lsJDone[k]=fp;
+    if(!_lsSlimTry(k) && _lsJDone[k]===fp && localStorage.getItem(mk)===m) localStorage.setItem(mk, 'c'+fp);   /* 送信待ちで残す写し：入り終えた印に（2 回目の独立レビュー P3-3） */
+  }catch(e){}
+}
+/* クラウドへまだ届いていない（送信待ち・送っている途中・シフトや本人確認や従業員の送信待ち）。分からなければ残す */
+function _lsCloudPending(k){
+  try{
+    k=String(k);
+    if(typeof _pushBusy==='function' && _pushBusy(k)) return true;
+    var q=(typeof _outboxGet==='function') ? _outboxGet() : [];
+    for(var i=0;i<q.length;i++){ if(q[i] && q[i].key===k) return true; }
+    var inf=null; try{ inf=JSON.parse(localStorage.getItem('_ux_inflight')||'null'); }catch(e){ inf=null; }
+    if(inf && typeof inf==='object' && Object.prototype.hasOwnProperty.call(inf, k)) return true;
+    if(k.indexOf('shiftplan_')===0 && typeof shiftPlanPendingList==='function'){
+      var sp=shiftPlanPendingList();
+      for(var j=0;j<sp.length;j++){ if(('shiftplan_'+sp[j].s+'_'+sp[j].w)===k) return true; }
+    }
+    if(k==='m_employees' && typeof empDirtyCount==='function' && empDirtyCount()) return true;
+    if(k.indexOf('spl_onboardings_')===0 && typeof obSecretPendingList==='function' && obSecretPendingList().length) return true;
+    return false;
+  }catch(e){ return true; }
+}
+/* IndexedDB に入り終えて、送信待ちでもなければ、localStorage の写しと印を消す */
+function _lsSlimTry(k){
+  try{
+    var fp=_lsJDone[k];
+    if(!fp) return false;
+    if(_lsCloudPending(k)) return false;
+    /* ほかのタブがそのあと別の中身を書いた（その写し・印はそのタブのもの）なら触らない */
+    var lv=localStorage.getItem(k), mk=localStorage.getItem(LSJ_PRE+k);
+    if((lv!==null && _lsFp(lv)!==fp) || (mk!==null && mk!=='d' && _lsMarkFp(mk)!==fp)){ delete _lsJDone[k]; return false; }
+    if(mk==='d'){ delete _lsJDone[k]; return false; }
+    localStorage.removeItem(k); localStorage.removeItem(LSJ_PRE+k);
+    delete _lsJDone[k];
+    return true;
+  }catch(e){ return false; }
+}
+/* 送信待ちが済んだあとなどに、残している写しをもう一度見る */
+function _lsSlimRetry(){
+  try{ Object.keys(_lsJDone).forEach(function(k){ _lsSlimTry(k); }); }catch(e){}
+}
+/* 起動のとき（IndexedDB を読み終えた直後・ready の前）：印の残っている写しを取り戻す。m は読み込んだ中身 */
+function _lsJournalReplay(m){
+  var out={ applied:0, same:0, dropped:0, del:0, initKept:0, unavail:0 };
+  try{
+    var ks=[]; for(var i=0;i<localStorage.length;i++){ var x=localStorage.key(i); if(x && x.indexOf(LSJ_PRE)===0) ks.push(x); }
+    ks.forEach(function(mk){
+      var k=mk.slice(LSJ_PRE.length), mark=localStorage.getItem(mk), lv=localStorage.getItem(k);
+      if(_lsSlimKind(k)!=='bulk'){ localStorage.removeItem(mk); return; }
+      if(mark==='d'){
+        if(lv===null && m.has(k)){ m.delete(k); _idbQ.set(k, null); out.del++; }
+        else localStorage.removeItem(mk);
+        return;
+      }
+      var kind=mark.charAt(0), fp=_lsMarkFp(mark);
+      if(kind!=='i' && kind!=='u' && kind!=='c') kind='';
+      if(lv===null || _lsFp(lv)!==fp){ localStorage.removeItem(mk); out.dropped++; return; }   /* 印と合わない（写しを書く前に閉じられた） */
+      if(m.has(k) && m.get(k)===lv){ _lsJDone[k]=fp; out.same++; return; }
+      if(m.has(k) && kind){
+        /* i（IndexedDB を読む前）・c（入り終えた写し）は IndexedDB が勝つ（前の版の「写す」と同じ。localStorage を空けた端末では、
+           読む前の書き込みは大きなデータの無い状態から作られている）。
+           u（IndexedDB を読めなかった起動）は、送信待ちのキー（まだクラウドに届いていない手元の変更）だけ取り戻す。合流の決まりの
+           あるキーは IndexedDB の値と合わせる。送信待ちでないキー・この端末だけのデータ（会計 PL など）は IndexedDB が勝つ
+           （その起動は大きなデータの無い状態から書いたことがあるため。2 回目の独立レビュー P2-1） */
+        var take=null;
+        if(kind==='u' && _lsCloudPending(k)){
+          take=lv;
+          try{ var def=(typeof _opMergeDef==='function') ? _opMergeDef(k) : null; if(def) take=JSON.stringify(def.merge(JSON.parse(m.get(k)), JSON.parse(lv))); }catch(e){ take=lv; }
+        }
+        if(take===null){ _lsKeepIdb(k, m.get(k)); out.initKept++; return; }
+        m.set(k, take); _idbQ.set(k, take); out.applied++; out.unavail++;
+        if(take!==lv){ try{ localStorage.setItem(k, take); localStorage.setItem(mk, _lsFp(take)); }catch(e){} }
+        return;
+      }
+      m.set(k, lv); _idbQ.set(k, lv); out.applied++; if(kind==='u') out.unavail++;   /* 書いている途中（印なし）・IndexedDB に無い名前は取り戻す */
+    });
+  }catch(e){}
+  return out;
+}
+/* IndexedDB を使えない起動：IndexedDB の無い端末なら印は要らない（消す）。IndexedDB がある端末なら、読む前の書き込み（i）も
+   この起動の書き込みとして扱う（u：次に IndexedDB を読めた起動で取り戻す。この起動は localStorage の値で動くため） */
+function _lsJournalUnavailable(){
+  try{
+    var api=(typeof _idbAvailable==='function') && _idbAvailable();
+    var ks=[]; for(var i=0;i<localStorage.length;i++){ var x=localStorage.key(i); if(x && x.indexOf(LSJ_PRE)===0) ks.push(x); }
+    ks.forEach(function(mk){
+      var m=localStorage.getItem(mk)||'';
+      if(!api) localStorage.removeItem(mk);
+      else if(m.charAt(0)==='i' && _lsJInitKeys[mk.slice(LSJ_PRE.length)]) localStorage.setItem(mk, 'u'+m.slice(1));   /* このタブの分だけ（前に閉じたタブの i は i のまま） */
+    });
+  }catch(e){}
+}
+/* 起動のあと：前の版の控え（印の無い写し）を消す。IndexedDB に入り終えてから。送信待ちで同じ中身の写しは、届くまで残す */
+var _lsSlimLast=null;
+function _lsSlimSweep(){
+  if(typeof _idbState==='undefined' || _idbState!=='ready' || !_IDB_MEM) return Promise.resolve(null);
+  return _idbFlushP().then(function(ok){
+    if(!ok) return null;
+    var out={ removed:0, kept:0, differ:0, bytes:0, at:Date.now() };
+    try{
+      var ks=[]; for(var i=0;i<localStorage.length;i++){ var x=localStorage.key(i); if(x) ks.push(x); }
+      ks.forEach(function(k){
+        if(k.indexOf(LSJ_PRE)===0 || _lsSlimKind(k)!=='bulk') return;
+        if(localStorage.getItem(LSJ_PRE+k)!==null){ _lsSlimTry(k); return; }   /* 書いている途中（その書き出しが片づける） */
+        if(!_IDB_MEM.has(k)) return;   /* IndexedDB にまだ無い（写したあとの次の起動で） */
+        var lv=localStorage.getItem(k);
+        if(lv===null) return;
+        if(_lsCloudPending(k)){   /* 送信待ちのキーの写しは届くまで残す。中身が違う（前の版の満杯で古いまま）なら IndexedDB の値に書き直す（2 回目の独立レビュー P2-2） */
+          if(_IDB_MEM.get(k)!==lv) out.differ++;
+          if(_lsKeepIdb(k, _IDB_MEM.get(k))==='kept') out.kept++; else { out.removed++; out.bytes+=(k.length+lv.length)*2; }
+          return;
+        }
+        out.bytes+=(k.length+lv.length)*2;
+        localStorage.removeItem(k); out.removed++;
+      });
+    }catch(e){}
+    _lsSlimLast=out;
+    try{ if(out.removed && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', (typeof t==='function') ? t('端末の保存領域を空けました（'+out.removed+' 件・'+(out.bytes/1048576).toFixed(1)+' MB）', 'Freed device storage ('+out.removed+' items, '+(out.bytes/1048576).toFixed(1)+' MB)') : ('端末の保存領域を空けました（'+out.removed+' 件）'), true); }catch(e){}
+    return out;
+  });
+}
+try{ setInterval(function(){ try{ if(Object.keys(_lsJDone).length) _lsSlimRetry(); }catch(e){} }, 60000); }catch(e){}
+var _idbSoonT=null;
+function _idbFlushSoon(){   /* 写しを残せなかった書き込み：待たずに（同じ時の分はまとめて 1 回で）書き出す。つなぎが切れていたらつなぎ直す */
+  if(_idbSoonT) return;
+  try{ _idbSoonT=setTimeout(function(){ _idbSoonT=null; try{ if(_idbTimer){ clearTimeout(_idbTimer); _idbTimer=null; } _idbFlush(); if(!_idbDB && !_idbTimer) _idbTimer=setTimeout(function(){ _idbTimer=null; _idbFlushSoon(); }, 5000); }catch(e){} }, 0); }catch(e){ _idbSoonT=null; }   /* つなぎが切れていれば _idbFlush がつなぎ直す。だめなら 5 秒後にもう一度 */
+}
+
 function _lsWriteVerified(key, json){
+  /* v1138：IndexedDB の端末では、localStorage は書いている途中の写しだけ（入り終えて送信待ちでなければ消す） */
+  if(typeof _lsSlimKind==='function' && _lsSlimKind(key)==='bulk' && typeof _idbState!=='undefined' && _idbState!=='unavailable'){
+    var _rdy=(_idbState==='ready');
+    var _iOk=false; try{ _iOk=(_idbQueue(key, json)===true); }catch(e){}
+    var _lOk=_lsJournalPut(key, json, _rdy);
+    if(_iOk && !_lOk) _idbFlushSoon();   /* 写しを残せないときは待たずに書き出す */
+    return _lOk || _iOk;
+  }
+  /* v1138：IndexedDB を使えなかった起動（開けない・読み込みが返らない）でも、その端末に IndexedDB があれば印（u）を残す。
+     次に IndexedDB を読めた起動で、この起動の書き込みを IndexedDB へ取り戻す（IndexedDB の古い値で消さない） */
+  if(typeof _lsSlimKind==='function' && _lsSlimKind(key)==='bulk' && typeof _idbState!=='undefined' && _idbState==='unavailable' && typeof _idbAvailable==='function' && _idbAvailable()){
+    if(_lsJournalPut(key, json, false, 'u')) return true;
+    try{ localStorage.setItem(key, json); }catch(e){}   /* 印を書けない（満杯）ときは、前の版と同じく値だけ書く（2 回目の独立レビュー P3-5） */
+    try{ return localStorage.getItem(key)===json; }catch(e){ return false; }
+  }
   var _lsOk=false;
   try{ localStorage.setItem(key, json); }catch(e){ /* 下の検証で失敗と判定させる */ }
   try{ _lsOk = (localStorage.getItem(key)===json); }catch(e){ _lsOk=false; }
@@ -11044,7 +11298,7 @@ function _outboxAdd(key, err, w){
   else { var n={key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}; if(w) n.who=w; a.push(n); }
   _outboxSet(a);
 }
-function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); try{ if(typeof _pendEditAtDrop==='function') _pendEditAtDrop(key); }catch(e){} }   /* v1136：送れたら直した時刻も忘れる */
+function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); try{ if(typeof _lsSlimTry==='function') _lsSlimTry(key); }catch(e){} try{ if(typeof _pendEditAtDrop==='function') _pendEditAtDrop(key); }catch(e){} }   /* v1136：送れたら直した時刻も忘れる */
 /* 今ログインしている人が送れる送信待ち（その人の保存と、だれのか分からない v1127 までのもの）。ほかの人の保存は、その人がまたログインしたときに送る */
 function _outboxMine(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && (!x.who || x.who===me); }); }
 function _outboxOthers(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && x.who && x.who!==me; }).length; }
@@ -11195,6 +11449,7 @@ async function flushOutbox(){
            入力内容が端末にもクラウドにも残らず完全に失われる。保存失敗中のキーはキューに残す。 */
         if(cur===null || typeof cur==='undefined'){
           if(_LS_SAVE_FAIL && _LS_SAVE_FAIL[key]) continue;   // 保存失敗中 → 次回に持ち越す
+          if(typeof _idbState!=='undefined' && _idbState!=='ready' && typeof _idbAvailable==='function' && _idbAvailable()) continue;   // v1138：IndexedDB を読めていない（値はそこにあるかもしれない）→ 次回に持ち越す
           _outboxRemove(key); continue;                        // 本当に存在しない → 送るものが無い
         }
         /* v1128（Codex の PR #118 のレビュー P1）：同じキーを送っている途中なら送らない（並べて送ると、古い値があとから届いて新しい値を上書きしうる）。
@@ -12290,10 +12545,10 @@ async function migrateUploadLocalOps(){
     if (!Array.isArray(cloud)) return;
     var have = {}; cloud.forEach(function(r){ if(r&&r.key) have[r.key]=1; });
     var batch=[];
-    for (var i=0;i<localStorage.length;i++){
-      var key=localStorage.key(i); if(!key||have[key]) continue;
+    lsKeys().forEach(function(key){   /* v1138：localStorage には大きなデータが無いので、IndexedDB のキーも見る（前の版で localStorage にあった分と同じ） */
+      if(!key||have[key]) return;
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
-    }
+    });
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
     var _casKeys=batch.filter(function(r){ var d=_opMergeDef(r.key); return !!(d && d.cas); });
     batch=batch.filter(function(r){ var d=_opMergeDef(r.key); return !(d && d.cas); });
@@ -17587,10 +17842,11 @@ function setStorePin(storeId, pin) { var p=getStorePins(); p[storeId]=pin; lsSet
    APP INIT
 ============================================================ */
 function initApp() {
+  var _dg=(typeof _lsDegraded==='function' && _lsDegraded());   /* v1138：IndexedDB を読めなかった起動では一度きりの移し替えをしない（localStorage に大きなデータが無い） */
   try{ autoPruneIfCritical(); }catch(e){}
-  try{ migrateInvHistSplit(); }catch(e){}   /* v617: 棚卸履歴を月ごとの行へ移行（巨大1行だとクラウド保存が失敗するため） */
+  try{ if(!_dg) migrateInvHistSplit(); }catch(e){}   /* v617: 棚卸履歴を月ごとの行へ移行（巨大1行だとクラウド保存が失敗するため） */
   var rc = ROLE_CONFIG[curRole];
-  try { migrateMenuStore(); } catch(e){}
+  try { if(!_dg) migrateMenuStore(); } catch(e){}
   // Topbar
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
   document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
@@ -17627,10 +17883,10 @@ function initApp() {
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
-  setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
-  setTimeout(function(){ try{ migrateUploadLocalOps(); }catch(e){} }, 2500); // F2-b: 既存ローカル運用データを一度だけクラウドへ移行
-  setTimeout(function(){ try{ migrateBudgetsSplit(); }catch(e){} }, 3500);   // v622: 予算を店舗ごとの行へ移行（旧版の端末から構造的に隔離）
-  setTimeout(function(){ try{ trimNotificationsOnce(); }catch(e){} }, 4500);  // v721: 通知の保持を150件へ揃える（既存の500件が縮まなかったため）
+  if(!_dg) setTimeout(function(){ try{ uploadAllLocalShifts(); }catch(e){} }, 1500); // F2-a: 既存ローカルシフトを一度だけクラウドへ移行
+  if(!_dg) setTimeout(function(){ try{ migrateUploadLocalOps(); }catch(e){} }, 2500); // F2-b: 既存ローカル運用データを一度だけクラウドへ移行
+  if(!_dg) setTimeout(function(){ try{ migrateBudgetsSplit(); }catch(e){} }, 3500);   // v622: 予算を店舗ごとの行へ移行（旧版の端末から構造的に隔離）
+  if(!_dg) setTimeout(function(){ try{ trimNotificationsOnce(); }catch(e){} }, 4500);  // v721: 通知の保持を150件へ揃える（既存の500件が縮まなかったため）
   setTimeout(function(){ try{ v1136MoveLocalOnly(); }catch(e){ console.warn('v1136MoveLocalOnly', e); } }, 3000);   // v1136: 端末にしか無かった手入力（勤怠の手動修正・Tip の確定・手入力 KPI・育成の記録）をクラウドへ
 }
 
@@ -42032,7 +42288,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1137';
+const APP_VERSION = '1138';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -99430,23 +99686,32 @@ async function checkOnboardToken(){
     return true;
   } catch(e){ console.error('onboard token', e); return false; }
 }
-try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
-try { migrateAkaneHourly(); } catch(e) { console.error('migrateAkaneHourly', e); }
 try { setTimeout(function(){ try{ checkCashTipNotify(); }catch(e){} }, 5000); } catch(e) {}
-try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
 try { migrateEnableMasterAutosync(); } catch(e) { console.error('migrateEnableMasterAutosync', e); }
-try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
-try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
-try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
-/* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
-try { migrateBudgetStatusYm(); } catch(e) { console.error('migrateBudgetStatusYm', e); }
-try { migrateBudgetStatusYmFix(); } catch(e) { console.error('migrateBudgetStatusYmFix', e); }
-try { if(!window.FUNERGY_FINANCIAL_SAVE && localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
-try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
-try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
-try { _v2VendorNormOnce(); } catch(e) { console.error('_v2VendorNormOnce', e); }
-try { migrateEcResetPreJuly(); } catch(e) { console.error('migrateEcResetPreJuly', e); }
-try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
+/* v1138：起動のときのデータの移し替えは、IndexedDB を読み終えてから（_bootMigrations）。localStorage にはもう大きなデータが無いため */
+function _bootMigrations(){
+  if(typeof _lsDegraded==='function' && _lsDegraded()) return;   /* IndexedDB を読めなかった起動はしない（localStorage に大きなデータが無い。次に読めた起動で） */
+  try { migrateWaikikiSplit(); } catch(e) { console.error('migrateWaikikiSplit', e); }
+  try { migrateAkaneHourly(); } catch(e) { console.error('migrateAkaneHourly', e); }
+  try { migrateYukiAm(); } catch(e) { console.error('migrateYukiAm', e); }
+  try { migrateActivateStores(); } catch(e) { console.error('migrateActivateStores', e); }
+  try { migrateTotoyaStoreIngredients(); } catch(e) { console.error('migrateTotoyaStoreIngredients', e); }
+  try { migrateOrderUnits(); } catch(e) { console.error('migrateOrderUnits', e); }
+  /* v728: 予算の重複（統合キーとパーティションの二重持ち）を一度だけ畳む。内容は失わない。 */
+  try { migrateBudgetStatusYm(); } catch(e) { console.error('migrateBudgetStatusYm', e); }
+  try { migrateBudgetStatusYmFix(); } catch(e) { console.error('migrateBudgetStatusYmFix', e); }
+  try { if(!window.FUNERGY_FINANCIAL_SAVE && localStorage.getItem('_bud_dupfix_v728')!=='1'){ var _bdf=repairBudgetDupes(true); localStorage.setItem('_bud_dupfix_v728','1'); if(_bdf.fixed) console.log('[v728] budget dupes fixed:', _bdf.fixed); } } catch(e) { console.error('repairBudgetDupes', e); }
+  try { migrateClearTestApplicants(); } catch(e) { console.error('migrateClearTestApplicants', e); }
+  try { migrateClearSampleOB(); } catch(e) { console.error('migrateClearSampleOB', e); }
+  try { _v2VendorNormOnce(); } catch(e) { console.error('_v2VendorNormOnce', e); }
+  try { migrateEcResetPreJuly(); } catch(e) { console.error('migrateEcResetPreJuly', e); }
+  try { migrateStoreGuids(); } catch(e) { console.error('migrateStoreGuids', e); }
+  try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
+  try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
+  try { migrateOfficePositions(); } catch(e) { console.error('migrateOfficePositions', e); }
+  try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
+  try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
+}
 /* ============================================================
    ⑫ ペーパーレス：Invoice / カードレシート アップロード
 /* ===== ペーパーレス共通ヘルパー（請求書タブで使用） ===== */
@@ -99552,22 +99817,17 @@ async function checkDriveOAuthReturn(){
   }
   return true;
 }
-try { migrateUniversalSkillItems(); } catch(e) { console.error('migrateUniversalSkillItems', e); }
-try { migrateStorePositionsSplitC(); } catch(e) { console.error('migrateStorePositionsSplitC', e); }
-try { migrateOfficePositions(); } catch(e) { console.error('migrateOfficePositions', e); }
-try { migrateMergeFCrew(); } catch(e) { console.error('migrateMergeFCrew', e); }
-try { migrateStoreManagers(); } catch(e) { console.error('migrateStoreManagers', e); }
 /* v764: IndexedDB の起動。既存の起動処理とは独立に走らせる（描画を待たせない）。
    失敗しても _idbState='unavailable' になるだけで、アプリの動作は変わらない。 */
 var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.resolve(_idbBoot()).then(res, res); }catch(e){ res(); } }, 0); });   /* v1098: 起動の終わりを待てるように（ログイン画面・差分の取り込み） */
-(async function(){ try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) {
+(async function(){ try { await Promise.resolve(_idbBootP); } catch(e) { } try { refreshStores(); } catch(e) { } try { _bootMigrations(); } catch(e) { console.error('_bootMigrations', e); } try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) {
   /* v1098: 名簿のある端末はログイン画面をすぐ出す（IndexedDB を読み終えてから。3 秒まで）。名簿は裏で取り直す */
   var _warm = false;
   try { await Promise.race([ _idbBootP, new Promise(function(r){ setTimeout(r, 3000); }) ]); _warm = _loginHasRoster();   /* v1137 */ } catch(_){}
   if (_warm) { bootLogin(); try { loginBootstrapPull({ background:true }); } catch(_){} }
   else { try { await loginBootstrapPull(); } catch(_){} bootLogin(); }
 } } catch(e) { console.error('bootLogin', e); try { bootLogin(); } catch(_){} } })();
-setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }, 1200);
+setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('checkDriveOAuthReturn', e); } }); }, 1200);   /* v1138：IndexedDB を読み終えてから */
 /* ============================================================
    v1127：操作感の共通の決まり（FUNERGY_UX）
    アプリ全体で同じ動きにする。業務の決まり（承認・確定・計算）は変えない。
@@ -99893,6 +100153,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
           if(r === 'failed') S.failed[key] = { key: key, label: rec.label, at: now(), retry: rec.retry, who: rec.who };
           else if(r === true || r === 'deferred') delete S.failed[key];
         }
+        try{ if(r === true && typeof _lsSlimTry === 'function') setTimeout(function(){ _lsSlimTry(key); }, 0); }catch(e){}   /* v1138 */
         paintSoon(0);
         return r;
       }
@@ -99905,6 +100166,7 @@ setTimeout(function(){ try{ checkDriveOAuthReturn(); }catch(e){ console.error('c
           infSet(o2);
         }
       }
+      try{ if(r === true && typeof _lsSlimTry === 'function') setTimeout(function(){ _lsSlimTry(key); }, 0); }catch(e){}   /* v1138：届いたら localStorage の控えを外す */
       paintSoon(0);
       return r;
     });
