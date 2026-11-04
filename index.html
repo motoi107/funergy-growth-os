@@ -3621,7 +3621,7 @@ function _kpiManualRaw(storeId, period){
 }
 function getKpiManual(storeId, period){
   var r=_kpiManualRaw(storeId, period), out={};
-  if(r) Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at') out[k]=r[k]; });
+  if(r) Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at' && k!=='_fi') out[k]=r[k]; });
   return out;
 }
 function setKpiManual(storeId, period, vals){
@@ -9299,9 +9299,28 @@ function _fsT(r, f){ var m=r && r._ft; return (m && typeof m==='object') ? (Numb
 function _fsFields(r){
   var seen={}, out=[];
   if(r && typeof r==='object'){
-    Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at' && !seen[k]){ seen[k]=1; out.push(k); } });
+    Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at' && k!=='_fi' && !seen[k]){ seen[k]=1; out.push(k); } });
     if(r._ft && typeof r._ft==='object') Object.keys(r._ft).forEach(function(k){ if(!seen[k]){ seen[k]=1; out.push(k); } });
   }
+  return out;
+}
+/* v1136（Codex の P2・#130/#131 コメント 6627627177）：入れ物の欄（育成のスキル Lv・カリキュラムなど、値が {} の欄）は項目ごとの時刻（_fi）で合流する。
+   前は欄全体に 1 つの時刻（_ft）だけで、2 台が同じ人の別々のスキル・カリキュラムの項目を直すと、あとの保存が欄ごと置き換えて先の変更を戻した。
+   _fi = { 欄: { 項目: 時刻 } }（消した項目も時刻を持つ）。_fi の無い項目は時刻 0（前の版の記録・その端末が触っていない項目）。
+   _fi[欄] の無い欄（時刻だけのもの）は、欄の時刻をどの項目にも使う */
+function _fsObj(v){ return !!v && typeof v==='object' && !Array.isArray(v); }
+function _fsFiOf(r, f){ var fi=r && r._fi, m=_fsObj(fi) ? fi[f] : null; return _fsObj(m) ? m : null; }
+function _fsSubT(r, f, s){ var m=_fsFiOf(r, f); return m ? (Number(m[s])||0) : _fsT(r, f); }
+/* この欄を入れ物として項目ごとに見るか：どちらの側も入れ物か欄が無く、少なくとも片方が入れ物 */
+function _fsCont(a, b, f){
+  var va=a?a[f]:undefined, vb=b?b[f]:undefined, ha=_fsHas(a, f), hb=_fsHas(b, f);
+  return (_fsObj(va) || !ha) && (_fsObj(vb) || !hb) && (_fsObj(va) || _fsObj(vb));
+}
+function _fsSubs(a, b, f){
+  var seen={}, out=[];
+  [_fsObj(a&&a[f]) ? a[f] : {}, _fsObj(b&&b[f]) ? b[f] : {}, _fsFiOf(a, f)||{}, _fsFiOf(b, f)||{}].forEach(function(o){
+    Object.keys(o).forEach(function(k){ if(!seen[k]){ seen[k]=1; out.push(k); } });
+  });
   return out;
 }
 /* 同じ時刻（前の版の記録どうし）で中身が違う欄：どちらの順でも同じ答え。
@@ -9359,12 +9378,20 @@ function _fsFill(nv, ov){
   if(Array.isArray(nv) && Array.isArray(ov)){
     var seen={}, add=[];
     nv.forEach(function(v){ seen[_cjson(v)]=1; });
+    var base=nv.slice();
     ov.forEach(function(v){
       var j=_cjson(v); if(seen[j]) return;
-      for(var i=0;i<nv.length;i++){ if(_fsSameEntry(nv[i], v)) return; }
+      for(var i=0;i<base.length;i++){
+        if(_fsSameEntry(base[i], v)){
+          /* 真偽の欄だけ違う同じ要素：どちらかで true なら true（再教育の「済み」は戻らない。育成の記録の真偽は false → true にしか変えない） */
+          var x=null; Object.keys(v).forEach(function(k){ if(v[k]===true && base[i][k]===false){ if(!x) x=Object.assign({}, base[i]); x[k]=true; } });
+          if(x) base[i]=x;
+          return;
+        }
+      }
       seen[j]=1; add.push(v);
     });
-    return add.length ? add.concat(nv) : nv.slice();
+    return add.length ? add.concat(base) : base;
   }
   var no=(nv && typeof nv==='object' && !Array.isArray(nv)), oo=(ov && typeof ov==='object' && !Array.isArray(ov));
   if(no && oo){
@@ -9379,15 +9406,35 @@ function mergeFieldStampRec(a, b){
   if(!ao && !bo) return ((_cjson(a)||'') >= (_cjson(b)||'')) ? a : b;
   if(!ao) return b;
   if(!bo) return a;
-  var out={}, ft={}, mx=0, seen={}, rw=null;
+  var out={}, ft={}, fi={}, mx=0, seen={}, rw=null;
   _fsFields(a).concat(_fsFields(b)).forEach(function(f){
     if(seen[f]) return; seen[f]=1;
     var ta=_fsT(a, f), tb=_fsT(b, f), ha=_fsHas(a, f), hb=_fsHas(b, f), t=Math.max(ta, tb);
+    if(_fsCont(a, b, f)){
+      /* 入れ物：項目ごとに新しいほう（消した項目は消したまま）。同じ時刻で違う値は文字の大きいほう（どちらの順でも同じ） */
+      var va=_fsObj(a[f]) ? a[f] : {}, vb=_fsObj(b[f]) ? b[f] : {}, o2={}, f2={};
+      _fsSubs(a, b, f).forEach(function(s){
+        var sa=_fsSubT(a, f, s), sb=_fsSubT(b, f, s), xa=_fsHas(va, s), xb=_fsHas(vb, s);
+        if(sa!==sb){ var wv=(sa>sb) ? va : vb; if(_fsHas(wv, s)) o2[s]=wv[s]; }
+        else if(xa && xb) o2[s]=((_cjson(va[s])||'') >= (_cjson(vb[s])||'')) ? va[s] : vb[s];
+        else if(xa) o2[s]=va[s];
+        else if(xb) o2[s]=vb[s];
+        var st=Math.max(sa, sb); if(st) f2[s]=st;
+      });
+      if(Object.keys(o2).length || (ta>tb ? ha : (tb>ta ? hb : (ha || hb)))) out[f]=o2;
+      if(t){ ft[f]=t; if(t>mx) mx=t; fi[f]=f2; }   /* 欄の時刻があれば _fi も置く（無いと欄の時刻をどの項目にも使ってしまう） */
+      return;
+    }
+    /* 入れ物として見ない欄（どちらにも無い・値が入れ物でない）でも、項目の時刻は残す（何度合流しても同じ答えに） */
+    var fa=_fsFiOf(a, f), fb=_fsFiOf(b, f);
+    if(fa || fb){ var f3={}; [fa||{}, fb||{}].forEach(function(m){ Object.keys(m).forEach(function(s){ var v=Number(m[s])||0; if(v>(f3[s]||0)) f3[s]=v; }); }); fi[f]=f3; }
     if(ta!==tb){
       var w=(ta>tb) ? a : b, o=(w===a) ? b : a;
       if(_fsHas(w, f)){
         out[f]=w[f];   /* 新しいほう（消した欄は消したまま） */
-        if(!Math.min(ta, tb) && _fsHas(o, f)) out[f]=_fsFill(w[f], o[f]);   /* 片方が前の版の記録：前の版にしか無い中身を足す */
+        /* 片方が前の版の記録：前の版にしか無い中身を足す。配列（テスト・再教育・ステージの履歴）は新しい版どうしでも足す
+           （Codex の P2：2 台が同じ人にテストを 1 つずつ入れると、あとの保存が先のテストを消していた。画面は配列の要素を消さない） */
+        if(_fsHas(o, f) && (!Math.min(ta, tb) || (Array.isArray(w[f]) && Array.isArray(o[f])))) out[f]=_fsFill(w[f], o[f]);
       }
     }
     else if(ha && hb){
@@ -9400,6 +9447,7 @@ function mergeFieldStampRec(a, b){
     if(t){ ft[f]=t; if(t>mx) mx=t; }
   });
   if(mx) out._ft=ft;
+  if(Object.keys(fi).length) out._fi=fi;
   var at=Math.max(_lrAt(a), _lrAt(b), mx); if(at) out._at=at;
   return out;
 }
@@ -9419,6 +9467,15 @@ function _coversFieldStampMap(check, want){
     for(var i=0;i<fs.length;i++){
       var f=fs[i], tw=_fsT(wr, f), th=_fsT(hr, f);
       if(th<tw) return false;
+      if(_fsCont(wr, hr, f)){
+        var wv=_fsObj(wr[f]) ? wr[f] : {}, hv=_fsObj(hr[f]) ? hr[f] : {}, ss=_fsSubs(wr, hr, f);
+        for(var j=0;j<ss.length;j++){
+          var s=ss[j], sw=_fsSubT(wr, f, s), sh=_fsSubT(hr, f, s);
+          if(sh<sw) return false;
+          if(sh===sw){ var xw=_fsHas(wv, s), xh=_fsHas(hv, s); if(xw && !xh) return false; if(xw && _cjson(wv[s])!==_cjson(hv[s])) return false; }
+        }
+        continue;
+      }
       if(th===tw){ var hw=_fsHas(wr, f), hh=_fsHas(hr, f); if(hw!==hh) return false; if(hw && _cjson(wr[f])!==_cjson(hr[f])) return false; }
     }
   }
@@ -9427,18 +9484,29 @@ function _coversFieldStampMap(check, want){
 /* 画面が直した記録 next に、前の記録 prev と比べて変わった欄の時刻を付ける（前の記録のどの時刻よりもあと＝時計の遅れた端末でも、見てから直した欄が勝つ） */
 function _fsStamp(prev, next){
   var p=_lrObj(prev), n={};
-  Object.keys(_lrObj(next)).forEach(function(k){ if(k!=='_ft' && k!=='_at') n[k]=next[k]; });
-  var ft=Object.assign({}, _lrObj(p._ft)), pm=_lrAt(p);
+  Object.keys(_lrObj(next)).forEach(function(k){ if(k!=='_ft' && k!=='_at' && k!=='_fi') n[k]=next[k]; });
+  var ft=Object.assign({}, _lrObj(p._ft)), fi={}, pm=_lrAt(p);
+  Object.keys(_lrObj(p._fi)).forEach(function(f){ var m=_fsFiOf(p, f); if(m) fi[f]=Object.assign({}, m); });   /* 項目の時刻は欄の時刻（_ft）を超えないので、前の時刻（pm）は _ft から */
   Object.keys(ft).forEach(function(k){ var v=Number(ft[k])||0; if(v>pm) pm=v; });
   var ts=Math.max(Date.now(), pm+1), changed=false, seen={};
   Object.keys(p).concat(Object.keys(n)).forEach(function(f){
-    if(f==='_ft' || f==='_at' || seen[f]) return; seen[f]=1;
+    if(f==='_ft' || f==='_at' || f==='_fi' || seen[f]) return; seen[f]=1;
     /* 無かった欄に空の配列・空の入れ物（画面が初めから渡す形）は「直した」にしない（独立レビュー 9fe3a66 P1：
        ほかの端末が入れたテスト・スキルを、この端末の空の初期値が時刻つきで消していた） */
     if(!_lrOwn(p, f) && n[f] && typeof n[f]==='object' && !Object.keys(n[f]).length) return;
-    if(_cjson(p[f])!==_cjson(n[f])){ ft[f]=ts; changed=true; }
+    if(_cjson(p[f])!==_cjson(n[f])){
+      ft[f]=ts; changed=true;
+      if(_fsCont(p, n, f)){
+        /* 入れ物：変わった項目にだけ時刻（Codex の P2）。_fi の無かった欄（欄の時刻だけ）は、触っていない項目に前の欄の時刻を残す */
+        var m=fi[f] || {}, pv=_fsObj(p[f]) ? p[f] : {}, nv=_fsObj(n[f]) ? n[f] : {}, pt=_fsT(p, f);
+        if(!fi[f] && pt) Object.keys(pv).forEach(function(s){ m[s]=pt; });
+        _fsSubs(p, n, f).forEach(function(s){ if(_cjson(pv[s])!==_cjson(nv[s]) || _fsHas(pv, s)!==_fsHas(nv, s)) m[s]=ts; });
+        fi[f]=m;
+      } else delete fi[f];
+    }
   });
   if(Object.keys(ft).length) n._ft=ft;
+  if(Object.keys(fi).length) n._fi=fi;
   var at=changed ? ts : _lrAt(p); if(at) n._at=at;
   return n;
 }
@@ -12032,6 +12100,10 @@ async function migrateUploadLocalOps(){
       var key=localStorage.key(i); if(!key||have[key]) continue;
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
     }
+    /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
+    var _casKeys=batch.filter(function(r){ var d=_opMergeDef(r.key); return !!(d && d.cas); });
+    batch=batch.filter(function(r){ var d=_opMergeDef(r.key); return !(d && d.cas); });
+    for (var q=0;q<_casKeys.length;q++){ await opMergePush(_casKeys[q].key, _casKeys[q].value); }
     for (var c=0;c<batch.length;c+=50){ await supaUpsert('app_state', batch.slice(c,c+50)); }
     localStorage.setItem('_f2b_opsync2','1');
   }catch(e){ console.warn('migrateUploadLocalOps', e); }
@@ -12566,9 +12638,10 @@ lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
   /* v1024: 理解度チェックの端末側の記録。名前ごとに独立しているので名前単位で合流する（handbook_reads と違い、2台が同時に書いても消し合わない）。 */
   handbook_tests: { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v1136：育成の記録・育成開始日（前は dev_data・dev_start でこの端末だけ）。名前ごと・欄ごとに新しいほう。
-     strict：クラウドを読めなかったら書かない（端末の写しで丸ごと書くと、ほかの人の記録が消える） */
-  dev_pipe:       { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true },
-  dev_pipe_start: { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true },
+     strict：クラウドを読めなかったら書かない（端末の写しで丸ごと書くと、ほかの人の記録が消える）。
+     cas：読んだ行が変わっていないときだけ書く（Codex の P2。変わっていたら読み直して合わせ直す）。スキル・カリキュラムは項目ごとの時刻（_fi） */
+  dev_pipe:       { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true },
+  dev_pipe_start: { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true },
   /* v1025: OJTの受講記録。人ごとに独立しているので名前単位で合流する。 */
   ojt_enroll:     { merge: mergeMapByTime, covers: _coversMapByTime },
   /* v753: リスト型3画面。性質が違うので別々のルールを当てる。
@@ -12764,10 +12837,11 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
   /* v835: Remind 済み。名前の和集合。取り消す操作が無いので復活の心配が無い。 */
   'reminded_': { merge: mergeRemindedNames, covers: _coversRemindedNames },
   /* v1136：勤怠の手動修正（att_fix_<店>_<年-月>）・Tip の期間の確定（tip_cf_<店>_<年>）は 1 件ずつ新しいほう（取り消しの印も）。
-     手入力 KPI（kpi_man_<期間>）は店ごと・欄ごとに新しいほう。前はどれも端末だけ。strict：クラウドを読めなかったら書かない */
-  'att_fix_': { merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true },
-  'tip_cf_':  { merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true },
-  'kpi_man_': { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true } };
+     手入力 KPI（kpi_man_<期間>）は店ごと・欄ごとに新しいほう。前はどれも端末だけ。strict：クラウドを読めなかったら書かない。
+     cas：読んだ行が変わっていないときだけ書く（Codex の P2：2 台が同じ古い行を読んで続けて書くと、両方「保存しました」でも先の書き込みが消えた） */
+  'att_fix_': { merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true, cas: true },
+  'tip_cf_':  { merge: mergeLocalRecMap, covers: _coversLocalRecMap, keepLocal: true, strict: true, cas: true },
+  'kpi_man_': { merge: mergeFieldStampMap, covers: _coversFieldStampMap, keepLocal: true, strict: true, cas: true } };
 /* v754: 棚卸(inv_<店舗>)の合流ルールを店舗ごとの完全キーで登録する。
    'inv_' の前方一致だと inv_hist_ や inv_templates まで拾ってしまうため、店舗IDまで含めて登録する。
    店舗が追加されたときのために refreshStores からも呼べるようにしておく。 */
@@ -95720,7 +95794,7 @@ function _devDataRaw(name){
 function getDevData(name){
   var r=_devDataRaw(name);
   if(!r) return {skillLevels:{},curriculum:{},tests:[],retrain:[]};
-  var out={}; Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at') out[k]=r[k]; });
+  var out={}; Object.keys(r).forEach(function(k){ if(k!=='_ft' && k!=='_at' && k!=='_fi') out[k]=r[k]; });
   if(out.targetCareer==='Store Leader') out.targetCareer='Operation Leader';   /* v1058: Store Leader は廃止（前に選んだ目標は Operation Leader として読む） */
   return out;
 }
