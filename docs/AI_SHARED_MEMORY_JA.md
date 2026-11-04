@@ -32,7 +32,10 @@
 - 本番の ①（Moto さん 11/04 05:59 HST・`1_確かめ_読むだけ.sql`）：STOP・NG なし。app_state の RLS は ON（今の決まりは PERMISSIVE の 3 つ）・対象のキーの決まり ss_secret はまだ・社員と結ばれていない GM・CEO のメールのアカウント 0・Realtime の publication に app_state あり・**`app_state_index`（v1098 の読むだけの関数）は入っていない**（ログインのたびに app_state を全部取っている。入れるのは任意・`deploy/perf-v1098/`。security invoker なので ③ のあとも anon に対象のキーは出ない＝④ の 11 行目で確かめる）。次は ②（関数）。
 - #128（v1136・head `3eabda6`）・#129（v1137・`7f299a1`）・#130（v1138・`69146ae`）は Moto さんが 11/04 06:05〜06:06 HST にマージ（main `ca8de5b`・`409c332`・`4a5901a`）。**どれも最新の head への Codex の判定はマージの前に無い**（Codex の最後は #130 の `4478cb5`（blocked）と #131 の `01f33ac`（blocked・P1 は `a8584fd` で直した））。main の APP_VERSION・SW_BUILD は 1138。
 - #131 は 06:07 HST に「マージできません」。API では mergeable・conflict なし（main との違いは 3 つのマージのコミットだけで中身は同じ）・GitHub の Actions が 16:02 UTC から全部 queued（ランナーが付かない）で checks が pending＝mergeable_state unstable。main を取り込んで最新にした（中身は変えていない・tree 同じ）。
-次：#131 をマージ（アプリ）→ Moto さんが関数を入れる（いつでも）→ 全部の端末を 1139 に → GM・CEO の端末で「診断と記録」に「全部」と出るのを確かめる → SQL → 確かめの SQL。2b の次：Career Score（lss_emp_・申請・履歴）・応募者・お悩み相談室・注意ログ・個人の Tip・本人の画面も使う賞与の設定・ガソリン代の単価・従業員の表の個人の欄。
+- #131（head `cc1d3be`）は Moto さんが 11/04 06:26 HST にマージ（main `9bc7b48`・APP_VERSION・SW_BUILD 1139）。マージのとき checks は Actions の遅れで pending（`cc1d3be` への Codex の判定も無い）。Moto さん 06:28 HST「v1139 になりません」＝公開（pages build and deployment）が 06:26〜06:33 HST に queued・06:37 HST に success（その前の v1138 の公開も 06:28 HST まで待った）。公開中のサイトはこの環境からは読めない（端末で「更新」して版を見る）。
+- 本番の ③・④（Moto さん 11/04 06:48 HST に ④ の表を貼った＝③ は流した）：④ はすべて OK。RLS ON・決まり ss_secret 1・ss_secret_key 1・対象のキーの判定 9・anon で読める対象のキーの行 0・anon で読めるほかの行 866（変わらず読める）・サーバーの鍵で読める対象のキーの行 6・anon で足せない・直せない・消せない・app_state_index に出る対象のキー 0・authenticated で読める対象のキーの行 0。**② の関数を入れたか・端末を 1139 にしたか・GM・CEO の「診断と記録」で「全部」と出たかは報告が無い**（③ は公開の 06:37 HST から約 10 分後）。GM・CEO の端末で成長カルテ・賞与が出なければ `戻す_SQL.sql`（行は変えない）→ secure-state の Logs を Claude に。
+- 済（Moto さん 11/04 07:02 HST「1~3まで確認できました」）：GM・CEO の端末が 1139・PIN のログインで成長カルテ・賞与が出る・「診断と記録」で「全部」＝② の関数も入っている。v1139 は本番で完了。
+次：残りの端末も 1139 に（1138 以前で GM・CEO が保存すると送信待ちに残る）→ GM・CEO の初期の PIN を変える。2b の次：Career Score（lss_emp_・申請・履歴）・応募者・お悩み相談室・注意ログ・個人の Tip・本人の画面も使う賞与の設定・ガソリン代の単価・従業員の表の個人の欄。
 
 ## 2026-11-03 v1138：端末の保存領域（localStorage）をいっぱいにしない（Moto さん 11/03 16:37 HST の依頼・Claude・ブランチ `claude/storage-1138`・PR #129（v1137）の上・アプリだけ・本番未反映）
 
