@@ -289,7 +289,7 @@ test('P2-1: the one-time upload of device data writes the cas keys only through 
   A.S.m_other = { x: 1 };
   run(A, fnSrc('migrateUploadLocalOps'));
   const keys = Object.keys(A.S);
-  Object.assign(A, { _supaBooting: false, isOpSyncKey: () => true, upserted: [],
+  Object.assign(A, { _supaBooting: false, isOpSyncKey: () => true, upserted: [], lsKeys: () => keys.slice(),   // v1138 から一覧は lsKeys
     localStorage: { length: keys.length, key: i => keys[i], getItem: k => (k === '_v1136_moved' ? '1' : null), setItem() {} } });
   // 一覧を読んだあとに、ほかの端末が dev_pipe を作る
   A.supaFetchAll = async () => { await db.query("insert into app_state values('dev_pipe', $1, now())", [JSON.stringify({ Amy: { stage: 1, _ft: { stage: 200 }, _at: 200 } })]); return []; };
