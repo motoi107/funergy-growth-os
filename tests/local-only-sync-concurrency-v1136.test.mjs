@@ -365,3 +365,22 @@ test('独立レビュー（1036dcd）P3：a cas key the one-time upload could no
   assert.deepEqual(queued.map(x => x[0]), ['dev_pipe']);
   await db.close();
 });
+
+test('独立レビュー（1036dcd）P3-1 の細かいところ：entry times through ties, saves and old copies', () => {
+  const c = device(null, 100);
+  const M = (a, b) => plain(run(c, `mergeFieldStampRec(${JSON.stringify(a)}, ${JSON.stringify(b)})`));
+  // 欄の時刻が同じ（同じミリ秒）でも、要素は入れた時刻の順
+  assert.deepEqual(M({ tests: [{ c: 'B', _t: 2 }], _ft: { tests: 5 } }, { tests: [{ c: 'A', _t: 1 }], _ft: { tests: 5 } }).tests.map(x => x.c), ['A', 'B']);
+  // 画面が時刻の無い要素を渡しても、前と同じ要素なら前の時刻を引き継ぎ、新しい要素だけに今の時刻
+  c.NOW = 50;
+  const st = plain(run(c, `_fsStamp({ tests: [{ c: 'A', _t: 5 }], _ft: { tests: 5 } }, { tests: [{ c: 'A' }, { c: 'B' }] })`));
+  assert.deepEqual(st.tests, [{ c: 'A', _t: 5 }, { c: 'B', _t: 50 }]);
+  // 前の版の写し（時刻なし）と時刻のある同じ要素は 1 つ（済みは済み・時刻は分かっている側）。どちらの順でも同じ
+  const L = { retrain: [{ item: 'Fry', done: false }] }, N = { retrain: [{ item: 'Fry', done: true, _t: 5 }], _ft: { retrain: 9 } };
+  for (const r of [M(L, N), M(N, L)]) assert.deepEqual(r.retrain, [{ item: 'Fry', done: true, _t: 5 }]);
+  // 新しいほうの要素に時刻が無く、古いほうにあるとき：時刻を写す（どちらの順でも同じ並びになるように）
+  const X = { retrain: [{ item: 'Fry', done: true }, { item: 'Knife', done: false, _t: 3 }], _ft: { retrain: 9 } }, Y = { retrain: [{ item: 'Fry', done: false, _t: 7 }], _ft: { retrain: 4 } };
+  const xy = M(X, Y), yx = M(Y, X);
+  assert.deepEqual(xy.retrain, [{ item: 'Knife', done: false, _t: 3 }, { item: 'Fry', done: true, _t: 7 }]);
+  assert.equal(run(c, `_cjson(${JSON.stringify(xy)})`), run(c, `_cjson(${JSON.stringify(yx)})`));
+});
