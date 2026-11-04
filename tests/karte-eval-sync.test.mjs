@@ -810,7 +810,7 @@ test('P3: missing attendance tells where to fetch it; missing purchases do not g
   const c = company();
   vm.runInContext("STORES.S2.noLabor = ['2026-08'];", c);
   const mia = person(c, 'mia');
-  assert.match(mia.missing.join(), /Labor の結果：実績が未取得（Store 2 8月：売上のある日に勤怠が未取得の日がある）。勤怠データの画面でその月を選び、「この月を最新化（売上＋勤怠）」を押して Toast から取得してください/);
+  assert.match(mia.missing.join(), /Labor の結果：実績が未取得（Store 2 8月：売上のある日に勤怠が未取得の日がある）。勤怠データの画面でその月を選び、「この月を Toast から取り直す（売上＋勤怠）」を押して Toast から取得してください/);
   assert.match(run(c, 'kevLockProblems(bonusTotals(kbCfg())).join()'), /Mia Sample：.*勤怠データの画面でその月を選び/);
   const f = company();
   vm.runInContext("STORES.S2.noCost = ['2026-08'];", f);

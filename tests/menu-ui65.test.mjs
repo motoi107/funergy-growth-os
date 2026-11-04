@@ -304,7 +304,9 @@ test('the previous monthly screen is unchanged and both page renderers widen the
   const now = fnFrom(source, 'renderMenuMonth').replace('function renderMenuMonth()', 'function renderMenu()')
     .replace("recipeInStore(r, storeId) && !(typeof isVisitTypeRecipe==='function' && isVisitTypeRecipe(r)) )", 'recipeInStore(r, storeId) )')
     // v1129 ③: with "All stores" the first store this person may see (soloStoreId), not visStores[0]/'F01'
-    .replace("(curStore!=='ALL'?curStore:soloStoreId('menu'));   /* v1129 ③：左上を変えたら pageStoresFollow が合わせる */", "(curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));");
+    .replace("(curStore!=='ALL'?curStore:soloStoreId('menu'));   /* v1129 ③：左上を変えたら pageStoresFollow が合わせる */", "(curStore!=='ALL'?curStore:(visStores[0]?visStores[0].id:'F01'));")
+    // v1137 (12A): the general screens no longer say "sync"; the button that re-reads the counts is named "re-fetch" (it does the same thing)
+    .replace("${t('出数を取り直す','Re-fetch sales qty')}", "${t('出数を同期','Sync sales qty')}");
   let before = '';
   try { before = read(execFileSync('git', ['show', '6bcf6cd:index.html'], { cwd: new URL('..', import.meta.url).pathname, encoding: 'utf8', maxBuffer: 64 << 20 })); } catch (e) { }
   if (before) assert.equal(now, fnFrom(before, 'renderMenu'), 'v1125 renderMenu body');
