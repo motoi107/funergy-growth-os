@@ -12599,7 +12599,7 @@ async function ssPull(force){
   /* v1140：Career Score。関数が前の版（cs が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
   var csr=null;
   if(j.cs && typeof j.cs==='object') csr=await csTake(j.cs);
-  else if(j.cs===undefined || j.cs===null) csStateSet(null);
+  else if(j.cs===undefined || j.cs===null){ csHistReset(csStateGet(), '', []); csStateSet(null); }
   var rows=Array.isArray(j.rows) ? j.rows.filter(function(x){ return x && ssIsKey(x.key) && x.key!=='karte_pin' && typeof x.v==='string'; }) : [];
   var ver={}; (Array.isArray(j.index) ? j.index : []).forEach(function(x){ if(x && ssIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
   if(level==='full'){
@@ -12659,8 +12659,17 @@ async function csTake(c){
   }
   var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && csIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; })
     .map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; });
+  csHistReset(csStateGet(), level, names);
   csStateSet({ level:level, names:names, req:req, who:csWho(), at:Date.now() });
   return { rows:rows, ver:ver, level:level };
+}
+/* 範囲（人・形・ログインした人）が変わったら、履歴（開いたときだけ取る）をもう一度取れるようにする。
+   前は一度取ると、次の人・広がった範囲でも取り直さなかった（独立レビュー P3） */
+function csHistReset(prev, level, names){
+  try{
+    var same=!!prev && prev.level===level && prev.who===csWho() && JSON.stringify((prev.names||[]).slice().sort())===JSON.stringify((names||[]).slice().sort());
+    if(!same && typeof _lsDeferReq!=='undefined') delete _lsDeferReq['#spl_lss_history_'];
+  }catch(e){}
 }
 /* 取り込めた行の印を残す（_kvSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
 function csSeenRecord(rows, okKeys){
@@ -12693,6 +12702,7 @@ async function csHistPull(){
 }
 /* ログアウト：共有の端末（ほかの人も使った）では、Career Score の写しを残さない（送れていない変更のある行は残す）。次にログインした人の範囲で受け取り直す */
 function csOnLogout(){
+  try{ if(typeof _lsDeferReq!=='undefined') delete _lsDeferReq['#spl_lss_history_']; }catch(e){}   /* 次にログインした人の範囲で履歴を取り直す（独立レビュー P3） */
   try{
     var m=ssMarkGet(), st=csStateGet();
     if(!m.shared && !(st && st.level!=='full')) return;
@@ -12844,6 +12854,8 @@ async function _kvPullRows(force){
   var _ssr=_ssP ? await _ssP : { rest:true };
   var _ssOut=!_ssr.rest;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var _csOut=!!_ssr.cs;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
+  /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
+  if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
@@ -13524,7 +13536,7 @@ var OP_MERGE = {
   tip_history:    { merge: mergeAppendLog, covers: _coversLog },
   career_history: { merge: mergeAppendLog, covers: _coversLog },
   eval_history:   { merge: mergeAppendLog, covers: _coversLog },
-  lss_requests:   { merge: mergeSkillReq,  covers: _coversSkillReq },
+  lss_requests:   { merge: mergeLssReq,    covers: _coversSkillReq },   /* v1140：取消と承認・却下がぶつかったら決定（mergeLssReq） */
   tip_requests:   { merge: mergeTipReq,    covers: _coversTipReq },   /* v1091: 2 台で決めたら、決めた時刻の新しいほう */
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
 /* v870: 申請者端末とGM端末が同じ行を書くので、上書きだと申請か承認のどちらかが消える。 */
@@ -14202,6 +14214,26 @@ function mergeSkillReq(cloudArr, localArr){
     if(!by[id]){ by[id]=item; order.push(id); return; }
     var cur=by[id], win;
     if(_srPending(cur)!==_srPending(item)) win = _srPending(cur)?item:cur; // レビュー済みを優先
+    else win = isLocal?item:cur;
+    by[id]=win;
+  }
+  (Array.isArray(cloudArr)?cloudArr:[]).forEach(function(x){ put(x,false); });
+  (Array.isArray(localArr)?localArr:[]).forEach(function(x){ put(x,true); });
+  return order.map(function(id){ return by[id]; });
+}
+/* v1140：Career Score の申請（lss_requests・spl_lss_requests_）の合流。skill_requests と同じ（id で和集合・決めたものが申請中に勝つ・どちらも決めてあれば手元）に加えて、
+   本人の取り下げ（取消）と承認する人の決定（承認・却下）がぶつかったら、決定のほう（どの端末で合流しても同じ。承認したときに点はもう書いてある）。
+   前は手元が勝つので、本人の端末が取消を送り続け、関数 secure-state が「決まった自分の申請の書き換え」を断るので、送信待ちに残り続けた（独立レビュー P3） */
+function mergeLssReq(cloudArr, localArr){
+  var by={}, order=[];
+  var dec=function(r){ return !_srPending(r) && r.status!=='取消'; };
+  function put(item, isLocal){
+    if(!item || item.id==null) return;
+    var id=item.id;
+    if(!by[id]){ by[id]=item; order.push(id); return; }
+    var cur=by[id], win;
+    if(_srPending(cur)!==_srPending(item)) win = _srPending(cur)?item:cur;    // レビュー済みを優先
+    else if(dec(cur)!==dec(item) && !_srPending(cur)) win = dec(cur)?cur:item; // 取消と承認・却下：決定
     else win = isLocal?item:cur;
     by[id]=win;
   }

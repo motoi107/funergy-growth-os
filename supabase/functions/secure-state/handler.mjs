@@ -292,33 +292,35 @@ export function createHandler(deps) {
     await flush();
     return out.filter(r => r && csIsKey(r.key));
   }
-  // Career Score の行を全部（履歴は hist のときだけ）。1000 行ずつ
+  // Career Score の行を全部（履歴は hist のときだけ）。1000 行ずつ、空のページが来るまで（独立レビュー P3：上限の行数が 1000 より小さいサーバーでも切れない）。
+  // 読み切れない（50 ページ）ときは失敗にする（途中までの一覧で、端末の写しを消さない）
   async function readCsAll(hist) {
     const q = hist ? 'key=like.spl_lss_history_*'
       : 'or=' + encodeURIComponent('(key.' + IN(CS_LEGACY) + ',key.like.lss_emp_*,key.like.spl_lss_requests_*)');
     const out = [];
-    for (let off = 0, page = 0; page < 50; page++) {
+    for (let off = 0, page = 0; ; page++) {
+      if (page >= 50) throw err('db', 500);
       const rows = await rest('app_state?select=key,value,updated_at&' + q + '&order=key.asc&limit=1000&offset=' + off);
       if (!Array.isArray(rows) || !rows.length) break;
       out.push(...rows); off += rows.length;
-      if (rows.length < 1000) break;
     }
     return out.filter(r => r && csIsKey(r.key) && (hist ? csParse(r.key).kind === 'hist' : csParse(r.key).kind !== 'hist'));
   }
-  // 人の表（社員の表・manager_auth・GM・CEO が確かめた写し・Score管理の権限）。社員の表の店・肩書き・役割は公開の鍵で書けるので、
-  // CEO・GM・経理・事務Crew（manager_auth）と AM（確かめた写し）の人は、店で決まる範囲には入れない（v1139 の目標と同じ）
+  // 人の表（社員の表・manager_auth・GM・CEO が確かめた写し・Score管理の権限）。社員の表の店・肩書き・役割・名前は公開の鍵で書けるので、
+  // CEO・GM・経理・事務Crew（manager_auth）と AM（確かめた写し）の人は、店で決まる範囲には入れない（v1139 の目標と同じ）。
+  // 退職の人も返す（同じ名前の人を見分けるため。範囲には入れない）。確かめた写しの名前が社員の表の名前と違えば、その名前も持つ（confName）
   async function csPeople() {
     const [emps, mgr, wrp, cfgRows] = await Promise.all([
       rest('employees?select=id,name,store,support,role,title,status,data&limit=5000'),
       rest('manager_auth?select=emp_id,role&limit=1000'),
-      rest('wr_people?select=emp_id,role,grade&limit=2000'),
+      rest('wr_people?select=emp_id,name,role,grade&limit=2000'),
       rest('app_state?select=value&key=eq.career_cfg'),
     ]);
     const mrole = new Map(), conf = new Map();
     for (const m of (Array.isArray(mgr) ? mgr : [])) if (m && m.emp_id != null && MGR_ROLES.includes(m.role)) mrole.set(String(m.emp_id), m.role);
-    for (const c of (Array.isArray(wrp) ? wrp : [])) if (c && c.emp_id != null) conf.set(String(c.emp_id), { role: c.role, grade: Number.isInteger(c.grade) ? c.grade : 0 });
+    for (const c of (Array.isArray(wrp) ? wrp : [])) if (c && c.emp_id != null) conf.set(String(c.emp_id), { role: c.role, grade: Number.isInteger(c.grade) ? c.grade : 0, name: typeof c.name === 'string' ? c.name : '' });
     const cfg = obj(Array.isArray(cfgRows) && cfgRows[0] ? cfgRows[0].value : null) || {};
-    const list = [];
+    const list = [], ids = new Set();
     for (const e of (Array.isArray(emps) ? emps : [])) {
       if (!e || e.id == null || typeof e.name !== 'string' || !e.name) continue;
       const d = obj(e.data) || {}, id = String(e.id), c = conf.get(id) || null, mr = mrole.get(id) || '';
@@ -328,54 +330,78 @@ export function createHandler(deps) {
       const gL = wrGrade(title, role), gS = Math.max(gL, c ? c.grade : 0);
       const dept = (typeof d.career === 'string' && d.career) || TITLE_DEPT[title] || '';
       const ag = appGrade(title, role);
-      let cfgRoles = [];
+      const cfgView = [], cfgEdit = [], cfgApprove = [];
       if (SPEC_DEPTS.includes(dept) && ag) {
         const x = obj(cfg[dept + '|' + (ag === 'G1-P' ? 'G1' : ag)]);
-        if (x && !x._deleted) for (const f of ['csView', 'csEdit', 'csApprove']) if (Array.isArray(x[f])) cfgRoles.push(...x[f].filter(r => typeof r === 'string'));
+        const pick = f => (x && !x._deleted && Array.isArray(x[f])) ? x[f].filter(r => typeof r === 'string') : [];
+        cfgEdit.push(...pick('csEdit')); cfgApprove.push(...pick('csApprove'));
+        cfgView.push(...pick('csView'), ...cfgEdit, ...cfgApprove);   // 付ける・承認する役は見られる（アプリの cgCsGranted と同じ）
       }
-      list.push({ id, name: e.name, store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
-        top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgRoles });
+      ids.add(id);
+      list.push({ id, name: e.name, confName: c && c.name && c.name !== e.name ? c.name : '', store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
+        top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgView, cfgEdit, cfgApprove });
     }
+    // 確かめた写しにだけある人（社員の表に行が無い）：その名前はだれにも見せない
+    for (const [id, c] of conf) if (!ids.has(id) && c.name) list.push({ id, name: c.name, confName: '', store: '', support: [], role: '', title: '', out: true, gS: 0, top: true, boss: false, confAm: c.role === 'am', cfgView: [], cfgEdit: [], cfgApprove: [] });
     return list;
   }
-  // 見られる人（see）・申請を見られる人（req）・点（lss_emp_）を書ける人（emp）・履歴を書ける人（hist）。名前の Set
+  // 見られる人（see）・申請を見られる人（req）・点（lss_emp_）を書ける人（emp：そのまま／ojt：分野の下限を上げるだけ＝名前 → 上げてよい上限）・
+  // 履歴を書ける人（hist）・本人（self）。名前の Set（Map）。
+  // 点・申請・履歴は名前で持っているので、名前で決める。社員の表の名前は公開の鍵で書き換えられるので（独立レビュー P1-1）、
+  // その名前を持つ人（社員の表の名前・確かめた写しの名前。退職の人も）が全員その範囲に入るときだけ、その名前を渡す。
+  // 本人の名前は、その名前を持つのが本人だけのときだけ。本人とほかの人が同じ名前なら、その名前は渡さない（だれの点か分からない）
   async function csScope(a) {
     const P = await csPeople();
-    const me = P.find(p => p.id === String(a.emp || '')) || null;
-    const selfNames = new Set();
-    if (a.name) selfNames.add(a.name);
-    if (me && a.name && me.name.trim() === a.name.trim()) selfNames.add(me.name);   // 名前の前後の空白だけ違う
-    if (a.via === 'email' && me) selfNames.add(me.name);
+    const actorId = String(a.emp || '');
+    const me = actorId ? (P.find(p => p.id === actorId && !p.out) || null) : null;
     const isChef = a.role === 'staff' && a.grade >= 4 && !!me && (me.role === 'chef' || CHEF_TITLES.includes(me.title));
     // Score管理（career_cfg）の役職：アプリの役割と同じ名前
     const R = ['office', 'office_crew', 'am'].includes(a.role) ? a.role
       : a.role === 'staff' ? (isChef ? 'chef' : a.grade >= 4 ? 'g4' : a.grade === 3 ? 'sl' : '') : '';
     const S = a.role === 'am' ? [...new Set([...a.am, ...a.stores])] : a.stores;
     const inStores = p => S.length > 0 && (S.includes(p.store) || p.support.some(x => S.includes(x)));
-    const see = new Set(selfNames), req = new Set(selfNames), emp = new Set(), hist = new Set();
-    for (const p of P) {
-      if (p.out) continue;
-      const self = selfNames.has(p.name);
+    const okOf = p => {
+      if (p.out) return null;
       let vis = false;
       if (a.role === 'am') vis = !p.top && inStores(p);
       else if (a.role === 'staff') {
-        if (isChef) vis = !p.top && p.gS === 1 && !OFFICE_ROLES.includes(p.role);   // Head Chef：全店の G1（OJT の合格のサイン。本部の事務の人は入れない）
+        if (isChef) vis = !p.top && !OFFICE_ROLES.includes(p.role);              // Head Chef：全店の人（申請と、その判断に要る点。本部の事務の人は入れない）
         else if (a.grade >= 4) vis = !p.top && inStores(p) && p.gS <= 4;          // G4：自分の店の G4 以下
         else if (a.grade === 3) vis = !p.top && inStores(p) && p.gS <= 2;         // G3：自分の店の G1・G2
         else if (a.grade === 2) vis = !p.top && inStores(p) && p.gS === 1;        // Crew Leader：自分の店の G1
       } else if (a.role === 'office' || a.role === 'office_crew') vis = HQ_ROLES.includes(p.role) && !p.boss && !p.confAm;   // 本部の人（Office管理のメンバー）
-      const grant = !!R && p.cfgRoles.includes(R) && (R !== 'g4' || p.gS <= 4) && !p.boss && !p.confAm;
-      if (vis || grant) { see.add(p.name); req.add(p.name); }
-      if (isChef && !p.top && !OFFICE_ROLES.includes(p.role)) req.add(p.name);    // Head Chef：申請は全店（今のまま。本部の事務の人は入れない）
-      if ((vis || grant) && !self) {
-        // 点を直接：AM・Score管理で決めた役・店の人の OJT の合格（分野の下限を上げる。サインする人より下のグレードの人。
-        // ワークセンターを使い始める前は直接書く＝今までどおり。使い始めたあとは申請）
-        if (a.role === 'am' || grant || (a.role === 'staff' && vis && (p.gS === 1 || p.gS < a.grade))) emp.add(p.name);
-        if (a.role === 'am' || grant) hist.add(p.name);
-      }
+      // Score管理で選ばれた役（GM・CEO・確かめた AM の人は除く。G4 は G4 以下。G4・G3 は自分の店の人だけ＝一覧と同じ）
+      const gOk = !!R && !p.boss && !p.confAm && (R !== 'g4' || p.gS <= 4) && (!['g4', 'sl'].includes(R) || inStores(p));
+      const gView = gOk && p.cfgView.includes(R);
+      // 点・履歴を直接書く：承認する役（承認すると点と履歴を書く）。付ける役は AM だけが直接（AM より下の役は申請＝アプリの lssNeedsApproval）
+      const gWrite = gOk && (p.cfgApprove.includes(R) || (R === 'am' && p.cfgEdit.includes(R)));
+      const full = (a.role === 'am' && vis) || gWrite;
+      // OJT の合格（ワークセンターを使い始める前は直接）：サインできる人（G3 以上＝アプリの g2CanEdit）が、範囲の G1・G2（OJT の相手）の分野の下限を上げるだけ
+      const ojt = !full && a.role === 'staff' && a.grade >= 3 && vis && p.gS <= 2;
+      return { see: vis || gView, req: vis || gView, emp: full ? 2 : ojt ? 1 : 0, hist: full, cap: p.gS <= 1 ? 2 : 3 };
+    };
+    const byName = new Map();
+    const hold = (n, p) => { if (!n) return; if (!byName.has(n)) byName.set(n, []); byName.get(n).push(p); };
+    for (const p of P) { hold(p.name, p); hold(p.confName, p); }
+    const onlyMe = n => { const hs = byName.get(n); return !!hs && hs.length > 0 && hs.every(h => h.id === actorId); };
+    const see = new Set(), req = new Set(), emp = new Set(), ojt = new Map(), hist = new Set(), self = new Set();
+    if (me && onlyMe(me.name)) self.add(me.name);
+    if (me && a.name && a.name !== me.name) {
+      if (onlyMe(a.name)) self.add(a.name);                                       // GM・CEO が確かめた写しの名前（社員の表はまだ前の名前）
+      else if (a.name.trim() === me.name.trim() && onlyMe(me.name) && !byName.has(a.name)) self.add(a.name);   // 名前の前後の空白だけ違う
     }
-    for (const n of selfNames) { emp.delete(n); hist.delete(n); }                 // 自分の点・履歴は書けない（自己評価は申請）
-    return { see, req, emp, hist, self: selfNames };
+    for (const [n, hs] of byName) {
+      if (hs.some(h => h.id === actorId)) continue;                               // 本人の名前（上）。本人とほかの人が同じ名前なら渡さない
+      const oks = hs.map(okOf);
+      if (oks.some(o => !o)) continue;                                            // 退職の人・社員の表に無い人と同じ名前
+      if (oks.every(o => o.see)) see.add(n);
+      if (oks.every(o => o.req)) req.add(n);
+      if (oks.every(o => o.emp === 2)) emp.add(n);
+      else if (oks.every(o => o.emp >= 1)) ojt.set(n, Math.min(...oks.map(o => o.cap)));
+      if (oks.every(o => o.hist)) hist.add(n);
+    }
+    for (const n of self) { see.add(n); req.add(n); }                            // 自分の点・履歴は書けない（自己評価は申請）
+    return { see, req, emp, ojt, hist, self };
   }
   const csSig = sc => [...sc.see].sort().join('\u0001') + '\u0002' + [...sc.req].sort().join('\u0001');
   function csProject(key, value, sc) {
@@ -449,12 +475,42 @@ export function createHandler(deps) {
     return { exists: true, value: r.value, updated_at: r.updated_at };
   }
   // 書く前の確かめ（CEO・GM 以外）。cur：今の行の値（無ければ null）。ダメなら forbidden（403）か bad_value（400）
-  function csCheck(p, value, cur, sc) {
+  // OJT の合格で分野の下限を上げるだけか（アプリの g2RaiseAxisFloor）：点を下げない・消さない・上げるのは上限（G1 は 2、G2 は 3）まで。
+  // 点のほかの欄は変えない（日付・OJT の印・保存の印は変えてよい。評価者・状態は無かったときだけ入れてよい）。base：今の点（無ければ前の統合行のその人の分）
+  const OJT_FREE = new Set(['scores', 'date', 'autoOjt', '_at', '_by', '_set', 'evaluator', 'status']);
+  function ojtRaiseOk(base, value, cap) {
+    const c = obj(base) || {};
+    if (!obj(value)) return false;
+    for (const k of new Set([...Object.keys(c), ...Object.keys(value)])) {
+      if (OJT_FREE.has(k)) continue;
+      if (canon(c[k] === undefined ? null : c[k]) !== canon(value[k] === undefined ? null : value[k])) return false;
+    }
+    for (const k of ['evaluator', 'status']) {
+      const had = c[k] !== undefined && c[k] !== null && c[k] !== '';
+      if (had ? canon(c[k]) !== canon(value[k] === undefined ? null : value[k]) : (value[k] != null && (typeof value[k] !== 'string' || value[k].length > 60))) return false;
+    }
+    if (value.autoOjt !== undefined && value.autoOjt !== true && canon(value.autoOjt) !== canon(c.autoOjt === undefined ? null : c.autoOjt)) return false;
+    const cs = obj(c.scores) || {}, vs = obj(value.scores);
+    if (!vs) return false;
+    for (const id of Object.keys(cs)) if (!Object.prototype.hasOwnProperty.call(vs, id)) return false;     // 消さない
+    for (const [id, v] of Object.entries(vs)) {
+      const had = Object.prototype.hasOwnProperty.call(cs, id);
+      if (had && canon(cs[id]) === canon(v)) continue;
+      const before = had ? (parseInt(cs[id], 10) || 0) : 0;
+      if (typeof v !== 'number' || !Number.isInteger(v) || v > cap || v <= before) return false;            // 上げるだけ・上限まで
+    }
+    return true;
+  }
+  function csCheck(p, value, cur, sc, base) {
     if (p.kind === 'legacy') throw err('forbidden', 403);                          // 前の統合行は CEO・GM だけ（見せる形で書き戻さない）
-    const may = p.kind === 'req' ? sc.req.has(p.name) : p.kind === 'emp' ? sc.emp.has(p.name) : sc.hist.has(p.name);
+    const may = p.kind === 'req' ? sc.req.has(p.name) : p.kind === 'emp' ? (sc.emp.has(p.name) || sc.ojt.has(p.name)) : sc.hist.has(p.name);
     if (!may) throw err('forbidden', 403);
     if (JSON.stringify(value === undefined ? null : value).length > 2000000) throw bad();
-    if (p.kind === 'emp') { if (!obj(value)) throw bad(); return; }
+    if (p.kind === 'emp') {
+      if (!obj(value)) throw bad();
+      if (!sc.emp.has(p.name) && !ojtRaiseOk(cur != null ? cur : base, value, sc.ojt.get(p.name))) throw err('forbidden', 403);   // OJT の合格だけ（独立レビュー P2-2）
+      return;
+    }
     if (!Array.isArray(value) || value.length > 5000) throw bad();
     if (!value.every(r => obj(r) && r.name === p.name)) throw bad();              // 別の人の記録を混ぜない
     const curList = Array.isArray(cur) ? cur.filter(r => obj(r)) : [];
@@ -487,7 +543,13 @@ export function createHandler(deps) {
     if (levelOf(a) === 'none') throw err('forbidden', 403);
     const sc = await csScope(a);
     const rows = await readKeysAny([key]), cur = rows[0] || null;
-    csCheck(p, b.value, cur ? cur.value : null, sc);
+    let base = null;   // OJT の合格で点の行がまだ無い人：アプリは前の統合行のその人の分から下限を上げる（getLssScores）
+    if (p.kind === 'emp' && !cur && !sc.emp.has(p.name) && sc.ojt.has(p.name)) {
+      const lg = await readKeysAny(['lss_scores']);
+      const m = lg[0] && obj(lg[0].value);
+      base = m && obj(m[p.name]) ? m[p.name] : null;
+    }
+    csCheck(p, b.value, cur ? cur.value : null, sc, base);
     // 確かめた行に書く（読んだあとに変わっていれば conflict）。expect があればそれとも合わせる
     if (e) {
       if (e.exists && e.updated_at != null && tsMicro(e.updated_at) == null) throw bad();

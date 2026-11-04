@@ -83,7 +83,12 @@ export function makeWorld(o = {}) {
       if (!q.get('user_id')) return J(Object.values(W.mgr).map(m => ({ emp_id: m.emp_id, role: m.role })));
       const r = W.mgr[q.get('user_id').replace(/^eq\./, '')]; return J(r ? [r] : []);
     }
-    if (p === '/rest/v1/wr_people') return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => ({ emp_id: x.emp_id, role: x.role, grade: x.grade })));
+    if (p === '/rest/v1/wr_people') {
+      // 本物と同じく、頼まれた列だけ返す（name は NOT NULL：試験で名前を入れていない行は空）
+      const sel = (q.get('select') || 'emp_id,role,grade').split(',');
+      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade });
+      return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+    }
     if (p === '/rest/v1/employees') {
       const sel = (q.get('select') || 'id,store').split(',');
       const full = e => ({ id: e.id, name: e.name, store: e.store, support: e.support || [], role: e.role || null, title: e.title || null, status: e.status || '', data: e.data || {} });
@@ -111,7 +116,7 @@ export function makeWorld(o = {}) {
           anonCount(key);
           out.push({ key, value: JSON.parse(r.value), updated_at: r.updated_at });
         }
-        const off = Number(q.get('offset') || 0), lim = q.get('limit') ? Number(q.get('limit')) : out.length;
+        const off = Number(q.get('offset') || 0), lim = Math.min(q.get('limit') ? Number(q.get('limit')) : out.length, W.maxRows || Infinity);   // PostgREST の max-rows
         out = out.slice(off, off + lim);
         const sel = (q.get('select') || 'key,value,updated_at').split(',');
         const res = J(out.map(r => Object.fromEntries(sel.map(c => [c, r[c]]))));

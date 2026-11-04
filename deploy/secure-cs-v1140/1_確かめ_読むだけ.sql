@@ -25,10 +25,15 @@ select 8, 'キーが長すぎる Career Score の行（400 文字超。関数で
   from public.app_state s
  where length(s.key::text) > 400 and (left(s.key::text, 8) = 'lss_emp_' or left(s.key::text, 17) = 'spl_lss_requests_' or left(s.key::text, 16) = 'spl_lss_history_')
 union all
--- 同じ名前の在籍の人（Career Score は名前で分けているので、同じ名前の人の点は 1 つの行になる・前から）
-select 9, '同じ名前の在籍の人', coalesce(string_agg(q.name || '（' || q.c || ' 人）', '・' order by q.name), 'なし'),
-       case when count(*) = 0 then 'OK' else 'info（前から 1 つの行。見られる範囲は、どちらかが見られれば見える）' end
-  from (select btrim(e.name) as name, count(*) as c from public.employees e where not public.wr_emp_out(e) and coalesce(btrim(e.name), '') <> '' group by btrim(e.name) having count(*) > 1) q
+-- 同じ名前の人（Career Score は名前で分けている）。v1140 の関数は、名前を持つ人（社員の表の名前・GM・CEO が確かめた写しの名前。退職した人も）が
+-- 全員見られる人にだけ、その名前の点・申請・履歴を届ける（社員の表の名前は公開の鍵で書き換えられるため。独立レビュー P1-1）。本人と同じ名前の人がいれば、本人にも届かない
+select 9, '同じ名前の人（退職した人・確かめた写しの名前も数える）', coalesce(string_agg(q.name || '（' || q.c || ' 人）', '・' order by q.name), 'なし'),
+       case when count(*) = 0 then 'OK' else 'info（その名前の Career Score は、同じ名前の人を全員見られる人と CEO・GM にだけ届きます。本人にも届きません）' end
+  from (select x.name, count(distinct x.id) as c
+          from (select e.id::text as id, e.name from public.employees e where coalesce(e.name, '') <> ''
+                union all
+                select w.emp_id::text, w.name from public.wr_people w where coalesce(w.name, '') <> '') x
+         group by x.name having count(distinct x.id) > 1) q
 union all
 -- AM・G3 以上・Head Chef で、GM・CEO の確かめがまだ（または社員の表のほうが広い）人。確かめるまで、見られる範囲が狭い（G3 まで・自分の店）
 select 10, '確かめがまだの AM・G3 以上・Head Chef（ワークセンター › 承認・閲覧の権限の確かめ）',

@@ -32,7 +32,7 @@ async function mkdb(initial) {
     create table public.stores(id text primary key, name text, am text, active boolean);
     insert into public.stores values ('S1','Store One','Ami Area',true);`);
   const people = [['E-GM', 'Gabe GM', 'gm', 'General Manager', 'HQ', 'gm'], ['E-AM', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E-4', 'Leo Four', 'g4', 'Store Manager', 'S1', null],
-    ['E-1', 'Kai One', 'crew', 'Crew', 'S1', null], ['E-1x', 'Kai One', 'crew', 'Crew', 'S1', null], ['E-OUT', 'Gone', 'crew', 'Crew', 'S1', null]];
+    ['E-1', 'Kai One', 'crew', 'Crew', 'S1', null], ['E-1x', 'Kai One', 'crew', 'Crew', 'S1', null], ['E-OUT', 'Gone', 'crew', 'Crew', 'S1', null], ['E-G2', 'Gone', 'crew', 'Crew', 'S1', null]];   // 退職した人と同じ名前の在籍の人
   for (const [id, name, role, title, store, ma] of people) {
     await db.query(`insert into public.employees values($1,$2,$3,$4,$5,'[]'::jsonb,$6,'{}'::jsonb)`, [id, name, role, title, store, id === 'E-OUT' ? '退職' : '在籍']);
     if (ma) await db.query('insert into public.manager_auth(role, emp_id) values($1,$2)', [ma, id]);
@@ -68,6 +68,8 @@ for (const initial of ['v1139', 'off', 'on']) {
     assert.match(pre.find(x => x.n === 7).value, /lss_history.*lss_requests.*lss_scores/);
     assert.equal(pre.find(x => x.n === 8).ok, 'OK');
     assert.match(pre.find(x => x.n === 9).value, /Kai One（2 人）/, 'two active people with the same name');
+    assert.match(pre.find(x => x.n === 9).ok, /^info/);
+    assert.match(pre.find(x => x.n === 9).value, /Gone（2 人）/, 'a retired person counts too (the function keeps that name for CEO/GM)');
     assert.match(pre.find(x => x.n === 10).ok, /^NG/); assert.match(pre.find(x => x.n === 10).value, /^1：Lia Four$/, 'the G4 added after the GM confirmed');
     assert.equal(pre.find(x => x.n === 12).value, '2', 'Lost Name and 山田 太郎 match no active person');
     await db.exec(MIG); await db.exec(MIG);   // 2 回流しても同じ

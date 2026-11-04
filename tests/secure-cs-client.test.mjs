@@ -22,6 +22,8 @@ function fn(name) {
   const end = source.indexOf('\n}', start);
   return source.slice(start, end + 2);
 }
+// 1 行で書いた関数（fn だと次の関数まで取ってしまう）
+const oneLine = name => { const i = source.indexOf('\nfunction ' + name + '('); assert.ok(i >= 0, name); const l = source.slice(i + 1, source.indexOf('\n', i + 1)); assert.ok(l.trimEnd().endsWith('}'), name); return l; };
 const block = (a, b) => { const i = source.indexOf(a), j = source.indexOf(b, i); assert.ok(i > 0 && j > i, a); return source.slice(i, j); };
 const varLine = re => { const m = source.match(re); assert.ok(m, String(re)); return m[0].replace(/\r$/, ''); };
 
@@ -36,7 +38,8 @@ const CODE = [
   block('var KV_SEEN_KEY', '\nasync function supaPullAllMasters('),
   varLine(/^var _OP_READ_TMO = .*$/m), varLine(/^var _SUPA_FETCH_ORDER = .*$/m),
   ...['_applyKvRows', '_supaFetchOrder', 'supaFetchAll', 'supaUpsert', '_supaWriteMs', '_fetchOpValue', '_fetchOpRow', '_tsMicro', '_casTs', '_opCasWrite',
-    '_opUpsertRow', 'opMergePush', 'pullOpKey', 'syncMasterToSupabase', 'migrateUploadLocalOps', 'supaHeaders', '_lsRequestDeferredPrefix'].map(fn),
+    '_opUpsertRow', 'opMergePush', 'pullOpKey', 'syncMasterToSupabase', 'migrateUploadLocalOps', 'supaHeaders', '_lsRequestDeferredPrefix',
+    '_srPending', 'mergeSkillReq', 'mergeLssReq'].map(fn),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
    var _SPLIT_KEYS={}, _LS_ONDEMAND_KEYS=[], _LS_ONDEMAND_PREFIX=['spl_lss_history_'], SUPA_MASTER_MAP={}, SUPA_SETTING_KEYS=[], SUPA_SETTING_PREFIX=[];
    var _supaBooting=false, _lastSupaError=null, _opMergeChain={}, _opLastPushErr={}, _opLastPushWhy={}, _idbState='ready', _idbBootP=null, _lsDeferReq={};
@@ -58,10 +61,12 @@ const CODE = [
    /* 試験用の合流：点は新しい _at、申請は id の和集合（決まった申請が勝つ） */
    function _opMergeDef(k){
      if(k.indexOf('lss_emp_')===0) return { merge:function(c, l){ return (!l || ((c&&c._at)||0)>=((l&&l._at)||0)) ? c : l; }, covers:function(c, m){ return JSON.stringify(c)===JSON.stringify(m); } };
-     if(k.indexOf('spl_lss_requests_')===0) return { merge:function(c, l){ var o={}; (c||[]).concat(l||[]).forEach(function(r){ var x=o[r.id]; if(!x || (x.status==='申請中' && r.status!=='申請中')) o[r.id]=r; }); return Object.keys(o).sort().map(function(i){ return o[i]; }); },
+     /* 申請：アプリと同じ合流（OP_MERGE.lss_requests＝mergeLssReq）。__reqMerge で前の合流（mergeSkillReq）に替えられる */
+     if(k.indexOf('spl_lss_requests_')===0) return { merge:function(c, l){ return (__reqMerge || mergeLssReq)(c, l); },
        covers:function(c, m){ return JSON.stringify(c)===JSON.stringify(m); } };
      return null;
    }
+   var __reqMerge=null;
    var __removed=[]; function _outboxRemove(k){ __removed.push(k); delete __pending[k]; }
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function karteRerender(){ __rerender++; } function showToast(m){ __toasts.push(m); }
@@ -195,22 +200,33 @@ test('the device writes Career Score rows only for people in scope (and never th
   assert.equal(d.csLocalWriteOk('lss_emp_Ben S2'), true); assert.equal(d.csSees('Ben S2'), true);
 });
 
-test('writes go through the function: the OJT pass of a G1, own requests; a refusal stays unsent with a message', async () => {
+test('writes go through the function: the OJT pass of a G1 (raise only), own requests; a refusal stays unsent with a message', async () => {
   const W = world({ rls: true, rlsCs: true });
-  const c = tab(W, 't2');
+  W.set('lss_emp_Kai One', { scores: { 'A-1': 1 }, evaluator: 'Sam Three', status: '確定', _at: 1 }, T0);
+  const c = tab(W, 't3');
   await pull(c);
-  // Crew Leader：自分の店の G1 の点（OJT の合格）
-  assert.equal(await c.syncMasterToSupabase('lss_emp_Kai One', { s: { 'A-1': 3 }, _at: 5 }), true);
-  assert.deepEqual(W.get('lss_emp_Kai One'), { s: { 'A-1': 3 }, _at: 5 });
+  // G3：自分の店の G1 の分野の下限を上げる（OJT の合格。アプリの g2RaiseAxisFloor と同じ形）
+  const up = { ...local(c, 'lss_emp_Kai One'), scores: { 'A-1': 2, 'A-2': 2 }, date: '2026/11/04', autoOjt: true, _at: 5 };
+  assert.equal(await c.syncMasterToSupabase('lss_emp_Kai One', up), true);
+  assert.deepEqual(W.get('lss_emp_Kai One'), up);
   // 自分の申請を足す（読んで合流して書く）
-  const mine = [...local(c, 'spl_lss_requests_Cora Two'), { id: 'n1', name: 'Cora Two', status: '申請中' }];
-  assert.equal(await c.syncMasterToSupabase('spl_lss_requests_Cora Two', mine), true);
-  assert.deepEqual(W.get('spl_lss_requests_Cora Two').map(r => r.id).sort(), ['n1', 'r-Cora Two']);
+  const mine = [...local(c, 'spl_lss_requests_Sam Three'), { id: 'n1', name: 'Sam Three', status: '申請中' }];
+  assert.equal(await c.syncMasterToSupabase('spl_lss_requests_Sam Three', mine), true);
+  assert.deepEqual(W.get('spl_lss_requests_Sam Three').map(r => r.id).sort(), ['n1', 'r-Sam Three']);
   // 自分の点：サーバーが断る（送信待ちに残る・知らせる）
   const t0 = c.__toasts.length;
-  assert.equal(await c.syncMasterToSupabase('lss_emp_Cora Two', { s: { 'A-1': 3 }, _at: 9 }), false);
-  assert.deepEqual(W.get('lss_emp_Cora Two'), { s: { 'A-1': 2 }, _at: 1 });
+  assert.equal(await c.syncMasterToSupabase('lss_emp_Sam Three', { s: { 'A-1': 3 }, _at: 9 }), false);
+  assert.deepEqual(W.get('lss_emp_Sam Three'), { s: { 'A-1': 2 }, _at: 1 });
   assert.ok(c.__toasts.length > t0 && /Career Score/.test(c.__toasts.at(-1)));
+  // 下げる・上限（G1 は 2）を超える：断る
+  assert.equal(await c.syncMasterToSupabase('lss_emp_Kai One', { ...up, scores: { 'A-1': 1, 'A-2': 2 }, _at: 6 }), false);
+  assert.equal(await c.syncMasterToSupabase('lss_emp_Kai One', { ...up, scores: { 'A-1': 3, 'A-2': 2 }, _at: 6 }), false);
+  assert.deepEqual(W.get('lss_emp_Kai One'), up);
+  // Crew Leader は OJT にサインしない（アプリの g2CanEdit）：G1 の点は見えるが書けない
+  const d = tab(W, 't2');
+  await pull(d);
+  assert.equal(d.csSees('Kai One'), true);
+  assert.equal(await d.syncMasterToSupabase('lss_emp_Kai One', { ...up, scores: { 'A-1': 2, 'A-2': 2, 'B-1': 2 }, _at: 7 }), false);
   assert.ok(!W.log.some(([, role, key]) => role === 'anon' && c.csIsKey(key)), 'the public key never wrote a Career Score row');
   // 1 つのキーの読み込み（pullOpKey）も関数から：範囲の外は読めない（REST にも落ちない）
   assert.equal(await c.pullOpKey('lss_emp_Kai One'), true);
@@ -252,11 +268,18 @@ test('when the function goes back to v1139, the recorded scope is cleared (scree
   const c = tab(W, 't3');
   await pull(c);
   assert.equal(state(c).level, 'scoped'); assert.equal(c.csSees('Ben S2'), false);
+  c._lsRequestDeferredPrefix('spl_lss_history_');   // 範囲の中の履歴を関数から取った
+  for (let i = 0; i < 40 && !c.MEM.has('spl_lss_history_Kai One'); i++) await new Promise(r => setTimeout(r, 5));
+  assert.ok(c.MEM.has('spl_lss_history_Kai One') && !c.MEM.has('spl_lss_history_Ben S2'));
   W.ssHandler = createHandler1139({ env: k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]), fetch: W.fetch, now: () => Date.now() });
   await pull(c);
   assert.equal(state(c), null);
   assert.equal(c.csSees('Ben S2'), true);
   assert.ok(csKeys(c).includes('lss_emp_Ben S2'));
+  // 履歴も今までどおり REST から取り直す（関数から取ったときの「取った」の印を残さない）
+  c._lsRequestDeferredPrefix('spl_lss_history_');
+  for (let i = 0; i < 40 && !c.MEM.has('spl_lss_history_Ben S2'); i++) await new Promise(r => setTimeout(r, 5));
+  assert.deepEqual(local(c, 'spl_lss_history_Ben S2'), [{ name: 'Ben S2', total: 40 }]);
 });
 
 test('a store login (401) and a shared device: no Career Score on the device; logout clears what the next person should not see', async () => {
@@ -293,4 +316,91 @@ test('if the scope cannot be decided (people tables unreadable), the device keep
   assert.deepEqual(csKeys(c), before);
   assert.equal(W.calls.anonCs, n, 'no REST read of Career Score');
   assert.equal(state(c).level, 'scoped', 'the last scope is kept');
+});
+
+// 独立レビュー（bcb64c3）の P3 の直し
+test('a withdrawal and an approval that cross: the approval wins on the requester’s device too, so the push is accepted (it used to stay unsent forever)', async () => {
+  for (const merge of ['old', 'new']) {
+    const W = world({ rls: true, rlsCs: true });
+    const K = 'spl_lss_requests_Kai One';
+    W.set(K, [{ id: 'r-Kai One', name: 'Kai One', status: '承認' }, { id: 'p1', name: 'Kai One', status: '申請中', total: 50 }], T0);
+    const c = tab(W, 't1');
+    if (merge === 'old') vm.runInContext('__reqMerge = mergeSkillReq;', c);   // v1140 の最初の形（OP_MERGE.lss_requests＝mergeSkillReq）
+    await pull(c);
+    // 本人が取り下げているあいだに、GM が承認する（点はもう書いてある）
+    W.set(K, [{ id: 'r-Kai One', name: 'Kai One', status: '承認' }, { id: 'p1', name: 'Kai One', status: '承認', total: 50, reviewedBy: 'Gina M' }], '2026-11-04T10:30:00.000000+00:00');
+    const mine = local(c, K).map(r => r.id === 'p1' ? { ...r, status: '取消' } : r);
+    const ok = await c.syncMasterToSupabase(K, mine);
+    if (merge === 'old') { assert.equal(ok, false, 'the old merge kept the withdrawal and the server refused it'); continue; }
+    assert.equal(ok, true);
+    assert.equal(W.get(K).find(r => r.id === 'p1').status, '承認', 'the approval stays');
+  }
+  // アプリの合流の表：前の統合行（lss_requests）も、分割の行（spl_lss_requests_…＝_opMergeDef が lss_requests の決まりを使う）も mergeLssReq
+  assert.match(source, /\n  lss_requests: +\{ merge: mergeLssReq, +covers: _coversSkillReq \}/);
+  // 合流は順によらない（どの端末でも同じ）。申請中は決めたものに負ける（今までどおり）
+  const c = tab(world());
+  const m = (x, y) => JSON.parse(JSON.stringify(c.mergeLssReq(x, y)));
+  const a = [{ id: 1, status: '取消' }], b = [{ id: 1, status: '却下', by: 'GM' }], p = [{ id: 1, status: '申請中' }];
+  assert.deepEqual(m(a, b), b); assert.deepEqual(m(b, a), b);
+  assert.deepEqual(m(p, a), a); assert.deepEqual(m(a, p), a);
+  assert.deepEqual(m([{ id: 1, status: '承認', x: 1 }], [{ id: 1, status: '承認', x: 2 }]), [{ id: 1, status: '承認', x: 2 }], 'two decisions: the device copy, as before');
+  assert.deepEqual(m([{ id: 1, status: '取消', x: 1 }], [{ id: 1, status: '取消', x: 2 }]), [{ id: 1, status: '取消', x: 2 }]);
+});
+
+test('history is fetched again for the next person and when the scope changes (the “already fetched” flag is not kept)', async () => {
+  const W = world();
+  const c = tab(W, 't3');
+  await pull(c);
+  const open = async key => { c._lsRequestDeferredPrefix('spl_lss_history_'); for (let i = 0; i < 40 && !c.MEM.has(key); i++) await new Promise(r => setTimeout(r, 5)); };
+  await open('spl_lss_history_Kai One');
+  assert.ok(c.MEM.has('spl_lss_history_Kai One'));
+  // 範囲が広がる（Ben さんが S1 へ）：もう一度取る
+  W.emps.find(e => e.id === 'E-1b').store = 'S1';
+  await pull(c);
+  await open('spl_lss_history_Ben S2');
+  assert.deepEqual(local(c, 'spl_lss_history_Ben S2'), [{ name: 'Ben S2', total: 40 }]);
+  // ログアウト → 別の人（Kai さん）がログイン：その人の範囲で取り直す
+  c.ssOnLogout();
+  assert.ok(!c.MEM.has('spl_lss_history_Kai One'), 'a scoped device keeps no Career Score after logout');
+  login(c, 't1');
+  await pull(c);
+  await open('spl_lss_history_Kai One');
+  assert.deepEqual(local(c, 'spl_lss_history_Kai One'), [{ name: 'Kai One', total: 40 }]);
+  assert.ok(!c.MEM.has('spl_lss_history_Ben S2'));
+});
+
+test('when the pull goes the REST way (a CEO/GM without a PIN mark), the scope of the last person is not kept', async () => {
+  const W = world();
+  const c = tab(W, 't3');
+  await pull(c);
+  assert.equal(state(c).level, 'scoped'); assert.equal(c.csSees('Ben S2'), false);
+  login(c, 'tGM'); c._hwSession = '';   // 共有の端末で GM がログイン（PIN の印なし＝今までどおり REST）
+  await pull(c);
+  assert.equal(state(c), null);
+  assert.equal(c.csSees('Ben S2'), true);
+  assert.equal(c.csLocalWriteOk('lss_emp_Ben S2'), true);
+});
+
+test('the old combined request row folds into the per-person rows with the app’s own fold, only for people in scope, and those rows go back through the function', async () => {
+  const W = world({ rls: true, rlsCs: true });
+  W.set('lss_requests', ['Kai One', 'Cora Two', 'Ben S2', 'Gina M'].map(n => ({ id: 'old-' + n, name: n, status: '承認', total: 30 })), T0);
+  const code = CODE
+    .replace('var _SPLIT_KEYS={}', "var _SPLIT_KEYS={ lss_requests:{type:'arr', by:function(r){return r&&r.name;}} }")
+    .replace('function _handleLegacySplitRow(){ return false; }', [...['_handleLegacySplitRow', '_foldLegacyIntoPartitions', '_splitPartitionsRaw', '_splitFoldable'].map(fn), ...['_splitPrefix', '_splitRecKey'].map(oneLine)].join('\n'));
+  assert.notEqual(code, CODE);
+  const c = vm.createContext({ console, setTimeout, clearTimeout, Promise, Map, Set, JSON, Math, Date, String, Number, Object, Array, AbortController, Error,
+    fetch: (u, o) => W.fetch(u, o), localStorage: (() => { const m = new Map(); return { getItem: k => m.has(k) ? m.get(k) : null, setItem: (k, v) => m.set(k, String(v)), removeItem: k => m.delete(k) }; })() });
+  c.window = c; vm.runInContext(code, c); login(c, 't3');
+  await pull(c);
+  assert.equal(c.MEM.has('lss_requests'), false, 'the combined row is folded, not kept');
+  assert.deepEqual(local(c, 'spl_lss_requests_Kai One').map(r => r.id).sort(), ['old-Kai One', 'r-Kai One']);
+  assert.deepEqual(local(c, 'spl_lss_requests_Cora Two').map(r => r.id).sort(), ['old-Cora Two', 'r-Cora Two']);
+  assert.ok(!c.MEM.has('spl_lss_requests_Ben S2') && !c.MEM.has('spl_lss_requests_Gina M'), 'nobody outside the scope');
+  assert.equal(c.__failed.length, 0, 'every fold write was allowed on the device');
+  for (const n of ['Kai One', 'Cora Two']) assert.equal(await c.syncMasterToSupabase('spl_lss_requests_' + n, local(c, 'spl_lss_requests_' + n)), true, n);
+  assert.deepEqual(W.get('spl_lss_requests_Kai One').map(r => r.id).sort(), ['old-Kai One', 'r-Kai One']);
+  assert.deepEqual(W.get('spl_lss_requests_Ben S2').map(r => r.id), ['r-Ben S2'], 'the other people’s rows are untouched');
+  // 2 回目：前の統合行は届き直さない（同じ印）
+  await pull(c);
+  assert.ok(!W.ssLast.cs.rows.some(r => r.key === 'lss_requests'));
 });
