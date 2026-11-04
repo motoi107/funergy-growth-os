@@ -46,7 +46,12 @@ export function makeWorld(o = {}) {
     }
     if (u.startsWith(WR)) {
       W.calls.wr++;
-      if (W.wrDown) return new Response('not found', { status: 404 });
+      // wrDown：true（＝404）・'503'・'throw'（通信の失敗）・'badjson'（200 で読めない本文）・'nome'（200 で me が無い）
+      if (W.wrDown === true || W.wrDown === '404') return new Response('not found', { status: 404 });
+      if (W.wrDown === '503') return J({ error: 'pin_check_missing' }, 503);
+      if (W.wrDown === 'throw') throw new TypeError('fetch failed');
+      if (W.wrDown === 'badjson') return new Response('<html>gateway</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      if (W.wrDown === 'nome') return J({ live: true, fn: 3 });
       const b = JSON.parse(opt.body);
       const me = W.pins[b.pin_session];
       if (!me || me === 'deny') return J({ error: 'unauthorized' }, 401);

@@ -159,14 +159,11 @@ export function createHandler(deps) {
     const tok = body.pin_session;
     const auth = req.headers.get('authorization') || '';
     const email = auth.startsWith('Bearer ') && auth.length <= 4000 && jwtRole(auth.slice(7)) === 'authenticated';
-    let a = null;
-    if (tok !== undefined && tok !== null && tok !== '') {
-      a = await pinActor(tok);
-      if (!a.err) return a;                       // 確かめられた（または断られた）：その前にいる人で決める
-      if (!email) return a;
-    }
+    // PIN の印がある要求は、その印だけで決める。確かめられない（work-requests の 404・503・通信の失敗・読めない答え）ときも
+    // メールのログインへ切り替えない（Codex の P1：共有の端末に GM のメールのログインが残っていると、Crew の PIN の要求が GM の権限になっていた）
+    if (tok !== undefined && tok !== null && tok !== '') return await pinActor(tok);
     if (email) return await emailActor(auth);
-    return a || { deny: 'none' };
+    return { deny: 'none' };
   }
   const levelOf = a => (SS_FULL_ROLES.includes(a.role) ? 'full' : (a.emp ? 'proj' : 'none'));
 

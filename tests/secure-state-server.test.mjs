@@ -129,13 +129,34 @@ test('the person at the device decides: a staff PIN with a GM email still gets o
   assert.equal((await S.call({ action: 'pull', pin_session: 'bad' }, { authorization: 'Bearer ' + JWT('jg') })).status, 401, 'a refused PIN mark does not fall back to the email');
 });
 
-test('work-requests missing: 503 auth_unavailable (the app keeps the old way); the email still works', async () => {
+test('work-requests missing: 503 auth_unavailable (the app keeps the old way); the email alone still works', async () => {
   const S = setup({ pins: { tGM: GM }, users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } } }); seed(S.W);
   S.W.wrDown = true;
   const r = await S.call({ action: 'pull', pin_session: 'tGM' });
   assert.equal(r.status, 503); assert.equal(r.j.error, 'auth_unavailable');
-  assert.equal((await S.call({ action: 'pull', pin_session: 'tGM' }, { authorization: 'Bearer ' + JWT('jg') })).j.level, 'full');
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jg') })).j.level, 'full', 'no PIN mark: the email decides');
 });
+
+// Codex の P1（#131・01f33ac）：PIN の印のある要求は、PIN を確かめられないときもメールのログインへ切り替えない
+for (const mode of ['404', '503', 'throw', 'badjson', 'nome']) {
+  test(`a staff PIN with a GM email on a shared device: work-requests ${mode} never gives the GM's rows`, async () => {
+    const S = setup({ pins: { t1: CREW }, users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } }, emps: EMPS }); seed(S.W);
+    S.W.wrDown = mode;
+    const hdr = { authorization: 'Bearer ' + JWT('jg') };
+    for (const body of [{ action: 'pull', pin_session: 't1' }, { action: 'get', pin_session: 't1', key: 'growth_karte' }, { action: 'get', pin_session: 't1', key: 'bonus_eval' },
+      { action: 'put', pin_session: 't1', key: 'bonus_rules', value: { x: 1 } }, { action: 'pin_check', pin_session: 't1', pin: '4321' }]) {
+      const r = await S.call(body, hdr);
+      assert.ok(r.status === 503 || r.status === 401, `${body.action}: refused (${r.status})`);
+      assert.notEqual(r.j && r.j.level, 'full');
+      const s = JSON.stringify(r.j);
+      assert.ok(!s.includes('1234') && !s.includes('面談') && !s.includes('gradeBase') && !s.includes('コメント'), `${body.action}: no other person's pay, meetings, bonus settings or evaluations`);
+    }
+    if (mode !== 'nome') assert.equal((await S.call({ action: 'pull', pin_session: 't1' }, hdr)).j.error, 'auth_unavailable', 'the app sees "PIN check unavailable" (keeps the old way)');
+    assert.equal(S.W.calls.post + S.W.calls.patch, 0, 'nothing written');
+    S.W.wrDown = false;
+    assert.equal((await S.call({ action: 'pull', pin_session: 't1' }, hdr)).j.level, 'proj', 'once work-requests answers, the PIN decides (projection)');
+  });
+}
 
 test('a store login or a resigned person (work-requests refuses) is 401; the PIN check is cached for 60 seconds', async () => {
   const S = setup({ pins: { tStore: 'deny', tOut: 'gone', tGM: GM } }); seed(S.W);

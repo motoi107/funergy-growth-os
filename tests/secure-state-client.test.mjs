@@ -305,6 +305,23 @@ test('work-requests unreachable from the function (503): the GM keeps the old wa
   assert.equal(W2.calls.ss, n0, 'the function is not asked again while it cannot check people');
 });
 
+test('Codex P1: a crew PIN on a device that still has a GM email session sends only the PIN, and never gets the GM\'s rows (work-requests up or down)', async () => {
+  const W = world({ rls: true, users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } } });
+  const real = W.ssHandler, auths = [];
+  W.ssHandler = async req => { auths.push(req.headers.get('authorization')); return real(req); };
+  const c = tab(W); c._authSession = { access_token: JWT('jg'), refresh_token: 'r' }; c._hwSession = 't1'; c.curRole = 'crew';
+  for (const mode of ['503', 'throw', false]) {
+    W.wrDown = mode;
+    await pull(c, true);
+    const gk = local(c, 'growth_karte') || {};
+    assert.ok(!JSON.stringify(gk).includes('1234') && !JSON.stringify(gk).includes('999'), `work-requests ${mode}: no pay history on the crew device`);
+    assert.equal(local(c, 'bonus_eval'), undefined);
+  }
+  assert.ok(auths.length && auths.every(a => a === 'Bearer ' + ANON), 'the GM email token is not sent with the PIN mark');
+  assert.equal(W.calls.anonSecret, 0);
+  W.ssHandler = real;
+});
+
 test('email sign-in (the managers page) works without a PIN session; a failed pull keeps proj devices off REST', async () => {
   const W = world({ users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } } });
   const c = tab(W); c._authSession = { access_token: JWT('jg'), refresh_token: 'r' };
