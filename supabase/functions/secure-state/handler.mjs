@@ -19,10 +19,11 @@ export const SS_PREFIX = ['spl_bonus_q_'];
 export const SS_PROJ = ['growth_karte', 'karte_bonus_config'];
 export const SS_FULL_ROLES = ['ceo', 'gm'];
 const MGR_ROLES = ['ceo', 'gm', 'office', 'office_crew'];
+export const SS_PREFIX_RE = /^spl_bonus_q_[0-9A-Za-z_-]{1,40}$/;   // spl_bonus_q_<四半期>（アプリ・SQL と同じ決まり）
 export function ssIsKey(k) {
   if (typeof k !== 'string' || !k || k.length > 200) return false;
   if (SS_KEYS.includes(k)) return true;
-  return SS_PREFIX.some(p => k.startsWith(p) && k.length > p.length);
+  return SS_PREFIX_RE.test(k);
 }
 
 const safeErr = e => String((e && (e.code || e.message)) || e || 'error').replace(/(key|token|secret|bearer|pin)[^\s]*/gi, '$1:***').slice(0, 200);
@@ -64,11 +65,29 @@ export function projKarte(v, mayGoals) {
   }
   return out;
 }
+// アプリの kbCfgPlain と同じ読み方（包んだ形 __st は、外側の欄が中より先）
+const KB_ST_META = { __st: 1, v: 1, _at: 1, _by: 1, _deleted: 1 };
+function kbPlain(r, depth = 0) {
+  if (!(obj(r) && r.__st === 1) || depth > 20) return r;
+  const top = {}; for (const k of Object.keys(r)) if (!KB_ST_META[k]) top[k] = r[k];
+  const inner = kbPlain(r.v, depth + 1);
+  return { ...(obj(inner) || {}), ...top };
+}
 export function projKbCfg(v) {
-  const r = obj(v); if (!r) return {};
-  const inner = (r.__st === 1 && obj(r.v)) ? r.v : null;
-  const q = (inner && inner.quarter != null) ? inner.quarter : r.quarter;
+  const r = obj(kbPlain(v)); if (!r) return {};
+  const q = r.quarter;
   return (typeof q === 'string' && q.length <= 20) || (typeof q === 'number' && Number.isFinite(q)) ? { quarter: q } : {};
+}
+// メールのログインか：Bearer が JWT で role が authenticated（公開の鍵（role anon）・新しい形の鍵（JWT でない）はメールのログインでない）
+export function jwtRole(tok) {
+  try {
+    const p = String(tok).split('.');
+    if (p.length !== 3 || p[1].length > 4000) return '';
+    const b = p[1].replace(/-/g, '+').replace(/_/g, '/');
+    const bin = atob(b + '==='.slice((b.length + 3) % 4));
+    const j = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, c => c.charCodeAt(0))));
+    return j && typeof j.role === 'string' ? j.role : '';
+  } catch { return ''; }
 }
 
 export function createHandler(deps) {
@@ -101,7 +120,12 @@ export function createHandler(deps) {
       r = await fetch(wrUrl, { method: 'POST', headers: { apikey: anon, authorization: 'Bearer ' + anon, 'content-type': 'application/json' },
         body: JSON.stringify({ action: 'whoami', pin_session: tok }), signal: timeout() });
     } catch { return { err: 'auth_unavailable' }; }
-    if (r.status === 401 || r.status === 403) { try { await r.text(); } catch { /* */ } return { deny: 'pin' }; }
+    if (r.status === 401 || r.status === 403) {
+      try { await r.text(); } catch { /* */ }
+      const d = { deny: 'pin' };
+      cache.set(h, { a: d, exp: now() + 30000 });   // 断られた印も 30 秒覚える（同じ印で何度も work-requests を呼ばない）
+      return d;
+    }
     if (!r.ok) { try { await r.text(); } catch { /* */ } return { err: 'auth_unavailable' }; }   // work-requests が無い（404）・PIN を確かめられない（503）など
     let j = null; try { j = await r.json(); } catch { return { err: 'auth_unavailable' }; }
     const me = obj(j && j.me);
@@ -115,7 +139,7 @@ export function createHandler(deps) {
   async function emailActor(auth) {
     let r;
     try { r = await fetch(url + '/auth/v1/user', { headers: { apikey: anon, authorization: auth }, signal: timeout() }); } catch { return { err: 'auth_unavailable' }; }
-    if (!r.ok) { try { await r.text(); } catch { /* */ } return r.status >= 500 ? { err: 'auth_unavailable' } : { deny: 'email' }; }
+    if (!r.ok) { try { await r.text(); } catch { /* */ } return (r.status >= 500 || r.status === 429) ? { err: 'auth_unavailable' } : { deny: 'email' }; }
     let u = null; try { u = await r.json(); } catch { return { deny: 'email' }; }
     const uid = u && typeof u.id === 'string' && /^[0-9a-f-]{36}$/i.test(u.id) ? u.id : null;
     if (!uid) return { deny: 'email' };
@@ -124,15 +148,17 @@ export function createHandler(deps) {
     if (!m || !MGR_ROLES.includes(m.role)) return { deny: 'email_role' };
     const emp = m.emp_id == null || m.emp_id === '' ? null : String(m.emp_id);
     if (emp) {
-      const es = await rest('employees?id=eq.' + encodeURIComponent(emp) + '&select=status');
-      if (Array.isArray(es) && es[0] && String(es[0].status || '') === '退職') return { deny: 'email_out' };
+      const es = await rest('employees?id=eq.' + encodeURIComponent(emp) + '&select=status,data');
+      const e0 = Array.isArray(es) ? es[0] : null, d = e0 && obj(e0.data) ? e0.data : {};
+      // work-requests の wr_emp_out と同じ：表の status・data の status が退職、または OS を止めた人
+      if (e0 && (String(e0.status || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true')) return { deny: 'email_out' };
     }
     return { via: 'email', emp, role: m.role, grade: 0, stores: [], am: [] };
   }
   async function actorOf(req, body) {
     const tok = body.pin_session;
     const auth = req.headers.get('authorization') || '';
-    const email = auth.startsWith('Bearer ') && auth !== 'Bearer ' + anon && auth.length <= 4000;
+    const email = auth.startsWith('Bearer ') && auth.length <= 4000 && jwtRole(auth.slice(7)) === 'authenticated';
     let a = null;
     if (tok !== undefined && tok !== null && tok !== '') {
       a = await pinActor(tok);
@@ -147,30 +173,44 @@ export function createHandler(deps) {
   // 目標を見せてよい人：本人。AM は担当の店（と自分の店）、G4 以上は自分の店の人（Career Score の一覧で見られる人）
   async function goalsGate(a) {
     const self = id => id === a.emp;
+    self.sig = 's';
     let stores = [];
     if (a.role === 'am') stores = [...new Set([...a.am, ...a.stores])];
     else if (a.role === 'staff' && a.grade >= 4) stores = a.stores;
     if (!stores.length) return self;
-    let emps = [];
-    try { emps = await rest('employees?select=id,store&limit=5000'); } catch { emps = []; }
-    const ok = new Set((Array.isArray(emps) ? emps : []).filter(e => e && stores.includes(String(e.store || ''))).map(e => String(e.id)));
-    return id => self(id) || ok.has(id);
+    let emps = [], mgr = [], ams = [];
+    try { [emps, mgr, ams] = await Promise.all([rest('employees?select=id,store&limit=5000'), rest('manager_auth?select=emp_id&limit=1000'), rest('wr_people?select=emp_id&role=eq.am&limit=1000')]); }
+    catch { return self; }
+    // 社員の表の店は公開の鍵で書けるので、CEO・GM・経理・事務Crew（manager_auth）と AM（GM・CEO が確かめた写し）の目標は、店を書き換えても見せない
+    const top = new Set([...(Array.isArray(mgr) ? mgr : []), ...(Array.isArray(ams) ? ams : [])].map(x => String((x && x.emp_id) || '')).filter(Boolean));
+    const ok = new Set((Array.isArray(emps) ? emps : []).filter(e => e && stores.includes(String(e.store || '')) && !top.has(String(e.id))).map(e => String(e.id)));
+    const fn = id => self(id) || ok.has(id);
+    fn.sig = 'g:' + [...ok].sort().join(',');
+    return fn;
   }
 
   // ---- 行
   const IN = keys => 'in.(' + keys.map(k => '"' + String(k).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"').join(',') + ')';
-  const SEL_ALL = 'or=(key.' + IN(SS_KEYS) + ',' + SS_PREFIX.map(p => 'key.like.' + p + '*').join(',') + ')';
+  const SEL_ALL = 'or=' + encodeURIComponent('(key.' + IN(SS_KEYS) + ',' + SS_PREFIX.map(p => 'key.like.' + p + '*').join(',') + ')');
   async function readRows(keys) {
-    const q = keys ? 'key=' + IN(keys) : SEL_ALL;
+    const q = keys ? 'key=' + encodeURIComponent(IN(keys)) : SEL_ALL;
     const rows = await rest('app_state?select=key,value,updated_at&' + q + '&limit=1000');
     return (Array.isArray(rows) ? rows : []).filter(r => r && ssIsKey(r.key) && r.key !== 'karte_pin');
   }
   // 行の一覧と印（md5）：app_state_index（v1098）があればそれ（サーバーの鍵で呼ぶ）。無ければ null
+  // 独立レビュー P2-2：PostgREST は 1 回に返す行に上限（既定 1000）があるので、空のページが来るまで読む
   async function index() {
     try {
-      const rows = await rest('rpc/app_state_index?limit=5000', { method: 'POST', body: JSON.stringify({ p_skip_prefix: ['invoice_purchase_', 'lunch_photo_'] }) });
-      if (!Array.isArray(rows)) return null;
-      return rows.filter(r => r && ssIsKey(r.key) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))).map(r => ({ key: r.key, v: 'h:' + r.h }));
+      const out = [];
+      for (let off = 0, page = 0; page < 100; page++) {
+        const rows = await rest('rpc/app_state_index?order=key.asc&limit=1000&offset=' + off, { method: 'POST', body: JSON.stringify({ p_skip_prefix: ['invoice_purchase_', 'lunch_photo_'] }) });
+        if (!Array.isArray(rows)) return null;
+        if (!rows.length) break;
+        off += rows.length;
+        for (const r of rows) if (r && ssIsKey(r.key) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
+        if (page === 99) return null;   // 読み切れない：中身から作る
+      }
+      return out;
     } catch { return null; }
   }
 
@@ -191,9 +231,19 @@ export function createHandler(deps) {
       for (const r of rows) out.push({ key: r.key, value: r.value, updated_at: r.updated_at, v: 'x:' + await sha256(JSON.stringify(r.value)) });
       return { level, index: out.map(r => ({ key: r.key, v: r.v })), rows: out.filter(r => have[r.key] !== r.v) };
     }
-    // proj：見せる形にしてから印を付ける
-    const rows = await readRows(SS_PROJ);
+    // proj：見せる形にしてから印を付ける。印は元の行の印（md5）と見せる範囲から作り、変わっていなければ行を読まない
+    //（成長カルテは大きく、CEO・GM 以外のログインと 10 分ごとの同期のたびに読んでいた：独立レビュー P3）
     const gate = await goalsGate(a);
+    const idx = await index();
+    if (idx) {
+      const pidx = [];
+      for (const x of idx) if (SS_PROJ.includes(x.key)) pidx.push({ key: x.key, v: 'p:' + await sha256(x.v + '|' + (x.key === 'growth_karte' ? a.emp + '|' + gate.sig : '')) });
+      const need = pidx.filter(x => have[x.key] !== x.v).map(x => x.key);
+      const rows = need.length ? await readRows(need) : [];
+      const pv = Object.fromEntries(pidx.map(x => [x.key, x.v]));
+      return { level, index: pidx, rows: rows.filter(r => pv[r.key]).map(r => ({ key: r.key, value: r.key === 'growth_karte' ? projKarte(r.value, gate) : projKbCfg(r.value), updated_at: r.updated_at, v: pv[r.key] })) };
+    }
+    const rows = await readRows(SS_PROJ);
     const out = [];
     for (const r of rows) {
       const value = r.key === 'growth_karte' ? projKarte(r.value, gate) : projKbCfg(r.value);
@@ -317,9 +367,10 @@ export function createHandler(deps) {
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
-    if (origin && !origins.includes(origin)) return new Response(JSON.stringify({ error: 'origin' }), { status: 403 });
+    if (origin && !origins.includes(origin)) return new Response(JSON.stringify({ error: 'origin', fn: 1 }), { status: 403 });
     const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, apikey, content-type', 'access-control-allow-methods': 'POST, OPTIONS', vary: 'origin' } : {};
-    const json = (v, s = 200) => new Response(JSON.stringify(v), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // 答えにはいつも fn:1（アプリは fn の無い答え（ゲートウェイの 401・関数が無い 404 など）を「関数が使えない」とみなす）
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
@@ -331,7 +382,7 @@ export function createHandler(deps) {
       const a = await actorOf(req, body);
       if (a.err) return json({ error: a.err }, 503);
       if (a.deny) { console.warn('secure-state unauthorized', body.action, a.deny); return json({ error: 'unauthorized' }, 401); }
-      return json({ ...(await fn(a, body)), fn: 1 });
+      return json(await fn(a, body));
     } catch (e) {
       const code = e && e.code && CODES[e.code] ? e.code : '';
       if (code) return json({ error: code }, CODES[code]);

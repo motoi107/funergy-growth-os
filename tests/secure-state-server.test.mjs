@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHandler, ssIsKey, projKarte, projKbCfg, tsMicro } from '../supabase/functions/secure-state/handler.mjs';
 
-import { makeWorld, URL0, ANON, SERVICE } from './lib/secure-state-world.mjs';
+import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
 
 function setup(o = {}) {
   const W = makeWorld(o);
@@ -95,12 +95,16 @@ test('crew (PIN): only the projection — every hire date, their own open goals,
 });
 
 test('AM sees the goals of people in their stores; G4 of their own store; office (email) only their own', async () => {
-  const S = setup({ pins: { tAM: AM, t4: G4 }, emps: EMPS, users: { jwtOffice: 'aaaaaaaa-0000-0000-0000-000000000001' }, mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'office', emp_id: 'E-2' } } }); seed(S.W);
+  const S = setup({ pins: { tAM: AM, t4: G4 }, emps: [...EMPS, { id: 'E-5', store: 'S2' }, { id: 'E-6', store: 'S1' }], wrPeople: [{ emp_id: 'E-6', role: 'am' }, { emp_id: 'E-4', role: 'staff' }],
+    users: { jwtOffice: 'aaaaaaaa-0000-0000-0000-000000000001' }, mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'office', emp_id: 'E-2' } } }); seed(S.W);
+  const gk = S.W.get('growth_karte'); gk['E-5'] = { goals: [{ text: 'E-5 の目標' }] }; gk['E-6'] = { goals: [{ text: '別の AM の目標' }] }; S.W.set('growth_karte', gk);
   const am = (await S.call({ action: 'pull', pin_session: 'tAM' })).j.rows.find(x => x.key === 'growth_karte').value;
-  assert.ok(am['E-1'].goals && am['E-2'].goals && !am['E-3']);
+  assert.ok(am['E-1'].goals && am['E-5'].goals && !am['E-3'], 'own store and the stores they cover');
+  assert.ok(!am['E-6'], 'another AM (confirmed copy): not shown');
+  assert.ok(!(am['E-2'] || {}).goals, 'a manager_auth person (office) in the store: not shown even to the AM (the store column can be rewritten with the public key)');
   const g4 = (await S.call({ action: 'pull', pin_session: 't4' })).j.rows.find(x => x.key === 'growth_karte').value;
   assert.ok(g4['E-3'].goals && !g4['E-1'].goals && !(g4['E-2'] || {}).goals);
-  const of = await S.call({ action: 'pull' }, { authorization: 'Bearer jwtOffice' });
+  const of = await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jwtOffice') });
   assert.equal(of.j.level, 'proj');
   const ofk = of.j.rows.find(x => x.key === 'growth_karte').value;
   assert.ok(ofk['E-2'].goals && !ofk['E-1'].goals);
@@ -110,19 +114,19 @@ test('email: GM gets everything; an account without an employee gets nothing; re
   const U = { gm: 'aaaaaaaa-0000-0000-0000-00000000000a', of: 'aaaaaaaa-0000-0000-0000-00000000000b', out: 'aaaaaaaa-0000-0000-0000-00000000000c', sus: 'aaaaaaaa-0000-0000-0000-00000000000d' };
   const S = setup({ users: { jg: U.gm, jo: U.of, jx: U.out, js: U.sus }, mgr: { [U.gm]: { role: 'gm', emp_id: 'E-GM' }, [U.of]: { role: 'office', emp_id: null }, [U.out]: { role: 'ceo', emp_id: 'E-X' }, [U.sus]: { role: 'suspended', emp_id: 'E-GM' } },
     emps: [...EMPS, { id: 'E-X', store: 'HQ', status: '退職' }] }); seed(S.W);
-  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer jg' })).j.level, 'full');
-  const o = await S.call({ action: 'pull' }, { authorization: 'Bearer jo' });
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jg') })).j.level, 'full');
+  const o = await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jo') });
   assert.equal(o.j.level, 'none'); assert.deepEqual(o.j.rows, []);
-  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer jx' })).status, 401);
-  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer js' })).status, 401);
-  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer nope' })).status, 401);
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jx') })).status, 401);
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('js') })).status, 401);
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('nope') })).status, 401);
   assert.equal((await S.call({ action: 'pull' })).status, 401, 'the anon key alone is not a sign-in');
 });
 
 test('the person at the device decides: a staff PIN with a GM email still gets only the projection', async () => {
   const S = setup({ pins: { t1: CREW }, users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } }, emps: EMPS }); seed(S.W);
-  assert.equal((await S.call({ action: 'pull', pin_session: 't1' }, { authorization: 'Bearer jg' })).j.level, 'proj');
-  assert.equal((await S.call({ action: 'pull', pin_session: 'bad' }, { authorization: 'Bearer jg' })).status, 401, 'a refused PIN mark does not fall back to the email');
+  assert.equal((await S.call({ action: 'pull', pin_session: 't1' }, { authorization: 'Bearer ' + JWT('jg') })).j.level, 'proj');
+  assert.equal((await S.call({ action: 'pull', pin_session: 'bad' }, { authorization: 'Bearer ' + JWT('jg') })).status, 401, 'a refused PIN mark does not fall back to the email');
 });
 
 test('work-requests missing: 503 auth_unavailable (the app keeps the old way); the email still works', async () => {
@@ -130,7 +134,7 @@ test('work-requests missing: 503 auth_unavailable (the app keeps the old way); t
   S.W.wrDown = true;
   const r = await S.call({ action: 'pull', pin_session: 'tGM' });
   assert.equal(r.status, 503); assert.equal(r.j.error, 'auth_unavailable');
-  assert.equal((await S.call({ action: 'pull', pin_session: 'tGM' }, { authorization: 'Bearer jg' })).j.level, 'full');
+  assert.equal((await S.call({ action: 'pull', pin_session: 'tGM' }, { authorization: 'Bearer ' + JWT('jg') })).j.level, 'full');
 });
 
 test('a store login or a resigned person (work-requests refuses) is 401; the PIN check is cached for 60 seconds', async () => {
@@ -220,8 +224,92 @@ test('projection helpers keep only what the screens use', () => {
   const g = projKarte({ A: { hireDate: '2020-01-01', goals: [{ text: ' ', due: 'x' }, { text: 'g', due: 5 }], salary: 1 }, __meta: { hireDate: 'x' }, B: null }, id => id === 'A');
   assert.deepEqual(g, { A: { hireDate: '2020-01-01', goals: [{ text: 'g', due: '' }] } });
   assert.deepEqual(projKbCfg({ quarter: '2026-Q1', gradeBase: {} }), { quarter: '2026-Q1' });
-  assert.deepEqual(projKbCfg({ __st: 1, v: { quarter: '2026-Q2' }, quarter: '2025-Q4' }), { quarter: '2026-Q2' });
+  assert.deepEqual(projKbCfg({ __st: 1, v: { quarter: '2026-Q2' }, quarter: '2025-Q4' }), { quarter: '2025-Q4' }, 'the outer field first, as the app reads it (kbCfgPlain)');
+  assert.deepEqual(projKbCfg({ __st: 1, v: { quarter: '2026-Q2' }, _at: 3 }), { quarter: '2026-Q2' });
+  assert.deepEqual(projKbCfg({ __st: 1, v: { __st: 1, v: { quarter: '2026-Q1' } } }), { quarter: '2026-Q1' });
   assert.deepEqual(projKbCfg(null), {});
   assert.equal(tsMicro('2026-11-03T10:00:00.5+00:00'), Date.UTC(2026, 10, 3, 10) * 1000 + 500000);
   assert.equal(tsMicro('bad'), null);
+});
+
+// ---- 独立レビュー（121da1c）の指摘
+test('P2-2: the row list is read page by page (PostgREST returns at most 1000 rows at a time)', async () => {
+  const S = setup({ pins: { tGM: GM }, maxRows: 1000 }); seed(S.W);
+  for (let i = 0; i < 2500; i++) S.W.set('a_' + String(i).padStart(5, '0'), { i });   // 対象のキーより前に並ぶ行
+  const r = await S.call({ action: 'pull', pin_session: 'tGM' });
+  const want = [...S.W.rows.keys()].filter(k => ssIsKey(k) && k !== 'karte_pin').sort();
+  assert.ok(want.length >= 5);
+  assert.deepEqual([...r.j.rows.map(x => x.key)].sort(), want, 'every secure row, even past the first 1000 rows of the list');
+  assert.ok(r.j.index.every(x => /^h:/.test(x.v)), 'from the row list (not the slow way)');
+});
+
+test('P2-1: every answer of this function says fn:1 (also refusals); 429 from Auth is "unavailable", not "refused"; only a real sign-in token counts as email', async () => {
+  const S = setup({ pins: { tGM: GM }, users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } } }); seed(S.W);
+  const r401 = await S.call({ action: 'pull' });
+  assert.equal(r401.status, 401); assert.equal(r401.j.fn, 1);
+  const bad = await S.call({ action: 'nope' }); assert.equal(bad.j.fn, 1);
+  // 公開の鍵の文字が関数の設定と違っても（Bearer が role anon の JWT）、メールのログインとはみなさない → work-requests が無ければ 503（401 ではない）
+  S.W.wrDown = true;
+  const a = await S.call({ action: 'pull', pin_session: 'tGM' }, { authorization: 'Bearer ' + JWT('x', 'anon') });
+  assert.equal(a.status, 503);
+  const pub = await S.call({ action: 'pull', pin_session: 'tGM' }, { authorization: 'Bearer sb_publishable_abc' });
+  assert.equal(pub.status, 503);
+  S.W.wrDown = false;
+  // Auth が 429
+  const realFetch = S.W.fetch;
+  S.W.fetch = async (u, o) => (String(u).endsWith('/auth/v1/user') ? new Response('{"msg":"rate"}', { status: 429 }) : realFetch(u, o));
+  const h = createHandler({ env: k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]), fetch: S.W.fetch });
+  const rr = await h(new Request('https://fn.test/x', { method: 'POST', headers: { authorization: 'Bearer ' + JWT('jg') }, body: JSON.stringify({ action: 'pull' }) }));
+  assert.equal(rr.status, 503);
+  const o = await h(new Request('https://fn.test/x', { method: 'POST', headers: { origin: 'https://evil.example' }, body: '{}' }));
+  assert.equal(o.status, 403); assert.equal((await o.json()).fn, 1);
+});
+
+test('P3: email sign-in of someone resigned in the data or with the OS turned off is refused (same as work-requests)', async () => {
+  const U = { a: 'aaaaaaaa-0000-0000-0000-00000000000a', b: 'aaaaaaaa-0000-0000-0000-00000000000b' };
+  const S = setup({ users: { ja: U.a, jb: U.b }, mgr: { [U.a]: { role: 'gm', emp_id: 'E-A' }, [U.b]: { role: 'ceo', emp_id: 'E-B' } },
+    emps: [{ id: 'E-A', store: 'HQ', data: { status: '退職' } }, { id: 'E-B', store: 'HQ', data: { osDisabled: true } }] }); seed(S.W);
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('ja') })).status, 401);
+  assert.equal((await S.call({ action: 'pull' }, { authorization: 'Bearer ' + JWT('jb') })).status, 401);
+});
+
+test('P3: a refused PIN mark is remembered for 30 seconds (no work-requests call for each request)', async () => {
+  const S = setup({ pins: { tGM: GM } }); seed(S.W);
+  await S.call({ action: 'pull', pin_session: 'bad' });
+  await S.call({ action: 'pull', pin_session: 'bad' });
+  assert.equal(S.W.calls.wr, 1);
+  S.tick(30001);
+  await S.call({ action: 'pull', pin_session: 'bad' });
+  assert.equal(S.W.calls.wr, 2);
+});
+
+test('P3: the projection is not rebuilt from the whole karte when nothing changed (the version comes from the row list and the scope)', async () => {
+  const S = setup({ pins: { t1: CREW }, emps: EMPS }); seed(S.W);
+  const r = await S.call({ action: 'pull', pin_session: 't1' });
+  const have = Object.fromEntries(r.j.index.map(x => [x.key, x.v]));
+  const n0 = S.W.reads.length;
+  const r2 = await S.call({ action: 'pull', pin_session: 't1', have });
+  assert.equal(r2.j.rows.length, 0);
+  assert.equal(S.W.reads.length, n0, 'the karte row was not read');
+  // 目標が変わる → 届く
+  const gk = S.W.get('growth_karte'); gk['E-1'].goals.push({ text: '次' }); S.W.set('growth_karte', gk);
+  const r3 = await S.call({ action: 'pull', pin_session: 't1', have });
+  assert.deepEqual([...r3.j.rows.map(x => x.key)], ['growth_karte']);
+  // 見せる範囲が変わる（AM の担当の店が増えた）→ 印が変わる
+  const S2 = setup({ pins: { tAM: AM }, emps: EMPS }); seed(S2.W);
+  const v1 = (await S2.call({ action: 'pull', pin_session: 'tAM' })).j.index.find(x => x.key === 'growth_karte').v;
+  S2.W.emps.push({ id: 'E-7', store: 'S2' });
+  S2.tick(61000);
+  const v2 = (await S2.call({ action: 'pull', pin_session: 'tAM' })).j.index.find(x => x.key === 'growth_karte').v;
+  assert.notEqual(v1, v2);
+});
+
+test('P3: odd keys that look like a bonus quarter (& # + space) are not secret keys and never break the reads', async () => {
+  const S = setup({ pins: { tGM: GM } }); seed(S.W);
+  for (const k of ['spl_bonus_q_a&b', 'spl_bonus_q_a#b', 'spl_bonus_q_a+b', 'spl_bonus_q_a b']) { S.W.set(k, { x: 1 }); assert.equal(ssIsKey(k), false, k); }
+  const r = await S.call({ action: 'pull', pin_session: 'tGM' });
+  assert.equal(r.status, 200);
+  assert.ok(r.j.rows.some(x => x.key === 'growth_karte'));
+  assert.ok(!r.j.rows.some(x => x.key.includes('a')  && x.key.startsWith('spl_bonus_q_a')));
+  assert.equal((await S.call({ action: 'get', pin_session: 'tGM', key: 'spl_bonus_q_a&b' })).status, 400);
 });

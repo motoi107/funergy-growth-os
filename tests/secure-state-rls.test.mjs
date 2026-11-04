@@ -70,14 +70,16 @@ for (const initial of ['off', 'on']) {
     // 確認の SQL
     const res = await db.exec(POST);
     const rows = res.find(r => r.fields && r.fields.some(f => f.name === 'what')).rows;
-    assert.equal(rows.length, 7);
+    assert.equal(rows.length, 12);
     rows.filter(x => x.ok !== 'info').forEach(x => assert.equal(x.ok, 'OK', x.what + ' ' + x.value));
+    assert.equal(rows.find(x => x.n === 11).value, '0', 'the row list was really checked as anon');
+    assert.equal((await db.query(`select count(*)::int c from public.app_state where key = 'spl_bonus_q_zz-postcheck'`)).rows[0].c, 0, 'the write tries are rolled back');
     assert.equal((await db.query(`select count(*)::int c from pg_class where relname = 'ss_chk'`)).rows[0].c, 0, 'the check leaves nothing behind');
     assert.equal((await db.query(`select current_user u`)).rows[0].u, 'postgres', 'the check gives the role back');
     // 確認の SQL は、決まりが外れていれば NG を出す
     await db.exec('alter policy ss_secret on public.app_state using (true) with check (true)');
     const bad = (await db.exec(POST)).find(r => r.fields && r.fields.some(f => f.name === 'what')).rows;
-    assert.equal(bad.find(x => x.n === 5).ok, 'NG', 'the check sees that anon can read the secret rows');
+    for (const n of [5, 8, 9, 10, 11, 12]) assert.equal(bad.find(x => x.n === n).ok, 'NG', 'the check sees the hole: row ' + n);
     await db.exec(MIG);
     // ss_open は OFF だったときだけ
     const pol = (await db.query(`select policyname from pg_policies where tablename = 'app_state' order by 1`)).rows.map(x => x.policyname);
@@ -100,13 +102,37 @@ test('the SQL rule and the function rule agree on every key', async () => {
   const db = new PGlite();
   await db.exec(`create role anon; create role authenticated; create role service_role; create table public.app_state(key text primary key, value jsonb);`);
   await db.exec(MIG);
-  const keys = [...SS_KEYS, ...SECRET, ...OTHER, 'spl_bonus_q_', 'spl_bonus_q_x', 'Growth_karte', 'growth_karte ', 'bonus_q_2026', 'spl_bonus_q', 'karte_pin2', 'spl_spl_bonus_q_1', ''];
+  const keys = [...SS_KEYS, ...SECRET, ...OTHER, 'spl_bonus_q_', 'spl_bonus_q_x', 'Growth_karte', 'growth_karte ', 'bonus_q_2026', 'spl_bonus_q', 'karte_pin2', 'spl_spl_bonus_q_1', '',
+    'spl_bonus_q_a&b', 'spl_bonus_q_a#b', 'spl_bonus_q_a+b', 'spl_bonus_q_a b', 'spl_bonus_q_2026-Q3\n', 'spl_bonus_q_四半期', 'spl_bonus_q_' + 'x'.repeat(40), 'spl_bonus_q_' + 'x'.repeat(41), 'SPL_BONUS_Q_2026-Q3'];
   for (let i = 0; i < 200; i++) keys.push('spl_bonus_q_' + Math.random().toString(36).slice(2, 2 + (i % 9)));
   for (const k of keys) {
     const s = (await db.query('select public.ss_secret_key($1) s', [k])).rows[0].s;
     assert.equal(s, ssIsKey(k), JSON.stringify(k));
   }
   assert.equal((await db.query('select public.ss_secret_key(null) s')).rows[0].s, false);
+  await db.close();
+});
+
+test('the check SQL says NG when there is no secret row at all (otherwise "anon reads 0" proves nothing)', async () => {
+  const db = new PGlite();
+  await db.exec(`create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
+    create table public.app_state(key text primary key, value jsonb not null, updated_at timestamptz default now());
+    grant select, insert, update, delete on public.app_state to anon, authenticated, service_role;
+    insert into public.app_state(key, value) values ('tasks_all', '{}');`);
+  await db.exec(IDX); await db.exec(MIG);
+  const rows = (await db.exec(POST)).find(r => r.fields && r.fields.some(f => f.name === 'what')).rows;
+  assert.equal(rows.find(x => x.n === 7).ok, 'NG');
+  await db.close();
+});
+
+test('RLS off but policies left from before: the migration stops (turning RLS on would wake them up)', async () => {
+  const db = await mkdb('off');
+  await db.exec(`create policy old_one on public.app_state for select to anon using (key <> 'tasks_all')`);
+  const pre = (await db.query(PRE)).rows;
+  assert.match(pre.find(x => x.n === 2).ok, /^STOP/);
+  await assert.rejects(db.exec(MIG), /STOP/);
+  assert.equal((await db.query(`select relrowsecurity r from pg_class where oid = 'public.app_state'::regclass`)).rows[0].r, false, 'nothing changed');
+  assert.equal((await db.query(`select count(*)::int c from pg_policies where policyname = 'ss_secret'`)).rows[0].c, 0);
   await db.close();
 });
 

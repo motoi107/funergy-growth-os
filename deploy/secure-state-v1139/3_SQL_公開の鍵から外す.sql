@@ -13,7 +13,7 @@
 create or replace function public.ss_secret_key(k text) returns boolean
 language sql immutable parallel safe set search_path = public, pg_temp as $$
   select coalesce(k in ('growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra')
-      or (left(k, 12) = 'spl_bonus_q_' and length(k) > 12), false)
+      or k ~ '^spl_bonus_q_[0-9A-Za-z_-]{1,40}$', false)   -- spl_bonus_q_<四半期>（2026-Q3 など）
 $$;
 comment on function public.ss_secret_key(text) is
   'v1139: app_state の成長カルテ・賞与のキーか（公開の鍵から外すキー）。関数 secure-state の ssIsKey と同じ決まり。';
@@ -26,6 +26,10 @@ begin
   if to_regclass('public.app_state') is null then raise exception 'STOP: public.app_state がありません（何も変えていません）'; end if;
   select c.relrowsecurity into rls from pg_class c where c.oid = 'public.app_state'::regclass;
   if not rls then
+    -- RLS が OFF なのに決まりが残っている：ON にすると、今まで効いていなかったその決まりが効き始める。確かめてから（何も変えない）
+    if exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'app_state' and policyname not in ('ss_open', 'ss_secret')) then
+      raise exception 'STOP: app_state の RLS が OFF で、効いていない決まり（policy）があります。ON にするとそれが効き始めるので、確かめてから（何も変えていません）';
+    end if;
     alter table public.app_state enable row level security;
     if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'app_state' and policyname = 'ss_open') then
       create policy ss_open on public.app_state as permissive for all to anon, authenticated using (true) with check (true);

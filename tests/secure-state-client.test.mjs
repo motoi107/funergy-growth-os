@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { createHandler } from '../supabase/functions/secure-state/handler.mjs';
-import { makeWorld, URL0, ANON, SERVICE } from './lib/secure-state-world.mjs';
+import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
 
 const source = readFileSync(process.env.UX_INDEX_PATH || new URL('../index.html', import.meta.url), 'utf8');
 function fn(name) {
@@ -26,7 +26,9 @@ const CODE = [
   block('var KV_SEEN_KEY', '\nasync function supaPullAllMasters('),
   varLine(/^var _OP_READ_TMO = .*$/m), varLine(/^var _SUPA_FETCH_ORDER = .*$/m),
   ...['_applyKvRows', '_supaFetchOrder', 'supaFetchAll', 'supaUpsert', '_supaWriteMs', '_fetchOpValue', '_fetchOpRow', '_tsMicro', '_casTs', '_opCasWrite',
-    '_opUpsertRow', 'opMergePush', 'pullOpKey', 'syncMasterToSupabase', 'migrateUploadLocalOps', 'getKartePin', 'setKartePin', 'karteTryUnlock', 'karteChangePin', 'supaHeaders'].map(fn),
+    '_opUpsertRow', 'opMergePush', 'pullOpKey', 'syncMasterToSupabase', 'migrateUploadLocalOps', 'getKartePin', 'setKartePin', 'karteTryUnlock', 'karteChangePin', 'supaHeaders',
+    // 成長カルテの本物の合流（同じ時刻は端末の側が勝つ・給与の履歴は 1 件ずつ）：独立レビュー（121da1c）の P1-1 はこれで起きた
+    'mergeMapByTime', '_recAt', 'kartePayMergeRec', 'kartePayT', 'kartePayId', 'kartePayDelMap', 'kartePayTrackOf', 'kartePayCmp', 'kartePayDropOne', 'kartePayCovers', 'kartePayCoversMap', '_coversMapByTime'].map(fn),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
    var _SPLIT_KEYS={}, _LS_ONDEMAND_KEYS=[], _LS_ONDEMAND_PREFIX=[], SUPA_MASTER_MAP={}, SUPA_SETTING_KEYS=[], SUPA_SETTING_PREFIX=[];
    var _supaBooting=false, _lastSupaError=null, _opMergeChain={}, _opLastPushErr={}, _opLastPushWhy={}, _idbState='ready', _idbBootP=null;
@@ -45,8 +47,12 @@ const CODE = [
    function _lsSetVerified(k, j){ return _lsWriteVerified(k, j); } function _lsFreeOldLaborKeys(){}
    function _opWriteBack(){} function _opCloudVal(k, v){ return v; } function isOpSyncKey(k){ return true; }
    var __defs={ growth_karte:1, karte_bonus_config:1, bonus_eval:1, bonus_rules:1, 'spl_bonus_q_2026-Q3':1, tasks_all:1 };
-   function _mergeMap(c, l){ var o=Object.assign({}, c||{}); Object.keys(l||{}).forEach(function(k){ var a=o[k], b=l[k]; if(!a || ((b&&b._at)||0)>((a&&a._at)||0)) o[k]=b; }); return o; }
-   function _opMergeDef(k){ return __defs[k] ? { merge:_mergeMap, covers:function(c, m){ return JSON.stringify(_mergeMap(c, m))===JSON.stringify(c); } } : null; }
+   function _mergeMap(c, l){ var o=Object.assign({}, c||{}); Object.keys(l||{}).forEach(function(k){ var a=o[k], b=l[k]; if(!a || ((b&&b._at)||0)>((a&&a._at)||0)) o[k]=b; }); return o; }   /* 試験用の簡単な合流（成長カルテは本物の mergeMapByTime：同じ時刻は端末の側） */
+   function _opMergeDef(k){
+     if(k==='growth_karte') return { merge:mergeMapByTime, covers:kartePayCoversMap };
+     return __defs[k] ? { merge:_mergeMap, covers:function(c, m){ return JSON.stringify(_mergeMap(c, m))===JSON.stringify(c); } } : null;
+   }
+   var __removed=[]; function _outboxRemove(k){ __removed.push(k); delete __pending[k]; }
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function karteRerender(){ __rerender++; } function showToast(m){ __toasts.push(m); }
    var __inputs=[]; async function askInput(){ return __inputs.shift(); } function alert(m){ __alerts.push(m); }
@@ -87,13 +93,14 @@ test('GM with a PIN session: the karte and bonus rows come from the function (ne
   const W = world();
   const c = tab(W); c._hwSession = 'tGM'; c.curRole = 'gm';
   c.MEM.set('bonus_eval', JSON.stringify({ 'E-2|2026-Q3': { ab: 1, _at: 9 } }));   // 送れていない手元の分は合流で残る
+  c.MEM.set('karte_pin', '"4321"');   // 前の版で REST から取っていた平文の PIN
   const rows = await pull(c);
   assert.equal(W.calls.anonSecret, 0, 'no secure row went through the public key');
   assert.ok(rows.some(r => r.key === 'growth_karte'), 'the full karte arrived');
   assert.deepEqual(local(c, 'growth_karte')['E-1'].payLog, [{ amount: 1234 }]);
   assert.deepEqual(Object.keys(local(c, 'bonus_eval')).sort(), ['E-1|2026-Q3', 'E-2|2026-Q3']);
   assert.deepEqual(local(c, 'spl_bonus_q_2026-Q3'), { evSnap: { 'E-1': 800 } });
-  assert.equal(local(c, 'karte_pin'), undefined, 'the karte PIN never comes to the device');
+  assert.equal(local(c, 'karte_pin'), undefined, 'the karte PIN never comes to the device (the old plain copy is removed)');
   assert.deepEqual(local(c, 'tasks_all'), { a: { t: 1 } }, 'other rows still come by REST');
   assert.equal(c.localStorage.getItem('_ss_level'), 'full');
   // 2 回目：変わっていない行は関数も送らない
@@ -141,11 +148,26 @@ test('GM writes go through the function: merge push, compare-and-write, plain up
   assert.deepEqual(W.get('m_other'), { x: 2 });
   assert.ok(!W.log.some(([, role, key]) => role === 'anon' && c.ssIsKey(key)), 'the public key never wrote a secure key');
   assert.equal(W.calls.anonSecret, 0);
+  // 関数が書けなかった（409・500）：false（送信待ちに残る）。ほかの行は書く
+  const real = W.ssHandler;
+  W.ssHandler = async req => { const b = await req.clone().json(); if (b.action === 'put') return new Response(JSON.stringify({ error: 'boom', fn: 1 }), { status: 500 }); return real(req); };
+  assert.equal(await c.supaUpsert('app_state', [{ key: 'bonus_pool_extra', value: { q: 9 } }, { key: 'm_other', value: { x: 3 } }]), false);
+  assert.deepEqual(W.get('bonus_pool_extra'), { q: 1 });
+  assert.deepEqual(W.get('m_other'), { x: 3 });
+  // 書けたと答えても、書いた時刻が読んだ時刻より後でなければ「ほかの保存と重なっていないか確かめられない」（REST の道と同じ）
+  W.ssHandler = async req => {
+    const b = await req.clone().json(), res = await real(req);
+    if (b.action !== 'put' || res.status !== 200) return res;
+    const j = await res.json(); j.updated_at = b.expect && b.expect.updated_at; return new Response(JSON.stringify(j), { status: 200 });
+  };
+  const row2 = await c._fetchOpRow('bonus_rules');
+  assert.equal(await c._opCasWrite('bonus_rules', { pool: [6] }, row2), 'stale');
+  W.ssHandler = real;
   // 1 つのキーの読み込み
-  assert.deepEqual(await c._fetchOpValue('bonus_rules', 'app_state', true), { pool: [3] });
+  assert.deepEqual(await c._fetchOpValue('bonus_rules', 'app_state', true), { pool: [6] }, 'the "stale" write did reach the cloud');
   assert.equal(await c._fetchOpValue('spl_bonus_q_2030-Q1', 'app_state', false), null, 'no row');
   assert.equal(await c.pullOpKey('bonus_rules'), true);
-  assert.deepEqual(local(c, 'bonus_rules'), { pool: [3] });
+  assert.deepEqual(local(c, 'bonus_rules'), { pool: [6] });
 });
 
 test('crew with a PIN session: only the projection (hire dates, own goals, quarter); old full copies are removed; nothing is sent', async () => {
@@ -163,9 +185,12 @@ test('crew with a PIN session: only the projection (hire dates, own goals, quart
   for (const k of ['bonus_eval', 'spl_bonus_q_2026-Q3', 'karte_pin', 'bonus_rules']) assert.equal(local(c, k), undefined, k + ' removed from the device');
   assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
   // 送らない（対象外）
-  const p0 = W.calls.post + W.calls.patch;
-  assert.equal(await c.syncMasterToSupabase('growth_karte', { 'E-1': { goals: [] } }), undefined);
+  const p0 = W.calls.post + W.calls.patch, s0 = W.calls.ss;
+  assert.equal(await c.syncMasterToSupabase('growth_karte', { 'E-1': { goals: [] } }), false, 'held: kept in the unsent list, never sent');
   assert.equal(W.calls.post + W.calls.patch, p0);
+  assert.equal(W.calls.ss, s0, 'not even asked: the device copy is only the projection');
+  assert.ok(JSON.parse(c.localStorage.getItem('_ss_mark')).unsafe.growth_karte, 'marked: an edit made on a partial copy');
+  assert.equal(c.__toasts.length, 1, 'the person is told (once)');
   // 2 回目：同じ見せる形なら取り直さない・端末の写しは見せる形のまま
   const n0 = W.calls.ss; await pull(c);
   assert.equal(W.calls.ss - n0, 1);
@@ -182,11 +207,23 @@ test('crew with a PIN session: only the projection (hire dates, own goals, quart
   assert.equal(W.calls.anonSecret, 0);
 });
 
+test('crew: even if the server ignored the "not" filters, the full secure rows from REST never land on the device', async () => {
+  const W = world({ ignoreNot: true });
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  assert.deepEqual(local(c, 'growth_karte'), { 'E-1': { hireDate: '2024-01-05', goals: [{ text: '仕込み', due: '2026-12-01' }] }, 'E-2': { hireDate: '2023-03-01' } });
+  for (const k of ['bonus_eval', 'spl_bonus_q_2026-Q3', 'karte_pin', 'bonus_rules']) assert.equal(local(c, k), undefined, k);
+  assert.deepEqual(local(c, 'tasks_all'), { a: { t: 1 } });
+});
+
 test('a GM device used by crew and back: the projection never merges into the full values', async () => {
   const W = world();
   const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
   await pull(c);
   assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
+  assert.deepEqual(local(c, 'growth_karte')['E-2'], { hireDate: '2023-03-01' });
+  // そのあいだにクラウドで E-2 の記録が消えた：見せる形の E-2 を全部の値に混ぜない（混ぜると消した記録が半分の形で戻る）
+  const gk = W.get('growth_karte'); delete gk['E-2']; W.set('growth_karte', gk, '2026-11-03T14:00:00.000000+00:00');
   c._hwSession = 'tGM'; c.curRole = 'gm';
   await pull(c);
   assert.deepEqual(local(c, 'growth_karte'), W.get('growth_karte'), 'the full karte, not the projection merged in');
@@ -258,11 +295,19 @@ test('work-requests unreachable from the function (503): the GM keeps the old wa
   await pull(c);
   assert.deepEqual(local(c, 'growth_karte'), { old: { _at: 1 } }, 'nothing from REST (RLS), the device copy stays');
   assert.equal(W.calls.anonSecret, 0);
+  // RLS の前（SQL を流す前）：GM の 1 つのキーの読み書きは今までどおり REST で続く（10 分は関数を呼ばない）
+  const W2 = world();
+  W2.wrDown = true;
+  const g = tab(W2); g._hwSession = 'tGM'; g.curRole = 'gm';
+  await pull(g);
+  const n0 = W2.calls.ss;
+  assert.deepEqual(await g._fetchOpValue('bonus_rules', 'app_state', true), { pool: [1, 2] });
+  assert.equal(W2.calls.ss, n0, 'the function is not asked again while it cannot check people');
 });
 
 test('email sign-in (the managers page) works without a PIN session; a failed pull keeps proj devices off REST', async () => {
   const W = world({ users: { jg: 'aaaaaaaa-0000-0000-0000-00000000000a' }, mgr: { 'aaaaaaaa-0000-0000-0000-00000000000a': { role: 'gm', emp_id: 'E-GM' } } });
-  const c = tab(W); c._authSession = { access_token: 'jg', refresh_token: 'r' };
+  const c = tab(W); c._authSession = { access_token: JWT('jg'), refresh_token: 'r' };
   await pull(c);
   assert.deepEqual(local(c, 'growth_karte'), W.get('growth_karte'));
   assert.equal(W.calls.anonSecret, 0);
@@ -336,4 +381,172 @@ test('what the screens of non-GM people use is the same with the projection as w
   assert.equal(run(proj), run(full));
   assert.match(run(proj), /"q":"2026-Q3"/);
   assert.match(run(proj), /仕込み/);
+});
+
+// ---- 独立レビュー（121da1c）の指摘の再現と直し
+test('P1-1: on a shared device, a GM\'s unsent karte edit survives a crew session and is merged (never the projection) when the GM comes back', async () => {
+  const W = world();
+  W.set('growth_karte', { 'E-1': { hireDate: '2024-01-05', goals: [{ text: 'g' }], payLog: [{ id: 'p1', amount: 1234 }], meetings: [{ note: 'secret' }], _at: 5 },
+    'E-2': { hireDate: '2023-03-01', payLog: [{ id: 'p2', amount: 999 }], meetings: [{ note: 'old' }] } });
+  const c = tab(W); c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  // GM が直したが送れていない（送信待ち）
+  const mine = local(c, 'growth_karte'); mine['E-3'] = { note: 'GM の新しい記録', _at: 50 };
+  c.MEM.set('growth_karte', JSON.stringify(mine)); c.__pending.growth_karte = true;
+  // 同じ端末で crew がログイン
+  c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  assert.equal(local(c, 'growth_karte')['E-3'].note, 'GM の新しい記録', 'the unsent value is not replaced by the projection');
+  assert.deepEqual(local(c, 'karte_bonus_config'), { quarter: '2026-Q3' }, 'other projected keys are the projection');
+  // GM が戻る
+  c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  const k = local(c, 'growth_karte');
+  assert.equal(k['E-3'].note, 'GM の新しい記録', 'the GM edit is still there');
+  assert.deepEqual(k['E-2'].payLog, [{ id: 'p2', amount: 999 }], 'the cloud pay log is not lost');
+  assert.deepEqual(k['E-2'].meetings, [{ note: 'old' }], 'nor the meetings');
+  assert.deepEqual(local(c, 'karte_bonus_config'), W.get('karte_bonus_config'), 'the projection was dropped before the full value');
+  assert.equal(await c.syncMasterToSupabase('growth_karte', k), true, 'and it is sent');
+  assert.deepEqual(W.get('growth_karte')['E-2'].payLog, [{ id: 'p2', amount: 999 }]);
+  assert.equal(W.get('growth_karte')['E-3'].note, 'GM の新しい記録');
+});
+
+test('P1-2: after crew used the device and the GM\'s pull fails (RLS on), a GM edit on the partial copy is held (not sent, not silently dropped), then set aside with a copy', async () => {
+  const W = world({ rls: true });
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  const real = W.ssHandler;
+  W.ssHandler = async () => new Response(JSON.stringify({ error: 'error', fn: 1 }), { status: 500 });
+  c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  assert.equal(c.ssState(), 'part', 'nothing full arrived (the function failed, REST shows nothing secure)');
+  // GM が見せる形の上で直す
+  const edited = Object.assign(local(c, 'growth_karte'), { 'E-2': { hireDate: '2023-03-01', note: 'on a partial copy', _at: 99 } });
+  c.MEM.set('growth_karte', JSON.stringify(edited));
+  const before = JSON.stringify(W.get('growth_karte'));
+  assert.equal(await c.syncMasterToSupabase('growth_karte', edited), false, 'held (stays in the unsent list)');
+  assert.ok(c.__toasts.some(m => /送りません/.test(m)), 'the GM is told');
+  assert.equal(JSON.stringify(W.get('growth_karte')), before, 'the cloud is untouched');
+  c.__pending.growth_karte = true;   // 送信待ちに残っている
+  // 次に受け取れたら：その入力は控えに移して外し、全部の値を置く
+  W.ssHandler = real;
+  await pull(c);
+  assert.deepEqual(local(c, 'growth_karte'), W.get('growth_karte'), 'the full value, not the edit on the projection');
+  assert.ok(c.__removed.includes('growth_karte'), 'removed from the unsent list');
+  const kept = JSON.parse(c.localStorage.getItem('_ss_unsent'));
+  assert.equal(kept[0].key, 'growth_karte'); assert.match(kept[0].text, /on a partial copy/);
+  assert.equal(c.ssState(), 'full');
+  assert.equal(await c.syncMasterToSupabase('growth_karte', local(c, 'growth_karte')), true, 'from now on the GM can save');
+  assert.equal(JSON.stringify(W.get('growth_karte')), before);
+});
+
+test('P1-2: the same with RLS off (before the SQL): the GM\'s REST pull brings the full rows, the partial copy is replaced, and saving works', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  W.ssHandler = async () => new Response(JSON.stringify({ error: 'error', fn: 1 }), { status: 500 });
+  c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  assert.equal(c.ssState(), 'full');
+  assert.deepEqual(local(c, 'growth_karte'), W.get('growth_karte'), 'the REST full value replaced the projection (no merge into it)');
+  assert.deepEqual(local(c, 'karte_bonus_config'), W.get('karte_bonus_config'));
+});
+
+test('P1-2: a GM account the server shows only the projection (no employee link): edits are held with a warning, not dropped', async () => {
+  const W = world();
+  W.pins.tGMx = { emp: 'E-9', role: 'staff', grade: 6, stores: [], am_stores: [] };
+  const c = tab(W); c._hwSession = 'tGMx'; c.curRole = 'gm';
+  await pull(c);
+  assert.equal(c.localStorage.getItem('_ss_level'), 'proj');
+  assert.equal(await c.syncMasterToSupabase('bonus_pool_extra', { q: 5 }), false);
+  assert.equal(c.__toasts.length, 1);
+  assert.equal(W.get('bonus_pool_extra'), undefined);
+});
+
+test('the level is the server\'s answer for this person: a device that was proj does not stop a GM whose pull works from saving', async () => {
+  const W = world({ rls: true });
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  assert.equal(await c.syncMasterToSupabase('bonus_pool_extra', { q: 7 }), true);
+  assert.deepEqual(W.get('bonus_pool_extra'), { q: 7 });
+});
+
+test('P2-1: a refusal that does not come from this function (gateway, Verify JWT ON) is "not deployed", not "nothing for you"; a GM\'s 401 keeps the device copy', async () => {
+  const W = world();
+  W.ssHandler = async () => new Response(JSON.stringify({ code: 401, message: 'Invalid JWT' }), { status: 401 });
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  c.MEM.set('growth_karte', JSON.stringify(W.get('growth_karte')));
+  await pull(c);
+  assert.ok(c._ss.legacy, 'treated as not deployed');
+  assert.notEqual(c.localStorage.getItem('_ss_level'), 'none');
+  // 関数の 401（fn:1）でも、GM の端末の写しは消さない
+  const W2 = world({ rls: true });
+  W2.pins.tGM = 'deny';
+  const g = tab(W2); g._hwSession = 'tGM'; g.curRole = 'gm';
+  g.MEM.set('bonus_eval', JSON.stringify({ mine: { _at: 1 } }));
+  await pull(g);
+  assert.deepEqual(local(g, 'bonus_eval'), { mine: { _at: 1 } });
+  assert.notEqual(g.ssState(), 'part');
+});
+
+test('P2-3: the purge waits for IndexedDB (copies that were still loading are removed too)', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  c._idbState = 'init';
+  c._idbBootP = new Promise(r => setTimeout(() => { c.MEM.set('bonus_eval', JSON.stringify(W.get('bonus_eval'))); c._idbState = 'ready'; r(); }, 400));   // 関数の答えより遅い
+  const res = await c.ssPull(false);
+  assert.equal(res.rest, false);
+  await c._idbBootP;
+  assert.equal(local(c, 'bonus_eval'), undefined, 'the copy that came from IndexedDB is gone (the purge waited for it)');
+  assert.deepEqual(local(c, 'growth_karte'), { 'E-1': { hireDate: '2024-01-05', goals: [{ text: '仕込み', due: '2026-12-01' }] }, 'E-2': { hireDate: '2023-03-01' } });
+});
+
+test('logout: on a shared device the GM\'s full copies are removed (unsent ones stay); a GM-only device keeps them', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  assert.ok(local(c, 'bonus_eval'));
+  c.MEM.set('bonus_rules', JSON.stringify({ pool: [8] })); c.__pending.bonus_rules = true;
+  c.ssOnLogout();
+  assert.equal(local(c, 'bonus_eval'), undefined);
+  assert.equal(local(c, 'growth_karte'), undefined);
+  assert.deepEqual(local(c, 'bonus_rules'), { pool: [8] }, 'unsent changes stay');
+  assert.equal(c.ssState(), 'part');
+  // GM だけの端末
+  const g = tab(W); g._hwSession = 'tGM'; g.curRole = 'gm';
+  await pull(g);
+  g.ssOnLogout();
+  assert.ok(local(g, 'bonus_eval'), 'kept');
+});
+
+test('P2-4: when the function is not usable (old REST way), a device with a partial copy still does not send it', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  W.ssDown = true; c._ss.legacy = { id: c.ssSess().id, at: Date.now() };
+  const n0 = W.log.length;
+  assert.equal(await c.syncMasterToSupabase('growth_karte', local(c, 'growth_karte')), false);
+  assert.equal(W.log.length, n0, 'nothing written by REST');
+});
+
+test('a write the server refuses (403: this person is no longer CEO/GM) stays in the unsent list and the person is told', async () => {
+  const W = world();
+  const c = tab(W); c._hwSession = 'tGM'; c.curRole = 'gm';
+  await pull(c);
+  W.pins.tGM = { emp: 'E-GM', role: 'staff', grade: 3, stores: [], am_stores: [] };
+  W.tick(61000);   // 関数の覚え（60 秒）を過ぎた
+  assert.equal(await c.syncMasterToSupabase('bonus_pool_extra', { q: 3 }), false);
+  assert.ok(c.__toasts.some(m => /このアカウントでは/.test(m)));
+  assert.equal(W.get('bonus_pool_extra'), undefined);
+});
+
+test('the app, the function and the SQL use the same key rule', async () => {
+  const { ssIsKey } = await import('../supabase/functions/secure-state/handler.mjs');
+  const c = tab(world());
+  const keys = ['growth_karte', 'karte_pin', 'bonus_q', 'spl_bonus_q_2026-Q3', 'spl_bonus_q_', 'spl_bonus_q_a&b', 'spl_bonus_q_a b', 'spl_bonus_q_' + 'x'.repeat(41), 'spl_bonus_q_四', 'bonus_eval_rule', 'tasks_all', 'Growth_karte'];
+  for (const k of keys) assert.equal(c.ssIsKey(k), ssIsKey(k), k);
 });

@@ -3,7 +3,9 @@
 select 1 as n, 'app_state の表' as what, case when to_regclass('public.app_state') is null then 'ない' else 'ある' end as value,
        case when to_regclass('public.app_state') is null then 'STOP' else 'OK' end as ok
 union all
-select 2, 'app_state の RLS（行ごとの決まり）', case when c.relrowsecurity then 'ON' else 'OFF（SQL が ON にして、今までと同じ決まり ss_open を足します）' end, 'info'
+select 2, 'app_state の RLS（行ごとの決まり）', case when c.relrowsecurity then 'ON' else 'OFF（SQL が ON にして、今までと同じ決まり ss_open を足します）' end,
+       case when not c.relrowsecurity and exists (select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = 'app_state' and p.policyname not in ('ss_open', 'ss_secret'))
+            then 'STOP（OFF なのに決まりがある。ON にすると効き始めるので、SQL は止まります。Claude に貼ってください）' else 'info' end
   from pg_class c where c.oid = to_regclass('public.app_state')
 union all
 select 3, '今の決まり（policy）', coalesce(string_agg(p.policyname || '（' || p.permissive || '・' || p.cmd || '・' || array_to_string(p.roles, ',') || '）', ' / ' order by p.policyname), 'なし'), 'info'
@@ -16,7 +18,7 @@ union all
 select 5, '対象のキーの行（数・大きさ）', count(*)::text || ' 行・' || coalesce(round(sum(octet_length(s.value::text)) / 1024.0)::text, '0') || ' KB', 'info'
   from public.app_state s
  where s.key::text in ('growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra')
-    or (left(s.key::text, 12) = 'spl_bonus_q_' and length(s.key::text) > 12)
+    or s.key::text ~ '^spl_bonus_q_[0-9A-Za-z_-]{1,40}$'
 union all
 select 6, '関数 app_state_index（v1098。あると関数 secure-state が変わった行だけ返す）', count(*)::text,
        case when count(*) = 1 then 'OK' else 'info（無くても動く。毎回全部返す）' end

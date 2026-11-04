@@ -9,13 +9,16 @@ export const URL0 = 'https://db.example.test';
 export const WR = URL0 + '/functions/v1/work-requests';
 export const SS = URL0 + '/functions/v1/secure-state';
 export const ANON = 'anon-key', SERVICE = 'service-key';
+// メールのログインの印（JWT の形・role は authenticated）。関数は JWT の role でメールのログインかを決める（公開の鍵は role anon）
+export const JWT = (name, role = 'authenticated') => 'eyJhbGciOiJIUzI1NiJ9.' + Buffer.from(JSON.stringify({ role, sub: name })).toString('base64url') + '.c2ln';
+const jwtSub = tok => { try { return JSON.parse(Buffer.from(String(tok).split('.')[1], 'base64url').toString('utf8')).sub; } catch { return null; } };
 export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\d{3})$/, '.$1000') + '+00:00';
 
 export function makeWorld(o = {}) {
   const W = {
-    rows: new Map(), users: o.users || {}, mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, indexMissing: !!o.indexMissing, rls: !!o.rls, ssHandler: null, ssDown: !!o.ssDown,
-    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0 }, log: [],
+    rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
+    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, ssHandler: null, ssDown: !!o.ssDown,
+    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0 }, log: [], reads: [], maxRows: o.maxRows || 0,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
   W.get = key => { const r = W.rows.get(key); return r ? JSON.parse(r.value) : undefined; };
@@ -23,6 +26,7 @@ export function makeWorld(o = {}) {
   const unq = s => s.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   const splitList = s => { const out = []; let cur = '', q = false; for (const ch of s) { if (ch === '"') q = !q; if (ch === ',' && !q) { out.push(cur); cur = ''; } else cur += ch; } if (cur) out.push(cur); return out.map(unq); };
   const one = (f, key) => {
+    if (W.ignoreNot && f.startsWith('not.')) return true;   // 「除く」の条件を読まないサーバー（試験だけ）
     if (f.startsWith('eq.')) return key === f.slice(3);
     if (f.startsWith('in.(')) return splitList(f.slice(4, -1)).includes(key);
     if (f.startsWith('not.in.(')) return !splitList(f.slice(8, -1)).includes(key);
@@ -50,7 +54,7 @@ export function makeWorld(o = {}) {
       return J({ me, live: true, fn: 3, sql: 4 });
     }
     if (p === '/auth/v1/user') {
-      const uid = W.users[(h.authorization || '').replace(/^Bearer /, '')];
+      const uid = W.users[jwtSub((h.authorization || '').replace(/^Bearer /, ''))];
       return uid ? J({ id: uid }) : J({ msg: 'bad jwt' }, 401);
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
@@ -63,12 +67,17 @@ export function makeWorld(o = {}) {
       const skip = (JSON.parse(opt.body || '{}').p_skip_prefix || []);
       const out = [...W.rows.entries()].filter(([key]) => !hide(key) && !skip.some(s => s && key.startsWith(s))).sort(([a], [b]) => a < b ? -1 : 1)
         .map(([key, r]) => ({ key, updated_at: r.updated_at, h: crypto.createHash('md5').update(r.value).digest('hex'), n: r.value.length }));
-      const off = Number(q.get('offset') || 0), lim = Number(q.get('limit') || 100000);
+      const off = Number(q.get('offset') || 0), lim = Math.min(Number(q.get('limit') || 100000), W.maxRows || Infinity);   // PostgREST の max-rows
+      if (W.maxRows && !q.get('order') && (W.idxCalls = (W.idxCalls || 0) + 1) > 1) out.reverse();   // 並びを指定しないと、ページごとに並びが変わりうる（試験では 2 回目から逆に）
       return J(out.slice(off, off + lim));
     }
-    if (p === '/rest/v1/manager_auth') { const r = W.mgr[q.get('user_id').replace(/^eq\./, '')]; return J(r ? [r] : []); }
+    if (p === '/rest/v1/manager_auth') {
+      if (!q.get('user_id')) return J(Object.values(W.mgr).map(m => ({ emp_id: m.emp_id })));
+      const r = W.mgr[q.get('user_id').replace(/^eq\./, '')]; return J(r ? [r] : []);
+    }
+    if (p === '/rest/v1/wr_people') return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => ({ emp_id: x.emp_id })));
     if (p === '/rest/v1/employees') {
-      if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => ({ status: e.status || '' })));
+      if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => ({ status: e.status || '', data: e.data || {} })));
       return J(W.emps.map(e => ({ id: e.id, store: e.store })));
     }
     if (p === '/rest/v1/app_state') {
@@ -84,6 +93,7 @@ export function makeWorld(o = {}) {
         return true;
       };
       if (m === 'GET') {
+        W.reads.push(url.search);
         let out = [];
         for (const [key, r] of [...W.rows.entries()].sort(([a], [b]) => a < b ? -1 : 1)) {
           if (!match(key)) continue;
