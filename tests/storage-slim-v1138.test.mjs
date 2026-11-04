@@ -31,7 +31,8 @@ const CODE = [/^var IDB_NAME = .*$/m, /^var _idbDB = .*$/m, /^var _idbState = .*
   .concat([slimBlock,
     'function _lskBump(){} function _lsNoteSaveFailure(k){ (__fails||(__fails=[])).push(k); } var __fails=[];',
     'function lsKeys(p){ p=p||""; var s=new Set(); for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k&&k.indexOf(p)===0) s.add(k);} if(_idbState==="ready"&&_IDB_MEM) _IDB_MEM.forEach(function(v,k){ if(String(k).indexOf(p)===0) s.add(k); }); return Array.from(s); }',
-    'var __outbox=[], __busy={}, __logs=[];',
+    'var __outbox=[], __busy={}, __logs=[], __mergeDefs={};',
+    'function _opMergeDef(k){ return __mergeDefs[k] || null; }',
     'function _outboxGet(){ return __outbox.slice(); } function _outboxSet(a){ __outbox=a.slice(); return true; } function _pushBusy(k){ return !!__busy[k]; } function _pendEditAtDrop(){}',
     fn('_outboxRemove'),
     'var FUNERGY_STATUS={ log:function(kind, msg){ __logs.push([kind, msg]); } };',
@@ -100,7 +101,8 @@ test('(a)(k) 前の版の端末：IndexedDB にある控えは起動のあとに
   assert.ok(out && out.removed >= 2, JSON.stringify(out));
   assert.equal(dev.ls.has('daily_actuals_F01'), false);
   assert.equal(dev.ls.has('spl_budgets_v2_F01'), false);
-  assert.equal(dev.ls.get('tip_labor_F01'), big(300, 'OLD'), '(k) 送信待ちのキーの写しは、中身が違っても届くまで消さない（独立レビュー P2-1）');
+  assert.equal(dev.ls.get('tip_labor_F01'), rows.tip_labor_F01, '(k) 送信待ちのキーの写しは届くまで残す。中身が違う（古い）写しは IndexedDB の値に書き直す（2 回目の独立レビュー P2-2）');
+  assert.equal(dev.ls.get('_lsj:tip_labor_F01'), 'c' + c._lsFp(rows.tip_labor_F01));
   assert.equal(out.differ, 1);
   assert.equal(dev.ls.get('m_employees'), rows.m_employees, '送信待ちで同じ中身の控えは届くまで残す');
   assert.equal(dev.ls.get('funergy_lang'), 'ja'); assert.equal(dev.ls.get('_pend_edit_at'), '{"x":1}');
@@ -279,10 +281,10 @@ test('(h)(i) 起動のデータの移し替え・必要時の取り込みは Ind
   assert.deepEqual(top.map(l => l.match(/^try \{ (\w+)/)[1]), ['migrateEnableMasterAutosync']);
 });
 
-test('起動の読み込みが返らない端末は 8 秒でつなぎ直して 20 秒まで待ち、それでもだめなら使えないことにする（起動を止めない）', () => {
+test('起動の読み込みが返らない端末は 8 秒でつなぎ直して 12 秒まで待ち、それでもだめなら使えないことにする（起動を止めない）', () => {
   const b = fn('_idbBoot');
   assert.match(b, /Promise\.race\(\[_idbLoadAll\(\), new Promise\(function \(r\) \{ setTimeout\(function \(\) \{ r\(null\); \}, ms\); \}\)\]\)/);
-  assert.match(b, /var m = await _race\(8000\);/); assert.match(b, /m = _idbDB \? await _race\(20000\) : null;/);
+  assert.match(b, /var m = await _race\(8000\);/); assert.match(b, /m = _idbDB \? await _race\(12000\) : null;/);
   assert.match(b, /端末のデータを読み込んでいます/);
 });
 
@@ -386,7 +388,7 @@ test('P2-2 アプリの保存の層を通らないキー（Office のモジュ�
   assert.equal(b._IDB_MEM.has(k2), false, '写さない');
 });
 
-test('P2-1 IndexedDB を読めなかった起動の保存・削除は、次に読めた起動で取り戻す（IndexedDB の古い値で消さない・古い値を送らない）', async () => {
+test('P2-1 IndexedDB を読めなかった起動の送信待ちの保存は、次に読めた起動で取り戻す（古い値で消さない・古い値を送らない）。削除は届けない', async () => {
   const dev = device(); await seedDisk(dev.factory, { spl_k: big(5, 'stale'), spl_gone: big(5, 'g') });
   const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); });   // 読み込みが返らない（つなぎ直しても）
   assert.equal(await ready(a), 'unavailable');
@@ -395,9 +397,10 @@ test('P2-1 IndexedDB を読めなかった起動の保存・削除は、次に�
   assert.equal(a._lsWriteVerified('spl_k', big(5, 'EDIT')), true);
   assert.equal(dev.ls.get('_lsj:spl_k').charAt(0), 'u');
   assert.equal(a._lsRawDel('spl_gone'), true);
+  assert.equal(dev.ls.has('_lsj:spl_gone'), false, '読めなかった起動の削除は印を残さない（空の土台からの削除で IndexedDB の値を消さない）');
   const b = tab(dev, x => { x.__outbox = [{ key: 'spl_k' }]; }); await ready(b);
   assert.equal(b._lsStoreGet('spl_k'), big(5, 'EDIT'), '送信待ちの編集が IndexedDB の古い値に負けない');
-  assert.equal(b._lsStoreGet('spl_gone'), null);
+  assert.equal(b._lsStoreGet('spl_gone'), big(5, 'g'));
   assert.equal(b._idbStat.journal.unavail, 1);
   await b._idbFlushP(); await wait(5); await b._lsSlimSweep();
   assert.equal((await disk(dev.factory)).get('spl_k'), big(5, 'EDIT'));
@@ -406,14 +409,89 @@ test('P2-1 IndexedDB を読めなかった起動の保存・削除は、次に�
   assert.equal(dev.ls.has('spl_k'), false);
 });
 
-test('P2-1 IndexedDB を読めなかった起動：読む前の書き込みの印はこの起動の書き込み（u）に・IndexedDB の無い端末は印を消す', async () => {
-  const dev = device(); await seedDisk(dev.factory, { spl_i: big(5, 'old') });
+test('P2-1（2 回目）読めなかった起動の送信待ちでない書き込み・この端末だけのデータは IndexedDB が勝つ（空の土台から作った値で履歴を消さない）', async () => {
+  const hist = JSON.stringify({ '2026-08': { s: 1 }, '2026-09': { s: 2 } });
+  const dev = device(); await seedDisk(dev.factory, { pl_actual: hist, spl_np: big(5, 'idb') });
+  const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); }); await ready(a);
+  const cur = JSON.parse(a._lsStoreGet('pl_actual') || '{}'); cur['2026-10'] = { s: 3 };   // plImportSave と同じ読み書き（土台が空）
+  a._lsWriteVerified('pl_actual', JSON.stringify(cur));
+  a._lsWriteVerified('spl_np', big(5, 'np'));
+  const b = tab(dev); await ready(b);
+  assert.equal(b._lsStoreGet('pl_actual'), hist, '8・9 月が残る');
+  assert.equal(b._lsStoreGet('spl_np'), big(5, 'idb'));
+  assert.equal(dev.ls.has('pl_actual'), false); assert.equal(dev.ls.has('_lsj:pl_actual'), false);
+});
+
+test('P2-1（2 回目）合流の決まりのある送信待ちのキーは IndexedDB の値と合わせる', async () => {
+  const dev = device(); await seedDisk(dev.factory, { spl_m: JSON.stringify({ a: 1 }) });
+  const merge = { merge: (remote, local) => Object.assign({}, remote, local) };
+  const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); x.__mergeDefs = { spl_m: merge }; }); await ready(a);
+  a.__outbox = [{ key: 'spl_m' }];
+  a._lsWriteVerified('spl_m', JSON.stringify({ b: 2 }));
+  const b = tab(dev, x => { x.__outbox = [{ key: 'spl_m' }]; x.__mergeDefs = { spl_m: merge }; }); await ready(b);
+  assert.deepEqual(JSON.parse(b._lsStoreGet('spl_m')), { a: 1, b: 2 });
+  await b._idbFlushP(); await wait(5);
+  assert.deepEqual(JSON.parse((await disk(dev.factory)).get('spl_m')), { a: 1, b: 2 });
+});
+
+test('P2-2（2 回目）前の版の満杯で古いままの送信待ちの写しは IndexedDB の値に書き直す（読めなかった起動の土台にする）', async () => {
+  const dev = device({ ls: { spl_p: JSON.stringify(['old']) } }); await seedDisk(dev.factory, { spl_p: JSON.stringify(['old', 'NEW-unsent']) });
+  const a = tab(dev, x => { x.__outbox = [{ key: 'spl_p' }]; }); await ready(a); await a._lsSlimSweep();
+  assert.equal(dev.ls.get('spl_p'), JSON.stringify(['old', 'NEW-unsent']));
+  const b = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); x.__outbox = [{ key: 'spl_p' }]; }); await ready(b);
+  const cur = JSON.parse(b._lsStoreGet('spl_p')); cur.push('edit'); b._lsWriteVerified('spl_p', JSON.stringify(cur));
+  const c = tab(dev, x => { x.__outbox = [{ key: 'spl_p' }]; }); await ready(c);
+  assert.deepEqual(JSON.parse(c._lsStoreGet('spl_p')), ['old', 'NEW-unsent', 'edit']);
+});
+
+test('P3-3（2 回目）送信待ちで残した写しは「入り終えた」印（c）：あとで IndexedDB が新しくなっても古い写しで戻さない', async () => {
+  const dev = device(); const a = tab(dev, x => { x.__outbox = [{ key: 'spl_c' }]; }); await ready(a); await wait(20);
+  a._lsWriteVerified('spl_c', '"v1"'); await a._idbFlushP(); await wait(5);
+  assert.equal(dev.ls.get('_lsj:spl_c'), 'c' + a._lsFp('"v1"'));
+  crash(a);
+  await seedDisk(dev.factory, { spl_c: '"v2-newer"' });   // 前の版のタブが IndexedDB だけに新しい値を書いた
+  const b = tab(dev, x => { x.__outbox = [{ key: 'spl_c' }]; }); await ready(b);
+  assert.equal(b._lsStoreGet('spl_c'), '"v2-newer"');
+  assert.equal(dev.ls.get('spl_c'), '"v2-newer"', '写しは IndexedDB の値に書き直す（送信待ちなので残す）');
+});
+
+test('P2-3（2 回目）開くときの時間切れは、あとで状態を「使えない」に変えない', { timeout: 15000 }, async () => {
+  const dev = device(); const c = tab(dev); await ready(c);
+  c._idbDB = null;   // つなぎ直しの途中など
+  await wait(4300);
+  assert.equal(c._idbState, 'ready');
+  const o = fn('_idbOpen');
+  assert.doesNotMatch(o.slice(o.indexOf('setTimeout')), /_idbState/);
+});
+
+test('P3-5（2 回目）読めなかった起動で印を書けない（満杯）ときは値だけ書く', async () => {
+  const v = big(900, 'w');
+  const dev = device({ cap: v.length + 'spl_w'.length + 5 }); await seedDisk(dev.factory, { x: '1' });
+  const c = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); }); await ready(c);
+  assert.equal(c._lsWriteVerified('spl_w', v), true);
+  assert.equal(dev.ls.get('spl_w'), v);
+});
+
+test('P3-1・P3-2（2 回目）読めなかった起動：送信待ちの値が見えなくても捨てない・一度きりの移し替えをしない', () => {
+  assert.match(fn('flushOutbox'), /_idbState!=='ready' && typeof _idbAvailable==='function' && _idbAvailable\(\)\) continue;/);
+  assert.match(fn('_bootMigrations'), /_lsDegraded\(\)\) return;/);
+  const ia = fn('initApp');
+  assert.match(ia, /var _dg=\(typeof _lsDegraded==='function' && _lsDegraded\(\)\);/);
+  for (const m of ['migrateInvHistSplit', 'migrateMenuStore', 'uploadAllLocalShifts', 'migrateUploadLocalOps', 'migrateBudgetsSplit', 'trimNotificationsOnce']) assert.match(ia, new RegExp('if\\(!_dg\\)[^\\n]{0,40}' + m), m);
+  assert.match(source, /_idbState==='init' \|\| \(typeof _lsDegraded==='function' && _lsDegraded\(\)\)\)\) return false;/);
+});
+
+test('P2-1 IndexedDB を読めなかった起動：このタブの読む前の書き込みは u に（送信待ちでなければ次も IndexedDB が勝つ）・前のタブの i はそのまま・IndexedDB の無い端末は印を消す', async () => {
+  const dev = device({ ls: { spl_prev: big(5, 'p') } }); await seedDisk(dev.factory, { spl_i: big(5, 'old'), spl_prev: big(5, 'idbp') });
+  dev.ls.set('_lsj:spl_prev', 'i' + tab(device({ idb: false }))._lsFp(big(5, 'p')));   // 前に閉じたタブの読む前の書き込み
   const a = tab(dev, x => { x._idbLoadAll = () => Promise.resolve(null); });
   a._lsWriteVerified('spl_i', big(5, 'init'));   // 読む前
   await ready(a);
   assert.equal(dev.ls.get('_lsj:spl_i').charAt(0), 'u');
+  assert.equal(dev.ls.get('_lsj:spl_prev').charAt(0), 'i');
   const b = tab(dev); await ready(b);
-  assert.equal(b._lsStoreGet('spl_i'), big(5, 'init'));
+  assert.equal(b._lsStoreGet('spl_i'), big(5, 'old'));
+  assert.equal(b._lsStoreGet('spl_prev'), big(5, 'idbp'));
   const d2 = device({ idb: false }); const c = tab(d2);
   c._lsWriteVerified('spl_x', '1'); await ready(c);
   assert.equal([...d2.ls.keys()].some(k => k.startsWith('_lsj:')), false);
@@ -469,4 +547,13 @@ test('P3 Drive の連携の戻り・前の運用キーの送り直しは Indexed
   assert.match(source, /setTimeout\(function\(\)\{ Promise\.resolve\(_idbBootP\)\.then\(function\(\)\{ try\{ checkDriveOAuthReturn\(\);/);
   assert.match(fn('migrateUploadLocalOps'), /lsKeys\(\)\.forEach/);
   assert.doesNotMatch(fn('migrateUploadLocalOps'), /localStorage\.key\(/);
+});
+
+test('P3-6（2 回目）つなぎが切れていても、ふだんの書き出しでつなぎ直して書く（写しが積もらない）', async () => {
+  const dev = device(); const c = tab(dev); await ready(c); await wait(20);
+  try { c._idbDB.close(); } catch (e) { } c._idbDB = null;   // iOS で切れた
+  c._lsWriteVerified('spl_re', '"x"');
+  await wait(400);
+  assert.equal((await disk(dev.factory)).get('spl_re'), '"x"');
+  assert.equal(dev.ls.has('spl_re'), false);
 });
