@@ -100,3 +100,5 @@ CEO・GM は今までどおり（確かめなし）。それ以外：
 - `tests/secure-cs-client.test.mjs`：アプリの本物の取り込み・送信・1 つの行・履歴・書く前の確かめを VM で。v1139 の関数（入れる一式の 1 ファイル）では今までどおり REST。店のログイン・ログアウト・範囲を決められないとき。
 - `tests/secure-cs-rls.test.mjs`：本物の PostgreSQL（PGlite）で SQL（v1139 のあと・RLS OFF・ON から）・2 回・確かめの SQL（穴があれば NG）・戻す・SQL と関数の決まりが同じ。
 - `tests/secure-state-deploy.test.mjs`：入れる一式がリポジトリのファイルと同じ・v1139 の関数の 1 ファイルは sha256 で固定。
+- ブラウザ（Chromium・模擬サーバー・合成データ）：`tests/perf/cs-check.mjs`。模擬サーバーを `SS_REAL=1`（本物の関数 secure-state をつなぐ）・`RLS_CS=1`（公開の鍵では Career Score のキーを読めない＝SQL のあと）で動かし、GM（全部・画面が開く・公開の鍵で 0 行）・G3（自分の店の G1・G2 と自分だけ・端末にもそれだけ・「—」・範囲の外は書かない・画面が開く・ログアウトの片づけ）・スタッフ（自分だけ）。
+  模擬サーバーでは Office の画面のモジュールが動かず doLogout がその見張りで止まる（main でも同じ）ので、ログアウトの片づけは中で呼ぶ ssOnLogout を直接。

@@ -131,6 +131,7 @@ test('GM: every Career Score row (not history) comes from the function, none thr
   assert.deepEqual(local(c, 'tasks_all'), { a: { t: 1 } }, 'other rows still by REST');
   await pull(c);
   assert.equal(W.ssLast.cs.rows.length, 0, 'unchanged rows are skipped');
+  assert.equal(W.ssLast.rows.length, 0, 'the karte/bonus part too (its versions are still recorded)');
   W.set('lss_emp_Ben S2', { s: { 'A-1': 3 }, _at: 7 }, '2026-11-04T11:00:00.000000+00:00');
   await pull(c);
   assert.deepEqual(W.ssLast.cs.rows.map(r => r.key), ['lss_emp_Ben S2']);

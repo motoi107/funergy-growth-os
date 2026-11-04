@@ -333,7 +333,7 @@ export function createHandler(deps) {
         const x = obj(cfg[dept + '|' + (ag === 'G1-P' ? 'G1' : ag)]);
         if (x && !x._deleted) for (const f of ['csView', 'csEdit', 'csApprove']) if (Array.isArray(x[f])) cfgRoles.push(...x[f].filter(r => typeof r === 'string'));
       }
-      list.push({ id, name: e.name, store: String(e.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
+      list.push({ id, name: e.name, store: String(e.store || d.store || ''), support: support.filter(x => typeof x === 'string'), role, title, out, gS,
         top: !!mr || !!(c && c.role === 'am'), boss: mr === 'ceo' || mr === 'gm', confAm: !!(c && c.role === 'am'), cfgRoles });
     }
     return list;
