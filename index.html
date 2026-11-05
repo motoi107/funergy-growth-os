@@ -10664,6 +10664,16 @@ function _lsRerenderSoon(){
 }
 function _lsRequestDeferred(key){
   try{
+    /* v1142：不採用ログは関数 secure-state から（見られる範囲の分だけ）。関数が無い・前の版なら今までどおり REST */
+    if(typeof hrIsKey==='function' && hrIsKey(key) && hrRouted(key)){
+      if(_lsDeferReq[key]) return; _lsDeferReq[key]=1;
+      hrLoad(key).then(function(r){
+        if(r==='ok'){ _lsRerenderSoon(); return; }
+        if(r==='rest'){ delete _lsDeferReq[key]; _lsRequestDeferred(key); return; }
+        setTimeout(function(){ delete _lsDeferReq[key]; }, 30000);   /* 読めなかった：30 秒たったらまた読む */
+      }, function(){ setTimeout(function(){ delete _lsDeferReq[key]; }, 30000); });
+      return;
+    }
     if(_lsDeferReq[key]) return; _lsDeferReq[key]=1;
     if(typeof pullOpKey!=='function') return;
     Promise.resolve().then(function(){ return pullOpKey(key); })
@@ -11001,6 +11011,8 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
   if(typeof csLocalWriteOk==='function' && !csLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
+  /* v1142：採用・お悩み相談室は、関数で 1 件ずつ保存する（前の版の道で 1 行を丸ごと書かない） */
+  if(typeof hrLocalWriteOk==='function' && !hrLocalWriteOk(key)) return false;
   /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
      重ねられなかったときは書かない（古い写しの表をそのまま書くと、退職した人が戻る） */
   if(key==='m_employees' && typeof _empOnLocalSave==='function'){ try{ val=_empOnLocalSave(val); }catch(e){ console.warn('emp save', e); try{ _lsNoteSaveFailure(key); }catch(_){} return false; } }
@@ -12083,7 +12095,8 @@ async function syncMasterToSupabase(key, val){
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
-    if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
+    if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }
+    if (typeof hrRouted==='function' && hrIsKey(key) && hrRouted(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1142：採用・お悩み相談室は REST で送らない（関数で 1 件ずつ。前の版の送れていない変更は hrPlace が控えに移す） */   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
     var _outVal = (typeof _opCloudVal==='function') ? _opCloudVal(key, val) : ((key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val);   /* v1128：人ごとに分けた行も */
     return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
@@ -12496,6 +12509,120 @@ function swRouted(key){
   var S=ssSess(); if(!S || ssLegacyNow(S) || swOldNow(S)) return false;
   return true;
 }
+/* ============================================================
+   v1142（段階 2b の 4 つ目）：採用（応募者・不採用ログ）とお悩み相談室（docs/SECURE_HR_V1142_JA.md）
+   ------------------------------------------------------------
+   【前】applicants・reject_log・growthhub は app_state の 1 行（配列）で、公開の鍵でだれでも読めて書けた（応募者の名前・電話・メール・
+     不採用の理由、スタッフの相談の中身）。端末は 1 行を丸ごと送っていた（ほかの端末の変更を上書きする）。
+   【いま】読むのも書くのも関数 secure-state で。見られる範囲はサーバーが決め、範囲の分だけ返す（今の画面と同じ範囲。Moto さん 11/04）。
+     書くのは 1 件ずつ（足す・直す・不採用にする・相談・返信・状態・担当）。サーバーが行を読んでその 1 件だけを直す（一部だけの写しで全体を上書きしない）。
+     保存はクラウドに入ったときだけ「保存しました」。通信できなければ保存しない（入力は画面に残る）。
+     端末の写しは関数の答えだけ（REST の取り込みでは取らない）。ログインが変わったら、読み直すまで一覧を出さない。
+   【関数が前の版】答えに hrfn:1 が無ければ、今までどおり REST（公開の鍵）で。公開の鍵から外すのは、全部の端末を 1142 にしたあとの SQL（20261111090000）。 */
+var HR_KEYS = { applicants:1, reject_log:1, growthhub:1 };
+var HR_UNSENT_KEY = '_hr_unsent';   /* 前の版で送れていなかった採用・相談の変更の控え（新しい 3 件まで・この端末だけ） */
+var _hrMem = { at:{}, p:{}, lv:{} };  /* メモリだけ：読んだログイン（tid）と時刻・頼んでいる途中・範囲（all・scoped・none） */
+function hrIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(HR_KEYS, k); }
+function hrOldNow(S){ var L=_ss.hrOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+/* このキーを関数で読み書きするか（ログインの印があり、関数が無い・前の版と分かっていない） */
+function hrRouted(key){
+  if(key!==undefined && !hrIsKey(key)) return false;
+  var S=ssSess(); if(!S || ssLegacyNow(S) || hrOldNow(S)) return false;
+  return true;
+}
+function hrTid(tk){ tk=tk||ssToken(); return tk.g+'|'+tk.u+'|'+tk.st+'|'+tk.id; }
+/* 今のログインで関数から読めたか（読めるまで一覧を出さない：前の人の写し・前の版の全部の写しを見せない） */
+function hrReady(key){ var m=_hrMem.at[key]; return !!(m && m.tid===hrTid()); }
+/* この端末に置く（送らない）。前の版で送れていなかった変更は控えに移して外す */
+function hrPlace(key, value){
+  try{
+    if(ssPending(key)){
+      var txt=null; try{ txt=_lsStoreGet(key); }catch(e){}
+      var old=[]; try{ old=JSON.parse(localStorage.getItem(HR_UNSENT_KEY)||'[]'); }catch(e){ old=[]; }
+      try{ localStorage.setItem(HR_UNSENT_KEY, JSON.stringify((Array.isArray(old) ? old : []).concat([{ key:key, dropped:Date.now(), text:String(txt==null?'':txt).slice(0, 200000) }]).slice(-3))); }catch(e){}
+      try{ if(typeof _outboxRemove==='function') _outboxRemove(key); }catch(e){}
+      ssWarnOnce('hr_unsent_'+key, '前の版で送れていなかった採用・相談の変更は送りませんでした（この端末の「'+HR_UNSENT_KEY+'」に控え）。もう一度入力してください',
+        'An unsent hiring / consultation change from the previous version was not sent (a copy is kept on this device). Please enter it again.');
+    }
+  }catch(e){}
+  try{ if(_lsWriteVerified(key, JSON.stringify(Array.isArray(value) ? value : []))) _lsMarkFetched(key); }catch(e){}
+}
+/* 関数から読む。返す：'ok'／'rest'（今までどおり REST）／'stale'（頼んだあとにログインが変わった）／'fail' */
+async function hrLoad(key, force){
+  if(!hrRouted(key)) return 'rest';
+  var tk=ssToken(), tid=hrTid(tk), m=_hrMem.at[key];
+  if(!force && m && m.tid===tid && Date.now()-m.t<60000) return 'ok';
+  if(_hrMem.p[key] && _hrMem.p[key].tid===tid) return _hrMem.p[key].p;
+  var p=(async function(){
+    var r=await ssCall({ action:'hr_get', key:key, ms:30000 });
+    if(ssStale(tk)) return 'stale';
+    if(r.legacy || r.none) return 'rest';
+    if(!r.ok) return 'fail';
+    await ssIdbReady(); if(ssStale(tk)) return 'stale';
+    hrPlace(key, r.j.value);
+    _hrMem.at[key]={ tid:tid, t:Date.now() }; _hrMem.lv[key]=r.j.level;
+    return 'ok';
+  })();
+  _hrMem.p[key]={ tid:tid, p:p };
+  try{ return await p; } finally { if(_hrMem.p[key] && _hrMem.p[key].p===p) delete _hrMem.p[key]; }
+}
+/* 画面を描くときに呼ぶ：読めていなければ読みに行き、読めたら描き直す */
+var _hrEnsureAt = {};
+function hrEnsure(keys, page){
+  (keys||[]).forEach(function(k){
+    if(!hrRouted(k)) return;
+    var m=_hrMem.at[k], tid=hrTid();
+    if(m && m.tid===tid && Date.now()-m.t<60000) return;
+    if(_hrEnsureAt[k] && Date.now()-_hrEnsureAt[k]<5000) return;   /* 読めなかったときに描くたびに頼まない */
+    _hrEnsureAt[k]=Date.now();
+    hrLoad(k).then(function(r){
+      if(r==='ok' || r==='rest'){ delete _hrEnsureAt[k]; try{ if(typeof curPage!=='undefined' && curPage===page && typeof renderPage==='function') renderPage(page); }catch(e){} }
+    }, function(){});
+  });
+}
+/* 読めるまでの表示 */
+function hrWaitHtml(){
+  return '<div class="card" style="text-align:center;color:var(--muted);padding:22px;font-size:12px"><i class="ti ti-loader-2"></i> '
+    + ((typeof t==='function') ? t('サーバーから読み込んでいます…（読めないときは「最新に更新」）','Loading from the server… (if it does not load, refresh)') : 'サーバーから読み込んでいます…') + '</div>';
+}
+/* 1 件ずつ頼む。返す：{ok, j}／'rest'（今までどおり REST で）／{error, status, net} */
+async function hrDo(payload){
+  var tk=ssToken();
+  var r=await ssCall(Object.assign({ ms:30000 }, payload));
+  if(r.legacy || r.none) return 'rest';
+  if(ssStale(tk)) return { error:'stale' };
+  if(!r.ok) return { error:r.error || (r.net ? 'net' : ''), status:r.status || 0, net:!!r.net };
+  await ssIdbReady(); if(ssStale(tk)) return { error:'stale' };
+  if(payload.key && Array.isArray(r.j.value)){ hrPlace(payload.key, r.j.value); _hrMem.at[payload.key]={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv[payload.key]=r.j.level; }
+  if(r.j.reject_log && Array.isArray(r.j.reject_log.value)){ hrPlace('reject_log', r.j.reject_log.value); _hrMem.at.reject_log={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv.reject_log=r.j.reject_log.level; }
+  return { ok:true, j:r.j };
+}
+/* 断られた・保存できなかったときの文（保存していないことをはっきり言う） */
+function hrErrText(res){
+  var e=(res && res.error) || '';
+  var T=(typeof t==='function') ? t : function(a){ return a; };
+  if(res && res.net) return T('通信できませんでした。保存していません（入力はそのまま。つながってから、もう一度押してください）', 'Could not reach the server. Not saved (your input is kept — try again when online).');
+  if(e==='forbidden') return T('このアカウントでは、この操作はできません（見られる範囲の外です。保存していません）', 'This account cannot do this (outside what you can see). Not saved.');
+  if(e==='gone') return T('もうありません（ほかの端末で不採用・削除されたかもしれません）。最新を読み直しました', 'It is no longer there (maybe changed on another device). Reloaded the latest.');
+  if(e==='conflict') return T('ほかの端末と同時に保存しました。最新を読み直したので、もう一度押してください（保存していません）', 'Saved at the same time as another device. Reloaded — please try again (not saved).');
+  if(e==='bad_value') return T('入力の形が正しくありません（保存していません）', 'The input is not valid (not saved).');
+  if(e==='stale') return T('途中でログインが変わりました（保存していないかもしれません。開き直して確かめてください）', 'The login changed while saving (it may not be saved — please reopen and check).');
+  if(e==='unauthorized') return T('ログインを確かめられませんでした。ログインし直してください（保存していません）', 'Could not check your login. Please log in again (not saved).');
+  return T('保存できませんでした（サーバーのエラー）。もう一度押してください', 'Could not save (server error). Please try again.');
+}
+/* 端末の写しに書いてよいか（lsSet）。関数で読み書きしているあいだは、前の版の道（1 行を丸ごと送る）で書かない */
+var _hrWarned = 0;
+function hrLocalWriteOk(key){
+  if(!hrIsKey(key) || !hrRouted(key)) return true;
+  if(Date.now()-_hrWarned>15000){ _hrWarned=Date.now(); try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t('採用・相談の記録は、画面のボタンから保存してください（保存していません）','Save hiring / consultation records with the buttons on the screen (not saved).') : '採用・相談の記録は、画面のボタンから保存してください（保存していません）', 'warning'); }catch(e){} }
+  return false;
+}
+/* ログアウト：採用・相談の写しを残さない（次の人は読み直すまで見えない） */
+function hrOnLogout(){
+  _hrMem={ at:{}, p:{}, lv:{} }; _hrEnsureAt={};
+  try{ Object.keys(HR_KEYS).forEach(function(k){ if(!ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } try{ if(typeof _lsDeferReq!=='undefined') delete _lsDeferReq[k]; }catch(e){} }); }catch(e){}
+}
+function hrIdOk(id){ return typeof id==='string' && /^[A-Za-z0-9_-]{1,64}$/.test(id); }
 function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
 function ssLevelSet(v){
   var prev=ssLevelGet();
@@ -12587,6 +12714,7 @@ function ssOnLogout(){
   _ssGen++;   /* 頼んでいる途中の前の人の答えは、届いても置かない（ssStale） */
   try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
   try{ if(typeof csOnLogout==='function') csOnLogout(); }catch(e){}   /* v1140：Career Score も */
+  try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -12620,6 +12748,9 @@ async function ssCall(payload, retried){
   /* v1141：決めた人だけが書ける設定を扱う関数か（swfn:1）。前の版の関数なら、その設定は今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
   if(j.swfn===1) _ss.swOld=null;
   else { _ss.swOld={ id:S.id, at:Date.now() }; if(payload.key && swIsKey(payload.key)) return { legacy:true }; }
+  /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
+  if(j.hrfn===1) _ss.hrOld=null;
+  else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
   if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
   return { ok:true, j:j };
 }
@@ -12932,6 +13063,7 @@ async function _kvPullRows(force){
   var _stale=!!_ssr.stale || (typeof ssStale==='function' && ssStale(_tk));   /* 頼んだあとにログインが変わった：成長カルテ・賞与・Career Score は REST でも取らず、端末も変えない */
   var _ssOut=!_ssr.rest || _stale;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var _csOut=!!_ssr.cs || _stale;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
+  var _hrOut=_stale || (typeof hrRouted==='function' && hrRouted());   /* v1142：採用・お悩み相談室は関数から（画面を開いたときに読む）。REST では取らない */
   /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
   if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
@@ -12940,6 +13072,7 @@ async function _kvPullRows(force){
       var k=r.key;
       if(_ssOut && ssIsKey(k)) return;
       if(_csOut && csIsKey(k)) return;
+      if(_hrOut && hrIsKey(k)) return;   /* v1142 */
       ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
         if(!force && seen.rows[k]===r.v){ skip[k]=1; legacySkip++; } else need.push(k);
@@ -12971,6 +13104,7 @@ async function _kvPullRows(force){
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
     if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
     if(_csOut){ f+='&key=not.in.'+encodeURIComponent('('+CS_LEGACY.map(_kvQuote).join(',')+')'); CS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1140 */
+    if(_hrOut){ f+='&key=not.in.'+encodeURIComponent('('+Object.keys(HR_KEYS).map(_kvQuote).join(',')+')'); }   /* v1142 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
   if(!_stale && typeof ssStale==='function' && ssStale(_tk)) _stale=true;   /* REST を待つあいだにログインが変わった */
@@ -12986,6 +13120,7 @@ async function _kvPullRows(force){
   else if(Array.isArray(rows) && !_ssOut && typeof ssIsKey==='function' && rows.some(function(r){ return r && ssIsKey(r.key); }) && ssState()==='part'){
     await ssIdbReady(); ssFreshCleanup();   /* 今までどおり REST で、対象のキーの行が届いた（SQL の前）：同じく、置く直前に part の写しを消す */
   }
+  if(Array.isArray(rows) && _hrOut) rows=rows.filter(function(r){ return !(r && hrIsKey(r.key)); });   /* v1142：REST の採用・相談の行は使わない（まだ印を付ける前に外す） */
   if(Array.isArray(rows) && _ssOut && !_stale){
     rows=rows.filter(function(r){ return !(r && ssIsKey(r.key)); }).concat(_ssr.rows || []);   /* v1139：REST の対象のキーの行は使わない・関数の行（full）を足す */
     if(_ssr.full){ try{ Object.defineProperty(rows, '_ss', { value:{ ver:_ssr.ver || {} }, enumerable:false }); }catch(e){} }   /* 印は取り込めた行だけ（ssSeenRecord）。見せる形（proj）は ssPull が記録した */
@@ -42919,7 +43054,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1141';
+const APP_VERSION = '1142';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -54687,7 +54822,11 @@ function renderCareerExplainShow(){
 function renderHiring() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">採用管理の閲覧権限がありません</div>';
   maybePullOnboardings();
-  var apps = visibleApplicants();
+  /* v1142：応募者・不採用ログは関数から（今のログインで読めるまで一覧を出さない） */
+  var _hrOn = (typeof hrRouted==='function' && hrRouted('applicants'));
+  if (_hrOn) hrEnsure(['applicants','reject_log'], 'hiring');
+  var _hrWait = _hrOn && !hrReady('applicants');
+  var apps = _hrWait ? [] : visibleApplicants();
   var obsP = ls('onboardings', []);
   var obPending = pendingOnboardOffice();
 
@@ -54725,7 +54864,7 @@ function renderHiring() {
   html += `</div></div>`;
 
   // ===== 採用 → オンボーディング を1画面に統合（タブ廃止） =====
-  html += renderHiringInner(apps);
+  html += _hrWait ? hrWaitHtml() : renderHiringInner(apps);
   html += renderRejectedList();
   html += `<div id="ob-section" class="section-header" style="margin-top:20px;border-top:1px solid var(--border);padding-top:14px">
     <div><div class="section-title" style="font-size:16px"><i class="ti ti-school" style="color:var(--accent)"></i> オンボーディング</div>
@@ -54736,8 +54875,10 @@ function renderHiring() {
 }
 /* 過去の不採用者リスト（reject_log）。折りたたみ表示。 */
 function renderRejectedList(){
+  if (typeof hrRouted==='function' && hrRouted('reject_log') && !hrReady('reject_log')) return '';   /* v1142：読めるまで出さない */
   var log = (typeof getRejectLog==='function') ? getRejectLog() : [];
   if (!log.length) return '';
+  var E = escapeHtml;
   if (!window._showRejected) {
     return `<div class="card" style="padding:10px"><div onclick="window._showRejected=true;renderPage('hiring')" style="cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)"><i class="ti ti-user-x"></i> 過去の不採用者リスト (${log.length}) <i class="ti ti-chevron-right" style="margin-left:auto"></i></div></div>`;
   }
@@ -54745,12 +54886,12 @@ function renderRejectedList(){
     <button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="window._showRejected=false;renderPage('hiring')">閉じる</button></div>`;
   log.slice().reverse().forEach(function(r){
     html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="font-weight:600;font-size:13px">${r.name||'(無名)'} <span class="tag tag-red" style="font-size:9px">不採用</span></div>
-      <div style="font-size:11px;color:var(--muted)">${r.store||''}${r.applyDate?' · 応募 '+r.applyDate:''}${r.rejectDate?' · 不採用 '+r.rejectDate:''}</div>
-      <div style="font-size:11px;color:var(--red)">理由: ${r.reason||'—'}</div>
-      ${r.memo?`<div style="font-size:11px;color:var(--muted)">メモ: ${r.memo}</div>`:''}
-      ${(r.phone||r.email)?`<div style="font-size:10px;color:var(--muted)">${r.phone||''}${r.phone&&r.email?' · ':''}${r.email||''}</div>`:''}
-      ${r.by?`<div style="font-size:10px;color:var(--muted)">担当: ${r.by}</div>`:''}
+      <div style="font-weight:600;font-size:13px">${E(r.name||'(無名)')} <span class="tag tag-red" style="font-size:9px">不採用</span></div>
+      <div style="font-size:11px;color:var(--muted)">${E(r.store||'')}${r.applyDate?' · 応募 '+E(r.applyDate):''}${r.rejectDate?' · 不採用 '+E(r.rejectDate):''}</div>
+      <div style="font-size:11px;color:var(--red)">理由: ${E(r.reason||'—')}</div>
+      ${r.memo?`<div style="font-size:11px;color:var(--muted)">メモ: ${E(r.memo)}</div>`:''}
+      ${(r.phone||r.email)?`<div style="font-size:10px;color:var(--muted)">${E(r.phone||'')}${r.phone&&r.email?' · ':''}${E(r.email||'')}</div>`:''}
+      ${r.by?`<div style="font-size:10px;color:var(--muted)">担当: ${E(r.by)}</div>`:''}
     </div>`;
   });
   html += `<div style="font-size:11px;color:var(--muted);margin-top:6px">同じ人が再応募すると応募者一覧で警告表示されます。</div></div>`;
@@ -54784,32 +54925,33 @@ function renderHiringInner(apps) {
     var list = byStore[store] || [];
     if (!list.length) return;
     var color = (STORES.find(s=>s.brand===store||s.name===store)||{}).color || 'var(--muted)';
-    html += `<div class="card"><div class="card-title" style="color:${color}"><span class="store-dot" style="background:${color}"></span>${store} 応募者一覧 (${list.length})</div>`;
+    html += `<div class="card"><div class="card-title" style="color:${color}"><span class="store-dot" style="background:${color}"></span>${escapeHtml(store)} 応募者一覧 (${list.length})</div>`;
     list.forEach(c => {
       var sc = c.status==='採用'?'tag-green':c.status==='不採用'?'tag-red':'tag-gray';
-      var priorRejects = findPriorRejects(c).filter(r=>r.rejectDate!==c._justRejected);
+      var _hrE = escapeHtml;
+      var priorRejects = ((typeof hrRouted==='function' && hrRouted('applicants')) ? (Array.isArray(c._prior) ? c._prior : []) : findPriorRejects(c)).filter(r=>r.rejectDate!==c._justRejected);   /* v1142：全店の不採用ログから当たった分（サーバーが付ける） */
       var rehireWarn = (c.status==='応募中'||c.status==='新規応募'||c.status==='要確認') && priorRejects.length;
       html += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
         ${rehireWarn?`<div style="background:var(--red-bg,#fbeae8);border-radius:8px;padding:6px 8px;margin-bottom:6px;font-size:11px;color:var(--red)">
-          <b><i class="ti ti-alert-triangle"></i> 過去応募履歴あり</b>${priorRejects.slice(-1).map(r=>`<br>${r.rejectDate} 不採用 · 理由: ${r.reason}${r.memo?'<br>メモ: '+r.memo:''}`).join('')}</div>`:''}
+          <b><i class="ti ti-alert-triangle"></i> 過去応募履歴あり</b>${priorRejects.slice(-1).map(r=>`<br>${_hrE(r.rejectDate)} 不採用${r.store?' · '+_hrE(r.store):''} · 理由: ${_hrE(r.reason)}${r.memo?'<br>メモ: '+_hrE(r.memo):''}`).join('')}</div>`:''}
         <div style="display:flex;justify-content:space-between;align-items:flex-start">
-          <div><div style="font-weight:600;font-size:13px">${c.name} <span class="tag ${sc}" style="font-size:9px">${c.status==='新規応募'||c.status==='要確認'?'応募中':c.status}</span></div>
-            <div style="font-size:11px;color:var(--muted)">${c.pos||'ポジション未定'} · ${c.phone||'TEL無'} · ${c.email||'Email無'}</div>
-            <div style="font-size:11px;color:var(--muted)">応募 ${c.date}${c.source?' · '+c.source:''}</div>
-            ${c.skills?`<div style="font-size:11px;color:var(--muted)">スキル: ${c.skills}</div>`:''}
-            ${c.resumeName?`<div style="font-size:11px;color:var(--blue,#2e6fd6)"><i class="ti ti-file-text"></i> ${c.resumeName}</div>`:''}
-            ${c.memo?`<div style="font-size:11px;color:var(--accent2)">メモ: ${c.memo}</div>`:''}
-            ${c.status==='不採用'&&c.rejectReason?`<div style="font-size:11px;color:var(--red)">不採用理由: ${c.rejectReason}</div>`:''}
+          <div><div style="font-weight:600;font-size:13px">${_hrE(c.name)} <span class="tag ${sc}" style="font-size:9px">${_hrE(c.status==='新規応募'||c.status==='要確認'?'応募中':c.status)}</span></div>
+            <div style="font-size:11px;color:var(--muted)">${_hrE(c.pos||'ポジション未定')} · ${_hrE(c.phone||'TEL無')} · ${_hrE(c.email||'Email無')}</div>
+            <div style="font-size:11px;color:var(--muted)">応募 ${_hrE(c.date)}${c.source?' · '+_hrE(c.source):''}</div>
+            ${c.skills?`<div style="font-size:11px;color:var(--muted)">スキル: ${_hrE(c.skills)}</div>`:''}
+            ${c.resumeName?`<div style="font-size:11px;color:var(--blue,#2e6fd6)"><i class="ti ti-file-text"></i> ${_hrE(c.resumeName)}</div>`:''}
+            ${c.memo?`<div style="font-size:11px;color:var(--accent2)">メモ: ${_hrE(c.memo)}</div>`:''}
+            ${c.status==='不採用'&&c.rejectReason?`<div style="font-size:11px;color:var(--red)">不採用理由: ${_hrE(c.rejectReason)}</div>`:''}
           </div>
         </div>
-        <div class="approval-actions" style="margin-top:6px">
+        ${hrIdOk(c.id)?`<div class="approval-actions" style="margin-top:6px">
           <button class="btn btn-secondary btn-sm" onclick="openApplicantModal('${c.id}')"><i class="ti ti-edit"></i> 編集</button>
           ${c.status!=='採用'&&c.status!=='不採用'?`
             <button class="btn btn-success btn-sm" onclick="openHireModal('${c.id}')"><i class="ti ti-user-check"></i> 採用</button>
             <button class="btn btn-danger btn-sm" onclick="openRejectModal('${c.id}')"><i class="ti ti-user-x"></i> 不採用</button>`:''}
           ${c.status==='採用'&&!c.onboardId?`<button class="btn btn-primary btn-sm" onclick="startOnboardingFromApplicant('${c.id}')"><i class="ti ti-school"></i> Onboarding開始</button>`:''}
           ${c.status==='採用'&&c.onboardId?`<span class="tag tag-green" style="font-size:9px">Onboarding中</span>`:''}
-        </div>
+        </div>`:''}
       </div>`;
     });
     html += '</div>';
@@ -54822,35 +54964,39 @@ const APPLICANT_SOURCES = ['Indeed','紹介','再雇用','飛び込み','その�
 function openApplicantModal(id) {
   var apps = getApplicants();
   var a = id ? apps.find(x=>x.id===id) : {name:'',store:'未分類',pos:'',phone:'',email:'',date:todayISO(),memo:'',source:'Indeed',history:'',skills:'',resumeName:''};
+  if (!a) return;
+  if (id && !hrIdOk(id)) return;
+  var E = escapeHtml;   /* v1142：応募者の入力は画面に文字として出す */
+  _apRehireSeq++;
   openModal(`<div class="modal-title">${id?'応募者編集':'応募者を登録'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="ap-rehire-warn"></div>
-    <div class="form-group"><label class="form-label">氏名 *</label><input class="form-input" id="ap-name" value="${a.name||''}" oninput="apCheckRehire()"></div>
+    <div class="form-group"><label class="form-label">氏名 *</label><input class="form-input" id="ap-name" value="${E(a.name||'')}" oninput="apCheckRehire()"></div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">応募店舗 *</label>
-        <select class="form-select" id="ap-store">${applicantStores().map(s=>`<option ${a.store===s?'selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${a.pos||''}" placeholder="例: Server"></div>
+        <select class="form-select" id="ap-store">${applicantStores().map(s=>`<option value="${E(s)}" ${a.store===s?'selected':''}>${E(s)}</option>`).join('')}</select></div>
+      <div class="form-group"><label class="form-label">希望ポジション</label><input class="form-input" id="ap-pos" value="${E(a.pos||'')}" placeholder="例: Server"></div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="ap-phone" value="${a.phone||''}" oninput="apCheckRehire()"></div>
-      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="ap-email" value="${a.email||''}" oninput="apCheckRehire()"></div>
+      <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="ap-phone" value="${E(a.phone||'')}" oninput="apCheckRehire()"></div>
+      <div class="form-group"><label class="form-label">メールアドレス</label><input class="form-input" id="ap-email" value="${E(a.email||'')}" oninput="apCheckRehire()"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">応募経路</label>
         <select class="form-select" id="ap-source">${APPLICANT_SOURCES.map(s=>`<option ${a.source===s?'selected':''}>${s}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${a.date||''}"></div>
+      <div class="form-group"><label class="form-label">応募日</label><input class="form-input" id="ap-date" type="date" value="${E(a.date||'')}"></div>
     </div>
-    <div class="form-group"><label class="form-label">職歴</label><textarea class="form-textarea" id="ap-history" rows="2" placeholder="過去の勤務先・経験">${a.history||''}</textarea></div>
-    <div class="form-group"><label class="form-label">スキル</label><input class="form-input" id="ap-skills" value="${a.skills||''}" placeholder="例: 接客3年, 日英バイリンガル"></div>
+    <div class="form-group"><label class="form-label">職歴</label><textarea class="form-textarea" id="ap-history" rows="2" placeholder="過去の勤務先・経験">${E(a.history||'')}</textarea></div>
+    <div class="form-group"><label class="form-label">スキル</label><input class="form-input" id="ap-skills" value="${E(a.skills||'')}" placeholder="例: 接客3年, 日英バイリンガル"></div>
     <div class="form-group"><label class="form-label">レジュメPDF</label>
       <div style="display:flex;align-items:center;gap:8px">
         <input type="file" id="ap-resume" accept="application/pdf" style="font-size:12px" onchange="apResumePicked(this)">
-        <span id="ap-resume-name" style="font-size:11px;color:var(--muted)">${a.resumeName||'未添付'}</span>
+        <span id="ap-resume-name" style="font-size:11px;color:var(--muted)">${E(a.resumeName||'未添付')}</span>
       </div>
       <div style="font-size:10px;color:var(--muted);margin-top:2px">※ Indeedのレジュメを添付。氏名・連絡先は上のフォームに手入力してください（自動読取は将来対応）。</div>
     </div>
-    <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo" rows="2">${a.memo||''}</textarea></div>
+    <div class="form-group"><label class="form-label">メモ</label><textarea class="form-textarea" id="ap-memo" rows="2">${E(a.memo||'')}</textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-primary" onclick="saveApplicant('${id||''}')">保存</button></div>`);
+    <button class="btn btn-primary" id="ap-save-btn" onclick="saveApplicant('${id||''}')">保存</button></div>`);
   setTimeout(apCheckRehire, 100);
 }
 var _apResumeData = null;
@@ -54862,16 +55008,32 @@ function apResumePicked(input) {
   document.getElementById('ap-resume-name').textContent = f.name;
 }
 /* 入力中に過去不採用ログを照合して警告表示 */
+var _apRehireSeq = 0, _apRehireTm = null;
+function apRehireShow(el, priors){
+  if (!priors || !priors.length) { el.innerHTML=''; return; }
+  var last = priors[priors.length-1], E = escapeHtml;
+  el.innerHTML = `<div style="background:var(--red-bg,#fbeae8);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--red)">
+    <b><i class="ti ti-alert-triangle"></i> 過去に不採用の応募者と一致</b><br>${E(last.rejectDate)} 不採用 · ${E(last.store||'')}<br>理由: ${E(last.reason)}${last.memo?'<br>メモ: '+E(last.memo):''}</div>`;
+}
 function apCheckRehire() {
   var el = document.getElementById('ap-rehire-warn'); if(!el) return;
   var probe = {name:(document.getElementById('ap-name')||{}).value, phone:(document.getElementById('ap-phone')||{}).value, email:(document.getElementById('ap-email')||{}).value};
-  if (!probe.name && !probe.phone && !probe.email) { el.innerHTML=''; return; }
-  var priors = findPriorRejects(probe);
-  if (priors.length) {
-    var last = priors[priors.length-1];
-    el.innerHTML = `<div style="background:var(--red-bg,#fbeae8);border-radius:8px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:var(--red)">
-      <b><i class="ti ti-alert-triangle"></i> 過去に不採用の応募者と一致</b><br>${last.rejectDate} 不採用 · ${last.store||''}<br>理由: ${last.reason}${last.memo?'<br>メモ: '+last.memo:''}</div>`;
-  } else el.innerHTML='';
+  if (!probe.name && !probe.phone && !probe.email) { _apRehireSeq++; el.innerHTML=''; return; }
+  /* v1142：全店の不採用ログから当たった分だけをサーバーに聞く（端末には見られる範囲の分しか無い。Moto さん 11/04） */
+  if (typeof hrRouted==='function' && hrRouted('applicants')) {
+    var seq = ++_apRehireSeq, tk = ssToken();
+    if (_apRehireTm) clearTimeout(_apRehireTm);
+    _apRehireTm = setTimeout(function(){
+      ssCall({ action:'hr_match', name:String(probe.name||''), phone:String(probe.phone||''), email:String(probe.email||''), ms:15000 }).then(function(r){
+        if (seq!==_apRehireSeq || ssStale(tk)) return;
+        var el2 = document.getElementById('ap-rehire-warn'); if(!el2) return;
+        if (r.legacy || r.none) { apRehireShow(el2, findPriorRejects(probe)); return; }
+        if (r.ok && Array.isArray(r.j.matches)) apRehireShow(el2, r.j.matches);
+      }, function(){});
+    }, 400);
+    return;
+  }
+  apRehireShow(el, findPriorRejects(probe));
 }
 function saveApplicant(id) {
   var name=document.getElementById('ap-name').value.trim();
@@ -54885,9 +55047,14 @@ function saveApplicant(id) {
     skills:document.getElementById('ap-skills').value.trim(),
   };
   if (_apResumeData) data.resumeName = _apResumeData.name;
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrSaveApplicant(id, data); return; }   /* v1142：関数で 1 件ずつ */
+  saveApplicantRest(id, data);
+}
+/* 今までの保存（関数が前の版・ログインの印が無いとき） */
+function saveApplicantRest(id, data) {
   var apps = getApplicants();
   if (id) {
-    var a=apps.find(x=>x.id===id); Object.assign(a,data);
+    var a=apps.find(x=>x.id===id); if(!a) return; Object.assign(a,data);
     if (a.status==='要確認'||a.status==='新規応募') a.status='応募中';
   } else {
     apps.push(Object.assign({id:'a'+Date.now(), status:'応募中'}, data));
@@ -55110,14 +55277,14 @@ async function sendInviteServer(channel){
 /* ===== 採用: 配属情報を設定 → Onboarding開始 ===== */
 const REJECT_REASONS = ['勤務条件が合わない','希望シフトが合わない','経験・スキル不足','面接態度に懸念あり','連絡が取れない','過去に採用不可判断あり','その他'];
 function openHireModal(id) {
-  var a = getApplicants().find(x=>x.id===id); if(!a)return;
+  var a = getApplicants().find(x=>x.id===id); if(!a || !hrIdOk(id))return;
   var storeObj = STORES.find(s=>s.brand===a.store||s.name===a.store) || STORES[0];
-  openModal(`<div class="modal-title">採用 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  openModal(`<div class="modal-title">採用 — ${escapeHtml(a.name)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">採用情報を設定すると、そのままOnboardingが開始されます。</div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">配属店舗</label>
         <select class="form-select" id="hire-store">${STORES.map(s=>`<option value="${s.id}" ${s.id===storeObj.id?'selected':''}>${s.name}</option>`).join('')}</select></div>
-      <div class="form-group"><label class="form-label">ポジション</label><input class="form-input" id="hire-pos" value="${a.pos||''}" placeholder="例: Server"></div>
+      <div class="form-group"><label class="form-label">ポジション</label><input class="form-input" id="hire-pos" value="${escapeHtml(a.pos||'')}" placeholder="例: Server"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label class="form-label">時給 ($)</label><input class="form-input" id="hire-wage" type="number" inputmode="decimal" step="0.25" value="16"></div>
@@ -55128,25 +55295,28 @@ function openHireModal(id) {
     <div class="form-group"><label class="form-label">雇用区分</label>
       <select class="form-select" id="hire-emp">${EMP_DIVISIONS.map(d=>`<option>${d}</option>`).join('')}</select></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-success" onclick="confirmHire('${id}')"><i class="ti ti-user-check"></i> 採用してOnboarding開始</button></div>`);
+    <button class="btn btn-success" id="hire-go-btn" onclick="confirmHire('${id}')"><i class="ti ti-user-check"></i> 採用してOnboarding開始</button></div>`);
 }
 function confirmHire(id) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   var storeId=document.getElementById('hire-store').value;
-  var storeObj=STORES.find(s=>s.id===storeId)||STORES[0];
-  a.status='採用';
-  a.hirePos=document.getElementById('hire-pos').value.trim();
-  a.hireWage=parseFloat(document.getElementById('hire-wage').value)||16;
-  a.hireStart=document.getElementById('hire-start').value;
-  a.hireVisa=document.getElementById('hire-visa').value;
-  a.hireStore=storeId;
-  a.hireEmp=document.getElementById('hire-emp').value;
+  var f = { status:'採用', hirePos:document.getElementById('hire-pos').value.trim(), hireWage:parseFloat(document.getElementById('hire-wage').value)||16,
+    hireStart:document.getElementById('hire-start').value, hireVisa:document.getElementById('hire-visa').value, hireStore:storeId, hireEmp:document.getElementById('hire-emp').value };
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrConfirmHire(id, f); return; }   /* v1142 */
+  confirmHireRest(id, f);
+}
+function confirmHireRest(id, f) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
+  Object.assign(a, f);
   setApplicants(apps);
   closeModalDirect();
   startOnboardingFromApplicant(id);
 }
 /* 応募者情報をOnboardingへ引き継ぐ */
 function startOnboardingFromApplicant(id) {
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrStartOnboarding(id); return; }   /* v1142 */
+  startOnboardingRest(id);
+}
+function startOnboardingRest(id) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   if (a.onboardId) { showToast('既にOnboarding開始済みです','info'); goOnboarding(); return; }
   var storeId = a.hireStore || (STORES.find(s=>s.brand===a.store||s.name===a.store)||STORES[0]).id;
@@ -55165,28 +55335,32 @@ function startOnboardingFromApplicant(id) {
 }
 /* ===== 不採用: 理由入力 → ログ保存 ===== */
 function openRejectModal(id) {
-  var a = getApplicants().find(x=>x.id===id); if(!a)return;
-  openModal(`<div class="modal-title">不採用 — ${a.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
+  var a = getApplicants().find(x=>x.id===id); if(!a || !hrIdOk(id))return;
+  openModal(`<div class="modal-title">不採用 — ${escapeHtml(a.name)} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:8px">不採用理由はログに保存され、同じ人が再応募した際に警告表示されます。</div>
     <div class="form-group"><label class="form-label">不採用理由 *</label>
       <select class="form-select" id="rej-reason" onchange="rejToggleOther()">${REJECT_REASONS.map(r=>`<option>${r}</option>`).join('')}</select></div>
     <div class="form-group" id="rej-other-wrap" style="display:none"><label class="form-label">理由（自由入力）</label><input class="form-input" id="rej-other"></div>
     <div class="form-group"><label class="form-label">面接メモ</label><textarea class="form-textarea" id="rej-memo" rows="2"></textarea></div>
-    <div class="form-group"><label class="form-label">対応者</label><input class="form-input" id="rej-by" value="${(ROLE_CONFIG[curRole]||{}).name||curUserName||''}"></div>
+    <div class="form-group"><label class="form-label">対応者</label><input class="form-input" id="rej-by" value="${escapeHtml((ROLE_CONFIG[curRole]||{}).name||curUserName||'')}"></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">キャンセル</button>
-    <button class="btn btn-danger" onclick="confirmReject('${id}')"><i class="ti ti-user-x"></i> 不採用にする</button></div>`);
+    <button class="btn btn-danger" id="rej-go-btn" onclick="confirmReject('${id}')"><i class="ti ti-user-x"></i> 不採用にする</button></div>`);
 }
 function rejToggleOther() {
   var v=document.getElementById('rej-reason').value;
   document.getElementById('rej-other-wrap').style.display = (v==='その他')?'':'none';
 }
 function confirmReject(id) {
-  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   var reason=document.getElementById('rej-reason').value;
   if (reason==='その他') { var o=document.getElementById('rej-other').value.trim(); reason = o?('その他: '+o):'その他'; }
   var memo=document.getElementById('rej-memo').value.trim();
   var by=document.getElementById('rej-by').value.trim();
   var today=todayISO();
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrConfirmReject(id, { reason:reason, memo:memo, by:by, rejectDate:today }); return; }   /* v1142 */
+  confirmRejectRest(id, reason, memo, by, today);
+}
+function confirmRejectRest(id, reason, memo, by, today) {
+  var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   // 不採用ログ（過去の不採用者リスト）へ保存し、アクティブな応募者一覧からは削除
   addRejectLog({name:a.name, phone:a.phone, email:a.email, store:a.store, applyDate:a.date,
     rejectDate:today, reason:reason, memo:memo, by:by, resumeName:a.resumeName||''});
@@ -55199,7 +55373,97 @@ function confirmReject(id) {
 function updateApplicant(id, status) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   if (status==='不採用') { openRejectModal(id); return; }
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrPutApplicant(Object.assign({}, a, { status:status }), false).then(function(r){ if(r==='rest'){ var a2=getApplicants(); var x=a2.find(function(y){ return y.id===id; }); if(x){ x.status=status; setApplicants(a2); } } renderPage('hiring'); }); return; }   /* v1142 */
   a.status=status; setApplicants(apps); renderPage('hiring');
+}
+/* ===== v1142：採用の保存（関数 secure-state で 1 件ずつ。docs/SECURE_HR_V1142_JA.md） =====
+   クラウドに入ったときだけ「保存しました」。保存できなければ、入力の画面は閉じない（もう一度押せる） */
+var _hrBusy = false;
+function hrBtn(id, on){ try{ var b=document.getElementById(id); if(b) b.disabled=!!on; }catch(e){} }
+/* 1 件を送る。返す：'ok'／'rest'（今までどおり REST で）／'fail'（文は出した） */
+async function hrPutApplicant(rec, create){
+  rec=Object.assign({}, rec); delete rec._prior;
+  var res=await hrDo({ action:'hr_op', key:'applicants', op:'put', rec:rec, create:!!create });
+  if(res==='rest') return 'rest';
+  if(res.ok) return 'ok';
+  if(create && res.error==='conflict'){   /* 前に送った分が入っていた（答えが届かなかった）：読み直して同じ ID があれば保存できている */
+    if((await hrLoad('applicants', true))==='ok' && getApplicants().some(function(x){ return x && x.id===rec.id; })) return 'ok';
+  }
+  showToast(hrErrText(res), 'error');
+  if(res.error==='gone' || res.error==='conflict') hrLoad('applicants', true).then(function(){ try{ if(curPage==='hiring') renderPage('hiring'); }catch(e){} });
+  return 'fail';
+}
+async function hrSaveApplicant(id, data){
+  if(_hrBusy) return; _hrBusy=true; hrBtn('ap-save-btn', true);
+  try{
+    var base=id ? (getApplicants().find(function(x){ return x && x.id===id; }) || null) : null;
+    if(id && !base){ showToast(hrErrText({ error:'gone' }), 'warning'); return; }
+    var rec=id ? Object.assign({}, base, data) : Object.assign({ id:'a'+Date.now(), status:'応募中' }, data);
+    if(id && (rec.status==='要確認' || rec.status==='新規応募')) rec.status='応募中';
+    var r=await hrPutApplicant(rec, !id);
+    if(r==='rest'){ saveApplicantRest(id, data); return; }
+    if(r!=='ok') return;
+    _apResumeData=null;
+    closeModalDirect(); showToast('応募者を保存しました','success');
+    if(!getApplicants().some(function(x){ return x && x.id===rec.id; })) showToast('見られる範囲の外の店にしたので、この一覧からは外れました','info');
+    renderPage('hiring');
+  } finally { _hrBusy=false; hrBtn('ap-save-btn', false); }
+}
+async function hrConfirmHire(id, f){
+  if(_hrBusy) return; _hrBusy=true; hrBtn('hire-go-btn', true);
+  try{
+    var base=getApplicants().find(function(x){ return x && x.id===id; });
+    if(!base){ showToast(hrErrText({ error:'gone' }), 'warning'); return; }
+    var r=await hrPutApplicant(Object.assign({}, base, f), false);
+    if(r==='rest'){ confirmHireRest(id, f); return; }
+    if(r!=='ok') return;
+    closeModalDirect();
+  } finally { _hrBusy=false; hrBtn('hire-go-btn', false); }
+  hrStartOnboarding(id);
+}
+async function hrStartOnboarding(id){
+  var a=getApplicants().find(function(x){ return x && x.id===id; }); if(!a) return;
+  if(a.onboardId){ showToast('既にOnboarding開始済みです','info'); goOnboarding(); return; }
+  if(_hrBusy) return; _hrBusy=true;
+  try{
+    var storeId = a.hireStore || (STORES.find(s=>s.brand===a.store||s.name===a.store)||STORES[0]).id;
+    var storeObj = STORES.find(s=>s.id===storeId)||STORES[0];
+    /* 前に始めて、応募者に結べなかった Onboarding があればそれに結ぶ（2 つ作らない） */
+    var ex=(ls('onboardings', [])||[]).find(function(o){ return o && !o._deleted && o.applicantId===a.id && o.candId; });
+    var candId = ex ? ex.candId : createOnboarding({
+      applicantId:a.id, name:a.name, store:storeObj.id, storeName:storeObj.name,
+      pos:a.hirePos||a.pos||'', email:a.email, phone:a.phone,
+      wage:a.hireWage||16, division:a.hireEmp||'Part Time Crew',
+      plannedStart:a.hireStart||'', visaStatus:a.hireVisa||'',
+    });
+    var r=await hrPutApplicant(Object.assign({}, a, { onboardId:candId, status:'採用' }), false);
+    if(r==='rest'){
+      var apps=getApplicants(); var x=apps.find(function(y){ return y && y.id===id; });
+      if(x){ x.onboardId=candId; x.status='採用'; setApplicants(apps); }
+    } else if(r!=='ok'){
+      showToast('Onboarding は始めました（'+candId+'）。応募者の記録に結べませんでした。もう一度「Onboarding開始」を押すと、同じ Onboarding に結びます','warning');
+      renderPage('hiring'); return;
+    }
+    if(!ex){ try{ addNotif({ type:'onboard', title:'オンボーディング開始', text:(a.name+'（'+storeObj.name+'）の受け入れが始まりました').slice(0,140), toStore:storeObj.id, toRoles:['sl','am','gm'], page:'hiring', refId:candId }); }catch(e){} }
+    showToast(`${a.name}を採用。${candId} でOnboarding開始`,'success');
+    goOnboarding();
+  } finally { _hrBusy=false; }
+}
+async function hrConfirmReject(id, f){
+  if(_hrBusy) return; _hrBusy=true; hrBtn('rej-go-btn', true);
+  try{
+    var a=getApplicants().find(function(x){ return x && x.id===id; });
+    var res=await hrDo({ action:'hr_op', key:'applicants', op:'reject', id:id, reason:f.reason, memo:f.memo, by:f.by, rejectDate:f.rejectDate });
+    if(res==='rest'){ confirmRejectRest(id, f.reason, f.memo, f.by, f.rejectDate); return; }
+    if(!res.ok){
+      showToast(hrErrText(res), 'error');
+      if(res.error==='gone' || res.error==='conflict') hrLoad('applicants', true).then(function(){ try{ if(curPage==='hiring') renderPage('hiring'); }catch(e){} });
+      return;
+    }
+    closeModalDirect();
+    showToast(`${a ? a.name : ''}を不採用にしました（過去の不採用者リストへ移動）`,'info');
+    renderPage('hiring');
+  } finally { _hrBusy=false; hrBtn('rej-go-btn', false); }
 }
 
 /* ============================================================
@@ -84586,6 +84850,8 @@ function renderMypage() {
 
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
+  /* v1142：相談は関数から（今のログインで読めるまで出さない） */
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrEnsure(['growthhub'], (typeof curPage!=='undefined' ? curPage : '')); if (!hrReady('growthhub')) posts = []; }
   /* ★v995: フォームの入口に集約（Motoさん指示）。
      ★crew はお悩み相談室ページを開けないので、ここが現場スタッフの唯一の入口。
        v993 でページ側だけ直したときは、この人たちに何も届いていなかった。
@@ -96328,6 +96594,24 @@ function ghVoiceCard(mgr){
   return h;
 }
 var ghFilter = 'all';
+/* v1142：お悩み相談室の 1 つの操作を関数で（相談する・返信・状態・担当）。ok(p, j)：クラウドに入ったとき（p＝その相談の今の形）。
+   rest()：関数が前の版・ログインの印が無い（今までどおり）。保存できなければ文を出して画面は閉じない */
+async function hrGhOp(payload, ok, rest){
+  if (_hrBusy) return; _hrBusy=true; hrBtn('gh-reply-btn', true);
+  try{
+    var res=await hrDo(Object.assign({ action:'hr_op', key:'growthhub' }, payload));
+    if (res==='rest') { rest(); return; }
+    if (!res.ok) {
+      showToast(hrErrText(res), 'error');
+      if (res.error==='gone' || res.error==='conflict') hrLoad('growthhub', true).then(function(){ try{ if(curPage==='growthhub') renderPage('growthhub'); }catch(e){} });
+      return;
+    }
+    var pid = payload.op==='post' ? res.j.id : payload.id;
+    var p = (res.j.value||[]).find(function(x){ return x && x.id===pid; }) || {};
+    ok(p, res.j);
+    renderPage('growthhub');
+  } finally { _hrBusy=false; hrBtn('gh-reply-btn', false); }
+}
 /* 相談を見られる管理職か */
 function ghIsManager(){ return ['ceo','gm','office','am'].includes(curRole) || isStoreManager(); }
 /* 管理職が見られる投稿スコープ（店舗ID配列 or null=全店） */
@@ -96339,6 +96623,9 @@ function ghScopeStores(){
 }
 function renderGrowthHub() {
   var posts = ls('growthhub', []);
+  /* v1142：相談は関数から（見られる範囲の分と自分の相談だけ）。今のログインで読めるまで出さない */
+  var _hrWait = false;
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrEnsure(['growthhub'], 'growthhub'); if (!hrReady('growthhub')) { posts = []; _hrWait = true; } }
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var html = `<div class="section-header">
@@ -96364,7 +96651,8 @@ function renderGrowthHub() {
     });
     var openCount = visible.filter(p=>(p.status||'未対応')!=='解決').length;
     html += `<div class="phase-tabs">${statuses.map(s=>`<div class="phase-tab${ghFilter===s.id?' active':''}" onclick="setGHFilter('${s.id}')">${s.label}${s.id==='未対応'&&openCount?` <span style="background:var(--red);color:#fff;border-radius:8px;padding:0 5px;font-size:9px">${visible.filter(p=>(p.status||'未対応')==='未対応').length}</span>`:''}</div>`).join('')}</div>`;
-    if (!list.length) {
+    if (_hrWait) html += hrWaitHtml();
+    else if (!list.length) {
       html += `<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-mood-smile" style="font-size:32px;margin-bottom:8px;display:block"></i>${t('該当する相談はありません','No consultations found')}</div>`;
     } else {
       list.forEach(p=> html += ghPostCard(p, true));
@@ -96384,6 +96672,13 @@ function renderGrowthHub() {
 }
 /* 担当者の設定/解除。担当が決まると投稿者へ通知（v1088: 初動タスクは廃止） */
 function ghAssignMe(id, off){
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'assign', id:id, off:!!off, at:nowJP() }, function(p){
+    if(!off){ try{ addNotif({type:'consult', title:'相談の担当者が決まりました', text:((curUserName||'')+' が対応します: '+String(p.title||'').slice(0,80)), toUser:p.author, page:'growthhub', refId:id}); }catch(e){} }
+    showToast(off?'担当を外れました':'あなたが担当になりました（対応中に変更）','success');
+  }, function(){ ghAssignMeRest(id, off); }); return; }   /* v1142 */
+  ghAssignMeRest(id, off);
+}
+function ghAssignMeRest(id, off){
   var posts=ls('growthhub',[]); var p=posts.find(function(x){return x.id===id;}); if(!p) return;
   var me=curUserName||(ROLE_CONFIG[curRole]||{}).name;
   if(off){ p.assignee=''; }
@@ -96398,27 +96693,28 @@ function ghAssignMe(id, off){
 }
 /* 投稿カード。mgr=trueなら管理職操作（返信・ステータス）を表示 */
 function ghPostCard(p, mgr){
+  if (!p || !hrIdOk(String(p.id))) return '';   /* v1142：ボタンに入れる ID の形を決める */
   var st = p.status||'未対応';
   var stCol = st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
   var store = getStoresAll().find(s=>s.id===p.store);
   var html = `<div class="card">
     <div class="approval-header"><div>
-      <div class="approval-title">${p.title}</div>
-      <div class="approval-meta">${mgr?p.author+' · ':''}${store?store.name+' · ':''}${p.date}</div></div>
+      <div class="approval-title">${escapeHtml(p.title)}</div>
+      <div class="approval-meta">${mgr?escapeHtml(p.author)+' · ':''}${store?escapeHtml(store.name)+' · ':''}${escapeHtml(p.date)}</div></div>
       <span class="tag ${stCol}">${tStatus(st)}</span></div>
     ${mgr?`<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
       <i class="ti ti-user-shield" style="color:var(--accent)"></i>${t('担当','Assigned')}: ${p.assignee?`<b>${escapeHtml(p.assignee)}</b>`:'<span style="color:var(--red)">'+t('未定','Unassigned')+'</span>'}
       ${!p.assignee?`<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="ghAssignMe('${p.id}')"><i class="ti ti-hand-stop"></i> ${t('担当する','Take it')}</button>`
         :(p.assignee===(curUserName||(ROLE_CONFIG[curRole]||{}).name)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:10px" onclick="ghAssignMe('${p.id}', true)">${t('担当を外れる','Unassign')}</button>`:'')}
     </div>`:''}
-    <div style="font-size:13px;margin-top:8px;white-space:pre-wrap">${p.body}</div>`;
+    <div style="font-size:13px;margin-top:8px;white-space:pre-wrap">${escapeHtml(p.body)}</div>`;
   // スレッド（往復）
   (p.replies||[]).forEach(r=>{
     var fromMgr = r.byMgr;
     html += `<div style="display:flex;${fromMgr?'justify-content:flex-start':'justify-content:flex-end'};margin-top:8px">
       <div style="max-width:85%;background:${fromMgr?'var(--accent)14':'var(--surface2)'};border-radius:10px;padding:8px 11px;font-size:12px">
-        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${fromMgr?'<i class="ti ti-headset"></i> '+r.author:r.author} · ${r.date}</div>
-        <div style="white-space:pre-wrap">${r.text}</div></div></div>`;
+        <div style="font-size:10px;color:var(--muted);margin-bottom:2px">${fromMgr?'<i class="ti ti-headset"></i> '+escapeHtml(r.author):escapeHtml(r.author)} · ${escapeHtml(r.date)}</div>
+        <div style="white-space:pre-wrap">${escapeHtml(r.text)}</div></div></div>`;
   });
   // 操作
   if (mgr) {
@@ -96449,6 +96745,15 @@ function saveGHPost() {
   var title = document.getElementById('gh-title').value.trim();
   var body = document.getElementById('gh-body').value.trim();
   if (!title || !body) { alert(t('タイトルと内容を入力してください','Please enter a title and details')); return; }
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'post', title:title, body:body, date:todayJP() }, function(p, j){
+    var np=(j.value||[]).find(function(x){ return x && x.id===j.id; });
+    try{ if(np && np.store){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(np.title||'').slice(0,140), toStore:np.store, toRoles:['sl','am','gm'], page:'growthhub', refId:np.id }); } }catch(e){}
+    closeModalDirect();
+    showToast(t('相談を送信しました。管理者が確認します','Sent. A manager will review it'), 'success');
+  }, function(){ saveGHPostRest(title, body); }); return; }   /* v1142 */
+  saveGHPostRest(title, body);
+}
+function saveGHPostRest(title, body) {
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var emp = getEmployees().find(e=>e.name===me);
   var posts = ls('growthhub', []);
@@ -96467,11 +96772,24 @@ function openGHReply(pId) {
   openModal(`<div class="modal-title">${mgr?t('返信','Reply'):t('追記・返信','Add / reply')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">${t('メッセージ','Message')}</label><textarea class="form-textarea" id="gh-reply" style="min-height:100px" placeholder="${mgr?t('スタッフへの返信','Reply to staff'):t('追記や返信','Add or reply')}"></textarea></div>
     <div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">${t('キャンセル','Cancel')}</button>
-    <button class="btn btn-primary" onclick="saveGHReply('${pId}')">${t('送信','Send')}</button></div>`);
+    <button class="btn btn-primary" id="gh-reply-btn" onclick="saveGHReply('${pId}')">${t('送信','Send')}</button></div>`);
 }
 function saveGHReply(pId) {
   var text = document.getElementById('gh-reply').value.trim();
   if (!text) return;
+  var mgr = ghIsManager();
+  var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'reply', id:pId, text:text, author:(mgr ? ((ROLE_CONFIG[curRole]||{}).name||'管理者') : ''), date:todayJP() }, function(p, j){
+    try{
+      if(j.mgr){ addNotif({ type:'consult', title:t('相談に回答がありました','Your consultation got a reply'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); }
+      else if(p.store){ addNotif({ type:'consult', title:t('相談に返信がありました','A consultation got a reply'), text:(p.title||'').slice(0,140), toStore:p.store, toRoles:['sl','am','gm'], page:'growthhub', refId:p.id }); }
+    }catch(e){}
+    closeModalDirect();
+    showToast(t('送信しました','Sent'), 'success');
+  }, function(){ saveGHReplyRest(pId, text); }); return; }   /* v1142 */
+  saveGHReplyRest(pId, text);
+}
+function saveGHReplyRest(pId, text) {
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var posts = ls('growthhub', []);
@@ -96492,6 +96810,13 @@ function saveGHReply(pId) {
   renderPage('growthhub');
 }
 function ghSetStatus(pId, status){
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'status', id:pId, status:status }, function(p){
+    try{ if(status==='解決'){ addNotif({ type:'consult', title:t('相談が解決済みになりました','A consultation was marked resolved'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){}
+    showToast(curLang==='en'?tStatus(status):status+'にしました', status==='解決'?'success':'info');
+  }, function(){ ghSetStatusRest(pId, status); }); return; }   /* v1142 */
+  ghSetStatusRest(pId, status);
+}
+function ghSetStatusRest(pId, status){
   var posts = ls('growthhub', []);
   var p = posts.find(x=>x.id===pId);
   if (p){ p.status=status; lsSet('growthhub', posts); try{ if(status==='解決'){ addNotif({ type:'consult', title:t('相談が解決済みになりました','A consultation was marked resolved'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){} }
