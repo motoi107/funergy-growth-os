@@ -837,7 +837,7 @@ export function createHandler(deps) {
     if (!a.emp) return sc;
     const [es, st] = await Promise.all([
       rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,name,role,title,store,status,data'),
-      rest('stores?select=id,name,brand&limit=1000'),
+      rest('stores?select=id,name,brand,data&limit=1000'),
     ]);
     const e = Array.isArray(es) ? es[0] : null;
     if (!e) return sc;
@@ -852,8 +852,10 @@ export function createHandler(deps) {
     const labels = (ids, withName) => {
       const out = [];
       for (const s of S) if (ids.includes(String(s.id))) {
-        if (typeof s.brand === 'string' && s.brand.trim()) out.push(s.brand.trim());
-        if (withName && typeof s.name === 'string' && s.name.trim()) out.push(s.name.trim());
+        const sd = obj(s.data) || {};   // 列が空なら中身（data）の値（アプリは同じものを両方に書く）
+        const brand = typeof s.brand === 'string' && s.brand.trim() ? s.brand : sd.brand, name = typeof s.name === 'string' && s.name.trim() ? s.name : sd.name;
+        if (typeof brand === 'string' && brand.trim()) out.push(brand.trim());
+        if (withName && typeof name === 'string' && name.trim()) out.push(name.trim());
       }
       return [...new Set(out)];
     };

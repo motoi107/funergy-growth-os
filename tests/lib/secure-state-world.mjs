@@ -93,7 +93,7 @@ export function makeWorld(o = {}) {
     }
     if (p === '/rest/v1/stores') {
       if (W.storesDown) return J({ message: 'down' }, 500);
-      return J(W.stores.map(x => ({ id: x.id, name: x.name, brand: x.brand == null ? null : x.brand })));
+      return J(W.stores.map(x => ({ id: x.id, name: x.name == null ? null : x.name, brand: x.brand == null ? null : x.brand, data: x.data == null ? null : x.data })));
     }
     if (p === '/rest/v1/employees') {
       const sel = (q.get('select') || 'id,store').split(',');

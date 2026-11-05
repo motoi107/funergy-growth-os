@@ -355,3 +355,9 @@ test('a stored helper field (_prior) is never passed on as it is; a row that is 
     assert.equal(r.status, 500, key); assert.deepEqual(W2.get(key), { not: 'a list' }, key + ' unchanged');
   }
 });
+
+test('the store\'s brand and name come from the columns, or from data when the columns are empty (the app writes both)', async () => {
+  const { W, call, as } = setup({ stores: [{ id: 'S1', name: null, brand: null, data: { id: 'S1', name: 'Alpha Kaimuki', brand: 'Alpha' } }, { id: 'S2', name: 'Beta Ward', brand: 'Beta', data: { brand: 'Other' } }] });
+  assert.deepEqual(ids((await call({ action: 'hr_get', key: 'applicants', ...as('sm') })).j.value), ['a1', 'a4'], 'S1 from data: brand Alpha + name Alpha Kaimuki');
+  assert.deepEqual(ids((await call({ action: 'hr_get', key: 'applicants', ...as('sl') })).j.value), ['a2', 'a6'], 'S2: the column wins over data');
+});

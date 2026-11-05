@@ -6,8 +6,8 @@ union all
 select 2, 'v1139・v1140 の SQL（決まり ss_secret）', count(*)::text, case when count(*) = 1 then 'OK（入っている）' else 'info（まだ。v1142 の SQL が一緒に入れます）' end
   from pg_policies p where p.schemaname = 'public' and p.tablename = 'app_state' and p.policyname = 'ss_secret'
 union all
-select 3, '店の表（stores の id・name・brand）', (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stores' and column_name in ('id', 'name', 'brand'))::text || ' / 3 列',
-       case when (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stores' and column_name in ('id', 'name', 'brand')) = 3 then 'OK'
+select 3, '店の表（stores の id・name・brand・data）', (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stores' and column_name in ('id', 'name', 'brand', 'data'))::text || ' / 4 列',
+       case when (select count(*) from information_schema.columns where table_schema = 'public' and table_name = 'stores' and column_name in ('id', 'name', 'brand', 'data')) = 4 then 'OK'
             else 'STOP（関数は店の表で応募者の店を決めます。Claude に貼ってください）' end
 union all
 select 4, '応募者（applicants）', coalesce((select case when jsonb_typeof(s.value) = 'array' then jsonb_array_length(s.value)::text || ' 件・' else '形が違う（' || jsonb_typeof(s.value) || '）・' end
@@ -26,7 +26,8 @@ union all
 select 7, '店に当たらない応募者・不採用の記録（CEO・GM・経理にだけ見える）',
        (select count(*) from public.app_state s, jsonb_array_elements(case when jsonb_typeof(s.value) = 'array' then s.value else '[]'::jsonb end) x
          where s.key::text in ('applicants', 'reject_log')
-           and coalesce(btrim(x->>'store'), '') not in (select btrim(coalesce(st.brand, '')) from public.stores st union select btrim(coalesce(st.name, '')) from public.stores st union select '未分類'))::text,
+           and coalesce(btrim(x->>'store'), '') not in (select btrim(coalesce(nullif(btrim(st.brand), ''), st.data->>'brand', '')) from public.stores st
+                                                        union select btrim(coalesce(nullif(btrim(st.name), ''), st.data->>'name', '')) from public.stores st union select '未分類'))::text,
        'info'
 union all
 -- ID の形が合わない応募者・相談（英数字と _ - だけ・64 文字まで）：画面にボタンが出ない（直す・採用・不採用・返信ができない）

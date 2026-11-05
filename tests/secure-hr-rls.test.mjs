@@ -37,8 +37,9 @@ async function mkdb(initial) {
     grant select, insert, update, delete on public.app_state to anon, authenticated, service_role;
     create table public.manager_auth(user_id uuid primary key default gen_random_uuid(), role text, emp_id text);
     create table public.employees(id text primary key, name text, role text, title text, store text, support jsonb, status text, data jsonb);
-    create table public.stores(id text primary key, name text, brand text, am text, active boolean);
-    insert into public.stores values ('S1','Alpha Kaimuki','Alpha','Ami Area',true), ('S2','Beta Ward','Beta',null,true);`);
+    create table public.stores(id text primary key, name text, brand text, am text, active boolean, data jsonb);
+    insert into public.stores values ('S1','Alpha Kaimuki','Alpha','Ami Area',true,null), ('S2','Beta Ward','Beta',null,true,null),
+      ('S3',null,null,null,true,'{"name":"Nowhere Ward","brand":"Nowhere"}');   -- 列が空で中身（data）にだけブランドがある店`);
   const people = [['E-GM', 'Gabe GM', 'gm', 'General Manager', 'HQ', 'gm'], ['E-AM', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E-1', 'Kai One', 'crew', 'Crew', 'S1', null], ['E-OUT', 'Gone', 'crew', 'Crew', 'S1', null]];
   for (const [id, name, role, title, store, ma] of people) {
     await db.query(`insert into public.employees values($1,$2,$3,$4,$5,'[]'::jsonb,$6,'{}'::jsonb)`, [id, name, role, title, store, id === 'E-OUT' ? '退職' : '在籍']);
@@ -75,7 +76,7 @@ for (const initial of ['v1141', 'v1140', 'v1139', 'off', 'on']) {
     assert.match(pre.find(x => x.n === 2).ok, ['v1141', 'v1140', 'v1139'].includes(initial) ? /^OK/ : /^info/);
     assert.match(pre.find(x => x.n === 4).value, /^3 件・/); assert.equal(pre.find(x => x.n === 4).ok, 'info');
     assert.match(pre.find(x => x.n === 5).value, /^2 件・/); assert.match(pre.find(x => x.n === 6).value, /^2 件・/);
-    assert.equal(pre.find(x => x.n === 7).value, '2', 'Nowhere (applicant) and the empty store (reject)');
+    assert.equal(pre.find(x => x.n === 7).value, '1', 'the empty store (reject); Nowhere is the brand of S3 in data (the columns are empty)');
     assert.equal(pre.find(x => x.n === 8).value, '1', 'the applicant id with a space');
     assert.equal(pre.find(x => x.n === 9).value, '1', 'store S9 is not in the store table');
     assert.equal(pre.find(x => x.n === 10).value, '1', 'Gone is retired');
