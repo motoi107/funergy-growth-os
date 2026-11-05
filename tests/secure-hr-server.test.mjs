@@ -40,12 +40,14 @@ const ME = {
   of: { emp: 'E-OF', role: 'office', grade: 4, stores: [], am_stores: [], name: 'Ofelia' },
   oc: { emp: 'E-OC', role: 'office_crew', grade: 1, stores: [], am_stores: [], name: 'Oscar' },
   am: { emp: 'E-AM', role: 'am', grade: 5, stores: ['S2'], am_stores: ['S2', 'S4'], name: 'Amy Area' },
-  amu: { emp: 'E-AMU', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Una Unconf' },
-  g4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S2'], am_stores: [], name: 'Leo Four' },
-  sm: { emp: 'E-SM', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Sam Manager' },
-  sl: { emp: 'E-SL', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Sally Lead' },
-  g2: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S4'], am_stores: [], name: 'Gus Two' },
-  chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken' },
+  amu: { emp: 'E-AMU', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Una Unconf', confirmed: false },   // 写しが無い：whoami は G3 まで
+  g4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S2'], am_stores: [], name: 'Leo Four', confirmed: true },
+  g4u: { emp: 'E-4', role: 'staff', grade: 3, stores: ['S1', 'S2'], am_stores: [], name: 'Leo Four', confirmed: false },   // 確かめがまだの G4
+  sm: { emp: 'E-SM', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Sam Manager', confirmed: true },
+  smu: { emp: 'E-SM', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Manager', confirmed: false },     // 確かめがまだの店長
+  sl: { emp: 'E-SL', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Sally Lead', confirmed: true },
+  g2: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S4'], am_stores: [], name: 'Gus Two', confirmed: false },
+  chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken', confirmed: true },
   g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
   g1b: { emp: 'E-1B', role: 'staff', grade: 1, stores: ['S2'], am_stores: [], name: 'Bea One' },
   out: { emp: 'E-OUT', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Gone Lead' },
@@ -123,8 +125,10 @@ test('who sees which applicants and rejects (the screens of today; Moto 11/04)',
     of: [['a1', 'a2', 'a3', 'a4', 'a5', 'a6'], ['Old Beta', 'Old Unsorted', 'Rex Again'], 'all'],
     oc: [[], [], 'none'],                                            // 事務Crew：今の画面でも応募者は出ない
     am: [['a2', 'a3', 'a6'], ['Old Beta', 'Old Unsorted'], 'scoped'],   // 確かめた担当の店（S2 Beta・S4 は空のブランド）＋未分類
-    amu: [['a2', 'a3', 'a6'], ['Old Beta', 'Old Unsorted'], 'scoped'], // 確かめがまだの AM：配属の店＋未分類（G4 と同じ）
+    amu: [['a2', 'a6'], ['Old Beta'], 'scoped'],                      // 確かめがまだの AM：G3 と同じ（配属の店のブランドと店の名前。未分類は入らない）
     g4: [['a1', 'a3'], ['Old Unsorted', 'Rex Again'], 'scoped'],     // 配属の店（S1 Alpha）だけ＋未分類（応援の S2 は入れない）
+    g4u: [['a1', 'a4'], ['Rex Again'], 'scoped'],                    // 確かめがまだの G4：G3 と同じ
+    smu: [['a1', 'a4'], ['Rex Again'], 'scoped'],
     sm: [['a1', 'a4'], ['Rex Again'], 'scoped'],                    // 店長（SL）：自分の店のブランドと店の名前
     sl: [['a2', 'a6'], ['Old Beta'], 'scoped'],
     g2: [[], [], 'none'],                                            // S4 はブランドも名前も空でない：名前 Gamma
@@ -177,7 +181,8 @@ test('the rehire check at entry: matches from every store, only for people who c
 
 test('the consultation room: managers see their stores, everyone sees their own (the screen of today)', async () => {
   const { call, as } = setup();
-  const want = { gm: ['gh1', 'gh2', 'gh3'], of: ['gh1', 'gh2', 'gh3'], am: ['gh2', 'gh3'], g4: ['gh1'], sm: ['gh1'], sl: [], g1: ['gh1'], g1b: ['gh2'], g2: ['gh3'], chef: [], oc: [], amu: ['gh2'] };
+  const want = { gm: ['gh1', 'gh2', 'gh3'], of: ['gh1', 'gh2', 'gh3'], am: ['gh2', 'gh3'], g4: ['gh1'], sm: ['gh1'], sl: [], g1: ['gh1'], g1b: ['gh2'], g2: ['gh3'], chef: [], oc: [],
+    amu: [], g4u: [], smu: [] };   // 確かめがまだの AM・G4・店長は相談の管理者にならない（自分の相談だけ）
   for (const [who, list] of Object.entries(want)) {
     const r = await call({ action: 'hr_get', key: 'growthhub', ...as(who) });
     assert.deepEqual(ids(r.j.value), list, who);
@@ -199,19 +204,19 @@ test('add and edit an applicant: one record at a time; others are never overwrit
   r = await call({ action: 'hr_op', key: 'applicants', op: 'put', create: true, rec: { id: 'a2', name: 'Fake', store: 'Alpha', status: '応募中' }, ...as('sm') });
   assert.equal(r.status, 409); assert.equal(W.get('applicants').find(x => x.id === 'a2').name, 'Bob Beta');
   // 直す：見られる店の人だけ
-  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[0], memo: 'call back' }, ...as('sm') });
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[0], memo: 'call back' }, base: APPS[0], ...as('sm') });
   assert.equal(r.status, 200); assert.equal(W.get('applicants').find(x => x.id === 'a1').memo, 'call back');
-  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[1], store: 'Alpha', memo: 'grab' }, ...as('sm') });
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[1], store: 'Alpha', memo: 'grab' }, base: APPS[1], ...as('sm') });
   assert.equal(r.status, 403, 'a Beta applicant cannot be taken over by moving them'); assert.equal(W.get('applicants').find(x => x.id === 'a2').store, 'Beta');
   // 見られる店から別の店へ移す（担当の店の人）：できる
-  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[1], store: 'Alpha' }, ...as('am') });
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[1], store: 'Alpha' }, base: APPS[1], ...as('am') });
   assert.equal(r.status, 200); assert.equal(W.get('applicants').find(x => x.id === 'a2').store, 'Alpha');
   // もう無い人を直す：410（作らない）
-  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { id: 'zz', name: 'Ghost', store: 'Alpha', status: '応募中' }, ...as('sm') });
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { id: 'zz', name: 'Ghost', store: 'Alpha', status: '応募中' }, base: { id: 'zz', name: 'Ghost', store: 'Alpha', status: '要確認' }, ...as('sm') });
   assert.equal(r.status, 410); assert.ok(!W.get('applicants').some(x => x.id === 'zz'));
   // 同じ中身：書かない
   const before = W.log.length;
-  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[0], memo: 'call back' }, ...as('sm') });
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...APPS[0], memo: 'call back' }, base: APPS[0], ...as('sm') });
   assert.equal(r.status, 200); assert.equal(W.log.length, before, 'no write');
   // 応募者を見られない人は足せない・直せない
   for (const who of ['g1', 'chef', 'oc', 'out']) {
@@ -360,4 +365,74 @@ test('the store\'s brand and name come from the columns, or from data when the c
   const { W, call, as } = setup({ stores: [{ id: 'S1', name: null, brand: null, data: { id: 'S1', name: 'Alpha Kaimuki', brand: 'Alpha' } }, { id: 'S2', name: 'Beta Ward', brand: 'Beta', data: { brand: 'Other' } }] });
   assert.deepEqual(ids((await call({ action: 'hr_get', key: 'applicants', ...as('sm') })).j.value), ['a1', 'a4'], 'S1 from data: brand Alpha + name Alpha Kaimuki');
   assert.deepEqual(ids((await call({ action: 'hr_get', key: 'applicants', ...as('sl') })).j.value), ['a2', 'a6'], 'S2: the column wins over data');
+});
+
+test('writing yourself up in the employee table does not make you a manager (the confirmed copy decides; review P2-3)', async () => {
+  // Crew（E-1）が自分の行を役割 g4・店 S2・肩書き Store Manager に書き換えた。whoami は写しが無いので G3 まで・店は今の表
+  const { W, call, as } = setup({ pins: { ...Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), tself: { emp: 'E-1', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Kai One', confirmed: false } } });
+  W.emps = W.emps.map(e => (e.id === 'E-1' ? { ...e, role: 'g4', store: 'S2', title: 'Store Manager' } : e));
+  const gh = await call({ action: 'hr_get', key: 'growthhub', ...as('self') });
+  assert.deepEqual(ids(gh.j.value), ['gh1'], 'only their own consultation (not the S2 posts of others)');
+  assert.equal((await call({ action: 'hr_op', key: 'growthhub', op: 'status', id: 'gh2', status: '解決', ...as('self') })).status, 403);
+  assert.equal(W.get('growthhub').find(x => x.id === 'gh2').status, '未対応');
+  const ap = await call({ action: 'hr_get', key: 'applicants', ...as('self') });
+  assert.ok(!ap.j.value.some(x => x.store === '未分類'), 'no 未分類 (that is for confirmed G4 and AM)');
+  // G3 と同じ範囲（配属の店）までは、社員の表の書き換えで見える（残る限界・段階 (b) で閉じる）
+  assert.deepEqual(ids(ap.j.value), ['a2', 'a6']);
+  // whoami が（もし）G4 を返しても、確かめた写しが無ければ管理者にしない
+  const { W: W2, call: c2, as: a2 } = setup({ pins: { tself: { emp: 'E-1', role: 'staff', grade: 4, stores: ['S2'], am_stores: [], name: 'Kai One', confirmed: false } } });
+  W2.emps = W2.emps.map(e => (e.id === 'E-1' ? { ...e, role: 'g4', store: 'S2', title: 'Store Manager' } : e));
+  assert.deepEqual(ids((await c2({ action: 'hr_get', key: 'growthhub', ...a2('self') })).j.value), ['gh1']);
+  assert.ok(!(await c2({ action: 'hr_get', key: 'applicants', ...a2('self') })).j.value.some(x => x.store === '未分類'));
+});
+
+test('editing an applicant: only the fields this device changed; the same field changed elsewhere is a conflict (review P2-2)', async () => {
+  const { W, call, as } = setup();
+  const base = { ...APPS[0] };
+  // GM が採用にして Onboarding の印を付けた（店長の端末はまだ前の写し）
+  let r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, status: '採用', onboardId: 'C9' }, base, ...as('gm') });
+  assert.equal(r.status, 200);
+  // 店長が前の写しのままメモを直す：メモだけ重なる（状態・印は戻らない）
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, memo: 'call back', _prior: [{ x: 1 }] }, base: { ...base, _prior: [{ x: 1 }] }, ...as('sm') });
+  assert.equal(r.status, 200);
+  assert.deepEqual(W.get('applicants').find(x => x.id === 'a1'), { ...base, status: '採用', onboardId: 'C9', memo: 'call back' });
+  // 同じ欄（状態）を前の写しから別の値に：409（書かない）
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, status: '要確認' }, base, ...as('sm') });
+  assert.equal(r.status, 409); assert.equal(W.get('applicants').find(x => x.id === 'a1').status, '採用');
+  // 同じ値に変えていた：ぶつからない（書かない）
+  const before = W.log.length;
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, status: '採用' }, base, ...as('sm') });
+  assert.equal(r.status, 200); assert.equal(W.log.length, before);
+  // 欄を消す
+  const now = W.get('applicants').find(x => x.id === 'a1');
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: (({ memo, ...x }) => x)(now), base: now, ...as('sm') });
+  assert.equal(r.status, 200); assert.ok(!('memo' in W.get('applicants').find(x => x.id === 'a1')));
+  // base が無い・別の人：400
+  assert.equal((await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, memo: 'x' }, ...as('sm') })).status, 400);
+  assert.equal((await call({ action: 'hr_op', key: 'applicants', op: 'put', rec: { ...base, memo: 'x' }, base: { ...APPS[3] }, ...as('sm') })).status, 400);
+});
+
+test('posting or replying twice with the same send key (the first answer was lost): one post, one reply', async () => {
+  const { W, call, as } = setup();
+  const b = { action: 'hr_op', key: 'growthhub', op: 'post', title: 'T', body: 'B', cid: 'cid-123456', ...as('g1') };
+  const r1 = await call(b), r2 = await call(b);
+  assert.equal(r1.status, 200); assert.equal(r2.status, 200); assert.equal(r1.j.id, r2.j.id);
+  assert.equal(W.get('growthhub').filter(x => x.cid === 'cid-123456').length, 1);
+  // ほかの人が同じ印で送っても、その人の相談にはならない（別に足す）
+  const r3 = await call({ ...b, ...as('g1b') });
+  assert.notEqual(r3.j.id, r1.j.id);
+  const rp = { action: 'hr_op', key: 'growthhub', op: 'reply', id: 'gh1', text: 'ok', cid: 'rcid-1234', ...as('sm') };
+  await call(rp); await call(rp);
+  assert.equal(W.get('growthhub').find(x => x.id === 'gh1').replies.length, 1);
+  // 社員と結ばれていないメールのログインの GM も担当できる（名前は GM）
+  const { W: W2, call: c2, email } = setup({ mgr: { ...MGR, [U(1)]: { role: 'gm', emp_id: null } } });
+  const ra = await c2({ action: 'hr_op', key: 'growthhub', op: 'assign', id: 'gh2', at: 't' }, email('gm'));
+  assert.equal(ra.status, 200); assert.equal(W2.get('growthhub').find(x => x.id === 'gh2').assignee, 'GM');
+});
+
+test('a confirmed G4 who is a leader but not the store manager does not manage consultations (the title decides, as on the screen)', async () => {
+  const { W, call, as } = setup({ pins: { tlead: { emp: 'E-SL', role: 'staff', grade: 4, stores: ['S2'], am_stores: [], name: 'Sally Lead', confirmed: true } } });
+  assert.deepEqual(ids((await call({ action: 'hr_get', key: 'growthhub', ...as('lead') })).j.value), [], 'not a manager (Server Leader)');
+  W.emps = W.emps.map(e => (e.id === 'E-SL' ? { ...e, title: 'Store Manager' } : e));
+  assert.deepEqual(ids((await call({ action: 'hr_get', key: 'growthhub', ...as('lead') })).j.value), ['gh2'], 'the store manager of S2');
 });

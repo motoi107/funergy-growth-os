@@ -105,7 +105,9 @@ export function swShapeOk(key, value, cloud) {
 export const HR_KEYS = ['applicants', 'reject_log', 'growthhub'];
 export function hrIsKey(k) { return typeof k === 'string' && HR_KEYS.includes(k); }
 const HR_ALL = ['ceo', 'gm', 'office'];
+const HR_LABEL = { ceo: 'CEO', gm: 'GM', office: '経理' };
 const HR_UNSORTED = '未分類';
+const HR_CID_RE = /^[A-Za-z0-9_-]{6,64}$/;
 const AP_ACTIVE = ['応募中', '新規応募', '要確認'];
 const HR_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export function hrStr(v, max) { return typeof v === 'string' ? v.trim().slice(0, max) : (typeof v === 'number' && Number.isFinite(v) ? String(v).slice(0, max) : ''); }
@@ -133,6 +135,11 @@ export function hrApClean(rec) {
   if (typeof x.status !== 'string' || x.status.length > 40) return null;
   let s; try { s = JSON.stringify(x); } catch { return null; }
   if (s.length > 50000) return null;
+  return x;
+}
+export function hrApStrip(rec) {
+  const x = {};
+  if (rec && typeof rec === 'object' && !Array.isArray(rec)) for (const [k, v] of Object.entries(rec)) if (k.charAt(0) !== '_') x[k] = v;
   return x;
 }
 // 肩書きと役割からのグレード（SQL の wr_grade と同じ。大きいほう）
@@ -272,7 +279,8 @@ export function createHandler(deps) {
     const me = obj(j && j.me);
     if (!me || typeof me.emp !== 'string' || !me.emp || me.emp.length > 64) return { deny: 'pin' };
     const a = { via: 'pin', emp: me.emp, role: typeof me.role === 'string' ? me.role : '', grade: Number.isInteger(me.grade) ? me.grade : 0,
-      stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '' };   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
+      stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '',
+      confirmed: me.confirmed === true };   // v1142：GM・CEO が確かめた写しがあるか（G4・店長の範囲に要る）   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
     if (cache.size > 500) { for (const [k, v] of cache) if (!(v.exp > now())) cache.delete(k); if (cache.size > 500) cache.clear(); }
     cache.set(h, { a, exp: now() + 60000 });
     return a;
@@ -833,7 +841,7 @@ export function createHandler(deps) {
   // G3 以上の店は確かめた写しと今の社員の表の重なり（work-requests の whoami が決めた a.am・a.stores）を使う。
   async function hrScope(a) {
     const sc = { all: false, ap: [], gh: [], mgr: false, name: typeof a.name === 'string' ? a.name.trim() : '', store: '' };
-    if (HR_ALL.includes(a.role)) return { ...sc, all: true, mgr: true };
+    if (HR_ALL.includes(a.role)) return { ...sc, all: true, mgr: true, name: sc.name || HR_LABEL[a.role] };   // 社員と結ばれていないメールのログインも（担当の名前）
     if (!a.emp) return sc;
     const [es, st] = await Promise.all([
       rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,name,role,title,store,status,data'),
@@ -859,12 +867,15 @@ export function createHandler(deps) {
       }
       return [...new Set(out)];
     };
-    const own = a.stores.includes(home) ? [home] : [];                           // 自分の店（配属の店。確かめた店の中にあるときだけ）
+    const own = a.stores.includes(home) ? [home] : [];                           // 自分の店（配属の店。whoami の店の中にあるときだけ）
+    // G4・店長（Store Manager＝G4）の範囲は、GM・CEO が確かめた写しのある人だけ（社員の表の役割・肩書きは公開の鍵で書けるので、
+    // 確かめた写しの無い人のグレードは whoami が 3 までにする。独立レビュー 7e3f878 P2-3）。確かめがまだの AM・G4 は G3 と同じ（配属の店）
+    const g4ok = a.confirmed === true && Number(a.grade) >= 4;
     if (a.role === 'am') { sc.ap = [...labels(a.am, false), HR_UNSORTED]; sc.gh = [...a.am]; sc.mgr = true; }
-    else if (rr === 'g4' || rr === 'am') { sc.ap = [...labels(own, false), HR_UNSORTED]; sc.gh = own; sc.mgr = true; }   // アプリ：G4 は AM 扱い（担当＝配属の店）
-    else if (rr === 'sl' || rr === 'g2') {                                       // アプリ：G2 は SL 扱い。店長（SL・Store Manager）は相談も
+    else if ((rr === 'g4' || rr === 'am') && g4ok) { sc.ap = [...labels(own, false), HR_UNSORTED]; sc.gh = own; sc.mgr = true; }   // アプリ：G4 は AM 扱い（担当＝配属の店）
+    else if (rr === 'g4' || rr === 'am' || rr === 'sl' || rr === 'g2') {        // アプリ：G2 は SL 扱い。店長（SL・Store Manager）は相談も
       sc.ap = labels(own, true);
-      if (rr === 'sl' && title === 'Store Manager') { sc.gh = own; sc.mgr = true; }
+      if (rr === 'sl' && title === 'Store Manager' && g4ok) { sc.gh = own; sc.mgr = true; }
     }
     return sc;
   }
@@ -928,6 +939,8 @@ export function createHandler(deps) {
       if (op === 'put') {
         const rec = hrApClean(b.rec);
         if (!rec) throw bad();
+        const base = b.create === true ? null : hrApClean(b.base);                 // 直すときは、端末が読んだときの記録が要る
+        if (b.create !== true && (!base || base.id !== rec.id)) throw bad();
         // 足す・直すのは、応募者を見られる人（今の画面で一覧が出る人）だけ。応募店舗は今までどおりどの店でも選べる（見られない店にすると一覧から消える）
         if (!sc.all && !sc.ap.length) throw err('forbidden', 403);
         let created = false;
@@ -936,8 +949,18 @@ export function createHandler(deps) {
           if (i >= 0) {
             if (b.create === true) throw err('conflict', 409);                     // 新しく足すつもりが同じ ID：上書きしない（どの店の人かも言わない）
             if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);                 // 見られない店の応募者は書き換えない
-            if (canon(cur[i]) === canon(rec)) return undefined;
-            cur[i] = rec;
+            // 端末が読んだときの記録（base）と比べて、この端末が変えた欄だけを今の記録に重ねる。同じ欄をほかの端末も変えていたら 409
+            // （古い写しで、ほかの人が変えた状態・Onboarding の印を戻さない。独立レビュー 7e3f878 P2-2）
+            const cur0 = hrApStrip(cur[i]), next = { ...cur0 };
+            for (const k of new Set([...Object.keys(base), ...Object.keys(rec)])) {
+              if (canon(base[k]) === canon(rec[k])) continue;
+              if (canon(cur0[k]) !== canon(base[k]) && canon(cur0[k]) !== canon(rec[k])) throw err('conflict', 409);
+              if (rec[k] === undefined) delete next[k]; else next[k] = rec[k];
+            }
+            const merged = hrApClean(next);
+            if (!merged) throw bad();
+            if (canon(cur[i]) === canon(merged)) return undefined;
+            cur[i] = merged;
           } else {
             if (b.create !== true) throw err('gone', 410);                        // 直そうとした応募者がもう無い（ほかの端末で不採用にした など）
             cur.push(rec); created = true;
@@ -980,13 +1003,16 @@ export function createHandler(deps) {
     if (op === 'post') {
       const title = hrStr(b.title, 200), body = hrStr(b.body, 5000);
       if (!title || !body || !sc.name) throw err(sc.name ? 'bad_value' : 'forbidden', sc.name ? 400 : 403);
+      const cid = typeof b.cid === 'string' && HR_CID_RE.test(b.cid) ? b.cid : '';   // 同じ送信を 2 回押しても 1 つ（答えが届かなかったとき）
       let id = '';
       await hrRmw('growthhub', cur => {
+        const same = cid ? cur.find(p => obj(p) && p.cid === cid && p.author === sc.name) : null;
+        if (same) { id = String(same.id); return undefined; }
         let n = now();
         const ids = new Set(cur.map(p => obj(p) && String(p.id)));
         while (ids.has('gh' + n)) n++;
         id = 'gh' + n;
-        return cur.concat([{ id, title, body, author: sc.name, store: sc.store, date: hrStr(b.date, 40), status: '未対応', replies: [] }]);
+        return cur.concat([{ id, title, body, author: sc.name, store: sc.store, date: hrStr(b.date, 40), status: '未対応', replies: [], ...(cid ? { cid } : {}) }]);
       });
       return { ...(await hrView('growthhub', sc)), id };
     }
@@ -1003,7 +1029,9 @@ export function createHandler(deps) {
         const text = hrStr(b.text, 5000);
         if (!text) throw bad();
         mgrOut = mgr;
-        p.replies = (Array.isArray(p.replies) ? p.replies : []).concat([{ author: mgr ? (hrStr(b.author, 60) || sc.name || '管理者') : sc.name, byMgr: mgr, text, date: hrStr(b.date, 40) }]);
+        const cid = typeof b.cid === 'string' && HR_CID_RE.test(b.cid) ? b.cid : '';
+        if (cid && Array.isArray(p.replies) && p.replies.some(r => obj(r) && r.cid === cid)) return undefined;   // 同じ返信をもう一度（答えが届かなかった）
+        p.replies = (Array.isArray(p.replies) ? p.replies : []).concat([{ author: mgr ? (hrStr(b.author, 60) || sc.name || '管理者') : sc.name, byMgr: mgr, text, date: hrStr(b.date, 40), ...(cid ? { cid } : {}) }]);
         if (mgr && (p.status || '未対応') === '未対応') p.status = '対応中';
         return cur;
       }

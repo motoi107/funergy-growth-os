@@ -26,7 +26,7 @@ const HR = ['applicants', 'reject_log', 'growthhub'];
 const OTHER = ['tasks_all', 'onboardings', 'mileage_config', 'career_cfg', 'notifications', 'applicants_old'];
 const V = {
   applicants: [{ id: 'a1', name: 'Ann', store: 'Alpha', status: '応募中' }, { id: 'a 2', name: 'Bad Id', store: 'Nowhere', status: '応募中' }, { id: 'a3', name: 'U', store: '未分類', status: '要確認' }],
-  reject_log: [{ name: 'Rex', store: 'Beta', reason: 'r' }, { name: 'Lost', store: '', reason: 'r' }],
+  reject_log: [{ name: 'Rex', store: 'Beta', reason: 'r' }, { name: 'Lost', store: 'Closed Shop', reason: 'r' }],
   growthhub: [{ id: 'gh1', title: 't', author: 'Kai One', store: 'S1' }, { id: 'gh2', title: 't', author: 'Gone', store: 'S9' }],
 };
 
@@ -76,7 +76,7 @@ for (const initial of ['v1141', 'v1140', 'v1139', 'off', 'on']) {
     assert.match(pre.find(x => x.n === 2).ok, ['v1141', 'v1140', 'v1139'].includes(initial) ? /^OK/ : /^info/);
     assert.match(pre.find(x => x.n === 4).value, /^3 件・/); assert.equal(pre.find(x => x.n === 4).ok, 'info');
     assert.match(pre.find(x => x.n === 5).value, /^2 件・/); assert.match(pre.find(x => x.n === 6).value, /^2 件・/);
-    assert.equal(pre.find(x => x.n === 7).value, '1', 'the empty store (reject); Nowhere is the brand of S3 in data (the columns are empty)');
+    assert.equal(pre.find(x => x.n === 7).value, '1', 'the closed shop (reject); Nowhere is the brand of S3 in data (the columns are empty)');
     assert.equal(pre.find(x => x.n === 8).value, '1', 'the applicant id with a space');
     assert.equal(pre.find(x => x.n === 9).value, '1', 'store S9 is not in the store table');
     assert.equal(pre.find(x => x.n === 10).value, '1', 'Gone is retired');
@@ -98,7 +98,7 @@ for (const initial of ['v1141', 'v1140', 'v1139', 'off', 'on']) {
     assert.equal((await as(db, 'service_role', `update public.app_state set value = '[]' where key = 'growthhub'`)).affectedRows, 1);
     assert.deepEqual(keysOf(await as(db, 'anon', 'select key from public.app_state_index()')), [...OTHER].sort());
     const rows = await postRows(db);
-    assert.equal(rows.length, 13);
+    assert.equal(rows.length, 15);
     rows.filter(x => !/^info/.test(x.ok)).forEach(x => assert.match(x.ok, /^OK/, x.n + ' ' + x.what + ' ' + x.value));
     assert.equal(rows.find(x => x.n === 7).value, '3', 'the server key sees the three rows');
     assert.match(rows.find(x => x.n === 13).ok, initial === 'v1141' ? /^OK/ : /^info/);
@@ -145,4 +145,33 @@ test('the migration stops (changes nothing) when there is no app_state; RLS off 
   await assert.rejects(d2.exec(MIG), /STOP/);
   assert.equal((await d2.query(`select relrowsecurity r from pg_class where oid = 'public.app_state'::regclass`)).rows[0].r, false, 'nothing changed');
   await d2.close();
+});
+
+test('the checks work on a json column too, and the postcheck shows routes around the rules (definer functions, views)', async () => {
+  const db = await mkdb('v1141');
+  await db.exec('alter table public.app_state alter column value type json using value::json');
+  await db.exec(`insert into public.employees values('E-G4X','Gil Four','g4','Store Manager','S1','[]'::jsonb,'在籍','{}'::jsonb),
+    ('E-SMX','Sue Manager','sl','Store Manager','S2','[]'::jsonb,'在籍','{}'::jsonb), ('E-SLX','Lee Lead','sl','Server Leader','S2','[]'::jsonb,'在籍','{}'::jsonb)`);
+  const pre = (await db.query(PRE)).rows;
+  assert.equal(pre.find(x => x.n === 11).value, '3：Gil Four・Sue Manager・Una Unconf', 'G4 and store managers without a confirmed copy too (not the leader)');
+  assert.equal(pre.length, 12);
+  assert.match(pre.find(x => x.n === 4).value, /^3 件・/, 'json column: counted like jsonb');
+  assert.equal(pre.find(x => x.n === 8).value, '1');
+  await db.exec(MIG);
+  let rows = await postRows(db);
+  assert.equal(rows.length, 15);
+  rows.filter(x => !/^info/.test(x.ok)).forEach(x => assert.match(x.ok, /^OK/, x.n + ' ' + x.what + ' ' + x.value));
+  // 決まりを通らない道を作る：postcheck が名前を出す
+  await db.exec(`create function public.peek_state(k text) returns json language sql security definer set search_path = public as $$ select value from public.app_state where key = k $$;
+    grant execute on function public.peek_state(text) to anon;
+    create view public.state_view as select key, value from public.app_state;
+    grant select on public.state_view to anon;`);
+  assert.ok((await as(db, 'anon', `select public.peek_state('applicants') v`)).rows[0].v, 'the definer function does go around the rule');
+  rows = await postRows(db);
+  assert.match(rows.find(x => x.n === 14).ok, /^CHECK/); assert.match(rows.find(x => x.n === 14).value, /peek_state/);
+  assert.match(rows.find(x => x.n === 15).ok, /^CHECK/); assert.match(rows.find(x => x.n === 15).value, /state_view/);
+  await db.exec('alter view public.state_view set (security_invoker = true)');
+  rows = await postRows(db);
+  assert.match(rows.find(x => x.n === 15).ok, /^OK/, 'a security_invoker view follows the rules');
+  await db.close();
 });

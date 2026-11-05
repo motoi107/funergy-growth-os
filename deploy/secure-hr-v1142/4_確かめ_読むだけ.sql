@@ -85,5 +85,19 @@ select 7, 'サーバーの鍵・postgres で読める採用・相談の行（関
 insert into hr_chk
 select 13, 'v1141 の決まり（ss_guard_*：ガソリン代の単価・Score管理）', count(*)::text, case when count(*) = 3 then 'OK（入っている）' else 'info（v1141 の SQL がまだ）' end
   from pg_policies p where p.schemaname = 'public' and p.tablename = 'app_state' and p.policyname in ('ss_guard_ins', 'ss_guard_upd', 'ss_guard_del');
+-- 決まり（RLS）を通らない道：app_state を使う security definer の関数・view で、公開の鍵・ログインで呼べる／読めるもの（v1141 の 15・16 と同じ。v1142 は読むのも）
+insert into hr_chk
+select 14, 'app_state を使う security definer の関数で、公開の鍵・ログインで呼べるもの（決まりを通らない）', coalesce(string_agg(p.proname, ', ' order by p.proname), 'なし'),
+       case when count(*) = 0 then 'OK' else 'CHECK（名前を Claude に。採用・相談のキーを返さないか確かめます）' end
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prosecdef and p.prosrc ilike '%app_state%'
+   and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));
+insert into hr_chk
+select 15, 'app_state を使う view で、公開の鍵・ログインで読める・書けるもの（security_invoker でないもの）', coalesce(string_agg(c.relname, ', ' order by c.relname), 'なし'),
+       case when count(*) = 0 then 'OK' else 'CHECK（名前を Claude に）' end
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public' and c.relkind in ('v', 'm') and pg_get_viewdef(c.oid) ilike '%app_state%'
+   and not coalesce('security_invoker=true' = any(c.reloptions) or 'security_invoker=on' = any(c.reloptions), false)
+   and (has_table_privilege('anon', c.oid, 'select,insert,update,delete') or has_table_privilege('authenticated', c.oid, 'select,insert,update,delete'));
 select n, what, value, ok from hr_chk order by n;
 rollback;

@@ -10674,6 +10674,7 @@ function _lsRequestDeferred(key){
       }, function(){ setTimeout(function(){ delete _lsDeferReq[key]; }, 30000); });
       return;
     }
+    if(typeof hrIsKey==='function' && hrIsKey(key)) hrDropToRest(key);   /* v1142：REST で読む前に、関数から置いた写しを外す */
     if(_lsDeferReq[key]) return; _lsDeferReq[key]=1;
     if(typeof pullOpKey!=='function') return;
     Promise.resolve().then(function(){ return pullOpKey(key); })
@@ -12096,7 +12097,7 @@ async function syncMasterToSupabase(key, val){
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
     if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }
-    if (typeof hrRouted==='function' && hrIsKey(key) && hrRouted(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1142：採用・お悩み相談室は REST で送らない（関数で 1 件ずつ。前の版の送れていない変更は hrPlace が控えに移す） */   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
+    if (typeof hrRouted==='function' && hrIsKey(key) && (hrRouted(key) || hrSrcGet()[key])) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1142：採用・お悩み相談室は REST で送らない（関数で 1 件ずつ。前の版の送れていない変更は hrPlace が控えに移す） */   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
     var _outVal = (typeof _opCloudVal==='function') ? _opCloudVal(key, val) : ((key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val);   /* v1128：人ごとに分けた行も */
     return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
@@ -12299,7 +12300,7 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
       var _val=row.value;
       if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
-      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; if(okOut) okOut.push(row.key); }
+      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; if(okOut) okOut.push(row.key); if(typeof hrIsKey==='function' && hrIsKey(row.key)) hrRestPlaced(row.key); }
       else { _lsNoteSaveFailure(row.key); }
     }catch(e){}
   });
@@ -12527,25 +12528,75 @@ function hrOldNow(S){ var L=_ss.hrOld; return !!(L && S && L.id===S.id && Date.n
 /* このキーを関数で読み書きするか（ログインの印があり、関数が無い・前の版と分かっていない） */
 function hrRouted(key){
   if(key!==undefined && !hrIsKey(key)) return false;
-  var S=ssSess(); if(!S || ssLegacyNow(S) || hrOldNow(S)) return false;
+  /* 関数が前の版（hrfn が無い・関数が無い）と分かったときだけ REST に。PIN の確かめ先が一時的に答えない（503）だけでは切り替えない
+     （独立レビュー 7e3f878 P1-1：切り替えると、一部だけの写しを REST で丸ごと送りうる） */
+  var S=ssSess(); if(!S || hrOldNow(S)) return false;
+  return true;
+}
+/* 端末の写しがどこから来たか（この端末だけ・localStorage）：{ キー：{ lv, tid } }＝関数から置いた写し／{ need:1 }＝REST で読み直すまで使わない・書かない */
+var HR_SRC_KEY = '_hr_src';
+function hrSrcGet(){ try{ var o=JSON.parse(localStorage.getItem(HR_SRC_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function hrSrcSet(o){ try{ if(o && Object.keys(o).length) localStorage.setItem(HR_SRC_KEY, JSON.stringify(o)); else localStorage.removeItem(HR_SRC_KEY); }catch(e){} }
+function hrNeed(key){ var s=hrSrcGet()[key]; return !!(s && s.need); }
+/* 前の版で送れていなかった変更を控えに移して送信待ちから外す（この端末だけ・ログアウトで消す） */
+function hrStash(key){
+  if(!ssPending(key)) return;
+  var txt=null; try{ txt=_lsStoreGet(key); }catch(e){}
+  var old=[]; try{ old=JSON.parse(localStorage.getItem(HR_UNSENT_KEY)||'[]'); }catch(e){ old=[]; }
+  try{ localStorage.setItem(HR_UNSENT_KEY, JSON.stringify((Array.isArray(old) ? old : []).concat([{ key:key, dropped:Date.now(), text:String(txt==null?'':txt).slice(0, 200000) }]).slice(-3))); }catch(e){}
+  try{ if(typeof _outboxRemove==='function') _outboxRemove(key); }catch(e){}
+  ssWarnOnce('hr_unsent_'+key, '前の版で送れていなかった採用・相談の変更は送りませんでした（ログアウトまで、この端末の「'+HR_UNSENT_KEY+'」に控え）。もう一度入力してください',
+    'An unsent hiring / consultation change from the previous version was not sent (a copy is kept on this device until logout). Please enter it again.');
+}
+/* REST で読み書きする（関数が前の版・ログインの印が無い）とき：関数から置いた写し（一部だけかもしれない・前の人のもの）は使わず、REST で読み直すまで書かない */
+function hrDropToRest(key){
+  if(!hrIsKey(key)) return;
+  var src=hrSrcGet(), s=src[key];
+  if(!s || s.need) return;
+  hrStash(key);
+  try{ _lsRawDel(key); }catch(e){}
+  src[key]={ need:1, at:Date.now() }; hrSrcSet(src);
+}
+/* REST の取り込みでクラウドの行（全部）を置いた */
+function hrRestPlaced(key){ var src=hrSrcGet(); if(src[key]){ delete src[key]; hrSrcSet(src); } }
+/* 関数で読み書きしているとき（ログインのたび）：今のログインで関数から置いたもの以外の写し（前の版の全部の写し・前の人の写し）を消す */
+function hrSweep(){
+  var src=hrSrcGet(), tid=hrTid(), ch=false;
+  Object.keys(HR_KEYS).forEach(function(k){
+    var s=src[k], has=false; try{ has=_lsStoreGet(k)!=null; }catch(e){}
+    if(s && s.tid===tid && !s.need) return;
+    if(has){ hrStash(k); try{ _lsRawDel(k); }catch(e){} }
+    if(s){ delete src[k]; ch=true; }
+  });
+  if(ch) hrSrcSet(src);
+}
+/* 画面に端末の写しを出してよいか */
+function hrShow(key){
+  if(hrRouted(key)) return hrReady(key);
+  hrDropToRest(key); return !hrNeed(key);
+}
+/* REST の道で書く前に：写しが関数から来た・読み直していないなら書かない（知らせる） */
+function hrRestGate(keys){
+  var bad=false;
+  (keys||[]).forEach(function(k){ hrDropToRest(k); if(hrNeed(k)) bad=true; });
+  if(bad){
+    try{ showToast((typeof t==='function') ? t('採用・相談の記録をサーバーから読み直せていないので、保存していません（「最新に更新」してから、もう一度）','Hiring / consultation records could not be reloaded from the server — not saved (refresh, then try again)') : '採用・相談の記録をサーバーから読み直せていないので、保存していません', 'error'); }catch(e){}
+    try{ (keys||[]).forEach(function(k){ if(hrNeed(k) && typeof pullOpKey==='function') pullOpKey(k); }); }catch(e){}
+    return false;
+  }
   return true;
 }
 function hrTid(tk){ tk=tk||ssToken(); return tk.g+'|'+tk.u+'|'+tk.st+'|'+tk.id; }
 /* 今のログインで関数から読めたか（読めるまで一覧を出さない：前の人の写し・前の版の全部の写しを見せない） */
 function hrReady(key){ var m=_hrMem.at[key]; return !!(m && m.tid===hrTid()); }
 /* この端末に置く（送らない）。前の版で送れていなかった変更は控えに移して外す */
-function hrPlace(key, value){
-  try{
-    if(ssPending(key)){
-      var txt=null; try{ txt=_lsStoreGet(key); }catch(e){}
-      var old=[]; try{ old=JSON.parse(localStorage.getItem(HR_UNSENT_KEY)||'[]'); }catch(e){ old=[]; }
-      try{ localStorage.setItem(HR_UNSENT_KEY, JSON.stringify((Array.isArray(old) ? old : []).concat([{ key:key, dropped:Date.now(), text:String(txt==null?'':txt).slice(0, 200000) }]).slice(-3))); }catch(e){}
-      try{ if(typeof _outboxRemove==='function') _outboxRemove(key); }catch(e){}
-      ssWarnOnce('hr_unsent_'+key, '前の版で送れていなかった採用・相談の変更は送りませんでした（この端末の「'+HR_UNSENT_KEY+'」に控え）。もう一度入力してください',
-        'An unsent hiring / consultation change from the previous version was not sent (a copy is kept on this device). Please enter it again.');
-    }
-  }catch(e){}
-  try{ if(_lsWriteVerified(key, JSON.stringify(Array.isArray(value) ? value : []))) _lsMarkFetched(key); }catch(e){}
+function hrPlace(key, value, lv, tid){
+  try{ hrStash(key); }catch(e){}
+  var ok=false;
+  try{ ok=_lsWriteVerified(key, JSON.stringify(Array.isArray(value) ? value : [])); if(ok) _lsMarkFetched(key); }catch(e){}
+  /* 関数から置いた写しの印（REST に切り替わったとき、この写しを使わない・送らない） */
+  var src=hrSrcGet(); src[key]={ lv:lv || '', tid:tid || hrTid() }; hrSrcSet(src);
+  return ok;
 }
 /* 関数から読む。返す：'ok'／'rest'（今までどおり REST）／'stale'（頼んだあとにログインが変わった）／'fail' */
 async function hrLoad(key, force){
@@ -12559,7 +12610,7 @@ async function hrLoad(key, force){
     if(r.legacy || r.none) return 'rest';
     if(!r.ok) return 'fail';
     await ssIdbReady(); if(ssStale(tk)) return 'stale';
-    hrPlace(key, r.j.value);
+    hrPlace(key, r.j.value, r.j.level, tid);
     _hrMem.at[key]={ tid:tid, t:Date.now() }; _hrMem.lv[key]=r.j.level;
     return 'ok';
   })();
@@ -12570,7 +12621,14 @@ async function hrLoad(key, force){
 var _hrEnsureAt = {};
 function hrEnsure(keys, page){
   (keys||[]).forEach(function(k){
-    if(!hrRouted(k)) return;
+    if(!hrRouted(k)){
+      /* REST：関数から置いた写しは使わず、REST で読み直す（読めたら描き直す） */
+      hrDropToRest(k);
+      if(!hrNeed(k) || (_hrEnsureAt[k] && Date.now()-_hrEnsureAt[k]<30000) || typeof pullOpKey!=='function') return;
+      _hrEnsureAt[k]=Date.now();
+      Promise.resolve(pullOpKey(k)).then(function(){ if(!hrNeed(k)){ delete _hrEnsureAt[k]; try{ if(typeof curPage!=='undefined' && curPage===page && typeof renderPage==='function') renderPage(page); }catch(e){} } }, function(){});
+      return;
+    }
     var m=_hrMem.at[k], tid=hrTid();
     if(m && m.tid===tid && Date.now()-m.t<60000) return;
     if(_hrEnsureAt[k] && Date.now()-_hrEnsureAt[k]<5000) return;   /* 読めなかったときに描くたびに頼まない */
@@ -12589,22 +12647,22 @@ function hrWaitHtml(){
 async function hrDo(payload){
   var tk=ssToken();
   var r=await ssCall(Object.assign({ ms:30000 }, payload));
+  if(ssStale(tk)) return { error:'stale' };   /* 先に：ログインが変わったら、前の人の入力で REST の道に行かない（独立レビュー P3） */
   if(r.legacy || r.none) return 'rest';
-  if(ssStale(tk)) return { error:'stale' };
   if(!r.ok) return { error:r.error || (r.net ? 'net' : ''), status:r.status || 0, net:!!r.net };
   await ssIdbReady(); if(ssStale(tk)) return { error:'stale' };
-  if(payload.key && Array.isArray(r.j.value)){ hrPlace(payload.key, r.j.value); _hrMem.at[payload.key]={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv[payload.key]=r.j.level; }
-  if(r.j.reject_log && Array.isArray(r.j.reject_log.value)){ hrPlace('reject_log', r.j.reject_log.value); _hrMem.at.reject_log={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv.reject_log=r.j.reject_log.level; }
+  if(payload.key && Array.isArray(r.j.value)){ hrPlace(payload.key, r.j.value, r.j.level, hrTid(tk)); _hrMem.at[payload.key]={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv[payload.key]=r.j.level; }
+  if(r.j.reject_log && Array.isArray(r.j.reject_log.value)){ hrPlace('reject_log', r.j.reject_log.value, r.j.reject_log.level, hrTid(tk)); _hrMem.at.reject_log={ tid:hrTid(tk), t:Date.now() }; _hrMem.lv.reject_log=r.j.reject_log.level; }
   return { ok:true, j:r.j };
 }
 /* 断られた・保存できなかったときの文（保存していないことをはっきり言う） */
 function hrErrText(res){
   var e=(res && res.error) || '';
   var T=(typeof t==='function') ? t : function(a){ return a; };
-  if(res && res.net) return T('通信できませんでした。保存していません（入力はそのまま。つながってから、もう一度押してください）', 'Could not reach the server. Not saved (your input is kept — try again when online).');
+  if(res && res.net) return T('通信できませんでした（保存できたか確かめられません）。入力はそのまま。つながってから、もう一度押してください（同じものが 2 つ入ることはありません）', 'Could not reach the server (not sure it was saved). Your input is kept — press again when online (it will not be added twice).');
   if(e==='forbidden') return T('このアカウントでは、この操作はできません（見られる範囲の外です。保存していません）', 'This account cannot do this (outside what you can see). Not saved.');
   if(e==='gone') return T('もうありません（ほかの端末で不採用・削除されたかもしれません）。最新を読み直しました', 'It is no longer there (maybe changed on another device). Reloaded the latest.');
-  if(e==='conflict') return T('ほかの端末と同時に保存しました。最新を読み直したので、もう一度押してください（保存していません）', 'Saved at the same time as another device. Reloaded — please try again (not saved).');
+  if(e==='conflict') return T('ほかの端末で同じところが変わりました（同時の保存かもしれません）。最新を読み直したので、確かめてからもう一度押してください（保存していません）', 'The same part was changed on another device (or at the same time). Reloaded — check and try again (not saved).');
   if(e==='bad_value') return T('入力の形が正しくありません（保存していません）', 'The input is not valid (not saved).');
   if(e==='stale') return T('途中でログインが変わりました（保存していないかもしれません。開き直して確かめてください）', 'The login changed while saving (it may not be saved — please reopen and check).');
   if(e==='unauthorized') return T('ログインを確かめられませんでした。ログインし直してください（保存していません）', 'Could not check your login. Please log in again (not saved).');
@@ -12613,14 +12671,28 @@ function hrErrText(res){
 /* 端末の写しに書いてよいか（lsSet）。関数で読み書きしているあいだは、前の版の道（1 行を丸ごと送る）で書かない */
 var _hrWarned = 0;
 function hrLocalWriteOk(key){
-  if(!hrIsKey(key) || !hrRouted(key)) return true;
+  if(!hrIsKey(key)) return true;
+  if(!hrRouted(key)){
+    /* REST の道：関数から置いた写し（一部だけかもしれない）を元に丸ごと書かない。REST で読み直すまで書かない（独立レビュー P1-1） */
+    hrDropToRest(key);
+    if(!hrNeed(key)) return true;
+    if(Date.now()-_hrWarned>15000){ _hrWarned=Date.now(); try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t('採用・相談の記録をサーバーから読み直せていないので、保存していません','Hiring / consultation records are not reloaded yet — not saved') : '採用・相談の記録をサーバーから読み直せていないので、保存していません', 'warning'); }catch(e){} }
+    return false;
+  }
   if(Date.now()-_hrWarned>15000){ _hrWarned=Date.now(); try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t('採用・相談の記録は、画面のボタンから保存してください（保存していません）','Save hiring / consultation records with the buttons on the screen (not saved).') : '採用・相談の記録は、画面のボタンから保存してください（保存していません）', 'warning'); }catch(e){} }
   return false;
 }
 /* ログアウト：採用・相談の写しを残さない（次の人は読み直すまで見えない） */
 function hrOnLogout(){
   _hrMem={ at:{}, p:{}, lv:{} }; _hrEnsureAt={};
-  try{ Object.keys(HR_KEYS).forEach(function(k){ if(!ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } try{ if(typeof _lsDeferReq!=='undefined') delete _lsDeferReq[k]; }catch(e){} }); }catch(e){}
+  var src=hrSrcGet();
+  try{ Object.keys(HR_KEYS).forEach(function(k){
+    /* 関数から置いた写しは消す。前の版の送れていない変更（関数の前の写し）だけは残す（次のログインで控えに移す） */
+    if(src[k] || !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} }
+    try{ if(typeof _lsDeferReq!=='undefined') delete _lsDeferReq[k]; }catch(e){}
+  }); }catch(e){}
+  hrSrcSet({});
+  try{ localStorage.removeItem(HR_UNSENT_KEY); }catch(e){}   /* 控えも（共有の端末で次の人に残さない・独立レビュー P3） */
 }
 function hrIdOk(id){ return typeof id==='string' && /^[A-Za-z0-9_-]{1,64}$/.test(id); }
 function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
@@ -12731,7 +12803,13 @@ async function ssCall(payload, retried){
   catch(e){ if(tm) clearTimeout(tm); return { net:true, timeout:timed }; }
   var j=null; try{ j=await r.json(); }catch(e){ j=null; }
   if(tm) clearTimeout(tm);
-  if((r.status===404 && !(j && j.error)) || (r.status===503 && j && j.error==='auth_unavailable')){ _ss.legacy={ id:S.id, at:Date.now() }; return { legacy:true }; }
+  var _isHr = typeof payload.action==='string' && payload.action.indexOf('hr_')===0;
+  if((r.status===404 && !(j && j.error)) || (r.status===503 && j && j.error==='auth_unavailable')){
+    _ss.legacy={ id:S.id, at:Date.now() };
+    /* v1142：採用・お悩み相談室は、PIN の確かめ先が答えないだけなら失敗（REST に切り替えない）。関数が無いなら前の版と同じ */
+    if(_isHr){ if(r.status===503) return { status:503, error:'auth_unavailable' }; _ss.hrOld={ id:S.id, at:Date.now() }; }
+    return { legacy:true };
+  }
   /* メールのログインの期限切れ：1 回だけ取り替えてやり直す（PIN の印のあるときは PIN で決まるので取り替えない） */
   if(r.status===401 && !retried && !S.pin && S.em && S.em.refresh_token && typeof invInSessionRefresh==='function'){
     var ns=null; try{ ns=await invInSessionRefresh(S.em); }catch(e){ ns=null; }
@@ -12740,7 +12818,7 @@ async function ssCall(payload, retried){
   /* この関数の答えでない（ゲートウェイ・Verify JWT が ON・別の物が答えた）：関数が無いのと同じに（独立レビュー P2-1。断りも含めて関数の答えには fn:1） */
   if(!(j && j.fn===1)){
     if(r.status>=500) return { status:r.status, error:'' };   /* 関数が落ちた（入っている）：失敗（REST に切り替えない） */
-    _ss.legacy={ id:S.id, at:Date.now() }; return { legacy:true };
+    _ss.legacy={ id:S.id, at:Date.now() }; if(_isHr) _ss.hrOld={ id:S.id, at:Date.now() }; return { legacy:true };
   }
   /* v1140：Career Score を扱う関数か（csfn:1）。前の版の関数なら、Career Score の読み書きは REST に戻す */
   if(j.csfn===1) _ss.csOld=null;
@@ -13064,6 +13142,10 @@ async function _kvPullRows(force){
   var _ssOut=!_ssr.rest || _stale;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var _csOut=!!_ssr.cs || _stale;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _hrOut=_stale || (typeof hrRouted==='function' && hrRouted());   /* v1142：採用・お悩み相談室は関数から（画面を開いたときに読む）。REST では取らない */
+  if(typeof hrSweep==='function' && !_stale){
+    try{ if(_hrOut) hrSweep();   /* 前の版の全部の写し・前の人の写しを残さない（独立レビュー P2-5） */
+         else Object.keys(HR_KEYS).forEach(function(k){ hrDropToRest(k); }); }catch(e){}   /* REST：関数から置いた写しは使わず、REST の行で置き直す */
+  }
   /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
   if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
@@ -13099,12 +13181,12 @@ async function _kvPullRows(force){
     var ex=[];
     if(idx){ Object.keys(skip).forEach(function(k){ if(_SPLIT_KEYS && _SPLIT_KEYS[k]) ex.push(_kvQuote(k)); }); }
     try{ (_LS_ONDEMAND_KEYS||[]).forEach(function(k){ ex.push(_kvQuote(k)); }); }catch(e){}
+    if(_hrOut) Object.keys(HR_KEYS).forEach(function(k){ ex.push(_kvQuote(k)); });   /* v1142：採用・お悩み相談室は REST で取らない */
     var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
     try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
     if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
     if(_csOut){ f+='&key=not.in.'+encodeURIComponent('('+CS_LEGACY.map(_kvQuote).join(',')+')'); CS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1140 */
-    if(_hrOut){ f+='&key=not.in.'+encodeURIComponent('('+Object.keys(HR_KEYS).map(_kvQuote).join(',')+')'); }   /* v1142 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
   if(!_stale && typeof ssStale==='function' && ssStale(_tk)) _stale=true;   /* REST を待つあいだにログインが変わった */
@@ -14990,6 +15072,7 @@ async function pullOpKey(key, _noSs){
         }
       }
       _lsMarkFetched(key);   /* v721: 完全なデータを持ったので押し上げを許可する */
+      if(!_viaSs && typeof hrIsKey==='function' && hrIsKey(key)) hrRestPlaced(key);   /* v1142：REST でクラウドの行（全部）を置いた */
       try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
   }catch(e){}
   return false;
@@ -54823,9 +54906,8 @@ function renderHiring() {
   if (curRole==='crew') return '<div class="card" style="text-align:center;padding:30px;color:var(--muted)">採用管理の閲覧権限がありません</div>';
   maybePullOnboardings();
   /* v1142：応募者・不採用ログは関数から（今のログインで読めるまで一覧を出さない） */
-  var _hrOn = (typeof hrRouted==='function' && hrRouted('applicants'));
-  if (_hrOn) hrEnsure(['applicants','reject_log'], 'hiring');
-  var _hrWait = _hrOn && !hrReady('applicants');
+  if (typeof hrEnsure==='function') hrEnsure(['applicants','reject_log'], 'hiring');
+  var _hrWait = (typeof hrShow==='function') && !hrShow('applicants');   /* 関数から（REST のときは REST で読み直してから） */
   var apps = _hrWait ? [] : visibleApplicants();
   var obsP = ls('onboardings', []);
   var obPending = pendingOnboardOffice();
@@ -54875,7 +54957,7 @@ function renderHiring() {
 }
 /* 過去の不採用者リスト（reject_log）。折りたたみ表示。 */
 function renderRejectedList(){
-  if (typeof hrRouted==='function' && hrRouted('reject_log') && !hrReady('reject_log')) return '';   /* v1142：読めるまで出さない */
+  if (typeof hrShow==='function' && !hrShow('reject_log')) return '';   /* v1142：読めるまで出さない */
   var log = (typeof getRejectLog==='function') ? getRejectLog() : [];
   if (!log.length) return '';
   var E = escapeHtml;
@@ -54967,7 +55049,7 @@ function openApplicantModal(id) {
   if (!a) return;
   if (id && !hrIdOk(id)) return;
   var E = escapeHtml;   /* v1142：応募者の入力は画面に文字として出す */
-  _apRehireSeq++;
+  _apRehireSeq++; _apNewId = null;
   openModal(`<div class="modal-title">${id?'応募者編集':'応募者を登録'} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div id="ap-rehire-warn"></div>
     <div class="form-group"><label class="form-label">氏名 *</label><input class="form-input" id="ap-name" value="${E(a.name||'')}" oninput="apCheckRehire()"></div>
@@ -55000,6 +55082,7 @@ function openApplicantModal(id) {
   setTimeout(apCheckRehire, 100);
 }
 var _apResumeData = null;
+var _apNewId = null;   /* v1142：この画面で足す応募者の ID（押し直しても同じ） */
 function apResumePicked(input) {
   var f = input.files && input.files[0]; if(!f) return;
   if (f.type!=='application/pdf') { alert('PDFを選んでください'); input.value=''; return; }
@@ -55052,6 +55135,7 @@ function saveApplicant(id) {
 }
 /* 今までの保存（関数が前の版・ログインの印が無いとき） */
 function saveApplicantRest(id, data) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['applicants'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var apps = getApplicants();
   if (id) {
     var a=apps.find(x=>x.id===id); if(!a) return; Object.assign(a,data);
@@ -55305,6 +55389,7 @@ function confirmHire(id) {
   confirmHireRest(id, f);
 }
 function confirmHireRest(id, f) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['applicants'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   Object.assign(a, f);
   setApplicants(apps);
@@ -55317,6 +55402,7 @@ function startOnboardingFromApplicant(id) {
   startOnboardingRest(id);
 }
 function startOnboardingRest(id) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['applicants'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   if (a.onboardId) { showToast('既にOnboarding開始済みです','info'); goOnboarding(); return; }
   var storeId = a.hireStore || (STORES.find(s=>s.brand===a.store||s.name===a.store)||STORES[0]).id;
@@ -55360,6 +55446,7 @@ function confirmReject(id) {
   confirmRejectRest(id, reason, memo, by, today);
 }
 function confirmRejectRest(id, reason, memo, by, today) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['applicants','reject_log'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   // 不採用ログ（過去の不採用者リスト）へ保存し、アクティブな応募者一覧からは削除
   addRejectLog({name:a.name, phone:a.phone, email:a.email, store:a.store, applyDate:a.date,
@@ -55373,7 +55460,8 @@ function confirmRejectRest(id, reason, memo, by, today) {
 function updateApplicant(id, status) {
   var apps=getApplicants(); var a=apps.find(x=>x.id===id); if(!a)return;
   if (status==='不採用') { openRejectModal(id); return; }
-  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrPutApplicant(Object.assign({}, a, { status:status }), false).then(function(r){ if(r==='rest'){ var a2=getApplicants(); var x=a2.find(function(y){ return y.id===id; }); if(x){ x.status=status; setApplicants(a2); } } renderPage('hiring'); }); return; }   /* v1142 */
+  if (typeof hrRouted==='function' && hrRouted('applicants')) { hrPutApplicant(Object.assign({}, a, { status:status }), false, a).then(function(r){ if(r==='rest' && hrRestGate(['applicants'])){ var a2=getApplicants(); var x=a2.find(function(y){ return y.id===id; }); if(x){ x.status=status; setApplicants(a2); } } renderPage('hiring'); }); return; }   /* v1142 */
+  if (typeof hrRestGate==='function' && !hrRestGate(['applicants'])) return;
   a.status=status; setApplicants(apps); renderPage('hiring');
 }
 /* ===== v1142：採用の保存（関数 secure-state で 1 件ずつ。docs/SECURE_HR_V1142_JA.md） =====
@@ -55381,9 +55469,10 @@ function updateApplicant(id, status) {
 var _hrBusy = false;
 function hrBtn(id, on){ try{ var b=document.getElementById(id); if(b) b.disabled=!!on; }catch(e){} }
 /* 1 件を送る。返す：'ok'／'rest'（今までどおり REST で）／'fail'（文は出した） */
-async function hrPutApplicant(rec, create){
+async function hrPutApplicant(rec, create, base){
   rec=Object.assign({}, rec); delete rec._prior;
-  var res=await hrDo({ action:'hr_op', key:'applicants', op:'put', rec:rec, create:!!create });
+  var b=null; if(!create && base){ b=Object.assign({}, base); delete b._prior; }   /* 直すとき：読んだときの記録（サーバーは変えた欄だけを重ねる） */
+  var res=await hrDo({ action:'hr_op', key:'applicants', op:'put', rec:rec, create:!!create, base:b });
   if(res==='rest') return 'rest';
   if(res.ok) return 'ok';
   if(create && res.error==='conflict'){   /* 前に送った分が入っていた（答えが届かなかった）：読み直して同じ ID があれば保存できている */
@@ -55398,10 +55487,12 @@ async function hrSaveApplicant(id, data){
   try{
     var base=id ? (getApplicants().find(function(x){ return x && x.id===id; }) || null) : null;
     if(id && !base){ showToast(hrErrText({ error:'gone' }), 'warning'); return; }
-    var rec=id ? Object.assign({}, base, data) : Object.assign({ id:'a'+Date.now(), status:'応募中' }, data);
+    if(!id && !_apNewId) _apNewId='a'+Date.now();   /* 押し直しても同じ ID（答えが届かなかったとき 2 人にしない・独立レビュー P2-1） */
+    var rec=id ? Object.assign({}, base, data) : Object.assign({ id:_apNewId, status:'応募中' }, data);
     if(id && (rec.status==='要確認' || rec.status==='新規応募')) rec.status='応募中';
-    var r=await hrPutApplicant(rec, !id);
+    var r=await hrPutApplicant(rec, !id, base);
     if(r==='rest'){ saveApplicantRest(id, data); return; }
+    if(!id && r==='ok') _apNewId=null;
     if(r!=='ok') return;
     _apResumeData=null;
     closeModalDirect(); showToast('応募者を保存しました','success');
@@ -55414,7 +55505,7 @@ async function hrConfirmHire(id, f){
   try{
     var base=getApplicants().find(function(x){ return x && x.id===id; });
     if(!base){ showToast(hrErrText({ error:'gone' }), 'warning'); return; }
-    var r=await hrPutApplicant(Object.assign({}, base, f), false);
+    var r=await hrPutApplicant(Object.assign({}, base, f), false, base);
     if(r==='rest'){ confirmHireRest(id, f); return; }
     if(r!=='ok') return;
     closeModalDirect();
@@ -55436,8 +55527,9 @@ async function hrStartOnboarding(id){
       wage:a.hireWage||16, division:a.hireEmp||'Part Time Crew',
       plannedStart:a.hireStart||'', visaStatus:a.hireVisa||'',
     });
-    var r=await hrPutApplicant(Object.assign({}, a, { onboardId:candId, status:'採用' }), false);
+    var r=await hrPutApplicant(Object.assign({}, a, { onboardId:candId, status:'採用' }), false, a);
     if(r==='rest'){
+      if(!hrRestGate(['applicants'])) return;
       var apps=getApplicants(); var x=apps.find(function(y){ return y && y.id===id; });
       if(x){ x.onboardId=candId; x.status='採用'; setApplicants(apps); }
     } else if(r!=='ok'){
@@ -84851,7 +84943,7 @@ function renderMypage() {
   // 9. Growth Hub（My Page内に埋め込み）
   var posts = ls('growthhub', []);
   /* v1142：相談は関数から（今のログインで読めるまで出さない） */
-  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrEnsure(['growthhub'], (typeof curPage!=='undefined' ? curPage : '')); if (!hrReady('growthhub')) posts = []; }
+  if (typeof hrEnsure==='function') { hrEnsure(['growthhub'], (typeof curPage!=='undefined' ? curPage : '')); if (!hrShow('growthhub')) posts = []; }
   /* ★v995: フォームの入口に集約（Motoさん指示）。
      ★crew はお悩み相談室ページを開けないので、ここが現場スタッフの唯一の入口。
        v993 でページ側だけ直したときは、この人たちに何も届いていなかった。
@@ -84865,7 +84957,7 @@ function renderMypage() {
     html += `<div class="card"><div class="card-title" style="font-size:12.5px"><i class="ti ti-message-2" style="color:var(--muted)"></i>${t('これまでの相談','Past consultations')}</div>`;
     myPosts.forEach(p => {
       var st=p.status||'未対応'; var stc=st==='解決'?'tag-green':st==='対応中'?'tag-yellow':'tag-red';
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(p.title||'')}</div><span class="tag ${stc}">${tStatus(st)}</span></div>
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(p.title||'')}</div><span class="tag ${stc}">${escapeHtml(tStatus(st))}</span></div>
         ${(p.replies||[]).some(r=>r.byMgr)?`<div style="font-size:11px;color:var(--green);margin-top:4px"><i class="ti ti-message"></i> ${t('管理者から返信あり','Manager replied')}</div>`:'<div style="font-size:11px;color:var(--muted);margin-top:4px">'+t('確認待ち','Awaiting reply')+'</div>'}</div>`;
     });
     html += `<p style="font-size:10px;color:var(--muted);margin-top:6px">${t('★新しい相談は上のフォームからお願いします。','★Please use the form above for anything new.')}</p>`;
@@ -96625,7 +96717,7 @@ function renderGrowthHub() {
   var posts = ls('growthhub', []);
   /* v1142：相談は関数から（見られる範囲の分と自分の相談だけ）。今のログインで読めるまで出さない */
   var _hrWait = false;
-  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrEnsure(['growthhub'], 'growthhub'); if (!hrReady('growthhub')) { posts = []; _hrWait = true; } }
+  if (typeof hrEnsure==='function') { hrEnsure(['growthhub'], 'growthhub'); if (!hrShow('growthhub')) { posts = []; _hrWait = true; } }
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var html = `<div class="section-header">
@@ -96679,6 +96771,7 @@ function ghAssignMe(id, off){
   ghAssignMeRest(id, off);
 }
 function ghAssignMeRest(id, off){
+  if (typeof hrRestGate==='function' && !hrRestGate(['growthhub'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var posts=ls('growthhub',[]); var p=posts.find(function(x){return x.id===id;}); if(!p) return;
   var me=curUserName||(ROLE_CONFIG[curRole]||{}).name;
   if(off){ p.assignee=''; }
@@ -96701,7 +96794,7 @@ function ghPostCard(p, mgr){
     <div class="approval-header"><div>
       <div class="approval-title">${escapeHtml(p.title)}</div>
       <div class="approval-meta">${mgr?escapeHtml(p.author)+' · ':''}${store?escapeHtml(store.name)+' · ':''}${escapeHtml(p.date)}</div></div>
-      <span class="tag ${stCol}">${tStatus(st)}</span></div>
+      <span class="tag ${stCol}">${escapeHtml(tStatus(st))}</span></div>
     ${mgr?`<div style="display:flex;align-items:center;gap:8px;margin-top:6px;font-size:11px">
       <i class="ti ti-user-shield" style="color:var(--accent)"></i>${t('担当','Assigned')}: ${p.assignee?`<b>${escapeHtml(p.assignee)}</b>`:'<span style="color:var(--red)">'+t('未定','Unassigned')+'</span>'}
       ${!p.assignee?`<button class="btn btn-primary btn-sm" style="padding:2px 10px;font-size:10px" onclick="ghAssignMe('${p.id}')"><i class="ti ti-hand-stop"></i> ${t('担当する','Take it')}</button>`
@@ -96733,7 +96826,9 @@ function ghPostCard(p, mgr){
   return html;
 }
 function setGHFilter(f) { ghFilter = f; renderPage('growthhub'); }
+var _ghCid = null;   /* v1142：この画面の送信の印（答えが届かずに押し直しても 1 つ） */
 function openGHModal() {
+  _ghCid = null;
   openModal(`<div class="modal-title">${t('相談する','Ask')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:10px"><i class="ti ti-lock"></i> ${t('この相談は管理者だけが見ます。同僚には表示されません。','Only managers can see this. It is not shown to coworkers.')}</div>
     <div class="form-group"><label class="form-label">${t('タイトル','Title')}</label><input class="form-input" id="gh-title" placeholder="${t('例: シフトの相談、仕事の悩みなど','e.g. shift questions, work concerns')}"></div>
@@ -96745,15 +96840,19 @@ function saveGHPost() {
   var title = document.getElementById('gh-title').value.trim();
   var body = document.getElementById('gh-body').value.trim();
   if (!title || !body) { alert(t('タイトルと内容を入力してください','Please enter a title and details')); return; }
-  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'post', title:title, body:body, date:todayJP() }, function(p, j){
+  if (!_ghCid) _ghCid = 'c' + Date.now() + Math.random().toString(36).slice(2, 8);   /* 押し直しても同じ送信（2 つにしない） */
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'post', title:title, body:body, date:todayJP(), cid:_ghCid }, function(p, j){
     var np=(j.value||[]).find(function(x){ return x && x.id===j.id; });
-    try{ if(np && np.store){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(np.title||'').slice(0,140), toStore:np.store, toRoles:['sl','am','gm'], page:'growthhub', refId:np.id }); } }catch(e){}
+    _ghCid = null;
+    try{ if(np && np.store){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(np.title||'').slice(0,140), toStore:np.store, toRoles:['sl','am','gm'], page:'growthhub', refId:np.id }); }
+         else if(np){ addNotif({ type:'consult', title:t('新しい相談が届きました','New consultation received'), text:(np.title||'').slice(0,140), toRoles:['gm','am'], page:'growthhub', refId:np.id }); } }catch(e){}   /* 店の無い相談（本部の人）：前と同じく GM・AM へ */
     closeModalDirect();
     showToast(t('相談を送信しました。管理者が確認します','Sent. A manager will review it'), 'success');
   }, function(){ saveGHPostRest(title, body); }); return; }   /* v1142 */
   saveGHPostRest(title, body);
 }
 function saveGHPostRest(title, body) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['growthhub'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var emp = getEmployees().find(e=>e.name===me);
   var posts = ls('growthhub', []);
@@ -96768,6 +96867,7 @@ function saveGHPostRest(title, body) {
   renderPage('growthhub');
 }
 function openGHReply(pId) {
+  _ghCid = null;
   var mgr = ghIsManager();
   openModal(`<div class="modal-title">${mgr?t('返信','Reply'):t('追記・返信','Add / reply')} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <div class="form-group"><label class="form-label">${t('メッセージ','Message')}</label><textarea class="form-textarea" id="gh-reply" style="min-height:100px" placeholder="${mgr?t('スタッフへの返信','Reply to staff'):t('追記や返信','Add or reply')}"></textarea></div>
@@ -96779,7 +96879,9 @@ function saveGHReply(pId) {
   if (!text) return;
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
-  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'reply', id:pId, text:text, author:(mgr ? ((ROLE_CONFIG[curRole]||{}).name||'管理者') : ''), date:todayJP() }, function(p, j){
+  if (!_ghCid) _ghCid = 'r' + Date.now() + Math.random().toString(36).slice(2, 8);
+  if (typeof hrRouted==='function' && hrRouted('growthhub')) { hrGhOp({ op:'reply', id:pId, text:text, author:(mgr ? ((ROLE_CONFIG[curRole]||{}).name||'管理者') : ''), date:todayJP(), cid:_ghCid }, function(p, j){
+    _ghCid = null;
     try{
       if(j.mgr){ addNotif({ type:'consult', title:t('相談に回答がありました','Your consultation got a reply'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); }
       else if(p.store){ addNotif({ type:'consult', title:t('相談に返信がありました','A consultation got a reply'), text:(p.title||'').slice(0,140), toStore:p.store, toRoles:['sl','am','gm'], page:'growthhub', refId:p.id }); }
@@ -96790,6 +96892,7 @@ function saveGHReply(pId) {
   saveGHReplyRest(pId, text);
 }
 function saveGHReplyRest(pId, text) {
+  if (typeof hrRestGate==='function' && !hrRestGate(['growthhub'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var mgr = ghIsManager();
   var me = curUserName || (ROLE_CONFIG[curRole]||{}).name;
   var posts = ls('growthhub', []);
@@ -96817,6 +96920,7 @@ function ghSetStatus(pId, status){
   ghSetStatusRest(pId, status);
 }
 function ghSetStatusRest(pId, status){
+  if (typeof hrRestGate==='function' && !hrRestGate(['growthhub'])) return;   /* v1142：関数から置いた写しを REST で丸ごと送らない（独立レビュー P1-1） */
   var posts = ls('growthhub', []);
   var p = posts.find(x=>x.id===pId);
   if (p){ p.status=status; lsSet('growthhub', posts); try{ if(status==='解決'){ addNotif({ type:'consult', title:t('相談が解決済みになりました','A consultation was marked resolved'), text:(p.title||'').slice(0,140), toUser:(p.author||''), page:'growthhub', refId:p.id }); } }catch(e){} }
