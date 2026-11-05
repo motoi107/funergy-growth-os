@@ -1,10 +1,11 @@
 // v1139（2b-1）の試験の土台：合成のクラウド（app_state の行・Auth・manager_auth・employees・work-requests の whoami）。
 // PostgREST は、アプリと関数 secure-state が使う問い合わせだけ答える偽物。rls を true にすると、公開の鍵（anon）は
 // 成長カルテ・賞与のキーの行を読めない・書けない（SQL 20261108090000 と同じ）。rlsCs も true にすると Career Score のキーも（v1140 の SQL 20261109090000）。
-// サーバーの鍵（service）は通る。
+// サーバーの鍵（service）は通る。rlsSw を true にすると、公開の鍵はガソリン代の単価・Score管理（v1141 の SQL 20261110090000）を読めるが書けない。
+// rlsHr を true にすると、公開の鍵は採用（応募者・不採用ログ）・お悩み相談室の行を読めない・書けない（v1142 の SQL 20261111090000）。stores は店の表。
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { ssIsKey, csIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { ssIsKey, csIsKey, swIsKey, hrIsKey } from '../../supabase/functions/secure-state/handler.mjs';
 
 export const URL0 = 'https://db.example.test';
 export const WR = URL0 + '/functions/v1/work-requests';
@@ -18,8 +19,8 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, ssHandler: null, ssDown: !!o.ssDown,
-    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
+    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
+    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
   W.get = key => { const r = W.rows.get(key); return r ? JSON.parse(r.value) : undefined; };
@@ -65,8 +66,9 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)));
-    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; };
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)));
+    const noWrite = key => role !== 'service' && W.rlsSw && swIsKey(key);   // v1141：読めるが書けない
+    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; };
     W.calls.rest++;
     const q = url.searchParams;
     if (p === '/rest/v1/rpc/app_state_index') {
@@ -88,6 +90,10 @@ export function makeWorld(o = {}) {
       const sel = (q.get('select') || 'emp_id,role,grade').split(',');
       const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade });
       return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+    }
+    if (p === '/rest/v1/stores') {
+      if (W.storesDown) return J({ message: 'down' }, 500);
+      return J(W.stores.map(x => ({ id: x.id, name: x.name == null ? null : x.name, brand: x.brand == null ? null : x.brand, data: x.data == null ? null : x.data })));
     }
     if (p === '/rest/v1/employees') {
       const sel = (q.get('select') || 'id,store').split(',');
@@ -127,7 +133,7 @@ export function makeWorld(o = {}) {
         W.calls.post++;
         const body = JSON.parse(opt.body);
         const list = Array.isArray(body) ? body : [body];
-        if (list.some(b => hide(b.key))) return J({ code: '42501', message: 'new row violates row-level security policy' }, 401);
+        if (list.some(b => hide(b.key) || noWrite(b.key))) return J({ code: '42501', message: 'new row violates row-level security policy' }, 401);
         const merge = String(h.prefer || '').includes('merge-duplicates');
         if (!merge && list.some(b => W.rows.has(b.key))) return J({ code: '23505', message: 'duplicate key' }, 409);
         const out = [];
@@ -145,7 +151,7 @@ export function makeWorld(o = {}) {
         const b = JSON.parse(opt.body);
         const key = q.get('key').replace(/^eq\./, ''), cond = q.get('updated_at');
         const r = W.rows.get(key);
-        if (!r || hide(key)) return J([]);
+        if (!r || hide(key) || noWrite(key)) return J([]);
         const ok = cond === 'is.null' ? r.updated_at == null : r.updated_at === cond.replace(/^eq\./, '');
         if (!ok) return J([]);
         anonCount(key);

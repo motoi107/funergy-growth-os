@@ -88,6 +88,10 @@ const appServer = http.createServer(async (req, res) => {
     res.writeHead(200); res.end(JSON.stringify({ RTT, BPS })); return;
   }
   if (u.pathname === '/__ss') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(mock.ss || {})); return; }   // v1140：関数を呼んだ回数・公開の鍵で渡った Career Score の行
+  if (u.pathname === '/__hr') {   // v1142：採用・お悩み相談室の行（合成データ・hr-check.mjs が確かめる）
+    const r = (mock.T.app_state || []).find(x => x.key === u.searchParams.get('key'));
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(r ? r.value : null)); return;
+  }
   if (u.pathname === '/__reset') { mock = createMock(JSON.parse(fs.readFileSync(DATA, 'utf8'))); delays = {}; wfail = {}; res.writeHead(200); res.end('ok'); return; }
   // 別の端末が保存したつもりで、クラウドの行を変える（e2e-check.mjs）
   if (u.pathname === '/__mutate') {

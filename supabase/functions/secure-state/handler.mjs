@@ -15,6 +15,10 @@
 // ・PIN のログインの印が無い・確かめられない人：何も返さない（401）。
 // ・v1140（段階 2b の 2 つ目）：Career Score の点・申請・履歴も（下の「v1140」の節・docs/SECURE_CS_V1140_JA.md）。取り込みは cs_have を送った
 //   アプリ（v1140）にだけ cs の部分を付ける。答えにはいつも csfn:1（前の版の関数でないことの印）。
+// ・v1141（段階 2b の 3 つ目）：ガソリン代の単価（mileage_config）と Score管理（career_cfg）は、決めた人だけがこの関数で書く（下の「v1141」の節・
+//   docs/SECURE_SETTINGS_V1141_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも swfn:1。
+// ・v1142（段階 2b の 4 つ目）：採用（応募者・不採用ログ）とお悩み相談室も、この関数で読み書きする（hr_get・hr_op・hr_match。
+//   見られる範囲の分だけ返し、書くのは 1 件ずつ。docs/SECURE_HR_V1142_JA.md）。答えにはいつも hrfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -52,6 +56,92 @@ export function csParse(k) {
 }
 // 公開の鍵から外すキー（SQL の ss_secret_key と同じ：成長カルテ・賞与＋Career Score）
 export const secretKey = k => ssIsKey(k) || csIsKey(k);
+
+// ---- v1141（段階 2b の 3 つ目）：決めた人だけが書ける設定（docs/SECURE_SETTINGS_V1141_JA.md）
+//   サーバーが値を信じて使うキー。読むのは今までどおり公開の鍵で（どの画面も読む）。書くのはこの関数だけ（SQL 20261110090000 で
+//   公開の鍵の足す・直す・消すを止める）。
+//     mileage_config：ガソリン代の単価（work-requests の wr_mileage_rate が精算の金額に使う）・地図の鍵・往復の既定 → CEO・GM・経理（Moto さん 11/04）
+//     career_cfg：Score管理（専門職 × グレードの権限。この関数の Career Score の範囲に使う）→ GM・CEO（今の画面と同じ）
+//   役割はサーバーが決める（PIN の印は work-requests の whoami・メールのログインは manager_auth）。端末の言う役割は使わない。
+export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'] };
+export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
+// 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
+//   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
+//     外と中で違う単価になる。アプリは書かない＝独立レビュー P3-1）。単価は 0.01〜5（それより小さいと短い距離が 0 セントになり申請が止まる）。
+//   career_cfg：'<部門>|<G>' ごとの記録（オブジェクトか null）の地図。おかしな記録は、クラウドにもうある同じ記録だけ通す
+//     （ほかの人が前に入れたものが残っていても、GM・CEO の保存が止まらないように＝独立レビュー P2-1。新しく入れることはできない）。
+export function swCgEntryOk(k, x) { return typeof k === 'string' && k.length <= 100 && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
+export function swCgBadKeys(value) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k])) : []; }
+export function swShapeOk(key, value, cloud) {
+  let s;
+  try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
+  if (key === 'mileage_config') {
+    if (s.length > 20000) return false;
+    const v = value;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    if (Object.prototype.hasOwnProperty.call(v, '__st')) return false;   // 包んだ形は書かない（上）
+    const r = v.ratePerMile;
+    if (typeof r !== 'number' || !Number.isFinite(r) || r < 0.01 || r > 5) return false;   // 0.01〜5（wr_mileage_rate が使える単価で、短い距離も 1 セント以上）
+    if (v.gmapsKey !== undefined && v.gmapsKey !== null && (typeof v.gmapsKey !== 'string' || v.gmapsKey.length > 300)) return false;
+    if (v.roundTripDefault !== undefined && typeof v.roundTripDefault !== 'boolean') return false;
+    return true;
+  }
+  if (key === 'career_cfg') {
+    if (s.length > 1000000) return false;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const c = (cloud && typeof cloud === 'object' && !Array.isArray(cloud)) ? cloud : null;
+    return swCgBadKeys(value).every(k => !!c && Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]));
+  }
+  return false;
+}
+// ---- v1142（段階 2b の 4 つ目）：採用（応募者・不採用ログ）とお悩み相談室（docs/SECURE_HR_V1142_JA.md）
+//   applicants・reject_log・growthhub は、どれも app_state の 1 行（配列）。読むのも書くのもこの関数で（公開の鍵から外すのは、全部の端末を
+//   1142 にしたあとの SQL 20261111090000）。見られる範囲はサーバーが決め、範囲の分だけ返す。書くのは 1 件ずつ（hr_op）：
+//   サーバーが行を読み、その 1 件だけを直して、読んだ行が変わっていないときだけ書く（一部だけの写しで全体を上書きしない）。
+//     応募者：CEO・GM・経理＝全部／AM＝確かめた担当の店＋「未分類」／G4＝自分の店＋「未分類」／店長・リーダー（SL・G2）＝自分の店／ほか＝なし
+//     不採用ログ：応募者と同じ範囲（Moto さん 11/04：全部は CEO・GM・経理だけ）。足すのは「不採用にする」（hr_op reject）だけ
+//     応募の入力の「前に不採用」の確かめ（hr_match）：全店の不採用ログから、当たった分だけ（日付・店・理由・メモ）
+//     お悩み相談室：CEO・GM・経理＝全部／AM＝担当の店／G4・店長（SL の Store Manager）＝自分の店／ほか＝自分の相談だけ（今の画面と同じ）
+export const HR_KEYS = ['applicants', 'reject_log', 'growthhub'];
+export function hrIsKey(k) { return typeof k === 'string' && HR_KEYS.includes(k); }
+const HR_ALL = ['ceo', 'gm', 'office'];
+const HR_LABEL = { ceo: 'CEO', gm: 'GM', office: '経理' };
+const HR_UNSORTED = '未分類';
+const HR_CID_RE = /^[A-Za-z0-9_-]{6,64}$/;
+const AP_ACTIVE = ['応募中', '新規応募', '要確認'];
+const HR_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export function hrStr(v, max) { return typeof v === 'string' ? v.trim().slice(0, max) : (typeof v === 'number' && Number.isFinite(v) ? String(v).slice(0, max) : ''); }
+// 前に不採用の人か（アプリの findPriorRejects と同じ：名前・電話（7 桁以上）・メールのどれかが同じ）
+export function hrMatches(probe, log) {
+  const name = String((probe && probe.name) || '').trim().toLowerCase();
+  const phone = String((probe && probe.phone) || '').replace(/[^0-9]/g, '');
+  const email = String((probe && probe.email) || '').trim().toLowerCase();
+  return (Array.isArray(log) ? log : []).filter(r => {
+    if (!r || typeof r !== 'object') return false;
+    const rn = String(r.name || '').trim().toLowerCase(), rp = String(r.phone || '').replace(/[^0-9]/g, ''), re = String(r.email || '').trim().toLowerCase();
+    return (!!name && rn === name) || (!!phone && phone.length >= 7 && rp === phone) || (!!email && re === email);
+  });
+}
+// 当たった不採用の記録から見せる分（名前・電話・メールは出さない＝入れた人がもう知っている）
+export function hrPrior(r) { return { rejectDate: hrStr(r.rejectDate, 40), store: hrStr(r.store, 80), reason: hrStr(r.reason, 300), memo: hrStr(r.memo, 2000) }; }
+// 応募者の 1 件（アプリが送る形）。_ で始まる欄（_prior など、この関数が付けたもの）は落とす
+export function hrApClean(rec) {
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return null;
+  const x = {};
+  for (const [k, v] of Object.entries(rec)) if (k.charAt(0) !== '_') x[k] = v;
+  if (typeof x.id !== 'string' || !HR_ID_RE.test(x.id)) return null;
+  if (typeof x.store !== 'string' || !x.store.trim() || x.store.length > 80) return null;
+  if (typeof x.name !== 'string' || !x.name.trim() || x.name.length > 200) return null;
+  if (typeof x.status !== 'string' || x.status.length > 40) return null;
+  let s; try { s = JSON.stringify(x); } catch { return null; }
+  if (s.length > 50000) return null;
+  return x;
+}
+export function hrApStrip(rec) {
+  const x = {};
+  if (rec && typeof rec === 'object' && !Array.isArray(rec)) for (const [k, v] of Object.entries(rec)) if (k.charAt(0) !== '_') x[k] = v;
+  return x;
+}
 // 肩書きと役割からのグレード（SQL の wr_grade と同じ。大きいほう）
 const TITLE_G = { 'General Manager': 6, 'Area Manager': 5, 'Corporate Chef': 5, 'Customer Service Manager': 5, 'Store Manager': 4, 'Head Chef': 4, 'Office Manager': 4, 'Accountant': 4,
   'Server Leader': 3, 'Kitchen Leader': 3, 'Operation Leader': 3, 'Store Leader': 3, 'Accounting Leader': 3, 'Crew Leader': 2, 'Office Crew Leader': 2,
@@ -189,7 +279,8 @@ export function createHandler(deps) {
     const me = obj(j && j.me);
     if (!me || typeof me.emp !== 'string' || !me.emp || me.emp.length > 64) return { deny: 'pin' };
     const a = { via: 'pin', emp: me.emp, role: typeof me.role === 'string' ? me.role : '', grade: Number.isInteger(me.grade) ? me.grade : 0,
-      stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '' };   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
+      stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '',
+      confirmed: me.confirmed === true };   // v1142：GM・CEO が確かめた写しがあるか（G4・店長の範囲に要る）   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
     if (cache.size > 500) { for (const [k, v] of cache) if (!(v.exp > now())) cache.delete(k); if (cache.size > 500) cache.clear(); }
     cache.set(h, { a, exp: now() + 60000 });
     return a;
@@ -622,8 +713,29 @@ export function createHandler(deps) {
   }
 
   // 書く。expect が無い：今までの upsert と同じ（読んだ行によらず書く）。expect.exists=false：行が無いときだけ。expect.exists=true：updated_at が同じときだけ
+  // v1141：決めた人だけが書ける設定。決めた人でなくても、クラウドと同じ値なら書かずに通す（一括の送り直しなどで、変えていない設定を送っても止まらない）
+  async function swPut(a, b) {
+    const key = b.key;
+    if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
+    const e = b.expect;
+    if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
+    const cur = async () => { const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key)); return Array.isArray(rows) && rows[0] ? rows[0] : null; };
+    if (!SW_WRITE[key].includes(a.role)) {
+      // 決めた人でなければ書かない。クラウドと同じ値なら（まとめて送り直す端末のため）書かずに通す。
+      // 書かないので値の形は見ない（クラウドの値そのものの形がおかしくても、送り直しが止まらないように＝独立レビュー P3-6）
+      const c = await cur();
+      if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true };
+      throw err('forbidden', 403);
+    }
+    let cloud;
+    if (key === 'career_cfg' && swCgBadKeys(b.value).length) { const c = await cur(); cloud = c ? c.value : null; }
+    if (!swShapeOk(key, b.value, cloud)) throw bad();
+    return writeRow(key, b.value, e);
+  }
+
   async function put(a, b) {
     const key = b.key;
+    if (swIsKey(key)) return swPut(a, b);   // v1141
     if (csIsKey(key)) return csPut(a, b);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     if (levelOf(a) !== 'full') throw err('forbidden', 403);
@@ -723,8 +835,223 @@ export function createHandler(deps) {
     return { ok: true };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet };
-  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429 };
+  // ================================================================ v1142：採用（応募者・不採用ログ）とお悩み相談室（docs/SECURE_HR_V1142_JA.md）
+  // 見られる範囲はサーバーが決める（今の画面と同じ。Moto さん 11/04：不採用ログの全部は CEO・GM・経理、AM・店長は担当・自分の店の分だけ。
+  // お悩み相談室は今のまま）。社員の表（役割・肩書き・店）と店の表（ブランド）は公開の鍵で書けるので、AM の担当の店は GM・CEO が確かめた写し、
+  // G3 以上の店は確かめた写しと今の社員の表の重なり（work-requests の whoami が決めた a.am・a.stores）を使う。
+  async function hrScope(a) {
+    const sc = { all: false, ap: [], gh: [], mgr: false, name: typeof a.name === 'string' ? a.name.trim() : '', store: '' };
+    if (HR_ALL.includes(a.role)) return { ...sc, all: true, mgr: true, name: sc.name || HR_LABEL[a.role] };   // 社員と結ばれていないメールのログインも（担当の名前）
+    if (!a.emp) return sc;
+    const [es, st] = await Promise.all([
+      rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,name,role,title,store,status,data'),
+      rest('stores?select=id,name,brand,data&limit=1000'),
+    ]);
+    const e = Array.isArray(es) ? es[0] : null;
+    if (!e) return sc;
+    const d = obj(e.data) || {};
+    if (String(e.status || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true') return sc;
+    const rr = String(e.role || d.role || ''), title = String(e.title || d.title || '');
+    const home = String(e.store || d.store || '');
+    sc.store = home;
+    if (!sc.name && typeof e.name === 'string') sc.name = e.name.trim();
+    if (a.role !== 'am' && a.role !== 'staff') return sc;                        // 事務Crew：応募者・不採用ログは見ない（今の画面と同じ）。相談は自分の分だけ
+    const S = (Array.isArray(st) ? st : []).filter(s => s && s.id != null);
+    const labels = (ids, withName) => {
+      const out = [];
+      for (const s of S) if (ids.includes(String(s.id))) {
+        const sd = obj(s.data) || {};   // 列が空なら中身（data）の値（アプリは同じものを両方に書く）
+        const brand = typeof s.brand === 'string' && s.brand.trim() ? s.brand : sd.brand, name = typeof s.name === 'string' && s.name.trim() ? s.name : sd.name;
+        if (typeof brand === 'string' && brand.trim()) out.push(brand.trim());
+        if (withName && typeof name === 'string' && name.trim()) out.push(name.trim());
+      }
+      return [...new Set(out)];
+    };
+    const own = a.stores.includes(home) ? [home] : [];                           // 自分の店（配属の店。whoami の店の中にあるときだけ）
+    // G4・店長（Store Manager＝G4）の範囲は、GM・CEO が確かめた写しのある人だけ（社員の表の役割・肩書きは公開の鍵で書けるので、
+    // 確かめた写しの無い人のグレードは whoami が 3 までにする。独立レビュー 7e3f878 P2-3）。確かめがまだの AM・G4 は G3 と同じ（配属の店）
+    const g4ok = a.confirmed === true && Number(a.grade) >= 4;
+    if (a.role === 'am') { sc.ap = [...labels(a.am, false), HR_UNSORTED]; sc.gh = [...a.am]; sc.mgr = true; }
+    else if ((rr === 'g4' || rr === 'am') && g4ok) { sc.ap = [...labels(own, false), HR_UNSORTED]; sc.gh = own; sc.mgr = true; }   // アプリ：G4 は AM 扱い（担当＝配属の店）
+    else if (rr === 'g4' || rr === 'am' || rr === 'sl' || rr === 'g2') {        // アプリ：G2 は SL 扱い。店長（SL・Store Manager）は相談も
+      sc.ap = labels(own, true);
+      if (rr === 'sl' && title === 'Store Manager' && g4ok) { sc.gh = own; sc.mgr = true; }
+    }
+    return sc;
+  }
+  const hrApIn = (sc, r) => sc.all || sc.ap.includes(String((r && r.store) || '').trim());
+  const hrGhMgr = (sc, p) => sc.all || (sc.mgr && sc.gh.includes(String((p && p.store) || '')));
+  const hrOwn = (sc, p) => !!sc.name && !!p && typeof p.author === 'string' && p.author.trim() === sc.name;
+  function hrProject(key, value, sc, log) {
+    const list = Array.isArray(value) ? value.filter(x => obj(x)) : [];
+    if (key === 'applicants') {
+      return list.filter(r => hrApIn(sc, r)).map(r => {
+        const x = { ...r };
+        delete x._prior;
+        if (AP_ACTIVE.includes(x.status)) { const m = hrMatches(x, log); if (m.length) x._prior = m.slice(-5).map(hrPrior); }
+        return x;
+      });
+    }
+    if (key === 'reject_log') return list.filter(r => hrApIn(sc, r));
+    return list.filter(p => hrGhMgr(sc, p) || hrOwn(sc, p));                       // growthhub
+  }
+  const hrLevel = (key, sc) => (sc.all ? 'all' : key === 'growthhub' ? 'scoped' : (sc.ap.length ? 'scoped' : 'none'));
+  async function hrRow(key) {
+    const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key));
+    return Array.isArray(rows) && rows[0] ? rows[0] : null;
+  }
+  async function hrView(key, sc) {
+    const [row, lg] = await Promise.all([hrRow(key), key === 'applicants' ? hrRow('reject_log') : Promise.resolve(null)]);
+    const log = lg && Array.isArray(lg.value) ? lg.value.filter(x => obj(x)) : [];
+    return { exists: !!row, value: hrProject(key, row ? row.value : null, sc, log), updated_at: row ? row.updated_at : null, level: hrLevel(key, sc) };
+  }
+  // 読んで・直して・読んだ行が変わっていないときだけ書く（変わっていれば読み直してやり直す。5 回まで）。fn が undefined を返せば書かない
+  async function hrRmw(key, fn) {
+    for (let i = 0; i < 5; i++) {
+      const row = await hrRow(key);
+      if (row && row.value != null && !Array.isArray(row.value)) throw err('db', 500);   // 配列でない行（形が違う）：空とみなして上書きしない
+      const cur = row && Array.isArray(row.value) ? row.value : [];
+      const next = fn(cur.slice());
+      if (next === undefined) return false;
+      if (JSON.stringify(next).length > 8000000) throw bad();
+      try { await writeRow(key, next, row ? { exists: true, updated_at: row.updated_at } : { exists: false }); return true; }
+      catch (x) { if (x.code !== 'conflict') throw x; }
+    }
+    throw err('conflict', 409);
+  }
+  async function hrGet(a, b) {
+    if (!hrIsKey(b.key)) throw bad();
+    return hrView(b.key, await hrScope(a));
+  }
+  // 応募の入力の「前に不採用」の確かめ：全店の不採用ログから、当たった分だけ（Moto さん 11/04）。応募者を足せる人だけ
+  async function hrMatch(a, b) {
+    const sc = await hrScope(a);
+    if (!sc.all && !sc.ap.length) throw err('forbidden', 403);
+    const probe = { name: hrStr(b.name, 120), phone: hrStr(b.phone, 60), email: hrStr(b.email, 200) };
+    const lg = await hrRow('reject_log');
+    return { matches: hrMatches(probe, lg && Array.isArray(lg.value) ? lg.value.filter(x => obj(x)) : []).slice(-5).map(hrPrior) };
+  }
+  async function hrOp(a, b) {
+    const key = b.key, op = b.op;
+    if (!hrIsKey(key) || key === 'reject_log' || typeof op !== 'string') throw bad();
+    const sc = await hrScope(a);
+    if (key === 'applicants') {
+      if (op === 'put') {
+        const rec = hrApClean(b.rec);
+        if (!rec) throw bad();
+        const base = b.create === true ? null : hrApClean(b.base);                 // 直すときは、端末が読んだときの記録が要る
+        if (b.create !== true && (!base || base.id !== rec.id)) throw bad();
+        // 足す・直すのは、応募者を見られる人（今の画面で一覧が出る人）だけ。応募店舗は今までどおりどの店でも選べる（見られない店にすると一覧から消える）
+        if (!sc.all && !sc.ap.length) throw err('forbidden', 403);
+        let created = false;
+        await hrRmw('applicants', cur => {
+          const i = cur.findIndex(r => obj(r) && String(r.id) === rec.id);
+          if (i >= 0) {
+            if (b.create === true) throw err('conflict', 409);                     // 新しく足すつもりが同じ ID：上書きしない（どの店の人かも言わない）
+            if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);                 // 見られない店の応募者は書き換えない
+            // 端末が読んだときの記録（base）と比べて、この端末が変えた欄だけを今の記録に重ねる。同じ欄をほかの端末も変えていたら 409
+            // （古い写しで、ほかの人が変えた状態・Onboarding の印を戻さない。独立レビュー 7e3f878 P2-2）
+            const cur0 = hrApStrip(cur[i]), next = { ...cur0 };
+            for (const k of new Set([...Object.keys(base), ...Object.keys(rec)])) {
+              if (canon(base[k]) === canon(rec[k])) continue;
+              if (canon(cur0[k]) !== canon(base[k]) && canon(cur0[k]) !== canon(rec[k])) throw err('conflict', 409);
+              if (rec[k] === undefined) delete next[k]; else next[k] = rec[k];
+            }
+            const merged = hrApClean(next);
+            if (!merged) throw bad();
+            if (canon(cur[i]) === canon(merged)) return undefined;
+            cur[i] = merged;
+          } else {
+            if (b.create !== true) throw err('gone', 410);                        // 直そうとした応募者がもう無い（ほかの端末で不採用にした など）
+            cur.push(rec); created = true;
+          }
+          return cur;
+        });
+        return { ...(await hrView('applicants', sc)), created };
+      }
+      if (op === 'reject') {
+        const id = typeof b.id === 'string' && HR_ID_RE.test(b.id) ? b.id : null;
+        if (!id) throw bad();
+        const row = await hrRow('applicants');
+        const ap = (row && Array.isArray(row.value) ? row.value : []).find(r => obj(r) && String(r.id) === id) || null;
+        let entry = null;
+        if (ap) {
+          if (!hrApIn(sc, ap)) throw err('forbidden', 403);
+          entry = { aid: id, name: hrStr(ap.name, 200), phone: hrStr(ap.phone, 60), email: hrStr(ap.email, 200), store: hrStr(ap.store, 80), applyDate: hrStr(ap.date, 40),
+            rejectDate: hrStr(b.rejectDate, 40), reason: hrStr(b.reason, 300), memo: hrStr(b.memo, 2000), by: hrStr(b.by, 80) || sc.name, resumeName: hrStr(ap.resumeName, 200) };
+          if (!entry.reason || !entry.rejectDate) throw bad();
+          // 不採用ログに足す（同じ応募者の記録がもうあれば足さない＝やり直しても 2 つにならない）→ 応募者の一覧から外す
+          await hrRmw('reject_log', cur => (cur.some(r => obj(r) && r.aid === id) ? undefined : cur.concat([entry])));
+        } else {
+          const lg = await hrRow('reject_log');
+          const done = (lg && Array.isArray(lg.value) ? lg.value : []).find(r => obj(r) && r.aid === id);
+          if (!done) throw err('gone', 410);
+          if (!hrApIn(sc, done)) throw err('forbidden', 403);
+        }
+        await hrRmw('applicants', cur => {
+          const i = cur.findIndex(r => obj(r) && String(r.id) === id);
+          if (i < 0) return undefined;
+          if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);
+          cur.splice(i, 1); return cur;
+        });
+        const [v1, v2] = await Promise.all([hrView('applicants', sc), hrView('reject_log', sc)]);
+        return { ...v1, reject_log: v2 };
+      }
+      throw bad();
+    }
+    // growthhub
+    if (op === 'post') {
+      const title = hrStr(b.title, 200), body = hrStr(b.body, 5000);
+      if (!title || !body || !sc.name) throw err(sc.name ? 'bad_value' : 'forbidden', sc.name ? 400 : 403);
+      const cid = typeof b.cid === 'string' && HR_CID_RE.test(b.cid) ? b.cid : '';   // 同じ送信を 2 回押しても 1 つ（答えが届かなかったとき）
+      let id = '';
+      await hrRmw('growthhub', cur => {
+        const same = cid ? cur.find(p => obj(p) && p.cid === cid && p.author === sc.name) : null;
+        if (same) { id = String(same.id); return undefined; }
+        let n = now();
+        const ids = new Set(cur.map(p => obj(p) && String(p.id)));
+        while (ids.has('gh' + n)) n++;
+        id = 'gh' + n;
+        return cur.concat([{ id, title, body, author: sc.name, store: sc.store, date: hrStr(b.date, 40), status: '未対応', replies: [], ...(cid ? { cid } : {}) }]);
+      });
+      return { ...(await hrView('growthhub', sc)), id };
+    }
+    const id = typeof b.id === 'string' && HR_ID_RE.test(b.id) ? b.id : null;
+    if (!id) throw bad();
+    if (!['reply', 'status', 'assign'].includes(op)) throw bad();
+    let mgrOut = false;
+    await hrRmw('growthhub', cur => {
+      const p = cur.find(x => obj(x) && String(x.id) === id);
+      if (!p) throw err('gone', 410);
+      const mgr = hrGhMgr(sc, p), mine = hrOwn(sc, p);
+      if (op === 'reply') {
+        if (!mgr && !mine) throw err('forbidden', 403);
+        const text = hrStr(b.text, 5000);
+        if (!text) throw bad();
+        mgrOut = mgr;
+        const cid = typeof b.cid === 'string' && HR_CID_RE.test(b.cid) ? b.cid : '';
+        if (cid && Array.isArray(p.replies) && p.replies.some(r => obj(r) && r.cid === cid)) return undefined;   // 同じ返信をもう一度（答えが届かなかった）
+        p.replies = (Array.isArray(p.replies) ? p.replies : []).concat([{ author: mgr ? (hrStr(b.author, 60) || sc.name || '管理者') : sc.name, byMgr: mgr, text, date: hrStr(b.date, 40), ...(cid ? { cid } : {}) }]);
+        if (mgr && (p.status || '未対応') === '未対応') p.status = '対応中';
+        return cur;
+      }
+      if (!mgr) throw err('forbidden', 403);
+      if (op === 'status') {
+        if (!['未対応', '対応中', '解決'].includes(b.status)) throw bad();
+        if (p.status === b.status) return undefined;
+        p.status = b.status; return cur;
+      }
+      if (b.off === true) { if (!p.assignee) return undefined; p.assignee = ''; return cur; }
+      if (!sc.name) throw err('forbidden', 403);
+      p.assignee = sc.name; p.assignedAt = hrStr(b.at, 40);
+      if ((p.status || '未対応') === '未対応') p.status = '対応中';
+      return cur;
+    });
+    return { ...(await hrView('growthhub', sc)), mgr: mgrOut };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch };
+  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -733,7 +1060,9 @@ export function createHandler(deps) {
     // 答えにはいつも fn:1（アプリは fn の無い答え（ゲートウェイの 401・関数が無い 404 など）を「関数が使えない」とみなす）
     // csfn:1＝Career Score も扱う関数（v1140）。アプリは csfn の無い答えを「前の版の関数」とみなし、Career Score を今までどおり REST で
     //（取り込みの答えの Career Score の部分は cs。名前を分けている）
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // swfn:1＝決めた人だけが書ける設定（v1141）も扱う関数。アプリは swfn の無い答えを前の版とみなし、その設定を今までどおり REST で書く
+    // hrfn:1＝採用（応募者・不採用ログ）とお悩み相談室（v1142）も扱う関数。アプリは hrfn の無い答えを前の版とみなし、今までどおり REST で
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
