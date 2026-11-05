@@ -15,6 +15,8 @@
 // ・PIN のログインの印が無い・確かめられない人：何も返さない（401）。
 // ・v1140（段階 2b の 2 つ目）：Career Score の点・申請・履歴も（下の「v1140」の節・docs/SECURE_CS_V1140_JA.md）。取り込みは cs_have を送った
 //   アプリ（v1140）にだけ cs の部分を付ける。答えにはいつも csfn:1（前の版の関数でないことの印）。
+// ・v1141（段階 2b の 3 つ目）：ガソリン代の単価（mileage_config）と Score管理（career_cfg）は、決めた人だけがこの関数で書く（下の「v1141」の節・
+//   docs/SECURE_SETTINGS_V1141_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも swfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -52,6 +54,44 @@ export function csParse(k) {
 }
 // 公開の鍵から外すキー（SQL の ss_secret_key と同じ：成長カルテ・賞与＋Career Score）
 export const secretKey = k => ssIsKey(k) || csIsKey(k);
+
+// ---- v1141（段階 2b の 3 つ目）：決めた人だけが書ける設定（docs/SECURE_SETTINGS_V1141_JA.md）
+//   サーバーが値を信じて使うキー。読むのは今までどおり公開の鍵で（どの画面も読む）。書くのはこの関数だけ（SQL 20261110090000 で
+//   公開の鍵の足す・直す・消すを止める）。
+//     mileage_config：ガソリン代の単価（work-requests の wr_mileage_rate が精算の金額に使う）・地図の鍵・往復の既定 → CEO・GM・経理（Moto さん 11/04）
+//     career_cfg：Score管理（専門職 × グレードの権限。この関数の Career Score の範囲に使う）→ GM・CEO（今の画面と同じ）
+//   役割はサーバーが決める（PIN の印は work-requests の whoami・メールのログインは manager_auth）。端末の言う役割は使わない。
+export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'] };
+export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
+// 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
+//   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
+//     外と中で違う単価になる。アプリは書かない＝独立レビュー P3-1）。単価は 0.01〜5（それより小さいと短い距離が 0 セントになり申請が止まる）。
+//   career_cfg：'<部門>|<G>' ごとの記録（オブジェクトか null）の地図。おかしな記録は、クラウドにもうある同じ記録だけ通す
+//     （ほかの人が前に入れたものが残っていても、GM・CEO の保存が止まらないように＝独立レビュー P2-1。新しく入れることはできない）。
+export function swCgEntryOk(k, x) { return typeof k === 'string' && k.length <= 100 && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
+export function swCgBadKeys(value) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k])) : []; }
+export function swShapeOk(key, value, cloud) {
+  let s;
+  try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
+  if (key === 'mileage_config') {
+    if (s.length > 20000) return false;
+    const v = value;
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    if (Object.prototype.hasOwnProperty.call(v, '__st')) return false;   // 包んだ形は書かない（上）
+    const r = v.ratePerMile;
+    if (typeof r !== 'number' || !Number.isFinite(r) || r < 0.01 || r > 5) return false;   // 0.01〜5（wr_mileage_rate が使える単価で、短い距離も 1 セント以上）
+    if (v.gmapsKey !== undefined && v.gmapsKey !== null && (typeof v.gmapsKey !== 'string' || v.gmapsKey.length > 300)) return false;
+    if (v.roundTripDefault !== undefined && typeof v.roundTripDefault !== 'boolean') return false;
+    return true;
+  }
+  if (key === 'career_cfg') {
+    if (s.length > 1000000) return false;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const c = (cloud && typeof cloud === 'object' && !Array.isArray(cloud)) ? cloud : null;
+    return swCgBadKeys(value).every(k => !!c && Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]));
+  }
+  return false;
+}
 // 肩書きと役割からのグレード（SQL の wr_grade と同じ。大きいほう）
 const TITLE_G = { 'General Manager': 6, 'Area Manager': 5, 'Corporate Chef': 5, 'Customer Service Manager': 5, 'Store Manager': 4, 'Head Chef': 4, 'Office Manager': 4, 'Accountant': 4,
   'Server Leader': 3, 'Kitchen Leader': 3, 'Operation Leader': 3, 'Store Leader': 3, 'Accounting Leader': 3, 'Crew Leader': 2, 'Office Crew Leader': 2,
@@ -622,8 +662,29 @@ export function createHandler(deps) {
   }
 
   // 書く。expect が無い：今までの upsert と同じ（読んだ行によらず書く）。expect.exists=false：行が無いときだけ。expect.exists=true：updated_at が同じときだけ
+  // v1141：決めた人だけが書ける設定。決めた人でなくても、クラウドと同じ値なら書かずに通す（一括の送り直しなどで、変えていない設定を送っても止まらない）
+  async function swPut(a, b) {
+    const key = b.key;
+    if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
+    const e = b.expect;
+    if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
+    const cur = async () => { const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key)); return Array.isArray(rows) && rows[0] ? rows[0] : null; };
+    if (!SW_WRITE[key].includes(a.role)) {
+      // 決めた人でなければ書かない。クラウドと同じ値なら（まとめて送り直す端末のため）書かずに通す。
+      // 書かないので値の形は見ない（クラウドの値そのものの形がおかしくても、送り直しが止まらないように＝独立レビュー P3-6）
+      const c = await cur();
+      if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true };
+      throw err('forbidden', 403);
+    }
+    let cloud;
+    if (key === 'career_cfg' && swCgBadKeys(b.value).length) { const c = await cur(); cloud = c ? c.value : null; }
+    if (!swShapeOk(key, b.value, cloud)) throw bad();
+    return writeRow(key, b.value, e);
+  }
+
   async function put(a, b) {
     const key = b.key;
+    if (swIsKey(key)) return swPut(a, b);   // v1141
     if (csIsKey(key)) return csPut(a, b);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     if (levelOf(a) !== 'full') throw err('forbidden', 403);
@@ -733,7 +794,8 @@ export function createHandler(deps) {
     // 答えにはいつも fn:1（アプリは fn の無い答え（ゲートウェイの 401・関数が無い 404 など）を「関数が使えない」とみなす）
     // csfn:1＝Career Score も扱う関数（v1140）。アプリは csfn の無い答えを「前の版の関数」とみなし、Career Score を今までどおり REST で
     //（取り込みの答えの Career Score の部分は cs。名前を分けている）
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // swfn:1＝決めた人だけが書ける設定（v1141）も扱う関数。アプリは swfn の無い答えを前の版とみなし、その設定を今までどおり REST で書く
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

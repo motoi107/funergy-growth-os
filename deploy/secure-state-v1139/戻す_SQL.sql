@@ -4,13 +4,13 @@ do $$
 begin
   if to_regclass('public.app_state') is null then return; end if;
   drop policy if exists ss_secret on public.app_state;
-  -- この SQL が RLS を ON にしたときだけ（ss_open に印がある）、ss_open を外して RLS を OFF に戻す
+  -- この SQL が RLS を ON にしたときだけ（ss_open に印がある）、ss_open を外して RLS を OFF に戻す。
+  -- ほかの決まり（v1141 の ss_guard_* など）が残っているときは ss_open を残す（外すと、残るのが「止める」決まりだけになり、だれも読めなくなる＝v1141 の独立レビュー P3-2）
   if exists (select 1 from pg_policy p where p.polrelid = 'public.app_state'::regclass and p.polname = 'ss_open'
-               and obj_description(p.oid, 'pg_policy') like 'v1139: RLS was off before%') then
+               and obj_description(p.oid, 'pg_policy') like 'v1139: RLS was off before%')
+     and not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'app_state' and policyname <> 'ss_open') then
     drop policy if exists ss_open on public.app_state;
-    if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'app_state') then
-      alter table public.app_state disable row level security;
-    end if;
+    alter table public.app_state disable row level security;
   end if;
 end $$;
 drop function if exists public.ss_secret_key(text);
