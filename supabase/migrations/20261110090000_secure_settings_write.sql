@@ -35,7 +35,7 @@ begin
     alter table public.app_state enable row level security;
     if not exists (select 1 from pg_policies where schemaname = 'public' and tablename = 'app_state' and policyname = 'ss_open') then
       create policy ss_open on public.app_state as permissive for all to anon, authenticated using (true) with check (true);
-      comment on policy ss_open on public.app_state is 'v1139: RLS was off before 20261108090000 (rollback turns it off again)';
+      comment on policy ss_open on public.app_state is 'v1141: RLS was off before 20261110090000 (rollback turns it off again)';   -- v1141 の印（v1139 の戻す SQL が外さないように＝独立レビュー P3-2）
     end if;
   end if;
   drop policy if exists ss_guard_ins on public.app_state;

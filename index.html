@@ -12808,7 +12808,14 @@ async function ssPutRow(key, value, expect){
   if(r.legacy || r.none) return SS_REST;
   if(r.ok) return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at) };
   if(r.status===409) return 'conflict';
-  if(r.status===400) return 'badts';
+  if(r.status===400){
+    /* v1141（独立レビュー P2-1）：決めた人が書いた値の形をサーバーが断った（送信待ちに残る）。何が悪いかを出す */
+    if(key==='mileage_config') ssWarnOnce('bad_sw_mi', 'ガソリン代の設定をサーバーが断りました（単価は $0.01〜$5.00 / マイル。送信待ちに残しています。設定を開いて入れ直してください）',
+      'The server refused the mileage settings (rate must be $0.01–$5.00 per mile; kept in the unsent list — open the settings and save again).');
+    else if(key==='career_cfg') ssWarnOnce('bad_sw_cg', 'Score管理の設定をサーバーが断りました（形の合わない記録があります。送信待ちに残しています）',
+      'The server refused the Score settings (a record has the wrong shape; kept in the unsent list).');
+    return 'badts';
+  }
   if(r.status===403){
     if(key==='mileage_config') ssWarnOnce('forbidden_sw_mi', 'ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です（サーバーが断りました。送信待ちに残しています）',
       'Only the CEO, GM or Accounting can change the mileage rate / map settings (the server refused; kept in the unsent list).');
@@ -47613,8 +47620,8 @@ function openMileageConfig(){
 function saveMileageConfigDo(){
   var key=(document.getElementById('mi-key').value||'').trim();
   var rate=parseFloat(document.getElementById('mi-rate').value)||0.70;
-  /* v1141：精算の金額に使う単価（サーバーの wr_mileage_rate が使えるのは 0 より大きく 5 以下。外れるとガソリン代の申請が止まる） */
-  if(!(rate>0 && rate<=5)){ alert('単価は $0.01〜$5.00 / マイルで入れてください'); return; }
+  /* v1141：精算の金額に使う単価（0.01〜5。サーバーの wr_mileage_rate が使えるのは 5 以下・0.01 より小さいと短い距離が 0 セントになり申請が止まる） */
+  if(!(rate>=0.01 && rate<=5)){ alert('単価は $0.01〜$5.00 / マイルで入れてください'); return; }
   if(!canManageMileage()){ alert('ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です'); return; }
   var rt=document.getElementById('mi-rtdef').checked;
   setMileageConfig({ gmapsKey:key, ratePerMile:rate, roundTripDefault:rt });

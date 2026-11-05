@@ -35,7 +35,8 @@ const CODE = [
   block('var SS_FN = ', 'var KV_SEEN_KEY'),
   varLine(/^var _OP_READ_TMO = .*$/m),
   ...['supaUpsert', '_supaWriteMs', '_fetchOpValue', '_fetchOpRow', '_tsMicro', '_casTs', '_opCasWrite', '_opUpsertRow', 'opMergePush', 'syncMasterToSupabase', 'supaHeaders', 'saveMileageConfigDo'].map(fn),
-  ...['getMileageConfig', 'setMileageConfig', 'canManageMileage'].map(oneLine),
+  ...['getMileageConfig', 'setMileageConfig', 'canManageMileage', '_recAt'].map(oneLine),
+  ...['mergeMapByTime', '_coversMapByTime'].map(fn),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
    var _SPLIT_KEYS={}, SUPA_MASTER_MAP={}, SUPA_SETTING_KEYS=[], SUPA_SETTING_PREFIX=[];
    var _supaBooting=false, _lastSupaError=null, _opMergeChain={}, _opLastPushErr={}, _opLastPushWhy={}, _idbState='ready', _idbBootP=null;
@@ -50,12 +51,8 @@ const CODE = [
    function _lsCloudPending(k){ return !!__pending[k]; }
    function _opWriteBack(){} function _opCloudVal(k, v){ return v; } function isOpSyncKey(k){ return true; }
    function csIsKey(k){ return false; } function csOnLogout(){}
-   /* 試験用の合流：Score管理は '<部門>|<G>' ごとに新しい _at（アプリの mergeMapByTime と同じ考え） */
-   function _opMergeDef(k){
-     if(k==='career_cfg') return { merge:function(c, l){ var o=Object.assign({}, c||{}); Object.keys(l||{}).forEach(function(x){ if(!o[x] || ((l[x]&&l[x]._at)||0)>=((o[x]&&o[x]._at)||0)) o[x]=l[x]; }); return o; },
-       covers:function(c, m){ return JSON.stringify(c)===JSON.stringify(m); } };
-     return null;
-   }
+   /* Score管理の合流はアプリの本物（mergeMapByTime・_coversMapByTime。独立レビュー P3-6） */
+   function _opMergeDef(k){ return k==='career_cfg' ? { merge:mergeMapByTime, covers:_coversMapByTime } : null; }
    function _outboxRemove(){}
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function showToast(m){ __toasts.push(m); } function alert(m){ __alerts.push(m); } function closeModalDirect(){} function renderPage(){}
@@ -144,7 +141,7 @@ test('CEO, GM and Accounting save the mileage rate through the function (service
 test('the screen refuses a rate the server cannot use (negative, over $5) and a role that may not change it', async () => {
   const W = world();
   const c = tab(W, 'tGM');
-  for (const bad of ['-1', '5.01', '9']) {
+  for (const bad of ['-1', '5.01', '9', '0.009', '0.000001']) {   // 0.01 より小さいと短い距離が 0 セント（独立レビュー P3-1）
     c.__alerts.length = 0;
     await saveMileage(c, bad);
     assert.equal(c.__alerts.length, 1, bad); assert.match(c.__alerts[0], /\$0\.01〜\$5\.00/);
@@ -236,4 +233,23 @@ test('reading is unchanged: the two keys are not read through the function, and 
   assert.deepEqual(await Promise.all(c.__pushed), [true]);
   assert.deepEqual(writesOf(W, 'tasks_all'), ['anon'], 'other keys: REST as before');
   assert.equal(c.swIsKey('mileage_requests'), false); assert.equal(c.swIsKey('career_cfg'), true); assert.equal(c.swIsKey(null), false);
+});
+
+test('v1141 review: when the server refuses the shape (400), the device says what is wrong and keeps the change unsent', async () => {
+  const W = world();
+  const c = tab(W, 'tGM');
+  c.__pushed.length = 0;
+  c.setMileageConfig({ gmapsKey: '', ratePerMile: 0.004, roundTripDefault: true });   // 前の版の画面で入れた値など（画面は 0.01 未満を断る）
+  assert.deepEqual(await Promise.all(c.__pushed), [false]);
+  assert.ok(c.__toasts.some(m => /ガソリン代の設定をサーバーが断りました（単価は \$0\.01〜\$5\.00/.test(m)), c.__toasts.join(' | '));
+  assert.deepEqual(W.get('mileage_config'), MI0);
+  // Score管理：クラウドにもうある形の合わない記録は GM の保存を止めない（本物の合流で、クラウドの記録も一緒に送る）
+  W.set('career_cfg', { ...CG0, x: 1 }, T0);
+  const next = { ...CG0, '調理|G4': { role: 'chef', hide: [], csView: ['g4'], csEdit: null, csApprove: null, _at: 9 } };
+  assert.equal(await c.opMergePush('career_cfg', next), true);
+  assert.deepEqual(W.get('career_cfg'), { ...next, x: 1 }, 'the odd record stays as it was');
+  // 新しく形の合わない記録を入れようとすると断られ、何が悪いかを出す
+  assert.equal(await c.opMergePush('career_cfg', { ...next, y: 'odd' }), false);
+  assert.ok(c.__toasts.some(m => /Score管理の設定をサーバーが断りました/.test(m)));
+  assert.deepEqual(W.get('career_cfg'), { ...next, x: 1 });
 });

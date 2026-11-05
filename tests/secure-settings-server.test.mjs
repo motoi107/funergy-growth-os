@@ -61,15 +61,23 @@ test('the keys: only mileage_config and career_cfg; not secret (still readable);
   for (const k of ['mileage_requests', 'career_cfg ', 'Career_cfg', 'cs_criteria', 'growth_karte', 'toString', '__proto__', 'constructor', 'hasOwnProperty', '', null, undefined, 1]) assert.ok(!swIsKey(k), String(k));
 });
 
-test('the shape check: a mileage rate the server can use (0 < rate <= 5); the wrapped form; the Score settings are a map', () => {
-  const ok = [MI0, { ratePerMile: 5 }, { ratePerMile: 0.01 }, { ratePerMile: 0.7, gmapsKey: null }, { __st: 1, v: { ratePerMile: 0.66 }, _at: 3 }];
+test('the shape check: a mileage rate the server can use (0.01 <= rate <= 5, never wrapped); the Score settings are a map (odd records only as they already are in the cloud)', () => {
+  const ok = [MI0, { ratePerMile: 5 }, { ratePerMile: 0.01 }, { ratePerMile: 0.7, gmapsKey: null }, { ratePerMile: 0.7, gmapsKey: 'k'.repeat(300), roundTripDefault: false }];
   for (const v of ok) assert.ok(swShapeOk('mileage_config', v), JSON.stringify(v));
   const bad = [null, [], 'x', {}, { ratePerMile: 0 }, { ratePerMile: -1 }, { ratePerMile: 5.0001 }, { ratePerMile: '0.7' }, { ratePerMile: NaN }, { ratePerMile: Infinity },
+    { ratePerMile: 0.009 }, { ratePerMile: 1e-9 },   // 独立レビュー P3-1：短い距離が 0 セントになり申請が止まる
     { ratePerMile: 0.7, gmapsKey: 5 }, { ratePerMile: 0.7, gmapsKey: 'k'.repeat(301) }, { ratePerMile: 0.7, roundTripDefault: 'yes' }, { __st: 1, v: { ratePerMile: 9 } },
+    { __st: 1, v: { ratePerMile: 0.66 }, _at: 3 }, { __st: '1', ratePerMile: 0.7, v: {} }, { __st: '1', ratePerMile: 0.7, v: { ratePerMile: 5 } }, { ratePerMile: 0.7, __st: 0 },   // 包んだ形は書かない（画面と精算で違う単価）
     { ratePerMile: 0.7, junk: 'x'.repeat(20001) }];
   for (const v of bad) assert.ok(!swShapeOk('mileage_config', v), JSON.stringify(v).slice(0, 60));
   assert.ok(swShapeOk('career_cfg', CG0)); assert.ok(swShapeOk('career_cfg', {})); assert.ok(swShapeOk('career_cfg', { 'a|G1': null }));
   for (const v of [null, [], 'x', { a: 1 }, { a: [] }, { ['k'.repeat(101)]: {} }, { a: { x: 'y'.repeat(1000001) } }]) assert.ok(!swShapeOk('career_cfg', v), JSON.stringify(v).slice(0, 40));
+  // 独立レビュー P2-1：クラウドにもうある形の合わない記録は、同じままなら通す（新しく入れる・変えるのは断る）
+  const cloud = { ...CG0, x: 1, y: [1, { a: 2 }] };
+  assert.ok(swShapeOk('career_cfg', { ...CG0, x: 1, y: [1, { a: 2 }], 'b|G2': { _at: 1 } }, cloud));
+  assert.ok(swShapeOk('career_cfg', { ...CG0, x: 1 }, cloud), 'one of them dropped');
+  for (const v of [{ ...CG0, x: 2 }, { ...CG0, x: 1, z: 3 }, { ...CG0, y: [1] }]) assert.ok(!swShapeOk('career_cfg', v, cloud), JSON.stringify(v));
+  for (const c of [null, undefined, [], 'x', { x: '1' }]) assert.ok(!swShapeOk('career_cfg', { ...CG0, x: 1 }, c), JSON.stringify(c));
   assert.ok(!swShapeOk('tasks_all', {}));
 });
 
@@ -168,4 +176,30 @@ test('reading and pulling do not go through this path: get refuses the keys, pul
   const d = await S.call({ action: 'put', key: 'mileage_config', value: { ...MI0, ratePerMile: 1 }, ...S.pin('g4') }, S.email('gm'));
   assert.equal(d.status, 503, 'a PIN request is decided by the PIN only (Codex P1 of v1139)');
   assert.deepEqual(S.W.get('mileage_config'), MI0);
+});
+
+test('v1141 review P2-1: an odd record that someone put in the Score settings before the SQL does not stop the GM — it stays as it is; a new odd record is refused (400)', async () => {
+  const S = setup();
+  S.W.set('career_cfg', { ...CG0, x: 1 }, T0);
+  const v = { ...CG0, x: 1, '調理|G4': { role: 'chef', hide: [], csView: ['g4'], _at: 9 } };   // GM の端末：クラウドと合流した値（形の合わない記録も入る）
+  const r = await S.call({ action: 'put', key: 'career_cfg', value: v, ...S.pin('gm') });
+  assert.equal(r.status, 200); assert.deepEqual(S.W.get('career_cfg'), v);
+  const n = await S.call({ action: 'put', key: 'career_cfg', value: { ...v, x: 2 }, ...S.pin('gm') });
+  assert.equal(n.status, 400); assert.equal(n.j.error, 'bad_value'); assert.deepEqual(S.W.get('career_cfg'), v);
+  assert.equal((await S.call({ action: 'put', key: 'career_cfg', value: { ...v, z: 'new' }, ...S.pin('ceo') })).status, 400);
+  assert.deepEqual(writes(S.W, 'career_cfg'), ['service']);
+});
+
+test('v1141 review P3-6: a resend that equals the cloud passes even when the cloud value itself has the wrong shape (no write); a different value is 403, not 400', async () => {
+  const S = setup();
+  const odd = { __st: 1, v: { ratePerMile: 0.66 }, ratePerMile: 0.66 };
+  S.W.set('mileage_config', odd, T0);
+  const r = await S.call({ action: 'put', key: 'mileage_config', value: { ...odd }, ...S.pin('g4') });
+  assert.equal(r.status, 200); assert.equal(r.j.same, true);
+  assert.equal((await S.call({ action: 'put', key: 'mileage_config', value: { ratePerMile: 0.9 }, ...S.pin('g4') })).status, 403);
+  assert.equal((await S.call({ action: 'put', key: 'mileage_config', value: 'junk', ...S.pin('g4') })).status, 403, 'not 400: whoever is not allowed is told so');
+  // 決めた人が同じ包んだ形を送ると断る（直してもらう）。包まない形にすると書ける
+  assert.equal((await S.call({ action: 'put', key: 'mileage_config', value: { ...odd }, ...S.pin('of') })).status, 400);
+  assert.equal((await S.call({ action: 'put', key: 'mileage_config', value: { ratePerMile: 0.66 }, ...S.pin('of') })).status, 200);
+  assert.equal(S.W.log.filter(x => x[0] === 'write').length, 1);
 });

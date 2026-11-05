@@ -1,5 +1,5 @@
 -- 読むだけ（v1141・2b-3）。20261110090000_secure_settings_write.sql を入れた「あと」に、Supabase の SQL Editor で流す。
--- 最後に rollback するので何も変わりません。全部の行が OK（か info）なら入っています。NG があったら、表をそのまま Claude に貼ってください（中身は出ません）。
+-- 最後に rollback するので何も変わりません。全部の行が OK（か info）なら入っています。NG・CHECK があったら、表をそのまま Claude に貼ってください（地図の鍵・名前は出ません）。
 begin;
 create temp table sw_chk(n int, what text, value text, ok text) on commit drop;
 grant insert on sw_chk to anon, authenticated;   -- 下で anon・authenticated として結果を書くため（この一時表だけ。rollback で消える）
@@ -97,9 +97,43 @@ declare r numeric;
 begin
   begin
     execute 'select public.wr_mileage_rate()' into r;
-    insert into sw_chk values (12, 'ガソリン代の単価（wr_mileage_rate。work-requests が使う）', coalesce(r::text, '読めない'), case when r is not null then 'OK' else 'NG（ガソリン代の申請が止まる。CEO・GM・経理が画面で単価を入れ直す）' end);
+    insert into sw_chk values (12, 'ガソリン代の単価（wr_mileage_rate。work-requests が使う。③ の前に書き換えられていないか、決めた単価と同じか見てください）', coalesce(r::text, '読めない'),
+      case when r is not null and r >= 0.01 and r <= 5 then 'OK（決めた単価と同じか確かめてください）' else 'NG（ガソリン代の申請が止まる・短い距離が 0 セントになる。CEO・GM・経理が画面で単価を入れ直す）' end);
   exception when undefined_function then insert into sw_chk values (12, 'ガソリン代の単価（wr_mileage_rate）', '関数なし', 'info');
   end;
 end $$;
+-- 13：対象の行の形（関数 secure-state の swShapeOk と同じ決まり）。おかしな形のガソリン代の設定は、決めた人が保存し直すまで直らない
+insert into sw_chk
+select 13, '対象の行の形（関数と同じ決まり：ガソリン代は包まない形・単価 0.01〜5・地図の鍵は 300 字まで／Score管理は記録ごとにオブジェクトか空）',
+       'ガソリン代 ' || case when mi is null then '行なし' when mi_ok then 'OK' else 'NG' end || '・Score管理の形の合わない記録 ' || coalesce(cg_bad::text, '行なし'),
+       case when mi is not null and not mi_ok then 'NG（ガソリン代の設定：CEO・GM・経理が画面で入れ直す）'
+            when coalesce(cg_bad, 0) > 0 then 'info（Score管理に形の合わない記録が ' || cg_bad || ' 件。GM・CEO の保存は止まりません（そのまま残る）。消すなら Claude に）'
+            else 'OK' end
+  from (select (select a.value::jsonb from public.app_state a where a.key = 'mileage_config') mi,
+               (select a.value::jsonb from public.app_state a where a.key = 'career_cfg') cg) x
+  left join lateral (select jsonb_typeof(x.mi) = 'object' and not (x.mi ? '__st')
+                            and jsonb_typeof(x.mi->'ratePerMile') = 'number' and (x.mi->>'ratePerMile')::numeric between 0.01 and 5
+                            and (not (x.mi ? 'gmapsKey') or jsonb_typeof(x.mi->'gmapsKey') = 'null' or (jsonb_typeof(x.mi->'gmapsKey') = 'string' and char_length(x.mi->>'gmapsKey') <= 300))
+                            and (not (x.mi ? 'roundTripDefault') or jsonb_typeof(x.mi->'roundTripDefault') = 'boolean') as mi_ok) y on true
+  left join lateral (select case when x.cg is null then null when jsonb_typeof(x.cg) <> 'object' then -1
+                                 else (select count(*)::int from jsonb_each(x.cg) e where char_length(e.key) > 100 or jsonb_typeof(e.value) not in ('object', 'null')) end as cg_bad) z on true;
+-- 14：Score管理の記録（キーと最後に変えた日時。名前は出しません）。③ の前は公開の鍵で書けたので、画面で 1 つずつ決めたとおりか確かめる
+insert into sw_chk
+select 14, 'Score管理の記録（専門職|グレード：最後に変えた日時）', coalesce((select string_agg(e.key || '：' || coalesce(e.value->>'at', '?'), ' / ' order by e.key)
+         from public.app_state a, jsonb_each(case when jsonb_typeof(a.value::jsonb) = 'object' then a.value::jsonb else '{}'::jsonb end) e where a.key = 'career_cfg'), 'なし'),
+       'info（Score管理の画面で、権限がどれも決めたとおりか確かめてください）';
+-- 15・16：決まり（RLS）を通らずに app_state に書ける道（独立レビュー P2-2）。この SQL は直接の書き込みしか試していないので、名前を出して確かめる
+insert into sw_chk
+select 15, 'app_state を使う security definer の関数で、公開の鍵・ログインで呼べるもの（決まりを通らない）', coalesce(string_agg(p.proname, ', ' order by p.proname), 'なし'),
+       case when count(*) = 0 then 'OK' else 'CHECK（名前を Claude に。決まったキーだけを書くか確かめます）' end
+  from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+ where n.nspname = 'public' and p.prosecdef and p.prosrc ilike '%app_state%'
+   and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));
+insert into sw_chk
+select 16, 'app_state を使う view で、公開の鍵・ログインで書けるもの', coalesce(string_agg(c.relname, ', ' order by c.relname), 'なし'),
+       case when count(*) = 0 then 'OK' else 'CHECK（名前を Claude に）' end
+  from pg_class c join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public' and c.relkind = 'v' and pg_get_viewdef(c.oid) ilike '%app_state%'
+   and (has_table_privilege('anon', c.oid, 'insert,update,delete') or has_table_privilege('authenticated', c.oid, 'insert,update,delete'));
 select n, what, value, ok from sw_chk order by n;
 rollback;

@@ -63,17 +63,23 @@ export const secretKey = k => ssIsKey(k) || csIsKey(k);
 //   役割はサーバーが決める（PIN の印は work-requests の whoami・メールのログインは manager_auth）。端末の言う役割は使わない。
 export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'] };
 export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
-// 値の形（決めた人が書くときも確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
-export function swShapeOk(key, value) {
+// 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
+//   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
+//     外と中で違う単価になる。アプリは書かない＝独立レビュー P3-1）。単価は 0.01〜5（それより小さいと短い距離が 0 セントになり申請が止まる）。
+//   career_cfg：'<部門>|<G>' ごとの記録（オブジェクトか null）の地図。おかしな記録は、クラウドにもうある同じ記録だけ通す
+//     （ほかの人が前に入れたものが残っていても、GM・CEO の保存が止まらないように＝独立レビュー P2-1。新しく入れることはできない）。
+export function swCgEntryOk(k, x) { return typeof k === 'string' && k.length <= 100 && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
+export function swCgBadKeys(value) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k])) : []; }
+export function swShapeOk(key, value, cloud) {
   let s;
   try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
   if (key === 'mileage_config') {
     if (s.length > 20000) return false;
-    let v = value;
-    if (v && typeof v === 'object' && !Array.isArray(v) && v.__st === 1) v = v.v;   // 包んだ形（wr_mileage_rate と同じ読み方）
+    const v = value;
     if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
+    if (Object.prototype.hasOwnProperty.call(v, '__st')) return false;   // 包んだ形は書かない（上）
     const r = v.ratePerMile;
-    if (typeof r !== 'number' || !Number.isFinite(r) || !(r > 0) || r > 5) return false;   // wr_mileage_rate が使える単価（0 より大きく 5 以下）
+    if (typeof r !== 'number' || !Number.isFinite(r) || r < 0.01 || r > 5) return false;   // 0.01〜5（wr_mileage_rate が使える単価で、短い距離も 1 セント以上）
     if (v.gmapsKey !== undefined && v.gmapsKey !== null && (typeof v.gmapsKey !== 'string' || v.gmapsKey.length > 300)) return false;
     if (v.roundTripDefault !== undefined && typeof v.roundTripDefault !== 'boolean') return false;
     return true;
@@ -81,7 +87,8 @@ export function swShapeOk(key, value) {
   if (key === 'career_cfg') {
     if (s.length > 1000000) return false;
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-    return Object.entries(value).every(([k, x]) => k.length <= 100 && (x === null || (typeof x === 'object' && !Array.isArray(x))));
+    const c = (cloud && typeof cloud === 'object' && !Array.isArray(cloud)) ? cloud : null;
+    return swCgBadKeys(value).every(k => !!c && Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]));
   }
   return false;
 }
@@ -661,12 +668,18 @@ export function createHandler(deps) {
     if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
     const e = b.expect;
     if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
-    if (!swShapeOk(key, b.value)) throw bad();
-    if (SW_WRITE[key].includes(a.role)) return writeRow(key, b.value, e);
-    const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key));
-    const cur = Array.isArray(rows) && rows[0] ? rows[0] : null;
-    if (cur && canon(cur.value) === canon(b.value)) return { ok: true, updated_at: cur.updated_at, same: true };
-    throw err('forbidden', 403);
+    const cur = async () => { const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key)); return Array.isArray(rows) && rows[0] ? rows[0] : null; };
+    if (!SW_WRITE[key].includes(a.role)) {
+      // 決めた人でなければ書かない。クラウドと同じ値なら（まとめて送り直す端末のため）書かずに通す。
+      // 書かないので値の形は見ない（クラウドの値そのものの形がおかしくても、送り直しが止まらないように＝独立レビュー P3-6）
+      const c = await cur();
+      if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true };
+      throw err('forbidden', 403);
+    }
+    let cloud;
+    if (key === 'career_cfg' && swCgBadKeys(b.value).length) { const c = await cur(); cloud = c ? c.value : null; }
+    if (!swShapeOk(key, b.value, cloud)) throw bad();
+    return writeRow(key, b.value, e);
   }
 
   async function put(a, b) {
