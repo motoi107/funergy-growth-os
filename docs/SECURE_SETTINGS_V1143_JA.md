@@ -55,7 +55,7 @@ v1141（PR #135）と同じ道（関数 `secure-state` の `put`・決めた人�
 - `tests/secure-settings-more-rls.test.mjs`（7・PGlite）：v1141 のあと／v1139〜v1142 のあと／RLS OFF／ON から：anon・authenticated は 10 のキーを読めるが足す・上書き・直す・消す・名前を変えて入れる、ができない・グレードの履歴などほかは書ける・サーバーの鍵は書ける・行の一覧に出る・2 回流しても同じ・確かめの SQL（13 行・17 行）・穴があれば NG・決まりが無ければ NG・戻す SQL（2 回）・v1141 の戻す SQL・SQL と関数とアプリ（index.html）のキーの決まりが同じ（300 の乱数のキーも）・STOP・形の NG と info・決まりを通らない関数は CHECK。
 - 変えた試験：`tests/secure-settings-server.test.mjs`（キーが 10）・`tests/secure-state-server.test.mjs`（答えに `sw2:1`）・`tests/secure-settings-client.test.mjs`（Score管理の同じ値の送り直しは「書かなかった（クラウドにもうある）」）・`tests/secure-settings-rls.test.mjs`（v1141 の SQL だけなら 2 つ）・`tests/secure-state-deploy.test.mjs`（v1142 の関数の 1 ファイルを sha256 で固定・v1143 の一式）・
   `tests/career-criteria.test.mjs`・`tests/cs-strengths.test.mjs`・`tests/karte-eval.test.mjs`・`tests/karte-settings.test.mjs`（合流の決まりの行に `cas: true`）。CI に v1142・v1143 の試験を足した。
-- secure 一式（`tests/secure-*.test.mjs` 16 ファイル）214/214。static release pass/1143。
+- secure 一式（`tests/secure-*.test.mjs` 16 ファイル）214/214、v1142 の Codex の直し（#136 `7305c75`）を取り込んだあと 218/218。static release pass/1143。
 - 全体（重い 2 つ以外・4 並列）：v1143 2,109 件・v1142（`b3ae79b`）2,041 件。落ちる試験は同じ（meeting-budget・meeting-sales・cooking-sake・bot-center・bot-database・approvals の forced tie・ingredient-transfers・invoice-migrations・next-v1090・perf-v1098・specialist-career＝前から）。違いは v1142 で重いときだけ落ちた invoice-intake の 1 件と、上の 4 ファイル（合流の行の `cas: true`。直した）。
 - わざと壊す 34 通りのうち 33 で落ちる（関数 7・アプリ 13・SQL 8・戻す 3・確かめ 3）。1 回目は 31（「クラウドにもうある」の文・確かめの 3 行目のグレードの履歴は試験を足した）。残り 1 は同じ意味（直す決まりの with check を省くと using を使う）。
 

@@ -57,7 +57,7 @@ test('the v1142 bundle is as it was (the SQL files and the pinned function file)
   assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261111090000_secure_hr_rls.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-hr-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-hr-rls-rollback.sql'));
-  assert.equal(sha(D + '2_関数_secure-state_index.ts'), '8adbc38767ec700cba66ee8da1365f6b9b1b5eea59cac974399e9c100a8425d7', 'the v1142 function file (PR #136 b3ae79b) is not changed');
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), '8447f4e93d4c9d9b306d5082f8b18292cbcb5d2b9d4ade06900e63091d847e3a', 'the v1142 function file (PR #136 7305c75) is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
   assert.match(one, TAIL);
   assert.ok(/hrfn: 1/.test(one) && !/sw2: 1/.test(one), 'the v1142 function knows hiring, not the v1143 settings');
