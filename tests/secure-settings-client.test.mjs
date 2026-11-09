@@ -24,6 +24,8 @@ function fn(name) {
 const oneLine = name => { const i = source.indexOf('\nfunction ' + name + '('); assert.ok(i >= 0, name); const l = source.slice(i + 1, source.indexOf('\n', i + 1)); assert.ok(l.trimEnd().endsWith('}'), name); return l; };
 const block = (a, b) => { const i = source.indexOf(a), j = source.indexOf(b, i); assert.ok(i > 0 && j > i, a); return source.slice(i, j); };
 const varLine = re => { const m = source.match(re); assert.ok(m, String(re)); return m[0].replace(/\r$/, ''); };
+// Score管理の合流の決まりはアプリの本物（OP_MERGE の行。cas も：Codex #135 の P1）
+const CG_DEF = (() => { const m = source.match(/^  career_cfg:\s+(\{[^}\n]*\})/m); assert.ok(m, 'career_cfg def'); return m[1]; })();
 
 // 前の版の関数（v1140）：入れる一式の 1 ファイル（Deno の起動の行を外して読む）
 const v1140Src = readFileSync(new URL('../deploy/secure-cs-v1140/2_関数_secure-state_index.ts', import.meta.url), 'utf8').replace(/\nDeno\.serve\([^\n]*\n?$/, '\n');
@@ -52,7 +54,8 @@ const CODE = [
    function _opWriteBack(){} function _opCloudVal(k, v){ return v; } function isOpSyncKey(k){ return true; }
    function csIsKey(k){ return false; } function csOnLogout(){}
    /* Score管理の合流はアプリの本物（mergeMapByTime・_coversMapByTime。独立レビュー P3-6） */
-   function _opMergeDef(k){ return k==='career_cfg' ? { merge:mergeMapByTime, covers:_coversMapByTime } : null; }
+   var __CG_DEF=${CG_DEF};
+   function _opMergeDef(k){ return k==='career_cfg' ? __CG_DEF : null; }
    function _outboxRemove(){}
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function showToast(m){ __toasts.push(m); } function alert(m){ __alerts.push(m); } function closeModalDirect(){} function renderPage(){}
@@ -148,9 +151,6 @@ test('the screen refuses a rate the server cannot use (negative, over $5) and a 
   }
   assert.deepEqual(W.get('mileage_config'), MI0, 'nothing sent');
   assert.equal(writesOf(W, 'mileage_config').length, 0);
-  // 空・0 は今までどおり 0.70（前からの決まり）
-  await saveMileage(c, '');
-  assert.equal(W.get('mileage_config').ratePerMile, 0.7);
   const g4 = tab(W, 't4');
   await saveMileage(g4, 0.9);
   assert.match(g4.__alerts[0], /CEO・GM・経理/);
@@ -252,4 +252,91 @@ test('v1141 review: when the server refuses the shape (400), the device says wha
   assert.equal(await c.opMergePush('career_cfg', { ...next, y: 'odd' }), false);
   assert.ok(c.__toasts.some(m => /Score管理の設定をサーバーが断りました/.test(m)));
   assert.deepEqual(W.get('career_cfg'), { ...next, x: 1 });
+});
+
+test('Codex #135 P2: blank, 0 or a non-number is not saved and the current rate stays (no silent $0.70)', async () => {
+  const W = world();
+  W.set('mileage_config', { ...MI0, ratePerMile: 1.25 }, T0);
+  const c = tab(W, 'tGM');
+  for (const bad of ['', '0', '  ', 'abc', '1.2abc', '0.00']) {
+    c.__alerts.length = 0;
+    const r = await saveMileage(c, bad);
+    assert.deepEqual(r, [], JSON.stringify(bad) + ': nothing sent');
+    assert.equal(c.__alerts.length, 1, JSON.stringify(bad)); assert.match(c.__alerts[0], /空・0 は保存しません。今の単価はそのままです/);
+  }
+  assert.equal(W.get('mileage_config').ratePerMile, 1.25);
+  assert.equal(writesOf(W, 'mileage_config').length, 0);
+  // 英語の画面の文
+  vm.runInContext("function t(ja, en){ return en; }", c); c.__alerts.length = 0;
+  await saveMileage(c, '');
+  assert.match(c.__alerts[0], /blank or 0 is not saved; the current rate stays/);
+  // ふつうの値は保存できる
+  assert.deepEqual(await saveMileage(c, '0.85'), [true]);
+  assert.equal(W.get('mileage_config').ratePerMile, 0.85);
+});
+
+test('Codex #135 P1: GM and CEO save different Score settings at the same time: both report success and both changes stay', async () => {
+  const W = world();
+  const gm = tab(W, 'tGM'), ceo = tab(W, 'tCEO');
+  const A = { role: 'chef', hide: [], csView: ['g4'], csEdit: null, csApprove: null, _at: 9 };
+  const B = { role: '', hide: ['karte'], csView: null, csEdit: ['am'], csApprove: null, _at: 10 };
+  const r = await Promise.all([gm.opMergePush('career_cfg', { ...CG0, '調理|G4': A }), ceo.opMergePush('career_cfg', { ...CG0, 'サービス|G4': B })]);
+  assert.deepEqual(r, [true, true]);
+  assert.deepEqual(W.get('career_cfg'), { ...CG0, '調理|G4': A, 'サービス|G4': B }, 'both changes stay');
+  assert.ok(writesOf(W, 'career_cfg').every(x => x === 'service'));
+});
+
+test('Codex #135 P1: the CEO read the old settings, then the GM revoked an approval right, then the CEO saved another item: the revocation stays', async () => {
+  const W = world();
+  const gm = tab(W, 'tGM');
+  let hold = null, held = false;
+  const ceo = tab(W, 'tCEO');
+  // CEO の端末：Score管理の行を読んだあと（書く前）に止める
+  ceo.fetch = async (u, o) => {
+    const res = await W.fetch(u, o);
+    if (!held && String(u).includes('/rest/v1/app_state?key=eq.career_cfg') && (!o || !o.method || o.method === 'GET')) { held = true; await new Promise(r => { hold = r; }); }
+    return res;
+  };
+  const revoked = { ...CG0['経理|G4'], csApprove: [], _at: 6 };
+  const B = { role: '', hide: ['karte'], csView: null, csEdit: ['am'], csApprove: null, _at: 10 };
+  const p = ceo.opMergePush('career_cfg', { ...CG0, 'サービス|G4': B });   // CEO の写しの '経理|G4' は古いまま（AM が承認する）
+  for (let i = 0; i < 50 && !hold; i++) await new Promise(r => setTimeout(r, 1));
+  assert.ok(hold, 'the CEO read the row');
+  assert.equal(await gm.opMergePush('career_cfg', { ...CG0, '経理|G4': revoked }), true);
+  hold();
+  assert.equal(await p, true);
+  const fin = W.get('career_cfg');
+  assert.deepEqual(fin['経理|G4'].csApprove, [], 'the AM is not put back');
+  assert.deepEqual(fin['サービス|G4'], B, 'the CEO change is in too');
+});
+
+test('Codex #135 P1: a device that may not change the Score settings and resends the same value is not stuck (nothing written)', async () => {
+  const W = world();
+  const c = tab(W, 't1');
+  assert.equal(await c.opMergePush('career_cfg', CG0), true);
+  assert.equal(writesOf(W, 'career_cfg').length, 0);
+  assert.equal(c._swLast.career_cfg.how, 'same');
+});
+
+test('Codex #135 P2 (step B-5): the device records which way the setting was written — the function as the decided role, not written, or REST', async () => {
+  const W = world();
+  const gm = tab(W, 'tGM');
+  await saveMileage(gm, '0.7');
+  assert.deepEqual({ how: gm._swLast.mileage_config.how, by: gm._swLast.mileage_config.by }, { how: 'fn', by: 'gm' }, 'v1141 wrote it as the GM');
+  const one = tab(W, 't1');
+  one.__pushed.length = 0; one.setMileageConfig(W.get('mileage_config'));
+  assert.deepEqual(await Promise.all(one.__pushed), [true], 'the same value from a crew device passes (as before)');
+  assert.equal(one._swLast.mileage_config.how, 'same', 'but it is recorded as not written');
+  const W2 = world({ old: true });
+  const g2 = tab(W2, 'tGM');
+  await saveMileage(g2, '0.7');
+  assert.equal(g2._swLast.mileage_config.how, 'rest', 'the function is v1140: REST');
+  const np = tab(W, 'nopin'); vm.runInContext("curRole='gm';", np);
+  await saveMileage(np, '0.7');
+  assert.equal(np._swLast.mileage_config.how, 'rest', 'no PIN sign-in: REST');
+  // 「設定 › 診断と記録」に残す文
+  const logs = [];
+  const c = tab(world(), 'tOF'); c.FUNERGY_STATUS = { log: (k, m) => logs.push(m) };
+  await saveMileage(c, '0.7');
+  assert.ok(logs.some(m => /ガソリン代の設定：サーバー（secure-state v1141）が書きました（役割 経理）/.test(m)), logs.join(' | '));
 });

@@ -679,7 +679,8 @@ export function createHandler(deps) {
     let cloud;
     if (key === 'career_cfg' && swCgBadKeys(b.value).length) { const c = await cur(); cloud = c ? c.value : null; }
     if (!swShapeOk(key, b.value, cloud)) throw bad();
-    return writeRow(key, b.value, e);
+    // by：書いた人の役割（アプリが「設定 › 診断と記録」に残す。③ の前の確かめで、関数が決めた人として書いたことが分かる：Codex #135 の P2）
+    return { ...(await writeRow(key, b.value, e)), by: a.role };
   }
 
   async function put(a, b) {

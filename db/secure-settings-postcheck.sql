@@ -104,9 +104,12 @@ begin
 end $$;
 -- 13：対象の行の形（関数 secure-state の swShapeOk と同じ決まり）。おかしな形のガソリン代の設定は、決めた人が保存し直すまで直らない
 insert into sw_chk
+-- Codex #135 の P2：形を確かめられない（単価が無い・数でない＝NULL）を OK にしない（is not true）。Score管理の行がオブジェクトでないのは NG（-1 を OK にしていた）
 select 13, '対象の行の形（関数と同じ決まり：ガソリン代は包まない形・単価 0.01〜5・地図の鍵は 300 字まで／Score管理は記録ごとにオブジェクトか空）',
-       'ガソリン代 ' || case when mi is null then '行なし' when mi_ok then 'OK' else 'NG' end || '・Score管理の形の合わない記録 ' || coalesce(cg_bad::text, '行なし'),
-       case when mi is not null and not mi_ok then 'NG（ガソリン代の設定：CEO・GM・経理が画面で入れ直す）'
+       'ガソリン代 ' || case when mi is null then '行なし' when mi_ok is true then 'OK' else 'NG' end
+         || '・Score管理 ' || case when cg is null then '行なし' when cg_bad < 0 then '全体がオブジェクトでない（' || jsonb_typeof(cg) || '）' else '形の合わない記録 ' || cg_bad end,
+       case when mi is not null and mi_ok is not true then 'NG（ガソリン代の設定：CEO・GM・経理が画面で入れ直す）'
+            when cg_bad < 0 then 'NG（Score管理の行がオブジェクトでない。権限が初期の決まりに戻っています。Claude に）'
             when coalesce(cg_bad, 0) > 0 then 'info（Score管理に形の合わない記録が ' || cg_bad || ' 件。GM・CEO の保存は止まりません（そのまま残る）。消すなら Claude に）'
             else 'OK' end
   from (select (select a.value::jsonb from public.app_state a where a.key = 'mileage_config') mi,
@@ -119,8 +122,10 @@ select 13, '対象の行の形（関数と同じ決まり：ガソリン代は�
                                  else (select count(*)::int from jsonb_each(x.cg) e where char_length(e.key) > 100 or jsonb_typeof(e.value) not in ('object', 'null')) end as cg_bad) z on true;
 -- 14：Score管理の記録（キーと最後に変えた日時。名前は出しません）。③ の前は公開の鍵で書けたので、画面で 1 つずつ決めたとおりか確かめる
 insert into sw_chk
-select 14, 'Score管理の記録（専門職|グレード：最後に変えた日時）', coalesce((select string_agg(e.key || '：' || coalesce(e.value->>'at', '?'), ' / ' order by e.key)
-         from public.app_state a, jsonb_each(case when jsonb_typeof(a.value::jsonb) = 'object' then a.value::jsonb else '{}'::jsonb end) e where a.key = 'career_cfg'), 'なし'),
+select 14, 'Score管理の記録（専門職|グレード：最後に変えた日時）',
+       coalesce((select case when jsonb_typeof(a.value::jsonb) <> 'object' then '全体がオブジェクトでない（13 行目）' end from public.app_state a where a.key = 'career_cfg'),
+                (select string_agg(e.key || '：' || coalesce(e.value->>'at', '?'), ' / ' order by e.key)
+                   from public.app_state a, jsonb_each(case when jsonb_typeof(a.value::jsonb) = 'object' then a.value::jsonb else '{}'::jsonb end) e where a.key = 'career_cfg'), 'なし'),
        'info（Score管理の画面で、権限がどれも決めたとおりか確かめてください）';
 -- 15・16：決まり（RLS）を通らずに app_state に書ける道（独立レビュー P2-2）。この SQL は直接の書き込みしか試していないので、名前を出して確かめる
 insert into sw_chk

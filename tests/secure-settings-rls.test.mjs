@@ -184,6 +184,23 @@ test('v1141 review: the postcheck shows what the direct tries cannot — a secur
   assert.match((await postRows(db)).find(x => x.n === 13).ok, /^info.*3 件/);
   assert.match((await db.query(PRE)).rows.find(x => x.n === 7).value, /形の合わない記録 3$/);
   assert.match((await postRows(db)).find(x => x.n === 14).value, /経理\|G4：2026\/11\/04 10:00/);
+  // Codex #135 の P2：単価が無い・数でない（NULL）を OK にしない／Score管理の行がオブジェクトでないのは NG（-1 を OK にしていた）
+  await db.query(`update public.app_state set value = '{}' where key = 'mileage_config'`);
+  let r = (await postRows(db)).find(x => x.n === 13);
+  assert.match(r.value, /^ガソリン代 NG/); assert.match(r.ok, /^NG/, '{} → ' + r.ok);
+  await db.query(`update public.app_state set value = '{"ratePerMile":"0.7"}' where key = 'mileage_config'`);
+  assert.match((await postRows(db)).find(x => x.n === 13).ok, /^NG/, 'a string rate');
+  await db.query(`update public.app_state set value = '{"ratePerMile":0.7}' where key = 'mileage_config'`);
+  for (const v of ['[]', '"x"', '5']) {
+    await db.query(`update public.app_state set value = $1 where key = 'career_cfg'`, [v]);
+    const rr = await postRows(db);
+    assert.match(rr.find(x => x.n === 13).value, /Score管理 全体がオブジェクトでない/, v); assert.match(rr.find(x => x.n === 13).ok, /^NG/, v);
+    assert.match(rr.find(x => x.n === 14).value, /全体がオブジェクトでない/, v);
+    assert.match((await db.query(PRE)).rows.find(x => x.n === 7).ok, /^NG/, 'precheck ' + v);
+  }
+  await db.query(`delete from public.app_state where key = 'career_cfg'`);
+  r = (await postRows(db)).find(x => x.n === 13);
+  assert.match(r.value, /Score管理 行なし$/); assert.equal(r.ok, 'OK', 'no row is not an error');
   await db.close();
 });
 

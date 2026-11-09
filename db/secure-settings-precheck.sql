@@ -32,7 +32,9 @@ select 7, 'Score管理（career_cfg）', coalesce((select (select count(*) from 
                                               || case when jsonb_typeof(a.value::jsonb) <> 'object' then '（全体が地図でない）'
                                                       else (select count(*) from jsonb_each(a.value::jsonb) e where char_length(e.key) > 100 or jsonb_typeof(e.value) not in ('object', 'null'))::text end
                                               from public.app_state a where a.key = 'career_cfg'), '行なし'),
-       'info（形の合わない記録があっても GM・CEO の保存は止まりません（そのまま残る）。消すなら Claude に）'
+       case when (select jsonb_typeof(a.value::jsonb) from public.app_state a where a.key = 'career_cfg') <> 'object'
+            then 'NG（Score管理の行が地図でない。権限が初期の決まりに戻っています。Claude に）'
+            else 'info（形の合わない記録があっても GM・CEO の保存は止まりません（そのまま残る）。消すなら Claude に）' end
 union all
 -- PIN のログインで「経理」「GM」「CEO」と分かるのは、メールのアカウント（manager_auth）が社員と結ばれている人だけ（work-requests の whoami）。
 -- アプリは PIN の印があればいつもそれで送る（メールのログインに切り替えない）ので、結ばれていない人は v1141 からガソリン代の単価・Score管理を変えられない

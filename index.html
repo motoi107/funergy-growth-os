@@ -12172,6 +12172,7 @@ async function supaUpsert(table, rows, _noSs){
       console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
     if (tm) clearTimeout(tm);
     _lastSupaError = null;
+    if (table==='app_state' && typeof swNote==='function'){ try{ (Array.isArray(rows) ? rows : [rows]).forEach(function(r){ if(r && swIsKey(r.key)) swNote(r.key, 'rest'); }); }catch(e){} }   /* v1141 */
     return true;
   } catch(e){
     if (tm) clearTimeout(tm);
@@ -12496,6 +12497,20 @@ function swRouted(key){
   var S=ssSess(); if(!S || ssLegacyNow(S) || swOldNow(S)) return false;
   return true;
 }
+/* v1141（Codex #135 の P2）：この 2 つの設定をどの道で書いたかを「設定 › 診断と記録」に残す（手順.md の B-5 の確かめ）。
+   fn＝関数 secure-state（v1141）が決めた人として書いた／same＝関数は書かなかった（このログインの役割では変えられない。クラウドと同じ値だったので止めなかった）／
+   rest＝公開の鍵（REST）で書いた（関数が前の版・ログインの印が無い）。「保存済み」だけでは道が分からないため */
+var _swLast = {};
+function swNote(key, how, by){
+  _swLast[key]={ how:how, by:by || '', at:Date.now() };
+  var nm={ mileage_config:['ガソリン代の設定','Mileage settings'], career_cfg:['Score管理の設定','Score settings'] }[key] || [key, key];
+  var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'] }[by];
+  var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
+  var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state v1141）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state v1141, role '+re+')']
+        : how==='same' ? [nm[0]+'：サーバー（secure-state v1141）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state v1141) did not write (this sign-in may not change it; the cloud already had the same value)']
+        :                [nm[0]+'：公開の鍵（REST）で書きました（関数が v1141 でない・PIN のログインでない。③ の SQL はまだ流さないでください）', nm[1]+': written with the public key (REST: the function is not v1141 or no PIN sign-in; do not run step 3 yet)'];
+  try{ if(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', (typeof t==='function') ? t(m[0], m[1]) : m[0]); }catch(e){}
+}
 function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
 function ssLevelSet(v){
   var prev=ssLevelGet();
@@ -12806,7 +12821,10 @@ async function ssPutRow(key, value, expect){
   if(expect) p.expect={ exists:!!expect.exists, updated_at:(expect.exists ? (expect.updatedAt==null ? null : expect.updatedAt) : null) };
   var r=await ssCall(p);
   if(r.legacy || r.none) return SS_REST;
-  if(r.ok) return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at) };
+  if(r.ok){
+    if(swIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
+    return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at), same:r.j.same===true };
+  }
   if(r.status===409) return 'conflict';
   if(r.status===400){
     /* v1141（独立レビュー P2-1）：決めた人が書いた値の形をサーバーが断った（送信待ちに残る）。何が悪いかを出す */
@@ -13586,7 +13604,8 @@ var OP_MERGE = {
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
   grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
-  career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう） */
+  career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう）。
+                         v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
   bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
   /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう。
@@ -14202,12 +14221,13 @@ function _casTs(readTs){
 /* v1096: 読んだ行が変わっていないときだけ書く。'ok'／'conflict'（ほかの端末が先に書いた）／'fail'／
    'badts'（読んだ時刻の形を読めない：書かない）／'stale'（書けたが、書いた行の時刻が読んだ時刻より進んでいない） */
 function _opCasWrite(key, value, row, _noSs){
-  if(!_noSs && typeof ssRouted==='function' && ssRouted(key)){   /* v1139：同じ照合（読んだ行の updated_at）を関数 secure-state で */
+  if(!_noSs && typeof ssRouted==='function' && (ssRouted(key) || (typeof swRouted==='function' && swRouted(key)))){   /* v1139：同じ照合（読んだ行の updated_at）を関数 secure-state で。v1141：決めた人だけが書ける設定も（Codex #135 の P1） */
     var _srt=(row && row.exists) ? row.updatedAt : null, _sb=(_srt==null) ? null : _tsMicro(_srt);
     if(_srt!=null && _sb==null) return Promise.resolve('badts');
     return ssPutRow(key, value, { exists:!!(row && row.exists), updatedAt:_srt }).then(function(x){
       if(x===SS_REST) return _opCasWrite(key, value, row, true);
       if(x==='conflict' || x==='badts') return x;
+      if(x && x.ok && x.same) return 'ok';   /* v1141：クラウドがもう同じ値（書く役割でない端末の送り直し）：書くものは無い */
       if(x && x.ok){ if(_sb!=null){ var _g=_tsMicro(x.updatedAt); if(_g==null || _g<=_sb) return 'stale'; } return 'ok'; }
       return 'fail';
     }, function(){ return 'fail'; });
@@ -14239,6 +14259,7 @@ function _opCasWrite(key, value, row, _noSs){
       /* 書いた行の時刻が、読んだ時刻より進んだのを確かめてから「書けた」にする（DB の時刻の精度が粗い・時刻を戻す仕組みがあると、
          次の古い書き込みが同じ時刻の条件をすり抜けうるので、保存できたとは言わない） */
       if(_base!=null){ var _got=_tsMicro(rows[0] && rows[0].updated_at); if(_got==null || _got<=_base) return 'stale'; }
+      if(typeof swNote==='function' && swIsKey(key)) swNote(key, 'rest');   /* v1141：公開の鍵で書いた（関数が前の版・ログインの印なし） */
       return 'ok';
     });
   }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
@@ -47619,9 +47640,12 @@ function openMileageConfig(){
 }
 function saveMileageConfigDo(){
   var key=(document.getElementById('mi-key').value||'').trim();
-  var rate=parseFloat(document.getElementById('mi-rate').value)||0.70;
+  /* v1141（Codex #135 の P2）：空・0・数でない入力は保存しない（前は 0.70 に置き換えて、今の単価を黙って変えていた）。今の単価はそのまま。
+     0.70 は、まだ単価を決めていないときの初めの表示（getMileageConfig）だけに使う */
+  var _raw=String((document.getElementById('mi-rate')||{}).value==null ? '' : document.getElementById('mi-rate').value).trim();
+  var rate=(_raw==='') ? NaN : Number(_raw);
   /* v1141：精算の金額に使う単価（0.01〜5。サーバーの wr_mileage_rate が使えるのは 5 以下・0.01 より小さいと短い距離が 0 セントになり申請が止まる） */
-  if(!(rate>=0.01 && rate<=5)){ alert('単価は $0.01〜$5.00 / マイルで入れてください'); return; }
+  if(!(isFinite(rate) && rate>=0.01 && rate<=5)){ alert((typeof t==='function') ? t('単価は $0.01〜$5.00 / マイルで入れてください（空・0 は保存しません。今の単価はそのままです）', 'Enter a rate from $0.01 to $5.00 per mile (blank or 0 is not saved; the current rate stays)') : '単価は $0.01〜$5.00 / マイルで入れてください（空・0 は保存しません。今の単価はそのままです）'); return; }
   if(!canManageMileage()){ alert('ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です'); return; }
   var rt=document.getElementById('mi-rtdef').checked;
   setMileageConfig({ gmapsKey:key, ratePerMile:rate, roundTripDefault:rt });
