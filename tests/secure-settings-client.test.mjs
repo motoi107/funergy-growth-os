@@ -315,7 +315,7 @@ test('Codex #135 P1: a device that may not change the Score settings and resends
   const c = tab(W, 't1');
   assert.equal(await c.opMergePush('career_cfg', CG0), true);
   assert.equal(writesOf(W, 'career_cfg').length, 0);
-  assert.equal(c._swLast.career_cfg.how, 'same');
+  assert.equal(c._swLast.career_cfg.how, 'none', 'v1143: the cloud already has it, so the app does not even ask the server');
 });
 
 test('Codex #135 P2 (step B-5): the device records which way the setting was written — the function as the decided role, not written, or REST', async () => {

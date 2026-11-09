@@ -565,7 +565,8 @@ test('the screens render for PC and phone, escape names from synced data, and ar
 test('sync: the three new keys are synced, merged per entry by time and kept by storage cleanup', () => {
   assert.match(source, /'karte_pin','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
   assert.match(source, /'q_budgets','bonus_eval_rule','bonus_eval_ovr','bonus_eval',/);
-  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap, keepLocal: true \\}'));
+  // v1143：4 項目の設定・個人設定は、読んだ行が変わっていないときだけ書く（cas。関数 secure-state で GM・CEO だけ）。個別評価の入力は今までどおり
+  for (const k of ['bonus_eval_rule', 'bonus_eval_ovr', 'bonus_eval']) assert.match(source, new RegExp('\\n  ' + k + ':\\s+\\{ merge: kevMergeMap, covers: kevCoversMap, keepLocal: true' + (k === 'bonus_eval' ? '' : ', cas: true') + ' \\}'));
   assert.ok(Number((source.match(/const APP_VERSION = '(\d+)';/) || [])[1]) >= 1065, 'v1065 or later');   /* v1066 で版が上がっても通る */
 });
 

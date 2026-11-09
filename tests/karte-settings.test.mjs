@@ -186,7 +186,7 @@ test('ranges live in their own synced key: a device still on v1058–v1061 rewri
   const r = run(c, `bcoefRange('G3-sv')`);
   assert.deepEqual([r.lo, r.hi, r.src], [0.9, 1.1, 'set']);
   assert.match(source, /'bonus_track','bonus_coef_rng','karte_pin'/, 'synced');
-  assert.match(source, /\n  bonus_coef_rng:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/, 'merged per coefficient by time');
+  assert.match(source, /\n  bonus_coef_rng:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \}/, 'merged per coefficient by time (v1143: written only over the row read)');
   assert.match(source, /'bonus_track','bonus_coef_rng','q_budgets'/, 'kept by storage cleanup');
   // a G3 whose track is unknown is shown with the range formula too (no leftover Career Score coefficient)
   const sho = { id: 'sho', name: 'Sho Sample', title: 'Store Leader' };
