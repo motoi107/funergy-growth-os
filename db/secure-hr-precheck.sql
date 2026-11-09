@@ -61,4 +61,12 @@ select 11, '確かめがまだの AM・G4・店長（ワークセンター › �
 union all
 select 12, 'app_state の RLS（ON なら v1139 以降の SQL が入っている）', case when c.relrowsecurity then 'ON' else 'OFF' end, 'info'
   from pg_class c where c.oid = 'public.app_state'::regclass
+union all
+-- CEO・GM・経理のメールのアカウントで、社員 ID が社員の表に無い人：関数はその人に応募者・不採用ログ・相談を何も見せない
+-- （社員の行を消した人は止める：Codex #136 6738169923 の P2-1）。社員と結ばれていない（社員 ID が空の）アカウントは今までどおり全部見える
+select 13, 'CEO・GM・経理のメールのアカウントで、社員 ID が社員の表に無い（応募者・不採用ログ・相談が見えなくなる）', count(*)::text,
+       case when count(*) = 0 then 'OK' else 'info（manager_auth の emp_id を今の社員 ID に直すか、空にする。db/invoice-signin-emp-check.sql で確かめる）' end
+  from public.manager_auth m
+ where m.role in ('ceo', 'gm', 'office') and coalesce(m.emp_id::text, '') <> ''
+   and not exists (select 1 from public.employees e where e.id::text = m.emp_id::text)
 order by n;

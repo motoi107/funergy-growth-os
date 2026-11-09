@@ -71,6 +71,8 @@ export function makeWorld(o = {}) {
     const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; };
     W.calls.rest++;
     const q = url.searchParams;
+    // 試験だけ：書けた直後（答えを返す前）にほかの操作を流す。afterWrite(keys) が Promise を返したら 1 回だけで、終わるまで待つ
+    const afterWrite = async keys => { if (!W.afterWrite) return; const v = W.afterWrite(keys); if (v && typeof v.then === 'function') { W.afterWrite = null; await v; } else if (v) W.afterWrite = null; };
     if (p === '/rest/v1/rpc/app_state_index') {
       if (W.indexMissing) return J({ code: 'PGRST202', message: 'Could not find the function' }, 404);
       const skip = (JSON.parse(opt.body || '{}').p_skip_prefix || []);
@@ -126,7 +128,9 @@ export function makeWorld(o = {}) {
         out = out.slice(off, off + lim);
         const sel = (q.get('select') || 'key,value,updated_at').split(',');
         const res = J(out.map(r => Object.fromEntries(sel.map(c => [c, r[c]]))));
-        if (W.afterGet && W.afterGet(url)) W.afterGet = null;   // 試験だけ：読んだ直後にほかの端末が書く（true を返したら 1 回で終わり）
+        // 試験だけ：読んだ直後にほかの端末が書く（true を返したら 1 回で終わり）。Promise を返したら 1 回だけで、終わるまで待つ
+        // （そのあいだにほかの操作を最後まで流す：Codex #136 6738169923 の順番の再現）
+        if (W.afterGet) { const v = W.afterGet(url); if (v && typeof v.then === 'function') { W.afterGet = null; await v; } else if (v) W.afterGet = null; }
         return res;
       }
       if (m === 'POST') {
@@ -144,6 +148,7 @@ export function makeWorld(o = {}) {
           W.log.push(['write', role, b.key]);
           out.push({ key: b.key, updated_at: at });
         }
+        await afterWrite(list.map(b => b.key));
         return String(h.prefer || '').includes('return=representation') ? J(out, 201) : new Response(null, { status: 201 });
       }
       if (m === 'PATCH') {
@@ -158,6 +163,7 @@ export function makeWorld(o = {}) {
         const at = ts6(Date.parse(b.updated_at));
         W.rows.set(key, { value: JSON.stringify(b.value), updated_at: at });
         W.log.push(['write', role, key]);
+        await afterWrite([key]);
         return J([{ key, updated_at: at }]);
       }
     }

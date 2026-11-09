@@ -45,6 +45,8 @@ async function mkdb(initial) {
     await db.query(`insert into public.employees values($1,$2,$3,$4,$5,'[]'::jsonb,$6,'{}'::jsonb)`, [id, name, role, title, store, id === 'E-OUT' ? '退職' : '在籍']);
     if (ma) await db.query('insert into public.manager_auth(role, emp_id) values($1,$2)', [ma, id]);
   }
+  // 社員の行が無い社員 ID の経理（① の 13 行目で数える）・社員と結ばれていない CEO（数えない）
+  await db.query(`insert into public.manager_auth(role, emp_id) values ('office', 'E-GONE'), ('ceo', null), ('office_crew', 'E-GONE2')`);
   for (const m of WR) await db.exec(m);
   await db.exec('update public.wr_settings set live = true');
   // 確かめたあとに入った AM（確かめがまだ）
@@ -71,7 +73,9 @@ for (const initial of ['v1141', 'v1140', 'v1139', 'off', 'on']) {
   test(`hiring/consultation RLS (from ${initial}): the public keys lose those rows too; the rest is unchanged; rollback goes back to v1140`, async () => {
     const db = await mkdb(initial);
     const pre = (await db.query(PRE)).rows;
-    assert.equal(pre.length, 12);
+    assert.equal(pre.length, 13);
+    assert.equal(pre.find(x => x.n === 13).value, '1', 'the office account linked to a removed employee (not the unlinked CEO, not office crew)');
+    assert.match(pre.find(x => x.n === 13).ok, /^info/);
     assert.equal(pre.find(x => x.n === 1).ok, 'OK'); assert.equal(pre.find(x => x.n === 3).ok, 'OK');
     assert.match(pre.find(x => x.n === 2).ok, ['v1141', 'v1140', 'v1139'].includes(initial) ? /^OK/ : /^info/);
     assert.match(pre.find(x => x.n === 4).value, /^3 件・/); assert.equal(pre.find(x => x.n === 4).ok, 'info');
@@ -154,7 +158,7 @@ test('the checks work on a json column too, and the postcheck shows routes aroun
     ('E-SMX','Sue Manager','sl','Store Manager','S2','[]'::jsonb,'在籍','{}'::jsonb), ('E-SLX','Lee Lead','sl','Server Leader','S2','[]'::jsonb,'在籍','{}'::jsonb)`);
   const pre = (await db.query(PRE)).rows;
   assert.equal(pre.find(x => x.n === 11).value, '3：Gil Four・Sue Manager・Una Unconf', 'G4 and store managers without a confirmed copy too (not the leader)');
-  assert.equal(pre.length, 12);
+  assert.equal(pre.length, 13);
   assert.match(pre.find(x => x.n === 4).value, /^3 件・/, 'json column: counted like jsonb');
   assert.equal(pre.find(x => x.n === 8).value, '1');
   await db.exec(MIG);
