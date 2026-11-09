@@ -849,7 +849,10 @@ export function createHandler(deps) {
     if (HR_ALL.includes(a.role)) {
       if (a.emp) {   // 社員と結ばれている CEO・GM・経理も、今の社員の表で退職・OS 停止なら止める（メールのログインは emailActor が止める。PIN は 60 秒のあいだ）
         const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,status,data');
-        if (out(Array.isArray(es) ? es[0] : null)) return none;
+        // 社員の行が無くなった（消した）人も止める（Codex #136 6738169923 の P2-1：前は行が無いと「退職でない」になり、PIN を覚えている 60 秒のあいだ全部が見えた）。
+        // 社員と結ばれていないメールのログイン（a.emp が空）は今までどおり
+        const e0 = Array.isArray(es) ? es[0] : null;
+        if (!e0 || out(e0)) return none;
       }
       return { ...sc, all: true, mgr: true, name: sc.name || HR_LABEL[a.role] };   // 社員と結ばれていないメールのログインも（担当の名前）
     }
@@ -987,13 +990,21 @@ export function createHandler(deps) {
         // 不採用ログに写す → 応募者の一覧から外す。外すのは、ログに写したときの記録のまま（ほかの端末が直していない）ときだけ。
         // 直されていたら、今の記録をログに写し直してからもう一度（5 回まで）。前は写したあとに直された電話番号などが消えた（Codex #136 6736973993 の P2-2）。
         // ログの記録は同じ応募者に 1 つ（やり直しても 2 つにならない）。理由・日付・メモは最初の不採用のまま、応募者から写した欄だけ今の記録に
+        // 読む順：不採用ログ → 応募者。ログは「先に読んだログの行のまま」のときだけ書く（変わっていれば読み直す）。
+        // こうすると、ログにもうある記録は、こちらが応募者を読むより前に読んだ応募者から写したもの＝こちらの写しのほうが新しい（か同じ）。
+        // 古い不採用の処理が、あとから完了した新しいログを古い電話番号などに戻すことはない（Codex #136 6738169923 の P2-2：
+        // 前は応募者を先に読み、そのあいだに直し＋ほかの不採用が完了すると、古い写しでログを上書きして成功にしていた）。
         let done = false;
-        for (let t = 0; t < 5 && !done; t++) {
+        for (let t = 0; t < 8 && !done; t++) {
+          const lg = await hrRow('reject_log');
+          if (lg && lg.value != null && !Array.isArray(lg.value)) throw err('db', 500);   // 配列でない行（形が違う）：上書きしない
+          const logs = lg && Array.isArray(lg.value) ? lg.value : [];
           const row = await hrRow('applicants');
           const ap = (row && Array.isArray(row.value) ? row.value : []).find(r => obj(r) && String(r.id) === id) || null;
           if (!ap) {
-            const lg = await hrRow('reject_log');
-            const was = (lg && Array.isArray(lg.value) ? lg.value : []).find(r => obj(r) && r.aid === id);
+            // 応募者がもう無い：ほかの端末が不採用を終えた（ログを読んだあとに終わったこともあるので、ログを読み直す）
+            const lg2 = await hrRow('reject_log');
+            const was = (lg2 && Array.isArray(lg2.value) ? lg2.value : []).find(r => obj(r) && r.aid === id);
             if (!was) throw err('gone', 410);
             if (!hrApIn(sc, was)) throw err('forbidden', 403);
             done = true; break;
@@ -1002,13 +1013,16 @@ export function createHandler(deps) {
           const copy = { aid: id, name: hrStr(ap.name, 200), phone: hrStr(ap.phone, 60), email: hrStr(ap.email, 200), store: hrStr(ap.store, 80), applyDate: hrStr(ap.date, 40), resumeName: hrStr(ap.resumeName, 200) };
           const entry = { ...copy, ...why };
           if (!entry.reason || !entry.rejectDate) throw bad();
-          await hrRmw('reject_log', cur => {
-            const i = cur.findIndex(r => obj(r) && r.aid === id);
-            if (i < 0) return cur.concat([entry]);
-            const next = { ...cur[i], ...copy };
-            if (canon(next) === canon(cur[i])) return undefined;
-            cur[i] = next; return cur;
-          });
+          const cur = logs.slice();
+          const i = cur.findIndex(r => obj(r) && r.aid === id);
+          let next = null;
+          if (i < 0) next = cur.concat([entry]);
+          else { const e1 = { ...cur[i], ...copy }; if (canon(e1) !== canon(cur[i])) { cur[i] = e1; next = cur; } }
+          if (next) {
+            if (JSON.stringify(next).length > 8000000) throw bad();
+            try { await writeRow('reject_log', next, lg ? { exists: true, updated_at: lg.updated_at } : { exists: false }); }
+            catch (x) { if (x.code !== 'conflict') throw x; continue; }   // 読んだあとにログが変わった：はじめから読み直す
+          }
           let moved = false;
           await hrRmw('applicants', cur => {
             const i = cur.findIndex(r => obj(r) && String(r.id) === id);

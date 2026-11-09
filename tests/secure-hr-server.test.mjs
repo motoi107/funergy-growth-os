@@ -506,3 +506,76 @@ test('Codex #136 P2-2: an edit made by another device while the reject is copied
   const e3 = W2.get('reject_log').filter(x => x.aid === 'a2');
   assert.equal(e3.length, 1); assert.equal(e3[0].phone, now.phone, 'the latest record'); assert.equal(e3[0].reason, 'x', 'the first reject reason stays');
 });
+
+test('Codex #136 6738169923 P2-1: a CEO, GM or office person whose employee row was removed sees nothing (PIN cache and email); an email login with no employee link is unchanged', async () => {
+  for (const who of ['ceo', 'gm', 'of']) {
+    const { W, call, as } = setup();
+    assert.equal((await call({ action: 'hr_get', key: 'applicants', ...as(who) })).j.level, 'all', who + ': all while the row is there');
+    const empId = ME[who].emp;
+    W.emps.splice(W.emps.findIndex(e => e.id === empId), 1);   // 社員の行を消した。work-requests も PIN を断るが、関数は 60 秒覚えている
+    W.pins['t' + who] = 'deny';
+    let r = await call({ action: 'hr_get', key: 'applicants', ...as(who) });
+    assert.equal(r.status, 200, who); assert.equal(r.j.level, 'none', who); assert.deepEqual(r.j.value, [], who + ': no applicants');
+    r = await call({ action: 'hr_get', key: 'reject_log', ...as(who) });
+    assert.deepEqual(r.j.value, [], who + ': no reject log');
+    r = await call({ action: 'hr_get', key: 'growthhub', ...as(who) });
+    assert.deepEqual(r.j.value, [], who + ': no consultations');
+    r = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a1', reason: 'x', rejectDate: '2026-11-09', ...as(who) });
+    assert.equal(r.status, 403, who + ': cannot reject');
+    r = await call({ action: 'hr_match', name: 'Rex Again', phone: '', email: '', ...as(who) });
+    assert.equal(r.status, 403, who + ': no match lookup');
+    assert.ok(W.get('applicants').some(x => x.id === 'a1'), who + ': nothing written');
+  }
+  // メールのログイン：manager_auth の社員 ID が社員の表に無い経理も何も見ない。社員と結ばれていないメールのログイン（emp_id が空）は今までどおり全部
+  const mgr = { ...MGR, [U(6)]: { role: 'office', emp_id: null } };
+  const { W, call, email } = setup({ mgr, users: { ...USERS, ofn: U(6) } });
+  assert.equal((await call({ action: 'hr_get', key: 'applicants' }, email('of'))).j.level, 'all');
+  W.emps.splice(W.emps.findIndex(e => e.id === 'E-OF'), 1);
+  let r = await call({ action: 'hr_get', key: 'applicants' }, email('of'));
+  assert.equal(r.status, 200); assert.equal(r.j.level, 'none'); assert.deepEqual(r.j.value, []);
+  r = await call({ action: 'hr_get', key: 'applicants' }, email('ofn'));
+  assert.equal(r.status, 200); assert.equal(r.j.level, 'all'); assert.equal(r.j.value.length, APPS.length);
+});
+
+test('Codex #136 6738169923 P2-2: two rejects overlap with an edit in between — the old reject never puts old values back into the finished log', async () => {
+  // A（AM）が不採用を始め、途中で止まる → CEO が電話番号を直す（200）→ CEO の不採用 B が最後まで終わる（200）→ A を続ける。
+  // 止まる場所は 3 つ：ログを読んだあと／応募者を読んだあと（Codex の順番）／ログを書いたあと
+  const runOther = async (W, call, as) => {
+    const base = W.get('applicants').find(x => x.id === 'a2');
+    const ed = await call({ action: 'hr_op', key: 'applicants', op: 'put', base, rec: { ...base, phone: 'NEW-PHONE' }, ...as('ceo') });
+    assert.equal(ed.status, 200, 'the edit is saved');
+    const rb = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'B-reason', rejectDate: '2026-11-09', ...as('ceo') });
+    assert.equal(rb.status, 200, 'reject B finishes');
+    assert.equal(W.get('reject_log').find(x => x.aid === 'a2').phone, 'NEW-PHONE', 'B logged the new phone');
+    assert.ok(!W.get('applicants').some(x => x.id === 'a2'), 'B removed the applicant');
+  };
+  const isGet = (url, key) => decodeURIComponent(url.search).includes('key=eq.' + key);
+  for (const at of ['after the log read', 'after the applicant read', 'after the log write']) {
+    const { W, call, as } = setup();
+    W.set('applicants', APPS.map(x => (x.id === 'a2' ? { ...x, phone: '808-555-0002' } : x)), T0);
+    let started = false;
+    if (at === 'after the log read') W.afterGet = url => (started && isGet(url, 'reject_log') ? runOther(W, call, as) : false);
+    if (at === 'after the applicant read') W.afterGet = url => (started && isGet(url, 'applicants') ? runOther(W, call, as) : false);
+    if (at === 'after the log write') W.afterWrite = keys => (started && keys.includes('reject_log') ? runOther(W, call, as) : false);
+    started = true;
+    const ra = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'A-reason', rejectDate: '2026-11-08', ...as('am') });
+    assert.equal(ra.status, 200, at + ': A ends (the applicant is rejected)');
+    assert.equal(W.afterGet || W.afterWrite || null, null, at + ': the pause happened');
+    const e = W.get('reject_log').filter(x => x.aid === 'a2');
+    assert.equal(e.length, 1, at + ': one log entry');
+    assert.equal(e[0].phone, 'NEW-PHONE', at + ': the newer phone stays in the log (A did not put the old one back)');
+    assert.ok(!W.get('applicants').some(x => x.id === 'a2'), at + ': removed');
+    // 理由・日付は最初にログに書いた不採用のまま（A がログを書いてから止まったときは A、ほかは B）
+    assert.equal(e[0].reason, at === 'after the log write' ? 'A-reason' : 'B-reason', at + ': the first reject keeps its reason');
+    assert.equal(W.get('reject_log').length, LOG.length + 1, at + ': nothing else added');
+  }
+});
+
+test('reject: a reject log row that is not a list is not overwritten, and the applicant stays', async () => {
+  const { W, call, as } = setup();
+  W.set('reject_log', { odd: true }, T0);
+  const r = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'x', rejectDate: '2026-11-09', ...as('gm') });
+  assert.equal(r.status, 500);
+  assert.deepEqual(W.get('reject_log'), { odd: true }, 'the odd row is kept');
+  assert.ok(W.get('applicants').some(x => x.id === 'a2'), 'the applicant stays');
+});
