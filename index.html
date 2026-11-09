@@ -55107,6 +55107,8 @@ function openApplicantModal(id) {
 }
 var _apResumeData = null;
 var _apNewId = null;   /* v1142：この画面で足す応募者の ID（押し直しても同じ） */
+/* 新しい応募者の ID：時刻＋乱数（2 台がほぼ同時に足しても同じにならない：Codex #136 6736973993 の P2-3。サーバーの決まり [A-Za-z0-9_-]{1,64}） */
+function hrNewApId(){ var r=''; try{ var a=new Uint32Array(2); crypto.getRandomValues(a); r=a[0].toString(36)+a[1].toString(36); }catch(e){ r=Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2); } return ('a'+Date.now()+'_'+r).slice(0, 40); }
 function apResumePicked(input) {
   var f = input.files && input.files[0]; if(!f) return;
   if (f.type!=='application/pdf') { alert('PDFを選んでください'); input.value=''; return; }
@@ -55165,7 +55167,7 @@ function saveApplicantRest(id, data) {
     var a=apps.find(x=>x.id===id); if(!a) return; Object.assign(a,data);
     if (a.status==='要確認'||a.status==='新規応募') a.status='応募中';
   } else {
-    apps.push(Object.assign({id:'a'+Date.now(), status:'応募中'}, data));
+    apps.push(Object.assign({id:hrNewApId(), status:'応募中'}, data));
   }
   setApplicants(apps);
   _apResumeData = null;
@@ -55493,14 +55495,25 @@ function updateApplicant(id, status) {
 var _hrBusy = false;
 function hrBtn(id, on){ try{ var b=document.getElementById(id); if(b) b.disabled=!!on; }catch(e){} }
 /* 1 件を送る。返す：'ok'／'rest'（今までどおり REST で）／'fail'（文は出した） */
+function hrApNoMeta(r){ var x={}; Object.keys(r||{}).forEach(function(k){ if(k.charAt(0)!=='_') x[k]=r[k]; }); return x; }
 async function hrPutApplicant(rec, create, base){
   rec=Object.assign({}, rec); delete rec._prior;
   var b=null; if(!create && base){ b=Object.assign({}, base); delete b._prior; }   /* 直すとき：読んだときの記録（サーバーは変えた欄だけを重ねる） */
   var res=await hrDo({ action:'hr_op', key:'applicants', op:'put', rec:rec, create:!!create, base:b });
   if(res==='rest') return 'rest';
   if(res.ok) return 'ok';
-  if(create && res.error==='conflict'){   /* 前に送った分が入っていた（答えが届かなかった）：読み直して同じ ID があれば保存できている */
-    if((await hrLoad('applicants', true))==='ok' && getApplicants().some(function(x){ return x && x.id===rec.id; })) return 'ok';
+  if(create && res.error==='conflict'){   /* 前に送った分が入っていた（答えが届かなかった）：読み直して、同じ ID で中身も同じなら保存できている */
+    if((await hrLoad('applicants', true))==='ok'){
+      var got=getApplicants().find(function(x){ return x && x.id===rec.id; });
+      if(got){
+        /* 中身まで同じときだけ「保存済み」（ID が同じだけでは、送り直す前に入力を変えた分が保存されていない：Codex #136 6736973993 の P2-3）。
+           _ で始まる欄（サーバーが付けた前の不採用の印など）は比べない */
+        if(_cjson(hrApNoMeta(got))===_cjson(hrApNoMeta(rec))) return 'ok';
+        showToast(t('この応募者は、前に送った内容でもう保存されています（そのあと変えた分は保存していません）。この画面を閉じて、一覧からその応募者を開いて直してください',
+          'This applicant is already saved with what you sent before (later changes are not saved). Close this form, open the applicant from the list and edit there.'), 'warning');
+        return 'fail';
+      }
+    }
   }
   showToast(hrErrText(res), 'error');
   if(res.error==='gone' || res.error==='conflict') hrLoad('applicants', true).then(function(){ try{ if(curPage==='hiring') renderPage('hiring'); }catch(e){} });
@@ -55511,7 +55524,7 @@ async function hrSaveApplicant(id, data){
   try{
     var base=id ? (getApplicants().find(function(x){ return x && x.id===id; }) || null) : null;
     if(id && !base){ showToast(hrErrText({ error:'gone' }), 'warning'); return; }
-    if(!id && !_apNewId) _apNewId='a'+Date.now();   /* 押し直しても同じ ID（答えが届かなかったとき 2 人にしない・独立レビュー P2-1） */
+    if(!id && !_apNewId) _apNewId=hrNewApId();   /* 押し直しても同じ ID（答えが届かなかったとき 2 人にしない・独立レビュー P2-1） */
     var rec=id ? Object.assign({}, base, data) : Object.assign({ id:_apNewId, status:'応募中' }, data);
     if(id && (rec.status==='要確認' || rec.status==='新規応募')) rec.status='応募中';
     var r=await hrPutApplicant(rec, !id, base);

@@ -31,7 +31,7 @@ const { createHandler: createHandler1141 } = await import(pathToFileURL(join(tmp
 
 const HIRING = ['getApplicants', 'setApplicants', 'getRejectLog', 'addRejectLog', 'findPriorRejects', 'visibleApplicants', 'saveApplicant', 'saveApplicantRest',
   'confirmHire', 'confirmHireRest', 'startOnboardingFromApplicant', 'startOnboardingRest', 'confirmReject', 'confirmRejectRest', 'updateApplicant',
-  'hrBtn', 'hrPutApplicant', 'hrSaveApplicant', 'hrConfirmHire', 'hrStartOnboarding', 'hrConfirmReject', 'apRehireShow', 'apCheckRehire', 'renderRejectedList'];
+  'hrBtn', 'hrApNoMeta', 'hrPutApplicant', 'hrSaveApplicant', 'hrNewApId', '_cjson', 'hrConfirmHire', 'hrStartOnboarding', 'hrConfirmReject', 'apRehireShow', 'apCheckRehire', 'renderRejectedList'];
 const GHF = ['hrGhOp', 'ghIsManager', 'ghScopeStores', 'ghAssignMe', 'ghAssignMeRest', 'ghPostCard', 'saveGHPost', 'saveGHPostRest', 'saveGHReply', 'saveGHReplyRest', 'ghSetStatus', 'ghSetStatusRest'];
 const CODE = [
   block('var SS_FN = ', 'var KV_SEEN_KEY'),
@@ -515,4 +515,62 @@ test('the login changes while a save is answered by an older function: the save 
   c._hwSession = 't1'; run(c, "curUserName='Kai One'; curRole='crew';");
   release();
   const res = await p; assert.equal(res && res.error, 'stale', JSON.stringify(res));
+});
+
+test('Codex #136 P2-3: the first save landed but its answer was lost, then the input was changed and sent again: not "saved" — the device says to edit the saved one', async () => {
+  const W = world();
+  let drop = true;
+  const c = tab(W, 'tGM', async (u, o) => {
+    const r = await W.fetch(u, o);
+    if (drop && String(u).includes('secure-state') && JSON.parse(o.body).op === 'put') { drop = false; throw new TypeError('the answer was lost'); }
+    return r;
+  });
+  await c.hrLoad('applicants');
+  assert.equal(await c.hrPutApplicant({ id: 'a778', name: 'First Name', store: 'Alpha', status: '応募中' }, true), 'fail', 'first press: the answer did not arrive');
+  c.__toasts.length = 0;
+  assert.equal(await c.hrPutApplicant({ id: 'a778', name: 'Changed Name', store: 'Alpha', status: '応募中' }, true), 'fail', 'second press with other input: not "saved"');
+  assert.ok(c.__toasts.some(([k, m]) => k === 'warning' && /前に送った内容でもう保存されています（そのあと変えた分は保存していません）/.test(m)), JSON.stringify(c.__toasts));
+  assert.deepEqual(W.get('applicants').filter(x => x.id === 'a778').map(x => x.name), ['First Name'], 'one record, the first content');
+  // 同じ中身の送り直しは今までどおり「保存済み」（サーバーが付けた _ の欄は比べない）
+  assert.equal(await c.hrPutApplicant({ id: 'a778', name: 'First Name', store: 'Alpha', status: '応募中', _prior: [{ x: 1 }] }, true), 'ok');
+  // 前に不採用だった人（サーバーが一覧で _prior を付けて返す）でも、同じ中身なら「保存済み」
+  let drop3 = true;
+  const c3 = tab(W, 'tGM', async (u, o) => {
+    const r = await W.fetch(u, o);
+    if (drop3 && String(u).includes('secure-state') && JSON.parse(o.body).op === 'put') { drop3 = false; throw new TypeError('the answer was lost'); }
+    return r;
+  });
+  await c3.hrLoad('applicants');
+  const rex = { id: 'a779', name: 'Rex Again', store: 'Beta', phone: '808-555-9999', status: '応募中' };
+  assert.equal(await c3.hrPutApplicant(rex, true), 'fail');
+  assert.equal(await c3.hrPutApplicant(rex, true), 'ok');
+  assert.ok(Array.isArray(c3.getApplicants().find(x => x.id === 'a779')._prior), 'the list carries the server-added _prior');
+  // 画面から：送り直して中身が違えば、画面を閉じない
+  const W2 = world();
+  let drop2 = true;
+  const c2 = tab(W2, 'tSM', async (u, o) => {
+    const r = await W2.fetch(u, o);
+    if (drop2 && String(u).includes('secure-state') && JSON.parse(o.body).op === 'put') { drop2 = false; throw new TypeError('the answer was lost'); }
+    return r;
+  });
+  await c2.hrLoad('applicants');
+  els(c2, { 'ap-name': 'Twice', 'ap-store': 'Alpha', 'ap-pos': '', 'ap-phone': '', 'ap-email': '', 'ap-source': 'Indeed', 'ap-date': '', 'ap-memo': '', 'ap-history': '', 'ap-skills': '' });
+  run(c2, "saveApplicant('');");
+  for (let i = 0; i < 40 && !c2.__toasts.length; i++) await flush();
+  els(c2, { 'ap-name': 'Twice', 'ap-store': 'Alpha', 'ap-pos': '', 'ap-phone': '808-555-0100', 'ap-email': '', 'ap-source': 'Indeed', 'ap-date': '', 'ap-memo': '', 'ap-history': '', 'ap-skills': '' });
+  c2.__toasts.length = 0;
+  run(c2, "saveApplicant('');");
+  for (let i = 0; i < 40 && !c2.__toasts.length; i++) await flush();
+  assert.equal(c2.__closed, 0, 'the form stays open');
+  assert.ok(c2.__toasts.some(([k, m]) => k === 'warning' && /前に送った内容でもう保存されています/.test(m)));
+  assert.equal(W2.get('applicants').filter(x => x.name === 'Twice').length, 1, 'still one applicant (the same id is kept)');
+  assert.match(W2.get('applicants').find(x => x.name === 'Twice').id, /^a\d{13}_[a-z0-9]{4,}$/, 'the screen uses the time-plus-random id');
+});
+
+test('Codex #136 P2-3: new applicant ids are time plus random (two devices at the same millisecond do not collide) and fit the server rule', () => {
+  const c = tab(world(), 'tGM');
+  const a = run(c, 'hrNewApId()'), b = run(c, 'hrNewApId()');
+  assert.notEqual(a, b);
+  for (const id of [a, b]) assert.match(id, /^a\d{13}_[a-z0-9]{4,}$/);
+  for (const id of [a, b]) assert.ok(id.length <= 40 && /^[A-Za-z0-9_-]{1,64}$/.test(id));
 });
