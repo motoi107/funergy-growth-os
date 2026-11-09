@@ -853,16 +853,26 @@ export function createHandler(deps) {
   // G3 以上の店は確かめた写しと今の社員の表の重なり（work-requests の whoami が決めた a.am・a.stores）を使う。
   async function hrScope(a) {
     const sc = { all: false, ap: [], gh: [], mgr: false, name: typeof a.name === 'string' ? a.name.trim() : '', store: '' };
-    if (HR_ALL.includes(a.role)) return { ...sc, all: true, mgr: true, name: sc.name || HR_LABEL[a.role] };   // 社員と結ばれていないメールのログインも（担当の名前）
-    if (!a.emp) return sc;
+    // 何も見せない・本人の分も無い（名前を残さない）：退職・OS を止めた・社員がいない人。PIN の確かめは 60 秒覚えているので、
+    // そのあいだに退職にしても、ここで今の社員の表を見て止める（Codex #136 6736973993 の P2-1：前は名前が残り、本人の相談を読み書きできた）
+    const none = { ...sc, name: '' };
+    const out = e => { const d = obj(e && e.data) || {}; return String((e && e.status) || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true'; };
+    if (HR_ALL.includes(a.role)) {
+      if (a.emp) {   // 社員と結ばれている CEO・GM・経理も、今の社員の表で退職・OS 停止なら止める（メールのログインは emailActor が止める。PIN は 60 秒のあいだ）
+        const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,status,data');
+        if (out(Array.isArray(es) ? es[0] : null)) return none;
+      }
+      return { ...sc, all: true, mgr: true, name: sc.name || HR_LABEL[a.role] };   // 社員と結ばれていないメールのログインも（担当の名前）
+    }
+    if (!a.emp) return none;
     const [es, st] = await Promise.all([
       rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,name,role,title,store,status,data'),
       rest('stores?select=id,name,brand,data&limit=1000'),
     ]);
     const e = Array.isArray(es) ? es[0] : null;
-    if (!e) return sc;
+    if (!e) return none;
     const d = obj(e.data) || {};
-    if (String(e.status || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true') return sc;
+    if (out(e)) return none;
     const rr = String(e.role || d.role || ''), title = String(e.title || d.title || '');
     const home = String(e.store || d.store || '');
     sc.store = home;
@@ -984,28 +994,43 @@ export function createHandler(deps) {
       if (op === 'reject') {
         const id = typeof b.id === 'string' && HR_ID_RE.test(b.id) ? b.id : null;
         if (!id) throw bad();
-        const row = await hrRow('applicants');
-        const ap = (row && Array.isArray(row.value) ? row.value : []).find(r => obj(r) && String(r.id) === id) || null;
-        let entry = null;
-        if (ap) {
+        const why = { rejectDate: hrStr(b.rejectDate, 40), reason: hrStr(b.reason, 300), memo: hrStr(b.memo, 2000), by: hrStr(b.by, 80) || sc.name };
+        // 不採用ログに写す → 応募者の一覧から外す。外すのは、ログに写したときの記録のまま（ほかの端末が直していない）ときだけ。
+        // 直されていたら、今の記録をログに写し直してからもう一度（5 回まで）。前は写したあとに直された電話番号などが消えた（Codex #136 6736973993 の P2-2）。
+        // ログの記録は同じ応募者に 1 つ（やり直しても 2 つにならない）。理由・日付・メモは最初の不採用のまま、応募者から写した欄だけ今の記録に
+        let done = false;
+        for (let t = 0; t < 5 && !done; t++) {
+          const row = await hrRow('applicants');
+          const ap = (row && Array.isArray(row.value) ? row.value : []).find(r => obj(r) && String(r.id) === id) || null;
+          if (!ap) {
+            const lg = await hrRow('reject_log');
+            const was = (lg && Array.isArray(lg.value) ? lg.value : []).find(r => obj(r) && r.aid === id);
+            if (!was) throw err('gone', 410);
+            if (!hrApIn(sc, was)) throw err('forbidden', 403);
+            done = true; break;
+          }
           if (!hrApIn(sc, ap)) throw err('forbidden', 403);
-          entry = { aid: id, name: hrStr(ap.name, 200), phone: hrStr(ap.phone, 60), email: hrStr(ap.email, 200), store: hrStr(ap.store, 80), applyDate: hrStr(ap.date, 40),
-            rejectDate: hrStr(b.rejectDate, 40), reason: hrStr(b.reason, 300), memo: hrStr(b.memo, 2000), by: hrStr(b.by, 80) || sc.name, resumeName: hrStr(ap.resumeName, 200) };
+          const copy = { aid: id, name: hrStr(ap.name, 200), phone: hrStr(ap.phone, 60), email: hrStr(ap.email, 200), store: hrStr(ap.store, 80), applyDate: hrStr(ap.date, 40), resumeName: hrStr(ap.resumeName, 200) };
+          const entry = { ...copy, ...why };
           if (!entry.reason || !entry.rejectDate) throw bad();
-          // 不採用ログに足す（同じ応募者の記録がもうあれば足さない＝やり直しても 2 つにならない）→ 応募者の一覧から外す
-          await hrRmw('reject_log', cur => (cur.some(r => obj(r) && r.aid === id) ? undefined : cur.concat([entry])));
-        } else {
-          const lg = await hrRow('reject_log');
-          const done = (lg && Array.isArray(lg.value) ? lg.value : []).find(r => obj(r) && r.aid === id);
-          if (!done) throw err('gone', 410);
-          if (!hrApIn(sc, done)) throw err('forbidden', 403);
+          await hrRmw('reject_log', cur => {
+            const i = cur.findIndex(r => obj(r) && r.aid === id);
+            if (i < 0) return cur.concat([entry]);
+            const next = { ...cur[i], ...copy };
+            if (canon(next) === canon(cur[i])) return undefined;
+            cur[i] = next; return cur;
+          });
+          let moved = false;
+          await hrRmw('applicants', cur => {
+            const i = cur.findIndex(r => obj(r) && String(r.id) === id);
+            if (i < 0) return undefined;
+            if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);
+            if (canon(cur[i]) !== canon(ap)) { moved = true; return undefined; }   // ログに写したあとに直された：写し直してから
+            cur.splice(i, 1); return cur;
+          });
+          if (!moved) done = true;
         }
-        await hrRmw('applicants', cur => {
-          const i = cur.findIndex(r => obj(r) && String(r.id) === id);
-          if (i < 0) return undefined;
-          if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);
-          cur.splice(i, 1); return cur;
-        });
+        if (!done) throw err('conflict', 409);
         const [v1, v2] = await Promise.all([hrView('applicants', sc), hrView('reject_log', sc)]);
         return { ...v1, reject_log: v2 };
       }

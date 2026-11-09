@@ -436,3 +436,73 @@ test('a confirmed G4 who is a leader but not the store manager does not manage c
   W.emps = W.emps.map(e => (e.id === 'E-SL' ? { ...e, title: 'Store Manager' } : e));
   assert.deepEqual(ids((await call({ action: 'hr_get', key: 'growthhub', ...as('lead') })).j.value), ['gh2'], 'the store manager of S2');
 });
+
+test('Codex #136 P2-1: within the 60-second PIN cache, a person who was retired, stopped or removed sees and writes nothing of their own', async () => {
+  for (const change of ['retired', 'osDisabled', 'removed']) {
+    const { W, call, as } = setup();
+    // 在籍のうちに一度呼ぶ（PIN の確かめを覚える）
+    let r = await call({ action: 'hr_get', key: 'growthhub', ...as('g1') });
+    assert.equal(r.status, 200); assert.deepEqual(ids(r.j.value), ['gh1'], 'own consultation while employed');
+    // 退職・OS 停止・社員の行が無くなった。work-requests も PIN を断るが、関数は 60 秒覚えている
+    const i = W.emps.findIndex(e => e.id === 'E-1');
+    if (change === 'retired') W.emps[i] = { ...W.emps[i], status: '退職' };
+    else if (change === 'osDisabled') W.emps[i] = { ...W.emps[i], data: { osDisabled: true } };
+    else W.emps.splice(i, 1);
+    W.pins.tg1 = 'deny';
+    r = await call({ action: 'hr_get', key: 'growthhub', ...as('g1') });
+    assert.equal(r.status, 200, change); assert.deepEqual(r.j.value, [], change + ': no own consultation');
+    r = await call({ action: 'hr_op', key: 'growthhub', op: 'post', title: 't', body: 'b', date: '2026/11/9', ...as('g1') });
+    assert.equal(r.status, 403, change + ': cannot post');
+    r = await call({ action: 'hr_op', key: 'growthhub', op: 'reply', id: 'gh1', text: 'x', date: '2026/11/9', ...as('g1') });
+    assert.equal(r.status, 403, change + ': cannot reply to the own consultation');
+    assert.equal(W.get('growthhub').length, GH.length, change + ': nothing written');
+    assert.deepEqual(W.get('growthhub')[0].replies, []);
+  }
+  // CEO・GM・経理（社員と結ばれている）も、今の社員の表で退職なら何も見ない
+  const { W, call, as } = setup();
+  assert.equal((await call({ action: 'hr_get', key: 'applicants', ...as('gm') })).j.value.length, APPS.length);
+  const g = W.emps.findIndex(e => e.id === 'E-GM'); W.emps[g] = { ...W.emps[g], status: '退職' }; W.pins.tgm = 'deny';
+  let r = await call({ action: 'hr_get', key: 'applicants', ...as('gm') });
+  assert.equal(r.status, 200); assert.deepEqual(r.j.value, []); assert.equal(r.j.level, 'none');
+  r = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a1', reason: 'x', rejectDate: '2026-11-09', ...as('gm') });
+  assert.equal(r.status, 403); assert.ok(W.get('applicants').some(x => x.id === 'a1'));
+  // 在籍の人・社員と結ばれていないメールのログインの経理などは今までどおり
+  assert.deepEqual(ids((await call({ action: 'hr_get', key: 'growthhub', ...as('g1') })).j.value), ['gh1']);
+});
+
+test('Codex #136 P2-2: an edit made by another device while the reject is copied to the log is not lost (the log gets the new values)', async () => {
+  const { W, call, as } = setup();
+  W.set('applicants', APPS.map(x => (x.id === 'a2' ? { ...x, phone: 'OLD-PHONE' } : x)), T0);
+  let n = 0;
+  W.afterGet = url => {   // 不採用ログを読んだ直後（書く前）に、ほかの端末が応募者の電話番号を直す
+    if (!/key=eq\.reject_log/.test(decodeURIComponent(url.search)) || n++ > 0) return false;
+    W.set('applicants', W.get('applicants').map(x => (x.id === 'a2' ? { ...x, phone: 'NEW-PHONE' } : x)), ts6(Date.UTC(2026, 10, 4, 10, 31)));
+    return true;
+  };
+  const r = await call({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'x', rejectDate: '2026-11-09', memo: 'm', ...as('am') });
+  assert.equal(r.status, 200);
+  assert.ok(!W.get('applicants').some(x => x.id === 'a2'), 'removed');
+  const e = W.get('reject_log').filter(x => x.aid === 'a2');
+  assert.equal(e.length, 1, 'one log entry');
+  assert.equal(e[0].phone, 'NEW-PHONE', 'the newer edit is in the log');
+  assert.equal(e[0].reason, 'x'); assert.equal(e[0].memo, 'm');
+  // ずっと直され続ける：応募者は外さない（409）。ログは今の記録の写し・1 つだけ
+  const { W: W2, call: c2, as: a2 } = setup();
+  let k = 0;
+  W2.afterGet = url => {
+    if (/key=eq\.applicants/.test(decodeURIComponent(url.search))) W2.set('applicants', W2.get('applicants').map(x => (x.id === 'a2' ? { ...x, phone: 'P' + (++k) } : x)), ts6(Date.UTC(2026, 10, 4, 11, 0) + k * 1000));
+    return false;
+  };
+  const r2 = await c2({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'x', rejectDate: '2026-11-09', ...a2('am') });
+  assert.equal(r2.status, 409);
+  assert.ok(W2.get('applicants').some(x => x.id === 'a2'), 'not removed');
+  assert.equal(W2.get('reject_log').filter(x => x.aid === 'a2').length, 1);
+  // そのあと押し直す（もう直されない）：今の記録を写して外す。理由は最初の不採用のまま
+  W2.afterGet = null;
+  const now = W2.get('applicants').find(x => x.id === 'a2');
+  const r3 = await c2({ action: 'hr_op', key: 'applicants', op: 'reject', id: 'a2', reason: 'y', rejectDate: '2026-11-10', ...a2('am') });
+  assert.equal(r3.status, 200);
+  assert.ok(!W2.get('applicants').some(x => x.id === 'a2'));
+  const e3 = W2.get('reject_log').filter(x => x.aid === 'a2');
+  assert.equal(e3.length, 1); assert.equal(e3[0].phone, now.phone, 'the latest record'); assert.equal(e3[0].reason, 'x', 'the first reject reason stays');
+});
