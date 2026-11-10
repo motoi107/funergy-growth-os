@@ -11379,8 +11379,10 @@ function outboxLabel(key){
     ['vacations','休暇','Time off'],['handbook_reads','Handbook の読了','Handbook reading'],['handbook_chapters','Handbook の章','Handbook chapters'],['shift_fixed_','シフトの固定','Fixed shifts'],['cash_tip','現金チップ','Cash tips'],
     ['grade_hist','グレード履歴','Grade history'],['mileage_config','ガソリン代の設定','Mileage settings'],['career_cfg','Score管理の設定','Score settings'],['cs_criteria','スコア基準','Score criteria'],
     ['bonus_coef_rng','賞与の係数の幅','Bonus coefficient ranges'],['bonus_coef','賞与の係数','Bonus coefficients'],['bonus_track','G3 の職種','G3 track'],['bonus_eval_rule','賞与の 4 項目の設定','Bonus four-item settings'],
-    ['bonus_eval_ovr','賞与の個人設定','Bonus personal settings'],['cs_strength_rule','強みの決まり','Strength rules'],['cs_guide','評価基準・例','Scoring guide']];   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
+    ['bonus_eval_ovr','賞与の個人設定','Bonus personal settings'],['cs_strength_rule','強みの決まり','Strength rules'],['cs_guide','評価基準・例','Scoring guide'],
+    ['prep_tables','プレップの時給の表','Prep wage tables'],['prep_certs','プレップの認定','Prep certifications']];   /* v1146 */   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
   var en=(typeof curLang!=='undefined' && curLang==='en');   /* v1137（独立レビュー P3-10）：英語の画面では英語の名前 */
+  if(k.indexOf('spl_tip_requests_')===0 && k.length>17) return 'Tip Rate（'+k.slice(17)+'）';   /* v1146：だれの Tip Rate か（断られたものを外す画面で見分ける） */
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return (en && map[i][2]) ? map[i][2] : map[i][1]; }
   return k;
 }
@@ -12198,7 +12200,7 @@ async function supaUpsert(table, rows, _noSs){
       console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
     if (tm) clearTimeout(tm);
     _lastSupaError = null;
-    if (table==='app_state' && typeof swNote==='function'){ try{ (Array.isArray(rows) ? rows : [rows]).forEach(function(r){ if(r && swIsKey(r.key)) swNote(r.key, 'rest'); }); }catch(e){} }   /* v1141 */
+    if (table==='app_state' && typeof swNote==='function'){ try{ (Array.isArray(rows) ? rows : [rows]).forEach(function(r){ if(r && gwIsKey(r.key)) swNote(r.key, 'rest'); }); }catch(e){} }   /* v1141 */
     return true;
   } catch(e){
     if (tm) clearTimeout(tm);
@@ -12526,15 +12528,25 @@ function sw2IsKey(k){ return typeof k==='string' && Object.prototype.hasOwnPrope
 var GH_KEYS = { grade_hist:1 };
 function ghIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(GH_KEYS, k); }
 function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k) || ghIsKey(k)); }
+/* v1146（Moto さん 11/10「Tip Rate とプレップから」・docs/SECURE_TIP_PREP_V1146_JA.md）：Tip Rate の申請・決定（spl_tip_requests_<名前>・前の統合行 tip_requests）と
+   プレップの時給の表・認定（prep_tables・prep_certs）も、書くのは関数だけ（決められる人だけ＝今の画面と同じ。サーバーが決める）。読むのは今までどおり REST
+   （どの端末もチップの配分と人件費を計算する）。関数が v1145 以前（答えに tpfn:1 が無い）なら、今までどおり REST で書く */
+var TP_KEYS = { prep_tables:1, prep_certs:1, tip_requests:1 };
+var TP_TIP_PRE = 'spl_tip_requests_';
+function tpIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(TP_KEYS, k) || (k.indexOf(TP_TIP_PRE)===0 && k.length>TP_TIP_PRE.length)); }   /* 長さによらず（SQL・関数と同じ。関数は 200 字までだけ書く） */
+/* 決めた人だけが書けるキー（関数 secure-state の swIsKey・tpIsKey と同じ）。送信待ち・断った印・「設定 › 診断と記録」に使う */
+function gwIsKey(k){ return swIsKey(k) || tpIsKey(k); }
 function swOldNow(S){ var L=_ss.swOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function sw2OldNow(S){ var L=_ss.sw2Old; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function ghOldNow(S){ var L=_ss.ghOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function tpOldNow(S){ var L=_ss.tpOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーの書き込みを関数に頼むか（読むのは今までどおり REST） */
 function swRouted(key){
-  if(!swIsKey(key)) return false;
+  if(!gwIsKey(key)) return false;
   var S=ssSess(); if(!S || ssLegacyNow(S) || swOldNow(S)) return false;
   if(sw2IsKey(key) && sw2OldNow(S)) return false;   /* v1143：関数が v1142 以前 */
   if(ghIsKey(key) && ghOldNow(S)) return false;     /* v1145：関数が v1144 以前 */
+  if(tpIsKey(key) && tpOldNow(S)) return false;     /* v1146：関数が v1145 以前 */
   return true;
 }
 /* ============================================================
@@ -12958,10 +12970,12 @@ function swNote(key, how, by){
   var nm={ mileage_config:['ガソリン代の設定','Mileage settings'], career_cfg:['Score管理の設定','Score settings'],
     cs_criteria:['スコア基準','Score criteria'], bonus_coef:['賞与の係数','Bonus coefficients'], bonus_coef_rng:['賞与の係数の幅','Bonus coefficient ranges'],
     bonus_track:['G3 の職種','G3 track'], bonus_eval_rule:['賞与の 4 項目の設定','Bonus 4-item settings'], bonus_eval_ovr:['賞与の個人設定','Bonus personal settings'],
-    cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'], grade_hist:['グレード履歴','Grade history'] }[key] || [key, key];
-  var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'] }[by];
+    cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'], grade_hist:['グレード履歴','Grade history'],
+    prep_tables:['プレップの時給の表','Prep wage tables'], prep_certs:['プレップの認定','Prep certifications'], tip_requests:['Tip Rate（前の統合行）','Tip Rate (old combined row)'] }[key]
+    || (String(key).indexOf(TP_TIP_PRE)===0 ? ['Tip Rate（'+String(key).slice(TP_TIP_PRE.length)+'）', 'Tip Rate ('+String(key).slice(TP_TIP_PRE.length)+')'] : [key, key]);
+  var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'], office_crew:['事務Crew','Office Crew'], am:'AM', staff:['スタッフ','staff'] }[by];
   var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
-  var fv=ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141');
+  var fv=tpIsKey(key) ? 'v1146' : (ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141'));
   var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state '+fv+'）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state '+fv+', role '+re+')']
         : how==='same' ? [nm[0]+'：サーバー（secure-state '+fv+'）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state '+fv+') did not write (this sign-in may not change it; the cloud already had the same value)']
         : how==='none' ? [nm[0]+'：クラウドにもう入っているので書きませんでした（新しい変更なし）', nm[1]+': not written (the cloud already has it; nothing new)']
@@ -13099,13 +13113,16 @@ async function ssCall(payload, retried){
   else { _ss.csOld={ id:S.id, at:Date.now() }; if((payload.key && csIsKey(payload.key)) || payload.action==='hist') return { legacy:true }; }
   /* v1141：決めた人だけが書ける設定を扱う関数か（swfn:1）。前の版の関数なら、その設定は今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
   if(j.swfn===1) _ss.swOld=null;
-  else { _ss.swOld={ id:S.id, at:Date.now() }; if(payload.key && swIsKey(payload.key)) return { legacy:true }; }
+  else { _ss.swOld={ id:S.id, at:Date.now() }; if(payload.key && gwIsKey(payload.key)) return { legacy:true }; }
   /* v1143：GM・CEO だけが変える賞与・Career Score の設定を扱う関数か（sw2:1）。v1142 以前の関数なら、その 8 つは今までどおり REST で書く */
   if(j.sw2===1) _ss.sw2Old=null;
   else { _ss.sw2Old={ id:S.id, at:Date.now() }; if(payload.key && sw2IsKey(payload.key)) return { legacy:true }; }
   /* v1145：グレード履歴を扱う関数か（ghfn:1）。v1144 以前の関数なら、グレード履歴は今までどおり REST で書く */
   if(j.ghfn===1) _ss.ghOld=null;
   else { _ss.ghOld={ id:S.id, at:Date.now() }; if(payload.key && ghIsKey(payload.key)) return { legacy:true }; }
+  /* v1146：Tip Rate・プレップを扱う関数か（tpfn:1）。v1145 以前の関数なら、今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
+  if(j.tpfn===1) _ss.tpOld=null;
+  else { _ss.tpOld={ id:S.id, at:Date.now() }; if(payload.key && tpIsKey(payload.key)) return { legacy:true }; }
   /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
   if(j.hrfn===1) _ss.hrOld=null;
   else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
@@ -13299,8 +13316,8 @@ async function ssPutRow(key, value, expect){
   var r=await ssCall(p);
   if(r.legacy || r.none) return SS_REST;
   if(r.ok){
-    if(swIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
-    if(swIsKey(key)) ssRefusedClear(key);   /* v1145：受け付けた（断った印を消す） */
+    if(gwIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
+    if(gwIsKey(key)) ssRefusedClear(key);   /* v1145：受け付けた（断った印を消す）。v1146：Tip Rate・プレップも */
     return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at), same:r.j.same===true };
   }
   if(r.status===409) return 'conflict';
@@ -13315,6 +13332,8 @@ async function ssPutRow(key, value, expect){
       'The server refused the bonus / Career Score settings (a record has the wrong shape; kept in the unsent list).');
     else if(ghIsKey(key)) ssWarnOnce('bad_gh', 'グレード履歴をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
       'The server refused the grade history (a record has the wrong shape; kept in the unsent list).');
+    else if(tpIsKey(key)) ssWarnOnce('bad_tp', (key.indexOf('prep_')===0 ? 'プレップの表・認定' : 'Tip Rate の記録')+'をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
+      'The server refused the '+(key.indexOf('prep_')===0 ? 'prep tables / certifications' : 'Tip Rate records')+' (a record has the wrong shape; kept in the unsent list).');
     return 'badts';
   }
   if(r.status===403){
@@ -13327,6 +13346,12 @@ async function ssPutRow(key, value, expect){
       'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(ghIsKey(key)) ssWarnOnce('forbidden_gh', 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
       'Only the GM or CEO can change the grade history (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(key==='prep_tables') ssWarnOnce('forbidden_tp_tbl', 'プレップの時給の表を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can change the prep wage tables (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(key==='prep_certs') ssWarnOnce('forbidden_tp_cert', 'プレップの認定を決められるのは GM・CEO です（経理は「反映した」の印だけ。サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can decide prep certifications (Accounting only marks them done; the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(tpIsKey(key)) ssWarnOnce('forbidden_tp_tip', 'この Tip Rate の記録は、このログインでは変えられません（決めるのは CEO・GM・AM などで、自分の Tip Rate は決めません。申請は本人だけ。サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'This sign-in cannot change this Tip Rate record (the CEO, GM, AM and similar decide, not for themselves; only the person can request. The server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
       'This account cannot save this person’s Career Score (kept in the unsent list).');
     else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
@@ -13338,7 +13363,7 @@ async function ssPutRow(key, value, expect){
 /* ============================================================
    v1145（Moto さん 11/10「外すボタンを足す」・docs/SECURE_GRADE_HIST_V1145_JA.md の 6）：サーバーが断った送信待ちを外す
    ------------------------------------------------------------
-   決めた人だけが書ける設定（swIsKey：ガソリン代の単価・Score管理・賞与と Career Score の設定 8 つ・グレード履歴）は、
+   決めた人だけが書ける設定（swIsKey：ガソリン代の単価・Score管理・賞与と Career Score の設定 8 つ・グレード履歴。v1146 から gwIsKey：Tip Rate・プレップの時給の表と認定も）は、
    書く役割でない端末の変更をサーバーが断る（403。形の合わない記録は 400）。断られた変更は何度送っても届かず、送信待ちに残り続けていた
    （Codex #139 6760482271 の個別確認 ②。1144 のときに送れていなかった GM・CEO 以外のグレード履歴など）。
    断られたキーにこの端末だけの印（_ss_refused_v1）を付け、右上の「保存」と「設定 › 診断と記録」から、確かめの画面のあとに外せるようにする。
@@ -13365,7 +13390,7 @@ function ssRefusedFp(key){
 function ssRefusedAll(){ var o=null; try{ o=JSON.parse(localStorage.getItem(SS_REFUSED_KEY)||'null'); }catch(e){ o=null; } return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }
 function ssRefusedPut(o){ try{ if(Object.keys(o).length) localStorage.setItem(SS_REFUSED_KEY, JSON.stringify(o)); else localStorage.removeItem(SS_REFUSED_KEY); }catch(e){} }
 function ssRefusedMark(key, st){
-  if(!swIsKey(key)) return;
+  if(!gwIsKey(key)) return;
   var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403), fp:ssRefusedFp(key), who:(typeof _saveWho==='function') ? _saveWho() : '' }; ssRefusedPut(o);
 }
 function ssRefusedClear(key){ var o=ssRefusedAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; ssRefusedPut(o); } }
@@ -13375,7 +13400,7 @@ function ssRefusedList(){
   var o=ssRefusedAll(), mine=[], me=(typeof _saveWho==='function') ? _saveWho() : '';
   try{ mine=(typeof _outboxMine==='function') ? _outboxMine() : []; }catch(e){ mine=[]; }
   return mine.filter(function(x){
-      if(!(x && swIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key))) return false;
+      if(!(x && gwIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key))) return false;
       var m=o[x.key]||{};
       return typeof m.fp==='string' && m.fp===ssRefusedFp(x.key) && String(m.who||'')===me;
     })
@@ -14242,7 +14267,7 @@ var OP_MERGE = {
      店の設定と表は cas（読んだ行が変わっていないときだけ書く・Handbook と同じ）：2 台がほぼ同時に送っても、あとの書き込みが先の版・設定を消さない（Codex 6340525082 の P2） */
   prep_cfg:           { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
   prep_tables:        { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
-  prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime },
+  prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1146：決めた人だけが関数で書く（読んだ行が変わっていないときだけ書く） */
   vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
   bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
   bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
@@ -14271,7 +14296,7 @@ var OP_MERGE = {
   career_history: { merge: mergeAppendLog, covers: _coversLog },
   eval_history:   { merge: mergeAppendLog, covers: _coversLog },
   lss_requests:   { merge: mergeLssReq,    covers: _coversSkillReq },   /* v1140：取消と承認・却下がぶつかったら決定（mergeLssReq） */
-  tip_requests:   { merge: mergeTipReq,    covers: _coversTipReq },   /* v1091: 2 台で決めたら、決めた時刻の新しいほう */
+  tip_requests:   { merge: mergeTipReq,    covers: _coversTipReq, cas: true },   /* v1091: 2 台で決めたら、決めた時刻の新しいほう。v1146：決めた人だけが関数で書く（読んだ行が変わっていないときだけ書く。人ごとの行 spl_tip_requests_ も） */
   mileage_requests:{ merge: mergeReqTomb, covers: _coversReqTomb },
 /* v870: 申請者端末とGM端末が同じ行を書くので、上書きだと申請か承認のどちらかが消える。 */
 lost_receipts:  { merge: mergeReqTomb, covers: _coversReqTomb },
@@ -14889,7 +14914,7 @@ function _opCasWrite(key, value, row, _noSs){
       /* 書いた行の時刻が、読んだ時刻より進んだのを確かめてから「書けた」にする（DB の時刻の精度が粗い・時刻を戻す仕組みがあると、
          次の古い書き込みが同じ時刻の条件をすり抜けうるので、保存できたとは言わない） */
       if(_base!=null){ var _got=_tsMicro(rows[0] && rows[0].updated_at); if(_got==null || _got<=_base) return 'stale'; }
-      if(typeof swNote==='function' && swIsKey(key)) swNote(key, 'rest');   /* v1141：公開の鍵で書いた（関数が前の版・ログインの印なし） */
+      if(typeof swNote==='function' && gwIsKey(key)) swNote(key, 'rest');   /* v1141：公開の鍵で書いた（関数が前の版・ログインの印なし）。v1146：Tip Rate・プレップも */
       return 'ok';
     });
   }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
@@ -43584,7 +43609,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1145';
+const APP_VERSION = '1146';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -66505,6 +66530,8 @@ function pmAskFrom(a){
 async function pmCheckForApproval(a, status, opt){
   if(!(await pmPull([PM_CERT, PM_TBL]))){ showToast(pmT('最新の認定を読めませんでした（何も変えていません）。もう一度押してください','Could not read the latest certifications (nothing changed)'),'warning'); return null; }
   if(status!=='approved' && !pmCanAdmin()){ showToast(pmT('プレップ認定を却下できるのは GM・CEO です','Only GM/CEO can reject a Prep certification'),'warning'); return null; }
+  /* v1146：承認（認定を書く）も GM・CEO だけ（サーバーも GM・CEO だけが認定を書く。承認ルートは初めから GM だけ） */
+  if(status==='approved' && !pmCanAdmin()){ showToast(pmT('プレップ認定を承認できるのは GM・CEO です（何も変えていません）','Only GM/CEO can approve a Prep certification (nothing changed)'),'warning'); return null; }
   var c=pmMap(PM_CERT)[a.ref];
   if(!c && status!=='approved') return { cert:null, id:a.ref, from:'', tbl:null };   /* 記録が無い申請も却下はできる（承認待ちに残さない） */
   if(!c){ showToast(pmT('認定の申請が見つからないため、決めていません','The certification request was not found (nothing changed)'),'warning'); return null; }

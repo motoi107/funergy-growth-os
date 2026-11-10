@@ -25,6 +25,8 @@
 //   この関数で読み書きする（pii_get・pii_op・card_match・ins_totals。下の「v1144」の節・docs/SECURE_PII_V1144_JA.md）。答えにはいつも piifn:1。
 // ・v1145（段階 2b の 7 つ目）：グレード履歴（grade_hist）も、GM・CEO だけがこの関数で書く（Moto さん 11/10「GM,CEOです」。v1143 と同じ道・GH_KEYS・
 //   docs/SECURE_GRADE_HIST_V1145_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも ghfn:1。
+// ・v1146（段階 2b の 8 つ目）：Tip Rate の申請・決定（spl_tip_requests_<名前>）とプレップの時給の表・認定（prep_tables・prep_certs）も、
+//   この関数で書く（今の画面で決められる人だけ。下の「v1146」の節・docs/SECURE_TIP_PREP_V1146_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも tpfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -114,6 +116,122 @@ export function swShapeOk(key, value, cloud) {
     return swCgBadKeys(value, swMapMax(key)).every(k => !!c && Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]));
   }
   return false;
+}
+// ---- v1146（段階 2b の 8 つ目・Moto さん 11/10「Tip Rate とプレップから」・docs/SECURE_TIP_PREP_V1146_JA.md）
+//   Tip Rate の申請・決定（spl_tip_requests_<名前>・前の統合行 tip_requests）、プレップの時給の表（prep_tables）と認定（prep_certs）。
+//   チップの配分（v1092 から Tip Rate で）と時給（v1106 から認定の Lv × 表）にアプリが使う。公開の鍵で書けると、自分の Tip Rate を「承認」にする・
+//   時給の表を書き換える・自分の認定を足す、ができた。読むのは今までどおり公開の鍵で（どの端末も配分と人件費を計算する）。書くのはこの関数だけ。
+//   だれが何を変えてよいかは、今の画面で決められる人と同じ（Moto さん 11/10「今の画面で決められる人だけ」）：
+//     Tip Rate の承認・却下・引き上げ（自分の Tip Rate は決めない・店では分けない＝今の画面と同じ）：
+//       CEO・GM・確かめた AM（いつも）。役割 g4 の人・Head Chef（GM・CEO が確かめた G4）は、ワークセンターを使い始めるまで（使い始めたら GM に申請＝v1135）。
+//       Corporate Chef（GM・CEO が確かめた G5 の Head Chef の印）はいつも（画面の決まりと同じ）。役割は今の社員の表（画面と同じ）・グレードは確かめた写しとの狭いほう。
+//     Tip Rate の申請（申請中を足す）：本人だけ。決めたものは消さない・申請中に戻さない（決め直しは、前の決定より新しい決定だけ＝v1091 の合流と同じ）。
+//     承認センターが記録に付ける印（_dG・_stK・_stT・_dT・_mut：率・状態・決めた人は変えない。v1087）は、だれでも付け直せる（古い写しの端末が外すことも＝今までの合流と同じ）。
+//     プレップの時給の表：GM・CEO。プレップの認定：GM・CEO（申請・承認・却下・直接決める・表の切り替え・指定を外す）。「反映した」の印だけは経理も。
+//   決めた人でなくても、クラウドと同じ値なら書かずに通す（v1141 と同じ）。前の決定より古い写しの送り直しも（covers：アプリが書かない）。
+//   書くのは、確かめた行が変わっていないときだけ（読んだ行で確かめ、その行に条件を付けて書く。違えば 409）。
+export const TP_KEYS = ['prep_tables', 'prep_certs', 'tip_requests'];
+export const TP_TIP_PRE = 'spl_tip_requests_';
+// spl_tip_requests_ で始まる名前は長さによらず（SQL の ss_guard_key と同じ。アプリはこの名前で始まる行をすべて Tip Rate として読む）。書くのは 200 字までの名前だけ（tpPut）
+export function tpIsKey(k) { return typeof k === 'string' && (TP_KEYS.includes(k) || (k.startsWith(TP_TIP_PRE) && k.length > TP_TIP_PRE.length)); }
+export const TIP_DECIDE = ['ceo', 'gm', 'am'];
+const TIP_ST = ['申請中', '承認', '却下'];
+const TIP_DEC_FIELDS = ['approver', 'approvedDate', 'decAt', 'decDay', 'decHst', 'fromDay', 'prevRate'];
+// 承認センターの印（v1087 の _apSyncRecStamp・_apRecordState）。率・状態・決めた時刻（decAt）ではない（配分にも Tip Rate にも使わない）
+export const TIP_STAMPS = ['_dG', '_stK', '_stT', '_dT', '_mut'];
+function tipStampsOk(r) {
+  for (const k of TIP_STAMPS) {
+    if (!Object.prototype.hasOwnProperty.call(r, k)) continue;
+    const v = r[k];
+    if (v === null || v === undefined || v === '') continue;
+    if (k === '_stK') { if (typeof v !== 'string' || v.length > 120) return false; continue; }
+    const n = typeof v === 'string' && v.length <= 20 ? Number(v) : v;
+    if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return false;
+  }
+  return true;
+}
+const hasV = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined && o[k] !== null && o[k] !== '';
+const tipDecT = r => { const t = Number(r && r.decAt); return Number.isFinite(t) && t > 0 ? t : 0; };
+const tipId = r => (r && (typeof r.id === 'string' || typeof r.id === 'number')) ? String(r.id) : null;
+const omit = (o, ks) => { const x = {}; for (const k of Object.keys(o || {})) if (!ks.includes(k)) x[k] = o[k]; return x; };
+// 1 件の形（Tip Rate）：id・名前（行の名前と同じ）・状態・率（0〜100）
+function tipEntryOk(r, name) {
+  if (!r || typeof r !== 'object' || Array.isArray(r)) return false;
+  const id = tipId(r); if (!id || id.length > 80) return false;
+  if (r.name !== name) return false;
+  if (!TIP_ST.includes(r.status)) return false;
+  const rt = Number(r.rate); if (!Number.isFinite(rt) || rt < 0 || rt > 100) return false;
+  return true;
+}
+// 書いてよいか：'ok'・'forbidden'（この人は変えられない）・'bad'（形がおかしい）。cloud はいまのクラウドの値（無ければ null）
+//   a：{ role, name, dec }（name は社員の表・GM・CEO が確かめた写し。本人かどうかに使う。dec：Tip Rate を決められる人か＝関数の tipDecider）
+export function tpCheck(key, cloud, value, a) {
+  let s; try { s = JSON.stringify(value === undefined ? null : value); } catch { return 'bad'; }
+  if (s.length > 4000000) return 'bad';
+  const role = a && a.role, top = role === 'ceo' || role === 'gm';
+  if (key === 'prep_tables' || key === 'prep_certs') {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return 'bad';
+    const c = (cloud && typeof cloud === 'object' && !Array.isArray(cloud)) ? cloud : {};
+    // 形のおかしな記録は、クラウドにもうある同じ記録だけ（v1143 と同じ）
+    if (!swCgBadKeys(value, 200).every(k => Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]))) return 'bad';
+    if (top) return 'ok';
+    if (key === 'prep_tables' || role !== 'office') return 'forbidden';
+    // 経理：承認した認定に「反映した」の印を付けるだけ（中身はそのまま。時刻 _at は進む）
+    for (const id of new Set([...Object.keys(c), ...Object.keys(value)])) {
+      const o = c[id], n = value[id];
+      if (canon(o === undefined ? null : o) === canon(n === undefined ? null : n)) continue;
+      if (!o || !n || typeof o !== 'object' || typeof n !== 'object') return 'forbidden';
+      if (o.state !== 'approved' || n.state !== 'approved' || (o.toast && o.toast.at)) return 'forbidden';
+      const tt = n.toast;
+      if (!tt || typeof tt !== 'object' || Array.isArray(tt) || typeof tt.at !== 'string' || !tt.at || tt.at.length > 40 || typeof tt.by !== 'string' || tt.by.length > 120 || Object.keys(tt).some(k => k !== 'at' && k !== 'by')) return 'forbidden';
+      if (canon(omit(o, ['toast', '_at'])) !== canon(omit(n, ['toast', '_at']))) return 'forbidden';
+    }
+    return 'ok';
+  }
+  if (key === 'tip_requests') {   // 前の統合行（全員の分）：GM・CEO だけ
+    if (!Array.isArray(value)) return 'bad';
+    return top ? 'ok' : 'forbidden';
+  }
+  // spl_tip_requests_<名前>
+  const name = key.slice(TP_TIP_PRE.length);
+  if (!Array.isArray(value) || value.length > 2000) return 'bad';
+  const C = Array.isArray(cloud) ? cloud : [];
+  const cBy = new Map(); for (const r of C) { const id = tipId(r); if (id != null) cBy.set(id, r); }
+  const nBy = new Map();
+  for (const r of value) {
+    const id = tipId(r);
+    if (id == null || nBy.has(id)) return 'bad';
+    nBy.set(id, r);
+    if (!tipEntryOk(r, name) && !(cBy.has(id) && canon(cBy.get(id)) === canon(r))) return 'bad';   // 形のおかしな記録は、クラウドにもうある同じ記録だけ
+  }
+  const me = typeof (a && a.name) === 'string' ? a.name.trim() : '';
+  const self = !!me && name.trim() === me;
+  const decider = !!(a && a.dec) && !self;
+  for (const [id, o] of cBy) {
+    const n = nBy.get(id);
+    if (!n) return 'forbidden';   // 消さない（だれも）
+    if (canon(o) === canon(n)) continue;
+    if (!tipStampsOk(n)) return 'bad';
+    // 承認センターの印だけが違う：だれでも（付け直す・古い写しが外す。率・状態・決めた時刻は同じ）
+    if (canon(omit(o, TIP_STAMPS)) === canon(omit(n, TIP_STAMPS))) continue;
+    if (!decider) return 'forbidden';
+    if (!tipEntryOk(n, name) || n.name !== o.name || Number(n.rate) !== Number(o.rate)) return 'forbidden';
+    if (o.status === '申請中') continue;   // 承認・却下（決める）・申請中のまま（決める人だけが直す）
+    // 決めたもの：前の決定より新しい決定だけ（v1091 の合流と同じ。時刻の無い前の記録に時刻を付けるのも）。申請中には戻さない
+    if (n.status === '申請中' || !(tipDecT(n) > tipDecT(o))) return 'forbidden';
+  }
+  for (const [id, n] of nBy) {
+    if (cBy.has(id)) continue;
+    if (!tipStampsOk(n)) return 'bad';
+    if (n.status === '申請中') {   // 申請：本人だけ・決めた印なし
+      if (!self || TIP_DEC_FIELDS.some(k => hasV(n, k))) return 'forbidden';
+      continue;
+    }
+    // 引き上げ（決める人が、ほかの人の）。前の統合行にだけあった前の決定（時刻なし）を人ごとの行へ移すのも（v720 の畳み込み）
+    if (decider) continue;
+    return 'forbidden';
+  }
+  return 'ok';
 }
 // ---- v1142（段階 2b の 4 つ目）：採用（応募者・不採用ログ）とお悩み相談室（docs/SECURE_HR_V1142_JA.md）
 //   applicants・reject_log・growthhub は、どれも app_state の 1 行（配列）。読むのも書くのもこの関数で（公開の鍵から外すのは、全部の端末を
@@ -353,7 +471,8 @@ export function createHandler(deps) {
     if (!me || typeof me.emp !== 'string' || !me.emp || me.emp.length > 64) return { deny: 'pin' };
     const a = { via: 'pin', emp: me.emp, role: typeof me.role === 'string' ? me.role : '', grade: Number.isInteger(me.grade) ? me.grade : 0,
       stores: arr(me.stores), am: arr(me.am_stores), name: typeof me.name === 'string' && me.name.length <= 120 ? me.name : '',
-      confirmed: me.confirmed === true };   // v1142：GM・CEO が確かめた写しがあるか（G4・店長の範囲に要る）   // v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
+      confirmed: me.confirmed === true,   // v1142：GM・CEO が確かめた写しがあるか（G4・店長の範囲に要る）。v1140：名前（GM・CEO が確かめた写しか、PIN の印の名前）
+      live: j.live === true ? true : (j.live === false ? false : null) };   // v1146：ワークセンターを使い始めたか（G4・Head Chef が Tip Rate を決めるか）
     if (cache.size > 500) { for (const [k, v] of cache) if (!(v.exp > now())) cache.delete(k); if (cache.size > 500) cache.clear(); }
     cache.set(h, { a, exp: now() + 60000 });
     return a;
@@ -399,6 +518,25 @@ export function createHandler(deps) {
       const r = await rest('wr_people?emp_id=eq.' + encodeURIComponent(a.emp) + '&select=chef');
       return Array.isArray(r) && r.length === 1 && !!r[0] && r[0].chef === true;
     } catch { return false; }
+  }
+
+  // v1146：Tip Rate を決められる人か（今の画面と同じ。画面の Tip Rate の画面の承認・引き上げ＝ROLE_CONFIG の canApprove と v1135 の止め）。
+  //   CEO・GM・確かめた AM：いつも。役割 g4（画面では AM と同じ扱い）：ワークセンターを使い始めるまで。
+  //   役割 chef：GM・CEO が確かめた Head Chef の印があるとき。Head Chef（G4）は使い始めるまで、Corporate Chef（G5）はいつも。
+  //   役割は今の社員の表（画面が使う役割と同じ。公開の鍵で書ける＝今の画面と同じ確かさ）、グレードは GM・CEO が確かめた写しとの狭いほう（whoami）。
+  //   使い始めたか（live）は work-requests の whoami の答え（wr_settings・サーバーの鍵だけ）。分からないときは使い始めたとみなす（狭いほう）
+  async function tipDecider(a) {
+    if (!a) return false;
+    if (TIP_DECIDE.includes(a.role)) return true;
+    if (a.role !== 'staff' || !(a.grade >= 4) || a.confirmed !== true || typeof a.emp !== 'string' || !a.emp) return false;
+    let e = null;
+    try { const r = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=role,data'); e = Array.isArray(r) && r.length === 1 ? r[0] : null; } catch { return false; }
+    if (!e) return false;
+    const d = obj(e.data) || {}, role = String(e.role || d.role || '');
+    const notLive = a.live === false;
+    if (role === 'g4') return notLive;
+    if (role === 'chef') return (a.grade >= 5 || notLive) && await confChef(a);
+    return false;
   }
 
   // 目標を見せてよい人：本人。AM は担当の店（と自分の店）、G4 以上は自分の店の人（Career Score の一覧で見られる人）
@@ -817,8 +955,28 @@ export function createHandler(deps) {
     return { ...(await writeRow(key, b.value, e)), by: a.role };
   }
 
+  // v1146：Tip Rate・プレップ。読んだ行で確かめ（tpCheck）、その行が変わっていないときだけ書く
+  async function tpPut(a, b) {
+    const key = b.key;
+    if (!Object.prototype.hasOwnProperty.call(b, 'value') || key.length > 200) throw bad();
+    const e = b.expect;
+    if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
+    const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key));
+    const c = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true, by: a.role };   // クラウドと同じ：書かずに通す
+    // 端末が読んだ行（expect）から変わっていれば 409（端末は読み直して合わせてから送り直す。古い写しを「断られた」にしない）
+    if (e && (e.exists !== !!c || (c && e.exists && tsMicro(e.updated_at) !== tsMicro(c.updated_at)))) throw err('conflict', 409);
+    const dec = key.startsWith(TP_TIP_PRE) ? await tipDecider(a) : false;   // 名前の分からない人は申請を足せない（本人かを決められない：tpCheck）
+    const v = tpCheck(key, c ? c.value : null, b.value, { role: a.role, name: a.name, dec });
+    if (v === 'bad') throw bad();
+    if (v !== 'ok') throw err('forbidden', 403);
+    // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）
+    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false })), by: a.role };
+  }
+
   async function put(a, b) {
     const key = b.key;
+    if (tpIsKey(key)) return tpPut(a, b);   // v1146
     if (swIsKey(key)) return swPut(a, b);   // v1141
     if (csIsKey(key)) return csPut(a, b);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
@@ -1342,7 +1500,8 @@ export function createHandler(deps) {
     // sw2:1＝v1143 の設定（GM・CEO だけが変える賞与・Career Score の設定）も扱う。アプリは sw2 の無い答えを前の版とみなし、その設定を今までどおり REST で書く
     // piifn:1＝従業員の個人の欄（v1144）も扱う。アプリは piifn の無い答えを前の版とみなし、その欄を今までどおり従業員の表に書く
     // ghfn:1＝グレード履歴（v1145）も扱う。アプリは ghfn の無い答えを前の版とみなし、グレード履歴を今までどおり REST で書く
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // tpfn:1＝Tip Rate・プレップ（v1146）も扱う。アプリは tpfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で書く
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

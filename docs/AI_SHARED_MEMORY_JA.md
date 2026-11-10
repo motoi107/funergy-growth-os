@@ -1,5 +1,17 @@
 # Claude / Codex 共通記録
 
+## 2026-11-10 v1146：Tip Rate とプレップの時給を「今の画面で決められる人」だけが書く（全体アップデート指示の 2b の 8 つ目・Claude・ブランチ `claude/tip-prep-1146`・v1145（PR #139）の上・関数 secure-state・SQL `20261115090000`・本番未反映）
+
+- 依頼と決定：Moto さん 11/10「Tip Rate とプレップから」（選択肢）・「今の画面で決められる人だけ」。仕様・だれが何を変えられるかの表・限界：`docs/SECURE_TIP_PREP_V1146_JA.md`。入れる一式：`deploy/secure-tip-prep-v1146/`（① → ② 関数 → v1141〜v1146 のマージ → 全部の端末を 1146 に → B-5 → ③ SQL → ④）。
+- 前：`spl_tip_requests_<名前>`（人ごとの Tip Rate の申請・決定。v1092 からチップの配分に使う）・前の統合行 `tip_requests`・`prep_tables`（プレップの時給の表）・`prep_certs`（認定。v1106 から時給と人件費）は公開の鍵でだれでも書けた（自分の Tip Rate を「承認」・時給の表の書き換え・自分の認定を足す、ができた）。
+- 関数 secure-state v1146：`tpPut`（`tpIsKey`）。Tip Rate を決める人（`tipDecider`）＝CEO・GM・確かめた AM／確かめた G4（役割 g4）と確かめた Head Chef はワークセンターを使い始める前だけ（whoami の `live`・答えに無ければ使い始めたとみなす）／確かめた Corporate Chef（G5 の Head Chef の印）はいつも。自分の分は決めない・店では分けない（今の画面と同じ）。申請は本人だけ・決めたものは消さない・申請中に戻さない・決め直しは新しい時刻だけ。承認センターの印（`_dG`・`_stK`・`_stT`・`_dT`・`_mut`）はだれでも。前の統合行は GM・CEO。プレップの表・認定は GM・CEO、経理は承認した認定の「反映した」の印だけ。`expect` の 409・確かめた行に条件を付けて書く（409）・形の 400・同じ値は書かずに通す。答えに `tpfn:1`。
+- アプリ v1146：`gwIsKey`（v1141〜v1145 の 11 ＋ Tip Rate・プレップ）で書き込みだけ関数へ（関数が v1145 以前なら 10 分 REST＝`_ss.tpOld`）・`tip_requests` と `prep_certs` も `cas`・断られたときの知らせ（日英）・「設定 › 診断と記録」に「Tip Rate（名前）：サーバー（secure-state v1146）が書きました（役割 GM）」・送信待ちの名前。**画面を 1 か所そろえた**：承認センターの「プレップ認定」の承認（`pmCheckForApproval`）を GM・CEO だけに（ルートは初めから GM だけ。却下は前から GM・CEO だけ）。
+- SQL `20261115090000`：`ss_guard_key` を 11 ＋ `tip_requests`・`prep_tables`・`prep_certs`・`spl_tip_requests_` で始まる名前（長さによらず）に。`prep_cfg`・`spl_tip_history_`・`live_tip_rate` は含めない。戻す：`db/secure-tip-prep-rollback.sql`（v1145 の 11 に）。確かめ：precheck 11 行（④ の前に Tip Rate を決められなくなる人の数＝8 行目など・名前は出さない）・postcheck 22 行。
+- 試験（合成データ）：secure-tip-prep-server 12・client 8（v1145 の関数＝入れる一式の 1 ファイルでも）・rls 6（PGlite・v1145／v1144 のあと・RLS OFF／ON）・deploy（v1145 の関数を sha256 で固定）・static release pass/1146。変えた試験：secure-state-server（`tpfn:1`）・prep-matrix-v1106 と tip-rate-live（OP_MERGE の行に `cas: true`。tip-rate-live の合成のクラウドに条件つきの書き込みを足し、アプリと同じ `cas` の道で流す）。わざと壊す 47 通りのうち 46（1 回目 39 → 試験を足した。残り 1 は二重の守り）。全体（重い 2 つ以外・4 並列）：2,241 件のうち 31 件が落ちる＝ファイルごとに v1145 と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget と meeting-sales 18＝#139 の head `7b0814c` でも同じ 18・next-v1090 1・perf-v1098 1・specialist-career 1・承認の forced tie 1＝重いときだけ。単独で 40/40）。
+- 同じ日に #139 の Codex（`bd68040`・6764923073・blocked）の P2（断った送信待ちを外すとき、断ったあとの新しい保存まで外せた）を #139 で直し（`7b0814c`）、取り込んだ（`ssRefusedMark`・`ssRefusedList` は v1146 で `gwIsKey`）。
+- 変わること（Moto さんに伝える）：確かめていない AM・G4・Head Chef は、今の画面で押してもサーバーが断る（v1131 からの決まり。① の 8 行目）・社員と結ばれていないメールのアカウントは自分の Tip Rate を申請できない・前の統合行にだけある前の決定を、決める人でない端末が移そうとすると断られる（① の 5 行目）。
+- 独立レビューは無し（Claude の別エージェントは使っていない）。Codex のレビューはまだ。
+
 ## 2026-11-10 v1145：グレード履歴を GM・CEO だけが書く（全体アップデート指示の 2b の 7 つ目・Claude・ブランチ `claude/grade-hist-1145`・v1144（PR #138）の上・関数 secure-state・SQL `20261114090000`・本番未反映）
 
 - 依頼と決定：Moto さん 11/10「GM,CEOです / 次お願いします」（グレード履歴を書いてよいのは GM・CEO）。続けて Claude の問い（GM・CEO 以外が今している G1 からの昇格をどうするか）に「GM・CEO だけにする」（選択肢）。仕様・限界：`docs/SECURE_GRADE_HIST_V1145_JA.md`。入れる一式：`deploy/secure-grade-hist-v1145/`（① → ② 関数 → v1141〜v1145 のマージ → 全部の端末を 1145 に → B-5 → ③ SQL → ④）。

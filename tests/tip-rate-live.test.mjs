@@ -38,7 +38,7 @@ const plain = v => JSON.parse(JSON.stringify(v));
 const settle = async (n = 30) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
 
 // The real merge rule line for tip_requests (OP_MERGE) — the devices use exactly what the app registers.
-const MERGE_LINE = /^ {2}tip_requests: +\{ merge: (\w+), +covers: (\w+) \}/m.exec(SRC);
+const MERGE_LINE = /^ {2}tip_requests: +\{ merge: (\w+), +covers: (\w+)(, cas: true)? \}/m.exec(SRC);   // v1146: cas (write only when the row read is unchanged)
 
 /* PostgREST's like is SQL LIKE ('*' is '%'): '%' any run, '_' any one character, '\\' makes the next character literal */
 function likeRe(pat) {
@@ -61,6 +61,22 @@ function makeCloud() {
     for (let i = 0; i < cloud.delay; i++) await new Promise(r => setImmediate(r));
     const u = new URL(url);
     const ok = (body) => ({ ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(body)), text: async () => '' });
+    if ((opts.method || 'GET') === 'PATCH') {   // v1146: the cas write (only when the row read is unchanged)
+      const b = JSON.parse(opts.body); const k = (u.searchParams.get('key') || '').slice(3); const ua = u.searchParams.get('updated_at') || '';
+      cloud.log.push(['PATCH', [k]]);
+      if (cloud.failPost) return { ok: false, status: 503, text: async () => 'down', json: async () => ({}) };
+      const r = rows.get(k);
+      if (!r || !(ua === 'is.null' ? r.updated_at == null : ua === 'eq.' + r.updated_at)) return ok([]);
+      rows.set(k, { value: JSON.stringify(b.value), updated_at: b.updated_at });
+      return ok([{ key: k, updated_at: b.updated_at }]);
+    }
+    if ((opts.method || 'GET') === 'POST' && !Array.isArray(JSON.parse(opts.body))) {   // v1146: the cas write of a new row
+      const b = JSON.parse(opts.body); cloud.log.push(['POST', [b.key]]);
+      if (cloud.failPost) return { ok: false, status: 503, text: async () => 'down', json: async () => ({}) };
+      if (rows.has(b.key)) return { ok: false, status: 409, text: async () => 'dup', json: async () => ({}) };
+      rows.set(b.key, { value: JSON.stringify(b.value), updated_at: b.updated_at });
+      return ok([{ key: b.key }]);
+    }
     if ((opts.method || 'GET') === 'POST') {
       cloud.log.push(['POST', JSON.parse(opts.body).map(r => r.key)]);
       if (cloud.failPost) return { ok: false, status: 503, text: async () => 'down', json: async () => ({}) };
@@ -84,7 +100,7 @@ const EMP = [{ name: 'Crew A', store: 'F01', role: 'crew', firstWork: daysAgo(27
              { name: 'Crew C', store: 'F01', role: 'crew', firstWork: daysAgo(400), status: '在籍' }];   // past 3 months: 100% automatically
 const FUNCS = ['ls', 'lsSet', '_splitPrefix', '_splitRead', '_splitWrite', '_lsRaw', '_lsStoreGet', '_lsWriteVerified', '_lsSetVerified', '_lsSplitOnDemandPrefix',
   '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun', '_lsPushBlocked', 'syncMasterToSupabase', 'isOpSyncKey', 'isLocalOnlyKey', '_opMergeDef', 'opMergePush', '_fetchOpValue', 'supaUpsert',
-  '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_srPending', 'mergeSkillReq', '_coversSkillReq',
+  '_opUpsertRow', '_opWriteBack', 'supaHeaders', 'pullOpKey', '_fetchOpRow', '_opCasWrite', '_tsMicro', '_casTs', '_srPending', 'mergeSkillReq', '_coversSkillReq',
   'effectiveTipRate', 'firstWorkDate', 'isThreeMonths', 'applyTipRaise', 'approveTip', 'submitTipRequest'];
 const NEW = ['mergeTipReq', '_coversTipReq', '_tipDecT', '_tipLatestApproved', 'tipDecStamp', '_tipLiveTimeout', '_tipLiveGetJson', '_tipLiveOn', 'tipPullPerson', 'tipLiveBeacon',
   'tipLiveAfterSave', 'tipLivePull', 'tipLiveRerender', 'tipLivePullSoon', 'tipLiveStart', 'tipLiveStop',
@@ -117,10 +133,10 @@ function device(cloud, { user = 'Moto', role = 'gm', page = 'tiprate', view = 'm
   const load = names => names.map(n => { try { return fnSrc(n); } catch (_e) { return ''; } }).join('\n');
   vm.runInContext(load(FUNCS.concat(NEW)) + '\n' + NEW_VARS.map(n => { try { return varLine(n); } catch (_e) { return ''; } }).join('\n') + '\n' + varLine('LS_LOCAL_ONLY') + `
     var _SPLIT_KEYS = { tip_requests: { type: 'arr', by: function(r){ return r && r.name; } } };
-    var _STAMP_LIST_KEYS = {}, _LS_ONDEMAND_PREFIX = ['spl_tip_history_'], _LS_FETCHED = {}, _LS_SAVE_FAIL = {}, _lsEscalatedAt = 0, _opMergeChain = {}, _opLastPushErr = {}, _lastSupaError = null;
+    var _STAMP_LIST_KEYS = {}, _LS_ONDEMAND_PREFIX = ['spl_tip_history_'], _LS_FETCHED = {}, _LS_SAVE_FAIL = {}, _lsEscalatedAt = 0, _opMergeChain = {}, _opLastPushErr = {}, _opLastPushWhy = {}, _lastSupaError = null;
     var _idbState = 'unavailable', _IDB_MEM = null, _rtClient = null;
     var SUPA_MASTER_MAP = {}, SUPA_SETTING_KEYS = [], SUPA_SETTING_PREFIX = [], OP_SYNC_KEYS = ['tip_requests'], OP_SYNC_PREFIX = ['spl_'];
-    var OP_MERGE = { tip_requests: { merge: ${MERGE_LINE ? MERGE_LINE[1] : 'mergeSkillReq'}, covers: ${MERGE_LINE ? MERGE_LINE[2] : '_coversSkillReq'} } };
+    var OP_MERGE = { tip_requests: { merge: ${MERGE_LINE ? MERGE_LINE[1] : 'mergeSkillReq'}, covers: ${MERGE_LINE ? MERGE_LINE[2] : '_coversSkillReq'}${MERGE_LINE && MERGE_LINE[3] ? ', cas: true' : ''} } };
     var OP_MERGE_PREFIX = { 'spl_tip_requests_': OP_MERGE.tip_requests };   /* as _registerSplitMergeDefs does */
     function _idbQueue(){ return false; }
     function lsKeys(p){ var o=[]; for (var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(!p || k.indexOf(p)===0) o.push(k); } return o; }
