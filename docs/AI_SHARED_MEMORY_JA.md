@@ -10,6 +10,8 @@
 - 試験（合成データ）：secure-grade-hist-server 8・client 8（v1144・v1142 の関数＝入れる一式の 1 ファイルでも）・rls 6（PGlite・v1143 のあと／v1139〜v1144 のあと／RLS OFF／ON から）・grade-hist-gm-only 8（index.html の本物の UI案38 の仕組み）・grade-special（AM は確定日の画面の前に止まる）・関連 558 件のうち 557（落ちる 1 件は specialist-career の career_cfg の行の確かめ＝v1141 から・HEAD でも落ちる）・static release pass/1145。v1144 の関数の 1 ファイルを sha256 で固定。入れる一式の関数の 1 ファイル（sha256 先頭 `6081ec5c975a`）。わざと壊す 34 通りのうち 33（残り 1 は同じ意味：試験の名簿では Store Leader と Operation Leader がどちらも G3）。全体（重い 2 つ以外・4 並列）：2,201 件のうち 31 件が落ちる＝ファイルごとに v1144 と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 1・承認の forced tie 1＝重いときだけ）。
 - 独立レビューは無し（Claude の別エージェントは使っていない）。Codex のレビューはまだ。
 - PR #139（base main・#135〜#138 の上・head `c93cc6b` のあと記録だけ）。
+- レビュー（`c92b1ff`）：Claude のルーティン 6760386056（`c93cc6b` を読むだけ・新しい P1・P2 なし・P3 3）。**Codex 6760482271：blocked／manual・新しい P1・P2 なし**（関連 253 成功・skip 0）。個別確認：① GM・CEO 以外が登録した人に入社の記録を書かない（Claude が決めた・Moto さんの確認が要る）② 1144 のときに送れていなかった GM・CEO 以外の端末のグレード履歴は、1145 にするとサーバーが断り送信待ちに残り続ける（消す画面なし）③ 同じ社員の同時編集は社員ごとに新しいほう（項目ごとではない）・役職とグレード履歴をまとめて確定するのは端末の中だけ。Claude のルーティンは最新の 40 桁の SHA を書いていない（Codex は採用していない）。
+  - 直し（11/10・Claude・記録と手順だけ）：手順の 4 に「GM・CEO 以外の端末は更新の前に送信待ちを 0 に」・困ったときに「残ったら GM・CEO が入れ直す」。仕様の限界に足した。②の消し方と ① は Moto さんに確かめる。
 
 ## 2026-11-09 v1144：従業員の個人の欄（生年月日・カードの下 4 桁・保険）を公開の鍵から外す（全体アップデート指示の 2b の 6 つ目・Claude・ブランチ `claude/emp-private-1144`・v1143（PR #137）の上・関数 secure-state・SQL `20261113090000`・本番未反映）
 
