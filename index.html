@@ -13346,37 +13346,66 @@ async function ssPutRow(key, value, expect){
    外せるのは、今ログインしている人の送信待ち（とだれのか分からない前の版のもの）だけ。クラウドを読めない・送っている途中・
    読んでいるあいだにこの端末でまた保存された・ログインが変わった、のときは外さない。
    印は、そのキーをサーバーが受け付けたとき・送信待ちから外れたときに消える（一覧は送信待ちと印の両方があるものだけ）。
-   ほかの断り（成長カルテ・賞与・Career Score の行など）はこの道に入れない（範囲で決まる写しなので、クラウドの値で置き換えると見られない人の分まで変わりうる） */
+   ほかの断り（成長カルテ・賞与・Career Score の行など）はこの道に入れない（範囲で決まる写しなので、クラウドの値で置き換えると見られない人の分まで変わりうる）
+   【断った値の世代（Codex #139 6764923073 の P2）】印には、断ったときのこの端末の値の指紋（fp）と、だれの保存か（who）を残す。
+   断ったあとにこの端末でまた保存すると指紋が変わり、その新しい保存は「断られたもの」にしない（外せない・ふつうに送る。また断られれば、その値で印を付け直す）。
+   確かめの画面は、出したときの指紋を覚え、押したとき・クラウドを読んだあとの両方で同じときだけ外す（違えば外さず、開き直してもらう） */
 var SS_REFUSED_KEY = '_ss_refused_v1';
+var _ssFpMemo = {};
+/* この端末のそのキーの値（保存した文字）の指紋。長さと FNV-1a。値が無ければ 'none'。同じ文字なら前に計算した指紋を使う */
+function ssRefusedFp(key){
+  var s; try{ s=_lsStoreGet(key); }catch(e){ s=null; }
+  if(s==null) return 'none';
+  s=String(s);
+  var m=_ssFpMemo[key]; if(m && m.s===s) return m.fp;
+  var h=0x811c9dc5; for(var i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h, 0x01000193)>>>0; }
+  var fp=s.length.toString(36)+'.'+h.toString(36);
+  _ssFpMemo[key]={ s:s, fp:fp }; return fp;
+}
 function ssRefusedAll(){ var o=null; try{ o=JSON.parse(localStorage.getItem(SS_REFUSED_KEY)||'null'); }catch(e){ o=null; } return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }
 function ssRefusedPut(o){ try{ if(Object.keys(o).length) localStorage.setItem(SS_REFUSED_KEY, JSON.stringify(o)); else localStorage.removeItem(SS_REFUSED_KEY); }catch(e){} }
 function ssRefusedMark(key, st){
   if(!swIsKey(key)) return;
-  var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403) }; ssRefusedPut(o);
+  var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403), fp:ssRefusedFp(key), who:(typeof _saveWho==='function') ? _saveWho() : '' }; ssRefusedPut(o);
 }
 function ssRefusedClear(key){ var o=ssRefusedAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; ssRefusedPut(o); } }
-/* 外せるもの：今の人の送信待ちで、サーバーが断った印のあるもの（{ key, at, st, label }） */
+/* 外せるもの：今の人の送信待ちで、サーバーが断った印があり、印がこの人の・この端末の今の値（断った値）のもの（{ key, at, st, fp, label }）。
+   断ったあとにまた保存した値（指紋が違う）・ほかの人が断られた印は出さない（Codex #139 6764923073 の P2） */
 function ssRefusedList(){
-  var o=ssRefusedAll(), mine=[];
+  var o=ssRefusedAll(), mine=[], me=(typeof _saveWho==='function') ? _saveWho() : '';
   try{ mine=(typeof _outboxMine==='function') ? _outboxMine() : []; }catch(e){ mine=[]; }
-  return mine.filter(function(x){ return x && swIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key); })
-    .map(function(x){ var m=o[x.key]||{}; return { key:x.key, at:Number(m.at)||0, st:(m.st===400 ? 400 : 403), label:(typeof outboxLabel==='function') ? outboxLabel(x.key) : x.key }; });
+  return mine.filter(function(x){
+      if(!(x && swIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key))) return false;
+      var m=o[x.key]||{};
+      return typeof m.fp==='string' && m.fp===ssRefusedFp(x.key) && String(m.who||'')===me;
+    })
+    .map(function(x){ var m=o[x.key]||{}; return { key:x.key, at:Number(m.at)||0, st:(m.st===400 ? 400 : 403), fp:m.fp, label:(typeof outboxLabel==='function') ? outboxLabel(x.key) : x.key }; });
 }
-/* 外す（keys の順に 1 つずつ）。返す：{ done:[key], skip:[{ key, why }] }。why：'gone'（送信待ち・印が無い・ほかの人の）／'busy'（送っている途中）／
-   'read'（クラウドを読めなかった）／'changed'（読んでいるあいだにこの端末でまた保存された・送り始めた・ログインが変わった）／'local'（この端末に書けなかった） */
-async function ssDropRefused(keys){
-  var out={ done:[], skip:[] }, list=ssRefusedList(), can={};
-  list.forEach(function(x){ can[x.key]=1; });
-  keys=Array.isArray(keys) ? keys : [];
-  for(var i=0;i<keys.length;i++){
-    var key=keys[i];
-    if(!can[key]){ out.skip.push({ key:key, why:'gone' }); continue; }
+/* 外す（items の順に 1 つずつ）。items は確かめの画面に出したもの（{ key, fp }：出したときの断った値の指紋）。キーの文字だけなら、今の一覧の指紋。
+   返す：{ done:[key], skip:[{ key, why }] }。why：'gone'（送信待ち・印が無い・ほかの人の）／'busy'（送っている途中）／
+   'read'（クラウドを読めなかった）／'changed'（画面を出したあと・読んでいるあいだにこの端末でまた保存された・送り始めた・ログインが変わった）／'local'（この端末に書けなかった） */
+async function ssDropRefused(items){
+  var out={ done:[], skip:[] };
+  var now=function(){ var m={}; ssRefusedList().forEach(function(x){ m[x.key]=x; }); return m; };
+  var first=now();
+  items=Array.isArray(items) ? items : [];
+  for(var i=0;i<items.length;i++){
+    var it=items[i], key=(it && typeof it==='object') ? it.key : it;
+    var fp=(it && typeof it==='object') ? it.fp : (first[key] ? first[key].fp : null);
+    var cur=now()[key];
+    if(!cur){
+      /* まだこの人の送信待ちにあり、この人の断った印もあるのに一覧に出ない＝断ったあとにこの端末でまた保存された（新しい保存は外さない） */
+      var mine=false, mk=ssRefusedAll()[key], me=(typeof _saveWho==='function') ? _saveWho() : '';
+      try{ mine=_outboxMine().some(function(x){ return x && x.key===key; }); }catch(e){}
+      out.skip.push({ key:key, why:(mine && mk && String(mk.who||'')===me) ? 'changed' : 'gone' }); continue;
+    }
+    if(typeof fp!=='string' || cur.fp!==fp){ out.skip.push({ key:key, why:'changed' }); continue; }   /* 画面を出したあとにまた保存された・また断られた */
     if(typeof _pushBusy==='function' && _pushBusy(key)){ out.skip.push({ key:key, why:'busy' }); continue; }
-    var before=_lsStoreGet(key), who=(typeof _saveWho==='function') ? _saveWho() : '';
+    var who=(typeof _saveWho==='function') ? _saveWho() : '';
     var row; try{ row=await _fetchOpRow(key); }catch(e){ row=undefined; }
     if(!(row && typeof row==='object' && 'exists' in row)){ out.skip.push({ key:key, why:'read' }); continue; }
-    var still=ssRefusedList().some(function(x){ return x.key===key; });
-    if(!still || _lsStoreGet(key)!==before || (typeof _pushBusy==='function' && _pushBusy(key)) || ((typeof _saveWho==='function') ? _saveWho() : '')!==who){ out.skip.push({ key:key, why:'changed' }); continue; }
+    var still=now()[key];
+    if(!still || still.fp!==fp || ssRefusedFp(key)!==fp || (typeof _pushBusy==='function' && _pushBusy(key)) || ((typeof _saveWho==='function') ? _saveWho() : '')!==who){ out.skip.push({ key:key, why:'changed' }); continue; }
     var w=false;
     try{ w=row.exists ? _lsWriteVerified(key, JSON.stringify(row.value)) : _lsRawDel(key); }catch(e){ w=false; }
     if(!w){ out.skip.push({ key:key, why:'local' }); continue; }
@@ -13396,7 +13425,7 @@ function ssRefusedClock(at){
   var d=new Date(at), p=function(n){ return (n<10 ? '0' : '')+n; };
   return (d.getMonth()+1)+'/'+d.getDate()+' '+p(d.getHours())+':'+p(d.getMinutes());
 }
-var _ssRefusedAsk = [];   /* 確かめの画面に出したキー（押したときは、このキーだけを外す） */
+var _ssRefusedAsk = [];   /* 確かめの画面に出したもの（{ key, fp }。押したときは、このキーを、出したときと同じ値のときだけ外す） */
 /* 確かめの画面。onlyKey を渡すとその 1 件だけ */
 function openRefusedDrop(onlyKey){
   var T2=function(a, b){ return (typeof t==='function') ? t(a, b) : a; };
@@ -13404,7 +13433,7 @@ function openRefusedDrop(onlyKey){
   var list=ssRefusedList();
   if(onlyKey) list=list.filter(function(x){ return x.key===onlyKey; });
   if(!list.length){ try{ showToast(T2('サーバーが断った送信待ちはありません', 'There are no saves the server refused'), 'info'); }catch(e){} return; }
-  _ssRefusedAsk=list.map(function(x){ return x.key; });
+  _ssRefusedAsk=list.map(function(x){ return { key:x.key, fp:x.fp }; });
   var gm=(typeof curRole!=='undefined') && (curRole==='gm' || curRole==='ceo');
   var rows=list.map(function(x){ return '<li style="margin:4px 0"><b>'+E(x.label)+'</b> <span style="color:var(--muted);font-size:11px">'+E(T2('断った時刻 ', 'Refused ')+ssRefusedClock(x.at))+' · '+E(ssRefusedWhy(x.st))+'</span></li>'; }).join('');
   openModal('<div class="modal-title"><i class="ti ti-cloud-x"></i> '+E(T2('サーバーが断った送信待ちを外す', 'Remove saves the server refused'))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
@@ -13420,13 +13449,13 @@ async function ssDropRefusedRun(){
   var T2=function(a, b){ return (typeof t==='function') ? t(a, b) : a; };
   var b=(typeof document!=='undefined' && document.getElementById) ? document.getElementById('ss-refused-go') : null;
   if(b){ if(b.disabled) return; b.disabled=true; }
-  var keys=_ssRefusedAsk.slice(); _ssRefusedAsk=[];
+  var asks=_ssRefusedAsk.slice(); _ssRefusedAsk=[];
   var r;
-  try{ r=await ssDropRefused(keys); }catch(e){ r={ done:[], skip:keys.map(function(k){ return { key:k, why:'error' }; }) }; }
+  try{ r=await ssDropRefused(asks); }catch(e){ r={ done:[], skip:asks.map(function(k){ return { key:(k && k.key) || k, why:'error' }; }) }; }
   try{ closeModalDirect(); }catch(e){}
   var lab=function(k){ return (typeof outboxLabel==='function') ? outboxLabel(k) : k; };
   var whyText={ gone:T2('もう送信待ちにありません', 'no longer waiting'), busy:T2('送っている途中', 'being sent'), read:T2('クラウドを読めませんでした（つながる所でもう一度）', 'could not read the cloud (try again when online)'),
-    changed:T2('確かめのあいだにこの端末でまた保存されました（もう一度開いてください）', 'saved again on this device meanwhile (open it again)'), local:T2('この端末に書けませんでした（容量を整理してください）', 'could not write on this device (free space)'), error:T2('うまくいきませんでした', 'failed') };
+    changed:T2('確かめの画面を出したあとに、この端末でまた保存されました（新しい保存は外しません。もう一度開いてください）', 'saved again on this device after the confirmation opened (the newer save is not removed; open it again)'), local:T2('この端末に書けませんでした（容量を整理してください）', 'could not write on this device (free space)'), error:T2('うまくいきませんでした', 'failed') };
   r.done.forEach(function(k){ try{ if(window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', T2('サーバーが断った送信待ちを外しました：', 'Removed a save the server refused: ')+lab(k)+T2('（この端末の値をクラウドの値に戻した）', ' (this device now has the cloud value)'), true); }catch(e){} });
   try{
     if(r.done.length && !r.skip.length) showToast(T2('外しました（'+r.done.length+' 件）。この端末はクラウドの値に戻りました', 'Removed ('+r.done.length+'). This device now has the cloud value'), 'success');

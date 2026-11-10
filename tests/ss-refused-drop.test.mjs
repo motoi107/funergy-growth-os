@@ -242,6 +242,80 @@ test('not removed when the cloud cannot be read, while it is being sent, when it
   assert.equal(c.ssRefusedList().length, 1, 'the mark stays');
 });
 
+// Codex #139 6764923073 の P2：断った値の世代（指紋 fp）とだれの保存か（who）を印に残す。断ったあとにまた保存した値は「断られたもの」にしない・外さない
+const fnDown = (W, c) => { const real = W.fetch; c.fetch = (u, o) => String(u).includes('/functions/v1/secure-state') ? Promise.reject(new TypeError('fetch failed')) : real(u, o); return () => { c.fetch = real; }; };
+test('a save made after the refusal is not shown as refused and is not removed; resending it reaches the cloud (with and without trying to remove it first)', async () => {
+  for (const tryDrop of [true, false]) {
+    const W = world();
+    const gm = device(W, 'tGM');
+    assert.equal(await save(gm, 'grade_hist', { ...GH0, odd: 'x' }), false, 'the bad shape is refused (400)');
+    assert.deepEqual(gm.ssRefusedList().map(x => [x.key, x.st]), [['grade_hist', 400]]);
+    const up = fnDown(W, gm);
+    const fixed = ghMore('E-7', 1762700000009);
+    assert.equal(await save(gm, 'grade_hist', fixed), false, 'the fixed save is not sent (the function cannot be reached)');
+    assert.deepEqual(outKeys(gm), ['grade_hist']);
+    assert.deepEqual(J(gm.ssRefusedList()), [], 'the newer save is not listed as refused');
+    up();
+    if (tryDrop) assert.deepEqual(J((await gm.ssDropRefused(['grade_hist'])).skip), [{ key: 'grade_hist', why: 'changed' }], 'not removed');
+    assert.deepEqual(JSON.parse(gm.MEM.get('grade_hist')), fixed, 'E-7 stays on the device');
+    await gm.flushOutbox();
+    assert.deepEqual(outKeys(gm), [], 'sent');
+    assert.deepEqual(J(W.get('grade_hist')['E-7']), J(fixed['E-7']), 'E-7 reaches the cloud');
+    assert.equal(gm.__store.get('_ss_refused_v1'), undefined);
+  }
+});
+
+test('the confirmation removes only the value it showed: a save made after it opened is not removed (refused again → open it again; not sent → not refused)', async () => {
+  for (const net of [false, true]) {
+    const W = world();
+    const am = device(W, 'tAM');
+    await save(am, 'grade_hist', ghMore('E-9'));
+    am.openRefusedDrop();
+    assert.ok(am.__modal);
+    const up = net ? fnDown(W, am) : () => {};
+    assert.equal(await save(am, 'grade_hist', ghMore('E-7')), false);
+    up();
+    const r = await am.ssDropRefusedRun();
+    assert.deepEqual(J(r), { done: [], skip: [{ key: 'grade_hist', why: 'changed' }] }, net ? 'not sent' : 'refused again');
+    assert.deepEqual(JSON.parse(am.MEM.get('grade_hist')), ghMore('E-7'), 'the newer save stays');
+    assert.deepEqual(outKeys(am), ['grade_hist']);
+    assert.ok(am.__toasts.some(([m]) => /確かめの画面を出したあとに、この端末でまた保存されました（新しい保存は外しません/.test(m)), am.__toasts.map(x => x[0]).join(' | '));
+    if (net) assert.equal(am.ssRefusedList().length, 0, 'not sent is not refused');
+    else {
+      assert.equal(am.ssRefusedList().length, 1, 'refused again: listed with the new value');
+      am.openRefusedDrop();
+      const r2 = await am.ssDropRefusedRun();
+      assert.deepEqual(J(r2.done), ['grade_hist']);
+      assert.deepEqual(JSON.parse(am.MEM.get('grade_hist')), GH0);
+    }
+  }
+  // 中身を直接渡しても：出したときの指紋と違えば外さない
+  const W = world(); const am = device(W, 'tAM');
+  await save(am, 'grade_hist', ghMore('E-9'));
+  const fp0 = am.ssRefusedList()[0].fp;
+  assert.match(fp0, /^[0-9a-z]+\.[0-9a-z]+$/);
+  assert.deepEqual(J((await am.ssDropRefused([{ key: 'grade_hist', fp: 'x.y' }])).skip), [{ key: 'grade_hist', why: 'changed' }]);
+  assert.deepEqual(J((await am.ssDropRefused([{ key: 'grade_hist', fp: fp0 }])).done), ['grade_hist']);
+});
+
+test('the mark keeps who was refused: a sign-in that did not make the refused save does not see it, even for an unsent entry of unknown owner', async () => {
+  const W = world(); const c = device(W, 'tAM');
+  await save(c, 'grade_hist', ghMore('E-9'));
+  c._outboxSet(c._outboxGet().map(x => { const y = { ...x }; delete y.who; return y; }));
+  assert.deepEqual(c.ssRefusedList().map(x => x.key), ['grade_hist']);
+  login(c, 't4');
+  assert.deepEqual(J(c.ssRefusedList()), [], 'the G4 did not make that save');
+  assert.deepEqual(J((await c.ssDropRefused(['grade_hist'])).skip), [{ key: 'grade_hist', why: 'gone' }]);
+  // G4 sends it and is refused too: now it is the G4's refusal
+  await c.flushOutbox();
+  assert.deepEqual(c.ssRefusedList().map(x => x.key), ['grade_hist']);
+  // a mark from the earlier version (no fingerprint) is not listed (the next refusal marks it again)
+  const o = JSON.parse(c.__store.get('_ss_refused_v1')); delete o.grade_hist.fp; c.__store.set('_ss_refused_v1', JSON.stringify(o));
+  assert.deepEqual(J(c.ssRefusedList()), []);
+  await c.flushOutbox();
+  assert.deepEqual(c.ssRefusedList().map(x => x.key), ['grade_hist']);
+});
+
 test('the mark goes away when the server accepts the key later (the same value as the cloud, or a GM save on the device) and is not set for other keys', async () => {
   const W = world();
   const am = device(W, 'tAM');
