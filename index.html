@@ -12515,14 +12515,20 @@ var SW_KEYS = { mileage_config:1, career_cfg:1 };
    関数が v1142 以前（答えに sw2:1 が無い）なら、この 8 つは今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
 var SW2_KEYS = { cs_criteria:1, bonus_coef:1, bonus_coef_rng:1, bonus_track:1, bonus_eval_rule:1, bonus_eval_ovr:1, cs_strength_rule:1, cs_guide:1 };
 function sw2IsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(SW2_KEYS, k); }
-function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k)); }
+/* v1145（Moto さん 11/10「GM,CEOです」・docs/SECURE_GRADE_HIST_V1145_JA.md）：グレード履歴（grade_hist）も、書くのは関数だけ（GM・CEO）。読むのは今までどおり REST。
+   関数が v1144 以前（答えに ghfn:1 が無い）なら、今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
+var GH_KEYS = { grade_hist:1 };
+function ghIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(GH_KEYS, k); }
+function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k) || ghIsKey(k)); }
 function swOldNow(S){ var L=_ss.swOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 function sw2OldNow(S){ var L=_ss.sw2Old; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function ghOldNow(S){ var L=_ss.ghOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーの書き込みを関数に頼むか（読むのは今までどおり REST） */
 function swRouted(key){
   if(!swIsKey(key)) return false;
   var S=ssSess(); if(!S || ssLegacyNow(S) || swOldNow(S)) return false;
   if(sw2IsKey(key) && sw2OldNow(S)) return false;   /* v1143：関数が v1142 以前 */
+  if(ghIsKey(key) && ghOldNow(S)) return false;     /* v1145：関数が v1144 以前 */
   return true;
 }
 /* ============================================================
@@ -12946,10 +12952,10 @@ function swNote(key, how, by){
   var nm={ mileage_config:['ガソリン代の設定','Mileage settings'], career_cfg:['Score管理の設定','Score settings'],
     cs_criteria:['スコア基準','Score criteria'], bonus_coef:['賞与の係数','Bonus coefficients'], bonus_coef_rng:['賞与の係数の幅','Bonus coefficient ranges'],
     bonus_track:['G3 の職種','G3 track'], bonus_eval_rule:['賞与の 4 項目の設定','Bonus 4-item settings'], bonus_eval_ovr:['賞与の個人設定','Bonus personal settings'],
-    cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'] }[key] || [key, key];
+    cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'], grade_hist:['グレード履歴','Grade history'] }[key] || [key, key];
   var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'] }[by];
   var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
-  var fv=sw2IsKey(key) ? 'v1143' : 'v1141';
+  var fv=ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141');
   var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state '+fv+'）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state '+fv+', role '+re+')']
         : how==='same' ? [nm[0]+'：サーバー（secure-state '+fv+'）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state '+fv+') did not write (this sign-in may not change it; the cloud already had the same value)']
         : how==='none' ? [nm[0]+'：クラウドにもう入っているので書きませんでした（新しい変更なし）', nm[1]+': not written (the cloud already has it; nothing new)']
@@ -13091,6 +13097,9 @@ async function ssCall(payload, retried){
   /* v1143：GM・CEO だけが変える賞与・Career Score の設定を扱う関数か（sw2:1）。v1142 以前の関数なら、その 8 つは今までどおり REST で書く */
   if(j.sw2===1) _ss.sw2Old=null;
   else { _ss.sw2Old={ id:S.id, at:Date.now() }; if(payload.key && sw2IsKey(payload.key)) return { legacy:true }; }
+  /* v1145：グレード履歴を扱う関数か（ghfn:1）。v1144 以前の関数なら、グレード履歴は今までどおり REST で書く */
+  if(j.ghfn===1) _ss.ghOld=null;
+  else { _ss.ghOld={ id:S.id, at:Date.now() }; if(payload.key && ghIsKey(payload.key)) return { legacy:true }; }
   /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
   if(j.hrfn===1) _ss.hrOld=null;
   else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
@@ -13296,6 +13305,8 @@ async function ssPutRow(key, value, expect){
       'The server refused the Score settings (a record has the wrong shape; kept in the unsent list).');
     else if(sw2IsKey(key)) ssWarnOnce('bad_sw2', '賞与・Career Score の設定をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
       'The server refused the bonus / Career Score settings (a record has the wrong shape; kept in the unsent list).');
+    else if(ghIsKey(key)) ssWarnOnce('bad_gh', 'グレード履歴をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
+      'The server refused the grade history (a record has the wrong shape; kept in the unsent list).');
     return 'badts';
   }
   if(r.status===403){
@@ -13305,6 +13316,8 @@ async function ssPutRow(key, value, expect){
       'Only the GM or CEO can change the Score settings (the server refused; kept in the unsent list).');
     else if(sw2IsKey(key)) ssWarnOnce('forbidden_sw2', '賞与・Career Score の設定（スコア基準・係数・個人設定・強みの決まり・評価基準など）を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
       'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list).');
+    else if(ghIsKey(key)) ssWarnOnce('forbidden_gh', 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
+      'Only the GM or CEO can change the grade history (the server refused; kept in the unsent list).');
     else if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
       'This account cannot save this person’s Career Score (kept in the unsent list).');
     else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
@@ -14079,7 +14092,7 @@ var OP_MERGE = {
   q_budgets:          { merge: mergeMapByTime, covers: _coversMapByTime },
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
-  grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },
+  grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1145：GM・CEO だけが関数で書く（読んだ行が変わっていないときだけ書く） */
   cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう）。
                          v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
@@ -43431,7 +43444,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1144';
+const APP_VERSION = '1145';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -68159,6 +68172,7 @@ function ghBeforeSaveEmp(empId, data){
   var old=ghEmp(empId); if(!old) return false;
   var g0=ghNormG(empGrade(old)), g1=ghNormG(empGrade(Object.assign({}, old, data)));
   var p=window._ghPend;
+  if(p && p.ok && g0!==g1 && typeof ghChangeStopMsg==='function' && ghChangeStopMsg(g0, g1)){ window._ghPend=null; p=null; }   /* v1145：GM・CEO の確かめは、ほかの人の保存に使わない（下で止める） */
   if(p && p.ok && (p.kind||'emp')==='emp' && p.empId===empId && p.g1===g1){
     /* v1115：特例は保存の直前にも、権限・理由・確定日を確かめる（画面の表示だけに頼らない） */
     var _sp=(p.mode==='special') ? ghEvalStop(p) : '';
@@ -68167,6 +68181,8 @@ function ghBeforeSaveEmp(empId, data){
   }   /* v1058: 承認・Leader 昇格の確定は流用しない */   /* 確定日を聞いたあと → そのまま保存へ */
   window._ghPend=null;
   if(!g0 || !g1 || g0===g1) return false;                        /* グレードが変わらない役職の変更では聞かない */
+  var _gs=(typeof ghChangeStopMsg==='function') ? ghChangeStopMsg(g0, g1) : '';   /* v1145：GM・CEO 以外は保存しない（役職を元に戻せば、ほかの変更は保存できる） */
+  if(_gs){ showToast(_gs+((typeof t==='function') ? t('（保存していません。役職・権限ロールを元に戻すと、ほかの変更は保存できます）', ' (not saved — set the title / role back to save your other changes)') : '（保存していません）'),'warning'); return true; }
   window._ghPend={ empId:empId, g0:g0, g1:g1, name:data.name||old.name||'', t0:old.title||'', t1:data.title||'', d:ghToday(), note:'', ok:false, kind:'emp', key:empId, ev:null, track:null, mode:'normal', reason:'' };
   var body=document.getElementById('modal-body');
   if(body){ var fr=document.createDocumentFragment(); while(body.firstChild) fr.appendChild(body.firstChild); window._ghStash=fr; }   /* 編集中の画面は消さずに取っておく */
@@ -68236,7 +68252,9 @@ function ghAfterSaveEmp(empId, data, emps){
   }
   /* 新しく登録した人：入社日があれば入社の記録（当日から） */
   var e=(emps||[]).find(function(x){ return x.id===(data&&data.id); }), g=e?ghNormG(empGrade(e)):'', h=ghDate(data&&data.hireDate);
-  if(e && g && h) ghAddRec(e.id, {d:h, g:g, start:true, src:'hire'}, e.name);
+  /* v1145：入社の記録も GM・CEO だけが書く。ほかの人が登録したときは書かない（記録が無い人は入社日から今のグレード＝入社の記録と同じ区間になる。
+     グレード履歴のタブでは「確定日 未設定」。GM・CEO があとで足せる） */
+  if(e && g && h && (typeof ghEvalCan!=='function' || ghEvalCan())) ghAddRec(e.id, {d:h, g:g, start:true, src:'hire'}, e.name);
 }
 
 /* --- ① 成長カルテの「グレード履歴」タブ（UI案31-4） --- */
@@ -71336,6 +71354,15 @@ function bonusLegacyNoteHtml(tot){
    Career Score が無い人は先に評価する（未評価のまま確定できない）。 */
 function ghEvalNeeded(p){ return !!(p && p.g0 && p.g1 && p.g0!==p.g1 && ghElig(p.g0)); }
 function ghEvalCan(){ return ['gm','ceo'].indexOf(curRole)>=0; }
+/* v1145（Moto さん 11/10「GM,CEOです」「GM・CEO だけにする」）：グレード履歴を書いてよいのは GM・CEO。グレードが変わる変更（G1 から上がる・下がるも）は
+   役職とグレード履歴を一緒に保存するので、GM・CEO だけができる（従業員マスターの役職の変更・昇格申請の承認・Leader 昇格）。
+   ほかの人には理由を出して、何も変えない（サーバーも GM・CEO 以外のグレード履歴の書き込みを断る）。グレードが変わらない役職の変更は今までどおり */
+function ghChangeStopMsg(g0, g1){
+  g0=ghNormG(g0); g1=ghNormG(g1);
+  if(!g0 || !g1 || g0===g1 || ghEvalCan()) return '';
+  return (typeof t==='function') ? t('グレードが変わる変更（'+g0+' → '+g1+'）は GM・CEO が行います', 'Only the GM or CEO can make a change that moves the grade ('+g0+' → '+g1+')')
+    : ('グレードが変わる変更（'+g0+' → '+g1+'）は GM・CEO が行います');
+}
 /* v1116：グレード履歴の最後の記録が、もうこの変更（新しいグレードになった記録・前のグレードが空か今のグレード）か。
    例：先にグレード履歴のタブで記録を足した・役職だけが前のまま。そうでなければ null */
 function ghLastSameChange(p, recs){
@@ -71522,6 +71549,8 @@ function ghGatePassed(kind, key){ var p=window._ghPend; return !!(p && p.ok && p
 function ghGate(kind, key, emp, t1, args){
   if(!emp) return false;
   var g0=ghNormG(empGrade(emp)), g1=ghNormG(empGrade(Object.assign({}, emp, {title:t1, role:((typeof jobTitle==='function' && jobTitle(t1))||{}).permRole||emp.role})));
+  var _gs=ghChangeStopMsg(g0, g1);   /* v1145：グレードが変わる承認・Leader 昇格は GM・CEO だけ（何も変えない） */
+  if(_gs){ if(window._ghPend && window._ghPend.kind===kind && window._ghPend.key===key) window._ghPend=null; showToast(_gs+((typeof t==='function') ? t('（変えていません。GM・CEO に承認してもらってください）', ' (nothing changed — ask the GM or CEO to approve)') : '（変えていません）'),'warning'); return true; }
   var p=window._ghPend;
   if(p && p.ok && p.kind===kind && p.key===key && p.g1===g1){
     var _sp=(p.mode==='special') ? ghEvalStop(p) : '';   /* v1115：特例は承認・昇格の直前にも、権限・理由・確定日を確かめる */
@@ -81846,7 +81875,7 @@ function renderLeadership() {
     html += `<div class="card"><div class="card-title"><i class="ti ti-clock" style="color:var(--yellow)"></i>${t('承認待ち','Pending')} (${pendingReqs.length})</div>`;
     pendingReqs.forEach(r=>{
       html += `<div class="approval-item"><div class="approval-header"><div><div class="approval-title">${r.name} <span class="tag ${r.kind==='promo'?'tag-blue':'tag-green'}" style="font-size:9px">${r.kind==='promo'?t('昇格','Promo'):'Tip'}</span></div>
-        <div class="approval-meta">${r.csc?cscReqTxt(r):lssReqPts(r)}${r.wantTitle?' · '+t('希望','Wants')+': '+r.wantTitle:''}${r.reason?' · '+r.reason:''}</div></div></div>
+        <div class="approval-meta">${r.csc?cscReqTxt(r):lssReqPts(r)}${r.wantTitle?' · '+t('希望','Wants')+': '+r.wantTitle:''}${r.reason?' · '+r.reason:''}${lssPromoGmNote(r)}</div></div></div>
         <div class="approval-actions">
           <button class="btn btn-success btn-sm" onclick="approveLssRequest('${r.id}','承認')"><i class="ti ti-check"></i> ${t('承認','Approve')}</button>
           <button class="btn btn-danger btn-sm" onclick="approveLssRequest('${r.id}','却下')"><i class="ti ti-x"></i> ${t('却下','Reject')}</button>
@@ -82235,6 +82264,16 @@ function submitLssApply(name, kind) {
   closeModalDirect();
   showToast('申請しました（承認待ち）','success');
   renderPage('leadership');
+}
+/* v1145：グレードが変わる昇格は GM・CEO が承認する（ほかの人の一覧に一言。却下は今までどおりできる） */
+function lssPromoGmNote(r){
+  try{
+    if(!r || r.kind!=='promo' || !r.wantTitle || typeof ghChangeStopMsg!=='function') return '';
+    var t1=(r.wantTitle==='Store Leader') ? 'Operation Leader' : r.wantTitle, e=getEmployees().find(function(x){ return x.name===r.name; });
+    if(!e) return '';
+    var g1=empGrade(Object.assign({}, e, {title:t1, role:((typeof jobTitle==='function' && jobTitle(t1))||{}).permRole||e.role}));
+    return ghChangeStopMsg(empGrade(e), g1) ? ' · <span style="color:var(--accent);font-weight:700">'+escapeHtml(t('グレードが変わるので GM・CEO が承認します','The grade changes — the GM or CEO approves'))+'</span>' : '';
+  }catch(e){ return ''; }
 }
 /* LSS申請の承認/却下 */
 function approveLssRequest(id, status) {

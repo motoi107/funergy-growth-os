@@ -54,11 +54,11 @@ function setup(o = {}) {
 const writes = (W, key) => W.log.filter(x => x[0] === 'write' && x[2] === key).map(x => x[1]);
 
 test('the keys: mileage_config and career_cfg (v1141) and the eight GM/CEO settings (v1143); not secret (still readable); the rules per key', () => {
-  assert.deepEqual(Object.keys(SW_WRITE).sort(), ['bonus_coef', 'bonus_coef_rng', 'bonus_eval_ovr', 'bonus_eval_rule', 'bonus_track', 'career_cfg', 'cs_criteria', 'cs_guide', 'cs_strength_rule', 'mileage_config']);
+  assert.deepEqual(Object.keys(SW_WRITE).sort(), ['bonus_coef', 'bonus_coef_rng', 'bonus_eval_ovr', 'bonus_eval_rule', 'bonus_track', 'career_cfg', 'cs_criteria', 'cs_guide', 'cs_strength_rule', 'grade_hist', 'mileage_config']);   // v1145：グレード履歴も
   assert.deepEqual(SW_WRITE.mileage_config, ['ceo', 'gm', 'office'], 'Moto 11/04: CEO, GM and Accounting');
   assert.deepEqual(SW_WRITE.career_cfg, ['ceo', 'gm']);
   for (const k of ['mileage_config', 'career_cfg']) { assert.ok(swIsKey(k)); assert.ok(!secretKey(k) && !ssIsKey(k) && !csIsKey(k), k + ' stays readable'); }
-  for (const k of ['mileage_requests', 'career_cfg ', 'Career_cfg', 'cs_criteria_', 'grade_hist', 'q_budgets', 'growth_karte', 'toString', '__proto__', 'constructor', 'hasOwnProperty', '', null, undefined, 1]) assert.ok(!swIsKey(k), String(k));
+  for (const k of ['mileage_requests', 'career_cfg ', 'Career_cfg', 'cs_criteria_', 'grade_hist ', 'q_budgets', 'growth_karte', 'toString', '__proto__', 'constructor', 'hasOwnProperty', '', null, undefined, 1]) assert.ok(!swIsKey(k), String(k));
 });
 
 test('the shape check: a mileage rate the server can use (0.01 <= rate <= 5, never wrapped); the Score settings are a map (odd records only as they already are in the cloud)', () => {
