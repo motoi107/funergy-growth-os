@@ -11429,7 +11429,7 @@ function _pushBusy(key){ var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ 
 function _pushRun(key, v, w){
   var q=_pushQOf(key);
   if(typeof w==='undefined') w=(typeof _saveWho==='function'?_saveWho():'');
-  var my=++q.seq; q.busy=Date.now(); q.busySeq=my;
+  var my=++q.seq; q.busy=Date.now(); q.busySeq=my; q.busyWho=w;   /* v1145（Codex #139 6765880796）：この回はだれの保存か（断った印に使う） */
   return Promise.resolve().then(function(){ return syncMasterToSupabase(key, v); })
     .then(function(r){ return { r:r }; }, function(e){ return { r:false, e:e }; })
     .then(function(o){
@@ -13296,6 +13296,7 @@ async function ssGetRow(key, tmo){
 async function ssPutRow(key, value, expect){
   var p={ action:'put', key:key, value:value, ms:45000 };
   if(expect) p.expect={ exists:!!expect.exists, updated_at:(expect.exists ? (expect.updatedAt==null ? null : expect.updatedAt) : null) };
+  var run=ssRefusedRun(key);   /* v1145（Codex #139 6765880796 の P2）：この送信がどの保存のものかを、答えを待つ前に決める（断ったときの印は、この保存にだけ付ける） */
   var r=await ssCall(p);
   if(r.legacy || r.none) return SS_REST;
   if(r.ok){
@@ -13305,7 +13306,7 @@ async function ssPutRow(key, value, expect){
   }
   if(r.status===409) return 'conflict';
   if(r.status===400){
-    ssRefusedMark(key, 400);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
+    ssRefusedMark(key, 400, run);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
     /* v1141（独立レビュー P2-1）：決めた人が書いた値の形をサーバーが断った（送信待ちに残る）。何が悪いかを出す */
     if(key==='mileage_config') ssWarnOnce('bad_sw_mi', 'ガソリン代の設定をサーバーが断りました（単価は $0.01〜$5.00 / マイル。送信待ちに残しています。設定を開いて入れ直してください）',
       'The server refused the mileage settings (rate must be $0.01–$5.00 per mile; kept in the unsent list — open the settings and save again).');
@@ -13318,7 +13319,7 @@ async function ssPutRow(key, value, expect){
     return 'badts';
   }
   if(r.status===403){
-    ssRefusedMark(key, 403);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
+    ssRefusedMark(key, 403, run);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
     if(key==='mileage_config') ssWarnOnce('forbidden_sw_mi', 'ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
       'Only the CEO, GM or Accounting can change the mileage rate / map settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(key==='career_cfg') ssWarnOnce('forbidden_sw_cg', 'Score管理の設定を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
@@ -13349,7 +13350,10 @@ async function ssPutRow(key, value, expect){
    ほかの断り（成長カルテ・賞与・Career Score の行など）はこの道に入れない（範囲で決まる写しなので、クラウドの値で置き換えると見られない人の分まで変わりうる）
    【断った値の世代（Codex #139 6764923073 の P2）】印には、断ったときのこの端末の値の指紋（fp）と、だれの保存か（who）を残す。
    断ったあとにこの端末でまた保存すると指紋が変わり、その新しい保存は「断られたもの」にしない（外せない・ふつうに送る。また断られれば、その値で印を付け直す）。
-   確かめの画面は、出したときの指紋を覚え、押したとき・クラウドを読んだあとの両方で同じときだけ外す（違えば外さず、開き直してもらう） */
+   確かめの画面は、出したときの指紋を覚え、押したとき・クラウドを読んだあとの両方で同じときだけ外す（違えば外さず、開き直してもらう）
+   【答えを待つあいだの保存（Codex #139 6765880796 の P2）】指紋とだれの保存かは、答えが届いた時ではなく送る前に決める（ssRefusedRun）。
+   答えを待つあいだに同じキーがまた保存された（送る列に次の送信が待っている）・この端末の値が変わったときは、断られても印を付けない
+   （断られたのは前の保存で、新しい保存はまだ送っていない。新しい保存は次の送信でふつうに送り、また断られれば、そのとき印を付ける） */
 var SS_REFUSED_KEY = '_ss_refused_v1';
 var _ssFpMemo = {};
 /* この端末のそのキーの値（保存した文字）の指紋。長さと FNV-1a。値が無ければ 'none'。同じ文字なら前に計算した指紋を使う */
@@ -13364,9 +13368,24 @@ function ssRefusedFp(key){
 }
 function ssRefusedAll(){ var o=null; try{ o=JSON.parse(localStorage.getItem(SS_REFUSED_KEY)||'null'); }catch(e){ o=null; } return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }
 function ssRefusedPut(o){ try{ if(Object.keys(o).length) localStorage.setItem(SS_REFUSED_KEY, JSON.stringify(o)); else localStorage.removeItem(SS_REFUSED_KEY); }catch(e){} }
-function ssRefusedMark(key, st){
-  if(!swIsKey(key)) return;
-  var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403), fp:ssRefusedFp(key), who:(typeof _saveWho==='function') ? _saveWho() : '' }; ssRefusedPut(o);
+/* この送信がどの保存のものか（ssPutRow が答えを待つ前に呼ぶ）。送る列（_pushRun）の回・その回はだれの保存か・送る値を作った時点のこの端末の値の指紋。
+   送る列の外の送信（まとめて送る など）は null（印を付けない。送信待ちに残れば、送り直しの回で付く） */
+function ssRefusedRun(key){
+  if(!swIsKey(key)) return null;
+  var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : null, q=Q ? Q[key] : null;
+  if(!(q && q.busy)) return null;
+  return { seq:q.busySeq, who:(typeof q.busyWho==='string') ? q.busyWho : null, fp:ssRefusedFp(key) };
+}
+/* 断った印を付ける。run（ssRefusedRun）の保存が、答えが届いた今もこの端末の値のときだけ（Codex #139 6765880796 の P2）。
+   答えを待つあいだにまた保存された（次の送信が待っている）・この端末の値が変わった・送る列の別の回・ログインが変わった、のときは付けない
+   （そのとき付けると、送っていない新しい保存を「断られたもの」として外せてしまう）。印の指紋とだれの保存かは、答えを待つ前に決めたもの */
+function ssRefusedMark(key, st, run){
+  if(!swIsKey(key) || !run) return;
+  var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : null, q=Q ? Q[key] : null;
+  if(!(q && q.busy && q.busySeq===run.seq && !q.next)) return;
+  if(((typeof _saveWho==='function') ? _saveWho() : '')!==run.who) return;
+  if(ssRefusedFp(key)!==run.fp) return;
+  var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403), fp:run.fp, who:run.who }; ssRefusedPut(o);
 }
 function ssRefusedClear(key){ var o=ssRefusedAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; ssRefusedPut(o); } }
 /* 外せるもの：今の人の送信待ちで、サーバーが断った印があり、印がこの人の・この端末の今の値（断った値）のもの（{ key, at, st, fp, label }）。
