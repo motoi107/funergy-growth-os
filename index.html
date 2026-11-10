@@ -11320,7 +11320,7 @@ function _outboxAdd(key, err, w){
   else { var n={key:key, attempts:1, lastErr:String(err||''), ts:Date.now()}; if(w) n.who=w; a.push(n); }
   _outboxSet(a);
 }
-function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); try{ if(typeof _lsSlimTry==='function') _lsSlimTry(key); }catch(e){} try{ if(typeof _pendEditAtDrop==='function') _pendEditAtDrop(key); }catch(e){} }   /* v1136：送れたら直した時刻も忘れる */
+function _outboxRemove(key){ var a=_outboxGet(); var b=a.filter(function(x){return x.key!==key;}); if(b.length!==a.length) _outboxSet(b); try{ if(typeof _lsSlimTry==='function') _lsSlimTry(key); }catch(e){} try{ if(typeof _pendEditAtDrop==='function') _pendEditAtDrop(key); }catch(e){} try{ if(typeof ssRefusedClear==='function') ssRefusedClear(key); }catch(e){} }   /* v1136：送れたら直した時刻も忘れる。v1145：サーバーが断った印も */
 /* 今ログインしている人が送れる送信待ち（その人の保存と、だれのか分からない v1127 までのもの）。ほかの人の保存は、その人がまたログインしたときに送る */
 function _outboxMine(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && (!x.who || x.who===me); }); }
 function _outboxOthers(){ var me=(typeof _saveWho==='function'?_saveWho():''); return _outboxGet().filter(function(x){ return x && x.who && x.who!==me; }).length; }
@@ -11376,7 +11376,10 @@ function outboxLabel(key){
     ['menu_mix_','メニューの出数','Menu item counts'],['shiftplan_','シフト','Shift'],['spl_tip_requests_','Tip Rate','Tip Rate'],['tip_requests','Tip Rate','Tip Rate'],['notifications','通知','Notifications'],
     ['lala_tasks','LaLa のタスク','LaLa tasks'],['m_employees','従業員','Employees'],['m_stores','店舗','Stores'],['growth_karte','成長カルテ','Growth chart'],['lss_','Career Score','Career Score'],
     ['q_budgets','Qコミット','Quarter commit'],['fc_monthly_','原価（月）','Food cost (month)'],['daily_actuals_','売上・日報','Sales and daily report'],['ot_approvals_','残業の承認','Overtime approvals'],['onboardings','入社の手続き','Onboarding'],
-    ['vacations','休暇','Time off'],['handbook_reads','Handbook の読了','Handbook reading'],['handbook_chapters','Handbook の章','Handbook chapters'],['shift_fixed_','シフトの固定','Fixed shifts'],['cash_tip','現金チップ','Cash tips']];   /* v1137：右上の「保存」の中身で読める名前 */
+    ['vacations','休暇','Time off'],['handbook_reads','Handbook の読了','Handbook reading'],['handbook_chapters','Handbook の章','Handbook chapters'],['shift_fixed_','シフトの固定','Fixed shifts'],['cash_tip','現金チップ','Cash tips'],
+    ['grade_hist','グレード履歴','Grade history'],['mileage_config','ガソリン代の設定','Mileage settings'],['career_cfg','Score管理の設定','Score settings'],['cs_criteria','スコア基準','Score criteria'],
+    ['bonus_coef_rng','賞与の係数の幅','Bonus coefficient ranges'],['bonus_coef','賞与の係数','Bonus coefficients'],['bonus_track','G3 の職種','G3 track'],['bonus_eval_rule','賞与の 4 項目の設定','Bonus four-item settings'],
+    ['bonus_eval_ovr','賞与の個人設定','Bonus personal settings'],['cs_strength_rule','強みの決まり','Strength rules'],['cs_guide','評価基準・例','Scoring guide']];   /* v1137：右上の「保存」の中身で読める名前。v1145：決めた人だけが書ける設定（サーバーが断ったものを外す画面に出す） */
   var en=(typeof curLang!=='undefined' && curLang==='en');   /* v1137（独立レビュー P3-10）：英語の画面では英語の名前 */
   for(var i=0;i<map.length;i++){ if(k.indexOf(map[i][0])===0) return (en && map[i][2]) ? map[i][2] : map[i][1]; }
   return k;
@@ -11506,6 +11509,9 @@ function openOutboxDiag(){
       +'<div class="card" style="margin:0">'+listRows+'</div>';
   }
   if(_oth) body+='<div style="font-size:11px;color:var(--muted);margin-top:6px"><i class="ti ti-user"></i> '+t('ほかの人の送信待ち '+_oth+' 件（その人がこの端末でログインしたときに送ります）','Unsent saves of other people: '+_oth+' (sent when that person signs in on this device)')+'</div>';
+  var _rf=(typeof ssRefusedList==='function') ? ssRefusedList() : [];   /* v1145：サーバーが断ったもの（再送しても届かない） */
+  if(_rf.length) body+='<div style="font-size:12px;color:var(--red);margin-top:6px"><i class="ti ti-cloud-x"></i> '+escapeHtml(t('このうちサーバーが断ったもの '+_rf.length+' 件（再送しても届きません）：','Refused by the server: '+_rf.length+' (resending will not deliver them): ')+_rf.map(function(x){ return x.label; }).join('・'))
+    +' <button class="btn btn-secondary btn-sm" style="padding:1px 8px" onclick="closeModalDirect(); openRefusedDrop();">'+escapeHtml(t('外す…','Remove…'))+'</button></div>';
   openModal('<div class="modal-title"><i class="ti ti-cloud-check"></i> 書き戻し確認（未送信データ） <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
     +body
     +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">閉じる</button>'
@@ -13294,10 +13300,12 @@ async function ssPutRow(key, value, expect){
   if(r.legacy || r.none) return SS_REST;
   if(r.ok){
     if(swIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
+    if(swIsKey(key)) ssRefusedClear(key);   /* v1145：受け付けた（断った印を消す） */
     return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at), same:r.j.same===true };
   }
   if(r.status===409) return 'conflict';
   if(r.status===400){
+    ssRefusedMark(key, 400);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
     /* v1141（独立レビュー P2-1）：決めた人が書いた値の形をサーバーが断った（送信待ちに残る）。何が悪いかを出す */
     if(key==='mileage_config') ssWarnOnce('bad_sw_mi', 'ガソリン代の設定をサーバーが断りました（単価は $0.01〜$5.00 / マイル。送信待ちに残しています。設定を開いて入れ直してください）',
       'The server refused the mileage settings (rate must be $0.01–$5.00 per mile; kept in the unsent list — open the settings and save again).');
@@ -13310,14 +13318,15 @@ async function ssPutRow(key, value, expect){
     return 'badts';
   }
   if(r.status===403){
-    if(key==='mileage_config') ssWarnOnce('forbidden_sw_mi', 'ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です（サーバーが断りました。送信待ちに残しています）',
-      'Only the CEO, GM or Accounting can change the mileage rate / map settings (the server refused; kept in the unsent list).');
-    else if(key==='career_cfg') ssWarnOnce('forbidden_sw_cg', 'Score管理の設定を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
-      'Only the GM or CEO can change the Score settings (the server refused; kept in the unsent list).');
-    else if(sw2IsKey(key)) ssWarnOnce('forbidden_sw2', '賞与・Career Score の設定（スコア基準・係数・個人設定・強みの決まり・評価基準など）を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
-      'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list).');
-    else if(ghIsKey(key)) ssWarnOnce('forbidden_gh', 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
-      'Only the GM or CEO can change the grade history (the server refused; kept in the unsent list).');
+    ssRefusedMark(key, 403);   /* v1145：断った印（右上の「保存」と「設定 › 診断と記録」から外せる） */
+    if(key==='mileage_config') ssWarnOnce('forbidden_sw_mi', 'ガソリン代の単価・地図の設定を変えられるのは CEO・GM・経理です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the CEO, GM or Accounting can change the mileage rate / map settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(key==='career_cfg') ssWarnOnce('forbidden_sw_cg', 'Score管理の設定を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can change the Score settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(sw2IsKey(key)) ssWarnOnce('forbidden_sw2', '賞与・Career Score の設定（スコア基準・係数・個人設定・強みの決まり・評価基準など）を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(ghIsKey(key)) ssWarnOnce('forbidden_gh', 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the GM or CEO can change the grade history (the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
       'This account cannot save this person’s Career Score (kept in the unsent list).');
     else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
@@ -13325,6 +13334,108 @@ async function ssPutRow(key, value, expect){
     return 'forbidden';
   }
   return 'fail';
+}
+/* ============================================================
+   v1145（Moto さん 11/10「外すボタンを足す」・docs/SECURE_GRADE_HIST_V1145_JA.md の 6）：サーバーが断った送信待ちを外す
+   ------------------------------------------------------------
+   決めた人だけが書ける設定（swIsKey：ガソリン代の単価・Score管理・賞与と Career Score の設定 8 つ・グレード履歴）は、
+   書く役割でない端末の変更をサーバーが断る（403。形の合わない記録は 400）。断られた変更は何度送っても届かず、送信待ちに残り続けていた
+   （Codex #139 6760482271 の個別確認 ②。1144 のときに送れていなかった GM・CEO 以外のグレード履歴など）。
+   断られたキーにこの端末だけの印（_ss_refused_v1）を付け、右上の「保存」と「設定 › 診断と記録」から、確かめの画面のあとに外せるようにする。
+   外す＝クラウドの今の値を読み、この端末の値をそれに置き換え（合流しない）、送信待ちから外す。この端末の変更は消える（要る変更は GM・CEO が入れ直す）。
+   外せるのは、今ログインしている人の送信待ち（とだれのか分からない前の版のもの）だけ。クラウドを読めない・送っている途中・
+   読んでいるあいだにこの端末でまた保存された・ログインが変わった、のときは外さない。
+   印は、そのキーをサーバーが受け付けたとき・送信待ちから外れたときに消える（一覧は送信待ちと印の両方があるものだけ）。
+   ほかの断り（成長カルテ・賞与・Career Score の行など）はこの道に入れない（範囲で決まる写しなので、クラウドの値で置き換えると見られない人の分まで変わりうる） */
+var SS_REFUSED_KEY = '_ss_refused_v1';
+function ssRefusedAll(){ var o=null; try{ o=JSON.parse(localStorage.getItem(SS_REFUSED_KEY)||'null'); }catch(e){ o=null; } return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }
+function ssRefusedPut(o){ try{ if(Object.keys(o).length) localStorage.setItem(SS_REFUSED_KEY, JSON.stringify(o)); else localStorage.removeItem(SS_REFUSED_KEY); }catch(e){} }
+function ssRefusedMark(key, st){
+  if(!swIsKey(key)) return;
+  var o=ssRefusedAll(); o[key]={ at:Date.now(), st:(st===400 ? 400 : 403) }; ssRefusedPut(o);
+}
+function ssRefusedClear(key){ var o=ssRefusedAll(); if(Object.prototype.hasOwnProperty.call(o, key)){ delete o[key]; ssRefusedPut(o); } }
+/* 外せるもの：今の人の送信待ちで、サーバーが断った印のあるもの（{ key, at, st, label }） */
+function ssRefusedList(){
+  var o=ssRefusedAll(), mine=[];
+  try{ mine=(typeof _outboxMine==='function') ? _outboxMine() : []; }catch(e){ mine=[]; }
+  return mine.filter(function(x){ return x && swIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key); })
+    .map(function(x){ var m=o[x.key]||{}; return { key:x.key, at:Number(m.at)||0, st:(m.st===400 ? 400 : 403), label:(typeof outboxLabel==='function') ? outboxLabel(x.key) : x.key }; });
+}
+/* 外す（keys の順に 1 つずつ）。返す：{ done:[key], skip:[{ key, why }] }。why：'gone'（送信待ち・印が無い・ほかの人の）／'busy'（送っている途中）／
+   'read'（クラウドを読めなかった）／'changed'（読んでいるあいだにこの端末でまた保存された・送り始めた・ログインが変わった）／'local'（この端末に書けなかった） */
+async function ssDropRefused(keys){
+  var out={ done:[], skip:[] }, list=ssRefusedList(), can={};
+  list.forEach(function(x){ can[x.key]=1; });
+  keys=Array.isArray(keys) ? keys : [];
+  for(var i=0;i<keys.length;i++){
+    var key=keys[i];
+    if(!can[key]){ out.skip.push({ key:key, why:'gone' }); continue; }
+    if(typeof _pushBusy==='function' && _pushBusy(key)){ out.skip.push({ key:key, why:'busy' }); continue; }
+    var before=_lsStoreGet(key), who=(typeof _saveWho==='function') ? _saveWho() : '';
+    var row; try{ row=await _fetchOpRow(key); }catch(e){ row=undefined; }
+    if(!(row && typeof row==='object' && 'exists' in row)){ out.skip.push({ key:key, why:'read' }); continue; }
+    var still=ssRefusedList().some(function(x){ return x.key===key; });
+    if(!still || _lsStoreGet(key)!==before || (typeof _pushBusy==='function' && _pushBusy(key)) || ((typeof _saveWho==='function') ? _saveWho() : '')!==who){ out.skip.push({ key:key, why:'changed' }); continue; }
+    var w=false;
+    try{ w=row.exists ? _lsWriteVerified(key, JSON.stringify(row.value)) : _lsRawDel(key); }catch(e){ w=false; }
+    if(!w){ out.skip.push({ key:key, why:'local' }); continue; }
+    try{ if(typeof _lsMarkFetched==='function') _lsMarkFetched(key); }catch(e){}
+    _outboxRemove(key); ssRefusedClear(key);
+    try{ var d=(typeof _opMergeDef==='function') ? _opMergeDef(key) : null; if(d && d.after) d.after(); }catch(e){}
+    out.done.push(key);
+  }
+  return out;
+}
+function ssRefusedWhy(st){
+  var T2=function(a, b){ return (typeof t==='function') ? t(a, b) : a; };
+  return st===400 ? T2('形の合わない記録があります', 'A record has the wrong shape') : T2('変えられる人が決まっている設定です', 'Only certain people can change this');
+}
+function ssRefusedClock(at){
+  if(!at) return '';
+  var d=new Date(at), p=function(n){ return (n<10 ? '0' : '')+n; };
+  return (d.getMonth()+1)+'/'+d.getDate()+' '+p(d.getHours())+':'+p(d.getMinutes());
+}
+var _ssRefusedAsk = [];   /* 確かめの画面に出したキー（押したときは、このキーだけを外す） */
+/* 確かめの画面。onlyKey を渡すとその 1 件だけ */
+function openRefusedDrop(onlyKey){
+  var T2=function(a, b){ return (typeof t==='function') ? t(a, b) : a; };
+  var E=function(x){ return (typeof escapeHtml==='function') ? escapeHtml(String(x)) : String(x).replace(/[&<>"']/g, function(c){ return '&#'+c.charCodeAt(0)+';'; }); };
+  var list=ssRefusedList();
+  if(onlyKey) list=list.filter(function(x){ return x.key===onlyKey; });
+  if(!list.length){ try{ showToast(T2('サーバーが断った送信待ちはありません', 'There are no saves the server refused'), 'info'); }catch(e){} return; }
+  _ssRefusedAsk=list.map(function(x){ return x.key; });
+  var gm=(typeof curRole!=='undefined') && (curRole==='gm' || curRole==='ceo');
+  var rows=list.map(function(x){ return '<li style="margin:4px 0"><b>'+E(x.label)+'</b> <span style="color:var(--muted);font-size:11px">'+E(T2('断った時刻 ', 'Refused ')+ssRefusedClock(x.at))+' · '+E(ssRefusedWhy(x.st))+'</span></li>'; }).join('');
+  openModal('<div class="modal-title"><i class="ti ti-cloud-x"></i> '+E(T2('サーバーが断った送信待ちを外す', 'Remove saves the server refused'))+' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+    +'<div style="font-size:12.5px;line-height:1.7">'+E(T2('次の変更は、サーバーが受け付けませんでした。このままでは何度送っても届きません。', 'The server did not accept these changes. They will never be delivered as they are.'))+'</div>'
+    +'<ul style="font-size:12.5px;padding-left:18px;margin:8px 0">'+rows+'</ul>'
+    +'<div class="alert alert-warning" style="margin:8px 0"><i class="ti ti-alert-triangle"></i><div style="font-size:12px;line-height:1.7">'
+    +E(T2('外すと、この端末の値をクラウドの今の値に戻し、送信待ちから外します。この端末で入れたこの変更は消えます（元に戻せません）。変更が要るなら、GM・CEO に伝えて入れ直してもらってください。', 'Removing puts this device back to the current cloud value and takes these out of the unsent list. The change made on this device is lost (cannot be undone). If the change is needed, ask the GM or CEO to enter it again.'))+'</div></div>'
+    +(gm ? '<div style="font-size:12px;line-height:1.7;color:var(--red);margin:6px 0">'+E(T2('GM・CEO でログインしているのに断られたときは、外す前に、メールのアカウントと社員の ID の結びを確かめてください（入れる手順の「困ったとき」）。結びを直せば、外さずに送れます。', 'If you are signed in as the GM or CEO and were still refused, check the link between your email account and employee ID first (see “If something goes wrong” in the procedure). Once fixed, the change can be sent without removing it.'))+'</div>' : '')
+    +'<div class="btn-row"><button class="btn btn-secondary" onclick="closeModalDirect()">'+E(T2('キャンセル', 'Cancel'))+'</button>'
+    +'<button class="btn btn-danger" id="ss-refused-go" onclick="ssDropRefusedRun()"><i class="ti ti-trash"></i> '+E(T2('外す（クラウドの値に戻す）', 'Remove (use the cloud value)'))+'</button></div>');
+}
+async function ssDropRefusedRun(){
+  var T2=function(a, b){ return (typeof t==='function') ? t(a, b) : a; };
+  var b=(typeof document!=='undefined' && document.getElementById) ? document.getElementById('ss-refused-go') : null;
+  if(b){ if(b.disabled) return; b.disabled=true; }
+  var keys=_ssRefusedAsk.slice(); _ssRefusedAsk=[];
+  var r;
+  try{ r=await ssDropRefused(keys); }catch(e){ r={ done:[], skip:keys.map(function(k){ return { key:k, why:'error' }; }) }; }
+  try{ closeModalDirect(); }catch(e){}
+  var lab=function(k){ return (typeof outboxLabel==='function') ? outboxLabel(k) : k; };
+  var whyText={ gone:T2('もう送信待ちにありません', 'no longer waiting'), busy:T2('送っている途中', 'being sent'), read:T2('クラウドを読めませんでした（つながる所でもう一度）', 'could not read the cloud (try again when online)'),
+    changed:T2('確かめのあいだにこの端末でまた保存されました（もう一度開いてください）', 'saved again on this device meanwhile (open it again)'), local:T2('この端末に書けませんでした（容量を整理してください）', 'could not write on this device (free space)'), error:T2('うまくいきませんでした', 'failed') };
+  r.done.forEach(function(k){ try{ if(window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', T2('サーバーが断った送信待ちを外しました：', 'Removed a save the server refused: ')+lab(k)+T2('（この端末の値をクラウドの値に戻した）', ' (this device now has the cloud value)'), true); }catch(e){} });
+  try{
+    if(r.done.length && !r.skip.length) showToast(T2('外しました（'+r.done.length+' 件）。この端末はクラウドの値に戻りました', 'Removed ('+r.done.length+'). This device now has the cloud value'), 'success');
+    else if(r.skip.length) showToast((r.done.length ? T2('外しました（'+r.done.length+' 件）。', 'Removed '+r.done.length+'. ') : '')+T2('外せなかったもの：', 'Not removed: ')+r.skip.map(function(x){ return lab(x.key)+'（'+(whyText[x.why]||x.why)+'）'; }).join('・'), 'warning');
+  }catch(e){}
+  try{ if(window.FUNERGY_STATUS && typeof FUNERGY_STATUS.paintSoon==='function') FUNERGY_STATUS.paintSoon(0); }catch(e){}
+  /* この端末の値が変わったので、今の画面を描き直す（診断と記録はすぐ・ほかは _lsRerenderSoon と同じ） */
+  try{ if(r.done.length){ if(typeof curPage!=='undefined' && curPage==='diag_center' && typeof renderPage==='function') renderPage('diag_center'); else if(typeof _lsRerenderSoon==='function') _lsRerenderSoon(); } }catch(e){}
+  return r;
 }
 var KV_SEEN_KEY = 'kv_seen_v1';                                   /* この端末だけ（クラウドへ送らない・クラウドから受け取らない） */
 /* 端末に置いた文字の印（同じ文字なら同じ印）。長さ＋64 ビット（2 本の 32 ビット）。暗号ではない（くらべるためだけ） */
@@ -102559,8 +102670,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try{ if(typeof _idbState !== 'undefined' && _idbState === 'unavailable') items.push({ k: 'idb', text: T('この端末の保存領域（IndexedDB）が使えません。容量の小さい保存だけで動いています', 'This device’s storage (IndexedDB) is unavailable; running on the small storage only') }); }catch(e){}
     try{
       if(online() && typeof _outboxMine === 'function'){
-        var st = _outboxMine().filter(function(x){ return x && (Number(x.attempts) || 0) >= 3 && x.lastErr && !/^(queued|deferred|interrupted)/.test(String(x.lastErr)); }).length;   /* 送っている途中で待った・まだ取っていない・閉じられたは数えない */
+        var rf = {}; try{ if(typeof ssRefusedList === 'function') ssRefusedList().forEach(function(x){ rf[x.key] = 1; }); }catch(e){}
+        var st = _outboxMine().filter(function(x){ return x && !rf[x.key] && (Number(x.attempts) || 0) >= 3 && x.lastErr && !/^(queued|deferred|interrupted)/.test(String(x.lastErr)); }).length;   /* 送っている途中で待った・まだ取っていない・閉じられたは数えない。サーバーが断ったものは下で別に */
         if(st) items.push({ k: 'stuck', n: st, text: T('何度送っても送れない保存 ' + st + ' 件', st + ' save(s) failed repeatedly') });
+        var nrf = Object.keys(rf).length;   /* v1145 */
+        if(nrf) items.push({ k: 'refused', n: nrf, text: T('サーバーが断った保存 ' + nrf + ' 件（このままでは届きません。要らない変更なら「断られたものを外す」で外せます）', nrf + ' save(s) refused by the server (cannot be delivered; remove them with “Remove refused” if not needed)') });
       }
     }catch(e){}
     if(SY.streak >= 2) items.push({ k: 'pull', text: T('クラウドから続けて取り込めていません（' + SY.streak + ' 回）', 'Could not fetch from the cloud ' + SY.streak + ' times in a row') });
@@ -102659,6 +102773,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       sb.push(esc(T('送れていない ' + queued.length + ' 件（この端末には保存されています。つながると自動で送ります）：', queued.length + ' not sent yet (saved on this device; sent automatically when connected):')));
       sb.push(listHtml(queued.slice(0, 6).map(function(x){ return esc(x.label) + (x.at ? ' <span class="ux-st-mut">' + esc(clock(x.at)) + '</span>' : ''); }).concat(queued.length > 6 ? [esc(T('ほか ' + (queued.length - 6) + ' 件', '+' + (queued.length - 6) + ' more'))] : [])));
     }
+    /* v1145：このうちサーバーが断ったもの（このままでは届かない。確かめの画面のあとに外せる） */
+    var refused = [];
+    try{ refused = (typeof ssRefusedList === 'function') ? ssRefusedList() : []; }catch(e){ refused = []; }
+    if(refused.length) sb.push('<span style="color:var(--red)">' + esc(T('このうちサーバーが断ったもの ' + refused.length + ' 件（このままでは届きません）：', 'Of these, refused by the server: ' + refused.length + ' (cannot be delivered as they are): ') + refused.map(function(x){ return x.label; }).join('・')) + '</span>');
     var failed = (ux && ux.failedList) ? ux.failedList() : [];
     if(failed.length){
       sb.push(esc(T('保存できなかったもの（もう一度送れます）：', 'Not saved (you can try again):')));
@@ -102687,6 +102805,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     /* ボタン */
     var btns = [];
     if(queued.length) btns.push('<button type="button" class="btn btn-primary btn-sm" data-ux-repeat="1" data-st-act="send">' + esc(T('今すぐ送る', 'Send now')) + '</button>');
+    if(refused.length && typeof openRefusedDrop === 'function') btns.push('<button type="button" class="btn btn-secondary btn-sm" data-ux-repeat="1" data-st-act="drop">' + esc(T('断られたものを外す…', 'Remove refused…')) + '</button>');   /* v1145 */
     if(failed.length) btns.push('<button type="button" class="btn btn-primary btn-sm" data-ux-repeat="1" data-st-act="retry">' + esc(T('もう一度', 'Try again')) + '</button>');
     if(d.items.some(function(x){ return x.k === 'device' || x.k === 'queue'; }) && typeof openStorageManager === 'function') btns.push('<button type="button" class="btn btn-secondary btn-sm" data-ux-repeat="1" data-st-act="space">' + esc(T('容量を整理', 'Free space')) + '</button>');
     if(ST.canOpen()) btns.push('<button type="button" class="btn btn-secondary btn-sm" data-ux-repeat="1" data-st-act="more">' + esc(T('詳しく（設定 › 診断と記録）', 'Details (Settings › Diagnostics)')) + '</button>');
@@ -102701,6 +102820,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if(pop._stBusy) return;
         if(act === 'more'){ try{ pop.classList.remove('on'); }catch(e){} try{ go('diag_center'); }catch(e){} return; }
         if(act === 'space'){ try{ pop.classList.remove('on'); }catch(e){} try{ openStorageManager(); }catch(e){} return; }
+        if(act === 'drop'){ try{ pop.classList.remove('on'); }catch(e){} try{ openRefusedDrop(); }catch(e){} return; }   /* v1145：確かめの画面を開く（外すのはそこで押したとき） */
         btn.disabled = true; btn.innerHTML = '<span class="ux-spin" aria-hidden="true"></span> ' + esc(T('送信中…', 'Sending…'));
         pop._stBusy = true;
         var fin = function(){ pop._stBusy = false; pop._stHtml = ''; try{ if(pop.classList.contains('on')) ST.fillPop(pop); }catch(e){} };
@@ -102841,10 +102961,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var stBody = pop.innerHTML.replace(/<div class="ux-save-pop-h">[\s\S]*?<\/div>/, '').replace(/<div class="ux-st-btns">[\s\S]*$/, '');
     var unsent = [];
     try{ if(typeof _outboxMine === 'function') unsent = _outboxMine(); }catch(e){}
+    var refusedMap = {}; try{ if(typeof ssRefusedList === 'function') ssRefusedList().forEach(function(x){ refusedMap[x.key] = x; }); }catch(e){}   /* v1145 */
     var unsentHtml = unsent.length ? '<div style="font-size:11.5px;margin-top:8px;max-height:30vh;overflow:auto">' + unsent.map(function(x){
+      var rx = refusedMap[x.key], qk = esc(String(x.key).replace(/'/g, ''));
       return '<div style="padding:5px 0;border-top:1px solid var(--border)"><b>' + esc((typeof outboxLabel === 'function') ? outboxLabel(x.key) : x.key) + '</b> <span style="color:var(--muted)">' + esc(x.key) + '</span>'
         + '<div style="color:var(--muted)">' + esc(T('試行 ' + (x.attempts || 1) + ' 回', (x.attempts || 1) + ' tries')) + (x.lastErr ? ' · <span style="color:var(--red)">' + esc(String(x.lastErr).slice(0, 140)) + '</span>' : '') + '</div>'
-        + '<button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="outboxRetryOne(\'' + esc(String(x.key).replace(/'/g, '')) + '\')">' + esc(T('この 1 件を送る', 'Send this one')) + '</button></div>';
+        + (rx ? '<div style="color:var(--red)">' + esc(T('サーバーが断りました（', 'Refused by the server (') + ((typeof ssRefusedWhy === 'function') ? ssRefusedWhy(rx.st) : '') + T('）。このままでは届きません', '). It cannot be delivered as it is')) + '</div>' : '')
+        + '<button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="outboxRetryOne(\'' + qk + '\')">' + esc(T('この 1 件を送る', 'Send this one')) + '</button>'
+        + (rx ? ' <button class="btn btn-secondary btn-sm" style="padding:1px 8px;margin-top:2px" onclick="openRefusedDrop(\'' + qk + '\')">' + esc(T('外す…', 'Remove…')) + '</button>' : '') + '</div>';
     }).join('') + '</div>' : '';
     var failKeys = []; try{ failKeys = (typeof lsSaveFailKeys === 'function') ? lsSaveFailKeys() : []; }catch(e){}
     var failHtml = failKeys.length ? '<div style="font-size:11.5px;margin-top:8px;color:var(--red)">' + esc(T('この端末に保存できなかった項目：', 'Could not save on this device: ')) + failKeys.slice(0, 12).map(function(k){ return esc((typeof outboxLabel === 'function') ? outboxLabel(k) : k); }).join('・') + '</div>' : '';
@@ -102854,6 +102978,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<button class="btn btn-primary btn-sm" onclick="FUNERGY_STATUS.sendNow().then(function(){ renderPage(\'diag_center\'); })"><i class="ti ti-cloud-upload"></i> ' + esc(T('今すぐ送る', 'Send now')) + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="FUNERGY_STATUS.syncNow()"><i class="ti ti-cloud-download"></i> ' + esc(T('今すぐ最新にする', 'Update now')) + '</button>'
       + '<button class="btn btn-secondary btn-sm" onclick="openOutboxDiag()"><i class="ti ti-list-details"></i> ' + esc(T('送れていない保存の一覧', 'Unsent saves')) + '</button>'
+      + (Object.keys(refusedMap).length && typeof openRefusedDrop === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="openRefusedDrop()"><i class="ti ti-cloud-x"></i> ' + esc(T('断られたものを外す…', 'Remove refused…')) + '</button>' : '')   /* v1145 */
       + (typeof openStorageManager === 'function' ? '<button class="btn btn-secondary btn-sm" onclick="openStorageManager()"><i class="ti ti-database"></i> ' + esc(T('容量を整理', 'Free space')) + '</button>' : '')
       + '</div>');
     /* ② Toast の取り直し・同期センターの点検（前の同期センター） */

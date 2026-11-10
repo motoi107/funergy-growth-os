@@ -166,7 +166,7 @@ test('Accounting, AM, G4 and crew: a changed grade history is refused (403), the
     const c = tab(W, who);
     assert.deepEqual(await push(c, 'grade_hist', ghMore('E-9')), [false], who);
     assert.deepEqual(W.get('grade_hist'), GH0, who + ': unchanged');
-    assert.ok(c.__toasts.some(m => m === 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）'), who + ': ' + c.__toasts.join(' | '));
+    assert.ok(c.__toasts.some(m => m === 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）'), who + ': ' + c.__toasts.join(' | '));
     const d = tab(W, who);
     assert.deepEqual(await push(d, 'grade_hist', GH0), [true], who + ': the same value is not stuck');
     assert.equal(d._swLast.grade_hist.how, 'none', who + ': the cloud already has it');
