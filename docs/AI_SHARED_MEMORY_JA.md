@@ -9,6 +9,7 @@
 - SQL `20261113090000`：`ss_secret_key` に `emp_pii`・従業員の表を止めて 5 つの欄を `emp_pii` に写し（もうある人は `emp_pii` の値）、従業員の表から消す・書くたびに外す見張り `employees_pii_strip_trg`。戻す：`db/secure-pii-rollback.sql`（値を従業員の表に戻す・`emp_pii` は残す）。③ のあと 1143 以前の端末では 5 つが空に見え、保存しても入らない（全部の端末を 1144 にしてから ③）。
 - 試験（合成データ）：secure-pii-server 14・client 12（v1143 の関数＝入れる一式の 1 ファイルでも）・rls 7（PGlite・本物の退職の守りと変更記録の上・v1143 のあと／RLS OFF／ON から）・pg 2（本物の PostgreSQL の 2 つのつなぎ：③ と関数・前の版の端末が重なるとき）・employee-resign-sync 39（v1144 の 3 件）・deploy（v1143 の関数を sha256 で固定）・static release pass/1144。secure-state-server の答えの形に `piifn:1`。わざと壊す 73 通りのうち 72（残り 1 は同じ結果の二重の守り）。全体（重い 2 つ以外・4 並列）：2,123 件のうち 31 件が落ちる＝ファイルごとに v1143（`eb75e66`）と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 1。approvals-v1087 の 1 件は重いときだけ＝単独で両方 40/40。handbook-progress は重いときに時間切れ＝単独で 33/33）。
 - 独立レビューは無し（Claude の別エージェントは使っていない）。Codex のレビューはまだ。
+- PR #138（base main・#135〜#137 の上・head `b9b3f44` のあと記録だけ）。
 - 残る限界：従業員の表の店・応援は公開の鍵で書ける（AM の範囲・1 人の店の合計。段階 (b)）・カードの照合の回数は関数の実行環境ごと・確かめがまだの AM・Head Chef には届かない・名前だけの管理者の入り方にはサーバーが返さない。
 
 ## 2026-11-09 v1143：GM・CEO だけが変える賞与・Career Score の設定を公開の鍵で書けなくする（全体アップデート指示の 2b の 5 つ目・Claude・ブランチ `claude/secure-cfg-1143`・v1142（PR #136）の上・関数 secure-state・SQL `20261112090000`・本番未反映）
