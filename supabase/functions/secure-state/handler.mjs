@@ -27,6 +27,8 @@
 //   docs/SECURE_GRADE_HIST_V1145_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも ghfn:1。
 // ・v1146（段階 2b の 8 つ目）：Tip Rate の申請・決定（spl_tip_requests_<名前>）とプレップの時給の表・認定（prep_tables・prep_certs）も、
 //   この関数で書く（今の画面で決められる人だけ。下の「v1146」の節・docs/SECURE_TIP_PREP_V1146_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも tpfn:1。
+// ・v1147（段階 2b の 9 つ目）：Tip の期間の確定（tip_cf_<店>_<年>）と注意ログ（warnings_<店>）も、この関数で読み書きする（見られる店の行だけ。
+//   取り込みは sc_have を送ったアプリにだけ sc の部分を付ける。下の「v1147」の節・docs/SECURE_TIP_CF_V1147_JA.md）。答えにはいつも scfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -384,6 +386,98 @@ const te = new TextEncoder();
 const hex = buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 async function sha256(s) { return hex(await crypto.subtle.digest('SHA-256', te.encode(String(s)))); }
 
+// ================================================================ v1147：Tip の期間の確定（tip_cf_<店>_<年>）・注意ログ（warnings_<店>）（docs/SECURE_TIP_CF_V1147_JA.md）
+// 店ごとの行（丸ごと）。見られる店の行だけを返し、書くのも見られる店の行だけ（今の画面と同じ。Moto さん 11/10「読む人も書く人も絞る」）。
+// キーの決まり（アプリの scIsKey・SQL の ss_secret_key と同じ）：tip_cf_ か warnings_ で始まり、その後ろに 1 文字以上（200 字まで）。
+export const SC_TIP_PRE = 'tip_cf_', SC_WN_PRE = 'warnings_';
+export function scIsKey(k) {
+  return typeof k === 'string' && k.length <= 200
+    && ((k.startsWith(SC_TIP_PRE) && k.length > SC_TIP_PRE.length) || (k.startsWith(SC_WN_PRE) && k.length > SC_WN_PRE.length));
+}
+// { kind: 'tip'|'wn', store, year }。tip_cf_ の形（tip_cf_<店>_<4 桁の年>）でなければ store は null（全店を見られる人にだけ見える・だれも書かない）
+export function scParse(k) {
+  if (!scIsKey(k)) return null;
+  if (k.startsWith(SC_TIP_PRE)) { const m = /^tip_cf_(.+)_(\d{4})$/.exec(k); return { kind: 'tip', store: m ? m[1] : null, year: m ? m[2] : null }; }
+  return { kind: 'wn', store: k.slice(SC_WN_PRE.length), year: null };
+}
+// 見られるか（sc：scScope の答え）
+export function scCanRead(k, sc) {
+  const p = scParse(k);
+  if (!p || !sc) return false;
+  if (!(p.kind === 'tip' ? sc.tip : sc.wn)) return false;
+  return sc.all || (p.store != null && sc.stores.includes(p.store));
+}
+const asVal = v => { if (typeof v === 'string') { try { return JSON.parse(v); } catch { return v; } } return v; };   // 前の版が JSON の文字で書いた行
+// Tip の期間の確定：{ 初日（YYYY-MM-DD）: 記録 }。記録は確定（status 確定済み・初日 from）か、解除の印（_deleted:true）。
+// 消さない（解除は印）。変えた記録だけを見る：確定＝見られる人（確定のボタンは画面を開ける人みんな）／解除・例外承認（forced）＝CEO・GM・経理（画面と同じ）
+function tcfRecOk(day, r) {
+  if (!obj(r) || JSON.stringify(r).length > 300000) return false;
+  if (r._deleted === true) return true;
+  if (r.status !== '確定済み') return false;
+  if (r.from !== undefined && r.from !== day) return false;
+  if (r.rows !== undefined && (!Array.isArray(r.rows) || r.rows.length > 2000)) return false;
+  return true;
+}
+export function tcfCheck(year, cloud, value, sc) {
+  value = asVal(value);
+  if (!obj(value) || !year) return 'bad';
+  const cur = obj(asVal(cloud)) || {};
+  for (const d of Object.keys(cur)) if (!Object.prototype.hasOwnProperty.call(value, d)) return 'forbidden';   // 記録を消さない（解除は取り消しの印）
+  for (const [d, r] of Object.entries(value)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || d.slice(0, 4) !== year) return 'bad';
+    if (Object.prototype.hasOwnProperty.call(cur, d) && canon(cur[d]) === canon(r)) continue;
+    if (!tcfRecOk(d, r)) return 'bad';
+    // 解除・例外承認と、確定済みの記録を別の中身にする（解除して確定し直すのと同じ）は、解除できる人（画面でも確定済みは「確定解除」だけ）
+    const live = Object.prototype.hasOwnProperty.call(cur, d) && obj(cur[d]) && cur[d]._deleted !== true;
+    if (r._deleted === true || r.forced === true || live) { if (!sc.unlock) return 'forbidden'; }
+    else if (!sc.confirm) return 'forbidden';
+  }
+  return 'ok';
+}
+// 注意ログ：[{ date, by, reason, id, _mut }]。足すだけ（消さない・書き換えない。保存の印 _mut と、id の無い前の記録に付ける id は変えてよい）。
+// 足せるのは記録のボタンを押せる人（wnWrite）。鍵はアプリの _wnKey と同じ（id、無ければ中身から）
+export function wnKey(w) {
+  if (w && w.id != null) return String(w.id);
+  const s = String((w && w.date) || '') + '|' + String((w && w.by) || '') + '|' + String((w && w.reason) || '');
+  let h = 5381; for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+  return 'w' + h.toString(36);
+}
+const WN_FIELDS = new Set(['date', 'by', 'reason', 'id', '_mut']);
+function wnRecOk(x) {
+  if (!obj(x)) return false;
+  for (const k of Object.keys(x)) if (!WN_FIELDS.has(k)) return false;
+  const s = (v, n) => v === undefined || v === null || (typeof v === 'string' && v.length <= n);
+  if (!s(x.date, 60) || !s(x.by, 120) || !s(x.reason, 4000)) return false;
+  if (x.id !== undefined && x.id !== null && !((typeof x.id === 'string' && x.id.length <= 80) || (typeof x.id === 'number' && Number.isFinite(x.id)))) return false;
+  if (x._mut !== undefined && !(typeof x._mut === 'number' && Number.isFinite(x._mut))) return false;
+  return true;
+}
+export function wnCheck(cloud, value, sc) {
+  value = asVal(value);
+  if (!Array.isArray(value) || value.length > 5000) return 'bad';
+  if (!value.every(x => obj(x))) return 'bad';
+  const cur = (Array.isArray(asVal(cloud)) ? asVal(cloud) : []).filter(x => obj(x));
+  // 比べる形：保存の印 _mut と id は除く（同じ鍵の中で比べる。鍵は id から、id の無い前の記録は中身から作るので、id が違えば鍵も違う。
+  // id の無い前の記録に、アプリが中身から作った鍵を id として付けるのは書き換えではない）
+  const form = x => { const y = { ...x }; delete y._mut; delete y.id; return canon(y); };
+  const group = list => { const m = new Map(); for (const x of list) { const k = wnKey(x); if (!m.has(k)) m.set(k, new Set()); m.get(k).add(form(x)); } return m; };
+  const curBy = group(cur), valBy = group(value);
+  for (const [k, forms] of curBy) {
+    const v = valBy.get(k);
+    if (!v) return 'forbidden';                                                  // 消さない
+    for (const f of forms) if (!v.has(f)) return 'forbidden';                    // 書き換えない
+    for (const f of v) if (!forms.has(f)) return 'forbidden';                    // 同じ鍵（id）で中身の違う記録を足さない（記録しない人が鍵を借りて足す道にしない）
+  }
+  let added = false;
+  for (const x of value) {
+    if (curBy.has(wnKey(x))) continue;
+    if (!wnRecOk(x)) return 'bad';
+    added = true;
+  }
+  if (added && !sc.wnWrite) return 'forbidden';
+  return 'ok';
+}
+
 // PostgREST の updated_at（小数 0〜6 桁）→ マイクロ秒。読めなければ null（アプリの _tsMicro と同じ）
 export function tsMicro(s) {
   if (s == null) return null;
@@ -598,7 +692,8 @@ export function createHandler(deps) {
         if (!rows.length) break;
         off += rows.length;
         // v1140：Career Score のキーも（履歴は開いたときだけ取るので一覧に入れない）
-        for (const r of rows) if (r && (ssIsKey(r.key) || (csIsKey(r.key) && csParse(r.key).kind !== 'hist')) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
+        // v1147：Tip の期間の確定・注意ログも（店ごとの行）
+        for (const r of rows) if (r && (ssIsKey(r.key) || (csIsKey(r.key) && csParse(r.key).kind !== 'hist') || scIsKey(r.key)) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
         if (page === 99) return null;   // 読み切れない：中身から作る
       }
       return out;
@@ -608,7 +703,7 @@ export function createHandler(deps) {
 
   // ================================================================ v1140：Career Score
   // 行を読む（キーが多いときは URL が長くなりすぎないよう分ける）
-  async function readKeysAny(keys) {
+  async function readKeysAny(keys, pred = csIsKey) {   // v1147：pred（どの種類のキーか。初めは Career Score）
     const out = [];
     let batch = [], len = 0;
     const flush = async () => {
@@ -623,7 +718,7 @@ export function createHandler(deps) {
       batch.push(k); len += el;
     }
     await flush();
-    return out.filter(r => r && csIsKey(r.key));
+    return out.filter(r => r && pred(r.key));
   }
   // Career Score の行を全部（履歴は hist のときだけ）。1000 行ずつ、空のページが来るまで（独立レビュー P3：上限の行数が 1000 より小さいサーバーでも切れない）。
   // 読み切れない（50 ページ）ときは失敗にする（途中までの一覧で、端末の写しを消さない）
@@ -895,11 +990,16 @@ export function createHandler(deps) {
   async function pull(a, b) {
     // v1140：Career Score（cs_have を送ってきたアプリ＝v1140 から。前の版のアプリには付けない）
     const wantCs = obj(b.cs_have) !== null;
-    const idxAll = levelOf(a) === 'none' ? null : await index();
+    const wantSc = obj(b.sc_have) !== null;   // v1147：sc_have を送ってきたアプリ（v1147 から）にだけ、Tip の期間の確定・注意ログを付ける
+    const idxAll = (levelOf(a) === 'none' && !wantSc) ? null : await index();
     const out = await pullKb(a, b, idxAll && idxAll.filter(x => ssIsKey(x.key)));
     if (wantCs) {
       try { out.cs = await csPull(a, b, idxAll && idxAll.filter(x => csIsKey(x.key))); }
       catch (e) { console.error('secure-state cs pull', safeErr(e)); out.cs = { error: 'scope' }; }   // 見られる人を決められなかった：端末の写しはそのまま
+    }
+    if (wantSc) {
+      try { out.sc = await scPull(a, b, idxAll && idxAll.filter(x => scIsKey(x.key))); }
+      catch (e) { console.error('secure-state sc pull', safeErr(e)); out.sc = { error: 'scope' }; }   // 見られる店を決められなかった：端末の写しはそのまま
     }
     return out;
   }
@@ -943,6 +1043,7 @@ export function createHandler(deps) {
 
   async function get(a, b) {
     const key = b.key;
+    if (scIsKey(key)) return scGet(a, key);   // v1147
     if (csIsKey(key)) return csGet(a, key);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     const level = levelOf(a);
@@ -996,8 +1097,119 @@ export function createHandler(deps) {
     return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false })), by: a.role };
   }
 
+  // ================================================================ v1147：Tip の期間の確定・注意ログ（店ごと。docs/SECURE_TIP_CF_V1147_JA.md）
+  // 見られる店（今の画面と同じ。Moto さん 11/10「読む人も書く人も絞る」）：
+  //   Tip の確定（チップ管理を開ける人）：CEO・GM・経理・事務Crew＝全店／確かめた AM＝担当の店と自分の店・応援の店／
+  //     GM・CEO が確かめた Head Chef＝全店／ほかの G2〜G4・店長・AM・Head Chef（社員の表の役割）＝自分の店と応援の店（whoami の店）／G1 など＝なし。
+  //   注意ログ（必須チェックを開ける人。事務Crew は開けない）：同じ店。
+  // 書ける人：Tip の確定＝見られる人（確定のボタンは画面を開ける人みんな）。確定の解除・例外承認＝CEO・GM・経理（画面と同じ）。
+  //   注意ログを足す＝記録のボタンを押せる人（CEO・GM・確かめた AM・GM・CEO が確かめた G4 以上の G4・Head Chef）。
+  // 社員の表の役割は公開の鍵で書けるので、広い範囲（全店・注意ログを足す）は GM・CEO が確かめた写し（whoami の grade・confirmed、wr_people.chef）でも
+  // 合うときだけ。店のログイン（店舗の PIN）は whoami が断る（401）＝何も見えない。
+  const SC_NONE = { tip: false, wn: false, all: false, stores: [], confirm: false, unlock: false, wnWrite: false };
+  async function scScope(a) {
+    const empOk = async () => {
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,role,status,data');
+      const e0 = Array.isArray(es) ? es[0] : null;
+      return e0 && !empOut(e0) ? e0 : null;
+    };
+    if (MGR_ROLES.includes(a.role)) {
+      // 社員と結ばれた CEO・GM・経理・事務Crew も、今の社員の表で退職・OS 停止・行が無ければ止める（v1142 の hrScope と同じ。PIN は 60 秒覚えているので）
+      if (a.emp && !(await empOk())) return SC_NONE;
+      const tip = true, wn = a.role !== 'office_crew';
+      return { tip, wn, all: true, stores: [], confirm: tip, unlock: ['ceo', 'gm', 'office'].includes(a.role), wnWrite: ['ceo', 'gm'].includes(a.role) };
+    }
+    if (!a.emp) return SC_NONE;
+    const e = await empOk();
+    if (!e) return SC_NONE;
+    const d = obj(e.data) || {}, rr = String(e.role || d.role || '');
+    const S = [...new Set([...(a.role === 'am' ? a.am : []), ...a.stores])].filter(x => typeof x === 'string' && x);
+    if (a.role === 'am') return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: true };
+    if (a.role !== 'staff') return SC_NONE;
+    const g4ok = a.confirmed === true && Number(a.grade) >= 4;
+    if (rr === 'chef' && g4ok && await confChef(a)) return { tip: true, wn: true, all: true, stores: [], confirm: true, unlock: false, wnWrite: true };
+    if (['g4', 'am', 'chef'].includes(rr) && g4ok) return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: true };
+    if (['g4', 'am', 'chef', 'sl', 'g2'].includes(rr)) return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: false };
+    return SC_NONE;
+  }
+  const scOut = sc => ({ level: (!sc.tip && !sc.wn) ? 'none' : (sc.all ? 'all' : 'scoped'), stores: sc.all ? null : [...sc.stores].sort(),
+    tip: sc.tip, wn: sc.wn, confirm: sc.confirm, unlock: sc.unlock, wnWrite: sc.wnWrite });
+  // 2 つの種類の行を全部（1000 行ずつ・空のページまで）。読み切れないときは失敗（途中までの一覧で端末の写しを消さない）
+  async function readScAll() {
+    const q = 'or=' + encodeURIComponent('(key.like.' + SC_TIP_PRE + '*,key.like.' + SC_WN_PRE + '*)');
+    const out = [];
+    for (let off = 0, page = 0; ; page++) {
+      if (page >= 50) throw err('db', 500);
+      const rows = await rest('app_state?select=key,value,updated_at&' + q + '&order=key.asc&limit=1000&offset=' + off);
+      if (!Array.isArray(rows) || !rows.length) break;
+      out.push(...rows); off += rows.length;
+    }
+    return out.filter(r => r && scIsKey(r.key));
+  }
+  async function scPull(a, b, idx) {
+    const sc = await scScope(a), o = scOut(sc);
+    if (o.level === 'none') return { ...o, index: [], rows: [] };
+    const have = obj(b.sc_have) || {};
+    let base;   // [{key, v（元の行の印）, row?}]
+    if (idx) base = idx.filter(x => scCanRead(x.key, sc));
+    else {
+      base = [];
+      for (const r of await readScAll()) if (scCanRead(r.key, sc)) base.push({ key: r.key, v: 'x:' + await sha256(JSON.stringify(r.value)), row: r });
+    }
+    const need = base.filter(x => have[x.key] !== x.v);
+    let rows = need.filter(x => x.row).map(x => x.row);
+    const toRead = need.filter(x => !x.row).map(x => x.key);
+    if (toRead.length) rows = rows.concat(await readKeysAny(toRead, scIsKey));
+    const ver = Object.fromEntries(base.map(x => [x.key, x.v]));
+    return { ...o, index: base.map(x => ({ key: x.key, v: x.v })),
+      rows: rows.filter(r => ver[r.key] && scCanRead(r.key, sc)).map(r => ({ key: r.key, value: r.value, updated_at: r.updated_at, v: ver[r.key] })) };
+  }
+  async function scGet(a, key) {
+    const sc = await scScope(a);
+    if (!scCanRead(key, sc)) throw err('forbidden', 403);
+    const rows = await readKeysAny([key], scIsKey);
+    if (!rows.length) return { exists: false, value: null, updated_at: null };
+    return { exists: true, value: rows[0].value, updated_at: rows[0].updated_at };
+  }
+  async function scPut(a, b) {
+    const key = b.key, p = scParse(key);
+    if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
+    const e = b.expect;
+    if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
+    const sc = await scScope(a);
+    // 見られない店・種類の行には書かない（同じ値でも 403：値を当てる道にしない）
+    if (!scCanRead(key, sc)) throw err('forbidden', 403);
+    if (JSON.stringify(b.value === undefined ? null : b.value).length > 4000000) throw bad();
+    const rows = await rest('app_state?select=key,value,updated_at&key=eq.' + encodeURIComponent(key));
+    const c = Array.isArray(rows) && rows[0] ? rows[0] : null;
+    if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true, by: a.role };   // クラウドと同じ：書かずに通す
+    if (e && (e.exists !== !!c || (c && e.exists && tsMicro(e.updated_at) !== tsMicro(c.updated_at)))) throw err('conflict', 409);
+    if (!p.store) throw bad();                                                     // 形の合わないキー（tip_cf_x など）：だれも書かない
+    const v = p.kind === 'tip' ? tcfCheck(p.year, c ? c.value : null, b.value, sc) : wnCheck(c ? c.value : null, b.value, sc);
+    if (v === 'bad') throw bad();
+    if (v !== 'ok') throw err('forbidden', 403);
+    // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）
+    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false })), by: a.role };
+  }
+  // 前の期間から Tip Rate を効かせるときの確かめ（アプリの tipBackPull）：その人の店のその期間が確定しているか（店の ID だけ。額は返さない）。
+  // Tip Rate を決められる人（店では分けない）と、その店の確定を見られる人
+  async function tcfStatus(a, b) {
+    const from = typeof b.from === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(b.from) ? b.from : null;
+    const stores = Array.isArray(b.stores) && b.stores.length <= 30 && b.stores.every(s => typeof s === 'string' && s && s.length <= 60) ? [...new Set(b.stores)] : null;
+    if (!from || !stores) throw bad();
+    const keyOf = s => SC_TIP_PRE + s + '_' + from.slice(0, 4);
+    if (!(await tipDecider(a))) {
+      const sc = await scScope(a);
+      if (!stores.every(s => scCanRead(keyOf(s), sc))) throw err('forbidden', 403);
+    }
+    const rows = stores.length ? await readKeysAny(stores.map(keyOf), scIsKey) : [];
+    const by = new Map(rows.map(r => [r.key, asVal(r.value)]));
+    return { confirmed: stores.filter(s => { const m = obj(by.get(keyOf(s))), r = m && obj(m[from]); return !!(r && r._deleted !== true && r.status === '確定済み'); }) };
+  }
+
   async function put(a, b) {
     const key = b.key;
+    if (scIsKey(key)) return scPut(a, b);   // v1147
     if (tpIsKey(key)) return tpPut(a, b);   // v1146
     if (swIsKey(key)) return swPut(a, b);   // v1141
     if (csIsKey(key)) return csPut(a, b);   // v1140
@@ -1507,7 +1719,7 @@ export function createHandler(deps) {
     return { totals };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch };
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
   return async function handle(req) {
@@ -1523,7 +1735,8 @@ export function createHandler(deps) {
     // piifn:1＝従業員の個人の欄（v1144）も扱う。アプリは piifn の無い答えを前の版とみなし、その欄を今までどおり従業員の表に書く
     // ghfn:1＝グレード履歴（v1145）も扱う。アプリは ghfn の無い答えを前の版とみなし、グレード履歴を今までどおり REST で書く
     // tpfn:1＝Tip Rate・プレップ（v1146）も扱う。アプリは tpfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で書く
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // scfn:1＝Tip の期間の確定・注意ログ（v1147）も扱う。アプリは scfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で読み書きする
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

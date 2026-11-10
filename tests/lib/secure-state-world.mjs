@@ -5,7 +5,7 @@
 // rlsHr を true にすると、公開の鍵は採用（応募者・不採用ログ）・お悩み相談室の行を読めない・書けない（v1142 の SQL 20261111090000）。stores は店の表。
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { ssIsKey, csIsKey, swIsKey, hrIsKey, tpIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { ssIsKey, csIsKey, swIsKey, hrIsKey, tpIsKey, scIsKey } from '../../supabase/functions/secure-state/handler.mjs';
 
 export const URL0 = 'https://db.example.test';
 export const WR = URL0 + '/functions/v1/work-requests';
@@ -19,7 +19,7 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
+    wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, rlsSc: !!o.rlsSc, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
     calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
@@ -67,9 +67,9 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)) || (W.rlsPii && key === 'emp_pii'));   // rlsPii：v1144 の SQL 20261113090000
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)) || (W.rlsPii && key === 'emp_pii') || (W.rlsSc && scIsKey(key)));   // rlsPii：v1144 の SQL 20261113090000。rlsSc：v1147 の SQL 20261116090000（Tip の期間の確定・注意ログ）
     const noWrite = key => role !== 'service' && ((W.rlsSw && swIsKey(key)) || (W.rlsTp && tpIsKey(key)));   // v1141：読めるが書けない。rlsTp：v1146 の SQL 20261115090000（Tip Rate・プレップ）
-    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; };
+    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; if (scIsKey(key)) W.calls.anonSc = (W.calls.anonSc || 0) + 1; };
     W.calls.rest++;
     const q = url.searchParams;
     // 試験だけ：書けた直後（答えを返す前）にほかの操作を流す。afterWrite(keys) が Promise を返したら 1 回だけで、終わるまで待つ
@@ -103,6 +103,7 @@ export function makeWorld(o = {}) {
       return J(W.stores.map(x => ({ id: x.id, name: x.name == null ? null : x.name, brand: x.brand == null ? null : x.brand, data: x.data == null ? null : x.data })));
     }
     if (p === '/rest/v1/employees') {
+      if (W.empsDown) return J({ message: 'down' }, 500);   // v1147：社員の表を読めない（見られる店を決められない）
       const sel = (q.get('select') || 'id,store').split(',');
       const full = e => ({ id: e.id, name: e.name, store: e.store, support: e.support || [], role: e.role || null, title: e.title || null, status: e.status || '', data: e.data || {} });
       if (q.get('id')) return J(W.emps.filter(e => e.id === q.get('id').replace(/^eq\./, '')).map(e => Object.fromEntries(sel.map(c => [c, full(e)[c]]))));
