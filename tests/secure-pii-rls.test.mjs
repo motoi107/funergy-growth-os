@@ -16,6 +16,8 @@ const MIG = rd('supabase/migrations/20261113090000_secure_emp_pii.sql');
 const IDX = rd('supabase/migrations/20261027090000_app_state_index.sql');
 const GUARD = rd('supabase/migrations/20261023090000_employee_resign_guard.sql');
 const FLOG = rd('supabase/migrations/20261029090000_employee_field_log.sql');
+const WRS = ['20261104090000_work_requests.sql', '20261105090000_work_requests_eval.sql', '20261106090000_work_requests_apply_claim.sql', '20261107090000_work_requests_ui68.sql'].map(f => rd('supabase/migrations/' + f));
+const CHEF = rd('supabase/migrations/20261113080000_wr_people_chef.sql');   // ①b（Codex #138 P1-1）
 const PRE = rd('db/secure-pii-precheck.sql');
 const POST = rd('db/secure-pii-postcheck.sql');
 const BACK = rd('db/secure-pii-rollback.sql');
@@ -27,7 +29,7 @@ const PEOPLE = [
   { id: 'e4', name: 'Dee Sample', role: 'crew', title: 'Crew', store: 'S2', status: '在籍' },                                               // 個人の欄が無い人
 ];
 
-async function mkdb(initial, { entry = false } = {}) {
+async function mkdb(initial, { entry = false, chef = true } = {}) {
   const db = new PGlite();
   await db.exec(`create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
     create table public.app_state(key text primary key, value jsonb not null, updated_at timestamptz default now());
@@ -44,6 +46,10 @@ async function mkdb(initial, { entry = false } = {}) {
   await db.query(`insert into public.employees(id,name,status,data) values ('e5','Odd Row','在籍','"not an object"'::jsonb)`);   // data がオブジェクトでない行（変えない）
   await db.exec(GUARD);
   await db.exec(FLOG);
+  // ワークセンターの申請（本番に入っている）と ①b（権限の写しに Head Chef）
+  await db.exec(`create table public.stores(id text primary key, name text, am text, active boolean); grant select on public.stores to service_role;`);
+  for (const m of WRS) await db.exec(m);
+  if (chef) await db.exec(CHEF);
   for (const k of ['growth_karte', 'applicants', 'tasks_all', 'mileage_config', 'notifications']) await db.query(`insert into public.app_state(key, value) values ($1, '{"v":1}')`, [k]);
   if (entry) await db.query(`insert into public.app_state(key, value) values ('emp_pii', $1::jsonb)`, [JSON.stringify({ e2: { dob: '1985-06-06', cardLast4: '1111', insurance: true, dental: false, insuranceAmt: 300, _at: 'x', _by: 'Gina' } })]);
   if (initial === 'on') await db.exec(`alter table public.app_state enable row level security; create policy app_all on public.app_state for all to public using (true) with check (true);`);
@@ -62,7 +68,9 @@ for (const initial of ['v1143', 'off', 'on']) {
   test(`employee personal fields (from ${initial}): copied to emp_pii, removed from the table, hidden from the public keys; rollback puts them back`, async () => {
     const db = await mkdb(initial);
     const pre = (await db.query(PRE)).rows;
-    assert.equal(pre.length, 7);
+    assert.equal(pre.length, 9);
+    assert.equal(pre.find(x => x.n === 8).ok, 'OK');
+    assert.equal(pre.find(x => x.n === 9).value, '0', 'no Head Chef in the sample');
     assert.equal(pre.find(x => x.n === 1).ok, 'OK');
     assert.equal(pre.find(x => x.n === 3).value, '3・1・2・1・1', 'birthday 3 (e1, e2, e3)・card 1・medical 2・dental 1・amount 1');
     assert.equal(pre.find(x => x.n === 4).value, '1');
@@ -113,7 +121,9 @@ for (const initial of ['v1143', 'off', 'on']) {
     assert.ok(!F.some(k => k in d9), 'a new row too');
     const post = await postRows(db);
     for (const r of post) assert.match(r.ok, /^(OK|info)/, r.n + ' ' + r.what + ' = ' + r.value + ' ' + r.ok);
-    assert.equal(post.length, 16);
+    assert.equal(post.length, 18);
+    assert.equal(post.find(x => x.n === 17).ok, 'OK');
+    assert.equal(post.find(x => x.n === 18).ok, 'OK');
     assert.equal(post.find(x => x.n === 7).value, '3 人');
     assert.equal(post.find(x => x.n === 16).ok, 'OK');
     // 2 回目：何も変えない
@@ -175,6 +185,29 @@ test('the postcheck finds holes', async () => {
   const p2 = await postRows(db2);
   assert.equal(p2.find(x => x.n === 3).ok, 'NG');
   assert.equal(p2.find(x => x.n === 8).ok, 'NG');
+  // ①b を流していない：17 行目が NG（18 行目は出ない）
+  const db3 = await mkdb('v1143', { chef: false });
+  await db3.exec(MIG);
+  const p3 = await postRows(db3);
+  assert.match(p3.find(x => x.n === 17).ok, /^NG/);
+  assert.ok(!p3.some(x => x.n === 18));
+  // 確かめがまだの Head Chef（社員の表で Head Chef・写しに印がない）：18 行目が info。CEO・GM・経理・事務Crew のアカウントの人は数えない
+  const db4 = await mkdb('v1143');
+  await db4.exec(MIG);
+  await db4.exec(`insert into public.employees(id, name, role, title, store, status, data) values
+    ('e6', 'Chef Sample', 'chef', 'Head Chef', 'S1', '在籍', '{"name":"Chef Sample"}'),
+    ('e7', 'Corp Sample', 'crew', 'Corporate Chef', 'S2', '在籍', '{"name":"Corp Sample"}'),
+    ('e8', 'Gone Chef', 'chef', 'Head Chef', 'S1', '退職', '{"name":"Gone Chef","status":"退職"}'),
+    ('e10', 'Boss Chef', 'chef', 'Head Chef', 'S1', '在籍', '{"name":"Boss Chef"}');
+    insert into public.manager_auth(role, emp_id) values ('gm', 'e10');`);
+  assert.equal((await db4.query(PRE)).rows.find(x => x.n === 9).value, '2', 'the precheck counts the 2 Head Chefs in service (not the retired one, not the GM account)');
+  const p4 = await postRows(db4);
+  assert.equal(p4.find(x => x.n === 18).value, '2'); assert.match(p4.find(x => x.n === 18).ok, /^info/);
+  await db4.exec(`insert into public.wr_people(emp_id, name, role, grade, chef) values ('e6', 'Chef Sample', 'staff', 4, true)`);   // GM が確かめた
+  assert.equal((await postRows(db4)).find(x => x.n === 18).value, '1');
+  // 写しにいても Head Chef の印が無い（①b の前に G4 として確かめた）人は、まだ数える
+  await db4.exec(`insert into public.wr_people(emp_id, name, role, grade) values ('e7', 'Corp Sample', 'staff', 5)`);
+  assert.equal((await postRows(db4)).find(x => x.n === 18).value, '1', 'confirmed as G5 before ①b, but not as a Head Chef');
 });
 
 test('the SQL rule and the function rule agree', async () => {

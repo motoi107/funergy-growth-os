@@ -12292,6 +12292,7 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
   if(_list) _list.forEach(function(row){
     if(!row || !row.key) return;
     try{
+      if(typeof piiRawKey==='function' && piiRawKey(row.key)){ piiPurgeLocal(); return; }   /* v1144（Codex #138 P1-2）：個人の欄の生の行は端末に置かない */
       /* v720: 分割保存へ移行済みのキーは、旧・統合行を端末に置かない（請求書の二重保存を解消）。 */
       if(_handleLegacySplitRow(row.key, row.value)){ cnt++; if(okOut && _handleLegacySplitRow._ok) okOut.push(row.key); return; }
       /* v721: 必要時だけ取得する行は端末に書かない（クラウドの行はそのまま残る）。
@@ -12721,12 +12722,25 @@ function hrIdOk(id){ return typeof id==='string' && /^[A-Za-z0-9_-]{1,64}$/.test
    ・カードの下 4 桁の照合は card_match（自分の PIN・メールのログインの人）。店舗の PIN のタブレットでは社員を手で選ぶ。
    ============================================================ */
 var PII_FIELDS = ['dob','cardLast4','insurance','dental','insuranceAmt'];
+var PII_KEY = 'emp_pii';                          /* app_state の行（全員の 5 つの生の値）。端末に置かない（下の piiPurgeLocal） */
 var PII_SKIP = PII_FIELDS.concat(['_dobSet']);   /* 関数が v1144 のとき、従業員の表（端末の写しも）に書かない欄 */
 var PII_FN_KEY = '_ss_pii_fn';                    /* この端末が v1144 の関数の答えを見た（端末だけ・_ で始まるので同期しない） */
 var PII_ROLES = ['ceo','gm','office','office_crew','am','chef'];
 var _pii = { tid:'', lv:'', map:null, at:0, p:null };   /* メモリだけ（ログアウトで消す） */
 var _piiCard = {};                                      /* 下 4 桁 → { tid, t, list:[{id,name}] }（メモリだけ） */
 var _piiEnsureAt = 0;
+/* Codex #138 P1-2：emp_pii の行は、SQL 20261113090000 の前は公開の鍵で読める。通常の取り込み（_kvPullRows・_applyKvRows）で
+   取らず・置かず、前に置いた写し（localStorage・IndexedDB・送信待ち）も消す。起動（IndexedDB を読み終えたあと）・取り込み・ログアウトのたび。
+   画面の個人の欄は pii_get の答え（メモリだけ）から出すので、この行の写しはどこでも使わない */
+function piiRawKey(k){ return k===PII_KEY; }
+function piiPurgeLocal(){
+  var had=false;
+  try{ had=_lsStoreGet(PII_KEY)!=null; }catch(e){}
+  try{ if(!had && typeof localStorage!=='undefined' && localStorage.getItem(PII_KEY)!=null) had=true; }catch(e){}
+  if(had){ try{ _lsRawDel(PII_KEY); }catch(e){} try{ localStorage.removeItem(PII_KEY); }catch(e){} }
+  try{ if(typeof _outboxRemove==='function') _outboxRemove(PII_KEY); }catch(e){}
+  return had;
+}
 function piiFnSeen(){ try{ return localStorage.getItem(PII_FN_KEY)==='1'; }catch(e){ return false; } }
 function piiFnMark(on){ try{ if(on) localStorage.setItem(PII_FN_KEY, '1'); else localStorage.removeItem(PII_FN_KEY); }catch(e){} }
 function piiTid(tk){ tk=tk||ssToken(); return tk.g+'|'+tk.u+'|'+tk.st+'|'+tk.id; }
@@ -12921,7 +12935,7 @@ function piiAfterLogin(){
   try{ insTotalsRefresh(true); }catch(e){}
   try{ if(piiWants()) piiLoad(true); }catch(e){}
 }
-function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; }
+function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; piiPurgeLocal(); }
 
 /* v1141（Codex #135 の P2）：この 2 つの設定をどの道で書いたかを「設定 › 診断と記録」に残す（手順.md の B-5 の確かめ）。
    fn＝関数 secure-state（v1141）が決めた人として書いた／same＝関数は書かなかった（このログインの役割では変えられない。クラウドと同じ値だったので止めなかった）／
@@ -13325,6 +13339,7 @@ function _kvSkipKey(k){
 }
 /* 取り込みで捨てる行（_applyKvRows と同じ順で判定：前の統合行は畳み込むので捨てない） */
 function _kvDiscarded(k){
+  try{ if(typeof piiRawKey==='function' && piiRawKey(k)) return true; }catch(e){}   /* v1144：個人の欄の生の行は取らない */
   if(_SPLIT_KEYS && _SPLIT_KEYS[k]) return false;
   try{ if(_lsOnDemand(k)) return true; }catch(e){}
   try{ if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(k)) return true; }catch(e){}
@@ -13391,6 +13406,7 @@ async function _kvPullRows(force){
   var t0=Date.now();
   var _tk=(typeof ssToken==='function') ? ssToken() : null;   /* Codex P1：頼んだときのログイン（遅れて届いた前の人の答えを、次の人の端末に置かない） */
   try{ if(typeof _idbBootP!=='undefined' && _idbBootP) await Promise.race([_idbBootP, new Promise(function(r){ setTimeout(r, 3000); })]); }catch(e){}   /* 端末に何があるかを IndexedDB から読み終えてから決める */
+  try{ if(typeof piiPurgeLocal==='function') piiPurgeLocal(); }catch(e){}   /* v1144（Codex #138 P1-2）：前に置いた個人の欄の生の行を消す */
   var _ssP=(typeof ssPull==='function') ? ssPull(force, _tk).catch(function(e){ console.warn('ss pull', e); return { rest:true, fail:true }; }) : null;   /* v1139：成長カルテ・賞与のキーは関数 secure-state から（行の一覧と並べて頼む） */
   var seen=_kvSeenGet();
   var _fa=Number(seen.fullAt)||0, _now=Date.now();
@@ -13443,6 +13459,7 @@ async function _kvPullRows(force){
     if(idx){ Object.keys(skip).forEach(function(k){ if(_SPLIT_KEYS && _SPLIT_KEYS[k]) ex.push(_kvQuote(k)); }); }
     try{ (_LS_ONDEMAND_KEYS||[]).forEach(function(k){ ex.push(_kvQuote(k)); }); }catch(e){}
     if(_hrOut) Object.keys(HR_KEYS).forEach(function(k){ ex.push(_kvQuote(k)); });   /* v1142：採用・お悩み相談室は REST で取らない */
+    if(typeof PII_KEY!=='undefined') ex.push(_kvQuote(PII_KEY));   /* v1144（Codex #138 P1-2）：個人の欄の生の行は取らない（関数の版によらず） */
     var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
     try{ (_LS_ONDEMAND_PREFIX||[]).forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }catch(e){}
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
@@ -101245,6 +101262,7 @@ async function checkDriveOAuthReturn(){
 /* v764: IndexedDB の起動。既存の起動処理とは独立に走らせる（描画を待たせない）。
    失敗しても _idbState='unavailable' になるだけで、アプリの動作は変わらない。 */
 var _idbBootP = new Promise(function(res){ setTimeout(function(){ try{ Promise.resolve(_idbBoot()).then(res, res); }catch(e){ res(); } }, 0); });   /* v1098: 起動の終わりを待てるように（ログイン画面・差分の取り込み） */
+_idbBootP.then(function(){ try{ if(typeof piiPurgeLocal==='function') piiPurgeLocal(); }catch(e){} });   /* v1144（Codex #138 P1-2）：IndexedDB を読み終えてから、前に置いた個人の欄の生の行を消す（読み終える前の削除は IndexedDB に届かない） */
 (async function(){ try { await Promise.resolve(_idbBootP); } catch(e) { } try { refreshStores(); } catch(e) { } try { _bootMigrations(); } catch(e) { console.error('_bootMigrations', e); } try { await migrateSeedTrainMaster(); } catch(e) { console.error('migrateSeedTrainMaster', e); } try { if (!(await checkOnboardToken())) {
   /* v1098: 名簿のある端末はログイン画面をすぐ出す（IndexedDB を読み終えてから。3 秒まで）。名簿は裏で取り直す */
   var _warm = false;
@@ -103163,16 +103181,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if ((me.role === 'ceo' || me.role === 'gm') && S.people && S.people.changes > 0) {
       return '<div class="card" style="margin-bottom:10px;border-left:3px solid ' + (S.people.up ? 'var(--yellow)' : 'var(--border)') + '"><div style="font-size:12.5px;font-weight:700"><i class="ti ti-user-check"></i> ' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
         + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + T('社員の表と、GM・CEO が確かめた権限の写しが違う人：','People whose employee record differs from the confirmed copy: ') + S.people.changes + T(' 人',' ') + (S.people.up ? ' · <b style="color:#7a4a00">' + T('権限が増える人 ','rights would increase: ') + S.people.up + T(' 人','') + '</b>' : '')
-        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G3 以上になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。','The employee table can be edited by anyone, so becoming an AM / G3+ or gaining stores only takes effect after a check here (decreases already apply). G3 can ask the GM for changes; G4+ see and approve store requests.') + '</span></div>'
+        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G3 以上・Head Chef になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。Head Chef は全員の生年月日・保険と全店の Career Score を見ます。','The employee table can be edited by anyone, so becoming an AM / G3+ / Head Chef or gaining stores only takes effect after a check here (decreases already apply). G3 can ask the GM for changes; G4+ see and approve store requests. A Head Chef sees everyone\'s birthday / insurance and every store\'s Career Score.') + '</span></div>'
         + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrPeople()">' + T('確かめる','Check') + '</button></div>';
     }
-    if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + T('あなたの AM・G3 以上の権限（GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G3+ rights (asking the GM, seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.') + '</div>';
+    if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + (me.confirmed
+      ? T('あなたの権限が増える変更（AM・G3 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです。','A change that adds to your rights (AM / G3+ / Head Chef / stores) waits for the GM to check. Until then your earlier confirmed rights stay.')
+      : T('あなたの AM・G3 以上の権限（GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G3+ rights (asking the GM, seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.')) + '</div>';
     return '';
   }
   function pDesc(x){
     if (!x) return '<span style="color:var(--muted)">' + T('なし（権限なし）','none') + '</span>';
     var st = function(a){ return (a || []).map(storeName).join('・') || '—'; };
-    return esc((x.role === 'am' ? 'AM' : 'G' + x.grade) + ' · ' + x.name) + '<div style="font-size:10.5px;color:var(--muted)">' + T('店 ','Stores ') + esc(st(x.stores)) + (x.role === 'am' ? ' · ' + T('担当 ','Leads ') + esc(st(x.am_stores)) : '') + '</div>';
+    return esc((x.role === 'am' ? 'AM' : 'G' + x.grade) + (x.chef ? ' · Head Chef' : '') + ' · ' + x.name) + '<div style="font-size:10.5px;color:var(--muted)">' + T('店 ','Stores ') + esc(st(x.stores)) + (x.role === 'am' ? ' · ' + T('担当 ','Leads ') + esc(st(x.am_stores)) : '') + '</div>';
   }
   W.wrPeople = function(goLive){
     S.pp = { goLive:!!goLive, d:null, err:'', pick:{}, busy:false };

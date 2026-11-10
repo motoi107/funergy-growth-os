@@ -82,6 +82,7 @@ test('the v1143 bundle is as it was (the SQL files and the pinned function file)
 test('the v1144 bundle is the repository files as they are', () => {
   const D = 'deploy/secure-pii-v1144/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-pii-precheck.sql'));
+  assert.equal(rd(D + '1b_SQL_権限の写しにHeadChef.sql'), rd('supabase/migrations/20261113080000_wr_people_chef.sql'));   // Codex #138 P1-1
   assert.equal(rd(D + '3_SQL_個人の欄を移して外す.sql'), rd('supabase/migrations/20261113090000_secure_emp_pii.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-pii-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-pii-rollback.sql'));
@@ -94,5 +95,6 @@ test('the v1144 bundle is the repository files as they are', () => {
   assert.match(one, /piifn: 1/); assert.match(one, /sw2: 1/); assert.match(one, /hrfn: 1/);
   assert.match(rd('supabase/functions/secure-state/index.ts'), /Deno\.serve\(createHandler\(\{ env: \(key: string\) => Deno\.env\.get\(key\) \}\)\);/);
   const how = rd(D + '手順.md');
-  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_個人の欄を移して外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-settings-v1143/2_関数_secure-state_index.ts', 'deploy/secure-settings-v1143/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
+  assert.match(one, /async function confChef\(a\)/, 'Head Chef also needs the confirmed copy (Codex #138 P1-1)');
+  for (const f of ['1_確かめ_読むだけ.sql', '1b_SQL_権限の写しにHeadChef.sql', '2_関数_secure-state_index.ts', '3_SQL_個人の欄を移して外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-settings-v1143/2_関数_secure-state_index.ts', 'deploy/secure-settings-v1143/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });

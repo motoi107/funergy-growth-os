@@ -42,12 +42,14 @@ const ME = {
   g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
   out: { emp: 'E-OUT', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Gone Lead' },
 };
+// GM・CEO が確かめた写し（wr_people）：店長（G4）と Head Chef（chef：Codex #138 P1-1）
+const WRP = [{ emp_id: 'E-SM', role: 'staff', grade: 4 }, { emp_id: 'E-SL', role: 'staff', grade: 3 }, { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true }];
 const T0 = ts6(Date.UTC(2026, 10, 3, 9, 0, 0));
 // 前に v1144 の関数で直した人（emp_pii にある人）：従業員の表の値より先
 const PII0 = { 'E-SL': { dob: '1990-04-04', cardLast4: '2222', insurance: true, dental: true, insuranceAmt: 120, _at: 'x', _by: 'Gina M' }, 'E-NEW': { dob: '2002-02-02', _at: 'x', _by: 'Gina M' } };
 
 function setup(o = {}) {
-  const W = makeWorld({ emps: EMPS.map(e => JSON.parse(JSON.stringify(e))), mgr: MGR, users: USERS, stores: [], wrPeople: [], pins: { ...Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), tstore: 'deny' }, ...o });
+  const W = makeWorld({ emps: EMPS.map(e => JSON.parse(JSON.stringify(e))), mgr: MGR, users: USERS, stores: [], wrPeople: WRP.map(x => ({ ...x })), pins: { ...Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), tstore: 'deny' }, ...o });
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
   let clock = Date.UTC(2026, 10, 9, 10, 0, 0);
   const handle = createHandler({ env, fetch: W.fetch, now: () => (clock += 1000) });
@@ -128,6 +130,37 @@ test('who sees which fields of whom (the staff master of today; Moto 11/09)', as
   // 店舗の PIN のタブレット（work-requests が断る）：401
   assert.equal((await call({ action: 'pii_get', pin_session: 'tstore' })).status, 401);
   assert.equal((await call({ action: 'pii_get' })).status, 401, 'no login');
+});
+
+// Codex #138 P1-1：社員の表の肩書き・役割は公開の鍵で書けるので、それだけで Head Chef（全員の 4 つ）にしない。
+// GM・CEO が確かめた写し（wr_people.chef）と、今の社員の表の両方で Head Chef の人だけ
+test('Head Chef needs the confirmed copy too: a store manager who edits their own title or role to chef gets nothing (Codex #138 P1-1)', async () => {
+  const look = async (S, who) => { const r = await S.call({ action: 'pii_get', ...S.as(who) }); assert.equal(r.status, 200); return [r.j.level, ids(r.j.data)]; };
+  const op = (S, who, id, set, base) => S.call({ action: 'pii_op', id, set, base, ...S.as(who) });
+  const edit = (W, id, ch) => Object.assign(W.emps.find(e => e.id === id), ch);
+  // 確かめた店長（G4）が、自分の社員の行の肩書きだけを Head Chef に書き換える（公開の鍵で書ける）
+  for (const ch of [{ title: 'Head Chef' }, { title: 'Corporate Chef' }, { role: 'chef' }, { data: { ...EMPS.find(e => e.id === 'E-SM').data, title: 'Head Chef', role: 'chef' } }]) {
+    const S = setup();
+    assert.deepEqual(await look(S, 'sm'), ['none', []], 'before');
+    edit(S.W, 'E-SM', ch);
+    assert.deepEqual(await look(S, 'sm'), ['none', []], 'after ' + JSON.stringify(ch).slice(0, 40) + ': still nothing');
+    const r = await op(S, 'sm', 'E-SL', { dob: '1999-09-09' }, { dob: '1990-04-04' });
+    assert.equal(r.status, 403, 'cannot change a person of another store');
+    assert.equal(S.W.get(PII_KEY)['E-SL'].dob, '1990-04-04', 'nothing written');
+    assert.deepEqual(await look(S, 'chef'), ['hr', ['E-1', 'E-1B', 'E-CEO', 'E-G2', 'E-OUT', 'E-SL', 'E-SM', 'E-SUP']], 'the confirmed Head Chef still sees everybody');
+  }
+  // GM・CEO が確かめた（写しに chef）あとは、店長から Head Chef になった人も全員
+  { const S = setup(); edit(S.W, 'E-SM', { title: 'Head Chef' }); S.W.wrPeople.find(x => x.emp_id === 'E-SM').chef = true;
+    assert.equal((await look(S, 'sm'))[0], 'hr'); assert.equal((await op(S, 'sm', 'E-SL', { dob: '1999-09-09' }, { dob: '1990-04-04' })).status, 200); }
+  // 確かめた Head Chef でも、今の社員の表で Head Chef でなくなったらすぐ（狭いほう）
+  { const S = setup(); edit(S.W, 'E-CH', { title: 'Store Manager', role: 'sl' }); assert.deepEqual(await look(S, 'chef'), ['none', []]); }
+  // 写しに chef の列がまだ無い（SQL 20261113080000 の前）・写しの行が無い・写しを読めない：Head Chef としない
+  { const S = setup({ wrNoChef: true }); assert.deepEqual(await look(S, 'chef'), ['none', []], 'no chef column yet');
+    assert.equal((await op(S, 'chef', 'E-SM', { dob: '1985-07-07' }, { dob: '1985-05-05' })).status, 403); }
+  { const S = setup({ wrPeople: [] }); assert.deepEqual(await look(S, 'chef'), ['none', []], 'no confirmed copy'); }
+  { const S = setup(); S.W.wrPeopleDown = true; assert.deepEqual(await look(S, 'chef'), ['none', []], 'the confirmed copy cannot be read'); }
+  // 確かめた G3（店長ではない）が Head Chef に書き換えても G3 のまま（grade は写しと今の小さいほう＝work-requests の whoami）
+  { const S = setup(); edit(S.W, 'E-SL', { title: 'Head Chef' }); assert.deepEqual(await look(S, 'sl'), ['none', []]); }
 });
 
 test('a manager whose employee row is gone or out sees nothing (the PIN is remembered for 60 s)', async () => {

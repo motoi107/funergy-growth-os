@@ -10,6 +10,10 @@
 - 試験（合成データ）：secure-pii-server 14・client 12（v1143 の関数＝入れる一式の 1 ファイルでも）・rls 7（PGlite・本物の退職の守りと変更記録の上・v1143 のあと／RLS OFF／ON から）・pg 2（本物の PostgreSQL の 2 つのつなぎ：③ と関数・前の版の端末が重なるとき）・employee-resign-sync 39（v1144 の 3 件）・deploy（v1143 の関数を sha256 で固定）・static release pass/1144。secure-state-server の答えの形に `piifn:1`。わざと壊す 73 通りのうち 72（残り 1 は同じ結果の二重の守り）。全体（重い 2 つ以外・4 並列）：2,123 件のうち 31 件が落ちる＝ファイルごとに v1143（`eb75e66`）と同じ（bot-center 2・bot-database 2・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 1。approvals-v1087 の 1 件は重いときだけ＝単独で両方 40/40。handbook-progress は重いときに時間切れ＝単独で 33/33）。
 - 独立レビューは無し（Claude の別エージェントは使っていない）。Codex のレビューはまだ。
 - PR #138（base main・#135〜#137 の上・head `b9b3f44` のあと記録だけ）。
+- **Codex（#138 6755438709・`44ce0cb`）：blocked・P1 2**（Claude のルーティン 6755273329・6755275028 の「P1・P2 なし」とは違う）：① 確かめた店長（G4）が自分の肩書き・役割を Head Chef に書き換えるだけで、全員の個人の欄を読み書きできた（確かめた写し wr_people に Head Chef の印が無い。v1140 の Career Score の「Head Chef は全店」も同じ）② SQL の前に通常の取り込みが `emp_pii` の行を端末（localStorage・IndexedDB）に置き、SQL のあと・ログアウトのあとも残った。
+  - 直し（11/10・Claude・仕様の 9）：SQL `20261113080000_wr_people_chef.sql`（①b・wr_people に `chef`・`wr_chef`・`wr_person_live`／`wr_person_conf`／`wr_up`／`wr_people_sync`）・関数の `confChef`（今の社員の表と確かめた写しの両方で Head Chef のときだけ・`piiScope` と `csScope`）・確かめの画面に「Head Chef」・アプリは `emp_pii` を取らない・置かない・消す（取り込み・ログアウト・IndexedDB を読み終えたとき）。手順に 1b・1c（GM・CEO が Head Chef を確かめる）。① 8・9 行目・④ 17・18 行目。
+  - 試験（合成データ）：pii-server 15・cs-server 24・wr-people-chef 5（新）・pii-device 6（新）・pii-rls 7・work-requests-ui に 1。足した試験は `44ce0cb` で落ちる。わざと壊す 26/26。関連 586/586・本物の PostgreSQL 2/2・static release pass/1144。直したあとの独立レビューは無し。Codex の再レビューはまだ。
+  - 変わること（Moto さんに伝える）：①b のあと、今の Head Chef は GM・CEO が「承認・閲覧の権限の確かめ」で確かめるまで、全員の個人の欄を見られず、Career Score も自分の店の範囲。
 - 残る限界：従業員の表の店・応援は公開の鍵で書ける（AM の範囲・1 人の店の合計。段階 (b)）・カードの照合の回数は関数の実行環境ごと・確かめがまだの AM・Head Chef には届かない・名前だけの管理者の入り方にはサーバーが返さない。
 
 ## 2026-11-09 v1143：GM・CEO だけが変える賞与・Career Score の設定を公開の鍵で書けなくする（全体アップデート指示の 2b の 5 つ目・Claude・ブランチ `claude/secure-cfg-1143`・v1142（PR #136）の上・関数 secure-state・SQL `20261112090000`・本番未反映）

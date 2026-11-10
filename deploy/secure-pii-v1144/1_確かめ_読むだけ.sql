@@ -40,4 +40,15 @@ union all
 select 7, '書くたびに外す見張り（employees_pii_strip_trg）',
        (select count(*) from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_pii_strip_trg' and not t.tgisinternal)::text,
        case when (select count(*) from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_pii_strip_trg' and not t.tgisinternal) = 1
-            then 'info（もう入っている）' else 'OK（まだ）' end;
+            then 'info（もう入っている）' else 'OK（まだ）' end
+union all
+-- v1144 の直し（Codex #138 P1-1）：Head Chef も GM・CEO が確かめた写し（wr_people）で決める。①b の SQL がこの表に欄を足す
+select 8, 'ワークセンターの権限の写し（wr_people）', case when to_regclass('public.wr_people') is null then 'ない' else 'ある' end,
+       case when to_regclass('public.wr_people') is null then 'STOP（①b を流せません。Claude に）' else 'OK' end
+union all
+select 9, 'Head Chef（社員の表の肩書き・役割。在籍。CEO・GM・経理・事務Crew のアカウントの人を除く）',
+       (select count(*) from public.employees e
+         where (coalesce(e.role, '') = 'chef' or btrim(coalesce(e.title, '')) in ('Head Chef', 'Corporate Chef'))
+           and coalesce(e.status, '') <> '退職' and coalesce(e.data->>'status', '') <> '退職' and coalesce(e.data->>'osDisabled', '') <> 'true'
+           and not exists (select 1 from public.manager_auth m where m.emp_id::text = e.id::text and m.role in ('ceo', 'gm', 'office', 'office_crew')))::text,
+       'info（①b のあと「承認・閲覧の権限の確かめ」で確かめるまで、この人たちは全員の個人の欄・全店の Career Score を見られません）';

@@ -113,5 +113,21 @@ select 16, 'app_state を使う security definer の関数で、公開の鍵・�
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
  where n.nspname = 'public' and p.prosecdef and p.prosrc ilike '%app_state%'
    and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'));
+-- v1144 の直し（Codex #138 P1-1・①b の SQL 20261113080000）：Head Chef も GM・CEO が確かめた写し（wr_people.chef）で決める
+do $$
+declare has_col boolean; n int;
+begin
+  select exists (select 1 from information_schema.columns c where c.table_schema = 'public' and c.table_name = 'wr_people' and c.column_name = 'chef') into has_col;
+  insert into pii_chk values (17, '権限の写しの Head Chef の欄（①b の SQL）', case when has_col then 'ある' else 'ない' end,
+    case when has_col then 'OK' else 'NG（①b を流してください。流すまで、Head Chef は全員の個人の欄・全店の Career Score を見られません）' end);
+  if has_col then
+    execute $q$select count(*) from public.employees e
+      where public.wr_chef(e.title, e.role) and not public.wr_emp_out(e)
+        and not exists (select 1 from public.manager_auth m where m.emp_id::text = e.id::text and m.role in ('ceo', 'gm', 'office', 'office_crew'))
+        and not exists (select 1 from public.wr_people c where c.emp_id = e.id::text and c.chef)$q$ into n;
+    insert into pii_chk values (18, 'Head Chef（社員の表）で、GM・CEO の確かめがまだの人', n::text,
+      case when n = 0 then 'OK' else 'info（「承認・閲覧の権限の確かめ」で確かめるまで、その人は全員の個人の欄・全店の Career Score を見られません）' end);
+  end if;
+end $$;
 select n, what, value, ok from pii_chk order by n;
 rollback;

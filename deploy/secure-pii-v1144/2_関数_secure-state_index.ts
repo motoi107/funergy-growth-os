@@ -43,6 +43,7 @@ export function ssIsKey(k) {
 //   見られる人（Moto さん 11/04 の回答）：AM＝担当の店（応援も）・G4＝自分の店の G4 以下・G3＝自分の店の G1・G2・Crew Leader（G2）＝自分の店の G1・
 //   Head Chef＝全店の G1（申請は全店）・経理・事務Crew＝本部の人（Office管理のメンバー）・それ以外＝自分だけ。Score管理（career_cfg）で
 //   見る・付ける・承認する役にした人も。店のログインなど＝なし。
+//   v1144（Codex #138 P1-1）：Head Chef の広い範囲は、GM・CEO が確かめた写しでも Head Chef の人だけ（確かめるまでは G4 の範囲）。
 export const CS_PREFIX = ['lss_emp_', 'spl_lss_requests_', 'spl_lss_history_'];
 export const CS_LEGACY = ['lss_scores', 'lss_requests', 'lss_history'];
 export function csIsKey(k) {
@@ -161,6 +162,7 @@ export function hrApStrip(rec) {
 //   SQL 20261113090000 が、従業員の表に残っている欄を emp_pii に写して消す（それまでは、emp_pii に無い人は従業員の表の値を読む）。
 //   見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
 //   AM＝担当の店（応援も）と本部（ALL）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
+//   Head Chef は、今の社員の表と GM・CEO が確かめた写し（wr_people.chef・SQL 20261113080000）の両方で Head Chef の人だけ（Codex #138 P1-1）。
 //   保険料（人ごと）は GM・CEO だけ（今の画面で直せる人）。店ごとの合計（人件費に入れる）はだれにでも返す（ins_totals・ログイン不要。
 //   店舗の PIN のタブレットでも人件費が今と同じになるように。Moto さん 11/09）。
 //   カードの下 4 桁の照合（card_match）：レシート管理を使える人（自分の PIN・メールのログイン）に、当たった人の ID と名前だけ（Moto さん 11/09）。
@@ -226,6 +228,8 @@ export function appGrade(title, role) {
 const SPEC_DEPTS = ['経理', '調理', 'サービス', 'マーケ'];
 const TITLE_DEPT = { 'Accountant': '経理', 'Office Manager': '経理', 'Office Crew Leader': '経理', 'Accounting Leader': '経理', 'Head Chef': '調理', 'Corporate Chef': '調理', 'Customer Service Manager': 'サービス' };
 const CHEF_TITLES = ['Head Chef', 'Corporate Chef'];
+// 社員の表（今）で Head Chef か：役割 chef か、肩書きが Head Chef・Corporate Chef（列、無ければ中身）。SQL の wr_chef と同じ決まり（列で見る）
+const liveChef = e => { const d = obj(e && e.data) || {}; return String((e && e.role) || d.role || '') === 'chef' || CHEF_TITLES.includes(String((e && e.title) || d.title || '').trim()); };
 const HQ_ROLES = ['office', 'office_crew', 'chef'];   // 経理・事務Crew が見る本部の人（Office管理のメンバー）
 const OFFICE_ROLES = ['office', 'office_crew'];
 // キーの順によらない文字（クラウドの jsonb はキーを並べ替えて返す）
@@ -379,6 +383,16 @@ export function createHandler(deps) {
     return { deny: 'none' };
   }
   const levelOf = a => (SS_FULL_ROLES.includes(a.role) ? 'full' : (a.emp ? 'proj' : 'none'));
+  // v1144（Codex #138 P1-1）：Head Chef として広い範囲（全員の個人の欄・全店の Career Score）を見るのは、GM・CEO が確かめた写し
+  // （wr_people.chef・SQL 20261113080000）でも Head Chef のときだけ。社員の表の肩書き・役割は公開の鍵で書けるので、それだけでは広げない。
+  // 列が無い（SQL の前）・読めない・写しが無いときは Head Chef としない（狭いほう）。今の社員の表でも Head Chef か（liveChef）は呼ぶ側が見る
+  async function confChef(a) {
+    if (!a || a.role !== 'staff' || !(a.grade >= 4) || typeof a.emp !== 'string' || !a.emp) return false;
+    try {
+      const r = await rest('wr_people?emp_id=eq.' + encodeURIComponent(a.emp) + '&select=chef');
+      return Array.isArray(r) && r.length === 1 && !!r[0] && r[0].chef === true;
+    } catch { return false; }
+  }
 
   // 目標を見せてよい人：本人。AM は担当の店（と自分の店）、G4 以上は自分の店の人（Career Score の一覧で見られる人）
   async function goalsGate(a) {
@@ -507,7 +521,7 @@ export function createHandler(deps) {
     const P = await csPeople();
     const actorId = String(a.emp || '');
     const me = actorId ? (P.find(p => p.id === actorId && !p.out) || null) : null;
-    const isChef = a.role === 'staff' && a.grade >= 4 && !!me && (me.role === 'chef' || CHEF_TITLES.includes(me.title));
+    const isChef = a.role === 'staff' && a.grade >= 4 && !!me && (me.role === 'chef' || CHEF_TITLES.includes(me.title)) && await confChef(a);   // v1144：確かめた写しでも Head Chef
     // Score管理（career_cfg）の役職：アプリの役割と同じ名前
     const R = ['office', 'office_crew', 'am'].includes(a.role) ? a.role
       : a.role === 'staff' ? (isChef ? 'chef' : a.grade >= 4 ? 'g4' : a.grade === 3 ? 'sl' : '') : '';
@@ -1177,11 +1191,9 @@ export function createHandler(deps) {
       };
       return { lv: 'hr', ok, newOk: false, amt: false };
     }
-    if (a.role === 'staff' && a.grade >= 4) {   // Head Chef（Corporate Chef も）：全員（v950 から従業員マスターで全店の人を見る）。GM・CEO が確かめた写しのある人だけ（G4）
-      const d = obj(me.data) || {};
-      const rr = String(me.role || d.role || ''), title = String(me.title || d.title || '');
-      if (rr === 'chef' || CHEF_TITLES.includes(title)) return { lv: 'hr', ok: () => true, newOk: false, amt: false };
-    }
+    // Head Chef（Corporate Chef も）：全員（v950 から従業員マスターで全店の人を見る）。今の社員の表と、GM・CEO が確かめた写し（wr_people.chef）の
+    // 両方で Head Chef のときだけ（Codex #138 P1-1：確かめた店長が自分の肩書きを Head Chef に書き換えるだけでは広げない）
+    if (a.role === 'staff' && a.grade >= 4 && liveChef(me) && await confChef(a)) return { lv: 'hr', ok: () => true, newOk: false, amt: false };
     return none;
   }
   async function piiLoad() {
