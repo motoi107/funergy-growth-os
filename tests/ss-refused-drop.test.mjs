@@ -265,6 +265,135 @@ test('a save made after the refusal is not shown as refused and is not removed; 
   }
 });
 
+// Codex #139 6765880796 の P2：断った答えが届いた時点の値ではなく、送った保存に印を付ける。答えを待つあいだにまた保存された値は「断られたもの」にしない
+// put の答えを 1 回だけ止める（関数の答えはできているが、端末に届くのを待たせる）
+const holdPut = (c, key) => {
+  const real = c.fetch; let release, began; const gate = new Promise(r => { release = r; }), started = new Promise(r => { began = r; }); let hit = false;
+  c.fetch = async (u, o) => {
+    if (!hit && String(u).includes('/functions/v1/secure-state') && o && typeof o.body === 'string' && o.body.includes('"action":"put"') && o.body.includes('"key":' + JSON.stringify(key))) {
+      hit = true; const res = await real(u, o); began(); await gate; return res;
+    }
+    return real(u, o);
+  };
+  return { started, release: () => release(), restore: () => { c.fetch = real; } };
+};
+test('Codex 6765880796: a save made while the refusal is still on its way is not marked; removing does nothing and resending delivers it (the drop and the resend side by side)', async () => {
+  const out = {};
+  for (const mode of ['drop', 'retry']) {
+    const W = world();
+    const gm = device(W, 'tGM');
+    const h = holdPut(gm, 'grade_hist');
+    const p1 = save(gm, 'grade_hist', { ...GH0, odd: 'x' });   // ① 形の合わない値を送る（400 が返るが、届くのを待たせる）
+    await h.started;
+    const fixed = ghMore('E-7', 1762700000009);
+    const p2 = save(gm, 'grade_hist', fixed);                    // ② 答えを待つあいだに正しい値（E-7）を保存：送る列で次の送信になる
+    assert.equal(gm._pushQOf('grade_hist').next != null, true, 'the new save waits for the first send');
+    h.restore();
+    const up = fnDown(W, gm);                                     // ④ 次の送信は届かない（通信の失敗）
+    h.release();                                                  // ③ 古い 400 が届く
+    assert.equal(await p1, false);
+    assert.equal(await p2, false);
+    assert.equal(gm._pushBusy('grade_hist'), false, 'the queue is quiet');
+    assert.deepEqual(outKeys(gm), ['grade_hist']);
+    assert.deepEqual(J(gm.ssRefusedList()), [], 'E-7 was never refused: not listed');
+    assert.equal(gm.__store.get('_ss_refused_v1'), undefined, 'no mark at all (the 400 belonged to the earlier save)');
+    up();
+    if (mode === 'drop') {
+      gm.openRefusedDrop();
+      assert.equal(gm.__modal, null, 'nothing to remove');
+      assert.deepEqual(J(await gm.ssDropRefused(['grade_hist'])), { done: [], skip: [{ key: 'grade_hist', why: 'gone' }] });
+    }
+    assert.deepEqual(JSON.parse(gm.MEM.get('grade_hist')), fixed, 'E-7 stays on the device');
+    await gm.flushOutbox();
+    out[mode] = { local: JSON.parse(gm.MEM.get('grade_hist'))['E-7'] != null, cloud: W.get('grade_hist')['E-7'] != null, pending: outKeys(gm) };
+  }
+  assert.deepEqual(J(out), { drop: { local: true, cloud: true, pending: [] }, retry: { local: true, cloud: true, pending: [] } });
+});
+
+test('Codex 6765880796: also not marked when the save comes while the send is still reading the cloud row (before the value is built), when the sign-in changes while waiting, or when the send is not from the send queue', async () => {
+  // 送る値を作る前（クラウドの行を読んでいるあいだ）に保存された
+  {
+    const W = world(); const gm = device(W, 'tGM');
+    const fixed = ghMore('E-7', 1762700000009);
+    let p2 = null, puts = 0;
+    const real = gm.fetch;
+    // 最初の put だけ関数に届ける。そのあとの関数の呼び出しは届かない（通信の失敗）
+    gm.fetch = (u, o) => {
+      if (String(u).includes('/functions/v1/secure-state') && o && typeof o.body === 'string' && o.body.includes('"action":"put"')) { puts++; if (puts > 1) return Promise.reject(new TypeError('fetch failed')); }
+      return real(u, o);
+    };
+    W.afterGet = url => { if (!String(url).includes('grade_hist')) return false; p2 = save(gm, 'grade_hist', fixed); return true; };
+    const p1 = save(gm, 'grade_hist', { ...GH0, odd: 'x' });
+    assert.equal(await p1, false, 'the first send is refused (400)');
+    assert.ok(p2, 'the second save happened during the read');
+    assert.equal(await p2, false, 'the second send does not get through');
+    assert.equal(puts, 2);
+    assert.equal(gm.__store.get('_ss_refused_v1'), undefined, 'no mark');
+    assert.deepEqual(J(gm.ssRefusedList()), [], 'not listed');
+    gm.fetch = real;
+    await gm.flushOutbox();
+    assert.notEqual(W.get('grade_hist')['E-7'], undefined, 'E-7 reaches the cloud');
+  }
+  // 答えを待つあいだにログインが変わった：印を付けない（だれの保存かが今の人でない）
+  {
+    const W = world(); const am = device(W, 'tAM');
+    const h = holdPut(am, 'grade_hist');
+    const p1 = save(am, 'grade_hist', ghMore('E-9'));
+    await h.started; h.restore();
+    login(am, 't4');
+    h.release();
+    assert.equal(await p1, false);
+    assert.equal(am.__store.get('_ss_refused_v1'), undefined, 'no mark for a sign-in that changed while waiting');
+    login(am, 'tAM');
+    assert.deepEqual(J(am.ssRefusedList()), []);
+    await am.flushOutbox();   // AM の送り直し：断られて、そのとき印が付く
+    assert.deepEqual(am.ssRefusedList().map(x => x.key), ['grade_hist']);
+  }
+  // 待っていた次の保存の人と、送るときのログインが違う（A が保存 → B にログインしてから送られて断られた）：B の印にしない
+  {
+    const W = world(); const am = device(W, 'tAM');
+    const h = holdPut(am, 'grade_hist');
+    const p1 = save(am, 'grade_hist', ghMore('E-9'));
+    await h.started; h.restore();
+    const p2 = save(am, 'grade_hist', ghMore('E-8'));   // AM の保存が次の送信として待つ
+    login(am, 't4');
+    h.release();
+    assert.equal(await p1, false); assert.equal(await p2, false);
+    assert.equal(am.__store.get('_ss_refused_v1'), undefined, 'the G4 did not make that save: no mark');
+    assert.deepEqual(J(am.ssRefusedList()), []);
+  }
+  // 答えを待つあいだに、送る列の別の回になっていた（試験だけで回の番号を進める）：印を付けない
+  {
+    const W = world(); const am = device(W, 'tAM');
+    const h = holdPut(am, 'grade_hist');
+    const p1 = save(am, 'grade_hist', ghMore('E-9'));
+    await h.started; h.restore();
+    am._pushQOf('grade_hist').busySeq += 1;
+    h.release();
+    assert.equal(await p1, false);
+    assert.equal(am.__store.get('_ss_refused_v1'), undefined);
+  }
+  // 送る列の外の送信（まとめて送るなど）：印を付けない
+  {
+    const W = world(); const am = device(W, 'tAM');
+    am.MEM.set('grade_hist', JSON.stringify(ghMore('E-9')));
+    const r = await am.ssPutRow('grade_hist', ghMore('E-9'));
+    assert.equal(r, 'forbidden');
+    assert.equal(am.__store.get('_ss_refused_v1'), undefined);
+  }
+  // 答えを待つあいだに、この端末の値が保存以外（取り込みなど）で変わった：印を付けない
+  {
+    const W = world(); const am = device(W, 'tAM');
+    const h = holdPut(am, 'grade_hist');
+    const p1 = save(am, 'grade_hist', ghMore('E-9'));
+    await h.started; h.restore();
+    am.MEM.set('grade_hist', JSON.stringify(ghMore('E-5')));
+    h.release();
+    assert.equal(await p1, false);
+    assert.equal(am.__store.get('_ss_refused_v1'), undefined);
+  }
+});
+
 test('the confirmation removes only the value it showed: a save made after it opened is not removed (refused again → open it again; not sent → not refused)', async () => {
   for (const net of [false, true]) {
     const W = world();
@@ -424,7 +553,8 @@ test('the screens: the top-right Save panel and Settings › Diagnostics show th
   assert.match(dc, /onclick="openRefusedDrop\(\)"><i class="ti ti-cloud-x"><\/i> ' \+ esc\(T\('断られたものを外す…', 'Remove refused…'\)\)/);
   const od = fn('openOutboxDiag');
   assert.match(od, /closeModalDirect\(\); openRefusedDrop\(\);/);
-  assert.match(fn('ssPutRow'), /if\(r\.status===403\)\{\n    ssRefusedMark\(key, 403\);/);
-  assert.match(fn('ssPutRow'), /if\(r\.status===400\)\{\n    ssRefusedMark\(key, 400\);/);
+  assert.match(fn('ssPutRow'), /var run=ssRefusedRun\(key\);[^\n]*\n  var r=await ssCall\(p\);/, 'the save is fixed before waiting');
+  assert.match(fn('ssPutRow'), /if\(r\.status===403\)\{\n    ssRefusedMark\(key, 403, run\);/);
+  assert.match(fn('ssPutRow'), /if\(r\.status===400\)\{\n    ssRefusedMark\(key, 400, run\);/);
   assert.match(oneLine('_outboxRemove'), /ssRefusedClear\(key\)/);
 });

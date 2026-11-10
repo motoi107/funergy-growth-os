@@ -43,6 +43,10 @@ const CODE = [
   ...['supaUpsert', '_supaWriteMs', '_fetchOpValue', '_fetchOpRow', '_tsMicro', '_casTs', '_opCasWrite', '_opUpsertRow', 'opMergePush', 'syncMasterToSupabase', 'supaHeaders', 'outboxLabel'].map(fn),
   ...['_recAt', '_srPending', '_tipDecT', 'pmCanAdmin'].map(oneLine),
   ...['mergeMapByTime', '_coversMapByTime', '_coversSkillReq', 'mergeTipReq', '_coversTipReq', 'pmCheckForApproval'].map(fn),
+  // 送る列（本物）：保存はアプリと同じく _pushWithOutbox → _pushRun で送る（断った印は送る列の回にだけ付く：Codex #139 6765880796）
+  ...['_outboxGet', '_outboxSet', '_outboxAdd', '_saveWho', '_pushWithOutbox', '_pushRun'].map(fn),
+  ...['_pushQOf', '_pushBusy'].map(oneLine),
+  varLine(/^var _pushQ = \{\};.*$/m),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
    var _SPLIT_KEYS={}, SUPA_MASTER_MAP={}, SUPA_SETTING_KEYS=[], SUPA_SETTING_PREFIX=[];
    var _supaBooting=false, _lastSupaError=null, _opMergeChain={}, _opLastPushErr={}, _opLastPushWhy={}, _idbState='ready', _idbBootP=null;
@@ -51,7 +55,9 @@ const CODE = [
    function _lsStoreGet(k){ return MEM.has(k) ? MEM.get(k) : null; }
    function _lsRawDel(k){ MEM.delete(k); return true; }
    function ls(k, d){ var v=_lsStoreGet(k); return v ? JSON.parse(v) : d; }
-   function lsSet(k, v){ MEM.set(k, JSON.stringify(v)); __pushed.push(syncMasterToSupabase(k, v)); return true; }
+   var _lsPushP={}, SUPA_SYNC_ENABLED=true, _LS_SAVE_FAIL={};
+   function _lsPushBlocked(){ return false; }
+   function lsSet(k, v){ MEM.set(k, JSON.stringify(v)); _pushWithOutbox(k, v); __pushed.push(_lsPushP[k]); return true; }
    function lsKeys(){ return [...MEM.keys()]; }
    function _lsCloudPending(k){ return !!__pending[k]; }
    function _opWriteBack(){} function _opCloudVal(k, v){ return v; } function isOpSyncKey(k){ return true; }
