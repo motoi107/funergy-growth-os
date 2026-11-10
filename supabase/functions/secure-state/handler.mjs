@@ -21,6 +21,8 @@
 //   見られる範囲の分だけ返し、書くのは 1 件ずつ。docs/SECURE_HR_V1142_JA.md）。答えにはいつも hrfn:1。
 // ・v1143（段階 2b の 5 つ目）：GM・CEO だけが変える賞与・Career Score の設定 8 つ（スコア基準・係数・係数の幅・G3 の職種・4 項目の設定・個人設定・
 //   強みの決まり・評価基準・例）も、GM・CEO だけがこの関数で書く（v1141 と同じ道・SW2_KEYS・docs/SECURE_SETTINGS_V1143_JA.md）。答えにはいつも sw2:1。
+// ・v1144（段階 2b の 6 つ目）：従業員の表の個人の欄（生年月日・会社カードの下 4 桁・保険の加入・保険料）を、app_state の emp_pii に置いて
+//   この関数で読み書きする（pii_get・pii_op・card_match・ins_totals。下の「v1144」の節・docs/SECURE_PII_V1144_JA.md）。答えにはいつも piifn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -153,6 +155,55 @@ export function hrApStrip(rec) {
   if (rec && typeof rec === 'object' && !Array.isArray(rec)) for (const [k, v] of Object.entries(rec)) if (k.charAt(0) !== '_') x[k] = v;
   return x;
 }
+// ---- v1144（段階 2b の 6 つ目）：従業員の表の個人の欄（docs/SECURE_PII_V1144_JA.md）
+//   生年月日（dob）・会社カードの下 4 桁（cardLast4）・医療／歯科保険の加入（insurance・dental）・会社負担の保険料（月額・insuranceAmt）は、
+//   従業員の表（公開の鍵で読める）から外し、app_state の 1 行 emp_pii（社員 ID → 欄）に置く。読み書きはこの関数で（pii_get・pii_op）。
+//   SQL 20261113090000 が、従業員の表に残っている欄を emp_pii に写して消す（それまでは、emp_pii に無い人は従業員の表の値を読む）。
+//   見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
+//   AM＝担当の店（応援も）と本部（ALL）の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンターの確かめ）／ほか＝なし。
+//   保険料（人ごと）は GM・CEO だけ（今の画面で直せる人）。店ごとの合計（人件費に入れる）はだれにでも返す（ins_totals・ログイン不要。
+//   店舗の PIN のタブレットでも人件費が今と同じになるように。Moto さん 11/09）。
+//   カードの下 4 桁の照合（card_match）：レシート管理を使える人（自分の PIN・メールのログイン）に、当たった人の ID と名前だけ（Moto さん 11/09）。
+export const PII_KEY = 'emp_pii';
+export const PII_FIELDS = ['dob', 'cardLast4', 'insurance', 'dental', 'insuranceAmt'];
+export const PII_HR = ['dob', 'cardLast4', 'insurance', 'dental'];
+const PII_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export function piiIsKey(k) { return k === PII_KEY; }
+// 比べるための形（空・無い・false をそろえる。アプリの piiCmp と同じ）
+export function piiCmp(k, v) {
+  if (k === 'insurance' || k === 'dental') return v === true || v === 'true';
+  if (k === 'insuranceAmt') { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; }
+  return v == null ? '' : String(v).trim();
+}
+// 書くときの形（おかしな値は undefined＝断る）
+export function piiValid(k, v) {
+  if (k === 'dob') {
+    if (v === '' || v === null || v === undefined) return '';
+    if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+    const [y, m, d] = v.split('-').map(Number), t = new Date(Date.UTC(y, m - 1, d));
+    if (y < 1900 || y > 2100 || t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d) return undefined;
+    return v;
+  }
+  if (k === 'cardLast4') {
+    if (v === '' || v === null || v === undefined) return '';
+    return typeof v === 'string' && /^\d{4}(,\d{4}){0,9}$/.test(v) ? v : undefined;
+  }
+  if (k === 'insurance' || k === 'dental') return typeof v === 'boolean' ? v : undefined;
+  if (k === 'insuranceAmt') {
+    if (v === null || v === undefined || v === '') return null;
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100000 ? v : undefined;
+  }
+  return undefined;
+}
+// 返すときの形（前からの値は形を問わず、短い文字・真偽・数だけ）
+function piiOut(v) {
+  if (typeof v === 'boolean' || v === null) return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string') return v.slice(0, 200);
+  return null;
+}
+// 退職・OS を止めた人（work-requests の wr_emp_out と同じ）
+const empOut = e => { const d = obj(e && e.data) || {}; return String((e && e.status) || '') === '退職' || String(d.status || '') === '退職' || String(d.osDisabled) === 'true'; };
 // 肩書きと役割からのグレード（SQL の wr_grade と同じ。大きいほう）
 const TITLE_G = { 'General Manager': 6, 'Area Manager': 5, 'Corporate Chef': 5, 'Customer Service Manager': 5, 'Store Manager': 4, 'Head Chef': 4, 'Office Manager': 4, 'Accountant': 4,
   'Server Leader': 3, 'Kitchen Leader': 3, 'Operation Leader': 3, 'Store Leader': 3, 'Accounting Leader': 3, 'Crew Leader': 2, 'Office Crew Leader': 2,
@@ -1101,8 +1152,164 @@ export function createHandler(deps) {
     return { ...(await hrView('growthhub', sc)), mgr: mgrOut };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch };
-  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410 };
+  // ---- v1144：従業員の個人の欄（生年月日・カードの下 4 桁・保険の加入・保険料）
+  // 見られる範囲。lv：full（5 つ）／hr（保険料を除く 4 つ）／flag（生年月日があるかだけ）／none。ok(e)：その社員の行が範囲か。
+  // newOk：社員の表にまだ無い人（今登録した人）にも書ける（CEO・GM・経理）。amt：保険料を見る・直す（GM・CEO）
+  async function piiScope(a) {
+    const none = { lv: 'none', ok: () => false, newOk: false, amt: false };
+    let me = null;
+    if (a.emp) {   // 社員と結ばれた人：行が無い・退職・OS を止めた人は何も（PIN の確かめは 60 秒覚えているので、今の社員の表で見る。hrScope と同じ）
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,role,title,store,status,data');
+      me = Array.isArray(es) ? es[0] || null : null;
+      if (!me || empOut(me)) return none;
+    }
+    if (a.role === 'ceo' || a.role === 'gm') return { lv: 'full', ok: () => true, newOk: true, amt: true };
+    if (a.role === 'office') return { lv: 'hr', ok: () => true, newOk: true, amt: false };
+    if (a.role === 'office_crew') return { lv: 'flag', ok: () => true, newOk: false, amt: false };
+    if (!me) return none;
+    if (a.role === 'am') {   // 担当の店（応援も）と本部（ALL）の人：アプリの従業員マスターの絞り込みと同じ
+      const S = [...new Set([...a.am, ...a.stores])];
+      const ok = e => {
+        const d = obj(e && e.data) || {};
+        const st = String((d.store != null && d.store !== '') ? d.store : ((e && e.store) || ''));
+        const sup = Array.isArray(d.support) ? d.support : (Array.isArray(e && e.support) ? e.support : []);
+        return st === 'ALL' || S.includes(st) || sup.some(x => S.includes(String(x)));
+      };
+      return { lv: 'hr', ok, newOk: false, amt: false };
+    }
+    if (a.role === 'staff' && a.grade >= 4) {   // Head Chef（Corporate Chef も）：全員（v950 から従業員マスターで全店の人を見る）。GM・CEO が確かめた写しのある人だけ（G4）
+      const d = obj(me.data) || {};
+      const rr = String(me.role || d.role || ''), title = String(me.title || d.title || '');
+      if (rr === 'chef' || CHEF_TITLES.includes(title)) return { lv: 'hr', ok: () => true, newOk: false, amt: false };
+    }
+    return none;
+  }
+  async function piiLoad() {
+    const [row, emps] = await Promise.all([hrRow(PII_KEY), rest('employees?select=id,name,role,title,store,support,status,data&limit=5000')]);
+    if (row && row.value != null && !obj(row.value)) throw err('db', 500);   // オブジェクトでない行（形が違う）：読まない・上書きしない
+    return { row, map: row ? obj(row.value) || {} : {}, emps: (Array.isArray(emps) ? emps : []).filter(e => e && e.id != null) };
+  }
+  // その人の欄：emp_pii にあればそれ（書いたときに全部の欄を持たせる）。無ければ従業員の表の値（SQL 20261113090000 の前）
+  function piiOf(map, id, e) {
+    const en = obj(map[id]);
+    const src = en || obj(e && e.data) || {};
+    const o = {};
+    for (const k of PII_FIELDS) if (Object.prototype.hasOwnProperty.call(src, k)) o[k] = piiOut(src[k]);
+    return o;
+  }
+  function piiProject(f, lv) {
+    if (lv === 'flag') return piiCmp('dob', f.dob) !== '' ? { _dobSet: true } : null;
+    const ks = lv === 'full' ? PII_FIELDS : PII_HR;
+    const o = {};
+    let n = 0;
+    for (const k of ks) if (Object.prototype.hasOwnProperty.call(f, k)) { o[k] = f[k]; n++; }
+    return n ? o : null;
+  }
+  async function piiGet(a) {
+    const sc = await piiScope(a);
+    if (sc.lv === 'none') return { level: 'none', data: {}, updated_at: null };
+    const { row, map, emps } = await piiLoad();
+    const data = {}, seen = new Set();
+    for (const e of emps) {
+      const id = String(e.id);
+      seen.add(id);
+      if (!sc.ok(e)) continue;
+      const p = piiProject(piiOf(map, id, e), sc.lv);
+      if (p) data[id] = p;
+    }
+    // 社員の表にまだ無い人（登録した端末がまだ送れていない）：書ける人（CEO・GM・経理）にだけ
+    if (sc.newOk) for (const id of Object.keys(map)) if (!seen.has(id) && PII_ID_RE.test(id) && obj(map[id])) { const p = piiProject(piiOf(map, id, null), sc.lv); if (p) data[id] = p; }
+    return { level: sc.lv, data, updated_at: row ? row.updated_at : null };
+  }
+  // 1 人の欄を直す。base＝画面を開いたときの値。サーバーの今の値が base と違い、送った値とも違う欄があれば 409（ほかの端末が同じ欄を直した）。
+  // 読んだ行が変わっていないときだけ書く（5 回まで）。書くとき、その人の欄を全部 emp_pii に持たせる（従業員の表の値も写す）
+  async function piiOp(a, b) {
+    const id = b.id;
+    if (typeof id !== 'string' || !PII_ID_RE.test(id)) throw bad();
+    const set = obj(b.set), base = obj(b.base) || {};
+    if (!set) throw bad();
+    const ks = Object.keys(set);
+    if (!ks.length || ks.some(k => !PII_FIELDS.includes(k))) throw bad();
+    const val = {};
+    for (const k of ks) { const v = piiValid(k, set[k]); if (v === undefined) throw bad(); val[k] = v; }
+    const sc = await piiScope(a);
+    if (sc.lv !== 'full' && sc.lv !== 'hr') throw err('forbidden', 403);
+    if (ks.includes('insuranceAmt') && !sc.amt) throw err('forbidden', 403);
+    const who = typeof a.name === 'string' && a.name.trim() ? a.name.trim().slice(0, 120) : (HR_LABEL[a.role] || a.role);
+    for (let t = 0; t < 5; t++) {
+      const { row, map, emps } = await piiLoad();
+      const e = emps.find(x => String(x.id) === id) || null;
+      if (e) { if (!sc.ok(e)) throw err('forbidden', 403); }
+      else if (!sc.newOk) throw err('not_found', 404);   // 社員の表にまだ無い人：社員の行が届いてから（アプリはもう一度送る）
+      const cur = piiOf(map, id, e);
+      let changed = false;
+      for (const k of ks) {
+        const c = canon(piiCmp(k, cur[k]));
+        if (c === canon(piiCmp(k, val[k]))) continue;
+        if (c !== canon(piiCmp(k, base[k]))) throw err('conflict', 409);
+        changed = true;
+      }
+      if (!changed) return { same: true, entry: piiProject(cur, sc.lv) || {}, level: sc.lv, by: a.role };
+      const next = { ...cur, ...val, _at: new Date(now()).toISOString(), _by: who };
+      const value = { ...map, [id]: next };
+      if (JSON.stringify(value).length > 2000000) throw bad();
+      try { await writeRow(PII_KEY, value, row ? { exists: true, updated_at: row.updated_at } : { exists: false }); }
+      catch (x) { if (x.code !== 'conflict') throw x; continue; }   // 読んだあとに行が変わった：読み直して比べ直す
+      return { same: false, entry: piiProject(next, sc.lv) || {}, level: sc.lv, by: a.role };
+    }
+    throw err('conflict', 409);
+  }
+  // カードの下 4 桁の照合：レシート管理を使える人（CEO・GM・経理・事務Crew・AM・G3 以上）。在籍の G2 以上の人（アプリの empsByCardLast4 と同じ）の ID と名前だけ。
+  // 全部の 4 桁を当てて調べられないように、10 分で 200 件まで（関数の 1 つの実行環境の中で数える）
+  const cardHits = new Map();
+  async function cardMatch(a, b) {
+    if (!(['ceo', 'gm', 'office', 'office_crew', 'am'].includes(a.role) || (a.role === 'staff' && a.grade >= 3))) throw err('forbidden', 403);
+    const list = Array.isArray(b.last4s) ? b.last4s : [b.last4];
+    if (!list.length || list.length > 20 || list.some(x => typeof x !== 'string' || !/^\d{4}$/.test(x))) throw bad();
+    if (a.emp) {
+      const es = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=id,status,data');
+      const me = Array.isArray(es) ? es[0] || null : null;
+      if (!me || empOut(me)) throw err('forbidden', 403);
+    }
+    const hk = a.emp ? 'e:' + a.emp : 'r:' + a.role + ':' + a.via;
+    const t0 = now(), hits = (cardHits.get(hk) || []).filter(x => t0 - x < 600000);
+    if (hits.length + list.length > 200) throw err('locked', 429);
+    for (let i = 0; i < list.length; i++) hits.push(t0);
+    cardHits.set(hk, hits);
+    if (cardHits.size > 500) for (const [k, v] of cardHits) if (!v.some(x => t0 - x < 600000)) cardHits.delete(k);
+    const { map, emps } = await piiLoad();
+    const out = {};
+    for (const l4 of list) out[l4] = [];
+    for (const e of emps) {
+      const d = obj(e.data) || {}, id = String(e.id);
+      const st = String(d.status != null ? d.status : (e.status || ''));
+      if (st && st !== '在籍') continue;
+      const g = Number(String(appGrade(String(d.title || e.title || ''), String(d.role || e.role || ''))).replace('G', '')) || 0;
+      if (g < 2) continue;
+      const cards = String(piiOf(map, id, e).cardLast4 || '').split(',').map(x => x.trim());
+      for (const l4 of Object.keys(out)) if (cards.includes(l4)) out[l4].push({ id, name: String(d.name || e.name || '').slice(0, 120) });
+    }
+    return { matches: out };
+  }
+  // 店ごとの保険料の合計（月額）：アプリの storeInsuranceMonthly と同じ（配属の店・退職でない人）。だれにでも（ログイン不要）
+  async function insTotals() {
+    const { map, emps } = await piiLoad();
+    const totals = {};
+    for (const e of emps) {
+      const d = obj(e.data) || {}, id = String(e.id);
+      const st = String(d.store != null ? d.store : (e.store || ''));
+      const status = String(d.status != null ? d.status : (e.status || ''));
+      if (!st || status === '退職') continue;
+      const f = piiOf(map, id, e);
+      const amt = f.insuranceAmt != null ? (Number(f.insuranceAmt) || 0) : 0;
+      if (!amt) continue;
+      totals[st] = (totals[st] || 0) + amt;
+    }
+    return { totals };
+  }
+
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch };
+  const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -1114,12 +1321,17 @@ export function createHandler(deps) {
     // swfn:1＝決めた人だけが書ける設定（v1141）も扱う関数。アプリは swfn の無い答えを前の版とみなし、その設定を今までどおり REST で書く
     // hrfn:1＝採用（応募者・不採用ログ）とお悩み相談室（v1142）も扱う関数。アプリは hrfn の無い答えを前の版とみなし、今までどおり REST で
     // sw2:1＝v1143 の設定（GM・CEO だけが変える賞与・Career Score の設定）も扱う。アプリは sw2 の無い答えを前の版とみなし、その設定を今までどおり REST で書く
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // piifn:1＝従業員の個人の欄（v1144）も扱う。アプリは piifn の無い答えを前の版とみなし、その欄を今までどおり従業員の表に書く
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
     try { const t = await req.text(); if (t.length > 8000000) return json({ error: 'too_large' }, 413); body = JSON.parse(t || '{}'); } catch { return json({ error: 'bad_json' }, 400); }
     if (!obj(body)) return json({ error: 'bad_json' }, 400);
+    // v1144：店ごとの保険料の合計は、ログインを確かめずに返す（店舗の PIN のタブレットでも人件費が今と同じに。人ごとの額は返さない）
+    if (body.action === 'ins_totals') {
+      try { return json(await insTotals()); } catch (e) { console.error('secure-state', 'ins_totals', safeErr(e)); return json({ error: 'error' }, 500); }
+    }
     const fn = Object.prototype.hasOwnProperty.call(ACTIONS, body.action) ? ACTIONS[body.action] : null;
     if (!fn) return json({ error: 'unknown_action' }, 400);
     try {

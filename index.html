@@ -7085,6 +7085,8 @@ var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.
   });
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
   if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
+  /* v1144：生年月日・カード・保険は関数（secure-state）から読んだ分を重ねる（関数が v1144 で、今のログインで読めたとき） */
+  if (typeof piiOverlay==='function') piiOverlay(emps);
   return emps;
 }).apply(this,arguments);var originalStoreGet=_lsStoreGet;return (function(_lsStoreGet){return (function getEmployees() {
   /* v1085: 読んだときの表（文字のまま）を覚えておく。保存のとき、この画面が変えた欄だけを、いまの表に重ねる（_empOnLocalSave） */
@@ -7097,6 +7099,8 @@ var answer=typeof window.FUNERGY_WEB_OFFICE_EMPLOYEE_SOURCE==='function'?window.
   });
   /* セキュリティ#2: 給与・メール・電話は emp-private(サーバー)から取得した分のみ上書き（権限者のみ） */
   if (window._empPrivate) { emps.forEach(function(e){ var pr=window._empPrivate[e.id]; if(pr){ e.wage=pr.wage; e.email=pr.email; e.phone=pr.phone; if(pr.monthlySalary!==undefined && pr.monthlySalary!==null) e.monthlySalary=pr.monthlySalary; } }); }
+  /* v1144：生年月日・カード・保険は関数（secure-state）から読んだ分を重ねる（関数が v1144 で、今のログインで読めたとき） */
+  if (typeof piiOverlay==='function') piiOverlay(emps);
   return emps;
 }).call(this);}).call(this,function(key){return key==='m_employees'?answer:originalStoreGet(key);});
 }
@@ -11671,8 +11675,10 @@ function _empOnLocalSave(val){
     if(!v || v.id==null || v.id==='') return;
     var id=String(v.id), b=bBy[id], set={}, n=0, isNew=!b;
     var keys={}; Object.keys(v).forEach(function(k){ keys[k]=1; }); if(b) Object.keys(b).forEach(function(k){ keys[k]=1; });
+    var _piiSkip=(typeof piiFnSeen==='function' && piiFnSeen());   /* v1144：個人の欄は関数で送る（従業員の表・端末の写しに書かない） */
     Object.keys(keys).forEach(function(k){
       if(k==='__src') return;
+      if(_piiSkip && PII_SKIP.indexOf(k)>=0) return;
       var nv=v[k], ov=b ? b[k] : undefined;
       if(k==='coef' && ov===undefined && nv===1) return;            /* getEmployees が足した初期値 */
       if(_empJ(nv)===_empJ(ov)) return;
@@ -12703,6 +12709,220 @@ function hrOnLogout(){
   try{ localStorage.removeItem(HR_UNSENT_KEY); }catch(e){}   /* 控えも（共有の端末で次の人に残さない・独立レビュー P3） */
 }
 function hrIdOk(id){ return typeof id==='string' && /^[A-Za-z0-9_-]{1,64}$/.test(id); }
+/* ============================================================
+   v1144（段階 2b の 6 つ目）：従業員の表の個人の欄（生年月日・会社カードの下 4 桁・医療／歯科保険の加入・会社負担の保険料）
+   docs/SECURE_PII_V1144_JA.md。従業員の表（公開の鍵で読める）から外し、関数 secure-state（app_state の emp_pii）で読み書きする。
+   ・関数が v1144（答えに piifn:1）なら：読むのは pii_get（見られる範囲の分だけ・メモリだけに持つ・端末に残さない）。
+     直すのは pii_op（1 人ずつ・変えた欄だけ・開いたときの値と比べる）。従業員の表にこの 5 つを書かない（_empOnLocalSave）。
+   ・関数が前の版なら：今までどおり（従業員の表に書く・従業員の表の値を読む）。
+   ・見られる人（Moto さん 11/09：今の従業員マスターと同じ）：CEO・GM＝全員の 5 つ／経理・Head Chef＝全員の 4 つ（保険料を除く）／
+     AM＝担当の店と本部の人の 4 つ／事務Crew＝生年月日があるかだけ（エラーセンター）。範囲はサーバーが決める。
+   ・保険料の店ごとの合計（人件費）は ins_totals（ログイン不要・店舗のタブレットも。人ごとの額は返さない）。
+   ・カードの下 4 桁の照合は card_match（自分の PIN・メールのログインの人）。店舗の PIN のタブレットでは社員を手で選ぶ。
+   ============================================================ */
+var PII_FIELDS = ['dob','cardLast4','insurance','dental','insuranceAmt'];
+var PII_SKIP = PII_FIELDS.concat(['_dobSet']);   /* 関数が v1144 のとき、従業員の表（端末の写しも）に書かない欄 */
+var PII_FN_KEY = '_ss_pii_fn';                    /* この端末が v1144 の関数の答えを見た（端末だけ・_ で始まるので同期しない） */
+var PII_ROLES = ['ceo','gm','office','office_crew','am','chef'];
+var _pii = { tid:'', lv:'', map:null, at:0, p:null };   /* メモリだけ（ログアウトで消す） */
+var _piiCard = {};                                      /* 下 4 桁 → { tid, t, list:[{id,name}] }（メモリだけ） */
+var _piiEnsureAt = 0;
+function piiFnSeen(){ try{ return localStorage.getItem(PII_FN_KEY)==='1'; }catch(e){ return false; } }
+function piiFnMark(on){ try{ if(on) localStorage.setItem(PII_FN_KEY, '1'); else localStorage.removeItem(PII_FN_KEY); }catch(e){} }
+function piiTid(tk){ tk=tk||ssToken(); return tk.g+'|'+tk.u+'|'+tk.st+'|'+tk.id; }
+function piiWants(){ try{ return PII_ROLES.indexOf(curRole)>=0 && !curStoreLogin; }catch(e){ return false; } }
+function piiReady(){ return !!(_pii.map && _pii.tid===piiTid()); }
+function piiLevel(){ return piiReady() ? _pii.lv : ''; }
+/* 比べる形（空・無い・false をそろえる。関数の piiCmp と同じ） */
+function piiCmp(k, v){
+  if(k==='insurance' || k==='dental') return v===true || v==='true';
+  if(k==='insuranceAmt'){ if(v===null || v===undefined || v==='') return null; var n=Number(v); return isFinite(n) ? n : null; }
+  return v==null ? '' : String(v).trim();
+}
+/* 送る形（おかしな値は undefined。関数の piiValid と同じ決まり） */
+function piiSendVal(k, v){
+  if(k==='dob'){
+    if(v==null || v==='') return '';
+    if(typeof v!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+    var y=+v.slice(0,4), m=+v.slice(5,7), d=+v.slice(8,10), dt=new Date(Date.UTC(y, m-1, d));
+    if(y<1900 || y>2100 || dt.getUTCFullYear()!==y || dt.getUTCMonth()!==m-1 || dt.getUTCDate()!==d) return undefined;
+    return v;
+  }
+  if(k==='cardLast4'){ if(v==null || v==='') return ''; return (typeof v==='string' && /^\d{4}(,\d{4}){0,9}$/.test(v)) ? v : undefined; }
+  if(k==='insurance' || k==='dental') return v===true;
+  if(k==='insuranceAmt'){ if(v===null || v===undefined || v==='') return null; return (typeof v==='number' && isFinite(v) && v>=0 && v<=100000) ? v : undefined; }
+  return undefined;
+}
+function piiPick(e){ var o={}; PII_FIELDS.forEach(function(k){ o[k]=(e && e[k]!==undefined) ? e[k] : null; }); return o; }
+/* 変えた欄だけ（base＝開いたときの値・d＝画面の値。d に無い欄（保険料は GM・CEO の画面だけ）は比べない）。返す：{set, base}／null／{bad:欄} */
+function piiChanges(b, d){
+  var set={}, base={}, n=0, badK='';
+  b=b||{};
+  PII_FIELDS.forEach(function(k){
+    if(badK || !Object.prototype.hasOwnProperty.call(d||{}, k)) return;
+    if(JSON.stringify(piiCmp(k, d[k]))===JSON.stringify(piiCmp(k, b[k]))) return;
+    var v=piiSendVal(k, d[k]); if(v===undefined){ badK=k; return; }
+    set[k]=v; base[k]=(b[k]===undefined) ? null : b[k]; n++;
+  });
+  if(badK) return { bad:badK };
+  return n ? { set:set, base:base } : null;
+}
+/* 読む（今のログインで）。返す：'ok'／'rest'（関数が前の版・無い）／'stale'／'fail'／'none'（この人は読まない） */
+async function piiLoad(force){
+  if(!piiWants()) return 'none';
+  var tk=ssToken(), tid=piiTid(tk);
+  if(!force && _pii.map && _pii.tid===tid && Date.now()-_pii.at<60000) return 'ok';
+  if(_pii.p && _pii.p.tid===tid) return _pii.p.p;
+  var p=(async function(){
+    var r=await ssCall({ action:'pii_get', ms:30000 });
+    if(ssStale(tk)) return 'stale';
+    if(r.legacy || r.none) return 'rest';
+    if(!r.ok) return 'fail';
+    var d=r.j && r.j.data;
+    if(!d || typeof d!=='object' || Array.isArray(d)) return 'fail';
+    _pii={ tid:tid, lv:String(r.j.level||''), map:d, at:Date.now(), p:_pii.p };
+    return 'ok';
+  })();
+  _pii.p={ tid:tid, p:p };
+  try{ return await p; } finally { if(_pii.p && _pii.p.p===p) _pii.p=null; }
+}
+/* getEmployees が呼ぶ：関数から読んだ欄を重ねる（今のログインで読めたときだけ） */
+function piiOverlay(emps){
+  try{
+    if(!Array.isArray(emps) || !piiFnSeen() || !piiReady()) return;
+    var m=_pii.map;
+    emps.forEach(function(e){ if(!e || e.id==null) return; var x=m[String(e.id)]; if(!x || typeof x!=='object') return; Object.keys(x).forEach(function(k){ if(PII_SKIP.indexOf(k)>=0) e[k]=x[k]; }); });
+  }catch(err){}
+}
+/* 直せた答えを、読んだ写しに重ねる */
+function piiPut(id, entry, lv){
+  if(!piiReady() || !entry || typeof entry!=='object') return;
+  var cur=_pii.map[String(id)]||{}, nx={};
+  Object.keys(cur).forEach(function(k){ nx[k]=cur[k]; });
+  Object.keys(entry).forEach(function(k){ if(PII_SKIP.indexOf(k)>=0) nx[k]=entry[k]; });
+  _pii.map[String(id)]=nx;
+}
+/* 画面を描くときに呼ぶ：読めていなければ読み、読めたらその画面を描き直す */
+function piiEnsure(page){
+  if(!piiFnSeen() || !piiWants() || piiReady()) return;
+  if(Date.now()-_piiEnsureAt<5000) return;
+  _piiEnsureAt=Date.now();
+  piiLoad().then(function(r){ if(r==='ok'){ try{ if(typeof curPage!=='undefined' && curPage===page && typeof renderPage==='function') renderPage(page); }catch(e){} } }, function(){});
+}
+/* エラーセンターの「生年月日 未登録」を確かめてよいか（関数が v1144 なら、読めて、生年月日が見える・あるか分かる人だけ） */
+function piiDobKnown(){
+  if(!piiFnSeen()) return true;
+  if(!piiReady()){ try{ if(piiWants()) piiLoad(); }catch(e){} return false; }
+  return ['full','hr','flag'].indexOf(_pii.lv)>=0;
+}
+/* 従業員の編集の画面：個人の欄を直せるか。返す：{ note（出す文の HTML）, lock（4 つを止める）, lockAmt（保険料を止める） } */
+function piiFormState(empId){
+  var T=(typeof t==='function') ? t : function(a){ return a; };
+  if(!piiFnSeen()) return { note:'', lock:false, lockAmt:false };
+  if(!piiReady()){
+    var id=empId||'';
+    piiLoad().then(function(r){ if(r==='ok') piiFormFill(id); }, function(){});
+    return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-loader-2"></i> '+T('生年月日・カード・保険はサーバーから読み込んでいます（読めるまで直せません）','Loading birthday / card / insurance from the server (you can edit them once loaded)')+'</div>', lock:true, lockAmt:true };
+  }
+  var lv=_pii.lv;
+  if(lv!=='full' && lv!=='hr') return { note:'<div id="e-pii-note" style="font-size:11px;color:var(--muted);margin:2px 0 8px"><i class="ti ti-lock"></i> '+T('このアカウントでは生年月日・カード・保険を見る・直すことはできません','This account cannot see or edit birthday / card / insurance')+'</div>', lock:true, lockAmt:true };
+  return { note:'', lock:false, lockAmt:lv!=='full' };
+}
+/* 読み込めたら、開いている編集の画面の欄を埋めて直せるように（その人の画面が開いたままのときだけ） */
+function piiFormFill(id){
+  try{
+    var F=window._empForm; if(!F || F.id!==id || !document.getElementById('e-dob')) return;
+    var st=piiFormState(id), e=id ? (getEmployees().find(function(x){ return x && x.id===id; })||{}) : {};
+    var set=function(elId, v, ch){ var el=document.getElementById(elId); if(!el) return; if(ch) el.checked=!!v; else el.value=(v==null ? '' : String(v)); el.disabled=st.lock; };
+    if(id){ set('e-dob', e.dob, false); set('e-cardlast4', e.cardLast4, false); set('e-insurance', e.insurance, true); set('e-dental', e.dental, true); }
+    else ['e-dob','e-cardlast4','e-insurance','e-dental'].forEach(function(x){ var el=document.getElementById(x); if(el) el.disabled=st.lock; });
+    var am=document.getElementById('e-insurance-amt'); if(am){ if(id) am.value=(e.insuranceAmt!=null ? e.insuranceAmt : ''); am.disabled=st.lockAmt; }
+    var nt=document.getElementById('e-pii-note'); if(nt){ if(st.note){ var tmp=document.createElement('div'); tmp.innerHTML=st.note; nt.innerHTML=tmp.firstChild ? tmp.firstChild.innerHTML : ''; } else nt.remove(); }
+    F.pii=st.lock ? null : (id ? piiPick(e) : {});
+  }catch(err){}
+}
+/* 1 人の個人の欄を送る（保存の画面のあと）。返す：true／'failed'／'conflict'（右上の「保存」に出す） */
+function piiSave(id, set, base, isNew){
+  var tk=ssToken(), T=(typeof t==='function') ? t : function(a){ return a; };
+  var p=(async function(){
+    if(isNew){ try{ if(typeof empPushDirty==='function') await empPushDirty(); }catch(e){} }   /* 新しい人：社員の行がサーバーに届いてから（範囲はサーバーが社員の表で確かめる） */
+    if(ssStale(tk)) return 'failed';
+    var r=await ssCall({ action:'pii_op', id:String(id), set:set, base:base, ms:30000 });
+    if(ssStale(tk)) return 'failed';
+    if(r.ok){
+      piiPut(id, r.j.entry, r.j.level);
+      if(Object.prototype.hasOwnProperty.call(set, 'insuranceAmt')) { try{ insTotalsRefresh(true); }catch(e){} }
+      return true;
+    }
+    if(r.status===409){
+      try{ showToast(T('生年月日・カード・保険は、ほかの端末で同じ欄が先に変わっていました（保存していません）。開き直して確かめてから、もう一度直してください','Birthday / card / insurance had already been changed on another device (not saved). Reopen, check and edit again.'),'warning'); }catch(e){}
+      try{ piiLoad(true); }catch(e){}
+      return 'conflict';
+    }
+    var why=r.status===403 ? T('このアカウントでは直せません','This account cannot edit them') : r.status===404 ? T('社員の行がまだサーバーに届いていません','The staff record has not reached the server yet') : (r.net ? T('通信できませんでした','Could not connect') : T('サーバーのエラー','Server error'));
+    try{ showToast(T('生年月日・カード・保険を保存できませんでした（','Could not save birthday / card / insurance (')+why+T('）。右上の「保存」からもう一度送れます',') — you can send again from "Save" at the top right'),'danger'); }catch(e){}
+    return 'failed';
+  })();
+  try{ if(window.FUNERGY_UX && FUNERGY_UX._track) FUNERGY_UX._track('emp_pii_'+id, p, { direct:true, label:T('生年月日・保険・カード','Birthday, insurance, card'), retry:function(){ return piiSave(id, set, base, false); } }); }catch(e){}
+  return p;
+}
+/* ---- カードの下 4 桁の照合（関数が v1144 のとき。サーバーが在籍の G2 以上の人から探す） */
+function piiCardCached(l4){ var c=_piiCard[l4]; return (c && c.tid===piiTid() && Date.now()-c.t<1800000) ? c.list : null; }
+async function piiCardFetch(list){
+  var need=(list||[]).map(function(x){ return String(x||''); }).filter(function(l4, i, a){ return /^\d{4}$/.test(l4) && a.indexOf(l4)===i && !piiCardCached(l4); });
+  if(!need.length) return 'ok';
+  var tk=ssToken();
+  var r=await ssCall({ action:'card_match', last4s:need.slice(0,20), ms:20000 });
+  if(ssStale(tk)) return 'stale';
+  if(r.legacy) return 'rest';
+  if(r.none || r.status===401 || r.status===403) return 'none';
+  if(!r.ok) return 'fail';
+  var m=(r.j && r.j.matches) || {};
+  need.slice(0,20).forEach(function(l4){
+    var a=Array.isArray(m[l4]) ? m[l4] : [];
+    _piiCard[l4]={ tid:piiTid(tk), t:Date.now(), list:a.filter(function(x){ return x && typeof x.id==='string'; }).map(function(x){ return { id:x.id, name:String(x.name||'') }; }) };
+  });
+  return 'ok';
+}
+/* ---- 保険料の店ごとの合計（人件費）。だれでも（ログイン不要）。端末に合計だけ置く（人ごとの額は置かない） */
+var INS_TOT_KEY = '_ins_totals_v1';
+var _insTot = null, _insTotP = null, _insTotTry = 0;
+function insTotalsGet(){
+  if(_insTot) return _insTot;
+  try{ var o=JSON.parse(localStorage.getItem(INS_TOT_KEY)||'null'); if(o && o.totals && typeof o.totals==='object' && !Array.isArray(o.totals)) _insTot=o; }catch(e){}
+  return _insTot;
+}
+async function insTotalsRefresh(force){
+  if(_insTotP) return _insTotP;
+  if(!force && _insTot && Date.now()-_insTot.at<600000) return 'ok';
+  if(!force && Date.now()-_insTotTry<60000) return 'skip';
+  _insTotTry=Date.now();
+  _insTotP=(async function(){
+    var ctl=null, tm=null;
+    try{
+      try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 20000); }catch(e){ ctl=null; }
+      var r=await fetch(SUPABASE_URL+SS_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' },
+        body:JSON.stringify({ action:'ins_totals' }), signal:ctl ? ctl.signal : undefined });
+      var j=null; try{ j=await r.json(); }catch(e){ j=null; }
+      if(!(j && j.fn===1)) return 'fail';
+      if(j.piifn!==1){ piiFnMark(false); return 'old'; }   /* 前の版の関数：今までどおり（従業員の表の値で数える） */
+      piiFnMark(true);
+      if(!r.ok || !j.totals || typeof j.totals!=='object' || Array.isArray(j.totals)) return 'fail';
+      _insTot={ at:Date.now(), totals:j.totals };
+      try{ localStorage.setItem(INS_TOT_KEY, JSON.stringify(_insTot)); }catch(e){}
+      return 'ok';
+    }catch(e){ return 'fail'; }
+    finally { if(tm) clearTimeout(tm); }
+  })();
+  try{ return await _insTotP; } finally { _insTotP=null; }
+}
+/* ログインのあと（待たない） */
+function piiAfterLogin(){
+  try{ insTotalsRefresh(true); }catch(e){}
+  try{ if(piiWants()) piiLoad(true); }catch(e){}
+}
+function piiOnLogout(){ _pii={ tid:'', lv:'', map:null, at:0, p:null }; _piiCard={}; _piiEnsureAt=0; }
+
 /* v1141（Codex #135 の P2）：この 2 つの設定をどの道で書いたかを「設定 › 診断と記録」に残す（手順.md の B-5 の確かめ）。
    fn＝関数 secure-state（v1141）が決めた人として書いた／same＝関数は書かなかった（このログインの役割では変えられない。クラウドと同じ値だったので止めなかった）／
    rest＝公開の鍵（REST）で書いた（関数が前の版・ログインの印が無い）。「保存済み」だけでは道が分からないため */
@@ -12814,6 +13034,7 @@ function ssOnLogout(){
   try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
   try{ if(typeof csOnLogout==='function') csOnLogout(); }catch(e){}   /* v1140：Career Score も */
   try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
+  try{ if(typeof piiOnLogout==='function') piiOnLogout(); }catch(e){}   /* v1144：従業員の個人の欄も */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -12859,6 +13080,9 @@ async function ssCall(payload, retried){
   /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
   if(j.hrfn===1) _ss.hrOld=null;
   else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
+  /* v1144：従業員の個人の欄を扱う関数か（piifn:1）。前の版の関数なら、その欄は今までどおり従業員の表に書く・読む */
+  if(j.piifn===1) piiFnMark(true);
+  else { piiFnMark(false); if(typeof payload.action==='string' && (payload.action.indexOf('pii_')===0 || payload.action==='card_match')) return { legacy:true }; }
   if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
   return { ok:true, j:j };
 }
@@ -18419,6 +18643,7 @@ async function enterAppWithSync(){
   } catch(e){}
   try { if (window._uxMastersP) uxLoginOpsStart(window._uxMastersP); } catch(e){}   /* v1127 */
   try { await fetchEmpPrivate(); } catch(e){}
+  try { if (typeof piiAfterLogin === 'function') piiAfterLogin(); } catch(e){}   /* v1144：個人の欄と保険料の合計（待たない） */
   hideSyncSplash();
   try { var _fm = document.getElementById('login-forced-msg'); if (_fm) _fm.style.display = 'none'; } catch(e){}
   var lsEl=document.getElementById('login-screen'); if(lsEl) lsEl.style.display='none';
@@ -23186,6 +23411,12 @@ function daysInMonthOf(ym){
 }
 /* その店舗に在籍し保険加入(金額>0)している人の月額保険料 合計 */
 function storeInsuranceMonthly(storeId){
+  /* v1144：関数が v1144 なら、店ごとの合計はサーバーの値（人ごとの額は従業員の表に無い。店舗のタブレットも同じ合計）。読めていなければ今までどおり */
+  if (typeof piiFnSeen==='function' && piiFnSeen()) {
+    var T = insTotalsGet();
+    try { if (!T || Date.now()-T.at>600000) insTotalsRefresh(false); } catch(e){}
+    if (T) return Number(T.totals[storeId])||0;
+  }
   var sum = 0;
   getEmployees().forEach(function(e){
     if (!e || e.store!==storeId) return;
@@ -43183,7 +43414,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1143';
+const APP_VERSION = '1144';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -57124,6 +57355,7 @@ function renderInactiveCard(){
 
 function renderStaffMaster() {
   try { if (canAccessStaffMaster()) setTimeout(function(){ try{ empRosterRefresh(true); }catch(e){} }, 0); } catch(e){}   /* v1085: 開いたら名簿だけ取り直す（60 秒に 1 回まで） */
+  try { if (canAccessStaffMaster() && typeof piiEnsure==='function') piiEnsure('staff_master'); } catch(e){}   /* v1144：生年月日・保険を関数から読む（読めたら描き直す） */
   if (!canAccessStaffMaster()) {
     return `<div class="section-header"><div class="section-title">従業員マスター</div></div>
       <div class="card" style="text-align:center;padding:32px">
@@ -57331,6 +57563,11 @@ function saveTitleWageTable() {
 function empsByCardLast4(last4){
   last4 = String(last4||'').replace(/[^0-9]/g,'');
   if(last4.length!==4) return [];
+  /* v1144：関数が v1144 なら、サーバーで照らした結果（piiCardFetch で取ったもの）。まだ無ければ端末の値で（読めた人の分だけ） */
+  if(typeof piiFnSeen==='function' && piiFnSeen()){
+    var _pc=piiCardCached(last4);
+    if(_pc){ var _all=getEmployees(); return _pc.map(function(x){ return _all.find(function(e){ return e && String(e.id)===x.id; }) || { id:x.id, name:x.name }; }); }
+  }
   return getEmployees().filter(function(e){
     if(e.status && e.status!=='在籍') return false;
     var g = (typeof gradeNum==='function' && typeof empGrade==='function') ? gradeNum(empGrade(e)) : 0;
@@ -57344,6 +57581,10 @@ function openEmpModal(empId) {
   window._empForm = { id: empId || '', list: emps };   /* v1085: 保存のとき、この画面に出した内容と比べて、変えた欄だけを書く */
   var e = empId ? emps.find(x=>x.id===empId) : {id:'', name:'', empCode:'', role:'crew', store:STORES[0].id, support:[], emp:'パート', step:0, hireDate:'', resignDate:'', status:'在籍', perms:'crew', email:'', phone:'', insurance:false, dental:false};
   var isNew = !empId;
+  /* v1144：生年月日・カード・保険（関数が v1144 なら、サーバーから読めて、直せる人だけ直せる。読めるまで止める） */
+  var _piiSt = (typeof piiFormState==='function') ? piiFormState(empId||'') : { note:'', lock:false, lockAmt:false };
+  window._empForm.pii = (typeof piiFnSeen==='function' && piiFnSeen()) ? (_piiSt.lock ? null : (isNew ? {} : piiPick(e))) : undefined;
+  var _piiD = _piiSt.lock ? ' disabled' : '', _piiDA = _piiSt.lockAmt ? ' disabled' : '';
   /* v1111：Toast での名前（別名）。開いたときの写しと、この画面での変更 */
   try { var _al0 = empToastAliases(e); window._empForm.aliases = JSON.parse(JSON.stringify(_al0)); window._empForm.aliasOrig = JSON.parse(JSON.stringify(_al0)); window._empForm.aliasEdit = !isNew && empAliasCanEdit(e); } catch(err) { window._empForm.aliases = []; window._empForm.aliasOrig = []; window._empForm.aliasEdit = false; }
   var storeOpts = [{id:'ALL',name:'全店'},{id:'OFFICE',name:'Office'},...STORES];
@@ -57394,8 +57635,9 @@ function openEmpModal(empId) {
       <div class="form-group"><label class="form-label">Email</label><input class="form-input" id="e-email" value="${e.email||''}" placeholder="name@example.com"></div>
       <div class="form-group"><label class="form-label">電話番号</label><input class="form-input" id="e-phone" value="${e.phone||''}" placeholder="808-xxx-xxxx"></div>
     </div>
+    ${_piiSt.note||''}
     <div class="form-group"><label class="form-label">会社カード下4桁 <span class="tag" style="font-size:9px;background:var(--surface2);color:var(--muted)">G3以上・レシート自動照合用</span></label>
-      <input class="form-input" id="e-cardlast4" value="${(e.cardLast4||'')}" placeholder="例: 1234（複数ある場合はカンマ区切り 1234,5678）" inputmode="numeric">
+      <input class="form-input" id="e-cardlast4"${_piiD} value="${escapeHtml(String(e.cardLast4||''))}" placeholder="例: 1234（複数ある場合はカンマ区切り 1234,5678）" inputmode="numeric">
       <div style="font-size:11px;color:var(--muted);margin-top:4px">レシートOCRが読み取った下4桁と照合し、社員を自動特定します。下4桁のみ保存（フルカード番号は保存しません）。</div>
     </div>
     <div class="form-row">
@@ -57407,7 +57649,7 @@ function openEmpModal(empId) {
       </div>
     </div>
     <div class="form-row">
-      <div class="form-group"><label class="form-label">生年月日${e.dob?` <span class="tag tag-gray" style="font-size:9px">${empAge(e.dob)}歳</span>`:''}</label><input class="form-input" id="e-dob" type="date" value="${e.dob||''}"></div>
+      <div class="form-group"><label class="form-label">生年月日${e.dob?` <span class="tag tag-gray" style="font-size:9px">${empAge(e.dob)}歳</span>`:''}</label><input class="form-input" id="e-dob" type="date"${_piiD} value="${escapeHtml(String(e.dob||''))}"></div>
       <div class="form-group"><label class="form-label">入社日</label><input class="form-input" id="e-hire" type="date" value="${e.hireDate||''}"></div>
     </div>
     <div class="form-row">
@@ -57431,12 +57673,12 @@ function openEmpModal(empId) {
     </div>
     <div class="form-group"><label class="form-label">保険</label>
       <div style="display:flex;gap:12px">
-        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-insurance"${e.insurance?' checked':''}> 医療保険あり</label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-dental"${e.dental?' checked':''}> 歯科保険あり</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-insurance"${_piiD}${e.insurance?' checked':''}> 医療保険あり</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" id="e-dental"${_piiD}${e.dental?' checked':''}> 歯科保険あり</label>
       </div>
       ${canEditWages()?`<div class="form-group" style="margin:8px 0 0">
         <label class="form-label" style="font-size:12px">会社負担 保険料（月額 $）</label>
-        <input class="form-input" id="e-insurance-amt" type="number" inputmode="decimal" step="10" value="${e.insuranceAmt!=null?e.insuranceAmt:''}" placeholder="例: 450（未加入は空欄）">
+        <input class="form-input" id="e-insurance-amt" type="number" inputmode="decimal" step="10"${_piiDA} value="${e.insuranceAmt!=null?escapeHtml(String(e.insuranceAmt)):''}" placeholder="例: 450（未加入は空欄）">
         <div style="font-size:11px;color:var(--muted);margin-top:4px">この金額をその店舗の在籍者で合計し、月の日数で日割りしてLabor額に加算します（給与税17%は別途自動）。</div></div>`:''}
     </div>
     ${canViewWageOf(e)?(canEditWages()
@@ -57524,6 +57766,15 @@ function saveEmp(empId) {
   var _cgB = (typeof cgEmpBeforeSave==='function') ? cgEmpBeforeSave(empId, data) : {ok:true, career:data.career};
   if (!_cgB.ok) return;
   data.career = _cgB.career;
+  /* v1144：生年月日・カード・保険は、関数が v1144 なら関数で送る（変えた欄だけ・開いたときの値と比べる）。読めていない画面（欄を止めた）では送らない */
+  var _piiCh = null;
+  if (typeof piiFnSeen==='function' && piiFnSeen()) {
+    var _piiB = (window._empForm && window._empForm.id===(empId||'')) ? window._empForm.pii : null;
+    if (_piiB) {
+      _piiCh = piiChanges(_piiB, data);
+      if (_piiCh && _piiCh.bad) { alert(t('生年月日・カード・保険の入力の形が正しくありません（保存していません）','Birthday / card / insurance is not in a valid form (not saved)')); return; }
+    }
+  }
   if (typeof ghBeforeSaveEmp==='function' && ghBeforeSaveEmp(empId, data)) return;   /* v1043: グレードが変わるときは確定日を聞いてから保存する（UI案31-5b） */
   /* v1111：Toast での名前（別名）。この画面で足した・外した別名の欄だけを書く（別名ごとに別の欄なので、ほかの端末で足した別名は消えない）。
      外すときは消さずに off:true（ほかの端末が気づいて勤怠を取り直せるように） */
@@ -57562,6 +57813,7 @@ function saveEmp(empId) {
   }catch(err){ if(!_gtx) throw err; _gtx.err=err; }
   if(_gtx && !ghTxnEnd(_gtx)){ showToast(ghTxnFailMsg(_gtx, '役職とグレード履歴'),'danger'); return; }   /* 編集の画面は開いたまま */
   try{ var _se = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_se) saveEmpPrivate(_se.id, _se.wage, _se.email, _se.phone, _se.monthlySalary); }catch(e){}
+  try{ var _seP = empId ? emps.find(function(x){return x.id===empId;}) : emps[emps.length-1]; if(_piiCh && _seP) piiSave(_seP.id, _piiCh.set, _piiCh.base, !empId); }catch(e){}   /* v1144 */
   // シフト条件を保存（配属店舗がある場合）。最大時間のみ更新、曜日×区分の詳細はシフト画面で。
   var store = data.store;
   if (store && store!=='ALL' && typeof setWorkCondition==='function') {
@@ -60020,6 +60272,7 @@ function migrateEcResetPreJuly(){
 /* — 従業員マスター系（1ループで複数検知） — */
 function ecDetEmpMaster(){
   var issues=[]; var emps=(typeof getEmployees==='function')?getEmployees():[];
+  var _ecDobOk=(typeof piiDobKnown!=='function') || piiDobKnown();   /* v1144：生年月日が関数から読めていないときは「未登録」と言わない */
   var byName={}, byEmail={};
   emps.forEach(function(e){
     var nm=e.name||e.id, fix={label:'編集',action:"openEmpModal('"+e.id+"')"};
@@ -60034,7 +60287,7 @@ function ecDetEmpMaster(){
     if(_ecEmpAlive(e) && (!e.store||e.store==='ALL') && e.role!=='office'&&e.role!=='ceo'&&e.role!=='gm'&&e.role!=='office_crew') add('store','mid',nm+'：配属店舗が未設定','在籍中ですが配属店舗が未設定です（打刻・集計・チップに影響）。','');
     // 連絡先・DOB
     if(_ecEmpAlive(e) && !(e.email&&e.email.trim())) add('email','low',nm+'：Email未登録','通知・招待が届きません。','');
-    if(_ecEmpAlive(e) && !(e.dob&&String(e.dob).trim())) add('dob','low',nm+'：生年月日 未登録','生年月日が未登録です。','');
+    if(_ecEmpAlive(e) && _ecDobOk && !(e.dob&&String(e.dob).trim()) && !e._dobSet) add('dob','low',nm+'：生年月日 未登録','生年月日が未登録です。','');   /* v1144：関数から読めた人だけ確かめる（事務Crew は「あるか」だけ） */
     // 給与係数の不整合（チップ対象外なのにチップ係数）
     if(typeof isTipExcludedTitle==='function' && isTipExcludedTitle(e.title) && e.coef && e.coef>1) add('coef','low',nm+'：チップ係数の不整合','チップ対象外の役職（'+e.title+'）ですが、チップ係数が'+e.coef+'に設定されています。',e.title+'|'+e.coef);
     // 重複収集
@@ -88558,6 +88811,8 @@ async function _bulkProcess(it){
     }
     var r=await _bulkOcr(it.blob);
     if(_bulk.items.indexOf(it)<0) return;   /* 読んでいる間に外された */
+    /* v1144：カードの下 4 桁はサーバーで照らす（判定の前に取っておく。照らせないログインでは端末の値） */
+    if(r && r.ocr && r.ocr.card4 && typeof piiFnSeen==='function' && piiFnSeen()){ try{ await piiCardFetch([r.ocr.card4]); }catch(e){} }
     if(r.error){ it.status='error'; it.reason=r.error; it.ocr=null; }
     else if(r.bad){ it.status='bad'; it.reason=r.reason; it.ocr=null; }
     else { it.ocr=r.ocr; it.status='todo'; it.reason=''; _bulkEval(it, (ls('invoices',[])||[])); }   /* 判定してから端末に置く */
@@ -89782,13 +90037,21 @@ async function checkDeleteDo(id){
   try{ renderPage(curPage); }catch(e){}
 }
 /* 買い出し/カードレシート：下4桁→社員自動特定（在籍・G3以上） */
-function invMatchEmp(){
+function invMatchEmp(_after){
   var last4=(docVal('inv-card4')||'').replace(/[^0-9]/g,'');
   var box=document.getElementById('inv-card-match'); var sel=document.getElementById('inv-emp');
   if(last4.length!==4){ if(box) box.innerHTML='カード下4桁を入れると社員を自動特定します。'; return; }
+  /* v1144：関数が v1144 なら、サーバーで照らす（店舗の PIN のタブレットなど照らせないログインでは、社員を手で選ぶ） */
+  if(!_after && typeof piiFnSeen==='function' && piiFnSeen() && !piiCardCached(last4)){
+    if(box) box.innerHTML='<span style="color:var(--muted)"><i class="ti ti-loader-2"></i> 照合しています…</span>';
+    piiCardFetch([last4]).then(function(r){ if((docVal('inv-card4')||'').replace(/[^0-9]/g,'')!==last4) return; invMatchEmp(r||'fail'); }, function(){ invMatchEmp('fail'); });
+    return;
+  }
   var ms=empsByCardLast4(last4);
   if(ms.length===1){ if(sel) sel.value=ms[0].id; if(box) box.innerHTML='<span style="color:var(--green)"><i class="ti ti-check"></i> '+escapeHtml(ms[0].name)+' を自動特定</span>'; }
   else if(ms.length>1){ if(box) box.innerHTML='<span style="color:var(--yellow)">複数一致：'+ms.map(function(e){return escapeHtml(e.name);}).join(' / ')+' — 社員を選択してください</span>'; }
+  else if(_after==='none'){ if(box) box.innerHTML='<span style="color:var(--muted)">このログインではカードの下4桁から社員を選べません。社員を手動で選択してください。</span>'; }
+  else if(_after==='fail' || _after==='stale'){ if(box) box.innerHTML='<span style="color:var(--muted)">照合できませんでした（通信）。社員を手動で選択してください。</span>'; }
   else { if(box) box.innerHTML='<span style="color:var(--muted)">未登録の下4桁です。社員を手動選択（必要なら従業員マスターに登録）。</span>'; }
 }
 /* ===== 請求書画像：Supabase Storage（バケット invoices / 店舗名 × 年月） ===== */

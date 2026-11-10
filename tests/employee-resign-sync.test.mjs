@@ -966,3 +966,49 @@ test('v1085: the offboarding record moves forward only: 完了 is final except �
   const x = d.run("offboardById('x')");
   assert.ok(x._stAt && x._mut); assert.equal(x._stBy, 'Gus Sample');
 });
+
+// ---------------------------------------------------------------------------------------------------- v1144：従業員の個人の欄
+// 関数 secure-state が v1144（piifn:1 を見た端末）なら、生年月日・カード・保険は従業員の表（公開の鍵で読める）に書かず、関数へ（piiSave）。
+// 見た前（前の版の関数）なら今までどおり従業員の表へ。どちらでも、ほかの欄は今までどおり送る。
+function piiDevice(d, on) {
+  const x = extractor(NOW);
+  vm.runInContext([x.line('var PII_FIELDS = '), x.line('var PII_SKIP = '), x.line('var PII_FN_KEY = '),
+    x.fn('piiFnSeen'), x.fn('piiCmp'), x.fn('piiSendVal'), x.fn('piiPick'), x.fn('piiChanges'),
+    'var PIISAVES = []; function piiSave(id, set, base, isNew){ PIISAVES.push({ id:id, set:set, base:base, isNew:isNew }); return Promise.resolve(true); }'].join('\n'), d);
+  if (on) d.LSMAP.set('_ss_pii_fn', '1');
+  return d;
+}
+for (const on of [true, false]) {
+  test(`v1144: saving the edit form ${on ? 'with' : 'without'} the v1144 function — the birthday goes ${on ? 'to secure-state, not to the employee table' : 'to the employee table as before'}`, async () => {
+    const S = await server();
+    await S.pg.query(`update employees set data = data || '{"dob":"2000-01-01","cardLast4":"1111"}'::jsonb where id = 'e2'`);
+    const b = piiDevice(await pulled(S, NOW), on);
+    b.run(`window._empForm = { id:'e2', list:getEmployees(), pii:${on ? "piiPick(getEmployees().find(function(e){ return e.id==='e2'; }))" : 'undefined'} }`);
+    Object.assign(b.DOMV, { 'e-name': 'Bob Sample', 'e-code': '', 'e-role': 'crew', 'e-store': 'F01', 'e-emp': 'パート', 'e-step': '1', 'e-hire': '', 'e-resign': '', 'e-status': '在籍',
+      'e-email': '', 'e-phone': '', 'e-title': 'Crew Leader', 'e-wc-maxh': '40', 'e-insurance': '', 'e-dental': '', 'e-dob': '1999-09-09', 'e-cardlast4': '1111' });
+    b.run("saveEmp('e2')"); await S.settle();
+    const r = await S.emp('e2');
+    assert.equal(r.data.title, 'Crew Leader', 'the other fields are sent as before');
+    const saves = JSON.parse(JSON.stringify(vm.runInContext('PIISAVES', b)));
+    if (on) {
+      assert.equal(r.data.dob, '2000-01-01', 'the employee table keeps the old value (the SQL removes it later)');
+      assert.deepEqual(saves, [{ id: 'e2', set: { dob: '1999-09-09' }, base: { dob: '2000-01-01' }, isNew: false }], 'only the changed field, with the value the form opened with');
+      assert.ok(!b.list().some(e => e.dob === '1999-09-09'), 'not kept in the device copy of the table either');
+      assert.ok(!S.calls.some(c => /employees/.test(c) && /1999-09-09/.test(c)));
+    } else {
+      assert.equal(r.data.dob, '1999-09-09', 'before v1144: the employee table, as before');
+      assert.deepEqual(saves, []);
+    }
+  });
+}
+test('v1144: a form opened before the fields were read (inputs stopped) sends no personal field and does not clear them', async () => {
+  const S = await server();
+  await S.pg.query(`update employees set data = data || '{"dob":"2000-01-01"}'::jsonb where id = 'e2'`);
+  const b = piiDevice(await pulled(S, NOW), true);
+  b.run("window._empForm = { id:'e2', list:getEmployees(), pii:null }");
+  Object.assign(b.DOMV, { 'e-name': 'Bob Sample', 'e-code': '', 'e-role': 'crew', 'e-store': 'F01', 'e-emp': 'パート', 'e-step': '1', 'e-hire': '', 'e-resign': '', 'e-status': '在籍',
+    'e-email': '', 'e-phone': '', 'e-title': 'Crew', 'e-wc-maxh': '40', 'e-insurance': '', 'e-dental': '', 'e-dob': '', 'e-cardlast4': '' });
+  b.run("saveEmp('e2')"); await S.settle();
+  assert.deepEqual(JSON.parse(JSON.stringify(vm.runInContext('PIISAVES', b))), []);
+  assert.equal((await S.emp('e2')).data.dob, '2000-01-01');
+});
