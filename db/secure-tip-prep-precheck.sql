@@ -121,10 +121,11 @@ begin
          else 'info（OFF：確かめた G4・Head Chef も Tip Rate を決める（今の画面と同じ））' end);
 end $$;
 -- 10・11：PIN のログインで「GM」「CEO」と分かるのは、メールのアカウント（manager_auth）が社員と結ばれている人だけ（work-requests の whoami）。
---   結ばれていない人は、v1146 の関数ではプレップの表・認定を変えられない（社員 ID を入れる：db/invoice-signin-emp-check.sql で確かめる）
+--   結ばれていない人は、v1146 の関数ではプレップの表・認定を PIN のログインで変えられない（社員 ID を入れる：db/invoice-signin-emp-check.sql で確かめる）。
+--   Tip Rate は、メールのログインでも決められない（名前が分からないと、自分の Tip Rate かを決められない。Codex #140 6766283780 の P3）
 insert into tp_pre
 select 10, 'GM・CEO のメールのアカウントのうち、社員と結ばれていないもの', count(*)::text,
-       case when count(*) = 0 then 'OK' else 'info（その人は PIN のログインではプレップの表・認定を変えられません。manager_auth に社員 ID を入れてください）' end
+       case when count(*) = 0 then 'OK' else 'info（その人は Tip Rate を決められず、PIN のログインではプレップの表・認定も変えられません。manager_auth に社員 ID を入れてください）' end
   from public.manager_auth m where m.role in ('ceo', 'gm') and (m.emp_id is null or m.emp_id::text = '');
 insert into tp_pre
 select 11, 'GM・CEO のメールのアカウント（v1146 からプレップの表・認定を変えられる人）', count(*)::text, case when count(*) > 0 then 'OK' else 'STOP（だれも変えられなくなります）' end

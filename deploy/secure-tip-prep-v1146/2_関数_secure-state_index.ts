@@ -127,6 +127,8 @@ export function swShapeOk(key, value, cloud) {
 //       Corporate Chef（GM・CEO が確かめた G5 の Head Chef の印）はいつも（画面の決まりと同じ）。役割は今の社員の表（画面と同じ）・グレードは確かめた写しとの狭いほう。
 //     Tip Rate の申請（申請中を足す）：本人だけ。決めたものは消さない・申請中に戻さない（決め直しは、前の決定より新しい決定だけ＝v1091 の合流と同じ）。
 //     承認センターが記録に付ける印（_dG・_stK・_stT・_dT・_mut：率・状態・決めた人は変えない。v1087）は、だれでも付け直せる（古い写しの端末が外すことも＝今までの合流と同じ）。
+//     本人かは、名前をそろえて（全角・空白・大文字）この人の名前（PIN の印・確かめた写し・社員の表の自分の行）と比べる。名前が分からない人は決めない・申請しない。
+//     前の統合行（tip_requests）：だれも変えない（読むだけ。v720 からアプリは書かない。Codex #140 6766283780）。
 //     プレップの時給の表：GM・CEO。プレップの認定：GM・CEO（申請・承認・却下・直接決める・表の切り替え・指定を外す）。「反映した」の印だけは経理も。
 //   決めた人でなくても、クラウドと同じ値なら書かずに通す（v1141 と同じ）。前の決定より古い写しの送り直しも（covers：アプリが書かない）。
 //   書くのは、確かめた行が変わっていないときだけ（読んだ行で確かめ、その行に条件を付けて書く。違えば 409）。
@@ -151,6 +153,8 @@ function tipStampsOk(r) {
   return true;
 }
 const hasV = (o, k) => o != null && Object.prototype.hasOwnProperty.call(o, k) && o[k] !== undefined && o[k] !== null && o[k] !== '';
+// 名前をそろえる（本人かを見るため）：NFKC・空白を 1 つに・前後の空白を取る・小文字
+export const tipNk = s => typeof s === 'string' ? s.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase() : '';
 const tipDecT = r => { const t = Number(r && r.decAt); return Number.isFinite(t) && t > 0 ? t : 0; };
 const tipId = r => (r && (typeof r.id === 'string' || typeof r.id === 'number')) ? String(r.id) : null;
 const omit = (o, ks) => { const x = {}; for (const k of Object.keys(o || {})) if (!ks.includes(k)) x[k] = o[k]; return x; };
@@ -188,9 +192,13 @@ export function tpCheck(key, cloud, value, a) {
     }
     return 'ok';
   }
-  if (key === 'tip_requests') {   // 前の統合行（全員の分）：GM・CEO だけ
+  if (key === 'tip_requests') {
+    // 前の統合行（全員の分）：読むだけ（Codex #140 6766283780 の P2）。v720 から、アプリは人ごとの行に書き、この行には書かない
+    // （統合行にしか無い記録を人ごとの行へ移すのは端末の中だけ。クラウドの統合行には触らない）。アプリはこの行の記録も読む（_splitRead）ので、
+    // 変えられると人ごとの行の決まり（自分の Tip Rate は決めない・申請は本人だけ・決めたものは消さない）を通らずに Tip Rate を変えられた。
+    // クラウドと同じ値は tpPut が書かずに通す。それ以外はだれも変えない（GM・CEO も）
     if (!Array.isArray(value)) return 'bad';
-    return top ? 'ok' : 'forbidden';
+    return canon(cloud === undefined ? null : cloud) === canon(value) ? 'ok' : 'forbidden';
   }
   // spl_tip_requests_<名前>
   const name = key.slice(TP_TIP_PRE.length);
@@ -204,9 +212,11 @@ export function tpCheck(key, cloud, value, a) {
     nBy.set(id, r);
     if (!tipEntryOk(r, name) && !(cBy.has(id) && canon(cBy.get(id)) === canon(r))) return 'bad';   // 形のおかしな記録は、クラウドにもうある同じ記録だけ
   }
-  const me = typeof (a && a.name) === 'string' ? a.name.trim() : '';
-  const self = !!me && name.trim() === me;
-  const decider = !!(a && a.dec) && !self;
+  // 本人か（Codex #140 6766283780 の P3）：名前の書き方の違い（全角・空白・大文字）をそろえ、この人の名前（PIN の印・確かめた写し・社員の表の
+  // 自分の行：tpPut の tipActorNames）のどれかと同じなら本人。名前が 1 つも分からない人は、本人かを決められないので決めない・申請もしない
+  const mine = new Set([a && a.name, ...((a && Array.isArray(a.names)) ? a.names : [])].map(tipNk).filter(Boolean));
+  const self = mine.has(tipNk(name));
+  const decider = !!(a && a.dec) && mine.size > 0 && !self;
   for (const [id, o] of cBy) {
     const n = nBy.get(id);
     if (!n) return 'forbidden';   // 消さない（だれも）
@@ -537,6 +547,17 @@ export function createHandler(deps) {
     if (role === 'g4') return notLive;
     if (role === 'chef') return (a.grade >= 5 || notLive) && await confChef(a);
     return false;
+  }
+
+  // v1146（Codex #140 6766283780 の P3）：本人かを見るための、この人の名前。PIN の印・確かめた写しの名前（a.name）と、社員の表の自分の行の名前（列と data）。
+  //   社員と結ばれていない人（社員 ID の無いメールのログイン）は a.name だけ（空なら本人かを決められない＝決めない・申請しない）。読めなければ失敗（500。端末は送り直す）
+  async function tipActorNames(a) {
+    const out = [a && a.name];
+    if (a && typeof a.emp === 'string' && a.emp) {
+      const r = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=name,data');
+      for (const e of (Array.isArray(r) ? r : [])) { const d = obj(e && e.data) || {}; out.push(e && e.name, d.name); }
+    }
+    return out.filter(x => typeof x === 'string' && x.length <= 200);
   }
 
   // 目標を見せてよい人：本人。AM は担当の店（と自分の店）、G4 以上は自分の店の人（Career Score の一覧で見られる人）
@@ -966,8 +987,9 @@ export function createHandler(deps) {
     if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true, by: a.role };   // クラウドと同じ：書かずに通す
     // 端末が読んだ行（expect）から変わっていれば 409（端末は読み直して合わせてから送り直す。古い写しを「断られた」にしない）
     if (e && (e.exists !== !!c || (c && e.exists && tsMicro(e.updated_at) !== tsMicro(c.updated_at)))) throw err('conflict', 409);
-    const dec = key.startsWith(TP_TIP_PRE) ? await tipDecider(a) : false;   // 名前の分からない人は申請を足せない（本人かを決められない：tpCheck）
-    const v = tpCheck(key, c ? c.value : null, b.value, { role: a.role, name: a.name, dec });
+    const dec = key.startsWith(TP_TIP_PRE) ? await tipDecider(a) : false;   // 名前の分からない人は申請を足せない・決めない（本人かを決められない：tpCheck）
+    const names = key.startsWith(TP_TIP_PRE) ? await tipActorNames(a) : [];
+    const v = tpCheck(key, c ? c.value : null, b.value, { role: a.role, name: a.name, names, dec });
     if (v === 'bad') throw bad();
     if (v !== 'ok') throw err('forbidden', 403);
     // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）

@@ -3,7 +3,7 @@
 // 読むのは今までどおり REST（この関数の get では返さない）。合成データだけ（架空の人と店）。PostgREST・Auth・work-requests は tests/lib/secure-state-world.mjs の偽物。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, tpIsKey, tpCheck, TP_KEYS, TIP_DECIDE, swIsKey, ssIsKey, csIsKey, hrIsKey } from '../supabase/functions/secure-state/handler.mjs';
+import { createHandler, tpIsKey, tpCheck, tipNk, TP_KEYS, TIP_DECIDE, swIsKey, ssIsKey, csIsKey, hrIsKey } from '../supabase/functions/secure-state/handler.mjs';
 import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
 
 const EMPS = [
@@ -113,10 +113,14 @@ test('Tip Rate: a staff member adds only their own request (pending, no decision
   // ほかの人の行に申請を足す
   r = await put('g1', K('Ria Two'), [{ id: 'tipX', name: 'Ria Two', rate: 100, status: '申請中', date: '2026/11/10' }], { exists: false });
   assert.equal(r.status, 403);
-  // 名前の分からない PIN の人は申請も足せない
+  // PIN の印に名前の無い人：社員の表の自分の行の名前で本人を決める（自分の行には申請を足せる・ほかの人の行には足せない。Codex #140 の P3）
+  r = await put('noname', K('Kai One'), [...mine, { id: 'tipX', name: 'Kai One', rate: 100, status: '申請中', date: '2026/11/10' }], ex(K('Kai One')));
+  assert.equal(r.status, 403, 'not their own row');
   r = await put('noname', K('Ria Two'), [{ id: 'tipX', name: 'Ria Two', rate: 100, status: '申請中', date: '2026/11/10' }], { exists: false });
+  assert.equal(r.status, 200, 'their own row (the employee record E-2 is Ria Two)');
+  // 名前が 1 つも分からない人（社員と結ばれていないメールのログイン・名前なし）は申請も足せない
+  r = await put('@ofx', K('Kai One'), [...mine, { id: 'tipY', name: 'Kai One', rate: 100, status: '申請中', date: '2026/11/10' }], ex(K('Kai One')));
   assert.equal(r.status, 403);
-  assert.equal(W.get(K('Ria Two')), undefined);
 });
 
 test('Tip Rate: CEO, GM and AM approve, reject and raise other people (as on the Tip Rate screen); a decided record changes only by a newer decision; nothing is deleted or put back to pending', async () => {
@@ -221,15 +225,90 @@ test('Tip Rate before the Work Center is in use: G4 (role g4) and the Head Chef 
     S.W.set(K('Gus Four'), [{ id: 'tipG', name: 'Gus Four', rate: 90, status: '申請中', date: '2026/11/01' }], T0);
     assert.equal((await S.put('g4c', K('Gus Four'), [approve({ id: 'tipG', name: 'Gus Four', rate: 90, status: '申請中', date: '2026/11/01' })], S.ex(K('Gus Four')))).status, 403, 'G4 decides their own');
   }
-  // 社員の表を読めないときは決めない（狭いほう）
+  // 社員の表を読めないときは決めない（狭いほう）。本人かも決められないので失敗（500：端末は送信待ちに残して送り直す。断った印は付けない）
   {
     const S = setup({ wrLive: false });
     const f0 = S.W.fetch;
     S.W.fetch = async (u, opt) => (String(u).includes('/rest/v1/employees?id=') ? new Response('{"message":"down"}', { status: 500 }) : f0(u, opt));
     const r = await S.put('g4c', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500, JSON.stringify(r.j));
+    assert.deepEqual(S.W.get(K('Kai One')), TIP0);
+    assert.deepEqual(writes(S.W, K('Kai One')), []);
+  }
+});
+
+// Codex #140 6766283780 の P2：前の統合行を使うと「自分の Tip Rate は決めない」を通らずに済んだ（GM が自分の承認を統合行に足して 200）。
+// アプリは統合行の記録も読む（_splitRead → _tipLatestApproved）ので、統合行はだれも変えない（クラウドと同じ値だけ通す）。P3：名前の書き方の違い・名前なし
+test('Codex #140: the old combined row cannot be used to decide one\'s own Tip Rate (nobody changes it: add, change, remove, stamp, empty); the per-person row refuses it too', async () => {
+  const own = { id: 'tipGM', name: 'Gina M', rate: 100, status: '承認', date: '2026/11/10', approver: 'Gina M', approvedDate: '2026/11/10', decAt: 1762800000000, decDay: '2026-11-10', decHst: '2026-11-10', fromDay: '2026-11-10', prevRate: 90 };
+  for (const who of ['gm', '@gm', 'ceo', '@ceo', 'am']) {
+    const S = setup();
+    // 人ごとの行：GM 本人は決めない（CEO・AM が GM の Tip Rate を決めるのは、ほかの人のことなので今までどおり）
+    if (who === 'gm' || who === '@gm') assert.equal((await S.put(who, K('Gina M'), [own], { exists: false })).status, 403, who + ': per-person row');
+    const cases = {
+      'add own approval': [OLD, own],
+      'add someone else\'s approval': [OLD, raise('Kai One')],
+      'change a record': [{ ...OLD, rate: 100 }],
+      'stamp a record': [{ ...OLD, _dG: 2 }],
+      'remove a record': [],
+      'add a pending request': [OLD, P1],
+    };
+    for (const [what, v] of Object.entries(cases)) {
+      const r = await S.put(who, 'tip_requests', v, S.ex('tip_requests'));
+      assert.equal(r.status, 403, who + ' ' + what + ' ' + JSON.stringify(r.j));
+    }
+    assert.deepEqual(S.W.get('tip_requests'), [OLD], who + ': unchanged');
+    assert.deepEqual(writes(S.W, 'tip_requests'), [], who + ': not written');
+    if (who === 'gm' || who === '@gm') assert.equal(S.W.get(K('Gina M')), undefined);
+  }
+  // 行が無いときも足せない
+  const S = setup(); S.W.rows.delete('tip_requests');
+  assert.equal((await S.put('gm', 'tip_requests', [own], { exists: false })).status, 403);
+  assert.equal((await S.put('gm', 'tip_requests', { a: 1 }, { exists: false })).status, 400, 'not a list');
+  // 関数の確かめ（tpCheck）も同じ
+  assert.equal(tpCheck('tip_requests', [OLD], [OLD, own], { role: 'gm', name: 'Gina M', dec: true }), 'forbidden');
+  assert.equal(tpCheck('tip_requests', [OLD], [OLD], { role: 'gm', name: 'Gina M', dec: true }), 'ok');
+  assert.equal(tpCheck('tip_requests', null, [], { role: 'ceo', name: 'Cal E', dec: true }), 'forbidden');
+});
+
+test('Codex #140 (P3): whether it is one\'s own Tip Rate does not depend on how the name is written; a person whose name is not known decides nothing', async () => {
+  const own = (nm, at = 1762800000000) => ({ id: 'tipS' + at, name: nm, rate: 100, status: '承認', date: '2026/11/10', approver: 'x', approvedDate: '2026/11/10', decAt: at, decDay: '2026-11-10', decHst: '2026-11-10', fromDay: '2026-11-10', prevRate: 90 });
+  // 書き方の違う自分の名前の行（全角・空白・大文字）：決めない
+  for (const nm of ['Gina  M', ' Gina M ', 'ＧＩＮＡ M', 'gina m', 'Gina　M']) {
+    const S = setup();
+    assert.equal((await S.put('gm', K(nm), [own(nm)], { exists: false })).status, 403, JSON.stringify(nm));
+  }
+  // PIN の印の名前が社員の表と違っても（略した名前など）、社員の表の自分の行の名前で本人と分かる
+  {
+    const S = setup({ pins: { ...Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), tgmx: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'G. M' } } });
+    assert.equal((await S.call({ action: 'put', key: K('Gina M'), value: [own('Gina M')], expect: { exists: false }, pin_session: 'tgmx' })).status, 403, 'the employee record says Gina M');
+    const r = await S.call({ action: 'put', key: K('Kai One'), value: [OLD, approve(P1)], expect: S.ex(K('Kai One')), pin_session: 'tgmx' });
+    assert.equal(r.status, 200, 'other people are decided as before ' + JSON.stringify(r.j));
+  }
+  // 社員の表の data の中の名前も見る
+  {
+    // PIN の印は「A.A.」・社員の表の列は「A. Area」・data の中だけが「Amy Area」
+    const S = setup({ emps: EMPS.map(e => e.id === 'E-AM' ? { ...e, name: 'A. Area', data: { name: 'Amy Area' } } : { ...e }),
+      pins: { ...Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), tamx: { ...ME.am, name: 'A.A.' } } });
+    const v = [{ id: 'tipA', name: 'Amy Area', rate: 90, status: '承認', date: '2026/11/01', approver: 'x', approvedDate: '2026/11/10', decAt: 1762800000000, decDay: '2026-11-10', decHst: '2026-11-10' }];
+    assert.equal((await S.call({ action: 'put', key: K('Amy Area'), value: v, expect: S.ex(K('Amy Area')), pin_session: 'tamx' })).status, 403, 'AM own (data.name)');
+    assert.equal((await S.call({ action: 'put', key: K('Kai One'), value: [OLD, approve(P1)], expect: S.ex(K('Kai One')), pin_session: 'tamx' })).status, 200, 'the same AM decides for others');
+  }
+  // 名前が 1 つも分からない GM（社員と結ばれていないメールのアカウント）：決めない（本人かを決められない）
+  {
+    const S = setup({ mgr: { ...MGR, [U(8)]: { role: 'gm', emp_id: null } }, users: { ...USERS, gmx: U(8) } });
+    const r = await S.put('@gmx', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
     assert.equal(r.status, 403, JSON.stringify(r.j));
     assert.deepEqual(S.W.get(K('Kai One')), TIP0);
+    // プレップの表は今までどおり（GM の役割で決まる）
+    assert.equal((await S.put('@gmx', 'prep_tables', { ...TBL0, t2: { store: 'S1', from: '2026-12-01', levels: [], _at: 1762900000000 } }, S.ex('prep_tables'))).status, 200);
   }
+  // 名前のそろえ方
+  assert.equal(tipNk(' ＧＩＮＡ　\tM '), 'gina m');
+  assert.equal(tipNk(null), '');
+  assert.equal(tpCheck(K('Gina M'), [], [own('Gina M')], { role: 'gm', name: '', names: ['gina  m'], dec: true }), 'forbidden', 'names are compared after normalising');
+  assert.equal(tpCheck(K('Kai One'), [OLD, P1], [OLD, approve(P1)], { role: 'gm', name: '', names: [], dec: true }), 'forbidden', 'no name: no decision');
+  assert.equal(tpCheck(K('Kai One'), [OLD, P1], [OLD, approve(P1)], { role: 'gm', name: 'Gina M', dec: true }), 'ok');
 });
 
 test('Tip Rate: the approval center\'s stamps on a record (_dG, _stK, _stT, _dT, _mut) can be set or dropped by anyone signed in, without changing the rate, status or decision; bad stamp values are refused', async () => {
@@ -266,7 +345,7 @@ test('Tip Rate: the approval center\'s stamps on a record (_dG, _stK, _stT, _dT,
   assert.equal((await S.put('@ofx', K('Kai One'), [...base, { id: 'tip6', name: 'Kai One', rate: 100, status: '申請中', date: '2026/11/10' }], S.ex(K('Kai One')))).status, 403);
 });
 
-test('Tip Rate: what the cloud has (or a copy the cloud already covers) passes without a write for anyone; the old combined row is GM/CEO only; shapes are checked', async () => {
+test('Tip Rate: what the cloud has (or a copy the cloud already covers) passes without a write for anyone; the old combined row is read-only; shapes are checked', async () => {
   const { W, put, ex, call } = setup();
   for (const who of ['g1', 'g4', 'of', 'am']) {
     const r = await put(who, K('Kai One'), JSON.parse(JSON.stringify(TIP0)).map(x => Object.fromEntries(Object.entries(x).reverse())), ex(K('Kai One')));
@@ -274,7 +353,8 @@ test('Tip Rate: what the cloud has (or a copy the cloud already covers) passes w
   }
   assert.deepEqual(writes(W, K('Kai One')), [], 'nothing written');
   assert.equal((await put('am', 'tip_requests', [OLD, P1], ex('tip_requests'))).status, 403, 'AM: the old combined row');
-  assert.equal((await put('gm', 'tip_requests', [OLD, P1], ex('tip_requests'))).status, 200, 'GM: the old combined row');
+  assert.equal((await put('gm', 'tip_requests', [OLD, P1], ex('tip_requests'))).status, 403, 'GM: the old combined row is read-only too (Codex #140)');
+  { const r = await put('gm', 'tip_requests', [OLD], ex('tip_requests')); assert.equal(r.status, 200); assert.equal(r.j.same, true, 'the same value passes without a write'); }
   const shapes = {
     'not a list': { a: 1 },
     'a record of another name': [...TIP0, { ...raise('Ria Two') }],
