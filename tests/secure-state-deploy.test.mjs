@@ -146,11 +146,12 @@ test('the v1147 bundle is as it was (the SQL files and the pinned function file)
   // Codex #141 6781928056 の P2-1：1b（写しに G2 も）とその戻し
   assert.equal(rd(D + '1b_SQL_写しにG2も.sql'), rd('supabase/migrations/20261116080000_wr_people_g2.sql'));
   assert.equal(rd(D + '戻す_SQL_1b.sql'), rd('db/wr-people-g2-rollback.sql'));
-  // v1148 から関数は先へ進んだので、v1147 の 1 ファイルは PR #141（c8e4d79）のまま固定（v1148 を戻すときに使う）
-  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'f418ef5d98121c75194c165be050693e4c0a17dc298bcc79a2f7362c68451617', 'the v1147 function file (PR #141 c8e4d79) is not changed');
+  // v1148 から関数は先へ進んだので、v1147 の 1 ファイルは PR #141（61d5247）のまま固定（v1148 を戻すときに使う）
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'aa9699478570c37919eee5d158919aa2cfd05472b8c7740030f727bc22a4d887', 'the v1147 function file (PR #141 61d5247) is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
   assert.match(one, /async function protStores\(a\)/, 'store scopes from the GM/CEO-confirmed copy (P2-1)');
   assert.match(one, /async function tipPastNames\(a\)/, 'past names from the change log (P2-2)');
+  assert.match(one, /'&id=gt\.' \+ last/, 'past names read to the end of the change log (Codex 6784041763)');
   assert.match(one, TAIL);
   assert.ok(!/verifyPin/.test(one), 'no private part');
   assert.ok(!/gbfn/.test(one), 'the v1147 function does not know the v1148 read scope');
