@@ -432,3 +432,120 @@ test('the range record of another sign-in counts as "not received" for this one'
   login(c, 't1');   // まだ取り込んでいない
   for (const k of GB) assert.equal(c.gbSees(k), false, k);
 });
+
+// ---- Codex（#142 6785448408）P2：送信待ちの印がある 3 つの行を共有の端末に残しても、次にログインした人の読み出し（ghAll・kevOvrAll・btrGet）は
+// その人の範囲の外を返さない（scoped・none・ログインの切り替え・取得の失敗・REST に戻ったとき）。GM の変更は残り、GM が戻ったら送り直せる
+const GM_EDIT = {
+  grade_hist: { ...V.grade_hist, 'E-9': REC('E-9') },
+  bonus_eval_ovr: { ...V.bonus_eval_ovr, 'E-3B|2026-Q4': OV(40) },
+  bonus_track: { ...V.bonus_track, '2026-Q4|E-3B': { t: 'op', at: '2026/11/10', by: 'Gina M', _at: 1762800000000 } },
+};
+const reads = c => ({ grade_hist: plain(c.ghAll()), bonus_eval_ovr: plain(c.kevOvrAll()), bonus_track: plain(c.btrAll()) });
+const ids = m => Object.keys(m).sort();
+async function gmLeavesUnsent(W, shared = true) {
+  const c = tab(W, 'tGM');
+  if (shared) c.localStorage.setItem('_ss_mark', JSON.stringify({ shared: true, keep: {}, unsafe: {} }));
+  await pull(c);
+  for (const k of GB) { c.MEM.set(k, JSON.stringify(GM_EDIT[k])); c.__pending[k] = true; }   // GM が直したが送れていない（送信待ち）
+  assert.deepEqual(reads(c), plain(GM_EDIT), 'the GM reads the own unsent changes');
+  logout(c);
+  return c;
+}
+
+test('Codex #142 P2: after the GM leaves unsent changes on a shared device, crew / AM / the store login read only their own range, before and after the pull', async () => {
+  const W = world({ rlsGb: true });
+  const c = await gmLeavesUnsent(W);
+  for (const k of GB) assert.deepEqual(local(c, k), GM_EDIT[k], k + ': the unsent change stays on the device');
+  // スタッフ：受け取る前（ログインの直後）も、受け取ったあとも、本人の分だけ
+  login(c, 't1');
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} }, 'before the pull: nothing (not received for this sign-in)');
+  assert.equal(c.btrGet('2026-Q4', 'E-3B'), null);
+  await pull(c);
+  for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, ['E-1']), 'crew ' + k);
+  assert.equal(c.btrGet('2026-Q4', 'E-3B'), null); assert.ok(!('E-9' in c.ghAll()));
+  for (const k of GB) assert.deepEqual(local(c, k), GM_EDIT[k], k + ': still kept (not merged with the crew range)');
+  assert.equal(c.gbLocalWriteOk('grade_hist', true), false);
+  // 送れて送信待ちが外れても（だれのか分からない前の版の送信待ちなど）、このログインのあいだは残した写しを読まない
+  delete c.__pending.grade_hist;
+  assert.deepEqual(ids(c.ghAll()), ['E-1']);
+  c.__pending.grade_hist = true;
+  // AM：担当の範囲だけ
+  logout(c); login(c, 'tAM');
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} });
+  await pull(c);
+  for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, AM_IDS), 'AM ' + k);
+  // 店のログイン：何もない
+  logout(c); login(c, 'tStore');
+  await pull(c);
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} });
+  for (const k of GB) assert.deepEqual(local(c, k), GM_EDIT[k], k + ': still kept for the GM');
+  assert.equal(anonGb(W), 0);
+});
+
+test('Codex #142 P2: the same when the range cannot be received (people cannot be decided, the function or the PIN check is down)', async () => {
+  const W = world({ rlsGb: true });
+  const c = await gmLeavesUnsent(W);
+  // 見られる人を決められない（gb: error）
+  W.empsDown = true; W.fresh();
+  login(c, 't1');
+  await pull(c);
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} }, 'cannot decide the people');
+  W.empsDown = false; W.fresh();
+  // 関数が答えない（404＝前の版と同じ扱いで REST に戻る。SQL のあとなので REST は 3 つを返さない）
+  W.ssDown = true;
+  await pull(c);
+  assert.equal(state(c), null, 'REST as before');
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} }, 'REST: the kept copies are not read');
+  assert.equal(c.gbLocalWriteOk('bonus_track', true), false, 'and not overwritten from an empty read');
+  for (const k of GB) assert.deepEqual(local(c, k), GM_EDIT[k], k);
+  W.ssDown = false; c._ss.legacy = null;
+  await pull(c);
+  for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, ['E-1']), k);
+});
+
+test('Codex #142 P2: when the GM comes back the unsent changes are still there, read whole, and sent again', async () => {
+  const W = world({ rlsGb: true });
+  const c = await gmLeavesUnsent(W);
+  login(c, 't1'); await pull(c); logout(c);
+  W.ssDown = true; login(c, 't1'); await pull(c); logout(c); W.ssDown = false; c._ss.legacy = null;
+  login(c, 'tGM');
+  // CEO・GM のログインは、範囲がまだ決まっていない（ログアウトのあと受け取る前・REST に戻った）ときも残した写しを読める（前から全部を持つ人）
+  assert.deepEqual(reads(c), plain(GM_EDIT), 'GM before the pull');
+  assert.equal(c.gbLocalWriteOk('grade_hist', true), true);
+  W.ssDown = true; await pull(c);
+  assert.deepEqual(reads(c), plain(GM_EDIT), 'GM in the REST fallback');
+  W.ssDown = false; c._ss.legacy = null;
+  await pull(c);
+  assert.deepEqual(state(c).keys, { grade_hist: 'all', bonus_eval_ovr: 'all', bonus_track: 'all' });
+  const rd = reads(c);
+  for (const k of GB) assert.deepEqual(ids(rd[k]), ids(GM_EDIT[k]), k + ': the GM reads everyone with the own unsent change (merged with the cloud)');
+  assert.deepEqual(rd.grade_hist['E-9'], REC('E-9')); assert.equal(rd.bonus_track['2026-Q4|E-3B'].t, 'op'); assert.equal(rd.bonus_eval_ovr['E-3B|2026-Q4'].set.c.bp8, 290);
+  assert.equal(c.secHeld('grade_hist'), false);
+  // 送り直し（flushOutbox と同じく端末の写しをそのまま送る）
+  for (const k of GB) {
+    const r = await c.syncMasterToSupabase(k, c.ls(k, null));
+    assert.equal(r, true, k + ' sent'); delete c.__pending[k];
+    assert.deepEqual(ids(W.get(k)), ids(GM_EDIT[k]), k + ' in the cloud');
+  }
+  assert.deepEqual(W.get('grade_hist')['E-9'], REC('E-9')); assert.equal(W.get('bonus_track')['2026-Q4|E-3B'].t, 'op'); assert.equal(W.get('bonus_eval_ovr')['E-3B|2026-Q4'].set.c.bp8, 290);
+});
+
+test('Codex #142 P2: the GM\'s own device (not shared) keeps the copies on logout, but the next sign-in reads nothing of them until its own range arrives', async () => {
+  const W = world({ rlsGb: true });
+  const c = await gmLeavesUnsent(W, false);
+  for (const k of GB) assert.deepEqual(local(c, k), GM_EDIT[k], k);
+  login(c, 't1');
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} }, 'another sign-in\'s range is not this one\'s');
+  W.empsDown = true; W.fresh();
+  await pull(c);
+  assert.deepEqual(reads(c), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} }, 'and a failed pull does not open them');
+  W.empsDown = false; W.fresh();
+  await pull(c);
+  for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, ['E-1']), k);
+  // 送れていない変更が無い GM の写し（全員の分）も：REST に戻ったとき、ほかのログインの写しは使わない
+  const W2 = world({ rlsGb: true });
+  const g = tab(W2, 'tGM'); await pull(g); logout(g);
+  login(g, 't1'); W2.ssDown = true; await pull(g);
+  assert.deepEqual(reads(g), { grade_hist: {}, bonus_eval_ovr: {}, bonus_track: {} });
+  for (const k of GB) assert.equal(local(g, k), undefined, k + ': the GM copy without unsent changes left the device');
+});

@@ -12687,6 +12687,62 @@ function gbStateSet(o){
     }
   }catch(e){}
 }
+/* ============================================================
+   Codex（#142 6785448408）P2 の直し：共有の端末に残した「前の人の送れていない変更」を、今のログインの読み出しに使わない
+   ------------------------------------------------------------
+   【前】送信待ちの印がある行は、取り込み（gbTake）でもログアウト（gbOnLogout）でも消さずに残していた（消すと GM の変更が失われる）。
+     そのまま ghAll()・kevOvrAll()・btrGet() が読むので、GM のあとにログインしたスタッフ・店のログインが、全員の分（範囲の外）を読めた。
+   【いま】残すのは今までどおり（GM が戻ったら送り直す）。ただし「前の人の写しを残している行」の印（SEC_HELD_KEY）を付け、
+     画面が読む関数は gbReadVal を通す：
+       ・範囲がまだ決まっていない（関数が前の版・REST に戻った・ログアウトのあと受け取る前・取得の失敗）：印のある行は返さない（GM・CEO のログインを除く）
+       ・ほかのログインの範囲が残っている：何も返さない（受け取り終えるまで）
+       ・全部（all）：端末の写し
+       ・見られる人の分だけ（scoped）で、印のある行・送信待ちの行：サーバーが今のログインに渡した分（_gbView・メモリだけ）
+       ・受け取らない（none）：何も返さない
+     送る道（flushOutbox・syncMasterToSupabase）は今までどおり端末の写しをそのまま読む（GM の変更は GM のログインのときに送る＝v1128）。 */
+var SEC_HELD_KEY = '_sec_held_v1';   /* この端末だけ：{ key:1 }＝前のログインの送れていない写しを残している行（今のログインの範囲の写しではない） */
+function secHeldAll(){ try{ var o=JSON.parse(localStorage.getItem(SEC_HELD_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function secHeld(k){ return Object.prototype.hasOwnProperty.call(secHeldAll(), k); }
+function secHeldSet(k, on){
+  var o=secHeldAll(), has=Object.prototype.hasOwnProperty.call(o, k);
+  if(on ? has : !has) return;
+  if(on) o[k]=1; else delete o[k];
+  try{ if(Object.keys(o).length) localStorage.setItem(SEC_HELD_KEY, JSON.stringify(o)); else localStorage.removeItem(SEC_HELD_KEY); }catch(e){}
+}
+/* 今のログインが CEO・GM（店のログインでない）。範囲がまだ決まっていないとき、残した写しを読んでよい人（前から全部を持つ人） */
+function secGmNow(){
+  try{ var r=String((typeof curRealRole!=='undefined' && curRealRole) || (typeof curRole!=='undefined' && curRole) || '');
+    return (r==='gm' || r==='ceo') && !(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){ return false; }
+}
+/* scoped のログインで、残した写しの代わりに読む値（サーバーがこのログインに渡した行。メモリだけ・ログアウトと次の取り込みで作り直す） */
+var _gbView = { who:'', keys:{} };
+function gbViewGet(key, def){
+  try{ if(_gbView.who===csWho() && Object.prototype.hasOwnProperty.call(_gbView.keys, key)) return JSON.parse(_gbView.keys[key]); }catch(e){}
+  return def;
+}
+/* 画面が読む値（ghAll・kevOvrAll・btrAll）。上の決まり */
+function gbReadVal(key, def){
+  if(!gbIsKey(key)) return ls(key, def);
+  var st=gbStateGet(), held=secHeld(key);
+  if(!st) return (held && !secGmNow()) ? def : ls(key, def);
+  if(st.who!==csWho()) return def;
+  var lv=st.keys[key];
+  if(lv==='all') return ls(key, def);
+  if(lv!=='scoped') return def;
+  if(held || ssPending(key)) return gbViewGet(key, def);
+  return ls(key, def);
+}
+/* REST に戻すとき（関数が前の版・PIN の確かめ先が答えない・PIN の印の無い CEO・GM）：前の範囲がほかのログインのものなら、その写しを使わない
+   （送れていない行は残して印を付け、ほかは消す。REST で取れるものは取り直す） */
+function gbDropOthers(){
+  var seen=gbSeenGet(), ch=false;
+  Object.keys(GB_KEYS).forEach(function(k){
+    if(ssPending(k)){ if(_lsStoreGet(k)!=null) secHeldSet(k, true); return; }
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+    if(seen[k]!=null){ delete seen[k]; ch=true; }
+  });
+  if(ch) gbSeenSet(seen);
+}
 function gbSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(GB_SEEN_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
 function gbSeenSet(o){ try{ localStorage.setItem(GB_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
 /* このキーをこのログインでクラウドから読めるか（all・scoped）。範囲がまだ決まっていない（関数が前の版・v1147 以前から上げた直後）は今までどおり */
@@ -12700,11 +12756,13 @@ function gbSees(key){
 var _gbWarned = {};
 function gbLocalWriteOk(key, quiet){
   if(!gbIsKey(key)) return true;
-  var st=gbStateGet(); if(!st) return true;
+  var st=gbStateGet();
   var no=function(id, ja, en){
     if(!quiet && !_gbWarned[id]){ _gbWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} setTimeout(function(){ delete _gbWarned[id]; }, 15000); }
     return false;
   };
+  /* 前の人の送れていない写しを残している行は、読めない人が上書きしない（読めない値から作った保存で、GM の変更を消さない。Codex #142 P2） */
+  if(!st){ if(secHeld(key) && !secGmNow()) return no('held', 'この端末には前にログインした人の送れていない変更が残っています。グレード履歴・賞与の個人設定・G3 の職種は保存していません', 'This device still holds unsent changes from an earlier sign-in. Grade history / bonus settings / G3 track were not saved.'); return true; }
   if(st.who && st.who!==csWho()) return no('who', 'グレード履歴・賞与の設定を受け取っている途中です。少し待ってから、もう一度押してください（保存していません）', 'Still receiving grade history / bonus settings. Please try again in a moment (not saved).');
   if(st.keys[key]!=='all') return no('out', 'グレード履歴・賞与の個人設定・G3 の職種を変えられるのは GM・CEO です（このログインでは全員の分を受け取っていません。保存していません）',
     'Only the GM or CEO can change grade history, bonus personal settings or the G3 track (this sign-in does not receive everyone’s; not saved).');
@@ -12713,8 +12771,10 @@ function gbLocalWriteOk(key, quiet){
 /* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
 function gbHaveMap(force){
   var have={}; if(force) return have;
+  /* 前の範囲がこのログインのものでない・前の人の写しを残している行・送信待ちの行は、印を送らない（このログインの分をいつも受け取る） */
+  var st=gbStateGet(); if(!st || st.who!==csWho()) return have;
   var seen=gbSeenGet();
-  Object.keys(seen).forEach(function(k){ var s=String(seen[k]), c=s.indexOf('#'); if(c>0 && gbIsKey(k) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c); });
+  Object.keys(seen).forEach(function(k){ var s=String(seen[k]), c=s.indexOf('#'); if(c>0 && gbIsKey(k) && !secHeld(k) && !ssPending(k) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c); });
   return have;
 }
 /* 関数の答え（gb）を受け取る：scoped・none のキーは端末の写しを置き換える（合流しない）。送れていない変更のある行は残す。返す行は _applyKvRows で取り込む */
@@ -12725,17 +12785,28 @@ async function gbTake(c, tk){
   var keys={}; Object.keys(GB_KEYS).forEach(function(k){ var l=c.keys && c.keys[k]; keys[k]=(l==='all' || l==='scoped') ? l : 'none'; });
   var ver={}; (Array.isArray(c.index) ? c.index : []).forEach(function(x){ if(x && gbIsKey(x.key) && keys[x.key]!=='none' && typeof x.v==='string') ver[x.key]=x.v; });
   var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && gbIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; });
-  var got={}; rows.forEach(function(x){ got[x.key]=1; });
-  var seen=gbSeenGet(), ch=false;
+  var got={}; rows.forEach(function(x){ got[x.key]=x; });
+  var seen=gbSeenGet(), ch=false, view={}, out=[];
   Object.keys(GB_KEYS).forEach(function(k){
-    if(keys[k]==='all' || ssPending(k)) return;   /* all：今までどおり合流して取り込む（クラウドに行が無いときも端末の写しのまま） */
+    if(keys[k]==='all'){ secHeldSet(k, false); if(got[k]) out.push(got[k]); return; }   /* all：今までどおり合流して取り込む（クラウドに行が無いときも端末の写しのまま。残した写しも全部を見る人には範囲の中） */
+    if(ssPending(k)){
+      /* Codex（#142 6785448408）P2：送れていない変更のある行は残す（GM が戻ったら送り直す）が、前の人の写しなので、このログインでは読まない（gbReadVal）。
+         見られる人の分だけの行は合流させず（前の人の写しに混ぜない）、このログインの読み出し用に覚える */
+      if(_lsStoreGet(k)!=null) secHeldSet(k, true);
+      if(keys[k]==='scoped' && got[k]) view[k]=JSON.stringify(got[k].value==null ? {} : got[k].value);
+      if(seen[k]!=null){ delete seen[k]; ch=true; }
+      return;
+    }
     /* none：持たない。scoped：届いた行で置き換える（前に REST で持っていたほかの人の記録を合流で残さない）・クラウドに行が無ければ持たない。
-       届かなかった（印が同じ＝取り込んだ直後のまま）scoped の行はそのまま */
+       届かなかった（印が同じ＝このログインが取り込んだ直後のまま。gbHaveMap）scoped の行はそのまま */
     if(keys[k]==='none' || !ver[k] || got[k]){ try{ _lsRawDel(k); }catch(e){} if(seen[k]!=null){ delete seen[k]; ch=true; } }
+    secHeldSet(k, false);
+    if(keys[k]==='scoped' && got[k]) out.push(got[k]);
   });
   if(ch) gbSeenSet(seen);
+  _gbView={ who:csWho(), keys:view };
   gbStateSet({ keys:keys, who:csWho(), at:Date.now() });
-  return { rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, keys:keys };
+  return { rows:out.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, keys:keys };
 }
 /* 取り込めた行の印を残す（scSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
 function gbSeenRecord(rows, okKeys){
@@ -12756,11 +12827,16 @@ function gbSeenRecord(rows, okKeys){
 }
 /* ログアウト：3 つとも全部を受け取る人（GM・CEO）の自分の端末でなければ、写しを残さない（送れていない変更のある行は残す）。次にログインした人の範囲で受け取り直す */
 function gbOnLogout(){
+  _gbView={ who:'', keys:{} };
   try{
     var m=ssMarkGet(), st=gbStateGet();
     var allKeys=!!st && Object.keys(GB_KEYS).every(function(k){ return st.keys[k]==='all'; });
-    if(!m.shared && !(st && !allKeys)) return;
-    Object.keys(GB_KEYS).forEach(function(k){ if(!ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+    if(!m.shared && !(st && !allKeys)) return;   /* GM・CEO の自分の端末：残す（次にログインした人は、受け取り終えるまで読まない＝gbReadVal） */
+    /* 送れていない変更のある行は残す（GM が戻ったら送り直す）。ほかの人に読ませない印を付ける（Codex #142 6785448408 P2） */
+    Object.keys(GB_KEYS).forEach(function(k){
+      if(ssPending(k)){ if(_lsStoreGet(k)!=null) secHeldSet(k, true); return; }
+      try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+    });
     gbSeenSet({}); gbStateSet(null);
   }catch(e){}
 }
@@ -13914,7 +13990,7 @@ async function _kvPullRows(force){
   /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
   if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
   if(!_scOut){ try{ if(typeof scStateGet==='function' && scStateGet()) scStateSet(null); }catch(e){} }   /* v1147 */
-  if(!_gbOut){ try{ if(typeof gbStateGet==='function' && gbStateGet()) gbStateSet(null); }catch(e){} }   /* v1148 */
+  if(!_gbOut){ try{ if(typeof gbStateGet==='function'){ var _gp=gbStateGet(); if(_gp){ if(_gp.who!==csWho()) gbDropOthers(); gbStateSet(null); } } }catch(e){} }   /* v1148。Codex #142 P2：ほかのログインの写しは REST の今までどおりに使わない */
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
@@ -68584,7 +68660,7 @@ function _ghNow(){ return (typeof nowJP==='function')?nowJP():new Date().toISOSt
 function ghHire(e){ var h=ghDate(e&&e.hireDate); if(h) return h; try{ return ghDate(getKarte(e.id).hireDate); }catch(err){ return null; } }
 function ghResign(e){ return ghDate(e&&e.resignDate); }
 /* --- 記録 --- */
-function ghAll(){ var m=ls('grade_hist', {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
+function ghAll(){ var m=((typeof gbReadVal==='function') ? gbReadVal('grade_hist', {}) : ls('grade_hist', {})); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
 function ghCmp(a, b){ return a.d<b.d?-1:(a.d>b.d?1:(((b.start?1:0)-(a.start?1:0)) || String(a.at||'').localeCompare(String(b.at||'')))); }
 function ghRecs(empId){
   var x=ghAll()[empId], r=(x && Array.isArray(x.recs)) ? x.recs : [];
@@ -71661,7 +71737,7 @@ function bonusCmRowsHtml(cm){
 function bcoefLabel(key){ if(key.indexOf('G3-')===0) return 'G3 '+cscTrackName(key.slice(3)); return key; }
 /* GM・CEO がその四半期に選んだ G3 の職種：別のキー bonus_track（「四半期|従業員」ごとに新しいほう）。
    四半期のレコード（bonus_q）の中に置くと、別の端末で別の人を選んだときに片方が消える（Codex・Claude のレビュー P2） */
-function btrAll(){ var r=ls('bonus_track', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function btrAll(){ var r=((typeof gbReadVal==='function') ? gbReadVal('bonus_track', {}) : ls('bonus_track', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function btrKey(q, empId){ return String(q||'')+'|'+String(empId||''); }
 function btrGet(q, empId){ var x=btrAll()[btrKey(q, empId)]; return (x && typeof x==='object' && x.t && CSC_TRACK_NAME[x.t]) ? x : null; }
 /* その四半期に G3 の職種として使うもの：GM・CEO がその四半期に選んだもの → 今の役職名 */
@@ -72365,7 +72441,7 @@ function kevRuleBad(r){
 
 /* ---- 設定（会社共通 → グレード・職種 → 個人。適用開始の四半期ごとの版） ---- */
 function kevRuleAll(){ var r=ls('bonus_eval_rule', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
-function kevOvrAll(){ var r=ls('bonus_eval_ovr', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function kevOvrAll(){ var r=((typeof gbReadVal==='function') ? gbReadVal('bonus_eval_ovr', {}) : ls('bonus_eval_ovr', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function kevEvAll(){ var r=ls('bonus_eval', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 /* prefix|四半期 の版のうち、q 以前で一番新しいもの */
 function kevVer(all, prefix, q){
