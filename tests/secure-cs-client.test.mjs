@@ -688,3 +688,55 @@ test('Codex P1: a history answer that waits for IndexedDB, and public rows that 
     assert.ok(rows.length > 0 && !rows.some(r => d.csIsKey(r.key) || d.ssIsKey(r.key)), 'the REST copies of the secure rows are dropped too');
   }
 });
+
+// ---- Codex（#142 6785448408）P2 と同じ形（v1140 でも見た）：GM の送れていない Career Score の行を共有の端末に残しても、次にログインした人の
+// 点の読み出し（getLssScores）は、その人の範囲の外を返さない（受け取る前・取得の失敗・REST に戻ったときも）。GM の変更は残り、戻ったら送り直せる。
+// （申請・履歴の分割の読み出しは、書き戻しの道が空の分け先を消すので、この直しでは変えていない＝docs の残り）
+const csReaders = c => { if (!c.getLssScores) vm.runInContext('var LSS_EMP_PREFIX="lss_emp_";\n' + fn('getLssScores'), c); return c; };
+const OUT = 'Ben S2', OUTK = 'lss_emp_' + OUT;   // S2 の人（S1 の G3・本人の範囲の外）
+
+test('Codex #142 P2 (same shape in v1140): a GM\'s unsent score row of a person outside the next sign-in\'s range is not read by it, before or after its pull, nor when the range cannot be received', async () => {
+  const W = world({ rlsCs: true });
+  const c = csReaders(tab(W, 'tGM'));
+  c.localStorage.setItem('_ss_mark', JSON.stringify({ shared: 1, keep: {}, unsafe: {} }));
+  await pull(c);
+  c.MEM.set(OUTK, JSON.stringify({ s: { 'A-1': 3 }, _at: 99 })); c.__pending[OUTK] = true;   // GM が直したが送れていない
+  assert.equal(JSON.parse(JSON.stringify(c.getLssScores(OUT))).s['A-1'], 3);
+  logout(c);
+  assert.deepEqual(local(c, OUTK), { s: { 'A-1': 3 }, _at: 99 }, 'kept for the GM');
+  login(c, 't3');
+  assert.equal(c.getLssScores(OUT), null, 'before the pull');
+  await pull(c);
+  assert.equal(c.getLssScores(OUT), null, 'after the pull (outside the range)');
+  assert.ok(c.getLssScores('Kai One'), 'a person in the range');
+  assert.equal(c.csLocalWriteOk(OUTK), false);
+  logout(c);
+  W.ssDown = true; login(c, 't3'); await pull(c);
+  assert.equal(c.csStateGet(), null, 'REST as before');
+  assert.equal(c.getLssScores(OUT), null, 'REST: the kept row is not read');
+  assert.equal(c.csLocalWriteOk(OUTK), false, 'and not overwritten');
+  W.ssDown = false; c._ss.legacy = null;
+  logout(c);
+  login(c, 'tGM');
+  assert.equal(JSON.parse(JSON.stringify(c.getLssScores(OUT))).s['A-1'], 3, 'GM before the pull (nothing decided yet)');
+  await pull(c);
+  assert.equal(JSON.parse(JSON.stringify(c.getLssScores(OUT))).s['A-1'], 3, 'GM after the pull');
+  assert.equal(await c.syncMasterToSupabase(OUTK, local(c, OUTK)), true); delete c.__pending[OUTK];
+  assert.equal(W.get(OUTK).s['A-1'], 3);
+});
+
+test('Codex #142 P2 (v1140): on the GM\'s own device the next sign-in reads no score of the GM\'s copy until its own range arrives; a REST fallback drops them', async () => {
+  const W = world({ rlsCs: true });
+  const c = csReaders(tab(W, 'tGM'));
+  await pull(c); logout(c);
+  assert.ok(local(c, OUTK), 'kept on the GM\'s own device');
+  login(c, 't3');
+  assert.equal(c.getLssScores(OUT), null, 'another sign-in\'s range');
+  W.ssDown = true; await pull(c);
+  assert.equal(c.getLssScores(OUT), null);
+  assert.equal(local(c, OUTK), undefined, 'the GM copy without unsent changes left the device');
+  assert.equal(local(c, 'lss_scores'), undefined);
+  W.ssDown = false; c._ss.legacy = null;
+  await pull(c);
+  assert.ok(c.getLssScores('Kai One')); assert.equal(c.getLssScores(OUT), null);
+});
