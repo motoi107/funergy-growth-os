@@ -25,6 +25,8 @@ const MIG = rd('supabase/migrations/20261116090000_secure_tip_cf.sql');
 const CHEF = rd('supabase/migrations/20261113080000_wr_people_chef.sql');
 const IDX = rd('supabase/migrations/20261027090000_app_state_index.sql');
 const WR = rd('supabase/migrations/20261104090000_work_requests.sql');
+const EFL = rd('supabase/migrations/20261029090000_employee_field_log.sql');   // 社員の変更記録（Tip Rate を決める人の本人かの確かめ：Codex #141 P2-2）
+const G2SQL = rd('supabase/migrations/20261116080000_wr_people_g2.sql');      // 1b：写しに G2 も（Codex #141 P2-1）
 const PRE = rd('db/secure-tip-cf-precheck.sql');
 const POST = rd('db/secure-tip-cf-postcheck.sql');
 const BACK = rd('db/secure-tip-cf-rollback.sql');
@@ -41,7 +43,7 @@ const OLD_SECRET = ['growth_karte', 'applicants', 'lss_emp_Kai One', 'emp_pii'];
 const OTHER = ['tasks_all', 'cash_tips_S1', 'tip_history', 'prep_cfg', 'warning_S1', 'tip_cfx'];
 const TIPREQ = 'spl_tip_requests_Kai One';   // v1146：読めるが書けない（ss_guard_*）
 
-async function mkdb(initial) {
+async function mkdb(initial, o = {}) {
   const db = new PGlite();
   await db.exec(`create role anon nologin; create role authenticated nologin; create role service_role nologin bypassrls;
     create table public.app_state(key text primary key, value jsonb not null, updated_at timestamptz default now());
@@ -55,10 +57,13 @@ async function mkdb(initial) {
       ('E-GM','Gina M','gm','General Manager','HQ','',null), ('E-AM','Amy Area','am','Area Manager','S1','',null),
       ('E-4','Leo Four','g4','Store Manager','S1','',null), ('E-CH','Chef Ken',null,'','S1','','{"role":"chef","title":"Head Chef"}'),
       ('E-OC','Oscar','office_crew','Office Crew','HQ','',null), ('E-OC2','Olga','office_crew','Office Crew','HQ','',null),
-      ('E-1','Kai One','crew','Crew','S1','',null), ('E-OUT','Gone Am','am','Area Manager','S1','退職',null);`);
+      ('E-1','Kai One','crew','Crew','S1','',null), ('E-OUT','Gone Am','am','Area Manager','S1','退職',null),
+      ('E-2','Ria Two','g2','Crew Leader','S2','',null), ('E-3','Sal Three','sl','Store Leader','S1','',null);`);
   await db.exec(WR);
   await db.exec(CHEF);
-  await db.query(`insert into public.wr_people(emp_id, name, role, grade, chef) values ('E-4', 'Leo Four', 'staff', 4, false), ('E-CH', 'Chef Ken', 'staff', 4, false)`);
+  if (o.efl !== false) await db.exec(EFL);
+  if (o.g2 !== false) { await db.exec(G2SQL); await db.exec(G2SQL); }
+  await db.query(`insert into public.wr_people(emp_id, name, role, grade, chef) values ('E-4', 'Leo Four', 'staff', 4, false), ('E-CH', 'Chef Ken', 'staff', 4, false), ('E-3', 'Sal Three', 'staff', 3, false)`);
   if (initial === 'on') await db.exec(`alter table public.app_state enable row level security;
     create policy app_all on public.app_state for all to public using (true) with check (true);`);
   for (const [k, v] of Object.entries(SC)) await db.query(`insert into public.app_state(key, value) values ($1, $2)`, [k, JSON.stringify(v)]);
@@ -77,7 +82,7 @@ for (const initial of ['v1146', 'v1144', 'off', 'on']) {
   test(`tip confirmation / warning log v1147 (from ${initial}): anon/authenticated cannot read or write them (or the older keys); the rest is unchanged; rollback to v1146`, async () => {
     const db = await mkdb(initial);
     const pre = await resRows(db, PRE);
-    assert.equal(pre.length, 10);
+    assert.equal(pre.length, 12);
     assert.equal(pre.find(x => x.n === 1).ok, 'OK');
     assert.match(pre.find(x => x.n === 2).ok, /v114/.test(initial) ? /^OK/ : /^info/);
     assert.equal(pre.find(x => x.n === 3).value, /v114/.test(initial) ? 'ON' : (initial === 'on' ? 'ON' : 'OFF'));
@@ -85,7 +90,9 @@ for (const initial of ['v1146', 'v1144', 'off', 'on']) {
     assert.match(pre.find(x => x.n === 4).ok, /^info/);
     assert.equal(pre.find(x => x.n === 5).value, '2 行・配列でない行 0・記録 2・id の無い記録 1・オブジェクトでない記録 0・200 字より長いキー 0'); assert.equal(pre.find(x => x.n === 5).ok, 'OK');
     assert.equal(pre.find(x => x.n === 6).value, '2', 'tip_cf_odd (no store) and warnings_S9');
-    assert.equal(pre.find(x => x.n === 7).value, '1', 'the AM (no confirmed copy); the G4 and the Head Chef are confirmed; the retired one is not counted');
+    assert.equal(pre.find(x => x.n === 7).value, '2', 'the AM and the G2 (no confirmed copy); the G4 and the Head Chef are confirmed; the retired one is not counted');
+    assert.deepEqual([pre.find(x => x.n === 11).value, pre.find(x => x.n === 11).ok], ['G2 以上', 'OK']);
+    assert.deepEqual([pre.find(x => x.n === 12).value, pre.find(x => x.n === 12).ok], ['ある・見張りあり', 'OK']);
     assert.equal(pre.find(x => x.n === 8).value, '1', 'Head Chef without the chef mark');
     assert.equal(pre.find(x => x.n === 9).value, '1', 'office crew not linked');
     assert.equal(pre.find(x => x.n === 10).value, '1', 'office account with a missing employee');
@@ -116,7 +123,8 @@ for (const initial of ['v1146', 'v1144', 'off', 'on']) {
       assert.equal((await as(db, 'anon', `select key from public.app_state where key = $1`, [TIPREQ])).rows.length, 1, 'and still readable');
     }
     const rows = await resRows(db, POST);
-    assert.equal(rows.length, 15);
+    assert.equal(rows.length, 17);
+    assert.deepEqual([rows.find(x => x.n === 16).ok, rows.find(x => x.n === 17).ok], ['OK', 'OK']);
     rows.filter(x => !/^info/.test(x.ok)).forEach(x => assert.match(x.ok, /^OK/, x.n + ' ' + x.what + ' ' + x.value));
     assert.equal(rows.find(x => x.n === 3).value, '24');
     assert.equal(rows.find(x => x.n === 7).value, '5');
@@ -195,4 +203,22 @@ test('the migration stops (changes nothing) with no app_state, or with RLS off a
   assert.equal((await r(4)).value, '0 行・オブジェクトでない行 0・記録 0（確定 0・解除 0・形の合わない記録 0）・店と年の形でないキー 0・200 字より長いキー 0');
   assert.equal((await r(4)).ok, 'OK');
   await d2.close();
+});
+
+test('Codex #141 6781928056: the checks see a missing 1b SQL (G2 cannot be confirmed) and a missing change log (Tip Rate decisions stop)', async () => {
+  const db = await mkdb('off', { g2: false, efl: false });
+  let pre = await resRows(db, PRE);
+  assert.deepEqual([pre.find(x => x.n === 11).value, pre.find(x => x.n === 11).ok.slice(0, 2)], ['G3 以上（まだ）', 'NG']);
+  assert.deepEqual([pre.find(x => x.n === 12).value, pre.find(x => x.n === 12).ok.slice(0, 4)], ['ない', 'STOP']);
+  await db.exec(MIG);
+  let post = await resRows(db, POST);
+  assert.deepEqual([post.find(x => x.n === 16).ok.slice(0, 2), post.find(x => x.n === 17).ok.slice(0, 2)], ['NG', 'NG']);
+  // 変更記録の表はあるが見張りが無い：NG
+  await db.exec(EFL); await db.exec('drop trigger employees_field_log_trg on public.employees');
+  pre = await resRows(db, PRE);
+  assert.deepEqual([pre.find(x => x.n === 12).value, pre.find(x => x.n === 12).ok.slice(0, 2)], ['ある・見張りなし', 'NG']);
+  await db.exec(EFL); await db.exec(G2SQL);
+  post = await resRows(db, POST);
+  assert.deepEqual([post.find(x => x.n === 16).ok, post.find(x => x.n === 17).ok], ['OK', 'OK']);
+  await db.close();
 });

@@ -522,3 +522,43 @@ test('tpCheck: random edits by a staff member never decide anything; random deci
     if (own === 'ok') assert.ok(cloud.every(c => bare(next.find(n => n.id === c.id)) === bare(c)), 'not their own');
   }
 });
+
+test('v1147 (Codex #141 6781928056 P2-2): a GM (e-mail sign-in) who renames their own employee row still cannot decide their own old-name Tip Rate request; the rename history is server-only', async () => {
+  const mine = [{ id: 'tipG', name: 'Gina M', rate: 100, reason: 'x', status: '申請中', date: '2026/11/01' }];
+  // 名前を変える前：自分の申請は 403（今までどおり）
+  { const S = setup(); S.W.set(K('Gina M'), mine, T0);
+    const r = await S.put('@gm', K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')));
+    assert.equal(r.status, 403); assert.deepEqual(S.W.get(K('Gina M')), mine); }
+  // 社員の表の名前（列と data）を変えたあと：社員の変更記録に前の名前があるので、やはり 403（前は 200 で承認が入った）
+  for (const via of ['@gm', 'gm']) {
+    const S = setup({ fieldLog: [
+      { emp_id: 'E-GM', field: 'name', old_value: null, new_value: 'Gina M', emp_name: 'Gina M' },
+      { emp_id: 'E-GM', field: 'name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other' },
+      { emp_id: 'E-GM', field: 'col:name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other' },
+      { emp_id: 'E-4', field: 'name', old_value: 'Gina M', new_value: 'Leo Four', emp_name: 'Leo Four' },   // ほかの人の記録は見ない
+    ] });
+    S.W.emps = S.W.emps.map(e => (e.id === 'E-GM' ? { ...e, name: 'Zed Other', data: { name: 'Zed Other' } } : e));
+    if (via === 'gm') S.W.pins.tgm = { ...ME.gm, name: 'Zed Other' };   // PIN でログインし直した（印の名前も新しい名前）
+    S.W.set(K('Gina M'), mine, T0);
+    const r = await S.put(via, K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')));
+    assert.equal(r.status, 403, via + ' ' + JSON.stringify(r.j)); assert.deepEqual(S.W.get(K('Gina M')), mine);
+    // ほかの人の申請は決められる（前の名前の記録はその人のものだけ）
+    const k1 = await S.put(via, K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(k1.status, 200, via + ' decides others');
+  }
+  // 表の列（col:name）だけを書き換えた（data の名前はそのまま）：列の記録の前の名前も本人の名前
+  { const S = setup({ fieldLog: [{ emp_id: 'E-GM', field: 'col:name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other', note: 'column_only' }] });
+    S.W.emps = S.W.emps.map(e => (e.id === 'E-GM' ? { ...e, name: 'Zed Other', data: { name: 'Zed Other' } } : e));
+    S.W.set(K('Gina M'), mine, T0);
+    assert.equal((await S.put('@gm', K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')))).status, 403); }
+  // 変更記録の表が無い（SQL 20261029090000 の前）：決める人は本人かを確かめられないので決めない（500・何も書かない）。申請は今までどおり
+  { const S = setup({ fieldLogMissing: true });
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); assert.deepEqual(S.W.get(K('Kai One')), TIP0);
+    const p = await S.put('g1', K('Kai One'), [...TIP0, { id: 'tip9', name: 'Kai One', rate: 100, reason: 'y', status: '申請中', date: '2026/11/10' }], S.ex(K('Kai One')));
+    assert.equal(p.status, 200, 'a request by the person (no decision) does not need the history'); }
+  // 前の名前で、いまその名前のほかの人の申請を足すことはできない（申請は今の名前だけ）
+  { const S = setup({ fieldLog: [{ emp_id: 'E-1', field: 'name', old_value: 'Ria Two', new_value: 'Kai One', emp_name: 'Kai One' }] });
+    const r = await S.put('g1', 'spl_tip_requests_Ria Two', [{ id: 'tipX', name: 'Ria Two', rate: 100, reason: 'x', status: '申請中', date: '2026/11/10' }], { exists: false });
+    assert.equal(r.status, 403); }
+});

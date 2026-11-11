@@ -143,7 +143,12 @@ test('the v1147 bundle is the repository files as they are', () => {
   assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261116090000_secure_tip_cf.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-tip-cf-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-tip-cf-rollback.sql'));
+  // Codex #141 6781928056 の P2-1：1b（写しに G2 も）とその戻し
+  assert.equal(rd(D + '1b_SQL_写しにG2も.sql'), rd('supabase/migrations/20261116080000_wr_people_g2.sql'));
+  assert.equal(rd(D + '戻す_SQL_1b.sql'), rd('db/wr-people-g2-rollback.sql'));
   const one = rd(D + '2_関数_secure-state_index.ts');
+  assert.match(one, /async function protStores\(a\)/, 'store scopes from the GM/CEO-confirmed copy (P2-1)');
+  assert.match(one, /async function tipPastNames\(a\)/, 'past names from the change log (P2-2)');
   const handler = rd('supabase/functions/secure-state/handler.mjs');
   assert.ok(one.startsWith(handler), 'the one file starts with the handler as it is');
   const tail = one.slice(handler.length);
@@ -156,5 +161,5 @@ test('the v1147 bundle is the repository files as they are', () => {
   assert.match(one, /async function confChef\(a\)/, 'keeps the v1144 Head Chef check');
   assert.match(rd('supabase/functions/secure-state/index.ts'), /Deno\.serve\(createHandler\(\{ env: \(key: string\) => Deno\.env\.get\(key\) \}\)\);/);
   const how = rd(D + '手順.md');
-  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-tip-prep-v1146/2_関数_secure-state_index.ts', 'deploy/secure-tip-prep-v1146/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
+  for (const f of ['1_確かめ_読むだけ.sql', '1b_SQL_写しにG2も.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', '戻す_SQL_1b.sql', 'deploy/employee-field-log/', 'deploy/secure-tip-prep-v1146/2_関数_secure-state_index.ts', 'deploy/secure-tip-prep-v1146/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });

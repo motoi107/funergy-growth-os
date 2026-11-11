@@ -100,7 +100,8 @@ const GH = [{ id: 'gh1', title: 'shift', body: 'b1', author: 'Kai One', store: '
   { id: 'gh2', title: 'pay', body: 'b2', author: 'Bea One', store: 'S2', date: 'd', status: '未対応', replies: [] }];
 
 function world(o = {}) {
-  const W = makeWorld({ pins: ME, emps: EMPS.map(e => ({ ...e })), stores: STORES, mgr: {}, rlsHr: !!o.rlsHr, ...o });
+  // GM・CEO が確かめた写し（wr_people）。店長・リーダーの店はこの写しで（v1147・Codex #141 P2-1）
+  const W = makeWorld({ pins: ME, emps: EMPS.map(e => ({ ...e })), stores: STORES, mgr: {}, wrPeople: [{ emp_id: 'E-SM', role: 'staff', grade: 4, stores: ['S1'] }, { emp_id: 'E-SL', role: 'staff', grade: 3, stores: ['S2'] }], rlsHr: !!o.rlsHr, ...o });
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
   let clock = Date.UTC(2026, 10, 4, 10, 0, 0);
   W.ssHandler = (o.old ? createHandler1141 : createHandler)({ env, fetch: W.fetch, now: () => (clock += 1000) });

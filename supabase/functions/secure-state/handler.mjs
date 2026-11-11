@@ -218,7 +218,11 @@ export function tpCheck(key, cloud, value, a) {
   // 自分の行：tpPut の tipActorNames）のどれかと同じなら本人。名前が 1 つも分からない人は、本人かを決められないので決めない・申請もしない
   const mine = new Set([a && a.name, ...((a && Array.isArray(a.names)) ? a.names : [])].map(tipNk).filter(Boolean));
   const self = mine.has(tipNk(name));
-  const decider = !!(a && a.dec) && mine.size > 0 && !self;
+  // 決める人が自分の分かを見るときは、前の名前（社員の変更記録 employee_field_log：サーバーだけの表）も本人の名前とみなす。
+  // 社員の表の名前は公開の鍵で書けるので、名前を変えてから前の名前の申請を承認する道を止める（Codex #141 6781928056 の P2-2）。
+  // 申請（本人だけ）は今の名前だけ（前の名前で、いまその名前のほかの人の申請を足さない）
+  const past = new Set(((a && Array.isArray(a.past)) ? a.past : []).map(tipNk).filter(Boolean));
+  const decider = !!(a && a.dec) && mine.size > 0 && !self && !past.has(tipNk(name));
   for (const [id, o] of cBy) {
     const n = nBy.get(id);
     if (!n) return 'forbidden';   // 消さない（だれも）
@@ -623,6 +627,22 @@ export function createHandler(deps) {
       return Array.isArray(r) && r.length === 1 && !!r[0] && r[0].chef === true;
     } catch { return false; }
   }
+  // v1147（Codex #141 6781928056 の P2-1）：店のある範囲（Tip の確定・注意ログ・応募者・Career Score の店の人）を決める店。
+  //   社員の表の役割・肩書き・店・応援は公開の鍵で書けるので、それだけでは範囲に入れない。GM・CEO が確かめた写し（wr_people）があり、
+  //   その写しのグレードが 2 以上の人だけ、写しの店と whoami の店（今の社員の表）の重なりを返す（増える変更は確かめるまで効かない・減るのはすぐ）。
+  //   G2（リーダー）も写しに入れるのは SQL 20261116080000（wr_elevated を G2 以上に）。写しが無い・G2 未満・読めない・列が無いときは []（狭いほう）。
+  //   whoami の AM（確かめた写しの AM）は a.am・a.stores がもう写しとの重なりなので、呼ぶ側がそのまま使う
+  async function protStores(a) {
+    if (!a || a.role !== 'staff' || a.confirmed !== true || !(Number(a.grade) >= 2) || typeof a.emp !== 'string' || !a.emp) return [];
+    let c = null;
+    try {
+      const r = await rest('wr_people?emp_id=eq.' + encodeURIComponent(a.emp) + '&select=grade,stores');
+      c = Array.isArray(r) && r.length === 1 && obj(r[0]) ? r[0] : null;
+    } catch { return []; }
+    if (!c || !Number.isInteger(c.grade) || c.grade < 2) return [];
+    const cs = arr(c.stores);
+    return [...new Set(arr(a.stores).filter(s => cs.includes(s)))];
+  }
 
   // v1146：Tip Rate を決められる人か（今の画面と同じ。画面の Tip Rate の画面の承認・引き上げ＝ROLE_CONFIG の canApprove と v1135 の止め）。
   //   CEO・GM・確かめた AM：いつも。役割 g4（画面では AM と同じ扱い）：ワークセンターを使い始めるまで。
@@ -645,6 +665,21 @@ export function createHandler(deps) {
 
   // v1146（Codex #140 6766283780 の P3）：本人かを見るための、この人の名前。PIN の印・確かめた写しの名前（a.name）と、社員の表の自分の行の名前（列と data）。
   //   社員と結ばれていない人（社員 ID の無いメールのログイン）は a.name だけ（空なら本人かを決められない＝決めない・申請しない）。読めなければ失敗（500。端末は送り直す）
+  // v1147（Codex #141 6781928056 の P2-2）：この人の前の名前（社員の変更記録の name・col:name の前と後と、そのときの名前）。
+  //   社員の表の名前は公開の鍵で書けるので、メールのログイン（社員の表の名前しか分からない）の GM・CEO が自分の行の名前を変えると、
+  //   前の名前の自分の Tip Rate の申請を承認できた。決める人だけが呼ぶ。読めない（表が無い＝SQL 20261029090000 の前を含む）ときは失敗
+  //  （500。決めない：本人かを確かめられないので。端末は送り直す・断った印は付けない）
+  async function tipPastNames(a) {
+    if (!a || typeof a.emp !== 'string' || !a.emp) return [];
+    let r;
+    try {
+      r = await rest('employee_field_log?emp_id=eq.' + encodeURIComponent(a.emp) + '&field=in.(name,' + encodeURIComponent('"col:name"') + ')'
+        + '&select=old_value,new_value,emp_name&order=id.desc&limit=2000');
+    } catch { throw err('db', 500); }   // 表が無い（404）も 500 にする（404 は「関数が無い」と読まれるので）
+    const out = [];
+    for (const x of (Array.isArray(r) ? r : [])) for (const v of [x && x.old_value, x && x.new_value, x && x.emp_name]) if (typeof v === 'string' && v.length <= 200) out.push(v);
+    return out;
+  }
   async function tipActorNames(a) {
     const out = [a && a.name];
     if (a && typeof a.emp === 'string' && a.emp) {
@@ -786,7 +821,9 @@ export function createHandler(deps) {
     // Score管理（career_cfg）の役職：アプリの役割と同じ名前
     const R = ['office', 'office_crew', 'am'].includes(a.role) ? a.role
       : a.role === 'staff' ? (isChef ? 'chef' : a.grade >= 4 ? 'g4' : a.grade === 3 ? 'sl' : '') : '';
-    const S = a.role === 'am' ? [...new Set([...a.am, ...a.stores])] : a.stores;
+    // 店：AM は whoami（確かめた写しとの重なり）。ほかの人は GM・CEO が確かめた写し（G2 以上）との重なりだけ（社員の表の役割・肩書き・店は
+    // 公開の鍵で書けるので、写しの無い人は店の人を見ない＝自分の分だけ：v1147・Codex #141 6781928056 の P2-1 と同じ）
+    const S = a.role === 'am' ? [...new Set([...a.am, ...a.stores])] : (a.role === 'staff' ? await protStores(a) : a.stores);
     const inStores = p => S.length > 0 && (S.includes(p.store) || p.support.some(x => S.includes(x)));
     const okOf = p => {
       if (p.out) return null;
@@ -991,15 +1028,22 @@ export function createHandler(deps) {
     // v1140：Career Score（cs_have を送ってきたアプリ＝v1140 から。前の版のアプリには付けない）
     const wantCs = obj(b.cs_have) !== null;
     const wantSc = obj(b.sc_have) !== null;   // v1147：sc_have を送ってきたアプリ（v1147 から）にだけ、Tip の期間の確定・注意ログを付ける
-    const idxAll = (levelOf(a) === 'none' && !wantSc) ? null : await index();
+    // 見られる店を先に決める（何も見ない人＝G1 などに、全部の行の一覧を読まない：Claude のレビュー 6781770026 の P3）
+    let scS = null, scErr = false;
+    if (wantSc) { try { scS = await scScope(a); } catch (e) { console.error('secure-state sc scope', safeErr(e)); scErr = true; } }
+    const scAny = !!scS && scOut(scS).level !== 'none';
+    const idxAll = (levelOf(a) === 'none' && !scAny) ? null : await index();
     const out = await pullKb(a, b, idxAll && idxAll.filter(x => ssIsKey(x.key)));
     if (wantCs) {
       try { out.cs = await csPull(a, b, idxAll && idxAll.filter(x => csIsKey(x.key))); }
       catch (e) { console.error('secure-state cs pull', safeErr(e)); out.cs = { error: 'scope' }; }   // 見られる人を決められなかった：端末の写しはそのまま
     }
     if (wantSc) {
-      try { out.sc = await scPull(a, b, idxAll && idxAll.filter(x => scIsKey(x.key))); }
-      catch (e) { console.error('secure-state sc pull', safeErr(e)); out.sc = { error: 'scope' }; }   // 見られる店を決められなかった：端末の写しはそのまま
+      if (scErr) out.sc = { error: 'scope' };   // 見られる店を決められなかった：端末の写しはそのまま
+      else {
+        try { out.sc = await scPull(a, b, idxAll && idxAll.filter(x => scIsKey(x.key)), scS); }
+        catch (e) { console.error('secure-state sc pull', safeErr(e)); out.sc = { error: 'scope' }; }
+      }
     }
     return out;
   }
@@ -1090,7 +1134,8 @@ export function createHandler(deps) {
     if (e && (e.exists !== !!c || (c && e.exists && tsMicro(e.updated_at) !== tsMicro(c.updated_at)))) throw err('conflict', 409);
     const dec = key.startsWith(TP_TIP_PRE) ? await tipDecider(a) : false;   // 名前の分からない人は申請を足せない・決めない（本人かを決められない：tpCheck）
     const names = key.startsWith(TP_TIP_PRE) ? await tipActorNames(a) : [];
-    const v = tpCheck(key, c ? c.value : null, b.value, { role: a.role, name: a.name, names, dec });
+    const past = dec ? await tipPastNames(a) : [];
+    const v = tpCheck(key, c ? c.value : null, b.value, { role: a.role, name: a.name, names, dec, past });
     if (v === 'bad') throw bad();
     if (v !== 'ok') throw err('forbidden', 403);
     // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）
@@ -1100,12 +1145,13 @@ export function createHandler(deps) {
   // ================================================================ v1147：Tip の期間の確定・注意ログ（店ごと。docs/SECURE_TIP_CF_V1147_JA.md）
   // 見られる店（今の画面と同じ。Moto さん 11/10「読む人も書く人も絞る」）：
   //   Tip の確定（チップ管理を開ける人）：CEO・GM・経理・事務Crew＝全店／確かめた AM＝担当の店と自分の店・応援の店／
-  //     GM・CEO が確かめた Head Chef＝全店／ほかの G2〜G4・店長・AM・Head Chef（社員の表の役割）＝自分の店と応援の店（whoami の店）／G1 など＝なし。
+  //     GM・CEO が確かめた Head Chef＝全店／ほかの G2〜G4・店長・リーダー・Head Chef（社員の表の役割で、GM・CEO が確かめた写しが G2 以上の人）＝
+  //     写しの店と whoami の店の重なり（protStores）／確かめがまだの人・G1 など＝なし（Codex #141 6781928056 の P2-1）。
   //   注意ログ（必須チェックを開ける人。事務Crew は開けない）：同じ店。
   // 書ける人：Tip の確定＝見られる人（確定のボタンは画面を開ける人みんな）。確定の解除・例外承認＝CEO・GM・経理（画面と同じ）。
   //   注意ログを足す＝記録のボタンを押せる人（CEO・GM・確かめた AM・GM・CEO が確かめた G4 以上の G4・Head Chef）。
-  // 社員の表の役割は公開の鍵で書けるので、広い範囲（全店・注意ログを足す）は GM・CEO が確かめた写し（whoami の grade・confirmed、wr_people.chef）でも
-  // 合うときだけ。店のログイン（店舗の PIN）は whoami が断る（401）＝何も見えない。
+  // 社員の表の役割・店・応援は公開の鍵で書けるので、範囲は GM・CEO が確かめた写し（whoami の grade・confirmed、wr_people の grade・stores・chef）で決め、
+  // 社員の表の役割は狭めることにだけ使う。店のログイン（店舗の PIN）は whoami が断る（401）＝何も見えない。
   const SC_NONE = { tip: false, wn: false, all: false, stores: [], confirm: false, unlock: false, wnWrite: false };
   async function scScope(a) {
     const empOk = async () => {
@@ -1126,11 +1172,14 @@ export function createHandler(deps) {
     const S = [...new Set([...(a.role === 'am' ? a.am : []), ...a.stores])].filter(x => typeof x === 'string' && x);
     if (a.role === 'am') return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: true };
     if (a.role !== 'staff') return SC_NONE;
+    // 画面と同じ役割（今の社員の表）の人だけ。役割は公開の鍵で書けるので、狭めることにだけ使う（Codex #141 6781928056 の P2-1）
+    if (!['g4', 'am', 'chef', 'sl', 'g2'].includes(rr)) return SC_NONE;
     const g4ok = a.confirmed === true && Number(a.grade) >= 4;
     if (rr === 'chef' && g4ok && await confChef(a)) return { tip: true, wn: true, all: true, stores: [], confirm: true, unlock: false, wnWrite: true };
-    if (['g4', 'am', 'chef'].includes(rr) && g4ok) return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: true };
-    if (['g4', 'am', 'chef', 'sl', 'g2'].includes(rr)) return { tip: true, wn: true, all: false, stores: S, confirm: true, unlock: false, wnWrite: false };
-    return SC_NONE;
+    // 店は GM・CEO が確かめた写し（G2 以上）と今の社員の表の重なり。写しの無い人（確かめがまだの AM・G4・Head Chef・店長・リーダーも）は何も見ない
+    const P = await protStores(a);
+    if (!P.length) return SC_NONE;
+    return { tip: true, wn: true, all: false, stores: P, confirm: true, unlock: false, wnWrite: ['g4', 'am', 'chef'].includes(rr) && g4ok };
   }
   const scOut = sc => ({ level: (!sc.tip && !sc.wn) ? 'none' : (sc.all ? 'all' : 'scoped'), stores: sc.all ? null : [...sc.stores].sort(),
     tip: sc.tip, wn: sc.wn, confirm: sc.confirm, unlock: sc.unlock, wnWrite: sc.wnWrite });
@@ -1146,8 +1195,8 @@ export function createHandler(deps) {
     }
     return out.filter(r => r && scIsKey(r.key));
   }
-  async function scPull(a, b, idx) {
-    const sc = await scScope(a), o = scOut(sc);
+  async function scPull(a, b, idx, sc0) {
+    const sc = sc0 || await scScope(a), o = scOut(sc);
     if (o.level === 'none') return { ...o, index: [], rows: [] };
     const have = obj(b.sc_have) || {};
     let base;   // [{key, v（元の行の印）, row?}]
@@ -1356,7 +1405,10 @@ export function createHandler(deps) {
       }
       return [...new Set(out)];
     };
-    const own = a.stores.includes(home) ? [home] : [];                           // 自分の店（配属の店。whoami の店の中にあるときだけ）
+    // 自分の店（配属の店）：AM は whoami の店（確かめた写しとの重なり）の中にあるとき。ほかの人は GM・CEO が確かめた写し（G2 以上）の店の中にもあるときだけ
+    //（社員の表の役割・店は公開の鍵で書けるので：v1147・Codex #141 6781928056 の P2-1 と同じ。写しの無い人は自分の相談だけ）
+    const PS = a.role === 'am' ? a.stores : await protStores(a);
+    const own = PS.includes(home) ? [home] : [];
     // G4・店長（Store Manager＝G4）の範囲は、GM・CEO が確かめた写しのある人だけ（社員の表の役割・肩書きは公開の鍵で書けるので、
     // 確かめた写しの無い人のグレードは whoami が 3 までにする。独立レビュー 7e3f878 P2-3）。確かめがまだの AM・G4 は G3 と同じ（配属の店）
     const g4ok = a.confirmed === true && Number(a.grade) >= 4;

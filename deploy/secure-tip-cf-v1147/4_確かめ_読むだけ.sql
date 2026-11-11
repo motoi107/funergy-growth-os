@@ -104,5 +104,20 @@ select 15, 'app_state を使う view で、公開の鍵・ログインで読め�
  where n.nspname = 'public' and c.relkind in ('v', 'm') and pg_get_viewdef(c.oid) ilike '%app_state%'
    and not coalesce('security_invoker=true' = any(c.reloptions) or 'security_invoker=on' = any(c.reloptions), false)
    and (has_table_privilege('anon', c.oid, 'select,insert,update,delete') or has_table_privilege('authenticated', c.oid, 'select,insert,update,delete'));
+-- v1147（Codex #141 6781928056 の P2-1・P2-2）：写しに G2 も入る（1b の SQL）と、社員の変更記録（Tip Rate を決める人の本人かの確かめ）
+insert into sc_chk
+select 16, '写しに入れる人が G2 以上（1b の SQL 20261116080000）',
+       case when to_regprocedure('public.wr_elevated(jsonb)') is null then 'ない'
+            when pg_get_functiondef(to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 2)%' then 'G2 以上' else 'G3 以上' end,
+       case when to_regprocedure('public.wr_elevated(jsonb)') is not null and pg_get_functiondef(to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 2)%' then 'OK'
+            else 'NG（G2 は確かめられず、店の Tip の確定・注意ログなどを見られません。1b の SQL を）' end;
+insert into sc_chk
+select 17, '社員の変更記録（employee_field_log と見張り）',
+       case when to_regclass('public.employee_field_log') is null then 'ない'
+            when exists (select 1 from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_field_log_trg' and not t.tgisinternal) then 'ある・見張りあり'
+            else 'ある・見張りなし' end,
+       case when to_regclass('public.employee_field_log') is not null
+             and exists (select 1 from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_field_log_trg' and not t.tgisinternal) then 'OK'
+            else 'NG（Tip Rate の承認・却下・引き上げが止まります。deploy/employee-field-log/ の SQL を）' end;
 select n, what, value, ok from sc_chk order by n;
 rollback;

@@ -50,20 +50,25 @@ union all
 select 6, '店の表に無い店の行（CEO・GM・経理にだけ見える）',
        (select count(*) from sc_store x where x.st is null or x.st not in (select st.id::text from public.stores st))::text, 'info'
 union all
--- 社員の表で AM・G4・Head Chef なのに、GM・CEO の確かめ（ワークセンター › 承認・閲覧の権限の確かめ）がまだの人：
--- 確かめるまで、注意ログを記録できない（読むのと Tip の確定は自分の店と応援の店だけ）
-select 7, '確かめがまだの AM・G4・Head Chef（注意ログを記録できない）',
+-- 社員の表で AM・G2 以上・Head Chef・店長・リーダーなのに、GM・CEO の確かめ（ワークセンター › 承認・閲覧の権限の確かめ）がまだの人：
+-- 関数 v1147 では、確かめるまで店のある範囲（Tip の期間の確定・注意ログ・応募者・Career Score の店の人）を何も見ない（自分の分だけ）。
+-- 社員の表の役割・肩書き・店は公開の鍵で書けるので（Codex #141 6781928056 の P2-1）。G2 を確かめるには先に 1b の SQL（20261116080000）
+select 7, '確かめがまだの AM・G2 以上・Head Chef・店長・リーダー（店の Tip の確定・注意ログ・応募者・Career Score を見られない）',
        (select count(*) from public.employees e
-         where (coalesce(e.role, e.data->>'role', '') in ('am', 'g4', 'chef') or btrim(coalesce(e.title, e.data->>'title', '')) in ('Head Chef', 'Corporate Chef'))
+         where (coalesce(e.role, e.data->>'role', '') in ('am', 'g4', 'chef', 'sl', 'g2')
+                or btrim(coalesce(e.title, e.data->>'title', '')) in ('Head Chef', 'Corporate Chef', 'Store Manager', 'Area Manager', 'Office Manager', 'Accountant', 'Customer Service Manager',
+                  'Server Leader', 'Kitchen Leader', 'Operation Leader', 'Store Leader', 'Accounting Leader', 'Crew Leader', 'Office Crew Leader'))
            and coalesce(e.status, '') <> '退職' and coalesce(e.data->>'status', '') <> '退職' and coalesce(e.data->>'osDisabled', '') <> 'true'
            and not exists (select 1 from public.manager_auth m where m.emp_id::text = e.id::text and m.role in ('ceo', 'gm', 'office', 'office_crew'))
-           and not exists (select 1 from public.wr_people w where w.emp_id = e.id::text and (w.role = 'am' or w.grade >= 4)))::text,
+           and not exists (select 1 from public.wr_people w where w.emp_id = e.id::text and (w.role = 'am' or w.grade >= 2)))::text,
        case when (select count(*) from public.employees e
-         where (coalesce(e.role, e.data->>'role', '') in ('am', 'g4', 'chef') or btrim(coalesce(e.title, e.data->>'title', '')) in ('Head Chef', 'Corporate Chef'))
+         where (coalesce(e.role, e.data->>'role', '') in ('am', 'g4', 'chef', 'sl', 'g2')
+                or btrim(coalesce(e.title, e.data->>'title', '')) in ('Head Chef', 'Corporate Chef', 'Store Manager', 'Area Manager', 'Office Manager', 'Accountant', 'Customer Service Manager',
+                  'Server Leader', 'Kitchen Leader', 'Operation Leader', 'Store Leader', 'Accounting Leader', 'Crew Leader', 'Office Crew Leader'))
            and coalesce(e.status, '') <> '退職' and coalesce(e.data->>'status', '') <> '退職' and coalesce(e.data->>'osDisabled', '') <> 'true'
            and not exists (select 1 from public.manager_auth m where m.emp_id::text = e.id::text and m.role in ('ceo', 'gm', 'office', 'office_crew'))
-           and not exists (select 1 from public.wr_people w where w.emp_id = e.id::text and (w.role = 'am' or w.grade >= 4))) = 0 then 'OK'
-            else 'info（GM・CEO が「承認・閲覧の権限の確かめ」で確かめると記録できます）' end
+           and not exists (select 1 from public.wr_people w where w.emp_id = e.id::text and (w.role = 'am' or w.grade >= 2))) = 0 then 'OK'
+            else 'info（1b の SQL のあと、GM・CEO が「承認・閲覧の権限の確かめ」で確かめると見られます。② の前に）' end
 union all
 -- Head Chef で、GM・CEO が確かめた写しに Head Chef の印（wr_people.chef）が無い人：全店ではなく自分の店と応援の店だけ（v1144 の Career Score と同じ）
 select 8, 'Head Chef の印がまだの Head Chef（全店ではなく自分の店だけ）',
@@ -87,4 +92,22 @@ select 10, 'CEO・GM・経理・事務Crew のアカウントで、社員 ID が
   from public.manager_auth m
  where m.role in ('ceo', 'gm', 'office', 'office_crew') and coalesce(m.emp_id::text, '') <> ''
    and not exists (select 1 from public.employees e where e.id::text = m.emp_id::text)
+union all
+-- 1b の SQL（20261116080000）：GM・CEO が確かめた写しに G2 も入る（入れないと G2 は確かめられない＝店の Tip の確定・注意ログなどを見られない）
+select 11, '写しに入れる人が G2 以上（1b の SQL 20261116080000）',
+       case when to_regprocedure('public.wr_elevated(jsonb)') is null then 'ない'
+            when pg_get_functiondef(to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 2)%' then 'G2 以上' else 'G3 以上（まだ）' end,
+       case when to_regprocedure('public.wr_elevated(jsonb)') is null then 'STOP（ワークセンターの申請の SQL がありません。Claude に）'
+            when pg_get_functiondef(to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 2)%' then 'OK'
+            else 'NG（② の前に 1b の SQL を流し、GM・CEO が確かめてください）' end
+union all
+-- 社員の変更記録（10/29・deploy/employee-field-log）：関数 v1147 は、Tip Rate を決める人が自分の前の名前の申請を決めないよう、この表で前の名前を見る
+-- （Codex #141 6781928056 の P2-2）。無いと Tip Rate の承認・却下・引き上げは止まる（500）
+select 12, '社員の変更記録（employee_field_log・Tip Rate を決める人の本人かの確かめ）',
+       case when to_regclass('public.employee_field_log') is null then 'ない'
+            when exists (select 1 from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_field_log_trg' and not t.tgisinternal) then 'ある・見張りあり'
+            else 'ある・見張りなし' end,
+       case when to_regclass('public.employee_field_log') is null then 'STOP（先に deploy/employee-field-log/ の SQL を流してください）'
+            when exists (select 1 from pg_trigger t where t.tgrelid = 'public.employees'::regclass and t.tgname = 'employees_field_log_trg' and not t.tgisinternal) then 'OK'
+            else 'NG（見張りがありません。deploy/employee-field-log/ の SQL を流し直してください）' end
 order by n;

@@ -18,7 +18,7 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 
 export function makeWorld(o = {}) {
   const W = {
-    rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
+    rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], fieldLog: o.fieldLog || [], fieldLogMissing: !!o.fieldLogMissing, mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
     wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, rlsSc: !!o.rlsSc, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
     calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
@@ -94,9 +94,17 @@ export function makeWorld(o = {}) {
       // v1144（Codex #138 P1-1）：列 chef（SQL 20261113080000）。wrNoChef：その SQL の前（列が無い＝PostgREST は 400）
       if (W.wrPeopleDown) return J({ message: 'down' }, 500);
       if (W.wrNoChef && sel.includes('chef')) return J({ code: '42703', message: 'column wr_people.chef does not exist' }, 400);
-      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade, chef: x.chef === true });
+      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade, chef: x.chef === true, stores: x.stores || [], am_stores: x.am_stores || [] });
       return J((W.wrPeople || []).filter(x => (!q.get('role') || x.role === q.get('role').replace(/^eq\./, '')) && (!q.get('emp_id') || x.emp_id === q.get('emp_id').replace(/^eq\./, '')))
         .map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+    }
+    if (p === '/rest/v1/employee_field_log') {
+      // v1147（Codex #141 P2-2）：社員の変更記録（サーバーだけの表）。fieldLogMissing：表が無い（SQL 20261029090000 の前）
+      if (W.fieldLogMissing) return J({ code: 'PGRST205', message: "Could not find the table 'public.employee_field_log'" }, 404);
+      const emp = (q.get('emp_id') || '').replace(/^eq\./, ''), f = q.get('field') || '';
+      const fs = f.startsWith('in.(') ? splitList(f.slice(4, -1)) : null;
+      const sel = (q.get('select') || 'emp_id,field,old_value,new_value,emp_name').split(',');
+      return J(W.fieldLog.filter(x => x.emp_id === emp && (!fs || fs.includes(x.field))).slice().reverse().map(x => Object.fromEntries(sel.map(c => [c, x[c] === undefined ? null : x[c]]))));
     }
     if (p === '/rest/v1/stores') {
       if (W.storesDown) return J({ message: 'down' }, 500);

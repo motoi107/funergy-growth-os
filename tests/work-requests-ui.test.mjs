@@ -108,7 +108,7 @@ test('before it is live: the screen says so; the GM turns it on (old requests co
   // 使い始める：先に権限の確かめ（増える人は最初は選ばない。GM が選ぶ）→ 選んで使い始める
   gm.ctx.wrGoLive(true); await gm.settle();
   const pm = gm.dom.els['wr-people'].innerHTML;
-  assert.match(pm, /使い始める前に、AM・G3 以上の人と担当の店を確かめてください/);
+  assert.match(pm, /使い始める前に、AM・G2 以上の人と担当の店を確かめてください/);
   assert.match(pm, /Ami Area/); assert.match(pm, /Sam Store/); assert.match(pm, /権限が増える/);
   assert.doesNotMatch(pm, /type="checkbox" checked/, 'raises are not picked for the GM');
   assert.match(pm, /このまま使い始める/);
@@ -333,7 +333,7 @@ test('Codex #138 P1-1: the check screen names a Head Chef; a confirmed store man
   await srv.pg.exec(`update public.employees set title = 'Head Chef', role = 'chef' where id = 'E6'; set role service_role;`);
   const sam = await app(srv, 'E6', { role: 'chef' });
   const hs = await sam.render();
-  assert.match(hs, /権限が増える変更（AM・G3 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです/);
+  assert.match(hs, /権限が増える変更（AM・G2 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです/);
   assert.doesNotMatch(hs, /それまでは自分の申請だけです/);
   const gm = await app(srv, 'E2');
   assert.match(await gm.render(), /Head Chef になる/);

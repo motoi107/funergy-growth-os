@@ -31,15 +31,16 @@ const EMPS = [
 const U = n => 'aaaaaaaa-0000-0000-0000-00000000000' + n;
 const MGR = { [U(1)]: { role: 'gm', emp_id: 'E-GM' }, [U(5)]: { role: 'ceo', emp_id: 'E-CEO' }, [U(2)]: { role: 'office', emp_id: 'E-OF' }, [U(3)]: { role: 'office_crew', emp_id: 'E-OC' }, [U(4)]: { role: 'office', emp_id: null } };
 const USERS = { gm: U(1), of: U(2), oc: U(3), noemp: U(4) };
-const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5 }, { emp_id: 'E-4', role: 'g4', grade: 4 }, { emp_id: 'E-4b', role: 'g4', grade: 4 }, { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true }];   // v1144：Head Chef は確かめた写しでも Head Chef（chef）
+const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S2'] }, { emp_id: 'E-4', role: 'g4', grade: 4, stores: ['S1'] }, { emp_id: 'E-4b', role: 'g4', grade: 4, stores: ['S2'] }, { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true, stores: ['S1'] },
+  { emp_id: 'E-3', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-2', role: 'staff', grade: 2, stores: ['S1'] }];   // v1147：G2・G3 の店も確かめた写しで（Codex #141 P2-1）   // v1144：Head Chef は確かめた写しでも Head Chef（chef）
 const ME = {
   gm: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'Gina M' },
   am: { emp: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S2'], name: 'Amy Area' },
-  g4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Leo Four' },
-  g3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Three' },
-  g2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cora Two' },
+  g4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Leo Four', confirmed: true },
+  g3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Three', confirmed: true },
+  g2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cora Two', confirmed: true },
   g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
-  chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken' },
+  chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken', confirmed: true },
 };
 const NAMES = EMPS.map(e => e.name);
 const T0 = '2026-11-03T09:00:00.000000+00:00';
@@ -539,4 +540,23 @@ test('Score管理 grants never reach CEO/GM rows or a confirmed AM, even when th
       assert.equal((await put(S, who, 'lss_emp_' + n, { scores: { 'A-1': 3 } })).status, 403, who + ' must not write ' + n);
     }
   }
+});
+
+test('v1147 (Codex #141 6781928056 P2-1, the same root): a crew who rewrites their own title / role / store gets no store people; a confirmed G2 or G3 only in the confirmed stores', async () => {
+  const S = setup(); seed(S.W);
+  // Crew（E-1）が自分の行を Server Leader（G3）・店 S1 に書き換えた：whoami は写しが無いので G3 まで・今の社員の表の店（確かめは無い）
+  S.W.pins.tforge = { emp: 'E-1', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Kai One', confirmed: false };
+  S.W.emps = S.W.emps.map(e => (e.id === 'E-1' ? { ...e, role: 'sl', title: 'Server Leader' } : e));
+  const f = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tforge' });
+  assert.equal(f.status, 200); assert.deepEqual(emps(f.j), ['Kai One'], 'only their own points');
+  // 確かめた G2：写しの店（S1）の G1。確かめていない店（社員の表で足した S2）の人は入らない
+  S.W.emps = EMPS.map(e => ({ ...e }));
+  S.W.pins.tg2x = { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1', 'S2'], am_stores: [], name: 'Cora Two', confirmed: true };
+  const g = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tg2x' });
+  assert.ok(!emps(g.j).includes('Ben S2'), 'a store not in the confirmed copy');
+  assert.ok(emps(g.j).includes('Kai One'), 'their own store G1');
+  // 写しの無い G2（確かめがまだ）：自分の分だけ
+  S.W.wrPeople = S.W.wrPeople.filter(x => x.emp_id !== 'E-2');
+  const u = await S.call({ action: 'pull', cs_have: {}, pin_session: 'tg2x' });
+  assert.deepEqual(emps(u.j), ['Cora Two']);
 });

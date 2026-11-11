@@ -17,11 +17,25 @@ const EMPS = [
   { id: 'E-3', name: 'Sal Three', store: 'S1', role: 'sl', title: 'Store Leader' },
   { id: 'E-4X', name: 'Xena Four', store: 'S2', role: 'g4', title: 'Store Manager' },          // whoami が G4 でも、GM・CEO の確かめの印が無い（ふつうは起きない・二重の守り）
   { id: 'E-4L', name: 'Lou Four', store: 'S1', role: 'g4', title: 'Store Manager' },           // 社員の表は g4 だが、GM・CEO が確かめたのは G3
-  { id: 'E-2', name: 'Ria Two', store: 'S2', role: 'g2', title: 'Crew Leader' },
+  { id: 'E-2', name: 'Ria Two', store: 'S2', support: ['S1'], role: 'g2', title: 'Crew Leader' },   // 応援の S1 は GM・CEO の確かめがまだ（写しは S2 だけ）
+  { id: 'E-2U', name: 'Uri Two', store: 'S2', role: 'g2', title: 'Crew Leader' },             // G2 だが GM・CEO の確かめがまだ（写しが無い）
+  { id: 'E-1F', name: 'Fay One', store: 'S2', role: 'g2', title: 'Crew Leader' },             // 本当は G1。公開の鍵で役割・店を書き換えた（Codex #141 P2-1 の場面）
+  { id: 'E-1C', name: 'Cy One', store: 'S1', role: 'g2', title: 'Crew Leader' },              // 写しはあるが G1（前の写し）
+  { id: 'E-3C', name: 'Cal Crew', store: 'S1', role: 'crew', title: 'Server Leader' },        // 写しは G3 だが、社員の表の役割は crew（画面でもチップ管理を開けない）
+  { id: 'E-2D', name: 'Dee Down', store: 'S2', role: 'g2', title: 'Crew' },                   // 写しは G2 だが、今の社員の表は G1（whoami は狭いほうの 1）
   { id: 'E-CH', name: 'Chef Ken', store: 'S1', role: 'chef', title: 'Head Chef' },
   { id: 'E-CU', name: 'Chef Uno', store: 'S2', role: 'chef', title: 'Head Chef' },           // GM・CEO が確かめたのは G4 だが Head Chef の印が無い
   { id: 'E-1', name: 'Kai One', store: 'S1', role: 'crew', title: 'Crew' },
   { id: 'E-OUT', name: 'Gone Lead', store: 'S1', role: 'sl', title: 'Store Leader', status: '退職' },
+];
+// GM・CEO が確かめた写し（wr_people）。店のある範囲はこの写し（G2 以上）の店と whoami の店の重なり（v1147・Codex #141 P2-1）
+const WRP = [
+  { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true, stores: ['S1'] }, { emp_id: 'E-CU', role: 'staff', grade: 4, chef: false, stores: ['S2'] },
+  { emp_id: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S3'] }, { emp_id: 'E-4L', role: 'staff', grade: 3, stores: ['S1'] },
+  { emp_id: 'E-3', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-2', role: 'staff', grade: 2, stores: ['S2'] },
+  { emp_id: 'E-1C', role: 'staff', grade: 1, stores: ['S1'] }, { emp_id: 'E-OUT', role: 'staff', grade: 3, stores: ['S1'] },
+  { emp_id: 'E-3C', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-2D', role: 'staff', grade: 2, stores: ['S2'] },
+  { emp_id: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S1', 'S2'] },
 ];
 const U = n => 'aaaaaaaa-0000-0000-0000-00000000000' + n;
 const MGR = { [U(1)]: { role: 'gm', emp_id: 'E-GM' }, [U(2)]: { role: 'office', emp_id: 'E-OF' }, [U(3)]: { role: 'office', emp_id: null }, [U(4)]: { role: 'ceo', emp_id: 'E-GONE' } };
@@ -37,7 +51,12 @@ const ME = {
   g4x: { emp: 'E-4X', role: 'staff', grade: 4, stores: ['S2'], am_stores: [], name: 'Xena Four', confirmed: false },
   g4lo: { emp: 'E-4L', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Lou Four', confirmed: true },
   g3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sal Three', confirmed: true },
-  g2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S2'], am_stores: [], name: 'Ria Two', confirmed: false },
+  g2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1', 'S2'], am_stores: [], name: 'Ria Two', confirmed: true },   // whoami は G2 の店を今の社員の表から（応援も）
+  g2u: { emp: 'E-2U', role: 'staff', grade: 2, stores: ['S2'], am_stores: [], name: 'Uri Two', confirmed: false },
+  g1f: { emp: 'E-1F', role: 'staff', grade: 2, stores: ['S2'], am_stores: [], name: 'Fay One', confirmed: false },   // whoami：写しが無いので G3 まで・今の社員の表の店
+  g1c: { emp: 'E-1C', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cy One', confirmed: true },   // whoami が（もし）2 を返しても、写しが G1 なら何も（二重の守り）
+  g3c: { emp: 'E-3C', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Cal Crew', confirmed: true },
+  g2d: { emp: 'E-2D', role: 'staff', grade: 1, stores: ['S2'], am_stores: [], name: 'Dee Down', confirmed: true },
   chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken', confirmed: true },
   chefu: { emp: 'E-CU', role: 'staff', grade: 4, stores: ['S2'], am_stores: [], name: 'Chef Uno', confirmed: true },
   g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One', confirmed: false },
@@ -56,7 +75,7 @@ const WOLD = { date: '2026/10/01 10:00', by: 'Yuki', reason: '必須タスク未
 const WNEW = (n = 1) => ({ date: '2026/11/10 09:00', by: 'Store Manager', reason: '必須タスク未完了 ' + n + '件 (閉店)', id: 'wN' + n, _mut: 1762700000000 + n });
 
 function setup(o = {}) {
-  const W = makeWorld({ emps: EMPS.map(e => ({ ...e })), mgr: MGR, users: USERS, wrPeople: [{ emp_id: 'E-CH', role: 'staff', grade: 4, chef: true }, { emp_id: 'E-CU', role: 'staff', grade: 4, chef: false }],
+  const W = makeWorld({ emps: EMPS.map(e => ({ ...e })), mgr: MGR, users: USERS, wrPeople: WRP.map(x => ({ ...x })),
     pins: Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), ...o });
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
   const handle = createHandler({ env, fetch: (u, opt) => W.fetch(u, opt), now: () => Date.UTC(2026, 10, 10, 10, 0, 0) });
@@ -108,10 +127,12 @@ test('pull: who receives which stores (the same as the screens today); rows are 
     oc: ['all', ALL_SC.filter(k => k.startsWith('tip_cf_'))],                                        // 事務Crew：チップ管理だけ（必須チェックは開けない）
     am: ['scoped', ['tip_cf_S1_2025', 'tip_cf_S1_2026', 'tip_cf_S2_2026', 'warnings_S1', 'warnings_S2']],   // 担当の店（S1・S2）と自分の店
     g4: ['scoped', ['tip_cf_S1_2025', 'tip_cf_S1_2026', 'tip_cf_S3_2026', 'warnings_S1']],                // 自分の店と応援の店
-    g4u: ['scoped', ['tip_cf_S2_2026', 'warnings_S2']],
-    g4x: ['scoped', ['tip_cf_S2_2026', 'warnings_S2']], g4lo: ['scoped', ['tip_cf_S1_2025', 'tip_cf_S1_2026', 'warnings_S1']],
+    g4u: ['none', []], g4x: ['none', []],                                                              // GM・CEO の確かめがまだ：社員の表が G4 でも何も（Codex #141 P2-1）
+    g4lo: ['scoped', ['tip_cf_S1_2025', 'tip_cf_S1_2026', 'warnings_S1']],
     g3: ['scoped', ['tip_cf_S1_2025', 'tip_cf_S1_2026', 'warnings_S1']],
-    g2: ['scoped', ['tip_cf_S2_2026', 'warnings_S2']],
+    g2: ['scoped', ['tip_cf_S2_2026', 'warnings_S2']],                                                 // 確かめた G2：写しの店だけ（確かめていない応援の S1 は入らない）
+    g2u: ['none', []], g1f: ['none', []], g1c: ['none', []],                                           // 写しの無い G2・役割と店を書き換えた G1・写しが G1
+    g3c: ['none', []], g2d: ['none', []],                                                              // 役割が画面の外（crew）・今の社員の表で G1 に下がった
     chef: ['all', ALL_SC],                                                                             // GM・CEO が確かめた Head Chef：全店
     chefu: ['scoped', ['tip_cf_S2_2026', 'warnings_S2']],                                              // Head Chef の印が無い：自分の店だけ（確かめた G4 と同じ）
     g1: ['none', []], out: ['none', []], odd: ['none', []],
@@ -334,4 +355,41 @@ test('unit: tcfCheck / wnCheck', () => {
   assert.equal(tcfCheck('2026', { '2026-11-01': CF('2026-11-01') }, { '2026-11-01': CF('2026-11-01', { totalFinal: 9 }) }, sc), 'forbidden', 'rewriting a live confirmation needs the unlock right');
   assert.equal(tcfCheck('2026', { '2026-11-01': CF('2026-11-01') }, { '2026-11-01': CF('2026-11-01', { totalFinal: 9 }) }, { ...sc, unlock: true }), 'ok');
   assert.equal(tcfCheck('2026', { '2026-11-01': UNLOCK() }, { '2026-11-01': CF('2026-11-01') }, sc), 'ok', 'confirming again after an unlock');
+});
+
+test('Codex #141 P2-1: rewriting one’s own role, store or support in the public employee table gives no store; a GM/CEO-confirmed G2 still works, only in the confirmed stores', async () => {
+  const S = setup();
+  const add = (prev, day, rec) => ({ ...prev, [day]: rec });
+  // 役割を g2・店を S2 に書き換えた G1（whoami は写しが無いので G3 まで・今の社員の表の店）：読めない・確定を作れない
+  for (const key of [TK('S2'), WK('S2')]) assert.equal((await S.as('g1f', { action: 'get', key })).status, 403, 'g1f get ' + key);
+  let r = await S.put('g1f', TK('S2'), add(S.W.get(TK('S2')), '2026-11-16', CF('2026-11-16', { _at: 1762900000000 })), S.ex(TK('S2')));
+  assert.equal(r.status, 403); assert.deepEqual(writes(S.W, TK('S2')), []);
+  // 写しの無い G2・写しが G1・確かめがまだの G4 も同じ
+  for (const who of ['g2u', 'g1c', 'g4u', 'g4x']) {
+    const st = who === 'g1c' ? 'S1' : 'S2';
+    assert.equal((await S.as(who, { action: 'get', key: TK(st) })).status, 403, who);
+    assert.equal((await S.put(who, WK(st), [...S.W.get(WK(st)), WNEW()], S.ex(WK(st)))).status, 403, who + ' warnings');
+  }
+  // 確かめた G2：写しの店（S2）は読めて確定できる。確かめていない応援の店（S1：社員の表で足した）は読めない
+  assert.equal((await S.as('g2', { action: 'get', key: TK('S2') })).status, 200);
+  assert.equal((await S.as('g2', { action: 'get', key: TK('S1') })).status, 403, 'a support store not in the confirmed copy');
+  r = await S.put('g2', TK('S2'), add(S.W.get(TK('S2')), '2026-11-16', CF('2026-11-16', { _at: 1762900000000 })), S.ex(TK('S2')));
+  assert.equal(r.status, 200, JSON.stringify(r.j));
+  // 写しの店を外した（GM・CEO が確かめ直した）：すぐに読めない
+  const T = setup(); T.W.wrPeople.find(x => x.emp_id === 'E-2').stores = [];
+  assert.equal((await T.as('g2', { action: 'get', key: TK('S2') })).status, 403);
+  // 写しを読めない（wr_people が落ちている）：狭いほう（何も）。全店の人（GM）はそのまま
+  const D = setup({}); D.W.wrPeopleDown = true;
+  assert.equal((await D.pull('g3')).j.sc.level, 'none');
+  assert.equal((await D.pull('gm')).j.sc.level, 'all');
+});
+
+test('Claude 6781770026 P3: Tip / warnings add no extra read of the row index (a G1 reads it once, for the growth chart, with or without sc_have)', async () => {
+  const S = setup();
+  let n = 0; const f0 = S.W.fetch;
+  S.W.fetch = async (u, o) => { if (String(u).includes('/rpc/app_state_index')) n++; return f0(u, o); };
+  await S.as('g1', { action: 'pull', have: {}, cs_have: {} }); const without = n; n = 0;
+  const r = await S.pull('g1');
+  assert.equal(r.status, 200); assert.equal(r.j.sc.level, 'none');
+  assert.equal(n, without, 'the same reads as an app that does not ask for tip / warnings');
 });

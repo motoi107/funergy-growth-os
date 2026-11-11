@@ -83761,9 +83761,11 @@ function renderPGD(empName, isManagerView) {
   var tipReqs = ls('tip_requests', []).filter(r=>r.name===empName);
   var curTip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(empName, null, (typeof _tipNotFuture==='function')?_tipNotFuture:null) : tipReqs.filter(r=>r.status==='承認').slice(-1)[0];   /* v1091。v1095：まだ来ていない適用開始日は数えない */
   var evalHist = ls('eval_history', []).filter(h=>h.name===empName);
-  var warnings = []; STORES.forEach(s=>{ getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
+  /* v1147（Codex #141 6781928056 の P2-3）：このログインで見られる店の注意ログだけ。見られない店の行が送信待ちで端末に残っていても出さない（消さない） */
+  var _wnSee = function(sid){ return (typeof scSeesStore!=='function') || scSeesStore('wn', sid); };
+  var warnings = []; STORES.forEach(s=>{ if(!_wnSee(s.id)) return; getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
   /* v1147：この人の店（所属・応援）の注意ログをこのログインで見られないとき（サーバーが返さない）は、「注意ログなし・良好」と言わない */
-  var _wnHidden = (typeof scSeesStore==='function') && [emp.store].concat(emp.support||[]).filter(Boolean).some(function(sid){ return !scSeesStore('wn', sid); });
+  var _wnHidden = [emp.store].concat(emp.support||[]).filter(Boolean).some(function(sid){ return !_wnSee(sid); });
   var obs = ls('onboardings', []).filter(o=>o.name===empName);
   var promo = STEP_PROMO[emp.step] || STEP_PROMO[0];
 
@@ -83873,6 +83875,7 @@ function renderPGD(empName, isManagerView) {
     warnings.slice().reverse().slice(0,4).forEach(w=>{
       html += `<div style="font-size:12px;color:var(--muted);padding:3px 0">・${escapeHtml(String(w.date||''))} ${escapeHtml(String(w.reason||''))}</div>`;   /* v1147：中身はエスケープ */
     });
+    if (_wnHidden) html += `<div style="font-size:12px;color:var(--muted);padding:3px 0"><i class="ti ti-lock"></i> ${t('このログインでは見られない店の注意ログは出していません','Warning logs of stores this sign-in cannot see are not shown')}</div>`;   /* v1147 */
   } else if (_wnHidden) {
     html += `<div style="font-size:12px;color:var(--muted);padding:6px 0"><i class="ti ti-lock"></i> ${t('注意ログは、このログインでは見られません','This sign-in cannot see the warning log')}</div>`;   /* v1147 */
   } else {
@@ -103626,12 +103629,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if ((me.role === 'ceo' || me.role === 'gm') && S.people && S.people.changes > 0) {
       return '<div class="card" style="margin-bottom:10px;border-left:3px solid ' + (S.people.up ? 'var(--yellow)' : 'var(--border)') + '"><div style="font-size:12.5px;font-weight:700"><i class="ti ti-user-check"></i> ' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
         + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + T('社員の表と、GM・CEO が確かめた権限の写しが違う人：','People whose employee record differs from the confirmed copy: ') + S.people.changes + T(' 人',' ') + (S.people.up ? ' · <b style="color:#7a4a00">' + T('権限が増える人 ','rights would increase: ') + S.people.up + T(' 人','') + '</b>' : '')
-        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G3 以上・Head Chef になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。Head Chef は全員の生年月日・保険と全店の Career Score を見ます。','The employee table can be edited by anyone, so becoming an AM / G3+ / Head Chef or gaining stores only takes effect after a check here (decreases already apply). G3 can ask the GM for changes; G4+ see and approve store requests. A Head Chef sees everyone\'s birthday / insurance and every store\'s Career Score.') + '</span></div>'
+        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G2 以上・Head Chef になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G2 以上は自分の店の Tip の期間の確定・注意ログ・応募者・Career Score を見るのに（v1147）、G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。Head Chef は全員の生年月日・保険と全店の Career Score を見ます。','The employee table can be edited by anyone, so becoming an AM / G2+ / Head Chef or gaining stores only takes effect after a check here (decreases already apply). G2+ use it to see the tip period confirmations, warning logs, applicants and Career Scores of their stores (v1147); G3 can ask the GM for changes; G4+ see and approve store requests. A Head Chef sees everyone\'s birthday / insurance and every store\'s Career Score.') + '</span></div>'
         + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrPeople()">' + T('確かめる','Check') + '</button></div>';
     }
     if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + (me.confirmed
-      ? T('あなたの権限が増える変更（AM・G3 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです。','A change that adds to your rights (AM / G3+ / Head Chef / stores) waits for the GM to check. Until then your earlier confirmed rights stay.')
-      : T('あなたの AM・G3 以上の権限（GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G3+ rights (asking the GM, seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.')) + '</div>';
+      ? T('あなたの権限が増える変更（AM・G2 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです。','A change that adds to your rights (AM / G2+ / Head Chef / stores) waits for the GM to check. Until then your earlier confirmed rights stay.')
+      : T('あなたの AM・G2 以上の権限（自分の店の Tip の確定・注意ログ・応募者・Career Score を見る・GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の分だけです。','Your AM / G2+ rights (tip confirmations, warning logs, applicants and Career Scores of your stores; asking the GM; seeing and approving store requests) wait for the GM to check. Until then you see your own only.')) + '</div>';
     return '';
   }
   function pDesc(x){
@@ -103654,7 +103657,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var d = pp.d; if (!d) return;
     var items = d.items || [], picked = items.filter(function(x){ return pp.pick[x.emp]; });
     var h = '<div style="font-size:15px;font-weight:700">' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
-      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G3 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G3+ and their stores. ') : '')
+      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G2 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G2+ and their stores. ') : '')
       + T('見覚えのない変更（だれかが社員の表を書き換えたかもしれないもの）は選ばないでください。選ばない人は今の写しのままです。','Do not pick changes you do not recognise (someone may have edited the employee table). People you leave out keep their current copy.') + '</div>';
     if (!items.length) h += '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('違う人はいません','No differences') + '</div>';
     else {

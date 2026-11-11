@@ -96,10 +96,13 @@ const ME = {
   tAM: { emp: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S1', 'S2'], name: 'Amy Area', confirmed: true },
   t4: { emp: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S3'], am_stores: [], name: 'Leo Four', confirmed: true },
   t3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sal Three', confirmed: true },
-  t2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S2'], am_stores: [], name: 'Ria Two', confirmed: false },
+  t2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S2'], am_stores: [], name: 'Ria Two', confirmed: true },
   t1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One', confirmed: false },
   tStore: 'deny',
 };
+// GM・CEO が確かめた写し（wr_people）。店のある範囲はこの写し（G2 以上）の店で（v1147・Codex #141 P2-1）
+const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S1', 'S2'] }, { emp_id: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S3'] },
+  { emp_id: 'E-3', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-2', role: 'staff', grade: 2, stores: ['S2'] }];
 const USER = { tGM: ['gm', 'Gina M'], tOF: ['office', 'Ofelia'], tAM: ['am', 'Amy Area'], t4: ['am', 'Leo Four'], t3: ['sl', 'Sal Three'], t2: ['g2', 'Ria Two'], t1: ['crew', 'Kai One'], tStore: ['sl', ''] };
 const T0 = '2026-11-09T09:00:00.000000+00:00';
 const TK = (s, y = '2026') => 'tip_cf_' + s + '_' + y, WK = s => 'warnings_' + s;
@@ -112,7 +115,7 @@ const WNEW = (n = 1) => ({ date: '2026/11/10 09:00', by: 'Store Manager', reason
 const ALL_SC = [TK('S1'), TK('S1', '2025'), TK('S2'), TK('S3'), 'tip_cf_odd', WK('S1'), WK('S2')].sort();
 
 function world(o = {}) {
-  const W = makeWorld({ pins: JSON.parse(JSON.stringify(ME)), emps: EMPS.map(e => ({ ...e })), mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'gm', emp_id: 'E-GM' } }, ...o });
+  const W = makeWorld({ pins: JSON.parse(JSON.stringify(ME)), emps: EMPS.map(e => ({ ...e })), wrPeople: WRP.map(x => ({ ...x })), mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'gm', emp_id: 'E-GM' } }, ...o });
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
   W.fresh = () => { W.ssHandler = (o.old ? createHandler1146 : createHandler)({ env, fetch: (u, x) => W.fetch(u, x), now: () => Date.UTC(2026, 10, 10, 10, 0, 0) }); };   // 関数を入れ直す（PIN の 60 秒の覚えも消える）
   W.fresh();
@@ -210,8 +213,11 @@ test('G3 on a device that had every store (the v1146 REST way): only its own sto
   assert.equal(anonSc(W), 0, 'no row of the two kinds through the public key (before the SQL as well)');
   await pull(c);
   assert.equal(W.ssLast.sc.rows.length, 0, 'unchanged rows are skipped');
-  // 応援の店が足された：その店の行が届く
+  // 応援の店が社員の表で足された：GM・CEO が確かめるまで届かない（v1147・Codex #141 P2-1）。確かめたら届く
   W.pins.t3.stores = ['S1', 'S2']; W.fresh();
+  await pull(c);
+  assert.ok(!scKeys(c).includes(TK('S2')), 'not before the GM/CEO confirms the added store');
+  W.wrPeople.find(x => x.emp_id === 'E-3').stores = ['S1', 'S2']; W.fresh();
   await pull(c);
   assert.ok(scKeys(c).includes(TK('S2')));
 });
@@ -449,7 +455,9 @@ test('the screens: no confirmation status or buttons for a store this sign-in ca
   assert.match(req, /escapeHtml\(String\(w\.reason\|\|''\)\)/); assert.match(req, /escapeHtml\(String\(w\.by\|\|''\)\)/);
   assert.match(body('logWarning'), /if \(!saveWarnings\(storeId, warnings\)\) \{ renderPage\('required'\); return; \}/);
   const pgd = body('renderPGD');
-  assert.match(pgd, /var _wnHidden = \(typeof scSeesStore==='function'\) && \[emp\.store\]\.concat\(emp\.support\|\|\[\]\)/);
+  assert.match(pgd, /var _wnSee = function\(sid\)\{ return \(typeof scSeesStore!=='function'\) \|\| scSeesStore\('wn', sid\); \};/);
+  assert.match(pgd, /STORES\.forEach\(s=>\{ if\(!_wnSee\(s\.id\)\) return; getWarnings\(s\.id\)/);
+  assert.match(pgd, /var _wnHidden = \[emp\.store\]\.concat\(emp\.support\|\|\[\]\)\.filter\(Boolean\)\.some\(function\(sid\)\{ return !_wnSee\(sid\); \}\);/);
   assert.match(pgd, /\} else if \(_wnHidden\) \{/);
   assert.match(pgd, /escapeHtml\(String\(w\.reason\|\|''\)\)/);
   // 前の名前の記録の移し替え：見られない店の分は移さない（送っても断られる）
@@ -463,4 +471,35 @@ test('the screens: no confirmation status or buttons for a store this sign-in ca
   assert.equal(c.scSeesStore('tip', 'S9'), true); assert.equal(c.scSeesStore('wn', 'S1'), false, 'office crew: tips but no warning log'); assert.equal(c.scTipUnlockOk(), true);
   c.localStorage.setItem('_sc_state', JSON.stringify({ level: 'all', stores: [], tip: true, wn: true, unlock: true, wnWrite: true, who: 'someone else', at: 1 }));
   assert.equal(c.scSeesStore('tip', 'S1'), false, 'the previous person’s scope is not used'); assert.equal(c.scTipUnlockOk(), false); assert.equal(c.scWnWritable('S1'), false);
+});
+
+test('Codex #141 6781928056 P2-3: the growth chart (renderPGD) shows warning logs only of stores this sign-in can see — a queued row of another store stays on the device but is not shown', () => {
+  const body = name => { const i = source.indexOf('\nfunction ' + name + '('); assert.ok(i >= 0, name); return source.slice(i + 1, source.indexOf('\n}', i) + 2); };
+  const MEMx = new Map();
+  const ctx = vm.createContext({
+    localStorage: { getItem: k => (MEMx.has(k) ? MEMx.get(k) : null), setItem: (k, v) => MEMx.set(k, String(v)), removeItem: k => MEMx.delete(k) },
+    csWho: () => 'me', console,
+    STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
+    getEmployees: () => [{ name: 'Kai One', store: 'S1', support: ['S2'], step: 0, role: 'crew' }],
+    ls: (k, d) => (MEMx.has('ls:' + k) ? JSON.parse(MEMx.get('ls:' + k)) : d),
+    STEP_PROMO: { 0: { role: 'Crew', next: 'x', cond: [] } }, t: (a) => a, escapeHtml: x => String(x).replace(/</g, '&lt;'),
+    kpi: (l, v) => '<div>' + l + ' ' + v + '</div>', ROLE_CONFIG: { crew: { label: 'Crew' } }, curRole: 'gm', SKILL_TRAINING: {}, posLabel: x => x, getStorePositions: () => [], getEmpSkillsStore: () => ({}), empStoresOf: e => [e.store], tStatus: x => x, _tipLatestApproved: () => null,
+  });
+  vm.runInContext([varLine(/^var SC_STATE_KEY = .*$/m), body('scStateGet'), body('scSeesStore'), body('getWarnings'), body('renderPGD'),
+    'this.renderPGD = renderPGD;'].join('\n'), ctx);
+  const SECRET = 'Kai One — 必須タスク未完了 S2 のひみつ';
+  MEMx.set('ls:warnings_S2', JSON.stringify([{ date: '2026/11/10', by: 'x', reason: SECRET, id: 'w1', _mut: 1 }]));   // 送信待ちで残っている見られない店の行
+  MEMx.set('ls:warnings_S1', JSON.stringify([{ date: '2026/11/09', by: 'x', reason: 'Kai One — S1 の記録', id: 'w2', _mut: 1 }]));
+  MEMx.set('_sc_state', JSON.stringify({ level: 'scoped', stores: ['S1'], tip: true, wn: true, who: 'me', at: 1 }));
+  let html = ctx.renderPGD('Kai One');
+  assert.ok(!html.includes('ひみつ'), 'the S2 row is not shown'); assert.ok(html.includes('S1 の記録'), 'the S1 row is shown');
+  assert.ok(html.includes('このログインでは見られない店の注意ログは出していません'), 'it says some stores are not shown');
+  MEMx.set('_sc_state', JSON.stringify({ level: 'none', stores: [], tip: false, wn: false, who: 'me', at: 1 }));
+  html = ctx.renderPGD('Kai One');
+  assert.ok(!html.includes('ひみつ') && !html.includes('S1 の記録'), 'none: nothing'); assert.ok(html.includes('注意ログは、このログインでは見られません'));
+  assert.ok(!html.includes('注意ログなし・良好です'), 'not “no warnings, good”');
+  assert.ok(MEMx.has('ls:warnings_S2'), 'the queued row stays on the device');
+  MEMx.delete('_sc_state');   // 範囲がまだ決まっていない（関数が前の版）：今までどおり全部
+  html = ctx.renderPGD('Kai One');
+  assert.ok(html.includes('ひみつ') && html.includes('S1 の記録'));
 });
