@@ -29,6 +29,10 @@
 //   この関数で書く（今の画面で決められる人だけ。下の「v1146」の節・docs/SECURE_TIP_PREP_V1146_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも tpfn:1。
 // ・v1147（段階 2b の 9 つ目）：Tip の期間の確定（tip_cf_<店>_<年>）と注意ログ（warnings_<店>）も、この関数で読み書きする（見られる店の行だけ。
 //   取り込みは sc_have を送ったアプリにだけ sc の部分を付ける。下の「v1147」の節・docs/SECURE_TIP_CF_V1147_JA.md）。答えにはいつも scfn:1。
+// ・v1148（段階 2b の 10 個目）：グレード履歴（grade_hist）・賞与の個人設定（bonus_eval_ovr）・G3 の職種（bonus_track）も、読むのはこの関数で
+//   （Moto さん 11/10「Career Score と同じ範囲に」：GM・CEO 以外は Career Score で見られる人と本人の記録だけ。経理・事務Crew のグレード履歴は全部＝HR・福利厚生の画面）。
+//   書くのは今までどおり GM・CEO だけ（swPut）。取り込みは gb_have を送ったアプリにだけ gb の部分を付ける。下の「v1148」の節・
+//   docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）。答えにはいつも gbfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -482,6 +486,36 @@ export function wnCheck(cloud, value, sc) {
   return 'ok';
 }
 
+// ================================================================ v1148：グレード履歴・賞与の個人設定・G3 の職種を読む人（docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）
+// 3 つとも app_state の 1 行（人ごとの記録の地図）。書くのは前から GM・CEO だけ（v1143・v1145 の swPut）。v1148 で読むのも絞る（Moto さん 11/10「Career Score と同じ範囲に」）：
+//   CEO・GM＝全部／ほかの人＝Career Score で見られる人（csScope の see）と本人の分だけ（地図をその人の記録だけにして返す）／
+//   経理・事務Crew のグレード履歴だけ全部（HR・福利厚生の画面が全員の「その日のグレード」を見る＝今の画面と同じ。Moto さんに伝える）。
+export const GB_KEYS = ['grade_hist', 'bonus_eval_ovr', 'bonus_track'];
+export function gbIsKey(k) { return typeof k === 'string' && GB_KEYS.includes(k); }
+// 記録のキー → 従業員 ID（アプリの ghAll・kevPutVer・btrKey と同じ形）。読めなければ null（その記録はだれにも分けない＝狭いほう）
+//   grade_hist：<従業員>／bonus_eval_ovr：<従業員>|<適用開始の四半期>／bonus_track：<四半期>|<従業員>
+export function gbEntryId(key, k) {
+  if (typeof k !== 'string' || !k) return null;
+  if (key === 'grade_hist') return k;
+  if (key === 'bonus_eval_ovr') { const i = k.lastIndexOf('|'); return i > 0 ? k.slice(0, i) : null; }
+  if (key === 'bonus_track') { const i = k.indexOf('|'); return i >= 0 && i < k.length - 1 ? k.slice(i + 1) : null; }
+  return null;
+}
+// 見られる人（ids：従業員 ID の Set）の記録だけの地図。地図でない値（前の版の文字・配列など）は {}（狭いほう）
+export function gbProject(key, value, ids) {
+  const m = obj(asVal(value));
+  const o = {};
+  if (!m || !ids) return o;
+  for (const [k, v] of Object.entries(m)) { const id = gbEntryId(key, k); if (id && ids.has(id)) o[k] = v; }
+  return o;
+}
+// そのキーを読む形（gb：gbScope の答え）：'all'（全部）／'scoped'（見られる人の分だけ）／'none'
+export function gbLevel(gb, key) {
+  if (!gb || !gbIsKey(key)) return 'none';
+  if (gb.all.includes(key)) return 'all';
+  return gb.ids ? 'scoped' : 'none';
+}
+
 // PostgREST の updated_at（小数 0〜6 桁）→ マイクロ秒。読めなければ null（アプリの _tsMicro と同じ）
 export function tsMicro(s) {
   if (s == null) return null;
@@ -727,8 +761,8 @@ export function createHandler(deps) {
         if (!rows.length) break;
         off += rows.length;
         // v1140：Career Score のキーも（履歴は開いたときだけ取るので一覧に入れない）
-        // v1147：Tip の期間の確定・注意ログも（店ごとの行）
-        for (const r of rows) if (r && (ssIsKey(r.key) || (csIsKey(r.key) && csParse(r.key).kind !== 'hist') || scIsKey(r.key)) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
+        // v1147：Tip の期間の確定・注意ログも（店ごとの行）。v1148：グレード履歴・賞与の個人設定・G3 の職種も
+        for (const r of rows) if (r && (ssIsKey(r.key) || (csIsKey(r.key) && csParse(r.key).kind !== 'hist') || scIsKey(r.key) || gbIsKey(r.key)) && r.key !== 'karte_pin' && /^[0-9a-f]{32}$/.test(String(r.h || ''))) out.push({ key: r.key, v: 'h:' + r.h });
         if (page === 99) return null;   // 読み切れない：中身から作る
       }
       return out;
@@ -866,7 +900,12 @@ export function createHandler(deps) {
       if (oks.every(o => o.hist)) hist.add(n);
     }
     for (const n of self) { see.add(n); req.add(n); }                            // 自分の点・履歴は書けない（自己評価は申請）
-    return { see, req, emp, ojt, hist, self };
+    // v1148：見られる人の従業員 ID（その名前を持つ人。名前を渡すのはその名前の人が全員見られるときだけなので、全員の ID）と本人の ID。
+    // グレード履歴・賞与の個人設定・G3 の職種（ID で持っている記録）を、Career Score と同じ範囲で分ける（gbScope）
+    const ids = new Set();
+    for (const n of see) for (const p of (byName.get(n) || [])) if (p.id) ids.add(p.id);
+    if (me) ids.add(me.id);
+    return { see, req, emp, ojt, hist, self, ids };
   }
   const csSig = sc => [...sc.see].sort().join('\u0001') + '\u0002' + [...sc.req].sort().join('\u0001');
   function csProject(key, value, sc) {
@@ -880,7 +919,7 @@ export function createHandler(deps) {
     return p.kind === 'req' ? sc.req.has(p.name) : sc.see.has(p.name);
   }
 
-  async function csPull(a, b, idx) {
+  async function csPull(a, b, idx, csP) {   // v1148：csP（同じ取り込みの中で見られる人を 1 回だけ決める。gbScope と分け合う）
     const level = levelOf(a);
     if (level === 'none') return { level: 'none', names: [], req_names: [], index: [], rows: [] };
     const have = obj(b.cs_have) || {};
@@ -895,7 +934,7 @@ export function createHandler(deps) {
       for (const r of rows) out.push({ key: r.key, value: r.value, updated_at: r.updated_at, v: 'x:' + await sha256(JSON.stringify(r.value)) });
       return { level, names: null, req_names: null, index: out.map(r => ({ key: r.key, v: r.v })), rows: out.filter(r => have[r.key] !== r.v) };
     }
-    const sc = await csScope(a), sig = await sha256(csSig(sc));
+    const sc = await (csP ? csP() : csScope(a)), sig = await sha256(csSig(sc));
     const names = [...sc.see].sort(), req_names = [...sc.req].sort();
     let base;   // [{key, v（元の行の印）}]
     if (idx) base = idx;
@@ -1028,14 +1067,21 @@ export function createHandler(deps) {
     // v1140：Career Score（cs_have を送ってきたアプリ＝v1140 から。前の版のアプリには付けない）
     const wantCs = obj(b.cs_have) !== null;
     const wantSc = obj(b.sc_have) !== null;   // v1147：sc_have を送ってきたアプリ（v1147 から）にだけ、Tip の期間の確定・注意ログを付ける
+    const wantGb = obj(b.gb_have) !== null;   // v1148：gb_have を送ってきたアプリ（v1148 から）にだけ、グレード履歴・賞与の個人設定・G3 の職種を付ける
+    // 見られる人（Career Score の範囲）は 1 回だけ決める（Career Score と v1148 の 3 つで分け合う。社員の表などを 2 回読まない）
+    let csMemo = null;
+    const csP = () => (csMemo || (csMemo = csScope(a)));
     // 見られる店を先に決める（何も見ない人＝G1 などに、全部の行の一覧を読まない：Claude のレビュー 6781770026 の P3）
     let scS = null, scErr = false;
     if (wantSc) { try { scS = await scScope(a); } catch (e) { console.error('secure-state sc scope', safeErr(e)); scErr = true; } }
     const scAny = !!scS && scOut(scS).level !== 'none';
-    const idxAll = (levelOf(a) === 'none' && !scAny) ? null : await index();
+    let gbS = null, gbErr = false;
+    if (wantGb) { try { gbS = await gbScope(a, csP); } catch (e) { console.error('secure-state gb scope', safeErr(e)); gbErr = true; } }
+    const gbAny = !!gbS && GB_KEYS.some(k => gbLevel(gbS, k) !== 'none');
+    const idxAll = (levelOf(a) === 'none' && !scAny && !gbAny) ? null : await index();
     const out = await pullKb(a, b, idxAll && idxAll.filter(x => ssIsKey(x.key)));
     if (wantCs) {
-      try { out.cs = await csPull(a, b, idxAll && idxAll.filter(x => csIsKey(x.key))); }
+      try { out.cs = await csPull(a, b, idxAll && idxAll.filter(x => csIsKey(x.key)), csP); }
       catch (e) { console.error('secure-state cs pull', safeErr(e)); out.cs = { error: 'scope' }; }   // 見られる人を決められなかった：端末の写しはそのまま
     }
     if (wantSc) {
@@ -1043,6 +1089,13 @@ export function createHandler(deps) {
       else {
         try { out.sc = await scPull(a, b, idxAll && idxAll.filter(x => scIsKey(x.key)), scS); }
         catch (e) { console.error('secure-state sc pull', safeErr(e)); out.sc = { error: 'scope' }; }
+      }
+    }
+    if (wantGb) {
+      if (gbErr) out.gb = { error: 'scope' };   // 見られる人を決められなかった：端末の写しはそのまま
+      else {
+        try { out.gb = await gbPull(a, b, idxAll && idxAll.filter(x => gbIsKey(x.key)), gbS); }
+        catch (e) { console.error('secure-state gb pull', safeErr(e)); out.gb = { error: 'scope' }; }
       }
     }
     return out;
@@ -1088,6 +1141,7 @@ export function createHandler(deps) {
   async function get(a, b) {
     const key = b.key;
     if (scIsKey(key)) return scGet(a, key);   // v1147
+    if (gbIsKey(key)) return gbGet(a, key);   // v1148
     if (csIsKey(key)) return csGet(a, key);   // v1140
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     const level = levelOf(a);
@@ -1110,6 +1164,8 @@ export function createHandler(deps) {
     if (!SW_WRITE[key].includes(a.role)) {
       // 決めた人でなければ書かない。クラウドと同じ値なら（まとめて送り直す端末のため）書かずに通す。
       // 書かないので値の形は見ない（クラウドの値そのものの形がおかしくても、送り直しが止まらないように＝独立レビュー P3-6）
+      // v1148：グレード履歴・賞与の個人設定・G3 の職種は、全部を読めない人には同じ値でも 403（「同じ値か」で中身を当てる道にしない）
+      if (gbIsKey(key) && gbLevel(await gbScope(a), key) !== 'all') throw err('forbidden', 403);
       const c = await cur();
       if (c && canon(c.value) === canon(b.value)) return { ok: true, updated_at: c.updated_at, same: true };
       throw err('forbidden', 403);
@@ -1213,6 +1269,50 @@ export function createHandler(deps) {
     return { ...o, index: base.map(x => ({ key: x.key, v: x.v })),
       rows: rows.filter(r => ver[r.key] && scCanRead(r.key, sc)).map(r => ({ key: r.key, value: r.value, updated_at: r.updated_at, v: ver[r.key] })) };
   }
+  // ================================================================ v1148：グレード履歴・賞与の個人設定・G3 の職種を読む範囲（docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）
+  // { all：全部を読むキー, ids：見られる人の従業員 ID（Set）か null }。
+  //   CEO・GM＝3 つとも全部／経理・事務Crew＝グレード履歴は全部（HR・福利厚生の画面）・ほかの 2 つは Career Score で見られる人と本人／
+  //   AM・スタッフ＝3 つとも Career Score で見られる人と本人（csScope の ids）／ほか（店のログインなど）＝なし
+  async function gbScope(a, csP) {
+    if (SS_FULL_ROLES.includes(a.role)) return { all: GB_KEYS.slice(), ids: null };
+    if (!['office', 'office_crew', 'am', 'staff'].includes(a.role)) return { all: [], ids: null };
+    const sc = await (csP ? csP() : csScope(a));
+    return { all: OFFICE_ROLES.includes(a.role) ? ['grade_hist'] : [], ids: sc.ids };
+  }
+  const gbSig = gb => [...(gb.ids || [])].sort().join('\u0001');
+  async function gbPull(a, b, idx, gb) {
+    const keys = Object.fromEntries(GB_KEYS.map(k => [k, gbLevel(gb, k)]));
+    const any = GB_KEYS.some(k => keys[k] !== 'none');
+    if (!any) return { keys, index: [], rows: [] };
+    const have = obj(b.gb_have) || {};
+    const sig = await sha256(gbSig(gb));
+    let base;   // [{key, v（元の行の印）, row?}]
+    if (idx) base = idx.filter(x => keys[x.key] && keys[x.key] !== 'none');
+    else {
+      base = [];
+      for (const r of await readKeysAny(GB_KEYS, gbIsKey)) if (keys[r.key] && keys[r.key] !== 'none') base.push({ key: r.key, v: 'x:' + await sha256(JSON.stringify(r.value)), row: r });
+    }
+    // 見られる人の分だけのときは、元の行の印と見られる人から印を作る（人が変われば送り直す・元の行が同じで人も同じなら読まない）
+    const pidx = [];
+    for (const x of base) pidx.push({ key: x.key, v: keys[x.key] === 'all' ? x.v : 'g:' + await sha256(x.v + '|' + sig), row: x.row });
+    const need = pidx.filter(x => have[x.key] !== x.v);
+    let rows = need.filter(x => x.row).map(x => x.row);
+    const toRead = need.filter(x => !x.row).map(x => x.key);
+    if (toRead.length) rows = rows.concat(await readKeysAny(toRead, gbIsKey));
+    const ver = Object.fromEntries(pidx.map(x => [x.key, x.v]));
+    return { keys, index: pidx.map(x => ({ key: x.key, v: x.v })),
+      rows: rows.filter(r => ver[r.key]).map(r => ({ key: r.key, value: keys[r.key] === 'all' ? r.value : gbProject(r.key, r.value, gb.ids), updated_at: r.updated_at, v: ver[r.key] })) };
+  }
+  async function gbGet(a, key) {
+    const gb = await gbScope(a), l = gbLevel(gb, key);
+    if (l === 'none') throw err('forbidden', 403);
+    const rows = await readKeysAny([key], gbIsKey);
+    if (!rows.length) return { exists: false, value: null, updated_at: null };
+    // 見られる人の分だけ（proj）：GM・CEO 以外は書かない（swPut が断る）。アプリはこの値で送るかを決めない（読むだけ）
+    return l === 'all' ? { exists: true, value: rows[0].value, updated_at: rows[0].updated_at }
+      : { exists: true, value: gbProject(key, rows[0].value, gb.ids), updated_at: rows[0].updated_at, proj: true };
+  }
+
   async function scGet(a, key) {
     const sc = await scScope(a);
     if (!scCanRead(key, sc)) throw err('forbidden', 403);
@@ -1788,7 +1888,8 @@ export function createHandler(deps) {
     // ghfn:1＝グレード履歴（v1145）も扱う。アプリは ghfn の無い答えを前の版とみなし、グレード履歴を今までどおり REST で書く
     // tpfn:1＝Tip Rate・プレップ（v1146）も扱う。アプリは tpfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で書く
     // scfn:1＝Tip の期間の確定・注意ログ（v1147）も扱う。アプリは scfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で読み書きする
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // gbfn:1＝グレード履歴・賞与の個人設定・G3 の職種を読む範囲（v1148）も扱う。アプリは gbfn の無い答えを前の版とみなし、その 3 つを今までどおり REST で読む
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;

@@ -188,7 +188,9 @@ test('not removed when the cloud cannot be read, while it is being sent, when it
   let W = world(), c = device(W, 'tAM');
   await save(c, 'grade_hist', ghMore('E-9'));
   const realFetch = W.fetch;
-  c.fetch = (u, o) => (String(u).includes('/rest/v1/app_state') && (!o || !o.method || o.method === 'GET')) ? Promise.reject(new TypeError('fetch failed')) : realFetch(u, o);
+  // v1148：グレード履歴は関数でも読む（gb_get）。REST と関数の読み込みの両方を落とす
+  const isGet = o => { try { return JSON.parse(o.body).action === 'get'; } catch { return false; } };
+  c.fetch = (u, o) => ((String(u).includes('/rest/v1/app_state') && (!o || !o.method || o.method === 'GET')) || (String(u).includes('/functions/v1/secure-state') && o && isGet(o))) ? Promise.reject(new TypeError('fetch failed')) : realFetch(u, o);
   assert.deepEqual(J(await c.ssDropRefused(['grade_hist'])).skip, [{ key: 'grade_hist', why: 'read' }]);
   assert.deepEqual(JSON.parse(c.MEM.get('grade_hist')), ghMore('E-9'), 'the device value stays');
   assert.deepEqual(outKeys(c), ['grade_hist']);
@@ -213,7 +215,8 @@ test('not removed when the cloud cannot be read, while it is being sent, when it
   W = world(); c = device(W, 'tAM');
   await save(c, 'grade_hist', ghMore('E-9'));
   W.afterGet = url => { if (!String(url).includes('grade_hist')) return false; login(c, 't4'); return true; };
-  assert.deepEqual(J(await c.ssDropRefused(['grade_hist'])).skip, [{ key: 'grade_hist', why: 'changed' }]);
+  // v1148：グレード履歴は関数で読むので、読んでいるあいだにログインが変わると、前の人の読んだ値は使わない（ssGetRow が捨てる＝'read'）。どちらでも外さない
+  assert.deepEqual(J(await c.ssDropRefused(['grade_hist'])).skip, [{ key: 'grade_hist', why: 'read' }]);
   login(c, 'tAM');
   assert.deepEqual(outKeys(c), ['grade_hist']);
 
@@ -230,7 +233,8 @@ test('not removed when the cloud cannot be read, while it is being sent, when it
   c._outboxSet(c._outboxGet().map(x => { const y = { ...x }; delete y.who; return y; }));
   assert.deepEqual(J(c.ssRefusedList().map(x => x.key)), ['grade_hist']);
   W.afterGet = url => { if (!String(url).includes('grade_hist')) return false; login(c, 't4'); return true; };
-  assert.deepEqual(J(await c.ssDropRefused(['grade_hist'])).skip, [{ key: 'grade_hist', why: 'changed' }]);
+  // v1148：グレード履歴は関数で読むので、読んでいるあいだにログインが変わると、前の人の読んだ値は使わない（ssGetRow が捨てる＝'read'）。どちらでも外さない
+  assert.deepEqual(J(await c.ssDropRefused(['grade_hist'])).skip, [{ key: 'grade_hist', why: 'read' }]);
   assert.deepEqual(outKeys(c), ['grade_hist']);
 
   // この端末に書けない

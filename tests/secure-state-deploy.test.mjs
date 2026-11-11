@@ -1,4 +1,4 @@
-// 入れる一式（deploy/secure-state-v1139・secure-cs-v1140・secure-settings-v1141・secure-hr-v1142・secure-settings-v1143・secure-pii-v1144・secure-grade-hist-v1145・secure-tip-prep-v1146・secure-tip-cf-v1147）が、リポジトリの元のファイルと 1 文字も違わないこと。
+// 入れる一式（deploy/secure-state-v1139・secure-cs-v1140・secure-settings-v1141・secure-hr-v1142・secure-settings-v1143・secure-pii-v1144・secure-grade-hist-v1145・secure-tip-prep-v1146・secure-tip-cf-v1147・secure-grade-bonus-read-v1148）が、リポジトリの元のファイルと 1 文字も違わないこと。
 // 貼る中身が古くならないように（関数・SQL を直したら、一式も作り直す）。
 // 前の版の関数の 1 ファイルは、入れたときのまま（次の版の関数を戻すときに貼る）。中身の sha256 で固定する。
 import test from 'node:test';
@@ -137,7 +137,7 @@ test('the v1146 bundle is as it was (the SQL files and the pinned function file)
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵で書けなくする.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-grade-hist-v1145/2_関数_secure-state_index.ts', 'deploy/secure-grade-hist-v1145/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
 
-test('the v1147 bundle is the repository files as they are', () => {
+test('the v1147 bundle is as it was (the SQL files and the pinned function file)', () => {
   const D = 'deploy/secure-tip-cf-v1147/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-tip-cf-precheck.sql'));
   assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261116090000_secure_tip_cf.sql'));
@@ -146,14 +146,14 @@ test('the v1147 bundle is the repository files as they are', () => {
   // Codex #141 6781928056 の P2-1：1b（写しに G2 も）とその戻し
   assert.equal(rd(D + '1b_SQL_写しにG2も.sql'), rd('supabase/migrations/20261116080000_wr_people_g2.sql'));
   assert.equal(rd(D + '戻す_SQL_1b.sql'), rd('db/wr-people-g2-rollback.sql'));
+  // v1148 から関数は先へ進んだので、v1147 の 1 ファイルは PR #141（c8e4d79）のまま固定（v1148 を戻すときに使う）
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'f418ef5d98121c75194c165be050693e4c0a17dc298bcc79a2f7362c68451617', 'the v1147 function file (PR #141 c8e4d79) is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
   assert.match(one, /async function protStores\(a\)/, 'store scopes from the GM/CEO-confirmed copy (P2-1)');
   assert.match(one, /async function tipPastNames\(a\)/, 'past names from the change log (P2-2)');
-  const handler = rd('supabase/functions/secure-state/handler.mjs');
-  assert.ok(one.startsWith(handler), 'the one file starts with the handler as it is');
-  const tail = one.slice(handler.length);
-  assert.match(tail, TAIL);
-  assert.ok(!/import /.test(tail) && !/verifyPin/.test(one), 'no private part, no imports');
+  assert.match(one, TAIL);
+  assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.ok(!/gbfn/.test(one), 'the v1147 function does not know the v1148 read scope');
   assert.match(one, /scfn: 1/); assert.match(one, /tpfn: 1/); assert.match(one, /ghfn: 1/); assert.match(one, /piifn: 1/); assert.match(one, /sw2: 1/); assert.match(one, /hrfn: 1/);
   assert.match(one, /export const SC_TIP_PRE = 'tip_cf_', SC_WN_PRE = 'warnings_';/);
   assert.match(one, /async function scScope\(a\)/); assert.match(one, /async function tcfStatus\(a, b\)/);
@@ -162,4 +162,27 @@ test('the v1147 bundle is the repository files as they are', () => {
   assert.match(rd('supabase/functions/secure-state/index.ts'), /Deno\.serve\(createHandler\(\{ env: \(key: string\) => Deno\.env\.get\(key\) \}\)\);/);
   const how = rd(D + '手順.md');
   for (const f of ['1_確かめ_読むだけ.sql', '1b_SQL_写しにG2も.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', '戻す_SQL_1b.sql', 'deploy/employee-field-log/', 'deploy/secure-tip-prep-v1146/2_関数_secure-state_index.ts', 'deploy/secure-tip-prep-v1146/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
+});
+
+test('the v1148 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+  const D = 'deploy/secure-grade-bonus-read-v1148/';
+  assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-grade-bonus-read-precheck.sql'));
+  assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261117090000_secure_grade_bonus_read.sql'));
+  assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-grade-bonus-read-postcheck.sql'));
+  assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-grade-bonus-read-rollback.sql'));
+  const one = rd(D + '2_関数_secure-state_index.ts');
+  const h = rd('supabase/functions/secure-state/handler.mjs');
+  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
+  assert.match(one.slice(h.length), TAIL);
+  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.match(one, /gbfn: 1/); assert.match(one, /scfn: 1/); assert.match(one, /tpfn: 1/); assert.match(one, /ghfn: 1/); assert.match(one, /piifn: 1/); assert.match(one, /sw2: 1/); assert.match(one, /hrfn: 1/);
+  assert.match(one, /export const GB_KEYS = \['grade_hist', 'bonus_eval_ovr', 'bonus_track'\];/);
+  assert.match(one, /async function gbScope\(a, csP\)/);
+  assert.match(one, /async function protStores\(a\)/, 'keeps the v1147 store scopes from the confirmed copy');
+  assert.match(one, /async function confChef\(a\)/, 'keeps the v1144 Head Chef check');
+  // 戻すときは v1147 の 1 ファイル（gbfn を知らない）
+  assert.ok(!/gbfn/.test(rd('deploy/secure-tip-cf-v1147/2_関数_secure-state_index.ts')));
+  const how = rd(D + '手順.md');
+  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-tip-cf-v1147/2_関数_secure-state_index.ts', 'deploy/secure-tip-cf-v1147/手順.md', 'docs/SECURE_GRADE_BONUS_READ_V1148_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });

@@ -120,12 +120,12 @@ const writesOf = (W, key) => W.log.filter(x => x[0] === 'write' && x[2] === key)
 const norm = v => JSON.parse(JSON.stringify(v, (k, x) => (k === 'hist' && Array.isArray(x) && !x.length) ? undefined : x));
 const push = async (c, k, v) => { c.__pushed.length = 0; c.lsSet(k, v); return Promise.all(c.__pushed); };
 
-test('the app routes the eight settings to the function for writing, but reads them by REST', () => {
+test('the app routes the eight settings to the function for writing, but reads six of them by REST (v1148: the bonus personal settings and G3 track through the function)', () => {
   const c = tab(world(), 'tGM');
   for (const k of SW2_KEYS) {
     assert.equal(c.swIsKey(k), true, k); assert.equal(c.sw2IsKey(k), true, k);
     assert.equal(c.swRouted(k), true, k + ' is written through the function');
-    assert.equal(c.ssRouted(k), false, k + ' is still read by REST');
+    assert.equal(c.ssRouted(k), ['bonus_eval_ovr', 'bonus_track'].includes(k), k + (['bonus_eval_ovr', 'bonus_track'].includes(k) ? ' is read through the function (v1148)' : ' is still read by REST'));
     assert.ok(c._opMergeDef(k).cas, k + ' writes only when the row read is unchanged (cas)');
   }
   for (const k of ['grade_hist', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_pool_extra', 'karte_bonus_config', 'tasks_all', 'cs_criteria ', 'Cs_guide', null])
@@ -167,12 +167,17 @@ test('Accounting, AM, G4 and crew: a changed setting is refused (403), the cloud
     assert.ok(c.__toasts.some(m => /賞与・Career Score の設定.*を変えられるのは GM・CEO です/.test(m)), who + ': ' + c.__toasts.join(' | '));
     const d = tab(W, who);
     for (const k of SW2_KEYS) {
-      assert.deepEqual(await push(d, k, V0[k]), [true], who + ' ' + k + ': the same value is not stuck');
+      // v1148：賞与の個人設定・G3 の職種は、端末が受け取る値（Career Score で見られる人と本人の分）が「クラウドにあるもの」
+      const gb = ['bonus_eval_ovr', 'bonus_track'].includes(k);
+      const same = gb ? (await d._fetchOpRow(k)).value : V0[k];
+      assert.deepEqual(await push(d, k, same), [true], who + ' ' + k + ': the same value is not stuck');
       assert.equal(d._swLast[k].how, 'none', who + ' ' + k + ': the cloud already has it, so the app does not even ask the server');
       if (k === 'cs_guide') { const logs = []; d.FUNERGY_STATUS = { log: (x, m) => logs.push(m) }; await push(d, k, V0[k]); assert.deepEqual(logs, ['評価基準・例：クラウドにもう入っているので書きませんでした（新しい変更なし）']); delete d.FUNERGY_STATUS; }
       // 端末の写しが古い（クラウドのほうが新しい）ときも止まらない
-      const old = JSON.parse(JSON.stringify(V0[k])); for (const r of Object.values(old)) if (r && typeof r === 'object') r._at -= 1000;
+      const old = JSON.parse(JSON.stringify(same)); for (const r of Object.values(old)) if (r && typeof r === 'object') r._at -= 1000;
       assert.deepEqual(await push(d, k, old), [true], who + ' ' + k + ': an older copy is not stuck');
+      // 前に REST で受け取った全員の分を送り直すと、全部を読めない人は断られる（同じ値でも 403＝中身を当てる道にしない）
+      if (gb && JSON.stringify(same) !== JSON.stringify(V0[k])) assert.deepEqual(await push(tab(W, who), k, V0[k]), [false], who + ' ' + k + ': a full copy from before v1148 is refused');
     }
   }
   for (const k of SW2_KEYS) assert.deepEqual(writesOf(W, k), [], k + ': nothing written');
