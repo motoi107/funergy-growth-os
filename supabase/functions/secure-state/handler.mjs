@@ -139,6 +139,8 @@ export const TP_TIP_PRE = 'spl_tip_requests_';
 // spl_tip_requests_ で始まる名前は長さによらず（SQL の ss_guard_key と同じ。アプリはこの名前で始まる行をすべて Tip Rate として読む）。書くのは 200 字までの名前だけ（tpPut）
 export function tpIsKey(k) { return typeof k === 'string' && (TP_KEYS.includes(k) || (k.startsWith(TP_TIP_PRE) && k.length > TP_TIP_PRE.length)); }
 export const TIP_DECIDE = ['ceo', 'gm', 'am'];
+// 社員の変更記録（前の名前）を読む 1 回の件数と、読む回数の上限（Codex #141 6784041763 の P2。読み切れなければ決めない）
+export const TIP_PAST_PAGE = 1000, TIP_PAST_PAGES = 200;
 const TIP_ST = ['申請中', '承認', '却下'];
 const TIP_DEC_FIELDS = ['approver', 'approvedDate', 'decAt', 'decDay', 'decHst', 'fromDay', 'prevRate'];
 // 承認センターの印（v1087 の _apSyncRecStamp・_apRecordState）。率・状態・決めた時刻（decAt）ではない（配分にも Tip Rate にも使わない）
@@ -669,16 +671,28 @@ export function createHandler(deps) {
   //   社員の表の名前は公開の鍵で書けるので、メールのログイン（社員の表の名前しか分からない）の GM・CEO が自分の行の名前を変えると、
   //   前の名前の自分の Tip Rate の申請を承認できた。決める人だけが呼ぶ。読めない（表が無い＝SQL 20261029090000 の前を含む）ときは失敗
   //  （500。決めない：本人かを確かめられないので。端末は送り直す・断った印は付けない）
+  // Codex #141 6784041763 の P2：前は新しい順に 2000 件までしか読まず、残りを「前の名前ではない」としていた
+  // （名前を何度も変える・サーバーの 1 回の上限が小さいと、古い名前の自分の申請を決められた）。
+  // いまは id の古い順に、続きの id（id=gt.）で空のページが来るまで読む（1 回の上限・max-rows に左右されない）。
+  // 読み切れない（ページが多すぎる・途中で読めない・id が進まない）ときは決めない（500）
   async function tipPastNames(a) {
     if (!a || typeof a.emp !== 'string' || !a.emp) return [];
-    let r;
-    try {
-      r = await rest('employee_field_log?emp_id=eq.' + encodeURIComponent(a.emp) + '&field=in.(name,' + encodeURIComponent('"col:name"') + ')'
-        + '&select=old_value,new_value,emp_name&order=id.desc&limit=2000');
-    } catch { throw err('db', 500); }   // 表が無い（404）も 500 にする（404 は「関数が無い」と読まれるので）
     const out = [];
-    for (const x of (Array.isArray(r) ? r : [])) for (const v of [x && x.old_value, x && x.new_value, x && x.emp_name]) if (typeof v === 'string' && v.length <= 200) out.push(v);
-    return out;
+    let last = null;
+    for (let page = 0; ; page++) {
+      if (page >= TIP_PAST_PAGES) throw err('db', 500);
+      let r;
+      try {
+        r = await rest('employee_field_log?emp_id=eq.' + encodeURIComponent(a.emp) + '&field=in.(name,' + encodeURIComponent('"col:name"') + ')'
+          + (last === null ? '' : '&id=gt.' + last) + '&select=id,old_value,new_value,emp_name&order=id.asc&limit=' + TIP_PAST_PAGE);
+      } catch { throw err('db', 500); }   // 表が無い（404）も 500 にする（404 は「関数が無い」と読まれるので）
+      if (!Array.isArray(r)) throw err('db', 500);
+      if (!r.length) return out;
+      for (const x of r) for (const v of [x && x.old_value, x && x.new_value, x && x.emp_name]) if (typeof v === 'string' && v.length <= 200) out.push(v);
+      const id = String(r[r.length - 1] && r[r.length - 1].id);
+      if (!/^[0-9]{1,18}$/.test(id) || (last !== null && BigInt(id) <= BigInt(last))) throw err('db', 500);   // id が読めない・進まない
+      last = id;
+    }
   }
   async function tipActorNames(a) {
     const out = [a && a.name];
