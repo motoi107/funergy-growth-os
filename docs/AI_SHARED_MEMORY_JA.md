@@ -1,5 +1,14 @@
 # Claude / Codex 共通記録
 
+## 2026-11-11 #142 の Codex 再確認（6787349699・6787364161・`d3ddd77`）の残る P2＝Career Score の申請・履歴の読み出しを直した（Claude・ブランチ `claude/secure-cfg-read-1148`・アプリだけ・版は 1148 のまま・本番未反映）
+
+- 依頼：Moto さん 11/11「次進めてください」。Codex は `d3ddd77` で前回の 3 キーの直しを確認（クライアント 4 試験 98 成功）し、バックログ 3o4（申請の分け先を `_splitRead` が範囲も印も見ずに束ねる）を残る P2 とした（合成データで再現：GM が残した S2 の架空の人の申請を、S1 の G3 が取り込みのあと理由ごと読めた）。
+- 直し（仕様 `docs/SECURE_GRADE_BONUS_READ_V1148_JA.md` の 8）：`_splitRead` が `lss_requests`・`lss_history` の束から、このログインが見られない人の分け先と読めない前の統合行を外す（`csSplitVis`・決まりは `csReadOk` と同じ＝`csReadOkIn`）。`_splitWrite` も同じ見え方で比べるので、見えない分け先は空にしない・断られない。見えない人の分け先は書かない。`lsSplitRO` の覚えは見え方が変われば読み直す。送り直しは分け先のキーを読むので変わらない。`csSees`・`csSeesReq` は同じ決まりのまま、1 回の読み出しで範囲の記録を何度も読まない形にした（`csSeeCtx`・`csReadCtx`）。
+- コミット：`5dc983a`（アプリと試験）。
+- 試験（合成データ）：secure-cs-client 27（足した 3 件は `d3ddd77` で落ちる）・secure 一式のクライアントと ss-refused-drop 189/189・関連（acct-review-unify・employee-resign-sync・financial-web-startup・invoice-purchase-ui・perf-v1098・tip-prep-server・tip-rate-live・handbook・grade・karte・career・specialist・cs-*）は `d3ddd77` と同じ失敗だけ（perf-v1098 の 1・specialist-career の 1・cs-grade-rollback＝浅い clone）・static release pass/1148。わざと壊す 10 通りのうち 8（残り 2：二重の守り・例外のときの守り）。全体（重い 2 つ以外・2 並列・`5dc983a`）：2,326 件のうち 28 件が落ちる・10 件は飛ばす。落ちる試験は名前まで前回（`9c039f7`＝直す前の `92e138f` と名前まで同じ）と同じ（増えたのは足した 3 件の成功だけ）。
+- 独立レビューは無し（Claude の別エージェントは使っていない）。Codex の再レビューはまだ（#142 の最新の head）。
+- 変わること（Moto さんに伝える）：共有の端末で、前の人の送れていない申請・履歴のうち、今のログインの範囲の外の人の分は、Career Score の申請・履歴の画面に出ない（今までは出ていた）。CEO・GM のログインは今までどおり。
+
 ## 2026-11-11 #142 の Codex（6785448408）P2 を直した・同じ形を v1139・v1140・v1147 でも直した（Claude・ブランチ `claude/secure-cfg-read-1148`・アプリだけ・版は 1148 のまま・本番未反映）
 
 - 依頼：Moto さん 11/11「続きお願いします」（下の引き継ぎの最初の作業）。仕様・直し方・試験：`docs/SECURE_GRADE_BONUS_READ_V1148_JA.md` の 7。関数・SQL は変えていない（入れる一式の 1 ファイルは作り直し不要）。
@@ -7,7 +16,7 @@
   - v1148（指摘そのもの）：`ghAll`・`kevOvrAll`・`btrAll` → `gbReadVal`（ほかのログインの範囲・none・印のある行は返さない。scoped で印・送信待ちの行は、サーバーがこのログインに渡した行 `_gbView`）。`gbTake` は残した行に scoped の行を合流させない。`gbLocalWriteOk` は範囲が決まっていないとき印のある行を CEO・GM 以外が書かない。REST に戻るとき、前の範囲がほかのログインのもので今のログインが CEO・GM でなければ、その写しを使わない（`gbDropOthers`）。印はこのログインの写しだけ送る（`gbHaveMap`）。
   - v1139（成長カルテ・賞与）：同じ形に加え、どのログインの写しかの記録が無く、GM の自分の端末でログアウトしたあと次の人が受け取る前・取得の失敗で、送信待ちでない GM の全部の値（給与の履歴・面談）も読めた。→ `_ss_who`・`ssReadVal`（8 つの読む関数）・`_ssView`・`ssLocalWriteOk`（`lsSet` の入口）・REST に戻るときの `ssToPart`（CEO・GM を除く）・印はこのログインの写しだけ。
   - v1147（Tip の期間の確定・注意ログ）：`getTipConfirm`・`getWarnings` → `scReadOk`。`scDropOthers`・`scLocalWriteOk` の印。
-  - v1140（Career Score）：`getLssScores` → `csReadOk`。`csDropOthers`・`csLocalWriteOk` の印。**申請（`lss_requests`）・履歴（`lss_history`）の読み出しはまだ**（`getLssRequests()` を読んで `lsSet('lss_requests', …)` で書き戻す画面があり、`_splitWrite` は値に無い分け先を空にするので、読み出しで外すと前の人の行を消す・保存が失敗になる。別の作業で、外した分け先を書き戻しで残す形にしてから）。
+  - v1140（Career Score）：`getLssScores` → `csReadOk`。`csDropOthers`・`csLocalWriteOk` の印。**申請（`lss_requests`）・履歴（`lss_history`）の読み出しはこのときはまだ（→ 上の節で直した）**（`getLssRequests()` を読んで `lsSet('lss_requests', …)` で書き戻す画面があり、`_splitWrite` は値に無い分け先を空にするので、読み出しで外すと前の人の行を消す・保存が失敗になる。別の作業で、外した分け先を書き戻しで残す形にしてから）。
   - CEO・GM のログインは、範囲が決まっていないとき・REST に戻ったときも今までどおり端末の写しを読む（前から全部を持つ人）。
 - コミット：`0770bcf`（v1148）・`fcd0bcc`（v1139・v1147・v1140）・`9c039f7`（試験を足した）。
 - 試験（合成データ）：secure-grade-bonus-read-client 22・secure-state-client 34・secure-tip-cf-client 18・secure-cs-client 24（足した試験は 14 件。どれも直す前の `92e138f`＝head `6e405e0` と同じアプリで落ちる。前からの試験は変えていない）・関連（secure 一式のクライアント・ss-refused-drop・grade／karte／career／bonus-close など）は通る・static release pass/1148。わざと壊す 41 通り（新しい守り）のうち、足した試験だけで 38 で落ちる。残り 3 は別の守りで結果が同じ（gb の none → 何も返さない＝取り込みで消している／gb の印をこのログインの写しだけ送る＝サーバーの印が範囲ごとに違う／v1139 の見せる形の外のキー＝`ssToPart` で消している）。全体（重い 2 つ＝invoice-mutations・employee-resign-mutations 以外・2 並列・`9c039f7`）：2,323 件のうち 28 件が落ちる・10 件は飛ばす。落ちたファイル（bot-center・bot-database・cs-grade-rollback と toast-alias＝浅い clone で git の履歴が要る・ingredient-transfers・meeting-budget・meeting-sales・next-v1090・perf-v1098・specialist-career）を直す前の `92e138f` でも流し、落ちる 28 件は名前まで同じ（この直しで増えていない）。
