@@ -740,3 +740,18 @@ test('Codex #142 P2 (v1140): on the GM\'s own device the next sign-in reads no s
   await pull(c);
   assert.ok(c.getLssScores('Kai One')); assert.equal(c.getLssScores(OUT), null);
 });
+
+test('Codex #142 P2 (v1140): on the GM\'s own device a GM score row kept unsent is marked when the next sign-in pulls, so a later REST fallback does not open it', async () => {
+  const W = world({ rlsCs: true });
+  const c = csReaders(tab(W, 'tGM'));
+  await pull(c);
+  c.MEM.set(OUTK, JSON.stringify({ s: { 'A-1': 3 }, _at: 99 })); c.__pending[OUTK] = true;
+  logout(c);
+  login(c, 't3'); await pull(c);
+  assert.equal(c.getLssScores(OUT), null);
+  W.ssDown = true; await pull(c);
+  assert.equal(c.csStateGet(), null);
+  assert.equal(c.getLssScores(OUT), null, 'the row the pull marked stays closed');
+  assert.deepEqual(local(c, OUTK), { s: { 'A-1': 3 }, _at: 99 });
+  W.ssDown = false;
+});

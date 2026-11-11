@@ -639,6 +639,7 @@ async function gmLeavesKarte(W, shared = true) {
   const k = local(c, 'growth_karte'); k['E-2'] = { ...k['E-2'], payLog: [{ amount: 999 }, { amount: 1500 }], _at: 77 };
   c.MEM.set('growth_karte', JSON.stringify(k)); c.__pending.growth_karte = true;   // GM が直したが送れていない
   c.MEM.set('bonus_rules', JSON.stringify({ pool: [1, 2], gm: { v: 9, _at: 99 } })); c.__pending.bonus_rules = true;   // 試験の合流は _at の新しいほう
+  c.MEM.set('karte_pin', '"4321"'); c.__pending.karte_pin = true;   // 前の版の平文の写しが送れずに残っている
   assert.equal(view(c).k['E-2'].payLog.length, 2, 'the GM reads the own unsent change');
   c.ssOnLogout(); c._hwSession = null; c.curRole = null;
   return c;
@@ -652,6 +653,7 @@ test('Codex #142 P2 (same shape in v1139): after the GM leaves unsent karte / bo
   c._hwSession = 't1'; c.curRole = 'crew';
   assert.deepEqual(view(c), NONE, 'before the pull: nothing (not received for this sign-in)');
   assert.equal(c.ssLocalWriteOk('growth_karte'), false, 'and not overwritten');
+  assert.equal(c.ssLocalWriteOk('karte_bonus_config'), false, 'nothing is written before this sign-in\'s answer arrives');
   await pull(c);
   assert.deepEqual(view(c), { k: PROJ1, r: {}, e: {}, pin: '1234' }, 'after the pull: the projection only (no pay log, no meetings, no bonus)');
   assert.equal(local(c, 'growth_karte')['E-2'].payLog.length, 2, 'still kept for the GM');
@@ -719,5 +721,29 @@ test('Codex #142 P2 (v1139): on the GM\'s own device the next sign-in reads none
   W.ssDown = true; o._hwSession = 'tGM'; o.curRole = 'gm';
   await pull(o);
   assert.deepEqual(view(o).k, W.get('growth_karte'), 'kept for the GM while the function is down');
+  W.ssDown = false;
+});
+
+test('Codex #142 P2 (v1139): before the SQL, a crew sign-in that falls back to REST gets the full rows by REST as before, but not the GM\'s unsent changes kept on the device', async () => {
+  const W = world();   // SQL の前（REST で全部読める）
+  const c = await gmLeavesKarte(W);
+  c._hwSession = 't1'; c.curRole = 'crew';
+  W.ssDown = true; await pull(c);
+  assert.equal(c.ssState(), 'full', 'REST as before');
+  assert.deepEqual(view(c).k, NONE.k, 'the karte row is the GM\'s kept change: not read');
+  assert.equal(local(c, 'growth_karte')['E-2'].payLog.length, 2, 'kept for the GM');
+  assert.deepEqual(view(c).e, W.get('bonus_eval'), 'a row without a kept change: REST as before');
+  W.ssDown = false;
+});
+
+test('Codex #142 P2 (v1139): after a sign-in that used REST (no record of whose copy it is), the next person still reads nothing of it before its own answer', async () => {
+  const W = world({ rls: true, pins: { tGM: GM, t1: CREW, t2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S2'], am_stores: [] }, tStore: 'deny' } });
+  const c = ssReaders(tab(W)); c._hwSession = 't1'; c.curRole = 'crew';
+  await pull(c);
+  assert.deepEqual(view(c).k, PROJ1);
+  W.ssDown = true; await pull(c);   // 同じ人のまま REST に戻る（だれの写しかの記録は空になる）
+  assert.deepEqual(view(c).k, PROJ1, 'the own projection, as before');
+  c.ssOnLogout(); c._hwSession = 't2'; c.curRole = 'g2';
+  assert.deepEqual(view(c), NONE, 'another person: nothing of the earlier projection');
   W.ssDown = false;
 });

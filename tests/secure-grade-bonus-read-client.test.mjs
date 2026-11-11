@@ -542,6 +542,9 @@ test('Codex #142 P2: the GM\'s own device (not shared) keeps the copies on logou
   W.empsDown = false; W.fresh();
   await pull(c);
   for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, ['E-1']), k);
+  // ここでは印を付けたのは取り込み（gbTake）だけ（GM だけの端末のログアウトは印を付けない）。送信待ちが外れても読まない
+  for (const k of GB) delete c.__pending[k];
+  for (const k of GB) assert.deepEqual(reads(c)[k], pick(k, ['E-1']), k + ' after the pending mark went away');
   // 送れていない変更が無い GM の写し（全員の分）も：REST に戻ったとき、ほかのログインの写しは使わない
   const W2 = world({ rlsGb: true });
   const g = tab(W2, 'tGM'); await pull(g); logout(g);

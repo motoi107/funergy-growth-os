@@ -565,3 +565,18 @@ test('Codex #142 P2 (v1147): on the GM\'s own device (not shared) the next sign-
   await pull(c);
   assert.equal(see(c, 'S1').tip.totalFinal, 123.45); assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] });
 });
+
+test('Codex #142 P2 (v1147): on the GM\'s own device a GM row kept unsent is marked when the next sign-in pulls, so a later REST fallback does not open it', async () => {
+  const W = world({ rlsSc: true });
+  const c = readers(tab(W, 'tGM'));
+  await pull(c);
+  c.MEM.set(TK('S2'), JSON.stringify(S2_EDIT)); c.__pending[TK('S2')] = true;
+  logout(c);   // GM だけの端末：ログアウトでは何も変えない
+  login(c, 't3'); await pull(c);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] });
+  W.ssDown = true; await pull(c);   // 同じ人のまま REST に戻る（ほかのログインの写しを消す道は通らない）
+  assert.equal(state(c), null);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'the row the pull marked stays closed');
+  assert.deepEqual(local(c, TK('S2')), S2_EDIT, 'and kept');
+  W.ssDown = false;
+});
