@@ -10102,7 +10102,7 @@ function lsSplitRO(key){
   if(!sp || sp.type!=='arr') return ls(key, [])||[];
   var sig=null;
   try{
-    sig=[_lsStoreGet(key)];
+    sig=[_lsStoreGet(key), (typeof csSplitVisSig==='function') ? csSplitVisSig(key) : ''];   /* Codex #142 P2：見え方が変われば読み直す */
     lsKeys(_splitPrefix(key)).forEach(function(k){ sig.push(k, _lsStoreGet(k)); });
   }catch(e){ return ls(key, [])||[]; }
   var c=_SPLIT_RO[key];
@@ -10115,8 +10115,10 @@ function lsSplitRO(key){
   _SPLIT_RO[key]={sig:sig, val:val};
   return val;
 }
-function _splitRead(key, sp, rawMode){
+function _splitRead(key, sp, rawMode, all){
   var pre=_splitPrefix(key);
+  /* Codex（#142 d3ddd77）P2：Career Score の申請・履歴は、このログインが見られる人の分け先だけ（csSplitVis）。all＝絞らない（使っていない・念のため） */
+  var vis=null; if(!all && typeof csSplitVis==='function'){ try{ vis=csSplitVis(key); }catch(e){ vis={ legacy:false, ok:function(){ return false; } }; } }
   if(sp.type==='obj'){
     var out={}; var legacy=_lsRaw(key,{})||{};
     /* v750: 保存者・時刻の印を外して返す。画面側のコードは今までどおりの形を受け取る。 */
@@ -10125,7 +10127,7 @@ function _splitRead(key, sp, rawMode){
     return out;
   }
   var byId={}, order=[];
-  (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
+  if(!vis || vis.legacy) (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
   /* v692: パーティションで「置換」すると、レガシーキー側(クラウドのlegacy行から取り込んだ分)が丸ごと消え、
      この端末が保存した数件しか見えなくなっていた（=請求書が積み上がらない／突合診断で数件しか出ない）。
      置換ではなく和集合にする（同一idはパーティション側を採用＝tombstoneも正しく効く）。 */
@@ -10149,6 +10151,7 @@ function _splitRead(key, sp, rawMode){
     }catch(e){ console.warn('_splitRead dedupe', key, e); }
     byId[id]=merged; if(order.indexOf(id)<0) order.push(id);
   }); }catch(e){}                                                 /* v765 */
+  if(vis) order=order.filter(function(id){ return vis.ok(id); });
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
   /* v679: 論理削除(tombstone)は読み取りから除外。rawMode時は素のまま返す（書き戻し用） */
   if(sp.readFilter && !rawMode){ try{ out=out.filter(sp.readFilter); }catch(e){} }
@@ -10156,6 +10159,9 @@ function _splitRead(key, sp, rawMode){
 }
 function _splitWrite(key, sp, val){
   var pre=_splitPrefix(key);
+  /* Codex（#142 d3ddd77）P2：読み出しと同じ見え方で比べる（見られない人の分け先は curMerged に入らない＝空にしない）。
+     見られない人の分け先を書こうとしたら書かない（前の人の送れていない写しを置き換えない・lsSet の csLocalWriteOk も断る） */
+  var _vis=null; if(typeof csSplitVis==='function'){ try{ _vis=csSplitVis(key); }catch(e){ _vis={ legacy:false, ok:function(){ return false; } }; } }
   var curMerged=_splitRead(key, sp, true);   /* v679: tombstone込みの生データと比較 */   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
   var _wOk=true;   /* v719: パーティションごとの保存結果を集計して呼び出し元へ返す */
   if(sp.type==='obj'){
@@ -10195,6 +10201,7 @@ function _splitWrite(key, sp, val){
     }catch(e){ console.warn('stamp list', key, e); }
   }
   Object.keys(byId).forEach(function(id){
+    if(_vis && !_vis.ok(id)){ _wOk=false; try{ if(typeof _lsNoteSaveFailure==='function') _lsNoteSaveFailure(pre+id); }catch(e){} return; }
     if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])){ if(lsSet(pre+id, byId[id])===false) _wOk=false; }
   });
   return _wOk;
@@ -12435,29 +12442,63 @@ function csSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(CS_SEEN_KEY)||'
 function csSeenSet(o){ try{ localStorage.setItem(CS_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
 /* その人の Career Score をこの端末で見せてよいか（画面の「—」）。範囲がまだ決まっていない（関数が前の版・v1139 以前から上げた直後）は今までどおり。
    前の人の範囲が残っているときは、受け取り終えるまで本人だけ */
-function csSees(name){
-  var st=csStateGet();
+function csSees(name){ return csSeesIn(csSeeCtx(), name); }
+function csSeesReq(name){ return csSeesReqIn(csSeeCtx(), name); }
+/* 画面が人ごとに何度も呼ぶので、範囲の記録と今のログインだけ（残した写しの印は読まない） */
+function csSeeCtx(){
+  var me='';
+  try{ me=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  return { st:csStateGet(), me:me, who:csWho() };
+}
+/* 見られるかを決めるのに要るもの（範囲の記録・残した写しの印・今のログイン）を 1 回だけ読む。申請・履歴の読み出し（_splitRead）は人ごとに何度も聞くため */
+function csReadCtx(){
+  var me='';
+  try{ me=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  return { st:csStateGet(), held:(typeof secHeldAll==='function') ? secHeldAll() : {}, me:me, gm:(typeof secGmNow==='function') ? secGmNow() : false, who:csWho() };
+}
+function csSeesIn(c, name){
+  var st=c.st;
   if(!st) return true;
-  if(st.who && st.who!==csWho()){ try{ return !!name && name===curUserName; }catch(e){ return false; } }
+  if(st.who && st.who!==c.who) return !!name && name===c.me;
   if(st.level==='full') return true;
   if(st.level==='none') return false;
   return st.names.indexOf(name)>=0;
 }
-function csSeesReq(name){
-  var st=csStateGet();
-  if(!st || st.level!=='scoped' || (st.who && st.who!==csWho())) return csSees(name);
+function csSeesReqIn(c, name){
+  var st=c.st;
+  if(!st || st.level!=='scoped' || (st.who && st.who!==c.who)) return csSeesIn(c, name);
   return st.req.indexOf(name)>=0 || st.names.indexOf(name)>=0;
 }
 /* Codex（#142 6785448408）P2 と同じ形（v1140）：画面が読む Career Score の点（getLssScores）。範囲が決まっていればその人だけ（csSees）。
    まだ決まっていない（ログアウトのあと受け取る前・REST に戻った・取得の失敗）ときは、前の人の写しを残している行は返さない（本人の行・CEO・GM のログインを除く）。
    前の統合行（lss_scores）は、このログインが受け取った見せる形のときだけ */
-function csReadOk(key){
+function csReadOk(key){ return csReadOkIn(csReadCtx(), key); }
+function csReadOkIn(c, key){
   if(!csIsKey(key)) return true;
-  var p=csParse(key), st=csStateGet(), me='';
-  try{ me=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
-  if(!st) return !secHeld(key) || secGmNow() || (p.kind!=='legacy' && !!me && p.name===me);
-  if(p.kind==='legacy') return st.who===csWho() && (st.level==='full' || (st.level==='scoped' && !secHeld(key) && !ssPending(key)));
-  return p.kind==='req' ? csSeesReq(p.name) : csSees(p.name);
+  var p=csParse(key), st=c.st, held=Object.prototype.hasOwnProperty.call(c.held, key);
+  if(!st) return !held || c.gm || (p.kind!=='legacy' && !!c.me && p.name===c.me);
+  if(p.kind==='legacy') return st.who===c.who && (st.level==='full' || (st.level==='scoped' && !held && !ssPending(key)));
+  return p.kind==='req' ? csSeesReqIn(c, p.name) : csSeesIn(c, p.name);
+}
+/* Codex（#142 d3ddd77）P2・バックログ 3o4：申請（lss_requests）・履歴（lss_history）は人ごとに分けた行（spl_lss_requests_<名前>）の束。
+   画面はどれも ls() → _splitRead で束を読むので、そこで「このログインが見られない人の分け先」と「読めない前の統合行」を外す（csReadOkIn と同じ決まり）。
+   書き戻し（_splitWrite）も同じ見え方で比べるので、外した分け先は「消された」とみなさず、空にしない・書き換えない（前の人の送れていない変更を残す）。
+   クラウドへ送るのは分け先のキーそのもの（spl_…）を読むので、外しても送り直しは変わらない。null＝絞らない（Career Score 以外の束・CEO・GM の全部） */
+function csSplitVis(key){
+  if(key!=='lss_requests' && key!=='lss_history') return null;
+  var c=csReadCtx(), pre='spl_'+key+'_';
+  if(c.st && c.st.level==='full' && c.st.who===c.who) return null;   /* csReadOkIn と同じ（前の統合行は記録の who が今のログインのときだけ） */
+  var memo={};
+  return { legacy:csReadOkIn(c, key), ok:function(id){ id=String(id); if(!(id in memo)) memo[id]=csReadOkIn(c, pre+id); return memo[id]; } };
+}
+/* lsSplitRO の覚えの印に足す：同じ中身でもログイン・範囲・残した印が変われば読み直す */
+function csSplitVisSig(key){
+  if(key!=='lss_requests' && key!=='lss_history') return '';
+  var a='', b='', w='', g=0, m='';
+  try{ a=String(localStorage.getItem(CS_STATE_KEY)||''); }catch(e){}
+  try{ b=String(localStorage.getItem((typeof SEC_HELD_KEY!=='undefined') ? SEC_HELD_KEY : '_sec_held_v1')||''); }catch(e){}
+  try{ w=csWho(); g=((typeof secGmNow==='function') && secGmNow()) ? 1 : 0; m=ssPending(key) ? 1 : 0; }catch(e){}
+  return a+'\n'+b+'\n'+w+'\n'+g+'\n'+m;
 }
 /* この端末の Career Score のうち、ほかのログインの写し：送れていない変更のある行は残して印、ほかは消す */
 function csDropOthers(){

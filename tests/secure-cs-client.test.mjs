@@ -755,3 +755,124 @@ test('Codex #142 P2 (v1140): on the GM\'s own device a GM score row kept unsent 
   assert.deepEqual(local(c, OUTK), { s: { 'A-1': 3 }, _at: 99 });
   W.ssDown = false;
 });
+
+// ---- Codex（#142 d3ddd77）P2・バックログ 3o4：申請（lss_requests）・履歴（lss_history）は人ごとの分け先の束。アプリの本物の束の読み書き
+// （_splitRead・_splitWrite・lsSplitRO）を ls・lsSet につなぎ、GM が共有の端末に残した範囲の外の人の送れていない申請・履歴が、
+// 次にログインした人の読み出しに出ないこと・その人の書き戻しで消えない／断られないこと・GM が戻ったら読めて送り直せることを確かめる
+const splitLine = name => { const m = source.match(new RegExp('^\\s*' + name + ':\\s*(\\{type:.*\\}),\\s*$', 'm')); assert.ok(m, name); return m[1]; };
+const splitify = c => {
+  if (c.__split) return csReaders(c);
+  vm.runInContext([oneLine('_splitPrefix'), 'var _SPLIT_RO={}, _STAMP_LIST_KEYS={};', fn('_mutBare'), fn('_splitRead'), fn('_splitWrite'), fn('lsSplitRO'),
+    oneLine('getLssRequests'), oneLine('addLssRequest'),
+    `_SPLIT_KEYS.lss_requests=${splitLine('lss_requests')}; _SPLIT_KEYS.lss_history=${splitLine('lss_history')}; var __split=1;`,
+    'function ls(k, d){ var sp=_SPLIT_KEYS[k]; if(sp) return _splitRead(k, sp); return _lsRaw(k, d); }',
+    /* アプリの lsSet の入口と同じ：束は _splitWrite、分け先は Career Score の確かめ（csLocalWriteOk）のあと */
+    'function lsSet(k, v){ var sp=_SPLIT_KEYS[k]; if(sp) return _splitWrite(k, sp, v); if(!csLocalWriteOk(k)){ __failed.push(k); return false; } MEM.set(k, JSON.stringify(v)); return true; }'].join('\n'), c);
+  return csReaders(c);
+};
+const REQK = n => 'spl_lss_requests_' + n, HISTK = n => 'spl_lss_history_' + n;
+const GM_REQ = { id: 'r-gm-ben', name: OUT, status: '承認', reason: 'GM の送れていない決定の理由（架空）', by: 'Gina M' };
+const GM_HIST = { name: OUT, total: 55, note: 'GM の送れていない記録（架空）' };
+const reqNames = c => [...new Set(plain(c.getLssRequests()).map(r => r.name))].sort();
+const histNames = c => [...new Set(plain(c.ls('lss_history', [])).map(r => r.name))].sort();
+const plain2 = x => JSON.parse(JSON.stringify(x));
+const plain = plain2;
+async function gmLeavesReq(W, shared = true) {
+  const c = splitify(tab(W, 'tGM'));
+  if (shared) c.localStorage.setItem('_ss_mark', JSON.stringify({ shared: 1, keep: {}, unsafe: {} }));
+  await pull(c);
+  const list = plain(local(c, REQK(OUT)) || []); list.push(GM_REQ);
+  c.MEM.set(REQK(OUT), JSON.stringify(list)); c.__pending[REQK(OUT)] = true;                 // GM が決めたが送れていない
+  c.MEM.set(HISTK(OUT), JSON.stringify([{ name: OUT, total: 40 }, GM_HIST])); c.__pending[HISTK(OUT)] = true;
+  assert.ok(reqNames(c).includes(OUT), 'the GM reads it');
+  assert.ok(plain(c.lsSplitRO('lss_requests')).some(r => r.id === 'r-gm-ben'));
+  logout(c);
+  return c;
+}
+
+test('Codex #142 P2 (d3ddd77, backlog 3o4): a GM\'s unsent request / history of a person outside the next sign-in\'s range is not read by it, and its write-back neither clears nor is refused because of it', async () => {
+  const W = world({ rlsCs: true });
+  const c = await gmLeavesReq(W);
+  const keptReq = c.MEM.get(REQK(OUT)), keptHist = c.MEM.get(HISTK(OUT));
+  assert.ok(keptReq && keptHist, 'kept for the GM');
+  login(c, 't3');
+  assert.ok(!reqNames(c).includes(OUT), 'before the pull: requests');
+  assert.ok(!histNames(c).includes(OUT), 'before the pull: history');
+  assert.ok(!plain(c.lsSplitRO('lss_requests')).some(r => r.name === OUT), 'before the pull: the cached read too');
+  await pull(c);
+  assert.equal(c.csSeesReq(OUT), false, 'outside the range (as in the Codex reproduction)');
+  assert.ok(!reqNames(c).includes(OUT), 'after the pull: requests');
+  assert.ok(!plain(c.lsSplitRO('lss_requests')).some(r => r.name === OUT || /GM の送れていない/.test(r.reason || '')), 'after the pull: lsSplitRO');
+  assert.ok(!histNames(c).includes(OUT), 'after the pull: history');
+  assert.ok(reqNames(c).includes('Kai One'), 'a person in range is still read');
+  // その人の書き戻し（画面と同じ：読んで直して丸ごと渡す）。範囲の外の分け先は空にしない・断られない
+  c.__failed.length = 0;
+  const reqs = c.getLssRequests(); reqs.find(r => r.name === 'Kai One').note = 'checked by Sam';
+  assert.equal(c.lsSet('lss_requests', reqs), true, 'saved');
+  c.addLssRequest({ id: 'r-new-sam', name: 'Sam Three', status: '申請中' });
+  const hist = plain(c.ls('lss_history', [])); hist.push({ name: 'Kai One', total: 41 });
+  assert.equal(c.lsSet('lss_history', hist), true, 'history saved');
+  assert.deepEqual(plain(c.__failed), [], 'nothing refused');
+  assert.equal(c.MEM.get(REQK(OUT)), keptReq, 'the GM request partition is untouched');
+  assert.equal(c.MEM.get(HISTK(OUT)), keptHist, 'the GM history partition is untouched');
+  assert.equal(local(c, REQK('Kai One')).find(r => r.name === 'Kai One').note, 'checked by Sam');
+  assert.ok(local(c, REQK('Sam Three')).some(r => r.id === 'r-new-sam'));
+  // 範囲の外の人の分を書こうとしても書かない（前の人の写しを置き換えない）
+  const bad = c.getLssRequests(); bad.push({ id: 'r-x', name: OUT, status: '申請中' });
+  assert.equal(c.lsSet('lss_requests', bad), false, 'refused');
+  assert.equal(c.MEM.get(REQK(OUT)), keptReq);
+  logout(c);
+  // 関数が無い（REST に戻る）：範囲は決まらないが、残した分け先は読まない
+  W.ssDown = true; login(c, 't3'); await pull(c);
+  assert.equal(c.csStateGet(), null, 'REST as before');
+  assert.ok(!reqNames(c).includes(OUT), 'REST: requests');
+  assert.ok(!histNames(c).includes(OUT), 'REST: history');
+  c.__failed.length = 0;
+  assert.equal(c.lsSet('lss_requests', c.getLssRequests()), true, 'REST: writing back what was read changes nothing and is not refused');
+  assert.equal(c.MEM.get(REQK(OUT)), keptReq);
+  W.ssDown = false; c._ss.legacy = null;
+  logout(c);
+  // GM が戻る：読める・送り直せる
+  login(c, 'tGM');
+  assert.ok(reqNames(c).includes(OUT), 'GM before the pull');
+  await pull(c);
+  assert.ok(plain(c.getLssRequests()).some(r => r.id === 'r-gm-ben' && /GM の送れていない/.test(r.reason)), 'GM after the pull');
+  assert.ok(histNames(c).includes(OUT));
+  assert.equal(await c.syncMasterToSupabase(REQK(OUT), local(c, REQK(OUT))), true); delete c.__pending[REQK(OUT)];
+  assert.ok(W.get(REQK(OUT)).some(r => r.id === 'r-gm-ben'), 'the GM decision reached the cloud');
+});
+
+test('Codex #142 P2 (backlog 3o4): on the GM\'s own device the next sign-in\'s cached read (lsSplitRO) does not return the GM\'s requests', async () => {
+  const W = world({ rlsCs: true });
+  const c = splitify(tab(W, 'tGM'));
+  await pull(c);
+  assert.ok(plain(c.lsSplitRO('lss_requests')).some(r => r.name === OUT), 'the GM read (cached)');
+  logout(c);   // GM だけの端末：写しはそのまま
+  assert.ok(c.MEM.get(REQK(OUT)), 'kept');
+  login(c, 't3');
+  assert.deepEqual([...new Set(plain(c.lsSplitRO('lss_requests')).map(r => r.name))], ['Sam Three'], 'only the own requests until the own range arrives');
+  assert.deepEqual(reqNames(c), ['Sam Three']);
+  await pull(c);
+  assert.ok(!plain(c.lsSplitRO('lss_requests')).some(r => r.name === OUT));
+  assert.ok(reqNames(c).includes('Kai One'));
+});
+
+test('Codex #142 P2 (backlog 3o4): a GM\'s unsent legacy request row (lss_requests) kept on the device is not read by the next sign-in when the range cannot be decided (REST)', async () => {
+  const W = world({ rlsCs: true });
+  const c = splitify(tab(W, 'tGM'));
+  c.localStorage.setItem('_ss_mark', JSON.stringify({ shared: 1, keep: {}, unsafe: {} }));
+  await pull(c);
+  c.MEM.set('lss_requests', JSON.stringify([{ id: 'r-legacy-ben', name: OUT, status: '承認', reason: 'GM の前の統合行（架空）' }])); c.__pending.lss_requests = true;
+  assert.ok(plain(c.getLssRequests()).some(r => r.id === 'r-legacy-ben'), 'the GM reads it');
+  logout(c);
+  assert.ok(c.MEM.get('lss_requests'), 'kept');
+  W.ssDown = true; login(c, 't3'); await pull(c);
+  assert.equal(c.csStateGet(), null);
+  assert.ok(!plain(c.getLssRequests()).some(r => r.id === 'r-legacy-ben'), 'not read (REST)');
+  c.__failed.length = 0;
+  assert.equal(c.lsSet('lss_requests', c.getLssRequests()), true);
+  assert.deepEqual(plain(c.__failed), []);
+  W.ssDown = false; c._ss.legacy = null;
+  logout(c); login(c, 'tGM');
+  assert.ok(plain(c.getLssRequests()).some(r => r.id === 'r-legacy-ben'), 'the GM reads it again');
+});
