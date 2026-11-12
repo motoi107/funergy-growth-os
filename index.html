@@ -9821,21 +9821,46 @@ function wbPending(key){
    ・起動・取り込みの途中の保存（すぐには送らない＝前から）でも覚える。覚えないと、その変更が入った値を次の保存で
      「直す前の値」にしてしまい、同じく消える。取り込みがその行をクラウドの値で置き換えたら、直す前の値も外れる（wbIncoming）。
      ただし端末の保存（IndexedDB）を読み終える前の保存は、直す前の値を確かめられないので覚えず、このキーは丸ごと送れるまで
-     覚えない（_wbUnk。この起動のあいだだけ） */
+     覚えない（「確かめられなかった」の印）。
+   ・（Codex #143 6823638883）その印はメモリだけだったので、送る前に閉じて開き直すと印が消え、次の保存でその変更の入った値を
+     「直す前の値」にして消していた。印は端末の小さな印（_wb_unk_v1・送信待ちの記録と同じく localStorage）にも残し、開き直しても
+     丸ごと送れるまで覚えない。書けなかったときはメモリの印（_wbUnk）だけ（この起動のあいだ） */
 var _wbUnk = {};
+var WB_UNK_KEY = '_wb_unk_v1';   /* { キー: 印を付けた時刻 }（この端末だけ・送らない） */
+function _wbUnkAll(){
+  try{ var s=(typeof _smallGet==='function') ? _smallGet(WB_UNK_KEY) : localStorage.getItem(WB_UNK_KEY); var o=JSON.parse(s||'null');
+    return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; }
+}
+function _wbUnkSave(o){
+  var t=Object.keys(o).length ? JSON.stringify(o) : null;
+  if(typeof _smallSet==='function') return _smallSet(WB_UNK_KEY, t);
+  try{ if(t==null) localStorage.removeItem(WB_UNK_KEY); else localStorage.setItem(WB_UNK_KEY, t); return true; }catch(e){ return false; }
+}
+function wbUnkHas(key){
+  if(_wbUnk[key]) return true;
+  return Object.prototype.hasOwnProperty.call(_wbUnkAll(), key);
+}
+function wbUnkMark(key){
+  _wbUnk[key]=1;
+  try{ var o=_wbUnkAll(); if(o[key]) return; o[key]=Date.now(); _wbUnkSave(o); }catch(e){}
+}
+function wbUnkClear(key){
+  try{ delete _wbUnk[key]; }catch(e){}
+  try{ var o=_wbUnkAll(); if(!Object.prototype.hasOwnProperty.call(o, key)) return; delete o[key]; _wbUnkSave(o); }catch(e){}
+}
 function wbOnEdit(key, prevTxt, nextTxt){
   try{
     if(prevTxt===nextTxt) return;
     if(!wbIsKey(key)) return;
-    if(typeof _idbState!=='undefined' && _idbState==='init'){ _wbUnk[key]=1; return; }
+    if(typeof _idbState!=='undefined' && _idbState==='init'){ wbUnkMark(key); return; }
     if(wbGet(key)) return;
-    if(_wbUnk[key] || wbPending(key)) return;
+    if(wbUnkHas(key) || wbPending(key)) return;
     wbSet(key, prevTxt);
   }catch(e){}
 }
 /* 丸ごと送れた（直す前の値が無かった）：この端末の値が送った値のままなら、確かめられなかった印を外す（次の保存から覚える） */
 function wbWholeSent(key, val){
-  try{ if(!_wbUnk[key]) return; if(_lsStoreGet(key)===JSON.stringify(val)) delete _wbUnk[key]; }catch(e){}
+  try{ if(!wbUnkHas(key)) return; if(_lsStoreGet(key)===JSON.stringify(val)) wbUnkClear(key); }catch(e){}
 }
 /* 中身が同じか（欄の順によらない） */
 function _wbEq(a, b){
@@ -10010,7 +10035,7 @@ async function wbPush(key){
   if(L2t===Lt){
     if(Mt!==Lt){ if(_lsWriteVerified(key, Mt)){ _lsMarkFetched(key); _lsClearSaveFailure(key); } }
     wbDrop(key);
-    try{ delete _wbUnk[key]; }catch(e){}   /* 手元の変更はすべて送れた */
+    try{ wbUnkClear(key); }catch(e){}   /* 手元の変更はすべて送れた */
   } else if(L2t!=null){
     try{
       var st2={ conf:[], prefer:'local' };
