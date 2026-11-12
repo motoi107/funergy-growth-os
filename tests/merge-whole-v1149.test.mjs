@@ -681,6 +681,99 @@ test('settings: a save before the device storage has been read is sent whole, an
   assert.equal(unk(A, 'kpi_config'), false);
   await db.close();
 });
+/* Codex #143 6824737733・Claude のルーティン 6824635936 の P3：印が残ったまま、取り込みで端末の値がクラウドの値に置き換わる順番（2 台） */
+test('a marked key replaced by the pull (nothing waiting to be sent): the mark is cleared, so the next save is merged and keeps another device’s later change (before: sent whole and erased it)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'shift_sections';
+  await putCloud(db, K, { F01: ['A'], F02: ['B'] });
+  const A = device(db), B = device(db);
+  await pull(A, db, K); await pull(B, db, K);
+  /* A：起動の途中・端末の保存を読む前の保存（送らない・送信待ちにも入らない。前から） */
+  A._idbState = 'init'; A._supaBooting = true;
+  quietWrite(A, K, { F01: ['A', 'C'], F02: ['B'] });
+  assert.equal(unk(A, K), true);
+  A._idbState = 'ready'; A._supaBooting = false;
+  /* 開き直す（印は端末に残る）→ 取り込み：送れていない変更は無いので、今までどおりクラウドの値で置き換える（C は v1136 から同じく消える） */
+  const A2 = device(db, undefined, { S: A.S, LS: A.LSM, OB: A.OB });
+  assert.equal(unk(A2, K), true, 'the mark survived the restart');
+  await pull(A2, db, K);
+  assert.deepEqual(local(A2, K), { F01: ['A'], F02: ['B'] }, 'replaced by the cloud value (as v1136)');
+  const clearedAtPull = !unk(A2, K), goneFromDevice = !A2.LSM.has('_wb_unk_v1');
+  /* B があとで別の店を足す → A が自分の店を直す：A は重ねて送る（B の店が残る） */
+  assert.equal(await edit(B, K, { F01: ['A'], F02: ['B'], F03: ['E'] }), true);
+  assert.equal(await edit(A2, K, { F01: ['A', 'G'], F02: ['B'] }), true);
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'G'], F02: ['B'], F03: ['E'] }, 'merged: B’s F03 stays (before: the whole send erased it)');
+  assert.equal(clearedAtPull, true, 'the device value became the cloud value at the pull: the mark was cleared');
+  assert.equal(goneFromDevice, true, 'and removed from the device');
+  await db.close();
+});
+test('the mark stays when the pull cannot be sure nothing is waiting: a send waiting (this person or another person on a shared device), being sent, or the device storage not read yet', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'shift_sections';
+  await putCloud(db, K, { F01: ['A'], F02: ['B'] });
+  const mk = async () => {
+    const D = device(db);
+    await pull(D, db, K);
+    D._idbState = 'init';
+    quietWrite(D, K, { F01: ['A', 'C'], F02: ['B'] });
+    D._idbState = 'ready';
+    assert.equal(unk(D, K), true);
+    return D;
+  };
+  /* この人の送信待ち（新しく直した）：手元を残す（v1136）・印も残す */
+  const P = await mk();
+  P.OB.push({ key: K, who: 'me' }); P.PE[K] = Date.UTC(2026, 10, 12, 9);
+  await pull(P, db, K);
+  assert.deepEqual(local(P, K), { F01: ['A', 'C'], F02: ['B'] }, 'kept (v1136)');
+  assert.equal(unk(P, K), true, 'something waits to be sent: the mark stays');
+  /* ほかの人の送信待ち（共有の端末）：取り込みは v1136 どおり。印は外さない（送るものが残っているかもしれない） */
+  const O = await mk();
+  O.OB.push({ key: K, who: 'someone-else' });
+  await pull(O, db, K);
+  assert.equal(unk(O, K), true, 'another person’s waiting send: the mark stays');
+  /* 送っている途中：手元を残す・印も残す */
+  const Q = await mk();
+  Q.busy[K] = 1;
+  await pull(Q, db, K);
+  assert.deepEqual(local(Q, K), { F01: ['A', 'C'], F02: ['B'] });
+  assert.equal(unk(Q, K), true, 'being sent: the mark stays');
+  /* 端末の保存をまだ読んでいない：外さない */
+  const R = await mk();
+  R._idbState = 'init';
+  await pull(R, db, K);
+  assert.equal(unk(R, K), true, 'the device storage is not read yet: the mark stays');
+  R._idbState = 'ready';
+  /* 書けなかった：外さない */
+  const W = await mk();
+  W._lsWriteVerified = () => false;
+  await pull(W, db, K);
+  assert.equal(unk(W, K), true, 'the pulled value could not be stored: the mark stays');
+  await db.close();
+});
+test('settings and pullOpKey: a marked key replaced by the pull clears the mark too', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  await putSetting(db, 'kpi_config', { F01: { fl: 60 } });
+  await putCloud(db, 'store_closures', { F01: { '2026-11-20': 'Thanksgiving' } });
+  const A = device(db);
+  A.S.kpi_config = JSON.stringify({ F01: { fl: 60 } });
+  await pull(A, db, 'store_closures');
+  A._idbState = 'init';
+  quietWrite(A, 'kpi_config', { F01: { fl: 61 } });
+  quietWrite(A, 'store_closures', { F01: { '2026-11-20': 'Closed' } });
+  A._idbState = 'ready';
+  assert.equal(await run(A, 'pullSettingKey("kpi_config")'), true);
+  assert.deepEqual(local(A, 'kpi_config'), { F01: { fl: 60 } });
+  assert.equal(unk(A, 'kpi_config'), false, 'pullSettingKey');
+  assert.equal(await run(A, 'pullOpKey("store_closures")'), true);
+  assert.deepEqual(local(A, 'store_closures'), { F01: { '2026-11-20': 'Thanksgiving' } });
+  assert.equal(unk(A, 'store_closures'), false, 'pullOpKey');
+  assert.equal(A.LSM.has('_wb_unk_v1'), false);
+  /* 次の保存は直す前の値を覚えて重ねる */
+  await putSetting(db, 'kpi_config', { F01: { fl: 60 }, F02: { fl: 70 } });
+  assert.equal(await edit(A, 'kpi_config', { F01: { fl: 62 } }), true);
+  assert.deepEqual(await cloudOf(db, 'kpi_config', 'app_settings'), { F01: { fl: 62 }, F02: { fl: 70 } }, 'merged: the other store stays');
+  await db.close();
+});
 
 // ---------- 11. 本物の lsSet に入っている ----------
 test('after a pull, the base is the pulled cloud value: a later removal on another device is not undone by this device', { skip: !HAS_WB }, async () => {

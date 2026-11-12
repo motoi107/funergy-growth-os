@@ -67,11 +67,13 @@ const PUSH_FNS = ['_outboxGet', '_outboxSet', '_outboxAdd', '_outboxRemove', '_p
 const WB_FNS = ['_cjson', '_tsMicro', '_casTs', '_fetchOpRow', '_opCasWrite', 'isLocalOnlyKey', 'isOpSyncKey', 'supaSettingCategory', 'syncMasterToSupabase',
   'wbSecure', 'wbTable', 'wbIsKey', 'wbGet', 'wbSet', 'wbDrop', 'wbParse', 'wbPending', 'wbOnEdit', '_wbEq', '_wbPlain', '_wbOwn', '_wbIds', '_wbConf',
   'wbMerge3', '_wbMergeIds', 'wbMergeTop', 'wbPrefer', 'wbNoteConf', 'wbFetchSetting', 'wbPush', 'wbWholeSent',
-  '_wbUnkAll', '_wbUnkSave', 'wbUnkHas', 'wbUnkMark', 'wbUnkClear'];
-const WB_VARS = ['WB_PRE', 'WB_ABS', 'WB_NOBASE', 'WB_MAX_KEYS', 'WB_CONF_LOG', 'LS_LOCAL_ONLY', '_OP_READ_TMO', '_wbUnk', 'WB_UNK_KEY', '_pushQ', '_lsPushP'];
+  '_wbUnkAll', '_wbUnkSave', 'wbUnkHas', 'wbUnkMark', 'wbUnkClear', 'wbIncoming'];
+/* 取り込み（本物）：_applyKvRows と v1136 の「送れていない手元を残す」決め方・直した時刻 */
+const PULL_FNS = ['_applyKvRows', '_pullPendingMap', '_pullKeepLocal', '_pendEditAtRaw', '_pendEditAtSetRaw', '_pendEditAtAll', '_pendEditAtMark', '_pendEditAtDrop'];
+const WB_VARS = ['WB_PRE', 'WB_ABS', 'WB_NOBASE', 'WB_MAX_KEYS', 'WB_CONF_LOG', 'LS_LOCAL_ONLY', '_OP_READ_TMO', '_wbUnk', 'WB_UNK_KEY', '_pushQ', '_lsPushP', 'PEND_EDIT_KEY'];
 const CODE = [...STORE_VARS.map(varLine).filter(Boolean), ...STORE_FNS.map(fnSrc), slimBlock,
   ...WB_VARS.map(varLine).filter(Boolean), varArr('OP_SYNC_KEYS'), varArr('OP_SYNC_PREFIX'), varArr('SUPA_SETTING_KEYS'), varArr('SUPA_SETTING_PREFIX'),
-  ...PUSH_FNS.map(fnSrc), ...WB_FNS.map(fnSrc)].join('\n') + `
+  ...PUSH_FNS.map(fnSrc), ...WB_FNS.map(fnSrc), ...PULL_FNS.map(fnSrc)].join('\n') + `
   function _lskBump(){} var _lsEscalatedAt=0; function _lsFreeOldLaborKeys(){}
   function _lsNoteSaveFailure(k){ __fails.push(k); } function _lsClearSaveFailure(){} var __fails=[];
   function lsKeys(p){ p=p||""; var s=new Set(); for(var i=0;i<localStorage.length;i++){ var k=localStorage.key(i); if(k&&k.indexOf(p)===0) s.add(k);} if(_idbState==="ready"&&_IDB_MEM) _IDB_MEM.forEach(function(v,k){ if(String(k).indexOf(p)===0) s.add(k); }); return Array.from(s); }
@@ -157,6 +159,11 @@ async function save(c, key, val) {
   const ok = vm.runInContext(`lsSet(${JSON.stringify(key)}, ${JSON.stringify(val)})`, c);
   const r = await vm.runInContext(`Promise.resolve(_lsPushP[${JSON.stringify(key)}])`, c);
   return { ok, r };
+}
+/* クラウドの行を本物の _applyKvRows で取り込む */
+async function pull(c, db, key) {
+  const r = await db.query("select value::text as v, to_json(updated_at)#>>'{}' as u from app_state where key=$1", [key]);
+  return vm.runInContext(`_applyKvRows(${JSON.stringify(r.rows.map(x => ({ key, value: JSON.parse(x.v), updated_at: x.u })))})`, c);
 }
 const local = (c, k) => JSON.parse(c._lsStoreGet(k));
 const outbox = c => vm.runInContext('_outboxGet()', c).map(x => x.key);
@@ -255,6 +262,66 @@ test('restart (real storage layer): a save before IndexedDB was read on a key th
   await putCloud(db, K, { F01: ['A'], F02: ['D'], F03: ['E'] }, '2026-11-12T06:00:00.000Z');
   assert.equal((await save(b, K, { F01: ['A', 'G'], F02: ['D'] })).r, true);
   assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'G'], F02: ['D'], F03: ['E'] }, 'merged again');
+  await db.close();
+});
+
+test('restart (real storage layer): the key was already on the device, so the write before reading was dropped (v1138); a pull after reopening clears the mark, and the next save is merged — another device’s later change stays (Codex #143 6824737733; before: sent whole and erased it)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'shift_sections';
+  await putCloud(db, K, { F01: ['A'], F02: ['B'] });
+  const dev = device();
+  await seed(dev, { [K]: { F01: ['A'], F02: ['B'] } });
+  const a = open(dev, db);
+  a._supaBooting = true;
+  await save(a, K, { F01: ['A', 'C'], F02: ['B'] });
+  await ready(a);
+  assert.deepEqual(local(a, K), { F01: ['A'], F02: ['B'] }, 'the device value wins (v1138, unchanged)');
+  crash(a);
+  const b = open(dev, db);
+  await ready(b);
+  assert.equal(unk(b, K), true, 'the mark survived the restart');
+  /* ログインの取り込み：送れていない変更は無いので、クラウドの値で置き換える（今までどおり） */
+  await putCloud(db, K, { F01: ['A'], F02: ['B'], F03: ['E'] }, '2026-11-12T06:00:00.000Z');
+  assert.equal(await pull(b, db, K), 1);
+  assert.deepEqual(local(b, K), { F01: ['A'], F02: ['B'], F03: ['E'] });
+  const clearedAtPull = !unk(b, K), goneFromDevice = !dev.ls.has('_wb_unk_v1');
+  /* ほかの端末があとで F04 を足す → この端末が F01 を直す */
+  await putCloud(db, K, { F01: ['A'], F02: ['B'], F03: ['E'], F04: ['H'] }, '2026-11-12T07:00:00.000Z');
+  assert.equal((await save(b, K, { F01: ['A', 'G'], F02: ['B'], F03: ['E'] })).r, true);
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'G'], F02: ['B'], F03: ['E'], F04: ['H'] }, 'merged: the other device’s F04 stays (before: the whole send erased it)');
+  assert.equal(clearedAtPull, true, 'the pull made the device value the cloud value: the mark was cleared');
+  assert.equal(goneFromDevice, true);
+  crash(b);
+  /* 開き直しても印は戻らない */
+  const c = open(dev, db);
+  await ready(c);
+  assert.equal(unk(c, K), false);
+  await db.close();
+});
+test('restart (real storage layer): a pull while the marked change is still waiting in the outbox keeps the device value and the mark (v1136; the change is sent whole later)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'store_closures';
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' } });
+  const dev = device();
+  const a = open(dev, db);
+  a._supaBooting = true;
+  await save(a, K, { F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' } });
+  await ready(a);
+  crash(a);
+  const b = open(dev, db, { offline: true });
+  await ready(b);
+  b._supaBooting = false;
+  const s1 = await save(b, K, { ...local(b, K), F02: { '2026-11-25': 'Party' } });
+  assert.equal(s1.r, false);
+  assert.deepEqual(outbox(b), [K]);
+  b.offline = false;
+  await pull(b, db, K);
+  assert.deepEqual(local(b, K), { F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' }, F02: { '2026-11-25': 'Party' } }, 'the waiting change is newer than the cloud row: kept (v1136)');
+  assert.equal(unk(b, K), true, 'something waits to be sent: the mark stays');
+  const s2 = await save(b, K, { ...local(b, K), F03: { '2026-12-01': 'Inventory' } });
+  assert.equal(s2.r, true);
+  assert.deepEqual(await cloudOf(db, K), { F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' }, F02: { '2026-11-25': 'Party' }, F03: { '2026-12-01': 'Inventory' } }, 'nothing is lost');
+  assert.equal(unk(b, K), false);
   await db.close();
 });
 

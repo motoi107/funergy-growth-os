@@ -9972,7 +9972,17 @@ function wbNoteConf(key, st, when){
 function wbIncoming(key, cloudVal, cloudAt){
   try{
     if(!wbIsKey(key)) return null;
-    var B=wbGet(key); if(!B) return null;
+    var B=wbGet(key);
+    if(!B){
+      /* v1149（Codex #143 6824737733・Claude のルーティン 6824635936 の P3）：「確かめられなかった」の印があるキーで、
+         送れていない変更が無い（だれの送信待ちにも・送っている途中にも無い）なら、取り込みは今までどおりクラウドの値で置き換える
+         （v1136 の決め方と同じ値）。置き換えたあとの端末の値はクラウドの値そのものなので、書けたら印を外す。外さないと、
+         開き直しをまたいで印が残り、そのキーの次の 1 回の保存が丸ごとになって、ほかの端末のあとの変更を消すことがあった。
+         端末の保存（IndexedDB）をまだ読んでいないあいだは外さない（読み終えたときに端末の値が勝つことがある＝v1138） */
+      if(cloudVal!==undefined && wbUnkHas(key) && !wbPending(key) && !(typeof _idbState!=='undefined' && _idbState==='init'))
+        return { value:cloudVal, commit:function(){ wbUnkClear(key); } };
+      return null;
+    }
     if(!wbPending(key)){ wbDrop(key); return null; }   /* 送るものが無い：直す前の値は要らない */
     if(typeof _pushBusy==='function' && _pushBusy(key)) return { keep:true };
     var Lt=_lsStoreGet(key); if(Lt==null){ wbDrop(key); return null; }
