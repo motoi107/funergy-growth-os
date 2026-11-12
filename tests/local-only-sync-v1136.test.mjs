@@ -560,7 +560,8 @@ test('③（P2-2）on the same device, the old record moved again at each login 
 });
 
 test('⑤ the same keep-local rule is used for app_settings and master tables in the full pull', () => {
-  assert.match(SRC, /if \(typeof _pullKeepLocal==='function' && _pullKeepLocal\(row\.key, _spend\)\) return;/);   // 設定：時刻を渡さない＝送っている途中だけ
+  // 設定：時刻を渡さない＝送っている途中だけ。v1149 からは、直す前の値があれば先に重ね方（wbIncoming）を使い、無ければこの決まり（!_wbi）
+  assert.match(SRC, /if \((?:!_wbi && )?typeof _pullKeepLocal==='function' && _pullKeepLocal\(row\.key, _spend\)\) return;/);
   assert.match(SRC, /if \(key !== 'm_employees' && key !== 'm_vendors' && typeof _pullKeepLocal==='function' && _pullKeepLocal\(key\)\) \{ results\.push/);
 });
 
