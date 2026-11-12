@@ -63,8 +63,8 @@ const run = (c, code) => vm.runInContext(code, c);
 const FNS = ['_cjson', '_tsMicro', '_casTs', '_fetchOpRow', '_opCasWrite', 'isLocalOnlyKey', 'isOpSyncKey', 'supaSettingCategory', 'syncMasterToSupabase',
   '_applyKvRows', 'pullOpKey', 'pullSettingKey', '_pullKeepLocal', '_pullPendingMap',
   'wbSecure', 'wbTable', 'wbIsKey', 'wbGet', 'wbSet', 'wbDrop', 'wbParse', 'wbPending', 'wbOnEdit', '_wbEq', '_wbPlain', '_wbOwn', '_wbIds', '_wbConf',
-  'wbMerge3', '_wbMergeIds', 'wbMergeTop', 'wbPrefer', 'wbNoteConf', 'wbIncoming', 'wbFetchSetting', 'wbPush'];
-const VARS = ['WB_PRE', 'WB_ABS', 'WB_NOBASE', 'WB_MAX_KEYS', 'WB_CONF_LOG', 'LS_LOCAL_ONLY', '_OP_READ_TMO'];
+  'wbMerge3', '_wbMergeIds', 'wbMergeTop', 'wbPrefer', 'wbNoteConf', 'wbIncoming', 'wbFetchSetting', 'wbPush', 'wbWholeSent'];
+const VARS = ['WB_PRE', 'WB_ABS', 'WB_NOBASE', 'WB_MAX_KEYS', 'WB_CONF_LOG', 'LS_LOCAL_ONLY', '_OP_READ_TMO', '_wbUnk'];
 
 async function cloudDb() {
   const { PGlite } = await import('./runtime/node_modules/@electric-sql/pglite/dist/index.js');
@@ -365,6 +365,54 @@ test('no base (a change saved before v1149): sends the whole value as before', {
   assert.deepEqual(await cloudOf(db, 'shift_sections'), { F01: ['A', 'C'] }, 'whole value, same as v1148');
   await db.close();
 });
+test('a change left unsent by v1148, edited again in v1149: no base is taken, it is sent whole as before (before the fix: the unsent change was lost)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'shift_sections';
+  await putCloud(db, K, { F01: ['A'], F02: ['B'] });
+  const A = device(db), B = device(db);
+  await pull(B, db, K);
+  A.S[K] = JSON.stringify({ F01: ['A', 'C'], F02: ['B'] });   // v1148 で送れなかった値（直す前の値は無い）
+  A.OB.push({ key: K, who: 'me' });
+  assert.equal(await edit(A, K, { F01: ['A', 'C'], F02: ['D'] }), true);
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'C'], F02: ['D'] }, 'C (the unsent change) is sent');
+  assert.deepEqual(local(A, K), { F01: ['A', 'C'], F02: ['D'] });
+  assert.equal(A.OB.length, 0);
+  assert.equal(A.S['whole_base_v1/' + K], undefined, 'no base was taken while it was waiting');
+  // 送れたあとの最初の保存で覚え、また重ねる
+  await pull(B, db, K);
+  assert.equal(await edit(B, K, { F01: ['A', 'C'], F02: ['D'], F03: ['E'] }), true);
+  assert.equal(await edit(A, K, { F01: ['A', 'C', 'G'], F02: ['D'] }), true);
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'C', 'G'], F02: ['D'], F03: ['E'] }, 'merged again: B’s store stays');
+  await db.close();
+});
+test('a change left unsent by v1148, another device saved since, then edited again in v1149: the unsent change is kept (sent whole as v1148 did)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'store_closures';
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' } });
+  const A = device(db), B = device(db);
+  await pull(A, db, K); await pull(B, db, K);
+  A.S[K] = JSON.stringify({ F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' } });   // v1148 で送れなかった
+  A.OB.push({ key: K, who: 'me' });
+  assert.equal(await edit(B, K, { F01: { '2026-11-20': 'Thanksgiving', '2026-11-22': 'Party' } }), true);
+  assert.equal(await edit(A, K, { ...local(A, K), F02: { '2026-11-25': 'Lunch off' } }), true);
+  const cl = await cloudOf(db, K);
+  assert.equal(cl.F01['2026-11-21'], 'Closed', 'A’s unsent change is not lost');
+  // 直す前の値が分からないので、v1148 と同じく丸ごと（B の 11-22 は前の版と同じく上書きされる：限界として仕様に書いた）
+  assert.deepEqual(cl, local(A, K));
+  await db.close();
+});
+test('a whole send is on the way (no base): editing again does not take the device value as the base', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const A = device(db);
+  A.S.store_closures = JSON.stringify({ F01: { x: 1 } });
+  A.busy.store_closures = 1;
+  A.wbOnEdit('store_closures', A.S.store_closures, JSON.stringify({ F01: { x: 1, y: 2 } }));
+  assert.equal(A.S['whole_base_v1/store_closures'], undefined, 'on the way');
+  A.busy.store_closures = 0;
+  A.wbOnEdit('store_closures', A.S.store_closures, JSON.stringify({ F01: { x: 1, y: 2 } }));
+  assert.ok(A.S['whole_base_v1/store_closures'], 'nothing waiting: remembered');
+  await db.close();
+});
 test('nothing changed since the base: the send writes nothing (does not undo others’ changes)', { skip: !HAS_WB }, async () => {
   const db = await cloudDb();
   await putCloud(db, 'pl_overrides', { F01: { rent: 5000 } });
@@ -446,21 +494,114 @@ test('pullOpKey while a change is waiting: merges, and the base becomes the clou
   await db.close();
 });
 
-// ---------- 13. 覚えないとき ----------
-test('no base while the app is starting up or sync is off (those saves are not sent, as before)', { skip: !HAS_WB }, async () => {
+// ---------- 13. 覚えないとき・起動の途中 ----------
+/* 起動の途中・同期 OFF の保存（本物の lsSet と同じ：直す前の値を覚えて書く。送らない・送信待ちにも入らない・直した時刻も付けない） */
+function quietWrite(c, key, val) { const prev = c._lsStoreGet(key), json = JSON.stringify(val); c.wbOnEdit(key, prev, json); c.S[key] = json; }
+test('a save while the app is starting up (or with sync off) is not sent at once, but the next save sends it too (before the fix: taken as unchanged and lost)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'store_closures';
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' } });
+  await putCloud(db, 'shift_sections', { F01: ['A'], F02: ['B'] });
+  const A = device(db), B = device(db);
+  for (const k of [K, 'shift_sections']) { await pull(A, db, k); await pull(B, db, k); }
+  A._supaBooting = true;
+  quietWrite(A, K, { F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' } });
+  A._supaBooting = false;
+  A.SUPA_SYNC_ENABLED = false;
+  quietWrite(A, 'shift_sections', { F01: ['A', 'C'], F02: ['B'] });
+  A.SUPA_SYNC_ENABLED = true;
+  assert.deepEqual(JSON.parse(JSON.parse(A.S['whole_base_v1/' + K]).t), { F01: { '2026-11-20': 'Thanksgiving' } }, 'base = the value before the start-up save');
+  assert.deepEqual(JSON.parse(JSON.parse(A.S['whole_base_v1/shift_sections']).t), { F01: ['A'], F02: ['B'] }, 'base = the value before the sync-off save');
+  assert.equal(A.OB.length, 0, 'not queued (as before)');
+  assert.equal(await edit(B, K, { F01: { '2026-11-20': 'Thanksgiving' }, F03: { '2026-12-01': 'Inventory' } }), true);
+  assert.equal(await edit(B, 'shift_sections', { F01: ['A'], F02: ['B'], F03: ['E'] }), true);
+  assert.equal(await edit(A, K, { ...local(A, K), F02: { '2026-11-25': 'Party' } }), true);
+  assert.equal(await edit(A, 'shift_sections', { F01: ['A', 'C'], F02: ['D'] }), true);
+  const want = { F01: { '2026-11-20': 'Thanksgiving', '2026-11-21': 'Closed' }, F02: { '2026-11-25': 'Party' }, F03: { '2026-12-01': 'Inventory' } };
+  assert.deepEqual(await cloudOf(db, K), want, 'the start-up change, this edit and B’s store all stay');
+  assert.deepEqual(local(A, K), want);
+  assert.deepEqual(await cloudOf(db, 'shift_sections'), { F01: ['A', 'C'], F02: ['D'], F03: ['E'] }, 'the sync-off change, this edit and B’s store all stay');
+  await db.close();
+});
+test('a start-up save is replaced by the cloud value when the pull comes before anything is sent (as before)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'store_closures';
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' } });
+  const A = device(db);
+  await pull(A, db, K);
+  A._supaBooting = true;
+  quietWrite(A, K, { F01: { '2026-11-20': 'Default' } });
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' }, F02: { '2026-11-25': 'Party' } }, '2026-11-12T05:00:00.000Z');
+  await pull(A, db, K);
+  A._supaBooting = false;
+  assert.deepEqual(local(A, K), { F01: { '2026-11-20': 'Thanksgiving' }, F02: { '2026-11-25': 'Party' } });
+  assert.equal(A.S['whole_base_v1/' + K], undefined, 'nothing left to send: the base is dropped');
+  await db.close();
+});
+test('same text and keys with a merge rule are left as they are', { skip: !HAS_WB }, async () => {
   const db = await cloudDb();
   const A = device(db);
   A.S.store_closures = JSON.stringify({ F01: {} });
-  A._supaBooting = true; A.wbOnEdit('store_closures', A.S.store_closures, JSON.stringify({ F01: { x: 1 } }));
-  assert.equal(A.S['whole_base_v1/store_closures'], undefined, 'booting');
-  A._supaBooting = false; A.SUPA_SYNC_ENABLED = false; A.wbOnEdit('store_closures', A.S.store_closures, JSON.stringify({ F01: { x: 1 } }));
-  assert.equal(A.S['whole_base_v1/store_closures'], undefined, 'sync off');
-  A.SUPA_SYNC_ENABLED = true; A.wbOnEdit('store_closures', A.S.store_closures, A.S.store_closures);
+  A.wbOnEdit('store_closures', A.S.store_closures, A.S.store_closures);
   assert.equal(A.S['whole_base_v1/store_closures'], undefined, 'same text');
   A.wbOnEdit('m_stores', '[]', '[1]'); A.wbOnEdit('initiatives', '[]', '[1]');
   assert.equal(A.S['whole_base_v1/m_stores'], undefined); assert.equal(A.S['whole_base_v1/initiatives'], undefined, 'keys with a merge rule are left as they are');
   A.wbOnEdit('store_closures', A.S.store_closures, JSON.stringify({ F01: { x: 1 } }));
   assert.deepEqual(JSON.parse(JSON.parse(A.S['whole_base_v1/store_closures']).t), { F01: {} });
+  await db.close();
+});
+test('a save before the device storage has been read (IndexedDB still loading): no base; the key is sent whole once, then merged again', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'shift_sections';
+  await putCloud(db, K, { F01: ['A'], F02: ['B'] });
+  const A = device(db), B = device(db);
+  await pull(A, db, K); await pull(B, db, K);
+  A._idbState = 'init';
+  quietWrite(A, K, { F01: ['A', 'C'], F02: ['B'] });
+  assert.equal(A.S['whole_base_v1/' + K], undefined, 'cannot tell the value before: no base');
+  assert.equal(A._wbUnk[K], 1);
+  A._idbState = 'ready';
+  assert.equal(await edit(A, K, { F01: ['A', 'C'], F02: ['D'] }), true);
+  assert.equal(A.S['whole_base_v1/' + K], undefined, 'still no base: sent whole');
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'C'], F02: ['D'] }, 'the change before the storage was read is not lost');
+  assert.equal(A._wbUnk[K], undefined, 'sent: the mark is cleared');
+  await pull(B, db, K);
+  assert.equal(await edit(B, K, { F01: ['A', 'C'], F02: ['D'], F03: ['E'] }), true);
+  assert.equal(await edit(A, K, { F01: ['A', 'C', 'G'], F02: ['D'] }), true);
+  assert.deepEqual(await cloudOf(db, K), { F01: ['A', 'C', 'G'], F02: ['D'], F03: ['E'] }, 'next save is merged again (B’s store stays)');
+  await db.close();
+});
+test('a save before the device storage has been read, on a key that already has a base: the merged send clears the mark (the next save is merged, not whole)', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  const K = 'store_closures';
+  await putCloud(db, K, { F01: { '2026-11-20': 'Thanksgiving' } });
+  const A = device(db), B = device(db);
+  await pull(A, db, K); await pull(B, db, K);
+  await edit(A, K, { ...local(A, K), F02: { '2026-11-25': 'Party' } }, { offline: true });   // 前の起動で送れなかった（直す前の値あり）
+  A._idbState = 'init';
+  quietWrite(A, K, { ...local(A, K), F05: { '2026-11-30': 'Closed' } });
+  A._idbState = 'ready';
+  assert.equal(A._wbUnk[K], 1);
+  assert.equal(await push(A, K), true);
+  assert.equal(A._wbUnk[K], undefined, 'everything on the device was sent');
+  assert.equal(await edit(B, K, { F01: { '2026-11-20': 'Thanksgiving' }, F02: { '2026-11-25': 'Party' }, F05: { '2026-11-30': 'Closed' }, F03: { '2026-12-01': 'Inventory' } }), true);
+  assert.equal(await edit(A, K, { ...local(A, K), F04: { '2026-12-24': 'Eve' } }), true);
+  assert.deepEqual(await cloudOf(db, K), { F01: { '2026-11-20': 'Thanksgiving' }, F02: { '2026-11-25': 'Party' }, F05: { '2026-11-30': 'Closed' }, F03: { '2026-12-01': 'Inventory' }, F04: { '2026-12-24': 'Eve' } }, 'merged: B’s store stays');
+  await db.close();
+});
+test('settings: a save before the device storage has been read is sent whole, and the mark is cleared only when the sent value is still the device value', { skip: !HAS_WB }, async () => {
+  const db = await cloudDb();
+  await putSetting(db, 'kpi_config', { F01: { fl: 60 } });
+  const A = device(db);
+  A.S.kpi_config = JSON.stringify({ F01: { fl: 60 } });
+  A._idbState = 'init';
+  quietWrite(A, 'kpi_config', { F01: { fl: 61 } });
+  A._idbState = 'ready';
+  run(A, 'wbWholeSent("kpi_config", { F01: { fl: 99 } })');
+  assert.equal(A._wbUnk.kpi_config, 1, 'a different value was sent: keep the mark');
+  assert.equal(await edit(A, 'kpi_config', { F01: { fl: 61 }, F02: { fl: 62 } }), true);
+  assert.deepEqual(await cloudOf(db, 'kpi_config', 'app_settings'), { F01: { fl: 61 }, F02: { fl: 62 } });
+  assert.equal(A._wbUnk.kpi_config, undefined);
   await db.close();
 });
 
