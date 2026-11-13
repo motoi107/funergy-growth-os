@@ -307,6 +307,32 @@ body.shift-wide .main { max-width:1900px; }
   /* v928: KPIタイルは auto-fit なのでここで列数を決め打ちしない。 */
   .meet-store-grid { grid-template-columns:repeat(3, minmax(0,1fr)); }
 }
+/* v1153：KPI設定の表（UI案70）。広い画面は 8 列、狭い画面は 1 行ずつのカード */
+.k2-counts { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; margin-bottom:10px; }
+.k2-chip { display:inline-block; font-size:11px; font-weight:800; border-radius:20px; padding:2px 9px; white-space:nowrap; }
+.k2-table { border-top:1px solid var(--border); }
+.k2-row { display:grid; grid-template-columns:minmax(130px,1.2fr) 52px minmax(104px,.9fr) minmax(110px,1fr) 84px 70px minmax(120px,1fr) minmax(170px,1.6fr);
+          gap:8px; align-items:start; padding:9px 4px; border-bottom:1px solid var(--border); font-size:12px; }
+.k2-head { font-size:10.5px; color:var(--muted); font-weight:700; padding-top:6px; padding-bottom:6px; }
+.k2-off { background:var(--surface2); color:var(--muted); }
+.k2-note { font-size:10.5px; color:var(--muted); line-height:1.5; }
+.k2-new { display:inline-block; margin-left:6px; font-size:9.5px; font-weight:800; color:var(--accent); border:1px solid var(--accent); border-radius:10px; padding:0 6px; }
+.k2-tgt { width:100%; max-width:110px; padding:5px 6px; text-align:right; font-size:13px; }
+.k2-use input { width:18px; height:18px; }
+.k2-st { display:inline-block; font-size:10.5px; font-weight:800; border-radius:6px; padding:1px 6px; margin-bottom:3px; background:var(--surface2); color:var(--tm); }
+.k2-st-final { color:#0f7a4d; } .k2-st-tent { color:#7a4b05; } .k2-st-wait, .k2-st-off { color:var(--muted); }
+.k2-frow { padding:8px 0; border-top:1px solid var(--border); }
+.k2-fhead { display:flex; align-items:center; gap:6px; font-size:12.5px; }
+.k2-fval { margin-top:2px; } .k2-fval > span:first-child { font-size:19px; font-weight:800; }
+.k2-gcols { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+@media (max-width:820px) {
+  .k2-head { display:none; }
+  .k2-row { grid-template-columns:1fr 1fr; gap:6px 12px; padding:11px 2px; }
+  .k2-row .k2-name { grid-column:1 / -1; font-size:13px; }
+  .k2-row .k2-c::before { content:attr(data-l); display:block; font-size:10px; color:var(--muted); font-weight:700; }
+  .k2-row .k2-role, .k2-row .k2-src { grid-column:1 / -1; }
+  .k2-gcols { grid-template-columns:1fr 1fr; }
+}
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -3153,6 +3179,9 @@ function _toastShiftsOverlap(a, b){
   return false;
 }
 /* 1 日の勤怠の表に 1 人分を入れる（同じ人に 2 つ目が来て、どちらも確かな当たりなら足す） */
+/* v1153：取り込んだ 1 件に Toast のアカウント ID を足す（ID が無い・"unknown" のときは何も足さない＝今までと同じ形）。
+   hyper-worker は前から tip_labor に ID を保存していた。KPI の総労働時間が仕組みのアカウントを ID でも外すのに使う */
+function tipLaborWithGuid(rec, emp){ var g=emp && emp.guid ? String(emp.guid) : ''; if(g && g!=='unknown') rec.toastGuid=g; return rec; }
 function tipLaborPut(labor, conf, key, add, r){
   var cur=labor[key];
   if(cur && r && r.conf && conf[key]){
@@ -3162,6 +3191,9 @@ function tipLaborPut(labor, conf, key, add, r){
     var sh=(hasA && hasB) ? cur.shifts.concat(add.shifts).sort(function(x,y){ return String(x&&x.inDate||'').localeCompare(String(y&&y.inDate||'')); }) : [];
     var out={ lunch:(+cur.lunch||0)+(+add.lunch||0), dinner:(+cur.dinner||0)+(+add.dinner||0), rawLunch:(+cur.rawLunch||0)+(+add.rawLunch||0), rawDinner:(+cur.rawDinner||0)+(+add.rawDinner||0),
               shifts:sh, toastName:cur.toastName, toastNames:names };
+    var gs=(Array.isArray(cur.toastGuids) ? cur.toastGuids.slice() : (cur.toastGuid ? [cur.toastGuid] : []));   /* v1153：Toast のアカウント ID */
+    if(add.toastGuid && gs.indexOf(add.toastGuid)<0) gs.push(add.toastGuid);
+    if(gs.length){ out.toastGuid=gs[0]; out.toastGuids=gs; }
     if(cur.overlap || _toastShiftsOverlap(cur.shifts, add.shifts)) out.overlap=true;
     labor[key]=out;
     return;
@@ -3229,7 +3261,7 @@ async function syncTipLaborFromDB(storeId, guid, days, opts) {
       var key = _r.emp ? _r.emp.name : emp.name;
       var shifts = emp.shifts||[];
       var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-      tipLaborPut(labor, _conf, key, { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, _r);
+      tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
     });
     // business_date を YYYY-MM-DD に正規化（タイムスタンプ/YYYYMMDD等に対応）
     var bd = normalizeBusinessDate(row.business_date);
@@ -3571,7 +3603,7 @@ const KPI_DEFS = [
   // ⑤ トッピング/アップセル（食事業態）
   {key:'upsellRate',   label:'トッピング/アップセル比率', unit:'%', dir:'up', scope:'dining'},
   // ⑥ 味噌汁アップグレード率（Totoya専用）＝あおさ以外(エビ/カニ/サーモン/うどん)÷味噌汁全出数
-  {key:'misoUpgradeRate', label:'味噌汁アップグレード率', unit:'%', dir:'up', scope:'totoya', star:true},
+  {key:'misoUpgradeRate', label:'アップグレード率', unit:'%', dir:'up', scope:'totoya', star:true},   /* v1153：旧 味噌汁アップグレード率（数え方は今のまま） */
   // ⑦ いくらシャワー注文率（Totoya専用）＝いくらシャワー÷(Take+Matsu+Tokujo)
   {key:'ikuraShowerRate', label:'いくらシャワー注文率', unit:'%', dir:'up', scope:'totoya', star:true},
 ];
@@ -3629,12 +3661,21 @@ function getFormatKpi(fmt){
 function setFormatKpi(fmt, vals){
   var saved = ls('m_format_kpi', {}); try{ if(vals && typeof vals==='object') vals._at=Date.now(); }catch(e){} saved[fmt]=vals; lsSet('m_format_kpi', saved);
 }
-/* 店舗の実効KPI目標 = 業態デフォルト ← 店舗上書き(kpiOverride) */
-function getStoreKpiTargets(storeId, offset){
+/* 店舗の実効KPI目標 = 業態デフォルト ← 店舗上書き(kpiOverride) ← v1153 その月の目標（KPI設定・前の月から引き継ぐ）。
+   ym（YYYY-MM）が無ければ offset の月（offset も無ければ今月） */
+function getStoreKpiTargets(storeId, offset, ym){
   var s = getStoresAll().find(x=>x.id===storeId); if(!s) return {};
   var base = getFormatKpi(s.format||'dining');
   var ov = (ls('m_store_kpi', {})[storeId])||{};
-  return Object.assign({}, base, ov);
+  var out = Object.assign({}, base, ov);
+  try{
+    if(typeof k2Resolved==='function'){
+      var y = (ym && /^\d{4}-\d{2}$/.test(ym)) ? ym : k2YmOfOffset(offset||0);
+      var mt = k2Resolved(storeId, y).tgt;
+      Object.keys(mt).forEach(function(key){ out[key] = mt[key].v; });
+    }
+  }catch(e){}
+  return out;
 }
 function getStoreKpiOverride(storeId){ return (ls('m_store_kpi', {})[storeId])||{}; }
 function setStoreKpiOverride(storeId, ov){
@@ -3660,6 +3701,464 @@ function setKpiManual(storeId, period, vals){
   all[storeId]=_fsStamp(_kpiManualRaw(storeId, period), vals);
   return lsSet(k, all);
 }
+/* ===== FUNERGY_KPI2 start =====
+   v1153：KPI設定（UI案70・Moto さん 11/13 の回答 1A〜7A）
+   ・店舗 × 月の目標と「使う／対象外」。保存は今の手入力 KPI と同じ kpi_man_<YYYY.M>[店] の欄
+     tgt_<KPI>（目標）・off_<KPI>（true＝対象外）。欄ごとに新しいほう（v1136 の合流・cas）で、新しい同期キーは作らない。
+   ・その月に入れていない欄は前の月（24 か月まで）に入れた値を引き継ぐ（6A：変えた月から先だけが変わる。
+     前の月・ほかの店は変わらない）。どの月にも入れていない店は、今までどおり 業態の初期値 ← 店舗の上書き（m_store_kpi）。
+   ・実績は会議タブと同じ関数（keyKpiStats・_meetApplyPl・meetingBudgetKpi）から取り、判定も会議と同じしきい値（_meetStatus）。
+     総労働時間だけは「計画との差」（計画以内＝達成・超え＝計画超）。
+   ・Google の口コミ（1A）：会議の実績は「その月に投稿された口コミの星の平均」。Google の API に頼らない（2A）ので手入力。 */
+var K2_DEFS = [
+  {key:'sales',           no:'①', label:'売上',            en:'Sales',        unit:'$',  meet:'sales',  role:'mgmtSales', budget:true},
+  {key:'guests',          no:'②', label:'客数',            en:'Guests',       unit:'',   meet:'guests', role:'field',     budget:true},
+  {key:'ppa',             no:'③', label:'客単価',          en:'Avg check',    unit:'$',  meet:'ppa',    role:'mgmt',      budget:true},
+  {key:'repeatRate',      no:'④', label:'リピート率',      en:'Repeat',       unit:'%',  meet:'repeat', role:'field'},
+  {key:'foodCost',        no:'⑤', label:'原価率',          en:'Food cost',    unit:'%',  meet:'fc',     role:'mgmt', lower:true},
+  {key:'laborPct',        no:'⑥', label:'人件費率',        en:'Labor',        unit:'%',  meet:'labor',  role:'mgmt', lower:true},
+  {key:'laborHours',      no:'⑦', label:'総労働時間',      en:'Labor hours',  unit:'h',  plan:true,     role:'mgmt', isNew:true},
+  {key:'drinkRate',       no:'⑧', label:'ドリンク比率',    en:'Drink ratio',  unit:'%',  meet:'drink',  role:'field'},
+  {key:'misoUpgradeRate', no:'⑨', label:'アップグレード率', en:'Upgrade rate', unit:'%',  meet:'miso',   role:'field', sub:'旧 味噌汁UP率'},
+  {key:'ikuraShowerRate', no:'⑩', label:'いくらシャワー率', en:'Ikura shower', unit:'%',  meet:'ikura',  role:'field'},
+  {key:'reviewScore',     no:'⑪', label:'Googleレビュー',  en:'Google review',unit:'★', meet:'google', role:'review'}
+];
+var K2_ROLE = {
+  mgmtSales:['管理：G4（自店）・G5（担当店）・G6（全社）','Mgmt: G4 (own store) · G5 (area) · G6 (company)'],
+  mgmt:['管理：G4 以上','Mgmt: G4 and above'],
+  field:['現場：G1〜G3｜店舗責任：G4','Floor: G1–G3 | Store: G4'],
+  review:['店舗責任：G4｜G1〜G3 は口コミを見る','Store: G4 | G1–G3 read the reviews']
+};
+/* 目標を変えられる KPI（売上・客数・客単価は予算設定で決める） */
+var K2_EDIT_TGT = ['repeatRate','foodCost','laborPct','laborHours','drinkRate','misoUpgradeRate','ikuraShowerRate','reviewScore'];
+/* 入れられる目標の幅 */
+var K2_RANGE = { laborHours:[0,100000], reviewScore:[1,5] };
+function k2Def(key){ for(var i=0;i<K2_DEFS.length;i++){ if(K2_DEFS[i].key===key) return K2_DEFS[i]; } return null; }
+function k2Period(ym){ var p=String(ym).split('-'); return p[0]+'.'+parseInt(p[1],10); }
+function k2YmOfPeriod(per){ var p=String(per).split('.'); return p[0]+'-'+String(p[1]).padStart(2,'0'); }
+function k2YmOfOffset(off){ return k2YmOfPeriod(periodForOffset(off||0)); }
+function k2YmAdd(ym, d){ var p=String(ym).split('-'), n=parseInt(p[0],10)*12+parseInt(p[1],10)-1+(d||0); return Math.floor(n/12)+'-'+String(n%12+1).padStart(2,'0'); }
+function k2YmLabel(ym){ var p=String(ym).split('-'); return (curLang==='en') ? (p[0]+'/'+parseInt(p[1],10)) : (p[0]+'年'+parseInt(p[1],10)+'月'); }
+function _k2Num(v){ if(v==null || v==='' || typeof v==='boolean') return null; var n=Number(v); return isFinite(n) ? n : null; }
+/* その店・その月に効いている欄。その月に無ければ前の月へ（24 か月まで）。描画 1 回のあいだだけ覚える */
+function k2Resolved(sid, ym){
+  var make=function(){
+    var out={ tgt:{}, off:{} };
+    for(var i=0;i<24;i++){
+      var y=k2YmAdd(ym, -i), r=getKpiManual(sid, k2Period(y))||{};
+      Object.keys(r).forEach(function(f){
+        var v=r[f];
+        if(f.indexOf('tgt_')===0){ var a=f.slice(4), n=_k2Num(v); if(n!=null && !out.tgt[a]) out.tgt[a]={ v:n, ym:y }; }
+        else if(f.indexOf('off_')===0){ var b=f.slice(4); if(typeof v==='boolean' && !out.off[b]) out.off[b]={ v:v, ym:y }; }
+      });
+    }
+    return out;
+  };
+  return (typeof _mdMemo==='function') ? _mdMemo('k2res', sid+'|'+ym, make) : make();
+}
+function k2DefaultOn(sid, key){
+  if(key==='drinkRate') return (typeof isDrinkRateStore==='function') && isDrinkRateStore(sid);
+  if(key==='misoUpgradeRate' || key==='ikuraShowerRate') return (typeof isTotoyaStore==='function') && isTotoyaStore(sid);
+  return true;
+}
+function k2On(sid, ym, key){
+  if(key==='sales') return true;
+  var r=k2Resolved(sid, ym).off[key];
+  return r ? !r.v : k2DefaultOn(sid, key);
+}
+/* 人が決めた目標（その月・前の月・店舗の上書き）。無ければ null（業態の初期値・予算の率は入れない） */
+function k2ExplicitTarget(sid, ym, key){
+  var r=k2Resolved(sid, ym).tgt[key];
+  if(r) return r.v;
+  var ov=(typeof getStoreKpiOverride==='function') ? (getStoreKpiOverride(sid)||{}) : {};
+  return _k2Num(ov[key]);
+}
+function k2ExplicitTargets(sid, ym){
+  var o={};
+  K2_DEFS.forEach(function(d){ var v=k2ExplicitTarget(sid, ym, d.key); if(v!=null) o[d.key]=v; });
+  return o;
+}
+/* その月の営業日（全休の日を除く）。before があればその日より前だけ */
+function k2OpenDays(sid, ym, before){
+  var n=0;
+  daysOfYm(ym).forEach(function(d){
+    if(before && d.date>=before) return;
+    var dow=new Date(d.date+'T00:00:00').getDay();
+    try{ if(typeof dayClosureMode==='function' && dayClosureMode(sid, d.date, dow)==='closed') return; }catch(e){}
+    n++;
+  });
+  return n;
+}
+/* 総労働時間：人件費と同じ勤怠（laborCoreForYm）の時間の合計。仕組みのアカウント（toastSystemAccount）は足さない。
+   4A：名前のほか、Toast のアカウント ID でも外す（名前が仕組みのアカウントだったことのある ID・k2SysGuids）。
+   hyper-worker は前から ID を tip_labor に保存していた。v1153 からアプリの勤怠の写しにも残す（取り込み直した日から） */
+/* 勤怠の 1 件の Toast のアカウント ID（2 つの打刻を足した件は両方） */
+function k2RecGuids(e){ if(!e) return []; if(Array.isArray(e.toastGuids) && e.toastGuids.length) return e.toastGuids.filter(Boolean); return e.toastGuid ? [String(e.toastGuid)] : []; }
+/* 仕組みのアカウントの Toast のアカウント ID（4A）：この端末にあるこの店の勤怠（その月から 13 か月前まで）で、
+   名前が仕組みのアカウントだった件の ID。あとで Toast で名前が変わっても、同じ ID なら外す。描画 1 回のあいだだけ覚える */
+function k2SysGuids(sid, ym){
+  var make=function(){
+    var out={}, lo=k2YmAdd(ym, -13)+'-01', pre='tip_labor_'+sid+'_';
+    var keys=(typeof lsKeys==='function') ? lsKeys(pre) : [];
+    keys.forEach(function(k){
+      var d=k.slice(pre.length); if(!(d>=lo)) return;
+      var lab=null; try{ lab=(typeof _lsRaw==='function') ? _lsRaw(k, null) : ls(k, null); }catch(e){ lab=null; }
+      if(!lab || typeof lab!=='object') return;
+      Object.keys(lab).forEach(function(n){
+        var e=lab[n]; if(!e) return;
+        var nm=[n, e.toastName].concat(Array.isArray(e.toastNames)?e.toastNames:[]);
+        if(!nm.some(function(x){ return x && toastSystemAccount(x, sid); })) return;
+        k2RecGuids(e).forEach(function(g){ out[g]=n; });
+      });
+    });
+    return out;
+  };
+  return (typeof _mdMemo==='function') ? _mdMemo('k2sys', sid+'|'+ym, make) : make();
+}
+/* その月にこの名前（勤怠の件の名前）で入っている Toast のアカウント ID */
+function k2MonthGuids(sid, ym){
+  var make=function(){
+    var out={};
+    daysOfYm(ym).forEach(function(d){
+      var lab=null; try{ lab=getTipLabor(sid, d.date); }catch(e){ lab=null; }
+      if(!lab) return;
+      Object.keys(lab).forEach(function(n){ k2RecGuids(lab[n]).forEach(function(g){ (out[n]=out[n]||{})[g]=1; }); });
+    });
+    return out;
+  };
+  return (typeof _mdMemo==='function') ? _mdMemo('k2mg', sid+'|'+ym, make) : make();
+}
+function k2IsSysName(sid, ym, n){
+  if(typeof toastSystemAccount==='function' && toastSystemAccount(n, sid)) return true;
+  var sys=k2SysGuids(sid, ym), mg=k2MonthGuids(sid, ym)[n]||{};
+  return Object.keys(mg).some(function(g){ return Object.prototype.hasOwnProperty.call(sys, g); });
+}
+function k2LaborHours(sid, ym){
+  var lc=laborCoreForYm(sid, ym)||{}, h=0, ex=0, names=[];
+  Object.keys(lc.byName||{}).forEach(function(n){
+    var v=Number((lc.byName[n]||{}).hours)||0; if(!(v>0)) return;
+    if(k2IsSysName(sid, ym, n)){ ex+=v; names.push(n); return; }
+    h+=v;
+  });
+  return { hours:Math.round(h*10)/10, excluded:Math.round(ex*10)/10, exNames:names,
+    noLaborDays:(lc.noLaborDays||[]).slice(), laborDays:lc.laborDays||0, cutoff:lc.cutoff||null };
+}
+function k2Fmt(def, v, sid){
+  if(v==null || !isFinite(v)) return '—';
+  if(def.key==='sales') return '$'+Math.round(v).toLocaleString();
+  if(def.key==='ppa') return '$'+(Math.round(v*100)/100).toFixed(2);
+  if(def.key==='guests'){ var u=k2GuestUnit(sid); return Math.round(v).toLocaleString()+(u?(' '+u):''); }
+  if(def.unit==='%') return (Math.round(v*10)/10).toFixed(1)+'%';
+  if(def.unit==='h') return (Math.round(v*10)/10).toLocaleString()+'h';
+  if(def.unit==='★') return '★'+(Math.round(v*10)/10).toFixed(1);
+  return String(v);
+}
+function k2GuestUnit(sid){ var g=(typeof guestCountType==='function')?guestCountType(sid):'guest'; return g==='bowls'?t('丼','bowls'):g==='plate'?t('皿','plates'):t('人','guests'); }
+function k2GuestLabel(sid){ var g=(typeof guestCountType==='function')?guestCountType(sid):'guest'; return g==='bowls'?t('丼数','Bowls'):g==='plate'?t('プレート数','Plates'):t('客数','Guests'); }
+function k2Label(def, sid){ return def.key==='guests' ? k2GuestLabel(sid) : t(def.label, def.en); }
+function k2Src(def, sid){
+  var g=(typeof guestCountType==='function')?guestCountType(sid):'guest';
+  switch(def.key){
+    case 'sales': return t('予実管理の売上実績と同じ（確定月は会計 PL）','Same as the budget page (confirmed months use the accounting PL)');
+    case 'guests': return g==='bowls' ? t('丼数（店内＋テイクアウト）。Totoya の今の数え方','Bowls (dine-in + takeout), as Totoya counts today')
+      : g==='plate' ? t('プレート数（選んだ商品の数）。Waikiki の今の数え方','Plates (selected items), as Waikiki counts today')
+      : t('Toast の客数（店内＋テイクアウト）','Toast guests (dine-in + takeout)');
+    case 'ppa': return t('売上 ÷ 客数（予実管理と同じ）','Sales ÷ guests (same as the budget page)');
+    case 'repeatRate': return t('(RP＋SR) ÷ (FT＋RP＋SR) × 100。月の合計の分子と分母から','(RP+SR) ÷ (FT+RP+SR) × 100 from the month totals');
+    case 'foodCost': return t('予実管理と同じ式（Invoice＋買い出し＋食材移動 ÷ 売上）。確定月は会計 PL','Same as the budget page (invoices + purchases + transfers ÷ sales); confirmed months use the PL');
+    case 'laborPct': return t('予実管理と同じ式（勤怠×時給＋残業・給与税・月給・保険 ÷ 売上）。確定月は会計 PL','Same as the budget page; confirmed months use the PL');
+    case 'laborHours': return t('人件費と同じ勤怠の時間の合計（この店の分だけ）。仕組みのアカウント（Order Only・Toast Generic Login・LaLa の Server Default など）は名前と Toast のアカウント ID で外す','Sum of the hours used for labor cost at this store; system accounts are excluded by name and by Toast account ID');
+    case 'drinkRate': return t('ドリンクの出数×売価 ÷ 全メニューの出数×売価（対象のカテゴリーは「実績入力/対象指定」）','Drink sales ÷ menu sales (categories in the input tab)');
+    case 'misoUpgradeRate': return t('アップグレードの数 ÷ 対象の数（今は味噌汁の数え方のまま。CHAZUKE を足すのは Toast の商品名を確かめてから）','Upgrades ÷ eligible items (miso counting for now; CHAZUKE after the item names are confirmed)');
+    case 'ikuraShowerRate': return t('いくらシャワー ÷ Take／Matsu／Tokujo','Ikura shower ÷ Take/Matsu/Tokujo');
+    case 'reviewScore': return t('その月に投稿された Google の口コミの星の平均（会議の実績と同じ）。手入力','Average stars of the Google reviews posted that month (same as the meeting). Entered by hand');
+  }
+  return '';
+}
+/* 店・月の 11 行（会議タブと同じ値） */
+function k2Actuals(sid, ym){
+  var f=function(){ return _k2ActualsRaw(sid, ym); };
+  return (typeof _mdMemo==='function') ? _mdMemo('k2act', sid+'|'+ym, f) : f();
+}
+function _k2ActualsRaw(sid, ym){
+  var store=(getStoresAll()||[]).find(function(s){ return s.id===sid; }); if(!store) return null;
+  var cym=curYm(), isCur=(ym===cym), future=(ym>cym);
+  var k=null;
+  if(!future){ try{ k=keyKpiStats([store], daysOfYm(ym)); k=_meetApplyPl(k, sid, ym); }catch(e){ k=null; } }
+  var kp=k ? meetingBudgetKpi(k, isCur) : null, km=k ? meetingBudgetKpi(k, false) : null;
+  var conf='prov'; try{ if(!future) conf=_meetConfirmState(sid, ym); }catch(e){}
+  var res=k2Resolved(sid, ym), tg=getStoreKpiTargets(sid, 0, ym)||{};
+  var man=getKpiManual(sid, k2Period(ym))||{};
+  var today=(typeof bizToday==='function')?bizToday():'';
+  var hrs=null; if(!future){ try{ hrs=k2LaborHours(sid, ym); }catch(e){ hrs=null; } }
+  var rows=K2_DEFS.map(function(d){
+    var r={ key:d.key, def:d, label:k2Label(d, sid), on:k2On(sid, ym, d.key), editable:K2_EDIT_TGT.indexOf(d.key)>=0,
+      tgt:null, tgtJudge:null, tgtNote:'', tgtFrom:null, act:null, actNote:'', diff:'', j:'none', st:'', sk:'none',
+      src:k2Src(d, sid), role:t(K2_ROLE[d.role][0], K2_ROLE[d.role][1]),
+      own:Object.prototype.hasOwnProperty.call(res.tgt, d.key) && res.tgt[d.key].ym===ym,
+      ownOff:Object.prototype.hasOwnProperty.call(res.off, d.key) && res.off[d.key].ym===ym };
+    var ex=res.tgt[d.key];
+    if(ex) r.tgtFrom = ex.ym===ym ? 'month' : 'prev';
+    /* 目標 */
+    switch(d.key){
+      case 'sales': r.tgt=km?(km.budget||null):null; r.tgtJudge=kp?(kp.budget||null):null; r.tgtFrom='budget'; break;
+      case 'guests': r.tgt=km?km.guestBudget:null; r.tgtJudge=kp?kp.guestBudget:null; r.tgtFrom='budget'; break;
+      case 'ppa': r.tgt=kp?kp.ppaBudget:null; r.tgtJudge=r.tgt; r.tgtFrom='budget'; break;
+      case 'foodCost': r.tgt=kp?kp.fcBudgetRate:null; if(!r.tgtFrom) r.tgtFrom=(k2ExplicitTarget(sid, ym, d.key)!=null)?'store':'budgetRate'; break;
+      case 'laborPct': r.tgt=kp?kp.laborBudgetRate:null; if(!r.tgtFrom) r.tgtFrom=(k2ExplicitTarget(sid, ym, d.key)!=null)?'store':'budgetRate'; break;
+      case 'laborHours': r.tgt=k2ExplicitTarget(sid, ym, d.key); if(r.tgt!=null && !r.tgtFrom) r.tgtFrom='store'; break;
+      case 'reviewScore': r.tgt=k2ExplicitTarget(sid, ym, d.key); if(r.tgt!=null && !r.tgtFrom) r.tgtFrom='store'; break;
+      /* リピート率の目標は会議と同じ「人が決めた目標だけ」（業態の初期値は使わない） */
+      case 'repeatRate': r.tgt=kp ? kp.repeatTgt : k2ExplicitTarget(sid, ym, d.key); if(r.tgt!=null && !r.tgtFrom) r.tgtFrom='store'; break;
+      default: r.tgt=_k2Num(tg[d.key]); if(r.tgt!=null && !r.tgtFrom) r.tgtFrom=(_k2Num((getStoreKpiOverride(sid)||{})[d.key])!=null)?'store':'format';
+    }
+    if(r.tgtJudge==null) r.tgtJudge=r.tgt;
+    /* 実績 */
+    if(k){
+      switch(d.key){
+        case 'sales': r.act=(k.sales>0)?k.sales:null; r.actNote=k.plSrc?t('会計 PL','Accounting PL'):t('アプリの日次実績','App daily actuals'); break;
+        case 'guests': r.act=(k.guests>0)?k.guests:null; break;
+        case 'ppa': r.act=(k.ppa>0)?k.ppa:null; if(r.act!=null) r.actNote='$'+Math.round(k.sales).toLocaleString()+' ÷ '+Math.round(k.guests).toLocaleString(); break;
+        case 'repeatRate': r.act=(k.repeatRate!=null)?k.repeatRate:null;
+          if(k.repeatHas) r.actNote='FT '+(k.first||0).toLocaleString()+'・RP '+Math.max(0,(k.repeat||0)-(k.sr||0)).toLocaleString()+'・SR '+(k.sr||0).toLocaleString(); break;
+        case 'foodCost': r.act=(k.sales>0)?k.fcRate:null; r.actNote=k.plSrc?t('会計 PL','Accounting PL'):t('速報','Provisional'); break;
+        case 'laborPct': r.act=(k.sales>0)?k.laborRate:null; r.actNote=k.plSrc?t('会計 PL','Accounting PL'):t('速報','Provisional'); break;
+        case 'drinkRate': try{ var ds=storeDrinkSales(sid, k2Period(ym)); if(ds.hasCfg && ds.total>0){ r.act=Math.round(ds.drink/ds.total*1000)/10; r.actNote='$'+Math.round(ds.drink).toLocaleString()+' ÷ $'+Math.round(ds.total).toLocaleString(); } }catch(e){} break;
+        case 'misoUpgradeRate': if(k.totoyaScope && k.misoRate!=null){ r.act=k.misoRate; if(k.misoAll>0) r.actNote=(k.misoUp||0).toLocaleString()+' ÷ '+(k.misoAll||0).toLocaleString(); } break;
+        case 'ikuraShowerRate': if(k.totoyaScope && k.ikuraRate!=null){ r.act=k.ikuraRate; if(k.ikuraBowls>0) r.actNote=(k.ikura||0).toLocaleString()+' ÷ '+(k.ikuraBowls||0).toLocaleString(); } break;
+      }
+    }
+    /* 総労働時間と Google は売上の集計（k）が無くても出す（勤怠・手入力から。これからの月は出さない） */
+    if(!future){
+      if(d.key==='laborHours' && hrs && hrs.laborDays>0){ r.act=hrs.hours; if(hrs.excluded>0) r.actNote=t('仕組みのアカウント '+hrs.excluded+'h を除外','Excluded system accounts '+hrs.excluded+'h'); }
+      if(d.key==='reviewScore'){ r.act=_k2Num(man.gAvg); var gc=_k2Num(man.gCnt), gt=_k2Num(man.reviewScore);
+        r.actNote=(gc!=null?t('この月 '+gc+' 件の平均','Average of '+gc+' reviews this month'):'')+(gt!=null?((gc!=null?'・':'')+t('総合評価 ★'+gt.toFixed(1),'Overall ★'+gt.toFixed(1))):''); }
+    }
+    /* 総労働時間の計画（今月は前日までの営業日の分だけ） */
+    if(d.plan && r.tgt!=null && isCur){
+      var all=k2OpenDays(sid, ym), part=k2OpenDays(sid, ym, today);
+      r.tgtJudge = all>0 ? Math.round(r.tgt*part/all*10)/10 : null;
+      r.tgtNote = t('前日までの計画 '+(r.tgtJudge!=null?r.tgtJudge+'h':'—')+'（営業日 '+part+'/'+all+' 日）','Plan to date '+(r.tgtJudge!=null?r.tgtJudge+'h':'—')+' ('+part+'/'+all+' open days)');
+    } else if(d.plan){ r.tgtNote=t('月間計画','Monthly plan'); }
+    if(d.budget && isCur && r.tgtJudge!=null && d.key!=='ppa') r.tgtNote=t('前日までの予算 ','Budget to date ')+k2Fmt(d, r.tgtJudge, sid);
+    if(d.key==='ppa') r.tgtNote=t('売上目標 ÷ 客数目標','Sales target ÷ guest target');
+    if((d.key==='foodCost'||d.key==='laborPct')) r.tgtNote=(r.tgtFrom==='budgetRate')?t('上限・予算の率','Ceiling · budget rate'):t('上限','Ceiling');
+    /* 判定 */
+    if(!r.on){ r.j='none'; r.st=t('対象外','Not used'); r.sk='off'; return r; }
+    if(future){ r.st=t('これから','Upcoming'); r.sk='none'; return r; }
+    if(d.plan){
+      if(r.act!=null && r.tgtJudge!=null){ r.j=(r.act<=r.tgtJudge)?'ok':'over'; var dd=Math.round((r.act-r.tgtJudge)*10)/10; r.diff=t('計画差 ','vs plan ')+(dd>=0?'+':'−')+Math.abs(dd)+'h'; }
+    } else if(r.act!=null && r.tgtJudge!=null){
+      r.j=_meetStatus(d.meet, r.act, r.tgtJudge, !!d.lower);
+      r.diff=_meetDiffStr(d.meet, r.act, r.tgtJudge, !!d.lower, (d.unit==='%'?'%':(d.key==='guests'?'':'')), (d.key==='sales'||d.key==='ppa'));
+    }
+    /* 状態 */
+    var pl=(d.key==='sales'||d.key==='ppa'||d.key==='foodCost'||d.key==='laborPct');
+    if(d.plan){
+      if(r.act==null){ r.st=t('勤怠なし','No attendance'); r.sk='wait'; }
+      else if(hrs && hrs.noLaborDays.length){ r.st=t('暫定：勤怠の無い日 '+hrs.noLaborDays.length+' 日','Provisional: '+hrs.noLaborDays.length+' days without attendance'); r.sk='tent'; }
+      else if(isCur){ r.st=t('暫定（前日まで）','Provisional (to date)'); r.sk='tent'; }
+      else { r.st=t('確定','Final'); r.sk='final'; }
+      if(r.tgt==null){ r.st=t('計画を入れてください','Enter the plan'); r.sk='wait'; }
+    } else if(d.key==='reviewScore'){
+      if(r.act==null){ r.st=t('未入力（実績入力/対象指定）','Not entered'); r.sk='wait'; }
+      else { r.st=t('手入力','Manual'); r.sk='final'; }
+      if(r.tgt==null && r.act!=null){ r.st=t('目標未設定','No target'); r.sk='wait'; }
+    } else if(r.act==null){
+      if(d.key==='misoUpgradeRate' || d.key==='ikuraShowerRate' || d.key==='drinkRate'){ r.st=t('設定待ち','Setup needed'); r.sk='wait'; }
+      else { r.st=t('実績なし','No data'); r.sk='wait'; }
+    } else if(r.tgtJudge==null){ r.st=t('目標未設定','No target'); r.sk='wait'; }
+    else if(isCur){ r.st=t('速報（前日まで）','Provisional (to date)'); r.sk='tent'; }
+    else if(pl){ if(conf==='final'||conf==='comb'){ r.st=t('確定（会計 PL）','Final (PL)'); r.sk='final'; } else { r.st=t('速報（PL 未取込）','Provisional (no PL yet)'); r.sk='tent'; } }
+    else { r.st=t('月の合計','Month total'); r.sk='final'; }
+    return r;
+  });
+  return { store:store, ym:ym, isCur:isCur, future:future, conf:conf, rows:rows, today:today };
+}
+var K2_J = {
+  ok:['達成','Met','#0f7a4d','rgba(15,122,77,.10)'], warn:['注意','Watch','#7a4b05','rgba(217,167,59,.16)'],
+  miss:['未達','Missed','#b42323','rgba(224,80,80,.11)'], over:['計画超','Over plan','#9a3c0c','rgba(194,65,12,.12)'],
+  none:['—','—','var(--muted)','var(--surface2)']
+};
+function k2Chip(j, text){ var c=K2_J[j]||K2_J.none; return '<span class="k2-chip" style="color:'+c[2]+';background:'+c[3]+'">'+escapeHtml(text||t(c[0],c[1]))+'</span>'; }
+function k2Counts(rows){
+  var c={ use:0, ok:0, warn:0, miss:0, over:0, wait:0, off:0 };
+  rows.forEach(function(r){ if(!r.on){ c.off++; return; } c.use++; if(c[r.j]!=null && r.j!=='none') c[r.j]++; else if(r.sk==='wait') c.wait++; });
+  return c;
+}
+/* ---- KPI設定：店舗 × 月の表 ---- */
+function renderKpi2Store(){
+  var stores=kpiSettableStores();
+  if(!stores.length) return '<div class="card" style="text-align:center;color:var(--muted);padding:20px">'+t('設定対象の店舗がありません','No stores to set')+'</div>';
+  if(!window._kpiStore || !stores.find(function(s){ return s.id===window._kpiStore; })) window._kpiStore=(curStore && curStore!=='ALL' && stores.find(function(s){ return s.id===curStore; })) ? curStore : stores[0].id;
+  var sid=window._kpiStore, cym=curYm();
+  if(!window._k2Ym || !/^\d{4}-\d{2}$/.test(window._k2Ym)) window._k2Ym=cym;
+  var ym=window._k2Ym;
+  var A=k2Actuals(sid, ym); if(!A) return '<div class="card" style="text-align:center;color:var(--muted);padding:20px">'+t('店舗が見つかりません','Store not found')+'</div>';
+  var can=canSetKpiStore(sid), cnt=k2Counts(A.rows);
+  var own=A.rows.filter(function(r){ return r.own || r.ownOff; }).map(function(r){ return r.label; });
+  var opts=''; for(var i=-12;i<=2;i++){ var y=k2YmAdd(cym, i); opts+='<option value="'+y+'"'+(y===ym?' selected':'')+'>'+escapeHtml(k2YmLabel(y))+(y===cym?t('（今月）',' (this month)'):'')+'</option>'; }
+  if(ym<k2YmAdd(cym,-12) || ym>k2YmAdd(cym,2)) opts='<option value="'+ym+'" selected>'+escapeHtml(k2YmLabel(ym))+'</option>'+opts;
+  var h='<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:12px;color:var(--muted)">'+t('店舗','Store')+'</span>'
+    +'<select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;renderPage(\'kpi_master\')">'
+    +stores.map(function(s){ return '<option value="'+escapeHtml(s.id)+'"'+(sid===s.id?' selected':'')+'>'+escapeHtml(s.name)+'</option>'; }).join('')+'</select>'
+    +'<span style="font-size:12px;color:var(--muted)">'+t('月','Month')+'</span>'
+    +'<select class="form-select" style="width:auto;padding:6px" onchange="window._k2Ym=this.value;renderPage(\'kpi_master\')">'+opts+'</select>'
+    +(A.isCur?'<span style="font-size:11px;color:var(--muted)">'+t('実績は前日まで','Actuals to yesterday')+'</span>':'')
+    +'</div></div>';
+  h+='<div class="card"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>'+escapeHtml(k2YmLabel(ym))+t('の目標と実績',' targets and actuals')+'</div>'
+    +'<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px;line-height:1.6">'
+    +(own.length?t('前の月から引き継ぎ・この月に変えたもの '+own.length+' 件（'+own.map(escapeHtml).join('・')+'）','Carried over; changed this month: '+own.length+' ('+own.map(escapeHtml).join(', ')+')')
+      :t('前の月の目標を引き継いでいます（この月に変えたものはありません）','Carried over from earlier months (nothing changed this month)'))+'</div>'
+    +'<div class="k2-counts">'
+    +'<span>'+t('使う','Used')+' <b>'+cnt.use+'</b></span>'+k2Chip('ok', t('達成 ','Met ')+cnt.ok)+k2Chip('warn', t('注意 ','Watch ')+cnt.warn)+k2Chip('miss', t('未達 ','Missed ')+cnt.miss)
+    +(cnt.over?k2Chip('over', t('計画超 ','Over ')+cnt.over):'')+(cnt.wait?k2Chip('none', t('設定待ち ','Setup ')+cnt.wait):'')+(cnt.off?k2Chip('none', t('対象外 ','Not used ')+cnt.off):'')
+    +'</div>';
+  h+='<div class="k2-table"><div class="k2-row k2-head"><div>KPI</div><div>'+t('使う','Use')+'</div><div>'+t('目標','Target')+'</div><div>'+t('実績','Actual')+'</div><div>'+t('差','Gap')+'</div><div>'+t('判定','Status')+'</div><div>'+t('担当（現場／管理）','Owner')+'</div><div>'+t('数え方・状態','Source · state')+'</div></div>';
+  A.rows.forEach(function(r){
+    var d=r.def, jc=K2_J[r.j]||K2_J.none, canTgt=can && r.editable && r.on;
+    var tgtCell;
+    if(canTgt){
+      var ex=k2ExplicitTarget(sid, ym, r.key);
+      var ph=(r.tgt!=null && ex==null)?k2FmtPlain(d, r.tgt):'';
+      tgtCell='<input class="form-input k2-tgt" id="k2t-'+r.key+'" type="number" inputmode="decimal" step="any" value="'+(ex!=null?ex:'')+'"'+(ph?(' placeholder="'+escapeHtml(ph)+'"'):'')+' aria-label="'+escapeHtml(r.label+t(' の目標',' target'))+'">'
+        +'<div class="k2-note">'+escapeHtml(r.tgtNote||'')+(r.tgtFrom==='prev'?escapeHtml(t('・前の月から','・from an earlier month')):'')+'</div>';
+    } else {
+      tgtCell='<b>'+escapeHtml(r.tgt!=null?k2Fmt(d, r.tgt, sid):'—')+'</b><div class="k2-note">'+escapeHtml(r.tgtNote||'')+'</div>';
+    }
+    var useCell = (r.key==='sales') ? '<span class="k2-note">'+t('いつも','Always')+'</span>'
+      : '<label class="k2-use"><input type="checkbox" id="k2o-'+r.key+'"'+(r.on?' checked':'')+(can?'':' disabled')+' aria-label="'+escapeHtml(r.label+t(' を使う',' used'))+'"></label>';
+    h+='<div class="k2-row'+(r.on?'':' k2-off')+'">'
+      +'<div class="k2-name"><b>'+r.def.no+' '+escapeHtml(r.label)+'</b>'+(d.sub?'<div class="k2-note">'+escapeHtml(t(d.sub,'formerly miso upsell'))+'</div>':'')+(d.isNew?'<span class="k2-new">'+t('新規','New')+'</span>':'')+'</div>'
+      +'<div class="k2-c" data-l="'+escapeHtml(t('使う','Use'))+'">'+useCell+'</div>'
+      +'<div class="k2-c" data-l="'+escapeHtml(t('目標','Target'))+'">'+tgtCell+'</div>'
+      +'<div class="k2-c" data-l="'+escapeHtml(t('実績','Actual'))+'"><b style="color:'+jc[2]+'">'+escapeHtml(r.on?k2Fmt(d, r.act, sid):'—')+'</b>'+(r.actNote&&r.on?'<div class="k2-note">'+escapeHtml(r.actNote)+'</div>':'')+'</div>'
+      +'<div class="k2-c" data-l="'+escapeHtml(t('差','Gap'))+'" style="color:'+jc[2]+';font-weight:700">'+escapeHtml(r.on?(r.diff||''):'')+'</div>'
+      +'<div class="k2-c" data-l="'+escapeHtml(t('判定','Status'))+'">'+(r.on&&r.j!=='none'?k2Chip(r.j):'<span class="k2-note">—</span>')+'</div>'
+      +'<div class="k2-c k2-role" data-l="'+escapeHtml(t('担当','Owner'))+'">'+escapeHtml(r.role)+'</div>'
+      +'<div class="k2-c k2-src" data-l="'+escapeHtml(t('数え方','Source'))+'"><span class="k2-st k2-st-'+r.sk+'">'+escapeHtml(r.st)+'</span><div class="k2-note">'+escapeHtml(r.src)+'</div></div>'
+      +'</div>';
+  });
+  h+='</div>';
+  h+='<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6"><i class="ti ti-info-circle"></i> '
+    +t('判定は会議タブと同じしきい値です。原価率・人件費率は目標を上限に、総労働時間は計画との差で見ます。売上・客数・客単価の目標は予算設定で決めます。この月の目標を変えても、前の月とほかの店は変わりません。目標を空にすると前の月の目標を引き継ぎます。',
+      'Same thresholds as the meeting tab. Food cost and labor use the target as a ceiling; labor hours compare with the plan. Sales, guest and check targets come from the budget. Changing this month leaves earlier months and other stores unchanged; an empty target carries over the earlier one.')+'</div>';
+  if(can) h+='<div class="btn-row" style="margin-top:10px"><button class="btn btn-primary" onclick="k2SaveMonth(\''+escapeHtml(sid)+'\',\''+ym+'\')"><i class="ti ti-device-floppy"></i> '+escapeHtml(k2YmLabel(ym))+t('の目標を保存',' — save targets')+'</button></div>';
+  else h+='<div style="font-size:11px;color:var(--accent);margin-top:8px">'+t('この店舗の目標を変える権限がありません（見るだけ）','You can view but not change this store')+'</div>';
+  h+='</div>';
+  return h;
+}
+function k2FmtPlain(def, v){ if(v==null || !isFinite(v)) return ''; return String(Math.round(v*10)/10); }
+/* 保存：この月に変えた欄だけ書く（引き継いだ値と同じなら書かない）。目標を空にすると、この月の欄を消して前の月から引き継ぐ */
+function k2SaveMonth(sid, ym){
+  if(!canSetKpiStore(sid)){ showToast(t('この店舗を編集する権限がありません','No permission for this store'),'warning'); return false; }
+  if(!/^\d{4}-\d{2}$/.test(String(ym))) return false;
+  var per=k2Period(ym), cur=getKpiManual(sid, per)||{}, vals=Object.assign({}, cur), n=0, bad=null;
+  K2_DEFS.forEach(function(d){
+    var ob=document.getElementById('k2o-'+d.key);
+    if(ob && d.key!=='sales'){
+      var on=!!ob.checked, was=k2On(sid, ym, d.key);
+      if(on!==was){ vals['off_'+d.key]=!on; n++; }
+    }
+    if(K2_EDIT_TGT.indexOf(d.key)<0) return;
+    var el=document.getElementById('k2t-'+d.key); if(!el) return;
+    var s=String(el.value==null?'':el.value).trim(), f='tgt_'+d.key;
+    var hasOwn=Object.prototype.hasOwnProperty.call(cur, f) && _k2Num(cur[f])!=null;
+    if(s===''){ if(hasOwn){ vals[f]=undefined; n++; } return; }
+    var v=Number(s), rg=K2_RANGE[d.key]||[0,100];
+    if(!isFinite(v) || v<rg[0] || v>rg[1]){ bad=bad||(t(d.label,d.en)+t('：'+rg[0]+'〜'+rg[1]+' の数で入れてください',': enter '+rg[0]+'–'+rg[1])); return; }
+    v=Math.round(v*100)/100;
+    var eff=k2ExplicitTarget(sid, ym, d.key);
+    if(hasOwn ? (_k2Num(cur[f])!==v) : (eff!==v)){ vals[f]=v; n++; }
+  });
+  if(bad){ showToast(bad,'warning'); return false; }
+  if(!n){ showToast(t('変わったところはありません','Nothing changed'),'info'); return false; }
+  setKpiManual(sid, per, vals);
+  try{ if(typeof mdCacheClear==='function') mdCacheClear(); }catch(e){}
+  showToast(t(k2YmLabel(ym)+'の目標を保存しました（'+n+' 件）',k2YmLabel(ym)+' targets saved ('+n+')'),'success');
+  renderPage('kpi_master');
+  return true;
+}
+/* ---- 重点 KPI のカード（G1〜G3＝現場、G4＝店舗責任） ---- */
+var K2_FOCUS = { field:['guests','repeatRate','drinkRate','misoUpgradeRate','ikuraShowerRate','reviewScore'],
+                 mgmt:['sales','ppa','foodCost','laborPct','laborHours','reviewScore'] };
+function k2FocusCard(sid, mode){
+  try{
+    if(!sid || sid==='ALL') return '';
+    var A=k2Actuals(sid, curYm()); if(!A) return '';
+    var keys=K2_FOCUS[mode]||K2_FOCUS.field;
+    var rows=A.rows.filter(function(r){ return keys.indexOf(r.key)>=0 && r.on; });
+    if(!rows.length || !rows.some(function(r){ return r.act!=null; })) return '';   /* この端末に実績が 1 つも無ければ出さない（目標だけでは出さない） */
+    var dt=A.today?A.today.split('-'):null, prev=dt?new Date(+dt[0], +dt[1]-1, +dt[2]-1):null;
+    var upTo=prev?((prev.getMonth()+1)+'/'+prev.getDate()):'';
+    var mo=parseInt(String(A.ym).split('-')[1],10);
+    var h='<div class="card k2-focus"><div class="card-title"><i class="ti ti-target" style="color:var(--accent)"></i>'
+      +escapeHtml(A.store.name)+(mode==='mgmt'?t(' の KPI',' KPIs'):t(' の現場の重点 KPI',' floor KPIs'))
+      +'<span style="margin-left:auto;font-size:10.5px;color:var(--muted);font-weight:400">'+t(mo+'月・前日（'+upTo+'）まで','Month to '+upTo)+'</span></div>'
+      +'<div style="font-size:11px;color:var(--muted);margin:-4px 0 8px">'+(mode==='mgmt'?t('あなたの担当：店舗責任（G4・自店）','Your part: store (G4)'):t('あなたの担当：現場（G1〜G3）','Your part: floor (G1–G3)'))+'</div>';
+    rows.forEach(function(r){
+      var d=r.def, jc=K2_J[r.j]||K2_J.none, look=(mode==='field' && r.key==='reviewScore');
+      var tag=look?t('見るだけ','View only'):(r.j!=='none'?t(jc[0],jc[1]):r.st);
+      var sub=r.key==='laborHours'
+        ? ((r.tgtJudge!=null)?t('前日までの計画 ','Plan to date ')+k2Fmt(d, r.tgtJudge, sid)+(r.tgt!=null?t('（月 '+k2Fmt(d, r.tgt, sid)+'）',' (month '+k2Fmt(d, r.tgt, sid)+')'):''):r.st)
+        : ((r.tgtJudge!=null)?((d.budget?t('前日までの目標 ','Target to date '):t('目標 ','Target '))+k2Fmt(d, r.tgtJudge, sid)):t('目標未設定','No target'));
+      if(r.diff) sub+='・'+r.diff;
+      h+='<div class="k2-frow"><div class="k2-fhead"><b>'+escapeHtml(r.label)+'</b>'+(r.sk==='tent'&&(r.key==='foodCost'||r.key==='laborPct')?'<span class="k2-note">'+t('速報','Prov.')+'</span>':'')
+        +'<span class="k2-chip" style="margin-left:auto;color:'+(look?'var(--muted)':jc[2])+';background:'+(look?'var(--surface2)':jc[3])+'">'+escapeHtml(tag)+'</span></div>'
+        +'<div class="k2-fval"><span style="color:'+(look?'var(--tm)':jc[2])+'">'+escapeHtml(k2Fmt(d, r.act, sid))+'</span> <span class="k2-note">'+escapeHtml(sub)+'</span></div>'
+        +(r.key==='repeatRate'&&r.actNote?'<div class="k2-note">'+escapeHtml(r.actNote)+'・(RP＋SR) ÷ (FT＋RP＋SR)</div>':'')
+        +(r.key==='reviewScore'&&r.actNote?'<div class="k2-note">'+escapeHtml(r.actNote)+'</div>':'')
+        +'</div>';
+    });
+    if(mode==='mgmt'){
+      var fr=A.rows.filter(function(r){ return K2_FOCUS.field.indexOf(r.key)>=0 && r.key!=='reviewScore' && r.on; });
+      if(fr.length) h+='<div class="k2-note" style="margin-top:8px;line-height:1.7">'+t('現場の KPI（G1〜G3 が取り組む・あなたが見る）','Floor KPIs (G1–G3 work on them, you watch)')+'：'
+        +fr.map(function(r){ return escapeHtml(r.label)+' '+escapeHtml(k2Fmt(r.def, r.act, sid))+'・'+escapeHtml(r.j!=='none'?t(K2_J[r.j][0],K2_J[r.j][1]):r.st); }).join('　')+'</div>';
+      if(typeof canAccessKpiMaster==='function' && canAccessKpiMaster()) h+='<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'store\';window._kpiStore=\''+escapeHtml(sid)+'\';window._k2Ym=null;go(\'kpi_master\')"><i class="ti ti-target"></i> '+t('KPI設定を開く（目標を変える）','Open KPI settings')+'</button></div>';
+    } else {
+      h+='<div class="k2-note" style="margin-top:8px">'+t('売上・客単価・原価率・人件費率・総労働時間は G4（店舗責任）の KPI です。','Sales, check, food cost, labor and hours are G4 (store) KPIs.')+'</div>';
+    }
+    return h+'</div>';
+  }catch(e){ return ''; }
+}
+/* Google の口コミのページ：店舗マスターの「Google Review ページURL」（http・https だけ）。無ければ Google マップで店名を探すリンク */
+function k2GoogleUrlSet(store){ return !!(store && store.googleUrl && /^https?:\/\//i.test(String(store.googleUrl).trim())); }
+function k2GoogleUrl(store){
+  if(k2GoogleUrlSet(store)) return String(store.googleUrl).trim();
+  return 'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(((store&&store.name)||'')+' Hawaii');
+}
+/* ---- 会議タブ：Google の口コミ（1A：実績はその月に投稿された口コミの平均） ---- */
+function _meetGoogleCard(store, ym){
+  try{
+    var sid=store.id, man=getKpiManual(sid, k2Period(ym))||{};
+    var avg=_k2Num(man.gAvg), cnt=_k2Num(man.gCnt), tot=_k2Num(man.reviewScore), totN=_k2Num(man.gTotalCnt);
+    var tgt=k2ExplicitTarget(sid, ym, 'reviewScore');
+    var st=(avg!=null && tgt!=null) ? _meetStatus('google', avg, tgt, false) : 'none';
+    var col=_meetStatColor(st), diff=(avg!=null && tgt!=null) ? _meetDiffStr('google', avg, tgt, false, '', false) : '';
+    var can=(typeof canSetKpiStore==='function') && canSetKpiStore(sid);
+    var off=(typeof _ymToOffset==='function') ? _ymToOffset(ym) : 0;
+    var h='<div class="card"><div class="card-title"><i class="ti ti-brand-google" style="color:var(--accent)"></i>'+t('Googleレビュー','Google reviews')
+      +'<span class="k2-chip" style="margin-left:auto;color:var(--muted);background:var(--surface2)">'+t('手入力','Manual')+'</span></div>'
+      +'<div class="k2-gcols">'
+      +'<div><div class="k2-note">'+t('この月の平均（この月に投稿された口コミ）','Average of the reviews posted this month')+'</div>'
+        +'<div style="font-size:24px;font-weight:800;color:'+col+'">'+(avg!=null?'★'+avg.toFixed(1):'—')+'</div>'
+        +'<div class="k2-note">'+(cnt!=null?t(cnt+' 件・会議の「実績」に入る値',cnt+' reviews · used as the meeting actual'):t('会議の「実績」に入る値','Used as the meeting actual'))+'</div></div>'
+      +'<div><div class="k2-note">'+t('目標','Target')+'</div><div style="font-size:24px;font-weight:800">'+(tgt!=null?'★'+tgt.toFixed(1):'—')+'</div>'
+        +'<div class="k2-note">'+(st!=='none'?_meetStatLabel(st)+(diff?'・'+diff:''):t('KPI設定で決める','Set in KPI settings'))+'</div></div>'
+      +'<div><div class="k2-note">'+t('総合評価（月末）','Overall (month end)')+'</div><div style="font-size:24px;font-weight:800;color:var(--tm)">'+(tot!=null?'★'+tot.toFixed(1):'—')+'</div>'
+        +'<div class="k2-note">'+(totN!=null?t('累計 '+totN+' 件','Total '+totN):t('参考','For reference'))+'</div></div>'
+      +'</div>'
+      +'<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（Google の API はつなぎません）。',
+        'The month is the posting date in Hawaii time; star-only reviews count. Count them on Google and enter them in KPI settings › Inputs (no Google API).')+'</div>'
+      +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      +(can?'<button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'manual\';window._kpiStore=\''+escapeHtml(sid)+'\';window._kpiManualOffset='+off+';go(\'kpi_master\')"><i class="ti ti-edit"></i> '+t('入力する','Enter')+'</button>':'')
+      +'<a class="btn btn-secondary btn-sm" style="text-decoration:none" href="'+escapeHtml(k2GoogleUrl(store))+'" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> '+(k2GoogleUrlSet(store)?t('Google で見る','Open Google'):t('Google マップで探す','Find on Google Maps'))+'</a>'
+      +'</div></div>';
+    return h;
+  }catch(e){ return ''; }
+}
+/* ===== FUNERGY_KPI2 end ===== */
 /* ドリンクカテゴリ / アップセル対象商品の指定（GMが設定）。店舗共通でもよいが店舗別に持てる */
 function getKpiConfig(){ return ls('kpi_config', {drinkCats:[], upsellGuids:[], alcoholCats:[]}); }
 function setKpiConfig(c){ lsSet('kpi_config', c); }
@@ -4520,7 +5019,7 @@ function mdBar(rate, color) {
 /* v842: 判定不可の理由ごとに「どこを直せば判定できるか」。
    画面に理由だけ出しても動けないので、行き先まで出す。 */
 var MD_FIX = {
-  no_target:    { label: 'KPI目標が未設定',   page: 'kpi_master', how: 'KPI管理 → 店舗タブで 人件費率・原価率の目標を入れる' },
+  no_target:    { label: 'KPI目標が未設定',   page: 'kpi_master', how: 'KPI設定 → 目標と実績 で 人件費率・原価率の目標を入れる' },
   /* v853: 客数・客単価・営業利益の目標は KPI管理ではなく本部予算（hqPlanForYm）から来る。
      この3つにも no_target を共用していたため、画面に「KPI管理へ」と出ていた。
      指示どおり KPI管理に入れても変わらず、行き止まりになっていた。 */
@@ -5145,7 +5644,10 @@ function renderMgmtDash() {
   counts.approvals = counts.approvalList.length;
   counts.errors = { total: errs.length, high: errs.filter(function (e) { return e.sev === 'high'; }).length };
 
-  var h = head + '<div class="md-shell">';
+  var h = head;
+  /* v1153（UI案70）：G4（店長）は自店の KPI を先に見る。G4 は am に読み替えるので本当の役割で見る */
+  if (curRealRole === 'g4') { try { h += k2FocusCard(myStoreId(), 'mgmt'); } catch (e) {} }
+  h += '<div class="md-shell">';
   h += '<div class="md-a-hdr">' + mdHeaderHtml(stores) + '</div>';
   /* v929: 「整備中」バナーはダッシュボードから外した（数字が合ってきたため・Motoさん指示）。
      v1084: 管理統括の廃止と一緒に、その関数も消した。
@@ -5681,7 +6183,7 @@ const NAV_ITEMS = [
   {id:'discount',    label:'従業員割引',   icon:'ti-discount',         roles:['ceo','gm','office','chef','am','g4','sl','g2','office_crew','crew']},
   {id:'crew_handbook', label:'Handbook', icon:'ti-book',          roles:['ceo','gm','office','am','sl','crew','office_crew','chef']},
   {id:'store_master',label:'店舗マスター', icon:'ti-building',         roles:['ceo','gm','office']},
-  {id:'kpi_master',  label:'KPI管理',      icon:'ti-chart-dots',           roles:['ceo','gm','office','am','sl','office_crew','chef']},
+  {id:'kpi_master',  label:'KPI設定',      icon:'ti-chart-dots',           roles:['ceo','gm','office','am','sl','office_crew','chef']},
     {id:'company_msg_edit', label:'会社メッセージ', icon:'ti-speakerphone', roles:['ceo','gm','office']},
   {id:'announce',     label:'アナウンス',   icon:'ti-broadcast',     roles:['ceo','gm','office','am','sl']},
   {id:'settings',    label:'設定',        icon:'ti-settings',         roles:['ceo','gm','office','office_crew','chef']},
@@ -8107,7 +8609,7 @@ async function fetchTipLabor(storeId, guid, date) {
     var shifts = emp.shifts||[];
     // 店舗のbasis/時間窓に応じて対象時間を計算（shiftsがあれば窓計算、無ければToastの素の値）
     var hrs = shifts.length ? tipHoursFromShifts(storeId, shifts) : { lunch: emp.lunchHours||0, dinner: emp.dinnerHours||0 };
-    tipLaborPut(labor, _conf, key, { lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, _r);
+    tipLaborPut(labor, _conf, key, tipLaborWithGuid({ lunch: hrs.lunch, dinner: hrs.dinner, rawLunch: emp.lunchHours||0, rawDinner: emp.dinnerHours||0, shifts: shifts, toastName: emp.name }, emp), _r);   /* v1153：Toast のアカウント ID（hyper-worker は前から保存していた） */
   });
   setTipLabor(storeId, date, labor);
   _tipLaborMark(storeId, date, 'L');   /* v1090: Toast から取った勤怠を、それより前に始めた DB の読み込みの古い答えで戻さない */
@@ -8638,7 +9140,7 @@ var NAV_LABEL_EN = {
   '食材移動':'Ingredient Transfer','業者マスター':'Vendor Master','スキルレベル':'Skill Level','チップ率':'Tip Rate',
   'OJTマップ':'OJT Map','お悩み相談室':'Support Room','成長管理':'Growth Mgmt','OJT管理':'OJT Admin',
   '承認センター':'Approval Center','エラーセンター':'Error Center','通知':'Notifications','マイページ':'My Page',
-  '店舗マスター':'Store Master','KPI管理':'KPI Mgmt','経理出力':'Accounting Export','会社メッセージ':'Company Message',
+  '店舗マスター':'Store Master','KPI管理':'KPI Mgmt','KPI設定':'KPI settings','経理出力':'Accounting Export','会社メッセージ':'Company Message',
   'アナウンス':'Announcements','設定':'Settings',
   '予実':'Budget','人材管理':'People','育成・評価':'Development','食材管理':'Ingredients',
   '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
@@ -23224,6 +23726,8 @@ function renderDashboard() {
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${scopeLabel} · ${t('本日','Today')}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:11px" onclick="loadRealtimeSales()" data-ux-repeat="1"><i class="ti ti-refresh"></i> ${t('取り直す','Re-fetch')}</button></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
+  /* v1153（UI案70）：G4（店長）は自店の KPI を先に見る */
+  if (curRealRole==='g4') { try { html += k2FocusCard(myStoreId(), 'mgmt'); } catch(e) {} }   /* v1153：G4（店舗責任）。curRole は am に読み替えるので本当の役割で見る */
 
   // ====== ⑤ 店舗別状況（全店合算＋店舗別） ======
   if (stores.length >= 1) {
@@ -23384,6 +23888,8 @@ function renderSlFunergyNow(){
     <div class="card-title"><i class="ti ti-bolt" style="color:var(--accent)"></i>Funergy Now <span style="font-size:11px;color:var(--muted);font-weight:400">${label} · ${t('本日','Today')}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:11px" onclick="loadRealtimeSales()" data-ux-repeat="1"><i class="ti ti-refresh"></i> ${t('取り直す','Re-fetch')}</button></div>
     <div id="rt-sales-body"><div style="text-align:center;padding:20px;color:var(--muted)"><i class="ti ti-loader"></i> ${t('Toastから取得中…','Loading from Toast…')}</div></div>
   </div>`;
+  /* v1153（UI案70）：自店の重点 KPI（G4＝店舗責任、G1〜G3＝現場） */
+  try { html += k2FocusCard(myStoreId(), myGradeNum()>=4 ? 'mgmt' : 'field'); } catch(e) {}
 
   // 店舗別状況（全店合算なし。Totoyaは3店を店舗別で表示）
   var sdata = myStores.map(function(s){ return storeData(s.id); });
@@ -25387,7 +25893,7 @@ function renderSalesMixCard(mix){
   }
   var _cfgAll=(typeof getKpiConfig==='function')?getKpiConfig():{};
   if(!(_cfgAll.alcoholCats&&_cfgAll.alcoholCats.length)){
-    h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:8px"><i class="ti ti-alert-triangle"></i> お酒カテゴリ未設定のため、ドリンクは全て「ソフト」に計上中。KPI管理→「お酒の対象カテゴリ」で設定してください。</div>';
+    h+='<div style="font-size:10.5px;color:var(--yellow);margin-top:8px"><i class="ti ti-alert-triangle"></i> お酒カテゴリ未設定のため、ドリンクは全て「ソフト」に計上中。KPI設定→「実績入力/対象指定」の「お酒の対象カテゴリ」で設定してください。</div>';
   }
   h+='<div style="font-size:10.5px;color:var(--muted);margin-top:6px">メニュー出数×売価で算出。フード＝ドリンク以外。ドリンクはお酒＋ソフトを同一バーに合算（内訳色分け）。</div>';
   return h+'</div>';
@@ -26504,7 +27010,7 @@ function renderMonthlySummary(){
     +tile('人件費率', agg.laborRate>0?agg.laborRate+'%':'—', '前月 '+(prevAgg.laborRate||'—')+'%　'+msDelta(agg,prevAgg,'laborRate',true), lCol)
     +tile('粗利', fmtK(agg.grossProfit), '売上-原価-人件費　'+(agg.gpRate||0)+'%')
     +(drinkScopeMs?tile('ドリンク比率', drinkRateMs==null?'—':drinkRateMs+'%', 'ドリンク売上÷総売上'+(drinkTgtMs!=null?'　目標'+drinkTgtMs+'%':''), drinkColMs):'')
-    +(totoyaScopeMs?tile('味噌汁UP率 ★', trMs.misoRate==null?'—':trMs.misoRate+'%', trMs.misoAll>0?('②'+(trMs.misoUp||0).toLocaleString()+' / 全'+(trMs.misoAll||0).toLocaleString()+(msMisoTgt!=null?'　目標'+msMisoTgt+'%':'')):'同期後に表示', misoColMs):'')
+    +(totoyaScopeMs?tile('アップグレード率 ★', trMs.misoRate==null?'—':trMs.misoRate+'%', trMs.misoAll>0?('②'+(trMs.misoUp||0).toLocaleString()+' / 全'+(trMs.misoAll||0).toLocaleString()+(msMisoTgt!=null?'　目標'+msMisoTgt+'%':'')):'同期後に表示', misoColMs):'')
     +(totoyaScopeMs?tile('いくらシャワー率 ★', trMs.ikuraRate==null?'—':trMs.ikuraRate+'%', trMs.bowls>0?('③'+(trMs.ikura||0).toLocaleString()+' / 対象'+(trMs.bowls||0).toLocaleString()+(msIkuraTgt!=null?'　目標'+msIkuraTgt+'%':'')):'同期後に表示', ikuraColMs):'')
     +'</div>';
 
@@ -29356,7 +29862,7 @@ function _meetKpiRows(k){
   if(k.repeatHas || k.repeatTgt!=null || (k.vtState && k.vtState!=='empty')) rows.push({key:'repeat', label:t('リピート率','Repeat'), act:k.repeatRate, tgt:k.repeatTgt, unit:'%', lower:false});
   rows.push({key:'fc', label:t('原価率','Food cost'), act:k.fcRate, tgt:k.fcBudgetRate, unit:'%', lower:true});
   rows.push({key:'labor', label:t('人件費率','Labor'), act:k.laborRate, tgt:k.laborBudgetRate, unit:'%', lower:true});
-  if(k.totoyaScope && k.misoRate!=null) rows.push({key:'miso', label:t('味噌汁UP率','Miso upsell'), act:k.misoRate, tgt:k.misoTgt, unit:'%', lower:false});
+  if(k.totoyaScope && k.misoRate!=null) rows.push({key:'miso', label:t('アップグレード率','Upgrade rate'), act:k.misoRate, tgt:k.misoTgt, unit:'%', lower:false});
   if(k.totoyaScope && k.ikuraRate!=null) rows.push({key:'ikura', label:t('いくらシャワー率','Ikura shower'), act:k.ikuraRate, tgt:k.ikuraTgt, unit:'%', lower:false});
   if(k.drinkScope && k.drinkRate!=null) rows.push({key:'drink', label:t('ドリンク比率','Drink ratio'), act:k.drinkRate, tgt:k.drinkTgt, unit:'%', lower:false});
   return rows;
@@ -29434,7 +29940,7 @@ var MEET_KPI_DEF=[
  {key:'repeat', label:'リピート率',   labelEn:'Repeat',     icon:'ti-repeat',        lower:false, defG:100, defY:90},
  {key:'fc',     label:'原価率',       labelEn:'Food cost',  icon:'ti-percentage',    lower:true,  defG:100, defY:108},
  {key:'labor',  label:'人件費率',     labelEn:'Labor',      icon:'ti-users-group',   lower:true,  defG:100, defY:108},
- {key:'miso',   label:'味噌汁UP率',   labelEn:'Miso',       icon:'ti-soup',          lower:false, defG:100, defY:90},
+ {key:'miso',   label:'アップグレード率',labelEn:'Upgrade',       icon:'ti-soup',          lower:false, defG:100, defY:90},
  {key:'ikura',  label:'いくらシャワー率',labelEn:'Ikura',    icon:'ti-fish',          lower:false, defG:100, defY:90},
  {key:'drink',  label:'ドリンク比率', labelEn:'Drink',      icon:'ti-glass-full',lower:false, defG:100, defY:90},
  {key:'google', label:'Googleレビュー',labelEn:'Google review', icon:'ti-star',          lower:false, defG:100, defY:95}
@@ -30984,13 +31490,16 @@ function _meetYearMatrix(store, y){
     google:{f:function(v){return (Math.round(v*10)/10)+'';}, unit:'', money:false, lower:false}
   };
   var ORDER=['sales','guests','ppa','repeat','drink','fc','labor','miso','ikura','google'];
-  var KEYS=ORDER.filter(function(k){ return seed[k] || ['sales','guests','ppa'].indexOf(k)>=0; });
+  /* v1153：Google の口コミの行はいつも出す（7月から＝KPI設定の目標と、手入力の「その月に投稿された口コミの平均」） */
+  var KEYS=ORDER.filter(function(k){ return seed[k] || ['sales','guests','ppa','google'].indexOf(k)>=0; });
   if(!KEYS.length){ return '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>'+escapeHtml(store.name)+'</div><div style="color:var(--muted);font-size:12px">'+t('この店舗のExcel取込データはありません（7月以降はライブ値で表示）。','No Excel data imported for this store.')+'</div></div>'; }
   var canEd=(typeof qbCanEdit==='function')?qbCanEdit():false;
   var edits=getKgiEdits();
   /* v926: 確定月はPLの数字を出す。1〜6月は cellV がシードを優先するので届かない
      （「1〜6月の会議記録の数字は動かさない」A案・Motoさん確認済みを維持）。 */
-  function liveA(kk, ym, off){ if(off>0) return null; var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+  function liveA(kk, ym, off){ if(off>0) return null;
+    if(kk==='google'){ try{ return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A） */
+    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
   /* v930: 速報（アプリの日次実績）。_meetApplyPl が退避した上書き前の値を読む。
@@ -31022,7 +31531,9 @@ function _meetYearMatrix(store, y){
      Motoさん確認済み（A案）。1〜6月の会議記録の数字は動かさない。
      ライブ値の無いKPI（Googleレビューなど）は今までどおりシードで埋める。
      目標は中間MTGと同じ keyKpiStats の値を使う＝2つの会議で同じ数字になる。 */
-  function liveT(kk, ym){ var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
+  function liveT(kk, ym){
+    if(kk==='google'){ try{ return k2ExplicitTarget(sid, ym, 'reviewScore'); }catch(e){ return null; } }   /* v1153：KPI設定の目標 */
+    var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     switch(kk){ case 'sales': return k.budget;
       case 'guests': return isB?(k.guestBudget===0?0:((k.opDays>0&&k.guestBudget!=null)?Math.round(k.guestBudget/k.opDays):null)):k.guestBudget;
       case 'ppa': return k.ppaBudget; case 'repeat': return k.repeatTgt; case 'drink': return k.drinkTgt;
@@ -31189,6 +31700,7 @@ function renderMeetingReview(){
   ks.forEach(function(x){
       if (_multi) { try { html += _meetStoreSummary(x.s, x.k, ym, isCurrent); return; } catch(e){} }
       html += _meetStoreCard(x.s, x.k, ym, isCurrent);
+      try { html += _meetGoogleCard(x.s, ym); } catch(e){}   /* v1153（1A） */
       try { html += _meetYearMatrix(x.s, ym0.y); } catch(e){}
     });
   if (_multi) html += '</div>';   /* v927: meet-store-grid を閉じる */
@@ -34314,7 +34826,7 @@ function budKpiCard(stores, days, agg, isCur, wow){
   html += kpiTile('ti-coin',t('客単価（全体）','Avg check (all)'), k.ppa>0?'$'+k.ppa.toFixed(2):'—', k.ppaBudget!=null?'$'+k.ppaBudget.toFixed(2):'', ppaCol, wowBadge(wow.ppa,true,false,''), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):''), {title:t('客単価','Avg check'), body:_kpiDetailWrap(t('区分別の客単価、実績のある日の最低〜最高、曜日ごとの平均、前々月からの推移。','Check by segment, daily range, by weekday, and the 3-month trend.'), 'L '+(k.ppaLunch!=null?'$'+k.ppaLunch.toFixed(2):'—')+' ／ D '+(k.ppaDinner!=null?'$'+k.ppaDinner.toFixed(2):'—')+(k.ppaTO!=null?' ／ TO $'+k.ppaTO.toFixed(2):'')+checkRangeSub(stores,days)+checkDowTriSub(stores,days))});
   html += kpiTile('ti-percentage',t('原価率','Food cost %'), k.fcRate>0?k.fcRate.toFixed(1)+'%':'—', fcTgt+'%', fcCol, wowBadge(wow.fcPt,false,true,''), t('低いほど良い','Lower is better'), {title:t('原価率','Food cost %'), body:_kpiDetailWrap(t('原価の内訳：前月棚(期首)＋当月仕入＋食材移動(純)−当月棚(期末)。期末は入力まで0。あわせて業者別の仕入を前々月・前月と比較。','COGS breakdown, plus purchases by vendor vs the prior two months.'), (fcBreakdownSub(stores,days)||'')+fcVendorTriSub(stores,days))});
   html += kpiTile('ti-users-group',t('人件費率','Labor %'), k.laborRate>0?k.laborRate.toFixed(1)+'%':'—', lbTgt+'%', lbCol, '', t('低いほど良い（月累計）','Lower is better (MTD)'), {title:t('人件費率','Labor %'), body:_kpiDetailWrap(t('人件費(賃金)の内訳：G2以上／G1。税・保険等は含みません。あわせて1日あたりの総労働時間と人件費額の推移。','Payroll split G2+/G1, plus hours-per-day and payroll trend.'), (laborGradeSub(stores,days)||'')+laborTrendSub(stores,days))});
-  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('味噌汁UP率 ★','Miso upsell % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('味噌汁UP率','Miso upsell %'), body:_kpiDetailWrap(t('味噌汁を付けた数 ÷ 対象の丼数。','Attached ÷ eligible bowls.'), misoSub(k))});
+  if (k.totoyaScope && k.misoRate!=null) html += kpiTile('ti-soup',t('アップグレード率 ★','Upgrade % ★'), k.misoRate.toFixed(1)+'%', k.misoTgt!=null?k.misoTgt+'%':'', rateCol(k.misoRate,k.misoTgt), '', null, {title:t('アップグレード率','Upgrade %'), body:_kpiDetailWrap(t('アップグレードした数 ÷ 対象の丼数（今は味噌汁を付けた数）。','Upgraded ÷ eligible bowls (now: miso soup added).'), misoSub(k))});
   if (k.totoyaScope && k.ikuraRate!=null) html += kpiTile('ti-fish',t('いくらシャワー率 ★','Ikura shower % ★'), k.ikuraRate.toFixed(1)+'%', k.ikuraTgt!=null?k.ikuraTgt+'%':'', rateCol(k.ikuraRate,k.ikuraTgt), '', null, {title:t('いくらシャワー率','Ikura shower %'), body:_kpiDetailWrap(t('いくらシャワー数 ÷ 対象の丼数。','Ikura ÷ eligible bowls.'), ikuraSub(k))});
   if (k.drinkScope && k.drinkRate!=null) html += kpiTile('ti-glass-full',t('ドリンク比率','Drink ratio'), k.drinkRate.toFixed(1)+'%', k.drinkTgt!=null?k.drinkTgt+'%':'', rateCol(k.drinkRate,k.drinkTgt), '', null, {title:t('ドリンク比率','Drink ratio'), body:_kpiDetailWrap(t('店舗ごとのドリンク売上 ÷ 総売上と、お酒／ソフトの内訳・曜日別・前々月からの推移。お酒の対象カテゴリ設定に依存します。','Drink ÷ total per store, alcohol/soft split, by weekday, and the 3-month trend.'), (drinkSubDetail(k)||'')+drinkRatioTriSub(stores,days)+drinkTrendSub(stores,days))});
   html += `</div>
@@ -36797,7 +37309,7 @@ function keyKpiStats(scopeStores, days){
   if(totoyaScope){
     var mt=0,mc=0,it=0,ic=0;
     scopeStores.forEach(function(s){
-      var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst)||{}):{};
+      var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst, ym)||{}):{};
       if(tg.misoUpgradeRate!=null){ mt+=tg.misoUpgradeRate; mc++; }
       if(tg.ikuraShowerRate!=null){ it+=tg.ikuraShowerRate; ic++; }
     });
@@ -36808,10 +37320,11 @@ function keyKpiStats(scopeStores, days){
   var drinkScope = (scopeStores&&scopeStores.length>0) && scopeStores.every(function(s){ return (typeof isDrinkRateStore==='function') && isDrinkRateStore(s.id); });
   var drinkRateV = (drinkScope && tperiod) ? drinkRateForScope(scopeStores.map(function(s){return s.id;}), tperiod) : null;
   var drinkTgt=null;
-  if(drinkScope){ var _dt=0,_dc=0; scopeStores.forEach(function(s){ var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst)||{}):{}; if(tg.drinkRate!=null){_dt+=tg.drinkRate;_dc++;} }); if(_dc) drinkTgt=Math.round(_dt/_dc*10)/10; }
+  if(drinkScope){ var _dt=0,_dc=0; scopeStores.forEach(function(s){ var tg=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(s.id, ofst, ym)||{}):{}; if(tg.drinkRate!=null){_dt+=tg.drinkRate;_dc++;} }); if(_dc) drinkTgt=Math.round(_dt/_dc*10)/10; }
   // KPI管理で店舗別に設定した目標（明示上書きのみ）があれば、原価率/人件費率/リピート率の目標に優先採用（scope平均）
+  // v1153：その月の目標（KPI設定・前の月から引き継ぐ）が店舗の上書きより先
   var _kpiFc=0,_kpiFcC=0,_kpiLb=0,_kpiLbC=0,_kpiRp=0,_kpiRpC=0;
-  scopeStores.forEach(function(s){ var ov=(typeof getStoreKpiOverride==='function')?(getStoreKpiOverride(s.id)||{}):{};
+  scopeStores.forEach(function(s){ var ov=(typeof k2ExplicitTargets==='function' && ym)?(k2ExplicitTargets(s.id, ym)||{}):((typeof getStoreKpiOverride==='function')?(getStoreKpiOverride(s.id)||{}):{});
     if(ov.foodCost!=null){ _kpiFc+=ov.foodCost; _kpiFcC++; }
     if(ov.laborPct!=null){ _kpiLb+=ov.laborPct; _kpiLbC++; }
     if(ov.repeatRate!=null){ _kpiRp+=ov.repeatRate; _kpiRpC++; } });
@@ -36976,7 +37489,7 @@ function drinkSubDetail(k){
       + '<i class="ti ti-alert-triangle"></i><div>'
       + t('お酒の対象カテゴリが未設定の店舗があります：','Alcohol categories not set: ')
       + noCfg.map(function(p){ return escapeHtml(p.name); }).join('、')
-      + '<br>' + t('未設定の間はドリンク売上が 0 として集計されます。KPI管理→「お酒の対象カテゴリ」で設定してください。',
+      + '<br>' + t('未設定の間はドリンク売上が 0 として集計されます。KPI設定→「実績入力/対象指定」の「お酒の対象カテゴリ」で設定してください。',
                    'Drink sales count as 0 until set. Set it in KPI Mgmt.')
       + '</div></div>';
   }
@@ -45004,7 +45517,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1152';
+const APP_VERSION = '1153';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -86463,6 +86976,9 @@ function renderMypage() {
     </div>
   </div>`;
 
+  /* v1153（UI案70）：G1〜G3 は自店の現場の重点 KPI を最初に見る（売上・原価などの管理の KPI は出さない） */
+  try { if (curStore!=='ALL' || (meEmp && meEmp.store && meEmp.store!=='ALL')) { if (myGradeNum()<=3) html += k2FocusCard(storeId, 'field'); } } catch(e) {}
+
   /* v1080: Tenkichi ランチチャレンジ（Tenkichi に所属・応援の人と本部だけ） */
   try { html += lcEntryCard('mypage'); } catch(e) {}
 
@@ -101049,111 +101565,29 @@ function savePositionConfig(storeId) {
 ============================================================ */
 function renderKpiMaster() {
   if (!canAccessKpiMaster()) {
-    return `<div class="section-header"><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div></div>
+    return `<div class="section-header"><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI設定</div></div>
       <div class="card" style="text-align:center;padding:32px">
         <i class="ti ti-lock" style="font-size:36px;color:var(--muted)"></i>
         <div style="margin-top:12px;font-weight:600">アクセス権限がありません</div>
-        <div style="font-size:13px;color:var(--muted);margin-top:6px">KPI管理は Store Manager 以上が利用できます。</div>
+        <div style="font-size:13px;color:var(--muted);margin-top:6px">KPI設定は Store Manager 以上が利用できます。</div>
       </div>`;
   }
   if (!window._kpiTab || window._kpiTab==='format') window._kpiTab = 'store';
   var html = `<div class="section-header">
-    <div><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> KPI管理</div>
-    <div class="section-sub">店舗ごとにKPI目標を設定</div></div>
+    <div><div class="section-title"><i class="ti ti-target" style="color:var(--accent)"></i> ${t('KPI設定','KPI settings')}</div>
+    <div class="section-sub">${t('店舗と月を選んで、目標と実績を見る・目標を変える','Pick a store and month to see and change targets')}</div></div>
   </div>
   <div class="phase-tabs">
-    <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> 店舗別KPI</div>
+    <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> ${t('目標と実績','Targets & actuals')}</div>
     <div class="phase-tab${window._kpiTab==='manual'?' active':''}" onclick="window._kpiTab='manual';renderPage('kpi_master')"><i class="ti ti-edit" style="font-size:12px"></i> 実績入力/対象指定</div>
   </div>`;
 
   if (window._kpiTab==='manual') return html + renderKpiManualTab();
 
-  // 店舗別タブ
-  var stores = kpiSettableStores();
-  if (!stores.length) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">設定対象の店舗がありません</div>`;
-  if (!window._kpiStore || !stores.find(s=>s.id===window._kpiStore)) window._kpiStore = (curStore && curStore!=='ALL' && stores.find(s=>s.id===curStore)) ? curStore : (stores[0] ? stores[0].id : null);   /* v1129 ③：左上が店ならその店から */
-  var sid = window._kpiStore;
-  var store = getStoresAll().find(s=>s.id===sid);
-  if (!store) return html + `<div class="card" style="text-align:center;color:var(--muted);padding:20px">稼働中の店舗がありません</div>`;
-  var fm = formatMeta(store.format||'dining');
-  html += `<div class="card" style="padding:10px;margin-bottom:10px"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-    <span style="font-size:12px;color:var(--muted)">店舗:</span>
-    <select class="form-select" style="width:auto;padding:6px" onchange="window._kpiStore=this.value;renderPage('kpi_master')">
-      ${stores.map(s=>`<option value="${s.id}" ${sid===s.id?'selected':''}>${s.name}</option>`).join('')}</select>
-    <span class="tag" style="background:${fm.color}1a;color:${fm.color};font-size:10px"><i class="ti ${fm.icon}" style="font-size:11px"></i> ${fm.name}</span>
-  </div></div>`;
-
-  // ===== 実績 vs 目標（詳細）=====
-  if (!window._kpiStoreOffset) window._kpiStoreOffset = 0;
-  var soff = window._kpiStoreOffset;
-  var speriod = periodForOffset(soff);
-  var ach = kpiAchievement(sid, soff);
-  var achCol = evalColor(ach.pct);
-  var sTargets = getStoreKpiTargets(sid, soff);
-  var sAct = computeKpiActuals(sid, soff).actuals;
-  var sKpis = kpisForStore(store);
-  html += `<div class="card">
-    <div class="card-title"><i class="ti ti-chart-bar" style="color:var(--accent)"></i>実績 vs 目標
-      <div style="margin-left:auto;display:flex;gap:4px">
-        <button class="btn btn-${soff===0?'primary':'secondary'} btn-sm" onclick="window._kpiStoreOffset=0;renderPage('kpi_master')">今月</button>
-        <button class="btn btn-${soff===-1?'primary':'secondary'} btn-sm" onclick="window._kpiStoreOffset=-1;renderPage('kpi_master')">先月</button>
-      </div></div>
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:10px">
-      <div style="width:64px;flex-shrink:0">${healthRing(ach.pct||0, achCol, 60)}</div>
-      <div><div style="font-size:26px;font-weight:800;color:${achCol};line-height:1">${ach.pct!=null?ach.pct+'%':'—'}</div>
-        <div style="font-size:11px;color:var(--muted)">${speriod} 達成率 · ${ach.total>0?ach.met+'/'+ach.total+' KPI達成':'実績待ち'}</div></div>
-      <div style="margin-left:auto;display:flex;gap:4px">
-        ${store.googleUrl?`<a href="${store.googleUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-google"></i></a>`:''}
-        ${store.yelpUrl?`<a href="${store.yelpUrl}" target="_blank" rel="noopener" class="btn btn-secondary btn-sm" style="text-decoration:none"><i class="ti ti-brand-yelp"></i></a>`:''}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px">`;
-  sKpis.forEach(function(k){
-    var tv=sTargets[k.key], av=sAct[k.key];
-    var hasAct = av!=null && !isNaN(av);
-    var ok=null; if(hasAct&&tv!=null){ ok=(k.dir==='down')?(av<=tv):(av>=tv); }
-    var col = ok===null?'var(--muted)':ok?'var(--green)':'var(--red)';
-    var u=function(v){ return k.unit==='$'?'$'+v:v+(k.unit==='%'?'%':k.unit==='★'?'★':''); };
-    html += `<div style="background:var(--surface2);border-radius:8px;padding:8px 10px">
-      <div style="font-size:10px;color:var(--muted)">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:9px;color:var(--yellow)"></i>':''}</div>
-      <div style="display:flex;align-items:baseline;gap:5px;margin-top:2px">
-        <span style="font-size:16px;font-weight:800;color:${col}">${hasAct?u(av):'—'}</span>
-        <span style="font-size:10px;color:var(--muted)">/ ${tv!=null?u(tv):'—'}</span>
-        ${ok!==null?`<i class="ti ti-${ok?'circle-check':'circle-x'}" style="font-size:13px;color:${col};margin-left:auto"></i>`:''}
-      </div>${totoyaKpiNote(k.key, sid, speriod)}</div>`;
-  });
-  html += `</div>
-    <div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-info-circle"></i> 「—」は未入力/対象未指定。手入力・対象指定は「実績入力/対象指定」タブで。</div>
-  </div>`;
-
-  var canEditT = canSetKpiStore(sid);
-  html += `<div style="font-size:13px;font-weight:700;margin:14px 0 6px;color:var(--tm)"><i class="ti ti-adjustments"></i> 目標値の設定 ${canEditT?'':'<span style="font-size:11px;font-weight:400;color:var(--accent)">（この店舗の編集権限がありません）</span>'}</div>`;
-  var base = getFormatKpi(store.format||'dining');
-  var ov = getStoreKpiOverride(sid);
-  var kpis = kpisForStore(store);
-  html += `<div class="card"><div style="display:grid;grid-template-columns:1fr auto;gap:8px 12px;align-items:center">
-    <div style="font-size:11px;color:var(--muted);font-weight:700">KPI</div>
-    <div style="font-size:11px;color:var(--muted);font-weight:700;text-align:center">${store.name}の目標</div>`;
-  kpis.forEach(k=>{
-    // 集客数は予実連動（表示のみ）
-    if (k.key==='lunchGuests' || k.key==='dinnerGuests') {
-      var seg = k.key==='lunchGuests'?'lunch':'dinner';
-      var bg = budgetGuestsMonthly(sid, seg, 0);
-      html += `<div style="font-size:12px">${k.label}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
-        <div style="text-align:right;font-size:12px"><span class="tag" style="font-size:9px;background:var(--surface2);color:var(--accent2)">予実連動</span> <b>${bg!=null?bg.toLocaleString():'未設定'}</b></div>`;
-      return;
-    }
-    // 店舗の値（未設定なら業態デフォルトを初期値として表示）
-    var cur = ov[k.key]!=null ? ov[k.key] : base[k.key];
-    html += `<div style="font-size:12px">${k.label}${k.star?' <i class="ti ti-star-filled" style="font-size:10px;color:var(--yellow)"></i>':''}<span style="font-size:10px;color:var(--muted)"> ${k.unit}</span></div>
-      <input class="form-input" style="width:90px;padding:6px;text-align:right${canEditT?'':';background:var(--surface2);color:var(--muted)'}" type="number" inputmode="decimal" step="any" id="sk-${k.key}" value="${cur!=null?cur:''}" ${canEditT?'':'readonly'}>`;
-  });
-  html += `</div>
-    <div style="font-size:10px;color:var(--muted);margin-top:8px"><i class="ti ti-link"></i> 集客数の目標は予実（曜日別の客数予算×月の曜日回数）と連動。予実で設定してください。</div>
-    ${canEditT?`<div class="btn-row" style="margin-top:12px">
-      <button class="btn btn-primary" onclick="saveStoreKpiFromForm('${sid}')"><i class="ti ti-device-floppy"></i> ${store.name}のKPIを保存</button>
-    </div>`:''}</div>`;
-  html += mdPrimaryKpiCard(sid, store);
+  // v1153：店舗 × 月の目標と実績（UI案70）。前の「実績 vs 目標」「目標値の設定」はこの表にまとめた
+  html += renderKpi2Store();
+  var _k2st = getStoresAll().find(function(x){ return x.id===window._kpiStore; });
+  if (_k2st) html += mdPrimaryKpiCard(_k2st.id, _k2st);
   return html;
 }
 
@@ -101286,7 +101720,8 @@ function renderKpiManualTab(){
   // 手入力KPI
   html += `<div class="card"><div class="card-title"><i class="ti ti-edit"></i>手入力KPI <span style="font-size:11px;color:var(--muted);font-weight:400">${store.name} / ${period}</span></div>
     <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Toastで取れないKPIです。月ごとに実績を入力してください（${canManual?'Store Manager以上':'閲覧のみ'}）。</div>`;
-  var manKpis=[['reviewScore','Google Review点数','★'],['reviewYelp','Yelp点数','★'],['reviewReply','口コミ返信率','%']];
+  /* v1153（1A）：会議の Google の実績は「その月に投稿された口コミの星の平均」。Google の API はつながないので手入力 */
+  var manKpis=[['gAvg','Google：この月に投稿された口コミの平均（会議の実績）','★'],['gCnt','Google：この月の口コミの件数','件'],['reviewScore','Google：総合評価（月末）','★'],['gTotalCnt','Google：累計の件数（月末）','件'],['reviewYelp','Yelp点数','★'],['reviewReply','口コミ返信率','%']];
   // 口コミページへのリンク（登録済みなら）
   if (store.googleUrl || store.yelpUrl) {
     html += `<div style="display:flex;gap:6px;margin-bottom:8px">
@@ -101373,7 +101808,7 @@ function renderKpiManualTab(){
     var _ikura = (_tk.ikuraRate!=null)?('<b style="color:var(--green)">'+_tk.ikuraRate+'%</b>'):'<span style="color:var(--muted)">未取得</span>';
     html += `<div class="card" style="border-left:3px solid var(--accent)">
       <div class="card-title"><i class="ti ti-bowl" style="color:var(--accent)"></i>Totoya専用KPI <span style="font-size:10px;font-weight:400;color:var(--muted)">（Toast連携から自動）</span></div>
-      <div style="font-size:12px;padding:2px 0">味噌汁アップグレード率：${_miso} <span style="font-size:10px;color:var(--muted)">分子② Crab/Today's/Udon ${_na(_tk.eff.misoUp)} ÷ 分母① 全味噌汁(Aosa含む) ${_na(_tk.eff.misoAll)}</span></div>
+      <div style="font-size:12px;padding:2px 0">アップグレード率（旧 味噌汁UP率）：${_miso} <span style="font-size:10px;color:var(--muted)">分子② Crab/Today's/Udon ${_na(_tk.eff.misoUp)} ÷ 分母① 全味噌汁(Aosa含む) ${_na(_tk.eff.misoAll)}</span></div>
       <div style="font-size:12px;padding:2px 0">いくらシャワー注文率：${_ikura} <span style="font-size:10px;color:var(--muted)">分子③ いくらシャワー[店内] ${_na(_tk.eff.ikura)} ÷ 分母④ Take/Matsu/Tokujo[店内] ${_na(_tk.eff.bowls)}</span></div>
       <div class="card" style="background:var(--surface2);padding:8px 10px;margin-top:10px">
         <div style="font-size:11px;font-weight:700"><i class="ti ti-keyboard"></i> 手入力フォールバック（${period}・${store.name}）</div>
@@ -101488,7 +101923,12 @@ async function saveBowlCatCfg(sid){
 function saveKpiManual(sid, period){
   if (!canSetKpiStore(sid)) { showToast('この店舗を編集する権限がありません','warning'); return; }
   var vals=getKpiManual(sid, period);
-  ['repeatRate','reviewScore','reviewYelp','reviewReply'].forEach(k=>{ var el=document.getElementById('km-'+k); if(el) vals[k]= el.value!==''?parseFloat(el.value):undefined; });
+  var _bad=null;
+  ['repeatRate','reviewScore','reviewYelp','reviewReply','gAvg','gCnt','gTotalCnt'].forEach(k=>{ var el=document.getElementById('km-'+k); if(!el) return; var v= el.value!==''?parseFloat(el.value):undefined;
+    /* v1153：星は 1〜5、件数は 0 以上の整数 */
+    if(v!==undefined && (!isFinite(v) || ((k==='gAvg'||k==='reviewScore'||k==='reviewYelp') && (v<1||v>5)) || ((k==='gCnt'||k==='gTotalCnt') && (v<0||Math.floor(v)!==v)) || (k==='reviewReply' && (v<0||v>100)))) { _bad=_bad||k; return; }
+    vals[k]=v; });
+  if(_bad){ showToast('入力できない値があります（星は 1〜5、件数は 0 以上の整数）','warning'); return; }
   setKpiManual(sid, period, vals);
   showToast('手入力KPIを保存しました','success');
   renderPage('kpi_master');
