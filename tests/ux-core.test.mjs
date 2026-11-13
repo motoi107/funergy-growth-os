@@ -601,3 +601,20 @@ test('v1151（Codex #145 6846570741 P2-3）：関数から読んだ個人の欄�
   assert.equal(renders.length, 2, '変わった：描き直す（前は端末の保存を見るだけで、メモリの変更に気づかなかった）');
   assert.equal([...env.store.values()].some(v => String(v).includes('1991-02-02')), false, '端末には残さない');
 });
+
+test('v1151（Claude #145 6847734306 P3-2）：個人の欄を初めて読んだときは描き直しの印を付けない（読む画面が自分で描く）', async () => {
+  const renders = [];
+  const main = { querySelector: () => null, contains: () => false }, shell = {};
+  const env = fakeEnv({ _idbQueue: function () {}, renderPage: function (p) { renders.push(p); },
+    ssCall: async () => ({ ok: true, j: { data: { 'E-1': { dob: '1990-01-01' } }, level: 'full' } }) });
+  env.ctx.document.getElementById = id => (id === 'app-shell' ? shell : id === 'main-content' ? main : null);
+  vm.runInContext('var curRole = "gm", curPage = "employees", curStoreLogin = false; var _pii = { tid: "", lv: "", map: null, at: 0, p: null };', env.ctx);
+  vm.runInContext(uxBlock(), env.ctx);
+  vm.runInContext(fnFrom('piiLoad') + '\nfunction piiTid(){ return "T1"; } function piiWants(){ return true; } function ssToken(){ return {}; } function ssStale(){ return false; }', env.ctx);
+  const tk = ms => new Promise(r => setTimeout(r, ms));
+  vm.runInContext('renderPage("employees")', env.ctx);
+  await tk(5);
+  assert.equal(await env.ctx.piiLoad(true), 'ok');
+  env.ctx.window.FUNERGY_UX.bgRefresh(); await tk(20);
+  assert.equal(renders.length, 1, 'the first read does not mark the screen');
+});
