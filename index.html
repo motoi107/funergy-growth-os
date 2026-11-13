@@ -12493,16 +12493,17 @@ function _mrTouchedPut(all, key){
   var ok=_mrJsonPut(MR_TOUCH_KEY, all), ovf=false, s=all._s;
   try{ ovf=(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(MR_TOUCH_OVF)); }catch(e){}
   if(ok){ if(ovf){ try{ _idbQueue(MR_TOUCH_OVF, null); }catch(e){} } _mrOvpDone(s); return true; }   /* 残った別の名前は回が古いので使われない（消えなくても） */
-  /* 先に印（同期で localStorage に入る）。書けなければ false（呼ぶ側が印 _mr_unk_v1 を付ける） */
+  /* 先に印（同期で localStorage に入る）。書けなくても IndexedDB には積む（Codex #144 6842328965：前は印を書けないと積まずに戻り、
+     開き直すと古い覚えのまま「送れた」にして、2 つ目の変更を取り込みで消した）。印を書けなかったときは false（呼ぶ側が印 _mr_unk_v1 も試す） */
   var o=_mrJsonGet(MR_OVP_KEY), k=(o.k && typeof o.k==='object' && !Array.isArray(o.k)) ? o.k : {};
   if(key) k[key]=1;
-  if(!_mrJsonPut(MR_OVP_KEY, { _s:s, k:k })) return false;
+  var markOk=_mrJsonPut(MR_OVP_KEY, { _s:s, k:k });
   try{
     if(typeof _idbQueue==='function' && _idbQueue(MR_TOUCH_OVF, JSON.stringify(all))===true){
-      /* 呼んだ lsSet が表を積み終えてから（同じ書き出しで表と覚えが入る）すぐ書き出し、入り終えたら印を外す */
+      /* 呼んだ lsSet が表を積み終えてから（同じ書き出し＝同じ 1 つの IndexedDB の取引で、表と覚えが両方入るか、両方入らない）すぐ書き出し、入り終えたら印を外す */
       Promise.resolve().then(function(){ return (typeof _idbFlushP==='function') ? _idbFlushP() : false; })
         .then(function(r){ if(r===true) _mrOvpDone(s); }, function(){});
-      return true;
+      return markOk;
     }
   }catch(e){}
   return false;
@@ -12603,7 +12604,7 @@ function mrOnEdit(key, prevTxt, nextTxt){
       if(Object.prototype.hasOwnProperty.call(N.map, pk)) return;
       T[pk]={ d:1, n:bump(T[pk]) }; n++;   /* 消した（足してまだ送っていない行でも、クラウドに入っていれば印を付ける） */
     });
-    if(n){ all[key]=T; if(!_mrTouchedPut(all, key)) mrUnkMark(key); }   /* 端末に書けなかった（localStorage も IndexedDB も）：このタブのメモリにはあるが、閉じると消えるので印も付ける */
+    if(n){ all[key]=T; if(!_mrTouchedPut(all, key)) mrUnkMark(key); }   /* 覚えか小さな印を localStorage に書けなかった：覚えはこのタブのメモリにある（IndexedDB に積めていれば表と同じ書き出しで入る）。念のため印も付ける（書けなければこのタブのメモリだけ） */
   }catch(e){ try{ mrUnkMark(key); }catch(_){} }
 }
 function _mrStrip(row){ var y=Object.assign({}, row); MR_DEL_F.forEach(function(f){ delete y[f]; }); return y; }

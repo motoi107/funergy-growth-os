@@ -76,10 +76,10 @@ const rowsOf = async (db, t) => (await db.query(`select data::text as d from ${t
 const rowOf = async (db, t, pk) => { const r = await db.query(`select data::text as d from ${t} where ${PK[t]}=$1`, [String(pk)]); return r.rows.length ? JSON.parse(r.rows[0].d) : undefined; };
 async function seedCloud(db, t, rows) { for (const r of rows) await db.query(`insert into ${t}(${PK[t]}, data) values($1,$2)`, [String(r[PK[t]]), JSON.stringify(r)]); }
 
-/* localStorage の代わり。refuse に入れたキーだけ書けない（いっぱい） */
+/* localStorage の代わり。dev.refuse に入れたキーだけ書けない（いっぱい）。'*' ならどのキーも書けない。書くたびに今の dev.refuse を見る */
 function lsObject(map, refuse) {
   return { getItem: k => (map.has(k) ? map.get(k) : null), removeItem: k => { map.delete(k); }, key: i => [...map.keys()][i] ?? null, get length() { return map.size; },
-    setItem: (k, v) => { if (refuse.includes(k)) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } map.set(k, String(v)); } };
+    setItem: (k, v) => { const r = refuse(); if (r === '*' || r.includes(k)) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } map.set(k, String(v)); } };
 }
 const device = (refuse = []) => ({ ls: new Map(), factory: new IDBFactory(), refuse });
 /* 1 回の起動（vm）。作った直後は IndexedDB を読み終える前（_idbState='init'）。ready() で読み終えるのを待つ */
@@ -87,7 +87,7 @@ function open(dev, db, { offline = false } = {}) {
   const writes = [], logs = [];
   const c = {
     console: { log() {}, warn() {}, error() {} }, setTimeout, clearTimeout, setInterval: () => 0, Promise, Map, Set, JSON, Math, Date, String, Number, Object, Array,
-    navigator: {}, IDBKeyRange, localStorage: lsObject(dev.ls, dev.refuse), indexedDB: dev.factory, AbortController, writes, logs,
+    navigator: {}, IDBKeyRange, localStorage: lsObject(dev.ls, () => dev.refuse), indexedDB: dev.factory, AbortController, writes, logs,
     SUPABASE_URL: 'https://cloud.invalid', supaHeaders: () => ({}), FUNERGY_STATUS: { log: (_k, m) => logs.push(m) }, t: ja => ja,
     _supaBooting: false, SUPA_SYNC_ENABLED: true, _opLastPushErr: {}, _SPLIT_KEYS: {}, offline, myName: () => 'E',
     empPushDirty: async () => true, vendorPushDirty: async () => true, refreshStores() {},
@@ -353,5 +353,40 @@ test('restart (real storage layer): the record reached IndexedDB but the app clo
   assert.equal(dev.ls.has('_mr_ovp_v1'), false, 'the mark is taken off');
   assert.equal(await save(b, 'm_ingredients', local(b, 'm_ingredients')), true);
   assert.deepEqual(b.writes, ['1001']);
+  await db.close();
+});
+
+test('restart (real storage layer): an older non-empty record is on the device, then localStorage refuses every write (even the small mark) while IndexedDB works; the second edit is flushed before closing: both changes are sent and the next pull keeps them (before: the record was not queued without the mark, only the first row was sent, the second was reported as sent and the pull put it back — Codex #144 6842328965)', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  await seedCloud(db, 'ingredients', ING);
+  const dev = device(['_mr_touched_v1']);
+  await seed(dev, { m_ingredients: ING });
+  const a = open(dev, db, { offline: true });
+  assert.equal(await ready(a), 'ready');
+  /* 1 つ目：覚えは IndexedDB の別の名前に入り終える */
+  const v = local(a, 'm_ingredients'); v[0].price = 99;
+  assert.equal(await save(a, 'm_ingredients', v), false);
+  await flush(a);
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false);
+  /* localStorage がどのキーも受け付けなくなる（小さな印 _mr_ovp_v1・_mr_unk_v1 も書けない）。IndexedDB はふつう */
+  dev.refuse = '*';
+  const w = local(a, 'm_ingredients'); w[1].price = 88;
+  assert.equal(await save(a, 'm_ingredients', w), false);
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false, 'the small mark could not be written');
+  assert.equal(dev.ls.has('_mr_unk_v1'), false, 'the unconfirmed mark could not be written either');
+  await flush(a);   /* 今回は書き出しが入り終えるのを待ってから閉じる */
+  crash(a);
+  const b = open(dev, db);
+  assert.equal(await ready(b), 'ready');
+  assert.deepEqual(local(b, 'm_ingredients').map(r => r.price), [99, 88, 2], 'the device table has both changes');
+  assert.deepEqual(outbox(b), ['m_ingredients']);
+  assert.deepEqual(Object.keys(touched(b, 'm_ingredients')).sort(), ['1001', '1002'], 'the record in IndexedDB has both rows (it went in with the table)');
+  assert.equal(await save(b, 'm_ingredients', local(b, 'm_ingredients')), true);
+  assert.deepEqual(b.writes.sort(), ['1001', '1002'], 'both rows are sent');
+  assert.deepEqual((await rowsOf(db, 'ingredients')).map(r => r.price), [99, 88, 2], 'the cloud has both changes');
+  assert.deepEqual(outbox(b), []);
+  await flush(b);
+  await pull(b, db, 'm_ingredients', 'ingredients');
+  assert.deepEqual(local(b, 'm_ingredients').map(r => r.price), [99, 88, 2], 'the next pull keeps 88');
   await db.close();
 });
