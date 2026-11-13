@@ -48,6 +48,7 @@
 - **送る**（`ntPush`・`syncMasterToSupabase` の app_state の道の先頭。送信待ち・送り直しも同じ道）：足した通知（このログインの人が足した分・20 件ずつ）と、
   クラウドにまだ無い自分の既読・確認の印だけ。送れなければ送信待ちに残す。ほかの人が足して送れなかった分は、その人のログインで送る（14 日で捨てる）。
 - **読む**（`ntPull`）：ログイン（`notifRealtimeStart`）・画面に戻ったとき・1 分ごと・「変わった」の合図（v1151。`notifications`・`_secure:notifications`）・`pullOpKey`。
+  合図で読むときは、合図より前に頼んだ読み（途中のもの）を待ってから読む。読めなかったら（false）間をおいてもう一度（v1151 の直し・`docs/CHANGE_SIGNAL_V1151_JA.md` の 9-1）。
   答えで端末の写しを置き換える（まだ送っていない足した通知・自分の印は残す）。頼んでいるあいだに送った答えで新しい写しを置いたら、古い答えは置かない（`_nt.rx`）。
 - REST の取り込み（`_kvPullRows`）では通知を取らない。app_state の Realtime も購読しない（公開の鍵では読めない行になるため）。
 - **v1152 の形にする**（`ntMigrate`・端末に 1 回。`_nt_mig_v1152`）：REST で取り込んだ通知は「クラウドにある」とみなす。送信待ちが残っていたときだけ、
@@ -96,7 +97,7 @@
   初めて直すときの 3 日と送信待ち・ほかの人の送れていない通知（14 日）・20 件ずつ・形の合わない通知・確認の印は 1 回・頼んでいるあいだに替わったログイン・
   古い読みの答え・pullOpKey・REST の道のあいだの取り込み（前の版の関数・送ったときに分かった・PIN の確かめ先が答えない）・REST の頼みに通知の行を入れない（全部・変わった行だけ）・
   Realtime は REST の道だけ・前の版の関数のタブレットと印の無いスタッフ）。
-- `tests/change-signal-client.test.mjs`：合図 `notifications`・`_secure:notifications` は関数から（REST で 1 つずつ取らない）。前の版の関数なら今までどおり（関数で読もうとして前の版と分かったときも、同じ合図で REST で読む）。
+- `tests/change-signal-client.test.mjs`：合図 `notifications`・`_secure:notifications` は関数から（REST で 1 つずつ取らない）。前の版の関数なら今までどおり（関数で読もうとして前の版と分かったときも、同じ合図で REST で読む）。途中の読みを待つ・読めなかったら間をおいてもう一度（v1151 の直しを取り込んだあとに足した 1）。
 - `tests/secure-notifications-rls.test.mjs`：SQL を PGlite で（v1151／v1148／OFF／ON から・2 回・precheck・postcheck と穴・戻す・区分・決まりの一致）。
 - `tests/secure-state-deploy.test.mjs`：v1151 の 1 ファイルを sha256 で固定・v1152 の一式。
 - 全体（重い 2 つ以外・2 並列）：2,471 件のうち 28 件が落ちる・10 件は飛ばす。落ちる試験は v1151 の全体の結果と名前まで同じ。static release pass/1152。

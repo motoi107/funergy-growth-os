@@ -35,8 +35,11 @@ function fakeDom() {
 
 // 合図の表と Realtime の偽物
 function world(o = {}) {
-  const W = { signals: new Map(), calls: [], fetches: [], rt: { subs: [], removed: 0, status: o.rtStatus === undefined ? 'SUBSCRIBED' : o.rtStatus }, corsRefuse: !!o.corsRefuse, missing: !!o.missing, down: false };
+  const W = { signals: new Map(), calls: [], fetches: [], rt: { subs: [], removed: 0, status: o.rtStatus === undefined ? 'SUBSCRIBED' : o.rtStatus }, corsRefuse: !!o.corsRefuse, missing: !!o.missing, down: false,
+    cap: o.cap || 1000, failPage: 0 };   // cap＝PostgREST の上限（Supabase の既定 1000）。failPage＝続きのページをこの回数だけ失敗させる
   W.put = (key, n, at, by_emp, by_dev) => W.signals.set(key, { key, n, at, by_emp, by_dev });
+  // PostgREST の or=(at.gt."X",and(at.eq."X",key.gt."K")) の値（"…" の中は \" と \\）
+  const CUR = /^\(at\.gt\.("(?:[^"\\]|\\.)*"),and\(at\.eq\.("(?:[^"\\]|\\.)*"),key\.gt\.("(?:[^"\\]|\\.)*")\)\)$/;
   W.fetch = async (u, opt = {}) => {
     const h = opt.headers || {};
     W.fetches.push({ u, method: opt.method || 'GET', h: { ...h } });
@@ -47,7 +50,17 @@ function world(o = {}) {
       if (W.missing) return { status: 404, ok: false, json: async () => ({ code: 'PGRST205' }) };
       let rows = [...W.signals.values()];
       const at = url.searchParams.get('at'); if (at && at.startsWith('gte.')) rows = rows.filter(r => r.at >= at.slice(4));
-      rows.sort((a, b) => a.at < b.at ? -1 : 1);
+      const or = url.searchParams.get('or');
+      if (or) {
+        if (W.failPage > 0) { W.failPage--; return { status: 500, ok: false, json: async () => ({}) }; }
+        const m = CUR.exec(or); assert.ok(m, 'cursor shape: ' + or);
+        const [ga, ea, gk] = [m[1], m[2], m[3]].map(s => JSON.parse(s));
+        assert.equal(ga, ea);
+        rows = rows.filter(r => r.at > ga || (r.at === ea && r.key > gk));
+      }
+      if (url.searchParams.get('order') === 'at.asc,key.asc') rows.sort((a, b) => a.at < b.at ? -1 : a.at > b.at ? 1 : (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+      else rows.sort((a, b) => a.at < b.at ? -1 : 1);
+      rows = rows.slice(0, Math.min(Number(url.searchParams.get('limit')) || Infinity, W.cap));
       return { status: 200, ok: true, json: async () => rows.map(r => ({ ...r })) };
     }
     return { status: 201, ok: true, json: async () => [] };
@@ -63,7 +76,7 @@ function world(o = {}) {
 function load(o = {}) {
   const W = world(o);
   const doc = fakeDom();
-  const store = new Map(o.ls || []);
+  const store = o.store || new Map(o.ls || []);   // o.store：同じブラウザのほかのタブ（localStorage を分け合う）
   const pulls = [];
   let busy = '', dataAt = 0, autoN = 0, refreshes = 0, autoLast = 0;
   const ST = { userBusy: () => busy, auto: { get last() { return autoLast; } }, autoSync(why) { autoN++; autoLast = Date.now(); pulls.push(['auto', why]); return Promise.resolve('ok'); },
@@ -117,6 +130,14 @@ test('the device id is random, kept on this device only, and the kind comes from
   assert.equal(load({ ua: 'Mozilla/5.0 (Linux; Android 14; Pixel) Mobile' }).SG.kind(), 'android');
   assert.equal(load({ ua: 'Mozilla/5.0 (iPad; CPU OS 17_0)' }).SG.kind(), 'ipad');
   assert.equal(load().SG.kind(), 'pc');
+  // 送る印＝端末の印＋このタブの印（タブの印は端末に残さない・64 文字まで。Codex #145 P3）
+  const s = A.SG.sendId();
+  assert.match(s, /^d[0-9a-f]{24}-t[0-9a-f]{8}$/); assert.equal(A.SG.sendId(), s); assert.ok(s.startsWith(d + '-'));
+  assert.ok(![...A.store.values()].some(v => String(v).includes(A.SG.tab())), 'the tab part is not stored');
+  const long = 'd' + 'x'.repeat(63);
+  const L = load({ ls: [['_fp_dev_v1', long]] });
+  assert.equal(L.SG.device(), long); assert.equal(L.SG.sendId().length, 64); assert.match(L.SG.sendId(), /^[A-Za-z0-9_-]{6,64}$/);
+  assert.ok(L.SG.sendId().endsWith('-' + L.SG.tab()));
 });
 
 test('who changed it goes only on REST writes, and only after REST accepted the header once', async () => {
@@ -126,7 +147,7 @@ test('who changed it goes only on REST writes, and only after REST accepted the 
   assert.equal(await A.SG.probe(), true);
   await A.ctx.fetch(URL0 + '/rest/v1/app_state?on_conflict=key', { method: 'POST', headers: { apikey: ANON } });
   const h = A.W.fetches.at(-1).h['x-fp-actor'];
-  assert.deepEqual(JSON.parse(Buffer.from(h, 'base64').toString('utf8')), { e: 'E-GM', n: 'Gina 試験', r: 'gm', d: A.SG.device(), k: 'pc' });
+  assert.deepEqual(JSON.parse(Buffer.from(h, 'base64').toString('utf8')), { e: 'E-GM', n: 'Gina 試験', r: 'gm', d: A.SG.sendId(), k: 'pc' });
   for (const [u, m] of [[URL0 + '/rest/v1/app_state?key=eq.x', 'GET'], [URL0 + '/functions/v1/auth-pin', 'POST'], [URL0 + '/storage/v1/object/invoices/a', 'DELETE'], [URL0 + '/auth/v1/token', 'POST']]) {
     await A.ctx.fetch(u, { method: m, headers: { apikey: ANON } });
     assert.equal(A.W.fetches.at(-1).h['x-fp-actor'], undefined, m + ' ' + u);
@@ -165,12 +186,12 @@ test('at sign-in: older signals are the baseline; ones from during the sign-in a
   assert.ok(A.refreshes() >= 1);
   const note = A.doc.getElementById('fp-sig-note');
   assert.ok(note && /<li>会議 <span class="fp-sig-who">Bob さん<\/span><\/li>/.test(note.innerHTML), note && note.innerHTML);
-  // this device (n + 1, our id): not taken
-  A.W.emit({ key: 'meetings', n: 6, at: later(3), by_emp: 'E-GM', by_dev: A.SG.device() });
+  // this tab (n + 1, our id): not taken
+  A.W.emit({ key: 'meetings', n: 6, at: later(3), by_emp: 'E-GM', by_dev: A.SG.sendId() });
   await tick(1600);
   assert.equal(A.pulls.filter(p => p[0] === 'op').length, 2);
-  // this device's write, but another device wrote in between (n jumped by 2): taken
-  A.W.emit({ key: 'meetings', n: 8, at: later(4), by_emp: 'E-GM', by_dev: A.SG.device() });
+  // this tab's write, but another device wrote in between (n jumped by 2): taken
+  A.W.emit({ key: 'meetings', n: 8, at: later(4), by_emp: 'E-GM', by_dev: A.SG.sendId() });
   await tick(1600);
   assert.equal(A.pulls.filter(p => p[0] === 'op').length, 3);
   // the same signal twice (Realtime and a read): once
@@ -377,4 +398,224 @@ test('ssCall: the device header goes to secure-state only after it answered clfn
   answer = { fn: 1, ok: true };   // an older function (no clfn): never starts sending
   await ctx.ssCall({ action: 'pull' });
   assert.equal(calls.at(-1), null);
+});
+
+// ---- Codex #145（a7b8896）の指摘の直し ----
+
+test('Codex #145 P3: another tab of the same browser (the same localStorage) is not "this tab"; its change is taken', async () => {
+  const store = new Map();
+  const A = load({ store }), B = load({ store });   // 2 つのタブ
+  assert.equal(A.SG.device(), B.SG.device(), 'the device id is shared through localStorage');
+  assert.notEqual(A.SG.sendId(), B.SG.sendId(), 'the id sent with a write is per tab');
+  B.SG.start(); await tick(20);
+  // タブ A の書き込み（A の送る印）：タブ B は取り込む（前は同じ端末の印なので「自分の書き込み」として捨てた）
+  B.W.emit({ key: 'meetings', n: 1, at: later(1), by_emp: 'E-GM', by_dev: A.SG.sendId() });
+  await tick(1700);
+  assert.deepEqual(B.pulls.filter(p => p[0] === 'op').map(p => p[1]), ['meetings']);
+  B.W.emit({ key: 'meetings', n: 2, at: later(2), by_emp: 'E-GM', by_dev: A.SG.sendId() });
+  await tick(1700);
+  assert.equal(B.pulls.filter(p => p[0] === 'op').length, 2, 'again (n + 1 by the other tab)');
+  // タブ B 自身の書き込み：取り込まない
+  B.W.emit({ key: 'meetings', n: 3, at: later(3), by_emp: 'E-GM', by_dev: B.SG.sendId() });
+  await tick(1700);
+  assert.equal(B.pulls.filter(p => p[0] === 'op').length, 2);
+  // 前の版のタブ（端末の印だけを送る）の書き込みも取り込む（どのタブか分からない）
+  B.W.emit({ key: 'meetings', n: 4, at: later(4), by_emp: 'E-GM', by_dev: B.SG.device() });
+  await tick(1700);
+  assert.equal(B.pulls.filter(p => p[0] === 'op').length, 3);
+  // 書き込みの見出しにも、タブごとの印
+  await B.SG.probe();
+  await B.ctx.fetch(URL0 + '/rest/v1/app_state', { method: 'POST', headers: { apikey: ANON } });
+  assert.equal(JSON.parse(Buffer.from(B.W.fetches.at(-1).h['x-fp-actor'], 'base64').toString('utf8')).d, B.SG.sendId());
+});
+
+test('Codex #145 P2: a protected kind that could not be read is read again (fail / throw); a changed login and an older function are not failures', async () => {
+  const A = load({ hrLoaded: true, piiLoaded: true });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  const hr = [], pii = [];
+  A.ctx.hrLoad = async (k, f) => { const r = hr.shift() || 'ok'; A.pulls.push(['hr', k, f, r]); if (r === 'throw') throw new Error('boom'); if (r === 'ok') A.setData(); return r; };
+  A.ctx.piiLoad = async f => { const r = pii.shift() || 'ok'; A.pulls.push(['pii', f, r]); if (r === 'throw') throw new Error('boom'); if (r === 'ok') A.setData(); return r; };
+  A.SG.start(); await tick(20);
+  // 1) 読めなかった（fail）：取れたことにしない・読み直しの列に入る・間をおいてもう一度（合図の表を読み直さなくても）
+  hr.push('fail', 'ok');
+  A.W.emit({ key: '_secure:hiring', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['fail']);
+  assert.ok(A.SG.st.retry['_secure:hiring'], 'waiting to read again');
+  assert.equal(A.SG.st.seen['_secure:hiring'], 0, 'the signal is not used up');
+  assert.equal(A.doc.getElementById('fp-sig-note'), null, 'nothing is announced');
+  await tick(1200);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['fail', 'ok']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0); assert.equal(Object.keys(A.SG.st.tries).length, 0);
+  assert.equal(A.SG.st.seen['_secure:hiring'], 1, 'taken: the count is back');
+  assert.match(A.doc.getElementById('fp-sig-note').innerHTML, /<li>採用<\/li>/);
+  // 2) 例外も「読めなかった」
+  hr.push('throw', 'ok');
+  A.W.emit({ key: '_secure:hiring', n: 2, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.ok(A.SG.st.retry['_secure:hiring'], 'a thrown read is read again');
+  await tick(1200);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['fail', 'ok', 'throw', 'ok']);
+  pii.push('throw', 'ok');
+  A.W.emit({ key: '_secure:pii', n: 1, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.ok(A.SG.st.retry['_secure:pii']);
+  await tick(1200);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'pii').map(p => p[2]), ['throw', 'ok']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  // 3) 途中でログインが変わった（stale）・関数が前の版（rest）・読まない人（none）：失敗ではない（読み直さない・知らせに出さない）
+  for (const [k, q, r, n] of [['_secure:hiring', hr, 'stale', 3], ['_secure:hiring', hr, 'rest', 4], ['_secure:pii', pii, 'none', 2]]) {
+    q.push(r);
+    A.W.emit({ key: k, n, at: later(3), by_emp: null, by_dev: 'dOTHER' });
+    await tick(1600);
+    assert.equal(q.length, 0, r + ' was read');
+    assert.equal(Object.keys(A.SG.st.retry).length, 0, r);
+    assert.equal(A.SG.st.seen[k], n, r);
+  }
+  // 4) 読んだことのないもの（相談室）は読まない（読むものが無い：失敗ではない）
+  A.W.emit({ key: '_secure:growthhub', n: 1, at: later(3), by_emp: null, by_dev: 'dOTHER' });
+  A.W.emit({ key: 'meetings', n: 1, at: later(3), by_emp: 'E-2', by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.equal(A.pulls.filter(p => p[0] === 'hr' && p[1] !== 'applicants').length, 0);
+  const nt = A.doc.getElementById('fp-sig-note').innerHTML;
+  assert.match(nt, /会議/); assert.doesNotMatch(nt, /お悩み相談室/, 'not announced: nothing of it is on this device');
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  // 5) 続けて読めない：だんだん長く待つ（tries が増える）。ログアウトで捨てる
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 40, 80, 120);
+  hr.push('fail', 'fail', 'fail', 'fail');
+  A.W.emit({ key: '_secure:hiring', n: 5, at: later(4), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600 + 40 + 80 + 60);
+  assert.ok(A.SG.st.tries['_secure:hiring'] >= 2, JSON.stringify(A.SG.st.tries));
+  A.SG.stop();
+  assert.equal(A.SG.st.retryTm, null); assert.equal(Object.keys(A.SG.st.retry).length, 0); assert.equal(Object.keys(A.SG.st.tries).length, 0);
+  const before = A.pulls.length; await tick(300);
+  assert.equal(A.pulls.length, before, 'nothing after sign-out');
+});
+
+test('Codex #145 P2: a read that started before the signal is not used; it waits for it and reads again', async () => {
+  const A = load({ hrLoaded: true, piiLoaded: true });
+  const ev = [];
+  let rel; const inflight = new Promise(r => { rel = r; });
+  A.ctx._hrMem.p = { applicants: { tid: 'x', p: inflight.then(() => { ev.push('old-done'); return 'ok'; }) } };
+  A.ctx.hrLoad = async (k, f) => { ev.push('read:' + k + ':' + f); return 'ok'; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: '_secure:hiring', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(ev, [], 'waits for the read that was already going');
+  rel(); await tick(20);
+  assert.deepEqual(ev, ['old-done', 'read:applicants:true']);
+  // 個人の欄も同じ
+  let rel2; const inf2 = new Promise(r => { rel2 = r; });
+  A.ctx._pii.p = { tid: 'x', p: inf2.then(() => { ev.push('pii-old'); return 'ok'; }) };
+  A.ctx.piiLoad = async f => { ev.push('pii:' + f); return 'ok'; };
+  A.W.emit({ key: '_secure:pii', n: 1, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  rel2(); await tick(20);
+  assert.deepEqual(ev.slice(2), ['pii-old', 'pii:true']);
+});
+
+test('Codex #145 P2: a key that failed is read again even after the read window has moved past its signal', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR' });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  let fail = 1;
+  A.ctx.pullOpKey = async k => { A.pulls.push(['op', k]); if (k === 'meetings' && fail-- > 0) return false; A.setData(); return true; };
+  A.SG.start(); await tick(20);
+  A.W.put('meetings', 3, later(1), 'E-1', 'dOTHER');
+  A.W.put('daily_actuals_F01', 1, later(400), 'E-1', 'dOTHER');   // ほかのキーの合図が 2 分より先に進む
+  await A.SG.pollNow('test'); await tick(1600);
+  assert.equal(A.pulls.filter(p => p[0] === 'op' && p[1] === 'meetings').length, 1);
+  const since = new URL(A.W.fetches.filter(f => f.u.includes('sync_signal')).at(-1).u).searchParams.get('at');
+  await A.SG.pollNow('test');
+  const q = new URL(A.W.fetches.filter(f => f.u.includes('sync_signal')).at(-1).u).searchParams.get('at');
+  assert.ok(q.slice(4) > later(1), 'the next read no longer covers the failed signal (' + since + ' → ' + q + ')');
+  await tick(1300);
+  assert.equal(A.pulls.filter(p => p[0] === 'op' && p[1] === 'meetings').length, 2, 'read again by the retry, not by the table');
+  assert.equal(A.SG.st.seen.meetings, 3);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+});
+
+test('Codex #145 P2: the signal table is read page by page with a (at, key) cursor; more than one page in the 2-minute window is all read', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR', cap: 1000 });
+  // 2,100 キー（同じ取引＝同じ at の 2,070 行と、新しい 30 行）。ページの境目のキーに , ( ) . " \ を入れる
+  const keys = []; for (let i = 0; i < 2100; i++) keys.push('k' + String(i).padStart(4, '0'));
+  keys[999] = 'k0999,(x)."q"\\z';
+  const at1 = later(-30), atNew = (i) => later(-10 + i / 1000);
+  keys.forEach((k, i) => A.W.put(k, 1, i < 2070 ? at1 : atNew(i), 'E-1', 'dOTHER'));
+  A.SG.start(); await tick(30);
+  const reads = () => A.W.fetches.filter(f => f.u.includes('/rest/v1/sync_signal?select=key,n,at'));
+  assert.equal(reads().length, 3, 'the start read went through 3 pages');
+  for (const f of reads()) { const p = new URL(f.u).searchParams; assert.equal(p.get('order'), 'at.asc,key.asc'); assert.equal(p.get('limit'), '1000'); }
+  const or2 = new URL(reads()[1].u).searchParams.get('or');
+  assert.equal(or2, '(at.gt."' + at1 + '",and(at.eq."' + at1 + '",key.gt."k0999,(x).\\"q\\"\\\\z"))', 'the cursor is the last row of page 1, quoted');
+  assert.equal(Object.keys(A.SG.st.seen).length, 2100, 'all rows are the baseline');
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0, 'older than the sign-in: not taken');
+  // the newest 30 keys change again while the other 2,070 rows are still inside the 2-minute window
+  // (before: every read got the same first 2,000 rows and these were never seen)
+  const newest = keys.slice(2070);
+  newest.forEach((k, i) => A.W.put(k, 2, later(5 + i / 1000), 'E-2', 'dOTHER'));
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(new URL(reads().at(-1).u).searchParams.get('or') !== null, true, 'the poll also went past page 1');
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op').map(p => p[1]).sort(), newest.slice().sort());
+  assert.ok(newest.every(k => A.SG.st.seen[k] === 2));
+  assert.equal(A.autoN(), 0, '30 keys: one by one');
+});
+
+test('Codex #145 P2: many keys at once go to the full sync instead of one request per key', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR', cap: 1000 });
+  A.SG.start(); await tick(20);
+  for (let i = 0; i < 2100; i++) A.W.put('b' + String(i).padStart(4, '0'), 1, later(1), 'E-1', 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(Object.keys(A.SG.st.seen).length, 2100, 'all 2,100 signals are seen (3 pages)');
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0, 'no request per key');
+  assert.equal(A.autoN(), 1, 'the full sync once');
+  // 50 keys or fewer: one by one
+  for (let i = 0; i < 50; i++) A.W.put('c' + String(i).padStart(2, '0'), 1, later(2), 'E-1', 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 50);
+  assert.equal(A.autoN(), 1);
+});
+
+test('Codex #145 P2: a page that fails makes the whole read fail (no half read); a failed start read makes the next read the baseline', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR', cap: 1000 });
+  for (let i = 0; i < 1500; i++) A.W.put('o' + String(i).padStart(4, '0'), 1, t0(), 'E-1', 'dOTHER');   // ずっと前の合図
+  A.W.failPage = 1;   // 始めの読みの 2 ページ目が失敗
+  A.SG.mark(); A.SG.start(); await tick(30);
+  assert.equal(Object.keys(A.SG.st.seen).length, 0, 'page 1 alone is not used');
+  assert.equal(A.SG.st.based, false);
+  A.W.put('during', 1, later(1), 'E-1', 'dOTHER');   // ログインのあいだに変わった
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.SG.st.based, true);
+  assert.equal(Object.keys(A.SG.st.seen).length, 1501);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op').map(p => p[1]), ['during'], 'the old signals are the baseline (before: all 1,500 were taken one by one)');
+  assert.equal(A.autoN(), 0);
+  // a later read whose page 2 fails: nothing is used and the window does not move
+  const lastAt = A.SG.st.lastAt;
+  A.W.put('o0001', 2, later(2), 'E-1', 'dOTHER');
+  A.W.failPage = 1;
+  for (let i = 0; i < 1000; i++) A.W.put('p' + String(i).padStart(4, '0'), 1, later(1.5), 'E-1', 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.SG.st.lastAt, lastAt);
+  assert.equal(A.SG.st.seen.o0001, 1);
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.SG.st.seen.o0001, 2, 'read at the next try');
+});
+
+test('notifications (v1152) with the Codex #145 fixes: a read already going is awaited first; a failed read is read again later', async () => {
+  const A = load();
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  const ev = [], res = ['fail-ish', true];
+  let rel; A.ctx._ntPullP = new Promise(r => { rel = r; }).then(() => { ev.push('old-done'); A.ctx._ntPullP = null; return true; });
+  A.ctx.ntMode = () => 'fn';
+  A.ctx.ntPull = async () => { const r = res.shift(); ev.push('read:' + r); return r === 'fail-ish' ? false : r; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: '_secure:notifications', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(ev, [], 'waits for the read that was already going');
+  rel(); await tick(20);
+  assert.deepEqual(ev, ['old-done', 'read:fail-ish']);
+  assert.ok(A.SG.st.retry['_secure:notifications'], 'not read: waiting to read again');
+  await tick(1200);
+  assert.deepEqual(ev, ['old-done', 'read:fail-ish', 'read:true']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  assert.equal(A.SG.st.seen['_secure:notifications'], 1);
 });

@@ -104740,6 +104740,17 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
     return (SG._dev = d);
   };
+  /* 送る印＝端末の印＋このタブの印（Codex #145 P3）。端末の印は localStorage でタブどうし同じなので、それだけで見分けると
+     同じブラウザのほかのタブの変更を「自分の書き込み」として取り込まなかった（覚えた回数 seen と画面のデータはタブごと）。
+     タブの印はメモリだけ（開き直すと変わる。sessionStorage は「タブを複製」で写るので使わない）。合わせて 64 文字まで（サーバーの形） */
+  SG.tab = function(){
+    if(SG._tab) return SG._tab;
+    var x = '';
+    try{ var a = new Uint8Array(4); crypto.getRandomValues(a); x = Array.prototype.map.call(a, function(v){ return ('0' + v.toString(16)).slice(-2); }).join(''); }
+    catch(e){ x = (Math.random().toString(16).slice(2) + '00000000').slice(0, 8); }
+    return (SG._tab = 't' + x);
+  };
+  SG.sendId = function(){ var tb = SG.tab(); return SG.device().slice(0, 63 - tb.length) + '-' + tb; };
   SG.kind = function(){
     var ua = ''; try{ ua = navigator.userAgent || ''; }catch(e){}
     if(/iPhone|iPod/.test(ua)) return 'iphone';
@@ -104757,7 +104768,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var store = !!(typeof curStoreLogin !== 'undefined' && curStoreLogin);
       var p = (typeof loginPerson !== 'undefined' && loginPerson) ? loginPerson : null;
       return { e: (!store && p && p.id != null) ? String(p.id).slice(0, 64) : '', n: String((typeof curUserName !== 'undefined' && curUserName) || '').slice(0, 120),
-        r: store ? 'store' : String(curRole).slice(0, 40), d: SG.device(), k: SG.kind() };
+        r: store ? 'store' : String(curRole).slice(0, 40), d: SG.sendId(), k: SG.kind() };
     }catch(e){ return null; }
   };
   W.fpActorHdr = function(force){
@@ -104805,8 +104816,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 
   /* ---------- 合図 ---------- */
-  var SIG = SG.st = { on: false, live: false, missing: false, seen: {}, want: {}, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
+  var SIG = SG.st = { on: false, live: false, missing: false, based: false, seen: {}, want: {}, retry: {}, tries: {}, retryTm: null, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
   var POLL_OFF = 60000, POLL_LIVE = 5 * 60000, BATCH_MS = 1500, BUSY_MS = 5000, FULL_GAP = 2 * 60000, BACK_MS = 120000;
+  var PAGE = 1000, MAX_PAGES = 200;   /* 合図の表を読む 1 ページ（Supabase の既定の上限と同じ・supaFetchAll と同じ）・安全弁 */
+  var RETRY_MS = [10000, 30000, 60000, 120000, 300000];   /* 取り込めなかったキーを読み直すまで（だんだん長く・5 分まで） */
+  var BULK_KEYS = 50;   /* 1 回にこれより多いキーが変わったら、1 つずつ取らずに今までの自動の同期を前倒し */
   SG.live = function(){ return !!(SIG.on && SIG.live && !SIG.missing); };
   SG.state = function(){
     if(!SIG.on) return { k: 'none' };
@@ -104815,20 +104829,39 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return { k: 'poll', at: SIG.lastPoll };
   };
   SG.mark = function(){ SIG.t0 = now(); };   /* ログインの取り込みを始める前（このあとの合図は取り込み直す） */
+  /* 合図の表を全部のページ読む（Codex #145 P2：前は order=at.asc&limit=2000 の 1 ページだけで、2 分の中に 2,000 行を超えると
+     次の見回りも同じ先頭のページを読み、新しいほうのキーをいつまでも取らなかった）。
+     並びは (at, key)（同じ取引の書き込みは at が同じ）。続きは最後の行の (at, key) より後（offset は読むあいだに行が動くと飛ぶので使わない）。
+     途中のページで読めなかったら全体を「読めなかった」（null）にする（途中までを全部として扱わない：基準・lastAt を進めない） */
+  function pq(v){ return '"' + String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"'; }   /* or=(…) の中の値（キーに , ( ) . " があっても） */
   async function fetchSignals(since){
-    var q = 'sync_signal?select=key,n,at,by_emp,by_dev&order=at.asc&limit=2000' + (since ? '&at=gte.' + encodeURIComponent(since) : '');
-    try{
-      var r = await fetch(restBase() + q, { headers: anonHdr() });
-      if(r.status === 404) return 'missing';
-      if(!r.ok) return null;
-      var j = await r.json();
-      return Array.isArray(j) ? j : null;
-    }catch(e){ return null; }
+    var all = [], cur = null;
+    for(var pg = 0; pg < MAX_PAGES; pg++){
+      var q = 'sync_signal?select=key,n,at,by_emp,by_dev&order=at.asc,key.asc&limit=' + PAGE
+        + (since ? '&at=gte.' + encodeURIComponent(since) : '')
+        + (cur ? '&or=' + encodeURIComponent('(at.gt.' + pq(cur.at) + ',and(at.eq.' + pq(cur.at) + ',key.gt.' + pq(cur.key) + '))') : '');
+      var j = null;
+      try{
+        var r = await fetch(restBase() + q, { headers: anonHdr() });
+        if(r.status === 404) return 'missing';
+        if(!r.ok) return null;
+        j = await r.json();
+      }catch(e){ return null; }
+      if(!Array.isArray(j)) return null;
+      for(var i = 0; i < j.length; i++) all.push(j[i]);
+      if(j.length < PAGE) return all;   /* 最後のページ */
+      var last = j[j.length - 1];
+      if(!last || typeof last.at !== 'string' || typeof last.key !== 'string') return null;
+      if(cur && last.at === cur.at && last.key === cur.key) return null;   /* 進まない（表の答えがおかしい）：同じページを読み続けない */
+      cur = { at: last.at, key: last.key };
+    }
+    return all;   /* 安全弁（200 ページ＝20 万行） */
   }
+  SG._fetchSignals = fetchSignals;
   function want(row){ SIG.want[row.key] = row; schedule(BATCH_MS); }
   function consider(row, first){
     if(!row || typeof row.key !== 'string') return;
-    var k = row.key, n = Number(row.n) || 0, prev = SIG.seen[k], mine = row.by_dev === SG.device();
+    var k = row.key, n = Number(row.n) || 0, prev = SIG.seen[k], mine = row.by_dev === SG.sendId();   /* このタブの書き込み（Codex #145 P3） */
     if(typeof row.at === 'string' && row.at > SIG.lastAt) SIG.lastAt = row.at;
     if(prev === undefined){
       SIG.seen[k] = n;
@@ -104837,7 +104870,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return;
     }
     if(n === prev) return;
-    if(n > prev && mine && n === prev + 1){ SIG.seen[k] = n; return; }   /* この端末の書き込みだけ */
+    if(n > prev && mine && n === prev + 1){ SIG.seen[k] = n; return; }   /* このタブの書き込みだけ */
     SIG.seen[k] = n;
     want(row);
   }
@@ -104851,7 +104884,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var rows = await fetchSignals(since);
     if(g !== SIG.gen) return;
     if(rows === 'missing'){ SIG.missing = true; paint(); return; }
-    if(Array.isArray(rows)) rows.forEach(function(r){ consider(r, false); });
+    /* 始めの読み（基準）が読めていなかったら、この読みを基準にする（前は全部のキーを「変わった」として 1 つずつ取っていた） */
+    if(Array.isArray(rows)){ var first = !SIG.based; rows.forEach(function(r){ consider(r, first); }); SIG.based = true; }
     paint();
   }
   SG.pollNow = pollNow;
@@ -104874,14 +104908,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   SG.start = function(){
     SG.stop();
     if(typeof curRole === 'undefined' || !curRole) return;
-    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.seen = {}; SIG.want = {}; SIG.lastAt = '';
+    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.lastAt = '';
     (async function(){
       await SG.probe();
       if(g !== SIG.gen) return;
       var rows = await fetchSignals('');
       if(g !== SIG.gen) return;
       if(rows === 'missing'){ SIG.missing = true; paint(); return; }   /* SQL の前：今までどおり 10 分ごとの同期 */
-      if(Array.isArray(rows)) rows.forEach(function(r){ consider(r, true); });
+      if(Array.isArray(rows) && !SIG.based){ rows.forEach(function(r){ consider(r, true); }); SIG.based = true; }
       SIG.lastPoll = now();
       subscribe(g);
       paint();
@@ -104902,9 +104936,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(SIG.timer){ clearInterval(SIG.timer); SIG.timer = null; }
     if(SIG.flushTm){ clearTimeout(SIG.flushTm); SIG.flushTm = null; }
     if(SIG.fullTm){ clearTimeout(SIG.fullTm); SIG.fullTm = null; }
+    if(SIG.retryTm){ clearTimeout(SIG.retryTm); SIG.retryTm = null; }
     try{ if(SIG.onVis) D.removeEventListener('visibilitychange', SIG.onVis); if(SIG.onOnline) W.removeEventListener('online', SIG.onOnline); }catch(e){}
     SIG.onVis = SIG.onOnline = null;
-    SIG.on = false; SIG.live = false; SIG.seen = {}; SIG.want = {}; SIG.running = false; SIG.again = false;
+    SIG.on = false; SIG.live = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.running = false; SIG.again = false;
     noteHide();
     paint();
   };
@@ -104940,9 +104975,25 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(mk === 'm_stores'){ try{ if(typeof refreshStores === 'function') refreshStores(); }catch(e){} }
     return true;
   }
+  /* 関数から読んだ結果（hrLoad・piiLoad）を 3 つに分ける（Codex #145 P2：前は結果を見ずに「取れた」とし、読めなかったときも同じ合図で読み直さなかった）。
+     true＝読めた／false＝読めなかった（あとで読み直す）／null＝読むものが無い：'stale'（途中でログインが変わった。新しいログインの画面は
+     hrReady・piiReady が偽なので、開いたときに読み直す）・'rest'（関数が前の版）・'none'（この人は読まない） */
+  function loadRes(r){ if(r === 'ok') return true; if(r === 'stale' || r === 'rest' || r === 'none') return null; return false; }
+  function both(a, b){ return (a === false || b === false) ? false : ((a === true || b === true) ? true : null); }
+  /* 合図より前に頼んだ読み（途中のもの）の答えを使わない：それを待ってから、もう一度読む */
+  async function hrFresh(hk){
+    try{ var q = _hrMem.p && _hrMem.p[hk]; if(q && q.p) await q.p; }catch(e){}
+    try{ return loadRes(await hrLoad(hk, true)); }catch(e){ return false; }
+  }
+  async function piiFresh(){
+    try{ var q = _pii.p; if(q && q.p) await q.p; }catch(e){}
+    try{ return loadRes(await piiLoad(true)); }catch(e){ return false; }
+  }
+  SG._loadRes = loadRes;
   async function pullOne(k){
     if(k === 'notifications' || k === '_secure:notifications'){   /* v1152：通知は関数から（見られる分だけ。REST では読まない） */
       if(typeof ntMode === 'function' && ntMode() !== 'rest'){
+        try{ if(typeof _ntPullP !== 'undefined' && _ntPullP) await _ntPullP; }catch(e){}   /* 合図より前に頼んだ読み（途中のもの）の答えは使わない：待ってから読む（Codex #145 P2 と同じ） */
         var _np = (typeof ntPull === 'function') ? await ntPull() : null;
         if(_np !== 'rest') return _np;   /* false＝読めなかった（同じ合図で読み直す） */
       }
@@ -104953,13 +105004,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(k.indexOf('_secure:') === 0){
       var cat = k.slice(8);
       if(SEC_OWN[cat]){
+        var res = null;
         for(var i = 0; i < SEC_OWN[cat].length; i++){
-          var hk = SEC_OWN[cat][i];
-          try{ if(typeof hrRouted === 'function' && hrRouted(hk) && typeof _hrMem !== 'undefined' && _hrMem.at && _hrMem.at[hk] && typeof hrLoad === 'function') await hrLoad(hk, true); }catch(e){}
+          var hk = SEC_OWN[cat][i], loaded = false;
+          try{ loaded = !!(typeof hrRouted === 'function' && hrRouted(hk) && typeof _hrMem !== 'undefined' && _hrMem.at && _hrMem.at[hk] && typeof hrLoad === 'function'); }catch(e){ loaded = false; }
+          if(loaded) res = both(res, await hrFresh(hk));   /* 読んだことのあるものだけ読み直す */
         }
-        return true;
+        return res;
       }
-      if(cat === 'pii'){ try{ if(typeof _pii !== 'undefined' && _pii.map && typeof piiLoad === 'function') await piiLoad(true); }catch(e){} return true; }
+      if(cat === 'pii'){
+        var had = false; try{ had = !!(typeof _pii !== 'undefined' && _pii.map && typeof piiLoad === 'function'); }catch(e){ had = false; }
+        return had ? piiFresh() : null;
+      }
       return null;
     }
     if(skipKey(k)) return null;
@@ -104985,26 +105041,60 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var list = Object.keys(SIG.want).map(function(k){ return SIG.want[k]; }); SIG.want = {};
     if(!list.length) return;
     SIG.running = true;
-    var t0 = now(), got = [], full = false;
+    var t0 = now(), got = [], full = false, failed = [];
     try{
+      /* 1 回にたくさんのキーが変わった（送れていなかった変更をまとめて送った端末など）：1 つずつ取らずに今までの自動の同期を前倒し */
+      var one = list.filter(function(r){ return !wantsFull(r.key); });
+      if(one.length > BULK_KEYS){
+        full = true;
+        one.forEach(function(r){ delete SIG.retry[r.key]; delete SIG.tries[r.key]; });
+        list = list.filter(function(r){ return wantsFull(r.key); });
+      }
       for(var i = 0; i < list.length; i++){
         if(g !== SIG.gen) return;
         var r = list[i];
         if(wantsFull(r.key)){ full = true; continue; }
         var ok = null;
         try{ ok = await pullOne(r.key); }catch(e){ ok = false; }
-        if(ok === false){ SIG.seen[r.key] = Math.max(0, (Number(SIG.seen[r.key]) || 1) - 1); }   /* 取れなかった：次の合図・読み直しでもう一度 */
-        else if(ok !== null) got.push(r);
+        if(g !== SIG.gen) return;
+        if(ok === false){
+          SIG.seen[r.key] = Math.max(0, (Number(SIG.seen[r.key]) || 1) - 1);   /* 取れなかった：次の合図・読み直しでもう一度 */
+          failed.push(r);
+        } else {
+          if(SIG.tries[r.key]){ SIG.seen[r.key] = Math.max(Number(SIG.seen[r.key]) || 0, Number(r.n) || 0); delete SIG.tries[r.key]; }   /* 読み直しで取れた */
+          delete SIG.retry[r.key];
+          if(ok !== null) got.push(r);
+        }
       }
       if(full){ var p = fullSync(); if(p) { try{ await p; }catch(e){} } }
     } finally { SIG.running = false; }
     if(g !== SIG.gen) return;
+    if(failed.length) retryLater(failed, g);
     var ux = UXo();
     var changed = !ux || !ux._dataChangedSince || ux._dataChangedSince(t0 - 1);
     if(changed){ try{ if(ux && ux.bgRefresh) ux.bgRefresh(); }catch(e){} if(got.length) note(got); }   /* 案 C：その場で描き直す（入力中は待つ）＋左下の知らせ */
     if(SIG.again){ SIG.again = false; schedule(300); }
   }
   SG._flush = function(){ return flush(SIG.gen); };
+  SG._retryMs = RETRY_MS;   /* 試験だけが短くする */
+  /* 取り込めなかったキーは、合図の表を読み直さなくても、間をおいてもう一度取る（Codex #145 P2：前は次の見回りで同じ行を読んだときだけ。
+     ほかのキーの合図で読む範囲（2 分さかのぼる）が先に進むと、二度と取らなかった）。新しい合図が来たら、そちらで取る。ログアウトで捨てる */
+  function retryLater(rows, g){
+    var wait = 0;
+    rows.forEach(function(r){
+      var c = SIG.tries[r.key] = (SIG.tries[r.key] || 0) + 1;
+      SIG.retry[r.key] = r;
+      wait = Math.max(wait, RETRY_MS[Math.min(c, RETRY_MS.length) - 1]);
+    });
+    if(SIG.retryTm) return;   /* 待っているものに一緒に乗る */
+    SIG.retryTm = setTimeout(function(){
+      SIG.retryTm = null;
+      if(g !== SIG.gen || !SIG.on) return;
+      Object.keys(SIG.retry).forEach(function(k){ if(!SIG.want[k]) SIG.want[k] = SIG.retry[k]; });
+      SIG.retry = {};
+      schedule(0);
+    }, wait);
+  }
 
   /* ---------- 左下の知らせ（変えた人の名前・何が） ---------- */
   var SEC_LABEL = { karte: ['成長カルテ', 'Growth chart'], bonus: ['賞与', 'Bonus'], career_score: ['Career Score', 'Career Score'], hiring: ['採用', 'Hiring'], growthhub: ['お悩み相談室', 'Consultations'],

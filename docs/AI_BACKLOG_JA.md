@@ -47,7 +47,7 @@
 3r2. 済（Moto さん 11/12 16:18・16:32 HST）：① C ② 誰が何を変えたかを過去ログのように記録 ③ SQL はい ④ 30 分はい／記録は CEO・GM・経理・事務Crew・1 年・知らせに名前。
 3r3. 済（Claude・ブランチ `claude/change-signal-1151`・#144 の上）：v1151＝合図の表 `sync_signal` と変更の記録 `change_log`（SQL `20261118090000`）・関数 secure-state の `change_log` と確かめた人の見出し・アプリの `FUNERGY_SIGNAL`（案 C・左下の知らせ・つながっているあいだ 30 分ごと・「変更の記録」）（`docs/CHANGE_SIGNAL_V1151_JA.md` の 8）。試験 27＋deploy・全体は `23f2630` と同じ 28 件の失敗だけ。次：PR → Codex → #135〜#144 のあとにマージ → Moto さんが `deploy/change-signal-v1151/手順.md`（① の 11 行目が info なら app_state_index を入れると軽い）。
 3r4. 済（Claude 11/13）：#144 の直し（`308edfa`）を取り込み、PR #145 を開いた。次：Codex（#144・#145 の最新の head）→ #135〜#144 のあとにマージ → Moto さんが `deploy/change-signal-v1151/手順.md`。
-3r5. 次（Claude・次のチャットの最初）：#145 の Codex（6843803595・`a7b8896`・blocked）の P2 2・P3 1 と確認 1 を直す（合図の取り込みが読めなかった採用・相談室・個人の欄を成功とする／合図の表を 2,000 行で止まりページ送りしない／同じブラウザの別のタブの変更を捨てる／見張りの時間切れで元の保存も失敗する例外を仕様に書き、前後を測る）。直しは #146 に取り込む。
+3r5. 済（Claude 11/13）：Codex #145（`a7b8896`）の P2 2・P3 1 を直した（アプリだけ・`docs/CHANGE_SIGNAL_V1151_JA.md` の 9）・時間切れ（57014）は仕様に例外として書いた。#146（v1152）に取り込んだ。次：Codex の再レビュー（#140・#141・#145・#146 の最新の head）。
 3s. 済（Moto さん 11/12・選択肢）：店のタブレットには通知を出さない・会社全体の賞与・Career Score の設定 6 つ（`cs_criteria`・`bonus_coef`・`bonus_coef_rng`・`bonus_eval_rule`・`cs_strength_rule`・`cs_guide`）は今回は外さない。
 3s2. 済（Claude・ブランチ `claude/notif-secure-1152`・#145 の上・PR #146）：2b の最後 v1152＝通知を関数 secure-state の `nt` で、宛先の分と自分が出した分だけ読む・足した通知と自分の既読と確認の印だけ書く・店のタブレットと PIN が初期の人は足すだけ・SQL `20261119090000`（`docs/SECURE_NOTIFICATIONS_V1152_JA.md`）。試験・わざと壊す 78/83（残り 5 は二重の守り）。次：Codex → #135〜#145 のあとにマージ → Moto さんが `deploy/secure-notifications-v1152/手順.md`（**全部の端末を 1152 にしてから ③**）。
 3s3. Moto さんに伝える：PIN が初期のままの人（GM・CEO 以外）・確かめがまだの店長などには、確かめるまで出ない通知がある（Claude が決めた・違えば直す）。
