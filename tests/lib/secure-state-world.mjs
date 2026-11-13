@@ -19,7 +19,7 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
+    wrDown: false, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
     calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
@@ -66,7 +66,7 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)));
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)) || (W.rlsPii && key === 'emp_pii'));   // rlsPii：v1144 の SQL 20261113090000
     const noWrite = key => role !== 'service' && W.rlsSw && swIsKey(key);   // v1141：読めるが書けない
     const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; };
     W.calls.rest++;
@@ -90,8 +90,12 @@ export function makeWorld(o = {}) {
     if (p === '/rest/v1/wr_people') {
       // 本物と同じく、頼まれた列だけ返す（name は NOT NULL：試験で名前を入れていない行は空）
       const sel = (q.get('select') || 'emp_id,role,grade').split(',');
-      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade });
-      return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+      // v1144（Codex #138 P1-1）：列 chef（SQL 20261113080000）。wrNoChef：その SQL の前（列が無い＝PostgREST は 400）
+      if (W.wrPeopleDown) return J({ message: 'down' }, 500);
+      if (W.wrNoChef && sel.includes('chef')) return J({ code: '42703', message: 'column wr_people.chef does not exist' }, 400);
+      const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade, chef: x.chef === true });
+      return J((W.wrPeople || []).filter(x => (!q.get('role') || x.role === q.get('role').replace(/^eq\./, '')) && (!q.get('emp_id') || x.emp_id === q.get('emp_id').replace(/^eq\./, '')))
+        .map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
     }
     if (p === '/rest/v1/stores') {
       if (W.storesDown) return J({ message: 'down' }, 500);

@@ -324,6 +324,27 @@ test('#123 P1: the GM is told about rights waiting for a check and confirms only
   assert.doesNotMatch(await ned.render().then(() => { ned.ctx.wrRefresh(); return ned.settle(); }).then(() => ned.ctx.renderWrTab()), /GM の確かめ待ちです/);
 });
 
+// v1144 の直し（Codex #138 P1-1）：権限の写しに Head Chef（①b の SQL 20261113080000）。確かめの画面に「Head Chef」と出る。
+// 確かめた店長が Head Chef に変わったときの本人の知らせは「前に確かめた権限のまま」（自分の申請だけ、ではない）
+test('Codex #138 P1-1: the check screen names a Head Chef; a confirmed store manager who becomes one keeps the confirmed rights meanwhile', async () => {
+  const srv = await server({ live: true });
+  await srv.pg.exec(`reset role;`);
+  await srv.pg.exec(fs.readFileSync(new URL('../supabase/migrations/20261113080000_wr_people_chef.sql', import.meta.url), 'utf8'));
+  await srv.pg.exec(`update public.employees set title = 'Head Chef', role = 'chef' where id = 'E6'; set role service_role;`);
+  const sam = await app(srv, 'E6', { role: 'chef' });
+  const hs = await sam.render();
+  assert.match(hs, /権限が増える変更（AM・G3 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです/);
+  assert.doesNotMatch(hs, /それまでは自分の申請だけです/);
+  const gm = await app(srv, 'E2');
+  assert.match(await gm.render(), /Head Chef になる/);
+  gm.ctx.wrPeople(); await gm.settle();
+  const pm = gm.dom.els['wr-people'].innerHTML;
+  assert.match(pm, /G4 · Sam Store/, 'the confirmed copy: G4');
+  assert.match(pm, /G4 · Head Chef · Sam Store/, 'the employee table: Head Chef');
+  gm.ctx.wrPeoplePick('E6', true); gm.ctx.wrPeopleGo(); await gm.settle();
+  assert.equal((await srv.pg.query(`select chef from public.wr_people where emp_id = 'E6'`)).rows[0].chef, true);
+});
+
 test('#123 P2: an old request is fixed and resubmitted from the old record; the form is filled from it', async () => {
   const legacy = { reimbursements: [{ id: 'rb1761300000000', payer: 'Sam Store', byUser: 'Sam Store', isEmployee: true, storeId: 'S1', amount: 42.5, vendor: 'Costco',
     purpose: '消耗品', purposeMemo: 'ナプキン', date: '2026-10-20', imagePath: 'S1/2026-10/inv_1.jpg', status: '申請中', payStatus: '未払い' }] };

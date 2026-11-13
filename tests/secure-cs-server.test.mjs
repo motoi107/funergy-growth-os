@@ -31,7 +31,7 @@ const EMPS = [
 const U = n => 'aaaaaaaa-0000-0000-0000-00000000000' + n;
 const MGR = { [U(1)]: { role: 'gm', emp_id: 'E-GM' }, [U(5)]: { role: 'ceo', emp_id: 'E-CEO' }, [U(2)]: { role: 'office', emp_id: 'E-OF' }, [U(3)]: { role: 'office_crew', emp_id: 'E-OC' }, [U(4)]: { role: 'office', emp_id: null } };
 const USERS = { gm: U(1), of: U(2), oc: U(3), noemp: U(4) };
-const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5 }, { emp_id: 'E-4', role: 'g4', grade: 4 }, { emp_id: 'E-4b', role: 'g4', grade: 4 }, { emp_id: 'E-CH', role: 'staff', grade: 4 }];
+const WRP = [{ emp_id: 'E-AM', role: 'am', grade: 5 }, { emp_id: 'E-4', role: 'g4', grade: 4 }, { emp_id: 'E-4b', role: 'g4', grade: 4 }, { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true }];   // v1144：Head Chef は確かめた写しでも Head Chef（chef）
 const ME = {
   gm: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'Gina M' },
   am: { emp: 'E-AM', role: 'am', grade: 5, stores: ['S1'], am_stores: ['S2'], name: 'Amy Area' },
@@ -146,6 +146,25 @@ test('who sees whom: AM, G4, G3, Crew Leader, crew, Head Chef and the office get
     if (who === 'chef') assert.deepEqual(reqNames, sorted(NAMES.filter(n => !['Gina M', 'Cal E', 'Ofelia', 'Oscar', 'Hana', 'Amy Area', 'Gone Crew'].includes(n))), 'Head Chef: every store request (not CEO/GM/AM, not the HQ office people)');
     else assert.deepEqual(reqNames, sorted(want), who);
   }
+});
+
+// Codex #138 P1-1（v1144）：社員の表の肩書き・役割だけで Head Chef の広い範囲（全店）にしない。GM・CEO が確かめた写し（chef）も要る
+test('Head Chef needs the confirmed copy too: a G4 who edits their own title or role to chef keeps the G4 scope (Codex #138 P1-1)', async () => {
+  for (const ch of [{ title: 'Head Chef' }, { role: 'chef' }, { title: 'Corporate Chef', role: 'chef' }]) {
+    const S = setup(); seed(S.W);
+    Object.assign(S.W.emps.find(e => e.id === 'E-4'), ch);
+    const r = await S.pullCs('g4');
+    assert.deepEqual(r.j.cs.names, sorted(SCOPES.g4), JSON.stringify(ch) + ': still the own store');
+    assert.ok(!r.j.cs.names.includes('Ben S2'));
+    assert.equal((await S.call({ action: 'get', key: 'lss_emp_Ben S2', ...S.as('g4') })).status, 403);
+    // GM・CEO が確かめたあと（写しに chef）は全店
+    S.W.wrPeople.find(x => x.emp_id === 'E-4').chef = true;
+    assert.ok((await S.pullCs('g4')).j.cs.names.includes('Ben S2'), 'after the GM confirms: every store');
+  }
+  // 確かめた Head Chef でも、今の社員の表で Head Chef でなくなったら G4 の範囲（狭いほう）。写しの列がまだ無いときも
+  { const S = setup(); seed(S.W); Object.assign(S.W.emps.find(e => e.id === 'E-CH'), { title: 'Store Manager', role: 'sl' });
+    assert.ok(!(await S.pullCs('chef')).j.cs.names.includes('Ben S2')); }
+  { const S = setup({ wrNoChef: true }); seed(S.W); assert.ok(!(await S.pullCs('chef')).j.cs.names.includes('Ben S2'), 'no chef column yet'); }
 });
 
 test('the old combined rows reach scoped people only as the part about their people, and are versioned per scope', async () => {
