@@ -1,5 +1,10 @@
 # Claude / Codex 共通記録
 
+## 2026-11-13 v1153 の直し：Codex #147（`cbbfabb`・issuecomment 6862342775）の P2 2 つ（Claude・ブランチ `claude/kpi-google-1153`・アプリと試験と文書だけ）
+
+- P2-1：KPI設定の保存が、画面を描いたあとにほかの端末から届いた値を触っていない欄で書き戻していた → 画面を描いたときの値と比べ、人が変えた欄だけを最新の記録に重ねる。P2-2：前の月の判定・週の率が今月の目標だった → 月の分かる呼び出しはその月を渡す（`docs/KPI_SETTINGS_V1153_JA.md` の 5c）。
+- 試験（合成データ）：kpi-settings-v1153 14/14（足した 2 件は `cbbfabb` で落ちる）・わざと壊す 10/10・関連は直す前と同じ・static release pass/1153。
+- 独立レビューは無し。Codex の再レビューはまだ。#148・#149 に取り込む。
 ## 2026-11-13 v1154：ワークセンターの申請/承認 段階 1（UI案71 の A 案・GM のまとめての承認・経理レビューの「申請」）と hyper-worker v1154（CHAZUKE）（Claude・ブランチ `claude/wc-approvals-1154`・v1153（PR #147）の上・アプリだけ・本番未反映）
 
 - 依頼と決定：Moto さん 11/13 の添付「Workcenter Approvals」→ UI案71 → 「A案で」（11/13 08:44 HST）。仕様・守り・試験・残り：`docs/WORKCENTER_APPROVALS_V1154_JA.md`。SQL・Edge Function は変えない（申請の関数の act approve を 1 件ずつ・見た版と同じ鍵で）。
