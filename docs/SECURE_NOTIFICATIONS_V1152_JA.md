@@ -154,5 +154,6 @@
   試験の土台は本物の `_saveWho`・`_applyRole` を使うようにした（`loginPerson`）。
 - `tests/change-signal-client.test.mjs`（足した 1）：関数で読む端末の `notifications` の合図は 50 より多いキーと一緒でも 1 つずつ。
 - 足した試験は直す前（`5ed341f` の index.html と関数）では全部落ちる。
+- 全体（重い 2 つ以外・2 並列）：2,492 件のうち 32 件が落ちる・10 件は飛ばす（落ちる試験は v1151 の全体の結果と名前まで同じ）。static release pass/1152。
 - わざと壊す 16 通りのうち 15 で落ちる（残り 1 つ：社員と結ばれていないログインの名前の確かめ＝そのログインは名前を持たない（メールのログインの名前は社員の表から）ので届かない守り）。
 - 関数の 1 ファイル（`deploy/secure-notifications-v1152/2_関数_secure-state_index.ts`）を作り直した。
