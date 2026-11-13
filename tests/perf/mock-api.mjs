@@ -3,7 +3,7 @@
 // 書き：POST（upsert：merge-duplicates）・PATCH（条件つき）・DELETE。app_state の updated_at は渡された値（無ければ今）
 // rpc/app_state_index：key・updated_at・md5(value::text)・バイト数（v1098 の差分の取り込みが使う。HAS_INDEX=0 なら 404）
 import crypto from 'node:crypto';
-import { createHandler as createSecureState, csIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { createHandler as createSecureState, csIsKey, hrIsKey } from '../../supabase/functions/secure-state/handler.mjs';
 // v1140：SS_REAL=1 のとき、本物の関数 secure-state（handler）をこの模擬サーバーの REST につなぐ（サーバーの鍵は SS_SERVICE）。
 // PIN のログインの印は人ごと（perf-session:<社員 ID>）・work-requests の whoami はその人を返す（live は false＝画面は今までどおり）。
 // RLS_CS=1 のとき、公開の鍵（アプリ）からは Career Score のキーを読めない・書けない（SQL 20261109090000 のまね）。
@@ -80,8 +80,10 @@ function finTs() { const d = new Date(); return d.toISOString().replace(/\.(\d{3
 
 export function createMock(data) {
   const T = {}; for (const [k, v] of Object.entries(data.tables)) T[k] = v.slice();
-  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0', ssReal: process.env.SS_REAL === '1', rlsCs: process.env.RLS_CS === '1' };
-  const ss = { calls: 0, anonCs: 0 };
+  const opts = { hasIndex: process.env.HAS_INDEX !== '0', toastDelay: Number(process.env.TOAST_DELAY_MS || 1500), finGuard: process.env.FIN_GUARD !== '0', ssReal: process.env.SS_REAL === '1', rlsCs: process.env.RLS_CS === '1', rlsHr: process.env.RLS_HR === '1' };
+  const ss = { calls: 0, anonCs: 0, anonHr: 0 };
+  // v1142：RLS_HR=1 は SQL 20261111090000 のあと（公開の鍵では採用・お悩み相談室のキーを読めない・書けない）
+  const hid = k => (opts.rlsCs && csIsKey(k)) || (opts.rlsHr && hrIsKey(k));
   const receipts = new Map();
   const fin = { drop: 0, commits: 0, fail: {}, failed: 0 };   // v1104：次の保存の答えを落とす回数・書けた回数／v1107：店ごとに保存をサーバーのエラー（3 秒の上限で取り消し）にする回数
   const keyOf = (t, r) => (PK[t] || ['id']).map(c => String(r[c])).join('|');
@@ -91,14 +93,14 @@ export function createMock(data) {
   function rest(method, table, u, headers, body) {
     if (!T[table]) T[table] = [];
     const anonCs = table === 'app_state' && headers['apikey'] !== SS_SERVICE;
-    if (opts.rlsCs && anonCs && method !== 'GET' && method !== 'HEAD') {
+    if ((opts.rlsCs || opts.rlsHr) && anonCs && method !== 'GET' && method !== 'HEAD') {
       let arr = []; try { arr = JSON.parse(body || '[]'); } catch (e) { }
-      if ((Array.isArray(arr) ? arr : [arr]).some(r => r && csIsKey(r.key)) || filterRows(T[table], u).some(r => csIsKey(r.key) && method !== 'POST')) return json(401, { code: '42501', message: 'new row violates row-level security policy' });
+      if ((Array.isArray(arr) ? arr : [arr]).some(r => r && hid(r.key)) || filterRows(T[table], u).some(r => hid(r.key) && method !== 'POST')) return json(401, { code: '42501', message: 'new row violates row-level security policy' });
     }
-    const rows = (opts.rlsCs && anonCs) ? T[table].filter(r => !csIsKey(r.key)) : T[table];
+    const rows = T[table];   // 書くのは表そのもの（隠すキーへの書き込みは上で断る）
     if (method === 'GET' || method === 'HEAD') {
-      let out = filterRows(rows, u);
-      if (table === 'app_state' && headers['apikey'] !== SS_SERVICE) ss.anonCs += out.filter(r => csIsKey(r.key)).length;
+      let out = filterRows((opts.rlsCs || opts.rlsHr) && anonCs ? rows.filter(r => !hid(r.key)) : rows, u);
+      if (table === 'app_state' && headers['apikey'] !== SS_SERVICE) { ss.anonCs += out.filter(r => csIsKey(r.key)).length; ss.anonHr += out.filter(r => hrIsKey(r.key)).length; }
       const order = u.searchParams.get('order');
       if (order) { const [c, dir] = order.split(',')[0].split('.'); out = out.slice().sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0) * (dir === 'desc' ? -1 : 1)); }
       let from = 0, to = out.length - 1;
@@ -136,7 +138,7 @@ export function createMock(data) {
     if (name === 'app_state_index') {   // supabase/migrations/20261027090000_app_state_index.sql と同じ答え（印は中身の md5）
       if (!opts.hasIndex) return json(404, { code: 'PGRST202', message: 'Could not find the function' });
       const p = JSON.parse(body || '{}'); const ex = Array.isArray(p.p_skip_prefix) ? p.p_skip_prefix : [];
-      let out = T.app_state.filter(r => !(opts.rlsCs && csIsKey(r.key) && u.__anon)).filter(r => !ex.some(x => x && String(r.key).startsWith(x))).map(r => { const s = JSON.stringify(r.value); return { key: r.key, updated_at: r.updated_at, h: crypto.createHash('md5').update(s).digest('hex'), n: Buffer.byteLength(s) }; });
+      let out = T.app_state.filter(r => !(hid(r.key) && u.__anon)).filter(r => !ex.some(x => x && String(r.key).startsWith(x))).map(r => { const s = JSON.stringify(r.value); return { key: r.key, updated_at: r.updated_at, h: crypto.createHash('md5').update(s).digest('hex'), n: Buffer.byteLength(s) }; });
       if (u.searchParams.get('order')) out.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
       const off = +(u.searchParams.get('offset') || 0), lim = u.searchParams.has('limit') ? +u.searchParams.get('limit') : out.length;
       return json(200, out.slice(off, off + lim));

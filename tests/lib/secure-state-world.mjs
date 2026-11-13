@@ -2,9 +2,10 @@
 // PostgREST は、アプリと関数 secure-state が使う問い合わせだけ答える偽物。rls を true にすると、公開の鍵（anon）は
 // 成長カルテ・賞与のキーの行を読めない・書けない（SQL 20261108090000 と同じ）。rlsCs も true にすると Career Score のキーも（v1140 の SQL 20261109090000）。
 // サーバーの鍵（service）は通る。rlsSw を true にすると、公開の鍵はガソリン代の単価・Score管理（v1141 の SQL 20261110090000）を読めるが書けない。
+// rlsHr を true にすると、公開の鍵は採用（応募者・不採用ログ）・お悩み相談室の行を読めない・書けない（v1142 の SQL 20261111090000）。stores は店の表。
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import { ssIsKey, csIsKey, swIsKey } from '../../supabase/functions/secure-state/handler.mjs';
+import { ssIsKey, csIsKey, swIsKey, hrIsKey } from '../../supabase/functions/secure-state/handler.mjs';
 
 export const URL0 = 'https://db.example.test';
 export const WR = URL0 + '/functions/v1/work-requests';
@@ -18,8 +19,8 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, ssHandler: null, ssDown: !!o.ssDown,
-    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
+    wrDown: false, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
+    calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
   W.get = key => { const r = W.rows.get(key); return r ? JSON.parse(r.value) : undefined; };
@@ -65,11 +66,13 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)));
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)));
     const noWrite = key => role !== 'service' && W.rlsSw && swIsKey(key);   // v1141：読めるが書けない
-    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; };
+    const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; };
     W.calls.rest++;
     const q = url.searchParams;
+    // 試験だけ：書けた直後（答えを返す前）にほかの操作を流す。afterWrite(keys) が Promise を返したら 1 回だけで、終わるまで待つ
+    const afterWrite = async keys => { if (!W.afterWrite) return; const v = W.afterWrite(keys); if (v && typeof v.then === 'function') { W.afterWrite = null; await v; } else if (v) W.afterWrite = null; };
     if (p === '/rest/v1/rpc/app_state_index') {
       if (W.indexMissing) return J({ code: 'PGRST202', message: 'Could not find the function' }, 404);
       const skip = (JSON.parse(opt.body || '{}').p_skip_prefix || []);
@@ -89,6 +92,10 @@ export function makeWorld(o = {}) {
       const sel = (q.get('select') || 'emp_id,role,grade').split(',');
       const row = x => ({ emp_id: x.emp_id, name: x.name || '', role: x.role, grade: x.grade });
       return J((W.wrPeople || []).filter(x => !q.get('role') || x.role === q.get('role').replace(/^eq\./, '')).map(x => Object.fromEntries(sel.map(c => [c, row(x)[c]]))));
+    }
+    if (p === '/rest/v1/stores') {
+      if (W.storesDown) return J({ message: 'down' }, 500);
+      return J(W.stores.map(x => ({ id: x.id, name: x.name == null ? null : x.name, brand: x.brand == null ? null : x.brand, data: x.data == null ? null : x.data })));
     }
     if (p === '/rest/v1/employees') {
       const sel = (q.get('select') || 'id,store').split(',');
@@ -121,7 +128,9 @@ export function makeWorld(o = {}) {
         out = out.slice(off, off + lim);
         const sel = (q.get('select') || 'key,value,updated_at').split(',');
         const res = J(out.map(r => Object.fromEntries(sel.map(c => [c, r[c]]))));
-        if (W.afterGet && W.afterGet(url)) W.afterGet = null;   // 試験だけ：読んだ直後にほかの端末が書く（true を返したら 1 回で終わり）
+        // 試験だけ：読んだ直後にほかの端末が書く（true を返したら 1 回で終わり）。Promise を返したら 1 回だけで、終わるまで待つ
+        // （そのあいだにほかの操作を最後まで流す：Codex #136 6738169923 の順番の再現）
+        if (W.afterGet) { const v = W.afterGet(url); if (v && typeof v.then === 'function') { W.afterGet = null; await v; } else if (v) W.afterGet = null; }
         return res;
       }
       if (m === 'POST') {
@@ -139,6 +148,7 @@ export function makeWorld(o = {}) {
           W.log.push(['write', role, b.key]);
           out.push({ key: b.key, updated_at: at });
         }
+        await afterWrite(list.map(b => b.key));
         return String(h.prefer || '').includes('return=representation') ? J(out, 201) : new Response(null, { status: 201 });
       }
       if (m === 'PATCH') {
@@ -153,6 +163,7 @@ export function makeWorld(o = {}) {
         const at = ts6(Date.parse(b.updated_at));
         W.rows.set(key, { value: JSON.stringify(b.value), updated_at: at });
         W.log.push(['write', role, key]);
+        await afterWrite([key]);
         return J([{ key, updated_at: at }]);
       }
     }

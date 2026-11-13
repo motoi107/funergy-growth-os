@@ -37,20 +37,34 @@ test('the v1140 bundle is as it was when it went in (the SQL files and the pinne
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-state-v1139/2_関数_secure-state_index.ts']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
 
-test('the v1141 bundle is the repository files as they are', () => {
+test('the v1141 bundle is as it was (the SQL files and the pinned function file)', () => {
   const D = 'deploy/secure-settings-v1141/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-settings-precheck.sql'));
   assert.equal(rd(D + '3_SQL_公開の鍵で書けなくする.sql'), rd('supabase/migrations/20261110090000_secure_settings_write.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-settings-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-settings-write-rollback.sql'));
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'a55638d5c41fe094d7d27f9585e091a25362c642a89d3567fd06e974f61df472', 'the v1141 function file (PR #135 90a832e) is not changed');
+  const one = rd(D + '2_関数_secure-state_index.ts');
+  assert.match(one, TAIL);
+  assert.ok(/swfn: 1/.test(one) && !/hrfn/.test(one), 'the v1141 function knows the guarded settings, not hiring');
+  const how = rd(D + '手順.md');
+  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵で書けなくする.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-cs-v1140/2_関数_secure-state_index.ts']) assert.ok(how.includes(f), '手順.md names ' + f);
+});
+
+test('the v1142 bundle is the repository files as they are', () => {
+  const D = 'deploy/secure-hr-v1142/';
+  assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-hr-precheck.sql'));
+  assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261111090000_secure_hr_rls.sql'));
+  assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-hr-postcheck.sql'));
+  assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-hr-rls-rollback.sql'));
   const one = rd(D + '2_関数_secure-state_index.ts');
   const handler = rd('supabase/functions/secure-state/handler.mjs');
   assert.ok(one.startsWith(handler), 'the one file starts with the handler as it is');
   const tail = one.slice(handler.length);
   assert.match(tail, TAIL);
   assert.ok(!/import /.test(tail) && !/verifyPin/.test(one), 'no private part, no imports');
-  assert.match(one, /swfn: 1/);
+  assert.match(one, /hrfn: 1/);
   assert.match(rd('supabase/functions/secure-state/index.ts'), /Deno\.serve\(createHandler\(\{ env: \(key: string\) => Deno\.env\.get\(key\) \}\)\);/);
   const how = rd(D + '手順.md');
-  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵で書けなくする.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-cs-v1140/2_関数_secure-state_index.ts']) assert.ok(how.includes(f), '手順.md names ' + f);
+  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-settings-v1141/2_関数_secure-state_index.ts']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
