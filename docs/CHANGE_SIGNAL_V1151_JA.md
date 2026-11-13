@@ -265,6 +265,7 @@
 - ①〜③ は `0a11a73` の index.html では落ちる（④ は前も通る：前は何も足していなかった）。
 - 試験の土台（`tests/lib/secure-state-world.mjs`）に `app_settings` の読み（設定の行）を足した（本物の `supaPullAllMasters` が読むため。今までの試験の答えは変わらない）。
 - わざと壊す 11 通りのうち 10 で落ちる（残り 1 つは二重の守り：`_kvPullRows` の `!_stale`。`supaPullAllMasters` の `ssStale` と両方外すと落ちる）。
+- 関連（secure-*・change-signal-*・save-status-v1137・ux-core・storage-slim-v1138）595/595・static release pass/1151。全体（重い 2 つ以外・2 並列）：2,461 件のうち 32 件が落ちる・10 件は飛ばす（前の回と名前まで同じ）。
 
 ### 12-3. 限界
 

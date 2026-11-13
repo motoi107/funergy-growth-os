@@ -4,7 +4,7 @@
 
 - **Codex（#145 6848717787・`0a11a73`）：blocked／manual・P2 1**（時間切れの直しは確認済み）：`ssPull` が保護されたデータ（成長カルテ・賞与・Career Score など）を関数から取れなかったことを `_kvPullRows` が伝えず、REST が読めれば同期は「最新」になり、合図の預かり（`_secure:bonus` など）を外していた。
 - 直したこと（仕様：`docs/CHANGE_SIGNAL_V1151_JA.md` の 12）：取れなかった区分を行の印 `_secFail` に残し、`supaPullAllMasters` が `_fails` に `secure` を足す（右上は「同期 ⚠ 保護されたデータ」・`okStarted` を進めない・預かりは残って取り直す）。PIN の確かめ先が答えない 503 の 10 分も「取れなかった」。関数がまだ無い（404）・受け取らない人・ログインが替わったときは数えない。
-- 試験（合成データ）：secure-state-client（足した 4：本物の `ssPull`・`_kvPullRows`・`supaPullAllMasters`・`autoSync`・`runFull`）。3 つは `0a11a73` では落ちる。わざと壊す 11 通りのうち 10（残り 1 つは二重の守り）。static release pass/1151。関連・全体の結果は PR #145 の報告に。
+- 試験（合成データ）：secure-state-client（足した 4：本物の `ssPull`・`_kvPullRows`・`supaPullAllMasters`・`autoSync`・`runFull`）。3 つは `0a11a73` では落ちる。わざと壊す 11 通りのうち 10（残り 1 つは二重の守り）。static release pass/1151。関連（secure-*・change-signal-*・save-status-v1137・ux-core・storage-slim-v1138）595/595。全体（重い 2 つ以外・2 並列）：2,461 件のうち 32 件が落ちる・10 件は飛ばす（前の回と名前まで同じ）。
 - 限界：関数がずっと答えないと右上は「保護されたデータ」の警告のまま・預かりがあるあいだ 5 分おきに取り直す。
 - 独立レビューは無し。Codex の再レビューはまだ。この回も Claude は PR に報告を投稿していない（push だけ）。
 
