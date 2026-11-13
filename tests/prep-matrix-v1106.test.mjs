@@ -708,7 +708,7 @@ test('sync: the three new keys are synced, merged per record and never freed; th
   const SYNC = arr('var OP_SYNC_KEYS = [');
   for (const k of ['prep_cfg', 'prep_tables', 'prep_certs']) {
     assert.ok(SYNC.indexOf("'" + k + "'") >= 0, 'OP_SYNC_KEYS ' + k);
-    assert.match(SRC, new RegExp('  ' + k + ': +\\{ merge: mergeMapByTime, covers: _coversMapByTime' + (k === 'prep_certs' ? ' \\}' : ', keepLocal: true, cas: true \\}')));
+    assert.match(SRC, new RegExp('  ' + k + ': +\\{ merge: mergeMapByTime, covers: _coversMapByTime' + (k === 'prep_certs' ? ', cas: true \\}' : ', keepLocal: true, cas: true \\}')   /* v1146: prep_certs is cas too */));
     assert.match(SRC, new RegExp("var LS_NEVER_FREE[\\s\\S]*'" + k + "'[\\s\\S]*function _lsProtectedKey"));
   }
   assert.match(varFrom(SRC, 'APPROVAL_TYPES'), /'プレップ認定'/);
