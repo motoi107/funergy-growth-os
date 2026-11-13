@@ -266,3 +266,49 @@ test('the answer of every action says ntfn:1 (the app knows the function does no
   assert.equal(r.j.ntfn, 1);
   assert.equal((await S.call({ action: 'nope' })).j.ntfn, 1);
 });
+
+test('Codex #146 P2: a confirmed G2 is "sl" and a confirmed G4 is "am" for the addressed roles (the app turns g2 into sl and g4 into am at sign-in)', async () => {
+  const G2 = { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Gwen', confirmed: true };
+  const G4 = { emp: 'E-G4', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Gus', confirmed: true };
+  const G4X = { emp: 'E-G4X', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Gil', confirmed: false };
+  const E2 = [...emps, { id: 'E-G2', name: 'Gwen', role: 'g2', title: 'Crew Leader', store: 'S1' }, { id: 'E-G4', name: 'Gus', role: 'g4', title: 'Operation Leader', store: 'S1' },
+    { id: 'E-G4X', name: 'Gil', role: 'g4', title: 'Operation Leader', store: 'S1' }, { id: 'E-G2SM', name: 'Gia', role: 'g2', title: 'Store Manager', store: 'S1' }];
+  const WP = [...wrPeople, { emp_id: 'E-G2', role: 'staff', grade: 2, stores: ['S1'] }, { emp_id: 'E-G4', role: 'staff', grade: 4, stores: ['S1'] }, { emp_id: 'E-G2SM', role: 'staff', grade: 2, stores: ['S1'] }];
+  const G2SM = { emp: 'E-G2SM', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Gia', confirmed: true };
+  const S = setup({ pins: { ...pins, tG2: G2, tG4: G4, tG4X: G4X, tG2SM: G2SM }, emps: E2, wrPeople: WP });
+  S.W.set('notifications', [...SEED, N('st1-am', { toStore: 'S1', toRoles: ['am'] }), N('st1-sm', { toStore: 'S1', toRoles: ['sm'] }), N('st1-g2', { toStore: 'S1', toRoles: ['g2', 'g4'] })]);
+  const see = async t => ids((await S.call({ action: 'nt', pin_session: t })).j);
+  assert.deepEqual(await see('tG2'), ['st1-all', 'st1-crew', 'st1-sl'].sort(), 'G2：sl あて（前は g2 のまま比べて、sl あての通知が届かなかった）');
+  assert.deepEqual(await see('tG4'), ['st1-all', 'st1-am', 'st1-sl'].sort(), 'G4：am あて（前は届かなかった）');
+  assert.deepEqual(await see('tG2SM'), ['st1-all', 'st1-crew', 'st1-sl', 'st1-sm'].sort(), 'G2 で Store Manager の肩書き：sm あても（画面の isStoreManager と同じ）');
+  assert.deepEqual(await see('tG4X'), ['st1-all', 'st1-crew'].sort(), '確かめがまだの G4：crew あてだけ（今までどおり）');
+});
+
+test('Codex #146 6845284151: a notice addressed by name goes only to a person who alone holds that name (the employee table, the checked copy, people who left)', async () => {
+  const A1 = { emp: 'E-A1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Alex' };
+  const A2 = { emp: 'E-A2', role: 'staff', grade: 1, stores: ['S2'], am_stores: [], name: 'Alex' };
+  const B1 = { emp: 'E-B1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Bea' };
+  const C1 = { emp: 'E-C1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Cy' };
+  const E2 = [...emps, { id: 'E-A1', name: 'Alex', role: 'crew', store: 'S1' }, { id: 'E-A2', name: 'Alex', role: 'crew', store: 'S2' },
+    { id: 'E-B1', name: 'Bea', role: 'crew', store: 'S1' }, { id: 'E-B0', name: 'Bea ', role: 'crew', store: 'S2', status: '退職' }, { id: 'E-C1', name: 'Cy', role: 'crew', store: 'S1' }];
+  const WP = [...wrPeople, { emp_id: 'E-X9', role: 'staff', grade: 2, stores: ['S2'], name: 'Cy' }];   // 確かめた写しの名前が Cy（社員の表は別の名前）
+  const S = setup({ pins: { ...pins, tA1: A1, tA2: A2, tB1: B1, tC1: C1 }, emps: E2, wrPeople: WP });
+  S.W.set('notifications', [...SEED, N('u-alex', { toUser: 'Alex' }), N('u-bea', { toUser: 'Bea' }), N('u-cy', { toUser: 'Cy' }), N('by-alex', { by: 'Alex', toUser: 'Someone' })]);
+  const see = async t => ids((await S.call({ action: 'nt', pin_session: t })).j);
+  assert.ok(!(await see('tA1')).includes('u-alex'), '同じ名前の 2 人：どちらにも返さない（前は両方に同じ個人あての通知を返した）');
+  assert.ok(!(await see('tA2')).includes('u-alex'));
+  assert.ok(!(await see('tA1')).includes('by-alex'), '自分が出した分も（だれのものか分からない）');
+  assert.ok((await see('tA1')).includes('st1-crew'), '店・役割あての通知は今までどおり');
+  assert.ok(!(await see('tB1')).includes('u-bea'), '退職した人と同じ名前（前後の空白だけ違う）');
+  assert.ok(!(await see('tC1')).includes('u-cy'), '確かめた写しにだけある同じ名前');
+  assert.deepEqual(await see('t1'), ['st1-all', 'st1-crew', 'u-crew'].sort(), 'ほかに同じ名前の人がいない：今までどおり');
+  assert.ok((await see('tGM')).includes('u-gina'));
+  // 既読の印も同じ（見られない通知には付けない）
+  const r = await S.call({ action: 'nt', pin_session: 'tA1', ack: ['u-alex'] });
+  assert.equal(r.status, 200);
+  assert.deepEqual(S.W.get('notifications').find(n => n.id === 'u-alex').ackBy, []);
+  // 社員の表が読めない：通知を読むこと全体が失敗（端末の写しのまま。名前あての通知を黙って消さない）
+  S.tick(61000); S.W.empsDown = true;
+  const bad = await S.call({ action: 'nt', pin_session: 't1' });
+  assert.notEqual(bad.status, 200);
+});

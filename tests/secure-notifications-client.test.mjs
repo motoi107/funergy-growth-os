@@ -42,7 +42,8 @@ const CODE = [
     '_opUpsertRow', 'opMergePush', 'pullOpKey', 'syncMasterToSupabase', 'supaHeaders', '_lsRequestDeferredPrefix', 'outboxLabel',
     'mergeNotifs', '_coversNotifs', 'addNotif', 'notifForMe', 'markNotifRead', 'markAllNotifRead', 'ackNotif', 'notifPullNow', 'onNotifIncoming',
     'notifRealtimeStart', 'notifOnVisible', 'notifRealtimeStop', '_opWriteBack',
-    '_userSupportsStore', '_amManagesStore', '_roleMatch', 'isStoreManager', 'mergeMapByTime', '_coversMapByTime'].map(fn),
+    '_userSupportsStore', '_amManagesStore', '_roleMatch', 'isStoreManager', 'mergeMapByTime', '_coversMapByTime', '_saveWho'].map(fn),
+  varLine(/^var ROLE_ALIAS = .*$/m), oneLine('_applyRole'),
   ...['getNotifs', 'myNotifs', 'myUnreadCount', 'notifRetired'].map(oneLine),
   block('/* ============================================================\n   v1152（段階 2b の最後）：通知', '/* ===== 承認ルーティング'),
   `var SUPABASE_URL=${JSON.stringify(URL0)}, SUPABASE_ANON=${JSON.stringify(ANON)};
@@ -67,7 +68,7 @@ const CODE = [
    var __DEFS={ notifications: ${NT_DEF} };
    function _opMergeDef(k){ return __DEFS[k] || null; }
    var __removed=[]; function _outboxRemove(k){ __removed.push(k); delete __pending[k]; }
-   var _pushQ={}, __mine=[]; function _saveWho(){ return curUserName||''; } function _outboxMine(){ return __mine; } function _pushBusy(k){ return false; }
+   var _pushQ={}, __mine=[], loginPerson=null, loginLocation=null; function _outboxMine(){ return __mine; } function _pushBusy(k){ return false; }
    function invInSession(){ return window._authSession || null; } async function invInSessionRefresh(){ return null; }
    function karteRerender(){ __rerender++; } function showToast(m){ __toasts.push(m); } function alert(m){ __alerts.push(m); }
    function t(ja, en){ return ja; }
@@ -82,16 +83,20 @@ const EMPS = [
   { id: 'E-SL', name: 'Sally', store: 'S1', role: 'sl', title: 'Store Leader' },
   { id: 'E-1', name: 'Crew 1', store: 'S1', role: 'crew', title: 'Crew' },
   { id: 'E-2', name: 'Crew 2', store: 'S2', role: 'crew', title: 'Crew' },
+  { id: 'E-G2', name: 'Gwen', store: 'S1', role: 'g2', title: 'Crew Leader' },
+  { id: 'E-G4', name: 'Gus', store: 'S1', role: 'g4', title: 'Operation Leader' },
 ];
 const ME = {
   tGM: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'Gina', confirmed: true },
   tSL: { emp: 'E-SL', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sally', confirmed: true },
   t1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Crew 1', confirmed: false },
   t2: { emp: 'E-2', role: 'staff', grade: 1, stores: ['S2'], am_stores: [], name: 'Crew 2', confirmed: false },
+  tG2: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Gwen', confirmed: true },
+  tG4: { emp: 'E-G4', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Gus', confirmed: true },
   tStore: 'deny',
 };
-const USER = { tGM: ['gm', 'Gina', 'HQ'], tSL: ['sl', 'Sally', 'S1'], t1: ['crew', 'Crew 1', 'S1'], t2: ['crew', 'Crew 2', 'S2'], tStore: ['sl', '店 1', 'S1'] };
-const WRP = [{ emp_id: 'E-SL', role: 'staff', grade: 3, stores: ['S1'] }];
+const USER = { tGM: ['gm', 'Gina', 'HQ'], tSL: ['sl', 'Sally', 'S1'], t1: ['crew', 'Crew 1', 'S1'], t2: ['crew', 'Crew 2', 'S2'], tG2: ['g2', 'Gwen', 'S1'], tG4: ['g4', 'Gus', 'S1'], tStore: ['sl', '店 1', 'S1'] };
+const WRP = [{ emp_id: 'E-SL', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-G2', role: 'staff', grade: 2, stores: ['S1'] }, { emp_id: 'E-G4', role: 'staff', grade: 4, stores: ['S1'] }];
 const T0 = '2026-11-12T09:00:00.000000+00:00';
 const N = (id, o) => ({ id, at: '2026-11-12T0' + (id.length % 9) + ':00:00.000Z', by: 'X', readBy: [], ackBy: [], type: 't', title: 'T ' + id, ...o });
 const SEED = [
@@ -122,10 +127,11 @@ function tab(W, who) {
 }
 function login(c, who, noPin) {
   c._hwSession = noPin ? null : who;
-  vm.runInContext('curRole=' + JSON.stringify(USER[who][0]) + '; curRealRole=curRole; curUserName=' + JSON.stringify(USER[who][1]) + '; curStore=' + JSON.stringify(USER[who][2])
-    + '; curStoreLogin=' + (who === 'tStore' ? '{ id:"S1" }' : 'null') + ';', c);
+  // ログインの順（本物の _applyRole：g2 は sl・g4 は am として扱う）。loginPerson はだれの保存か（_saveWho）に使う
+  vm.runInContext('_applyRole(' + JSON.stringify(USER[who][0]) + '); curUserName=' + JSON.stringify(USER[who][1]) + '; curStore=' + JSON.stringify(USER[who][2])
+    + '; curStoreLogin=' + (who === 'tStore' ? '{ id:"S1" }' : 'null') + '; loginPerson=' + (who === 'tStore' ? 'null' : JSON.stringify({ id: ME[who].emp })) + ';', c);
 }
-const logout = c => { c.ssOnLogout(); c._hwSession = null; vm.runInContext('curRole=null; curRealRole=null; curUserName=null; curStoreLogin=false;', c); };
+const logout = c => { c.ssOnLogout(); c._hwSession = null; vm.runInContext('curRole=null; curRealRole=null; curUserName=null; curStoreLogin=false; loginPerson=null;', c); };
 const local = c => { const v = c.MEM.get('notifications'); return v == null ? undefined : JSON.parse(v); };
 const ids = arr => (arr || []).map(n => n.id).sort();
 const settle = async c => { for (let i = 0; i < 5; i++) { const p = c.__pushed.splice(0); if (!p.length) break; await Promise.all(p); } };
@@ -487,4 +493,82 @@ test('the store tablet with a function of the previous version: adds by REST as 
   c.addNotif({ type: 'consult', title: 'no mark', toRoles: ['gm'], refId: 'ot2' });
   await settle(c);
   assert.ok(cloud(W).some(n => n.refId === 'ot2'), 'reached the cloud');
+});
+
+test('Codex #146 P2: a confirmed G2 and G4 get on the device exactly what the screen shows them (the real handler, _applyRole and notifForMe)', async () => {
+  const W = world();
+  W.set('notifications', [...SEED, N('am-s1', { toStore: 'S1', toRoles: ['am'] })], T0);
+  for (const [who, role] of [['tG2', 'sl'], ['tG4', 'am']]) {
+    const c = tab(W, who);
+    assert.equal(c.curRole, role, 'the app treats ' + USER[who][0] + ' as ' + role);
+    assert.equal(await c.ntPull(), true);
+    const shown = cloud(W).filter(n => c.notifForMe(n)).map(n => n.id).sort();
+    assert.ok(shown.length >= 2, who + ': there are role notices for this person');
+    assert.deepEqual(ids(local(c)), shown, who + ': before, the function compared g2・g4 and gave nothing');
+  }
+});
+
+test('Codex #146 P2: an unsent "確認しました" survives logout (only the person and the notice id, no body); the same person sends it after signing in again, never someone else', async () => {
+  const W = world();
+  const c = tab(W, 't1');
+  await c.ntPull();
+  netDown(c, W, true);
+  c.ackNotif('shift-s1'); c.markNotifRead('u-crew1'); await settle(c);
+  assert.deepEqual(cloud(W).find(n => n.id === 'shift-s1').ackBy, [], 'not sent (no answer)');
+  logout(c);
+  assert.deepEqual(local(c) || [], [], 'no notice is left for the next person');
+  assert.ok(c.localStorage.getItem('_nt_marks_v1152'), 'kept on the device for this person (before: dropped with the notices)');
+  const held = JSON.parse(c.localStorage.getItem('_nt_marks_v1152'));
+  assert.deepEqual(held.map(m => [m.w, m.n, m.id, m.k]).sort(), [['p:E-1', 'Crew 1', 'shift-s1', 'ack'], ['p:E-1', 'Crew 1', 'u-crew1', 'read']]);
+  assert.ok(held.every(m => Object.keys(m).sort().join() === 'at,id,k,n,w'), 'no title or text');
+  netDown(c, W, false);
+  login(c, 'tSL');   // ほかの人（同じ通知 shift-s1 が見える）
+  await c.ntPull(); await settle(c);
+  assert.deepEqual(cloud(W).find(n => n.id === 'shift-s1').ackBy, [], 'not sent as another person');
+  assert.equal(JSON.parse(c.localStorage.getItem('_nt_marks_v1152')).length, 2, 'kept for the first person');
+  logout(c); login(c, 't1');
+  await c.ntPull(); await settle(c);
+  assert.deepEqual(cloud(W).find(n => n.id === 'shift-s1').ackBy, ['Crew 1'], 'sent when the same person signs in again (before: lost at logout)');
+  assert.deepEqual(cloud(W).find(n => n.id === 'shift-s1').readBy, ['Crew 1']);
+  assert.deepEqual(cloud(W).find(n => n.id === 'u-crew1').readBy, ['Crew 1']);
+  assert.equal(c.localStorage.getItem('_nt_marks_v1152'), null, 'sent: nothing kept');
+  // 14 日より古い印は使わない（捨てる）
+  const e = tab(W, 't1');
+  e.localStorage.setItem('_nt_marks_v1152', JSON.stringify([{ w: 'p:E-1', n: 'Crew 1', id: 'u-crew1', k: 'ack', at: Date.now() - 15 * 86400000 }]));
+  const ack0 = cloud(W).find(n => n.id === 'u-crew1').ackBy.length;
+  await e.ntPull(); await settle(e);
+  assert.equal(cloud(W).find(n => n.id === 'u-crew1').ackBy.length, ack0, 'an old mark is not sent');
+  assert.equal(c.myUnreadCount(), 0);
+  // ログインし直したあとも送れない：もう一度ログアウトしたら、また残す
+  const d = tab(W, 't1');
+  await d.ntPull();
+  netDown(d, W, true);
+  d.ackNotif('u-crew1'); await settle(d);
+  logout(d); login(d, 't1');
+  // 読めた（印を写しに戻した）が、印を送るのに失敗した
+  d.fetch = (u, o) => (String(u).includes('/functions/v1/secure-state') && /"ack":\["u-crew1"\]/.test(String(o && o.body)) ? Promise.reject(new TypeError('fetch failed')) : W.fetch(u, o));
+  await d.ntPull(); await settle(d);
+  assert.equal(d.localStorage.getItem('_nt_marks_v1152'), null, 'the mark is back on the device copy');
+  assert.deepEqual(cloud(W).find(n => n.id === 'u-crew1').ackBy, [], 'the send failed');
+  logout(d);
+  assert.deepEqual(JSON.parse(d.localStorage.getItem('_nt_marks_v1152')).map(m => [m.id, m.k]), [['u-crew1', 'ack']], 'kept again at the next logout');
+  netDown(d, W, false); login(d, 't1'); await d.ntPull(); await settle(d);
+  assert.deepEqual(cloud(W).find(n => n.id === 'u-crew1').ackBy, ['Crew 1']);
+});
+
+test('Codex #146 6845284151 P3: a notice with a too-large container is delivered without that field; a notice the function refuses is reported, not dropped silently', async () => {
+  const W = world();
+  const c = tab(W, 'tGM'); await c.ntPull();
+  const L = local(c);
+  L.push(nAt('big1', 60000, { by: 'Gina', toRoles: ['office'], rbFocus: { list: 'x'.repeat(1200) }, small: { a: 1 } }));
+  L.push(nAt('bad2', 60000, { by: 'Gina', 'bad-key': 1 }));
+  c.MEM.set('notifications', JSON.stringify(L));
+  c.__toasts.length = 0;
+  assert.equal(await c.ntPush(), true);
+  const big = cloud(W).find(n => n.id === 'big1');
+  assert.ok(big, 'delivered (before: the whole notice was refused and dropped)');
+  assert.equal(big.rbFocus, undefined, 'without the too-large field');
+  assert.deepEqual(big.small, { a: 1 }, 'small containers stay');
+  assert.ok(!cloud(W).some(n => n.id === 'bad2'));
+  assert.ok(c.__toasts.some(m => /1 件は形が合わず送れませんでした/.test(m)), 'reported: ' + JSON.stringify(c.__toasts));
 });

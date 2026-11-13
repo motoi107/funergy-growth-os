@@ -89118,6 +89118,18 @@ function onNotifIncoming(arr){
    ログイン・取り込み・画面に戻ったとき・1 分ごと・「変わった」の合図（v1151）で読む。 */
 var _nt = { old:null, rx:0 };   /* old：{ id（そのときのログイン）, at }（関数が前の版）・rx：受け取った回数（古い答えで新しい写しを戻さない） */
 var NT_MIG = '_nt_mig_v1152';   /* この端末の通知の写しを v1152 の形にしたか（REST で取り込んだら外す） */
+/* Codex #146 6845284151・6846844817 P2：ログアウトのとき、まだ送れていない自分の既読・確認の印を、だれの印か（社員）と通知の id だけで端末に残す
+   （通知の中身は残さない）。同じ人がもう一度ログインして通知を受け取ったら、その通知に印を戻して送る。ほかの人のログインでは使わない。14 日・500 件まで */
+var NT_MARKS = '_nt_marks_v1152';
+function ntWho(){ var w=''; try{ w=(typeof _saveWho==='function') ? String(_saveWho()||'') : ''; }catch(e){ w=''; } return /^[pa]:./.test(w) ? w : ''; }
+function ntMarksGet(){
+  var a=null; try{ a=JSON.parse(localStorage.getItem(NT_MARKS)||'null'); }catch(e){ a=null; }
+  var cut=Date.now()-14*86400000;
+  return (Array.isArray(a) ? a : []).filter(function(m){ return m && typeof m.w==='string' && typeof m.n==='string' && typeof m.id==='string' && (m.k==='read' || m.k==='ack') && Number(m.at)>=cut; });
+}
+function ntMarksSet(a){
+  try{ if(!a.length) localStorage.removeItem(NT_MARKS); else localStorage.setItem(NT_MARKS, JSON.stringify(a.slice(-500))); return true; }catch(e){ return false; }
+}
 function ntOldNow(id){ var L=_nt.old; return !!(L && L.id===id && Date.now()-L.at<600000); }
 /* 'fn'＝関数で読み書き／'add'＝関数で足すだけ（店のタブレット・ログインの印の無い人）／'rest'＝今までどおり（関数が前の版・無い・印の無い GM・CEO） */
 /* 'rest' の道のあいだは REST の取り込みが端末の写しを書く（クラウドにある印の無い通知になる）。関数の道に戻ったら写しを直す（v1152 の形の印を外す）。
@@ -89135,7 +89147,24 @@ function ntMe(){ try{ return String((typeof curUserName!=='undefined' && curUser
 function ntLocal(){ var a=null; try{ a=_lsRaw('notifications', null); }catch(e){ a=null; } return Array.isArray(a) ? a : []; }
 function ntWrite(arr){ try{ return _lsWriteVerified('notifications', JSON.stringify(arr)); }catch(e){ return false; } }   /* 端末にだけ（送らない） */
 function ntSort(arr){ arr.sort(function(a,b){ return String((a&&a.at)||'').localeCompare(String((b&&b.at)||'')); }); return arr.length>500 ? arr.slice(arr.length-500) : arr; }
-function ntStrip(n){ var o={}; Object.keys(n||{}).forEach(function(k){ if(k.charAt(0)!=='_' && k!=='readBy' && k!=='ackBy') o[k]=n[k]; }); return o; }
+/* 送る形。関数は 1,000 字を超える入れ物（rbFocus など）の通知を受け取らないので、その欄だけ外して通知は届ける（Codex #146 6845284151 P3：前は通知ごと黙って消えた） */
+function ntStrip(n){
+  var o={};
+  Object.keys(n||{}).forEach(function(k){
+    if(k.charAt(0)==='_' || k==='readBy' || k==='ackBy') return;
+    var v=n[k];
+    if(v && typeof v==='object'){ var sj=''; try{ sj=JSON.stringify(v); }catch(e){ sj=''; } if(!sj || sj.length>1000) return; }
+    o[k]=v;
+  });
+  return o;
+}
+/* 関数が形の合わない通知を受け取らなかった（id・欄の名前など）：黙って消さずに知らせる（送り直しても同じなので、端末には残さない） */
+function ntBadNote(n){
+  if(!(n>0)) return;
+  var ja='通知 '+n+' 件は形が合わず送れませんでした（宛先の人には届いていません）', en=n+' notification(s) could not be sent (wrong shape; not delivered)';
+  try{ if(window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('push', (typeof t==='function') ? t(ja, en) : ja, false); }catch(e){}
+  try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){}
+}
 /* 関数を呼ぶ。ログインの印が無い人（PIN が初期の人）も、足すだけは公開の鍵で呼ぶ */
 async function ntCall(payload){
   var S=null; try{ S=ssSess(); }catch(e){ S=null; }
@@ -89195,6 +89224,8 @@ function ntDelta(me, anon){
 function ntReceive(items, done){
   _nt.rx++;
   var me=ntMe(), loc=ntLocal(), doneSet={}, locById={}, seen={}, out=[];
+  var who=me ? ntWho() : '', held=who ? ntMarksGet() : [], heldBy={}, used={};
+  held.forEach(function(m, i){ if(m.w===who && m.n===me){ (heldBy[m.id]=heldBy[m.id]||[]).push(i); } });
   (done||[]).forEach(function(id){ doneSet[String(id)]=1; });
   loc.forEach(function(n){ if(n && typeof n==='object' && n.id!=null) locById[String(n.id)]=n; });
   (Array.isArray(items) ? items : []).forEach(function(s){
@@ -89208,11 +89239,18 @@ function ntReceive(items, done){
       if((l.readBy||[]).indexOf(me)>=0 && rb.indexOf(me)<0) rb.push(me);   /* まだ送っていない既読 */
       if((l.ackBy||[]).indexOf(me)>=0 && ab.indexOf(me)<0) ab.push(me);
     }
+    (heldBy[id]||[]).forEach(function(i){   /* 前のログインで送れなかった印（ログアウトで残したもの）：ここで戻すと、下の ntDelta が送る */
+      var m=held[i]; used[i]=1;
+      if(m.k==='ack' && ab.indexOf(me)<0) ab.push(me);
+      if(rb.indexOf(me)<0) rb.push(me);
+    });
     n.readBy=rb; n.ackBy=ab; delete n._w;
     out.push(n);
   });
   loc.forEach(function(l){ if(!l || typeof l!=='object' || l.id==null) return; var id=String(l.id); if(seen[id] || l._s || doneSet[id]) return; out.push(l); });   /* まだ送っていない足した通知 */
-  return ntWrite(ntSort(out));
+  var w=ntWrite(ntSort(out));
+  if(w && Object.keys(used).length) ntMarksSet(held.filter(function(m, i){ return !used[i]; }));   /* 端末の写しに戻した印は、写しから送る（もう一度ログアウトしたら、また残す） */
+  return w;
 }
 /* 足すだけの端末：関数が受け取った通知を端末から外す */
 function ntDropDone(done){
@@ -89238,6 +89276,7 @@ async function ntPush(){
     if(r.legacy){ ntMigReset(); return 'rest'; }
     if(!r.ok){ try{ _opLastPushErr['notifications']='nt:'+(r.error || (r.net ? 'network' : r.status) || ''); }catch(e){} return false; }
     var before=myUnreadCount();
+    ntBadNote(Number(r.j.bad)||0);
     if(anon || !Array.isArray(r.j.items)) ntDropDone(r.j.done);
     else ntReceive(r.j.items, r.j.done);
     ntUiRefresh(myUnreadCount()>before);
@@ -89274,7 +89313,21 @@ function ntOnLogout(){
   _nt.rx++;
   try{ if(ntMode()==='rest') return; }catch(e){}
   try{ if(!localStorage.getItem(NT_MIG)) return; }catch(e){ return; }
-  ntWrite(ntLocal().filter(function(n){ return n && typeof n==='object' && n.id!=null && !n._s; }));
+  var loc=ntLocal(), me=ntMe(), who=ntWho();
+  if(me && who){   /* まだ送れていない自分の既読・確認の印：だれの印か（社員）と通知の id だけ残す（中身は残さない） */
+    var add=[], at=Date.now();
+    loc.forEach(function(n){
+      if(!n || typeof n!=='object' || n.id==null || !n._s) return;
+      var id=String(n.id);
+      if((n.ackBy||[]).indexOf(me)>=0 && !n._sa) add.push({ w:who, n:me, id:id, k:'ack', at:at });
+      else if((n.readBy||[]).indexOf(me)>=0 && !n._sr) add.push({ w:who, n:me, id:id, k:'read', at:at });
+    });
+    if(add.length){
+      var keep=ntMarksGet().filter(function(m){ return !add.some(function(x){ return x.w===m.w && x.n===m.n && x.id===m.id; }); });
+      ntMarksSet(keep.concat(add));
+    }
+  }
+  ntWrite(loc.filter(function(n){ return n && typeof n==='object' && n.id!=null && !n._s; }));
 }
 /* 通知の画面の一行（店のタブレット・ログインの印の無い人） */
 function ntHintHtml(){
@@ -105034,9 +105087,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(k.indexOf('_secure:') === 0){ var c = k.slice(8); return !SEC_OWN[c] && c !== 'pii' && c !== 'notifications'; }
     return false;
   }
-  /* いつも 1 つずつ取るもの：関数から読む保護された区分（採用・相談室・個人の欄）。自動の同期（supaPullAllMasters）はこれを読まないので、
-     まとめての同期には任せられない（Codex #145 6846570741 P2-2：前は 50 より多いキーと一緒に、まとめての同期へ回して取らなかった） */
-  function oneAlways(k){ return k.indexOf('_secure:') === 0 && !wantsFull(k); }
+  /* いつも 1 つずつ取るもの：関数から読む保護された区分（採用・相談室・個人の欄・通知）。自動の同期（supaPullAllMasters）はこれを読まないので、
+     まとめての同期には任せられない（Codex #145 6846570741 P2-2：前は 50 より多いキーと一緒に、まとめての同期へ回して取らなかった）。
+     v1152：通知の行（notifications）も、関数で読む端末では REST の取り込みに入らないので 1 つずつ（関数が前の版の端末は今までどおり） */
+  function oneAlways(k){
+    if(k === 'notifications'){ try{ return typeof ntMode === 'function' && ntMode() !== 'rest'; }catch(e){ return false; } }
+    return k.indexOf('_secure:') === 0 && !wantsFull(k);
+  }
   SG._oneAlways = oneAlways;
   /* まとめての同期（'*'・保護の区分の一部・50 より多いキー）：今までの自動の同期を前倒し（2 分に 1 回まで）。
      そのキーは、預かった時刻より後に始まった自動の同期が「最新」で終わるまで fullPend に残す（Codex #145 6846570741 P2-1：前は結果を見ずに捨て、

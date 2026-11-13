@@ -754,3 +754,18 @@ test('Codex #145 6846570741 P2-3: a signal for the personal details re-reads the
   assert.equal(A.refreshes(), r0 + 1, 'changed: the screen is redrawn (before: kept in memory only, so the change was not seen)');
   assert.ok(![...A.store.values()].some(v => String(v).includes('1991-02-02')), 'still kept in memory only');
 });
+
+test('v1152 with Codex #145 6846570741 P2-2: the notifications row is read one by one through the function even with more than 50 other keys (REST devices: as before)', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR' });
+  let reads = 0; A.ctx.ntMode = () => 'fn'; A.ctx.ntPull = async () => { reads++; return true; };
+  A.SG.start(); await tick(20);
+  bulk(A, 'n', 51);
+  A.W.put('notifications', 1, later(1), 'E-1', 'dOTHER');
+  A.W.put('_secure:notifications', 1, later(1), null, 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(reads, 2, 'both signals read through the function (before: handed to the full sync, which does not read notifications)');
+  assert.equal(A.autoN(), 1);
+  assert.equal(A.SG._oneAlways('notifications'), true);
+  A.ctx.ntMode = () => 'rest';
+  assert.equal(A.SG._oneAlways('notifications'), false, 'a function of the previous version: the REST full sync reads the row');
+});

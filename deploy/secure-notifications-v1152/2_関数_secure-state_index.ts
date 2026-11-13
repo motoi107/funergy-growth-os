@@ -591,6 +591,9 @@ export const NT_MARK_MAX = 500;       // 1 回に付ける既読・確認の印�
 export const NT_ALL_ROLES = ['ceo', 'gm', 'office', 'office_crew'];   // 全店（画面の notifForMe と同じ）
 // 社員の表の役割（公開の鍵で書ける）を宛先の役割に使うのは、GM・CEO が確かめた写し（wr_people）のグレードが足りるときだけ（v1147 と同じ考え）
 export const NT_STAFF_NEED = { g2: 2, sl: 3, g4: 4, chef: 4 };
+// 宛先の役割：アプリはログインで g2 を sl、g4 を am として扱う（index.html の ROLE_ALIAS・_applyRole）。通知の宛先（toRoles）もその名前なので、
+// 確かめた役割を同じ名前にそろえる（Codex #146 6845284151・6846844817 P2：前は g2・g4 のまま比べ、確かめた G2・G4 に役割あての通知が届かなかった）
+export const NT_ROLE_ALIAS = { g2: 'sl', g4: 'am' };
 export const NT_SYS = 'システム';
 const NT_ID_RE = /^[A-Za-z0-9_:.-]{1,100}$/;
 const NT_FIELD_RE = /^[A-Za-z][A-Za-z0-9_]{0,30}$/;
@@ -631,7 +634,7 @@ export function ntClean(x, nowMs) {
 //   c：{ name, role（宛先の役割）, all（全店）, stores（Set）, sm（Store Manager） }
 export function ntVisible(n, c) {
   if (!n || typeof n !== 'object' || Array.isArray(n) || !c) return false;
-  const nm = c.name;
+  const nm = c.nameOk === false ? '' : c.name;   // 同じ名前の人がほかにいる（退職の人も）：名前あての通知・自分が出した通知は返さない（だれのものか分からない）
   if (nm && n.by === nm) return true;
   if (n.toUser) return !!nm && n.toUser === nm;
   const roles = Array.isArray(n.toRoles) ? n.toRoles : [];
@@ -2006,7 +2009,29 @@ export function createHandler(deps) {
   // ================================================================ v1152：通知
   // 宛先を決める人の形（画面の curRole・curStore・応援・担当の店に当たるもの）。60 秒覚える（通知は 1 分ごとに読むので）
   const ntCtxCache = new Map();
+  // 名前を持つ人（社員の表の名前・GM・CEO が確かめた写しの名前。退職の人も）。60 秒覚える（1 分ごとの読みで毎回読まない）。
+  // 個人あての通知（toUser）と出した人（by）は名前で持っているので、その名前を持つのが本人だけのときだけ返す（v1140 の Career Score と同じ考え。
+  // Codex #146 6845284151：前は名前だけで決め、同じ名前の別の人（別の店）にも同じ個人あての通知を返した）
+  let ntNames = null;
+  async function ntNameHolders() {
+    if (ntNames && ntNames.exp > now()) return ntNames.m;
+    const [emps, wrp] = await Promise.all([rest('employees?select=id,name&limit=5000'), rest('wr_people?select=emp_id,name&limit=2000').catch(() => [])]);   // 写しが読めない：社員の表の名前だけ（ntCtx0 と同じく狭いほうの役割で返す）
+    const m = new Map();
+    const hold = (n, id) => { const k = typeof n === 'string' ? n.trim() : ''; if (!k) return; if (!m.has(k)) m.set(k, new Set()); m.get(k).add(id); };
+    for (const e of (Array.isArray(emps) ? emps : [])) if (e && e.id != null) hold(e.name, String(e.id));
+    for (const w of (Array.isArray(wrp) ? wrp : [])) if (w && w.emp_id != null) hold(w.name, String(w.emp_id));
+    ntNames = { m, exp: now() + 60000 };
+    return m;
+  }
   async function ntCtx(a) {
+    const c0 = await ntCtx0(a);
+    const name = (c0.name || '').trim();
+    if (!name) return { ...c0, nameOk: false };
+    const hs = (await ntNameHolders()).get(name);   // 読めない：nt 全体を失敗にする（アプリは端末の写しのまま。名前あての通知を黙って消さない）
+    const emp = typeof a.emp === 'string' ? a.emp : '';
+    return { ...c0, nameOk: emp ? (!hs || [...hs].every(x => x === emp)) : !hs };   // 社員と結ばれていない人（GM・CEO）：その名前の社員がいないときだけ
+  }
+  async function ntCtx0(a) {
     const name = typeof a.name === 'string' ? a.name : '';
     if (NT_ALL_ROLES.includes(a.role)) return { name, role: a.role, all: true, stores: new Set(), sm: false };
     if (a.role === 'am') return { name, role: 'am', all: false, stores: new Set([...arr(a.stores), ...arr(a.am)]), sm: false };   // 確かめた AM（whoami）：担当の店と自分の店
@@ -2025,7 +2050,7 @@ export function createHandler(deps) {
     let role = 'crew', stores = arr(a.stores);   // 確かめがまだの人・G1：crew あての通知だけ（自分の店。whoami の店＝今の社員の表）
     const need = NT_STAFF_NEED[tr];
     if (need && cg >= need && Number(a.grade) >= need && (tr !== 'chef' || w.chef === true)) {
-      role = tr;
+      role = NT_ROLE_ALIAS[tr] || tr;
       const ws = arr(w.stores);
       stores = arr(a.stores).filter(s => ws.includes(s));   // 役割の通知の店：確かめた写しと今の社員の表の重なり（v1147 の protStores と同じ）
     }
