@@ -1,6 +1,9 @@
 -- まとめて確かめる（読むだけ・v1141〜v1152 の ① を 1 回で）。何も書き換えません（最後に rollback）。
--- Supabase の SQL Editor に貼って Run。表をそのまま Claude に貼ってください（名前・中身・金額は出ません。数と形だけです）。
--- v（版）と n（行）は、それぞれの deploy/<版>/手順.md の「① の◯行目」と同じです。中身はそれぞれの 1_確かめ_読むだけ.sql をそのまま並べたものです。
+-- Supabase の SQL Editor に貼って Run。表を Claude に貼ってください（Claude との会話だけ。公開の PR・Issue・共有の場所には貼らないでください）。
+-- 出るのは数・形・設定のあるなしと、ガソリン代の単価（会社の設定・1 マイルあたり）です。人の名前・記録の中身は出しません：
+-- 名前の入る行（v1142 の 11 行目＝確かめがまだの人）は数だけにし、ほかの行も社員の名前（2 文字以上）を含む値は伏せます（最後の select）。
+-- 確かめがまだの人の名前は、アプリの「ワークセンター › 承認・閲覧の権限の確かめ」の画面で見てください。
+-- v（版）と n（行）は、それぞれの deploy/<版>/手順.md の「① の◯行目」と同じです。中身はそれぞれの 1_確かめ_読むだけ.sql をそのまま並べたものです（名前を伏せるのは最後の select だけ）。
 begin;
 create temp table all_pre(v text, n int, what text, value text, ok text) on commit drop;
 
@@ -728,5 +731,16 @@ select 9, 'v1151 の SQL（合図と変更の記録：fp_sec_cat）', case when 
 order by n
 ) x;
 
-select v, n, what, value, ok from all_pre order by v, n;
+-- 最後の表：人の名前は出しません（Codex #146 6849760483 P2-1：前は v1142 の 11 行目が確かめがまだの人の名前をそのまま出していた）。
+-- v1142 の 11 行目は数だけ。ほかの行も、社員の表の名前（2 文字以上・退職した人も）を含む値は伏せる（数で始まる「数：名前」は数だけ）。
+select a.v, a.n, a.what,
+       case when a.v = 'v1142' and a.n = 11
+              then split_part(coalesce(a.value, ''), '：', 1) || case when strpos(coalesce(a.value, ''), '：') > 0 then '（名前は出しません）' else '' end
+            when exists (select 1 from public.employees e
+                          where char_length(btrim(coalesce(nullif(btrim(e.name), ''), e.data->>'name', ''))) >= 2
+                            and strpos(coalesce(a.value, ''), btrim(coalesce(nullif(btrim(e.name), ''), e.data->>'name', ''))) > 0)
+              then case when a.value ~ '^[0-9]+：' then split_part(a.value, '：', 1) || '（名前は出しません）' else '（名前を含むので出しません）' end
+            else a.value end as value,
+       a.ok
+  from all_pre a order by a.v, a.n;
 rollback;

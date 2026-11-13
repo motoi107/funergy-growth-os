@@ -25,8 +25,8 @@ jobs:
           persist-credentials: false
       - name: Check syntax and release consistency
         run: python3 scripts/check-static-release.py
-      - name: Fetch the older versions some tests compare with (v1084 dc5e78b, v1125 6bcf6cd; without them those checks are skipped)
-        run: git fetch --no-tags --depth=1 origin dc5e78b3a04a9290de278e7c155354ab63fff8e9 6bcf6cd0b68dacb6b53055cf054c2fdd11ec81fc
+      - name: Fetch the older versions some tests compare with (v1084 dc5e78b, v1125 6bcf6cd, v1140 main 2d83214; without them those checks are skipped)
+        run: git fetch --no-tags --depth=1 origin dc5e78b3a04a9290de278e7c155354ab63fff8e9 6bcf6cd0b68dacb6b53055cf054c2fdd11ec81fc 2d832147717459643d233a661a85bbcaa68ab2b4
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
@@ -77,6 +77,11 @@ jobs:
         run: node --test --test-concurrency=1 tests/secure-notifications-server.test.mjs tests/secure-notifications-client.test.mjs tests/secure-notifications-rls.test.mjs tests/secure-state-deploy.test.mjs
       - name: Check the combined v1141-v1152 deploy bundle (the combined read-only check returns the same rows as each version's check and changes nothing; the procedure names every file; PGlite, synthetic data)
         run: node --test --test-concurrency=1 tests/deploy-all-v1141-v1152.test.mjs
+      - name: Check the v1140 app (main 2d83214) still works with the v1152 secure-state function (step A of the combined procedure; the v1140 app's own client tests against the new function; synthetic data)
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=1 tests/compat-v1140-app.test.mjs | tee /tmp/compat-1140.txt
+          grep -q '^# skipped 0$' /tmp/compat-1140.txt
       - name: Check the same-name SQL (read-only check, and the rename of a retired duplicate record and its undo under the resign guard and the change log; PGlite, synthetic data)
         run: node --test tests/cs-same-name-sql.test.mjs tests/employee-dup-rename.test.mjs
       - name: Check v1129 and v1130 (Tip Rate start date, menu names and visit types, store switching, repeat rate state and breakdown, LaLa read-only SQL) with synthetic data
