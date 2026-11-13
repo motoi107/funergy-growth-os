@@ -63,6 +63,12 @@ Claude・ブランチ `claude/kpi-google-1153`・main `7eb042c`（v1152）の上
 - 休憩：hyper-worker は打刻の出入り（`inDate`〜`outDate`）で時間を数え、Toast の休憩（`breaks`・無給）を引いていない。人件費・Tip も同じ。引くかは Moto さんの判断（Tip と人件費が変わる）。
 - CHAZUKE：hyper-worker は丼のモディファイヤーの名前で数える（`aosa`＝分母だけ・`crab`・`today`・`udon`＝分母と分子）。CHAZUKE は数えていない。Toast の名前と、味噌汁の代わりか足すものかが分かってから hyper-worker を直す。
 
+## 5c. Codex のレビュー（#147 `cbbfabb`・issuecomment 6862342775）の P2 2 つの直し（11/13）
+
+- **P2-1：保存が、画面を描いたあとにほかの端末から届いた新しい値を、触っていない欄の古い値で書き戻していた。** `k2SaveMonth` は画面の全部の欄を、今の端末の値（最新）と比べて違えば書いていた。直し：画面を描いたときの値（入力欄の `defaultValue`・`defaultChecked`）と比べ、**その画面で人が変えた欄だけ**を最新の記録に重ねて書く。空にした欄はその月の値だけを消す。同じ数の書き方の違い（36 と 36.0）は変えていないとみなす（`k2SameInput`）。裏で描き直されたときに打ちかけの欄を残す FUNERGY_UX の決まりも、同じ `defaultValue` を使う。
+- **P2-2：前の月の判定・週の率が、今月の目標で決まっていた。** `mdVerdict`・`mdWeekRates` が `getStoreKpiTargets(storeId)`（＝今月）を読んでいた。直し：月の分かる呼び出しはすべてその月を渡す（`mdVerdict`・`mdWeekRates`・`_qbMonthData`・`laborSummaryCard`・`renderLaborDetail`。`quarterTargets` は四半期の最後の月＝月別の目標は前の月から引き継ぐので、その月の目標）。
+- 試験（合成データ）：kpi-settings-v1153 14/14（足した 2 件＝Codex の 2 つの場面そのもの。`cbbfabb` の index.html では 2 件とも落ちる：原価率 28 → 30 に戻る／10 月の目標 32 → 28）。わざと壊す 10 通りすべてで落ちる（欄の守り 2・数の比べ方 1・月を渡す 7）。関連（dashboard-ui41・karte-eval・local-only-sync 2 つ・meeting-budget・next-v1090）は直す前と同じ結果（meeting-budget 14・next-v1090 1 の失敗は前から）。static release pass/1153。
+
 ## 6. 全体の試験（main `7eb042c` と比べる）
 
 - 重い 2 つ（invoice-mutations・employee-resign-mutations）以外・4 並列：main `7eb042c` 2,529 件のうち 30 件が落ちる／v1153 2,538 件のうち 30 件が落ちる。落ちる試験は名前まで同じ（前からのファイル：bot-center・bot-database・cooking-sake・meeting-budget・meeting-sales・next-v1090・specialist-career など）。増えたのは新しい試験の成功だけ。

@@ -103,6 +103,14 @@ const kBase = (o = {}) => Object.assign({ sales: 128930, budget: 126480, guests:
   totoyaScope: false, drinkScope: true, drinkRate: 33.4, drinkTgt: 35 }, o);
 const setMan = (c, sid, per, rec) => { const k = 'kpi_man_' + per; const all = c.STORE.has(k) ? JSON.parse(c.STORE.get(k)) : {}; all[sid] = rec; c.STORE.set(k, JSON.stringify(all)); };
 const rowOf = (A, key) => A.rows.find(r => r.key === key);
+// その店・月の表を本物の renderKpi2Store で描き、ブラウザと同じく 描いたときの値＝defaultValue／defaultChecked の欄を作る
+const shownDom = (c, sid, ym) => {
+  run(c, `window._kpiStore=${JSON.stringify(sid)}; window._k2Ym=${JSON.stringify(ym)};`);
+  const html = run(c, `renderKpi2Store()`), dom = {};
+  for (const m of html.matchAll(/<input class="form-input k2-tgt" id="(k2t-[A-Za-z]+)"[^>]*? value="([^"]*)"/g)) dom[m[1]] = { value: m[2], defaultValue: m[2] };
+  for (const m of html.matchAll(/<input type="checkbox" id="(k2o-[A-Za-z]+)"([^>]*)>/g)) { const on = /\bchecked\b/.test(m[2]); dom[m[1]] = { checked: on, defaultChecked: on }; }
+  return dom;
+};
 
 test('① a target set in a month carries over to later months only; earlier months and other stores keep theirs (6A)', () => {
   const c = device();
@@ -279,7 +287,8 @@ test('⑤ saving writes only what changed this month; an empty target carries th
   c.STORE.set('m_store_kpi', JSON.stringify({ F09: { foodCost: 31 } }));
   setMan(c, 'F09', '2026.10', { tgt_repeatRate: 36, gAvg: 4.5 });
   setMan(c, 'F09', '2026.11', { gAvg: 4.7, gCnt: 9 });
-  const inputs = vals => { c.DOM = {}; for (const [id, v] of Object.entries(vals)) c.DOM[id] = typeof v === 'boolean' ? { checked: v } : { value: v }; };
+  // 画面を描いて、描いたときの値（defaultValue・defaultChecked）を持つ欄を作り、vals の欄だけ人が変えたことにする
+  const inputs = vals => { c.DOM = shownDom(c, 'F09', '2026-11'); for (const [id, v] of Object.entries(vals)) { if (!c.DOM[id]) c.DOM[id] = typeof v === 'boolean' ? { checked: v } : { value: v }; else if (typeof v === 'boolean') c.DOM[id].checked = v; else c.DOM[id].value = v; } };
   const rec = per => JSON.parse(c.STORE.get('kpi_man_' + per)).F09;
   // nothing changed (the shown values are the inherited ones)
   inputs({ 'k2t-repeatRate': '36', 'k2t-foodCost': '31', 'k2t-laborHours': '', 'k2o-drinkRate': false, 'k2o-guests': true });
@@ -322,6 +331,95 @@ test('⑤ saving writes only what changed this month; an empty target carries th
   d.DOM = { 'k2t-repeatRate': { value: '40' } };
   assert.equal(run(d, `k2SaveMonth('F09','2026-11')`), false);
   assert.equal(d.STORE.has('kpi_man_2026.11'), false);
+});
+
+test("⑤c (Codex #147 P2-1) another device's change that reached this device before the table was drawn again is not undone by saving untouched fields", () => {
+  const c = device({ k: { 'F01|2026-11': kBase(), 'F01|2026-10': kBase() } });
+  setMan(c, 'F01', '2026.11', { tgt_repeatRate: 35, tgt_foodCost: 30, gAvg: 4.6 });
+  const rec = () => JSON.parse(c.STORE.get('kpi_man_2026.11')).F01;
+  // A draws the table: repeat 35, food 30, drink used
+  const dom = shownDom(c, 'F01', '2026-11');
+  assert.equal(dom['k2t-repeatRate'].defaultValue, '35', 'the box carries the value it was drawn with');
+  assert.equal(dom['k2t-foodCost'].defaultValue, '30');
+  assert.equal(dom['k2o-drinkRate'].defaultChecked, true);
+  c.DOM = dom;
+  // A changes only the repeat rate
+  c.DOM['k2t-repeatRate'].value = '36';
+  // B's food cost 28 and "drink not used" reach A's device (the table is not drawn again yet)
+  const r0 = rec(), at = (r0._ft && r0._ft.tgt_foodCost) || 0;
+  setMan(c, 'F01', '2026.11', Object.assign({}, r0, { tgt_foodCost: 28, off_drinkRate: true, _ft: Object.assign({}, r0._ft, { tgt_foodCost: at + 1, off_drinkRate: at + 1 }) }));
+  assert.equal(run(c, `k2SaveMonth('F01','2026-11')`), true);
+  let r = rec();
+  assert.equal(r.tgt_repeatRate, 36, 'what A changed is saved');
+  assert.equal(r.tgt_foodCost, 28, 'B\'s food cost stays (A did not touch it)');
+  assert.equal(r.off_drinkRate, true, 'B\'s "not used" stays (A did not touch the box)');
+  assert.equal(r.gAvg, 4.6);
+  // A clears a target it had drawn → this month's value is removed, even though B's value is newer
+  c.DOM = shownDom(c, 'F01', '2026-11');
+  setMan(c, 'F01', '2026.11', Object.assign({}, rec(), { tgt_laborHours: 400 }));
+  c.DOM['k2t-repeatRate'].value = '';
+  assert.equal(run(c, `k2SaveMonth('F01','2026-11')`), true);
+  r = rec();
+  assert.ok(r.tgt_repeatRate == null, 'the cleared target is removed');
+  assert.equal(r.tgt_laborHours, 400, 'B\'s plan (arrived after drawing) stays');
+  assert.equal(r.tgt_foodCost, 28);
+  // A turns a box it had drawn as "used" off → written; a box drawn as off and still off is not touched
+  c.DOM = shownDom(c, 'F01', '2026-11');
+  assert.equal(c.DOM['k2o-drinkRate'].defaultChecked, false);
+  setMan(c, 'F01', '2026.11', Object.assign({}, rec(), { off_drinkRate: false }));
+  c.DOM['k2o-guests'].checked = false;
+  assert.equal(run(c, `k2SaveMonth('F01','2026-11')`), true);
+  r = rec();
+  assert.equal(r.off_guests, true);
+  assert.equal(r.off_drinkRate, false, 'B turned drink on again after A drew it; A did not touch it');
+  // nothing touched → nothing written even if the device has newer values from elsewhere
+  c.DOM = shownDom(c, 'F01', '2026-11');
+  setMan(c, 'F01', '2026.11', Object.assign({}, rec(), { tgt_foodCost: 27 }));
+  const before = c.STORE.get('kpi_man_2026.11');
+  assert.equal(run(c, `k2SaveMonth('F01','2026-11')`), false);
+  assert.equal(c.TOASTS.at(-1)[0], '変わったところはありません');
+  assert.equal(c.STORE.get('kpi_man_2026.11'), before);
+  // the same number written differently (36 / 36.0) is not a change
+  assert.equal(run(c, `k2SameInput('36', '36.0')`), true);
+  assert.equal(run(c, `k2SameInput('', '0')`), false);
+  assert.equal(run(c, `k2SameInput(' 30 ', '30')`), true);
+});
+
+test("⑤d (Codex #147 P2-2) a past month is judged with that month's targets, not this month's", () => {
+  const c = device({ cur: '2026-11' });
+  setMan(c, 'F09', '2026.10', { tgt_laborPct: 32, tgt_foodCost: 31 });
+  setMan(c, 'F09', '2026.11', { tgt_laborPct: 28, tgt_foodCost: 27 });
+  run(c, between('var MD_KPI = {', '\n};').replace('var MD_KPI', 'var MD_KPI') + '\n' + ['mcRound', 'mdUnknown', 'mdJudge', 'mdVerdict', 'mdWeekRates'].map(fnSrc).join('\n') + `
+    function mdV(code, state, o){ return Object.assign({ code: code, state: state }, o || {}); }
+    function mcYm(){ return CUR; }
+    function cumulativeToToday(){ return { laborRate: 30, actToToday: 1000, actMonth: 1000, budMonth: 1000, daysWithActual: 30, budToToday: 1000 }; }
+    function mcEnoughDays(){ return true; }
+    function mdViewLaborGate(){ return false; }
+    function foodCostOf(){ return { hasEnd: true, rate: 29 }; }
+    function _mdMemo(ns, key, make){ return make(); }
+    function mcYmOffset(){ return 0; }
+    function monthGuestBudget(){ return 0; }
+    function mdStoreSeries(){ return { budMonth: 1000, weeks: [{ sun: '2026-10-04', hasAct: true, sales: 1000, bud: 1000, guests: 0, labor: 300, food: 290 }] }; }
+  `);
+  const lab = plain(run(c, `mdVerdict('F09','labor_rate','2026-10')`));
+  assert.equal(lab.target, 32, 'October\'s labor target');
+  assert.equal(lab.state, 'ok', '30% against 32% is met');
+  const nov = plain(run(c, `mdVerdict('F09','labor_rate','2026-11')`));
+  assert.equal(nov.target, 28);
+  assert.equal(nov.state, 'miss');
+  const fc = plain(run(c, `mdVerdict('F09','cost_rate','2026-10')`));
+  assert.equal(fc.target, 31, 'October\'s food cost target');
+  assert.equal(fc.state, 'ok');
+  const wk = plain(run(c, `mdWeekRates('F09','2026-10')`))[0];
+  assert.equal(wk.labor_rate, Math.round(32 / 30 * 100), 'the week rate uses October\'s labor target');
+  assert.equal(wk.cost_rate, Math.round(31 / 29 * 100), 'and October\'s food cost target');
+  // every other lookup that knows its month passes it
+  assert.match(fnSrc('quarterTargets'), /getStoreKpiTargets\(storeId, 0, months\[months\.length-1\]\)/);
+  assert.match(fnSrc('_qbMonthData'), /getStoreKpiTargets\(storeId, 0, ym\)/);
+  assert.match(fnSrc('laborSummaryCard'), /getStoreKpiTargets\(storeId, 0, _ym\)/);
+  assert.match(fnSrc('renderLaborDetail'), /getStoreKpiTargets\(storeId, 0, ym\)/);
+  assert.doesNotMatch(fnSrc('mdVerdict'), /getStoreKpiTargets\(storeId\)/);
+  assert.doesNotMatch(fnSrc('mdWeekRates'), /getStoreKpiTargets\(storeId\)/);
 });
 
 test('⑤b the table renders every KPI with a target box only where it can be changed', () => {
