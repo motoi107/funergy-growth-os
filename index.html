@@ -14341,10 +14341,10 @@ async function ssCall(payload, retried){
   if(j && j.clfn===1 && window._fpSsHdr!==false) window._fpSsHdr=true;   /* v1151 */
   var _isHr = typeof payload.action==='string' && payload.action.indexOf('hr_')===0;
   if((r.status===404 && !(j && j.error)) || (r.status===503 && j && j.error==='auth_unavailable')){
-    _ss.legacy={ id:S.id, at:Date.now() };
+    _ss.legacy={ id:S.id, at:Date.now(), auth:(r.status===503) };   /* v1151（Codex #145 6848717787 P2）：auth＝関数は入っているが PIN の確かめ先が答えない（取れなかった。「関数が無い」とは分ける） */
     /* v1142：採用・お悩み相談室は、PIN の確かめ先が答えないだけなら失敗（REST に切り替えない）。関数が無いなら前の版と同じ */
     if(_isHr){ if(r.status===503) return { status:503, error:'auth_unavailable' }; _ss.hrOld={ id:S.id, at:Date.now() }; }
-    return { legacy:true };
+    return { legacy:true, auth:(r.status===503) };
   }
   /* メールのログインの期限切れ：1 回だけ取り替えてやり直す（PIN の印のあるときは PIN で決まるので取り替えない） */
   if(r.status===401 && !retried && !S.pin && S.em && S.em.refresh_token && typeof invInSessionRefresh==='function'){
@@ -14405,7 +14405,7 @@ async function ssPull(force, tk){
     var s0=await scTake({ level:'none' }, tk); if(s0.stale) return STALE;   /* v1147：Tip の期間の確定・注意ログも */
     var g0=await gbTake({ keys:{} }, tk); return g0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0, sc:s0, gb:g0 };   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   }
-  if(ssLegacyNow(S)) return { rest:true };
+  if(ssLegacyNow(S)) return { rest:true, fail:!!(_ss.legacy && _ss.legacy.auth) };   /* v1151（Codex #145 6848717787 P2）：PIN の確かめ先が答えない 10 分のあいだは「取れなかった」（RLS のあと REST では取れない） */
   var part=(ssState()==='part'), seen=ssSeenGet(), have={};
   if(!force && ssWhoGet()===csWho()) Object.keys(seen).forEach(function(k){   /* Codex #142 P2：ほかのログインが受け取った写しの印は送らない */   /* 「クラウドから取り込む」は印によらず全部。part の端末は見せる形の印（p:）だけ（全部の値の印 h: とは同じにならないので、全部の値は全部届く） */
     var s=String(seen[k]), c=s.indexOf('#');
@@ -14413,7 +14413,7 @@ async function ssPull(force, tk){
   });
   var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), sc_have:scHaveMap(force), gb_have:gbHaveMap(force), ms:60000 });   /* v1148：gb_have でグレード履歴・賞与の個人設定・G3 の職種も */   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない）。v1147：sc_have で Tip の期間の確定・注意ログも */
   if(ssStale(tk)) return STALE;   /* Codex P1：前の人の答え（GM の full など）を、次の人の端末に置かない */
-  if(r.legacy) return { rest:true };
+  if(r.legacy) return { rest:true, fail:!!r.auth };   /* v1151：関数が無い（前の版）は今までどおり。PIN の確かめ先が答えないのは「取れなかった」 */
   if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
     var s1=await scTake({ level:'none' }, tk); if(s1.stale) return STALE;
     var g1=await gbTake({ keys:{} }, tk); return g1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1, sc:s1, gb:g1 }; }
@@ -15004,6 +15004,13 @@ async function _kvPullRows(force){
     if(_scMk3){ try{ Object.defineProperty(rows, '_sc', { value:_scMk3, enumerable:false }); }catch(e){} }
     if(!_ssr.gb.fail){ try{ Object.defineProperty(rows, '_gb', { value:{ ver:_ssr.gb.ver || {} }, enumerable:false }); }catch(e){} }
   }
+  /* v1151（Codex #145 6848717787 P2）：保護されたデータ（成長カルテ・賞与・Career Score・Tip の期間の確定・注意ログ・グレード履歴など）を
+     関数から取れなかった区分。前はこれを呼ぶ側に伝えず、REST の行が読めれば同期は「最新」になり、「変わった」の合図の預かり（_secure:bonus など）を
+     外していた（SQL のあと公開の鍵ではこれらは取れない）。supaPullAllMasters が _fails に「secure」を足す＝自動の同期はこの同期を「最新」に数えない */
+  if(Array.isArray(rows) && !_stale){
+    var _sf=_ssr.fail ? ['ss','cs','sc','gb'] : ['cs','sc','gb'].filter(function(a){ return !!(_ssr[a] && _ssr[a].fail); });
+    if(_sf.length){ try{ Object.defineProperty(rows, '_secFail', { value:_sf, enumerable:false }); }catch(e){} }
+  }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
     if(_tk){ try{ Object.defineProperty(rows, '_tk', { value:_tk, enumerable:false }); }catch(e){} }   /* 取り込む直前にもう一度比べる（ssStaleRows） */
@@ -15112,6 +15119,9 @@ async function supaPullAllMasters(opt){
   var _deferredP = Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
     if (_dres[0] === null) _fails.push('ingredients');   /* v1137 */
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
+    /* v1151（Codex #145 6848717787 P2）：保護されたデータを関数から取れなかった（_kvPullRows の _secFail）。REST が読めても「取り込めなかった」に。
+       取り込む直前にログインが変わっていたら（前の人の同期）数えない */
+    try { var _sf=_dres[1] && _dres[1]._secFail; if (Array.isArray(_sf) && _sf.length && !(typeof ssStale==='function' && _dres[1]._tk && ssStale(_dres[1]._tk)) && _fails.indexOf('secure')<0) _fails.push('secure'); } catch(e){}
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;});
       /* v1150：消した印の行は置かない・まだ送っていない変えた欄と足した行を重ねる（前は送れていない変更があっても丸ごと置き換えていた） */
       var _mri=(typeof mrApplyPulled==='function') ? mrApplyPulled('m_ingredients', _ia) : null;
@@ -104312,7 +104322,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------- 同期（クラウドからの取り込み）の状態 ---------- */
   var SY = ST.syncInfo = { at: 0, busy: 0, fail: null, streak: 0 };
   var TABLE_LABEL = { app_state: ['業務のデータ', 'work data'], app_settings: ['設定', 'settings'], employees: ['従業員', 'employees'], stores: ['店舗', 'stores'],
-    ingredients: ['食材', 'ingredients'], recipes: ['レシピ', 'recipes'], vendors: ['取引先', 'vendors'], categories: ['カテゴリー', 'categories'], page: ['この画面のデータ', 'this page'] };
+    ingredients: ['食材', 'ingredients'], recipes: ['レシピ', 'recipes'], vendors: ['取引先', 'vendors'], categories: ['カテゴリー', 'categories'], page: ['この画面のデータ', 'this page'],
+    secure: ['保護されたデータ', 'protected data'] };   /* v1151（Codex #145 6848717787 P2）：関数から読む成長カルテ・賞与・Career Score など */
   function tableLabel(k){ var l = TABLE_LABEL[k]; return l ? T(l[0], l[1]) : T('データ', 'data'); }
   ST.tableLabel = tableLabel;   /* v1151：変更の記録・左下の知らせでも使う */
   /* supaPullAllMasters（ログイン・自動の同期・「クラウドから取り込む」）の結果を見る。読めなかった表は _fails */

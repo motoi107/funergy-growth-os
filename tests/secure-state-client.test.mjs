@@ -747,3 +747,130 @@ test('Codex #142 P2 (v1139): after a sign-in that used REST (no record of whose 
   assert.deepEqual(view(c), NONE, 'another person: nothing of the earlier projection');
   W.ssDown = false;
 });
+
+/* v1151（Codex #145 6848717787 P2）：保護されたデータを関数から取れなかった同期は「最新」に数えない。
+   本物の ssPull・_kvPullRows・supaPullAllMasters と、本物の FUNERGY_STATUS（autoSync・trackPull）・FUNERGY_SIGNAL（runFull）をつなぐ。
+   前は ssPull の「取れなかった」（{ rest:true, fail:true }）を _kvPullRows が伝えず、REST の行が読めれば _fails が空のまま「最新」になり、
+   「変わった」の合図の預かり（_secure:bonus）を外していた（SQL のあと公開の鍵では賞与などは取れない）。合成データだけ */
+const between = (a, b) => { const i = source.indexOf(a), j = source.indexOf(b, i); assert.ok(i > 0 && j > i, a); return source.slice(i, j); };
+const unrefTimer = (f, ms) => { const h = setTimeout(f, ms); if (h && h.unref) h.unref(); return h; };
+function syncTab(W, who) {
+  const c = tab(W);
+  Object.assign(c, who);
+  c.setTimeout = unrefTimer; c.setInterval = () => 0;
+  const shell = { style: {} };
+  c.document = { hidden: false, addEventListener() {}, removeEventListener() {}, getElementById: id => (id === 'app-shell' ? shell : null), createElement: () => ({ innerHTML: '', classList: { contains: () => false } }) };
+  c.addEventListener = () => {}; c.removeEventListener = () => {};
+  c.navigator = { onLine: true }; c.getComputedStyle = () => ({ display: 'block' }); c.curPage = 'dashboard';
+  c.FUNERGY_UX = { saveState: () => ({ k: '' }), save: {}, failedList: () => [] };
+  c.flushOutbox = async () => {};
+  vm.runInContext(fn('supaPullAllMasters'), c);   // 本物のまとめての取り込み（右上の同期の結果 _fails を作る）
+  vm.runInContext(between('/* ==== FUNERGY_STATUS（v1137）', '/* ==== FUNERGY_STATUS end ==== */'), c);   // 本物の autoSync・trackPull（取り込みを包む）
+  vm.runInContext(between('/* ==== FUNERGY_SIGNAL（v1151', '/* ==== FUNERGY_SIGNAL end ==== */'), c);   // 本物の runFull
+  const ST = c.FUNERGY_STATUS, SG = c.FUNERGY_SIGNAL;
+  SG.st.on = true;
+  return { c, ST, SG };
+}
+const hold = (SG, key) => { SG.st.fullPend[key] = { key, n: 1, _ft: Date.now() - 5 }; };
+const stopSig = SG => { try { clearTimeout(SG.st.fullTm); } catch {} SG.st.fullTm = null; SG.stop(); };
+const ssNet = (c, W) => { c.fetch = (u, o) => (String(u).startsWith(SS) ? Promise.reject(new TypeError('fetch failed')) : W.fetch(u, o)); };
+
+test('v1151 (Codex #145 6848717787 P2): the function cannot be reached by a GM: REST still reads, but the sync is not "up to date" and the signal hold for the bonus stays until the bonus is really read', async () => {
+  const W = world({ rls: true });
+  const { c, ST, SG } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+  W.set('bonus_rules', { pool: [9] }, '2026-11-03T12:00:00.000000+00:00');   // ほかの端末が賞与を変えた（合図 _secure:bonus）
+  hold(SG, '_secure:bonus');
+  ssNet(c, W);   // 関数に届かない：ssPull は { rest:true, fail:true }
+  const r = await SG._runFull();
+  assert.equal(r, 'fail', 'the sync says something could not be fetched (before: ok)');
+  assert.equal(ST.auto.okStarted, 0, 'not counted as up to date (before: counted)');
+  assert.deepEqual(Object.keys(SG.st.fullPend), ['_secure:bonus'], 'the hold stays (before: dropped)');
+  assert.ok(SG.st.fullTm, 'tried again later');
+  assert.equal(local(c, 'bonus_rules'), undefined, 'REST (RLS) never gave the bonus');
+  assert.ok(W.calls.rest > 0, 'the rest of the work data was still read');
+  const s = ST.syncState();
+  assert.equal(s.k, 'fail');
+  assert.deepEqual([...s.what], ['保護されたデータ']);
+  // 関数が戻った：賞与を本当に読めた同期で預かりを外す
+  c.fetch = (u, o) => W.fetch(u, o);
+  ST.auto.last = 0;
+  const r2 = await SG._runFull();
+  assert.equal(r2, 'ok');
+  assert.deepEqual(local(c, 'bonus_rules'), { pool: [9] }, 'the bonus was read');
+  assert.ok(ST.auto.okStarted > 0);
+  assert.equal(Object.keys(SG.st.fullPend).length, 0, 'released only now');
+  assert.equal(ST.syncState().k, 'ok');
+  stopSig(SG);
+});
+
+test('v1151 (Codex #145 6848717787 P2): the PIN check behind the function is down (503, the old REST way for 10 minutes) and crew whose function call fails: also "could not fetch"; a function that is simply not deployed (404) is still the old way and counts', async () => {
+  const W = world({ rls: true });
+  W.wrDown = true;   // 関数は入っているが PIN の確かめ先が答えない（関数は 503 auth_unavailable）
+  const A = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+  hold(A.SG, '_secure:bonus');
+  assert.equal(await A.SG._runFull(), 'fail');
+  assert.equal(A.ST.auto.okStarted, 0);
+  assert.deepEqual(Object.keys(A.SG.st.fullPend), ['_secure:bonus']);
+  const n0 = W.calls.ss; A.ST.auto.last = 0;
+  assert.equal(await A.SG._runFull(), 'fail', 'still not fetched while the old way is kept (10 minutes)');
+  assert.equal(W.calls.ss, n0, 'the function is not asked again in those 10 minutes (as before)');
+  assert.deepEqual(Object.keys(A.SG.st.fullPend), ['_secure:bonus']);
+  stopSig(A.SG);
+  W.wrDown = false;
+
+  const B = syncTab(W, { _hwSession: 't1', curRole: 'staff' });   // スタッフ：関数に届かない（{ rest:false, fail:true }）
+  hold(B.SG, '_secure:career_score');
+  ssNet(B.c, W);
+  assert.equal(await B.SG._runFull(), 'fail');
+  assert.equal(B.ST.auto.okStarted, 0);
+  assert.deepEqual(Object.keys(B.SG.st.fullPend), ['_secure:career_score']);
+  stopSig(B.SG);
+
+  const W2 = world();   // SQL の前・関数がまだ無い（404）：今までどおり REST で全部読める＝取れた
+  W2.ssDown = true;
+  const C = syncTab(W2, { _hwSession: 'tGM', curRole: 'gm' });
+  hold(C.SG, '_secure:bonus');
+  assert.equal(await C.SG._runFull(), 'ok');
+  assert.ok(C.ST.auto.okStarted > 0);
+  assert.equal(Object.keys(C.SG.st.fullPend).length, 0);
+  assert.deepEqual(local(C.c, 'bonus_rules'), { pool: [1, 2] }, 'read by REST as before');
+  stopSig(C.SG);
+});
+
+test('v1151 (Codex #145 6848717787 P2): only one protected part fails (Career Score, Tip period/warnings or grade history) while the rest is read: the sync is still "could not fetch" and that part\'s hold stays', async () => {
+  for (const [part, sig] of [['cs', '_secure:career_score'], ['sc', '_secure:tip_confirm'], ['gb', '_secure:grade_hist']]) {
+    const W = world({ rls: true });
+    const { c, ST, SG } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+    hold(SG, sig);
+    c.fetch = async (u, o) => {
+      const res = await W.fetch(u, o);
+      if (!String(u).startsWith(SS)) return res;
+      const j = await res.json();
+      if (j && typeof j === 'object' && j.level) j[part] = { error: 'down' };   // 関数は答えたが、その区分の「見られる人」を決められなかった
+      return new Response(JSON.stringify(j), { status: res.status, headers: { 'content-type': 'application/json' } });
+    };
+    assert.equal(await SG._runFull(), 'fail', part);
+    assert.equal(ST.auto.okStarted, 0, part);
+    assert.deepEqual(Object.keys(SG.st.fullPend), [sig], part);
+    assert.deepEqual([...ST.syncState().what], ['保護されたデータ'], part);
+    assert.deepEqual(local(c, 'bonus_rules'), { pool: [1, 2] }, 'the parts that were read are still read: ' + part);
+    stopSig(SG);
+  }
+});
+
+test('v1151 (Codex #145 6848717787 P2): the login changes while the protected data could not be fetched: the old person\'s failure is not shown to the next person', async () => {
+  const W = world({ rls: true });
+  const { c, ST, SG } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+  c.fetch = (u, o) => {
+    if (String(u).startsWith(SS)) return Promise.reject(new TypeError('fetch failed'));
+    if (String(u).includes('/rest/v1/app_state')) c._hwSession = 't1';   // REST を読んでいるあいだに次の人がログインした
+    return W.fetch(u, o);
+  };
+  const res = await c.supaPullAllMasters();
+  if (res && res._done) await res._done;
+  await new Promise(r => setTimeout(r, 0));
+  assert.equal(ST.syncInfo.busy, 0, 'the sync finished');
+  const s = ST.syncState();
+  assert.ok(!(s.what || []).includes('保護されたデータ'), 'not shown for the next person: ' + JSON.stringify(s));
+  stopSig(SG);
+});

@@ -245,3 +245,28 @@
 - `tests/ux-core.test.mjs`（足した 1）：個人の欄を初めて読んだときは描き直さない。
 - 足した 6 つのうち 5 つは `6cf4d72` の index.html では落ちる（④ は前も通る：前から画面の失敗は数えていなかった）。Codex と同じ 8 ファイル 186/186・static release pass/1151。
 - わざと壊す 11 通りのうち 10 で落ちる（残り 1 つは二重の守り：まとめての同期を 2 つ動かさない `fullBusy`＝自動の同期は動いているあいだ同じものを返す）。
+
+## 12. Codex #145（`0a11a73`・issuecomment 6848717787）の P2 の直し（11/13・Claude・アプリだけ。SQL・関数は変えていない）
+
+### 12-1. P2：保護されたデータを関数から取れなかったのに「最新」にしていた
+
+- 前：`ssPull` が「取れなかった」（CEO・GM＝`{ rest:true, fail:true }`、ほかの人＝`fail` と Career Score・Tip の期間の確定と注意ログ・グレード履歴の `fail`）を返しても、`_kvPullRows` はそれを呼ぶ側に伝えなかった。REST の行が読めれば `supaPullAllMasters` の `_fails` は空 → 11 の決まりで自動の同期は `okStarted` を進め、`runFull` は合図の預かり（`_secure:bonus` など）を外した。③ の SQL のあとは公開の鍵では賞与などは取れないので、ほかの端末の変更は次の別の変更まで取り直されなかった（Codex が本物の `ssPull`・`_kvPullRows`・`supaPullAllMasters`・`autoSync`・`runFull` をつないで再現）。
+- 今：`_kvPullRows` が取れなかった区分を行の印 `_secFail`（`ss`・`cs`・`sc`・`gb`）に残し、`supaPullAllMasters` が `_fails` に `secure` を足す。右上は「同期 ⚠ 保護されたデータ」、自動の同期は `okStarted` を進めず、預かりは残って 10 秒〜5 分おきに取り直す。本当に取れた同期で外す。REST で読めたほかのデータは今までどおり取り込む。
+- 「取れなかった」に数えるもの：関数に届かない・答えが読めない・CEO・GM の 401 などの失敗・関数は答えたが Career Score／Tip の期間の確定と注意ログ／グレード履歴の区分で見られる人を決められない・PIN の確かめ先が答えない（関数の 503 `auth_unavailable`。10 分は前の REST の道で、そのあいだ関数を呼ばないのは今までどおり。前はこの 10 分を「取れた」としていた）。
+- 数えないもの：関数がまだ無い（404・③ の SQL の前は REST で全部読める）・受け取らない人（`none`・店舗のログイン）・取り込みのあいだにログインが替わった（前の人の答え。`_kvPullRows` の `!_stale` と `supaPullAllMasters` の `ssStale` の二重の守り）。
+
+### 12-2. 試験（合成データ）
+
+- `tests/secure-state-client.test.mjs`（足した 4）：本物の `ssPull`・`_kvPullRows`・`supaPullAllMasters` と本物の FUNERGY_STATUS（`autoSync`・`trackPull`）・FUNERGY_SIGNAL（`runFull`）をつなぐ。
+  ① CEO・GM で関数に届かない（RLS あり）→ `fail`・`okStarted` は 0・預かり `_secure:bonus` は残る・右上は「保護されたデータ」→ 関数が戻ると賞与を読んで預かりを外す。
+  ② PIN の確かめ先が答えない（503）は 10 分のあいだ関数を呼ばずに「取れなかった」のまま・スタッフで関数に届かないのも同じ・関数がまだ無い（404・RLS の前）は今までどおり「取れた」。
+  ③ Career Score／Tip の期間の確定／グレード履歴の 1 つだけ決められないときも「取れなかった」（読めたほかのデータは取り込む）。
+  ④ 取り込みのあいだにログインが替わったら、前の人の失敗を次の人に出さない。
+- ①〜③ は `0a11a73` の index.html では落ちる（④ は前も通る：前は何も足していなかった）。
+- 試験の土台（`tests/lib/secure-state-world.mjs`）に `app_settings` の読み（設定の行）を足した（本物の `supaPullAllMasters` が読むため。今までの試験の答えは変わらない）。
+- わざと壊す 11 通りのうち 10 で落ちる（残り 1 つは二重の守り：`_kvPullRows` の `!_stale`。`supaPullAllMasters` の `ssStale` と両方外すと落ちる）。
+
+### 12-3. 限界
+
+- 関数がずっと答えない（CEO・GM の PIN の印の期限切れ・関数の不具合など）と、右上は「同期 ⚠ 保護されたデータ」のまま。預かりがあるあいだは 5 分おきに取り直す（ふだんの自動の同期は 10 分ごと）。
+- ③ の SQL の前でも、関数に届かないときは REST で読めていても「取れなかった」と出る（どちらか分からないので安全のほう）。

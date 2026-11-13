@@ -93,6 +93,8 @@ export function makeWorld(o = {}) {
     }
     // 試験だけ：書けた直後（答えを返す前）にほかの操作を流す。afterWrite(keys) が Promise を返したら 1 回だけで、終わるまで待つ
     const afterWrite = async keys => { if (!W.afterWrite) return; const v = W.afterWrite(keys); if (v && typeof v.then === 'function') { W.afterWrite = null; await v; } else if (v) W.afterWrite = null; };
+    // v1151（Codex #145 6848717787）：まとめての取り込み（supaPullAllMasters）が読む設定の表。試験では空（読めた）
+    if (p === '/rest/v1/app_settings' && m === 'GET') return J(W.settings || []);
     if (p === '/rest/v1/rpc/app_state_index') {
       if (W.indexMissing) return J({ code: 'PGRST202', message: 'Could not find the function' }, 404);
       const skip = (JSON.parse(opt.body || '{}').p_skip_prefix || []);
