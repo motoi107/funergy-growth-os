@@ -9740,6 +9740,321 @@ function _pullKeepLocal(key, pend, cloudAt){
     return ed*1000 > ca;   /* 手元を直したのが、クラウドの行が最後に書かれたよりあと（どちらも端末の時計：updated_at はアプリが書く） */
   }catch(e){ return false; }
 }
+/* ============================================================
+   v1149（段階 2c の 1 つ目・docs/MERGE_WHOLE_V1149_JA.md）：合流の決まりの無いキー（丸ごと上書き）は、
+   「直す前の値」と比べて、この端末で変えた所だけをクラウドの最新に重ねる
+   ------------------------------------------------------------
+   【前】合流の決まりの無い app_state の行（会議・食材移動・シフトの設定・店の休み・食材マスター v2 など約 40）と
+     app_settings の設定（約 30）は、保存のたびに端末の値を丸ごと送っていた。古い写しの端末・送り直し（flushOutbox）が、
+     ほかの人のあとの変更（別の店・別の記録）を消した（総点検の P1）。取り込みは、送れていない手元の変更があると
+     「手元を残す」か「クラウドで置き換える」のどちらか（v1136）で、片方の変更が消えた。
+   【いま】
+     1) 保存（lsSet）で中身が変わったとき、まだ無ければ「直す前の値」（この端末が最後にクラウドから受け取った・送った値）を
+        whole_base_v1/<キー> に覚える（この端末だけ・送らない・受け取らない）。送れたら忘れる。
+     2) 送るとき：クラウドの今の行を読み、3 つ（直す前・手元・クラウド）を比べて、手元で変えた所だけをクラウドに重ねる。
+        app_state は読んだ行が変わっていないときだけ書く（cas。ほかの端末が先に書いたら読み直して重ね直す）。
+        app_settings は書いたあと読み直して、同じでなければ重ね直す（3 回まで）。
+     3) 取り込むとき：送れていない手元の変更があれば、同じ重ね方で手元を作り直す（直す前の値はクラウドの値にする）。
+   【重ね方】入れ物（{…}）は欄ごと。id のそろった記録の並び（[{id:…},…]）は id ごと（並びはクラウドの順、
+     手元で足した記録は手元で前後にあった記録のそばに入れる）。それ以外の並び・数・文字は 1 つの値。
+     両方が同じ所を違う値にしたら、新しく直したほう（手元の最後の保存と、クラウドの行の時刻。どちらも端末の時計）。
+     分からなければ手元（前と同じ）。片方が消し、片方が直した所は、直した値を残す。両方が同じ id の記録を新しく作ったら、
+     その記録は丸ごと 1 つ（欄を混ぜない）。食材マスター v2 の通し番号（ing_v2_seq）は大きいほう。
+   【前と同じに動く所】直す前の値が無い（v1148 以前に送れなかった変更・v1149 で覚える前の変更）ときは、今までどおり丸ごと。
+     送れていない変更が残っているあいだは、またこの端末で直しても直す前の値を覚えない（丸ごとのまま。送れたあとの最初の保存で覚える）。
+     関数 secure-state で読み書きするキー・合流の決まりのあるキー・分けた行（spl_…）・マスターの表（rows）は対象の外。
+   ============================================================ */
+var WB_PRE = 'whole_base_v1/';
+var WB_ABS = { __wbAbsent:1 };          /* 「無い」（消した）の印。値としては使わない */
+var WB_NOBASE = { __wbNoBase:1 };       /* wbPush：直す前の値が無い＝今までどおり丸ごと送る */
+var WB_MAX_KEYS = ['ing_v2_seq'];       /* 数は大きいほう（通し番号を戻さない） */
+var WB_CONF_LOG = 12;                    /* 「設定 › 診断と記録」に残す食い違いの数（1 回の重ね方で） */
+/* 関数 secure-state で読み書きするキー（v1139〜v1148）。ここの重ね方は使わない */
+function wbSecure(key){
+  try{ if(typeof ssIsKey==='function' && ssIsKey(key)) return true; }catch(e){}
+  try{ if(typeof csIsKey==='function' && csIsKey(key)) return true; }catch(e){}
+  try{ if(typeof hrIsKey==='function' && hrIsKey(key)) return true; }catch(e){}
+  try{ if(typeof gwIsKey==='function' && gwIsKey(key)) return true; }catch(e){}
+  try{ if(typeof scIsKey==='function' && scIsKey(key)) return true; }catch(e){}
+  try{ if(typeof gbIsKey==='function' && gbIsKey(key)) return true; }catch(e){}
+  try{ if(typeof piiRawKey==='function' && piiRawKey(key)) return true; }catch(e){}
+  return false;
+}
+/* どの表の行か（app_state・app_settings）。対象でなければ null */
+function wbTable(key){
+  var k=String(key||'');
+  if(!k || k.length>300 || k.indexOf(WB_PRE)===0) return null;
+  try{ if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(k)) return null; }catch(e){ return null; }
+  try{ if(typeof SUPA_MASTER_MAP!=='undefined' && SUPA_MASTER_MAP[k]) return null; }catch(e){}
+  if(k.indexOf('spl_')===0) return null;
+  try{ if(typeof _SPLIT_KEYS!=='undefined' && _SPLIT_KEYS && _SPLIT_KEYS[k]) return null; }catch(e){}
+  try{ if(typeof _opMergeDef==='function' && _opMergeDef(k)) return null; }catch(e){ return null; }
+  if(wbSecure(k)) return null;
+  try{ if(typeof isOpSyncKey==='function' && isOpSyncKey(k)) return 'app_state'; }catch(e){}
+  try{
+    if(typeof SUPA_SETTING_KEYS!=='undefined' && SUPA_SETTING_KEYS.indexOf(k)>=0) return 'app_settings';
+    if(typeof SUPA_SETTING_PREFIX!=='undefined' && SUPA_SETTING_PREFIX.some(function(p){ return k.indexOf(p)===0; })) return 'app_settings';
+  }catch(e){}
+  return null;
+}
+function wbIsKey(key){ return wbTable(key)!=null; }
+/* 直す前の値の記録：{ v:1, t:文字（JSON）か null（行が無かった）, at } */
+function wbGet(key){
+  try{ var s=_lsStoreGet(WB_PRE+key); if(s==null) return null; var o=JSON.parse(s);
+    if(o && o.v===1 && (o.t===null || typeof o.t==='string')) return o; }catch(e){}
+  return null;
+}
+function wbSet(key, txt){ try{ return _lsWriteVerified(WB_PRE+key, JSON.stringify({ v:1, t:(txt==null ? null : String(txt)), at:Date.now() })); }catch(e){ return false; } }
+function wbDrop(key){ try{ if(_lsStoreGet(WB_PRE+key)!=null) _lsRawDel(WB_PRE+key); }catch(e){} }
+function wbParse(txt){ if(txt==null) return WB_ABS; try{ return JSON.parse(txt); }catch(e){ return WB_ABS; } }
+/* 送れていない変更があるか（だれの保存でも。共有の端末でほかの人の変更を取り込みで消さない）・送っている途中か */
+function wbPending(key){
+  try{ if(typeof _pushBusy==='function' && _pushBusy(key)) return true; }catch(e){}
+  try{ return _outboxGet().some(function(x){ return x && x.key===key; }); }catch(e){ return false; }
+}
+/* lsSet から：中身が変わる保存の前に、直す前の値を覚える（もう覚えていれば、送れるまでそのまま）。
+   v1149（Codex・Claude の #143 のレビュー P2）：
+   ・そのキーに送れていない変更（v1148 以前の送信待ち・直す前の値を覚えていない送信待ち・送っている途中）があるときは覚えない。
+     手元の値にはその変更が入っているので、それを「直す前の値」にすると、その変更を「この端末では変えていない」と読み、
+     クラウドの値に戻して送信待ちも外してしまう（送れていなかった変更が消える）。送れるまでは今までどおり丸ごと送り、
+     送れたあとの最初の保存で覚える。
+   ・起動・取り込みの途中の保存（すぐには送らない＝前から）でも覚える。覚えないと、その変更が入った値を次の保存で
+     「直す前の値」にしてしまい、同じく消える。取り込みがその行をクラウドの値で置き換えたら、直す前の値も外れる（wbIncoming）。
+     ただし端末の保存（IndexedDB）を読み終える前の保存は、直す前の値を確かめられないので覚えず、このキーは丸ごと送れるまで
+     覚えない（「確かめられなかった」の印）。
+   ・（Codex #143 6823638883）その印はメモリだけだったので、送る前に閉じて開き直すと印が消え、次の保存でその変更の入った値を
+     「直す前の値」にして消していた。印は端末の小さな印（_wb_unk_v1・送信待ちの記録と同じく localStorage）にも残し、開き直しても
+     丸ごと送れるまで覚えない。書けなかったときはメモリの印（_wbUnk）だけ（この起動のあいだ） */
+var _wbUnk = {};
+var WB_UNK_KEY = '_wb_unk_v1';   /* { キー: 印を付けた時刻 }（この端末だけ・送らない） */
+function _wbUnkAll(){
+  try{ var s=(typeof _smallGet==='function') ? _smallGet(WB_UNK_KEY) : localStorage.getItem(WB_UNK_KEY); var o=JSON.parse(s||'null');
+    return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; }
+}
+function _wbUnkSave(o){
+  var t=Object.keys(o).length ? JSON.stringify(o) : null;
+  if(typeof _smallSet==='function') return _smallSet(WB_UNK_KEY, t);
+  try{ if(t==null) localStorage.removeItem(WB_UNK_KEY); else localStorage.setItem(WB_UNK_KEY, t); return true; }catch(e){ return false; }
+}
+function wbUnkHas(key){
+  if(_wbUnk[key]) return true;
+  return Object.prototype.hasOwnProperty.call(_wbUnkAll(), key);
+}
+function wbUnkMark(key){
+  _wbUnk[key]=1;
+  try{ var o=_wbUnkAll(); if(o[key]) return; o[key]=Date.now(); _wbUnkSave(o); }catch(e){}
+}
+function wbUnkClear(key){
+  try{ delete _wbUnk[key]; }catch(e){}
+  try{ var o=_wbUnkAll(); if(!Object.prototype.hasOwnProperty.call(o, key)) return; delete o[key]; _wbUnkSave(o); }catch(e){}
+}
+function wbOnEdit(key, prevTxt, nextTxt){
+  try{
+    if(prevTxt===nextTxt) return;
+    if(!wbIsKey(key)) return;
+    if(typeof _idbState!=='undefined' && _idbState==='init'){ wbUnkMark(key); return; }
+    if(wbGet(key)) return;
+    if(wbUnkHas(key) || wbPending(key)) return;
+    wbSet(key, prevTxt);
+  }catch(e){}
+}
+/* 丸ごと送れた（直す前の値が無かった）：この端末の値が送った値のままなら、確かめられなかった印を外す（次の保存から覚える） */
+function wbWholeSent(key, val){
+  try{ if(!wbUnkHas(key)) return; if(_lsStoreGet(key)===JSON.stringify(val)) wbUnkClear(key); }catch(e){}
+}
+/* 中身が同じか（欄の順によらない） */
+function _wbEq(a, b){
+  if(a===b) return true;
+  if(a===WB_ABS || b===WB_ABS) return false;
+  try{ if(JSON.stringify(a)===JSON.stringify(b)) return true; }catch(e){}
+  try{ return _cjson(a)===_cjson(b); }catch(e){ return false; }
+}
+function _wbPlain(x){ return !!x && typeof x==='object' && !Array.isArray(x) && x!==WB_ABS; }
+function _wbOwn(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
+/* 記録の並びの id（どの記録にも文字か数の id があり、重ならないときだけ。それ以外は null） */
+function _wbIds(a){
+  if(!Array.isArray(a)) return null;
+  var ids=[], seen={};
+  for(var i=0;i<a.length;i++){
+    var r=a[i];
+    if(!_wbPlain(r)) return null;
+    var id=r.id;
+    if(!((typeof id==='string' && id!=='') || (typeof id==='number' && isFinite(id)))) return null;
+    var k=(typeof id)+':'+id;
+    if(_wbOwn(seen, k)) return null;
+    seen[k]=1; ids.push(k);
+  }
+  return ids;
+}
+function _wbConf(st, path, how){ try{ if(st && st.conf && st.conf.length<50) st.conf.push({ p:path, how:how }); }catch(e){} }
+/* 3 つを比べて重ねる。base＝直す前・local＝手元・cloud＝クラウドの今（どれも WB_ABS＝無い、になりうる） */
+function wbMerge3(base, local, cloud, st, path){
+  path=path||'';
+  if(_wbEq(local, base)) return cloud;     /* 手元は変えていない */
+  if(_wbEq(cloud, base)) return local;     /* クラウドは変わっていない */
+  if(_wbEq(local, cloud)) return local;    /* 同じ変更 */
+  if(_wbPlain(local) && _wbPlain(cloud)){
+    var b=_wbPlain(base) ? base : {}, out={}, ks=[], seen={};
+    Object.keys(cloud).forEach(function(k){ seen[k]=1; ks.push(k); });
+    Object.keys(local).forEach(function(k){ if(!_wbOwn(seen, k)){ seen[k]=1; ks.push(k); } });
+    ks.forEach(function(k){
+      var r=wbMerge3(_wbOwn(b,k) ? b[k] : WB_ABS, _wbOwn(local,k) ? local[k] : WB_ABS, _wbOwn(cloud,k) ? cloud[k] : WB_ABS, st, path+'.'+k);
+      if(r!==WB_ABS) out[k]=r;
+    });
+    return out;
+  }
+  var li=_wbIds(local), ci=_wbIds(cloud), bi=(base===WB_ABS) ? [] : _wbIds(base);
+  if(li && ci && bi) return _wbMergeIds(base===WB_ABS ? [] : base, local, cloud, li, ci, bi, st, path);
+  /* 1 つの値として、両方が違う値にした */
+  if(local===WB_ABS){ _wbConf(st, path, 'kept_edit'); return cloud; }   /* 手元で消し、クラウドで直した：直した値を残す */
+  if(cloud===WB_ABS){ _wbConf(st, path, 'kept_edit'); return local; }   /* クラウドで消し、手元で直した：直した値を残す */
+  var pc=(st && st.prefer==='cloud');
+  _wbConf(st, path, pc ? 'cloud' : 'local');
+  return pc ? cloud : local;
+}
+function _wbMergeIds(base, local, cloud, li, ci, bi, st, path){
+  var bm={}, lm={}, cm={};
+  base.forEach(function(r, i){ bm[bi[i]]=r; });
+  local.forEach(function(r, i){ lm[li[i]]=r; });
+  cloud.forEach(function(r, i){ cm[ci[i]]=r; });
+  var out=[], ok=[];
+  cloud.forEach(function(r, i){
+    var k=ci[i], bv=_wbOwn(bm,k) ? bm[k] : WB_ABS, lv=_wbOwn(lm,k) ? lm[k] : WB_ABS, x;
+    if(bv===WB_ABS && lv!==WB_ABS && !_wbEq(lv, r)){
+      /* 両方が同じ id の記録を新しく作った：欄を混ぜず、どちらか 1 つを丸ごと */
+      var pc=(st && st.prefer==='cloud'); _wbConf(st, path+'['+k+']', pc ? 'cloud' : 'local'); x=pc ? r : lv;
+    } else x=wbMerge3(bv, lv, r, st, path+'['+k+']');
+    if(x!==WB_ABS){ out.push(x); ok.push(k); }
+  });
+  local.forEach(function(r, i){
+    var k=li[i];
+    if(_wbOwn(cm, k)) return;
+    var x=wbMerge3(_wbOwn(bm,k) ? bm[k] : WB_ABS, r, WB_ABS, st, path+'['+k+']');
+    if(x===WB_ABS) return;
+    /* 手元で前後にあった記録のそばに入れる（後ろの記録の前・無ければ前の記録の後・どちらも無ければ最後） */
+    var at=-1, j, p;
+    for(j=i+1;j<li.length && at<0;j++){ p=ok.indexOf(li[j]); if(p>=0) at=p; }
+    if(at<0){ for(j=i-1;j>=0 && at<0;j--){ p=ok.indexOf(li[j]); if(p>=0) at=p+1; } }
+    if(at<0) at=out.length;
+    out.splice(at, 0, x); ok.splice(at, 0, k);
+  });
+  return out;
+}
+/* キーの決まり（通し番号は大きいほう）を入れた重ね方 */
+function wbMergeTop(key, base, local, cloud, st){
+  if(WB_MAX_KEYS.indexOf(key)>=0 && typeof local==='number' && typeof cloud==='number' && isFinite(local) && isFinite(cloud)) return Math.max(local, cloud);
+  return wbMerge3(base, local, cloud, st, '');
+}
+/* 両方が同じ所を違う値にしたとき、どちらを残すか：新しく直したほう（手元の最後の保存の時刻と、クラウドの行の時刻。どちらも端末の時計）。
+   分からなければ手元（前と同じ） */
+function wbPrefer(key, cloudAt){
+  try{
+    var ed=Number(_pendEditAtAll()[key])||0;
+    var ca=(typeof _tsMicro==='function') ? _tsMicro(cloudAt) : null;
+    if(ed && ca!=null && ed*1000<=ca) return 'cloud';
+  }catch(e){}
+  return 'local';
+}
+/* 食い違いを「設定 › 診断と記録」に残す（中身は出さない。どのキーの、どの所か・どちらを残したか） */
+function wbNoteConf(key, st, when){
+  try{
+    if(!st || !st.conf || !st.conf.length) return;
+    if(!(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function')) return;
+    var nm=(typeof outboxLabel==='function') ? outboxLabel(key) : key;
+    var L=st.conf.slice(0, WB_CONF_LOG).map(function(c){ var w=c.how==='cloud' ? 'クラウド' : (c.how==='kept_edit' ? '直したほう' : 'この端末'); return (c.p||'（全体）')+'→'+w; });
+    var E=st.conf.slice(0, WB_CONF_LOG).map(function(c){ var w=c.how==='cloud' ? 'cloud' : (c.how==='kept_edit' ? 'the edited one' : 'this device'); return (c.p||'(whole)')+'→'+w; });
+    var more=st.conf.length>WB_CONF_LOG ? ('（ほか '+(st.conf.length-WB_CONF_LOG)+'）') : '', moreE=st.conf.length>WB_CONF_LOG ? (' (+'+(st.conf.length-WB_CONF_LOG)+' more)') : '';
+    FUNERGY_STATUS.log('store', (typeof t==='function') ? t(nm+'：ほかの端末でも同じ所を直していました（'+(when==='pull' ? '取り込み' : '送信')+'）。'+L.join('・')+more, nm+': another device changed the same place ('+(when==='pull' ? 'import' : 'send')+'). '+E.join(', ')+moreE) : (nm+'：'+L.join('・')));
+  }catch(e){}
+}
+/* 取り込みのとき：送れていない手元の変更があるキーは、手元で変えた所をクラウドの値に重ねた値を返す。
+   null＝今までどおり（v1136 の決め方）／{ keep:true }＝送っている途中なので手元を残す／{ value, commit }＝value を書き、書けたら commit() */
+function wbIncoming(key, cloudVal, cloudAt){
+  try{
+    if(!wbIsKey(key)) return null;
+    var B=wbGet(key);
+    if(!B){
+      /* v1149（Codex #143 6824737733・Claude のルーティン 6824635936 の P3）：「確かめられなかった」の印があるキーで、
+         送れていない変更が無い（だれの送信待ちにも・送っている途中にも無い）なら、取り込みは今までどおりクラウドの値で置き換える
+         （v1136 の決め方と同じ値）。置き換えたあとの端末の値はクラウドの値そのものなので、書けたら印を外す。外さないと、
+         開き直しをまたいで印が残り、そのキーの次の 1 回の保存が丸ごとになって、ほかの端末のあとの変更を消すことがあった。
+         端末の保存（IndexedDB）をまだ読んでいないあいだは外さない（読み終えたときに端末の値が勝つことがある＝v1138） */
+      if(cloudVal!==undefined && wbUnkHas(key) && !wbPending(key) && !(typeof _idbState!=='undefined' && _idbState==='init'))
+        return { value:cloudVal, commit:function(){ wbUnkClear(key); } };
+      return null;
+    }
+    if(!wbPending(key)){ wbDrop(key); return null; }   /* 送るものが無い：直す前の値は要らない */
+    if(typeof _pushBusy==='function' && _pushBusy(key)) return { keep:true };
+    var Lt=_lsStoreGet(key); if(Lt==null){ wbDrop(key); return null; }
+    var L=JSON.parse(Lt), base=wbParse(B.t), C=(cloudVal===undefined) ? WB_ABS : cloudVal;
+    var st={ conf:[], prefer:wbPrefer(key, cloudAt) };
+    var M=wbMergeTop(key, base, L, C, st);
+    var ct=JSON.stringify(C===WB_ABS ? null : C);
+    return { value:(M===WB_ABS ? null : M), commit:function(){ wbSet(key, C===WB_ABS ? null : ct); wbNoteConf(key, st, 'pull'); } };
+  }catch(e){ return null; }
+}
+/* 設定（app_settings）の 1 行を読む。{ exists, value }・読めなければ undefined */
+function wbFetchSetting(key){
+  var ctl=null, tm=null;
+  try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 15000); }catch(e){ ctl=null; }
+  var opts={ headers: supaHeaders() }; if(ctl) opts.signal=ctl.signal;
+  return fetch(SUPABASE_URL+'/rest/v1/app_settings?key=eq.'+encodeURIComponent(key)+'&select=value', opts)
+    .then(function(r){ if(!r.ok) throw new Error('http '+r.status); return r.json(); })
+    .then(function(rows){ if(tm) clearTimeout(tm); if(!Array.isArray(rows)) return undefined; return rows.length ? { exists:true, value:rows[0].value, updatedAt:null } : { exists:false, value:null, updatedAt:null }; })
+    .catch(function(){ if(tm) clearTimeout(tm); return undefined; });
+}
+/* 送る：手元で変えた所だけをクラウドの最新に重ねて書く。true＝書けた（か、もうクラウドにある）／false＝送れなかった（送信待ちに残る）／
+   WB_NOBASE＝直す前の値が無い（呼ぶ側が今までどおり丸ごと送る） */
+async function wbPush(key){
+  var table=wbTable(key); if(!table) return WB_NOBASE;
+  var B=wbGet(key); if(!B) return WB_NOBASE;
+  var Lt=_lsStoreGet(key); if(Lt==null) return WB_NOBASE;
+  var L, base=wbParse(B.t);
+  try{ L=JSON.parse(Lt); }catch(e){ return WB_NOBASE; }
+  var M=null, st=null, ok=false, why='', gone=false;
+  for(var a=0; a<6; a++){
+    var row=(table==='app_state') ? await _fetchOpRow(key, true) : await wbFetchSetting(key);
+    if(row===undefined){ why='クラウドを読めなかったので送っていません（未送信に残し、あとで送り直します）'; break; }
+    var C=row.exists ? row.value : WB_ABS;
+    st={ conf:[], prefer:(table==='app_state') ? wbPrefer(key, row.updatedAt) : 'local' };
+    M=wbMergeTop(key, base, L, C, st);
+    if(M===WB_ABS){ if(!row.exists){ ok=true; gone=true; break; } M=null; }   /* 両方で無い：書くものは無い */
+    var out=(table==='app_state' && typeof _opCloudVal==='function') ? _opCloudVal(key, M) : M;
+    if(row.exists && _wbEq(out, C)){ ok=true; break; }   /* もうクラウドにある：書かない */
+    if(table==='app_state'){
+      var w=await _opCasWrite(key, out, row, true);
+      if(w==='ok'){ ok=true; break; }
+      if(w==='conflict'){ await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); }); continue; }   /* ほかの端末が先に書いた：読み直して重ね直す */
+      why=(w==='stale') ? '書き込みましたが、クラウドの更新時刻が読んだ時刻より進んだのを確かめられませんでした（未送信に残します）'
+        : (w==='badts' ? 'クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）' : 'クラウドへの書き込みに失敗しました');
+      break;
+    }
+    var cat=(typeof supaSettingCategory==='function') ? supaSettingCategory(key) : 'other';
+    if((await supaUpsert('app_settings', [{ key:key, value:out, category:cat }]))===false){ why='クラウドへの書き込みに失敗しました'; break; }
+    var chk=await wbFetchSetting(key);
+    if(chk===undefined || (chk.exists && _wbEq(chk.value, out))){ ok=true; break; }   /* 読み直せなかった：書けたので、今までと同じに */
+    if(a>=3){ why='ほかの端末の保存と重なり、4 回試しても確かめられませんでした（未送信に残します）'; break; }
+  }
+  if(!ok){ if(!why) why='ほかの端末の保存と重なり、6 回試しても書けませんでした（未送信に残し、あとで送り直します）'; try{ _opLastPushErr[key]=why; }catch(e){} return false; }
+  try{ _opLastPushErr[key]=''; }catch(e){}
+  wbNoteConf(key, st, 'push');
+  /* 手元を合わせる。送っているあいだに、またこの端末で直していたら（L と違う）、その変更を書けた値に重ね、直す前の値を書けた値にする */
+  if(gone){ wbDrop(key); return true; }
+  var Mt=JSON.stringify(M);
+  var L2t=_lsStoreGet(key);
+  if(L2t===Lt){
+    if(Mt!==Lt){ if(_lsWriteVerified(key, Mt)){ _lsMarkFetched(key); _lsClearSaveFailure(key); } }
+    wbDrop(key);
+    try{ wbUnkClear(key); }catch(e){}   /* 手元の変更はすべて送れた */
+  } else if(L2t!=null){
+    try{
+      var st2={ conf:[], prefer:'local' };
+      var N=wbMergeTop(key, L, JSON.parse(L2t), M, st2);
+      if(_lsWriteVerified(key, JSON.stringify(N===WB_ABS ? null : N))) wbSet(key, Mt);
+    }catch(e){}
+  }
+  return true;
+}
 /* ===== v917: 棚卸（inv_count_ / inv_top_ / inv_templates）の合流ルール =====
    形は「上位キー → 値」の平坦なマップ。値は数値・文字列・配列と様々で、
    値そのものに時刻を持てないため、同じ入れ物の中に _at（キー→保存時刻）を添える。
@@ -11040,6 +11355,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   /* v1136（2 回目の独立レビュー P2-1）：直した時刻は、中身が本当に変わった保存のときだけ覚える（送り直し・まとめて送る・同じ中身の保存では進めない）。
      取り込みは _lsWriteVerified で書くので、ここは通らない */
   var _prevTxt=null; try{ _prevTxt=_lsStoreGet(key); }catch(e){}
+  try{ if(typeof wbOnEdit==='function') wbOnEdit(key, _prevTxt, _json); }catch(e){}   /* v1149：合流の決まりの無いキーは、直す前の値を覚える（送るとき・取り込むときに、この端末で変えた所だけを重ねる） */
 
   var _ok=_lsWriteVerified(key, _json);
   if(!_ok){
@@ -11244,7 +11560,7 @@ function retryObSecretPending(manual){
      v910 のコメントが「セキュアページの端末にしか無い」と宣言している内容を、
      実装として成立させる。匿名キーで読める app_state に利益を置かない。 */
 var LS_LOCAL_ONLY = ['pl_actual', 'live_tip_rate', 'kv_seen_v1', 'financial_save_recovery_v2', 'financial_pre_guard_archive_v1', 'vendor_base_v1', 'vendor_touched_v1'];   /* v1121: vendor_base_v1＝業者をクラウドから読んだときの姿（この端末だけ） */   /* v1104: 売上・予算の保護の退避（この端末だけ・クラウドへ送らない・受け取らない） */   /* v1098: kv_seen_v1 は差分の取り込みの記録（この端末だけ） */   /* v1091: live_tip_rate は Tip Rate を変えた合図（クラウドだけ。端末には書かない・端末から送らない） */
-function isLocalOnlyKey(key){ var k=String(key||''); return LS_LOCAL_ONLY.indexOf(k) >= 0 || k.indexOf('financial_save_recovery_v2/')===0 || k.indexOf('financial_pre_guard_archive_v1/')===0; }   /* v1104: 退避の記録は 1 件ずつの名前（この端末だけ） */
+function isLocalOnlyKey(key){ var k=String(key||''); return LS_LOCAL_ONLY.indexOf(k) >= 0 || k.indexOf('financial_save_recovery_v2/')===0 || k.indexOf('financial_pre_guard_archive_v1/')===0 || k.indexOf('whole_base_v1/')===0; }   /* v1149：whole_base_v1/<キー>＝直す前の値（この端末だけ・送らない・受け取らない） */   /* v1104: 退避の記録は 1 件ずつの名前（この端末だけ） */
 function isOpSyncKey(key){
   if (isLocalOnlyKey(key)) return false;   /* v919 */
   if (!key) return false;
@@ -12119,15 +12435,21 @@ async function syncMasterToSupabase(key, val){
   var isSetting = SUPA_SETTING_KEYS.includes(key) || SUPA_SETTING_PREFIX.some(p=>key.indexOf(p)===0);
   if (isSetting) {
     if (_opMergeDef(key)) { return await opMergePush(key, val, 'app_settings'); }   /* v744: 結果を返す */
-    return await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
+    if (typeof wbIsKey==='function' && wbIsKey(key)) { var _wbs=await wbPush(key); if (_wbs!==WB_NOBASE) return _wbs; }   /* v1149：変えた所だけをクラウドの最新に重ねる（直す前の値が無ければ今までどおり） */
+    var _ws = await supaUpsert('app_settings', [{ key:key, value:val, category:supaSettingCategory(key) }]);
+    if (_ws!==false && typeof wbWholeSent==='function') wbWholeSent(key, val);
+    return _ws;
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
     if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }
     if (typeof hrRouted==='function' && hrIsKey(key) && (hrRouted(key) || hrSrcGet()[key])) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1142：採用・お悩み相談室は REST で送らない（関数で 1 件ずつ。前の版の送れていない変更は hrPlace が控えに移す） */   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
+    if (typeof wbIsKey==='function' && wbIsKey(key)) { var _wba=await wbPush(key); if (_wba!==WB_NOBASE) return _wba; }   /* v1149：変えた所だけをクラウドの最新に重ねる（読んだ行が変わっていないときだけ書く）。直す前の値が無ければ今までどおり丸ごと */
     var _outVal = (typeof _opCloudVal==='function') ? _opCloudVal(key, val) : ((key==='onboardings' && Array.isArray(val)) ? val.map(stripObPII) : val);   /* v1128：人ごとに分けた行も */
-    return await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
+    var _wa = await supaUpsert('app_state', [{ key:key, value:_outVal, updated_at:new Date().toISOString() }]);
+    if (_wa!==false && typeof wbWholeSent==='function') wbWholeSent(key, val);
+    return _wa;
   }
 }
 function supaSettingCategory(key){
@@ -12325,11 +12647,14 @@ function _applyKvRows(rows, okOut){   /* v1098: okOut（配列）を渡すと、
       if(typeof isLocalOnlyKey==='function' && isLocalOnlyKey(row.key)) return;
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
       /* v1136：合流の決まりの無いキーで、この人の送信待ち・送っている途中があれば手元を残す（取り込めた行に数えない＝次も取る） */
-      if(!_def && typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _pend, row.updated_at)) return;
-      var _val=row.value;
+      /* v1149：送れていない手元の変更は、直す前の値と比べて変えた所をクラウドの値に重ねる（手元を丸ごと残す・丸ごと置き換える、ではなく） */
+      var _wbi=(!_def && typeof wbIncoming==='function') ? wbIncoming(row.key, row.value, row.updated_at) : null;
+      if(_wbi && _wbi.keep) return;
+      if(!_wbi && !_def && typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _pend, row.updated_at)) return;
+      var _val=_wbi ? _wbi.value : row.value;
       if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
       /* v719: 保存できたかを検証し、失敗は記録する（黙って握り潰さない） */
-      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; if(okOut) okOut.push(row.key); if(typeof hrIsKey==='function' && hrIsKey(row.key)) hrRestPlaced(row.key); }
+      if(_lsWriteVerified(row.key, JSON.stringify(_val))){ if(_wbi) _wbi.commit(); _lsMarkFetched(row.key); _lsClearSaveFailure(row.key); cnt++; if(okOut) okOut.push(row.key); if(typeof hrIsKey==='function' && hrIsKey(row.key)) hrRestPlaced(row.key); }
       else { _lsNoteSaveFailure(row.key); }
     }catch(e){}
   });
@@ -14292,13 +14617,15 @@ async function supaPullAllMasters(opt){
     settings.forEach(function(row){
       if (!row || !row.key) return;
       try {
-        if (typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _spend)) return;   /* v1136：まだ送れていない手元の設定を消さない */
+        var _wbi=(typeof wbIncoming==='function') ? wbIncoming(row.key, row.value, null) : null;   /* v1149：送れていない手元の設定は、変えた所をクラウドの値に重ねる */
+        if (_wbi && _wbi.keep) return;
+        if (!_wbi && typeof _pullKeepLocal==='function' && _pullKeepLocal(row.key, _spend)) return;   /* v1136：まだ送れていない手元の設定を消さない */
         /* v622: マージ定義のあるキーは上書きせずマージ（app_state 側(v615)と挙動を揃える）。
            未プッシュのローカル変更が「クラウドから取り込む」で消えるのを防ぐ。 */
         var _def=(typeof _opMergeDef==='function')?_opMergeDef(row.key):null;
-        var _val=row.value;
+        var _val=_wbi ? _wbi.value : row.value;
         if(_def){ try{ var _loc=_lsRaw(row.key, null); _val=_def.merge(row.value, _loc); }catch(e){ _val=row.value; } }   /* v763 */
-        _lsWriteVerified(row.key, JSON.stringify(_val)); cnt++;   /* v763 */
+        if(_lsWriteVerified(row.key, JSON.stringify(_val)) && _wbi) _wbi.commit(); cnt++;   /* v763 */
       } catch(e){}
     });
     results.push('app_settings: '+cnt+'件 取込');
@@ -16075,7 +16402,10 @@ async function pullOpKey(key, _noSs){
     if(rows && rows.length){ var _cloud=rows[0].value;
       /* v720: 分割保存へ移行済みのキーは統合行を端末に置かない（_applyKvRows と同じ扱い） */
       if(_handleLegacySplitRow(key, _cloud)) return true;
-      if(typeof _pullKeepLocal==='function' && _pullKeepLocal(key, null, rows[0].updated_at)) return true;   /* v1136：合流の決まりの無いキーで、まだ送れていない手元の変更のほうが新しければ手元を残す（取得済みのキーだけ） */
+      var _wbi=(typeof wbIncoming==='function') ? wbIncoming(key, _cloud, rows[0].updated_at) : null;   /* v1149：送れていない手元の変更は、変えた所をクラウドの値に重ねる */
+      if(_wbi && _wbi.keep) return true;
+      if(_wbi) _cloud=_wbi.value;
+      else if(typeof _pullKeepLocal==='function' && _pullKeepLocal(key, null, rows[0].updated_at)) return true;   /* v1136：合流の決まりの無いキーで、まだ送れていない手元の変更のほうが新しければ手元を残す（取得済みのキーだけ） */
       var _def=(typeof _opMergeDef==='function')?_opMergeDef(key):null; var _out=_cloud; if(_def){ try{ var _loc=_lsRaw(key, null); _out=_def.merge(_cloud, _loc); }   /* v763 */catch(e){ _out=_cloud; } } var _json=JSON.stringify(_out);
       /* v703: 従来は setItem を try/catch で握り潰し、保存できなくても true を返していた。
          そのため容量不足の端末では「取得成功なのに端末に無い」状態になり、
@@ -16089,6 +16419,7 @@ async function pullOpKey(key, _noSs){
           return false;
         }
       }
+      if(_wbi) _wbi.commit();   /* v1149：書けたので、直す前の値をクラウドの値に */
       _lsMarkFetched(key);   /* v721: 完全なデータを持ったので押し上げを許可する */
       if(!_viaSs && typeof hrIsKey==='function' && hrIsKey(key)) hrRestPlaced(key);   /* v1142：REST でクラウドの行（全部）を置いた */
       try{ if(_def&&_def.after) _def.after(); }catch(e){} return true; }
@@ -16105,8 +16436,10 @@ async function pullSettingKey(key){
       /* v719: 従来は setItem を握り潰して常に true を返していた。容量不足の端末では
          「取得成功なのに端末に無い」状態になり、設定（スキル基準・店舗設定・マトリクス等）が
          いつまでも反映されなかった。保存を検証し、空けて再試行し、それでも駄目なら false。 */
-      if(typeof _pullKeepLocal==='function' && _pullKeepLocal(key)) return true;   /* v1136：まだ送れていない手元の設定を消さない */
-      var _sdef=(typeof _opMergeDef==='function')?_opMergeDef(key):null, _sval=rows[0].value;
+      var _wbi=(typeof wbIncoming==='function') ? wbIncoming(key, rows[0].value, null) : null;   /* v1149：送れていない手元の設定は、変えた所をクラウドの値に重ねる */
+      if(_wbi && _wbi.keep) return true;
+      if(!_wbi && typeof _pullKeepLocal==='function' && _pullKeepLocal(key)) return true;   /* v1136：まだ送れていない手元の設定を消さない */
+      var _sdef=(typeof _opMergeDef==='function')?_opMergeDef(key):null, _sval=_wbi ? _wbi.value : rows[0].value;
       if(_sdef){ try{ _sval=_sdef.merge(_sval, _lsRaw(key, null)); }catch(e){ _sval=rows[0].value; } }   /* v1136：合流の決まりのあるキーは合流（supaPullAllMasters と同じ） */
       var _sjson=JSON.stringify(_sval);
       if(!_lsWriteVerified(key,_sjson)){
@@ -16117,6 +16450,7 @@ async function pullSettingKey(key){
           return false;
         }
       }
+      if(_wbi) _wbi.commit();
       _lsClearSaveFailure(key);
       return true;
     }
@@ -44167,7 +44501,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1148';
+const APP_VERSION = '1149';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
