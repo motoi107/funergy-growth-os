@@ -2015,7 +2015,9 @@ export function createHandler(deps) {
   let ntNames = null;
   async function ntNameHolders() {
     if (ntNames && ntNames.exp > now()) return ntNames.m;
-    const [emps, wrp] = await Promise.all([rest('employees?select=id,name&limit=5000'), rest('wr_people?select=emp_id,name&limit=2000').catch(() => [])]);   // 写しが読めない：社員の表の名前だけ（ntCtx0 と同じく狭いほうの役割で返す）
+    // どちらかが読めない：名前を持つ人が分からないので、nt 全体を失敗にする（Codex #146 a78b401 P2：前は確かめた写しが読めないと社員の表の名前だけで決め、
+    // 写しにだけある同じ名前の人がいても個人あての通知を返し、印も付けられた）。端末は前の写しのまま
+    const [emps, wrp] = await Promise.all([rest('employees?select=id,name&limit=5000'), rest('wr_people?select=emp_id,name&limit=2000')]);
     const m = new Map();
     const hold = (n, id) => { const k = typeof n === 'string' ? n.trim() : ''; if (!k) return; if (!m.has(k)) m.set(k, new Set()); m.get(k).add(id); };
     for (const e of (Array.isArray(emps) ? emps : [])) if (e && e.id != null) hold(e.name, String(e.id));
@@ -2027,7 +2029,7 @@ export function createHandler(deps) {
     const c0 = await ntCtx0(a);
     const name = (c0.name || '').trim();
     if (!name) return { ...c0, nameOk: false };
-    const hs = (await ntNameHolders()).get(name);   // 読めない：nt 全体を失敗にする（アプリは端末の写しのまま。名前あての通知を黙って消さない）
+    const hs = (await ntNameHolders()).get(name);   // 社員の表・確かめた写しが読めない：nt 全体を失敗にする（アプリは端末の写しのまま。名前あての通知を黙って消さない）
     const emp = typeof a.emp === 'string' ? a.emp : '';
     return { ...c0, nameOk: emp ? (!hs || [...hs].every(x => x === emp)) : !hs };   // 社員と結ばれていない人（GM・CEO）：その名前の社員がいないときだけ
   }

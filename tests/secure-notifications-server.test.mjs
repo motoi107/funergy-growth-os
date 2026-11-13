@@ -73,10 +73,13 @@ test('each person gets only the notifications addressed to them (the same rule a
   const S2 = setup({ pins, emps, wrPeople: wrPeople.map(w => (w.emp_id === 'E-CH' ? { ...w, chef: false } : w)) });
   S2.W.set('notifications', SEED);
   assert.ok(!ids((await S2.call({ action: 'nt', pin_session: 'tCH' })).j).includes('r-chef'));
-  // 確かめた写しが読めない（列が無い・表が無い）：crew と同じ（狭いほう）
+  // 確かめた写しが読めない（列が無い・表が無い）：名前を持つ人が分からないので、通知を読むこと全体を失敗にする（Codex #146 a78b401 P2：
+  // 前は crew と同じ範囲で返し、名前あての通知（by-sally）も返した）。端末は前の写しのまま
   const S3 = setup({ pins, emps, wrPeople });
   S3.W.wrPeopleDown = true; S3.W.set('notifications', SEED);
-  assert.deepEqual(ids((await S3.call({ action: 'nt', pin_session: 'tSL' })).j), ['by-sally', 'st1-all', 'st1-crew'].sort());
+  const r3 = await S3.call({ action: 'nt', pin_session: 'tSL' });
+  assert.notEqual(r3.status, 200);
+  assert.equal(r3.j && r3.j.items, undefined, 'nothing is returned');
   assert.deepEqual(NT_STAFF_NEED, { g2: 2, sl: 3, g4: 4, chef: 4 });
   assert.deepEqual(NT_ALL_ROLES, ['ceo', 'gm', 'office', 'office_crew']);
 });
@@ -311,4 +314,20 @@ test('Codex #146 6845284151: a notice addressed by name goes only to a person wh
   S.tick(61000); S.W.empsDown = true;
   const bad = await S.call({ action: 'nt', pin_session: 't1' });
   assert.notEqual(bad.status, 200);
+});
+
+test('Codex #146 a78b401 P2: when the checked copy (wr_people) cannot be read, a notice addressed by name is neither returned nor marked (a same name may be held only in the copy)', async () => {
+  const D1 = { emp: 'E-D1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Dee' };
+  const E2 = [...emps, { id: 'E-D1', name: 'Dee', role: 'crew', store: 'S1' }];
+  const WP = [...wrPeople, { emp_id: 'E-X8', role: 'staff', grade: 2, stores: ['S2'], name: 'Dee' }];   // 写しにだけある同じ名前
+  const S = setup({ pins: { ...pins, tD1: D1 }, emps: E2, wrPeople: WP });
+  S.W.set('notifications', [...SEED, N('u-dee', { toUser: 'Dee' })]);
+  assert.ok(!ids((await S.call({ action: 'nt', pin_session: 'tD1' })).j).includes('u-dee'), 'readable: not returned (the same name is in the copy)');
+  S.tick(61000); S.W.wrPeopleDown = true;
+  const r = await S.call({ action: 'nt', pin_session: 'tD1', ack: ['u-dee'] });
+  assert.notEqual(r.status, 200, 'the copy cannot be read: the read fails (before: returned u-dee and took the mark)');
+  assert.deepEqual(S.W.get('notifications').find(n => n.id === 'u-dee').ackBy, []);
+  assert.ok(!(r.j && Array.isArray(r.j.items) && r.j.items.some(n => n.id === 'u-dee')));
+  S.W.wrPeopleDown = false;
+  assert.ok(!ids((await S.call({ action: 'nt', pin_session: 'tD1' })).j).includes('u-dee'), 'readable again: still not returned');
 });
