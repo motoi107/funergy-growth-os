@@ -32,7 +32,7 @@
   - P2（`fetchSignals`）：`(at, key)` の並びと続きの印で全部のページ（1,000 行ずつ・200 ページまで）。途中のページの失敗は全体の失敗。始めの読みが失敗したら次の読みを基準に。1 回に 50 より多いキーは自動の同期を前倒し（Claude が決めた。前は 1 つずつ最大 2,000 回）。
   - P3：送る印（`x-fp-actor` の d）を「端末の印-タブの印」に（タブの印はメモリだけ）。同じブラウザのほかのタブの変更も取り込む。変更の記録の 5 分のまとめはタブごとになる。
   - 確認（4）：見張りの中の時間切れ（57014）は `WHEN OTHERS` で救えず元の保存も失敗する＝仕様の「失敗しても保存は止めない」の例外として書いた（SQL は変えない）。PGlite の前後：10MB の行 +48〜59 ミリ秒・2,000 行のマスター +25〜33 ミリ秒（`scripts/measure-change-signal-v1151.mjs`）。本番のロールの上限は未確認（Supabase の文書の既定は anon 3 秒）。
-- 試験（合成データ・本番に接続していない）：change-signal-client 20（足した 7。直す前の index.html では 7 つとも落ちる）・change-signal-server 4・change-signal-sql 13・static release pass/1151。わざと壊す 21 通りのうち 20 で落ちる（残り 1 つは二重の守り）。
+- 試験（合成データ・本番に接続していない）：change-signal-client 20（足した 7。直す前の index.html では 7 つとも落ちる）・change-signal-server 4・change-signal-sql 13・static release pass/1151。わざと壊す 21 通りのうち 20 で落ちる（残り 1 つは二重の守り）。全体（重い 2 つ＝invoice-mutations・employee-resign-mutations 以外・2 並列）：2,444 件のうち 32 件が落ちる・10 件は飛ばす。落ちるのは前からのファイルだけ（bot-center 2・bot-database 2・cs-grade-rollback（浅い clone）・ingredient-transfers 1・meeting-budget 10・meeting-sales 8・next-v1090 1・perf-v1098 1・specialist-career 1・toast-alias 1・cooking-sake 4）。前の記録の 28 件に無い cooking-sake 4 は直す前の `6fde10b` でも同じ 4 件が落ちる（今日の日付で落ちる・この直しで増えていない）。
 - `deploy/change-signal-v1151/`（関数・SQL）は変わらない（アプリだけの直し）。版は 1151 のまま。
 - 独立レビューは無し。Codex の再レビューはまだ（この直しのコミット）。
 
