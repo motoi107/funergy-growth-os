@@ -1,4 +1,5 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ）。仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類）。
+// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -38,7 +39,9 @@ const CODE = v => (typeof v === 'string' && /^[A-Z]{2}-\d{4}-\d{4,6}$/.test(v) ?
 export const KINDS = ['mileage', 'reimburse', 'expense_pre'];
 // v1132：評価の変更（G4 → GM）。スキル Lv・Career Score・Tip Rate
 export const EVAL_KINDS = ['skill', 'cs', 'tiprate'];
-export const ALL_KINDS = [...KINDS, ...EVAL_KINDS];
+// v1155：段階 2。前の「承認」タブの種類と予算（前の画面で申請したとき、その記録をここに写す）
+export const S2_KINDS = ['budget', 'leave', 'shift', 'hire', 'resign', 'promo', 'tip_self', 'skill_self', 'prep', 'plan'];
+export const ALL_KINDS = [...KINDS, ...EVAL_KINDS, ...S2_KINDS];
 export const TIP_RATES = [80, 90, 100];
 const EMP = v => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(v)) throw bad(); return v; };
 const LV = (v, max, nullable) => { if (v == null && nullable) return null; if (!Number.isInteger(v) || v < 0 || v > max) throw bad(); return v; };
@@ -101,6 +104,43 @@ export function normPayload(kind, p) {
     if (!lss || !/^[A-Za-z0-9_.:-]+$/.test(lss)) throw bad();
     return { ...base, items, lss_req: lss, quarter: TS(p.quarter, 20), total_from: NUMN(p.total_from, 10000), total_to: NUMN(p.total_to, 10000) };
   }
+  // v1155：段階 2。前の画面の記録の写し（見出し・申請した人・表示用の項目）。正式な値は今までどおりアプリの共通データ。
+  // 予算は月の売上予算の合計（セント）と日ごと（セント）も。中身はサーバー（wr_s2_norm）がもう一度確かめる。
+  if (S2_KINDS.includes(kind)) {
+    if (typeof p.ap_id !== 'string' || !/^ap\d{6,20}$/.test(p.ap_id)) throw bad();
+    const title = TS(p.title, L.text);
+    if (!title) throw bad();
+    const out = { ap_id: p.ap_id, title, from_name: TS(p.from_name, L.name), target_name: TS(p.target_name, L.name), store_name: TS(p.store_name, L.name),
+      detail: TS(p.detail, L.long) };
+    // 前の画面の記録の ref（表示だけ・形が違えば落とす）
+    if (typeof p.ref === 'string' && /^[A-Za-z0-9_.:@-]{1,80}$/.test(p.ref)) out.ref = p.ref;
+    if (p.facts != null) {
+      if (!Array.isArray(p.facts) || p.facts.length > 12) throw bad();
+      out.facts = p.facts.map(x => { x = obj(x); const k = TS(x.k, 40), v = TS(x.v, L.text); if (!k) throw bad(); return { k, v }; });
+    }
+    const ym = p.ym == null || p.ym === '' ? null : (typeof p.ym === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(p.ym) ? p.ym : (() => { throw bad(); })());
+    if ((kind === 'budget' || kind === 'plan') && !ym) throw bad();
+    if (ym) out.ym = ym;
+    if (kind === 'budget') {
+      const t = p.total_cents;
+      if (!Number.isInteger(t) || t < 0 || t > 100000000000) throw bad();
+      out.total_cents = t;
+      if (p.days != null) {
+        const d = obj(p.days), ks = Object.keys(d);
+        if (ks.length > 31) throw bad();
+        out.days = {};
+        for (const k of ks) {
+          if (!isDate(k) || k.slice(0, 7) !== ym) throw bad();
+          const v = d[k];
+          if (!Number.isInteger(v) || v < 0 || v > 10000000000) throw bad();
+          out.days[k] = v;
+        }
+      }
+      out.basis = TS(p.basis, L.text); out.focus = TS(p.focus, L.long);
+    }
+    if (kind === 'prep' && p.from_day != null && p.from_day !== '') out.from_day = DT(p.from_day);
+    return out;
+  }
   throw bad();
 }
 
@@ -135,10 +175,10 @@ export function createHandler(deps) {
 
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
-    // fn：関数の版（v1132 は 2・v1133 から 3）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
+    // fn：関数の版（v1132 は 2・v1133 から 3・v1155 から 4＝段階 2 の種類を受ける）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
     whoami: async w => {
       const [me, st] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null)]);
-      return { ...me, fn: 3, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
+      return { ...me, fn: 4, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -170,6 +210,11 @@ export function createHandler(deps) {
     settings_save: (w, b) => {
       if (typeof b.live !== 'boolean') throw bad();
       return db.rpc('wr_settings_save', { ...w, live: b.live, expect_rev: REV(b.expect_rev) });
+    },
+    // v1155：段階 2 を使い始める／止める（GM・CEO）
+    s2_save: (w, b) => {
+      if (typeof b.s2 !== 'boolean') throw bad();
+      return db.rpc('wr_s2_save', { ...w, s2: b.s2, expect_rev: REV(b.expect_rev) });
     },
     legacy_import: w => db.rpc('wr_legacy_import', w),
     // 承認・閲覧の権限の写し（GM・CEO）：違いを見る・見た一覧（digest）のとおりに合わせる

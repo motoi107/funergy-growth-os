@@ -47,7 +47,7 @@ const PM = (() => { const a = SRC.indexOf('/* FUNERGY_PREP_BEGIN */'), b = SRC.i
 const LABOR = ['_laborHrs', 'laborWeekDays', 'laborMonthWeeks', 'laborWeekRange', 'isoOf', 'isoLocalDate', 'laborForEmployee', '_laborCoreForYmRaw',
   'toastLaborCostForDate', 'ldLaborDay', '_ldWage', 'laborBreakdownForPeriod', 'empWage', 'empWageOf', 'empPayType', '_mdMemo', 'mdCacheClear'];
 const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
-  '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', 'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'approveItem', 'reopenApproval',
+  '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', 'addApproval', '_apOldNotif', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'approveItem', 'reopenApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', '_apRecordState', '_apMarkDecided', 'apNotifyDecision', 'apNeedsAcct', 'apWithOfficeCrew', '_apStoreLabel', '_apReopenRec',
   'resolveApprovalByRef', '_apResolveLocal', '_apRecTime', '_apPullRecord', 'apDecStamp', '_apStT', '_apMut', '_apGen', '_apSyncRecStamp', '_rtStT', '_rtStK', '_rtDecT', '_rtDecG',
   'getNotifs', 'addNotif', 'mergeMapByTime', '_recAt', '_coversMapByTime'];

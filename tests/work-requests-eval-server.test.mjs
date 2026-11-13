@@ -180,7 +180,7 @@ test('apply can fail with a reason and be tried again; Tip Rate and Career Score
   const again = (await t('tiprate', { rate_to: 100, from_day: '2026-11-16' })).body;
   assert.match(again.code, /^TR-/); assert.notEqual(again.code, tr.code);
   const who = (await call('E2', { action: 'whoami' })).body;
-  assert.equal(who.fn, 3); assert.equal(who.sql, 3, 'the function says the v1133 SQL (apply claim) is there');
+  assert.ok(who.fn >= 3, 'v1133 or later (v1155 is 4)'); assert.equal(who.sql, 3, 'the function says the v1133 SQL (apply claim) is there');
   const h1 = createHandler({ env: k => ({ SUPABASE_URL: 'https://db.test', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k],
     db: { rpc: (n, p) => (n === 'wr_stage' ? Promise.reject(new Error('function not found')) : db.rpc(n, p)) },
     verifyPin: async () => ({ emp_id: 'E2', name: NAME.E2 }) });
