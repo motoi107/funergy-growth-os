@@ -578,6 +578,71 @@ export function jwtRole(tok) {
   } catch { return ''; }
 }
 
+// ================================================================ v1152：通知（app_state の notifications・段階 2b の最後）
+//   前：1 つの行（新しい 500 件の配列）を公開の鍵でだれでも読めて書けた（退職の理由・採用した人の名前・相談の題名・個人あての知らせ）。
+//   いま：読むのはこの関数の nt だけで、ログインした人の宛先の分（画面の notifForMe と同じ決まり）と自分が出した分。
+//     書くのは「足す」と「自分の既読・確認の印」だけ（ほかの人の印・中身は変えない・消さない）。読んだ行が変わっていないときだけ書く。
+//     足すのは、ログインを確かめられない端末（店舗の PIN のタブレット・PIN が初期の人）からもできる（今までどおりだれでも足せる。読めない）。
+//   Moto さん 11/12：店のタブレットには通知を出さない（各自の PIN で見る）。docs/SECURE_NOTIFICATIONS_V1152_JA.md
+export const NT_KEY = 'notifications';
+export const NT_MAX = 500;            // 残す数（アプリの mergeNotifs と同じ。新しい順に 500）
+export const NT_ADD_MAX = 20;         // 1 回に足す数
+export const NT_MARK_MAX = 500;       // 1 回に付ける既読・確認の印の数
+export const NT_ALL_ROLES = ['ceo', 'gm', 'office', 'office_crew'];   // 全店（画面の notifForMe と同じ）
+// 社員の表の役割（公開の鍵で書ける）を宛先の役割に使うのは、GM・CEO が確かめた写し（wr_people）のグレードが足りるときだけ（v1147 と同じ考え）
+export const NT_STAFF_NEED = { g2: 2, sl: 3, g4: 4, chef: 4 };
+export const NT_SYS = 'システム';
+const NT_ID_RE = /^[A-Za-z0-9_:.-]{1,100}$/;
+const NT_FIELD_RE = /^[A-Za-z][A-Za-z0-9_]{0,30}$/;
+const NT_STR = { type: 40, title: 300, text: 2000, toUser: 120, toStore: 40, page: 60, refId: 200, by: 120 };
+export function ntIsKey(k) { return k === NT_KEY; }
+// 足す通知の形を確かめて整える（合わなければ null＝足さない）。既読・確認の印と「_」で始まる欄はサーバーが決める
+export function ntClean(x, nowMs) {
+  if (!x || typeof x !== 'object' || Array.isArray(x)) return null;
+  const id = typeof x.id === 'string' ? x.id : (typeof x.id === 'number' && Number.isSafeInteger(x.id) ? String(x.id) : '');
+  if (!NT_ID_RE.test(id)) return null;
+  const out = { id };
+  for (const [k, v] of Object.entries(x)) {
+    if (k === 'id' || k === 'readBy' || k === 'ackBy' || k === 'at' || k.startsWith('_')) continue;
+    if (!NT_FIELD_RE.test(k)) return null;
+    if (v === undefined) continue;
+    if (k === 'toRoles') {
+      if (!Array.isArray(v) || v.length > 12 || v.some(r => typeof r !== 'string' || !/^[a-z_]{1,20}$/.test(r))) return null;
+      out.toRoles = [...new Set(v)]; continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(NT_STR, k)) {
+      if (v === null) continue;
+      if (typeof v !== 'string' && !(typeof v === 'number' && Number.isFinite(v))) return null;
+      out[k] = String(v).slice(0, NT_STR[k]); continue;
+    }
+    if (v === null || typeof v === 'boolean' || (typeof v === 'number' && Number.isFinite(v))) { out[k] = v; continue; }
+    if (typeof v === 'string') { out[k] = v.slice(0, 500); continue; }
+    if (typeof v === 'object') { const sj = JSON.stringify(v); if (sj.length > 1000) return null; out[k] = JSON.parse(sj); continue; }   // rbFocus など小さな入れ物
+    return null;
+  }
+  if (JSON.stringify(out).length > 6000) return null;
+  const t = typeof x.at === 'string' && x.at.length <= 40 ? Date.parse(x.at) : NaN;
+  // 時計の進んだ端末の時刻はいつまでも一番上に出るので、先の時刻（5 分より先）と古すぎる時刻は今にする
+  out.at = new Date(Number.isFinite(t) && t <= nowMs + 300000 && t >= nowMs - 400 * 86400000 ? t : nowMs).toISOString();
+  out.readBy = []; out.ackBy = [];
+  return out;
+}
+// この人に見せる通知か（画面の notifForMe と同じ決まり。自分が出した分も返す＝同じものを二度足さないため。画面は自分の分を出さない）
+//   c：{ name, role（宛先の役割）, all（全店）, stores（Set）, sm（Store Manager） }
+export function ntVisible(n, c) {
+  if (!n || typeof n !== 'object' || Array.isArray(n) || !c) return false;
+  const nm = c.name;
+  if (nm && n.by === nm) return true;
+  if (n.toUser) return !!nm && n.toUser === nm;
+  const roles = Array.isArray(n.toRoles) ? n.toRoles : [];
+  const rm = () => !!c.role && (roles.includes(c.role) || (c.sm === true && roles.includes('sm')));
+  if (n.toStore) {
+    if (!(c.all || (c.stores && c.stores.has(String(n.toStore))))) return false;
+    return roles.length ? rm() : true;
+  }
+  return roles.length ? rm() : false;
+}
+
 export function createHandler(deps) {
   const env = deps.env;
   const fetch = deps.fetch || globalThis.fetch.bind(globalThis);
@@ -1938,6 +2003,93 @@ export function createHandler(deps) {
     return { totals };
   }
 
+  // ================================================================ v1152：通知
+  // 宛先を決める人の形（画面の curRole・curStore・応援・担当の店に当たるもの）。60 秒覚える（通知は 1 分ごとに読むので）
+  const ntCtxCache = new Map();
+  async function ntCtx(a) {
+    const name = typeof a.name === 'string' ? a.name : '';
+    if (NT_ALL_ROLES.includes(a.role)) return { name, role: a.role, all: true, stores: new Set(), sm: false };
+    if (a.role === 'am') return { name, role: 'am', all: false, stores: new Set([...arr(a.stores), ...arr(a.am)]), sm: false };   // 確かめた AM（whoami）：担当の店と自分の店
+    if (a.role !== 'staff' || typeof a.emp !== 'string' || !a.emp) return { name, role: '', all: false, stores: new Set(), sm: false };
+    const ck = a.emp + '|' + name + '|' + arr(a.stores).join(',') + '|' + (a.confirmed === true ? 1 : 0) + '|' + a.grade;
+    const hit = ntCtxCache.get(ck);
+    if (hit && hit.exp > now()) return hit.c;
+    let e = null, w = null;
+    try { const r = await rest('employees?id=eq.' + encodeURIComponent(a.emp) + '&select=role,title,data'); e = Array.isArray(r) && r.length === 1 ? r[0] : null; } catch { e = null; }
+    if (a.confirmed === true) {
+      try { const r = await rest('wr_people?emp_id=eq.' + encodeURIComponent(a.emp) + '&select=grade,stores,chef'); w = Array.isArray(r) && r.length === 1 && obj(r[0]) ? r[0] : null; } catch { w = null; }   // 列が無い（SQL の前）・読めない：確かめた写しが無いのと同じ（狭いほう）
+    }
+    const d = obj(e && e.data) || {};
+    const tr = String((e && e.role) || d.role || ''), title = String((e && e.title) || d.title || '').trim();
+    const cg = w && Number.isInteger(w.grade) ? w.grade : 0;
+    let role = 'crew', stores = arr(a.stores);   // 確かめがまだの人・G1：crew あての通知だけ（自分の店。whoami の店＝今の社員の表）
+    const need = NT_STAFF_NEED[tr];
+    if (need && cg >= need && Number(a.grade) >= need && (tr !== 'chef' || w.chef === true)) {
+      role = tr;
+      const ws = arr(w.stores);
+      stores = arr(a.stores).filter(s => ws.includes(s));   // 役割の通知の店：確かめた写しと今の社員の表の重なり（v1147 の protStores と同じ）
+    }
+    const c = { name, role, all: false, stores: new Set(stores), sm: role === 'sl' && title === 'Store Manager' };
+    if (ntCtxCache.size > 500) ntCtxCache.clear();
+    ntCtxCache.set(ck, { c, exp: now() + 60000 });
+    return c;
+  }
+  // ログインを確かめられない端末から足す数（この関数の 1 つの実行環境の中で 10 分に 300 件まで。たくさん足して本物の通知を押し出さないように）
+  let ntAnonHits = [];
+  // nt：{ add:[通知…], read:[id…], ack:[id…] }。a が null＝ログインを確かめられない端末（足すだけ）
+  async function ntOp(a, b) {
+    const L = (v, max) => { if (v === undefined || v === null) return []; if (!Array.isArray(v) || v.length > max) throw bad(); return v; };
+    const add = L(b.add, NT_ADD_MAX), read = L(b.read, NT_MARK_MAX), ack = L(b.ack, NT_MARK_MAX);
+    if ([...read, ...ack].some(x => typeof x !== 'string' || !NT_ID_RE.test(x))) throw bad();
+    const t0 = now();
+    if (!a) {
+      ntAnonHits = ntAnonHits.filter(x => t0 - x < 600000);
+      if (ntAnonHits.length + add.length > 300) throw err('locked', 429);
+      for (let i = 0; i < add.length; i++) ntAnonHits.push(t0);
+    }
+    const items = add.map(x => ntClean(x, t0));
+    const ids = add.map(x => (x && (typeof x.id === 'string' || typeof x.id === 'number')) ? String(x.id) : '').filter(x => x && x.length <= 100);
+    const c = a ? await ntCtx(a) : null;
+    const me = c ? c.name : '';
+    for (let tries = 0; tries < 5; tries++) {
+      const rows = await rest('app_state?key=eq.' + NT_KEY + '&select=key,value,updated_at');
+      const row = Array.isArray(rows) && rows[0] ? rows[0] : null;
+      let list = row ? asVal(row.value) : [];
+      if (!Array.isArray(list)) list = [];
+      list = list.filter(n => n && typeof n === 'object' && !Array.isArray(n));
+      const byId = new Map();
+      for (const n of list) if (n.id != null) byId.set(String(n.id), n);
+      let changed = false, bad0 = 0;
+      for (const it0 of items) {
+        if (!it0) { bad0++; continue; }
+        if (byId.has(it0.id)) continue;   // もうある（送り直し・ほかの端末が出した）
+        if (it0.by === NT_SYS && it0.refId && list.some(n => n.refId === it0.refId)) continue;   // 自動の知らせ：同じ refId はもう出した（端末は見えない分を確かめられない）
+        const it = { ...it0 };
+        if (a && me && it.by !== NT_SYS) it.by = me;   // 出した人は関数が確かめた人（自動の知らせはシステムのまま）
+        if (!a) it._u = 1;                              // 出した人を確かめていない
+        list.push(it); byId.set(it.id, it); changed = true;
+      }
+      if (me) {
+        const mark = (id, f) => {
+          const n = byId.get(id); if (!n || !ntVisible(n, c)) return;   // 見られない通知には印を付けない
+          for (const k of f) { const v = Array.isArray(n[k]) ? n[k] : []; if (!v.includes(me)) { n[k] = [...v, me]; changed = true; } }
+        };
+        for (const id of new Set(read)) mark(id, ['readBy']);
+        for (const id of new Set(ack)) mark(id, ['ackBy', 'readBy']);
+      }
+      if (changed) {
+        list.sort((x, y) => String(x.at || '').localeCompare(String(y.at || '')));
+        if (list.length > NT_MAX) list = list.slice(list.length - NT_MAX);
+        try { await writeRow(NT_KEY, list, row ? { exists: true, updated_at: row.updated_at } : { exists: false }, a); }   // a が null：だれか分からない書き込み（変更の記録は「サーバー」）
+        catch (x) { if (x.code === 'conflict') continue; throw x; }   // 読んだあとに行が変わった：読み直して重ね直す
+      }
+      const out = { done: ids, bad: bad0, level: c ? 'fn' : 'add' };
+      if (c) out.items = list.filter(n => ntVisible(n, c));
+      return out;
+    }
+    throw err('conflict', 409);
+  }
+
   const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
@@ -1957,7 +2109,8 @@ export function createHandler(deps) {
     // scfn:1＝Tip の期間の確定・注意ログ（v1147）も扱う。アプリは scfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で読み書きする
     // gbfn:1＝グレード履歴・賞与の個人設定・G3 の職種を読む範囲（v1148）も扱う。アプリは gbfn の無い答えを前の版とみなし、その 3 つを今までどおり REST で読む
     // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // ntfn:1＝通知（v1152）を読み書きする（nt）。アプリは ntfn の無い答えを前の版とみなし、通知を今までどおり REST で読み書きする
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1, ntfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
@@ -1966,6 +2119,24 @@ export function createHandler(deps) {
     // v1144：店ごとの保険料の合計は、ログインを確かめずに返す（店舗の PIN のタブレットでも人件費が今と同じに。人ごとの額は返さない）
     if (body.action === 'ins_totals') {
       try { return json(await insTotals()); } catch (e) { console.error('secure-state', 'ins_totals', safeErr(e)); return json({ error: 'error' }, 500); }
+    }
+    // v1152：通知。ログインを確かめられない端末（店舗の PIN のタブレット・PIN が初期の人）は足すだけ（読めない・印を付けられない）
+    if (body.action === 'nt') {
+      try {
+        const a0 = await actorOf(req, body);
+        if (a0.err) return json({ error: a0.err }, 503);
+        if (a0.deny) {
+          const marks = (Array.isArray(body.read) && body.read.length) || (Array.isArray(body.ack) && body.ack.length);
+          if (marks || !Array.isArray(body.add) || !body.add.length) { console.warn('secure-state unauthorized', 'nt', a0.deny); return json({ error: 'unauthorized' }, 401); }
+          return json(await ntOp(null, body));
+        }
+        return json(await ntOp({ ...a0, ...fpDevice(req) }, body));
+      } catch (e) {
+        const code = e && e.code && CODES[e.code] ? e.code : '';
+        if (code) return json({ error: code }, CODES[code]);
+        console.error('secure-state', 'nt', safeErr(e));
+        return json({ error: 'error' }, 500);
+      }
     }
     const fn = Object.prototype.hasOwnProperty.call(ACTIONS, body.action) ? ACTIONS[body.action] : null;
     if (!fn) return json({ error: 'unknown_action' }, 400);

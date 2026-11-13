@@ -12882,6 +12882,8 @@ async function syncMasterToSupabase(key, val){
   }
   // app_state 行き（運用データ）
   if (isOpSyncKey(key)) {
+    /* v1152：通知は関数 secure-state で（足した通知と自分の既読・確認の印だけ）。関数が前の版なら今までどおり下の道で */
+    if (key==='notifications' && typeof ntMode==='function' && ntMode()!=='rest') { var _ntr=await ntPush(); if (_ntr!=='rest') return _ntr; }
     if (typeof ssWriteGate==='function' && !ssWriteGate(key)) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }
     if (typeof hrRouted==='function' && hrIsKey(key) && (hrRouted(key) || hrSrcGet()[key])) { try{ _opLastPushErr[key]='secure_hold'; }catch(e){} return false; }   /* v1142：採用・お悩み相談室は REST で送らない（関数で 1 件ずつ。前の版の送れていない変更は hrPlace が控えに移す） */   /* v1139：成長カルテ・賞与の写しが一部だけ（見せる形・消したあと）の端末で直した分は送らない（送信待ちに残す・REST の道でも） */
     if (_opMergeDef(key)) { return await opMergePush(key, val); }                    /* v744: 結果を返す */
@@ -14311,6 +14313,7 @@ function ssOnLogout(){
   try{ if(typeof gbOnLogout==='function') gbOnLogout(); }catch(e){}   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
   try{ if(typeof piiOnLogout==='function') piiOnLogout(); }catch(e){}   /* v1144：従業員の個人の欄も */
+  try{ if(typeof ntOnLogout==='function') ntOnLogout(); }catch(e){}   /* v1152：通知も（受け取った分は残さない） */
 }
 /* 関数を呼ぶ。返す：{ok, j}／{legacy}／{none}（ログインの印が無い）／{net}／{status, error} */
 async function ssCall(payload, retried){
@@ -14376,6 +14379,9 @@ async function ssCall(payload, retried){
   /* v1144：従業員の個人の欄を扱う関数か（piifn:1）。前の版の関数なら、その欄は今までどおり従業員の表に書く・読む */
   if(j.piifn===1) piiFnMark(true);
   else { piiFnMark(false); if(typeof payload.action==='string' && (payload.action.indexOf('pii_')===0 || payload.action==='card_match')) return { legacy:true }; }
+  /* v1152：通知を扱う関数か（ntfn:1）。前の版の関数なら、通知は 10 分のあいだ今までどおり REST で読み書きする */
+  if(j.ntfn===1){ if(typeof _nt!=='undefined') _nt.old=null; }
+  else { if(typeof _nt!=='undefined') _nt.old={ id:S.id, at:Date.now() }; if(payload.action==='nt') return { legacy:true }; }
   if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
   return { ok:true, j:j };
 }
@@ -14894,6 +14900,7 @@ async function _kvPullRows(force){
   var _scOut=!!_ssr.sc || _stale;    /* v1147：Tip の期間の確定・注意ログも関数から（見られる店の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _gbOut=!!_ssr.gb || _stale;    /* v1148：グレード履歴・賞与の個人設定・G3 の職種も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _hrOut=_stale || (typeof hrRouted==='function' && hrRouted());   /* v1142：採用・お悩み相談室は関数から（画面を開いたときに読む）。REST では取らない */
+  var _ntOut=_stale || (typeof ntMode==='function' && ntMode()!=='rest');   /* v1152：通知は関数から（notifPullNow）。REST では取らない */
   if(typeof hrSweep==='function' && !_stale){
     try{ if(_hrOut) hrSweep();   /* 前の版の全部の写し・前の人の写しを残さない（独立レビュー P2-5） */
          else Object.keys(HR_KEYS).forEach(function(k){ hrDropToRest(k); }); }catch(e){}   /* REST：関数から置いた写しは使わず、REST の行で置き直す */
@@ -14913,6 +14920,7 @@ async function _kvPullRows(force){
       if(_scOut && scIsKey(k)) return;   /* v1147 */
       if(_gbOut && gbIsKey(k)) return;   /* v1148 */
       if(_hrOut && hrIsKey(k)) return;   /* v1142 */
+      if(_ntOut && k==='notifications') return;   /* v1152 */
       ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
         if(!force && seen.rows[k]===r.v){ skip[k]=1; legacySkip++; } else need.push(k);
@@ -14939,6 +14947,7 @@ async function _kvPullRows(force){
     var ex=[];
     if(idx){ Object.keys(skip).forEach(function(k){ if(_SPLIT_KEYS && _SPLIT_KEYS[k]) ex.push(_kvQuote(k)); }); }
     try{ (_LS_ONDEMAND_KEYS||[]).forEach(function(k){ ex.push(_kvQuote(k)); }); }catch(e){}
+    if(_ntOut) ex.push(_kvQuote('notifications'));   /* v1152：通知は REST で取らない（関数から） */
     if(_hrOut) Object.keys(HR_KEYS).forEach(function(k){ ex.push(_kvQuote(k)); });   /* v1142：採用・お悩み相談室は REST で取らない */
     if(typeof PII_KEY!=='undefined') ex.push(_kvQuote(PII_KEY));   /* v1144（Codex #138 P1-2）：個人の欄の生の行は取らない（関数の版によらず） */
     var f=KV_SKIP_PREFIX.map(function(p){ return 'key=not.like.'+p+'*'; }).join('&');
@@ -14963,7 +14972,8 @@ async function _kvPullRows(force){
   else if(Array.isArray(rows) && !_ssOut && typeof ssIsKey==='function' && rows.some(function(r){ return r && ssIsKey(r.key); }) && ssState()==='part'){
     await ssIdbReady(); ssFreshCleanup();   /* 今までどおり REST で、対象のキーの行が届いた（SQL の前）：同じく、置く直前に part の写しを消す */
   }
-  if(Array.isArray(rows) && _hrOut) rows=rows.filter(function(r){ return !(r && hrIsKey(r.key)); });   /* v1142：REST の採用・相談の行は使わない（まだ印を付ける前に外す） */
+  if(Array.isArray(rows) && _hrOut) rows=rows.filter(function(r){ return !(r && hrIsKey(r.key)); });
+  if(Array.isArray(rows) && _ntOut) rows=rows.filter(function(r){ return !(r && r.key==='notifications'); });   /* v1152 */   /* v1142：REST の採用・相談の行は使わない（まだ印を付ける前に外す） */
   if(Array.isArray(rows) && _ssOut && !_stale){
     rows=rows.filter(function(r){ return !(r && ssIsKey(r.key)); }).concat(_ssr.rows || []);   /* v1139：REST の対象のキーの行は使わない・関数の行（full）を足す */
     if(_ssr.full){ try{ Object.defineProperty(rows, '_ss', { value:{ ver:_ssr.ver || {} }, enumerable:false }); }catch(e){} }   /* 印は取り込めた行だけ（ssSeenRecord）。見せる形（proj）は ssPull が記録した */
@@ -16836,6 +16846,7 @@ function _lsSetVerified(key, json){
   return _lsWriteVerified(key, json);
 }
 async function pullOpKey(key, _noSs){
+  if(key==='notifications' && typeof ntMode==='function' && ntMode()!=='rest'){ var _np=await ntPull(); if(_np!=='rest') return _np; }   /* v1152：通知は関数から */
   if(window.FUNERGY_FINANCIAL_SAVE && FunergyFinancialSave.financialKey(key)){try{await FUNERGY_FINANCIAL_SAVE.preserveLocal();}catch(e){return false;}}
   try{
     var rows=null, _viaSs=false;
@@ -44962,7 +44973,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1151';
+const APP_VERSION = '1152';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -88933,6 +88944,7 @@ function renderNotifications(){
     +'<div class="section-sub">あなた宛の通知一覧（最新順）'+(unreadN?(' ・未読 '+unreadN+'件'):'')+'</div></div>'
     +(all.length?'<button class="btn btn-secondary btn-sm" onclick="markAllNotifReadPage()"><i class="ti ti-checks"></i> すべて既読</button>':'')
     +'</div>';
+  if(typeof ntHintHtml==='function'){ var _nh=ntHintHtml(); if(_nh) html+='<div class="card" style="padding:0;margin-bottom:8px">'+_nh+'</div>'; }   /* v1152 */
   html+='<div class="phase-tabs" style="margin-bottom:8px">'
     +'<div class="phase-tab'+(_notifPageFilter==='all'?' active':'')+'" onclick="setNotifPageFilter(\'all\')">すべて'+(all.length?('（'+all.length+'）'):'')+'</div>'
     +'<div class="phase-tab'+(_notifPageFilter==='unread'?' active':'')+'" onclick="setNotifPageFilter(\'unread\')">未読'+(unreadN?('（'+unreadN+'）'):'')+'</div>'
@@ -88996,7 +89008,8 @@ function renderNotifPanel(){
   var list=myNotifs();
   var head='<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--surface);z-index:1">'
     +'<div style="font-weight:700;font-size:14px"><i class="ti ti-bell"></i> 通知</div>'
-    +(list.length?'<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="markAllNotifRead()">すべて既読</button>':'')+'</div>';
+    +(list.length?'<button class="btn btn-secondary btn-sm" style="padding:2px 8px" onclick="markAllNotifRead()">すべて既読</button>':'')+'</div>'
+    +((typeof ntHintHtml==='function') ? ntHintHtml() : '');   /* v1152 */
   if(!list.length){ p.innerHTML=head+'<div style="padding:24px;text-align:center;color:var(--muted);font-size:12px">通知はありません</div>'; return; }
   var rows=list.slice(0,50).map(function(n){
     var unread=(n.readBy||[]).indexOf(curUserName)<0;
@@ -89032,8 +89045,10 @@ function onNotifClick(id){
 var _rtClient=null, _rtChannel=null, _notifPollTimer=null;
 function notifRealtimeStart(){
   notifRealtimeStop();
+  var _ntm=(typeof ntMode==='function') ? ntMode() : 'rest';   /* v1152：関数で読む人は app_state を購読しない（公開の鍵では読めない行になる。合図（v1151）と 1 分ごとで読む） */
+  if(_ntm!=='rest') try{ ntMigrate(); }catch(e){}
   try{
-    if(window.supabase && window.supabase.createClient){
+    if(_ntm==='rest' && window.supabase && window.supabase.createClient){
       if(!_rtClient) _rtClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
       _rtChannel = _rtClient.channel('rt-notifications')
         .on('postgres_changes', { event:'*', schema:'public', table:'app_state', filter:'key=eq.notifications' }, function(){ notifPullNow(); })
@@ -89059,6 +89074,7 @@ function notifRealtimeStop(){
 }
 /* app_stateから最新notificationsを取得→ローカル反映（lsSetは使わない＝再pushループ防止） */
 async function notifPullNow(){
+  if(typeof ntMode==='function' && ntMode()!=='rest'){ var _np=await ntPull(); if(_np!=='rest') return; }   /* v1152：関数から（見られる分だけ） */
   try{
     var r = await fetch(SUPABASE_URL+'/rest/v1/app_state?key=eq.notifications&select=value', { headers: supaHeaders() });
     if(!r.ok) return;
@@ -89074,12 +89090,195 @@ function onNotifIncoming(arr){
        （電波の無いときの承認の知らせなど）が手元から消え、送り直されなかった。 */
     try{ var _loc=_lsRaw('notifications', null); if(Array.isArray(_loc) && _loc.length) arr=mergeNotifs(arr, _loc); }catch(e){}
     _lsWriteVerified('notifications', JSON.stringify(arr));       /* v763 */
+    try{ localStorage.removeItem('_nt_mig_v1152'); }catch(e){}   /* v1152：REST で全部を取り込んだ（関数の道に戻ったら写しを直す） */
     var after = myUnreadCount();
     renderNotifBell();
     var p=document.getElementById('notif-panel');
     if(p && p.style.display==='block') renderNotifPanel();
     if(after>before){ try{ showToast('新しい通知があります','info'); }catch(e){} }
   }catch(e){}
+}
+
+/* ============================================================
+   v1152（段階 2b の最後）：通知（notifications）を関数 secure-state で（docs/SECURE_NOTIFICATIONS_V1152_JA.md）
+   ------------------------------------------------------------
+   【前】通知は app_state の 1 行（新しい 500 件の配列）で、公開の鍵でだれでも読めて書けた（退職の理由・採用した人の名前・相談の題名・
+     個人あての知らせ）。どの端末も全部を取り込み、画面（notifForMe）で自分あての分だけを出していた。
+   【いま】読むのは関数の nt で、ログインした人の宛先の分（notifForMe と同じ決まり）と自分が出した分だけ。端末の写しもその分だけ。
+     書くのは「足した通知」と「自分の既読・確認の印」だけを送る（関数がクラウドの最新に重ねる。ほかの人の印・中身は変えない・消さない）。
+     端末の通知の印：_s＝クラウドにある（関数から受け取った）／_sr・_sa＝クラウドに自分の既読・確認の印がある／_w＝足した人（送るまで）。
+     _s の無い通知は「まだ送っていない足した通知」（_w がこのログインの人の分だけ送る）。
+   【店のタブレット・PIN が初期の人】（Moto さん 11/12：店のタブレットには通知を出さない）関数で足すだけ。読まない（端末にもほかの人の通知を残さない）。
+   【関数が前の版】答えに ntfn:1 が無ければ、10 分のあいだ今までどおり REST で読み書きする。公開の鍵から外すのは、全部の端末を 1152 にしたあとの SQL（20261119090000）。
+   ログイン・取り込み・画面に戻ったとき・1 分ごと・「変わった」の合図（v1151）で読む。 */
+var _nt = { old:null, rx:0 };   /* old：{ id（そのときのログイン）, at }（関数が前の版）・rx：受け取った回数（古い答えで新しい写しを戻さない） */
+var NT_MIG = '_nt_mig_v1152';   /* この端末の通知の写しを v1152 の形にしたか（REST で取り込んだら外す） */
+function ntOldNow(id){ var L=_nt.old; return !!(L && L.id===id && Date.now()-L.at<600000); }
+/* 'fn'＝関数で読み書き／'add'＝関数で足すだけ（店のタブレット・ログインの印の無い人）／'rest'＝今までどおり（関数が前の版・無い・印の無い GM・CEO） */
+/* 'rest' の道のあいだは REST の取り込みが端末の写しを書く（クラウドにある印の無い通知になる）。関数の道に戻ったら写しを直す（v1152 の形の印を外す）。
+   外さないと、REST で取った通知を「まだ送っていない足した通知」として自分の名前で送り直す（500 件を超えて押し出された通知が自分の通知として戻る） */
+function ntRest(){ try{ localStorage.removeItem(NT_MIG); }catch(e){} return 'rest'; }
+function ntMode(){
+  var S=null; try{ S=ssSess(); }catch(e){ S=null; }
+  if(ntOldNow(S ? S.id : 'none')) return ntRest();
+  try{ if(S && typeof ssLegacyNow==='function' && ssLegacyNow(S)) return ntRest(); }catch(e){}
+  try{ if(typeof curStoreLogin!=='undefined' && curStoreLogin) return 'add'; }catch(e){}
+  if(!S){ var gm=false; try{ gm=['gm','ceo'].indexOf(curRole)>=0; }catch(e){} return gm ? ntRest() : 'add'; }
+  return 'fn';
+}
+function ntMe(){ try{ return String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){ return ''; } }
+function ntLocal(){ var a=null; try{ a=_lsRaw('notifications', null); }catch(e){ a=null; } return Array.isArray(a) ? a : []; }
+function ntWrite(arr){ try{ return _lsWriteVerified('notifications', JSON.stringify(arr)); }catch(e){ return false; } }   /* 端末にだけ（送らない） */
+function ntSort(arr){ arr.sort(function(a,b){ return String((a&&a.at)||'').localeCompare(String((b&&b.at)||'')); }); return arr.length>500 ? arr.slice(arr.length-500) : arr; }
+function ntStrip(n){ var o={}; Object.keys(n||{}).forEach(function(k){ if(k.charAt(0)!=='_' && k!=='readBy' && k!=='ackBy') o[k]=n[k]; }); return o; }
+/* 関数を呼ぶ。ログインの印が無い人（PIN が初期の人）も、足すだけは公開の鍵で呼ぶ */
+async function ntCall(payload){
+  var S=null; try{ S=ssSess(); }catch(e){ S=null; }
+  if(S) return await ssCall(payload);
+  var ctl=null, tm=null; try{ ctl=new AbortController(); tm=setTimeout(function(){ try{ ctl.abort(); }catch(e){} }, 30000); }catch(e){ ctl=null; }
+  var r, j=null;
+  try{ r=await fetch(SUPABASE_URL+SS_FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify(payload), signal:ctl ? ctl.signal : undefined }); }
+  catch(e){ if(tm) clearTimeout(tm); return { net:true }; }
+  try{ j=await r.json(); }catch(e){ j=null; }
+  if(tm) clearTimeout(tm);
+  if(!(j && j.fn===1)){ if(r.status>=500) return { status:r.status, error:'' }; _nt.old={ id:'none', at:Date.now() }; return { legacy:true }; }   /* 関数が無い・ほかの物が答えた */
+  if(j.ntfn!==1){ _nt.old={ id:'none', at:Date.now() }; return { legacy:true }; }   /* 関数が前の版 */
+  if(!r.ok) return { status:r.status, error:(typeof j.error==='string') ? j.error : '' };
+  return { ok:true, j:j };
+}
+/* この端末の写しを v1152 の形に（1 回だけ）。REST で取り込んだ通知は「クラウドにある」とみなす。
+   送れていない変更が残っていた（送信待ち）ときだけ、3 日のうちに自分（またはシステム）が足した通知を送り直す（関数は同じ id を二度足さない）。
+   店のタブレット・ログインの印の無い人：ほかの人の通知を端末に残さない */
+function ntMigrate(){
+  var mode=ntMode(); if(mode==='rest') return;
+  try{ if(localStorage.getItem(NT_MIG)) return; }catch(e){ return; }
+  var me=ntMe(), pend=false; try{ pend=!!ssPending('notifications'); }catch(e){ pend=false; }
+  var cut=Date.now()-3*86400000, out=[];
+  ntLocal().forEach(function(n){
+    if(!n || typeof n!=='object' || n.id==null) return;
+    var t=Date.parse(n.at||'');
+    if(pend && me && (n.by===me || n.by==='システム') && isFinite(t) && t>=cut){ var c=Object.assign({}, n); delete c._s; delete c._sr; delete c._sa; c._w=me; out.push(c); return; }
+    if(mode==='add') return;
+    var c2=Object.assign({}, n); c2._s=1; delete c2._w;
+    if(me && (c2.readBy||[]).indexOf(me)>=0) c2._sr=1; else delete c2._sr;
+    if(me && (c2.ackBy||[]).indexOf(me)>=0) c2._sa=1; else delete c2._sa;
+    out.push(c2);
+  });
+  ntWrite(out);
+  try{ localStorage.setItem(NT_MIG, '1'); }catch(e){}
+}
+/* 送るもの：足した通知（このログインの人が足した分・20 件まで）と、自分の既読・確認の印でクラウドにまだ無いもの */
+function ntDelta(me, anon){
+  var loc=ntLocal(), add=[], read=[], ack=[], ch=false, old=Date.now()-14*86400000, keep=[];
+  loc.forEach(function(n){
+    if(!n || typeof n!=='object' || n.id==null) return;
+    if(!n._s){
+      if(!n._w){ n._w=me; ch=true; }
+      if(n._w!==me){ var t=Date.parse(n.at||''); if(isFinite(t) && t<old){ ch=true; return; } keep.push(n); return; }   /* ほかの人が足して送れなかった分：その人のログインで送る（14 日で捨てる） */
+      if(add.length<20) add.push(ntStrip(n));
+      keep.push(n); return;
+    }
+    keep.push(n);
+    if(anon || !me) return;
+    if((n.readBy||[]).indexOf(me)>=0 && !n._sr) read.push(String(n.id));
+    if((n.ackBy||[]).indexOf(me)>=0 && !n._sa) ack.push(String(n.id));
+  });
+  if(ch) ntWrite(keep);
+  return { add:add, read:read.slice(0,500), ack:ack.slice(0,500) };
+}
+/* 関数の答え（見られる通知）を端末に置く。まだ送っていない足した通知と自分の印は残す。done＝関数が受け取った（足した・もうある・形が合わない）通知 */
+function ntReceive(items, done){
+  _nt.rx++;
+  var me=ntMe(), loc=ntLocal(), doneSet={}, locById={}, seen={}, out=[];
+  (done||[]).forEach(function(id){ doneSet[String(id)]=1; });
+  loc.forEach(function(n){ if(n && typeof n==='object' && n.id!=null) locById[String(n.id)]=n; });
+  (Array.isArray(items) ? items : []).forEach(function(s){
+    if(!s || typeof s!=='object' || s.id==null) return;
+    var id=String(s.id); if(seen[id]) return; seen[id]=1;
+    var n=Object.assign({}, s), rb=Array.isArray(s.readBy) ? s.readBy.slice() : [], ab=Array.isArray(s.ackBy) ? s.ackBy.slice() : [], l=locById[id];
+    n._s=1;
+    if(me && rb.indexOf(me)>=0) n._sr=1; else delete n._sr;
+    if(me && ab.indexOf(me)>=0) n._sa=1; else delete n._sa;
+    if(l && me){
+      if((l.readBy||[]).indexOf(me)>=0 && rb.indexOf(me)<0) rb.push(me);   /* まだ送っていない既読 */
+      if((l.ackBy||[]).indexOf(me)>=0 && ab.indexOf(me)<0) ab.push(me);
+    }
+    n.readBy=rb; n.ackBy=ab; delete n._w;
+    out.push(n);
+  });
+  loc.forEach(function(l){ if(!l || typeof l!=='object' || l.id==null) return; var id=String(l.id); if(seen[id] || l._s || doneSet[id]) return; out.push(l); });   /* まだ送っていない足した通知 */
+  return ntWrite(ntSort(out));
+}
+/* 足すだけの端末：関数が受け取った通知を端末から外す */
+function ntDropDone(done){
+  var d={}; (done||[]).forEach(function(id){ d[String(id)]=1; });
+  ntWrite(ntLocal().filter(function(n){ return n && typeof n==='object' && n.id!=null && !n._s && !d[String(n.id)]; }));
+}
+function ntUiRefresh(newer){
+  try{ renderNotifBell(); }catch(e){}
+  try{ var p=document.getElementById('notif-panel'); if(p && p.style.display==='block') renderNotifPanel(); }catch(e){}
+  if(newer){ try{ showToast('新しい通知があります','info'); }catch(e){} }
+}
+/* 送る（syncMasterToSupabase から。送信待ち・送り直しも同じ道）。true＝送れた／false＝送れなかった（送信待ちに残す）／'rest'＝関数が前の版（今までどおり REST で） */
+function ntMigReset(){ try{ localStorage.removeItem(NT_MIG); }catch(e){} }   /* 今までどおり（REST）の道に戻った：関数の道に戻ったら写しを直す */
+async function ntPush(){
+  var mode=ntMode(); if(mode==='rest') return 'rest';   /* 写しの印は ntMode が外した */
+  ntMigrate();
+  var tk=ssToken(), me=ntMe(), anon=(mode==='add');
+  for(var i=0;i<30;i++){
+    var d=ntDelta(me, anon);
+    if(!d.add.length && !d.read.length && !d.ack.length) return true;
+    var r=await ntCall({ action:'nt', add:d.add, read:d.read, ack:d.ack });
+    if(ssStale(tk)) return false;   /* 頼んだあとにログインが変わった：何も置かない（足した通知は端末に残り、その人のログインで送る） */
+    if(r.legacy){ ntMigReset(); return 'rest'; }
+    if(!r.ok){ try{ _opLastPushErr['notifications']='nt:'+(r.error || (r.net ? 'network' : r.status) || ''); }catch(e){} return false; }
+    var before=myUnreadCount();
+    if(anon || !Array.isArray(r.j.items)) ntDropDone(r.j.done);
+    else ntReceive(r.j.items, r.j.done);
+    ntUiRefresh(myUnreadCount()>before);
+  }
+  return false;
+}
+/* 読む（ログイン・画面に戻ったとき・1 分ごと・合図）。関数で読む人（fn）だけ */
+var _ntPullP=null;
+function ntPull(){
+  if(ntMode()!=='fn') return Promise.resolve(null);
+  if(_ntPullP) return _ntPullP;
+  var tk=ssToken();
+  _ntPullP=(async function(){
+    try{
+      ntMigrate();
+      var rx0=_nt.rx, before=myUnreadCount();
+      var r=await ntCall({ action:'nt' });
+      if(ssStale(tk)) return null;
+      if(r.legacy){ ntMigReset(); return 'rest'; }
+      if(!r.ok || !r.j || !Array.isArray(r.j.items)) return false;
+      if(_nt.rx!==rx0) return true;   /* 頼んでいるあいだに、送った答えでもっと新しい写しを置いた */
+      ntReceive(r.j.items, []);
+      ntUiRefresh(myUnreadCount()>before);
+      var d=ntDelta(ntMe(), false);
+      if(d.add.length || d.read.length || d.ack.length){ try{ _pushWithOutbox('notifications', ntLocal()); }catch(e){} }   /* 送れていない印・通知 */
+      return true;
+    }catch(e){ return false; }
+    finally{ _ntPullP=null; }
+  })();
+  return _ntPullP;
+}
+/* ログアウト：クラウドから受け取った通知は端末に残さない（次の人に前の人の通知を出さない）。まだ送っていない足した通知だけ残す */
+function ntOnLogout(){
+  _nt.rx++;
+  try{ if(ntMode()==='rest') return; }catch(e){}
+  try{ if(!localStorage.getItem(NT_MIG)) return; }catch(e){ return; }
+  ntWrite(ntLocal().filter(function(n){ return n && typeof n==='object' && n.id!=null && !n._s; }));
+}
+/* 通知の画面の一行（店のタブレット・ログインの印の無い人） */
+function ntHintHtml(){
+  var m='rest'; try{ m=ntMode(); }catch(e){}
+  if(m!=='add') return '';
+  var store=false; try{ store=(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){}
+  var ja=store ? '店舗の PIN のタブレットでは通知を出しません。自分の PIN でログインすると見られます。' : '通知を見るには、自分の PIN を設定してログインし直してください。';
+  var en=store ? 'Notifications are not shown on the store tablet. Log in with your own PIN to see them.' : 'To see notifications, set your own PIN and log in again.';
+  return '<div style="padding:8px 12px;font-size:11px;color:var(--muted);border-bottom:1px solid var(--border)"><i class="ti ti-lock"></i> '+((typeof t==='function') ? t(ja, en) : ja)+'</div>';
 }
 
 /* ===== 承認ルーティング（タイプ別の承認者）＋ 店舗スコープ宛先の補助 ===== */
@@ -104742,6 +104941,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return true;
   }
   async function pullOne(k){
+    if(k === 'notifications' || k === '_secure:notifications'){   /* v1152：通知は関数から（見られる分だけ。REST では読まない） */
+      if(typeof ntMode === 'function' && ntMode() !== 'rest'){
+        var _np = (typeof ntPull === 'function') ? await ntPull() : null;
+        if(_np !== 'rest') return _np;   /* false＝読めなかった（同じ合図で読み直す） */
+      }
+      if(k !== 'notifications') return null;   /* 関数が前の版と分かった：通知は今までどおり REST で（下の道） */
+    }
     if(k.indexOf('set:') === 0) return (typeof pullSettingKey === 'function') ? pullSettingKey(k.slice(4)) : null;
     if(k.indexOf('m:') === 0) return pullMaster(k.slice(2));
     if(k.indexOf('_secure:') === 0){
@@ -104761,7 +104967,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function wantsFull(k){
     if(k === '*' || k === 'set:*') return true;
-    if(k.indexOf('_secure:') === 0){ var c = k.slice(8); return !SEC_OWN[c] && c !== 'pii'; }
+    if(k.indexOf('_secure:') === 0){ var c = k.slice(8); return !SEC_OWN[c] && c !== 'pii' && c !== 'notifications'; }
     return false;
   }
   /* 機密の区分・まとめての合図：今までの自動の同期を前倒し（2 分に 1 回まで） */

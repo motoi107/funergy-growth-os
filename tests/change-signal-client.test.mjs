@@ -218,6 +218,32 @@ test('keys the app does not keep, the raw personal row and the secure rows are n
   A.SG.stop();
 });
 
+test('notifications (v1152): a signal is read through the function (ntPull), never one by one by REST; the protected kind too; the REST road as before', async () => {
+  const A = load();
+  let nt = 0, mode = 'fn';
+  A.ctx.ntMode = () => mode; A.ctx.ntPull = async () => { nt++; return true; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: 'notifications', n: 1, at: later(1), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  A.W.emit({ key: '_secure:notifications', n: 1, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.equal(nt, 2, 'both through the function');
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0, 'not by REST');
+  assert.equal(A.autoN(), 0, 'not the whole sync');
+  mode = 'rest';   // 前の版の関数：今までどおり
+  A.W.emit({ key: 'notifications', n: 2, at: later(3), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op'), [['op', 'notifications']]);
+  assert.equal(nt, 2);
+  // 関数で読もうとして前の版と分かった（'rest'）：同じ合図で今までどおり REST で読む
+  mode = 'fn'; A.ctx.ntPull = async () => { nt++; mode = 'rest'; return 'rest'; };
+  A.W.emit({ key: 'notifications', n: 3, at: later(4), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.equal(nt, 3);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op'), [['op', 'notifications'], ['op', 'notifications']]);
+  A.SG.stop();
+});
+
 test('while typing or with a dialog open, nothing is taken; it is taken when the person stops', async () => {
   const A = load();
   A.SG.start(); await tick(20);
