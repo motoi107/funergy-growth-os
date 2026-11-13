@@ -769,3 +769,19 @@ test('v1152 with Codex #145 6846570741 P2-2: the notifications row is read one b
   A.ctx.ntMode = () => 'rest';
   assert.equal(A.SG._oneAlways('notifications'), false, 'a function of the previous version: the REST full sync reads the row');
 });
+test('Claude #145 6847734306 P3-3: a single key that changes while the full sync is running is taken right away (the full sync is not awaited inside the read)', async () => {
+  let release;
+  const A = load({ rtStatus: 'CHANNEL_ERROR', autoAns: n => (n === 1 ? new Promise(r => { release = r; }) : 'ok') });
+  A.SG.start(); await tick(20);
+  bulk(A, 'w', 51);
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.autoN(), 1, 'the full sync is running');
+  assert.ok(A.SG.st.fullBusy);
+  A.W.put('single', 1, later(3), 'E-1', 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op').map(p => p[1]), ['single'], 'taken while the full sync is still going (before: after it)');
+  release('ok'); await tick(30);
+  assert.equal(A.SG.st.fullBusy, false);
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 0);
+  assert.equal(A.autoN(), 1, 'only one full sync at a time');
+});

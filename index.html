@@ -14006,9 +14006,9 @@ async function piiLoad(force){
     var before='', lv=String(r.j.level||''), after='';
     try{ before=(_pii.map && _pii.tid===tid) ? (_pii.lv+'|'+JSON.stringify(_pii.map)) : ''; after=lv+'|'+JSON.stringify(d); }catch(e){ before=''; after='?'; }
     _pii={ tid:tid, lv:lv, map:d, at:Date.now(), p:_pii.p };
-    /* 端末には残さない（メモリだけ）ので、画面の「データが変わった」の見張り（端末の保存を見る）に届かない。中身が変わったら知らせる
-       （Codex #145 6846570741 P2-3：前は変更の合図で読み直しても、画面を描き直さなかった） */
-    if(before!==after){ try{ var ux=window.FUNERGY_UX; if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange(); }catch(e){} }
+    /* 端末には残さない（メモリだけ）ので、画面の「データが変わった」の見張り（端末の保存を見る）に届かない。前に読んだ中身から変わったら知らせる
+       （Codex #145 6846570741 P2-3：前は変更の合図で読み直しても、画面を描き直さなかった）。初めて読んだときは知らせない（読む画面が自分で描く。Claude #145 6847734306 P3-2） */
+    if(before && before!==after){ try{ var ux=window.FUNERGY_UX; if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange(); }catch(e){} }
     return 'ok';
   })();
   _pii.p={ tid:tid, p:p };
@@ -104608,6 +104608,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var same = function(){ return whoNow() === me && appShown(); };
     var failBefore = SY.fail, started = now();
     AU.n++; AU.manualRun = !!opt.manual; AU.started = started;
+    /* okStarted を進めるのは、取り込み（supaPullAllMasters）が本当に終わって読めたときだけ（Codex #145 6847848775 P2：前は 60 秒の時間切れでも
+       ほかに失敗が無ければ「最新」とし、合図の預かり（FUNERGY_SIGNAL の fullPend）を外していた。そのあと取り込みが失敗しても取り直さなかった）。
+       時間切れのときは、あとで取り込みが読めて終わったら進める（失敗・2 分の打ち切り・別の人に替わったら進めない） */
+    var pullSt = { done: false, ok: false, r: null };
+    var pullGood = function(res){ return !!res && res !== '__timeout__' && !(Array.isArray(res._fails) && res._fails.length); };
+    var advanceOk = function(){ if(pullSt.r === 'ok' && pullSt.done && pullSt.ok && started > AU.okStarted && whoNow() === me) AU.okStarted = started; };
     AU.running = (async function(){
       try{ await withTimeout(typeof flushOutbox === 'function' ? flushOutbox() : null, 20000); }catch(e){}
       try{ await withTimeout(ST.retryPending(!!opt.manual), 20000); }catch(e){}
@@ -104617,8 +104623,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         ST._lastTrack = null;
         var pp = (typeof supaPullAllMasters === 'function') ? supaPullAllMasters() : null;
         var tr = ST._lastTrack || pp;   /* 取り込みの結果を右上に書き終えるまで（裏の取り込み＝_done も） */
-        await withTimeout(tr, STEP_MAX * 2);
-      }catch(e){}
+        var wr = await withTimeout(tr, STEP_MAX * 2);
+        if(tr == null){ pullSt.done = true; pullSt.ok = true; }   /* 取り込みの関数が無い（読むものが無い） */
+        else if(wr === '__timeout__'){   /* まだ終わっていない：裏で続く。終わったら、その結果で決める */
+          Promise.resolve(tr).then(function(res){ pullSt.done = true; pullSt.ok = pullGood(res); advanceOk(); }, function(){ pullSt.done = true; pullSt.ok = false; });
+        } else { pullSt.done = true; pullSt.ok = pullGood(wr); }
+      }catch(e){ pullSt.done = true; pullSt.ok = false; }
       if(!same()) return 'changed';
       try{ if(typeof refreshStores === 'function') refreshStores(); }catch(e){}
       var pr = null, fn = ((typeof curPage !== 'undefined' ? curPage : '') === page) ? ST.pageRefresher(page, !!opt.manual) : null;
@@ -104633,7 +104643,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return (SY.fail && SY.fail !== failBefore) ? 'fail' : 'ok';
     })().catch(function(){ return 'fail'; }).then(function(r){
       AU.running = null; AU.manualRun = false; AU.last = now();
-      if(r === 'ok' && started > AU.okStarted) AU.okStarted = started;
+      pullSt.r = r; advanceOk();
       if(opt.manual || r === 'fail') ST.log('sync', (opt.manual ? T('手で最新にした', 'Updated by hand') : T('自動の同期', 'Auto sync')) + '：' + (r === 'ok' ? T('最新', 'up to date') : r === 'fail' ? T('取れなかったものがある', 'some could not be fetched') : r), r === 'ok' ? true : (r === 'fail' ? false : null));
       ST.paintSoon();
       return r;
@@ -104877,7 +104887,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 
   /* ---------- 合図 ---------- */
-  var SIG = SG.st = { on: false, live: false, missing: false, based: false, seen: {}, want: {}, retry: {}, tries: {}, retryTm: null, fullPend: {}, fullTries: 0, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
+  var SIG = SG.st = { on: false, live: false, missing: false, based: false, seen: {}, want: {}, retry: {}, tries: {}, retryTm: null, fullPend: {}, fullTries: 0, fullBusy: false, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
   var POLL_OFF = 60000, POLL_LIVE = 5 * 60000, BATCH_MS = 1500, BUSY_MS = 5000, FULL_GAP = 2 * 60000, BACK_MS = 120000;
   var PAGE = 1000, MAX_PAGES = 200;   /* 合図の表を読む 1 ページ（Supabase の既定の上限と同じ・supaFetchAll と同じ）・安全弁 */
   var RETRY_MS = [10000, 30000, 60000, 120000, 300000];   /* 取り込めなかったキーを読み直すまで（だんだん長く・5 分まで） */
@@ -104969,7 +104979,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   SG.start = function(){
     SG.stop();
     if(typeof curRole === 'undefined' || !curRole) return;
-    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.lastAt = '';
+    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.fullBusy = false; SIG.lastAt = '';
     (async function(){
       await SG.probe();
       if(g !== SIG.gen) return;
@@ -105000,7 +105010,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(SIG.retryTm){ clearTimeout(SIG.retryTm); SIG.retryTm = null; }
     try{ if(SIG.onVis) D.removeEventListener('visibilitychange', SIG.onVis); if(SIG.onOnline) W.removeEventListener('online', SIG.onOnline); }catch(e){}
     SIG.onVis = SIG.onOnline = null;
-    SIG.on = false; SIG.live = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.running = false; SIG.again = false;
+    SIG.on = false; SIG.live = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.fullBusy = false; SIG.running = false; SIG.again = false;
     noteHide();
     paint();
   };
@@ -105115,13 +105125,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var gap = FULL_GAP - (now() - ((S.auto && S.auto.last) || 0));
       if(gap > 0){ fullLater(gap, g); return null; }   /* 2 分に 1 回まで：あとでもう一度（キーは残す） */
     }
-    var p = null, r = null, st = 0;
-    try{ p = S.autoSync('signal'); st = (S.auto && S.auto.started) || 0; }catch(e){ p = null; }
+    var p = null, r = null;
+    try{ p = S.autoSync('signal'); }catch(e){ p = null; }
     try{ r = await p; }catch(e){ r = 'fail'; }
     if(g !== SIG.gen) return r;
-    var okFrom = (S.auto && S.auto.okStarted) || 0;
-    if(r === 'ok' && st > okFrom) okFrom = st;
-    if(fullCovered(okFrom)){
+    /* 済んだかは、自動の同期が残す okStarted だけで決める（取り込みが本当に読めて終わった同期だけが進める。時間切れの「最新」は数えない：Codex #145 6847848775） */
+    if(fullCovered((S.auto && S.auto.okStarted) || 0)){
       var c = ++SIG.fullTries;   /* 失敗・延期（offline・skip・busy・hidden・changed）・預かる前に始まった同期：間をおいてもう一度 */
       fullLater(RETRY_MS[Math.min(c, RETRY_MS.length) - 1], g);
     } else SIG.fullTries = 0;
@@ -105163,7 +105172,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
           if(ok !== null) got.push(r);
         }
       }
-      if(Object.keys(SIG.fullPend).length) await runFull(g);
+      /* まとめての同期は待たない（そのあいだに来た 1 つずつの合図を後回しにしない。Claude #145 6847734306 P3-3）。1 つだけ動かす */
+      if(Object.keys(SIG.fullPend).length && !SIG.fullBusy){
+        SIG.fullBusy = true;
+        runFull(g).catch(function(){}).then(function(){ if(g === SIG.gen) SIG.fullBusy = false; });
+      }
     } finally { SIG.running = false; }
     if(g !== SIG.gen) return;
     if(failed.length) retryLater(failed, g);
