@@ -14001,7 +14001,12 @@ async function piiLoad(force){
     if(!r.ok) return 'fail';
     var d=r.j && r.j.data;
     if(!d || typeof d!=='object' || Array.isArray(d)) return 'fail';
-    _pii={ tid:tid, lv:String(r.j.level||''), map:d, at:Date.now(), p:_pii.p };
+    var before='', lv=String(r.j.level||''), after='';
+    try{ before=(_pii.map && _pii.tid===tid) ? (_pii.lv+'|'+JSON.stringify(_pii.map)) : ''; after=lv+'|'+JSON.stringify(d); }catch(e){ before=''; after='?'; }
+    _pii={ tid:tid, lv:lv, map:d, at:Date.now(), p:_pii.p };
+    /* 端末には残さない（メモリだけ）ので、画面の「データが変わった」の見張り（端末の保存を見る）に届かない。中身が変わったら知らせる
+       （Codex #145 6846570741 P2-3：前は変更の合図で読み直しても、画面を描き直さなかった） */
+    if(before!==after){ try{ var ux=window.FUNERGY_UX; if(ux && typeof ux.noteDataChange==='function') ux.noteDataChange(); }catch(e){} }
     return 'ok';
   })();
   _pii.p={ tid:tid, p:p };
@@ -103044,6 +103049,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     };
   } else { lastDataChange = 1e15; }
   UX._dataChangedSince = function(t){ return lastDataChange > t; };
+  /* 端末に残さずメモリだけで持つデータ（関数から読んだ個人の欄など）が変わった：描き直してよい（v1151・Codex #145 6846570741 P2-3） */
+  UX.noteDataChange = function(){ var t = now(); if(t > lastDataChange) lastDataChange = t; };
   var bgWant = 0, bgT = null;
   UX.bgRefresh = function(){
     if(!bgWant) bgWant = now();
@@ -104285,7 +104292,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 
   /* ---------- 自動の同期 ---------- */
-  var AU = ST.auto = { last: 0, running: null, retryTm: null, n: 0 };
+  var AU = ST.auto = { last: 0, running: null, retryTm: null, n: 0, started: 0, okStarted: 0 };   /* started＝今の（最後の）同期を始めた時刻・okStarted＝最後に「最新」で終わった同期を始めた時刻（「変わった」の合図が、その同期で取り込まれたかを見る） */
   var VISIBLE_GAP = 3 * 60000, EVERY = 10 * 60000, BUSY_RETRY = 30000, STEP_MAX = 30000;
   ST.EVERY = EVERY; ST.VISIBLE_GAP = VISIBLE_GAP;
   /* v1151（Moto さん 11/12 の 4：はい）：「変わった」の合図にリアルタイムでつながっているあいだは、自動の同期を 30 分ごとに（合図が来たキーはすぐ取り込む）。
@@ -104347,8 +104354,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }
     var me = whoNow(), page = (typeof curPage !== 'undefined') ? curPage : '';
     var same = function(){ return whoNow() === me && appShown(); };
-    var failBefore = SY.fail;
-    AU.n++; AU.manualRun = !!opt.manual;
+    var failBefore = SY.fail, started = now();
+    AU.n++; AU.manualRun = !!opt.manual; AU.started = started;
     AU.running = (async function(){
       try{ await withTimeout(typeof flushOutbox === 'function' ? flushOutbox() : null, 20000); }catch(e){}
       try{ await withTimeout(ST.retryPending(!!opt.manual), 20000); }catch(e){}
@@ -104374,6 +104381,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       return (SY.fail && SY.fail !== failBefore) ? 'fail' : 'ok';
     })().catch(function(){ return 'fail'; }).then(function(r){
       AU.running = null; AU.manualRun = false; AU.last = now();
+      if(r === 'ok' && started > AU.okStarted) AU.okStarted = started;
       if(opt.manual || r === 'fail') ST.log('sync', (opt.manual ? T('手で最新にした', 'Updated by hand') : T('自動の同期', 'Auto sync')) + '：' + (r === 'ok' ? T('最新', 'up to date') : r === 'fail' ? T('取れなかったものがある', 'some could not be fetched') : r), r === 'ok' ? true : (r === 'fail' ? false : null));
       ST.paintSoon();
       return r;
@@ -104617,7 +104625,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 
   /* ---------- 合図 ---------- */
-  var SIG = SG.st = { on: false, live: false, missing: false, based: false, seen: {}, want: {}, retry: {}, tries: {}, retryTm: null, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
+  var SIG = SG.st = { on: false, live: false, missing: false, based: false, seen: {}, want: {}, retry: {}, tries: {}, retryTm: null, fullPend: {}, fullTries: 0, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
   var POLL_OFF = 60000, POLL_LIVE = 5 * 60000, BATCH_MS = 1500, BUSY_MS = 5000, FULL_GAP = 2 * 60000, BACK_MS = 120000;
   var PAGE = 1000, MAX_PAGES = 200;   /* 合図の表を読む 1 ページ（Supabase の既定の上限と同じ・supaFetchAll と同じ）・安全弁 */
   var RETRY_MS = [10000, 30000, 60000, 120000, 300000];   /* 取り込めなかったキーを読み直すまで（だんだん長く・5 分まで） */
@@ -104709,7 +104717,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   SG.start = function(){
     SG.stop();
     if(typeof curRole === 'undefined' || !curRole) return;
-    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.lastAt = '';
+    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.lastAt = '';
     (async function(){
       await SG.probe();
       if(g !== SIG.gen) return;
@@ -104740,7 +104748,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(SIG.retryTm){ clearTimeout(SIG.retryTm); SIG.retryTm = null; }
     try{ if(SIG.onVis) D.removeEventListener('visibilitychange', SIG.onVis); if(SIG.onOnline) W.removeEventListener('online', SIG.onOnline); }catch(e){}
     SIG.onVis = SIG.onOnline = null;
-    SIG.on = false; SIG.live = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.running = false; SIG.again = false;
+    SIG.on = false; SIG.live = false; SIG.based = false; SIG.seen = {}; SIG.want = {}; SIG.retry = {}; SIG.tries = {}; SIG.fullPend = {}; SIG.fullTries = 0; SIG.running = false; SIG.again = false;
     noteHide();
     paint();
   };
@@ -104819,34 +104827,65 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if(k.indexOf('_secure:') === 0){ var c = k.slice(8); return !SEC_OWN[c] && c !== 'pii'; }
     return false;
   }
-  /* 機密の区分・まとめての合図：今までの自動の同期を前倒し（2 分に 1 回まで） */
-  function fullSync(){
-    var S = STo(); if(!S || !S.autoSync) return null;
-    var last = (S.auto && S.auto.last) || 0, gap = FULL_GAP - (now() - last);
-    if(gap > 0){ if(!SIG.fullTm){ var g = SIG.gen; SIG.fullTm = setTimeout(function(){ SIG.fullTm = null; if(g === SIG.gen) fullSync(); }, gap); } return null; }
-    return S.autoSync('signal');
+  /* いつも 1 つずつ取るもの：関数から読む保護された区分（採用・相談室・個人の欄）。自動の同期（supaPullAllMasters）はこれを読まないので、
+     まとめての同期には任せられない（Codex #145 6846570741 P2-2：前は 50 より多いキーと一緒に、まとめての同期へ回して取らなかった） */
+  function oneAlways(k){ return k.indexOf('_secure:') === 0 && !wantsFull(k); }
+  SG._oneAlways = oneAlways;
+  /* まとめての同期（'*'・保護の区分の一部・50 より多いキー）：今までの自動の同期を前倒し（2 分に 1 回まで）。
+     そのキーは、預かった時刻より後に始まった自動の同期が「最新」で終わるまで fullPend に残す（Codex #145 6846570741 P2-1：前は結果を見ずに捨て、
+     失敗・延期（通信が無い・入力中・2 分の間）のあと、同じ合図では二度と取らなかった）。預かる前に始まっていた同期は、変更より前に読んだかもしれない */
+  function fullLater(ms, g){
+    if(SIG.fullTm) return;
+    SIG.fullTm = setTimeout(function(){ SIG.fullTm = null; if(g === SIG.gen && SIG.on) schedule(0); }, Math.max(0, ms));
   }
+  function fullHold(r){ SIG.fullPend[r.key] = Object.assign({}, r, { _ft: now() }); }
+  function fullCovered(okFrom){
+    Object.keys(SIG.fullPend).forEach(function(k){ var r = SIG.fullPend[k]; if(r && r._ft <= okFrom) delete SIG.fullPend[k]; });
+    return Object.keys(SIG.fullPend).length;
+  }
+  async function runFull(g){
+    var S = STo();
+    if(!S || !S.autoSync){ SIG.fullPend = {}; return null; }   /* 自動の同期が無い（今まで同じ：何もしない） */
+    if(!fullCovered((S.auto && S.auto.okStarted) || 0)){ SIG.fullTries = 0; return null; }   /* ほかの理由（10 分ごと・画面に戻った）の同期で済んでいた */
+    if(!(S.auto && S.auto.running)){
+      var gap = FULL_GAP - (now() - ((S.auto && S.auto.last) || 0));
+      if(gap > 0){ fullLater(gap, g); return null; }   /* 2 分に 1 回まで：あとでもう一度（キーは残す） */
+    }
+    var p = null, r = null, st = 0;
+    try{ p = S.autoSync('signal'); st = (S.auto && S.auto.started) || 0; }catch(e){ p = null; }
+    try{ r = await p; }catch(e){ r = 'fail'; }
+    if(g !== SIG.gen) return r;
+    var okFrom = (S.auto && S.auto.okStarted) || 0;
+    if(r === 'ok' && st > okFrom) okFrom = st;
+    if(fullCovered(okFrom)){
+      var c = ++SIG.fullTries;   /* 失敗・延期（offline・skip・busy・hidden・changed）・預かる前に始まった同期：間をおいてもう一度 */
+      fullLater(RETRY_MS[Math.min(c, RETRY_MS.length) - 1], g);
+    } else SIG.fullTries = 0;
+    return r;
+  }
+  SG._runFull = function(){ return runFull(SIG.gen); };
   async function flush(g){
     if(g !== SIG.gen || !SIG.on) return;
     var S = STo(), busy = (S && S.userBusy) ? S.userBusy() : '';
     if(busy || D.hidden){ schedule(BUSY_MS); return; }   /* 入力中・モーダル・裏にいる：取り込みも待つ（キーは覚えている） */
     if(SIG.running){ SIG.again = true; return; }
     var list = Object.keys(SIG.want).map(function(k){ return SIG.want[k]; }); SIG.want = {};
-    if(!list.length) return;
+    if(!list.length && !Object.keys(SIG.fullPend).length) return;
     SIG.running = true;
-    var t0 = now(), got = [], full = false, failed = [];
+    var t0 = now(), got = [], failed = [];
     try{
-      /* 1 回にたくさんのキーが変わった（送れていなかった変更をまとめて送った端末など）：1 つずつ取らずに今までの自動の同期を前倒し */
-      var one = list.filter(function(r){ return !wantsFull(r.key); });
-      if(one.length > BULK_KEYS){
-        full = true;
-        one.forEach(function(r){ delete SIG.retry[r.key]; delete SIG.tries[r.key]; });
-        list = list.filter(function(r){ return wantsFull(r.key); });
+      /* 1 回にたくさんのキーが変わった（送れていなかった変更をまとめて送った端末など）：1 つずつ取らずに今までの自動の同期を前倒し。
+         保護された区分（oneAlways）は数えず、いつも 1 つずつ取る */
+      var plain = list.filter(function(r){ return !wantsFull(r.key) && !oneAlways(r.key); });
+      if(plain.length > BULK_KEYS){
+        var drop = {};
+        plain.forEach(function(r){ drop[r.key] = 1; fullHold(r); delete SIG.retry[r.key]; delete SIG.tries[r.key]; });
+        list = list.filter(function(r){ return !drop[r.key]; });
       }
       for(var i = 0; i < list.length; i++){
         if(g !== SIG.gen) return;
         var r = list[i];
-        if(wantsFull(r.key)){ full = true; continue; }
+        if(wantsFull(r.key)){ fullHold(r); continue; }
         var ok = null;
         try{ ok = await pullOne(r.key); }catch(e){ ok = false; }
         if(g !== SIG.gen) return;
@@ -104856,10 +104895,11 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         } else {
           if(SIG.tries[r.key]){ SIG.seen[r.key] = Math.max(Number(SIG.seen[r.key]) || 0, Number(r.n) || 0); delete SIG.tries[r.key]; }   /* 読み直しで取れた */
           delete SIG.retry[r.key];
+          delete SIG.fullPend[r.key];   /* 前にまとめての同期に預けたキーを、今 1 つで取れた */
           if(ok !== null) got.push(r);
         }
       }
-      if(full){ var p = fullSync(); if(p) { try{ await p; }catch(e){} } }
+      if(Object.keys(SIG.fullPend).length) await runFull(g);
     } finally { SIG.running = false; }
     if(g !== SIG.gen) return;
     if(failed.length) retryLater(failed, g);
