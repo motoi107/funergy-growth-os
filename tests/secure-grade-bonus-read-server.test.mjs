@@ -231,7 +231,7 @@ test('get: CEO/GM read the whole row; the others read only their range (proj); t
     assert.equal((await S.as('store', { action: 'get', key: k })).status, 401);
   }
   S.W.rows.delete('bonus_track');
-  assert.deepEqual((await S.as('am', { action: 'get', key: 'bonus_track' })).j, { exists: false, value: null, updated_at: null, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1 });
+  assert.deepEqual((await S.as('am', { action: 'get', key: 'bonus_track' })).j, { exists: false, value: null, updated_at: null, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1 });
 });
 
 test('put: writing is still GM/CEO only (v1143 / v1145); those who do not read it all are refused even with the same value (no guessing); Accounting\'s same grade history still passes', async () => {

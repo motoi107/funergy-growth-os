@@ -14319,13 +14319,17 @@ async function ssCall(payload, retried){
   if(S.pin) body.pin_session=S.pin;
   /* PIN の印があるときはメールのログインを一緒に送らない（PIN で決まる。Codex の P1：PIN の確かめ先が落ちたとき別の人の権限にしない） */
   var hdr={ apikey:SUPABASE_ANON, Authorization:'Bearer '+((S.em && !S.pin) ? S.em.access_token : SUPABASE_ANON), 'Content-Type':'application/json' };
+  /* v1151：端末の印・種類を関数に（変更の記録だけに使う。人は関数が決める）。関数が v1151（clfn:1）と分かってから付ける（前の版の関数は受けない見出しで止まる） */
+  var _fpH=(window._fpSsHdr===true && typeof fpActorHdr==='function') ? fpActorHdr() : {};
+  if(_fpH['x-fp-actor']) hdr['x-fp-actor']=_fpH['x-fp-actor'];
   var ctl=null, tm=null, timed=false;
   try{ ctl=new AbortController(); tm=setTimeout(function(){ timed=true; try{ ctl.abort(); }catch(e){} }, payload.ms || 45000); }catch(e){ ctl=null; }
   var r;
   try{ r=await fetch(SUPABASE_URL+SS_FN, { method:'POST', headers:hdr, body:JSON.stringify(body), signal:ctl ? ctl.signal : undefined }); }
-  catch(e){ if(tm) clearTimeout(tm); return { net:true, timeout:timed }; }
+  catch(e){ if(tm) clearTimeout(tm); if(hdr['x-fp-actor'] && !timed){ window._fpSsHdr=false; return ssCall(payload, retried); } return { net:true, timeout:timed }; }   /* v1151：見出しで止まった（関数が前の版に戻った）なら付けずにもう一度 */
   var j=null; try{ j=await r.json(); }catch(e){ j=null; }
   if(tm) clearTimeout(tm);
+  if(j && j.clfn===1 && window._fpSsHdr!==false) window._fpSsHdr=true;   /* v1151 */
   var _isHr = typeof payload.action==='string' && payload.action.indexOf('hr_')===0;
   if((r.status===404 && !(j && j.error)) || (r.status===503 && j && j.error==='auth_unavailable')){
     _ss.legacy={ id:S.id, at:Date.now() };
@@ -20157,6 +20161,7 @@ function uxLoginOpsStart(after){
 }
 /* ログイン確定 → 同期 → アプリ表示 */
 async function enterAppWithSync(){
+  try{ if(window.FUNERGY_SIGNAL) FUNERGY_SIGNAL.mark(); }catch(e){}   /* v1151：このあとに変わったものは、合図の見張りを始めたときに取り込み直す */
   var doSync = true;   /* v1137：「ログイン時同期 OFF」は外した */
   if (doSync) showSyncSplash('最新データに同期中…');
   try { await Promise.race([ loginSync(), new Promise(function(res){ setTimeout(res, 9000); }) ]); } catch(e){} // 携帯回線でハングしても9秒で先へ
@@ -20182,6 +20187,7 @@ async function enterAppWithSync(){
   try{ if (window.FUNERGY_UX && FUNERGY_UX.afterEnter) FUNERGY_UX.afterEnter(); }catch(e){}
   try{ notifRealtimeStart(); }catch(e){}
   try{ tipLiveStart(); }catch(e){}   /* v1091: Tip Rate をほかの端末からすぐ受け取る */
+  try{ if(window.FUNERGY_SIGNAL) FUNERGY_SIGNAL.start(); }catch(e){}   /* v1151：「変わった」の合図（ほかの端末の変更をすぐ取り込む） */
   try{ checkShiftReminders(); }catch(e){}
   try{ checkTipPromotions(); }catch(e){}
   try{ rbNotifyRejectedPaid(); }catch(e){}   /* v1090: 建て替え経費の「却下・支払済」を経理・事務Crew に */
@@ -20303,6 +20309,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
   try{ tipLiveStop(); }catch(e){}   /* v1091 */
+  try{ if(window.FUNERGY_SIGNAL){ FUNERGY_SIGNAL.stop(); FUNERGY_SIGNAL.clReset(); } }catch(e){}   /* v1151 */
   try{ if(typeof ssOnLogout==='function') ssOnLogout(); }catch(e){}   /* v1139：共有の端末では CEO・GM の成長カルテ・賞与の写しを残さない */
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
@@ -20324,6 +20331,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   try{ if(typeof lalaRealtimeStop==='function') lalaRealtimeStop(); }catch(e){}   /* v1098：LaLa の見張りも止める（次の人が開いたときに始め直す） */
   try{ if(typeof mdState!=='undefined' && mdState) mdState.store=''; if(typeof mdLaborMarksClear==='function') mdLaborMarksClear(); }catch(e){}   /* v1090: 次にログインする人に前の人の選んだ店・勤怠の印を残さない */
   try{ tipLiveStop(); }catch(e){}   /* v1091 */
+  try{ if(window.FUNERGY_SIGNAL){ FUNERGY_SIGNAL.stop(); FUNERGY_SIGNAL.clReset(); } }catch(e){}   /* v1151 */
   try{ if(typeof ssOnLogout==='function') ssOnLogout(); }catch(e){}   /* v1139：共有の端末では CEO・GM の成長カルテ・賞与の写しを残さない */
   curRole = null; curRealRole = null; curStore = null; curStoreLogin = false; curUserName = null;
   loginLocation = null; loginPerson = null;
@@ -44953,7 +44961,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1150';
+const APP_VERSION = '1151';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -104046,6 +104054,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var TABLE_LABEL = { app_state: ['業務のデータ', 'work data'], app_settings: ['設定', 'settings'], employees: ['従業員', 'employees'], stores: ['店舗', 'stores'],
     ingredients: ['食材', 'ingredients'], recipes: ['レシピ', 'recipes'], vendors: ['取引先', 'vendors'], categories: ['カテゴリー', 'categories'], page: ['この画面のデータ', 'this page'] };
   function tableLabel(k){ var l = TABLE_LABEL[k]; return l ? T(l[0], l[1]) : T('データ', 'data'); }
+  ST.tableLabel = tableLabel;   /* v1151：変更の記録・左下の知らせでも使う */
   /* supaPullAllMasters（ログイン・自動の同期・「クラウドから取り込む」）の結果を見る。読めなかった表は _fails */
   var PULL_MAX = 120000;   /* 独立レビュー P3-2：答えの来ない取り込みで「同期中…」のままにしない（2 分で取れなかったことにする） */
   ST.trackPull = function(p){
@@ -104233,7 +104242,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       yb.push(esc(y.at ? T('前回 ' + clock(y.at) + ' の情報を表示中。自動でやり直します。', 'Showing data from ' + clock(y.at) + '. Retrying automatically.') : T('自動でやり直します。', 'Retrying automatically.')));
     }
     if(SY.at && y.k !== 'fail') yb.push(esc(T('最後に取得 ', 'Last fetched ') + clock(SY.at)));
-    yb.push('<span class="ux-st-mut">' + esc(T('自動で最新にします（アプリに戻ったとき・つながったとき・開いているあいだ 10 分ごと）。', 'Updated automatically (when you come back, when reconnected, and every 10 minutes while open).')) + '</span>');
+    /* v1151：「変わった」の合図（リアルタイム）の状態 */
+    var sgs = null; try{ sgs = (W.FUNERGY_SIGNAL && FUNERGY_SIGNAL.state) ? FUNERGY_SIGNAL.state() : null; }catch(e){ sgs = null; }
+    if(sgs && sgs.k === 'live') yb.push(esc(T('リアルタイム：つながっています（ほかの端末の変更をすぐ受け取ります）', 'Live: connected (changes from other devices arrive right away)')));
+    else if(sgs && sgs.k === 'poll') yb.push(esc(T('リアルタイム：つながっていません（1 分ごとに確かめます）', 'Live: not connected (checking every minute)')));
+    yb.push('<span class="ux-st-mut">' + esc((sgs && sgs.k === 'live')
+      ? T('自動で最新にします（アプリに戻ったとき・つながったとき・変わったとき・開いているあいだ 30 分ごと）。', 'Updated automatically (when you come back, when reconnected, when something changes, and every 30 minutes while open).')
+      : T('自動で最新にします（アプリに戻ったとき・つながったとき・開いているあいだ 10 分ごと）。', 'Updated automatically (when you come back, when reconnected, and every 10 minutes while open).')) + '</span>');
     h += rowHtml(T('同期', 'Sync'), yb.join('<br>'));
     /* 診断 */
     var d = ST.diagState(), db = [];
@@ -104272,6 +104287,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   var AU = ST.auto = { last: 0, running: null, retryTm: null, n: 0 };
   var VISIBLE_GAP = 3 * 60000, EVERY = 10 * 60000, BUSY_RETRY = 30000, STEP_MAX = 30000;
   ST.EVERY = EVERY; ST.VISIBLE_GAP = VISIBLE_GAP;
+  /* v1151（Moto さん 11/12 の 4：はい）：「変わった」の合図にリアルタイムでつながっているあいだは、自動の同期を 30 分ごとに（合図が来たキーはすぐ取り込む）。
+     つながっていない・SQL の前は今までどおり 10 分ごと */
+  var LIVE_EVERY = 30 * 60000; ST.LIVE_EVERY = LIVE_EVERY;
+  ST.every = function(){ try{ if(W.FUNERGY_SIGNAL && FUNERGY_SIGNAL.live && FUNERGY_SIGNAL.live()) return LIVE_EVERY; }catch(e){} return EVERY; };
   function withTimeout(p, ms){ return Promise.race([Promise.resolve(p).catch(function(){ return null; }), new Promise(function(r){ setTimeout(function(){ r('__timeout__'); }, ms); })]); }
   function modalOpen(){ try{ var ov = D.getElementById('modal-overlay'); return !!(ov && ov.classList && ov.classList.contains('open')); }catch(e){ return false; } }
   ST.userBusy = function(){
@@ -104372,7 +104391,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     D.addEventListener('visibilitychange', function(){ if(!D.hidden && now() - AU.last > VISIBLE_GAP) setTimeout(function(){ ST.autoSync('visible'); }, 800); ST.paintSoon(100); });
     W.addEventListener('online', function(){ setTimeout(function(){ ST.autoSync('online'); }, 1500); ST.paintSoon(0); });
     W.addEventListener('offline', function(){ ST.paintSoon(0); });
-    setInterval(function(){ if(!D.hidden && appShown() && now() - AU.last >= EVERY) ST.autoSync('timer'); }, 60000);
+    setInterval(function(){ if(!D.hidden && appShown() && now() - AU.last >= ST.every()) ST.autoSync('timer'); }, 60000);   /* v1151：ST.every()（つながっているあいだ 30 分） */
     setInterval(function(){ if(appShown()) ST.paintSoon(0); }, 15000);
   }catch(e){}
 
@@ -104458,6 +104477,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px"><div style="font-size:13px;font-weight:700;margin-bottom:6px">' + esc(T('Toast 接続診断', 'Toast connection check')) + '</div>'
         + '<button class="btn btn-secondary btn-sm" onclick="runToastDiag()"><i class="ti ti-plug-connected"></i> ' + esc(T('診断する', 'Run')) + '</button><div id="toast-diag-result" style="margin-top:12px"></div></div>');
     }
+    /* v1151：変更の記録（だれが・いつ・何を。中身は残さない・1 年）：CEO・GM・経理・事務Crew（Moto さん 11/12 16:32 の ①） */
+    try{ if(full && W.FUNERGY_SIGNAL && FUNERGY_SIGNAL.canLog && FUNERGY_SIGNAL.canLog()) h += card('ti-history-toggle', T('変更の記録', 'Change log'), FUNERGY_SIGNAL.logCardHtml(),
+      esc(T('だれが・いつ・どの画面の何を変えたか（すべての端末・1 年分・ハワイ時間）。金額・時刻・コメントなどの中身は残しません。v1150 以前の端末の書き込みは「名前なし」。', 'Who changed what and when (all devices, one year, Hawaii time). Contents such as amounts or comments are not kept. Writes from apps before v1151 show “No name”.'))); }catch(e){}
     /* ⑤ この端末の記録 */
     var lg = ST.logList();
     var logHtml = lg.length ? '<div style="font-size:11.5px;max-height:40vh;overflow:auto">' + lg.slice(0, 60).map(function(x){
@@ -104479,6 +104501,455 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
 })();
 /* ==== FUNERGY_STATUS end ==== */
+</script>
+<script>
+/* ==== FUNERGY_SIGNAL（v1151・全体アップデート指示の 2c の 3 つ目）：「変わった」の合図と変更の記録 ====
+   Moto さんの答え（11/12 16:18 HST）：1 はい＝案 C（その場で描き直す＋左下の知らせ）・2 だれが何を変えたかを過去ログのように記録・
+   3 合図の表と見張りの SQL を入れてよい・4 つながっているあいだは 10 分ごとの自動の同期を 30 分ごとに。
+   （11/12 16:32 HST）① 記録を見られるのは CEO・GM・経理・事務Crew ② 残す期間は 1 年 ③ 左下の知らせに変えた人の名前を出す。
+   仕様：docs/CHANGE_SIGNAL_V1151_JA.md。SQL：supabase/migrations/20261118090000_change_signal.sql。
+   ・合図（sync_signal・公開の鍵で読める・Realtime）：キーごと（app_state のキー／set:<設定>／m:<マスターの表>／_secure:<機密の区分>／*＝まとめて）の回数 n・
+     変えた人の社員 ID・端末の印。ほかの端末で n が進んだら、そのキーだけを取り込む（今までの取り込みの道：pullOpKey・pullSettingKey・マスター 1 つ）。
+     機密の区分・まとめての合図は、今までの自動の同期（FUNERGY_STATUS.autoSync）を前倒しする（2 分に 1 回まで）。
+     自分の端末の書き込み（端末の印が同じで n が 1 だけ進んだ）は取り込まない。
+   ・つながり：Realtime。つながっていないとき・アプリに戻ったときは合図の表を読む（つながっていないあいだは 1 分ごと）。
+   ・描き直し：FUNERGY_UX.bgRefresh（入力中・モーダルのあいだは待つ。データが変わったときだけ）。入力中は取り込みも待つ。
+   ・だれか：REST の書き込み（POST・PATCH・DELETE）にだけ x-fp-actor（社員 ID・名前・役割・端末の印・種類。base64 の JSON）を付ける。
+     ほかの関数（auth-pin など）の呼び出しには付けない（その関数が受けない名前の見出しで止まらないように）。初めに 1 回、REST が受けるかを確かめてから付ける。
+   ・記録（change_log）は関数 secure-state（change_log）で読む。「設定 › 診断と記録」の「変更の記録」（CEO・GM・経理・事務Crew） */
+(function(){
+  var W = window, D = document;
+  var SG = W.FUNERGY_SIGNAL = W.FUNERGY_SIGNAL || {};
+  function T(ja, en){ try{ return (typeof t === 'function') ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function now(){ return Date.now(); }
+  function esc(s){ s = String(s == null ? '' : s); try{ if(typeof escapeHtml === 'function') return escapeHtml(s); }catch(e){} return s.replace(/[&<>"']/g, function(c){ return '&#' + c.charCodeAt(0) + ';'; }); }
+  function STo(){ return W.FUNERGY_STATUS || null; }
+  function UXo(){ return W.FUNERGY_UX || null; }
+  function restBase(){ try{ return SUPABASE_URL + '/rest/v1/'; }catch(e){ return ''; } }
+  function anonHdr(){ return { apikey: SUPABASE_ANON, Authorization: 'Bearer ' + SUPABASE_ANON }; }
+
+  /* ---------- 端末の印（ランダム・この端末だけ）と種類 ---------- */
+  var DEV_KEY = '_fp_dev_v1';
+  SG.device = function(){
+    if(SG._dev) return SG._dev;
+    var d = ''; try{ d = localStorage.getItem(DEV_KEY) || ''; }catch(e){}
+    if(!/^[A-Za-z0-9_-]{6,64}$/.test(d)){
+      try{ var a = new Uint8Array(12); crypto.getRandomValues(a); d = 'd' + Array.prototype.map.call(a, function(x){ return ('0' + x.toString(16)).slice(-2); }).join(''); }
+      catch(e){ d = 'd' + Math.random().toString(36).slice(2, 12) + now().toString(36); }
+      try{ localStorage.setItem(DEV_KEY, d); }catch(e){}
+    }
+    return (SG._dev = d);
+  };
+  SG.kind = function(){
+    var ua = ''; try{ ua = navigator.userAgent || ''; }catch(e){}
+    if(/iPhone|iPod/.test(ua)) return 'iphone';
+    if(/iPad/.test(ua) || (/Macintosh/.test(ua) && ((typeof navigator !== 'undefined' && navigator.maxTouchPoints) || 0) > 1)) return 'ipad';
+    if(/Android/.test(ua)) return /Mobile/.test(ua) ? 'android' : 'tablet';
+    return 'pc';
+  };
+
+  /* ---------- だれか（x-fp-actor） ---------- */
+  var HDR = SG.hdr = { ok: null, busy: false };   /* ok：null＝まだ確かめていない／true＝REST が受ける／false＝受けない（付けない） */
+  function b64(s){ try{ return btoa(unescape(encodeURIComponent(s))); }catch(e){ return ''; } }
+  SG.actor = function(){
+    try{
+      if(typeof curRole === 'undefined' || !curRole) return null;
+      var store = !!(typeof curStoreLogin !== 'undefined' && curStoreLogin);
+      var p = (typeof loginPerson !== 'undefined' && loginPerson) ? loginPerson : null;
+      return { e: (!store && p && p.id != null) ? String(p.id).slice(0, 64) : '', n: String((typeof curUserName !== 'undefined' && curUserName) || '').slice(0, 120),
+        r: store ? 'store' : String(curRole).slice(0, 40), d: SG.device(), k: SG.kind() };
+    }catch(e){ return null; }
+  };
+  W.fpActorHdr = function(force){
+    if(!force && HDR.ok !== true) return {};
+    var a = SG.actor(); if(!a) return {};
+    var v = b64(JSON.stringify(a));
+    return (v && v.length <= 3000) ? { 'x-fp-actor': v } : {};
+  };
+  /* REST の書き込みにだけ付ける（ほかの関数・Storage・Auth には付けない） */
+  (function(){
+    var of = W.fetch; if(typeof of !== 'function' || of._fp) return;
+    var nf = function(u, opt){
+      try{
+        var base = restBase();
+        if(HDR.ok === true && base && typeof u === 'string' && u.indexOf(base) === 0 && opt && typeof opt.method === 'string' && /^(POST|PATCH|PUT|DELETE)$/i.test(opt.method)){
+          var add = W.fpActorHdr(), v = add['x-fp-actor'];
+          if(v){
+            var h = opt.headers;
+            if(h && typeof Headers !== 'undefined' && h instanceof Headers){ if(!h.has('x-fp-actor')){ h = new Headers(h); h.set('x-fp-actor', v); } }
+            else if(Array.isArray(h)){ h = h.concat([['x-fp-actor', v]]); }
+            else if(h && typeof h === 'object'){ if(!h['x-fp-actor']) h = Object.assign({}, h, add); }
+            else h = add;
+            opt = Object.assign({}, opt, { headers: h });
+          }
+        }
+      }catch(e){}
+      return of.call(W, u, opt);
+    };
+    nf._fp = true; W.fetch = nf;
+  })();
+  /* REST が x-fp-actor を受けるか（ブラウザの決まり：受けない見出しを付けると、答えが来ずに失敗する）。1 回だけ */
+  SG.probe = async function(){
+    if(HDR.ok !== null || HDR.busy) return HDR.ok;
+    HDR.busy = true;
+    try{
+      var r = await fetch(restBase() + 'sync_signal?select=key&limit=1', { headers: Object.assign(anonHdr(), W.fpActorHdr(true)) });
+      HDR.ok = true;
+      if(r.status === 404) SIG.missing = true;   /* 表がまだ無い（SQL の前）：名前は送れる。合図は待たない */
+    }catch(e){
+      try{ await fetch(restBase() + 'sync_signal?select=key&limit=1', { headers: anonHdr() }); HDR.ok = false; try{ STo().log('signal', T('この端末では、変えた人の名前を記録に送れません（REST が受けない）', 'This device cannot send who made a change (REST refused the header)'), false); }catch(e3){} }
+      catch(e2){ /* 通信が無い：あとでもう一度 */ }
+    }
+    HDR.busy = false;
+    return HDR.ok;
+  };
+
+  /* ---------- 合図 ---------- */
+  var SIG = SG.st = { on: false, live: false, missing: false, seen: {}, want: {}, gen: 0, ch: null, timer: null, lastPoll: 0, lastAt: '', flushTm: null, fullTm: null, running: false, again: false, t0: 0, chSeq: 0 };
+  var POLL_OFF = 60000, POLL_LIVE = 5 * 60000, BATCH_MS = 1500, BUSY_MS = 5000, FULL_GAP = 2 * 60000, BACK_MS = 120000;
+  SG.live = function(){ return !!(SIG.on && SIG.live && !SIG.missing); };
+  SG.state = function(){
+    if(!SIG.on) return { k: 'none' };
+    if(SIG.missing) return { k: 'missing' };
+    if(SIG.live) return { k: 'live' };
+    return { k: 'poll', at: SIG.lastPoll };
+  };
+  SG.mark = function(){ SIG.t0 = now(); };   /* ログインの取り込みを始める前（このあとの合図は取り込み直す） */
+  async function fetchSignals(since){
+    var q = 'sync_signal?select=key,n,at,by_emp,by_dev&order=at.asc&limit=2000' + (since ? '&at=gte.' + encodeURIComponent(since) : '');
+    try{
+      var r = await fetch(restBase() + q, { headers: anonHdr() });
+      if(r.status === 404) return 'missing';
+      if(!r.ok) return null;
+      var j = await r.json();
+      return Array.isArray(j) ? j : null;
+    }catch(e){ return null; }
+  }
+  function want(row){ SIG.want[row.key] = row; schedule(BATCH_MS); }
+  function consider(row, first){
+    if(!row || typeof row.key !== 'string') return;
+    var k = row.key, n = Number(row.n) || 0, prev = SIG.seen[k], mine = row.by_dev === SG.device();
+    if(typeof row.at === 'string' && row.at > SIG.lastAt) SIG.lastAt = row.at;
+    if(prev === undefined){
+      SIG.seen[k] = n;
+      if(first){ var at = Date.parse(row.at); if(!mine && SIG.t0 && Number.isFinite(at) && at > SIG.t0 - 60000) want(row); return; }   /* ログインの取り込みのあいだに変わったかもしれない */
+      if(!mine) want(row);
+      return;
+    }
+    if(n === prev) return;
+    if(n > prev && mine && n === prev + 1){ SIG.seen[k] = n; return; }   /* この端末の書き込みだけ */
+    SIG.seen[k] = n;
+    want(row);
+  }
+  SG._consider = consider;
+  function schedule(ms){ if(SIG.flushTm) return; var g = SIG.gen; SIG.flushTm = setTimeout(function(){ SIG.flushTm = null; flush(g); }, ms); }
+  async function pollNow(why){
+    if(!SIG.on || SIG.missing) return;
+    var g = SIG.gen;
+    var since = SIG.lastAt ? new Date(Math.max(0, Date.parse(SIG.lastAt) - BACK_MS)).toISOString() : '';   /* 先に始まってあとで終わった書き込みも拾う（2 分さかのぼる。同じ n は数えない） */
+    SIG.lastPoll = now();
+    var rows = await fetchSignals(since);
+    if(g !== SIG.gen) return;
+    if(rows === 'missing'){ SIG.missing = true; paint(); return; }
+    if(Array.isArray(rows)) rows.forEach(function(r){ consider(r, false); });
+    paint();
+  }
+  SG.pollNow = pollNow;
+  function subscribe(g){
+    try{
+      if(!(W.supabase && W.supabase.createClient)) return;
+      if(typeof _rtClient === 'undefined') return;
+      if(!_rtClient) _rtClient = W.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      SIG.ch = _rtClient.channel('rt-sync-signal-' + (++SIG.chSeq))
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'sync_signal' }, function(p){ if(g !== SIG.gen) return; var r = p && p['new']; if(r && r.key) consider(r, false); })
+        .subscribe(function(status){
+          if(g !== SIG.gen) return;
+          var was = SIG.live;
+          SIG.live = (status === 'SUBSCRIBED');
+          if(SIG.live && !was) pollNow('rt');   /* つながった（つながり直した）：あいだの合図を読む */
+          paint();
+        });
+    }catch(e){ console.warn('sync signal realtime', e); }
+  }
+  SG.start = function(){
+    SG.stop();
+    if(typeof curRole === 'undefined' || !curRole) return;
+    var g = ++SIG.gen; SIG.on = true; SIG.missing = false; SIG.seen = {}; SIG.want = {}; SIG.lastAt = '';
+    (async function(){
+      await SG.probe();
+      if(g !== SIG.gen) return;
+      var rows = await fetchSignals('');
+      if(g !== SIG.gen) return;
+      if(rows === 'missing'){ SIG.missing = true; paint(); return; }   /* SQL の前：今までどおり 10 分ごとの同期 */
+      if(Array.isArray(rows)) rows.forEach(function(r){ consider(r, true); });
+      SIG.lastPoll = now();
+      subscribe(g);
+      paint();
+    })();
+    SIG.timer = setInterval(function(){
+      if(!SIG.on || D.hidden) return;
+      if(HDR.ok === null) SG.probe();
+      if(now() - SIG.lastPoll >= (SIG.live ? POLL_LIVE : POLL_OFF)) pollNow('timer');
+    }, 15000);
+    SIG.onVis = function(){ if(!D.hidden && SIG.on) setTimeout(function(){ pollNow('visible'); }, 600); };
+    SIG.onOnline = function(){ if(SIG.on) setTimeout(function(){ pollNow('online'); }, 1200); };
+    try{ D.addEventListener('visibilitychange', SIG.onVis); W.addEventListener('online', SIG.onOnline); }catch(e){}
+  };
+  SG.stop = function(){
+    SIG.gen++;
+    try{ if(SIG.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(SIG.ch); }catch(e){}
+    SIG.ch = null;
+    if(SIG.timer){ clearInterval(SIG.timer); SIG.timer = null; }
+    if(SIG.flushTm){ clearTimeout(SIG.flushTm); SIG.flushTm = null; }
+    if(SIG.fullTm){ clearTimeout(SIG.fullTm); SIG.fullTm = null; }
+    try{ if(SIG.onVis) D.removeEventListener('visibilitychange', SIG.onVis); if(SIG.onOnline) W.removeEventListener('online', SIG.onOnline); }catch(e){}
+    SIG.onVis = SIG.onOnline = null;
+    SIG.on = false; SIG.live = false; SIG.seen = {}; SIG.want = {}; SIG.running = false; SIG.again = false;
+    noteHide();
+    paint();
+  };
+  function paint(){ try{ var S = STo(); if(S && S.paintSoon) S.paintSoon(0); }catch(e){} }
+
+  /* ---------- 取り込む ---------- */
+  var SEC_OWN = { hiring: ['applicants', 'reject_log'], growthhub: ['growthhub'] };   /* 関数から画面を開いたときに読む（読んだことのあるものだけ読み直す） */
+  function skipKey(k){
+    try{ if(typeof KV_SKIP_PREFIX !== 'undefined' && KV_SKIP_PREFIX.some(function(p){ return k.indexOf(p) === 0; })) return true; }catch(e){}
+    try{ if(typeof _lsOnDemand === 'function' && _lsOnDemand(k)) return true; }catch(e){}          /* 読むときに取る行（記録など） */
+    try{ if(typeof isLocalOnlyKey === 'function' && isLocalOnlyKey(k)) return true; }catch(e){}
+    try{ if(typeof piiRawKey === 'function' && piiRawKey(k)) return true; }catch(e){}
+    try{ if(typeof hrIsKey === 'function' && hrIsKey(k)) return true; }catch(e){}
+    try{ if((typeof ssIsKey === 'function' && ssIsKey(k)) || (typeof csIsKey === 'function' && csIsKey(k)) || (typeof scIsKey === 'function' && scIsKey(k)) || (typeof gbIsKey === 'function' && gbIsKey(k))) return true; }catch(e){}
+    return false;
+  }
+  async function pullMaster(table){
+    if(typeof SUPA_MASTER_MAP === 'undefined' || typeof supaFetchAll !== 'function') return false;
+    var mk = null; Object.keys(SUPA_MASTER_MAP).forEach(function(x){ if(SUPA_MASTER_MAP[x].table === table) mk = x; });
+    if(!mk) return null;
+    var t0 = now();
+    var rows = await supaFetchAll(table, 'data');
+    if(!Array.isArray(rows)) return false;
+    var arr = rows.map(function(r){ return r.data; }).filter(function(x){ return x != null; });
+    try{ if(typeof _stripTestRows === 'function') arr = _stripTestRows(mk, arr); }catch(e){}
+    if(mk === 'm_employees' && typeof _empMergeCloud === 'function') arr = _empMergeCloud(arr);   /* 送れていない変更（退職など）を消さない（v1085） */
+    if(mk === 'm_vendors' && typeof vendorMergePulled === 'function') arr = vendorMergePulled(arr, t0);   /* v1121 */
+    var mra = (typeof mrApplyPulled === 'function') ? mrApplyPulled(mk, arr) : null;   /* v1150：消した印・送れていない変えた欄 */
+    if(mra && mra.keep) return true;
+    if(mra) arr = mra.value;
+    else if(mk !== 'm_employees' && mk !== 'm_vendors' && typeof _pullKeepLocal === 'function' && _pullKeepLocal(mk)) return true;   /* v1136 */
+    if(arr.length || mra){ if(_lsWriteVerified(mk, JSON.stringify(arr)) && mra) mra.commit(); }
+    if(mk === 'm_stores'){ try{ if(typeof refreshStores === 'function') refreshStores(); }catch(e){} }
+    return true;
+  }
+  async function pullOne(k){
+    if(k.indexOf('set:') === 0) return (typeof pullSettingKey === 'function') ? pullSettingKey(k.slice(4)) : null;
+    if(k.indexOf('m:') === 0) return pullMaster(k.slice(2));
+    if(k.indexOf('_secure:') === 0){
+      var cat = k.slice(8);
+      if(SEC_OWN[cat]){
+        for(var i = 0; i < SEC_OWN[cat].length; i++){
+          var hk = SEC_OWN[cat][i];
+          try{ if(typeof hrRouted === 'function' && hrRouted(hk) && typeof _hrMem !== 'undefined' && _hrMem.at && _hrMem.at[hk] && typeof hrLoad === 'function') await hrLoad(hk, true); }catch(e){}
+        }
+        return true;
+      }
+      if(cat === 'pii'){ try{ if(typeof _pii !== 'undefined' && _pii.map && typeof piiLoad === 'function') await piiLoad(true); }catch(e){} return true; }
+      return null;
+    }
+    if(skipKey(k)) return null;
+    return (typeof pullOpKey === 'function') ? pullOpKey(k) : null;
+  }
+  function wantsFull(k){
+    if(k === '*' || k === 'set:*') return true;
+    if(k.indexOf('_secure:') === 0){ var c = k.slice(8); return !SEC_OWN[c] && c !== 'pii'; }
+    return false;
+  }
+  /* 機密の区分・まとめての合図：今までの自動の同期を前倒し（2 分に 1 回まで） */
+  function fullSync(){
+    var S = STo(); if(!S || !S.autoSync) return null;
+    var last = (S.auto && S.auto.last) || 0, gap = FULL_GAP - (now() - last);
+    if(gap > 0){ if(!SIG.fullTm){ var g = SIG.gen; SIG.fullTm = setTimeout(function(){ SIG.fullTm = null; if(g === SIG.gen) fullSync(); }, gap); } return null; }
+    return S.autoSync('signal');
+  }
+  async function flush(g){
+    if(g !== SIG.gen || !SIG.on) return;
+    var S = STo(), busy = (S && S.userBusy) ? S.userBusy() : '';
+    if(busy || D.hidden){ schedule(BUSY_MS); return; }   /* 入力中・モーダル・裏にいる：取り込みも待つ（キーは覚えている） */
+    if(SIG.running){ SIG.again = true; return; }
+    var list = Object.keys(SIG.want).map(function(k){ return SIG.want[k]; }); SIG.want = {};
+    if(!list.length) return;
+    SIG.running = true;
+    var t0 = now(), got = [], full = false;
+    try{
+      for(var i = 0; i < list.length; i++){
+        if(g !== SIG.gen) return;
+        var r = list[i];
+        if(wantsFull(r.key)){ full = true; continue; }
+        var ok = null;
+        try{ ok = await pullOne(r.key); }catch(e){ ok = false; }
+        if(ok === false){ SIG.seen[r.key] = Math.max(0, (Number(SIG.seen[r.key]) || 1) - 1); }   /* 取れなかった：次の合図・読み直しでもう一度 */
+        else if(ok !== null) got.push(r);
+      }
+      if(full){ var p = fullSync(); if(p) { try{ await p; }catch(e){} } }
+    } finally { SIG.running = false; }
+    if(g !== SIG.gen) return;
+    var ux = UXo();
+    var changed = !ux || !ux._dataChangedSince || ux._dataChangedSince(t0 - 1);
+    if(changed){ try{ if(ux && ux.bgRefresh) ux.bgRefresh(); }catch(e){} if(got.length) note(got); }   /* 案 C：その場で描き直す（入力中は待つ）＋左下の知らせ */
+    if(SIG.again){ SIG.again = false; schedule(300); }
+  }
+  SG._flush = function(){ return flush(SIG.gen); };
+
+  /* ---------- 左下の知らせ（変えた人の名前・何が） ---------- */
+  var SEC_LABEL = { karte: ['成長カルテ', 'Growth chart'], bonus: ['賞与', 'Bonus'], career_score: ['Career Score', 'Career Score'], hiring: ['採用', 'Hiring'], growthhub: ['お悩み相談室', 'Consultations'],
+    pii: ['従業員の個人の情報', 'Employee personal details'], tip_confirm: ['Tip の期間の確定', 'Tip period confirmation'], warnings: ['注意ログ', 'Warning log'], grade_hist: ['グレード履歴', 'Grade history'], secure: ['保護されたデータ', 'Protected data'] };
+  SG.secLabel = function(c){ var l = SEC_LABEL[c] || SEC_LABEL.secure; return T(l[0], l[1]); };
+  SG.label = function(src, key, cat){
+    var S = STo();
+    if(key === '_secure' || cat) return SG.secLabel(cat);
+    if(key === '*') return T('まとめて', 'In bulk');
+    if(src === 'app_state' || src === 'app_settings'){ var l = (typeof outboxLabel === 'function') ? outboxLabel(key) : key; return (S && S.niceLabel) ? S.niceLabel(l, key) : l; }
+    return (S && S.tableLabel) ? S.tableLabel(src) : src;
+  };
+  function sigLabel(k){
+    if(k.indexOf('_secure:') === 0) return SG.secLabel(k.slice(8));
+    if(k.indexOf('set:') === 0) return SG.label('app_settings', k.slice(4));
+    if(k.indexOf('m:') === 0) return SG.label(k.slice(2), k.slice(2));
+    return SG.label('app_state', k);
+  }
+  function empName(id){
+    if(!id) return '';
+    try{ var e = (typeof getEmployees === 'function' ? getEmployees() : []).find(function(x){ return String(x.id) === String(id); }); return e && e.name ? String(e.name) : ''; }catch(e){ return ''; }
+  }
+  SG.empName = empName;
+  var noteTm = null;
+  function noteHide(){ try{ var el = D.getElementById('fp-sig-note'); if(el && el.parentNode) el.parentNode.removeChild(el); }catch(e){} if(noteTm){ clearTimeout(noteTm); noteTm = null; } }
+  SG.noteHide = noteHide;
+  function note(rows){
+    var seen = {}, items = [];
+    rows.forEach(function(r){
+      var lbl = sigLabel(r.key), nm = (r.key.indexOf('_secure:') === 0) ? '' : empName(r.by_emp), k2 = lbl + '|' + nm;
+      if(seen[k2]) return; seen[k2] = 1; items.push({ l: lbl, n: nm });
+    });
+    if(!items.length) return;
+    try{
+      var el = D.getElementById('fp-sig-note');
+      if(!el){
+        el = D.createElement('div'); el.id = 'fp-sig-note'; el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'polite');
+        D.body.appendChild(el);
+      }
+      var shown = items.slice(0, 3).map(function(x){ return '<li>' + esc(x.l) + (x.n ? ' <span class="fp-sig-who">' + esc(T(x.n + ' さん', x.n)) + '</span>' : '') + '</li>'; }).join('')
+        + (items.length > 3 ? '<li class="fp-sig-who">' + esc(T('ほか ' + (items.length - 3) + ' 件', '+' + (items.length - 3) + ' more')) + '</li>' : '');
+      el.innerHTML = '<i class="ti ti-refresh" aria-hidden="true"></i><div class="fp-sig-body"><div class="fp-sig-h">' + esc(T('ほかの端末で変わりました（表示を新しくしました）', 'Changed on another device (screen updated)')) + '</div><ul>' + shown + '</ul></div>'
+        + '<button type="button" class="fp-sig-x" aria-label="' + esc(T('閉じる', 'Close')) + '" onclick="FUNERGY_SIGNAL.noteHide()">×</button>';
+      if(noteTm) clearTimeout(noteTm);
+      noteTm = setTimeout(noteHide, 8000);
+    }catch(e){}
+  }
+  SG._note = note;
+  try{
+    var css = D.createElement('style');
+    css.textContent = '#fp-sig-note{position:fixed;left:12px;bottom:calc(16px + env(safe-area-inset-bottom,0px));max-width:min(360px,calc(100% - 24px));z-index:135;display:flex;gap:8px;align-items:flex-start;padding:9px 10px 9px 12px;border-radius:12px;background:var(--surface,#fff);border:1px solid var(--border,#ddd);box-shadow:0 6px 22px rgba(0,0,0,.16);font-size:12.5px;line-height:1.45}'
+      + '#fp-sig-note .ti{color:var(--accent);margin-top:2px}#fp-sig-note ul{margin:2px 0 0;padding-left:16px}#fp-sig-note .fp-sig-h{font-weight:700}#fp-sig-note .fp-sig-who{color:var(--muted)}'
+      + '#fp-sig-note .fp-sig-x{border:0;background:none;font-size:16px;line-height:1;color:var(--muted);cursor:pointer;padding:0 2px}'
+      + '@media (max-width:820px){#fp-sig-note{bottom:calc(76px + env(safe-area-inset-bottom,0px))}}'
+      + '.cl-row{display:flex;gap:10px;padding:7px 0;border-top:1px solid var(--border);font-size:12px;line-height:1.5}.cl-row .cl-t{color:var(--muted);white-space:nowrap;min-width:92px}.cl-row .cl-m{flex:1;min-width:0;overflow-wrap:anywhere}.cl-row .cl-p{color:var(--muted)}';
+    D.head.appendChild(css);
+  }catch(e){}
+
+  /* ---------- 変更の記録（「設定 › 診断と記録」・CEO・GM・経理・事務Crew） ---------- */
+  var CL_ROLES = ['ceo', 'gm', 'office', 'office_crew'];
+  SG.canLog = function(){ try{ if(typeof curStoreLogin !== 'undefined' && curStoreLogin) return false; return CL_ROLES.indexOf(String(curRole || '')) >= 0; }catch(e){ return false; } };
+  var CL = SG.cl = { rows: [], more: false, busy: false, err: '', f: { days: 7, emp: '', src: '', q: '' }, gen: 0 };
+  var SRC_OPTS = [['', ['すべて', 'All']], ['app_state', ['業務のデータ', 'Work data']], ['app_settings', ['設定', 'Settings']], ['stores', ['店舗', 'Stores']], ['employees', ['従業員', 'Employees']],
+    ['ingredients', ['食材', 'Ingredients']], ['recipes', ['レシピ', 'Recipes']], ['vendors', ['取引先', 'Vendors']], ['categories', ['カテゴリー', 'Categories']]];
+  var DAY_OPTS = [[1, ['今日まで 1 日', 'Last day']], [7, ['7 日', '7 days']], [30, ['30 日', '30 days']], [90, ['90 日', '90 days']], [365, ['1 年', '1 year']]];
+  function hst(ms){
+    try{ return new Date(ms).toLocaleString(((typeof curLang !== 'undefined' && curLang === 'en') ? 'en-US' : 'ja-JP'), { timeZone: 'Pacific/Honolulu', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    catch(e){ try{ return new Date(ms).toLocaleString(); }catch(e2){ return ''; } }
+  }
+  function whoText(r){
+    if(r.by_name) return r.by_name;
+    if(r.via === 'old') return T('名前なし（前の版の端末）', 'No name (older app)');
+    if(r.via === 'server') return T('サーバー（自動の処理）', 'Server (automatic)');
+    if(r.via === 'sql') return T('SQL の直し', 'SQL fix');
+    if(r.by_role === 'store') return T('店のタブレット', 'Store tablet');
+    return T('名前なし', 'No name');
+  }
+  var KIND_ICON = { pc: 'ti-device-desktop', iphone: 'ti-device-mobile', android: 'ti-device-mobile', ipad: 'ti-device-ipad', tablet: 'ti-device-tablet' };
+  function partsText(r){
+    var p = Array.isArray(r.parts) ? r.parts.slice() : [];
+    if(r.src === 'employees') p = p.map(function(id){ return empName(id) || id; });
+    if(r.src === 'stores'){ try{ p = p.map(function(id){ var s = (typeof STORES !== 'undefined' ? STORES : []).find(function(x){ return x.id === id; }); return s ? s.name : id; }); }catch(e){} }
+    if(!p.length) return r.more ? T('（大きいので項目は出していません）', '(too large to list)') : '';
+    return p.slice(0, 8).join('・') + ((p.length > 8 || r.more) ? T(' ほか', ' and more') : '');
+  }
+  function rowHtml(r){
+    var t1 = Date.parse(r.last_at), t0 = Date.parse(r.at);
+    var when = esc(hst(t1)) + (r.n > 1 ? '<div class="cl-p">' + esc(T(r.n + ' 回（' + hst(t0) + ' から）', r.n + ' times (from ' + hst(t0) + ')')) + '</div>' : '');
+    var what = esc(SG.label(r.src, r.key, r.cat));
+    if(r.key === '*') what = esc(T('まとめて書いた（同期センターのアップロードなど）', 'Written in bulk (e.g. sync center upload)'));
+    var ic = KIND_ICON[r.by_kind] || '';
+    var pt = partsText(r);
+    var keyNote = (r.src === 'app_state' || r.src === 'app_settings') && r.key !== '_secure' && r.key !== '*' ? ' <span class="cl-p">' + esc(r.key) + '</span>' : '';
+    return '<div class="cl-row"><div class="cl-t">' + when + '</div><div class="cl-m"><b>' + esc(whoText(r)) + '</b>' + (ic ? ' <i class="ti ' + ic + '" style="color:var(--muted)" aria-hidden="true"></i>' : '')
+      + (r.via === 'fn' ? ' <span class="cl-p">' + esc(T('（確かめた人）', '(verified)')) + '</span>' : '')
+      + '<div>' + what + keyNote + '</div>' + (pt ? '<div class="cl-p">' + esc(pt) + '</div>' : '') + '</div></div>';
+  }
+  function empOpts(sel){
+    var list = []; try{ list = (typeof getEmployees === 'function') ? getEmployees().filter(function(e){ return e && e.id != null; }) : []; }catch(e){}
+    list.sort(function(a, b){ return String(a.name || '').localeCompare(String(b.name || '')); });
+    return '<option value="">' + esc(T('すべての人', 'Everyone')) + '</option>' + list.map(function(e){ return '<option value="' + esc(e.id) + '"' + (String(e.id) === String(sel) ? ' selected' : '') + '>' + esc(e.name || e.id) + '</option>'; }).join('');
+  }
+  SG.logCardHtml = function(){
+    if(!SG.canLog()) return '';
+    var f = CL.f;
+    var sel = function(id, opts, v){ return '<select id="' + id + '" class="form-select" style="width:auto;min-width:110px;padding:5px 8px;font-size:12px">' + opts.map(function(o){ return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(v) ? ' selected' : '') + '>' + esc(T(o[1][0], o[1][1])) + '</option>'; }).join('') + '</select>'; };
+    var h = '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('期間', 'Period')) + ' ' + sel('cl-days', DAY_OPTS, f.days) + '</label>'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('変えた人', 'Who')) + ' <select id="cl-emp" class="form-select" style="width:auto;min-width:130px;padding:5px 8px;font-size:12px">' + empOpts(f.emp) + '</select></label>'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('どこ', 'Where')) + ' ' + sel('cl-src', SRC_OPTS, f.src) + '</label>'
+      + '<label style="font-size:12px;color:var(--muted)">' + esc(T('キー・店の ID', 'Key / store ID')) + ' <input id="cl-q" class="form-input" style="width:110px;padding:5px 8px;font-size:12px" maxlength="40" value="' + esc(f.q) + '" placeholder="F01"></label>'
+      + '<button class="btn btn-primary btn-sm" onclick="FUNERGY_SIGNAL.clLoad(true)"><i class="ti ti-search"></i> ' + esc(T('見る', 'Show')) + '</button></div>'
+      + '<div id="cl-list">' + clListHtml() + '</div>';
+    if(!CL.rows.length && !CL.busy && !CL.err && !CL.loaded) setTimeout(function(){ SG.clLoad(true); }, 0);
+    return h;
+  };
+  function clListHtml(){
+    if(CL.err) return '<div style="font-size:12px;color:var(--red)">' + esc(CL.err) + '</div>';
+    if(CL.busy && !CL.rows.length) return '<div style="font-size:12px;color:var(--muted)">' + esc(T('読み込み中…', 'Loading…')) + '</div>';
+    if(!CL.rows.length) return '<div style="font-size:12px;color:var(--muted)">' + esc(T('この条件の記録はありません。', 'No records for these filters.')) + '</div>';
+    return '<div style="max-height:55vh;overflow:auto">' + CL.rows.map(rowHtml).join('') + '</div>'
+      + (CL.more ? '<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="FUNERGY_SIGNAL.clLoad(false)"' + (CL.busy ? ' disabled' : '') + '>' + esc(T('もっと見る', 'More')) + '</button>' : '');
+  }
+  function clPaint(){ try{ var el = D.getElementById('cl-list'); if(el) el.innerHTML = clListHtml(); }catch(e){} }
+  SG.clLoad = async function(reset){
+    if(!SG.canLog() || typeof ssCall !== 'function') return;
+    if(reset){
+      var gv = function(id){ var el = D.getElementById(id); return el ? el.value : null; };
+      var d = Number(gv('cl-days')); if(d) CL.f.days = d;
+      var e = gv('cl-emp'); if(e !== null) CL.f.emp = e;
+      var s = gv('cl-src'); if(s !== null) CL.f.src = s;
+      var q = gv('cl-q'); if(q !== null) CL.f.q = String(q).trim();
+      if(CL.f.q && !/^[A-Za-z0-9_-]{1,40}$/.test(CL.f.q)){ CL.err = T('「キー・店の ID」は英数字・- ・_ だけ（40 文字まで）', 'Key / store ID: letters, digits, - and _ only (up to 40)'); clPaint(); return; }
+      CL.rows = []; CL.more = false;
+    }
+    var g = ++CL.gen; CL.busy = true; CL.err = ''; CL.loaded = true; clPaint();
+    var p = { action: 'change_log', limit: 100, from: new Date(now() - CL.f.days * 86400000).toISOString() };
+    if(CL.f.emp) p.emp = CL.f.emp; if(CL.f.src) p.src = CL.f.src; if(CL.f.q) p.q = CL.f.q;
+    if(!reset && CL.rows.length) p.before = CL.rows[CL.rows.length - 1].id;
+    var r = null; try{ r = await ssCall(p); }catch(e){ r = { net: true }; }
+    if(g !== CL.gen) return;
+    CL.busy = false;
+    if(r && r.ok && r.j && Array.isArray(r.j.rows)){ CL.rows = CL.rows.concat(r.j.rows); CL.more = !!r.j.more; }
+    else if(r && r.status === 400 && r.error === 'unknown_action') CL.err = T('関数 secure-state がまだ前の版です。v1151 の 1 ファイル（deploy/change-signal-v1151）を入れると見られます。', 'The secure-state function is an older version. Deploy the v1151 file to see the log.');
+    else if(r && r.status === 403) CL.err = T('変更の記録は CEO・GM・経理・事務Crew が見られます。', 'The change log is for CEO, GM, accounting and office crew.');
+    else if(r && r.none) CL.err = T('PIN かメールでログインし直してください。', 'Please sign in again with your PIN or email.');
+    else CL.err = T('読み込めませんでした（通信・関数）。もう一度「見る」を押してください。', 'Could not load (network or function). Press “Show” again.');
+    clPaint();
+  };
+  SG.clReset = function(){ CL.rows = []; CL.more = false; CL.err = ''; CL.busy = false; CL.loaded = false; CL.gen++; CL.f = { days: 7, emp: '', src: '', q: '' }; };
+})();
+/* ==== FUNERGY_SIGNAL end ==== */
 </script>
 <script>
 /* ==== FUNERGY_WR（v1131）：ワークセンターの申請（11/02 の依頼の ①〜⑥⑧⑩・UI案68 の決めてほしいこと 1〜10 はおすすめ A）====

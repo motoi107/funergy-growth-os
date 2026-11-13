@@ -216,7 +216,7 @@ test('karte PIN: checked on the server; the default 1234 and a plain old value u
   assert.equal((await S.call({ action: 'pin_check', pin_session: 'tCEO', pin: '4321' })).j.ok, true);
   assert.equal(typeof S.W.get('karte_pin'), 'object');
   // 変える
-  assert.deepEqual((await S.call({ action: 'pin_set', pin_session: 'tCEO', cur: '0000', pin: '5555' })).j, { ok: false, why: 'cur', fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1 });
+  assert.deepEqual((await S.call({ action: 'pin_set', pin_session: 'tCEO', cur: '0000', pin: '5555' })).j, { ok: false, why: 'cur', fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1 });
   assert.equal((await S.call({ action: 'pin_set', pin_session: 'tCEO', cur: '4321', pin: '55a5' })).status, 400);
   assert.equal((await S.call({ action: 'pin_set', pin_session: 'tCEO', cur: '4321', pin: '5555' })).j.ok, true);
   assert.equal((await S.call({ action: 'pin_check', pin_session: 'tGM', pin: '4321' })).j.ok, false);

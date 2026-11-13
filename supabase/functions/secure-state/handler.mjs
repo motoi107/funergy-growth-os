@@ -39,6 +39,11 @@ export const SS_PREFIX = ['spl_bonus_q_'];
 export const SS_PROJ = ['growth_karte', 'karte_bonus_config'];
 export const SS_FULL_ROLES = ['ceo', 'gm'];
 const MGR_ROLES = ['ceo', 'gm', 'office', 'office_crew'];
+// v1151：変更の記録（change_log）を見られる役割・読める表・道・端末の種類
+export const CL_ROLES = ['ceo', 'gm', 'office', 'office_crew'];
+export const CL_SRC = ['app_state', 'app_settings', 'stores', 'employees', 'ingredients', 'recipes', 'vendors', 'categories'];
+export const CL_VIA = ['app', 'fn', 'old', 'server', 'sql'];
+export const FP_KINDS = ['pc', 'iphone', 'ipad', 'android', 'tablet', 'other'];
 export const SS_PREFIX_RE = /^spl_bonus_q_[0-9A-Za-z_-]{1,40}$/;   // spl_bonus_q_<四半期>（アプリ・SQL と同じ決まり）
 export function ssIsKey(k) {
   if (typeof k !== 'string' || !k || k.length > 200) return false;
@@ -592,6 +597,53 @@ export function createHandler(deps) {
     return t ? JSON.parse(t) : null;
   }
 
+  // ---- v1151：だれが書いたか（変更の記録）。この関数が PIN・メールで確かめた人を、サーバーの鍵の書き込みに付ける（x-fp-actor・f:'1'）。
+  //   見張り（SQL 20261118090000）は、サーバーの鍵で f:'1' の付いた書き込みを via='fn'（関数が確かめた人）として残す。
+  //   端末の印（d）・種類（k）は、アプリが送った x-fp-actor から形を確かめて写すだけ（人は関数が決める）
+  function fpHdr(a) {
+    if (!a || typeof a !== 'object') return {};
+    const o = { e: typeof a.emp === 'string' ? a.emp.slice(0, 64) : '', n: typeof a.name === 'string' ? a.name.slice(0, 120) : '', r: typeof a.role === 'string' ? a.role.slice(0, 40) : '', f: '1' };
+    if (typeof a.dev === 'string' && a.dev) o.d = a.dev;
+    if (typeof a.kind === 'string' && a.kind) o.k = a.kind;
+    const u = te.encode(JSON.stringify(o));
+    let t = ''; for (let i = 0; i < u.length; i++) t += String.fromCharCode(u[i]);
+    return { 'x-fp-actor': btoa(t) };
+  }
+  function fpDevice(req) {
+    const h = req.headers.get('x-fp-actor');
+    if (typeof h !== 'string' || !h || h.length > 3000) return {};
+    try {
+      const bin = atob(h), u = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+      const j = JSON.parse(new TextDecoder().decode(u));
+      if (!obj(j)) return {};
+      return { dev: typeof j.d === 'string' && /^[A-Za-z0-9_-]{6,64}$/.test(j.d) ? j.d : '', kind: FP_KINDS.includes(j.k) ? j.k : '' };
+    } catch { return {}; }
+  }
+
+  // ---- v1151：変更の記録を読む（Moto さん 11/12：見られるのは CEO・GM・経理・事務Crew・残すのは 1 年）。中身（値）は記録に無い
+  async function clGet(a, b) {
+    if (!CL_ROLES.includes(a.role)) throw err('forbidden', 403);
+    const day = 86400000, t1 = now();
+    const pt = v => (v === undefined || v === null || v === '') ? null : (typeof v === 'string' && v.length <= 40 && Number.isFinite(Date.parse(v)) ? Date.parse(v) : NaN);
+    const fromIn = pt(b.from), toIn = pt(b.to);
+    if (Number.isNaN(fromIn) || Number.isNaN(toIn)) throw bad();
+    const to = toIn == null ? t1 : Math.min(toIn, t1 + day);
+    const from = Math.max(fromIn == null ? to - 7 * day : fromIn, t1 - 366 * day);
+    if (from > to) throw bad();
+    const lim = Number.isInteger(b.limit) ? Math.min(Math.max(b.limit, 1), 200) : 100;
+    let q = 'change_log?select=id,at,last_at,src,key,cat,by_emp,by_name,by_role,by_dev,by_kind,via,parts,more,n&order=id.desc&limit=' + lim
+      + '&last_at=gte.' + encodeURIComponent(new Date(from).toISOString()) + '&at=lte.' + encodeURIComponent(new Date(to).toISOString());
+    if (b.before !== undefined && b.before !== null) { if (!Number.isSafeInteger(b.before) || b.before < 1) throw bad(); q += '&id=lt.' + b.before; }
+    if (b.emp !== undefined && b.emp !== null && b.emp !== '') { if (typeof b.emp !== 'string' || b.emp.length > 64) throw bad(); q += '&by_emp=eq.' + encodeURIComponent(b.emp); }
+    if (b.src !== undefined && b.src !== null && b.src !== '') { if (!CL_SRC.includes(b.src)) throw bad(); q += '&src=eq.' + b.src; }
+    if (b.via !== undefined && b.via !== null && b.via !== '') { if (!CL_VIA.includes(b.via)) throw bad(); q += '&via=eq.' + b.via; }
+    if (b.q !== undefined && b.q !== null && b.q !== '') { if (typeof b.q !== 'string' || !/^[A-Za-z0-9_-]{1,40}$/.test(b.q)) throw bad(); q += '&key=ilike.*' + b.q + '*'; }
+    const rows = await rest(q);
+    const list = Array.isArray(rows) ? rows : [];
+    return { rows: list, more: list.length === lim, from: new Date(from).toISOString(), to: new Date(to).toISOString() };
+  }
+
   // ---- だれか
   async function pinActor(tok) {
     if (typeof tok !== 'string' || !tok || tok.length > 4000) return { deny: 'pin_shape' };
@@ -1057,7 +1109,7 @@ export function createHandler(deps) {
     if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
     const e = b.expect;
     if (e !== undefined && e !== null && (!obj(e) || typeof e.exists !== 'boolean')) throw bad();
-    if (levelOf(a) === 'full') return writeRow(key, b.value, e);
+    if (levelOf(a) === 'full') return writeRow(key, b.value, e, a);
     if (levelOf(a) === 'none') throw err('forbidden', 403);
     const sc = await csScope(a);
     const rows = await readKeysAny([key]), cur = rows[0] || null;
@@ -1074,7 +1126,7 @@ export function createHandler(deps) {
       if (!!cur !== e.exists) throw err('conflict', 409);
       if (cur && (e.updated_at == null ? cur.updated_at != null : tsMicro(cur.updated_at) !== tsMicro(e.updated_at))) throw err('conflict', 409);
     }
-    return writeRow(key, b.value, cur ? { exists: true, updated_at: cur.updated_at } : { exists: false });
+    return writeRow(key, b.value, cur ? { exists: true, updated_at: cur.updated_at } : { exists: false }, a);
   }
 
   async function pull(a, b) {
@@ -1188,7 +1240,7 @@ export function createHandler(deps) {
     if (swMapKey(key) && swCgBadKeys(b.value, swMapMax(key)).length) { const c = await cur(); cloud = c ? c.value : null; }
     if (!swShapeOk(key, b.value, cloud)) throw bad();
     // by：書いた人の役割（アプリが「設定 › 診断と記録」に残す。③ の前の確かめで、関数が決めた人として書いたことが分かる：Codex #135 の P2）
-    return { ...(await writeRow(key, b.value, e)), by: a.role };
+    return { ...(await writeRow(key, b.value, e, a)), by: a.role };
   }
 
   // v1146：Tip Rate・プレップ。読んだ行で確かめ（tpCheck）、その行が変わっていないときだけ書く
@@ -1209,7 +1261,7 @@ export function createHandler(deps) {
     if (v === 'bad') throw bad();
     if (v !== 'ok') throw err('forbidden', 403);
     // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）
-    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false })), by: a.role };
+    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false }, a)), by: a.role };
   }
 
   // ================================================================ v1147：Tip の期間の確定・注意ログ（店ごと。docs/SECURE_TIP_CF_V1147_JA.md）
@@ -1352,7 +1404,7 @@ export function createHandler(deps) {
     if (v === 'bad') throw bad();
     if (v !== 'ok') throw err('forbidden', 403);
     // 確かめた行に条件を付けて書く（確かめたあと・書く前にほかの端末が書いていれば 409）
-    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false })), by: a.role };
+    return { ...(await writeRow(key, b.value, c ? { exists: true, updated_at: c.updated_at } : { exists: false }, a)), by: a.role };
   }
   // 前の期間から Tip Rate を効かせるときの確かめ（アプリの tipBackPull）：その人の店のその期間が確定しているか（店の ID だけ。額は返さない）。
   // Tip Rate を決められる人（店では分けない）と、その店の確定を見られる人
@@ -1379,14 +1431,15 @@ export function createHandler(deps) {
     if (!ssIsKey(key) || key === 'karte_pin') throw bad();
     if (levelOf(a) !== 'full') throw err('forbidden', 403);
     if (!Object.prototype.hasOwnProperty.call(b, 'value')) throw bad();
-    return writeRow(key, b.value, b.expect);
+    return writeRow(key, b.value, b.expect, a);
   }
-  async function writeRow(key, value, e) {
+  async function writeRow(key, value, e, a) {
     const b = { value };
-    const pref = { prefer: 'return=representation' };
+    const ah = fpHdr(a);   // v1151：だれが書いたか（この関数が確かめた人）。見張り（20261118090000）が変更の記録に残す
+    const pref = { prefer: 'return=representation', ...ah };
     if (e === undefined || e === null) {
       const ts = new Date(now()).toISOString();
-      const rows = await rest('app_state?select=key,updated_at', { method: 'POST', headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+      const rows = await rest('app_state?select=key,updated_at', { method: 'POST', headers: { prefer: 'resolution=merge-duplicates,return=representation', ...ah },
         body: JSON.stringify({ key, value: b.value, updated_at: ts }) });
       return { ok: true, updated_at: Array.isArray(rows) && rows[0] ? rows[0].updated_at : ts };
     }
@@ -1434,17 +1487,17 @@ export function createHandler(deps) {
     if (!o || typeof o.h !== 'string' || typeof o.s !== 'string' || !/^[0-9a-f]{32}$/.test(o.s) || !Number.isInteger(o.it) || o.it < 1000 || o.it > 2000000) return false;
     return same(await pbkdf2(pin, o.s, o.it), o.h);
   }
-  async function pinStore(pin, row, by) {
+  async function pinStore(pin, row, by, a) {
     const s = hex(crypto.getRandomValues(new Uint8Array(16))), it = 150000;
     const value = { h: await pbkdf2(pin, s, it), s, it, at: new Date(now()).toISOString(), by: String(by || '').slice(0, 64) };
     if (row) {
       const cond = row.updated_at == null ? 'updated_at=is.null' : 'updated_at=eq.' + encodeURIComponent(String(row.updated_at));
       const base = tsMicro(row.updated_at);
       const ts = new Date(Math.max(now(), base == null ? 0 : Math.floor(base / 1000) + 1)).toISOString();
-      const r = await rest('app_state?key=eq.karte_pin&' + cond + '&select=key', { method: 'PATCH', headers: { prefer: 'return=representation' }, body: JSON.stringify({ value, updated_at: ts }) });
+      const r = await rest('app_state?key=eq.karte_pin&' + cond + '&select=key', { method: 'PATCH', headers: { prefer: 'return=representation', ...fpHdr(a) }, body: JSON.stringify({ value, updated_at: ts }) });
       return Array.isArray(r) && r.length === 1;
     }
-    try { await rest('app_state?select=key', { method: 'POST', headers: { prefer: 'return=representation' }, body: JSON.stringify({ key: 'karte_pin', value, updated_at: new Date(now()).toISOString() }) }); return true; }
+    try { await rest('app_state?select=key', { method: 'POST', headers: { prefer: 'return=representation', ...fpHdr(a) }, body: JSON.stringify({ key: 'karte_pin', value, updated_at: new Date(now()).toISOString() }) }); return true; }
     catch (x) { if (x.code === 'conflict') return false; throw x; }
   }
   function pinGuard(a) {
@@ -1460,7 +1513,7 @@ export function createHandler(deps) {
     const row = await pinRow();
     if (!(await pinMatches(row, b.pin))) { miss(); return { ok: false }; }
     fails.delete(String(a.emp || a.role));
-    if (!row || !obj(row.value)) { try { await pinStore(b.pin, row, a.emp); } catch { /* 印に置き換えられなくても、合ったことは返す */ } }
+    if (!row || !obj(row.value)) { try { await pinStore(b.pin, row, a.emp, a); } catch { /* 印に置き換えられなくても、合ったことは返す */ } }
     return { ok: true };
   }
   async function pinSet(a, b) {
@@ -1470,7 +1523,7 @@ export function createHandler(deps) {
     const row = await pinRow();
     if (!(await pinMatches(row, b.cur))) { miss(); return { ok: false, why: 'cur' }; }
     fails.delete(String(a.emp || a.role));
-    if (!(await pinStore(b.pin, row, a.emp))) throw err('conflict', 409);
+    if (!(await pinStore(b.pin, row, a.emp, a))) throw err('conflict', 409);
     return { ok: true };
   }
 
@@ -1561,7 +1614,7 @@ export function createHandler(deps) {
     return { exists: !!row, value: hrProject(key, row ? row.value : null, sc, log), updated_at: row ? row.updated_at : null, level: hrLevel(key, sc) };
   }
   // 読んで・直して・読んだ行が変わっていないときだけ書く（変わっていれば読み直してやり直す。5 回まで）。fn が undefined を返せば書かない
-  async function hrRmw(key, fn) {
+  async function hrRmw(key, fn, a) {
     for (let i = 0; i < 5; i++) {
       const row = await hrRow(key);
       if (row && row.value != null && !Array.isArray(row.value)) throw err('db', 500);   // 配列でない行（形が違う）：空とみなして上書きしない
@@ -1569,7 +1622,7 @@ export function createHandler(deps) {
       const next = fn(cur.slice());
       if (next === undefined) return false;
       if (JSON.stringify(next).length > 8000000) throw bad();
-      try { await writeRow(key, next, row ? { exists: true, updated_at: row.updated_at } : { exists: false }); return true; }
+      try { await writeRow(key, next, row ? { exists: true, updated_at: row.updated_at } : { exists: false }, a); return true; }
       catch (x) { if (x.code !== 'conflict') throw x; }
     }
     throw err('conflict', 409);
@@ -1621,7 +1674,7 @@ export function createHandler(deps) {
             cur.push(rec); created = true;
           }
           return cur;
-        });
+        }, a);
         return { ...(await hrView('applicants', sc)), created };
       }
       if (op === 'reject') {
@@ -1661,7 +1714,7 @@ export function createHandler(deps) {
           else { const e1 = { ...cur[i], ...copy }; if (canon(e1) !== canon(cur[i])) { cur[i] = e1; next = cur; } }
           if (next) {
             if (JSON.stringify(next).length > 8000000) throw bad();
-            try { await writeRow('reject_log', next, lg ? { exists: true, updated_at: lg.updated_at } : { exists: false }); }
+            try { await writeRow('reject_log', next, lg ? { exists: true, updated_at: lg.updated_at } : { exists: false }, a); }
             catch (x) { if (x.code !== 'conflict') throw x; continue; }   // 読んだあとにログが変わった：はじめから読み直す
           }
           let moved = false;
@@ -1671,7 +1724,7 @@ export function createHandler(deps) {
             if (!hrApIn(sc, cur[i])) throw err('forbidden', 403);
             if (canon(cur[i]) !== canon(ap)) { moved = true; return undefined; }   // ログに写したあとに直された：写し直してから
             cur.splice(i, 1); return cur;
-          });
+          }, a);
           if (!moved) done = true;
         }
         if (!done) throw err('conflict', 409);
@@ -1694,7 +1747,7 @@ export function createHandler(deps) {
         while (ids.has('gh' + n)) n++;
         id = 'gh' + n;
         return cur.concat([{ id, title, body, author: sc.name, store: sc.store, date: hrStr(b.date, 40), status: '未対応', replies: [], ...(cid ? { cid } : {}) }]);
-      });
+      }, a);
       return { ...(await hrView('growthhub', sc)), id };
     }
     const id = typeof b.id === 'string' && HR_ID_RE.test(b.id) ? b.id : null;
@@ -1727,7 +1780,7 @@ export function createHandler(deps) {
       p.assignee = sc.name; p.assignedAt = hrStr(b.at, 40);
       if ((p.status || '未対応') === '未対応') p.status = '対応中';
       return cur;
-    });
+    }, a);
     return { ...(await hrView('growthhub', sc)), mgr: mgrOut };
   }
 
@@ -1830,7 +1883,7 @@ export function createHandler(deps) {
       const next = { ...cur, ...val, _at: new Date(now()).toISOString(), _by: who };
       const value = { ...map, [id]: next };
       if (JSON.stringify(value).length > 2000000) throw bad();
-      try { await writeRow(PII_KEY, value, row ? { exists: true, updated_at: row.updated_at } : { exists: false }); }
+      try { await writeRow(PII_KEY, value, row ? { exists: true, updated_at: row.updated_at } : { exists: false }, a); }
       catch (x) { if (x.code !== 'conflict') throw x; continue; }   // 読んだあとに行が変わった：読み直して比べ直す
       return { same: false, entry: piiProject(next, sc.lv) || {}, level: sc.lv, by: a.role };
     }
@@ -1885,13 +1938,13 @@ export function createHandler(deps) {
     return { totals };
   }
 
-  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus };
+  const ACTIONS = { pull, get, put, hist: csHist, pin_check: pinCheck, pin_set: pinSet, hr_get: hrGet, hr_op: hrOp, hr_match: hrMatch, pii_get: piiGet, pii_op: piiOp, card_match: cardMatch, tcf_status: tcfStatus, change_log: clGet };
   const CODES = { forbidden: 403, bad_value: 400, conflict: 409, locked: 429, gone: 410, not_found: 404 };
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
     if (origin && !origins.includes(origin)) return new Response(JSON.stringify({ error: 'origin', fn: 1 }), { status: 403 });
-    const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, apikey, content-type', 'access-control-allow-methods': 'POST, OPTIONS', vary: 'origin' } : {};
+    const cors = origin ? { 'access-control-allow-origin': origin, 'access-control-allow-headers': 'authorization, apikey, content-type, x-fp-actor', 'access-control-allow-methods': 'POST, OPTIONS', vary: 'origin' } : {};
     // 答えにはいつも fn:1（アプリは fn の無い答え（ゲートウェイの 401・関数が無い 404 など）を「関数が使えない」とみなす）
     // csfn:1＝Career Score も扱う関数（v1140）。アプリは csfn の無い答えを「前の版の関数」とみなし、Career Score を今までどおり REST で
     //（取り込みの答えの Career Score の部分は cs。名前を分けている）
@@ -1903,7 +1956,8 @@ export function createHandler(deps) {
     // tpfn:1＝Tip Rate・プレップ（v1146）も扱う。アプリは tpfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で書く
     // scfn:1＝Tip の期間の確定・注意ログ（v1147）も扱う。アプリは scfn の無い答えを前の版とみなし、その 2 つを今までどおり REST で読み書きする
     // gbfn:1＝グレード履歴・賞与の個人設定・G3 の職種を読む範囲（v1148）も扱う。アプリは gbfn の無い答えを前の版とみなし、その 3 つを今までどおり REST で読む
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // clfn:1＝変更の記録（v1151）を読める（change_log）・書き込みに確かめた人を付ける。アプリは clfn の無い答えを前の版とみなし、記録のタブで「関数を v1151 に」と出す
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1, tpfn: 1, scfn: 1, gbfn: 1, clfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
@@ -1916,9 +1970,10 @@ export function createHandler(deps) {
     const fn = Object.prototype.hasOwnProperty.call(ACTIONS, body.action) ? ACTIONS[body.action] : null;
     if (!fn) return json({ error: 'unknown_action' }, 400);
     try {
-      const a = await actorOf(req, body);
-      if (a.err) return json({ error: a.err }, 503);
-      if (a.deny) { console.warn('secure-state unauthorized', body.action, a.deny); return json({ error: 'unauthorized' }, 401); }
+      const a0 = await actorOf(req, body);
+      if (a0.err) return json({ error: a0.err }, 503);
+      if (a0.deny) { console.warn('secure-state unauthorized', body.action, a0.deny); return json({ error: 'unauthorized' }, 401); }
+      const a = { ...a0, ...fpDevice(req) };   // v1151：端末の印・種類（変更の記録だけに使う。権限には使わない）
       return json(await fn(a, body));
     } catch (e) {
       const code = e && e.code && CODES[e.code] ? e.code : '';

@@ -21,6 +21,7 @@ export function makeWorld(o = {}) {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], fieldLog: o.fieldLog || [], fieldLogMissing: !!o.fieldLogMissing, fieldLogMaxRows: o.fieldLogMaxRows || 0, fieldLogFailAt: o.fieldLogFailAt || 0, mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
     wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, rlsSc: !!o.rlsSc, rlsGb: !!o.rlsGb, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
     calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
+    actors: [], changeLog: o.changeLog || [], clReads: [],   // v1151：書き込みに付いた x-fp-actor（キー・中身）と、変更の記録（change_log）の偽物
   };
   W.set = (key, value, at) => W.rows.set(key, { value: JSON.stringify(value), updated_at: at || ts6(Date.UTC(2026, 10, 3, 9, 0, 0)) });
   W.get = key => { const r = W.rows.get(key); return r ? JSON.parse(r.value) : undefined; };
@@ -72,6 +73,24 @@ export function makeWorld(o = {}) {
     const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; if (scIsKey(key)) W.calls.anonSc = (W.calls.anonSc || 0) + 1; if (gbIsKey(key)) W.calls.anonGb = (W.calls.anonGb || 0) + 1; };
     W.calls.rest++;
     const q = url.searchParams;
+    // v1151：変更の記録（サーバーの鍵でだけ読める）。関数が使う条件だけ答える
+    if (p === '/rest/v1/change_log') {
+      assert.equal(m, 'GET'); assert.equal(role, 'service');
+      W.clReads.push(url.search);
+      let out = W.changeLog.slice();
+      for (const [k, v] of q.entries()) {
+        if (k === 'select' || k === 'order' || k === 'limit') continue;
+        if (k === 'last_at' && v.startsWith('gte.')) { const t = Date.parse(v.slice(4)); out = out.filter(r => Date.parse(r.last_at) >= t); continue; }
+        if (k === 'at' && v.startsWith('lte.')) { const t = Date.parse(v.slice(4)); out = out.filter(r => Date.parse(r.at) <= t); continue; }
+        if (k === 'id' && v.startsWith('lt.')) { const n = Number(v.slice(3)); out = out.filter(r => r.id < n); continue; }
+        if (['by_emp', 'src', 'via'].includes(k) && v.startsWith('eq.')) { out = out.filter(r => r[k] === v.slice(3)); continue; }
+        if (k === 'key' && v.startsWith('ilike.*') && v.endsWith('*')) { const t = v.slice(7, -1).toLowerCase(); out = out.filter(r => r.key.toLowerCase().includes(t)); continue; }
+        throw new Error('change_log filter ' + k + '=' + v);
+      }
+      assert.equal(q.get('order'), 'id.desc');
+      out.sort((x, y) => y.id - x.id);
+      return J(out.slice(0, Number(q.get('limit') || out.length)));
+    }
     // 試験だけ：書けた直後（答えを返す前）にほかの操作を流す。afterWrite(keys) が Promise を返したら 1 回だけで、終わるまで待つ
     const afterWrite = async keys => { if (!W.afterWrite) return; const v = W.afterWrite(keys); if (v && typeof v.then === 'function') { W.afterWrite = null; await v; } else if (v) W.afterWrite = null; };
     if (p === '/rest/v1/rpc/app_state_index') {
@@ -167,6 +186,7 @@ export function makeWorld(o = {}) {
           const at = ts6(b.updated_at ? Date.parse(b.updated_at) : Date.now());
           W.rows.set(b.key, { value: JSON.stringify(b.value), updated_at: at });
           W.log.push(['write', role, b.key]);
+          W.actors.push([b.key, h['x-fp-actor'] || null]);
           out.push({ key: b.key, updated_at: at });
         }
         await afterWrite(list.map(b => b.key));
@@ -184,6 +204,7 @@ export function makeWorld(o = {}) {
         const at = ts6(Date.parse(b.updated_at));
         W.rows.set(key, { value: JSON.stringify(b.value), updated_at: at });
         W.log.push(['write', role, key]);
+        W.actors.push([key, h['x-fp-actor'] || null]);
         await afterWrite([key]);
         return J([{ key, updated_at: at }]);
       }
