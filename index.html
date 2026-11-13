@@ -11355,6 +11355,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   /* v1136（2 回目の独立レビュー P2-1）：直した時刻は、中身が本当に変わった保存のときだけ覚える（送り直し・まとめて送る・同じ中身の保存では進めない）。
      取り込みは _lsWriteVerified で書くので、ここは通らない */
   var _prevTxt=null; try{ _prevTxt=_lsStoreGet(key); }catch(e){}
+  try{ if(typeof mrOnEdit==='function') mrOnEdit(key, _prevTxt, _json); }catch(e){}   /* v1150：店舗・食材・レシピ・カテゴリーは、変えた行・欄・足した行・消した行を覚える（送るとき・取り込むときに使う） */
   try{ if(typeof wbOnEdit==='function') wbOnEdit(key, _prevTxt, _json); }catch(e){}   /* v1149：合流の決まりの無いキーは、直す前の値を覚える（送るとき・取り込むときに、この端末で変えた所だけを重ねる） */
 
   var _ok=_lsWriteVerified(key, _json);
@@ -12418,6 +12419,443 @@ async function empRosterRefresh(force){
   finally { _empRosterBusy=false; }
 }
 /* FUNERGY_EMP_SYNC_END */
+/* ============================================================
+   v1150（段階 2c の 2 つ目・docs/MASTER_ROWS_V1150_JA.md）：店舗・食材・レシピ・カテゴリーのマスター（表の行）は、
+   この端末で変えた行の、変えた欄だけを送る。消した行は、クラウドの行に「消した」の印を残す
+   ------------------------------------------------------------
+   【前】保存のたびに、端末の全部の行をクラウドの表へ書き直していた（upsert は行ごと上書き）。古い写しの端末が保存すると、
+     ほかの端末が直した行・欄を前の値に戻した。消した行はクラウドに残り、次のログインの取り込みで戻ってきた
+     （総点検の P1「食材の削除が戻る」）。取り込みは端末の表をクラウドの表で丸ごと置き換え、送れていない変更を消した
+     （食材は v1136 の「送れていない手元を残す」も通っていなかった）。
+   【いま】
+     1) 保存（lsSet）で、直す前と後の表を比べ、変えた行の変えた欄・足した行・消した行を覚える（_mr_touched_v1・この端末だけ）。
+     2) 送るとき：その行だけクラウドから読み、変えた欄だけをクラウドの行に重ねて書く。足した行は丸ごと。消した行は、
+        クラウドの行の data に _deleted（と時刻・だれ）を付けて書く（行は残す。列は変えない）。
+        書くのは「読んだときの版の印（data の _mrv）のまま」のときだけ（条件つきの書き込み。新しい行は「まだ無い」ときだけ足す）。
+        読んでから書くまでにほかの端末が同じ行を書いていたら、こちらは入らないので、読み直して重ね直す（4 回まで）。
+        書くたびに版の印を新しくする（v1149 以前の端末は前に取り込んだ印のまま全部の行を書くので、その書き込みとは比べられない＝前からの限界）。
+        送れて、送っているあいだにその行をまた直していなければ、覚えを外し、端末の行をクラウドの行（ほかの端末の欄も入ったもの）にする。
+     3) 取り込むとき：クラウドの行（消した印の行は端末に置かない）に、まだ送っていない変えた欄・足した行を重ねる。
+        この端末で消してまだ送っていない行は出さない。
+     4) ほかの端末が消した行を、この端末で直していた → 消したほう（送らない・端末からも外す・「設定 › 診断と記録」に 1 行）。
+        ほかの端末が消した行と同じ番号の行を、この端末で新しく作った → 作ったほう（印を外して入れ直す）。
+   【変えないもの】従業員（v1085）・業者（v1121）は前からの仕組み。クラウドの行は消さないので、サーバーの処理
+     （Toast の取り込み・仕入れの集計など）が表を読む動きは変わらない。
+   【覚えを確かめられないとき（印 _mr_unk_v1）】起動・取り込みの途中の保存、端末の保存（IndexedDB）を読み終える前の保存
+     （店舗の表も）、前の値が無い保存、番号の無い行・同じ番号が 2 つある表、v1149 以前に送れなかった変更
+     （送信待ち）、覚えを端末に書けなかった保存（localStorage も IndexedDB も）、起動のときに送信待ちがあるのに覚えの無い表。
+     送るときにクラウドの表を全部読み、中身の違う行を行の版の印で決める（mrPush。前は全部の行を upsert し、ほかの端末の変更・消した行を戻した）。
+     印は確かめ終えたとき・送れていない変更の無い取り込みで外す。
+     覚えは localStorage に書けなければ IndexedDB の別の名前（mr_touched_overflow）に持つ（閉じて開き直しても消えない）。
+     IndexedDB に積んで入り終える前に閉じた（印 _mr_ovp_v1 の回より新しい覚えが無い）ときも、開き直したときに印 _mr_unk_v1 を付ける。
+     同期センターの「この端末からアップロード」は今までどおり全部の行。
+   ============================================================ */
+var MR_KEYS = ['m_stores', 'm_ingredients', 'm_recipes', 'm_categories'];
+var MR_TOUCH_KEY = '_mr_touched_v1';   /* { _s:書いた回, キー: { 行の番号: { f:{ 欄:1 }｜c:1（足した）｜d:1（消した）, n:直した回 } } }（この端末だけ・送らない） */
+var MR_UNK_KEY = '_mr_unk_v1';         /* { キー: 時刻 }：覚えを確かめられなかったので、次は全部の行を送る（この端末だけ） */
+var MR_INIT_KEY = '_mr_v1150';         /* v1149 以前の送信待ちを「覚えの無い送信」にした印 */
+var MR_DEL_F = ['_deleted', '_deletedAt', '_deletedBy'];
+function mrIsKey(k){ return MR_KEYS.indexOf(k)>=0; }
+function mrDef(k){ try{ return (typeof SUPA_MASTER_MAP!=='undefined' && SUPA_MASTER_MAP[k] && SUPA_MASTER_MAP[k].type==='rows') ? SUPA_MASTER_MAP[k] : null; }catch(e){ return null; } }
+/* 行の番号（クラウドの表の主キーと同じ決め方：def.map の pk） */
+function mrPkOf(key, row){
+  try{ var d=mrDef(key); if(!d || !row || typeof row!=='object' || Array.isArray(row)) return null;
+    var v=d.map(row)[d.pk]; if(v==null || v==='' || (typeof v==='number' && !isFinite(v))) return null; return String(v); }catch(e){ return null; }
+}
+function mrTomb(row){ return !!(row && typeof row==='object' && row._deleted===true); }
+function _mrJsonGet(name){ try{ var o=JSON.parse(((typeof _smallGet==='function') ? _smallGet(name) : localStorage.getItem(name))||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function _mrJsonPut(name, o){ var t=Object.keys(o).length ? JSON.stringify(o) : null; if(typeof _smallSet==='function') return _smallSet(name, t); try{ if(t==null) localStorage.removeItem(name); else localStorage.setItem(name, t); return true; }catch(e){ return false; } }
+/* 覚えを localStorage に書けなかったとき（いっぱい）は、IndexedDB の別の名前に持つ（送信待ちの op_outbox_overflow と同じ考え。
+   Codex #144 6838246707：前はこのタブのメモリだけに残り、閉じて開き直すと覚えが消え、送信待ちがあるのに「送るものが無い＝送れた」にして
+   送信待ちから外し、次の取り込みで端末の変更を消していた）。どれがいちばん新しいかは、書いた回（_s）で決める（時計によらない） */
+var MR_TOUCH_OVF = 'mr_touched_overflow';
+function mrTouchedAll(){
+  var a=_mrJsonGet(MR_TOUCH_KEY);   /* このタブのメモリ（_smallSet.mem）→ localStorage */
+  try{
+    if(typeof _idbState!=='undefined' && _idbState==='ready' && typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(MR_TOUCH_OVF)){
+      var b=JSON.parse(_IDB_MEM.get(MR_TOUCH_OVF));
+      if(b && typeof b==='object' && !Array.isArray(b) && ((+b._s)||0) > ((+a._s)||0)) return b;
+    }
+  }catch(e){}
+  return a;
+}
+function mrTouchedOf(key){ var T=mrTouchedAll()[key]; return (T && typeof T==='object') ? T : {}; }
+/* 覚えを IndexedDB の別の名前に積んだが、まだ端末の保存領域に入り終えていない印（{ _s:その回, k:{ キー:1 } }・localStorage・この端末だけ）。
+   Codex #144 6840900703：IndexedDB への書き出しは 300ms あとなので、そのあいだに閉じると、端末の表（localStorage の写し _lsj: で残る）は
+   新しいのに、覚えは前の回のまま（空でない）残り、開き直したときに「覚えている行だけ」を送って、ほかの行の変更を「送れた」にしていた。
+   開き直したとき、この印の回より新しい覚えが無ければ、その表に「覚えを確かめられない」の印を付ける（mrInitLegacy。送るときは行の版で確かめる） */
+var MR_OVP_KEY = '_mr_ovp_v1';
+function _mrOvpDone(s){ var o=_mrJsonGet(MR_OVP_KEY); if(o._s!=null && ((+o._s)||0)<=s) _mrJsonPut(MR_OVP_KEY, {}); }
+/* 書けたら true（localStorage か IndexedDB の別の名前）。どちらにも書けなければ false（呼ぶ側が「覚えを確かめられない」の印を付ける）。
+   key＝この回で覚えが変わった表（IndexedDB に積んだときの印に入れる） */
+function _mrTouchedPut(all, key){
+  all._s=((+all._s)||0)+1;
+  var ok=_mrJsonPut(MR_TOUCH_KEY, all), ovf=false, s=all._s;
+  try{ ovf=(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(MR_TOUCH_OVF)); }catch(e){}
+  if(ok){ if(ovf){ try{ _idbQueue(MR_TOUCH_OVF, null); }catch(e){} } _mrOvpDone(s); return true; }   /* 残った別の名前は回が古いので使われない（消えなくても） */
+  /* 先に印（同期で localStorage に入る）。書けなくても IndexedDB には積む（Codex #144 6842328965：前は印を書けないと積まずに戻り、
+     開き直すと古い覚えのまま「送れた」にして、2 つ目の変更を取り込みで消した）。印を書けなかったときは false（呼ぶ側が印 _mr_unk_v1 も試す） */
+  var o=_mrJsonGet(MR_OVP_KEY), k=(o.k && typeof o.k==='object' && !Array.isArray(o.k)) ? o.k : {};
+  if(key) k[key]=1;
+  var markOk=_mrJsonPut(MR_OVP_KEY, { _s:s, k:k });
+  try{
+    if(typeof _idbQueue==='function' && _idbQueue(MR_TOUCH_OVF, JSON.stringify(all))===true){
+      /* 呼んだ lsSet が表を積み終えてから（同じ書き出し＝同じ 1 つの IndexedDB の取引で、表と覚えが両方入るか、両方入らない）すぐ書き出し、入り終えたら印を外す */
+      Promise.resolve().then(function(){ return (typeof _idbFlushP==='function') ? _idbFlushP() : false; })
+        .then(function(r){ if(r===true) _mrOvpDone(s); }, function(){});
+      return markOk;
+    }
+  }catch(e){}
+  return false;
+}
+function mrUnkHas(key){ return Object.prototype.hasOwnProperty.call(_mrJsonGet(MR_UNK_KEY), key); }
+function mrUnkMark(key){ var o=_mrJsonGet(MR_UNK_KEY); if(o[key]) return true; o[key]=Date.now(); return _mrJsonPut(MR_UNK_KEY, o); }
+function mrUnkClear(key){ var o=_mrJsonGet(MR_UNK_KEY); if(!Object.prototype.hasOwnProperty.call(o, key)) return; delete o[key]; _mrJsonPut(MR_UNK_KEY, o); }
+/* まだ送れていない変更があるか（送信待ち（だれのものでも）・送っている途中・覚えている行） */
+function mrPending(key){
+  try{ if(typeof _pushBusy==='function' && _pushBusy(key)) return true; }catch(e){}
+  try{ if(typeof _outboxGet==='function' && _outboxGet().some(function(x){ return x && x.key===key; })) return true; }catch(e){}
+  return Object.keys(mrTouchedOf(key)).length>0;
+}
+function mrHasUnsent(key){ return mrUnkHas(key) || mrPending(key); }
+/* v1149 以前に送れなかったマスターの変更（送信待ちにあり、覚えが無い）は、覚えの無い送信（全部の行）にする。1 回だけ */
+function mrInitLegacy(){
+  try{
+    /* 起動ごとに 1 回（端末の保存（IndexedDB）を読み終えてから。この起動の保存が送信待ちに入る前）：送信待ちにあるのに、
+       覚えも印も無い表は、覚えを失った（閉じる前に端末へ書けなかった など）とみなして印を付ける（送るときは行の版の印で確かめる：mrPush）。
+       Codex #144 6838246707：前は送るものが無いとして「送れた」にし、送信待ちから外して、次の取り込みで端末の変更を消していた */
+    if(!mrInitLegacy.load && !(typeof _idbState!=='undefined' && _idbState==='init')){
+      mrInitLegacy.load=1;
+      var ob0=(typeof _outboxGet==='function') ? _outboxGet() : [], all0=mrTouchedAll();
+      /* 覚えを IndexedDB に積んだまま閉じた（印の回より新しい覚えが無い）：その表の覚えは古いかもしれない（Codex #144 6840900703） */
+      var ovp=_mrJsonGet(MR_OVP_KEY);
+      if(ovp._s!=null){
+        if(((+all0._s)||0) >= ((+ovp._s)||0)) _mrJsonPut(MR_OVP_KEY, {});
+        else {
+          var ks=(ovp.k && typeof ovp.k==='object') ? Object.keys(ovp.k).filter(mrIsKey) : [];
+          if(!ks.length) ks=MR_KEYS.slice();
+          var okAll=true; ks.forEach(function(k){ if(!mrUnkMark(k)) okAll=false; });
+          if(okAll) _mrJsonPut(MR_OVP_KEY, {});
+        }
+      }
+      MR_KEYS.forEach(function(k){
+        if(!ob0.some(function(x){ return x && x.key===k; })) return;
+        if(all0[k] && typeof all0[k]==='object' && Object.keys(all0[k]).length) return;
+        mrUnkMark(k);
+      });
+    }
+    if(((typeof _smallGet==='function') ? _smallGet(MR_INIT_KEY) : localStorage.getItem(MR_INIT_KEY))==='1') return;
+    var ob=(typeof _outboxGet==='function') ? _outboxGet() : [];
+    MR_KEYS.forEach(function(k){ if(ob.some(function(x){ return x && x.key===k; })) mrUnkMark(k); });
+    if(typeof _smallSet==='function') _smallSet(MR_INIT_KEY, '1'); else localStorage.setItem(MR_INIT_KEY, '1');
+  }catch(e){}
+}
+/* 欄の値が同じか（欄の順によらない） */
+function mrFieldEq(a, b){
+  if(a===b) return true;
+  if(a===undefined || b===undefined) return false;
+  try{ if(JSON.stringify(a)===JSON.stringify(b)) return true; }catch(e){}
+  try{ return (typeof _cjson==='function') ? _cjson(a)===_cjson(b) : false; }catch(e){ return false; }
+}
+function mrRowEq(a, b){
+  if(!a || !b) return a===b;
+  var ks={}; Object.keys(a).forEach(function(k){ ks[k]=1; }); Object.keys(b).forEach(function(k){ ks[k]=1; });
+  return Object.keys(ks).every(function(k){ return mrFieldEq(a[k], b[k]); });
+}
+/* 表を番号で引けるようにする。番号の無い行・同じ番号が 2 つあれば bad（覚えを確かめられない） */
+function mrIndex(key, arr){
+  var map={}, txt={}, bad=false;
+  (arr||[]).forEach(function(r){
+    var pk=mrPkOf(key, r);
+    if(pk==null || Object.prototype.hasOwnProperty.call(map, pk)){ bad=true; return; }
+    map[pk]=r; try{ txt[pk]=JSON.stringify(r); }catch(e){ txt[pk]=String(Math.random()); }
+  });
+  return { map:map, txt:txt, bad:bad };
+}
+/* lsSet から（書く前）：直す前と後の表を比べて、変えた行・欄を覚える */
+function mrOnEdit(key, prevTxt, nextTxt){
+  try{
+    if(!mrIsKey(key) || prevTxt===nextTxt) return;
+    mrInitLegacy();
+    var booting=(typeof _supaBooting!=='undefined' && _supaBooting);
+    /* 端末の保存（IndexedDB）を読み終える前は、どの表も印にする（店舗の表も。Claude のルーティン 6840823792 の P3-1：
+       そのあいだは IndexedDB の別の名前の覚えが読めないので、localStorage に書いた回が古い回になり、読み終えると落ちていた） */
+    var idbInit=(typeof _idbState!=='undefined' && _idbState==='init');
+    if(booting || idbInit || prevTxt==null){ mrUnkMark(key); return; }
+    var prev=JSON.parse(prevTxt), next=JSON.parse(nextTxt);
+    if(!Array.isArray(prev) || !Array.isArray(next)){ mrUnkMark(key); return; }
+    var P=mrIndex(key, prev), N=mrIndex(key, next);
+    if(P.bad || N.bad){ mrUnkMark(key); return; }
+    var all=mrTouchedAll(), T=(all[key] && typeof all[key]==='object') ? all[key] : {}, n=0;
+    var bump=function(t){ return ((t && +t.n) || 0) + 1; };
+    Object.keys(N.map).forEach(function(pk){
+      var nr=N.map[pk], pr=P.map[pk], t=T[pk];
+      if(!pr){ T[pk]={ c:1, n:bump(t) }; n++; return; }   /* 足した（消してまだ送っていない行を作り直した、も同じ） */
+      if(N.txt[pk]===P.txt[pk]) return;
+      var ks={}, f={}, any=false;
+      Object.keys(pr).forEach(function(k){ ks[k]=1; }); Object.keys(nr).forEach(function(k){ ks[k]=1; });
+      Object.keys(ks).forEach(function(k){ if(k!=='_mrv' && !mrFieldEq(pr[k], nr[k])){ f[k]=1; any=true; } });   /* 版の印は直した欄にしない（送るときに新しくする） */
+      if(!any) return;   /* 欄の順だけ違う */
+      if(t && t.c){ T[pk]={ c:1, n:bump(t) }; n++; return; }   /* 足してまだ送っていない行は、丸ごとのまま */
+      if(t && t.f) Object.keys(t.f).forEach(function(k){ f[k]=1; });
+      T[pk]={ f:f, n:bump(t) }; n++;
+    });
+    Object.keys(P.map).forEach(function(pk){
+      if(Object.prototype.hasOwnProperty.call(N.map, pk)) return;
+      T[pk]={ d:1, n:bump(T[pk]) }; n++;   /* 消した（足してまだ送っていない行でも、クラウドに入っていれば印を付ける） */
+    });
+    if(n){ all[key]=T; if(!_mrTouchedPut(all, key)) mrUnkMark(key); }   /* 覚えか小さな印を localStorage に書けなかった：覚えはこのタブのメモリにある（IndexedDB に積めていれば表と同じ書き出しで入る）。念のため印も付ける（書けなければこのタブのメモリだけ） */
+  }catch(e){ try{ mrUnkMark(key); }catch(_){} }
+}
+function _mrStrip(row){ var y=Object.assign({}, row); MR_DEL_F.forEach(function(f){ delete y[f]; }); return y; }
+/* クラウドの行に、この端末で変えた欄だけを重ねる */
+function mrOverlay(c, l, fields){
+  var y=_mrStrip(c);
+  Object.keys(fields||{}).forEach(function(f){ if(l[f]===undefined) delete y[f]; else y[f]=l[f]; });
+  return y;
+}
+function _mrQuote(v){ var s=String(v), q=String.fromCharCode(34), bs=String.fromCharCode(92); if(/^[A-Za-z0-9_-]+$/.test(s)) return s; return q+s.split(bs).join(bs+bs).split(q).join(bs+q)+q; }   /* 文字の引用符は書かない（試験の切り出しが正規表現の中の引用符で迷わないように） */
+/* クラウドの行（番号 → data）。読めなければ null */
+async function mrFetchRows(key, pks){
+  var def=mrDef(key); if(!def) return null;
+  try{
+    var list=(pks||[]).map(String).filter(Boolean), out={};
+    for(var i=0;i<list.length;i+=40){
+      var part=list.slice(i, i+40).map(_mrQuote).join(',');
+      var ac=(typeof AbortController==='function') ? new AbortController() : null, tm=ac ? setTimeout(function(){ try{ ac.abort(); }catch(e){} }, 15000) : null;
+      var res=await fetch(SUPABASE_URL+'/rest/v1/'+def.table+'?select='+def.pk+',data&'+def.pk+'=in.('+encodeURIComponent(part)+')', { headers:supaHeaders(), signal:ac ? ac.signal : undefined });
+      var rows=res.ok ? await res.json() : null;
+      if(tm) clearTimeout(tm);
+      if(!Array.isArray(rows)) return null;
+      rows.forEach(function(r){ if(r && r[def.pk]!=null && r.data && typeof r.data==='object') out[String(r[def.pk])]=r.data; });
+    }
+    return out;
+  }catch(e){ return null; }
+}
+function _mrLog(key, ja, en){
+  try{ if(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function'){
+    var nm=(typeof outboxLabel==='function') ? outboxLabel(key) : key;
+    FUNERGY_STATUS.log('store', (typeof t==='function') ? t(nm+'：'+ja, nm+': '+en) : (nm+'：'+ja)); } }catch(e){}
+}
+/* 版の印（_mrv）：書くたびに新しい値。読んだ版のままのときだけ書く（条件つきの書き込み）ので、読んでから書くまでのあいだに
+   ほかの端末が同じ行を書いたら、こちらの書き込みは入らず、読み直して重ね直す（前はあとから書いたほうが先の欄を消していた） */
+function mrTok(){ return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10); }
+/* 1 行を条件つきで書く。c＝読んだクラウドの行（無ければ新しく入れる）。'ok'｜'conflict'（ほかの端末が先に書いた・入れた）｜'fail' */
+async function mrCasWrite(key, pk, row, c){
+  var def=mrDef(key); if(!def) return 'fail';
+  var ac=(typeof AbortController==='function') ? new AbortController() : null, tm=ac ? setTimeout(function(){ try{ ac.abort(); }catch(e){} }, 15000) : null;
+  try{
+    var body=JSON.stringify(def.map(row)), url, opt;
+    if(c){
+      var v=c._mrv;
+      url=SUPABASE_URL+'/rest/v1/'+def.table+'?'+def.pk+'=eq.'+encodeURIComponent(pk)+'&data-%3E%3E_mrv='+((v==null || v==='') ? 'is.null' : 'eq.'+encodeURIComponent(String(v)))+'&select='+def.pk;
+      opt={ method:'PATCH', headers:supaHeaders({ Prefer:'return=representation' }), body:body };
+    } else {
+      url=SUPABASE_URL+'/rest/v1/'+def.table+'?select='+def.pk;
+      opt={ method:'POST', headers:supaHeaders({ Prefer:'return=representation' }), body:body };   /* 足すだけ（同じ番号があれば 409＝ほかの端末が先に入れた） */
+    }
+    if(ac) opt.signal=ac.signal;
+    var res=await fetch(url, opt);
+    if(!c && res.status===409){ if(tm) clearTimeout(tm); return 'conflict'; }
+    if(!res.ok){ var txt=''; try{ txt=await res.text(); }catch(e){} if(tm) clearTimeout(tm); try{ _lastSupaError={ table:def.table, status:res.status, body:txt, at:new Date().toISOString() }; }catch(e){} return 'fail'; }
+    var out=await res.json();
+    if(tm) clearTimeout(tm);
+    return (Array.isArray(out) && out.length) ? 'ok' : 'conflict';
+  }catch(e){ if(tm) clearTimeout(tm); return 'fail'; }
+}
+/* 一度にたくさんの行（MR_BULK より多い：一度きりの移し替え・取り込みなど）は、行ごとの条件つきの書き込みにすると
+   通信が行の数だけ要るので、まとめて書いて読み直し、版の印がこちらの書いたままかを確かめる（あとからほかの端末が
+   書いていたら、その行は読み直して重ね直す）。読んでから書くまでのあいだのほかの端末の書き込みは、この道だけは見分けられない（限界） */
+var MR_BULK = 100;
+async function mrBulkWrite(key, jobs){
+  var def=mrDef(key), out=jobs.map(function(){ return 'fail'; });
+  if(!def) return out;
+  for(var i=0;i<jobs.length;i+=500){
+    var w=await supaUpsert(def.table, jobs.slice(i, i+500).map(function(j){ return def.map(j.row); }));
+    if(w===false) return out;
+  }
+  var back=await mrFetchRows(key, jobs.map(function(j){ return j.pk; }));
+  if(back===null) return out;
+  return jobs.map(function(j){ var b=back[j.pk]; return (b && b._mrv===j.row._mrv) ? 'ok' : 'conflict'; });
+}
+/* n 本ずつ同時に */
+async function mrPool(items, n, fn){
+  var out=new Array(items.length), i=0, ws=[];
+  async function w(){ while(i<items.length){ var k=i++; out[k]=await fn(items[k]); } }
+  for(var j=0; j<Math.min(n, items.length); j++) ws.push(w());
+  await Promise.all(ws);
+  return out;
+}
+/* 行の版の印が同じか（どちらにも無いときも同じ）＝端末が持っている版のあと、クラウドのその行をだれも（1150 の端末は）書いていない */
+function mrSameVer(l, c){ var a=l ? l._mrv : null, b=c ? c._mrv : null; if(a==null || a==='') return b==null || b===''; return b!=null && b!=='' && String(a)===String(b); }
+/* 版の印・消した印を除いて中身が同じか（消した印の行かどうかは呼ぶ側が先に見る） */
+function mrSameData(l, c){ var x=_mrStrip(l||{}), y=_mrStrip(c||{}); delete x._mrv; delete y._mrv; return mrRowEq(x, y); }
+/* 送る（syncMasterToSupabase から）：覚えている行だけ。true＝送れた（か、送るものが無い）／false＝送れなかった（送信待ちに残る）。
+   覚えを確かめられない（印 _mr_unk_v1）ときは、クラウドの表を全部読み、覚えていない行のうち中身が違う行を、行の版の印（_mrv）で決める：
+     ・端末の行とクラウドの行の版の印が同じ（どちらにも無い、も同じ）＝端末が持っている版のあと、クラウドのその行はだれも書いていない
+       → 端末の行を書く（条件つき）。覚えている行（欄）も、版の印が同じなら端末の行を丸ごと書く（覚えていない欄の変更も入る）
+     ・違う（ほかの端末が先に書いた）・クラウドが消した印 → クラウドのほう（端末の行もクラウドの行にする。「設定 › 診断と記録」に 1 行）
+     ・クラウドに無い行 → 足した行として入れる
+     ・端末に無くクラウドにある行は、この端末で消したのか、あとでほかの端末が足したのか見分けられないので送らない（限界）
+   前は全部の行を upsert していた（ほかの端末が直した行・消した行を戻した。Codex #144 6838246707・Claude のルーティン 6838247224 の P3）。
+   v1149 以前の端末は版の印を変えずに書くので、その書き込みは見分けられない（前からの限界） */
+async function mrPush(key, val){
+  var def=mrDef(key); if(!def || !Array.isArray(val)) return;
+  mrInitLegacy();
+  var me=''; try{ me=(typeof myName==='function' ? myName() : '') || ''; }catch(e){}
+  var unk=mrUnkHas(key), sent0=_lsStoreGet(key);
+  var T=mrTouchedOf(key), pks=Object.keys(T);
+  var L={}; val.forEach(function(r){ var pk=mrPkOf(key, r); if(pk!=null) L[pk]=r; });
+  var first=null, U={}, utxt={};
+  if(unk){
+    var all0=(typeof supaFetchAll==='function') ? await supaFetchAll(def.table, def.pk+',data') : null;
+    if(!Array.isArray(all0)){ try{ _opLastPushErr[key]=t('クラウドの表を読めなかったので送っていません（未送信に残し、あとで送り直します）','Could not read the table from the cloud (kept unsent)'); }catch(e){} return false; }
+    first={};
+    all0.forEach(function(r){
+      if(!r || !r.data || typeof r.data!=='object') return;
+      var pk=(r[def.pk]!=null && r[def.pk]!=='') ? String(r[def.pk]) : mrPkOf(key, r.data);
+      if(pk!=null) first[pk]=r.data;
+    });
+    Object.keys(L).forEach(function(pk){
+      if(T[pk]) return;
+      var c=Object.prototype.hasOwnProperty.call(first, pk) ? first[pk] : null;
+      if(c && !mrTomb(c) && mrSameData(L[pk], c)) return;   /* 同じ */
+      U[pk]=1; try{ utxt[pk]=JSON.stringify(L[pk]); }catch(e){ utxt[pk]=''; }
+    });
+  }
+  var snap={}; pks.forEach(function(pk){ snap[pk]=(+T[pk].n)||0; });
+  var done={}, written={}, lost=[], recreated=[], won={}, why='', pending=pks.concat(Object.keys(U));
+  for(var a=0; a<4 && pending.length; a++){
+    var cloud=(a===0 && first) ? first : await mrFetchRows(key, pending);
+    if(cloud===null){ why=t('クラウドの表を読めなかったので送っていません（未送信に残し、あとで送り直します）','Could not read the table from the cloud (kept unsent)'); break; }
+    var jobs=[];
+    pending.forEach(function(pk){
+      var tc=T[pk], l=L[pk], c=Object.prototype.hasOwnProperty.call(cloud, pk) ? cloud[pk] : null;
+      if(!tc){   /* 覚えていない行（印のあるときだけ）：行の版の印で決める */
+        if(!l){ done[pk]=1; return; }
+        if(!c){ jobs.push({ pk:pk, c:null, row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return; }   /* クラウドに無い：足した行 */
+        if(mrTomb(c) || !mrSameVer(l, c)){ won[pk]=c; done[pk]=1; return; }   /* ほかの端末が先に消した・書いた：クラウドのほう（中身が同じ行は最初の読みで外してある） */
+        jobs.push({ pk:pk, c:c, row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return;
+      }
+      if(tc.d){
+        if(c && !mrTomb(c)) jobs.push({ pk:pk, c:c, row:Object.assign({}, c, { _deleted:true, _deletedAt:new Date().toISOString(), _deletedBy:me, _mrv:mrTok() }) });
+        else done[pk]=1;   /* クラウドに無い・もう消した印：送るものなし */
+        return;
+      }
+      if(!l){ done[pk]=1; return; }
+      if(tc.c || !c){ jobs.push({ pk:pk, c:c, re:!!(c && mrTomb(c)), row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return; }   /* 足した・クラウドに無い：丸ごと */
+      if(mrTomb(c)){ lost.push(pk); done[pk]=1; return; }   /* ほかの端末が消した行をこの端末で直していた：消したほう */
+      /* 印のあるとき、版の印が同じなら端末の行を丸ごと（覚えていない欄の変更も入る。だれも書いていないので、ほかの端末の欄は消えない） */
+      var y=(unk && mrSameVer(l, c)) ? _mrStrip(l) : mrOverlay(c, l, tc.f); y._mrv=mrTok(); jobs.push({ pk:pk, c:c, row:y });
+    });
+    var rs=(jobs.length>MR_BULK) ? await mrBulkWrite(key, jobs) : await mrPool(jobs, 6, function(j){ return mrCasWrite(key, j.pk, j.row, j.c); });
+    var next=[], failed=false;
+    jobs.forEach(function(j, i){
+      if(rs[i]==='ok'){ done[j.pk]=1; written[j.pk]=j.row; if(j.re) recreated.push(j.pk); }
+      else if(rs[i]==='conflict') next.push(j.pk);
+      else failed=true;
+    });
+    if(failed){ why=t('クラウドへの書き込みに失敗しました（未送信に残し、あとで送り直します）','Could not write to the cloud (kept unsent)'); break; }
+    pending=next;
+    if(pending.length){
+      if(a===3) why=t('ほかの端末の保存と重なり、4 回試しても書けませんでした（未送信に残します）','Overlapped with another device 4 times (kept unsent)');
+      else await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });   /* ほかの端末がほぼ同時に同じ行を書いた：読み直して重ね直す */
+    }
+  }
+  var still=(_lsStoreGet(key)===sent0 || sent0==null);   /* 送っているあいだに表を変えていない（下で端末の表を合わせる前に見る） */
+  /* 書けた行（と送るものの無かった行）の覚えを外す（送っているあいだにまた直した行は残す）。端末の表も合わせる（その行を直していなければ） */
+  var all2=mrTouchedAll(), T2=all2[key]||{}, cleared={};
+  Object.keys(done).forEach(function(pk){ if(T[pk] && T2[pk] && ((+T2[pk].n)||0)===snap[pk]){ delete T2[pk]; cleared[pk]=1; } });
+  if(Object.keys(T2).length) all2[key]=T2; else delete all2[key];
+  if(pks.length) _mrTouchedPut(all2, key);
+  try{
+    var cur=JSON.parse(_lsStoreGet(key)||'null');
+    if(Array.isArray(cur)){
+      var changed=false, out=[];
+      cur.forEach(function(r){
+        var pk=mrPkOf(key, r);
+        if(pk!=null && cleared[pk]){
+          if(lost.indexOf(pk)>=0 || (written[pk] && mrTomb(written[pk]))){ changed=true; return; }
+          if(written[pk] && !mrRowEq(r, written[pk])){ out.push(written[pk]); changed=true; return; }
+        }
+        /* 覚えていない行（印のあるとき）：送っているあいだに直していなければ、書いた行・クラウドの行にする */
+        if(pk!=null && U[pk] && done[pk] && !T2[pk]){
+          var same=false; try{ same=(JSON.stringify(r)===utxt[pk]); }catch(e){}
+          if(same && Object.prototype.hasOwnProperty.call(won, pk)){ if(mrTomb(won[pk])){ changed=true; return; } if(!mrRowEq(r, won[pk])){ out.push(won[pk]); changed=true; return; } }
+          else if(same && written[pk] && !mrRowEq(r, written[pk])){ out.push(written[pk]); changed=true; return; }
+        }
+        out.push(r);
+      });
+      if(changed){ _lsWriteVerified(key, JSON.stringify(out)); if(key==='m_stores' && typeof refreshStores==='function'){ try{ refreshStores(); }catch(e){} } }
+    }
+  }catch(e){}
+  if(lost.length) _mrLog(key, 'ほかの端末で消された行を、この端末で直していました（消したほうにしました：'+lost.length+' 行）。', 'rows deleted on another device were edited here (kept deleted: '+lost.length+')');
+  if(recreated.length) _mrLog(key, 'ほかの端末で消された行と同じ番号の行を、この端末で作りました（作ったほうにしました：'+recreated.length+' 行）。', 'rows were created here with the number of a deleted row (kept: '+recreated.length+')');
+  var wonDel=Object.keys(won).filter(function(pk){ return mrTomb(won[pk]); }).length, wonNew=Object.keys(won).length-wonDel;
+  if(wonDel) _mrLog(key, '変更を確かめられなかった送信で、ほかの端末で消された行は消したほうにしました（'+wonDel+' 行）。', 'unconfirmed changes: rows deleted on another device were kept deleted ('+wonDel+')');
+  if(wonNew) _mrLog(key, '変更を確かめられなかった送信で、ほかの端末が先に直した行はクラウドのほうにしました（'+wonNew+' 行。この端末で直していた場合、その変更は入っていません）。', 'unconfirmed changes: rows changed on another device first were kept as in the cloud ('+wonNew+')');
+  if(unk && !why && !pending.length && still) mrUnkClear(key);   /* 確かめ終えて、送っているあいだに表を変えていなければ印を外す */
+  if(why || pending.length){ try{ _opLastPushErr[key]=why || t('送れていない行があります','Some rows were not sent'); }catch(e){} return false; }
+  try{ _opLastPushErr[key]=''; }catch(e){}
+  return true;
+}
+/* 取り込むとき（supaPullAllMasters・loginBootstrapPull）：クラウドの表（data の並び）に、まだ送っていない変更を重ねた表を返す。
+   null＝今までどおり（呼ぶ側の決め方）／{ keep:true }＝送っている途中・覚えの無い送れていない変更があるので端末のまま／
+   { value, commit }＝value を書き、書けたら commit() */
+function mrApplyPulled(key, cloud){
+  try{
+    if(!mrIsKey(key) || !Array.isArray(cloud)) return null;
+    if(typeof _idbState!=='undefined' && _idbState==='init' && !(typeof LS_SLIM_KEEP!=='undefined' && LS_SLIM_KEEP.indexOf(key)>=0)) return null;
+    mrInitLegacy();
+    if(typeof _pushBusy==='function' && _pushBusy(key)) return { keep:true };
+    /* 店舗の表は IndexedDB を読み終える前にも取り込む。そのあいだは IndexedDB の別の名前の覚えが読めないので、送れていない変更があれば端末のまま */
+    if(typeof _idbState!=='undefined' && _idbState==='init'){
+      var obI=false; try{ obI=(typeof _outboxGet==='function') && _outboxGet().some(function(x){ return x && x.key===key; }); }catch(e){}
+      if(obI) return { keep:true };
+    }
+    var unk=mrUnkHas(key);
+    if(unk){
+      var obHas=false; try{ obHas=(typeof _outboxGet==='function') && _outboxGet().some(function(x){ return x && x.key===key; }); }catch(e){}
+      if(obHas) return { keep:true };   /* 覚えの無い、送れていない変更（v1136 と同じく端末のまま） */
+    }
+    var T=mrTouchedOf(key), local=null, L={};
+    try{ local=JSON.parse(_lsStoreGet(key)||'null'); }catch(e){}
+    (Array.isArray(local) ? local : []).forEach(function(r){ var pk=mrPkOf(key, r); if(pk!=null && !Object.prototype.hasOwnProperty.call(L, pk)) L[pk]=r; });
+    var out=[], seen={}, lost=[];
+    cloud.forEach(function(c){
+      if(!c || typeof c!=='object') return;
+      var pk=mrPkOf(key, c);
+      if(pk==null){ if(!mrTomb(c)) out.push(c); return; }
+      if(seen[pk]){ if(!mrTomb(c)) out.push(c); return; }   /* 同じ番号に見える行がほかにもある：今までどおりそのまま */
+      seen[pk]=1;
+      var tc=T[pk], l=L[pk];
+      if(mrTomb(c)){
+        if(tc && tc.c && l) out.push(l);          /* この端末で作り直してまだ送っていない：作ったほう */
+        else if(tc && tc.f) lost.push(pk);        /* この端末で直していた行を、ほかの端末が消した：消したほう */
+        return;
+      }
+      if(!tc){ out.push(c); return; }
+      if(tc.d) return;                            /* この端末で消して、まだ送っていない */
+      if(!l){ out.push(c); return; }
+      out.push(tc.c ? l : mrOverlay(c, l, tc.f));
+    });
+    Object.keys(L).forEach(function(pk){
+      if(seen[pk]) return;
+      var tc=T[pk];
+      if(tc && !tc.d) out.push(L[pk]);            /* この端末で足して（直して）まだ送っていない行（クラウドに無い） */
+    });
+    return { value:out, commit:function(){
+      if(unk) mrUnkClear(key);
+      if(lost.length){
+        var a=mrTouchedAll(), T3=a[key]||{};
+        lost.forEach(function(pk){ if(T3[pk] && T3[pk].f) delete T3[pk]; });
+        if(Object.keys(T3).length) a[key]=T3; else delete a[key];
+        _mrTouchedPut(a, key);
+        _mrLog(key, 'ほかの端末で消された行を、この端末で直していました（消したほうにしました：'+lost.length+' 行）。', 'rows deleted on another device were edited here (kept deleted: '+lost.length+')');
+      }
+    } };
+  }catch(e){ return null; }
+}
 async function syncMasterToSupabase(key, val){
   if (_supaBooting) return; // 起動/シード/プル中は押し上げない（プル後のユーザー編集のみクラウド反映）
   var def = SUPA_MASTER_MAP[key];
@@ -12425,6 +12863,8 @@ async function syncMasterToSupabase(key, val){
   if (key === 'm_employees') return await empPushDirty();
   /* v1121：業者は、この端末で変えた業者の変えた欄だけ（クラウドの最新に重ねて）。全部を送ると古い写しがほかの人の変更・削除を戻す */
   if (key === 'm_vendors') return await vendorPushDirty(val);
+  /* v1150：店舗・食材・レシピ・カテゴリーは、この端末で変えた行の変えた欄だけ（消した行はクラウドの行に印）。覚えを確かめられなければ今までどおり全部 */
+  if (typeof mrIsKey==='function' && mrIsKey(key)) return await mrPush(key, val);
   if (def && def.type==='rows') {
     if (!Array.isArray(val)) return;
     var rows = _stripTestRows(key, val).map(def.map);   /* v850 */
@@ -14600,9 +15040,12 @@ async function supaPullAllMasters(opt){
       arr = _stripTestRows(key, arr);                             /* v850 */
       if (key === 'm_employees') arr = _empMergeCloud(arr);       /* v1085: 送れていない変更（退職など）を取り込みで消さない */
       if (key === 'm_vendors') arr = vendorMergePulled(arr, _vT0);      /* v1121: 送れていない業者の変更を消さない・読んだ姿を覚える */
-      if (key !== 'm_employees' && key !== 'm_vendors' && typeof _pullKeepLocal==='function' && _pullKeepLocal(key)) { results.push(def.table+': 送れていない変更があるので端末のまま'); continue; }   /* v1136 */
-      if (arr.length){
-        _lsWriteVerified(key, JSON.stringify(arr));               /* v763 */
+      var _mra = (typeof mrApplyPulled==='function') ? mrApplyPulled(key, arr) : null;   /* v1150：消した印の行は置かない・まだ送っていない変えた欄と足した行を重ねる */
+      if (_mra && _mra.keep) { results.push(def.table+': 送れていない変更があるので端末のまま'); continue; }
+      if (_mra) arr = _mra.value;
+      else if (key !== 'm_employees' && key !== 'm_vendors' && typeof _pullKeepLocal==='function' && _pullKeepLocal(key)) { results.push(def.table+': 送れていない変更があるので端末のまま'); continue; }   /* v1136 */
+      if (arr.length || _mra){
+        if (_lsWriteVerified(key, JSON.stringify(arr)) && _mra) _mra.commit();   /* v763 */
         results.push(def.table+': '+arr.length+'件 取込');
       } else { results.push(def.table+': データなし(スキップ)'); }
     } else {
@@ -14650,7 +15093,12 @@ async function supaPullAllMasters(opt){
   var _deferredP = Promise.all([ _mp['m_ingredients'], _opstP ]).then(function(_dres){
     if (_dres[0] === null) _fails.push('ingredients');   /* v1137 */
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
-    try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
+    try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;});
+      /* v1150：消した印の行は置かない・まだ送っていない変えた欄と足した行を重ねる（前は送れていない変更があっても丸ごと置き換えていた） */
+      var _mri=(typeof mrApplyPulled==='function') ? mrApplyPulled('m_ingredients', _ia) : null;
+      if(_mri && _mri.keep){}
+      else if(_mri){ if(_lsWriteVerified('m_ingredients', JSON.stringify(_mri.value))) _mri.commit(); }
+      else if(_ia.length && !(typeof _pullKeepLocal==='function' && _pullKeepLocal('m_ingredients'))){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { var _kvRows=(typeof ssStaleRows==='function') ? ssStaleRows(_dres[1]) : _dres[1];   /* Codex P1：取り込む直前にもログインを比べる（前の人の成長カルテ・賞与・Career Score を置かない） */
       var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); if(typeof scSeenRecord==='function') scSeenRecord(_kvRows, _kvOk); if(typeof gbSeenRecord==='function') gbSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
@@ -19830,7 +20278,11 @@ async function loginBootstrapPull(opt){
       var _mine = function(k, i){ return !bg || _lsStoreGet(k)===before[i]; };
       if (Array.isArray(emps) && emps.length && _mine('m_employees', 0)){ var a=emps.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(a.length) _lsWriteVerified('m_employees', JSON.stringify(_empMergeCloud(a))); }   /* v763 → v1085: 送れていない変更を残す */
       var sts = _r[1];
-      if (Array.isArray(sts) && sts.length && _mine('m_stores', 1)){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
+      if (Array.isArray(sts) && sts.length && _mine('m_stores', 1)){ var b=sts.map(function(r){return r.data;}).filter(function(x){return x!=null;});
+        var _mrs=(typeof mrApplyPulled==='function') ? mrApplyPulled('m_stores', b) : null;   /* v1150：消した印の行は置かない・まだ送っていない変更を重ねる */
+        if(_mrs && _mrs.keep){}
+        else if(_mrs){ if(_lsWriteVerified('m_stores', JSON.stringify(_mrs.value))) _mrs.commit(); }
+        else if(b.length) _lsWriteVerified('m_stores', JSON.stringify(b)); }   /* v763 */
       try { refreshStores(); } catch(e){}
     })();
     if (bg) await work;
@@ -42800,6 +43252,7 @@ function _lsKeyRecoverable(k){
   var s=String(k||'');
   if(!s || s.indexOf('_')===0) return false;                 /* 内部フラグは触らない */
   if(_lsProtectedKey(s)) return false;                       /* v715: 復旧不能・再入力が重いものは対象外 */
+  try{ if(typeof mrIsKey==='function' && mrIsKey(s) && mrHasUnsent(s)) return false; }catch(e){}   /* v1150：まだ送れていないマスターの変更がある表は消さない */
   if(s.indexOf('tip_labor_')===0) return true;               /* DBのtip_laborから再取得可 */
   /* v720: m_ingredients / m_recipes / m_employees 等のマスターは SUPA_MASTER_MAP にあり
      supaPullAllMasters() で復元できる。従来は判定に入っておらず「端末のみ」と誤表示され、
@@ -44501,7 +44954,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1149';
+const APP_VERSION = '1150';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
