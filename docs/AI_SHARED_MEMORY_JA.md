@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-13 v1151 の 4 回目の直し：Codex #145（`0a11a73`・issuecomment 6848717787）の P2 1 件（Claude・ブランチ `claude/change-signal-1151`・アプリと試験と文書だけ）
+
+- **Codex（#145 6848717787・`0a11a73`）：blocked／manual・P2 1**（時間切れの直しは確認済み）：`ssPull` が保護されたデータ（成長カルテ・賞与・Career Score など）を関数から取れなかったことを `_kvPullRows` が伝えず、REST が読めれば同期は「最新」になり、合図の預かり（`_secure:bonus` など）を外していた。
+- 直したこと（仕様：`docs/CHANGE_SIGNAL_V1151_JA.md` の 12）：取れなかった区分を行の印 `_secFail` に残し、`supaPullAllMasters` が `_fails` に `secure` を足す（右上は「同期 ⚠ 保護されたデータ」・`okStarted` を進めない・預かりは残って取り直す）。PIN の確かめ先が答えない 503 の 10 分も「取れなかった」。関数がまだ無い（404）・受け取らない人・ログインが替わったときは数えない。
+- 試験（合成データ）：secure-state-client（足した 4：本物の `ssPull`・`_kvPullRows`・`supaPullAllMasters`・`autoSync`・`runFull`）。3 つは `0a11a73` では落ちる。わざと壊す 11 通りのうち 10（残り 1 つは二重の守り）。static release pass/1151。関連・全体の結果は PR #145 の報告に。
+- 限界：関数がずっと答えないと右上は「保護されたデータ」の警告のまま・預かりがあるあいだ 5 分おきに取り直す。
+- 独立レビューは無し。Codex の再レビューはまだ。この回も Claude は PR に報告を投稿していない（push だけ）。
+
 ## 2026-11-13 v1151 の 3 回目の直し：Codex #145（`6cf4d72`・issuecomment 6847848775）の P2 1 件（Claude・ブランチ `claude/change-signal-1151`・アプリと試験と文書だけ）
 
 - **Codex（#145 6847848775・`6cf4d72`）：blocked／manual・P2 1**：自動の同期は取り込みの 60 秒の時間切れでも、ほかに失敗が無ければ `ok` を返して `okStarted` を進めた。2 回目の直しの預かり（`fullPend`）はこれを根拠に 51 キーを外し、取り込みがそのあと失敗しても取り直さなかった（本物の `autoSync`・`trackPull`・`runFull` をつないで再現）。Claude のルーティン 6847734306 は同じことを P3-1（記録だけ）としたが、Codex は P2 とした（Codex の判断で直した）。Moto さん経由（11/12 22:28 HST）でも同じ報告。
