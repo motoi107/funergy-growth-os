@@ -78,10 +78,24 @@ function load(o = {}) {
   const doc = fakeDom();
   const store = o.store || new Map(o.ls || []);   // o.store：同じブラウザのほかのタブ（localStorage を分け合う）
   const pulls = [];
-  let busy = '', dataAt = 0, autoN = 0, refreshes = 0, autoLast = 0;
-  const ST = { userBusy: () => busy, auto: { get last() { return autoLast; } }, autoSync(why) { autoN++; autoLast = Date.now(); pulls.push(['auto', why]); return Promise.resolve('ok'); },
+  let busy = '', dataAt = 0, autoN = 0, refreshes = 0;
+  // 自動の同期の偽物（本物の FUNERGY_STATUS.autoSync と同じ返し方）：o.autoAns(回数) が 'ok'・'fail'・'changed'（始めて終わる）／
+  // 'offline'・'hidden'・'busy'・'skip'（始めない・last を変えない）／'throw'／Promise（その答えで終わる・終わるまで running）
+  const AU = { last: 0, running: null, started: 0, okStarted: 0 };
+  const ST = { userBusy: () => busy, auto: AU, autoSync(why) {
+      if (AU.running) return AU.running;
+      autoN++; pulls.push(['auto', why]);
+      const ans = o.autoAns ? o.autoAns(autoN, why) : 'ok';
+      if (ans === 'throw') throw new Error('sync threw');
+      if (['offline', 'hidden', 'busy', 'skip'].includes(ans)) return Promise.resolve(ans);
+      const started = Date.now(); AU.started = started;
+      if (o.onAutoStart) o.onAutoStart(autoN);
+      const fin = r => { AU.running = null; AU.last = Date.now(); if (r === 'ok' && started > AU.okStarted) AU.okStarted = started; return r; };
+      AU.running = Promise.resolve(ans).then(fin);
+      return AU.running;
+    },
     paintSoon() {}, log(...a) { pulls.push(['log', ...a]); }, niceLabel: (l, k) => (!l || l === k ? 'そのほかのデータ' : l), tableLabel: k => ({ stores: '店舗', employees: '従業員' }[k] || 'データ') };
-  const UX = { bgRefresh() { refreshes++; }, _dataChangedSince: t => dataAt > t };
+  const UX = { bgRefresh() { refreshes++; }, _dataChangedSince: t => dataAt > t, noteDataChange() { dataAt = Date.now() + 1; } };
   const ctx = {
     console, setTimeout, clearTimeout, setInterval, clearInterval, Date, JSON, Math, Promise, Number, String, Array, Object, RegExp, Uint8Array, Error, TypeError,
     btoa: s => Buffer.from(s, 'binary').toString('base64'), unescape, encodeURIComponent, decodeURIComponent, crypto: globalThis.crypto,
@@ -109,9 +123,11 @@ function load(o = {}) {
   };
   ctx.window = ctx; ctx.fetch = W.fetch; ctx.FUNERGY_STATUS = ST; ctx.FUNERGY_UX = UX;
   ctx.supabase = { createClient: () => W.client };
+  if (o.realPii) delete ctx.piiLoad;   // index.html の本物の piiLoad（関数から読む・メモリだけ）
   vm.createContext(ctx);
+  if (o.realPii) vm.runInContext(fn('piiLoad') + '\nfunction piiTid(){ return "1|u-gm||E-GM"; } function piiWants(){ return true; } function ssToken(){ return { g: 1, u: "u-gm", st: "", id: "E-GM" }; } function ssStale(){ return false; }', ctx);
   vm.runInContext(MOD, ctx);
-  const out = { W, ctx, SG: ctx.FUNERGY_SIGNAL, pulls, store, doc, setBusy: b => { busy = b; }, refreshes: () => refreshes, autoN: () => autoN, setData: () => { dataAt = Date.now() + 1; } };
+  const out = { W, ctx, SG: ctx.FUNERGY_SIGNAL, pulls, store, doc, setBusy: b => { busy = b; }, refreshes: () => refreshes, autoN: () => autoN, AU, setData: () => { dataAt = Date.now() + 1; } };
   LIVE.push(out);
   return out;
 }
@@ -618,4 +634,123 @@ test('notifications (v1152) with the Codex #145 fixes: a read already going is a
   assert.deepEqual(ev, ['old-done', 'read:fail-ish', 'read:true']);
   assert.equal(Object.keys(A.SG.st.retry).length, 0);
   assert.equal(A.SG.st.seen['_secure:notifications'], 1);
+});
+
+// ---- Codex #145 6846570741（c98dd95 から最新の head まで）P2 3 件 ----
+const bulk = (A, prefix, n, s = 1) => { for (let i = 0; i < n; i++) A.W.put(prefix + String(i).padStart(3, '0'), 1, later(s), 'E-1', 'dOTHER'); };
+const skipGap = A => { clearTimeout(A.SG.st.fullTm); A.SG.st.fullTm = null; A.AU.last = 0; };
+
+test('Codex #145 6846570741 P2-1: the keys handed to the full sync stay until a sync started after them ends up to date (offline・fail are tried again)', async () => {
+  const answers = ['offline', 'fail', 'ok'];
+  const A = load({ rtStatus: 'CHANNEL_ERROR', autoAns: n => answers[n - 1] || 'ok' });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 40, 80, 120);
+  A.SG.start(); await tick(20);
+  bulk(A, 'b', 51);
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0, '51 keys: not one by one');
+  assert.equal(A.autoN(), 2, 'offline (nothing ran) → tried again → fail (before: once, then never again)');
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 51, 'the keys are kept');
+  assert.ok(A.SG.st.fullTm, 'after the failed run: waits the 2-minute gap, then tries again');
+  skipGap(A);
+  await A.SG._flush(); await tick(50);
+  assert.equal(A.autoN(), 3);
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 0, 'up to date: done');
+  assert.equal(A.SG.st.fullTries, 0);
+  await tick(300);
+  assert.equal(A.autoN(), 3, 'no more runs');
+});
+
+test('Codex #145 6846570741 P2-1: a sync that had started before the keys were handed over does not count; a later periodic sync does', async () => {
+  let release;
+  const A = load({ rtStatus: 'CHANNEL_ERROR', autoAns: n => (n === 1 ? new Promise(r => { release = r; }) : 'ok') });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 40, 80, 120);
+  A.SG.start(); await tick(20);
+  A.ctx.FUNERGY_STATUS.autoSync('every');   // 10 分ごとの同期が先に始まっている（合図の前に読んだかもしれない）
+  await tick(5);
+  bulk(A, 'p', 60);
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.autoN(), 1, 'it joins the running sync');
+  release('ok'); await tick(30);
+  assert.ok(A.SG.st.fullTm, 'it began before the keys: tried again later (before: the keys were dropped)');
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 60, 'they stay');
+  assert.ok(A.SG.st.fullTries >= 1);
+  // 預けたあとに始まった、ほかの理由の同期（画面に戻った・10 分ごと）が「最新」で終われば済む
+  await tick(200);
+  skipGap(A);
+  await A.ctx.FUNERGY_STATUS.autoSync('visible'); await tick(10);
+  await A.SG._flush(); await tick(30);
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 0);
+  assert.equal(A.autoN(), 2, 'no extra run for the signal');
+});
+
+test('Codex #145 6846570741 P2-1: a sync put off for typing, a thrown sync and the bulk keys with a "*" are kept and tried again; a new key taken one by one leaves the hold', async () => {
+  const answers = ['busy', 'throw', 'ok'];
+  const A = load({ rtStatus: 'CHANNEL_ERROR', autoAns: n => answers[n - 1] || 'ok' });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 40, 80, 120);
+  A.SG.start(); await tick(20);
+  bulk(A, 'q', 51);
+  A.W.put('*', 1, later(1), null, 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.autoN(), 3, 'busy → threw → ok (no 2-minute wait: neither of the first two ran)');
+  assert.equal(Object.keys(A.SG.st.fullPend).length, 0);
+  // 預けたキーが、あとで 1 つだけの合図で来た：1 つで取れたら預けから外す
+  const B = load({ rtStatus: 'CHANNEL_ERROR', autoAns: () => 'offline' });
+  B.SG._retryMs.splice(0, B.SG._retryMs.length, 5000);
+  B.SG.start(); await tick(20);
+  bulk(B, 'r', 51);
+  await B.SG.pollNow('test'); await tick(1700);
+  assert.equal(Object.keys(B.SG.st.fullPend).length, 51);
+  B.W.put('r007', 2, later(3), 'E-1', 'dOTHER');
+  await B.SG.pollNow('test'); await tick(1700);
+  assert.deepEqual(B.pulls.filter(p => p[0] === 'op').map(p => p[1]), ['r007']);
+  assert.equal(Object.keys(B.SG.st.fullPend).length, 50);
+  assert.equal(B.SG.st.fullPend.r007, undefined);
+  B.SG.stop();
+  assert.equal(Object.keys(B.SG.st.fullPend).length, 0, 'sign-out: forgotten');
+});
+
+test('Codex #145 6846570741 P2-2: the protected kinds read through the function are always taken one by one, even with more than 50 other keys', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR', hrLoaded: true, piiLoaded: true });
+  A.SG.start(); await tick(20);
+  bulk(A, 's', 51);
+  A.W.put('_secure:pii', 1, later(1), null, 'dOTHER');
+  A.W.put('_secure:hiring', 1, later(1), null, 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'pii'), [['pii', true]], 'the personal details are read (before: handed to the full sync, which does not read them)');
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr'), [['hr', 'applicants', true]]);
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0);
+  assert.equal(A.autoN(), 1, 'the 51 plain keys: the full sync');
+  assert.equal(A.SG.st.fullPend['_secure:pii'], undefined);
+  // 50 のキー＋保護の区分 2 つ：50 を超えるのは保護の区分を数えたときだけ。1 つずつ取る
+  const B = load({ rtStatus: 'CHANNEL_ERROR', hrLoaded: true, piiLoaded: true });
+  B.SG.start(); await tick(20);
+  bulk(B, 't', 50);
+  B.W.put('_secure:pii', 1, later(1), null, 'dOTHER');
+  B.W.put('_secure:growthhub', 1, later(1), null, 'dOTHER');
+  await B.SG.pollNow('test'); await tick(1700);
+  assert.equal(B.pulls.filter(p => p[0] === 'op').length, 50);
+  assert.equal(B.pulls.filter(p => p[0] === 'pii').length, 1);
+  assert.equal(B.autoN(), 0, 'no full sync (before: 52 keys → the full sync)');
+  assert.equal(B.SG._oneAlways('_secure:bonus'), false, 'the kinds the full sync reads are not "one always"');
+  assert.equal(B.SG._oneAlways('_secure:hiring'), true);
+});
+
+test('Codex #145 6846570741 P2-3: a signal for the personal details re-reads them with the real piiLoad and redraws the screen only when they changed', async () => {
+  let data = { 'E-1': { dob: '1990-01-01' } };
+  const A = load({ rtStatus: 'CHANNEL_ERROR', realPii: true, piiLoaded: true,
+    ssAnswer: p => (p.action === 'pii_get' ? { ok: true, j: { data: JSON.parse(JSON.stringify(data)), level: 'full' } } : { ok: true, j: { rows: [], more: false, clfn: 1 } }) });
+  assert.equal(await A.ctx.piiLoad(true), 'ok');   // ログインのあと、この端末で読んだ
+  await tick(30);
+  A.SG.start(); await tick(20);
+  const r0 = A.refreshes();
+  A.W.put('_secure:pii', 1, later(1), null, 'dOTHER');   // ほかの端末が、同じ中身で保存した
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.pulls.filter(p => p[0] === 'ssCall' && p[1].action === 'pii_get').length, 2, 'read again');
+  assert.equal(A.refreshes(), r0, 'the same details: no redraw');
+  data = { 'E-1': { dob: '1991-02-02' } };
+  A.W.put('_secure:pii', 2, later(2), null, 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(A.ctx._pii.map['E-1'].dob, '1991-02-02');
+  assert.equal(A.refreshes(), r0 + 1, 'changed: the screen is redrawn (before: kept in memory only, so the change was not seen)');
+  assert.ok(![...A.store.values()].some(v => String(v).includes('1991-02-02')), 'still kept in memory only');
 });

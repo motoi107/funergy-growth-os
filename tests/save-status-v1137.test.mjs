@@ -899,3 +899,28 @@ test('版：アプリと Service Worker が 1137 以上でそろう', () => {
   assert.ok(Number(a) >= 1137, String(a));   // v1138 で版を上げても落ちないように
   assert.equal(a, b);
 });
+
+test('v1151（Codex #145 6846570741 P2-1）：自動の同期は始めた時刻（started）と、最後に「最新」で終わった同期を始めた時刻（okStarted）を残す。延期・失敗・別の人では進めない', async () => {
+  const E = stEnv({ extra: { flushOutbox: async () => {}, retryShiftPlanPending: async () => 0, retryObSecretPending: async () => 0 } });
+  E.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  assert.equal(E.ST.auto.okStarted, 0);
+  const t0 = Date.now();
+  const p = E.ST.autoSync('timer');
+  const st = E.ST.auto.started;
+  assert.ok(st >= t0, 'started is set when the run begins');
+  assert.equal(E.ST.autoSync('signal'), p, 'a second call joins the running sync (same start)');
+  assert.equal(await p, 'ok');
+  assert.equal(E.ST.auto.okStarted, st);
+  await tick(5);
+  const F = stEnv({ online: false });
+  assert.equal(await F.ST.autoSync('signal'), 'offline');
+  assert.equal(F.ST.auto.started, 0, 'not started');
+  assert.equal(F.ST.auto.okStarted, 0);
+  const G = stEnv({ ux: { saveState: () => ({ k: '' }), save: {}, failedList: () => [], _who: () => G.who } });
+  G.who = 'p:1';
+  G.ctx.flushOutbox = async () => { G.who = 'p:2'; };
+  G.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  assert.equal(await G.ST.autoSync('timer'), 'changed');
+  assert.ok(G.ST.auto.started > 0);
+  assert.equal(G.ST.auto.okStarted, 0, 'changed: not up to date');
+});
