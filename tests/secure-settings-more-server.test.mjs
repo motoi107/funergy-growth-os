@@ -69,8 +69,9 @@ test('the eight keys: GM and CEO only (the same as the screens); still readable 
     assert.deepEqual(SW_WRITE[k], ['ceo', 'gm'], k);
     assert.ok(swIsKey(k) && !secretKey(k) && !ssIsKey(k) && !csIsKey(k), k + ' is guarded for writing only');
   }
-  // 今回は入れないキー（グレードの履歴は新しく入った人の登録・昇格の承認など GM・CEO 以外も書く。賞与の確定・原資は v1139 の秘密のキー）
-  for (const k of ['grade_hist', 'bonus_eval', 'bonus_store_q', 'bonus_pool_extra', 'bonus_rules', 'karte_bonus_config', 'cs_criteria_x', 'cs_guide ', 'Bonus_coef']) assert.ok(!SW2_KEYS.includes(k) && !Object.prototype.hasOwnProperty.call(SW_WRITE, k), k);
+  // v1143 の 8 つに入れないキー（グレードの履歴は v1145 で別に足した＝GH_KEYS。賞与の確定・原資は v1139 の秘密のキー）
+  assert.ok(!SW2_KEYS.includes('grade_hist'), 'grade_hist is not one of the v1143 eight (v1145 adds it on its own: ghfn)');
+  for (const k of ['bonus_eval', 'bonus_store_q', 'bonus_pool_extra', 'bonus_rules', 'karte_bonus_config', 'cs_criteria_x', 'cs_guide ', 'Bonus_coef']) assert.ok(!SW2_KEYS.includes(k) && !Object.prototype.hasOwnProperty.call(SW_WRITE, k), k);
 });
 
 test('the shape check for the eight: a map of records (object or null), keys up to 200 characters, up to 6 million characters; odd records only as they already are in the cloud', () => {

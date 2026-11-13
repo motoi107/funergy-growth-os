@@ -54,15 +54,15 @@ test('the choice: only when the evaluation would be needed; "normal" is the defa
   assert.doesNotMatch(lastModal(c), /グレードの変え方|特例/);
   run(c, `ghSetChangeMode('special')`);
   assert.equal(run(c, `window._ghPend.mode`), 'normal', 'no evaluation needed → nothing to skip');
-  // AM: the special option is shown but disabled, and cannot be chosen
-  run(c, `ghConfirmCancel()`); c.curRole = 'am';
-  run(c, `ghBeforeSaveEmp('ken', { name:'Ken Sample', title:'Store Manager', role:'sl' })`);
-  assert.match(lastModal(c), /value="special" disabled[\s\S]*?特例は GM・CEO だけが使えます/);
-  run(c, `ghSetChangeMode('special')`);
-  assert.equal(run(c, `window._ghPend.mode`), 'normal');
-  assert.doesNotMatch(lastModal(c), /id="gh-sp-reason"/);
   // the radio rows are 44px targets
   for (const x of lastModal(c).matchAll(/<label style="display:flex;gap:10px;align-items:flex-start;min-height:(\d+)px/g)) assert.ok(+x[1] >= 44);
+  // AM: v1145（Moto さん 11/10「GM・CEO だけにする」）＝グレードが変わる変更は、確定日の画面も出さずに止める（前は特例だけが押せなかった）
+  run(c, `ghConfirmCancel()`); c.curRole = 'am';
+  const nModal = c.MODAL.length;
+  assert.equal(run(c, `ghBeforeSaveEmp('ken', { name:'Ken Sample', title:'Store Manager', role:'sl' })`), true, 'stopped');
+  assert.equal(c.MODAL.length, nModal, 'no confirm screen for the AM');
+  assert.equal(run(c, `window._ghPend`), null);
+  assert.match(c.TOASTS.at(-1), /グレードが変わる変更（G3 → G4）は GM・CEO が行います（保存していません/);
 });
 
 test('special with no Career Score at all: the reason is required (not empty, not spaces), the review shows who / grades / dates / reason, then title and history are saved together', () => {
@@ -187,7 +187,7 @@ test('permission: GM/CEO only, and checked again on the save path (not only on t
   run(c, `saveEmp('ken')`);
   assert.equal(empOf(c, 'ken').title, 'Server Leader');
   assert.equal(c.STORE.grade_hist, undefined);
-  assert.match(c.TOASTS.at(-1), /特例でのグレード変更は GM・CEO だけができます（保存していません）/);
+  assert.match(c.TOASTS.at(-1), /グレードが変わる変更（G3 → G4）は GM・CEO が行います（保存していません/);   // v1145：特例でなくても止める（GM の確かめは使わない）
   // the same on promotion approval
   const d = app();
   d.STORE.lss_requests = [{ id: 'r1', name: 'Amy Sample', kind: 'promo', wantTitle: 'Kitchen Leader', status: '申請中' }];

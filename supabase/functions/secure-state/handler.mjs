@@ -23,6 +23,8 @@
 //   強みの決まり・評価基準・例）も、GM・CEO だけがこの関数で書く（v1141 と同じ道・SW2_KEYS・docs/SECURE_SETTINGS_V1143_JA.md）。答えにはいつも sw2:1。
 // ・v1144（段階 2b の 6 つ目）：従業員の表の個人の欄（生年月日・会社カードの下 4 桁・保険の加入・保険料）を、app_state の emp_pii に置いて
 //   この関数で読み書きする（pii_get・pii_op・card_match・ins_totals。下の「v1144」の節・docs/SECURE_PII_V1144_JA.md）。答えにはいつも piifn:1。
+// ・v1145（段階 2b の 7 つ目）：グレード履歴（grade_hist）も、GM・CEO だけがこの関数で書く（Moto さん 11/10「GM,CEOです」。v1143 と同じ道・GH_KEYS・
+//   docs/SECURE_GRADE_HIST_V1145_JA.md）。読むのは今までどおり公開の鍵で。答えにはいつも ghfn:1。
 
 export const SS_KEYS = ['growth_karte', 'karte_pin', 'karte_bonus_config', 'bonus_q', 'bonus_eval', 'bonus_store_q', 'bonus_rules', 'bonus_pool_extra'];
 export const SS_PREFIX = ['spl_bonus_q_'];
@@ -74,18 +76,23 @@ export const secretKey = k => ssIsKey(k) || csIsKey(k);
 //     bonus_track：その四半期に選んだ G3 の職種／bonus_eval_rule：4 項目の設定（会社共通・グレード・職種）／bonus_eval_ovr：個人設定／
 //     cs_strength_rule：強みの決まり（表示）／cs_guide：評価基準・例の文
 export const SW2_KEYS = ['cs_criteria', 'bonus_coef', 'bonus_coef_rng', 'bonus_track', 'bonus_eval_rule', 'bonus_eval_ovr', 'cs_strength_rule', 'cs_guide'];
-export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'], ...Object.fromEntries(SW2_KEYS.map(k => [k, ['ceo', 'gm']])) };
+// v1145（Moto さん 11/10「GM,CEOです」・docs/SECURE_GRADE_HIST_V1145_JA.md）：グレード履歴（社員ごとの確定日・前後のグレード・前のグレードの期間の評価）。
+//   賞与の日割り（区間ごとのグレード）にアプリが使う。公開の鍵で書けると、確定日・グレード・確定した評価を書き換えられた。
+//   形は v1143 の 8 つと同じ「キー（社員 ID）→ 記録（オブジェクトか null）」の地図。前の関数（v1144 以前）は「知らないキー」と断るだけで何も書かない
+export const GH_KEYS = ['grade_hist'];
+export const SW_WRITE = { mileage_config: ['ceo', 'gm', 'office'], career_cfg: ['ceo', 'gm'], ...Object.fromEntries(SW2_KEYS.map(k => [k, ['ceo', 'gm']])),
+  ...Object.fromEntries(GH_KEYS.map(k => [k, ['ceo', 'gm']])) };
 export function swIsKey(k) { return typeof k === 'string' && Object.prototype.hasOwnProperty.call(SW_WRITE, k); }
 // 値の形（決めた人が書くときに確かめる：おかしな単価で、ガソリン代の申請が全部止まらないように）
 //   mileage_config：アプリが書く形（包まない）だけ。包んだ形（{__st:…}）は断る（wr_mileage_rate は中身を読み、アプリの画面は外を読むので、
 //     外と中で違う単価になる。アプリは書かない＝独立レビュー P3-1）。単価は 0.01〜5（それより小さいと短い距離が 0 セントになり申請が止まる）。
 //   career_cfg：'<部門>|<G>' ごとの記録（オブジェクトか null）の地図。おかしな記録は、クラウドにもうある同じ記録だけ通す
 //     （ほかの人が前に入れたものが残っていても、GM・CEO の保存が止まらないように＝独立レビュー P2-1。新しく入れることはできない）。
-//   v1143 の 8 つ：career_cfg と同じ「キー → 記録（オブジェクトか null）」の地図（キーは 200 字まで）。おかしな記録は、クラウドにもうある同じ記録だけ通す。
+//   v1143 の 8 つ・v1145 の grade_hist：career_cfg と同じ「キー → 記録（オブジェクトか null）」の地図（キーは 200 字まで）。おかしな記録は、クラウドにもうある同じ記録だけ通す。
 export function swCgEntryOk(k, x, max = 100) { return typeof k === 'string' && k.length <= max && (x === null || (typeof x === 'object' && !Array.isArray(x))); }
 export function swCgBadKeys(value, max = 100) { return (value && typeof value === 'object' && !Array.isArray(value)) ? Object.keys(value).filter(k => !swCgEntryOk(k, value[k], max)) : []; }
 const swMapMax = key => (key === 'career_cfg' ? 100 : 200);
-const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key);
+const swMapKey = key => key === 'career_cfg' || SW2_KEYS.includes(key) || GH_KEYS.includes(key);
 export function swShapeOk(key, value, cloud) {
   let s;
   try { s = JSON.stringify(value === undefined ? null : value); } catch { return false; }
@@ -101,7 +108,7 @@ export function swShapeOk(key, value, cloud) {
     return true;
   }
   if (swMapKey(key)) {
-    if (s.length > (key === 'career_cfg' ? 1000000 : 6000000)) return false;   // v1143 の 8 つは 600 万字まで（本文の上限 800 万字の内側。履歴を持つ評価基準・例・個人設定が大きくなっても GM・CEO の保存を止めない）
+    if (s.length > (key === 'career_cfg' ? 1000000 : 6000000)) return false;   // v1143 の 8 つ・grade_hist は 600 万字まで（本文の上限 800 万字の内側。履歴を持つ評価基準・例・個人設定・グレード履歴が大きくなっても GM・CEO の保存を止めない）
     if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
     const c = (cloud && typeof cloud === 'object' && !Array.isArray(cloud)) ? cloud : null;
     return swCgBadKeys(value, swMapMax(key)).every(k => !!c && Object.prototype.hasOwnProperty.call(c, k) && canon(c[k]) === canon(value[k]));
@@ -1334,7 +1341,8 @@ export function createHandler(deps) {
     // hrfn:1＝採用（応募者・不採用ログ）とお悩み相談室（v1142）も扱う関数。アプリは hrfn の無い答えを前の版とみなし、今までどおり REST で
     // sw2:1＝v1143 の設定（GM・CEO だけが変える賞与・Career Score の設定）も扱う。アプリは sw2 の無い答えを前の版とみなし、その設定を今までどおり REST で書く
     // piifn:1＝従業員の個人の欄（v1144）も扱う。アプリは piifn の無い答えを前の版とみなし、その欄を今までどおり従業員の表に書く
-    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
+    // ghfn:1＝グレード履歴（v1145）も扱う。アプリは ghfn の無い答えを前の版とみなし、グレード履歴を今までどおり REST で書く
+    const json = (v, s = 200) => new Response(JSON.stringify({ ...v, fn: 1, csfn: 1, swfn: 1, hrfn: 1, sw2: 1, piifn: 1, ghfn: 1 }), { status: s, headers: { 'content-type': 'application/json', 'cache-control': 'no-store', ...cors } });
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method !== 'POST') return json({ error: 'method' }, 405);
     let body;
