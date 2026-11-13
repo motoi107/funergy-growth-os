@@ -899,3 +899,103 @@ test('版：アプリと Service Worker が 1137 以上でそろう', () => {
   assert.ok(Number(a) >= 1137, String(a));   // v1138 で版を上げても落ちないように
   assert.equal(a, b);
 });
+
+test('v1151（Codex #145 6846570741 P2-1）：自動の同期は始めた時刻（started）と、最後に「最新」で終わった同期を始めた時刻（okStarted）を残す。延期・失敗・別の人では進めない', async () => {
+  const E = stEnv({ extra: { flushOutbox: async () => {}, retryShiftPlanPending: async () => 0, retryObSecretPending: async () => 0 } });
+  E.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  assert.equal(E.ST.auto.okStarted, 0);
+  const t0 = Date.now();
+  const p = E.ST.autoSync('timer');
+  const st = E.ST.auto.started;
+  assert.ok(st >= t0, 'started is set when the run begins');
+  assert.equal(E.ST.autoSync('signal'), p, 'a second call joins the running sync (same start)');
+  assert.equal(await p, 'ok');
+  assert.equal(E.ST.auto.okStarted, st);
+  await tick(5);
+  const F = stEnv({ online: false });
+  assert.equal(await F.ST.autoSync('signal'), 'offline');
+  assert.equal(F.ST.auto.started, 0, 'not started');
+  assert.equal(F.ST.auto.okStarted, 0);
+  const G = stEnv({ ux: { saveState: () => ({ k: '' }), save: {}, failedList: () => [], _who: () => G.who } });
+  G.who = 'p:1';
+  G.ctx.flushOutbox = async () => { G.who = 'p:2'; };
+  G.ctx.supaPullAllMasters = () => Promise.resolve([]);
+  assert.equal(await G.ST.autoSync('timer'), 'changed');
+  assert.ok(G.ST.auto.started > 0);
+  assert.equal(G.ST.auto.okStarted, 0, 'changed: not up to date');
+});
+
+/* v1151（Codex #145 6847848775 P2）：本物の autoSync・trackPull と本物の FUNERGY_SIGNAL の runFull をつなぐ。
+   取り込みが 60 秒の時間切れ（試験では 20 ms）のあとに失敗したら、合図の預かりを外さない／あとで読めて終わったら外す */
+function signalBlock() {
+  const a = html.indexOf('/* ==== FUNERGY_SIGNAL（v1151');
+  const b = html.indexOf('/* ==== FUNERGY_SIGNAL end ==== */', a);
+  assert.ok(a > 0 && b > a, 'FUNERGY_SIGNAL block');
+  return html.slice(a, b);
+}
+function stSigEnv(answer) {
+  let res; const pull = new Promise(r => { res = r; });
+  let pulls = 0;
+  const E = stEnv({ extra: { flushOutbox: async () => {}, retryShiftPlanPending: async () => 0, retryObSecretPending: async () => 0,
+    supaPullAllMasters: () => { pulls++; return pulls === 1 ? pull : Promise.resolve(answer.next || []); } } });
+  E.ctx.setTimeout = (f, ms) => (ms === 60000 ? setTimeout(f, 20) : uSetTimeout(f, ms === 120000 ? 5000 : ms));   // 取り込みの 60 秒を 20 ms に（2 分の打ち切りは 5 秒・そのまえに答える）
+  E.ctx.document.removeEventListener = () => {};
+  E.ctx.SUPABASE_URL = 'https://db.example.test'; E.ctx.SUPABASE_ANON = 'anon';
+  vm.runInContext(signalBlock(), E.ctx);
+  const SG = E.ctx.window.FUNERGY_SIGNAL;
+  SG.st.on = true;
+  const t = Date.now() - 5;
+  for (let i = 0; i < 51; i++) SG.st.fullPend['k' + i] = { key: 'k' + i, n: 1, _ft: t };
+  return { E, SG, finish: v => res(v), pulls: () => pulls };
+}
+
+test('v1151（Codex #145 6847848775 P2）：取り込みが時間切れのあとに失敗したら、合図の預かり（51 キー）は外さず取り直す', async () => {
+  const { E, SG, finish } = stSigEnv({});
+  const r = await SG._runFull();
+  assert.equal(r, 'ok', 'the sync itself still says up to date at the 60-second step (as before)');
+  assert.equal(E.ST.auto.okStarted, 0, 'not counted: the read has not finished (before: counted)');
+  assert.equal(Object.keys(SG.st.fullPend).length, 51, 'the keys are kept');
+  assert.ok(SG.st.fullTm, 'tried again later');
+  finish({ _fails: ['app_state'] }); await tick(30);
+  assert.equal(E.ST.syncState().k, 'fail');
+  assert.equal(E.ST.auto.okStarted, 0, 'the late failure does not count');
+  assert.equal(Object.keys(SG.st.fullPend).length, 51);
+  SG.stop();
+  assert.equal(Object.keys(SG.st.fullPend).length, 0);
+});
+
+test('v1151（Codex #145 6847848775 P2）：時間切れのあとで取り込みが読めて終わったら、その同期で済んだことにする（もう一度の同期はしない）', async () => {
+  const { E, SG, finish, pulls } = stSigEnv({});
+  const r = await SG._runFull();
+  assert.equal(r, 'ok');
+  assert.equal(E.ST.auto.okStarted, 0);
+  const st = E.ST.auto.started;
+  finish([]); await tick(30);
+  assert.equal(E.ST.auto.okStarted, st, 'counted when the read really ended up to date');
+  E.ST.auto.last = 0;
+  await SG._runFull();
+  assert.equal(Object.keys(SG.st.fullPend).length, 0, 'done');
+  assert.equal(pulls(), 1, 'no second sync for the signal');
+  SG.stop();
+});
+
+test('v1151（Codex #145 6847848775 P2）：時間切れのあと、別の人に替わってから読めて終わっても数えない', async () => {
+  const { E, SG, finish } = stSigEnv({});
+  E.ctx.window.FUNERGY_UX._who = () => E.who; E.who = 'p:1';
+  await SG._runFull();
+  E.who = 'p:2';
+  finish([]); await tick(30);
+  assert.equal(E.ST.auto.okStarted, 0);
+  SG.stop();
+});
+
+test('v1151（Codex #145 6847848775）：取り込みが読めても画面の読み直しが失敗した同期は「最新」に数えない／取り込みの関数が無い端末は読むものが無いので数える', async () => {
+  const E = stEnv({ extra: { flushOutbox: async () => {}, retryShiftPlanPending: async () => 0, retryObSecretPending: async () => 0, supaPullAllMasters: () => Promise.resolve([]) } });
+  E.ST.pageRefresher = () => () => false;   // この画面のデータを読み直せなかった
+  assert.equal(await E.ST.autoSync('timer'), 'fail');
+  assert.equal(E.ST.auto.okStarted, 0);
+  const F = stEnv({ extra: { flushOutbox: async () => {}, retryShiftPlanPending: async () => 0, retryObSecretPending: async () => 0 } });
+  const p = F.ST.autoSync('timer'); const st = F.ST.auto.started;
+  assert.equal(await p, 'ok');
+  assert.equal(F.ST.auto.okStarted, st);
+});

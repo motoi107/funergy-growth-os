@@ -165,18 +165,18 @@ test('the v1147 bundle is as it was (the SQL files and the pinned function file)
   for (const f of ['1_確かめ_読むだけ.sql', '1b_SQL_写しにG2も.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', '戻す_SQL_1b.sql', 'deploy/employee-field-log/', 'deploy/secure-tip-prep-v1146/2_関数_secure-state_index.ts', 'deploy/secure-tip-prep-v1146/手順.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
 
-test('the v1148 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+test('the v1148 bundle is as it was (the SQL files and the pinned function file)', () => {
   const D = 'deploy/secure-grade-bonus-read-v1148/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-grade-bonus-read-precheck.sql'));
   assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261117090000_secure_grade_bonus_read.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-grade-bonus-read-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-grade-bonus-read-rollback.sql'));
+  // v1151 から関数は先へ進んだので、v1148 の 1 ファイルは PR #142 のまま固定（v1151 を戻すときに使う）
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), 'f4d3ea213fc532e12458c501052abfb8f61bad8f2cc9838a5ae4070541589814', 'the v1148 function file (PR #142) is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
-  const h = rd('supabase/functions/secure-state/handler.mjs');
-  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
-  assert.match(one.slice(h.length), TAIL);
-  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.match(one, TAIL);
   assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.ok(!/clfn/.test(one), 'the v1148 function does not know the v1151 change log');
   assert.match(one, /gbfn: 1/); assert.match(one, /scfn: 1/); assert.match(one, /tpfn: 1/); assert.match(one, /ghfn: 1/); assert.match(one, /piifn: 1/); assert.match(one, /sw2: 1/); assert.match(one, /hrfn: 1/);
   assert.match(one, /export const GB_KEYS = \['grade_hist', 'bonus_eval_ovr', 'bonus_track'\];/);
   assert.match(one, /async function gbScope\(a, csP\)/);
@@ -186,4 +186,26 @@ test('the v1148 bundle matches the repository (the SQL files, and the function f
   assert.ok(!/gbfn/.test(rd('deploy/secure-tip-cf-v1147/2_関数_secure-state_index.ts')));
   const how = rd(D + '手順.md');
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-tip-cf-v1147/2_関数_secure-state_index.ts', 'deploy/secure-tip-cf-v1147/手順.md', 'docs/SECURE_GRADE_BONUS_READ_V1148_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
+});
+
+test('the v1151 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+  const D = 'deploy/change-signal-v1151/';
+  assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/change-signal-precheck.sql'));
+  assert.equal(rd(D + '3_SQL_合図と変更の記録.sql'), rd('supabase/migrations/20261118090000_change_signal.sql'));
+  assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/change-signal-postcheck.sql'));
+  assert.equal(rd(D + '戻す_SQL.sql'), rd('db/change-signal-rollback.sql'));
+  const one = rd(D + '2_関数_secure-state_index.ts');
+  const h = rd('supabase/functions/secure-state/handler.mjs');
+  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
+  assert.match(one.slice(h.length), TAIL);
+  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.match(one, /clfn: 1/); assert.match(one, /gbfn: 1/); assert.match(one, /scfn: 1/); assert.match(one, /tpfn: 1/);
+  assert.match(one, /async function clGet\(a, b\)/); assert.match(one, /function fpHdr\(a\)/);
+  assert.match(one, /'access-control-allow-headers': 'authorization, apikey, content-type, x-fp-actor'/);
+  assert.match(one, /async function gbScope\(a, csP\)/, 'keeps the v1148 read scope');
+  // 戻すときは v1148 の 1 ファイル（clfn を知らない）
+  assert.ok(!/clfn/.test(rd('deploy/secure-grade-bonus-read-v1148/2_関数_secure-state_index.ts')));
+  const how = rd(D + '手順.md');
+  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_合図と変更の記録.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-grade-bonus-read-v1148/2_関数_secure-state_index.ts', 'docs/CHANGE_SIGNAL_V1151_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
