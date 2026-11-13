@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-13 ワークセンターの申請/承認 段階 2：UI案72 と読むだけの SQL（Claude・ブランチ `claude/wc-approvals-1155`・#148（v1154）の上・コードの変更なし）
+
+- 依頼：Moto さん 11/13 09:24 HST「次お願いします」＝段階 2（予算・予算変更と、前の「承認」タブの種類を同じ番号の申請に）。画面を伴うので先に UI 案。
+- 調べたこと（index.html v1154）：前の承認タブの種類は 予算・シフト変更・採用・退職・休暇・月間行動計画・Leadership・TipRate（本人）・スキル（本人）・プレップ認定。承認者の初期値は `_aprDefaultRoles`（全員の種類は経理・GM・AM の AND）。予算の金額は日別の売上予算 `b.days` の合計（支払ではない）。予算変更は承認済みの月を直して出し直す形で、前の版を残さない。表は `docs/WORKCENTER_APPROVALS_STAGE2_JA.md`。
+- UI案72（Design・Moto さんの非公開の canvas・8 枚・人と金額はサンプル）：種類の一覧／決めてほしいこと 9（推奨 A）／GM PC（お金・予算はまとめて・人事と評価は 1 件ずつ・帯は「選択 3 件／精算対象 $100／予算承認額」）／予算変更の詳細（版 1 → 版 2・変わった日）／GM スマホ 2 枚／店長の自分の申請（予算の版）／経理レビュー（予算反映済み・確認完了）。
+- 読むだけの SQL `db/approvals-inventory-check.sql`（前の承認の種類 × 状態の数と承認ルートの設定・名前・タイトル・金額は出さない）と試験 `tests/approvals-inventory-sql.test.mjs` 2/2（PGlite・合成データ・CI に足した）。
+- 次：Moto さんの答え → 段階 2 の実装（SQL・関数 work-requests・アプリ）。Moto さん（任意）：読むだけの SQL の結果を Claude に。
+
 ## 2026-11-13 v1154：ワークセンターの申請/承認 段階 1（UI案71 の A 案・GM のまとめての承認・経理レビューの「申請」）と hyper-worker v1154（CHAZUKE）（Claude・ブランチ `claude/wc-approvals-1154`・v1153（PR #147）の上・アプリだけ・本番未反映）
 
 - 依頼と決定：Moto さん 11/13 の添付「Workcenter Approvals」→ UI案71 → 「A案で」（11/13 08:44 HST）。仕様・守り・試験・残り：`docs/WORKCENTER_APPROVALS_V1154_JA.md`。SQL・Edge Function は変えない（申請の関数の act approve を 1 件ずつ・見た版と同じ鍵で）。
