@@ -10102,7 +10102,7 @@ function lsSplitRO(key){
   if(!sp || sp.type!=='arr') return ls(key, [])||[];
   var sig=null;
   try{
-    sig=[_lsStoreGet(key)];
+    sig=[_lsStoreGet(key), (typeof csSplitVisSig==='function') ? csSplitVisSig(key) : ''];   /* Codex #142 P2：見え方が変われば読み直す */
     lsKeys(_splitPrefix(key)).forEach(function(k){ sig.push(k, _lsStoreGet(k)); });
   }catch(e){ return ls(key, [])||[]; }
   var c=_SPLIT_RO[key];
@@ -10115,8 +10115,10 @@ function lsSplitRO(key){
   _SPLIT_RO[key]={sig:sig, val:val};
   return val;
 }
-function _splitRead(key, sp, rawMode){
+function _splitRead(key, sp, rawMode, all){
   var pre=_splitPrefix(key);
+  /* Codex（#142 d3ddd77）P2：Career Score の申請・履歴は、このログインが見られる人の分け先だけ（csSplitVis）。all＝絞らない（使っていない・念のため） */
+  var vis=null; if(!all && typeof csSplitVis==='function'){ try{ vis=csSplitVis(key); }catch(e){ vis={ legacy:false, ok:function(){ return false; } }; } }
   if(sp.type==='obj'){
     var out={}; var legacy=_lsRaw(key,{})||{};
     /* v750: 保存者・時刻の印を外して返す。画面側のコードは今までどおりの形を受け取る。 */
@@ -10125,7 +10127,7 @@ function _splitRead(key, sp, rawMode){
     return out;
   }
   var byId={}, order=[];
-  (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
+  if(!vis || vis.legacy) (_lsRaw(key,[])||[]).forEach(function(r){ var id=String(sp.by(r)==null?'_':sp.by(r)); if(!byId[id]){byId[id]=[];order.push(id);} byId[id].push(r); });
   /* v692: パーティションで「置換」すると、レガシーキー側(クラウドのlegacy行から取り込んだ分)が丸ごと消え、
      この端末が保存した数件しか見えなくなっていた（=請求書が積み上がらない／突合診断で数件しか出ない）。
      置換ではなく和集合にする（同一idはパーティション側を採用＝tombstoneも正しく効く）。 */
@@ -10149,6 +10151,7 @@ function _splitRead(key, sp, rawMode){
     }catch(e){ console.warn('_splitRead dedupe', key, e); }
     byId[id]=merged; if(order.indexOf(id)<0) order.push(id);
   }); }catch(e){}                                                 /* v765 */
+  if(vis) order=order.filter(function(id){ return vis.ok(id); });
   var out=[]; order.forEach(function(id){ out=out.concat(byId[id]); });
   /* v679: 論理削除(tombstone)は読み取りから除外。rawMode時は素のまま返す（書き戻し用） */
   if(sp.readFilter && !rawMode){ try{ out=out.filter(sp.readFilter); }catch(e){} }
@@ -10156,6 +10159,9 @@ function _splitRead(key, sp, rawMode){
 }
 function _splitWrite(key, sp, val){
   var pre=_splitPrefix(key);
+  /* Codex（#142 d3ddd77）P2：読み出しと同じ見え方で比べる（見られない人の分け先は curMerged に入らない＝空にしない）。
+     見られない人の分け先を書こうとしたら書かない（前の人の送れていない写しを置き換えない・lsSet の csLocalWriteOk も断る） */
+  var _vis=null; if(typeof csSplitVis==='function'){ try{ _vis=csSplitVis(key); }catch(e){ _vis={ legacy:false, ok:function(){ return false; } }; } }
   var curMerged=_splitRead(key, sp, true);   /* v679: tombstone込みの生データと比較 */   // 現在のマージ後の値と比較（実際に変更したエンティティだけ書く）
   var _wOk=true;   /* v719: パーティションごとの保存結果を集計して呼び出し元へ返す */
   if(sp.type==='obj'){
@@ -10195,6 +10201,7 @@ function _splitWrite(key, sp, val){
     }catch(e){ console.warn('stamp list', key, e); }
   }
   Object.keys(byId).forEach(function(id){
+    if(_vis && !_vis.ok(id)){ _wOk=false; try{ if(typeof _lsNoteSaveFailure==='function') _lsNoteSaveFailure(pre+id); }catch(e){} return; }
     if(JSON.stringify(curById[id])!==JSON.stringify(byId[id])){ if(lsSet(pre+id, byId[id])===false) _wOk=false; }
   });
   return _wOk;
@@ -11016,8 +11023,12 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
   if(typeof csLocalWriteOk==='function' && !csLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
+  /* v1139（Codex #142 P2 と同じ形）：成長カルテ・賞与は、受け取る前・前の人の送れていない写しを残している行には書かない */
+  if(typeof ssLocalWriteOk==='function' && !ssLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
   /* v1147：見られない店の Tip の期間の確定・注意ログ、記録できない人の注意ログは、この端末で作らない（送っても断られる） */
   if(typeof scLocalWriteOk==='function' && !scLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
+  /* v1148：グレード履歴・賞与の個人設定・G3 の職種は、全員の分を受け取っていない端末で書かない（一部だけの写しで全体を書かない。書けるのは前から GM・CEO だけ） */
+  if(typeof gbLocalWriteOk==='function' && !gbLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
   /* v1142：採用・お悩み相談室は、関数で 1 件ずつ保存する（前の版の道で 1 行を丸ごと書かない） */
   if(typeof hrLocalWriteOk==='function' && !hrLocalWriteOk(key)) return false;
   /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
@@ -12431,30 +12442,86 @@ function csSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(CS_SEEN_KEY)||'
 function csSeenSet(o){ try{ localStorage.setItem(CS_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
 /* その人の Career Score をこの端末で見せてよいか（画面の「—」）。範囲がまだ決まっていない（関数が前の版・v1139 以前から上げた直後）は今までどおり。
    前の人の範囲が残っているときは、受け取り終えるまで本人だけ */
-function csSees(name){
-  var st=csStateGet();
+function csSees(name){ return csSeesIn(csSeeCtx(), name); }
+function csSeesReq(name){ return csSeesReqIn(csSeeCtx(), name); }
+/* 画面が人ごとに何度も呼ぶので、範囲の記録と今のログインだけ（残した写しの印は読まない） */
+function csSeeCtx(){
+  var me='';
+  try{ me=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  return { st:csStateGet(), me:me, who:csWho() };
+}
+/* 見られるかを決めるのに要るもの（範囲の記録・残した写しの印・今のログイン）を 1 回だけ読む。申請・履歴の読み出し（_splitRead）は人ごとに何度も聞くため */
+function csReadCtx(){
+  var me='';
+  try{ me=String((typeof curUserName!=='undefined' && curUserName) || ''); }catch(e){}
+  return { st:csStateGet(), held:(typeof secHeldAll==='function') ? secHeldAll() : {}, me:me, gm:(typeof secGmNow==='function') ? secGmNow() : false, who:csWho() };
+}
+function csSeesIn(c, name){
+  var st=c.st;
   if(!st) return true;
-  if(st.who && st.who!==csWho()){ try{ return !!name && name===curUserName; }catch(e){ return false; } }
+  if(st.who && st.who!==c.who) return !!name && name===c.me;
   if(st.level==='full') return true;
   if(st.level==='none') return false;
   return st.names.indexOf(name)>=0;
 }
-function csSeesReq(name){
-  var st=csStateGet();
-  if(!st || st.level!=='scoped' || (st.who && st.who!==csWho())) return csSees(name);
+function csSeesReqIn(c, name){
+  var st=c.st;
+  if(!st || st.level!=='scoped' || (st.who && st.who!==c.who)) return csSeesIn(c, name);
   return st.req.indexOf(name)>=0 || st.names.indexOf(name)>=0;
+}
+/* Codex（#142 6785448408）P2 と同じ形（v1140）：画面が読む Career Score の点（getLssScores）。範囲が決まっていればその人だけ（csSees）。
+   まだ決まっていない（ログアウトのあと受け取る前・REST に戻った・取得の失敗）ときは、前の人の写しを残している行は返さない（本人の行・CEO・GM のログインを除く）。
+   前の統合行（lss_scores）は、このログインが受け取った見せる形のときだけ */
+function csReadOk(key){ return csReadOkIn(csReadCtx(), key); }
+function csReadOkIn(c, key){
+  if(!csIsKey(key)) return true;
+  var p=csParse(key), st=c.st, held=Object.prototype.hasOwnProperty.call(c.held, key);
+  if(!st) return !held || c.gm || (p.kind!=='legacy' && !!c.me && p.name===c.me);
+  if(p.kind==='legacy') return st.who===c.who && (st.level==='full' || (st.level==='scoped' && !held && !ssPending(key)));
+  return p.kind==='req' ? csSeesReqIn(c, p.name) : csSeesIn(c, p.name);
+}
+/* Codex（#142 d3ddd77）P2・バックログ 3o4：申請（lss_requests）・履歴（lss_history）は人ごとに分けた行（spl_lss_requests_<名前>）の束。
+   画面はどれも ls() → _splitRead で束を読むので、そこで「このログインが見られない人の分け先」と「読めない前の統合行」を外す（csReadOkIn と同じ決まり）。
+   書き戻し（_splitWrite）も同じ見え方で比べるので、外した分け先は「消された」とみなさず、空にしない・書き換えない（前の人の送れていない変更を残す）。
+   クラウドへ送るのは分け先のキーそのもの（spl_…）を読むので、外しても送り直しは変わらない。null＝絞らない（Career Score 以外の束・CEO・GM の全部） */
+function csSplitVis(key){
+  if(key!=='lss_requests' && key!=='lss_history') return null;
+  var c=csReadCtx(), pre='spl_'+key+'_';
+  if(c.st && c.st.level==='full' && c.st.who===c.who) return null;   /* csReadOkIn と同じ（前の統合行は記録の who が今のログインのときだけ） */
+  var memo={};
+  return { legacy:csReadOkIn(c, key), ok:function(id){ id=String(id); if(!(id in memo)) memo[id]=csReadOkIn(c, pre+id); return memo[id]; } };
+}
+/* lsSplitRO の覚えの印に足す：同じ中身でもログイン・範囲・残した印が変われば読み直す */
+function csSplitVisSig(key){
+  if(key!=='lss_requests' && key!=='lss_history') return '';
+  var a='', b='', w='', g=0, m='';
+  try{ a=String(localStorage.getItem(CS_STATE_KEY)||''); }catch(e){}
+  try{ b=String(localStorage.getItem((typeof SEC_HELD_KEY!=='undefined') ? SEC_HELD_KEY : '_sec_held_v1')||''); }catch(e){}
+  try{ w=csWho(); g=((typeof secGmNow==='function') && secGmNow()) ? 1 : 0; m=ssPending(key) ? 1 : 0; }catch(e){}
+  return a+'\n'+b+'\n'+w+'\n'+g+'\n'+m;
+}
+/* この端末の Career Score のうち、ほかのログインの写し：送れていない変更のある行は残して印、ほかは消す */
+function csDropOthers(){
+  var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
+  ks.forEach(function(k){
+    if(!csIsKey(k)) return;
+    if(ssPending(k)){ secHeldSet(k, true); return; }
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+  });
 }
 /* この端末で Career Score の行を書いてよいか（lsSet）。見られない人の行を作る・直すと、一部だけの写しになる（あとで CEO・GM の端末から
    送られると、ほかの点を消す）ので書かない。範囲がまだ決まっていないときは今までどおり。前の人の範囲が残っているときは、受け取り終えるまで待つ */
 var _csWarned = {};
 function csLocalWriteOk(key){
   if(!csIsKey(key)) return true;
-  var st=csStateGet(); if(!st) return true;
+  var st=csStateGet();
   var no=function(id, ja, en){
     if(!_csWarned[id]){ _csWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} }
     setTimeout(function(){ delete _csWarned[id]; }, 15000);
     return false;
   };
+  /* 前の人の送れていない写しを残している行は、読めない人が上書きしない（Codex #142 P2 と同じ形） */
+  if(!st){ if(secHeld(key) && !csReadOk(key)) return no('held', 'この端末には前にログインした人の送れていない変更が残っています。Career Score は保存していません', 'This device still holds unsent changes from an earlier sign-in. The Career Score was not saved.'); return true; }
   if(st.who && st.who!==csWho()) return no('who', 'Career Score を受け取っている途中です。少し待ってから、もう一度保存してください（保存していません）', 'Still receiving Career Score data. Please save again in a moment (not saved).');
   if(st.level==='full') return true;
   var p=csParse(key);
@@ -12495,7 +12562,7 @@ function ssStale(tk){
 /* 取り込む直前（_applyKvRows の前）：頼んだあとにログインが変わっていたら、成長カルテ・賞与・Career Score の行を外し、印（_ss・_cs）も付けない */
 function ssStaleRows(rows){
   if(!Array.isArray(rows) || !rows._tk || !ssStale(rows._tk)) return rows;
-  var out=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも */
+  var out=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key) || gbIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも。v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   try{ if(rows._kv) Object.defineProperty(out, '_kv', { value:rows._kv, enumerable:false }); }catch(e){}
   try{ Object.defineProperty(out, '_stale', { value:true, enumerable:false }); }catch(e){}
   return out;
@@ -12503,11 +12570,12 @@ function ssStaleRows(rows){
 function ssLegacyNow(S){ var L=_ss.legacy; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーを関数に頼むか（ログインの印があり、関数が無いと分かっていない） */
 function ssRouted(key){
-  var cs=csIsKey(key), sc=scIsKey(key);
-  if(!ssIsKey(key) && !cs && !sc) return false;
+  var cs=csIsKey(key), sc=scIsKey(key), gb=gbIsKey(key);
+  if(!ssIsKey(key) && !cs && !sc && !gb) return false;
   var S=ssSess(); if(!S || ssLegacyNow(S)) return false;
   if(cs && csOldNow(S)) return false;   /* v1140：関数が前の版（Career Score を扱わない）：今までどおり REST */
   if(sc && scOldNow(S)) return false;   /* v1147：関数が前の版（Tip の期間の確定・注意ログを扱わない）：今までどおり REST */
+  if(gb && gbOldNow(S)) return false;   /* v1148：関数が前の版（グレード履歴・賞与の個人設定・G3 の職種を読まない）：今までどおり REST で読む */
   return true;
 }
 /* v1140：関数が前の版（答えに csfn:1 が無い）と分かったあと 10 分は、Career Score を REST で */
@@ -12571,6 +12639,23 @@ function scSees(key){
   if(p.store==null) return !!(st.level==='all' && (p.kind==='tip' ? st.tip : st.wn) && !(st.who && st.who!==csWho()));
   return scSeesStore(p.kind, p.store);
 }
+/* Codex（#142 6785448408）P2：画面が読む値（getTipConfirm・getWarnings）。範囲が決まっていればその店だけ（scSees）。
+   まだ決まっていない（ログアウトのあと受け取る前・REST に戻った・取得の失敗）ときは、前の人の写しを残している行（印）は返さない（CEO・GM のログインを除く） */
+function scReadOk(key){
+  if(!scIsKey(key)) return true;
+  var st=scStateGet();
+  if(!st) return !secHeld(key) || secGmNow();
+  return scSees(key);
+}
+/* この端末の Tip の期間の確定・注意ログのうち、ほかのログインの写し：送れていない変更のある行は残して印、ほかは消す */
+function scDropOthers(){
+  var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
+  ks.forEach(function(k){
+    if(!scIsKey(k)) return;
+    if(ssPending(k)){ secHeldSet(k, true); return; }
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+  });
+}
 /* v1147：Tip の確定の解除・例外承認をこのログインでできるか（サーバーが決めた範囲。まだ決まっていないときは今までどおり画面の役割で） */
 function scTipUnlockOk(){ var st=scStateGet(); if(!st) return true; return !(st.who && st.who!==csWho()) && !!st.unlock; }
 /* その店に注意ログを記録できるか（記録のボタン）。範囲がまだ決まっていないときは今までどおり（画面の役割で） */
@@ -12579,11 +12664,13 @@ function scWnWritable(store){ var st=scStateGet(); if(!st) return true; return s
 var _scWarned = {};
 function scLocalWriteOk(key, quiet){
   if(!scIsKey(key)) return true;
-  var st=scStateGet(); if(!st) return true;
+  var st=scStateGet();
   var no=function(id, ja, en){
     if(!quiet && !_scWarned[id]){ _scWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} setTimeout(function(){ delete _scWarned[id]; }, 15000); }
     return false;
   };
+  /* 前の人の送れていない写しを残している行は、読めない人が上書きしない（Codex #142 P2） */
+  if(!st){ if(secHeld(key) && !secGmNow()) return no('held', 'この端末には前にログインした人の送れていない変更が残っています。Tip の期間の確定・注意ログは保存していません', 'This device still holds unsent changes from an earlier sign-in. The tip confirmation / warning log was not saved.'); return true; }
   if(st.who && st.who!==csWho()) return no('who', 'Tip の期間の確定・注意ログを受け取っている途中です。少し待ってから、もう一度押してください（保存していません）', 'Still receiving tip confirmations / warning logs. Please try again in a moment (not saved).');
   var p=scParse(key);
   if(!scSees(key)) return no('out', p.kind==='tip' ? 'この店の Tip の期間の確定は、このログインでは見られません（保存していません）' : 'この店の注意ログは、このログインでは見られません（保存していません）',
@@ -12608,8 +12695,12 @@ async function scTake(c, tk){
   var seen=scSeenGet(), ch=false, ks=[];
   try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
   ks.forEach(function(k){
-    if(!scIsKey(k) || ssPending(k) || ver[k]) return;
-    /* 見られない店の行（とクラウドに無くなった行）：消す。送れていない変更のある行は残す */
+    if(!scIsKey(k)) return;
+    /* 送れていない変更のある行は残す（前の人が戻ったら送り直す）。Codex #142 P2：前の人の写しの印を付け、範囲の外なら読まない（scReadOk） */
+    if(ssPending(k)){ secHeldSet(k, true); return; }
+    secHeldSet(k, false);
+    if(ver[k]) return;
+    /* 見られない店の行（とクラウドに無くなった行）：消す */
     try{ _lsRawDel(k); }catch(e){} if(seen[k]!=null){ delete seen[k]; ch=true; }
   });
   if(ch) scSeenSet(seen);
@@ -12640,13 +12731,202 @@ function scOnLogout(){
   try{
     var m=ssMarkGet(), st=scStateGet();
     if(!m.shared && !(st && st.level!=='all')) return;
-    var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
-    ks.forEach(function(k){ if(scIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+    scDropOthers();   /* 送れていない変更のある行は残し、ほかの人に読ませない印を付ける（Codex #142 P2） */
     scSeenSet({}); scStateSet(null);
   }catch(e){}
 }
 /* 断った印・外す道・「設定 › 診断と記録」に入れるキー（決めた人だけが書ける設定と、v1147 の店ごとの行） */
 function rfIsKey(k){ return gwIsKey(k) || scIsKey(k); }
+/* ============================================================
+   v1148（段階 2b の 10 個目・Moto さん 11/10「Career Score と同じ範囲に」・docs/SECURE_GRADE_BONUS_READ_V1148_JA.md）：
+   グレード履歴（grade_hist）・賞与の個人設定（bonus_eval_ovr）・G3 の職種（bonus_track）も、読むのは関数 secure-state で
+   ------------------------------------------------------------
+   【前】3 つとも app_state の 1 行（人ごとの記録の地図）で、公開の鍵でだれでも全員の分を読めた（書くのは v1143・v1145 から GM・CEO だけ）。
+   【届く範囲（決めるのはサーバー）】CEO・GM＝3 つとも全部（all）／経理・事務Crew＝グレード履歴は全部（HR・福利厚生の画面が全員の「その日のグレード」を見る）・
+     ほかの 2 つは見られる人の分／ほかの人＝Career Score で見られる人と本人の分だけ（scoped：地図をその人たちの記録だけにした値）／
+     店のログイン・PIN の印の無い人など＝受け取らない（none）。画面が使う分は今と同じ（Career Score の基準点・G3 の職種は見られる人の分・休暇の福利厚生は本人の分）。
+   【端末の写し】scoped・none のキーは、受け取るたびに端末の写しを置き換える（合流しない＝前に REST で持っていたほかの人の記録を残さない）。
+     送れていない変更のある行は残す。scoped・none のキーは、この端末で書かない（gbLocalWriteOk。書けるのは前から GM・CEO だけ）。
+   【関数が前の版（v1147 以前）】答えに gbfn:1 が無ければ、今までどおり REST（公開の鍵）で読む。公開の鍵から外すのは、全部の端末を 1148 にしたあとの SQL（20261117090000）。 */
+var GB_KEYS = { grade_hist:1, bonus_eval_ovr:1, bonus_track:1 };
+var GB_STATE_KEY = '_gb_state';   /* この端末だけ：{ keys:{ grade_hist:'all'|'scoped'|'none', bonus_eval_ovr:…, bonus_track:… }, who, at } */
+var GB_SEEN_KEY = '_gb_seen';     /* この端末だけ：{ key: 関数の印#端末の文字の印 } */
+function gbIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(GB_KEYS, k); }
+function gbOldNow(S){ var L=_ss.gbOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function gbStateGet(){
+  try{ var o=JSON.parse(localStorage.getItem(GB_STATE_KEY)||'null');
+    if(o && typeof o==='object' && o.keys && typeof o.keys==='object'){
+      var k={}; Object.keys(GB_KEYS).forEach(function(x){ var l=o.keys[x]; k[x]=(l==='all' || l==='scoped') ? l : 'none'; }); o.keys=k; return o;
+    } }catch(e){}
+  return null;
+}
+function gbStateSet(o){
+  var prev=gbStateGet();
+  try{ if(o) localStorage.setItem(GB_STATE_KEY, JSON.stringify(o)); else localStorage.removeItem(GB_STATE_KEY); }catch(e){}
+  /* 「設定 › 診断と記録」に残す（形が変わったときだけ。人の名前・数は出さない） */
+  try{
+    var sig=function(s){ return s ? Object.keys(GB_KEYS).map(function(x){ return s.keys[x]; }).join('/') : ''; };
+    if(o && sig(prev)!==sig(o) && typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function'){
+      var L=function(l){ return l==='all' ? ['全部','all'] : l==='scoped' ? ['見られる人の分だけ','only the people you can see'] : ['受け取らない','none']; };
+      var g=L(o.keys.grade_hist), b=L(o.keys.bonus_eval_ovr);
+      FUNERGY_STATUS.log('store', (typeof t==='function') ? t('グレード履歴：'+g[0]+'・賞与の個人設定と G3 の職種：'+b[0]+'（サーバー secure-state v1148 から。この端末の写しも合わせました）',
+        'Grade history: '+g[1]+'; bonus personal settings and G3 track: '+b[1]+' (from the server, secure-state v1148; this device copy was matched)') : '');
+    }
+  }catch(e){}
+}
+/* ============================================================
+   Codex（#142 6785448408）P2 の直し：共有の端末に残した「前の人の送れていない変更」を、今のログインの読み出しに使わない
+   ------------------------------------------------------------
+   【前】送信待ちの印がある行は、取り込み（gbTake）でもログアウト（gbOnLogout）でも消さずに残していた（消すと GM の変更が失われる）。
+     そのまま ghAll()・kevOvrAll()・btrGet() が読むので、GM のあとにログインしたスタッフ・店のログインが、全員の分（範囲の外）を読めた。
+   【いま】残すのは今までどおり（GM が戻ったら送り直す）。ただし「前の人の写しを残している行」の印（SEC_HELD_KEY）を付け、
+     画面が読む関数は gbReadVal を通す：
+       ・範囲がまだ決まっていない（関数が前の版・REST に戻った・ログアウトのあと受け取る前・取得の失敗）：印のある行は返さない（GM・CEO のログインを除く）
+       ・ほかのログインの範囲が残っている：何も返さない（受け取り終えるまで）
+       ・全部（all）：端末の写し
+       ・見られる人の分だけ（scoped）で、印のある行・送信待ちの行：サーバーが今のログインに渡した分（_gbView・メモリだけ）
+       ・受け取らない（none）：何も返さない
+     送る道（flushOutbox・syncMasterToSupabase）は今までどおり端末の写しをそのまま読む（GM の変更は GM のログインのときに送る＝v1128）。 */
+var SEC_HELD_KEY = '_sec_held_v1';   /* この端末だけ：{ key:1 }＝前のログインの送れていない写しを残している行（今のログインの範囲の写しではない） */
+function secHeldAll(){ try{ var o=JSON.parse(localStorage.getItem(SEC_HELD_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function secHeld(k){ return Object.prototype.hasOwnProperty.call(secHeldAll(), k); }
+function secHeldSet(k, on){
+  var o=secHeldAll(), has=Object.prototype.hasOwnProperty.call(o, k);
+  if(on ? has : !has) return;
+  if(on) o[k]=1; else delete o[k];
+  try{ if(Object.keys(o).length) localStorage.setItem(SEC_HELD_KEY, JSON.stringify(o)); else localStorage.removeItem(SEC_HELD_KEY); }catch(e){}
+}
+/* 今のログインが CEO・GM（店のログインでない）。範囲がまだ決まっていないとき、残した写しを読んでよい人（前から全部を持つ人） */
+function secGmNow(){
+  try{ var r=String((typeof curRealRole!=='undefined' && curRealRole) || (typeof curRole!=='undefined' && curRole) || '');
+    return (r==='gm' || r==='ceo') && !(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){ return false; }
+}
+/* scoped のログインで、残した写しの代わりに読む値（サーバーがこのログインに渡した行。メモリだけ・ログアウトと次の取り込みで作り直す） */
+var _gbView = { who:'', keys:{} };
+function gbViewGet(key, def){
+  try{ if(_gbView.who===csWho() && Object.prototype.hasOwnProperty.call(_gbView.keys, key)) return JSON.parse(_gbView.keys[key]); }catch(e){}
+  return def;
+}
+/* 画面が読む値（ghAll・kevOvrAll・btrAll）。上の決まり */
+function gbReadVal(key, def){
+  if(!gbIsKey(key)) return ls(key, def);
+  var st=gbStateGet(), held=secHeld(key);
+  if(!st) return (held && !secGmNow()) ? def : ls(key, def);
+  if(st.who!==csWho()) return def;
+  var lv=st.keys[key];
+  if(lv==='all') return ls(key, def);
+  if(lv!=='scoped') return def;
+  if(held || ssPending(key)) return gbViewGet(key, def);
+  return ls(key, def);
+}
+/* REST に戻すとき（関数が前の版・PIN の確かめ先が答えない・PIN の印の無い CEO・GM）：前の範囲がほかのログインのものなら、その写しを使わない
+   （送れていない行は残して印を付け、ほかは消す。REST で取れるものは取り直す） */
+function gbDropOthers(){
+  var seen=gbSeenGet(), ch=false;
+  Object.keys(GB_KEYS).forEach(function(k){
+    if(ssPending(k)){ if(_lsStoreGet(k)!=null) secHeldSet(k, true); return; }
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+    if(seen[k]!=null){ delete seen[k]; ch=true; }
+  });
+  if(ch) gbSeenSet(seen);
+}
+function gbSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(GB_SEEN_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function gbSeenSet(o){ try{ localStorage.setItem(GB_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
+/* このキーをこのログインでクラウドから読めるか（all・scoped）。範囲がまだ決まっていない（関数が前の版・v1147 以前から上げた直後）は今までどおり */
+function gbSees(key){
+  if(!gbIsKey(key)) return true;
+  var st=gbStateGet(); if(!st) return true;
+  if(st.who && st.who!==csWho()) return false;
+  return st.keys[key]==='all' || st.keys[key]==='scoped';
+}
+/* この端末でそのキーを書いてよいか（lsSet）。全部を受け取っている（all）ときだけ。書けるのは前から GM・CEO だけ（サーバーが決める） */
+var _gbWarned = {};
+function gbLocalWriteOk(key, quiet){
+  if(!gbIsKey(key)) return true;
+  var st=gbStateGet();
+  var no=function(id, ja, en){
+    if(!quiet && !_gbWarned[id]){ _gbWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} setTimeout(function(){ delete _gbWarned[id]; }, 15000); }
+    return false;
+  };
+  /* 前の人の送れていない写しを残している行は、読めない人が上書きしない（読めない値から作った保存で、GM の変更を消さない。Codex #142 P2） */
+  if(!st){ if(secHeld(key) && !secGmNow()) return no('held', 'この端末には前にログインした人の送れていない変更が残っています。グレード履歴・賞与の個人設定・G3 の職種は保存していません', 'This device still holds unsent changes from an earlier sign-in. Grade history / bonus settings / G3 track were not saved.'); return true; }
+  if(st.who && st.who!==csWho()) return no('who', 'グレード履歴・賞与の設定を受け取っている途中です。少し待ってから、もう一度押してください（保存していません）', 'Still receiving grade history / bonus settings. Please try again in a moment (not saved).');
+  if(st.keys[key]!=='all') return no('out', 'グレード履歴・賞与の個人設定・G3 の職種を変えられるのは GM・CEO です（このログインでは全員の分を受け取っていません。保存していません）',
+    'Only the GM or CEO can change grade history, bonus personal settings or the G3 track (this sign-in does not receive everyone’s; not saved).');
+  return true;
+}
+/* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
+function gbHaveMap(force){
+  var have={}; if(force) return have;
+  /* 前の範囲がこのログインのものでない・前の人の写しを残している行・送信待ちの行は、印を送らない（このログインの分をいつも受け取る） */
+  var st=gbStateGet(); if(!st || st.who!==csWho()) return have;
+  var seen=gbSeenGet();
+  Object.keys(seen).forEach(function(k){ var s=String(seen[k]), c=s.indexOf('#'); if(c>0 && gbIsKey(k) && !secHeld(k) && !ssPending(k) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c); });
+  return have;
+}
+/* 関数の答え（gb）を受け取る：scoped・none のキーは端末の写しを置き換える（合流しない）。送れていない変更のある行は残す。返す行は _applyKvRows で取り込む */
+async function gbTake(c, tk){
+  await ssIdbReady();
+  if(tk && ssStale(tk)) return { stale:true, fail:true, rows:[], ver:{} };   /* 頼んだあとにログインが変わった（範囲も写しも変えない） */
+  if(!c || c.error || c.fail) return { fail:true, rows:[], ver:{} };   /* 見られる人を決められなかった：端末の写しはそのまま・REST でも取らない */
+  var keys={}; Object.keys(GB_KEYS).forEach(function(k){ var l=c.keys && c.keys[k]; keys[k]=(l==='all' || l==='scoped') ? l : 'none'; });
+  var ver={}; (Array.isArray(c.index) ? c.index : []).forEach(function(x){ if(x && gbIsKey(x.key) && keys[x.key]!=='none' && typeof x.v==='string') ver[x.key]=x.v; });
+  var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && gbIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; });
+  var got={}; rows.forEach(function(x){ got[x.key]=x; });
+  var seen=gbSeenGet(), ch=false, view={}, out=[];
+  Object.keys(GB_KEYS).forEach(function(k){
+    if(keys[k]==='all'){ secHeldSet(k, false); if(got[k]) out.push(got[k]); return; }   /* all：今までどおり合流して取り込む（クラウドに行が無いときも端末の写しのまま。残した写しも全部を見る人には範囲の中） */
+    if(ssPending(k)){
+      /* Codex（#142 6785448408）P2：送れていない変更のある行は残す（GM が戻ったら送り直す）が、前の人の写しなので、このログインでは読まない（gbReadVal）。
+         見られる人の分だけの行は合流させず（前の人の写しに混ぜない）、このログインの読み出し用に覚える */
+      if(_lsStoreGet(k)!=null) secHeldSet(k, true);
+      if(keys[k]==='scoped' && got[k]) view[k]=JSON.stringify(got[k].value==null ? {} : got[k].value);
+      if(seen[k]!=null){ delete seen[k]; ch=true; }
+      return;
+    }
+    /* none：持たない。scoped：届いた行で置き換える（前に REST で持っていたほかの人の記録を合流で残さない）・クラウドに行が無ければ持たない。
+       届かなかった（印が同じ＝このログインが取り込んだ直後のまま。gbHaveMap）scoped の行はそのまま */
+    if(keys[k]==='none' || !ver[k] || got[k]){ try{ _lsRawDel(k); }catch(e){} if(seen[k]!=null){ delete seen[k]; ch=true; } }
+    secHeldSet(k, false);
+    if(keys[k]==='scoped' && got[k]) out.push(got[k]);
+  });
+  if(ch) gbSeenSet(seen);
+  _gbView={ who:csWho(), keys:view };
+  gbStateSet({ keys:keys, who:csWho(), at:Date.now() });
+  return { rows:out.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, keys:keys };
+}
+/* 取り込めた行の印を残す（scSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
+function gbSeenRecord(rows, okKeys){
+  try{
+    var m=rows && rows._gb; if(!m || !m.ver) return;
+    try{ if(typeof _idbState!=='undefined' && _idbState==='init') return; }catch(e){}
+    var seen=gbSeenGet(), next={}, ok={}, got={}, st=gbStateGet();
+    (okKeys||[]).forEach(function(k){ ok[k]=1; });
+    (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
+    Object.keys(m.ver).forEach(function(k){
+      /* 見られる人の分だけのキーで、送れていない変更と合流した写し（ほかの人の記録が残っている）は印を残さない（送れなくなったあとの取り込みで、届いた行に置き換える） */
+      if(ok[k] && ssPending(k) && st && st.keys[k]!=='all') return;
+      if(ok[k]) next[k]=m.ver[k]+'#'+_kvFp(_lsStoreGet(k));
+      else if(!got[k] && seen[k]!=null && String(seen[k]).indexOf(m.ver[k]+'#')===0) next[k]=seen[k];
+    });
+    gbSeenSet(next);
+  }catch(e){ console.warn('gb seen', e); }
+}
+/* ログアウト：3 つとも全部を受け取る人（GM・CEO）の自分の端末でなければ、写しを残さない（送れていない変更のある行は残す）。次にログインした人の範囲で受け取り直す */
+function gbOnLogout(){
+  _gbView={ who:'', keys:{} };
+  try{
+    var m=ssMarkGet(), st=gbStateGet();
+    var allKeys=!!st && Object.keys(GB_KEYS).every(function(k){ return st.keys[k]==='all'; });
+    if(!m.shared && !(st && !allKeys)) return;   /* GM・CEO の自分の端末：残す（次にログインした人は、受け取り終えるまで読まない＝gbReadVal） */
+    /* 送れていない変更のある行は残す（GM が戻ったら送り直す）。ほかの人に読ませない印を付ける（Codex #142 6785448408 P2） */
+    Object.keys(GB_KEYS).forEach(function(k){
+      if(ssPending(k)){ if(_lsStoreGet(k)!=null) secHeldSet(k, true); return; }
+      try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
+    });
+    gbSeenSet({}); gbStateSet(null);
+  }catch(e){}
+}
 /* ============================================================
    v1141（段階 2b の 3 つ目）：決めた人だけが書ける設定（docs/SECURE_SETTINGS_V1141_JA.md）
    ------------------------------------------------------------
@@ -13147,6 +13427,53 @@ function ssState(){
   return 'part';
 }
 function ssStateSet(v){ try{ localStorage.setItem(SS_STATE_KEY, v); }catch(e){} }
+/* Codex（#142 6785448408）P2 と同じ形（v1139）：端末の写しはだれのログインの答えか（csWho）。''＝REST（今までどおり）・'#out'＝ログアウトのあと受け取る前。
+   前は記録が無く、GM の自分の端末でログアウトしたあと次の人が受け取る前（と取得の失敗のとき）に、GM の全部の値（給与の履歴・面談）を読めた */
+var SS_WHO_KEY = '_ss_who';
+function ssWhoGet(){ try{ return String(localStorage.getItem(SS_WHO_KEY)||''); }catch(e){ return ''; } }
+function ssWhoSet(v){ try{ if(v) localStorage.setItem(SS_WHO_KEY, v); else localStorage.removeItem(SS_WHO_KEY); }catch(e){} }
+/* 見せる形（proj）のログインで、残した GM の送れていない写しの代わりに読む値（サーバーがこのログインに渡した見せる形。メモリだけ） */
+var _ssView = { who:'', keys:{} };
+function ssViewGet(key, def){
+  try{ if(_ssView.who===csWho() && Object.prototype.hasOwnProperty.call(_ssView.keys, key)) return JSON.parse(_ssView.keys[key]); }catch(e){}
+  return def;
+}
+/* 前の人の写しを残している印（分割の bonus_q は分けた行 spl_bonus_q_<四半期> のどれか） */
+function ssHeldFor(key){
+  if(key!=='bonus_q') return secHeld(key);
+  var o=secHeldAll(); return Object.keys(o).some(function(k){ return k==='bonus_q' || k.indexOf('spl_bonus_q_')===0; });
+}
+/* 写しの様子を軽く読む（ssState は記録が無いと全部のキーを見るので、画面が何度も読む所では使わない。記録が無い＝v1138 から上げた端末の全部の値か、まだ何も無い） */
+function ssFullFast(){ var v=''; try{ v=localStorage.getItem(SS_STATE_KEY)||''; }catch(e){} return v!=='part'; }
+function ssHeldClearAll(){ var o=secHeldAll(); Object.keys(o).forEach(function(k){ if(ssIsKey(k)) secHeldSet(k, false); }); }
+/* 画面が読む値（getKarteAll・kbCfg・bqAll・bonusRules・kevEvAll・kevStoreQAll・kevPxAll・getKartePin）：
+   ほかのログインの答えが残っている → 何も返さない／CEO・GM → 今までどおり端末の写し／
+   全部の値の写し（REST の今までどおり）→ 前の人の写しを残している行は返さない／見せる形（part）→ 見せる形のキーだけ（残した行はこのログインが受け取った見せる形） */
+function ssReadVal(key, def){
+  if(!ssIsKey(key) && key!=='bonus_q') return ls(key, def);
+  var w=ssWhoGet(), me=csWho();
+  if(w && w!==me) return def;
+  if(secGmNow()) return ls(key, def);
+  var held=ssHeldFor(key);
+  if(ssFullFast()) return (held && w!==me) ? def : ls(key, def);
+  if(SS_PROJ.indexOf(key)<0) return def;
+  if(held || ssPending(key)) return ssViewGet(key, def);
+  return ls(key, def);
+}
+/* この端末で書いてよいか（lsSet の入口）。受け取る前・前の人の写しを残している行（読めない人の保存で GM の変更を消さない）は書かない */
+var _ssLwWarned = {};
+function ssLocalWriteOk(key){
+  if(!ssIsKey(key)) return true;
+  var w=ssWhoGet(), me=csWho();
+  var no=function(id, ja, en){
+    if(!_ssLwWarned[id]){ _ssLwWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} setTimeout(function(){ delete _ssLwWarned[id]; }, 15000); }
+    return false;
+  };
+  if(w && w!==me) return no('who', '成長カルテ・賞与を受け取っている途中です。少し待ってから、もう一度保存してください（保存していません）', 'Still receiving growth chart / bonus data. Please save again in a moment (not saved).');
+  if(secGmNow()) return true;
+  if(secHeld(key) && !(ssFullFast() && w===me)) return no('held', 'この端末には前にログインした人の送れていない変更が残っています。成長カルテ・賞与は保存していません', 'This device still holds unsent changes from an earlier sign-in. The growth chart / bonus data was not saved.');
+  return true;
+}
 function ssMarkGet(){
   var o=null; try{ o=JSON.parse(localStorage.getItem(SS_MARK_KEY)||'null'); }catch(e){ o=null; }
   if(!(o && typeof o==='object' && !Array.isArray(o))) o={};
@@ -13181,8 +13508,8 @@ function ssToPart(except){
   try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
   ks.forEach(function(k){
     if(!ssIsKey(k) || (except && except.indexOf(k)>=0)) return;
-    if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; return; }
-    try{ _lsRawDel(k); }catch(e){}
+    if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; secHeldSet(k, true); return; }   /* Codex #142 P2：残すが、見せる形のログインには読ませない（ssReadVal） */
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
     if(seen[k]!=null){ delete seen[k]; ch=true; }
   });
   if(ch) ssSeenSet(seen);
@@ -13194,7 +13521,7 @@ function ssFreshCleanup(){
   Object.keys(m.unsafe).forEach(function(k){
     var txt=null; try{ txt=_lsStoreGet(k); }catch(e){}
     if(txt!=null) dropped.push({ key:k, at:Number(m.unsafe[k])||0, dropped:Date.now(), text:String(txt).slice(0, 200000) });
-    try{ _lsRawDel(k); }catch(e){}
+    try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false);
     try{ if(typeof _outboxRemove==='function') _outboxRemove(k); }catch(e){}
   });
   if(dropped.length){
@@ -13204,15 +13531,19 @@ function ssFreshCleanup(){
       dropped.length+' change(s) made on a partial copy of the growth chart / bonus data were not sent (a copy is kept on this device). Please enter them again.');
   }
   var ks=[]; try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
-  ks.forEach(function(k){ if(ssIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });   /* 見せる形・前の写しを全部の値と合流させない */
+  ks.forEach(function(k){ if(ssIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} secHeldSet(k, false); } });   /* 見せる形・前の写しを全部の値と合流させない */
   ssSeenSet({}); ssMarkSet(m.shared ? { shared:1 } : {}); ssStateSet('full');
 }
 /* ログアウト：共有の端末（ほかの人も使った）では、CEO・GM の全部の値の写しを残さない（送れていない変更のあるキーは残す） */
 function ssOnLogout(){
   _ssGen++;   /* 頼んでいる途中の前の人の答えは、届いても置かない（ssStale） */
-  try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
+  try{ var m=ssMarkGet(), full=(ssState()==='full'); if(m.shared && full) ssToPart(null);
+    if(m.shared || !full || ssWhoGet()) ssWhoSet('#out');   /* Codex #142 P2：次の人は自分の答えを受け取るまで読まない（GM だけの端末の REST の今までどおりは変えない） */
+  }catch(e){}
+  _ssView={ who:'', keys:{} };
   try{ if(typeof csOnLogout==='function') csOnLogout(); }catch(e){}   /* v1140：Career Score も */
   try{ if(typeof scOnLogout==='function') scOnLogout(); }catch(e){}   /* v1147：Tip の期間の確定・注意ログも */
+  try{ if(typeof gbOnLogout==='function') gbOnLogout(); }catch(e){}   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
   try{ if(typeof piiOnLogout==='function') piiOnLogout(); }catch(e){}   /* v1144：従業員の個人の欄も */
 }
@@ -13248,6 +13579,10 @@ async function ssCall(payload, retried){
     if(r.status>=500) return { status:r.status, error:'' };   /* 関数が落ちた（入っている）：失敗（REST に切り替えない） */
     _ss.legacy={ id:S.id, at:Date.now() }; if(_isHr) _ss.hrOld={ id:S.id, at:Date.now() }; return { legacy:true };
   }
+  /* v1148：グレード履歴・賞与の個人設定・G3 の職種を読む関数か（gbfn:1）。v1147 以前の関数なら、読むのは今までどおり REST（書くのは v1143・v1145 の道のまま）。
+     ほかの印の確かめより先に（前の版の答えで先に戻ると、この印を覚えず、10 分のあいだも毎回関数に読みに行く） */
+  if(j.gbfn===1) _ss.gbOld=null;
+  else { _ss.gbOld={ id:S.id, at:Date.now() }; if(payload.action==='get' && payload.key && gbIsKey(payload.key)) return { legacy:true }; }
   /* v1140：Career Score を扱う関数か（csfn:1）。前の版の関数なら、Career Score の読み書きは REST に戻す */
   if(j.csfn===1) _ss.csOld=null;
   else { _ss.csOld={ id:S.id, at:Date.now() }; if((payload.key && csIsKey(payload.key)) || payload.action==='hist') return { legacy:true }; }
@@ -13286,28 +13621,31 @@ async function ssPull(force, tk){
   if(!S){
     if(gmHint) return { rest:true };                     /* PIN の印の無い CEO・GM：今までどおり */
     await ssIdbReady(); if(ssStale(tk)) return STALE;
-    ssToPart(null); ssLevelSet('none'); var c0=await csTake({ level:'none' }, tk); if(c0.stale) return STALE;   /* v1140：Career Score も受け取らない */
-    var s0=await scTake({ level:'none' }, tk); return s0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0, sc:s0 };   /* v1147：Tip の期間の確定・注意ログも */
+    ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c0=await csTake({ level:'none' }, tk); if(c0.stale) return STALE;   /* v1140：Career Score も受け取らない */
+    var s0=await scTake({ level:'none' }, tk); if(s0.stale) return STALE;   /* v1147：Tip の期間の確定・注意ログも */
+    var g0=await gbTake({ keys:{} }, tk); return g0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0, sc:s0, gb:g0 };   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   }
   if(ssLegacyNow(S)) return { rest:true };
   var part=(ssState()==='part'), seen=ssSeenGet(), have={};
-  if(!force) Object.keys(seen).forEach(function(k){   /* 「クラウドから取り込む」は印によらず全部。part の端末は見せる形の印（p:）だけ（全部の値の印 h: とは同じにならないので、全部の値は全部届く） */
+  if(!force && ssWhoGet()===csWho()) Object.keys(seen).forEach(function(k){   /* Codex #142 P2：ほかのログインが受け取った写しの印は送らない */   /* 「クラウドから取り込む」は印によらず全部。part の端末は見せる形の印（p:）だけ（全部の値の印 h: とは同じにならないので、全部の値は全部届く） */
     var s=String(seen[k]), c=s.indexOf('#');
     if(c>0 && ssIsKey(k) && (!part || s.indexOf('p:')===0) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c);
   });
-  var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), sc_have:scHaveMap(force), ms:60000 });   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない）。v1147：sc_have で Tip の期間の確定・注意ログも */
+  var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), sc_have:scHaveMap(force), gb_have:gbHaveMap(force), ms:60000 });   /* v1148：gb_have でグレード履歴・賞与の個人設定・G3 の職種も */   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない）。v1147：sc_have で Tip の期間の確定・注意ログも */
   if(ssStale(tk)) return STALE;   /* Codex P1：前の人の答え（GM の full など）を、次の人の端末に置かない */
   if(r.legacy) return { rest:true };
-  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
-    var s1=await scTake({ level:'none' }, tk); return s1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1, sc:s1 }; }
+  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
+    var s1=await scTake({ level:'none' }, tk); if(s1.stale) return STALE;
+    var g1=await gbTake({ keys:{} }, tk); return g1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1, sc:s1, gb:g1 }; }
   if(r.status===401){
     /* CEO・GM：端末の写しは消さない（PIN の確かめの一時的な失敗も 401 になる）。今までどおり REST（SQL のあとは対象のキーは来ない） */
     if(gmHint) return { rest:true, fail:true };
     await ssIdbReady(); if(ssStale(tk)) return STALE;
-    ssToPart(null); ssLevelSet('none'); var c2=await csTake({ level:'none' }, tk); if(c2.stale) return STALE;   /* 店舗のログイン・期限切れ */
-    var s2=await scTake({ level:'none' }, tk); return s2.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c2, sc:s2 };   /* v1147 */
+    ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c2=await csTake({ level:'none' }, tk); if(c2.stale) return STALE;   /* 店舗のログイン・期限切れ */
+    var s2=await scTake({ level:'none' }, tk); if(s2.stale) return STALE;   /* v1147 */
+    var g2=await gbTake({ keys:{} }, tk); return g2.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c2, sc:s2, gb:g2 };   /* v1148 */
   }
-  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true, cs:{ fail:true, rows:[], ver:{} }, sc:{ fail:true, rows:[], ver:{} } };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま。v1147：Tip の期間の確定・注意ログも） */
+  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true, cs:{ fail:true, rows:[], ver:{} }, sc:{ fail:true, rows:[], ver:{} }, gb:{ fail:true, rows:[], ver:{} } };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま。v1147：Tip の期間の確定・注意ログも） */
   var j=r.j, level=(j.level==='full' || j.level==='proj') ? j.level : 'none';
   /* v1140：Career Score。関数が前の版（cs が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
   var csr=null;
@@ -13317,12 +13655,16 @@ async function ssPull(force, tk){
   var scr=null;
   if(j.sc && typeof j.sc==='object'){ scr=await scTake(j.sc, tk); if(scr.stale) return STALE; }
   else if(j.sc===undefined || j.sc===null) scStateSet(null);
+  /* v1148：グレード履歴・賞与の個人設定・G3 の職種。関数が前の版（gb が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
+  var gbr=null;
+  if(j.gb && typeof j.gb==='object'){ gbr=await gbTake(j.gb, tk); if(gbr.stale) return STALE; }
+  else if(j.gb===undefined || j.gb===null) gbStateSet(null);
   var rows=Array.isArray(j.rows) ? j.rows.filter(function(x){ return x && ssIsKey(x.key) && x.key!=='karte_pin' && typeof x.v==='string'; }) : [];
   var ver={}; (Array.isArray(j.index) ? j.index : []).forEach(function(x){ if(x && ssIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
   if(level==='full'){
-    ssLevelSet('full');
+    ssLevelSet('full'); ssWhoSet(csWho()); ssHeldClearAll(); _ssView={ who:csWho(), keys:{} };   /* CEO・GM：全部を見る（残した写しも範囲の中） */
     /* 置くのは REST の取り込みも読めたあと（_kvPullRows）。part の端末は、その直前に見せる形・前の写しを消す（ssFreshCleanup） */
-    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, cs:csr, sc:scr };
+    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, cs:csr, sc:scr, gb:gbr };
   }
   /* proj・none：見せる形をそのまま置く（合流しない・送らない）。ほかの対象のキーの写しは消す。
      送れていない変更のあるキー（共有の端末で GM が直して送れていない分）は、消さない・見せる形で上書きしない（独立レビュー P1-1） */
@@ -13330,18 +13672,21 @@ async function ssPull(force, tk){
   if(ssStale(tk)) return STALE;
   ssToPart(level==='proj' ? SS_PROJ : null);
   var nseen={}, m=ssMarkGet();
+  var pv={};
   if(level==='proj'){
     var got={}; rows.forEach(function(x){ got[x.key]=x; });
     SS_PROJ.forEach(function(k){
-      if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; return; }
+      /* 送れていない GM の値は残す（見せる形で上書きしない）。Codex #142 P2：このログインは受け取った見せる形を読む（ssReadVal） */
+      if(ssPending(k)){ if(!m.unsafe[k]) m.keep[k]=1; secHeldSet(k, true); if(got[k]) pv[k]=JSON.stringify(got[k].value==null ? {} : got[k].value); return; }
+      secHeldSet(k, false);
       if(got[k]){ var t=JSON.stringify(got[k].value==null ? {} : got[k].value); if(_lsWriteVerified(k, t)){ try{ _lsMarkFetched(k); }catch(e){} nseen[k]=got[k].v+'#'+_kvFp(_lsStoreGet(k)); } }
-      else if(ver[k] && seen[k]!=null && String(seen[k]).indexOf(ver[k]+'#')===0) nseen[k]=seen[k];   /* 変わっていない */
-      else if(!ver[k]){ try{ _lsRawDel(k); }catch(e){} }   /* クラウドに無い */
+      else if(ver[k] && seen[k]!=null && String(seen[k]).indexOf(ver[k]+'#')===0 && ssWhoGet()===csWho()) nseen[k]=seen[k];   /* 変わっていない（このログインが受け取ったまま） */
+      else { try{ _lsRawDel(k); }catch(e){} }   /* クラウドに無い・ほかのログインの見せる形 */
     });
     ssMarkSet(m);
   }
-  ssSeenSet(nseen); ssLevelSet(level);
-  return { rest:false, rows:[], ver:{}, cs:csr, sc:scr };
+  ssSeenSet(nseen); ssLevelSet(level); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:pv };
+  return { rest:false, rows:[], ver:{}, cs:csr, sc:scr, gb:gbr };
 }
 /* ---- v1140：Career Score の取り込み ---- */
 /* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
@@ -13365,7 +13710,9 @@ async function csTake(c, tk){
     var seen=csSeenGet(), ch=false, ks=[];
     try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
     ks.forEach(function(k){
-      if(!csIsKey(k) || ssPending(k)) return;
+      if(!csIsKey(k)) return;
+      if(ssPending(k)){ secHeldSet(k, true); return; }   /* 残す（前の人が戻ったら送り直す）。Codex #142 P2 と同じ形：範囲の外なら読まない（getLssScores → csReadOk） */
+      secHeldSet(k, false);
       var p=csParse(k), keep=false;
       if(level==='scoped'){
         if(p.kind==='hist') keep=names.indexOf(p.name)>=0;
@@ -13378,6 +13725,7 @@ async function csTake(c, tk){
   }
   var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && csIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; })
     .map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; });
+  if(level==='full'){ var _ho=secHeldAll(); Object.keys(_ho).forEach(function(k){ if(csIsKey(k)) secHeldSet(k, false); }); }   /* CEO・GM：全部を見る */
   csHistReset(csStateGet(), level, names);
   csStateSet({ level:level, names:names, req:req, who:csWho(), at:Date.now() });
   return { rows:rows, ver:ver, level:level };
@@ -13428,8 +13776,7 @@ function csOnLogout(){
   try{
     var m=ssMarkGet(), st=csStateGet();
     if(!m.shared && !(st && st.level!=='full')) return;
-    var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
-    ks.forEach(function(k){ if(csIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+    csDropOthers();   /* 送れていない変更のある行は残し、ほかの人に読ませない印を付ける（Codex #142 P2 と同じ形） */
     csSeenSet({}); csStateSet(null);
   }catch(e){}
 }
@@ -13605,6 +13952,7 @@ async function ssDropRefused(items){
     var row;
     /* v1147：見られない店の Tip の期間の確定・注意ログはクラウドを読めない（サーバーが断る）。この端末の写しを消すだけ（見られない店の分は持たない） */
     if(scIsKey(key) && !scSees(key)) row={ exists:false, value:null, outScope:true };
+    else if(gbIsKey(key) && !gbSees(key)) row={ exists:false, value:null, outScope:true };   /* v1148：受け取らないログイン（店のログインなど）は、この端末の写しを消すだけ */
     else { try{ row=await _fetchOpRow(key); }catch(e){ row=undefined; } }
     if(!(row && typeof row==='object' && 'exists' in row)){ out.skip.push({ key:key, why:'read' }); continue; }
     var still=now()[key];
@@ -13775,14 +14123,18 @@ async function _kvPullRows(force){
   var _ssOut=!_ssr.rest || _stale;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var _csOut=!!_ssr.cs || _stale;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _scOut=!!_ssr.sc || _stale;    /* v1147：Tip の期間の確定・注意ログも関数から（見られる店の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
+  var _gbOut=!!_ssr.gb || _stale;    /* v1148：グレード履歴・賞与の個人設定・G3 の職種も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _hrOut=_stale || (typeof hrRouted==='function' && hrRouted());   /* v1142：採用・お悩み相談室は関数から（画面を開いたときに読む）。REST では取らない */
   if(typeof hrSweep==='function' && !_stale){
     try{ if(_hrOut) hrSweep();   /* 前の版の全部の写し・前の人の写しを残さない（独立レビュー P2-5） */
          else Object.keys(HR_KEYS).forEach(function(k){ hrDropToRest(k); }); }catch(e){}   /* REST：関数から置いた写しは使わず、REST の行で置き直す */
   }
+  /* v1139（Codex #142 P2 と同じ形）：REST で取る（今までどおり）とき、端末の成長カルテ・賞与がほかのログインの答えなら使わない（送れていない行は残して印）。CEO・GM は全部を見る人なので今までどおり */
+  if(!_ssOut && typeof ssWhoGet==='function'){ try{ var _sw=ssWhoGet(); if(_sw && _sw!==csWho() && !secGmNow()){ await ssIdbReady(); ssToPart(null); } ssWhoSet(''); }catch(e){} }
   /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
-  if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
-  if(!_scOut){ try{ if(typeof scStateGet==='function' && scStateGet()) scStateSet(null); }catch(e){} }   /* v1147 */
+  if(!_csOut){ try{ if(typeof csStateGet==='function'){ var _cp=csStateGet(); if(_cp){ if(_cp.who!==csWho() && !secGmNow()) csDropOthers(); csHistReset(null, '', []); csStateSet(null); } } }catch(e){} }   /* Codex #142 P2 と同じ形：ほかのログインの写しは REST の今までどおりに使わない */
+  if(!_scOut){ try{ if(typeof scStateGet==='function'){ var _sp=scStateGet(); if(_sp){ if(_sp.who!==csWho() && !secGmNow()) scDropOthers(); scStateSet(null); } } }catch(e){} }   /* v1147。Codex #142 P2：ほかのログインの写しは REST の今までどおりに使わない */
+  if(!_gbOut){ try{ if(typeof gbStateGet==='function'){ var _gp=gbStateGet(); if(_gp){ if(_gp.who!==csWho() && !secGmNow()) gbDropOthers(); gbStateSet(null); } } }catch(e){} }   /* v1148。Codex #142 P2：ほかのログインの写しは REST の今までどおりに使わない */
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
@@ -13790,6 +14142,7 @@ async function _kvPullRows(force){
       if(_ssOut && ssIsKey(k)) return;
       if(_csOut && csIsKey(k)) return;
       if(_scOut && scIsKey(k)) return;   /* v1147 */
+      if(_gbOut && gbIsKey(k)) return;   /* v1148 */
       if(_hrOut && hrIsKey(k)) return;   /* v1142 */
       ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
@@ -13825,12 +14178,13 @@ async function _kvPullRows(force){
     if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
     if(_csOut){ f+='&key=not.in.'+encodeURIComponent('('+CS_LEGACY.map(_kvQuote).join(',')+')'); CS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1140 */
     if(_scOut){ [SC_TIP_PRE, SC_WN_PRE].forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1147 */
+    if(_gbOut){ f+='&key=not.in.'+encodeURIComponent('('+Object.keys(GB_KEYS).map(_kvQuote).join(',')+')'); }   /* v1148 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
   if(!_stale && typeof ssStale==='function' && ssStale(_tk)) _stale=true;   /* REST を待つあいだにログインが変わった */
   if(_stale){
     /* 前の人の答え：成長カルテ・賞与・Career Score の行は外し、写しの片づけ（ssFreshCleanup）も印（_ss・_cs）もしない */
-    if(Array.isArray(rows)) rows=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも */
+    if(Array.isArray(rows)) rows=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key) || gbIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも。v1148 */
   }
   else if(Array.isArray(rows) && _ssOut && _ssr.full){
     await ssIdbReady();
@@ -13857,6 +14211,14 @@ async function _kvPullRows(force){
     if(_ssMk2){ try{ Object.defineProperty(rows, '_ss', { value:_ssMk2, enumerable:false }); }catch(e){} }
     if(_csMk2){ try{ Object.defineProperty(rows, '_cs', { value:_csMk2, enumerable:false }); }catch(e){} }
     if(!_ssr.sc.fail){ try{ Object.defineProperty(rows, '_sc', { value:{ ver:_ssr.sc.ver || {} }, enumerable:false }); }catch(e){} }
+  }
+  if(Array.isArray(rows) && _gbOut && !_stale){
+    var _ssMk3=rows._ss, _csMk3=rows._cs, _scMk3=rows._sc;   /* 新しい配列にするので、前の印（_ss・_cs・_sc）を付け直す */
+    rows=rows.filter(function(r){ return !(r && gbIsKey(r.key)); }).concat(_ssr.gb.rows || []);   /* v1148：REST の行は使わない・関数の行を足す */
+    if(_ssMk3){ try{ Object.defineProperty(rows, '_ss', { value:_ssMk3, enumerable:false }); }catch(e){} }
+    if(_csMk3){ try{ Object.defineProperty(rows, '_cs', { value:_csMk3, enumerable:false }); }catch(e){} }
+    if(_scMk3){ try{ Object.defineProperty(rows, '_sc', { value:_scMk3, enumerable:false }); }catch(e){} }
+    if(!_ssr.gb.fail){ try{ Object.defineProperty(rows, '_gb', { value:{ ver:_ssr.gb.ver || {} }, enumerable:false }); }catch(e){} }
   }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
@@ -13963,7 +14325,7 @@ async function supaPullAllMasters(opt){
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { var _kvRows=(typeof ssStaleRows==='function') ? ssStaleRows(_dres[1]) : _dres[1];   /* Codex P1：取り込む直前にもログインを比べる（前の人の成長カルテ・賞与・Career Score を置かない） */
-      var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); if(typeof scSeenRecord==='function') scSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
+      var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); if(typeof scSeenRecord==='function') scSeenRecord(_kvRows, _kvOk); if(typeof gbSeenRecord==='function') gbSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -13987,6 +14349,7 @@ async function migrateUploadLocalOps(){
       if (typeof ssIsKey==='function' && ssIsKey(key)) return;   /* v1139：成長カルテ・賞与のキーは一覧に出ない（公開の鍵では読めない）。端末の写しで書かない */
       if (typeof csIsKey==='function' && csIsKey(key)) return;   /* v1140：Career Score も */
       if (typeof scIsKey==='function' && scIsKey(key)) return;   /* v1147：Tip の期間の確定・注意ログも */
+      if (typeof gbIsKey==='function' && gbIsKey(key)) return;   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も（一覧に出ない。端末の写しで書かない） */
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
     });
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
@@ -39561,6 +39924,7 @@ function setTipPeriodView(v){ tipPeriodView=v; renderPage('tip'); }
    tip_cf_<店>_<年> = { 初日: { status:'確定済み', …, _at } }。解除は { _deleted:true, by, at, _at } */
 function tipConfirmKey(storeId, info){ return 'tip_cf_'+storeId+'_'+String(info.from||'').slice(0, 4); }
 function getTipConfirm(storeId, info){
+  if(typeof scReadOk==='function' && !scReadOk(tipConfirmKey(storeId, info))) return null;   /* Codex #142 P2：このログインの範囲の外・前の人の写し */
   var m=ls(tipConfirmKey(storeId, info), null), r=(m && typeof m==='object' && !Array.isArray(m)) ? m[info.from] : null;
   if(r && typeof r==='object') return r._deleted ? null : r;
   if(!v1136Moved()) return ls('tip_confirm_'+storeId+'_'+info.from, null);   /* この端末の前の名前の記録（移し替えが済むまで） */
@@ -43803,7 +44167,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1147';
+const APP_VERSION = '1148';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -64710,7 +65074,12 @@ function lssItemId(catKey, idx){ return catKey+idx; }
 function lssAllItems() {
   var out=[]; LSS_CATEGORIES.forEach(c=>c.items.forEach((label,i)=>out.push({id:lssItemId(c.key,i), cat:c.key, label:label}))); return out;
 }
-function getLssScores(name){ var per = ls(LSS_EMP_PREFIX+name, null); if (per!==null) return per; var all = ls('lss_scores', {}); return all[name]||null; }
+function getLssScores(name){
+  if(typeof csReadOk==='function' && !csReadOk(LSS_EMP_PREFIX+name)) return null;   /* Codex #142 P2 と同じ形：このログインの範囲の外・前の人の写し */
+  var per = ls(LSS_EMP_PREFIX+name, null); if (per!==null) return per;
+  if(typeof csReadOk==='function' && !csReadOk('lss_scores')) return null;
+  var all = ls('lss_scores', {}); return all[name]||null;
+}
 /* ===== v752: Career Score にも保存時刻と保存者を付ける =====
    lss_emp_<社員> には合流ルールが無く、丸ごと上書きだった。保存自体は上下とも通るが、
    2端末が同じ人を評価すると後から届いた方が前を消し、古い端末が新しい評価を消すこともあった。
@@ -67377,7 +67746,7 @@ function _money(n){ return fmtUSD2(n||0).toLocaleString('en-US'); }
 function _curQuarter(){ var d=new Date(); return d.getFullYear()+'-Q'+(Math.floor(d.getMonth()/3)+1); }
 function _karteStoreNm(id){ var s=(typeof STORES!=='undefined'?STORES:[]).find(function(x){return x.id===id;}); return s?s.name:id; }
 /* --- 成長カルテ 専用PINゲート（既定 1234・GM/CEOが変更可・app_state同期） --- */
-function getKartePin(){ var p=ls('karte_pin','1234'); return (p==null||p==='')?'1234':String(p); }
+function getKartePin(){ var p=((typeof ssReadVal==='function') ? ssReadVal('karte_pin','1234') : ls('karte_pin','1234')); return (p==null||p==='')?'1234':String(p); }
 function setKartePin(p){ lsSet('karte_pin', String(p)); }
 /* v1139：成長カルテの PIN はサーバー（関数 secure-state）で確かめる（端末には置かない・PBKDF2 の印で保存・5 回まちがえると 10 分止める）。
    関数がまだ無い・PIN のログインの印が無いときは、今までどおり端末で */
@@ -67449,7 +67818,7 @@ function kbCfgPlain(r){
 }
 function kbCfg(){
   var d={ poolRate:0.12, profit:0, quarter:_curQuarter(), gradeBase:{G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, csMin:0.7, csMax:1.3, storeScore:{}, storeProfit:{}, empStore:{}, spMin:0.8, spMax:1.2, baMin:0.8, baMax:1.2 };
-  var r=kbCfgPlain(ls('karte_bonus_config',null));
+  var r=kbCfgPlain((typeof ssReadVal==='function') ? ssReadVal('karte_bonus_config',null) : ls('karte_bonus_config',null));
   if(r && typeof r==='object'){ d=Object.assign(d,r); d.gradeBase=Object.assign({G2:1000,G3:3000,G4:5000,G5:8000,G6:12000}, r.gradeBase||{}); d.storeScore=Object.assign({}, r.storeScore||{}); d.storeProfit=Object.assign({}, r.storeProfit||{}); d.empStore=Object.assign({}, r.empStore||{}); if(d.spMin==null)d.spMin=0.8; if(d.spMax==null)d.spMax=1.2; if(d.baMin==null)d.baMin=0.8; if(d.baMax==null)d.baMax=1.2; }
   return d;
 }
@@ -67459,7 +67828,7 @@ function kbSave(c){
   var prev=ls('karte_bonus_config', null), at=Math.max(Date.now(), ((prev && typeof prev==='object' && prev.__st===1) ? (Number(prev._at)||0) : 0)+1);   /* この端末で前に保存した・受け取った時刻より新しく */
   return lsSet('karte_bonus_config', Object.assign({}, clean, {__st:1, v:clean, _at:at, _by:String(by||'')}));
 }
-function getKarteAll(){ return ls('growth_karte',{}); }
+function getKarteAll(){ return (typeof ssReadVal==='function') ? ssReadVal('growth_karte',{}) : ls('growth_karte',{}); }
 function getKarte(empId){ var m=getKarteAll(); return m[empId]||{}; }
 function saveKarte(empId, k){ var m=getKarteAll(); if(typeof kartePayTrackInit==='function') kartePayTrackInit(k);   /* v1067（独立レビュー P2-1）：履歴を 1 行ずつ合流し始めた時刻（_at を新しくする前に） */ k.updatedAt=new Date().toISOString(); k._at=Date.now();   /* v798: 合流で勝敗を決めるための印 */ k.evaluator=(typeof myName==='function'?myName():(curUserName||'')); m[empId]=k; lsSet('growth_karte', m); }
 
@@ -67531,7 +67900,7 @@ var BQ_STAGES = [
   {key:'cs',      label:'Career Score', icon:'ti-star'},
   {key:'confirm', label:'査定確定',     icon:'ti-lock-check'}
 ];
-function bqAll(){ var m=ls('bonus_q', {}); return (m && typeof m==='object')?m:{}; }
+function bqAll(){ var m=((typeof ssReadVal==='function') ? ssReadVal('bonus_q', {}) : ls('bonus_q', {})); return (m && typeof m==='object')?m:{}; }
 function bqGet(q){
   var d=bqAll()[q]; if(!d || typeof d!=='object' || Array.isArray(d)) d={};
   return Object.assign({}, d, { profit:(d.profit&&typeof d.profit==='object')?d.profit:{},   /* v1044: 知らない項目も落とさない */
@@ -68063,7 +68432,7 @@ var BONUS_POOL_TABLE_DEFAULT = [
   {lo:9,  hi:10, r:7},  {lo:10, hi:11, r:8},  {lo:11, hi:12, r:9},  {lo:12, hi:13, r:10}, {lo:13, hi:14, r:11},
   {lo:14, hi:15, r:12}, {lo:15, hi:16, r:13}, {lo:16, hi:18, r:14}, {lo:18, hi:null, r:15}
 ];
-function bonusRules(){ var r=ls('bonus_rules', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function bonusRules(){ var r=((typeof ssReadVal==='function') ? ssReadVal('bonus_rules', {}) : ls('bonus_rules', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function bonusRulesSave(part, obj){ var r=bonusRules(); obj._at=Date.now(); r[part]=obj; return lsSet('bonus_rules', r); }
 /* 数字に直す。全角（１１．１％・－２）も読む。空・数字でないものは null */
 function _bpNum(v){
@@ -68441,7 +68810,7 @@ function _ghNow(){ return (typeof nowJP==='function')?nowJP():new Date().toISOSt
 function ghHire(e){ var h=ghDate(e&&e.hireDate); if(h) return h; try{ return ghDate(getKarte(e.id).hireDate); }catch(err){ return null; } }
 function ghResign(e){ return ghDate(e&&e.resignDate); }
 /* --- 記録 --- */
-function ghAll(){ var m=ls('grade_hist', {}); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
+function ghAll(){ var m=((typeof gbReadVal==='function') ? gbReadVal('grade_hist', {}) : ls('grade_hist', {})); return (m && typeof m==='object' && !Array.isArray(m)) ? m : {}; }
 function ghCmp(a, b){ return a.d<b.d?-1:(a.d>b.d?1:(((b.start?1:0)-(a.start?1:0)) || String(a.at||'').localeCompare(String(b.at||'')))); }
 function ghRecs(empId){
   var x=ghAll()[empId], r=(x && Array.isArray(x.recs)) ? x.recs : [];
@@ -71518,7 +71887,7 @@ function bonusCmRowsHtml(cm){
 function bcoefLabel(key){ if(key.indexOf('G3-')===0) return 'G3 '+cscTrackName(key.slice(3)); return key; }
 /* GM・CEO がその四半期に選んだ G3 の職種：別のキー bonus_track（「四半期|従業員」ごとに新しいほう）。
    四半期のレコード（bonus_q）の中に置くと、別の端末で別の人を選んだときに片方が消える（Codex・Claude のレビュー P2） */
-function btrAll(){ var r=ls('bonus_track', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function btrAll(){ var r=((typeof gbReadVal==='function') ? gbReadVal('bonus_track', {}) : ls('bonus_track', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function btrKey(q, empId){ return String(q||'')+'|'+String(empId||''); }
 function btrGet(q, empId){ var x=btrAll()[btrKey(q, empId)]; return (x && typeof x==='object' && x.t && CSC_TRACK_NAME[x.t]) ? x : null; }
 /* その四半期に G3 の職種として使うもの：GM・CEO がその四半期に選んだもの → 今の役職名 */
@@ -72222,8 +72591,8 @@ function kevRuleBad(r){
 
 /* ---- 設定（会社共通 → グレード・職種 → 個人。適用開始の四半期ごとの版） ---- */
 function kevRuleAll(){ var r=ls('bonus_eval_rule', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
-function kevOvrAll(){ var r=ls('bonus_eval_ovr', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
-function kevEvAll(){ var r=ls('bonus_eval', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function kevOvrAll(){ var r=((typeof gbReadVal==='function') ? gbReadVal('bonus_eval_ovr', {}) : ls('bonus_eval_ovr', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function kevEvAll(){ var r=((typeof ssReadVal==='function') ? ssReadVal('bonus_eval', {}) : ls('bonus_eval', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 /* prefix|四半期 の版のうち、q 以前で一番新しいもの */
 function kevVer(all, prefix, q){
   var best=null, pre=String(prefix)+'|';
@@ -72888,7 +73257,7 @@ function kevFcG(v, gen){ return (Number(gen)===3) ? kevF2(v) : kevFc(v); }   /* 
 function kevPctTxt(v){ var n=kevN(v); return n==null ? '—' : (Math.round(n*10)/10).toFixed(1)+'%'; }
 
 /* ---- 店舗の目標と実績（bonus_store_q '<四半期>|<店舗>'） ---- */
-function kevStoreQAll(){ var r=ls('bonus_store_q', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function kevStoreQAll(){ var r=((typeof ssReadVal==='function') ? ssReadVal('bonus_store_q', {}) : ls('bonus_store_q', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function kevStoreQKey(q, sid){ return String(q)+'|'+String(sid); }
 function kevStoreQGet(q, sid){ var x=kevStoreQAll()[kevStoreQKey(q, sid)]; return (x && typeof x==='object' && !x._deleted) ? x : null; }
 function kevStoreQPut(q, sid, rec, parts){
@@ -75531,7 +75900,7 @@ function kevMisfitHtml(q, cfg){
 }
 
 /* ======================= 特別原資（⑤） ======================= */
-function kevPxAll(){ var r=ls('bonus_pool_extra', {}); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
+function kevPxAll(){ var r=((typeof ssReadVal==='function') ? ssReadVal('bonus_pool_extra', {}) : ls('bonus_pool_extra', {})); return (r && typeof r==='object' && !Array.isArray(r)) ? r : {}; }
 function kevPxGet(q){ var x=kevPxAll()[q]; if(!x || typeof x!=='object' || x._deleted) return {v:0, rec:null}; var n=kevN(x.v); return {v:(n!=null && n>=0 && isFinite(n)) ? Math.round(n*100)/100 : 0, rec:x}; }
 function kevPxParse(v){ var s=String(v==null ? '' : v).replace(/[$,\s]/g, ''); if(s==='') return {ok:true, v:0}; if(!/^\d+(\.\d{1,2})?$/.test(s)) return {ok:false}; var n=Number(s); return (isFinite(n) && n>=0 && n<=100000000) ? {ok:true, v:Math.round(n*100)/100} : {ok:false}; }
 function kevPxCan(){ return ['gm','ceo'].indexOf(curRole)>=0; }   /* 通常原資（bonusSetCo）と同じ */
@@ -93513,7 +93882,7 @@ function _wnKey(w){
   return 'w'+h.toString(36);
 }
 function _wnId(r){ return r ? ('id:'+_wnKey(r)) : null; }
-function getWarnings(storeId){ var a=ls('warnings_'+storeId, []); return Array.isArray(a)?a:[]; }
+function getWarnings(storeId){ if(typeof scReadOk==='function' && !scReadOk('warnings_'+storeId)) return []; var a=ls('warnings_'+storeId, []); return Array.isArray(a)?a:[]; }   /* Codex #142 P2 */
 function saveWarnings(storeId, list){
   var prev=getWarnings(storeId);
   (Array.isArray(list)?list:[]).forEach(function(r){ if(r && r.id==null) r.id=_wnKey(r); });

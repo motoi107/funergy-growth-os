@@ -503,3 +503,80 @@ test('Codex #141 6781928056 P2-3: the growth chart (renderPGD) shows warning log
   html = ctx.renderPGD('Kai One');
   assert.ok(html.includes('ひみつ') && html.includes('S1 の記録'));
 });
+
+// ---- Codex（#142 6785448408）P2 と同じ形（v1147 でも見た）：送信待ちの印がある行を共有の端末に残しても、次にログインした人の読み出し
+// （getTipConfirm・getWarnings）はその人の店の外を返さない（受け取る前・取得の失敗・REST に戻ったときも）。GM の変更は残り、戻ったら送り直せる
+const readers = c => { if (!c.getWarnings) vm.runInContext(fn('getTipConfirm') + '\n' + fn('getWarnings') + '\nfunction v1136Moved(){ return true; }', c); return c; };
+const S2_EDIT = { '2026-11-01': CF('2026-11-01', { totalFinal: 555, _at: 1762800000000 }) };
+const WN_EDIT = [W1, WNEW(7)];
+const see = (c, s) => ({ tip: plain(c.getTipConfirm(s, { from: s === 'S3' ? '2026-10-16' : '2026-11-01' })), wn: plain(c.getWarnings(s)) });
+
+test('Codex #142 P2 (same shape in v1147): a GM\'s unsent rows of other stores on a shared device are not read by the next sign-in, before or after its pull, nor when the range cannot be received', async () => {
+  const W = world({ rlsSc: true });
+  const c = readers(tab(W, 'tGM'));
+  c.localStorage.setItem('_ss_mark', JSON.stringify({ shared: true, keep: {}, unsafe: {} }));
+  await pull(c);
+  c.MEM.set(TK('S2'), JSON.stringify(S2_EDIT)); c.__pending[TK('S2')] = true;   // GM が直したが送れていない
+  c.MEM.set(WK('S2'), JSON.stringify(WN_EDIT)); c.__pending[WK('S2')] = true;
+  assert.equal(see(c, 'S2').tip.totalFinal, 555);
+  logout(c);
+  assert.deepEqual(local(c, TK('S2')), S2_EDIT, 'kept for the GM'); assert.deepEqual(local(c, WK('S2')), WN_EDIT);
+  login(c, 't3');   // S1 だけ
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'before the pull');
+  assert.equal(c.scLocalWriteOk(WK('S2'), true), false, 'and not overwritten from an empty read');
+  await pull(c);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'after the pull (S2 is outside)');
+  assert.equal(see(c, 'S1').tip.totalFinal, 123.45, 'the own store');
+  assert.deepEqual(local(c, TK('S2')), S2_EDIT, 'still kept');
+  logout(c);
+  // 見られる店を決められない・関数が答えない（REST に戻る。SQL のあとなので REST は返さない）
+  W.empsDown = true; W.fresh();
+  login(c, 't3'); await pull(c);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'cannot decide the stores');
+  W.empsDown = false; W.fresh();
+  W.ssDown = true; await pull(c);
+  assert.equal(state(c), null, 'REST as before');
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'REST: the kept rows are not read');
+  assert.equal(c.scLocalWriteOk(WK('S2'), true), false);
+  W.ssDown = false; c._ss.legacy = null;
+  logout(c);
+  // GM が戻る：読める・送り直せる
+  login(c, 'tGM');
+  assert.equal(see(c, 'S2').tip.totalFinal, 555, 'GM before the pull (nothing decided yet: CEO/GM may read the kept rows)');
+  await pull(c);
+  assert.equal(see(c, 'S2').tip.totalFinal, 555, 'GM after the pull');
+  assert.ok(see(c, 'S2').wn.some(w => w.id === 'wN7'));
+  for (const k of [TK('S2'), WK('S2')]) { assert.equal(await c.syncMasterToSupabase(k, c.ls(k, null)), true, k); delete c.__pending[k]; }
+  assert.equal(W.get(TK('S2'))['2026-11-01'].totalFinal, 555); assert.ok(W.get(WK('S2')).some(w => w.id === 'wN7'));
+  assert.equal(anonSc(W), 0);
+});
+
+test('Codex #142 P2 (v1147): on the GM\'s own device (not shared) the next sign-in reads no store of the GM\'s copy until its own range arrives; falling back to REST drops the other sign-in\'s copies', async () => {
+  const W = world({ rlsSc: true });
+  const c = readers(tab(W, 'tGM'));
+  await pull(c); logout(c);
+  assert.ok(local(c, TK('S2')), 'kept on the GM\'s own device');
+  login(c, 't3');
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }); assert.equal(see(c, 'S1').tip, null, 'another sign-in\'s range: nothing yet');
+  W.ssDown = true; await pull(c);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] });
+  assert.equal(local(c, TK('S2')), undefined, 'the GM copy without unsent changes left the device');
+  W.ssDown = false; c._ss.legacy = null;
+  await pull(c);
+  assert.equal(see(c, 'S1').tip.totalFinal, 123.45); assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] });
+});
+
+test('Codex #142 P2 (v1147): on the GM\'s own device a GM row kept unsent is marked when the next sign-in pulls, so a later REST fallback does not open it', async () => {
+  const W = world({ rlsSc: true });
+  const c = readers(tab(W, 'tGM'));
+  await pull(c);
+  c.MEM.set(TK('S2'), JSON.stringify(S2_EDIT)); c.__pending[TK('S2')] = true;
+  logout(c);   // GM だけの端末：ログアウトでは何も変えない
+  login(c, 't3'); await pull(c);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] });
+  W.ssDown = true; await pull(c);   // 同じ人のまま REST に戻る（ほかのログインの写しを消す道は通らない）
+  assert.equal(state(c), null);
+  assert.deepEqual(see(c, 'S2'), { tip: null, wn: [] }, 'the row the pull marked stays closed');
+  assert.deepEqual(local(c, TK('S2')), S2_EDIT, 'and kept');
+  W.ssDown = false;
+});

@@ -130,11 +130,11 @@ const writesOf = (W, key) => W.log.filter(x => x[0] === 'write' && x[2] === key)
 const norm = v => JSON.parse(JSON.stringify(v, (k, x) => (k === 'hist' && Array.isArray(x) && !x.length) ? undefined : x));
 const push = async (c, k, v) => { c.__pushed.length = 0; c.lsSet(k, v); return Promise.all(c.__pushed); };
 
-test('the app routes the grade history to the function for writing (its own ghfn marker), but reads it by REST; it writes only when the row read is unchanged (cas)', () => {
+test('the app routes the grade history to the function for writing (its own ghfn marker) and, from v1148, for reading too; it writes only when the row read is unchanged (cas)', () => {
   const c = tab(world(), 'tGM');
   assert.equal(c.ghIsKey('grade_hist'), true); assert.equal(c.swIsKey('grade_hist'), true); assert.equal(c.sw2IsKey('grade_hist'), false);
   assert.equal(c.swRouted('grade_hist'), true, 'written through the function');
-  assert.equal(c.ssRouted('grade_hist'), false, 'still read by REST');
+  assert.equal(c.ssRouted('grade_hist'), true, 'v1148: read through the function too (Career Score range)');
   assert.ok(c._opMergeDef('grade_hist').cas, 'cas');
   for (const k of ['grade_hist ', 'Grade_hist', 'grade_hist_x', 'growth_karte', 'cs_guide', 'tasks_all', null]) assert.equal(c.ghIsKey(k), false, String(k));
   for (const k of SW2_KEYS) assert.equal(c.swRouted(k), true, k + ' (v1143) unchanged');
@@ -160,7 +160,7 @@ test('GM and CEO write the grade history through the function (server key); the 
   assert.ok(logs.some(m => /^Grade history: written by the server \(secure-state v1145, role GM\)$/.test(m)), logs.join(' | '));
 });
 
-test('Accounting, AM, G4 and crew: a changed grade history is refused (403), the cloud row stays and the device says only GM/CEO; what the cloud has, or an older copy, passes without a write', async () => {
+test('Accounting, AM, G4 and crew: a changed grade history is refused (403), the cloud row stays and the device says only GM/CEO; what the device receives, or an older copy, passes without a write', async () => {
   const W = world();
   for (const who of ['tOF', 'tAM', 't4', 't1']) {
     const c = tab(W, who);
@@ -168,10 +168,15 @@ test('Accounting, AM, G4 and crew: a changed grade history is refused (403), the
     assert.deepEqual(W.get('grade_hist'), GH0, who + ': unchanged');
     assert.ok(c.__toasts.some(m => m === 'グレード履歴を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）'), who + ': ' + c.__toasts.join(' | '));
     const d = tab(W, who);
-    assert.deepEqual(await push(d, 'grade_hist', GH0), [true], who + ': the same value is not stuck');
+    // v1148：端末が受け取る値（経理＝全部・ほかの人＝Career Score で見られる人と本人の分）が「クラウドにあるもの」。それを送り直しても止まらない
+    const same = (await d._fetchOpRow('grade_hist')).value;
+    if (who === 'tOF') assert.deepEqual(same, GH0, 'Accounting reads it all (HR benefits)');
+    assert.deepEqual(await push(d, 'grade_hist', same), [true], who + ': the same value is not stuck');
     assert.equal(d._swLast.grade_hist.how, 'none', who + ': the cloud already has it');
-    const old = JSON.parse(JSON.stringify(GH0)); for (const r of Object.values(old)) r._at -= 1000;
+    const old = JSON.parse(JSON.stringify(same)); for (const r of Object.values(old)) r._at -= 1000;
     assert.deepEqual(await push(d, 'grade_hist', old), [true], who + ': an older copy is not stuck');
+    // 前に REST で受け取った全員の分（見られる人の分より多い）を送り直すと、全部を読めない人は断られる（同じ値でも 403＝中身を当てる道にしない）
+    if (JSON.stringify(same) !== JSON.stringify(GH0)) assert.deepEqual(await push(tab(W, who), 'grade_hist', GH0), [false], who + ': a full copy from before v1148 is refused');
   }
   assert.deepEqual(writesOf(W, 'grade_hist'), [], 'nothing written');
 });
@@ -209,7 +214,9 @@ test('after the SQL: without a PIN sign-in the public key cannot write the grade
   assert.deepEqual(W.get('grade_hist'), ghMore('E-9'));
   assert.deepEqual(writesOf(W, 'grade_hist'), ['service']);
   const one = tab(W, 't1');
-  assert.deepEqual(await one._fetchOpValue('grade_hist'), ghMore('E-9'), 'read by REST');
+  // v1148：読むのも関数で（クルーは本人の分だけ）。v1148 の SQL の前は公開の鍵でも読める（REST の道は残る）
+  assert.deepEqual(await one._fetchOpValue('grade_hist'), { 'E-1': GH0['E-1'] }, 'v1148: the crew reads only their own record through the function');
+  assert.deepEqual(await one._fetchOpValue('grade_hist', 'app_state', false, 0, true), ghMore('E-9'), 'the public key still reads it until the v1148 SQL');
 });
 
 test('cas: GM and CEO save different people\'s grade history at the same time — both succeed and both stay', async () => {

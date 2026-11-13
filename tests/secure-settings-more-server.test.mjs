@@ -124,13 +124,15 @@ test('everyone else is refused (403) and nothing is written — Accounting, offi
 
 test('the same value as the cloud passes for anyone signed in without writing (an unchanged resend from a non-GM device does not stop); no row is never "the same"', async () => {
   const S = setup();
+  // v1148：賞与の個人設定・G3 の職種は、全部を読めない人（GM・CEO 以外）には同じ値でも 403（「同じ値か」で中身を当てる道にしない）
   for (const k of SW2_KEYS) {
     const r = await S.call({ action: 'put', key: k, value: JSON.parse(JSON.stringify(V0[k])), ...S.pin('g4') });
+    if (['bonus_eval_ovr', 'bonus_track'].includes(k)) { assert.equal(r.status, 403, k + ' (v1148)'); continue; }
     assert.equal(r.status, 200, k); assert.equal(r.j.same, true); assert.equal(r.j.updated_at, T0);
   }
   assert.equal(S.W.log.filter(x => x[0] === 'write').length, 0);
-  S.W.rows.delete('bonus_track');
-  assert.equal((await S.call({ action: 'put', key: 'bonus_track', value: V0.bonus_track, ...S.pin('g4') })).status, 403);
+  S.W.rows.delete('cs_guide');
+  assert.equal((await S.call({ action: 'put', key: 'cs_guide', value: V0.cs_guide, ...S.pin('g4') })).status, 403);
 });
 
 test('a bad shape is refused (400) even for the CEO; an odd record already in the cloud does not stop the GM', async () => {
@@ -161,9 +163,10 @@ test('expect (read-then-write) for the eight: a stale read is a conflict (409) a
   assert.equal((await S.call({ action: 'put', key: 'cs_strength_rule', value: V0.cs_strength_rule, expect: { exists: false }, ...S.pin('gm') })).status, 200, 'a new row with exists:false');
 });
 
-test('reading does not go through this path (get refuses, pull never returns the eight); a PIN request whose check fails is 503 (no fallback to email); the v1141 keys are unchanged (Accounting still writes the mileage rate)', async () => {
+test('reading does not go through this path (get refuses the six, pull never returns the eight in the karte part); a PIN request whose check fails is 503 (no fallback to email); the v1141 keys are unchanged (Accounting still writes the mileage rate)', async () => {
   const S = setup();
-  for (const k of SW2_KEYS) assert.equal((await S.call({ action: 'get', key: k, ...S.pin('gm') })).status, 400, k);
+  // v1148：賞与の個人設定・G3 の職種は get で読める（GM には全部）。ほかの 6 つは今までどおり読まない
+  for (const k of SW2_KEYS) assert.equal((await S.call({ action: 'get', key: k, ...S.pin('gm') })).status, ['bonus_eval_ovr', 'bonus_track'].includes(k) ? 200 : 400, k);
   const p = await S.call({ action: 'pull', have: {}, cs_have: {}, ...S.pin('gm') });
   assert.equal(p.status, 200);
   assert.ok(!p.j.rows.some(r => SW2_KEYS.includes(r.key)) && !p.j.index.some(r => SW2_KEYS.includes(r.key)));

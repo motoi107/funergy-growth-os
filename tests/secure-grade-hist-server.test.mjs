@@ -105,12 +105,17 @@ test('everyone else is refused (403) and nothing is written — Accounting, offi
   assert.deepEqual(writes(S.W, 'grade_hist'), []);
 });
 
-test('the same value as the cloud passes for anyone signed in without writing (key order does not matter); no row is never "the same"', async () => {
+test('the same value as the cloud passes without writing only for those who read it all (key order does not matter); no row is never "the same"', async () => {
   const S = setup();
   const reordered = { 'E-4': GH0['E-4'], 'E-1': { _at: 5, name: 'Kai One', recs: GH0['E-1'].recs } };
-  for (const who of ['am', 'g4', 'of', 'g1']) {
+  // v1148：グレード履歴を全部読めるのは CEO・GM・経理・事務Crew。ほかの人は同じ値でも 403（「同じ値か」で中身を当てる道にしない）
+  for (const who of ['of']) {
     const r = await S.call({ action: 'put', key: 'grade_hist', value: reordered, ...S.pin(who) });
     assert.equal(r.status, 200, who); assert.equal(r.j.same, true); assert.equal(r.j.updated_at, T0);
+  }
+  for (const who of ['am', 'g4', 'g1']) {
+    const r = await S.call({ action: 'put', key: 'grade_hist', value: reordered, ...S.pin(who) });
+    assert.equal(r.status, 403, who + ' (v1148: does not read it all)');
   }
   assert.equal(S.W.log.filter(x => x[0] === 'write').length, 0);
   S.W.rows.delete('grade_hist');
@@ -143,12 +148,14 @@ test('expect (read-then-write): a stale read is a conflict (409) and writes noth
   assert.equal((await S.call({ action: 'put', key: 'grade_hist', value: GH0, expect: { exists: false }, ...S.pin('ceo') })).status, 200, 'a new row with exists:false');
 });
 
-test('reading does not go through this path (get refuses, pull never returns it); a PIN request whose check fails is 503 (no fallback to email); the v1141 / v1143 keys are unchanged', async () => {
+test('reading: get returns it to the GM (v1148), pull returns it only in the gb part to an app that sends gb_have; a PIN request whose check fails is 503 (no fallback to email); the v1141 / v1143 keys are unchanged', async () => {
   const S = setup();
-  assert.equal((await S.call({ action: 'get', key: 'grade_hist', ...S.pin('gm') })).status, 400);
+  const g = await S.call({ action: 'get', key: 'grade_hist', ...S.pin('gm') });
+  assert.equal(g.status, 200, 'v1148: the GM reads it through the function'); assert.deepEqual(g.j.value, GH0);
   const p = await S.call({ action: 'pull', have: {}, cs_have: {}, ...S.pin('gm') });
   assert.equal(p.status, 200);
-  assert.ok(!p.j.rows.some(r => r.key === 'grade_hist') && !p.j.index.some(r => r.key === 'grade_hist'));
+  assert.ok(!p.j.rows.some(r => r.key === 'grade_hist') && !p.j.index.some(r => r.key === 'grade_hist'), 'not in the karte part');
+  assert.equal(p.j.gb, undefined, 'an app before v1148 (no gb_have) does not get the gb part');
   assert.equal((await S.call({ action: 'put', key: 'mileage_config', value: { gmapsKey: '', ratePerMile: 0.75, roundTripDefault: true }, ...S.pin('of') })).status, 200, 'Accounting still writes the mileage rate');
   assert.equal((await S.call({ action: 'put', key: 'cs_guide', value: { a: { _at: 1 } }, ...S.pin('of') })).status, 403, 'the v1143 eight stay GM/CEO');
   S.W.wrDown = '503';
