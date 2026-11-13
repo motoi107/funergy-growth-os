@@ -19,7 +19,7 @@ export const ts6 = d => new Date(d).toISOString().replace('Z', '').replace(/\.(\
 export function makeWorld(o = {}) {
   const W = {
     rows: new Map(), users: o.users || {}, wrPeople: o.wrPeople || [], fieldLog: o.fieldLog || [], fieldLogMissing: !!o.fieldLogMissing, fieldLogMaxRows: o.fieldLogMaxRows || 0, fieldLogFailAt: o.fieldLogFailAt || 0, mgr: o.mgr || {}, emps: o.emps || [], pins: o.pins || {},
-    wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, rlsSc: !!o.rlsSc, rlsGb: !!o.rlsGb, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
+    wrDown: false, wrLive: o.wrLive, wrNoChef: !!o.wrNoChef, ignoreNot: !!o.ignoreNot, indexMissing: !!o.indexMissing, rls: !!o.rls, rlsCs: !!o.rlsCs, rlsSw: !!o.rlsSw, rlsHr: !!o.rlsHr, rlsPii: !!o.rlsPii, rlsTp: !!o.rlsTp, rlsSc: !!o.rlsSc, rlsGb: !!o.rlsGb, rlsNt: !!o.rlsNt, stores: o.stores || [], ssHandler: null, ssDown: !!o.ssDown,
     calls: { wr: 0, rest: 0, patch: 0, post: 0, ss: 0, anonSecret: 0, anonCs: 0, anonHr: 0 }, log: [], reads: [], maxRows: o.maxRows || 0, cfg: o.cfg || null,
     actors: [], changeLog: o.changeLog || [], clReads: [],   // v1151：書き込みに付いた x-fp-actor（キー・中身）と、変更の記録（change_log）の偽物
   };
@@ -68,7 +68,7 @@ export function makeWorld(o = {}) {
     }
     const role = h.apikey === SERVICE ? 'service' : h.apikey === ANON ? 'anon' : null;
     assert.ok(role, 'a known key');
-    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)) || (W.rlsPii && key === 'emp_pii') || (W.rlsSc && scIsKey(key)) || (W.rlsGb && gbIsKey(key)));   // rlsPii：v1144 の SQL 20261113090000。rlsSc：v1147 の SQL 20261116090000（Tip の期間の確定・注意ログ）。rlsGb：v1148 の SQL 20261117090000（グレード履歴・賞与の個人設定・G3 の職種）
+    const hide = key => role !== 'service' && ((W.rls && ssIsKey(key)) || (W.rlsCs && csIsKey(key)) || (W.rlsHr && hrIsKey(key)) || (W.rlsPii && key === 'emp_pii') || (W.rlsSc && scIsKey(key)) || (W.rlsGb && gbIsKey(key)) || (W.rlsNt && key === 'notifications'));   // rlsNt：v1152 の SQL 20261119090000（通知）   // rlsPii：v1144 の SQL 20261113090000。rlsSc：v1147 の SQL 20261116090000（Tip の期間の確定・注意ログ）。rlsGb：v1148 の SQL 20261117090000（グレード履歴・賞与の個人設定・G3 の職種）
     const noWrite = key => role !== 'service' && ((W.rlsSw && swIsKey(key)) || (W.rlsTp && tpIsKey(key)));   // v1141：読めるが書けない。rlsTp：v1146 の SQL 20261115090000（Tip Rate・プレップ）
     const anonCount = key => { if (role !== 'anon') return; if (ssIsKey(key)) W.calls.anonSecret++; if (csIsKey(key)) W.calls.anonCs++; if (hrIsKey(key)) W.calls.anonHr++; if (scIsKey(key)) W.calls.anonSc = (W.calls.anonSc || 0) + 1; if (gbIsKey(key)) W.calls.anonGb = (W.calls.anonGb || 0) + 1; };
     W.calls.rest++;
@@ -171,6 +171,7 @@ export function makeWorld(o = {}) {
       };
       if (m === 'GET') {
         W.reads.push(url.search);
+        if (role === 'anon') (W.anonReads = W.anonReads || []).push(url.search);   // 公開の鍵で読んだ（v1152 の試験）
         let out = [];
         for (const [key, r] of [...W.rows.entries()].sort(([a], [b]) => a < b ? -1 : 1)) {
           if (!match(key)) continue;

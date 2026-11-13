@@ -257,6 +257,32 @@ test('keys the app does not keep, the raw personal row and the secure rows are n
   A.SG.stop();
 });
 
+test('notifications (v1152): a signal is read through the function (ntPull), never one by one by REST; the protected kind too; the REST road as before', async () => {
+  const A = load();
+  let nt = 0, mode = 'fn';
+  A.ctx.ntMode = () => mode; A.ctx.ntPull = async () => { nt++; return true; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: 'notifications', n: 1, at: later(1), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  A.W.emit({ key: '_secure:notifications', n: 1, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.equal(nt, 2, 'both through the function');
+  assert.equal(A.pulls.filter(p => p[0] === 'op').length, 0, 'not by REST');
+  assert.equal(A.autoN(), 0, 'not the whole sync');
+  mode = 'rest';   // 前の版の関数：今までどおり
+  A.W.emit({ key: 'notifications', n: 2, at: later(3), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op'), [['op', 'notifications']]);
+  assert.equal(nt, 2);
+  // 関数で読もうとして前の版と分かった（'rest'）：同じ合図で今までどおり REST で読む
+  mode = 'fn'; A.ctx.ntPull = async () => { nt++; mode = 'rest'; return 'rest'; };
+  A.W.emit({ key: 'notifications', n: 3, at: later(4), by_emp: 'E-1', by_dev: 'dOTHER' });
+  await tick(1700);
+  assert.equal(nt, 3);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'op'), [['op', 'notifications'], ['op', 'notifications']]);
+  A.SG.stop();
+});
+
 test('while typing or with a dialog open, nothing is taken; it is taken when the person stops', async () => {
   const A = load();
   A.SG.start(); await tick(20);
@@ -592,6 +618,26 @@ test('Codex #145 P2: a page that fails makes the whole read fail (no half read);
   assert.equal(A.SG.st.seen.o0001, 2, 'read at the next try');
 });
 
+test('notifications (v1152) with the Codex #145 fixes: a read already going is awaited first; a failed read is read again later', async () => {
+  const A = load();
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  const ev = [], res = ['fail-ish', true];
+  let rel; A.ctx._ntPullP = new Promise(r => { rel = r; }).then(() => { ev.push('old-done'); A.ctx._ntPullP = null; return true; });
+  A.ctx.ntMode = () => 'fn';
+  A.ctx.ntPull = async () => { const r = res.shift(); ev.push('read:' + r); return r === 'fail-ish' ? false : r; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: '_secure:notifications', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(ev, [], 'waits for the read that was already going');
+  rel(); await tick(20);
+  assert.deepEqual(ev, ['old-done', 'read:fail-ish']);
+  assert.ok(A.SG.st.retry['_secure:notifications'], 'not read: waiting to read again');
+  await tick(1200);
+  assert.deepEqual(ev, ['old-done', 'read:fail-ish', 'read:true']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  assert.equal(A.SG.st.seen['_secure:notifications'], 1);
+});
+
 // ---- Codex #145 6846570741（c98dd95 から最新の head まで）P2 3 件 ----
 const bulk = (A, prefix, n, s = 1) => { for (let i = 0; i < n; i++) A.W.put(prefix + String(i).padStart(3, '0'), 1, later(s), 'E-1', 'dOTHER'); };
 const skipGap = A => { clearTimeout(A.SG.st.fullTm); A.SG.st.fullTm = null; A.AU.last = 0; };
@@ -711,6 +757,20 @@ test('Codex #145 6846570741 P2-3: a signal for the personal details re-reads the
   assert.ok(![...A.store.values()].some(v => String(v).includes('1991-02-02')), 'still kept in memory only');
 });
 
+test('v1152 with Codex #145 6846570741 P2-2: the notifications row is read one by one through the function even with more than 50 other keys (REST devices: as before)', async () => {
+  const A = load({ rtStatus: 'CHANNEL_ERROR' });
+  let reads = 0; A.ctx.ntMode = () => 'fn'; A.ctx.ntPull = async () => { reads++; return true; };
+  A.SG.start(); await tick(20);
+  bulk(A, 'n', 51);
+  A.W.put('notifications', 1, later(1), 'E-1', 'dOTHER');
+  A.W.put('_secure:notifications', 1, later(1), null, 'dOTHER');
+  await A.SG.pollNow('test'); await tick(1700);
+  assert.equal(reads, 2, 'both signals read through the function (before: handed to the full sync, which does not read notifications)');
+  assert.equal(A.autoN(), 1);
+  assert.equal(A.SG._oneAlways('notifications'), true);
+  A.ctx.ntMode = () => 'rest';
+  assert.equal(A.SG._oneAlways('notifications'), false, 'a function of the previous version: the REST full sync reads the row');
+});
 test('Claude #145 6847734306 P3-3: a single key that changes while the full sync is running is taken right away (the full sync is not awaited inside the read)', async () => {
   let release;
   const A = load({ rtStatus: 'CHANNEL_ERROR', autoAns: n => (n === 1 ? new Promise(r => { release = r; }) : 'ok') });

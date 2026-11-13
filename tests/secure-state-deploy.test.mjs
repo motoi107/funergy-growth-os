@@ -188,18 +188,18 @@ test('the v1148 bundle is as it was (the SQL files and the pinned function file)
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-tip-cf-v1147/2_関数_secure-state_index.ts', 'deploy/secure-tip-cf-v1147/手順.md', 'docs/SECURE_GRADE_BONUS_READ_V1148_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
 
-test('the v1151 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+test('the v1151 bundle is as it was (the SQL files and the pinned function file)', () => {
   const D = 'deploy/change-signal-v1151/';
   assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/change-signal-precheck.sql'));
   assert.equal(rd(D + '3_SQL_合図と変更の記録.sql'), rd('supabase/migrations/20261118090000_change_signal.sql'));
   assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/change-signal-postcheck.sql'));
   assert.equal(rd(D + '戻す_SQL.sql'), rd('db/change-signal-rollback.sql'));
+  // v1152 から関数は先へ進んだので、v1151 の 1 ファイルは PR #145（6fde10b）のまま固定（v1152 を戻すときに使う）
+  assert.equal(sha(D + '2_関数_secure-state_index.ts'), '40d23486b1f42ee97d554f807b23a746eb14b24d02243f4395d694621101cfb6', 'the v1151 function file (PR #145) is not changed');
   const one = rd(D + '2_関数_secure-state_index.ts');
-  const h = rd('supabase/functions/secure-state/handler.mjs');
-  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
-  assert.match(one.slice(h.length), TAIL);
-  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.match(one, TAIL);
   assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.ok(!/ntfn/.test(one), 'the v1151 function does not know the v1152 notifications');
   assert.match(one, /clfn: 1/); assert.match(one, /gbfn: 1/); assert.match(one, /scfn: 1/); assert.match(one, /tpfn: 1/);
   assert.match(one, /async function clGet\(a, b\)/); assert.match(one, /function fpHdr\(a\)/);
   assert.match(one, /'access-control-allow-headers': 'authorization, apikey, content-type, x-fp-actor'/);
@@ -208,4 +208,25 @@ test('the v1151 bundle matches the repository (the SQL files, and the function f
   assert.ok(!/clfn/.test(rd('deploy/secure-grade-bonus-read-v1148/2_関数_secure-state_index.ts')));
   const how = rd(D + '手順.md');
   for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_合図と変更の記録.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/secure-grade-bonus-read-v1148/2_関数_secure-state_index.ts', 'docs/CHANGE_SIGNAL_V1151_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
+});
+
+test('the v1152 bundle matches the repository (the SQL files, and the function file is the current handler + the start line)', () => {
+  const D = 'deploy/secure-notifications-v1152/';
+  assert.equal(rd(D + '1_確かめ_読むだけ.sql'), rd('db/secure-notifications-precheck.sql'));
+  assert.equal(rd(D + '3_SQL_公開の鍵から外す.sql'), rd('supabase/migrations/20261119090000_secure_notifications.sql'));
+  assert.equal(rd(D + '4_確かめ_読むだけ.sql'), rd('db/secure-notifications-postcheck.sql'));
+  assert.equal(rd(D + '戻す_SQL.sql'), rd('db/secure-notifications-rollback.sql'));
+  const one = rd(D + '2_関数_secure-state_index.ts');
+  const h = rd('supabase/functions/secure-state/handler.mjs');
+  assert.ok(one.startsWith(h), 'the function file starts with the current handler (rebuild it after changing the handler)');
+  assert.match(one.slice(h.length), TAIL);
+  assert.equal(one.length, h.length + one.slice(h.length).length);
+  assert.ok(!/verifyPin/.test(one), 'no private part');
+  assert.match(one, /ntfn: 1/); assert.match(one, /clfn: 1/); assert.match(one, /gbfn: 1/);
+  assert.match(one, /async function ntOp\(a, b\)/); assert.match(one, /async function ntCtx\(a\)/); assert.match(one, /export function ntVisible\(n, c\)/);
+  assert.match(one, /async function clGet\(a, b\)/, 'keeps the v1151 change log');
+  // 戻すときは v1151 の 1 ファイル（ntfn を知らない）。戻す SQL を先に（手順.md）
+  assert.ok(!/ntfn/.test(rd('deploy/change-signal-v1151/2_関数_secure-state_index.ts')));
+  const how = rd(D + '手順.md');
+  for (const f of ['1_確かめ_読むだけ.sql', '2_関数_secure-state_index.ts', '3_SQL_公開の鍵から外す.sql', '4_確かめ_読むだけ.sql', '戻す_SQL.sql', 'deploy/change-signal-v1151/2_関数_secure-state_index.ts', 'docs/SECURE_NOTIFICATIONS_V1152_JA.md']) assert.ok(how.includes(f), '手順.md names ' + f);
 });
