@@ -6,7 +6,7 @@
 2. 済（Claude・ブランチ `claude/kpi-google-1153`）：v1153（アプリだけ・`docs/KPI_SETTINGS_V1153_JA.md`）・試験 10/10・わざと壊す 36/37・ブラウザ 54/54・全体は main と同じ失敗だけ。済：PR #147。済（Claude 11/13）：Codex（`cbbfabb`）の P2 2 つ（触っていない欄の書き戻し・前の月を今月の目標で判定）を直した（5c）。次：Codex の再レビュー → マージ → 端末を 1153 に → 店ごとに 11 月の目標・総労働時間の計画・Google の平均を入れる。
 3. v1154：Google の口コミを Places API（新）で（Edge Function が鍵を持つ・決めた店の place ID だけ）。Moto さん：API キー・Places API（新）・請求・上限。Places API で取れる口コミは最近の 5 件までなので、月の平均の出し方を UI 案から。
 4. 済（Moto さん 11/13）：hyper-worker のソース（非公開）・UI案71 は A 案・Google は手入力＋リンクでよい。済（Claude）：アカウント ID は hyper-worker が前から保存 → アプリで外す（v1153 の 5b）。（CHAZUKE・休憩は 5b で済）
-5. ワークセンターの申請／承認（A 案）：済（Claude・ブランチ `claude/wc-approvals-1154`）段階 1＝v1154（`docs/WORKCENTER_APPROVALS_V1154_JA.md`・試験 8/8・わざと壊す 18/18）。PR #148。次：Codex → #147 → #148 の順にマージ。そのあと段階 2（予算と前の種類をサーバーへ・UI案から）→ 段階 3（承認のタブを外して移す）。
+5. ワークセンターの申請／承認（A 案）：済（Claude・ブランチ `claude/wc-approvals-1154`）段階 1＝v1154（`docs/WORKCENTER_APPROVALS_V1154_JA.md`・試験 8/8・わざと壊す 18/18）。PR #148。済（Claude 11/13）：Codex（6862591044）の P2-1（経理レビュー › 申請が「読み込み中…」のまま）を直した。次：Codex の再レビュー → #147 → #148 の順にマージ。そのあと段階 2（予算と前の種類をサーバーへ・UI案から）→ 段階 3（承認のタブを外して移す）。
 5b. 済（Moto さん 11/13 09:07 HST）：CHAZUKE＝モディファイヤー「CHAZUKE」・アップグレード → hyper-worker v1154（非公開・直接渡した）。休憩は A（引かない）。次（Moto さん）：hyper-worker を貼る → Totoya の期間一括取り込み。
 6. 記録：v1141〜v1152 の配備と ss_secret_key の件を共有記録に・`deploy/all-v1141-v1152/手順.md` に「新しい版の ③ のあとに古い版の ③ を流さない」を足す。
 
