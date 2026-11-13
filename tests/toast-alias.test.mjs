@@ -20,7 +20,7 @@ function pick(src, name) {
 }
 const H = (d, hm, plus) => { const [y, m, dd] = d.split('-').map(Number), [h, mi] = hm.split(':').map(Number); return new Date(Date.UTC(y, m - 1, dd + (plus ? 1 : 0), h + 10, mi)).toISOString(); };
 
-const NEW = ['toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut',
+const NEW = ['toastNameKey', 'toastAliasField', '_toastAliasRec', 'empToastAliases', 'toastAliasIndex', 'toastAliasFind', 'toastAliasResolve', '_toastShiftsOverlap', 'tipLaborPut', 'tipLaborWithGuid',
   '_toastNameTokens', 'toastNameCandidates', 'toastNameOwnerNow', 'toastAliasMovesFrom', 'toastAliasProblem', 'toastLinkCan', 'toastLinkItemOk', 'empAliasCanEdit',
   'toastLinkPeriodStart', 'toastLinkEarliest', '_toastLinkPreview', 'unregisteredClockIns', 'empAliasChanges', '_empAliasProbe',
   'toastAliasStamps', '_toastPrevMonthStart', 'toastAliasCatchUp', 'tipPeriodStartOf',
