@@ -3,7 +3,7 @@
 // 読むのは今までどおり REST（この関数の get では返さない）。合成データだけ（架空の人と店）。PostgREST・Auth・work-requests は tests/lib/secure-state-world.mjs の偽物。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHandler, tpIsKey, tpCheck, tipNk, TP_KEYS, TIP_DECIDE, swIsKey, ssIsKey, csIsKey, hrIsKey } from '../supabase/functions/secure-state/handler.mjs';
+import { createHandler, tpIsKey, tpCheck, tipNk, TP_KEYS, TIP_DECIDE, TIP_PAST_PAGES, swIsKey, ssIsKey, csIsKey, hrIsKey } from '../supabase/functions/secure-state/handler.mjs';
 import { makeWorld, URL0, ANON, SERVICE, JWT } from './lib/secure-state-world.mjs';
 
 const EMPS = [
@@ -521,4 +521,80 @@ test('tpCheck: random edits by a staff member never decide anything; random deci
     const own = tpCheck('spl_tip_requests_Kai One', cloud, next, { role: 'gm', name: 'Kai One', dec: true });
     if (own === 'ok') assert.ok(cloud.every(c => bare(next.find(n => n.id === c.id)) === bare(c)), 'not their own');
   }
+});
+
+test('v1147 (Codex #141 6781928056 P2-2): a GM (e-mail sign-in) who renames their own employee row still cannot decide their own old-name Tip Rate request; the rename history is server-only', async () => {
+  const mine = [{ id: 'tipG', name: 'Gina M', rate: 100, reason: 'x', status: '申請中', date: '2026/11/01' }];
+  // 名前を変える前：自分の申請は 403（今までどおり）
+  { const S = setup(); S.W.set(K('Gina M'), mine, T0);
+    const r = await S.put('@gm', K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')));
+    assert.equal(r.status, 403); assert.deepEqual(S.W.get(K('Gina M')), mine); }
+  // 社員の表の名前（列と data）を変えたあと：社員の変更記録に前の名前があるので、やはり 403（前は 200 で承認が入った）
+  for (const via of ['@gm', 'gm']) {
+    const S = setup({ fieldLog: [
+      { emp_id: 'E-GM', field: 'name', old_value: null, new_value: 'Gina M', emp_name: 'Gina M' },
+      { emp_id: 'E-GM', field: 'name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other' },
+      { emp_id: 'E-GM', field: 'col:name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other' },
+      { emp_id: 'E-4', field: 'name', old_value: 'Gina M', new_value: 'Leo Four', emp_name: 'Leo Four' },   // ほかの人の記録は見ない
+    ] });
+    S.W.emps = S.W.emps.map(e => (e.id === 'E-GM' ? { ...e, name: 'Zed Other', data: { name: 'Zed Other' } } : e));
+    if (via === 'gm') S.W.pins.tgm = { ...ME.gm, name: 'Zed Other' };   // PIN でログインし直した（印の名前も新しい名前）
+    S.W.set(K('Gina M'), mine, T0);
+    const r = await S.put(via, K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')));
+    assert.equal(r.status, 403, via + ' ' + JSON.stringify(r.j)); assert.deepEqual(S.W.get(K('Gina M')), mine);
+    // ほかの人の申請は決められる（前の名前の記録はその人のものだけ）
+    const k1 = await S.put(via, K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(k1.status, 200, via + ' decides others');
+  }
+  // 表の列（col:name）だけを書き換えた（data の名前はそのまま）：列の記録の前の名前も本人の名前
+  { const S = setup({ fieldLog: [{ emp_id: 'E-GM', field: 'col:name', old_value: 'Gina M', new_value: 'Zed Other', emp_name: 'Zed Other', note: 'column_only' }] });
+    S.W.emps = S.W.emps.map(e => (e.id === 'E-GM' ? { ...e, name: 'Zed Other', data: { name: 'Zed Other' } } : e));
+    S.W.set(K('Gina M'), mine, T0);
+    assert.equal((await S.put('@gm', K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')))).status, 403); }
+  // 変更記録の表が無い（SQL 20261029090000 の前）：決める人は本人かを確かめられないので決めない（500・何も書かない）。申請は今までどおり
+  { const S = setup({ fieldLogMissing: true });
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); assert.deepEqual(S.W.get(K('Kai One')), TIP0);
+    const p = await S.put('g1', K('Kai One'), [...TIP0, { id: 'tip9', name: 'Kai One', rate: 100, reason: 'y', status: '申請中', date: '2026/11/10' }], S.ex(K('Kai One')));
+    assert.equal(p.status, 200, 'a request by the person (no decision) does not need the history'); }
+  // 前の名前で、いまその名前のほかの人の申請を足すことはできない（申請は今の名前だけ）
+  { const S = setup({ fieldLog: [{ emp_id: 'E-1', field: 'name', old_value: 'Ria Two', new_value: 'Kai One', emp_name: 'Kai One' }] });
+    const r = await S.put('g1', 'spl_tip_requests_Ria Two', [{ id: 'tipX', name: 'Ria Two', rate: 100, reason: 'x', status: '申請中', date: '2026/11/10' }], { exists: false });
+    assert.equal(r.status, 403); }
+});
+
+test('v1147 (Codex #141 6784041763 P2): the decider\'s past names are read to the end of the change log, in pages, whatever the server\'s row limit; an unread rest stops the decision', async () => {
+  const mine = [{ id: 'tipG', name: 'Gina M', rate: 100, reason: 'x', status: '申請中', date: '2026/11/01' }];
+  // いちばん古い名前が Gina M、そのあと何度も名前を変えた（合成データ）。Codex の再現：履歴 2001 行・上限 2000／1001 行・上限 1000 で、前は承認が入った
+  const hist = n => [{ emp_id: 'E-GM', field: 'name', old_value: 'Gina M', new_value: 'Zed 0', emp_name: 'Zed 0' },
+    ...Array.from({ length: n - 1 }, (_, i) => ({ emp_id: 'E-GM', field: i % 2 ? 'col:name' : 'name', old_value: 'Zed ' + i, new_value: 'Zed ' + (i + 1), emp_name: 'Zed ' + (i + 1) }))];
+  for (const [n, max] of [[2, 0], [2001, 2000], [1001, 1000], [2500, 500], [999, 0], [1000, 0], [1001, 0], [1300, 7]]) {
+    const S = setup({ fieldLog: hist(n), fieldLogMaxRows: max });
+    S.W.emps = S.W.emps.map(e => (e.id === 'E-GM' ? { ...e, name: 'Zed ' + (n - 1), data: { name: 'Zed ' + (n - 1) } } : e));
+    S.W.set(K('Gina M'), mine, T0);
+    const r = await S.put('@gm', K('Gina M'), [approve(mine[0])], S.ex(K('Gina M')));
+    assert.equal(r.status, 403, n + ' rows / max ' + max + ' ' + JSON.stringify(r.j)); assert.deepEqual(S.W.get(K('Gina M')), mine, n + ' / ' + max);
+    // 前の名前でないほかの人の申請は今までどおり決められる（読み切ったうえで）
+    const k1 = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(k1.status, 200, 'decides others ' + n + ' / ' + max);
+  }
+  // 1 回で読み切れる件数でも、最後に空のページを確かめるまで読む（サーバーの上限が分からないので）
+  { const S = setup({ fieldLog: hist(3) });
+    const k1 = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(k1.status, 200); assert.equal(S.W.fieldLogCalls, 2, 'one page and the empty page'); }
+  // 途中のページが読めない：決めない（500・何も書かない）
+  { const S = setup({ fieldLog: hist(2500), fieldLogMaxRows: 1000, fieldLogFailAt: 2 });
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); assert.deepEqual(S.W.get(K('Kai One')), TIP0); }
+  // ページが多すぎる（読み切れない）：決めない
+  { const S = setup({ fieldLog: hist(TIP_PAST_PAGES + 1), fieldLogMaxRows: 1 });
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); assert.deepEqual(S.W.get(K('Kai One')), TIP0); assert.equal(S.W.fieldLogCalls, TIP_PAST_PAGES); }
+  // id が進まない（読めない id・続きの条件を読まないサーバー）：決めない（同じページを読み続けない）
+  { const S = setup({ fieldLog: hist(3).map(x => ({ ...x, id: 'x' })) });
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); }
+  { const S = setup({ fieldLog: hist(3) }); S.W.fieldLogIgnoreGt = true;
+    const r = await S.put('@gm', K('Kai One'), [OLD, approve(P1)], S.ex(K('Kai One')));
+    assert.equal(r.status, 500); assert.equal(S.W.fieldLogCalls, 2, 'stops at the second page'); }
 });

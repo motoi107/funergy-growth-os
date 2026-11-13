@@ -46,13 +46,21 @@ const ME = {
   sm: { emp: 'E-SM', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Sam Manager', confirmed: true },
   smu: { emp: 'E-SM', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Manager', confirmed: false },     // 確かめがまだの店長
   sl: { emp: 'E-SL', role: 'staff', grade: 3, stores: ['S2'], am_stores: [], name: 'Sally Lead', confirmed: true },
-  g2: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S4'], am_stores: [], name: 'Gus Two', confirmed: false },
+  g2: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S4'], am_stores: [], name: 'Gus Two', confirmed: true },
+  g2u: { emp: 'E-G2', role: 'staff', grade: 2, stores: ['S4'], am_stores: [], name: 'Gus Two', confirmed: false },   // 確かめがまだの G2（v1147：何も）
   chef: { emp: 'E-CH', role: 'staff', grade: 4, stores: ['S1'], am_stores: [], name: 'Chef Ken', confirmed: true },
   g1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
   g1b: { emp: 'E-1B', role: 'staff', grade: 1, stores: ['S2'], am_stores: [], name: 'Bea One' },
   out: { emp: 'E-OUT', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Gone Lead' },
   smNoStore: { emp: 'E-SM', role: 'staff', grade: 4, stores: [], am_stores: [], name: 'Sam Manager' },   // 確かめた写しの店と今の店が重ならない
 };
+// GM・CEO が確かめた写し（wr_people）。店長・リーダー・G4 の店はこの写し（G2 以上）の店と whoami の店の重なり（v1147・Codex #141 P2-1）
+const WRP = [
+  { emp_id: 'E-AM', role: 'am', grade: 5, stores: ['S2'], am_stores: ['S2', 'S4'] },
+  { emp_id: 'E-4', role: 'staff', grade: 4, stores: ['S1', 'S2'] }, { emp_id: 'E-SM', role: 'staff', grade: 4, stores: ['S1'] },
+  { emp_id: 'E-SL', role: 'staff', grade: 3, stores: ['S2'] }, { emp_id: 'E-G2', role: 'staff', grade: 2, stores: ['S4'] },
+  { emp_id: 'E-CH', role: 'staff', grade: 4, chef: true, stores: ['S1'] },
+];
 const T0 = ts6(Date.UTC(2026, 10, 3, 9, 0, 0));
 const APPS = [
   { id: 'a1', name: 'Ann Alpha', store: 'Alpha', phone: '808-555-0001', email: 'ann@x.test', status: '応募中', date: '2026-10-01' },
@@ -74,7 +82,7 @@ const GH = [
 ];
 
 function setup(o = {}) {
-  const W = makeWorld({ emps: EMPS.map(e => ({ ...e })), mgr: MGR, users: USERS, stores: STORES.map(s => ({ ...s })), wrPeople: [], pins: Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), ...o });
+  const W = makeWorld({ emps: EMPS.map(e => ({ ...e })), mgr: MGR, users: USERS, stores: STORES.map(s => ({ ...s })), wrPeople: WRP.map(x => ({ ...x })), pins: Object.fromEntries(Object.entries(ME).map(([k, v]) => ['t' + k, v])), ...o });
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);
   let clock = Date.UTC(2026, 10, 4, 10, 0, 0);
   const handle = createHandler({ env, fetch: W.fetch, now: () => (clock += 1000) });
@@ -125,10 +133,9 @@ test('who sees which applicants and rejects (the screens of today; Moto 11/04)',
     of: [['a1', 'a2', 'a3', 'a4', 'a5', 'a6'], ['Old Beta', 'Old Unsorted', 'Rex Again'], 'all'],
     oc: [[], [], 'none'],                                            // 事務Crew：今の画面でも応募者は出ない
     am: [['a2', 'a3', 'a6'], ['Old Beta', 'Old Unsorted'], 'scoped'],   // 確かめた担当の店（S2 Beta・S4 は空のブランド）＋未分類
-    amu: [['a2', 'a6'], ['Old Beta'], 'scoped'],                      // 確かめがまだの AM：G3 と同じ（配属の店のブランドと店の名前。未分類は入らない）
+    amu: [[], [], 'none'],                                            // 確かめがまだの AM：何も（v1147：社員の表の役割・店は公開の鍵で書けるので。Codex #141 P2-1）
     g4: [['a1', 'a3'], ['Old Unsorted', 'Rex Again'], 'scoped'],     // 配属の店（S1 Alpha）だけ＋未分類（応援の S2 は入れない）
-    g4u: [['a1', 'a4'], ['Rex Again'], 'scoped'],                    // 確かめがまだの G4：G3 と同じ
-    smu: [['a1', 'a4'], ['Rex Again'], 'scoped'],
+    g4u: [[], [], 'none'], smu: [[], [], 'none'], g2u: [[], [], 'none'],   // 確かめがまだの G4・店長・G2：何も（v1147）
     sm: [['a1', 'a4'], ['Rex Again'], 'scoped'],                    // 店長（SL）：自分の店のブランドと店の名前
     sl: [['a2', 'a6'], ['Old Beta'], 'scoped'],
     g2: [[], [], 'none'],                                            // S4 はブランドも名前も空でない：名前 Gamma
@@ -377,8 +384,8 @@ test('writing yourself up in the employee table does not make you a manager (the
   assert.equal(W.get('growthhub').find(x => x.id === 'gh2').status, '未対応');
   const ap = await call({ action: 'hr_get', key: 'applicants', ...as('self') });
   assert.ok(!ap.j.value.some(x => x.store === '未分類'), 'no 未分類 (that is for confirmed G4 and AM)');
-  // G3 と同じ範囲（配属の店）までは、社員の表の書き換えで見える（残る限界・段階 (b) で閉じる）
-  assert.deepEqual(ids(ap.j.value), ['a2', 'a6']);
+  // v1147（Codex #141 6781928056 の P2-1）：配属の店も見えない（前は G3 と同じ範囲まで見えた＝残る限界だった。GM・CEO が確かめた写しで決める）
+  assert.deepEqual(ids(ap.j.value), []); assert.equal(ap.j.level, 'none');
   // whoami が（もし）G4 を返しても、確かめた写しが無ければ管理者にしない
   const { W: W2, call: c2, as: a2 } = setup({ pins: { tself: { emp: 'E-1', role: 'staff', grade: 4, stores: ['S2'], am_stores: [], name: 'Kai One', confirmed: false } } });
   W2.emps = W2.emps.map(e => (e.id === 'E-1' ? { ...e, role: 'g4', store: 'S2', title: 'Store Manager' } : e));

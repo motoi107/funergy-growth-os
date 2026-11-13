@@ -9667,7 +9667,7 @@ function v1136MoveLocalOnly(){
     var r=Object.assign({}, v); r._at=_lrLegacyAt(v.at); r._from='v1135';
     var nk='tip_cf_'+m[1]+'_'+m[2]; (tc[nk]=tc[nk]||{})[m[2]+m[3]]=r;
   });
-  Object.keys(tc).forEach(function(nk){ fold(nk, tc[nk], mergeLocalRecMap); });
+  Object.keys(tc).forEach(function(nk){ if(typeof scLocalWriteOk==='function' && !scLocalWriteOk(nk, true)) return; fold(nk, tc[nk], mergeLocalRecMap); });   /* v1147：見られない店の分は移さない（送っても断られる。この端末の前の名前の記録はそのまま） */
   /* 手入力 KPI */
   each('kpi_manual_', /^kpi_manual_(.+)$/, function(k, m){
     var v=ls(k, null); if(!v || typeof v!=='object' || Array.isArray(v)) return;
@@ -11016,6 +11016,8 @@ if(typeof window.FUNERGY_WEB_OFFICE_WRITE==='function')window.FUNERGY_WEB_OFFICE
   var sp = _SPLIT_KEYS && _SPLIT_KEYS[key]; if(sp){ return _splitWrite(key, sp, val); }
   /* v1140：見られない人の Career Score の行は、この端末で作らない・直さない（一部だけの写しにしない）。分割の行（申請・履歴）もここを通る */
   if(typeof csLocalWriteOk==='function' && !csLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
+  /* v1147：見られない店の Tip の期間の確定・注意ログ、記録できない人の注意ログは、この端末で作らない（送っても断られる） */
+  if(typeof scLocalWriteOk==='function' && !scLocalWriteOk(key)){ try{ _lsNoteSaveFailure(key); }catch(e){} return false; }
   /* v1142：採用・お悩み相談室は、関数で 1 件ずつ保存する（前の版の道で 1 行を丸ごと書かない） */
   if(typeof hrLocalWriteOk==='function' && !hrLocalWriteOk(key)) return false;
   /* v1085: 従業員の表は「この保存で変えた人の、変えた欄」だけをいまの表に重ねて書き、送る分を覚える（退職した人を古い写しで戻さない）。
@@ -11372,7 +11374,7 @@ function outboxLabel(key){
     ['m_recipes','レシピ','Recipes'],['inv_','棚卸','Inventory'],['purchases_','買い出し','Purchases'],['reimbursements','立替','Reimbursements'],['spl_checks_','チェック','Checks'],['checks','チェック','Checks'],
     ['ec_resolutions','エラーの解除','Error resolutions'],['ec_log','エラーセンター記録','Error center log'],['menu_log','メニュー変更ログ','Menu change log'],['reject_log','不採用ログ','Rejection log'],
     ['handbook_log','ハンドブック更新ログ','Handbook update log'],['prep_history','仕込みレベル履歴','Prep level history'],['meeting_minutes','議事録','Meeting minutes'],
-    ['att_fix_','勤怠の手動修正','Attendance fixes'],['tip_cf_','Tipの期間の確定','Tip period confirmation'],['kpi_man_','手入力KPI','Manual KPIs'],['dev_pipe','育成の記録','Development records'],   /* v1136 */
+    ['att_fix_','勤怠の手動修正','Attendance fixes'],['tip_cf_','Tipの期間の確定','Tip period confirmation'],['warnings_','注意ログ','Warning log'],['kpi_man_','手入力KPI','Manual KPIs'],['dev_pipe','育成の記録','Development records'],   /* v1136 */
     ['menu_mix_','メニューの出数','Menu item counts'],['shiftplan_','シフト','Shift'],['spl_tip_requests_','Tip Rate','Tip Rate'],['tip_requests','Tip Rate','Tip Rate'],['notifications','通知','Notifications'],
     ['lala_tasks','LaLa のタスク','LaLa tasks'],['m_employees','従業員','Employees'],['m_stores','店舗','Stores'],['growth_karte','成長カルテ','Growth chart'],['lss_','Career Score','Career Score'],
     ['q_budgets','Qコミット','Quarter commit'],['fc_monthly_','原価（月）','Food cost (month)'],['daily_actuals_','売上・日報','Sales and daily report'],['ot_approvals_','残業の承認','Overtime approvals'],['onboardings','入社の手続き','Onboarding'],
@@ -12200,7 +12202,7 @@ async function supaUpsert(table, rows, _noSs){
       console.warn('supaUpsert '+table+' failed', res.status, txt); return false; }
     if (tm) clearTimeout(tm);
     _lastSupaError = null;
-    if (table==='app_state' && typeof swNote==='function'){ try{ (Array.isArray(rows) ? rows : [rows]).forEach(function(r){ if(r && gwIsKey(r.key)) swNote(r.key, 'rest'); }); }catch(e){} }   /* v1141 */
+    if (table==='app_state' && typeof swNote==='function'){ try{ (Array.isArray(rows) ? rows : [rows]).forEach(function(r){ if(r && rfIsKey(r.key)) swNote(r.key, 'rest'); }); }catch(e){} }   /* v1141。v1147：Tip の期間の確定・注意ログも */
     return true;
   } catch(e){
     if (tm) clearTimeout(tm);
@@ -12493,7 +12495,7 @@ function ssStale(tk){
 /* 取り込む直前（_applyKvRows の前）：頼んだあとにログインが変わっていたら、成長カルテ・賞与・Career Score の行を外し、印（_ss・_cs）も付けない */
 function ssStaleRows(rows){
   if(!Array.isArray(rows) || !rows._tk || !ssStale(rows._tk)) return rows;
-  var out=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key))); });
+  var out=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも */
   try{ if(rows._kv) Object.defineProperty(out, '_kv', { value:rows._kv, enumerable:false }); }catch(e){}
   try{ Object.defineProperty(out, '_stale', { value:true, enumerable:false }); }catch(e){}
   return out;
@@ -12501,14 +12503,150 @@ function ssStaleRows(rows){
 function ssLegacyNow(S){ var L=_ss.legacy; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーを関数に頼むか（ログインの印があり、関数が無いと分かっていない） */
 function ssRouted(key){
-  var cs=csIsKey(key);
-  if(!ssIsKey(key) && !cs) return false;
+  var cs=csIsKey(key), sc=scIsKey(key);
+  if(!ssIsKey(key) && !cs && !sc) return false;
   var S=ssSess(); if(!S || ssLegacyNow(S)) return false;
   if(cs && csOldNow(S)) return false;   /* v1140：関数が前の版（Career Score を扱わない）：今までどおり REST */
+  if(sc && scOldNow(S)) return false;   /* v1147：関数が前の版（Tip の期間の確定・注意ログを扱わない）：今までどおり REST */
   return true;
 }
 /* v1140：関数が前の版（答えに csfn:1 が無い）と分かったあと 10 分は、Career Score を REST で */
 function csOldNow(S){ var L=_ss.csOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+/* ============================================================
+   v1147（段階 2b の 9 つ目・Moto さん 11/10「読む人も書く人も絞る」・docs/SECURE_TIP_CF_V1147_JA.md）：
+   Tip の期間の確定（tip_cf_<店>_<年>）と注意ログ（warnings_<店>）も関数 secure-state を通す
+   ------------------------------------------------------------
+   【前】どちらも公開の鍵で、だれでも全店の分を読めて書けた（確定には人ごとの最終チップ額が入る）。
+   【届く店（今の画面と同じ。決めるのはサーバー）】Tip の確定＝チップ管理を開ける人の、見られる店：CEO・GM・経理・事務Crew＝全店／
+     確かめた AM＝担当の店と自分の店・応援の店／GM・CEO が確かめた Head Chef＝全店／ほかの G2〜G4・店長＝自分の店と応援の店。
+     注意ログ＝必須チェックを開ける人（事務Crew は開けない）の同じ店。G1・店のログイン（店舗の PIN）＝なし。行は店ごとに丸ごと（一部だけの写しは無い）。
+   【書ける人（今の画面と同じ）】Tip の確定＝見られる人。確定の解除・例外承認＝CEO・GM・経理。注意ログ＝記録のボタンを押せる人
+     （CEO・GM・確かめた AM・G4・Head Chef）が足すだけ（消さない・書き換えない）。
+   【端末の写し】見られない店の行は、取り込みのたびに端末から消す（送れていない変更のある行は残す）。見られない店の行・書けない記録は、
+     この端末で作らない（scLocalWriteOk）。
+   【関数が前の版（v1146 以前）】答えに scfn:1 が無ければ、今までどおり REST（公開の鍵）で。公開の鍵から外すのは、全部の端末を 1147 にしたあとの SQL（20261116090000）。 */
+var SC_TIP_PRE = 'tip_cf_', SC_WN_PRE = 'warnings_';
+var SC_STATE_KEY = '_sc_state';   /* この端末だけ：{ level:all|scoped|none, stores:[見られる店]|null, tip, wn, confirm, unlock, wnWrite, who, at } */
+var SC_SEEN_KEY = '_sc_seen';     /* この端末だけ：{ key: 関数の印#端末の文字の印 } */
+/* 関数・SQL（ss_secret_key）と同じ決まり：tip_cf_ か warnings_ で始まり、その後ろに 1 文字以上（200 字まで） */
+function scIsKey(k){ return typeof k==='string' && k.length<=200 && ((k.indexOf(SC_TIP_PRE)===0 && k.length>SC_TIP_PRE.length) || (k.indexOf(SC_WN_PRE)===0 && k.length>SC_WN_PRE.length)); }
+function scParse(k){
+  if(!scIsKey(k)) return null;
+  if(k.indexOf(SC_TIP_PRE)===0){ var m=/^tip_cf_(.+)_(\d{4})$/.exec(k); return { kind:'tip', store:m ? m[1] : null }; }
+  return { kind:'wn', store:k.slice(SC_WN_PRE.length) };
+}
+function scOldNow(S){ var L=_ss.scOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function scStateGet(){
+  try{ var o=JSON.parse(localStorage.getItem(SC_STATE_KEY)||'null');
+    if(o && typeof o==='object' && (o.level==='all' || o.level==='scoped' || o.level==='none')){ if(!Array.isArray(o.stores)) o.stores=[]; return o; } }catch(e){}
+  return null;
+}
+function scStateSet(o){
+  var prev=scStateGet();
+  try{ if(o) localStorage.setItem(SC_STATE_KEY, JSON.stringify(o)); else localStorage.removeItem(SC_STATE_KEY); }catch(e){}
+  /* 「設定 › 診断と記録」に残す（形・店の数が変わったときだけ。店の名前は出さない） */
+  try{
+    var pk=prev ? prev.level+'/'+prev.stores.length+'/'+(prev.wn?1:0) : '', nk=o ? o.level+'/'+o.stores.length+'/'+(o.wn?1:0) : '';
+    if(o && pk!==nk && typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function'){
+      var L=o.level==='all' ? ['全店','all stores'] : o.level==='scoped' ? ['見られる店の分だけ（'+o.stores.length+' 店）','only the stores you can see ('+o.stores.length+')'] : ['受け取らない','none'];
+      FUNERGY_STATUS.log('store', (typeof t==='function') ? t('Tip の期間の確定・注意ログ：サーバー（secure-state v1147）から '+L[0]+'（この端末の写しも合わせました）', 'Tip period confirmation / warning log: from the server (secure-state v1147), '+L[1]+' (this device copy updated)') : ('Tip の期間の確定・注意ログ：'+L[0]));
+    }
+  }catch(e){}
+}
+function scSeenGet(){ try{ var o=JSON.parse(localStorage.getItem(SC_SEEN_KEY)||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
+function scSeenSet(o){ try{ localStorage.setItem(SC_SEEN_KEY, JSON.stringify(o||{})); }catch(e){} }
+/* その店のその種類（'tip'・'wn'）をこの端末で見せてよいか。範囲がまだ決まっていない（関数が前の版・v1146 以前から上げた直後）は今までどおり。
+   前の人の範囲が残っているときは、受け取り終えるまで見せない */
+function scSeesStore(kind, store){
+  var st=scStateGet();
+  if(!st) return true;
+  if(st.who && st.who!==csWho()) return false;
+  if(st.level==='none' || !(kind==='tip' ? st.tip : st.wn)) return false;
+  if(st.level==='all') return true;
+  return store!=null && st.stores.indexOf(String(store))>=0;
+}
+function scSees(key){
+  var p=scParse(key); if(!p) return true;
+  var st=scStateGet(); if(!st) return true;
+  if(p.store==null) return !!(st.level==='all' && (p.kind==='tip' ? st.tip : st.wn) && !(st.who && st.who!==csWho()));
+  return scSeesStore(p.kind, p.store);
+}
+/* v1147：Tip の確定の解除・例外承認をこのログインでできるか（サーバーが決めた範囲。まだ決まっていないときは今までどおり画面の役割で） */
+function scTipUnlockOk(){ var st=scStateGet(); if(!st) return true; return !(st.who && st.who!==csWho()) && !!st.unlock; }
+/* その店に注意ログを記録できるか（記録のボタン）。範囲がまだ決まっていないときは今までどおり（画面の役割で） */
+function scWnWritable(store){ var st=scStateGet(); if(!st) return true; return scSeesStore('wn', store) && !!st.wnWrite; }
+/* この端末でその行を書いてよいか（lsSet）。quiet：知らせを出さない（前の名前の記録の移し替えなど） */
+var _scWarned = {};
+function scLocalWriteOk(key, quiet){
+  if(!scIsKey(key)) return true;
+  var st=scStateGet(); if(!st) return true;
+  var no=function(id, ja, en){
+    if(!quiet && !_scWarned[id]){ _scWarned[id]=1; try{ if(typeof showToast==='function') showToast((typeof t==='function') ? t(ja, en) : ja, 'warning'); }catch(e){} setTimeout(function(){ delete _scWarned[id]; }, 15000); }
+    return false;
+  };
+  if(st.who && st.who!==csWho()) return no('who', 'Tip の期間の確定・注意ログを受け取っている途中です。少し待ってから、もう一度押してください（保存していません）', 'Still receiving tip confirmations / warning logs. Please try again in a moment (not saved).');
+  var p=scParse(key);
+  if(!scSees(key)) return no('out', p.kind==='tip' ? 'この店の Tip の期間の確定は、このログインでは見られません（保存していません）' : 'この店の注意ログは、このログインでは見られません（保存していません）',
+    p.kind==='tip' ? 'This sign-in cannot see this store’s tip period confirmation (not saved).' : 'This sign-in cannot see this store’s warning log (not saved).');
+  if(p.kind==='wn' && !st.wnWrite) return no('wn', '注意ログを記録できるのは CEO・GM・AM・G4・Head Chef（GM・CEO が確かめた人）です（保存していません）', 'Only the CEO, GM, AM, G4 and Head Chef (confirmed by the GM or CEO) can record warnings (not saved).');
+  return true;
+}
+/* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
+function scHaveMap(force){
+  var have={}; if(force) return have;
+  var seen=scSeenGet();
+  Object.keys(seen).forEach(function(k){ var s=String(seen[k]), c=s.indexOf('#'); if(c>0 && scIsKey(k) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c); });
+  return have;
+}
+/* 関数の答え（sc）を受け取る：見られない店の行を端末から消し（送れていない変更のある行は残す）、範囲を記録する。返す行は _applyKvRows で合流して取り込む */
+async function scTake(c, tk){
+  await ssIdbReady();
+  if(tk && ssStale(tk)) return { stale:true, fail:true, rows:[], ver:{} };   /* 頼んだあとにログインが変わった（範囲も写しも変えない） */
+  if(!c || c.error || c.fail) return { fail:true, rows:[], ver:{} };   /* 見られる店を決められなかった：端末の写しはそのまま・REST でも取らない */
+  var level=(c.level==='all' || c.level==='scoped') ? c.level : 'none';
+  var ver={}; (Array.isArray(c.index) ? c.index : []).forEach(function(x){ if(x && scIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
+  var seen=scSeenGet(), ch=false, ks=[];
+  try{ ks=(typeof lsKeys==='function') ? lsKeys() : []; }catch(e){ ks=[]; }
+  ks.forEach(function(k){
+    if(!scIsKey(k) || ssPending(k) || ver[k]) return;
+    /* 見られない店の行（とクラウドに無くなった行）：消す。送れていない変更のある行は残す */
+    try{ _lsRawDel(k); }catch(e){} if(seen[k]!=null){ delete seen[k]; ch=true; }
+  });
+  if(ch) scSeenSet(seen);
+  var rows=(Array.isArray(c.rows) ? c.rows : []).filter(function(x){ return x && scIsKey(x.key) && typeof x.v==='string' && ver[x.key]===x.v; })
+    .map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; });
+  var strs=Array.isArray(c.stores) ? c.stores.filter(function(s){ return typeof s==='string' && s; }) : [];
+  scStateSet({ level:level, stores:(level==='scoped') ? strs : [], tip:level!=='none' && c.tip===true, wn:level!=='none' && c.wn===true,
+    confirm:c.confirm===true, unlock:c.unlock===true, wnWrite:c.wnWrite===true, who:csWho(), at:Date.now() });
+  return { rows:rows, ver:ver, level:level };
+}
+/* 取り込めた行の印を残す（_kvSeenRecord と同じ：関数の印#取り込んだ直後の端末の文字の印） */
+function scSeenRecord(rows, okKeys){
+  try{
+    var m=rows && rows._sc; if(!m || !m.ver) return;
+    try{ if(typeof _idbState!=='undefined' && _idbState==='init') return; }catch(e){}
+    var seen=scSeenGet(), next={}, ok={}, got={};
+    (okKeys||[]).forEach(function(k){ ok[k]=1; });
+    (rows||[]).forEach(function(r){ if(r && r.key) got[r.key]=1; });
+    Object.keys(m.ver).forEach(function(k){
+      if(ok[k]) next[k]=m.ver[k]+'#'+_kvFp(_lsStoreGet(k));
+      else if(!got[k] && seen[k]!=null && String(seen[k]).indexOf(m.ver[k]+'#')===0) next[k]=seen[k];
+    });
+    scSeenSet(next);
+  }catch(e){ console.warn('sc seen', e); }
+}
+/* ログアウト：全店を見られる人でない・共有の端末なら、写しを残さない（送れていない変更のある行は残す）。次にログインした人の範囲で受け取り直す */
+function scOnLogout(){
+  try{
+    var m=ssMarkGet(), st=scStateGet();
+    if(!m.shared && !(st && st.level!=='all')) return;
+    var ks=[]; try{ ks=lsKeys(); }catch(e){ ks=[]; }
+    ks.forEach(function(k){ if(scIsKey(k) && !ssPending(k)){ try{ _lsRawDel(k); }catch(e){} } });
+    scSeenSet({}); scStateSet(null);
+  }catch(e){}
+}
+/* 断った印・外す道・「設定 › 診断と記録」に入れるキー（決めた人だけが書ける設定と、v1147 の店ごとの行） */
+function rfIsKey(k){ return gwIsKey(k) || scIsKey(k); }
 /* ============================================================
    v1141（段階 2b の 3 つ目）：決めた人だけが書ける設定（docs/SECURE_SETTINGS_V1141_JA.md）
    ------------------------------------------------------------
@@ -12972,10 +13110,11 @@ function swNote(key, how, by){
     bonus_track:['G3 の職種','G3 track'], bonus_eval_rule:['賞与の 4 項目の設定','Bonus 4-item settings'], bonus_eval_ovr:['賞与の個人設定','Bonus personal settings'],
     cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'], grade_hist:['グレード履歴','Grade history'],
     prep_tables:['プレップの時給の表','Prep wage tables'], prep_certs:['プレップの認定','Prep certifications'], tip_requests:['Tip Rate（前の統合行）','Tip Rate (old combined row)'] }[key]
-    || (String(key).indexOf(TP_TIP_PRE)===0 ? ['Tip Rate（'+String(key).slice(TP_TIP_PRE.length)+'）', 'Tip Rate ('+String(key).slice(TP_TIP_PRE.length)+')'] : [key, key]);
+    || (String(key).indexOf(TP_TIP_PRE)===0 ? ['Tip Rate（'+String(key).slice(TP_TIP_PRE.length)+'）', 'Tip Rate ('+String(key).slice(TP_TIP_PRE.length)+')']
+    : (scIsKey(key) ? (function(p){ return p.kind==='tip' ? ['Tip の期間の確定（'+(p.store||'?')+'）', 'Tip period confirmation ('+(p.store||'?')+')'] : ['注意ログ（'+p.store+'）', 'Warning log ('+p.store+')']; })(scParse(key)) : [key, key]));   /* v1147 */
   var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'], office_crew:['事務Crew','Office Crew'], am:'AM', staff:['スタッフ','staff'] }[by];
   var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
-  var fv=tpIsKey(key) ? 'v1146' : (ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141'));
+  var fv=scIsKey(key) ? 'v1147' : (tpIsKey(key) ? 'v1146' : (ghIsKey(key) ? 'v1145' : (sw2IsKey(key) ? 'v1143' : 'v1141')));
   var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state '+fv+'）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state '+fv+', role '+re+')']
         : how==='same' ? [nm[0]+'：サーバー（secure-state '+fv+'）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state '+fv+') did not write (this sign-in may not change it; the cloud already had the same value)']
         : how==='none' ? [nm[0]+'：クラウドにもう入っているので書きませんでした（新しい変更なし）', nm[1]+': not written (the cloud already has it; nothing new)']
@@ -13073,6 +13212,7 @@ function ssOnLogout(){
   _ssGen++;   /* 頼んでいる途中の前の人の答えは、届いても置かない（ssStale） */
   try{ var m=ssMarkGet(); if(m.shared && ssState()==='full') ssToPart(null); }catch(e){}
   try{ if(typeof csOnLogout==='function') csOnLogout(); }catch(e){}   /* v1140：Career Score も */
+  try{ if(typeof scOnLogout==='function') scOnLogout(); }catch(e){}   /* v1147：Tip の期間の確定・注意ログも */
   try{ if(typeof hrOnLogout==='function') hrOnLogout(); }catch(e){}   /* v1142：採用・お悩み相談室も */
   try{ if(typeof piiOnLogout==='function') piiOnLogout(); }catch(e){}   /* v1144：従業員の個人の欄も */
 }
@@ -13123,6 +13263,9 @@ async function ssCall(payload, retried){
   /* v1146：Tip Rate・プレップを扱う関数か（tpfn:1）。v1145 以前の関数なら、今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
   if(j.tpfn===1) _ss.tpOld=null;
   else { _ss.tpOld={ id:S.id, at:Date.now() }; if(payload.key && tpIsKey(payload.key)) return { legacy:true }; }
+  /* v1147：Tip の期間の確定・注意ログを扱う関数か（scfn:1）。v1146 以前の関数なら、今までどおり REST で読み書きする */
+  if(j.scfn===1) _ss.scOld=null;
+  else { _ss.scOld={ id:S.id, at:Date.now() }; if((payload.key && scIsKey(payload.key)) || payload.action==='tcf_status') return { legacy:true }; }
   /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
   if(j.hrfn===1) _ss.hrOld=null;
   else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
@@ -13143,7 +13286,8 @@ async function ssPull(force, tk){
   if(!S){
     if(gmHint) return { rest:true };                     /* PIN の印の無い CEO・GM：今までどおり */
     await ssIdbReady(); if(ssStale(tk)) return STALE;
-    ssToPart(null); ssLevelSet('none'); var c0=await csTake({ level:'none' }, tk); return c0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0 };   /* v1140：Career Score も受け取らない */
+    ssToPart(null); ssLevelSet('none'); var c0=await csTake({ level:'none' }, tk); if(c0.stale) return STALE;   /* v1140：Career Score も受け取らない */
+    var s0=await scTake({ level:'none' }, tk); return s0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0, sc:s0 };   /* v1147：Tip の期間の確定・注意ログも */
   }
   if(ssLegacyNow(S)) return { rest:true };
   var part=(ssState()==='part'), seen=ssSeenGet(), have={};
@@ -13151,28 +13295,34 @@ async function ssPull(force, tk){
     var s=String(seen[k]), c=s.indexOf('#');
     if(c>0 && ssIsKey(k) && (!part || s.indexOf('p:')===0) && s.slice(c+1)===_kvFp(_lsStoreGet(k))) have[k]=s.slice(0,c);
   });
-  var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), ms:60000 });   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない） */
+  var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), sc_have:scHaveMap(force), ms:60000 });   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない）。v1147：sc_have で Tip の期間の確定・注意ログも */
   if(ssStale(tk)) return STALE;   /* Codex P1：前の人の答え（GM の full など）を、次の人の端末に置かない */
   if(r.legacy) return { rest:true };
-  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); var c1=await csTake({ level:'none' }, tk); return c1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1 }; }
+  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
+    var s1=await scTake({ level:'none' }, tk); return s1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1, sc:s1 }; }
   if(r.status===401){
     /* CEO・GM：端末の写しは消さない（PIN の確かめの一時的な失敗も 401 になる）。今までどおり REST（SQL のあとは対象のキーは来ない） */
     if(gmHint) return { rest:true, fail:true };
     await ssIdbReady(); if(ssStale(tk)) return STALE;
-    ssToPart(null); ssLevelSet('none'); var c2=await csTake({ level:'none' }, tk); return c2.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c2 };   /* 店舗のログイン・期限切れ */
+    ssToPart(null); ssLevelSet('none'); var c2=await csTake({ level:'none' }, tk); if(c2.stale) return STALE;   /* 店舗のログイン・期限切れ */
+    var s2=await scTake({ level:'none' }, tk); return s2.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c2, sc:s2 };   /* v1147 */
   }
-  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true, cs:{ fail:true, rows:[], ver:{} } };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま） */
+  if(!r.ok) return gmHint ? { rest:true, fail:true } : { rest:false, rows:[], ver:{}, fail:true, cs:{ fail:true, rows:[], ver:{} }, sc:{ fail:true, rows:[], ver:{} } };   /* CEO・GM 以外：REST で全部を取らない（端末の写しはそのまま。v1147：Tip の期間の確定・注意ログも） */
   var j=r.j, level=(j.level==='full' || j.level==='proj') ? j.level : 'none';
   /* v1140：Career Score。関数が前の版（cs が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
   var csr=null;
   if(j.cs && typeof j.cs==='object'){ csr=await csTake(j.cs, tk); if(csr.stale) return STALE; }
   else if(j.cs===undefined || j.cs===null){ csHistReset(csStateGet(), '', []); csStateSet(null); }
+  /* v1147：Tip の期間の確定・注意ログ。関数が前の版（sc が無い）なら null＝今までどおり REST（範囲の記録も消す＝画面は今までどおり） */
+  var scr=null;
+  if(j.sc && typeof j.sc==='object'){ scr=await scTake(j.sc, tk); if(scr.stale) return STALE; }
+  else if(j.sc===undefined || j.sc===null) scStateSet(null);
   var rows=Array.isArray(j.rows) ? j.rows.filter(function(x){ return x && ssIsKey(x.key) && x.key!=='karte_pin' && typeof x.v==='string'; }) : [];
   var ver={}; (Array.isArray(j.index) ? j.index : []).forEach(function(x){ if(x && ssIsKey(x.key) && typeof x.v==='string') ver[x.key]=x.v; });
   if(level==='full'){
     ssLevelSet('full');
     /* 置くのは REST の取り込みも読めたあと（_kvPullRows）。part の端末は、その直前に見せる形・前の写しを消す（ssFreshCleanup） */
-    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, cs:csr };
+    return { rest:false, full:true, fresh:part, rows:rows.map(function(x){ return { key:x.key, value:x.value, updated_at:x.updated_at }; }), ver:ver, cs:csr, sc:scr };
   }
   /* proj・none：見せる形をそのまま置く（合流しない・送らない）。ほかの対象のキーの写しは消す。
      送れていない変更のあるキー（共有の端末で GM が直して送れていない分）は、消さない・見せる形で上書きしない（独立レビュー P1-1） */
@@ -13191,7 +13341,7 @@ async function ssPull(force, tk){
     ssMarkSet(m);
   }
   ssSeenSet(nseen); ssLevelSet(level);
-  return { rest:false, rows:[], ver:{}, cs:csr };
+  return { rest:false, rows:[], ver:{}, cs:csr, sc:scr };
 }
 /* ---- v1140：Career Score の取り込み ---- */
 /* 送る印：取り込んだ直後のまま（端末の文字の印が同じ）の行だけ。「クラウドから取り込む」は全部 */
@@ -13317,8 +13467,8 @@ async function ssPutRow(key, value, expect){
   var r=await ssCall(p);
   if(r.legacy || r.none) return SS_REST;
   if(r.ok){
-    if(gwIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
-    if(gwIsKey(key)) ssRefusedClear(key);   /* v1145：受け付けた（断った印を消す）。v1146：Tip Rate・プレップも */
+    if(rfIsKey(key)) swNote(key, r.j.same===true ? 'same' : 'fn', r.j.by);
+    if(rfIsKey(key)) ssRefusedClear(key);   /* v1145：受け付けた（断った印を消す）。v1146：Tip Rate・プレップも。v1147：Tip の期間の確定・注意ログも */
     return { ok:true, updatedAt:r.j.updated_at==null ? null : String(r.j.updated_at), same:r.j.same===true };
   }
   if(r.status===409) return 'conflict';
@@ -13335,6 +13485,8 @@ async function ssPutRow(key, value, expect){
       'The server refused the grade history (a record has the wrong shape; kept in the unsent list).');
     else if(tpIsKey(key)) ssWarnOnce('bad_tp', (key.indexOf('prep_')===0 ? 'プレップの表・認定' : 'Tip Rate の記録')+'をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
       'The server refused the '+(key.indexOf('prep_')===0 ? 'prep tables / certifications' : 'Tip Rate records')+' (a record has the wrong shape; kept in the unsent list).');
+    else if(scIsKey(key)) ssWarnOnce('bad_sc', (key.indexOf(SC_TIP_PRE)===0 ? 'Tip の期間の確定' : '注意ログ')+'をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
+      'The server refused the '+(key.indexOf(SC_TIP_PRE)===0 ? 'tip period confirmation' : 'warning log')+' (a record has the wrong shape; kept in the unsent list).');   /* v1147 */
     return 'badts';
   }
   if(r.status===403){
@@ -13353,6 +13505,10 @@ async function ssPutRow(key, value, expect){
       'Only the GM or CEO can decide prep certifications (Accounting only marks them done; the server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
     else if(tpIsKey(key)) ssWarnOnce('forbidden_tp_tip', 'この Tip Rate の記録は、このログインでは変えられません（決めるのは CEO・GM・AM などで、自分の Tip Rate は決めません。申請は本人だけ。サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
       'This sign-in cannot change this Tip Rate record (the CEO, GM, AM and similar decide, not for themselves; only the person can request. The server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');
+    else if(scIsKey(key) && key.indexOf(SC_TIP_PRE)===0) ssWarnOnce('forbidden_sc_tip', 'この Tip の期間の確定は、このログインでは変えられません（確定は、その店のチップ管理を見られる人。確定の解除・例外承認は CEO・GM・経理。サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'This sign-in cannot change this tip period confirmation (anyone who sees the store’s tips confirms; the CEO, GM or Accounting unlock or force. The server refused; kept in the unsent list — if you do not need the change, remove it with “Remove refused” under Save at the top right).');   /* v1147 */
+    else if(scIsKey(key)) ssWarnOnce('forbidden_sc_wn', '注意ログを記録できるのは、その店を見られる CEO・GM・AM・G4・Head Chef（GM・CEO が確かめた人）です。消す・書き換えることはできません（サーバーが断りました。送信待ちに残しています。要らない変更なら、右上の「保存」の「断られたものを外す」で外せます）',
+      'Only the CEO, GM, AM, G4 or Head Chef (confirmed by the GM or CEO) who see the store can record warnings, and nobody removes or rewrites them (the server refused; kept in the unsent list — remove it with “Remove refused” under Save at the top right if not needed).');   /* v1147 */
     else if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
       'This account cannot save this person’s Career Score (kept in the unsent list).');
     else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
@@ -13396,7 +13552,7 @@ function ssRefusedPut(o){ try{ if(Object.keys(o).length) localStorage.setItem(SS
 /* この送信がどの保存のものか（ssPutRow が答えを待つ前に呼ぶ）。送る列（_pushRun）の回・その回はだれの保存か・送る値を作った時点のこの端末の値の指紋。
    送る列の外の送信（まとめて送る など）は null（印を付けない。送信待ちに残れば、送り直しの回で付く） */
 function ssRefusedRun(key){
-  if(!gwIsKey(key)) return null;
+  if(!rfIsKey(key)) return null;   /* v1147：Tip の期間の確定・注意ログも */
   var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : null, q=Q ? Q[key] : null;
   if(!(q && q.busy)) return null;
   return { seq:q.busySeq, who:(typeof q.busyWho==='string') ? q.busyWho : null, fp:ssRefusedFp(key) };
@@ -13405,7 +13561,7 @@ function ssRefusedRun(key){
    答えを待つあいだにまた保存された（次の送信が待っている）・この端末の値が変わった・送る列の別の回・ログインが変わった、のときは付けない
    （そのとき付けると、送っていない新しい保存を「断られたもの」として外せてしまう）。印の指紋とだれの保存かは、答えを待つ前に決めたもの */
 function ssRefusedMark(key, st, run){
-  if(!gwIsKey(key) || !run) return;
+  if(!rfIsKey(key) || !run) return;
   var Q=(typeof _pushQ!=='undefined' && _pushQ) ? _pushQ : null, q=Q ? Q[key] : null;
   if(!(q && q.busy && q.busySeq===run.seq && !q.next)) return;
   if(((typeof _saveWho==='function') ? _saveWho() : '')!==run.who) return;
@@ -13419,7 +13575,7 @@ function ssRefusedList(){
   var o=ssRefusedAll(), mine=[], me=(typeof _saveWho==='function') ? _saveWho() : '';
   try{ mine=(typeof _outboxMine==='function') ? _outboxMine() : []; }catch(e){ mine=[]; }
   return mine.filter(function(x){
-      if(!(x && gwIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key))) return false;
+      if(!(x && rfIsKey(x.key) && Object.prototype.hasOwnProperty.call(o, x.key))) return false;
       var m=o[x.key]||{};
       return typeof m.fp==='string' && m.fp===ssRefusedFp(x.key) && String(m.who||'')===me;
     })
@@ -13446,7 +13602,10 @@ async function ssDropRefused(items){
     if(typeof fp!=='string' || cur.fp!==fp){ out.skip.push({ key:key, why:'changed' }); continue; }   /* 画面を出したあとにまた保存された・また断られた */
     if(typeof _pushBusy==='function' && _pushBusy(key)){ out.skip.push({ key:key, why:'busy' }); continue; }
     var who=(typeof _saveWho==='function') ? _saveWho() : '';
-    var row; try{ row=await _fetchOpRow(key); }catch(e){ row=undefined; }
+    var row;
+    /* v1147：見られない店の Tip の期間の確定・注意ログはクラウドを読めない（サーバーが断る）。この端末の写しを消すだけ（見られない店の分は持たない） */
+    if(scIsKey(key) && !scSees(key)) row={ exists:false, value:null, outScope:true };
+    else { try{ row=await _fetchOpRow(key); }catch(e){ row=undefined; } }
     if(!(row && typeof row==='object' && 'exists' in row)){ out.skip.push({ key:key, why:'read' }); continue; }
     var still=now()[key];
     if(!still || still.fp!==fp || ssRefusedFp(key)!==fp || (typeof _pushBusy==='function' && _pushBusy(key)) || ((typeof _saveWho==='function') ? _saveWho() : '')!==who){ out.skip.push({ key:key, why:'changed' }); continue; }
@@ -13615,6 +13774,7 @@ async function _kvPullRows(force){
   var _stale=!!_ssr.stale || (typeof ssStale==='function' && ssStale(_tk));   /* 頼んだあとにログインが変わった：成長カルテ・賞与・Career Score は REST でも取らず、端末も変えない */
   var _ssOut=!_ssr.rest || _stale;   /* v1139：対象のキーは REST で取らない（関数から受け取った・受け取らない人） */
   var _csOut=!!_ssr.cs || _stale;    /* v1140：Career Score も関数から（見られる人の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
+  var _scOut=!!_ssr.sc || _stale;    /* v1147：Tip の期間の確定・注意ログも関数から（見られる店の分だけ・受け取らない人・読めなかった人は REST でも取らない） */
   var _hrOut=_stale || (typeof hrRouted==='function' && hrRouted());   /* v1142：採用・お悩み相談室は関数から（画面を開いたときに読む）。REST では取らない */
   if(typeof hrSweep==='function' && !_stale){
     try{ if(_hrOut) hrSweep();   /* 前の版の全部の写し・前の人の写しを残さない（独立レビュー P2-5） */
@@ -13622,12 +13782,14 @@ async function _kvPullRows(force){
   }
   /* REST で取る（関数が無い・前の版・PIN の印の無い CEO・GM・関数が答えない CEO・GM）：前の人の範囲の記録を残さない（画面は今までどおり。独立レビュー P3） */
   if(!_csOut){ try{ if(typeof csStateGet==='function' && csStateGet()){ csHistReset(null, '', []); csStateSet(null); } }catch(e){} }
+  if(!_scOut){ try{ if(typeof scStateGet==='function' && scStateGet()) scStateSet(null); }catch(e){} }   /* v1147 */
   var ver={}, need=[], skip={}, n=0, legacySkip=0, sameSkip=0;
   if(idx){
     idx.forEach(function(r){
       var k=r.key;
       if(_ssOut && ssIsKey(k)) return;
       if(_csOut && csIsKey(k)) return;
+      if(_scOut && scIsKey(k)) return;   /* v1147 */
       if(_hrOut && hrIsKey(k)) return;   /* v1142 */
       ver[k]=r.v; n++;
       if(_SPLIT_KEYS && _SPLIT_KEYS[k]){   /* 前の統合行：印が同じなら取らない（関数が無くても updated_at で） */
@@ -13662,12 +13824,13 @@ async function _kvPullRows(force){
     if(ex.length) f+='&key=not.in.'+encodeURIComponent('('+ex.join(',')+')');
     if(_ssOut){ f+='&key=not.in.'+encodeURIComponent('('+SS_KEYS.map(_kvQuote).join(',')+')'); SS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1139 */
     if(_csOut){ f+='&key=not.in.'+encodeURIComponent('('+CS_LEGACY.map(_kvQuote).join(',')+')'); CS_PREFIX.forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1140 */
+    if(_scOut){ [SC_TIP_PRE, SC_WN_PRE].forEach(function(p){ f+='&key=not.like.'+encodeURIComponent(p)+'*'; }); }   /* v1147 */
     rows=await supaFetchAll('app_state', 'key,value,updated_at', f); how='all';   /* v1136：updated_at も（_pullKeepLocal） */
   }
   if(!_stale && typeof ssStale==='function' && ssStale(_tk)) _stale=true;   /* REST を待つあいだにログインが変わった */
   if(_stale){
     /* 前の人の答え：成長カルテ・賞与・Career Score の行は外し、写しの片づけ（ssFreshCleanup）も印（_ss・_cs）もしない */
-    if(Array.isArray(rows)) rows=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key))); });
+    if(Array.isArray(rows)) rows=rows.filter(function(r){ return !(r && (ssIsKey(r.key) || csIsKey(r.key) || scIsKey(r.key))); });   /* v1147：Tip の期間の確定・注意ログも */
   }
   else if(Array.isArray(rows) && _ssOut && _ssr.full){
     await ssIdbReady();
@@ -13687,6 +13850,13 @@ async function _kvPullRows(force){
     rows=rows.filter(function(r){ return !(r && csIsKey(r.key)); }).concat(_ssr.cs.rows || []);   /* v1140：REST の Career Score の行は使わない・関数の行を足す（合流して取り込む） */
     if(_ssMark){ try{ Object.defineProperty(rows, '_ss', { value:_ssMark, enumerable:false }); }catch(e){} }
     if(!_ssr.cs.fail){ try{ Object.defineProperty(rows, '_cs', { value:{ ver:_ssr.cs.ver || {} }, enumerable:false }); }catch(e){} }
+  }
+  if(Array.isArray(rows) && _scOut && !_stale){
+    var _ssMk2=rows._ss, _csMk2=rows._cs;   /* 新しい配列にするので、前の印（_ss・_cs）を付け直す */
+    rows=rows.filter(function(r){ return !(r && scIsKey(r.key)); }).concat(_ssr.sc.rows || []);   /* v1147：REST の行は使わない・関数の行を足す（合流して取り込む） */
+    if(_ssMk2){ try{ Object.defineProperty(rows, '_ss', { value:_ssMk2, enumerable:false }); }catch(e){} }
+    if(_csMk2){ try{ Object.defineProperty(rows, '_cs', { value:_csMk2, enumerable:false }); }catch(e){} }
+    if(!_ssr.sc.fail){ try{ Object.defineProperty(rows, '_sc', { value:{ ver:_ssr.sc.ver || {} }, enumerable:false }); }catch(e){} }
   }
   if(Array.isArray(rows)){
     try{ Object.defineProperty(rows, '_kv', { value:{ ver:ver, exact:exact, force:!!force, idx:!!idx, how:how }, enumerable:false }); }catch(e){}
@@ -13793,7 +13963,7 @@ async function supaPullAllMasters(opt){
     if (_dres[1] === null || _dres[1] === undefined) _fails.push('app_state');
     try { var _ir=_dres[0]; if(Array.isArray(_ir)&&_ir.length){ var _ia=_ir.map(function(r){return r.data;}).filter(function(x){return x!=null;}); if(_ia.length){ _lsWriteVerified('m_ingredients', JSON.stringify(_ia)); }   /* v763 */ } } catch(e){}
     try { var _kvRows=(typeof ssStaleRows==='function') ? ssStaleRows(_dres[1]) : _dres[1];   /* Codex P1：取り込む直前にもログインを比べる（前の人の成長カルテ・賞与・Career Score を置かない） */
-      var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
+      var _kvOk=[]; _applyKvRows(_kvRows, _kvOk); _kvSeenRecord(_kvRows, _kvOk); if(typeof ssSeenRecord==='function') ssSeenRecord(_kvRows, _kvOk); if(typeof csSeenRecord==='function') csSeenRecord(_kvRows, _kvOk); if(typeof scSeenRecord==='function') scSeenRecord(_kvRows, _kvOk); } catch(e){}   /* v1098: 取り込めた行の印を記録（v1140：Career Score も） */
     try { if(typeof ipsEnsure==='function' && typeof ipsCurYm==='function') ipsEnsure(ipsCurYm()); } catch(e){}   /* v1077: 仕入れ集計の一覧と今月 */
     try{ clearTimeout(_heavyTimer); }catch(e){}
     _heavyDone();
@@ -13816,6 +13986,7 @@ async function migrateUploadLocalOps(){
       if(!key||have[key]) return;
       if (typeof ssIsKey==='function' && ssIsKey(key)) return;   /* v1139：成長カルテ・賞与のキーは一覧に出ない（公開の鍵では読めない）。端末の写しで書かない */
       if (typeof csIsKey==='function' && csIsKey(key)) return;   /* v1140：Career Score も */
+      if (typeof scIsKey==='function' && scIsKey(key)) return;   /* v1147：Tip の期間の確定・注意ログも */
       if (isOpSyncKey(key)){ var v=ls(key,null); if(v!=null) batch.push({ key:key, value:v, updated_at:new Date().toISOString() }); }
     });
     /* v1136（Codex の P2）：cas の付いたキーは丸ごと書かない（一覧を読んだあとにほかの端末が作った行を消さないように。読んだ行のときだけ書く道で） */
@@ -14545,7 +14716,7 @@ var OP_MERGE_PREFIX = { 'office_attend_': { merge: mergeOfficeAttend, covers: _c
      志願者は人ごとに時刻で判定する（同時に手を挙げた人が消えないように）。 */
   'help_requests_': { merge: mergeHelpRequests, covers: _coversHelpRequests },
   /* v832: 注意ログ。追記だけなので和集合。id が無い古い記録は中身から鍵を作る。 */
-  'warnings_': { merge: mergeWarnings, covers: _coversWarnings },
+  'warnings_': { merge: mergeWarnings, covers: _coversWarnings, cas: true },   /* v1147：読んだ行のときだけ書く（関数も同じ条件で書く） */
   /* v833: 日次オペレーション。テンプレート・当日のチェック状態・完了記録の3つを
      同じルールで扱う。id ごと（無い記録は中身から作った鍵ごと）に新しい保存が勝つ。
      テンプレートは app_settings 経由だが、そちらも _opMergeDef を見るので同じく効く。 */
@@ -14933,7 +15104,7 @@ function _opCasWrite(key, value, row, _noSs){
       /* 書いた行の時刻が、読んだ時刻より進んだのを確かめてから「書けた」にする（DB の時刻の精度が粗い・時刻を戻す仕組みがあると、
          次の古い書き込みが同じ時刻の条件をすり抜けうるので、保存できたとは言わない） */
       if(_base!=null){ var _got=_tsMicro(rows[0] && rows[0].updated_at); if(_got==null || _got<=_base) return 'stale'; }
-      if(typeof swNote==='function' && gwIsKey(key)) swNote(key, 'rest');   /* v1141：公開の鍵で書いた（関数が前の版・ログインの印なし）。v1146：Tip Rate・プレップも */
+      if(typeof swNote==='function' && rfIsKey(key)) swNote(key, 'rest');   /* v1141：公開の鍵で書いた（関数が前の版・ログインの印なし）。v1146：Tip Rate・プレップも */
       return 'ok';
     });
   }).then(function(x){ if(tm) clearTimeout(tm); return x; }, function(){ if(tm) clearTimeout(tm); return 'fail'; });
@@ -40373,7 +40544,9 @@ function tipPeriodAggregate(storeId, info) {
 function renderTipPeriodSummary(storeId, store, info) {
   var agg = tipPeriodAggregate(storeId, info);
   var settle = calcHalfMonthSettlement(storeId, info.anyDate);
-  var confirm = getTipConfirm(storeId, info);
+  /* v1147：この店の確定をこのログインで見られないとき（サーバーが返さない）は、確定の状態を出さない・確定のボタンも出さない（未確定に見せない） */
+  var _scNo = (typeof scSeesStore==='function') && !scSeesStore('tip', storeId);
+  var confirm = _scNo ? null : getTipConfirm(storeId, info);
   // Tip Rate内訳
   var staff = getEmployees().filter(e=>(e.store===storeId||(e.support||[]).includes(storeId))&&isTipEligibleRole(e)&&e.status!=='退職'); /* v630: g2も対象 */
   var workedNames={}; settle.rows.forEach(r=>workedNames[r.name]=true);
@@ -40386,7 +40559,7 @@ function renderTipPeriodSummary(storeId, store, info) {
     else rateBuckets.r80++;
   });
 
-  var status = confirm ? confirm.status : (agg.anyError?'エラーあり':agg.daysWithData?'確認中':'未取得');
+  var status = _scNo ? '—' : (confirm ? confirm.status : (agg.anyError?'エラーあり':agg.daysWithData?'確認中':'未取得'));
   var statusTag = status==='確定済み'?'tag-green':status==='エラーあり'?'tag-red':status==='修正待ち'?'tag-yellow':status==='確認中'?'tag-blue':'tag-gray';
 
   var html = `<div class="card"><div class="card-title"><i class="ti ti-clipboard-data" style="color:var(--green)"></i>${t('期間サマリー','Period Summary')}
@@ -40430,9 +40603,11 @@ function renderTipPeriodSummary(storeId, store, info) {
       <button class="btn btn-secondary btn-sm" style="margin-left:auto;padding:1px 8px;font-size:10px" onclick="laborTab='attendance';go('labor')">${t('勤怠へ','To labor')}</button>
     </div>`;
   }
-  if (confirm && confirm.status==='確定済み') {
+  if (_scNo) {
+    html += `<div class="alert alert-warning" style="padding:8px 10px;font-size:12px"><i class="ti ti-lock"></i><div>${t('この店の Tip の確定は、このログインでは見られません（確定・解除もできません）。チップ管理を見られる人の、自分の PIN でログインしてください。','This sign-in cannot see this store’s tip finalization (and cannot finalize or unlock it). Sign in with your own PIN as someone who manages this store’s tips.')}</div></div>`;
+  } else if (confirm && confirm.status==='確定済み') {
     html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i><div style="font-size:12px"><b>${t('確定済み','Finalized')}</b><br>${confirm.by} · ${confirm.at}<br>${t('総額','Total')} $${(confirm.totalFinal||0).toFixed(2)} · ${confirm.staffCount}${t('名','')}</div></div>
-      ${['gm','ceo','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="unconfirmTip('${storeId}')"><i class="ti ti-lock-open"></i> ${t('確定解除','Unlock')}</button>`:''}`;
+      ${(['gm','ceo','office'].includes(curRole) && scTipUnlockOk())?`<button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="unconfirmTip('${storeId}')"><i class="ti ti-lock-open"></i> ${t('確定解除','Unlock')}</button>`:''}`;
   } else {
     var daysApprovedOK = !dayApp.anyData || dayApp.allApproved;
     var canConfirm = !agg.anyError && agg.daysWithData>0 && daysApprovedOK;
@@ -40442,7 +40617,7 @@ function renderTipPeriodSummary(storeId, store, info) {
       if (agg.anyError) reasons.push(t('Tipデータにエラー','errors in tip data'));
       if (!daysApprovedOK) reasons.push(t('日次勤怠に未承認の日','unapproved labor days'));
       html += `<div class="alert alert-warning" style="padding:7px 10px;font-size:12px"><i class="ti ti-alert-circle"></i> ${reasons.join(curLang==='en'?', ':'・')}${t('があるため確定できません。',' — cannot finalize.')}`;
-      if (['gm','office','ceo'].includes(curRole)) html += ` <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="forceConfirmTip('${storeId}')">${t('例外承認で確定','Force finalize')}</button>`;
+      if (['gm','office','ceo'].includes(curRole) && scTipUnlockOk()) html += ` <button class="btn btn-danger btn-sm" style="margin-left:4px" onclick="forceConfirmTip('${storeId}')">${t('例外承認で確定','Force finalize')}</button>`;
       html += `</div>`;
     } else {
       html += `<button class="btn btn-primary" style="width:100%" ${canConfirm?'':'disabled'} onclick="confirmTip('${storeId}')"><i class="ti ti-check"></i> ${t('この期間のTipを確定','Finalize tips for this period')}</button>`;
@@ -41021,7 +41196,7 @@ function confirmTip(storeId, force) {
     rows, staffCount:rows.length, totalFinal:rows.reduce((a,r)=>a+r.final,0),
     forced:!!force, forceReason: force||'',
   };
-  setTipConfirm(storeId, info, data);
+  if (setTipConfirm(storeId, info, data) === false) { renderPage('tip'); return; }   /* v1147：この端末で書けなかった（見られない店など。知らせは出ている） */
   showToast(force?'例外承認でTipを確定しました':'Tipを確定しました','success');
   renderPage('tip');
 }
@@ -41033,7 +41208,7 @@ function forceConfirmTip(storeId) {
 function unconfirmTip(storeId) {
   if (!confirm('Tip確定を解除しますか？')) return;
   var info = tipPeriodInfo();
-  setTipConfirm(storeId, info, null);
+  if (setTipConfirm(storeId, info, null) === false) { renderPage('tip'); return; }   /* v1147 */
   showToast('確定を解除しました','info');
   renderPage('tip');
 }
@@ -43628,7 +43803,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1146';
+const APP_VERSION = '1147';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -83586,7 +83761,11 @@ function renderPGD(empName, isManagerView) {
   var tipReqs = ls('tip_requests', []).filter(r=>r.name===empName);
   var curTip = (typeof _tipLatestApproved==='function') ? _tipLatestApproved(empName, null, (typeof _tipNotFuture==='function')?_tipNotFuture:null) : tipReqs.filter(r=>r.status==='承認').slice(-1)[0];   /* v1091。v1095：まだ来ていない適用開始日は数えない */
   var evalHist = ls('eval_history', []).filter(h=>h.name===empName);
-  var warnings = []; STORES.forEach(s=>{ getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
+  /* v1147（Codex #141 6781928056 の P2-3）：このログインで見られる店の注意ログだけ。見られない店の行が送信待ちで端末に残っていても出さない（消さない） */
+  var _wnSee = function(sid){ return (typeof scSeesStore!=='function') || scSeesStore('wn', sid); };
+  var warnings = []; STORES.forEach(s=>{ if(!_wnSee(s.id)) return; getWarnings(s.id).forEach(w=>{ if((w.reason||'').includes(empName)) warnings.push(w); }); });
+  /* v1147：この人の店（所属・応援）の注意ログをこのログインで見られないとき（サーバーが返さない）は、「注意ログなし・良好」と言わない */
+  var _wnHidden = [emp.store].concat(emp.support||[]).filter(Boolean).some(function(sid){ return !_wnSee(sid); });
   var obs = ls('onboardings', []).filter(o=>o.name===empName);
   var promo = STEP_PROMO[emp.step] || STEP_PROMO[0];
 
@@ -83694,8 +83873,11 @@ function renderPGD(empName, isManagerView) {
   if (warnings.length) {
     html += `<div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:4px">注意ログ (${warnings.length})</div>`;
     warnings.slice().reverse().slice(0,4).forEach(w=>{
-      html += `<div style="font-size:12px;color:var(--muted);padding:3px 0">・${w.date} ${w.reason}</div>`;
+      html += `<div style="font-size:12px;color:var(--muted);padding:3px 0">・${escapeHtml(String(w.date||''))} ${escapeHtml(String(w.reason||''))}</div>`;   /* v1147：中身はエスケープ */
     });
+    if (_wnHidden) html += `<div style="font-size:12px;color:var(--muted);padding:3px 0"><i class="ti ti-lock"></i> ${t('このログインでは見られない店の注意ログは出していません','Warning logs of stores this sign-in cannot see are not shown')}</div>`;   /* v1147 */
+  } else if (_wnHidden) {
+    html += `<div style="font-size:12px;color:var(--muted);padding:6px 0"><i class="ti ti-lock"></i> ${t('注意ログは、このログインでは見られません','This sign-in cannot see the warning log')}</div>`;   /* v1147 */
   } else {
     html += `<div class="alert alert-success" style="padding:8px 10px"><i class="ti ti-circle-check"></i>注意ログなし・良好です</div>`;
   }
@@ -93250,7 +93432,10 @@ function renderRequired() {
   var items = getDailyOps(storeId);
   var required = items.filter(t=>t.required);
   var incomplete = required.filter(t=>!t.done);
-  var warnings = getWarnings(storeId);
+  /* v1147：この店の注意ログをこのログインで見られないとき（サーバーが返さない）は、件数・履歴を出さない（0 件に見せない）。記録のボタンは記録できる人だけ */
+  var _wnNo = (typeof scSeesStore==='function') && !scSeesStore('wn', storeId);
+  var _wnCan = ROLE_CONFIG[curRole].canApprove && (typeof scWnWritable!=='function' || scWnWritable(storeId));
+  var warnings = _wnNo ? [] : getWarnings(storeId);
 
   var html = pageStoreTabs(storeId, false) + `<div class="section-header">
     <div><div class="section-title">${store.name} · Required管理</div><div class="section-sub">必須タスクの遵守状況</div></div>
@@ -93259,14 +93444,14 @@ function renderRequired() {
     ${kpi('必須タスク', required.length, '本日', 'var(--tm)')}
     ${kpi('完了', required.length-incomplete.length, '達成', 'var(--green)')}
     ${kpi('未完了', incomplete.length, '要対応', incomplete.length?'var(--red)':'var(--green)')}
-    ${kpi('警告累計', warnings.length, '今月', warnings.length>=3?'var(--red)':'var(--yellow)')}
+    ${kpi('警告累計', _wnNo ? '—' : warnings.length, _wnNo ? '見られません' : '今月', _wnNo ? 'var(--muted)' : (warnings.length>=3?'var(--red)':'var(--yellow)'))}
   </div>`;
 
   if (incomplete.length) {
     html += `<div class="alert alert-danger"><i class="ti ti-alert-triangle"></i><div>
       <p style="font-size:12px;font-weight:600">未完了の必須タスク</p>
       <div style="font-size:11px;margin-top:2px">${incomplete.map(t=>`${t.phase}: ${dailyOpsText(t)}`).join(' / ')}</div></div></div>
-      ${ROLE_CONFIG[curRole].canApprove?`<button class="btn btn-danger btn-sm" style="margin-bottom:12px" onclick="logWarning('${storeId}')"><i class="ti ti-flag"></i> 注意ログを記録（警告+1）</button>`:''}`;
+      ${_wnCan?`<button class="btn btn-danger btn-sm" style="margin-bottom:12px" onclick="logWarning('${storeId}')"><i class="ti ti-flag"></i> 注意ログを記録（警告+1）</button>`:''}`;
   } else {
     html += `<div class="alert alert-success"><i class="ti ti-circle-check"></i>本日の必須タスクは全て完了しています</div>`;
   }
@@ -93285,11 +93470,12 @@ function renderRequired() {
   html += '</div>';
 
   // 警告履歴
+  if (_wnNo) html += `<div class="card" style="font-size:12px;color:var(--muted)"><i class="ti ti-lock"></i> この店の注意ログは、このログインでは見られません（必須チェックを見られる人の、自分の PIN でログインしてください）</div>`;   /* v1147 */
   if (warnings.length) {
     html += `<div class="card"><div class="card-title"><i class="ti ti-flag" style="color:var(--red)"></i>注意ログ履歴</div>`;
     warnings.slice().reverse().forEach(w => {
-      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${w.reason}</div><span class="tag tag-red">警告</span></div>
-        <div class="approval-meta">${w.date} · 記録: ${w.by}</div></div>`;
+      html += `<div class="approval-item"><div class="approval-header"><div class="approval-title">${escapeHtml(String(w.reason||''))}</div><span class="tag tag-red">警告</span></div>
+        <div class="approval-meta">${escapeHtml(String(w.date||''))} · 記録: ${escapeHtml(String(w.by||''))}</div></div>`;   /* v1147：中身はエスケープ */
     });
     html += '</div>';
   }
@@ -93367,7 +93553,7 @@ function logWarning(storeId) {
   var warnings = getWarnings(storeId);
   warnings.push({date:nowJP(), by:ROLE_CONFIG[curRole].name,
     reason:`必須タスク未完了 ${incomplete.length}件 (${incomplete.map(t=>t.text).join(', ')})`});
-  saveWarnings(storeId, warnings);
+  if (!saveWarnings(storeId, warnings)) { renderPage('required'); return; }   /* v1147：この端末で書けなかった（記録できない人・見られない店。知らせは出ている） */
   showToast('注意ログを記録しました', 'danger');
   renderPage('required');
 }
@@ -95669,6 +95855,29 @@ async function tipBackPull(name, fd) {
   var b = tipBackInfo(name, fd);
   if (!b.back) return [];
   var more = [];
+  /* v1147：確定はサーバーが見られる店の分だけ返す（その人の店が、決める人の見られる店とは限らない）。関数に「その期間が確定している店」だけを聞く（額は返らない）。
+     関数が前の版なら今までどおり REST で行を読む。読めない・断られたら止める（null） */
+  if (typeof ssRouted === 'function' && typeof tipConfirmKey === 'function') {
+    var empS = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
+    var idsS = empS ? [empS.store].concat(empS.support || []).filter(Boolean) : [];
+    if (idsS.length && ssRouted(tipConfirmKey(idsS[0], { from: b.from }))) {
+      var tkS = (typeof ssToken === 'function') ? ssToken() : null;
+      var rs = await ssCall({ action: 'tcf_status', stores: idsS, from: b.from, ms: 15000 });
+      if (tkS && typeof ssStale === 'function' && ssStale(tkS)) return null;   /* 頼んだあとにログインが変わった */
+      if (!rs.legacy && !rs.none) {
+        if (!rs.ok) {
+          showToast(rs.status === 403 ? t('この人の店の Tip の期間の確定を、このログインでは確かめられません。前の期間に設定するのは、Tip Rate を決められる人です（何も変えていません）',
+                                          'This sign-in cannot check the tip period confirmation of this person’s store. Only those who decide Tip Rates can set a previous period (nothing was changed)')
+            : t('クラウドの Tip の期間の確定を読めませんでした。前の期間に設定するには、つながっているときにもう一度押してください（何も変えていません）',
+                'Could not read the tip period finalization from the cloud. To set the previous period, try again while online (nothing was changed)'), 'warning');
+          return null;
+        }
+        var cf = Array.isArray(rs.j.confirmed) ? rs.j.confirmed : [];
+        idsS.forEach(function (sid) { if (cf.indexOf(sid) >= 0) { var st = (typeof STORES !== 'undefined' && STORES.find) ? STORES.find(function (x) { return x.id === sid; }) : null; more.push((st && st.name) || sid); } });
+        return more;
+      }
+    }
+  }
   if (typeof _fetchOpValue === 'function' && typeof tipConfirmKey === 'function') {
     var emp = (typeof getEmployees === 'function') ? getEmployees().find(function (e) { return e && e.name === name; }) : null;
     var ids = emp ? [emp.store].concat(emp.support || []).filter(Boolean) : [];
@@ -103420,12 +103629,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if ((me.role === 'ceo' || me.role === 'gm') && S.people && S.people.changes > 0) {
       return '<div class="card" style="margin-bottom:10px;border-left:3px solid ' + (S.people.up ? 'var(--yellow)' : 'var(--border)') + '"><div style="font-size:12.5px;font-weight:700"><i class="ti ti-user-check"></i> ' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
         + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + T('社員の表と、GM・CEO が確かめた権限の写しが違う人：','People whose employee record differs from the confirmed copy: ') + S.people.changes + T(' 人',' ') + (S.people.up ? ' · <b style="color:#7a4a00">' + T('権限が増える人 ','rights would increase: ') + S.people.up + T(' 人','') + '</b>' : '')
-        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G3 以上・Head Chef になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。Head Chef は全員の生年月日・保険と全店の Career Score を見ます。','The employee table can be edited by anyone, so becoming an AM / G3+ / Head Chef or gaining stores only takes effect after a check here (decreases already apply). G3 can ask the GM for changes; G4+ see and approve store requests. A Head Chef sees everyone\'s birthday / insurance and every store\'s Career Score.') + '</span></div>'
+        + '<br><span style="color:var(--muted)">' + T('社員の表はだれでも書き換えられるので、AM・G2 以上・Head Chef になる・担当の店が増える変更は、ここで確かめるまで効きません（減る変更はもう効いています）。G2 以上は自分の店の Tip の期間の確定・注意ログ・応募者・Career Score を見るのに（v1147）、G3 は GM への変更の申請、G4 以上は店の申請を見る・承認に使います。Head Chef は全員の生年月日・保険と全店の Career Score を見ます。','The employee table can be edited by anyone, so becoming an AM / G2+ / Head Chef or gaining stores only takes effect after a check here (decreases already apply). G2+ use it to see the tip period confirmations, warning logs, applicants and Career Scores of their stores (v1147); G3 can ask the GM for changes; G4+ see and approve store requests. A Head Chef sees everyone\'s birthday / insurance and every store\'s Career Score.') + '</span></div>'
         + '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="wrPeople()">' + T('確かめる','Check') + '</button></div>';
     }
     if (me.pending && me.role !== 'ceo' && me.role !== 'gm') return '<div style="font-size:11px;color:var(--muted);margin-bottom:8px">' + (me.confirmed
-      ? T('あなたの権限が増える変更（AM・G3 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです。','A change that adds to your rights (AM / G3+ / Head Chef / stores) waits for the GM to check. Until then your earlier confirmed rights stay.')
-      : T('あなたの AM・G3 以上の権限（GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の申請だけです。','Your AM / G3+ rights (asking the GM, seeing and approving store requests) wait for the GM to check. Until then you see your own requests only.')) + '</div>';
+      ? T('あなたの権限が増える変更（AM・G2 以上・Head Chef・担当の店）は、GM の確かめ待ちです。それまでは前に確かめた権限のままです。','A change that adds to your rights (AM / G2+ / Head Chef / stores) waits for the GM to check. Until then your earlier confirmed rights stay.')
+      : T('あなたの AM・G2 以上の権限（自分の店の Tip の確定・注意ログ・応募者・Career Score を見る・GM への変更の申請・店の申請を見る・承認）は、GM の確かめ待ちです。それまでは自分の分だけです。','Your AM / G2+ rights (tip confirmations, warning logs, applicants and Career Scores of your stores; asking the GM; seeing and approving store requests) wait for the GM to check. Until then you see your own only.')) + '</div>';
     return '';
   }
   function pDesc(x){
@@ -103448,7 +103657,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var d = pp.d; if (!d) return;
     var items = d.items || [], picked = items.filter(function(x){ return pp.pick[x.emp]; });
     var h = '<div style="font-size:15px;font-weight:700">' + T('承認・閲覧の権限の確かめ','Check approval / view rights') + '</div>'
-      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G3 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G3+ and their stores. ') : '')
+      + '<div style="font-size:11.5px;line-height:1.7;margin-top:4px">' + (pp.goLive ? T('使い始める前に、AM・G2 以上の人と担当の店を確かめてください。','Before turning on, check who is an AM / G2+ and their stores. ') : '')
       + T('見覚えのない変更（だれかが社員の表を書き換えたかもしれないもの）は選ばないでください。選ばない人は今の写しのままです。','Do not pick changes you do not recognise (someone may have edited the employee table). People you leave out keep their current copy.') + '</div>';
     if (!items.length) h += '<div style="font-size:12px;color:var(--muted);margin-top:10px">' + T('違う人はいません','No differences') + '</div>';
     else {

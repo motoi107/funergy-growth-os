@@ -83,8 +83,8 @@ const EMPS = [
 ];
 const ME = {
   tGM: { emp: 'E-GM', role: 'gm', grade: 6, stores: [], am_stores: [], name: 'Gina M' },
-  t3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Three' },
-  t2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cora Two' },
+  t3: { emp: 'E-3', role: 'staff', grade: 3, stores: ['S1'], am_stores: [], name: 'Sam Three', confirmed: true },
+  t2: { emp: 'E-2', role: 'staff', grade: 2, stores: ['S1'], am_stores: [], name: 'Cora Two', confirmed: true },
   t1: { emp: 'E-1', role: 'staff', grade: 1, stores: ['S1'], am_stores: [], name: 'Kai One' },
   tStore: 'deny',
 };
@@ -93,7 +93,8 @@ const T0 = '2026-11-03T09:00:00.000000+00:00';
 const NAMES = EMPS.map(e => e.name);
 
 function world(o = {}) {
-  const W = makeWorld({ pins: ME, emps: EMPS.map(e => ({ ...e })), mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'gm', emp_id: 'E-GM' } }, ...o });
+  // GM・CEO が確かめた写し（wr_people）。G2・G3 の店はこの写しで（v1147・Codex #141 P2-1）
+  const W = makeWorld({ pins: ME, emps: EMPS.map(e => ({ ...e })), wrPeople: [{ emp_id: 'E-3', role: 'staff', grade: 3, stores: ['S1'] }, { emp_id: 'E-2', role: 'staff', grade: 2, stores: ['S1'] }], mgr: { 'aaaaaaaa-0000-0000-0000-000000000001': { role: 'gm', emp_id: 'E-GM' } }, ...o });
   let clock = Date.UTC(2026, 10, 4, 10, 0, 0);
   W.tick = ms => { clock += ms; };
   const env = k => ({ SUPABASE_URL: URL0, SUPABASE_SERVICE_ROLE_KEY: SERVICE, SUPABASE_ANON_KEY: ANON }[k]);

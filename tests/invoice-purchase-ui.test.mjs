@@ -320,7 +320,7 @@ test('the purchases chip uses one count per month for every store; English has n
   const skipM = /var KV_SKIP_PREFIX = (\[[^\]]*\]);/.exec(source);
   assert.ok(skipM && JSON.parse(skipM[1].replace(/'/g, '"')).includes('invoice_purchase_'), 'the login pull leaves the summaries out');
   assert.ok(/body:JSON\.stringify\(\{ p_skip_prefix:KV_SKIP_PREFIX \}\)/.test(source), 'the index of rows leaves them out');
-  assert.ok(/var f=KV_SKIP_PREFIX\.map\(function\(p\)\{ return 'key=not\.like\.'\+p\+'\*'; \}\)\.join\('&'\);[\s\S]{0,600}rows=await supaFetchAll\('app_state', 'key,value,updated_at', f\)/.test(source), 'the full read leaves them out');
+  assert.ok(/var f=KV_SKIP_PREFIX\.map\(function\(p\)\{ return 'key=not\.like\.'\+p\+'\*'; \}\)\.join\('&'\);[\s\S]{0,900}rows=await supaFetchAll\('app_state', 'key,value,updated_at', f\)/.test(source), 'the full read leaves them out');   // v1147：Tip の確定・注意ログを外す 1 行が増えた（600 → 900）
   assert.ok(/async function supaFetchAll\(table, select, filter\)[\s\S]{0,800}encodeURIComponent\(select\|\|'\*'\)\+\(filter\?'&'\+filter:''\)/.test(source), 'supaFetchAll takes the filter');
   // the bonus lock reads the summaries of the quarter again before it locks
   const k = { IPS_START: '2026-10', _bonusQParse: () => ({ y: 2026, q: 4 }), _quarterMonths: () => ['2026-10', '2026-11', '2026-12'], _ymToOffset: ym => (ym <= '2026-11' ? 0 : 1),
