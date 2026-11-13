@@ -60,8 +60,8 @@ Claude・ブランチ `claude/kpi-google-1153`・main `7eb042c`（v1152）の上
 - アプリ：取り込んだ 1 件に `toastGuid` を足す（`tipLaborWithGuid`。ID が無い・`unknown` のときは足さない＝今までと同じ形）。同じ人に 2 つの打刻を足した件は `toastGuids`（両方）。Tip の時間・配分・人件費の計算は変えない。
 - 総労働時間：名前が仕組みのアカウント（`toastSystemAccount`）か、名前が仕組みのアカウントだったことのある ID（`k2SysGuids`：この端末にあるその店の勤怠の 13 か月前まで）を持つ件を外す。Toast で名前が変わっても外れる。
 - 試験：名前を変えた仕組みのアカウントが ID で外れる・その証拠（前の日）が無ければ名前だけでは外さない・人は外さない・取り込みが ID を残す・2 つを足した件は両方の ID・ID が無い行は前と同じ形（`tests/toast-alias.test.mjs` の v1110 との比べも通る）。わざと壊す 4 通りすべてで落ちる。
-- 休憩：hyper-worker は打刻の出入り（`inDate`〜`outDate`）で時間を数え、Toast の休憩（`breaks`・無給）を引いていない。人件費・Tip も同じ。引くかは Moto さんの判断（Tip と人件費が変わる）。
-- CHAZUKE：hyper-worker は丼のモディファイヤーの名前で数える（`aosa`＝分母だけ・`crab`・`today`・`udon`＝分母と分子）。CHAZUKE は数えていない。Toast の名前と、味噌汁の代わりか足すものかが分かってから hyper-worker を直す。
+- 休憩：hyper-worker は打刻の出入り（`inDate`〜`outDate`）で時間を数え、Toast の休憩（`breaks`・無給）を引いていない。人件費・Tip も同じ。Moto さん 11/13「A」＝引かない（今のまま）。総労働時間の説明に「休憩は引かない」と書いた（v1154）。
+- CHAZUKE：hyper-worker は丼のモディファイヤーの名前で数える（`aosa`＝分母だけ・`crab`・`today`・`udon`＝分母と分子）。Moto さん 11/13：モディファイヤーの名前は「CHAZUKE」・アップグレードで選ぶもの → hyper-worker v1154（非公開・Moto さんに直接）で `chazuke` も分母と分子に数える（変えたのはその 1 行・SQL なし）。前の日は期間一括取り込みで取り込み直すと入る。アプリの数え方の説明も v1154 で直した。
 
 ## 6. 全体の試験（main `7eb042c` と比べる）
 
