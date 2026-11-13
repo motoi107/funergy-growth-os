@@ -45,9 +45,9 @@ function varBlock(name, open = '{', close = '}') {
 
 const FNS = ['_cjson', '_smallGet', '_smallSet', '_outboxGet', '_outboxSet', '_outboxAdd', '_outboxRemove', '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun',
   'lsSet', 'syncMasterToSupabase', '_stripTestRows', 'supaPullAllMasters', 'loginBootstrapPull', '_pullKeepLocal', '_pullPendingMap',
-  'mrIsKey', 'mrDef', 'mrPkOf', 'mrTomb', '_mrJsonGet', '_mrJsonPut', 'mrTouchedAll', 'mrTouchedOf', '_mrTouchedPut', 'mrUnkHas', 'mrUnkMark', 'mrUnkClear',
+  'mrIsKey', 'mrDef', 'mrPkOf', 'mrTomb', '_mrJsonGet', '_mrJsonPut', 'mrTouchedAll', 'mrTouchedOf', '_mrOvpDone', '_mrTouchedPut', 'mrUnkHas', 'mrUnkMark', 'mrUnkClear',
   'mrPending', 'mrHasUnsent', 'mrInitLegacy', 'mrFieldEq', 'mrRowEq', 'mrIndex', 'mrOnEdit', '_mrStrip', 'mrOverlay', '_mrQuote', 'mrFetchRows', '_mrLog', 'mrTok', 'mrCasWrite', 'mrBulkWrite', 'mrPool', 'mrSameVer', 'mrSameData', 'mrPush', 'mrApplyPulled'];
-const VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_TOUCH_OVF', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', 'LS_SLIM_KEEP', '_pushQ', '_lsPushP'];
+const VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_TOUCH_OVF', 'MR_OVP_KEY', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', 'LS_SLIM_KEEP', '_pushQ', '_lsPushP'];
 const PK = { stores: 'id', ingredients: 'code', recipes: 'id', categories: 'code', employees: 'id', vendors: 'id' };
 const KEY_OF = { m_stores: 'stores', m_ingredients: 'ingredients', m_recipes: 'recipes', m_categories: 'categories' };
 
@@ -537,7 +537,8 @@ test('a save during start-up (or before the device storage is read, or without a
   assert.deepEqual(wrote(D), ['1001', '1002'], 'the v1149 change is sent (not lost); the unchanged row is not written');
   assert.equal((await rowOf(db, 'ingredients', 1001)).name, 'Salmon (v1149)');
   assert.equal(D.LSM.get('_mr_v1150'), '1');
-  /* 端末の保存を読む前：食材は印（全部）、店舗の表は localStorage にあるので変えた行を覚える */
+  /* 端末の保存を読む前：どの表も印（店舗の表も。Claude のルーティン 6840823792 の P3-1：そのあいだは IndexedDB の覚えが読めず、
+     localStorage に書いた覚えの回が古い回になって、読み終えると落ちていた） */
   await seedCloud(db, 'stores', [{ id: 'F01', name: 'ToriTon' }, { id: 'F02', name: 'Tenkichi' }]);
   const E = device(db, { name: 'E' });
   await pullAll(E);
@@ -546,9 +547,16 @@ test('a save during start-up (or before the device storage is read, or without a
   assert.ok(JSON.parse(E.LSM.get('_mr_unk_v1')).m_ingredients, 'ingredients: mark');
   const es = local(E, 'm_stores'); es[1].name = 'Tenkichi Kaimuki';
   assert.equal(await save(E, 'm_stores', es), false);
-  assert.equal(JSON.parse(E.LSM.get('_mr_unk_v1')).m_stores, undefined, 'stores: no mark');
-  assert.deepEqual(JSON.parse(E.LSM.get('_mr_touched_v1')).m_stores, { F02: { f: { name: 1 }, n: 1 } }, 'stores: the changed field is remembered');
-  E._idbState = 'ready';
+  assert.ok(JSON.parse(E.LSM.get('_mr_unk_v1')).m_stores, 'stores: mark too');
+  assert.equal(JSON.parse(E.LSM.get('_mr_touched_v1') || '{}').m_stores, undefined, 'stores: nothing is remembered before IndexedDB is read');
+  /* 読み終える前の取り込みは、送れていない変更があれば端末のまま */
+  const kept = run(E, `mrApplyPulled('m_stores', ${JSON.stringify(await rowsOf(db, 'stores'))})`);
+  assert.equal(kept && kept.keep, true, 'a pull before IndexedDB is read keeps the unsent store change');
+  E._idbState = 'ready'; E.offline = false;
+  E.writes.length = 0;
+  assert.equal(await save(E, 'm_stores', local(E, 'm_stores')), true);
+  assert.deepEqual(wrote(E), ['F02'], 'checked by version: only the changed store is written');
+  assert.equal((await rowOf(db, 'stores', 'F02')).name, 'Tenkichi Kaimuki');
   await db.close();
 });
 

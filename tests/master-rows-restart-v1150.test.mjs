@@ -51,10 +51,10 @@ const STORE_VARS = ['IDB_NAME', '_idbDB', '_idbState', '_IDB_MEM', '_idbQ', '_id
 const STORE_FNS = ['_idbAvailable', '_idbOpen', '_idbLoadAll', '_idbWatched', '_idbTrack', '_idbWriteBatch', '_idbFlush', '_idbFlushP', '_idbReopen',
   '_idbStale', '_idbRequeue', '_idbQueue', '_idbBackfill', '_idbBoot', 'lsIsDeviceLocal', '_lsStoreGet', '_lsRawStr', '_lsRawDel', '_lsWriteVerified'];
 const PUSH_FNS = ['_cjson', '_outboxGet', '_outboxSet', '_outboxAdd', '_outboxRemove', '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun', '_smallGet', '_smallSet', 'lsSet', 'syncMasterToSupabase'];
-const MR_FNS = ['mrIsKey', 'mrDef', 'mrPkOf', 'mrTomb', '_mrJsonGet', '_mrJsonPut', 'mrTouchedAll', 'mrTouchedOf', '_mrTouchedPut', 'mrUnkHas', 'mrUnkMark', 'mrUnkClear',
+const MR_FNS = ['mrIsKey', 'mrDef', 'mrPkOf', 'mrTomb', '_mrJsonGet', '_mrJsonPut', 'mrTouchedAll', 'mrTouchedOf', '_mrOvpDone', '_mrTouchedPut', 'mrUnkHas', 'mrUnkMark', 'mrUnkClear',
   'mrPending', 'mrHasUnsent', 'mrInitLegacy', 'mrFieldEq', 'mrRowEq', 'mrIndex', 'mrOnEdit', '_mrStrip', 'mrOverlay', '_mrQuote', 'mrFetchRows', '_mrLog', 'mrTok',
   'mrCasWrite', 'mrBulkWrite', 'mrPool', 'mrSameVer', 'mrSameData', 'mrPush', 'mrApplyPulled'];
-const MR_VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_TOUCH_OVF', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', '_pushQ', '_lsPushP'];
+const MR_VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_TOUCH_OVF', 'MR_OVP_KEY', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', '_pushQ', '_lsPushP'];
 const CODE = [...STORE_VARS.map(varLine).filter(Boolean), ...STORE_FNS.map(fnSrc), slimBlock, varBlock('SUPA_MASTER_MAP'),
   ...MR_VARS.map(varLine).filter(Boolean), ...PUSH_FNS.map(fnSrc), ...MR_FNS.map(fnSrc)].join('\n') + `
   function _lskBump(){} var _lsEscalatedAt=0; function _lsFreeOldLaborKeys(){}
@@ -134,9 +134,11 @@ function open(dev, db, { offline = false } = {}) {
 }
 const ready = async c => { await c._idbBootP; return c._idbState; };
 /* IndexedDB への書き出しを待つ */
-const flush = c => vm.runInContext('_idbFlushP()', c);
+const flush = async c => { const r = await vm.runInContext('_idbFlushP()', c); await new Promise(res => setTimeout(res, 0)); return r; };
 /* 閉じる（書き出しを待たない）：IndexedDB への書き出しの残りを捨てる。localStorage の写し（_lsj:）は残る */
 function crash(c) { try { clearTimeout(c._idbTimer); } catch (e) { } c._idbTimer = null; c._idbQ = new Map(); try { c._idbDB.close(); } catch (e) { } c._idbDB = null; }
+/* IndexedDB への書き出しが入り終えない（遅い端末で閉じる前）：すぐ書き出しても入らない */
+function slowIdb(c) { vm.runInContext('_idbFlushP = function(){ return Promise.resolve(false); };', c); }
 async function save(c, key, val) {
   vm.runInContext(`lsSet(${JSON.stringify(key)}, ${JSON.stringify(val)})`, c);
   return vm.runInContext(`Promise.resolve(_lsPushP[${JSON.stringify(key)}])`, c);
@@ -203,8 +205,10 @@ test('restart (real storage layer): closed before even IndexedDB took the record
   await seed(dev, { m_ingredients: ING });
   const a = open(dev, db, { offline: true });
   await ready(a);
+  slowIdb(a);   /* 覚えを積んだあとの書き出しが入り終えない（遅い端末）。そのまま閉じる */
   const v = local(a, 'm_ingredients'); v[0].price = 99;
   assert.equal(await save(a, 'm_ingredients', v.filter(r => r.code !== 1003)), false);
+  assert.ok(JSON.parse(dev.ls.get('_mr_ovp_v1'))._s >= 1, 'the mark says a record is waiting for IndexedDB');
   crash(a);   /* IndexedDB への書き出し（300ms 後）を待たない */
   const b = open(dev, db);
   await ready(b);
@@ -243,5 +247,111 @@ test('restart (real storage layer): once localStorage has room again, the newer 
   assert.deepEqual(Object.keys(touched(c, 'm_ingredients')).sort(), ['1001', '1002'], 'the newer record (in localStorage) is used');
   assert.equal(await save(c, 'm_ingredients', local(c, 'm_ingredients')), true);
   assert.deepEqual((await rowsOf(db, 'ingredients')).map(r => r.price), [99, 33, 2], 'both changes reached the cloud');
+  await db.close();
+});
+
+test('restart (real storage layer): an older non-empty record is on the device, a second edit is made and the app closes before IndexedDB takes the new record: both changes are sent and the next pull keeps them (before: only the first row was sent, the second was reported as sent and the pull put it back — Codex #144 6840900703)', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  await seedCloud(db, 'ingredients', ING);
+  const dev = device(['_mr_touched_v1']);
+  await seed(dev, { m_ingredients: ING });
+  const a = open(dev, db, { offline: true });
+  assert.equal(await ready(a), 'ready');
+  /* 1 つ目：覚えは IndexedDB の別の名前に入り終える */
+  const v = local(a, 'm_ingredients'); v[0].price = 99;
+  assert.equal(await save(a, 'm_ingredients', v), false);
+  await flush(a);
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false, 'the record reached IndexedDB: no mark');
+  /* 2 つ目：覚えを積んだが入り終える前に閉じる（端末の表は localStorage の写しで残る） */
+  slowIdb(a);
+  const w = local(a, 'm_ingredients'); w[1].price = 88;
+  assert.equal(await save(a, 'm_ingredients', w), false);
+  assert.ok(JSON.parse(dev.ls.get('_mr_ovp_v1'))._s >= 3, 'the mark is newer than the record that reached IndexedDB');
+  crash(a);
+  const b = open(dev, db);
+  assert.equal(await ready(b), 'ready');
+  assert.deepEqual(local(b, 'm_ingredients').map(r => r.price), [99, 88, 2], 'the device table has both changes');
+  assert.deepEqual(Object.keys(touched(b, 'm_ingredients')), ['1001'], 'the record on the device is the older one');
+  assert.deepEqual(outbox(b), ['m_ingredients']);
+  assert.equal(await save(b, 'm_ingredients', local(b, 'm_ingredients')), true);
+  assert.deepEqual(b.writes.sort(), ['1001', '1002'], 'both rows are sent (1002 is checked by version)');
+  assert.deepEqual((await rowsOf(db, 'ingredients')).map(r => r.price), [99, 88, 2]);
+  assert.deepEqual(outbox(b), []);
+  await flush(b);   /* 覚え（まだ localStorage はいっぱい）が IndexedDB に入り終える */
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false, 'mark cleared');
+  assert.equal(JSON.parse(dev.ls.get('_mr_unk_v1') || '{}').m_ingredients, undefined, 'unconfirmed mark cleared after the check');
+  await pull(b, db, 'm_ingredients', 'ingredients');
+  assert.deepEqual(local(b, 'm_ingredients').map(r => r.price), [99, 88, 2], 'the next pull keeps 88');
+  await db.close();
+});
+
+test('restart (real storage layer): the same steps, but the app waits until IndexedDB takes the record: the newer record is used and the mark is not needed', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  await seedCloud(db, 'ingredients', ING);
+  const dev = device(['_mr_touched_v1']);
+  await seed(dev, { m_ingredients: ING });
+  const a = open(dev, db, { offline: true });
+  await ready(a);
+  const v = local(a, 'm_ingredients'); v[0].price = 99;
+  await save(a, 'm_ingredients', v);
+  await flush(a);
+  const w = local(a, 'm_ingredients'); w[1].price = 88;
+  await save(a, 'm_ingredients', w);
+  await flush(a);
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false);
+  crash(a);
+  const b = open(dev, db);
+  await ready(b);
+  assert.deepEqual(Object.keys(touched(b, 'm_ingredients')).sort(), ['1001', '1002'], 'both rows are in the record');
+  assert.equal(await save(b, 'm_ingredients', local(b, 'm_ingredients')), true);
+  assert.deepEqual(b.writes.sort(), ['1001', '1002']);
+  assert.equal(JSON.parse(dev.ls.get('_mr_unk_v1') || '{}').m_ingredients, undefined, 'no unconfirmed mark was needed');
+  await db.close();
+});
+
+test('restart (real storage layer): the store table is pulled before IndexedDB is read while its change record is only in IndexedDB: the device table is kept, and the change is sent after IndexedDB is read (Claude routine 6840823792 P3-1)', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  const ST = [{ id: 'F01', name: 'ToriTon' }, { id: 'F02', name: 'Tenkichi' }];
+  await seedCloud(db, 'stores', ST);
+  const dev = device(['_mr_touched_v1']);
+  dev.ls.set('m_stores', JSON.stringify(ST));   /* 店舗の表は localStorage にある（v1138） */
+  const a = open(dev, db, { offline: true });
+  await ready(a);
+  const s1 = local(a, 'm_stores'); s1[1].name = 'Tenkichi Kaimuki';
+  assert.equal(await save(a, 'm_stores', s1), false);
+  await flush(a);
+  crash(a);
+  /* 開き直して、IndexedDB を読み終える前に店舗の表が届く */
+  const b = open(dev, db);
+  assert.equal(b._idbState, 'init');
+  const o = vm.runInContext(`mrApplyPulled('m_stores', ${JSON.stringify(await rowsOf(db, 'stores'))})`, b);
+  assert.equal(o && o.keep, true, 'kept: the record in IndexedDB cannot be read yet and the change is waiting');
+  assert.equal(local(b, 'm_stores')[1].name, 'Tenkichi Kaimuki');
+  await ready(b);
+  assert.equal(await save(b, 'm_stores', local(b, 'm_stores')), true);
+  assert.equal((await rowOf(db, 'stores', 'F02')).name, 'Tenkichi Kaimuki', 'the change reached the cloud');
+  await db.close();
+});
+
+test('restart (real storage layer): the record reached IndexedDB but the app closed before the mark was taken off: the record is used as is (no unconfirmed check)', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  await seedCloud(db, 'ingredients', ING);
+  const dev = device(['_mr_touched_v1']);
+  await seed(dev, { m_ingredients: ING });
+  const a = open(dev, db, { offline: true });
+  await ready(a);
+  slowIdb(a);   /* すぐの書き出しは入らない（印は残る） */
+  const v = local(a, 'm_ingredients'); v[0].price = 99;
+  await save(a, 'm_ingredients', v);
+  await vm.runInContext('(_idbFlush(), Promise.all(Array.from(_idbInflight)))', a);   /* ふだんの書き出し（300ms の）で覚えは入る */
+  assert.ok(dev.ls.has('_mr_ovp_v1'), 'the mark is still there');
+  crash(a);
+  const b = open(dev, db);
+  await ready(b);
+  vm.runInContext('mrInitLegacy()', b);   /* 起動ごとの確かめ（ふだんは最初の保存・取り込みのとき） */
+  assert.equal(JSON.parse(dev.ls.get('_mr_unk_v1') || '{}').m_ingredients, undefined, 'the same write count reached IndexedDB: no unconfirmed mark');
+  assert.equal(dev.ls.has('_mr_ovp_v1'), false, 'the mark is taken off');
+  assert.equal(await save(b, 'm_ingredients', local(b, 'm_ingredients')), true);
+  assert.deepEqual(b.writes, ['1001']);
   await db.close();
 });
