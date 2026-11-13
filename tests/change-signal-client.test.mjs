@@ -115,6 +115,8 @@ function load(o = {}) {
     _lsWriteVerified: (k, v) => { pulls.push(['write', k]); store.set(k, v); dataAt = Date.now() + 1; return true; }, refreshStores: () => pulls.push(['refreshStores']),
     hrRouted: () => true, _hrMem: { at: o.hrLoaded ? { applicants: 1 } : {} }, hrLoad: async (k, f) => { pulls.push(['hr', k, f]); return 'ok'; },
     _pii: { map: o.piiLoaded ? {} : null }, piiLoad: async f => { pulls.push(['pii', f]); return 'ok'; },
+    // v1151（Codex #146 6849760483 P2）：公開の鍵の決まり（SQL ③）がそのキーに入っているか。o.rls(k)：true／false（関数が無い）／null（分からない）。初めは false
+    ssSess: () => (o.noSess ? null : { id: 'S1', pin: 'tok' }), ssRlsOn: async k => { pulls.push(['rls', k]); return o.rls ? o.rls(k) : false; },
     getEmployees: () => [{ id: 'E-1', name: 'Ann <b>試験</b>' }, { id: 'E-2', name: 'Bob' }, { id: 'E-GM', name: 'Gina 試験' }],
     outboxLabel: k => ({ meetings: '会議', daily_actuals_F01: '売上・日報' }[k] || (k.startsWith('daily_actuals_') ? '売上・日報' : k)),
     escapeHtml: s => String(s).replace(/[&<>"']/g, c => '&#' + c.charCodeAt(0) + ';'), t: (ja) => ja,
@@ -784,4 +786,78 @@ test('Claude #145 6847734306 P3-3: a single key that changes while the full sync
   assert.equal(A.SG.st.fullBusy, false);
   assert.equal(Object.keys(A.SG.st.fullPend).length, 0);
   assert.equal(A.autoN(), 1, 'only one full sync at a time');
+});
+
+// ---- Codex #146（56ae430・issuecomment 6849760483）の継続の P2 ----
+
+test('Codex #146 6849760483 P2: "rest" (the function is not found) is "not read" when the key is behind the public-key rule (RLS), or when that cannot be told; the hold stays and is read again after the function is back', async () => {
+  let rls = () => true;
+  const A = load({ hrLoaded: true, piiLoaded: true, rls: k => rls(k) });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  const hr = [], pii = [];
+  A.ctx.hrLoad = async (k, f) => { const r = hr.shift() || 'ok'; A.pulls.push(['hr', k, f, r]); if (r === 'ok') A.setData(); return r; };
+  A.ctx.piiLoad = async f => { const r = pii.shift() || 'ok'; A.pulls.push(['pii', f, r]); if (r === 'ok') A.setData(); return r; };
+  A.SG.start(); await tick(20);
+  // 1) 採用：関数が無い（rest）＋決まりが入っている → 読めていない（前は「読むものが無い」で預かりを外していた）
+  hr.push('rest', 'ok');
+  A.W.emit({ key: '_secure:hiring', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'rls').map(p => p[1]), ['applicants'], 'asked about the key that was read');
+  assert.ok(A.SG.st.retry['_secure:hiring'], 'waiting to read again (before: dropped)');
+  assert.equal(A.SG.st.seen['_secure:hiring'], 0, 'the signal is not used up');
+  assert.equal(A.doc.getElementById('fp-sig-note'), null, 'nothing is announced');
+  await tick(1200);   // 関数が戻った：本当に読めてから外す
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['rest', 'ok']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  assert.equal(A.SG.st.seen['_secure:hiring'], 1);
+  // 2) 個人の欄も同じ（決まりを聞くのは emp_pii）
+  pii.push('rest', 'ok');
+  A.W.emit({ key: '_secure:pii', n: 1, at: later(2), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.equal(A.pulls.filter(p => p[0] === 'rls').at(-1)[1], 'emp_pii');
+  assert.ok(A.SG.st.retry['_secure:pii']);
+  await tick(1200);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'pii').map(p => p[2]), ['rest', 'ok']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  // 3) 決まりが分からない（聞けなかった：null）も読めていないとみなす
+  rls = () => null;
+  hr.push('rest', 'ok');
+  A.W.emit({ key: '_secure:hiring', n: 2, at: later(3), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.ok(A.SG.st.retry['_secure:hiring'], 'unknown rule: read again');
+  await tick(1200);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  // 4) 決まりが入っていない（SQL ③ の前・関数がまだ無い 404）は今までどおり「読むものが無い」（読み直さない）
+  rls = () => false;
+  hr.push('rest');
+  A.W.emit({ key: '_secure:hiring', n: 3, at: later(4), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.equal(hr.length, 0);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0, 'no rule: as before');
+  assert.equal(A.SG.st.seen['_secure:hiring'], 3);
+});
+
+test('Codex #146 6849760483 P2: during the 10 minutes after the function was found missing (hrRouted is false), a hiring signal is still read again (it is not "nothing to read"); without a sign-in it is as before', async () => {
+  const A = load({ hrLoaded: true, rls: () => true });
+  A.SG._retryMs.splice(0, A.SG._retryMs.length, 1000);
+  let routed = false, old = true; const hr = ['rest', 'ok'];
+  A.ctx.hrRouted = () => routed; A.ctx.hrOldNow = () => old;
+  A.ctx.hrLoad = async (k, f) => { const r = hr.shift() || 'ok'; A.pulls.push(['hr', k, f, r]); if (r === 'ok') A.setData(); return r; };
+  A.SG.start(); await tick(20);
+  A.W.emit({ key: '_secure:hiring', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['rest'], 'read (before: skipped while hrRouted was false, so the hold was dropped)');
+  assert.ok(A.SG.st.retry['_secure:hiring']);
+  routed = true; old = false;   // 10 分が過ぎて関数が戻った
+  await tick(1200);
+  assert.deepEqual(A.pulls.filter(p => p[0] === 'hr').map(p => p[3]), ['rest', 'ok']);
+  assert.equal(Object.keys(A.SG.st.retry).length, 0);
+  // ログインの印が無い（関数は人を決められない）：今までどおり読まない・読み直さない
+  const B = load({ hrLoaded: true, rls: () => true, noSess: true });
+  B.ctx.hrRouted = () => false; B.ctx.hrOldNow = () => false;
+  B.SG.start(); await tick(20);
+  B.W.emit({ key: '_secure:hiring', n: 1, at: later(1), by_emp: null, by_dev: 'dOTHER' });
+  await tick(1600);
+  assert.equal(B.pulls.filter(p => p[0] === 'hr').length, 0);
+  assert.equal(Object.keys(B.SG.st.retry).length, 0);
 });
