@@ -95,6 +95,18 @@ export function makeWorld(o = {}) {
     const afterWrite = async keys => { if (!W.afterWrite) return; const v = W.afterWrite(keys); if (v && typeof v.then === 'function') { W.afterWrite = null; await v; } else if (v) W.afterWrite = null; };
     // v1151（Codex #145 6848717787）：まとめての取り込み（supaPullAllMasters）が読む設定の表。試験では空（読めた）
     if (p === '/rest/v1/app_settings' && m === 'GET') return J(W.settings || []);
+    // v1151（Codex #146 6849760483 P2）：公開の鍵の決まり（SQL ③）の判定。どの rls も入っていなければ関数が無い（本物と同じ 404 PGRST202）。
+    // rlsProbeDown：'500'（関数が落ちた）・'throw'（通信の失敗）・'badjson'（読めない答え）
+    if (p === '/rest/v1/rpc/ss_secret_key') {
+      W.calls.rlsProbe = (W.calls.rlsProbe || 0) + 1;
+      assert.equal(m, 'POST');
+      if (W.rlsProbeDown === '500') return J({ message: 'down' }, 500);
+      if (W.rlsProbeDown === 'throw') throw new TypeError('fetch failed');
+      if (W.rlsProbeDown === 'badjson') return new Response('<html>gateway</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      if (!(W.rls || W.rlsCs || W.rlsHr || W.rlsPii || W.rlsSc || W.rlsGb)) return J({ code: 'PGRST202', message: 'Could not find the function public.ss_secret_key(k)' }, 404);
+      const k = String((JSON.parse(opt.body || '{}')).k || '');
+      return J(!!((W.rls && ssIsKey(k)) || (W.rlsCs && csIsKey(k)) || (W.rlsHr && hrIsKey(k)) || (W.rlsPii && k === 'emp_pii') || (W.rlsSc && scIsKey(k)) || (W.rlsGb && gbIsKey(k))));
+    }
     if (p === '/rest/v1/rpc/app_state_index') {
       if (W.indexMissing) return J({ code: 'PGRST202', message: 'Could not find the function' }, 404);
       const skip = (JSON.parse(opt.body || '{}').p_skip_prefix || []);

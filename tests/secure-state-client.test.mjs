@@ -874,3 +874,83 @@ test('v1151 (Codex #145 6848717787 P2): the login changes while the protected da
   assert.ok(!(s.what || []).includes('保護されたデータ'), 'not shown for the next person: ' + JSON.stringify(s));
   stopSig(SG);
 });
+
+/* v1151（Codex #146 6849760483 継続の P2）：関数が見つからない（404・関数でない答え）・PIN の印の無い CEO・GM は今までどおり REST で読むが、
+   公開の鍵の決まり（SQL ③）が入っていれば REST では保護されたデータは返らない。前は「関数が無い＝今までどおり」として「最新」に数え、
+   「変わった」の合図の預かり（_secure:bonus）を外していた。決まりが入っているかを ss_secret_key で聞く（合成データだけ） */
+test('v1151 (Codex #146 6849760483 P2): the function is not found (404) while the public-key rule (RLS) is on: the sync is "could not fetch" and the bonus hold stays (also for the 10 minutes of the old way); once the function is back, the bonus is read and only then released', async () => {
+  const W = world({ rls: true });
+  W.ssDown = true;   // 関数が見つからない（前の版に戻した・名前の誤り）
+  const { c, ST, SG } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+  W.set('bonus_rules', { pool: [9] }, '2026-11-03T12:00:00.000000+00:00');   // ほかの端末が賞与を変えた（合図 _secure:bonus）
+  hold(SG, '_secure:bonus');
+  const r = await SG._runFull();
+  assert.equal(r, 'fail', 'not "up to date" (before: ok, because a missing function counted as the old way)');
+  assert.ok(W.calls.rlsProbe >= 1, 'asked whether the rule is on');
+  assert.equal(ST.auto.okStarted, 0);
+  assert.deepEqual(Object.keys(SG.st.fullPend), ['_secure:bonus'], 'the hold stays (before: dropped)');
+  assert.equal(local(c, 'bonus_rules'), undefined, 'REST (RLS) never gave the bonus');
+  assert.ok(W.calls.rest > 0, 'the rest of the work data was still read');
+  assert.deepEqual([...ST.syncState().what], ['保護されたデータ']);
+  // 関数が無いと分かった 10 分（ssLegacyNow）：関数には聞かないが、やはり「取れなかった」
+  const n0 = W.calls.ss; ST.auto.last = 0;
+  assert.equal(await SG._runFull(), 'fail', 'still not fetched during the 10 minutes');
+  assert.equal(W.calls.ss, n0, 'the function is not asked again in those 10 minutes (as before)');
+  assert.deepEqual(Object.keys(SG.st.fullPend), ['_secure:bonus']);
+  // 関数が戻った（10 分が過ぎた）：賞与を本当に読めた同期で外す
+  W.ssDown = false; c._ss.legacy.at -= 600001; ST.auto.last = 0;
+  const r3 = await SG._runFull();
+  assert.equal(r3, 'ok');
+  assert.deepEqual(local(c, 'bonus_rules'), { pool: [9] }, 'the bonus was read');
+  assert.ok(ST.auto.okStarted > 0);
+  assert.equal(Object.keys(SG.st.fullPend).length, 0, 'released only now');
+  assert.equal(ST.syncState().k, 'ok');
+  stopSig(SG);
+});
+
+test('v1151 (Codex #146 6849760483 P2): an answer that is not this function\'s (a gateway 401) and a CEO/GM without a PIN mark, with the rule on: also "could not fetch"; with the rule off (before the SQL) both are the old way and count', async () => {
+  const gate = (c, W) => { c.fetch = (u, o) => (String(u).startsWith(SS) ? Promise.resolve(new Response(JSON.stringify({ msg: 'Invalid JWT' }), { status: 401 })) : W.fetch(u, o)); };
+  for (const rlsOn of [true, false]) {
+    const W = world({ rls: rlsOn });
+    const A = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+    gate(A.c, W);
+    hold(A.SG, '_secure:bonus');
+    assert.equal(await A.SG._runFull(), rlsOn ? 'fail' : 'ok', 'gateway, rls ' + rlsOn);
+    assert.deepEqual(Object.keys(A.SG.st.fullPend), rlsOn ? ['_secure:bonus'] : [], 'gateway, rls ' + rlsOn);
+    assert.deepEqual(local(A.c, 'bonus_rules'), rlsOn ? undefined : { pool: [1, 2] }, 'gateway, rls ' + rlsOn);
+    stopSig(A.SG);
+
+    const W2 = world({ rls: rlsOn });
+    const B = syncTab(W2, { curRole: 'gm' });   // PIN の印もメールのログインも無い CEO・GM（初期の PIN など）：今までどおり REST
+    hold(B.SG, '_secure:bonus');
+    assert.equal(await B.SG._runFull(), rlsOn ? 'fail' : 'ok', 'no PIN mark, rls ' + rlsOn);
+    assert.equal(W2.calls.ss, 0, 'the function is not asked (as before)');
+    assert.deepEqual(Object.keys(B.SG.st.fullPend), rlsOn ? ['_secure:bonus'] : [], 'no PIN mark, rls ' + rlsOn);
+    stopSig(B.SG);
+  }
+});
+
+test('v1151 (Codex #146 6849760483 P2): when the rule cannot be told (the check fails, does not answer or answers something unreadable), a missing function is "could not fetch"; the hold is released only when the check says the rule is off', async () => {
+  for (const down of ['500', 'throw', 'badjson']) {
+    const W = world();   // 決まりは入っていない（本当は REST で読める）が、それを確かめられない
+    W.ssDown = true; W.rlsProbeDown = down;
+    const { c, ST, SG } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+    hold(SG, '_secure:bonus');
+    assert.equal(await SG._runFull(), 'fail', down);
+    assert.deepEqual(Object.keys(SG.st.fullPend), ['_secure:bonus'], down);
+    assert.deepEqual(local(c, 'bonus_rules'), { pool: [1, 2] }, 'REST still read what it could: ' + down);
+    W.rlsProbeDown = null; ST.auto.last = 0;   // 確かめられた：決まりは無い（関数が無い 404）
+    assert.equal(await SG._runFull(), 'ok', down);
+    assert.equal(Object.keys(SG.st.fullPend).length, 0, down);
+    stopSig(SG);
+  }
+});
+
+test('v1151 (Codex #146 6849760483 P2): the login changes while the rule is being checked: the old person\'s result is not used', async () => {
+  const W = world({ rls: true });
+  W.ssDown = true;
+  const { c } = syncTab(W, { _hwSession: 'tGM', curRole: 'gm' });
+  c.fetch = (u, o) => { if (String(u).includes('/rpc/ss_secret_key')) c._hwSession = 't1'; return W.fetch(u, o); };
+  const r = await c.ssPull(false);
+  assert.equal(r.stale, true, 'stale (the next person gets its own answer)');
+});

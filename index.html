@@ -13333,6 +13333,22 @@ function ssStaleRows(rows){
   return out;
 }
 function ssLegacyNow(S){ var L=_ss.legacy; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+/* v1151（Codex #145 6849251115・#146 6849760483 P2）：関数が見つからない（404・関数でない答え）・PIN の印の無い CEO・GM のとき、
+   今までどおり REST で読む。でも公開の鍵の決まり（SQL ③）が入っていれば、REST では保護されたデータ（成長カルテ・賞与・Career Score など）は返らない
+   ＝読めていないのに「最新」になり、「変わった」の合図の預かり（_secure:bonus など）を外していた。決まりが入っているかを公開の鍵で聞く
+   （SQL ③ の ss_secret_key：どの版の ③ にも growth_karte は入っている・全部を戻す SQL は関数ごと消す）。
+   返す：true＝入っている（REST では取れない）／false＝入っていない（関数が無い 404：今までどおり REST で読める）／null＝分からない（取れなかったとみなす）。覚えない（毎回聞く） */
+async function ssRlsOn(){
+  try{
+    var r=await fetch(SUPABASE_URL+'/rest/v1/rpc/ss_secret_key', { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer '+SUPABASE_ANON, 'Content-Type':'application/json' }, body:JSON.stringify({ k:'growth_karte' }) });
+    if(r.status===404) return false;
+    if(!r.ok) return null;
+    var j=await r.json();
+    return j===true ? true : (j===false ? false : null);
+  }catch(e){ return null; }
+}
+/* REST に戻る取り込み：保護されたデータを取れたことにしてよいか（auth＝PIN の確かめ先が答えない：取れなかった） */
+async function ssRestFail(auth){ return !!auth || (await ssRlsOn())!==false; }
 /* このキーを関数に頼むか（ログインの印があり、関数が無いと分かっていない） */
 function ssRouted(key){
   var cs=csIsKey(key), sc=scIsKey(key), gb=gbIsKey(key);
@@ -14393,13 +14409,13 @@ async function ssPull(force, tk){
   var S=ssSess();
   var gmHint=false; try{ gmHint=['gm','ceo'].indexOf(typeof curRole!=='undefined' ? curRole : '')>=0 && !(typeof curStoreLogin!=='undefined' && curStoreLogin); }catch(e){}
   if(!S){
-    if(gmHint) return { rest:true };                     /* PIN の印の無い CEO・GM：今までどおり */
+    if(gmHint){ var f0=await ssRestFail(false); return ssStale(tk) ? STALE : { rest:true, fail:f0 }; }   /* PIN の印の無い CEO・GM：今までどおり REST。v1151（Codex #146 6849760483 P2）：公開の鍵の決まりが入っていれば REST では保護されたデータは取れない＝「取れなかった」 */
     await ssIdbReady(); if(ssStale(tk)) return STALE;
     ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c0=await csTake({ level:'none' }, tk); if(c0.stale) return STALE;   /* v1140：Career Score も受け取らない */
     var s0=await scTake({ level:'none' }, tk); if(s0.stale) return STALE;   /* v1147：Tip の期間の確定・注意ログも */
     var g0=await gbTake({ keys:{} }, tk); return g0.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c0, sc:s0, gb:g0 };   /* v1148：グレード履歴・賞与の個人設定・G3 の職種も */
   }
-  if(ssLegacyNow(S)) return { rest:true, fail:!!(_ss.legacy && _ss.legacy.auth) };   /* v1151（Codex #145 6848717787 P2）：PIN の確かめ先が答えない 10 分のあいだは「取れなかった」（RLS のあと REST では取れない） */
+  if(ssLegacyNow(S)){ var fl=await ssRestFail(!!(_ss.legacy && _ss.legacy.auth)); return ssStale(tk) ? STALE : { rest:true, fail:fl }; }   /* v1151（Codex #145 6848717787 P2）：PIN の確かめ先が答えない 10 分のあいだは「取れなかった」。（#146 6849760483 P2）関数が無い（404）10 分も、公開の鍵の決まりが入っていれば（分からなければ）「取れなかった」 */
   var part=(ssState()==='part'), seen=ssSeenGet(), have={};
   if(!force && ssWhoGet()===csWho()) Object.keys(seen).forEach(function(k){   /* Codex #142 P2：ほかのログインが受け取った写しの印は送らない */   /* 「クラウドから取り込む」は印によらず全部。part の端末は見せる形の印（p:）だけ（全部の値の印 h: とは同じにならないので、全部の値は全部届く） */
     var s=String(seen[k]), c=s.indexOf('#');
@@ -14407,8 +14423,8 @@ async function ssPull(force, tk){
   });
   var r=await ssCall({ action:'pull', have:have, cs_have:csHaveMap(force), sc_have:scHaveMap(force), gb_have:gbHaveMap(force), ms:60000 });   /* v1148：gb_have でグレード履歴・賞与の個人設定・G3 の職種も */   /* v1140：cs_have を送ると Career Score も返る（前の版の関数は読まない）。v1147：sc_have で Tip の期間の確定・注意ログも */
   if(ssStale(tk)) return STALE;   /* Codex P1：前の人の答え（GM の full など）を、次の人の端末に置かない */
-  if(r.legacy) return { rest:true, fail:!!r.auth };   /* v1151：関数が無い（前の版）は今までどおり。PIN の確かめ先が答えないのは「取れなかった」 */
-  if(r.none){ if(gmHint) return { rest:true }; await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
+  if(r.legacy){ var f1=await ssRestFail(!!r.auth); return ssStale(tk) ? STALE : { rest:true, fail:f1 }; }   /* v1151：関数が無い（前の版）は今までどおり REST で読むが、公開の鍵の決まりが入っていれば（分からなければ）保護されたデータは「取れなかった」（#146 6849760483 P2）。PIN の確かめ先が答えないのも「取れなかった」 */
+  if(r.none){ if(gmHint){ var f2=await ssRestFail(false); return ssStale(tk) ? STALE : { rest:true, fail:f2 }; } await ssIdbReady(); if(ssStale(tk)) return STALE; ssToPart(null); ssLevelSet('none'); ssWhoSet(csWho()); _ssView={ who:csWho(), keys:{} }; var c1=await csTake({ level:'none' }, tk); if(c1.stale) return STALE;
     var s1=await scTake({ level:'none' }, tk); if(s1.stale) return STALE;
     var g1=await gbTake({ keys:{} }, tk); return g1.stale ? STALE : { rest:false, rows:[], ver:{}, cs:c1, sc:s1, gb:g1 }; }
   if(r.status===401){
@@ -104810,14 +104826,23 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      hrReady・piiReady が偽なので、開いたときに読み直す）・'rest'（関数が前の版）・'none'（この人は読まない） */
   function loadRes(r){ if(r === 'ok') return true; if(r === 'stale' || r === 'rest' || r === 'none') return null; return false; }
   function both(a, b){ return (a === false || b === false) ? false : ((a === true || b === true) ? true : null); }
+  /* 'rest'（関数が無い・前の版）は「読むものが無い」とは限らない（Codex #146 6849760483 P2）：公開の鍵の決まり（SQL ③）がそのキーに入っていれば、
+     REST では読めない＝読めていない（預かりを残して、関数が戻ってから読み直す）。決まりが無い（関数が無い 404）ときだけ今までどおり「読むものが無い」。
+     分からないときは読めていないとみなす。ログインの印が無いとき（関数は人を決められない）は今までどおり */
+  async function restRes(k){
+    try{ if(typeof ssSess === 'function' && !ssSess()) return null; }catch(e){ return null; }
+    try{ return (typeof ssRlsOn === 'function' && (await ssRlsOn(k)) === false) ? null : false; }catch(e){ return false; }
+  }
   /* 合図より前に頼んだ読み（途中のもの）の答えを使わない：それを待ってから、もう一度読む */
   async function hrFresh(hk){
     try{ var q = _hrMem.p && _hrMem.p[hk]; if(q && q.p) await q.p; }catch(e){}
-    try{ return loadRes(await hrLoad(hk, true)); }catch(e){ return false; }
+    var r; try{ r = await hrLoad(hk, true); }catch(e){ return false; }
+    return (r === 'rest') ? restRes(hk) : loadRes(r);
   }
   async function piiFresh(){
     try{ var q = _pii.p; if(q && q.p) await q.p; }catch(e){}
-    try{ return loadRes(await piiLoad(true)); }catch(e){ return false; }
+    var r; try{ r = await piiLoad(true); }catch(e){ return false; }
+    return (r === 'rest') ? restRes('emp_pii') : loadRes(r);
   }
   SG._loadRes = loadRes;
   async function pullOne(k){
@@ -104829,7 +104854,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         var res = null;
         for(var i = 0; i < SEC_OWN[cat].length; i++){
           var hk = SEC_OWN[cat][i], loaded = false;
-          try{ loaded = !!(typeof hrRouted === 'function' && hrRouted(hk) && typeof _hrMem !== 'undefined' && _hrMem.at && _hrMem.at[hk] && typeof hrLoad === 'function'); }catch(e){ loaded = false; }
+          /* 関数が無いと分かった 10 分（hrOld）も読み直しに回す（hrLoad が 'rest' を返し、決まりが入っていれば「読めていない」で預かりを残す。
+             前は hrRouted が偽になると読まずに「読むものが無い」になり、2 回目で預かりを外していた） */
+          try{ var S0 = (typeof ssSess === 'function') ? ssSess() : null;
+               loaded = !!(typeof hrRouted === 'function' && (hrRouted(hk) || (S0 && typeof hrOldNow === 'function' && hrOldNow(S0))) && typeof _hrMem !== 'undefined' && _hrMem.at && _hrMem.at[hk] && typeof hrLoad === 'function'); }catch(e){ loaded = false; }
           if(loaded) res = both(res, await hrFresh(hk));   /* 読んだことのあるものだけ読み直す */
         }
         return res;

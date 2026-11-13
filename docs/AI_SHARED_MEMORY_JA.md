@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-13 v1151 の 5 回目の直し：Codex #146（`56ae430`・issuecomment 6849760483）の継続の P2（404 × RLS）（Claude・ブランチ `claude/change-signal-1151`・アプリと試験と文書だけ）
+
+- **Codex（#146 6849760483・`56ae430`）：blocked／manual・P2 2**。P2-2（継続・#145 6849251115 と同じ）：関数が見つからない（404）と `ssPull` は `{ rest:true, fail:false }` を返し、③ の SQL のあと REST では保護されたデータは返らないのに「最新」に数え、合図の預かり（`_secure:bonus`）を外した（Codex が本物の `ssPull → _kvPullRows → supaPullAllMasters → autoSync → runFull` で再現）。P2-1（まとめの確かめの SQL が名前を出す）は #146 で直す（下の節）。Claude のルーティン（6849724625 など）の「P1・P2 なし」とは違う（Codex の判断で直した）。
+- 直したこと（仕様：`docs/CHANGE_SIGNAL_V1151_JA.md` の 13）：REST に戻るとき（関数が見つからない・関数でない答え・PIN の印の無い CEO・GM）、公開の鍵で `rpc/ss_secret_key` を聞く（`ssRlsOn`）。決まりに入っている・分からない＝「取れなかった」（12 の `_secFail` で預かりは残る）。関数が無い（404）＝今までどおり。採用・相談室・個人の欄（FUNERGY_SIGNAL の `pullOne`）の `'rest'` も同じ（関数が無いと分かった 10 分も読み直す）。RLS・権限は緩めていない。
+- 試験（合成データ）：secure-state-client（足した 4）・change-signal-client（足した 2）。足した 6 つは `b0ef02f` で全部落ちる。わざと壊す 12 通りすべてで落ちる。関連 696/696・static release pass/1151。試験の土台に `rpc/ss_secret_key`。
+- 変わること（Moto さんに伝える）：③ のあと PIN の印の無い CEO・GM（初期の PIN）は右上が「同期 ⚠ 保護されたデータ」（REST では読めないのは前から）。
+- 独立レビューは無し。Codex の再レビューはまだ。この回も Claude は PR に報告を投稿していない（push だけ）。
+
 ## 2026-11-13 v1151 の 4 回目の直し：Codex #145（`0a11a73`・issuecomment 6848717787）の P2 1 件（Claude・ブランチ `claude/change-signal-1151`・アプリと試験と文書だけ）
 
 - **Codex（#145 6848717787・`0a11a73`）：blocked／manual・P2 1**（時間切れの直しは確認済み）：`ssPull` が保護されたデータ（成長カルテ・賞与・Career Score など）を関数から取れなかったことを `_kvPullRows` が伝えず、REST が読めれば同期は「最新」になり、合図の預かり（`_secure:bonus` など）を外していた。
