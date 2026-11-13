@@ -46,8 +46,8 @@ function varBlock(name, open = '{', close = '}') {
 const FNS = ['_cjson', '_smallGet', '_smallSet', '_outboxGet', '_outboxSet', '_outboxAdd', '_outboxRemove', '_pushWithOutbox', '_pushQOf', '_pushBusy', '_pushRun',
   'lsSet', 'syncMasterToSupabase', '_stripTestRows', 'supaPullAllMasters', 'loginBootstrapPull', '_pullKeepLocal', '_pullPendingMap',
   'mrIsKey', 'mrDef', 'mrPkOf', 'mrTomb', '_mrJsonGet', '_mrJsonPut', 'mrTouchedAll', 'mrTouchedOf', '_mrTouchedPut', 'mrUnkHas', 'mrUnkMark', 'mrUnkClear',
-  'mrPending', 'mrHasUnsent', 'mrInitLegacy', 'mrFieldEq', 'mrRowEq', 'mrIndex', 'mrOnEdit', '_mrStrip', 'mrOverlay', '_mrQuote', 'mrFetchRows', '_mrLog', 'mrTok', 'mrCasWrite', 'mrBulkWrite', 'mrPool', 'mrPush', 'mrApplyPulled'];
-const VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', 'LS_SLIM_KEEP', '_pushQ', '_lsPushP'];
+  'mrPending', 'mrHasUnsent', 'mrInitLegacy', 'mrFieldEq', 'mrRowEq', 'mrIndex', 'mrOnEdit', '_mrStrip', 'mrOverlay', '_mrQuote', 'mrFetchRows', '_mrLog', 'mrTok', 'mrCasWrite', 'mrBulkWrite', 'mrPool', 'mrSameVer', 'mrSameData', 'mrPush', 'mrApplyPulled'];
+const VARS = ['MR_KEYS', 'MR_TOUCH_KEY', 'MR_TOUCH_OVF', 'MR_UNK_KEY', 'MR_INIT_KEY', 'MR_DEL_F', 'MR_BULK', 'LS_SLIM_KEEP', '_pushQ', '_lsPushP'];
 const PK = { stores: 'id', ingredients: 'code', recipes: 'id', categories: 'code', employees: 'id', vendors: 'id' };
 const KEY_OF = { m_stores: 'stores', m_ingredients: 'ingredients', m_recipes: 'recipes', m_categories: 'categories' };
 
@@ -229,7 +229,7 @@ test('a row deleted on another device but edited here: the deletion wins (not wr
   assert.deepEqual(local(B, 'm_ingredients').map(x => x.code), [1001, 1003], 'removed on B');
   assert.deepEqual(outbox(B), []);
   assert.ok(B.logs.some(m => /消された行/.test(m)), 'logged');
-  assert.deepEqual(B.S._mr_touched_v1 === undefined ? {} : JSON.parse(B.LSM.get('_mr_touched_v1') || '{}'), {}, 'nothing left to send');
+  assert.deepEqual(Object.keys(JSON.parse(B.LSM.get('_mr_touched_v1') || '{}')).filter(k => k !== '_s'), [], 'nothing left to send');
   await db.close();
 });
 
@@ -504,7 +504,7 @@ test('stores, recipes and categories work the same (string ids, ids with spaces)
   await db.close();
 });
 
-test('a save during start-up (or before the device storage is read, or without a previous list) is sent whole once, as before; a v1149 unsent change is sent whole once too', { skip: !HAS_MR }, async () => {
+test('a save during start-up (or before the device storage is read, or without a previous list) and a v1149 unsent change are checked against the cloud once: changed rows are written by version, unchanged rows are not (before: every row was upserted)', { skip: !HAS_MR }, async () => {
   const { db, A, B } = await twoDevices();
   /* 起動の途中の保存：覚えを確かめられない → 印 */
   A._supaBooting = true;
@@ -515,7 +515,9 @@ test('a save during start-up (or before the device storage is read, or without a
   assert.equal(JSON.parse(A.LSM.get('_mr_touched_v1') || '{}').m_ingredients, undefined);
   const a2 = local(A, 'm_ingredients'); a2[1].price = 41;
   assert.equal(await save(A, 'm_ingredients', a2), true);
-  assert.equal(A.writes[0].method, 'UPSERT'); assert.deepEqual(A.writes[0].pks.sort(), ['1001', '1002', '1003'], 'all rows once (as before)');
+  assert.ok(A.writes.every(w => w.method === 'PATCH'), 'conditional writes, no upsert of every row');
+  assert.deepEqual(wrote(A), ['1001', '1002'], 'the start-up change (not remembered) and the remembered change; the unchanged row is not written');
+  assert.deepEqual(live(await rowsOf(db, 'ingredients')).map(x => x.price), [40, 41, 2]);
   assert.equal(JSON.parse(A.LSM.get('_mr_unk_v1') || '{}').m_ingredients, undefined, 'mark cleared');
   A.writes.length = 0;
   const a3 = local(A, 'm_ingredients'); a3[2].price = 42;
@@ -532,7 +534,7 @@ test('a save during start-up (or before the device storage is read, or without a
   D.writes.length = 0;
   const d2 = local(D, 'm_ingredients'); d2[1].unit = 'lb';
   assert.equal(await save(D, 'm_ingredients', d2), true);
-  assert.equal(D.writes[0].pks.length, 3, 'the v1149 change is sent with all rows (not lost)');
+  assert.deepEqual(wrote(D), ['1001', '1002'], 'the v1149 change is sent (not lost); the unchanged row is not written');
   assert.equal((await rowOf(db, 'ingredients', 1001)).name, 'Salmon (v1149)');
   assert.equal(D.LSM.get('_mr_v1150'), '1');
   /* 端末の保存を読む前：食材は印（全部）、店舗の表は localStorage にあるので変えた行を覚える */
@@ -589,7 +591,7 @@ test('a pull while the table is being sent keeps the device table (the change be
   await db.close();
 });
 
-test('rows without a number or with the same number twice: sent whole as before (no rows are guessed)', { skip: !HAS_MR }, async () => {
+test('rows without a number or with the same number twice: marked as unconfirmed (no rows are guessed; checked against the cloud by version when sent)', { skip: !HAS_MR }, async () => {
   const { db, A } = await twoDevices();
   const a = local(A, 'm_ingredients'); a.push({ code: 1001, name: 'Salmon copy' });
   run(A, `lsSet('m_ingredients', ${JSON.stringify(a)})`);
@@ -607,4 +609,154 @@ test('lsSet records the change before writing; syncMasterToSupabase sends these 
   /* 同期センターの「この端末からアップロード」は今までどおり全部の行 */
   const up = /var ok = await supaUpsert\(def\.table, val\.map\(def\.map\)\);/.test(SRC);
   assert.ok(up);
+});
+
+/* ── Codex #144 6838246707（P2）：覚え（_mr_touched_v1）を端末に書けないまま閉じて開き直しても、送れていない変更を「送れた」にしない ── */
+/* localStorage が、決めたキーだけ書けない（いっぱい）ことにする */
+function refuse(c, keys) {
+  const base = c.localStorage;
+  c.localStorage = { getItem: k => base.getItem(k), removeItem: k => base.removeItem(k), key: i => base.key(i), get length() { return base.length; },
+    setItem: (k, v) => { if (keys.includes(k)) { const e = new Error('QuotaExceededError'); e.name = 'QuotaExceededError'; throw e; } base.setItem(k, v); } };
+}
+/* 閉じて開き直す：端末の保存（S）と localStorage は残る。このタブのメモリ（_smallSet.mem など）は消える */
+const reopen = (db, c, name) => device(db, { S: { ...c.S }, LS: new Map(c.LSM), name });
+
+for (const both of [false, true]) {
+  test(`the change record cannot be written to the device${both ? ' (nor the small mark)' : ''}, the app is closed before sending, then reopened: the change is still sent (before: “nothing to send”, the queue was cleared and the next pull put the old price back — Codex #144 6838246707)`, { skip: !HAS_MR }, async () => {
+    const db = await cloudDb();
+    await seedCloud(db, 'ingredients', ING);
+    const E = device(db, { name: 'E' });
+    await pullAll(E);
+    refuse(E, both ? ['_mr_touched_v1', '_mr_unk_v1'] : ['_mr_touched_v1']);
+    E.offline = true;
+    const e = local(E, 'm_ingredients'); e[0].price = 99;
+    assert.equal(await save(E, 'm_ingredients', e), false, 'offline: not sent');
+    assert.deepEqual(outbox(E), ['m_ingredients']);
+    assert.equal(E.LSM.has('_mr_touched_v1'), false, 'the change record is only in this tab’s memory');
+    assert.equal(E.LSM.has('_mr_unk_v1'), !both, both ? 'the small mark could not be written either' : 'so the small mark is written');
+    /* 開き直す（localStorage はまだいっぱい）。同じ値をもう一度保存する（Codex の手順） */
+    const E2 = reopen(db, E, 'E');
+    refuse(E2, both ? ['_mr_touched_v1', '_mr_unk_v1'] : ['_mr_touched_v1']);
+    assert.equal(await save(E2, 'm_ingredients', local(E2, 'm_ingredients')), true);
+    assert.equal((await rowOf(db, 'ingredients', 1001)).price, 99, 'the price change reached the cloud');
+    assert.deepEqual(wrote(E2), ['1001'], 'only the changed row (checked by version), not every row');
+    assert.deepEqual(outbox(E2), []);
+    await pullAll(E2);
+    assert.equal(local(E2, 'm_ingredients')[0].price, 99, 'the next pull keeps 99');
+    await db.close();
+  });
+}
+
+test('the unconfirmed path (mark) does not undo another device’s change or bring back its deleted row; this device’s change is written (before: every row was upserted — Claude routine 6838247224 P3-2)', { skip: !HAS_MR }, async () => {
+  const { db, A, B } = await twoDevices();
+  const a = local(A, 'm_ingredients'); a[1].price = 33;
+  assert.equal(await save(A, 'm_ingredients', a), true);
+  assert.equal(await save(A, 'm_ingredients', local(A, 'm_ingredients').filter(r => r.code !== 1003)), true);
+  /* B は A の変更を取り込んでいない。起動の途中に 1001 の値段を変え（覚えを確かめられない＝印）、そのあと名前を変える */
+  B._supaBooting = true;
+  const b = local(B, 'm_ingredients'); b[0].price = 40;
+  run(B, `lsSet('m_ingredients', ${JSON.stringify(b)})`);
+  B._supaBooting = false;
+  const b2 = local(B, 'm_ingredients'); b2[0].name = 'Salmon B';
+  assert.equal(await save(B, 'm_ingredients', b2), true);
+  const r1 = await rowOf(db, 'ingredients', 1001);
+  assert.deepEqual({ price: r1.price, name: r1.name }, { price: 40, name: 'Salmon B' }, 'the version had not changed: the whole device row is written (the unrecorded price too)');
+  assert.equal((await rowOf(db, 'ingredients', 1002)).price, 33, 'A’s change is not undone');
+  assert.equal((await rowOf(db, 'ingredients', 1003))._deleted, true, 'A’s deleted row does not come back');
+  assert.deepEqual(wrote(B), ['1001']);
+  assert.deepEqual(local(B, 'm_ingredients').map(x => [x.code, x.price]), [[1001, 40], [1002, 33]], 'the device rows become the cloud rows');
+  assert.ok(B.logs.some(m => /消したほうにしました（1 行）/.test(m)) && B.logs.some(m => /先に直した行はクラウドのほうにしました（1 行/.test(m)), 'both are in the log');
+  assert.equal(JSON.parse(B.LSM.get('_mr_unk_v1') || '{}').m_ingredients, undefined, 'mark cleared');
+  await db.close();
+});
+
+test('the unconfirmed path: a row changed both here (not recorded) and on another device first keeps the cloud row and logs it; a recorded change on another row is written', { skip: !HAS_MR }, async () => {
+  const { db, A, B } = await twoDevices();
+  const a = local(A, 'm_ingredients'); a[0].unit = 'lb';
+  assert.equal(await save(A, 'm_ingredients', a), true);
+  B._supaBooting = true;
+  const b = local(B, 'm_ingredients'); b[0].price = 40;
+  run(B, `lsSet('m_ingredients', ${JSON.stringify(b)})`);
+  B._supaBooting = false;
+  const b2 = local(B, 'm_ingredients'); b2[1].price = 31;
+  assert.equal(await save(B, 'm_ingredients', b2), true);
+  const r1 = await rowOf(db, 'ingredients', 1001);
+  assert.deepEqual({ price: r1.price, unit: r1.unit }, { price: 20, unit: 'lb' }, 'A wrote first (its version is newer): the cloud row stays');
+  assert.equal((await rowOf(db, 'ingredients', 1002)).price, 31);
+  assert.deepEqual(wrote(B), ['1002']);
+  assert.equal(local(B, 'm_ingredients')[0].unit, 'lb', 'the device row becomes the cloud row');
+  assert.ok(B.logs.some(m => /先に直した行はクラウドのほうにしました（1 行/.test(m)));
+  await db.close();
+});
+
+test('the unconfirmed path with an empty table: the deleted rows are still marked deleted (before: an empty table returned before sending them — Claude routine 6838247224 P3-1)', { skip: !HAS_MR }, async () => {
+  const db = await cloudDb();
+  await seedCloud(db, 'categories', [{ code: 'C1', name: 'Fish' }, { code: 'C2', name: 'Meat' }]);
+  const C = device(db, { name: 'C' });
+  await pullAll(C);
+  C._supaBooting = true;
+  run(C, `lsSet('m_categories', ${JSON.stringify([{ code: 'C1', name: 'Fish!' }, { code: 'C2', name: 'Meat' }])})`);
+  C._supaBooting = false;
+  assert.ok(JSON.parse(C.LSM.get('_mr_unk_v1')).m_categories);
+  assert.equal(await save(C, 'm_categories', []), true);
+  assert.deepEqual(live(await rowsOf(db, 'categories')), [], 'both rows are marked deleted');
+  assert.equal(JSON.parse(C.LSM.get('_mr_unk_v1') || '{}').m_categories, undefined, 'mark cleared');
+  await db.close();
+});
+
+test('the unconfirmed path cannot read the whole cloud table: nothing is written, it stays unsent and the mark stays (it is not treated as an empty cloud)', { skip: !HAS_MR }, async () => {
+  const { db, A } = await twoDevices();
+  A._supaBooting = true;
+  const a = local(A, 'm_ingredients'); a[0].price = 40;
+  run(A, `lsSet('m_ingredients', ${JSON.stringify(a)})`);
+  A._supaBooting = false;
+  const fetchAll = A.supaFetchAll;
+  A.supaFetchAll = async () => null;
+  const a2 = local(A, 'm_ingredients'); a2[1].price = 41;
+  assert.equal(await save(A, 'm_ingredients', a2), false);
+  assert.deepEqual(wrote(A), [], 'nothing written');
+  assert.deepEqual(outbox(A), ['m_ingredients']);
+  assert.ok(JSON.parse(A.LSM.get('_mr_unk_v1')).m_ingredients, 'the mark stays');
+  A.supaFetchAll = fetchAll;
+  assert.equal(await save(A, 'm_ingredients', local(A, 'm_ingredients')), true);
+  assert.deepEqual(live(await rowsOf(db, 'ingredients')).map(x => x.price), [40, 41, 2]);
+  await db.close();
+});
+
+test('the unconfirmed mark is not cleared when the table is saved again while it is being checked: that save (here a list with the same number twice, so not recorded) is checked and sent by the queued send', { skip: !HAS_MR }, async () => {
+  const { db, A } = await twoDevices();
+  A._supaBooting = true;
+  const a = local(A, 'm_ingredients'); a[0].price = 40;
+  run(A, `lsSet('m_ingredients', ${JSON.stringify(a)})`);
+  A._supaBooting = false;
+  const g = gateAt(A, 'write');
+  const a2 = local(A, 'm_ingredients'); a2[1].price = 41;
+  const pa = save(A, 'm_ingredients', a2);
+  await g.reached;
+  /* 送っているあいだの保存：同じ番号が 2 つ（覚えを確かめられない＝印はもう付いている）。1003 の値段も変える */
+  const a3 = local(A, 'm_ingredients'); a3[2].price = 3; a3.push({ ...a3[0] });
+  run(A, `lsSet('m_ingredients', ${JSON.stringify(a3)})`);
+  const pq = run(A, `Promise.resolve(_lsPushP['m_ingredients'])`);   /* 待っている次の送信 */
+  g.release();
+  await pa;
+  assert.equal(await pq, true);
+  assert.deepEqual(live(await rowsOf(db, 'ingredients')).map(x => x.price), [40, 41, 3], 'the change saved during the send is sent by the queued send (before the mark was kept: it was lost)');
+  await db.close();
+});
+
+test('the unconfirmed path: a row marked deleted without a new version (e.g. by hand in SQL) still counts as deleted (not written back)', { skip: !HAS_MR }, async () => {
+  const { db, A } = await twoDevices();
+  const v0 = (await rowOf(db, 'ingredients', 1003))._mrv;
+  await db.query(`update ingredients set data = data || '{"_deleted":true}'::jsonb where code='1003'`);
+  assert.equal((await rowOf(db, 'ingredients', 1003))._mrv, v0, 'same version as the device row');
+  A._supaBooting = true;
+  const a = local(A, 'm_ingredients'); a[2].price = 5;
+  run(A, `lsSet('m_ingredients', ${JSON.stringify(a)})`);
+  A._supaBooting = false;
+  const a2 = local(A, 'm_ingredients'); a2[0].price = 21;
+  assert.equal(await save(A, 'm_ingredients', a2), true);
+  assert.equal((await rowOf(db, 'ingredients', 1003))._deleted, true, 'still deleted');
+  assert.deepEqual(wrote(A), ['1001']);
+  assert.deepEqual(local(A, 'm_ingredients').map(x => x.code), [1001, 1002], 'removed here too');
+  await db.close();
 });

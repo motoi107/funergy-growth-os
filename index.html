@@ -12441,13 +12441,16 @@ async function empRosterRefresh(force){
         ほかの端末が消した行と同じ番号の行を、この端末で新しく作った → 作ったほう（印を外して入れ直す）。
    【変えないもの】従業員（v1085）・業者（v1121）は前からの仕組み。クラウドの行は消さないので、サーバーの処理
      （Toast の取り込み・仕入れの集計など）が表を読む動きは変わらない。
-   【今までどおり（全部の行を 1 回送る）】覚えを確かめられない保存：起動・取り込みの途中の保存、端末の保存（IndexedDB）を
-     読み終える前の保存（店舗の表は localStorage にあるので除く）、前の値が無い保存、番号の無い行・同じ番号が 2 つある表、
-     v1149 以前に送れなかった変更（送信待ち）。この印（_mr_unk_v1）は全部送れたとき・送れていない変更の無い取り込みで外す。
-     同期センターの「この端末からアップロード」も今までどおり。
+   【覚えを確かめられないとき（印 _mr_unk_v1）】起動・取り込みの途中の保存、端末の保存（IndexedDB）を読み終える前の保存
+     （店舗の表は localStorage にあるので除く）、前の値が無い保存、番号の無い行・同じ番号が 2 つある表、v1149 以前に送れなかった変更
+     （送信待ち）、覚えを端末に書けなかった保存（localStorage も IndexedDB も）、起動のときに送信待ちがあるのに覚えの無い表。
+     送るときにクラウドの表を全部読み、中身の違う行を行の版の印で決める（mrPush。前は全部の行を upsert し、ほかの端末の変更・消した行を戻した）。
+     印は確かめ終えたとき・送れていない変更の無い取り込みで外す。
+     覚えは localStorage に書けなければ IndexedDB の別の名前（mr_touched_overflow）に持つ（閉じて開き直しても消えない）。
+     同期センターの「この端末からアップロード」は今までどおり全部の行。
    ============================================================ */
 var MR_KEYS = ['m_stores', 'm_ingredients', 'm_recipes', 'm_categories'];
-var MR_TOUCH_KEY = '_mr_touched_v1';   /* { キー: { 行の番号: { f:{ 欄:1 }｜c:1（足した）｜d:1（消した）, n:直した回 } } }（この端末だけ・送らない） */
+var MR_TOUCH_KEY = '_mr_touched_v1';   /* { _s:書いた回, キー: { 行の番号: { f:{ 欄:1 }｜c:1（足した）｜d:1（消した）, n:直した回 } } }（この端末だけ・送らない） */
 var MR_UNK_KEY = '_mr_unk_v1';         /* { キー: 時刻 }：覚えを確かめられなかったので、次は全部の行を送る（この端末だけ） */
 var MR_INIT_KEY = '_mr_v1150';         /* v1149 以前の送信待ちを「覚えの無い送信」にした印 */
 var MR_DEL_F = ['_deleted', '_deletedAt', '_deletedBy'];
@@ -12461,11 +12464,32 @@ function mrPkOf(key, row){
 function mrTomb(row){ return !!(row && typeof row==='object' && row._deleted===true); }
 function _mrJsonGet(name){ try{ var o=JSON.parse(((typeof _smallGet==='function') ? _smallGet(name) : localStorage.getItem(name))||'null'); return (o && typeof o==='object' && !Array.isArray(o)) ? o : {}; }catch(e){ return {}; } }
 function _mrJsonPut(name, o){ var t=Object.keys(o).length ? JSON.stringify(o) : null; if(typeof _smallSet==='function') return _smallSet(name, t); try{ if(t==null) localStorage.removeItem(name); else localStorage.setItem(name, t); return true; }catch(e){ return false; } }
-function mrTouchedAll(){ return _mrJsonGet(MR_TOUCH_KEY); }
+/* 覚えを localStorage に書けなかったとき（いっぱい）は、IndexedDB の別の名前に持つ（送信待ちの op_outbox_overflow と同じ考え。
+   Codex #144 6838246707：前はこのタブのメモリだけに残り、閉じて開き直すと覚えが消え、送信待ちがあるのに「送るものが無い＝送れた」にして
+   送信待ちから外し、次の取り込みで端末の変更を消していた）。どれがいちばん新しいかは、書いた回（_s）で決める（時計によらない） */
+var MR_TOUCH_OVF = 'mr_touched_overflow';
+function mrTouchedAll(){
+  var a=_mrJsonGet(MR_TOUCH_KEY);   /* このタブのメモリ（_smallSet.mem）→ localStorage */
+  try{
+    if(typeof _idbState!=='undefined' && _idbState==='ready' && typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(MR_TOUCH_OVF)){
+      var b=JSON.parse(_IDB_MEM.get(MR_TOUCH_OVF));
+      if(b && typeof b==='object' && !Array.isArray(b) && ((+b._s)||0) > ((+a._s)||0)) return b;
+    }
+  }catch(e){}
+  return a;
+}
 function mrTouchedOf(key){ var T=mrTouchedAll()[key]; return (T && typeof T==='object') ? T : {}; }
-function _mrTouchedPut(all){ return _mrJsonPut(MR_TOUCH_KEY, all); }
+/* 書けたら true（localStorage か IndexedDB の別の名前）。どちらにも書けなければ false（呼ぶ側が「覚えを確かめられない」の印を付ける） */
+function _mrTouchedPut(all){
+  all._s=((+all._s)||0)+1;
+  var ok=_mrJsonPut(MR_TOUCH_KEY, all), ovf=false;
+  try{ ovf=(typeof _IDB_MEM!=='undefined' && _IDB_MEM && _IDB_MEM.has(MR_TOUCH_OVF)); }catch(e){}
+  if(ok){ if(ovf){ try{ _idbQueue(MR_TOUCH_OVF, null); }catch(e){} } return true; }   /* 残った別の名前は回が古いので使われない（消えなくても） */
+  try{ if(typeof _idbQueue==='function' && _idbQueue(MR_TOUCH_OVF, JSON.stringify(all))===true) return true; }catch(e){}
+  return false;
+}
 function mrUnkHas(key){ return Object.prototype.hasOwnProperty.call(_mrJsonGet(MR_UNK_KEY), key); }
-function mrUnkMark(key){ var o=_mrJsonGet(MR_UNK_KEY); if(o[key]) return; o[key]=Date.now(); _mrJsonPut(MR_UNK_KEY, o); }
+function mrUnkMark(key){ var o=_mrJsonGet(MR_UNK_KEY); if(o[key]) return true; o[key]=Date.now(); return _mrJsonPut(MR_UNK_KEY, o); }
 function mrUnkClear(key){ var o=_mrJsonGet(MR_UNK_KEY); if(!Object.prototype.hasOwnProperty.call(o, key)) return; delete o[key]; _mrJsonPut(MR_UNK_KEY, o); }
 /* まだ送れていない変更があるか（送信待ち（だれのものでも）・送っている途中・覚えている行） */
 function mrPending(key){
@@ -12477,6 +12501,18 @@ function mrHasUnsent(key){ return mrUnkHas(key) || mrPending(key); }
 /* v1149 以前に送れなかったマスターの変更（送信待ちにあり、覚えが無い）は、覚えの無い送信（全部の行）にする。1 回だけ */
 function mrInitLegacy(){
   try{
+    /* 起動ごとに 1 回（端末の保存（IndexedDB）を読み終えてから。この起動の保存が送信待ちに入る前）：送信待ちにあるのに、
+       覚えも印も無い表は、覚えを失った（閉じる前に端末へ書けなかった など）とみなして印を付ける（送るときは行の版の印で確かめる：mrPush）。
+       Codex #144 6838246707：前は送るものが無いとして「送れた」にし、送信待ちから外して、次の取り込みで端末の変更を消していた */
+    if(!mrInitLegacy.load && !(typeof _idbState!=='undefined' && _idbState==='init')){
+      mrInitLegacy.load=1;
+      var ob0=(typeof _outboxGet==='function') ? _outboxGet() : [], all0=mrTouchedAll();
+      MR_KEYS.forEach(function(k){
+        if(!ob0.some(function(x){ return x && x.key===k; })) return;
+        if(all0[k] && typeof all0[k]==='object' && Object.keys(all0[k]).length) return;
+        mrUnkMark(k);
+      });
+    }
     if(((typeof _smallGet==='function') ? _smallGet(MR_INIT_KEY) : localStorage.getItem(MR_INIT_KEY))==='1') return;
     var ob=(typeof _outboxGet==='function') ? _outboxGet() : [];
     MR_KEYS.forEach(function(k){ if(ob.some(function(x){ return x && x.key===k; })) mrUnkMark(k); });
@@ -12535,7 +12571,7 @@ function mrOnEdit(key, prevTxt, nextTxt){
       if(Object.prototype.hasOwnProperty.call(N.map, pk)) return;
       T[pk]={ d:1, n:bump(T[pk]) }; n++;   /* 消した（足してまだ送っていない行でも、クラウドに入っていれば印を付ける） */
     });
-    if(n){ all[key]=T; _mrTouchedPut(all); }
+    if(n){ all[key]=T; if(!_mrTouchedPut(all)) mrUnkMark(key); }   /* 端末に書けなかった（localStorage も IndexedDB も）：このタブのメモリにはあるが、閉じると消えるので印も付ける */
   }catch(e){ try{ mrUnkMark(key); }catch(_){} }
 }
 function _mrStrip(row){ var y=Object.assign({}, row); MR_DEL_F.forEach(function(f){ delete y[f]; }); return y; }
@@ -12617,38 +12653,57 @@ async function mrPool(items, n, fn){
   await Promise.all(ws);
   return out;
 }
-/* 送る（syncMasterToSupabase から）：覚えている行だけ。true＝送れた（か、送るものが無い）／false＝送れなかった（送信待ちに残る） */
+/* 行の版の印が同じか（どちらにも無いときも同じ）＝端末が持っている版のあと、クラウドのその行をだれも（1150 の端末は）書いていない */
+function mrSameVer(l, c){ var a=l ? l._mrv : null, b=c ? c._mrv : null; if(a==null || a==='') return b==null || b===''; return b!=null && b!=='' && String(a)===String(b); }
+/* 版の印・消した印を除いて中身が同じか（消した印の行かどうかは呼ぶ側が先に見る） */
+function mrSameData(l, c){ var x=_mrStrip(l||{}), y=_mrStrip(c||{}); delete x._mrv; delete y._mrv; return mrRowEq(x, y); }
+/* 送る（syncMasterToSupabase から）：覚えている行だけ。true＝送れた（か、送るものが無い）／false＝送れなかった（送信待ちに残る）。
+   覚えを確かめられない（印 _mr_unk_v1）ときは、クラウドの表を全部読み、覚えていない行のうち中身が違う行を、行の版の印（_mrv）で決める：
+     ・端末の行とクラウドの行の版の印が同じ（どちらにも無い、も同じ）＝端末が持っている版のあと、クラウドのその行はだれも書いていない
+       → 端末の行を書く（条件つき）。覚えている行（欄）も、版の印が同じなら端末の行を丸ごと書く（覚えていない欄の変更も入る）
+     ・違う（ほかの端末が先に書いた）・クラウドが消した印 → クラウドのほう（端末の行もクラウドの行にする。「設定 › 診断と記録」に 1 行）
+     ・クラウドに無い行 → 足した行として入れる
+     ・端末に無くクラウドにある行は、この端末で消したのか、あとでほかの端末が足したのか見分けられないので送らない（限界）
+   前は全部の行を upsert していた（ほかの端末が直した行・消した行を戻した。Codex #144 6838246707・Claude のルーティン 6838247224 の P3）。
+   v1149 以前の端末は版の印を変えずに書くので、その書き込みは見分けられない（前からの限界） */
 async function mrPush(key, val){
   var def=mrDef(key); if(!def || !Array.isArray(val)) return;
   mrInitLegacy();
   var me=''; try{ me=(typeof myName==='function' ? myName() : '') || ''; }catch(e){}
-  if(mrUnkHas(key)){
-    /* 覚えを確かめられない：今までどおり全部の行（1 回）。版の印は新しくする（この書き込みのあとに、前に読んだ版で書かれないように）。
-       送れて端末の表がそのままなら印を外し、足した・直した覚えも外す（消した覚えは残して下で送る） */
-    var tok0=mrTok(), rowsAll=val.map(function(r){ return def.map(Object.assign({}, r, { _mrv:tok0 })); });
-    if(!rowsAll.length) return;
-    var sent0=_lsStoreGet(key);
-    var wa=await supaUpsert(def.table, rowsAll);
-    if(wa===false) return false;
-    if(_lsStoreGet(key)===sent0 || sent0==null){
-      mrUnkClear(key);
-      var a0=mrTouchedAll(), T0=a0[key]||{};
-      Object.keys(T0).forEach(function(pk){ if(!T0[pk].d) delete T0[pk]; });
-      if(Object.keys(T0).length) a0[key]=T0; else delete a0[key];
-      _mrTouchedPut(a0);
-    }
-  }
+  var unk=mrUnkHas(key), sent0=_lsStoreGet(key);
   var T=mrTouchedOf(key), pks=Object.keys(T);
-  if(!pks.length) return true;
-  var snap={}; pks.forEach(function(pk){ snap[pk]=(+T[pk].n)||0; });
   var L={}; val.forEach(function(r){ var pk=mrPkOf(key, r); if(pk!=null) L[pk]=r; });
-  var done={}, written={}, lost=[], recreated=[], why='', pending=pks.slice();
+  var first=null, U={}, utxt={};
+  if(unk){
+    var all0=(typeof supaFetchAll==='function') ? await supaFetchAll(def.table, def.pk+',data') : null;
+    if(!Array.isArray(all0)){ try{ _opLastPushErr[key]=t('クラウドの表を読めなかったので送っていません（未送信に残し、あとで送り直します）','Could not read the table from the cloud (kept unsent)'); }catch(e){} return false; }
+    first={};
+    all0.forEach(function(r){
+      if(!r || !r.data || typeof r.data!=='object') return;
+      var pk=(r[def.pk]!=null && r[def.pk]!=='') ? String(r[def.pk]) : mrPkOf(key, r.data);
+      if(pk!=null) first[pk]=r.data;
+    });
+    Object.keys(L).forEach(function(pk){
+      if(T[pk]) return;
+      var c=Object.prototype.hasOwnProperty.call(first, pk) ? first[pk] : null;
+      if(c && !mrTomb(c) && mrSameData(L[pk], c)) return;   /* 同じ */
+      U[pk]=1; try{ utxt[pk]=JSON.stringify(L[pk]); }catch(e){ utxt[pk]=''; }
+    });
+  }
+  var snap={}; pks.forEach(function(pk){ snap[pk]=(+T[pk].n)||0; });
+  var done={}, written={}, lost=[], recreated=[], won={}, why='', pending=pks.concat(Object.keys(U));
   for(var a=0; a<4 && pending.length; a++){
-    var cloud=await mrFetchRows(key, pending);
+    var cloud=(a===0 && first) ? first : await mrFetchRows(key, pending);
     if(cloud===null){ why=t('クラウドの表を読めなかったので送っていません（未送信に残し、あとで送り直します）','Could not read the table from the cloud (kept unsent)'); break; }
     var jobs=[];
     pending.forEach(function(pk){
       var tc=T[pk], l=L[pk], c=Object.prototype.hasOwnProperty.call(cloud, pk) ? cloud[pk] : null;
+      if(!tc){   /* 覚えていない行（印のあるときだけ）：行の版の印で決める */
+        if(!l){ done[pk]=1; return; }
+        if(!c){ jobs.push({ pk:pk, c:null, row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return; }   /* クラウドに無い：足した行 */
+        if(mrTomb(c) || !mrSameVer(l, c)){ won[pk]=c; done[pk]=1; return; }   /* ほかの端末が先に消した・書いた：クラウドのほう（中身が同じ行は最初の読みで外してある） */
+        jobs.push({ pk:pk, c:c, row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return;
+      }
       if(tc.d){
         if(c && !mrTomb(c)) jobs.push({ pk:pk, c:c, row:Object.assign({}, c, { _deleted:true, _deletedAt:new Date().toISOString(), _deletedBy:me, _mrv:mrTok() }) });
         else done[pk]=1;   /* クラウドに無い・もう消した印：送るものなし */
@@ -12657,7 +12712,8 @@ async function mrPush(key, val){
       if(!l){ done[pk]=1; return; }
       if(tc.c || !c){ jobs.push({ pk:pk, c:c, re:!!(c && mrTomb(c)), row:Object.assign(_mrStrip(l), { _mrv:mrTok() }) }); return; }   /* 足した・クラウドに無い：丸ごと */
       if(mrTomb(c)){ lost.push(pk); done[pk]=1; return; }   /* ほかの端末が消した行をこの端末で直していた：消したほう */
-      var y=mrOverlay(c, l, tc.f); y._mrv=mrTok(); jobs.push({ pk:pk, c:c, row:y });
+      /* 印のあるとき、版の印が同じなら端末の行を丸ごと（覚えていない欄の変更も入る。だれも書いていないので、ほかの端末の欄は消えない） */
+      var y=(unk && mrSameVer(l, c)) ? _mrStrip(l) : mrOverlay(c, l, tc.f); y._mrv=mrTok(); jobs.push({ pk:pk, c:c, row:y });
     });
     var rs=(jobs.length>MR_BULK) ? await mrBulkWrite(key, jobs) : await mrPool(jobs, 6, function(j){ return mrCasWrite(key, j.pk, j.row, j.c); });
     var next=[], failed=false;
@@ -12673,11 +12729,12 @@ async function mrPush(key, val){
       else await new Promise(function(res){ setTimeout(res, 40 + Math.floor(Math.random()*160)); });   /* ほかの端末がほぼ同時に同じ行を書いた：読み直して重ね直す */
     }
   }
+  var still=(_lsStoreGet(key)===sent0 || sent0==null);   /* 送っているあいだに表を変えていない（下で端末の表を合わせる前に見る） */
   /* 書けた行（と送るものの無かった行）の覚えを外す（送っているあいだにまた直した行は残す）。端末の表も合わせる（その行を直していなければ） */
   var all2=mrTouchedAll(), T2=all2[key]||{}, cleared={};
-  Object.keys(done).forEach(function(pk){ if(T2[pk] && ((+T2[pk].n)||0)===snap[pk]){ delete T2[pk]; cleared[pk]=1; } });
+  Object.keys(done).forEach(function(pk){ if(T[pk] && T2[pk] && ((+T2[pk].n)||0)===snap[pk]){ delete T2[pk]; cleared[pk]=1; } });
   if(Object.keys(T2).length) all2[key]=T2; else delete all2[key];
-  _mrTouchedPut(all2);
+  if(pks.length) _mrTouchedPut(all2);
   try{
     var cur=JSON.parse(_lsStoreGet(key)||'null');
     if(Array.isArray(cur)){
@@ -12688,6 +12745,12 @@ async function mrPush(key, val){
           if(lost.indexOf(pk)>=0 || (written[pk] && mrTomb(written[pk]))){ changed=true; return; }
           if(written[pk] && !mrRowEq(r, written[pk])){ out.push(written[pk]); changed=true; return; }
         }
+        /* 覚えていない行（印のあるとき）：送っているあいだに直していなければ、書いた行・クラウドの行にする */
+        if(pk!=null && U[pk] && done[pk] && !T2[pk]){
+          var same=false; try{ same=(JSON.stringify(r)===utxt[pk]); }catch(e){}
+          if(same && Object.prototype.hasOwnProperty.call(won, pk)){ if(mrTomb(won[pk])){ changed=true; return; } if(!mrRowEq(r, won[pk])){ out.push(won[pk]); changed=true; return; } }
+          else if(same && written[pk] && !mrRowEq(r, written[pk])){ out.push(written[pk]); changed=true; return; }
+        }
         out.push(r);
       });
       if(changed){ _lsWriteVerified(key, JSON.stringify(out)); if(key==='m_stores' && typeof refreshStores==='function'){ try{ refreshStores(); }catch(e){} } }
@@ -12695,6 +12758,10 @@ async function mrPush(key, val){
   }catch(e){}
   if(lost.length) _mrLog(key, 'ほかの端末で消された行を、この端末で直していました（消したほうにしました：'+lost.length+' 行）。', 'rows deleted on another device were edited here (kept deleted: '+lost.length+')');
   if(recreated.length) _mrLog(key, 'ほかの端末で消された行と同じ番号の行を、この端末で作りました（作ったほうにしました：'+recreated.length+' 行）。', 'rows were created here with the number of a deleted row (kept: '+recreated.length+')');
+  var wonDel=Object.keys(won).filter(function(pk){ return mrTomb(won[pk]); }).length, wonNew=Object.keys(won).length-wonDel;
+  if(wonDel) _mrLog(key, '変更を確かめられなかった送信で、ほかの端末で消された行は消したほうにしました（'+wonDel+' 行）。', 'unconfirmed changes: rows deleted on another device were kept deleted ('+wonDel+')');
+  if(wonNew) _mrLog(key, '変更を確かめられなかった送信で、ほかの端末が先に直した行はクラウドのほうにしました（'+wonNew+' 行。この端末で直していた場合、その変更は入っていません）。', 'unconfirmed changes: rows changed on another device first were kept as in the cloud ('+wonNew+')');
+  if(unk && !why && !pending.length && still) mrUnkClear(key);   /* 確かめ終えて、送っているあいだに表を変えていなければ印を外す */
   if(why || pending.length){ try{ _opLastPushErr[key]=why || t('送れていない行があります','Some rows were not sent'); }catch(e){} return false; }
   try{ _opLastPushErr[key]=''; }catch(e){}
   return true;
