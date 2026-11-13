@@ -3,10 +3,10 @@
 ## 2026-11-13 KPI設定・Google の口コミ（UI案70・v1153）とワークセンターの申請／承認（UI案71）
 
 1. 済（Moto さん 11/13）：UI案70 の 1A〜7A（2 は「Places API なら使ってよい」も）・UI案71 は A 案。
-2. 済（Claude・ブランチ `claude/kpi-google-1153`）：v1153（アプリだけ・`docs/KPI_SETTINGS_V1153_JA.md`）・試験 10/10・わざと壊す 36/37・ブラウザ 54/54・全体は main と同じ失敗だけ。済：PR #147。次：Codex → マージ → 端末を 1153 に → 店ごとに 11 月の目標・総労働時間の計画・Google の平均を入れる。
+2. 済（Claude・ブランチ `claude/kpi-google-1153`）：v1153（アプリだけ・`docs/KPI_SETTINGS_V1153_JA.md`）・試験 10/10・わざと壊す 36/37・ブラウザ 54/54・全体は main と同じ失敗だけ。済：PR #147。済（Claude 11/13）：Codex（`cbbfabb`）の P2 2 つ（触っていない欄の書き戻し・前の月を今月の目標で判定）を直した（5c）。次：Codex の再レビュー → マージ → 端末を 1153 に → 店ごとに 11 月の目標・総労働時間の計画・Google の平均を入れる。
 3. v1154：Google の口コミを Places API（新）で（Edge Function が鍵を持つ・決めた店の place ID だけ）。Moto さん：API キー・Places API（新）・請求・上限。Places API で取れる口コミは最近の 5 件までなので、月の平均の出し方を UI 案から。
 4. 済（Moto さん 11/13）：hyper-worker のソース（非公開）・UI案71 は A 案・Google は手入力＋リンクでよい。済（Claude）：アカウント ID は hyper-worker が前から保存 → アプリで外す（v1153 の 5b）。（CHAZUKE・休憩は 5b で済）
-5. ワークセンターの申請／承認（A 案）：済（Claude・ブランチ `claude/wc-approvals-1154`）段階 1＝v1154（`docs/WORKCENTER_APPROVALS_V1154_JA.md`・試験 8/8・わざと壊す 18/18）。PR #148。次：Codex → #147 → #148 の順にマージ。そのあと段階 2（予算と前の種類をサーバーへ・UI案から）→ 段階 3（承認のタブを外して移す）。
+5. ワークセンターの申請／承認（A 案）：済（Claude・ブランチ `claude/wc-approvals-1154`）段階 1＝v1154（`docs/WORKCENTER_APPROVALS_V1154_JA.md`・試験 8/8・わざと壊す 18/18）。PR #148。済（Claude 11/13）：Codex（6862591044）の P2-1（経理レビュー › 申請が「読み込み中…」のまま）を直した。次：Codex の再レビュー → #147 → #148 の順にマージ。そのあと段階 2（予算と前の種類をサーバーへ・UI案から）→ 段階 3（承認のタブを外して移す）。
 5a. 済（Claude 11/13・ブランチ `claude/wc-approvals-1155`）：段階 2 の UI案72（8 枚・決めてほしいこと 9）と読むだけの SQL `db/approvals-inventory-check.sql`（`docs/WORKCENTER_APPROVALS_STAGE2_JA.md`）。
 5a2. 済（Moto さん 11/13 09:48 HST）：UI案72 の答え（2 は A＋GM がすべてまとめて承認・7 は B・9 は B・ほかは A）。済（Claude）：段階 2＝v1155（SQL `20261120090000`・関数 work-requests fn 4・アプリ・入れる一式 `deploy/work-requests-v1155/`・試験 30・わざと壊す 25/25・36/36）。非公開の 1 ファイルを Moto さんに直接。PR #149。次：Codex → #147 → #148 → #149 → Moto さんが手順.md（全端末 1155 にしてから「段階 2 を使い始める」）。そのあと段階 3（前の承認タブを外す・前の記録を写す）。
 5b. 済（Moto さん 11/13 09:07 HST）：CHAZUKE＝モディファイヤー「CHAZUKE」・アップグレード → hyper-worker v1154（非公開・直接渡した）。休憩は A（引かない）。次（Moto さん）：hyper-worker を貼る → Totoya の期間一括取り込み。

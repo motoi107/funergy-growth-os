@@ -4050,7 +4050,17 @@ function renderKpi2Store(){
   return h;
 }
 function k2FmtPlain(def, v){ if(v==null || !isFinite(v)) return ''; return String(Math.round(v*10)/10); }
-/* 保存：この月に変えた欄だけ書く（引き継いだ値と同じなら書かない）。目標を空にすると、この月の欄を消して前の月から引き継ぐ */
+/* 保存：この月に変えた欄だけ書く（引き継いだ値と同じなら書かない）。目標を空にすると、この月の欄を消して前の月から引き継ぐ。
+   v1153（Codex #147 P2-1）：人が画面で変えた欄だけを見る。描いたときの値（欄の defaultValue・defaultChecked）と同じ欄は、
+   そのあとほかの端末の変更が端末に届いていても触らない（画面がまだ描き直されていない古い値で戻さない）。
+   変えた欄だけを、保存するときの最新の記録に重ねる */
+function k2SameInput(a, b){
+  a=String(a==null?'':a).trim(); b=String(b==null?'':b).trim();
+  if(a===b) return true;
+  if(a==='' || b==='') return false;
+  var x=Number(a), y=Number(b);
+  return isFinite(x) && isFinite(y) && x===y;
+}
 function k2SaveMonth(sid, ym){
   if(!canSetKpiStore(sid)){ showToast(t('この店舗を編集する権限がありません','No permission for this store'),'warning'); return false; }
   if(!/^\d{4}-\d{2}$/.test(String(ym))) return false;
@@ -4058,12 +4068,17 @@ function k2SaveMonth(sid, ym){
   K2_DEFS.forEach(function(d){
     var ob=document.getElementById('k2o-'+d.key);
     if(ob && d.key!=='sales'){
-      var on=!!ob.checked, was=k2On(sid, ym, d.key);
-      if(on!==was){ vals['off_'+d.key]=!on; n++; }
+      var on=!!ob.checked;
+      /* 描いたときのまま（人が触っていない）なら書かない */
+      var touched=(typeof ob.defaultChecked==='boolean') ? (on!==ob.defaultChecked) : true;
+      var was=k2On(sid, ym, d.key);
+      if(touched && on!==was){ vals['off_'+d.key]=!on; n++; }
     }
     if(K2_EDIT_TGT.indexOf(d.key)<0) return;
     var el=document.getElementById('k2t-'+d.key); if(!el) return;
     var s=String(el.value==null?'':el.value).trim(), f='tgt_'+d.key;
+    /* 描いたときの値と同じ欄は、人が変えていない。保存するときの記録（ほかの端末の新しい値かもしれない）を残す */
+    if(typeof el.defaultValue==='string' && k2SameInput(s, el.defaultValue)) return;
     var hasOwn=Object.prototype.hasOwnProperty.call(cur, f) && _k2Num(cur[f])!=null;
     if(s===''){ if(hasOwn){ vals[f]=undefined; n++; } return; }
     var v=Number(s), rg=K2_RANGE[d.key]||[0,100];
@@ -5910,7 +5925,7 @@ function mdStoreSeries(storeId, ym, meeting){
 function mdWeekRates(storeId, ym, meeting){
   return _mdMemo('wrate', String(storeId) + '|' + ym + (meeting?'|meeting':''), function(){
     var s = mdStoreSeries(storeId, ym, meeting);
-    var k = {}; try{ k = getStoreKpiTargets(storeId) || {}; }catch(e){ k = {}; }
+    var k = {}; try{ k = getStoreKpiTargets(storeId, 0, ym) || {}; }catch(e){ k = {}; }   /* v1153（Codex #147 P2-2）：その月の目標 */
     var gbM = 0; try{ gbM = Number(monthGuestBudget(storeId, mcYmOffset(ym))) || 0; }catch(e){ gbM = 0; }
     var ppaT = (gbM > 0 && s.budMonth > 0) ? (s.budMonth / gbM) : 0;
     var lT = Number(k.laborPct) || 0, fT = Number(k.foodCost) || 0;
@@ -5965,7 +5980,7 @@ function mdVerdict(storeId, code, ym) {
     }
 
     if (code === 'labor_rate') {
-      var kL = getStoreKpiTargets(storeId) || {};
+      var kL = getStoreKpiTargets(storeId, 0, ym) || {};   /* v1153（Codex #147 P2-2）：判定する月の目標 */
       var tL = Number(kL.laborPct);
       if (!(tL > 0)) return mdUnknown(code, 'no_target', '', c.laborRate);
       if (!(c.actToToday > 0)) return mdUnknown(code, 'no_actual');
@@ -5975,7 +5990,7 @@ function mdVerdict(storeId, code, ym) {
     }
 
     if (code === 'cost_rate') {
-      var kC = getStoreKpiTargets(storeId) || {};
+      var kC = getStoreKpiTargets(storeId, 0, ym) || {};
       var tC = Number(kC.foodCost);
       /* v842: 目標が無くても実測は出せるので、先に率を出してから目標を見る */
       var _ev = (typeof monthEventSalesYm === 'function') ? (monthEventSalesYm(storeId, ym).sales || 0) : 0;   /* v1041: 原価率の売上にイベント出店も足す（棚卸表と同じ数字） */
@@ -29718,7 +29733,8 @@ function quarterTargets(storeId,y,q){
     salesT+=msales; guestsT+=mguests; if(el){ salesEl+=msales; guestsEl+=mguests; }
     byMonth.push({ym:ym, sales:msales, guests:mguests, seg:seg, elapsed:el, registered:registered, rationale:_qbMonthRationale(b, ym)});
   });
-  var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
+  /* v1153（Codex #147 P2-2）：率の目標は四半期の最後の月の目標（月別の目標は前の月から引き継ぐ） */
+  var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId, 0, months[months.length-1])||{}):{};
   return { sales:salesT, guests:guestsT, salesEl:salesEl, guestsEl:guestsEl, ppa:guestsT?Math.round(salesT/guestsT*100)/100:0, fcRate:kpi.foodCost||0, laborRate:kpi.laborPct||0, repeat:kpi.repeatRate||0, byMonth:byMonth };
 }
 function qbCanEdit(){ return ['ceo','gm','office','am','sl','g4'].indexOf(curRole)>=0; }
@@ -29775,7 +29791,7 @@ function _qbMonthData(storeId, ym){
   var off=_ymToOffset(ym); var ms=(off<=0)?(monthStats(storeId,off)||{}):{};
   /* v933: 確定月は会計PLの売上を使う（quarterActuals と同じ）。 */
   var _plM=null; if(off<=0){ try{ _plM=_meetPlKpi(storeId, ym); }catch(e){} }
-  var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId)||{}):{};
+  var kpi=(typeof getStoreKpiTargets==='function')?(getStoreKpiTargets(storeId, 0, ym)||{}):{};   /* v1153（Codex #147 P2-2）：その月の目標 */
   var aG=ms.guests||0, aS=(_plM?(_plM.sales||0):(ms.sales||0));
   // 原価率・人件費率は棚卸法COGS(食材移動込み)＋laborCoreForYm（現行集計）を反映
   var aFc=0, aLb=0, cogsSrc='';
@@ -43735,7 +43751,7 @@ function laborSummaryCard(storeId){
   var _ym = ymOf(attMonthRef());
   var _frozen = isFrozenMonth(_ym);
   var c = cumulativeToToday(storeId, attMonthOffset===0?null:_ym);
-  var tgt = getStoreKpiTargets(storeId);
+  var tgt = getStoreKpiTargets(storeId, 0, _ym);   /* v1153（Codex #147 P2-2）：表示している月の目標 */
   var laborTarget = (tgt && tgt.laborPct!=null && tgt.laborPct>0) ? tgt.laborPct : 29;
   var rate = c.laborRate||0;
   var col = rate<=laborTarget?'var(--green)':(rate<=laborTarget+3?'var(--yellow)':'var(--red)');
@@ -45379,7 +45395,7 @@ function renderLaborDetail(storeId, store) {
   var _ins = _core.ins;
   var _laborTotal = _core.total;
   var _pSales = _core.sales;
-  var _tgt=(typeof getStoreKpiTargets==='function')?getStoreKpiTargets(storeId):{}; var _lt=(_tgt&&_tgt.laborPct>0)?_tgt.laborPct:29;
+  var _tgt=(typeof getStoreKpiTargets==='function')?getStoreKpiTargets(storeId, 0, ym):{}; var _lt=(_tgt&&_tgt.laborPct>0)?_tgt.laborPct:29;
   var _rate=_pSales?Math.round(_laborTotal/_pSales*1000)/10:0;
   var _rcol=_rate<=_lt?'var(--green)':(_rate<=_lt+3?'var(--yellow)':'var(--red)');
   if(canWage){
@@ -106041,7 +106057,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.wrAPI = api;
 
   function onWrTab(){ return typeof curPage !== 'undefined' && curPage === 'tasks' && typeof workTab !== 'undefined' && workTab === 'wr'; }
-  function rerender(){ if (onWrTab()) { try{ renderPage('tasks'); }catch(e){} } }
+  /* v1154（Codex #148 P2-1）：読み終えたら、開いている画面を描き直す。経理レビュー › 申請を初めて開いたときも
+     （whoami と一覧を読み終えるまで「読み込み中…」だった）。rerenderAcct は経理レビュー › 申請を開いているときだけ描く */
+  function rerender(){ if (onWrTab()) { try{ renderPage('tasks'); }catch(e){} } else rerenderAcct(); }
 
   /* 読む：whoami → 一覧。世代（gen）が変わったら古い答えは捨てる */
   function load(force){

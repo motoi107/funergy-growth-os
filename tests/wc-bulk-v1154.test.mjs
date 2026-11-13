@@ -9,7 +9,7 @@ import { webcrypto } from 'node:crypto';
 import { createHandler } from '../supabase/functions/work-requests/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const html = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const B = '/* ==== FUNERGY_WR（v1131', E = '/* ==== FUNERGY_WR end ==== */';
 const MOD = html.slice(html.indexOf(B), html.indexOf(E));
 // v1132：2 段目の SQL（種類で振り分ける）を重ねても 1 段目の動きは同じ
@@ -236,6 +236,43 @@ test('accounting review › requests: accounting sees GM-approved requests to ch
   assert.match(hg, /（見るだけ）/);
   assert.doesNotMatch(hg, /確認する/);
   assert.match(hg, />見る</);
+});
+
+test('accounting review › requests: the first open fills itself in when the reading ends, without drawing it again by hand (Codex #148 P2-1)', async () => {
+  const srv = await server({ live: true });
+  const a = await submit(srv, 'E7', 'mileage', 'S1', mil('2026-11-11', 10));
+  assert.equal((await act(srv, 'E2', a.id, 'approve', a.rev)).status, 200);
+  // the page is drawn only by the screen itself (renderPage → renderWrAcct), like the app
+  const open = async (emp, opts, before) => {
+    const d = await app(srv, emp, opts), shown = [];
+    d.ctx.renderPage = p => { d.pages.push(p); if (p === 'acct_review') shown.push(d.ctx.renderWrAcct()); };
+    d.ctx.curPage = 'acct_review'; d.ctx._arTab = 'req';
+    if (before) before(d);
+    const first = d.ctx.renderWrAcct();
+    await d.settle();
+    return { d, first, shown };
+  };
+  const { d, first, shown } = await open('E3', { role: 'office' });
+  assert.match(first, /読み込み中/, 'the first drawing waits for the reading');
+  assert.ok(shown.length >= 1, 'the screen is drawn again when the reading ends');
+  const last = shown.at(-1);
+  assert.match(last, new RegExp(a.code), 'the approved request is listed');
+  assert.match(last, /\[経理の確認待ち:1件\]/);
+  assert.doesNotMatch(last, /読み込み中/);
+  assert.ok(!d.pages.includes('tasks'), 'the work center is not drawn in its place');
+  // a failure also replaces "loading…"
+  const bad = await open('E3', { role: 'office' }, x => { x.ctx.fetch = async () => { throw new TypeError('offline'); }; });
+  assert.match(bad.first, /読み込み中/);
+  assert.ok(bad.shown.length >= 1);
+  assert.doesNotMatch(bad.shown.at(-1), /読み込み中/);
+  assert.match(bad.shown.at(-1), /つながりません/, 'the reason is shown');
+  // nothing is drawn when the person has moved to another page meanwhile
+  const away = await app(srv, 'E3', { role: 'office' }), drawn = [];
+  away.ctx.renderPage = p => drawn.push(p);
+  away.ctx.curPage = 'acct_review'; away.ctx._arTab = 'req';
+  away.ctx.renderWrAcct(); away.ctx.curPage = 'dashboard';
+  await away.settle();
+  assert.deepEqual(drawn, []);
 });
 
 test('what can be bulk-approved: the three expense kinds, waiting, approvable by this person, no open duplicate', async () => {
