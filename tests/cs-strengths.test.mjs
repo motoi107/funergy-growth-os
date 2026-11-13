@@ -420,7 +420,7 @@ test('wiring: My page, the Career Score list and screen, the growth chart and it
   assert.match(ak, /var weak=cats\.slice\(\)\.sort/);
   // the shared rule key: synced, merged by time, never freed
   assert.match(SRC, /var OP_SYNC_KEYS = \[[\s\S]*?'cs_strength_rule','cs_guide',/);
-  assert.match(SRC, /\n  cs_strength_rule:   \{ merge: mergeMapByTime, covers: _coversMapByTime \},/);
+  assert.match(SRC, /\n  cs_strength_rule:   \{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \},/);   // v1143：読んだ行が変わっていないときだけ書く（関数 secure-state）
   assert.equal((SRC.match(/'bonus_pool_extra','cs_strength_rule','cs_guide',/g) || []).length, 2);
   // release markers
   const app = (SRC.match(/const APP_VERSION = '(\d+)';/) || [])[1], sw = (SW.match(/const SW_BUILD = '(\d+)';/) || [])[1];   // v1109: later releases keep the strengths

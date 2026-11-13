@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PGlite } from './runtime/node_modules/@electric-sql/pglite/dist/index.js';
-import { swIsKey } from '../supabase/functions/secure-state/handler.mjs';
+import { swIsKey, SW2_KEYS } from '../supabase/functions/secure-state/handler.mjs';
 
 const rd = p => fs.readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const MIG39 = rd('supabase/migrations/20261108090000_secure_state_rls.sql');
@@ -126,7 +126,9 @@ test('the SQL rule and the function rule agree on every key', async () => {
   await db.exec(MIG);
   const keys = [...GUARD, ...SECRET, ...OTHER, 'mileage_config ', ' career_cfg', 'Mileage_config', 'career_cfg\n', 'career', 'mileage', 'toString', '__proto__', ''];
   for (let i = 0; i < 200; i++) keys.push(['mileage_', 'career_', 'cfg', ''][i % 4] + Math.random().toString(36).slice(2, 2 + (i % 9)));
-  for (const k of keys) assert.equal((await db.query('select public.ss_guard_key($1) s', [k])).rows[0].s, swIsKey(k), JSON.stringify(k));
+  // v1143 で関数のキーは 10 になった（SW2_KEYS の 8 つは v1143 の SQL 20261112090000 が足す。tests/secure-settings-more-rls.test.mjs）。v1141 の SQL は 2 つだけ
+  for (const k of keys) assert.equal((await db.query('select public.ss_guard_key($1) s', [k])).rows[0].s, swIsKey(k) && !SW2_KEYS.includes(k), JSON.stringify(k));
+  for (const k of SW2_KEYS) assert.equal((await db.query('select public.ss_guard_key($1) s', [k])).rows[0].s, false, 'the v1141 SQL alone does not close ' + k);
   assert.equal((await db.query('select public.ss_guard_key(null) s')).rows[0].s, false);
   await db.close();
 });

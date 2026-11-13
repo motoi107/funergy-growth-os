@@ -230,9 +230,10 @@ test('a quarter track pick can be changed or cleared, and uses the same quarter 
 
 test('cs_criteria and bonus_coef are synced, merged per entry by time, and kept by storage cleanup', () => {
   assert.match(source, /'grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','karte_pin'/);
-  assert.match(source, /\n  bonus_track:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
-  assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime \}/);
+  // v1143：3 つとも、読んだ行が変わっていないときだけ書く（cas。関数 secure-state で GM・CEO だけ）
+  assert.match(source, /\n  bonus_track:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \}/);
+  assert.match(source, /\n  cs_criteria:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \}/);
+  assert.match(source, /\n  bonus_coef:\s+\{ merge: mergeMapByTime, covers: _coversMapByTime, cas: true \}/);
   assert.match(source, /'bonus_rules','grade_hist','cs_criteria','bonus_coef','bonus_track','bonus_coef_rng','q_budgets'/);
 });
 

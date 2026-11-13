@@ -12503,12 +12503,19 @@ function csOldNow(S){ var L=_ss.csOld; return !!(L && S && L.id===S.id && Date.n
    公開の鍵で書けなくするのは、全部の端末を 1141 にしたあとの SQL（20261110090000）。
    【関数が前の版】答えに swfn:1 が無ければ、今までどおり REST で書く（SQL の前なら書ける）。 */
 var SW_KEYS = { mileage_config:1, career_cfg:1 };
-function swIsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(SW_KEYS, k); }
+/* v1143（段階 2b の 5 つ目・docs/SECURE_SETTINGS_V1143_JA.md）：GM・CEO だけが変える賞与・Career Score の設定（今の画面と同じ）も、書くのは関数だけ。
+   スコア基準・係数・係数の幅・G3 の職種・4 項目の設定・個人設定・強みの決まり・評価基準と例。読むのは今までどおり REST（どの画面も読む）。
+   関数が v1142 以前（答えに sw2:1 が無い）なら、この 8 つは今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
+var SW2_KEYS = { cs_criteria:1, bonus_coef:1, bonus_coef_rng:1, bonus_track:1, bonus_eval_rule:1, bonus_eval_ovr:1, cs_strength_rule:1, cs_guide:1 };
+function sw2IsKey(k){ return typeof k==='string' && Object.prototype.hasOwnProperty.call(SW2_KEYS, k); }
+function swIsKey(k){ return typeof k==='string' && (Object.prototype.hasOwnProperty.call(SW_KEYS, k) || sw2IsKey(k)); }
 function swOldNow(S){ var L=_ss.swOld; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
+function sw2OldNow(S){ var L=_ss.sw2Old; return !!(L && S && L.id===S.id && Date.now()-L.at<600000); }
 /* このキーの書き込みを関数に頼むか（読むのは今までどおり REST） */
 function swRouted(key){
   if(!swIsKey(key)) return false;
   var S=ssSess(); if(!S || ssLegacyNow(S) || swOldNow(S)) return false;
+  if(sw2IsKey(key) && sw2OldNow(S)) return false;   /* v1143：関数が v1142 以前 */
   return true;
 }
 /* ============================================================
@@ -12702,12 +12709,17 @@ function hrIdOk(id){ return typeof id==='string' && /^[A-Za-z0-9_-]{1,64}$/.test
 var _swLast = {};
 function swNote(key, how, by){
   _swLast[key]={ how:how, by:by || '', at:Date.now() };
-  var nm={ mileage_config:['ガソリン代の設定','Mileage settings'], career_cfg:['Score管理の設定','Score settings'] }[key] || [key, key];
+  var nm={ mileage_config:['ガソリン代の設定','Mileage settings'], career_cfg:['Score管理の設定','Score settings'],
+    cs_criteria:['スコア基準','Score criteria'], bonus_coef:['賞与の係数','Bonus coefficients'], bonus_coef_rng:['賞与の係数の幅','Bonus coefficient ranges'],
+    bonus_track:['G3 の職種','G3 track'], bonus_eval_rule:['賞与の 4 項目の設定','Bonus 4-item settings'], bonus_eval_ovr:['賞与の個人設定','Bonus personal settings'],
+    cs_strength_rule:['強みの決まり','Strength rule'], cs_guide:['評価基準・例','Evaluation guide'] }[key] || [key, key];
   var rl={ ceo:'CEO', gm:'GM', office:['経理','Accounting'] }[by];
   var rj=Array.isArray(rl) ? rl[0] : (rl || by || '?'), re=Array.isArray(rl) ? rl[1] : (rl || by || '?');
-  var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state v1141）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state v1141, role '+re+')']
-        : how==='same' ? [nm[0]+'：サーバー（secure-state v1141）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state v1141) did not write (this sign-in may not change it; the cloud already had the same value)']
-        :                [nm[0]+'：公開の鍵（REST）で書きました（関数が v1141 でない・PIN のログインでない。③ の SQL はまだ流さないでください）', nm[1]+': written with the public key (REST: the function is not v1141 or no PIN sign-in; do not run step 3 yet)'];
+  var fv=sw2IsKey(key) ? 'v1143' : 'v1141';
+  var m = how==='fn'   ? [nm[0]+'：サーバー（secure-state '+fv+'）が書きました（役割 '+rj+'）', nm[1]+': written by the server (secure-state '+fv+', role '+re+')']
+        : how==='same' ? [nm[0]+'：サーバー（secure-state '+fv+'）は書きませんでした（このログインの役割では変えられません。クラウドと同じ値だったので止めませんでした）', nm[1]+': the server (secure-state '+fv+') did not write (this sign-in may not change it; the cloud already had the same value)']
+        : how==='none' ? [nm[0]+'：クラウドにもう入っているので書きませんでした（新しい変更なし）', nm[1]+': not written (the cloud already has it; nothing new)']
+        :                [nm[0]+'：公開の鍵（REST）で書きました（関数が '+fv+' でない・PIN のログインでない。③ の SQL はまだ流さないでください）', nm[1]+': written with the public key (REST: the function is not '+fv+' or no PIN sign-in; do not run step 3 yet)'];
   try{ if(typeof window!=='undefined' && window.FUNERGY_STATUS && typeof FUNERGY_STATUS.log==='function') FUNERGY_STATUS.log('store', (typeof t==='function') ? t(m[0], m[1]) : m[0]); }catch(e){}
 }
 function ssLevelGet(){ try{ var v=localStorage.getItem(SS_LEVEL_KEY); return (v==='full' || v==='proj' || v==='none') ? v : ''; }catch(e){ return ''; } }
@@ -12841,6 +12853,9 @@ async function ssCall(payload, retried){
   /* v1141：決めた人だけが書ける設定を扱う関数か（swfn:1）。前の版の関数なら、その設定は今までどおり REST で書く（前の版は「知らないキー」と断るだけで何も書かない） */
   if(j.swfn===1) _ss.swOld=null;
   else { _ss.swOld={ id:S.id, at:Date.now() }; if(payload.key && swIsKey(payload.key)) return { legacy:true }; }
+  /* v1143：GM・CEO だけが変える賞与・Career Score の設定を扱う関数か（sw2:1）。v1142 以前の関数なら、その 8 つは今までどおり REST で書く */
+  if(j.sw2===1) _ss.sw2Old=null;
+  else { _ss.sw2Old={ id:S.id, at:Date.now() }; if(payload.key && sw2IsKey(payload.key)) return { legacy:true }; }
   /* v1142：採用・お悩み相談室を扱う関数か（hrfn:1）。前の版の関数なら、今までどおり REST で（前の版は「知らない頼み」と断るだけで何も書かない） */
   if(j.hrfn===1) _ss.hrOld=null;
   else { _ss.hrOld={ id:S.id, at:Date.now() }; if(typeof payload.action==='string' && payload.action.indexOf('hr_')===0) return { legacy:true }; }
@@ -13041,6 +13056,8 @@ async function ssPutRow(key, value, expect){
       'The server refused the mileage settings (rate must be $0.01–$5.00 per mile; kept in the unsent list — open the settings and save again).');
     else if(key==='career_cfg') ssWarnOnce('bad_sw_cg', 'Score管理の設定をサーバーが断りました（形の合わない記録があります。送信待ちに残しています）',
       'The server refused the Score settings (a record has the wrong shape; kept in the unsent list).');
+    else if(sw2IsKey(key)) ssWarnOnce('bad_sw2', '賞与・Career Score の設定をサーバーが断りました（形の合わない記録があります。送信待ちに残しています。Claude に）',
+      'The server refused the bonus / Career Score settings (a record has the wrong shape; kept in the unsent list).');
     return 'badts';
   }
   if(r.status===403){
@@ -13048,6 +13065,8 @@ async function ssPutRow(key, value, expect){
       'Only the CEO, GM or Accounting can change the mileage rate / map settings (the server refused; kept in the unsent list).');
     else if(key==='career_cfg') ssWarnOnce('forbidden_sw_cg', 'Score管理の設定を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
       'Only the GM or CEO can change the Score settings (the server refused; kept in the unsent list).');
+    else if(sw2IsKey(key)) ssWarnOnce('forbidden_sw2', '賞与・Career Score の設定（スコア基準・係数・個人設定・強みの決まり・評価基準など）を変えられるのは GM・CEO です（サーバーが断りました。送信待ちに残しています）',
+      'Only the GM or CEO can change the bonus / Career Score settings (the server refused; kept in the unsent list).');
     else if(csIsKey(key)) ssWarnOnce('forbidden_cs', 'このアカウントでは、この人の Career Score を保存できません（送信待ちに残しています。見られる範囲の外・自分の点などはサーバーが断ります）',
       'This account cannot save this person’s Career Score (kept in the unsent list).');
     else ssWarnOnce('forbidden', 'このアカウントでは成長カルテ・賞与を保存できません（送信待ちに残しています。GM・CEO の社員 ID の結びを確かめてください）',
@@ -13820,10 +13839,10 @@ var OP_MERGE = {
   karte_bonus_config: { merge: mergeStamped,   covers: _coversStamped },
   bonus_rules:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1042: 原資率の表とメモ。片方の保存がもう片方を消さない */
   grade_hist:         { merge: mergeMapByTime, covers: _coversMapByTime },
-  cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
+  cs_criteria:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: スコア基準。目標（G2・G3 の 3 職種・G4・G5）ごとに新しいほう */
   career_cfg:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1103: 専門職 × グレードの権限（'<部門>|<G>' ごとに新しいほう）。
                          v1141（Codex #135 の P1）：読んだ行が変わっていないときだけ書く（2 台が同じ古い行に足して書くと、先の変更・権限の取り消しが消えた） */
-  bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
+  bonus_coef:         { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: グレード・職種係数。係数ごとに新しいほう */
   lunch_challenge:    { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1080: Tenkichi ランチチャレンジ。月の設定・日の印・確定・食事会・履歴を記録ごとに新しいほう */
   /* v1106: プレップ（店の設定・Lv と時給の表・認定）。店・版・認定ごとに新しいほう。
      店の設定と表は cas（読んだ行が変わっていないときだけ書く・Handbook と同じ）：2 台がほぼ同時に送っても、あとの書き込みが先の版・設定を消さない（Codex 6340525082 の P2） */
@@ -13831,15 +13850,15 @@ var OP_MERGE = {
   prep_tables:        { merge: mergeMapByTime, covers: _coversMapByTime, keepLocal: true, cas: true },
   prep_certs:         { merge: mergeMapByTime, covers: _coversMapByTime },
   vendor_merges:      { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1083: 業者の統合（名前ごとの印・統合の記録・「別の業者」）。記録ごとに新しいほう（外すのは off で上書き） */
-  bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
-  bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
-  bonus_eval_rule:    { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 4 項目の設定（会社共通・グレード・職種）。「キー|適用開始の四半期」の中を部分（c・s・f・p・w・fl）ごとに新しいほう・履歴は両方 */
-  bonus_eval_ovr:     { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個人設定。「従業員|適用開始の四半期」の中を部分ごと（外した部分も時刻つき） */
+  bonus_track:        { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1058: その四半期に選んだ G3 職種。「四半期|従業員」ごとに新しいほう（別の人の選択を消さない） */
+  bonus_coef_rng:     { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1062: 係数の幅（下限〜上限）。係数ごとに新しいほう。前の版の端末は書かないキー */
+  bonus_eval_rule:    { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true, cas: true },   /* v1065: 4 項目の設定（会社共通・グレード・職種）。「キー|適用開始の四半期」の中を部分（c・s・f・p・w・fl）ごとに新しいほう・履歴は両方 */
+  bonus_eval_ovr:     { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true, cas: true },   /* v1065: 個人設定。「従業員|適用開始の四半期」の中を部分ごと（外した部分も時刻つき） */
   bonus_eval:         { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1065: 個別評価の入力（下書き）。「四半期|従業員|グレード」の中を項目ごと（2 台で同じ人の別の項目を直しても両方残る） */
   bonus_store_q:      { merge: kevMergeMap, covers: kevCoversMap, keepLocal: true },   /* v1074（CEO の指示書）：店舗の目標と実績（四半期の利益の目標・FL の目標率・各月の店舗管理利益）。「四半期|店舗」の中を欄ごと（2 台で別の店・別の欄を直しても両方残る） */
   bonus_pool_extra:   { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1099（UI案58 ⑤）：特別原資。四半期ごとに新しい保存が勝つ（変更の記録は record の中。「不足分を補う」は読み直してから書く） */
-  cs_strength_rule:   { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1108（UI案61）：強みの決まり（表示だけ・GM・CEO）。{rule:{minItems, top, _at}} の新しい保存が勝つ */
-  cs_guide:           { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1099（UI案58 ②・回答 8）：評価基準・例（GM・CEO が直した文）。グループごとに新しい保存が勝つ */
+  cs_strength_rule:   { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1108（UI案61）：強みの決まり（表示だけ・GM・CEO）。{rule:{minItems, top, _at}} の新しい保存が勝つ */
+  cs_guide:           { merge: mergeMapByTime, covers: _coversMapByTime, cas: true },   /* v1099（UI案58 ②・回答 8）：評価基準・例（GM・CEO が直した文）。グループごとに新しい保存が勝つ */
   md_all_viewers:     { merge: mergeMapByTime, covers: _coversMapByTime },   /* v1090: ダッシュボードで全店を見る人（従業員 ID ごとに新しい保存が勝つ） */
   ocs_cfg:            { merge: mergeLssRec,    covers: _coversLssRec },      /* v1050: オフィス用 Career Score の正式運用の ON/OFF（新しい保存が勝つ） */   /* v1043: グレード履歴。社員ごとに新しいほう */
   /* v767: 本部目標と行動計画。id単位の和集合で、勝敗は必ず _mut（時刻）で決める。
@@ -14952,6 +14971,12 @@ function opMergePush(key, localVal, table){
           if(_lastConf && row.exists===_lastConf.exists && String(row.updatedAt)===String(_lastConf.updatedAt)){ _ok=false; _why='refused'; _err='クラウドが書き込みを受け付けませんでした（権限など。未送信に残します）'; break; }
           var cm = def.merge(row.exists ? row.value : null, desired);
           _opWriteBack(key, def, cm);
+          /* v1143：決めた人だけが書ける設定（swIsKey）は、クラウドがもう端末の値をすべて持っていれば書かない。
+             合流で値の見た目だけが変わる（4 項目の設定・個人設定の hist の並びなど）と、GM・CEO でない端末の送り直しが「違う値」として断られ、送信待ちに残り続けるため */
+          if(row.exists && typeof swIsKey==='function' && swIsKey(key) && def.covers(row.value, desired)){
+            if(typeof swNote==='function') swNote(key, 'none');
+            desired=cm; _ok=true; break;
+          }
           var w = await _opCasWrite(key, cm, row);
           if(w==='ok'){ desired=cm; _ok=true; break; }
           if(w==='badts'){ _ok=false; _why='badts'; _err='クラウドの更新時刻の形を読めなかったので送っていません（未送信に残します）'; break; }
@@ -43158,7 +43183,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1142';
+const APP_VERSION = '1143';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
