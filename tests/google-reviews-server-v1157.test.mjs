@@ -485,8 +485,12 @@ test('#151 deleted on Google: a review removed from Google leaves the month once
   // ★1 が Google で消された。3 日の範囲の外の 10 月の口コミ（★4）も消された
   s.g.reviews[LOC1] = s.g.reviews[LOC1].filter(x => !/\/r1$|\/r3$/.test(x.name));
   s.setNow(NOW0 + 86400000);
+  // #151 の再レビュー：1 回目は印だけ（まだ数える）。次の回にも無ければ消す
+  const r0 = await s.worker(k);
+  assert.deepEqual(r0.body.stores.map(x => [x.store, x.ok, x.pruned, x.marked]), [['S1', true, 0, 2]]);
+  assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 2.67, cnt: 3 } }, 'still counted until the next read');
   const r = await s.worker(k);
-  assert.deepEqual(r.body.stores.map(x => [x.store, x.ok, x.pruned]), [['S1', true, 2]]);
+  assert.deepEqual(r.body.stores.map(x => [x.store, x.ok, x.pruned, x.marked]), [['S1', true, 2, 0]]);
   const kp = await s.ok('E8', { action: 'kpi' });
   assert.deepEqual(kp.months['2026-11'], { S1: { avg: 3.5, cnt: 2 } }, 'the deleted ★1 is gone');
   assert.equal(kp.months['2026-10'], undefined, 'the deleted October review is gone too (after the start of last month)');
@@ -512,10 +516,100 @@ test('#151 deleted on Google: a review removed from Google leaves the month once
   assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where name like '%/r4'")).rows[0].n, 1, 'not deleted when the read stopped at the page limit');
   await s.pg.exec('set role service_role');
   // gr_reviews_prune の守り：100 日より前・先の時刻・ほかの location は断る
-  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2026-01-01T00:00:00Z', names: [] }), /bad_value/);
-  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2099-01-01T00:00:00Z', names: [] }), /bad_value/);
-  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC2, since: new Date().toISOString(), names: [] }), /conflict/);
-  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: 'x', names: [] }), /bad_value/);
+  const st = new Date().toISOString();
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2026-01-01T00:00:00Z', started: st, names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2099-01-01T00:00:00Z', started: st, names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC2, since: st, started: st, names: [] }), /conflict/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: 'x', started: st, names: [] }), /bad_value/);
+  // #151 の再レビュー（Claude の P3）：names・started が無い・形が違う・先の時刻・古すぎる、は断る（NULL を通さない）
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, started: st }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, started: st, names: null }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, started: '2099-01-01T00:00:00Z', names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, started: '2026-01-01T00:00:00Z', names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: st, started: 5, names: [] }), /bad_value/);
+});
+
+// #151 の再レビュー（Codex 6875770314）：重なった 2 つの取り込み。古い一覧の取り込みが、あとの取り込みの入れた口コミを消さない
+test('#151 overlapping reads: an older read that finishes last does not delete a review the newer read put (both orders, repeated)', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'ONE', '2026-11-05T02:00:00Z')];
+  const k = await s.key();
+  await s.worker(k);
+  const orig = s.db.rpc;
+  let hold = null, held = null, holdOn = 'gr_reviews_prune';
+  s.db.rpc = async function (n, p) { if (n === holdOn && hold) { const h = hold; hold = null; held(); await h; } return orig.call(this, n, p); };
+  const kpi = async () => (await s.ok('E8', { action: 'kpi' })).months['2026-11'];
+  for (let round = 0; round < 3; round++) {
+    // A：★1 だけの一覧を読み、消す直前（round 1 は入れる直前）で止まる
+    holdOn = round === 1 ? 'gr_reviews_put' : 'gr_reviews_prune';
+    let release; hold = new Promise(r => { release = r; }); const atPrune = new Promise(r => { held = r; });
+    const a = s.worker(k);
+    await atPrune;
+    // Google に★5 が増え、B が最後まで取る
+    s.g.reviews[LOC1] = s.g.reviews[LOC1].concat([rv(LOC1, 50 + round, 'FIVE', '2026-11-06T02:00:00Z')]);
+    const b = await s.worker(k);
+    assert.equal(b.body.stores[0].ok, true);
+    // A を続ける：B の★5 を消さない・印も付けない
+    release();
+    const ra = await a;
+    assert.equal(ra.body.stores[0].ok, true);
+    assert.deepEqual([ra.body.stores[0].pruned, ra.body.stores[0].marked], [0, 0], 'round ' + round);
+    await s.pg.exec('reset role');
+    assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where name like '%/r" + (50 + round) + "' and gone_at is null")).rows[0].n, 1, 'kept round ' + round);
+    await s.pg.exec('set role service_role');
+    // そのまま次の取り込みが来ても★5 は消えない（Google にある）
+    await s.worker(k);
+    const m = await kpi();
+    assert.equal(m.S1.cnt, 2 + round, 'round ' + round);
+  }
+  // 逆の順：B が先に始め、あとで始めた取り込みが★7 を入れたあとで B が消そうとしても消さない
+  holdOn = 'gr_reviews_put';
+  let release; hold = new Promise(r => { release = r; }); const atPrune = new Promise(r => { held = r; });
+  s.g.reviews[LOC1] = s.g.reviews[LOC1].slice();
+  const b = s.worker(k);   // 今の一覧（★7 なし）を読んで止まる
+  await atPrune;
+  s.g.reviews[LOC1].push(rv(LOC1, 70, 'FIVE', '2026-11-07T02:00:00Z'));
+  await s.worker(k);       // あとで始めた取り込みが★7 を入れる
+  release();
+  const rb = await b;
+  assert.deepEqual([rb.body.stores[0].ok, rb.body.stores[0].pruned, rb.body.stores[0].marked], [true, 0, 0]);
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where name like '%/r70' and gone_at is null")).rows[0].n, 1, 'the newer review is kept');
+  await s.pg.exec('set role service_role');
+  s.db.rpc = orig;
+});
+
+// #151 の再レビュー（Claude の P3）：読んでいるあいだに並びが変わって 1 回だけ読み落としても、口コミは消えない
+test('#151 a review missed once (the order changed while paging) is only marked, and the mark goes away on the next read', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'ONE', '2026-11-05T02:00:00Z'), rv(LOC1, 2, 'FIVE', '2026-11-06T02:00:00Z'), rv(LOC1, 3, 'THREE', '2026-11-07T02:00:00Z')];
+  const k = await s.key();
+  await s.worker(k);
+  // 1 回だけ★5（r2）が一覧に出ない
+  const all = s.g.reviews[LOC1];
+  s.g.reviews[LOC1] = all.filter(x => !/\/r2$/.test(x.name));
+  const r1 = await s.worker(k);
+  assert.deepEqual([r1.body.stores[0].pruned, r1.body.stores[0].marked], [0, 1]);
+  assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 3, cnt: 3 } }, 'still counted');
+  // 次の回は読めた：印は外れ、消えない
+  s.g.reviews[LOC1] = all;
+  const r2 = await s.worker(k);
+  assert.deepEqual([r2.body.stores[0].pruned, r2.body.stores[0].marked], [0, 0]);
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where gone_at is not null")).rows[0].n, 0);
+  await s.pg.exec('set role service_role');
+  const r3 = await s.worker(k);
+  assert.deepEqual([r3.body.stores[0].pruned, r3.body.stores[0].marked], [0, 0]);
+  assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 3, cnt: 3 } });
+  // 長くつながっていなかった（最後に取れたのが 120 日前）あとでも、消す所で止まらない（Claude の P3）
+  await s.pg.exec("reset role; update public.gr_bp_loc set synced_at = now() - interval '120 days'; set role service_role");
+  const r4 = await s.worker(k);
+  assert.deepEqual([r4.body.stores[0].ok, r4.body.stores[0].error], [true, undefined]);
 });
 
 test('#151 a month with more than 200 reviews: 200 at a time, every review is reachable once, a bad cursor is refused', async () => {

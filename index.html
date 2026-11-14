@@ -108498,7 +108498,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 閉じていたあいだに会話が変わっていたら、前の写しは出さない（見えなくした本文を一瞬でも出さない）。開くときに読み直す */
   function freshCache(tid){
     var m = C.msgs[tid], r = C.threads[tid];
-    if (!m || !m.list.length) return;
+    if (!m) return;
+    /* Codex（#154 6875910941）：写しが空でも、最初の読み込みのとちゅうなら世代を進める（その答えは使わずに読み直す） */
+    if (!m.list.length) { if (m.busy) { m.ep = (m.ep || 0) + 1; m.again = true; } return; }
     if (r && m.chg != null && String(r.chg) === String(m.chg)) return;
     /* #152 の Codex：写しの世代を進める。読み込みのとちゅうの答え（前の世代）はあとで届いても使わず、読み直す */
     m.ep = (m.ep || 0) + 1; if (m.busy) m.again = true;
