@@ -519,7 +519,7 @@ test('⑦ focus cards: G1–G3 see the floor KPIs only, G4 the management KPIs; 
   assert.match(roughFn('renderMgmtDash'), /if \(curRealRole === 'g4'\) \{ try \{ h \+= k2FocusCard\(myStoreId\(\), 'mgmt'\); \} catch \(e\) \{\} \}\n  h \+= '<div class="md-shell">'/, 'G4 opens the management dashboard (mdCanOpen): the card goes above it');
 });
 
-test('⑧ names: アップグレード率 (formerly 味噌汁UP率) everywhere on screen; KPI設定; version 1153', () => {
+test('⑧ names: アップグレード率 (formerly 味噌汁UP率) everywhere on screen; KPI設定; version 1153 or later', () => {
   const c = device();
   assert.equal(run(c, `_meetKpiDef('miso').label`), 'アップグレード率');
   assert.match(SRC, /\{key:'misoUpgradeRate', label:'アップグレード率'/);
@@ -528,7 +528,7 @@ test('⑧ names: アップグレード率 (formerly 味噌汁UP率) everywhere o
   assert.deepEqual(screen, [], 'no screen label left');
   assert.match(SRC, /\{id:'kpi_master',  label:'KPI設定',/);
   const v = /const APP_VERSION = '(\d+)'/.exec(SRC)[1];
-  assert.equal(v, '1153');
+  assert.ok(Number(v) >= 1153, 'version ' + v);
   assert.equal(/const SW_BUILD = '(\d+)'/.exec(SW)[1], v);
 });
 

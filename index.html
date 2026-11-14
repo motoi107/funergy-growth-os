@@ -3867,9 +3867,9 @@ function k2Src(def, sid){
     case 'repeatRate': return t('(RP＋SR) ÷ (FT＋RP＋SR) × 100。月の合計の分子と分母から','(RP+SR) ÷ (FT+RP+SR) × 100 from the month totals');
     case 'foodCost': return t('予実管理と同じ式（Invoice＋買い出し＋食材移動 ÷ 売上）。確定月は会計 PL','Same as the budget page (invoices + purchases + transfers ÷ sales); confirmed months use the PL');
     case 'laborPct': return t('予実管理と同じ式（勤怠×時給＋残業・給与税・月給・保険 ÷ 売上）。確定月は会計 PL','Same as the budget page; confirmed months use the PL');
-    case 'laborHours': return t('人件費と同じ勤怠の時間の合計（この店の分だけ）。仕組みのアカウント（Order Only・Toast Generic Login・LaLa の Server Default など）は名前と Toast のアカウント ID で外す','Sum of the hours used for labor cost at this store; system accounts are excluded by name and by Toast account ID');
+    case 'laborHours': return t('人件費と同じ勤怠の時間の合計（この店の分だけ）。仕組みのアカウント（Order Only・Toast Generic Login・LaLa の Server Default など）は名前と Toast のアカウント ID で外す。休憩は引かない（出勤から退勤まで・人件費と同じ）','Sum of the hours used for labor cost at this store (clock-in to clock-out; breaks are not subtracted, as in labor cost); system accounts are excluded by name and by Toast account ID');
     case 'drinkRate': return t('ドリンクの出数×売価 ÷ 全メニューの出数×売価（対象のカテゴリーは「実績入力/対象指定」）','Drink sales ÷ menu sales (categories in the input tab)');
-    case 'misoUpgradeRate': return t('アップグレードの数 ÷ 対象の数（今は味噌汁の数え方のまま。CHAZUKE を足すのは Toast の商品名を確かめてから）','Upgrades ÷ eligible items (miso counting for now; CHAZUKE after the item names are confirmed)');
+    case 'misoUpgradeRate': return t('アップグレード（crab・today・udon の味噌汁と CHAZUKE）÷ 丼に付けた味噌汁（aosa を含む）と CHAZUKE。CHAZUKE は Toast の取り込み（hyper-worker v1154）から入る（前の日は取り込み直すと入る）','Upgrades (crab, today, udon miso and CHAZUKE) ÷ all miso (incl. aosa) and CHAZUKE on bowls. CHAZUKE counts from the Toast import v1154 (re-import earlier days)');
     case 'ikuraShowerRate': return t('いくらシャワー ÷ Take／Matsu／Tokujo','Ikura shower ÷ Take/Matsu/Tokujo');
     case 'reviewScore': return t('その月に投稿された Google の口コミの星の平均（会議の実績と同じ）。手入力','Average stars of the Google reviews posted that month (same as the meeting). Entered by hand');
   }
@@ -45533,7 +45533,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1153';
+const APP_VERSION = '1154';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -94411,6 +94411,14 @@ function renderAcctReview(){
   if(!['ceo','gm','office','office_crew'].includes(curRole)){
     return '<div class="card" style="text-align:center;color:var(--muted);padding:40px"><i class="ti ti-lock" style="font-size:32px;display:block;margin-bottom:8px"></i>この画面は経理（office／事務Crew）／GM／CEO専用です</div>';
   }
+  /* v1154（UI案71 の A 案）：書類（Invoice・レシート）と、GM が承認した申請（ワークセンターの経費 3 種）をタブで分ける */
+  window._arTab = window._arTab === 'req' ? 'req' : 'docs';
+  var _arTabs = '<div class="phase-tabs" style="margin-bottom:10px"><div class="phase-tab' + (window._arTab === 'docs' ? ' active' : '') + '" onclick="window._arTab=\'docs\';renderPage(\'acct_review\')">' + t('書類（Invoice・レシート）','Documents (invoices, receipts)') + '</div>'
+    + '<div class="phase-tab' + (window._arTab === 'req' ? ' active' : '') + '" onclick="window._arTab=\'req\';renderPage(\'acct_review\')">' + t('申請（GM 承認済み）','Requests (GM-approved)') + '</div></div>';
+  if (window._arTab === 'req') {
+    var _wrH = (typeof window.renderWrAcct === 'function') ? window.renderWrAcct() : '<div class="card">' + t('申請の画面を読み込めませんでした','Could not load requests') + '</div>';
+    return '<div class="section-header"><div><div class="section-title">' + t('経理レビュー','Accounting review') + '</div><div class="section-sub">' + t('GM が承認した申請の確認・精算','Check and pay GM-approved requests') + '</div></div></div>' + _arTabs + _wrH;
+  }
   var all = arReviewList();   /* v1095: Invoice取込の写し・削除済みは出さない（Q8） */
   try{ setTimeout(function(){ try{ arPullLatest(false); }catch(e){} }, 0); }catch(e){}   /* v1095: 開いたら読み直す（60 秒に 1 回まで・描いている途中には描き直さない） */
   // フィルタ既定値
@@ -94449,6 +94457,7 @@ function renderAcctReview(){
   var typeOpts  = ['ALL','Invoice','Receipt'].map(function(t){return '<option value="'+t+'" '+(window._arType===t?'selected':'')+'>'+(t==='ALL'?'全種別':t==='Receipt'?'レシート':'Invoice')+'</option>';}).join('');
 
   var html = '<div class="section-header"><div><div class="section-title">経理レビュー</div><div class="section-sub">アップロード書類の確認・差し戻し → 確認済みでDrive整理</div></div></div>';
+  html += _arTabs;   /* v1154 */
   html += arFreshHtml();   /* v1095 */
 
   // ステータスサマリー（タップでフィルタ）
@@ -105921,7 +105930,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function setLiveSeen(v, at){ liveMem = { live:!!v, at:at || new Date().toISOString() }; try{ localStorage.setItem(LIVE_KEY, JSON.stringify(liveMem)); }catch(e){} }
 
   function fresh(){ return { authKey:'', me:null, live:null, rate:null, settingsRev:1, view:'todo', rows:null, counts:null, load:'', err:'', errCode:'',
-    flt:{ kind:'', store:'' }, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, pend:{}, tipDone:{} }; }
+    flt:{ kind:'', store:'', who:'' }, sel:{}, att:{}, bulk:null, acct:null, gen:0, busy:'', d:null, dErr:'', ask:null, form:null, keys:{}, openCode:'', people:null, pp:null, views:{}, vw:null, tipForm:null, tipApply:null, claims:{}, pend:{}, tipDone:{} }; }
   var S = fresh();
   W._wrState = function(){ return S; };
 
@@ -105992,7 +106001,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.wrAPI = api;
 
   function onWrTab(){ return typeof curPage !== 'undefined' && curPage === 'tasks' && typeof workTab !== 'undefined' && workTab === 'wr'; }
-  function rerender(){ if (onWrTab()) { try{ renderPage('tasks'); }catch(e){} } }
+  /* v1154（Codex #148 P2-1）：読み終えたら、開いている画面を描き直す。経理レビュー › 申請を初めて開いたときも
+     （whoami と一覧を読み終えるまで「読み込み中…」だった）。rerenderAcct は経理レビュー › 申請を開いているときだけ描く */
+  function rerender(){ if (onWrTab()) { try{ renderPage('tasks'); }catch(e){} } else rerenderAcct(); }
 
   /* 読む：whoami → 一覧。世代（gen）が変わったら古い答えは捨てる */
   function load(force){
@@ -106028,8 +106039,14 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function reloadList(){ var g = ++S.gen; S.load = 'loading'; loadList(g).then(function(){ if (g === S.gen) S.load = 'done'; }, function(e){ if (g === S.gen) { S.load = 'err'; S.err = String(e && e.message || e); S.errCode = e && e.code || ''; } }).then(function(){ if (g === S.gen) rerender(); }); }
   W.wrRefresh = function(){ S.load = ''; S.me = null; load(true); rerender(); };
-  W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; reloadList(); rerender(); };
-  W.wrSetFilter = function(k, v){ if (k !== 'kind' && k !== 'store') return; S.flt[k] = v || ''; S.rows = null; reloadList(); rerender(); };
+  W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; S.sel = {}; reloadList(); rerender(); };
+  /* v1154（UI案71 の A 案）：絞り込みを変えたら選択を外す（見えていない申請を承認しないため）。申請した人はこの端末で絞る（読み直さない） */
+  W.wrSetFilter = function(k, v){
+    if (k !== 'kind' && k !== 'store' && k !== 'who') return;
+    S.flt[k] = v || ''; S.sel = {};
+    if (k === 'who') { rerender(); return; }
+    S.rows = null; reloadList(); rerender();
+  };
   /* ログインの直後に 1 回だけ「使い始めたか」を見る（前の画面の案内とログインの直後の行き先に使う） */
   W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at); }, function(){}); };
   W.wrLiveSeen = liveSeen;
@@ -106113,10 +106130,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     h2 += '<div class="phase-tabs" style="margin-bottom:8px">' + tabs.map(function(tb){ return '<div class="phase-tab' + (S.view === tb[0] ? ' active' : '') + '" onclick="wrSetView(\'' + tb[0] + '\')">' + esc(tb[1]) + '</div>'; }).join('') + '</div>';
     h2 += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">'
       + '<select onchange="wrSetFilter(\'kind\',this.value)"><option value="">' + T('種別：すべて','Kind: all') + '</option>' + KINDS.map(function(k){ return '<option value="' + k + '"' + (S.flt.kind === k ? ' selected' : '') + '>' + esc(kindL(k)) + '</option>'; }).join('') + '</select>'
-      + '<select onchange="wrSetFilter(\'store\',this.value)"><option value="">' + T('店舗：すべて','Store: all') + '</option>' + storeOpts().map(function(s){ return '<option value="' + esc(s) + '"' + (S.flt.store === s ? ' selected' : '') + '>' + esc(storeName(s)) + '</option>'; }).join('') + '</select></div>';
+      + '<select onchange="wrSetFilter(\'store\',this.value)"><option value="">' + T('店舗：すべて','Store: all') + '</option>' + storeOpts().map(function(s){ return '<option value="' + esc(s) + '"' + (S.flt.store === s ? ' selected' : '') + '>' + esc(storeName(s)) + '</option>'; }).join('') + '</select>'
+      + whoSelect() + '</div>';
     if (S.load === 'err') h2 += '<div class="alert alert-danger" style="font-size:12px">' + esc(S.err) + '</div>';
     if (!S.rows) return h2 + '<div class="card" style="color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>';
-    var rows = S.rows;
+    var rows = byWho(S.rows);
+    var bulkOn = S.view === 'todo' && rows.some(bulkOk);
+    if (S.view === 'todo') { pruneSel(rows); if (bulkOn) h2 += bulkHead(rows); }
     if (S.view === 'todo') {
       rows = rows.slice().sort(function(a, b){ return new Date(a.updated_at) - new Date(b.updated_at); });
       var payable = rows.filter(function(r){ return r.kind === 'mileage' && (r.can || []).indexOf('pay') >= 0; });
@@ -106127,25 +106147,34 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       /* スマホ：1 件 1 枚（UI案68 のスマホの要対応） */
       rows.forEach(function(r){
         var dup = (r.dup_codes || []).length && !r.dup_ok, open = ['paid','done','rejected','withdrawn','applied'].indexOf(r.status) < 0;
-        h2 += '<div class="card" style="cursor:pointer;padding:10px 12px;margin-bottom:8px" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
+        var bk = bulkOn && bulkOk(r), on = bk && !!S.sel[r.id];
+        if (bk) h2 += '<div style="display:flex;align-items:stretch;gap:0;margin-bottom:8px;border:2px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:12px;background:var(--surface,#fff)">'
+          + '<label style="width:52px;display:flex;align-items:center;justify-content:center;border-right:1px solid var(--border);cursor:pointer" onclick="event.stopPropagation()"><input type="checkbox" style="width:24px;height:24px" data-a="' + esc(r.id) + '"' + (on ? ' checked' : '') + ' aria-label="' + esc(r.code) + '" onchange="wrSel(this.dataset.a,this.checked)"></label>';
+        h2 += '<div class="card" style="cursor:pointer;padding:10px 12px;margin-bottom:' + (bk ? '0;flex:1;min-width:0;border:none;box-shadow:none' : '8px') + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
           + '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted)"><span>' + esc(kindL(r.kind)) + ' · ' + esc(r.code) + (r.version > 1 ? ' · ' + T('版','v') + r.version : '') + '</span>' + (r.legacy ? '<span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '<span style="margin-left:auto">' + tag(r.status, r.kind) + '</span></div>'
           + '<div style="display:flex;align-items:baseline;gap:8px;margin-top:4px"><div style="flex:1;min-width:0;font-size:13px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + useL(r) + '</div><div style="font-size:14px;font-weight:700">' + money(r.amount_cents) + '</div></div>'
           + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + (dup ? ' · <span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + '</span>' : '') + '</div>'
           + (open ? '<div style="font-size:11px;margin-top:4px">' + T('次：','Next: ') + nextL(r) + ' · ' + daysSince(r.updated_at) + T(' 日',' d') + '</div>' : '') + '</div>';
+        if (bk) h2 += '</div>';
       });
     }
     else {
       h2 += '<div class="card" style="padding:0;overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;min-width:760px"><thead><tr>'
+        + (bulkOn ? '<th style="width:40px"></th>' : '')
         + ['種別','番号','申請した人','用途','店舗','金額','状態','次の対応','待ち'].map(function(x, i){ return '<th' + (i === 5 ? ' style="text-align:right"' : '') + '>' + esc(T(x, ['Kind','No.','Requester','Use','Store','Amount','Status','Next','Waiting'][i])) + '</th>'; }).join('') + '</tr></thead><tbody>';
       rows.forEach(function(r){
         var dup = (r.dup_codes || []).length && !r.dup_ok;
-        h2 += '<tr style="cursor:pointer" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)"><td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
+        var bk2 = bulkOn && bulkOk(r);
+        h2 += '<tr style="cursor:pointer' + (bk2 && S.sel[r.id] ? ';background:#fff7f1' : '') + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
+          + (bulkOn ? '<td onclick="event.stopPropagation()" style="text-align:center">' + (bk2 ? '<input type="checkbox" style="width:20px;height:20px" data-a="' + esc(r.id) + '"' + (S.sel[r.id] ? ' checked' : '') + ' aria-label="' + esc(r.code) + '" onchange="wrSel(this.dataset.a,this.checked)">' : '') + '</td>' : '')
+          + '<td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
           + '<td style="white-space:nowrap">' + esc(r.code) + (r.version > 1 ? ' <span style="color:var(--muted)">' + T('版','v') + r.version + '</span>' : '') + (dup ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + ' ' + r.dup_codes.length + '</span></div>' : '') + '</td>'
           + '<td>' + esc(r.requester_name) + '</td><td>' + useL(r) + '</td><td>' + esc(storeName(r.store_id)) + '</td><td style="text-align:right;white-space:nowrap">' + money(r.amount_cents) + '</td>'
           + '<td>' + tag(r.status, r.kind) + '</td><td>' + nextL(r) + '</td><td style="white-space:nowrap">' + (['paid','done','rejected','withdrawn','applied'].indexOf(r.status) >= 0 ? '' : daysSince(r.updated_at) + T(' 日',' d')) + '</td></tr>';
       });
       h2 += '</tbody></table></div>';
     }
+    if (bulkOn) h2 += bulkBar(rows);
     if ((me.role === 'ceo' || me.role === 'gm') && S.view === 'team') h2 += '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" ' + (S.busy ? 'disabled' : '') + ' onclick="wrReimport()">' + T('前の画面に残っている申請をもう一度写す','Copy requests left on the earlier screens again') + '</button> <span style="font-size:10.5px;color:var(--muted)">' + T('（まだ写していないものだけ。写したものは変えない）','(only ones not copied yet; copied ones are not changed)') + '</span></div>';
     h2 += '<div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">' + T('休暇・シフト変更・採用・退職・予算・月間行動計画・プレップ認定・スキル・Tip Rate は、今までどおり「承認」タブで処理します（段階 2 で移します）。','Leave, shift changes, hiring, offboarding, budgets, monthly plans, prep certification, skills and Tip Rate stay in the Approvals tab for now (moved in step 2).') + ' <a href="#" onclick="setWorkTab(\'approval\');return false">' + T('承認タブ','Approvals tab') + '</a></div>';
     return h2;
@@ -106308,7 +106337,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       else if (r.kind === 'reimburse') {
         add(T('支払った人','Paid by'), p.payer); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('用途のメモ','Note'), p.purposeMemo); add(T('支払のメモ','Payment note'), p.payMethodNote);
         var ip = typeof p.imagePath === 'string' && /^[A-Za-z0-9_\-./]+$/.test(p.imagePath) ? p.imagePath : '', du = typeof p.driveUrl === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(p.driveUrl) ? p.driveUrl : '';
-        o.push([T('領収書','Receipt'), ip ? '<a href="#" data-a="' + esc(ip) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : du ? '<a href="' + esc(du) + '" target="_blank" rel="noopener">' + T('開く（Drive）','Open (Drive)') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+        o.push([T('領収書','Receipt'), ip ? '<a href="#" data-a="' + esc(ip) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : du ? '<a href="' + esc(du) + '" target="_blank" rel="noopener" data-a="' + esc(du) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く（Drive）','Open (Drive)') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       }
       else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('実施日','Event dates'), p.eventDates); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); add(T('メモ','Memo'), p.memo); }
       return o;
@@ -106316,7 +106345,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('片道マイル','One-way miles'), p.one_way_miles); add(T('往復','Round trip'), p.round_trip ? T('はい','yes') : T('いいえ','no')); add(T('合計マイル × 単価','Miles × rate'), p.miles + ' × $' + p.rate); add(T('メモ','Memo'), p.memo); }
     else if (r.kind === 'reimburse') {
       add(T('支払った人','Paid by'), p.payer + (p.payer_is_employee ? T('（従業員）',' (employee)') : '')); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('用途のメモ','Note'), p.purpose_memo); add(T('メモ','Memo'), p.memo);
-      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       else o.push([T('領収書','Receipt'), '<span style="color:var(--muted)">' + T('なし','none') + '</span>']);
     } else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); if (p.per_person_cents) o.push([T('1 人あたり','Per person'), money(p.per_person_cents)]); add(T('メモ','Memo'), p.memo); }
     return o;
@@ -106421,7 +106450,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       showToast(String(e.message || e), 'error');
       if (e.code === 'conflict') return api({ action:'get', id:r.id }).then(function(j){ S.d = j; S.ask = null; drawDetail(); }, function(){});
       drawDetail();
-    }).then(function(){ reloadList(); });
+    }).then(function(){ reloadList(); acctReload(); });
   }
   W.wrBatchPay = function(){
     var list = (S.rows || []).filter(function(r){ return r.kind === 'mileage' && (r.can || []).indexOf('pay') >= 0; });
@@ -106444,8 +106473,204 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       showToast(stopped ? errText('signin_changed') + T('（記録できたもの ',' (recorded ') + ok + T(' 件）',')') + dupT : T('精算を記録：','Recorded: ') + ok + T(' 件','') + (ng ? T('・できなかった ',' · failed ') + ng + T(' 件','') : '') + dupT, (ng || dup.length) ? 'error' : 'success'); reloadList();
     });
   };
+  /* ---------------------------------------------------------------- v1154：GM のまとめて承認（UI案71 の A 案・Moto さん 11/13）
+     ・選べるのは「要対応」の経費 3 種で、この人が承認でき（can に approve）、承認待ちで、重複の候補が片づいているものだけ。
+       評価の変更（スキル・Career Score・Tip Rate）は承認のあとこの端末で反映するので 1 件ずつ（詳しい画面）。
+     ・見た版（rev）で送る（expect_rev）。あいだに直された申請はサーバーが断る（conflict）→ 承認しない・「要再確認」に出す。
+     ・鍵は 1 件ずつの承認と同じ（keyFor：申請 × 版 × 操作）。二度押し・送り直しでも承認は 1 回。
+     ・絞り込みを変えたら選択を外す。一覧を読み直して版が変わった申請の選択も外す（見ていない内容を承認しない）。 */
+  var BULK_MAX = 50;
+  function bulkOk(r){ return !!r && KINDS.indexOf(r.kind) >= 0 && r.status === 'pending' && (r.can || []).indexOf('approve') >= 0 && !((r.dup_codes || []).length && !r.dup_ok); }
+  W._wrBulkOk = function(r){ return bulkOk(r); };   /* 試験用（決まりを外から確かめる） */
+  function byWho(rows){ var w = S.flt.who; rows = rows || []; return w ? rows.filter(function(r){ return r.requester_name === w; }) : rows; }
+  function whoSelect(){
+    var seen = {}; (S.rows || []).forEach(function(r){ if (r && r.requester_name) seen[r.requester_name] = 1; });
+    var list = Object.keys(seen).sort(); if (S.flt.who && !seen[S.flt.who]) list.unshift(S.flt.who);
+    return '<select onchange="wrSetFilter(\'who\',this.value)"><option value="">' + T('申請した人：すべて','Requester: all') + '</option>'
+      + list.map(function(n){ return '<option value="' + esc(n) + '"' + (S.flt.who === n ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select>';
+  }
+  /* 描くたびに：見えていない・もう選べない申請の選択を外す。版が変わった申請は外して知らせる */
+  function pruneSel(rows){
+    var vis = {}, changed = [];
+    rows.forEach(function(r){ if (bulkOk(r)) vis[r.id] = r; });
+    Object.keys(S.sel).forEach(function(id){ var r = vis[id]; if (!r) { delete S.sel[id]; return; } if (r.rev !== S.sel[id].rev) { changed.push(r.code); delete S.sel[id]; } });
+    if (changed.length) S.selNote = T('内容が変わった申請の選択を外しました：','Unselected requests that changed: ') + changed.join(', ');
+  }
+  function selRows(rows){ return (rows || []).filter(function(r){ return bulkOk(r) && !!S.sel[r.id]; }); }
+  function payCents(list){ return list.reduce(function(a, r){ return a + (r.kind === 'expense_pre' ? 0 : (Number(r.amount_cents) || 0)); }, 0); }
+  function preCents(list){ return list.reduce(function(a, r){ return a + (r.kind === 'expense_pre' ? (Number(r.amount_cents) || 0) : 0); }, 0); }
+  /* 添付（建て替え経費の領収書）。開いたかはこの画面のあいだだけ覚える（ログインが変わると消える） */
+  function attKeys(r){
+    var p = (r && r.payload) || {}, rc = p.receipt || {}; if (!r || r.kind !== 'reimburse') return [];
+    var path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
+    if (typeof path === 'string' && path) return ['p:' + path];
+    if (typeof du === 'string' && du) return ['u:' + du];
+    return [];
+  }
+  function attLink(r){
+    var p = (r && r.payload) || {}, rc = p.receipt || {}, path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
+    if (typeof path === 'string' && /^[A-Za-z0-9_\-./]+$/.test(path)) return '<a href="#" data-a="' + esc(path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>';
+    if (typeof du === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(du)) return '<a href="' + esc(du) + '" target="_blank" rel="noopener" data-a="' + esc(du) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く（Drive）','Open (Drive)') + '</a>';
+    return '';
+  }
+  function unseen(list){ return list.filter(function(r){ var k = attKeys(r); return k.length && !k.some(function(x){ return !!S.att[x]; }); }); }
+  W.wrAttSeen = function(k){ if (typeof k === 'string' && k.length < 600) { S.att[k] = 1; if (S.bulk && S.bulk.phase === 'ask') drawBulk(); } };
+  function bulkHead(rows){
+    var el = rows.filter(bulkOk), n = el.length, k = selRows(rows).length;
+    var h = '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px">'
+      + '<label style="display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;min-height:40px;cursor:pointer"><input type="checkbox" style="width:22px;height:22px"' + (n && k === Math.min(n, BULK_MAX) ? ' checked' : '') + ' onchange="wrSelAll(this.checked)">'
+      + T('表示中の承認待ちを全選択（','Select all shown (') + n + T('）',')') + '</label>'
+      + '<span style="font-size:11px;color:var(--muted)">' + T('絞り込みを変えると選択を外します（見えていない申請を承認しないため）。','Changing a filter clears the selection (so nothing hidden is approved).') + '</span></div>';
+    var skip = rows.filter(function(r){ return (r.can || []).indexOf('approve') >= 0 && !bulkOk(r); }).length;
+    if (skip) h += '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('まとめて承認に入らないもの ','Not in the bulk approval: ') + skip
+      + T(' 件（評価の変更は承認のあとに反映するので 1 件ずつ・重複の候補は確かめてから）',' (evaluation changes are applied after approval, one at a time; check possible duplicates first)') + '</div>';
+    if (S.selNote) { h += '<div class="alert alert-warning" style="font-size:11.5px;margin-bottom:6px">' + esc(S.selNote) + '</div>'; S.selNote = ''; }
+    return h;
+  }
+  function bulkBar(rows){
+    var sel = selRows(rows); if (!sel.length) return '';
+    var pre = preCents(sel);
+    return '<div style="position:sticky;bottom:0;z-index:5;margin-top:10px;background:#211b15;color:#fff;border-radius:12px;padding:10px 14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">'
+      + '<b style="font-size:14px">' + T('選択 ','Selected ') + sel.length + T(' 件','') + '</b>'
+      + '<span style="font-size:12.5px">' + T('精算対象 ','To pay ') + '<b>' + money(payCents(sel)) + '</b></span>'
+      + (pre ? '<span style="font-size:12.5px">' + T('事前経費 ','Pre-approval ') + '<b>' + money(pre) + '</b>' + T('（精算には入れない）',' (not paid now)') + '</span>' : '')
+      + '<button class="btn btn-primary" style="margin-left:auto;min-height:44px;font-weight:800" ' + (S.busy ? 'disabled' : '') + ' onclick="wrBulkAsk()">'
+      + T('選択した ','Approve the ') + sel.length + T(' 件を承認',' selected') + '</button></div>';
+  }
+  W.wrSel = function(id, on){
+    var r = (S.rows || []).find(function(x){ return x.id === id; });
+    if (!r || !bulkOk(r) || S.busy) { rerender(); return; }
+    if (on) {
+      if (!S.sel[id] && Object.keys(S.sel).length >= BULK_MAX) { showToast(T('まとめて承認できるのは 1 回に ','You can approve up to ') + BULK_MAX + T(' 件までです',' at a time'), 'warning'); rerender(); return; }
+      S.sel[id] = { rev:r.rev, code:r.code };
+    } else delete S.sel[id];
+    rerender();
+  };
+  W.wrSelAll = function(on){
+    if (S.busy) return;
+    var el = byWho(S.rows).filter(bulkOk); S.sel = {};
+    if (on) { el.slice(0, BULK_MAX).forEach(function(r){ S.sel[r.id] = { rev:r.rev, code:r.code }; }); if (el.length > BULK_MAX) showToast(T('先の ','Selected the first ') + BULK_MAX + T(' 件を選びました（1 回に ',' (up to ') + BULK_MAX + T(' 件まで）',' at a time)'), 'warning'); }
+    rerender();
+  };
+  /* 押す直前の確認：見た版のまま送る（あとで一覧が読み直されても、ここに出したものだけ） */
+  W.wrBulkAsk = function(){
+    checkAuth();
+    var sel = selRows(byWho(S.rows)).sort(function(a, b){ return new Date(a.updated_at) - new Date(b.updated_at); });   /* 一覧（要対応）と同じ並び */
+    if (!sel.length || S.busy) return;
+    S.bulk = { phase:'ask', k0:authKey(), list:sel.map(function(r){ return { id:r.id, rev:S.sel[r.id].rev, code:r.code, kind:r.kind, store_id:r.store_id, requester_name:r.requester_name, amount_cents:r.amount_cents, payload:r.payload, use:useL(r) }; }), res:[] };
+    openModal('<div id="wr-bulk" style="width:100%"></div>');
+    drawBulk();
+  };
+  function drawBulk(){
+    var el = document.getElementById('wr-bulk'), b = S.bulk; if (!el || !b) return;
+    var list = b.list, h = '';
+    if (b.phase === 'ask') {
+      var un = unseen(list), pre = preCents(list);
+      h += '<div style="font-size:17px;font-weight:800;margin-bottom:8px">' + list.length + T(' 件を承認します',' to approve') + '</div>'
+        + '<div style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px">'
+        + list.map(function(x){ return '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12.5px">'
+          + '<div><b>' + esc(x.code) + '</b> <span style="color:var(--muted)">' + esc(kindL(x.kind)) + '・' + esc(storeName(x.store_id)) + '・' + esc(x.requester_name || '') + '</span></div>'
+          + '<div style="text-align:right;font-weight:700">' + money(x.amount_cents) + '</div>'
+          + '<div style="grid-column:1/-1;font-size:11.5px;color:var(--muted)">' + x.use + '</div></div>'; }).join('') + '</div>'
+        + '<div style="font-size:13px;margin-top:8px">' + T('精算対象 ','To pay ') + '<b>' + money(payCents(list)) + '</b>' + (pre ? T('・事前経費 ',' · pre-approval ') + '<b>' + money(pre) + '</b>' + T('（精算には入れない）',' (not paid now)') : '') + '</div>';
+      if (un.length) h += '<div style="margin-top:8px;padding:10px 12px;border-radius:10px;background:#fffaf0;border:1px solid #e8c98a;font-size:12.5px;line-height:1.7">'
+        + T('まだ開いていない領収書が ','Receipts not opened yet: ') + un.length + T(' 件（開かずに承認もできます）',' (you can approve without opening)')
+        + un.map(function(x){ return '<div>' + esc(x.code) + ' ' + attLink(x) + '</div>'; }).join('') + '</div>';
+      h += '<div style="display:flex;gap:10px;margin-top:12px"><button class="btn btn-secondary" style="flex:1;min-height:46px" onclick="closeModal()">' + T('戻る','Back') + '</button>'
+        + '<button class="btn btn-primary" style="flex:2;min-height:46px;font-weight:800" onclick="wrBulkGo()">' + list.length + T(' 件を承認',' — approve') + '</button></div>';
+    } else if (b.phase === 'run') {
+      h += '<div style="font-size:15px;font-weight:800">' + T('承認しています… ','Approving… ') + b.res.length + ' / ' + list.length + '</div>'
+        + '<div style="font-size:11.5px;color:var(--muted);margin-top:6px">' + T('閉じずに待ってください（1 件ずつ送っています）','Please wait (sending one by one)') + '</div>';
+    } else {
+      var ok = b.res.filter(function(x){ return x.st === 'ok'; }), re = b.res.filter(function(x){ return x.st === 'changed' || x.st === 'done_already'; }), ng = b.res.filter(function(x){ return x.st === 'error' || x.st === 'stopped'; });
+      h += '<div style="font-size:17px;font-weight:800;margin-bottom:8px">' + ok.length + T(' 件承認',' approved') + (re.length ? T('／',' / ') + re.length + T(' 件は要再確認',' need another look') : '') + (ng.length ? T('／',' / ') + ng.length + T(' 件はできませんでした',' failed') : '') + '</div>'
+        + b.res.map(function(x){
+          var c = x.st === 'ok' ? ['#f1faf5','#0f6b44',T('承認','Approved')] : (x.st === 'changed' || x.st === 'done_already') ? ['#fff6f6','#a51f1f',T('要再確認','Check again')] : ['#fff6f6','#a51f1f',T('できなかった','Failed')];
+          return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 11px;border-radius:10px;background:' + c[0] + ';margin-bottom:6px;font-size:12.5px"><span style="font-weight:800;color:' + c[1] + ';white-space:nowrap">' + c[2] + '</span><div style="flex:1;min-width:0"><b>' + esc(x.code) + '</b> ' + esc(x.msg || '')
+            + (x.st === 'changed' || x.st === 'done_already' ? ' <a href="#" data-a="' + esc(x.id) + '" onclick="wrOpen(this.dataset.a);return false">' + T('開く','Open') + '</a>' : '') + '</div></div>';
+        }).join('')
+        + '<div style="font-size:11.5px;color:var(--muted);line-height:1.6;margin-top:6px">' + T('二度押し・送り直しでも、承認は 1 回だけです。要再確認の申請は承認していません（承認待ちのまま・選択は外しました）。','Double taps and retries approve only once. Requests to check again were not approved (still waiting; unselected).') + '</div>'
+        + '<div style="margin-top:10px"><button class="btn btn-primary" style="width:100%;min-height:46px" onclick="closeModal()">' + T('閉じる','Close') + '</button></div>';
+    }
+    el.innerHTML = h;
+  }
+  W.wrBulkGo = function(){
+    var b = S.bulk; if (!b || b.phase !== 'ask' || S.busy) return;
+    if (b.k0 !== authKey()) { showToast(errText('signin_changed'), 'error'); closeModal(); return; }
+    b.phase = 'run'; b.res = []; S.busy = 'bulk'; drawBulk();
+    var stopped = false;
+    b.list.reduce(function(pr, x){ return pr.then(function(){
+      if (stopped) { b.res.push({ id:x.id, code:x.code, st:'stopped', msg:errText('signin_changed') }); return; }
+      return api({ action:'act', id:x.id, op:'approve', expect_rev:x.rev, client_key:keyFor(x, 'approve'), note:T('まとめて承認','Bulk approval') }, b.k0).then(function(row){
+        b.res.push({ id:x.id, code:x.code, st:'ok', msg:kindL(x.kind) + ' ' + money(x.amount_cents) + ' → ' + (row && ST_L[row.status] ? T(ST_L[row.status][0], ST_L[row.status][1]) : '') });
+        delete S.sel[x.id];
+        try{ notifyAfter('approve', row); }catch(e){}
+      }, function(e){
+        delete S.sel[x.id];
+        if (e && e.code === 'signin_changed') { stopped = true; b.res.push({ id:x.id, code:x.code, st:'stopped', msg:errText('signin_changed') }); return; }
+        if (e && e.code === 'conflict') return api({ action:'get', id:x.id }, b.k0).then(function(j){
+          if (j && j.status !== 'pending') b.res.push({ id:x.id, code:x.code, st:'done_already', msg:T('承認していません。もう処理されています（','Not approved. It was already handled (') + (ST_L[j.status] ? T(ST_L[j.status][0], ST_L[j.status][1]) : j.status) + T('）',')') });
+          else b.res.push({ id:x.id, code:x.code, st:'changed', msg:T('承認していません。あなたが見たあと内容が変わりました（版 ','Not approved. It changed after you looked (version ') + (j && j.version || '?')
+            + (j && j.amount_cents !== x.amount_cents ? T('・金額 ',', amount ') + money(x.amount_cents) + ' → ' + money(j.amount_cents) : '') + T('）。開いて確かめてください','). Open it to check') });
+        }, function(){ b.res.push({ id:x.id, code:x.code, st:'changed', msg:T('承認していません。あなたが見たあと内容が変わりました。開いて確かめてください','Not approved. It changed after you looked. Open it to check') }); });
+        b.res.push({ id:x.id, code:x.code, st:'error', msg:String(e && e.message || e) });
+      });
+    }); }, Promise.resolve()).then(function(){
+      S.busy = ''; b.phase = 'done'; drawBulk(); reloadList(); acctReload();
+    });
+  };
+
+  /* ---------------------------------------------------------------- v1154：経理レビュー › 申請（GM 承認済みの経費 3 種・UI案71）
+     確認・精算は今までどおり 1 件の画面（wrOpen）で。GM・CEO は見るだけ（サーバーの can で決まる）。評価の変更は経理の作業が無いので出さない */
+  function acctReload(){ if (S.acct) { S.acct.load = ''; rerenderAcct(); } }
+  function onAcct(){ return typeof curPage !== 'undefined' && curPage === 'acct_review' && W._arTab === 'req'; }
+  function rerenderAcct(){ if (onAcct()) { try{ renderPage('acct_review'); }catch(e){} } }
+  function acctLoad(){
+    var a = S.acct, g = S.gen; a.load = 'loading';
+    api({ action:'list', scope:'team', state:'open', limit:500 }).then(function(j){
+      if (a !== S.acct || g !== S.gen) return;
+      a.rows = (j.rows || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0 && (r.status === 'approved' || r.status === 'checked'); });
+      a.load = 'done'; a.at = Date.now(); rerenderAcct();
+    }, function(e){ if (a !== S.acct || g !== S.gen) return; a.load = 'err'; a.err = String(e && e.message || e); rerenderAcct(); });
+  }
+  W.wrAcctRefresh = function(){ S.load = ''; acctReload(); };
+  W.renderWrAcct = function(){
+    checkAuth();
+    if (!pinTok()) return '<div class="card">' + esc(errText('signin')) + '</div>';
+    if (S.load === '') load();
+    if (!S.me) return '<div class="card" style="font-size:12px;color:var(--muted)">' + (S.load === 'err' ? esc(S.err) : T('読み込み中…','Loading…')) + '</div>';
+    if (!S.live) return '<div class="card" style="font-size:12px;line-height:1.7">' + esc(errText('not_live')) + '</div>';
+    if (!S.acct) S.acct = { rows:null, load:'' };
+    if (S.acct.load === '') acctLoad();
+    var a = S.acct, rows = a.rows || [];
+    var ck = rows.filter(function(r){ return r.status === 'approved'; }), py = rows.filter(function(r){ return r.status === 'checked'; });
+    var h = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap"><div style="font-size:12px;color:var(--muted)">' + esc(S.me.name) + ' · ' + esc(roleL(S.me))
+      + (['ceo','gm'].indexOf(S.me.role) >= 0 ? T('（見るだけ）',' (view only)') : '') + '</div>'
+      + '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="wrAcctRefresh()"><i class="ti ti-refresh"></i> ' + T('最新','Latest') + '</button></div>'
+      + '<div class="kpi-grid" style="margin-bottom:10px">'
+      + tile(T('経理の確認待ち','Waiting for accounting check'), a.rows ? ck.length : null, T('GM が承認したもの','approved by the GM'), ck.length ? 'var(--red)' : 'var(--green)', '')
+      + tile(T('精算待ち','Waiting for payment'), a.rows ? py.length : null, T('確認済み・ガソリン代と建て替え','checked mileage and reimbursements'), py.length ? 'var(--blue,#2b6cb0)' : 'var(--green)', '')
+      + '</div>';
+    if (a.load === 'err') h += '<div class="alert alert-danger" style="font-size:12px">' + esc(a.err) + '</div>';
+    if (!a.rows) return h + '<div class="card" style="font-size:12px;color:var(--muted)">' + T('読み込み中…','Loading…') + '</div>';
+    if (!rows.length) return h + '<div class="card" style="text-align:center;padding:22px;color:var(--muted);font-size:12px">' + T('GM が承認して経理の作業が残っている申請はありません','No GM-approved requests waiting for accounting') + '</div>';
+    rows = rows.slice().sort(function(x, y){ return (x.status === y.status ? 0 : x.status === 'approved' ? -1 : 1) || (new Date(x.updated_at) - new Date(y.updated_at)); });
+    h += '<div class="card" style="padding:0;overflow-x:auto"><table class="tbl" style="width:100%;font-size:11.5px;min-width:680px"><thead><tr>'
+      + [['番号・種別','No. / kind'],['申請した人・店舗','Requester / store'],['用途','Use'],['金額','Amount'],['状態','Status'],['経理の作業','Accounting'],['待ち','Waiting']].map(function(x, i){ return '<th' + (i === 3 ? ' style="text-align:right"' : '') + '>' + esc(T(x[0], x[1])) + '</th>'; }).join('') + '</tr></thead><tbody>';
+    rows.forEach(function(r){
+      var can = r.can || [], work = can.indexOf('check') >= 0 ? T('確認する','Check') : can.indexOf('pay') >= 0 ? T('精算を記録','Record payment') : T('見る','View');
+      h += '<tr style="cursor:pointer" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)"><td style="white-space:nowrap"><b>' + esc(r.code) + '</b><div style="color:var(--muted)">' + esc(kindL(r.kind)) + '</div></td>'
+        + '<td>' + esc(r.requester_name) + '<div style="color:var(--muted)">' + esc(storeName(r.store_id)) + '</div></td><td>' + useL(r) + '</td>'
+        + '<td style="text-align:right;white-space:nowrap">' + money(r.amount_cents) + '</td><td>' + tag(r.status, r.kind) + '</td>'
+        + '<td><span style="font-weight:700;color:' + (work === T('見る','View') ? 'var(--muted)' : 'var(--accent)') + '">' + esc(work) + '</span></td><td style="white-space:nowrap">' + daysSince(r.updated_at) + T(' 日',' d') + '</td></tr>';
+    });
+    h += '</tbody></table></div><div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.6">'
+      + T('行を押すと 1 件の画面（領収書・履歴・確認・差し戻し・精算）。事前経費は確認で完了します。評価の変更は経理の作業が無いので出しません。','Tap a row for the detail (receipt, history, check, return, payment). Pre-approvals finish at the check. Evaluation changes have no accounting step, so they are not listed.') + '</div>';
+    return h;
+  };
   W.wrReceipt = function(path){
     if (typeof path !== 'string' || !/^[A-Za-z0-9_\-./]+$/.test(path)) return;
+    S.att['p:' + path] = 1; if (S.bulk && S.bulk.phase === 'ask') setTimeout(drawBulk, 0);
     try{ if (typeof viewInvoiceImage === 'function') return viewInvoiceImage(path); }catch(e){}
     window.open(SUPABASE_URL + '/storage/v1/object/public/invoices/' + encodeURI(path), '_blank', 'noopener');
   };
