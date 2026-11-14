@@ -184,10 +184,10 @@ export function createHandler(deps) {
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
     // fn：関数の版（v1132 は 2・v1133 から 3・v1155 から 4＝段階 2 の種類を受ける）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
-    // v1156 から fn 5（チャット）・chat：チャットの SQL が入っていれば 1
+    // v1156 から fn 5（チャット）・chat：チャットの SQL が入っていれば 1。v1159 から fn 6（段階 3 の s3_import）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 5, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 6, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -219,6 +219,22 @@ export function createHandler(deps) {
     settings_save: (w, b) => {
       if (typeof b.live !== 'boolean') throw bad();
       return db.rpc('wr_settings_save', { ...w, live: b.live, expect_rev: REV(b.expect_rev) });
+    },
+    // v1159：段階 3。前の「承認」タブの記録を写す（GM・CEO の端末がログインのたびに自動で・UI案74 の 3B）。
+    // 端末は前の記録の id と表示用の中身だけを送る。状態・種類・店・申請した人はサーバーが共通データから読む（wr_s3_import）
+    s3_import: (w, b) => {
+      if (!Array.isArray(b.items) || b.items.length > 100) throw bad();
+      const seen = new Set();
+      const items = b.items.map(x => {
+        x = obj(x);
+        if (typeof x.ap_id !== 'string' || !/^ap\d{6,20}$/.test(x.ap_id) || seen.has(x.ap_id)) throw bad();
+        seen.add(x.ap_id);
+        if (!S2_KINDS.includes(x.kind)) throw bad();
+        const payload = normPayload(x.kind, x.payload);
+        if (payload.ap_id !== x.ap_id) throw bad();
+        return { ap_id: x.ap_id, kind: x.kind, store_id: STORE(x.store_id), payload };
+      });
+      return db.rpc('wr_s3_import', { ...w, items });
     },
     // v1155：段階 2 を使い始める／止める（GM・CEO）
     s2_save: (w, b) => {

@@ -22,7 +22,7 @@ union all select '7. 申請のチャットが申請に戻れる（申請の id �
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_row(jsonb,public.chat_threads,public.chat_members)')) like '%''id'', r.id%'
     then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '8. 申請の段階 2 が入ったまま（チャットの SQL のあとに前の申請の SQL を流していない）',
-  case when public.wr_stage('{}'::jsonb)->>'stage' = '5' then 'OK' else 'NG（deploy/work-requests-v1155 の ② → この 2 をもう一度）' end
+  case when (public.wr_stage('{}'::jsonb)->>'stage')::int >= 5 then 'OK' else 'NG（deploy/work-requests-v1155 の ② → この 2 をもう一度）' end
 union all select '9. Realtime：合図の表が入っている（Realtime が無いときは —）',
   case when not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then '—'
     when exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'chat_sig') then 'OK'

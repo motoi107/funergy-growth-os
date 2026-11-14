@@ -1,11 +1,17 @@
 # 改修・自動化の作業記録
 
+## 2026-11-14 #151〜#153 のレビューの直しと Totoya の取り込み
+
+1. 済（Claude）：#151・#152・#153 のレビュー（Claude・Codex）の P1・P2 を直した（共有記録の 11/14 の節）。次：Codex の再レビュー（最新の head）→ Moto さんが #151 → #152 → #153 の順にマージ（SQL・関数は各手順.md。#151 は Google の口コミの SQL・関数が同じ名前のまま中身が変わった）。
+2. 済（Claude）：hyper-worker v1160（非公開・Moto さんに直接）。次（Moto さん）：Deploy → Aiea の期間一括取り込みをもう一度 →（任意）L/D 列の SQL。
+3. 次（Claude）：アプリ v1160＝期間一括取り込みで失敗した日の理由を出す・失敗した日を自動でもう一度・「失敗した日だけ取り込み直す」（#153 の上）。チャットの添付は v1161 に（サーバーの SQL・関数と試験はできている・未コミット）。
+
 ## 2026-11-13 Google の口コミ（UI案73・v1157）とワークセンター段階 3（UI案74）
 
 1. 済（Moto さん 11/13 18:42 HST）：UI案73 は 1〜4 はい（2 は「API 繋ぐまでは手入力」・3 は「どの投稿も出してください」）。UI案74 は 1 はい・2 はい・3 B・4 はい。
 2. 済（Claude・ブランチ `claude/google-1157`）：v1157＝Google の口コミ（SQL `20261122090000`・関数 google-reviews・アプリ・`docs/GOOGLE_REVIEWS_V1157_JA.md`・入れる一式 `deploy/google-reviews-v1157/`）。試験 21・わざと壊す 41/44・Chrome の画面の形。
 3. 次：PR → Codex（とくに from_ym を入れる時・結び直しの conflict・whoami の道・Places を残さないこと・worker の鍵）→ Moto さんが `deploy/google-reviews-v1157/手順.md`（Business Profile API の審査は最大 14 日・Places は費用がかかる）。
-4. 次（Claude）：v1159＝ワークセンター段階 3（UI案74：2026 年に決まったものと承認待ちを写す・承認待ちはワークセンターの承認待ちに・前の承認タブは更新で閉じる・前の記録は読むだけ）。v1158 はチャットの直し。
+4. 済（Claude・ブランチ `claude/wc-stage3-1159`）：v1159＝ワークセンター段階 3（SQL `20261123090000`・関数 fn 6・アプリ・`docs/WORKCENTER_APPROVALS_STAGE3_JA.md`・入れる一式 `deploy/work-requests-v1159/`）。次：PR → Codex → #151 → #152 → この PR → Moto さんが ①〜④（非公開の 1 ファイルは直接）→ 端末を 1159 に → GM・CEO のログインで写ったか。
 
 ## 2026-11-13 チャット（全体アップデート指示の 5・UI案69「全部 A」）
 
