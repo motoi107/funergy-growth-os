@@ -38,7 +38,7 @@
 - `tests/wr-approve-v1165-deploy.test.mjs` 3・`tests/wr-switch-count-sql.test.mjs` 3（v1165 の SQL の前・後）。
 - 前の試験の直し（v1165 で変えた動き）：経理レビューのタイル → タブ（wc-bulk-v1154）・前の承認の数え方を `apOldPend` に（wc-stage2-v1155）・承認センターは段階 3 の前もメニューに出さない（wc-stage3-v1159）・明細の承認のボタンの文（work-requests-ui）・whoami の fn は 7 以上（chat-files-server-v1161）。
 - わざと壊す：アプリ 15 通りのうち 14（残り 1 は二重の守り：段階 3 のあとは `apOldPend` が空なので帯も出ない）・SQL 10/10（1 回目 9 → 事前経費の実費に取り下げた申請を出さない試験を足した）。
-- 本物の Chrome（`tests/e2e-wr/approve-v1165.mjs`・本物の work-requests の SQL と handler・別々のログイン）16/16：G2 が事前経費 $100・建て替え $120・$80 → GM（1280px）のタブは「申請/承認」1 つ・表の列・選んで次へで 3 件 → まとめて承認 → 経理（390px）の 3 つのタブ・事前経費を確認・ボタンが下に固定（高さ 48px・画面の中）・$120 を $100 に結ぶ（聞く → GM の承認待ち）→ GM の明細に「予定を超えています」→ 再承認 → 経理が確認・精算 → 処理済み（今月）・pageerror 0。v1164 の e2e（`expense-paths.mjs`）も v1165 の SQL を入れて 37/37。
+- 本物の Chrome（`tests/e2e-wr/approve-v1165.mjs`・本物の work-requests の SQL と handler・別々のログイン・`SHOTS=フォルダ` で画面の写真）17/17：G2 が事前経費 $100・建て替え $120・$80 → GM（1280px）のタブは「申請/承認」1 つ・表の列（1280px で 11 列が横にはみ出さない：はじめ 980px の最小幅ではみ出したので 820px に）・選んで次へで 3 件 → まとめて承認 → 経理（390px）の 3 つのタブ・事前経費を確認・ボタンが下に固定（高さ 48px・画面の中）・$120 を $100 に結ぶ（聞く → GM の承認待ち）→ GM の明細に「予定を超えています」→ 再承認 → 経理が確認・精算 → 処理済み（今月）・pageerror 0。v1164 の e2e（`expense-paths.mjs`）も v1165 の SQL を入れて 37/37。
 - 関連（work-requests-*・wc-*・wr-*・ux-core・chat-files・approvals-v1087・acct-review-unify）と全体：共有記録に。static release pass/1165。
 
 ## 5. 限界・残したこと

@@ -11,6 +11,7 @@ const ARGS = ['--host-resolver-rules=MAP tgbhgxzehzeouopklhje.supabase.co 127.0.
 const browser = await chromium.launch({ headless: true, args: ARGS, executablePath: process.env.CHROME || '/usr/bin/google-chrome' });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const results = [];
+const shot = async (D, name) => { if (process.env.SHOTS) await D.page.screenshot({ path: process.env.SHOTS + '/' + name + '.png' }).catch(() => {}); };   // SHOTS=フォルダ：画面の写真
 const ok = (name, cond, info) => { results.push({ name, ok: !!cond, info }); console.log((cond ? 'OK  ' : 'NG  ') + name + (info !== undefined ? '  ' + JSON.stringify(info) : '')); };
 
 async function device(width) {
@@ -70,10 +71,14 @@ await GM.page.evaluate(() => { workTab = 'wr'; go('tasks'); }); await sleep(2500
 await GM.page.waitForFunction(() => /要対応/.test(document.body.innerText) && document.querySelectorAll('table.tbl thead th').length > 5, null, { timeout: 20000 }).catch(() => {});
 const tabs = await GM.page.evaluate(() => Array.from(document.querySelectorAll('.phase-tab')).map(e => e.innerText.trim().replace(/\s+\d+$/, '')));
 ok('ワークセンターのタブは「申請/承認」1 つ（「承認」タブは無い）', tabs.some(x => /^申請\/承認/.test(x)) && !tabs.some(x => /^承認\s*$|^承認\s*\d/.test(x)), tabs);
+await shot(GM, '1_GM_要対応_PC');
 const heads = await GM.page.evaluate(() => Array.from(document.querySelectorAll('table.tbl thead th')).map(e => e.innerText.trim()));
+const fit = await GM.page.evaluate(() => { const t = document.querySelector('table.tbl'); const c = t && t.parentElement; return t ? { table: Math.round(t.scrollWidth), box: Math.round(c.clientWidth), cols: Array.from(t.querySelectorAll('thead th')).map(th => Math.round(th.getBoundingClientRect().width)) } : null; });
+ok('PC（1280px）で要対応の表が横にはみ出さない（11 列が見える）', fit && fit.table <= fit.box + 1, fit);
 ok('要対応の表の列：種別・申請した人・店舗・用途・対象日・月・金額（変更前後）・添付', ['種別', '申請した人', '店舗', '用途', '対象日・月', '金額（変更前後）', '添付'].every(h => heads.includes(h)), heads);
 const order = await GM.page.evaluate(() => _wrState().lastTodo.slice());
 let d = await openWr(GM, order[0], 'wrPickNext');
+await shot(GM, '2_GM_明細_選んで次へ_PC');
 ok('一覧から開いた明細に［選択に戻る］［選んで次へ］［この 1 件を承認］', /選択に戻る/.test(d) && /選んで次へ/.test(d) && /この 1 件を承認/.test(d));
 for (let i = 0; i < order.length; i++) {
   await GM.page.evaluate(id => wrPickNext(id), order[i]);
@@ -91,6 +96,7 @@ const AC = await device(390);
 await login(AC, 'OFFICE', 'Ann Acct');
 await AC.page.evaluate(() => { window._arTab = 'req'; go('acct_review'); }); await sleep(2500);
 await AC.page.waitForFunction(() => /確認待ち/.test(document.body.innerText) && !/読み込み中/.test((document.getElementById('main-content') || document.body).innerText), null, { timeout: 20000 }).catch(() => {});
+await shot(AC, '3_経理_確認待ち_スマホ');
 const acTabs = await AC.page.evaluate(() => Array.from(document.querySelectorAll('.phase-tab')).map(e => e.innerText.trim()));
 ok('経理レビューは 確認待ち 3 ／ 確認済み・処理待ち 0 ／ 処理済み（今月）', acTabs.some(x => /^確認待ち\s*3$/.test(x)) && acTabs.some(x => /^確認済み・処理待ち\s*0$/.test(x)) && acTabs.some(x => /^処理済み（今月）/.test(x)), acTabs);
 const ex = await row(exCode), r120 = await row(rb120);
@@ -106,10 +112,13 @@ const bar = await AC.page.evaluate(() => {
   const r = b.getBoundingClientRect(), btn = b.querySelector('button').getBoundingClientRect();
   return { pos: getComputedStyle(b).position, bottom: Math.round(r.bottom), vh: window.innerHeight, h: Math.round(btn.height), scrolls: !!sc && sc !== document.body };
 });
+await shot(AC, '4_経理_明細_下のボタン_スマホ');
 ok('スマホ：明細のボタンは画面の下に固定（押せる高さ 44px）', bar && bar.pos === 'sticky' && bar.bottom <= bar.vh && bar.h >= 44, bar);
 await AC.page.evaluate(() => wrPreOpen());
 await AC.page.waitForFunction(c => (document.getElementById('wr-detail') || {}).innerHTML.includes(c), exCode, { timeout: 15000 }).catch(() => {});
 d = await AC.page.evaluate(() => document.getElementById('wr-detail').innerHTML);
+await AC.page.evaluate(() => { const d = document.getElementById('wr-detail'); const b = d && d.querySelector('[name="wr-pre"]'); if (b) b.scrollIntoView({ block: 'center' }); }); await sleep(300);
+await shot(AC, '5_経理_事前経費に結ぶ_スマホ');
 ok('実費 $120 の明細で、同じ人の事前経費 $100 が候補に出る（予定を超える印）', d.includes(exCode) && /予定を超える/.test(d));
 await AC.page.evaluate(() => wrPreLink()); await sleep(2500);
 const linked = await row(rb120);
@@ -119,6 +128,7 @@ await AC.page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
 // ---------------------------------------------------------------- GM：もう一度承認
 await GM.page.evaluate(() => wrRefresh()); await sleep(2500);
 d = await openWr(GM, r120.id, "wrAsk('approve')");
+await shot(GM, '6_GM_予定を超えた実費_PC');
 ok('GM の明細に「予定を超えています」と事前経費の番号', /予定を超えています/.test(d) && d.includes(exCode));
 await GM.page.evaluate(() => wrAsk('approve')); await sleep(400); await GM.page.evaluate(() => { if (document.getElementById('wr-note')) wrAskGo(); }); await sleep(1500);
 ok('GM がもう一度承認 → 経理の確認待ち', (await row(rb120)).status === 'approved', (await row(rb120)).status);
@@ -136,6 +146,7 @@ await AC.page.evaluate(() => wrAsk('pay')); await sleep(400); await AC.page.eval
 await AC.page.evaluate(() => { try { closeModalDirect(); } catch (e) { } });
 ok('経理が確認・精算（実費 $120 だけ）', (await row(rb120)).status === 'paid' && (await row(exCode)).status === 'done', [(await row(rb120)).status, (await row(exCode)).status]);
 await AC.page.evaluate(() => { wrAcctRefresh(); wrAcctTab('done'); }); await sleep(2500);
+await shot(AC, '7_経理_処理済み今月_スマホ');
 const doneTxt = await AC.page.evaluate(() => (document.getElementById('main-content') || document.body).innerText);
 ok('処理済み（今月）に精算した実費と確認した事前経費が出る', doneTxt.includes(rb120) && doneTxt.includes(exCode) && !doneTxt.includes(rb80), doneTxt.slice(0, 300));
 
