@@ -291,6 +291,9 @@ export function createHandler(deps) {
   //   #151 のレビュー：いつも前の月の初め（ハワイ）までは読む（rec）。そこまで最後まで読めたら、その間に直された・投稿された口コミで
   //   いま Google に無いもの（消されたもの）を消す（gr_reviews_prune）。途中で失敗・ページの上限で止まったときは消さない。
   //   1 回に 1 店 20 ページ＝1,000 件まで。since まで読めなければ synced_at を進めず、次の回に同じところから。
+  //   #151 の再レビュー（Codex 6875770314）：消すときは、この取り込みを始めた時刻（gr_locs の now＝データベースの時計）を渡す。
+  //   それより後に入った・確かめた口コミ（重なったほかの取り込みが入れたもの）は消さない。1 回目は印だけ、次の回にも無ければ消す。
+  //   消すときの since は 99 日より前にしない（長くつながっていなかったあとでも prune_bad_value にしない・Claude の P3）。
   async function syncAll(kind) {
     const t = await access();
     if (!t.ok) {
@@ -344,16 +347,17 @@ export function createHandler(deps) {
         try { await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items: [], done: true, ...(l.synced_at ? {} : { from_ym: hstYm(since) }) }); }
         catch (e) { err = String(e.message || 'put_failed').split(/[\s:]/)[0].slice(0, 40); }
       }
-      if (!err && recDone) {
-        try { const pr = await db.rpc('gr_reviews_prune', { store: l.store, location: l.location, since: new Date(rec).toISOString(), names }); pruned = (pr && pr.pruned) || 0; }
+      let marked = null;
+      if (!err && recDone && typeof l.now === 'string') {
+        try { const pr = await db.rpc('gr_reviews_prune', { store: l.store, location: l.location, since: new Date(Math.max(rec, now() - 99 * 86400000)).toISOString(), started: l.now, names }); pruned = (pr && pr.pruned) || 0; marked = (pr && pr.marked) || 0; }
         catch (e) { err = 'prune_' + String(e.message || 'failed').split(/[\s:]/)[0].slice(0, 30); }
       }
       if (!done && !err) err = 'too_many_pages';
-      out.push({ store: l.store, ok: done && !err, put, ...(pruned != null ? { pruned } : {}), ...(!err && done && !recDone ? { note: 'prune_skipped' } : {}), error: err || undefined });
+      out.push({ store: l.store, ok: done && !err, put, ...(pruned != null ? { pruned, marked } : {}), ...(!err && done && (!recDone || typeof l.now !== 'string') ? { note: 'prune_skipped' } : {}), error: err || undefined });
     }
     const allOk = out.every(x => x.ok);
     await db.rpc('gr_bp_mark', { status: pending ? 'pending' : (allOk ? 'ok' : 'error'), error: allOk ? null : (out.find(x => !x.ok) || {}).error || null, synced: allOk && out.length > 0 });
-    await db.rpc('gr_run_log', { kind, ok: allOk, info: { stores: out.map(x => ({ store: x.store, ok: x.ok, put: x.put, pruned: x.pruned, note: x.note, error: x.error })) } });
+    await db.rpc('gr_run_log', { kind, ok: allOk, info: { stores: out.map(x => ({ store: x.store, ok: x.ok, put: x.put, pruned: x.pruned, marked: x.marked, note: x.note, error: x.error })) } });
     return { ok: allOk, stores: out };
   }
 

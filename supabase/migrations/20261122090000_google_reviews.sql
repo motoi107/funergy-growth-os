@@ -66,8 +66,10 @@ create table if not exists public.gr_reviews (
   updated timestamptz,
   ym text not null check (ym ~ '^20[0-9]{2}-(0[1-9]|1[0-2])$'),
   replied boolean not null default false,
-  seen_at timestamptz not null default now()
+  seen_at timestamptz not null default now(),
+  gone_at timestamptz   -- #151 の再レビュー：前の回の取り込みで Google に無かった（次の回にも無ければ消す）
 );
+alter table public.gr_reviews add column if not exists gone_at timestamptz;
 create index if not exists gr_reviews_store_ym on public.gr_reviews (store_id, ym);
 -- #151 のレビュー：1 つの Business Profile の店は 1 つの店にだけ（同時に結んでも 2 つにならない）
 create unique index if not exists gr_bp_loc_location on public.gr_bp_loc (location);
@@ -240,7 +242,8 @@ end $$;
 
 create or replace function public.gr_locs(p jsonb) returns jsonb
 language sql stable security invoker set search_path = public, pg_temp as $$
-  select coalesce(jsonb_agg(jsonb_build_object('store', store_id, 'account', account, 'location', location, 'synced_at', synced_at) order by store_id), '[]'::jsonb)
+  -- now：この取り込みを始めた時刻（データベースの時計）。消すときは、これより後に入った・確かめた口コミを触らない（#151 の再レビュー）
+  select coalesce(jsonb_agg(jsonb_build_object('store', store_id, 'account', account, 'location', location, 'synced_at', synced_at, 'now', now()) order by store_id), '[]'::jsonb)
     from public.gr_bp_loc
 $$;
 
@@ -262,7 +265,7 @@ begin
            coalesce((x->>'replied')::boolean, false), now())
    on conflict (name) do update set store_id = excluded.store_id, ym = excluded.ym, created = excluded.created,   -- 結び直した店へ移す（#151 のレビュー）
      rating = excluded.rating, comment = excluded.comment, reviewer = excluded.reviewer,
-     updated = excluded.updated, replied = excluded.replied, seen_at = now();
+     updated = excluded.updated, replied = excluded.replied, seen_at = now(), gone_at = null;
    n := n + 1;
  end loop;
  -- 初めて取り終えたとき、取り始めた月（ハワイ時間）を「全部取れている最初の月」にする。読めない値なら今の月（安全なほう）
@@ -280,22 +283,39 @@ end $$;
 -- #151 のレビュー：Google で消された口コミを消す。関数が since から後に直された口コミを最後まで読めたときだけ呼ぶ
 --   （途中で失敗・ページの上限で止まったときは呼ばない）。since より後に直された（または投稿された）口コミで、いま Google に無いもの＝消されたもの。
 --   since は 100 日より前にしない（まちがって多く消さない）。この店の、結んでいる location の口コミだけ。
+-- #151 の再レビュー（Codex 6875770314）：
+--   ・started（この取り込みを始めた時刻＝gr_locs の now）より後に入った・確かめた口コミは触らない。
+--     重なった取り込みの古い一覧が、あとから始めた取り込みの入れた口コミを消さない。
+--   ・1 回で消さない。無かった口コミには印（gone_at）を付け、次の回（印より後に始めた取り込み）にも無ければ消す。
+--     読んでいるあいだに並びが変わって 1 回だけ読み落としても消えない（次に読めれば印は外れる）。印のある口コミは消すまで数える。
+--   ・names・since・started が無い・形が違うときは断る（NULL を通さない）。
 create or replace function public.gr_reviews_prune(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
-declare s text := p->>'store'; l public.gr_bp_loc; since timestamptz; n int := 0;
+declare s text := p->>'store'; l public.gr_bp_loc; since timestamptz; started timestamptz; n int := 0; m int := 0;
 begin
- if jsonb_typeof(p->'names') <> 'array' or jsonb_typeof(p->'since') <> 'string' then raise exception 'bad_value'; end if;
- begin since := (p->>'since')::timestamptz; exception when others then raise exception 'bad_value'; end;
+ if jsonb_typeof(p->'names') is distinct from 'array' or jsonb_typeof(p->'since') is distinct from 'string'
+    or jsonb_typeof(p->'started') is distinct from 'string' then raise exception 'bad_value'; end if;
+ begin since := (p->>'since')::timestamptz; started := (p->>'started')::timestamptz; exception when others then raise exception 'bad_value'; end;
  if since < now() - interval '100 days' or since > now() then raise exception 'bad_value'; end if;
+ if started > now() or started < now() - interval '1 day' then raise exception 'bad_value'; end if;
  select * into l from public.gr_bp_loc where store_id = s for update;
  if l.store_id is null then raise exception 'not_found'; end if;
  if (p->>'location') is distinct from l.location then raise exception 'conflict'; end if;
+ -- 前の回にも無かった（印がこの取り込みより前）口コミを消す
  delete from public.gr_reviews r
   where r.store_id = s and r.name like 'accounts/%/' || l.location || '/reviews/%'
     and coalesce(r.updated, r.created) >= since
+    and r.seen_at < started and r.gone_at is not null and r.gone_at < started
     and not exists (select 1 from jsonb_array_elements_text(p->'names') x where x = r.name);
  get diagnostics n = row_count;
- return jsonb_build_object('store', s, 'pruned', n);
+ -- 今回はじめて無かった口コミに印
+ update public.gr_reviews r set gone_at = now()
+  where r.store_id = s and r.name like 'accounts/%/' || l.location || '/reviews/%'
+    and coalesce(r.updated, r.created) >= since
+    and r.seen_at < started and r.gone_at is null
+    and not exists (select 1 from jsonb_array_elements_text(p->'names') x where x = r.name);
+ get diagnostics m = row_count;
+ return jsonb_build_object('store', s, 'pruned', n, 'marked', m);
 end $$;
 
 -- 会議・KPI の実績：Business Profile に結んだ店だけ（auto）。月ごとの平均・件数（ハワイ時間の投稿日）

@@ -27,6 +27,9 @@ union all select '9. 段（gr_stage）',
     else (xpath('/table/row/v/text()', query_to_xml('select case when public.gr_stage(''{}''::jsonb)->>''gr'' = ''2'' then ''OK'' else ''NG'' end v', false, false, '')))[1]::text end
 union all select '10. 1 つの Business Profile の店は 1 つの店だけ（索引 gr_bp_loc_location）',
   case when to_regclass('public.gr_bp_loc_location') is not null then 'OK' else 'NG（② をもう一度）' end
+union all select '11. 消された口コミは 2 回続けて無いときだけ消す（gone_at の欄・重なった取り込みの守り）',
+  case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'gr_reviews' and column_name = 'gone_at')
+        and exists (select 1 from f where proname = 'gr_reviews_prune' and pg_get_functiondef(f.oid) like '%started%') then 'OK' else 'NG（② をもう一度）' end
 union all select '（参考）Business Profile のつなぎ',
   case when to_regclass('public.gr_bp') is null then '—'
     else (xpath('/table/row/v/text()', query_to_xml('select status v from public.gr_bp where id = 1', false, false, '')))[1]::text end
