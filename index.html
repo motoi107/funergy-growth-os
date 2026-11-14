@@ -6158,6 +6158,8 @@ const NAV_ITEMS = [
   {id:'inventory',   label:'棚卸し',   icon:'ti-box',              roles:['ceo','gm','office','chef','am','sl']},
   /* v1087: 「発注」（id:'order'）は廃止（Moto 10/16 ④）。古い行き先は NAV_RETIRED で棚卸しへ */
   {id:'tasks',       label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl','office_crew','chef']},
+  /* v1156：DM・グループ・申請のチャット（UI案69 の 3A：全スタッフ）。G1（crew）も開ける。だれが読める・書けるかはサーバーが決める。店のタブレットは使えない */
+  {id:'chat',        label:'DM・チャット', icon:'ti-messages',   roles:['ceo','gm','office','am','sl','crew','office_crew','chef']},
   {id:'lala',        label:'LaLa オープン準備', icon:'ti-sparkles',      roles:['ceo','gm','office','am','sl','chef','office_crew']},
   {id:'biz_guide',   label:'業務ガイド',    icon:'ti-book-2',           roles:['ceo','gm','office','am','sl','office_crew']},
   {id:'required',    label:'必須チェック',    icon:'ti-alert-circle',     roles:['ceo','gm','office','am','sl','chef']},
@@ -6214,7 +6216,7 @@ const MENU_GROUPS = [
     /* v1084: 会議は中間レビューの右隣・仕入れは原価率(FC)のあった位置（原価率(FC)は廃止） */
     children:['budget','mid_review','meeting','labor','purchase','kpi_master']},
   {id:'g_tasks', label:'ワークセンター', icon:'ti-layout-kanban', roles:['ceo','gm','office','am','sl'],
-    children:['tasks','lala']},
+    children:['tasks','chat','lala']},   /* v1156 */
   {id:'g_hr', label:'人材管理', icon:'ti-users', roles:['ceo','gm','office','am','sl'],
     /* v891: mileage を追加。NAV_ITEMS の roles には全役職が書いてあったのに、
       children に載せているのが ACCT_GROUPS だけだったため、経理以外の誰の画面にも
@@ -6252,12 +6254,14 @@ const OFFICE_GROUPS = [
     children:['mid_review']},   /* v1066 */
   {id:'go_meeting', label:'会議', icon:'ti-presentation', roles:['ceo','gm'],
     children:['meeting']},   /* v1084: 中間レビューの右隣（中間レビューと同じ階層） */
+  {id:'go_chat', label:'チャット', icon:'ti-messages', roles:['ceo','gm','office'],
+    children:['chat']},   /* v1156 */
   {id:'go_set', label:'設定', icon:'ti-settings', roles:['ceo','gm','office'],
     children:['settings','diag_center','profile']},   /* v1137 */
 ]
 /* 経理(office)専用：キッチン側を含まない */
 const ACCT_GROUPS = [
-  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications','tasks','biz_guide']},
+  {id:'ga_home', label:'本部', icon:'ti-building-skyscraper', children:['office_mgr','notifications','tasks','chat','biz_guide']},   /* v1156: chat */
   {id:'ga_acct', label:'経理 請求・仕訳', icon:'ti-calculator', children:['invoice','acct_review','acct_export','monthly','purchase_detail','vendor_master','ingredient_master']},
   /* v1084: 会議は予実管理の中にあったので予実管理の右隣（経理は中間レビューを見ない）・仕入れは原価率(FC)の位置 */
   {id:'ga_budget', label:'経理 予実・労務', icon:'ti-chart-bar', children:['budget','meeting','labor','purchase','kpi_master','tip']},
@@ -6287,7 +6291,7 @@ const CHEF_GROUPS = [
   {id:'gc_budget', label:'予実', icon:'ti-chart-bar',
     children:['budget','mid_review','meeting','labor','purchase','kpi_master']},   /* v1072: 中間レビュー（Head Chef・Corporate Chef） / v1084: 会議・仕入れ */
   {id:'gc_tasks', label:'ワークセンター', icon:'ti-layout-kanban',
-    children:['tasks','lala']},
+    children:['tasks','chat','lala']},   /* v1156 */
   {id:'gc_food', label:'食材管理', icon:'ti-tools-kitchen-2',
     children:['menu','recipe','ingredient_master','ing_transfer','vendor_master',
               'inventory','purchase_detail','invoice']},   /* v1084: 日次食材差異・備品発注は廃止 / v1087: 発注も廃止 */
@@ -6307,6 +6311,7 @@ const CREW_GROUPS = [
   {id:'g_skill', label:'スキル', icon:'ti-stairs-up', children:['skill','ojtmap','totoya_docs']},
   {id:'g_tip', label:'チップ', icon:'ti-coin', children:['tiprate']},
   {id:'g_store', label:'店舗オペレーション', icon:'ti-building-store', children:['store_cmd']},
+  {id:'g_chat', label:'チャット', icon:'ti-messages', children:['chat']},   /* v1156（3A：G1 も DM・グループ） */
 ];
 /* 店舗共有アカウント（タブレット等）: 店舗オペレーション中心の絞ったメニュー */
 const STORE_GROUPS = [
@@ -9161,7 +9166,8 @@ var NAV_LABEL_EN = {
   '本部':'HQ','経理':'Accounting','店舗管理':'Store Mgmt','シフト':'Shift','スキル':'Skills','チップ':'Tips',
   '休暇承認':'Vacation Approval',
   '従業員割引':'Employee Discount',   /* v1028 */
-  '会議':'Meeting','仕入れ':'Purchases','経理センター':'Accounting Center'   /* v1084 */
+  '会議':'Meeting','仕入れ':'Purchases','経理センター':'Accounting Center',   /* v1084 */
+  'DM・チャット':'Chat','チャット':'Chat'   /* v1156 */
 };
 function navLabelEn(l){ return (curLang==='en' && NAV_LABEL_EN[l]!=null) ? NAV_LABEL_EN[l] : l; }
 /* 従業員マスターを閲覧・編集できる個人（役職ではなく個人名・名で判定） */
@@ -20890,6 +20896,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
+  if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -20912,6 +20919,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   window._pinCache = null; _secAuthAfter = null;   /* v1067: PIN 一覧の写しと、認証のあとに続ける操作も消す */
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
+  if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -21113,6 +21121,7 @@ function initApp() {
   curGroup = groupOfPage(curPage).id;
   renderPage(curPage);
   try{ setTimeout(function(){ if(typeof wrPing==='function') wrPing(); }, 2500); }catch(e){}   /* v1131：申請を使い始めたか（前の画面の案内に使う） */
+  try{ setTimeout(function(){ if(typeof chatStart==='function') chatStart(); }, 3000); }catch(e){}   /* v1156：チャットの未読の数と合図（店のタブレットでは動かない） */
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
@@ -21134,6 +21143,7 @@ function _groupColor(id){ return _GROUP_COLOR[id] || 'var(--accent)'; }
 /* v1084: ナビの件数バッジ（承認・休暇・経理レビュー・差し戻し）。経理レビューは 1 ページだけのタブになったので、
    そのときはタブ（グループ）のボタンに出す（前は食材管理の中の小タブに出ていた）。 */
 function navBadgeCount(pid, memo){
+  if (pid==='chat') return (typeof chatUnread==='function') ? chatUnread() : 0;   /* v1156：チャットの未読 */
   if (pid==='approval') return ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq).length;   /* v1155：段階 2 の申請はワークセンターで数える */
   if (pid==='vacation') return getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   if (pid==='acct_review' || pid==='invoice') {
@@ -21253,7 +21263,7 @@ var OFFICE_OK_PAGES = ['lunch_challenge','crew_handbook','biz_guide','office_mgr
   /* v884: 経理センターと紛失届。ここに載せ忘れると、オフィス表示では
      switch に到達する前に Office管理へ差し替えられ、何を押しても
      ダッシュボードが出続ける。新しいページを足したら必ずここにも足すこと。 */
-  'acct_center','lost_receipt','expense','diag_center'];   /* v809-811 */   /* v767-768 */
+  'acct_center','lost_receipt','expense','diag_center','chat'];   /* v1156: chat */   /* v809-811 */   /* v767-768 */
 
 /* ============================================================
    ROUTER
@@ -22920,6 +22930,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
   /* v864: シフト作成のときだけ .main の 900px 制限を外す。他画面には影響しない。 */
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
+  try { document.body.classList.toggle('chat-wide', page === 'chat' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'chat')); } catch (e) { }   /* v1156 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
   try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
@@ -22982,6 +22993,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_RENDER==='function')return window.FUNERGY_WE
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
     case 'tasks':        el.innerHTML = renderWorkCenter(); break;
+    case 'chat':         el.innerHTML = (typeof renderChatPage==='function') ? renderChatPage() : ''; break;   /* v1156 */
     case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
     case 'cc_plan':      el.innerHTML = renderCcPlan(); break;   /* v767 */
@@ -23056,6 +23068,7 @@ case 'acct_center':
   /* v864: シフト作成のときだけ .main の 900px 制限を外す。他画面には影響しない。 */
   try { document.body.classList.toggle('shift-wide', page === 'shift_admin'); } catch (e) { }
   try { document.body.classList.toggle('mr-wide', page === 'mid_review'); } catch (e) { }   /* v1066 */
+  try { document.body.classList.toggle('chat-wide', page === 'chat' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'chat')); } catch (e) { }   /* v1156 */
   try { document.body.classList.toggle('mn-wide', page === 'menu' && !(window._mn && window._mn.tab === 'month')); } catch (e) { }   /* v1126（UI案65） */
   try { document.body.classList.toggle('ilk-wide', page === 'ingredient_master' && window._ingTab === 'link'); } catch (e) { }   /* v1128（UI案66） */
   /* v1065: 個別評価で打ちかけの文字は、描き直す前に保存する */
@@ -23118,6 +23131,7 @@ case 'acct_center':
     case 'inventory':    el.innerHTML = renderInventory(); break;
     case 'dailyops':     el.innerHTML = renderDailyOps(); break;
     case 'tasks':        el.innerHTML = renderWorkCenter(); break;
+    case 'chat':         el.innerHTML = (typeof renderChatPage==='function') ? renderChatPage() : ''; break;   /* v1156 */
     case 'biz_guide':    el.innerHTML = renderBizGuide(); break;
     case 'required':     el.innerHTML = renderRequired(); break;
     case 'cc_plan':      el.innerHTML = renderCcPlan(); break;   /* v767 */
@@ -45547,7 +45561,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1155';
+const APP_VERSION = '1156';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -95395,10 +95409,11 @@ function renderWorkCenter(){
   if (workTab==='announce' && !canAnn) workTab='today';
   if (workTab==='error' && !canErr) workTab='today';
   if (workTab==='mgmt' || workTab==='requests' || workTab==='tasks') workTab='today';   /* v1084: 管理統括・対応依頼は廃止 / v1088: タスクも廃止（UI案52 5A） */
-  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">申請・承認・エラー・アナウンスの作業ハブ</div></div></div>
+  var bar = `<div class="section-header"><div><div class="section-title"><i class="ti ti-layout-dashboard" style="color:var(--accent)"></i> ワークセンター</div><div class="section-sub">申請・承認・チャット・エラー・アナウンスの作業ハブ</div></div></div>
   <div class="phase-tabs" style="margin-bottom:10px">
     <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
     <div class="phase-tab${workTab==='wr'?' active':''}" onclick="setWorkTab('wr')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> ${t('申請','Requests')}${(typeof wrTabBadge==='function')?wrTabBadge():''}</div>
+    <div class="phase-tab${workTab==='chat'?' active':''}" onclick="setWorkTab('chat')"><i class="ti ti-messages" style="font-size:12px"></i> ${t('DM・チャット','Chat')}${(typeof chatTabBadge==='function')?chatTabBadge():''}</div>
     <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
     ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
@@ -95406,6 +95421,7 @@ function renderWorkCenter(){
   </div>`;
   if (workTab==='bot' && botCanView()) return bar + renderBotCenter();
   if (workTab==='wr') return bar + ((typeof renderWrTab==='function') ? renderWrTab() : '');   /* v1131：申請（UI案68） */
+  if (workTab==='chat') return bar + ((typeof chatWorkTab==='function') ? chatWorkTab() : '');   /* v1156：DM・チャット（UI案69） */
   if (workTab==='approval') return bar + renderApproval();
   if (workTab==='error')    return bar + renderErrorCenter(true);
   if (workTab==='announce') return bar + renderAnnounce();
@@ -95413,6 +95429,7 @@ function renderWorkCenter(){
   var h = bar;
   h += `<div class="kpi-grid" style="margin-bottom:12px">
     ${(typeof wrTodayTile==='function')?wrTodayTile():''}
+    ${(typeof chatTodayTile==='function')?chatTodayTile():''}
     <div style="cursor:pointer" onclick="setWorkTab('approval')">${kpi('承認待ち', pend.length+'件', pend.length?'タップで処理へ':'すべて処理済み', pend.length?'var(--red)':'var(--green)')}</div>
     ${canErr?`<div style="cursor:pointer" onclick="setWorkTab('error')">${kpi('エラー検知', issues.length+'件', hi?('重要 '+hi+'件'):'重要なし', hi?'var(--red)':issues.length?'var(--yellow)':'var(--green)')}</div>`:''}
   </div>`;
@@ -106403,6 +106420,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     h += '<details style="margin-top:10px"' + ((r.events || []).length <= 6 ? ' open' : '') + '><summary style="font-size:12px;font-weight:700;cursor:pointer">' + T('履歴','History') + '（' + (r.events || []).length + '）</summary><div style="font-size:11px;line-height:1.7;margin-top:4px">'
       + (r.events || []).map(function(e){ var a = ACT_L[e.action] || [e.action, e.action]; return '<div><span style="color:var(--muted)">' + esc(hstTime(e.at)) + '</span> ' + esc(e.by || T('記録なし','no record')) + ' ' + T('が','') + esc(T(a[0], a[1])) + (e.version > 1 ? '（' + T('版 ','v') + e.version + '）' : '') + (e.note ? '：' + esc(e.note) : '') + '</div>'; }).join('')
       + '</div></details>';
+    if (typeof W.chatCaseButton === 'function') h += W.chatCaseButton(r);   /* v1156：申請のチャット（4A） */
     h += askHtml(r) + buttons(r);
     el.innerHTML = h;
   }
@@ -108062,6 +108080,815 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   });
 })();
 /* ==== FUNERGY_WR end ==== */
+</script>
+<script>
+/* ==== FUNERGY_CHAT（v1156）：DM・グループ・申請の案件のチャット（UI案69・Moto さん 11/03「全部 A」・11/13「大きい作業も始めてください」）====
+   仕様：docs/CHAT_V1156_JA.md。
+   ・本文・参加者・既読はサーバー（関数 work-requests の chat_*・表 chat_*）にだけ置く。この端末（共通データ・localStorage・IndexedDB）には書かない。
+     書きかけ・送れなかったメッセージはこのタブのメモリだけ（ログアウト・読み込み直しで消える）。
+   ・入り方は PIN のログインの印（window._hwSession）だけ。だれが読める・書けるかはサーバーが決める。店のタブレット（店舗の PIN）は使えない。
+   ・3A だれでも DM・グループを作れる／4A 申請のチャットは申請した人・決める人・確かめる人が自動で入る／5A 24 時間まで直せる・消せる・GM・CEO は見えなくできる／
+     7A 知らせはアプリの中だけ（数・自分宛ての @）。添付（6A）は次の段階。
+   ・「変わった」の合図：表 chat_sig（本人だけが知る印）を Realtime で見る。つながらないときは 60 秒ごと、開いている会話は 20 秒ごと、5 分ごとに全部読み直す。
+   ・送る：送信ごとに鍵（client_key）を作る。送れなかったら同じ鍵で送り直す（サーバーで二重にならない）。
+   ・Enter は改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送る。日本語の変換中の Enter では送らない。 */
+(function(){
+  'use strict';
+  var W = window, D = document;
+  var FN = '/functions/v1/work-requests';
+  var LOOKBACK = 200, FULL_MS = 300000, POLL_OFF = 60000, POLL_OPEN = 20000, BODY_MAX = 2000, GROUP_MAX = 49;
+  var KIND = { mileage:['ガソリン代','Mileage'], reimburse:['建て替え経費','Reimbursement'], expense_pre:['事前経費','Pre-approval'],
+    skill:['スキルレベル','Skill level'], cs:['Career Score','Career Score'], tiprate:['Tip Rate','Tip Rate'], budget:['予算','Budget'], leave:['休暇','Leave'],
+    shift:['シフト変更','Shift change'], hire:['採用','Hiring'], resign:['退職','Offboarding'], promo:['Leadership','Leadership'], tip_self:['Tip Rate（本人）','Tip Rate (own)'],
+    skill_self:['スキル（本人）','Skill (own)'], prep:['プレップ認定','Prep certification'], plan:['月間行動計画','Monthly action plan'] };
+  var ERR = {
+    signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
+    signin_changed:['途中で別の人のログインに変わったので止めました（送っていません）','Stopped because the sign-in changed (nothing was sent)'],
+    unauthorized:['PIN のログインを確かめられませんでした（期限切れなど）。ログアウトしてログインし直してください','The PIN login could not be checked (it may have expired). Log out and log in again'],
+    forbidden:['この操作はできません（サーバーで確かめました）','You cannot do this (checked by the server)'],
+    not_found:['この会話は見られません（参加者でない・外された・申請を見られなくなった）','You cannot see this conversation (not a member, removed, or you can no longer see the request)'],
+    not_member:['@ を付けた人がこの会話にいません。参加者に加えてから送ってください','Someone you @-mentioned is not in this conversation. Add them first'],
+    too_late:['送ってから 24 時間を過ぎたので直せません（消すことはできます）','More than 24 hours have passed, so it cannot be edited (you can still delete it)'],
+    too_many:['参加者は 50 人までです','A conversation can have up to 50 members'],
+    bad_value:['入力を確かめてください（空・長すぎ・在籍していない人）','Check the input (empty, too long, or someone who has left)'],
+    conflict:['ほかの人が先に変えました。最新を読み込みました','Someone changed it first. The latest is loaded'],
+    reason_required:['理由を書いてください','Write a reason'],
+    chat_missing:['チャットのサーバー（SQL）がまだ入っていません。Moto さんに知らせてください','The chat database is not set up yet. Tell Moto'],
+    unknown_action:['チャットのサーバー（関数 work-requests）が前の版です。v1156 の 1 ファイルにしてください（Moto さんに知らせてください）','The chat server (work-requests) is an earlier version. It needs the v1156 single file (tell Moto)'],
+    pin_check_missing:['申請・チャットのサーバー（work-requests）が PIN のログインに対応していません（Moto さんに知らせてください）','The work-requests server does not accept the PIN login (tell Moto)'],
+    network:['チャットのサーバーにつながりません（通信を確かめてください）','Cannot reach the chat server (check the network)']
+  };
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function errText(code, status){
+    if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
+    var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
+    return T('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (status ? '（HTTP ' + status + '）' : ''));
+  }
+  function mk(code, status){ var e = new Error(errText(code, status)); e.code = code; e.status = status || 0; return e; }
+  function toast(m, k){ try{ if (typeof showToast === 'function') showToast(m, k || 'info'); }catch(e){} }
+  function newKey(){
+    var a = new Uint8Array(12);
+    try{ (W.crypto || {}).getRandomValues(a); }catch(e){ for (var i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); }
+    return 'ch-' + Date.now().toString(36) + '-' + Array.prototype.map.call(a, function(b){ return b.toString(16).padStart(2, '0'); }).join('');
+  }
+  function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
+  function canUse(){ try{ return !curStoreLogin && !!curRole && !!pinTok(); }catch(e){ return false; } }
+
+  function fresh(gen){ return { tok:null, gen:gen || 0, me:'', role:'', token:'', st:'', err:'', errCode:'',
+    threads:{}, cursor:0, unread:0, mention:0, lastSync:0, lastFull:0, syncing:false, again:'', painted:'',
+    seg:'all', q:'', open:'', paneFor:null, msgs:{}, out:{}, drafts:{}, ment:{}, people:null, peopleSt:'', at:null, atSt:'',
+    rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null }; }
+  var C = fresh(0);
+  W._chatState = function(){ return C; };
+
+  /* サーバー（関数 work-requests）。答えが来る前に別の人のログインに変わったら（世代 gen が変わったら）使わない */
+  async function api(payload){
+    var tok = pinTok();
+    if (!tok) throw mk('signin');
+    if (C.tok && tok !== C.tok) throw mk('signin_changed');
+    var r, j = null;
+    try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
+    catch(e) { throw mk('network'); }
+    try { j = await r.json(); } catch(e) { j = null; }
+    if (r.status === 404 && !(j && j.error)) throw mk('network', 404);
+    if (!r.ok) throw mk((j && typeof j.error === 'string') ? j.error : '', r.status);
+    return j;
+  }
+  W.chatAPI = api;
+
+  /* ---------------------------------------------------------------- 読む（合図・定期） */
+  W.chatStart = function(){
+    if (!canUse()) return;
+    var tok = pinTok();
+    if (C.tok && C.tok !== tok) W.chatReset();
+    if (C.timer || C.st === 'missing' || C.st === 'old') return;
+    C.tok = tok; if (!C.st) C.st = 'loading';
+    try{ C.timer = setInterval(tick, 15000); }catch(e){}
+    try{ D.addEventListener('visibilitychange', onVis); }catch(e){}
+    syncNow(true);
+  };
+  W.chatReset = function(){
+    try{ if (C.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(C.ch); }catch(e){}
+    try{ if (C.timer) clearInterval(C.timer); }catch(e){}
+    try{ if (C.sigT) clearTimeout(C.sigT); }catch(e){}
+    try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    C = fresh(C.gen + 1);
+  };
+  function onVis(){ if (!D.hidden) { syncNow(false); markRead(); } }
+  function tick(){
+    if (!canUse() || D.hidden || C.st === 'missing' || C.st === 'old') return;
+    var now = Date.now();
+    if (now - C.lastFull >= (visible() ? FULL_MS : FULL_MS * 3)) { syncNow(true); return; }
+    if ((!C.rt && now - C.lastSync >= POLL_OFF) || (visible() && C.open && now - C.lastSync >= POLL_OPEN)) syncNow(false);
+  }
+  function sigSoon(){ if (C.sigT) return; C.sigT = setTimeout(function(){ C.sigT = null; syncNow(false); }, 300); }
+  /* 変わった会話だけ読む（前の番号から 200 さかのぼる：番号を取った順と保存し終えた順が前後しても拾う）。full は全部（5 分ごと・開いたとき） */
+  async function syncNow(full){
+    if (!canUse() || C.st === 'missing' || C.st === 'old') return;
+    if (C.syncing) { if (full || !C.again) C.again = full ? 'full' : 'delta'; return; }
+    C.syncing = true;
+    var g = C.gen, all = full || !C.lastFull, seen = all ? {} : null, done = false;
+    try {
+      var since = all ? 0 : Math.max(0, C.cursor - LOOKBACK);
+      for (var i = 0; i < 6; i++) {
+        var j = await api({ action:'chat_sync', since:since, limit:200 });
+        if (g !== C.gen) return;
+        apply(j, seen);
+        if (!j.more) { done = true; break; }
+        since = Number(j.cursor) || since;
+      }
+      if (all && done) Object.keys(C.threads).forEach(function(id){ if (!seen[id]) { delete C.threads[id]; if (C.open === id) closeOpen(errText('not_found')); } });
+      if (all) C.lastFull = Date.now();
+      C.lastSync = Date.now(); C.st = 'ok'; C.err = ''; C.errCode = '';
+    } catch(e) {
+      if (g !== C.gen) return;
+      if (e.code === 'chat_missing') C.st = 'missing';
+      else if (e.code === 'unknown_action') C.st = 'old';
+      else { if (C.st !== 'ok') C.st = 'err'; C.err = e.message; C.errCode = e.code || ''; }
+      C.lastSync = Date.now();
+    } finally {
+      if (g === C.gen) C.syncing = false;
+    }
+    if (g !== C.gen) return;
+    subscribe(); paintAll(); badges();
+    if (C.seg === 'at' && visible()) loadAt();
+    if (C.again) { var a = C.again; C.again = ''; syncNow(a === 'full'); }
+  }
+  function apply(j, seen){
+    var first = !C.lastFull;
+    C.me = j.me || C.me; C.role = j.role || C.role;
+    (j.threads || []).forEach(function(r){
+      var old = C.threads[r.id]; C.threads[r.id] = r; if (seen) seen[r.id] = 1;
+      if (!first && old && (Number(r.mention) || 0) > (Number(old.mention) || 0) && !(C.open === r.id && visible() && !D.hidden)) toast('@ ' + T('あなた宛て：','To you: ') + titleOf(r));
+      if (C.open === r.id && old && old.chg !== r.chg) loadMsgs(r.id, 'latest');
+    });
+    (j.gone || []).forEach(function(id){ delete C.threads[id]; if (seen) seen[id] = 1; if (C.open === id) closeOpen(errText('not_found')); });
+    C.cursor = Math.max(C.cursor, Number(j.cursor) || 0);
+    C.unread = Number(j.unread) || 0; C.mention = Number(j.mention) || 0;
+    if (j.token && j.token !== C.token) { unsubscribe(); C.token = j.token; }
+  }
+  /* 合図（Realtime）：本人の印の行が変わったら読み直す。つながらなければ 60 秒ごと（tick） */
+  function subscribe(){
+    if (C.ch || !C.token) return;
+    try {
+      if (!(W.supabase && W.supabase.createClient) || typeof _rtClient === 'undefined') return;
+      if (!_rtClient) _rtClient = W.supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+      var g = C.gen;
+      C.ch = _rtClient.channel('rt-chat-sig-' + (++C.chSeq))
+        .on('postgres_changes', { event:'*', schema:'public', table:'chat_sig', filter:'token=eq.' + C.token }, function(){ if (g === C.gen) sigSoon(); })
+        .subscribe(function(status){ if (g !== C.gen) return; var was = C.rt; C.rt = status === 'SUBSCRIBED'; if (C.rt && !was) sigSoon(); });
+    } catch(e) { C.ch = null; }
+  }
+  function unsubscribe(){ try{ if (C.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(C.ch); }catch(e){} C.ch = null; C.rt = false; }
+
+  /* ---------------------------------------------------------------- 会話 */
+  function newMsgs(){ return { list:[], older:false, members:[], can:{}, st:'', err:'', busy:false, again:false, once:false, reading:0 }; }
+  function closeOpen(msg){ if (!C.open) return; C.open = ''; if (msg && visible()) toast(msg, 'warn'); }
+  function mergeMsgs(m, arr){
+    var by = {}; m.list.forEach(function(x){ by[x.seq] = x; });
+    arr.forEach(function(x){ if (x && x.seq != null) by[x.seq] = x; });
+    m.list = Object.keys(by).map(function(k){ return by[k]; }).sort(function(a, b){ return a.seq - b.seq; });
+  }
+  function dropSent(tid){
+    var m = C.msgs[tid], o = C.out[tid]; if (!m || !o || !o.length) return;
+    var keys = {}; m.list.forEach(function(x){ if (x.mine && x.key) keys[x.key] = 1; });
+    C.out[tid] = o.filter(function(x){ return !keys[x.key]; });   /* 答えが届かなかったが、サーバーには入っていたもの */
+  }
+  function loadMsgs(tid, mode){
+    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs());
+    if (m.busy) { if (mode !== 'older') m.again = true; return; }
+    m.busy = true; if (!m.list.length) m.st = 'loading';
+    var g = C.gen, p = { action:'chat_messages', thread:tid, limit:100 };
+    if (mode === 'older' && m.list.length) p.before = m.list[0].seq;
+    api(p).then(function(j){
+      if (g !== C.gen) return;
+      m.members = j.members || []; m.can = { add:!!j.can_add, rename:!!j.can_rename, leave:!!j.can_leave, remove:!!j.can_remove };
+      if (j.thread) C.threads[tid] = Object.assign({}, C.threads[tid] || {}, j.thread);
+      mergeMsgs(m, j.messages || []); dropSent(tid);
+      if (mode === 'older' || !m.once) m.older = !!j.older;
+      m.once = true; m.st = 'ok'; m.err = '';
+    }, function(e){
+      if (g !== C.gen) return;
+      if (e.code === 'not_found') { delete C.threads[tid]; delete C.msgs[tid]; if (C.open === tid) closeOpen(errText('not_found')); m.busy = false; paintAll(); return; }
+      m.st = m.list.length ? 'ok' : 'err'; m.err = e.message;
+    }).then(function(){
+      if (g !== C.gen || !C.msgs[tid]) return;
+      m.busy = false;
+      if (C.open === tid) { paintPane(mode === 'older' ? 'older' : (m.list.length && !m.painted ? 'bottom' : 'keep')); m.painted = true; }
+      paintList(); markRead();
+      if (m.again) { m.again = false; loadMsgs(tid, 'latest'); }
+    });
+  }
+  /* 読んだ（開いていて見えている会話だけ。番号は前へだけ） */
+  function markRead(){
+    var tid = C.open; if (!tid || D.hidden || !visible()) return;
+    var r = C.threads[tid], m = C.msgs[tid]; if (!r || !m || !m.list.length) return;
+    var top = m.list[m.list.length - 1].seq;
+    if (top <= (Number(r.last_read) || 0) || m.reading >= top) return;
+    m.reading = top;
+    var g = C.gen;
+    api({ action:'chat_read', thread:tid, seq:top }).then(function(j){
+      if (g !== C.gen) return;
+      var rr = C.threads[tid]; if (!rr) return;
+      rr.last_read = Math.max(Number(rr.last_read) || 0, Number(j.last_read) || 0);
+      if (rr.last_read >= (Number(rr.last_seq) || 0)) { C.unread = Math.max(0, C.unread - (Number(rr.unread) || 0)); C.mention = Math.max(0, C.mention - (Number(rr.mention) || 0)); rr.unread = 0; rr.mention = 0; }
+      paintList(); badges();
+    }, function(){ if (g === C.gen) m.reading = 0; });
+  }
+
+  /* ---------------------------------------------------------------- 開く・行き先 */
+  function visible(){ return !!D.getElementById('chat-root'); }
+  W.chatGo = function(tid){
+    if (tid) { C.open = tid; C.msgs[tid] = C.msgs[tid] || newMsgs(); }
+    var inWc = false; try { inWc = curPage === 'tasks'; } catch(e){}
+    try { if (inWc) { workTab = 'chat'; renderPage('tasks'); } else go('chat'); } catch(e){}
+    if (tid) loadMsgs(tid, 'latest');
+  };
+  W.chatOpen = function(tid){
+    if (!C.threads[tid]) return;
+    C.open = tid; closePop();
+    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); m.painted = !!m.list.length;
+    paintAll(); scrollBottom();
+    loadMsgs(tid, 'latest');
+  };
+  W.chatBack = function(){ C.open = ''; closePop(); paintAll(); };
+  W.chatSeg = function(s){ if (['all','dm','group','case','at'].indexOf(s) < 0) return; C.seg = s; paintSide(); if (s === 'at') loadAt(); };
+  W.chatSearch = function(v){ C.q = String(v || '').slice(0, 60); paintList(); };
+  W.chatOlder = function(){ if (C.open) loadMsgs(C.open, 'older'); };
+  function loadAt(){
+    var g = C.gen; C.atSt = C.at ? 'ok' : 'loading';
+    api({ action:'chat_mentions', limit:50 }).then(function(j){ if (g !== C.gen) return; C.at = j.items || []; C.atSt = 'ok'; paintList(); },
+      function(e){ if (g !== C.gen) return; C.atSt = 'err'; C.atErr = e.message; paintList(); });
+  }
+  W.chatOpenAt = function(tid){ if (C.threads[tid]) { W.chatOpen(tid); } else { syncNow(false); toast(T('会話を読み込んでいます。もう一度押してください','Loading the conversation. Tap again')); } };
+
+  /* ---------------------------------------------------------------- 送る */
+  function mentionsFor(tid, body){
+    var sel = C.ment[tid] || {}, o = [];
+    Object.keys(sel).forEach(function(emp){ if (body.indexOf('@' + sel[emp]) >= 0 && o.indexOf(emp) < 0) o.push(emp); });
+    return o.slice(0, 50);
+  }
+  W.chatSend = function(){
+    var tid = C.open, ta = D.getElementById('chat-ta'); if (!tid || !ta) return;
+    var body = String(ta.value || '');
+    if (!body.trim()) return;
+    if (body.trim().length > BODY_MAX) { toast(T('2,000 字までです（今 ','Up to 2,000 characters (now ') + body.trim().length + T(' 字）',')'), 'warn'); return; }
+    var o = { key:newKey(), body:body.trim(), mentions:mentionsFor(tid, body), st:'sending', err:'', code:'', at:new Date().toISOString() };
+    (C.out[tid] || (C.out[tid] = [])).push(o);
+    ta.value = ''; C.drafts[tid] = ''; C.ment[tid] = {}; grow(ta); closePop();
+    paintPane('bottom');
+    sendOut(tid, o);
+    try { ta.focus(); } catch(e){}
+  };
+  function sendOut(tid, o){
+    var g = C.gen; o.st = 'sending'; o.err = ''; o.code = '';
+    api({ action:'chat_send', thread:tid, body:o.body, mentions:o.mentions, client_key:o.key }).then(function(msg){
+      if (g !== C.gen) return;
+      var arr = C.out[tid] || [], i = arr.indexOf(o); if (i >= 0) arr.splice(i, 1);
+      var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); mergeMsgs(m, [msg]);
+      var r = C.threads[tid];
+      if (r) { r.last_seq = Math.max(Number(r.last_seq) || 0, msg.seq); r.last_read = Math.max(Number(r.last_read) || 0, msg.seq); r.last_at = msg.at;
+        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:String(msg.body || '').replace(/\s+/g, ' ').slice(0, 80), at:msg.at }; }
+      if (C.open === tid) paintPane('bottom'); paintList();
+    }, function(e){
+      if (g !== C.gen) return;
+      o.st = 'failed'; o.err = e.message; o.code = e.code || '';
+      if (C.open === tid) paintPane('keep');
+    });
+  }
+  W.chatRetry = function(tid, key){ var o = (C.out[tid] || []).find(function(x){ return x.key === key; }); if (o && o.st === 'failed') { sendOut(tid, o); paintPane('keep'); } };
+  W.chatDiscard = function(tid, key){
+    var arr = C.out[tid] || [], o = arr.find(function(x){ return x.key === key; }); if (!o || o.st !== 'failed') return;
+    arr.splice(arr.indexOf(o), 1);
+    var ta = D.getElementById('chat-ta');
+    if (ta && C.open === tid && !String(ta.value || '').trim()) { ta.value = o.body; C.drafts[tid] = o.body; grow(ta); }   /* 入力欄が空なら戻す（直して送れるように） */
+    paintPane('keep');
+  };
+
+  /* ---------------------------------------------------------------- 入力欄（改行・送信・@） */
+  function grow(ta){ try{ ta.style.height = 'auto'; ta.style.height = Math.min(150, Math.max(40, ta.scrollHeight)) + 'px'; }catch(e){} }
+  W.chatKey = function(ev){
+    if (!ev) return;
+    if (ev.isComposing || ev.keyCode === 229) return;   /* 日本語の変換中は何もしない（Enter で送らない） */
+    var p = C.pop;
+    var pe = D.getElementById('chat-pop');
+    if (p && p.items && p.items.length && pe && pe.style.display !== 'none') {
+      if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') { ev.preventDefault(); p.sel = (p.sel + (ev.key === 'ArrowDown' ? 1 : p.items.length - 1)) % p.items.length; drawPop(); return; }
+      if ((ev.key === 'Enter' && !ev.ctrlKey && !ev.metaKey) || ev.key === 'Tab') { ev.preventDefault(); W.chatPick(p.sel); return; }
+      if (ev.key === 'Escape') { ev.preventDefault(); closePop(); return; }
+    }
+    if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); W.chatSend(); }
+  };
+  W.chatInput = function(ta){
+    if (!ta || !C.open) return;
+    C.drafts[C.open] = ta.value; grow(ta);
+    var pos = typeof ta.selectionStart === 'number' ? ta.selectionStart : ta.value.length, before = ta.value.slice(0, pos);
+    var mm = /(^|[\s　(（「])@([^\s　@]{0,20})$/.exec(before);
+    if (!mm) { closePop(); return; }
+    C.pop = { q:mm[2], start:pos - mm[2].length - 1, end:pos, sel:0, items:[] };
+    var r = C.threads[C.open];
+    if (r && r.kind !== 'dm') ensurePeople();
+    candidates(); drawPop();
+  };
+  function candidates(){
+    var p = C.pop; if (!p) return;
+    var r = C.threads[C.open], m = C.msgs[C.open] || newMsgs(), q = p.q.toLowerCase(), o = [], inM = {};
+    m.members.forEach(function(x){ inM[x.emp] = 1; if (x.emp !== C.me && (!q || String(x.name || '').toLowerCase().indexOf(q) >= 0)) o.push({ emp:x.emp, name:x.name, member:true }); });
+    if (r && r.kind !== 'dm' && Array.isArray(C.people)) C.people.forEach(function(x){ if (!inM[x.emp] && x.emp !== C.me && (!q || String(x.name || '').toLowerCase().indexOf(q) >= 0)) o.push({ emp:x.emp, name:x.name, member:false, store:x.store }); });
+    p.items = o.slice(0, 8); if (p.sel >= p.items.length) p.sel = 0;
+  }
+  function drawPop(){
+    var el = D.getElementById('chat-pop'); if (!el) return;
+    var p = C.pop;
+    if (!p || !p.items.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.innerHTML = p.items.map(function(x, i){ return '<div class="chat-pop-i' + (i === p.sel ? ' on' : '') + '" onmousedown="event.preventDefault();chatPick(' + i + ')" onclick="chatPick(' + i + ')"><i class="ti ti-at"></i>' + esc(x.name) + (x.member ? '' : '<small>' + esc(T('この会話にいません','Not in this conversation')) + '</small>') + '</div>'; }).join('');
+    el.style.display = 'block';
+  }
+  function closePop(){ C.pop = null; var el = D.getElementById('chat-pop'); if (el) { el.style.display = 'none'; el.innerHTML = ''; } }
+  /* 外れたら候補を隠すだけ（スマホで候補を押す前に消さない）。候補を押したときは C.pop で入れる */
+  W.chatBlur = function(){ setTimeout(function(){ var el = D.getElementById('chat-pop'), ta = D.getElementById('chat-ta'); if (el && !(ta && D.activeElement === ta)) el.style.display = 'none'; }, 250); };
+  function insertMention(tid, x, at){
+    var ta = D.getElementById('chat-ta'); if (!ta || C.open !== tid) return;
+    var v = String(ta.value || ''), ins = '@' + x.name + ' ';
+    if (at && v === at.val) { ta.value = v.slice(0, at.start) + ins + v.slice(at.end); try{ ta.selectionStart = ta.selectionEnd = at.start + ins.length; }catch(e){} }
+    else ta.value = v + (v && !/\s$/.test(v) ? ' ' : '') + ins;
+    (C.ment[tid] || (C.ment[tid] = {}))[x.emp] = x.name;
+    C.drafts[tid] = ta.value; grow(ta);
+    try { ta.focus(); } catch(e){}
+  }
+  W.chatPick = function(i){
+    var p = C.pop, tid = C.open; if (!p || !p.items[i] || !tid) return;
+    var x = p.items[i], ta = D.getElementById('chat-ta'), at = { start:p.start, end:p.end, val:ta ? ta.value : '' };
+    closePop();
+    if (x.member) { insertMention(tid, x, at); return; }
+    /* UI案69：いない人に @ → 「参加者に加えて、これまでの会話を見せますか？」 */
+    C.add = { tid:tid, x:x, at:at, busy:false, err:'' };
+    openModal('<div id="chat-add" style="width:100%"></div>'); drawAdd();
+  };
+  function drawAdd(){
+    var el = D.getElementById('chat-add'), a = C.add; if (!el || !a) return;
+    el.innerHTML = '<div class="modal-title">' + esc(a.x.name) + T(' さんはこの会話にいません',' is not in this conversation') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="font-size:13px;margin:6px 0 12px">' + T('参加者に加えて、これまでの会話を見せますか？','Add them to the conversation? Should they see the earlier messages?') + '</div>'
+      + (a.err ? '<div class="alert alert-danger" style="font-size:12px">' + esc(a.err) + '</div>' : '')
+      + '<div style="display:flex;flex-direction:column;gap:8px">'
+      + '<button class="btn btn-primary"' + (a.busy ? ' disabled' : '') + ' onclick="chatAddMention(true)">' + T('加えて、これまでの会話も見せる','Add, and show the earlier messages') + '</button>'
+      + '<button class="btn btn-secondary"' + (a.busy ? ' disabled' : '') + ' onclick="chatAddMention(false)">' + T('加えて、これからの会話だけ見せる','Add, show only new messages') + '</button>'
+      + '<button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる（@ を付けない）','Cancel (no @)') + '</button></div>';
+  }
+  W.chatAddMention = function(hist){
+    var a = C.add; if (!a || a.busy) return;
+    a.busy = true; a.err = ''; drawAdd();
+    var g = C.gen;
+    api({ action:'chat_add', thread:a.tid, members:[a.x.emp], history:!!hist }).then(function(){
+      if (g !== C.gen) return;
+      C.add = null; try{ closeModalDirect(); }catch(e){}
+      var m = C.msgs[a.tid]; if (m && !m.members.some(function(y){ return y.emp === a.x.emp; })) m.members.push({ emp:a.x.emp, name:a.x.name, auto:false, last_read:0 });
+      insertMention(a.tid, a.x, a.at);
+      toast(a.x.name + T(' さんを加えました',' was added'), 'success');
+      loadMsgs(a.tid, 'latest');
+    }, function(e){ if (g !== C.gen) return; a.busy = false; a.err = e.message; drawAdd(); });
+  };
+
+  /* ---------------------------------------------------------------- 直す・消す・見えなくする（5A） */
+  function findMsg(id){ var m = C.msgs[C.open]; return m ? m.list.find(function(x){ return x.id === id; }) : null; }
+  function nameOf(emp){
+    var m = C.msgs[C.open], x = m && m.members.find(function(y){ return y.emp === emp; });
+    if (x) return x.name;
+    var p = Array.isArray(C.people) ? C.people.find(function(y){ return y.emp === emp; }) : null;
+    return p ? p.name : '';
+  }
+  function msgDone(tid, msg){ var m = C.msgs[tid]; if (m && msg && msg.seq != null) mergeMsgs(m, [msg]); if (C.open === tid) paintPane('keep'); paintList(); }
+  W.chatEdit = function(id){
+    var x = findMsg(id); if (!x || !x.can_edit) return;
+    C.dlg = { kind:'edit', id:id, tid:C.open, busy:false, err:'' };
+    openModal('<div id="chat-dlg" style="width:100%"><div class="modal-title">' + T('メッセージを直す','Edit message') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('送ってから 24 時間まで直せます。「編集済み」と出ます。','You can edit for 24 hours after sending. It shows “edited”.') + '</div>'
+      + '<textarea id="chat-edit-ta" class="form-input" rows="5" maxlength="' + BODY_MAX + '" style="width:100%">' + esc(x.body || '') + '</textarea>'
+      + '<div id="chat-dlg-err"></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button>'
+      + '<button class="btn btn-primary" id="chat-dlg-ok" onclick="chatEditSave()">' + T('保存','Save') + '</button></div></div>');
+  };
+  function dlgRun(p, done){
+    var d = C.dlg; if (!d || d.busy) return;
+    d.busy = true; var b = D.getElementById('chat-dlg-ok'); if (b) b.disabled = true;
+    var g = C.gen;
+    api(p).then(function(msg){ if (g !== C.gen) return; C.dlg = null; try{ closeModalDirect(); }catch(e){} msgDone(d.tid, msg); if (done) done(msg); },
+      function(e){ if (g !== C.gen) return; d.busy = false; if (b) b.disabled = false; var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(e.message) + '</div>'; if (e.code === 'too_late' || e.code === 'conflict') loadMsgs(d.tid, 'latest'); });
+  }
+  W.chatEditSave = function(){
+    var d = C.dlg, ta = D.getElementById('chat-edit-ta'); if (!d || d.kind !== 'edit' || !ta) return;
+    var body = String(ta.value || '').trim(), x = findMsg(d.id);
+    if (!body) { var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(T('空にはできません（消すときは「消す」）','It cannot be empty (use Delete)')) + '</div>'; return; }
+    var keep = ((x && x.mentions) || []).filter(function(emp){ var n = nameOf(emp); return n && body.indexOf('@' + n) >= 0; });
+    dlgRun({ action:'chat_edit', id:d.id, body:body, mentions:keep });
+  };
+  W.chatDelete = function(id){
+    var x = findMsg(id); if (!x || !x.can_delete) return;
+    if (!confirm(T('このメッセージを消しますか？（「削除されました」と残ります。元に戻せません）','Delete this message? (“Deleted” stays. This cannot be undone)'))) return;
+    var tid = C.open, g = C.gen;
+    api({ action:'chat_delete', id:id }).then(function(msg){ if (g === C.gen) msgDone(tid, msg); }, function(e){ if (g === C.gen) toast(e.message, 'error'); });
+  };
+  W.chatHide = function(id){
+    var x = findMsg(id); if (!x || !x.can_hide || x.hidden) return;
+    C.dlg = { kind:'hide', id:id, tid:C.open, busy:false, err:'' };
+    openModal('<div id="chat-dlg" style="width:100%"><div class="modal-title">' + T('見えなくする（GM・CEO）','Hide (GM / CEO)') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="font-size:11.5px;color:var(--muted);margin-bottom:6px">' + T('参加者の画面には「見えなくなりました」と出ます。本文はサーバーに残り、あとで戻せます。','Members see “hidden”. The text stays on the server and can be restored.') + '</div>'
+      + '<input id="chat-hide-reason" class="form-input" maxlength="200" style="width:100%" placeholder="' + esc(T('理由（必須）','Reason (required)')) + '">'
+      + '<div id="chat-dlg-err"></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button>'
+      + '<button class="btn btn-danger" id="chat-dlg-ok" onclick="chatHideSave()">' + T('見えなくする','Hide') + '</button></div></div>');
+  };
+  W.chatHideSave = function(){
+    var d = C.dlg, el = D.getElementById('chat-hide-reason'); if (!d || d.kind !== 'hide' || !el) return;
+    var reason = String(el.value || '').trim();
+    if (!reason) { var e2 = D.getElementById('chat-dlg-err'); if (e2) e2.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(errText('reason_required')) + '</div>'; return; }
+    dlgRun({ action:'chat_hide', id:d.id, hide:true, reason:reason });
+  };
+  W.chatUnhide = function(id){
+    var x = findMsg(id); if (!x || !x.can_hide || !x.hidden) return;
+    if (!confirm(T('このメッセージを戻しますか？（参加者にまた見えます）','Restore this message? (members can see it again)'))) return;
+    var tid = C.open, g = C.gen;
+    api({ action:'chat_hide', id:id, hide:false }).then(function(msg){ if (g === C.gen) msgDone(tid, msg); }, function(e){ if (g === C.gen) toast(e.message, 'error'); });
+  };
+
+  /* ---------------------------------------------------------------- 新しい会話（3A：だれでも DM・グループ） */
+  function ensurePeople(){
+    if (C.people || C.peopleSt === 'loading') return;
+    C.peopleSt = 'loading'; var g = C.gen;
+    api({ action:'chat_people' }).then(function(j){ if (g !== C.gen) return; C.people = j.people || []; C.peopleSt = 'ok'; if (C.pop) { candidates(); drawPop(); } drawNewList(); drawMem(); },
+      function(e){ if (g !== C.gen) return; C.peopleSt = 'err'; C.peopleErr = e.message; drawNewList(); drawMem(); });
+  }
+  W.chatNew = function(kind){
+    C.dlg = { kind:'new', mode:kind === 'group' ? 'group' : 'dm', q:'', sel:{}, title:'', key:newKey(), busy:false, err:'' };
+    ensurePeople();
+    openModal('<div id="chat-new" style="width:100%"></div>'); drawNew();
+  };
+  function drawNew(){
+    var el = D.getElementById('chat-new'), d = C.dlg; if (!el || !d || d.kind !== 'new') return;
+    var n = Object.keys(d.sel).length;
+    el.innerHTML = '<div class="modal-title">' + T('新しい会話','New conversation') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div class="phase-tabs" style="margin-bottom:8px"><div class="phase-tab' + (d.mode === 'dm' ? ' active' : '') + '" onclick="chatNewMode(\'dm\')"><i class="ti ti-user"></i> DM</div>'
+      + '<div class="phase-tab' + (d.mode === 'group' ? ' active' : '') + '" onclick="chatNewMode(\'group\')"><i class="ti ti-users"></i> ' + T('グループ','Group') + '</div></div>'
+      + (d.mode === 'group' ? '<input id="chat-new-title" class="form-input" maxlength="60" style="width:100%;margin-bottom:6px" placeholder="' + esc(T('グループの名前（60 字まで）','Group name (up to 60)')) + '" value="' + esc(d.title) + '" oninput="chatNewTitle(this.value)">' : '')
+      + '<input class="form-input" style="width:100%" placeholder="' + esc(T('名前で探す','Search by name')) + '" value="' + esc(d.q) + '" oninput="chatNewQ(this.value)">'
+      + '<div id="chat-new-list" style="max-height:46vh;overflow-y:auto;margin-top:6px"></div>'
+      + (d.mode === 'group' ? '<div id="chat-new-foot" style="display:flex;gap:8px;align-items:center;margin-top:10px"></div>' : '')
+      + '<div id="chat-new-err"></div>';
+    drawNewList();
+  }
+  function peopleRows(q, skip){
+    q = String(q || '').toLowerCase();
+    return (C.people || []).filter(function(x){ return x.emp !== C.me && !(skip && skip[x.emp]) && (!q || String(x.name || '').toLowerCase().indexOf(q) >= 0); });
+  }
+  function storeL(id){ if (!id) return ''; if (id === 'OFFICE' || id === '---') return T('本部','HQ'); try{ var s = (typeof STORES !== 'undefined' ? STORES : []).find(function(x){ return x.id === id; }); return s ? s.name : id; }catch(e){ return id; } }
+  function drawNewList(){
+    var el = D.getElementById('chat-new-list'), d = C.dlg; if (!el || !d || d.kind !== 'new') return;
+    if (!C.people) { el.innerHTML = '<div class="chat-empty">' + (C.peopleSt === 'err' ? esc(C.peopleErr || '') : T('読み込み中…','Loading…')) + '</div>'; return; }
+    var rows = peopleRows(d.q).slice(0, 200);
+    el.innerHTML = rows.length ? rows.map(function(x){
+      var sub = '<span style="font-size:10.5px;color:var(--muted)">' + esc(storeL(x.store)) + (x.title ? ' · ' + esc(x.title) : '') + '</span>';
+      if (d.mode === 'dm') return '<div class="chat-row" onclick="chatStartDm(\'' + esc(x.emp) + '\')"><div class="chat-av k-dm">' + esc(String(x.name || '?').slice(0, 1)) + '</div><div class="chat-row-main"><b style="font-size:12.5px">' + esc(x.name) + '</b><div>' + sub + '</div></div></div>';
+      return '<label class="chat-row"><input type="checkbox"' + (d.sel[x.emp] ? ' checked' : '') + ' onchange="chatNewSel(\'' + esc(x.emp) + '\',this.checked)" style="width:18px;height:18px;flex:0 0 auto"><div class="chat-row-main"><b style="font-size:12.5px">' + esc(x.name) + '</b><div>' + sub + '</div></div></label>';
+    }).join('') : '<div class="chat-empty">' + T('見つかりません','No one found') + '</div>';
+    drawNewFoot();
+  }
+  function drawNewFoot(){
+    var el = D.getElementById('chat-new-foot'), d = C.dlg; if (!el || !d) return;
+    var n = Object.keys(d.sel).length;
+    el.innerHTML = '<span style="font-size:12px;color:var(--muted);flex:1">' + T('選んだ人 ','Selected ') + n + T(' 人（あなたを入れて ',' (with you ') + (n + 1) + T(' 人・50 人まで）',', up to 50)') + '</span>'
+      + '<button class="btn btn-primary" id="chat-new-ok"' + (d.busy || !n || !d.title.trim() ? ' disabled' : '') + ' onclick="chatCreateGroup()">' + T('グループを作る','Create group') + '</button>';
+  }
+  W.chatNewMode = function(m){ var d = C.dlg; if (!d || d.kind !== 'new') return; d.mode = m === 'group' ? 'group' : 'dm'; drawNew(); };
+  W.chatNewQ = function(v){ var d = C.dlg; if (!d || d.kind !== 'new') return; d.q = String(v || '').slice(0, 40); drawNewList(); };
+  W.chatNewTitle = function(v){ var d = C.dlg; if (!d || d.kind !== 'new') return; d.title = String(v || '').slice(0, 60); drawNewFoot(); };
+  W.chatNewSel = function(emp, on){
+    var d = C.dlg; if (!d || d.kind !== 'new') return;
+    if (on) { if (Object.keys(d.sel).length >= GROUP_MAX) { toast(errText('too_many'), 'warn'); drawNewList(); return; } d.sel[emp] = 1; } else delete d.sel[emp];
+    drawNewFoot();
+  };
+  function newErr(e){ var el = D.getElementById('chat-new-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(e.message || e) + '</div>'; }
+  W.chatStartDm = function(emp){
+    var d = C.dlg; if (!d || d.busy) return; d.busy = true;
+    var g = C.gen;
+    api({ action:'chat_open_dm', to:emp }).then(function(r){ if (g !== C.gen) return; C.dlg = null; C.threads[r.id] = Object.assign({}, C.threads[r.id] || {}, r); try{ closeModalDirect(); }catch(e){} W.chatGo(r.id); },
+      function(e){ if (g !== C.gen) return; d.busy = false; newErr(e); });
+  };
+  W.chatCreateGroup = function(){
+    var d = C.dlg; if (!d || d.kind !== 'new' || d.busy) return;
+    var mem = Object.keys(d.sel), title = d.title.trim();
+    if (!title || !mem.length) return;
+    d.busy = true; drawNewFoot();
+    var g = C.gen;
+    /* 同じ鍵：答えが届かずにもう一度押しても、グループは 1 つ */
+    api({ action:'chat_create_group', title:title, members:mem, client_key:d.key }).then(function(r){ if (g !== C.gen) return; C.dlg = null; C.threads[r.id] = Object.assign({}, C.threads[r.id] || {}, r); try{ closeModalDirect(); }catch(e){} W.chatGo(r.id); },
+      function(e){ if (g !== C.gen) return; d.busy = false; drawNewFoot(); newErr(e); });
+  };
+
+  /* ---------------------------------------------------------------- 参加者（加える・外す・抜ける・名前） */
+  W.chatMembers = function(){
+    var tid = C.open; if (!tid || !C.msgs[tid]) return;
+    C.mem = { tid:tid, q:'', sel:{}, hist:true, busy:false, err:'', title:(C.threads[tid] || {}).title || '' };
+    openModal('<div id="chat-mem" style="width:100%"></div>'); drawMem();
+  };
+  function drawMem(){
+    var el = D.getElementById('chat-mem'), s = C.mem; if (!el || !s) return;
+    var r = C.threads[s.tid] || {}, m = C.msgs[s.tid] || newMsgs(), can = m.can || {};
+    var h = '<div class="modal-title">' + T('参加者','Members') + '（' + m.members.length + '）<button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    if (s.err) h += '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>';
+    if (can.rename) h += '<div style="display:flex;gap:6px;margin-bottom:10px"><input id="chat-ren" class="form-input" maxlength="60" style="flex:1" value="' + esc(s.title) + '"><button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatRename()">' + T('名前を変える','Rename') + '</button></div>';
+    h += '<div style="max-height:34vh;overflow-y:auto">' + m.members.map(function(x){
+      var me = x.emp === C.me;
+      var btn = me ? (can.leave ? '<button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatRemove(\'' + esc(x.emp) + '\')">' + T('抜ける','Leave') + '</button>' : '')
+        : (can.remove ? '<button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatRemove(\'' + esc(x.emp) + '\')">' + T('外す','Remove') + '</button>' : '');
+      return '<div class="chat-row" style="cursor:default"><div class="chat-av k-dm">' + esc(String(x.name || '?').slice(0, 1)) + '</div><div class="chat-row-main"><b style="font-size:12.5px">' + esc(x.name || T('（名前なし）','(no name)')) + (me ? T('（あなた）',' (you)') : '') + '</b>'
+        + (x.auto ? '<div style="font-size:10.5px;color:var(--muted)">' + T('申請の担当で自動で入った人','Added automatically (part of the request)') + '</div>' : '') + '</div>' + btn + '</div>';
+    }).join('') + '</div>';
+    if (can.add) {
+      var inM = {}; m.members.forEach(function(x){ inM[x.emp] = 1; });
+      var n = Object.keys(s.sel).length;
+      h += '<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px"><div style="font-size:12px;font-weight:700;margin-bottom:6px">' + T('人を加える','Add people') + '</div>'
+        + '<input class="form-input" style="width:100%" placeholder="' + esc(T('名前で探す','Search by name')) + '" value="' + esc(s.q) + '" oninput="chatMemQ(this.value)">'
+        + '<div id="chat-mem-list" style="max-height:26vh;overflow-y:auto;margin-top:6px">' + memList(inM) + '</div>'
+        + '<label style="display:flex;gap:6px;align-items:center;font-size:12px;margin-top:8px"><input type="radio" name="chat-hist"' + (s.hist ? ' checked' : '') + ' onchange="chatMemHist(true)"> ' + T('これまでの会話も見せる','Show the earlier messages') + '</label>'
+        + '<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="radio" name="chat-hist"' + (!s.hist ? ' checked' : '') + ' onchange="chatMemHist(false)"> ' + T('これからの会話だけ見せる','Show only new messages') + '</label>'
+        + '<div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn btn-primary btn-sm" id="chat-mem-add"' + (s.busy || !n ? ' disabled' : '') + ' onclick="chatMemAdd()">' + T('加える','Add') + (n ? '（' + n + '）' : '') + '</button></div></div>';
+    }
+    if (r.kind === 'case') h += '<div style="font-size:10.5px;color:var(--muted);margin-top:10px;line-height:1.6">' + T('申請のチャット：申請した人・決める人・確かめる人は自動で入ります。自動で入った人は、その申請を見られなくなると読めなくなります。','Request chat: the requester and the people who decide or check join automatically. They lose access if they can no longer see the request.') + '</div>';
+    el.innerHTML = h;
+  }
+  function memList(inM){
+    var s = C.mem; if (!s) return '';
+    if (!C.people) { ensurePeople(); return '<div class="chat-empty">' + (C.peopleSt === 'err' ? esc(C.peopleErr || '') : T('読み込み中…','Loading…')) + '</div>'; }
+    var rows = peopleRows(s.q, inM).slice(0, 100);
+    return rows.length ? rows.map(function(x){ return '<label class="chat-row"><input type="checkbox"' + (s.sel[x.emp] ? ' checked' : '') + ' onchange="chatMemSel(\'' + esc(x.emp) + '\',this.checked)" style="width:18px;height:18px;flex:0 0 auto"><div class="chat-row-main"><b style="font-size:12.5px">' + esc(x.name) + '</b> <span style="font-size:10.5px;color:var(--muted)">' + esc(storeL(x.store)) + '</span></div></label>'; }).join('')
+      : '<div class="chat-empty">' + T('見つかりません','No one found') + '</div>';
+  }
+  W.chatMemQ = function(v){ var s = C.mem; if (!s) return; s.q = String(v || '').slice(0, 40); var el = D.getElementById('chat-mem-list'), m = C.msgs[s.tid]; if (el && m) { var inM = {}; m.members.forEach(function(x){ inM[x.emp] = 1; }); el.innerHTML = memList(inM); } };
+  W.chatMemSel = function(emp, on){
+    var s = C.mem; if (!s) return; if (on) s.sel[emp] = 1; else delete s.sel[emp];
+    var b = D.getElementById('chat-mem-add'), n = Object.keys(s.sel).length; if (b) { b.disabled = s.busy || !n; b.textContent = T('加える','Add') + (n ? '（' + n + '）' : ''); }
+  };
+  W.chatMemHist = function(h){ if (C.mem) C.mem.hist = !!h; };
+  function memRun(p, after){
+    var s = C.mem; if (!s || s.busy) return;
+    s.busy = true; s.err = ''; drawMem();
+    var g = C.gen;
+    api(p).then(function(j){ if (g !== C.gen) return; s.busy = false; if (after) after(j); }, function(e){ if (g !== C.gen) return; s.busy = false; s.err = e.message; drawMem(); if (e.code === 'conflict') { syncNow(false); loadMsgs(s.tid, 'latest'); } });
+  }
+  W.chatMemAdd = function(){
+    var s = C.mem; if (!s) return; var mem = Object.keys(s.sel); if (!mem.length) return;
+    memRun({ action:'chat_add', thread:s.tid, members:mem, history:!!s.hist }, function(){ s.sel = {}; toast(T('加えました','Added'), 'success'); loadMsgs(s.tid, 'latest'); var g = C.gen; setTimeout(function(){ if (g === C.gen && C.mem === s) drawMem(); }, 600); });
+  };
+  W.chatRemove = function(emp){
+    var s = C.mem; if (!s) return; var me = emp === C.me;
+    if (!confirm(me ? T('このグループから抜けますか？（もう読めなくなります）','Leave this group? (you will no longer see it)') : T('この人を会話から外しますか？','Remove this person from the conversation?'))) return;
+    memRun({ action:'chat_remove', thread:s.tid, emp:emp }, function(){
+      if (me) { C.mem = null; try{ closeModalDirect(); }catch(e){} delete C.threads[s.tid]; delete C.msgs[s.tid]; if (C.open === s.tid) C.open = ''; paintAll(); badges(); return; }
+      var m = C.msgs[s.tid]; if (m) m.members = m.members.filter(function(x){ return x.emp !== emp; }); drawMem(); loadMsgs(s.tid, 'latest');
+    });
+  };
+  W.chatRename = function(){
+    var s = C.mem, el = D.getElementById('chat-ren'); if (!s || !el) return;
+    var r = C.threads[s.tid]; if (!r) return;
+    s.title = String(el.value || '').trim(); if (!s.title) return;
+    memRun({ action:'chat_rename', thread:s.tid, title:s.title, expect_rev:Number(r.rev) || 1 }, function(row){ C.threads[s.tid] = Object.assign({}, C.threads[s.tid] || {}, row); toast(T('名前を変えました','Renamed'), 'success'); drawMem(); paintAll(); });
+  };
+
+  /* ---------------------------------------------------------------- 申請のチャット（4A） */
+  W.chatCaseButton = function(r){
+    if (!r || !r.id || !canUse() || C.st === 'missing' || C.st === 'old') return '';
+    return '<div style="margin-top:10px"><button class="btn btn-secondary btn-sm" onclick="chatOpenCase(\'' + esc(r.id) + '\')"><i class="ti ti-messages"></i> ' + T('この申請のチャット','Chat about this request') + '</button></div>';
+  };
+  W.chatOpenCase = function(id){
+    if (!canUse()) { toast(errText('signin'), 'error'); return; }
+    var g = C.gen; if (!C.tok) C.tok = pinTok();
+    api({ action:'chat_case', id:id }).then(function(j){
+      if (g !== C.gen) return;
+      if (!j || !j.thread) { toast(T('この申請のチャットには入っていません（申請した人・決める人・確かめる人が開くと始まります。GM・CEO が加えられます）','You are not in this request’s chat (it starts when the requester or a decider opens it; the GM or CEO can add you)'), 'warn'); return; }
+      C.threads[j.thread.id] = Object.assign({}, C.threads[j.thread.id] || {}, j.thread);
+      try{ closeModalDirect(); }catch(e){}
+      W.chatStart(); W.chatGo(j.thread.id);
+    }, function(e){ if (g !== C.gen) return; if (e.code === 'chat_missing') C.st = 'missing'; else if (e.code === 'unknown_action') C.st = 'old'; toast(e.message, 'error'); });
+  };
+  W.chatOpenRequest = function(id){ try{ if (typeof W.wrOpen === 'function') W.wrOpen(id); }catch(e){} };
+
+  /* ---------------------------------------------------------------- 数（ナビ・ワークセンター） */
+  W.chatUnread = function(){ return canUse() ? (C.unread || 0) : 0; };
+  function badgeInner(){ return C.unread ? '<span class="tag tag-red" style="font-size:8px">' + C.unread + (C.mention ? '・@' + C.mention : '') + '</span>' : ''; }
+  W.chatTabBadge = function(){ return ' <span id="chat-wc-badge">' + badgeInner() + '</span>'; };
+  W.chatTodayTile = function(){
+    if (!canUse() || C.st === 'missing' || C.st === 'old') return '';
+    var n = C.st === 'ok' ? C.unread : null;
+    return '<div style="cursor:pointer" onclick="setWorkTab(\'chat\')">' + (typeof kpi === 'function' ? kpi(T('チャットの未読','Unread chat'), n == null ? '—' : n + T('件',''), C.mention ? T('自分宛ての @ ','@ to you ') + C.mention : T('DM・チャットのタブ','Chat tab'), n ? 'var(--red)' : 'var(--green)') : '') + '</div>';
+  };
+  function badges(){
+    var k = C.unread + '|' + C.mention;
+    var el = D.getElementById('chat-wc-badge'); if (el) el.innerHTML = badgeInner();
+    if (k === C.painted) return;
+    C.painted = k;
+    try { if (typeof buildNav === 'function' && D.getElementById('nav-bar')) buildNav(); } catch(e){}
+  }
+
+  /* ---------------------------------------------------------------- 画面 */
+  function titleOf(r){
+    if (!r) return '';
+    if (r.kind === 'case') { var ref = r.ref || {}, k = KIND[ref.wr_kind]; return (k ? T(k[0], k[1]) : T('申請','Request')) + (ref.code ? ' ' + ref.code : '') + (r.title ? ' · ' + r.title : ''); }
+    return r.title || T('（名前なし）','(no name)');
+  }
+  function caseLabel(r){ var ref = (r && r.ref) || {}, k = KIND[ref.wr_kind]; return (k ? T(k[0], k[1]) : T('申請','Request')) + (r && r.title ? ' · ' + r.title : ''); }
+  function hst(iso, opt){ try{ return new Date(iso).toLocaleString(T('ja-JP','en-US'), Object.assign({ timeZone:'Pacific/Honolulu' }, opt)); }catch(e){ return ''; } }
+  function dayKey(iso){ return hst(iso, { year:'numeric', month:'2-digit', day:'2-digit' }); }
+  function shortTime(iso){ if (!iso) return ''; return dayKey(iso) === dayKey(new Date().toISOString()) ? hst(iso, { hour:'2-digit', minute:'2-digit', hour12:false }) : hst(iso, { month:'numeric', day:'numeric' }); }
+  function clock(iso){ return hst(iso, { hour:'2-digit', minute:'2-digit', hour12:false }); }
+  function sorted(){
+    return Object.keys(C.threads).map(function(k){ return C.threads[k]; }).sort(function(a, b){
+      var x = Date.parse(b.last_at || '') || 0, y = Date.parse(a.last_at || '') || 0; return x - y || String(a.id).localeCompare(String(b.id)); });
+  }
+  W.renderChatPage = function(){
+    return '<div class="section-header"><div><div class="section-title"><i class="ti ti-messages" style="color:var(--accent)"></i> ' + T('DM・チャット','Chat') + '</div><div class="section-sub">' + T('DM・グループ・申請のチャット（知らせはアプリの中だけ）','DMs, groups and request chats (notices stay in the app)') + '</div></div></div>' + W.chatWorkTab();
+  };
+  W.chatWorkTab = function(){
+    if (!canUse()) return '<div class="card"><div class="chat-empty">' + T('チャットは、個人の PIN でログインした人だけが使えます（店のタブレットでは使えません）','Chat is for people signed in with their own PIN (not the store tablet)') + '</div></div>';
+    W.chatStart();
+    if (C.st === 'ok' && !C.syncing && Date.now() - C.lastSync > 10000) syncNow(false);
+    C.paneFor = C.open;
+    if (C.open && C.msgs[C.open]) C.msgs[C.open].painted = !!C.msgs[C.open].list.length;
+    setTimeout(function(){ scrollBottom(); markRead(); }, 0);
+    ensureCss();
+    return '<div id="chat-root" class="chat-wrap' + (C.open ? ' chat-has-open' : '') + '"><div id="chat-side" class="chat-side">' + sideHtml() + '</div><div id="chat-pane" class="chat-pane">' + paneHtml() + '</div></div>';
+  };
+  function stateNote(){
+    if (C.st === 'missing' || C.st === 'old') return '<div class="alert alert-warning" style="font-size:12px;margin:8px">' + esc(errText(C.st === 'missing' ? 'chat_missing' : 'unknown_action')) + '</div>';
+    if (C.st === 'err') return '<div class="alert alert-danger" style="font-size:12px;margin:8px">' + esc(C.err) + ' <button class="btn btn-secondary btn-sm" onclick="chatRetrySync()">' + T('もう一度','Retry') + '</button></div>';
+    return '';
+  }
+  W.chatRetrySync = function(){ C.st = C.st === 'err' ? 'loading' : C.st; syncNow(true); paintAll(); };
+  function segsHtml(){
+    var segs = [['all', T('すべて','All')], ['dm', 'DM'], ['group', T('グループ','Groups')], ['case', T('案件','Requests')], ['at', T('自分宛ての @','@ to you') + (C.mention ? '（' + C.mention + '）' : '')]];
+    return segs.map(function(s){ return '<button class="chat-seg' + (C.seg === s[0] ? ' on' : '') + '" onclick="chatSeg(\'' + s[0] + '\')">' + esc(s[1]) + '</button>'; }).join('');
+  }
+  function sideHtml(){
+    return '<div class="chat-side-top"><div class="chat-segs" id="chat-segs">' + segsHtml() + '</div>'
+      + '<div style="display:flex;gap:6px"><input id="chat-q" class="form-input" style="flex:1;min-width:0;font-size:12.5px" placeholder="' + esc(T('会話を探す','Search')) + '" value="' + esc(C.q) + '" oninput="chatSearch(this.value)">'
+      + '<button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="chatNew()"' + (C.st === 'missing' || C.st === 'old' ? ' disabled' : '') + '>' + T('＋ 新しい会話','＋ New') + '</button></div></div>'
+      + stateNote() + '<div id="chat-list" class="chat-list">' + listHtml() + '</div>';
+  }
+  function listHtml(){
+    if (C.seg === 'at') {
+      if (!C.at) return '<div class="chat-empty">' + (C.atSt === 'err' ? esc(C.atErr || '') : T('読み込み中…','Loading…')) + '</div>';
+      var q0 = C.q.toLowerCase();
+      var items = C.at.filter(function(x){ return !q0 || (String(x.thread_title || '') + ' ' + String(x.body || '') + ' ' + String(x.name || '')).toLowerCase().indexOf(q0) >= 0; });
+      return items.length ? items.map(function(x){
+        return '<div class="chat-row" onclick="chatOpenAt(\'' + esc(x.thread) + '\')"><div class="chat-av k-at"><i class="ti ti-at"></i></div><div class="chat-row-main"><div class="chat-row-top"><b>' + esc(x.thread_kind === 'case' ? titleOf(C.threads[x.thread] || { kind:'case', title:x.thread_title }) : x.thread_title) + '</b><span class="chat-time">' + esc(shortTime(x.at)) + '</span></div>'
+          + '<div class="chat-row-prev">' + esc(x.name) + '：' + esc(String(x.body || '').replace(/\s+/g, ' ').slice(0, 80)) + '</div></div>' + (x.unread ? '<span class="chat-unread">@</span>' : '') + '</div>';
+      }).join('') : '<div class="chat-empty">' + T('自分宛ての @ はありません','No @-mentions for you') + '</div>';
+    }
+    var q = C.q.toLowerCase();
+    var rows = sorted().filter(function(r){ return (C.seg === 'all' || r.kind === C.seg) && (!q || (titleOf(r) + ' ' + ((r.preview || {}).text || '')).toLowerCase().indexOf(q) >= 0); });
+    if (!rows.length) {
+      if (C.st === 'loading' || (C.st === '' && canUse())) return '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+      return '<div class="chat-empty">' + (q || C.seg !== 'all' ? T('見つかりません','Nothing found') : T('まだ会話がありません。「＋ 新しい会話」から始められます','No conversations yet. Start one with “＋ New”')) + '</div>';
+    }
+    return rows.map(function(r){
+      var pv = r.preview, un = Number(r.unread) || 0, mn = Number(r.mention) || 0, ref = r.ref || {};
+      var av = r.kind === 'group' ? '<i class="ti ti-users"></i>' : r.kind === 'case' ? '<i class="ti ti-file-text"></i>' : esc(String(r.title || '?').slice(0, 1));
+      return '<div class="chat-row' + (C.open === r.id ? ' on' : '') + '" onclick="chatOpen(\'' + esc(r.id) + '\')"><div class="chat-av k-' + esc(r.kind) + '">' + av + '</div><div class="chat-row-main"><div class="chat-row-top"><b>' + esc(r.kind === 'case' ? caseLabel(r) : titleOf(r)) + '</b>'
+        + (r.kind === 'case' && ref.code ? '<span class="chat-chip">' + T('案件 ','Req ') + esc(ref.code) + '</span>' : '') + '<span class="chat-time">' + esc(shortTime(r.last_at)) + '</span></div>'
+        + '<div class="chat-row-prev">' + (pv ? (pv.emp === C.me ? T('あなた','You') : esc(pv.name)) + '：' + esc(pv.text || '') : '<span style="opacity:.7">' + T('まだメッセージはありません','No messages yet') + '</span>') + '</div></div>'
+        + (un ? '<span class="chat-unread">' + un + (mn ? ' · @' : '') + '</span>' : '') + '</div>';
+    }).join('');
+  }
+  function headHtml(){
+    var r = C.threads[C.open] || {}, m = C.msgs[C.open] || newMsgs(), ref = r.ref || {};
+    var sub = r.kind === 'dm' ? 'DM' : r.kind === 'group' ? T('グループ','Group') + ' · ' + (r.members || m.members.length) + T(' 人',' people') + (r.created_name ? ' · ' + T('作った人 ','by ') + esc(r.created_name) : '')
+      : T('申請のチャット','Request chat') + ' · ' + (r.members || m.members.length) + T(' 人',' people');
+    return '<button class="btn btn-secondary btn-sm chat-back" onclick="chatBack()"><i class="ti ti-chevron-left"></i> ' + T('戻る','Back') + '</button>'
+      + '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(titleOf(r)) + '</div><div style="font-size:10.5px;color:var(--muted)">' + sub + '</div></div>'
+      + (r.kind === 'case' && ref.id ? '<button class="btn btn-secondary btn-sm" onclick="chatOpenRequest(\'' + esc(ref.id) + '\')"><i class="ti ti-file-text"></i> ' + T('申請','Request') + '</button>' : '')
+      + (r.kind !== 'dm' ? '<button class="btn btn-secondary btn-sm" onclick="chatMembers()"><i class="ti ti-users"></i> ' + T('参加者','Members') + '</button>' : '');
+  }
+  function bodyHtml(x){
+    var s = esc(x.body || '');
+    s = s.replace(/https?:\/\/[A-Za-z0-9\-._~:\/?#\[\]@!$&;%+=,*()']+/g, function(u){ return '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + u + '</a>'; });
+    (x.mentions || []).forEach(function(emp){ var n = nameOf(emp); if (!n) return; var t = esc('@' + n); s = s.split(t).join('<span class="chat-at">' + t + '</span>'); });
+    return s.replace(/\n/g, '<br>');
+  }
+  function msgsHtml(){
+    var tid = C.open, r = C.threads[tid] || {}, m = C.msgs[tid] || newMsgs(), out = C.out[tid] || [], h = '';
+    if (m.st === 'loading' && !m.list.length) return '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+    if (m.st === 'err' && !m.list.length) return '<div class="chat-empty">' + esc(m.err) + '<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" onclick="chatOpen(\'' + esc(tid) + '\')">' + T('もう一度','Retry') + '</button></div></div>';
+    if (m.older) h += '<div style="text-align:center;margin:4px 0 10px"><button class="btn btn-secondary btn-sm" onclick="chatOlder()"' + (m.busy ? ' disabled' : '') + '>' + T('前のメッセージを読む','Load earlier messages') + '</button></div>';
+    else if ((Number(r.history_from) || 1) > 1) h += '<div class="chat-day">' + T('あなたが加わる前の会話は見られません','Messages from before you joined are not shown') + '</div>';
+    if (!m.list.length && !out.length) h += '<div class="chat-empty">' + T('まだメッセージはありません。最初のメッセージを送りましょう','No messages yet. Send the first one') + '</div>';
+    var lastDay = '', prev = null, dm = r.kind === 'dm';
+    m.list.forEach(function(x){
+      var day = dayKey(x.at);
+      if (day !== lastDay) { h += '<div class="chat-day">' + esc(hst(x.at, { month:'numeric', day:'numeric', weekday:'short' })) + '</div>'; lastDay = day; prev = null; }
+      var showName = !x.mine && (!prev || prev.emp !== x.emp || (Date.parse(x.at) - Date.parse(prev.at)) > 300000);
+      var atMe = !x.mine && (x.mentions || []).indexOf(C.me) >= 0;
+      var gone = x.deleted || x.hidden;
+      var body = x.deleted ? T('削除されました','Deleted') : x.hidden ? T('見えなくなりました','Hidden') + (x.hidden_name ? '（' + esc(x.hidden_name) + '）' : '') : bodyHtml(x);
+      var meta = (x.mine ? T('あなた · ','You · ') : '') + esc(clock(x.at)) + (x.edited ? ' · ' + T('編集済み','edited') : '')
+        + (x.mine && !gone && Number(x.read) > 0 ? ' · ' + (dm ? T('既読','Read') : T('既読 ','Read ') + Number(x.read)) : '');
+      var act = '';
+      if (x.can_edit) act += '<button class="lnk" onclick="chatEdit(\'' + esc(x.id) + '\')">' + T('直す','Edit') + '</button>';
+      if (x.can_delete) act += '<button class="lnk" onclick="chatDelete(\'' + esc(x.id) + '\')">' + T('消す','Delete') + '</button>';
+      if (x.can_hide) act += x.hidden ? '<button class="lnk" onclick="chatUnhide(\'' + esc(x.id) + '\')">' + T('戻す','Restore') + '</button>' : '<button class="lnk" onclick="chatHide(\'' + esc(x.id) + '\')">' + T('見えなくする','Hide') + '</button>';
+      h += '<div class="chat-msg' + (x.mine ? ' me' : '') + (atMe ? ' at' : '') + '">' + (showName ? '<div class="chat-msg-name">' + esc(x.name) + '</div>' : '')
+        + '<div class="chat-bub' + (gone ? ' gone' : '') + '">' + body + '</div><div class="chat-msg-meta">' + meta + act + '</div></div>';
+      prev = x;
+    });
+    out.forEach(function(o){
+      h += '<div class="chat-msg me"><div class="chat-bub pend">' + esc(o.body).replace(/\n/g, '<br>') + '</div><div class="chat-msg-meta">'
+        + (o.st === 'sending' ? T('送信中…','Sending…') : '<span style="color:var(--red);font-weight:700">' + T('送れませんでした','Not sent') + '</span>' + (o.err ? '（' + esc(o.err) + '）' : '')
+          + '<button class="lnk" onclick="chatRetry(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('もう一度送る','Send again') + '</button><button class="lnk" onclick="chatDiscard(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('消す','Discard') + '</button>')
+        + '</div></div>';
+    });
+    return h;
+  }
+  function compHtml(){
+    var tid = C.open;
+    return '<div id="chat-pop" class="chat-pop" style="display:none"></div><div class="chat-comp-row">'
+      + '<textarea id="chat-ta" rows="2" maxlength="' + (BODY_MAX + 200) + '" placeholder="' + esc(T('メッセージ（@ で人を呼ぶ）','Message (@ to mention)')) + '" oninput="chatInput(this)" onkeydown="chatKey(event)" onblur="chatBlur()">' + esc(C.drafts[tid] || '') + '</textarea>'
+      + '<button class="btn btn-primary" onclick="chatSend()" style="flex:0 0 auto"><i class="ti ti-send"></i> ' + T('送信','Send') + '</button></div>'
+      + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send.') + '</div>';
+  }
+  function paneHtml(){
+    if (!C.open || !C.threads[C.open]) return '<div class="chat-empty" style="margin:auto">' + T('左の一覧から会話を選んでください','Choose a conversation on the left') + '</div>';
+    return '<div class="chat-head" id="chat-head">' + headHtml() + '</div><div class="chat-msgs" id="chat-msgs">' + msgsHtml() + '</div><div class="chat-comp" id="chat-comp">' + compHtml() + '</div>';
+  }
+  function scrollBottom(){ var b = D.getElementById('chat-msgs'); if (b) b.scrollTop = b.scrollHeight; }
+  function paintSide(){ var el = D.getElementById('chat-side'); if (!el) return; var q = D.getElementById('chat-q'), focus = q && D.activeElement === q; el.innerHTML = sideHtml(); if (focus) { var q2 = D.getElementById('chat-q'); if (q2) { try{ q2.focus(); q2.selectionStart = q2.selectionEnd = q2.value.length; }catch(e){} } } }
+  function paintList(){
+    var el = D.getElementById('chat-list'); if (!el) return;
+    el.innerHTML = listHtml();
+    var s = D.getElementById('chat-segs'); if (s) s.innerHTML = segsHtml();
+  }
+  function paintPane(mode){
+    var pane = D.getElementById('chat-pane'); if (!pane) return;
+    var root = D.getElementById('chat-root'); if (root) root.className = 'chat-wrap' + (C.open ? ' chat-has-open' : '');
+    if (C.paneFor !== C.open || !D.getElementById('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); return; }
+    var box = D.getElementById('chat-msgs');
+    var near = box ? (box.scrollHeight - box.scrollTop - box.clientHeight < 80) : true, prevH = box ? box.scrollHeight : 0, prevT = box ? box.scrollTop : 0;
+    var hd = D.getElementById('chat-head'); if (hd) hd.innerHTML = headHtml();
+    if (box) { box.innerHTML = msgsHtml(); box.scrollTop = mode === 'older' ? box.scrollHeight - prevH + prevT : (mode === 'bottom' || near) ? box.scrollHeight : prevT; }
+  }
+  function paintAll(){ if (!visible()) return; paintSide(); paintPane('keep'); }
+  /* 見た目は head に 1 回だけ（描き直しで消えない） */
+  function ensureCss(){
+    try{
+      if (D.getElementById('chat-css')) return;
+      var st = D.createElement('style'); st.id = 'chat-css'; st.textContent = CSS_TEXT; (D.head || D.body).appendChild(st);
+    }catch(e){}
+  }
+  var CSS_TEXT = ''
+      + '.chat-wrap{display:grid;grid-template-columns:300px minmax(0,1fr);border:1px solid var(--border);border-radius:14px;background:var(--surface);overflow:hidden;height:calc(100dvh - 230px);min-height:420px}'
+      + '.chat-side{border-right:1px solid var(--border);display:flex;flex-direction:column;min-height:0;min-width:0}'
+      + '.chat-side-top{padding:10px;border-bottom:1px solid var(--border)}'
+      + '.chat-segs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}'
+      + '.chat-seg{font-size:11px;padding:4px 9px;border-radius:12px;border:1px solid var(--border);cursor:pointer;background:transparent;color:inherit}'
+      + '.chat-seg.on{background:var(--accent);border-color:var(--accent);color:#fff}'
+      + '.chat-list{flex:1;overflow-y:auto;min-height:0}'
+      + '.chat-row{display:flex;gap:9px;align-items:center;padding:9px 10px;border-bottom:1px solid var(--border);cursor:pointer}'
+      + '.chat-row:hover{background:var(--surface2)}.chat-row.on{background:var(--surface2);box-shadow:inset 3px 0 0 var(--accent)}'
+      + '.chat-av{width:34px;height:34px;border-radius:50%;flex:0 0 34px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;background:#6d6459}'
+      + '.chat-av.k-dm{background:#15a66a}.chat-av.k-group{background:#3b82f6}.chat-av.k-case{background:#c2410c}.chat-av.k-at{background:#9c6209}'
+      + '.chat-row-main{flex:1;min-width:0}.chat-row-top{display:flex;gap:6px;align-items:center;font-size:12.5px}'
+      + '.chat-row-top b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}'
+      + '.chat-chip{font-size:9.5px;padding:1px 6px;border-radius:8px;background:#fde3d3;color:#7a3410;white-space:nowrap;flex:0 0 auto}'
+      + '.chat-time{margin-left:auto;font-size:10px;color:var(--muted);flex:0 0 auto}'
+      + '.chat-row-prev{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}'
+      + '.chat-unread{background:var(--red);color:#fff;border-radius:9px;font-size:10px;padding:1px 7px;flex:0 0 auto;font-weight:700}'
+      + '.chat-pane{display:flex;flex-direction:column;min-width:0;min-height:0}'
+      + '.chat-head{padding:9px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}'
+      + '.chat-msgs{flex:1;overflow-y:auto;padding:12px;min-height:0}'
+      + '.chat-msg{margin:5px 0;display:flex;flex-direction:column;align-items:flex-start;max-width:78%}'
+      + '.chat-msg.me{margin-left:auto;align-items:flex-end}'
+      + '.chat-bub{padding:8px 11px;border-radius:14px;background:var(--surface2);font-size:13px;line-height:1.55;word-break:break-word;overflow-wrap:anywhere}'
+      + '.chat-msg.me .chat-bub{background:#fde3d3}'
+      + '.chat-msg.at .chat-bub{box-shadow:inset 0 0 0 2px #e8920b}'
+      + '.chat-bub.gone{background:transparent!important;border:1px dashed var(--border);color:var(--muted);font-style:italic}'
+      + '.chat-bub.pend{opacity:.65}'
+      + '.chat-bub a{color:#1d4fd0;text-decoration:underline}'
+      + '.chat-msg-name{font-size:10.5px;color:var(--muted);margin:0 0 2px 4px}'
+      + '.chat-msg-meta{font-size:10px;color:var(--muted);margin:2px 4px 0}'
+      + '.chat-msg-meta .lnk{background:none;border:0;color:var(--accent);cursor:pointer;font-size:10.5px;padding:2px 0 2px 8px}'
+      + '.chat-at{font-weight:700;color:#7a3410}'
+      + '.chat-day{text-align:center;font-size:10px;color:var(--muted);margin:10px 0}'
+      + '.chat-comp{border-top:1px solid var(--border);padding:8px 10px;position:relative}'
+      + '.chat-comp-row{display:flex;gap:8px;align-items:flex-end}'
+      + '.chat-comp textarea{flex:1;resize:none;min-height:40px;max-height:150px;font-size:14px;line-height:1.45;padding:8px 10px;border-radius:10px;border:1px solid var(--border);background:var(--bg);color:inherit;font-family:inherit}'
+      + '.chat-hint{font-size:10px;color:var(--muted);margin-top:4px}'
+      + '.chat-pop{position:absolute;left:10px;right:10px;bottom:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 18px rgba(0,0,0,.15);max-height:240px;overflow-y:auto;z-index:5}'
+      + '.chat-pop-i{padding:8px 10px;font-size:12.5px;cursor:pointer;display:flex;gap:6px;align-items:center}'
+      + '.chat-pop-i.on{background:var(--surface2)}.chat-pop-i small{color:var(--muted);margin-left:auto;font-size:10px}'
+      + '.chat-back{display:none}'
+      + '.chat-empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6}'
+      + '@media (max-width:820px){.chat-wrap{grid-template-columns:minmax(0,1fr);height:calc(100dvh - 190px)}.chat-wrap .chat-pane{display:none}'
+      + '.chat-wrap.chat-has-open .chat-side{display:none}.chat-wrap.chat-has-open .chat-pane{display:flex}.chat-back{display:inline-flex}.chat-hint{display:none}.chat-msg{max-width:88%}.chat-side{border-right:0}}'
+      + '@media (min-width:1180px){body.chat-wide .main{max-width:1280px}}';
+})();
+/* ==== FUNERGY_CHAT end ==== */
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>

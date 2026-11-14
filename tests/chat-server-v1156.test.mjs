@@ -114,7 +114,7 @@ test('DM: everyone can talk to anyone (3A); one conversation per pair; others ca
 });
 
 test('sending: one message per key (a re-send after a lost answer is the same message), text is checked, mentions must be members', async () => {
-  const { call, ok, send, msgs, key } = await setup();
+  const { call, ok, send, msgs, key, db } = await setup();
   const g = await ok('E6', { action: 'chat_create_group', title: 'S1 リーダー', members: ['E7', 'E8'], client_key: key() });
   const k = key();
   const a = await send('E7', g.id, '在庫の確認', { key: k });
@@ -124,7 +124,11 @@ test('sending: one message per key (a re-send after a lost answer is the same me
   const other = await ok('E7', { action: 'chat_open_dm', to: 'E6' });
   assert.equal((await send('E7', other.id, 'x', { key: k })).status, 409, 'the same key in another chat is refused');
   assert.equal((await send('E7', g.id, '   ')).status, 400);
+  const real = db.rpc; let asked = 0;
+  db.rpc = (name, p) => { if (name === 'chat_send') asked++; return real.call(db, name, p); };
   assert.equal((await send('E7', g.id, 'x'.repeat(CHAT.body + 1))).status, 400, 'too long is refused, never cut');
+  assert.equal(asked, 0, 'the function refuses it before the database (the SQL refuses it too)');
+  db.rpc = real;
   assert.equal((await send('E7', g.id, 'x'.repeat(CHAT.body))).status, 200);
   assert.equal((await send('E7', g.id, 'a\u0007b')).body.body, 'ab', 'control characters are dropped');
   assert.equal((await call('E7', { action: 'chat_send', thread: g.id, body: 'x', client_key: 'bad key!' })).status, 400);
@@ -238,7 +242,7 @@ test('case chat (4A): the requester and the deciders join on their own; others n
     payload: { date: '2026-11-01', payer: NAME.E7, payer_is_employee: true, vendor: 'Costco', purpose: '仕入れ', amount_cents: 8640 } }));
   assert.equal((await call('E8', { action: 'chat_case', id: r.id })).status, 404, 'another crew member of the store cannot see the request');
   const c8 = await ok('E7', { action: 'chat_case', id: r.id });
-  assert.equal(c8.can_open, true); assert.equal(c8.thread.kind, 'case'); assert.equal(c8.thread.ref.code, r.code);
+  assert.equal(c8.can_open, true); assert.equal(c8.thread.kind, 'case'); assert.equal(c8.thread.ref.code, r.code); assert.equal(c8.thread.ref.id, r.id);
   const mem = (await msgs('E7', c8.thread.id)).body.members.map(x => x.emp).sort();
   assert.deepEqual(mem, ['E1', 'E13', 'E2', 'E3', 'E7'], 'requester, CEO, GM, accounting and office crew (money kind)');
   assert.equal((await ok('E2', { action: 'chat_case', code: r.code })).thread.id, c8.thread.id, 'one chat per request');

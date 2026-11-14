@@ -296,7 +296,7 @@ begin
  end if;
  if t.kind = 'case' then
   select * into r from public.wr_requests x where x.id = t.ref_id;
-  if found then v_ref := jsonb_build_object('kind', 'wr', 'code', r.code, 'wr_kind', r.kind, 'status', r.status, 'store_id', r.store_id); end if;
+  if found then v_ref := jsonb_build_object('kind', 'wr', 'id', r.id, 'code', r.code, 'wr_kind', r.kind, 'status', r.status, 'store_id', r.store_id); end if;
  end if;
  if t.kind = 'dm' then select x.emp_id into v_other from public.chat_members x where x.thread_id = t.id and x.emp_id <> a->>'emp' limit 1; end if;
  return jsonb_build_object('id', t.id, 'kind', t.kind, 'title', public.chat_title(a, t), 'other', v_other, 'ref', v_ref, 'members', v_n,
