@@ -12,7 +12,7 @@ function extract(name, text = updated) {
   assert.ok(end > begin, name + ' end');
   return text.slice(start, end + 2);
 }
-const names = ['doRangeImport', 'tipRefreshPeriodFromToast', 'attBackfillMonth', 'saveBowlCatCfg',
+const names = ['doRangeImport', 'toastFailSummaryHtml', 'tipRefreshPeriodFromToast', 'attBackfillMonth', 'saveBowlCatCfg',
   'syncCenterRunStore', 'syncAllData', 'syncCenterRunAll', 'doToastFetchToday',
   'ensureMonthDataLoaded', 'refreshNow', 'reopenApproval', 'repairBudgetDupes'];
 function fixture(success = false) {

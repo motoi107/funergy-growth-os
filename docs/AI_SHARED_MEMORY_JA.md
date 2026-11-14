@@ -1,5 +1,13 @@
 # Claude / Codex 共通記録
 
+## 2026-11-14 v1160：期間一括取り込みの失敗した日（理由・もう一度取る・失敗した日だけ取り込み直す）（Claude・ブランチ `claude/range-import-1160`・#153（`fcf0502`）の上・アプリだけ・本番未反映）
+
+- 依頼：Moto さん 11/13 23:04 HST（Totoya Aiea の期間一括取り込みで 91 日のうち 46 日が失敗・理由が出ない）。hyper-worker の側は v1160（非公開・上の節）。この版はアプリの側。仕様・試験・限界：`docs/RANGE_IMPORT_V1160_JA.md`。
+- 直し：`syncToastDay` は通信の切れ・JSON でない答えでも投げずに理由を返す。`fetchToastRange` は失敗した日ごとに理由（`toastFailKind`：Toast の回数の制限・Toast のログイン・アプリのログイン・サーバー・通信・DB・そのほか）を残し、断られたら間をあけ（15 秒まで）、アプリのログインが切れたら残りを呼ばず、最後に失敗した日を 1 回だけ取り直す（ログインの切れ・DB は取り直さない）。画面は理由・失敗した日・［失敗した日だけ取り込み直す］・失敗があれば閉じない。任意の SQL `db/toast-sales-ld-columns.sql`（L/D 列）。
+- 試験（合成データ）：range-import-v1160 10（v1159 `fcf0502` の本物のコードと比べる）・financial-web-callers 8・financial-web-save 66・関連（toast-session・dashboard-ui41・wc-stage2・stage3・workflow-yaml・fetch-status）55/55・static release pass/1160。わざと壊す 16/16。CI に足した。ブラウザ・実機では見ていない。独立レビューは無し。
+- チャットの添付（UI案75）は v1161 に（サーバーの SQL・関数と試験はできている・`/home/claude/wtchat` で未コミット）。
+- 次：PR → Codex → #151 → #152 → #153 → この PR → 端末を 1160 に → Moto さんが hyper-worker v1160 を Deploy → Aiea を取り込み直す（失敗した日があれば理由とボタンが出る）。
+
 ## 2026-11-14 #151〜#153 のレビューの直し・Totoya の期間一括取り込みの失敗（hyper-worker v1160）（Claude）
 
 - #151（v1157・`541b6bb`）：Claude のルーティン 6872551957（P2 1・P3 2）と Codex 6872593320（blocked・P2 4）を直した＝店の付け替えで口コミを移す・1 location 1 店の索引・前の月の初めまで最後まで読めたら Google で消された口コミを消す（`gr_reviews_prune`）・その月の口コミを 200 件ずつ（続きを読む）・失敗したら古い値があっても 2 分待つ・取り消しの言葉。同じ migration の置き換え（本番にまだ入れていない）・③ は 20 関数と索引。仕様 `docs/GOOGLE_REVIEWS_V1157_JA.md` の 7。server 11・app 13・deploy 5・わざと壊す 17/17。

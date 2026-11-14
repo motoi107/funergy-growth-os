@@ -2852,12 +2852,20 @@ async function syncToastDay(guid, businessDateYmd) {
     _body.bowlCfg = { foodGuids:_bc.foodGuids||[], takeoutGuids:_bc.takeoutGuids||[] };
   }
   try { var _stSplit = (typeof STORES!=='undefined') ? STORES.find(function(s){return s.toastGuid===guid;}) : null; if (_stSplit && typeof tipSplitHourFor==='function') _body.splitHour = tipSplitHourFor(_stSplit.id); } catch(e){}
-  var res = await fetch(TOAST_SYNC_FN, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-    body: toastFnBody(_body),
-  });
-  return await res.json();
+  // v1160：通信が切れた・JSON でない答え（502 の HTML・関数の上限など）でも投げずに、理由の付いた失敗を返す
+  var res, txt = '', j = null;
+  try {
+    res = await fetch(TOAST_SYNC_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+      body: toastFnBody(_body),
+    });
+  } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80) }; }
+  try { txt = await res.text(); } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _http: res.status }; }
+  try { j = txt ? JSON.parse(txt) : null; } catch (e) { j = null; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, error: 'HTTP ' + res.status + (txt ? ': ' + String(txt).replace(/\s+/g, ' ').slice(0, 80) : ''), _http: res.status };
+  if (!res.ok) { j._http = res.status; if (j.ok === true) j.ok = false; }
+  return j;
 }
 /* Toast連携が「アクセスできる」レストラン一覧を取得（restaurantGuidなしで呼ぶと /partners/v1/restaurants を返す） */
 async function fetchToastRestaurants() {
@@ -3342,65 +3350,116 @@ function normalizeBusinessDate(bd) {
 }
 
 /* 期間一括: dateFrom〜dateTo の各日をEdge Function経由でToastから取得→DB保存。
-   進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。 */
-async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress) {
+   進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。
+   v1160：失敗した日ごとに理由（toastFailKind）を残す。Toast に断られたら日と日のあいだを空ける（250ms → 3 秒 → … 15 秒まで）。
+   アプリのログインが切れたら残りの日は呼ばない。最後に、失敗した日を 1 回だけ取り直す（ログインの切れ・DB 保存のエラーは取り直さない）。
+   opts.dates を渡すと、その日だけ取り込む（「失敗した日だけ取り込み直す」）。opts.noRetry で取り直さない。
+   onProgress(done, total, ok, fail, info)：info は取り直しのとき { phase:'wait'|'retry', i, n }。 */
+var _toastRangeSleep = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+var TOAST_FAIL_LABEL = { limit: 'Toast の回数の制限', auth: 'Toast にログインできない', session: 'アプリのログインを確かめられない', server: 'サーバーの一時的なエラー', network: '通信が切れた', db: 'DB 保存エラー', other: 'そのほかのエラー' };
+function toastFailKind(r) {
+  if (!r) return 'other';
+  var e = String(r.error || '') + ' ' + String(r.detail || '');
+  var st = Number(r._http) || 0;
+  if (/session_required|session_expired|[（(]inactive[）)]|^unauthorized\b|\bforbidden\b/i.test(e) || st === 403) return 'session';
+  if (r.dbError && !r.error) return 'db';
+  if (/\b429\b|rate.?limit|too many/i.test(e) || st === 429) return 'limit';
+  if (/auth_failed|toast login/i.test(e)) return 'auth';
+  if (/^network\b|failed to fetch|load failed|networkerror/i.test(e.trim())) return 'network';
+  if (/\b5\d\d\b|worker_limit|timeout|timed out|db_unavailable/i.test(e) || st >= 500) return 'server';
+  return 'other';
+}
+async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress, opts) {
   if (!guid) return { error: 'GUID未設定' };
   var start = new Date(dateFromISO+'T00:00:00');
   var end = new Date(dateToISO+'T00:00:00');
   var ok=0, fail=0, total=0, sumSales=0;
-  // 日付リスト生成
+  // 日付リスト生成（★ 端末TZに依存しないローカル日付。toISOStringはUTC変換で日付がズレる端末があるため使わない）
   var dates = [];
-  for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(new Date(d));
+  for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
+  if (opts && Array.isArray(opts.dates)) { var _want = {}; opts.dates.forEach(function(x){ _want[String(x)] = 1; }); dates = dates.filter(function(x){ return _want[x]; }); }
   total = dates.length;
-  var ldMissing = 0, dbErrLast = null;
-  for (var i=0; i<dates.length; i++) {
-    var dt = dates[i];
-    // ★ 端末TZに依存しないローカル日付（toISOStringはUTC変換で日付がズレる端末があるため使わない）
-    var iso = dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-    var ymd = iso.replace(/-/g,'');
-    try {
-      var r = await syncToastDay(guid, ymd);
-      // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
-      if (r && r.dbError) dbErrLast = String(r.dbError);
-      if (r && r.ldSaved === false) ldMissing++;
-      if (r && r.ok) {
-        ok++; sumSales += Number(r.net_sales)||0;
-        var actuals = getDailyActuals(storeId);
-        var prev = actuals[iso] || {};
-        // ★ 値があるフィールドだけ反映（undefinedで既存値を消さない）
-        var _patch = { actual: Number(r.net_sales)||0, toastSrc:true };
-        function _rput(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
-        _rput('guests', r.guests);
-        _rput('lunchSales', r.lunchSales); _rput('dinnerSales', r.dinnerSales);
-        _rput('lunchGuests', r.lunchGuests); _rput('dinnerGuests', r.dinnerGuests);
-        _rput('bowls', r.bowls); _rput('lunchBowls', r.lunchBowls); _rput('dinnerBowls', r.dinnerBowls);
-        _rput('takeout', r.takeoutCount); _rput('takeoutBowls', r.takeoutBowls);
-        _rput('lunchTakeoutBowls', r.lunchTakeoutBowls); _rput('dinnerTakeoutBowls', r.dinnerTakeoutBowls);
-        _rput('toLunchSales', r.toLunchSales); _rput('toDinnerSales', r.toDinnerSales);
-        _rput('toLunchCount', r.toLunchCount); _rput('toDinnerCount', r.toDinnerCount);
-        _rput('firstTimeBowls', r.firstTimeBowls); _rput('repeatBowls', r.repeatBowls);
-        _rput('superRegular', r.superRegular);
-        // ★ L/D別 新規/リピート（会議・月次サマリーのリピーターのL/Dリピート率用）
-        _rput('firstTimeBowlsLunch', r.firstTimeBowlsLunch); _rput('firstTimeBowlsDinner', r.firstTimeBowlsDinner);
-        _rput('repeatBowlsLunch', r.repeatBowlsLunch); _rput('repeatBowlsDinner', r.repeatBowlsDinner);
-        _rput('misoTotal', r.misoTotal); _rput('misoUpgrade', r.misoUpgrade);
-        _rput('ikuraShower', r.ikuraShower); _rput('ikuraBowls', r.ikuraBowls);
-        _rput('creditTip', r.creditTip); _rput('cashTip', r.cashTip);
-        _rput('lunchCreditTip', r.lunchCreditTip); _rput('dinnerCreditTip', r.dinnerCreditTip);
-        _rput('lunchCashTip', r.lunchCashTip); _rput('dinnerCashTip', r.dinnerCashTip);
-        actuals[iso] = Object.assign({}, prev, _patch);
-        setDailyActuals(storeId, actuals);
-      } else { fail++; }
-    } catch(e) { fail++; }
-    if (onProgress) onProgress(i+1, total, ok, fail);
-    // レート制限対策: 少し待つ
-    await new Promise(res=>setTimeout(res, 250));
+  var ldDays = {}, failed = {}, gap = 250, stopped = null;
+  function applyDay(iso, r) {
+    sumSales += Number(r.net_sales)||0;
+    var actuals = getDailyActuals(storeId);
+    var prev = actuals[iso] || {};
+    // ★ 値があるフィールドだけ反映（undefinedで既存値を消さない）
+    var _patch = { actual: Number(r.net_sales)||0, toastSrc:true };
+    function _rput(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
+    _rput('guests', r.guests);
+    _rput('lunchSales', r.lunchSales); _rput('dinnerSales', r.dinnerSales);
+    _rput('lunchGuests', r.lunchGuests); _rput('dinnerGuests', r.dinnerGuests);
+    _rput('bowls', r.bowls); _rput('lunchBowls', r.lunchBowls); _rput('dinnerBowls', r.dinnerBowls);
+    _rput('takeout', r.takeoutCount); _rput('takeoutBowls', r.takeoutBowls);
+    _rput('lunchTakeoutBowls', r.lunchTakeoutBowls); _rput('dinnerTakeoutBowls', r.dinnerTakeoutBowls);
+    _rput('toLunchSales', r.toLunchSales); _rput('toDinnerSales', r.toDinnerSales);
+    _rput('toLunchCount', r.toLunchCount); _rput('toDinnerCount', r.toDinnerCount);
+    _rput('firstTimeBowls', r.firstTimeBowls); _rput('repeatBowls', r.repeatBowls);
+    _rput('superRegular', r.superRegular);
+    // ★ L/D別 新規/リピート（会議・月次サマリーのリピーターのL/Dリピート率用）
+    _rput('firstTimeBowlsLunch', r.firstTimeBowlsLunch); _rput('firstTimeBowlsDinner', r.firstTimeBowlsDinner);
+    _rput('repeatBowlsLunch', r.repeatBowlsLunch); _rput('repeatBowlsDinner', r.repeatBowlsDinner);
+    _rput('misoTotal', r.misoTotal); _rput('misoUpgrade', r.misoUpgrade);
+    _rput('ikuraShower', r.ikuraShower); _rput('ikuraBowls', r.ikuraBowls);
+    _rput('creditTip', r.creditTip); _rput('cashTip', r.cashTip);
+    _rput('lunchCreditTip', r.lunchCreditTip); _rput('dinnerCreditTip', r.dinnerCreditTip);
+    _rput('lunchCashTip', r.lunchCashTip); _rput('dinnerCashTip', r.dinnerCashTip);
+    actuals[iso] = Object.assign({}, prev, _patch);
+    setDailyActuals(storeId, actuals);
   }
+  async function oneDay(iso) {
+    var r;
+    try { r = await syncToastDay(guid, iso.replace(/-/g,'')); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    if (r && r.ldSaved === false) ldDays[iso] = 1;
+    if (r && r.ok) { applyDay(iso, r); delete failed[iso]; return 'ok'; }
+    var k = toastFailKind(r);
+    // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
+    var msg = r ? (r.dbError ? String(r.dbError) : (String(r.error || '') + (r.detail ? ' ' + String(r.detail) : ''))) : '';
+    failed[iso] = { kind: k, msg: msg.slice(0, 160) };
+    return k;
+  }
+  function slower(k) { return k === 'limit' || k === 'auth' || k === 'server' || k === 'network'; }
+  function nFail() { return Object.keys(failed).length; }
+  for (var i=0; i<dates.length; i++) {
+    var iso = dates[i];
+    if (stopped) failed[iso] = { kind: 'session', msg: stopped, skipped: true };
+    else {
+      var k = await oneDay(iso);
+      if (k === 'session') stopped = failed[iso].msg || 'session';
+      else if (k === 'ok') gap = Math.max(250, Math.floor(gap / 2));
+      else if (slower(k)) gap = Math.min(Math.max(gap * 2, 3000), 15000);
+    }
+    if (onProgress) onProgress(i+1, total, i+1-nFail(), nFail());
+    // レート制限対策: 少し待つ（断られたら長く）
+    if (!stopped && i < dates.length - 1) await _toastRangeSleep(gap);
+  }
+  var again = Object.keys(failed).filter(function(x){ return failed[x].kind !== 'session' && failed[x].kind !== 'db'; }).sort();
+  var retried = 0, recovered = 0;
+  if (again.length && !stopped && !(opts && opts.noRetry)) {
+    retried = again.length;
+    if (onProgress) onProgress(total, total, total-nFail(), nFail(), { phase: 'wait', i: 0, n: again.length });
+    await _toastRangeSleep(again.some(function(x){ return failed[x].kind === 'limit' || failed[x].kind === 'auth'; }) ? 15000 : 5000);
+    gap = Math.max(gap, 1200);
+    for (var j=0; j<again.length; j++) {
+      var k2 = await oneDay(again[j]);
+      if (k2 === 'ok') { recovered++; gap = Math.max(1200, Math.floor(gap / 2)); }
+      else if (k2 === 'session') { stopped = failed[again[j]].msg || 'session'; }
+      else if (slower(k2)) gap = Math.min(Math.max(gap * 2, 3000), 15000);
+      if (onProgress) onProgress(total, total, total-nFail(), nFail(), { phase: 'retry', i: j+1, n: again.length });
+      if (stopped) break;
+      if (j < again.length - 1) await _toastRangeSleep(gap);
+    }
+  }
+  fail = nFail(); ok = total - fail;
+  var failures = Object.keys(failed).sort().map(function(x){ return { date: x, kind: failed[x].kind, msg: failed[x].msg, skipped: !!failed[x].skipped }; });
+  var dbErrLast = null; failures.forEach(function(f){ if (f.kind === 'db') dbErrLast = f.msg; });
+  var ldMissing = Object.keys(ldDays).filter(function(x){ return !failed[x]; }).length;
   // 月次実績も更新
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(getDailyActuals(storeId)).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
-  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast };
+  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast, failures: failures, retried: retried, recovered: recovered };
 }
 
 /* ============================================================
@@ -36701,7 +36760,7 @@ function openRangeModal(storeId, guid) {
   var jan1 = new Date().getFullYear() + '-01-01';
   var allStores = getVisibleStores().filter(function(x){ return x.toastGuid; });
   openModal(`<div class="modal-title">期間一括取り込み — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり約0.3秒）。</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり数秒。Toast に断られたら間をあけて続け、最後に失敗した日をもう一度取ります）。</p>
     <div class="form-row">
       <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="rg-from" type="date" value="${jan1}"></div>
       <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="rg-to" type="date" value="${today}"></div>
@@ -36715,38 +36774,76 @@ function openRangeModal(storeId, guid) {
     <button class="btn btn-primary" id="rg-start" onclick="doRangeImport('${storeId}','${guid}')"><i class="ti ti-download"></i> 取り込み開始</button></div>`);
 }
 /* FUNERGY_FINANCIAL_CALLER_FIXES_V1 */
-async function doRangeImport(storeId, guid) {
-  var from = document.getElementById('rg-from').value;
-  var to = document.getElementById('rg-to').value;
-  if (!from || !to) { alert('期間を指定してください'); return; }
-  if (from > to) { alert('開始日が終了日より後になっています'); return; }
-  var useAll = !!(document.getElementById('rg-all')||{}).checked;
-  var targets = useAll ? getVisibleStores().filter(function(x){ return x.toastGuid; })
-                       : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
+/* v1160：失敗した日の理由と日付を出す。失敗した日が残ったら「失敗した日だけ取り込み直す」で、その日だけを取り直す */
+var _rgLastFailed = null;   // { from, to, stores: [{ id, name, toastGuid, dates }] }
+function toastFailSummaryHtml(failures) {
+  var list = Array.isArray(failures) ? failures : [];
+  if (!list.length) return '';
+  var cnt = {}, order = [];
+  list.forEach(function(f){ if (!cnt[f.kind]) { cnt[f.kind] = 0; order.push(f.kind); } cnt[f.kind]++; });
+  var why = order.map(function(k){ return (TOAST_FAIL_LABEL[k] || k) + ' ' + cnt[k] + '日'; }).join('・');
+  var days = list.map(function(f){ return f.date.slice(5).replace('-', '/'); });
+  var shown = days.slice(0, 12).join('、') + (days.length > 12 ? ' ほか' + (days.length - 12) + '日' : '');
+  var first = list.find(function(f){ return f.msg && !f.skipped; }) || list[0];
+  var html = '<div style="font-size:11px;color:var(--yellow);padding-left:10px">理由：' + escapeHtml(why) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);padding-left:10px">失敗した日：' + escapeHtml(shown) + '</div>';
+  if (first && first.msg) html += '<div style="font-size:10px;color:var(--muted);padding-left:10px;word-break:break-all">' + escapeHtml(first.msg) + '</div>';
+  return html;
+}
+async function doRangeImport(storeId, guid, onlyFailed) {
+  var from, to, targets, last = onlyFailed ? _rgLastFailed : null;
+  if (onlyFailed) {
+    if (!last || !last.stores || !last.stores.length) { alert('取り込み直す日がありません'); return; }
+    from = last.from; to = last.to; targets = last.stores;
+  } else {
+    from = document.getElementById('rg-from').value;
+    to = document.getElementById('rg-to').value;
+    if (!from || !to) { alert('期間を指定してください'); return; }
+    if (from > to) { alert('開始日が終了日より後になっています'); return; }
+    var useAll = !!(document.getElementById('rg-all')||{}).checked;
+    targets = useAll ? getVisibleStores().filter(function(x){ return x.toastGuid; })
+                     : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
+  }
   if (!targets.length) { alert('対象店舗がありません'); return; }
   var btn = document.getElementById('rg-start');
   if (btn) { btn.disabled = true; btn.innerHTML = '取り込み中...'; }
   var prog = document.getElementById('rg-progress');
-  var sumOk=0, sumFail=0, sumSales=0, ldMissing=0, dbError=null, lines=[];
+  var sumOk=0, sumFail=0, sumSales=0, ldMissing=0, dbError=null, lines=[], sumRetried=0, sumRecovered=0, session=false;
+  var next = { from: from, to: to, stores: [] };
   for (var si=0; si<targets.length; si++) {
     var st = targets[si];
-    var head = targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] '+escapeHtml(st.name)+'<br>') : '';
-    var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail){
-      if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
-    });
+    var head = (onlyFailed ? '失敗した日だけ取り込み直し：' : '') + (targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] ') : '') + escapeHtml(st.name) + '<br>';
+    var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail, info){
+      var phase = '';
+      if (info && info.phase === 'wait') phase = '<br><span style="color:var(--muted)">失敗した ' + info.n + ' 日を、少し待ってからもう一度取ります…</span>';
+      else if (info && info.phase === 'retry') phase = '<br><span style="color:var(--muted)">失敗した日をもう一度（' + info.i + '/' + info.n + '）</span>';
+      if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/Math.max(1,total)*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）` + phase;
+    }, onlyFailed ? { dates: st.dates } : undefined);
     if (!res || res.error) { sumFail++; dbError=(res&&res.error)||'保存結果を確認できません'; lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(dbError)+'</div>'); continue; }
     sumOk += (res.ok||0); sumFail += (res.fail||0); sumSales += (res.sumSales||0);
+    sumRetried += (res.retried||0); sumRecovered += (res.recovered||0);
     ldMissing += (res.ldMissing||0); if (res.dbError) dbError = res.dbError;
-    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')+'</div>');
+    var fl = Array.isArray(res.failures) ? res.failures : [];
+    if (fl.some(function(f){ return f.kind === 'session'; })) session = true;
+    var again = fl.filter(function(f){ return f.kind !== 'session' && f.kind !== 'db'; }).map(function(f){ return f.date; });
+    if (again.length) next.stores.push({ id: st.id, name: st.name, toastGuid: st.toastGuid, dates: again });
+    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')
+      +((res.recovered||0)?('（失敗した日のうち '+res.recovered+' 日は、もう一度取って取れました）'):'')+'</div>' + toastFailSummaryHtml(fl));
   }
+  _rgLastFailed = next.stores.length ? next : null;
   var html = lines.join('') + `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`;
   // ★ DB保存の問題を必ず表に出す（以前サイレント失敗で売上が消えたため）
   if (dbError) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> DB保存エラー: ${escapeHtml(dbError)}</div>`;
-  else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると、ランチ/ディナー別リピート率が使えます。</div>`;
+  else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると（GitHub の db/toast-sales-ld-columns.sql）、ランチ/ディナー別リピート率が使えます。</div>`;
+  if (session) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> アプリのログインを確かめられなかったため、残りの日は取り込んでいません。ログアウトしてログインし直してから、もう一度取り込んでください。</div>`;
+  if (_rgLastFailed) {
+    var nDays = _rgLastFailed.stores.reduce(function(a, x){ return a + x.dates.length; }, 0);
+    html += `<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="rg-retry" onclick="doRangeImport('','',1)"><i class="ti ti-refresh"></i> 失敗した日だけ取り込み直す（${nDays}日）</button></div>`;
+  }
   if (prog) prog.innerHTML = html;
   showToast(`期間取り込み完了: ${sumOk}日分`, sumFail?'warning':'success');
   if (btn) { btn.disabled=false; btn.innerHTML='取り込み開始'; }
-  if (!dbError && !ldMissing) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
+  if (!dbError && !ldMissing && !sumFail) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
   else renderPage('budget');
 }
 
@@ -45576,7 +45673,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1159';
+const APP_VERSION = '1160';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
