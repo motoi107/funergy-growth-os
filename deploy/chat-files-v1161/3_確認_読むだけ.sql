@@ -12,7 +12,10 @@ with pol as (
      (coalesce(p.with_check, '') ~ '^\(bucket_id = ''[^'']+''::text\)$' or coalesce(p.with_check, '') ~ '^\(\(bucket_id = ''[^'']+''::text\) AND .+\)$')
        and substring(p.with_check from '^\(\(?bucket_id = ''([^'']+)''::text\)') <> 'chat-files' as w_ok) x
   where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'
-     and p.roles && array['public','anon','authenticated']::name[])
+     -- #155・#156 の Codex（6880266210・6880661922）：anon・authenticated が入っているロール宛ての決まりも公開の鍵に効く
+     and (p.roles && array['public','anon','authenticated']::name[]
+          or exists (select 1 from unnest(p.roles) pr(n) join pg_roles g on g.rolname = pr.n
+                      join pg_roles u on u.rolname in ('anon','authenticated') where pg_has_role(u.oid, g.oid, 'MEMBER'))))
 select '1. 添付の表（chat_files）の行の守り（RLS）が ON' as check_name,
   case when (select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'chat_files') then 'OK' else 'NG（2 をもう一度流す）' end as result
 union all select '2. ブラウザの鍵では添付の表を読めない・書けない',
@@ -44,6 +47,11 @@ union all select '8. Storage に chat-files を開ける決まり・置き場所
     then 'NG（Claude に決まりの名前を：' || (select string_agg(policyname, ', ' order by policyname) from pol where chat or loose) || '。公開の鍵で添付を読めるおそれ）' else 'OK' end
 union all select '9. 申請の段階 2 が入ったまま（添付のあとに前の申請の SQL を流していない）',
   case when (public.wr_stage('{}'::jsonb)->>'stage')::int >= 5 then 'OK' else 'NG（deploy/work-requests-v1155 の ② → チャットの ② → この 2）' end
+union all select '10. Storage の行の守り（RLS）が効いている（OFF・RLS を飛ばせる公開の鍵だと、決まりに関係なく chat-files も読めてしまう）',
+  case when to_regclass('storage.objects') is null then '—（Storage が無い）'
+    when coalesce((select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'), false)
+     and not exists (select 1 from pg_roles r where r.rolname in ('anon','authenticated') and (r.rolbypassrls or r.rolsuper)) then 'OK'
+    else 'NG（Claude にこの表を）' end
 union all select '（参考）送ったファイルの数',
   case when to_regclass('public.chat_files') is null then '—（2 がまだ）'
     else (xpath('/table/row/n/text()', query_to_xml($q$select count(*) n from public.chat_files where status = 'sent'$q$, false, false, '')))[1]::text end

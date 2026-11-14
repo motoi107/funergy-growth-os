@@ -27,11 +27,20 @@ end $$;
 --   PostgreSQL が書き直した式の形で、(bucket_id = 'x'::text) か ((bucket_id = 'x'::text) AND …)＝ほかの条件と AND でつないだものだけを「限っている」とみなす。
 --   それ以外（<>・OR・IN・関数・式が無い）は分からないものとして止める（ほかの置き場所の決まりは消さない・Claude に知らせてもらう）。
 --   INSERT は with_check、SELECT・DELETE は qual、UPDATE・ALL は qual と（あれば）with_check を見る。RESTRICTIVE の決まりは許さないので見ない。
+-- #155・#156 の Codex（6880266210・6880661922）：名前が public・anon・authenticated の決まりだけでは足りない。
+--   anon・authenticated が入っているロール（grant storage_readers to anon など・継承でも SET ROLE でも）宛ての決まりも公開の鍵に効く → pg_has_role（MEMBER）で同じに見る。
+--   storage.objects の行の守り（RLS）が OFF・anon か authenticated が RLS を飛ばせる（BYPASSRLS）なら、決まりに関係なく読める → 止める。
 do $$ declare v text; begin
  if to_regclass('storage.objects') is not null then
+  if not coalesce((select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'), false)
+     or exists (select 1 from pg_roles r where r.rolname in ('anon','authenticated') and (r.rolbypassrls or r.rolsuper)) then
+   raise exception 'STOP: Storage（storage.objects）の行の守り（RLS）が効いていません（公開の鍵で chat-files も読めてしまう）。Claude に知らせてください（何も変えていません）';
+  end if;
   select string_agg(p.policyname, ', ' order by p.policyname) into v from pg_policies p
    where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'
-     and p.roles && array['public','anon','authenticated']::name[]
+     and (p.roles && array['public','anon','authenticated']::name[]
+          or exists (select 1 from unnest(p.roles) pr(n) join pg_roles g on g.rolname = pr.n
+                      join pg_roles u on u.rolname in ('anon','authenticated') where pg_has_role(u.oid, g.oid, 'MEMBER')))
      and (coalesce(p.qual, '') || coalesce(p.with_check, '')) like '%chat-files%';
   if v is not null then raise exception 'STOP: Storage に chat-files を開ける決まりがあります（%）。Claude に知らせてください（何も変えていません）', v; end if;
   select string_agg(p.policyname, ', ' order by p.policyname) into v from pg_policies p
@@ -41,7 +50,9 @@ do $$ declare v text; begin
      (coalesce(p.with_check, '') ~ '^\(bucket_id = ''[^'']+''::text\)$' or coalesce(p.with_check, '') ~ '^\(\(bucket_id = ''[^'']+''::text\) AND .+\)$')
        and substring(p.with_check from '^\(\(?bucket_id = ''([^'']+)''::text\)') <> 'chat-files' as w_ok) x
    where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'
-     and p.roles && array['public','anon','authenticated']::name[]
+     and (p.roles && array['public','anon','authenticated']::name[]
+          or exists (select 1 from unnest(p.roles) pr(n) join pg_roles g on g.rolname = pr.n
+                      join pg_roles u on u.rolname in ('anon','authenticated') where pg_has_role(u.oid, g.oid, 'MEMBER')))
      and (case p.cmd when 'INSERT' then x.w_ok when 'SELECT' then x.q_ok when 'DELETE' then x.q_ok
             else x.q_ok and (p.with_check is null or x.w_ok) end) is not true;
   if v is not null then raise exception 'STOP: Storage（storage.objects）に置き場所を限らない決まりがあります（%）。Claude に知らせてください（何も変えていません）', v; end if;

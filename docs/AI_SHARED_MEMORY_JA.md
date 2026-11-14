@@ -1,5 +1,26 @@
 # Claude / Codex 共通記録
 
+## 2026-11-14 Codex P2 2 つの直し（ブランチ `claude/codex-p2-sql`・#157 の上・SQL と試験だけ・アプリ v1162 のまま）
+
+- Moto さん 11/14 07:29 HST（前の引き継ぎの 3 つ）：1 はい（手順の E＝Google の SQL・確認・関数 google-reviews を入れた）／2 はい（端末は 1162）／3「10月入れました」（10 月版の PL を取り込んだ。10 月版には 1〜10 月が入っていて、8 月版の月も置き換えるので、8 月版を先に入れていなくても数は同じ＝`docs/PL_IMPORT_V1162_JA.md` の試験）。
+- 済（Claude）P2 #155・#156 の Codex（6880266210・6880661922）：Storage の確かめ（`20261124090000` の最初・① の 3・4・③ の 8）が、anon・authenticated が入っているロール宛ての決まりも `pg_has_role(…, 'MEMBER')` で見る。storage.objects の RLS が OFF・anon か authenticated が BYPASSRLS なら止める（① の 6・③ の 10・新しい）。`docs/CHAT_FILES_V1161_JA.md` の 7。
+- 済（Claude）P2 #153 の Codex（6880375329）：`wr_s3_import` が書く前に予算の店・月の鍵（`wr_bg:<店>:<月>`）を全部文字の順で取ってから確かめる（同じ店・月の承認待ちは 1 件）。`docs/WORKCENTER_APPROVALS_STAGE3_JA.md` の「11/14 の直し」。
+- 試験（合成データ）：`tests/wc-stage3-lock-pg-v1163.test.mjs`（本物の PostgreSQL の 2 セッション・3 件。直す前の SQL で 3 件とも落ちる・確かめるときだけ鍵を取る形で 3 件目が落ちる）・chat-files deploy 8・stage3 deploy＋server＋app 15。CI に本物の PostgreSQL の段を足した（skipped 0 を確かめる）。
+- 本番に入れる：`deploy/codex-p2-20261114/手順.md`（添付の ③ を読むだけで流す → 段階 3 の ①②③）。関数・アプリの貼り替えは無い。済（Moto さん 11/14 07:48 HST「全部入れました、問題なし」）：この PR の前に、Claude が直接渡した同じ中身の 4 ファイル（添付の ③・段階 3 の ①②③）を本番に流した＝添付の ③ の 8・10 が OK（ロール経由の決まり・RLS の OFF・BYPASSRLS は本番に無い＝公開の鍵で chat-files は読めない）・段階 3 の ③ の 6 が OK（直した wr_s3_import が本番に入った）。
+- レビュー：まだ（Codex に最新の head を見てもらう）。
+- 開いたまま（あとで）：P3 2 つ（添付の一覧の文の英語 `chat_files_label`・Google の返信の有無が同じ更新時刻で戻りうる）・UI案76・区分の分からない 3 科目・Google Cloud の準備と Business Profile の接続。
+
+## 2026-11-14 引き継ぎ：#151〜#156 はマージ済み・本番は v1162（Codex の blocked が残ったまま）
+
+- Moto さんが 11/14 06:36〜06:38 HST に #151（head `1081f76`）→ #152（`dc23168`）→ #153（`f71df70`）→ #154（`4dedf3e`）→ #155（`ba9907c`）→ #156（`1ca59cf`）をマージ（main `2647441`・APP_VERSION・SW_BUILD 1162・Pages の公開は成功・Growth OS checks はこの記録の時点で実行中）。Moto さん 06:39 HST「マージも全て終わりました／次のチャットで続きやります」。手順の E（Google の SQL をもう一度・確認・関数 google-reviews の差し替え）を入れたかは、はっきりした報告が無い（次のチャットで確かめる）。
+- **最新の head への Codex の判定はどれも blocked／manual のままマージされた**（AI の判定はマージの承認ではない）。開いている指摘（次のチャットで直す）：
+  1. **P2（#155・#156 の Codex 6880266210・6880661922）**：添付の SQL（`20261124090000`）と配布の ①②③ の Storage の確かめは、`public`・`anon`・`authenticated` の名前が直接書いてある決まりだけを見る。anon が入っている別のロール宛ての PERMISSIVE の決まり（例：`storage_readers` に `using (true)`）は見落とし、合成 DB で chat-files の行を anon で読めた。本番にその形があるとは確かめていない（11/14 05:39 HST に Moto さんが貼った表は、直接 anon と書いた 3 つだけを見る問い合わせだった）。次：本番を読むだけの SQL（anon・authenticated が入っているロールと、そのロール宛ての storage.objects の決まり）→ 確かめを、継承したロールも見る（`pg_has_role` など）か分からない形は止めるに直す・①②③ に負例の試験。
+  2. **P2（#153 の Codex 6880375329・#156 でも）**：段階 3 の旧予算の移行（`wr_s3_import`）は移行のロックだけで、通常の予算申請（`wr_bg:<店>:<月>`）と同じ店・月で排他しない。重なると承認待ちが 2 件できうる（コード上の指摘・2 セッションの再現は未実施）。次：移行も店・月のロックを（決まった順で）取ってから確かめる・本物の PostgreSQL の 2 セッションの試験。
+  3. P3（#155 の Codex）：英語の画面で、本文の無い添付のチャットの一覧の文（SQL の `chat_files_label`）が「写真 1 枚」と日本語のまま。
+  4. P3（#151 の Codex 6880096590）：同じ Google の更新時刻なら、古い取り込みが返信の有無を戻せる（返信で updateTime が変わらないなら起きる・実 API は未確認）。
+  5. P3：3 つの仕様の末尾の空行 → この記録の PR で直した。
+- 次のチャットでやること（Moto さんに聞く・自分から持ち出しすぎない）：E を入れたか／端末を 1162 に／PL は 8 月版 → 10 月版の順に取り込んだか／上の P2 2 つの直し（サーバーは SQL を流し直す）／Google Cloud の準備と Business Profile の接続／UI案76（月別推移・取り込みの前の差分・要分類）／区分の分からない 3 科目。
+
 ## 2026-11-14 #151〜#156：本番に SQL・関数を入れた・Codex の blocked（#155・#156）を直した（Claude・アプリは未マージ）
 
 - 本番（Moto さん 11/14 05:21〜05:37 HST）：`deploy/all-v1157-v1162/手順.md` の 01〜17（チャット・Google の口コミ・段階 3・添付の SQL、関数 work-requests v1161・google-reviews・cron・hyper-worker）を入れた。最初は 08（段階 3）と 11（添付）が入っておらず 09 が NG・12 がエラー（`chat_files does not exist`）→ 流し直して「全部終わりました」（09・12 の表は見ていない）。アプリは main（v1156）のまま＝新しい機能は使われていない・添付のファイルは 0。手順の 17（`db/toast-sales-ld-columns.sql`）を「読むだけ」と書いたのは誤り（列を足す SQL・行は変えない）→ 直した。

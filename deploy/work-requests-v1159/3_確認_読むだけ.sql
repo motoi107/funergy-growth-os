@@ -10,5 +10,7 @@ union all select '4. ブラウザの鍵では wr_ の関数を呼べない',
     and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) = 0 then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '5. wr_s3_ の関数はどれも security invoker',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_s3\_%' and p.prosecdef) = 0 then 'OK' else 'NG（2 をもう一度流す）' end
+union all select '6. 前の記録を写すときも、予算は通常の申請と同じ店・月の鍵を取る（#153 の Codex・11/14 の直し）',
+  case when (select prosrc from pg_proc where oid = to_regprocedure('public.wr_s3_import(jsonb)')) like '%''wr_bg:''%' then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '（参考）写した承認待ち', (select count(*)::text from public.wr_requests where legacy and legacy_info->>'src' = 'approvals' and coalesce(legacy_info->>'hist', '') <> 'true')
 union all select '（参考）写した履歴', (select count(*)::text from public.wr_requests where legacy and legacy_info->>'src' = 'approvals' and legacy_info->>'hist' = 'true');
