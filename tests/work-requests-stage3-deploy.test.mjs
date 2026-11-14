@@ -61,4 +61,42 @@ test('before stage 2 the pre-check says STOP and the SQL changes nothing; on top
   assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('4.'), /^NG/);
   await pg.exec('revoke execute on function public.wr_s3_import(jsonb) from anon; alter function public.wr_s3_kind(text) security definer');
   assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('5.'), /^NG/);
+  // #153 の Codex（6880375329）：店・月の鍵を取らない前の wr_s3_import（11/14 に本番へ入った形）に戻っていたら 6 が NG
+  await pg.exec('alter function public.wr_s3_kind(text) security invoker');
+  assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('6.'), 'OK');
+  const before = M('20261123090000_work_requests_stage3').match(/create or replace function public\.wr_s3_import[\s\S]*?\nend \$\$;\n/)[0]
+    .replace(/ -- #153 の Codex（6880375329）[\s\S]*? end loop;\n/, '').replace(/   if v_kind = 'budget' and not v_hist and not \(\('wr_bg:'[^\n]*\n/, '');
+  assert.doesNotMatch(before, /wr_bg/);
+  await pg.exec(before);
+  assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('6.'), /^NG/);
+  await pg.exec(read('2_SQL_段階3.sql'));
+  assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
+});
+
+// 11/14 の直し（#153 の Codex 6880375329）は、本番（チャット・Google の口コミ・段階 3・添付が入ったあと）でこの ② を流し直して入れる。
+// 流し直しても、添付・チャット・Google の確認は OK のまま（ほかの関数を前に戻さない）・写した記録は変えない
+test('re-running this SQL in production (after the chat, Google reviews and attachments SQL) keeps their checks OK and changes no copied record', async () => {
+  const pg = await base();
+  await pg.exec(`create schema storage;
+    create table storage.buckets(id text primary key, name text, public boolean default false, file_size_limit bigint, allowed_mime_types text[]);
+    create table storage.objects(id uuid primary key default gen_random_uuid(), bucket_id text, name text);
+    alter table storage.objects enable row level security;
+    create policy "invoices read" on storage.objects for select to anon using (bucket_id = 'invoices');`);
+  for (const f of [...WR, S2, '20261121090000_chat', '20261122090000_google_reviews']) await pg.exec(M(f));
+  await pg.exec(S3);
+  await pg.exec(M('20261124090000_chat_files'));
+  await pg.exec(`insert into public.wr_requests(code, kind, status, store_id, requester_name, payload, ap_id, legacy, legacy_ref, legacy_info, submitted_at)
+    values ('BG-2610-0001', 'budget', 'pending', 'S1', 'x', '{"ym":"2026-12","ap_id":"ap1792000000009","title":"t","total_cents":1}', 'ap1792000000009', true, 'ap:ap1792000000009', '{"src":"approvals","id":"ap1792000000009"}', now())`);
+  const snap = async () => (await pg.query(`select to_jsonb(r) - 'updated_at' v from public.wr_requests r order by code`)).rows.map(r => JSON.stringify(r.v));
+  const before = await snap();
+  const checks = [['work-requests-v1159', '3_確認_読むだけ.sql'], ['chat-files-v1161', '3_確認_読むだけ.sql'], ['chat-v1156', '3_確認_読むだけ.sql'], ['google-reviews-v1157', '3_確認_読むだけ.sql']];
+  const run = async () => { const o = {}; for (const [d, f] of checks) o[d] = (await pg.query(fs.readFileSync(new URL('../deploy/' + d + '/' + f, import.meta.url), 'utf8'))).rows
+    .filter(r => !/^（参考）/.test(r.check_name)).map(r => r.check_name.split(' ')[0] + r.result); return o; };
+  const was = await run();
+  for (const d of ['work-requests-v1159', 'chat-files-v1161']) assert.ok(was[d].every(x => /^[0-9.]+OK/.test(x)), d + ' ' + JSON.stringify(was[d]));
+  await pg.exec(read('1_最初に確認_読むだけ.sql'));
+  await pg.exec(read('2_SQL_段階3.sql'));
+  assert.deepEqual(await run(), was, 'every check reads the same after the re-run');
+  assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
+  assert.deepEqual(await snap(), before, 'no request changed');
 });

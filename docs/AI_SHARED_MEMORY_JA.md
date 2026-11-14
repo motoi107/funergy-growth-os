@@ -1,5 +1,15 @@
 # Claude / Codex 共通記録
 
+## 2026-11-14 Codex P2 2 つの直し（ブランチ `claude/codex-p2-sql`・#157 の上・SQL と試験だけ・アプリ v1162 のまま）
+
+- Moto さん 11/14 07:29 HST（前の引き継ぎの 3 つ）：1 はい（手順の E＝Google の SQL・確認・関数 google-reviews を入れた）／2 はい（端末は 1162）／3「10月入れました」（10 月版の PL を取り込んだ。10 月版には 1〜10 月が入っていて、8 月版の月も置き換えるので、8 月版を先に入れていなくても数は同じ＝`docs/PL_IMPORT_V1162_JA.md` の試験）。
+- 済（Claude）P2 #155・#156 の Codex（6880266210・6880661922）：Storage の確かめ（`20261124090000` の最初・① の 3・4・③ の 8）が、anon・authenticated が入っているロール宛ての決まりも `pg_has_role(…, 'MEMBER')` で見る。storage.objects の RLS が OFF・anon か authenticated が BYPASSRLS なら止める（① の 6・③ の 10・新しい）。`docs/CHAT_FILES_V1161_JA.md` の 7。
+- 済（Claude）P2 #153 の Codex（6880375329）：`wr_s3_import` が書く前に予算の店・月の鍵（`wr_bg:<店>:<月>`）を全部文字の順で取ってから確かめる（同じ店・月の承認待ちは 1 件）。`docs/WORKCENTER_APPROVALS_STAGE3_JA.md` の「11/14 の直し」。
+- 試験（合成データ）：`tests/wc-stage3-lock-pg-v1163.test.mjs`（本物の PostgreSQL の 2 セッション・3 件。直す前の SQL で 3 件とも落ちる・確かめるときだけ鍵を取る形で 3 件目が落ちる）・chat-files deploy 8・stage3 deploy＋server＋app 15。CI に本物の PostgreSQL の段を足した（skipped 0 を確かめる）。
+- 本番に入れる：`deploy/codex-p2-20261114/手順.md`（添付の ③ を読むだけで流す → 段階 3 の ①②③）。関数・アプリの貼り替えは無い。
+- レビュー：まだ（Codex に最新の head を見てもらう）。
+- 開いたまま（あとで）：P3 2 つ（添付の一覧の文の英語 `chat_files_label`・Google の返信の有無が同じ更新時刻で戻りうる）・UI案76・区分の分からない 3 科目・Google Cloud の準備と Business Profile の接続。
+
 ## 2026-11-14 引き継ぎ：#151〜#156 はマージ済み・本番は v1162（Codex の blocked が残ったまま）
 
 - Moto さんが 11/14 06:36〜06:38 HST に #151（head `1081f76`）→ #152（`dc23168`）→ #153（`f71df70`）→ #154（`4dedf3e`）→ #155（`ba9907c`）→ #156（`1ca59cf`）をマージ（main `2647441`・APP_VERSION・SW_BUILD 1162・Pages の公開は成功・Growth OS checks はこの記録の時点で実行中）。Moto さん 06:39 HST「マージも全て終わりました／次のチャットで続きやります」。手順の E（Google の SQL をもう一度・確認・関数 google-reviews の差し替え）を入れたかは、はっきりした報告が無い（次のチャットで確かめる）。

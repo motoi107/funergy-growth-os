@@ -10,6 +10,7 @@
 --   予算：写した履歴（決まったもの）は、そのあとの予算の申請の版の元にしない（wr_s3_hist）。
 --   wr_stage は 6（アプリは 6 のとき前の「承認」タブを閉じる）。
 -- 段階 2 の SQL（20261120090000）をあとで流し直すと wr_submit_s2・wr_stage が前に戻るので、この SQL も流し直す。
+-- #153 の Codex（6880375329・本番に入ったあとの直し 11/14）：写すときも予算は通常の申請と同じ店・月の鍵を取る（同じ店・同じ月の承認待ちを 1 件に）。流し直すだけでよい（記録は変えない）。
 
 do $$ begin
  if to_regprocedure('public.wr_s2_steps(text,text,text)') is null or to_regprocedure('public.wr_submit_s2(jsonb)') is null then
@@ -73,12 +74,22 @@ create or replace function public.wr_s3_import(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.wr_actor(p); it jsonb; x jsonb; v_ap text; v_kind text; v_store text; v_st text; v_res text; v_day date; n jsonb; v_pl jsonb;
  v_cents bigint; v_name text; v_emp text; v_steps text[]; v_at timestamptz; v_now timestamptz := now(); r public.wr_requests; v_hist boolean;
- o jsonb := '[]'::jsonb; v_known jsonb; v_marks jsonb; v_kcode text;
+ o jsonb := '[]'::jsonb; v_known jsonb; v_marks jsonb; v_kcode text; v_bg text[] := '{}'::text[]; v_k text;
 begin
  if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
  if not public.wr_s2_live() then raise exception 'not_live'; end if;
  if jsonb_typeof(p->'items') <> 'array' or jsonb_array_length(p->'items') > 100 then raise exception 'bad_value'; end if;
  perform pg_advisory_xact_lock(hashtext('wr_s3_import'));
+ -- #153 の Codex（6880375329）：予算は、通常の予算の申請（wr_submit_s2）と同じ店・月の鍵（wr_bg:<店>:<月>）を取ってから
+ --   「同じ店・同じ月の申請があるか」を確かめる（取らないと、同時に来たとき両方が「無い」と見て承認待ちが 2 件になる）。
+ --   鍵は何も書く前に、予算の行の分を全部、決まった順（文字の順）で取る（途中で取ると、番号（wr_counters）の行の鍵と待ち合って止まりうる）。
+ --   wr_s2_norm は ym を変えないので、ここで取る鍵とあとで確かめる店・月は同じ（違えば bad_value）。
+ for v_k in select distinct 'wr_bg:' || (e->>'store_id') || ':' || (e->'payload'->>'ym') from jsonb_array_elements(p->'items') e
+   where jsonb_typeof(e) = 'object' and e->>'kind' = 'budget' and coalesce(e->>'store_id', '') ~ '^[A-Za-z0-9_-]{1,30}$'
+     and jsonb_typeof(e->'payload') = 'object' and coalesce(e->'payload'->>'ym', '') ~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' order by 1 loop
+  perform pg_advisory_xact_lock(hashtext(v_k));
+  v_bg := v_bg || v_k;
+ end loop;
  for it in select jsonb_array_elements(p->'items') loop
   if jsonb_typeof(it) <> 'object' then raise exception 'bad_value'; end if;
   v_ap := it->>'ap_id';
@@ -109,7 +120,8 @@ begin
    if v_pl->>'ap_id' is distinct from v_ap then raise exception 'bad_value'; end if;
    -- 履歴の予算：いまの予算の額は承認したときの額と違うことがある → 額と日ごとは残さない
    if v_hist then v_pl := v_pl - 'days' - 'total_cents' - 'basis' - 'focus'; v_cents := null; end if;
-   -- 承認待ちの予算：同じ店・同じ月にもう申請があれば、そちら（段階 2 で出た新しい版）を使う
+   -- 承認待ちの予算：同じ店・同じ月にもう申請があれば、そちら（段階 2 で出た新しい版）を使う（店・月の鍵は最初に取った）
+   if v_kind = 'budget' and not v_hist and not (('wr_bg:' || v_store || ':' || (v_pl->>'ym')) = any(v_bg)) then raise exception 'bad_value'; end if;
    if v_kind = 'budget' and not v_hist and exists (select 1 from public.wr_requests q where q.kind = 'budget' and q.store_id = v_store
        and q.payload->>'ym' = v_pl->>'ym' and q.status not in ('withdrawn','rejected') and not public.wr_s3_hist(q)) then v_res := 'known'; end if;
   end if;
