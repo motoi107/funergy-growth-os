@@ -6,7 +6,7 @@
 2. 済（Codex #160 6882878159・6882938125）：blocked・P2 1（カードの読み直しが止まらない）・P3 2（busy が戻らない・Office Crew Leader の記録）。済（Claude 11/14・`610b353`）：3 つとも直した。次（Codex）：最新の head の再レビュー。
 3. 済（Moto さん）：#158・#159 をマージ（#159 は Storage の持ち主の直しの前・その直しは #160 だけ）。次（Moto さん）：`deploy/expense-g2-v1164/手順.md`（①②③）→ この PR → 端末を 1164 に → 本番の G2 で 1 件ずつ出して GM・経理まで見る。
 4. 済（Claude 11/14）：依頼書の UI 案＝UI案77。済（Moto さん 09:29 HST）：1A・2A・3A・4B・5A・6A。済（Claude・ブランチ `claude/wr-approve-1165`）：v1165（SQL `20261126090000`・関数 fn 8・アプリ・`docs/WR_APPROVE_V1165_JA.md`・入れる一式 `deploy/wr-approve-v1165/`・試験 21・e2e 17/17・全体は前からの失敗だけ）。PR #161。次：Codex → #160 → #161 → Moto さんが手順.md（関数の非公開の 1 ファイルは、前の v1161 の 1 ファイルを Moto さんにもう一度添付してもらってから作る）。
-5. 済（Claude 11/14）：年間計画の UI 案＝UI案78・チャット改修の UI 案＝UI案79。済（Moto さん 09:29 HST）：UI案78 は 1〜5 A・6 はい／UI案79 は 1〜6 A。次（Claude）：78 → 79 の順に実装（年間計画は 7月・8月の例・1 店 1 確定月で照合）。
+5. 済（Claude 11/14）：年間計画の UI 案＝UI案78・チャット改修の UI 案＝UI案79。済（Moto さん 09:29 HST）：UI案78 は 1〜5 A・6 はい／UI案79 は 1〜6 A。済（Claude・ブランチ `claude/annual-plan-1166`）：UI案78＝v1166（アプリだけ・`docs/ANNUAL_PLAN_V1166_JA.md`・試験 22・わざと壊す 40/41・Chrome 55/55・Store A の 9 月・10 月を今の関数と照合）。次：PR → Codex → #160 → #161 → この PR → 端末を 1166 に → GM が本番の数字を確かめる。次（Claude）：UI案79（チャット）。
 6. Moto さんに確かめる：G1 の事務Crew（Office Crew・Office Staff）は建て替えだけのままでよいか（Office Crew Leader は G2 で 3 種）。G2 にワークセンターを隠しているか（Grade別の非表示ページ）。
 
 ## 2026-11-14 v1163：P3 2 つ（ブランチ `claude/p3-1163`）
