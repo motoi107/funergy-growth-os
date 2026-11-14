@@ -109127,7 +109127,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); mergeMsgs(m, [msg]);
       var r = C.threads[tid];
       if (r) { r.last_seq = Math.max(Number(r.last_seq) || 0, msg.seq); r.last_read = Math.max(Number(r.last_read) || 0, msg.seq); r.last_at = msg.at;
-        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), at:msg.at }; }
+        /* 本文が無ければ数も持つ（サーバーの preview.files と同じ形）→ 日英を切り替えても pvText が今の言葉で出す（#159 の Claude P3） */
+        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), files:msg.body ? undefined : filesCount(msg.files), at:msg.at }; }
       if (C.open === tid) paintPane('bottom'); paintList();
     }, function(e){
       if (g !== C.gen) return;
@@ -109452,13 +109453,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 前の版の関数（添付を知らない）なら、そう言う */
   function fErr(e){ return e && e.code === 'unknown_action' ? errText('files_old') : (e && e.message) || errText(''); }
   function sizeL(n){ n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.max(1, Math.round(n / 1024)) + ' KB' : n + ' B'; }
-  function filesLabel(fs){
-    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, ot = fs.length - ph;
-    if (ph && !ot) return T('写真 ' + ph + ' 枚', ph + ' photo' + (ph > 1 ? 's' : ''));
-    if (!ph && ot === 1) return T('ファイル「' + (fs[0].name || '') + '」', 'File “' + (fs[0].name || '') + '”');
-    if (!ph && ot > 1) return T('ファイル ' + ot + ' 個', ot + ' files');
-    return ph ? T('写真 ' + ph + ' 枚・ファイル ' + ot + ' 個', ph + ' photos, ' + ot + ' files') : '';
+  /* 付けたファイルの数（サーバーの chat_files_count と同じ形：写真・ほか・ほかが 1 つならその名前） */
+  function filesCount(fs){
+    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, oth = fs.filter(function(f){ return f.kind !== 'photo'; });
+    return { ph:ph, ot:oth.length, name:oth.length === 1 ? String(oth[0].name || '') : '' };
   }
+  /* 言い方は一覧（pvText）と同じ 1 つ（「1 photo · 2 files」）。前は英語で「1 photos, 1 files」になっていた */
+  function filesLabel(fs){ var c = filesCount(fs); return c.ph || c.ot ? pvText({ files:c }) : ''; }
   /* 種類を決める（写真は端末で JPEG に縮めるので、名前も .jpg に） */
   W.chatFileClass = function(file){
     if (!file) return { err:'file_type' };
