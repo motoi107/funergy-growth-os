@@ -5584,7 +5584,7 @@ function mdPendingApprovals(stores) {
   try {
     var names = {};
     (stores || []).forEach(function (id) { names[id] = 1; names[mcStoreLabel(id)] = 1; });
-    out = (ls('approvals', []) || []).filter(function (a) {
+    out = ((typeof _apClosed === 'function' && _apClosed()) ? [] : (ls('approvals', []) || [])).filter(function (a) {   /* v1159：前の承認タブを閉じたあとはワークセンターの申請で */
       if (!a || a.status !== 'pending' || a.wrq) return false;   /* v1155：段階 2 の申請はワークセンターの数に */
       if (mcRole() === 'gm') return true;
       if (!a.ref && !a.store) return true;
@@ -6429,7 +6429,10 @@ function groupOfPage(pageId) {
   return groups.find(g=>g.children.includes(pageId)) || groups[0];
 }
 /* v1084: ナビの子ページを今の役職が開けるか。firstAllowedChild・buildNav・navPageAllowed で同じ判定を使う。 */
+/* v1159（段階 3・UI案74 の 3B）：前の「承認」タブ（承認センター）を閉じたか。ワークセンターの申請が段階 3 の SQL・関数で動いているとき（この端末が聞いた答え） */
+function _apClosed(){ try{ return !!(window.wrS3Seen && window.wrS3Seen()); }catch(e){ return false; } }
 function navChildAllowed(pid){
+  if (pid==='approval' && typeof _apClosed==='function' && _apClosed()) return false;   /* v1159：承認センターはメニューから外す（ワークセンターの申請へ） */
   if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
   if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
   if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
@@ -6469,6 +6472,8 @@ function navResolvePage(page){
     else if (budgetTab === 'analysis') budgetTab = 'daily';
   }
   if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests' || workTab === 'tasks')) workTab = 'today';   /* v1088: タスク */
+  /* v1159：前の承認タブを閉じたあとの古い行き先（通知・ボタン・お気に入り）はワークセンターの申請へ */
+  if ((page === 'approval' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'approval')) && typeof _apClosed === 'function' && _apClosed()) { page = 'tasks'; workTab = 'wr'; }
   if (page === 'office_mgr' && typeof officeMgrTab !== 'undefined' && officeMgrTab === 'tasks') officeMgrTab = 'dash';
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, page)) {
     var to = NAV_RETIRED[page];
@@ -21154,7 +21159,7 @@ function _groupColor(id){ return _GROUP_COLOR[id] || 'var(--accent)'; }
    そのときはタブ（グループ）のボタンに出す（前は食材管理の中の小タブに出ていた）。 */
 function navBadgeCount(pid, memo){
   if (pid==='chat') return (typeof chatUnread==='function') ? chatUnread() : 0;   /* v1156：チャットの未読 */
-  if (pid==='approval') return ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq).length;   /* v1155：段階 2 の申請はワークセンターで数える */
+  if (pid==='approval') return (typeof _apClosed==='function' && _apClosed()) ? 0 : ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq).length;   /* v1159：閉じたあとはワークセンターの申請で数える */   /* v1155：段階 2 の申請はワークセンターで数える */
   if (pid==='vacation') return getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   if (pid==='acct_review' || pid==='invoice') {
     var _invAll = memo.inv || (memo.inv = lsSplitRO('invoices'));   /* v1098: 読むだけ */
@@ -23756,7 +23761,7 @@ function renderDashboard() {
   var me = rc.name;
   var today = todayISO();
   /* v1088: タスクは廃止（UI案52 5A）。優先アクション・本日の対応にタスクは出さない */
-  var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq);   /* v1155：段階 2 の申請はワークセンターで */
+  var approvalsAll = (typeof _apClosed==='function' && _apClosed()) ? [] : ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq);   /* v1155：段階 2 の申請はワークセンターで。v1159：閉じたあとはワークセンターの申請で */
   var reqAlerts = [];
   // GM/CEOは全社視点。店舗の必須チェック（店舗タスク）は優先アクション・本日の対応から除外
   if (!['gm','ceo'].includes(curRole)) {
@@ -45571,7 +45576,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1158';
+const APP_VERSION = '1159';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -95407,7 +95412,9 @@ function renderWorkCenter(){
   try{ checkCashTipNotify(); }catch(e){}
   var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可（エラーセンターの中身は CEO・GM・経理・事務Crew）
   var canAnn = true;
-  var pend = ls('approvals',[]).filter(function(a){return a.status==='pending' && !a.wrq;});   /* v1155：段階 2 の申請はワークセンターの「申請」で数える */
+  var apOff = typeof _apClosed==='function' && _apClosed();   /* v1159：前の承認タブを閉じた（タブを出さない・ワークセンターの申請へ） */
+  if (apOff && workTab==='approval') workTab='wr';
+  var pend = apOff ? [] : ls('approvals',[]).filter(function(a){return a.status==='pending' && !a.wrq;});   /* v1155：段階 2 の申請はワークセンターの「申請」で数える */
   if (['gm','ceo','office','office_crew'].indexOf(curRole)<0) {   /* v1087: 事務Crew にも本部の申請 */
     var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
     pend = pend.filter(function(a){ var st=(typeof _approvalStore==='function')?_approvalStore(a):{id:a.store,name:a.store}; return _vi.indexOf(st.id)>=0 || _vn.indexOf(st.name)>=0; });
@@ -95424,7 +95431,7 @@ function renderWorkCenter(){
     <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
     <div class="phase-tab${workTab==='wr'?' active':''}" onclick="setWorkTab('wr')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> ${t('申請','Requests')}${(typeof wrTabBadge==='function')?wrTabBadge():''}</div>
     <div class="phase-tab${workTab==='chat'?' active':''}" onclick="setWorkTab('chat')"><i class="ti ti-messages" style="font-size:12px"></i> ${t('DM・チャット','Chat')}${(typeof chatTabBadge==='function')?chatTabBadge():''}</div>
-    <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
+    ${apOff?'':`<div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>`}
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
     ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
     ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
@@ -106110,7 +106117,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       S.me = me.me; S.live = !!me.live; S.rate = me.rate; S.settingsRev = me.settings_rev || 1; S.people = me.people || null;
       S.s2 = !!me.s2; S.s2At = me.s2_at || ''; S.s2By = me.s2_by || ''; S.fn = Number(me.fn) || 0; S.sql = Number(me.sql) || 0;
       setLiveSeen(S.live, me.settings_at, S.s2);
+      s3Seen(me);
       if (S.s2) s2Retry();
+      if (S.s3) s3Import(me);
       if (S.live) await loadList(g);
     })().then(function(){ if (g === S.gen) S.load = 'done'; }, function(e){
       if (g !== S.gen) return;
@@ -106136,13 +106145,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; S.sel = {}; reloadList(); rerender(); };
   /* v1154（UI案71 の A 案）：絞り込みを変えたら選択を外す（見えていない申請を承認しないため）。申請した人はこの端末で絞る（読み直さない） */
   W.wrSetFilter = function(k, v){
-    if (k !== 'kind' && k !== 'store' && k !== 'who') return;
+    if (k !== 'kind' && k !== 'store' && k !== 'who' && k !== 'old') return;
     S.flt[k] = v || ''; S.sel = {};
-    if (k === 'who') { rerender(); return; }
+    if (k === 'who' || k === 'old') { rerender(); return; }
     S.rows = null; reloadList(); rerender();
   };
   /* ログインの直後に 1 回だけ「使い始めたか」を見る（前の画面の案内とログインの直後の行き先に使う） */
-  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at, !!(j && j.s2)); if (j && j.s2) s2Retry(); }, function(){}); };
+  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at, !!(j && j.s2)); s3Seen(j); if (j && j.s2) s2Retry(); if (S.s3) s3Import(j); }, function(){}); };
   W.wrS2Seen = s2Seen;
   W.wrLiveSeen = liveSeen;
   /* v1135（UI案68 の 10B・Moto さん 11/03）：ログインの直後は全員今のまま（ダッシュボードなど）。ワークセンターへは行かない。
@@ -106228,7 +106237,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     h2 += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">'
       + '<select onchange="wrSetFilter(\'kind\',this.value)"><option value="">' + T('種別：すべて','Kind: all') + '</option>' + kindsAll().map(function(k){ return '<option value="' + k + '"' + (S.flt.kind === k ? ' selected' : '') + '>' + esc(kindL(k)) + '</option>'; }).join('') + '</select>'
       + '<select onchange="wrSetFilter(\'store\',this.value)"><option value="">' + T('店舗：すべて','Store: all') + '</option>' + storeOpts().map(function(s){ return '<option value="' + esc(s) + '"' + (S.flt.store === s ? ' selected' : '') + '>' + esc(storeName(s)) + '</option>'; }).join('') + '</select>'
-      + whoSelect() + '</div>';
+      + whoSelect() + (S.view === 'history' && S.s3 ? '<label style="display:flex;align-items:center;gap:4px"><input type="checkbox"' + (S.flt.old ? ' checked' : '') + ' onchange="wrSetFilter(\'old\',this.checked?\'1\':\'\')">' + T('前の承認タブから','From the old Approvals tab') + '</label>' : '') + '</div>';
     if (S.load === 'err') h2 += '<div class="alert alert-danger" style="font-size:12px">' + esc(S.err) + '</div>';
     if (!S.rows) return h2 + '<div class="card" style="color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>';
     var rows = byWho(S.rows);
@@ -106264,7 +106273,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         var bk2 = bulkOn && bulkOk(r);
         h2 += '<tr style="cursor:pointer' + (bk2 && S.sel[r.id] ? ';background:#fff7f1' : '') + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
           + (bulkOn ? '<td onclick="event.stopPropagation()" style="text-align:center">' + (bk2 ? '<input type="checkbox" style="width:20px;height:20px" data-a="' + esc(r.id) + '"' + (S.sel[r.id] ? ' checked' : '') + ' aria-label="' + esc(r.code) + '" onchange="wrSel(this.dataset.a,this.checked)">' : '') + '</td>' : '')
-          + '<td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
+          + '<td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + (isS3(r) ? T('前の承認タブ','old Approvals tab') : T('前から','earlier')) + '</span>' : '') + '</td>'
           + '<td style="white-space:nowrap">' + esc(r.code) + (r.version > 1 ? ' <span style="color:var(--muted)">' + T('版','v') + r.version + '</span>' : '') + (dup ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + ' ' + r.dup_codes.length + '</span></div>' : '') + '</td>'
           + '<td>' + esc(r.requester_name) + '</td><td>' + useL(r) + '</td><td>' + esc(storeName(r.store_id)) + '</td><td style="text-align:right;white-space:nowrap">' + money(r.amount_cents) + '</td>'
           + '<td>' + tag(r.status, r.kind) + '</td><td>' + nextL(r) + '</td><td style="white-space:nowrap">' + (['paid','done','rejected','withdrawn','applied'].indexOf(r.status) >= 0 ? '' : daysSince(r.updated_at) + T(' 日',' d')) + '</td></tr>';
@@ -106364,6 +106373,78 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }, function(e){ S.busy = ''; showToast(String(e.message || e), 'error'); if (e.code === 'conflict') W.wrRefresh(); else rerender(); });
   }
 
+  /* ---------------------------------------------------------------- v1159：段階 3（UI案74 の答え：1A・2A・3B・4）
+     ・段階 2 を使っていて、申請のサーバーが段階 3（関数 fn 6・SQL 6）なら、前の「承認」タブ（承認センター）を閉じる（3B：更新したら自動）。
+       この端末が聞いた答えを覚える（S3_KEY・メニューを作るときに使う。ログインのたびに聞き直す）。
+     ・GM・CEO の端末はログインのたびに、前の承認タブの記録のうちまだ写していないもの（承認待ち・2026 年に決まったもの）を写す（1A・2A）。
+       状態・種類・店・申請した人はサーバーが共通データから決める。承認待ちはワークセンターの承認待ちに（前の画面の記録に段階 2 と同じ印）。
+       決まったものは履歴に（読むだけ・4）。前の記録は消さない。 */
+  var S3_KEY = '_wr_s3_v1', s3Mem = null;
+  function s3Seen(me){
+    if (!me || typeof me !== 'object') return;
+    var on = !!(me.live && me.s2 && Number(me.fn) >= 6 && Number(me.sql) >= 6);
+    var was = W.wrS3Seen();
+    s3Mem = on ? '1' : '0'; S.s3 = on;
+    try { if (on) localStorage.setItem(S3_KEY, '1'); else localStorage.removeItem(S3_KEY); } catch(e) {}
+    if (was !== on) { try { if (typeof buildNav === 'function') buildNav(); } catch(e) {} }
+  }
+  W.wrS3Seen = function(){ if (s3Mem != null) return s3Mem === '1'; try { return localStorage.getItem(S3_KEY) === '1'; } catch(e) { return false; } };
+  /* 写す候補：段階 2 の 10 種・段階 2 の印が無い・承認待ちか 2026 年に決まったもの（年はサーバーがもう一度決める） */
+  function s3Year(a){
+    var t = Date.parse(a.decidedAt || '') || Number(a._stT) || 0;
+    if (!t) { var m = /^ap(\d{13})/.exec(String(a.id || '')); t = m ? Number(m[1]) : 0; }
+    return t ? new Date(t - 10 * 3600000).getUTCFullYear() : 0;
+  }
+  function s3Cands(known){
+    var k = {}; (known || []).forEach(function(x){ k[x] = 1; });
+    return (ls('approvals', []) || []).filter(function(a){
+      if (!a || typeof a !== 'object' || a._deleted || !S2_TYPE[a.type] || a.wrq || k[a.id] || !/^ap\d{6,20}$/.test(String(a.id || ''))) return false;
+      if (a.status === 'pending') return true;
+      return ['approved','rejected','withdrawn'].indexOf(a.status) >= 0 && s3Year(a) >= 2026;
+    });
+  }
+  async function s3Import(me){
+    if (S.s3Busy || !me || !me.me || (me.me.role !== 'ceo' && me.me.role !== 'gm')) return;
+    S.s3Busy = 1;
+    var ak = authKey(), tot = { pending:0, history:0 };
+    try {
+      var first = await api({ action:'s3_import', items:[] }, ak);
+      var list = s3Cands(first.known);
+      for (var i = 0; i < list.length; i += 100) {
+        var items = [];
+        list.slice(i, i + 100).forEach(function(a){
+          var kind = S2_TYPE[a.type], store = s2StoreOf(a.store);
+          if (store == null || ((kind === 'budget' || kind === 'plan') && !(typeof a.ym === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(a.ym)))) return;
+          try { items.push({ ap_id:String(a.id), kind:kind, store_id:store, payload:s2Payload(a, kind, store) }); } catch(e) {}
+        });
+        if (!items.length) continue;
+        var j = await api({ action:'s3_import', items:items }, ak);
+        (j.items || []).forEach(function(x){
+          if (x.result === 'pending') { tot.pending++; s2Mark(x.ap_id, { code:x.code }); }
+          else if (x.result === 'history') tot.history++;
+        });
+      }
+      S.s3Last = { at:new Date().toISOString(), pending:tot.pending, history:tot.history };
+      if (tot.pending || tot.history) {
+        showToast(T('前の承認タブの記録をワークセンターに写しました：承認待ち ','Copied the old Approvals tab into the Work Center: pending ') + tot.pending + T(' 件・履歴 ',' · history ') + tot.history + T(' 件',''), 'success');
+        if (onWrTab()) { S.rows = null; reloadList(); }
+      }
+    } catch(e) {
+      S.s3Last = { at:new Date().toISOString(), err:String(e && e.message || e) };   /* 次のログインでもう一度（写したものは 2 回は写らない） */
+    } finally { S.s3Busy = 0; }
+  }
+  W._wrS3Import = s3Import;   /* 試験用 */
+  function s3Note(r, lg){
+    var st = lg.status === 'approved' ? T('承認','approved') : lg.status === 'rejected' ? T('却下','rejected') : lg.status === 'withdrawn' ? T('取り下げ','withdrawn') : T('承認待ち','pending');
+    var h = '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6"><b>' + T('前の承認タブから写した','Copied from the old Approvals tab') + '</b>'
+      + '<div>' + T('前の記録：','Earlier record: ') + esc(st) + (lg.decidedBy ? ' · ' + esc(lg.decidedBy) : '') + (lg.decidedDay ? ' · ' + esc(lg.decidedDay) : '') + (lg.date ? ' · ' + T('申請 ','asked ') + esc(lg.date) : '') + '</div>'
+      + (lg.rejectReason ? '<div>' + T('理由：','Reason: ') + esc(lg.rejectReason) + '</div>' : '')
+      + '<div style="color:var(--muted)">' + (lg.hist === 'true' ? T('前の画面で決まっています（反映済み）。ボタンはありません（もう一度は反映しません）。','Decided on the earlier screen (already applied). No buttons (it is not applied again).')
+        : T('承認すると、今までの画面の決め方で 1 回だけ反映します（段階 2 と同じ）。','Approving applies it once the same way as the earlier screen (as in step 2).'))
+      + (lg.by ? ' ' + T('写した：','Copied by ') + esc(lg.by) + (lg.at ? ' · ' + esc(hstTime(lg.at)) : '') : '') + '</div></div>';
+    return h;
+  }
+
   /* v1155：段階 2 を使い始める／止める（GM・CEO）。使い始める前に「承認」タブに入った申請は「承認」タブのまま（8A：段階 3 で写す） */
   function s2Ready(){ return (S.fn || 0) >= 4 && (S.sql || 0) >= 5; }
   function s2Card(me){
@@ -106410,7 +106491,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<div style="font-size:18px;font-weight:700;margin-top:2px">' + useL(r) + (EVAL_K[r.kind] || (s2 && r.kind !== 'budget') ? '' : ' ' + money(r.amount_cents)) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + ' · ' + (EVAL_K[r.kind] ? T('対象 ','For ') + esc(evalName(r)) : s2 ? (r.target_name || p.target_name ? T('対象 ','For ') + esc(r.target_name || p.target_name) : esc(p.from_name || '')) : T('利用日 ','Date ') + esc(mdOf(r.use_date))) + ' · ' + T('申請 ','Submitted ') + esc(hstTime(r.submitted_at)) + T('（ハワイ）',' (HST)') + '</div></div>'
       + '<div>' + tag(r.status, r.kind) + '</div></div>';
-    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。申請した人は、前の画面の名前から決めました（社員 ID の記録はありません）。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”. The requester was matched by the name on the earlier screen (no employee ID was recorded).') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
+    if (r.legacy && lg.src === 'approvals') h += s3Note(r, lg);   /* v1159：前の承認タブから写した（段階 3） */
+    else if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。申請した人は、前の画面の名前から決めました（社員 ID の記録はありません）。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”. The requester was matched by the name on the earlier screen (no employee ID was recorded).') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
       + (lg.archivedWhilePending ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で、申請中のまま月末処理（精算）で締められていました。もう一度精算しないよう「精算済み」で写しています。','It was closed by month-end (settled) while still waiting for approval on the earlier screen. Copied as paid so it is not paid twice.') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.paid && r.status !== 'paid' ? '<div style="color:var(--red);margin-top:4px;font-weight:700">' + T('写したあとに、前の画面で精算済みになっています。二重に払わないでください（精算は「前の画面で精算済み」として記録します）。','It was paid on the earlier screen after the copy. Do not pay it twice (payment is recorded as “paid on the earlier screen”).') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.found && (r.legacy_now.deleted || (r.legacy_now.status && lg.status && r.legacy_now.status !== lg.status)) ? '<div style="color:#7a4a00;margin-top:4px">' + T('写したあとに前の画面で変わりました（今：','Changed on the earlier screen after the copy (now: ') + esc(r.legacy_now.deleted ? T('削除','deleted') : r.legacy_now.status) + '）</div>' : '') + '</div>';
@@ -106624,7 +106706,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     && (r.kind !== 'budget' || S.seen[r.id] === r.rev); }
   function bgUnseen(r){ return !!r && r.kind === 'budget' && r.status === 'pending' && (r.can || []).indexOf('approve') >= 0 && S.seen[r.id] !== r.rev; }
   W._wrBulkOk = function(r){ return bulkOk(r); };   /* 試験用（決まりを外から確かめる） */
-  function byWho(rows){ var w = S.flt.who; rows = rows || []; return w ? rows.filter(function(r){ return r.requester_name === w; }) : rows; }
+  function byWho(rows){
+    var w = S.flt.who; rows = rows || [];
+    if (S.flt.old && S.view === 'history') rows = rows.filter(isS3);   /* v1159：履歴の「前の承認タブから」 */
+    return w ? rows.filter(function(r){ return r.requester_name === w; }) : rows;
+  }
+  function isS3(r){ return !!(r && r.legacy && r.legacy_info && r.legacy_info.src === 'approvals'); }
   function whoSelect(){
     var seen = {}; (S.rows || []).forEach(function(r){ if (r && r.requester_name) seen[r.requester_name] = 1; });
     var list = Object.keys(seen).sort(); if (S.flt.who && !seen[S.flt.who]) list.unshift(S.flt.who);

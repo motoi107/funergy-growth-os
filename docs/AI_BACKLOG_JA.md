@@ -5,7 +5,7 @@
 1. 済（Moto さん 11/13 18:42 HST）：UI案73 は 1〜4 はい（2 は「API 繋ぐまでは手入力」・3 は「どの投稿も出してください」）。UI案74 は 1 はい・2 はい・3 B・4 はい。
 2. 済（Claude・ブランチ `claude/google-1157`）：v1157＝Google の口コミ（SQL `20261122090000`・関数 google-reviews・アプリ・`docs/GOOGLE_REVIEWS_V1157_JA.md`・入れる一式 `deploy/google-reviews-v1157/`）。試験 21・わざと壊す 41/44・Chrome の画面の形。
 3. 次：PR → Codex（とくに from_ym を入れる時・結び直しの conflict・whoami の道・Places を残さないこと・worker の鍵）→ Moto さんが `deploy/google-reviews-v1157/手順.md`（Business Profile API の審査は最大 14 日・Places は費用がかかる）。
-4. 次（Claude）：v1159＝ワークセンター段階 3（UI案74：2026 年に決まったものと承認待ちを写す・承認待ちはワークセンターの承認待ちに・前の承認タブは更新で閉じる・前の記録は読むだけ）。v1158 はチャットの直し。
+4. 済（Claude・ブランチ `claude/wc-stage3-1159`）：v1159＝ワークセンター段階 3（SQL `20261123090000`・関数 fn 6・アプリ・`docs/WORKCENTER_APPROVALS_STAGE3_JA.md`・入れる一式 `deploy/work-requests-v1159/`）。次：PR → Codex → #151 → #152 → この PR → Moto さんが ①〜④（非公開の 1 ファイルは直接）→ 端末を 1159 に → GM・CEO のログインで写ったか。
 
 ## 2026-11-13 チャット（全体アップデート指示の 5・UI案69「全部 A」）
 

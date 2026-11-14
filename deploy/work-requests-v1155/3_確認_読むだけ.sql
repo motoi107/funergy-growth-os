@@ -21,7 +21,7 @@ union all select '7. 振り分け：段階 2 → 評価の変更 → 経費（�
     and to_regprocedure('public.wr_apply_fresh(public.wr_requests)') is not null
     then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '8. SQL の段が 5',
-  case when public.wr_stage('{}'::jsonb)->>'stage' = '5' then 'OK' else 'NG（2 をもう一度流す）' end
+  case when (public.wr_stage('{}'::jsonb)->>'stage')::int >= 5 then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '9. 段階 2 の関数（14）がそろっている',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname in
     ('wr_s2_kinds','wr_is_s2','wr_s2_acct','wr_s2_am_kind','wr_s2_store_has_am','wr_s2_steps','wr_s2_live','wr_s2_can_submit','wr_s2_norm',

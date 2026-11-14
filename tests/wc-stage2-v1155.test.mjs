@@ -458,11 +458,11 @@ test('the old lists leave these requests to the work center; the version is 1155
   const add = fnSrc('addApproval');
   assert.match(add, /window\.wrS2Take\(rec\)/); assert.match(add, /if\(!_s2\) _apOldNotif\(rec\)/);
   assert.match(fnSrc('mdPendingApprovals'), /a\.status !== 'pending' \|\| a\.wrq/);
-  assert.match(SRC, /var approvalsAll = ls\('approvals', \[\]\)\.filter\(a=>a\.status==='pending' && !a\.wrq\)/);
-  assert.match(SRC, /var pend = ls\('approvals',\[\]\)\.filter\(function\(a\)\{return a\.status==='pending' && !a\.wrq;\}\)/);
+  assert.match(SRC, /var approvalsAll = (\(typeof _apClosed==='function' && _apClosed\(\)\) \? \[\] : )?ls\('approvals', \[\]\)\.filter\(a=>a\.status==='pending' && !a\.wrq\)/);   /* v1159：閉じたあとは [] */
+  assert.match(SRC, /var pend = (apOff \? \[\] : )?ls\('approvals',\[\]\)\.filter\(function\(a\)\{return a\.status==='pending' && !a\.wrq;\}\)/);
   assert.match(fnSrc('renderApproval'), /ワークセンターで処理中（段階 2）/);
   assert.match(fnSrc('renderApproval'), /pending = pending\.filter\(function\(a\)\{ return !\(a && a\.wrq\); \}\);/, 'the old approval tab does not offer them');
-  assert.match(SRC, /if \(pid==='approval'\) return ls\('approvals', \[\]\)\.filter\(a=>a\.status==='pending' && !a\.wrq\)\.length;/, 'not counted on the old tab badge');
+  assert.match(SRC, /if \(pid==='approval'\) return (\(typeof _apClosed==='function' && _apClosed\(\)\) \? 0 : )?ls\('approvals', \[\]\)\.filter\(a=>a\.status==='pending' && !a\.wrq\)\.length;/, 'not counted on the old tab badge');
   const v = /const APP_VERSION = '(\d+)';/.exec(SRC)[1];   /* 1155 から（あとの版でも通る・SW と同じ） */
   assert.ok(Number(v) >= 1155); assert.match(SW, new RegExp("const SW_BUILD = '" + v + "';"));
 });
