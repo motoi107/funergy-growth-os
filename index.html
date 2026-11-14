@@ -107477,7 +107477,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     } catch(e) {}
   }
   /* マイページ・レシート管理のカード：3 種の入口と自分の申請（新しい 5 件） */
-  var MY = { rows:null, err:'', busy:false, key:'', at:0 };
+  /* req：いちばん新しい読み込みの番号（古い答えは使わない・busy は自分の答えでだけ外す＝#160 の Codex P3）。
+     at：最後に読み終えた（失敗も）時刻。失敗したら 30 秒は自動で読み直さない（描き直しのたびに読み直していた＝#160 の Codex P2） */
+  var MY = { rows:null, err:'', busy:false, key:'', at:0, req:0 }, myReq = 0;
+  W.wrMyExpRetry = function(){ MY.at = 0; MY.err = ''; paintMyExp(); };
   W.wrMyExpCard = function(where){
     try { if (typeof curStoreLogin !== 'undefined' && curStoreLogin) return ''; } catch(e) {}
     if (!pinTok() || !liveSeen()) return '';
@@ -107491,15 +107494,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!S.live) return '';
     var ks = expKindsNow();
     if (!ks.length) return '';
-    var k = authKey(); if (MY.key !== k) { MY = { rows:null, err:'', busy:false, key:k, at:0 }; }
-    /* 開くたびに新しくする（ほかの端末の承認・経理の確認・精算を出す）。読み終わるまでは前の一覧のまま */
-    if (!MY.busy && (!MY.rows || Date.now() - MY.at > 10000)) { MY.err = ''; myExpLoad(); }
+    var k = authKey(); if (MY.key !== k) { MY = { rows:null, err:'', busy:false, key:k, at:0, req:0 }; }
+    /* 開くたびに新しくする（ほかの端末の承認・経理の確認・精算を出す）。読み終わるまでは前の一覧のまま。
+       失敗したあとは 30 秒待つ（「もう一度」を押せばすぐ） */
+    var age = Date.now() - MY.at;
+    if (!MY.busy && (MY.err ? age > 30000 : (!MY.rows || age > 10000))) { MY.err = ''; myExpLoad(); }
     var ico = { mileage:'ti-gas-station', reimburse:'ti-receipt', expense_pre:'ti-file-invoice' };
     var h = '<div class="card-title"><i class="ti ti-files"></i>' + T('経費の申請','Expense requests') + '</div>'
       + '<div style="display:flex;gap:6px;flex-wrap:wrap">' + ks.map(function(x){ return '<button class="btn btn-secondary btn-sm" data-wr-exp="' + x + '" data-a="' + x + '" onclick="wrStartExpense(this.dataset.a)"><i class="ti ' + ico[x] + '"></i> ' + esc(kindL(x)) + '</button>'; }).join('') + '</div>'
       + '<div style="display:flex;align-items:center;margin-top:10px"><div style="font-size:12px;font-weight:700">' + T('自分の申請','My requests') + '</div>'
       + '<button class="btn btn-secondary btn-sm" style="margin-left:auto" onclick="wrOpenMine()">' + T('すべて見る','See all') + '</button></div>';
-    if (MY.err) return h + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + esc(MY.err) + '</div>';
+    var errLine = MY.err ? '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + esc(MY.err)
+      + ' <button class="btn btn-secondary btn-sm" onclick="wrMyExpRetry()">' + T('もう一度','Retry') + '</button></div>' : '';
+    if (MY.err && !MY.rows) return h + errLine;
+    h += errLine;
     if (!MY.rows) return h + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + T('読み込み中…','Loading…') + '</div>';
     if (!MY.rows.length) return h + '<div style="font-size:11.5px;color:var(--muted);margin-top:4px">' + T('まだありません','None yet') + '</div>';
     return h + MY.rows.map(function(r){
@@ -107510,13 +107518,18 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }).join('');
   }
   function myExpLoad(){
-    var k = authKey(), g = S.gen; MY.busy = true;
+    var k = authKey(), g = S.gen, n = ++myReq; MY.busy = true; MY.req = n;
     api({ action:'list', scope:'mine', state:'all', limit:20 }, k).then(function(j){
-      if (MY.key !== k || g !== S.gen) return;
-      MY.busy = false; MY.at = Date.now();
+      if (MY.key !== k || MY.req !== n) return;   /* 前の人・前の読み込みの答え：使わない（今の読み込みの busy は触らない） */
+      MY.busy = false;
+      if (g !== S.gen) { MY.at = 0; return paintMyExp(); }   /* 読んでいるあいだに世代が変わった：使わずに読み直す */
+      MY.at = Date.now(); MY.err = '';
       MY.rows = ((j && j.rows) || []).filter(function(r){ return KINDS.indexOf(r.kind) >= 0; }).slice(0, 5);
       paintMyExp();
-    }, function(e){ if (MY.key !== k) return; MY.busy = false; MY.err = String(e && e.message || e); paintMyExp(); });
+    }, function(e){
+      if (MY.key !== k || MY.req !== n) return;
+      MY.busy = false; MY.at = Date.now(); MY.err = String(e && e.message || e); paintMyExp();
+    });
   }
   function paintMyExp(reload){
     if (reload) { MY.rows = null; MY.err = ''; }

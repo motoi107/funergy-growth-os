@@ -15,6 +15,7 @@ const PEOPLE = [   // [id, 名前, 社員の表の役割, 肩書き, 店, manage
   ['E4', 'Oli Office', 'office_crew', 'Office Crew', 'OFFICE', 'office_crew'],
   ['E5', 'Ami Area', 'am', 'Area Manager', 'S1', null], ['E6', 'Mia Four', 'g4', 'Store Manager', 'S1', null], ['E7', 'Sam Three', 'sl', 'Server Leader', 'S1', null],
   ['E8', 'Lee Two', 'g2', 'Crew Leader', 'S1', null], ['E9', 'Cam Crew', 'crew', 'Crew', 'S1', null], ['E10', 'Kai Two', 'g2', 'Crew Leader', 'S2', null],
+  ['E11', 'Ola Lead', 'office_crew', 'Office Crew Leader', 'OFFICE', 'office_crew'],   // 事務Crew でも肩書きが Office Crew Leader なら G2（#160 の Codex P3：記録の「事務Crew は建て替えだけ」は G1 の事務Crew のこと）
 ];
 const NAME = Object.fromEntries(PEOPLE.map(p => [p[0], p[1]]));
 const ALL = ['mileage', 'reimburse', 'expense_pre'];
@@ -55,13 +56,13 @@ async function setup({ fix = true, confirm = true } = {}) {
   return { pg, db, call, submit };
 }
 
-test('v1164 whoami says which expense kinds each person can send; the server takes exactly those (G2–G6 all three, G1 none, office crew reimbursement)', async () => {
+test('v1164 whoami says which expense kinds each person can send; the server takes exactly those (G2–G6 all three incl. Office Crew Leader, G1 none, G1 office crew reimbursement)', async () => {
   const s = await setup();
-  const want = { E1: ALL, E2: ALL, E3: ALL, E4: ['reimburse'], E5: ALL, E6: ALL, E7: ALL, E8: ALL, E9: [], E10: ALL };
+  const want = { E1: ALL, E2: ALL, E3: ALL, E4: ['reimburse'], E5: ALL, E6: ALL, E7: ALL, E8: ALL, E9: [], E10: ALL, E11: ALL };
   for (const [who, kinds] of Object.entries(want)) {
     const w = (await s.call(who, { action: 'whoami' })).body;
     assert.deepEqual(w.exp_kinds, kinds, who + ' ' + NAME[who]);
-    const store = ['E1', 'E2', 'E3', 'E4'].includes(who) ? 'S1' : who === 'E10' ? 'S2' : 'S1';
+    const store = ['E1', 'E2', 'E3', 'E4', 'E11'].includes(who) ? 'S1' : who === 'E10' ? 'S2' : 'S1';
     for (const k of ALL) {
       const r = await s.submit(who, k, store);
       if (kinds.includes(k)) { assert.equal(r.status, 200, who + ' ' + k + ' ' + JSON.stringify(r.body)); assert.equal(r.body.status, 'pending', who + ' ' + k + ' ' + r.body.status); assert.equal(r.body.requester_emp, who); }
