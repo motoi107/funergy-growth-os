@@ -106409,6 +106409,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var ak = authKey(), tot = { pending:0, history:0 };
     try {
       var first = await api({ action:'s3_import', items:[] }, ak);
+      /* #153 の Codex：写したのに答えが届かず、前の記録に印（wrq・wrc）が付かなかったものに付け直す（承認待ちの前の記録だけ） */
+      s3Remark(first.marks);
       var list = s3Cands(first.known);
       for (var i = 0; i < list.length; i += 100) {
         var items = [];
@@ -106422,6 +106424,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         (j.items || []).forEach(function(x){
           if (x.result === 'pending') { tot.pending++; s2Mark(x.ap_id, { code:x.code }); }
           else if (x.result === 'history') tot.history++;
+          else if (x.result === 'known' && x.code) s3Remark([{ ap_id:x.ap_id, code:x.code }]);   /* もうあった：印が無ければ付ける */
         });
       }
       S.s3Last = { at:new Date().toISOString(), pending:tot.pending, history:tot.history };
@@ -106434,6 +106437,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     } finally { S.s3Busy = 0; }
   }
   W._wrS3Import = s3Import;   /* 試験用 */
+  W._wrS3Remark = function(m){ return s3Remark(m); };   /* 試験用 */
+  /* 印を付け直す：前の記録が承認待ちで、まだ印が無い（か別の申請番号の印）ものだけ。書くのは 1 回 */
+  function s3Remark(marks){
+    try {
+      if (!Array.isArray(marks) || !marks.length) return 0;
+      var by = {}; marks.forEach(function(m){ if (m && typeof m.ap_id === 'string' && typeof m.code === 'string' && m.code) by[m.ap_id] = m.code; });
+      var aps = ls('approvals', []) || [], n = 0, t = Date.now();
+      aps.forEach(function(a){
+        if (!a || typeof a !== 'object' || a._deleted || a.status !== 'pending') return;
+        var c = by[String(a.id)]; if (!c || (a.wrq && a.wrc === c)) return;
+        a.wrq = 1; a.wrc = c; a._mut = Math.max(t, (Number(a._mut) || 0) + 1); n++;
+      });
+      if (n) lsSet('approvals', aps);
+      return n;
+    } catch(e) { return 0; }
+  }
   function s3Note(r, lg){
     var st = lg.status === 'approved' ? T('承認','approved') : lg.status === 'rejected' ? T('却下','rejected') : lg.status === 'withdrawn' ? T('取り下げ','withdrawn') : T('承認待ち','pending');
     var h = '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6"><b>' + T('前の承認タブから写した','Copied from the old Approvals tab') + '</b>'

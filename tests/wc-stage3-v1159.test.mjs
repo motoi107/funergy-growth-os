@@ -246,3 +246,57 @@ test('the rest of the app: the menu drops 承認センター, old links go to th
   const v = /const APP_VERSION = '(\d+)'/.exec(SRC)[1];
   assert.ok(Number(v) >= 1159); assert.match(SW, new RegExp("const SW_BUILD = '" + v + "'"));
 });
+
+// #153 の Codex（PR #153 の判定のコメント・`56e9392`）：サーバーが写し終えたのに答えが届かないと、前の記録に印が付かず、次のログインでも付かなかった
+test('#153: the answer is lost after the server copied a pending record: the next GM login puts the stage 2 mark on the old record', async () => {
+  const srv = await server(), st = shared();
+  const pend = AP(31), pend2 = AP(32, { title: '休暇の申請 2つ目', ref: 'vac2' }), dec = AP(33, { status: 'approved', decidedBy: 'Ami Area', decidedAt: '2026-10-22T19:00:00.000Z' });
+  st.approvals = [pend, pend2, dec]; await cloud(srv, st.approvals);
+  // 1 回目：写す答え（items があるほう）だけ、サーバーが書いたあとで失う
+  let lose = true;
+  const wrap = { ...srv, handler: async req => {
+    const body = await req.clone().json();
+    const r = await srv.handler(req);
+    if (lose && body.action === 's3_import' && Array.isArray(body.items) && body.items.length) throw new TypeError('the answer was lost after the server saved');
+    return r;
+  } };
+  const g = await app(wrap, 'E2', st); await g.render(); await g.settle();
+  const saved = (await srv.pg.query(`select ap_id, code, status from public.wr_requests where legacy order by code`)).rows;
+  assert.ok(saved.some(r => r.ap_id === pend.id && r.status === 'pending'), 'the server copied it');
+  assert.equal(apOf(st, pend.id).wrq, undefined, 'the answer was lost: no mark yet');
+  // 2 回目のログイン（通信は戻った）：印を付け直す。もう一度は写さない
+  lose = false;
+  const g2 = await app(wrap, 'E2', st); await g2.render(); await g2.settle();
+  const code = saved.find(r => r.ap_id === pend.id).code;
+  assert.equal(apOf(st, pend.id).wrq, 1); assert.equal(apOf(st, pend.id).wrc, code);
+  assert.equal(apOf(st, pend2.id).wrq, 1, 'every pending one');
+  assert.equal(apOf(st, dec.id).wrq, undefined, 'a decided record is not marked');
+  assert.equal((await srv.pg.query('select count(*)::int n from public.wr_requests where legacy')).rows[0].n, 3, 'nothing copied twice');
+  // 3 回目：もう印があるので書かない
+  const before = JSON.stringify(st.approvals);
+  const g3 = await app(wrap, 'E2', st); await g3.render(); await g3.settle();
+  assert.equal(JSON.stringify(st.approvals), before);
+});
+
+test('#153: a pending record already sent in stage 2 whose answer was lost (no mark) gets its mark from the "known" answer; marks also come back on the next login', async () => {
+  const srv = await server(), st = shared();
+  const pend = AP(41), pend2 = AP(42, { title: '休暇の申請 42', ref: 'vac42' });
+  const dec = AP(43, { status: 'approved', title: '休暇 43', ref: 'vac43', decidedBy: 'Ami Area', decidedAt: '2026-10-22T19:00:00.000Z' });
+  st.approvals = [pend, pend2, dec]; await cloud(srv, st.approvals);
+  // 段階 2 で出した（ap_id がこの前の記録）が、答えが届かず前の記録に印が無い
+  const sent = await submit(srv, 'E7', 'leave', 'S1', { ap_id: pend.id, title: '休暇の申請 41', from_name: 'Lee Leader' });
+  const g = await app(srv, 'E2', st); await g.render(); await g.settle();
+  assert.equal(apOf(st, pend.id).wrq, 1); assert.equal(apOf(st, pend.id).wrc, sent.code, 'marked with the stage 2 request, not copied again');
+  assert.equal((await srv.pg.query(`select count(*)::int n from public.wr_requests where ap_id = $1`, [pend.id])).rows[0].n, 1);
+  const code2 = apOf(st, pend2.id).wrc;
+  assert.match(code2, /^LV-/);
+  // 印が消えた（ほかの端末の古い写しで上書きされたなど）：次のログインの最初の問い合わせ（marks）で付け直す
+  delete apOf(st, pend2.id).wrq; delete apOf(st, pend2.id).wrc;
+  const g2 = await app(srv, 'E2', st); await g2.render(); await g2.settle();
+  assert.equal(apOf(st, pend2.id).wrq, 1); assert.equal(apOf(st, pend2.id).wrc, code2);
+  const j = (await srv.call('E2', { action: 's3_import', items: [] })).j;
+  deq(j.marks, [{ ap_id: pend2.id, code: code2 }], 'only records copied as pending (not the history one, not stage 2 ones)');
+  // 決まった前の記録に、承認待ちの申請番号が来ても印は付けない（端末の守り）
+  await g2.ctx._wrS3Remark([{ ap_id: dec.id, code: code2 }]);
+  assert.equal(apOf(st, dec.id).wrq, undefined);
+});

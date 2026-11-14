@@ -64,14 +64,16 @@ language sql stable security invoker set search_path = public, pg_temp as $$
 $$;
 
 -- ---------------------------------------------------------------- 写す
--- p.items：[{ ap_id, kind, store_id, payload }]（100 件まで）。返す：{ items:[{ ap_id, result, code? }], known:[写した前の記録の id] }
+-- p.items：[{ ap_id, kind, store_id, payload }]（100 件まで）。返す：{ items:[{ ap_id, result, code? }], known:[写した前の記録の id],
+--   marks:[{ ap_id, code }]（承認待ちとして写したもの。#153 の Codex：答えが届かず前の記録に印が付かなかったとき、次のログインで付け直す） }
+--   known のときも、その前の記録から作った申請があれば code を返す（印を付け直す）
 -- result：pending（承認待ちにした）・history（履歴にした）・known（もうある）・in_wc（段階 2 で出したもの）・old（2025 年までに決まった）・
 --   missing（前の記録が無い）・deleted・kind（種類が違う）・store（店が違う）・status（状態が分からない）
 create or replace function public.wr_s3_import(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.wr_actor(p); it jsonb; x jsonb; v_ap text; v_kind text; v_store text; v_st text; v_res text; v_day date; n jsonb; v_pl jsonb;
  v_cents bigint; v_name text; v_emp text; v_steps text[]; v_at timestamptz; v_now timestamptz := now(); r public.wr_requests; v_hist boolean;
- o jsonb := '[]'::jsonb; v_known jsonb;
+ o jsonb := '[]'::jsonb; v_known jsonb; v_marks jsonb; v_kcode text;
 begin
  if (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
  if not public.wr_s2_live() then raise exception 'not_live'; end if;
@@ -81,7 +83,7 @@ begin
   if jsonb_typeof(it) <> 'object' then raise exception 'bad_value'; end if;
   v_ap := it->>'ap_id';
   if coalesce(v_ap, '') !~ '^ap[0-9]{6,20}$' then raise exception 'bad_value'; end if;
-  v_res := null; v_hist := false; r := null;
+  v_res := null; v_hist := false; r := null; v_kcode := null;
   x := public.wr_s3_src(v_ap);
   v_kind := public.wr_s3_kind(x->>'type');
   v_store := it->>'store_id';
@@ -89,7 +91,9 @@ begin
   elsif coalesce(x->'_deleted' = 'true'::jsonb, false) then v_res := 'deleted';
   elsif v_kind is null or v_kind is distinct from (it->>'kind') then v_res := 'kind';
   elsif coalesce(x->>'wrq', '') in ('1', 'true') then v_res := 'in_wc';
-  elsif exists (select 1 from public.wr_requests q where q.ap_id = v_ap or q.legacy_ref = 'ap:' || v_ap) then v_res := 'known';
+  elsif exists (select 1 from public.wr_requests q where q.ap_id = v_ap or q.legacy_ref = 'ap:' || v_ap) then
+   v_res := 'known';
+   select q.code into v_kcode from public.wr_requests q where (q.ap_id = v_ap or q.legacy_ref = 'ap:' || v_ap) and not public.wr_s3_hist(q) order by q.created_at limit 1;
   elsif coalesce(v_store, '') !~ '^[A-Za-z0-9_-]{1,30}$' or not public.wr_s3_store_ok(v_store, x->>'store') then v_res := 'store';
   else
    v_st := case x->>'status' when 'pending' then 'pending' when 'approved' then 'applied' when 'rejected' then 'rejected' when 'withdrawn' then 'withdrawn' end;
@@ -134,11 +138,14 @@ begin
      '前の承認タブの記録（' || case x->>'status' when 'pending' then '承認待ち' when 'approved' then '承認' when 'rejected' then '却下' else '取り下げ' end || '）を写した');
    v_res := case when v_hist then 'history' else 'pending' end;
   end if;
-  o := o || jsonb_strip_nulls(jsonb_build_object('ap_id', v_ap, 'result', v_res, 'code', r.code));
+  o := o || jsonb_strip_nulls(jsonb_build_object('ap_id', v_ap, 'result', v_res, 'code', coalesce(r.code, v_kcode)));
  end loop;
- select coalesce(jsonb_agg(q.legacy_info->>'id' order by q.legacy_info->>'id'), '[]'::jsonb) into v_known
+ select coalesce(jsonb_agg(q.legacy_info->>'id' order by q.legacy_info->>'id'), '[]'::jsonb),
+        coalesce(jsonb_agg(jsonb_build_object('ap_id', q.legacy_info->>'id', 'code', q.code) order by q.legacy_info->>'id')
+                   filter (where coalesce(q.legacy_info->>'hist', '') <> 'true'), '[]'::jsonb)
+   into v_known, v_marks
   from public.wr_requests q where q.legacy and q.legacy_info->>'src' = 'approvals';
- return jsonb_build_object('items', o, 'known', v_known);
+ return jsonb_build_object('items', o, 'known', v_known, 'marks', v_marks);
 end $$;
 
 -- ---------------------------------------------------------------- 予算の版（段階 2 の wr_submit_s2 に 1 行：写した履歴を版の元にしない）
