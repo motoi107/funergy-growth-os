@@ -639,6 +639,7 @@ end $$;
 create or replace function public.chat_add(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.chat_actor(p); t public.chat_threads; v text; v_hist boolean; n integer := 0; v_cnt integer; r public.wr_requests;
+ mm public.chat_members; v_from bigint; a2 jsonb;
 begin
  select * into t from public.chat_threads x where x.id::text = lower(coalesce(p->>'thread', ''));
  if not found then raise exception 'not_found'; end if;
@@ -656,12 +657,26 @@ begin
  select * into t from public.chat_threads x where x.id = t.id for update;
  for v in select jsonb_array_elements_text(p->'members') loop
   if not public.chat_emp_ok(v) then raise exception 'bad_value'; end if;
-  insert into public.chat_members(thread_id, emp_id, added_by, history_from)
-   values (t.id, v, a->>'emp', case when v_hist then 1 else t.last_seq + 1 end)
-   on conflict (thread_id, emp_id) do update set left_at = null, auto = false, added_by = excluded.added_by, added_at = now(),
-     history_from = least(public.chat_members.history_from, excluded.history_from)
-    where public.chat_members.left_at is not null or public.chat_members.auto;
-  get diagnostics v_cnt = row_count; n := n + v_cnt;
+  -- 読める範囲（v1156 の直し・Codex #150 P2-1）：新しく加える人・外された／抜けた人を加え直すときは、いま選んだ範囲（見せない＝次の番号から）。
+  -- 前の範囲と小さいほうを取らない（抜けていたあいだの会話を読ませない）。いま読めている人（自動で入っていて申請を見られる）は今のまま
+  v_from := case when v_hist then 1 else t.last_seq + 1 end;
+  select * into mm from public.chat_members x where x.thread_id = t.id and x.emp_id = v for update;
+  if not found then
+   insert into public.chat_members(thread_id, emp_id, added_by, history_from) values (t.id, v, a->>'emp', v_from);
+   n := n + 1;
+  elsif mm.left_at is not null then
+   update public.chat_members set left_at = null, auto = false, added_by = a->>'emp', added_at = now(), history_from = v_from
+    where thread_id = t.id and emp_id = v;
+   n := n + 1;
+  elsif mm.auto then
+   -- 自動で入っている人を、加えた人にする（申請を見られなくなっても残る）。申請を見られなくなっていた（読めていなかった）なら、いま選んだ範囲
+   a2 := public.chat_actor_of(v);
+   if t.kind = 'case' then select * into r from public.wr_requests x where x.id = t.ref_id; end if;
+   if not (t.kind = 'case' and a2 is not null and r.id is not null and public.wr_visible(a2, r)) then mm.history_from := v_from; end if;
+   update public.chat_members set auto = false, added_by = a->>'emp', added_at = now(), history_from = mm.history_from
+    where thread_id = t.id and emp_id = v;
+   n := n + 1;
+  end if;
  end loop;
  select count(*) into v_cnt from public.chat_members x where x.thread_id = t.id and x.left_at is null;
  if v_cnt > 50 then raise exception 'too_many'; end if;

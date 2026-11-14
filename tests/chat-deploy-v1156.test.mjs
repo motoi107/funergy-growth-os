@@ -59,7 +59,7 @@ test('on top of stage 2: pre-check, the SQL (twice), post-check all OK; a stray 
   const post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
   const P = by(post);
-  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.']) assert.equal(P(n), 'OK', n);
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '10.']) assert.equal(P(n), 'OK', n);
   assert.equal(P('9.'), '—', 'no Realtime publication in this test database');
   assert.equal(P('（参考）会話の数'), '0'); assert.equal(P('（参考）メッセージの数'), '0');
   pre = by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'));
@@ -90,4 +90,20 @@ test('the post-check notices what it is meant to notice', async () => {
   assert.match((await P())('5.'), /^NG/);
   await pg.exec('alter function public.chat_stage(jsonb) security invoker');
   assert.equal((await P())('5.'), 'OK');
+});
+
+// Codex #150 P2-1 の直し：前に渡した 2（least で加え直す）を流していたら 10 が NG。今の 2 をもう一度流すと OK
+test('post-check 10 notices the chat SQL from before the re-add fix; the current SQL fixes it', async () => {
+  const { execSync } = await import('node:child_process');
+  let OLD;
+  try { OLD = execSync('git show 95f9ff9:supabase/migrations/20261121090000_chat.sql', { cwd: new URL('..', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch { assert.fail('git history with 95f9ff9 is needed (fetch with full depth)'); }
+  assert.match(OLD, /least\(public\.chat_members\.history_from/);
+  const pg = await base();
+  for (const f of WR) await pg.exec(M(f));
+  await pg.exec(OLD);
+  assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), /^NG/);
+  await pg.exec(read('2_SQL_チャット.sql'));
+  const post = await rowsOf(pg, '3_確認_読むだけ.sql');
+  assert.ok(okAll(post), JSON.stringify(post));
 });

@@ -45571,7 +45571,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1157';
+const APP_VERSION = '1158';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -108115,7 +108115,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   'use strict';
   var W = window, D = document;
   var FN = '/functions/v1/work-requests';
-  var LOOKBACK = 200, FULL_MS = 300000, POLL_OFF = 60000, POLL_OPEN = 20000, BODY_MAX = 2000, GROUP_MAX = 49;
+  var LOOKBACK = 200, FULL_MS = 300000, POLL_OFF = 60000, POLL_OPEN = 20000, BODY_MAX = 2000, GROUP_MAX = 49, REFRESH_PAGES = 4;
   var KIND = { mileage:['ガソリン代','Mileage'], reimburse:['建て替え経費','Reimbursement'], expense_pre:['事前経費','Pre-approval'],
     skill:['スキルレベル','Skill level'], cs:['Career Score','Career Score'], tiprate:['Tip Rate','Tip Rate'], budget:['予算','Budget'], leave:['休暇','Leave'],
     shift:['シフト変更','Shift change'], hire:['採用','Hiring'], resign:['退職','Offboarding'], promo:['Leadership','Leadership'], tip_self:['Tip Rate（本人）','Tip Rate (own)'],
@@ -108243,7 +108243,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (!first && old && (Number(r.mention) || 0) > (Number(old.mention) || 0) && !(C.open === r.id && visible() && !D.hidden)) toast('@ ' + T('あなた宛て：','To you: ') + titleOf(r));
       if (C.open === r.id && old && old.chg !== r.chg) loadMsgs(r.id, 'latest');
     });
-    (j.gone || []).forEach(function(id){ delete C.threads[id]; if (seen) seen[id] = 1; if (C.open === id) closeOpen(errText('not_found')); });
+    (j.gone || []).forEach(function(id){ delete C.threads[id]; delete C.msgs[id]; if (seen) seen[id] = 1; if (C.open === id) closeOpen(errText('not_found')); });
     C.cursor = Math.max(C.cursor, Number(j.cursor) || 0);
     C.unread = Number(j.unread) || 0; C.mention = Number(j.mention) || 0;
     if (j.token && j.token !== C.token) { unsubscribe(); C.token = j.token; }
@@ -108270,6 +108270,35 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     arr.forEach(function(x){ if (x && x.seq != null) by[x.seq] = x; });
     m.list = Object.keys(by).map(function(k){ return by[k]; }).sort(function(a, b){ return a.seq - b.seq; });
   }
+  /* 番号 lo〜hi（どちらも含む）の写しを、サーバーから届いたものに置き換える（届かなかった＝読めなくなったものは消す）。
+     Codex #150（issuecomment 6870029872）P2-2：前は足すだけだったので、見えなくした・直した・消したことが前のページに届かなかった */
+  function putRange(m, arr, lo, hi){
+    m.list = m.list.filter(function(x){ return x.seq < lo || x.seq > hi; });
+    mergeMsgs(m, arr);
+  }
+  function cutBelow(m, lo){ m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = true; }
+  /* 開いている会話で、最新のページより前に読んだページも取り直す（100 件ずつ・REFRESH_PAGES まで）。
+     それより前・取れなかったページの写しは捨てる（「さらに読む」でサーバーから取り直す）。この中では失敗を投げない */
+  function refreshBelow(tid, m, g, lo, pages){
+    if (!m.list.length || m.list[0].seq >= lo) return Promise.resolve();
+    if (pages >= REFRESH_PAGES) { cutBelow(m, lo); return Promise.resolve(); }
+    return api({ action:'chat_messages', thread:tid, limit:100, before:lo }).then(function(j){
+      if (g !== C.gen) return;
+      var arr = j.messages || [];
+      if (!arr.length) { m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = false; return; }
+      putRange(m, arr, arr[0].seq, lo - 1);
+      m.older = !!j.older;
+      if (!j.older) { m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; }); return; }
+      return refreshBelow(tid, m, g, arr[0].seq, pages + 1);
+    }, function(){ if (g === C.gen) cutBelow(m, lo); });
+  }
+  /* 閉じていたあいだに会話が変わっていたら、前の写しは出さない（見えなくした本文を一瞬でも出さない）。開くときに読み直す */
+  function freshCache(tid){
+    var m = C.msgs[tid], r = C.threads[tid];
+    if (!m || !m.list.length) return;
+    if (r && m.chg != null && String(r.chg) === String(m.chg)) return;
+    m.list = []; m.older = false; m.once = false; m.painted = false; m.st = ''; m.reading = 0;
+  }
   function dropSent(tid){
     var m = C.msgs[tid], o = C.out[tid]; if (!m || !o || !o.length) return;
     var keys = {}; m.list.forEach(function(x){ if (x.mine && x.key) keys[x.key] = 1; });
@@ -108280,14 +108309,31 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (m.busy) { if (mode !== 'older') m.again = true; return; }
     m.busy = true; if (!m.list.length) m.st = 'loading';
     var g = C.gen, p = { action:'chat_messages', thread:tid, limit:100 };
-    if (mode === 'older' && m.list.length) p.before = m.list[0].seq;
+    var older = mode === 'older' && m.list.length > 0;
+    if (older) p.before = m.list[0].seq;
+    var top0 = m.list.length ? m.list[m.list.length - 1].seq : 0;
     api(p).then(function(j){
       if (g !== C.gen) return;
       m.members = j.members || []; m.can = { add:!!j.can_add, rename:!!j.can_rename, leave:!!j.can_leave, remove:!!j.can_remove };
       if (j.thread) C.threads[tid] = Object.assign({}, C.threads[tid] || {}, j.thread);
-      mergeMsgs(m, j.messages || []); dropSent(tid);
-      if (mode === 'older' || !m.once) m.older = !!j.older;
+      var arr = j.messages || [], more = null;
+      if (older) {
+        /* 待っているあいだに写しが変わった（捨てた・読み直した）なら、このページは使わない（間が抜けないように） */
+        if (m.list.length && m.list[0].seq === p.before) { mergeMsgs(m, arr); m.older = !!j.older; }
+      } else {
+        /* 最新のページ：その範囲の写しを置き換える。届いたあとに足したもの（top0 より後）は残す */
+        if (arr.length) putRange(m, arr, arr[0].seq, arr[arr.length - 1].seq);
+        else m.list = m.list.filter(function(x){ return x.seq > top0; });
+        m.older = !!j.older;
+        if (j.thread && j.thread.chg != null) m.chg = j.thread.chg;
+        if (arr.length) {
+          if (!j.older) m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; });
+          else more = refreshBelow(tid, m, g, arr[0].seq, 0);
+        }
+      }
+      dropSent(tid);
       m.once = true; m.st = 'ok'; m.err = '';
+      return more;
     }, function(e){
       if (g !== C.gen) return;
       if (e.code === 'not_found') { delete C.threads[tid]; delete C.msgs[tid]; if (C.open === tid) closeOpen(errText('not_found')); m.busy = false; paintAll(); return; }
@@ -108320,7 +108366,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------------------------------------------------------------- 開く・行き先 */
   function visible(){ return !!D.getElementById('chat-root'); }
   W.chatGo = function(tid){
-    if (tid) { C.open = tid; C.msgs[tid] = C.msgs[tid] || newMsgs(); }
+    if (tid) { C.open = tid; C.msgs[tid] = C.msgs[tid] || newMsgs(); freshCache(tid); }
     var inWc = false; try { inWc = curPage === 'tasks'; } catch(e){}
     try { if (inWc) { workTab = 'chat'; renderPage('tasks'); } else go('chat'); } catch(e){}
     if (tid) loadMsgs(tid, 'latest');
@@ -108328,7 +108374,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatOpen = function(tid){
     if (!C.threads[tid]) return;
     C.open = tid; closePop();
-    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); m.painted = !!m.list.length;
+    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); freshCache(tid); m.painted = !!m.list.length;
     paintAll(); scrollBottom();
     loadMsgs(tid, 'latest');
   };

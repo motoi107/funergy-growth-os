@@ -306,6 +306,113 @@ test('edit (edited), delete (Deleted), and the GM hides / restores someone else�
   assert.match(text(g.D.getElementById('chat-msgs')), /rude words/);
 });
 
+// Codex #150（issuecomment 6870029872）P2-2：最新の 100 件だけ取り直して足していたので、それより前のページで見えなくした・直した・消したことが、
+// もう開いている端末に届かなかった。開いている会話は前に読んだページも取り直す（4 ページまで・それより前は捨てて「さらに読む」で取り直す）。
+// 閉じていたあいだに変わった会話は、開くときに前の写しを出さない
+async function bulk(srv, tid, from, to, who = 'E2') {
+  await srv.pg.exec('reset role');
+  await srv.pg.query(`insert into public.chat_messages(thread_id, seq, author_emp, author_name, body, client_key)
+    select $1::uuid, g, $4, $5, 'm' || g, 'bulk-' || $1 || '-' || g from generate_series($2::int, $3::int) g`, [tid, from, to, who, NAME[who]]);
+  await srv.pg.query(`update public.chat_threads set last_seq = $2, last_at = now(), chg = nextval('public.chat_chg_seq') where id = $1::uuid`, [tid, to]);
+  await srv.pg.exec('set role service_role');
+}
+async function srvCall(srv, who, body) {
+  const r = await srv.handler(new Request('https://fn.test/work-requests', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ pin_session: 'pin-' + who, ...body }) }));
+  const j = await r.json(); assert.equal(r.status, 200, JSON.stringify(j)); return j;
+}
+const msgOf = (a, tid, seq) => a.S().msgs[tid].list.find(x => x.seq === seq);
+
+test('an open chat re-reads the older pages it shows: a message hidden, edited or deleted further back reaches a device that already has it (Codex #150 P2-2)', async () => {
+  const srv = await server();
+  const a = await app(srv, 'E8');
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('Long'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await a.type('mine 1'); a.key('Enter', { ctrl: true }); await a.idle();
+  await bulk(srv, tid, 2, 102);
+  a.ctx.chatRetrySync(); await a.idle();
+  assert.equal(a.S().msgs[tid].list.length, 102, 'the newest page (3–102) and the page under it (1–2) that the device already showed');
+  assert.equal(msgOf(a, tid, 1).body, 'mine 1', 'E8 still shows seq 1');
+  // Codex の順番：もう 1 件 → GM が seq 1 を見えなくする → E8 が読み直す
+  const m1 = msgOf(a, tid, 1);
+  await bulk(srv, tid, 103, 103);
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m1.id, hide: true, reason: 'not appropriate' });
+  a.ctx.chatRetrySync(); await a.idle();
+  assert.equal(msgOf(a, tid, 1).hidden, true, 'seq 1 is hidden on the device that already had it');
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /mine 1/);
+  // 前のページで本人が直した・消したものも届く
+  await srv.pg.exec(`reset role; update public.chat_messages set body = 'm2 fixed', edited_at = now() where thread_id = '${tid}' and seq = 2;
+    update public.chat_messages set deleted_at = now() where thread_id = '${tid}' and seq = 3;
+    update public.chat_threads set chg = nextval('public.chat_chg_seq') where id = '${tid}'; set role service_role`);
+  a.ctx.chatRetrySync(); await a.idle();
+  assert.equal(msgOf(a, tid, 2).body, 'm2 fixed');
+  assert.equal(msgOf(a, tid, 3).deleted, true);
+  assert.equal(a.S().msgs[tid].older, false, 'nothing older on the server');
+});
+
+test('more pages than it re-reads: the oldest are dropped and loaded again from the server; a failed re-read drops them too', async () => {
+  const srv = await server();
+  let failBefore = false;
+  const a = await app(srv, 'E8', { fail: { before: b => failBefore && b.action === 'chat_messages' && b.before != null } });
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('Very long'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await bulk(srv, tid, 1, 650, 'E8');
+  a.ctx.chatRetrySync(); await a.idle();
+  for (let i = 0; i < 6; i++) { a.ctx.chatOlder(); await a.idle(); }
+  assert.equal(a.S().msgs[tid].list[0].seq, 1, 'all 650 are shown');
+  const m10 = msgOf(a, tid, 10);
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m10.id, hide: true, reason: 'x' });
+  a.ctx.chatRetrySync(); await a.idle();
+  const L = a.S().msgs[tid];
+  assert.equal(L.list[0].seq, 151, 'the newest page and 4 more (500) are re-read; older copies are dropped');
+  assert.equal(L.list.length, 500);
+  assert.equal(L.older, true, '"load older" fetches them again');
+  assert.equal(msgOf(a, tid, 10), undefined, 'the hidden one is not kept from before');
+  a.ctx.chatOlder(); await a.idle(); a.ctx.chatOlder(); await a.idle();
+  assert.equal(msgOf(a, tid, 10).hidden, true, 'loaded again from the server: hidden');
+  // 前のページを取り直せない（通信）：取れなかったところより前は捨てる
+  failBefore = true;
+  await bulk(srv, tid, 651, 651, 'E8');
+  a.ctx.chatRetrySync(); await a.idle();
+  assert.equal(a.S().msgs[tid].list[0].seq, 552, 'only the newest page (552–651) is kept');
+  assert.equal(a.S().msgs[tid].older, true);
+});
+
+test('a chat that changed while closed does not show its old copy when opened again (no flash of a hidden message)', async () => {
+  const srv = await server();
+  let hold = null;
+  const a = await app(srv, 'E8', { gate: b => (b.action === 'chat_messages' && hold) ? hold.p : null });
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('Reopen'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await a.type('secret words'); a.key('Enter', { ctrl: true }); await a.idle();
+  const m = a.S().msgs[tid].list[0];
+  a.ctx.chatBack(); a.show(); await a.idle();
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m.id, hide: true, reason: 'x' });
+  a.ctx.chatRetrySync(); await a.idle();
+  let release; hold = { p: new Promise(r => { release = r; }) };
+  a.ctx.chatOpen(tid); a.show();
+  await sleep(20);
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret words/, 'while the answer is on its way, the old copy is not shown');
+  hold = null; release(); await a.idle(); a.show(); await a.idle();
+  assert.equal(a.S().msgs[tid].list[0].hidden, true);
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret words/);
+  // 変わっていなければ前の写しをすぐ出す（読み直しは裏で）
+  a.ctx.chatBack(); a.show(); await a.idle();
+  hold = { p: new Promise(r => { release = r; }) };
+  a.ctx.chatOpen(tid); a.show();
+  await sleep(20);
+  assert.match(text(a.D.getElementById('chat-msgs')), /見えなくなりました/, 'unchanged: the copy is shown at once');
+  hold = null; release(); await a.idle();
+});
+
 test('request chat: the button in the request detail opens it for a decider; others are told; the chat links back to the request', async () => {
   const srv = await server();
   const r7 = await app(srv, 'E7', { role: 'sl' });
