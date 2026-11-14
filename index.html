@@ -3931,8 +3931,13 @@ function _k2ActualsRaw(sid, ym){
     /* 総労働時間と Google は売上の集計（k）が無くても出す（勤怠・手入力から。これからの月は出さない） */
     if(!future){
       if(d.key==='laborHours' && hrs && hrs.laborDays>0){ r.act=hrs.hours; if(hrs.excluded>0) r.actNote=t('仕組みのアカウント '+hrs.excluded+'h を除外','Excluded system accounts '+hrs.excluded+'h'); }
-      if(d.key==='reviewScore'){ r.act=_k2Num(man.gAvg); var gc=_k2Num(man.gCnt), gt=_k2Num(man.reviewScore);
-        r.actNote=(gc!=null?t('この月 '+gc+' 件の平均','Average of '+gc+' reviews this month'):'')+(gt!=null?((gc!=null?'・':'')+t('総合評価 ★'+gt.toFixed(1),'Overall ★'+gt.toFixed(1))):''); }
+      if(d.key==='reviewScore'){
+        /* v1157：Business Profile に結んで取り終えた店・月は自動（Google）。ほかは今までどおり手入力 */
+        var _gm=(typeof grMonthOf==='function')?grMonthOf(sid, ym):null;
+        if(_gm){ r.act=_gm.avg; var _go=(typeof grOverallOf==='function')?grOverallOf(sid):null;
+          r.actNote=(_gm.cnt>0?t('Google（自動）この月 '+_gm.cnt+' 件の平均','Google (auto): average of '+_gm.cnt+' reviews this month'):t('Google（自動）この月の口コミはまだありません','Google (auto): no reviews this month yet'))+(_go&&_go.rating!=null?'・'+t('総合評価 ★'+_go.rating.toFixed(1),'Overall ★'+_go.rating.toFixed(1)):''); }
+        else { r.act=_k2Num(man.gAvg); var gc=_k2Num(man.gCnt), gt=_k2Num(man.reviewScore);
+        r.actNote=(gc!=null?t('この月 '+gc+' 件の平均','Average of '+gc+' reviews this month'):'')+(gt!=null?((gc!=null?'・':'')+t('総合評価 ★'+gt.toFixed(1),'Overall ★'+gt.toFixed(1))):''); } }
     }
     /* 総労働時間の計画（今月は前日までの営業日の分だけ） */
     if(d.plan && r.tgt!=null && isCur){
@@ -4145,6 +4150,8 @@ function k2GoogleUrl(store){
 }
 /* ---- 会議タブ：Google の口コミ（1A：実績はその月に投稿された口コミの平均） ---- */
 function _meetGoogleCard(store, ym){
+  /* v1157：Google の口コミのカード（FUNERGY_GR）。読めない環境では今までの手入力のカード */
+  try{ if(typeof grCardHtml==='function'){ var _gh=grCardHtml(store, ym); if(_gh) return _gh; } }catch(e){}
   try{
     var sid=store.id, man=getKpiManual(sid, k2Period(ym))||{};
     var avg=_k2Num(man.gAvg), cnt=_k2Num(man.gCnt), tot=_k2Num(man.reviewScore), totN=_k2Num(man.gTotalCnt);
@@ -4164,8 +4171,8 @@ function _meetGoogleCard(store, ym){
       +'<div><div class="k2-note">'+t('総合評価（月末）','Overall (month end)')+'</div><div style="font-size:24px;font-weight:800;color:var(--tm)">'+(tot!=null?'★'+tot.toFixed(1):'—')+'</div>'
         +'<div class="k2-note">'+(totN!=null?t('累計 '+totN+' 件','Total '+totN):t('参考','For reference'))+'</div></div>'
       +'</div>'
-      +'<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（Google の API はつなぎません）。',
-        'The month is the posting date in Hawaii time; star-only reviews count. Count them on Google and enter them in KPI settings › Inputs (no Google API).')+'</div>'
+      +'<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Business Profile をつなぐまでは、Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（つないだら自動になります）。',
+        'The month is the posting date in Hawaii time; star-only reviews count. Until Business Profile is connected, count them on Google and enter them in KPI settings › Inputs (it becomes automatic once connected).')+'</div>'
       +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
       +(can?'<button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'manual\';window._kpiStore=\''+escapeHtml(sid)+'\';window._kpiManualOffset='+off+';go(\'kpi_master\')"><i class="ti ti-edit"></i> '+t('入力する','Enter')+'</button>':'')
       +'<a class="btn btn-secondary btn-sm" style="text-decoration:none" href="'+escapeHtml(k2GoogleUrl(store))+'" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> '+(k2GoogleUrlSet(store)?t('Google で見る','Open Google'):t('Google マップで探す','Find on Google Maps'))+'</a>'
@@ -20897,6 +20904,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
+  if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -20920,6 +20928,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
+  if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -21122,6 +21131,7 @@ function initApp() {
   renderPage(curPage);
   try{ setTimeout(function(){ if(typeof wrPing==='function') wrPing(); }, 2500); }catch(e){}   /* v1131：申請を使い始めたか（前の画面の案内に使う） */
   try{ setTimeout(function(){ if(typeof chatStart==='function') chatStart(); }, 3000); }catch(e){}   /* v1156：チャットの未読の数と合図（店のタブレットでは動かない） */
+  try{ setTimeout(function(){ if(typeof grStart==='function') grStart(); }, 3500); }catch(e){}   /* v1157：Google の口コミ（会議の実績）・Google のログインから戻ったときの知らせ */
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
@@ -31542,7 +31552,7 @@ function _meetYearMatrix(store, y){
   /* v926: 確定月はPLの数字を出す。1〜6月は cellV がシードを優先するので届かない
      （「1〜6月の会議記録の数字は動かさない」A案・Motoさん確認済みを維持）。 */
   function liveA(kk, ym, off){ if(off>0) return null;
-    if(kk==='google'){ try{ return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A） */
+    if(kk==='google'){ try{ var _gm=(typeof grMonthOf==='function')?grMonthOf(sid, ym):null; if(_gm) return _gm.avg; return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A）・v1157：自動の店と月は Google */
     var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
@@ -45561,7 +45571,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1156';
+const APP_VERSION = '1157';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -101662,9 +101672,12 @@ function renderKpiMaster() {
   <div class="phase-tabs">
     <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> ${t('目標と実績','Targets & actuals')}</div>
     <div class="phase-tab${window._kpiTab==='manual'?' active':''}" onclick="window._kpiTab='manual';renderPage('kpi_master')"><i class="ti ti-edit" style="font-size:12px"></i> 実績入力/対象指定</div>
+    <div class="phase-tab${window._kpiTab==='google'?' active':''}" onclick="window._kpiTab='google';renderPage('kpi_master')"><i class="ti ti-brand-google" style="font-size:12px"></i> ${t('Google の口コミ','Google reviews')}</div>
   </div>`;
 
   if (window._kpiTab==='manual') return html + renderKpiManualTab();
+  /* v1157（UI案73 の 4）：Google の口コミのつなぎ方と店ごとの設定（決める・つなぐのは GM・CEO） */
+  if (window._kpiTab==='google') return html + ((typeof grTabHtml==='function') ? grTabHtml() : '');
 
   // v1153：店舗 × 月の目標と実績（UI案70）。前の「実績 vs 目標」「目標値の設定」はこの表にまとめた
   html += renderKpi2Store();
@@ -101812,6 +101825,12 @@ function renderKpiManualTab(){
     </div>`;
   } else {
     html += `<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 店舗マスターでGoogle/YelpのURLを登録すると、ここから確認リンクが出ます。</div>`;
+  }
+  /* v1157：Business Profile から自動で取っている店・月は Google の 4 つを手入力しない（会議の実績は自動） */
+  var _grAutoM = false; try{ _grAutoM = (typeof grAutoYm==='function') && grAutoYm(sid, k2YmOfPeriod(period)); }catch(e){ _grAutoM = false; }
+  if (_grAutoM) {
+    manKpis = manKpis.filter(m=>['gAvg','gCnt','reviewScore','gTotalCnt'].indexOf(m[0])<0);
+    html += `<div style="font-size:11px;color:var(--green);margin-bottom:8px"><i class="ti ti-brand-google"></i> ${t('Google の口コミ（この月の平均・件数・総合評価）は Business Profile から自動で取っています（KPI設定 › Google の口コミ）','Google reviews (month average, count, overall) are read automatically from Business Profile (KPI settings › Google reviews)')}</div>`;
   }
   manKpis.forEach(m=>{
     html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
@@ -108889,6 +108908,513 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '@media (min-width:1180px){body.chat-wide .main{max-width:1280px}}';
 })();
 /* ==== FUNERGY_CHAT end ==== */
+/* ==== FUNERGY_GR（v1157）：Google の口コミ（UI案73・Moto さん 11/13 18:42 HST の答え：1 はい・2 はい（Business Profile をつなぐまでは手入力）・
+   3 はい（その月の口コミをすべて会議に出す）・4 はい（設定は KPI設定の中））====
+   仕様：docs/GOOGLE_REVIEWS_V1157_JA.md。
+   ・サーバーは関数 google-reviews（入り方は PIN のログインの印だけ・店のタブレットは使えない）。決める・つなぐのは GM・CEO（サーバーで確かめる）。
+   ・Places API：店の総合評価・件数・Google が返す最近の口コミ（最大 5 件）。Google の決まりで残せないので、見るときに取ってこのタブのメモリだけに置く。
+   ・Business Profile API：自分の店の口コミを毎日 4:30（ハワイ）にサーバーが取って残す。結んだ店は会議の実績（その月の平均・件数）が自動になり、手入力は使わない。
+     つなぐまで（Google の審査待ちのあいだも）は今までどおり手入力。
+   ・この端末（共通データ・localStorage・IndexedDB）には何も書かない。ログアウトで世代を進めて捨てる。 */
+(function(){
+  'use strict';
+  var W = window, D = document;
+  var FN = '/functions/v1/google-reviews';
+  var KPI_MS = 600000, NOW_MS = 600000, MONTH_MS = 600000, FAIL_MS = 120000;
+  var ERR = {
+    signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
+    signin_changed:['途中で別の人のログインに変わったので止めました','Stopped because the sign-in changed'],
+    unauthorized:['PIN のログインを確かめられませんでした（期限切れなど）。ログアウトしてログインし直してください','The PIN login could not be checked (it may have expired). Log out and log in again'],
+    auth_unavailable:['ログインを確かめるサーバー（work-requests）が答えません。少し待ってからもう一度','The sign-in check (work-requests) is not answering. Try again later'],
+    forbidden:['GM・CEO だけができます（サーバーで確かめました）','Only GM and CEO can do this (checked by the server)'],
+    bad_value:['入力を確かめてください','Check the input'],
+    conflict:['その Business Profile の店は、ほかの店に結ばれています','That Business Profile location is already linked to another store'],
+    too_many:['続けて取りすぎました。1 分ほど待ってから','Too many requests. Wait a minute'],
+    places_not_configured:['Places API の鍵がサーバーに入っていません（Moto さんに知らせてください）','The Places API key is not set on the server (tell Moto)'],
+    places_denied:['Google が断りました（API キーの制限・Places API（新）が有効でない）','Google refused (API key restriction, or Places API (New) is not enabled)'],
+    place_not_found:['Google にその店が見つかりません（店を選び直してください）','Google cannot find that place (pick it again)'],
+    places_busy:['Google が混んでいます。少し待ってから','Google is busy. Try again later'],
+    places_bad:['Google への問い合わせの形が合いません','The request to Google was rejected'],
+    places_failed:['Google から読めませんでした','Could not read from Google'],
+    not_configured:['Google のログインの設定（OAuth のクライアント）がサーバーに入っていません（Moto さんに知らせてください）','The Google sign-in (OAuth client) is not set on the server (tell Moto)'],
+    bp_not_connected:['Business Profile をつないでいません','Business Profile is not connected'],
+    bp_pending:['Google の審査待ちです（Business Profile の API がまだ使えません）','Waiting for Google approval (the Business Profile API is not available yet)'],
+    bp_failed:['Business Profile から読めませんでした','Could not read from Business Profile'],
+    bp_auth_revoked:['Google で許可が取り消されました。つなぎ直してください','Access was revoked in Google. Connect again'],
+    gr_missing:['Google の口コミのサーバー（SQL）がまだ入っていません（Moto さんに知らせてください）','The Google reviews database is not set up yet (tell Moto)'],
+    fn_missing:['Google の口コミのサーバー（関数 google-reviews）がまだ入っていません（Moto さんに知らせてください）','The Google reviews server (google-reviews) is not set up yet (tell Moto)'],
+    network:['Google の口コミのサーバーにつながりません（通信を確かめてください）','Cannot reach the Google reviews server (check the network)']
+  };
+  var BACK = {
+    ok:['Business Profile をつなぎました','Business Profile is connected'],
+    pending:['つなぎました。Google の審査が通るまで口コミは取れません（それまでは手入力）','Connected. Reviews cannot be read until Google approves (enter them by hand until then)'],
+    error:['つなぎましたが、Business Profile を読めませんでした（「Google の口コミ」で確かめてください）','Connected, but Business Profile could not be read (check the Google reviews tab)'],
+    bad_state:['つなぐのに時間がかかりすぎたか、もう使ったリンクです。もう一度「Google でログインしてつなぐ」を','The link expired or was already used. Press Connect again'],
+    denied:['Google で許可されませんでした（つないでいません）','Google did not allow it (not connected)'],
+    not_configured:['Google のログインの設定がサーバーに入っていません（Moto さんに知らせてください）','The Google sign-in is not set on the server (tell Moto)'],
+    no_refresh_token:['Google が鍵を返しませんでした。Google のアカウントの「サードパーティのアクセス」から外して、もう一度つないでください','Google did not return a key. Remove the access in your Google account and connect again'],
+    scope_missing:['Business Profile の許可にチェックが入っていませんでした。もう一度つないでチェックを入れてください','The Business Profile permission was not checked. Connect again and check it'],
+    exchange_failed:['Google と鍵を取り替えられませんでした。もう一度','Could not finish signing in with Google. Try again'],
+    save_failed:['つなぎ先を保存できませんでした。もう一度','Could not save the connection. Try again']
+  };
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function errText(code, status){
+    if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
+    var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
+    return T('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (status ? '（HTTP ' + status + '）' : ''));
+  }
+  function mk(code, status){ var e = new Error(errText(code, status)); e.code = code; e.status = status || 0; return e; }
+  function toast(m, k){ try{ if (typeof showToast === 'function') showToast(m, k || 'info'); }catch(e){} }
+  function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
+  function canUse(){ try{ return !curStoreLogin && !!curRole && !!pinTok(); }catch(e){ return false; } }
+  function isMgr(){ try{ return curRole === 'gm' || curRole === 'ceo'; }catch(e){ return false; } }
+  function sidOk(s){ return typeof s === 'string' && /^[A-Za-z0-9_-]{1,30}$/.test(s); }
+  function ymOk(s){ return typeof s === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(s); }
+  function storeOf(sid){ try{ return (getStoresAll() || []).find(function(x){ return x && x.id === sid; }) || { id:sid, name:sid }; }catch(e){ return { id:sid, name:sid }; } }
+  function nowMs(){ return Date.now(); }
+  /* ハワイ時間の年月（投稿日の月を決める・会議の月と同じ） */
+  function hstYm(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; return new Date(ms - 36000000).toISOString().slice(0, 7); }
+  function hstDate(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; var d = new Date(ms - 36000000); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); }
+  function hstTime(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; var d = new Date(ms - 36000000); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + ' ' + String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); }
+  function stars(n){ n = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); return '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n); }
+
+  function fresh(gen){ return { gen:gen || 0, tok:null, st:'', who:null, kpi:null, kpiAt:0, kpiFail:0, kpiP:null, kpiErr:'',
+    status:null, statusSt:'', statusErr:'', statusP:null, statusFail:0, now:{}, month:{}, busy:'', search:null, locs:null, timer:null }; }
+  var G = fresh(0);
+  W._grState = function(){ return G; };
+
+  /* サーバー（関数 google-reviews）。答えが来る前に別の人のログインに変わったら（世代 gen が変わったら）使わない */
+  async function api(payload){
+    var tok = pinTok();
+    if (!tok) throw mk('signin');
+    var g = G.gen;
+    var r, j = null;
+    try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
+    catch(e) { throw mk('network'); }
+    try { j = await r.json(); } catch(e) { j = null; }
+    if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
+    if (r.status === 404 && !(j && j.error)) { G.st = 'missing'; throw mk('fn_missing', 404); }
+    if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (code === 'gr_missing') G.st = 'sql'; throw mk(code, r.status); }
+    if (G.st === 'missing' || G.st === 'sql') G.st = '';
+    return j;
+  }
+  W.grAPI = api;
+
+  /* 画面に知らせる：会議・KPI設定を開いているときだけ描き直す（入力中は FUNERGY_UX が待つ） */
+  function changed(){
+    try{
+      if (typeof curPage === 'undefined' || (curPage !== 'meeting' && curPage !== 'kpi_master')) return;
+      var ux = W.FUNERGY_UX;
+      if (ux && typeof ux.noteDataChange === 'function') ux.noteDataChange();
+      if (ux && typeof ux.bgRefresh === 'function') ux.bgRefresh(); else renderPage(curPage);
+    }catch(e){}
+  }
+  /* 会議のカードだけを入れ替える（ほかの所は描き直さない） */
+  function patchCards(sid){
+    try{
+      Array.prototype.forEach.call(D.querySelectorAll('[data-grcard]'), function(el){
+        var k = String(el.getAttribute('data-grcard') || ''), p = k.split('|');
+        if (sid && p[0] !== sid) return;
+        if (!sidOk(p[0]) || !ymOk(p[1])) return;
+        var w = D.createElement('div'); w.innerHTML = W.grCardHtml(storeOf(p[0]), p[1]);
+        if (w.firstElementChild) el.replaceWith(w.firstElementChild);
+      });
+      Array.prototype.forEach.call(D.querySelectorAll('[data-grtab]'), function(el){ el.outerHTML = W.grTabHtml(); });
+    }catch(e){}
+  }
+
+  /* ---------------------------------------------------------------- 会議の実績（Business Profile に結んだ店） */
+  W.grLoadKpi = function(force){
+    if (!canUse() || G.st === 'missing' || G.st === 'sql') return Promise.resolve(null);
+    if (G.kpiP) return G.kpiP;
+    if (!force && G.kpi && nowMs() - G.kpiAt < KPI_MS) return Promise.resolve(G.kpi);
+    var g = G.gen, before = G.kpi ? JSON.stringify(G.kpi) : '';
+    G.kpiP = (async function(){
+      try {
+        var j = await api({ action:'kpi' });
+        if (g !== G.gen) return null;
+        G.kpi = (j && typeof j === 'object') ? j : null; G.kpiAt = nowMs(); G.kpiErr = '';
+        if (JSON.stringify(G.kpi) !== before) { changed(); patchCards(''); }
+        return G.kpi;
+      } catch(e) { if (g === G.gen) { G.kpiFail = nowMs(); G.kpiErr = e.code || 'error'; } return null; }
+      finally { if (g === G.gen) G.kpiP = null; }
+    })();
+    return G.kpiP;
+  };
+  function kick(){
+    if (!canUse() || G.kpiP || G.st === 'missing' || G.st === 'sql') return;
+    if (G.kpi ? nowMs() - G.kpiAt >= KPI_MS : nowMs() - G.kpiFail >= FAIL_MS) W.grLoadKpi();
+  }
+  /* その店の実績が自動（Business Profile に結んでいて、つながっていて、口コミを一度でも全部取り終えた）か。読めていなければ false（手入力のまま） */
+  W.grAuto = function(sid){ kick(); var k = G.kpi; return !!(k && k.connected && Array.isArray(k.auto) && k.auto.indexOf(sid) >= 0); };
+  /* 口コミを全部取れている最初の月（これより前の月は手入力のまま） */
+  W.grFromOf = function(sid){ var k = G.kpi, f = k && k.from && k.from[sid]; return ymOk(f) ? f : null; };
+  /* その月の実績が自動か（自動の店で、取り始めの月から） */
+  W.grAutoYm = function(sid, ym){ if (!W.grAuto(sid) || !ymOk(ym)) return false; var f = W.grFromOf(sid); return !!(f && ym >= f); };
+  /* 自動の店の、その月の平均と件数（ハワイ時間の投稿日）。自動でなければ null。口コミが無い月は avg null・cnt 0 */
+  W.grMonthOf = function(sid, ym){
+    if (!W.grAutoYm(sid, ym)) return null;
+    var m = G.kpi.months && G.kpi.months[ym], v = m && m[sid];
+    if (!v) return { avg:null, cnt:0 };
+    var a = Number(v.avg), c = Number(v.cnt);
+    return { avg:isFinite(a) ? Math.round(a * 100) / 100 : null, cnt:isFinite(c) ? c : 0 };
+  };
+  W.grOverallOf = function(sid){
+    var k = G.kpi, o = k && k.overall && k.overall[sid];
+    if (!o || o.rating == null) return null;
+    var r = Number(o.rating), n = Number(o.total);
+    return { rating:isFinite(r) ? r : null, total:isFinite(n) ? n : null, at:o.at || null };
+  };
+
+  /* ---------------------------------------------------------------- Places（見るときに取る・残さない） */
+  function loadNow(sid, force){
+    if (!canUse() || !sidOk(sid) || G.st === 'missing' || G.st === 'sql') return;
+    var e = G.now[sid];
+    if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? NOW_MS : FAIL_MS)))) return;
+    var g = G.gen;
+    G.now[sid] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'' };
+    api({ action:'places_now', store:sid }).then(function(j){
+      if (g !== G.gen) return;
+      G.now[sid] = { st:'ok', at:nowMs(), data:j, err:'' }; patchCards(sid);
+    }, function(err){
+      if (g !== G.gen) return;
+      G.now[sid] = { st:'err', at:nowMs(), data:null, err:err.code || 'error' }; patchCards(sid);
+    });
+  }
+  W.grRetryNow = function(sid){ loadNow(sid, true); patchCards(sid); };
+  /* その月の口コミ（自動の店だけ・すべて・新しい順） */
+  function loadMonth(sid, ym, force){
+    if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
+    var k = sid + '|' + ym, e = G.month[k];
+    if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? MONTH_MS : FAIL_MS)))) return;
+    var g = G.gen;
+    G.month[k] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'' };
+    api({ action:'month', store:sid, ym:ym }).then(function(j){
+      if (g !== G.gen) return;
+      G.month[k] = { st:'ok', at:nowMs(), data:j, err:'' }; patchCards(sid);
+    }, function(err){
+      if (g !== G.gen) return;
+      G.month[k] = { st:'err', at:nowMs(), data:e ? e.data : null, err:err.code || 'error' }; patchCards(sid);
+    });
+  }
+  W.grRetryMonth = function(sid, ym){ loadMonth(sid, ym, true); patchCards(sid); };
+  W.grToggleList = function(btn){ try{ var box = btn.parentNode.querySelector('.gr-list'); if (box) { var open = box.getAttribute('data-open') === '1'; box.setAttribute('data-open', open ? '0' : '1'); box.style.maxHeight = open ? '320px' : 'none'; btn.textContent = open ? T('すべて広げる','Expand all') : T('たたむ','Collapse'); } }catch(e){} };
+
+  function reviewRow(x, src){
+    var who = x.reviewer || x.author || '';
+    var link = (src === 'places' && x.author_uri && /^https:\/\//.test(x.author_uri)) ? x.author_uri : '';
+    var when = src === 'places' ? hstDate(x.time) : hstDate(x.created);
+    var text = src === 'places' ? x.text : x.comment;
+    return '<div class="gr-rv"><div class="gr-rv-h"><span class="gr-st" aria-label="' + esc((x.rating || 0) + ' / 5') + '">' + stars(x.rating) + '</span>'
+      + '<span class="k2-note">' + esc(when) + '</span>'
+      + (who ? (link ? '<a class="k2-note" href="' + esc(link) + '" target="_blank" rel="noopener">' + esc(who) + '</a>' : '<span class="k2-note">' + esc(who) + '</span>') : '<span class="k2-note">' + T('名前なし','Anonymous') + '</span>')
+      + (x.replied ? '<span class="k2-chip" style="color:var(--green);background:var(--surface2)">' + T('返信済み','Replied') + '</span>' : '')
+      + '</div>' + (text ? '<div class="gr-rv-t">' + esc(text) + '</div>' : '<div class="gr-rv-t k2-note">' + T('（星だけ）','(stars only)') + '</div>') + '</div>';
+  }
+
+  /* ---------------------------------------------------------------- 会議のカード */
+  W.grCardHtml = function(store, ym){
+    var sid = store && store.id;
+    if (!sidOk(sid) || !ymOk(ym)) return '';
+    var auto = W.grAutoYm(sid, ym), use = canUse();
+    var man = {}; try{ man = getKpiManual(sid, k2Period(ym)) || {}; }catch(e){}
+    var mo = auto ? W.grMonthOf(sid, ym) : null;
+    var avg = auto ? (mo ? mo.avg : null) : _k2Num(man.gAvg), cnt = auto ? (mo ? mo.cnt : 0) : _k2Num(man.gCnt);
+    var tgt = null; try{ tgt = k2ExplicitTarget(sid, ym, 'reviewScore'); }catch(e){}
+    var st = (avg != null && tgt != null) ? _meetStatus('google', avg, tgt, false) : 'none';
+    var col = _meetStatColor(st), diff = (avg != null && tgt != null) ? _meetDiffStr('google', avg, tgt, false, '', false) : '';
+    /* 総合評価：自動の店は Business Profile の数、ほかは Places（見るとき・Google の料金がかかるので要るときだけ）、どちらも無ければ手入力 */
+    var bpo = auto ? W.grOverallOf(sid) : null;
+    if (use && !bpo) loadNow(sid);
+    var nw = bpo ? null : (G.now[sid] || null), nd = nw && nw.st === 'ok' ? nw.data : (nw && nw.data) || null;
+    var linked = !!(nd && nd.linked);
+    var ovr = bpo ? bpo.rating : (linked && nd.rating != null ? nd.rating : _k2Num(man.reviewScore));
+    var ovrN = bpo ? bpo.total : (linked && nd.count != null ? nd.count : _k2Num(man.gTotalCnt));
+    var ovrSrc = bpo ? T('Business Profile','Business Profile') : (linked && nd.rating != null ? T('Google（今）','Google (now)') : T('手入力（月末）','Manual (month end)'));
+    var chip = auto ? T('自動（Google）','Auto (Google)') : (linked ? T('総合評価は自動・月の平均は手入力','Overall auto · month average manual') : T('手入力','Manual'));
+    var can = (typeof canSetKpiStore === 'function') && canSetKpiStore(sid);
+    var off = (typeof _ymToOffset === 'function') ? _ymToOffset(ym) : 0;
+    var url = (linked && nd.uri) ? nd.uri : k2GoogleUrl(store);
+    var h = '<div class="card" data-grcard="' + esc(sid + '|' + ym) + '"><div class="card-title" style="flex-wrap:wrap;row-gap:4px"><i class="ti ti-brand-google" style="color:var(--accent)"></i><span style="white-space:nowrap">' + T('Googleレビュー','Google reviews') + '</span>'
+      + '<span class="k2-chip" style="margin-left:auto;color:' + (auto ? 'var(--green)' : 'var(--muted)') + ';background:var(--surface2)">' + chip + '</span></div>'
+      + '<div class="k2-gcols">'
+      + '<div><div class="k2-note">' + T('この月の平均（この月に投稿された口コミ）','Average of the reviews posted this month') + '</div>'
+        + '<div style="font-size:24px;font-weight:800;color:' + col + '">' + (avg != null ? '★' + avg.toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (auto ? (cnt > 0 ? T(cnt + ' 件・会議の「実績」に入る値（自動）', cnt + ' reviews · the meeting actual (auto)') : T('この月の口コミはまだありません','No reviews this month yet'))
+          : (cnt != null ? T(cnt + ' 件・会議の「実績」に入る値', cnt + ' reviews · used as the meeting actual') : T('会議の「実績」に入る値','Used as the meeting actual'))) + '</div></div>'
+      + '<div><div class="k2-note">' + T('目標','Target') + '</div><div style="font-size:24px;font-weight:800">' + (tgt != null ? '★' + tgt.toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (st !== 'none' ? _meetStatLabel(st) + (diff ? '・' + diff : '') : T('KPI設定で決める','Set in KPI settings')) + '</div></div>'
+      + '<div><div class="k2-note">' + T('総合評価','Overall') + '・' + ovrSrc + '</div><div style="font-size:24px;font-weight:800;color:var(--tm)">' + (ovr != null ? '★' + Number(ovr).toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (ovrN != null ? T('累計 ' + ovrN + ' 件','Total ' + ovrN) : T('参考','For reference')) + '</div></div>'
+      + '</div>';
+    /* その月の口コミ（3：すべて出す） */
+    if (auto) {
+      if (use) loadMonth(sid, ym);
+      var me = G.month[sid + '|' + ym], md = me && me.data, items = (md && Array.isArray(md.items)) ? md.items : null;
+      h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('この月の口コミ（すべて・新しい順）','Reviews this month (all, newest first)') + (items ? '（' + items.length + '）' : '') + '</div>';
+      if (items && items.length) {
+        h += '<div class="gr-list" data-open="0" style="max-height:320px;overflow:auto">' + items.map(function(x){ return reviewRow(x, 'bp'); }).join('') + '</div>';
+        if (items.length > 4) h += '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="grToggleList(this)">' + T('すべて広げる','Expand all') + '</button>';
+      } else if (items) h += '<div class="k2-note">' + T('この月に投稿された口コミはありません','No reviews were posted this month') + '</div>';
+      else if (me && me.st === 'err') h += '<div class="k2-note" style="color:var(--red)">' + esc(errText(me.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryMonth(\'' + esc(sid) + '\',\'' + esc(ym) + '\')">' + T('もう一度','Retry') + '</button></div>';
+      else h += '<div class="k2-note">' + T('読み込み中…','Loading…') + '</div>';
+      var kr = G.kpi && G.kpi.overall && G.kpi.overall[sid], kst = G.kpi && G.kpi.status;
+      if (kst === 'expired' || kst === 'error' || kst === 'pending') h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">'
+        + T('いまは Google から取れていません（KPI設定 › Google の口コミ で確かめてください）。','Not reading from Google right now (check KPI settings › Google reviews).')
+        + (G.kpi.last_ok_at ? T('最後に取れた時刻 ' + hstTime(G.kpi.last_ok_at) + '（ハワイ）',' Last read ' + hstTime(G.kpi.last_ok_at) + ' (Hawaii)') : '') + '</div>';
+      h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile から毎日 4:30（ハワイ時間）に取ります。月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。','Read from Business Profile every day at 4:30 (Hawaii time). The month is the posting date in Hawaii time; star-only reviews count.')
+        + (kr && kr.at ? T('（総合評価 ' + hstTime(kr.at) + ' 時点）',' (overall as of ' + hstTime(kr.at) + ')') : '') + '</div>';
+    } else {
+      /* Business Profile をつなぐまで：月の平均は手入力。Google が返す最近の口コミ（最大 5 件）は見るだけ（残さない） */
+      var pr = (linked && Array.isArray(nd.reviews)) ? nd.reviews : [];
+      var inMonth = pr.filter(function(x){ return hstYm(x.time) === ym; });
+      if (linked) {
+        h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('Google が返す最近の口コミ（最大 5 件・この月の分 ' + inMonth.length + ' 件）','Recent reviews from Google (up to 5 · ' + inMonth.length + ' this month)') + '</div>';
+        if (pr.length) h += '<div class="gr-list" style="max-height:320px;overflow:auto">' + pr.map(function(x){ return reviewRow(x, 'places'); }).join('') + '</div>';
+        else h += '<div class="k2-note">' + T('口コミはありません','No reviews') + '</div>';
+        h += '<div class="k2-note" style="margin-top:4px">' + T('Google マップのデータ・見るたびに Google から取ります（Google の決まりで残しません）','Google Maps data · read from Google each time (not stored, per Google’s terms)') + (nd.at ? '・' + esc(hstTime(nd.at)) : '') + '</div>';
+      } else if (nw && nw.st === 'err') {
+        h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">' + esc(errText(nw.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryNow(\'' + esc(sid) + '\')">' + T('もう一度','Retry') + '</button></div>';
+      }
+      h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Business Profile をつなぐまでは、Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（つないだら自動になります）。',
+        'The month is the posting date in Hawaii time; star-only reviews count. Until Business Profile is connected, count them on Google and enter them in KPI settings › Inputs (it becomes automatic once connected).') + '</div>';
+    }
+    h += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      + ((can && !auto) ? '<button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'manual\';window._kpiStore=\'' + esc(sid) + '\';window._kpiManualOffset=' + off + ';go(\'kpi_master\')"><i class="ti ti-edit"></i> ' + T('入力する','Enter') + '</button>' : '')
+      + '<a class="btn btn-secondary btn-sm" style="text-decoration:none" href="' + esc(url) + '" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> ' + ((linked || k2GoogleUrlSet(store)) ? T('Google で見る','Open Google') : T('Google マップで探す','Find on Google Maps')) + '</a>'
+      + '</div></div>';
+    return h;
+  };
+
+  /* ---------------------------------------------------------------- KPI設定 › Google の口コミ */
+  function loadStatus(force){
+    if (!canUse()) return;
+    if (G.statusP || (!force && G.status && nowMs() - G.status._at < 60000)) return;
+    if (!force && !G.status && G.statusFail && nowMs() - G.statusFail < FAIL_MS) return;
+    var g = G.gen;
+    G.statusSt = G.status ? 'ok' : 'loading';
+    G.statusP = Promise.all([api({ action:'status' }), G.who ? Promise.resolve(G.who) : api({ action:'whoami' })]).then(function(r){
+      if (g !== G.gen) return;
+      G.status = r[0] || {}; G.status._at = nowMs(); G.who = r[1] || null; G.statusSt = 'ok'; G.statusErr = '';
+    }, function(err){
+      if (g !== G.gen) return;
+      G.statusSt = 'err'; G.statusErr = err.code || 'error'; G.statusFail = nowMs();
+    }).then(function(){ if (g === G.gen) { G.statusP = null; patchCards('-'); } });
+  }
+  function bpLine(bp){
+    var s = bp && bp.status;
+    if (!bp || !bp.connected || s === 'none') return ['var(--muted)', T('つないでいません（会議の月の平均は手入力）','Not connected (the meeting month average is entered by hand)')];
+    if (s === 'pending') return ['var(--amber, #b7791f)', T('つなぎました・Google の審査待ち（口コミはまだ取れません・それまでは手入力）','Connected · waiting for Google approval (reviews cannot be read yet; enter them by hand until then)')];
+    if (s === 'expired') return ['var(--red)', T('Google で許可が取り消されました。つなぎ直してください（それまでは手入力）','Access was revoked in Google. Connect again (enter by hand until then)')];
+    if (s === 'error') return ['var(--red)', T('読めませんでした','Could not read') + (bp.error ? '（' + esc(bp.error) + '）' : '')];
+    return ['var(--green)', T('つながっています','Connected')];
+  }
+  W.grTabHtml = function(){
+    if (!canUse()) return '<div class="card" data-grtab="1" style="color:var(--muted);font-size:13px">' + T('Google の口コミの設定は、個人の PIN でログインした人だけが見られます（店のタブレットでは見られません）','Only people signed in with their own PIN can see the Google review settings (not on the store tablet)') + '</div>';
+    loadStatus(false);
+    var mgr = isMgr(), S = G.status, who = G.who || {};
+    var h = '<div data-grtab="1">';
+    if (G.st === 'missing' || G.st === 'sql') return h + '<div class="card" style="color:var(--red);font-size:13px">' + esc(errText(G.st === 'sql' ? 'gr_missing' : 'fn_missing')) + '</div></div>';
+    if (!S) return h + '<div class="card" style="font-size:13px;color:' + (G.statusSt === 'err' ? 'var(--red)' : 'var(--muted)') + '">'
+      + (G.statusSt === 'err' ? esc(errText(G.statusErr)) + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button>' : T('読み込み中…','Loading…')) + '</div></div>';
+    var bp = S.bp || {}, bl = bpLine(bp), stores = {}; try{ stores = S.stores || {}; }catch(e){}
+    var run = S.run;
+    /* つなぎ方 */
+    h += '<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>' + T('つなぎ方','Connections') + '</div>'
+      + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google の店を選ぶと、会議に総合評価と Google が返す最近の口コミ（最大 5 件）が出ます。見るたびに Google から取ります（Google の決まりで残しません）。','Pick the Google place for each store to show the overall rating and up to 5 recent reviews in the meeting. Read from Google each time (not stored, per Google’s terms).') + '</div>'
+        + '<div class="k2-note" style="color:' + (who.places === false ? 'var(--red)' : 'var(--green)') + '">' + (who.places === false ? esc(errText('places_not_configured')) : T('サーバーに鍵が入っています','The server has the key')) + '</div></div>'
+      + '<div><b>' + T('② その月の口コミ（Business Profile API）','② Reviews by month (Business Profile API)') + '</b><div class="k2-note">' + T('自分の店の口コミを毎日 4:30（ハワイ）に取って残し、結んだ店は会議の月の平均・件数が自動になります（手入力は使いません）。Google の審査が要ります。','Reads your own reviews every day at 4:30 (Hawaii) and keeps them; linked stores get the meeting month average and count automatically (no manual entry). Needs Google approval.') + '</div>'
+        + '<div class="k2-note" style="color:' + bl[0] + '">' + bl[1] + (bp.connected && bp.account ? '・' + esc(bp.account) : '') + '</div>'
+        + (bp.last_ok_at ? '<div class="k2-note">' + T('最後に取れた時刻 ','Last read ') + esc(hstTime(bp.last_ok_at)) + T('（ハワイ）',' (Hawaii)') + '</div>' : '')
+        + (run ? '<div class="k2-note">' + T('最後の取り込み ','Last run ') + esc(hstTime(run.at)) + '・' + (run.ok ? T('取れました','OK') : T('取れなかった店があります','Some stores failed')) + '</div>' : '')
+        + (mgr ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'
+          + (!bp.connected || bp.status === 'expired' ? '<button class="btn btn-primary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grConnect()"><i class="ti ti-brand-google"></i> ' + T('Google でログインしてつなぐ','Sign in with Google to connect') + '</button>' : '')
+          + (bp.connected && bp.status !== 'expired' ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grSyncNow()"><i class="ti ti-refresh"></i> ' + T('今すぐ取る','Read now') + '</button>' : '')
+          + (bp.connected ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grDisconnect()">' + T('切る','Disconnect') + '</button>' : '')
+          + '</div>' : '<div class="k2-note">' + T('つなぐ・店を選ぶのは GM・CEO です','GM and CEO connect and pick the places') + '</div>')
+        + '</div></div></div>';
+    /* 店ごと */
+    var list = []; try{ list = (typeof kpiSettableStores === 'function' ? kpiSettableStores() : activeStores()) || []; }catch(e){ list = []; }
+    var auto = (G.kpi && G.kpi.connected && Array.isArray(G.kpi.auto)) ? G.kpi.auto : [];
+    var ym = (typeof k2YmOfOffset === 'function') ? k2YmOfOffset(0) : '';
+    h += '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>' + T('店ごと','By store') + '</div><div class="gr-table" role="table">'
+      + '<div class="gr-tr gr-th" role="row"><div>' + T('店舗','Store') + '</div><div>' + T('Google の店（①）','Google place (①)') + '</div><div>' + T('Business Profile の店（②）','Business Profile location (②)') + '</div><div>' + T('総合評価','Overall') + '</div><div>' + T('今月の平均','This month') + '</div></div>';
+    list.forEach(function(s){
+      if (!s || !sidOk(s.id)) return;
+      var x = stores[s.id] || {}, isAuto = auto.indexOf(s.id) >= 0, mo = isAuto ? W.grMonthOf(s.id, ym) : null, o = isAuto ? W.grOverallOf(s.id) : null;
+      var fy = isAuto ? W.grFromOf(s.id) : null;
+      var sq = esc(s.id);
+      h += '<div class="gr-tr" role="row"><div><b>' + esc(s.name || s.id) + '</b><div class="k2-note">' + (isAuto ? '<span style="color:var(--green)">' + T('自動','Auto') + (fy ? T('（' + fy + ' から）',' (from ' + fy + ')') : '') + '</span>'
+          : (x.loc && bp.connected ? T('手入力（初めて取り終えるまで）','Manual (until the first read)') : T('手入力','Manual'))) + '</div></div>'
+        + '<div data-l="' + esc(T('Google の店（①）','Google place (①)')) + '">' + (x.place ? '<span style="color:var(--green)">' + T('選んであります','Set') + '</span>' : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
+          + (mgr ? ' <button class="btn btn-secondary btn-sm" onclick="grSearchOpen(\'' + sq + '\')">' + (x.place ? T('変える','Change') : T('選ぶ','Pick')) + '</button>' + (x.place ? ' <button class="btn btn-secondary btn-sm" onclick="grPlaceUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
+        + '<div data-l="' + esc(T('Business Profile の店（②）','Business Profile location (②)')) + '">' + (x.loc ? esc(x.title || T('結んであります','Linked')) : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
+          + ((mgr && bp.connected) ? ' <button class="btn btn-secondary btn-sm" onclick="grLocsOpen(\'' + sq + '\')">' + (x.loc ? T('変える','Change') : T('結ぶ','Link')) + '</button>' + (x.loc ? ' <button class="btn btn-secondary btn-sm" onclick="grLocUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
+        + '<div data-l="' + esc(T('総合評価','Overall')) + '">' + (o && o.rating != null ? '★' + o.rating.toFixed(1) + (o.total != null ? ' <span class="k2-note">（' + o.total + '）</span>' : '') : (x.rating != null ? '★' + Number(x.rating).toFixed(1) : '<span class="k2-note">—</span>')) + '</div>'
+        + '<div data-l="' + esc(T('今月の平均','This month')) + '">' + (mo ? (mo.avg != null ? '★' + mo.avg.toFixed(1) + ' <span class="k2-note">（' + mo.cnt + T(' 件',' reviews') + '）</span>' : '<span class="k2-note">' + T('まだなし','None yet') + '</span>') : '<span class="k2-note">' + T('手入力','Manual') + '</span>') + '</div>'
+        + '</div>';
+    });
+    h += '</div><div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile の店を結んで口コミを初めて取り終えると、その店は会議の実績（その月の平均・件数）が自動になり、手入力の欄は出なくなります（初めて取り終えた月の前の月から。それより前の月は手入力のまま）。つなぐまでと、Google の審査が通るまでは手入力です。','Once a store is linked to a Business Profile location and its reviews have been read once, the meeting actual (month average and count) becomes automatic and the manual fields go away (from the month before the first read; earlier months stay manual). Until connected and approved by Google, enter them by hand.') + '</div></div>';
+    return h + '</div>';
+  };
+  W.grReloadTab = function(){ loadStatus(true); W.grLoadKpi(true); patchCards('-'); };
+
+  /* ---------------------------------------------------------------- GM・CEO の操作 */
+  async function act(label, fn){
+    if (G.busy) return;
+    G.busy = label; patchCards('-');
+    try { await fn(); }
+    catch(e) { toast(e.message || errText(e.code), 'error'); }
+    finally { G.busy = ''; loadStatus(true); W.grLoadKpi(true); patchCards('-'); }
+  }
+  W.grSearchOpen = function(sid){
+    if (!sidOk(sid) || typeof openModal !== 'function') return;
+    var s = storeOf(sid);
+    G.search = { sid:sid, items:null, err:'' };
+    openModal('<div class="modal-title">' + T('Google の店を選ぶ','Pick the Google place') + '・' + esc(s.name || sid) + '</div>'
+      + '<div style="display:flex;gap:6px;margin:8px 0"><input class="form-input" id="gr-q" maxlength="120" value="' + esc((s.name || '') + ' Hawaii') + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing){event.preventDefault();grSearchRun();}">'
+      + '<button class="btn btn-primary btn-sm" onclick="grSearchRun()">' + T('探す','Search') + '</button></div>'
+      + '<div id="gr-res" class="k2-note">' + T('名前と地域で探して、合う店を選んでください','Search by name and area, then pick the matching place') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+  };
+  W.grSearchRun = async function(){
+    var S0 = G.search; if (!S0) return;
+    var el = D.getElementById('gr-q'), box = D.getElementById('gr-res'), q = el ? String(el.value || '').trim() : '';
+    if (q.length < 2) { if (box) box.textContent = T('2 文字以上で','At least 2 characters'); return; }
+    if (box) box.textContent = T('探しています…','Searching…');
+    var g = G.gen;
+    try {
+      var j = await api({ action:'places_search', q:q });
+      if (g !== G.gen || G.search !== S0) return;
+      S0.items = (j && Array.isArray(j.items)) ? j.items : [];
+      if (!box) return;
+      box.innerHTML = S0.items.length ? S0.items.map(function(x, i){
+        return '<div class="gr-pick"><div><b>' + esc(x.name) + '</b><div class="k2-note">' + esc(x.address) + '</div>'
+          + '<div class="k2-note">' + (x.rating != null ? '★' + Number(x.rating).toFixed(1) : '—') + (x.count != null ? '（' + x.count + '）' : '') + '</div></div>'
+          + '<button class="btn btn-primary btn-sm" onclick="grSearchPick(' + i + ')">' + T('この店にする','Use this') + '</button></div>';
+      }).join('') + '<div class="k2-note" style="margin-top:6px">' + T('Google マップのデータ','Google Maps data') + '</div>' : T('見つかりませんでした','Nothing found');
+    } catch(e) { if (box && G.search === S0) box.textContent = e.message || errText(e.code); }
+  };
+  W.grSearchPick = function(i){
+    var S0 = G.search, x = S0 && S0.items && S0.items[i];
+    if (!x) return;
+    act('place', async function(){
+      await api({ action:'places_set', store:S0.sid, place_id:x.place_id });
+      delete G.now[S0.sid];
+      try{ closeModalDirect(); }catch(e){}
+      toast(T('Google の店を選びました','The Google place is set'), 'success');
+    });
+  };
+  W.grPlaceUnset = function(sid){
+    if (!sidOk(sid) || !confirm(T('この店の Google の店（総合評価）を外しますか？','Remove the Google place (overall rating) for this store?'))) return;
+    act('place', async function(){ await api({ action:'places_set', store:sid, place_id:null }); delete G.now[sid]; toast(T('外しました','Removed'), 'success'); });
+  };
+  /* Google のログインへ（このタブを Google に移す。戻ってきたらログインし直す） */
+  W.grConnect = function(){
+    if (!confirm(T('Google のログインの画面に移ります。お店の Business Profile を管理している Google アカウントでログインし、「Business Profile の管理」にチェックを入れてください。戻ってきたら、もう一度 PIN でログインしてください。','You will go to the Google sign-in. Sign in with the Google account that manages the Business Profile and check "manage Business Profile". When you come back, log in again with your PIN.'))) return;
+    act('connect', async function(){
+      var j = await api({ action:'bp_connect' });
+      if (!j || typeof j.url !== 'string' || j.url.indexOf('https://accounts.google.com/') !== 0) throw mk('not_configured');
+      W.location.assign(j.url);
+    });
+  };
+  W.grSyncNow = function(){
+    act('sync', async function(){
+      var j = await api({ action:'sync_now' });
+      var bad = (j && Array.isArray(j.stores)) ? j.stores.filter(function(x){ return !x.ok; }) : [];
+      if (j && j.ok) toast(T('取りました（' + ((j.stores || []).length) + ' 店）','Read (' + ((j.stores || []).length) + ' stores)'), 'success');
+      else toast(errText(j && j.error ? j.error : (bad[0] && bad[0].error && /^reviews_(403|429)$/.test(bad[0].error) ? 'bp_pending' : 'bp_failed')), 'error');
+      G.month = {};
+    });
+  };
+  W.grDisconnect = function(){
+    if (!confirm(T('Business Profile を切りますか？ 会議の Google の実績は手入力に戻ります（取った口コミは残ります）','Disconnect Business Profile? The meeting Google actual goes back to manual entry (the reviews already read are kept)'))) return;
+    act('disconnect', async function(){ await api({ action:'bp_disconnect' }); G.month = {}; toast(T('切りました','Disconnected'), 'success'); });
+  };
+  W.grLocsOpen = async function(sid){
+    if (!sidOk(sid) || typeof openModal !== 'function') return;
+    var s = storeOf(sid);
+    G.locs = { sid:sid, items:null };
+    openModal('<div class="modal-title">' + T('Business Profile の店を結ぶ','Link a Business Profile location') + '・' + esc(s.name || sid) + '</div><div id="gr-locs" class="k2-note" style="margin:8px 0">' + T('読み込み中…','Loading…') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+    var L0 = G.locs, g = G.gen, box;
+    try {
+      var j = await api({ action:'bp_locations' });
+      if (g !== G.gen || G.locs !== L0) return;
+      L0.items = (j && Array.isArray(j.items)) ? j.items : [];
+      box = D.getElementById('gr-locs'); if (!box) return;
+      box.innerHTML = L0.items.length ? L0.items.map(function(x, i){
+        return '<div class="gr-pick"><div><b>' + esc(x.title || x.location) + '</b><div class="k2-note">' + esc(x.address || '') + '</div></div>'
+          + '<button class="btn btn-primary btn-sm" onclick="grLocPick(' + i + ')">' + T('この店に結ぶ','Link') + '</button></div>';
+      }).join('') : T('Business Profile に店がありません','No locations in Business Profile');
+    } catch(e) { box = D.getElementById('gr-locs'); if (box && G.locs === L0) box.textContent = e.message || errText(e.code); loadStatus(true); }
+  };
+  W.grLocPick = function(i){
+    var L0 = G.locs, x = L0 && L0.items && L0.items[i];
+    if (!x) return;
+    act('link', async function(){
+      await api({ action:'bp_link', store:L0.sid, account:x.account, location:x.location, title:x.title || '' });
+      G.month = {};
+      try{ closeModalDirect(); }catch(e){}
+      toast(T('結びました。次の 4:30 か「今すぐ取る」で口コミが入ります','Linked. Reviews come in at the next 4:30 run or with Read now'), 'success');
+    });
+  };
+  W.grLocUnset = function(sid){
+    if (!sidOk(sid) || !confirm(T('この店の Business Profile の結びを外しますか？ 会議の実績は手入力に戻ります（取った口コミはサーバーに残りますが、数えません）','Unlink Business Profile for this store? The meeting actual goes back to manual (the reviews already read stay on the server but are not counted)'))) return;
+    act('link', async function(){ await api({ action:'bp_link', store:sid, location:null }); G.month = {}; toast(T('外しました','Removed'), 'success'); });
+  };
+
+  /* ---------------------------------------------------------------- 始める・やめる */
+  function onVis(){ if (!D.hidden) kick(); }
+  W.grStart = function(){
+    if (!canUse()) return;
+    var tok = pinTok();
+    if (G.tok && G.tok !== tok) W.grReset();
+    G.tok = tok;
+    if (!G.timer) { try{ G.timer = setInterval(function(){ if (!D.hidden) kick(); }, 60000); }catch(e){} try{ D.addEventListener('visibilitychange', onVis); }catch(e){} }
+    W.grLoadKpi(false);
+    /* Google のログインから戻ってきた：結果を知らせて、GM・CEO なら KPI設定の Google のタブへ */
+    var back = W._grBack; W._grBack = null;
+    if (back) {
+      var m = Object.prototype.hasOwnProperty.call(BACK, back) ? BACK[back] : null;
+      toast(m ? T(m[0], m[1]) : errText(back), (back === 'ok') ? 'success' : (back === 'pending' ? 'info' : 'error'));
+      if (isMgr()) { W._kpiTab = 'google'; try{ go('kpi_master'); }catch(e){} }
+    }
+  };
+  W.grReset = function(){
+    try{ if (G.timer) clearInterval(G.timer); }catch(e){}
+    try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    G = fresh(G.gen + 1);
+  };
+  try{
+    if (!D.getElementById('gr-css')) {
+      var cs = D.createElement('style'); cs.id = 'gr-css';
+      cs.textContent = '.gr-list{border:1px solid var(--border);border-radius:10px;padding:0 10px;margin-top:6px}'
+        + '.gr-rv{padding:8px 0;border-top:1px solid var(--border)}.gr-rv:first-child{border-top:0}'
+        + '.gr-rv-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}'
+        + '.gr-st{color:#c98a06;letter-spacing:1px;font-size:13px}'
+        + '.gr-rv-t{font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:2px}'
+        + '.gr-conn{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}'
+        + '.gr-table .gr-tr{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr) minmax(0,1.6fr) minmax(0,.8fr) minmax(0,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--border);font-size:12.5px;align-items:center}'
+        + '.gr-table .gr-th{font-weight:700;color:var(--muted);border-top:0;font-size:11.5px}'
+        + '.gr-pick{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)}'
+        + '@media (max-width:820px){.gr-conn{grid-template-columns:minmax(0,1fr)}.gr-table .gr-tr{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.gr-table .gr-th{display:none}.gr-table .gr-tr>div[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:2px}}';
+      (D.head || D.body).appendChild(cs);
+    }
+  }catch(e){}
+  /* Google のログインから戻ってきたとき、アドレスの結果（?google_bp=…）を取り出して消す（ログインのあとで知らせる） */
+  try{
+    var u = new URL(W.location.href), b = u.searchParams.get('google_bp');
+    if (b != null) {
+      W._grBack = /^[a-z_]{1,40}$/.test(b) ? b : 'error';
+      u.searchParams.delete('google_bp');
+      W.history.replaceState(W.history.state, '', u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '') + u.hash);
+    }
+  }catch(e){}
+})();
+/* ==== FUNERGY_GR end ==== */
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>
