@@ -18,6 +18,13 @@ function extract(name, text) {
   assert.ok(end > begin, name + ' end');
   return text.slice(start, end + 2);
 }
+// v1160 の直し：_rgLastFailed から toastFailSummaryHtml の前まで（_rgBusy と rg* の小さな関数）
+function rgBlock(text) {
+  const a = text.indexOf('var _rgLastFailed = null;');
+  const b = text.indexOf('function toastFailSummaryHtml(');
+  assert.ok(a >= 0 && b > a, 'rg block');
+  return text.slice(a, b);
+}
 function varLine(name, text) {
   const i = text.indexOf('var ' + name + ' = ');
   assert.ok(i >= 0, name);
@@ -70,7 +77,8 @@ function load(text, plan) {
   context.window = context;
   const isNew = text.includes('function toastFailKind(');
   const parts = isNew
-    ? [varLine('_toastRangeSleep', text), varLine('TOAST_FAIL_LABEL', text), varLine('_rgLastFailed', text),
+    ? [varLine('_toastRangeSleep', text), varLine('TOAST_FAIL_LABEL', text),
+      text.includes('var _rgBusy') ? rgBlock(text) : varLine('_rgLastFailed', text),
       ...['syncToastDay', 'toastFailKind', 'fetchToastRange', 'toastFailSummaryHtml', 'doRangeImport'].map(n => extract(n, text))]
     : ['syncToastDay', 'fetchToastRange'].map(n => extract(n, text));
   vm.runInContext(parts.join('\n'), context);
@@ -222,4 +230,135 @@ test('the optional L/D column SQL only adds columns and can run twice', async ()
   assert.equal(Number(row.net_sales), 123.45); assert.equal(row.guest_count, 7);
   assert.equal(row.lunch_repeat_count, 0); assert.equal(row.dinner_super_regular_count, 0);
   assert.doesNotMatch(sql, /\b(drop|delete|update|truncate)\b/i);
+});
+
+// ---- #154 の Codex（6875910941）：取り込み直しのあとも、取り直さなかった失敗・注意を残す ----
+const dbMissing = { status: 200, body: { ok: false, dbError: 'column missing' } };
+const plain = x => JSON.parse(JSON.stringify(x));   // VM の中の配列と比べるため
+
+test('#154: retrying only the failed days keeps the database error of a day that was not retried, and does not close', async () => {
+  // Codex の順番そのもの：10/02 は DB 保存エラー、10/03 は最初も自動の取り直しも 429
+  const a = load(now, { '2026-10-02': [dbMissing], '2026-10-03': [limit429, limit429] });
+  await a.c.doRangeImport('F04-A', 'guid-a');
+  let html = a.element('rg-progress').innerHTML;
+  assert.match(html, /合計3日取得（失敗2）/);
+  assert.match(html, /DB保存エラー: column missing/);
+  assert.match(html, /10\/02/); assert.match(html, /10\/03/);
+  assert.match(html, /失敗した日だけ取り込み直す（1日）/);
+  assert.equal(a.effects.includes('close'), false);
+  const callsBefore = a.w.calls.length;
+  await a.c.doRangeImport('', '', 1);
+  assert.deepEqual(a.w.calls.slice(callsBefore), ['2026-10-03'], 'takes only the day that can be tried again');
+  html = a.element('rg-progress').innerHTML;
+  assert.doesNotMatch(html, /失敗0/);
+  assert.match(html, /取り込み直した 1日のうち 1日取得（まだ取れていない日 1）/);
+  assert.match(html, /DB保存エラー: column missing/, 'the database error stays on the screen');
+  assert.match(html, /失敗した日：10\/02/);
+  assert.doesNotMatch(html, /rg-retry/, 'nothing left that the button can take');
+  assert.equal(a.effects.includes('close'), false, 'does not close while a day is still not saved');
+  assert.equal(a.toasts.at(-1).k, 'warning');
+  assert.equal(a.actuals['F04-A']['2026-10-02'], undefined);
+  const rec = a.c._rgLastFailed.stores[0];
+  assert.deepEqual(plain(rec.fails.map(f => [f.date, f.kind])), [['2026-10-02', 'db']]);
+  assert.deepEqual(plain(rec.dates), []);
+  await assert.rejects(a.c.doRangeImport('', '', 1), /取り込み直す日がありません/);
+});
+
+test('#154: the app login and L/D notes stay after a retry; a retry that cannot run keeps the days', async () => {
+  const refused = { status: 401, body: { error: 'ログインを確かめられませんでした（session_required）' } };
+  const ld = date => ({ status: 200, body: { ok: true, date, net_sales: 100, ldSaved: false } });
+  const a = load(now, { '2026-10-01': [ld('2026-10-01')], '2026-10-02': [limit429, limit429], '2026-10-03': [refused] });
+  await a.c.doRangeImport('F04-A', 'guid-a');
+  let html = a.element('rg-progress').innerHTML;
+  assert.match(html, /ログインし直して/);
+  assert.match(html, /L\/D列が未作成.*（1日）/);
+  assert.match(html, /失敗した日だけ取り込み直す（1日）/);
+  // 取り込み直しがはじめから断られた（保存の守りなど）：前の失敗はそのまま・ボタンも残る
+  const real = a.c.fetchToastRange;
+  a.c.fetchToastRange = async () => ({ error: '保存結果を確認できないため同期を完了していません。' });
+  await a.c.doRangeImport('', '', 1);
+  html = a.element('rg-progress').innerHTML;
+  assert.match(html, /保存結果を確認できないため/);
+  assert.match(html, /DB保存エラー: 保存結果を確認できないため/, 'the store error is shown as before (v1159 used the DB line)');
+  assert.match(html, /失敗した日だけ取り込み直す（1日）/);
+  assert.match(html, /ログインし直して/);
+  assert.equal(a.effects.includes('close'), false);
+  a.c.fetchToastRange = real;
+  await a.c.doRangeImport('', '', 1);
+  html = a.element('rg-progress').innerHTML;
+  assert.equal(a.actuals['F04-A']['2026-10-02'].actual, 100);
+  assert.match(html, /まだ取れていない日 3/);
+  assert.match(html, /ログインし直して/, 'the login note stays');
+  assert.match(html, /L\/D列が未作成.*（1日）/, 'the L/D note stays');
+  assert.doesNotMatch(html, /rg-retry/);
+  assert.equal(a.effects.includes('close'), false);
+});
+
+test('#154: a day saved with a database note keeps the note (v1159 showed it); a store with nothing to retry is carried', async () => {
+  const warn = date => ({ status: 200, body: { ok: true, date, net_sales: 100, dbError: 'repeat column missing' } });
+  const a = load(now, { '2026-10-01': [warn('2026-10-01')] });
+  const r = await a.c.fetchToastRange('F04-A', 'guid-a', '2026-10-01', '2026-10-02');
+  assert.equal(r.ok, 2); assert.equal(r.fail, 0);
+  assert.match(String(r.dbError), /repeat column missing/);
+  assert.deepEqual(plain(r.dbWarns), [{ date: '2026-10-01', msg: 'repeat column missing' }]);
+  const m = load(now, { '2026-10-01': [warn('2026-10-01')] });
+  await m.c.doRangeImport('F04-A', 'guid-a');
+  assert.match(m.element('rg-progress').innerHTML, /DB保存エラー: repeat column missing/);
+  assert.equal(m.effects.includes('close'), false);
+  // その注意は、ほかの日を取り込み直したあとも残る
+  const w2 = load(now, { '2026-10-01': [warn('2026-10-01')], '2026-10-03': [limit429, limit429] });
+  await w2.c.doRangeImport('F04-A', 'guid-a');
+  await w2.c.doRangeImport('', '', 1);
+  assert.match(w2.element('rg-progress').innerHTML, /まだ取れていない日 0/);
+  assert.match(w2.element('rg-progress').innerHTML, /DB保存エラー: repeat column missing/);
+  assert.equal(w2.effects.includes('close'), false);
+  // 2 つの店：B は DB 保存エラーだけ（取り直す日なし）、A は 429。取り込み直しでは A だけ取り、B はそのまま出す
+  const b = load(now, {});
+  const A = { id: 'F04-A', name: 'Aiea', toastGuid: 'guid-a' }, B = { id: 'F04-K', name: 'Kaimuki', toastGuid: 'guid-b' };
+  b.c._rgLastFailed = { from: '2026-10-01', to: '2026-10-05', stores: [
+    { ...A, dates: ['2026-10-03'], fails: [{ date: '2026-10-03', kind: 'limit', msg: 'Error: orders HTTP 429' }], ld: [], dbw: [], err: null },
+    { ...B, dates: [], fails: [{ date: '2026-10-02', kind: 'db', msg: 'column missing' }], ld: [], dbw: [], err: null }] };
+  await b.c.doRangeImport('', '', 1);
+  const html = b.element('rg-progress').innerHTML;
+  assert.deepEqual(b.w.calls, ['2026-10-03']);
+  assert.match(html, /Kaimuki: 取り込み直す日はありません（まだ取れていない日 1）/);
+  assert.match(html, /DB保存エラー: column missing/);
+  assert.equal(b.effects.includes('close'), false);
+  assert.deepEqual(plain(b.c._rgLastFailed.stores.map(s => s.id)), ['F04-K']);
+});
+
+test('#154: pressing the retry button twice runs it once', async () => {
+  const a = load(now, { '2026-10-03': [limit429, limit429] });
+  await a.c.doRangeImport('F04-A', 'guid-a');
+  const callsBefore = a.w.calls.length;
+  const p1 = a.c.doRangeImport('', '', 1);
+  assert.equal(a.element('rg-retry').disabled, true, 'the button is turned off as soon as it is pressed');
+  const p2 = a.c.doRangeImport('', '', 1);
+  await Promise.all([p1, p2]);
+  assert.deepEqual(a.w.calls.slice(callsBefore), ['2026-10-03']);
+});
+
+test('#154 (P3): today\'s sales card says it could not fetch when the sync call fails like v1159 (no old row shown as new)', async () => {
+  async function run(text, plan) {
+    const w = fakeWorker(plan);
+    const store = { id: 'F04-A', name: 'Aiea', toastGuid: 'guid-a', color: '#000' };
+    const c = vm.createContext({ console, Promise, Date, Math, JSON, Number, String, Array, Object, TypeError,
+      fetch: w.fetch, TOAST_SYNC_FN: 'https://example.invalid/hyper-worker', SUPABASE_ANON: 'anon', toastFnBody: o => JSON.stringify(o), STORES: [store],
+      fetchToastSales: async () => [{ business_date: '2026-10-05', net_sales: 999, guest_count: 9 }],
+      rtDaySummary: (_s, r) => ({ net: r.net_sales }), Error });
+    c.window = c;
+    vm.runInContext(['syncToastDay', 'fetchTodayRealtime'].map(n => extract(n, text)).join('\n'), c);
+    return c.fetchTodayRealtime([store]);
+  }
+  const RealDate = Date;
+  const ymd = (() => { const d = new RealDate(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+  const html502 = { status: 502, body: '<html>Bad gateway</html>' };
+  for (const a of ['throw', html502]) {
+    const r = await run(now, { [ymd]: [a] });
+    assert.equal(r[0].error, true, 'shows the card as not fetched');
+    if (before) { const r0 = await run(before, { [ymd]: [a] }); assert.equal(r0[0].error, true, 'v1159 did the same'); }
+  }
+  // Toast が理由つきで断った（JSON の答え）は前と同じく DB の行を出す
+  const ok = await run(now, { [ymd]: [limit429] });
+  assert.equal(ok[0].error, undefined); assert.equal(ok[0].hasData, true);
 });

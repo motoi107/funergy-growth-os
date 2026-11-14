@@ -59,7 +59,7 @@ test('the first time: pre-check, the SQL (twice), post-check all OK; then the pr
   const post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
   const P = by(post);
-  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.']) assert.equal(P(n), 'OK', n);
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.']) assert.equal(P(n), 'OK', n);
   assert.equal(P('（参考）Business Profile のつなぎ'), 'none');
   assert.equal(P('（参考）Google の店（place ID）を決めた店の数'), '0');
   assert.equal(P('（参考）残っている口コミの数'), '0');
@@ -106,6 +106,15 @@ test('the post-check notices what it is meant to notice', async () => {
   await pg.exec('drop index public.gr_bp_loc_location');
   assert.match((await P())('10.'), /^NG/, '#151: the one-location-one-store index');
   await pg.exec(SQL);
+  // #151 の再レビュー：前の ② の消し方（1 回で消す・始めた時刻を見ない）なら 11 が NG
+  await pg.exec("create or replace function public.gr_reviews_prune(p jsonb) returns jsonb language sql security invoker set search_path = public, pg_temp as $f$ select '{}'::jsonb $f$");
+  assert.match((await P())('11.'), /^NG/, 'the old prune');
+  await pg.exec(SQL);
+  assert.equal((await P())('11.'), 'OK');
+  await pg.exec('alter table public.gr_reviews drop column gone_at');
+  assert.match((await P())('11.'), /^NG/, 'no gone_at column');
+  await pg.exec(SQL);
+  assert.equal((await P())('11.'), 'OK', 'the SQL adds the column back on a table that already exists');
   await pg.exec('drop table public.gr_runs');
   assert.match((await P())('1.'), /^NG/);
 });

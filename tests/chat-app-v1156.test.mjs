@@ -576,3 +576,40 @@ test('#152: the same for a late answer of the newest page (made before the hide,
   assert.equal(msgOf(a, tid, 1).hidden, true, 'read again: hidden');
   assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret two/);
 });
+
+test('#152 (Codex on #154): the first read of a conversation (nothing in the copy yet) that arrives after closing and opening again does not bring back a hidden message, even when the next read fails', async () => {
+  const srv = await server();
+  let hold = null, release = null, failNext = false;
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    if (failNext && !hold && body.action === 'chat_messages') return new Response(JSON.stringify({ error: 'x' }), { status: 503 });
+    const r = await srv.handler(req);
+    if (hold && body.action === 'chat_messages' && body.before == null) { const h = hold; hold = null; await h; }
+    return r;
+  }, pg: srv.pg };
+  const a = await app(wrap, 'E8');
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('First read'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await a.type('secret three'); a.key('Enter', { ctrl: true }); await a.idle();
+  const m1 = msgOf(a, tid, 1);
+  // 同じ人のほかの端末：写しは空。最初の読み込みの答えはもうできていて、止まっている
+  const b = await app(wrap, 'E8');
+  await start(b);
+  hold = new Promise(r => { release = r; });
+  b.ctx.chatOpen(tid); b.show(); await sleep(60);
+  assert.equal(b.S().msgs[tid].list.length, 0);
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m1.id, hide: true, reason: 'x' });
+  b.ctx.chatRetrySync(); await sleep(40);   // 一覧で「変わった」を知る
+  b.ctx.chatBack(); b.show();
+  b.ctx.chatOpen(tid); b.show();           // 閉じて開き直す（写しは空のまま）
+  failNext = true;
+  release(); await b.idle(); b.show(); await b.idle();
+  assert.equal(msgOf(b, tid, 1), undefined, 'the first answer (made before the hide) is not used');
+  assert.doesNotMatch(text(b.D.getElementById('chat-msgs')), /secret three/);
+  failNext = false; b.ctx.chatOpen(tid); await b.idle(); b.show(); await b.idle();
+  assert.equal(msgOf(b, tid, 1).hidden, true, 'read again: hidden');
+  assert.doesNotMatch(text(b.D.getElementById('chat-msgs')), /secret three/);
+});

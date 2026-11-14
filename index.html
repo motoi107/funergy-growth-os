@@ -2853,6 +2853,7 @@ async function syncToastDay(guid, businessDateYmd) {
   }
   try { var _stSplit = (typeof STORES!=='undefined') ? STORES.find(function(s){return s.toastGuid===guid;}) : null; if (_stSplit && typeof tipSplitHourFor==='function') _body.splitHour = tipSplitHourFor(_stSplit.id); } catch(e){}
   // v1160：通信が切れた・JSON でない答え（502 の HTML・関数の上限など）でも投げずに、理由の付いた失敗を返す
+  // _thrown：v1159 なら投げていた答え（通信の切れ・JSON でない答え）の印。今日の売上のカードはこれを見て、前のように「取れなかった」と出す
   var res, txt = '', j = null;
   try {
     res = await fetch(TOAST_SYNC_FN, {
@@ -2860,10 +2861,10 @@ async function syncToastDay(guid, businessDateYmd) {
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
       body: toastFnBody(_body),
     });
-  } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80) }; }
-  try { txt = await res.text(); } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _http: res.status }; }
+  } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _thrown: true }; }
+  try { txt = await res.text(); } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _http: res.status, _thrown: true }; }
   try { j = txt ? JSON.parse(txt) : null; } catch (e) { j = null; }
-  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, error: 'HTTP ' + res.status + (txt ? ': ' + String(txt).replace(/\s+/g, ' ').slice(0, 80) : ''), _http: res.status };
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, error: 'HTTP ' + res.status + (txt ? ': ' + String(txt).replace(/\s+/g, ' ').slice(0, 80) : ''), _http: res.status, _thrown: true };
   if (!res.ok) { j._http = res.status; if (j.ok === true) j.ok = false; }
   return j;
 }
@@ -2983,7 +2984,9 @@ async function fetchTodayRealtime(storeList, opts) {
     var s = storeList[i];
     if (!s.toastGuid) { results.push({id:s.id, name:s.name, color:s.color, noGuid:true}); continue; }
     try {
-      await syncToastDay(s.toastGuid, ymd);
+      // #154 のレビュー（P3）：v1160 の syncToastDay は通信の切れでも投げないので、前の版と同じく「取れなかった」にする（古い行を新しいように出さない）
+      var _rtSync = await syncToastDay(s.toastGuid, ymd);
+      if (_rtSync && _rtSync._thrown) throw new Error(String(_rtSync.error || 'sync_failed'));
       var rows = await fetchToastSales(s.toastGuid, withPrev ? prevIso : iso, iso);
       var r = null, pr = null;
       if (!withPrev) r = (rows && rows.length) ? rows[0] : null;   /* v1063 と同じ */
@@ -3379,7 +3382,7 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
   for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
   if (opts && Array.isArray(opts.dates)) { var _want = {}; opts.dates.forEach(function(x){ _want[String(x)] = 1; }); dates = dates.filter(function(x){ return _want[x]; }); }
   total = dates.length;
-  var ldDays = {}, failed = {}, gap = 250, stopped = null;
+  var ldDays = {}, failed = {}, dbWarn = {}, gap = 250, stopped = null;
   function applyDay(iso, r) {
     sumSales += Number(r.net_sales)||0;
     var actuals = getDailyActuals(storeId);
@@ -3412,7 +3415,8 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
     var r;
     try { r = await syncToastDay(guid, iso.replace(/-/g,'')); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
     if (r && r.ldSaved === false) ldDays[iso] = 1;
-    if (r && r.ok) { applyDay(iso, r); delete failed[iso]; return 'ok'; }
+    // #154 のレビュー（P3）：保存できた日でも DB の注意（dbError）は落とさない（v1159 と同じく画面に出す）
+    if (r && r.ok) { applyDay(iso, r); delete failed[iso]; if (r.dbError) dbWarn[iso] = String(r.dbError).slice(0, 160); else delete dbWarn[iso]; return 'ok'; }
     var k = toastFailKind(r);
     // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
     var msg = r ? (r.dbError ? String(r.dbError) : (String(r.error || '') + (r.detail ? ' ' + String(r.detail) : ''))) : '';
@@ -3453,13 +3457,18 @@ async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress
   }
   fail = nFail(); ok = total - fail;
   var failures = Object.keys(failed).sort().map(function(x){ return { date: x, kind: failed[x].kind, msg: failed[x].msg, skipped: !!failed[x].skipped }; });
-  var dbErrLast = null; failures.forEach(function(f){ if (f.kind === 'db') dbErrLast = f.msg; });
-  var ldMissing = Object.keys(ldDays).filter(function(x){ return !failed[x]; }).length;
+  var dbWarns = Object.keys(dbWarn).filter(function(x){ return !failed[x]; }).sort().map(function(x){ return { date: x, msg: dbWarn[x] }; });
+  var dbErrLast = null;
+  failures.filter(function(f){ return f.kind === 'db'; }).concat(dbWarns).sort(function(a, b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
+    .forEach(function(f){ dbErrLast = f.msg; });
+  var ldDates = Object.keys(ldDays).filter(function(x){ return !failed[x]; }).sort();
+  var ldMissing = ldDates.length;
   // 月次実績も更新
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(getDailyActuals(storeId)).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
-  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast, failures: failures, retried: retried, recovered: recovered };
+  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast, failures: failures, retried: retried, recovered: recovered,
+    ldDates: ldDates, dbWarns: dbWarns };   // ldDates・dbWarns：取り込み直しのあとも注意を残すため（doRangeImport）
 }
 
 /* ============================================================
@@ -36759,6 +36768,7 @@ function openRangeModal(storeId, guid) {
   var today = todayISO();
   var jan1 = new Date().getFullYear() + '-01-01';
   var allStores = getVisibleStores().filter(function(x){ return x.toastGuid; });
+  if (!_rgBusy) _rgLastFailed = null;   // 前に開いた画面の「失敗した日」は持ち越さない
   openModal(`<div class="modal-title">期間一括取り込み — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
     <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり数秒。Toast に断られたら間をあけて続け、最後に失敗した日をもう一度取ります）。</p>
     <div class="form-row">
@@ -36775,7 +36785,16 @@ function openRangeModal(storeId, guid) {
 }
 /* FUNERGY_FINANCIAL_CALLER_FIXES_V1 */
 /* v1160：失敗した日の理由と日付を出す。失敗した日が残ったら「失敗した日だけ取り込み直す」で、その日だけを取り直す */
-var _rgLastFailed = null;   // { from, to, stores: [{ id, name, toastGuid, dates }] }
+/* v1160 の直し（#154 の Codex 6875910941）：覚えておくのは「取り直す日」だけでなく、まだ片づいていないこと全部
+   （取り直さない DB 保存エラー・アプリのログインの切れ・L/D 列の注意・保存できたが DB に注意のあった日・店ごとのエラー）。
+   取り込み直しでは、取れた日だけを外し、ほかは残して出す（残っていれば閉じない） */
+var _rgLastFailed = null;   // { from, to, stores: [{ id, name, toastGuid, dates, fails, ld, dbw, err }] }（dates＝取り直す日・fails＝まだ取れていない日すべて）
+var _rgBusy = false;
+function rgRetryable(f) { return f && f.kind !== 'session' && f.kind !== 'db'; }
+function rgRetryDays(rec) { return (rec && Array.isArray(rec.stores)) ? rec.stores.reduce(function(a, x){ return a + ((x.dates || []).length); }, 0) : 0; }
+function rgOpenCount(x) { var n = (x.fails || []).length; return (x.err && !n) ? 1 : n; }
+function rgHasIssue(x) { return !!((x.fails || []).length || (x.ld || []).length || (x.dbw || []).length || x.err); }
+function rgUniqSorted(list) { var seen = {}, out = []; (list || []).forEach(function(d){ if (d && !seen[d]) { seen[d] = 1; out.push(d); } }); return out.sort(); }
 function toastFailSummaryHtml(failures) {
   var list = Array.isArray(failures) ? failures : [];
   if (!list.length) return '';
@@ -36791,10 +36810,13 @@ function toastFailSummaryHtml(failures) {
   return html;
 }
 async function doRangeImport(storeId, guid, onlyFailed) {
-  var from, to, targets, last = onlyFailed ? _rgLastFailed : null;
+  if (_rgBusy) return;   // 押した直後にもう一度押しても 2 回は走らせない
+  var from, to, targets, carry = [], last = onlyFailed ? _rgLastFailed : null;
   if (onlyFailed) {
-    if (!last || !last.stores || !last.stores.length) { alert('取り込み直す日がありません'); return; }
-    from = last.from; to = last.to; targets = last.stores;
+    if (!last || !rgRetryDays(last)) { alert('取り込み直す日がありません'); return; }
+    from = last.from; to = last.to;
+    targets = last.stores.filter(function(x){ return (x.dates || []).length; });
+    carry = last.stores.filter(function(x){ return !(x.dates || []).length; });   // 取り直す日の無い店（DB 保存エラー・ログインの切れ・注意だけ）はそのまま残す
   } else {
     from = document.getElementById('rg-from').value;
     to = document.getElementById('rg-to').value;
@@ -36805,46 +36827,88 @@ async function doRangeImport(storeId, guid, onlyFailed) {
                      : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
   }
   if (!targets.length) { alert('対象店舗がありません'); return; }
+  _rgBusy = true;
+  try {
   var btn = document.getElementById('rg-start');
   if (btn) { btn.disabled = true; btn.innerHTML = '取り込み中...'; }
+  var rbtn = document.getElementById('rg-retry');
+  if (rbtn) { rbtn.disabled = true; rbtn.innerHTML = '取り込み中...'; }
   var prog = document.getElementById('rg-progress');
-  var sumOk=0, sumFail=0, sumSales=0, ldMissing=0, dbError=null, lines=[], sumRetried=0, sumRecovered=0, session=false;
+  var sumOk=0, sumSales=0, lines=[], sumRetried=0, sumRecovered=0, asked=0;
   var next = { from: from, to: to, stores: [] };
   for (var si=0; si<targets.length; si++) {
     var st = targets[si];
+    var prev = onlyFailed ? st : null;
     var head = (onlyFailed ? '失敗した日だけ取り込み直し：' : '') + (targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] ') : '') + escapeHtml(st.name) + '<br>';
+    if (prev) asked += prev.dates.length;
     var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail, info){
       var phase = '';
       if (info && info.phase === 'wait') phase = '<br><span style="color:var(--muted)">失敗した ' + info.n + ' 日を、少し待ってからもう一度取ります…</span>';
       else if (info && info.phase === 'retry') phase = '<br><span style="color:var(--muted)">失敗した日をもう一度（' + info.i + '/' + info.n + '）</span>';
       if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/Math.max(1,total)*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）` + phase;
-    }, onlyFailed ? { dates: st.dates } : undefined);
-    if (!res || res.error) { sumFail++; dbError=(res&&res.error)||'保存結果を確認できません'; lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(dbError)+'</div>'); continue; }
-    sumOk += (res.ok||0); sumFail += (res.fail||0); sumSales += (res.sumSales||0);
+    }, prev ? { dates: prev.dates } : undefined);
+    var rec = { id: st.id, name: st.name, toastGuid: st.toastGuid, dates: [], fails: [],
+      ld: prev ? (prev.ld || []).slice() : [], dbw: prev ? (prev.dbw || []).slice() : [], err: null };
+    if (!res || res.error) {
+      rec.err = (res&&res.error)||'保存結果を確認できません';
+      if (prev) rec.fails = (prev.fails || []).slice();   // 取り込み直せなかった：前の失敗はそのまま
+      rec.dates = rec.fails.filter(rgRetryable).map(function(f){ return f.date; });
+      next.stores.push(rec);
+      lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(rec.err)+'</div>' + toastFailSummaryHtml(rec.fails));
+      continue;
+    }
+    sumOk += (res.ok||0); sumSales += (res.sumSales||0);
     sumRetried += (res.retried||0); sumRecovered += (res.recovered||0);
-    ldMissing += (res.ldMissing||0); if (res.dbError) dbError = res.dbError;
     var fl = Array.isArray(res.failures) ? res.failures : [];
-    if (fl.some(function(f){ return f.kind === 'session'; })) session = true;
-    var again = fl.filter(function(f){ return f.kind !== 'session' && f.kind !== 'db'; }).map(function(f){ return f.date; });
-    if (again.length) next.stores.push({ id: st.id, name: st.name, toastGuid: st.toastGuid, dates: again });
-    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')
-      +((res.recovered||0)?('（失敗した日のうち '+res.recovered+' 日は、もう一度取って取れました）'):'')+'</div>' + toastFailSummaryHtml(fl));
+    var asked1 = prev ? prev.dates : [];
+    // 前の失敗のうち、今回取り直さなかったもの（DB 保存エラー・ログインの切れ）は残す。取り直した日は今回の結果だけ
+    var keep = prev ? (prev.fails || []).filter(function(f){ return asked1.indexOf(f.date) < 0; }) : [];
+    rec.fails = keep.concat(fl).sort(function(x, y){ return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
+    rec.dates = rec.fails.filter(rgRetryable).map(function(f){ return f.date; });
+    rec.ld = rgUniqSorted(rec.ld.concat(Array.isArray(res.ldDates) ? res.ldDates : []));
+    rec.dbw = rec.dbw.concat(Array.isArray(res.dbWarns) ? res.dbWarns : []);
+    if (rgHasIssue(rec)) next.stores.push(rec);
+    var nOpen = rgOpenCount(rec);
+    if (prev) {
+      lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': 取り込み直した '+asked1.length+' 日のうち '+(res.ok||0)+' 日取得'
+        +(nOpen ? ('（まだ取れていない日 '+nOpen+'）') : '')+'</div>' + toastFailSummaryHtml(rec.fails));
+    } else {
+      lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')
+        +((res.recovered||0)?('（失敗した日のうち '+res.recovered+' 日は、もう一度取って取れました）'):'')+'</div>' + toastFailSummaryHtml(fl));
+    }
   }
+  // 取り直す日の無かった店は、前のまま残して出す（取れたことにしない）
+  carry.forEach(function(x){
+    var c = { id: x.id, name: x.name, toastGuid: x.toastGuid, dates: [], fails: (x.fails || []).slice(), ld: (x.ld || []).slice(), dbw: (x.dbw || []).slice(), err: x.err || null };
+    next.stores.push(c);
+    var n = rgOpenCount(c);
+    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(c.name)+': 取り込み直す日はありません'+(n ? ('（まだ取れていない日 '+n+'）') : '')+'</div>' + toastFailSummaryHtml(c.fails));
+  });
   _rgLastFailed = next.stores.length ? next : null;
-  var html = lines.join('') + `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`;
+  // まだ片づいていないことは、覚えている全部の店から数える（取り込み直しでも、今回取らなかった日を「失敗0」にしない）
+  var sumFail = 0, ldMissing = 0, dbError = null, session = false;
+  next.stores.forEach(function(x){
+    sumFail += rgOpenCount(x);
+    ldMissing += (x.ld || []).length;
+    (x.fails || []).forEach(function(f){ if (f.kind === 'db') dbError = f.msg || 'DB 保存エラー'; if (f.kind === 'session') session = true; });
+    (x.dbw || []).forEach(function(w){ if (w && w.msg) dbError = w.msg; });
+    if (x.err) dbError = x.err;
+  });
+  var html = lines.join('') + (onlyFailed
+    ? `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 取り込み直した ${asked}日のうち ${sumOk}日取得（まだ取れていない日 ${sumFail}）・取り込み直した日の売上 ${fmtUSD2(sumSales)}</div>`
+    : `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`);
   // ★ DB保存の問題を必ず表に出す（以前サイレント失敗で売上が消えたため）
   if (dbError) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> DB保存エラー: ${escapeHtml(dbError)}</div>`;
   else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると（GitHub の db/toast-sales-ld-columns.sql）、ランチ/ディナー別リピート率が使えます。</div>`;
   if (session) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> アプリのログインを確かめられなかったため、残りの日は取り込んでいません。ログアウトしてログインし直してから、もう一度取り込んでください。</div>`;
-  if (_rgLastFailed) {
-    var nDays = _rgLastFailed.stores.reduce(function(a, x){ return a + x.dates.length; }, 0);
-    html += `<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="rg-retry" onclick="doRangeImport('','',1)"><i class="ti ti-refresh"></i> 失敗した日だけ取り込み直す（${nDays}日）</button></div>`;
-  }
+  var nDays = rgRetryDays(_rgLastFailed);
+  if (nDays) html += `<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="rg-retry" onclick="doRangeImport('','',1)"><i class="ti ti-refresh"></i> 失敗した日だけ取り込み直す（${nDays}日）</button></div>`;
   if (prog) prog.innerHTML = html;
-  showToast(`期間取り込み完了: ${sumOk}日分`, sumFail?'warning':'success');
+  showToast((onlyFailed ? '取り込み直し完了: ' : '期間取り込み完了: ') + sumOk + '日分', (sumFail || dbError) ? 'warning' : 'success');
   if (btn) { btn.disabled=false; btn.innerHTML='取り込み開始'; }
-  if (!dbError && !ldMissing && !sumFail) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
+  if (!dbError && !ldMissing && !sumFail && !session) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
   else renderPage('budget');
+  } finally { _rgBusy = false; }
 }
 
 function openGuidModal(storeId) {
@@ -108526,7 +108590,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 閉じていたあいだに会話が変わっていたら、前の写しは出さない（見えなくした本文を一瞬でも出さない）。開くときに読み直す */
   function freshCache(tid){
     var m = C.msgs[tid], r = C.threads[tid];
-    if (!m || !m.list.length) return;
+    if (!m) return;
+    /* Codex（#154 6875910941）：写しが空でも、最初の読み込みのとちゅうなら世代を進める（その答えは使わずに読み直す） */
+    if (!m.list.length) { if (m.busy) { m.ep = (m.ep || 0) + 1; m.again = true; } return; }
     if (r && m.chg != null && String(r.chg) === String(m.chg)) return;
     /* #152 の Codex：写しの世代を進める。読み込みのとちゅうの答え（前の世代）はあとで届いても使わず、読み直す */
     m.ep = (m.ep || 0) + 1; if (m.busy) m.again = true;
