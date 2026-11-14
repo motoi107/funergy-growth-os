@@ -52,6 +52,9 @@ union all select '10. Storage の行の守り（RLS）が効いている（OFF�
     when coalesce((select c.relrowsecurity from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'storage' and c.relname = 'objects'), false)
      and not exists (select 1 from pg_roles r where r.rolname in ('anon','authenticated') and (r.rolbypassrls or r.rolsuper)) then 'OK'
     else 'NG（Claude にこの表を）' end
+union all select '11. 一覧の 1 行が画面の言葉で出せる（files・state。v1163 の直し・#155 の Codex P3）',
+  case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_row(jsonb,public.chat_threads,public.chat_members)')) like '%chat_files_count%'
+    then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '（参考）送ったファイルの数',
   case when to_regclass('public.chat_files') is null then '—（2 がまだ）'
     else (xpath('/table/row/n/text()', query_to_xml($q$select count(*) n from public.chat_files where status = 'sent'$q$, false, false, '')))[1]::text end

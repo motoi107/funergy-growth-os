@@ -45968,7 +45968,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1162';
+const APP_VERSION = '1163';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -109657,6 +109657,19 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return r.title || T('（名前なし）','(no name)');
   }
   function caseLabel(r){ var ref = (r && r.ref) || {}, k = KIND[ref.wr_kind]; return (k ? T(k[0], k[1]) : T('申請','Request')) + (r && r.title ? ' · ' + r.title : ''); }
+  // 一覧の 1 行の文（v1163・#155 の Codex P3）：サーバーの files・state から画面の言葉で。無ければ（前の SQL）text のまま
+  function pvText(pv){
+    if (!pv) return '';
+    if (pv.state === 'deleted') return T('（削除されました）','(Deleted)');
+    if (pv.state === 'hidden') return T('（見えなくなりました）','(Hidden)');
+    var f = pv.files, ph = f ? Number(f.ph) || 0 : 0, ot = f ? Number(f.ot) || 0 : 0;
+    if (!ph && !ot) return String(pv.text || '');
+    var phE = ph === 1 ? '1 photo' : ph + ' photos', otE = ot === 1 ? '1 file' : ot + ' files';
+    if (!ot) return T('写真 ' + ph + ' 枚', phE);
+    if (!ph && ot === 1) return T('ファイル「' + String(f.name || '') + '」', 'File “' + String(f.name || '') + '”');
+    if (!ph) return T('ファイル ' + ot + ' 個', otE);
+    return T('写真 ' + ph + ' 枚・ファイル ' + ot + ' 個', phE + ' · ' + otE);
+  }
   function hst(iso, opt){ try{ return new Date(iso).toLocaleString(T('ja-JP','en-US'), Object.assign({ timeZone:'Pacific/Honolulu' }, opt)); }catch(e){ return ''; } }
   function dayKey(iso){ return hst(iso, { year:'numeric', month:'2-digit', day:'2-digit' }); }
   function shortTime(iso){ if (!iso) return ''; return dayKey(iso) === dayKey(new Date().toISOString()) ? hst(iso, { hour:'2-digit', minute:'2-digit', hour12:false }) : hst(iso, { month:'numeric', day:'numeric' }); }
@@ -109705,7 +109718,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       }).join('') : '<div class="chat-empty">' + T('自分宛ての @ はありません','No @-mentions for you') + '</div>';
     }
     var q = C.q.toLowerCase();
-    var rows = sorted().filter(function(r){ return (C.seg === 'all' || r.kind === C.seg) && (!q || (titleOf(r) + ' ' + ((r.preview || {}).text || '')).toLowerCase().indexOf(q) >= 0); });
+    var rows = sorted().filter(function(r){ return (C.seg === 'all' || r.kind === C.seg) && (!q || (titleOf(r) + ' ' + pvText(r.preview)).toLowerCase().indexOf(q) >= 0); });
     if (!rows.length) {
       if (C.st === 'loading' || (C.st === '' && canUse())) return '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
       return '<div class="chat-empty">' + (q || C.seg !== 'all' ? T('見つかりません','Nothing found') : T('まだ会話がありません。「＋ 新しい会話」から始められます','No conversations yet. Start one with “＋ New”')) + '</div>';
@@ -109715,7 +109728,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var av = r.kind === 'group' ? '<i class="ti ti-users"></i>' : r.kind === 'case' ? '<i class="ti ti-file-text"></i>' : esc(String(r.title || '?').slice(0, 1));
       return '<div class="chat-row' + (C.open === r.id ? ' on' : '') + '" onclick="chatOpen(\'' + esc(r.id) + '\')"><div class="chat-av k-' + esc(r.kind) + '">' + av + '</div><div class="chat-row-main"><div class="chat-row-top"><b>' + esc(r.kind === 'case' ? caseLabel(r) : titleOf(r)) + '</b>'
         + (r.kind === 'case' && ref.code ? '<span class="chat-chip">' + T('案件 ','Req ') + esc(ref.code) + '</span>' : '') + '<span class="chat-time">' + esc(shortTime(r.last_at)) + '</span></div>'
-        + '<div class="chat-row-prev">' + (pv ? (pv.emp === C.me ? T('あなた','You') : esc(pv.name)) + '：' + esc(pv.text || '') : '<span style="opacity:.7">' + T('まだメッセージはありません','No messages yet') + '</span>') + '</div></div>'
+        + '<div class="chat-row-prev">' + (pv ? (pv.emp === C.me ? T('あなた','You') : esc(pv.name)) + '：' + esc(pvText(pv)) : '<span style="opacity:.7">' + T('まだメッセージはありません','No messages yet') + '</span>') + '</div></div>'
         + (un ? '<span class="chat-unread">' + un + (mn ? ' · @' : '') + '</span>' : '') + '</div>';
     }).join('');
   }

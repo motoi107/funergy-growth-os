@@ -145,13 +145,18 @@ language sql stable security invoker set search_path = public, pg_temp as $$
  select jsonb_build_object('id', f.id, 'name', f.name, 'ext', f.ext, 'kind', f.kind, 'size', f.size, 'w', f.w, 'h', f.h, 'thumb', f.thumb, 'req', f.wr_id is not null);
 $$;
 
--- 一覧の 1 行の文（本文が空のメッセージ）
+-- 一覧の 1 行（本文が空のメッセージ）のファイルの数（写真・ほか・ほかが 1 つならその名前）。#155 の Codex（P3）：画面が言葉を決める（英語の画面で日本語を出さない）
+create or replace function public.chat_files_count(p_msg uuid) returns jsonb
+language sql stable security invoker set search_path = public, pg_temp as $$
+ select jsonb_build_object('ph', count(*) filter (where f.kind = 'photo'), 'ot', count(*) filter (where f.kind <> 'photo'),
+   'name', case when count(*) filter (where f.kind <> 'photo') = 1 then min(f.name) filter (where f.kind <> 'photo') end)
+  from public.chat_files f where f.message_id = p_msg and f.status = 'sent';
+$$;
+-- 一覧の 1 行の文（日本語。v1162 までの画面が出す。v1163 からの画面は preview の files・state から言葉を決める）
 create or replace function public.chat_files_label(p_msg uuid) returns text
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare v_ph integer; v_ot integer; v_name text;
+declare c jsonb := public.chat_files_count(p_msg); v_ph integer := (c->>'ph')::int; v_ot integer := (c->>'ot')::int; v_name text := c->>'name';
 begin
- select count(*) filter (where f.kind = 'photo'), count(*) filter (where f.kind <> 'photo'), min(f.name) filter (where f.kind <> 'photo')
-   into v_ph, v_ot, v_name from public.chat_files f where f.message_id = p_msg and f.status = 'sent';
  if v_ph > 0 and v_ot = 0 then return '写真 ' || v_ph || ' 枚'; end if;
  if v_ph = 0 and v_ot = 1 then return 'ファイル「' || coalesce(v_name, '') || '」'; end if;
  if v_ph = 0 and v_ot > 1 then return 'ファイル ' || v_ot || ' 個'; end if;
@@ -193,7 +198,10 @@ begin
  return jsonb_build_object('id', t.id, 'kind', t.kind, 'title', public.chat_title(a, t), 'other', v_other, 'ref', v_ref, 'members', v_n,
   'created_by', t.created_by, 'created_name', t.created_name, 'rev', t.rev,
   'last_seq', t.last_seq, 'last_at', t.last_at, 'last_read', m.last_read, 'history_from', m.history_from,
-  'preview', case when lm.id is null then null else jsonb_build_object('seq', lm.seq, 'name', lm.author_name, 'emp', lm.author_emp, 'text', v_prev, 'at', lm.created_at) end,
+  'preview', case when lm.id is null then null else jsonb_strip_nulls(jsonb_build_object('seq', lm.seq, 'name', lm.author_name, 'emp', lm.author_emp, 'text', v_prev, 'at', lm.created_at,
+    -- #155 の Codex（P3）：画面が言葉を決められるように（text は v1162 までの画面のため日本語のまま残す）
+    'state', case when lm.deleted_at is not null then 'deleted' when lm.hidden_at is not null then 'hidden' end,
+    'files', case when lm.deleted_at is null and lm.hidden_at is null and coalesce(lm.body, '') = '' then public.chat_files_count(lm.id) end)) end,
   'unread', v_unread, 'mention', v_ment, 'chg', greatest(t.chg, m.chg));
 end $$;
 
