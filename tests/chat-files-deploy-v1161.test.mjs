@@ -258,10 +258,27 @@ test('#155/#156 storage rules for roles that anon or authenticated belong to are
   assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('8.'), /^NG（Claude に決まりの名前を：late/);
   await pg.exec('revoke late_readers from anon');
   assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('8.'), 'OK');
-  // RLS が OFF・anon が RLS を飛ばせる：③ の 10 が NG・① の 6 が STOP・② は止まる
+  // なぜ止めるか（Codex の再現）：anon が storage.objects の持ち主のロールに入っていると、決まり・RLS に関係なく chat-files の行を読める
+  const owner = (await pg.query(`select r.rolname from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_roles r on r.oid = c.relowner
+    where n.nspname = 'storage' and c.relname = 'objects'`)).rows[0].rolname;
+  await pg.exec(`create role demo_owner; alter table storage.objects owner to demo_owner; grant demo_owner to anon; grant usage on schema storage to anon;
+    insert into storage.objects(bucket_id, name) values ('chat-files', 'synthetic-private.pdf')`);
+  await pg.exec('set role anon');
+  assert.deepEqual((await pg.query(`select name from storage.objects where bucket_id = 'chat-files'`)).rows.map(r => r.name), ['synthetic-private.pdf']);
+  await pg.exec('reset role');
+  await pg.exec(`revoke demo_owner from anon; alter table storage.objects owner to ${owner}; drop role demo_owner; revoke usage on schema storage from anon;
+    delete from storage.objects where name = 'synthetic-private.pdf'`);
+  // RLS が OFF・anon が RLS を飛ばせる・表の持ち主か RLS を飛ばせるロールに入っている：③ の 10 が NG・① の 6 が STOP・② は止まる
   for (const [label, on, off] of [['rls off', 'alter table storage.objects disable row level security', 'alter table storage.objects enable row level security'],
                                   ['bypassrls', 'alter role anon bypassrls', 'alter role anon nobypassrls'],
-                                  ['authenticated bypassrls', 'alter role authenticated bypassrls', 'alter role authenticated nobypassrls']]) {
+                                  ['authenticated bypassrls', 'alter role authenticated bypassrls', 'alter role authenticated nobypassrls'],
+                                  // #158・#159 の Codex（6881786429・6881979126）：表の持ち主のロール・RLS を飛ばせるロールに入っている公開の鍵
+                                  ['inherited owner', `create role inherited_owner; alter table storage.objects owner to inherited_owner; grant inherited_owner to anon`,
+                                    `revoke inherited_owner from anon; alter table storage.objects owner to ${owner}; drop role inherited_owner`],
+                                  ['owner by set role only', `create role set_owner; alter table storage.objects owner to set_owner; grant set_owner to authenticated with inherit false`,
+                                    `revoke set_owner from authenticated; alter table storage.objects owner to ${owner}; drop role set_owner`],
+                                  ['bypassrls role', `create role skip_rls bypassrls; grant skip_rls to anon`, `revoke skip_rls from anon; drop role skip_rls`],
+                                  ['superuser role', `create role super_r superuser; grant super_r to authenticated`, `revoke super_r from authenticated; drop role super_r`]]) {
     await pg.exec(on);
     assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), /^NG/, label);
     assert.match(by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'))('6.'), /^STOP/, label);
@@ -269,6 +286,16 @@ test('#155/#156 storage rules for roles that anon or authenticated belong to are
     await pg.exec(off);
     assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), 'OK', label);
   }
+  // 添付の表 chat_files の持ち主のロールに入っている公開の鍵：③ の 10 が NG（① の 6・② は流す人のロールで見る）
+  await pg.exec(`create role cf_owner; alter table public.chat_files owner to cf_owner; grant cf_owner to anon`);
+  assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), /^NG/, 'chat_files owner');
+  await pg.exec(`revoke cf_owner from anon`);
+  assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), 'OK', 'chat_files owner revoked');
+  await pg.exec(`alter table public.chat_files owner to ${owner}; drop role cf_owner`);
+  // 入っていないだけのロール（anon の上・関係ない持ち主）は止めない
+  await pg.exec(`create role above_owner; grant anon to above_owner; create role other_owner; create table public.zz_other(x int); alter table public.zz_other owner to other_owner`);
+  assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('10.'), 'OK', 'roles above anon and owners of other tables');
+  assert.equal(by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'))('6.'), 'OK');
   post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
   // Storage が無い環境：① の 6・③ の 10 は「—」
