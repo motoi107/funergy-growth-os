@@ -107701,6 +107701,24 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     } catch(e) {}
     return f;
   }
+  /* v1155（Codex #149 P2）：予算の中身（合計・日ごと・根拠）。出すときと反映するときに同じ決め方で作る */
+  function s2BudgetSig(store, ym){
+    var ra = {};
+    try { var b = (getBudgets() || []).find(function(x){ return x && x.storeId === store; }); ra = b ? (budRationale(b, ym) || {}) : {}; } catch(e) { ra = {}; }
+    return { total:s2BudgetCents(store, ym), days:s2BudgetDays(store, ym), basis:cut(ra.basis, 200), focus:cut(ra.focus, 600) };
+  }
+  /* 承認した版と今の予算の違い（無ければ null）。日ごとは全部の日を比べる（合計が同じでも配り方が違えば違う） */
+  function s2BudgetDiff(p, cur){
+    if (cur.total !== Number(p.total_cents != null ? p.total_cents : NaN)) return { what:'total' };
+    var a = (p.days && typeof p.days === 'object') ? p.days : null, b = cur.days;
+    if (!a !== !b) return { what:'days' };
+    if (a && b) {
+      var ks = Object.keys(a).concat(Object.keys(b)).filter(function(k, i, all){ return all.indexOf(k) === i; }).sort();
+      for (var i = 0; i < ks.length; i++) { var x = Number(a[ks[i]] || 0), y = Number(b[ks[i]] || 0); if (x !== y) return { what:'day', date:ks[i], from:x, to:y }; }
+    }
+    if (String(p.basis || '') !== cur.basis || String(p.focus || '') !== cur.focus) return { what:'basis' };
+    return null;
+  }
   function s2Payload(rec, kind, store){
     var p = { ap_id:String(rec.id), title:cut(rec.title, 200) || kindL(kind), store_name:cut(storeName(store), 80) };
     var fn = cut(rec.from, 80); if (fn) p.from_name = fn;
@@ -107709,9 +107727,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (typeof rec.ym === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(rec.ym)) p.ym = rec.ym;
     var f = s2Facts(rec, kind); if (f.length) p.facts = f;
     if (kind === 'budget') {
-      p.total_cents = s2BudgetCents(store, p.ym);
-      var d = s2BudgetDays(store, p.ym); if (d) p.days = d;
-      try { var b = (getBudgets() || []).find(function(x){ return x && x.storeId === store; }), ra = b ? (budRationale(b, p.ym) || {}) : {}; var bs = cut(ra.basis, 200), fc = cut(ra.focus, 600); if (bs) p.basis = bs; if (fc) p.focus = fc; } catch(e) {}
+      var sg = s2BudgetSig(store, p.ym);
+      p.total_cents = sg.total;
+      if (sg.days) p.days = sg.days;
+      if (sg.basis) p.basis = sg.basis; if (sg.focus) p.focus = sg.focus;
     }
     return p;
   }
@@ -107877,23 +107896,37 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (st === 'rejected' || st === 'withdrawn') return gone(st);
     if (st === 'missing') return { cancel:true, msg:T('前の画面の記録がこの端末にまだありません。少し待って（同期のあと）、もう一度「正式な値に反映する」を押してください','The earlier record is not on this device yet. Wait for the sync and press “Apply” again') };
     var a = (kind === 'budget' || kind === 'plan') ? null : apRec(p.ap_id);
+    /* v1155（Claude #149 P3）：前の画面の関数を通すのは、反映しているあいだだけ（終わったらすぐ閉じる。30 分は上限） */
+    var held = [], allow = function(keys){ held = held.concat(keys); s2Allow(keys); };
+    try {
     if (kind === 'budget') {
       var now = s2BudgetCents(r.store_id, p.ym);
       if (now !== Number(r.amount_cents)) return { cancel:true, msg:T('この端末の ' + p.ym + ' の予算（' + money(now) + '）が、承認した版（' + money(r.amount_cents) + '）と違います。「最新」で読み直してから、もう一度反映してください。店が予算を変えていたら、店に出し直してもらってください（新しい版になります）',
         'This device’s ' + p.ym + ' budget (' + money(now) + ') differs from the approved version (' + money(r.amount_cents) + '). Reload and apply again. If the store changed it, ask the store to resubmit (it becomes a new version)') };
-      s2Allow(['bg:' + r.store_id + '|' + p.ym]);
+      /* v1155（Codex #149 P2）：合計が同じでも、日ごとの配り方・根拠が承認した版と違えば反映しない（承認していない予算を正式にしない） */
+      var df = s2BudgetDiff(p, s2BudgetSig(r.store_id, p.ym));
+      if (df) return { cancel:true, msg:df.what === 'day'
+        ? T('この端末の ' + p.ym + ' の日ごとの予算が、承認した版と違います（' + df.date + '：' + money(df.from) + ' → ' + money(df.to) + '）。合計が同じでも反映しません。「最新」で読み直してから、もう一度押してください。店が変えたときは、差し戻して出し直してもらってください（新しい版になります）',
+            'This device’s ' + p.ym + ' daily budget differs from the approved version (' + df.date + ': ' + money(df.from) + ' → ' + money(df.to) + '). Not applied even though the total is the same. Reload and apply again. If the store changed it, return it so the store resubmits (it becomes a new version)')
+        : df.what === 'basis'
+        ? T('この端末の ' + p.ym + ' の予算の根拠・重点が、承認した版と違います。「最新」で読み直してから、もう一度押してください。店が変えたときは、差し戻して出し直してもらってください',
+            'This device’s ' + p.ym + ' budget basis or focus differs from the approved version. Reload and apply again. If the store changed it, return it so the store resubmits')
+        : T('この端末の ' + p.ym + ' の予算が、承認した版と違います（日ごとの予算があるかどうか）。「最新」で読み直してから、もう一度押してください。店が変えたときは、差し戻して出し直してもらってください',
+            'This device’s ' + p.ym + ' budget differs from the approved version (daily budget present or not). Reload and apply again. If the store changed it, return it so the store resubmits') };
+      allow(['bg:' + r.store_id + '|' + p.ym]);
       await s2Run(function(){ approveBudgetSeg(r.store_id, p.ym); }, true);
     } else if (kind === 'plan') {
-      s2Allow(['pl:' + p.ym]);
+      allow(['pl:' + p.ym]);
       await s2Run(function(){ ccApprove(p.ym); }, true);
     } else if (kind === 'promo' || kind === 'tip_self') {
       if (!a || a.ref == null) return { cancel:true, msg:T('前の画面の申請（' + kindL(kind) + '）が見つかりません','The request on the earlier screen was not found') };
-      if (kind === 'promo') { s2Allow(['ls:' + a.ref]); await s2Run(function(){ approveLssRequest(a.ref, '承認'); }, true); }
-      else { s2Allow(['tp:' + a.ref]); await s2Run(function(){ return approveTip(a.ref, '承認'); }, false); }
+      if (kind === 'promo') { allow(['ls:' + a.ref]); await s2Run(function(){ approveLssRequest(a.ref, '承認'); }, true); }
+      else { allow(['tp:' + a.ref]); await s2Run(function(){ return approveTip(a.ref, '承認'); }, false); }
     } else {
-      s2Allow(['ap:' + p.ap_id]);
+      allow(['ap:' + p.ap_id]);
       await s2Run(function(){ return approveItem(p.ap_id, 'approved', null, { fresh:true, prepFrom:p.from_day || undefined }); }, false);
     }
+    } finally { held.forEach(function(k){ delete S2A[k]; }); }
     if (k0 != null && authKey() !== k0) return { skip:true };
     st = s2OldState(r);
     if (st === 'approved') return { ok:true, msg:s2DoneMsg(r) };

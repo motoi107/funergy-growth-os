@@ -10,7 +10,7 @@ import { webcrypto } from 'node:crypto';
 import { createHandler } from '../supabase/functions/work-requests/handler.mjs';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
-const SRC = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const SRC = fs.readFileSync(process.env.FUNERGY_INDEX || new URL('../index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const SW = fs.readFileSync(new URL('../sw.js', import.meta.url), 'utf8');
 const B = '/* ==== FUNERGY_WR（v1131', E = '/* ==== FUNERGY_WR end ==== */';
 const MOD = SRC.slice(SRC.indexOf(B), SRC.indexOf(E));
@@ -81,8 +81,13 @@ function rejectVacation(id){ __st.calls.push(['rejectVacation', id]); }
 function getBudgets(){ return __st.budgets; }
 function budStatusFor(b, ym){ return (b.st || {})[ym] || '提出済み'; }
 function monthSalesBudget(store, ym){ return __st.msb[store + '|' + ym] || 0; }
-function getBudgetForMonth(){ return null; }
-function budRationale(){ return { basis:'前年 +3%', focus:'ランチの客数' }; }
+// the day-by-day budget: none unless a test sets __st.days[store|ym] (then the budget screen has a budget for the month)
+function getBudgetForMonth(store, ym){ var d = (__st.days || {})[store + '|' + ym]; return d ? { days:d } : null; }
+function budgetAuthorLabel(){ return 'store'; }
+function getDailyActuals(){ return {}; }
+function dayBudgetFor(b, date){ return (b.days || {})[date] || 0; }
+function daysOfYm(ym){ var y = +ym.slice(0, 4), m = +ym.slice(5, 7), n = new Date(Date.UTC(y, m, 0)).getUTCDate(), o = []; for (var i = 1; i <= n; i++) o.push({ date:ym + '-' + String(i).padStart(2, '0') }); return o; }
+function budRationale(){ return __st.ra || { basis:'前年 +3%', focus:'ランチの客数' }; }
 function approveBudgetSeg(store, ym){ __st.calls.push(['approveBudgetSeg', store, ym]); var b = __st.budgets.find(function(x){ return x.storeId === store; }); b.st = b.st || {}; b.st[ym] = '承認済み'; __apRef('予算', store, ym, 'approved'); }
 function rejectBudgetSeg(store, ym){ openInputModal({ title:'差し戻し' }, function(why){ __st.calls.push(['rejectBudgetSeg', store, ym, why]); var b = __st.budgets.find(function(x){ return x.storeId === store; }); b.st = b.st || {}; b.st[ym] = '差し戻し'; __apRef('予算', store, ym, 'rejected'); }); }
 function openInputModal(){ __st.calls.push(['openInputModal']); }
@@ -296,6 +301,10 @@ test('apply outcomes: already approved elsewhere → recorded without writing; r
   const g22 = (await srv.call('E2', { action: 'get', code: r22.code })).j;
   assert.ok((g22.can || []).includes('apply_done'), 'still held by this device');
   assert.ok(gm.toasts.some(([k, m]) => k === 'info' && /まだ反映していません/.test(m)));
+  // （Claude #149 P3）the old screen is closed again as soon as the apply returns (not for 30 minutes)
+  const n22 = st.calls.filter(c => c[0] === 'approveItem').length;
+  assert.equal(await gm.ctx.approveItem(apOf(st, 'ap1700000022').id, 'approved'), false, 'the old tab cannot decide it after the apply returned');
+  assert.equal(st.calls.filter(c => c[0] === 'approveItem').length, n22);
   st.noop = false;
   gm.ctx.wrEvalApply(); await gm.settle();
   assert.equal((await rows(srv))[r22.code].status, 'applied', 'pressed again: applied and recorded');
@@ -315,6 +324,43 @@ test('apply outcomes: already approved elsewhere → recorded without writing; r
   assert.equal((await rows(srv))[code].status, 'approved');
   assert.equal(await events(srv, 'apply_cancel'), 1);
   assert.ok(gm.toasts.some(([k, m]) => k === 'warning' && /\$1,200\.00/.test(m) && /\$1,000\.00/.test(m)));
+});
+
+test('(Codex #149 P2) the same month total with another day-by-day split, or another basis, is not applied; the approved one is', async () => {
+  const srv = await server(), st = shared();
+  st.msb['S1|2026-12'] = 1000; st.days = { 'S1|2026-12': { '2026-12-01': 500, '2026-12-02': 500 } };
+  const sm = await app(srv, 'E6', st, { role: 'sl' });
+  sm.ctx.addApproval({ id: 'ap1700000050', type: '予算', ref: 'S1', ym: '2026-12', store: 'S1', title: '予算', from: 'Sam Store' });
+  await sm.settle();
+  const code = apOf(st, 'ap1700000050').wrc;
+  const sent = (await srv.call('E2', { action: 'get', code })).j;
+  assert.equal(sent.payload.days['2026-12-01'], 50000); assert.equal(sent.payload.days['2026-12-02'], 50000, 'the request carries the split that was approved');
+  // the split on this device changes after the store submitted; the month total is the same
+  st.days['S1|2026-12'] = { '2026-12-01': 800, '2026-12-02': 200 };
+  const gm = await app(srv, 'E2', st);
+  await gm.render();
+  await gm.open(gm.S().rows.find(r => r.code === code).id);
+  gm.ctx.wrAsk('approve'); await gm.settle();
+  assert.equal(st.calls.filter(c => c[0] === 'approveBudgetSeg').length, 0, 'the other split is not made official');
+  assert.equal((await rows(srv))[code].status, 'approved', 'approved, not applied');
+  assert.equal(await events(srv, 'apply_cancel'), 1, 'the claim is let go');
+  assert.ok(gm.toasts.some(([k, m]) => k === 'warning' && /日ごとの予算/.test(m) && /2026-12-01/.test(m) && /\$500\.00 → \$800\.00/.test(m)), JSON.stringify(gm.toasts));
+  assert.equal(gm.ctx.approveBudgetSeg('S1', '2026-12'), false, 'and the old budget screen is closed again right away');
+  // the basis changed instead: stopped too
+  st.days['S1|2026-12'] = { '2026-12-01': 500, '2026-12-02': 500 }; st.ra = { basis: '前年 +10%', focus: 'ランチの客数' };
+  gm.ctx.wrEvalApply(); await gm.settle();
+  assert.equal(st.calls.filter(c => c[0] === 'approveBudgetSeg').length, 0);
+  assert.ok(gm.toasts.some(([k, m]) => k === 'warning' && /根拠・重点/.test(m)));
+  // the month now comes from somewhere without a day-by-day budget (same total): stopped too
+  st.ra = null; delete st.days['S1|2026-12'];
+  gm.ctx.wrEvalApply(); await gm.settle();
+  assert.equal(st.calls.filter(c => c[0] === 'approveBudgetSeg').length, 0);
+  assert.ok(gm.toasts.some(([k, m]) => k === 'warning' && /日ごとの予算があるかどうか/.test(m)));
+  // back to what was approved: applied once
+  st.days['S1|2026-12'] = { '2026-12-01': 500, '2026-12-02': 500 };
+  gm.ctx.wrEvalApply(); await gm.settle();
+  deq(st.calls.filter(c => c[0] === 'approveBudgetSeg'), [['approveBudgetSeg', 'S1', '2026-12']]);
+  assert.equal((await rows(srv))[code].status, 'acct');
 });
 
 test('a budget changed later is a new version of the same number; the bulk box needs the new version opened again', async () => {

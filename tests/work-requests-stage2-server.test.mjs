@@ -172,8 +172,9 @@ test('the same record of the old screen is one request (a resend, two devices)',
   const a = (await sub('E8', 'leave', 'S1', {}, { ap: 'ap1700000001' })).body;
   const b = (await sub('E8', 'leave', 'S1', {}, { ap: 'ap1700000001' })).body;
   assert.equal(b.id, a.id); assert.equal(b.replay, true);
+  // （Codex #149 P1）only the same person at the same store gets it back; nobody else learns what is in it
   const c = await sub('E5', 'leave', 'S1', {}, { ap: 'ap1700000001' });
-  assert.equal(c.body.id, a.id, 'another person sending the same old record gets the same request');
+  assert.equal(c.status, 409, 'another person sending the same old record is refused'); assert.equal(c.body.id, undefined);
   assert.equal((await pg.query(`select count(*)::int n from public.wr_requests where ap_id = 'ap1700000001'`)).rows[0].n, 1);
   const k = 'k-same-key-0001';
   const d1 = (await sub('E8', 'shift', 'S1', {}, { key: k })).body;
@@ -202,8 +203,9 @@ test('budget: returned and resubmitted under the same number; approved, applied 
   assert.equal(ap.status, 'acct', '6A: 予算反映済み comes from accounting');
   const c = (await act('E3', ap, 'check')).body;
   assert.equal(c.status, 'done');
-  // 予算変更（4A）
-  const r3 = (await budget('E6', 'S1', '2026-12', 9300000)).body;
+  // 予算変更（4A）：承認したあとの版を変えられるのは GM・CEO（前の画面の「承認済みは GM 以上」・Codex #149 P2）
+  assert.equal((await budget('E6', 'S1', '2026-12', 9300000)).status, 403, 'the store manager cannot change an approved budget');
+  const r3 = (await budget('E2', 'S1', '2026-12', 9300000)).body;
   assert.equal(r3.id, r.id); assert.equal(r3.version, 3); assert.equal(r3.status, 'pending');
   assert.equal(r3.payload.prev_cents, 8500000, 'the applied amount of the version before'); assert.equal(r3.payload.prev_version, 2);
   assert.equal(r3.checked, null); assert.equal(r3.approved, null); assert.deepEqual(r3.signoffs, []);
@@ -225,12 +227,74 @@ test('budget: no new version while the GM is applying (claimed); after the claim
   const a = (await act('E2', r, 'approve')).body;
   const k = key();
   const st = (await act('E2', a, 'apply_start', { key: k })).body;
-  assert.equal((await budget('E6', 'S1', '2026-12', 2000)).status, 409, 'wait while the approved version is being applied');
+  assert.equal((await budget('E1', 'S1', '2026-12', 2000)).status, 409, 'wait while the approved version is being applied');
   const cancel = (await act('E2', st, 'apply_cancel', { claim: k })).body;
   assert.equal(cancel.status, 'approved');
-  const r2 = (await budget('E6', 'S1', '2026-12', 2000)).body;
+  assert.equal((await budget('E6', 'S1', '2026-12', 2000)).status, 403, 'an approved version is changed by the GM or CEO only');
+  const r2 = (await budget('E1', 'S1', '2026-12', 2000)).body;
   assert.equal(r2.status, 'pending'); assert.equal(r2.version, 2);
   assert.equal(r2.payload.prev_cents, undefined, 'nothing was applied yet');
+});
+
+test('(Codex #149 P1) a resend of the same old record returns it only to the same person at the same store', async () => {
+  const { call, sub, pg } = await setup();
+  const ap = 'ap1700000999';
+  const own = (await sub('E12', 'resign', 'S2', { detail: 'secret reason', facts: [{ k: '理由', v: 'secret reason' }] }, { ap })).body;
+  assert.equal(own.store_id, 'S2');
+  // another store: a crew member of S1 guesses the id
+  const o1 = await sub('E8', 'resign', 'S1', {}, { ap });
+  assert.equal(o1.status, 409); assert.doesNotMatch(JSON.stringify(o1.body), /secret|S2|Hal Head|RS-/);
+  // the same store, not the owner (a crew member at S2), and even naming the store of the request
+  const o2 = await sub('E9', 'resign', 'S2', {}, { ap });
+  assert.equal(o2.status, 409); assert.doesNotMatch(JSON.stringify(o2.body), /secret|Hal Head|RS-/);
+  assert.equal((await call('E9', { action: 'get', id: own.id })).status, 404, 'the crew member cannot read it either');
+  // the owner naming another store is refused too (the store is part of the resend)
+  assert.equal((await sub('E12', 'resign', 'S1', {}, { ap })).status, 403, 'not their store');
+  const o3 = await sub('E12', 'resign', '---', {}, { ap });
+  assert.equal(o3.status, 409, 'the owner sending it as the head office is not the same request');
+  // the owner at the same store gets the same request back
+  const again = await sub('E12', 'resign', 'S2', {}, { ap });
+  assert.equal(again.status, 200); assert.equal(again.body.id, own.id); assert.equal(again.body.replay, true);
+  assert.equal((await pg.query(`select count(*)::int n from public.wr_requests where ap_id = $1`, [ap])).rows[0].n, 1);
+  // the same tap (same key) at another store is refused as well
+  const k = 'k-same-key-0099';
+  const t1 = (await sub('E5', 'shift', 'S1', {}, { key: k })).body;
+  assert.equal(t1.store_id, 'S1');
+  assert.equal((await sub('E5', 'shift', '---', {}, { key: k })).status, 409, 'the same key for another store');
+});
+
+test('(Codex #149 P2) who may submit a budget follows the old budget screen; an approved version is changed by the GM or CEO only', async () => {
+  const { budget, act, call, applyAll } = await setup();
+  assert.equal((await budget('E8', 'S1', '2026-12', 100)).status, 403, 'crew cannot submit a budget');
+  assert.equal((await budget('E13', 'S1', '2026-12', 100)).status, 403, 'office crew cannot either (not on the old budget screen)');
+  const r = (await budget('E6', 'S1', '2026-12', 5000000)).body;   // the store manager
+  assert.equal(r.status, 'pending');
+  assert.equal((await budget('E8', 'S1', '2026-12', 1)).status, 403, 'crew cannot make a new version of a waiting budget');
+  const a = (await act('E2', r, 'approve')).body;
+  assert.equal(a.status, 'approved');
+  for (const who of ['E8', 'E7', 'E6', 'E5', 'E3']) assert.equal((await budget(who, 'S1', '2026-12', 1)).status, 403, who + ' cannot change an approved budget');
+  let now = (await call('E2', { action: 'get', id: r.id })).body;
+  assert.equal(now.status, 'approved'); assert.equal(now.version, 1); assert.equal(now.requester_name, 'Sam Store'); assert.equal(Number(now.amount_cents), 5000000);
+  assert.ok([403, 404].includes((await act('E8', now, 'withdraw')).status), 'and cannot withdraw it (crew do not even see it)');
+  assert.ok([403, 404].includes((await act('E7', now, 'withdraw')).status), 'a leader who did not send it cannot withdraw it');
+  assert.equal((await act('E5', now, 'withdraw')).status, 403, 'the AM sees it but cannot withdraw it');
+  // applied, waiting for accounting, done: still the GM or CEO only
+  const ap = (await applyAll('E2', now)).body;
+  assert.equal(ap.status, 'acct');
+  assert.equal((await budget('E6', 'S1', '2026-12', 1)).status, 403);
+  const c = (await budget('E1', 'S1', '2026-12', 5100000)).body;
+  assert.equal(c.status, 'pending'); assert.equal(c.version, 2); assert.equal(c.requester_name, 'Cora CEO');
+  // a waiting (not approved) version: the store side (G3 and up, AM, accounting) may send a new one, crew may not
+  assert.equal((await budget('E8', 'S1', '2026-12', 1)).status, 403);
+  const d = (await budget('E5', 'S1', '2026-12', 5200000)).body;
+  assert.equal(d.version, 3); assert.equal(d.requester_name, 'Ami Area');
+  const rt = (await act('E2', d, 'return', { note: 'もう少し' })).body;
+  assert.equal(rt.status, 'returned');
+  assert.equal((await budget('E8', 'S1', '2026-12', 1)).status, 403, 'crew cannot resubmit a returned budget');
+  const e = (await budget('E6', 'S1', '2026-12', 5300000)).body;
+  assert.equal(e.status, 'pending'); assert.equal(e.version, 4);
+  // other kinds are unchanged: crew still send their own leave and shift
+  assert.equal((await call('E8', { action: 'submit', kind: 'leave', store_id: 'S1', client_key: 'k-crew-leave-1', payload: { ap_id: 'ap1700000777', title: 't' } })).status, 200);
 });
 
 test('the AM step needs the GM-checked copy and the store table to agree (the employee and store tables only narrow)', async () => {
@@ -309,7 +373,8 @@ test('the shape is checked by the function and again by the SQL', async () => {
   assert.equal((await budget('E6', 'S1', '2026-12', 100, { payload: { days: { '2027-01-01': 100 } } })).status, 400, 'a day outside the month');
   assert.equal((await sub('E8', 'leave', 'S1', { facts: [{ k: '', v: 'x' }] })).status, 400);
   assert.equal((await sub('E8', 'leave', 'S1', { facts: Array.from({ length: 13 }, (_, i) => ({ k: 'k' + i, v: 'v' })) })).status, 400);
-  const sql = (kind, payload) => db.rpc('wr_submit', { emp_id: 'E8', name: NAME.E8, kind, store_id: 'S1', client_key: key(), payload }).then(() => 'ok', e => e.message);
+  // a budget is sent by the store manager (crew may not send budgets: Codex #149 P2)
+  const sql = (kind, payload) => { const who = kind === 'budget' ? 'E6' : 'E8'; return db.rpc('wr_submit', { emp_id: who, name: NAME[who], kind, store_id: 'S1', client_key: key(), payload }).then(() => 'ok', e => e.message); };
   assert.match(await sql('leave', { ap_id: 'bad', title: 't' }), /bad_value/);
   assert.match(await sql('leave', { ap_id: 'ap1700009999' }), /bad_value/);
   assert.match(await sql('budget', { ap_id: 'ap1700009998', title: 't', ym: '2026-12', total_cents: 'a lot' }), /bad_value/);
@@ -318,6 +383,12 @@ test('the shape is checked by the function and again by the SQL', async () => {
   assert.match(await sql('plan', { ap_id: 'ap1700009994', title: 't' }), /bad_value/, 'and of a plan');
   assert.match(await sql('budget', { ap_id: 'ap1700009993', title: 't', ym: '2026-12', total_cents: -5 }), /bad_value/, 'no minus total');
   assert.match(await sql('budget', { ap_id: 'ap1700009992', title: 't', ym: '2026-12', total_cents: 100000000001 }), /bad_value/, 'not too large');
+  // （Claude #149 P3）a decimal is bad_value, not a cast error; the days must be whole cents in range
+  assert.match(await sql('budget', { ap_id: 'ap1700009991', title: 't', ym: '2026-12', total_cents: 12.5 }), /bad_value/, 'a decimal total');
+  assert.match(await sql('budget', { ap_id: 'ap1700009990', title: 't', ym: '2026-12', total_cents: 5, days: { '2026-12-01': 2.5 } }), /bad_value/, 'a decimal day');
+  assert.match(await sql('budget', { ap_id: 'ap1700009989', title: 't', ym: '2026-12', total_cents: 5, days: { '2026-12-01': -1 } }), /bad_value/, 'a minus day');
+  assert.match(await sql('budget', { ap_id: 'ap1700009988', title: 't', ym: '2026-12', total_cents: 5, days: { '2026-12-01': 10000000001 } }), /bad_value/, 'a day too large');
+  assert.doesNotMatch(await sql('budget', { ap_id: 'ap1700009987', title: 't', ym: '2026-12', total_cents: 5, days: { '2026-12-01': 5 } }), /bad_value/, 'whole cents pass');
   assert.equal(await sql('leave', { ap_id: 'ap1700009996', title: 't' }), 'ok');
   // the function keeps only known fields
   const n = normPayload('leave', { ap_id: 'ap1700000123', title: 't', evil: '<script>', ref: 'vac17000', facts: [{ k: '期間', v: 'x', z: 1 }] });

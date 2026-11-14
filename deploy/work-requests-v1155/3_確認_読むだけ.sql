@@ -28,6 +28,12 @@ union all select '9. 段階 2 の関数（14）がそろっている',
      'wr_submit_s2','wr_actions_s2','wr_act_s2','wr_live_row','wr_s2_save')) = 14 then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '10. G2 も権限の確かめに入ったまま（v1147 の直しが戻っていない）',
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.wr_elevated(jsonb)')) like '%>= 2%' then 'OK' else 'NG（20261116080000_wr_people_g2.sql をもう一度流す）' end
+union all select '11. 直し（Codex #149）：送り直しは同じ人・同じ店だけ・予算を出せる人・整数のセント',
+  case when (select prosrc from pg_proc where oid = to_regprocedure('public.wr_submit_s2(jsonb)')) like '%o.requester_emp is distinct from%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_submit_s2(jsonb)')) like '%r.store_id is distinct from v_store%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_submit_s2(jsonb)')) like '%''staff''%>= 3%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.wr_s2_norm(text,jsonb)')) like '%{1,12}%'
+    then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '（参考）wr_ の関数の数（v1144 の Head Chef の直しが入っていれば 71・無ければ 70）',
   (select count(*)::text from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'wr\_%')
 union all select '（参考）段階 2 を使い始めたか：アプリで GM・CEO が押すまで false', (select coalesce(s2_live, false)::text from public.wr_settings where id = 1)

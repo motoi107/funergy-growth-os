@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const { PGlite } = await import(process.env.BOT_PGLITE_MODULE || './runtime/node_modules/@electric-sql/pglite/dist/index.js');
 const D = new URL('../deploy/work-requests-v1155/', import.meta.url);
@@ -70,6 +71,28 @@ test('on top of the v1135 set and the v1144/v1147 fixes: pre-check, the SQL (twi
   assert.match(by(post)('7.'), /^NG/); assert.match(by(post)('10.'), /^NG/, 'and v1135 alone takes G2 out again');
   await pg.exec(read('2_SQL_段階2.sql')); await pg.exec(G2);
   assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
+});
+
+// The first stage-2 SQL Moto ran on 11/13 (commit b6c507d). CI fetches that commit; without it this check is skipped.
+const FIRST_SHA = 'b6c507d5c4f4b0ee2b11e39ccd46e7b12df56ff9';
+const FIRST = (() => { try { return execFileSync('git', ['show', FIRST_SHA + ':deploy/work-requests-v1155/2_SQL_段階2.sql'], { cwd: new URL('..', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }); } catch { return null; } })();
+
+test('(Codex #149) the first ② is already in: the post-check says the fixes are missing; running the fixed ② again makes it all OK and keeps the requests', { skip: FIRST ? false : 'the first v1155 SQL (b6c507d) is not in this clone' }, async () => {
+  const pg = await base();
+  await pg.exec(V1135); await pg.exec(CHEF); await pg.exec(G2);
+  await pg.exec(FIRST);
+  await pg.exec(`update public.wr_settings set live = true;
+    insert into public.wr_requests(code, kind, status, store_id, requester_emp, requester_name, payload)
+     values ('GS-2611-0001','mileage','pending','S1','E7','Lee Leader','{}');`);
+  let post = await rowsOf(pg, '3_確認_読むだけ.sql');
+  assert.match(by(post)('11.'), /^NG/, 'the first ② does not have the fixes');
+  assert.equal(by(post)('9.'), 'OK');
+  assert.equal(by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'))('2.'), '5', 'the pre-check says it is in (running ② again is the same)');
+  await pg.exec(read('2_SQL_段階2.sql'));
+  post = await rowsOf(pg, '3_確認_読むだけ.sql');
+  assert.ok(okAll(post), JSON.stringify(post));
+  assert.equal(by(post)('（参考）wr_ の関数の数'), '71', 'no new function');
+  assert.deepEqual((await pg.query(`select code, status from public.wr_requests`)).rows, [{ code: 'GS-2611-0001', status: 'pending' }]);
 });
 
 test('without the v1147 fix the pre-check and the post-check say so (stage 2 itself does not need it)', async () => {

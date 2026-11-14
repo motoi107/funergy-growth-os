@@ -110,13 +110,15 @@ begin
  if v_ym is not null and v_ym !~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' then raise exception 'bad_value'; end if;
  if p_kind in ('budget','plan') and v_ym is null then raise exception 'bad_value'; end if;
  if p_kind = 'budget' then
-  if jsonb_typeof(o->'total_cents') <> 'number' then raise exception 'bad_value'; end if;
+  -- 整数のセントだけ（小数・指数・負の数は bad_value。cast のエラーにしない・Claude #149 P3）
+  if jsonb_typeof(o->'total_cents') <> 'number' or (o->>'total_cents') !~ '^[0-9]{1,12}$' then raise exception 'bad_value'; end if;
   v_cents := (o->>'total_cents')::bigint;
   if v_cents < 0 or v_cents > 100000000000 then raise exception 'bad_value'; end if;
   if o ? 'days' then
    if jsonb_typeof(o->'days') <> 'object' or (select count(*) from jsonb_object_keys(o->'days')) > 31 then raise exception 'bad_value'; end if;
    for k in select jsonb_object_keys(o->'days') loop
-    if k !~ ('^' || v_ym || '-(0[1-9]|[12][0-9]|3[01])$') or jsonb_typeof(o->'days'->k) <> 'number' then raise exception 'bad_value'; end if;
+    if k !~ ('^' || v_ym || '-(0[1-9]|[12][0-9]|3[01])$') or jsonb_typeof(o->'days'->k) <> 'number'
+       or (o->'days'->>k) !~ '^[0-9]{1,11}$' or (o->'days'->>k)::bigint > 10000000000 then raise exception 'bad_value'; end if;
    end loop;
   end if;
  end if;
@@ -125,6 +127,9 @@ end $$;
 
 -- ---------------------------------------------------------------- 出す
 -- 予算は同じ店・同じ月の申請があれば、同じ番号の新しい版（予算変更）。ほかは前の画面の記録 1 つに 1 つ（同じ記録なら前の申請を返す）。
+-- （Codex #149 P2）予算を出せるのは前の画面（canEditBudget）と同じ人：CEO・GM・経理・AM・G3 以上（Crew・G2・事務Crew は出せない）。
+--   承認したあとの版（approved・apply_error・acct・done・applied＝前の画面の「承認済み」）を新しい版にできるのは GM・CEO だけ。
+-- （Codex #149 P1）前の画面の記録が同じでも、返すのは同じ人・同じ店の送り直しだけ（ほかの人・ほかの店の申請の中身は返さない＝conflict）。
 create or replace function public.wr_submit_s2(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare a jsonb := public.wr_actor(p); v_kind text := p->>'kind'; v_store text := p->>'store_id'; v_key text := p->>'client_key';
@@ -136,12 +141,15 @@ begin
  select e.request_id, e.action, e.by_emp into v_rid, v_ract, v_remp from public.wr_events e where e.client_key = v_key;
  if v_rid is not null then
   select * into r from public.wr_requests x where x.id = v_rid;
-  if v_ract not in ('submit','revise','resubmit') or v_remp is distinct from (a->>'emp') or r.kind <> coalesce(v_kind, '') then raise exception 'conflict'; end if;
+  if v_ract not in ('submit','revise','resubmit') or v_remp is distinct from (a->>'emp') or r.kind <> coalesce(v_kind, '')
+     or r.store_id is distinct from v_store then raise exception 'conflict'; end if;
   return public.wr_row(a, r) || jsonb_build_object('replay', true);
  end if;
  if not public.wr_s2_live() then raise exception 'not_live'; end if;
  if not public.wr_is_s2(v_kind) then raise exception 'bad_value'; end if;
  if not public.wr_s2_can_submit(a, v_store) then raise exception 'forbidden'; end if;
+ if v_kind = 'budget' and not ((a->>'role') in ('ceo','gm','office','am')
+     or ((a->>'role') = 'staff' and coalesce((a->>'grade')::int, 0) >= 3)) then raise exception 'forbidden'; end if;
  n := public.wr_s2_norm(v_kind, p->'payload');
  v_pl := n->'payload';
  v_steps := public.wr_s2_steps(v_kind, v_store, a->>'emp');
@@ -151,6 +159,8 @@ begin
   select * into o from public.wr_requests x where x.kind = 'budget' and x.store_id = v_store and x.payload->>'ym' = v_pl->>'ym'
    and x.status not in ('withdrawn','rejected') order by x.created_at desc limit 1 for update;
   if o.id is not null then
+   -- 承認したあとの版を新しい版にできるのは GM・CEO だけ（前の画面の「承認済みは GM 以上」と同じ）
+   if o.status in ('approved','apply_error','acct','done','applied') and (a->>'role') not in ('ceo','gm') then raise exception 'forbidden'; end if;
    -- 反映中（押さえて 30 分以内）は待ってもらう（反映している版と違う版を重ねない）
    if o.status in ('approved','apply_error') and public.wr_apply_fresh(o) then raise exception 'conflict'; end if;
    if o.status in ('acct','done','applied') then v_prev := o.amount_cents; v_prevv := o.version;
@@ -175,7 +185,10 @@ begin
   -- 同じ前の画面の記録は 1 つ（端末が送り直したとき・2 台が同時に写したとき）
   perform pg_advisory_xact_lock(hashtext('wr_ap:' || v_kind || ':' || (v_pl->>'ap_id')));
   select * into o from public.wr_requests x where x.kind = v_kind and x.ap_id = v_pl->>'ap_id';
-  if o.id is not null then return public.wr_row(a, o) || jsonb_build_object('replay', true); end if;
+  if o.id is not null then
+   if o.requester_emp is distinct from (a->>'emp') or o.store_id is distinct from v_store or not public.wr_visible(a, o) then raise exception 'conflict'; end if;
+   return public.wr_row(a, o) || jsonb_build_object('replay', true);
+  end if;
  end if;
 
  insert into public.wr_requests(code, kind, status, store_id, requester_emp, requester_name, target_name, payload, amount_cents, use_date,
