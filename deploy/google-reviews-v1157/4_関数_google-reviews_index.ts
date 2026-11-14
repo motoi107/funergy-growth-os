@@ -291,8 +291,10 @@ export function createHandler(deps) {
   async function bpDisconnect(a) { mgrOnly(a); return db.rpc('gr_bp_disconnect', who(a)); }
 
   // ---- Business Profile：口コミを取る（毎日・GM・CEO の「今すぐ取る」）
-  //   初めての店は前の月の初め（ハワイ）から、そのあとは最後に取れた時刻の 3 日前から。新しく直された順に、さかのぼりきったら止める
-  //   （1 回に 1 店 20 ページ＝1,000 件まで。さかのぼりきれなければ synced_at を進めず、次の回に同じところから）
+  //   新しく直された順に読む。取り終えたとみなす所（since）：初めての店は前の月の初め（ハワイ）、そのあとは最後に取れた時刻の 3 日前。
+  //   #151 のレビュー：いつも前の月の初め（ハワイ）までは読む（rec）。そこまで最後まで読めたら、その間に直された・投稿された口コミで
+  //   いま Google に無いもの（消されたもの）を消す（gr_reviews_prune）。途中で失敗・ページの上限で止まったときは消さない。
+  //   1 回に 1 店 20 ページ＝1,000 件まで。since まで読めなければ synced_at を進めず、次の回に同じところから。
   async function syncAll(kind) {
     const t = await access();
     if (!t.ok) {
@@ -305,8 +307,11 @@ export function createHandler(deps) {
     const out = [];
     let pending = false;
     for (const l of (Array.isArray(locs) ? locs : [])) {
-      const since = l.synced_at ? Date.parse(l.synced_at) - 3 * 86400000 : hstPrevMonthStart(now());
-      let token = '', put = 0, done = false, rating = null, total = null, err = '';
+      const prevStart = hstPrevMonthStart(now());
+      const since = l.synced_at ? Date.parse(l.synced_at) - 3 * 86400000 : prevStart;
+      const rec = Math.min(since, prevStart);
+      let token = '', put = 0, done = false, recDone = false, rating = null, total = null, err = '', pruned = null;
+      const names = [];
       for (let i = 0; i < 20; i++) {
         const r = await timed(BP_REV + l.account + '/' + l.location + '/reviews?' + new URLSearchParams({ pageSize: '50', orderBy: 'updateTime desc', ...(token ? { pageToken: token } : {}) }).toString(),
           { headers: { authorization: 'Bearer ' + t.token } }, 20000);
@@ -314,39 +319,54 @@ export function createHandler(deps) {
         const j = r.j || {};
         if (i === 0) { const ar = Number(j.averageRating), tc = Number(j.totalReviewCount); rating = Number.isFinite(ar) ? ar : null; total = Number.isInteger(tc) ? tc : null; }
         const items = [];
-        let older = false;
+        let older = false, olderRec = false;
         for (const x of (Array.isArray(j.reviews) ? j.reviews : [])) {
           const st = STARS[x && x.starRating];
           const ct = x && Date.parse(x.createTime), ut1 = x && Date.parse(x.updateTime || x.createTime);
           if (!st || !Number.isFinite(ct) || typeof x.name !== 'string') continue;
           const ut = Number.isFinite(ut1) ? ut1 : ct;
-          if (ut < since) { older = true; if (ct < since) continue; }
+          if (ut < since) older = true;
+          if (ut < rec) { olderRec = true; if (ct < rec) continue; }
+          names.push(x.name);
           const rv = obj(x.reviewer) || {};
           items.push({ name: x.name, rating: st, comment: txt(x.comment, 6000), reviewer: rv.isAnonymous ? '' : txt(rv.displayName, 200),
             created: new Date(ct).toISOString(), updated: new Date(ut).toISOString(), replied: !!obj(x.reviewReply) });
         }
         token = typeof j.nextPageToken === 'string' ? j.nextPageToken : '';
-        const last = older || !token;
+        const end = !token;
+        if (older || end) done = true;
+        if (olderRec || end) recDone = true;
         try {
-          const res = await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items, done: last, ...(i === 0 ? { rating, total } : {}),
+          const res = await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items, done: done && recDone, ...(i === 0 ? { rating, total } : {}),
             ...(l.synced_at ? {} : { from_ym: hstYm(since) }) });
           put += (res && res.put) || 0;
         } catch (e) { err = String(e.message || 'put_failed').split(/[\s:]/)[0].slice(0, 40); break; }
-        if (last) { done = true; break; }
+        if (recDone) break;
+      }
+      if (!err && done && !recDone) {
+        // since までは読めた（ページの上限で前の月の初めまでは届かなかった）：取り終えたことにする。消された口コミは今回は見ない
+        try { await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items: [], done: true, ...(l.synced_at ? {} : { from_ym: hstYm(since) }) }); }
+        catch (e) { err = String(e.message || 'put_failed').split(/[\s:]/)[0].slice(0, 40); }
+      }
+      if (!err && recDone) {
+        try { const pr = await db.rpc('gr_reviews_prune', { store: l.store, location: l.location, since: new Date(rec).toISOString(), names }); pruned = (pr && pr.pruned) || 0; }
+        catch (e) { err = 'prune_' + String(e.message || 'failed').split(/[\s:]/)[0].slice(0, 30); }
       }
       if (!done && !err) err = 'too_many_pages';
-      out.push({ store: l.store, ok: done && !err, put, error: err || undefined });
+      out.push({ store: l.store, ok: done && !err, put, ...(pruned != null ? { pruned } : {}), ...(!err && done && !recDone ? { note: 'prune_skipped' } : {}), error: err || undefined });
     }
     const allOk = out.every(x => x.ok);
     await db.rpc('gr_bp_mark', { status: pending ? 'pending' : (allOk ? 'ok' : 'error'), error: allOk ? null : (out.find(x => !x.ok) || {}).error || null, synced: allOk && out.length > 0 });
-    await db.rpc('gr_run_log', { kind, ok: allOk, info: { stores: out.map(x => ({ store: x.store, ok: x.ok, put: x.put, error: x.error })) } });
+    await db.rpc('gr_run_log', { kind, ok: allOk, info: { stores: out.map(x => ({ store: x.store, ok: x.ok, put: x.put, pruned: x.pruned, note: x.note, error: x.error })) } });
     return { ok: allOk, stores: out };
   }
 
   // ---- 読む
   async function status(a) { return db.rpc('gr_status', { mgr: MGR.includes(a.role) }); }
   async function kpi() { return db.rpc('gr_kpi', {}); }
-  async function month(a, b) { return db.rpc('gr_month', { store: STORE(b.store), ym: YM(b.ym) }); }
+  // #151 のレビュー：200 件ずつ。続きは before（gr_month が返した next）
+  const BEFORE = v => { if (v == null) return null; if (!obj(v) || typeof v.c !== 'string' || !Number.isFinite(Date.parse(v.c)) || typeof v.h !== 'string' || !/^[0-9a-f]{32}$/.test(v.h)) throw bad(); return { c: v.c, h: v.h }; };
+  async function month(a, b) { const before = BEFORE(b.before); return db.rpc('gr_month', { store: STORE(b.store), ym: YM(b.ym), ...(before ? { before } : {}) }); }
 
   const ACTIONS = {
     whoami: async a => ({ me: { emp: a.emp, role: a.role, name: a.name }, fn: 1, places: !!placesKey(), oauth: !!(client().id && client().secret) }),

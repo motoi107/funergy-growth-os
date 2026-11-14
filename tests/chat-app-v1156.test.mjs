@@ -494,3 +494,85 @@ test('the app keeps chat off the device and is wired into the navigation, logout
   const v = /const APP_VERSION = '(\d+)'/.exec(html)[1];
   assert.ok(Number(v) >= 1156); assert.match(sw, new RegExp("const SW_BUILD = '" + v + "'"));
 });
+
+// #152 の Codex（issuecomment 6872721025）：古いページの遅れた答えが、写しを捨てたあとに見えなくした本文を戻す
+test('#152: a late answer for an older page after the copy was dropped (closed and opened again) does not bring back a hidden message, even when the next read fails', async () => {
+  const srv = await server();
+  let hold = null, release = null, failLatest = false;
+  // サーバーが答えを作ったあとで止める（Codex の順番：古いページの答えは隠す前に作られている）
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    if (failLatest && body.action === 'chat_messages' && body.before == null) return new Response(JSON.stringify({ error: 'x' }), { status: 503 });
+    const r = await srv.handler(req);
+    if (hold && body.action === 'chat_messages' && body.before != null) { const h = hold; hold = null; await h; }
+    return r;
+  }, pg: srv.pg };
+  const a = await app(wrap, 'E8');
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('Late page'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await a.type('secret one'); a.key('Enter', { ctrl: true }); await a.idle();
+  await bulk(srv, tid, 2, 102);
+  a.ctx.chatRetrySync(); await a.idle();
+  assert.equal(msgOf(a, tid, 1).body, 'secret one');
+  const m1 = msgOf(a, tid, 1);
+  // 103 件目 → 読み直しの古いページ（1〜3）の答えを止める
+  await bulk(srv, tid, 103, 103);
+  hold = new Promise(r => { release = r; });
+  a.ctx.chatRetrySync();
+  await sleep(60);
+  // そのあいだに GM が 1 件目を見えなくする → 一覧の同期で新しい chg → 閉じて開き直す（写しは捨てる）
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m1.id, hide: true, reason: 'x' });
+  a.ctx.chatBack(); a.show();
+  a.ctx.chatRetrySync(); await sleep(40);
+  failLatest = true;                         // 次の最新のページは読めない
+  a.ctx.chatOpen(tid); a.show();
+  assert.equal(a.S().msgs[tid].list.length, 0, 'the copy was dropped on open');
+  release(); await a.idle(); a.show(); await a.idle();
+  assert.equal(msgOf(a, tid, 1), undefined, 'the late older page is not put back');
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret one/);
+  assert.notEqual(a.S().msgs[tid].st, 'ok', 'the failed read shows as a failure, not as an OK copy');
+  // 読めるようになったら、見えなくした形で出る
+  assert.match(text(a.D.getElementById('chat-msgs')), /もう一度/, 'the retry button');
+  failLatest = false; a.ctx.chatOpen(tid); await a.idle(); a.show(); await a.idle();   /* 「もう一度」 */
+  assert.equal(a.S().msgs[tid].st, 'ok');
+  a.ctx.chatOlder(); await a.idle(); a.show(); await a.idle();
+  assert.equal(msgOf(a, tid, 1).hidden, true);
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret one/);
+});
+
+test('#152: the same for a late answer of the newest page (made before the hide, arriving after the copy was dropped; the next read fails)', async () => {
+  const srv = await server();
+  let hold = null, release = null, failNext = false;
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    if (failNext && !hold && body.action === 'chat_messages') return new Response(JSON.stringify({ error: 'x' }), { status: 503 });
+    const r = await srv.handler(req);
+    if (hold && body.action === 'chat_messages' && body.before == null) { const h = hold; hold = null; await h; }
+    return r;
+  }, pg: srv.pg };
+  const a = await app(wrap, 'E8');
+  await start(a);
+  a.ctx.chatNew('group'); await a.idle();
+  a.ctx.chatNewMode('group'); a.ctx.chatNewTitle('Late newest'); a.ctx.chatNewSel('E2', true); a.ctx.chatCreateGroup(); await a.idle();
+  a.show(); await a.idle();
+  const tid = a.S().open;
+  await a.type('secret two'); a.key('Enter', { ctrl: true }); await a.idle();
+  const m1 = msgOf(a, tid, 1);
+  hold = new Promise(r => { release = r; });
+  a.ctx.chatRetrySync(); await sleep(60);       // 最新のページの答えはもうできていて、止まっている
+  await srvCall(srv, 'E2', { action: 'chat_hide', id: m1.id, hide: true, reason: 'x' });
+  a.ctx.chatBack(); a.show();
+  a.ctx.chatRetrySync(); await sleep(40);
+  a.ctx.chatOpen(tid); a.show();
+  assert.equal(a.S().msgs[tid].list.length, 0);
+  failNext = true;
+  release(); await a.idle(); a.show(); await a.idle();
+  assert.equal(msgOf(a, tid, 1), undefined, 'the late newest page is not used');
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret two/);
+  failNext = false; a.ctx.chatOpen(tid); await a.idle(); a.show(); await a.idle();
+  assert.equal(msgOf(a, tid, 1).hidden, true, 'read again: hidden');
+  assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /secret two/);
+});

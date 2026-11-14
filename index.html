@@ -108369,7 +108369,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function unsubscribe(){ try{ if (C.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(C.ch); }catch(e){} C.ch = null; C.rt = false; }
 
   /* ---------------------------------------------------------------- 会話 */
-  function newMsgs(){ return { list:[], older:false, members:[], can:{}, st:'', err:'', busy:false, again:false, once:false, reading:0 }; }
+  function newMsgs(){ return { list:[], older:false, members:[], can:{}, st:'', err:'', busy:false, again:false, once:false, reading:0, ep:0 }; }
   function closeOpen(msg){ if (!C.open) return; C.open = ''; if (msg && visible()) toast(msg, 'warn'); }
   function mergeMsgs(m, arr){
     var by = {}; m.list.forEach(function(x){ by[x.seq] = x; });
@@ -108385,24 +108385,26 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function cutBelow(m, lo){ m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = true; }
   /* 開いている会話で、最新のページより前に読んだページも取り直す（100 件ずつ・REFRESH_PAGES まで）。
      それより前・取れなかったページの写しは捨てる（「さらに読む」でサーバーから取り直す）。この中では失敗を投げない */
-  function refreshBelow(tid, m, g, lo, pages){
+  function refreshBelow(tid, m, g, lo, pages, ep){
     if (!m.list.length || m.list[0].seq >= lo) return Promise.resolve();
     if (pages >= REFRESH_PAGES) { cutBelow(m, lo); return Promise.resolve(); }
     return api({ action:'chat_messages', thread:tid, limit:100, before:lo }).then(function(j){
-      if (g !== C.gen) return;
+      if (g !== C.gen || m.ep !== ep) return;   /* #152 の Codex：待つあいだに写しを捨てた（freshCache）なら、古いページを戻さない */
       var arr = j.messages || [];
       if (!arr.length) { m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = false; return; }
       putRange(m, arr, arr[0].seq, lo - 1);
       m.older = !!j.older;
       if (!j.older) { m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; }); return; }
-      return refreshBelow(tid, m, g, arr[0].seq, pages + 1);
-    }, function(){ if (g === C.gen) cutBelow(m, lo); });
+      return refreshBelow(tid, m, g, arr[0].seq, pages + 1, ep);
+    }, function(){ if (g === C.gen && m.ep === ep) cutBelow(m, lo); });
   }
   /* 閉じていたあいだに会話が変わっていたら、前の写しは出さない（見えなくした本文を一瞬でも出さない）。開くときに読み直す */
   function freshCache(tid){
     var m = C.msgs[tid], r = C.threads[tid];
     if (!m || !m.list.length) return;
     if (r && m.chg != null && String(r.chg) === String(m.chg)) return;
+    /* #152 の Codex：写しの世代を進める。読み込みのとちゅうの答え（前の世代）はあとで届いても使わず、読み直す */
+    m.ep = (m.ep || 0) + 1; if (m.busy) m.again = true;
     m.list = []; m.older = false; m.once = false; m.painted = false; m.st = ''; m.reading = 0;
   }
   function dropSent(tid){
@@ -108414,12 +108416,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var m = C.msgs[tid] || (C.msgs[tid] = newMsgs());
     if (m.busy) { if (mode !== 'older') m.again = true; return; }
     m.busy = true; if (!m.list.length) m.st = 'loading';
-    var g = C.gen, p = { action:'chat_messages', thread:tid, limit:100 };
+    var g = C.gen, ep = m.ep || 0, p = { action:'chat_messages', thread:tid, limit:100 };
     var older = mode === 'older' && m.list.length > 0;
     if (older) p.before = m.list[0].seq;
     var top0 = m.list.length ? m.list[m.list.length - 1].seq : 0;
     api(p).then(function(j){
       if (g !== C.gen) return;
+      if ((m.ep || 0) !== ep) { m.again = true; return; }   /* #152 の Codex：前の世代の写しの答えは使わない（下の then で読み直す） */
       m.members = j.members || []; m.can = { add:!!j.can_add, rename:!!j.can_rename, leave:!!j.can_leave, remove:!!j.can_remove };
       if (j.thread) C.threads[tid] = Object.assign({}, C.threads[tid] || {}, j.thread);
       var arr = j.messages || [], more = null;
@@ -108434,7 +108437,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         if (j.thread && j.thread.chg != null) m.chg = j.thread.chg;
         if (arr.length) {
           if (!j.older) m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; });
-          else more = refreshBelow(tid, m, g, arr[0].seq, 0);
+          else more = refreshBelow(tid, m, g, arr[0].seq, 0, ep);
         }
       }
       dropSent(tid);
@@ -108443,6 +108446,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }, function(e){
       if (g !== C.gen) return;
       if (e.code === 'not_found') { delete C.threads[tid]; delete C.msgs[tid]; if (C.open === tid) closeOpen(errText('not_found')); m.busy = false; paintAll(); return; }
+      if ((m.ep || 0) !== ep) { m.again = true; return; }
       m.st = m.list.length ? 'ok' : 'err'; m.err = e.message;
     }).then(function(){
       if (g !== C.gen || !C.msgs[tid]) return;
@@ -109187,7 +109191,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       try {
         var j = await api({ action:'kpi' });
         if (g !== G.gen) return null;
-        G.kpi = (j && typeof j === 'object') ? j : null; G.kpiAt = nowMs(); G.kpiErr = '';
+        G.kpi = (j && typeof j === 'object') ? j : null; G.kpiAt = nowMs(); G.kpiErr = ''; G.kpiFail = 0;
         if (JSON.stringify(G.kpi) !== before) { changed(); patchCards(''); }
         return G.kpi;
       } catch(e) { if (g === G.gen) { G.kpiFail = nowMs(); G.kpiErr = e.code || 'error'; } return null; }
@@ -109197,7 +109201,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   };
   function kick(){
     if (!canUse() || G.kpiP || G.st === 'missing' || G.st === 'sql') return;
-    if (G.kpi ? nowMs() - G.kpiAt >= KPI_MS : nowMs() - G.kpiFail >= FAIL_MS) W.grLoadKpi();
+    if (G.kpiFail && nowMs() - G.kpiFail < FAIL_MS) return;   /* #151 のレビュー：失敗したら古い値があっても 2 分待つ */
+    if (!G.kpi || nowMs() - G.kpiAt >= KPI_MS) W.grLoadKpi();
   }
   /* その店の実績が自動（Business Profile に結んでいて、つながっていて、口コミを一度でも全部取り終えた）か。読めていなければ false（手入力のまま） */
   W.grAuto = function(sid){ kick(); var k = G.kpi; return !!(k && k.connected && Array.isArray(k.auto) && k.auto.indexOf(sid) >= 0); };
@@ -109241,17 +109246,37 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
     var k = sid + '|' + ym, e = G.month[k];
     if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? MONTH_MS : FAIL_MS)))) return;
-    var g = G.gen;
-    G.month[k] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'' };
+    var g = G.gen, rev = ((e && e.rev) || 0) + 1;
+    G.month[k] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'', rev:rev };
     api({ action:'month', store:sid, ym:ym }).then(function(j){
-      if (g !== G.gen) return;
-      G.month[k] = { st:'ok', at:nowMs(), data:j, err:'' }; patchCards(sid);
+      if (g !== G.gen || !G.month[k] || G.month[k].rev !== rev) return;
+      G.month[k] = { st:'ok', at:nowMs(), data:j, err:'', rev:rev }; patchCards(sid);
     }, function(err){
-      if (g !== G.gen) return;
-      G.month[k] = { st:'err', at:nowMs(), data:e ? e.data : null, err:err.code || 'error' }; patchCards(sid);
+      if (g !== G.gen || !G.month[k] || G.month[k].rev !== rev) return;
+      G.month[k] = { st:'err', at:nowMs(), data:e ? e.data : null, err:err.code || 'error', rev:rev }; patchCards(sid);
     });
   }
   W.grRetryMonth = function(sid, ym){ loadMonth(sid, ym, true); patchCards(sid); };
+  /* #151 のレビュー：200 件ずつ。続きを読む（読み直したら・別の人になったら答えを使わない） */
+  W.grMoreMonth = function(sid, ym){
+    if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
+    var k = sid + '|' + ym, e = G.month[k], d = e && e.data;
+    if (!e || e.st !== 'ok' || !d || !d.more || !d.next || e.moreBusy) return;
+    var g = G.gen, rev = e.rev;
+    e.moreBusy = true; e.moreErr = ''; patchCards(sid);
+    api({ action:'month', store:sid, ym:ym, before:d.next }).then(function(j){
+      var x = G.month[k];
+      if (g !== G.gen || !x || x.rev !== rev || x.data !== d) return;
+      var seen = {}; (d.items || []).forEach(function(r){ if (r && r.h) seen[r.h] = 1; });
+      var add = (j && Array.isArray(j.items) ? j.items : []).filter(function(r){ return !(r && r.h && seen[r.h]); });
+      x.data = Object.assign({}, d, { items:(d.items || []).concat(add), more:!!(j && j.more), next:(j && j.next) || null, cnt:(j && j.cnt != null) ? j.cnt : d.cnt, avg:(j && j.avg != null) ? j.avg : d.avg });
+      x.moreBusy = false; patchCards(sid);
+    }, function(err){
+      var x = G.month[k];
+      if (g !== G.gen || !x || x.rev !== rev) return;
+      x.moreBusy = false; x.moreErr = err.code || 'error'; patchCards(sid);
+    });
+  };
   W.grToggleList = function(btn){ try{ var box = btn.parentNode.querySelector('.gr-list'); if (box) { var open = box.getAttribute('data-open') === '1'; box.setAttribute('data-open', open ? '0' : '1'); box.style.maxHeight = open ? '320px' : 'none'; btn.textContent = open ? T('すべて広げる','Expand all') : T('たたむ','Collapse'); } }catch(e){} };
 
   function reviewRow(x, src){
@@ -109305,10 +109330,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (auto) {
       if (use) loadMonth(sid, ym);
       var me = G.month[sid + '|' + ym], md = me && me.data, items = (md && Array.isArray(md.items)) ? md.items : null;
-      h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('この月の口コミ（すべて・新しい順）','Reviews this month (all, newest first)') + (items ? '（' + items.length + '）' : '') + '</div>';
+      var mcnt = (md && md.cnt != null && isFinite(Number(md.cnt))) ? Number(md.cnt) : null;
+      h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('この月の口コミ（すべて・新しい順）','Reviews this month (all, newest first)')
+        + (items ? '（' + ((md.more && mcnt != null) ? T(mcnt + ' 件のうち ' + items.length + ' 件を表示', items.length + ' of ' + mcnt + ' shown') : items.length) + '）' : '') + '</div>';
       if (items && items.length) {
         h += '<div class="gr-list" data-open="0" style="max-height:320px;overflow:auto">' + items.map(function(x){ return reviewRow(x, 'bp'); }).join('') + '</div>';
         if (items.length > 4) h += '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="grToggleList(this)">' + T('すべて広げる','Expand all') + '</button>';
+        /* #151 のレビュー：200 件ずつ。残りはここから読む */
+        if (md.more) h += ' <button class="btn btn-secondary btn-sm" style="margin-top:6px" ' + (me.moreBusy ? 'disabled' : '') + ' onclick="grMoreMonth(\'' + esc(sid) + '\',\'' + esc(ym) + '\')">'
+          + (me.moreBusy ? T('読み込み中…','Loading…') : T('続きを読む' + (mcnt != null ? '（残り ' + Math.max(0, mcnt - items.length) + ' 件）' : ''), 'Read more' + (mcnt != null ? ' (' + Math.max(0, mcnt - items.length) + ' left)' : ''))) + '</button>';
+        if (me.moreErr) h += '<div class="k2-note" style="color:var(--red)">' + esc(errText(me.moreErr)) + '</div>';
       } else if (items) h += '<div class="k2-note">' + T('この月に投稿された口コミはありません','No reviews were posted this month') + '</div>';
       else if (me && me.st === 'err') h += '<div class="k2-note" style="color:var(--red)">' + esc(errText(me.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryMonth(\'' + esc(sid) + '\',\'' + esc(ym) + '\')">' + T('もう一度','Retry') + '</button></div>';
       else h += '<div class="k2-note">' + T('読み込み中…','Loading…') + '</div>';
@@ -109344,22 +109375,24 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function loadStatus(force){
     if (!canUse()) return;
     if (G.statusP || (!force && G.status && nowMs() - G.status._at < 60000)) return;
-    if (!force && !G.status && G.statusFail && nowMs() - G.statusFail < FAIL_MS) return;
+    /* #151 のレビュー：失敗したら、前に読めた値があっても 2 分待つ（描き直しのたびに読み直さない） */
+    if (!force && G.statusFail && nowMs() - G.statusFail < FAIL_MS) return;
     var g = G.gen;
     G.statusSt = G.status ? 'ok' : 'loading';
     G.statusP = Promise.all([api({ action:'status' }), G.who ? Promise.resolve(G.who) : api({ action:'whoami' })]).then(function(r){
       if (g !== G.gen) return;
-      G.status = r[0] || {}; G.status._at = nowMs(); G.who = r[1] || null; G.statusSt = 'ok'; G.statusErr = '';
+      G.status = r[0] || {}; G.status._at = nowMs(); G.who = r[1] || null; G.statusSt = 'ok'; G.statusErr = ''; G.statusFail = 0;
     }, function(err){
       if (g !== G.gen) return;
-      G.statusSt = 'err'; G.statusErr = err.code || 'error'; G.statusFail = nowMs();
+      G.statusSt = G.status ? 'stale' : 'err'; G.statusErr = err.code || 'error'; G.statusFail = nowMs();
     }).then(function(){ if (g === G.gen) { G.statusP = null; patchCards('-'); } });
   }
   function bpLine(bp){
     var s = bp && bp.status;
     if (!bp || !bp.connected || s === 'none') return ['var(--muted)', T('つないでいません（会議の月の平均は手入力）','Not connected (the meeting month average is entered by hand)')];
     if (s === 'pending') return ['var(--amber, #b7791f)', T('つなぎました・Google の審査待ち（口コミはまだ取れません・それまでは手入力）','Connected · waiting for Google approval (reviews cannot be read yet; enter them by hand until then)')];
-    if (s === 'expired') return ['var(--red)', T('Google で許可が取り消されました。つなぎ直してください（それまでは手入力）','Access was revoked in Google. Connect again (enter by hand until then)')];
+    /* #151 のレビュー：取り消されても、取り終えた店は自動のまま（手入力は使わない）。つなぎ直すと止まったところから取る */
+    if (s === 'expired') return ['var(--red)', T('Google で許可が取り消されました。つなぎ直してください（それまで新しい口コミは入りません・つなぎ直すと止まったところから取ります）','Access was revoked in Google. Connect again (no new reviews until then; it continues from where it stopped)')];
     if (s === 'error') return ['var(--red)', T('読めませんでした','Could not read') + (bp.error ? '（' + esc(bp.error) + '）' : '')];
     return ['var(--green)', T('つながっています','Connected')];
   }
@@ -109373,6 +109406,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + (G.statusSt === 'err' ? esc(errText(G.statusErr)) + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button>' : T('読み込み中…','Loading…')) + '</div></div>';
     var bp = S.bp || {}, bl = bpLine(bp), stores = {}; try{ stores = S.stores || {}; }catch(e){}
     var run = S.run;
+    /* #151 のレビュー：読み直せなかったときは前に読めた値のまま、そう書く（2 分は読み直さない） */
+    if (G.statusSt === 'stale') h += '<div class="card" style="font-size:12px;color:var(--red)">' + T('最新を読めませんでした（前に読めた内容を出しています）','Could not read the latest (showing what was read before)') + '・' + esc(errText(G.statusErr))
+      + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button></div>';
     /* つなぎ方 */
     h += '<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>' + T('つなぎ方','Connections') + '</div>'
       + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google の店を選ぶと、会議に総合評価と Google が返す最近の口コミ（最大 5 件）が出ます。見るたびに Google から取ります（Google の決まりで残しません）。','Pick the Google place for each store to show the overall rating and up to 5 recent reviews in the meeting. Read from Google each time (not stored, per Google’s terms).') + '</div>'

@@ -100,9 +100,12 @@ test('the post-check notices what it is meant to notice', async () => {
   assert.match((await P())('6.'), /^NG/);
   await pg.exec('grant execute on function public.gr_month(jsonb) to service_role; drop function public.gr_stage(jsonb)');
   const p = await P();
-  assert.match(p('4.'), /^NG（18 個）/); assert.equal(p('9.'), 'NG');
+  assert.match(p('4.'), /^NG（19 個）/); assert.equal(p('9.'), 'NG');
   await pg.exec(SQL);   // もう一度流せば戻る
   assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
+  await pg.exec('drop index public.gr_bp_loc_location');
+  assert.match((await P())('10.'), /^NG/, '#151: the one-location-one-store index');
+  await pg.exec(SQL);
   await pg.exec('drop table public.gr_runs');
   assert.match((await P())('1.'), /^NG/);
 });
