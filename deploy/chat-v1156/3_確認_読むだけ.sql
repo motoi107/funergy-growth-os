@@ -12,20 +12,24 @@ union all select '3. ブラウザの鍵で読めるのは「変わった」の�
 union all select '4. ブラウザの鍵では chat_ の関数を呼べない',
   case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'chat\_%'
     and (has_function_privilege('anon', p.oid, 'execute') or has_function_privilege('authenticated', p.oid, 'execute'))) = 0 then 'OK' else 'NG（2 をもう一度流す）' end
-union all select '5. chat_ の関数が 36・どれも security invoker',
-  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'chat\_%' and not p.prosecdef) = 36
+union all select '5. chat_ の関数が 36（添付 v1161 のあとは もっと）・どれも security invoker',
+  case when (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'chat\_%' and not p.prosecdef) >= 36
     and (select count(*) from pg_proc p join pg_namespace s on s.oid = p.pronamespace where s.nspname = 'public' and p.proname like 'chat\_%' and p.prosecdef) = 0
     then 'OK' else 'NG（2 をもう一度流す）' end
-union all select '6. SQL の段（チャット 1）',
-  case when public.chat_stage('{}'::jsonb)->>'chat' = '1' then 'OK' else 'NG（2 をもう一度流す）' end
+union all select '6. SQL の段（チャット 1・添付 v1161 のあとは 2）',
+  case when (public.chat_stage('{}'::jsonb)->>'chat')::int >= 1 then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '7. 申請のチャットが申請に戻れる（申請の id を返す）',
   case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_row(jsonb,public.chat_threads,public.chat_members)')) like '%''id'', r.id%'
     then 'OK' else 'NG（2 をもう一度流す）' end
 union all select '8. 申請の段階 2 が入ったまま（チャットの SQL のあとに前の申請の SQL を流していない）',
-  case when public.wr_stage('{}'::jsonb)->>'stage' = '5' then 'OK' else 'NG（deploy/work-requests-v1155 の ② → この 2 をもう一度）' end
+  case when (public.wr_stage('{}'::jsonb)->>'stage')::int >= 5 then 'OK' else 'NG（deploy/work-requests-v1155 の ② → この 2 をもう一度）' end
 union all select '9. Realtime：合図の表が入っている（Realtime が無いときは —）',
   case when not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then '—'
     when exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'chat_sig') then 'OK'
     else 'NG（2 をもう一度流す）' end
+union all select '10. 加え直した人に、抜けていたあいだの会話を見せない（v1156 の直し）',
+  case when (select prosrc from pg_proc where oid = to_regprocedure('public.chat_add(jsonb)')) like '%history_from = v_from%'
+    and (select prosrc from pg_proc where oid = to_regprocedure('public.chat_add(jsonb)')) not like '%least(public.chat_members.history_from%'
+    then 'OK' else 'NG（今の 2 をもう一度流す）' end
 union all select '（参考）会話の数', (select count(*)::text from public.chat_threads)
 union all select '（参考）メッセージの数', (select count(*)::text from public.chat_messages);

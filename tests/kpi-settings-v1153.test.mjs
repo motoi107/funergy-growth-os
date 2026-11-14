@@ -157,7 +157,7 @@ test('② the meeting (keyKpiStats) reads the month targets: the source passes t
   assert.doesNotMatch(ks, /getStoreKpiTargets\(s\.id, ofst\)/);
   // the year table: Google uses the month target and the manual month average
   const ym = fnSrc('_meetYearMatrix');
-  assert.match(ym, /kk==='google'\)\{ try\{ return _k2Num\(\(getKpiManual\(sid, k2Period\(ym\)\)\|\|\{\}\)\.gAvg\)/);
+  assert.match(ym, /kk==='google'\)\{ try\{ var _gm=\(typeof grMonthOf==='function'\)\?grMonthOf\(sid, ym\):null; if\(_gm\) return _gm\.avg; return _k2Num\(\(getKpiManual\(sid, k2Period\(ym\)\)\|\|\{\}\)\.gAvg\)/);
   assert.match(ym, /kk==='google'\)\{ try\{ return k2ExplicitTarget\(sid, ym, 'reviewScore'\)/);
   assert.match(ym, /\['sales','guests','ppa','google'\]\.indexOf\(k\)>=0/);
   assert.match(fnSrc('renderMeetingReview'), /_meetGoogleCard\(x\.s, ym\)/);
@@ -472,7 +472,7 @@ test('⑥ Google in the meeting: the month average of the reviews posted that mo
   assert.ok(h.includes('★4.4'), 'the target');
   assert.ok(h.includes('達成'), 'judged with the meeting threshold');
   assert.ok(h.includes('★4.6') && h.includes('累計 312 件'), 'the overall rating for reference');
-  assert.ok(h.includes('Google の API はつなぎません'));
+  assert.ok(h.includes('Business Profile をつなぐまでは'), 'v1157: manual until Business Profile is connected');
   assert.ok(h.includes('href="https://maps.example/x"'));
   assert.ok(h.includes('Google で見る'));
   // no review page in the store master: a Google Maps search for the store; an unsafe address is never used as a link

@@ -2,18 +2,36 @@
 
 ## 2026-11-14 会計 PL の取り込みと月別推移（Moto さん 04:02・04:30 HST・急ぎ）
 
-1. 済（Claude・ブランチ `claude/pl-import-hotfix-1162`・main の上）：原因の特定と v1162＝読み取りの決まりの作り直し・保存・暫定の印（会議タブ・KPI 管理・中間レビュー）（`docs/PL_IMPORT_V1162_JA.md`・試験 19）。次：PR → Moto さんがマージ（アプリだけ）→ 端末を 1162 に → 8 月版 → 10 月版の順に取り込む。
-2. 次（Claude）：#151〜#155 に main を取り込み、版を 1163〜1167 に付け替える（Moto さんがマージする前に）。
+1. 済（Claude・ブランチ `claude/pl-import-hotfix-1162`・PR #156・#155 の上）：原因の特定と v1162＝読み取りの決まりの作り直し・保存・暫定の印（会議タブ・KPI 管理・中間レビュー）（`docs/PL_IMPORT_V1162_JA.md`・試験 19）。次：Moto さんが `deploy/all-v1157-v1162/手順.md`（#151〜#156 をまとめて入れる・SQL 4 組・関数 2 つ・マージ 6 つ）→ 端末を 1162 に → 8 月版 → 10 月版の順に取り込む。
+2. 済（Moto さん 05:05 HST「151からのマージ手順、Codeもここに」）：#156 を #155 の上に載せ直し（版の付け替えはしない）、まとめの手順と SQL・関数のファイルを渡した。
 3. 次（Claude）：UI案76（月別推移の画面 PC・iPhone・取り込みの前の差分・要分類の数と割り当て）→ Moto さんの答え → 実装。
 4. Moto さんに聞く：区分の分からない 3 科目（GET の上乗せ分・酒類の手数料・出張の交通宿泊）・区分の決まり（`pl_expense_class`）をほかの端末と共有するか。
 5. そのあと：6（全体の試験）。
+
+## 2026-11-14 #151〜#153 のレビューの直しと Totoya の取り込み
+
+1. 済（Claude）：#151・#152・#153 のレビュー（Claude・Codex）の P1・P2 を直した（共有記録の 11/14 の節）。次：Codex の再レビュー（最新の head）→ Moto さんが #151 → #152 → #153 の順にマージ（SQL・関数は各手順.md。#151 は Google の口コミの SQL・関数が同じ名前のまま中身が変わった）。
+2. 済（Claude）：hyper-worker v1160（非公開・Moto さんに直接）。次（Moto さん）：Deploy → Aiea の期間一括取り込みをもう一度 →（任意）L/D 列の SQL。
+3. 済（Claude・ブランチ `claude/range-import-1160`）：アプリ v1160＝期間一括取り込みで失敗した日の理由・自動でもう一度・「失敗した日だけ取り込み直す」（`docs/RANGE_IMPORT_V1160_JA.md`・試験 10・わざと壊す 16/16）。次：PR → Codex → #151〜#153 のあとにマージ → 端末を 1160 に。
+3b. 済（Claude 11/14）：Codex（#154 6875910941）の P2（取り込み直しで未解決の DB エラー・ログインの切れ・L/D の注意が消える）と Claude の P3 を直した（仕様の 7）。次：Codex の再レビュー（#151〜#154 の最新の head）。
+4. 済（Claude・ブランチ `claude/chat-files-1161`・#154 の上）：チャットの添付（UI案75）＝v1161（SQL `20261124090000`・関数 fn 7・アプリ・`docs/CHAT_FILES_V1161_JA.md`・入れる一式 `deploy/chat-files-v1161/`・試験 25・わざと壊す 40/41）。非公開の 1 ファイルは Moto さんに直接。PR #155。次：Codex → #151〜#154 のあとにマージ → Moto さんが ①〜④ → 端末を 1161 に → 実機。
+5. 次（Claude）：6（全体の試験）。
+
+## 2026-11-13 Google の口コミ（UI案73・v1157）とワークセンター段階 3（UI案74）
+
+1. 済（Moto さん 11/13 18:42 HST）：UI案73 は 1〜4 はい（2 は「API 繋ぐまでは手入力」・3 は「どの投稿も出してください」）。UI案74 は 1 はい・2 はい・3 B・4 はい。
+2. 済（Claude・ブランチ `claude/google-1157`）：v1157＝Google の口コミ（SQL `20261122090000`・関数 google-reviews・アプリ・`docs/GOOGLE_REVIEWS_V1157_JA.md`・入れる一式 `deploy/google-reviews-v1157/`）。試験 21・わざと壊す 41/44・Chrome の画面の形。
+3. 次：PR → Codex（とくに from_ym を入れる時・結び直しの conflict・whoami の道・Places を残さないこと・worker の鍵）→ Moto さんが `deploy/google-reviews-v1157/手順.md`（Business Profile API の審査は最大 14 日・Places は費用がかかる）。
+4. 済（Claude・ブランチ `claude/wc-stage3-1159`）：v1159＝ワークセンター段階 3（SQL `20261123090000`・関数 fn 6・アプリ・`docs/WORKCENTER_APPROVALS_STAGE3_JA.md`・入れる一式 `deploy/work-requests-v1159/`）。次：PR → Codex → #151 → #152 → この PR → Moto さんが ①〜④（非公開の 1 ファイルは直接）→ 端末を 1159 に → GM・CEO のログインで写ったか。
 
 ## 2026-11-13 チャット（全体アップデート指示の 5・UI案69「全部 A」）
 
 1. 済（Claude・ブランチ `claude/chat-1156`）：v1156＝DM・グループ・申請のチャット（SQL `20261121090000`・関数 work-requests fn 5・アプリ・`docs/CHAT_V1156_JA.md`・入れる一式 `deploy/chat-v1156/`）。試験 22/22・わざと壊す 20/20・Chrome の画面の形。
 2. 次：PR → Codex（とくに `chat_sig` を公開の鍵で読める決まり・申請のチャットに自動で入る人・送り直しの鍵・ログアウトの世代）→ Moto さんが ①〜④（関数は非公開の 1 ファイル）→ マージ → 端末を 1156 に → 実機（iPhone の日本語入力・Realtime の合図）。
+2b. 済（Moto さん 11/13 19:19 HST）：PR #150 をマージ（main `bf9df59`）。マージの前に Codex（6869797305・6870029872）が blocked・P2 2（加え直した人に抜けていたあいだの会話が見える・100 件より前のメッセージの見えなくした／直した／消したが開いている端末に届かない）。次（Claude）：2 つを直す別の PR。それまで Moto さんは ①〜④ を入れない。
+2c. 済（Claude・ブランチ `claude/chat-fix-1158`）：v1158 で 2 つを直した（`docs/CHAT_V1156_JA.md` の 6）。次：Codex → #151 → この PR → Moto さんが ①〜④ → 端末を 1158 に。
 3. 次の段階：添付（写真・PDF・6A）。
-4. 待ち（Moto さん）：UI案73・UI案74 の答え → Google の口コミ（Places API の総合評価 → Business Profile の月の平均）・段階 3。hyper-worker v1154 を貼る → Totoya の取り込み直し。
+4. 済（Moto さん 11/13 18:42 HST）：UI案73・UI案74 の答え（上の節）。待ち（Moto さん）：hyper-worker v1154 を貼る → Totoya の取り込み直し。
 
 ## 2026-11-13 KPI設定・Google の口コミ（UI案70・v1153）とワークセンターの申請／承認（UI案71）
 

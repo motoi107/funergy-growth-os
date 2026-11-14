@@ -2852,12 +2852,21 @@ async function syncToastDay(guid, businessDateYmd) {
     _body.bowlCfg = { foodGuids:_bc.foodGuids||[], takeoutGuids:_bc.takeoutGuids||[] };
   }
   try { var _stSplit = (typeof STORES!=='undefined') ? STORES.find(function(s){return s.toastGuid===guid;}) : null; if (_stSplit && typeof tipSplitHourFor==='function') _body.splitHour = tipSplitHourFor(_stSplit.id); } catch(e){}
-  var res = await fetch(TOAST_SYNC_FN, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
-    body: toastFnBody(_body),
-  });
-  return await res.json();
+  // v1160：通信が切れた・JSON でない答え（502 の HTML・関数の上限など）でも投げずに、理由の付いた失敗を返す
+  // _thrown：v1159 なら投げていた答え（通信の切れ・JSON でない答え）の印。今日の売上のカードはこれを見て、前のように「取れなかった」と出す
+  var res, txt = '', j = null;
+  try {
+    res = await fetch(TOAST_SYNC_FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + SUPABASE_ANON },
+      body: toastFnBody(_body),
+    });
+  } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _thrown: true }; }
+  try { txt = await res.text(); } catch (e) { return { ok: false, error: 'network: ' + String((e && e.message) || e).slice(0, 80), _http: res.status, _thrown: true }; }
+  try { j = txt ? JSON.parse(txt) : null; } catch (e) { j = null; }
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return { ok: false, error: 'HTTP ' + res.status + (txt ? ': ' + String(txt).replace(/\s+/g, ' ').slice(0, 80) : ''), _http: res.status, _thrown: true };
+  if (!res.ok) { j._http = res.status; if (j.ok === true) j.ok = false; }
+  return j;
 }
 /* Toast連携が「アクセスできる」レストラン一覧を取得（restaurantGuidなしで呼ぶと /partners/v1/restaurants を返す） */
 async function fetchToastRestaurants() {
@@ -2975,7 +2984,9 @@ async function fetchTodayRealtime(storeList, opts) {
     var s = storeList[i];
     if (!s.toastGuid) { results.push({id:s.id, name:s.name, color:s.color, noGuid:true}); continue; }
     try {
-      await syncToastDay(s.toastGuid, ymd);
+      // #154 のレビュー（P3）：v1160 の syncToastDay は通信の切れでも投げないので、前の版と同じく「取れなかった」にする（古い行を新しいように出さない）
+      var _rtSync = await syncToastDay(s.toastGuid, ymd);
+      if (_rtSync && _rtSync._thrown) throw new Error(String(_rtSync.error || 'sync_failed'));
       var rows = await fetchToastSales(s.toastGuid, withPrev ? prevIso : iso, iso);
       var r = null, pr = null;
       if (!withPrev) r = (rows && rows.length) ? rows[0] : null;   /* v1063 と同じ */
@@ -3342,65 +3353,122 @@ function normalizeBusinessDate(bd) {
 }
 
 /* 期間一括: dateFrom〜dateTo の各日をEdge Function経由でToastから取得→DB保存。
-   進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。 */
-async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress) {
+   進捗をonProgress(コールバック)で通知。月をまたいで daily_actuals_ にも反映。
+   v1160：失敗した日ごとに理由（toastFailKind）を残す。Toast に断られたら日と日のあいだを空ける（250ms → 3 秒 → … 15 秒まで）。
+   アプリのログインが切れたら残りの日は呼ばない。最後に、失敗した日を 1 回だけ取り直す（ログインの切れ・DB 保存のエラーは取り直さない）。
+   opts.dates を渡すと、その日だけ取り込む（「失敗した日だけ取り込み直す」）。opts.noRetry で取り直さない。
+   onProgress(done, total, ok, fail, info)：info は取り直しのとき { phase:'wait'|'retry', i, n }。 */
+var _toastRangeSleep = function (ms) { return new Promise(function (res) { setTimeout(res, ms); }); };
+var TOAST_FAIL_LABEL = { limit: 'Toast の回数の制限', auth: 'Toast にログインできない', session: 'アプリのログインを確かめられない', server: 'サーバーの一時的なエラー', network: '通信が切れた', db: 'DB 保存エラー', other: 'そのほかのエラー' };
+function toastFailKind(r) {
+  if (!r) return 'other';
+  var e = String(r.error || '') + ' ' + String(r.detail || '');
+  var st = Number(r._http) || 0;
+  if (/session_required|session_expired|[（(]inactive[）)]|^unauthorized\b|\bforbidden\b/i.test(e) || st === 403) return 'session';
+  if (r.dbError && !r.error) return 'db';
+  if (/\b429\b|rate.?limit|too many/i.test(e) || st === 429) return 'limit';
+  if (/auth_failed|toast login/i.test(e)) return 'auth';
+  if (/^network\b|failed to fetch|load failed|networkerror/i.test(e.trim())) return 'network';
+  if (/\b5\d\d\b|worker_limit|timeout|timed out|db_unavailable/i.test(e) || st >= 500) return 'server';
+  return 'other';
+}
+async function fetchToastRange(storeId, guid, dateFromISO, dateToISO, onProgress, opts) {
   if (!guid) return { error: 'GUID未設定' };
   var start = new Date(dateFromISO+'T00:00:00');
   var end = new Date(dateToISO+'T00:00:00');
   var ok=0, fail=0, total=0, sumSales=0;
-  // 日付リスト生成
+  // 日付リスト生成（★ 端末TZに依存しないローカル日付。toISOStringはUTC変換で日付がズレる端末があるため使わない）
   var dates = [];
-  for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(new Date(d));
+  for (var d=new Date(start); d<=end; d.setDate(d.getDate()+1)) dates.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));
+  if (opts && Array.isArray(opts.dates)) { var _want = {}; opts.dates.forEach(function(x){ _want[String(x)] = 1; }); dates = dates.filter(function(x){ return _want[x]; }); }
   total = dates.length;
-  var ldMissing = 0, dbErrLast = null;
-  for (var i=0; i<dates.length; i++) {
-    var dt = dates[i];
-    // ★ 端末TZに依存しないローカル日付（toISOStringはUTC変換で日付がズレる端末があるため使わない）
-    var iso = dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0');
-    var ymd = iso.replace(/-/g,'');
-    try {
-      var r = await syncToastDay(guid, ymd);
-      // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
-      if (r && r.dbError) dbErrLast = String(r.dbError);
-      if (r && r.ldSaved === false) ldMissing++;
-      if (r && r.ok) {
-        ok++; sumSales += Number(r.net_sales)||0;
-        var actuals = getDailyActuals(storeId);
-        var prev = actuals[iso] || {};
-        // ★ 値があるフィールドだけ反映（undefinedで既存値を消さない）
-        var _patch = { actual: Number(r.net_sales)||0, toastSrc:true };
-        function _rput(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
-        _rput('guests', r.guests);
-        _rput('lunchSales', r.lunchSales); _rput('dinnerSales', r.dinnerSales);
-        _rput('lunchGuests', r.lunchGuests); _rput('dinnerGuests', r.dinnerGuests);
-        _rput('bowls', r.bowls); _rput('lunchBowls', r.lunchBowls); _rput('dinnerBowls', r.dinnerBowls);
-        _rput('takeout', r.takeoutCount); _rput('takeoutBowls', r.takeoutBowls);
-        _rput('lunchTakeoutBowls', r.lunchTakeoutBowls); _rput('dinnerTakeoutBowls', r.dinnerTakeoutBowls);
-        _rput('toLunchSales', r.toLunchSales); _rput('toDinnerSales', r.toDinnerSales);
-        _rput('toLunchCount', r.toLunchCount); _rput('toDinnerCount', r.toDinnerCount);
-        _rput('firstTimeBowls', r.firstTimeBowls); _rput('repeatBowls', r.repeatBowls);
-        _rput('superRegular', r.superRegular);
-        // ★ L/D別 新規/リピート（会議・月次サマリーのリピーターのL/Dリピート率用）
-        _rput('firstTimeBowlsLunch', r.firstTimeBowlsLunch); _rput('firstTimeBowlsDinner', r.firstTimeBowlsDinner);
-        _rput('repeatBowlsLunch', r.repeatBowlsLunch); _rput('repeatBowlsDinner', r.repeatBowlsDinner);
-        _rput('misoTotal', r.misoTotal); _rput('misoUpgrade', r.misoUpgrade);
-        _rput('ikuraShower', r.ikuraShower); _rput('ikuraBowls', r.ikuraBowls);
-        _rput('creditTip', r.creditTip); _rput('cashTip', r.cashTip);
-        _rput('lunchCreditTip', r.lunchCreditTip); _rput('dinnerCreditTip', r.dinnerCreditTip);
-        _rput('lunchCashTip', r.lunchCashTip); _rput('dinnerCashTip', r.dinnerCashTip);
-        actuals[iso] = Object.assign({}, prev, _patch);
-        setDailyActuals(storeId, actuals);
-      } else { fail++; }
-    } catch(e) { fail++; }
-    if (onProgress) onProgress(i+1, total, ok, fail);
-    // レート制限対策: 少し待つ
-    await new Promise(res=>setTimeout(res, 250));
+  var ldDays = {}, failed = {}, dbWarn = {}, gap = 250, stopped = null;
+  function applyDay(iso, r) {
+    sumSales += Number(r.net_sales)||0;
+    var actuals = getDailyActuals(storeId);
+    var prev = actuals[iso] || {};
+    // ★ 値があるフィールドだけ反映（undefinedで既存値を消さない）
+    var _patch = { actual: Number(r.net_sales)||0, toastSrc:true };
+    function _rput(key, raw){ if(raw!=null) _patch[key] = Number(raw); }
+    _rput('guests', r.guests);
+    _rput('lunchSales', r.lunchSales); _rput('dinnerSales', r.dinnerSales);
+    _rput('lunchGuests', r.lunchGuests); _rput('dinnerGuests', r.dinnerGuests);
+    _rput('bowls', r.bowls); _rput('lunchBowls', r.lunchBowls); _rput('dinnerBowls', r.dinnerBowls);
+    _rput('takeout', r.takeoutCount); _rput('takeoutBowls', r.takeoutBowls);
+    _rput('lunchTakeoutBowls', r.lunchTakeoutBowls); _rput('dinnerTakeoutBowls', r.dinnerTakeoutBowls);
+    _rput('toLunchSales', r.toLunchSales); _rput('toDinnerSales', r.toDinnerSales);
+    _rput('toLunchCount', r.toLunchCount); _rput('toDinnerCount', r.toDinnerCount);
+    _rput('firstTimeBowls', r.firstTimeBowls); _rput('repeatBowls', r.repeatBowls);
+    _rput('superRegular', r.superRegular);
+    // ★ L/D別 新規/リピート（会議・月次サマリーのリピーターのL/Dリピート率用）
+    _rput('firstTimeBowlsLunch', r.firstTimeBowlsLunch); _rput('firstTimeBowlsDinner', r.firstTimeBowlsDinner);
+    _rput('repeatBowlsLunch', r.repeatBowlsLunch); _rput('repeatBowlsDinner', r.repeatBowlsDinner);
+    _rput('misoTotal', r.misoTotal); _rput('misoUpgrade', r.misoUpgrade);
+    _rput('ikuraShower', r.ikuraShower); _rput('ikuraBowls', r.ikuraBowls);
+    _rput('creditTip', r.creditTip); _rput('cashTip', r.cashTip);
+    _rput('lunchCreditTip', r.lunchCreditTip); _rput('dinnerCreditTip', r.dinnerCreditTip);
+    _rput('lunchCashTip', r.lunchCashTip); _rput('dinnerCashTip', r.dinnerCashTip);
+    actuals[iso] = Object.assign({}, prev, _patch);
+    setDailyActuals(storeId, actuals);
   }
+  async function oneDay(iso) {
+    var r;
+    try { r = await syncToastDay(guid, iso.replace(/-/g,'')); } catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+    if (r && r.ldSaved === false) ldDays[iso] = 1;
+    // #154 のレビュー（P3）：保存できた日でも DB の注意（dbError）は落とさない（v1159 と同じく画面に出す）
+    if (r && r.ok) { applyDay(iso, r); delete failed[iso]; if (r.dbError) dbWarn[iso] = String(r.dbError).slice(0, 160); else delete dbWarn[iso]; return 'ok'; }
+    var k = toastFailKind(r);
+    // ★ Edge FunctionがDB保存に失敗した場合（列不足など）は必ず可視化する
+    var msg = r ? (r.dbError ? String(r.dbError) : (String(r.error || '') + (r.detail ? ' ' + String(r.detail) : ''))) : '';
+    failed[iso] = { kind: k, msg: msg.slice(0, 160) };
+    return k;
+  }
+  function slower(k) { return k === 'limit' || k === 'auth' || k === 'server' || k === 'network'; }
+  function nFail() { return Object.keys(failed).length; }
+  for (var i=0; i<dates.length; i++) {
+    var iso = dates[i];
+    if (stopped) failed[iso] = { kind: 'session', msg: stopped, skipped: true };
+    else {
+      var k = await oneDay(iso);
+      if (k === 'session') stopped = failed[iso].msg || 'session';
+      else if (k === 'ok') gap = Math.max(250, Math.floor(gap / 2));
+      else if (slower(k)) gap = Math.min(Math.max(gap * 2, 3000), 15000);
+    }
+    if (onProgress) onProgress(i+1, total, i+1-nFail(), nFail());
+    // レート制限対策: 少し待つ（断られたら長く）
+    if (!stopped && i < dates.length - 1) await _toastRangeSleep(gap);
+  }
+  var again = Object.keys(failed).filter(function(x){ return failed[x].kind !== 'session' && failed[x].kind !== 'db'; }).sort();
+  var retried = 0, recovered = 0;
+  if (again.length && !stopped && !(opts && opts.noRetry)) {
+    retried = again.length;
+    if (onProgress) onProgress(total, total, total-nFail(), nFail(), { phase: 'wait', i: 0, n: again.length });
+    await _toastRangeSleep(again.some(function(x){ return failed[x].kind === 'limit' || failed[x].kind === 'auth'; }) ? 15000 : 5000);
+    gap = Math.max(gap, 1200);
+    for (var j=0; j<again.length; j++) {
+      var k2 = await oneDay(again[j]);
+      if (k2 === 'ok') { recovered++; gap = Math.max(1200, Math.floor(gap / 2)); }
+      else if (k2 === 'session') { stopped = failed[again[j]].msg || 'session'; }
+      else if (slower(k2)) gap = Math.min(Math.max(gap * 2, 3000), 15000);
+      if (onProgress) onProgress(total, total, total-nFail(), nFail(), { phase: 'retry', i: j+1, n: again.length });
+      if (stopped) break;
+      if (j < again.length - 1) await _toastRangeSleep(gap);
+    }
+  }
+  fail = nFail(); ok = total - fail;
+  var failures = Object.keys(failed).sort().map(function(x){ return { date: x, kind: failed[x].kind, msg: failed[x].msg, skipped: !!failed[x].skipped }; });
+  var dbWarns = Object.keys(dbWarn).filter(function(x){ return !failed[x]; }).sort().map(function(x){ return { date: x, msg: dbWarn[x] }; });
+  var dbErrLast = null;
+  failures.filter(function(f){ return f.kind === 'db'; }).concat(dbWarns).sort(function(a, b){ return a.date < b.date ? -1 : a.date > b.date ? 1 : 0; })
+    .forEach(function(f){ dbErrLast = f.msg; });
+  var ldDates = Object.keys(ldDays).filter(function(x){ return !failed[x]; }).sort();
+  var ldMissing = ldDates.length;
   // 月次実績も更新
   var budgets = getBudgets();
   var b = budgets.find(x=>x.storeId===storeId);
   if (b) { b.actual = Object.values(getDailyActuals(storeId)).reduce((a,v)=>a+(v.actual||0),0); saveBudgets(budgets); }
-  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast };
+  return { ok, fail, total, sumSales, ldMissing: ldMissing, dbError: dbErrLast, failures: failures, retried: retried, recovered: recovered,
+    ldDates: ldDates, dbWarns: dbWarns };   // ldDates・dbWarns：取り込み直しのあとも注意を残すため（doRangeImport）
 }
 
 /* ============================================================
@@ -3931,8 +3999,13 @@ function _k2ActualsRaw(sid, ym){
     /* 総労働時間と Google は売上の集計（k）が無くても出す（勤怠・手入力から。これからの月は出さない） */
     if(!future){
       if(d.key==='laborHours' && hrs && hrs.laborDays>0){ r.act=hrs.hours; if(hrs.excluded>0) r.actNote=t('仕組みのアカウント '+hrs.excluded+'h を除外','Excluded system accounts '+hrs.excluded+'h'); }
-      if(d.key==='reviewScore'){ r.act=_k2Num(man.gAvg); var gc=_k2Num(man.gCnt), gt=_k2Num(man.reviewScore);
-        r.actNote=(gc!=null?t('この月 '+gc+' 件の平均','Average of '+gc+' reviews this month'):'')+(gt!=null?((gc!=null?'・':'')+t('総合評価 ★'+gt.toFixed(1),'Overall ★'+gt.toFixed(1))):''); }
+      if(d.key==='reviewScore'){
+        /* v1157：Business Profile に結んで取り終えた店・月は自動（Google）。ほかは今までどおり手入力 */
+        var _gm=(typeof grMonthOf==='function')?grMonthOf(sid, ym):null;
+        if(_gm){ r.act=_gm.avg; var _go=(typeof grOverallOf==='function')?grOverallOf(sid):null;
+          r.actNote=(_gm.cnt>0?t('Google（自動）この月 '+_gm.cnt+' 件の平均','Google (auto): average of '+_gm.cnt+' reviews this month'):t('Google（自動）この月の口コミはまだありません','Google (auto): no reviews this month yet'))+(_go&&_go.rating!=null?'・'+t('総合評価 ★'+_go.rating.toFixed(1),'Overall ★'+_go.rating.toFixed(1)):''); }
+        else { r.act=_k2Num(man.gAvg); var gc=_k2Num(man.gCnt), gt=_k2Num(man.reviewScore);
+        r.actNote=(gc!=null?t('この月 '+gc+' 件の平均','Average of '+gc+' reviews this month'):'')+(gt!=null?((gc!=null?'・':'')+t('総合評価 ★'+gt.toFixed(1),'Overall ★'+gt.toFixed(1))):''); } }
     }
     /* 総労働時間の計画（今月は前日までの営業日の分だけ） */
     if(d.plan && r.tgt!=null && isCur){
@@ -4145,6 +4218,8 @@ function k2GoogleUrl(store){
 }
 /* ---- 会議タブ：Google の口コミ（1A：実績はその月に投稿された口コミの平均） ---- */
 function _meetGoogleCard(store, ym){
+  /* v1157：Google の口コミのカード（FUNERGY_GR）。読めない環境では今までの手入力のカード */
+  try{ if(typeof grCardHtml==='function'){ var _gh=grCardHtml(store, ym); if(_gh) return _gh; } }catch(e){}
   try{
     var sid=store.id, man=getKpiManual(sid, k2Period(ym))||{};
     var avg=_k2Num(man.gAvg), cnt=_k2Num(man.gCnt), tot=_k2Num(man.reviewScore), totN=_k2Num(man.gTotalCnt);
@@ -4164,8 +4239,8 @@ function _meetGoogleCard(store, ym){
       +'<div><div class="k2-note">'+t('総合評価（月末）','Overall (month end)')+'</div><div style="font-size:24px;font-weight:800;color:var(--tm)">'+(tot!=null?'★'+tot.toFixed(1):'—')+'</div>'
         +'<div class="k2-note">'+(totN!=null?t('累計 '+totN+' 件','Total '+totN):t('参考','For reference'))+'</div></div>'
       +'</div>'
-      +'<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（Google の API はつなぎません）。',
-        'The month is the posting date in Hawaii time; star-only reviews count. Count them on Google and enter them in KPI settings › Inputs (no Google API).')+'</div>'
+      +'<div class="k2-note" style="margin-top:8px;line-height:1.6">'+t('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Business Profile をつなぐまでは、Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（つないだら自動になります）。',
+        'The month is the posting date in Hawaii time; star-only reviews count. Until Business Profile is connected, count them on Google and enter them in KPI settings › Inputs (it becomes automatic once connected).')+'</div>'
       +'<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
       +(can?'<button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'manual\';window._kpiStore=\''+escapeHtml(sid)+'\';window._kpiManualOffset='+off+';go(\'kpi_master\')"><i class="ti ti-edit"></i> '+t('入力する','Enter')+'</button>':'')
       +'<a class="btn btn-secondary btn-sm" style="text-decoration:none" href="'+escapeHtml(k2GoogleUrl(store))+'" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> '+(k2GoogleUrlSet(store)?t('Google で見る','Open Google'):t('Google マップで探す','Find on Google Maps'))+'</a>'
@@ -5577,7 +5652,7 @@ function mdPendingApprovals(stores) {
   try {
     var names = {};
     (stores || []).forEach(function (id) { names[id] = 1; names[mcStoreLabel(id)] = 1; });
-    out = (ls('approvals', []) || []).filter(function (a) {
+    out = ((typeof _apClosed === 'function' && _apClosed()) ? [] : (ls('approvals', []) || [])).filter(function (a) {   /* v1159：前の承認タブを閉じたあとはワークセンターの申請で */
       if (!a || a.status !== 'pending' || a.wrq) return false;   /* v1155：段階 2 の申請はワークセンターの数に */
       if (mcRole() === 'gm') return true;
       if (!a.ref && !a.store) return true;
@@ -6422,7 +6497,10 @@ function groupOfPage(pageId) {
   return groups.find(g=>g.children.includes(pageId)) || groups[0];
 }
 /* v1084: ナビの子ページを今の役職が開けるか。firstAllowedChild・buildNav・navPageAllowed で同じ判定を使う。 */
+/* v1159（段階 3・UI案74 の 3B）：前の「承認」タブ（承認センター）を閉じたか。ワークセンターの申請が段階 3 の SQL・関数で動いているとき（この端末が聞いた答え） */
+function _apClosed(){ try{ return !!(window.wrS3Seen && window.wrS3Seen()); }catch(e){ return false; } }
 function navChildAllowed(pid){
+  if (pid==='approval' && typeof _apClosed==='function' && _apClosed()) return false;   /* v1159：承認センターはメニューから外す（ワークセンターの申請へ） */
   if (pid==='staff_master' && typeof canAccessStaffMaster==='function' && !canAccessStaffMaster()) return false;
   if (pid==='kpi_master' && typeof canAccessKpiMaster==='function' && !canAccessKpiMaster()) return false;
   if (pid==='dashboard') return (typeof canSeeDashboard==='function') ? canSeeDashboard() : true; // Totoya店長にも開放
@@ -6462,6 +6540,8 @@ function navResolvePage(page){
     else if (budgetTab === 'analysis') budgetTab = 'daily';
   }
   if (page === 'tasks' && typeof workTab !== 'undefined' && (workTab === 'mgmt' || workTab === 'requests' || workTab === 'tasks')) workTab = 'today';   /* v1088: タスク */
+  /* v1159：前の承認タブを閉じたあとの古い行き先（通知・ボタン・お気に入り）はワークセンターの申請へ */
+  if ((page === 'approval' || (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'approval')) && typeof _apClosed === 'function' && _apClosed()) { page = 'tasks'; workTab = 'wr'; }
   if (page === 'office_mgr' && typeof officeMgrTab !== 'undefined' && officeMgrTab === 'tasks') officeMgrTab = 'dash';
   if (Object.prototype.hasOwnProperty.call(NAV_RETIRED, page)) {
     var to = NAV_RETIRED[page];
@@ -20897,6 +20977,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
+  if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -20920,6 +21001,7 @@ if(typeof window.FUNERGY_WEB_OFFICE_NAVIGATE==='function')return window.FUNERGY_
   if(typeof mrReset==='function') mrReset();   /* v1066: 前の人の中間レビューの内容を残さない */
   if(typeof bcForget==='function') bcForget();   /* v1109：ボーナスの締めの保存していない選び方も消す */
   if(typeof chatReset==='function') chatReset();   /* v1156：前の人のチャット（一覧・本文・書きかけ）を残さない */
+  if(typeof grReset==='function') grReset();   /* v1157：前の人の Google の口コミの読み込みを残さない */
   document.getElementById('app-shell').style.display = 'none';
   document.getElementById('login-screen').style.display = 'flex';
   /* v1037: 成功したときのまま「確認中…」で押せなくなっていたボタンを戻す（次の人がそのまま入れるように） */
@@ -21122,6 +21204,7 @@ function initApp() {
   renderPage(curPage);
   try{ setTimeout(function(){ if(typeof wrPing==='function') wrPing(); }, 2500); }catch(e){}   /* v1131：申請を使い始めたか（前の画面の案内に使う） */
   try{ setTimeout(function(){ if(typeof chatStart==='function') chatStart(); }, 3000); }catch(e){}   /* v1156：チャットの未読の数と合図（店のタブレットでは動かない） */
+  try{ setTimeout(function(){ if(typeof grStart==='function') grStart(); }, 3500); }catch(e){}   /* v1157：Google の口コミ（会議の実績）・Google のログインから戻ったときの知らせ */
   // 今月の会社メッセージ（初回ログイン時のみポップアップ）
   setTimeout(maybeShowCompanyMessage, 400);
   _supaBooting = false; // ここから先（ユーザー操作）の保存はクラウドへ即時反映（F1）
@@ -21144,7 +21227,7 @@ function _groupColor(id){ return _GROUP_COLOR[id] || 'var(--accent)'; }
    そのときはタブ（グループ）のボタンに出す（前は食材管理の中の小タブに出ていた）。 */
 function navBadgeCount(pid, memo){
   if (pid==='chat') return (typeof chatUnread==='function') ? chatUnread() : 0;   /* v1156：チャットの未読 */
-  if (pid==='approval') return ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq).length;   /* v1155：段階 2 の申請はワークセンターで数える */
+  if (pid==='approval') return (typeof _apClosed==='function' && _apClosed()) ? 0 : ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq).length;   /* v1159：閉じたあとはワークセンターの申請で数える */   /* v1155：段階 2 の申請はワークセンターで数える */
   if (pid==='vacation') return getVacations().filter(v=>v.status==='申請中' && canApproveVacation(v)).length;
   if (pid==='acct_review' || pid==='invoice') {
     var _invAll = memo.inv || (memo.inv = lsSplitRO('invoices'));   /* v1098: 読むだけ */
@@ -23748,7 +23831,7 @@ function renderDashboard() {
   var me = rc.name;
   var today = todayISO();
   /* v1088: タスクは廃止（UI案52 5A）。優先アクション・本日の対応にタスクは出さない */
-  var approvalsAll = ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq);   /* v1155：段階 2 の申請はワークセンターで */
+  var approvalsAll = (typeof _apClosed==='function' && _apClosed()) ? [] : ls('approvals', []).filter(a=>a.status==='pending' && !a.wrq);   /* v1155：段階 2 の申請はワークセンターで。v1159：閉じたあとはワークセンターの申請で */
   var reqAlerts = [];
   // GM/CEOは全社視点。店舗の必須チェック（店舗タスク）は優先アクション・本日の対応から除外
   if (!['gm','ceo'].includes(curRole)) {
@@ -31754,7 +31837,7 @@ function _meetYearMatrix(store, y){
   /* v926: 確定月はPLの数字を出す。1〜6月は cellV がシードを優先するので届かない
      （「1〜6月の会議記録の数字は動かさない」A案・Motoさん確認済みを維持）。 */
   function liveA(kk, ym, off){ if(off>0) return null;
-    if(kk==='google'){ try{ return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A） */
+    if(kk==='google'){ try{ var _gm=(typeof grMonthOf==='function')?grMonthOf(sid, ym):null; if(_gm) return _gm.avg; return _k2Num((getKpiManual(sid, k2Period(ym))||{}).gAvg); }catch(e){ return null; } }   /* v1153（1A）・v1157：自動の店と月は Google */
     var k; try{ k=keyKpiStats([store], daysOfYm(ym)); }catch(e){ return null; } if(!k) return null;
     try{ k=_meetApplyPl(k, sid, ym); }catch(e){}
     switch(kk){ case 'sales': return k.sales||null; case 'guests': return isB?((k.opDays>0)?Math.round((k.guests||0)/k.opDays):null):(k.guests||null); case 'ppa': return k.ppa||null; case 'repeat': return k.repeatRate; case 'fc': return k.fcRate||null; case 'labor': return k.laborRate||null; case 'miso': return k.misoRate; case 'ikura': return k.ikuraRate; case 'drink': return k.drinkRate; default: return null; } }
@@ -36897,8 +36980,9 @@ function openRangeModal(storeId, guid) {
   var today = todayISO();
   var jan1 = new Date().getFullYear() + '-01-01';
   var allStores = getVisibleStores().filter(function(x){ return x.toastGuid; });
+  if (!_rgBusy) _rgLastFailed = null;   // 前に開いた画面の「失敗した日」は持ち越さない
   openModal(`<div class="modal-title">期間一括取り込み — ${s.name} <button class="modal-close" onclick="closeModalDirect()">×</button></div>
-    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり約0.3秒）。</p>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:8px">指定期間の各日をToastから取得し、サーバ(toast_sales)に保存します。サーバに保存されるので<b>他の端末にも反映</b>されます。日数が多いと数分かかります（1日あたり数秒。Toast に断られたら間をあけて続け、最後に失敗した日をもう一度取ります）。</p>
     <div class="form-row">
       <div class="form-group"><label class="form-label">開始日</label><input class="form-input" id="rg-from" type="date" value="${jan1}"></div>
       <div class="form-group"><label class="form-label">終了日</label><input class="form-input" id="rg-to" type="date" value="${today}"></div>
@@ -36912,39 +36996,131 @@ function openRangeModal(storeId, guid) {
     <button class="btn btn-primary" id="rg-start" onclick="doRangeImport('${storeId}','${guid}')"><i class="ti ti-download"></i> 取り込み開始</button></div>`);
 }
 /* FUNERGY_FINANCIAL_CALLER_FIXES_V1 */
-async function doRangeImport(storeId, guid) {
-  var from = document.getElementById('rg-from').value;
-  var to = document.getElementById('rg-to').value;
-  if (!from || !to) { alert('期間を指定してください'); return; }
-  if (from > to) { alert('開始日が終了日より後になっています'); return; }
-  var useAll = !!(document.getElementById('rg-all')||{}).checked;
-  var targets = useAll ? getVisibleStores().filter(function(x){ return x.toastGuid; })
-                       : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
+/* v1160：失敗した日の理由と日付を出す。失敗した日が残ったら「失敗した日だけ取り込み直す」で、その日だけを取り直す */
+/* v1160 の直し（#154 の Codex 6875910941）：覚えておくのは「取り直す日」だけでなく、まだ片づいていないこと全部
+   （取り直さない DB 保存エラー・アプリのログインの切れ・L/D 列の注意・保存できたが DB に注意のあった日・店ごとのエラー）。
+   取り込み直しでは、取れた日だけを外し、ほかは残して出す（残っていれば閉じない） */
+var _rgLastFailed = null;   // { from, to, stores: [{ id, name, toastGuid, dates, fails, ld, dbw, err }] }（dates＝取り直す日・fails＝まだ取れていない日すべて）
+var _rgBusy = false;
+function rgRetryable(f) { return f && f.kind !== 'session' && f.kind !== 'db'; }
+function rgRetryDays(rec) { return (rec && Array.isArray(rec.stores)) ? rec.stores.reduce(function(a, x){ return a + ((x.dates || []).length); }, 0) : 0; }
+function rgOpenCount(x) { var n = (x.fails || []).length; return (x.err && !n) ? 1 : n; }
+function rgHasIssue(x) { return !!((x.fails || []).length || (x.ld || []).length || (x.dbw || []).length || x.err); }
+function rgUniqSorted(list) { var seen = {}, out = []; (list || []).forEach(function(d){ if (d && !seen[d]) { seen[d] = 1; out.push(d); } }); return out.sort(); }
+function toastFailSummaryHtml(failures) {
+  var list = Array.isArray(failures) ? failures : [];
+  if (!list.length) return '';
+  var cnt = {}, order = [];
+  list.forEach(function(f){ if (!cnt[f.kind]) { cnt[f.kind] = 0; order.push(f.kind); } cnt[f.kind]++; });
+  var why = order.map(function(k){ return (TOAST_FAIL_LABEL[k] || k) + ' ' + cnt[k] + '日'; }).join('・');
+  var days = list.map(function(f){ return f.date.slice(5).replace('-', '/'); });
+  var shown = days.slice(0, 12).join('、') + (days.length > 12 ? ' ほか' + (days.length - 12) + '日' : '');
+  var first = list.find(function(f){ return f.msg && !f.skipped; }) || list[0];
+  var html = '<div style="font-size:11px;color:var(--yellow);padding-left:10px">理由：' + escapeHtml(why) + '</div>'
+    + '<div style="font-size:11px;color:var(--muted);padding-left:10px">失敗した日：' + escapeHtml(shown) + '</div>';
+  if (first && first.msg) html += '<div style="font-size:10px;color:var(--muted);padding-left:10px;word-break:break-all">' + escapeHtml(first.msg) + '</div>';
+  return html;
+}
+async function doRangeImport(storeId, guid, onlyFailed) {
+  if (_rgBusy) return;   // 押した直後にもう一度押しても 2 回は走らせない
+  var from, to, targets, carry = [], last = onlyFailed ? _rgLastFailed : null;
+  if (onlyFailed) {
+    if (!last || !rgRetryDays(last)) { alert('取り込み直す日がありません'); return; }
+    from = last.from; to = last.to;
+    targets = last.stores.filter(function(x){ return (x.dates || []).length; });
+    carry = last.stores.filter(function(x){ return !(x.dates || []).length; });   // 取り直す日の無い店（DB 保存エラー・ログインの切れ・注意だけ）はそのまま残す
+  } else {
+    from = document.getElementById('rg-from').value;
+    to = document.getElementById('rg-to').value;
+    if (!from || !to) { alert('期間を指定してください'); return; }
+    if (from > to) { alert('開始日が終了日より後になっています'); return; }
+    var useAll = !!(document.getElementById('rg-all')||{}).checked;
+    targets = useAll ? getVisibleStores().filter(function(x){ return x.toastGuid; })
+                     : [ (getStoresAll().find(function(x){return x.id===storeId;})||{id:storeId, name:storeId, toastGuid:guid}) ];
+  }
   if (!targets.length) { alert('対象店舗がありません'); return; }
+  _rgBusy = true;
+  try {
   var btn = document.getElementById('rg-start');
   if (btn) { btn.disabled = true; btn.innerHTML = '取り込み中...'; }
+  var rbtn = document.getElementById('rg-retry');
+  if (rbtn) { rbtn.disabled = true; rbtn.innerHTML = '取り込み中...'; }
   var prog = document.getElementById('rg-progress');
-  var sumOk=0, sumFail=0, sumSales=0, ldMissing=0, dbError=null, lines=[];
+  var sumOk=0, sumSales=0, lines=[], sumRetried=0, sumRecovered=0, asked=0;
+  var next = { from: from, to: to, stores: [] };
   for (var si=0; si<targets.length; si++) {
     var st = targets[si];
-    var head = targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] '+escapeHtml(st.name)+'<br>') : '';
-    var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail){
-      if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/total*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）`;
-    });
-    if (!res || res.error) { sumFail++; dbError=(res&&res.error)||'保存結果を確認できません'; lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(dbError)+'</div>'); continue; }
-    sumOk += (res.ok||0); sumFail += (res.fail||0); sumSales += (res.sumSales||0);
-    ldMissing += (res.ldMissing||0); if (res.dbError) dbError = res.dbError;
-    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')+'</div>');
+    var prev = onlyFailed ? st : null;
+    var head = (onlyFailed ? '失敗した日だけ取り込み直し：' : '') + (targets.length>1 ? ('['+(si+1)+'/'+targets.length+'] ') : '') + escapeHtml(st.name) + '<br>';
+    if (prev) asked += prev.dates.length;
+    var res = await fetchToastRange(st.id, st.toastGuid, from, to, function(done, total, ok, fail, info){
+      var phase = '';
+      if (info && info.phase === 'wait') phase = '<br><span style="color:var(--muted)">失敗した ' + info.n + ' 日を、少し待ってからもう一度取ります…</span>';
+      else if (info && info.phase === 'retry') phase = '<br><span style="color:var(--muted)">失敗した日をもう一度（' + info.i + '/' + info.n + '）</span>';
+      if (prog) prog.innerHTML = lines.join('') + head + `<div class="progress-bar" style="margin-bottom:4px"><div class="progress-fill" style="background:var(--accent2);width:${Math.round(done/Math.max(1,total)*100)}%"></div></div>${done}/${total}日 処理（成功${ok} / 失敗${fail}）` + phase;
+    }, prev ? { dates: prev.dates } : undefined);
+    var rec = { id: st.id, name: st.name, toastGuid: st.toastGuid, dates: [], fails: [],
+      ld: prev ? (prev.ld || []).slice() : [], dbw: prev ? (prev.dbw || []).slice() : [], err: null };
+    if (!res || res.error) {
+      rec.err = (res&&res.error)||'保存結果を確認できません';
+      if (prev) rec.fails = (prev.fails || []).slice();   // 取り込み直せなかった：前の失敗はそのまま
+      rec.dates = rec.fails.filter(rgRetryable).map(function(f){ return f.date; });
+      next.stores.push(rec);
+      lines.push('<div style="color:var(--red)">'+escapeHtml(st.name)+': '+escapeHtml(rec.err)+'</div>' + toastFailSummaryHtml(rec.fails));
+      continue;
+    }
+    sumOk += (res.ok||0); sumSales += (res.sumSales||0);
+    sumRetried += (res.retried||0); sumRecovered += (res.recovered||0);
+    var fl = Array.isArray(res.failures) ? res.failures : [];
+    var asked1 = prev ? prev.dates : [];
+    // 前の失敗のうち、今回取り直さなかったもの（DB 保存エラー・ログインの切れ）は残す。取り直した日は今回の結果だけ
+    var keep = prev ? (prev.fails || []).filter(function(f){ return asked1.indexOf(f.date) < 0; }) : [];
+    rec.fails = keep.concat(fl).sort(function(x, y){ return x.date < y.date ? -1 : x.date > y.date ? 1 : 0; });
+    rec.dates = rec.fails.filter(rgRetryable).map(function(f){ return f.date; });
+    rec.ld = rgUniqSorted(rec.ld.concat(Array.isArray(res.ldDates) ? res.ldDates : []));
+    rec.dbw = rec.dbw.concat(Array.isArray(res.dbWarns) ? res.dbWarns : []);
+    if (rgHasIssue(rec)) next.stores.push(rec);
+    var nOpen = rgOpenCount(rec);
+    if (prev) {
+      lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': 取り込み直した '+asked1.length+' 日のうち '+(res.ok||0)+' 日取得'
+        +(nOpen ? ('（まだ取れていない日 '+nOpen+'）') : '')+'</div>' + toastFailSummaryHtml(rec.fails));
+    } else {
+      lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(st.name)+': '+(res.ok||0)+'日取得'+((res.fail||0)?(' / 失敗'+res.fail):'')
+        +((res.recovered||0)?('（失敗した日のうち '+res.recovered+' 日は、もう一度取って取れました）'):'')+'</div>' + toastFailSummaryHtml(fl));
+    }
   }
-  var html = lines.join('') + `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`;
+  // 取り直す日の無かった店は、前のまま残して出す（取れたことにしない）
+  carry.forEach(function(x){
+    var c = { id: x.id, name: x.name, toastGuid: x.toastGuid, dates: [], fails: (x.fails || []).slice(), ld: (x.ld || []).slice(), dbw: (x.dbw || []).slice(), err: x.err || null };
+    next.stores.push(c);
+    var n = rgOpenCount(c);
+    lines.push('<div style="font-size:11px;color:var(--muted)">'+escapeHtml(c.name)+': 取り込み直す日はありません'+(n ? ('（まだ取れていない日 '+n+'）') : '')+'</div>' + toastFailSummaryHtml(c.fails));
+  });
+  _rgLastFailed = next.stores.length ? next : null;
+  // まだ片づいていないことは、覚えている全部の店から数える（取り込み直しでも、今回取らなかった日を「失敗0」にしない）
+  var sumFail = 0, ldMissing = 0, dbError = null, session = false;
+  next.stores.forEach(function(x){
+    sumFail += rgOpenCount(x);
+    ldMissing += (x.ld || []).length;
+    (x.fails || []).forEach(function(f){ if (f.kind === 'db') dbError = f.msg || 'DB 保存エラー'; if (f.kind === 'session') session = true; });
+    (x.dbw || []).forEach(function(w){ if (w && w.msg) dbError = w.msg; });
+    if (x.err) dbError = x.err;
+  });
+  var html = lines.join('') + (onlyFailed
+    ? `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 取り込み直した ${asked}日のうち ${sumOk}日取得（まだ取れていない日 ${sumFail}）・取り込み直した日の売上 ${fmtUSD2(sumSales)}</div>`
+    : `<div style="color:${sumFail?'var(--yellow)':'var(--green)'};margin-top:4px"><i class="ti ti-check"></i> 完了: 合計${sumOk}日取得（失敗${sumFail}）・合計売上 ${fmtUSD2(sumSales)}</div>`);
   // ★ DB保存の問題を必ず表に出す（以前サイレント失敗で売上が消えたため）
   if (dbError) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> DB保存エラー: ${escapeHtml(dbError)}</div>`;
-  else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると、ランチ/ディナー別リピート率が使えます。</div>`;
+  else if (ldMissing) html += `<div style="color:var(--yellow);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> L/D列が未作成のため、売上のみ保存しました（${ldMissing}日）。Supabase の SQL Editor で L/D列を追加すると（GitHub の db/toast-sales-ld-columns.sql）、ランチ/ディナー別リピート率が使えます。</div>`;
+  if (session) html += `<div style="color:var(--red);margin-top:6px;font-size:11px"><i class="ti ti-alert-triangle"></i> アプリのログインを確かめられなかったため、残りの日は取り込んでいません。ログアウトしてログインし直してから、もう一度取り込んでください。</div>`;
+  var nDays = rgRetryDays(_rgLastFailed);
+  if (nDays) html += `<div style="margin-top:8px"><button class="btn btn-secondary btn-sm" id="rg-retry" onclick="doRangeImport('','',1)"><i class="ti ti-refresh"></i> 失敗した日だけ取り込み直す（${nDays}日）</button></div>`;
   if (prog) prog.innerHTML = html;
-  showToast(`期間取り込み完了: ${sumOk}日分`, sumFail?'warning':'success');
+  showToast((onlyFailed ? '取り込み直し完了: ' : '期間取り込み完了: ') + sumOk + '日分', (sumFail || dbError) ? 'warning' : 'success');
   if (btn) { btn.disabled=false; btn.innerHTML='取り込み開始'; }
-  if (!dbError && !ldMissing) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
+  if (!dbError && !ldMissing && !sumFail && !session) setTimeout(()=>{ closeModalDirect(); renderPage('budget'); }, 1800);
   else renderPage('budget');
+  } finally { _rgBusy = false; }
 }
 
 function openGuidModal(storeId) {
@@ -95609,7 +95785,9 @@ function renderWorkCenter(){
   try{ checkCashTipNotify(); }catch(e){}
   var canErr = true;  // G3以上（＋事務）はワークセンターの全項目を閲覧可（エラーセンターの中身は CEO・GM・経理・事務Crew）
   var canAnn = true;
-  var pend = ls('approvals',[]).filter(function(a){return a.status==='pending' && !a.wrq;});   /* v1155：段階 2 の申請はワークセンターの「申請」で数える */
+  var apOff = typeof _apClosed==='function' && _apClosed();   /* v1159：前の承認タブを閉じた（タブを出さない・ワークセンターの申請へ） */
+  if (apOff && workTab==='approval') workTab='wr';
+  var pend = apOff ? [] : ls('approvals',[]).filter(function(a){return a.status==='pending' && !a.wrq;});   /* v1155：段階 2 の申請はワークセンターの「申請」で数える */
   if (['gm','ceo','office','office_crew'].indexOf(curRole)<0) {   /* v1087: 事務Crew にも本部の申請 */
     var _v=getVisibleStores(); var _vi=_v.map(function(x){return x.id;}), _vn=_v.map(function(x){return x.name;});
     pend = pend.filter(function(a){ var st=(typeof _approvalStore==='function')?_approvalStore(a):{id:a.store,name:a.store}; return _vi.indexOf(st.id)>=0 || _vn.indexOf(st.name)>=0; });
@@ -95626,7 +95804,7 @@ function renderWorkCenter(){
     <div class="phase-tab${workTab==='today'?' active':''}" onclick="setWorkTab('today')"><i class="ti ti-sun" style="font-size:12px"></i> 今日</div>
     <div class="phase-tab${workTab==='wr'?' active':''}" onclick="setWorkTab('wr')"><i class="ti ti-clipboard-list" style="font-size:12px"></i> ${t('申請','Requests')}${(typeof wrTabBadge==='function')?wrTabBadge():''}</div>
     <div class="phase-tab${workTab==='chat'?' active':''}" onclick="setWorkTab('chat')"><i class="ti ti-messages" style="font-size:12px"></i> ${t('DM・チャット','Chat')}${(typeof chatTabBadge==='function')?chatTabBadge():''}</div>
-    <div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>
+    ${apOff?'':`<div class="phase-tab${workTab==='approval'?' active':''}" onclick="setWorkTab('approval')"><i class="ti ti-checklist" style="font-size:12px"></i> 承認${pend.length?' <span class="tag tag-red" style="font-size:8px">'+pend.length+'</span>':''}</div>`}
     ${canErr?`<div class="phase-tab${workTab==='error'?' active':''}" onclick="setWorkTab('error')"><i class="ti ti-alert-hexagon" style="font-size:12px"></i> エラー${issues.length?' <span class="tag '+(hi?'tag-red':'tag-yellow')+'" style="font-size:8px">'+issues.length+'</span>':''}</div>`:''}
     ${botCanView()?`<div class="phase-tab${workTab==='bot'?' active':''}" onclick="setWorkTab('bot')"><i class="ti ti-robot"></i> ${t('業務Bot','Operations Bot')}</div>`:''}
     ${canAnn?`<div class="phase-tab${workTab==='announce'?' active':''}" onclick="setWorkTab('announce')"><i class="ti ti-speakerphone" style="font-size:12px"></i> アナウンス</div>`:''}
@@ -101874,9 +102052,12 @@ function renderKpiMaster() {
   <div class="phase-tabs">
     <div class="phase-tab${window._kpiTab==='store'?' active':''}" onclick="window._kpiTab='store';renderPage('kpi_master')"><i class="ti ti-building-store" style="font-size:12px"></i> ${t('目標と実績','Targets & actuals')}</div>
     <div class="phase-tab${window._kpiTab==='manual'?' active':''}" onclick="window._kpiTab='manual';renderPage('kpi_master')"><i class="ti ti-edit" style="font-size:12px"></i> 実績入力/対象指定</div>
+    <div class="phase-tab${window._kpiTab==='google'?' active':''}" onclick="window._kpiTab='google';renderPage('kpi_master')"><i class="ti ti-brand-google" style="font-size:12px"></i> ${t('Google の口コミ','Google reviews')}</div>
   </div>`;
 
   if (window._kpiTab==='manual') return html + renderKpiManualTab();
+  /* v1157（UI案73 の 4）：Google の口コミのつなぎ方と店ごとの設定（決める・つなぐのは GM・CEO） */
+  if (window._kpiTab==='google') return html + ((typeof grTabHtml==='function') ? grTabHtml() : '');
 
   // v1153：店舗 × 月の目標と実績（UI案70）。前の「実績 vs 目標」「目標値の設定」はこの表にまとめた
   html += renderKpi2Store();
@@ -102024,6 +102205,12 @@ function renderKpiManualTab(){
     </div>`;
   } else {
     html += `<div style="font-size:11px;color:var(--muted);margin-bottom:8px"><i class="ti ti-info-circle"></i> 店舗マスターでGoogle/YelpのURLを登録すると、ここから確認リンクが出ます。</div>`;
+  }
+  /* v1157：Business Profile から自動で取っている店・月は Google の 4 つを手入力しない（会議の実績は自動） */
+  var _grAutoM = false; try{ _grAutoM = (typeof grAutoYm==='function') && grAutoYm(sid, k2YmOfPeriod(period)); }catch(e){ _grAutoM = false; }
+  if (_grAutoM) {
+    manKpis = manKpis.filter(m=>['gAvg','gCnt','reviewScore','gTotalCnt'].indexOf(m[0])<0);
+    html += `<div style="font-size:11px;color:var(--green);margin-bottom:8px"><i class="ti ti-brand-google"></i> ${t('Google の口コミ（この月の平均・件数・総合評価）は Business Profile から自動で取っています（KPI設定 › Google の口コミ）','Google reviews (month average, count, overall) are read automatically from Business Profile (KPI settings › Google reviews)')}</div>`;
   }
   manKpis.forEach(m=>{
     html += `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border)">
@@ -106303,7 +106490,9 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       S.me = me.me; S.live = !!me.live; S.rate = me.rate; S.settingsRev = me.settings_rev || 1; S.people = me.people || null;
       S.s2 = !!me.s2; S.s2At = me.s2_at || ''; S.s2By = me.s2_by || ''; S.fn = Number(me.fn) || 0; S.sql = Number(me.sql) || 0;
       setLiveSeen(S.live, me.settings_at, S.s2);
+      s3Seen(me);
       if (S.s2) s2Retry();
+      if (S.s3) s3Import(me);
       if (S.live) await loadList(g);
     })().then(function(){ if (g === S.gen) S.load = 'done'; }, function(e){
       if (g !== S.gen) return;
@@ -106329,13 +106518,13 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.wrSetView = function(v){ if (['todo','mine','team','history'].indexOf(v) < 0) return; S.view = v; S.rows = null; S.sel = {}; reloadList(); rerender(); };
   /* v1154（UI案71 の A 案）：絞り込みを変えたら選択を外す（見えていない申請を承認しないため）。申請した人はこの端末で絞る（読み直さない） */
   W.wrSetFilter = function(k, v){
-    if (k !== 'kind' && k !== 'store' && k !== 'who') return;
+    if (k !== 'kind' && k !== 'store' && k !== 'who' && k !== 'old') return;
     S.flt[k] = v || ''; S.sel = {};
-    if (k === 'who') { rerender(); return; }
+    if (k === 'who' || k === 'old') { rerender(); return; }
     S.rows = null; reloadList(); rerender();
   };
   /* ログインの直後に 1 回だけ「使い始めたか」を見る（前の画面の案内とログインの直後の行き先に使う） */
-  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at, !!(j && j.s2)); if (j && j.s2) s2Retry(); }, function(){}); };
+  W.wrPing = function(){ if (!pinTok()) return; api({ action:'whoami' }).then(function(j){ setLiveSeen(!!(j && j.live), j && j.settings_at, !!(j && j.s2)); s3Seen(j); if (j && j.s2) s2Retry(); if (S.s3) s3Import(j); }, function(){}); };
   W.wrS2Seen = s2Seen;
   W.wrLiveSeen = liveSeen;
   /* v1135（UI案68 の 10B・Moto さん 11/03）：ログインの直後は全員今のまま（ダッシュボードなど）。ワークセンターへは行かない。
@@ -106421,7 +106610,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     h2 += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;font-size:11px">'
       + '<select onchange="wrSetFilter(\'kind\',this.value)"><option value="">' + T('種別：すべて','Kind: all') + '</option>' + kindsAll().map(function(k){ return '<option value="' + k + '"' + (S.flt.kind === k ? ' selected' : '') + '>' + esc(kindL(k)) + '</option>'; }).join('') + '</select>'
       + '<select onchange="wrSetFilter(\'store\',this.value)"><option value="">' + T('店舗：すべて','Store: all') + '</option>' + storeOpts().map(function(s){ return '<option value="' + esc(s) + '"' + (S.flt.store === s ? ' selected' : '') + '>' + esc(storeName(s)) + '</option>'; }).join('') + '</select>'
-      + whoSelect() + '</div>';
+      + whoSelect() + (S.view === 'history' && S.s3 ? '<label style="display:flex;align-items:center;gap:4px"><input type="checkbox"' + (S.flt.old ? ' checked' : '') + ' onchange="wrSetFilter(\'old\',this.checked?\'1\':\'\')">' + T('前の承認タブから','From the old Approvals tab') + '</label>' : '') + '</div>';
     if (S.load === 'err') h2 += '<div class="alert alert-danger" style="font-size:12px">' + esc(S.err) + '</div>';
     if (!S.rows) return h2 + '<div class="card" style="color:var(--muted);font-size:12px">' + T('読み込み中…','Loading…') + '</div>';
     var rows = byWho(S.rows);
@@ -106457,7 +106646,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         var bk2 = bulkOn && bulkOk(r);
         h2 += '<tr style="cursor:pointer' + (bk2 && S.sel[r.id] ? ';background:#fff7f1' : '') + '" data-a="' + esc(r.id) + '" onclick="wrOpen(this.dataset.a)">'
           + (bulkOn ? '<td onclick="event.stopPropagation()" style="text-align:center">' + (bk2 ? '<input type="checkbox" style="width:20px;height:20px" data-a="' + esc(r.id) + '"' + (S.sel[r.id] ? ' checked' : '') + ' aria-label="' + esc(r.code) + '" onchange="wrSel(this.dataset.a,this.checked)">' : '') + '</td>' : '')
-          + '<td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + T('前から','earlier') + '</span>' : '') + '</td>'
+          + '<td>' + esc(kindL(r.kind)) + (r.legacy ? ' <span class="tag" style="font-size:8px">' + (isS3(r) ? T('前の承認タブ','old Approvals tab') : T('前から','earlier')) + '</span>' : '') + '</td>'
           + '<td style="white-space:nowrap">' + esc(r.code) + (r.version > 1 ? ' <span style="color:var(--muted)">' + T('版','v') + r.version + '</span>' : '') + (dup ? '<div><span class="tag tag-yellow" style="font-size:8px">' + T('重複の候補','possible duplicate') + ' ' + r.dup_codes.length + '</span></div>' : '') + '</td>'
           + '<td>' + esc(r.requester_name) + '</td><td>' + useL(r) + '</td><td>' + esc(storeName(r.store_id)) + '</td><td style="text-align:right;white-space:nowrap">' + money(r.amount_cents) + '</td>'
           + '<td>' + tag(r.status, r.kind) + '</td><td>' + nextL(r) + '</td><td style="white-space:nowrap">' + (['paid','done','rejected','withdrawn','applied'].indexOf(r.status) >= 0 ? '' : daysSince(r.updated_at) + T(' 日',' d')) + '</td></tr>';
@@ -106557,6 +106746,97 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     }, function(e){ S.busy = ''; showToast(String(e.message || e), 'error'); if (e.code === 'conflict') W.wrRefresh(); else rerender(); });
   }
 
+  /* ---------------------------------------------------------------- v1159：段階 3（UI案74 の答え：1A・2A・3B・4）
+     ・段階 2 を使っていて、申請のサーバーが段階 3（関数 fn 6・SQL 6）なら、前の「承認」タブ（承認センター）を閉じる（3B：更新したら自動）。
+       この端末が聞いた答えを覚える（S3_KEY・メニューを作るときに使う。ログインのたびに聞き直す）。
+     ・GM・CEO の端末はログインのたびに、前の承認タブの記録のうちまだ写していないもの（承認待ち・2026 年に決まったもの）を写す（1A・2A）。
+       状態・種類・店・申請した人はサーバーが共通データから決める。承認待ちはワークセンターの承認待ちに（前の画面の記録に段階 2 と同じ印）。
+       決まったものは履歴に（読むだけ・4）。前の記録は消さない。 */
+  var S3_KEY = '_wr_s3_v1', s3Mem = null;
+  function s3Seen(me){
+    if (!me || typeof me !== 'object') return;
+    var on = !!(me.live && me.s2 && Number(me.fn) >= 6 && Number(me.sql) >= 6);
+    var was = W.wrS3Seen();
+    s3Mem = on ? '1' : '0'; S.s3 = on;
+    try { if (on) localStorage.setItem(S3_KEY, '1'); else localStorage.removeItem(S3_KEY); } catch(e) {}
+    if (was !== on) { try { if (typeof buildNav === 'function') buildNav(); } catch(e) {} }
+  }
+  W.wrS3Seen = function(){ if (s3Mem != null) return s3Mem === '1'; try { return localStorage.getItem(S3_KEY) === '1'; } catch(e) { return false; } };
+  /* 写す候補：段階 2 の 10 種・段階 2 の印が無い・承認待ちか 2026 年に決まったもの（年はサーバーがもう一度決める） */
+  function s3Year(a){
+    var t = Date.parse(a.decidedAt || '') || Number(a._stT) || 0;
+    if (!t) { var m = /^ap(\d{13})/.exec(String(a.id || '')); t = m ? Number(m[1]) : 0; }
+    return t ? new Date(t - 10 * 3600000).getUTCFullYear() : 0;
+  }
+  function s3Cands(known){
+    var k = {}; (known || []).forEach(function(x){ k[x] = 1; });
+    return (ls('approvals', []) || []).filter(function(a){
+      if (!a || typeof a !== 'object' || a._deleted || !S2_TYPE[a.type] || a.wrq || k[a.id] || !/^ap\d{6,20}$/.test(String(a.id || ''))) return false;
+      if (a.status === 'pending') return true;
+      return ['approved','rejected','withdrawn'].indexOf(a.status) >= 0 && s3Year(a) >= 2026;
+    });
+  }
+  async function s3Import(me){
+    if (S.s3Busy || !me || !me.me || (me.me.role !== 'ceo' && me.me.role !== 'gm')) return;
+    S.s3Busy = 1;
+    var ak = authKey(), tot = { pending:0, history:0 };
+    try {
+      var first = await api({ action:'s3_import', items:[] }, ak);
+      /* #153 の Codex：写したのに答えが届かず、前の記録に印（wrq・wrc）が付かなかったものに付け直す（承認待ちの前の記録だけ） */
+      s3Remark(first.marks);
+      var list = s3Cands(first.known);
+      for (var i = 0; i < list.length; i += 100) {
+        var items = [];
+        list.slice(i, i + 100).forEach(function(a){
+          var kind = S2_TYPE[a.type], store = s2StoreOf(a.store);
+          if (store == null || ((kind === 'budget' || kind === 'plan') && !(typeof a.ym === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(a.ym)))) return;
+          try { items.push({ ap_id:String(a.id), kind:kind, store_id:store, payload:s2Payload(a, kind, store) }); } catch(e) {}
+        });
+        if (!items.length) continue;
+        var j = await api({ action:'s3_import', items:items }, ak);
+        (j.items || []).forEach(function(x){
+          if (x.result === 'pending') { tot.pending++; s2Mark(x.ap_id, { code:x.code }); }
+          else if (x.result === 'history') tot.history++;
+          else if (x.result === 'known' && x.code) s3Remark([{ ap_id:x.ap_id, code:x.code }]);   /* もうあった：印が無ければ付ける */
+        });
+      }
+      S.s3Last = { at:new Date().toISOString(), pending:tot.pending, history:tot.history };
+      if (tot.pending || tot.history) {
+        showToast(T('前の承認タブの記録をワークセンターに写しました：承認待ち ','Copied the old Approvals tab into the Work Center: pending ') + tot.pending + T(' 件・履歴 ',' · history ') + tot.history + T(' 件',''), 'success');
+        if (onWrTab()) { S.rows = null; reloadList(); }
+      }
+    } catch(e) {
+      S.s3Last = { at:new Date().toISOString(), err:String(e && e.message || e) };   /* 次のログインでもう一度（写したものは 2 回は写らない） */
+    } finally { S.s3Busy = 0; }
+  }
+  W._wrS3Import = s3Import;   /* 試験用 */
+  W._wrS3Remark = function(m){ return s3Remark(m); };   /* 試験用 */
+  /* 印を付け直す：前の記録が承認待ちで、まだ印が無い（か別の申請番号の印）ものだけ。書くのは 1 回 */
+  function s3Remark(marks){
+    try {
+      if (!Array.isArray(marks) || !marks.length) return 0;
+      var by = {}; marks.forEach(function(m){ if (m && typeof m.ap_id === 'string' && typeof m.code === 'string' && m.code) by[m.ap_id] = m.code; });
+      var aps = ls('approvals', []) || [], n = 0, t = Date.now();
+      aps.forEach(function(a){
+        if (!a || typeof a !== 'object' || a._deleted || a.status !== 'pending') return;
+        var c = by[String(a.id)]; if (!c || (a.wrq && a.wrc === c)) return;
+        a.wrq = 1; a.wrc = c; a._mut = Math.max(t, (Number(a._mut) || 0) + 1); n++;
+      });
+      if (n) lsSet('approvals', aps);
+      return n;
+    } catch(e) { return 0; }
+  }
+  function s3Note(r, lg){
+    var st = lg.status === 'approved' ? T('承認','approved') : lg.status === 'rejected' ? T('却下','rejected') : lg.status === 'withdrawn' ? T('取り下げ','withdrawn') : T('承認待ち','pending');
+    var h = '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6"><b>' + T('前の承認タブから写した','Copied from the old Approvals tab') + '</b>'
+      + '<div>' + T('前の記録：','Earlier record: ') + esc(st) + (lg.decidedBy ? ' · ' + esc(lg.decidedBy) : '') + (lg.decidedDay ? ' · ' + esc(lg.decidedDay) : '') + (lg.date ? ' · ' + T('申請 ','asked ') + esc(lg.date) : '') + '</div>'
+      + (lg.rejectReason ? '<div>' + T('理由：','Reason: ') + esc(lg.rejectReason) + '</div>' : '')
+      + '<div style="color:var(--muted)">' + (lg.hist === 'true' ? T('前の画面で決まっています（反映済み）。ボタンはありません（もう一度は反映しません）。','Decided on the earlier screen (already applied). No buttons (it is not applied again).')
+        : T('承認すると、今までの画面の決め方で 1 回だけ反映します（段階 2 と同じ）。','Approving applies it once the same way as the earlier screen (as in step 2).'))
+      + (lg.by ? ' ' + T('写した：','Copied by ') + esc(lg.by) + (lg.at ? ' · ' + esc(hstTime(lg.at)) : '') : '') + '</div></div>';
+    return h;
+  }
+
   /* v1155：段階 2 を使い始める／止める（GM・CEO）。使い始める前に「承認」タブに入った申請は「承認」タブのまま（8A：段階 3 で写す） */
   function s2Ready(){ return (S.fn || 0) >= 4 && (S.sql || 0) >= 5; }
   function s2Card(me){
@@ -106603,7 +106883,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '<div style="font-size:18px;font-weight:700;margin-top:2px">' + useL(r) + (EVAL_K[r.kind] || (s2 && r.kind !== 'budget') ? '' : ' ' + money(r.amount_cents)) + '</div>'
       + '<div style="font-size:11px;color:var(--muted);margin-top:2px">' + esc(r.requester_name) + ' · ' + esc(storeName(r.store_id)) + ' · ' + (EVAL_K[r.kind] ? T('対象 ','For ') + esc(evalName(r)) : s2 ? (r.target_name || p.target_name ? T('対象 ','For ') + esc(r.target_name || p.target_name) : esc(p.from_name || '')) : T('利用日 ','Date ') + esc(mdOf(r.use_date))) + ' · ' + T('申請 ','Submitted ') + esc(hstTime(r.submitted_at)) + T('（ハワイ）',' (HST)') + '</div></div>'
       + '<div>' + tag(r.status, r.kind) + '</div></div>';
-    if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。申請した人は、前の画面の名前から決めました（社員 ID の記録はありません）。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”. The requester was matched by the name on the earlier screen (no employee ID was recorded).') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
+    if (r.legacy && lg.src === 'approvals') h += s3Note(r, lg);   /* v1159：前の承認タブから写した（段階 3） */
+    else if (r.legacy) h += '<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#f4f4f4;font-size:11px;line-height:1.6">' + T('前の画面の申請を写したものです。前の画面に残っていた記録のままで、無い記録（承認した人・日時・精算）は「記録なし」と出します。申請した人は、前の画面の名前から決めました（社員 ID の記録はありません）。','Copied from the earlier screen as it was. Missing records (approver, time, payment) show as “no record”. The requester was matched by the name on the earlier screen (no employee ID was recorded).') + (lg.rejectedButPaid ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で「却下」なのに「支払済」になっていました。','It was rejected on the earlier screen but marked paid.') + '</div>' : '')
       + (lg.archivedWhilePending ? '<div style="color:var(--red);margin-top:4px">' + T('前の画面で、申請中のまま月末処理（精算）で締められていました。もう一度精算しないよう「精算済み」で写しています。','It was closed by month-end (settled) while still waiting for approval on the earlier screen. Copied as paid so it is not paid twice.') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.paid && r.status !== 'paid' ? '<div style="color:var(--red);margin-top:4px;font-weight:700">' + T('写したあとに、前の画面で精算済みになっています。二重に払わないでください（精算は「前の画面で精算済み」として記録します）。','It was paid on the earlier screen after the copy. Do not pay it twice (payment is recorded as “paid on the earlier screen”).') + '</div>' : '')
       + (r.legacy_now && r.legacy_now.found && (r.legacy_now.deleted || (r.legacy_now.status && lg.status && r.legacy_now.status !== lg.status)) ? '<div style="color:#7a4a00;margin-top:4px">' + T('写したあとに前の画面で変わりました（今：','Changed on the earlier screen after the copy (now: ') + esc(r.legacy_now.deleted ? T('削除','deleted') : r.legacy_now.status) + '）</div>' : '') + '</div>';
@@ -106662,7 +106943,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('片道マイル','One-way miles'), p.one_way_miles); add(T('往復','Round trip'), p.round_trip ? T('はい','yes') : T('いいえ','no')); add(T('合計マイル × 単価','Miles × rate'), p.miles + ' × $' + p.rate); add(T('メモ','Memo'), p.memo); }
     else if (r.kind === 'reimburse') {
       add(T('支払った人','Paid by'), p.payer + (p.payer_is_employee ? T('（従業員）',' (employee)') : '')); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('用途のメモ','Note'), p.purpose_memo); add(T('メモ','Memo'), p.memo);
-      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+      if (p.receipt && p.receipt.chat_file) o.push([T('領収書','Receipt'), chatRcLink(r)]);   /* v1161（8B）：申請のチャットの写真・PDF */
+      else if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       else o.push([T('領収書','Receipt'), '<span style="color:var(--muted)">' + T('なし','none') + '</span>']);
     } else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); if (p.per_person_cents) o.push([T('1 人あたり','Per person'), money(p.per_person_cents)]); add(T('メモ','Memo'), p.memo); }
     return o;
@@ -106817,7 +107099,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     && (r.kind !== 'budget' || S.seen[r.id] === r.rev); }
   function bgUnseen(r){ return !!r && r.kind === 'budget' && r.status === 'pending' && (r.can || []).indexOf('approve') >= 0 && S.seen[r.id] !== r.rev; }
   W._wrBulkOk = function(r){ return bulkOk(r); };   /* 試験用（決まりを外から確かめる） */
-  function byWho(rows){ var w = S.flt.who; rows = rows || []; return w ? rows.filter(function(r){ return r.requester_name === w; }) : rows; }
+  function byWho(rows){
+    var w = S.flt.who; rows = rows || [];
+    if (S.flt.old && S.view === 'history') rows = rows.filter(isS3);   /* v1159：履歴の「前の承認タブから」 */
+    return w ? rows.filter(function(r){ return r.requester_name === w; }) : rows;
+  }
+  function isS3(r){ return !!(r && r.legacy && r.legacy_info && r.legacy_info.src === 'approvals'); }
   function whoSelect(){
     var seen = {}; (S.rows || []).forEach(function(r){ if (r && r.requester_name) seen[r.requester_name] = 1; });
     var list = Object.keys(seen).sort(); if (S.flt.who && !seen[S.flt.who]) list.unshift(S.flt.who);
@@ -106842,13 +107129,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 添付（建て替え経費の領収書）。開いたかはこの画面のあいだだけ覚える（ログインが変わると消える） */
   function attKeys(r){
     var p = (r && r.payload) || {}, rc = p.receipt || {}; if (!r || r.kind !== 'reimburse') return [];
+    if (typeof rc.chat_file === 'string' && rc.chat_file) return ['c:' + rc.chat_file];
     var path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
     if (typeof path === 'string' && path) return ['p:' + path];
     if (typeof du === 'string' && du) return ['u:' + du];
     return [];
   }
+  /* v1161（8B）：チャットの写真・PDF を領収書にしたもの。開くのはサーバーが確かめる（その申請を見られる人） */
+  function chatRcLink(r){
+    var rc = ((r && r.payload) || {}).receipt || {}, id = String((r && r.id) || ''), f = String(rc.chat_file || '');
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(f)) return '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>';
+    return '<a href="#" data-a="' + esc(id) + '" data-f="' + esc(f) + '" onclick="wrAttSeen(\'c:\'+this.dataset.f);if(window.chatReceiptOpen)chatReceiptOpen(this.dataset.a);return false">'
+      + T('開く','Open') + '</a> <span style="color:var(--muted)">' + (rc.kind === 'pdf' ? T('（チャットの PDF','(chat PDF') : T('（チャットの写真','(chat photo')) + (rc.name ? '：' + esc(rc.name) : '') + T('）',')') + '</span>';
+  }
   function attLink(r){
     var p = (r && r.payload) || {}, rc = p.receipt || {}, path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
+    if (typeof rc.chat_file === 'string' && rc.chat_file) return chatRcLink(r);
     if (typeof path === 'string' && /^[A-Za-z0-9_\-./]+$/.test(path)) return '<a href="#" data-a="' + esc(path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>';
     if (typeof du === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(du)) return '<a href="' + esc(du) + '" target="_blank" rel="noopener" data-a="' + esc(du) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く（Drive）','Open (Drive)') + '</a>';
     return '';
@@ -107132,7 +107428,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<label style="display:block;font-size:11.5px;margin-top:6px"><input id="wrf-emp" type="checkbox"' + (p.payer_is_employee !== false ? ' checked' : '') + '> ' + T('従業員','Employee') + '</label>'
         + inp('vendor', T('支払先（お店）','Vendor'), p.vendor, 'text', 'maxlength="200"') + sel('purpose', T('用途','Purpose'), p.purpose || RB_PURPOSES[0], RB_PURPOSES.map(function(v){ return [v, purposeL(v)]; }))
         + inp('pmemo', T('用途のメモ','Note'), p.purpose_memo, 'text', 'maxlength="600"') + inp('amount', T('金額（$）','Amount ($)'), cents2(p.amount_cents), 'number', 'step="0.01" min="0.01"')
-        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && p.receipt.path ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
+        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && (p.receipt.path || p.receipt.chat_file) ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
         + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
     } else {
       h += inp('date', T('実施日','Date'), p.date || hstToday(), 'date') + inp('dept', T('部門','Dept'), p.dept, 'text', 'maxlength="60"') + inp('project', T('プロジェクト','Project'), p.project, 'text', 'maxlength="200"')
@@ -108300,7 +108596,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      書きかけ・送れなかったメッセージはこのタブのメモリだけ（ログアウト・読み込み直しで消える）。
    ・入り方は PIN のログインの印（window._hwSession）だけ。だれが読める・書けるかはサーバーが決める。店のタブレット（店舗の PIN）は使えない。
    ・3A だれでも DM・グループを作れる／4A 申請のチャットは申請した人・決める人・確かめる人が自動で入る／5A 24 時間まで直せる・消せる・GM・CEO は見えなくできる／
-     7A 知らせはアプリの中だけ（数・自分宛ての @）。添付（6A）は次の段階。
+     7A 知らせはアプリの中だけ（数・自分宛ての @）。
+   ・v1161 添付（UI案75 の答え・11/13「1 B 2 A 3 A 4 A 5 A 6 A 7 A 8 B」）：写真（端末で JPEG にして長い辺 2000px・一覧用 480px）・PDF・Excel・Word・PowerPoint・テキスト。
+     1 回に 5 つ・1 つ 10MB まで。中身は送るまでこのタブのメモリだけ。上げるのはサーバーが出す 1 回だけの上げる先、開く・保存は 5 分だけのリンク（そのつど頼む）。
+     見られる人はだれでも保存できる・本人が消すとファイルも消える・「この会話のファイル」・建て替え経費の申請のチャットでは申請した本人が「申請に付ける」。仕様：docs/CHAT_FILES_V1161_JA.md
    ・「変わった」の合図：表 chat_sig（本人だけが知る印）を Realtime で見る。つながらないときは 60 秒ごと、開いている会話は 20 秒ごと、5 分ごとに全部読み直す。
    ・送る：送信ごとに鍵（client_key）を作る。送れなかったら同じ鍵で送り直す（サーバーで二重にならない）。
    ・Enter は改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送る。日本語の変換中の Enter では送らない。 */
@@ -108308,7 +108607,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   'use strict';
   var W = window, D = document;
   var FN = '/functions/v1/work-requests';
-  var LOOKBACK = 200, FULL_MS = 300000, POLL_OFF = 60000, POLL_OPEN = 20000, BODY_MAX = 2000, GROUP_MAX = 49;
+  var LOOKBACK = 200, FULL_MS = 300000, POLL_OFF = 60000, POLL_OPEN = 20000, BODY_MAX = 2000, GROUP_MAX = 49, REFRESH_PAGES = 4;
   var KIND = { mileage:['ガソリン代','Mileage'], reimburse:['建て替え経費','Reimbursement'], expense_pre:['事前経費','Pre-approval'],
     skill:['スキルレベル','Skill level'], cs:['Career Score','Career Score'], tiprate:['Tip Rate','Tip Rate'], budget:['予算','Budget'], leave:['休暇','Leave'],
     shift:['シフト変更','Shift change'], hire:['採用','Hiring'], resign:['退職','Offboarding'], promo:['Leadership','Leadership'], tip_self:['Tip Rate（本人）','Tip Rate (own)'],
@@ -108328,7 +108627,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     chat_missing:['チャットのサーバー（SQL）がまだ入っていません。Moto さんに知らせてください','The chat database is not set up yet. Tell Moto'],
     unknown_action:['チャットのサーバー（関数 work-requests）が前の版です。v1156 の 1 ファイルにしてください（Moto さんに知らせてください）','The chat server (work-requests) is an earlier version. It needs the v1156 single file (tell Moto)'],
     pin_check_missing:['申請・チャットのサーバー（work-requests）が PIN のログインに対応していません（Moto さんに知らせてください）','The work-requests server does not accept the PIN login (tell Moto)'],
-    network:['チャットのサーバーにつながりません（通信を確かめてください）','Cannot reach the chat server (check the network)']
+    network:['チャットのサーバーにつながりません（通信を確かめてください）','Cannot reach the chat server (check the network)'],
+    /* v1161 添付 */
+    file_type:['付けられない種類です（写真・PDF・Excel・Word・PowerPoint・テキストだけ）','This kind of file cannot be attached (photos, PDF, Excel, Word, PowerPoint and text only)'],
+    file_big:['大きすぎます（1 つ 10MB まで）','Too large (up to 10 MB each)'],
+    file_empty:['空のファイルは付けられません','An empty file cannot be attached'],
+    file_bad:['ファイルの中身が名前と合いません（名前だけ変えたものなど）。消して、元のファイルを付け直してください','The file content does not match its name. Discard it and attach the original file'],
+    file_missing:['ファイルを上げきれませんでした。もう一度送ってください','The file did not finish uploading. Send again'],
+    file_many:['送っていないファイルが多すぎます（1 日 30 まで）。少し待ってからにしてください','Too many unsent files (up to 30 a day). Try again later'],
+    files_missing:['添付のサーバー（SQL）がまだ入っていません。文字のメッセージは送れます（Moto さんに知らせてください）','Attachments are not set up on the server yet. Text messages still work (tell Moto)'],
+    files_old:['添付は、チャットのサーバー（関数 work-requests）が v1161 になってから使えます。文字のメッセージは送れます','Attachments work once the chat server (work-requests) is v1161. Text messages still work'],
+    upload:['ファイルを上げられませんでした（通信を確かめて、もう一度送ってください）','The file could not be uploaded (check the network and send again)'],
+    storage:['ファイルの置き場所につながりませんでした。もう一度押してください','Could not reach the file storage. Try again'],
+    photo_read:['この写真を読めませんでした（JPEG か PNG で付けてください）','This photo could not be read (attach a JPEG or PNG)'],
+    not_live:['ワークセンターの申請がまだ始まっていません','Work Center requests have not started yet']
   };
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
   function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -108350,7 +108662,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function fresh(gen){ return { tok:null, gen:gen || 0, me:'', role:'', token:'', st:'', err:'', errCode:'',
     threads:{}, cursor:0, unread:0, mention:0, lastSync:0, lastFull:0, syncing:false, again:'', painted:'',
     seg:'all', q:'', open:'', paneFor:null, msgs:{}, out:{}, drafts:{}, ment:{}, people:null, peopleSt:'', at:null, atSt:'',
-    rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null }; }
+    rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null,
+    att:{}, furl:{}, fneed:{}, fbusy:false, flist:null, view:null, rkey:{} }; }
   var C = fresh(0);
   W._chatState = function(){ return C; };
 
@@ -108386,6 +108699,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try{ if (C.timer) clearInterval(C.timer); }catch(e){}
     try{ if (C.sigT) clearTimeout(C.sigT); }catch(e){}
     try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    freeAll();   /* v1161：付けた写真の小さい絵（このタブのメモリ）も残さない */
     C = fresh(C.gen + 1);
   };
   function onVis(){ if (!D.hidden) { syncNow(false); markRead(); } }
@@ -108436,7 +108750,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       if (!first && old && (Number(r.mention) || 0) > (Number(old.mention) || 0) && !(C.open === r.id && visible() && !D.hidden)) toast('@ ' + T('あなた宛て：','To you: ') + titleOf(r));
       if (C.open === r.id && old && old.chg !== r.chg) loadMsgs(r.id, 'latest');
     });
-    (j.gone || []).forEach(function(id){ delete C.threads[id]; if (seen) seen[id] = 1; if (C.open === id) closeOpen(errText('not_found')); });
+    (j.gone || []).forEach(function(id){ delete C.threads[id]; delete C.msgs[id]; if (seen) seen[id] = 1; if (C.open === id) closeOpen(errText('not_found')); });
     C.cursor = Math.max(C.cursor, Number(j.cursor) || 0);
     C.unread = Number(j.unread) || 0; C.mention = Number(j.mention) || 0;
     if (j.token && j.token !== C.token) { unsubscribe(); C.token = j.token; }
@@ -108456,12 +108770,45 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function unsubscribe(){ try{ if (C.ch && typeof _rtClient !== 'undefined' && _rtClient) _rtClient.removeChannel(C.ch); }catch(e){} C.ch = null; C.rt = false; }
 
   /* ---------------------------------------------------------------- 会話 */
-  function newMsgs(){ return { list:[], older:false, members:[], can:{}, st:'', err:'', busy:false, again:false, once:false, reading:0 }; }
+  function newMsgs(){ return { list:[], older:false, members:[], can:{}, st:'', err:'', busy:false, again:false, once:false, reading:0, ep:0 }; }
   function closeOpen(msg){ if (!C.open) return; C.open = ''; if (msg && visible()) toast(msg, 'warn'); }
   function mergeMsgs(m, arr){
     var by = {}; m.list.forEach(function(x){ by[x.seq] = x; });
     arr.forEach(function(x){ if (x && x.seq != null) by[x.seq] = x; });
     m.list = Object.keys(by).map(function(k){ return by[k]; }).sort(function(a, b){ return a.seq - b.seq; });
+  }
+  /* 番号 lo〜hi（どちらも含む）の写しを、サーバーから届いたものに置き換える（届かなかった＝読めなくなったものは消す）。
+     Codex #150（issuecomment 6870029872）P2-2：前は足すだけだったので、見えなくした・直した・消したことが前のページに届かなかった */
+  function putRange(m, arr, lo, hi){
+    m.list = m.list.filter(function(x){ return x.seq < lo || x.seq > hi; });
+    mergeMsgs(m, arr);
+  }
+  function cutBelow(m, lo){ m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = true; }
+  /* 開いている会話で、最新のページより前に読んだページも取り直す（100 件ずつ・REFRESH_PAGES まで）。
+     それより前・取れなかったページの写しは捨てる（「さらに読む」でサーバーから取り直す）。この中では失敗を投げない */
+  function refreshBelow(tid, m, g, lo, pages, ep){
+    if (!m.list.length || m.list[0].seq >= lo) return Promise.resolve();
+    if (pages >= REFRESH_PAGES) { cutBelow(m, lo); return Promise.resolve(); }
+    return api({ action:'chat_messages', thread:tid, limit:100, before:lo }).then(function(j){
+      if (g !== C.gen || m.ep !== ep) return;   /* #152 の Codex：待つあいだに写しを捨てた（freshCache）なら、古いページを戻さない */
+      var arr = j.messages || [];
+      if (!arr.length) { m.list = m.list.filter(function(x){ return x.seq >= lo; }); m.older = false; return; }
+      putRange(m, arr, arr[0].seq, lo - 1);
+      m.older = !!j.older;
+      if (!j.older) { m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; }); return; }
+      return refreshBelow(tid, m, g, arr[0].seq, pages + 1, ep);
+    }, function(){ if (g === C.gen && m.ep === ep) cutBelow(m, lo); });
+  }
+  /* 閉じていたあいだに会話が変わっていたら、前の写しは出さない（見えなくした本文を一瞬でも出さない）。開くときに読み直す */
+  function freshCache(tid){
+    var m = C.msgs[tid], r = C.threads[tid];
+    if (!m) return;
+    /* Codex（#154 6875910941）：写しが空でも、最初の読み込みのとちゅうなら世代を進める（その答えは使わずに読み直す） */
+    if (!m.list.length) { if (m.busy) { m.ep = (m.ep || 0) + 1; m.again = true; } return; }
+    if (r && m.chg != null && String(r.chg) === String(m.chg)) return;
+    /* #152 の Codex：写しの世代を進める。読み込みのとちゅうの答え（前の世代）はあとで届いても使わず、読み直す */
+    m.ep = (m.ep || 0) + 1; if (m.busy) m.again = true;
+    m.list = []; m.older = false; m.once = false; m.painted = false; m.st = ''; m.reading = 0;
   }
   function dropSent(tid){
     var m = C.msgs[tid], o = C.out[tid]; if (!m || !o || !o.length) return;
@@ -108472,18 +108819,37 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var m = C.msgs[tid] || (C.msgs[tid] = newMsgs());
     if (m.busy) { if (mode !== 'older') m.again = true; return; }
     m.busy = true; if (!m.list.length) m.st = 'loading';
-    var g = C.gen, p = { action:'chat_messages', thread:tid, limit:100 };
-    if (mode === 'older' && m.list.length) p.before = m.list[0].seq;
+    var g = C.gen, ep = m.ep || 0, p = { action:'chat_messages', thread:tid, limit:100 };
+    var older = mode === 'older' && m.list.length > 0;
+    if (older) p.before = m.list[0].seq;
+    var top0 = m.list.length ? m.list[m.list.length - 1].seq : 0;
     api(p).then(function(j){
       if (g !== C.gen) return;
+      if ((m.ep || 0) !== ep) { m.again = true; return; }   /* #152 の Codex：前の世代の写しの答えは使わない（下の then で読み直す） */
       m.members = j.members || []; m.can = { add:!!j.can_add, rename:!!j.can_rename, leave:!!j.can_leave, remove:!!j.can_remove };
       if (j.thread) C.threads[tid] = Object.assign({}, C.threads[tid] || {}, j.thread);
-      mergeMsgs(m, j.messages || []); dropSent(tid);
-      if (mode === 'older' || !m.once) m.older = !!j.older;
+      var arr = j.messages || [], more = null;
+      if (older) {
+        /* 待っているあいだに写しが変わった（捨てた・読み直した）なら、このページは使わない（間が抜けないように） */
+        if (m.list.length && m.list[0].seq === p.before) { mergeMsgs(m, arr); m.older = !!j.older; }
+      } else {
+        /* 最新のページ：その範囲の写しを置き換える。届いたあとに足したもの（top0 より後）は残す */
+        if (arr.length) putRange(m, arr, arr[0].seq, arr[arr.length - 1].seq);
+        else m.list = m.list.filter(function(x){ return x.seq > top0; });
+        m.older = !!j.older;
+        if (j.thread && j.thread.chg != null) m.chg = j.thread.chg;
+        if (arr.length) {
+          if (!j.older) m.list = m.list.filter(function(x){ return x.seq >= arr[0].seq; });
+          else more = refreshBelow(tid, m, g, arr[0].seq, 0, ep);
+        }
+      }
+      dropSent(tid);
       m.once = true; m.st = 'ok'; m.err = '';
+      return more;
     }, function(e){
       if (g !== C.gen) return;
       if (e.code === 'not_found') { delete C.threads[tid]; delete C.msgs[tid]; if (C.open === tid) closeOpen(errText('not_found')); m.busy = false; paintAll(); return; }
+      if ((m.ep || 0) !== ep) { m.again = true; return; }
       m.st = m.list.length ? 'ok' : 'err'; m.err = e.message;
     }).then(function(){
       if (g !== C.gen || !C.msgs[tid]) return;
@@ -108513,7 +108879,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* ---------------------------------------------------------------- 開く・行き先 */
   function visible(){ return !!D.getElementById('chat-root'); }
   W.chatGo = function(tid){
-    if (tid) { C.open = tid; C.msgs[tid] = C.msgs[tid] || newMsgs(); }
+    if (tid) { C.open = tid; C.msgs[tid] = C.msgs[tid] || newMsgs(); freshCache(tid); }
     var inWc = false; try { inWc = curPage === 'tasks'; } catch(e){}
     try { if (inWc) { workTab = 'chat'; renderPage('tasks'); } else go('chat'); } catch(e){}
     if (tid) loadMsgs(tid, 'latest');
@@ -108521,7 +108887,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatOpen = function(tid){
     if (!C.threads[tid]) return;
     C.open = tid; closePop();
-    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); m.painted = !!m.list.length;
+    var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); freshCache(tid); m.painted = !!m.list.length;
     paintAll(); scrollBottom();
     loadMsgs(tid, 'latest');
   };
@@ -108544,29 +108910,48 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   W.chatSend = function(){
     var tid = C.open, ta = D.getElementById('chat-ta'); if (!tid || !ta) return;
-    var body = String(ta.value || '');
-    if (!body.trim()) return;
+    var body = String(ta.value || ''), att = C.att[tid] || [];
+    if (att.some(function(a){ return a.st !== 'ready'; })) { toast(T('写真を縮めています。少し待ってから送ってください','Still resizing the photos. Send in a moment'), 'warn'); return; }
+    if (!body.trim() && !att.length) return;
     if (body.trim().length > BODY_MAX) { toast(T('2,000 字までです（今 ','Up to 2,000 characters (now ') + body.trim().length + T(' 字）',')'), 'warn'); return; }
-    var o = { key:newKey(), body:body.trim(), mentions:mentionsFor(tid, body), st:'sending', err:'', code:'', at:new Date().toISOString() };
+    var o = { key:newKey(), body:body.trim(), mentions:mentionsFor(tid, body), files:att.slice(), st:'sending', err:'', code:'', prog:'', at:new Date().toISOString() };
     (C.out[tid] || (C.out[tid] = [])).push(o);
+    C.att[tid] = [];
     ta.value = ''; C.drafts[tid] = ''; C.ment[tid] = {}; grow(ta); closePop();
-    paintPane('bottom');
+    paintPane('bottom'); paintComp();
     sendOut(tid, o);
     try { ta.focus(); } catch(e){}
   };
+  /* 送る（ファイルがあれば先に上げる）。答えが届かなくても同じ鍵（メッセージ・ファイルごと）で送り直すので、サーバーでは 1 つ */
   function sendOut(tid, o){
-    var g = C.gen; o.st = 'sending'; o.err = ''; o.code = '';
-    api({ action:'chat_send', thread:tid, body:o.body, mentions:o.mentions, client_key:o.key }).then(function(msg){
+    var g = C.gen, files = o.files || []; o.st = 'sending'; o.err = ''; o.code = '';
+    var once = function(retried){
+      return (files.length ? upFiles(tid, o, g) : Promise.resolve([])).then(function(ids){
+        if (g !== C.gen) throw mk('signin_changed');
+        var p = { action:'chat_send', thread:tid, body:o.body, mentions:o.mentions, client_key:o.key };
+        if (ids.length) p.files = ids;
+        return api(p);
+      }).catch(function(e){
+        /* 上げたものが置き場所に無い（途中で切れた）：1 回だけ上げ直す */
+        if (e && e.code === 'file_missing' && !retried && g === C.gen) { files.forEach(function(a){ a.done = false; }); return once(true); }
+        throw e;
+      });
+    };
+    once(false).then(function(msg){
       if (g !== C.gen) return;
       var arr = C.out[tid] || [], i = arr.indexOf(o); if (i >= 0) arr.splice(i, 1);
+      /* 付けた写真の小さい絵は、このタブではそのまま使う（読み直さない）。中身はもう持たない */
+      (msg.files || []).forEach(function(f){ var a = files.find(function(x){ return x.id === f.id; }); if (a && a.local) { C.furl['t:' + f.id] = { url:a.local, at:Date.now(), local:true }; a.local = ''; } });
+      files.forEach(function(a){ a.blob = null; a.thumb = null; freeLocal(a); });
       var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); mergeMsgs(m, [msg]);
       var r = C.threads[tid];
       if (r) { r.last_seq = Math.max(Number(r.last_seq) || 0, msg.seq); r.last_read = Math.max(Number(r.last_read) || 0, msg.seq); r.last_at = msg.at;
-        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:String(msg.body || '').replace(/\s+/g, ' ').slice(0, 80), at:msg.at }; }
+        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), at:msg.at }; }
       if (C.open === tid) paintPane('bottom'); paintList();
     }, function(e){
       if (g !== C.gen) return;
-      o.st = 'failed'; o.err = e.message; o.code = e.code || '';
+      o.st = 'failed'; o.prog = ''; o.code = e.code || '';
+      o.err = files.length && e.code === 'unknown_action' ? errText('files_old') : e.message;
       if (C.open === tid) paintPane('keep');
     });
   }
@@ -108576,7 +108961,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     arr.splice(arr.indexOf(o), 1);
     var ta = D.getElementById('chat-ta');
     if (ta && C.open === tid && !String(ta.value || '').trim()) { ta.value = o.body; C.drafts[tid] = o.body; grow(ta); }   /* 入力欄が空なら戻す（直して送れるように） */
-    paintPane('keep');
+    /* 付けていたファイルも、付ける欄が空なら戻す（新しい鍵で）。中身が名前と合わなかったもの（file_bad）は戻さない */
+    var fl = o.files || [];
+    if (fl.length && o.code !== 'file_bad' && !(C.att[tid] || []).length && fl.every(function(a){ return a.blob; })) {
+      C.att[tid] = fl.map(function(a){ return Object.assign({}, a, { key:newKey(), id:'', done:false }); });
+    } else fl.forEach(freeLocal);
+    paintPane('keep'); paintComp();
   };
 
   /* ---------------------------------------------------------------- 入力欄（改行・送信・@） */
@@ -108676,7 +109066,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var x = findMsg(id); if (!x || !x.can_edit) return;
     C.dlg = { kind:'edit', id:id, tid:C.open, busy:false, err:'' };
     openModal('<div id="chat-dlg" style="width:100%"><div class="modal-title">' + T('メッセージを直す','Edit message') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('送ってから 24 時間まで直せます。「編集済み」と出ます。','You can edit for 24 hours after sending. It shows “edited”.') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('送ってから 24 時間まで直せます。「編集済み」と出ます。','You can edit for 24 hours after sending. It shows “edited”.') + ((x.files || []).length ? T('ファイルはそのまま（文は空にもできます）。',' The files stay (the text may be empty).') : '') + '</div>'
       + '<textarea id="chat-edit-ta" class="form-input" rows="5" maxlength="' + BODY_MAX + '" style="width:100%">' + esc(x.body || '') + '</textarea>'
       + '<div id="chat-dlg-err"></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button>'
       + '<button class="btn btn-primary" id="chat-dlg-ok" onclick="chatEditSave()">' + T('保存','Save') + '</button></div></div>');
@@ -108691,13 +109081,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatEditSave = function(){
     var d = C.dlg, ta = D.getElementById('chat-edit-ta'); if (!d || d.kind !== 'edit' || !ta) return;
     var body = String(ta.value || '').trim(), x = findMsg(d.id);
-    if (!body) { var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(T('空にはできません（消すときは「消す」）','It cannot be empty (use Delete)')) + '</div>'; return; }
+    if (!body && !(x && x.files && x.files.length)) { var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(T('空にはできません（消すときは「消す」）','It cannot be empty (use Delete)')) + '</div>'; return; }
     var keep = ((x && x.mentions) || []).filter(function(emp){ var n = nameOf(emp); return n && body.indexOf('@' + n) >= 0; });
     dlgRun({ action:'chat_edit', id:d.id, body:body, mentions:keep });
   };
   W.chatDelete = function(id){
     var x = findMsg(id); if (!x || !x.can_delete) return;
-    if (!confirm(T('このメッセージを消しますか？（「削除されました」と残ります。元に戻せません）','Delete this message? (“Deleted” stays. This cannot be undone)'))) return;
+    var nf = (x.files || []).length;
+    if (!confirm(nf ? T('このメッセージを消しますか？付けたファイル（','Delete this message? Its files (') + nf + T(' つ）もサーバーから消えます（申請の領収書にしたものは申請に残ります）。元に戻せません',') are removed from the server too (a request receipt stays with the request). This cannot be undone')
+      : T('このメッセージを消しますか？（「削除されました」と残ります。元に戻せません）','Delete this message? (“Deleted” stays. This cannot be undone)'))) return;
     var tid = C.open, g = C.gen;
     api({ action:'chat_delete', id:id }).then(function(msg){ if (g === C.gen) msgDone(tid, msg); }, function(e){ if (g === C.gen) toast(e.message, 'error'); });
   };
@@ -108866,6 +109258,336 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     memRun({ action:'chat_rename', thread:s.tid, title:s.title, expect_rev:Number(r.rev) || 1 }, function(row){ C.threads[s.tid] = Object.assign({}, C.threads[s.tid] || {}, row); toast(T('名前を変えました','Renamed'), 'success'); drawMem(); paintAll(); });
   };
 
+  /* ---------------------------------------------------------------- 添付（v1161・UI案75：1B 種類・2A 写真は縮める・3A 5 つ・10MB・4A だれでも保存・5A 消すとファイルも・7A この会話のファイル・8B 申請に付ける）
+     中身は送るまでこのタブのメモリだけ（localStorage・IndexedDB に書かない）。サーバーへは 1 回だけ使える上げる先へ直接 PUT（関数が出す）。
+     開く・保存は 5 分だけのリンクをそのつど頼む。見られるか・消えたかはサーバーが決める */
+  var FILE_MAX = 5, FILE_SIZE = 10485760, EDGE = 2000, THUMB_EDGE = 480, URL_MS = 240000, THUMB_BATCH = 30;
+  var FILE_EXTS = { jpg:'photo', pdf:'pdf', xlsx:'sheet', xls:'sheet', csv:'sheet', docx:'doc', doc:'doc', pptx:'slide', ppt:'slide', txt:'text' };
+  var PHOTO_EXTS = { jpg:1, jpeg:1, jpe:1, png:1, heic:1, heif:1, webp:1, gif:1 };
+  var FICON = { photo:'ti-photo', pdf:'ti-file-type-pdf', sheet:'ti-file-spreadsheet', doc:'ti-file-text', slide:'ti-presentation', text:'ti-file-text' };
+  var ACCEPT = 'image/*,.pdf,.xlsx,.xls,.csv,.docx,.doc,.pptx,.ppt,.txt';
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  function extOf(name){ var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+  /* 前の版の関数（添付を知らない）なら、そう言う */
+  function fErr(e){ return e && e.code === 'unknown_action' ? errText('files_old') : (e && e.message) || errText(''); }
+  function sizeL(n){ n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.max(1, Math.round(n / 1024)) + ' KB' : n + ' B'; }
+  function filesLabel(fs){
+    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, ot = fs.length - ph;
+    if (ph && !ot) return T('写真 ' + ph + ' 枚', ph + ' photo' + (ph > 1 ? 's' : ''));
+    if (!ph && ot === 1) return T('ファイル「' + (fs[0].name || '') + '」', 'File “' + (fs[0].name || '') + '”');
+    if (!ph && ot > 1) return T('ファイル ' + ot + ' 個', ot + ' files');
+    return ph ? T('写真 ' + ph + ' 枚・ファイル ' + ot + ' 個', ph + ' photos, ' + ot + ' files') : '';
+  }
+  /* 種類を決める（写真は端末で JPEG に縮めるので、名前も .jpg に） */
+  W.chatFileClass = function(file){
+    if (!file) return { err:'file_type' };
+    var e = extOf(file.name), ty = String(file.type || '').toLowerCase();
+    if (PHOTO_EXTS[e] || (!FILE_EXTS[e] && /^image\//.test(ty))) return { ext:'jpg', kind:'photo', name:(String(file.name || '').replace(/\.[A-Za-z0-9]{1,5}$/, '').slice(0, 100) || 'photo') + '.jpg' };
+    if (!FILE_EXTS[e]) return { err:'file_type' };
+    if (!(Number(file.size) > 0)) return { err:'file_empty' };
+    if (file.size > FILE_SIZE) return { err:'file_big' };
+    return { ext:e, kind:FILE_EXTS[e], name:String(file.name || 'file').slice(-120) };
+  };
+  /* 写真を縮める（長い辺 2000px と 480px の JPEG）。向きは写真の情報どおり。透明なところは白に */
+  async function decodeImg(file){
+    if (typeof createImageBitmap === 'function') {
+      try { return await createImageBitmap(file, { imageOrientation:'from-image' }); } catch(e){ try { return await createImageBitmap(file); } catch(e2){} }
+    }
+    return await new Promise(function(res, rej){
+      var u = '', im;
+      try { u = W.URL.createObjectURL(file); im = new Image(); } catch(e){ rej(mk('photo_read')); return; }
+      im.onload = function(){ res(im); setTimeout(function(){ try{ W.URL.revokeObjectURL(u); }catch(e){} }, 0); };
+      im.onerror = function(){ try{ W.URL.revokeObjectURL(u); }catch(e){} rej(mk('photo_read')); };
+      im.src = u;
+    });
+  }
+  function drawJpeg(src, edge, q){
+    var w0 = src.width || src.naturalWidth || 0, h0 = src.height || src.naturalHeight || 0;
+    if (!w0 || !h0) return Promise.reject(mk('photo_read'));
+    var k = Math.min(1, edge / Math.max(w0, h0)), w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+    var cv = D.createElement('canvas'); cv.width = w; cv.height = h;
+    var cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h); cx.drawImage(src, 0, 0, w, h);
+    return new Promise(function(res, rej){ cv.toBlob(function(b){ if (b) res({ blob:b, w:w, h:h }); else rej(mk('photo_read')); }, 'image/jpeg', q); });
+  }
+  W._chatShrink = async function(file){
+    var src = await decodeImg(file);
+    try {
+      var big = await drawJpeg(src, EDGE, 0.85);
+      if (big.blob.size > FILE_SIZE) big = await drawJpeg(src, EDGE, 0.6);
+      var th = await drawJpeg(src, THUMB_EDGE, 0.72);
+      return { blob:big.blob, w:big.w, h:big.h, thumb:th.blob };
+    } finally { try { if (src && src.close) src.close(); } catch(e){} }
+  };
+  function freeLocal(a){ try { if (a && a.local && W.URL && W.URL.revokeObjectURL) W.URL.revokeObjectURL(a.local); } catch(e){} if (a) a.local = ''; }
+  function freeAll(){
+    try {
+      Object.keys(C.att).forEach(function(t){ (C.att[t] || []).forEach(freeLocal); });
+      Object.keys(C.out).forEach(function(t){ (C.out[t] || []).forEach(function(o){ (o.files || []).forEach(freeLocal); }); });
+      Object.keys(C.furl).forEach(function(k){ var u = C.furl[k]; if (u && u.local) freeLocal({ local:u.url }); });
+    } catch(e){}
+  }
+  W.chatPickFiles = function(input){
+    var tid = C.open; if (!tid || !input) return;
+    var files = Array.prototype.slice.call(input.files || []);
+    try { input.value = ''; } catch(e){}
+    if (files.length) addFiles(tid, files);
+  };
+  function addFiles(tid, files){
+    var list = C.att[tid] || (C.att[tid] = []), g = C.gen, over = 0, bad = {};
+    files.forEach(function(f){
+      if (list.length >= FILE_MAX) { over++; return; }
+      var c = W.chatFileClass(f);
+      if (c.err) { bad[c.err] = (bad[c.err] || 0) + 1; return; }
+      var a = { key:newKey(), name:c.name, ext:c.ext, kind:c.kind, size:Number(f.size) || 0, st:c.kind === 'photo' ? 'prep' : 'ready', blob:c.kind === 'photo' ? null : f,
+        thumb:null, w:null, h:null, id:'', done:false, local:'' };
+      list.push(a);
+      if (a.kind === 'photo') shrinkOne(tid, a, f, g);
+    });
+    if (over) toast(T('1 回に付けられるのは 5 つまでです（' + over + ' つは付けていません）', 'Up to 5 at a time (' + over + ' not added)'), 'warn');
+    Object.keys(bad).forEach(function(k){ toast(errText(k) + (bad[k] > 1 ? '（' + bad[k] + '）' : ''), 'warn'); });
+    paintComp();
+  }
+  function shrinkOne(tid, a, f, g){
+    Promise.resolve().then(function(){ return W._chatShrink(f); }).then(function(r){
+      if (g !== C.gen) return;
+      if (!r || !r.blob || !(r.w > 0) || !(r.h > 0)) throw mk('photo_read');
+      if (r.blob.size > FILE_SIZE) throw mk('file_big');
+      a.blob = r.blob; a.thumb = r.thumb || null; a.w = Math.round(r.w); a.h = Math.round(r.h); a.size = r.blob.size; a.st = 'ready';
+      try { if (a.thumb && W.URL && W.URL.createObjectURL) a.local = W.URL.createObjectURL(a.thumb); } catch(e){}
+      paintComp();
+    }).catch(function(e){
+      if (g !== C.gen) return;
+      var list = C.att[tid] || [], i = list.indexOf(a); if (i >= 0) list.splice(i, 1);
+      toast(a.name + '：' + (e && e.code ? e.message : errText('photo_read')), 'warn');
+      paintComp();
+    });
+  }
+  W.chatUnattach = function(key){
+    var tid = C.open, list = C.att[tid] || [], a = list.find(function(x){ return x.key === key; }); if (!a) return;
+    list.splice(list.indexOf(a), 1); freeLocal(a); paintComp();
+  };
+  function trayHtml(tid){
+    return (C.att[tid] || []).map(function(a){
+      var pic = a.kind === 'photo' && /^blob:/.test(a.local) ? '<img src="' + esc(a.local) + '" alt="">' : '<i class="ti ' + (FICON[a.kind] || 'ti-file') + '"></i>';
+      return '<div class="chat-att"><span class="chat-att-pic">' + pic + '</span><span class="chat-att-main"><b>' + esc(a.name) + '</b><span>' + (a.st === 'prep' ? T('縮めています…','Resizing…') : esc(sizeL(a.size))) + '</span></span>'
+        + '<button class="chat-att-x" title="' + esc(T('外す','Remove')) + '" onclick="chatUnattach(\'' + esc(a.key) + '\')">×</button></div>';
+    }).join('');
+  }
+  function paintComp(){ var el = D.getElementById('chat-tray'); if (!el) return; el.innerHTML = trayHtml(C.open); el.style.display = (C.att[C.open] || []).length ? '' : 'none'; }
+
+  /* 上げる：サーバーが出した上げる先（この Supabase の Storage だけ）へ。もう上がっていれば（答えが届かなかった 1 回目）そのまま次へ */
+  async function putFile(url, blob, mime){
+    if (typeof url !== 'string' || url.indexOf(SUPABASE_URL + '/storage/v1/object/upload/sign/') !== 0 || !blob) throw mk('upload');
+    var r, t = '';
+    try { r = await fetch(url, { method:'PUT', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':mime || 'application/octet-stream', 'x-upsert':'false', 'cache-control':'max-age=3600' }, body:blob }); }
+    catch(e) { throw mk('network'); }
+    if (r.ok) return;
+    try { t = await r.text(); } catch(e){}
+    if (r.status === 409 || /Duplicate|already exists/i.test(t)) return;
+    throw mk(r.status === 413 || /too large|maximum allowed size/i.test(t) ? 'file_big' : 'upload', r.status);
+  }
+  async function upFiles(tid, o, g){
+    var ids = [];
+    for (var i = 0; i < o.files.length; i++) {
+      var a = o.files[i];
+      if (!a.done) {
+        o.prog = (i + 1) + '/' + o.files.length; if (C.open === tid) paintPane('keep');
+        var q = { action:'chat_file_start', thread:tid, client_key:a.key, name:a.name, ext:a.ext, size:a.size };
+        if (a.kind === 'photo') { q.w = a.w; q.h = a.h; }
+        var s = await api(q);
+        if (g !== C.gen) throw mk('signin_changed');
+        a.id = s.id;
+        if (s.status === 'bad') throw mk('file_bad');
+        if (s.status === 'up') {
+          if (s.upload) await putFile(s.upload.url, a.blob, s.mime);
+          if (s.thumb_upload) await putFile(s.thumb_upload.url, a.thumb, 'image/jpeg');
+        }
+        if (g !== C.gen) throw mk('signin_changed');
+        a.done = true;
+      }
+      ids.push(a.id);
+    }
+    o.prog = '';
+    return ids;
+  }
+
+  /* 見る：小さい写真は 30 ずつまとめてリンクを頼む（4 分で頼み直す）。送った写真はこのタブの絵をそのまま使う */
+  function turl(id){ var u = C.furl['t:' + id]; return u && (u.local || Date.now() - u.at < URL_MS) ? (u.url || '') : ''; }
+  function needThumb(id){ if (!UUID.test(String(id || ''))) return; var u = C.furl['t:' + id]; if (u && (u.local || Date.now() - u.at < URL_MS)) return; C.fneed[id] = 1; }
+  function fetchThumbs(){
+    if (C.fbusy || !canUse()) return;
+    var ids = Object.keys(C.fneed).slice(0, THUMB_BATCH); if (!ids.length) return;
+    ids.forEach(function(id){ delete C.fneed[id]; });
+    C.fbusy = true;
+    var g = C.gen;
+    api({ action:'chat_file_url', ids:ids, thumb:true }).then(function(j){
+      if (g !== C.gen) return;
+      var now = Date.now();
+      ids.forEach(function(id){ C.furl['t:' + id] = { url:'', at:now }; });   /* 開けないもの（消えた・見えなくなった）は 4 分は頼まない */
+      (j.items || []).forEach(function(x){ if (x && UUID.test(String(x.id || '')) && typeof x.url === 'string' && /^https:\/\//.test(x.url)) C.furl['t:' + x.id] = { url:x.url, at:now }; });
+      showThumbs(ids);
+    }, function(){ /* 次に描くときにもう一度 */ }).then(function(){
+      if (g !== C.gen) return;
+      C.fbusy = false;
+      if (Object.keys(C.fneed).length) fetchThumbs();
+    });
+  }
+  function showThumbs(ids){
+    if (typeof D.querySelectorAll === 'function') {
+      ids.forEach(function(id){ var u = turl(id); if (!u) return; try { Array.prototype.forEach.call(D.querySelectorAll('img[data-cf="' + id + '"]'), function(im){ if (im.getAttribute('src') !== u) im.setAttribute('src', u); }); } catch(e){} });
+      return;
+    }
+    if (C.open) paintPane('keep');
+    drawFlist();
+  }
+  function filesHtml(tid, x){
+    var fs = x.files || [], ph = fs.filter(function(f){ return f.kind === 'photo'; }), ot = fs.filter(function(f){ return f.kind !== 'photo'; }), h = '';
+    if (ph.length) {
+      h += '<div class="chat-ph' + (ph.length === 1 ? ' one' : '') + '">' + ph.map(function(f){
+        needThumb(f.id);
+        var u = turl(f.id), w = Math.round(Number(f.w) || 0), hh = Math.round(Number(f.h) || 0);
+        var ar = ph.length === 1 && w > 0 && hh > 0 ? ' style="aspect-ratio:' + w + '/' + hh + '"' : '';
+        return '<button class="chat-ph-i"' + ar + ' onclick="chatFileOpen(\'' + esc(f.id) + '\')" title="' + esc(f.name || '') + '"><img data-cf="' + esc(f.id) + '" alt=""' + (u ? ' src="' + esc(u) + '"' : '') + '>'
+          + (f.req ? '<span class="chat-ph-tag">' + T('申請に付けた','On the request') + '</span>' : '') + '</button>';
+      }).join('') + '</div>';
+    }
+    ot.forEach(function(f){
+      h += '<div class="chat-fc"><i class="ti ' + (FICON[f.kind] || 'ti-file') + '"></i><div class="chat-fc-main"><b>' + esc(f.name || '') + '</b><span>' + esc(sizeL(f.size)) + (f.req ? ' · ' + T('申請に付けた','on the request') : '') + '</span></div>'
+        + '<button class="lnk" onclick="chatFileOpen(\'' + esc(f.id) + '\')">' + T('開く','Open') + '</button><button class="lnk" onclick="chatFileSave(\'' + esc(f.id) + '\')">' + T('保存','Save') + '</button>'
+        + (canReceipt(tid, f) ? '<button class="lnk" onclick="chatFileReceipt(\'' + esc(f.id) + '\')">' + T('申請に付ける','Use as receipt') + '</button>' : '') + '</div>';
+    });
+    return '<div class="chat-files">' + h + '</div>';
+  }
+  function fileById(id){
+    var m = C.msgs[C.open], hit = null;
+    if (m) m.list.some(function(x){ return !x.deleted && !x.hidden && (x.files || []).some(function(f){ if (f.id === id) { hit = f; return true; } return false; }); });
+    if (!hit && C.flist && C.flist.tid === C.open) hit = (C.flist.items || []).find(function(f){ return f.id === id; }) || null;
+    return hit;
+  }
+  /* 開く：写真はこの画面の中で。ほかは新しい窓（押したときに開いておく：あとから開くと端末が止めるため）。開けなければ押して開くリンク */
+  function openWin(){ try { var w = W.open('', '_blank'); if (w) { try { w.opener = null; } catch(e){} } return w || null; } catch(e){ return null; } }
+  function goUrl(w, url, name){
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) { if (w) try{ w.close(); }catch(e){} toast(errText('storage'), 'error'); return; }
+    if (w && !w.closed) { try { w.location.href = url; return; } catch(e){} }
+    openModal('<div style="width:100%"><div class="modal-title">' + esc(name || T('ファイル','File')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="margin:10px 0"><a class="btn btn-primary" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" onclick="closeModalDirect()"><i class="ti ti-external-link"></i> ' + T('開く','Open') + '</a></div>'
+      + '<div style="font-size:11px;color:var(--muted)">' + T('このリンクは 5 分だけ使えます','This link works for 5 minutes') + '</div></div>');
+  }
+  W.chatFileOpen = function(id){
+    var f = fileById(id); if (!f) return;
+    if (f.kind === 'photo') { viewPhoto(f); return; }
+    var w = openWin(), g = C.gen;
+    api({ action:'chat_file_url', id:id }).then(function(j){
+      if (g !== C.gen) { if (w) try{ w.close(); }catch(e){} return; }
+      goUrl(w, j && j.url, f.name);
+    }, function(e){ if (w) try{ w.close(); }catch(_){} if (g === C.gen) toast(fErr(e), 'error'); });
+  };
+  W.chatFileSave = function(id){
+    var f = fileById(id); if (!f) return;
+    var g = C.gen;
+    api({ action:'chat_file_url', id:id, download:true }).then(function(j){ if (g === C.gen) W._chatSaveUrl(j && j.url, (j && j.name) || f.name); }, function(e){ if (g === C.gen) toast(fErr(e), 'error'); });
+  };
+  /* 保存：リンクに「保存して」の印が付いている（サーバーが付ける）。この画面はそのまま */
+  W._chatSaveUrl = function(url, name){
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) { toast(errText('storage'), 'error'); return; }
+    try { var a = D.createElement('a'); a.href = url; a.rel = 'noopener'; a.download = name || ''; (D.body || D.documentElement).appendChild(a); a.click(); setTimeout(function(){ try{ a.remove(); }catch(e){} }, 0); }
+    catch(e) { try { W.location.href = url; } catch(_){} }
+  };
+  function viewPhoto(f){
+    C.view = { id:f.id, url:'', st:'loading', err:'' };
+    openModal('<div id="chat-view" style="width:100%"></div>'); drawView();
+    var g = C.gen, v = C.view;
+    api({ action:'chat_file_url', id:f.id }).then(function(j){ if (g !== C.gen || C.view !== v) return; v.url = (j && j.url) || ''; v.st = /^https:\/\//.test(v.url) ? 'ok' : 'err'; if (v.st === 'err') v.err = errText('storage'); drawView(); },
+      function(e){ if (g !== C.gen || C.view !== v) return; v.st = 'err'; v.err = fErr(e); drawView(); });
+  }
+  function drawView(){
+    var el = D.getElementById('chat-view'), v = C.view; if (!el || !v) return;
+    var f = fileById(v.id) || { id:v.id, name:'', kind:'photo' };
+    var body = v.st === 'ok' ? '<img src="' + esc(v.url) + '" alt="' + esc(f.name || '') + '" style="max-width:100%;max-height:68vh;display:block;margin:0 auto;border-radius:8px">'
+      : v.st === 'err' ? '<div class="alert alert-danger" style="font-size:12px">' + esc(v.err) + '</div>' : '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+    el.innerHTML = '<div class="modal-title">' + esc(f.name || T('写真','Photo')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' + body
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:10px">'
+      + (canReceipt(C.open, f) ? '<button class="btn btn-secondary btn-sm" onclick="chatFileReceipt(\'' + esc(f.id) + '\')"><i class="ti ti-receipt"></i> ' + T('申請に付ける','Use as the receipt') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="chatFileSave(\'' + esc(f.id) + '\')"><i class="ti ti-download"></i> ' + T('保存','Save') + '</button>'
+      + '<button class="btn btn-primary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+  }
+
+  /* 7A：この会話のファイル（新しい順・メッセージ 30 件ずつ） */
+  W.chatFilesList = function(){
+    var tid = C.open; if (!tid) return;
+    C.flist = { tid:tid, items:[], before:null, more:false, st:'loading', err:'', busy:false };
+    openModal('<div id="chat-flist" style="width:100%"></div>'); drawFlist(); loadFlist(false);
+  };
+  W.chatFilesMore = function(){ loadFlist(true); };
+  function loadFlist(more){
+    var s = C.flist; if (!s || s.busy) return;
+    s.busy = true; drawFlist();
+    var g = C.gen, p = { action:'chat_files', thread:s.tid, limit:30 };
+    if (more && s.before != null) p.before = s.before;
+    api(p).then(function(j){ if (g !== C.gen || C.flist !== s) return; s.items = (more ? s.items : []).concat(j.items || []); s.before = j.before; s.more = !!j.more; s.st = 'ok'; s.err = ''; },
+      function(e){ if (g !== C.gen || C.flist !== s) return; if (s.items.length) toast(fErr(e), 'error'); else { s.st = 'err'; s.err = fErr(e); } })
+    .then(function(){ if (g !== C.gen || C.flist !== s) return; s.busy = false; drawFlist(); fetchThumbs(); });
+  }
+  function drawFlist(){
+    var el = D.getElementById('chat-flist'), s = C.flist; if (!el || !s) return;
+    var h = '<div class="modal-title"><i class="ti ti-paperclip"></i> ' + T('この会話のファイル','Files in this conversation') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    if (s.st === 'loading' && !s.items.length) h += '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+    else if (s.st === 'err') h += '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>';
+    else if (!s.items.length) h += '<div class="chat-empty">' + T('まだファイルはありません（📎 で付けられます）','No files yet (attach with 📎)') + '</div>';
+    else {
+      h += '<div style="max-height:56vh;overflow-y:auto">' + s.items.map(function(f){
+        var pic;
+        if (f.kind === 'photo') { needThumb(f.id); var u = turl(f.id); pic = '<img data-cf="' + esc(f.id) + '" alt=""' + (u ? ' src="' + esc(u) + '"' : '') + '>'; }
+        else pic = '<i class="ti ' + (FICON[f.kind] || 'ti-file') + '"></i>';
+        return '<div class="chat-fl"><button class="chat-fl-pic" onclick="chatFileOpen(\'' + esc(f.id) + '\')" title="' + esc(f.name || '') + '">' + pic + '</button>'
+          + '<div class="chat-fl-main"><b>' + esc(f.name || '') + '</b><span>' + esc(f.by || '') + ' · ' + esc(hst(f.at, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false })) + ' · ' + esc(sizeL(f.size))
+          + (f.req ? ' · <b style="color:var(--accent)">' + T('申請に付けた','On the request') + '</b>' : '') + '</span></div>'
+          + '<div class="chat-fl-act"><button class="lnk" onclick="chatFileOpen(\'' + esc(f.id) + '\')">' + T('開く','Open') + '</button><button class="lnk" onclick="chatFileSave(\'' + esc(f.id) + '\')">' + T('保存','Save') + '</button>'
+          + (canReceipt(s.tid, f) ? '<button class="lnk" onclick="chatFileReceipt(\'' + esc(f.id) + '\')">' + T('申請に付ける','Use as receipt') + '</button>' : '') + '</div></div>';
+      }).join('') + '</div>'
+        + (s.more ? '<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatFilesMore()">' + T('前のファイルを読む','Load earlier files') + '</button></div>' : '');
+    }
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6">' + T('この会話を見られる人はだれでも開いて保存できます。送った人がメッセージを消すとファイルも消えます。','Anyone who can see this conversation can open and save these. When the sender deletes the message, its files go too.') + '</div>';
+    el.innerHTML = h;
+  }
+
+  /* 8B：建て替え経費の申請のチャットの写真・PDF を、申請した本人が申請の領収書にする（承認待ち・差し戻しのあいだ） */
+  function canReceipt(tid, f){
+    var r = C.threads[tid], ref = r && r.ref;
+    return !!(f && r && r.kind === 'case' && ref && ref.wr_kind === 'reimburse' && ref.mine === true && typeof ref.rev === 'number'
+      && (ref.status === 'pending' || ref.status === 'returned') && (f.kind === 'photo' || f.kind === 'pdf') && !f.req);
+  }
+  function markReq(id){
+    Object.keys(C.msgs).forEach(function(t){ (C.msgs[t].list || []).forEach(function(x){ (x.files || []).forEach(function(f){ f.req = f.id === id ? true : f.req; }); }); });
+    if (C.flist) (C.flist.items || []).forEach(function(f){ if (f.id === id) f.req = true; });
+  }
+  W.chatFileReceipt = function(id){
+    var tid = C.open, f = fileById(id); if (!canReceipt(tid, f)) return;
+    var ref = C.threads[tid].ref, rev = Number(ref.rev);
+    if (!confirm(T('この' + (f.kind === 'pdf' ? ' PDF ' : '写真') + 'を申請 ' + (ref.code || '') + ' の領収書にしますか？（今の領収書と置き換わります。メッセージを消しても申請の記録として残ります）',
+      'Use this ' + (f.kind === 'pdf' ? 'PDF' : 'photo') + ' as the receipt of ' + (ref.code || 'the request') + '? (It replaces the current receipt and stays with the request even if the message is deleted)'))) return;
+    var k = id + ':' + rev, key = C.rkey[k] || (C.rkey[k] = newKey()), g = C.gen;   /* 答えが届かず押し直しても、同じ鍵で 1 回 */
+    api({ action:'wr_receipt_chat', id:ref.id, file:id, expect_rev:rev, client_key:key }).then(function(row){
+      if (g !== C.gen) return;
+      var r = C.threads[tid]; if (r && r.ref && row && typeof row.rev === 'number') { r.ref.rev = row.rev; if (row.status) r.ref.status = row.status; }
+      markReq(id);
+      if (C.view && C.view.id === id) { C.view = null; try{ closeModalDirect(); }catch(e){} }
+      toast(T('申請 ' + (ref.code || '') + ' の領収書にしました', 'Set as the receipt of ' + (ref.code || 'the request')), 'success');
+      if (C.open === tid) paintPane('keep'); drawFlist(); drawView();
+    }, function(e){
+      if (g !== C.gen) return;
+      toast(fErr(e), 'error');
+      if (e.code === 'conflict' || e.code === 'forbidden') syncNow(false);
+    });
+  };
+  /* 申請の画面から：チャットの写真・PDF の領収書を開く（その申請を見られる人。サーバーが確かめる） */
+  W.chatReceiptOpen = function(reqId){
+    if (!UUID.test(String(reqId || ''))) return;
+    var w = openWin();
+    api({ action:'wr_receipt_url', id:reqId }).then(function(j){ goUrl(w, j && j.url, j && j.name); },
+      function(e){ if (w) try{ w.close(); }catch(_){} toast(fErr(e), 'error'); });
+  };
+
   /* ---------------------------------------------------------------- 申請のチャット（4A） */
   W.chatCaseButton = function(r){
     if (!r || !r.id || !canUse() || C.st === 'missing' || C.st === 'old') return '';
@@ -108925,7 +109647,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (C.st === 'ok' && !C.syncing && Date.now() - C.lastSync > 10000) syncNow(false);
     C.paneFor = C.open;
     if (C.open && C.msgs[C.open]) C.msgs[C.open].painted = !!C.msgs[C.open].list.length;
-    setTimeout(function(){ scrollBottom(); markRead(); }, 0);
+    setTimeout(function(){ scrollBottom(); markRead(); fetchThumbs(); }, 0);
     ensureCss();
     return '<div id="chat-root" class="chat-wrap' + (C.open ? ' chat-has-open' : '') + '"><div id="chat-side" class="chat-side">' + sideHtml() + '</div><div id="chat-pane" class="chat-pane">' + paneHtml() + '</div></div>';
   };
@@ -108977,6 +109699,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return '<button class="btn btn-secondary btn-sm chat-back" onclick="chatBack()"><i class="ti ti-chevron-left"></i> ' + T('戻る','Back') + '</button>'
       + '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(titleOf(r)) + '</div><div style="font-size:10.5px;color:var(--muted)">' + sub + '</div></div>'
       + (r.kind === 'case' && ref.id ? '<button class="btn btn-secondary btn-sm" onclick="chatOpenRequest(\'' + esc(ref.id) + '\')"><i class="ti ti-file-text"></i> ' + T('申請','Request') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="chatFilesList()" title="' + esc(T('この会話のファイル','Files in this conversation')) + '"><i class="ti ti-paperclip"></i><span class="chat-hb-t"> ' + T('ファイル','Files') + '</span></button>'
       + (r.kind !== 'dm' ? '<button class="btn btn-secondary btn-sm" onclick="chatMembers()"><i class="ti ti-users"></i> ' + T('参加者','Members') + '</button>' : '');
   }
   function bodyHtml(x){
@@ -109002,17 +109725,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var body = x.deleted ? T('削除されました','Deleted') : x.hidden ? T('見えなくなりました','Hidden') + (x.hidden_name ? '（' + esc(x.hidden_name) + '）' : '') : bodyHtml(x);
       var meta = (x.mine ? T('あなた · ','You · ') : '') + esc(clock(x.at)) + (x.edited ? ' · ' + T('編集済み','edited') : '')
         + (x.mine && !gone && Number(x.read) > 0 ? ' · ' + (dm ? T('既読','Read') : T('既読 ','Read ') + Number(x.read)) : '');
-      var act = '';
+      var act = '', fh = !gone && x.files && x.files.length ? filesHtml(tid, x) : '', hasText = gone || String(x.body || '').trim() !== '';
+      var rp = !gone ? (x.files || []).filter(function(f){ return f.kind === 'photo' && canReceipt(tid, f); }) : [];
+      if (rp.length === 1) act += '<button class="lnk" onclick="chatFileReceipt(\'' + esc(rp[0].id) + '\')">' + T('写真を申請に付ける','Use the photo as the receipt') + '</button>';
       if (x.can_edit) act += '<button class="lnk" onclick="chatEdit(\'' + esc(x.id) + '\')">' + T('直す','Edit') + '</button>';
       if (x.can_delete) act += '<button class="lnk" onclick="chatDelete(\'' + esc(x.id) + '\')">' + T('消す','Delete') + '</button>';
       if (x.can_hide) act += x.hidden ? '<button class="lnk" onclick="chatUnhide(\'' + esc(x.id) + '\')">' + T('戻す','Restore') + '</button>' : '<button class="lnk" onclick="chatHide(\'' + esc(x.id) + '\')">' + T('見えなくする','Hide') + '</button>';
       h += '<div class="chat-msg' + (x.mine ? ' me' : '') + (atMe ? ' at' : '') + '">' + (showName ? '<div class="chat-msg-name">' + esc(x.name) + '</div>' : '')
-        + '<div class="chat-bub' + (gone ? ' gone' : '') + '">' + body + '</div><div class="chat-msg-meta">' + meta + act + '</div></div>';
+        + (hasText || !fh ? '<div class="chat-bub' + (gone ? ' gone' : '') + '">' + body + '</div>' : '') + fh + '<div class="chat-msg-meta">' + meta + act + '</div></div>';
       prev = x;
     });
     out.forEach(function(o){
-      h += '<div class="chat-msg me"><div class="chat-bub pend">' + esc(o.body).replace(/\n/g, '<br>') + '</div><div class="chat-msg-meta">'
-        + (o.st === 'sending' ? T('送信中…','Sending…') : '<span style="color:var(--red);font-weight:700">' + T('送れませんでした','Not sent') + '</span>' + (o.err ? '（' + esc(o.err) + '）' : '')
+      var fl = (o.files || []).map(function(a){ return '<div class="chat-fc pend"><i class="ti ' + (FICON[a.kind] || 'ti-file') + '"></i><div class="chat-fc-main"><b>' + esc(a.name) + '</b><span>' + esc(sizeL(a.size)) + '</span></div></div>'; }).join('');
+      h += '<div class="chat-msg me">' + (o.body || !fl ? '<div class="chat-bub pend">' + esc(o.body).replace(/\n/g, '<br>') + '</div>' : '') + (fl ? '<div class="chat-files">' + fl + '</div>' : '') + '<div class="chat-msg-meta">'
+        + (o.st === 'sending' ? (o.prog ? T('ファイルを上げています ','Uploading files ') + esc(o.prog) : T('送信中…','Sending…')) : '<span style="color:var(--red);font-weight:700">' + T('送れませんでした','Not sent') + '</span>' + (o.err ? '（' + esc(o.err) + '）' : '')
           + '<button class="lnk" onclick="chatRetry(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('もう一度送る','Send again') + '</button><button class="lnk" onclick="chatDiscard(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('消す','Discard') + '</button>')
         + '</div></div>';
     });
@@ -109020,10 +109746,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function compHtml(){
     var tid = C.open;
-    return '<div id="chat-pop" class="chat-pop" style="display:none"></div><div class="chat-comp-row">'
+    var na = (C.att[tid] || []).length;
+    return '<div id="chat-pop" class="chat-pop" style="display:none"></div><div id="chat-tray" class="chat-tray"' + (na ? '' : ' style="display:none"') + '>' + trayHtml(tid) + '</div><div class="chat-comp-row">'
+      + '<label class="btn btn-secondary chat-att-btn" title="' + esc(T('写真・ファイルを付ける（5 つまで・1 つ 10MB まで）','Attach photos or files (up to 5, 10 MB each)')) + '"><i class="ti ti-paperclip"></i><input type="file" multiple accept="' + ACCEPT + '" onchange="chatPickFiles(this)" style="display:none"></label>'
       + '<textarea id="chat-ta" rows="2" maxlength="' + (BODY_MAX + 200) + '" placeholder="' + esc(T('メッセージ（@ で人を呼ぶ）','Message (@ to mention)')) + '" oninput="chatInput(this)" onkeydown="chatKey(event)" onblur="chatBlur()">' + esc(C.drafts[tid] || '') + '</textarea>'
       + '<button class="btn btn-primary" onclick="chatSend()" style="flex:0 0 auto"><i class="ti ti-send"></i> ' + T('送信','Send') + '</button></div>'
-      + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send.') + '</div>';
+      + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。📎 で写真・PDF・Excel・Word・PowerPoint・テキスト（5 つ・1 つ 10MB まで）。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send. 📎 attaches photos, PDF, Excel, Word, PowerPoint or text (5 files, 10 MB each).') + '</div>';
   }
   function paneHtml(){
     if (!C.open || !C.threads[C.open]) return '<div class="chat-empty" style="margin:auto">' + T('左の一覧から会話を選んでください','Choose a conversation on the left') + '</div>';
@@ -109039,11 +109767,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function paintPane(mode){
     var pane = D.getElementById('chat-pane'); if (!pane) return;
     var root = D.getElementById('chat-root'); if (root) root.className = 'chat-wrap' + (C.open ? ' chat-has-open' : '');
-    if (C.paneFor !== C.open || !D.getElementById('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); return; }
+    if (C.paneFor !== C.open || !D.getElementById('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); fetchThumbs(); return; }
     var box = D.getElementById('chat-msgs');
     var near = box ? (box.scrollHeight - box.scrollTop - box.clientHeight < 80) : true, prevH = box ? box.scrollHeight : 0, prevT = box ? box.scrollTop : 0;
     var hd = D.getElementById('chat-head'); if (hd) hd.innerHTML = headHtml();
     if (box) { box.innerHTML = msgsHtml(); box.scrollTop = mode === 'older' ? box.scrollHeight - prevH + prevT : (mode === 'bottom' || near) ? box.scrollHeight : prevT; }
+    fetchThumbs();
   }
   function paintAll(){ if (!visible()) return; paintSide(); paintPane('keep'); }
   /* 見た目は head に 1 回だけ（描き直しで消えない） */
@@ -109095,12 +109824,574 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '.chat-pop-i{padding:8px 10px;font-size:12.5px;cursor:pointer;display:flex;gap:6px;align-items:center}'
       + '.chat-pop-i.on{background:var(--surface2)}.chat-pop-i small{color:var(--muted);margin-left:auto;font-size:10px}'
       + '.chat-back{display:none}'
+      + '.chat-att-btn{flex:0 0 auto;padding:0 10px;min-height:40px;display:inline-flex;align-items:center;cursor:pointer}'
+      + '.chat-tray{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}'
+      + '.chat-att{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:10px;padding:4px 6px;max-width:220px;background:var(--surface2)}'
+      + '.chat-att-pic{width:34px;height:34px;flex:0 0 34px;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--surface);font-size:18px}'
+      + '.chat-att-pic img{width:100%;height:100%;object-fit:cover}'
+      + '.chat-att-main{min-width:0;display:flex;flex-direction:column;font-size:11px}.chat-att-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-att-main span{color:var(--muted);font-size:10px}'
+      + '.chat-att-x{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted);padding:0 4px;min-height:32px}'
+      + '.chat-files{display:flex;flex-direction:column;gap:4px;margin-top:4px;max-width:100%}'
+      + '.chat-ph{display:grid;grid-template-columns:repeat(2,120px);gap:4px}.chat-ph.one{grid-template-columns:minmax(0,240px)}'
+      + '.chat-ph-i{position:relative;border:0;padding:0;border-radius:10px;overflow:hidden;background:var(--surface2);aspect-ratio:1;cursor:pointer;width:100%}'
+      + '.chat-ph.one .chat-ph-i{max-height:320px}'
+      + '.chat-ph-i img{width:100%;height:100%;object-fit:cover;display:block}'
+      + '.chat-ph-tag{position:absolute;left:4px;bottom:4px;background:rgba(0,0,0,.6);color:#fff;font-size:9.5px;padding:1px 6px;border-radius:8px}'
+      + '.chat-fc{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:6px 8px;background:var(--surface);max-width:300px;font-size:12px}'
+      + '.chat-fc>i{font-size:22px;color:var(--accent);flex:0 0 auto}.chat-fc.pend{opacity:.65}'
+      + '.chat-fc-main{flex:1;min-width:0;display:flex;flex-direction:column}.chat-fc-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-fc-main span{font-size:10px;color:var(--muted)}'
+      + '.chat-fc .lnk{background:none;border:0;color:var(--accent);cursor:pointer;font-size:11px;padding:4px 2px;white-space:nowrap}'
+      + '.chat-fl{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}'
+      + '.chat-fl-pic{width:46px;height:46px;flex:0 0 46px;border:0;border-radius:8px;overflow:hidden;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--accent);cursor:pointer;padding:0}'
+      + '.chat-fl-pic img{width:100%;height:100%;object-fit:cover}'
+      + '.chat-fl-main{flex:1;min-width:0;display:flex;flex-direction:column;font-size:12px}.chat-fl-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-fl-main span{font-size:10.5px;color:var(--muted)}'
+      + '.chat-fl-act{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2px}.chat-fl-act .lnk{background:none;border:0;color:var(--accent);cursor:pointer;font-size:11.5px;padding:6px 4px;white-space:nowrap}'
       + '.chat-empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6}'
       + '@media (max-width:820px){.chat-wrap{grid-template-columns:minmax(0,1fr);height:calc(100dvh - 190px)}.chat-wrap .chat-pane{display:none}'
-      + '.chat-wrap.chat-has-open .chat-side{display:none}.chat-wrap.chat-has-open .chat-pane{display:flex}.chat-back{display:inline-flex}.chat-hint{display:none}.chat-msg{max-width:88%}.chat-side{border-right:0}}'
+      + '.chat-wrap.chat-has-open .chat-side{display:none}.chat-wrap.chat-has-open .chat-pane{display:flex}.chat-back{display:inline-flex}.chat-hint{display:none}.chat-msg{max-width:88%}.chat-side{border-right:0}'
+      + '.chat-hb-t{display:none}.chat-ph{grid-template-columns:repeat(2,minmax(0,110px))}.chat-fc{max-width:100%}}'
       + '@media (min-width:1180px){body.chat-wide .main{max-width:1280px}}';
 })();
 /* ==== FUNERGY_CHAT end ==== */
+/* ==== FUNERGY_GR（v1157）：Google の口コミ（UI案73・Moto さん 11/13 18:42 HST の答え：1 はい・2 はい（Business Profile をつなぐまでは手入力）・
+   3 はい（その月の口コミをすべて会議に出す）・4 はい（設定は KPI設定の中））====
+   仕様：docs/GOOGLE_REVIEWS_V1157_JA.md。
+   ・サーバーは関数 google-reviews（入り方は PIN のログインの印だけ・店のタブレットは使えない）。決める・つなぐのは GM・CEO（サーバーで確かめる）。
+   ・Places API：店の総合評価・件数・Google が返す最近の口コミ（最大 5 件）。Google の決まりで残せないので、見るときに取ってこのタブのメモリだけに置く。
+   ・Business Profile API：自分の店の口コミを毎日 4:30（ハワイ）にサーバーが取って残す。結んだ店は会議の実績（その月の平均・件数）が自動になり、手入力は使わない。
+     つなぐまで（Google の審査待ちのあいだも）は今までどおり手入力。
+   ・この端末（共通データ・localStorage・IndexedDB）には何も書かない。ログアウトで世代を進めて捨てる。 */
+(function(){
+  'use strict';
+  var W = window, D = document;
+  var FN = '/functions/v1/google-reviews';
+  var KPI_MS = 600000, NOW_MS = 600000, MONTH_MS = 600000, FAIL_MS = 120000;
+  var ERR = {
+    signin:['PIN のログインがありません。ログアウトしてログインし直してください','There is no PIN login. Log out and log in again'],
+    signin_changed:['途中で別の人のログインに変わったので止めました','Stopped because the sign-in changed'],
+    unauthorized:['PIN のログインを確かめられませんでした（期限切れなど）。ログアウトしてログインし直してください','The PIN login could not be checked (it may have expired). Log out and log in again'],
+    auth_unavailable:['ログインを確かめるサーバー（work-requests）が答えません。少し待ってからもう一度','The sign-in check (work-requests) is not answering. Try again later'],
+    forbidden:['GM・CEO だけができます（サーバーで確かめました）','Only GM and CEO can do this (checked by the server)'],
+    bad_value:['入力を確かめてください','Check the input'],
+    conflict:['その Business Profile の店は、ほかの店に結ばれています','That Business Profile location is already linked to another store'],
+    too_many:['続けて取りすぎました。1 分ほど待ってから','Too many requests. Wait a minute'],
+    places_not_configured:['Places API の鍵がサーバーに入っていません（Moto さんに知らせてください）','The Places API key is not set on the server (tell Moto)'],
+    places_denied:['Google が断りました（API キーの制限・Places API（新）が有効でない）','Google refused (API key restriction, or Places API (New) is not enabled)'],
+    place_not_found:['Google にその店が見つかりません（店を選び直してください）','Google cannot find that place (pick it again)'],
+    places_busy:['Google が混んでいます。少し待ってから','Google is busy. Try again later'],
+    places_bad:['Google への問い合わせの形が合いません','The request to Google was rejected'],
+    places_failed:['Google から読めませんでした','Could not read from Google'],
+    not_configured:['Google のログインの設定（OAuth のクライアント）がサーバーに入っていません（Moto さんに知らせてください）','The Google sign-in (OAuth client) is not set on the server (tell Moto)'],
+    bp_not_connected:['Business Profile をつないでいません','Business Profile is not connected'],
+    bp_pending:['Google の審査待ちです（Business Profile の API がまだ使えません）','Waiting for Google approval (the Business Profile API is not available yet)'],
+    bp_failed:['Business Profile から読めませんでした','Could not read from Business Profile'],
+    bp_auth_revoked:['Google で許可が取り消されました。つなぎ直してください','Access was revoked in Google. Connect again'],
+    gr_missing:['Google の口コミのサーバー（SQL）がまだ入っていません（Moto さんに知らせてください）','The Google reviews database is not set up yet (tell Moto)'],
+    fn_missing:['Google の口コミのサーバー（関数 google-reviews）がまだ入っていません（Moto さんに知らせてください）','The Google reviews server (google-reviews) is not set up yet (tell Moto)'],
+    network:['Google の口コミのサーバーにつながりません（通信を確かめてください）','Cannot reach the Google reviews server (check the network)']
+  };
+  var BACK = {
+    ok:['Business Profile をつなぎました','Business Profile is connected'],
+    pending:['つなぎました。Google の審査が通るまで口コミは取れません（それまでは手入力）','Connected. Reviews cannot be read until Google approves (enter them by hand until then)'],
+    error:['つなぎましたが、Business Profile を読めませんでした（「Google の口コミ」で確かめてください）','Connected, but Business Profile could not be read (check the Google reviews tab)'],
+    bad_state:['つなぐのに時間がかかりすぎたか、もう使ったリンクです。もう一度「Google でログインしてつなぐ」を','The link expired or was already used. Press Connect again'],
+    denied:['Google で許可されませんでした（つないでいません）','Google did not allow it (not connected)'],
+    not_configured:['Google のログインの設定がサーバーに入っていません（Moto さんに知らせてください）','The Google sign-in is not set on the server (tell Moto)'],
+    no_refresh_token:['Google が鍵を返しませんでした。Google のアカウントの「サードパーティのアクセス」から外して、もう一度つないでください','Google did not return a key. Remove the access in your Google account and connect again'],
+    scope_missing:['Business Profile の許可にチェックが入っていませんでした。もう一度つないでチェックを入れてください','The Business Profile permission was not checked. Connect again and check it'],
+    exchange_failed:['Google と鍵を取り替えられませんでした。もう一度','Could not finish signing in with Google. Try again'],
+    save_failed:['つなぎ先を保存できませんでした。もう一度','Could not save the connection. Try again']
+  };
+  function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
+  function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+  function errText(code, status){
+    if (Object.prototype.hasOwnProperty.call(ERR, code)) return T(ERR[code][0], ERR[code][1]);
+    var c = /^[a-z_]{1,40}$/.test(String(code || '')) ? code : '';
+    return T('うまくいきませんでした','Something went wrong') + (c ? '（' + c + '）' : (status ? '（HTTP ' + status + '）' : ''));
+  }
+  function mk(code, status){ var e = new Error(errText(code, status)); e.code = code; e.status = status || 0; return e; }
+  function toast(m, k){ try{ if (typeof showToast === 'function') showToast(m, k || 'info'); }catch(e){} }
+  function pinTok(){ var w = W._hwSession; return (typeof w === 'string' && w) ? w : null; }
+  function canUse(){ try{ return !curStoreLogin && !!curRole && !!pinTok(); }catch(e){ return false; } }
+  function isMgr(){ try{ return curRole === 'gm' || curRole === 'ceo'; }catch(e){ return false; } }
+  function sidOk(s){ return typeof s === 'string' && /^[A-Za-z0-9_-]{1,30}$/.test(s); }
+  function ymOk(s){ return typeof s === 'string' && /^20\d{2}-(0[1-9]|1[0-2])$/.test(s); }
+  function storeOf(sid){ try{ return (getStoresAll() || []).find(function(x){ return x && x.id === sid; }) || { id:sid, name:sid }; }catch(e){ return { id:sid, name:sid }; } }
+  function nowMs(){ return Date.now(); }
+  /* ハワイ時間の年月（投稿日の月を決める・会議の月と同じ） */
+  function hstYm(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; return new Date(ms - 36000000).toISOString().slice(0, 7); }
+  function hstDate(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; var d = new Date(ms - 36000000); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate(); }
+  function hstTime(iso){ var ms = Date.parse(iso); if (!isFinite(ms)) return ''; var d = new Date(ms - 36000000); return (d.getUTCMonth() + 1) + '/' + d.getUTCDate() + ' ' + String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0'); }
+  function stars(n){ n = Math.max(0, Math.min(5, Math.round(Number(n) || 0))); return '★★★★★'.slice(0, n) + '☆☆☆☆☆'.slice(0, 5 - n); }
+
+  function fresh(gen){ return { gen:gen || 0, tok:null, st:'', who:null, kpi:null, kpiAt:0, kpiFail:0, kpiP:null, kpiErr:'',
+    status:null, statusSt:'', statusErr:'', statusP:null, statusFail:0, now:{}, month:{}, busy:'', search:null, locs:null, timer:null }; }
+  var G = fresh(0);
+  W._grState = function(){ return G; };
+
+  /* サーバー（関数 google-reviews）。答えが来る前に別の人のログインに変わったら（世代 gen が変わったら）使わない */
+  async function api(payload){
+    var tok = pinTok();
+    if (!tok) throw mk('signin');
+    var g = G.gen;
+    var r, j = null;
+    try { r = await fetch(SUPABASE_URL + FN, { method:'POST', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':'application/json' },
+      body:JSON.stringify(Object.assign({}, payload, { pin_session:tok })) }); }
+    catch(e) { throw mk('network'); }
+    try { j = await r.json(); } catch(e) { j = null; }
+    if (g !== G.gen || pinTok() !== tok) throw mk('signin_changed');
+    if (r.status === 404 && !(j && j.error)) { G.st = 'missing'; throw mk('fn_missing', 404); }
+    if (!r.ok) { var code = (j && typeof j.error === 'string') ? j.error : ''; if (code === 'gr_missing') G.st = 'sql'; throw mk(code, r.status); }
+    if (G.st === 'missing' || G.st === 'sql') G.st = '';
+    return j;
+  }
+  W.grAPI = api;
+
+  /* 画面に知らせる：会議・KPI設定を開いているときだけ描き直す（入力中は FUNERGY_UX が待つ） */
+  function changed(){
+    try{
+      if (typeof curPage === 'undefined' || (curPage !== 'meeting' && curPage !== 'kpi_master')) return;
+      var ux = W.FUNERGY_UX;
+      if (ux && typeof ux.noteDataChange === 'function') ux.noteDataChange();
+      if (ux && typeof ux.bgRefresh === 'function') ux.bgRefresh(); else renderPage(curPage);
+    }catch(e){}
+  }
+  /* 会議のカードだけを入れ替える（ほかの所は描き直さない） */
+  function patchCards(sid){
+    try{
+      Array.prototype.forEach.call(D.querySelectorAll('[data-grcard]'), function(el){
+        var k = String(el.getAttribute('data-grcard') || ''), p = k.split('|');
+        if (sid && p[0] !== sid) return;
+        if (!sidOk(p[0]) || !ymOk(p[1])) return;
+        var w = D.createElement('div'); w.innerHTML = W.grCardHtml(storeOf(p[0]), p[1]);
+        if (w.firstElementChild) el.replaceWith(w.firstElementChild);
+      });
+      Array.prototype.forEach.call(D.querySelectorAll('[data-grtab]'), function(el){ el.outerHTML = W.grTabHtml(); });
+    }catch(e){}
+  }
+
+  /* ---------------------------------------------------------------- 会議の実績（Business Profile に結んだ店） */
+  W.grLoadKpi = function(force){
+    if (!canUse() || G.st === 'missing' || G.st === 'sql') return Promise.resolve(null);
+    if (G.kpiP) return G.kpiP;
+    if (!force && G.kpi && nowMs() - G.kpiAt < KPI_MS) return Promise.resolve(G.kpi);
+    var g = G.gen, before = G.kpi ? JSON.stringify(G.kpi) : '';
+    G.kpiP = (async function(){
+      try {
+        var j = await api({ action:'kpi' });
+        if (g !== G.gen) return null;
+        G.kpi = (j && typeof j === 'object') ? j : null; G.kpiAt = nowMs(); G.kpiErr = ''; G.kpiFail = 0;
+        if (JSON.stringify(G.kpi) !== before) { changed(); patchCards(''); }
+        return G.kpi;
+      } catch(e) { if (g === G.gen) { G.kpiFail = nowMs(); G.kpiErr = e.code || 'error'; } return null; }
+      finally { if (g === G.gen) G.kpiP = null; }
+    })();
+    return G.kpiP;
+  };
+  function kick(){
+    if (!canUse() || G.kpiP || G.st === 'missing' || G.st === 'sql') return;
+    if (G.kpiFail && nowMs() - G.kpiFail < FAIL_MS) return;   /* #151 のレビュー：失敗したら古い値があっても 2 分待つ */
+    if (!G.kpi || nowMs() - G.kpiAt >= KPI_MS) W.grLoadKpi();
+  }
+  /* その店の実績が自動（Business Profile に結んでいて、つながっていて、口コミを一度でも全部取り終えた）か。読めていなければ false（手入力のまま） */
+  W.grAuto = function(sid){ kick(); var k = G.kpi; return !!(k && k.connected && Array.isArray(k.auto) && k.auto.indexOf(sid) >= 0); };
+  /* 口コミを全部取れている最初の月（これより前の月は手入力のまま） */
+  W.grFromOf = function(sid){ var k = G.kpi, f = k && k.from && k.from[sid]; return ymOk(f) ? f : null; };
+  /* その月の実績が自動か（自動の店で、取り始めの月から） */
+  W.grAutoYm = function(sid, ym){ if (!W.grAuto(sid) || !ymOk(ym)) return false; var f = W.grFromOf(sid); return !!(f && ym >= f); };
+  /* 自動の店の、その月の平均と件数（ハワイ時間の投稿日）。自動でなければ null。口コミが無い月は avg null・cnt 0 */
+  W.grMonthOf = function(sid, ym){
+    if (!W.grAutoYm(sid, ym)) return null;
+    var m = G.kpi.months && G.kpi.months[ym], v = m && m[sid];
+    if (!v) return { avg:null, cnt:0 };
+    var a = Number(v.avg), c = Number(v.cnt);
+    return { avg:isFinite(a) ? Math.round(a * 100) / 100 : null, cnt:isFinite(c) ? c : 0 };
+  };
+  W.grOverallOf = function(sid){
+    var k = G.kpi, o = k && k.overall && k.overall[sid];
+    if (!o || o.rating == null) return null;
+    var r = Number(o.rating), n = Number(o.total);
+    return { rating:isFinite(r) ? r : null, total:isFinite(n) ? n : null, at:o.at || null };
+  };
+
+  /* ---------------------------------------------------------------- Places（見るときに取る・残さない） */
+  function loadNow(sid, force){
+    if (!canUse() || !sidOk(sid) || G.st === 'missing' || G.st === 'sql') return;
+    var e = G.now[sid];
+    if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? NOW_MS : FAIL_MS)))) return;
+    var g = G.gen;
+    G.now[sid] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'' };
+    api({ action:'places_now', store:sid }).then(function(j){
+      if (g !== G.gen) return;
+      G.now[sid] = { st:'ok', at:nowMs(), data:j, err:'' }; patchCards(sid);
+    }, function(err){
+      if (g !== G.gen) return;
+      G.now[sid] = { st:'err', at:nowMs(), data:null, err:err.code || 'error' }; patchCards(sid);
+    });
+  }
+  W.grRetryNow = function(sid){ loadNow(sid, true); patchCards(sid); };
+  /* その月の口コミ（自動の店だけ・すべて・新しい順） */
+  function loadMonth(sid, ym, force){
+    if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
+    var k = sid + '|' + ym, e = G.month[k];
+    if (e && (e.st === 'loading' || (!force && nowMs() - e.at < (e.st === 'ok' ? MONTH_MS : FAIL_MS)))) return;
+    var g = G.gen, rev = ((e && e.rev) || 0) + 1;
+    G.month[k] = { st:'loading', at:nowMs(), data:e ? e.data : null, err:'', rev:rev };
+    api({ action:'month', store:sid, ym:ym }).then(function(j){
+      if (g !== G.gen || !G.month[k] || G.month[k].rev !== rev) return;
+      G.month[k] = { st:'ok', at:nowMs(), data:j, err:'', rev:rev }; patchCards(sid);
+    }, function(err){
+      if (g !== G.gen || !G.month[k] || G.month[k].rev !== rev) return;
+      G.month[k] = { st:'err', at:nowMs(), data:e ? e.data : null, err:err.code || 'error', rev:rev }; patchCards(sid);
+    });
+  }
+  W.grRetryMonth = function(sid, ym){ loadMonth(sid, ym, true); patchCards(sid); };
+  /* #151 のレビュー：200 件ずつ。続きを読む（読み直したら・別の人になったら答えを使わない） */
+  W.grMoreMonth = function(sid, ym){
+    if (!canUse() || !sidOk(sid) || !ymOk(ym)) return;
+    var k = sid + '|' + ym, e = G.month[k], d = e && e.data;
+    if (!e || e.st !== 'ok' || !d || !d.more || !d.next || e.moreBusy) return;
+    var g = G.gen, rev = e.rev;
+    e.moreBusy = true; e.moreErr = ''; patchCards(sid);
+    api({ action:'month', store:sid, ym:ym, before:d.next }).then(function(j){
+      var x = G.month[k];
+      if (g !== G.gen || !x || x.rev !== rev || x.data !== d) return;
+      var seen = {}; (d.items || []).forEach(function(r){ if (r && r.h) seen[r.h] = 1; });
+      var add = (j && Array.isArray(j.items) ? j.items : []).filter(function(r){ return !(r && r.h && seen[r.h]); });
+      x.data = Object.assign({}, d, { items:(d.items || []).concat(add), more:!!(j && j.more), next:(j && j.next) || null, cnt:(j && j.cnt != null) ? j.cnt : d.cnt, avg:(j && j.avg != null) ? j.avg : d.avg });
+      x.moreBusy = false; patchCards(sid);
+    }, function(err){
+      var x = G.month[k];
+      if (g !== G.gen || !x || x.rev !== rev) return;
+      x.moreBusy = false; x.moreErr = err.code || 'error'; patchCards(sid);
+    });
+  };
+  W.grToggleList = function(btn){ try{ var box = btn.parentNode.querySelector('.gr-list'); if (box) { var open = box.getAttribute('data-open') === '1'; box.setAttribute('data-open', open ? '0' : '1'); box.style.maxHeight = open ? '320px' : 'none'; btn.textContent = open ? T('すべて広げる','Expand all') : T('たたむ','Collapse'); } }catch(e){} };
+
+  function reviewRow(x, src){
+    var who = x.reviewer || x.author || '';
+    var link = (src === 'places' && x.author_uri && /^https:\/\//.test(x.author_uri)) ? x.author_uri : '';
+    var when = src === 'places' ? hstDate(x.time) : hstDate(x.created);
+    var text = src === 'places' ? x.text : x.comment;
+    return '<div class="gr-rv"><div class="gr-rv-h"><span class="gr-st" aria-label="' + esc((x.rating || 0) + ' / 5') + '">' + stars(x.rating) + '</span>'
+      + '<span class="k2-note">' + esc(when) + '</span>'
+      + (who ? (link ? '<a class="k2-note" href="' + esc(link) + '" target="_blank" rel="noopener">' + esc(who) + '</a>' : '<span class="k2-note">' + esc(who) + '</span>') : '<span class="k2-note">' + T('名前なし','Anonymous') + '</span>')
+      + (x.replied ? '<span class="k2-chip" style="color:var(--green);background:var(--surface2)">' + T('返信済み','Replied') + '</span>' : '')
+      + '</div>' + (text ? '<div class="gr-rv-t">' + esc(text) + '</div>' : '<div class="gr-rv-t k2-note">' + T('（星だけ）','(stars only)') + '</div>') + '</div>';
+  }
+
+  /* ---------------------------------------------------------------- 会議のカード */
+  W.grCardHtml = function(store, ym){
+    var sid = store && store.id;
+    if (!sidOk(sid) || !ymOk(ym)) return '';
+    var auto = W.grAutoYm(sid, ym), use = canUse();
+    var man = {}; try{ man = getKpiManual(sid, k2Period(ym)) || {}; }catch(e){}
+    var mo = auto ? W.grMonthOf(sid, ym) : null;
+    var avg = auto ? (mo ? mo.avg : null) : _k2Num(man.gAvg), cnt = auto ? (mo ? mo.cnt : 0) : _k2Num(man.gCnt);
+    var tgt = null; try{ tgt = k2ExplicitTarget(sid, ym, 'reviewScore'); }catch(e){}
+    var st = (avg != null && tgt != null) ? _meetStatus('google', avg, tgt, false) : 'none';
+    var col = _meetStatColor(st), diff = (avg != null && tgt != null) ? _meetDiffStr('google', avg, tgt, false, '', false) : '';
+    /* 総合評価：自動の店は Business Profile の数、ほかは Places（見るとき・Google の料金がかかるので要るときだけ）、どちらも無ければ手入力 */
+    var bpo = auto ? W.grOverallOf(sid) : null;
+    if (use && !bpo) loadNow(sid);
+    var nw = bpo ? null : (G.now[sid] || null), nd = nw && nw.st === 'ok' ? nw.data : (nw && nw.data) || null;
+    var linked = !!(nd && nd.linked);
+    var ovr = bpo ? bpo.rating : (linked && nd.rating != null ? nd.rating : _k2Num(man.reviewScore));
+    var ovrN = bpo ? bpo.total : (linked && nd.count != null ? nd.count : _k2Num(man.gTotalCnt));
+    var ovrSrc = bpo ? T('Business Profile','Business Profile') : (linked && nd.rating != null ? T('Google（今）','Google (now)') : T('手入力（月末）','Manual (month end)'));
+    var chip = auto ? T('自動（Google）','Auto (Google)') : (linked ? T('総合評価は自動・月の平均は手入力','Overall auto · month average manual') : T('手入力','Manual'));
+    var can = (typeof canSetKpiStore === 'function') && canSetKpiStore(sid);
+    var off = (typeof _ymToOffset === 'function') ? _ymToOffset(ym) : 0;
+    var url = (linked && nd.uri) ? nd.uri : k2GoogleUrl(store);
+    var h = '<div class="card" data-grcard="' + esc(sid + '|' + ym) + '"><div class="card-title" style="flex-wrap:wrap;row-gap:4px"><i class="ti ti-brand-google" style="color:var(--accent)"></i><span style="white-space:nowrap">' + T('Googleレビュー','Google reviews') + '</span>'
+      + '<span class="k2-chip" style="margin-left:auto;color:' + (auto ? 'var(--green)' : 'var(--muted)') + ';background:var(--surface2)">' + chip + '</span></div>'
+      + '<div class="k2-gcols">'
+      + '<div><div class="k2-note">' + T('この月の平均（この月に投稿された口コミ）','Average of the reviews posted this month') + '</div>'
+        + '<div style="font-size:24px;font-weight:800;color:' + col + '">' + (avg != null ? '★' + avg.toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (auto ? (cnt > 0 ? T(cnt + ' 件・会議の「実績」に入る値（自動）', cnt + ' reviews · the meeting actual (auto)') : T('この月の口コミはまだありません','No reviews this month yet'))
+          : (cnt != null ? T(cnt + ' 件・会議の「実績」に入る値', cnt + ' reviews · used as the meeting actual') : T('会議の「実績」に入る値','Used as the meeting actual'))) + '</div></div>'
+      + '<div><div class="k2-note">' + T('目標','Target') + '</div><div style="font-size:24px;font-weight:800">' + (tgt != null ? '★' + tgt.toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (st !== 'none' ? _meetStatLabel(st) + (diff ? '・' + diff : '') : T('KPI設定で決める','Set in KPI settings')) + '</div></div>'
+      + '<div><div class="k2-note">' + T('総合評価','Overall') + '・' + ovrSrc + '</div><div style="font-size:24px;font-weight:800;color:var(--tm)">' + (ovr != null ? '★' + Number(ovr).toFixed(1) : '—') + '</div>'
+        + '<div class="k2-note">' + (ovrN != null ? T('累計 ' + ovrN + ' 件','Total ' + ovrN) : T('参考','For reference')) + '</div></div>'
+      + '</div>';
+    /* その月の口コミ（3：すべて出す） */
+    if (auto) {
+      if (use) loadMonth(sid, ym);
+      var me = G.month[sid + '|' + ym], md = me && me.data, items = (md && Array.isArray(md.items)) ? md.items : null;
+      var mcnt = (md && md.cnt != null && isFinite(Number(md.cnt))) ? Number(md.cnt) : null;
+      h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('この月の口コミ（すべて・新しい順）','Reviews this month (all, newest first)')
+        + (items ? '（' + ((md.more && mcnt != null) ? T(mcnt + ' 件のうち ' + items.length + ' 件を表示', items.length + ' of ' + mcnt + ' shown') : items.length) + '）' : '') + '</div>';
+      if (items && items.length) {
+        h += '<div class="gr-list" data-open="0" style="max-height:320px;overflow:auto">' + items.map(function(x){ return reviewRow(x, 'bp'); }).join('') + '</div>';
+        if (items.length > 4) h += '<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="grToggleList(this)">' + T('すべて広げる','Expand all') + '</button>';
+        /* #151 のレビュー：200 件ずつ。残りはここから読む */
+        if (md.more) h += ' <button class="btn btn-secondary btn-sm" style="margin-top:6px" ' + (me.moreBusy ? 'disabled' : '') + ' onclick="grMoreMonth(\'' + esc(sid) + '\',\'' + esc(ym) + '\')">'
+          + (me.moreBusy ? T('読み込み中…','Loading…') : T('続きを読む' + (mcnt != null ? '（残り ' + Math.max(0, mcnt - items.length) + ' 件）' : ''), 'Read more' + (mcnt != null ? ' (' + Math.max(0, mcnt - items.length) + ' left)' : ''))) + '</button>';
+        if (me.moreErr) h += '<div class="k2-note" style="color:var(--red)">' + esc(errText(me.moreErr)) + '</div>';
+      } else if (items) h += '<div class="k2-note">' + T('この月に投稿された口コミはありません','No reviews were posted this month') + '</div>';
+      else if (me && me.st === 'err') h += '<div class="k2-note" style="color:var(--red)">' + esc(errText(me.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryMonth(\'' + esc(sid) + '\',\'' + esc(ym) + '\')">' + T('もう一度','Retry') + '</button></div>';
+      else h += '<div class="k2-note">' + T('読み込み中…','Loading…') + '</div>';
+      var kr = G.kpi && G.kpi.overall && G.kpi.overall[sid], kst = G.kpi && G.kpi.status;
+      if (kst === 'expired' || kst === 'error' || kst === 'pending') h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">'
+        + T('いまは Google から取れていません（KPI設定 › Google の口コミ で確かめてください）。','Not reading from Google right now (check KPI settings › Google reviews).')
+        + (G.kpi.last_ok_at ? T('最後に取れた時刻 ' + hstTime(G.kpi.last_ok_at) + '（ハワイ）',' Last read ' + hstTime(G.kpi.last_ok_at) + ' (Hawaii)') : '') + '</div>';
+      h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile から毎日 4:30（ハワイ時間）に取ります。月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。','Read from Business Profile every day at 4:30 (Hawaii time). The month is the posting date in Hawaii time; star-only reviews count.')
+        + (kr && kr.at ? T('（総合評価 ' + hstTime(kr.at) + ' 時点）',' (overall as of ' + hstTime(kr.at) + ')') : '') + '</div>';
+    } else {
+      /* Business Profile をつなぐまで：月の平均は手入力。Google が返す最近の口コミ（最大 5 件）は見るだけ（残さない） */
+      var pr = (linked && Array.isArray(nd.reviews)) ? nd.reviews : [];
+      var inMonth = pr.filter(function(x){ return hstYm(x.time) === ym; });
+      if (linked) {
+        h += '<div class="k2-note" style="margin-top:10px;font-weight:700;color:var(--tm)">' + T('Google が返す最近の口コミ（最大 5 件・この月の分 ' + inMonth.length + ' 件）','Recent reviews from Google (up to 5 · ' + inMonth.length + ' this month)') + '</div>';
+        if (pr.length) h += '<div class="gr-list" style="max-height:320px;overflow:auto">' + pr.map(function(x){ return reviewRow(x, 'places'); }).join('') + '</div>';
+        else h += '<div class="k2-note">' + T('口コミはありません','No reviews') + '</div>';
+        h += '<div class="k2-note" style="margin-top:4px">' + T('Google マップのデータ・見るたびに Google から取ります（Google の決まりで残しません）','Google Maps data · read from Google each time (not stored, per Google’s terms)') + (nd.at ? '・' + esc(hstTime(nd.at)) : '') + '</div>';
+      } else if (nw && nw.st === 'err') {
+        h += '<div class="k2-note" style="margin-top:8px;color:var(--red)">' + esc(errText(nw.err)) + ' <button class="btn btn-secondary btn-sm" onclick="grRetryNow(\'' + esc(sid) + '\')">' + T('もう一度','Retry') + '</button></div>';
+      }
+      h += '<div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('月はハワイ時間の投稿日で決めます。星だけの口コミも数えます。Business Profile をつなぐまでは、Google の画面で数えて「KPI設定 › 実績入力/対象指定」に入れてください（つないだら自動になります）。',
+        'The month is the posting date in Hawaii time; star-only reviews count. Until Business Profile is connected, count them on Google and enter them in KPI settings › Inputs (it becomes automatic once connected).') + '</div>';
+    }
+    h += '<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">'
+      + ((can && !auto) ? '<button class="btn btn-secondary btn-sm" onclick="window._kpiTab=\'manual\';window._kpiStore=\'' + esc(sid) + '\';window._kpiManualOffset=' + off + ';go(\'kpi_master\')"><i class="ti ti-edit"></i> ' + T('入力する','Enter') + '</button>' : '')
+      + '<a class="btn btn-secondary btn-sm" style="text-decoration:none" href="' + esc(url) + '" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> ' + ((linked || k2GoogleUrlSet(store)) ? T('Google で見る','Open Google') : T('Google マップで探す','Find on Google Maps')) + '</a>'
+      + '</div></div>';
+    return h;
+  };
+
+  /* ---------------------------------------------------------------- KPI設定 › Google の口コミ */
+  function loadStatus(force){
+    if (!canUse()) return;
+    if (G.statusP || (!force && G.status && nowMs() - G.status._at < 60000)) return;
+    /* #151 のレビュー：失敗したら、前に読めた値があっても 2 分待つ（描き直しのたびに読み直さない） */
+    if (!force && G.statusFail && nowMs() - G.statusFail < FAIL_MS) return;
+    var g = G.gen;
+    G.statusSt = G.status ? 'ok' : 'loading';
+    G.statusP = Promise.all([api({ action:'status' }), G.who ? Promise.resolve(G.who) : api({ action:'whoami' })]).then(function(r){
+      if (g !== G.gen) return;
+      G.status = r[0] || {}; G.status._at = nowMs(); G.who = r[1] || null; G.statusSt = 'ok'; G.statusErr = ''; G.statusFail = 0;
+    }, function(err){
+      if (g !== G.gen) return;
+      G.statusSt = G.status ? 'stale' : 'err'; G.statusErr = err.code || 'error'; G.statusFail = nowMs();
+    }).then(function(){ if (g === G.gen) { G.statusP = null; patchCards('-'); } });
+  }
+  function bpLine(bp){
+    var s = bp && bp.status;
+    if (!bp || !bp.connected || s === 'none') return ['var(--muted)', T('つないでいません（会議の月の平均は手入力）','Not connected (the meeting month average is entered by hand)')];
+    if (s === 'pending') return ['var(--amber, #b7791f)', T('つなぎました・Google の審査待ち（口コミはまだ取れません・それまでは手入力）','Connected · waiting for Google approval (reviews cannot be read yet; enter them by hand until then)')];
+    /* #151 のレビュー：取り消されても、取り終えた店は自動のまま（手入力は使わない）。つなぎ直すと止まったところから取る */
+    if (s === 'expired') return ['var(--red)', T('Google で許可が取り消されました。つなぎ直してください（それまで新しい口コミは入りません・つなぎ直すと止まったところから取ります）','Access was revoked in Google. Connect again (no new reviews until then; it continues from where it stopped)')];
+    if (s === 'error') return ['var(--red)', T('読めませんでした','Could not read') + (bp.error ? '（' + esc(bp.error) + '）' : '')];
+    return ['var(--green)', T('つながっています','Connected')];
+  }
+  W.grTabHtml = function(){
+    if (!canUse()) return '<div class="card" data-grtab="1" style="color:var(--muted);font-size:13px">' + T('Google の口コミの設定は、個人の PIN でログインした人だけが見られます（店のタブレットでは見られません）','Only people signed in with their own PIN can see the Google review settings (not on the store tablet)') + '</div>';
+    loadStatus(false);
+    var mgr = isMgr(), S = G.status, who = G.who || {};
+    var h = '<div data-grtab="1">';
+    if (G.st === 'missing' || G.st === 'sql') return h + '<div class="card" style="color:var(--red);font-size:13px">' + esc(errText(G.st === 'sql' ? 'gr_missing' : 'fn_missing')) + '</div></div>';
+    if (!S) return h + '<div class="card" style="font-size:13px;color:' + (G.statusSt === 'err' ? 'var(--red)' : 'var(--muted)') + '">'
+      + (G.statusSt === 'err' ? esc(errText(G.statusErr)) + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button>' : T('読み込み中…','Loading…')) + '</div></div>';
+    var bp = S.bp || {}, bl = bpLine(bp), stores = {}; try{ stores = S.stores || {}; }catch(e){}
+    var run = S.run;
+    /* #151 のレビュー：読み直せなかったときは前に読めた値のまま、そう書く（2 分は読み直さない） */
+    if (G.statusSt === 'stale') h += '<div class="card" style="font-size:12px;color:var(--red)">' + T('最新を読めませんでした（前に読めた内容を出しています）','Could not read the latest (showing what was read before)') + '・' + esc(errText(G.statusErr))
+      + ' <button class="btn btn-secondary btn-sm" onclick="grReloadTab()">' + T('もう一度','Retry') + '</button></div>';
+    /* つなぎ方 */
+    h += '<div class="card"><div class="card-title"><i class="ti ti-plug-connected" style="color:var(--accent)"></i>' + T('つなぎ方','Connections') + '</div>'
+      + '<div class="gr-conn"><div><b>' + T('① 総合評価（Places API）','① Overall rating (Places API)') + '</b><div class="k2-note">' + T('店ごとに Google の店を選ぶと、会議に総合評価と Google が返す最近の口コミ（最大 5 件）が出ます。見るたびに Google から取ります（Google の決まりで残しません）。','Pick the Google place for each store to show the overall rating and up to 5 recent reviews in the meeting. Read from Google each time (not stored, per Google’s terms).') + '</div>'
+        + '<div class="k2-note" style="color:' + (who.places === false ? 'var(--red)' : 'var(--green)') + '">' + (who.places === false ? esc(errText('places_not_configured')) : T('サーバーに鍵が入っています','The server has the key')) + '</div></div>'
+      + '<div><b>' + T('② その月の口コミ（Business Profile API）','② Reviews by month (Business Profile API)') + '</b><div class="k2-note">' + T('自分の店の口コミを毎日 4:30（ハワイ）に取って残し、結んだ店は会議の月の平均・件数が自動になります（手入力は使いません）。Google の審査が要ります。','Reads your own reviews every day at 4:30 (Hawaii) and keeps them; linked stores get the meeting month average and count automatically (no manual entry). Needs Google approval.') + '</div>'
+        + '<div class="k2-note" style="color:' + bl[0] + '">' + bl[1] + (bp.connected && bp.account ? '・' + esc(bp.account) : '') + '</div>'
+        + (bp.last_ok_at ? '<div class="k2-note">' + T('最後に取れた時刻 ','Last read ') + esc(hstTime(bp.last_ok_at)) + T('（ハワイ）',' (Hawaii)') + '</div>' : '')
+        + (run ? '<div class="k2-note">' + T('最後の取り込み ','Last run ') + esc(hstTime(run.at)) + '・' + (run.ok ? T('取れました','OK') : T('取れなかった店があります','Some stores failed')) + '</div>' : '')
+        + (mgr ? '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">'
+          + (!bp.connected || bp.status === 'expired' ? '<button class="btn btn-primary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grConnect()"><i class="ti ti-brand-google"></i> ' + T('Google でログインしてつなぐ','Sign in with Google to connect') + '</button>' : '')
+          + (bp.connected && bp.status !== 'expired' ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grSyncNow()"><i class="ti ti-refresh"></i> ' + T('今すぐ取る','Read now') + '</button>' : '')
+          + (bp.connected ? '<button class="btn btn-secondary btn-sm" ' + (G.busy ? 'disabled' : '') + ' onclick="grDisconnect()">' + T('切る','Disconnect') + '</button>' : '')
+          + '</div>' : '<div class="k2-note">' + T('つなぐ・店を選ぶのは GM・CEO です','GM and CEO connect and pick the places') + '</div>')
+        + '</div></div></div>';
+    /* 店ごと */
+    var list = []; try{ list = (typeof kpiSettableStores === 'function' ? kpiSettableStores() : activeStores()) || []; }catch(e){ list = []; }
+    var auto = (G.kpi && G.kpi.connected && Array.isArray(G.kpi.auto)) ? G.kpi.auto : [];
+    var ym = (typeof k2YmOfOffset === 'function') ? k2YmOfOffset(0) : '';
+    h += '<div class="card"><div class="card-title"><i class="ti ti-building-store" style="color:var(--accent)"></i>' + T('店ごと','By store') + '</div><div class="gr-table" role="table">'
+      + '<div class="gr-tr gr-th" role="row"><div>' + T('店舗','Store') + '</div><div>' + T('Google の店（①）','Google place (①)') + '</div><div>' + T('Business Profile の店（②）','Business Profile location (②)') + '</div><div>' + T('総合評価','Overall') + '</div><div>' + T('今月の平均','This month') + '</div></div>';
+    list.forEach(function(s){
+      if (!s || !sidOk(s.id)) return;
+      var x = stores[s.id] || {}, isAuto = auto.indexOf(s.id) >= 0, mo = isAuto ? W.grMonthOf(s.id, ym) : null, o = isAuto ? W.grOverallOf(s.id) : null;
+      var fy = isAuto ? W.grFromOf(s.id) : null;
+      var sq = esc(s.id);
+      h += '<div class="gr-tr" role="row"><div><b>' + esc(s.name || s.id) + '</b><div class="k2-note">' + (isAuto ? '<span style="color:var(--green)">' + T('自動','Auto') + (fy ? T('（' + fy + ' から）',' (from ' + fy + ')') : '') + '</span>'
+          : (x.loc && bp.connected ? T('手入力（初めて取り終えるまで）','Manual (until the first read)') : T('手入力','Manual'))) + '</div></div>'
+        + '<div data-l="' + esc(T('Google の店（①）','Google place (①)')) + '">' + (x.place ? '<span style="color:var(--green)">' + T('選んであります','Set') + '</span>' : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
+          + (mgr ? ' <button class="btn btn-secondary btn-sm" onclick="grSearchOpen(\'' + sq + '\')">' + (x.place ? T('変える','Change') : T('選ぶ','Pick')) + '</button>' + (x.place ? ' <button class="btn btn-secondary btn-sm" onclick="grPlaceUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
+        + '<div data-l="' + esc(T('Business Profile の店（②）','Business Profile location (②)')) + '">' + (x.loc ? esc(x.title || T('結んであります','Linked')) : '<span class="k2-note">' + T('未設定','Not set') + '</span>')
+          + ((mgr && bp.connected) ? ' <button class="btn btn-secondary btn-sm" onclick="grLocsOpen(\'' + sq + '\')">' + (x.loc ? T('変える','Change') : T('結ぶ','Link')) + '</button>' + (x.loc ? ' <button class="btn btn-secondary btn-sm" onclick="grLocUnset(\'' + sq + '\')">' + T('外す','Remove') + '</button>' : '') : '') + '</div>'
+        + '<div data-l="' + esc(T('総合評価','Overall')) + '">' + (o && o.rating != null ? '★' + o.rating.toFixed(1) + (o.total != null ? ' <span class="k2-note">（' + o.total + '）</span>' : '') : (x.rating != null ? '★' + Number(x.rating).toFixed(1) : '<span class="k2-note">—</span>')) + '</div>'
+        + '<div data-l="' + esc(T('今月の平均','This month')) + '">' + (mo ? (mo.avg != null ? '★' + mo.avg.toFixed(1) + ' <span class="k2-note">（' + mo.cnt + T(' 件',' reviews') + '）</span>' : '<span class="k2-note">' + T('まだなし','None yet') + '</span>') : '<span class="k2-note">' + T('手入力','Manual') + '</span>') + '</div>'
+        + '</div>';
+    });
+    h += '</div><div class="k2-note" style="margin-top:8px;line-height:1.6">' + T('Business Profile の店を結んで口コミを初めて取り終えると、その店は会議の実績（その月の平均・件数）が自動になり、手入力の欄は出なくなります（初めて取り終えた月の前の月から。それより前の月は手入力のまま）。つなぐまでと、Google の審査が通るまでは手入力です。','Once a store is linked to a Business Profile location and its reviews have been read once, the meeting actual (month average and count) becomes automatic and the manual fields go away (from the month before the first read; earlier months stay manual). Until connected and approved by Google, enter them by hand.') + '</div></div>';
+    return h + '</div>';
+  };
+  W.grReloadTab = function(){ loadStatus(true); W.grLoadKpi(true); patchCards('-'); };
+
+  /* ---------------------------------------------------------------- GM・CEO の操作 */
+  async function act(label, fn){
+    if (G.busy) return;
+    G.busy = label; patchCards('-');
+    try { await fn(); }
+    catch(e) { toast(e.message || errText(e.code), 'error'); }
+    finally { G.busy = ''; loadStatus(true); W.grLoadKpi(true); patchCards('-'); }
+  }
+  W.grSearchOpen = function(sid){
+    if (!sidOk(sid) || typeof openModal !== 'function') return;
+    var s = storeOf(sid);
+    G.search = { sid:sid, items:null, err:'' };
+    openModal('<div class="modal-title">' + T('Google の店を選ぶ','Pick the Google place') + '・' + esc(s.name || sid) + '</div>'
+      + '<div style="display:flex;gap:6px;margin:8px 0"><input class="form-input" id="gr-q" maxlength="120" value="' + esc((s.name || '') + ' Hawaii') + '" onkeydown="if(event.key===\'Enter\'&&!event.isComposing){event.preventDefault();grSearchRun();}">'
+      + '<button class="btn btn-primary btn-sm" onclick="grSearchRun()">' + T('探す','Search') + '</button></div>'
+      + '<div id="gr-res" class="k2-note">' + T('名前と地域で探して、合う店を選んでください','Search by name and area, then pick the matching place') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+  };
+  W.grSearchRun = async function(){
+    var S0 = G.search; if (!S0) return;
+    var el = D.getElementById('gr-q'), box = D.getElementById('gr-res'), q = el ? String(el.value || '').trim() : '';
+    if (q.length < 2) { if (box) box.textContent = T('2 文字以上で','At least 2 characters'); return; }
+    if (box) box.textContent = T('探しています…','Searching…');
+    var g = G.gen;
+    try {
+      var j = await api({ action:'places_search', q:q });
+      if (g !== G.gen || G.search !== S0) return;
+      S0.items = (j && Array.isArray(j.items)) ? j.items : [];
+      if (!box) return;
+      box.innerHTML = S0.items.length ? S0.items.map(function(x, i){
+        return '<div class="gr-pick"><div><b>' + esc(x.name) + '</b><div class="k2-note">' + esc(x.address) + '</div>'
+          + '<div class="k2-note">' + (x.rating != null ? '★' + Number(x.rating).toFixed(1) : '—') + (x.count != null ? '（' + x.count + '）' : '') + '</div></div>'
+          + '<button class="btn btn-primary btn-sm" onclick="grSearchPick(' + i + ')">' + T('この店にする','Use this') + '</button></div>';
+      }).join('') + '<div class="k2-note" style="margin-top:6px">' + T('Google マップのデータ','Google Maps data') + '</div>' : T('見つかりませんでした','Nothing found');
+    } catch(e) { if (box && G.search === S0) box.textContent = e.message || errText(e.code); }
+  };
+  W.grSearchPick = function(i){
+    var S0 = G.search, x = S0 && S0.items && S0.items[i];
+    if (!x) return;
+    act('place', async function(){
+      await api({ action:'places_set', store:S0.sid, place_id:x.place_id });
+      delete G.now[S0.sid];
+      try{ closeModalDirect(); }catch(e){}
+      toast(T('Google の店を選びました','The Google place is set'), 'success');
+    });
+  };
+  W.grPlaceUnset = function(sid){
+    if (!sidOk(sid) || !confirm(T('この店の Google の店（総合評価）を外しますか？','Remove the Google place (overall rating) for this store?'))) return;
+    act('place', async function(){ await api({ action:'places_set', store:sid, place_id:null }); delete G.now[sid]; toast(T('外しました','Removed'), 'success'); });
+  };
+  /* Google のログインへ（このタブを Google に移す。戻ってきたらログインし直す） */
+  W.grConnect = function(){
+    if (!confirm(T('Google のログインの画面に移ります。お店の Business Profile を管理している Google アカウントでログインし、「Business Profile の管理」にチェックを入れてください。戻ってきたら、もう一度 PIN でログインしてください。','You will go to the Google sign-in. Sign in with the Google account that manages the Business Profile and check "manage Business Profile". When you come back, log in again with your PIN.'))) return;
+    act('connect', async function(){
+      var j = await api({ action:'bp_connect' });
+      if (!j || typeof j.url !== 'string' || j.url.indexOf('https://accounts.google.com/') !== 0) throw mk('not_configured');
+      W.location.assign(j.url);
+    });
+  };
+  W.grSyncNow = function(){
+    act('sync', async function(){
+      var j = await api({ action:'sync_now' });
+      var bad = (j && Array.isArray(j.stores)) ? j.stores.filter(function(x){ return !x.ok; }) : [];
+      if (j && j.ok) toast(T('取りました（' + ((j.stores || []).length) + ' 店）','Read (' + ((j.stores || []).length) + ' stores)'), 'success');
+      else toast(errText(j && j.error ? j.error : (bad[0] && bad[0].error && /^reviews_(403|429)$/.test(bad[0].error) ? 'bp_pending' : 'bp_failed')), 'error');
+      G.month = {};
+    });
+  };
+  W.grDisconnect = function(){
+    if (!confirm(T('Business Profile を切りますか？ 会議の Google の実績は手入力に戻ります（取った口コミは残ります）','Disconnect Business Profile? The meeting Google actual goes back to manual entry (the reviews already read are kept)'))) return;
+    act('disconnect', async function(){ await api({ action:'bp_disconnect' }); G.month = {}; toast(T('切りました','Disconnected'), 'success'); });
+  };
+  W.grLocsOpen = async function(sid){
+    if (!sidOk(sid) || typeof openModal !== 'function') return;
+    var s = storeOf(sid);
+    G.locs = { sid:sid, items:null };
+    openModal('<div class="modal-title">' + T('Business Profile の店を結ぶ','Link a Business Profile location') + '・' + esc(s.name || sid) + '</div><div id="gr-locs" class="k2-note" style="margin:8px 0">' + T('読み込み中…','Loading…') + '</div>'
+      + '<div style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>');
+    var L0 = G.locs, g = G.gen, box;
+    try {
+      var j = await api({ action:'bp_locations' });
+      if (g !== G.gen || G.locs !== L0) return;
+      L0.items = (j && Array.isArray(j.items)) ? j.items : [];
+      box = D.getElementById('gr-locs'); if (!box) return;
+      box.innerHTML = L0.items.length ? L0.items.map(function(x, i){
+        return '<div class="gr-pick"><div><b>' + esc(x.title || x.location) + '</b><div class="k2-note">' + esc(x.address || '') + '</div></div>'
+          + '<button class="btn btn-primary btn-sm" onclick="grLocPick(' + i + ')">' + T('この店に結ぶ','Link') + '</button></div>';
+      }).join('') : T('Business Profile に店がありません','No locations in Business Profile');
+    } catch(e) { box = D.getElementById('gr-locs'); if (box && G.locs === L0) box.textContent = e.message || errText(e.code); loadStatus(true); }
+  };
+  W.grLocPick = function(i){
+    var L0 = G.locs, x = L0 && L0.items && L0.items[i];
+    if (!x) return;
+    act('link', async function(){
+      await api({ action:'bp_link', store:L0.sid, account:x.account, location:x.location, title:x.title || '' });
+      G.month = {};
+      try{ closeModalDirect(); }catch(e){}
+      toast(T('結びました。次の 4:30 か「今すぐ取る」で口コミが入ります','Linked. Reviews come in at the next 4:30 run or with Read now'), 'success');
+    });
+  };
+  W.grLocUnset = function(sid){
+    if (!sidOk(sid) || !confirm(T('この店の Business Profile の結びを外しますか？ 会議の実績は手入力に戻ります（取った口コミはサーバーに残りますが、数えません）','Unlink Business Profile for this store? The meeting actual goes back to manual (the reviews already read stay on the server but are not counted)'))) return;
+    act('link', async function(){ await api({ action:'bp_link', store:sid, location:null }); G.month = {}; toast(T('外しました','Removed'), 'success'); });
+  };
+
+  /* ---------------------------------------------------------------- 始める・やめる */
+  function onVis(){ if (!D.hidden) kick(); }
+  W.grStart = function(){
+    if (!canUse()) return;
+    var tok = pinTok();
+    if (G.tok && G.tok !== tok) W.grReset();
+    G.tok = tok;
+    if (!G.timer) { try{ G.timer = setInterval(function(){ if (!D.hidden) kick(); }, 60000); }catch(e){} try{ D.addEventListener('visibilitychange', onVis); }catch(e){} }
+    W.grLoadKpi(false);
+    /* Google のログインから戻ってきた：結果を知らせて、GM・CEO なら KPI設定の Google のタブへ */
+    var back = W._grBack; W._grBack = null;
+    if (back) {
+      var m = Object.prototype.hasOwnProperty.call(BACK, back) ? BACK[back] : null;
+      toast(m ? T(m[0], m[1]) : errText(back), (back === 'ok') ? 'success' : (back === 'pending' ? 'info' : 'error'));
+      if (isMgr()) { W._kpiTab = 'google'; try{ go('kpi_master'); }catch(e){} }
+    }
+  };
+  W.grReset = function(){
+    try{ if (G.timer) clearInterval(G.timer); }catch(e){}
+    try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    G = fresh(G.gen + 1);
+  };
+  try{
+    if (!D.getElementById('gr-css')) {
+      var cs = D.createElement('style'); cs.id = 'gr-css';
+      cs.textContent = '.gr-list{border:1px solid var(--border);border-radius:10px;padding:0 10px;margin-top:6px}'
+        + '.gr-rv{padding:8px 0;border-top:1px solid var(--border)}.gr-rv:first-child{border-top:0}'
+        + '.gr-rv-h{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12px}'
+        + '.gr-st{color:#c98a06;letter-spacing:1px;font-size:13px}'
+        + '.gr-rv-t{font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word;margin-top:2px}'
+        + '.gr-conn{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}'
+        + '.gr-table .gr-tr{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.4fr) minmax(0,1.6fr) minmax(0,.8fr) minmax(0,1fr);gap:8px;padding:9px 0;border-top:1px solid var(--border);font-size:12.5px;align-items:center}'
+        + '.gr-table .gr-th{font-weight:700;color:var(--muted);border-top:0;font-size:11.5px}'
+        + '.gr-pick{display:flex;gap:10px;justify-content:space-between;align-items:center;padding:8px 0;border-top:1px solid var(--border)}'
+        + '@media (max-width:820px){.gr-conn{grid-template-columns:minmax(0,1fr)}.gr-table .gr-tr{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.gr-table .gr-th{display:none}.gr-table .gr-tr>div[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;font-weight:700;color:var(--muted);margin-bottom:2px}}';
+      (D.head || D.body).appendChild(cs);
+    }
+  }catch(e){}
+  /* Google のログインから戻ってきたとき、アドレスの結果（?google_bp=…）を取り出して消す（ログインのあとで知らせる） */
+  try{
+    var u = new URL(W.location.href), b = u.searchParams.get('google_bp');
+    if (b != null) {
+      W._grBack = /^[a-z_]{1,40}$/.test(b) ? b : 'error';
+      u.searchParams.delete('google_bp');
+      W.history.replaceState(W.history.state, '', u.pathname + (u.searchParams.toString() ? '?' + u.searchParams.toString() : '') + u.hash);
+    }
+  }catch(e){}
+})();
+/* ==== FUNERGY_GR end ==== */
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>
