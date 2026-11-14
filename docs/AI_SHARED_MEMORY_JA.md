@@ -6,7 +6,7 @@
 - 済（Claude）P2 #155・#156 の Codex（6880266210・6880661922）：Storage の確かめ（`20261124090000` の最初・① の 3・4・③ の 8）が、anon・authenticated が入っているロール宛ての決まりも `pg_has_role(…, 'MEMBER')` で見る。storage.objects の RLS が OFF・anon か authenticated が BYPASSRLS なら止める（① の 6・③ の 10・新しい）。`docs/CHAT_FILES_V1161_JA.md` の 7。
 - 済（Claude）P2 #153 の Codex（6880375329）：`wr_s3_import` が書く前に予算の店・月の鍵（`wr_bg:<店>:<月>`）を全部文字の順で取ってから確かめる（同じ店・月の承認待ちは 1 件）。`docs/WORKCENTER_APPROVALS_STAGE3_JA.md` の「11/14 の直し」。
 - 試験（合成データ）：`tests/wc-stage3-lock-pg-v1163.test.mjs`（本物の PostgreSQL の 2 セッション・3 件。直す前の SQL で 3 件とも落ちる・確かめるときだけ鍵を取る形で 3 件目が落ちる）・chat-files deploy 8・stage3 deploy＋server＋app 15。CI に本物の PostgreSQL の段を足した（skipped 0 を確かめる）。
-- 本番に入れる：`deploy/codex-p2-20261114/手順.md`（添付の ③ を読むだけで流す → 段階 3 の ①②③）。関数・アプリの貼り替えは無い。
+- 本番に入れる：`deploy/codex-p2-20261114/手順.md`（添付の ③ を読むだけで流す → 段階 3 の ①②③）。関数・アプリの貼り替えは無い。済（Moto さん 11/14 07:48 HST「全部入れました、問題なし」）：この PR の前に、Claude が直接渡した同じ中身の 4 ファイル（添付の ③・段階 3 の ①②③）を本番に流した＝添付の ③ の 8・10 が OK（ロール経由の決まり・RLS の OFF・BYPASSRLS は本番に無い＝公開の鍵で chat-files は読めない）・段階 3 の ③ の 6 が OK（直した wr_s3_import が本番に入った）。
 - レビュー：まだ（Codex に最新の head を見てもらう）。
 - 開いたまま（あとで）：P3 2 つ（添付の一覧の文の英語 `chat_files_label`・Google の返信の有無が同じ更新時刻で戻りうる）・UI案76・区分の分からない 3 科目・Google Cloud の準備と Business Profile の接続。
 
