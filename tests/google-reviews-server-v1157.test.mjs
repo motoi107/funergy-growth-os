@@ -633,3 +633,53 @@ test('#151 a month with more than 200 reviews: 200 at a time, every review is re
   for (const before of [{ c: 'x', h: 'a'.repeat(32) }, { c: '2026-11-01T00:00:00Z', h: 'zz' }, 'abc'])
     assert.equal((await s.call('E8', { action: 'month', store: 'S1', ym: '2026-11', before })).status, 400, JSON.stringify(before));
 });
+
+// #155 の Codex（6876878458）の 3：重なった 2 つの取り込み。古い一覧（★1）を読んだ取り込みがあとから入れても、
+// あとで始めた取り込みの入れた新しい値（★5・総合評価 5）を戻さない。前の関数（started なし）は今までどおり
+test('#155 overlapping reads: an older read that saves last does not put back an older star, comment or overall rating', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'ONE', '2026-11-05T02:00:00Z')];
+  const k = await s.key();
+  assert.equal((await s.worker(k)).body.ok, true);
+  const orig = s.db.rpc;
+  let hold = null, held = null;
+  s.db.rpc = async function (n, p) { if (n === 'gr_reviews_put' && hold) { const h = hold; hold = null; held(); await h; } return orig.call(this, n, p); };
+  const row = async () => { await s.pg.exec('reset role'); const r = (await s.pg.query("select rating, comment, updated from public.gr_reviews where name like '%/r1'")).rows[0]; await s.pg.exec('set role service_role'); return r; };
+  // A：★1 の一覧を読み、入れる直前で止まる
+  let release; hold = new Promise(r => { release = r; }); const atPut = new Promise(r => { held = r; });
+  const a = s.worker(k);
+  await atPut;
+  // Google で★1 が★5 に直され、B が最後まで取る
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'FIVE', '2026-11-05T02:00:00Z', { updated: '2026-11-08T02:00:00Z' })];
+  s.g.reviews[LOC1][0].comment = 'now great';
+  const b = await s.worker(k);
+  assert.equal(b.body.ok, true, b.text);
+  assert.equal((await row()).rating, 5);
+  // A を続ける：★1・前の本文・総合評価 1 を戻さない
+  release();
+  const ra = await a;
+  assert.equal(ra.body.ok, true, ra.text);
+  const r = await row();
+  assert.equal(r.rating, 5, 'the newer star is kept');
+  assert.equal(r.comment, 'now great', 'the newer comment is kept');
+  assert.equal(new Date(r.updated).toISOString(), '2026-11-08T02:00:00.000Z');
+  let kp = await s.ok('E8', { action: 'kpi' });
+  assert.deepEqual(kp.months['2026-11'], { S1: { avg: 5, cnt: 1 } }, 'the month average stays 5');
+  assert.equal(kp.overall.S1.rating, 5, 'the overall rating stays 5');
+  // そのあとの取り込みで Google が★3 に直されたら、ふつうに直る
+  s.db.rpc = orig;
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'THREE', '2026-11-05T02:00:00Z', { updated: '2026-11-09T02:00:00Z' })];
+  assert.equal((await s.worker(k)).body.ok, true);
+  assert.equal((await row()).rating, 3);
+  kp = await s.ok('E8', { action: 'kpi' });
+  assert.equal(kp.overall.S1.rating, 3);
+  // 前の関数（started を送らない）は今までどおり書く
+  await s.db.rpc('gr_reviews_put', { store: 'S1', location: LOC1, items: [], rating: 4, total: 9 });
+  kp = await s.ok('E8', { action: 'kpi' });
+  assert.deepEqual([kp.overall.S1.rating, kp.overall.S1.total], [4, 9]);
+  // started の形が違う・未来・1 日より前は断る
+  for (const started of [5, 'x', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z'])
+    await assert.rejects(s.db.rpc('gr_reviews_put', { store: 'S1', location: LOC1, items: [], started }), /bad_value/, String(started));
+});

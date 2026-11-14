@@ -30,6 +30,9 @@ union all select '10. 1 つの Business Profile の店は 1 つの店だけ（�
 union all select '11. 消された口コミは 2 回続けて無いときだけ消す（gone_at の欄・重なった取り込みの守り）',
   case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'gr_reviews' and column_name = 'gone_at')
         and exists (select 1 from f where proname = 'gr_reviews_prune' and pg_get_functiondef(f.oid) like '%started%') then 'OK' else 'NG（② をもう一度）' end
+union all select '12. 古い取り込みがあとから入れても新しい星・総合評価を戻さない（rating_from の欄・gr_reviews_put）',
+  case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'gr_bp_loc' and column_name = 'rating_from')
+        and exists (select 1 from f where proname = 'gr_reviews_put' and pg_get_functiondef(f.oid) like '%rating_from%') then 'OK' else 'NG（② をもう一度）' end
 union all select '（参考）Business Profile のつなぎ',
   case when to_regclass('public.gr_bp') is null then '—'
     else (xpath('/table/row/v/text()', query_to_xml('select status v from public.gr_bp where id = 1', false, false, '')))[1]::text end
