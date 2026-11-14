@@ -6,9 +6,9 @@ select '1. ワークセンターの申請の段階 2（v1155）が入ってい�
 union all select '2. チャットの表の数（0 なら初めて・5 ならもう入っている＝もう一度流しても同じ）',
   (select count(*)::text from pg_class c join pg_namespace n on n.oid = c.relnamespace
     where n.nspname = 'public' and c.relkind = 'r' and c.relname in ('chat_threads','chat_members','chat_messages','chat_sig','chat_sig_owner'))
-union all select '3. 同じ名前のほかの表・関数が無い（chat_ で始まる、この SQL が作らないもの）',
+union all select '3. 同じ名前のほかの表・関数が無い（chat_ で始まる、この SQL が作らないもの。添付の chat_files（v1161）は除く）',
   case when (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r','v','m')
-      and c.relname like 'chat\_%' and c.relname not in ('chat_threads','chat_members','chat_messages','chat_sig','chat_sig_owner')) = 0
+      and c.relname like 'chat\_%' and c.relname not in ('chat_threads','chat_members','chat_messages','chat_sig','chat_sig_owner','chat_files')) = 0
     then 'OK' else 'STOP（chat_ で始まる別の表がある。Claude に名前を）' end
 union all select '4. Realtime（supabase_realtime）がある（無くても動く：1 分ごとに確かめる）',
   case when exists (select 1 from pg_publication where pubname = 'supabase_realtime') then 'OK' else 'OK（無い：Realtime なしで動く）' end
