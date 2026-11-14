@@ -304,3 +304,121 @@ test('server or SQL missing: the settings tab says so and the meeting stays manu
   assert.match(b.ctx.grTabHtml(), /SQL）がまだ入っていません/);
   void s;
 });
+
+// ---------------------------------------------------------------- #151 のレビュー（Codex・Claude）の直し
+test('#151 settings: a failed read with an older status waits 2 minutes instead of asking again on every redraw (503 ten times)', async () => {
+  const s = await server();
+  let fail = 0, statusCalls = 0;
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    if (body.action === 'status') { statusCalls++; if (fail > 0) { fail--; return new Response(JSON.stringify({ error: 'x' }), { status: 503 }); } }
+    return s.handler(req);
+  } };
+  const a = await app(wrap, 'E2', { role: 'gm' });
+  // 設定のタブが画面にあるとき：描き直すと grTabHtml が呼ばれる（Codex の再現と同じ形）
+  const tab = { getAttribute: () => '1', set outerHTML(v) { tab.n = (tab.n || 0) + 1; } };
+  a.D.querySelectorAll = sel => (sel === '[data-grtab]' ? [tab] : []);
+  a.ctx.grStart(); a.ctx.grTabHtml(); await a.idle();
+  assert.ok(a.S().status, 'read once');
+  const n0 = statusCalls;
+  a.S().status._at = 0; fail = 10;          // 古くなった・ここから 10 回 503
+  a.ctx.grTabHtml(); await a.idle(); await sleep(40); await a.idle();
+  assert.equal(statusCalls - n0, 1, 'one request, then it waits (before: 11 requests in 27 ms)');
+  assert.equal(a.S().statusSt, 'stale');
+  assert.match(a.ctx.grTabHtml(), /最新を読めませんでした（前に読めた内容を出しています）/);
+  assert.match(a.ctx.grTabHtml(), /つなぎ方/, 'the older status is still shown');
+  // 「もう一度」は待たずに読む
+  fail = 0; a.ctx.grReloadTab(); await a.idle();
+  assert.equal(statusCalls - n0, 2); assert.equal(a.S().statusSt, 'ok');
+  assert.ok(!/最新を読めませんでした/.test(a.ctx.grTabHtml()));
+});
+
+test('#151 the meeting data (kpi): a failed read with an older value waits 2 minutes, it does not ask again on every card', async () => {
+  const s = await server();
+  let fail = false, kpiCalls = 0;
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    if (body.action === 'kpi') { kpiCalls++; if (fail) return new Response(JSON.stringify({ error: 'x' }), { status: 503 }); }
+    return s.handler(req);
+  } };
+  const a = await app(wrap, 'E8');
+  a.ctx.grStart(); await a.idle();
+  const n0 = kpiCalls;
+  a.S().kpiAt = 0; fail = true;
+  for (let i = 0; i < 6; i++) { a.ctx.grAuto('S1'); await a.idle(); }
+  assert.equal(kpiCalls - n0, 1, 'one failed read, then it waits');
+  assert.ok(a.ctx.grAuto('S1'), 'the older value is still used');
+});
+
+test('#151 a month with more reviews than one page: the card says how many are shown and reads the rest 200 at a time; a late answer after a reload is dropped', async () => {
+  const s = await server();
+  await s.pg.exec('reset role');
+  for (let i = 0; i < 443; i++) await s.pg.query(`insert into public.gr_reviews (name, store_id, rating, comment, reviewer, created, updated, ym) values ($1,'S1',4,$2,'X',$3,$3,'2026-11')`,
+    [`${ACC}/${LOC1}/reviews/m${i}`, 'many ' + i, new Date(Date.parse('2026-11-12T00:00:00Z') - Math.floor(i / 2) * 60000).toISOString()]);
+  await s.pg.exec('set role service_role');
+  const a = await app(s, 'E8');
+  a.ctx.grStart(); await a.idle();
+  a.ctx.grCardHtml({ id: 'S1', name: 'Store One' }, '2026-11'); await a.idle();
+  let h = a.ctx.grCardHtml({ id: 'S1', name: 'Store One' }, '2026-11');
+  assert.match(h, /450 件のうち 200 件を表示/);
+  assert.match(h, /続きを読む（残り 250 件）/);
+  assert.equal((h.match(/class="gr-rv"/g) || []).length, 200);
+  a.ctx.grMoreMonth('S1', '2026-11'); await a.idle();
+  h = a.ctx.grCardHtml({ id: 'S1', name: 'Store One' }, '2026-11');
+  assert.match(h, /450 件のうち 400 件を表示/);
+  a.ctx.grMoreMonth('S1', '2026-11'); await a.idle();
+  h = a.ctx.grCardHtml({ id: 'S1', name: 'Store One' }, '2026-11');
+  assert.match(h, /この月の口コミ（すべて・新しい順）（450）/);
+  assert.ok(!/続きを読む/.test(h));
+  const items = a.S().month['S1|2026-11'].data.items;
+  assert.equal(new Set(items.map(x => x.h)).size, 450, 'each review once');
+});
+
+test('#151 reading more: a late "more" answer after a reload is dropped; an overlapping page does not show a review twice', async () => {
+  const s = await server();
+  await s.pg.exec('reset role');
+  for (let i = 0; i < 443; i++) await s.pg.query(`insert into public.gr_reviews (name, store_id, rating, comment, reviewer, created, updated, ym) values ($1,'S1',4,$2,'X',$3,$3,'2026-11')`,
+    [`${ACC}/${LOC1}/reviews/m${i}`, 'many ' + i, new Date(Date.parse('2026-11-12T00:00:00Z') - Math.floor(i / 2) * 60000).toISOString()]);
+  await s.pg.exec('set role service_role');
+  let hold = null, overlap = false;
+  const wrap = { handler: async req => {
+    const body = await req.clone().json();
+    const r = await s.handler(req);
+    if (body.action === 'month' && body.before) {
+      if (hold) await hold;
+      if (overlap) { const j = await r.json(); const first = { ...body }; delete first.before;
+        const prev = (await (await s.handler(new Request(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(first) }))).json()).items;
+        j.items = [prev[prev.length - 1]].concat(j.items); return new Response(JSON.stringify(j), { status: 200 }); }
+    }
+    return r;
+  } };
+  const a = await app(wrap, 'E8');
+  a.ctx.grStart(); await a.idle();
+  a.ctx.grCardHtml({ id: 'S1', name: 'Store One' }, '2026-11'); await a.idle();
+  // 続きの答えを止めて、そのあいだに読み直す：読み直しが先に届き、遅れて届いた続きは使わない
+  let release; hold = new Promise(r => { release = r; });
+  a.ctx.grMoreMonth('S1', '2026-11'); await sleep(20);
+  a.ctx.grRetryMonth('S1', '2026-11');
+  // 続きの答えは止まったまま（idle は待てない）：読み直しが届くまで待つ
+  for (let i = 0; i < 300 && a.S().month['S1|2026-11'].st !== 'ok'; i++) await sleep(10);
+  assert.equal(a.S().month['S1|2026-11'].st, 'ok');
+  assert.equal(a.S().month['S1|2026-11'].data.items.length, 200);
+  hold = null; release(); await a.idle();
+  assert.equal(a.S().month['S1|2026-11'].data.items.length, 200, 'the late "more" answer is dropped');
+  // 重なったページ（前のページの最後の 1 件がもう一度来る）：同じ口コミは 1 回だけ
+  overlap = true;
+  a.ctx.grMoreMonth('S1', '2026-11'); await a.idle();
+  const items = a.S().month['S1|2026-11'].data.items;
+  assert.equal(items.length, 400); assert.equal(new Set(items.map(x => x.h)).size, 400);
+});
+
+test('#151 revoked access: the settings line no longer says the hand entry is used (the read stores stay automatic)', async () => {
+  const s = await server();
+  await s.pg.exec("reset role; update public.gr_bp set status = 'expired'; set role service_role");
+  const a = await app(s, 'E2', { role: 'gm' });
+  a.ctx.grStart(); a.ctx.grTabHtml(); await a.idle();
+  const h = a.ctx.grTabHtml();
+  assert.match(h, /それまで新しい口コミは入りません・つなぎ直すと止まったところから取ります/);
+  assert.ok(!/それまでは手入力/.test(h.replace(/審査待ち[^<]*/g, '')));
+  assert.ok(a.ctx.grAuto('S1'), 'still automatic, as the text now says');
+});

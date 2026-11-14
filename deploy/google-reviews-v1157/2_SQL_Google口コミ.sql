@@ -69,6 +69,8 @@ create table if not exists public.gr_reviews (
   seen_at timestamptz not null default now()
 );
 create index if not exists gr_reviews_store_ym on public.gr_reviews (store_id, ym);
+-- #151 のレビュー：1 つの Business Profile の店は 1 つの店にだけ（同時に結んでも 2 つにならない）
+create unique index if not exists gr_bp_loc_location on public.gr_bp_loc (location);
 
 -- 取った記録（200 件まで）
 create table if not exists public.gr_runs (
@@ -207,7 +209,7 @@ end $$;
 
 create or replace function public.gr_loc_set(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
-declare w jsonb := public.gr_who(p); s text := p->>'store';
+declare w jsonb := public.gr_who(p); s text := p->>'store'; pat text;
 begin
  if s is null or s !~ '^[A-Za-z0-9_-]{1,30}$' then raise exception 'bad_value'; end if;
  if p->'location' is null or jsonb_typeof(p->'location') = 'null' then
@@ -226,9 +228,14 @@ begin
      total = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.total end,
      rating_at = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.rating_at end,
      from_ym = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.from_ym end;
+ -- 口コミは Business Profile の店（location）のもの。名前は accounts/…/locations/…/reviews/…
+ pat := 'accounts/%/' || (p->>'location') || '/reviews/%';
  -- 結び直したら、前の店の口コミはこの店のものではない
- delete from public.gr_reviews r where r.store_id = s and r.name not like (p->>'account') || '/' || (p->>'location') || '/reviews/%';
+ delete from public.gr_reviews r where r.store_id = s and r.name not like pat;
+ -- #151 のレビュー：ほかの店から外してこの店に結び直したときは、その location の口コミもこの店へ（前の店に残さない）
+ update public.gr_reviews r set store_id = s where r.name like pat and r.store_id <> s;
  return jsonb_build_object('store', s, 'loc', true);
+exception when unique_violation then raise exception 'conflict';   -- 同時に別の店へ結んだ
 end $$;
 
 create or replace function public.gr_locs(p jsonb) returns jsonb
@@ -242,7 +249,7 @@ create or replace function public.gr_reviews_put(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare s text := p->>'store'; l public.gr_bp_loc; x jsonb; n int := 0; pre text;
 begin
- select * into l from public.gr_bp_loc where store_id = s;
+ select * into l from public.gr_bp_loc where store_id = s for update;   -- 結び直しと重ならない（#151 のレビュー）
  if l.store_id is null then raise exception 'not_found'; end if;
  if (p->>'location') is distinct from l.location then raise exception 'conflict'; end if;   -- 取っているあいだに結び直された
  pre := l.account || '/' || l.location || '/reviews/';
@@ -253,7 +260,8 @@ begin
    values (x->>'name', s, (x->>'rating')::int, left(nullif(x->>'comment', ''), 6000), left(nullif(x->>'reviewer', ''), 200),
            (x->>'created')::timestamptz, (x->>'updated')::timestamptz, public.gr_hst_ym((x->>'created')::timestamptz),
            coalesce((x->>'replied')::boolean, false), now())
-   on conflict (name) do update set rating = excluded.rating, comment = excluded.comment, reviewer = excluded.reviewer,
+   on conflict (name) do update set store_id = excluded.store_id, ym = excluded.ym, created = excluded.created,   -- 結び直した店へ移す（#151 のレビュー）
+     rating = excluded.rating, comment = excluded.comment, reviewer = excluded.reviewer,
      updated = excluded.updated, replied = excluded.replied, seen_at = now();
    n := n + 1;
  end loop;
@@ -267,6 +275,27 @@ begin
    rating_at = case when jsonb_typeof(p->'rating') = 'number' then now() else rating_at end
   where store_id = s;
  return jsonb_build_object('store', s, 'put', n);
+end $$;
+
+-- #151 のレビュー：Google で消された口コミを消す。関数が since から後に直された口コミを最後まで読めたときだけ呼ぶ
+--   （途中で失敗・ページの上限で止まったときは呼ばない）。since より後に直された（または投稿された）口コミで、いま Google に無いもの＝消されたもの。
+--   since は 100 日より前にしない（まちがって多く消さない）。この店の、結んでいる location の口コミだけ。
+create or replace function public.gr_reviews_prune(p jsonb) returns jsonb
+language plpgsql volatile security invoker set search_path = public, pg_temp as $$
+declare s text := p->>'store'; l public.gr_bp_loc; since timestamptz; n int := 0;
+begin
+ if jsonb_typeof(p->'names') <> 'array' or jsonb_typeof(p->'since') <> 'string' then raise exception 'bad_value'; end if;
+ begin since := (p->>'since')::timestamptz; exception when others then raise exception 'bad_value'; end;
+ if since < now() - interval '100 days' or since > now() then raise exception 'bad_value'; end if;
+ select * into l from public.gr_bp_loc where store_id = s for update;
+ if l.store_id is null then raise exception 'not_found'; end if;
+ if (p->>'location') is distinct from l.location then raise exception 'conflict'; end if;
+ delete from public.gr_reviews r
+  where r.store_id = s and r.name like 'accounts/%/' || l.location || '/reviews/%'
+    and coalesce(r.updated, r.created) >= since
+    and not exists (select 1 from jsonb_array_elements_text(p->'names') x where x = r.name);
+ get diagnostics n = row_count;
+ return jsonb_build_object('store', s, 'pruned', n);
 end $$;
 
 -- 会議・KPI の実績：Business Profile に結んだ店だけ（auto）。月ごとの平均・件数（ハワイ時間の投稿日）
@@ -290,19 +319,34 @@ language sql stable security invoker set search_path = public, pg_temp as $$
                            from public.gr_bp_loc l where l.rating is not null), '{}'::jsonb))
 $$;
 
--- その月の口コミ（新しい順・500 件まで）
+-- その月の口コミ（新しい順）。#151 のレビュー：200 件ずつ。続きは next（{c: 投稿時刻, h: 名前の md5}）を before に渡す
 create or replace function public.gr_month(p jsonb) returns jsonb
 language plpgsql stable security invoker set search_path = public, pg_temp as $$
-declare s text := p->>'store'; m text := p->>'ym';
+declare s text := p->>'store'; m text := p->>'ym'; bc timestamptz; bh text; lim int := 200; rows jsonb; last jsonb; more boolean;
 begin
  if s is null or s !~ '^[A-Za-z0-9_-]{1,30}$' or m is null or m !~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' then raise exception 'bad_value'; end if;
- return (select jsonb_build_object('store', s, 'ym', m,
+ if p->'before' is not null and jsonb_typeof(p->'before') <> 'null' then
+   if jsonb_typeof(p->'before') <> 'object' or coalesce(p->'before'->>'h', '') !~ '^[0-9a-f]{32}$' then raise exception 'bad_value'; end if;
+   begin bc := (p->'before'->>'c')::timestamptz; exception when others then raise exception 'bad_value'; end;
+   if bc is null then raise exception 'bad_value'; end if;
+   bh := p->'before'->>'h';
+ end if;
+ select coalesce(jsonb_agg(jsonb_build_object('rating', r.rating, 'comment', r.comment, 'reviewer', r.reviewer,
+        'created', r.created, 'updated', r.updated, 'replied', r.replied, 'h', r.h) order by r.created desc, r.h desc), '[]'::jsonb)
+   into rows
+   from (select g.*, md5(g.name) h from public.gr_reviews g where g.store_id = s and g.ym = m
+            and (bc is null or (g.created, md5(g.name)) < (bc, bh))
+          order by g.created desc, md5(g.name) desc limit lim + 1) r;
+ more := jsonb_array_length(rows) > lim;
+ if more then rows := rows - lim; end if;
+ last := case when more then rows->(jsonb_array_length(rows) - 1) end;
+ return jsonb_build_object('store', s, 'ym', m,
    'linked', exists (select 1 from public.gr_bp_loc where store_id = s),
    'avg', (select round(avg(rating)::numeric, 2) from public.gr_reviews where store_id = s and ym = m),
    'cnt', (select count(*) from public.gr_reviews where store_id = s and ym = m),
-   'items', coalesce((select jsonb_agg(jsonb_build_object('rating', r.rating, 'comment', r.comment, 'reviewer', r.reviewer,
-        'created', r.created, 'updated', r.updated, 'replied', r.replied) order by r.created desc)
-      from (select * from public.gr_reviews where store_id = s and ym = m order by created desc limit 500) r), '[]'::jsonb)));
+   'items', rows,
+   'more', more,
+   'next', case when more then jsonb_build_object('c', last->'created', 'h', last->'h') end);
 end $$;
 
 create or replace function public.gr_run_log(p jsonb) returns jsonb
@@ -314,7 +358,7 @@ begin
 end $$;
 
 create or replace function public.gr_stage(p jsonb) returns jsonb
-language sql stable security invoker set search_path = public, pg_temp as $$ select jsonb_build_object('gr', 1) $$;
+language sql stable security invoker set search_path = public, pg_temp as $$ select jsonb_build_object('gr', 2) $$;   -- 2：#151 のレビューの直し（消された口コミ・続きを読む）
 
 do $$
 declare f record;

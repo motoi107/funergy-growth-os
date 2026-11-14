@@ -9,8 +9,8 @@ union all select '2. 表はどれも RLS が ON',
 union all select '3. 公開の鍵（anon・authenticated）は表を読めない・書けない',
   case when exists (select 1 from t, unnest(array['anon','authenticated']) r(role), unnest(array['SELECT','INSERT','UPDATE','DELETE']) pr(priv)
       where to_regclass('public.' || t.n) is not null and has_table_privilege(r.role, 'public.' || t.n, pr.priv)) then 'NG（Claude に）' else 'OK' end
-union all select '4. 関数 gr_* が 19 個・どれもサーバーの鍵で動く（security definer でない）',
-  case when (select count(*) from f) = 19 and not exists (select 1 from f where prosecdef) then 'OK'
+union all select '4. 関数 gr_* が 20 個・どれもサーバーの鍵で動く（security definer でない）',
+  case when (select count(*) from f) = 20 and not exists (select 1 from f where prosecdef) then 'OK'
     else 'NG（' || (select count(*) from f) || ' 個）' end
 union all select '5. 公開の鍵（anon・authenticated）は関数 gr_* を呼べない',
   case when exists (select 1 from f, unnest(array['anon','authenticated']) r(role) where has_function_privilege(r.role, f.oid, 'EXECUTE'))
@@ -24,7 +24,9 @@ union all select '8. 毎日の取り込みの鍵ができている（中身は�
     else (xpath('/table/row/v/text()', query_to_xml('select case when length(worker_key) >= 32 then ''OK'' else ''NG'' end v from public.gr_settings where id = 1', false, false, '')))[1]::text end
 union all select '9. 段（gr_stage）',
   case when to_regprocedure('public.gr_stage(jsonb)') is null then 'NG'
-    else (xpath('/table/row/v/text()', query_to_xml('select case when public.gr_stage(''{}''::jsonb)->>''gr'' = ''1'' then ''OK'' else ''NG'' end v', false, false, '')))[1]::text end
+    else (xpath('/table/row/v/text()', query_to_xml('select case when public.gr_stage(''{}''::jsonb)->>''gr'' = ''2'' then ''OK'' else ''NG'' end v', false, false, '')))[1]::text end
+union all select '10. 1 つの Business Profile の店は 1 つの店だけ（索引 gr_bp_loc_location）',
+  case when to_regclass('public.gr_bp_loc_location') is not null then 'OK' else 'NG（② をもう一度）' end
 union all select '（参考）Business Profile のつなぎ',
   case when to_regclass('public.gr_bp') is null then '—'
     else (xpath('/table/row/v/text()', query_to_xml('select status v from public.gr_bp where id = 1', false, false, '')))[1]::text end

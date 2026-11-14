@@ -127,7 +127,7 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
   assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_places', 'gr_reviews', 'gr_runs', 'gr_settings']);
   for (const t of tables) assert.equal((await pg.query(`select relrowsecurity r from pg_class where relname=$1`, [t])).rows[0].r, true, t);
   const fns = (await pg.query(`select proname, prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows;
-  assert.equal(fns.length, 19);
+  assert.equal(fns.length, 20);
   assert.ok(fns.every(f => !f.prosecdef), 'security invoker');
   for (const role of ['anon', 'authenticated']) {
     await pg.exec(`set role ${role}`);
@@ -135,9 +135,9 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
     for (const f of ['gr_kpi', 'gr_status', 'gr_worker_key', 'gr_bp_creds', 'gr_reviews_put']) await assert.rejects(pg.query(`select public.${f}('{}'::jsonb)`), /permission denied/, role + ' ' + f);
     await pg.exec('reset role');
   }
-  // 19 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
+  // 20 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
   const sigs = (await pg.query(`select p.oid::regprocedure::text sig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows.map(r => r.sig);
-  assert.equal(sigs.length, 19);
+  assert.equal(sigs.length, 20);
   for (const sig of sigs) {
     for (const role of ['anon', 'authenticated']) assert.equal((await pg.query(`select has_function_privilege($1, $2, 'execute') v`, [role, sig])).rows[0].v, false, role + ' ' + sig);
     assert.equal((await pg.query(`select has_function_privilege('service_role', $1, 'execute') v`, [sig])).rows[0].v, true, sig);
@@ -321,10 +321,12 @@ test('daily sync: reviews by Hawaii month, all of them kept, again is the same; 
   assert.equal((await s.pg.query('select count(*)::int n from public.gr_reviews')).rows[0].n, 124);
   assert.ok((await s.pg.query('select count(*)::int n from public.gr_runs')).rows[0].n >= 2);
   await s.pg.exec('set role service_role');
-  // 2 回目は最後に取れた時刻の 3 日前から：古いページまで行かない
+  // 2 回目からも、消された口コミに気づくために前の月の初め（ハワイ）までは読む（#151 のレビュー）。それより古いページは読まない
   const callsBefore = s.g.calls.length; await s.worker(k);
   const pages = s.g.calls.slice(callsBefore).filter(u => u.includes(LOC2 + '/reviews')).length;
-  assert.ok(pages >= 1 && pages < 3, 'stops once it reaches older reviews (3 days back), not all 3 pages: ' + pages);
+  assert.equal(pages, 3, 'the 120 November reviews are all after the start of October: 3 pages');
+  const p1 = s.g.calls.slice(callsBefore).filter(u => u.includes(LOC1 + '/reviews')).length;
+  assert.equal(p1, 1, 'one page is enough for S1');
   // 審査待ち（403）：口コミは取れない・状態は pending・前の口コミは残る
   s.g.reviewsStatus = 403;
   const r3 = await s.worker(k);
@@ -433,4 +435,107 @@ test('a store relinked while its reviews are being read: nothing is written for 
   await s.worker(k);
   const k2 = await s.ok('E8', { action: 'kpi' });
   assert.deepEqual(k2.auto, ['S1']); assert.deepEqual(k2.months['2026-11'], { S1: { avg: 3, cnt: 1 } });
+});
+
+// ---------------------------------------------------------------- #151 のレビュー（Claude・Codex）の直し
+test('#151 relink: a location moved from one store to another takes its reviews with it (they do not stay with the old store)', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'FIVE', '2026-11-05T02:00:00Z'), rv(LOC1, 2, 'THREE', '2026-11-06T02:00:00Z')];
+  const k = await s.key();
+  await s.worker(k);
+  assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 4, cnt: 2 } });
+  // まちがえて S1 に結んだ：外して S2 へ
+  await s.ok('E2', { action: 'bp_link', store: 'S1', location: null });
+  await s.ok('E2', { action: 'bp_link', store: 'S2', account: ACC, location: LOC1 });
+  await s.pg.exec('reset role');
+  assert.deepEqual((await s.pg.query('select store_id, count(*)::int n from public.gr_reviews group by 1')).rows, [{ store_id: 'S2', n: 2 }], 'moved when linked');
+  await s.pg.exec('set role service_role');
+  await s.worker(k);
+  const kp = await s.ok('E8', { action: 'kpi' });
+  assert.deepEqual(kp.auto, ['S2']); assert.deepEqual(kp.months['2026-11'], { S2: { avg: 4, cnt: 2 } });
+  const m2 = await s.ok('E8', { action: 'month', store: 'S2', ym: '2026-11' });
+  assert.deepEqual([m2.linked, m2.cnt, m2.items.length], [true, 2, 2]);
+  const m1 = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11' });
+  assert.deepEqual([m1.linked, m1.cnt, m1.items.length], [false, 0, 0], 'nothing left with the old store');
+  // 取り込みの put も店を入れ替える（結ぶ前に入った行が前の店のままでも）
+  await s.pg.exec("reset role; update public.gr_reviews set store_id = 'S1'; set role service_role");
+  await s.worker(k);
+  await s.pg.exec('reset role');
+  assert.deepEqual((await s.pg.query('select distinct store_id from public.gr_reviews')).rows, [{ store_id: 'S2' }], 'put moves it too');
+  // 1 つの location を 2 つの店に：索引でも止まる（同時に結んだとき）
+  await assert.rejects(s.pg.query("insert into public.gr_bp_loc (store_id, account, location) values ('S9', 'accounts/900', 'locations/111')"), /duplicate key|unique/);
+  await s.pg.exec('set role service_role');
+  assert.equal((await s.call('E2', { action: 'bp_link', store: 'S3', account: ACC, location: LOC1 })).status, 409);
+});
+
+test('#151 deleted on Google: a review removed from Google leaves the month once a read ends; a read that fails or stops on the page limit deletes nothing', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'ONE', '2026-11-12T02:00:00Z'), rv(LOC1, 2, 'FIVE', '2026-11-11T02:00:00Z'), rv(LOC1, 3, 'FOUR', '2026-10-03T02:00:00Z'),
+    rv(LOC1, 4, 'TWO', '2026-11-02T00:00:00Z')];
+  const k = await s.key();
+  await s.worker(k);
+  assert.deepEqual((await s.ok('E8', { action: 'kpi' })).months['2026-11'], { S1: { avg: 2.67, cnt: 3 } });
+  // 前の月の初めより前に直された口コミ（前に取ったもの）は、読む範囲の外なので消さない（Google にはまだある）
+  s.g.reviews[LOC1].push(rv(LOC1, 9, 'FIVE', '2026-09-10T02:00:00Z'));
+  await s.pg.exec("reset role; insert into public.gr_reviews (name, store_id, rating, created, updated, ym) values ('" + ACC + "/" + LOC1 + "/reviews/r9', 'S1', 5, '2026-09-10T02:00:00Z', '2026-09-10T02:00:00Z', '2026-09'); set role service_role");
+  // ★1 が Google で消された。3 日の範囲の外の 10 月の口コミ（★4）も消された
+  s.g.reviews[LOC1] = s.g.reviews[LOC1].filter(x => !/\/r1$|\/r3$/.test(x.name));
+  s.setNow(NOW0 + 86400000);
+  const r = await s.worker(k);
+  assert.deepEqual(r.body.stores.map(x => [x.store, x.ok, x.pruned]), [['S1', true, 2]]);
+  const kp = await s.ok('E8', { action: 'kpi' });
+  assert.deepEqual(kp.months['2026-11'], { S1: { avg: 3.5, cnt: 2 } }, 'the deleted ★1 is gone');
+  assert.equal(kp.months['2026-10'], undefined, 'the deleted October review is gone too (after the start of last month)');
+  assert.deepEqual(kp.months['2026-09'], { S1: { avg: 5, cnt: 1 } }, 'an older review outside the window is kept');
+  assert.deepEqual(kp.overall.S1, { rating: 4, total: 3, at: kp.overall.S1.at }, 'the overall comes from Google (r2, r4 and the old r9)');
+  // 途中で失敗した読み込みは何も消さない
+  s.g.pageSize = 1;
+  s.g.reviews[LOC1] = [rv(LOC1, 2, 'FIVE', '2026-11-11T02:00:00Z')];   // ★2 が消えたように見える
+  s.g.onReviews = async () => { s.g.reviewsStatus = 500; };   // 1 ページ目は取れて、2 ページ目で失敗
+  s.g.reviews[LOC1].push(rv(LOC1, 5, 'THREE', '2026-11-10T02:00:00Z'));
+  const r2 = await s.worker(k);
+  s.g.reviewsStatus = 200; s.g.onReviews = null;
+  assert.deepEqual(r2.body.stores.map(x => [x.ok, x.pruned, x.error]), [[false, undefined, 'reviews_500']]);
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where name like '%/r4'")).rows[0].n, 1, 'not deleted after a failed read');
+  await s.pg.exec('set role service_role');
+  // ページの上限（20 ページ）で前の月の初めまで届かない：取り終えたことにはするが、消さない
+  //   1 件ずつ・6 時間おき：3 日前（取り終えたとみなす所）は 20 ページの中で過ぎるが、10/1 までは届かない
+  s.g.reviews[LOC1] = Array.from({ length: 25 }, (_, i) => rv(LOC1, 200 + i, 'FIVE', new Date(Date.parse('2026-11-13T00:00:00Z') - i * 6 * 3600000).toISOString()));
+  const r3 = await s.worker(k);
+  assert.deepEqual(r3.body.stores.map(x => [x.ok, x.pruned, x.note]), [[true, undefined, 'prune_skipped']]);
+  await s.pg.exec('reset role');
+  assert.equal((await s.pg.query("select count(*)::int n from public.gr_reviews where name like '%/r4'")).rows[0].n, 1, 'not deleted when the read stopped at the page limit');
+  await s.pg.exec('set role service_role');
+  // gr_reviews_prune の守り：100 日より前・先の時刻・ほかの location は断る
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2026-01-01T00:00:00Z', names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: '2099-01-01T00:00:00Z', names: [] }), /bad_value/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC2, since: new Date().toISOString(), names: [] }), /conflict/);
+  await assert.rejects(s.db.rpc('gr_reviews_prune', { store: 'S1', location: LOC1, since: 'x', names: [] }), /bad_value/);
+});
+
+test('#151 a month with more than 200 reviews: 200 at a time, every review is reachable once, a bad cursor is refused', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  // 同じ時刻の口コミも混ぜる（並びの決まりで抜け・重なりが無いか）
+  s.g.reviews[LOC1] = Array.from({ length: 501 }, (_, i) => rv(LOC1, 1000 + i, 'FOUR', new Date(Date.parse('2026-11-12T00:00:00Z') - Math.floor(i / 3) * 60000).toISOString()));
+  s.g.pageSize = 50;
+  const k = await s.key();
+  // 501 件は 11 ページ（20 ページの上限の中）
+  const r = await s.worker(k);
+  assert.equal(r.body.ok, true, r.text);
+  let m = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11' });
+  assert.equal(m.cnt, 501); assert.equal(m.items.length, 200); assert.equal(m.more, true); assert.match(m.next.h, /^[0-9a-f]{32}$/);
+  const seen = new Set(m.items.map(x => x.h));
+  let pages = 1;
+  while (m.more && pages < 10) { m = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11', before: m.next }); m.items.forEach(x => seen.add(x.h)); pages++; }
+  assert.equal(pages, 3); assert.equal(seen.size, 501, 'each review once');
+  assert.equal(m.next, null);
+  for (const before of [{ c: 'x', h: 'a'.repeat(32) }, { c: '2026-11-01T00:00:00Z', h: 'zz' }, 'abc'])
+    assert.equal((await s.call('E8', { action: 'month', store: 'S1', ym: '2026-11', before })).status, 400, JSON.stringify(before));
 });
