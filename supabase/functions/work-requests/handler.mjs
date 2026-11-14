@@ -1,5 +1,5 @@
-// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類）。
-// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md
+// work-requests: ワークセンターの申請の API（v1131・1 段目＝経費 3 種／v1132・2 段目＝評価の変更 3 種と表示設定／v1133・反映の押さえ／v1155・段階 2＝予算と前の承認タブの種類／v1156・チャット）。
+// 仕様：docs/WORK_REQUESTS_V1131_JA.md・docs/WORK_REQUESTS_V1132_JA.md・docs/WORK_REQUESTS_V1133_JA.md・docs/WORKCENTER_APPROVALS_STAGE2_JA.md・docs/CHAT_V1156_JA.md
 // 入り方は PIN のログインの印だけ（deps.verifyPin が確かめて { emp_id, name } を返す）。アプリが送る役割・名前・承認した人は使わない。
 // 役割・店・できることは SQL（wr_actor・wr_actions）が決める。この関数は形を整えて渡すだけ。
 
@@ -7,7 +7,7 @@ export function postgrestDb({ fetch, url, key }) {
   const h = { apikey: key, authorization: 'Bearer ' + key, 'content-type': 'application/json' };
   return {
     async rpc(name, p) {
-      if (!/^wr_[a-z0-9_]+$/.test(name)) throw new Error('bad_rpc');
+      if (!/^(wr|chat)_[a-z0-9_]+$/.test(name)) throw new Error('bad_rpc');
       const r = await fetch(`${url}/rest/v1/rpc/${name}`, { method: 'POST', headers: h, body: JSON.stringify({ p: p ?? {} }) });
       const t = await r.text();
       if (!r.ok) { let m = t; try { m = JSON.parse(t).message || t; } catch { /* keep text */ } const e = new Error(String(m).slice(0, 400)); e.status = r.status; throw e; }
@@ -44,6 +44,14 @@ export const S2_KINDS = ['budget', 'leave', 'shift', 'hire', 'resign', 'promo', 
 export const ALL_KINDS = [...KINDS, ...EVAL_KINDS, ...S2_KINDS];
 export const TIP_RATES = [80, 90, 100];
 const EMP = v => { if (typeof v !== 'string' || !/^[A-Za-z0-9_.:-]{1,64}$/.test(v)) throw bad(); return v; };
+// v1156：チャット
+export const CHAT = { body: 2000, title: 60, reason: 200, members: 49, mentions: 50 };
+const TID = v => { const x = ID(v); if (!x) throw bad(); return x; };
+const SEQ = v => { if (!Number.isInteger(v) || v < 0 || v > 1e12) throw bad(); return v; };
+const EMPS = (v, min, max) => { if (!Array.isArray(v) || v.length < min || v.length > max) throw bad(); return [...new Set(v.map(EMP))]; };
+// 本文：空・長すぎは断る（黙って切らない）。改行は残す
+const BODY = v => { if (typeof v !== 'string') throw bad(); const x = v.replace(CTRL, '').trim(); if (!x || x.length > CHAT.body) throw bad(); return x; };
+const MENTIONS = v => (v == null ? [] : EMPS(v, 0, CHAT.mentions));
 const LV = (v, max, nullable) => { if (v == null && nullable) return null; if (!Number.isInteger(v) || v < 0 || v > max) throw bad(); return v; };
 const NUMN = (v, max) => { if (v == null) return null; if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v > max) throw bad(); return Math.round(v * 100) / 100; };
 export const MILEAGE_PURPOSES = ['買い出し', 'ミーティング', '銀行・郵便', '店舗間移動', 'その他'];
@@ -176,9 +184,10 @@ export function createHandler(deps) {
   const ref = b => { const id = ID(b.id), code = CODE(b.code); if (!id && !code) throw bad(); return id ? { id } : { code }; };
   const ACTIONS = {
     // fn：関数の版（v1132 は 2・v1133 から 3・v1155 から 4＝段階 2 の種類を受ける）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
+    // v1156 から fn 5（チャット）・chat：チャットの SQL が入っていれば 1
     whoami: async w => {
-      const [me, st] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null)]);
-      return { ...me, fn: 4, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1 };
+      const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
+      return { ...me, fn: 5, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -236,9 +245,46 @@ export function createHandler(deps) {
       if (!Number.isInteger(b.expect_rev) || b.expect_rev < 0 || b.expect_rev > 1e9) throw bad();
       return db.rpc('wr_view_save', { ...w, store: STORE(b.store), hidden, expect_rev: b.expect_rev });
     },
+    // v1156：チャット（DM・グループ・申請の案件）。だれが読める・書けるかは SQL（chat_*）が決める
+    chat_sync: (w, b) => db.rpc('chat_sync', { ...w, since: b.since == null ? 0 : SEQ(b.since), limit: Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 500 ? b.limit : 200 }),
+    chat_messages: (w, b) => {
+      const q = { ...w, thread: TID(b.thread), limit: Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 100 ? b.limit : 100 };
+      if (b.after != null) q.after = SEQ(b.after);
+      if (b.before != null) q.before = SEQ(b.before);
+      if (q.after != null && q.before != null) throw bad();
+      return db.rpc('chat_messages_get', q);
+    },
+    chat_mentions: (w, b) => db.rpc('chat_my_mentions', { ...w, limit: Number.isInteger(b.limit) && b.limit >= 1 && b.limit <= 100 ? b.limit : 50 }),
+    chat_people: w => db.rpc('chat_people', w),
+    chat_open_dm: (w, b) => db.rpc('chat_open_dm', { ...w, to: EMP(b.to) }),
+    chat_create_group: (w, b) => {
+      const title = TS(b.title, CHAT.title); if (!title) throw bad();
+      return db.rpc('chat_create_group', { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) });
+    },
+    chat_case: (w, b) => db.rpc('chat_case', { ...w, ...ref(b) }),
+    chat_send: (w, b) => db.rpc('chat_send', { ...w, thread: TID(b.thread), body: BODY(b.body), mentions: MENTIONS(b.mentions), client_key: KEY(b.client_key) }),
+    chat_edit: (w, b) => db.rpc('chat_edit', { ...w, id: TID(b.id), body: BODY(b.body), mentions: MENTIONS(b.mentions) }),
+    chat_delete: (w, b) => db.rpc('chat_delete', { ...w, id: TID(b.id) }),
+    chat_hide: (w, b) => {
+      if (typeof b.hide !== 'boolean') throw bad();
+      return db.rpc('chat_hide', { ...w, id: TID(b.id), hide: b.hide, reason: TS(b.reason, CHAT.reason) });
+    },
+    chat_read: (w, b) => db.rpc('chat_read', { ...w, thread: TID(b.thread), seq: SEQ(b.seq) }),
+    chat_add: (w, b) => {
+      if (typeof b.history !== 'boolean') throw bad();
+      return db.rpc('chat_add', { ...w, thread: TID(b.thread), members: EMPS(b.members, 1, CHAT.members), history: b.history });
+    },
+    chat_remove: (w, b) => db.rpc('chat_remove', { ...w, thread: TID(b.thread), emp: EMP(b.emp) }),
+    chat_rename: (w, b) => {
+      const title = TS(b.title, CHAT.title); if (!title) throw bad();
+      return db.rpc('chat_rename', { ...w, thread: TID(b.thread), title, expect_rev: REV(b.expect_rev) });
+    },
   };
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,
-    dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503 };
+    dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503 };
+  // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
+  const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
+    && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -257,7 +303,8 @@ export function createHandler(deps) {
       if (!who || who.deny) { console.warn('work-requests unauthorized', body.action, (who && who.deny) || 'none'); return json({ error: 'unauthorized' }, 401); }
       return json(await fn(who, body));
     } catch (e) {
-      const msg = String(e.message || 'error'), code = msg.split(/[\s:]/)[0];
+      const msg = String(e.message || 'error'), code0 = msg.split(/[\s:]/)[0];
+      const code = ERR[code0] ? code0 : (chatMissing(body && body.action, e) ? 'chat_missing' : code0);
       const status = ERR[code] || 500;
       if (status === 500) console.error('work-requests', body && body.action, safeErr(e));
       return json({ error: status === 500 ? 'error' : code }, status);

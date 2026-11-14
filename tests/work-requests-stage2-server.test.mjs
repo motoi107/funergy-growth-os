@@ -61,7 +61,7 @@ test('stage 2 starts only when the GM or CEO turns it on (after stage 1); before
   const { call, sub, pg } = await setup({ s2: false });
   assert.equal((await sub('E8', 'leave', 'S1')).status, 409, 'not live yet');
   const w = (await call('E2', { action: 'whoami' })).body;
-  assert.equal(w.fn, 4); assert.equal(w.sql, 5); assert.equal(w.s2, false);
+  assert.ok(w.fn >= 4, "fn " + w.fn); assert.equal(w.sql, 5); assert.equal(w.s2, false);
   assert.equal((await call('E5', { action: 's2_save', s2: true, expect_rev: w.settings_rev })).status, 403, 'an AM cannot turn it on');
   assert.equal((await call('E3', { action: 's2_save', s2: true, expect_rev: w.settings_rev })).status, 403, 'accounting cannot either');
   assert.equal((await call('E2', { action: 's2_save', s2: true, expect_rev: w.settings_rev + 5 })).status, 409, 'an old screen does not turn it on');
