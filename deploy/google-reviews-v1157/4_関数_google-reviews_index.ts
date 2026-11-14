@@ -314,6 +314,8 @@ export function createHandler(deps) {
       const since = l.synced_at ? Date.parse(l.synced_at) - 3 * 86400000 : prevStart;
       const rec = Math.min(since, prevStart);
       let token = '', put = 0, done = false, recDone = false, rating = null, total = null, err = '', pruned = null;
+      // #155 の Codex（6876878458）の 3：この取り込みを始めた時刻（データベースの時計）。古い取り込みがあとから入れても新しい値を戻さない（gr_reviews_put）
+      const started = typeof l.now === 'string' ? { started: l.now } : {};
       const names = [];
       for (let i = 0; i < 20; i++) {
         const r = await timed(BP_REV + l.account + '/' + l.location + '/reviews?' + new URLSearchParams({ pageSize: '50', orderBy: 'updateTime desc', ...(token ? { pageToken: token } : {}) }).toString(),
@@ -340,7 +342,7 @@ export function createHandler(deps) {
         if (older || end) done = true;
         if (olderRec || end) recDone = true;
         try {
-          const res = await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items, done: done && recDone, ...(i === 0 ? { rating, total } : {}),
+          const res = await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items, done: done && recDone, ...(i === 0 ? { rating, total } : {}), ...started,
             ...(l.synced_at ? {} : { from_ym: hstYm(since) }) });
           put += (res && res.put) || 0;
         } catch (e) { err = String(e.message || 'put_failed').split(/[\s:]/)[0].slice(0, 40); break; }
@@ -348,7 +350,7 @@ export function createHandler(deps) {
       }
       if (!err && done && !recDone) {
         // since までは読めた（ページの上限で前の月の初めまでは届かなかった）：取り終えたことにする。消された口コミは今回は見ない
-        try { await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items: [], done: true, ...(l.synced_at ? {} : { from_ym: hstYm(since) }) }); }
+        try { await db.rpc('gr_reviews_put', { store: l.store, location: l.location, items: [], done: true, ...started, ...(l.synced_at ? {} : { from_ym: hstYm(since) }) }); }
         catch (e) { err = String(e.message || 'put_failed').split(/[\s:]/)[0].slice(0, 40); }
       }
       let marked = null;
