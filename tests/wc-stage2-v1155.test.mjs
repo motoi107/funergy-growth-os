@@ -454,7 +454,7 @@ test('the mark (wrq) survives a merge with an older copy without it, in either o
   assert.notEqual(ctx._apSigBody(marked), ctx._apSigBody(base), 'the write check sees the mark');
 });
 
-test('the old lists leave these requests to the work center; the version is 1155', () => {
+test('the old lists leave these requests to the work center; the version is 1155 or later', () => {
   const add = fnSrc('addApproval');
   assert.match(add, /window\.wrS2Take\(rec\)/); assert.match(add, /if\(!_s2\) _apOldNotif\(rec\)/);
   assert.match(fnSrc('mdPendingApprovals'), /a\.status !== 'pending' \|\| a\.wrq/);
@@ -463,7 +463,8 @@ test('the old lists leave these requests to the work center; the version is 1155
   assert.match(fnSrc('renderApproval'), /ワークセンターで処理中（段階 2）/);
   assert.match(fnSrc('renderApproval'), /pending = pending\.filter\(function\(a\)\{ return !\(a && a\.wrq\); \}\);/, 'the old approval tab does not offer them');
   assert.match(SRC, /if \(pid==='approval'\) return ls\('approvals', \[\]\)\.filter\(a=>a\.status==='pending' && !a\.wrq\)\.length;/, 'not counted on the old tab badge');
-  assert.match(SRC, /const APP_VERSION = '1155';/); assert.match(SW, /const SW_BUILD = '1155';/);
+  const v = /const APP_VERSION = '(\d+)';/.exec(SRC)[1];   /* 1155 から（あとの版でも通る・SW と同じ） */
+  assert.ok(Number(v) >= 1155); assert.match(SW, new RegExp("const SW_BUILD = '" + v + "';"));
 });
 
 test('the shape the device sends passes the server (a long note is cut, not refused)', async () => {
