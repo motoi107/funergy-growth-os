@@ -30590,8 +30590,8 @@ function plReadSheet(ws, name, sid){
   var ref = X.decode_range(ws['!ref'] || 'A1:A1');
   var cols = _plFindColumns(ws, ref);
   var sh = { sheet:name, sid:sid, cols:cols, issues:[], lines:[], root:null, calc:{} };
-  if (cols.error){ sh.fatal = { code:'no_month', msg:'月の見出し（例：Jan 2026）が見つかりません' }; return sh; }
-  if (cols.dup.length){ sh.fatal = { code:'dup_month', msg:'同じ月の列が 2 つあります（'+cols.dup.join('・')+'）' }; return sh; }
+  if (cols.error){ sh.fatal = { code:'no_month', msg:t('月の見出し（例：Jan 2026）が見つかりません','No month heading (e.g. Jan 2026) was found') }; return sh; }
+  if (cols.dup.length){ sh.fatal = { code:'dup_month', msg:t('同じ月の列が 2 つあります（'+cols.dup.join('・')+'）','The same month appears in two columns ('+cols.dup.join(', ')+')') }; return sh; }
   var start = Math.max(cols.row, cols.sub) + 1;
   var raw = [];
   for (var r=start; r<=ref.e.r; r++){
@@ -30603,7 +30603,7 @@ function plReadSheet(ws, name, sid){
       if (typeof v === 'number') hasNum = true; else if (v === 'ERR' || v === 'TXT') hasBad = true;
     });
     if (!lab){
-      if (hasNum || hasBad) sh.issues.push({ lv:'warn', code:'no_label', row:r, msg:'科目名の無い行に金額があります（'+(r+1)+'行目）。取り込みません' });
+      if (hasNum || hasBad) sh.issues.push({ lv:'warn', code:'no_label', row:r, msg:t('科目名の無い行に金額があります（'+(r+1)+'行目）。取り込みません','A row with no account name has amounts (row '+(r+1)+'). Not imported') });
       continue;
     }
     var nt = plNormText(lab), tm = /^total(?: for)?\s+(.+)$/.exec(nt);
@@ -30619,15 +30619,15 @@ function plReadSheet(ws, name, sid){
   raw.forEach(function(x){
     var top = stack[stack.length-1];
     if (x.kind === 'calc'){
-      while (stack.length > 1){ var g0 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g0.row, msg:'「'+g0.label+'」の合計行がありません（'+(g0.row+1)+'行目から）' }); }
+      while (stack.length > 1){ var g0 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g0.row, msg:t('「'+g0.label+'」の合計行がありません（'+(g0.row+1)+'行目から）','"'+g0.label+'" has no total row (from row '+(g0.row+1)+')') }); }
       if (sh.calc[x.calc] == null) sh.calc[x.calc] = x;
       return;
     }
     if (x.kind === 'total'){
       var idx = -1;
       for (var k=stack.length-1; k>=1; k--){ if (stack[k].norm === x.target){ idx = k; break; } }
-      if (idx < 0){ sh.issues.push({ lv:'warn', code:'orphan_total', row:x.r, msg:'「'+x.label+'」に対応する見出しがありません（'+(x.r+1)+'行目）' }); return; }
-      while (stack.length-1 > idx){ var g1 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g1.row, msg:'「'+g1.label+'」の合計行がありません（'+(g1.row+1)+'行目から）' }); }
+      if (idx < 0){ sh.issues.push({ lv:'warn', code:'orphan_total', row:x.r, msg:t('「'+x.label+'」に対応する見出しがありません（'+(x.r+1)+'行目）','"'+x.label+'" has no matching heading (row '+(x.r+1)+')') }); return; }
+      while (stack.length-1 > idx){ var g1 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g1.row, msg:t('「'+g1.label+'」の合計行がありません（'+(g1.row+1)+'行目から）','"'+g1.label+'" has no total row (from row '+(g1.row+1)+')') }); }
       var g = stack.pop(); g.total = x;
       return;
     }
@@ -30640,15 +30640,15 @@ function plReadSheet(ws, name, sid){
     }
     top.kids.push({ a:true, label:x.label, code:sc.code, name:sc.name, row:x.r, vals:x.vals, top:(stack.length===1) });
   });
-  while (stack.length > 1){ var g2 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g2.row, msg:'「'+g2.label+'」の合計行がありません（'+(g2.row+1)+'行目から）' }); }
+  while (stack.length > 1){ var g2 = stack.pop(); sh.issues.push({ lv:'warn', code:'no_total', row:g2.row, msg:t('「'+g2.label+'」の合計行がありません（'+(g2.row+1)+'行目から）','"'+g2.label+'" has no total row (from row '+(g2.row+1)+')') }); }
   sh.root = root;
   /* 大きな区分（Income・COGS・Expenses・Other Income・Other Expenses） */
   sh.sec = {};
   root.kids.forEach(function(n){
-    if (!n.g){ if (n.vals && Object.keys(n.vals).some(function(k){ return typeof n.vals[k]==='number' && n.vals[k]!==0; })) sh.issues.push({ lv:'warn', code:'top_line', row:n.row, msg:'「'+n.label+'」は区分（Income など）の外にあります（'+(n.row+1)+'行目）' }); return; }
+    if (!n.g){ if (n.vals && Object.keys(n.vals).some(function(k){ return typeof n.vals[k]==='number' && n.vals[k]!==0; })) sh.issues.push({ lv:'warn', code:'top_line', row:n.row, msg:t('「'+n.label+'」は区分（Income など）の外にあります（'+(n.row+1)+'行目）','"'+n.label+'" is outside the sections (Income etc.) (row '+(n.row+1)+')') }); return; }
     var s = _plSecOf(n.label);
-    if (!s){ sh.issues.push({ lv:'warn', code:'unknown_section', row:n.row, msg:'区分「'+n.label+'」が分かりません（'+(n.row+1)+'行目）。営業利益・最終利益の検算で確かめます' }); n.sec = ''; return; }
-    if (sh.sec[s]){ sh.issues.push({ lv:'warn', code:'dup_section', row:n.row, msg:'区分「'+n.label+'」が 2 つあります（'+(n.row+1)+'行目）' }); return; }
+    if (!s){ sh.issues.push({ lv:'warn', code:'unknown_section', row:n.row, msg:t('区分「'+n.label+'」が分かりません（'+(n.row+1)+'行目）。営業利益・最終利益の検算で確かめます','Unknown section "'+n.label+'" (row '+(n.row+1)+'). Checked through the operating and net income') }); n.sec = ''; return; }
+    if (sh.sec[s]){ sh.issues.push({ lv:'warn', code:'dup_section', row:n.row, msg:t('区分「'+n.label+'」が 2 つあります（'+(n.row+1)+'行目）','Section "'+n.label+'" appears twice (row '+(n.row+1)+')') }); return; }
     n.sec = s; sh.sec[s] = n;
   });
   if (sh.sec.exp){
@@ -30714,10 +30714,10 @@ function plBuildMonth(sh, m){
     rec.issues.push({ lv:'warn', item:item, cell:(row!=null?cell(row):''), expected:exp, actual:act,
       diff:(exp!=null && act!=null) ? Math.round((act-exp)*100)/100 : null, msg:msg });
   };
-  var need = { inc:'売上（Total for Income）', cogs:'原価（Total for Cost of Goods Sold）', exp:'経費（Total for Expenses）' };
-  Object.keys(need).forEach(function(k){ if (!S[k]) fatal(need[k], null, need[k]+'の区分が見つかりません', null, null, '元の PL にこの区分があるか確かめてください'); });
-  if (!sh.pay || !sh.pay.length) fatal('人件費', S.exp ? S.exp.row : null, '人件費（給与費用のグループ）が経費の中に見つかりません', null, null, '経費の中に「Payroll」のグループがあるか確かめてください');
-  if (!C.noi) fatal('営業利益（Net Operating Income）', null, 'Net Operating Income の行が見つかりません', null, null, '');
+  var need = { inc:t('売上（Total for Income）','Sales (Total for Income)'), cogs:t('原価（Total for Cost of Goods Sold）','COGS (Total for Cost of Goods Sold)'), exp:t('経費（Total for Expenses）','Expenses (Total for Expenses)') };
+  Object.keys(need).forEach(function(k){ if (!S[k]) fatal(need[k], null, t(need[k]+'の区分が見つかりません','Section not found: '+need[k]), null, null, t('元の PL にこの区分があるか確かめてください','Check that the PL has this section')); });
+  if (!sh.pay || !sh.pay.length) fatal(t('人件費','Payroll'), S.exp ? S.exp.row : null, t('人件費（給与費用のグループ）が経費の中に見つかりません','No payroll group was found under Expenses'), null, null, t('経費の中に「Payroll」のグループがあるか確かめてください','Check that Expenses has a "Payroll" group'));
+  if (!C.noi) fatal(t('営業利益（Net Operating Income）','Net Operating Income'), null, t('Net Operating Income の行が見つかりません','No Net Operating Income row was found'), null, null, '');
   if (!rec.ok) return rec;
   var ctx = { mism:[], bad:[] };
   var v = {};
@@ -30729,7 +30729,7 @@ function plBuildMonth(sh, m){
   /* 数式エラー・数字でない値 */
   var badSeen = {};
   ctx.bad.forEach(function(x){ var rr = x.r!=null ? x.r : x.row; if (badSeen[rr]) return; badSeen[rr] = 1;
-    fatal(x.label, rr, '「'+x.label+'」のセルが数式エラーか、数字ではありません', null, null, '元の PL のこのセルを直してから取り込み直してください'); });
+    fatal(x.label, rr, t('「'+x.label+'」のセルが数式エラーか、数字ではありません','The "'+x.label+'" cell has a formula error or is not a number'), null, null, t('元の PL のこのセルを直してから取り込み直してください','Fix this cell in the PL and import again')); });
   /* 合計と明細の食い違い。主要な区分（売上・原価・経費・営業外）と経費の直下のグループ（人件費・販管費）は取り込まない
      （1 行にまとめると人件費・変動費・固定費の内訳が分からなくなるため）。それより下の入れ子の小計は 1 行にまとめる。 */
   var bigs = [S.inc, S.cogs, S.exp, S.oinc, S.oexp].concat(sh.pay || []);
@@ -30737,22 +30737,29 @@ function plBuildMonth(sh, m){
   var badGroups = [];
   ctx.mism.forEach(function(mm){
     var n = mm.node, row = n.total ? n.total.r : n.row;
-    if (bigs.indexOf(n) >= 0) fatal(n.label, row, '「'+n.label+'」の合計行と明細の合計が合いません', mm.sum, mm.total, '元の PL の合計の数式に、足した明細が入っているか確かめてください');
-    else { badGroups.push(n); warn(n.label, row, '「'+n.label+'」の小計と明細の合計が合わないため、小計を 1 行で取り込みます', mm.sum, mm.total); }
+    if (bigs.indexOf(n) >= 0) fatal(n.label, row, t('「'+n.label+'」の合計行と明細の合計が合いません','The "'+n.label+'" total does not match the sum of its lines'), mm.sum, mm.total, t('元の PL の合計の数式に、足した明細が入っているか確かめてください','Check that the total formula in the PL includes every line'));
+    else { badGroups.push(n); warn(n.label, row, t('「'+n.label+'」の小計と明細の合計が合わないため、小計を 1 行で取り込みます','The "'+n.label+'" subtotal does not match its lines, so the subtotal is imported as one line'), mm.sum, mm.total); }
   });
   /* 検算のつながり：売上 − 原価 ＝ 粗利益、粗利益 − 経費 ＝ 営業利益、営業外の収入 − 費用 ＝ 営業外損益、営業利益 ＋ 営業外損益 ＝ 最終利益 */
   var r2 = function(x){ return Math.round(x*100)/100; };
   var gp = r2(v.inc - v.cogs);
-  if (v.gp != null && Math.abs(v.gp - gp) > PL_TOL) fatal('粗利益（Gross Profit）', C.gp.r, '粗利益が 売上 − 原価 と合いません', gp, v.gp, '');
-  if (v.noi == null) fatal('営業利益（Net Operating Income）', C.noi.r, '営業利益のセルが空です', r2(gp - v.exp), null, '');
-  else if (Math.abs(v.noi - r2(gp - v.exp)) > PL_TOL) fatal('営業利益（Net Operating Income）', C.noi.r, '営業利益が 粗利益 − 経費 と合いません（読めていない区分がある可能性）', r2(gp - v.exp), v.noi, '元の PL で、Gross Profit と Net Operating Income の間の区分を確かめてください');
+  /* 計算の行（粗利益・営業利益・営業外損益・最終利益）がブックにあるのにこの月のセルが空なら取り込まない（#156 の Codex 6879068684）。
+     行そのものが無い前の形（営業外損益・最終利益の無いブック）は今までどおり計算した値で補う。 */
+  var LB = { gp:t('粗利益（Gross Profit）','Gross Profit'), noi:t('営業利益（Net Operating Income）','Net Operating Income'),
+    nother:t('営業外損益（Net Other Income）','Net Other Income'), ni:t('最終利益（Net Income）','Net Income') };
+  var emptyCell = function(k){ fatal(LB[k], C[k].r, t(LB[k]+'のセルが空です', 'The '+LB[k]+' cell is empty'), null, null, t('元の PL のこの月のセルを確かめてください','Check this month’s cell in the PL')); };
+  if (C.gp && v.gp == null) emptyCell('gp');
+  else if (v.gp != null && Math.abs(v.gp - gp) > PL_TOL) fatal(LB.gp, C.gp.r, t('粗利益が 売上 − 原価 と合いません','Gross Profit does not equal Sales − COGS'), gp, v.gp, '');
+  if (v.noi == null) emptyCell('noi');
+  else if (Math.abs(v.noi - r2(gp - v.exp)) > PL_TOL) fatal(LB.noi, C.noi.r, t('営業利益が 粗利益 − 経費 と合いません（読めていない区分がある可能性）','Net Operating Income does not equal Gross Profit − Expenses (a section may not have been read)'), r2(gp - v.exp), v.noi, t('元の PL で、Gross Profit と Net Operating Income の間の区分を確かめてください','Check the sections between Gross Profit and Net Operating Income in the PL'));
   var nother = r2(v.oinc - v.oexp);
-  if (v.nother != null && Math.abs(v.nother - nother) > PL_TOL) fatal('営業外損益（Net Other Income）', C.nother.r, '営業外損益が その他の収入 − その他の費用 と合いません', nother, v.nother, '');
+  if (C.nother && v.nother == null) emptyCell('nother');
+  else if (v.nother != null && Math.abs(v.nother - nother) > PL_TOL) fatal(LB.nother, C.nother.r, t('営業外損益が その他の収入 − その他の費用 と合いません','Net Other Income does not equal Other Income − Other Expenses'), nother, v.nother, '');
   if (C.ni){
-    if (v.ni == null) fatal('最終利益（Net Income）', C.ni.r, '最終利益のセルが空です', null, null, '');
+    if (v.ni == null) emptyCell('ni');
     else if (v.noi != null && Math.abs(v.ni - r2(v.noi + (v.nother != null ? v.nother : nother))) > PL_TOL)
-      fatal('最終利益（Net Income）', C.ni.r, '最終利益が 営業利益 ＋ 営業外損益 と合いません', r2(v.noi + (v.nother != null ? v.nother : nother)), v.ni, '元の PL で、Net Operating Income と Net Income の間の区分を確かめてください');
-  } else warn('最終利益（Net Income）', null, 'Net Income の行がありません（最終利益は取り込みません）', null, null);
+      fatal(LB.ni, C.ni.r, t('最終利益が 営業利益 ＋ 営業外損益 と合いません','Net Income does not equal Net Operating Income + Net Other Income'), r2(v.noi + (v.nother != null ? v.nother : nother)), v.ni, t('元の PL で、Net Operating Income と Net Income の間の区分を確かめてください','Check the sections between Net Operating Income and Net Income in the PL'));
+  } else warn(LB.ni, null, t('Net Income の行がありません（最終利益は取り込みません）','There is no Net Income row (net income is not imported)'), null, null);
   if (!rec.ok) return rec;
   var opex = r2(v.exp - v.pay);
   rec.c = { sales:v.inc, cogs:v.cogs, gp:gp, payroll:v.pay, exp:v.exp, opex:opex, netop:v.noi, othInc:v.oinc, othExp:v.oexp, netOther:(v.nother != null ? v.nother : nother), netinc:(C.ni ? v.ni : null) };
@@ -30792,27 +30799,37 @@ function parsePLWorkbook(wb, opt){
   opt = opt || {};
   var out = { months:[], rows:[], warnings:[], issues:[], sheets:[], file:opt.fileName||'' }, seen = {};
   var fileProv = PL_PROV_RE.test(String(opt.fileName||''));
-  wb.SheetNames.forEach(function(name){
+  /* 先に全部のシートを読み、ブックの「金額のある最後の月」を決める（#156 の Codex 6879068684・6879547415）。
+     末尾の空の月の列は数えない。店ごとではなくブック全体で決める（その月の金額が無い店の前の月に印を付けない）。
+     最後の月が検算エラーでも、前の月に印を移さない（取り込まない月にも印は残る）。 */
+  var sheets = wb.SheetNames.map(function(name){
     var sid = PL_SHEET_MAP[plNormText(name)];
-    if (!sid){ out.warnings.push('シート「'+name+'」は対応する店舗が不明のため取り込みません'); out.issues.push({ lv:'warn', sheet:name, msg:'対応する店舗が分からないシートです（取り込みません）' }); return; }
+    if (!sid) return { name:name };
     var ws = wb.Sheets[name];
     var sh = plReadSheet(ws, name, sid);
-    out.sheets.push({ sheet:name, sid:sid });
-    if (sh.fatal){ out.warnings.push('シート「'+name+'」：'+sh.fatal.msg); out.issues.push({ lv:'fatal', sheet:name, sid:sid, msg:sh.fatal.msg }); return; }
+    if (sh.fatal) return { name:name, sid:sid, sh:sh };
     /* 見出しの上の文字（タイトル）に「暫定」があるか */
     var titleProv = false, X = XLSX.utils;
     for (var r=0; r<sh.cols.row; r++){ for (var c=0; c<=3; c++){ if (PL_PROV_RE.test(_plText(ws[X.encode_cell({r:r,c:c})]))) titleProv = true; } }
-    sh.issues.forEach(function(i){ out.issues.push({ lv:i.lv, sheet:name, sid:sid, cell:(i.row!=null? name+'!A'+(i.row+1) : ''), msg:i.msg }); out.warnings.push('シート「'+name+'」：'+i.msg); });
-    var last = sh.cols.months.length ? sh.cols.months[sh.cols.months.length-1].ym : '';
-    sh.cols.months.forEach(function(m){
-      var rec = plBuildMonth(sh, m);
+    return { name:name, sid:sid, sh:sh, titleProv:titleProv, built:sh.cols.months.map(function(m){ return { m:m, rec:plBuildMonth(sh, m) }; }) };
+  });
+  var last = '';
+  sheets.forEach(function(x){ (x.built || []).forEach(function(b){ if (!b.rec.empty && b.m.ym > last) last = b.m.ym; }); });
+  sheets.forEach(function(x){
+    var name = x.name, sid = x.sid, sh = x.sh;
+    if (!sid){ out.warnings.push(t('シート「'+name+'」は対応する店舗が不明のため取り込みません','Sheet "'+name+'" is not imported (no matching store)')); out.issues.push({ lv:'warn', sheet:name, msg:t('対応する店舗が分からないシートです（取り込みません）','No matching store for this sheet (not imported)') }); return; }
+    out.sheets.push({ sheet:name, sid:sid });
+    if (sh.fatal){ out.warnings.push(t('シート「'+name+'」：','Sheet "'+name+'": ')+sh.fatal.msg); out.issues.push({ lv:'fatal', sheet:name, sid:sid, msg:sh.fatal.msg }); return; }
+    sh.issues.forEach(function(i){ out.issues.push({ lv:i.lv, sheet:name, sid:sid, cell:(i.row!=null? name+'!A'+(i.row+1) : ''), msg:i.msg }); out.warnings.push(t('シート「'+name+'」：','Sheet "'+name+'": ')+i.msg); });
+    x.built.forEach(function(b){
+      var m = b.m, rec = b.rec;
       if (rec.empty) return;
       rec.issues.forEach(function(i){
         out.issues.push({ lv:i.lv, sheet:name, sid:sid, ym:m.ym, item:i.item, cell:i.cell, expected:i.expected, actual:i.actual, diff:i.diff, msg:i.msg, fix:i.fix });
-        out.warnings.push(name+' '+m.ym+'：'+i.msg+(i.cell?'（'+i.cell+'）':'')+(i.diff!=null?' 期待 '+i.expected+' / 実際 '+i.actual+' / 差 '+i.diff:''));
+        out.warnings.push(name+' '+m.ym+'：'+i.msg+(i.cell?'（'+i.cell+'）':'')+(i.diff!=null?t(' 期待 ',' expected ')+i.expected+t(' / 実際 ',' / actual ')+i.actual+t(' / 差 ',' / diff ')+i.diff:''));
       });
-      /* 暫定：月の見出しの注記に「暫定」がある月。ファイル名・タイトルに「暫定」があれば、そのブックの最後の月。 */
-      rec.prov = PL_PROV_RE.test(m.note) || ((fileProv || titleProv) && m.ym === last);
+      /* 暫定：月の見出しの注記に「暫定」がある月。ファイル名・タイトルに「暫定」があれば、そのブックの金額のある最後の月。 */
+      rec.prov = PL_PROV_RE.test(m.note) || ((fileProv || x.titleProv) && m.ym === last);
       seen[m.ym] = 1;
       if (rec.ok) _plLegacy(rec);
       out.rows.push(rec);
@@ -30894,6 +30911,8 @@ function _plClsMaps(){
   Object.keys(PL_EXPENSE_CLASS_DEFAULT).forEach(function(k){ d[plNormKey(k)] = PL_EXPENSE_CLASS_DEFAULT[k]; });
   Object.keys(PL_EXPENSE_CLASS_ALIAS).forEach(function(k){ var c = d[plNormKey(PL_EXPENSE_CLASS_ALIAS[k])]; if (c && !d[plNormKey(k)]) d[plNormKey(k)] = c; });
   Object.keys(ovr).forEach(function(k){ if (PL_CLASS_LABEL[ovr[k]]) o[plNormKey(k)] = ovr[k]; });
+  /* #156 の Codex（6879068684）：前の名前に人が決めた区分は、新しい名前にも引き継ぐ（新しい名前に決めた区分があればそちら） */
+  Object.keys(PL_EXPENSE_CLASS_ALIAS).forEach(function(k){ var nk = plNormKey(k), oc = o[plNormKey(PL_EXPENSE_CLASS_ALIAS[k])]; if (oc && !o[nk]) o[nk] = oc; });
   _plClsCache = { sig:sig, d:d, o:o };
   return _plClsCache;
 }

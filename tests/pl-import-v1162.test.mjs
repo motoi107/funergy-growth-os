@@ -485,3 +485,84 @@ test('the amount column is the one labelled CURRENT (a budget column on its left
   same(r2.rows.map(x => x.col), ['C', 'E', 'G']);
   r2.rows.forEach((x, i) => assert.ok(near(x.c.netinc, S.keys.ni[i])));
 });
+
+// #156 の Codex（6879068684・6879547415）の P2：前の名前に人が決めた区分は、新しい名前にも引き継ぐ（新しい名前に決めた区分が先）
+test('#156 a class a person set on the earlier name follows the renamed account; a class set on the new name wins', () => {
+  const pairs = [['Taxes - General Excise Tax', '70500 Taxes - General Excise', 'fixed', 'variable'],
+    ['Taxes and Licenses', 'Taxes, Licenses & Fees', 'discretionary', 'fixed'],
+    ['Freight / Delivery', '70991 Freight / Delivery(Dont USE)', 'utility', 'variable']];
+  for (const [oldName, newName, set, dflt] of pairs) {
+    assert.equal(load().plClassOf(newName), dflt, 'the default first');
+    const c = load({ pl_expense_class: { [oldName.toLowerCase()]: set } });
+    assert.equal(c.plClassOf(oldName), set);
+    assert.equal(c.plClassOf(newName), set, newName + ' takes the earlier name’s class');
+    const t2 = c.plClassTotals({ [newName.replace(/^\d+ /, '')]: 100 });
+    assert.equal(t2[set], 100, 'the totals follow');
+    const both = load({ pl_expense_class: { [oldName.toLowerCase()]: set, [newName.replace(/^\d+ /, '').toLowerCase()]: 'other' } });
+    assert.equal(both.plClassOf(newName), 'other', 'a class set on the new name wins');
+  }
+});
+
+// #156 の Codex：末尾に空の月の列があっても、暫定の印は金額のある最後の月。その月が検算エラーでも前の月に印を移さない
+test('#156 provisional with a blank month column at the end: the last month with amounts is provisional; a refused last month keeps the mark to itself', () => {
+  const c = load();
+  const s = store();
+  for (const k of Object.keys(s)) s[k] = s[k].map(r => (r.group ? { group: r.group, items: r.items.map(x => [x[0], [x[1][0], x[1][1], null]]) } : [r[0], [r[1][0], r[1][1], null]]));
+  const S = rowsOf(s);
+  let r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(S.R) }), { fileName: 'PL_Feb26_暫定.xlsx' });
+  same(r.rows.map(x => [x.ym, x.ok, x.prov]), [['2026-01', true, false], ['2026-02', true, true]]);
+  // タイトルの「暫定」でも同じ
+  r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(S.R, { title: 'Marujuu - PL 暫定' }) }), {});
+  same(r.rows.map(x => x.prov), [false, true]);
+  // 2 月（金額のある最後の月）が検算エラー：2 月は取り込まない・1 月に印を移さない
+  const R = S.R.map(x => x.slice()), k = R.findIndex(x => x[0] === 'Gross Profit');
+  R[k] = ['Gross Profit', R[k][1].map((v, i) => (i === 1 ? Math.round((v + 10) * 100) / 100 : v))];
+  r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(R) }), { fileName: 'PL_Feb26_暫定.xlsx' });
+  same(r.rows.map(x => [x.ym, x.ok, x.prov]), [['2026-01', true, false], ['2026-02', false, true]]);
+});
+
+// #156 の Codex：計算の行（粗利益・営業外損益）がブックにあるのに、その月のセルが空なら取り込まない（行そのものが無い前の形は今までどおり）
+test('#156 a gross profit or net other income cell left empty refuses that month; a book without the row still reads', () => {
+  const c = load();
+  const S = rowsOf(store());
+  for (const lab of ['Gross Profit', 'Net Other Income', 'Net Income', 'Net Operating Income']) {
+    const R = S.R.map(x => x.slice()), k = R.findIndex(x => x[0] === lab);
+    R[k] = [lab, R[k][1].map((v, i) => (i === 1 ? null : v))];
+    const r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(R) }), {});
+    same(r.rows.map(x => x.ok), [true, false, true], lab);
+    const f = r.issues.find(x => x.lv === 'fatal' && x.ym === '2026-02');
+    assert.match(f.msg, /のセルが空です/, lab);
+    assert.equal(f.cell, 'Marujuu!D' + (k + 7), lab);
+  }
+  // 行そのものが無い（前の形）：粗利益・営業外損益は計算した値で補う
+  const R2 = S.R.filter(x => x[0] !== 'Gross Profit' && x[0] !== 'Net Other Income');
+  const r2 = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(R2) }), {});
+  same(r2.rows.map(x => x.ok), [true, true, true]);
+  assert.ok(near(r2.rows[0].c.gp, S.keys.gp[0]));
+});
+
+// #156 の Codex：検算の文は英語の画面では英語
+test('#156 the import messages follow the language (English screen)', () => {
+  const c = load();
+  c.t = (ja, en) => en;
+  const S = rowsOf(store());
+  const R = S.R.map(x => x.slice()), k = R.findIndex(x => x[0] === 'Gross Profit');
+  R[k] = ['Gross Profit', R[k][1].map((v, i) => (i === 0 ? Math.round((v + 10) * 100) / 100 : v))];
+  const r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(R), 'Nowhere': sheetOf(S.R) }), {});
+  const f = r.issues.find(x => x.lv === 'fatal');
+  assert.equal(f.item, 'Gross Profit'); assert.match(f.msg, /^Gross Profit does not equal Sales − COGS$/);
+  assert.ok(r.warnings.some(w => /^Sheet "Nowhere" is not imported/.test(w)), JSON.stringify(r.warnings));
+  assert.ok(r.warnings.every(w => !/[ぁ-んァ-ヶ一-龥]/.test(w.replace(/：/g, ''))), JSON.stringify(r.warnings));
+  const html = c._plPreviewHtml(r);
+  assert.doesNotMatch(html.replace(/<[^>]+>/g, ''), /合いません|見つかりません|取り込みません/);
+});
+
+// 暫定の月はブック全体で決める：その月の金額が無い店（例：合算の店）の前の月に印を付けない
+test('#156 the provisional month is decided for the whole book: a store with no amounts in it keeps its earlier months final', () => {
+  const c = load();
+  const full = rowsOf(store());
+  const s = store(2);
+  for (const k of Object.keys(s)) s[k] = s[k].map(r => (r.group ? { group: r.group, items: r.items.map(x => [x[0], [x[1][0], x[1][1], null]]) } : [r[0], [r[1][0], r[1][1], null]]));
+  const r = c.parsePLWorkbook(book({ 'Marujuu': sheetOf(full.R), 'LALA': sheetOf(rowsOf(s).R) }), { fileName: 'PL_Mar26_暫定.xlsx' });
+  same(r.rows.map(x => [x.storeKey, x.ym, x.prov]), [['F05', '2026-01', false], ['F05', '2026-02', false], ['F05', '2026-03', true], ['F06', '2026-01', false], ['F06', '2026-02', false]]);
+});
