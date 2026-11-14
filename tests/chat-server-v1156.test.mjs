@@ -273,6 +273,63 @@ test('case chat (4A): the requester and the deciders join on their own; others n
   assert.equal((await pg.query('select count(*)::int n from public.chat_threads where ref_id = $1', [r2.id])).rows[0].n, 0);
 });
 
+// Codex #150（issuecomment 6869797305）P2-1：外した人を「これまでの会話を見せない」で加え直すと、抜けていたあいだの会話が読めた（least）
+test('re-adding after remove/leave uses the boundary chosen now (no messages from while they were out); people still in keep theirs', async () => {
+  const { call, ok, send, msgs, key, pg } = await setup();
+  const g = await ok('E8', { action: 'chat_create_group', title: 'gap', members: ['E7', 'E6'], client_key: key() });
+  await send('E8', g.id, 'm1');
+  assert.equal((await ok('E8', { action: 'chat_remove', thread: g.id, emp: 'E7' })).removed, 1);
+  await send('E8', g.id, 'm2 (E7 was out)');
+  assert.equal((await msgs('E7', g.id)).status, 404);
+  // Codex の順番：外す → 送る → 見せないで加え直す → 抜けていたあいだ（m2）も前（m1）も読めない
+  assert.equal((await ok('E8', { action: 'chat_add', thread: g.id, members: ['E7'], history: false })).added, 1);
+  let r = await msgs('E7', g.id);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.messages.map(x => x.body), [], 'nothing from before the re-add');
+  assert.equal(r.body.thread.history_from, 3, 'reads from the next message');
+  assert.equal((await call('E7', { action: 'chat_messages', thread: g.id, before: 3 })).body.messages.length, 0, 'older pages are empty too');
+  await send('E8', g.id, 'm3');
+  assert.deepEqual((await msgs('E7', g.id)).body.messages.map(x => x.body), ['m3']);
+  // 自分で抜けた人も同じ
+  assert.equal((await ok('E6', { action: 'chat_remove', thread: g.id, emp: 'E6' })).removed, 1);
+  await send('E8', g.id, 'm4 (E6 left)');
+  await ok('E8', { action: 'chat_add', thread: g.id, members: ['E6'], history: false });
+  assert.deepEqual((await msgs('E6', g.id)).body.messages.map(x => x.body), [], 'a person who left and is re-added without history');
+  // 見せるで加え直せば、選んだとおり全部
+  await ok('E8', { action: 'chat_remove', thread: g.id, emp: 'E7' });
+  await ok('E8', { action: 'chat_add', thread: g.id, members: ['E7'], history: true });
+  assert.deepEqual((await msgs('E7', g.id)).body.messages.map(x => x.body), ['m1', 'm2 (E7 was out)', 'm3', 'm4 (E6 left)']);
+  // いる人を加えても何も変わらない（範囲も狭まらない）
+  assert.equal((await ok('E8', { action: 'chat_add', thread: g.id, members: ['E7'], history: false })).added, 0);
+  assert.equal((await msgs('E7', g.id)).body.messages.length, 4);
+
+  // 申請のチャット：自動で入っていて申請を見られる人を加えても範囲は今のまま。申請を見られなくなっていた人は、選んだ範囲から
+  const req = await ok('E7', { action: 'submit', kind: 'reimburse', store_id: 'S1', client_key: key(),
+    payload: { date: '2026-11-01', payer: NAME.E7, payer_is_employee: true, vendor: 'Costco', purpose: '仕入れ', amount_cents: 8640 } });
+  const c = (await ok('E7', { action: 'chat_case', id: req.id })).thread;
+  await send('E7', c.id, 'c1');
+  await ok('E2', { action: 'chat_add', thread: c.id, members: ['E13'], history: false });
+  assert.deepEqual((await msgs('E13', c.id)).body.messages.map(x => x.body), ['c1'], 'an auto member who can see the request keeps what they could read');
+  await pg.exec(`reset role; delete from public.manager_auth where emp_id = 'E3'; set role service_role`);
+  assert.equal((await msgs('E3', c.id)).status, 404, 'accounting lost the role');
+  await send('E7', c.id, 'c2 (E3 could not see)');
+  await pg.exec(`reset role; insert into public.manager_auth(role, emp_id) values ('office','E3'); set role service_role`);
+  // 役割を戻しても、自動の人は申請を見られる限り読める（今までどおり）。外して見せないで加え直すと、その後からだけ
+  await ok('E2', { action: 'chat_remove', thread: c.id, emp: 'E3' });
+  await send('E7', c.id, 'c3 (E3 removed)');
+  await ok('E2', { action: 'chat_add', thread: c.id, members: ['E3'], history: false });
+  assert.deepEqual((await msgs('E3', c.id)).body.messages.map(x => x.body), [], 'removed then re-added without history');
+  // 申請を見られない自動の人（行は残っている）を見せないで加える：選んだ範囲から
+  await pg.exec(`reset role; delete from public.manager_auth where emp_id = 'E1'; set role service_role`);
+  assert.equal((await msgs('E1', c.id)).status, 404);
+  await send('E7', c.id, 'c4 (E1 could not see)');
+  await pg.exec(`reset role; update public.employees set role = 'crew', title = 'Crew' where id = 'E1'; set role service_role`);
+  await ok('E2', { action: 'chat_add', thread: c.id, members: ['E1'], history: false });
+  const r1 = await msgs('E1', c.id);
+  assert.equal(r1.status, 200, 'now an added member (kept even without seeing the request)');
+  assert.deepEqual(r1.body.messages.map(x => x.body), [], 'nothing from while E1 could not read');
+});
+
 test('sync: only changed chats after the cursor; the change signal moves for the members only', async () => {
   const { ok, send, sync, key, pg } = await setup();
   const a = await ok('E8', { action: 'chat_open_dm', to: 'E9' });
