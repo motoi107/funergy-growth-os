@@ -109254,6 +109254,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   /* 開く：写真はこの画面の中で。ほかは新しい窓（押したときに開いておく：あとから開くと端末が止めるため）。開けなければ押して開くリンク */
   function openWin(){ try { var w = W.open('', '_blank'); if (w) { try { w.opener = null; } catch(e){} } return w || null; } catch(e){ return null; } }
+  /* 頼んだときと同じ人のままか（世代と PIN の印）。チャットを始めていない画面（申請の画面）からも使う */
+  function same(g, tok){ return g === C.gen && pinTok() === tok; }
   function goUrl(w, url, name){
     if (typeof url !== 'string' || !/^https:\/\//.test(url)) { if (w) try{ w.close(); }catch(e){} toast(errText('storage'), 'error'); return; }
     if (w && !w.closed) { try { w.location.href = url; return; } catch(e){} }
@@ -109264,16 +109266,16 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatFileOpen = function(id){
     var f = fileById(id); if (!f) return;
     if (f.kind === 'photo') { viewPhoto(f); return; }
-    var w = openWin(), g = C.gen;
+    var w = openWin(), g = C.gen, tok = pinTok();
     api({ action:'chat_file_url', id:id }).then(function(j){
-      if (g !== C.gen) { if (w) try{ w.close(); }catch(e){} return; }
+      if (!same(g, tok)) { if (w) try{ w.close(); }catch(e){} return; }
       goUrl(w, j && j.url, f.name);
-    }, function(e){ if (w) try{ w.close(); }catch(_){} if (g === C.gen) toast(fErr(e), 'error'); });
+    }, function(e){ if (w) try{ w.close(); }catch(_){} if (same(g, tok)) toast(fErr(e), 'error'); });
   };
   W.chatFileSave = function(id){
     var f = fileById(id); if (!f) return;
-    var g = C.gen;
-    api({ action:'chat_file_url', id:id, download:true }).then(function(j){ if (g === C.gen) W._chatSaveUrl(j && j.url, (j && j.name) || f.name); }, function(e){ if (g === C.gen) toast(fErr(e), 'error'); });
+    var g = C.gen, tok = pinTok();
+    api({ action:'chat_file_url', id:id, download:true }).then(function(j){ if (same(g, tok)) W._chatSaveUrl(j && j.url, (j && j.name) || f.name); }, function(e){ if (same(g, tok)) toast(fErr(e), 'error'); });
   };
   /* 保存：リンクに「保存して」の印が付いている（サーバーが付ける）。この画面はそのまま */
   W._chatSaveUrl = function(url, name){
@@ -109369,11 +109371,17 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     });
   };
   /* 申請の画面から：チャットの写真・PDF の領収書を開く（その申請を見られる人。サーバーが確かめる） */
+  /* #155 の Codex（6876878458）の 2：答えが来る前にログアウト・別の人のログインに変わったら（世代・PIN の印が違えば）、
+     前の人のリンクを開かない・先に開いた窓も閉じる・開けないときのリンクの画面も出さない */
   W.chatReceiptOpen = function(reqId){
     if (!UUID.test(String(reqId || ''))) return;
+    var g = C.gen, tok = pinTok();
+    if (!tok) { toast(errText('signin'), 'error'); return; }
     var w = openWin();
-    api({ action:'wr_receipt_url', id:reqId }).then(function(j){ goUrl(w, j && j.url, j && j.name); },
-      function(e){ if (w) try{ w.close(); }catch(_){} toast(fErr(e), 'error'); });
+    api({ action:'wr_receipt_url', id:reqId }).then(function(j){
+      if (!same(g, tok)) { if (w) try{ w.close(); }catch(_){} return; }
+      goUrl(w, j && j.url, j && j.name);
+    }, function(e){ if (w) try{ w.close(); }catch(_){} if (same(g, tok)) toast(fErr(e), 'error'); });
   };
 
   /* ---------------------------------------------------------------- 申請のチャット（4A） */
