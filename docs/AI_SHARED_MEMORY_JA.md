@@ -3,7 +3,7 @@
 ## 2026-11-14 #151〜#156：本番に SQL・関数を入れた・Codex の blocked（#155・#156）を直した（Claude・アプリは未マージ）
 
 - 本番（Moto さん 11/14 05:21〜05:37 HST）：`deploy/all-v1157-v1162/手順.md` の 01〜17（チャット・Google の口コミ・段階 3・添付の SQL、関数 work-requests v1161・google-reviews・cron・hyper-worker）を入れた。最初は 08（段階 3）と 11（添付）が入っておらず 09 が NG・12 がエラー（`chat_files does not exist`）→ 流し直して「全部終わりました」（09・12 の表は見ていない）。アプリは main（v1156）のまま＝新しい機能は使われていない・添付のファイルは 0。手順の 17（`db/toast-sales-ld-columns.sql`）を「読むだけ」と書いたのは誤り（列を足す SQL・行は変えない）→ 直した。
-- 本番の Storage の決まり（11/14 05:39 HST・Moto さんが読むだけの SQL で）：`anon_documents_rw`（ALL・anon・documents）・`invoices anon read`（SELECT）・`invoices anon upload`（INSERT）＝どれも置き場所を 1 つに限っている＝chat-files は公開の鍵で読めない。`documents` が公開の鍵で読み書きできるのは前から（Moto さんに伝えた・あとで決める）。
+- 本番の Storage の決まり（11/14 05:39 HST・Moto さんが読むだけの SQL で）：`anon_documents_rw`（ALL・anon・documents）・`invoices anon read`（SELECT）・`invoices anon upload`（INSERT）＝どれも置き場所を 1 つに限っている＝chat-files は公開の鍵で読めない。`documents` が公開の鍵で読み書きできるのは前から（Moto さん 11/14 06:24 HST「はい」＝今のまま）。
 - Codex：#155 `5b3e49b`（6876878458）blocked＝P1 2（Storage の決まりの確かめが `bucket_id <> 'invoices'` などを通す・領収書の遅い答えがログアウト・別の人のログインのあとに開く）＋ P2（#151 から：古い Google の取り込みが新しい星・総合評価を戻す）。#156 `2181f5e`（6879068684）・`01ff173`（6879547415）blocked＝P2 2（前の名前に決めた費用の区分が新しい名前に引き継がれない・末尾の空の月で暫定の印が消える）・P3（手順 17）・確認事項（計算の行の空のセル・英語の検算の文・opex の定義・過去の提出版の暫定の表示）。Moto さんの「マージしていいですか？」に「まだ」と答えた。
 - 直し（Claude）：
   - #151 `1081f76`：`gr_reviews_put` は Google の更新時刻が古くないときだけ中身を直す・総合評価は取り込みを始めた時刻の順（`gr_bp_loc.rating_from`）・`synced_at` は始めた時刻で戻さない・関数が `started` を渡す（`docs/GOOGLE_REVIEWS_V1157_JA.md` の 9）。**本番は ② をもう一度（05）→ ③（06・12 まで）→ 関数 google-reviews を差し替え（14）**。
@@ -11,7 +11,7 @@
   - #156 `30a5bda`：区分の引き継ぎ・暫定の月はブック全体の金額のある最後の月・計算の行の空のセルは取り込まない・検算の文の英語・手順 17 と E（`docs/PL_IMPORT_V1162_JA.md` の 7）。本物の 8 月版・10 月版で取り込める月と会議タブ・中間レビューの答えは直す前と同じ。
   - #151 の直しを #152 `dc23168`・#153 `f71df70`・#154 `4dedf3e`・#155 `ba9907c`・#156 に取り込んだ（#152〜#154 の取り込みのマージのコミットには Claude の署名の行が無い・押し直しは止められた）。
 - 試験（合成データ）：#151 google 3 ファイル 46/46・#155 チャット・添付 57/57・#156 上で関連 17 ファイル 203/203・static release pass（1161・1162）。足した試験はどれも直す前のコードで落ちる。全体（重い 2 つ以外・4 並列・#156 の上）：2732 件中 30 件が落ちる＝前からの失敗だけ（bot-center 2・bot-database 1＋親・cooking-sake 4・ingredient-transfers 1・meeting-budget 14・meeting-sales 4・next-v1090 1・perf-v1098 1・specialist-career 1。前の 31 件にあった承認の forced tie は重いときだけ）。
-- 次：Codex の再レビュー（#151〜#156 の最新の head）→ OK なら Moto さんが手順の E（05・06・14）→ #151 から順にマージ → 端末を 1162 に → PL 8 月版 → 10 月版。業務の確認（Moto さん）：過去の中間レビューもいまの PL の暫定・確定で出す・opex は「経費 − 人件費」・`documents` の置き場所。
+- 次：Codex の再レビュー（#151〜#156 の最新の head）→ OK なら Moto さんが手順の E（05・06・14）→ #151 から順にマージ → 端末を 1162 に → PL 8 月版 → 10 月版。済（Moto さん 11/14 06:24 HST・3 つとも「はい」）：過去の中間レビューもいまの PL の暫定・確定で出す・opex は「経費 − 人件費」・`documents` の置き場所は今のまま（公開の鍵で読み書きできる・前から）。コードの変更なし。
 
 ## 2026-11-14 v1162：会計 PL ブックの取り込み（Claude・ブランチ `claude/pl-import-hotfix-1162`・PR #156・#155（`5b3e49b`）の上・アプリだけ・本番未反映）
 
