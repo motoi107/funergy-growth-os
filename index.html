@@ -45737,7 +45737,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1160';
+const APP_VERSION = '1161';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -106731,7 +106731,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (r.kind === 'mileage') { add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('出発 → 目的地','From → to'), (p.origin || '') + ' → ' + (p.destination || '')); add(T('片道マイル','One-way miles'), p.one_way_miles); add(T('往復','Round trip'), p.round_trip ? T('はい','yes') : T('いいえ','no')); add(T('合計マイル × 単価','Miles × rate'), p.miles + ' × $' + p.rate); add(T('メモ','Memo'), p.memo); }
     else if (r.kind === 'reimburse') {
       add(T('支払った人','Paid by'), p.payer + (p.payer_is_employee ? T('（従業員）',' (employee)') : '')); add(T('支払先','Vendor'), p.vendor); add(T('用途','Purpose'), p.purpose ? purposeL(p.purpose) : ''); add(T('用途のメモ','Note'), p.purpose_memo); add(T('メモ','Memo'), p.memo);
-      if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
+      if (p.receipt && p.receipt.chat_file) o.push([T('領収書','Receipt'), chatRcLink(r)]);   /* v1161（8B）：申請のチャットの写真・PDF */
+      else if (p.receipt && (p.receipt.path || p.receipt.drive_url)) o.push([T('領収書','Receipt'), p.receipt.path && /^[A-Za-z0-9_\-./]+$/.test(p.receipt.path) ? '<a href="#" data-a="' + esc(p.receipt.path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>' : /^https:\/\/(drive|docs)\.google\.com\//.test(p.receipt.drive_url || '') ? '<a href="' + esc(p.receipt.drive_url) + '" target="_blank" rel="noopener" data-a="' + esc(p.receipt.drive_url) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く','Open') + '</a>' : '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>']);
       else o.push([T('領収書','Receipt'), '<span style="color:var(--muted)">' + T('なし','none') + '</span>']);
     } else { add(T('部門','Dept'), p.dept); add(T('プロジェクト','Project'), p.project); add(T('目的','Purpose'), p.purpose); add(T('内容','Description'), p.description); add(T('場所','Place'), p.location); add(T('人数','People'), p.participants); if (p.per_person_cents) o.push([T('1 人あたり','Per person'), money(p.per_person_cents)]); add(T('メモ','Memo'), p.memo); }
     return o;
@@ -106916,13 +106917,22 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   /* 添付（建て替え経費の領収書）。開いたかはこの画面のあいだだけ覚える（ログインが変わると消える） */
   function attKeys(r){
     var p = (r && r.payload) || {}, rc = p.receipt || {}; if (!r || r.kind !== 'reimburse') return [];
+    if (typeof rc.chat_file === 'string' && rc.chat_file) return ['c:' + rc.chat_file];
     var path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
     if (typeof path === 'string' && path) return ['p:' + path];
     if (typeof du === 'string' && du) return ['u:' + du];
     return [];
   }
+  /* v1161（8B）：チャットの写真・PDF を領収書にしたもの。開くのはサーバーが確かめる（その申請を見られる人） */
+  function chatRcLink(r){
+    var rc = ((r && r.payload) || {}).receipt || {}, id = String((r && r.id) || ''), f = String(rc.chat_file || '');
+    if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[0-9a-f-]{36}$/i.test(f)) return '<span style="color:var(--muted)">' + T('記録なし','no record') + '</span>';
+    return '<a href="#" data-a="' + esc(id) + '" data-f="' + esc(f) + '" onclick="wrAttSeen(\'c:\'+this.dataset.f);if(window.chatReceiptOpen)chatReceiptOpen(this.dataset.a);return false">'
+      + T('開く','Open') + '</a> <span style="color:var(--muted)">' + (rc.kind === 'pdf' ? T('（チャットの PDF','(chat PDF') : T('（チャットの写真','(chat photo')) + (rc.name ? '：' + esc(rc.name) : '') + T('）',')') + '</span>';
+  }
   function attLink(r){
     var p = (r && r.payload) || {}, rc = p.receipt || {}, path = rc.path || p.imagePath, du = rc.drive_url || p.driveUrl;
+    if (typeof rc.chat_file === 'string' && rc.chat_file) return chatRcLink(r);
     if (typeof path === 'string' && /^[A-Za-z0-9_\-./]+$/.test(path)) return '<a href="#" data-a="' + esc(path) + '" onclick="wrReceipt(this.dataset.a);return false">' + T('開く','Open') + '</a>';
     if (typeof du === 'string' && /^https:\/\/(drive|docs)\.google\.com\//.test(du)) return '<a href="' + esc(du) + '" target="_blank" rel="noopener" data-a="' + esc(du) + '" onclick="wrAttSeen(\'u:\'+this.dataset.a)">' + T('開く（Drive）','Open (Drive)') + '</a>';
     return '';
@@ -107206,7 +107216,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
         + '<label style="display:block;font-size:11.5px;margin-top:6px"><input id="wrf-emp" type="checkbox"' + (p.payer_is_employee !== false ? ' checked' : '') + '> ' + T('従業員','Employee') + '</label>'
         + inp('vendor', T('支払先（お店）','Vendor'), p.vendor, 'text', 'maxlength="200"') + sel('purpose', T('用途','Purpose'), p.purpose || RB_PURPOSES[0], RB_PURPOSES.map(function(v){ return [v, purposeL(v)]; }))
         + inp('pmemo', T('用途のメモ','Note'), p.purpose_memo, 'text', 'maxlength="600"') + inp('amount', T('金額（$）','Amount ($)'), cents2(p.amount_cents), 'number', 'step="0.01" min="0.01"')
-        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && p.receipt.path ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
+        + '<label style="display:block;font-size:11.5px;margin-top:6px">' + T('領収書（写真・PDF）','Receipt (photo / PDF)') + (p.receipt && (p.receipt.path || p.receipt.chat_file) ? ' <span style="color:var(--muted)">' + T('（今のまま。差し替えるときだけ選ぶ）','(kept; choose only to replace)') + '</span>' : '') + '<input id="wrf-file" type="file" accept="image/*,application/pdf" style="width:100%"></label>'
         + inp('memo', T('メモ','Memo'), p.memo, 'text', 'maxlength="600"');
     } else {
       h += inp('date', T('実施日','Date'), p.date || hstToday(), 'date') + inp('dept', T('部門','Dept'), p.dept, 'text', 'maxlength="60"') + inp('project', T('プロジェクト','Project'), p.project, 'text', 'maxlength="200"')
@@ -108374,7 +108384,10 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
      書きかけ・送れなかったメッセージはこのタブのメモリだけ（ログアウト・読み込み直しで消える）。
    ・入り方は PIN のログインの印（window._hwSession）だけ。だれが読める・書けるかはサーバーが決める。店のタブレット（店舗の PIN）は使えない。
    ・3A だれでも DM・グループを作れる／4A 申請のチャットは申請した人・決める人・確かめる人が自動で入る／5A 24 時間まで直せる・消せる・GM・CEO は見えなくできる／
-     7A 知らせはアプリの中だけ（数・自分宛ての @）。添付（6A）は次の段階。
+     7A 知らせはアプリの中だけ（数・自分宛ての @）。
+   ・v1161 添付（UI案75 の答え・11/13「1 B 2 A 3 A 4 A 5 A 6 A 7 A 8 B」）：写真（端末で JPEG にして長い辺 2000px・一覧用 480px）・PDF・Excel・Word・PowerPoint・テキスト。
+     1 回に 5 つ・1 つ 10MB まで。中身は送るまでこのタブのメモリだけ。上げるのはサーバーが出す 1 回だけの上げる先、開く・保存は 5 分だけのリンク（そのつど頼む）。
+     見られる人はだれでも保存できる・本人が消すとファイルも消える・「この会話のファイル」・建て替え経費の申請のチャットでは申請した本人が「申請に付ける」。仕様：docs/CHAT_FILES_V1161_JA.md
    ・「変わった」の合図：表 chat_sig（本人だけが知る印）を Realtime で見る。つながらないときは 60 秒ごと、開いている会話は 20 秒ごと、5 分ごとに全部読み直す。
    ・送る：送信ごとに鍵（client_key）を作る。送れなかったら同じ鍵で送り直す（サーバーで二重にならない）。
    ・Enter は改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送る。日本語の変換中の Enter では送らない。 */
@@ -108402,7 +108415,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     chat_missing:['チャットのサーバー（SQL）がまだ入っていません。Moto さんに知らせてください','The chat database is not set up yet. Tell Moto'],
     unknown_action:['チャットのサーバー（関数 work-requests）が前の版です。v1156 の 1 ファイルにしてください（Moto さんに知らせてください）','The chat server (work-requests) is an earlier version. It needs the v1156 single file (tell Moto)'],
     pin_check_missing:['申請・チャットのサーバー（work-requests）が PIN のログインに対応していません（Moto さんに知らせてください）','The work-requests server does not accept the PIN login (tell Moto)'],
-    network:['チャットのサーバーにつながりません（通信を確かめてください）','Cannot reach the chat server (check the network)']
+    network:['チャットのサーバーにつながりません（通信を確かめてください）','Cannot reach the chat server (check the network)'],
+    /* v1161 添付 */
+    file_type:['付けられない種類です（写真・PDF・Excel・Word・PowerPoint・テキストだけ）','This kind of file cannot be attached (photos, PDF, Excel, Word, PowerPoint and text only)'],
+    file_big:['大きすぎます（1 つ 10MB まで）','Too large (up to 10 MB each)'],
+    file_empty:['空のファイルは付けられません','An empty file cannot be attached'],
+    file_bad:['ファイルの中身が名前と合いません（名前だけ変えたものなど）。消して、元のファイルを付け直してください','The file content does not match its name. Discard it and attach the original file'],
+    file_missing:['ファイルを上げきれませんでした。もう一度送ってください','The file did not finish uploading. Send again'],
+    file_many:['送っていないファイルが多すぎます（1 日 30 まで）。少し待ってからにしてください','Too many unsent files (up to 30 a day). Try again later'],
+    files_missing:['添付のサーバー（SQL）がまだ入っていません。文字のメッセージは送れます（Moto さんに知らせてください）','Attachments are not set up on the server yet. Text messages still work (tell Moto)'],
+    files_old:['添付は、チャットのサーバー（関数 work-requests）が v1161 になってから使えます。文字のメッセージは送れます','Attachments work once the chat server (work-requests) is v1161. Text messages still work'],
+    upload:['ファイルを上げられませんでした（通信を確かめて、もう一度送ってください）','The file could not be uploaded (check the network and send again)'],
+    storage:['ファイルの置き場所につながりませんでした。もう一度押してください','Could not reach the file storage. Try again'],
+    photo_read:['この写真を読めませんでした（JPEG か PNG で付けてください）','This photo could not be read (attach a JPEG or PNG)'],
+    not_live:['ワークセンターの申請がまだ始まっていません','Work Center requests have not started yet']
   };
   function T(ja, en){ try{ return typeof t === 'function' ? t(ja, en) : ja; }catch(e){ return ja; } }
   function esc(s){ return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
@@ -108424,7 +108450,8 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function fresh(gen){ return { tok:null, gen:gen || 0, me:'', role:'', token:'', st:'', err:'', errCode:'',
     threads:{}, cursor:0, unread:0, mention:0, lastSync:0, lastFull:0, syncing:false, again:'', painted:'',
     seg:'all', q:'', open:'', paneFor:null, msgs:{}, out:{}, drafts:{}, ment:{}, people:null, peopleSt:'', at:null, atSt:'',
-    rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null }; }
+    rt:false, ch:null, chSeq:0, timer:null, sigT:null, pop:null, dlg:null, mem:null, add:null,
+    att:{}, furl:{}, fneed:{}, fbusy:false, flist:null, view:null, rkey:{} }; }
   var C = fresh(0);
   W._chatState = function(){ return C; };
 
@@ -108460,6 +108487,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     try{ if (C.timer) clearInterval(C.timer); }catch(e){}
     try{ if (C.sigT) clearTimeout(C.sigT); }catch(e){}
     try{ D.removeEventListener('visibilitychange', onVis); }catch(e){}
+    freeAll();   /* v1161：付けた写真の小さい絵（このタブのメモリ）も残さない */
     C = fresh(C.gen + 1);
   };
   function onVis(){ if (!D.hidden) { syncNow(false); markRead(); } }
@@ -108670,29 +108698,48 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   W.chatSend = function(){
     var tid = C.open, ta = D.getElementById('chat-ta'); if (!tid || !ta) return;
-    var body = String(ta.value || '');
-    if (!body.trim()) return;
+    var body = String(ta.value || ''), att = C.att[tid] || [];
+    if (att.some(function(a){ return a.st !== 'ready'; })) { toast(T('写真を縮めています。少し待ってから送ってください','Still resizing the photos. Send in a moment'), 'warn'); return; }
+    if (!body.trim() && !att.length) return;
     if (body.trim().length > BODY_MAX) { toast(T('2,000 字までです（今 ','Up to 2,000 characters (now ') + body.trim().length + T(' 字）',')'), 'warn'); return; }
-    var o = { key:newKey(), body:body.trim(), mentions:mentionsFor(tid, body), st:'sending', err:'', code:'', at:new Date().toISOString() };
+    var o = { key:newKey(), body:body.trim(), mentions:mentionsFor(tid, body), files:att.slice(), st:'sending', err:'', code:'', prog:'', at:new Date().toISOString() };
     (C.out[tid] || (C.out[tid] = [])).push(o);
+    C.att[tid] = [];
     ta.value = ''; C.drafts[tid] = ''; C.ment[tid] = {}; grow(ta); closePop();
-    paintPane('bottom');
+    paintPane('bottom'); paintComp();
     sendOut(tid, o);
     try { ta.focus(); } catch(e){}
   };
+  /* 送る（ファイルがあれば先に上げる）。答えが届かなくても同じ鍵（メッセージ・ファイルごと）で送り直すので、サーバーでは 1 つ */
   function sendOut(tid, o){
-    var g = C.gen; o.st = 'sending'; o.err = ''; o.code = '';
-    api({ action:'chat_send', thread:tid, body:o.body, mentions:o.mentions, client_key:o.key }).then(function(msg){
+    var g = C.gen, files = o.files || []; o.st = 'sending'; o.err = ''; o.code = '';
+    var once = function(retried){
+      return (files.length ? upFiles(tid, o, g) : Promise.resolve([])).then(function(ids){
+        if (g !== C.gen) throw mk('signin_changed');
+        var p = { action:'chat_send', thread:tid, body:o.body, mentions:o.mentions, client_key:o.key };
+        if (ids.length) p.files = ids;
+        return api(p);
+      }).catch(function(e){
+        /* 上げたものが置き場所に無い（途中で切れた）：1 回だけ上げ直す */
+        if (e && e.code === 'file_missing' && !retried && g === C.gen) { files.forEach(function(a){ a.done = false; }); return once(true); }
+        throw e;
+      });
+    };
+    once(false).then(function(msg){
       if (g !== C.gen) return;
       var arr = C.out[tid] || [], i = arr.indexOf(o); if (i >= 0) arr.splice(i, 1);
+      /* 付けた写真の小さい絵は、このタブではそのまま使う（読み直さない）。中身はもう持たない */
+      (msg.files || []).forEach(function(f){ var a = files.find(function(x){ return x.id === f.id; }); if (a && a.local) { C.furl['t:' + f.id] = { url:a.local, at:Date.now(), local:true }; a.local = ''; } });
+      files.forEach(function(a){ a.blob = null; a.thumb = null; freeLocal(a); });
       var m = C.msgs[tid] || (C.msgs[tid] = newMsgs()); mergeMsgs(m, [msg]);
       var r = C.threads[tid];
       if (r) { r.last_seq = Math.max(Number(r.last_seq) || 0, msg.seq); r.last_read = Math.max(Number(r.last_read) || 0, msg.seq); r.last_at = msg.at;
-        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:String(msg.body || '').replace(/\s+/g, ' ').slice(0, 80), at:msg.at }; }
+        r.preview = { seq:msg.seq, name:msg.name, emp:msg.emp, text:msg.body ? String(msg.body).replace(/\s+/g, ' ').slice(0, 80) : filesLabel(msg.files), at:msg.at }; }
       if (C.open === tid) paintPane('bottom'); paintList();
     }, function(e){
       if (g !== C.gen) return;
-      o.st = 'failed'; o.err = e.message; o.code = e.code || '';
+      o.st = 'failed'; o.prog = ''; o.code = e.code || '';
+      o.err = files.length && e.code === 'unknown_action' ? errText('files_old') : e.message;
       if (C.open === tid) paintPane('keep');
     });
   }
@@ -108702,7 +108749,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     arr.splice(arr.indexOf(o), 1);
     var ta = D.getElementById('chat-ta');
     if (ta && C.open === tid && !String(ta.value || '').trim()) { ta.value = o.body; C.drafts[tid] = o.body; grow(ta); }   /* 入力欄が空なら戻す（直して送れるように） */
-    paintPane('keep');
+    /* 付けていたファイルも、付ける欄が空なら戻す（新しい鍵で）。中身が名前と合わなかったもの（file_bad）は戻さない */
+    var fl = o.files || [];
+    if (fl.length && o.code !== 'file_bad' && !(C.att[tid] || []).length && fl.every(function(a){ return a.blob; })) {
+      C.att[tid] = fl.map(function(a){ return Object.assign({}, a, { key:newKey(), id:'', done:false }); });
+    } else fl.forEach(freeLocal);
+    paintPane('keep'); paintComp();
   };
 
   /* ---------------------------------------------------------------- 入力欄（改行・送信・@） */
@@ -108802,7 +108854,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     var x = findMsg(id); if (!x || !x.can_edit) return;
     C.dlg = { kind:'edit', id:id, tid:C.open, busy:false, err:'' };
     openModal('<div id="chat-dlg" style="width:100%"><div class="modal-title">' + T('メッセージを直す','Edit message') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
-      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('送ってから 24 時間まで直せます。「編集済み」と出ます。','You can edit for 24 hours after sending. It shows “edited”.') + '</div>'
+      + '<div style="font-size:11px;color:var(--muted);margin-bottom:6px">' + T('送ってから 24 時間まで直せます。「編集済み」と出ます。','You can edit for 24 hours after sending. It shows “edited”.') + ((x.files || []).length ? T('ファイルはそのまま（文は空にもできます）。',' The files stay (the text may be empty).') : '') + '</div>'
       + '<textarea id="chat-edit-ta" class="form-input" rows="5" maxlength="' + BODY_MAX + '" style="width:100%">' + esc(x.body || '') + '</textarea>'
       + '<div id="chat-dlg-err"></div><div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px"><button class="btn btn-secondary" onclick="closeModalDirect()">' + T('やめる','Cancel') + '</button>'
       + '<button class="btn btn-primary" id="chat-dlg-ok" onclick="chatEditSave()">' + T('保存','Save') + '</button></div></div>');
@@ -108817,13 +108869,15 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   W.chatEditSave = function(){
     var d = C.dlg, ta = D.getElementById('chat-edit-ta'); if (!d || d.kind !== 'edit' || !ta) return;
     var body = String(ta.value || '').trim(), x = findMsg(d.id);
-    if (!body) { var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(T('空にはできません（消すときは「消す」）','It cannot be empty (use Delete)')) + '</div>'; return; }
+    if (!body && !(x && x.files && x.files.length)) { var el = D.getElementById('chat-dlg-err'); if (el) el.innerHTML = '<div class="alert alert-danger" style="font-size:12px;margin-top:8px">' + esc(T('空にはできません（消すときは「消す」）','It cannot be empty (use Delete)')) + '</div>'; return; }
     var keep = ((x && x.mentions) || []).filter(function(emp){ var n = nameOf(emp); return n && body.indexOf('@' + n) >= 0; });
     dlgRun({ action:'chat_edit', id:d.id, body:body, mentions:keep });
   };
   W.chatDelete = function(id){
     var x = findMsg(id); if (!x || !x.can_delete) return;
-    if (!confirm(T('このメッセージを消しますか？（「削除されました」と残ります。元に戻せません）','Delete this message? (“Deleted” stays. This cannot be undone)'))) return;
+    var nf = (x.files || []).length;
+    if (!confirm(nf ? T('このメッセージを消しますか？付けたファイル（','Delete this message? Its files (') + nf + T(' つ）もサーバーから消えます（申請の領収書にしたものは申請に残ります）。元に戻せません',') are removed from the server too (a request receipt stays with the request). This cannot be undone')
+      : T('このメッセージを消しますか？（「削除されました」と残ります。元に戻せません）','Delete this message? (“Deleted” stays. This cannot be undone)'))) return;
     var tid = C.open, g = C.gen;
     api({ action:'chat_delete', id:id }).then(function(msg){ if (g === C.gen) msgDone(tid, msg); }, function(e){ if (g === C.gen) toast(e.message, 'error'); });
   };
@@ -108992,6 +109046,344 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     memRun({ action:'chat_rename', thread:s.tid, title:s.title, expect_rev:Number(r.rev) || 1 }, function(row){ C.threads[s.tid] = Object.assign({}, C.threads[s.tid] || {}, row); toast(T('名前を変えました','Renamed'), 'success'); drawMem(); paintAll(); });
   };
 
+  /* ---------------------------------------------------------------- 添付（v1161・UI案75：1B 種類・2A 写真は縮める・3A 5 つ・10MB・4A だれでも保存・5A 消すとファイルも・7A この会話のファイル・8B 申請に付ける）
+     中身は送るまでこのタブのメモリだけ（localStorage・IndexedDB に書かない）。サーバーへは 1 回だけ使える上げる先へ直接 PUT（関数が出す）。
+     開く・保存は 5 分だけのリンクをそのつど頼む。見られるか・消えたかはサーバーが決める */
+  var FILE_MAX = 5, FILE_SIZE = 10485760, EDGE = 2000, THUMB_EDGE = 480, URL_MS = 240000, THUMB_BATCH = 30;
+  var FILE_EXTS = { jpg:'photo', pdf:'pdf', xlsx:'sheet', xls:'sheet', csv:'sheet', docx:'doc', doc:'doc', pptx:'slide', ppt:'slide', txt:'text' };
+  var PHOTO_EXTS = { jpg:1, jpeg:1, jpe:1, png:1, heic:1, heif:1, webp:1, gif:1 };
+  var FICON = { photo:'ti-photo', pdf:'ti-file-type-pdf', sheet:'ti-file-spreadsheet', doc:'ti-file-text', slide:'ti-presentation', text:'ti-file-text' };
+  var ACCEPT = 'image/*,.pdf,.xlsx,.xls,.csv,.docx,.doc,.pptx,.ppt,.txt';
+  var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  function extOf(name){ var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || '')); return m ? m[1].toLowerCase() : ''; }
+  /* 前の版の関数（添付を知らない）なら、そう言う */
+  function fErr(e){ return e && e.code === 'unknown_action' ? errText('files_old') : (e && e.message) || errText(''); }
+  function sizeL(n){ n = Number(n) || 0; return n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : n >= 1024 ? Math.max(1, Math.round(n / 1024)) + ' KB' : n + ' B'; }
+  function filesLabel(fs){
+    fs = fs || []; var ph = fs.filter(function(f){ return f.kind === 'photo'; }).length, ot = fs.length - ph;
+    if (ph && !ot) return T('写真 ' + ph + ' 枚', ph + ' photo' + (ph > 1 ? 's' : ''));
+    if (!ph && ot === 1) return T('ファイル「' + (fs[0].name || '') + '」', 'File “' + (fs[0].name || '') + '”');
+    if (!ph && ot > 1) return T('ファイル ' + ot + ' 個', ot + ' files');
+    return ph ? T('写真 ' + ph + ' 枚・ファイル ' + ot + ' 個', ph + ' photos, ' + ot + ' files') : '';
+  }
+  /* 種類を決める（写真は端末で JPEG に縮めるので、名前も .jpg に） */
+  W.chatFileClass = function(file){
+    if (!file) return { err:'file_type' };
+    var e = extOf(file.name), ty = String(file.type || '').toLowerCase();
+    if (PHOTO_EXTS[e] || (!FILE_EXTS[e] && /^image\//.test(ty))) return { ext:'jpg', kind:'photo', name:(String(file.name || '').replace(/\.[A-Za-z0-9]{1,5}$/, '').slice(0, 100) || 'photo') + '.jpg' };
+    if (!FILE_EXTS[e]) return { err:'file_type' };
+    if (!(Number(file.size) > 0)) return { err:'file_empty' };
+    if (file.size > FILE_SIZE) return { err:'file_big' };
+    return { ext:e, kind:FILE_EXTS[e], name:String(file.name || 'file').slice(-120) };
+  };
+  /* 写真を縮める（長い辺 2000px と 480px の JPEG）。向きは写真の情報どおり。透明なところは白に */
+  async function decodeImg(file){
+    if (typeof createImageBitmap === 'function') {
+      try { return await createImageBitmap(file, { imageOrientation:'from-image' }); } catch(e){ try { return await createImageBitmap(file); } catch(e2){} }
+    }
+    return await new Promise(function(res, rej){
+      var u = '', im;
+      try { u = W.URL.createObjectURL(file); im = new Image(); } catch(e){ rej(mk('photo_read')); return; }
+      im.onload = function(){ res(im); setTimeout(function(){ try{ W.URL.revokeObjectURL(u); }catch(e){} }, 0); };
+      im.onerror = function(){ try{ W.URL.revokeObjectURL(u); }catch(e){} rej(mk('photo_read')); };
+      im.src = u;
+    });
+  }
+  function drawJpeg(src, edge, q){
+    var w0 = src.width || src.naturalWidth || 0, h0 = src.height || src.naturalHeight || 0;
+    if (!w0 || !h0) return Promise.reject(mk('photo_read'));
+    var k = Math.min(1, edge / Math.max(w0, h0)), w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
+    var cv = D.createElement('canvas'); cv.width = w; cv.height = h;
+    var cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, w, h); cx.drawImage(src, 0, 0, w, h);
+    return new Promise(function(res, rej){ cv.toBlob(function(b){ if (b) res({ blob:b, w:w, h:h }); else rej(mk('photo_read')); }, 'image/jpeg', q); });
+  }
+  W._chatShrink = async function(file){
+    var src = await decodeImg(file);
+    try {
+      var big = await drawJpeg(src, EDGE, 0.85);
+      if (big.blob.size > FILE_SIZE) big = await drawJpeg(src, EDGE, 0.6);
+      var th = await drawJpeg(src, THUMB_EDGE, 0.72);
+      return { blob:big.blob, w:big.w, h:big.h, thumb:th.blob };
+    } finally { try { if (src && src.close) src.close(); } catch(e){} }
+  };
+  function freeLocal(a){ try { if (a && a.local && W.URL && W.URL.revokeObjectURL) W.URL.revokeObjectURL(a.local); } catch(e){} if (a) a.local = ''; }
+  function freeAll(){
+    try {
+      Object.keys(C.att).forEach(function(t){ (C.att[t] || []).forEach(freeLocal); });
+      Object.keys(C.out).forEach(function(t){ (C.out[t] || []).forEach(function(o){ (o.files || []).forEach(freeLocal); }); });
+      Object.keys(C.furl).forEach(function(k){ var u = C.furl[k]; if (u && u.local) freeLocal({ local:u.url }); });
+    } catch(e){}
+  }
+  W.chatPickFiles = function(input){
+    var tid = C.open; if (!tid || !input) return;
+    var files = Array.prototype.slice.call(input.files || []);
+    try { input.value = ''; } catch(e){}
+    if (files.length) addFiles(tid, files);
+  };
+  function addFiles(tid, files){
+    var list = C.att[tid] || (C.att[tid] = []), g = C.gen, over = 0, bad = {};
+    files.forEach(function(f){
+      if (list.length >= FILE_MAX) { over++; return; }
+      var c = W.chatFileClass(f);
+      if (c.err) { bad[c.err] = (bad[c.err] || 0) + 1; return; }
+      var a = { key:newKey(), name:c.name, ext:c.ext, kind:c.kind, size:Number(f.size) || 0, st:c.kind === 'photo' ? 'prep' : 'ready', blob:c.kind === 'photo' ? null : f,
+        thumb:null, w:null, h:null, id:'', done:false, local:'' };
+      list.push(a);
+      if (a.kind === 'photo') shrinkOne(tid, a, f, g);
+    });
+    if (over) toast(T('1 回に付けられるのは 5 つまでです（' + over + ' つは付けていません）', 'Up to 5 at a time (' + over + ' not added)'), 'warn');
+    Object.keys(bad).forEach(function(k){ toast(errText(k) + (bad[k] > 1 ? '（' + bad[k] + '）' : ''), 'warn'); });
+    paintComp();
+  }
+  function shrinkOne(tid, a, f, g){
+    Promise.resolve().then(function(){ return W._chatShrink(f); }).then(function(r){
+      if (g !== C.gen) return;
+      if (!r || !r.blob || !(r.w > 0) || !(r.h > 0)) throw mk('photo_read');
+      if (r.blob.size > FILE_SIZE) throw mk('file_big');
+      a.blob = r.blob; a.thumb = r.thumb || null; a.w = Math.round(r.w); a.h = Math.round(r.h); a.size = r.blob.size; a.st = 'ready';
+      try { if (a.thumb && W.URL && W.URL.createObjectURL) a.local = W.URL.createObjectURL(a.thumb); } catch(e){}
+      paintComp();
+    }).catch(function(e){
+      if (g !== C.gen) return;
+      var list = C.att[tid] || [], i = list.indexOf(a); if (i >= 0) list.splice(i, 1);
+      toast(a.name + '：' + (e && e.code ? e.message : errText('photo_read')), 'warn');
+      paintComp();
+    });
+  }
+  W.chatUnattach = function(key){
+    var tid = C.open, list = C.att[tid] || [], a = list.find(function(x){ return x.key === key; }); if (!a) return;
+    list.splice(list.indexOf(a), 1); freeLocal(a); paintComp();
+  };
+  function trayHtml(tid){
+    return (C.att[tid] || []).map(function(a){
+      var pic = a.kind === 'photo' && /^blob:/.test(a.local) ? '<img src="' + esc(a.local) + '" alt="">' : '<i class="ti ' + (FICON[a.kind] || 'ti-file') + '"></i>';
+      return '<div class="chat-att"><span class="chat-att-pic">' + pic + '</span><span class="chat-att-main"><b>' + esc(a.name) + '</b><span>' + (a.st === 'prep' ? T('縮めています…','Resizing…') : esc(sizeL(a.size))) + '</span></span>'
+        + '<button class="chat-att-x" title="' + esc(T('外す','Remove')) + '" onclick="chatUnattach(\'' + esc(a.key) + '\')">×</button></div>';
+    }).join('');
+  }
+  function paintComp(){ var el = D.getElementById('chat-tray'); if (!el) return; el.innerHTML = trayHtml(C.open); el.style.display = (C.att[C.open] || []).length ? '' : 'none'; }
+
+  /* 上げる：サーバーが出した上げる先（この Supabase の Storage だけ）へ。もう上がっていれば（答えが届かなかった 1 回目）そのまま次へ */
+  async function putFile(url, blob, mime){
+    if (typeof url !== 'string' || url.indexOf(SUPABASE_URL + '/storage/v1/object/upload/sign/') !== 0 || !blob) throw mk('upload');
+    var r, t = '';
+    try { r = await fetch(url, { method:'PUT', headers:{ apikey:SUPABASE_ANON, Authorization:'Bearer ' + SUPABASE_ANON, 'Content-Type':mime || 'application/octet-stream', 'x-upsert':'false', 'cache-control':'max-age=3600' }, body:blob }); }
+    catch(e) { throw mk('network'); }
+    if (r.ok) return;
+    try { t = await r.text(); } catch(e){}
+    if (r.status === 409 || /Duplicate|already exists/i.test(t)) return;
+    throw mk(r.status === 413 || /too large|maximum allowed size/i.test(t) ? 'file_big' : 'upload', r.status);
+  }
+  async function upFiles(tid, o, g){
+    var ids = [];
+    for (var i = 0; i < o.files.length; i++) {
+      var a = o.files[i];
+      if (!a.done) {
+        o.prog = (i + 1) + '/' + o.files.length; if (C.open === tid) paintPane('keep');
+        var q = { action:'chat_file_start', thread:tid, client_key:a.key, name:a.name, ext:a.ext, size:a.size };
+        if (a.kind === 'photo') { q.w = a.w; q.h = a.h; }
+        var s = await api(q);
+        if (g !== C.gen) throw mk('signin_changed');
+        a.id = s.id;
+        if (s.status === 'bad') throw mk('file_bad');
+        if (s.status === 'up') {
+          if (s.upload) await putFile(s.upload.url, a.blob, s.mime);
+          if (s.thumb_upload) await putFile(s.thumb_upload.url, a.thumb, 'image/jpeg');
+        }
+        if (g !== C.gen) throw mk('signin_changed');
+        a.done = true;
+      }
+      ids.push(a.id);
+    }
+    o.prog = '';
+    return ids;
+  }
+
+  /* 見る：小さい写真は 30 ずつまとめてリンクを頼む（4 分で頼み直す）。送った写真はこのタブの絵をそのまま使う */
+  function turl(id){ var u = C.furl['t:' + id]; return u && (u.local || Date.now() - u.at < URL_MS) ? (u.url || '') : ''; }
+  function needThumb(id){ if (!UUID.test(String(id || ''))) return; var u = C.furl['t:' + id]; if (u && (u.local || Date.now() - u.at < URL_MS)) return; C.fneed[id] = 1; }
+  function fetchThumbs(){
+    if (C.fbusy || !canUse()) return;
+    var ids = Object.keys(C.fneed).slice(0, THUMB_BATCH); if (!ids.length) return;
+    ids.forEach(function(id){ delete C.fneed[id]; });
+    C.fbusy = true;
+    var g = C.gen;
+    api({ action:'chat_file_url', ids:ids, thumb:true }).then(function(j){
+      if (g !== C.gen) return;
+      var now = Date.now();
+      ids.forEach(function(id){ C.furl['t:' + id] = { url:'', at:now }; });   /* 開けないもの（消えた・見えなくなった）は 4 分は頼まない */
+      (j.items || []).forEach(function(x){ if (x && UUID.test(String(x.id || '')) && typeof x.url === 'string' && /^https:\/\//.test(x.url)) C.furl['t:' + x.id] = { url:x.url, at:now }; });
+      showThumbs(ids);
+    }, function(){ /* 次に描くときにもう一度 */ }).then(function(){
+      if (g !== C.gen) return;
+      C.fbusy = false;
+      if (Object.keys(C.fneed).length) fetchThumbs();
+    });
+  }
+  function showThumbs(ids){
+    if (typeof D.querySelectorAll === 'function') {
+      ids.forEach(function(id){ var u = turl(id); if (!u) return; try { Array.prototype.forEach.call(D.querySelectorAll('img[data-cf="' + id + '"]'), function(im){ if (im.getAttribute('src') !== u) im.setAttribute('src', u); }); } catch(e){} });
+      return;
+    }
+    if (C.open) paintPane('keep');
+    drawFlist();
+  }
+  function filesHtml(tid, x){
+    var fs = x.files || [], ph = fs.filter(function(f){ return f.kind === 'photo'; }), ot = fs.filter(function(f){ return f.kind !== 'photo'; }), h = '';
+    if (ph.length) {
+      h += '<div class="chat-ph' + (ph.length === 1 ? ' one' : '') + '">' + ph.map(function(f){
+        needThumb(f.id);
+        var u = turl(f.id), w = Math.round(Number(f.w) || 0), hh = Math.round(Number(f.h) || 0);
+        var ar = ph.length === 1 && w > 0 && hh > 0 ? ' style="aspect-ratio:' + w + '/' + hh + '"' : '';
+        return '<button class="chat-ph-i"' + ar + ' onclick="chatFileOpen(\'' + esc(f.id) + '\')" title="' + esc(f.name || '') + '"><img data-cf="' + esc(f.id) + '" alt=""' + (u ? ' src="' + esc(u) + '"' : '') + '>'
+          + (f.req ? '<span class="chat-ph-tag">' + T('申請に付けた','On the request') + '</span>' : '') + '</button>';
+      }).join('') + '</div>';
+    }
+    ot.forEach(function(f){
+      h += '<div class="chat-fc"><i class="ti ' + (FICON[f.kind] || 'ti-file') + '"></i><div class="chat-fc-main"><b>' + esc(f.name || '') + '</b><span>' + esc(sizeL(f.size)) + (f.req ? ' · ' + T('申請に付けた','on the request') : '') + '</span></div>'
+        + '<button class="lnk" onclick="chatFileOpen(\'' + esc(f.id) + '\')">' + T('開く','Open') + '</button><button class="lnk" onclick="chatFileSave(\'' + esc(f.id) + '\')">' + T('保存','Save') + '</button>'
+        + (canReceipt(tid, f) ? '<button class="lnk" onclick="chatFileReceipt(\'' + esc(f.id) + '\')">' + T('申請に付ける','Use as receipt') + '</button>' : '') + '</div>';
+    });
+    return '<div class="chat-files">' + h + '</div>';
+  }
+  function fileById(id){
+    var m = C.msgs[C.open], hit = null;
+    if (m) m.list.some(function(x){ return !x.deleted && !x.hidden && (x.files || []).some(function(f){ if (f.id === id) { hit = f; return true; } return false; }); });
+    if (!hit && C.flist && C.flist.tid === C.open) hit = (C.flist.items || []).find(function(f){ return f.id === id; }) || null;
+    return hit;
+  }
+  /* 開く：写真はこの画面の中で。ほかは新しい窓（押したときに開いておく：あとから開くと端末が止めるため）。開けなければ押して開くリンク */
+  function openWin(){ try { var w = W.open('', '_blank'); if (w) { try { w.opener = null; } catch(e){} } return w || null; } catch(e){ return null; } }
+  /* 頼んだときと同じ人のままか（世代と PIN の印）。チャットを始めていない画面（申請の画面）からも使う */
+  function same(g, tok){ return g === C.gen && pinTok() === tok; }
+  function goUrl(w, url, name){
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) { if (w) try{ w.close(); }catch(e){} toast(errText('storage'), 'error'); return; }
+    if (w && !w.closed) { try { w.location.href = url; return; } catch(e){} }
+    openModal('<div style="width:100%"><div class="modal-title">' + esc(name || T('ファイル','File')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>'
+      + '<div style="margin:10px 0"><a class="btn btn-primary" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" onclick="closeModalDirect()"><i class="ti ti-external-link"></i> ' + T('開く','Open') + '</a></div>'
+      + '<div style="font-size:11px;color:var(--muted)">' + T('このリンクは 5 分だけ使えます','This link works for 5 minutes') + '</div></div>');
+  }
+  W.chatFileOpen = function(id){
+    var f = fileById(id); if (!f) return;
+    if (f.kind === 'photo') { viewPhoto(f); return; }
+    var w = openWin(), g = C.gen, tok = pinTok();
+    api({ action:'chat_file_url', id:id }).then(function(j){
+      if (!same(g, tok)) { if (w) try{ w.close(); }catch(e){} return; }
+      goUrl(w, j && j.url, f.name);
+    }, function(e){ if (w) try{ w.close(); }catch(_){} if (same(g, tok)) toast(fErr(e), 'error'); });
+  };
+  W.chatFileSave = function(id){
+    var f = fileById(id); if (!f) return;
+    var g = C.gen, tok = pinTok();
+    api({ action:'chat_file_url', id:id, download:true }).then(function(j){ if (same(g, tok)) W._chatSaveUrl(j && j.url, (j && j.name) || f.name); }, function(e){ if (same(g, tok)) toast(fErr(e), 'error'); });
+  };
+  /* 保存：リンクに「保存して」の印が付いている（サーバーが付ける）。この画面はそのまま */
+  W._chatSaveUrl = function(url, name){
+    if (typeof url !== 'string' || !/^https:\/\//.test(url)) { toast(errText('storage'), 'error'); return; }
+    try { var a = D.createElement('a'); a.href = url; a.rel = 'noopener'; a.download = name || ''; (D.body || D.documentElement).appendChild(a); a.click(); setTimeout(function(){ try{ a.remove(); }catch(e){} }, 0); }
+    catch(e) { try { W.location.href = url; } catch(_){} }
+  };
+  function viewPhoto(f){
+    C.view = { id:f.id, url:'', st:'loading', err:'' };
+    openModal('<div id="chat-view" style="width:100%"></div>'); drawView();
+    var g = C.gen, v = C.view;
+    api({ action:'chat_file_url', id:f.id }).then(function(j){ if (g !== C.gen || C.view !== v) return; v.url = (j && j.url) || ''; v.st = /^https:\/\//.test(v.url) ? 'ok' : 'err'; if (v.st === 'err') v.err = errText('storage'); drawView(); },
+      function(e){ if (g !== C.gen || C.view !== v) return; v.st = 'err'; v.err = fErr(e); drawView(); });
+  }
+  function drawView(){
+    var el = D.getElementById('chat-view'), v = C.view; if (!el || !v) return;
+    var f = fileById(v.id) || { id:v.id, name:'', kind:'photo' };
+    var body = v.st === 'ok' ? '<img src="' + esc(v.url) + '" alt="' + esc(f.name || '') + '" style="max-width:100%;max-height:68vh;display:block;margin:0 auto;border-radius:8px">'
+      : v.st === 'err' ? '<div class="alert alert-danger" style="font-size:12px">' + esc(v.err) + '</div>' : '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+    el.innerHTML = '<div class="modal-title">' + esc(f.name || T('写真','Photo')) + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>' + body
+      + '<div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:10px">'
+      + (canReceipt(C.open, f) ? '<button class="btn btn-secondary btn-sm" onclick="chatFileReceipt(\'' + esc(f.id) + '\')"><i class="ti ti-receipt"></i> ' + T('申請に付ける','Use as the receipt') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="chatFileSave(\'' + esc(f.id) + '\')"><i class="ti ti-download"></i> ' + T('保存','Save') + '</button>'
+      + '<button class="btn btn-primary btn-sm" onclick="closeModalDirect()">' + T('閉じる','Close') + '</button></div>';
+  }
+
+  /* 7A：この会話のファイル（新しい順・メッセージ 30 件ずつ） */
+  W.chatFilesList = function(){
+    var tid = C.open; if (!tid) return;
+    C.flist = { tid:tid, items:[], before:null, more:false, st:'loading', err:'', busy:false };
+    openModal('<div id="chat-flist" style="width:100%"></div>'); drawFlist(); loadFlist(false);
+  };
+  W.chatFilesMore = function(){ loadFlist(true); };
+  function loadFlist(more){
+    var s = C.flist; if (!s || s.busy) return;
+    s.busy = true; drawFlist();
+    var g = C.gen, p = { action:'chat_files', thread:s.tid, limit:30 };
+    if (more && s.before != null) p.before = s.before;
+    api(p).then(function(j){ if (g !== C.gen || C.flist !== s) return; s.items = (more ? s.items : []).concat(j.items || []); s.before = j.before; s.more = !!j.more; s.st = 'ok'; s.err = ''; },
+      function(e){ if (g !== C.gen || C.flist !== s) return; if (s.items.length) toast(fErr(e), 'error'); else { s.st = 'err'; s.err = fErr(e); } })
+    .then(function(){ if (g !== C.gen || C.flist !== s) return; s.busy = false; drawFlist(); fetchThumbs(); });
+  }
+  function drawFlist(){
+    var el = D.getElementById('chat-flist'), s = C.flist; if (!el || !s) return;
+    var h = '<div class="modal-title"><i class="ti ti-paperclip"></i> ' + T('この会話のファイル','Files in this conversation') + ' <button class="modal-close" onclick="closeModalDirect()">×</button></div>';
+    if (s.st === 'loading' && !s.items.length) h += '<div class="chat-empty">' + T('読み込み中…','Loading…') + '</div>';
+    else if (s.st === 'err') h += '<div class="alert alert-danger" style="font-size:12px">' + esc(s.err) + '</div>';
+    else if (!s.items.length) h += '<div class="chat-empty">' + T('まだファイルはありません（📎 で付けられます）','No files yet (attach with 📎)') + '</div>';
+    else {
+      h += '<div style="max-height:56vh;overflow-y:auto">' + s.items.map(function(f){
+        var pic;
+        if (f.kind === 'photo') { needThumb(f.id); var u = turl(f.id); pic = '<img data-cf="' + esc(f.id) + '" alt=""' + (u ? ' src="' + esc(u) + '"' : '') + '>'; }
+        else pic = '<i class="ti ' + (FICON[f.kind] || 'ti-file') + '"></i>';
+        return '<div class="chat-fl"><button class="chat-fl-pic" onclick="chatFileOpen(\'' + esc(f.id) + '\')" title="' + esc(f.name || '') + '">' + pic + '</button>'
+          + '<div class="chat-fl-main"><b>' + esc(f.name || '') + '</b><span>' + esc(f.by || '') + ' · ' + esc(hst(f.at, { month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit', hour12:false })) + ' · ' + esc(sizeL(f.size))
+          + (f.req ? ' · <b style="color:var(--accent)">' + T('申請に付けた','On the request') + '</b>' : '') + '</span></div>'
+          + '<div class="chat-fl-act"><button class="lnk" onclick="chatFileOpen(\'' + esc(f.id) + '\')">' + T('開く','Open') + '</button><button class="lnk" onclick="chatFileSave(\'' + esc(f.id) + '\')">' + T('保存','Save') + '</button>'
+          + (canReceipt(s.tid, f) ? '<button class="lnk" onclick="chatFileReceipt(\'' + esc(f.id) + '\')">' + T('申請に付ける','Use as receipt') + '</button>' : '') + '</div></div>';
+      }).join('') + '</div>'
+        + (s.more ? '<div style="text-align:center;margin-top:8px"><button class="btn btn-secondary btn-sm"' + (s.busy ? ' disabled' : '') + ' onclick="chatFilesMore()">' + T('前のファイルを読む','Load earlier files') + '</button></div>' : '');
+    }
+    h += '<div style="font-size:10.5px;color:var(--muted);margin-top:8px;line-height:1.6">' + T('この会話を見られる人はだれでも開いて保存できます。送った人がメッセージを消すとファイルも消えます。','Anyone who can see this conversation can open and save these. When the sender deletes the message, its files go too.') + '</div>';
+    el.innerHTML = h;
+  }
+
+  /* 8B：建て替え経費の申請のチャットの写真・PDF を、申請した本人が申請の領収書にする（承認待ち・差し戻しのあいだ） */
+  function canReceipt(tid, f){
+    var r = C.threads[tid], ref = r && r.ref;
+    return !!(f && r && r.kind === 'case' && ref && ref.wr_kind === 'reimburse' && ref.mine === true && typeof ref.rev === 'number'
+      && (ref.status === 'pending' || ref.status === 'returned') && (f.kind === 'photo' || f.kind === 'pdf') && !f.req);
+  }
+  function markReq(id){
+    Object.keys(C.msgs).forEach(function(t){ (C.msgs[t].list || []).forEach(function(x){ (x.files || []).forEach(function(f){ f.req = f.id === id ? true : f.req; }); }); });
+    if (C.flist) (C.flist.items || []).forEach(function(f){ if (f.id === id) f.req = true; });
+  }
+  W.chatFileReceipt = function(id){
+    var tid = C.open, f = fileById(id); if (!canReceipt(tid, f)) return;
+    var ref = C.threads[tid].ref, rev = Number(ref.rev);
+    if (!confirm(T('この' + (f.kind === 'pdf' ? ' PDF ' : '写真') + 'を申請 ' + (ref.code || '') + ' の領収書にしますか？（今の領収書と置き換わります。メッセージを消しても申請の記録として残ります）',
+      'Use this ' + (f.kind === 'pdf' ? 'PDF' : 'photo') + ' as the receipt of ' + (ref.code || 'the request') + '? (It replaces the current receipt and stays with the request even if the message is deleted)'))) return;
+    var k = id + ':' + rev, key = C.rkey[k] || (C.rkey[k] = newKey()), g = C.gen;   /* 答えが届かず押し直しても、同じ鍵で 1 回 */
+    api({ action:'wr_receipt_chat', id:ref.id, file:id, expect_rev:rev, client_key:key }).then(function(row){
+      if (g !== C.gen) return;
+      var r = C.threads[tid]; if (r && r.ref && row && typeof row.rev === 'number') { r.ref.rev = row.rev; if (row.status) r.ref.status = row.status; }
+      markReq(id);
+      if (C.view && C.view.id === id) { C.view = null; try{ closeModalDirect(); }catch(e){} }
+      toast(T('申請 ' + (ref.code || '') + ' の領収書にしました', 'Set as the receipt of ' + (ref.code || 'the request')), 'success');
+      if (C.open === tid) paintPane('keep'); drawFlist(); drawView();
+    }, function(e){
+      if (g !== C.gen) return;
+      toast(fErr(e), 'error');
+      if (e.code === 'conflict' || e.code === 'forbidden') syncNow(false);
+    });
+  };
+  /* 申請の画面から：チャットの写真・PDF の領収書を開く（その申請を見られる人。サーバーが確かめる） */
+  /* #155 の Codex（6876878458）の 2：答えが来る前にログアウト・別の人のログインに変わったら（世代・PIN の印が違えば）、
+     前の人のリンクを開かない・先に開いた窓も閉じる・開けないときのリンクの画面も出さない */
+  W.chatReceiptOpen = function(reqId){
+    if (!UUID.test(String(reqId || ''))) return;
+    var g = C.gen, tok = pinTok();
+    if (!tok) { toast(errText('signin'), 'error'); return; }
+    var w = openWin();
+    api({ action:'wr_receipt_url', id:reqId }).then(function(j){
+      if (!same(g, tok)) { if (w) try{ w.close(); }catch(_){} return; }
+      goUrl(w, j && j.url, j && j.name);
+    }, function(e){ if (w) try{ w.close(); }catch(_){} if (same(g, tok)) toast(fErr(e), 'error'); });
+  };
+
   /* ---------------------------------------------------------------- 申請のチャット（4A） */
   W.chatCaseButton = function(r){
     if (!r || !r.id || !canUse() || C.st === 'missing' || C.st === 'old') return '';
@@ -109051,7 +109443,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     if (C.st === 'ok' && !C.syncing && Date.now() - C.lastSync > 10000) syncNow(false);
     C.paneFor = C.open;
     if (C.open && C.msgs[C.open]) C.msgs[C.open].painted = !!C.msgs[C.open].list.length;
-    setTimeout(function(){ scrollBottom(); markRead(); }, 0);
+    setTimeout(function(){ scrollBottom(); markRead(); fetchThumbs(); }, 0);
     ensureCss();
     return '<div id="chat-root" class="chat-wrap' + (C.open ? ' chat-has-open' : '') + '"><div id="chat-side" class="chat-side">' + sideHtml() + '</div><div id="chat-pane" class="chat-pane">' + paneHtml() + '</div></div>';
   };
@@ -109103,6 +109495,7 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
     return '<button class="btn btn-secondary btn-sm chat-back" onclick="chatBack()"><i class="ti ti-chevron-left"></i> ' + T('戻る','Back') + '</button>'
       + '<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(titleOf(r)) + '</div><div style="font-size:10.5px;color:var(--muted)">' + sub + '</div></div>'
       + (r.kind === 'case' && ref.id ? '<button class="btn btn-secondary btn-sm" onclick="chatOpenRequest(\'' + esc(ref.id) + '\')"><i class="ti ti-file-text"></i> ' + T('申請','Request') + '</button>' : '')
+      + '<button class="btn btn-secondary btn-sm" onclick="chatFilesList()" title="' + esc(T('この会話のファイル','Files in this conversation')) + '"><i class="ti ti-paperclip"></i><span class="chat-hb-t"> ' + T('ファイル','Files') + '</span></button>'
       + (r.kind !== 'dm' ? '<button class="btn btn-secondary btn-sm" onclick="chatMembers()"><i class="ti ti-users"></i> ' + T('参加者','Members') + '</button>' : '');
   }
   function bodyHtml(x){
@@ -109128,17 +109521,20 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       var body = x.deleted ? T('削除されました','Deleted') : x.hidden ? T('見えなくなりました','Hidden') + (x.hidden_name ? '（' + esc(x.hidden_name) + '）' : '') : bodyHtml(x);
       var meta = (x.mine ? T('あなた · ','You · ') : '') + esc(clock(x.at)) + (x.edited ? ' · ' + T('編集済み','edited') : '')
         + (x.mine && !gone && Number(x.read) > 0 ? ' · ' + (dm ? T('既読','Read') : T('既読 ','Read ') + Number(x.read)) : '');
-      var act = '';
+      var act = '', fh = !gone && x.files && x.files.length ? filesHtml(tid, x) : '', hasText = gone || String(x.body || '').trim() !== '';
+      var rp = !gone ? (x.files || []).filter(function(f){ return f.kind === 'photo' && canReceipt(tid, f); }) : [];
+      if (rp.length === 1) act += '<button class="lnk" onclick="chatFileReceipt(\'' + esc(rp[0].id) + '\')">' + T('写真を申請に付ける','Use the photo as the receipt') + '</button>';
       if (x.can_edit) act += '<button class="lnk" onclick="chatEdit(\'' + esc(x.id) + '\')">' + T('直す','Edit') + '</button>';
       if (x.can_delete) act += '<button class="lnk" onclick="chatDelete(\'' + esc(x.id) + '\')">' + T('消す','Delete') + '</button>';
       if (x.can_hide) act += x.hidden ? '<button class="lnk" onclick="chatUnhide(\'' + esc(x.id) + '\')">' + T('戻す','Restore') + '</button>' : '<button class="lnk" onclick="chatHide(\'' + esc(x.id) + '\')">' + T('見えなくする','Hide') + '</button>';
       h += '<div class="chat-msg' + (x.mine ? ' me' : '') + (atMe ? ' at' : '') + '">' + (showName ? '<div class="chat-msg-name">' + esc(x.name) + '</div>' : '')
-        + '<div class="chat-bub' + (gone ? ' gone' : '') + '">' + body + '</div><div class="chat-msg-meta">' + meta + act + '</div></div>';
+        + (hasText || !fh ? '<div class="chat-bub' + (gone ? ' gone' : '') + '">' + body + '</div>' : '') + fh + '<div class="chat-msg-meta">' + meta + act + '</div></div>';
       prev = x;
     });
     out.forEach(function(o){
-      h += '<div class="chat-msg me"><div class="chat-bub pend">' + esc(o.body).replace(/\n/g, '<br>') + '</div><div class="chat-msg-meta">'
-        + (o.st === 'sending' ? T('送信中…','Sending…') : '<span style="color:var(--red);font-weight:700">' + T('送れませんでした','Not sent') + '</span>' + (o.err ? '（' + esc(o.err) + '）' : '')
+      var fl = (o.files || []).map(function(a){ return '<div class="chat-fc pend"><i class="ti ' + (FICON[a.kind] || 'ti-file') + '"></i><div class="chat-fc-main"><b>' + esc(a.name) + '</b><span>' + esc(sizeL(a.size)) + '</span></div></div>'; }).join('');
+      h += '<div class="chat-msg me">' + (o.body || !fl ? '<div class="chat-bub pend">' + esc(o.body).replace(/\n/g, '<br>') + '</div>' : '') + (fl ? '<div class="chat-files">' + fl + '</div>' : '') + '<div class="chat-msg-meta">'
+        + (o.st === 'sending' ? (o.prog ? T('ファイルを上げています ','Uploading files ') + esc(o.prog) : T('送信中…','Sending…')) : '<span style="color:var(--red);font-weight:700">' + T('送れませんでした','Not sent') + '</span>' + (o.err ? '（' + esc(o.err) + '）' : '')
           + '<button class="lnk" onclick="chatRetry(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('もう一度送る','Send again') + '</button><button class="lnk" onclick="chatDiscard(\'' + esc(tid) + '\',\'' + esc(o.key) + '\')">' + T('消す','Discard') + '</button>')
         + '</div></div>';
     });
@@ -109146,10 +109542,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }
   function compHtml(){
     var tid = C.open;
-    return '<div id="chat-pop" class="chat-pop" style="display:none"></div><div class="chat-comp-row">'
+    var na = (C.att[tid] || []).length;
+    return '<div id="chat-pop" class="chat-pop" style="display:none"></div><div id="chat-tray" class="chat-tray"' + (na ? '' : ' style="display:none"') + '>' + trayHtml(tid) + '</div><div class="chat-comp-row">'
+      + '<label class="btn btn-secondary chat-att-btn" title="' + esc(T('写真・ファイルを付ける（5 つまで・1 つ 10MB まで）','Attach photos or files (up to 5, 10 MB each)')) + '"><i class="ti ti-paperclip"></i><input type="file" multiple accept="' + ACCEPT + '" onchange="chatPickFiles(this)" style="display:none"></label>'
       + '<textarea id="chat-ta" rows="2" maxlength="' + (BODY_MAX + 200) + '" placeholder="' + esc(T('メッセージ（@ で人を呼ぶ）','Message (@ to mention)')) + '" oninput="chatInput(this)" onkeydown="chatKey(event)" onblur="chatBlur()">' + esc(C.drafts[tid] || '') + '</textarea>'
       + '<button class="btn btn-primary" onclick="chatSend()" style="flex:0 0 auto"><i class="ti ti-send"></i> ' + T('送信','Send') + '</button></div>'
-      + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send.') + '</div>';
+      + '<div class="chat-hint">' + T('Enter で改行、Ctrl＋Enter（Mac は ⌘＋Enter）で送信。日本語の変換中の Enter では送りません。📎 で写真・PDF・Excel・Word・PowerPoint・テキスト（5 つ・1 つ 10MB まで）。','Enter adds a new line. Ctrl+Enter (⌘+Enter on Mac) sends. Enter during Japanese input does not send. 📎 attaches photos, PDF, Excel, Word, PowerPoint or text (5 files, 10 MB each).') + '</div>';
   }
   function paneHtml(){
     if (!C.open || !C.threads[C.open]) return '<div class="chat-empty" style="margin:auto">' + T('左の一覧から会話を選んでください','Choose a conversation on the left') + '</div>';
@@ -109165,11 +109563,12 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   function paintPane(mode){
     var pane = D.getElementById('chat-pane'); if (!pane) return;
     var root = D.getElementById('chat-root'); if (root) root.className = 'chat-wrap' + (C.open ? ' chat-has-open' : '');
-    if (C.paneFor !== C.open || !D.getElementById('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); return; }
+    if (C.paneFor !== C.open || !D.getElementById('chat-msgs') !== !C.open) { pane.innerHTML = paneHtml(); C.paneFor = C.open; scrollBottom(); fetchThumbs(); return; }
     var box = D.getElementById('chat-msgs');
     var near = box ? (box.scrollHeight - box.scrollTop - box.clientHeight < 80) : true, prevH = box ? box.scrollHeight : 0, prevT = box ? box.scrollTop : 0;
     var hd = D.getElementById('chat-head'); if (hd) hd.innerHTML = headHtml();
     if (box) { box.innerHTML = msgsHtml(); box.scrollTop = mode === 'older' ? box.scrollHeight - prevH + prevT : (mode === 'bottom' || near) ? box.scrollHeight : prevT; }
+    fetchThumbs();
   }
   function paintAll(){ if (!visible()) return; paintSide(); paintPane('keep'); }
   /* 見た目は head に 1 回だけ（描き直しで消えない） */
@@ -109221,9 +109620,32 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
       + '.chat-pop-i{padding:8px 10px;font-size:12.5px;cursor:pointer;display:flex;gap:6px;align-items:center}'
       + '.chat-pop-i.on{background:var(--surface2)}.chat-pop-i small{color:var(--muted);margin-left:auto;font-size:10px}'
       + '.chat-back{display:none}'
+      + '.chat-att-btn{flex:0 0 auto;padding:0 10px;min-height:40px;display:inline-flex;align-items:center;cursor:pointer}'
+      + '.chat-tray{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}'
+      + '.chat-att{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:10px;padding:4px 6px;max-width:220px;background:var(--surface2)}'
+      + '.chat-att-pic{width:34px;height:34px;flex:0 0 34px;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--surface);font-size:18px}'
+      + '.chat-att-pic img{width:100%;height:100%;object-fit:cover}'
+      + '.chat-att-main{min-width:0;display:flex;flex-direction:column;font-size:11px}.chat-att-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-att-main span{color:var(--muted);font-size:10px}'
+      + '.chat-att-x{border:0;background:none;font-size:16px;cursor:pointer;color:var(--muted);padding:0 4px;min-height:32px}'
+      + '.chat-files{display:flex;flex-direction:column;gap:4px;margin-top:4px;max-width:100%}'
+      + '.chat-ph{display:grid;grid-template-columns:repeat(2,120px);gap:4px}.chat-ph.one{grid-template-columns:minmax(0,240px)}'
+      + '.chat-ph-i{position:relative;border:0;padding:0;border-radius:10px;overflow:hidden;background:var(--surface2);aspect-ratio:1;cursor:pointer;width:100%}'
+      + '.chat-ph.one .chat-ph-i{max-height:320px}'
+      + '.chat-ph-i img{width:100%;height:100%;object-fit:cover;display:block}'
+      + '.chat-ph-tag{position:absolute;left:4px;bottom:4px;background:rgba(0,0,0,.6);color:#fff;font-size:9.5px;padding:1px 6px;border-radius:8px}'
+      + '.chat-fc{display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:6px 8px;background:var(--surface);max-width:300px;font-size:12px}'
+      + '.chat-fc>i{font-size:22px;color:var(--accent);flex:0 0 auto}.chat-fc.pend{opacity:.65}'
+      + '.chat-fc-main{flex:1;min-width:0;display:flex;flex-direction:column}.chat-fc-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-fc-main span{font-size:10px;color:var(--muted)}'
+      + '.chat-fc .lnk{background:none;border:0;color:var(--accent);cursor:pointer;font-size:11px;padding:4px 2px;white-space:nowrap}'
+      + '.chat-fl{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}'
+      + '.chat-fl-pic{width:46px;height:46px;flex:0 0 46px;border:0;border-radius:8px;overflow:hidden;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:22px;color:var(--accent);cursor:pointer;padding:0}'
+      + '.chat-fl-pic img{width:100%;height:100%;object-fit:cover}'
+      + '.chat-fl-main{flex:1;min-width:0;display:flex;flex-direction:column;font-size:12px}.chat-fl-main b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-fl-main span{font-size:10.5px;color:var(--muted)}'
+      + '.chat-fl-act{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:2px}.chat-fl-act .lnk{background:none;border:0;color:var(--accent);cursor:pointer;font-size:11.5px;padding:6px 4px;white-space:nowrap}'
       + '.chat-empty{padding:28px 16px;text-align:center;color:var(--muted);font-size:12px;line-height:1.6}'
       + '@media (max-width:820px){.chat-wrap{grid-template-columns:minmax(0,1fr);height:calc(100dvh - 190px)}.chat-wrap .chat-pane{display:none}'
-      + '.chat-wrap.chat-has-open .chat-side{display:none}.chat-wrap.chat-has-open .chat-pane{display:flex}.chat-back{display:inline-flex}.chat-hint{display:none}.chat-msg{max-width:88%}.chat-side{border-right:0}}'
+      + '.chat-wrap.chat-has-open .chat-side{display:none}.chat-wrap.chat-has-open .chat-pane{display:flex}.chat-back{display:inline-flex}.chat-hint{display:none}.chat-msg{max-width:88%}.chat-side{border-right:0}'
+      + '.chat-hb-t{display:none}.chat-ph{grid-template-columns:repeat(2,minmax(0,110px))}.chat-fc{max-width:100%}}'
       + '@media (min-width:1180px){body.chat-wide .main{max-width:1280px}}';
 })();
 /* ==== FUNERGY_CHAT end ==== */
