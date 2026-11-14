@@ -71,6 +71,8 @@ create table if not exists public.gr_reviews (
 );
 alter table public.gr_reviews add column if not exists gone_at timestamptz;
 create index if not exists gr_reviews_store_ym on public.gr_reviews (store_id, ym);
+-- #155 の Codex（6876878458）の 3：総合評価・件数をどの取り込みが書いたか（取り込みを始めた時刻）。古い取り込みがあとから書いても戻さない
+alter table public.gr_bp_loc add column if not exists rating_from timestamptz;
 -- #151 のレビュー：1 つの Business Profile の店は 1 つの店にだけ（同時に結んでも 2 つにならない）
 create unique index if not exists gr_bp_loc_location on public.gr_bp_loc (location);
 
@@ -229,6 +231,7 @@ begin
      rating = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.rating end,
      total = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.total end,
      rating_at = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.rating_at end,
+     rating_from = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.rating_from end,
      from_ym = case when public.gr_bp_loc.location = excluded.location then public.gr_bp_loc.from_ym end;
  -- 口コミは Business Profile の店（location）のもの。名前は accounts/…/locations/…/reviews/…
  pat := 'accounts/%/' || (p->>'location') || '/reviews/%';
@@ -248,10 +251,19 @@ language sql stable security invoker set search_path = public, pg_temp as $$
 $$;
 
 -- 口コミを入れる（同じ name は直す）。ym はハワイ時間の投稿日。総合評価（Business Profile の数）も入れる
+-- #155 の Codex（6876878458）の 3：重なった取り込み。古い一覧を読んだ取り込みがあとから入れても、新しい値を戻さない。
+--   ・口コミの中身（星・本文・名前・返信）は、Google の更新時刻（updated）が今ある値より古くないときだけ直す。
+--   ・総合評価・件数は、取り込みを始めた時刻（started＝gr_locs の now）が、今の値を書いた取り込みより前なら書かない。
+--   ・取り終えた時刻（synced_at）は、取り込みを始めた時刻にする（戻さない）。started の無い前の関数は今までどおり。
 create or replace function public.gr_reviews_put(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
-declare s text := p->>'store'; l public.gr_bp_loc; x jsonb; n int := 0; pre text;
+declare s text := p->>'store'; l public.gr_bp_loc; x jsonb; n int := 0; pre text; st timestamptz := null; v_agg boolean;
 begin
+ if p ? 'started' and jsonb_typeof(p->'started') <> 'null' then
+   if jsonb_typeof(p->'started') <> 'string' then raise exception 'bad_value'; end if;
+   begin st := (p->>'started')::timestamptz; exception when others then raise exception 'bad_value'; end;
+   if st > now() or st < now() - interval '1 day' then raise exception 'bad_value'; end if;
+ end if;
  select * into l from public.gr_bp_loc where store_id = s for update;   -- 結び直しと重ならない（#151 のレビュー）
  if l.store_id is null then raise exception 'not_found'; end if;
  if (p->>'location') is distinct from l.location then raise exception 'conflict'; end if;   -- 取っているあいだに結び直された
@@ -264,18 +276,27 @@ begin
            (x->>'created')::timestamptz, (x->>'updated')::timestamptz, public.gr_hst_ym((x->>'created')::timestamptz),
            coalesce((x->>'replied')::boolean, false), now())
    on conflict (name) do update set store_id = excluded.store_id, ym = excluded.ym, created = excluded.created,   -- 結び直した店へ移す（#151 のレビュー）
-     rating = excluded.rating, comment = excluded.comment, reviewer = excluded.reviewer,
-     updated = excluded.updated, replied = excluded.replied, seen_at = now(), gone_at = null;
+     rating = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.rating else public.gr_reviews.rating end,
+     comment = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.comment else public.gr_reviews.comment end,
+     reviewer = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.reviewer else public.gr_reviews.reviewer end,
+     replied = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.replied else public.gr_reviews.replied end,
+     updated = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.updated else public.gr_reviews.updated end,
+     seen_at = now(), gone_at = null;
    n := n + 1;
  end loop;
+ -- 総合評価・件数：あとで始めた取り込みが書いた値を、前に始めた取り込みが戻さない
+ v_agg := (jsonb_typeof(p->'rating') = 'number' or jsonb_typeof(p->'total') = 'number')
+          and (st is null or l.rating_from is null or st >= l.rating_from);
  -- 初めて取り終えたとき、取り始めた月（ハワイ時間）を「全部取れている最初の月」にする。読めない値なら今の月（安全なほう）
- update public.gr_bp_loc set synced_at = case when coalesce((p->>'done')::boolean, false) then now() else synced_at end,
+ update public.gr_bp_loc set synced_at = case when coalesce((p->>'done')::boolean, false)
+                                              then case when st is null then now() else greatest(coalesce(synced_at, st), st) end else synced_at end,
    from_ym = case when from_ym is null and coalesce((p->>'done')::boolean, false)
                   then case when coalesce(p->>'from_ym', '') ~ '^20[0-9]{2}-(0[1-9]|1[0-2])$' and (p->>'from_ym') <= public.gr_hst_ym(now()) then p->>'from_ym' else public.gr_hst_ym(now()) end
                   else from_ym end,
-   rating = case when jsonb_typeof(p->'rating') = 'number' then round((p->>'rating')::numeric, 2) else rating end,
-   total = case when jsonb_typeof(p->'total') = 'number' then (p->>'total')::int else total end,
-   rating_at = case when jsonb_typeof(p->'rating') = 'number' then now() else rating_at end
+   rating = case when v_agg and jsonb_typeof(p->'rating') = 'number' then round((p->>'rating')::numeric, 2) else rating end,
+   total = case when v_agg and jsonb_typeof(p->'total') = 'number' then (p->>'total')::int else total end,
+   rating_at = case when v_agg and jsonb_typeof(p->'rating') = 'number' then now() else rating_at end,
+   rating_from = case when v_agg then st else rating_from end
   where store_id = s;
  return jsonb_build_object('store', s, 'put', n);
 end $$;

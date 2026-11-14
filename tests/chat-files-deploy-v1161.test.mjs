@@ -120,3 +120,81 @@ test('the post-check notices what it is meant to notice', async () => {
   await pg.exec(M('20261107090000_work_requests_ui68'));
   assert.match((await P())('9.'), /^NG/);
 });
+
+// #155 の Codex（6876878458）の 1：「bucket_id という字がある」では足りない。置き場所を 1 つ（chat-files 以外）に限った決まりだけを通し、
+// <>・OR・IN・関数・true・式が無いものは止める（ほかの置き場所の決まりは消さない）。本番と同じ 3 つの形・AND でつないだもの・RESTRICTIVE は通す
+const POLS = {
+  safe: [
+    `create policy "anon_documents_rw" on storage.objects for all to anon using (bucket_id = 'documents') with check (bucket_id = 'documents')`,
+    `create policy "invoices anon upload" on storage.objects for insert to anon with check (bucket_id = 'invoices')`,
+    `create policy "own folder" on storage.objects for select to authenticated using (bucket_id = 'avatars' and name like 'x/%')`,
+    `create policy "own folder or" on storage.objects for update to authenticated using (bucket_id = 'avatars' and (name like 'x/%' or name like 'y/%')) with check (bucket_id = 'avatars')`,
+    `create policy "limit" on storage.objects as restrictive for select to anon using (true)`,
+    `create policy "server" on storage.objects for select to service_role using (true)`,
+  ],
+  loose: [
+    `create policy "not invoices" on storage.objects for select to anon using (bucket_id <> 'invoices')`,
+    `create policy "or true" on storage.objects for select to anon using (bucket_id = 'invoices' or true)`,
+    `create policy "and then or" on storage.objects for select to public using ((bucket_id = 'invoices' and name like 'a%') or name like 'b%')`,
+    `create policy "in list" on storage.objects for select to anon using (bucket_id in ('invoices', 'docs'))`,
+    `create policy "two eq" on storage.objects for select to authenticated using (bucket_id = 'invoices' or bucket_id = 'docs')`,
+    `create policy "insert not" on storage.objects for insert to anon with check (bucket_id <> 'x')`,
+    `create policy "all check true" on storage.objects for all to anon using (bucket_id = 'documents') with check (true)`,
+    `create policy "update true" on storage.objects for update to authenticated using (true)`,
+    `create policy "lower" on storage.objects for delete to anon using (lower(bucket_id) = 'invoices')`,
+  ],
+  chat: [
+    `create policy "chat in list" on storage.objects for select to anon using (bucket_id in ('invoices', 'chat-files'))`,
+    `create policy "chat eq" on storage.objects for insert to authenticated with check (bucket_id = 'chat-files')`,
+  ],
+};
+test('#155 storage rules: only rules limited to one other place pass; <>, OR, IN, functions, true and chat-files stop (pre-check, the SQL, post-check)', async () => {
+  // 通るもの（まとめて）：① 3・4 OK → ② が入る → ③ 8 OK
+  const pg = await base({ policy: POLS.safe.join(';\n') + ';' });
+  for (const f of WR) await pg.exec(M(f));
+  await pg.exec(CHAT);
+  let pre = by(await rowsOf(pg, '1_最初に確認_読むだけ.sql'));
+  assert.equal(pre('3.'), 'OK'); assert.equal(pre('4.'), 'OK');
+  await pg.exec(read('2_SQL_添付.sql'));
+  assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('8.'), 'OK');
+  // 入れたあとに増えた限らない決まり・chat-files の決まりは ③ の 8 が NG（名前つき）。消すと OK
+  for (const sql of [...POLS.loose, ...POLS.chat]) {
+    const name = /policy "([^"]+)"/.exec(sql)[1];
+    await pg.exec(sql);
+    assert.match(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('8.'), new RegExp('^NG（Claude に決まりの名前を：' + name), name);
+    await pg.exec(`drop policy "${name}" on storage.objects`);
+  }
+  assert.equal(by(await rowsOf(pg, '3_確認_読むだけ.sql'))('8.'), 'OK');
+  // 止まるもの（1 つずつ）：① が STOP・② は何も変えずに止まる
+  for (const [kind, list] of [['loose', POLS.loose], ['chat', POLS.chat]]) for (const sql of list) {
+    const name = /policy "([^"]+)"/.exec(sql)[1];
+    const db = await base({ policy: sql });
+    for (const f of WR) await db.exec(M(f));
+    await db.exec(CHAT);
+    const p = by(await rowsOf(db, '1_最初に確認_読むだけ.sql'));
+    if (kind === 'loose') { assert.match(p('3.'), new RegExp('^STOP（Claude に決まりの名前を：' + name), name); assert.equal(p('4.'), 'OK', name); }
+    else assert.match(p('4.'), new RegExp('^STOP（Claude に決まりの名前を：' + name), name);
+    await assert.rejects(db.exec(read('2_SQL_添付.sql')), kind === 'loose' ? /STOP: Storage（storage.objects）に置き場所を限らない決まり/ : /STOP: Storage に chat-files を開ける決まり/, name);
+    assert.equal((await db.query(`select count(*)::int n from pg_tables where tablename = 'chat_files'`)).rows[0].n, 0, name + ': nothing changed');
+    assert.equal((await db.query(`select count(*)::int n from storage.buckets where id = 'chat-files'`)).rows[0].n, 0, name + ': no bucket');
+  }
+  // なぜ止めるか：<> の決まりがあると、公開の鍵で chat-files の行が読める（前の確かめは通していた）
+  const db = await base({ policy: POLS.loose[0] });
+  await db.exec(`grant usage on schema storage to anon; grant select on storage.objects to anon;
+    insert into storage.objects(bucket_id, name) values ('chat-files', 'a/b'), ('invoices', 'c')`);
+  await db.exec('set role anon');
+  assert.deepEqual((await db.query(`select bucket_id from storage.objects order by 1`)).rows.map(r => r.bucket_id), ['chat-files', 'invoices'], 'chat-files is readable (invoices by the usual rule)');
+  await db.exec('reset role');
+});
+
+// 11/14 本番：2 が入っていないのに 3 を流すと「chat_files does not exist」で止まった → NG と「—（2 がまだ）」を出す
+test('the post-check before the SQL: NG lines, not an error', async () => {
+  const pg = await base();
+  for (const f of WR) await pg.exec(M(f));
+  await pg.exec(CHAT);
+  const rows = await rowsOf(pg, '3_確認_読むだけ.sql');
+  const P = by(rows);
+  assert.match(P('1.'), /^NG/); assert.match(P('5.'), /^NG/);
+  assert.equal(P('（参考）送ったファイルの数'), '—（2 がまだ）');
+  assert.equal(P('（参考）送っていない'), '—（2 がまだ）');
+});

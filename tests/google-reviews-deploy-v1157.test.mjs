@@ -59,7 +59,7 @@ test('the first time: pre-check, the SQL (twice), post-check all OK; then the pr
   const post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
   const P = by(post);
-  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.']) assert.equal(P(n), 'OK', n);
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.']) assert.equal(P(n), 'OK', n);
   assert.equal(P('（参考）Business Profile のつなぎ'), 'none');
   assert.equal(P('（参考）Google の店（place ID）を決めた店の数'), '0');
   assert.equal(P('（参考）残っている口コミの数'), '0');
@@ -115,6 +115,15 @@ test('the post-check notices what it is meant to notice', async () => {
   assert.match((await P())('11.'), /^NG/, 'no gone_at column');
   await pg.exec(SQL);
   assert.equal((await P())('11.'), 'OK', 'the SQL adds the column back on a table that already exists');
+  // #155 の Codex（6876878458）の 3：前の ② の入れ方（古い取り込みが新しい星・総合評価を戻す）なら 12 が NG
+  await pg.exec("create or replace function public.gr_reviews_put(p jsonb) returns jsonb language sql security invoker set search_path = public, pg_temp as $f$ select '{}'::jsonb $f$");
+  assert.match((await P())('12.'), /^NG/, 'the old put');
+  await pg.exec(SQL);
+  assert.equal((await P())('12.'), 'OK');
+  await pg.exec('alter table public.gr_bp_loc drop column rating_from');
+  assert.match((await P())('12.'), /^NG/, 'no rating_from column');
+  await pg.exec(SQL);
+  assert.equal((await P())('12.'), 'OK', 'the SQL adds the column back on a table that already exists');
   await pg.exec('drop table public.gr_runs');
   assert.match((await P())('1.'), /^NG/);
 });

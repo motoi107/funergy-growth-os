@@ -21,18 +21,30 @@ do $$ begin
  end if;
 end $$;
 
--- Storage に「置き場所（bucket_id）を限らない」決まりがあると、公開の鍵で chat-files を読めてしまう。あれば何も変えずに止める。
+-- Storage の決まり（公開の鍵：public・anon・authenticated に許すもの）が、どれも置き場所を 1 つ（chat-files 以外）に限っているか。
+-- 限っていない決まりがあると、公開の鍵で chat-files も読めてしまう。あれば何も変えずに止める。
+-- #155 の Codex（6876878458）の 1：「bucket_id という字がある」では足りない（bucket_id <> 'invoices'・OR・IN なども通っていた）。
+--   PostgreSQL が書き直した式の形で、(bucket_id = 'x'::text) か ((bucket_id = 'x'::text) AND …)＝ほかの条件と AND でつないだものだけを「限っている」とみなす。
+--   それ以外（<>・OR・IN・関数・式が無い）は分からないものとして止める（ほかの置き場所の決まりは消さない・Claude に知らせてもらう）。
+--   INSERT は with_check、SELECT・DELETE は qual、UPDATE・ALL は qual と（あれば）with_check を見る。RESTRICTIVE の決まりは許さないので見ない。
 do $$ declare v text; begin
  if to_regclass('storage.objects') is not null then
-  select string_agg(policyname, ', ' order by policyname) into v from pg_policies
-   where schemaname = 'storage' and tablename = 'objects'
-     and roles && array['public','anon','authenticated']::name[]
-     and position('bucket_id' in coalesce(qual, '') || coalesce(with_check, '')) = 0;
-  if v is not null then raise exception 'STOP: Storage（storage.objects）に置き場所を限らない決まりがあります（%）。Claude に知らせてください（何も変えていません）', v; end if;
-  select string_agg(policyname, ', ' order by policyname) into v from pg_policies
-   where schemaname = 'storage' and tablename = 'objects' and roles && array['public','anon','authenticated']::name[]
-     and (coalesce(qual, '') || coalesce(with_check, '')) like '%chat-files%';
+  select string_agg(p.policyname, ', ' order by p.policyname) into v from pg_policies p
+   where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'
+     and p.roles && array['public','anon','authenticated']::name[]
+     and (coalesce(p.qual, '') || coalesce(p.with_check, '')) like '%chat-files%';
   if v is not null then raise exception 'STOP: Storage に chat-files を開ける決まりがあります（%）。Claude に知らせてください（何も変えていません）', v; end if;
+  select string_agg(p.policyname, ', ' order by p.policyname) into v from pg_policies p
+   cross join lateral (select
+     (coalesce(p.qual, '') ~ '^\(bucket_id = ''[^'']+''::text\)$' or coalesce(p.qual, '') ~ '^\(\(bucket_id = ''[^'']+''::text\) AND .+\)$')
+       and substring(p.qual from '^\(\(?bucket_id = ''([^'']+)''::text\)') <> 'chat-files' as q_ok,
+     (coalesce(p.with_check, '') ~ '^\(bucket_id = ''[^'']+''::text\)$' or coalesce(p.with_check, '') ~ '^\(\(bucket_id = ''[^'']+''::text\) AND .+\)$')
+       and substring(p.with_check from '^\(\(?bucket_id = ''([^'']+)''::text\)') <> 'chat-files' as w_ok) x
+   where p.schemaname = 'storage' and p.tablename = 'objects' and p.permissive = 'PERMISSIVE'
+     and p.roles && array['public','anon','authenticated']::name[]
+     and (case p.cmd when 'INSERT' then x.w_ok when 'SELECT' then x.q_ok when 'DELETE' then x.q_ok
+            else x.q_ok and (p.with_check is null or x.w_ok) end) is not true;
+  if v is not null then raise exception 'STOP: Storage（storage.objects）に置き場所を限らない決まりがあります（%）。Claude に知らせてください（何も変えていません）', v; end if;
  end if;
 end $$;
 

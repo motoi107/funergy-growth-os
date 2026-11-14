@@ -474,6 +474,39 @@ test('use as the receipt (8B): only the requester, only a reimbursement waiting 
   assert.equal(c8.wins[0].closed, true); assert.match(c8.toasts.at(-1)[1], /見られません/);
   c8.ctx.chatReceiptOpen('not-an-id'); await c8.idle();
   assert.equal(c8.wins.length, 1, 'a bad id does nothing');
+  // #155 の Codex（6876878458）の 2：答えが来る前にログアウトして別の人がログインしたら、前の人の領収書を開かない（窓も閉じる）
+  const hold = async (who, change) => {
+    const x = await app(srv, 'E3', { role: 'office' });
+    if (who === 'blocked') x.ctx.open = () => null;   // ポップアップを止める端末（リンクの画面を出すところ）
+    const realFetch = x.ctx.fetch;
+    let release; const gate = new Promise(r => { release = r; });
+    x.ctx.fetch = async (url, init) => { const r = await realFetch(url, init); if (init && init.body && /wr_receipt_url/.test(init.body)) await gate; return r; };
+    x.ctx.chatReceiptOpen(sub.id); await sleep(30);
+    change(x);
+    release(); await x.idle();
+    return x;
+  };
+  for (const [name, change] of [
+    ['logout and another person signs in', x => { x.ctx.chatReset(); x.ctx._hwSession = 'pin-E9'; }],
+    ['another person signs in (no reset)', x => { x.ctx._hwSession = 'pin-E9'; }],
+    ['logout only', x => { x.ctx.chatReset(); x.ctx._hwSession = null; }],
+  ]) {
+    const x = await hold('', change);
+    assert.equal(x.wins.length, 1, name);
+    assert.equal(x.wins[0].location.href, '', name + ': the old link is not opened');
+    assert.equal(x.wins[0].closed, true, name + ': the window opened on the tap is closed');
+    assert.equal(x.D.modal.innerHTML, '', name + ': no link on the screen');
+    assert.equal(x.toasts.length, 0, name + ': nothing shown to the next person');
+  }
+  const xb = await hold('blocked', x => { x.ctx.chatReset(); x.ctx._hwSession = 'pin-E9'; });
+  assert.equal(xb.D.modal.innerHTML, '', 'a blocked pop-up: the link screen is not shown to the next person');
+  // 同じ人のままなら開く（ポップアップを止める端末はリンクの画面）
+  const xs = await hold('blocked', () => {});
+  assert.match(xs.D.modal.innerHTML, new RegExp(`href="${URLB}/sign/chat-files/`));
+  // ログインしていない画面からは呼ばない
+  const xn = await app(srv, null, { role: 'office' });
+  xn.ctx.chatReceiptOpen(sub.id); await xn.idle();
+  assert.equal(xn.wins.length, 0); assert.match(xn.toasts.at(-1)[1], /ログイン/);
 });
 
 test('file names are shown as text; logout forgets the attachments and links; nothing is kept on the device; the request detail is wired', async () => {
