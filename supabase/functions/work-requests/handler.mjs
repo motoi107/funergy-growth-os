@@ -296,9 +296,10 @@ export function createHandler(deps) {
     // fn：関数の版（v1132 は 2・v1133 から 3・v1155 から 4＝段階 2 の種類を受ける）・sql：SQL の段（2 段目の SQL が無ければ 1・反映の押さえ（v1133）が無ければ 2）。アプリは評価の変更が断られたとき、これで前の版かを見分ける
     // v1156 から fn 5（チャット）・chat：チャットの SQL が入っていれば 1（添付の SQL があれば 2）。v1159 から fn 6（段階 3 の s3_import）。v1161 から fn 7（添付）
     // v1165 から fn 8（事前経費に結ぶ：pre_candidates・link_pre。SQL は sql 7 から）
+    // v1167 から fn 9（チャットの UI案79：chat_case_create・chat_admin。チャットの SQL は chat 3 から）
     whoami: async w => {
       const [me, st, cs] = await Promise.all([db.rpc('wr_whoami', w), db.rpc('wr_stage', {}).catch(() => null), db.rpc('chat_stage', {}).catch(() => null)]);
-      return { ...me, fn: 8, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
+      return { ...me, fn: 9, sql: (st && Number.isInteger(st.stage)) ? st.stage : 1, chat: (cs && Number.isInteger(cs.chat)) ? cs.chat : 0 };
     },
     list: (w, b) => {
       const scope = ['todo', 'mine', 'team'].includes(b.scope) ? b.scope : 'todo';
@@ -396,6 +397,9 @@ export function createHandler(deps) {
       return db.rpc('chat_create_group', { ...w, title, members: EMPS(b.members, 1, CHAT.members), client_key: KEY(b.client_key) });
     },
     chat_case: (w, b) => db.rpc('chat_case', { ...w, ...ref(b) }),
+    // v1167（UI案79 の 2A）：申請のチャットは最初に開いた人が参加者を選んで作る（関係する人を最初から選んだ状態・外せる）。同じ申請は 1 つ
+    chat_case_create: (w, b) => db.rpc('chat_case_create', { ...w, ...ref(b), title: TS(b.title, CHAT.title),
+      members: b.members == null ? [] : EMPS(b.members, 0, CHAT.members), client_key: KEY(b.client_key) }),
     chat_send: async (w, b) => {
       const thread = TID(b.thread), files = FILES(b.files), client_key = KEY(b.client_key), mentions = MENTIONS(b.mentions);
       if (!files.length) return db.rpc('chat_send', { ...w, thread, body: BODY(b.body), mentions, client_key });
@@ -468,6 +472,11 @@ export function createHandler(deps) {
       return db.rpc('chat_add', { ...w, thread: TID(b.thread), members: EMPS(b.members, 1, CHAT.members), history: b.history });
     },
     chat_remove: (w, b) => db.rpc('chat_remove', { ...w, thread: TID(b.thread), emp: EMP(b.emp) }),
+    // v1167：管理する人を決める（その会話の管理する人だけ・最後の 1 人は外せない＝last_admin）
+    chat_admin: (w, b) => {
+      if (typeof b.admin !== 'boolean') throw bad();
+      return db.rpc('chat_admin', { ...w, thread: TID(b.thread), emp: EMP(b.emp), admin: b.admin });
+    },
     chat_rename: (w, b) => {
       const title = TS(b.title, CHAT.title); if (!title) throw bad();
       return db.rpc('chat_rename', { ...w, thread: TID(b.thread), title, expect_rev: REV(b.expect_rev) });
@@ -476,7 +485,7 @@ export function createHandler(deps) {
   const ERR = { forbidden: 403, not_live: 409, conflict: 409, not_found: 404, bad_value: 400, no_rate: 409, reason_required: 400,
     dup_unresolved: 409, legacy_paid: 409, pin_check_missing: 503, not_member: 409, too_late: 409, too_many: 409, chat_missing: 503,
     file_type: 400, file_big: 413, file_bad: 409, file_missing: 409, file_many: 409, files_missing: 503, storage: 502,
-    pre_bad: 409, pre_taken: 409, pre_missing: 503 };
+    pre_bad: 409, pre_taken: 409, pre_missing: 503, case_exists: 409, last_admin: 409, chat_old: 503 };
   // チャットの SQL がまだ無い（関数が見つからない）＝ 503 chat_missing（アプリは「サーバーの準備がまだ」と出す）
   const chatMissing = (action, e) => typeof action === 'string' && action.startsWith('chat_')
     && (e.status === 404 || /(function public\.chat_[a-z_]+\(.*\) does not exist|Could not find the function public\.chat_)/i.test(String(e.message || '')));
@@ -488,6 +497,10 @@ export function createHandler(deps) {
   // v1165：事前経費に結ぶ SQL（20261126090000）がまだ（関数が無い）＝ 503 pre_missing
   const preMissing = (action, e) => (action === 'link_pre' || action === 'pre_candidates')
     && /wr_(link_pre|pre_candidates)/.test(String(e.message || '')) && (e.status === 404 || /does not exist|Could not find the function/i.test(String(e.message || '')));
+
+  // v1167：チャットの UI案79 の SQL（20261127090000）がまだ（関数が無い）＝ 503 chat_old（アプリは「チャットのサーバー（SQL）が前の版」と出す）
+  const ui79Missing = (action, e) => (action === 'chat_case_create' || action === 'chat_admin')
+    && /chat_(case_create|admin)/.test(String(e.message || '')) && (e.status === 404 || /does not exist|Could not find the function/i.test(String(e.message || '')));
 
   return async function handle(req) {
     const origin = req.headers.get('origin');
@@ -507,7 +520,7 @@ export function createHandler(deps) {
       return json(await fn(who, body));
     } catch (e) {
       const msg = String(e.message || 'error'), code0 = msg.split(/[\s:]/)[0];
-      const code = ERR[code0] ? code0 : (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : chatMissing(body && body.action, e) ? 'chat_missing' : code0);
+      const code = ERR[code0] ? code0 : (filesMissing(body && body.action, e) ? 'files_missing' : preMissing(body && body.action, e) ? 'pre_missing' : ui79Missing(body && body.action, e) ? 'chat_old' : chatMissing(body && body.action, e) ? 'chat_missing' : code0);
       const status = ERR[code] || 500;
       if (status === 500 || status === 502) console.error('work-requests', body && body.action, safeErr(e));
       return json({ error: status === 500 ? 'error' : code }, status);

@@ -83,7 +83,7 @@ function fakeDom() {
   const main = mkEl('main-content', 'div'), modal = mkEl('modal', 'div');
   const dom = { byId, main, modal, active: null, hidden: false,
     getElementById: id => byId.get(id) || null, addEventListener() {}, removeEventListener() {},
-    createElement: tag => mkEl('', tag), head: { appendChild(c) { if (c.id) byId.set(c.id, c); } } };
+    createElement: tag => mkEl('', tag), head: { appendChild(c) { if (c.id) byId.set(c.id, c); } }, body: { appendChild(c) { if (c.id) byId.set(c.id, c); } } };
   Object.defineProperty(dom, 'activeElement', { get: () => dom.active });
   byId.set('nav-bar', mkEl('nav-bar', 'div'));
   return dom;
@@ -164,7 +164,7 @@ test('crew DM: start a DM, Ctrl/⌘+Enter sends (Enter and Japanese input do not
   await start(a); await start(b);
   const tid = await openDm(a, 'E9');
   assert.ok(tid);
-  assert.ok(a.pages.includes('go:chat'));
+  assert.ok(!a.pages.includes('go:chat'), 'v1167: the chat page is showing, so it opens here (no navigation)');
   assert.match(text(a.D.getElementById('chat-head')), /Kai Kitchen/);
   await a.type('こんにちは');
   assert.equal(a.key('Enter', { composing: true, ctrl: true }), false, 'nothing during IME composition');
@@ -288,6 +288,8 @@ test('edit (edited), delete (Deleted), and the GM hides / restores someone else�
   assert.match(text(a.D.getElementById('chat-msgs')), /typo here/);
   assert.match(text(a.D.getElementById('chat-msgs')), /編集済み/);
   a.ctx.chatDelete(m3.id); await a.idle();
+  assert.match(text(a.D.getElementById('chat-askl')), /取り戻せません/, 'v1167: asks inside the chat (no browser confirm), and does not promise to recall it');
+  a.ctx.chatAskAnswer(true); await a.idle();
   assert.match(text(a.D.getElementById('chat-msgs')), /削除されました/);
   assert.doesNotMatch(text(a.D.getElementById('chat-msgs')), /to delete/);
   // GM
@@ -303,6 +305,7 @@ test('edit (edited), delete (Deleted), and the GM hides / restores someone else�
   assert.match(text(g.D.getElementById('chat-msgs')), /見えなくなりました（Gabe GM）/);
   assert.doesNotMatch(text(g.D.getElementById('chat-msgs')), /rude words/);
   g.ctx.chatUnhide(m2.id); await g.idle();
+  g.ctx.chatAskAnswer(true); await g.idle();
   assert.match(text(g.D.getElementById('chat-msgs')), /rude words/);
 });
 
@@ -420,10 +423,12 @@ test('request chat: the button in the request detail opens it for a decider; oth
   const sub = await r7.ctx.chatAPI({ action: 'submit', kind: 'reimburse', store_id: 'S1', client_key: 'wr-test-000001-chatapp',
     payload: { date: '2026-11-01', payer: NAME.E7, payer_is_employee: true, vendor: 'Costco', purpose: '仕入れ', amount_cents: 8640 } });
   assert.match(r7.ctx.chatCaseButton(sub), /この申請のチャット/);
-  r7.ctx.curPage = 'tasks';
+  r7.ctx.curPage = 'tasks'; r7.D.main.innerHTML = '<div id="wc-requests">requests</div>';   /* 業務の画面（申請の画面）を見ている */
   r7.ctx.chatOpenCase(sub.id); await r7.idle();
-  assert.equal(r7.ctx.workTab, 'chat', 'opens inside the Work Center when you are there');
-  r7.show(); await r7.idle();
+  assert.equal(r7.ctx.workTab, 'today', 'v1167: the Work Center screen stays as it is');
+  assert.ok(r7.D.getElementById('wc-requests'), 'the business screen is not redrawn');
+  assert.ok(r7.D.getElementById('chat-float') && !r7.D.getElementById('chat-float').hidden, 'opens in the floating panel');
+  assert.ok(r7.D.getElementById('chat-head'));
   const tid = r7.S().open, row = r7.S().threads[tid];
   assert.equal(row.kind, 'case'); assert.equal(row.ref.id, sub.id);
   assert.match(text(r7.D.getElementById('chat-head')), /建て替え経費/);
@@ -479,7 +484,10 @@ test('message text is shown as text: no HTML, only http(s) links, mention names 
 });
 
 test('the app keeps chat off the device and is wired into the navigation, logout, login and the request detail', () => {
-  assert.doesNotMatch(MOD.replace(/\/\*[\s\S]*?\*\//g, ''), /localStorage|indexedDB|lsSet\(|sessionStorage/, 'no copies on the device');
+  // v1167：この端末に残すのはパネルの位置・大きさ・前面の固定（UI_KEY）だけ。会話・書きかけ・人の ID・端末の種類は残さない
+  const code = MOD.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(code.split('W.localStorage.getItem(UI_KEY)').join('').split('W.localStorage.setItem(UI_KEY').join(''), /localStorage|indexedDB|lsSet\(|sessionStorage/, 'no copies on the device');
+  assert.deepEqual([...code.matchAll(/uiSave\(\{ (\w+):/g)].map(m => m[1]).sort(), ['geo', 'geo', 'pinned'], 'only the panel place and the pin');
   assert.match(html, /\{id:'chat',\s+label:'DM・チャット', icon:'ti-messages',\s+roles:\['ceo','gm','office','am','sl','crew','office_crew','chef'\]\}/);
   assert.match(html, /\{id:'g_chat', label:'チャット', icon:'ti-messages', children:\['chat'\]\}/, 'G1 (crew) menu');
   assert.match(html, /children:\['tasks','chat','lala'\]\},   \/\* v1156 \*\//);
