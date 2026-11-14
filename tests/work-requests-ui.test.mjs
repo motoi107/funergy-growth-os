@@ -159,7 +159,7 @@ test('approve → return with a reason → fixed and resubmitted under the same 
   const id = am.S().rows[0].id;
   am.ctx.wrOpen(id); await am.settle();
   assert.match(am.dom.els['wr-detail'].innerHTML, /① <\/div><div style="width:120px">承認|①/);
-  assert.match(am.dom.els['wr-detail'].innerHTML, /承認する/);
+  assert.match(am.dom.els['wr-detail'].innerHTML, /承認する|この 1 件を承認/);   /* v1165：一覧から開いたら「この 1 件を承認」 */
   am.ctx.wrAsk('approve'); await am.settle();
   assert.equal(am.S().d.status, 'approved');
   assert.ok(am.notifs.some(n => (n.toRoles || []).join() === 'office,office_crew'), 'accounting and office crew are told');
@@ -192,7 +192,7 @@ test('approve → return with a reason → fixed and resubmitted under the same 
   assert.deepEqual([r.version, r.status, Number(r.amount_cents)], [2, 'pending', 280]);
   am.ctx.wrOpen(id); await am.settle();
   assert.match(am.dom.els['wr-detail'].innerHTML, /版 1 → 2：金額 \$3\.50 → \$2\.80/);
-  assert.match(am.dom.els['wr-detail'].innerHTML, /承認する（版 2）/);
+  assert.match(am.dom.els['wr-detail'].innerHTML, /(承認する|この 1 件を承認)（版 2）/);
 });
 
 test('a possible duplicate: the form shows it and asks why; payment waits for a confirmation', async () => {
