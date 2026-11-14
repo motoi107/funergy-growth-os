@@ -7,6 +7,7 @@
 - 試験（合成データ）：range-import-v1160 10（v1159 `fcf0502` の本物のコードと比べる）・financial-web-callers 8・financial-web-save 66・関連（toast-session・dashboard-ui41・wc-stage2・stage3・workflow-yaml・fetch-status）55/55・static release pass/1160。わざと壊す 16/16。CI に足した。ブラウザ・実機では見ていない。独立レビューは無し。
 - チャットの添付（UI案75）は v1161 に（サーバーの SQL・関数と試験はできている・`/home/claude/wtchat` で未コミット）。
 - 次：PR → Codex → #151 → #152 → #153 → この PR → 端末を 1160 に → Moto さんが hyper-worker v1160 を Deploy → Aiea を取り込み直す（失敗した日があれば理由とボタンが出る）。
+- 11/14 の直し（Claude・`docs/RANGE_IMPORT_V1160_JA.md` の 7）：Codex（#154 6875910941・`18bad23`・blocked）の P2＝取り込み直しで、取り直さない DB 保存エラー・ログインの切れ・L/D の注意が消えて「失敗0」で閉じた → 店ごとに片づいていないこと全部を覚え、取り直した日だけ置き換える。Claude の P3（ok と dbError・今日の売上のカード・2 回押す）も直した。継承の P2（チャットの空の写し＝#152 `4f7d3df`・Google の口コミの重なり＝#151 `e742abc`）は取り込んだ。range-import 15・関連 105/105・わざと壊す 15/15。直したあとの独立レビューは無し。
 
 ## 2026-11-14 #151〜#153 のレビューの直し・Totoya の期間一括取り込みの失敗（hyper-worker v1160）（Claude）
 

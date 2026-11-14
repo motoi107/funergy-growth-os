@@ -46,7 +46,10 @@ function fixture(success = false) {
     showSyncSplash: () => {}, setSyncSplash: message => effects.push('splash:' + message), hideSyncSplash: () => {},
   });
   context.window = context;
-  vm.runInContext(names.map(name => extract(name)).join('\n'), context);
+  // v1160 の直し：期間一括取り込みの覚え（_rgLastFailed・_rgBusy・rg* の小さな関数）
+  const rgA = updated.indexOf('var _rgLastFailed = null;'), rgB = updated.indexOf('function toastFailSummaryHtml(');
+  assert.ok(rgA >= 0 && rgB > rgA, 'rg block');
+  vm.runInContext(updated.slice(rgA, rgB) + '\n' + names.map(name => extract(name)).join('\n'), context);
   return { context, toasts, effects, writes, synced, element };
 }
 
