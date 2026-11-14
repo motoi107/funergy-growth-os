@@ -8,7 +8,7 @@
 - 試験（合成データ）：annual-plan-v1166 22（依頼書の 7月・8月の例・9→10 月・12 月・進行中・予算未設定・未取込・確認済み $0・新店・前年 $0・全店・Q 小計・iPhone・会計PL・率・開店前）・わざと壊す 40/41（残り 1 は二重の守り）・本物の Chrome（`tests/e2e-ap/annual-plan-v1166.mjs`・PC 1280px・iPhone 390px）55/55・照合（Store A の 9 月＝アプリ・10 月＝会計PL を `k2Actuals`・`cumulativeToToday`・`_plPrevYear` と）・static release pass/1166・CI に足した。全体（重い 2 つ以外・4 並列）：2,790 件のうち 31 件が落ちる＝前からの失敗だけ（bot-center 2・bot-database 1＋親・cooking-sake 4・google-reviews-server の #151 の 1・ingredient-transfers 1・meeting-budget と meeting-sales 18・next-v1090 1・perf-v1098 1・specialist-career 1。v1165 の記録と同じ名前・年間計画に関わるものは無い）。
 - Claude が決めたこと（Moto さんに伝える）：実績が 1 日も無く予算が店の共通設定だけの月は開店前として数えない（表の上に出す）・全店は店の略称で出す・年は 2026〜来年。
 - 独立レビューは無し。Codex のレビューはまだ。実機・本番のデータでは見ていない。
-- 次：PR（base main・#161 の上）→ Codex → #160 → #161 → この PR → 端末を 1166 に → GM が年間計画で本番の数字を確かめる。そのあと UI案79（チャット）。
+- PR #162（base main・#161 の上）。次：Codex → #160 → #161 → #162 → 端末を 1166 に → GM が年間計画で本番の数字を確かめる。そのあと UI案79（チャット）。
 
 ## 2026-11-14 v1165：ワークセンター「申請/承認」（UI案77・Claude・ブランチ `claude/wr-approve-1165`・#160（v1164）の上・SQL `20261126090000`・関数 work-requests fn 8・アプリ・本番未反映）
 
