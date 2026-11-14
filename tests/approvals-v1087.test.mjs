@@ -52,11 +52,11 @@ function objSrc(decl) {
   throw new Error('unterminated ' + decl);
 }
 
-const MERGE = ['_apAcctOn', '_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', 'mergeApprovals', '_apSig',
+const MERGE = ['_apAcctOn', '_apSigBody', '_apDecided', '_apTs', '_apUnionSignoffs', '_apMut', '_apGen', '_apStT', '_apSoT', '_apMergeOne', '_apMergeOne0', 'mergeApprovals', '_apSig',
   '_coversApprovals', '_rtDel', '_rtPend', '_rtStT', '_rtStK', '_rtDecRank', '_rtDecT', '_rtDecG', '_rtDecCmp', '_rtDecOverlay', 'mergeReqTomb', '_coversReqTomb', 'mergeNotifs', '_invMut', 'mergeInvoices', '_coversInvoices'];
 const APPROVAL = ['_apFollowPage', '_apNewestForRef', 'apFinalize', 'apNotifyAcctApplied', '_apDecidedElsewhere', '_apSigBody', '_actorName', '_apGradeChainTypes', '_apApplicantGrade', '_apUserInScope', '_apStoreHasAm', 'approvalRequiredRoles',
   '_approvalStore', '_approvalStoreId', '_approvalMyRoles', '_approvalSignedMap', '_approvalAllDone', '_approvalRoleLabel', '_approvalChainHtml',
-  'addApproval', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
+  'addApproval', '_apOldNotif', 'signoffApproval', 'overrideApproveAll', 'rejectApprovalItem', 'cancelMySignoff', 'approveItem', 'reopenApproval', 'renderApproval',
   '_apFreshPending', 'apPullLatest', '_apOnApprovalPage', '_apRerender', 'apAutoPull', 'apRefreshNow', '_apRecordState', '_apMarkDecided',
   'apNotifyDecision', 'apNeedsAcct', 'apCanAcct', 'apSeesAcct', 'apWithOfficeCrew', '_apStoreLabel', 'apAcctPending', 'apAcctConfirm',
   '_apAcctNotifHtml', '_apShortTime', '_apDeciders', '_apReopenRec', 'resolveApprovalByRef', '_apResolveLocal', '_apNotifyHits',
