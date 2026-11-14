@@ -117,7 +117,7 @@ const shrink = async file => {
   return { blob: new Blob([JPG(5000)], { type: 'image/jpeg' }), w: 2000, h: 1500, thumb: new Blob([JPG(800)], { type: 'image/jpeg' }) };
 };
 
-async function app(srv, emp, { role = 'crew', fail = null } = {}) {
+async function app(srv, emp, { role = 'crew', fail = null, lang = 'ja' } = {}) {
   const D = fakeDom(), toasts = [], pages = [], calls = [], wins = [], saves = [], confirms = [], revoked = [];
   let pending = 0, blobs = 0;
   const ctx = {
@@ -125,7 +125,7 @@ async function app(srv, emp, { role = 'crew', fail = null } = {}) {
     setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
     crypto: webcrypto, SUPABASE_URL: 'https://db.test', SUPABASE_ANON: 'anon-key', _hwSession: emp ? 'pin-' + emp : null,
     curStoreLogin: false, curRole: role, curPage: 'chat', workTab: 'today', STORES: [{ id: 'S1', name: 'Store One' }, { id: 'S2', name: 'Store Two' }],
-    t: ja => ja, kpi: (l, v, s) => `[${l}:${v}:${s}]`, showToast: (m, k) => toasts.push([k, m]),
+    t: lang === 'en' ? (ja, en) => en : ja => ja, kpi: (l, v, s) => `[${l}:${v}:${s}]`, showToast: (m, k) => toasts.push([k, m]),
     openModal: h => { D.modal.innerHTML = h; }, closeModalDirect: () => { D.modal.innerHTML = ''; }, confirm: m => { confirms.push(m); return true; },
     buildNav: () => pages.push('nav'), go: p => { ctx.curPage = p; pages.push('go:' + p); }, renderPage: p => pages.push('render:' + p),
     open: () => { const w = { closed: false, location: { href: '' }, close() { w.closed = true; } }; wins.push(w); return w; },
@@ -578,4 +578,38 @@ test('an upload whose answer was lost is not uploaded twice; an upload link for 
   assert.match(r7.toasts.at(-1)[1], /の領収書にしました/);
   assert.equal((await rowsOf(srv, 'select version from public.wr_requests where id = $1', [sub.id]))[0].version, v0 + 1, 'one new version, not two');
   assert.equal((await rowsOf(srv, `select count(*)::int n from public.wr_events where request_id = $1 and action = 'receipt_chat'`, [sub.id]))[0].n, 1);
+});
+
+// #155 の Codex（P3）：英語の画面で、本文の無い添付のメッセージの一覧の文が「写真 1 枚」と日本語だった（SQL の chat_files_label）。
+// v1163：サーバーは数（preview.files）と状態（preview.state）も返し、画面の言葉で出す。前の SQL（files が無い）なら text のまま
+test('v1163 the list line for files only, deleted and hidden follows the screen language (English too); without the new SQL it shows the text as before', async () => {
+  const srv = await server();
+  const a = await app(srv, 'E8');
+  await start(a);
+  const tid = await openDm(a, 'E9');
+  const listOf = async (lang, q = '') => { const b = await app(srv, 'E9', { lang }); await start(b); if (q) { b.ctx._chatState().q = q; b.show(); } return text(b.D.getElementById('chat-list')); };
+  await a.attach(file('IMG_0001.jpg', JPG(9000), 'image/jpeg'), file('menu.pdf', PDF, 'application/pdf')); await a.send();
+  assert.match(await listOf('en'), /Cam Crew：1 photo · 1 file/);
+  assert.match(await listOf('ja'), /Cam Crew：写真 1 枚・ファイル 1 個/);
+  assert.match(await listOf('en', 'photo'), /1 photo · 1 file/, 'found by the English words');
+  await a.attach(file('a.jpg', JPG(9000), 'image/jpeg'), file('b.jpg', JPG(9000), 'image/jpeg')); await a.send();
+  assert.match(await listOf('en'), /Cam Crew：2 photos/);
+  await a.attach(file('シフト.xlsx', ZIP)); await a.send();
+  assert.match(await listOf('en'), /Cam Crew：File “シフト\.xlsx”/);
+  await a.attach(file('x.pdf', PDF), file('y.pdf', PDF)); await a.send();
+  assert.match(await listOf('en'), /Cam Crew：2 files/);
+  assert.match(await listOf('ja'), /Cam Crew：ファイル 2 個/);
+  // 本文があれば本文
+  await a.type('資料です'); await a.attach(file('z.pdf', PDF)); await a.send();
+  assert.match(await listOf('en'), /Cam Crew：資料です/);
+  // 消した：英語は (Deleted)
+  a.ctx.chatDelete(a.S().msgs[tid].list.at(-1).id); await a.idle(); await sleep(20);
+  assert.match(await listOf('en'), /Cam Crew：\(Deleted\)/);
+  assert.match(await listOf('ja'), /Cam Crew：（削除されました）/);
+  // 前の SQL（preview に files・state が無い）：text をそのまま出す（v1162 までと同じ）
+  const old = M('20261124090000_chat_files').match(/create or replace function public\.chat_row[\s\S]*?\nend \$\$;\n/)[0]
+    .replace(/jsonb_strip_nulls\(jsonb_build_object\('seq'([\s\S]*?)'at', lm\.created_at,\n[\s\S]*?public\.chat_files_count\(lm\.id\) end\)\) end,/, "jsonb_build_object('seq'$1'at', lm.created_at) end,");
+  assert.doesNotMatch(old, /chat_files_count/);
+  await srv.pg.exec('reset role'); await srv.pg.exec(old); await srv.pg.exec('set role service_role');
+  assert.match(await listOf('en'), /Cam Crew：（削除されました）/, 'the old SQL still gives its Japanese text');
 });

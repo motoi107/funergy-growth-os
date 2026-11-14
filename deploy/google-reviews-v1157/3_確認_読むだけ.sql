@@ -9,8 +9,8 @@ union all select '2. 表はどれも RLS が ON',
 union all select '3. 公開の鍵（anon・authenticated）は表を読めない・書けない',
   case when exists (select 1 from t, unnest(array['anon','authenticated']) r(role), unnest(array['SELECT','INSERT','UPDATE','DELETE']) pr(priv)
       where to_regclass('public.' || t.n) is not null and has_table_privilege(r.role, 'public.' || t.n, pr.priv)) then 'NG（Claude に）' else 'OK' end
-union all select '4. 関数 gr_* が 20 個・どれもサーバーの鍵で動く（security definer でない）',
-  case when (select count(*) from f) = 20 and not exists (select 1 from f where prosecdef) then 'OK'
+union all select '4. 関数 gr_* が 21 個・どれもサーバーの鍵で動く（security definer でない）',
+  case when (select count(*) from f) = 21 and not exists (select 1 from f where prosecdef) then 'OK'
     else 'NG（' || (select count(*) from f) || ' 個）' end
 union all select '5. 公開の鍵（anon・authenticated）は関数 gr_* を呼べない',
   case when exists (select 1 from f, unnest(array['anon','authenticated']) r(role) where has_function_privilege(r.role, f.oid, 'EXECUTE'))
@@ -33,6 +33,9 @@ union all select '11. 消された口コミは 2 回続けて無いときだけ�
 union all select '12. 古い取り込みがあとから入れても新しい星・総合評価を戻さない（rating_from の欄・gr_reviews_put）',
   case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'gr_bp_loc' and column_name = 'rating_from')
         and exists (select 1 from f where proname = 'gr_reviews_put' and pg_get_functiondef(f.oid) like '%rating_from%') then 'OK' else 'NG（② をもう一度）' end
+union all select '13. 同じ更新時刻なら、前に始めた取り込みがあとから入れても返信の有無を戻さない（put_from の欄・gr_newer・#151 の Codex P3）',
+  case when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'gr_reviews' and column_name = 'put_from')
+        and exists (select 1 from f where proname = 'gr_reviews_put' and pg_get_functiondef(f.oid) like '%gr_newer%') then 'OK' else 'NG（② をもう一度）' end
 union all select '（参考）Business Profile のつなぎ',
   case when to_regclass('public.gr_bp') is null then '—'
     else (xpath('/table/row/v/text()', query_to_xml('select status v from public.gr_bp where id = 1', false, false, '')))[1]::text end

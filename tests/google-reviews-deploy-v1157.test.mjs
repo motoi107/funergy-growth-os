@@ -59,7 +59,7 @@ test('the first time: pre-check, the SQL (twice), post-check all OK; then the pr
   const post = await rowsOf(pg, '3_確認_読むだけ.sql');
   assert.ok(okAll(post), JSON.stringify(post));
   const P = by(post);
-  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.']) assert.equal(P(n), 'OK', n);
+  for (const n of ['1.', '2.', '3.', '4.', '5.', '6.', '7.', '8.', '9.', '10.', '11.', '12.', '13.']) assert.equal(P(n), 'OK', n);
   assert.equal(P('（参考）Business Profile のつなぎ'), 'none');
   assert.equal(P('（参考）Google の店（place ID）を決めた店の数'), '0');
   assert.equal(P('（参考）残っている口コミの数'), '0');
@@ -100,7 +100,7 @@ test('the post-check notices what it is meant to notice', async () => {
   assert.match((await P())('6.'), /^NG/);
   await pg.exec('grant execute on function public.gr_month(jsonb) to service_role; drop function public.gr_stage(jsonb)');
   const p = await P();
-  assert.match(p('4.'), /^NG（19 個）/); assert.equal(p('9.'), 'NG');
+  assert.match(p('4.'), /^NG（20 個）/); assert.equal(p('9.'), 'NG');
   await pg.exec(SQL);   // もう一度流せば戻る
   assert.ok(okAll(await rowsOf(pg, '3_確認_読むだけ.sql')));
   await pg.exec('drop index public.gr_bp_loc_location');

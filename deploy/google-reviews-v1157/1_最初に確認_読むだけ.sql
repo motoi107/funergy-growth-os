@@ -13,7 +13,7 @@ union all select '3. 同じ名前のほかの関数が無い（gr_ で始まる�
   case when (select count(*) from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = 'public' and p.proname like 'gr\_%'
         and p.proname not in ('gr_hst_ym','gr_who','gr_worker_key','gr_status','gr_place_set','gr_place_of','gr_oauth_start','gr_oauth_take',
-          'gr_bp_save','gr_bp_mark','gr_bp_creds','gr_bp_disconnect','gr_loc_set','gr_locs','gr_reviews_put','gr_reviews_prune','gr_kpi','gr_month','gr_run_log','gr_stage')) = 0
+          'gr_bp_save','gr_bp_mark','gr_bp_creds','gr_bp_disconnect','gr_loc_set','gr_locs','gr_reviews_put','gr_newer','gr_reviews_prune','gr_kpi','gr_month','gr_run_log','gr_stage')) = 0
     then 'OK' else 'STOP（gr_ で始まる別の関数がある。Claude に名前を）' end
 union all select '4. 毎日の取り込み（⑤）に使う pg_cron と pg_net が入っている（⑤ のときだけ要る）',
   case when exists (select 1 from pg_extension where extname = 'pg_cron') and exists (select 1 from pg_extension where extname = 'pg_net')

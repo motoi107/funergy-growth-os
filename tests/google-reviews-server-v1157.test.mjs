@@ -127,7 +127,7 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
   assert.deepEqual(tables, ['gr_bp', 'gr_bp_loc', 'gr_oauth', 'gr_places', 'gr_reviews', 'gr_runs', 'gr_settings']);
   for (const t of tables) assert.equal((await pg.query(`select relrowsecurity r from pg_class where relname=$1`, [t])).rows[0].r, true, t);
   const fns = (await pg.query(`select proname, prosecdef from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows;
-  assert.equal(fns.length, 20);
+  assert.equal(fns.length, 21);
   assert.ok(fns.every(f => !f.prosecdef), 'security invoker');
   for (const role of ['anon', 'authenticated']) {
     await pg.exec(`set role ${role}`);
@@ -135,9 +135,9 @@ test('the SQL runs twice; the public keys cannot read any table or run any funct
     for (const f of ['gr_kpi', 'gr_status', 'gr_worker_key', 'gr_bp_creds', 'gr_reviews_put']) await assert.rejects(pg.query(`select public.${f}('{}'::jsonb)`), /permission denied/, role + ' ' + f);
     await pg.exec('reset role');
   }
-  // 20 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
+  // 21 の関数のどれも、公開の鍵では呼べない（PUBLIC も）・サーバーの鍵だけ
   const sigs = (await pg.query(`select p.oid::regprocedure::text sig from pg_proc p join pg_namespace n on n.oid=p.pronamespace where nspname='public' and proname like 'gr\\_%'`)).rows.map(r => r.sig);
-  assert.equal(sigs.length, 20);
+  assert.equal(sigs.length, 21);
   for (const sig of sigs) {
     for (const role of ['anon', 'authenticated']) assert.equal((await pg.query(`select has_function_privilege($1, $2, 'execute') v`, [role, sig])).rows[0].v, false, role + ' ' + sig);
     assert.equal((await pg.query(`select has_function_privilege('service_role', $1, 'execute') v`, [sig])).rows[0].v, true, sig);
@@ -682,4 +682,48 @@ test('#155 overlapping reads: an older read that saves last does not put back an
   // started の形が違う・未来・1 日より前は断る
   for (const started of [5, 'x', '2099-01-01T00:00:00Z', '2026-01-01T00:00:00Z'])
     await assert.rejects(s.db.rpc('gr_reviews_put', { store: 'S1', location: LOC1, items: [], started }), /bad_value/, String(started));
+});
+
+// #151 の Codex（6880096590・P3）：返信しても Google の updateTime が変わらないなら、同じ更新時刻のまま古い取り込みがあとから入れて
+// 「返信あり」を「返信なし」に戻せた。v1163：同じ更新時刻なら、取り込みを始めた時刻（put_from）が前の取り込みは中身を直さない。
+test('#151 P3 same update time: an older read that saves last does not take back the reply; a later read still can (the reply was removed)', async () => {
+  const s = await setup();
+  await s.connect();
+  await s.ok('E2', { action: 'bp_link', store: 'S1', account: ACC, location: LOC1 });
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'FOUR', '2026-11-05T02:00:00Z')];
+  const k = await s.key();
+  assert.equal((await s.worker(k)).body.ok, true);
+  const orig = s.db.rpc;
+  let hold = null, held = null;
+  s.db.rpc = async function (n, p) { if (n === 'gr_reviews_put' && hold) { const h = hold; hold = null; held(); await h; } return orig.call(this, n, p); };
+  const row = async () => { await s.pg.exec('reset role'); const r = (await s.pg.query("select replied, updated, put_from from public.gr_reviews where name like '%/r1'")).rows[0]; await s.pg.exec('set role service_role'); return r; };
+  assert.equal((await row()).replied, false);
+  // A：返信の無い一覧を読み、入れる直前で止まる
+  let release; hold = new Promise(r => { release = r; }); const atPut = new Promise(r => { held = r; });
+  const a = s.worker(k);
+  await atPut;
+  await new Promise(r => setTimeout(r, 15));
+  // 店が Google で返信した（口コミの updateTime は同じ）。B が最後まで取る
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'FOUR', '2026-11-05T02:00:00Z', { reply: true })];
+  const b = await s.worker(k);
+  assert.equal(b.body.ok, true, b.text);
+  assert.equal((await row()).replied, true);
+  // A を続ける：「返信なし」に戻さない
+  release();
+  const ra = await a;
+  assert.equal(ra.body.ok, true, ra.text);
+  assert.equal((await row()).replied, true, 'the reply stays');
+  let m = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11' });
+  assert.deepEqual(m.items.map(x => x.replied), [true]);
+  // あとで始めた取り込みは、同じ更新時刻でも直せる（返信を消した）
+  s.db.rpc = orig;
+  await new Promise(r => setTimeout(r, 15));
+  s.g.reviews[LOC1] = [rv(LOC1, 1, 'FOUR', '2026-11-05T02:00:00Z')];
+  assert.equal((await s.worker(k)).body.ok, true);
+  assert.equal((await row()).replied, false, 'a later read takes the reply away');
+  // Google の更新時刻が新しければ、始めた時刻に関係なく直す（前と同じ）・前の関数（started なし）も今までどおり直す
+  await s.db.rpc('gr_reviews_put', { store: 'S1', location: LOC1, items: [{ name: `${ACC}/${LOC1}/reviews/r1`, rating: 4, created: '2026-11-05T02:00:00Z', updated: '2026-11-05T02:00:00Z', replied: true }] });
+  assert.equal((await row()).replied, true, 'an old function without started writes as before');
+  m = await s.ok('E8', { action: 'month', store: 'S1', ym: '2026-11' });
+  assert.deepEqual(m.items.map(x => x.replied), [true]);
 });

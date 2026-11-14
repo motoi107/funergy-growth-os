@@ -70,6 +70,9 @@ create table if not exists public.gr_reviews (
   gone_at timestamptz   -- #151 の再レビュー：前の回の取り込みで Google に無かった（次の回にも無ければ消す）
 );
 alter table public.gr_reviews add column if not exists gone_at timestamptz;
+-- #151 の Codex（6880096590・P3）：口コミの中身をどの取り込みが書いたか（取り込みを始めた時刻）。返信しても Google の updateTime が変わらないとき、
+--   同じ updateTime なら、前に始めた取り込みがあとから書いても、あとで始めた取り込みの返信の有無を戻さない
+alter table public.gr_reviews add column if not exists put_from timestamptz;
 create index if not exists gr_reviews_store_ym on public.gr_reviews (store_id, ym);
 -- #155 の Codex（6876878458）の 3：総合評価・件数をどの取り込みが書いたか（取り込みを始めた時刻）。古い取り込みがあとから書いても戻さない
 alter table public.gr_bp_loc add column if not exists rating_from timestamptz;
@@ -255,6 +258,11 @@ $$;
 --   ・口コミの中身（星・本文・名前・返信）は、Google の更新時刻（updated）が今ある値より古くないときだけ直す。
 --   ・総合評価・件数は、取り込みを始めた時刻（started＝gr_locs の now）が、今の値を書いた取り込みより前なら書かない。
 --   ・取り終えた時刻（synced_at）は、取り込みを始めた時刻にする（戻さない）。started の無い前の関数は今までどおり。
+-- 新しい値で直してよいか：Google の更新時刻が新しい。同じなら、取り込みを始めた時刻が前でない（どちらかが分からないときは今までどおり直す）
+create or replace function public.gr_newer(o_upd timestamptz, o_from timestamptz, n_upd timestamptz, n_from timestamptz) returns boolean
+language sql immutable security invoker set search_path = public, pg_temp as $$
+ select o_upd is null or n_upd > o_upd or (n_upd = o_upd and (n_from is null or o_from is null or n_from >= o_from));
+$$;
 create or replace function public.gr_reviews_put(p jsonb) returns jsonb
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
 declare s text := p->>'store'; l public.gr_bp_loc; x jsonb; n int := 0; pre text; st timestamptz := null; v_agg boolean;
@@ -271,16 +279,17 @@ begin
  for x in select * from jsonb_array_elements(coalesce(p->'items', '[]'::jsonb)) loop
    if jsonb_typeof(x->'name') <> 'string' or left(x->>'name', length(pre)) <> pre or length(x->>'name') > 400 then raise exception 'bad_value'; end if;
    if jsonb_typeof(x->'rating') <> 'number' or (x->>'rating')::int not between 1 and 5 then raise exception 'bad_value'; end if;
-   insert into public.gr_reviews (name, store_id, rating, comment, reviewer, created, updated, ym, replied, seen_at)
+   insert into public.gr_reviews (name, store_id, rating, comment, reviewer, created, updated, ym, replied, seen_at, put_from)
    values (x->>'name', s, (x->>'rating')::int, left(nullif(x->>'comment', ''), 6000), left(nullif(x->>'reviewer', ''), 200),
            (x->>'created')::timestamptz, (x->>'updated')::timestamptz, public.gr_hst_ym((x->>'created')::timestamptz),
-           coalesce((x->>'replied')::boolean, false), now())
+           coalesce((x->>'replied')::boolean, false), now(), st)
    on conflict (name) do update set store_id = excluded.store_id, ym = excluded.ym, created = excluded.created,   -- 結び直した店へ移す（#151 のレビュー）
-     rating = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.rating else public.gr_reviews.rating end,
-     comment = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.comment else public.gr_reviews.comment end,
-     reviewer = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.reviewer else public.gr_reviews.reviewer end,
-     replied = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.replied else public.gr_reviews.replied end,
-     updated = case when public.gr_reviews.updated is null or excluded.updated >= public.gr_reviews.updated then excluded.updated else public.gr_reviews.updated end,
+     rating = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then excluded.rating else public.gr_reviews.rating end,
+     comment = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then excluded.comment else public.gr_reviews.comment end,
+     reviewer = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then excluded.reviewer else public.gr_reviews.reviewer end,
+     replied = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then excluded.replied else public.gr_reviews.replied end,
+     put_from = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then st else public.gr_reviews.put_from end,
+     updated = case when public.gr_newer(public.gr_reviews.updated, public.gr_reviews.put_from, excluded.updated, st) then excluded.updated else public.gr_reviews.updated end,
      seen_at = now(), gone_at = null;
    n := n + 1;
  end loop;

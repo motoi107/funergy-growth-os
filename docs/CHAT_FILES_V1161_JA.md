@@ -76,3 +76,11 @@ v1156 のチャット（`docs/CHAT_V1156_JA.md`）の上に、ファイルを付
   - あわせて、storage.objects の RLS が OFF か、anon・authenticated が RLS を飛ばせる（BYPASSRLS・superuser）なら、決まりに関係なく読めるので止める（② の最初・① の 6・③ の 10。新しい）。
 - 本番：11/14 05:39 HST の表は名前が直接 anon などの決まりだけを見る問い合わせだったので、ロール経由の決まりがあるかはまだ分からない。③（読むだけ）を流して 8・10 が OK なら、公開の鍵では chat-files を読めない。済（Moto さん 11/14 07:48 HST「問題なし」）：本番で 8・10 とも OK。② は流し直さなくてよい（`deploy/codex-p2-20261114/手順.md`）。
 - 試験（合成データ・PGlite）：deploy 8（足した 1：止めるもの 5 つ（ロール経由の `using (true)`・2 段・SET ROLE だけ・ほかのロールと一緒・ロール経由の chat-files）を ①②③ で・通るもの 3 つ（anon が入っていないロール・anon の上のロール・ロール経由でも 1 つの置き場所）・入れたあとに増えたロール経由の決まりとロールから anon を外したとき・RLS OFF と BYPASSRLS（anon・authenticated）・ロール経由の決まりで anon が chat-files を読めること・Storage が無い環境）。足した試験は直す前の SQL（main `2647441`）で落ちる。
+
+## 8. v1163：一覧の 1 行の文を画面の言葉で（#155 の Codex P3）
+
+- 前：本文の無い添付のメッセージの一覧の文は、SQL（`chat_files_label`）が日本語で作っていた（英語の画面でも「写真 1 枚」）。「（削除されました）」「（見えなくなりました）」も同じ。
+- いま：`chat_row` の `preview` に、数（`files`：`ph`＝写真・`ot`＝ほか・`name`＝ほかが 1 つならその名前）と状態（`state`：`deleted`・`hidden`）も入れる（新しい関数 `chat_files_count`）。画面（v1163 の `pvText`）が日本語・英語で出す（`1 photo · 1 file`・`File “x.pdf”`・`(Deleted)`）。検索も同じ文で探す。
+- `text` は v1162 までの画面のために日本語のまま残す。前の SQL（`files`・`state` が無い）なら、v1163 の画面も `text` を出す。
+- ③ の 11（新しい）：`chat_row` が `chat_files_count` を使っているか。入れ方：`deploy/p3-v1163/手順.md`。
+- 試験（合成データ）：app 11（足した 1：英語・日本語・本文のあるとき・消したとき・検索・前の SQL）。
