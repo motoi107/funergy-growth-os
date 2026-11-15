@@ -1,5 +1,7 @@
 # GitHub経由の共同開発・自動更新
 
+> **2026-11-15 追記**：今の開発の流れ（個人と Team の 2 つの Claude が実装・Codex がレビュー・GitHub が唯一の最新版）は `docs/DEV_WORKFLOW.md` に書いています。Codex の判定は PR コメント（`chatgpt-codex-connector`・`growth-ai-decision` の印）で届きます。この文書の下の内容は 2026-09 時点の初期設定の記録で、そのまま残しています。
+
 ## 目指す流れ
 
 依頼を共有記録へ保存 → 一方のAIが作業ブランチで改修 → GitHubへ直接保存 → コード検証と他方のAIによるレビュー → 指摘を修正して最新版を再確認 → 条件を満たした変更をmainへ反映 → 既存のGitHub Pagesで公開 → 作業履歴を保存。

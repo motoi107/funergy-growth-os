@@ -1,13 +1,22 @@
 # Growth OS: shared instructions for coding agents
 
-Read `docs/AI_SHARED_MEMORY_JA.md` and `docs/AI_BACKLOG_JA.md` before work. Update them when a decision, verified result, or next step changes. Read the relevant existing handoff and verification files for the area being changed; version numbers in their filenames do not establish the current release.
+Follow `docs/DEV_WORKFLOW.md` for starting work, handing over, parallel work, PR contents and the Codex review loop. When continuing a task, read `docs/handoff/<task-id>.md` first (template and rules: `docs/HANDOFF.md`).
+
+`docs/AI_SHARED_MEMORY_JA.md` and `docs/AI_BACKLOG_JA.md` are very large. Do not load them in full: read their newest sections at the top and search them for terms related to the task. Update them when a decision, verified result, or next step changes. Read the relevant existing handoff and verification files for the area being changed; version numbers in their filenames do not establish the current release.
+
+## Roles
+
+- Implementation: Claude, from either Moto's personal workspace or the company Team workspace. Either one may start a task or take it over at a handover point. The Claude currently in charge of a branch also fixes Codex's findings on that PR.
+- Review: Codex reviews the PR head and re-reviews after fixes. In this workflow Codex does not commit, open fix PRs, merge, or change repository settings.
+- Decisions, merging and production changes (SQL, Edge Functions, Secrets, devices): Moto.
+- Every actor appears on GitHub as `motoi107`. Identify the Claude that wrote a commit with a `Claude-Workspace: personal` or `Claude-Workspace: team` trailer, and state it in the PR body and the handoff record.
 
 ## Project boundaries
 
 - This repository is the GitHub edition of Growth OS, published with GitHub Pages at the domain in `CNAME`. Its current application is `index.html` with `sw.js` and `appicons/`.
 - A separate Growth OS project exists in ChatGPT Sites. It has a different source history and architecture. Never overwrite one edition with the other, change their data connections, or switch the production domain as an incidental part of synchronization.
 - Start from the current remote commit, work in one feature branch per task, and push commits directly through the authorized integration. Do not ask Moto to copy generated code into GitHub.
-- Assign one editing agent per branch at a time. The other agent reviews the committed change. Fetch again before a handoff; do not force-push over someone else's work.
+- Assign one editing Claude (personal or Team) per branch at a time. Codex reviews the committed head. Fetch again before a handoff; do not force-push over someone else's work. Do not keep long-lived per-account branches.
 
 ## Shared memory
 
@@ -25,6 +34,22 @@ Read `docs/AI_SHARED_MEMORY_JA.md` and `docs/AI_BACKLOG_JA.md` before work. Upda
 - The initial integration setup does not enable automatic merging. Complete the connection and release checks in `docs/AI_AUTOMATION_SETUP_JA.md` before enabling unattended publication.
 
 ## Code Review Rules
+
+### Findings that matter
+
+Prioritize findings that can lose or corrupt saved data, let one user see or change another's data, produce wrong money, hours, tips or payroll figures, break login or offline updates, or make production steps unsafe. Give each finding a concrete reproduction or the exact code path. State what was not checked.
+
+### Store and employee data separation
+
+Check that a store, role or grade cannot read or write another store's or another employee's records through the app, the public key, or an Edge Function, and that the server, not only the screen, enforces it.
+
+### Database compatibility
+
+Check that SQL can run twice safely, stops without changing anything when its preconditions are missing, keeps existing rows and grants, and stays compatible with app versions that are still installed on devices.
+
+### PC, smartphone and the installed iPhone app
+
+Check affected screens at PC and smartphone widths, in the iPhone home-screen app (the same PWA), and in Japanese and English when both exist.
 
 ### Data and permissions
 
