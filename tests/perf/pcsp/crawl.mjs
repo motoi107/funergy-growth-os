@@ -109,7 +109,7 @@ const measure = (label) => page.evaluate((label) => {
     tabbars, textLen: (root.innerText || '').length,
     /* v1172 の印：表の名前の列の固定・表の中の横送り・全画面の箱・箱の大きさ */
     stick1: root.querySelectorAll('table[data-stick1]').length, ovx: root.querySelectorAll('table[data-ovx]').length,
-    mfull: modalOpen && rr.width >= vw - 2 ? 1 : 0, msize: modalOpen ? (document.getElementById('modal-body').getAttribute('data-msize') || '') : '', hits: root.querySelectorAll('[data-hit]').length,
+    mfull: modalOpen && rr.width >= vw - 2 ? 1 : 0, msize: modalOpen ? (document.getElementById('modal-body').getAttribute('data-msize') || '') : '', hits: root.querySelectorAll('[data-hit]').length, win: !!(window.FUNERGY_LAYOUT && window.FUNERGY_LAYOUT._windowed),   /* 要素がとても多い画面：アプリは見えている所の近くだけを直す（ここはページ全体を測る） */
     fns: [...new Set([...root.querySelectorAll('[onclick]')].map(e => ((e.getAttribute('onclick') || '').match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/) || [])[1]).filter(Boolean))].slice(0, 200)
   };
 }, label);

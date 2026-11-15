@@ -28,10 +28,11 @@ for (const r of csv.slice(1)) {
   else st = '未対応';
   const m = a.metrics, sp = m.sp;
   const left = [pcLeft.length ? 'PC：' + pcLeft.join('・') : '', spLeft.length ? 'スマホ：' + spLeft.join('・') : ''].filter(Boolean).join('／');
-  r[H('現状の問題')] = 'v1171：' + r[H('現状の問題')].replace(/^v1171：/, '') + (left ? '　→ v1172 の残り：' + left : '　→ v1172：解消');
+  const huge = sp && (sp.win || sp.tapTotal > 1500);   /* 要素がとても多い画面（2 万より多い）：アプリは見えている所の上下 1 画面だけを直す。ここの数はページ全体 */
+  r[H('現状の問題')] = 'v1171：' + r[H('現状の問題')].replace(/^v1171：/, '') + (left ? '　→ v1172 の残り：' + left : '　→ v1172：解消' + (taps.length ? '（押すところは押せる範囲を広げた。広げられない分は「検証結果」）' : ''));
   r[H('対応状況')] = st;
   r[H('検証結果')] = `v1172（合成データ・GM）1440：主の幅 ${m.pc.mainW}px・横はみ出し ${m.pc.docOv > 2 ? '+' + m.pc.docOv : 'なし'}・枠の中で横に送る表 ${m.pc.tablesScroll}` +
-    (sp ? `／390：横はみ出し ${sp.docOv > 2 ? '+' + sp.docOv : 'なし'}・44px に届かない押すところ ${sp.tapSmall}/${sp.tapTotal}（となりと近い・文中のリンク・表の中）・11px 未満の文字 ${sp.fontSmall}${sp.fontSmall ? '（グラフの中の文字）' : ''}・表の固定 ${sp.stick1 || 0}${sp.mfull ? '・全画面の箱' : ''}` : '／390：測れず');
+    (sp ? `／390：横はみ出し ${sp.docOv > 2 ? '+' + sp.docOv : 'なし'}・44px に届かない押すところ ${sp.tapSmall}/${sp.tapTotal}（となりと近い・文中のリンク・表の中）・11px 未満の文字 ${sp.fontSmall}${sp.fontSmall && !huge ? '（グラフの中の文字）' : ''}・表の固定 ${sp.stick1 || 0}${sp.mfull ? '・全画面の箱' : ''}${huge ? '（とても大きい画面：アプリは見えている所の上下 1 画面だけを直し、スクロールが止まったら見直す。この数はページ全体）' : ''}` : '／390：測れず');
   if (taps.length && st === '改修済み') r[H('検証結果')] += '　残り：' + taps.join('・');
   changed++; cnt[st] = (cnt[st] || 0) + 1;
 }

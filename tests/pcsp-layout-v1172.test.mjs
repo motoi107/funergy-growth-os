@@ -165,6 +165,10 @@ test('タッチの端末（iPad など・768px 以上）も押せる範囲を広
   assert.ok(!n1.parentElement.hasAttribute('data-fs11') && !n1.parentElement.hasAttribute('data-fs10'));
   phoneRun([], 'touch', [sp, sv]);
   assert.ok(!sp.parentElement.hasAttribute('data-fs11') && !sv.parentElement.hasAttribute('data-fs11'));
+  /* 最初の子が空白だけ（改行と字下げ）でも、あとの文字があればその要素を見る（v1172 の直し：KPI設定の注意書き 10px が残っていた） */
+  const ws = textOf(10), real = { nodeValue: '昨対は…', parentElement: ws.parentElement }; ws.nodeValue = '\n   ';
+  phoneRun([], true, [ws, real]);
+  assert.ok(ws.parentElement.hasAttribute('data-fs11'));
 });
 /* ---------- 速さ（v1172 の直し：経理レビューのように押すところが数万ある画面で止まらない） ---------- */
 /* 前の形（となりを全部見る）と同じ広げ方：同じ順で全部を見る。マス目で近くだけを見ても結果は同じであること */
