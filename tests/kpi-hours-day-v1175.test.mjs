@@ -33,7 +33,7 @@ function fnSrc(name) {
   throw new Error('unterminated: ' + name);
 }
 
-const FNS = ['k2NormAcctName','k2SysAcctList','k2SysMatcher','k2HoursDays','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
+const FNS = ['k2NormAcctName','k2SysAcctList','k2SysMatcher','k2DayIssues','k2HoursDays','k2HoursDaysM','k2HoursDaysAll','k2RecGuids','isOrderOnlyAccount','toastSystemAccount','ceIsSystemAccount','_laborHrs','getTipLabor','k2IsSysName','k2SysGuids','k2MonthGuids','k2YmAdd','daysOfYm'];
 
 function world({ today = '2026-11-12', stores = [{ id: 'F06', bizDays: { 1: 'closed' } }], labor = {}, kpi = {}, closures = {} } = {}) {
   const LS = {};
@@ -57,9 +57,9 @@ function world({ today = '2026-11-12', stores = [{ id: 'F06', bizDays: { 1: 'clo
 }
 const E = (h, g, extra) => Object.assign({ rawLunch: 0, rawDinner: h, lunch: 0, dinner: h, toastGuid: g }, extra || {});
 
-test('v1175 version markers', () => {
-  assert.match(SRC, /const APP_VERSION = '1175'/);
-  assert.match(SW, /const SW_BUILD = '1175'/);
+test('v1175 version markers (1175 or later, page and SW the same)', () => {
+  const a = /const APP_VERSION = '(\d+)'/.exec(SRC)[1], b = /const SW_BUILD = '(\d+)'/.exec(SW)[1];
+  assert.ok(+a >= 1175, a); assert.equal(a, b);
 });
 
 test('A example 1: 8 business days, 336h → 42.0 h/business day; system accounts do not change it; a late import updates both sides', () => {
