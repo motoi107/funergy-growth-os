@@ -2,7 +2,13 @@
 // absolute・fixed・sticky の要素の位置を変えないこと（メニュー分析「出数 vs 売価」の散布図の点 .mn-pt など）を本物のブラウザ（Chromium）の CSS で確かめる。
 // index.html の <style> と FUNERGY_LAYOUT をそのまま白紙のページに入れ、合成の点・ボタンを置いて L.run() の前後を比べる（本番・模擬サーバーにはつながない）。
 // 使い方：node tests/e2e-pcsp/hit-position-v1172.mjs   （INDEX=ほかの index.html で前の版と比べられる）
-import { chromium } from '/opt/npm-tools/node_modules/playwright/index.mjs';
+// Playwright は環境によって置き場所が違う（PLAYWRIGHT_MODULE → 'playwright' → 決まった置き場所の順に探す）
+async function loadChromium() {
+  const tries = [process.env.PLAYWRIGHT_MODULE, 'playwright', '/opt/npm-tools/node_modules/playwright/index.mjs', '/opt/node-tools/node_modules/playwright/index.mjs'].filter(Boolean);
+  for (const m of tries) { try { const mod = await import(m); if (mod.chromium) return mod.chromium; } catch (e) { /* 次を試す */ } }
+  throw new Error('Playwright が見つかりません（PLAYWRIGHT_MODULE に index.mjs の場所を入れてください）');
+}
+const chromium = await loadChromium();
 import fs from 'node:fs';
 for (const k of Object.keys(process.env)) if (/proxy/i.test(k)) delete process.env[k];
 const HTML = fs.readFileSync(process.env.INDEX || new URL('../../index.html', import.meta.url), 'utf8');
