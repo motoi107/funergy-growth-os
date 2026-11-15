@@ -57,6 +57,7 @@ async function server({ files = true, ui79 = true } = {}) {
   await pg.exec(M('20261121090000_chat'));
   if (files) await pg.exec(M('20261124090000_chat_files'));
   if (files && ui79) await pg.exec(M('20261127090000_chat_ui79'));
+  if (files && ui79 && process.env.CHAT_WITH_GUARD === '1') await pg.exec(M('20261128090000_chat_guard'));   /* v1168：守りの SQL があっても同じ */
   await pg.exec('update public.wr_settings set live = true; set role service_role');
   const db = { async rpc(name, p) { const r = await pg.query(`select public.${name}($1::jsonb) as v`, [JSON.stringify(p ?? {})]); return r.rows[0].v; } };
   const gm = { emp_id: 'E2', name: NAME.E2 }; const d = await db.rpc('wr_people_diff', gm); await db.rpc('wr_people_sync', { ...gm, digest: d.digest });
@@ -330,7 +331,7 @@ test('lock now hides the chat everywhere (no messages on the screen); a shared P
   a.authLock.n = 0; el(a, 'chat-lock-pin').value = '4321'; a.ctx.chatUnlock(); await a.idle();
   // 自分の端末に変える → 30 分。続けるは PIN なし
   a.ctx.chatGuard(); await a.idle();
-  assert.match(text(el(a, 'chat-layer')), /店の共有 PC/);
+  assert.match(text(el(a, 'chat-gd')) || text(el(a, 'chat-layer')), /店の共有 PC/);   // v1168：守りの画面は chat-gd の中に描く
   a.ctx.chatSetDev('personal'); a.ctx.chatDlgClose();
   // 放っておいた：5 分では閉じない（自分の端末）・31 分で閉じる
   const realNow = Date.now; let off = 0;

@@ -18,7 +18,8 @@ export const WR_MIGS = ['20261104090000_work_requests', '20261105090000_work_req
   '20261113080000_wr_people_chef', '20261116080000_wr_people_g2', '20261120090000_work_requests_stage2', '20261121090000_chat', '20261123090000_work_requests_stage3', '20261124090000_chat_files']
   .concat(process.env.WR_FIX === '0' ? [] : ['20261125090000_wr_expense_g2'])   // WR_FIX=0：直す前（v1162 の本番と同じ SQL）
   .concat(process.env.WR_FIX === '0' || process.env.WR_1165 === '0' ? [] : ['20261126090000_wr_approve_v1165'])   // v1165：事前経費と実費（WR_1165=0：その SQL の前）
-  .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : []);   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
+  .concat(process.env.WR_UI79 === '1' ? ['20261127090000_chat_ui79'] : [])   // v1167：チャットの UI案79（WR_UI79=1 のときだけ。前の e2e は前のまま）
+  .concat(process.env.WR_UI79 === '1' && process.env.WR_GUARD === '1' ? ['20261128090000_chat_guard'] : []);   // v1168：チャットの守り（WR_GUARD=1 のときだけ）
 
 export const TODAY = new Date().toISOString().slice(0, 10);
 const STORES = [['F01', 'Store A', 'Brand A', 'Ami Area'], ['F02', 'Store B', 'Brand B', '']].map(([id, name, brand, am]) => ({ id, name, brand, color: '#335577', am, toastGuid: '', hours: '11:00-22:00', days: '毎日', active: true }));
@@ -78,8 +79,13 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
     async head(p) { const o = files.get(p); return o ? { bytes: o.slice(0, 16), size: o.length } : null; },
     async remove(paths) { for (const p of paths) files.delete(p); },
   };
-  const wr = createHandler({ env: k => ({ SUPABASE_URL: 'https://tgbhgxzehzeouopklhje.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'service' })[k], db, storage,
-    verifyPin: async tok => { const m = /^perf-session:(e\d+)$/.exec(tok); return m && NAME[m[1]] ? { emp_id: m[1], name: NAME[m[1]] } : null; } });
+  // v1168：プッシュの送り先は代わり（届けた送り先を覚えるだけ）。ログインの PIN の確かめ（暗証番号を忘れたとき）は 1234 が正しい（代わり）
+  const pushed = [];
+  const wrEnv = { SUPABASE_URL: 'https://tgbhgxzehzeouopklhje.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'service', CHAT_VAPID_PUBLIC: 'BAkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk', CHAT_VAPID_PRIVATE: 'x' };
+  const wr = createHandler({ env: k => wrEnv[k], db, storage,
+    verifyPin: async tok => { const m = /^perf-session:(e\d+)$/.exec(tok); return m && NAME[m[1]] ? { emp_id: m[1], name: NAME[m[1]] } : null; },
+    loginCheck: async (w, pin) => (pin === '1234' ? { ok: true } : { ok: false }),
+    pushSend: async ep => { pushed.push(ep); return 201; } });
   const calls = [];
   const authCalls = [];
   async function handle(method, u, headers, body, raw) {
@@ -141,5 +147,5 @@ export async function startWorld({ appPort = 8090, vendor = process.env.VENDOR_D
   ext.on('upgrade', (req, sock) => sock.destroy());
   await new Promise(r => app.listen(appPort, '127.0.0.1', r)); await new Promise(r => ext.listen(443, '127.0.0.1', r));
   const q = async (sql, args) => { await pg.exec('reset role'); try { return (await pg.query(sql, args)).rows; } finally { await pg.exec('set role service_role'); } };
-  return { url: `http://localhost:${appPort}/`, mock, pg, q, db, calls, authCalls, files, close: () => { app.close(); ext.close(); } };
+  return { url: `http://localhost:${appPort}/`, mock, pg, q, db, calls, authCalls, files, pushed, close: () => { app.close(); ext.close(); } };
 }

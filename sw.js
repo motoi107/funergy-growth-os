@@ -7,7 +7,7 @@
    - waiting 状態の SW は、index.html から SKIP_WAITING を受けたときだけ有効化する（勝手に切り替えて
      入力中データを飛ばさない。ユーザーがバナーで「更新」を押したときだけ切り替わる）。
    SW を差し替えるときは SW_BUILD を上げること。 */
-const SW_BUILD = '1167';                     // ← index.html の APP_VERSION と揃える
+const SW_BUILD = '1168';                     // ← index.html の APP_VERSION と揃える
 const CACHE = 'funergy-os-' + SW_BUILD;
 const CORE = [
   './',
@@ -81,24 +81,30 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-/* Push通知用フック（将来用・無害なプレースホルダ） */
+/* v1168：チャットのプッシュ通知（docs/CHAT_GUARD_V1168_JA.md）。サーバーは中身を送らない（届いた中身があっても使わない）。
+   出すのは「新着メッセージがあります」だけ（送った人・会話の名前・本文・画像は出さない）。同じ印（tag）なので、何通来ても 1 つにまとまる。
+   iPhone はホーム画面に追加したアプリ（iOS 16.4 以上）で受け取る。届いたら必ず 1 つ出す（出さないとブラウザが受け取りを止めることがある）。 */
 self.addEventListener('push', (e) => {
-  let data = {};
-  try { data = e.data ? e.data.json() : {}; } catch (_) {}
-  const title = data.title || 'Funergy';
-  const options = {
-    body: data.body || '',
+  e.waitUntil(self.registration.showNotification('Funergy+', {
+    body: '新着メッセージがあります',
+    tag: 'funergy-chat',
+    renotify: false,
     icon: 'appicons/icon-192.png',
     badge: 'appicons/icon-192.png',
-    data: data.url || './'
-  };
-  e.waitUntil(self.registration.showNotification(title, options));
+    data: { chat: 1 }
+  }));
 });
+/* 押したら：開いているアプリがあれば前に出して「新しいメッセージのある会話を開いて」と伝える。無ければ ?chat=1 で開く（ログインのあと開く） */
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const target = e.notification.data || './';
-  e.waitUntil(clients.matchAll({ type: 'window' }).then((cl) => {
-    for (const c of cl) { if ('focus' in c) return c.focus(); }
-    if (clients.openWindow) return clients.openWindow(target);
+  const url = new URL('./?chat=1', self.registration.scope).href;
+  e.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cl) => {
+    for (const c of cl) {
+      if ('focus' in c) {
+        try { c.postMessage({ type: 'funergy-chat-open' }); } catch (_) {}
+        return c.focus();
+      }
+    }
+    if (clients.openWindow) return clients.openWindow(url);
   }));
 });
