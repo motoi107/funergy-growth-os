@@ -1632,6 +1632,96 @@ i.ti-loader, i.ti-loader-2 { display:inline-block; animation:uxSpin 1s linear in
 .ux-st-mut { color:var(--muted); font-size:11.5px; }
 .ux-st-btns { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; margin-top:10px; }
 .ux-st-page { font-size:12.5px; line-height:1.6; }
+/* ===== v1172：PC・スマホの共通の決まり（UI案82・Moto さん 11/14 21:52 HST「１〜５ A」）。FUNERGY_LAYOUT が印を付ける =====
+   幅：表・一覧・分析は「広い」、カードの画面は「ふつう」、文章と短いフォームは今の 900px（body[data-layout]）。
+   自分の幅を持つ画面（シフト作成・チャット）は印を付けない。保存・同期・計算・権限は変えない（見た目だけ）。 */
+@media (min-width:1024px) {
+  html body[data-layout="wide"] .main { max-width:1440px; }
+  html body[data-layout="std"] .main { max-width:1180px; }
+  /* 箱：中身で大きさを選ぶ（入力 6 つ以上か表＝中、広い表＝大）。決まった大きさの箱（#modal-body:has(...)）はそのまま */
+  #modal-body.modal[data-msize="md"] { max-width:760px; }
+  #modal-body.modal[data-msize="lg"] { max-width:1000px; }
+  #modal-body.modal[data-mcols="2"] { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); column-gap:16px; align-content:start; }
+  #modal-body.modal[data-mcols="2"] > * { grid-column:1 / -1; }
+  #modal-body.modal[data-mcols="2"] > .form-group:not(:has(textarea, table, .form-row, [data-wide])) { grid-column:auto; }
+}
+@media (min-width:1440px) {
+  html body[data-layout="wide"] .main { max-width:1880px; }
+}
+/* 従業員マスター（UI案82 の 3：A）：PC（1024px 以上）は表と右のパネル、スマホ・タブレットは今のカード。
+   描くのは幅に合うほうだけ（renderStaffMaster）。幅が変わって描き直すまでのあいだも崩れないように、表とパネルは 1024px 未満では縦に並べる */
+@media (min-width:1024px) {
+  /* 上の確かめ（非アクティブ・未登録の打刻・退職手続き）：何もない（data-clear）ものは横に並べて低く。あるものは横いっぱい */
+  .sm-chk { display:grid; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); gap:12px; align-items:stretch; margin-bottom:12px; }
+  .sm-chk > .card { margin:0 !important; }
+  .sm-chk > .card:not([data-clear]) { grid-column:1 / -1; }
+  .sm-wrap > .sm-pc { display:grid; grid-template-columns:minmax(0,1fr) clamp(270px,24vw,340px); gap:14px; align-items:start; }
+}
+.sm-pc > .sm-panel { margin-top:12px; }
+@media (min-width:1024px) { .sm-pc > .sm-panel { margin-top:0; position:sticky; top:64px; } }
+.sm-tbl-card { padding:0; overflow-x:auto; }
+.sm-tbl { width:100%; border-collapse:collapse; font-size:13px; }
+.sm-tbl th { text-align:left; font-size:11px; font-weight:700; color:var(--muted); padding:9px 10px; border-bottom:1px solid var(--border); white-space:nowrap; }
+.sm-tbl td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.sm-tbl .num { text-align:right; white-space:nowrap; }
+.sm-tbl tr.sm-row { cursor:pointer; }
+@media (hover:hover) { .sm-tbl tr.sm-row:hover > td { background:var(--surface2); } }
+.sm-tbl tr.sm-row.sel > td { background:var(--accent-soft, #fff4ec); }
+.sm-tbl tr.sm-row:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+.sm-tbl tr.sm-grp > td { font-size:11px; font-weight:700; letter-spacing:1px; color:var(--muted); background:var(--surface2); padding:6px 10px; }
+.sm-nm { display:flex; align-items:center; gap:8px; min-width:150px; }
+.sm-av { width:26px; height:26px; border-radius:50%; border:1.5px solid var(--border); display:inline-flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; flex-shrink:0; background:var(--surface); }
+.sm-code { font-size:11px; color:var(--muted); font-weight:400; margin-left:6px; }
+.sm-mu { color:var(--muted); font-size:12px; }
+.sm-ph { display:flex; gap:10px; align-items:center; margin-bottom:12px; }
+.sm-pn { font-size:16px; font-weight:800; overflow-wrap:anywhere; }
+.sm-pt { font-size:12px; color:var(--muted); margin-top:2px; }
+.sm-dl { display:grid; grid-template-columns:auto minmax(0,1fr); gap:7px 12px; margin:0 0 14px; font-size:13px; }
+.sm-dl dt { color:var(--muted); font-size:12px; white-space:nowrap; }
+.sm-dl dd { margin:0; overflow-wrap:anywhere; }
+.sm-pb { display:flex; flex-direction:column; gap:8px; }
+.sm-pb > .btn { justify-content:center; }
+/* 上の店の切り替え：スマホは略称で切れないように（押せる範囲は FUNERGY_LAYOUT で広げる） */
+.tb-sn-s { display:none; }
+@media (max-width:640px) {
+  .topbar-store { overflow:visible; flex:0 0 auto; max-width:none; }
+  /* 店の切り替えを縮めない。足りないときは名前の札を縮める（…で切る） */
+  .topbar-right { min-width:0; }
+  .topbar-role-badge { min-width:0; overflow:hidden; }
+  .tb-sn-f { display:none; }
+  .tb-sn-s { display:inline; }
+}
+@media (max-width:374px) {
+  .topbar-role-badge { display:none; }   /* 360px など：名前の札（押すところではない）を出さず、店・保存の状態・ログアウトを残す */
+}
+@media (max-width:767px) {
+  /* 画面の見出し：題とボタンが 1 行に入らなければ、ボタンを次の行へ（題を 1 文字ずつ折り返さない） */
+  .section-header { flex-wrap:wrap; gap:8px 10px; }
+  .section-header > :last-child:not(:first-child) { flex-wrap:wrap; max-width:100%; }
+  /* 押すところ：見た目はそのまま、押せる範囲だけ 44px に（となりの押すところとは間の半分まで） */
+  [data-hit] { position:relative; }
+  [data-hit]:not(.ux-busy)::after { content:""; position:absolute; top:calc(-1 * var(--ht, 0px)); bottom:calc(-1 * var(--hb, 0px)); left:calc(-1 * var(--hl, 0px)); right:calc(-1 * var(--hr, 0px)); }
+  .nav-btn { min-height:44px; }
+  .form-input, .form-select { min-height:44px; }
+  /* いちばん小さい文字は 11px */
+  [data-fs11] { font-size:11px !important; }
+  /* 表：横に送る表は名前の列を固定・ページ全体は横に送らない */
+  table[data-stick1] > * > tr > :first-child { position:sticky; left:0; z-index:2; background:var(--surface); box-shadow:1px 0 0 var(--border); }
+  table[data-ovx] { display:block; max-width:100%; overflow-x:auto; }
+  table[data-stickh] > thead > tr > th { position:sticky; top:52px; z-index:3; background:var(--surface); }
+  /* 入力の多い箱・表のある箱は全画面。見出しと保存・閉じるを上下に固定（iPhone の下の余白も） */
+  .modal-overlay.open:has(> #modal-body[data-mfull]) { padding:0; align-items:stretch; }
+  #modal-body.modal[data-mfull] { max-width:none; width:100%; height:100%; max-height:none; border:0; border-radius:0; padding:0 16px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  #modal-body.modal[data-mfull] > .modal-title { position:sticky; top:0; z-index:6; background:var(--surface); margin:0 -16px 10px; padding:calc(12px + env(safe-area-inset-top, 0px)) 16px 10px; border-bottom:1px solid var(--border); }
+  #modal-body.modal[data-mfull] > [data-mfoot] { position:sticky; bottom:calc(-16px - env(safe-area-inset-bottom, 0px)); z-index:6; background:var(--surface); margin:12px -16px 0; padding:10px 16px calc(10px + env(safe-area-inset-bottom, 0px)); border-top:1px solid var(--border); }
+  body:has(.modal-overlay.open > #modal-body[data-mfull]) .chat-fab { display:none; }
+}
+@media (max-width:1023px) {
+  /* ナビ：横に送れるときは端をうすく（今の場所は FUNERGY_LAYOUT が見える位置へ送る） */
+  .nav-bar[data-more="r"], .subnav-bar[data-more="r"] { -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 32px), transparent); mask-image:linear-gradient(to right, #000 calc(100% - 32px), transparent); }
+  .nav-bar[data-more="l"], .subnav-bar[data-more="l"] { -webkit-mask-image:linear-gradient(to left, #000 calc(100% - 32px), transparent); mask-image:linear-gradient(to left, #000 calc(100% - 32px), transparent); }
+  .nav-bar[data-more="lr"], .subnav-bar[data-more="lr"] { -webkit-mask-image:linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); mask-image:linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent); }
+}
 </style>
 </head>
 <body>
@@ -21288,6 +21378,11 @@ function setStorePin(storeId, pin) { var p=getStorePins(); p[storeId]=pin; lsSet
 /* ============================================================
    APP INIT
 ============================================================ */
+/* v1172：上の店の切り替え。スマホ（640px まで）は略称（予実と同じ）にして切れないように */
+function tbStoreName(id, name){
+  var ab = id === 'ALL' ? '全店' : id === 'OFFICE' ? 'Office' : (function(){ try{ var st = (typeof STORES !== 'undefined' ? STORES : []).find(function(x){ return x.id === id; }); return _bStoreAbbr(st || { id: id, name: name }); }catch(e){ return String(id || ''); } })();
+  return '<span class="tb-sn"><span class="tb-sn-f">' + escapeHtml(String(name == null ? '' : name)) + '</span><span class="tb-sn-s">' + escapeHtml(String(ab)) + '</span></span>';
+}
 function initApp() {
   var _dg=(typeof _lsDegraded==='function' && _lsDegraded());   /* v1138：IndexedDB を読めなかった起動では一度きりの移し替えをしない（localStorage に大きなデータが無い） */
   try{ autoPruneIfCritical(); }catch(e){}
@@ -21296,7 +21391,7 @@ function initApp() {
   try { if(!_dg) migrateMenuStore(); } catch(e){}
   // Topbar
   var storeName = curStore === 'ALL' ? '全店舗' : (STORES.find(s=>s.id===curStore)||{name:curStore}).name;
-  document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
+  document.getElementById('topbar-store').innerHTML = `<i class="ti ti-building-store" style="font-size:12px;"></i> ${tbStoreName(curStore, storeName)} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   (function(){
     var _hr = (typeof curRealRole!=='undefined' && curRealRole) ? curRealRole : curRole;
     var _hlabel = ((typeof ROLE_CONFIG!=='undefined' && ROLE_CONFIG[_hr]) ? ROLE_CONFIG[_hr].label : rc.label);
@@ -21453,7 +21548,7 @@ function switchStore(id) {
   try{ if(typeof pageStoresFollow==='function') pageStoresFollow(id); }catch(e){}   /* v1129 ③：画面の中の店を左上に合わせる */
   var storeName = id === 'ALL' ? '全店舗' : (id==='OFFICE' ? 'Office' : (STORES.find(s=>s.id===id)||{name:id}).name);
   var sicon = id==='OFFICE' ? 'ti-building-skyscraper' : 'ti-building-store';
-  document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${storeName} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
+  document.getElementById('topbar-store').innerHTML = `<i class="ti ${sicon}" style="font-size:12px;"></i> ${tbStoreName(id, storeName)} <i class="ti ti-chevron-down" style="font-size:10px;"></i>`;
   closeModalDirect();
   if (id === 'OFFICE') { curPage = 'office_mgr'; if(typeof buildNav==='function') buildNav(); renderPage('office_mgr'); window.scrollTo(0,0); return; }
   if (['office_mgr','error_center'].indexOf(curPage)>=0) curPage='dashboard';
@@ -33347,11 +33442,11 @@ function renderQcSummary(scope, y, q, R){
       +_qcBarMark(pPace, 'var(--tm)')
       +_qcBarMark(pFc, (fcDiff>=0)?'var(--green)':'var(--red)')
       +'</div>'
-      +'<div style="position:relative;height:26px;font-size:9px;color:var(--muted);font-weight:600;margin-top:2px">'
-      +'<span style="position:absolute;left:0">$0</span>'
-      +'<span style="position:absolute;left:'+pPace.toFixed(1)+'%;transform:translateX(-50%);'
-      +'text-align:center;line-height:1.3;color:var(--tm)">'+t('経過目標','Elapsed')+'<br>'+fmtK(R.paceSales)+'</span>'
-      +'<span style="position:absolute;right:0;text-align:right;line-height:1.3;color:'
+      /* v1172：数字の行は並べる（重ねない）。入らなければ着地見込みを次の行の右へ。印の位置は上の棒の色で分かる */
+      +'<div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:2px 12px;font-size:9px;color:var(--muted);font-weight:600;margin-top:4px">'
+      +'<span>$0</span>'
+      +'<span style="text-align:center;line-height:1.3;color:var(--tm)">'+t('経過目標','Elapsed')+'<br>'+fmtK(R.paceSales)+'</span>'
+      +'<span style="margin-left:auto;text-align:right;line-height:1.3;color:'
       +((fcDiff>=0)?'var(--green)':'var(--red)')+'">'+t('着地見込み','Forecast')+' '+fmtK(R.forecastPace)
       +'<br><span style="color:var(--muted)">'+t('Q目標','Q target')+' '+fmtK(T)+' · '+_qcSign(fcDiff)+'</span></span>'
       +'</div>';
@@ -46579,7 +46674,7 @@ function publishShift(storeId) {
 ============================================================ */
 const SHIFT_PERIODS = ['Lunch','Dinner'];
 /* アプリのビルド版。デプロイ反映確認用にログイン画面へ表示。更新のたびに数字を上げる。 */
-const APP_VERSION = '1171';
+const APP_VERSION = '1172';
 const DOW_SHIFT = ['日','月','火','水','木','金','土'];
 /* ===== 店舗別シフトスロット定義（新モデル）=====
    各店舗を「セクション（時間帯/系統）× ポジション枠」で定義。
@@ -60478,7 +60573,7 @@ function renderUnregisteredCard(){
       return row('<span class="tag tag-yellow" style="font-size:9px">未登録</span>', _candHtml, !can?_new(!_c0):(_c0?_l+_new(false):_new(true)+_l));
     }).join('');
   }
-  return '<div class="card" style="border-left:3px solid var(--yellow)">'
+  return '<div class="card"'+(list.length?'':' data-clear')+' style="border-left:3px solid var(--yellow)">'
     +'<div class="card-title"><i class="ti ti-user-question" style="color:var(--yellow)"></i> 未登録の打刻検知'+(list.length?' <span class="tag tag-yellow" style="font-size:10px">'+list.length+'名</span>':'')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">Toastでクロックインしているが、従業員マスターに登録が無い人を表示。退職した人の記録や、名前の一部が同じ人に入っている打刻も出します（Toast の仕組みのアカウントは出しません）。判定期間：</div>'
     +'<div class="phase-tabs" style="margin-bottom:8px">'+opts+'</div>'
@@ -60510,7 +60605,7 @@ function renderInactiveCard(){
         +'</div></div>';
     }).join('');
   }
-  return '<div class="card" style="border-left:3px solid var(--accent)">'
+  return '<div class="card"'+(list.length?'':' data-clear')+' style="border-left:3px solid var(--accent)">'
     +'<div class="card-title"><i class="ti ti-user-off" style="color:var(--accent)"></i> 非アクティブ検知'+(list.length?' <span class="tag tag-yellow" style="font-size:10px">'+list.length+'名</span>':'')+'</div>'
     +'<div style="font-size:11px;color:var(--muted);margin:2px 0 8px">在籍だが Toast打刻が一定期間ない人を表示。判定期間：</div>'
     +'<div class="phase-tabs" style="margin-bottom:8px">'+opts+'</div>'
@@ -60560,10 +60655,7 @@ function renderStaffMaster() {
       <button class="btn btn-primary btn-sm" onclick="openEmpModal()"><i class="ti ti-user-plus"></i> 登録</button>
     </div>
   </div>
-  ${renderInactiveCard()}
-  ${renderUnregisteredCard()}
-  ${renderOffboardingCard()}
-  ${renderResignRepairCard()}
+  <div class="sm-chk">${renderInactiveCard()}${renderUnregisteredCard()}${renderOffboardingCard()}${renderResignRepairCard()}</div>
     <div style="position:relative">
       <i class="ti ti-search" style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--muted)"></i>
       <input class="form-input" style="padding-left:32px" id="emp-search" placeholder="名前・従業員コード・Email・電話で検索" value="${escapeHtml(empSearchQ)}" oninput="empSearch(this.value)">
@@ -60575,15 +60667,16 @@ function renderStaffMaster() {
     <div class="phase-tab${empFilter==='resigned'?' active':''}" onclick="setEmpFilter('resigned')">退職</div>
     <div class="phase-tab${empFilter==='all'?' active':''}" onclick="setEmpFilter('all')">全員</div>
   </div>
-  <div class="card">`;
+  `;
 
   if (!list.length) {
-    html += `<div style="text-align:center;color:var(--muted);padding:24px">該当する従業員がいません</div></div>`;
+    html += `<div class="card"><div style="text-align:center;color:var(--muted);padding:24px">該当する従業員がいません</div></div>`;
     return html;
   }
 
   // Grade順（高い順）→ Lv(STEP評価)順 → 名前順で整理
   var _gOrder = ['CEO','G7','G6','G5','G4','G3','G2','G1','G1-P',''];
+  var _groups = [];
   _gOrder.forEach(gr => {
     var group = (gr==='CEO') ? list.filter(e=>e.role==='ceo') : list.filter(e=>e.role!=='ceo' && (empGrade(e)||'')===gr);
     if (!group.length) return;
@@ -60591,36 +60684,142 @@ function renderStaffMaster() {
       var d=(parseInt(b.step,10)||0)-(parseInt(a.step,10)||0);
       return d!==0?d:String(a.name).localeCompare(String(b.name));
     });
-    html += `<div style="margin-bottom:14px"><div class="role-section-label">${gr||'Grade未設定'} (${group.length})</div>`;
-    group.forEach(e => {
+    _groups.push({ gr: gr, list: group });
+  });
+  /* v1172（UI案82 の 3：A）：スマホとタブレットは今のカード、PC（1024px 以上）は表と右のパネル。
+     画面の幅に合うほうだけを描く（両方を描いて隠さない。読み込み・保存・権限の確かめは同じ）。
+     幅が 1024px をまたいだら描き直す（empSmWatch）。選んでいる人・検索・絞り込みは今までの変数のまま */
+  var _isPc = empSmIsPc();
+  var sp = '', pc = '';
+  if (!_isPc) {
+  sp = '<div class="card sm-sp">';
+  _groups.forEach(g => {
+    sp += `<div style="margin-bottom:14px"><div class="role-section-label">${g.gr||'Grade未設定'} (${g.list.length})</div>`;
+    g.list.forEach(e => {
       var stepColor = evalColorLv(e.step,3);
       var obRec = e.status==='退職' ? getOffboardings().find(function(o){return o.empId===e.id;}) : null;
       var storeName = storeBadge(e.store);
       var supportNames = (e.support||[]).map(id=>storeBadge(id)).join(' ');
       var statusTag = e.status==='在籍'?'tag-green':e.status==='退職'?'tag-red':e.status==='研修中'?'tag-yellow':'tag-gray';
       var ins = []; if(e.insurance)ins.push('医療'); if(e.dental)ins.push('歯科');
-      html += `<div class="staff-item" style="cursor:pointer" onclick="openEmpModal('${e.id}')">
-        <div class="staff-avatar" style="background:var(--surface);border-color:${stepColor}">${e.name[0]}</div>
+      sp += `<div class="staff-item" style="cursor:pointer" onclick="openEmpModal('${e.id}')">
+        <div class="staff-avatar" style="background:var(--surface);border-color:${stepColor}">${escapeHtml(String(e.name||'')[0]||'')}</div>
         <div style="flex:1;min-width:0">
-          <div class="staff-name">${e.name} ${e.empCode?`<span style="font-size:10px;color:var(--muted);font-weight:400">#${e.empCode}</span>`:''}</div>
-          <div class="staff-role">${e.title?((typeof empTitleHtml==='function') ? empTitleHtml(e,{noBadge:true}) : '<b>'+escapeHtml(e.title)+'</b>')+' · ':''}${storeName}${supportNames?' +応援:'+supportNames:''} · ${e.emp}${ins.length?' · '+ins.join('/'):''}</div>
+          <div class="staff-name">${escapeHtml(e.name||'')} ${e.empCode?`<span style="font-size:10px;color:var(--muted);font-weight:400">#${escapeHtml(e.empCode)}</span>`:''}</div>
+          <div class="staff-role">${e.title?((typeof empTitleHtml==='function') ? empTitleHtml(e,{noBadge:true}) : '<b>'+escapeHtml(e.title)+'</b>')+' · ':''}${storeName}${supportNames?' +応援:'+supportNames:''} · ${escapeHtml(e.emp||'')}${ins.length?' · '+ins.join('/'):''}</div>
           <div style="margin-top:3px">${gradeLevelBadgeHtml(e,{pct:true})}</div>
-          ${canViewPins()?`<div style="font-size:10px;color:var(--muted);margin-top:1px"><i class="ti ti-lock" style="font-size:10px"></i> PIN: <span style="font-family:monospace;letter-spacing:1px;color:var(--tm);font-weight:600">${getStaffPin(e.name)}</span></div>`:''}
+          ${canViewPins()?`<div style="font-size:10px;color:var(--muted);margin-top:1px"><i class="ti ti-lock" style="font-size:10px"></i> PIN: <span style="font-family:monospace;letter-spacing:1px;color:var(--tm);font-weight:600">${escapeHtml(getStaffPin(e.name))}</span></div>`:''}
         </div>
         <div style="text-align:right">
-          <span class="tag ${statusTag}">${e.status}</span>
+          <span class="tag ${statusTag}">${escapeHtml(e.status||'')}</span>
           ${canViewWageOf(e)?`<div style="font-size:10px;color:var(--green);margin-top:2px">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</div>`:''}
-          ${e.status==='退職'?`<div style="margin-top:5px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">
-            ${obRec?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();openOffboardingModal('${obRec.id}')"><i class="ti ti-clipboard-check"></i> 手続き${obRec.status==='進行中'?' '+offboardProgress(obRec).pct+'%':obRec.status==='完了'?' ✓':''}</button>`:''}
-            ${['ceo','gm','am','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();restoreEmployee('${e.id}')"><i class="ti ti-arrow-back-up"></i> 復元</button>`:''}
-          </div>`:''}
+          ${e.status==='退職'?`<div style="margin-top:5px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap">${empSmResignBtns(e, obRec)}</div>`:''}
         </div>
       </div>`;
     });
-    html += '</div>';
+    sp += '</div>';
   });
-  html += '</div>';
+  sp += '</div>';
+  } else {
+  /* PC：表（Grade ごとの見出しの行）と右のパネル */
+  var _wageCol = list.some(function(e){ return canViewWageOf(e); });
+  var _ncol = _wageCol ? 7 : 6;
+  var _sel = list.find(function(e){ return e.id===window.empSmSel; }) || _groups[0].list[0];
+  var pc = `<div class="sm-pc"><div class="card sm-tbl-card"><table class="sm-tbl"><thead><tr>
+      <th>${t('名前','Name')}</th><th>${t('肩書き','Title')}</th><th>${t('店・応援','Store・support')}</th><th>${t('雇用','Type')}</th><th>Grade・Lv</th><th>${t('状態','Status')}</th>${_wageCol?`<th class="num">${t('給与','Pay')}</th>`:''}
+    </tr></thead><tbody>`;
+  _groups.forEach(g => {
+    pc += `<tr class="sm-grp"><td colspan="${_ncol}">${g.gr||'Grade未設定'} (${g.list.length})</td></tr>`;
+    g.list.forEach(e => {
+      var statusTag = e.status==='在籍'?'tag-green':e.status==='退職'?'tag-red':e.status==='研修中'?'tag-yellow':'tag-gray';
+      var supN = (e.support||[]).length;
+      var on = e.id===_sel.id;
+      pc += `<tr class="sm-row${on?' sel':''}" tabindex="0" aria-selected="${on?'true':'false'}" data-eid="${escapeHtml(e.id)}" onclick="empSmPick(this.getAttribute('data-eid'))" ondblclick="openEmpModal(this.getAttribute('data-eid'))" onkeydown="if(event.key==='Enter'){event.preventDefault();openEmpModal(this.getAttribute('data-eid'));}">
+        <td><div class="sm-nm"><span class="sm-av" style="border-color:${evalColorLv(e.step,3)}">${escapeHtml(String(e.name||'')[0]||'')}</span><span><b>${escapeHtml(e.name||'')}</b>${e.empCode?`<span class="sm-code">#${escapeHtml(e.empCode)}</span>`:''}</span></div></td>
+        <td>${e.title?((typeof empTitleHtml==='function') ? empTitleHtml(e,{noBadge:true}) : escapeHtml(e.title)):'<span class="sm-mu">—</span>'}</td>
+        <td style="white-space:nowrap">${storeBadge(e.store)}${supN?` <span class="sm-mu" title="${escapeHtml((e.support||[]).join(', '))}">＋${supN}</span>`:''}</td>
+        <td>${escapeHtml(e.emp||'')}</td>
+        <td>${gradeLevelBadgeHtml(e,{pct:true})}</td>
+        <td><span class="tag ${statusTag}">${escapeHtml(e.status||'')}</span></td>
+        ${_wageCol?`<td class="num">${canViewWageOf(e)?(isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'):''}</td>`:''}
+      </tr>`;
+    });
+  });
+  pc += `</tbody></table></div><aside class="card sm-panel" id="sm-panel" aria-live="polite">${empSmPanelInner(_sel)}</aside></div>`;
+  }
+  empSmWatch();
+  html += `<div class="sm-wrap" data-v="${_isPc?'pc':'sp'}">${_isPc?pc:sp}</div>`;
   return html;
+}
+
+/* v1172：従業員マスターを PC の形（表と右のパネル）で描くか。1024px 以上（matchMedia が無ければカード） */
+function empSmIsPc() {
+  try { return !!(window.matchMedia && window.matchMedia('(min-width:1024px)').matches); } catch (e) { return false; }
+}
+/* v1172：幅が 1024px をまたいだら、従業員マスターを開いているときだけ描き直す（見張りは 1 つだけ。
+   入力中・箱を開いているあいだは描き直さない＝FUNERGY_UX と同じ決まり。次に描くときに合う形になる） */
+function empSmWatch() {
+  if (window._empSmMq || !window.matchMedia) return;
+  try {
+    var mq = window.matchMedia('(min-width:1024px)');
+    var on = function () {
+      if (typeof curPage === 'undefined' || curPage !== 'staff_master') return;
+      var w = document.querySelector('.sm-wrap');
+      if (!w || w.getAttribute('data-v') === (mq.matches ? 'pc' : 'sp')) return;
+      var ov = document.getElementById('modal-overlay');
+      /* 箱を開いている・入力中は待つ（1.5 秒ごとに見直し、終わったら描き直す） */
+      if ((ov && ov.classList.contains('open')) || (typeof _empTyping === 'function' && _empTyping())) { clearTimeout(window._empSmMqT); window._empSmMqT = setTimeout(on, 1500); return; }
+      try { renderPage('staff_master'); } catch (e) { }
+    };
+    if (mq.addEventListener) mq.addEventListener('change', on); else if (mq.addListener) mq.addListener(on);
+    window._empSmMq = mq;
+  } catch (e) { }
+}
+
+/* v1172：退職した人の「手続き」「復元」のボタン（カードと PC のパネルで同じ） */
+function empSmResignBtns(e, obRec) {
+  return `${obRec?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px" onclick="event.stopPropagation();openOffboardingModal('${obRec.id}')"><i class="ti ti-clipboard-check"></i> 手続き${obRec.status==='進行中'?' '+offboardProgress(obRec).pct+'%':obRec.status==='完了'?' ✓':''}</button>`:''}
+            ${['ceo','gm','am','office'].includes(curRole)?`<button class="btn btn-secondary btn-sm" style="padding:2px 8px;font-size:11px;color:var(--green);border-color:var(--green)" onclick="event.stopPropagation();restoreEmployee('${e.id}')"><i class="ti ti-arrow-back-up"></i> 復元</button>`:''}`;
+}
+/* v1172：PC の右のパネル（選んだ人）。見せるものはカードと同じ権限の確かめ（給与・PIN） */
+function empSmPanelInner(e) {
+  if (!e) return '';
+  var obRec = e.status==='退職' ? getOffboardings().find(function(o){return o.empId===e.id;}) : null;
+  var statusTag = e.status==='在籍'?'tag-green':e.status==='退職'?'tag-red':e.status==='研修中'?'tag-yellow':'tag-gray';
+  var ins = []; if(e.insurance)ins.push('医療'); if(e.dental)ins.push('歯科');
+  var al = []; try { al = (typeof empToastAliases==='function' ? empToastAliases(e) : []).map(function(a){ return escapeHtml(a.n)+(a.store?' '+storeBadge(a.store):''); }); } catch(err) { al = []; }
+  var rows = [
+    [t('所属店','Store'), storeBadge(e.store)||'—'],
+    [t('応援','Support'), (e.support||[]).map(function(id){ return storeBadge(id); }).join(' ')||'—'],
+    [t('雇用','Type'), escapeHtml(e.emp||'—')],
+    [t('入社日','Hire date'), escapeHtml(e.hireDate||'—')],
+    [t('状態','Status'), `<span class="tag ${statusTag}">${escapeHtml(e.status||'')}</span>`],
+    [t('従業員コード','Employee code'), e.empCode?'#'+escapeHtml(e.empCode):'—'],
+    [t('Toast の名前','Toast name'), al.join('<br>')||'—']
+  ];
+  if (ins.length) rows.push([t('保険','Insurance'), ins.join('/')]);
+  if (canViewWageOf(e)) rows.push([t('給与','Pay'), `<span style="color:var(--green);font-weight:700">${isMonthlyTitle(e.title)?'$'+empMonthlyOf(e).toLocaleString()+'/月':'$'+empWageOf(e)+'/h'}</span>`]);
+  if (canViewPins()) rows.push(['PIN', `<span style="font-family:monospace;letter-spacing:1px;font-weight:600">${escapeHtml(getStaffPin(e.name))}</span>`]);
+  return `<div class="sm-ph">
+      <div class="staff-avatar" style="width:44px;height:44px;font-size:16px;border-color:${evalColorLv(e.step,3)}">${escapeHtml(String(e.name||'')[0]||'')}</div>
+      <div style="min-width:0"><div class="sm-pn">${escapeHtml(e.name||'')}</div><div class="sm-pt">${e.title?((typeof empTitleHtml==='function') ? empTitleHtml(e,{noBadge:true}) : escapeHtml(e.title)):''}</div><div style="margin-top:4px">${gradeLevelBadgeHtml(e,{pct:true})}</div></div>
+    </div>
+    <dl class="sm-dl">${rows.map(function(r){ return '<dt>'+r[0]+'</dt><dd>'+r[1]+'</dd>'; }).join('')}</dl>
+    <div class="sm-pb">
+      <button class="btn btn-primary" data-eid="${escapeHtml(e.id)}" onclick="openEmpModal(this.getAttribute('data-eid'))"><i class="ti ti-edit"></i> ${t('編集する','Edit')}</button>
+      ${e.status==='退職'?`<div style="display:flex;gap:6px;flex-wrap:wrap">${empSmResignBtns(e, obRec)}</div>`:''}
+    </div>`;
+}
+/* v1172：PC の表で人を選ぶ（パネルだけ描き直す。表に出ている人だけ＝AM の担当の外の人は出ない） */
+function empSmPick(id) {
+  window.empSmSel = id;
+  var tb = document.querySelector('#main-content .sm-tbl'); if (!tb) return;
+  var hit = null;
+  tb.querySelectorAll('tr.sm-row').forEach(function(tr){ var on = tr.getAttribute('data-eid')===id; tr.classList.toggle('sel', on); tr.setAttribute('aria-selected', on?'true':'false'); if (on) hit = tr; });
+  if (!hit) return;
+  var e = getEmployees().find(function(x){ return x.id===id; });
+  var pn = document.getElementById('sm-panel');
+  if (pn && e) pn.innerHTML = empSmPanelInner(e);
 }
 
 function setEmpFilter(f) { empFilter = f; renderPage('staff_master'); }
@@ -61472,7 +61671,7 @@ function renderOffboardingCard(){
         +'</div>';
     }).join('');
   }
-  return '<div class="card" style="border-left:3px solid var(--red)">'
+  return '<div class="card"'+(all.length?'':' data-clear')+' style="border-left:3px solid var(--red)">'
     +'<div class="card-title" style="display:flex;justify-content:space-between;align-items:center"><span><i class="ti ti-user-off" style="color:var(--red)"></i> 退職手続き'+(all.length?' <span class="tag tag-yellow" style="font-size:10px">'+all.length+'件</span>':'')+'</span>'+tplBtn+'</div>'
     + body + '</div>';
 }
@@ -113110,6 +113309,229 @@ setTimeout(function(){ Promise.resolve(_idbBootP).then(function(){ try{ checkDri
   }catch(e){}
 })();
 /* ==== FUNERGY_GR end ==== */
+</script>
+<script>
+/* ==== FUNERGY_LAYOUT start（v1172・Moto さん 11/14 21:52 HST：UI案82「１〜５ A」）====
+   PC・スマホの共通の決まり。画面の中身・保存・同期・計算・権限・イベントは変えない（印を付けるだけ。CSS は <head> の v1172 の段）。
+   ・画面の幅：body[data-layout]（wide＝表・一覧・分析／std＝カードの画面／read＝文章と短いフォーム＝今の 900px）
+   ・箱：中身で大きさ（PC：data-msize md／lg・入力が多い箱は 2 列 data-mcols）・スマホは入力 3 つ以上か表のある箱を全画面（data-mfull）
+     見出しと保存の行を上下に固定（data-mfoot）。開いているあいだは大きくなるだけ（中身が少し変わっても揺れない）
+   ・スマホ：押すところは押せる範囲だけ 44px に（data-hit・となりの押すところとは間の半分まで）・11px より小さい文字を 11px（data-fs11）
+     横に送る表は名前の列を固定（data-stick1）・ページからはみ出す表は表の中で送る（data-ovx）・長い表は見出しを固定（data-stickh）
+   ・ナビ（1023px まで）：今の場所を見える位置へ送る・横に送れるときは端をうすく（data-more） */
+(function(){
+  var W = window, D = document;
+  var L = W.FUNERGY_LAYOUT = W.FUNERGY_LAYOUT || {};
+  if (L._on) return; L._on = true;
+  var WIDE = { dashboard:1, mgmt_dash:1, budget:1, mid_review:1, meeting:1, purchase:1, monthly:1, store_power:1, menu:1, recipe:1, costsheet:1,
+    purchase_detail:1, invoice:1, acct_review:1, office_mgr:1, office_export:1, error_center:1, inventory:1, tasks:1, labor:1, tip:1, attendance:1,
+    acct_center:1, hr:1, hiring:1, onboarding:1, staff_master:1, ingredient_master:1, ing_transfer:1, vendor_master:1, leadership:1, office_career:1,
+    skill:1, growth_mgr:1, ojt_admin:1, approval:1, store_master:1, kpi_master:1, acct_export:1, growth_karte:1, diag_center:1, mileage:1 };
+  var STD = { store_cmd:1, store_ops_settings:1, dailyops:1, lala:1, cc_plan:1, announce:1, totoya_docs:1, mypage:1, ojtmap:1, settings:1,
+    company_msg_edit:1, vacation:1, expense:1 };
+  L.layoutOf = function(page){
+    if (page === 'shift_admin' || page === 'chat') return '';   /* 自分の幅を持つ画面 */
+    if (page === 'tasks' && typeof workTab !== 'undefined' && workTab === 'chat') return '';
+    if (page === 'dashboard') { try { return (typeof mdCanOpen === 'function' && mdCanOpen()) ? 'wide' : 'std'; } catch (e) { return 'std'; } }
+    if (WIDE[page]) return 'wide';
+    if (STD[page]) return 'std';
+    return 'read';
+  };
+  function setLayout(page){
+    try {
+      var v = L.layoutOf(page);
+      if (v) D.body.setAttribute('data-layout', v); else D.body.removeAttribute('data-layout');
+    } catch (e) {}
+  }
+  L.setLayout = setLayout;
+  if (typeof W.renderPage === 'function') {
+    var rp0 = W.renderPage;
+    W.renderPage = function(page){
+      setLayout(page);   /* 描く前に幅を決める（中身が幅を見て並びを決める画面のため） */
+      var r = rp0.apply(this, arguments);
+      try { var cp = (typeof curPage !== 'undefined' && curPage) || page; if (cp !== page) setLayout(cp); } catch (e) {}
+      schedule();
+      return r;
+    };
+  }
+
+  var mqPhone = W.matchMedia ? W.matchMedia('(max-width:767px)') : { matches: false };
+  var mqNav = W.matchMedia ? W.matchMedia('(max-width:1023px)') : { matches: false };
+  function phone(){ return !!mqPhone.matches; }
+
+  /* ---------- 箱（モーダル） ---------- */
+  var RANK = { '': 0, md: 1, lg: 2 };
+  function vis(el){ if (!el || !el.getClientRects().length) return false; var s = W.getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none'; }
+  function fieldsIn(root){
+    var n = 0; root.querySelectorAll('input, select, textarea').forEach(function(f){
+      var ty = (f.getAttribute('type') || '').toLowerCase();
+      if (ty === 'hidden' || ty === 'checkbox' || ty === 'radio' || ty === 'button' || ty === 'submit' || ty === 'file') return;
+      n++;
+    });
+    return n;
+  }
+  function modalClear(mb){ ['data-msize', 'data-mfull', 'data-mcols'].forEach(function(a){ mb.removeAttribute(a); }); mb.querySelectorAll(':scope > [data-mfoot]').forEach(function(x){ x.removeAttribute('data-mfoot'); }); }
+  function modalSize(reset){
+    var ov = D.getElementById('modal-overlay'), mb = D.getElementById('modal-body');
+    if (!ov || !mb) return;
+    if (!ov.classList.contains('open') || reset) { modalClear(mb); if (!ov.classList.contains('open')) return; }
+    var n = fieldsIn(mb), tbls = mb.querySelectorAll('table'), wide = false;
+    tbls.forEach(function(t){ if (!wide && t.getClientRects().length && t.scrollWidth > 560) wide = true; });
+    var want = wide ? 'lg' : (tbls.length || n >= 6) ? 'md' : '';
+    var cur = mb.getAttribute('data-msize') || '';
+    if (RANK[want] > RANK[cur]) mb.setAttribute('data-msize', want);
+    if (n >= 3 || tbls.length) mb.setAttribute('data-mfull', '');
+    var groups = mb.querySelectorAll(':scope > .form-group').length;
+    if (groups >= 6 && !tbls.length) mb.setAttribute('data-mcols', '2');
+    /* 下に固定する行：最後の子がボタンだけの行のとき */
+    var last = mb.lastElementChild; mb.querySelectorAll(':scope > [data-mfoot]').forEach(function(x){ if (x !== last) x.removeAttribute('data-mfoot'); });
+    if (last && last.classList && !last.classList.contains('modal-title') && last.querySelector('button, .btn') && !last.querySelector('input:not([type=hidden]), select, textarea, table')) {
+      var h = last.getBoundingClientRect().height;
+      if (h > 0 && h < 150) last.setAttribute('data-mfoot', ''); else last.removeAttribute('data-mfoot');
+    }
+  }
+  L.modalSize = modalSize;
+  if (typeof W.openModal === 'function') {
+    var om0 = W.openModal;
+    W.openModal = function(){
+      var mb = D.getElementById('modal-body'); if (mb) modalClear(mb);
+      var r = om0.apply(this, arguments);
+      try { modalSize(true); } catch (e) {}
+      schedule();
+      return r;
+    };
+  }
+
+  /* ---------- スマホ：押すところ・文字・表 ---------- */
+  var TGT = 'button, a[href], [onclick], [role=button], label';
+  function isTarget(el){
+    if (!el.matches(TGT)) return false;
+    if (el.tagName === 'LABEL' && !el.querySelector('input[type=checkbox], input[type=radio]') && !el.getAttribute('for')) return false;
+    var p = el.parentElement; if (p && p.closest('button, a[href], [onclick], [role=button]')) return false;   /* 押すところの中の押すところは数えない */
+    return true;
+  }
+  function clearHit(el){ el.removeAttribute('data-hit'); ['--ht', '--hb', '--hl', '--hr'].forEach(function(k){ el.style.removeProperty(k); }); }
+  function absKids(el){ for (var c = el.firstElementChild; c; c = c.nextElementSibling) { var p = W.getComputedStyle(c).position; if (p === 'absolute' || p === 'fixed') return true; } return false; }
+  function scanHits(roots){
+    var tg = [], fields = [];
+    roots.forEach(function(root){
+      if (!root) return;
+      root.querySelectorAll(TGT).forEach(function(el){ if (isTarget(el)) tg.push(el); });
+      root.querySelectorAll('input:not([type=hidden]), select, textarea').forEach(function(f){ fields.push(f); });
+    });
+    var items = [];
+    tg.forEach(function(el){ var rs = el.getClientRects(); if (!rs.length) return; var r = el.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; items.push({ el: el, r: r }); });
+    var others = items.map(function(x){ return x.r; });
+    fields.forEach(function(f){ if (f.getClientRects().length) { var r = f.getBoundingClientRect(); if (r.width >= 1 && r.height >= 1) others.push(r); } });
+    items.forEach(function(it){
+      var el = it.el, r = it.r;
+      if (r.width >= 44 && r.height >= 44) { if (el.hasAttribute('data-hit')) clearHit(el); return; }
+      var cs = W.getComputedStyle(el);
+      if (cs.display === 'inline' || cs.display === 'contents' || cs.display.indexOf('table') === 0 || /(hidden|clip|auto|scroll)/.test(cs.overflow + cs.overflowX + cs.overflowY)) return;
+      if (!el.hasAttribute('data-hit')) { var af = W.getComputedStyle(el, '::after').content; if (af && af !== 'none' && af !== 'normal') return; }
+      if (cs.position === 'static' && absKids(el)) return;
+      var e = { t: Math.max(0, (44 - r.height) / 2), b: Math.max(0, (44 - r.height) / 2), l: Math.max(0, (44 - r.width) / 2), r: Math.max(0, (44 - r.width) / 2) };
+      for (var i = 0; i < others.length; i++) {
+        var q = others[i]; if (q === r) continue;
+        if (q.left < r.right && q.right > r.left && q.top < r.bottom && q.bottom > r.top) continue;   /* 重なる（中・外）ものは見ない */
+        var vOv = q.top < r.bottom + e.b && q.bottom > r.top - e.t, hOv = q.left < r.right + e.r && q.right > r.left - e.l;
+        if (q.left >= r.right && vOv) e.r = Math.min(e.r, Math.max(0, (q.left - r.right) / 2));
+        else if (q.right <= r.left && vOv) e.l = Math.min(e.l, Math.max(0, (r.left - q.right) / 2));
+        if (q.top >= r.bottom && hOv) e.b = Math.min(e.b, Math.max(0, (q.top - r.bottom) / 2));
+        else if (q.bottom <= r.top && hOv) e.t = Math.min(e.t, Math.max(0, (r.top - q.bottom) / 2));
+      }
+      if (e.t + e.b + e.l + e.r < 1) { if (el.hasAttribute('data-hit')) clearHit(el); return; }
+      el.style.setProperty('--ht', e.t.toFixed(1) + 'px'); el.style.setProperty('--hb', e.b.toFixed(1) + 'px');
+      el.style.setProperty('--hl', e.l.toFixed(1) + 'px'); el.style.setProperty('--hr', e.r.toFixed(1) + 'px');
+      if (!el.hasAttribute('data-hit')) el.setAttribute('data-hit', '');
+    });
+  }
+  function scanFonts(roots){
+    roots.forEach(function(root){
+      if (!root) return;
+      var tw = D.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), seen = new Set(), n;
+      while ((n = tw.nextNode())) {
+        var p = n.parentElement; if (!p || seen.has(p)) continue; seen.add(p);
+        if (!n.nodeValue || !n.nodeValue.trim() || p.hasAttribute('data-fs11') || p.closest('svg')) continue;
+        if (parseFloat(W.getComputedStyle(p).fontSize) < 10.95 && p.getClientRects().length) p.setAttribute('data-fs11', '');
+      }
+    });
+  }
+  function scroller(el){ for (var a = el.parentElement; a && a !== D.body; a = a.parentElement) { var s = W.getComputedStyle(a); if (/(auto|scroll)/.test(s.overflowX)) return a; if (/(hidden|clip)/.test(s.overflowX)) return null; } return null; }
+  function scanTables(roots){
+    var vw = D.documentElement.clientWidth, vh = W.innerHeight;
+    roots.forEach(function(root){
+      if (!root) return;
+      root.querySelectorAll('table').forEach(function(t){
+        if (!t.getClientRects().length || t.closest('svg')) return;
+        var r = t.getBoundingClientRect(), sc = t.hasAttribute('data-ovx') ? t : scroller(t);
+        if (!sc && r.right > vw + 1 && r.width > vw * 0.5) { t.setAttribute('data-ovx', ''); sc = t; }
+        if (sc && sc.scrollWidth > sc.clientWidth + 2 && !t.querySelector('[rowspan]') && t.rows.length >= 2) {
+          var c0 = t.rows[0] && t.rows[0].cells[0];
+          if (c0 && c0.getBoundingClientRect().width < sc.clientWidth * 0.45) t.setAttribute('data-stick1', ''); else t.removeAttribute('data-stick1');
+        } else if (t.hasAttribute('data-stick1') && sc && sc.scrollWidth <= sc.clientWidth + 2) t.removeAttribute('data-stick1');
+        if (!sc && t.tHead && r.height > vh * 1.5) t.setAttribute('data-stickh', '');
+      });
+    });
+  }
+
+  /* ---------- ナビ ---------- */
+  function navMore(b){
+    if (!b) return;
+    var more = b.scrollWidth > b.clientWidth + 2, l = more && b.scrollLeft > 2, rr = more && b.scrollLeft + b.clientWidth < b.scrollWidth - 2;
+    var v = (l ? 'l' : '') + (rr ? 'r' : '');
+    if (v && mqNav.matches) b.setAttribute('data-more', v); else b.removeAttribute('data-more');
+  }
+  /* 今の場所を見える位置へ送るのは、ナビを作り直したときだけ（人が横に送ったナビを、ほかの描き直しで戻さない） */
+  function navShow(move){
+    ['nav-bar', 'subnav-bar'].forEach(function(id){
+      var b = D.getElementById(id); if (!b) return;
+      if (!b._fxl) { b._fxl = true; b.addEventListener('scroll', function(){ navMore(b); }, { passive: true }); }
+      var a = move && b.querySelector('.active');
+      if (a && b.scrollWidth > b.clientWidth + 2) {
+        var x = a.offsetLeft - b.offsetLeft, w = a.offsetWidth;
+        if (x < b.scrollLeft || x + w > b.scrollLeft + b.clientWidth) b.scrollLeft = Math.max(0, x - (b.clientWidth - w) / 2);
+      }
+      navMore(b);
+    });
+  }
+  L.navShow = navShow;
+  if (typeof W.buildNav === 'function') {
+    var bn0 = W.buildNav;
+    W.buildNav = function(){ var r = bn0.apply(this, arguments); try { navShow(true); } catch (e) {} schedule(); return r; };
+  }
+
+  /* ---------- まとめて走らせる ---------- */
+  var tmr = 0;
+  function run(){
+    tmr = 0;
+    if (D.visibilityState === 'hidden') return;
+    try { modalSize(false); } catch (e) {}
+    try { navShow(false); } catch (e) {}
+    if (!phone()) return;
+    var ov = D.getElementById('modal-overlay'), mb = (ov && ov.classList.contains('open')) ? D.getElementById('modal-body') : null;
+    var roots = [D.getElementById('main-content'), mb, D.getElementById('nav-bar'), D.getElementById('subnav-bar'), D.querySelector('.topbar')].filter(Boolean);
+    try { scanTables(roots); } catch (e) {}
+    try { scanFonts(roots); } catch (e) {}
+    try { scanHits(roots); } catch (e) {}
+  }
+  function schedule(){ if (tmr) return; tmr = setTimeout(function(){ (W.requestAnimationFrame || setTimeout)(run); }, 120); }
+  L.schedule = schedule; L.run = run;
+  function watch(){
+    var mc = D.getElementById('main-content'), mb = D.getElementById('modal-body'), ov = D.getElementById('modal-overlay');
+    if (!W.MutationObserver) return;
+    var mo = new MutationObserver(schedule);
+    if (mc) mo.observe(mc, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'open', 'hidden'] });
+    if (mb) mo.observe(mb, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'open', 'hidden'] });
+    if (ov) mo.observe(ov, { attributes: true, attributeFilter: ['class'] });
+    W.addEventListener('resize', schedule, { passive: true });
+    W.addEventListener('orientationchange', schedule, { passive: true });
+    D.addEventListener('visibilitychange', function(){ if (D.visibilityState === 'visible') schedule(); });
+  }
+  if (D.readyState === 'loading') D.addEventListener('DOMContentLoaded', watch); else watch();
+  try { if (typeof curPage !== 'undefined' && curPage) setLayout(curPage); } catch (e) {}
+})();
+/* ==== FUNERGY_LAYOUT end ==== */
 </script>
 <script type="module" src="./web-office-cas.f7f5f2d21cda41ff32c82bdd0b6985ed60b4b9e4ab46cc0e653708fe0ab1223d.js"></script>
 </body>

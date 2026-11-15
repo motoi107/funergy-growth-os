@@ -44,6 +44,8 @@ const pages = await page.evaluate(() => {
 const list = (ONLY.length ? ONLY : (WHO === 'gm' ? pages.ids : pages.nav)).filter(p => ['mgmt_dash', 'office_mgr'].indexOf(p) < 0);
 
 const measure = (label) => page.evaluate((label) => {
+  /* v1172：重い画面は描き終わる直後に測ることがある。FUNERGY_LAYOUT の待っている印付け（描いて 120ms のあと）を先に走らせて、人が見る状態で測る */
+  try { if (window.FUNERGY_LAYOUT && window.FUNERGY_LAYOUT.run) window.FUNERGY_LAYOUT.run(); } catch (e) { }
   const vw = innerWidth, vh = innerHeight;
   const main = document.querySelector('.main'); const mc = document.getElementById('main-content');
   const ov = document.getElementById('modal-overlay'); const modalOpen = ov && ov.classList.contains('open');
@@ -70,7 +72,15 @@ const measure = (label) => page.evaluate((label) => {
     if (inter) {
       if (/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) inputs++;
       tapTotal++;
-      if (r.width < 44 || r.height < 44) { tapSmall++; if (r.width < 32 || r.height < 28) { tapTiny++; if (tapEx.length < 6) tapEx.push(desc(el) + ' ' + Math.round(r.width) + '×' + Math.round(r.height)); } }
+      /* v1172：押せる範囲を広げた所（data-hit の ::after）は、広げた範囲で測る（はみ出しを切る親で切る） */
+      let er = r;
+      if (el.hasAttribute('data-hit')) {
+        const v = k => parseFloat(el.style.getPropertyValue(k)) || 0;
+        let L0 = r.left - v('--hl'), R0 = r.right + v('--hr'), T0 = r.top - v('--ht'), B0 = r.bottom + v('--hb');
+        for (let a = el.parentElement; a && a !== document.body; a = a.parentElement) { const st = getComputedStyle(a); if (st.overflowX !== 'visible' || st.overflowY !== 'visible') { const ar = a.getBoundingClientRect(); L0 = Math.max(L0, ar.left); R0 = Math.min(R0, ar.right); T0 = Math.max(T0, ar.top); B0 = Math.min(B0, ar.bottom); } }
+        er = { width: Math.max(0, R0 - L0), height: Math.max(0, B0 - T0) };
+      }
+      if (er.width < 43.5 || er.height < 43.5) { tapSmall++; if (er.width < 32 || er.height < 28) { tapTiny++; if (tapEx.length < 6) tapEx.push(desc(el) + ' ' + Math.round(er.width) + '×' + Math.round(er.height)); } }
     }
     const hasText = [...el.childNodes].some(n => n.nodeType === 3 && n.textContent.trim());
     if (hasText && parseFloat(s.fontSize) < 11) { fontSmall++; if (fontEx.length < 4) fontEx.push(desc(el) + ' ' + s.fontSize); }
@@ -91,6 +101,9 @@ const measure = (label) => page.evaluate((label) => {
     scrollers: scrollers.slice(0, 6), tables, tablesScroll, tapTotal, tapSmall, tapTiny, tapEx, fontSmall, fontEx, inputs,
     side, wideBlocks: wide, blocks: blocks.length, heightScreens: +(document.documentElement.scrollHeight / vh).toFixed(1),
     tabbars, textLen: (root.innerText || '').length,
+    /* v1172 の印：表の名前の列の固定・表の中の横送り・全画面の箱・箱の大きさ */
+    stick1: root.querySelectorAll('table[data-stick1]').length, ovx: root.querySelectorAll('table[data-ovx]').length,
+    mfull: modalOpen && rr.width >= vw - 2 ? 1 : 0, msize: modalOpen ? (document.getElementById('modal-body').getAttribute('data-msize') || '') : '', hits: root.querySelectorAll('[data-hit]').length,
     fns: [...new Set([...root.querySelectorAll('[onclick]')].map(e => ((e.getAttribute('onclick') || '').match(/([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/) || [])[1]).filter(Boolean))].slice(0, 200)
   };
 }, label);
