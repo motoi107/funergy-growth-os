@@ -35,3 +35,4 @@
 - `navcheck.mjs`（v1172）：ナビの印（端がうすいか）・今の場所が見えるか・押せる高さ（`--ht`・`--hb` を足した高さ）・上の店の切り替え（GM・G3・G1 × 390・768・1440。390・768 はタッチ）。`cd "$PCSP_DIR" && node <repo>/tests/perf/pcsp/navcheck.mjs` → `navcheck.json`。
 - `update_v1172.mjs` の決まり：「文章・短いフォーム」の画面（`index.html` の WIDE・STD に無い画面）の幅 900px は共通の決まり 1 どおりなので問題に数えない。入力も表も無い箱の「スマホ用の小さな箱」も数えない。名前の列を固定しない表（結合したセル・最初の列が枠の 45% より広い）は検証結果に書く。
 - `tests/e2e-pcsp/hit-position-v1172.mjs`：押す範囲を広げても absolute・fixed・sticky の位置が変わらないこと（散布図の点など）を本物の Chromium の CSS で確かめる。模擬サーバーは要らない（index.html の `<style>` と FUNERGY_LAYOUT を白紙のページに入れる）。
+- `tests/e2e-pcsp/labor-ui83-v1173.mjs`（v1173）：予実 › 人件費・勤怠（UI案83）を模擬サーバーで確かめる（GM・1440 日本語・1024 英語・390 日英）。模擬サーバーを立ててから `node tests/e2e-pcsp/labor-ui83-v1173.mjs`。
