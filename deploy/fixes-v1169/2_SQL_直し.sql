@@ -11,6 +11,8 @@
 --    ・管理する人：退職した人は選ばない（いまの参加者から）。管理する人が退職した人だけの会話も直す（1 回）。
 --    ・v1170 の直し（Codex #166 の P2）：SQL のあとに唯一の管理する人が退職・無効になっても、加える・外す・管理する人・名前・キーの操作は、
 --      会話をロックしてから管理する人を直し（chat_admin_lock）、そのあとで権限と最後の参加者を確かめる。参加者でない人には見せない（前のまま）。
+--    ・v1170 の直し（Codex #166 6891496601）：会話を開いたときの「できること」も、次に管理する人になる人を管理する人として返す
+--      （chat_admin_eff・読むだけ）。残った参加者がふつうの画面で「人を加える」などを押せる（前は API を直接呼ばないと直せなかった）。
 -- 3.（#161）経理レビュー › 申請の「処理済み（今月）」：精算・確認した時刻（ハワイの月）でサーバーから読む（wr_acct_done・ページごと）。
 --    前は申請した日で 2 か月前まで・1,000 件で読んでいたので、古い申請を今月処理したものが出なかった。
 -- 4. 段：chat_stage 5（前の版のチャットの SQL はこの上では止まる）。申請の段（wr_stage）は変えない（v1165 の ③ が段 7 ちょうどを見るため）。
@@ -67,17 +69,33 @@ end $$;
 
 -- ---------------------------------------------------------------- 2. 申請のチャット・管理する人
 -- 管理する人がいなければ（いても退職した人だけなら）、いちばん前から入っている読める参加者を管理する人に（作った人が先）
+-- v1170 の直し（Codex #166 6891496601）：だれを管理する人にするかを 1 つの関数（chat_admin_next・読むだけ）に。
+-- 直す（chat_admin_fix）のと、画面に見せる権限（chat_admin_eff）が同じ人を選ぶ
+create or replace function public.chat_admin_next(p_thread uuid) returns text
+language sql stable security invoker set search_path = public, pg_temp as $$
+ select x.emp_id from public.chat_members x
+  where x.thread_id = p_thread and x.left_at is null and not x.auto and public.chat_emp_ok(x.emp_id)
+    and exists (select 1 from public.chat_threads t where t.id = p_thread and t.kind in ('group','case'))
+    and not exists (select 1 from public.chat_members y where y.thread_id = p_thread and y.left_at is null and not y.auto and y.admin
+                     and public.chat_emp_ok(y.emp_id))
+  order by (x.emp_id = (select t.created_by from public.chat_threads t where t.id = p_thread)) desc, x.added_at, x.emp_id limit 1
+$$;
+
 create or replace function public.chat_admin_fix(p_thread uuid) returns void
 language plpgsql volatile security invoker set search_path = public, pg_temp as $$
-declare v text;
+declare v text := public.chat_admin_next(p_thread);
 begin
- if not exists (select 1 from public.chat_threads t where t.id = p_thread and t.kind in ('group','case')) then return; end if;
- if exists (select 1 from public.chat_members x where x.thread_id = p_thread and x.left_at is null and not x.auto and x.admin
-             and public.chat_emp_ok(x.emp_id)) then return; end if;
- select x.emp_id into v from public.chat_members x where x.thread_id = p_thread and x.left_at is null and not x.auto and public.chat_emp_ok(x.emp_id)
-  order by (x.emp_id = (select t.created_by from public.chat_threads t where t.id = p_thread)) desc, x.added_at, x.emp_id limit 1;
  if v is not null then update public.chat_members set admin = true where thread_id = p_thread and emp_id = v; end if;
 end $$;
+
+-- v1170 の直し（Codex #166 6891496601）：画面に見せる「管理する人か」。管理する人がいなければ（退職・無効だけなら）、
+-- 次の操作で管理する人になる人（chat_admin_next）も管理する人として見せる（読むだけ・何も書かない）。
+-- その人が加える・名前・管理・キーを押すと、chat_admin_lock がロックの下で本当に管理する人にしてから確かめる
+create or replace function public.chat_admin_eff(m public.chat_members, t public.chat_threads) returns boolean
+language sql stable security invoker set search_path = public, pg_temp as $$
+ select t.kind <> 'dm' and m.emp_id is not null and m.left_at is null and not coalesce(m.auto, false)
+  and (coalesce(m.admin, false) or coalesce(public.chat_admin_next(t.id) = m.emp_id, false))
+$$;
 
 -- v1170 の直し：会話をロックし、管理する人がいなければ（退職・無効だけなら）直してから、自分の参加の行を読み直す。
 -- 管理する人の権限を確かめる操作は、どれもこれを通してから確かめる（唯一の管理する人の退職のあとも、残った参加者が加える・抜ける・直すことができる）
@@ -89,6 +107,68 @@ begin
  if not found then raise exception 'not_found'; end if;
  perform public.chat_admin_fix(t.id);
  return public.chat_member_of(a, t);
+end $$;
+
+-- v1170 の直し（Codex #166 6891496601）：会話を開いたとき（一覧・メッセージ）の「管理する人か」と「できること」を chat_admin_eff で。
+-- 唯一の管理する人が退職したあと、残った参加者がふつうの画面で「人を加える」「名前」「管理」「キー」を押せる（前は API を直接呼ばないと直せなかった）。
+-- 中身は v1168（守り）の chat_row と v1167（UI案79）の chat_messages_get のまま、管理する人の印だけを変えた
+create or replace function public.chat_row(a jsonb, t public.chat_threads, m public.chat_members) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare lm public.chat_messages; v_unread integer; v_ment integer; v_n integer; v_prev text; r public.wr_requests; v_ref jsonb := null; v_other text; v_vis boolean := false;
+ v_kok boolean := public.chat_key_ok(a, t);
+begin
+ select * into lm from public.chat_messages x where x.thread_id = t.id and x.seq >= m.history_from order by x.seq desc limit 1;
+ select count(*) filter (where x.author_emp <> a->>'emp' and x.deleted_at is null and x.hidden_at is null),
+        count(*) filter (where x.author_emp <> a->>'emp' and x.deleted_at is null and x.hidden_at is null and x.mentions @> array[a->>'emp'])
+   into v_unread, v_ment
+   from public.chat_messages x where x.thread_id = t.id and x.seq > greatest(m.last_read, m.history_from - 1);
+ select count(*) into v_n from public.chat_members x where x.thread_id = t.id and x.left_at is null and not x.auto;
+ if lm.id is not null then
+  v_prev := case when lm.deleted_at is not null then '（削除されました）' when lm.hidden_at is not null then '（見えなくなりました）'
+                 when coalesce(lm.body, '') = '' then public.chat_files_label(lm.id)
+                 else left(regexp_replace(lm.body, '\s+', ' ', 'g'), 80) end;
+ end if;
+ if t.kind = 'case' then
+  select * into r from public.wr_requests x where x.id = t.ref_id;
+  if found then
+   begin v_vis := public.wr_visible(a, r); exception when others then v_vis := false; end;
+   if v_vis then v_ref := jsonb_build_object('kind', 'wr', 'id', r.id, 'code', r.code, 'wr_kind', r.kind, 'status', r.status, 'store_id', r.store_id,
+     'rev', r.rev, 'mine', r.requester_emp is not distinct from a->>'emp'); end if;
+  end if;
+ end if;
+ if t.kind = 'dm' then select x.emp_id into v_other from public.chat_members x where x.thread_id = t.id and x.emp_id <> a->>'emp' limit 1; end if;
+ return jsonb_build_object('id', t.id, 'kind', t.kind, 'title', public.chat_title(a, t), 'other', v_other, 'ref', v_ref, 'members', v_n,
+  'created_by', t.created_by, 'created_name', t.created_name, 'rev', t.rev, 'admin', public.chat_admin_eff(m, t),
+  'keyed', t.key_hash is not null, 'key_ok', v_kok, 'key_rev', t.key_rev,
+  'last_seq', t.last_seq, 'last_at', t.last_at, 'last_read', m.last_read, 'history_from', m.history_from,
+  'preview', case when lm.id is null then null when not v_kok then jsonb_build_object('seq', lm.seq, 'at', lm.created_at, 'locked', true)
+    else jsonb_strip_nulls(jsonb_build_object('seq', lm.seq, 'name', lm.author_name, 'emp', lm.author_emp, 'text', v_prev, 'at', lm.created_at,
+    'state', case when lm.deleted_at is not null then 'deleted' when lm.hidden_at is not null then 'hidden' end,
+    'files', case when lm.deleted_at is null and lm.hidden_at is null and coalesce(lm.body, '') = '' then public.chat_files_count(lm.id) end)) end,
+  'unread', v_unread, 'mention', v_ment, 'chg', greatest(t.chg, m.chg));
+end $$;
+
+create or replace function public.chat_messages_get(p jsonb) returns jsonb
+language plpgsql stable security invoker set search_path = public, pg_temp as $$
+declare a jsonb := public.chat_actor(p); t public.chat_threads := public.chat_find(a, p->>'thread'); m public.chat_members := public.chat_member_of(a, t);
+ v_after bigint := null; v_before bigint := null; v_lim integer := 100; o jsonb; mem jsonb; v_older boolean; v_adm boolean := public.chat_admin_eff(m, t); v_next text := public.chat_admin_next(t.id);
+begin
+ if jsonb_typeof(p->'after') = 'number' then v_after := (p->>'after')::bigint; end if;
+ if jsonb_typeof(p->'before') = 'number' then v_before := (p->>'before')::bigint; end if;
+ if jsonb_typeof(p->'limit') = 'number' then v_lim := least(100, greatest(1, (p->>'limit')::int)); end if;
+ select coalesce(jsonb_agg(public.chat_msg(a, t, x) order by x.seq), '[]'::jsonb) into o from (
+  select * from public.chat_messages y
+   where y.thread_id = t.id and y.seq >= m.history_from
+     and (v_after is null or y.seq > v_after) and (v_before is null or y.seq < v_before)
+   order by case when v_after is not null then y.seq end asc, case when v_after is null then y.seq end desc
+   limit v_lim) x;
+ select exists (select 1 from public.chat_messages y where y.thread_id = t.id and y.seq >= m.history_from
+   and y.seq < coalesce((select min((e->>'seq')::bigint) from jsonb_array_elements(o) e), 0)) into v_older;
+ select coalesce(jsonb_agg(jsonb_build_object('emp', x.emp_id, 'name', public.chat_emp_name(x.emp_id), 'auto', false, 'admin', x.admin or x.emp_id = v_next, 'last_read', x.last_read)
+   order by (x.admin or x.emp_id = v_next) desc, public.chat_emp_name(x.emp_id)), '[]'::jsonb) into mem
+   from public.chat_members x where x.thread_id = t.id and x.left_at is null and not x.auto;
+ return jsonb_build_object('thread', public.chat_row(a, t, m), 'messages', o, 'older', coalesce(v_older, false), 'members', mem,
+  'can_add', v_adm, 'can_rename', v_adm, 'can_leave', t.kind <> 'dm', 'can_remove', v_adm, 'can_admin', v_adm);
 end $$;
 
 -- 外す（管理する人）／抜ける（本人）。抜けるのはキーを開けていなくてもできる。申請のチャットの最後の参加者は抜けられない（last_member）
